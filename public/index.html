@@ -1177,19 +1177,23 @@ let _autoKpiDraftTimer = null;          // lock keys held by this client
 (function detectServerOrigin(){
   try {
     const proto = location.protocol;
-    if(proto === "http:" || proto === "https:"){
-      // Served from HTTP server — same origin is the data server
+    const host = location.hostname;
+    // GitHub Pages / static hosting — skip server mode
+    const isStaticHost = host.endsWith("github.io") || host.endsWith("netlify.app") || host.endsWith("vercel.app") || host === "";
+    if((proto === "http:" || proto === "https:") && !isStaticHost){
+      // Served from a real HTTP server — same origin is the data server
       const origin = location.origin;
       serverConfig.url = origin;
       serverConfig.enabled = true;
       console.log("[Server] Auto-detected:", origin);
-    } else {
+    } else if(proto !== "http:" && proto !== "https:"){
       // Opened as file:// — try last saved server URL from localStorage
       try {
         const saved = localStorage.getItem("hr_kpi_server_url");
         if(saved){ serverConfig.url=saved; serverConfig.enabled=true; console.log("[Server] Restored from localStorage:", saved); }
       } catch(e){}
     }
+    // else: static hosting (github.io etc.) → localStorage only mode
   } catch(e){}
 })();
 
