@@ -326,9 +326,20 @@ app.get("*", (req, res) => {
 });
 
 // ── Start ─────────────────────────────────────────────────────────────────────
-app.listen(PORT, () => {
-  console.log(`\n🚀 인사평가 통합 시스템 서버 시작`);
-  console.log(`   URL: http://localhost:${PORT}`);
-  console.log(`   데이터: ${DATA_FILE}`);
-  console.log(`   백업:   ${BACKUP_DIR}\n`);
+const server = app.listen(PORT, () => {
+  console.log("\n=== HR KPI System Server Started ===");
+  console.log("URL  : http://localhost:" + PORT);
+  console.log("Data : " + DATA_FILE);
+  console.log("Backup: " + BACKUP_DIR + "\n");
+});
+
+server.on("error", (err) => {
+  if (err.code === "EADDRINUSE") {
+    console.error("[ERROR] Port " + PORT + " is already in use.");
+    console.error("        Run: netstat -ano | findstr :" + PORT);
+    console.error("        Then stop the process using that port.");
+  } else {
+    console.error("[ERROR]", err.message);
+  }
+  process.exit(1);
 });
