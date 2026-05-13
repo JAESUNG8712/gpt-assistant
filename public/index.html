@@ -3403,8 +3403,6 @@ function handleComprehensiveUpload(input){
   const isXlsx=file.name.toLowerCase().endsWith('.xlsx')||file.name.toLowerCase().endsWith('.xls');
   if(isXlsx){handleXlsxUpload(file);input.value="";return;}
   // CSV fallback below
-  const _origFile=file;
-  const file=input.files[0];if(!file)return;
   const reader=new FileReader();
   reader.onload=ev=>{
     try{
