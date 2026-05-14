@@ -1,0 +1,270 @@
+{% extends "base.html" %}
+{% block title %}{{ year }}년 {{ month }}월 급여 계산{% endblock %}
+{% block page_title %}{{ year }}년 {{ month }}월 급여 계산{% endblock %}
+
+{% block content %}
+<!-- Month navigation -->
+<div class="d-flex align-items-center justify-content-between mb-4 flex-wrap gap-2">
+  <div class="d-flex align-items-center gap-2">
+    <a href="{{ url_for('salary_calculate', year=prev_year, month=prev_month) }}"
+       class="btn btn-outline-secondary btn-sm">
+      <i class="bi bi-chevron-left"></i>
+    </a>
+    <span class="fw-semibold fs-5 px-2">{{ year }}년 {{ month }}월</span>
+    <a href="{{ url_for('salary_calculate', year=next_year, month=next_month) }}"
+       class="btn btn-outline-secondary btn-sm">
+      <i class="bi bi-chevron-right"></i>
+    </a>
+  </div>
+  <div class="d-flex gap-2 flex-wrap">
+    <a href="{{ url_for('salary_upload') }}" class="btn btn-outline-secondary btn-sm">
+      <i class="bi bi-upload me-1"></i>일괄 업로드
+    </a>
+    <a href="{{ url_for('salary_export', year=year, month=month) }}" class="btn btn-outline-success btn-sm">
+      <i class="bi bi-file-earmark-excel me-1"></i>엑셀 내보내기
+    </a>
+    <form method="post" action="{{ url_for('salary_confirm', year=year, month=month) }}" class="d-inline"
+          onsubmit="return confirm('{{ year }}년 {{ month }}월 급여를 확정 저장하시겠습니까?\n이미 저장된 직원은 건너뜁니다.')">
+      <button type="submit" class="btn btn-success btn-sm">
+        <i class="bi bi-check2-circle me-1"></i>급여 확정
+      </button>
+    </form>
+    <button class="btn btn-primary btn-sm" data-bs-toggle="modal" data-bs-target="#addAdjModal">
+      <i class="bi bi-plus-lg me-1"></i>조정 항목 추가
+    </button>
+  </div>
+</div>
+
+<!-- Summary cards -->
+{% if results %}
+<div class="row g-3 mb-4">
+  <div class="col-sm-4">
+    <div class="p-3 rounded border bg-white text-center">
+      <div class="text-muted small mb-1">총 지급액</div>
+      <div class="fw-bold text-success fs-5">{{ summary.total_pay | won }}</div>
+    </div>
+  </div>
+  <div class="col-sm-4">
+    <div class="p-3 rounded border bg-white text-center">
+      <div class="text-muted small mb-1">총 공제액</div>
+      <div class="fw-bold text-danger fs-5">{{ summary.total_deduction | won }}</div>
+    </div>
+  </div>
+  <div class="col-sm-4">
+    <div class="p-3 rounded border bg-white text-center">
+      <div class="text-muted small mb-1">총 실수령액</div>
+      <div class="fw-bold text-primary fs-5">{{ summary.net_pay | won }}</div>
+    </div>
+  </div>
+</div>
+
+<!-- Per-employee results -->
+{% for item in results %}
+{% set emp = item.emp %}
+{% set r = item.result %}
+<div class="card border-0 shadow-sm mb-4">
+  <div class="card-header bg-white border-bottom d-flex justify-content-between align-items-center">
+    <div>
+      <span class="fw-semibold">{{ emp.name }}</span>
+      <code class="ms-2 text-muted small">{{ emp.employee_id }}</code>
+      {% if emp.department %}<span class="badge bg-secondary-subtle text-secondary ms-1">{{ emp.department }}</span>{% endif %}
+      {% if emp.position %}<span class="badge bg-light text-dark ms-1">{{ emp.position }}</span>{% endif %}
+    </div>
+    <div class="fw-bold text-primary">실수령액 {{ r.net_pay | won }}</div>
+  </div>
+  <div class="card-body">
+    <div class="row g-4">
+
+      <!-- 지급 항목 -->
+      <div class="col-md-6">
+        <h6 class="text-success mb-3"><i class="bi bi-plus-circle me-1"></i>지급 항목</h6>
+        <table class="table table-sm table-borderless mb-0">
+          <tr>
+            <td class="text-muted">기본급</td>
+            <td class="text-end fw-medium">{{ r.monthly_base | won }}</td>
+          </tr>
+          {% if r.extra_pay %}
+          <tr>
+            <td class="text-muted">추가수당</td>
+            <td class="text-end fw-medium text-success">+{{ r.extra_pay | won }}</td>
+          </tr>
+          {% endif %}
+          {% if r.condolence_pay %}
+          <tr>
+            <td class="text-muted">경조사비 <span class="badge bg-info-subtle text-info small">비과세</span></td>
+            <td class="text-end fw-medium text-success">+{{ r.condolence_pay | won }}</td>
+          </tr>
+          {% endif %}
+          {% if r.unpaid_leave_amount %}
+          <tr>
+            <td class="text-muted">무급휴가 차감</td>
+            <td class="text-end fw-medium text-danger">-{{ r.unpaid_leave_amount | won }}</td>
+          </tr>
+          {% endif %}
+          <tr class="border-top">
+            <td class="fw-semibold">총 지급액</td>
+            <td class="text-end fw-bold text-success">{{ r.total_pay | won }}</td>
+          </tr>
+        </table>
+      </div>
+
+      <!-- 공제 항목 -->
+      <div class="col-md-6">
+        <h6 class="text-danger mb-3"><i class="bi bi-dash-circle me-1"></i>공제 항목</h6>
+        <table class="table table-sm table-borderless mb-0">
+          <tr>
+            <td class="text-muted small ps-2">국민연금 (4.5%)</td>
+            <td class="text-end fw-medium">{{ r.national_pension | won }}</td>
+          </tr>
+          <tr>
+            <td class="text-muted small ps-2">건강보험 (3.545%)</td>
+            <td class="text-end fw-medium">{{ r.health_insurance | won }}</td>
+          </tr>
+          <tr>
+            <td class="text-muted small ps-2">장기요양보험</td>
+            <td class="text-end fw-medium">{{ r.long_term_care | won }}</td>
+          </tr>
+          <tr>
+            <td class="text-muted small ps-2">고용보험 (0.9%)</td>
+            <td class="text-end fw-medium">{{ r.employment_insurance | won }}</td>
+          </tr>
+          <tr>
+            <td class="fw-medium ps-2 text-muted border-top pt-1">4대보험 소계</td>
+            <td class="text-end fw-semibold border-top pt-1">{{ r.total_insurance | won }}</td>
+          </tr>
+          <tr>
+            <td class="text-muted small ps-2">소득세</td>
+            <td class="text-end fw-medium">{{ r.income_tax | won }}</td>
+          </tr>
+          <tr>
+            <td class="text-muted small ps-2">지방소득세 (10%)</td>
+            <td class="text-end fw-medium">{{ r.local_income_tax | won }}</td>
+          </tr>
+          {% if r.other_deduction %}
+          <tr>
+            <td class="text-muted small ps-2">기타공제</td>
+            <td class="text-end fw-medium text-danger">{{ r.other_deduction | won }}</td>
+          </tr>
+          {% endif %}
+          <tr class="border-top">
+            <td class="fw-semibold">총 공제액</td>
+            <td class="text-end fw-bold text-danger">{{ r.total_deduction | won }}</td>
+          </tr>
+        </table>
+      </div>
+    </div>
+
+    <!-- 이번 달 조정 내역 -->
+    {% if item.adjs %}
+    <hr class="my-3">
+    <div class="d-flex align-items-center justify-content-between mb-2">
+      <h6 class="mb-0 text-muted"><i class="bi bi-list-ul me-1"></i>이번 달 조정 내역</h6>
+    </div>
+    <div class="d-flex flex-wrap gap-2">
+      {% for adj in item.adjs %}
+      <div class="adj-chip d-flex align-items-center gap-2 border rounded px-3 py-1 bg-light small">
+        <span class="text-muted">{{ adj_type_label.get(adj.type, adj.type) }}</span>
+        <span class="fw-medium">
+          {% if adj.type == 'unpaid_leave' %}{{ adj.value }}일{% else %}{{ adj.value | int | won }}{% endif %}
+        </span>
+        {% if adj.description %}<span class="text-secondary">({{ adj.description }})</span>{% endif %}
+        <form method="post" action="{{ url_for('adjustment_delete', adj_id=adj.id) }}" class="d-inline"
+              onsubmit="return confirm('이 조정 항목을 삭제하시겠습니까?')">
+          <button type="submit" class="btn-close btn-close-sm ms-1" style="font-size:0.6rem"></button>
+        </form>
+      </div>
+      {% endfor %}
+    </div>
+    {% endif %}
+
+    <!-- 공제율 바 -->
+    <hr class="my-3">
+    <div class="d-flex align-items-center gap-3">
+      <span class="text-muted small">공제율</span>
+      <div class="flex-grow-1 progress" style="height:8px">
+        {% set ratio = (r.total_deduction / r.total_pay * 100) | round(1) if r.total_pay else 0 %}
+        <div class="progress-bar bg-danger" style="width:{{ ratio }}%"></div>
+        <div class="progress-bar bg-success" style="width:{{ 100 - ratio }}%"></div>
+      </div>
+      <span class="text-muted small fw-medium">{{ ratio }}%</span>
+    </div>
+  </div>
+</div>
+{% endfor %}
+
+{% else %}
+<div class="text-center py-5 text-muted">
+  <i class="bi bi-people display-3 d-block mb-3 opacity-25"></i>
+  <p>재직 중인 직원이 없습니다.</p>
+  <a href="{{ url_for('employee_new') }}" class="btn btn-primary">직원 등록하기</a>
+</div>
+{% endif %}
+
+<!-- Add Adjustment Modal -->
+<div class="modal fade" id="addAdjModal" tabindex="-1">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <form method="post" action="{{ url_for('adjustment_add', year=year, month=month) }}">
+        <div class="modal-header">
+          <h5 class="modal-title"><i class="bi bi-plus-circle me-2"></i>조정 항목 추가</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+        </div>
+        <div class="modal-body">
+          <div class="mb-3">
+            <label class="form-label fw-medium">직원</label>
+            <select name="employee_id" class="form-select" required>
+              <option value="">-- 직원 선택 --</option>
+              {% for item in results %}
+              <option value="{{ item.emp.id }}">{{ item.emp.name }} ({{ item.emp.employee_id }})</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="mb-3">
+            <label class="form-label fw-medium">구분</label>
+            <select name="type" class="form-select" required id="adjTypeSelect">
+              <option value="unpaid_leave">무급휴가 (일수 입력)</option>
+              <option value="condolence_pay">경조사비 (비과세, 금액 입력)</option>
+              <option value="extra_pay">추가수당 (금액 입력)</option>
+              <option value="other_deduction">기타공제 (금액 입력)</option>
+            </select>
+          </div>
+          <div class="mb-3">
+            <label class="form-label fw-medium" id="adjValueLabel">값 (일수 또는 금액)</label>
+            <div class="input-group">
+              <input type="text" name="value" class="form-control" required placeholder="예: 1.5">
+              <span class="input-group-text" id="adjUnit">일</span>
+            </div>
+          </div>
+          <div class="mb-3">
+            <label class="form-label fw-medium">비고</label>
+            <input type="text" name="description" class="form-control" placeholder="사유 또는 메모">
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">취소</button>
+          <button type="submit" class="btn btn-primary">추가</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  const typeSelect = document.getElementById('adjTypeSelect');
+  const unitEl = document.getElementById('adjUnit');
+  const labelEl = document.getElementById('adjValueLabel');
+  if (typeSelect) {
+    typeSelect.addEventListener('change', function() {
+      if (this.value === 'unpaid_leave') {
+        unitEl.textContent = '일';
+        labelEl.textContent = '휴가 일수';
+      } else {
+        unitEl.textContent = '원';
+        labelEl.textContent = '금액 (원)';
+      }
+    });
+  }
+</script>
+{% endblock %}

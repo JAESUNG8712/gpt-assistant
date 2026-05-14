@@ -1,0 +1,183 @@
+{% extends "base.html" %}
+{% block title %}조정 항목 일괄 업로드{% endblock %}
+{% block page_title %}조정 항목 일괄 업로드{% endblock %}
+
+{% block content %}
+<div class="row g-4">
+  <!-- Upload form -->
+  <div class="col-lg-5">
+    <div class="card border-0 shadow-sm">
+      <div class="card-header bg-white border-bottom">
+        <h6 class="mb-0 fw-semibold"><i class="bi bi-upload me-2"></i>CSV 파일 업로드</h6>
+      </div>
+      <div class="card-body">
+        <form method="post" enctype="multipart/form-data" id="uploadForm">
+          <div class="mb-3">
+            <label class="form-label fw-medium">적용 연월 <span class="text-danger">*</span></label>
+            <div class="row g-2">
+              <div class="col-6">
+                <input type="number" name="year" class="form-control" value="{{ year }}" min="2000" max="2099">
+              </div>
+              <div class="col-6">
+                <select name="month" class="form-select">
+                  {% for m in months %}
+                  <option value="{{ m }}" {% if m == month %}selected{% endif %}>{{ m }}월</option>
+                  {% endfor %}
+                </select>
+              </div>
+            </div>
+          </div>
+
+          <div class="mb-3">
+            <label class="form-label fw-medium">CSV 파일 <span class="text-danger">*</span></label>
+            <input type="file" name="csv_file" class="form-control" accept=".csv" required>
+          </div>
+
+          <div class="d-flex gap-2">
+            <button type="submit" name="action" value="preview" class="btn btn-outline-primary flex-grow-1">
+              <i class="bi bi-eye me-1"></i>미리보기
+            </button>
+            {% if preview_rows and not errors %}
+            <button type="submit" name="action" value="apply" class="btn btn-primary flex-grow-1"
+                    onclick="return confirm('{{ preview_rows | length }}건을 저장하시겠습니까?')">
+              <i class="bi bi-check-lg me-1"></i>저장
+            </button>
+            {% endif %}
+          </div>
+        </form>
+
+        <hr>
+        <div class="d-grid">
+          <a href="{{ url_for('download_template') }}" class="btn btn-outline-secondary">
+            <i class="bi bi-file-earmark-arrow-down me-1"></i>업로드 양식 다운로드 (.csv)
+          </a>
+        </div>
+      </div>
+    </div>
+
+    <!-- CSV format guide -->
+    <div class="card border-0 shadow-sm mt-3">
+      <div class="card-header bg-white border-bottom">
+        <h6 class="mb-0 fw-semibold"><i class="bi bi-info-circle me-2"></i>CSV 형식 안내</h6>
+      </div>
+      <div class="card-body small">
+        <p class="text-muted mb-2">필수 컬럼: <code>사번, 구분, 값</code></p>
+        <p class="text-muted mb-2">선택 컬럼: <code>비고</code></p>
+        <table class="table table-sm table-bordered mb-0">
+          <thead class="table-light">
+            <tr><th>구분 값</th><th>의미</th><th>값 단위</th></tr>
+          </thead>
+          <tbody>
+            <tr><td><code>무급휴가</code></td><td>무급 휴가 차감</td><td>일수 (소수 가능)</td></tr>
+            <tr><td><code>경조사비</code></td><td>경조사비 지급 (비과세)</td><td>금액 (원)</td></tr>
+            <tr><td><code>추가수당</code></td><td>추가 수당 지급</td><td>금액 (원)</td></tr>
+            <tr><td><code>기타공제</code></td><td>기타 공제 차감</td><td>금액 (원)</td></tr>
+          </tbody>
+        </table>
+        <div class="mt-2 p-2 bg-light rounded">
+          <div class="fw-medium mb-1">예시</div>
+          <code class="small">
+            사번,구분,값,비고<br>
+            EMP001,무급휴가,1.5,반차 3회<br>
+            EMP001,경조사비,300000,배우자 상<br>
+            EMP002,추가수당,150000,연장근무
+          </code>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Preview -->
+  <div class="col-lg-7">
+    {% if preview_rows %}
+    <div class="card border-0 shadow-sm">
+      <div class="card-header bg-white border-bottom d-flex justify-content-between align-items-center">
+        <h6 class="mb-0 fw-semibold">미리보기 ({{ preview_rows | length }}건)</h6>
+        {% if errors %}
+          <span class="badge bg-danger">오류 {{ errors | length }}건</span>
+        {% else %}
+          <span class="badge bg-success">모두 정상</span>
+        {% endif %}
+      </div>
+      <div class="table-responsive">
+        <table class="table table-sm table-hover align-middle mb-0">
+          <thead class="table-light">
+            <tr>
+              <th>행</th>
+              <th>사번</th>
+              <th>이름</th>
+              <th>구분</th>
+              <th class="text-end">값</th>
+              <th>비고</th>
+              <th>상태</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in preview_rows %}
+            <tr class="{% if row.error %}table-danger{% endif %}">
+              <td class="text-muted small">{{ row.row }}</td>
+              <td><code>{{ row.emp_code }}</code></td>
+              <td>{{ row.emp_name }}</td>
+              <td>{{ row.type }}</td>
+              <td class="text-end">{{ row.value }}</td>
+              <td class="text-muted small">{{ row.desc }}</td>
+              <td>
+                {% if row.error %}
+                  <span class="badge bg-danger" title="{{ row.error }}">오류</span>
+                {% else %}
+                  <span class="badge bg-success">정상</span>
+                {% endif %}
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% if errors %}
+      <div class="card-footer bg-danger-subtle">
+        <div class="fw-semibold text-danger mb-1"><i class="bi bi-exclamation-triangle me-1"></i>오류 내역</div>
+        <ul class="mb-0 small text-danger">
+          {% for e in errors %}<li>{{ e }}</li>{% endfor %}
+        </ul>
+      </div>
+      {% else %}
+      <div class="card-footer">
+        <form method="post" enctype="multipart/form-data" id="applyForm">
+          <input type="hidden" name="year" value="{{ year }}">
+          <input type="hidden" name="month" value="{{ month }}">
+          <input type="hidden" name="action" value="apply">
+          <!-- Re-upload same file for apply -->
+          <div class="d-flex align-items-center gap-3">
+            <span class="text-muted small">{{ year }}년 {{ month }}월에 {{ preview_rows | length }}건을 저장합니다.</span>
+          </div>
+        </form>
+        <form method="post" enctype="multipart/form-data" class="mt-2" id="applyForm2">
+          <input type="hidden" name="year" value="{{ year }}">
+          <input type="hidden" name="month" value="{{ month }}">
+          <input type="hidden" name="action" value="apply">
+          <input type="file" name="csv_file" class="d-none" id="hiddenFile">
+          <button type="button" class="btn btn-primary btn-sm"
+                  onclick="document.getElementById('hiddenFile').click()">
+            <i class="bi bi-check-lg me-1"></i>파일 재선택 후 저장
+          </button>
+          <span class="text-muted small ms-2">※ 저장하려면 파일을 다시 선택해 주세요</span>
+          <script>
+            document.getElementById('hiddenFile').addEventListener('change', function(){
+              document.getElementById('applyForm2').submit();
+            });
+          </script>
+        </form>
+      </div>
+      {% endif %}
+    </div>
+    {% else %}
+    <div class="card border-0 shadow-sm h-100 d-flex align-items-center justify-content-center">
+      <div class="text-center text-muted py-5">
+        <i class="bi bi-file-earmark-arrow-up display-3 d-block mb-3 opacity-25"></i>
+        <p>CSV 파일을 선택하고 미리보기를 클릭하세요.</p>
+      </div>
+    </div>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}

@@ -1,0 +1,184 @@
+{% extends "base.html" %}
+{% block title %}급여 내역 ({{ year }}년 {{ month }}월){% endblock %}
+{% block page_title %}급여 확정 내역{% endblock %}
+
+{% block content %}
+<!-- Filter bar -->
+<div class="d-flex align-items-center gap-3 mb-4 flex-wrap">
+  <form method="get" class="d-flex align-items-center gap-2 flex-wrap">
+    <select name="year" class="form-select form-select-sm" style="width:auto">
+      {% for y in range(2020, now.year + 2) %}
+      <option value="{{ y }}" {% if y == year %}selected{% endif %}>{{ y }}년</option>
+      {% endfor %}
+    </select>
+    <select name="month" class="form-select form-select-sm" style="width:auto">
+      {% for m in months %}
+      <option value="{{ m }}" {% if m == month %}selected{% endif %}>{{ m }}월</option>
+      {% endfor %}
+    </select>
+    <button type="submit" class="btn btn-primary btn-sm">조회</button>
+  </form>
+
+  {% if months_available %}
+  <div class="d-flex align-items-center gap-1 flex-wrap">
+    <span class="text-muted small">저장된 월:</span>
+    {% for my in months_available[:12] %}
+    <a href="{{ url_for('salary_history', year=my[0], month=my[1]) }}"
+       class="badge {% if my[0] == year and my[1] == month %}bg-primary{% else %}bg-light text-dark border{% endif %} text-decoration-none">
+      {{ my[0] }}년 {{ my[1] }}월
+    </a>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  {% if records %}
+  <div class="ms-auto">
+    <a href="{{ url_for('history_export', year=year, month=month) }}" class="btn btn-outline-success btn-sm">
+      <i class="bi bi-file-earmark-excel me-1"></i>엑셀 다운로드
+    </a>
+  </div>
+  {% endif %}
+</div>
+
+{% if records %}
+<!-- Summary -->
+<div class="row g-3 mb-4">
+  <div class="col-sm-4">
+    <div class="p-3 rounded border bg-white text-center">
+      <div class="text-muted small mb-1">총 지급액</div>
+      <div class="fw-bold text-success fs-5">{{ summary.total_pay | won }}</div>
+    </div>
+  </div>
+  <div class="col-sm-4">
+    <div class="p-3 rounded border bg-white text-center">
+      <div class="text-muted small mb-1">총 공제액</div>
+      <div class="fw-bold text-danger fs-5">{{ summary.total_deduction | won }}</div>
+    </div>
+  </div>
+  <div class="col-sm-4">
+    <div class="p-3 rounded border bg-white text-center">
+      <div class="text-muted small mb-1">총 실수령액</div>
+      <div class="fw-bold text-primary fs-5">{{ summary.net_pay | won }}</div>
+    </div>
+  </div>
+</div>
+
+<!-- Records table -->
+<div class="card border-0 shadow-sm">
+  <div class="card-header bg-white border-bottom">
+    <h6 class="mb-0 fw-semibold">{{ year }}년 {{ month }}월 확정 급여 ({{ records | length }}명)</h6>
+  </div>
+  <div class="table-responsive">
+    <table class="table table-hover align-middle mb-0 small">
+      <thead class="table-light">
+        <tr>
+          <th>사번</th>
+          <th>이름</th>
+          <th>부서</th>
+          <th class="text-end">기본급</th>
+          <th class="text-end">추가수당</th>
+          <th class="text-end">경조사비</th>
+          <th class="text-end text-danger">무급차감</th>
+          <th class="text-end fw-semibold">총지급액</th>
+          <th class="text-end">4대보험</th>
+          <th class="text-end">원천세</th>
+          <th class="text-end fw-semibold text-danger">총공제액</th>
+          <th class="text-end fw-semibold text-primary">실수령액</th>
+          <th class="text-center">삭제</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in records %}
+        <tr>
+          <td><code class="text-primary">{{ r.emp_code }}</code></td>
+          <td class="fw-medium">{{ r.emp_name }}</td>
+          <td class="text-muted">{{ r.department or '-' }}</td>
+          <td class="text-end">{{ r.monthly_base | won }}</td>
+          <td class="text-end {% if r.extra_pay %}text-success{% else %}text-muted{% endif %}">
+            {{ r.extra_pay | won if r.extra_pay else '-' }}
+          </td>
+          <td class="text-end {% if r.condolence_pay %}text-success{% else %}text-muted{% endif %}">
+            {{ r.condolence_pay | won if r.condolence_pay else '-' }}
+          </td>
+          <td class="text-end {% if r.unpaid_leave_amount %}text-danger{% else %}text-muted{% endif %}">
+            {{ r.unpaid_leave_amount | won if r.unpaid_leave_amount else '-' }}
+          </td>
+          <td class="text-end fw-semibold text-success">{{ r.total_pay | won }}</td>
+          <td class="text-end">{{ (r.national_pension + r.health_insurance + r.long_term_care + r.employment_insurance) | won }}</td>
+          <td class="text-end">{{ (r.income_tax + r.local_income_tax) | won }}</td>
+          <td class="text-end fw-semibold text-danger">{{ r.total_deduction | won }}</td>
+          <td class="text-end fw-bold text-primary">{{ r.net_pay | won }}</td>
+          <td class="text-center">
+            <form method="post" action="{{ url_for('record_delete', rec_id=r.id) }}"
+                  onsubmit="return confirm('{{ r.emp_name }}의 {{ year }}년 {{ month }}월 확정 내역을 삭제하시겠습니까?')">
+              <button type="submit" class="btn btn-sm btn-outline-danger">
+                <i class="bi bi-trash"></i>
+              </button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+      <tfoot class="table-light fw-semibold">
+        <tr>
+          <td colspan="7" class="text-end">합계</td>
+          <td class="text-end text-success">{{ summary.total_pay | won }}</td>
+          <td></td><td></td>
+          <td class="text-end text-danger">{{ summary.total_deduction | won }}</td>
+          <td class="text-end text-primary">{{ summary.net_pay | won }}</td>
+          <td></td>
+        </tr>
+      </tfoot>
+    </table>
+  </div>
+</div>
+
+<!-- Per-employee deduction detail (collapsible) -->
+<div class="mt-4">
+  <h6 class="fw-semibold mb-3 text-muted">공제 항목 상세</h6>
+  <div class="card border-0 shadow-sm">
+    <div class="table-responsive">
+      <table class="table table-sm table-hover align-middle mb-0 small">
+        <thead class="table-light">
+          <tr>
+            <th>이름</th>
+            <th class="text-end">국민연금</th>
+            <th class="text-end">건강보험</th>
+            <th class="text-end">장기요양</th>
+            <th class="text-end">고용보험</th>
+            <th class="text-end">소득세</th>
+            <th class="text-end">지방소득세</th>
+            <th class="text-end">기타공제</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for r in records %}
+          <tr>
+            <td class="fw-medium">{{ r.emp_name }}</td>
+            <td class="text-end">{{ r.national_pension | won }}</td>
+            <td class="text-end">{{ r.health_insurance | won }}</td>
+            <td class="text-end">{{ r.long_term_care | won }}</td>
+            <td class="text-end">{{ r.employment_insurance | won }}</td>
+            <td class="text-end">{{ r.income_tax | won }}</td>
+            <td class="text-end">{{ r.local_income_tax | won }}</td>
+            <td class="text-end {% if r.other_deduction %}text-danger{% else %}text-muted{% endif %}">
+              {{ r.other_deduction | won if r.other_deduction else '-' }}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+{% else %}
+<div class="text-center py-5 text-muted">
+  <i class="bi bi-clock-history display-3 d-block mb-3 opacity-25"></i>
+  <p>{{ year }}년 {{ month }}월에 확정된 급여 내역이 없습니다.</p>
+  <a href="{{ url_for('salary_calculate', year=year, month=month) }}" class="btn btn-primary">
+    <i class="bi bi-calculator me-1"></i>급여 계산하고 확정하기
+  </a>
+</div>
+{% endif %}
+{% endblock %}

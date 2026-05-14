@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+{% block title %}직원 목록{% endblock %}
+{% block page_title %}직원 목록{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+  <p class="text-muted mb-0">총 <strong>{{ employees | length }}</strong>명이 등록되어 있습니다.</p>
+  <a href="{{ url_for('employee_new') }}" class="btn btn-primary">
+    <i class="bi bi-person-plus me-1"></i>직원 등록
+  </a>
+</div>
+
+{% if employees %}
+<div class="card border-0 shadow-sm">
+  <div class="table-responsive">
+    <table class="table table-hover align-middle mb-0">
+      <thead class="table-light">
+        <tr>
+          <th>사번</th>
+          <th>이름</th>
+          <th>부서</th>
+          <th>직급</th>
+          <th class="text-end">연봉</th>
+          <th class="text-center">부양가족</th>
+          <th>입사일</th>
+          <th>상태</th>
+          <th class="text-center">관리</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for emp in employees %}
+        <tr>
+          <td><code class="text-primary">{{ emp.employee_id }}</code></td>
+          <td class="fw-semibold">{{ emp.name }}</td>
+          <td>{{ emp.department or '-' }}</td>
+          <td>{{ emp.position or '-' }}</td>
+          <td class="text-end fw-medium">{{ emp.annual_salary | won }}</td>
+          <td class="text-center">{{ emp.dependents }}명</td>
+          <td>{{ emp.hire_date.strftime('%Y-%m-%d') if emp.hire_date else '-' }}</td>
+          <td>
+            {% if emp.is_active %}
+              <span class="badge bg-success-subtle text-success">재직</span>
+            {% else %}
+              <span class="badge bg-secondary-subtle text-secondary">퇴직</span>
+            {% endif %}
+          </td>
+          <td class="text-center">
+            <a href="{{ url_for('employee_edit', emp_id=emp.id) }}" class="btn btn-sm btn-outline-primary me-1">
+              <i class="bi bi-pencil"></i>
+            </a>
+            <form method="post" action="{{ url_for('employee_delete', emp_id=emp.id) }}" class="d-inline"
+                  onsubmit="return confirm('{{ emp.name }} 직원을 삭제하시겠습니까? 관련 조정 항목도 모두 삭제됩니다.')">
+              <button type="submit" class="btn btn-sm btn-outline-danger">
+                <i class="bi bi-trash"></i>
+              </button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% else %}
+<div class="text-center py-5 text-muted">
+  <i class="bi bi-people display-3 mb-3 d-block opacity-25"></i>
+  <p>등록된 직원이 없습니다.</p>
+  <a href="{{ url_for('employee_new') }}" class="btn btn-primary">
+    <i class="bi bi-person-plus me-1"></i>직원 등록하기
+  </a>
+</div>
+{% endif %}
+{% endblock %}

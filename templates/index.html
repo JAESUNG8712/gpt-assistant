@@ -1,0 +1,144 @@
+{% extends "base.html" %}
+{% block title %}대시보드{% endblock %}
+{% block page_title %}대시보드{% endblock %}
+
+{% block content %}
+<div class="row g-4 mb-4">
+  <div class="col-sm-6 col-xl-3">
+    <div class="stat-card">
+      <div class="stat-icon bg-primary-subtle text-primary">
+        <i class="bi bi-people-fill"></i>
+      </div>
+      <div>
+        <div class="stat-label">재직 직원 수</div>
+        <div class="stat-value">{{ total_employees }}<small class="fs-6 fw-normal ms-1 text-muted">명</small></div>
+      </div>
+    </div>
+  </div>
+  <div class="col-sm-6 col-xl-3">
+    <div class="stat-card">
+      <div class="stat-icon bg-success-subtle text-success">
+        <i class="bi bi-cash-stack"></i>
+      </div>
+      <div>
+        <div class="stat-label">이번 달 총 지급액</div>
+        <div class="stat-value text-success">{{ total_pay | won }}</div>
+      </div>
+    </div>
+  </div>
+  <div class="col-sm-6 col-xl-3">
+    <div class="stat-card">
+      <div class="stat-icon bg-danger-subtle text-danger">
+        <i class="bi bi-dash-circle"></i>
+      </div>
+      <div>
+        <div class="stat-label">이번 달 총 공제액</div>
+        <div class="stat-value text-danger">{{ total_deduction | won }}</div>
+      </div>
+    </div>
+  </div>
+  <div class="col-sm-6 col-xl-3">
+    <div class="stat-card">
+      <div class="stat-icon bg-warning-subtle text-warning">
+        <i class="bi bi-wallet2"></i>
+      </div>
+      <div>
+        <div class="stat-label">이번 달 총 실수령액</div>
+        <div class="stat-value text-warning">{{ total_net | won }}</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="row g-4">
+  <div class="col-lg-6">
+    <div class="card border-0 shadow-sm">
+      <div class="card-header bg-white border-bottom">
+        <h6 class="mb-0 fw-semibold">{{ year }}년 {{ month }}월 빠른 이동</h6>
+      </div>
+      <div class="card-body">
+        <div class="d-flex flex-wrap gap-2">
+          <a href="{{ url_for('salary_calculate', year=year, month=month) }}" class="btn btn-primary">
+            <i class="bi bi-calculator me-1"></i>{{ year }}년 {{ month }}월 급여 계산
+          </a>
+          <a href="{{ url_for('salary_upload') }}" class="btn btn-outline-secondary">
+            <i class="bi bi-upload me-1"></i>조정 항목 업로드
+          </a>
+          <a href="{{ url_for('salary_export', year=year, month=month) }}" class="btn btn-outline-success">
+            <i class="bi bi-file-earmark-excel me-1"></i>엑셀 내보내기
+          </a>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="col-lg-6">
+    <div class="card border-0 shadow-sm">
+      <div class="card-header bg-white border-bottom">
+        <h6 class="mb-0 fw-semibold">공제 비율 (이번 달)</h6>
+      </div>
+      <div class="card-body">
+        {% if total_pay > 0 %}
+          {% set ratio = (total_deduction / total_pay * 100) | round(1) %}
+          <div class="d-flex align-items-center gap-3 mb-2">
+            <span class="text-muted small">공제율</span>
+            <span class="fw-bold fs-5">{{ ratio }}%</span>
+          </div>
+          <div class="progress" style="height:12px">
+            <div class="progress-bar bg-danger" style="width:{{ ratio }}%"></div>
+            <div class="progress-bar bg-success" style="width:{{ 100 - ratio }}%"></div>
+          </div>
+          <div class="d-flex justify-content-between mt-1">
+            <small class="text-danger">공제 {{ total_deduction | won }}</small>
+            <small class="text-success">실수령 {{ total_net | won }}</small>
+          </div>
+        {% else %}
+          <p class="text-muted mb-0">등록된 직원이 없습니다.</p>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="mt-4">
+  <div class="card border-0 shadow-sm">
+    <div class="card-header bg-white border-bottom d-flex justify-content-between align-items-center">
+      <h6 class="mb-0 fw-semibold">적용 공제율 안내 (2024년 기준)</h6>
+    </div>
+    <div class="card-body">
+      <div class="row g-3">
+        <div class="col-md-4">
+          <div class="p-3 rounded bg-light">
+            <div class="fw-semibold mb-2 text-primary"><i class="bi bi-shield-check me-1"></i>4대 보험 (근로자 부담)</div>
+            <table class="table table-sm table-borderless mb-0 small">
+              <tr><td>국민연금</td><td class="text-end fw-medium">4.5%</td></tr>
+              <tr><td>건강보험</td><td class="text-end fw-medium">3.545%</td></tr>
+              <tr><td>장기요양보험</td><td class="text-end fw-medium">건강보험료 × 12.95%</td></tr>
+              <tr><td>고용보험</td><td class="text-end fw-medium">0.9%</td></tr>
+            </table>
+          </div>
+        </div>
+        <div class="col-md-4">
+          <div class="p-3 rounded bg-light">
+            <div class="fw-semibold mb-2 text-danger"><i class="bi bi-receipt me-1"></i>원천세</div>
+            <table class="table table-sm table-borderless mb-0 small">
+              <tr><td>소득세</td><td class="text-end fw-medium">간이세액표 적용</td></tr>
+              <tr><td>지방소득세</td><td class="text-end fw-medium">소득세 × 10%</td></tr>
+              <tr><td>비과세 식대</td><td class="text-end fw-medium">월 200,000원</td></tr>
+            </table>
+          </div>
+        </div>
+        <div class="col-md-4">
+          <div class="p-3 rounded bg-light">
+            <div class="fw-semibold mb-2 text-warning"><i class="bi bi-calendar-x me-1"></i>무급휴가</div>
+            <table class="table table-sm table-borderless mb-0 small">
+              <tr><td>일급 기준</td><td class="text-end fw-medium">월급 ÷ 21.75일</td></tr>
+              <tr><td>차감 방식</td><td class="text-end fw-medium">일급 × 휴가일수</td></tr>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

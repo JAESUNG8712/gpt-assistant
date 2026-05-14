@@ -1,0 +1,88 @@
+{% extends "base.html" %}
+{% block title %}{% if action == 'new' %}직원 등록{% else %}직원 수정{% endif %}{% endblock %}
+{% block page_title %}{% if action == 'new' %}직원 등록{% else %}{{ emp.name }} 수정{% endif %}{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+  <div class="col-lg-7">
+    <div class="card border-0 shadow-sm">
+      <div class="card-body p-4">
+        <form method="post" novalidate>
+          <div class="row g-3">
+
+            <div class="col-sm-6">
+              <label class="form-label fw-medium">사번 <span class="text-danger">*</span></label>
+              <input type="text" name="employee_id" class="form-control"
+                     value="{{ emp.employee_id if emp else data.get('employee_id','') }}"
+                     placeholder="EMP001" required>
+            </div>
+            <div class="col-sm-6">
+              <label class="form-label fw-medium">이름 <span class="text-danger">*</span></label>
+              <input type="text" name="name" class="form-control"
+                     value="{{ emp.name if emp else data.get('name','') }}"
+                     placeholder="홍길동" required>
+            </div>
+
+            <div class="col-sm-6">
+              <label class="form-label fw-medium">부서</label>
+              <input type="text" name="department" class="form-control"
+                     value="{{ emp.department if emp else data.get('department','') }}"
+                     placeholder="개발팀">
+            </div>
+            <div class="col-sm-6">
+              <label class="form-label fw-medium">직급</label>
+              <input type="text" name="position" class="form-control"
+                     value="{{ emp.position if emp else data.get('position','') }}"
+                     placeholder="사원">
+            </div>
+
+            <div class="col-sm-6">
+              <label class="form-label fw-medium">연봉 (원) <span class="text-danger">*</span></label>
+              <div class="input-group">
+                <input type="text" name="annual_salary" class="form-control text-end" data-number
+                       value="{{ '{:,}'.format(emp.annual_salary) if emp else data.get('annual_salary','') }}"
+                       placeholder="36,000,000" required>
+                <span class="input-group-text">원</span>
+              </div>
+              <div class="form-text">월 기본급 = 연봉 ÷ 12</div>
+            </div>
+            <div class="col-sm-6">
+              <label class="form-label fw-medium">입사일</label>
+              <input type="date" name="hire_date" class="form-control"
+                     value="{{ emp.hire_date.isoformat() if emp and emp.hire_date else '' }}">
+            </div>
+
+            <div class="col-sm-6">
+              <label class="form-label fw-medium">부양가족 수
+                <span class="text-muted small">(본인 포함)</span>
+              </label>
+              <input type="number" name="dependents" class="form-control" min="1" max="20"
+                     value="{{ emp.dependents if emp else data.get('dependents', 1) }}">
+              <div class="form-text">소득세 계산 시 기본공제에 적용</div>
+            </div>
+            <div class="col-sm-6">
+              <label class="form-label fw-medium">비과세 식대 (원/월)</label>
+              <div class="input-group">
+                <input type="text" name="non_taxable_meal" class="form-control text-end" data-number
+                       value="{{ '{:,}'.format(emp.non_taxable_meal) if emp else data.get('non_taxable_meal','200,000') }}">
+                <span class="input-group-text">원</span>
+              </div>
+              <div class="form-text">소득세 비과세 항목 (최대 200,000원)</div>
+            </div>
+
+          </div>
+
+          <hr class="my-4">
+          <div class="d-flex gap-2 justify-content-end">
+            <a href="{{ url_for('employees_list') }}" class="btn btn-outline-secondary">취소</a>
+            <button type="submit" class="btn btn-primary">
+              <i class="bi bi-check-lg me-1"></i>
+              {% if action == 'new' %}등록{% else %}저장{% endif %}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
