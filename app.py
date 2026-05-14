@@ -138,6 +138,19 @@ class TaxConfig(db.Model):
         }
 
 
+class MonthlyPeriod(db.Model):
+    """월별 마감 상태 관리."""
+    __tablename__  = "monthly_periods"
+    __table_args__ = (db.UniqueConstraint("year", "month", name="uq_monthly_period"),)
+
+    id          = db.Column(db.Integer, primary_key=True)
+    year        = db.Column(db.Integer, nullable=False)
+    month       = db.Column(db.Integer, nullable=False)
+    is_closed   = db.Column(db.Boolean, default=False, nullable=False)
+    closed_at   = db.Column(db.DateTime)
+    reopened_at = db.Column(db.DateTime)
+
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 ADJ_TYPE_MAP = {
@@ -183,6 +196,30 @@ def inject_globals():
         "now":             datetime.now(),
         "local_bootstrap": _has_local_bootstrap(),
     }
+
+
+def get_period(year: int, month: int) -> "MonthlyPeriod | None":
+    return MonthlyPeriod.query.filter_by(year=year, month=month).first()
+
+
+def is_period_editable(year: int, month: int) -> tuple[bool, str]:
+    """
+    (편집 가능 여부, 사유 메시지) 반환.
+    - 당월보다 이전 달 → 시스템 잠금 (항상 불가)
+    - 당월 이후 또는 당월 → MonthlyPeriod.is_closed 여부로 판단
+    """
+    now_y, now_m = datetime.now().year, datetime.now().month
+    if (year, month) < (now_y, now_m):
+        return False, f"{year}년 {month}월은 지난 달이므로 수정할 수 없습니다."
+    period = get_period(year, month)
+    if period and period.is_closed:
+        return False, f"{year}년 {month}월은 마감되었습니다. 마감을 해제해야 수정할 수 있습니다."
+    return True, ""
+
+
+def is_past_period(year: int, month: int) -> bool:
+    now_y, now_m = datetime.now().year, datetime.now().month
+    return (year, month) < (now_y, now_m)
 
 
 def get_tax_rates(year: int) -> dict:
@@ -513,9 +550,12 @@ def salary_index():
 
 @app.route("/salary/<int:year>/<int:month>")
 def salary_calculate(year, month):
-    rates     = get_tax_rates(year)
-    employees = Employee.query.filter_by(is_active=True).order_by(Employee.employee_id).all()
-    tax_cfg   = TaxConfig.query.filter_by(year=year).first()
+    rates      = get_tax_rates(year)
+    employees  = Employee.query.filter_by(is_active=True).order_by(Employee.employee_id).all()
+    tax_cfg    = TaxConfig.query.filter_by(year=year).first()
+    period     = get_period(year, month)
+    editable, lock_reason = is_period_editable(year, month)
+    past       = is_past_period(year, month)
 
     results = []
     for emp in employees:
@@ -542,9 +582,40 @@ def salary_calculate(year, month):
         prev_year=prev_year, prev_month=prev_month,
         next_year=next_year, next_month=next_month,
         adj_type_label=ADJ_TYPE_LABEL,
-        tax_cfg=tax_cfg,
-        rates=rates,
+        tax_cfg=tax_cfg, rates=rates,
+        period=period, editable=editable,
+        lock_reason=lock_reason, is_past=past,
     )
+
+
+@app.route("/salary/<int:year>/<int:month>/close", methods=["POST"])
+def period_close(year, month):
+    if is_past_period(year, month):
+        flash("지난 달은 이미 시스템에 의해 잠겨 있습니다.", "warning")
+        return redirect(url_for("salary_calculate", year=year, month=month))
+    period = get_period(year, month)
+    if not period:
+        period = MonthlyPeriod(year=year, month=month)
+        db.session.add(period)
+    period.is_closed = True
+    period.closed_at = datetime.utcnow()
+    db.session.commit()
+    flash(f"{year}년 {month}월이 마감되었습니다. 수정하려면 마감을 해제해야 합니다.", "success")
+    return redirect(url_for("salary_calculate", year=year, month=month))
+
+
+@app.route("/salary/<int:year>/<int:month>/reopen", methods=["POST"])
+def period_reopen(year, month):
+    if is_past_period(year, month):
+        flash("지난 달은 시스템 잠금 상태로 마감 해제가 불가합니다.", "danger")
+        return redirect(url_for("salary_calculate", year=year, month=month))
+    period = get_period(year, month)
+    if period:
+        period.is_closed   = False
+        period.reopened_at = datetime.utcnow()
+        db.session.commit()
+    flash(f"{year}년 {month}월 마감이 해제되었습니다.", "success")
+    return redirect(url_for("salary_calculate", year=year, month=month))
 
 
 @app.route("/salary/<int:year>/<int:month>/export")
@@ -595,6 +666,11 @@ def salary_export(year, month):
 
 @app.route("/salary/<int:year>/<int:month>/confirm", methods=["POST"])
 def salary_confirm(year, month):
+    editable, reason = is_period_editable(year, month)
+    if not editable:
+        flash(reason, "danger")
+        return redirect(url_for("salary_calculate", year=year, month=month))
+
     rates     = get_tax_rates(year)
     employees = Employee.query.filter_by(is_active=True).all()
     saved = skipped = 0
@@ -702,6 +778,10 @@ def history_export():
 def record_delete(rec_id):
     rec = SalaryRecord.query.get_or_404(rec_id)
     year, month = rec.year, rec.month
+    editable, reason = is_period_editable(year, month)
+    if not editable:
+        flash(reason, "danger")
+        return redirect(url_for("salary_history", year=year, month=month))
     db.session.delete(rec)
     db.session.commit()
     flash("확정 내역이 삭제되었습니다.", "success")
@@ -720,6 +800,12 @@ def salary_upload():
         year   = int(request.form.get("year",  year))
         month  = int(request.form.get("month", month))
         action = request.form.get("action", "preview")
+
+        if action == "apply":
+            editable, reason = is_period_editable(year, month)
+            if not editable:
+                flash(reason, "danger")
+                return render_template("salary/upload.html", year=year, month=month, months=MONTHS)
 
         file = request.files.get("csv_file")
         if not file or file.filename == "":
@@ -815,6 +901,10 @@ def download_template():
 def adjustment_delete(adj_id):
     adj = Adjustment.query.get_or_404(adj_id)
     year, month = adj.year, adj.month
+    editable, reason = is_period_editable(year, month)
+    if not editable:
+        flash(reason, "danger")
+        return redirect(url_for("salary_calculate", year=year, month=month))
     db.session.delete(adj)
     db.session.commit()
     flash("조정 항목이 삭제되었습니다.", "success")
@@ -823,6 +913,11 @@ def adjustment_delete(adj_id):
 
 @app.route("/salary/<int:year>/<int:month>/adjustment/add", methods=["POST"])
 def adjustment_add(year, month):
+    editable, reason = is_period_editable(year, month)
+    if not editable:
+        flash(reason, "danger")
+        return redirect(url_for("salary_calculate", year=year, month=month))
+
     emp_id   = request.form.get("employee_id")
     adj_type = request.form.get("type")
     value    = request.form.get("value", "0").replace(",", "")
