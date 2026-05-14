@@ -136,7 +136,7 @@ body{font-family:-apple-system,'Noto Sans KR',sans-serif;background:var(--bg);fo
   <div class="section-title" style="margin-top:0">퇴직금 계산</div>
   <div class="card card-body mb-2" style="font-size:12px;color:var(--muted);padding:10px 14px">
     <strong style="color:#334155">평균임금 산정 방식</strong><br>
-    퇴직 전 3개월 임금총액(연봉÷4) ÷ 91일 = <strong>1일 평균임금</strong><br>
+    퇴직 전 3개월 각 월의 실제 임금 합계 ÷ 해당 3개월 실제 일수 = <strong>1일 평균임금</strong><br>
     <span style="color:#1d4ed8">DB형</span> = 1일 평균임금 × 30일 × 재직일수÷365 &nbsp;|&nbsp;
     <span style="color:#16a34a">DC형</span> = 월기본급(연봉÷12) × 재직연수 (최소 법정 납입 기준)
   </div>
@@ -390,6 +390,34 @@ function saveOTHours(empId, val) {
 }
 
 // ===== RETIREMENT CALC =====
+function subtractMonths(date, months){
+  const d=new Date(date);
+  let y=d.getFullYear(), mo=d.getMonth()-months;
+  while(mo<0){mo+=12;y--;}
+  const last=new Date(y,mo+1,0).getDate();
+  return new Date(y,mo,Math.min(d.getDate(),last));
+}
+function calcAvgWageBreakdown(emp, retire){
+  const start=subtractMonths(retire,3);
+  const monthly=Math.round(emp.annual_salary/12);
+  const totalDays=Math.round((retire-start)/86400000);
+  const periods=[];
+  let cur=new Date(start);
+  while(cur<retire){
+    const yr=cur.getFullYear(),mo=cur.getMonth();
+    const daysInMonth=new Date(yr,mo+1,0).getDate();
+    const nextMonth=new Date(yr,mo+1,1);
+    const segEnd=nextMonth<retire?nextMonth:retire;
+    const daysInSeg=Math.round((segEnd-cur)/86400000);
+    periods.push({year:yr,month:mo+1,daysInMonth,daysInSeg,
+      isFullMonth:daysInSeg===daysInMonth,
+      salaryInSeg:Math.round(monthly*daysInSeg/daysInMonth)});
+    cur=nextMonth;
+  }
+  const totalSalary=periods.reduce((s,p)=>s+p.salaryInSeg,0);
+  const avgDaily=Math.round(totalSalary/totalDays);
+  return{start,retire,totalDays,totalSalary,avgDaily,periods,monthly};
+}
 function calcRet(emp, retDateStr){
   if(!emp.hire_date) return null;
   const hire=new Date(emp.hire_date);
@@ -397,11 +425,11 @@ function calcRet(emp, retDateStr){
   if(isNaN(hire)||isNaN(retire)||retire<=hire)return null;
   const days=Math.floor((retire-hire)/86400000);
   const years=days/365;
-  const monthly3=emp.annual_salary/4; // 3개월 임금
-  const avgDaily=monthly3/91;          // 1일 평균임금
+  const wb=calcAvgWageBreakdown(emp,retire);
+  const avgDaily=wb.avgDaily;
   const db=Math.round(avgDaily*30*days/365);
   const dc=Math.round(emp.annual_salary/12*years);
-  return{days,years,eligible:years>=1,avgDaily,db,dc,hire,retire,monthly3};
+  return{days,years,eligible:years>=1,avgDaily,db,dc,hire,retire,wb};
 }
 function calcRetPrevYear(emp){
   if(!emp.hire_date)return null;
@@ -833,9 +861,27 @@ function openRetDetail(empId){
     <div style="font-size:11px;color:var(--muted);margin-bottom:14px">${emp.department||''} ${emp.position||''}</div>
     <div style="background:#f8fafc;border-radius:10px;padding:12px;margin-bottom:14px;font-size:12px">
       <div class="bd-section" style="padding-top:0">📐 평균임금 산정</div>
-      <div class="bd-row"><span>연봉</span><span>${won(emp.annual_salary)}</span></div>
-      <div class="bd-row"><span>퇴직전 3개월 임금 (연봉÷4)</span><span>${won(r.monthly3)}</span></div>
-      <div class="bd-row"><span>3개월 일수</span><span>91일</span></div>
+      <div class="bd-row"><span>연봉 / 월기본급</span><span>${won(emp.annual_salary)} / ${won(r.wb.monthly)}</span></div>
+      <div class="bd-row"><span>산정 기간</span><span>${fmtDate(r.wb.start)} ~ ${fmtDate(r.wb.retire)}</span></div>
+      <table style="width:100%;border-collapse:collapse;margin:6px 0 4px;font-size:11px">
+        <thead><tr style="background:#e2e8f0;text-align:center">
+          <th style="padding:3px 4px">연월</th>
+          <th style="padding:3px 4px">해당월 일수</th>
+          <th style="padding:3px 4px">산정 일수</th>
+          <th style="padding:3px 4px">임금</th>
+        </tr></thead>
+        <tbody>${r.wb.periods.map(p=>`<tr style="text-align:center;border-bottom:1px solid #e2e8f0">
+          <td style="padding:3px 4px">${p.year}.${String(p.month).padStart(2,'0')}</td>
+          <td style="padding:3px 4px">${p.daysInMonth}일</td>
+          <td style="padding:3px 4px">${p.daysInSeg}일${p.isFullMonth?' (전체)':''}</td>
+          <td style="padding:3px 4px">${won(p.salaryInSeg)}</td>
+        </tr>`).join('')}
+        <tr style="font-weight:700;background:#f1f5f9;text-align:center">
+          <td style="padding:3px 4px" colspan="2">합계</td>
+          <td style="padding:3px 4px">${r.wb.totalDays}일</td>
+          <td style="padding:3px 4px">${won(r.wb.totalSalary)}</td>
+        </tr></tbody>
+      </table>
       <div class="bd-row" style="font-weight:700"><span>1일 평균임금</span><span style="color:var(--primary)">${won(Math.round(r.avgDaily))}/일</span></div>
       <div class="bd-row"><span>입사일 → 퇴직일</span><span>${fmtDate(r.hire)} → ${fmtDate(r.retire)}</span></div>
       <div class="bd-row"><span>재직일수</span><span>${r.days}일 (${diffLabel(r.hire,r.retire)})</span></div>
