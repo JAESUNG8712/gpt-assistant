@@ -267,7 +267,8 @@ body{font-family:-apple-system,'Noto Sans KR',sans-serif;background:var(--bg);fo
   <div class="modal-sheet">
     <div class="modal-handle"></div>
     <div style="font-size:17px;font-weight:700;margin-bottom:6px">조정항목 일괄업로드</div>
-    <div style="font-size:11px;color:var(--muted);margin-bottom:14px">형식: <code>이름,유형,값,메모</code> (유형: 무급휴가/경조사비/식대/교통비/기타지급/기타공제/소득세추가/지방소득세추가)</div>
+    <div style="font-size:11px;color:var(--muted);margin-bottom:10px">형식: <code>이름,유형,값,메모</code> (유형: 무급휴가/경조사비/식대/교통비/기타지급/기타공제/소득세추가/지방소득세추가)</div>
+    <button class="btn-outline btn-sm" style="margin-bottom:14px;width:100%" onclick="downloadAdjTemplate()">📥 양식 다운로드 (CSV)</button>
     <div class="mb-3"><div class="form-label">파일 선택 (CSV / Excel)</div><input type="file" class="form-control" id="adj-upload-file" accept=".csv,.xlsx,.xls" onchange="onAdjFileSelect(event)"></div>
     <div class="mb-3"><div class="form-label">텍스트 직접 입력</div><textarea class="form-control" id="adj-upload-text" rows="5" placeholder="이름,유형,값,메모&#10;김민준,무급휴가,2,개인사유&#10;이서연,경조사비,100000,결혼" oninput="onAdjTextInput()"></textarea></div>
     <div id="adj-upload-preview" style="display:none;margin-bottom:12px">
@@ -666,6 +667,26 @@ function deleteAdj(adjId){
 
 // ===== BULK UPLOAD =====
 const ADJ_MAP={'무급휴가':'무급휴가','경조사비':'경조사비','식대':'식대','교통비':'교통비','기타지급':'기타지급','기타공제':'기타공제','소득세추가':'소득세추가','지방소득세추가':'지방소득세추가','소득세':'소득세추가','지방소득세':'지방소득세추가'};
+function downloadAdjTemplate() {
+  const names = state.employees.slice(0, 3).map(e => e.name);
+  const rows = [
+    '이름,유형,값,메모',
+    `${names[0]||'홍길동'},무급휴가,2,개인사유`,
+    `${names[1]||'김철수'},경조사비,100000,결혼`,
+    `${names[2]||'이영희'},식대,100000,`,
+    ',교통비,30000,출장',
+    ',기타지급,200000,성과급',
+    ',기타공제,50000,대여금상환',
+    ',소득세추가,30000,연말정산추가납부',
+    ',지방소득세추가,3000,연말정산추가납부',
+  ];
+  const csv = '﻿' + rows.join('\r\n'); // BOM for Excel UTF-8
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8;' }));
+  a.download = '조정항목_업로드양식.csv';
+  a.click();
+  toast('양식 파일이 다운로드되었습니다');
+}
 function openAdjUploadModal(){document.getElementById('adj-upload-file').value='';document.getElementById('adj-upload-text').value='';document.getElementById('adj-upload-preview').style.display='none';document.getElementById('adj-upload-apply-btn').disabled=true;adjUploadRows=[];openModal('modal-adj-upload');}
 function parseAdjCsv(text){
   const lines=text.trim().split('\n').map(l=>l.trim()).filter(Boolean);
