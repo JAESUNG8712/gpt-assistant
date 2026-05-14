@@ -109,12 +109,26 @@
       <div class="row g-3">
         <div class="col-md-4">
           <div class="p-3 rounded bg-light">
-            <div class="fw-semibold mb-2 text-primary"><i class="bi bi-shield-check me-1"></i>4대 보험 (근로자 부담)</div>
+            <div class="fw-semibold mb-2 text-primary d-flex justify-content-between align-items-center">
+              <span><i class="bi bi-shield-check me-1"></i>4대 보험 (근로자 부담)</span>
+              {% if tax_cfg %}
+              <span class="badge bg-primary-subtle text-primary">{{ tax_cfg.year }}년 적용 중</span>
+              {% else %}
+              <a href="{{ url_for('tax_settings_new') }}" class="badge bg-warning-subtle text-warning text-decoration-none">세율 등록</a>
+              {% endif %}
+            </div>
             <table class="table table-sm table-borderless mb-0 small">
-              <tr><td>국민연금</td><td class="text-end fw-medium">4.5%</td></tr>
-              <tr><td>건강보험</td><td class="text-end fw-medium">3.545%</td></tr>
-              <tr><td>장기요양보험</td><td class="text-end fw-medium">건강보험료 × 12.95%</td></tr>
-              <tr><td>고용보험</td><td class="text-end fw-medium">0.9%</td></tr>
+              {% if tax_cfg %}
+              <tr><td>국민연금</td><td class="text-end fw-medium">{{ tax_cfg.national_pension_rate }}%</td></tr>
+              <tr><td>건강보험</td><td class="text-end fw-medium">{{ tax_cfg.health_insurance_rate }}%</td></tr>
+              <tr><td>장기요양보험</td><td class="text-end fw-medium">건강보험료 × {{ tax_cfg.long_term_care_rate }}%</td></tr>
+              <tr><td>고용보험</td><td class="text-end fw-medium">{{ tax_cfg.employment_insurance_rate }}%</td></tr>
+              {% else %}
+              <tr><td>국민연금</td><td class="text-end fw-medium">4.5% <span class="text-muted">(기본값)</span></td></tr>
+              <tr><td>건강보험</td><td class="text-end fw-medium">3.545% <span class="text-muted">(기본값)</span></td></tr>
+              <tr><td>장기요양보험</td><td class="text-end fw-medium">× 12.95% <span class="text-muted">(기본값)</span></td></tr>
+              <tr><td>고용보험</td><td class="text-end fw-medium">0.9% <span class="text-muted">(기본값)</span></td></tr>
+              {% endif %}
             </table>
           </div>
         </div>

@@ -3,6 +3,27 @@
 {% block page_title %}{{ year }}년 {{ month }}월 급여 계산{% endblock %}
 
 {% block content %}
+<!-- Applied tax rate banner -->
+{% if tax_cfg %}
+<div class="alert alert-info py-2 px-3 mb-3 d-flex align-items-center gap-2 small">
+  <i class="bi bi-shield-check text-primary"></i>
+  <span>
+    <strong>{{ tax_cfg.year }}년 세율 적용 중</strong> —
+    국민연금 {{ tax_cfg.national_pension_rate }}% /
+    건강보험 {{ tax_cfg.health_insurance_rate }}% /
+    장기요양 {{ tax_cfg.long_term_care_rate }}% /
+    고용보험 {{ tax_cfg.employment_insurance_rate }}%
+  </span>
+  <a href="{{ url_for('tax_settings') }}" class="ms-auto text-decoration-none small">세율 관리 →</a>
+</div>
+{% else %}
+<div class="alert alert-warning py-2 px-3 mb-3 d-flex align-items-center gap-2 small">
+  <i class="bi bi-exclamation-triangle"></i>
+  <span>{{ year }}년 세율이 등록되지 않아 <strong>직전 연도 세율</strong>이 사용됩니다.</span>
+  <a href="{{ url_for('tax_settings_new') }}" class="ms-auto text-decoration-none small">{{ year }}년 세율 등록 →</a>
+</div>
+{% endif %}
+
 <!-- Month navigation -->
 <div class="d-flex align-items-center justify-content-between mb-4 flex-wrap gap-2">
   <div class="d-flex align-items-center gap-2">

@@ -1,0 +1,163 @@
+{% extends "base.html" %}
+{% block title %}세율 설정{% endblock %}
+{% block page_title %}연도별 세율 설정{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+  <p class="text-muted mb-0">
+    연도별 세율을 등록하면 해당 연도의 급여 계산 시 <strong>자동으로 적용</strong>됩니다.<br>
+    등록되지 않은 연도는 직전 연도 세율을 사용합니다.
+  </p>
+  <a href="{{ url_for('tax_settings_new') }}" class="btn btn-primary">
+    <i class="bi bi-plus-lg me-1"></i>연도 추가
+  </a>
+</div>
+
+{% if configs %}
+<div class="row g-4">
+  {% for cfg in configs %}
+  <div class="col-lg-6">
+    <div class="card border-0 shadow-sm h-100">
+      <div class="card-header bg-white border-bottom d-flex justify-content-between align-items-center">
+        <div>
+          <h6 class="mb-0 fw-bold">{{ cfg.year }}년</h6>
+          {% if cfg.note %}
+          <small class="text-muted">{{ cfg.note }}</small>
+          {% endif %}
+        </div>
+        <div class="d-flex gap-2 align-items-center">
+          <small class="text-muted">
+            수정: {{ cfg.updated_at.strftime('%Y-%m-%d') if cfg.updated_at else '-' }}
+          </small>
+          <a href="{{ url_for('tax_settings_new', copy_year=cfg.year) }}"
+             class="btn btn-sm btn-outline-secondary" title="{{ cfg.year }}년 기준으로 다음 연도 추가">
+            <i class="bi bi-copy"></i>
+          </a>
+          <a href="{{ url_for('tax_settings_edit', year=cfg.year) }}" class="btn btn-sm btn-outline-primary">
+            <i class="bi bi-pencil"></i>
+          </a>
+          <form method="post" action="{{ url_for('tax_settings_delete', year=cfg.year) }}" class="d-inline"
+                onsubmit="return confirm('{{ cfg.year }}년 세율을 삭제하시겠습니까?')">
+            <button type="submit" class="btn btn-sm btn-outline-danger">
+              <i class="bi bi-trash"></i>
+            </button>
+          </form>
+        </div>
+      </div>
+      <div class="card-body">
+        <div class="row g-3">
+          <!-- 4대보험 -->
+          <div class="col-12">
+            <div class="p-3 rounded bg-light">
+              <div class="fw-semibold text-primary mb-2 small">
+                <i class="bi bi-shield-check me-1"></i>4대 보험 (근로자 부담)
+              </div>
+              <div class="row g-2 small">
+                <div class="col-6">
+                  <div class="d-flex justify-content-between">
+                    <span class="text-muted">국민연금</span>
+                    <span class="fw-bold">{{ cfg.national_pension_rate }}%</span>
+                  </div>
+                </div>
+                <div class="col-6">
+                  <div class="d-flex justify-content-between">
+                    <span class="text-muted">건강보험</span>
+                    <span class="fw-bold">{{ cfg.health_insurance_rate }}%</span>
+                  </div>
+                </div>
+                <div class="col-6">
+                  <div class="d-flex justify-content-between">
+                    <span class="text-muted">장기요양</span>
+                    <span class="fw-bold">건강보험료 × {{ cfg.long_term_care_rate }}%</span>
+                  </div>
+                </div>
+                <div class="col-6">
+                  <div class="d-flex justify-content-between">
+                    <span class="text-muted">고용보험</span>
+                    <span class="fw-bold">{{ cfg.employment_insurance_rate }}%</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <!-- 국민연금 상하한 -->
+          <div class="col-12">
+            <div class="p-3 rounded bg-light">
+              <div class="fw-semibold text-secondary mb-2 small">
+                <i class="bi bi-arrows-expand-vertical me-1"></i>국민연금 기준소득월액
+              </div>
+              <div class="row g-2 small">
+                <div class="col-6">
+                  <div class="d-flex justify-content-between">
+                    <span class="text-muted">하한</span>
+                    <span class="fw-bold">{{ cfg.np_min | won }}</span>
+                  </div>
+                </div>
+                <div class="col-6">
+                  <div class="d-flex justify-content-between">
+                    <span class="text-muted">상한</span>
+                    <span class="fw-bold">{{ cfg.np_max | won }}</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+
+{% else %}
+<div class="text-center py-5 text-muted">
+  <i class="bi bi-sliders display-3 d-block mb-3 opacity-25"></i>
+  <p>등록된 세율이 없습니다.<br>아래 기본값이 사용됩니다.</p>
+  <a href="{{ url_for('tax_settings_new') }}" class="btn btn-primary">
+    <i class="bi bi-plus-lg me-1"></i>세율 등록하기
+  </a>
+</div>
+{% endif %}
+
+<!-- 원천세 참고 -->
+<div class="card border-0 shadow-sm mt-4">
+  <div class="card-header bg-white border-bottom">
+    <h6 class="mb-0 fw-semibold text-muted">
+      <i class="bi bi-info-circle me-1"></i>소득세 (원천세) 누진세율 — 2024년 기준 (자동 적용)
+    </h6>
+  </div>
+  <div class="card-body">
+    <div class="row g-3">
+      <div class="col-md-6">
+        <table class="table table-sm table-bordered mb-0 small">
+          <thead class="table-light">
+            <tr><th>과세표준</th><th class="text-end">세율</th><th class="text-end">누진공제</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>1,400만원 이하</td><td class="text-end">6%</td><td class="text-end">-</td></tr>
+            <tr><td>5,000만원 이하</td><td class="text-end">15%</td><td class="text-end">126만원</td></tr>
+            <tr><td>8,800만원 이하</td><td class="text-end">24%</td><td class="text-end">576만원</td></tr>
+            <tr><td>1.5억원 이하</td><td class="text-end">35%</td><td class="text-end">1,544만원</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="col-md-6">
+        <table class="table table-sm table-bordered mb-0 small">
+          <thead class="table-light">
+            <tr><th>과세표준</th><th class="text-end">세율</th><th class="text-end">누진공제</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>3억원 이하</td><td class="text-end">38%</td><td class="text-end">1,994만원</td></tr>
+            <tr><td>5억원 이하</td><td class="text-end">40%</td><td class="text-end">2,594만원</td></tr>
+            <tr><td>10억원 이하</td><td class="text-end">42%</td><td class="text-end">3,594만원</td></tr>
+            <tr><td>10억원 초과</td><td class="text-end">45%</td><td class="text-end">6,594만원</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+    <p class="text-muted small mt-2 mb-0">
+      * 지방소득세 = 소득세 × 10% / 근로소득공제·세액공제 자동 적용 / 비과세 식대 200,000원 제외 후 계산
+    </p>
+  </div>
+</div>
+{% endblock %}

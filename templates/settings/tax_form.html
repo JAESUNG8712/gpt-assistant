@@ -1,0 +1,113 @@
+{% extends "base.html" %}
+{% block title %}{% if action == 'new' %}세율 추가{% else %}{{ cfg.year }}년 세율 수정{% endif %}{% endblock %}
+{% block page_title %}{% if action == 'new' %}세율 추가{% else %}{{ cfg.year }}년 세율 수정{% endif %}{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+  <div class="col-lg-6">
+    <div class="card border-0 shadow-sm">
+      <div class="card-body p-4">
+        <form method="post" novalidate>
+          <!-- 연도 -->
+          <div class="mb-4">
+            <label class="form-label fw-semibold">적용 연도 <span class="text-danger">*</span></label>
+            {% if action == 'new' %}
+            <input type="number" name="year" class="form-control"
+                   value="{{ prefill_year }}" min="2000" max="2099" required>
+            <div class="form-text">이 연도의 급여 계산에 자동으로 적용됩니다.</div>
+            {% else %}
+            <input type="text" class="form-control bg-light" value="{{ cfg.year }}년" readonly>
+            {% endif %}
+          </div>
+
+          <!-- 4대보험 -->
+          <h6 class="fw-semibold text-primary mb-3">
+            <i class="bi bi-shield-check me-1"></i>4대 보험 요율 (근로자 부담 %)
+          </h6>
+
+          <div class="row g-3 mb-4">
+            <div class="col-sm-6">
+              <label class="form-label fw-medium">국민연금 (%)</label>
+              <div class="input-group">
+                <input type="number" name="national_pension_rate" class="form-control text-end"
+                       step="0.001" min="0" max="100"
+                       value="{{ cfg.national_pension_rate if cfg else 4.5 }}" required>
+                <span class="input-group-text">%</span>
+              </div>
+            </div>
+            <div class="col-sm-6">
+              <label class="form-label fw-medium">건강보험 (%)</label>
+              <div class="input-group">
+                <input type="number" name="health_insurance_rate" class="form-control text-end"
+                       step="0.001" min="0" max="100"
+                       value="{{ cfg.health_insurance_rate if cfg else 3.545 }}" required>
+                <span class="input-group-text">%</span>
+              </div>
+            </div>
+            <div class="col-sm-6">
+              <label class="form-label fw-medium">장기요양보험 (건강보험료 대비 %)</label>
+              <div class="input-group">
+                <input type="number" name="long_term_care_rate" class="form-control text-end"
+                       step="0.001" min="0" max="100"
+                       value="{{ cfg.long_term_care_rate if cfg else 12.95 }}" required>
+                <span class="input-group-text">%</span>
+              </div>
+              <div class="form-text">장기요양보험료 = 건강보험료 × 이 요율</div>
+            </div>
+            <div class="col-sm-6">
+              <label class="form-label fw-medium">고용보험 (%)</label>
+              <div class="input-group">
+                <input type="number" name="employment_insurance_rate" class="form-control text-end"
+                       step="0.001" min="0" max="100"
+                       value="{{ cfg.employment_insurance_rate if cfg else 0.9 }}" required>
+                <span class="input-group-text">%</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- 국민연금 기준소득 -->
+          <h6 class="fw-semibold text-secondary mb-3">
+            <i class="bi bi-arrows-expand-vertical me-1"></i>국민연금 기준소득월액 상·하한
+          </h6>
+
+          <div class="row g-3 mb-4">
+            <div class="col-sm-6">
+              <label class="form-label fw-medium">하한 (원)</label>
+              <div class="input-group">
+                <input type="text" name="np_min" class="form-control text-end" data-number
+                       value="{{ '{:,}'.format(cfg.np_min) if cfg else '370,000' }}" required>
+                <span class="input-group-text">원</span>
+              </div>
+            </div>
+            <div class="col-sm-6">
+              <label class="form-label fw-medium">상한 (원)</label>
+              <div class="input-group">
+                <input type="text" name="np_max" class="form-control text-end" data-number
+                       value="{{ '{:,}'.format(cfg.np_max) if cfg else '5,900,000' }}" required>
+                <span class="input-group-text">원</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- 메모 -->
+          <div class="mb-4">
+            <label class="form-label fw-medium">변경 사유 / 메모</label>
+            <input type="text" name="note" class="form-control"
+                   value="{{ cfg.note if cfg else '' }}"
+                   placeholder="예: 2025년 고시 세율 반영">
+          </div>
+
+          <hr class="mb-4">
+          <div class="d-flex gap-2 justify-content-end">
+            <a href="{{ url_for('tax_settings') }}" class="btn btn-outline-secondary">취소</a>
+            <button type="submit" class="btn btn-primary">
+              <i class="bi bi-check-lg me-1"></i>
+              {% if action == 'new' %}등록{% else %}저장{% endif %}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
