@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: salary-calculator
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app --bind 0.0.0.0:$PORT
+    envVars:
+      - key: SECRET_KEY
+        generateValue: true
+    disk:
+      name: data
+      mountPath: /opt/render/project/src/instance
+      sizeGB: 1
