@@ -34,6 +34,9 @@
     <a href="{{ url_for('employee_new') }}" class="sidebar-link">
       <i class="bi bi-person-plus"></i> 직원 등록
     </a>
+    <a href="{{ url_for('employees_upload') }}" class="sidebar-link {% if request.endpoint == 'employees_upload' %}active{% endif %}">
+      <i class="bi bi-table"></i> 일괄 등록 (Raw Data)
+    </a>
     <div class="sidebar-section">급여 계산</div>
     <a href="{{ url_for('salary_index') }}" class="sidebar-link {% if request.endpoint == 'salary_calculate' %}active{% endif %}">
       <i class="bi bi-calculator"></i> 급여 계산

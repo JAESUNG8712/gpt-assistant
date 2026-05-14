@@ -1,0 +1,157 @@
+{% extends "base.html" %}
+{% block title %}직원 일괄 등록{% endblock %}
+{% block page_title %}직원 일괄 등록 (Raw Data 업로드){% endblock %}
+
+{% block content %}
+<div class="row g-4">
+  <!-- 폼 -->
+  <div class="col-lg-4">
+    <div class="card border-0 shadow-sm">
+      <div class="card-header bg-white border-bottom">
+        <h6 class="mb-0 fw-semibold"><i class="bi bi-upload me-2"></i>파일 업로드</h6>
+      </div>
+      <div class="card-body">
+        <form method="post" enctype="multipart/form-data" id="uploadForm">
+          <div class="mb-3">
+            <label class="form-label fw-medium">파일 선택 <span class="text-danger">*</span></label>
+            <input type="file" name="file" class="form-control" accept=".csv,.xlsx,.xls" required>
+            <div class="form-text">CSV 또는 Excel(.xlsx) 파일 지원</div>
+          </div>
+
+          <div class="mb-4">
+            <label class="form-label fw-medium">중복 사번 처리</label>
+            <div class="d-flex gap-3">
+              <div class="form-check">
+                <input class="form-check-input" type="radio" name="on_duplicate"
+                       id="dup_skip" value="skip" checked>
+                <label class="form-check-label" for="dup_skip">건너뜀 (유지)</label>
+              </div>
+              <div class="form-check">
+                <input class="form-check-input" type="radio" name="on_duplicate"
+                       id="dup_update" value="update">
+                <label class="form-check-label" for="dup_update">업데이트</label>
+              </div>
+            </div>
+          </div>
+
+          <button type="submit" name="action" value="preview" class="btn btn-outline-primary w-100 mb-2">
+            <i class="bi bi-eye me-1"></i>미리보기
+          </button>
+          {% if preview_rows and not errors %}
+          <button type="submit" name="action" value="apply" class="btn btn-primary w-100"
+                  onclick="return confirm('{{ preview_rows | length }}건을 저장하시겠습니까?')">
+            <i class="bi bi-check-lg me-1"></i>저장 ({{ preview_rows | length }}건)
+          </button>
+          {% endif %}
+        </form>
+
+        <hr>
+        <a href="{{ url_for('employees_template') }}" class="btn btn-outline-secondary w-100">
+          <i class="bi bi-file-earmark-arrow-down me-1"></i>양식 다운로드 (.csv)
+        </a>
+      </div>
+    </div>
+
+    <!-- 컬럼 안내 -->
+    <div class="card border-0 shadow-sm mt-3">
+      <div class="card-header bg-white border-bottom">
+        <h6 class="mb-0 fw-semibold"><i class="bi bi-info-circle me-2"></i>컬럼 안내</h6>
+      </div>
+      <div class="card-body small">
+        <table class="table table-sm table-borderless mb-0">
+          <thead class="table-light"><tr><th>컬럼명</th><th>필수</th><th>설명</th></tr></thead>
+          <tbody>
+            <tr><td><code>사번</code></td><td><span class="text-danger">✓</span></td><td>고유 직원 번호</td></tr>
+            <tr><td><code>이름</code></td><td><span class="text-danger">✓</span></td><td>직원 이름</td></tr>
+            <tr><td><code>연봉</code></td><td><span class="text-danger">✓</span></td><td>연봉 (원, 숫자)</td></tr>
+            <tr><td><code>부서</code></td><td class="text-muted">-</td><td>부서명</td></tr>
+            <tr><td><code>직급</code></td><td class="text-muted">-</td><td>직급명</td></tr>
+            <tr><td><code>부양가족수</code></td><td class="text-muted">-</td><td>본인 포함, 기본 1</td></tr>
+            <tr><td><code>비과세식대</code></td><td class="text-muted">-</td><td>월 원, 기본 200000</td></tr>
+            <tr><td><code>입사일</code></td><td class="text-muted">-</td><td>YYYY-MM-DD</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- 미리보기 -->
+  <div class="col-lg-8">
+    {% if preview_rows %}
+    <div class="card border-0 shadow-sm">
+      <div class="card-header bg-white border-bottom d-flex justify-content-between align-items-center">
+        <h6 class="mb-0 fw-semibold">미리보기 ({{ preview_rows | length }}건)</h6>
+        <div class="d-flex gap-2">
+          {% set new_cnt = preview_rows | selectattr('status', 'equalto', '신규') | list | length %}
+          {% set upd_cnt = preview_rows | selectattr('status', 'equalto', '중복 (업데이트 예정)') | list | length %}
+          {% set skip_cnt = preview_rows | selectattr('status', 'equalto', '중복 (건너뜀)') | list | length %}
+          {% set err_cnt = preview_rows | selectattr('error') | list | length %}
+          {% if new_cnt %}<span class="badge bg-primary-subtle text-primary">신규 {{ new_cnt }}</span>{% endif %}
+          {% if upd_cnt %}<span class="badge bg-warning-subtle text-warning">업데이트 {{ upd_cnt }}</span>{% endif %}
+          {% if skip_cnt %}<span class="badge bg-secondary-subtle text-secondary">건너뜀 {{ skip_cnt }}</span>{% endif %}
+          {% if err_cnt %}<span class="badge bg-danger">오류 {{ err_cnt }}</span>{% endif %}
+        </div>
+      </div>
+      <div class="table-responsive">
+        <table class="table table-sm table-hover align-middle mb-0 small">
+          <thead class="table-light">
+            <tr>
+              <th>행</th>
+              <th>사번</th>
+              <th>이름</th>
+              <th>부서</th>
+              <th>직급</th>
+              <th class="text-end">연봉</th>
+              <th class="text-center">부양</th>
+              <th>입사일</th>
+              <th>상태</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for pr in preview_rows %}
+            <tr class="{% if pr.error %}table-danger{% elif pr.status == '신규' %}table-success bg-opacity-25{% elif '업데이트' in pr.status %}table-warning bg-opacity-25{% endif %}">
+              <td class="text-muted">{{ pr.row }}</td>
+              <td><code>{{ pr.emp_code }}</code></td>
+              <td class="fw-medium">{{ pr.name }}</td>
+              <td>{{ pr.department or '-' }}</td>
+              <td>{{ pr.position or '-' }}</td>
+              <td class="text-end">{{ '{:,}'.format(pr.annual_salary) ~ '원' if pr.annual_salary else '-' }}</td>
+              <td class="text-center">{{ pr.dependents }}명</td>
+              <td>{{ pr.hire_date.isoformat() if pr.hire_date else '-' }}</td>
+              <td>
+                {% if pr.error %}
+                  <span class="badge bg-danger" title="{{ pr.error }}">오류: {{ pr.error }}</span>
+                {% elif pr.status == '신규' %}
+                  <span class="badge bg-success">신규</span>
+                {% elif '업데이트' in pr.status %}
+                  <span class="badge bg-warning text-dark">업데이트</span>
+                {% else %}
+                  <span class="badge bg-secondary">건너뜀</span>
+                {% endif %}
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% if errors %}
+      <div class="card-footer bg-danger-subtle">
+        <div class="fw-semibold text-danger small mb-1"><i class="bi bi-exclamation-triangle me-1"></i>오류 목록</div>
+        <ul class="mb-0 small text-danger">{% for e in errors %}<li>{{ e }}</li>{% endfor %}</ul>
+      </div>
+      {% endif %}
+    </div>
+    {% else %}
+    <div class="card border-0 shadow-sm h-100 d-flex align-items-center justify-content-center">
+      <div class="text-center text-muted py-5">
+        <i class="bi bi-table display-3 d-block mb-3 opacity-25"></i>
+        <p>파일을 선택하고 미리보기를 클릭하세요.</p>
+        <a href="{{ url_for('employees_template') }}" class="btn btn-outline-secondary btn-sm">
+          <i class="bi bi-file-earmark-arrow-down me-1"></i>양식 먼저 다운로드하기
+        </a>
+      </div>
+    </div>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}

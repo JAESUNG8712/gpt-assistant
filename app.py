@@ -259,6 +259,173 @@ def employees_list():
     return render_template("employees/list.html", employees=employees)
 
 
+@app.route("/employees/template")
+def employees_template():
+    """직원 일괄 업로드용 CSV 양식 다운로드"""
+    rows = [
+        ["사번", "이름", "부서", "직급", "연봉", "부양가족수", "비과세식대", "입사일"],
+        ["EMP001", "홍길동", "개발팀", "대리", "42000000", "2", "200000", "2022-03-01"],
+        ["EMP002", "김영희", "인사팀", "과장", "55000000", "3", "200000", "2019-07-15"],
+        ["EMP003", "이철수", "영업팀", "사원", "36000000", "1", "200000", "2024-01-02"],
+    ]
+    buf = io.StringIO()
+    csv.writer(buf).writerows(rows)
+    buf.seek(0)
+    return send_file(
+        io.BytesIO(buf.getvalue().encode("utf-8-sig")),
+        mimetype="text/csv",
+        as_attachment=True,
+        download_name="직원_일괄등록_템플릿.csv",
+    )
+
+
+@app.route("/employees/upload", methods=["GET", "POST"])
+def employees_upload():
+    preview_rows = []
+    errors       = []
+
+    if request.method == "POST":
+        action   = request.form.get("action", "preview")
+        on_dup   = request.form.get("on_duplicate", "skip")  # skip | update
+        file     = request.files.get("file")
+
+        if not file or file.filename == "":
+            flash("파일을 선택해주세요.", "danger")
+            return render_template("employees/upload.html")
+
+        # ── 파일 파싱 ──────────────────────────────────────────────────────
+        fname = file.filename.lower()
+        try:
+            if fname.endswith((".xlsx", ".xls")):
+                df = pd.read_excel(file, dtype=str)
+            else:
+                try:
+                    df = pd.read_csv(file, encoding="utf-8-sig", dtype=str)
+                except Exception:
+                    file.seek(0)
+                    df = pd.read_csv(file, encoding="cp949", dtype=str)
+        except Exception as e:
+            flash(f"파일 읽기 오류: {e}", "danger")
+            return render_template("employees/upload.html")
+
+        required_cols = {"사번", "이름", "연봉"}
+        if not required_cols.issubset(set(df.columns)):
+            flash(f"필수 컬럼이 없습니다. 필요: {required_cols}", "danger")
+            return render_template("employees/upload.html")
+
+        # ── 행별 검증 ──────────────────────────────────────────────────────
+        for i, row in df.iterrows():
+            def col(name, default=""):
+                v = str(row.get(name, default) or "").strip()
+                return v if v not in ("nan", "None", "") else default
+
+            emp_code    = col("사번")
+            name        = col("이름")
+            department  = col("부서")
+            position    = col("직급")
+            salary_raw  = col("연봉")
+            dep_raw     = col("부양가족수", "1")
+            meal_raw    = col("비과세식대", "200000")
+            hire_raw    = col("입사일")
+
+            row_error = None
+            annual_salary = None
+            existing = Employee.query.filter_by(employee_id=emp_code).first() if emp_code else None
+
+            if not emp_code:
+                row_error = "사번 없음"
+            elif not name:
+                row_error = "이름 없음"
+            else:
+                try:
+                    annual_salary = int(salary_raw.replace(",", ""))
+                except ValueError:
+                    row_error = f"연봉 '{salary_raw}' 숫자 아님"
+
+            try:
+                dependents = int(dep_raw) if dep_raw else 1
+            except ValueError:
+                dependents = 1
+            try:
+                non_taxable_meal = int(meal_raw.replace(",", "")) if meal_raw else 200_000
+            except ValueError:
+                non_taxable_meal = 200_000
+            try:
+                hire_date = date.fromisoformat(hire_raw) if hire_raw else None
+            except ValueError:
+                hire_date = None
+
+            status = "중복 (업데이트 예정)" if existing and on_dup == "update" \
+                else "중복 (건너뜀)" if existing and on_dup == "skip" \
+                else "신규"
+
+            preview_rows.append({
+                "row":             i + 2,
+                "emp_code":        emp_code,
+                "name":            name,
+                "department":      department,
+                "position":        position,
+                "annual_salary":   annual_salary,
+                "dependents":      dependents,
+                "non_taxable_meal":non_taxable_meal,
+                "hire_date":       hire_date,
+                "existing":        existing,
+                "status":          status,
+                "error":           row_error,
+            })
+            if row_error:
+                errors.append(f"행 {i+2}: {row_error}")
+
+        # ── 저장 ──────────────────────────────────────────────────────────
+        if action == "apply":
+            if errors:
+                flash(f"오류가 있는 행이 있어 저장할 수 없습니다. ({len(errors)}건)", "danger")
+            else:
+                added = updated = skipped = 0
+                for pr in preview_rows:
+                    if pr["error"]:
+                        continue
+                    existing = Employee.query.filter_by(employee_id=pr["emp_code"]).first()
+                    if existing:
+                        if on_dup == "update":
+                            existing.name             = pr["name"]
+                            existing.department       = pr["department"]
+                            existing.position         = pr["position"]
+                            existing.annual_salary    = pr["annual_salary"]
+                            existing.dependents       = pr["dependents"]
+                            existing.non_taxable_meal = pr["non_taxable_meal"]
+                            if pr["hire_date"]:
+                                existing.hire_date = pr["hire_date"]
+                            updated += 1
+                        else:
+                            skipped += 1
+                    else:
+                        db.session.add(Employee(
+                            employee_id      = pr["emp_code"],
+                            name             = pr["name"],
+                            department       = pr["department"],
+                            position         = pr["position"],
+                            annual_salary    = pr["annual_salary"],
+                            dependents       = pr["dependents"],
+                            non_taxable_meal = pr["non_taxable_meal"],
+                            hire_date        = pr["hire_date"],
+                        ))
+                        added += 1
+                db.session.commit()
+                parts = []
+                if added:   parts.append(f"{added}명 신규 등록")
+                if updated: parts.append(f"{updated}명 업데이트")
+                if skipped: parts.append(f"{skipped}명 건너뜀")
+                flash(", ".join(parts) + " 완료.", "success")
+                return redirect(url_for("employees_list"))
+
+    return render_template(
+        "employees/upload.html",
+        preview_rows=preview_rows,
+        errors=errors,
+    )
+
+
 @app.route("/employees/new", methods=["GET", "POST"])
 def employee_new():
     if request.method == "POST":
