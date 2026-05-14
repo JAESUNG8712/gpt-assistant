@@ -210,6 +210,8 @@ body { font-family: -apple-system, 'Noto Sans KR', sans-serif; background: var(-
         <option value="교통비">교통비 (지급)</option>
         <option value="기타지급">기타 지급</option>
         <option value="기타공제">기타 공제</option>
+        <option value="소득세추가">소득세 추가공제 (연말정산 등)</option>
+        <option value="지방소득세추가">지방소득세 추가공제</option>
       </select>
     </div>
     <div class="mb-3" id="adj-days-row">
@@ -343,6 +345,12 @@ function calcEmployee(emp, adjs, rates) {
     } else if (a.type === '기타공제') {
       otherDed += a.amount;
       adjDetails.push({ label: '기타공제' + (a.note ? ` (${a.note})` : ''), amount: -a.amount, note: '' });
+    } else if (a.type === '소득세추가') {
+      otherDed += a.amount;
+      adjDetails.push({ label: '소득세 추가' + (a.note ? ` (${a.note})` : ''), amount: -a.amount, note: '', taxAdj: true });
+    } else if (a.type === '지방소득세추가') {
+      otherDed += a.amount;
+      adjDetails.push({ label: '지방소득세 추가' + (a.note ? ` (${a.note})` : ''), amount: -a.amount, note: '', taxAdj: true });
     }
   }
 
@@ -567,7 +575,8 @@ function renderSalaryPage() {
           <tr><td>고용보험 (0.9%)</td><td class="deduct">-${won(c.ei)}</td></tr>
           <tr><td>근로소득세</td><td class="deduct">-${won(c.it)}</td></tr>
           <tr><td>지방소득세</td><td class="deduct">-${won(c.lit)}</td></tr>
-          ${c.adjDetails.filter(a=>a.amount<0).map(a=>`<tr><td style="color:#dc2626">${a.label}</td><td style="color:#dc2626">-${won(Math.abs(a.amount))}</td></tr>`).join('')}
+          ${c.adjDetails.filter(a=>a.amount<0 && a.taxAdj).map(a=>`<tr><td style="color:#dc2626">${a.label}</td><td style="color:#dc2626">-${won(Math.abs(a.amount))}</td></tr>`).join('')}
+          ${c.adjDetails.filter(a=>a.amount<0 && !a.taxAdj).map(a=>`<tr><td style="color:#dc2626">${a.label}</td><td style="color:#dc2626">-${won(Math.abs(a.amount))}</td></tr>`).join('')}
           <tr class="divider"><td colspan="2"></td></tr>
           <tr><td><strong>공제 합계</strong></td><td><strong class="deduct">-${won(c.totalDed)}</strong></td></tr>
         </table>
