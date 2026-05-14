@@ -255,6 +255,55 @@ def _seed_default_rates():
         db.session.commit()
 
 
+def _seed_demo_employees():
+    """DEMO_MODE=1 환경변수가 있을 때 샘플 직원 데이터 자동 삽입"""
+    if os.environ.get("DEMO_MODE") != "1":
+        return
+    if Employee.query.count() > 0:
+        return
+
+    from datetime import date as d
+    now = datetime.now()
+
+    employees = [
+        dict(employee_id="EMP001", name="김민준", department="개발팀",   position="팀장",    annual_salary=78_000_000, dependents=3, hire_date=d(2018,3,2)),
+        dict(employee_id="EMP002", name="이서연", department="개발팀",   position="대리",    annual_salary=48_000_000, dependents=1, hire_date=d(2021,7,1)),
+        dict(employee_id="EMP003", name="박지훈", department="개발팀",   position="사원",    annual_salary=36_000_000, dependents=1, hire_date=d(2024,2,5)),
+        dict(employee_id="EMP004", name="최수진", department="인사팀",   position="과장",    annual_salary=58_000_000, dependents=2, hire_date=d(2019,9,10)),
+        dict(employee_id="EMP005", name="정도현", department="인사팀",   position="사원",    annual_salary=34_000_000, dependents=1, hire_date=d(2023,4,3)),
+        dict(employee_id="EMP006", name="강예진", department="영업팀",   position="부장",    annual_salary=92_000_000, dependents=4, hire_date=d(2015,1,20)),
+        dict(employee_id="EMP007", name="윤성호", department="영업팀",   position="대리",    annual_salary=46_000_000, dependents=2, hire_date=d(2020,11,16)),
+        dict(employee_id="EMP008", name="임채원", department="재무팀",   position="과장",    annual_salary=62_000_000, dependents=3, hire_date=d(2017,6,1)),
+        dict(employee_id="EMP009", name="오지민", department="재무팀",   position="사원",    annual_salary=38_000_000, dependents=1, hire_date=d(2023,8,21)),
+        dict(employee_id="EMP010", name="신태양", department="경영지원팀", position="이사",  annual_salary=130_000_000,dependents=4, hire_date=d(2012,5,7)),
+    ]
+    emp_map = {}
+    for data in employees:
+        emp = Employee(non_taxable_meal=200_000, **data)
+        db.session.add(emp)
+        db.session.flush()
+        emp_map[data["employee_id"]] = emp.id
+
+    y, m = now.year, now.month
+    adjustments = [
+        dict(emp_code="EMP001", type="condolence_pay",  value=300_000,   description="부모님 회갑"),
+        dict(emp_code="EMP002", type="unpaid_leave",    value=1.0,        description="개인 사유"),
+        dict(emp_code="EMP003", type="extra_pay",       value=150_000,   description="야근수당"),
+        dict(emp_code="EMP005", type="unpaid_leave",    value=0.5,        description="반차"),
+        dict(emp_code="EMP007", type="extra_pay",       value=500_000,   description="영업인센티브"),
+        dict(emp_code="EMP008", type="condolence_pay",  value=200_000,   description="배우자 상"),
+        dict(emp_code="EMP009", type="other_deduction", value=50_000,    description="주차비"),
+        dict(emp_code="EMP010", type="extra_pay",       value=1_000_000, description="성과급"),
+    ]
+    for adj in adjustments:
+        db.session.add(Adjustment(
+            employee_id=emp_map[adj["emp_code"]],
+            year=y, month=m,
+            type=adj["type"], value=adj["value"], description=adj["description"],
+        ))
+    db.session.commit()
+
+
 # ── Routes: Dashboard ─────────────────────────────────────────────────────────
 
 @app.route("/")
@@ -1016,6 +1065,7 @@ def tax_settings_delete(year):
 with app.app_context():
     db.create_all()
     _seed_default_rates()
+    _seed_demo_employees()
 
 if __name__ == "__main__":
     app.run(debug=True, host="0.0.0.0", port=5000)
