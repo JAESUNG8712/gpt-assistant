@@ -7,103 +7,111 @@
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <style>
-:root {
-  --primary: #2563eb; --success: #16a34a; --danger: #dc2626;
-  --warn: #d97706; --bg: #f1f5f9; --card: #fff; --border: #e2e8f0; --muted: #64748b;
-}
-* { box-sizing: border-box; }
-body { font-family: -apple-system,'Noto Sans KR',sans-serif; background:var(--bg); font-size:14px; padding-bottom:80px; }
-.page { display:none; } .page.active { display:block; }
-.navbar { background:var(--primary)!important; position:sticky; top:0; z-index:100; }
-.bottom-nav { position:fixed; bottom:0; left:0; right:0; background:#fff; border-top:1px solid var(--border); display:flex; z-index:100; }
-.bn-item { flex:1; text-align:center; padding:10px 0 8px; cursor:pointer; color:var(--muted); font-size:10px; }
-.bn-item.active { color:var(--primary); }
-.bn-item svg { display:block; margin:0 auto 2px; }
-.card { border:1px solid var(--border); border-radius:12px; background:var(--card); margin-bottom:12px; }
-.card-header { background:none; border-bottom:1px solid var(--border); font-weight:600; padding:12px 16px; border-radius:12px 12px 0 0; }
-.card-body { padding:14px 16px; }
-.badge-dept { background:#eff6ff; color:#1d4ed8; border-radius:6px; padding:2px 8px; font-size:11px; }
-.won { font-weight:700; color:var(--primary); } .deduct { color:var(--danger); }
-.lock-banner { padding:10px 16px; border-radius:8px; font-size:13px; font-weight:600; margin-bottom:12px; display:flex; align-items:center; justify-content:space-between; }
-.lock-past { background:#4b5563; color:#fff; } .lock-closed { background:var(--danger); color:#fff; } .lock-open { background:var(--success); color:#fff; }
-.table-calc { width:100%; font-size:13px; } .table-calc td { padding:4px 0; } .table-calc td:last-child { text-align:right; font-weight:500; }
-.divider { border-top:1px solid var(--border); margin:8px 0; }
-.emp-row { display:flex; align-items:center; gap:10px; padding:12px 16px; border-bottom:1px solid var(--border); cursor:pointer; }
-.emp-row:last-child { border-bottom:none; }
-.emp-avatar { width:40px; height:40px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-weight:700; font-size:16px; color:#fff; flex-shrink:0; }
-.emp-info { flex:1; min-width:0; } .emp-name { font-weight:600; } .emp-sub { color:var(--muted); font-size:12px; }
-.month-nav { display:flex; align-items:center; justify-content:space-between; margin-bottom:16px; }
-.month-nav .month-label { font-size:18px; font-weight:700; }
-.section-title { font-size:15px; font-weight:700; margin:16px 0 8px; color:#1e293b; }
-.adj-item { display:flex; align-items:center; gap:8px; padding:8px 0; border-bottom:1px solid var(--border); font-size:13px; }
-.adj-item:last-child { border-bottom:none; }
-.adj-type { flex:1; } .adj-value { font-weight:600; }
-.progress-thin { height:6px; border-radius:3px; }
-.rate-row { display:flex; justify-content:space-between; padding:6px 0; border-bottom:1px solid var(--border); font-size:13px; }
-.rate-row:last-child { border-bottom:none; }
-.modal-overlay { display:none; position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:200; align-items:flex-end; }
-.modal-overlay.open { display:flex; }
-.modal-sheet { background:#fff; border-radius:20px 20px 0 0; padding:24px 20px 40px; width:100%; max-height:90vh; overflow-y:auto; }
-.modal-handle { width:40px; height:4px; background:#cbd5e1; border-radius:2px; margin:0 auto 20px; }
-.form-label { font-weight:600; font-size:13px; margin-bottom:4px; }
-.form-control,.form-select { border:1px solid var(--border); border-radius:8px; padding:10px 12px; font-size:14px; width:100%; outline:none; }
-.form-control:focus,.form-select:focus { border-color:var(--primary); box-shadow:0 0 0 3px rgba(37,99,235,.15); }
-.btn-primary { background:var(--primary); border:none; color:#fff; border-radius:10px; padding:12px 20px; font-weight:600; width:100%; font-size:15px; cursor:pointer; }
-.btn-primary:active { background:#1d4ed8; }
-.btn-outline { background:none; border:1.5px solid var(--border); border-radius:10px; padding:10px 16px; font-weight:600; font-size:13px; cursor:pointer; color:#334155; }
-.btn-danger { background:var(--danger); border:none; color:#fff; border-radius:10px; padding:10px 16px; font-weight:600; font-size:13px; cursor:pointer; }
-.btn-success { background:var(--success); border:none; color:#fff; border-radius:10px; padding:10px 16px; font-weight:600; font-size:13px; cursor:pointer; }
-.btn-sm { padding:6px 12px; font-size:12px; border-radius:8px; }
-.empty-state { text-align:center; padding:60px 20px; color:var(--muted); }
-.empty-state-icon { font-size:48px; margin-bottom:12px; }
-.fab { position:fixed; bottom:80px; right:20px; width:56px; height:56px; border-radius:50%; background:var(--primary); color:#fff; border:none; font-size:28px; display:flex; align-items:center; justify-content:center; box-shadow:0 4px 16px rgba(37,99,235,.4); cursor:pointer; z-index:90; }
-.net-pay-box { background:linear-gradient(135deg,#1e3a8a,#2563eb); border-radius:14px; padding:18px; color:#fff; margin-bottom:12px; }
-.net-pay-box .label { opacity:.8; font-size:12px; } .net-pay-box .amount { font-size:26px; font-weight:800; margin-top:4px; }
-.history-item { padding:10px 16px; border-bottom:1px solid var(--border); display:flex; justify-content:space-between; align-items:center; font-size:13px; }
-.toast-msg { position:fixed; top:70px; left:50%; transform:translateX(-50%); background:#1e293b; color:#fff; padding:10px 20px; border-radius:8px; font-size:13px; z-index:300; opacity:0; transition:opacity .3s; pointer-events:none; white-space:nowrap; }
-.toast-msg.show { opacity:1; }
-/* retirement */
-.ret-type-toggle { display:flex; border:1.5px solid var(--border); border-radius:10px; overflow:hidden; margin-bottom:16px; }
-.ret-type-btn { flex:1; text-align:center; padding:8px; font-size:13px; font-weight:600; cursor:pointer; background:#fff; border:none; color:var(--muted); }
-.ret-type-btn.active { background:var(--primary); color:#fff; }
-.ret-card { border:1px solid var(--border); border-radius:12px; padding:14px; margin-bottom:10px; }
-.ret-header { display:flex; align-items:center; gap:10px; margin-bottom:12px; }
-.ret-amount { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
-.ret-box { background:var(--bg); border-radius:10px; padding:12px; text-align:center; }
-.ret-box .lbl { font-size:11px; color:var(--muted); margin-bottom:4px; }
-.ret-box .val { font-size:17px; font-weight:800; }
-.ret-box.db .val { color:#1d4ed8; } .ret-box.dc .val { color:#16a34a; }
-/* upload preview */
-.upload-preview { max-height:200px; overflow-y:auto; font-size:12px; }
-.upload-preview table { width:100%; border-collapse:collapse; }
-.upload-preview th { background:#f8fafc; padding:4px 8px; text-align:left; border-bottom:1px solid var(--border); font-weight:600; }
-.upload-preview td { padding:4px 8px; border-bottom:1px solid #f1f5f9; }
-.row-ok { background:#f0fdf4; } .row-warn { background:#fef9c3; } .row-err { background:#fff1f2; }
-.chip { display:inline-block; padding:1px 6px; border-radius:4px; font-size:10px; font-weight:700; margin-left:4px; }
-.chip-ok { background:#dcfce7; color:#166534; } .chip-warn { background:#fef9c3; color:#854d0e; } .chip-err { background:#fee2e2; color:#991b1b; }
+:root{--primary:#2563eb;--success:#16a34a;--danger:#dc2626;--bg:#f1f5f9;--card:#fff;--border:#e2e8f0;--muted:#64748b;}
+*{box-sizing:border-box;}
+body{font-family:-apple-system,'Noto Sans KR',sans-serif;background:var(--bg);font-size:13px;padding-bottom:80px;}
+.page{display:none;}.page.active{display:block;}
+.navbar{background:var(--primary)!important;position:sticky;top:0;z-index:100;}
+.bottom-nav{position:fixed;bottom:0;left:0;right:0;background:#fff;border-top:1px solid var(--border);display:flex;z-index:100;}
+.bn-item{flex:1;text-align:center;padding:10px 0 8px;cursor:pointer;color:var(--muted);font-size:10px;}
+.bn-item.active{color:var(--primary);}
+.bn-item svg{display:block;margin:0 auto 2px;}
+.card{border:1px solid var(--border);border-radius:12px;background:var(--card);margin-bottom:12px;}
+.card-header{background:none;border-bottom:1px solid var(--border);font-weight:600;padding:10px 14px;border-radius:12px 12px 0 0;}
+.card-body{padding:14px;}
+.section-title{font-size:14px;font-weight:700;margin:14px 0 8px;color:#1e293b;}
+.modal-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:200;align-items:flex-end;}
+.modal-overlay.open{display:flex;}
+.modal-sheet{background:#fff;border-radius:20px 20px 0 0;padding:20px 16px 40px;width:100%;max-height:92vh;overflow-y:auto;}
+.modal-handle{width:40px;height:4px;background:#cbd5e1;border-radius:2px;margin:0 auto 18px;}
+.form-label{font-weight:600;font-size:12px;margin-bottom:3px;}
+.form-control,.form-select{border:1px solid var(--border);border-radius:8px;padding:9px 11px;font-size:13px;width:100%;outline:none;}
+.form-control:focus,.form-select:focus{border-color:var(--primary);box-shadow:0 0 0 3px rgba(37,99,235,.12);}
+.btn-primary{background:var(--primary);border:none;color:#fff;border-radius:10px;padding:11px 18px;font-weight:600;width:100%;font-size:14px;cursor:pointer;}
+.btn-outline{background:none;border:1.5px solid var(--border);border-radius:10px;padding:9px 14px;font-weight:600;font-size:12px;cursor:pointer;color:#334155;}
+.btn-danger{background:var(--danger);border:none;color:#fff;border-radius:10px;padding:9px 14px;font-weight:600;font-size:12px;cursor:pointer;}
+.btn-success{background:var(--success);border:none;color:#fff;border-radius:10px;padding:9px 14px;font-weight:600;font-size:12px;cursor:pointer;}
+.btn-sm{padding:5px 10px;font-size:11px;border-radius:7px;}
+.fab{position:fixed;bottom:80px;right:18px;width:52px;height:52px;border-radius:50%;background:var(--primary);color:#fff;border:none;font-size:26px;display:flex;align-items:center;justify-content:center;box-shadow:0 4px 14px rgba(37,99,235,.4);cursor:pointer;z-index:90;}
+.toast-msg{position:fixed;top:66px;left:50%;transform:translateX(-50%);background:#1e293b;color:#fff;padding:9px 18px;border-radius:8px;font-size:12px;z-index:300;opacity:0;transition:opacity .3s;pointer-events:none;white-space:nowrap;}
+.toast-msg.show{opacity:1;}
+.lock-banner{padding:9px 14px;border-radius:8px;font-size:12px;font-weight:600;margin-bottom:10px;display:flex;align-items:center;justify-content:space-between;}
+.lock-past{background:#4b5563;color:#fff;}.lock-closed{background:var(--danger);color:#fff;}.lock-open{background:var(--success);color:#fff;}
+/* ---- SHARED TABLE ---- */
+.tbl-wrap{overflow-x:auto;border-radius:12px;border:1px solid var(--border);background:#fff;margin-bottom:12px;}
+.tbl{min-width:680px;border-collapse:collapse;width:100%;font-size:12px;}
+.tbl th{background:#f8fafc;padding:9px 11px;text-align:right;font-weight:600;color:var(--muted);border-bottom:2px solid var(--border);white-space:nowrap;font-size:11px;}
+.tbl th.lft{text-align:left;}
+.tbl th.name-col{position:sticky;left:0;background:#f8fafc;z-index:2;text-align:left;min-width:80px;}
+.tbl td{padding:9px 11px;border-bottom:1px solid var(--border);text-align:right;white-space:nowrap;vertical-align:middle;}
+.tbl td.lft{text-align:left;}
+.tbl td.name-col{position:sticky;left:0;background:#fff;z-index:1;font-weight:600;}
+.tbl tr:last-child td{border-bottom:none;}
+.tbl tbody tr:hover td{background:#f8fafc!important;}
+.tbl tbody tr:hover td.name-col{background:#f8fafc!important;}
+.tbl .total-row td{background:#eff6ff!important;font-weight:700;border-top:2px solid var(--primary);}
+.tbl .total-row td.name-col{background:#eff6ff!important;}
+.badge-dept{background:#eff6ff;color:#1d4ed8;border-radius:5px;padding:1px 6px;font-size:10px;}
+.won-pos{color:var(--primary);font-weight:600;}
+.won-neg{color:var(--danger);}
+/* ---- BREAKDOWN (modal) ---- */
+.bd-row{display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--border);font-size:13px;}
+.bd-row:last-child{border-bottom:none;}
+.bd-section{font-weight:700;font-size:12px;color:var(--muted);padding:8px 0 3px;letter-spacing:.5px;}
+.net-box{background:linear-gradient(135deg,#1e3a8a,#2563eb);border-radius:12px;padding:14px;color:#fff;margin-bottom:12px;}
+.net-box .lbl{opacity:.8;font-size:11px;}.net-box .amt{font-size:22px;font-weight:800;margin-top:3px;}
+/* ---- RETIREMENT TABLE ---- */
+.ret-tbl{min-width:900px;}
+.ret-date-inp{border:1px solid var(--border);border-radius:6px;padding:4px 6px;font-size:11px;width:108px;color:#334155;}
+.cmp-bar{display:flex;flex-direction:column;gap:3px;min-width:100px;}
+.cmp-bar-row{display:flex;align-items:center;gap:4px;font-size:10px;}
+.cmp-bar-lbl{width:20px;font-weight:700;}
+.cmp-bar-track{flex:1;height:5px;background:#e2e8f0;border-radius:3px;min-width:50px;}
+.cmp-bar-fill{height:100%;border-radius:3px;}
+.cmp-bar-pct{width:30px;text-align:right;font-size:10px;}
+.diff-pos{color:var(--success);font-weight:600;}
+.diff-neg{color:var(--danger);font-weight:600;}
+/* ---- UPLOAD PREVIEW ---- */
+.up-preview{max-height:180px;overflow-y:auto;font-size:11px;border:1px solid var(--border);border-radius:8px;}
+.up-preview table{width:100%;border-collapse:collapse;}
+.up-preview th{background:#f8fafc;padding:4px 8px;text-align:left;border-bottom:1px solid var(--border);font-weight:600;}
+.up-preview td{padding:3px 8px;border-bottom:1px solid #f1f5f9;}
+.row-ok{background:#f0fdf4;}.row-err{background:#fff1f2;}
+.chip{display:inline-block;padding:1px 5px;border-radius:4px;font-size:10px;font-weight:700;}
+.chip-ok{background:#dcfce7;color:#166534;}.chip-err{background:#fee2e2;color:#991b1b;}
+/* ---- EMPLOYEES LIST ---- */
+.emp-row{display:flex;align-items:center;gap:10px;padding:11px 14px;border-bottom:1px solid var(--border);cursor:pointer;}
+.emp-row:last-child{border-bottom:none;}
+.emp-avatar{width:38px;height:38px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:15px;color:#fff;flex-shrink:0;}
+.rate-row{display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--border);font-size:12px;}
+.rate-row:last-child{border-bottom:none;}
+.history-item{padding:9px 14px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;font-size:12px;}
+.history-item:last-child{border-bottom:none;}
+.empty-state{text-align:center;padding:50px 20px;color:var(--muted);}
+.empty-state-icon{font-size:44px;margin-bottom:10px;}
+/* ---- MONTH NAV ---- */
+.month-nav{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;}
+.month-label{font-size:17px;font-weight:700;}
 </style>
 </head>
 <body>
 
 <nav class="navbar navbar-dark py-2 px-3">
-  <span class="fw-bold text-white" style="font-size:16px">💰 급여 자동계산</span>
+  <span class="fw-bold text-white" style="font-size:15px">💰 급여 자동계산</span>
   <span class="badge bg-warning text-dark">DEMO</span>
 </nav>
 
-<!-- ===== PAGES ===== -->
+<!-- ===== PAGE: 직원 ===== -->
 <div id="page-employees" class="page active px-3 pt-3">
-  <div class="d-flex justify-content-between align-items-center mb-3">
+  <div class="d-flex justify-content-between align-items-center mb-2">
     <div class="section-title" style="margin:0">직원 목록 (<span id="emp-count">0</span>명)</div>
     <button class="btn-outline btn-sm" onclick="showDemoSeeder()">📋 데모 데이터</button>
   </div>
   <div id="emp-list" class="card"></div>
-  <div id="emp-empty" class="empty-state">
-    <div class="empty-state-icon">👥</div>
-    <div>등록된 직원이 없습니다</div>
-    <div style="font-size:12px;margin-top:6px">+ 버튼을 눌러 추가하거나 데모 데이터를 불러오세요</div>
-  </div>
+  <div id="emp-empty" class="empty-state"><div class="empty-state-icon">👥</div><div>등록된 직원이 없습니다</div><div style="font-size:11px;margin-top:5px">+ 버튼 또는 데모 데이터를 불러오세요</div></div>
 </div>
 
+<!-- ===== PAGE: 급여 ===== -->
 <div id="page-salary" class="page px-3 pt-3">
   <div class="month-nav">
     <button class="btn-outline btn-sm" onclick="changeMonth(-1)">◀</button>
@@ -111,52 +119,37 @@ body { font-family: -apple-system,'Noto Sans KR',sans-serif; background:var(--bg
     <button class="btn-outline btn-sm" onclick="changeMonth(1)">▶</button>
   </div>
   <div id="lock-banner"></div>
-  <div id="salary-export-row" class="d-flex gap-2 mb-3" style="display:none!important">
-    <button class="btn-outline btn-sm" style="flex:1" onclick="openAdjUploadModal()">📤 조정 일괄업로드</button>
-    <button class="btn-outline btn-sm" style="flex:1" onclick="exportExcel()">📊 엑셀</button>
+  <div id="salary-action-row" class="d-flex gap-2 mb-2" style="display:none!important">
+    <button class="btn-outline btn-sm" style="flex:1" onclick="openAdjUploadModal()">📤 일괄업로드</button>
+    <button class="btn-outline btn-sm" style="flex:1" onclick="exportSalaryExcel()">📊 엑셀</button>
     <button class="btn-success btn-sm" style="flex:1" onclick="saveAllRecords()">💾 저장</button>
   </div>
-  <div id="salary-list"></div>
-  <div id="salary-empty" class="empty-state" style="display:none">
-    <div class="empty-state-icon">📄</div><div>직원을 먼저 등록해주세요</div>
-  </div>
+  <div id="salary-table-wrap"></div>
+  <div id="salary-empty" class="empty-state" style="display:none"><div class="empty-state-icon">📄</div><div>직원을 먼저 등록해주세요</div></div>
 </div>
 
+<!-- ===== PAGE: 퇴직금 ===== -->
 <div id="page-retirement" class="page px-3 pt-3">
   <div class="section-title" style="margin-top:0">퇴직금 계산</div>
-  <div class="card card-body mb-3">
-    <div class="form-label mb-2">계산 기준</div>
-    <div class="ret-type-toggle" id="ret-base-toggle">
-      <button class="ret-type-btn active" onclick="setRetBase('year')">연말 기준 (12/31)</button>
-      <button class="ret-type-btn" onclick="setRetBase('date')">퇴직일 지정</button>
-    </div>
-    <div id="ret-date-row" style="display:none">
-      <div class="form-label">퇴직일</div>
-      <input type="date" class="form-control" id="ret-date" onchange="renderRetirementPage()">
-    </div>
+  <div class="card card-body mb-2" style="font-size:12px;color:var(--muted);padding:10px 14px">
+    <strong style="color:#334155">평균임금 산정 방식</strong><br>
+    퇴직 전 3개월 임금총액(연봉÷4) ÷ 91일 = <strong>1일 평균임금</strong><br>
+    <span style="color:#1d4ed8">DB형</span> = 1일 평균임금 × 30일 × 재직일수÷365 &nbsp;|&nbsp;
+    <span style="color:#16a34a">DC형</span> = 월기본급(연봉÷12) × 재직연수 (최소 법정 납입 기준)
   </div>
-  <div style="font-size:12px;color:var(--muted);margin-bottom:10px;padding:0 4px">
-    ※ DB형: 평균임금 × 30일 × 재직일수/365 &nbsp;|&nbsp; DC형: 연봉/12 × 재직연수 (최소납입 기준)
-  </div>
-  <div id="ret-list"></div>
-  <div id="ret-empty" class="empty-state" style="display:none">
-    <div class="empty-state-icon">🏦</div>
-    <div>입사일이 등록된 직원이 없습니다</div>
-    <div style="font-size:12px;margin-top:6px">직원 탭에서 입사일을 입력해주세요</div>
-  </div>
+  <div id="ret-table-wrap"></div>
+  <div id="ret-empty" class="empty-state" style="display:none"><div class="empty-state-icon">🏦</div><div>입사일이 등록된 직원이 없습니다</div></div>
   <div id="ret-export-row" class="mt-2" style="display:none">
     <button class="btn-outline" style="width:100%" onclick="exportRetirementExcel()">📊 퇴직금 내역 엑셀 다운로드</button>
   </div>
 </div>
 
+<!-- ===== PAGE: 기록/설정 ===== -->
 <div id="page-settings" class="page px-3 pt-3">
   <div class="section-title" style="margin-top:0">저장된 급여 기록</div>
   <div id="history-list" class="card"></div>
-  <div id="history-empty" class="empty-state" style="display:none">
-    <div class="empty-state-icon">📚</div><div>저장된 기록이 없습니다</div>
-    <div style="font-size:12px;margin-top:6px">급여 탭에서 💾 저장을 누르세요</div>
-  </div>
-  <div class="section-title mt-4">보험료율 설정</div>
+  <div id="history-empty" class="empty-state" style="display:none"><div class="empty-state-icon">📚</div><div>저장된 기록이 없습니다</div></div>
+  <div class="section-title mt-3">보험료율 설정</div>
   <div class="card card-body" id="rates-display"></div>
 </div>
 
@@ -175,39 +168,38 @@ body { font-family: -apple-system,'Noto Sans KR',sans-serif; background:var(--bg
     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>기록/설정
   </div>
 </div>
-
 <button class="fab" id="fab-btn" onclick="openAddModal()">+</button>
 <div class="toast-msg" id="toast"></div>
 
 <!-- ===== MODALS ===== -->
 
-<!-- Employee Modal -->
+<!-- 직원 추가/수정 -->
 <div class="modal-overlay" id="modal-emp">
   <div class="modal-sheet">
     <div class="modal-handle"></div>
-    <div style="font-size:18px;font-weight:700;margin-bottom:20px" id="modal-emp-title">직원 추가</div>
+    <div style="font-size:17px;font-weight:700;margin-bottom:16px" id="modal-emp-title">직원 추가</div>
     <input type="hidden" id="edit-emp-id">
     <div class="mb-3"><div class="form-label">이름 *</div><input type="text" class="form-control" id="inp-name" placeholder="홍길동"></div>
     <div class="mb-3"><div class="form-label">부서</div><input type="text" class="form-control" id="inp-dept" placeholder="개발팀"></div>
     <div class="mb-3"><div class="form-label">직급</div><input type="text" class="form-control" id="inp-position" placeholder="과장"></div>
     <div class="mb-3"><div class="form-label">연봉 (원) *</div><input type="number" class="form-control" id="inp-salary" placeholder="36000000"></div>
     <div class="mb-3"><div class="form-label">입사일 (퇴직금 계산용)</div><input type="date" class="form-control" id="inp-hire-date"></div>
-    <div class="d-flex gap-2 mt-4">
+    <div class="d-flex gap-2 mt-3">
       <button class="btn-outline" style="flex:1" onclick="closeModal('modal-emp')">취소</button>
       <button class="btn-primary" style="flex:1" onclick="saveEmployee()">저장</button>
     </div>
-    <div id="edit-emp-delete" style="display:none;margin-top:10px">
+    <div id="edit-emp-delete" style="display:none;margin-top:8px">
       <button class="btn-danger" style="width:100%" onclick="deleteEmployee()">직원 삭제</button>
     </div>
   </div>
 </div>
 
-<!-- Adjustment Modal -->
+<!-- 조정 항목 추가 -->
 <div class="modal-overlay" id="modal-adj">
   <div class="modal-sheet">
     <div class="modal-handle"></div>
-    <div style="font-size:18px;font-weight:700;margin-bottom:20px">조정 항목 추가</div>
-    <input type="hidden" id="adj-emp-id"> <input type="hidden" id="adj-edit-id">
+    <div style="font-size:17px;font-weight:700;margin-bottom:16px">조정 항목 추가</div>
+    <input type="hidden" id="adj-emp-id"><input type="hidden" id="adj-edit-id">
     <div class="mb-3"><div class="form-label">직원</div><select class="form-select" id="adj-emp-select"></select></div>
     <div class="mb-3">
       <div class="form-label">항목 유형</div>
@@ -225,34 +217,52 @@ body { font-family: -apple-system,'Noto Sans KR',sans-serif; background:var(--bg
     <div class="mb-3" id="adj-days-row"><div class="form-label">무급 일수 (일)</div><input type="number" class="form-control" id="adj-days" placeholder="2" min="0" step="0.5"></div>
     <div class="mb-3" id="adj-amount-row" style="display:none"><div class="form-label">금액 (원)</div><input type="number" class="form-control" id="adj-amount" placeholder="100000"></div>
     <div class="mb-3"><div class="form-label">메모</div><input type="text" class="form-control" id="adj-note" placeholder="사유 입력"></div>
-    <div class="d-flex gap-2 mt-4">
+    <div class="d-flex gap-2 mt-3">
       <button class="btn-outline" style="flex:1" onclick="closeModal('modal-adj')">취소</button>
       <button class="btn-primary" style="flex:1" onclick="saveAdjustment()">저장</button>
     </div>
   </div>
 </div>
 
-<!-- Adjustment Bulk Upload Modal -->
+<!-- 급여 상세 -->
+<div class="modal-overlay" id="modal-salary-detail">
+  <div class="modal-sheet">
+    <div class="modal-handle"></div>
+    <div id="modal-salary-detail-content"></div>
+    <button class="btn-outline mt-3" style="width:100%" onclick="closeModal('modal-salary-detail')">닫기</button>
+  </div>
+</div>
+
+<!-- 퇴직금 상세 -->
+<div class="modal-overlay" id="modal-ret-detail">
+  <div class="modal-sheet">
+    <div class="modal-handle"></div>
+    <div id="modal-ret-detail-content"></div>
+    <button class="btn-outline mt-3" style="width:100%" onclick="closeModal('modal-ret-detail')">닫기</button>
+  </div>
+</div>
+
+<!-- 조정 목록 -->
+<div class="modal-overlay" id="modal-adj-list">
+  <div class="modal-sheet">
+    <div class="modal-handle"></div>
+    <div id="modal-adj-list-content"></div>
+    <button class="btn-outline mt-3" style="width:100%" onclick="closeModal('modal-adj-list')">닫기</button>
+  </div>
+</div>
+
+<!-- 일괄업로드 -->
 <div class="modal-overlay" id="modal-adj-upload">
   <div class="modal-sheet">
     <div class="modal-handle"></div>
-    <div style="font-size:18px;font-weight:700;margin-bottom:8px">조정항목 일괄업로드</div>
-    <div style="font-size:12px;color:var(--muted);margin-bottom:16px">
-      CSV 형식: <code>이름,유형,값,메모</code><br>
-      유형: 무급휴가(일수), 경조사비/식대/교통비/기타지급/기타공제/소득세추가/지방소득세추가(원)
-    </div>
-    <div class="mb-3">
-      <div class="form-label">CSV 파일 선택 또는 직접 붙여넣기</div>
-      <input type="file" class="form-control" id="adj-upload-file" accept=".csv,.xlsx,.xls" onchange="onAdjFileSelect(event)">
-    </div>
-    <div class="mb-3">
-      <div class="form-label">텍스트 직접 입력</div>
-      <textarea class="form-control" id="adj-upload-text" rows="5" placeholder="이름,유형,값,메모&#10;김민준,무급휴가,2,개인사유&#10;이서연,경조사비,100000,결혼&#10;박지호,식대,50000," oninput="onAdjTextInput()"></textarea>
-    </div>
-    <div id="adj-upload-preview" style="display:none;margin-bottom:16px">
+    <div style="font-size:17px;font-weight:700;margin-bottom:6px">조정항목 일괄업로드</div>
+    <div style="font-size:11px;color:var(--muted);margin-bottom:14px">형식: <code>이름,유형,값,메모</code> (유형: 무급휴가/경조사비/식대/교통비/기타지급/기타공제/소득세추가/지방소득세추가)</div>
+    <div class="mb-3"><div class="form-label">파일 선택 (CSV / Excel)</div><input type="file" class="form-control" id="adj-upload-file" accept=".csv,.xlsx,.xls" onchange="onAdjFileSelect(event)"></div>
+    <div class="mb-3"><div class="form-label">텍스트 직접 입력</div><textarea class="form-control" id="adj-upload-text" rows="5" placeholder="이름,유형,값,메모&#10;김민준,무급휴가,2,개인사유&#10;이서연,경조사비,100000,결혼" oninput="onAdjTextInput()"></textarea></div>
+    <div id="adj-upload-preview" style="display:none;margin-bottom:12px">
       <div class="form-label">미리보기</div>
-      <div class="upload-preview" id="adj-preview-table"></div>
-      <div id="adj-preview-summary" style="font-size:12px;margin-top:6px"></div>
+      <div class="up-preview" id="adj-preview-table"></div>
+      <div id="adj-preview-summary" style="font-size:11px;margin-top:5px"></div>
     </div>
     <div class="d-flex gap-2">
       <button class="btn-outline" style="flex:1" onclick="closeModal('modal-adj-upload')">취소</button>
@@ -261,25 +271,16 @@ body { font-family: -apple-system,'Noto Sans KR',sans-serif; background:var(--bg
   </div>
 </div>
 
-<!-- Detail Modal -->
-<div class="modal-overlay" id="modal-detail">
-  <div class="modal-sheet">
-    <div class="modal-handle"></div>
-    <div id="modal-detail-content"></div>
-    <button class="btn-outline mt-3" style="width:100%" onclick="closeModal('modal-detail')">닫기</button>
-  </div>
-</div>
-
-<!-- Rates Modal -->
+<!-- 요율 수정 -->
 <div class="modal-overlay" id="modal-rates">
   <div class="modal-sheet">
     <div class="modal-handle"></div>
-    <div style="font-size:18px;font-weight:700;margin-bottom:20px">보험료율 수정</div>
-    <div class="mb-3"><div class="form-label">국민연금 (근로자 부담, %)</div><input type="number" class="form-control" id="rate-np" step="0.01"></div>
-    <div class="mb-3"><div class="form-label">건강보험 (근로자 부담, %)</div><input type="number" class="form-control" id="rate-hi" step="0.001"></div>
-    <div class="mb-3"><div class="form-label">장기요양 (건강보험료 대비, %)</div><input type="number" class="form-control" id="rate-ltc" step="0.01"></div>
-    <div class="mb-3"><div class="form-label">고용보험 (근로자 부담, %)</div><input type="number" class="form-control" id="rate-ei" step="0.01"></div>
-    <div class="d-flex gap-2 mt-4">
+    <div style="font-size:17px;font-weight:700;margin-bottom:16px">보험료율 수정</div>
+    <div class="mb-3"><div class="form-label">국민연금 (%)</div><input type="number" class="form-control" id="rate-np" step="0.01"></div>
+    <div class="mb-3"><div class="form-label">건강보험 (%)</div><input type="number" class="form-control" id="rate-hi" step="0.001"></div>
+    <div class="mb-3"><div class="form-label">장기요양 (건강보험료 대비 %)</div><input type="number" class="form-control" id="rate-ltc" step="0.01"></div>
+    <div class="mb-3"><div class="form-label">고용보험 (%)</div><input type="number" class="form-control" id="rate-ei" step="0.01"></div>
+    <div class="d-flex gap-2 mt-3">
       <button class="btn-outline" style="flex:1" onclick="closeModal('modal-rates')">취소</button>
       <button class="btn-primary" style="flex:1" onclick="saveRates()">저장</button>
     </div>
@@ -288,173 +289,131 @@ body { font-family: -apple-system,'Noto Sans KR',sans-serif; background:var(--bg
 
 <script>
 // ===== DATA =====
-const KEY = 'salary_v3';
-const DEFAULT_RATES = { np:4.5, hi:3.545, ltc:12.95, ei:0.9, np_max:5900000 };
-const COLORS = ['#ef4444','#f97316','#eab308','#22c55e','#06b6d4','#3b82f6','#8b5cf6','#ec4899','#14b8a6','#f59e0b'];
+const KEY='salary_v4';
+const DEFAULT_RATES={np:4.5,hi:3.545,ltc:12.95,ei:0.9,np_max:5900000};
+const COLORS=['#ef4444','#f97316','#eab308','#22c55e','#06b6d4','#3b82f6','#8b5cf6','#ec4899','#14b8a6','#f59e0b'];
+function load(){try{return JSON.parse(localStorage.getItem(KEY))||ns();}catch{return ns();}}
+function save(s){localStorage.setItem(KEY,JSON.stringify(s));}
+function ns(){return{employees:[],adjustments:{},periods:{},records:{},rates:{...DEFAULT_RATES},retDates:{}};}
+function uid(){return Date.now().toString(36)+Math.random().toString(36).slice(2,6);}
 
-function load() { try { return JSON.parse(localStorage.getItem(KEY)) || newState(); } catch { return newState(); } }
-function save(s) { localStorage.setItem(KEY, JSON.stringify(s)); }
-function newState() { return { employees:[], adjustments:{}, periods:{}, records:{}, rates:{...DEFAULT_RATES} }; }
-function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2,6); }
+let state=load();
+let curY=new Date().getFullYear(), curM=new Date().getMonth()+1;
+let curPage='employees';
+let adjUploadRows=[];
 
-let state = load();
-let currentYear = new Date().getFullYear();
-let currentMonth = new Date().getMonth()+1;
-let currentPage = 'employees';
-let retBase = 'year'; // 'year' | 'date'
-let adjUploadRows = [];
+// ===== FORMAT =====
+function won(n){if(n==null)return'-';return(n<0?'-':'')+Math.abs(Math.round(n)).toLocaleString('ko-KR')+'원';}
+function wonS(n){const a=Math.abs(Math.round(n));if(a>=100000000)return(n<0?'-':'')+(a/100000000).toFixed(1)+'억';if(a>=10000)return(n<0?'-':'')+Math.round(a/10000)+'만';return won(n);}
+function num(n){if(n==null)return'-';return Math.abs(Math.round(n)).toLocaleString('ko-KR');}
+function mkKey(y,m){return`${y}-${String(m).padStart(2,'0')}`;}
+function fmtDate(d){if(!d)return'';const dt=typeof d==='string'?new Date(d):d;return`${dt.getFullYear()}.${dt.getMonth()+1}.${dt.getDate()}`;}
+function diffLabel(hire,retire){const d=Math.floor((retire-hire)/86400000),y=Math.floor(d/365),r=d%365,m=Math.floor(r/30);return`${y}년 ${m}개월`;}
 
 // ===== SALARY CALC =====
-function calcIncomeTax(annualSalary) {
-  let ded;
-  if (annualSalary<=5000000) ded=annualSalary*0.70;
-  else if (annualSalary<=15000000) ded=3500000+(annualSalary-5000000)*0.40;
-  else if (annualSalary<=45000000) ded=7500000+(annualSalary-15000000)*0.15;
-  else if (annualSalary<=100000000) ded=12000000+(annualSalary-45000000)*0.05;
-  else ded=14750000+(annualSalary-100000000)*0.02;
-  ded=Math.min(ded,20000000);
-  const ti=Math.max(0,annualSalary-ded);
-  let tax;
-  if (ti<=14000000) tax=ti*0.06;
-  else if (ti<=50000000) tax=840000+(ti-14000000)*0.15;
-  else if (ti<=88000000) tax=6240000+(ti-50000000)*0.24;
-  else if (ti<=150000000) tax=15360000+(ti-88000000)*0.35;
-  else if (ti<=300000000) tax=37060000+(ti-150000000)*0.38;
-  else if (ti<=500000000) tax=94060000+(ti-300000000)*0.40;
-  else if (ti<=1000000000) tax=174060000+(ti-500000000)*0.42;
-  else tax=384060000+(ti-1000000000)*0.45;
-  let credit=tax<=1300000?tax*0.55:715000+(tax-1300000)*0.30;
-  credit=Math.min(credit,740000);
-  return Math.round(Math.max(0,tax-credit)/12/10)*10;
+function calcIT(annual){
+  let d;
+  if(annual<=5e6)d=annual*.7;else if(annual<=15e6)d=3.5e6+(annual-5e6)*.4;
+  else if(annual<=45e6)d=7.5e6+(annual-15e6)*.15;else if(annual<=1e8)d=12e6+(annual-45e6)*.05;
+  else d=14.75e6+(annual-1e8)*.02;
+  d=Math.min(d,20e6);
+  const ti=Math.max(0,annual-d);
+  let t;
+  if(ti<=14e6)t=ti*.06;else if(ti<=50e6)t=840000+(ti-14e6)*.15;
+  else if(ti<=88e6)t=6240000+(ti-50e6)*.24;else if(ti<=150e6)t=15360000+(ti-88e6)*.35;
+  else if(ti<=300e6)t=37060000+(ti-150e6)*.38;else if(ti<=500e6)t=94060000+(ti-300e6)*.4;
+  else if(ti<=1e9)t=174060000+(ti-500e6)*.42;else t=384060000+(ti-1e9)*.45;
+  let c=t<=1300000?t*.55:715000+(t-1300000)*.3;c=Math.min(c,740000);
+  return Math.round(Math.max(0,t-c)/12/10)*10;
 }
-
-function calcEmployee(emp, adjs, rates) {
+function calcEmp(emp,adjs,rates){
   const r=rates||state.rates;
   const monthly=Math.round(emp.annual_salary/12);
-  let unpaidDays=0, otherAdd=0, otherDed=0;
-  const adjDetails=[];
-  for (const a of (adjs||[])) {
-    if (a.type==='무급휴가') {
-      const amt=Math.round(monthly/21.75*a.days);
-      unpaidDays=a.days; otherDed+=amt;
-      adjDetails.push({label:`무급휴가 ${a.days}일`,amount:-amt,note:a.note});
-    } else if (['경조사비','식대','교통비','기타지급'].includes(a.type)) {
-      otherAdd+=a.amount;
-      adjDetails.push({label:a.type+(a.note?` (${a.note})`:''),amount:a.amount});
-    } else if (a.type==='기타공제') {
-      otherDed+=a.amount;
-      adjDetails.push({label:'기타공제'+(a.note?` (${a.note})`:''),amount:-a.amount});
-    } else if (a.type==='소득세추가') {
-      otherDed+=a.amount;
-      adjDetails.push({label:'소득세 추가'+(a.note?` (${a.note})`:''),amount:-a.amount,taxAdj:true});
-    } else if (a.type==='지방소득세추가') {
-      otherDed+=a.amount;
-      adjDetails.push({label:'지방소득세 추가'+(a.note?` (${a.note})`:''),amount:-a.amount,taxAdj:true});
-    }
+  let unpaidDays=0,otherAdd=0,otherDed=0;const adjDet=[];
+  for(const a of(adjs||[])){
+    if(a.type==='무급휴가'){const amt=Math.round(monthly/21.75*a.days);unpaidDays=a.days;otherDed+=amt;adjDet.push({label:`무급휴가 ${a.days}일`,amount:-amt});}
+    else if(['경조사비','식대','교통비','기타지급'].includes(a.type)){otherAdd+=a.amount;adjDet.push({label:a.type+(a.note?` (${a.note})`:''),amount:a.amount});}
+    else if(a.type==='기타공제'){otherDed+=a.amount;adjDet.push({label:'기타공제'+(a.note?` (${a.note})`:''),amount:-a.amount});}
+    else if(a.type==='소득세추가'){otherDed+=a.amount;adjDet.push({label:'소득세추가'+(a.note?` (${a.note})`:''),amount:-a.amount,taxAdj:true});}
+    else if(a.type==='지방소득세추가'){otherDed+=a.amount;adjDet.push({label:'지방소득세추가'+(a.note?` (${a.note})`:''),amount:-a.amount,taxAdj:true});}
   }
   const gross=monthly-(unpaidDays>0?Math.round(monthly/21.75*unpaidDays):0)+otherAdd;
-  const npBase=Math.min(gross,r.np_max);
-  const np=Math.round(npBase*(r.np/100)/10)*10;
+  const np=Math.round(Math.min(gross,r.np_max)*(r.np/100)/10)*10;
   const hi=Math.round(gross*(r.hi/100)/10)*10;
   const ltc=Math.round(hi*(r.ltc/100)/10)*10;
   const ei=Math.round(gross*(r.ei/100)/10)*10;
-  const it=calcIncomeTax(emp.annual_salary);
-  const lit=Math.round(it*0.1/10)*10;
+  const it=calcIT(emp.annual_salary);
+  const lit=Math.round(it*.1/10)*10;
   const totalDed=np+hi+ltc+ei+it+lit+otherDed;
-  return {monthly,otherAdd,otherDed,gross,np,hi,ltc,ei,it,lit,totalDed,net:gross-totalDed,adjDetails};
+  return{monthly,otherAdd,otherDed,gross,np,hi,ltc,ei,it,lit,totalDed,net:gross-totalDed,adjDet,ins:np+hi+ltc+ei,tax:it+lit};
 }
 
 // ===== RETIREMENT CALC =====
-function calcRetirement(emp, retireDate) {
-  if (!emp.hire_date) return null;
-  const hire = new Date(emp.hire_date);
-  const retire = retireDate ? new Date(retireDate) : new Date(new Date().getFullYear(), 11, 31);
-  if (isNaN(hire) || isNaN(retire) || retire <= hire) return null;
-  const days = Math.floor((retire - hire) / 86400000);
-  const years = days / 365;
-  if (years < 1) return { days, years, eligible: false };
-
-  // DB형: 평균임금(1일) × 30 × 재직일수/365
-  // 평균임금 = 퇴직전 3개월 임금총액(연봉/4) ÷ 91일
-  const avgDailyWage = (emp.annual_salary / 4) / 91;
-  const db = Math.round(avgDailyWage * 30 * days / 365);
-
-  // DC형: 연봉/12 × 재직연수 (최소 법정납입금 합계)
-  const dc = Math.round(emp.annual_salary / 12 * years);
-
-  return { days, years, eligible: true, db, dc, hire, retire };
+function calcRet(emp, retDateStr){
+  if(!emp.hire_date) return null;
+  const hire=new Date(emp.hire_date);
+  const retire=retDateStr?new Date(retDateStr):new Date(curY,11,31);
+  if(isNaN(hire)||isNaN(retire)||retire<=hire)return null;
+  const days=Math.floor((retire-hire)/86400000);
+  const years=days/365;
+  const monthly3=emp.annual_salary/4; // 3개월 임금
+  const avgDaily=monthly3/91;          // 1일 평균임금
+  const db=Math.round(avgDaily*30*days/365);
+  const dc=Math.round(emp.annual_salary/12*years);
+  return{days,years,eligible:years>=1,avgDaily,db,dc,hire,retire,monthly3};
 }
-
-// ===== FORMAT =====
-function won(n) {
-  if (n==null) return '-';
-  return (n<0?'-':'')+Math.abs(Math.round(n)).toLocaleString('ko-KR')+'원';
-}
-function wonShort(n) {
-  const abs=Math.abs(Math.round(n));
-  if (abs>=100000000) return (n<0?'-':'')+(abs/100000000).toFixed(1)+'억';
-  if (abs>=10000) return (n<0?'-':'')+Math.round(abs/10000)+'만';
-  return won(n);
-}
-function mkKey(y,m) { return `${y}-${String(m).padStart(2,'0')}`; }
-function fmtDate(d) {
-  if (!d) return '';
-  const dt = typeof d==='string'?new Date(d):d;
-  return `${dt.getFullYear()}.${dt.getMonth()+1}.${dt.getDate()}`;
-}
-function dateDiff(hire, retire) {
-  const d = Math.floor((retire-hire)/86400000);
-  const y = Math.floor(d/365), rem = d%365, m = Math.floor(rem/30);
-  return `${y}년 ${m}개월`;
+function calcRetPrevYear(emp){
+  if(!emp.hire_date)return null;
+  const retDateStr=`${curY-1}-12-31`;
+  return calcRet(emp,retDateStr);
 }
 
 // ===== PERIOD =====
-function isPast(y,m) { const n=new Date(); return y<n.getFullYear()||(y===n.getFullYear()&&m<n.getMonth()+1); }
-function isClosed(y,m) { const p=state.periods[mkKey(y,m)]; return p&&p.locked; }
-function isEditable(y,m) { return !isPast(y,m)&&!isClosed(y,m); }
+function isPast(y,m){const n=new Date();return y<n.getFullYear()||(y===n.getFullYear()&&m<n.getMonth()+1);}
+function isClosed(y,m){const p=state.periods[mkKey(y,m)];return p&&p.locked;}
+function isEditable(y,m){return!isPast(y,m)&&!isClosed(y,m);}
 
 // ===== NAV =====
-function showPage(page) {
+function showPage(page){
   document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
   document.getElementById('page-'+page).classList.add('active');
   document.querySelectorAll('.bn-item').forEach(b=>b.classList.toggle('active',b.dataset.page===page));
   document.getElementById('fab-btn').style.display=(page==='employees')?'flex':'none';
-  currentPage=page;
-  if (page==='salary') renderSalaryPage();
-  if (page==='history'||page==='settings') renderSettingsPage();
-  if (page==='employees') renderEmployees();
-  if (page==='retirement') renderRetirementPage();
+  curPage=page;
+  if(page==='salary')renderSalary();
+  if(page==='settings')renderSettings();
+  if(page==='employees')renderEmployees();
+  if(page==='retirement')renderRetirement();
 }
 
 // ===== EMPLOYEES =====
-function renderEmployees() {
+function renderEmployees(){
   const emps=state.employees;
   document.getElementById('emp-count').textContent=emps.length;
-  const list=document.getElementById('emp-list'), empty=document.getElementById('emp-empty');
-  if (emps.length===0) { list.style.display='none'; empty.style.display=''; return; }
-  list.style.display=''; empty.style.display='none';
+  const list=document.getElementById('emp-list'),empty=document.getElementById('emp-empty');
+  if(!emps.length){list.style.display='none';empty.style.display='';return;}
+  list.style.display='';empty.style.display='none';
   list.innerHTML=emps.map((e,i)=>`
     <div class="emp-row" onclick="openEditEmp('${e.id}')">
       <div class="emp-avatar" style="background:${COLORS[i%COLORS.length]}">${e.name[0]}</div>
-      <div class="emp-info">
-        <div class="emp-name">${e.name}</div>
-        <div class="emp-sub">${e.department?`<span class="badge-dept">${e.department}</span> `:''} ${e.position||''}${e.hire_date?` · 입사 ${e.hire_date}`:''}</div>
+      <div style="flex:1">
+        <div style="font-weight:600">${e.name}</div>
+        <div style="font-size:11px;color:var(--muted)">${e.department?`<span class="badge-dept">${e.department}</span> `:''} ${e.position||''}${e.hire_date?` · 입사 ${e.hire_date}`:''}</div>
       </div>
       <div style="text-align:right">
-        <div class="won" style="font-size:13px">${wonShort(e.annual_salary)}</div>
-        <div style="font-size:11px;color:var(--muted)">연봉</div>
+        <div style="font-weight:700;color:var(--primary);font-size:12px">${wonS(e.annual_salary)}</div>
+        <div style="font-size:10px;color:var(--muted)">연봉</div>
       </div>
     </div>`).join('');
 }
-
-function openAddModal() {
+function openAddModal(){
   document.getElementById('modal-emp-title').textContent='직원 추가';
   ['edit-emp-id','inp-name','inp-dept','inp-position','inp-salary','inp-hire-date'].forEach(id=>document.getElementById(id).value='');
   document.getElementById('edit-emp-delete').style.display='none';
   openModal('modal-emp');
 }
-function openEditEmp(id) {
-  const e=state.employees.find(x=>x.id===id); if (!e) return;
+function openEditEmp(id){
+  const e=state.employees.find(x=>x.id===id);if(!e)return;
   document.getElementById('modal-emp-title').textContent='직원 수정';
   document.getElementById('edit-emp-id').value=id;
   document.getElementById('inp-name').value=e.name;
@@ -465,395 +424,421 @@ function openEditEmp(id) {
   document.getElementById('edit-emp-delete').style.display='';
   openModal('modal-emp');
 }
-function saveEmployee() {
+function saveEmployee(){
   const id=document.getElementById('edit-emp-id').value;
   const name=document.getElementById('inp-name').value.trim();
   const salary=parseInt(document.getElementById('inp-salary').value);
-  if (!name) { toast('이름을 입력하세요'); return; }
-  if (!salary||salary<1000000) { toast('올바른 연봉을 입력하세요'); return; }
-  const data={name,department:document.getElementById('inp-dept').value.trim(),position:document.getElementById('inp-position').value.trim(),annual_salary:salary,hire_date:document.getElementById('inp-hire-date').value||''};
-  if (id) { Object.assign(state.employees.find(x=>x.id===id),data); }
-  else { state.employees.push({id:uid(),...data}); }
-  save(state); closeModal('modal-emp'); renderEmployees(); toast(id?'수정되었습니다':'추가되었습니다');
+  if(!name){toast('이름을 입력하세요');return;}
+  if(!salary||salary<1000000){toast('올바른 연봉을 입력하세요');return;}
+  const d={name,department:document.getElementById('inp-dept').value.trim(),position:document.getElementById('inp-position').value.trim(),annual_salary:salary,hire_date:document.getElementById('inp-hire-date').value||''};
+  if(id)Object.assign(state.employees.find(x=>x.id===id),d);
+  else state.employees.push({id:uid(),...d});
+  save(state);closeModal('modal-emp');renderEmployees();toast(id?'수정되었습니다':'추가되었습니다');
 }
-function deleteEmployee() {
+function deleteEmployee(){
   const id=document.getElementById('edit-emp-id').value;
-  if (!confirm('삭제하시겠습니까?')) return;
+  if(!confirm('삭제하시겠습니까?'))return;
   state.employees=state.employees.filter(x=>x.id!==id);
-  save(state); closeModal('modal-emp'); renderEmployees(); toast('삭제되었습니다');
+  save(state);closeModal('modal-emp');renderEmployees();toast('삭제되었습니다');
 }
 
 // ===== SALARY PAGE =====
-function renderSalaryPage() {
-  const y=currentYear, m=currentMonth;
+function renderSalary(){
+  const y=curY,m=curM;
   document.getElementById('month-label').textContent=`${y}년 ${m}월`;
-  const banner=document.getElementById('lock-banner'), exportRow=document.getElementById('salary-export-row');
-  if (isPast(y,m)) {
-    banner.innerHTML=`<div class="lock-banner lock-past">🔒 이전 달 — 시스템 잠금 (조회만 가능)</div>`;
-    exportRow.style.display='none';
-  } else if (isClosed(y,m)) {
+  const banner=document.getElementById('lock-banner'),actRow=document.getElementById('salary-action-row');
+  if(isPast(y,m)){
+    banner.innerHTML=`<div class="lock-banner lock-past">🔒 이전 달 — 시스템 잠금</div>`;
+    actRow.style.display='none';
+  }else if(isClosed(y,m)){
     banner.innerHTML=`<div class="lock-banner lock-closed"><span>🔒 ${y}년 ${m}월 마감됨</span><button class="btn-outline btn-sm" style="color:#fff;border-color:rgba(255,255,255,.5)" onclick="reopenPeriod()">마감 해제</button></div>`;
-    exportRow.style.display='none';
-  } else {
+    actRow.style.display='none';
+  }else{
     banner.innerHTML=`<div class="lock-banner lock-open"><span>✅ ${y}년 ${m}월 편집 가능</span><button class="btn-outline btn-sm" style="color:#fff;border-color:rgba(255,255,255,.5)" onclick="closePeriod()">마감</button></div>`;
-    exportRow.style.display='';
+    actRow.style.display='';
   }
-  const emps=state.employees, list=document.getElementById('salary-list'), empty=document.getElementById('salary-empty');
-  if (emps.length===0) { list.innerHTML=''; empty.style.display=''; return; }
+  const wrap=document.getElementById('salary-table-wrap'),empty=document.getElementById('salary-empty');
+  const emps=state.employees;
+  if(!emps.length){wrap.innerHTML='';empty.style.display='';return;}
   empty.style.display='none';
-  const key=mkKey(y,m), adjs=state.adjustments[key]||[], editable=isEditable(y,m);
-  list.innerHTML=emps.map((emp,idx)=>{
-    const empAdjs=adjs.filter(a=>a.emp_id===emp.id);
-    const c=calcEmployee(emp,empAdjs,state.rates);
-    const ratio=Math.round((c.totalDed/c.gross)*100);
-    const color=COLORS[idx%COLORS.length];
-    return `<div class="card">
-      <div class="card-header d-flex align-items-center gap-2">
-        <div style="width:32px;height:32px;border-radius:50%;background:${color};display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;font-size:14px;flex-shrink:0">${emp.name[0]}</div>
-        <div style="flex:1"><div>${emp.name} <span style="font-size:11px;color:var(--muted)">${emp.position||''}</span></div><div style="font-size:11px;color:var(--muted)">${emp.department||''}</div></div>
-      </div>
-      <div class="card-body">
-        <div class="net-pay-box"><div class="label">실수령액</div><div class="amount">${won(c.net)}</div></div>
-        <table class="table-calc">
-          <tr><td colspan="2" style="font-weight:700;padding-bottom:4px;color:#16a34a">▸ 지급 내역</td></tr>
-          <tr><td>기본급</td><td class="won">${won(c.monthly)}</td></tr>
-          ${c.adjDetails.filter(a=>a.amount>0).map(a=>`<tr><td style="color:#16a34a">${a.label}</td><td style="color:#16a34a">+${won(a.amount)}</td></tr>`).join('')}
-          <tr class="divider"><td colspan="2"></td></tr>
-          <tr><td><strong>지급 합계</strong></td><td><strong class="won">${won(c.gross)}</strong></td></tr>
-          <tr><td colspan="2" style="font-weight:700;padding:8px 0 4px;color:#dc2626">▸ 공제 내역</td></tr>
-          <tr><td>국민연금 (${state.rates.np}%)</td><td class="deduct">-${won(c.np)}</td></tr>
-          <tr><td>건강보험 (${state.rates.hi}%)</td><td class="deduct">-${won(c.hi)}</td></tr>
-          <tr><td>장기요양보험</td><td class="deduct">-${won(c.ltc)}</td></tr>
-          <tr><td>고용보험 (${state.rates.ei}%)</td><td class="deduct">-${won(c.ei)}</td></tr>
-          <tr><td>근로소득세</td><td class="deduct">-${won(c.it)}</td></tr>
-          <tr><td>지방소득세</td><td class="deduct">-${won(c.lit)}</td></tr>
-          ${c.adjDetails.filter(a=>a.amount<0&&a.taxAdj).map(a=>`<tr><td style="color:#dc2626">${a.label}</td><td style="color:#dc2626">-${won(Math.abs(a.amount))}</td></tr>`).join('')}
-          ${c.adjDetails.filter(a=>a.amount<0&&!a.taxAdj).map(a=>`<tr><td style="color:#dc2626">${a.label}</td><td style="color:#dc2626">-${won(Math.abs(a.amount))}</td></tr>`).join('')}
-          <tr class="divider"><td colspan="2"></td></tr>
-          <tr><td><strong>공제 합계</strong></td><td><strong class="deduct">-${won(c.totalDed)}</strong></td></tr>
-        </table>
-        <div class="mt-3">
-          <div class="d-flex justify-content-between" style="font-size:11px;margin-bottom:4px">
-            <span style="color:var(--muted)">공제율</span><span style="color:var(--muted)">${ratio}%</span>
-          </div>
-          <div class="progress progress-thin"><div class="progress-bar bg-danger" style="width:${ratio}%"></div></div>
-        </div>
-        ${editable?`<div class="mt-3 d-flex gap-2">
-          <button class="btn-outline btn-sm" style="flex:1" onclick="openAdjModal('${emp.id}')">+ 조정</button>
-          ${empAdjs.length>0?`<button class="btn-outline btn-sm" style="flex:1;color:var(--danger)" onclick="showAdjList('${emp.id}')">목록 (${empAdjs.length})</button>`:''}
-        </div>`:(empAdjs.length>0?`<div style="margin-top:8px;font-size:12px;color:var(--muted)">조정 항목 ${empAdjs.length}개 (잠금)</div>`:'')}
-      </div>
-    </div>`;
-  }).join('');
+  const key=mkKey(y,m),adjs=state.adjustments[key]||[],editable=isEditable(y,m);
+  const calcs=emps.map(emp=>{const empAdjs=adjs.filter(a=>a.emp_id===emp.id);return{emp,c:calcEmp(emp,empAdjs,state.rates),adjs:empAdjs};});
+  // totals
+  const T={gross:0,ins:0,tax:0,otherDed:0,totalDed:0,net:0};
+  calcs.forEach(({c})=>{T.gross+=c.gross;T.ins+=c.ins;T.tax+=c.tax;T.otherDed+=c.otherDed;T.totalDed+=c.totalDed;T.net+=c.net;});
+
+  wrap.innerHTML=`<div class="tbl-wrap">
+    <table class="tbl">
+      <thead><tr>
+        <th class="name-col">이름</th>
+        <th class="lft">부서</th>
+        <th>기본급</th>
+        <th>기타지급</th>
+        <th>지급합계</th>
+        <th>4대보험</th>
+        <th>소득세</th>
+        <th>기타공제</th>
+        <th>공제합계</th>
+        <th style="color:var(--primary)">실수령액</th>
+        ${editable?'<th>조정</th>':''}
+      </tr></thead>
+      <tbody>
+        ${calcs.map(({emp,c,adjs:ea},i)=>`<tr style="cursor:pointer" onclick="openSalaryDetail('${emp.id}')">
+          <td class="name-col">
+            <div style="display:flex;align-items:center;gap:7px">
+              <div style="width:28px;height:28px;border-radius:50%;background:${COLORS[i%COLORS.length]};display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;font-size:12px;flex-shrink:0">${emp.name[0]}</div>
+              ${emp.name}
+            </div>
+          </td>
+          <td class="lft"><span class="badge-dept">${emp.department||''}</span></td>
+          <td>${num(c.monthly)}</td>
+          <td>${c.otherAdd>0?`<span style="color:var(--success)">+${num(c.otherAdd)}</span>`:'<span style="color:var(--muted)">-</span>'}</td>
+          <td class="won-pos">${num(c.gross)}</td>
+          <td class="won-neg">${num(c.ins)}</td>
+          <td class="won-neg">${num(c.tax)}</td>
+          <td>${c.otherDed>0?`<span class="won-neg">${num(c.otherDed)}</span>`:'<span style="color:var(--muted)">-</span>'}</td>
+          <td class="won-neg">${num(c.totalDed)}</td>
+          <td class="won-pos" style="font-weight:700">${num(c.net)}</td>
+          ${editable?`<td onclick="event.stopPropagation()"><button class="btn-outline btn-sm" onclick="openAdjModal('${emp.id}')">+</button>${ea.length>0?`<button class="btn-outline btn-sm" style="color:var(--danger);margin-left:4px" onclick="openAdjList('${emp.id}')">${ea.length}</button>`:''}
+          </td>`:''}
+        </tr>`).join('')}
+      </tbody>
+      <tfoot><tr class="total-row">
+        <td class="name-col" colspan="2">합계 (${emps.length}명)</td>
+        <td colspan="2"></td>
+        <td>${num(T.gross)}</td>
+        <td>${num(T.ins)}</td>
+        <td>${num(T.tax)}</td>
+        <td>${num(T.otherDed)}</td>
+        <td>${num(T.totalDed)}</td>
+        <td style="color:var(--primary)">${num(T.net)}</td>
+        ${editable?'<td></td>':''}
+      </tr></tfoot>
+    </table>
+  </div>`;
 }
 
-function changeMonth(d) {
-  currentMonth+=d;
-  if (currentMonth>12){currentMonth=1;currentYear++;}
-  if (currentMonth<1){currentMonth=12;currentYear--;}
-  renderSalaryPage();
+function openSalaryDetail(empId){
+  const y=curY,m=curM,key=mkKey(y,m);
+  const emp=state.employees.find(e=>e.id===empId);
+  const adjs=(state.adjustments[key]||[]).filter(a=>a.emp_id===empId);
+  const c=calcEmp(emp,adjs,state.rates);
+  const ratio=Math.round(c.totalDed/c.gross*100);
+  document.getElementById('modal-salary-detail-content').innerHTML=`
+    <div style="font-size:17px;font-weight:700;margin-bottom:4px">${emp.name}</div>
+    <div style="font-size:11px;color:var(--muted);margin-bottom:14px">${emp.department||''} ${emp.position||''} · ${y}년 ${m}월</div>
+    <div class="net-box"><div class="lbl">실수령액</div><div class="amt">${won(c.net)}</div></div>
+    <div class="bd-section">▸ 지급 내역</div>
+    <div class="bd-row"><span>기본급</span><span style="color:var(--primary);font-weight:600">${won(c.monthly)}</span></div>
+    ${c.adjDet.filter(a=>a.amount>0).map(a=>`<div class="bd-row"><span>${a.label}</span><span style="color:var(--success)">+${won(a.amount)}</span></div>`).join('')}
+    <div class="bd-row" style="font-weight:700"><span>지급 합계</span><span style="color:var(--primary)">${won(c.gross)}</span></div>
+    <div class="bd-section" style="color:var(--danger)">▸ 공제 내역</div>
+    <div class="bd-row"><span>국민연금 (${state.rates.np}%)</span><span class="won-neg">-${won(c.np)}</span></div>
+    <div class="bd-row"><span>건강보험 (${state.rates.hi}%)</span><span class="won-neg">-${won(c.hi)}</span></div>
+    <div class="bd-row"><span>장기요양보험 (건보×${state.rates.ltc}%)</span><span class="won-neg">-${won(c.ltc)}</span></div>
+    <div class="bd-row"><span>고용보험 (${state.rates.ei}%)</span><span class="won-neg">-${won(c.ei)}</span></div>
+    <div class="bd-row"><span>근로소득세</span><span class="won-neg">-${won(c.it)}</span></div>
+    <div class="bd-row"><span>지방소득세</span><span class="won-neg">-${won(c.lit)}</span></div>
+    ${c.adjDet.filter(a=>a.amount<0).map(a=>`<div class="bd-row"><span>${a.label}</span><span class="won-neg">-${won(Math.abs(a.amount))}</span></div>`).join('')}
+    <div class="bd-row" style="font-weight:700"><span>공제 합계</span><span class="won-neg">-${won(c.totalDed)}</span></div>
+    <div style="margin-top:10px">
+      <div style="display:flex;justify-content:space-between;font-size:11px;margin-bottom:3px"><span style="color:var(--muted)">공제율</span><span>${ratio}%</span></div>
+      <div style="height:6px;background:#e2e8f0;border-radius:3px"><div style="height:100%;width:${ratio}%;background:var(--danger);border-radius:3px"></div></div>
+    </div>`;
+  openModal('modal-salary-detail');
 }
-function closePeriod() {
-  state.periods[mkKey(currentYear,currentMonth)]={locked:true,locked_at:new Date().toISOString()};
-  save(state); renderSalaryPage(); toast(`${currentYear}년 ${currentMonth}월 마감되었습니다`);
+
+function openAdjList(empId){
+  const key=mkKey(curY,curM);
+  const empAdjs=(state.adjustments[key]||[]).filter(a=>a.emp_id===empId);
+  const emp=state.employees.find(e=>e.id===empId);
+  const editable=isEditable(curY,curM);
+  document.getElementById('modal-adj-list-content').innerHTML=`
+    <div style="font-size:17px;font-weight:700;margin-bottom:14px">${emp.name} 조정 항목</div>
+    ${empAdjs.map(a=>`<div style="display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--border)">
+      <div style="flex:1"><div>${a.type}</div>${a.note?`<div style="font-size:10px;color:var(--muted)">${a.note}</div>`:''}</div>
+      <div style="font-weight:600">${a.type==='무급휴가'?a.days+'일':won(a.amount)}</div>
+      ${editable?`<button style="background:none;border:none;color:var(--danger);cursor:pointer;font-size:17px;padding:0 4px" onclick="deleteAdj('${a.id}')">×</button>`:''}
+    </div>`).join('')}`;
+  openModal('modal-adj-list');
 }
-function reopenPeriod() {
-  state.periods[mkKey(currentYear,currentMonth)]={locked:false,reopened_at:new Date().toISOString()};
-  save(state); renderSalaryPage(); toast('마감이 해제되었습니다');
-}
+
+function changeMonth(d){curM+=d;if(curM>12){curM=1;curY++;}if(curM<1){curM=12;curY--;}renderSalary();}
+function closePeriod(){state.periods[mkKey(curY,curM)]={locked:true,locked_at:new Date().toISOString()};save(state);renderSalary();toast(`${curY}년 ${curM}월 마감되었습니다`);}
+function reopenPeriod(){state.periods[mkKey(curY,curM)]={locked:false,reopened_at:new Date().toISOString()};save(state);renderSalary();toast('마감이 해제되었습니다');}
 
 // ===== ADJUSTMENTS =====
-function onAdjTypeChange() {
-  const t=document.getElementById('adj-type').value;
-  document.getElementById('adj-days-row').style.display=t==='무급휴가'?'':'none';
-  document.getElementById('adj-amount-row').style.display=t!=='무급휴가'?'':'none';
-}
-function openAdjModal(empId) {
+function onAdjTypeChange(){const t=document.getElementById('adj-type').value;document.getElementById('adj-days-row').style.display=t==='무급휴가'?'':'none';document.getElementById('adj-amount-row').style.display=t!=='무급휴가'?'':'none';}
+function openAdjModal(empId){
   document.getElementById('adj-emp-select').innerHTML=state.employees.map(e=>`<option value="${e.id}" ${e.id===empId?'selected':''}>${e.name}</option>`).join('');
   document.getElementById('adj-edit-id').value='';
   document.getElementById('adj-type').value='무급휴가';
   document.getElementById('adj-days').value='';
   document.getElementById('adj-amount').value='';
   document.getElementById('adj-note').value='';
-  onAdjTypeChange(); openModal('modal-adj');
+  onAdjTypeChange();openModal('modal-adj');
 }
-function saveAdjustment() {
+function saveAdjustment(){
   const empId=document.getElementById('adj-emp-select').value;
   const type=document.getElementById('adj-type').value;
   const note=document.getElementById('adj-note').value.trim();
-  const key=mkKey(currentYear,currentMonth);
-  if (!state.adjustments[key]) state.adjustments[key]=[];
+  const key=mkKey(curY,curM);
+  if(!state.adjustments[key])state.adjustments[key]=[];
   let adj={id:uid(),emp_id:empId,type,note};
-  if (type==='무급휴가') {
-    const days=parseFloat(document.getElementById('adj-days').value);
-    if (!days||days<=0){toast('무급 일수를 입력하세요');return;}
-    adj.days=days;
-  } else {
-    const amount=parseInt(document.getElementById('adj-amount').value);
-    if (!amount||amount<=0){toast('금액을 입력하세요');return;}
-    adj.amount=amount;
-  }
-  const editId=document.getElementById('adj-edit-id').value;
-  if (editId){const idx=state.adjustments[key].findIndex(a=>a.id===editId);if(idx>=0)state.adjustments[key][idx]={...adj,id:editId};}
-  else state.adjustments[key].push(adj);
-  save(state); closeModal('modal-adj'); renderSalaryPage(); toast('조정 항목이 추가되었습니다');
+  if(type==='무급휴가'){const days=parseFloat(document.getElementById('adj-days').value);if(!days||days<=0){toast('무급 일수를 입력하세요');return;}adj.days=days;}
+  else{const amount=parseInt(document.getElementById('adj-amount').value);if(!amount||amount<=0){toast('금액을 입력하세요');return;}adj.amount=amount;}
+  state.adjustments[key].push(adj);
+  save(state);closeModal('modal-adj');renderSalary();toast('조정 항목이 추가되었습니다');
 }
-function showAdjList(empId) {
-  const key=mkKey(currentYear,currentMonth);
-  const empAdjs=(state.adjustments[key]||[]).filter(a=>a.emp_id===empId);
-  const emp=state.employees.find(e=>e.id===empId);
-  const editable=isEditable(currentYear,currentMonth);
-  document.getElementById('modal-detail-content').innerHTML=`
-    <div style="font-size:18px;font-weight:700;margin-bottom:16px">${emp.name} 조정 항목</div>
-    ${empAdjs.map(a=>`<div class="adj-item">
-      <div class="adj-type"><div>${a.type}</div>${a.note?`<div style="font-size:11px;color:var(--muted)">${a.note}</div>`:''}</div>
-      <div class="adj-value">${a.type==='무급휴가'?a.days+'일':won(a.amount)}</div>
-      ${editable?`<button style="background:none;border:none;color:var(--danger);cursor:pointer;font-size:18px;padding:0 4px" onclick="deleteAdj('${a.id}')">×</button>`:''}
-    </div>`).join('')}`;
-  openModal('modal-detail');
-}
-function deleteAdj(adjId) {
-  const key=mkKey(currentYear,currentMonth);
+function deleteAdj(adjId){
+  const key=mkKey(curY,curM);
   state.adjustments[key]=(state.adjustments[key]||[]).filter(a=>a.id!==adjId);
-  save(state); closeModal('modal-detail'); renderSalaryPage(); toast('삭제되었습니다');
+  save(state);closeModal('modal-adj-list');renderSalary();toast('삭제되었습니다');
 }
 
-// ===== ADJUSTMENT BULK UPLOAD =====
-const ADJ_TYPE_MAP = {
-  '무급휴가':'무급휴가','경조사비':'경조사비','식대':'식대','교통비':'교통비',
-  '기타지급':'기타지급','기타공제':'기타공제','소득세추가':'소득세추가',
-  '지방소득세추가':'지방소득세추가','소득세':'소득세추가','지방소득세':'지방소득세추가'
-};
-
-function openAdjUploadModal() {
-  document.getElementById('adj-upload-file').value='';
-  document.getElementById('adj-upload-text').value='';
-  document.getElementById('adj-upload-preview').style.display='none';
-  document.getElementById('adj-upload-apply-btn').disabled=true;
-  adjUploadRows=[];
-  openModal('modal-adj-upload');
-}
-
-function parseAdjCsv(text) {
+// ===== BULK UPLOAD =====
+const ADJ_MAP={'무급휴가':'무급휴가','경조사비':'경조사비','식대':'식대','교통비':'교통비','기타지급':'기타지급','기타공제':'기타공제','소득세추가':'소득세추가','지방소득세추가':'지방소득세추가','소득세':'소득세추가','지방소득세':'지방소득세추가'};
+function openAdjUploadModal(){document.getElementById('adj-upload-file').value='';document.getElementById('adj-upload-text').value='';document.getElementById('adj-upload-preview').style.display='none';document.getElementById('adj-upload-apply-btn').disabled=true;adjUploadRows=[];openModal('modal-adj-upload');}
+function parseAdjCsv(text){
   const lines=text.trim().split('\n').map(l=>l.trim()).filter(Boolean);
-  const rows=[];
-  const start=lines[0].includes('이름')?1:0;
-  for (let i=start;i<lines.length;i++) {
+  const rows=[];const start=lines[0].includes('이름')?1:0;
+  for(let i=start;i<lines.length;i++){
     const cols=lines[i].split(',').map(c=>c.trim().replace(/^"|"$/g,''));
-    if (cols.length<3) continue;
-    const [name, typeRaw, valRaw, note=''] = cols;
-    const type=ADJ_TYPE_MAP[typeRaw]||null;
+    if(cols.length<3)continue;
+    const[name,typeRaw,valRaw,note='']= cols;
+    const type=ADJ_MAP[typeRaw]||null;
     const emp=state.employees.find(e=>e.name===name);
     const val=parseFloat(valRaw);
-    let status='ok', error='';
-    if (!emp) { status='err'; error='직원 없음'; }
-    else if (!type) { status='err'; error='유형 불인식'; }
-    else if (isNaN(val)||val<=0) { status='err'; error='값 오류'; }
+    let status='ok',error='';
+    if(!emp){status='err';error='직원 없음';}
+    else if(!type){status='err';error='유형 불인식';}
+    else if(isNaN(val)||val<=0){status='err';error='값 오류';}
     rows.push({name,typeRaw,type,val,note,emp,status,error});
   }
   return rows;
 }
-
-function renderAdjPreview(rows) {
-  const ok=rows.filter(r=>r.status==='ok').length;
-  const err=rows.filter(r=>r.status==='err').length;
-  document.getElementById('adj-preview-table').innerHTML=`
-    <table>
-      <thead><tr><th>이름</th><th>유형</th><th>값</th><th>메모</th><th>상태</th></tr></thead>
-      <tbody>${rows.map(r=>`<tr class="row-${r.status==='ok'?'ok':'err'}">
-        <td>${r.name}</td><td>${r.typeRaw}</td><td>${r.val}</td><td>${r.note}</td>
-        <td>${r.status==='ok'?'<span class="chip chip-ok">✓ 정상</span>':`<span class="chip chip-err">✗ ${r.error}</span>`}</td>
-      </tr>`).join('')}</tbody>
-    </table>`;
+function renderAdjPreview(rows){
+  const ok=rows.filter(r=>r.status==='ok').length,err=rows.filter(r=>r.status!=='ok').length;
+  document.getElementById('adj-preview-table').innerHTML=`<table><thead><tr><th>이름</th><th>유형</th><th>값</th><th>메모</th><th>상태</th></tr></thead><tbody>${rows.map(r=>`<tr class="row-${r.status}"><td>${r.name}</td><td>${r.typeRaw}</td><td>${r.val}</td><td>${r.note}</td><td>${r.status==='ok'?'<span class="chip chip-ok">✓</span>':`<span class="chip chip-err">${r.error}</span>`}</td></tr>`).join('')}</tbody></table>`;
   document.getElementById('adj-preview-summary').innerHTML=`<span class="chip chip-ok">정상 ${ok}건</span> <span class="chip chip-err">오류 ${err}건</span>`;
   document.getElementById('adj-upload-preview').style.display='';
   document.getElementById('adj-upload-apply-btn').disabled=ok===0;
 }
-
-function onAdjTextInput() {
-  const text=document.getElementById('adj-upload-text').value;
-  if (!text.trim()) { document.getElementById('adj-upload-preview').style.display='none'; adjUploadRows=[]; return; }
-  adjUploadRows=parseAdjCsv(text);
-  renderAdjPreview(adjUploadRows);
-}
-
-function onAdjFileSelect(event) {
-  const file=event.target.files[0]; if (!file) return;
+function onAdjTextInput(){const text=document.getElementById('adj-upload-text').value;if(!text.trim()){document.getElementById('adj-upload-preview').style.display='none';adjUploadRows=[];return;}adjUploadRows=parseAdjCsv(text);renderAdjPreview(adjUploadRows);}
+function onAdjFileSelect(event){
+  const file=event.target.files[0];if(!file)return;
   const ext=file.name.split('.').pop().toLowerCase();
-  if (ext==='csv') {
-    const reader=new FileReader();
-    reader.onload=e=>{
-      document.getElementById('adj-upload-text').value=e.target.result;
-      adjUploadRows=parseAdjCsv(e.target.result);
-      renderAdjPreview(adjUploadRows);
-    };
-    reader.readAsText(file,'UTF-8');
-  } else if (['xlsx','xls'].includes(ext)) {
-    if (typeof XLSX==='undefined'){toast('Excel 파일 읽기는 인터넷 연결이 필요합니다');return;}
-    const reader=new FileReader();
-    reader.onload=e=>{
-      const wb=XLSX.read(e.target.result,{type:'array'});
-      const ws=wb.Sheets[wb.SheetNames[0]];
-      const data=XLSX.utils.sheet_to_csv(ws);
-      document.getElementById('adj-upload-text').value=data;
-      adjUploadRows=parseAdjCsv(data);
-      renderAdjPreview(adjUploadRows);
-    };
-    reader.readAsArrayBuffer(file);
-  }
+  if(ext==='csv'){const r=new FileReader();r.onload=e=>{document.getElementById('adj-upload-text').value=e.target.result;adjUploadRows=parseAdjCsv(e.target.result);renderAdjPreview(adjUploadRows);};r.readAsText(file,'UTF-8');}
+  else{if(typeof XLSX==='undefined'){toast('Excel 읽기는 인터넷 연결이 필요합니다');return;}const r=new FileReader();r.onload=e=>{const wb=XLSX.read(e.target.result,{type:'array'});const data=XLSX.utils.sheet_to_csv(wb.Sheets[wb.SheetNames[0]]);document.getElementById('adj-upload-text').value=data;adjUploadRows=parseAdjCsv(data);renderAdjPreview(adjUploadRows);};r.readAsArrayBuffer(file);}
 }
-
-function applyAdjUpload() {
-  const key=mkKey(currentYear,currentMonth);
-  if (!state.adjustments[key]) state.adjustments[key]=[];
+function applyAdjUpload(){
+  const key=mkKey(curY,curM);if(!state.adjustments[key])state.adjustments[key]=[];
   let count=0;
-  for (const r of adjUploadRows) {
-    if (r.status!=='ok') continue;
-    const adj={id:uid(),emp_id:r.emp.id,type:r.type,note:r.note};
-    if (r.type==='무급휴가') adj.days=r.val; else adj.amount=r.val;
-    state.adjustments[key].push(adj);
-    count++;
-  }
-  save(state); closeModal('modal-adj-upload'); renderSalaryPage();
-  toast(`${count}건 조정항목이 추가되었습니다`);
+  for(const r of adjUploadRows){if(r.status!=='ok')continue;const adj={id:uid(),emp_id:r.emp.id,type:r.type,note:r.note};if(r.type==='무급휴가')adj.days=r.val;else adj.amount=r.val;state.adjustments[key].push(adj);count++;}
+  save(state);closeModal('modal-adj-upload');renderSalary();toast(`${count}건 조정항목이 추가되었습니다`);
 }
 
 // ===== RETIREMENT PAGE =====
-function setRetBase(base) {
-  retBase=base;
-  document.querySelectorAll('.ret-type-btn').forEach((b,i)=>b.classList.toggle('active',(i===0&&base==='year')||(i===1&&base==='date')));
-  document.getElementById('ret-date-row').style.display=base==='date'?'':'none';
-  renderRetirementPage();
+function setRetDate(empId, val){
+  if(!state.retDates)state.retDates={};
+  state.retDates[empId]=val||'';
+  save(state);
+  // 재렌더 없이 해당 행만 갱신
+  renderRetirement();
 }
 
-function renderRetirementPage() {
-  const retireDateVal=document.getElementById('ret-date').value;
-  const retireDate=retBase==='date'&&retireDateVal?retireDateVal:null;
-  const refDate=retireDate?new Date(retireDate):new Date(new Date().getFullYear(),11,31);
+function renderRetirement(){
   const emps=state.employees.filter(e=>e.hire_date);
-  const list=document.getElementById('ret-list'), empty=document.getElementById('ret-empty'), expRow=document.getElementById('ret-export-row');
-  if (emps.length===0) { list.innerHTML=''; empty.style.display=''; expRow.style.display='none'; return; }
-  empty.style.display='none'; expRow.style.display='';
-  list.innerHTML=emps.map((emp,idx)=>{
-    const r=calcRetirement(emp,retireDate);
-    if (!r) return `<div class="ret-card"><div class="ret-header"><div class="emp-avatar" style="background:${COLORS[idx%COLORS.length]};width:36px;height:36px;font-size:14px">${emp.name[0]}</div><div><div class="emp-name">${emp.name}</div><div style="font-size:12px;color:var(--muted)">입사일 미등록 또는 재직기간 오류</div></div></div></div>`;
-    const color=COLORS[idx%COLORS.length];
-    if (!r.eligible) return `<div class="ret-card"><div class="ret-header"><div class="emp-avatar" style="background:${color};width:36px;height:36px;font-size:14px">${emp.name[0]}</div><div><div class="emp-name">${emp.name}</div><div style="font-size:12px;color:var(--muted)">재직 ${r.days}일 — 1년 미만 (퇴직금 미발생)</div></div></div></div>`;
-    return `<div class="ret-card">
-      <div class="ret-header">
-        <div class="emp-avatar" style="background:${color};width:36px;height:36px;font-size:14px">${emp.name[0]}</div>
-        <div style="flex:1">
-          <div class="emp-name">${emp.name} <span style="font-size:11px;font-weight:400;color:var(--muted)">${emp.department||''} ${emp.position||''}</span></div>
-          <div style="font-size:12px;color:var(--muted)">${fmtDate(r.hire)} → ${fmtDate(r.retire)} · ${dateDiff(r.hire,r.retire)} (${r.days}일)</div>
-        </div>
-      </div>
-      <div class="ret-amount">
-        <div class="ret-box db">
-          <div class="lbl">DB형 (확정급여)</div>
-          <div class="val">${wonShort(r.db)}</div>
-          <div style="font-size:10px;color:var(--muted);margin-top:2px">${won(r.db)}</div>
-        </div>
-        <div class="ret-box dc">
-          <div class="lbl">DC형 최소납입 합계</div>
-          <div class="val">${wonShort(r.dc)}</div>
-          <div style="font-size:10px;color:var(--muted);margin-top:2px">${won(r.dc)}</div>
-        </div>
-      </div>
-      <div style="font-size:11px;color:var(--muted);margin-top:8px">연봉 ${wonShort(emp.annual_salary)} · 월 기본급 ${wonShort(Math.round(emp.annual_salary/12))}</div>
-    </div>`;
-  }).join('');
-}
+  const wrap=document.getElementById('ret-table-wrap'),empty=document.getElementById('ret-empty'),expRow=document.getElementById('ret-export-row');
+  if(!emps.length){wrap.innerHTML='';empty.style.display='';expRow.style.display='none';return;}
+  empty.style.display='none';expRow.style.display='';
+  if(!state.retDates)state.retDates={};
 
-function exportRetirementExcel() {
-  if (typeof XLSX==='undefined'){toast('Excel 기능은 인터넷 연결이 필요합니다');return;}
-  const retireDateVal=document.getElementById('ret-date').value;
-  const retireDate=retBase==='date'&&retireDateVal?retireDateVal:null;
-  const refLabel=retireDate||`${new Date().getFullYear()}-12-31`;
-  const rows=state.employees.filter(e=>e.hire_date).map(emp=>{
-    const r=calcRetirement(emp,retireDate);
-    if (!r) return {'이름':emp.name,'부서':emp.department||'','직급':emp.position||'','입사일':emp.hire_date,'기준일':refLabel,'재직일수':'','재직기간':'','연봉':emp.annual_salary,'DB형퇴직금':'미등록','DC형납입합계':'미등록'};
-    return {
-      '이름':emp.name,'부서':emp.department||'','직급':emp.position||'',
-      '입사일':emp.hire_date,'기준일':retireDate||`${new Date().getFullYear()}-12-31`,
-      '재직일수':r.days,'재직기간':dateDiff(r.hire,r.retire),
-      '연봉':emp.annual_salary,
-      'DB형퇴직금':r.eligible?r.db:'미발생(1년미만)',
-      'DC형납입합계':r.eligible?r.dc:'미발생(1년미만)'
-    };
+  const rows=emps.map((emp,i)=>{
+    const retDateStr=state.retDates[emp.id]||'';
+    const r=calcRet(emp,retDateStr||null);
+    const rPrev=calcRetPrevYear(emp);
+    return{emp,i,r,rPrev,retDateStr};
   });
-  const ws=XLSX.utils.json_to_sheet(rows);
-  const wb=XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb,ws,'퇴직금계산');
-  XLSX.writeFile(wb,`퇴직금계산_${refLabel}.xlsx`);
-  toast('퇴직금 내역 엑셀이 다운로드되었습니다');
+
+  // totals (eligible only)
+  const eligRows=rows.filter(x=>x.r&&x.r.eligible);
+  const totDB=eligRows.reduce((s,x)=>s+x.r.db,0);
+  const totDC=eligRows.reduce((s,x)=>s+x.r.dc,0);
+  const totPrevDB=eligRows.reduce((s,x)=>s+(x.rPrev&&x.rPrev.eligible?x.rPrev.db:0),0);
+  const totPrevDC=eligRows.reduce((s,x)=>s+(x.rPrev&&x.rPrev.eligible?x.rPrev.dc:0),0);
+
+  wrap.innerHTML=`<div class="tbl-wrap"><table class="tbl ret-tbl">
+    <thead><tr>
+      <th class="name-col">이름</th>
+      <th class="lft">부서</th>
+      <th class="lft">입사일</th>
+      <th class="lft">퇴직일</th>
+      <th>재직기간</th>
+      <th>1일평균임금</th>
+      <th style="color:#1d4ed8">DB형</th>
+      <th style="color:#16a34a">DC형</th>
+      <th>DB↔DC 비교</th>
+      <th>전년말 대비</th>
+    </tr></thead>
+    <tbody>
+      ${rows.map(({emp,i,r,rPrev,retDateStr})=>{
+        if(!r)return`<tr><td class="name-col"><div style="display:flex;align-items:center;gap:7px"><div style="width:28px;height:28px;border-radius:50%;background:${COLORS[i%COLORS.length]};display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;font-size:12px">${emp.name[0]}</div>${emp.name}</div></td><td colspan="9" style="color:var(--muted);text-align:left">입사일 오류 또는 퇴직일 오류</td></tr>`;
+        if(!r.eligible)return`<tr><td class="name-col"><div style="display:flex;align-items:center;gap:7px"><div style="width:28px;height:28px;border-radius:50%;background:${COLORS[i%COLORS.length]};display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;font-size:12px">${emp.name[0]}</div>${emp.name}</div></td><td class="lft"><span class="badge-dept">${emp.department||''}</span></td><td class="lft">${emp.hire_date}</td><td class="lft"><input type="date" class="ret-date-inp" value="${retDateStr}" onchange="setRetDate('${emp.id}',this.value)"></td><td colspan="6" style="color:var(--muted)">재직 ${r.days}일 — 1년 미만 (퇴직금 미발생)</td></tr>`;
+        // DB vs DC bar
+        const mx=Math.max(r.db,r.dc);
+        const dbP=Math.round(r.db/mx*100),dcP=Math.round(r.dc/mx*100);
+        // Prev year diff
+        let diffHTML='<span style="color:var(--muted)">-</span>';
+        if(rPrev&&rPrev.eligible){
+          const diffDB=r.db-rPrev.db,diffDC=r.dc-rPrev.dc;
+          diffHTML=`<div style="font-size:11px"><div class="${diffDB>=0?'diff-pos':'diff-neg'}">DB ${diffDB>=0?'+':''}${wonS(diffDB)}</div><div class="${diffDC>=0?'diff-pos':'diff-neg'}">DC ${diffDC>=0?'+':''}${wonS(diffDC)}</div></div>`;
+        }else if(!rPrev||!rPrev.eligible){
+          diffHTML=`<span style="font-size:10px;color:var(--muted)">전년 1년미만</span>`;
+        }
+        return`<tr style="cursor:pointer" onclick="openRetDetail('${emp.id}')">
+          <td class="name-col"><div style="display:flex;align-items:center;gap:7px"><div style="width:28px;height:28px;border-radius:50%;background:${COLORS[i%COLORS.length]};display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;font-size:12px">${emp.name[0]}</div>${emp.name}</div></td>
+          <td class="lft"><span class="badge-dept">${emp.department||''}</span></td>
+          <td class="lft" style="font-size:11px">${emp.hire_date}</td>
+          <td class="lft" onclick="event.stopPropagation()"><input type="date" class="ret-date-inp" value="${retDateStr}" onchange="setRetDate('${emp.id}',this.value)"></td>
+          <td style="font-size:11px">${diffLabel(r.hire,r.retire)}<br><span style="color:var(--muted);font-size:10px">${r.days}일</span></td>
+          <td>${num(Math.round(r.avgDaily))}<span style="font-size:10px;color:var(--muted)">원/일</span></td>
+          <td style="color:#1d4ed8;font-weight:700">${wonS(r.db)}</td>
+          <td style="color:#16a34a;font-weight:700">${wonS(r.dc)}</td>
+          <td onclick="event.stopPropagation()">
+            <div class="cmp-bar">
+              <div class="cmp-bar-row"><span class="cmp-bar-lbl" style="color:#1d4ed8">DB</span><div class="cmp-bar-track"><div class="cmp-bar-fill" style="width:${dbP}%;background:#2563eb"></div></div><span class="cmp-bar-pct" style="color:#1d4ed8">${dbP}%</span></div>
+              <div class="cmp-bar-row"><span class="cmp-bar-lbl" style="color:#16a34a">DC</span><div class="cmp-bar-track"><div class="cmp-bar-fill" style="width:${dcP}%;background:#16a34a"></div></div><span class="cmp-bar-pct" style="color:#16a34a">${dcP}%</span></div>
+            </div>
+          </td>
+          <td>${diffHTML}</td>
+        </tr>`;
+      }).join('')}
+    </tbody>
+    <tfoot><tr class="total-row">
+      <td class="name-col" colspan="2">합계 (${eligRows.length}명)</td>
+      <td colspan="4"></td>
+      <td style="color:#1d4ed8">${won(totDB)}</td>
+      <td style="color:#16a34a">${won(totDC)}</td>
+      <td><div class="cmp-bar">
+        ${totDB||totDC?`
+        <div class="cmp-bar-row"><span class="cmp-bar-lbl" style="color:#1d4ed8">DB</span><div class="cmp-bar-track"><div class="cmp-bar-fill" style="width:${Math.round(totDB/Math.max(totDB,totDC)*100)}%;background:#2563eb"></div></div><span class="cmp-bar-pct" style="color:#1d4ed8">${Math.round(totDB/Math.max(totDB,totDC)*100)}%</span></div>
+        <div class="cmp-bar-row"><span class="cmp-bar-lbl" style="color:#16a34a">DC</span><div class="cmp-bar-track"><div class="cmp-bar-fill" style="width:${Math.round(totDC/Math.max(totDB,totDC)*100)}%;background:#16a34a"></div></div><span class="cmp-bar-pct" style="color:#16a34a">${Math.round(totDC/Math.max(totDB,totDC)*100)}%</span></div>`:''}
+      </div></td>
+      <td><div style="font-size:11px"><div class="${(totDB-totPrevDB)>=0?'diff-pos':'diff-neg'}">DB ${totDB-totPrevDB>=0?'+':''}${wonS(totDB-totPrevDB)}</div><div class="${(totDC-totPrevDC)>=0?'diff-pos':'diff-neg'}">DC ${totDC-totPrevDC>=0?'+':''}${wonS(totDC-totPrevDC)}</div></div></td>
+    </tr></tfoot>
+  </table></div>`;
 }
 
-// ===== RECORDS =====
-function saveAllRecords() {
-  const y=currentYear, m=currentMonth, key=mkKey(y,m);
-  const adjs=state.adjustments[key]||[];
-  if (!state.records[key]) state.records[key]=[];
-  for (const emp of state.employees) {
-    const c=calcEmployee(emp,adjs.filter(a=>a.emp_id===emp.id),state.rates);
-    const rec={emp_id:emp.id,emp_name:emp.name,dept:emp.department,...c,saved_at:new Date().toISOString()};
-    const idx=state.records[key].findIndex(r=>r.emp_id===emp.id);
-    if (idx>=0) state.records[key][idx]=rec; else state.records[key].push(rec);
-  }
-  save(state); toast(`${state.employees.length}명 급여 기록이 저장되었습니다`);
+function openRetDetail(empId){
+  const emp=state.employees.find(e=>e.id===empId);
+  if(!state.retDates)state.retDates={};
+  const retDateStr=state.retDates[empId]||'';
+  const r=calcRet(emp,retDateStr||null);
+  const rPrev=calcRetPrevYear(emp);
+  if(!r||!r.eligible){toast('퇴직금 발생 조건 미충족');return;}
+  const mx=Math.max(r.db,r.dc);
+  const dbP=Math.round(r.db/mx*100),dcP=Math.round(r.dc/mx*100);
+  document.getElementById('modal-ret-detail-content').innerHTML=`
+    <div style="font-size:17px;font-weight:700;margin-bottom:4px">${emp.name} 퇴직금 상세</div>
+    <div style="font-size:11px;color:var(--muted);margin-bottom:14px">${emp.department||''} ${emp.position||''}</div>
+    <div style="background:#f8fafc;border-radius:10px;padding:12px;margin-bottom:14px;font-size:12px">
+      <div class="bd-section" style="padding-top:0">📐 평균임금 산정</div>
+      <div class="bd-row"><span>연봉</span><span>${won(emp.annual_salary)}</span></div>
+      <div class="bd-row"><span>퇴직전 3개월 임금 (연봉÷4)</span><span>${won(r.monthly3)}</span></div>
+      <div class="bd-row"><span>3개월 일수</span><span>91일</span></div>
+      <div class="bd-row" style="font-weight:700"><span>1일 평균임금</span><span style="color:var(--primary)">${won(Math.round(r.avgDaily))}/일</span></div>
+      <div class="bd-row"><span>입사일 → 퇴직일</span><span>${fmtDate(r.hire)} → ${fmtDate(r.retire)}</span></div>
+      <div class="bd-row"><span>재직일수</span><span>${r.days}일 (${diffLabel(r.hire,r.retire)})</span></div>
+    </div>
+    <div style="background:#eff6ff;border-radius:10px;padding:12px;margin-bottom:10px;font-size:12px">
+      <div class="bd-section" style="padding-top:0;color:#1d4ed8">🔵 DB형 (확정급여)</div>
+      <div class="bd-row"><span>계산식</span><span style="font-size:11px">${num(Math.round(r.avgDaily))}원 × 30일 × ${r.days}일÷365</span></div>
+      <div class="bd-row" style="font-weight:700"><span>DB형 퇴직금</span><span style="color:#1d4ed8;font-size:16px">${won(r.db)}</span></div>
+    </div>
+    <div style="background:#f0fdf4;border-radius:10px;padding:12px;margin-bottom:14px;font-size:12px">
+      <div class="bd-section" style="padding-top:0;color:#16a34a">🟢 DC형 (확정기여 최소)</div>
+      <div class="bd-row"><span>계산식</span><span style="font-size:11px">${num(Math.round(emp.annual_salary/12))}원/월 × ${r.years.toFixed(2)}년</span></div>
+      <div class="bd-row" style="font-weight:700"><span>DC형 최소납입 합계</span><span style="color:#16a34a;font-size:16px">${won(r.dc)}</span></div>
+    </div>
+    <div style="margin-bottom:14px">
+      <div class="form-label mb-2">DB ↔ DC 비교 (100% 기준)</div>
+      <div class="cmp-bar" style="gap:6px">
+        <div class="cmp-bar-row" style="font-size:12px"><span class="cmp-bar-lbl" style="color:#1d4ed8;width:28px">DB</span><div class="cmp-bar-track" style="height:10px"><div class="cmp-bar-fill" style="width:${dbP}%;background:#2563eb;height:100%"></div></div><span class="cmp-bar-pct" style="color:#1d4ed8;font-size:12px;width:50px">${dbP}% (${wonS(r.db)})</span></div>
+        <div class="cmp-bar-row" style="font-size:12px"><span class="cmp-bar-lbl" style="color:#16a34a;width:28px">DC</span><div class="cmp-bar-track" style="height:10px"><div class="cmp-bar-fill" style="width:${dcP}%;background:#16a34a;height:100%"></div></div><span class="cmp-bar-pct" style="color:#16a34a;font-size:12px;width:50px">${dcP}% (${wonS(r.dc)})</span></div>
+      </div>
+    </div>
+    ${rPrev&&rPrev.eligible?`<div style="background:#fef9c3;border-radius:10px;padding:12px;font-size:12px">
+      <div class="bd-section" style="padding-top:0;color:#854d0e">📈 전년말(${curY-1}.12.31) 대비 증감</div>
+      <div class="bd-row"><span>전년말 DB형</span><span>${won(rPrev.db)}</span></div>
+      <div class="bd-row" style="font-weight:700"><span>DB형 증가액</span><span class="${r.db-rPrev.db>=0?'diff-pos':'diff-neg'}">${r.db-rPrev.db>=0?'+':''}${won(r.db-rPrev.db)}</span></div>
+      <div class="bd-row"><span>전년말 DC형</span><span>${won(rPrev.dc)}</span></div>
+      <div class="bd-row" style="font-weight:700"><span>DC형 증가액</span><span class="${r.dc-rPrev.dc>=0?'diff-pos':'diff-neg'}">${r.dc-rPrev.dc>=0?'+':''}${won(r.dc-rPrev.dc)}</span></div>
+    </div>`:''}`;
+  openModal('modal-ret-detail');
 }
 
-// ===== SETTINGS PAGE =====
-function renderSettingsPage() {
-  const list=document.getElementById('history-list'), empty=document.getElementById('history-empty');
-  const keys=Object.keys(state.records).sort().reverse();
-  if (keys.length===0){list.style.display='none';empty.style.display='';}
-  else {
-    list.style.display='';empty.style.display='none';
-    list.innerHTML=keys.map(k=>{
-      const recs=state.records[k];
-      const total=recs.reduce((s,r)=>s+(r.net||0),0);
-      return `<div class="history-item"><div><div style="font-weight:600">${k.replace('-','년 ')}월</div><div style="font-size:11px;color:var(--muted)">${recs.length}명</div></div><div style="text-align:right"><div class="won" style="font-size:13px">${won(total)}</div><div style="font-size:11px;color:var(--muted)">실수령 합계</div></div></div>`;
-    }).join('');
-  }
-  const r=state.rates;
-  document.getElementById('rates-display').innerHTML=`
-    <div class="rate-row"><span>국민연금 (근로자)</span><span>${r.np}%</span></div>
-    <div class="rate-row"><span>건강보험 (근로자)</span><span>${r.hi}%</span></div>
-    <div class="rate-row"><span>장기요양보험</span><span>건강보험의 ${r.ltc}%</span></div>
-    <div class="rate-row"><span>고용보험 (근로자)</span><span>${r.ei}%</span></div>
-    <div class="rate-row"><span>국민연금 상한액</span><span>${(r.np_max/10000).toFixed(0)}만원/월</span></div>
-    <div class="mt-3"><button class="btn-outline btn-sm" onclick="openRatesModal()">요율 수정</button></div>`;
-}
-function openRatesModal() {
-  document.getElementById('rate-np').value=state.rates.np;
-  document.getElementById('rate-hi').value=state.rates.hi;
-  document.getElementById('rate-ltc').value=state.rates.ltc;
-  document.getElementById('rate-ei').value=state.rates.ei;
-  openModal('modal-rates');
-}
-function saveRates() {
-  state.rates={np:parseFloat(document.getElementById('rate-np').value)||DEFAULT_RATES.np,hi:parseFloat(document.getElementById('rate-hi').value)||DEFAULT_RATES.hi,ltc:parseFloat(document.getElementById('rate-ltc').value)||DEFAULT_RATES.ltc,ei:parseFloat(document.getElementById('rate-ei').value)||DEFAULT_RATES.ei,np_max:state.rates.np_max||DEFAULT_RATES.np_max};
-  save(state); closeModal('modal-rates'); renderSettingsPage(); toast('보험료율이 수정되었습니다');
-}
-
-// ===== EXCEL (SALARY) =====
-function exportExcel() {
-  if (typeof XLSX==='undefined'){toast('Excel 기능은 인터넷 연결이 필요합니다');return;}
-  const y=currentYear,m=currentMonth,key=mkKey(y,m),adjs=state.adjustments[key]||[];
-  const rows=state.employees.map(emp=>{
-    const c=calcEmployee(emp,adjs.filter(a=>a.emp_id===emp.id),state.rates);
-    return {'이름':emp.name,'부서':emp.department||'','직급':emp.position||'','연봉':emp.annual_salary,'기본급':c.monthly,'기타지급':c.otherAdd,'지급합계':c.gross,'국민연금':c.np,'건강보험':c.hi,'장기요양':c.ltc,'고용보험':c.ei,'근로소득세':c.it,'지방소득세':c.lit,'기타공제':c.otherDed,'공제합계':c.totalDed,'실수령액':c.net};
-  });
-  const ws=XLSX.utils.json_to_sheet(rows), wb=XLSX.utils.book_new();
+// ===== EXCEL EXPORTS =====
+function exportSalaryExcel(){
+  if(typeof XLSX==='undefined'){toast('Excel 기능은 인터넷 연결이 필요합니다');return;}
+  const y=curY,m=curM,key=mkKey(y,m),adjs=state.adjustments[key]||[];
+  const rows=state.employees.map(emp=>{const c=calcEmp(emp,adjs.filter(a=>a.emp_id===emp.id),state.rates);return{'이름':emp.name,'부서':emp.department||'','직급':emp.position||'','연봉':emp.annual_salary,'기본급':c.monthly,'기타지급':c.otherAdd,'지급합계':c.gross,'국민연금':c.np,'건강보험':c.hi,'장기요양':c.ltc,'고용보험':c.ei,'근로소득세':c.it,'지방소득세':c.lit,'기타공제':c.otherDed,'공제합계':c.totalDed,'실수령액':c.net};});
+  const ws=XLSX.utils.json_to_sheet(rows),wb=XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb,ws,`${y}년${m}월`);
   XLSX.writeFile(wb,`급여명세_${y}년${m}월.xlsx`);
   toast('엑셀 파일이 다운로드되었습니다');
 }
 
-// ===== DEMO DATA =====
-function showDemoSeeder() {
-  if (state.employees.length>0&&!confirm('기존 직원을 유지하고 데모 직원을 추가할까요?')) return;
-  const now=new Date(), y=now.getFullYear(), m=now.getMonth()+1;
+function exportRetirementExcel(){
+  if(typeof XLSX==='undefined'){toast('Excel 기능은 인터넷 연결이 필요합니다');return;}
+  if(!state.retDates)state.retDates={};
+  const rows=state.employees.filter(e=>e.hire_date).map(emp=>{
+    const retDateStr=state.retDates[emp.id]||'';
+    const r=calcRet(emp,retDateStr||null),rPrev=calcRetPrevYear(emp);
+    if(!r)return{'이름':emp.name,'부서':emp.department||'','직급':emp.position||'','입사일':emp.hire_date,'퇴직기준일':'오류','재직일수':'','재직기간':'','연봉':emp.annual_salary,'1일평균임금':'','DB형퇴직금':'오류','DC형납입합계':'오류','DB전년대비':'','DC전년대비':''};
+    return{'이름':emp.name,'부서':emp.department||'','직급':emp.position||'','입사일':emp.hire_date,'퇴직기준일':fmtDate(r.retire),'재직일수':r.days,'재직기간':diffLabel(r.hire,r.retire),'연봉':emp.annual_salary,'1일평균임금':Math.round(r.avgDaily),'DB형퇴직금':r.eligible?r.db:'미발생','DC형납입합계':r.eligible?r.dc:'미발생','DB전년대비':rPrev&&rPrev.eligible&&r.eligible?r.db-rPrev.db:'','DC전년대비':rPrev&&rPrev.eligible&&r.eligible?r.dc-rPrev.dc:''};
+  });
+  const ws=XLSX.utils.json_to_sheet(rows),wb=XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb,ws,'퇴직금계산');
+  XLSX.writeFile(wb,`퇴직금계산_${new Date().toISOString().slice(0,10)}.xlsx`);
+  toast('퇴직금 내역 엑셀이 다운로드되었습니다');
+}
+
+// ===== RECORDS =====
+function saveAllRecords(){
+  const y=curY,m=curM,key=mkKey(y,m),adjs=state.adjustments[key]||[];
+  if(!state.records[key])state.records[key]=[];
+  for(const emp of state.employees){
+    const c=calcEmp(emp,adjs.filter(a=>a.emp_id===emp.id),state.rates);
+    const rec={emp_id:emp.id,emp_name:emp.name,dept:emp.department,...c,saved_at:new Date().toISOString()};
+    const idx=state.records[key].findIndex(r=>r.emp_id===emp.id);
+    if(idx>=0)state.records[key][idx]=rec;else state.records[key].push(rec);
+  }
+  save(state);toast(`${state.employees.length}명 급여 기록이 저장되었습니다`);
+}
+
+// ===== SETTINGS =====
+function renderSettings(){
+  const list=document.getElementById('history-list'),empty=document.getElementById('history-empty');
+  const keys=Object.keys(state.records).sort().reverse();
+  if(!keys.length){list.style.display='none';empty.style.display='';}
+  else{list.style.display='';empty.style.display='none';list.innerHTML=keys.map(k=>{const recs=state.records[k];const total=recs.reduce((s,r)=>s+(r.net||0),0);return`<div class="history-item"><div><div style="font-weight:600">${k.replace('-','년 ')}월</div><div style="font-size:11px;color:var(--muted)">${recs.length}명</div></div><div style="text-align:right"><div style="font-weight:700;color:var(--primary);font-size:12px">${won(total)}</div><div style="font-size:10px;color:var(--muted)">실수령 합계</div></div></div>`;}).join('');}
+  const r=state.rates;
+  document.getElementById('rates-display').innerHTML=`
+    <div class="rate-row"><span>국민연금</span><span>${r.np}%</span></div>
+    <div class="rate-row"><span>건강보험</span><span>${r.hi}%</span></div>
+    <div class="rate-row"><span>장기요양</span><span>건보×${r.ltc}%</span></div>
+    <div class="rate-row"><span>고용보험</span><span>${r.ei}%</span></div>
+    <div class="rate-row"><span>국민연금 상한</span><span>${(r.np_max/10000).toFixed(0)}만원/월</span></div>
+    <div class="mt-2"><button class="btn-outline btn-sm" onclick="openRatesModal()">요율 수정</button></div>`;
+}
+function openRatesModal(){document.getElementById('rate-np').value=state.rates.np;document.getElementById('rate-hi').value=state.rates.hi;document.getElementById('rate-ltc').value=state.rates.ltc;document.getElementById('rate-ei').value=state.rates.ei;openModal('modal-rates');}
+function saveRates(){state.rates={np:parseFloat(document.getElementById('rate-np').value)||DEFAULT_RATES.np,hi:parseFloat(document.getElementById('rate-hi').value)||DEFAULT_RATES.hi,ltc:parseFloat(document.getElementById('rate-ltc').value)||DEFAULT_RATES.ltc,ei:parseFloat(document.getElementById('rate-ei').value)||DEFAULT_RATES.ei,np_max:state.rates.np_max||DEFAULT_RATES.np_max};save(state);closeModal('modal-rates');renderSettings();toast('보험료율이 수정되었습니다');}
+
+// ===== DEMO =====
+function showDemoSeeder(){
+  if(state.employees.length>0&&!confirm('기존 직원을 유지하고 데모 직원을 추가할까요?'))return;
+  const now=new Date(),y=now.getFullYear(),m=now.getMonth()+1;
   const demoEmps=[
     {name:'김민준',department:'개발팀',position:'팀장',annual_salary:72000000,hire_date:'2018-03-02'},
     {name:'이서연',department:'개발팀',position:'선임',annual_salary:54000000,hire_date:'2020-07-01'},
@@ -867,9 +852,8 @@ function showDemoSeeder() {
     {name:'오세진',department:'재무팀',position:'과장',annual_salary:50000000,hire_date:'2017-08-14'}
   ];
   const ids=[];
-  for (const d of demoEmps){const id=uid();ids.push(id);state.employees.push({id,...d});}
-  const key=mkKey(y,m);
-  if (!state.adjustments[key]) state.adjustments[key]=[];
+  for(const d of demoEmps){const id=uid();ids.push(id);state.employees.push({id,...d});}
+  const key=mkKey(y,m);if(!state.adjustments[key])state.adjustments[key]=[];
   state.adjustments[key].push(
     {id:uid(),emp_id:ids[1],type:'무급휴가',days:2,note:'개인사유'},
     {id:uid(),emp_id:ids[3],type:'경조사비',amount:100000,note:'결혼'},
@@ -877,22 +861,18 @@ function showDemoSeeder() {
     {id:uid(),emp_id:ids[6],type:'식대',amount:100000,note:''},
     {id:uid(),emp_id:ids[2],type:'교통비',amount:50000,note:''}
   );
-  save(state); renderEmployees(); toast('데모 직원 10명이 추가되었습니다');
+  save(state);renderEmployees();toast('데모 직원 10명이 추가되었습니다');
 }
 
 // ===== MODAL =====
 function openModal(id){document.getElementById(id).classList.add('open');}
 function closeModal(id){document.getElementById(id).classList.remove('open');}
-document.querySelectorAll('.modal-overlay').forEach(m=>{
-  m.addEventListener('click',e=>{if(e.target===m)m.classList.remove('open');});
-});
-
-// ===== TOAST =====
+document.querySelectorAll('.modal-overlay').forEach(m=>{m.addEventListener('click',e=>{if(e.target===m)m.classList.remove('open');});});
 function toast(msg){const el=document.getElementById('toast');el.textContent=msg;el.classList.add('show');setTimeout(()=>el.classList.remove('show'),2500);}
 
 // ===== INIT =====
 renderEmployees();
-renderSalaryPage();
+renderSalary();
 </script>
 </body>
 </html>
