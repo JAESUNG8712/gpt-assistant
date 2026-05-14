@@ -138,7 +138,7 @@ body{font-family:-apple-system,'Noto Sans KR',sans-serif;background:var(--bg);fo
     <strong style="color:#334155">평균임금 산정 방식</strong><br>
     퇴직 전 3개월 각 월의 실제 임금 합계 ÷ 해당 3개월 실제 일수 = <strong>1일 평균임금</strong><br>
     <span style="color:#1d4ed8">DB형</span> = 1일 평균임금 × 30일 × 재직일수÷365 &nbsp;|&nbsp;
-    <span style="color:#16a34a">DC형</span> = 월기본급(연봉÷12) × 재직연수 (최소 법정 납입 기준)
+    <span style="color:#16a34a">DC형</span> = 연도별 해당 연봉÷12 × 근무일수÷연도일수 합산 (연봉 이력 반영)
   </div>
   <div id="ret-table-wrap"></div>
   <div id="ret-empty" class="empty-state" style="display:none"><div class="empty-state-icon">🏦</div><div>입사일이 등록된 직원이 없습니다</div></div>
@@ -194,6 +194,12 @@ body{font-family:-apple-system,'Noto Sans KR',sans-serif;background:var(--bg);fo
         <span style="font-size:12px;color:var(--muted);white-space:nowrap">시간/주 (주 52h 한도)</span>
       </div>
       <div style="font-size:11px;color:var(--muted);margin-top:4px">주 40h 소정근로 + 주 연장근로시간 → 포괄임금 분해에 사용</div>
+    </div>
+    <div class="mb-3">
+      <div class="form-label">연봉 이력 <span style="font-size:11px;font-weight:400;color:var(--muted)">(DC형 퇴직금 연도별 계산용)</span></div>
+      <div id="salary-history-list" style="margin-bottom:6px"></div>
+      <button type="button" class="btn-outline btn-sm" onclick="addSalaryHistoryRow()">+ 연도 추가</button>
+      <div style="font-size:10px;color:var(--muted);margin-top:4px">이전 연도의 연봉을 추가하면 해당 기간에 반영됩니다. 입력 없으면 현재 연봉이 전 기간 적용됩니다.</div>
     </div>
     <div class="d-flex gap-2 mt-3">
       <button class="btn-outline" style="flex:1" onclick="closeModal('modal-emp')">취소</button>
@@ -313,6 +319,7 @@ let state=load();
 let curY=new Date().getFullYear(), curM=new Date().getMonth()+1;
 let curPage='employees';
 let adjUploadRows=[];
+let tempSalaryHistory=[];
 
 // ===== FORMAT =====
 function won(n){if(n==null)return'-';return(n<0?'-':'')+Math.abs(Math.round(n)).toLocaleString('ko-KR')+'원';}
@@ -389,6 +396,51 @@ function saveOTHours(empId, val) {
   renderSalary();
 }
 
+// ===== SALARY HISTORY (DC용) =====
+function renderSalaryHistoryList(){
+  const c=document.getElementById('salary-history-list');if(!c)return;
+  if(!tempSalaryHistory.length){c.innerHTML='<div style="font-size:11px;color:var(--muted);padding:3px 0">이력 없음 — 현재 연봉이 전 기간 적용</div>';return;}
+  c.innerHTML=tempSalaryHistory.map((h,i)=>`<div style="display:flex;align-items:center;gap:6px;margin-bottom:6px">
+    <input type="number" class="form-control" style="width:78px;padding:6px 8px;font-size:12px" value="${h.year}" placeholder="연도" min="1990" max="2099" onchange="tempSalaryHistory[${i}].year=parseInt(this.value)||0">
+    <span style="font-size:12px;color:var(--muted)">년</span>
+    <input type="number" class="form-control" style="flex:1;padding:6px 8px;font-size:12px" value="${h.annual_salary}" placeholder="연봉 (원)" onchange="tempSalaryHistory[${i}].annual_salary=parseInt(this.value)||0">
+    <button class="btn-danger btn-sm" style="padding:4px 8px;flex-shrink:0" onclick="removeSalaryHistoryRow(${i})">✕</button>
+  </div>`).join('');
+}
+function addSalaryHistoryRow(){
+  tempSalaryHistory.push({year:new Date().getFullYear()-1,annual_salary:0});
+  renderSalaryHistoryList();
+}
+function removeSalaryHistoryRow(i){
+  tempSalaryHistory.splice(i,1);
+  renderSalaryHistoryList();
+}
+function getSalaryForYear(emp, year){
+  const curYear=new Date().getFullYear();
+  const entries=[...(emp.salary_history||[]),{year:curYear,annual_salary:emp.annual_salary}]
+    .sort((a,b)=>a.year-b.year);
+  let salary=emp.annual_salary;
+  for(const h of entries){if(h.year<=year)salary=h.annual_salary;}
+  return salary;
+}
+function calcDCYearly(emp, hire, retire){
+  const hireYear=hire.getFullYear(), retireYear=retire.getFullYear();
+  const breakdown=[];let total=0;
+  for(let year=hireYear;year<=retireYear;year++){
+    const ps=year===hireYear?hire:new Date(year,0,1);
+    const pe=year===retireYear?retire:new Date(year+1,0,1);
+    if(pe<=ps)continue;
+    const daysInPeriod=Math.floor((pe-ps)/86400000);
+    const isLeap=(year%4===0&&year%100!==0)||year%400===0;
+    const daysInYear=isLeap?366:365;
+    const annualSalary=getSalaryForYear(emp,year);
+    const contribution=Math.round(annualSalary/12*daysInPeriod/daysInYear);
+    breakdown.push({year,annualSalary,daysInPeriod,daysInYear,contribution});
+    total+=contribution;
+  }
+  return{total,breakdown};
+}
+
 // ===== RETIREMENT CALC =====
 function subtractMonths(date, months){
   const d=new Date(date);
@@ -428,8 +480,9 @@ function calcRet(emp, retDateStr){
   const wb=calcAvgWageBreakdown(emp,retire);
   const avgDaily=wb.avgDaily;
   const db=Math.round(avgDaily*30*days/365);
-  const dc=Math.round(emp.annual_salary/12*years);
-  return{days,years,eligible:years>=1,avgDaily,db,dc,hire,retire,wb};
+  const dcResult=calcDCYearly(emp,hire,retire);
+  const dc=dcResult.total;
+  return{days,years,eligible:years>=1,avgDaily,db,dc,hire,retire,wb,dcBreakdown:dcResult.breakdown};
 }
 function calcRetPrevYear(emp){
   if(!emp.hire_date)return null;
@@ -480,6 +533,7 @@ function openAddModal(){
   ['edit-emp-id','inp-name','inp-dept','inp-position','inp-salary','inp-hire-date'].forEach(id=>document.getElementById(id).value='');
   document.getElementById('inp-overtime').value='12';
   document.getElementById('edit-emp-delete').style.display='none';
+  tempSalaryHistory=[];renderSalaryHistoryList();
   openModal('modal-emp');
 }
 function openEditEmp(id){
@@ -493,6 +547,7 @@ function openEditEmp(id){
   document.getElementById('inp-hire-date').value=e.hire_date||'';
   document.getElementById('inp-overtime').value=e.overtime_weekly!==undefined?e.overtime_weekly:12;
   document.getElementById('edit-emp-delete').style.display='';
+  tempSalaryHistory=(e.salary_history||[]).map(h=>({...h}));renderSalaryHistoryList();
   openModal('modal-emp');
 }
 function saveEmployee(){
@@ -502,7 +557,8 @@ function saveEmployee(){
   if(!name){toast('이름을 입력하세요');return;}
   if(!salary||salary<1000000){toast('올바른 연봉을 입력하세요');return;}
   const ot=parseInt(document.getElementById('inp-overtime').value);
-  const d={name,department:document.getElementById('inp-dept').value.trim(),position:document.getElementById('inp-position').value.trim(),annual_salary:salary,hire_date:document.getElementById('inp-hire-date').value||'',overtime_weekly:isNaN(ot)?12:Math.min(52,Math.max(0,ot))};
+  const salaryHistory=tempSalaryHistory.filter(h=>h.year>0&&h.annual_salary>0).sort((a,b)=>a.year-b.year);
+  const d={name,department:document.getElementById('inp-dept').value.trim(),position:document.getElementById('inp-position').value.trim(),annual_salary:salary,hire_date:document.getElementById('inp-hire-date').value||'',overtime_weekly:isNaN(ot)?12:Math.min(52,Math.max(0,ot)),salary_history:salaryHistory};
   if(id)Object.assign(state.employees.find(x=>x.id===id),d);
   else state.employees.push({id:uid(),...d});
   save(state);closeModal('modal-emp');renderEmployees();toast(id?'수정되었습니다':'추가되었습니다');
@@ -892,8 +948,25 @@ function openRetDetail(empId){
       <div class="bd-row" style="font-weight:700"><span>DB형 퇴직금</span><span style="color:#1d4ed8;font-size:16px">${won(r.db)}</span></div>
     </div>
     <div style="background:#f0fdf4;border-radius:10px;padding:12px;margin-bottom:14px;font-size:12px">
-      <div class="bd-section" style="padding-top:0;color:#16a34a">🟢 DC형 (확정기여 최소)</div>
-      <div class="bd-row"><span>계산식</span><span style="font-size:11px">${num(Math.round(emp.annual_salary/12))}원/월 × ${r.years.toFixed(2)}년</span></div>
+      <div class="bd-section" style="padding-top:0;color:#16a34a">🟢 DC형 (확정기여 — 연도별 적립)</div>
+      <table style="width:100%;border-collapse:collapse;margin:6px 0 4px;font-size:11px">
+        <thead><tr style="background:#dcfce7;text-align:center">
+          <th style="padding:3px 4px">연도</th>
+          <th style="padding:3px 4px">연봉</th>
+          <th style="padding:3px 4px">근무일수</th>
+          <th style="padding:3px 4px">적립액</th>
+        </tr></thead>
+        <tbody>${r.dcBreakdown.map(b=>`<tr style="text-align:center;border-bottom:1px solid #bbf7d0">
+          <td style="padding:3px 4px">${b.year}년</td>
+          <td style="padding:3px 4px">${wonS(b.annualSalary)}</td>
+          <td style="padding:3px 4px">${b.daysInPeriod}/${b.daysInYear}일</td>
+          <td style="padding:3px 4px">${won(b.contribution)}</td>
+        </tr>`).join('')}
+        <tr style="font-weight:700;background:#f0fdf4;text-align:center">
+          <td colspan="3" style="padding:3px 4px">합계</td>
+          <td style="padding:3px 4px">${won(r.dc)}</td>
+        </tr></tbody>
+      </table>
       <div class="bd-row" style="font-weight:700"><span>DC형 최소납입 합계</span><span style="color:#16a34a;font-size:16px">${won(r.dc)}</span></div>
     </div>
     <div style="margin-bottom:14px">
