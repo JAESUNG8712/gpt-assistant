@@ -149,7 +149,17 @@ body{font-family:-apple-system,'Noto Sans KR',sans-serif;background:var(--bg);fo
 
 <!-- ===== PAGE: 기록/설정 ===== -->
 <div id="page-settings" class="page px-3 pt-3">
-  <div class="section-title" style="margin-top:0">저장된 급여 기록</div>
+  <div class="section-title" style="margin-top:0">데이터 백업 / 복원</div>
+  <div class="card card-body mb-2" style="font-size:12px;color:var(--muted);padding:10px 14px">
+    모든 직원·급여·퇴직금 데이터를 <strong style="color:#334155">.json 파일</strong>로 PC에 저장하거나 불러옵니다.<br>
+    브라우저 캐시와 무관하게 파일로 관리하므로 데이터 분실 걱정이 없습니다.
+  </div>
+  <div style="display:flex;gap:10px;margin-bottom:14px">
+    <button class="btn-primary" style="flex:1;background:#1d4ed8" onclick="exportDataJSON()">💾 데이터 내보내기 (저장)</button>
+    <button class="btn-outline" style="flex:1;color:#1d4ed8;border-color:#1d4ed8" onclick="document.getElementById('import-json-file').click()">📂 데이터 불러오기 (복원)</button>
+  </div>
+  <input type="file" id="import-json-file" accept=".json" style="display:none" onchange="importDataJSON(event)">
+  <div class="section-title mt-1">저장된 급여 기록</div>
   <div id="history-list" class="card"></div>
   <div id="history-empty" class="empty-state" style="display:none"><div class="empty-state-icon">📚</div><div>저장된 기록이 없습니다</div></div>
   <div class="section-title mt-3">보험료율 설정</div>
@@ -1023,6 +1033,38 @@ function saveAllRecords(){
     if(idx>=0)state.records[key][idx]=rec;else state.records[key].push(rec);
   }
   save(state);toast(`${state.employees.length}명 급여 기록이 저장되었습니다`);
+}
+
+// ===== DATA BACKUP / RESTORE =====
+function exportDataJSON(){
+  const date=new Date().toISOString().slice(0,10);
+  const empCount=state.employees.length;
+  const json=JSON.stringify(state,null,2);
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(new Blob([json],{type:'application/json;charset=utf-8;'}));
+  a.download=`급여데이터_${date}.json`;
+  a.click();
+  toast(`데이터가 저장되었습니다 (직원 ${empCount}명)`);
+}
+function importDataJSON(event){
+  const file=event.target.files[0];
+  event.target.value='';
+  if(!file)return;
+  const reader=new FileReader();
+  reader.onload=e=>{
+    try{
+      const loaded=JSON.parse(e.target.result);
+      if(!loaded.employees||!Array.isArray(loaded.employees)){toast('올바른 데이터 파일이 아닙니다');return;}
+      if(!confirm(`직원 ${loaded.employees.length}명 포함 데이터를 불러옵니다.\n현재 데이터는 덮어씌워집니다. 계속하시겠습니까?`))return;
+      state=loaded;
+      if(!state.rates)state.rates={...DEFAULT_RATES};
+      if(!state.retDates)state.retDates={};
+      save(state);
+      renderEmployees();renderSettings();
+      toast(`데이터를 불러왔습니다 (직원 ${state.employees.length}명)`);
+    }catch{toast('파일을 읽는 중 오류가 발생했습니다');}
+  };
+  reader.readAsText(file,'UTF-8');
 }
 
 // ===== SETTINGS =====
