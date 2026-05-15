@@ -108,7 +108,10 @@ body{font-family:-apple-system,'Noto Sans KR',sans-serif;background:var(--bg);fo
 <div id="page-employees" class="page active px-3 pt-3">
   <div class="d-flex justify-content-between align-items-center mb-2">
     <div class="section-title" style="margin:0">직원 목록 (<span id="emp-count">0</span>명)</div>
-    <button class="btn-outline btn-sm" onclick="showDemoSeeder()">📋 데모 데이터</button>
+    <div style="display:flex;gap:6px">
+      <button class="btn-outline btn-sm" onclick="openEmpUploadModal()">📤 일괄등록</button>
+      <button class="btn-outline btn-sm" onclick="showDemoSeeder()">📋 데모</button>
+    </div>
   </div>
   <div id="emp-list" class="card"></div>
   <div id="emp-empty" class="empty-state"><div class="empty-state-icon">👥</div><div>등록된 직원이 없습니다</div><div style="font-size:11px;margin-top:5px">+ 버튼 또는 데모 데이터를 불러오세요</div></div>
@@ -299,6 +302,30 @@ body{font-family:-apple-system,'Noto Sans KR',sans-serif;background:var(--bg);fo
   </div>
 </div>
 
+<!-- 직원 일괄 등록 -->
+<div class="modal-overlay" id="modal-emp-upload">
+  <div class="modal-sheet">
+    <div class="modal-handle"></div>
+    <div style="font-size:17px;font-weight:700;margin-bottom:6px">직원 일괄 등록</div>
+    <div style="font-size:11px;color:var(--muted);margin-bottom:10px">
+      <code style="font-size:10px">이름, 부서, 직급, 연봉, 입사일, 주연장시간(h), 조정유형, 조정값, 조정메모</code><br>
+      연봉이 있으면 직원 생성/수정 &nbsp;|&nbsp; 조정유형이 있으면 이번 달 급여항목도 함께 추가
+    </div>
+    <button class="btn-outline btn-sm" style="margin-bottom:14px;width:100%" onclick="downloadEmpTemplate()">📥 양식 다운로드 (CSV)</button>
+    <div class="mb-3"><div class="form-label">파일 선택 (CSV / Excel)</div><input type="file" class="form-control" id="emp-upload-file" accept=".csv,.xlsx,.xls" onchange="onEmpFileSelect(event)"></div>
+    <div class="mb-3"><div class="form-label">텍스트 직접 입력</div><textarea class="form-control" id="emp-upload-text" rows="5" placeholder="이름,부서,직급,연봉,입사일,주연장시간(h),조정유형,조정값,조정메모&#10;김민준,개발팀,팀장,72000000,2018-03-02,12,식대,100000,월정액&#10;이서연,개발팀,선임,54000000,2020-07-01,10,,," oninput="onEmpTextInput()"></textarea></div>
+    <div id="emp-upload-preview" style="display:none;margin-bottom:12px">
+      <div class="form-label">미리보기</div>
+      <div class="up-preview" id="emp-preview-table"></div>
+      <div id="emp-preview-summary" style="font-size:11px;margin-top:5px"></div>
+    </div>
+    <div class="d-flex gap-2">
+      <button class="btn-outline" style="flex:1" onclick="closeModal('modal-emp-upload')">취소</button>
+      <button class="btn-primary" style="flex:1" id="emp-upload-apply-btn" disabled onclick="applyEmpUpload()">적용</button>
+    </div>
+  </div>
+</div>
+
 <!-- 요율 수정 -->
 <div class="modal-overlay" id="modal-rates">
   <div class="modal-sheet">
@@ -330,6 +357,7 @@ let curY=new Date().getFullYear(), curM=new Date().getMonth()+1;
 let curPage='employees';
 let adjUploadRows=[];
 let tempSalaryHistory=[];
+let empUploadRows=[];
 
 // ===== FORMAT =====
 function won(n){if(n==null)return'-';return(n<0?'-':'')+Math.abs(Math.round(n)).toLocaleString('ko-KR')+'원';}
@@ -819,6 +847,94 @@ function applyAdjUpload(){
   let count=0;
   for(const r of adjUploadRows){if(r.status!=='ok')continue;const adj={id:uid(),emp_id:r.emp.id,type:r.type,note:r.note};if(r.type==='무급휴가')adj.days=r.val;else adj.amount=r.val;state.adjustments[key].push(adj);count++;}
   save(state);closeModal('modal-adj-upload');renderSalary();toast(`${count}건 조정항목이 추가되었습니다`);
+}
+
+// ===== EMPLOYEE BULK UPLOAD =====
+function downloadEmpTemplate(){
+  const rows=[
+    '이름,부서,직급,연봉,입사일,주연장시간(h),조정유형,조정값,조정메모',
+    '김민준,개발팀,팀장,72000000,2018-03-02,12,식대,100000,월정액',
+    '김민준,,,,,,교통비,50000,출장비',
+    '이서연,개발팀,선임,54000000,2020-07-01,10,,,',
+    '박지호,마케팅,과장,48000000,2019-01-15,8,경조사비,200000,결혼',
+    '최유진,마케팅,대리,40000000,2022-04-04,12,,,',
+  ];
+  const csv='﻿'+rows.join('\r\n');
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv;charset=utf-8;'}));
+  a.download='직원등록_업로드양식.csv';a.click();
+  toast('양식 파일이 다운로드되었습니다');
+}
+function parseEmpUpload(text){
+  const lines=text.trim().split('\n').map(l=>l.trim()).filter(Boolean);
+  const rows=[];const start=lines[0].includes('이름')?1:0;
+  for(let i=start;i<lines.length;i++){
+    const cols=lines[i].split(',').map(c=>c.trim().replace(/^"|"$/g,''));
+    const[name='',dept='',pos='',salaryRaw='',hireDate='',otRaw='',adjTypeRaw='',adjValRaw='',adjNote='']=cols;
+    if(!name)continue;
+    const salary=parseInt(salaryRaw)||0;
+    const ot=parseFloat(otRaw);
+    const adjVal=parseFloat(adjValRaw);
+    const adjType=ADJ_MAP[adjTypeRaw]||null;
+    const existingEmp=state.employees.find(e=>e.name===name);
+    let empAction='skip',adjAction='skip',status='ok';const errors=[];
+    if(salary>0){
+      if(salary<1000000){errors.push('연봉 오류');status='err';}
+      else empAction=existingEmp?'update':'create';
+    } else if(!existingEmp&&adjTypeRaw){errors.push('직원 없음');status='err';}
+    else if(!existingEmp&&!adjTypeRaw){errors.push('연봉 필요');status='err';}
+    if(adjTypeRaw){
+      if(!adjType){errors.push('조정유형 불인식');adjAction='err';status='err';}
+      else if(isNaN(adjVal)||adjVal<=0){errors.push('조정값 오류');adjAction='err';status='err';}
+      else adjAction='ok';
+    }
+    if(errors.length)status='err';
+    rows.push({name,dept,pos,salary,hireDate,ot,adjTypeRaw,adjType,adjVal,adjNote,empAction,adjAction,status,error:errors.join(', '),existingEmp});
+  }
+  return rows;
+}
+function renderEmpPreview(rows){
+  const ok=rows.filter(r=>r.status==='ok').length,err=rows.filter(r=>r.status!=='ok').length;
+  const empC=rows.filter(r=>r.empAction==='create').length,empU=rows.filter(r=>r.empAction==='update').length;
+  const adjC=rows.filter(r=>r.adjAction==='ok').length;
+  document.getElementById('emp-preview-table').innerHTML=`<table><thead><tr><th>이름</th><th>부서</th><th>직급</th><th>연봉</th><th>입사일</th><th>연장(h)</th><th>조정유형</th><th>조정값</th><th>상태</th></tr></thead><tbody>${rows.map(r=>`<tr class="row-${r.status}"><td>${r.name}</td><td>${r.dept}</td><td>${r.pos}</td><td>${r.salary>0?r.salary.toLocaleString():''}</td><td>${r.hireDate}</td><td>${isNaN(r.ot)?'':r.ot}</td><td>${r.adjTypeRaw}</td><td>${r.adjVal>0?r.adjVal.toLocaleString():''}</td><td>${r.status==='ok'?`<span class="chip chip-ok">${r.empAction!=='skip'?(r.empAction==='create'?'신규':'수정'):''}${r.adjAction==='ok'?' +조정':''}</span>`:`<span class="chip chip-err">${r.error}</span>`}</td></tr>`).join('')}</tbody></table>`;
+  document.getElementById('emp-preview-summary').innerHTML=`<span class="chip chip-ok">정상 ${ok}건</span> <span style="font-size:11px;color:var(--muted)">신규 ${empC}명·수정 ${empU}명·급여항목 ${adjC}건</span>${err>0?` <span class="chip chip-err">오류 ${err}건</span>`:''}`;
+  document.getElementById('emp-upload-preview').style.display='';
+  document.getElementById('emp-upload-apply-btn').disabled=ok===0;
+}
+function onEmpTextInput(){const text=document.getElementById('emp-upload-text').value;if(!text.trim()){document.getElementById('emp-upload-preview').style.display='none';empUploadRows=[];return;}empUploadRows=parseEmpUpload(text);renderEmpPreview(empUploadRows);}
+function onEmpFileSelect(event){
+  const file=event.target.files[0];if(!file)return;
+  const ext=file.name.split('.').pop().toLowerCase();
+  if(ext==='csv'){const r=new FileReader();r.onload=e=>{document.getElementById('emp-upload-text').value=e.target.result;empUploadRows=parseEmpUpload(e.target.result);renderEmpPreview(empUploadRows);};r.readAsText(file,'UTF-8');}
+  else{if(typeof XLSX==='undefined'){toast('Excel 읽기는 인터넷 연결이 필요합니다');return;}const r=new FileReader();r.onload=e=>{const wb=XLSX.read(e.target.result,{type:'array'});const data=XLSX.utils.sheet_to_csv(wb.Sheets[wb.SheetNames[0]]);document.getElementById('emp-upload-text').value=data;empUploadRows=parseEmpUpload(data);renderEmpPreview(empUploadRows);};r.readAsArrayBuffer(file);}
+}
+function openEmpUploadModal(){
+  document.getElementById('emp-upload-file').value='';
+  document.getElementById('emp-upload-text').value='';
+  document.getElementById('emp-upload-preview').style.display='none';
+  document.getElementById('emp-upload-apply-btn').disabled=true;
+  empUploadRows=[];openModal('modal-emp-upload');
+}
+function applyEmpUpload(){
+  const key=mkKey(curY,curM);if(!state.adjustments[key])state.adjustments[key]=[];
+  let empC=0,empU=0,adjC=0;
+  for(const r of empUploadRows){
+    if(r.status!=='ok')continue;
+    if(r.empAction!=='skip'){
+      const otVal=isNaN(r.ot)?12:Math.min(52,Math.max(0,r.ot));
+      const d={name:r.name,department:r.dept,position:r.pos,annual_salary:r.salary,hire_date:r.hireDate||'',overtime_weekly:otVal,salary_history:r.existingEmp?(r.existingEmp.salary_history||[]):[]};
+      if(r.empAction==='create'){state.employees.push({id:uid(),...d});empC++;}
+      else{Object.assign(r.existingEmp,d);empU++;}
+    }
+    if(r.adjAction==='ok'){
+      const emp=state.employees.find(e=>e.name===r.name);
+      if(emp){const adj={id:uid(),emp_id:emp.id,type:r.adjType,note:r.adjNote};if(r.adjType==='무급휴가')adj.days=r.adjVal;else adj.amount=r.adjVal;state.adjustments[key].push(adj);adjC++;}
+    }
+  }
+  save(state);closeModal('modal-emp-upload');renderEmployees();
+  if(curPage==='salary')renderSalary();
+  toast(`신규 ${empC}명 · 수정 ${empU}명 · 급여항목 ${adjC}건 등록 완료`);
 }
 
 // ===== RETIREMENT PAGE =====
