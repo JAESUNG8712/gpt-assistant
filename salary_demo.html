@@ -2,8 +2,13 @@
 <html lang="ko">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>급여 자동계산 시스템</title>
+<link rel="manifest" href="/manifest.json">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="급여계산">
+<meta name="theme-color" content="#2563eb">
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <style>
@@ -95,6 +100,31 @@ body{font-family:-apple-system,'Noto Sans KR',sans-serif;background:var(--bg);fo
 /* ---- MONTH NAV ---- */
 .month-nav{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;}
 .month-label{font-size:17px;font-weight:700;}
+/* ---- RESPONSIVE / MOBILE ---- */
+@media(max-width:768px){
+  .tbl{min-width:580px;font-size:11px;}
+  .ret-tbl{min-width:700px;}
+  .tbl th,.tbl td{padding:7px 8px;}
+  .btn-primary{font-size:13px;padding:10px 14px;}
+  .btn-outline,.btn-danger,.btn-success{padding:8px 12px;font-size:12px;}
+  .modal-sheet{padding:16px 12px 36px;}
+  .card-body{padding:10px;}
+  .fab{width:46px;height:46px;font-size:22px;bottom:72px;right:14px;}
+  .emp-row{padding:9px 12px;}
+  .emp-avatar{width:34px;height:34px;font-size:13px;}
+  .net-box .amt{font-size:18px;}
+  .bd-row{font-size:12px;}
+}
+@media(max-width:480px){
+  body{font-size:12px;}
+  .tbl{min-width:500px;font-size:10px;}
+  .tbl th,.tbl td{padding:6px 6px;}
+  .section-title{font-size:13px;}
+}
+/* iOS tap highlight 제거 */
+button,a{-webkit-tap-highlight-color:transparent;}
+/* iOS Safari 경고 배너 */
+.ios-warn{background:#fef3c7;border:1px solid #fbbf24;border-radius:8px;padding:10px 12px;font-size:12px;color:#92400e;margin-bottom:10px;display:none;}
 </style>
 </head>
 <body>
@@ -152,6 +182,7 @@ body{font-family:-apple-system,'Noto Sans KR',sans-serif;background:var(--bg);fo
 
 <!-- ===== PAGE: 기록/설정 ===== -->
 <div id="page-settings" class="page px-3 pt-3">
+  <div class="ios-warn">⚠️ <strong>iOS Safari 주의:</strong> Safari는 7일 이상 앱을 사용하지 않으면 브라우저 데이터가 삭제될 수 있습니다. 정기적으로 <strong>데이터 내보내기</strong>로 백업하세요. 또는 홈 화면에 앱을 추가하면 삭제 위험이 줄어듭니다.</div>
   <div class="section-title" style="margin-top:0">데이터 백업 / 복원</div>
   <div class="card card-body mb-2" style="font-size:12px;color:var(--muted);padding:10px 14px">
     모든 직원·급여·퇴직금 데이터를 <strong style="color:#334155">.json 파일</strong>로 PC에 저장하거나 불러옵니다.<br>
@@ -353,6 +384,8 @@ body{font-family:-apple-system,'Noto Sans KR',sans-serif;background:var(--bg);fo
     <div class="mb-3"><div class="form-label">건강보험 (%)</div><input type="number" class="form-control" id="rate-hi" step="0.001"></div>
     <div class="mb-3"><div class="form-label">장기요양 (건강보험료 대비 %)</div><input type="number" class="form-control" id="rate-ltc" step="0.01"></div>
     <div class="mb-3"><div class="form-label">고용보험 (%)</div><input type="number" class="form-control" id="rate-ei" step="0.01"></div>
+    <div class="mb-3"><div class="form-label">국민연금 상한 기준월보수 (원)</div><input type="number" class="form-control" id="rate-np-max" step="10000" placeholder="6370000"></div>
+    <div style="font-size:11px;color:var(--muted);margin-bottom:12px">※ 2025년 기준: 국민연금 4.5% / 건강보험 3.545% / 장기요양 12.95% / 고용보험 0.9% / 국민연금 상한 637만원</div>
     <div class="d-flex gap-2 mt-3">
       <button class="btn-outline" style="flex:1" onclick="closeModal('modal-rates')">취소</button>
       <button class="btn-primary" style="flex:1" onclick="saveRates()">저장</button>
@@ -363,10 +396,18 @@ body{font-family:-apple-system,'Noto Sans KR',sans-serif;background:var(--bg);fo
 <script>
 // ===== DATA =====
 const KEY='salary_v4';
-const DEFAULT_RATES={np:4.5,hi:3.545,ltc:12.95,ei:0.9,np_max:5900000};
+const DEFAULT_RATES={np:4.5,hi:3.545,ltc:12.95,ei:0.9,np_max:6370000};
 const COLORS=['#ef4444','#f97316','#eab308','#22c55e','#06b6d4','#3b82f6','#8b5cf6','#ec4899','#14b8a6','#f59e0b'];
+const BACKUP_KEY='salary_save_count';
 function load(){try{return JSON.parse(localStorage.getItem(KEY))||ns();}catch{return ns();}}
-function save(s){localStorage.setItem(KEY,JSON.stringify(s));}
+function save(s){
+  localStorage.setItem(KEY,JSON.stringify(s));
+  const cnt=(parseInt(localStorage.getItem(BACKUP_KEY)||'0')+1);
+  localStorage.setItem(BACKUP_KEY,cnt);
+  if(cnt>0&&cnt%30===0){
+    setTimeout(()=>toast('💾 데이터 30회 변경 — JSON 백업을 권장합니다 (설정 탭)'),400);
+  }
+}
 function ns(){return{employees:[],adjustments:{},periods:{},records:{},rates:{...DEFAULT_RATES},retDates:{},workdays:{}};}
 function uid(){return Date.now().toString(36)+Math.random().toString(36).slice(2,6);}
 
@@ -386,13 +427,15 @@ function fmtDate(d){if(!d)return'';const dt=typeof d==='string'?new Date(d):d;re
 function diffLabel(hire,retire){const d=Math.floor((retire-hire)/86400000),y=Math.floor(d/365),r=d%365,m=Math.floor(r/30);return`${y}년 ${m}개월`;}
 
 // ===== SALARY CALC =====
-function calcIT(annual){
+function calcIT(annual, dependents){
   let d;
   if(annual<=5e6)d=annual*.7;else if(annual<=15e6)d=3.5e6+(annual-5e6)*.4;
   else if(annual<=45e6)d=7.5e6+(annual-15e6)*.15;else if(annual<=1e8)d=12e6+(annual-45e6)*.05;
   else d=14.75e6+(annual-1e8)*.02;
   d=Math.min(d,20e6);
-  const ti=Math.max(0,annual-d);
+  // 인적공제: 본인 150만 + 부양가족 1인당 150만
+  const personalDeduction=1500000*(1+(dependents||0));
+  const ti=Math.max(0,annual-d-personalDeduction);
   let t;
   if(ti<=14e6)t=ti*.06;else if(ti<=50e6)t=840000+(ti-14e6)*.15;
   else if(ti<=88e6)t=6240000+(ti-50e6)*.24;else if(ti<=150e6)t=15360000+(ti-88e6)*.35;
@@ -431,10 +474,10 @@ function calcEmp(emp,adjs,rates,monthWorkdays){
   const hi=Math.round(insBase*(r.hi/100)/10)*10;
   const ltc=Math.round(hi*(r.ltc/100)/10)*10;
   const ei=Math.round(insBase*(r.ei/100)/10)*10;
-  // 소득세: 비과세 제외한 연간소득 기준
+  // 소득세: 비과세 제외한 연간소득 기준, 부양가족 인적공제 반영
   const annualNonTax=(ot.mealAllowance+ot.researchAllowance)*12;
   const taxableAnnual=Math.max(0,emp.annual_salary-annualNonTax);
-  const it=calcIT(taxableAnnual);
+  const it=calcIT(taxableAnnual, emp.dependents||0);
   const lit=Math.round(it*.1/10)*10;
   const totalDed=np+hi+ltc+ei+it+lit;
   return{basicPay,otPay,titleAllowance,mealAllowance,researchAllowance,
@@ -532,7 +575,10 @@ function subtractMonths(date, months){
   return new Date(y,mo,Math.min(d.getDate(),last));
 }
 function calcAvgWageBreakdown(emp, retire){
-  const start=subtractMonths(retire,3);
+  const threeMonthsBack=subtractMonths(retire,3);
+  // 입사 후 3개월 미만인 경우 입사일을 기준 시작일로 사용
+  const hireDate=emp.hire_date?new Date(emp.hire_date):threeMonthsBack;
+  const start=hireDate>threeMonthsBack?hireDate:threeMonthsBack;
   const monthly=Math.round(emp.annual_salary/12);
   const totalDays=Math.round((retire-start)/86400000);
   const periods=[];
@@ -1192,7 +1238,20 @@ function openRetDetail(empId){
 function exportSalaryExcel(){
   if(typeof XLSX==='undefined'){toast('Excel 기능은 인터넷 연결이 필요합니다');return;}
   const y=curY,m=curM,key=mkKey(y,m),adjs=state.adjustments[key]||[];
-  const rows=state.employees.map(emp=>{const c=calcEmp(emp,adjs.filter(a=>a.emp_id===emp.id),state.rates);return{'이름':emp.name,'부서':emp.department||'','직급':emp.position||'','연봉':emp.annual_salary,'기본급':c.monthly,'기타지급':c.otherAdd,'지급합계':c.gross,'국민연금':c.np,'건강보험':c.hi,'장기요양':c.ltc,'고용보험':c.ei,'근로소득세':c.it,'지방소득세':c.lit,'기타공제':c.otherDed,'공제합계':c.totalDed,'실수령액':c.net};});
+  const rows=state.employees.map(emp=>{
+    const c=calcEmp(emp,adjs.filter(a=>a.emp_id===emp.id),state.rates);
+    return{
+      '이름':emp.name,'사업부':emp.division||emp.department||'','팀':emp.team||'',
+      '직급':emp.grade||emp.position||'','직책':emp.title||'','연봉':emp.annual_salary,
+      '기본급':c.basicPay,'연장근로수당':c.otPay,'직책수당':c.titleAllowance,
+      '식대(비과세)':c.mealAllowance,'연구활동비(비과세)':c.researchAllowance,
+      '기타지급':c.otherAdd,'과세지급합계':c.taxablePay,'비과세합계':c.nonTaxable,
+      '총지급합계':c.gross,
+      '국민연금':c.np,'건강보험':c.hi,'장기요양':c.ltc,'고용보험':c.ei,
+      '근로소득세':c.it,'지방소득세':c.lit,'기타공제':c.otherDed,
+      '공제합계':c.totalDed,'실수령액':c.net
+    };
+  });
   const ws=XLSX.utils.json_to_sheet(rows),wb=XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb,ws,`${y}년${m}월`);
   XLSX.writeFile(wb,`급여명세_${y}년${m}월.xlsx`);
@@ -1236,6 +1295,7 @@ function exportDataJSON(){
   a.href=URL.createObjectURL(new Blob([json],{type:'application/json;charset=utf-8;'}));
   a.download=`급여데이터_${date}.json`;
   a.click();
+  localStorage.setItem(BACKUP_KEY,'0');
   toast(`데이터가 저장되었습니다 (직원 ${empCount}명)`);
 }
 function importDataJSON(event){
@@ -1274,8 +1334,24 @@ function renderSettings(){
     <div class="rate-row"><span>국민연금 상한</span><span>${(r.np_max/10000).toFixed(0)}만원/월</span></div>
     <div class="mt-2"><button class="btn-outline btn-sm" onclick="openRatesModal()">요율 수정</button></div>`;
 }
-function openRatesModal(){document.getElementById('rate-np').value=state.rates.np;document.getElementById('rate-hi').value=state.rates.hi;document.getElementById('rate-ltc').value=state.rates.ltc;document.getElementById('rate-ei').value=state.rates.ei;openModal('modal-rates');}
-function saveRates(){state.rates={np:parseFloat(document.getElementById('rate-np').value)||DEFAULT_RATES.np,hi:parseFloat(document.getElementById('rate-hi').value)||DEFAULT_RATES.hi,ltc:parseFloat(document.getElementById('rate-ltc').value)||DEFAULT_RATES.ltc,ei:parseFloat(document.getElementById('rate-ei').value)||DEFAULT_RATES.ei,np_max:state.rates.np_max||DEFAULT_RATES.np_max};save(state);closeModal('modal-rates');renderSettings();toast('보험료율이 수정되었습니다');}
+function openRatesModal(){
+  document.getElementById('rate-np').value=state.rates.np;
+  document.getElementById('rate-hi').value=state.rates.hi;
+  document.getElementById('rate-ltc').value=state.rates.ltc;
+  document.getElementById('rate-ei').value=state.rates.ei;
+  document.getElementById('rate-np-max').value=state.rates.np_max||DEFAULT_RATES.np_max;
+  openModal('modal-rates');
+}
+function saveRates(){
+  state.rates={
+    np:parseFloat(document.getElementById('rate-np').value)||DEFAULT_RATES.np,
+    hi:parseFloat(document.getElementById('rate-hi').value)||DEFAULT_RATES.hi,
+    ltc:parseFloat(document.getElementById('rate-ltc').value)||DEFAULT_RATES.ltc,
+    ei:parseFloat(document.getElementById('rate-ei').value)||DEFAULT_RATES.ei,
+    np_max:parseInt(document.getElementById('rate-np-max').value)||DEFAULT_RATES.np_max
+  };
+  save(state);closeModal('modal-rates');renderSettings();toast('보험료율이 수정되었습니다');
+}
 
 // ===== DEMO =====
 function showDemoSeeder(){
@@ -1315,6 +1391,20 @@ function toast(msg){const el=document.getElementById('toast');el.textContent=msg
 // ===== INIT =====
 renderEmployees();
 renderSalary();
+
+// iOS Safari 감지 및 경고
+(function(){
+  const isIOS=/iPad|iPhone|iPod/.test(navigator.userAgent)&&!window.MSStream;
+  const isSafari=/^((?!chrome|android).)*safari/i.test(navigator.userAgent);
+  if(isIOS&&isSafari){
+    document.querySelectorAll('.ios-warn').forEach(el=>el.style.display='block');
+  }
+})();
+
+// Service Worker 등록
+if('serviceWorker' in navigator){
+  navigator.serviceWorker.register('/sw.js').catch(()=>{});
+}
 </script>
 </body>
 </html>

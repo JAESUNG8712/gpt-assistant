@@ -1,0 +1,19 @@
+{
+  "name": "급여 자동계산 시스템",
+  "short_name": "급여계산",
+  "description": "한국 근로기준법 기반 급여·퇴직금 자동계산 시스템",
+  "start_url": "/salary_demo.html",
+  "display": "standalone",
+  "background_color": "#f1f5f9",
+  "theme_color": "#2563eb",
+  "lang": "ko",
+  "orientation": "any",
+  "icons": [
+    {
+      "src": "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 192 192'><rect width='192' height='192' rx='32' fill='%232563eb'/><text x='50%' y='55%' dominant-baseline='middle' text-anchor='middle' font-size='110' font-family='system-ui'>💰</text></svg>",
+      "sizes": "192x192",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
