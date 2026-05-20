@@ -2,6 +2,10 @@ const express = require("express");
 const cors = require("cors");
 const fs = require("fs");
 const path = require("path");
+const os = require("os");
+const aiRouter     = require("./routes/ai");
+const syncRouter   = require("./routes/sync");
+const engineRouter = require("./routes/engine");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -142,6 +146,9 @@ function addActivityLog(entry) {
 app.use(cors());
 app.use(express.json({ limit: "50mb" }));
 app.use(express.static(path.join(__dirname, "public")));
+app.use("/ai", aiRouter);
+app.use("/sync", syncRouter);
+app.use("/engine", engineRouter);
 
 // ── API Routes ────────────────────────────────────────────────────────────────
 
@@ -325,12 +332,44 @@ app.get("*", (req, res) => {
   res.sendFile(path.join(__dirname, "public", "index.html"));
 });
 
+// ── Auto-import watch (checks sync folder every 30s) ─────────────────────────
+const syncService = require('./services/sync');
+let _lastImportMtime = null;
+
+function watchSyncFolder() {
+  try {
+    const file = syncService.IPAD_IMPORT_FILE;
+    if (!fs.existsSync(file)) return;
+    const mtime = fs.statSync(file).mtime.getTime();
+    if (_lastImportMtime !== null && mtime !== _lastImportMtime) {
+      console.log('[Sync] iPad 내보내기 파일 변경 감지 → 자동 가져오기 시작');
+      syncService.importIPad(file)
+        .then(r => console.log(`[Sync] 자동 가져오기 완료: ${r.imported}개`))
+        .catch(e => console.error('[Sync] 가져오기 오류:', e.message));
+    }
+    _lastImportMtime = mtime;
+  } catch {}
+}
+
 // ── Start ─────────────────────────────────────────────────────────────────────
-const server = app.listen(PORT, () => {
-  console.log("\n=== HR KPI System Server Started ===");
-  console.log("URL  : http://localhost:" + PORT);
+const server = app.listen(PORT, "0.0.0.0", () => {
+  const localIPs = [];
+  for (const ifaces of Object.values(os.networkInterfaces())) {
+    for (const iface of ifaces) {
+      if (iface.family === "IPv4" && !iface.internal) localIPs.push(iface.address);
+    }
+  }
+  console.log("\n=== AI Assistant Server Started ===");
+  console.log("PC   : http://localhost:" + PORT + "/ai-chat.html");
+  if (localIPs.length > 0) {
+    console.log("iPad : http://" + localIPs[0] + ":" + PORT + "/ai-chat.html");
+    if (localIPs.length > 1) localIPs.slice(1).forEach(ip => console.log("     : http://" + ip + ":" + PORT + "/ai-chat.html"));
+  }
   console.log("Data : " + DATA_FILE);
-  console.log("Backup: " + BACKUP_DIR + "\n");
+  console.log("Sync : http://localhost:" + PORT + "/sync.html");
+  console.log("===================================\n");
+  setInterval(watchSyncFolder, 30000);
+  watchSyncFolder();
 });
 
 server.on("error", (err) => {

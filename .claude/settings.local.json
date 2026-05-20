@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(netsh advfirewall *)",
+      "Bash(npm install *)",
+      "Read(//mnt/c/Users/A1292024032/**)",
+      "Bash(node -e ' *)",
+      "PowerShell(explorer \"C:\\\\Users\\\\A1292024032\\\\gpt-assistant\\\\ai-server-ipad\")"
+    ]
+  }
+}
