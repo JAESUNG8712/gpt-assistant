@@ -5,275 +5,200 @@
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="AI Cloud">
-<title>AI Cloud — OneDrive + iPad</title>
-<script src="https://alcdn.msauth.net/browser/2.38.3/js/msal-browser.min.js"></script>
+<title>AI Cloud</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
 :root{
   --bg:#090912;--s:#11111a;--s2:#181824;--b:#222232;
-  --acc:#a78bfa;--od:#0078d4;--g:#34d399;--text:#e2e2ef;
-  --dim:#5a5a7a;--err:#f87171;--warn:#fbbf24;
+  --acc:#a78bfa;--g:#34d399;--text:#e2e2ef;
+  --dim:#5a5a7a;--err:#f87171;--warn:#fbbf24;--gh:#24292f;
   --safe:env(safe-area-inset-bottom,0px);
 }
 html,body{height:100%;background:var(--bg);color:var(--text);font-family:'Segoe UI',system-ui,-apple-system,sans-serif;overscroll-behavior:none}
 body{display:flex;flex-direction:column;height:100dvh}
 
-/* ── Header ── */
-header{
-  background:var(--s);border-bottom:1px solid var(--b);
-  padding:10px 16px;padding-top:calc(10px + env(safe-area-inset-top,0px));
-  display:flex;align-items:center;gap:10px;flex-shrink:0;min-height:52px;
-}
-.logo{font-size:1.1rem;font-weight:800;background:linear-gradient(135deg,var(--acc),var(--od));-webkit-background-clip:text;-webkit-text-fill-color:transparent;flex:1;white-space:nowrap}
-#sync-badge{
-  font-size:.68rem;padding:3px 9px;border-radius:10px;font-weight:600;
-  white-space:nowrap;cursor:default;transition:all .3s;
-}
-#sync-badge.synced{background:#0a1f14;color:var(--g);border:1px solid #1a4a2a}
-#sync-badge.syncing{background:#1a1a0d;color:var(--warn);border:1px solid #3a3a1a}
-#sync-badge.offline{background:var(--s2);color:var(--dim);border:1px solid var(--b)}
-#sync-badge.error{background:#1f0a0a;color:var(--err);border:1px solid #3a1a1a}
-.hdr-btn{background:none;border:1px solid var(--b);color:var(--dim);border-radius:7px;padding:5px 10px;font-size:.75rem;cursor:pointer;white-space:nowrap}
-.hdr-btn:hover{color:var(--text);border-color:var(--acc)}
+header{background:var(--s);border-bottom:1px solid var(--b);padding:10px 16px;padding-top:calc(10px + env(safe-area-inset-top,0px));display:flex;align-items:center;gap:10px;flex-shrink:0;min-height:52px}
+.logo{font-size:1rem;font-weight:800;background:linear-gradient(135deg,var(--acc),#60a5fa);-webkit-background-clip:text;-webkit-text-fill-color:transparent;flex:1}
+#sync-badge{font-size:.68rem;padding:3px 9px;border-radius:10px;font-weight:600;white-space:nowrap;border:1px solid var(--b);color:var(--dim);background:var(--s2)}
+#sync-badge.ok{background:#0a1f14;color:var(--g);border-color:#1a4a2a}
+#sync-badge.busy{background:#1a1a0d;color:var(--warn);border-color:#3a3a1a}
+#sync-badge.err{background:#1f0a0a;color:var(--err);border-color:#3a1a1a}
+.hbtn{background:none;border:1px solid var(--b);color:var(--dim);border-radius:7px;padding:5px 10px;font-size:.75rem;cursor:pointer}
+.hbtn:hover{color:var(--text);border-color:var(--acc)}
 
-/* ── Login screen ── */
-#login-screen{
-  flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;
-  padding:24px;gap:20px;text-align:center;
-}
-#login-screen h2{font-size:1.3rem;font-weight:700}
-#login-screen p{font-size:.88rem;color:var(--dim);line-height:1.7;max-width:380px}
-.ms-btn{
-  display:flex;align-items:center;gap:10px;padding:13px 24px;
-  background:var(--od);color:#fff;border:none;border-radius:10px;
-  font-size:.95rem;font-weight:600;cursor:pointer;min-height:48px;
-  font-family:inherit;transition:opacity .2s;
-}
-.ms-btn:hover{opacity:.88}
-.ms-btn:disabled{opacity:.5;cursor:not-allowed}
-.client-row{display:flex;flex-direction:column;gap:6px;width:100%;max-width:380px}
-.client-row label{font-size:.78rem;color:var(--dim);text-align:left}
-.client-row input{
-  background:var(--s2);border:1px solid var(--b);color:var(--text);
-  border-radius:8px;padding:10px 12px;font-size:.88rem;outline:none;width:100%;
-}
-.client-row input:focus{border-color:var(--od)}
-.setup-link{font-size:.8rem;color:var(--od);text-decoration:none}
-.setup-link:hover{text-decoration:underline}
+/* Login */
+#login-screen{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:20px;gap:18px;text-align:center}
+#login-screen h2{font-size:1.2rem;font-weight:700}
+#login-screen p{font-size:.85rem;color:var(--dim);line-height:1.7;max-width:360px}
+.field{width:100%;max-width:380px;display:flex;flex-direction:column;gap:5px;text-align:left}
+.field label{font-size:.76rem;color:var(--dim)}
+.field input{background:var(--s2);border:1px solid var(--b);color:var(--text);border-radius:8px;padding:10px 12px;font-size:.88rem;font-family:monospace;outline:none;width:100%}
+.field input:focus{border-color:var(--acc)}
+.field .hint{font-size:.72rem;color:var(--dim);line-height:1.6}
+.field .hint a{color:var(--acc);text-decoration:none}
+.field .hint a:hover{text-decoration:underline}
+.gh-btn{display:flex;align-items:center;justify-content:center;gap:10px;padding:13px 24px;background:var(--gh);color:#fff;border:none;border-radius:10px;font-size:.92rem;font-weight:600;cursor:pointer;min-height:48px;font-family:inherit;transition:opacity .2s;width:100%;max-width:380px}
+.gh-btn:hover{opacity:.85}
+.gh-btn:disabled{opacity:.5;cursor:not-allowed}
+#login-err{font-size:.82rem;color:var(--err);display:none;max-width:380px}
 
-/* ── Chat ── */
+/* Chat */
 #chat-wrap{flex:1;display:none;flex-direction:column;overflow:hidden}
 #chat-wrap.show{display:flex}
-#chat-msgs{
-  flex:1;overflow-y:auto;padding:14px 12px;
-  display:flex;flex-direction:column;gap:12px;
-  -webkit-overflow-scrolling:touch;
-}
+#msgs{flex:1;overflow-y:auto;padding:14px 12px;display:flex;flex-direction:column;gap:12px;-webkit-overflow-scrolling:touch}
 .msg{display:flex;gap:8px;max-width:820px;width:100%}
 .msg.user{align-self:flex-end;flex-direction:row-reverse}
 .msg.ai{align-self:flex-start}
 .av{width:30px;height:30px;border-radius:50%;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:.72rem;font-weight:700}
 .msg.user .av{background:#2a2060}
 .msg.ai .av{background:#0d1a30}
-.bub{
-  padding:10px 14px;border-radius:12px;font-size:.9rem;
-  white-space:pre-wrap;word-break:break-word;line-height:1.65;
-  max-width:calc(100% - 38px);
-}
+.bub{padding:10px 14px;border-radius:12px;font-size:.9rem;white-space:pre-wrap;word-break:break-word;line-height:1.65;max-width:calc(100% - 38px)}
 .msg.user .bub{background:#1e1a40;border-radius:12px 4px 12px 12px}
 .msg.ai .bub{background:var(--s);border:1px solid var(--b);border-radius:4px 12px 12px 12px}
-.streaming::after{content:'▌';animation:blink .7s step-end infinite;color:var(--acc);margin-left:2px}
+.streaming::after{content:'▌';animation:blink .7s step-end infinite;color:var(--acc)}
 @keyframes blink{50%{opacity:0}}
-.msg-meta{font-size:.68rem;color:var(--dim);margin-top:4px;text-align:right}
+.sys-msg{text-align:center;font-size:.74rem;color:var(--dim);padding:4px 0}
 
-/* ── Input ── */
-#input-area{
-  padding:10px 12px;border-top:1px solid var(--b);
-  background:var(--s);flex-shrink:0;
-  padding-bottom:calc(10px + var(--safe));
-}
-.mode-row{display:flex;gap:8px;margin-bottom:8px;align-items:center}
-.mode-chip{
-  font-size:.74rem;padding:4px 10px;border-radius:8px;cursor:pointer;
-  background:var(--s2);border:1px solid var(--b);color:var(--dim);transition:all .2s;
-}
-.mode-chip.active{background:#1a1040;color:var(--acc);border-color:var(--acc)}
-.train-steps{font-size:.78rem;color:var(--dim);margin-left:auto;display:flex;align-items:center;gap:6px}
-.train-steps select{background:var(--s2);border:1px solid var(--b);color:var(--text);border-radius:6px;padding:3px 6px;font-size:.76rem}
-.input-row{display:flex;gap:8px;align-items:flex-end}
-textarea#msg-input{
-  flex:1;background:var(--s2);border:1px solid var(--b);color:var(--text);
-  border-radius:10px;padding:10px 13px;font-size:.9rem;resize:none;
-  min-height:44px;max-height:130px;font-family:inherit;outline:none;
-  -webkit-appearance:none;transition:border-color .2s;
-}
-textarea#msg-input:focus{border-color:var(--acc)}
-#send-btn{
-  width:44px;height:44px;border:none;border-radius:10px;
-  background:var(--acc);color:#fff;font-size:1.1rem;cursor:pointer;
-  flex-shrink:0;transition:opacity .2s;display:flex;align-items:center;justify-content:center;
-}
-#send-btn.train-mode{background:var(--od)}
-#send-btn:disabled{opacity:.4;cursor:not-allowed}
-.progress-bar{height:4px;background:var(--s2);border-radius:2px;overflow:hidden;margin-top:6px;display:none}
-.progress-fill{height:100%;background:var(--od);transition:width .3s;border-radius:2px;width:0%}
+/* Input */
+#input-area{padding:10px 12px;border-top:1px solid var(--b);background:var(--s);flex-shrink:0;padding-bottom:calc(10px + var(--safe))}
+.modes{display:flex;gap:8px;margin-bottom:8px;align-items:center}
+.chip{font-size:.74rem;padding:4px 10px;border-radius:8px;cursor:pointer;background:var(--s2);border:1px solid var(--b);color:var(--dim);transition:all .2s}
+.chip.on{background:#1a1040;color:var(--acc);border-color:var(--acc)}
+#step-sel{background:var(--s2);border:1px solid var(--b);color:var(--text);border-radius:6px;padding:3px 6px;font-size:.76rem;margin-left:auto;display:none}
+.irow{display:flex;gap:8px;align-items:flex-end}
+textarea#ti{flex:1;background:var(--s2);border:1px solid var(--b);color:var(--text);border-radius:10px;padding:10px 13px;font-size:.9rem;resize:none;min-height:44px;max-height:130px;font-family:inherit;outline:none;-webkit-appearance:none;transition:border-color .2s}
+textarea#ti:focus{border-color:var(--acc)}
+#sb{width:44px;height:44px;border:none;border-radius:10px;background:var(--acc);color:#fff;font-size:1.1rem;cursor:pointer;flex-shrink:0;transition:background .2s}
+#sb.tr{background:#238636}
+#sb:disabled{opacity:.4;cursor:not-allowed}
+.pbar{height:4px;background:var(--s2);border-radius:2px;overflow:hidden;margin-top:6px;display:none}
+.pfill{height:100%;background:var(--acc);transition:width .3s;border-radius:2px;width:0%}
 
-/* ── Panel (settings/info) ── */
-#panel-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:50;backdrop-filter:blur(3px)}
-#panel-overlay.show{display:block}
-#panel{
-  position:fixed;bottom:0;left:0;right:0;max-height:75vh;
-  background:var(--s);border-top:1px solid var(--b);border-radius:20px 20px 0 0;
-  z-index:51;padding:20px;overflow-y:auto;
-  transform:translateY(100%);transition:transform .3s cubic-bezier(.4,0,.2,1);
-}
+/* Panel */
+#ov{display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:50;backdrop-filter:blur(3px)}
+#ov.show{display:block}
+#panel{position:fixed;bottom:0;left:0;right:0;max-height:78vh;background:var(--s);border-top:1px solid var(--b);border-radius:20px 20px 0 0;z-index:51;padding:18px 18px;overflow-y:auto;transform:translateY(100%);transition:transform .28s cubic-bezier(.4,0,.2,1)}
 #panel.show{transform:translateY(0)}
-.panel-handle{width:40px;height:4px;background:var(--b);border-radius:2px;margin:0 auto 16px;cursor:pointer}
-.panel-section{margin-bottom:16px;padding-bottom:16px;border-bottom:1px solid var(--b)}
-.panel-section:last-child{border-bottom:none;margin-bottom:0;padding-bottom:0}
-.panel-section h3{font-size:.85rem;font-weight:600;margin-bottom:10px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em}
-.stat-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
-.stat{background:var(--s2);border:1px solid var(--b);border-radius:8px;padding:10px;text-align:center}
-.stat-v{font-size:1.1rem;font-weight:700;color:var(--acc);display:block}
-.stat-l{font-size:.68rem;color:var(--dim);margin-top:2px}
-.pnl-btn{
-  width:100%;padding:10px;border:1px solid var(--b);border-radius:8px;
-  background:var(--s2);color:var(--text);font-size:.85rem;cursor:pointer;
-  font-family:inherit;transition:all .2s;text-align:center;
-}
-.pnl-btn:hover{border-color:var(--acc);color:var(--acc)}
-.pnl-btn.danger{border-color:#3a1a1a;color:var(--err)}
-.pnl-btn.danger:hover{background:#1f0a0a}
-.user-row{display:flex;align-items:center;gap:10px;background:var(--s2);border:1px solid var(--b);border-radius:8px;padding:10px}
-.u-av{width:32px;height:32px;border-radius:50%;background:var(--od);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700;flex-shrink:0}
-.u-name{font-size:.88rem;font-weight:600}
-.u-email{font-size:.72rem;color:var(--dim)}
+.ph{width:40px;height:4px;background:var(--b);border-radius:2px;margin:0 auto 16px;cursor:pointer}
+.ps{margin-bottom:16px;padding-bottom:16px;border-bottom:1px solid var(--b)}
+.ps:last-child{border:none;margin:0;padding:0}
+.ps h3{font-size:.78rem;font-weight:600;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;margin-bottom:10px}
+.sg{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.sv{background:var(--s2);border:1px solid var(--b);border-radius:8px;padding:10px;text-align:center}
+.svv{font-size:1.1rem;font-weight:700;color:var(--acc);display:block}
+.svl{font-size:.68rem;color:var(--dim);margin-top:2px}
+.pb{width:100%;padding:10px;border:1px solid var(--b);border-radius:8px;background:var(--s2);color:var(--text);font-size:.85rem;cursor:pointer;font-family:inherit;transition:all .2s;margin-top:6px}
+.pb:hover{border-color:var(--acc);color:var(--acc)}
+.pb.red{border-color:#3a1a1a;color:var(--err)}
+.pb.red:hover{background:#1f0a0a}
+.gist-info{background:var(--s2);border:1px solid var(--b);border-radius:8px;padding:10px;font-size:.76rem;color:var(--dim);word-break:break-all;line-height:1.6}
+.gist-info a{color:var(--acc);text-decoration:none}
 </style>
 </head>
 <body>
 
 <header>
   <div class="logo">🧠 AI Cloud</div>
-  <div id="sync-badge" class="offline">⬡ 오프라인</div>
-  <button class="hdr-btn" onclick="togglePanel()">☰</button>
+  <div id="sync-badge">● 오프라인</div>
+  <button class="hbtn" onclick="togglePanel()">☰</button>
 </header>
 
 <!-- 로그인 화면 -->
 <div id="login-screen">
-  <div style="font-size:3rem">☁️</div>
-  <h2>OneDrive로 시작하기</h2>
-  <p>Microsoft OneDrive에 연결하면<br>
-  학습 내용이 자동 저장되고<br>
-  모든 기기에서 이어서 사용할 수 있습니다.</p>
+  <div style="font-size:3rem">🐙</div>
+  <h2>GitHub로 시작하기</h2>
+  <p>GitHub 계정만 있으면 됩니다.<br>토큰 1개 발급으로 모든 기기에서<br>학습 내용이 자동 동기화됩니다.</p>
 
-  <div class="client-row">
-    <label>Azure 앱 클라이언트 ID
-      <a href="onedrive-sync.html" class="setup-link" style="float:right">등록 방법 →</a>
-    </label>
-    <input type="text" id="client-id" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx">
+  <div class="field">
+    <label>GitHub Personal Access Token</label>
+    <input type="password" id="tok-input" placeholder="ghp_xxxxxxxxxxxxxxxxxxxx">
+    <div class="hint">
+      발급 방법: <a href="https://github.com/settings/tokens/new?scopes=gist&description=AI-Cloud" target="_blank">github.com/settings/tokens</a><br>
+      → "Generate new token (classic)" → <strong>gist</strong> 체크 → 생성 → 복사
+    </div>
   </div>
-  <button class="ms-btn" id="login-btn" onclick="login()">
-    <svg width="18" height="18" viewBox="0 0 21 21"><path d="M0 0h10v10H0z" fill="#f25022"/><path d="M11 0h10v10H11z" fill="#7fba00"/><path d="M0 11h10v10H0z" fill="#00a4ef"/><path d="M11 11h10v10H11z" fill="#ffb900"/></svg>
-    Microsoft 계정으로 로그인
+
+  <button class="gh-btn" id="login-btn" onclick="connectGitHub()">
+    <svg width="20" height="20" viewBox="0 0 98 96" fill="#fff"><path d="M49 0C21.9 0 0 22 0 49.2c0 21.8 14 40.2 33.4 46.7 2.4.5 3.3-1 3.3-2.4v-8.4c-13.6 3-16.5-6.6-16.5-6.6-2.2-5.7-5.4-7.2-5.4-7.2-4.4-3 .3-3 .3-3 4.9.3 7.5 5 7.5 5 4.4 7.5 11.4 5.3 14.2 4.1.4-3.2 1.7-5.3 3.1-6.5-10.8-1.2-22.2-5.4-22.2-24.3 0-5.4 1.9-9.8 5-13.2-.5-1.2-2.2-6.2.5-13 0 0 4.1-1.3 13.4 5 3.9-1.1 8-1.6 12.2-1.6 4.1 0 8.3.5 12.2 1.6 9.2-6.3 13.3-5 13.3-5 2.7 6.8 1 11.8.5 13 3.1 3.4 5 7.8 5 13.2 0 18.9-11.5 23-22.4 24.2 1.8 1.5 3.3 4.5 3.3 9.2v13.6c0 1.3.9 2.9 3.4 2.4C84.1 89.3 98 71 98 49.2 98 22 76.1 0 49 0z"/></svg>
+    GitHub 연결
   </button>
-  <div id="login-err" style="font-size:.82rem;color:var(--err);display:none"></div>
+  <div id="login-err"></div>
 </div>
 
-<!-- 채팅 화면 -->
+<!-- 채팅 -->
 <div id="chat-wrap">
-  <div id="chat-msgs">
-    <div id="empty-hint" style="margin:auto;text-align:center;color:var(--dim);padding:20px">
-      <div style="font-size:2.5rem;margin-bottom:10px">🧠</div>
-      <div style="font-size:.88rem;line-height:1.7">OneDrive에서 학습 데이터를 불러왔습니다.<br>메시지를 입력하거나 텍스트를 학습시켜 보세요.</div>
-    </div>
+  <div id="msgs">
+    <div class="sys-msg" id="empty-hint">대화를 시작하거나 텍스트를 학습시켜 보세요</div>
   </div>
-
   <div id="input-area">
-    <div class="mode-row">
-      <div class="mode-chip active" id="chip-chat" onclick="setMode('chat')">💬 대화</div>
-      <div class="mode-chip" id="chip-train" onclick="setMode('train')">📚 학습</div>
-      <div class="train-steps" id="steps-row" style="display:none">
-        스텝:
-        <select id="step-sel">
-          <option value="100">100</option>
-          <option value="300" selected>300</option>
-          <option value="500">500</option>
-        </select>
-      </div>
+    <div class="modes">
+      <div class="chip on" id="c-chat" onclick="setMode('chat')">💬 대화</div>
+      <div class="chip" id="c-train" onclick="setMode('train')">📚 학습</div>
+      <select id="step-sel">
+        <option value="100">100스텝</option>
+        <option value="300" selected>300스텝</option>
+        <option value="500">500스텝</option>
+      </select>
     </div>
-    <div class="input-row">
-      <textarea id="msg-input" rows="1"
-        placeholder="메시지 입력... (Enter 전송, Shift+Enter 줄바꿈)"
-        onkeydown="handleKey(event)"></textarea>
-      <button id="send-btn" onclick="handleSend()">▶</button>
+    <div class="irow">
+      <textarea id="ti" rows="1" placeholder="메시지 입력..." onkeydown="handleKey(event)"></textarea>
+      <button id="sb" onclick="handleSend()">▶</button>
     </div>
-    <div class="progress-bar" id="train-prog-bar">
-      <div class="progress-fill" id="train-prog-fill"></div>
-    </div>
+    <div class="pbar" id="pbar"><div class="pfill" id="pfill"></div></div>
   </div>
 </div>
 
-<!-- 설정 패널 -->
-<div id="panel-overlay" onclick="closePanel()"></div>
+<!-- 패널 -->
+<div id="ov" onclick="closePanel()"></div>
 <div id="panel">
-  <div class="panel-handle" onclick="closePanel()"></div>
+  <div class="ph" onclick="closePanel()"></div>
 
-  <div class="panel-section">
-    <h3>계정</h3>
-    <div class="user-row" id="panel-user">
-      <div class="u-av" id="p-avatar">?</div>
-      <div><div class="u-name" id="p-name">-</div><div class="u-email" id="p-email">-</div></div>
-    </div>
-  </div>
-
-  <div class="panel-section">
+  <div class="ps">
     <h3>모델 현황</h3>
-    <div class="stat-grid">
-      <div class="stat"><span class="stat-v" id="st-params">-</span><div class="stat-l">파라미터</div></div>
-      <div class="stat"><span class="stat-v" id="st-steps">0</span><div class="stat-l">학습 스텝</div></div>
-      <div class="stat"><span class="stat-v" id="st-loss">-</span><div class="stat-l">최근 손실</div></div>
+    <div class="sg">
+      <div class="sv"><span class="svv" id="st-p">-</span><div class="svl">파라미터</div></div>
+      <div class="sv"><span class="svv" id="st-s">0</span><div class="svl">학습 스텝</div></div>
+      <div class="sv"><span class="svv" id="st-l">-</span><div class="svl">손실값</div></div>
     </div>
   </div>
 
-  <div class="panel-section">
-    <h3>OneDrive 동기화</h3>
-    <button class="pnl-btn" onclick="manualSync();closePanel()">지금 OneDrive에 저장</button>
-    <button class="pnl-btn" style="margin-top:6px" onclick="pullOneDrive();closePanel()">OneDrive에서 불러오기</button>
+  <div class="ps">
+    <h3>GitHub Gist 저장소</h3>
+    <div class="gist-info" id="gist-info">연결 대기중...</div>
+    <button class="pb" onclick="manualSave();closePanel()">지금 저장</button>
+    <button class="pb" onclick="loadFromGist();closePanel()">GitHub에서 불러오기</button>
   </div>
 
-  <div class="panel-section">
+  <div class="ps">
     <h3>대화 기록</h3>
-    <button class="pnl-btn" onclick="exportHistory();closePanel()">대화 기록 내보내기</button>
-    <button class="pnl-btn danger" style="margin-top:6px" onclick="clearHistory();closePanel()">대화 기록 삭제</button>
+    <button class="pb" onclick="exportHistory();closePanel()">대화 기록 내보내기</button>
+    <button class="pb red" onclick="clearHistory();closePanel()">대화 기록 삭제</button>
   </div>
 
-  <div class="panel-section">
-    <button class="pnl-btn danger" onclick="logoutOneDrive();closePanel()">OneDrive 로그아웃</button>
+  <div class="ps">
+    <button class="pb red" onclick="disconnect();closePanel()">연결 해제 (토큰 삭제)</button>
   </div>
 </div>
 
 <script>
 'use strict';
 // ══════════════════════════════════════════════════════════════════════════════
-// 1. 행렬 연산 엔진 (iPad CPU로 실행)
+// MiniGPT 엔진 (iPad/PC CPU로 실행 — 외부 의존성 없음)
 // ══════════════════════════════════════════════════════════════════════════════
 class M {
   constructor(r,c,d){this.r=r;this.c=c;this.d=d instanceof Float32Array?d:new Float32Array(r*c)}
-  g(i,j){return this.d[i*this.c+j]} s(i,j,v){this.d[i*this.c+j]=v}
   clone(){return new M(this.r,this.c,this.d.slice())}
   static z(r,c){return new M(r,c)}
   static fill(r,c,v){const m=new M(r,c);m.d.fill(v);return m}
   static rn(r,c,std){const s=std??Math.sqrt(2/(r+c));const m=new M(r,c);for(let i=0;i<m.d.length;i+=2){const u=Math.random()||1e-10,u2=Math.random();const n=Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*u2);m.d[i]=n*s;if(i+1<m.d.length)m.d[i+1]=Math.sqrt(-2*Math.log(u))*Math.sin(2*Math.PI*u2)*s}return m}
   add(B){const C=new M(this.r,this.c);for(let i=0;i<this.d.length;i++)C.d[i]=this.d[i]+B.d[i];return C}
-  sub(B){const C=new M(this.r,this.c);for(let i=0;i<this.d.length;i++)C.d[i]=this.d[i]-B.d[i];return C}
-  mul(B){const C=new M(this.r,this.c);for(let i=0;i<this.d.length;i++)C.d[i]=this.d[i]*B.d[i];return C}
   sc(s){const C=new M(this.r,this.c);for(let i=0;i<this.d.length;i++)C.d[i]=this.d[i]*s;return C}
   addIP(B){for(let i=0;i<this.d.length;i++)this.d[i]+=B.d[i];return this}
   bias(b){const C=this.clone();for(let i=0;i<C.r;i++)for(let j=0;j<C.c;j++)C.d[i*C.c+j]+=b.d[j];return C}
   sr(){const o=new M(1,this.c);for(let i=0;i<this.r;i++)for(let j=0;j<this.c;j++)o.d[j]+=this.d[i*this.c+j];return o}
   row(i){return new M(1,this.c,this.d.slice(i*this.c,(i+1)*this.c))}
   T(){const B=new M(this.c,this.r);for(let i=0;i<this.r;i++)for(let j=0;j<this.c;j++)B.d[j*this.r+i]=this.d[i*this.c+j];return B}
-  static mm(A,B){const C=new M(A.r,B.c);const Ad=A.d,Bd=B.d,Cd=C.d,Ac=A.c,Bc=B.c;for(let i=0;i<A.r;i++){const iA=i*Ac,iC=i*Bc;for(let k=0;k<Ac;k++){const a=Ad[iA+k],kB=k*Bc;for(let j=0;j<Bc;j++)Cd[iC+j]+=a*Bd[kB+j]}}return C}
+  static mm(A,B){const C=new M(A.r,B.c);const ad=A.d,bd=B.d,cd=C.d,ac=A.c,bc=B.c;for(let i=0;i<A.r;i++){const ia=i*ac,ic=i*bc;for(let k=0;k<ac;k++){const a=ad[ia+k],kb=k*bc;for(let j=0;j<bc;j++)cd[ic+j]+=a*bd[kb+j]}}return C}
   static sm(X){const R=new M(X.r,X.c);for(let i=0;i<X.r;i++){const o=i*X.c;let mx=-Infinity;for(let j=0;j<X.c;j++)if(X.d[o+j]>mx)mx=X.d[o+j];let s=0;for(let j=0;j<X.c;j++){R.d[o+j]=Math.exp(X.d[o+j]-mx);s+=R.d[o+j]}for(let j=0;j<X.c;j++)R.d[o+j]/=s}return R}
   static smBk(dout,p){const dz=new M(p.r,p.c);for(let i=0;i<p.r;i++){const o=i*p.c;let dot=0;for(let j=0;j<p.c;j++)dot+=p.d[o+j]*dout.d[o+j];for(let j=0;j<p.c;j++)dz.d[o+j]=p.d[o+j]*(dout.d[o+j]-dot)}return dz}
   relu(){const C=new M(this.r,this.c);for(let i=0;i<this.d.length;i++)C.d[i]=this.d[i]>0?this.d[i]:0;return C}
@@ -283,501 +208,337 @@ class M {
   static cm(T){const Mx=new M(T,T);for(let i=0;i<T;i++)for(let j=i+1;j<T;j++)Mx.d[i*T+j]=-1e9;return Mx}
 }
 
-// ── Tokenizer (바이트 레벨) ──────────────────────────────────────────────────
-const Tok={enc:t=>Array.from(new TextEncoder().encode(t)),dec:a=>{try{return new TextDecoder().decode(new Uint8Array(a.filter(x=>x>=1&&x<=255)))}catch{return''}}};
+const Tok={
+  enc:t=>Array.from(new TextEncoder().encode(t)),
+  dec:a=>{try{return new TextDecoder().decode(new Uint8Array(a.filter(x=>x>=1&&x<=255)))}catch{return''}}
+};
 
-// ── 모델 설정 & 초기화 ───────────────────────────────────────────────────────
 const CFG={V:256,C:128,D:64,H:2,L:2,F:128};
 const mkP=(r,c)=>({W:M.rn(r,c),G:M.z(r,c)});
 const mkB=s=>({W:M.z(1,s),G:M.z(1,s)});
 const mkN=s=>({gamma:{W:M.fill(1,s,1),G:M.z(1,s)},beta:{W:M.z(1,s),G:M.z(1,s)}});
 
 function newModel(){
-  const{V,C,D,H,L,F}=CFG;
-  const embed=M.rn(V,D,0.02),pos=M.rn(C,D,0.01);
-  const layers=[];
+  const{V,C,D,H,L,F}=CFG,embed=M.rn(V,D,0.02),pos=M.rn(C,D,0.01),layers=[];
   for(let l=0;l<L;l++)layers.push({Wq:mkP(D,D),bq:mkB(D),Wk:mkP(D,D),bk:mkB(D),Wv:mkP(D,D),bv:mkB(D),Wo:mkP(D,D),bo:mkB(D),W1:mkP(D,F),b1:mkB(F),W2:mkP(F,D),b2:mkB(D),ln1:mkN(D),ln2:mkN(D)});
   return{cfg:CFG,embed,pos,layers,lmH:mkP(D,V),_eg:null};
 }
 
-// ── 순전파 ────────────────────────────────────────────────────────────────────
 function fwd(model,toks){
-  const{cfg:{D,H},embed,pos,layers,lmH}=model;
-  const T=toks.length,hd=D/H;
-  const cache={toks,T,lc:[]};
-  let X=new M(T,D);
-  for(let i=0;i<T;i++)for(let d=0;d<D;d++)X.d[i*D+d]=embed.d[toks[i]*D+d]+pos.d[i*D+d];
-  cache.X0=X;
+  const{cfg:{D,H},embed,pos,layers,lmH}=model;const T=toks.length,hd=D/H;const cache={toks,T,lc:[]};
+  let X=new M(T,D);for(let i=0;i<T;i++)for(let d=0;d<D;d++)X.d[i*D+d]=embed.d[toks[i]*D+d]+pos.d[i*D+d];cache.X0=X;
   for(let l=0;l<layers.length;l++){
-    const ly=layers[l],lc={};
-    const Q=M.mm(X,ly.Wq.W).bias(ly.bq.W),K=M.mm(X,ly.Wk.W).bias(ly.bk.W),V=M.mm(X,ly.Wv.W).bias(ly.bv.W);
+    const ly=layers[l],lc={};const Q=M.mm(X,ly.Wq.W).bias(ly.bq.W),K=M.mm(X,ly.Wk.W).bias(ly.bk.W),V=M.mm(X,ly.Wv.W).bias(ly.bv.W);
     const co=M.z(T,D),ha=[],sc=1/Math.sqrt(hd);
-    for(let h=0;h<H;h++){
-      const hs=h*hd,Qh=new M(T,hd),Kh=new M(T,hd),Vh=new M(T,hd);
-      for(let i=0;i<T;i++)for(let d=0;d<hd;d++){Qh.d[i*hd+d]=Q.d[i*D+hs+d];Kh.d[i*hd+d]=K.d[i*D+hs+d];Vh.d[i*hd+d]=V.d[i*D+hs+d]}
-      const scores=M.mm(Qh,Kh.T()).sc(sc).add(M.cm(T));
-      const attn=M.sm(scores),ch=M.mm(attn,Vh);
-      for(let i=0;i<T;i++)for(let d=0;d<hd;d++)co.d[i*D+hs+d]=ch.d[i*hd+d];
-      ha.push({Qh,Kh,Vh,attn});
-    }
-    const ap=M.mm(co,ly.Wo.W).bias(ly.bo.W),r1=X.add(ap);
-    const ln1=M.ln(r1,ly.ln1.gamma.W,ly.ln1.beta.W);
-    const ffp=M.mm(ln1.Y,ly.W1.W).bias(ly.b1.W),h1=ffp.relu(),ff=M.mm(h1,ly.W2.W).bias(ly.b2.W);
-    const r2=ln1.Y.add(ff),ln2=M.ln(r2,ly.ln2.gamma.W,ly.ln2.beta.W);
-    lc.X=X;lc.Q=Q;lc.K=K;lc.V=V;lc.ha=ha;lc.co=co;lc.ap=ap;lc.r1=r1;lc.ln1=ln1;lc.h1=h1;lc.ffp=ffp;lc.ff=ff;lc.r2=r2;lc.ln2=ln2;
-    cache.lc.push(lc);X=ln2.Y;
+    for(let h=0;h<H;h++){const hs=h*hd,Qh=new M(T,hd),Kh=new M(T,hd),Vh=new M(T,hd);for(let i=0;i<T;i++)for(let d=0;d<hd;d++){Qh.d[i*hd+d]=Q.d[i*D+hs+d];Kh.d[i*hd+d]=K.d[i*D+hs+d];Vh.d[i*hd+d]=V.d[i*D+hs+d]}const at=M.sm(M.mm(Qh,Kh.T()).sc(sc).add(M.cm(T))),ch=M.mm(at,Vh);for(let i=0;i<T;i++)for(let d=0;d<hd;d++)co.d[i*D+hs+d]=ch.d[i*hd+d];ha.push({Qh,Kh,Vh,attn:at})}
+    const ap=M.mm(co,ly.Wo.W).bias(ly.bo.W),r1=X.add(ap),ln1=M.ln(r1,ly.ln1.gamma.W,ly.ln1.beta.W);
+    const ffp=M.mm(ln1.Y,ly.W1.W).bias(ly.b1.W),h1=ffp.relu(),ff=M.mm(h1,ly.W2.W).bias(ly.b2.W),r2=ln1.Y.add(ff),ln2=M.ln(r2,ly.ln2.gamma.W,ly.ln2.beta.W);
+    lc.X=X;lc.Q=Q;lc.K=K;lc.V=V;lc.ha=ha;lc.co=co;lc.ap=ap;lc.r1=r1;lc.ln1=ln1;lc.h1=h1;lc.ffp=ffp;lc.ff=ff;lc.r2=r2;lc.ln2=ln2;cache.lc.push(lc);X=ln2.Y;
   }
-  cache.Xf=X;
-  return{logits:M.mm(X,lmH.W),cache};
+  cache.Xf=X;return{logits:M.mm(X,lmH.W),cache};
 }
 
-// ── 손실 & 역전파 ─────────────────────────────────────────────────────────────
-function lossAndGrad(logits,targets){
-  const T=targets.length,V=logits.c;
-  let L=0;const dL=M.z(T,V);
-  for(let i=0;i<T;i++){
-    const o=i*V;let mx=-Infinity;
-    for(let j=0;j<V;j++)if(logits.d[o+j]>mx)mx=logits.d[o+j];
-    let s=0;const p=new Float32Array(V);
-    for(let j=0;j<V;j++){p[j]=Math.exp(logits.d[o+j]-mx);s+=p[j]}
-    for(let j=0;j<V;j++)p[j]/=s;
-    L-=Math.log(Math.max(p[targets[i]],1e-10));
-    for(let j=0;j<V;j++)dL.d[o+j]=p[j]/T;
-    dL.d[o+targets[i]]-=1/T;
-  }
-  return{loss:L/T,dLogits:dL};
+function lossGrad(logits,targets){
+  const T=targets.length,V=logits.c;let L=0;const dL=M.z(T,V);
+  for(let i=0;i<T;i++){const o=i*V;let mx=-Infinity;for(let j=0;j<V;j++)if(logits.d[o+j]>mx)mx=logits.d[o+j];let s=0;const p=new Float32Array(V);for(let j=0;j<V;j++){p[j]=Math.exp(logits.d[o+j]-mx);s+=p[j]}for(let j=0;j<V;j++)p[j]/=s;L-=Math.log(Math.max(p[targets[i]],1e-10));for(let j=0;j<V;j++)dL.d[o+j]=p[j]/T;dL.d[o+targets[i]]-=1/T}
+  return{loss:L/T,dL};
 }
 
-function bwd(model,cache,dLogits){
-  const{cfg:{D,H},embed,layers,lmH}=model;
-  const{T,toks,lc}=cache;const hd=D/H,sc=1/Math.sqrt(hd);
-  lmH.G.addIP(M.mm(cache.Xf.T(),dLogits));
-  let dX=M.mm(dLogits,lmH.W.T());
+function bwd(model,cache,dL){
+  const{cfg:{D,H},embed,layers,lmH}=model;const{T,toks,lc}=cache;const hd=D/H,sc=1/Math.sqrt(hd);
+  lmH.G.addIP(M.mm(cache.Xf.T(),dL));let dX=M.mm(dL,lmH.W.T());
   for(let l=layers.length-1;l>=0;l--){
-    const ly=layers[l],c=lc[l];
-    const{dX:dL2,dG:dgL2,dB:dbL2}=M.lnBk(dX,c.r2,ly.ln2.gamma.W,c.ln2.ms,c.ln2.rs);
-    ly.ln2.gamma.G.addIP(dgL2);ly.ln2.beta.G.addIP(dbL2);
-    ly.b2.G.addIP(dL2.sr());ly.W2.G.addIP(M.mm(c.h1.T(),dL2));
-    const dH=M.rBk(M.mm(dL2,ly.W2.W.T()),c.ffp);
+    const ly=layers[l],c=lc[l];const{dX:dL2,dG:g2,dB:b2}=M.lnBk(dX,c.r2,ly.ln2.gamma.W,c.ln2.ms,c.ln2.rs);ly.ln2.gamma.G.addIP(g2);ly.ln2.beta.G.addIP(b2);
+    ly.b2.G.addIP(dL2.sr());ly.W2.G.addIP(M.mm(c.h1.T(),dL2));const dH=M.rBk(M.mm(dL2,ly.W2.W.T()),c.ffp);
     ly.b1.G.addIP(dH.sr());ly.W1.G.addIP(M.mm(c.ln1.Y.T(),dH));
-    const dA1=M.mm(dH,ly.W1.W.T()).add(dL2);
-    const{dX:dL1,dG:dgL1,dB:dbL1}=M.lnBk(dA1,c.r1,ly.ln1.gamma.W,c.ln1.ms,c.ln1.rs);
-    ly.ln1.gamma.G.addIP(dgL1);ly.ln1.beta.G.addIP(dbL1);
-    ly.bo.G.addIP(dL1.sr());ly.Wo.G.addIP(M.mm(c.co.T(),dL1));
-    const dCo=M.mm(dL1,ly.Wo.W.T());
+    const{dX:dL1,dG:g1,dB:b1}=M.lnBk(M.mm(dH,ly.W1.W.T()).add(dL2),c.r1,ly.ln1.gamma.W,c.ln1.ms,c.ln1.rs);ly.ln1.gamma.G.addIP(g1);ly.ln1.beta.G.addIP(b1);
+    ly.bo.G.addIP(dL1.sr());ly.Wo.G.addIP(M.mm(c.co.T(),dL1));const dCo=M.mm(dL1,ly.Wo.W.T());
     const dQ=M.z(T,D),dK=M.z(T,D),dV=M.z(T,D);
-    for(let h=0;h<H;h++){
-      const hs=h*hd;const{Qh,Kh,Vh,attn}=c.ha[h];
-      const dCh=new M(T,hd);for(let i=0;i<T;i++)for(let d=0;d<hd;d++)dCh.d[i*hd+d]=dCo.d[i*D+hs+d];
-      const dA=M.mm(dCh,Vh.T()),dVh=M.mm(attn.T(),dCh);
-      const dS=M.smBk(dA,attn).sc(sc);
-      const dQh=M.mm(dS,Kh),dKh=M.mm(dS.T(),Qh);
-      for(let i=0;i<T;i++)for(let d=0;d<hd;d++){dQ.d[i*D+hs+d]+=dQh.d[i*hd+d];dK.d[i*D+hs+d]+=dKh.d[i*hd+d];dV.d[i*D+hs+d]+=dVh.d[i*hd+d]}
-    }
-    ly.bq.G.addIP(dQ.sr());ly.bk.G.addIP(dK.sr());ly.bv.G.addIP(dV.sr());
-    ly.Wq.G.addIP(M.mm(c.X.T(),dQ));ly.Wk.G.addIP(M.mm(c.X.T(),dK));ly.Wv.G.addIP(M.mm(c.X.T(),dV));
+    for(let h=0;h<H;h++){const hs=h*hd;const{Qh,Kh,Vh,attn}=c.ha[h];const dCh=new M(T,hd);for(let i=0;i<T;i++)for(let d=0;d<hd;d++)dCh.d[i*hd+d]=dCo.d[i*D+hs+d];const dA=M.mm(dCh,Vh.T()),dVh=M.mm(attn.T(),dCh),dS=M.smBk(dA,attn).sc(sc);const dQh=M.mm(dS,Kh),dKh=M.mm(dS.T(),Qh);for(let i=0;i<T;i++)for(let d=0;d<hd;d++){dQ.d[i*D+hs+d]+=dQh.d[i*hd+d];dK.d[i*D+hs+d]+=dKh.d[i*hd+d];dV.d[i*D+hs+d]+=dVh.d[i*hd+d]}}
+    ly.bq.G.addIP(dQ.sr());ly.bk.G.addIP(dK.sr());ly.bv.G.addIP(dV.sr());ly.Wq.G.addIP(M.mm(c.X.T(),dQ));ly.Wk.G.addIP(M.mm(c.X.T(),dK));ly.Wv.G.addIP(M.mm(c.X.T(),dV));
     dX=dL1.add(M.mm(dQ,ly.Wq.W.T()).add(M.mm(dK,ly.Wk.W.T())).add(M.mm(dV,ly.Wv.W.T())));
   }
   if(!model._eg)model._eg=M.z(embed.r,embed.c);
   for(let i=0;i<T;i++){const tk=toks[i],o=i*D;for(let d=0;d<D;d++)model._eg.d[tk*D+d]+=dX.d[o+d]}
 }
 
-// ── Adam 옵티마이저 ───────────────────────────────────────────────────────────
 class Adam{
   constructor(){this.t=0;this._s=new Map()}
-  step(ps,embed,eGrad){
-    this.t++;const lr=3e-4,b1=0.9,b2=0.999,eps=1e-8,wd=0.01,t=this.t;
-    const bc1=1-b1**t,bc2=1-b2**t;
-    const upd=(W,G)=>{if(!this._s.has(W))this._s.set(W,{m:new Float32Array(W.d.length),v:new Float32Array(W.d.length)});const{m,v}=this._s.get(W);for(let i=0;i<W.d.length;i++){const g=G.d[i]+wd*W.d[i];m[i]=b1*m[i]+(1-b1)*g;v[i]=b2*v[i]+(1-b2)*g*g;W.d[i]-=lr*(m[i]/bc1)/(Math.sqrt(v[i]/bc2)+eps)}};
-    for(const p of ps)upd(p.W,p.G);
-    if(embed&&eGrad){if(!this._s.has(embed))this._s.set(embed,{m:new Float32Array(embed.d.length),v:new Float32Array(embed.d.length)});const{m,v}=this._s.get(embed);for(let i=0;i<embed.r;i++){let has=false;const o=i*embed.c;for(let d=0;d<embed.c;d++)if(eGrad.d[o+d]!==0){has=true;break}if(!has)continue;for(let d=0;d<embed.c;d++){const g=eGrad.d[o+d]+wd*embed.d[o+d];m[o+d]=b1*m[o+d]+(1-b1)*g;v[o+d]=b2*v[o+d]+(1-b2)*g*g;embed.d[o+d]-=lr*(m[o+d]/bc1)/(Math.sqrt(v[o+d]/bc2)+eps)}}}
+  step(ps,embed,eG){
+    this.t++;const lr=3e-4,b1=0.9,b2=0.999,eps=1e-8,wd=0.01,t=this.t,bc1=1-b1**t,bc2=1-b2**t;
+    const u=(W,G)=>{if(!this._s.has(W))this._s.set(W,{m:new Float32Array(W.d.length),v:new Float32Array(W.d.length)});const{m,v}=this._s.get(W);for(let i=0;i<W.d.length;i++){const g=G.d[i]+wd*W.d[i];m[i]=b1*m[i]+(1-b1)*g;v[i]=b2*v[i]+(1-b2)*g*g;W.d[i]-=lr*(m[i]/bc1)/(Math.sqrt(v[i]/bc2)+eps)}};
+    for(const p of ps)u(p.W,p.G);
+    if(embed&&eG){if(!this._s.has(embed))this._s.set(embed,{m:new Float32Array(embed.d.length),v:new Float32Array(embed.d.length)});const{m,v}=this._s.get(embed);for(let i=0;i<embed.r;i++){let has=false;const o=i*embed.c;for(let d=0;d<embed.c;d++)if(eG.d[o+d]!==0){has=true;break}if(!has)continue;for(let d=0;d<embed.c;d++){const g=eG.d[o+d]+wd*embed.d[o+d];m[o+d]=b1*m[o+d]+(1-b1)*g;v[o+d]=b2*v[o+d]+(1-b2)*g*g;embed.d[o+d]-=lr*(m[o+d]/bc1)/(Math.sqrt(v[o+d]/bc2)+eps)}}}
   }
   static clip(ps,eg,mn=1.0){let n2=0;for(const p of ps)for(const g of p.G.d)n2+=g*g;if(eg)for(const g of eg.d)n2+=g*g;const n=Math.sqrt(n2);if(n>mn){const s=mn/n;for(const p of ps)for(let i=0;i<p.G.d.length;i++)p.G.d[i]*=s;if(eg)for(let i=0;i<eg.d.length;i++)eg.d[i]*=s}}
 }
 
 function allPs(m){const p=[];for(const l of m.layers){for(const k of['Wq','bq','Wk','bk','Wv','bv','Wo','bo','W1','b1','W2','b2'])p.push(l[k]);p.push(l.ln1.gamma,l.ln1.beta,l.ln2.gamma,l.ln2.beta)}p.push(m.lmH);return p}
 function zeroG(m){for(const p of allPs(m))p.G.d.fill(0);if(m._eg)m._eg.d.fill(0)}
+function pcnt(m){return allPs(m).reduce((s,p)=>s+p.W.d.length,0)+m.embed.d.length+m.pos.d.length}
 
-// ── 직렬화 ─────────────────────────────────────────────────────────────────────
 const sM=m=>({r:m.r,c:m.c,d:Array.from(m.d)});
 const dM=s=>new M(s.r,s.c,new Float32Array(s.d));
 const mkLP=s=>({W:dM(s.W),G:M.z(dM(s.W).r,dM(s.W).c)});
+function toJ(model){return{cfg:model.cfg,embed:sM(model.embed),pos:sM(model.pos),lmH:{W:sM(model.lmH.W)},layers:model.layers.map(l=>({Wq:{W:sM(l.Wq.W)},bq:{W:sM(l.bq.W)},Wk:{W:sM(l.Wk.W)},bk:{W:sM(l.bk.W)},Wv:{W:sM(l.Wv.W)},bv:{W:sM(l.bv.W)},Wo:{W:sM(l.Wo.W)},bo:{W:sM(l.bo.W)},W1:{W:sM(l.W1.W)},b1:{W:sM(l.b1.W)},W2:{W:sM(l.W2.W)},b2:{W:sM(l.b2.W)},ln1:{gamma:{W:sM(l.ln1.gamma.W)},beta:{W:sM(l.ln1.beta.W)}},ln2:{gamma:{W:sM(l.ln2.gamma.W)},beta:{W:sM(l.ln2.beta.W)}}}))};}
+function fromJ(j){const model=newModel();model.embed=dM(j.embed);model.pos=dM(j.pos);model.lmH={W:dM(j.lmH.W),G:M.z(CFG.D,CFG.V)};model.layers=j.layers.map(l=>({Wq:mkLP(l.Wq),bq:mkLP(l.bq),Wk:mkLP(l.Wk),bk:mkLP(l.bk),Wv:mkLP(l.Wv),bv:mkLP(l.bv),Wo:mkLP(l.Wo),bo:mkLP(l.bo),W1:mkLP(l.W1),b1:mkLP(l.b1),W2:mkLP(l.W2),b2:mkLP(l.b2),ln1:{gamma:mkLP(l.ln1.gamma),beta:mkLP(l.ln1.beta)},ln2:{gamma:mkLP(l.ln2.gamma),beta:mkLP(l.ln2.beta)}}));return model;}
 
-function toJSON(model){
-  return{cfg:model.cfg,embed:sM(model.embed),pos:sM(model.pos),lmH:{W:sM(model.lmH.W)},
-    layers:model.layers.map(l=>({Wq:{W:sM(l.Wq.W)},bq:{W:sM(l.bq.W)},Wk:{W:sM(l.Wk.W)},bk:{W:sM(l.bk.W)},Wv:{W:sM(l.Wv.W)},bv:{W:sM(l.bv.W)},Wo:{W:sM(l.Wo.W)},bo:{W:sM(l.bo.W)},W1:{W:sM(l.W1.W)},b1:{W:sM(l.b1.W)},W2:{W:sM(l.W2.W)},b2:{W:sM(l.b2.W)},ln1:{gamma:{W:sM(l.ln1.gamma.W)},beta:{W:sM(l.ln1.beta.W)}},ln2:{gamma:{W:sM(l.ln2.gamma.W)},beta:{W:sM(l.ln2.beta.W)}}}))}
-}
-function fromJSON(j){
-  const model=newModel();
-  model.embed=dM(j.embed);model.pos=dM(j.pos);model.lmH={W:dM(j.lmH.W),G:M.z(CFG.D,CFG.V)};
-  model.layers=j.layers.map(l=>({Wq:mkLP(l.Wq),bq:mkLP(l.bq),Wk:mkLP(l.Wk),bk:mkLP(l.bk),Wv:mkLP(l.Wv),bv:mkLP(l.bv),Wo:mkLP(l.Wo),bo:mkLP(l.bo),W1:mkLP(l.W1),b1:mkLP(l.b1),W2:mkLP(l.W2),b2:mkLP(l.b2),ln1:{gamma:mkLP(l.ln1.gamma),beta:mkLP(l.ln1.beta)},ln2:{gamma:mkLP(l.ln2.gamma),beta:mkLP(l.ln2.beta)}}));
-  return model;
+function gen(model,prompt,{maxNew=200,temp=0.8,topK=40}={}){
+  let toks=Tok.enc(prompt);if(!toks.length)toks=[10];const out=[],V=model.cfg.V;
+  for(let s=0;s<maxNew;s++){const ctx=toks.slice(-model.cfg.C);const{logits}=fwd(model,ctx);const T=ctx.length,sc=new Float32Array(V);for(let j=0;j<V;j++)sc[j]=logits.d[(T-1)*V+j]/Math.max(temp,1e-6);if(topK<V){const sv=[...sc].map((v,i)=>({v,i})).sort((a,b)=>b.v-a.v);const th=sv[topK].v;for(let j=0;j<V;j++)if(sc[j]<th)sc[j]=-1e9}let mx=-Infinity;for(let j=0;j<V;j++)if(sc[j]>mx)mx=sc[j];let sum=0;const p=new Float32Array(V);for(let j=0;j<V;j++){p[j]=Math.exp(sc[j]-mx);sum+=p[j]}let r=Math.random()*sum,nt=V-1;for(let j=0;j<V;j++){r-=p[j];if(r<=0){nt=j;break}}toks.push(nt);out.push(nt);}return Tok.dec(out);
 }
 
-// ── 생성 (iPad CPU 실행) ─────────────────────────────────────────────────────
-function generate(model,prompt,{maxNew=200,temp=0.8,topK=40}={}){
-  let toks=Tok.enc(prompt);if(!toks.length)toks=[10];
-  const out=[];const V=model.cfg.V;
-  for(let s=0;s<maxNew;s++){
-    const ctx=toks.slice(-model.cfg.C);
-    const{logits}=fwd(model,ctx);
-    const T=ctx.length,sc=new Float32Array(V);
-    for(let j=0;j<V;j++)sc[j]=logits.d[(T-1)*V+j]/Math.max(temp,1e-6);
-    if(topK<V){const sv=[...sc].map((v,i)=>({v,i})).sort((a,b)=>b.v-a.v);const th=sv[topK].v;for(let j=0;j<V;j++)if(sc[j]<th)sc[j]=-1e9}
-    let mx=-Infinity;for(let j=0;j<V;j++)if(sc[j]>mx)mx=sc[j];
-    let sum=0;const p=new Float32Array(V);for(let j=0;j<V;j++){p[j]=Math.exp(sc[j]-mx);sum+=p[j]}
-    let r=Math.random()*sum,nt=V-1;for(let j=0;j<V;j++){r-=p[j];if(r<=0){nt=j;break}}
-    toks.push(nt);out.push(nt);
-  }
-  return Tok.dec(out);
-}
-
-// ══════════════════════════════════════════════════════════════════════════════
-// 2. OneDrive 저장소
-// ══════════════════════════════════════════════════════════════════════════════
-const GRAPH='https://graph.microsoft.com/v1.0';
-const OD_FOLDER='AI-Assistant';
-let _msalApp=null,_token=null,_user=null;
-
-function getClientId(){return localStorage.getItem('od_cid')||''}
-function saveClientId(v){localStorage.setItem('od_cid',v)}
-
-async function getToken(){
-  const accs=_msalApp.getAllAccounts();
-  if(!accs.length)throw new Error('로그인 필요');
-  const r=await _msalApp.acquireTokenSilent({scopes:['Files.ReadWrite','User.Read'],account:accs[0]});
-  return r.accessToken;
-}
-
-async function odFetch(path,opts={}){
-  _token=await getToken();
-  const res=await fetch(`${GRAPH}${path}`,{
-    ...opts,
-    headers:{'Authorization':`Bearer ${_token}`,'Content-Type':'application/json',...(opts.headers||{})},
-  });
-  if(!res.ok){const e=await res.text().catch(()=>'');throw new Error(`Graph ${res.status}: ${e}`)}
-  return res;
-}
-
-async function odUpload(name,data){
-  const body=typeof data==='string'?data:JSON.stringify(data);
-  // 4MB 이하: 단순 PUT / 이상: 업로드 세션
-  const MAX=4*1024*1024;
-  if(body.length<MAX){
-    await odFetch(`/me/drive/root:/${OD_FOLDER}/${name}:/content`,{method:'PUT',body,headers:{'Content-Type':'application/json'}});
-  } else {
-    const sessRes=await odFetch(`/me/drive/root:/${OD_FOLDER}/${name}:/createUploadSession`,{method:'POST',body:JSON.stringify({item:{'@microsoft.graph.conflictBehavior':'replace'}})});
-    const{uploadUrl}=await sessRes.json();
-    const bytes=new TextEncoder().encode(body);
-    const chunkSize=3*1024*1024;
-    for(let i=0;i<bytes.length;i+=chunkSize){
-      const chunk=bytes.slice(i,Math.min(i+chunkSize,bytes.length));
-      await fetch(uploadUrl,{method:'PUT',headers:{'Content-Range':`bytes ${i}-${i+chunk.length-1}/${bytes.length}`,'Content-Length':chunk.length},body:chunk});
-    }
-  }
-}
-
-async function odDownload(name){
-  const res=await odFetch(`/me/drive/root:/${OD_FOLDER}/${name}:/content`);
-  return res.json();
-}
-
-// ══════════════════════════════════════════════════════════════════════════════
-// 3. 앱 상태
-// ══════════════════════════════════════════════════════════════════════════════
-let _model=null,_opt=null,_log={steps:0,losses:[],chars:0};
-let _history=[];    // [{role,content,ts}]
-let _dirty=false;   // 저장 필요 여부
-let _saving=false;
-let _autoSaveTimer=null;
-let _mode='chat';   // 'chat' | 'train'
-
-function paramCount(){return allPs(_model).reduce((s,p)=>s+p.W.d.length,0)+_model.embed.d.length+_model.pos.d.length}
-
-// ── 동기화 상태 표시 ──────────────────────────────────────────────────────────
-function setSyncBadge(state,msg){
-  const b=document.getElementById('sync-badge');
-  const states={
-    synced:['synced','☁ 저장됨'],
-    syncing:['syncing','⟳ 저장 중'],
-    offline:['offline','⬡ 오프라인'],
-    error:['error','⚠ 오류'],
-  };
-  const[cls,label]=states[state]||states.offline;
-  b.className=cls;b.textContent=msg||label;
-}
-
-// ── 자동 저장 (30초 비활성 후) ───────────────────────────────────────────────
-function scheduleAutoSave(){
-  _dirty=true;
-  clearTimeout(_autoSaveTimer);
-  _autoSaveTimer=setTimeout(saveAllToOneDrive,30000);
-}
-
-async function saveAllToOneDrive(){
-  if(_saving||!_msalApp||!_model)return;
-  _saving=true;setSyncBadge('syncing');
+// ── 데이터 압축 (GitHub Gist 파일 크기 감소) ─────────────────────────────────
+async function compress(obj){
   try{
-    const[w,l,h]=await Promise.all([
-      odUpload('minigpt-weights.json',toJSON(_model)),
-      odUpload('minigpt-log.json',_log),
-      odUpload('chat-history.json',_history),
-    ]);
-    _dirty=false;setSyncBadge('synced');
-    document.getElementById('st-steps').textContent=_log.steps;
-    document.getElementById('st-loss').textContent=_log.losses.length?(_log.losses.slice(-20).reduce((a,b)=>a+b,0)/Math.min(20,_log.losses.length)).toFixed(3):'-';
-  }catch(e){setSyncBadge('error','⚠ '+e.message.slice(0,20))}
+    const cs=new CompressionStream('deflate');const w=cs.writable.getWriter();
+    w.write(new TextEncoder().encode(JSON.stringify(obj)));w.close();
+    const buf=await new Response(cs.readable).arrayBuffer();
+    return{_compressed:true,data:btoa(String.fromCharCode(...new Uint8Array(buf)))};
+  }catch{return obj}
+}
+async function decompress(obj){
+  if(!obj?._compressed)return obj;
+  try{
+    const bytes=Uint8Array.from(atob(obj.data),c=>c.charCodeAt(0));
+    const ds=new DecompressionStream('deflate');const w=ds.writable.getWriter();
+    w.write(bytes);w.close();
+    return JSON.parse(await new Response(ds.readable).text());
+  }catch{return obj}
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// GitHub Gist 저장소
+// ══════════════════════════════════════════════════════════════════════════════
+const GH='https://api.github.com';
+let _tok=null,_gistId=null,_ghUser=null;
+
+function ghHeaders(){return{'Authorization':`Bearer ${_tok}`,'Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28','Content-Type':'application/json'}}
+
+async function ghGet(url){const r=await fetch(url,{headers:ghHeaders()});if(!r.ok)throw new Error(`GitHub ${r.status}`);return r.json()}
+async function ghPost(url,body){const r=await fetch(url,{method:'POST',headers:ghHeaders(),body:JSON.stringify(body)});if(!r.ok)throw new Error(`GitHub ${r.status}: ${await r.text()}`);return r.json()}
+async function ghPatch(url,body){const r=await fetch(url,{method:'PATCH',headers:ghHeaders(),body:JSON.stringify(body)});if(!r.ok)throw new Error(`GitHub ${r.status}: ${await r.text()}`);return r.json()}
+
+// Gist 파일 읽기 (대용량 파일은 raw_url로 폴백)
+async function readGistFile(gist,name){
+  const f=gist.files?.[name];if(!f)return null;
+  const raw=f.truncated?await(await fetch(f.raw_url)).text():f.content;
+  return decompress(JSON.parse(raw));
+}
+
+async function loadFromGist(){
+  if(!_tok||!_gistId)return;
+  setSB('busy','⟳ 불러오는 중');
+  try{
+    const gist=await ghGet(`${GH}/gists/${_gistId}`);
+    const w=await readGistFile(gist,'weights');
+    const l=await readGistFile(gist,'log');
+    const h=await readGistFile(gist,'history');
+    if(w){_model=fromJ(w);_opt=new Adam();sysMsg('GitHub Gist에서 가중치를 불러왔습니다.')}
+    if(l)_log=l;
+    if(h&&h.length){_hist=h;renderHist()}
+    updateStats();setSB('ok');
+  }catch(e){setSB('err','⚠ '+e.message.slice(0,20));sysMsg('불러오기 실패: '+e.message)}
+}
+
+async function saveToGist(){
+  if(!_tok||_saving)return;
+  _saving=true;setSB('busy','⟳ 저장 중');
+  try{
+    const[cw,cl,ch]=await Promise.all([compress(toJ(_model)),compress(_log),compress(_hist)]);
+    const files={
+      'weights':{content:JSON.stringify(cw)},
+      'log':{content:JSON.stringify(cl)},
+      'history':{content:JSON.stringify(ch)},
+    };
+    if(_gistId){
+      await ghPatch(`${GH}/gists/${_gistId}`,{files});
+    } else {
+      const g=await ghPost(`${GH}/gists`,{description:`AI-Cloud MiniGPT — ${_ghUser||'user'}`,public:false,files});
+      _gistId=g.id;localStorage.setItem('gh_gist',_gistId);
+      updateGistInfo(g);
+    }
+    _dirty=false;setSB('ok','☁ 저장됨');
+  }catch(e){setSB('err','⚠ 저장실패')}
   finally{_saving=false}
 }
 
-async function pullOneDrive(){
-  setSyncBadge('syncing','⟳ 불러오는 중');
-  try{
-    const w=await odDownload('minigpt-weights.json').catch(()=>null);
-    const l=await odDownload('minigpt-log.json').catch(()=>null);
-    const h=await odDownload('chat-history.json').catch(()=>null);
-    if(w){_model=fromJSON(w);_opt=new Adam()}
-    if(l)_log=l;
-    if(h){_history=h;renderHistory()}
-    updateStats();setSyncBadge('synced');
-    addSystemMsg('OneDrive에서 최신 데이터를 불러왔습니다.');
-  }catch(e){setSyncBadge('error');addSystemMsg('불러오기 실패: '+e.message)}
+function updateGistInfo(gist){
+  const el=document.getElementById('gist-info');
+  if(!gist){el.textContent='연결 안됨';return}
+  const url=`https://gist.github.com/${_gistId}`;
+  el.innerHTML=`ID: <a href="${url}" target="_blank">${_gistId.slice(0,12)}...</a><br>비공개 Gist (본인만 접근 가능)`;
 }
 
-async function manualSync(){await saveAllToOneDrive()}
+// ══════════════════════════════════════════════════════════════════════════════
+// 앱 상태
+// ══════════════════════════════════════════════════════════════════════════════
+let _model=null,_opt=null,_log={steps:0,losses:[],chars:0};
+let _hist=[],_dirty=false,_saving=false,_mode='chat';
+let _autoTimer=null;
 
-// ══════════════════════════════════════════════════════════════════════════════
-// 4. 학습 & 생성
-// ══════════════════════════════════════════════════════════════════════════════
-async function trainOnText(text,steps,onProg){
-  const toks=Tok.enc(text);_log.chars+=text.length;
-  const C=_model.cfg.C;
+function schedSave(){_dirty=true;clearTimeout(_autoTimer);_autoTimer=setTimeout(saveToGist,30000)}
+
+// ── 학습 ─────────────────────────────────────────────────────────────────────
+async function trainText(text,steps,onProg){
+  const toks=Tok.enc(text);_log.chars+=text.length;const C=_model.cfg.C;
   for(let i=0;i<steps;i++){
     if(toks.length<C+1)break;
-    const st=Math.floor(Math.random()*(toks.length-C));
-    const inp=toks.slice(st,st+C),tgt=toks.slice(st+1,st+C+1);
-    zeroG(_model);
-    const{logits,cache}=fwd(_model,inp);
-    const{loss,dLogits}=lossAndGrad(logits,tgt);
-    bwd(_model,cache,dLogits);
-    Adam.clip(allPs(_model),_model._eg,1.0);
-    _opt.step(allPs(_model),_model.embed,_model._eg);
-    _log.steps++;_log.losses.push(parseFloat(loss.toFixed(4)));
-    if(_log.losses.length>300)_log.losses=_log.losses.slice(-300);
+    const st=Math.floor(Math.random()*(toks.length-C)),inp=toks.slice(st,st+C),tgt=toks.slice(st+1,st+C+1);
+    zeroG(_model);const{logits,cache}=fwd(_model,inp);const{loss,dL}=lossGrad(logits,tgt);
+    bwd(_model,cache,dL);Adam.clip(allPs(_model),_model._eg,1.0);_opt.step(allPs(_model),_model.embed,_model._eg);
+    _log.steps++;_log.losses.push(parseFloat(loss.toFixed(4)));if(_log.losses.length>300)_log.losses=_log.losses.slice(-300);
     if(i%10===0){onProg&&onProg({step:i+1,total:steps,loss});await new Promise(r=>setTimeout(r,0))}
   }
 }
 
-async function chat(userMsg){
-  _history.push({role:'user',content:userMsg,ts:Date.now()});
-  const aiBub=addBubble('ai');aiBub.classList.add('streaming');
+// ── 대화 ─────────────────────────────────────────────────────────────────────
+async function doChat(userMsg){
+  _hist.push({role:'user',content:userMsg,ts:Date.now()});
+  const aiBub=addBub('ai');aiBub.classList.add('streaming');
   let full='';
-  for(let chunk=0;chunk<12;chunk++){
-    const part=generate(_model,userMsg+full,{maxNew:25,temp:0.8});
-    full+=part;aiBub.textContent=full;
-    scrollChat();await new Promise(r=>setTimeout(r,0));
-  }
+  for(let i=0;i<12;i++){full+=gen(_model,userMsg+full,{maxNew:25,temp:0.8});aiBub.textContent=full;scrollMsgs();await new Promise(r=>setTimeout(r,0))}
   aiBub.classList.remove('streaming');
-  _history.push({role:'ai',content:full,ts:Date.now()});
-  // 대화 내용으로 백그라운드 학습
-  trainOnText(userMsg+'\n'+full+'\n',50,null).catch(()=>{});
-  scheduleAutoSave();
-  // 10개 메시지마다 즉시 저장
-  if(_history.length%10===0)saveAllToOneDrive();
+  _hist.push({role:'ai',content:full,ts:Date.now()});
+  trainText(userMsg+'\n'+full+'\n',50,null).catch(()=>{});
+  schedSave();
+  if(_hist.length%10===0)saveToGist();
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// 5. UI
+// UI
 // ══════════════════════════════════════════════════════════════════════════════
+function setSB(state,msg){
+  const b=document.getElementById('sync-badge');
+  b.className=state==='ok'?'ok':state==='busy'?'busy':state==='err'?'err':'';
+  b.textContent=msg||(state==='ok'?'☁ 저장됨':state==='busy'?'⟳ 저장 중':state==='err'?'⚠ 오류':'● 오프라인');
+}
+
 function setMode(m){
   _mode=m;
-  document.getElementById('chip-chat').classList.toggle('active',m==='chat');
-  document.getElementById('chip-train').classList.toggle('active',m==='train');
-  document.getElementById('steps-row').style.display=m==='train'?'flex':'none';
-  document.getElementById('send-btn').className='send-btn'+(m==='train'?' train-mode':'');
-  document.getElementById('msg-input').placeholder=
-    m==='chat'?'메시지 입력... (Enter 전송, Shift+Enter 줄바꿈)':'학습할 텍스트 입력...';
+  document.getElementById('c-chat').classList.toggle('on',m==='chat');
+  document.getElementById('c-train').classList.toggle('on',m==='train');
+  document.getElementById('step-sel').style.display=m==='train'?'':'none';
+  document.getElementById('sb').className=m==='train'?'tr':'';
+  document.getElementById('ti').placeholder=m==='chat'?'메시지 입력... (Enter 전송)':'학습할 텍스트를 입력하세요...';
 }
 
-function addBubble(role,text=''){
-  const hint=document.getElementById('empty-hint');
-  if(hint)hint.remove();
-  const wrap=document.createElement('div');wrap.className='msg '+role;
+function addBub(role,text=''){
+  const h=document.getElementById('empty-hint');if(h)h.remove();
+  const w=document.createElement('div');w.className='msg '+role;
   const av=document.createElement('div');av.className='av';av.textContent=role==='user'?'나':'AI';
-  const bub=document.createElement('div');bub.className='bub';bub.textContent=text;
-  wrap.appendChild(av);wrap.appendChild(bub);
-  document.getElementById('chat-msgs').appendChild(wrap);
-  scrollChat();return bub;
+  const b=document.createElement('div');b.className='bub';b.textContent=text;
+  w.appendChild(av);w.appendChild(b);document.getElementById('msgs').appendChild(w);
+  scrollMsgs();return b;
 }
-
-function addSystemMsg(text){
-  const el=document.createElement('div');
-  el.style.cssText='text-align:center;font-size:.76rem;color:var(--dim);padding:4px 0';
-  el.textContent=text;
-  document.getElementById('chat-msgs').appendChild(el);
-  scrollChat();
-}
-
-function scrollChat(){const c=document.getElementById('chat-msgs');c.scrollTop=c.scrollHeight}
-
-function renderHistory(){
-  const msgs=document.getElementById('chat-msgs');
-  msgs.innerHTML='';
-  for(const m of _history){const b=addBubble(m.role,m.content)}
-}
+function sysMsg(t){const e=document.createElement('div');e.className='sys-msg';e.textContent=t;document.getElementById('msgs').appendChild(e);scrollMsgs()}
+function scrollMsgs(){const c=document.getElementById('msgs');c.scrollTop=c.scrollHeight}
+function renderHist(){document.getElementById('msgs').innerHTML='';for(const m of _hist)addBub(m.role,m.content)}
 
 async function handleSend(){
-  const inp=document.getElementById('msg-input');
-  const text=inp.value.trim();if(!text)return;
-  const btn=document.getElementById('send-btn');
-  btn.disabled=true;inp.value='';inp.style.height='auto';
-
+  const ti=document.getElementById('ti'),text=ti.value.trim();if(!text)return;
+  const sb=document.getElementById('sb');sb.disabled=true;ti.value='';ti.style.height='auto';
   if(_mode==='chat'){
-    addBubble('user',text);
-    await chat(text);
+    addBub('user',text);await doChat(text);
   } else {
-    // 학습 모드
     const steps=parseInt(document.getElementById('step-sel').value);
-    const bar=document.getElementById('train-prog-bar');
-    const fill=document.getElementById('train-prog-fill');
-    bar.style.display='block';
-    addSystemMsg(`학습 시작: ${text.length}자, ${steps} 스텝`);
-    await trainOnText(text,steps,({step,total,loss})=>{
-      fill.style.width=(step/total*100)+'%';
-    });
-    bar.style.display='none';fill.style.width='0%';
-    addSystemMsg(`학습 완료! 최근 손실: ${_log.losses.slice(-1)[0]?.toFixed(4)||'-'}`);
-    updateStats();scheduleAutoSave();
-    // 학습 후 즉시 OneDrive 저장
-    saveAllToOneDrive();
+    const pbar=document.getElementById('pbar'),pfill=document.getElementById('pfill');
+    pbar.style.display='block';sysMsg(`학습 시작: ${text.length}자 / ${steps} 스텝`);
+    await trainText(text,steps,({step,total,loss})=>{pfill.style.width=(step/total*100)+'%'});
+    pbar.style.display='none';pfill.style.width='0%';
+    sysMsg(`학습 완료 — 손실: ${_log.losses.slice(-1)[0]?.toFixed(4)||'-'}`);
+    updateStats();saveToGist();
   }
-  btn.disabled=false;inp.focus();
+  sb.disabled=false;ti.focus();
 }
 
-function handleKey(e){
-  if(e.key==='Enter'&&!e.shiftKey&&!e.isComposing){e.preventDefault();handleSend()}
-}
+function handleKey(e){if(e.key==='Enter'&&!e.shiftKey&&!e.isComposing){e.preventDefault();handleSend()}}
 
-// 입력창 자동 높이
-document.addEventListener('DOMContentLoaded',()=>{
-  const inp=document.getElementById('msg-input');
-  inp.addEventListener('input',()=>{inp.style.height='auto';inp.style.height=Math.min(inp.scrollHeight,130)+'px'});
-});
-
-function togglePanel(){
-  document.getElementById('panel').classList.toggle('show');
-  document.getElementById('panel-overlay').classList.toggle('show');
-}
-function closePanel(){
-  document.getElementById('panel').classList.remove('show');
-  document.getElementById('panel-overlay').classList.remove('show');
-}
+const ti=document.getElementById('ti');
+ti.addEventListener('input',()=>{ti.style.height='auto';ti.style.height=Math.min(ti.scrollHeight,130)+'px'});
 
 function updateStats(){
   if(!_model)return;
-  document.getElementById('st-params').textContent=(paramCount()/1000).toFixed(0)+'K';
-  document.getElementById('st-steps').textContent=_log.steps;
-  const recent=_log.losses.slice(-20);
-  document.getElementById('st-loss').textContent=recent.length?(recent.reduce((a,b)=>a+b,0)/recent.length).toFixed(3):'-';
+  document.getElementById('st-p').textContent=(pcnt(_model)/1000).toFixed(0)+'K';
+  document.getElementById('st-s').textContent=_log.steps;
+  const r=_log.losses.slice(-20);
+  document.getElementById('st-l').textContent=r.length?(r.reduce((a,b)=>a+b,0)/r.length).toFixed(3):'-';
 }
 
-async function exportHistory(){
-  const blob=new Blob([JSON.stringify(_history,null,2)],{type:'application/json'});
-  const url=URL.createObjectURL(blob);
-  const a=document.createElement('a');a.href=url;a.download='chat-history.json';a.click();
-  URL.revokeObjectURL(url);
-}
+function togglePanel(){document.getElementById('panel').classList.toggle('show');document.getElementById('ov').classList.toggle('show')}
+function closePanel(){document.getElementById('panel').classList.remove('show');document.getElementById('ov').classList.remove('show')}
 
-async function clearHistory(){
-  if(!confirm('대화 기록을 삭제하시겠습니까?'))return;
-  _history=[];
-  document.getElementById('chat-msgs').innerHTML=`<div id="empty-hint" style="margin:auto;text-align:center;color:var(--dim);padding:20px"><div style="font-size:2.5rem;margin-bottom:10px">🧠</div><div style="font-size:.88rem">대화를 시작하세요</div></div>`;
-  scheduleAutoSave();
+function exportHistory(){
+  const b=new Blob([JSON.stringify(_hist,null,2)],{type:'application/json'});
+  const u=URL.createObjectURL(b);const a=document.createElement('a');a.href=u;a.download='chat-history.json';a.click();URL.revokeObjectURL(u);
 }
-
-async function logoutOneDrive(){
-  if(_msalApp)await _msalApp.logoutPopup().catch(()=>{});
-  _token=null;_msalApp=null;
-  document.getElementById('chat-wrap').classList.remove('show');
-  document.getElementById('login-screen').style.display='';
-  setSyncBadge('offline');
-}
+function clearHistory(){if(!confirm('대화 기록을 삭제하시겠습니까?'))return;_hist=[];document.getElementById('msgs').innerHTML='<div class="sys-msg" id="empty-hint">대화를 시작하거나 텍스트를 학습시켜 보세요</div>';schedSave()}
+function disconnect(){if(!confirm('GitHub 토큰을 삭제하고 로그아웃하시겠습니까?'))return;localStorage.removeItem('gh_tok');localStorage.removeItem('gh_gist');location.reload()}
+function manualSave(){saveToGist()}
 
 // ══════════════════════════════════════════════════════════════════════════════
-// 6. Microsoft 로그인 & 부트
+// GitHub 연결
 // ══════════════════════════════════════════════════════════════════════════════
-async function login(){
-  const cid=(document.getElementById('client-id').value.trim())||getClientId();
-  if(!cid){showErr('클라이언트 ID를 입력하세요');return}
-  saveClientId(cid);
-  const btn=document.getElementById('login-btn');btn.disabled=true;btn.textContent='로그인 중...';
+function showErr(msg){const e=document.getElementById('login-err');e.textContent=msg;e.style.display='block'}
+
+async function connectGitHub(){
+  const tok=(document.getElementById('tok-input').value.trim())||localStorage.getItem('gh_tok');
+  if(!tok||!tok.startsWith('gh')){showErr('올바른 GitHub 토큰을 입력하세요 (ghp_ 또는 github_pat_ 로 시작)');return}
+  const btn=document.getElementById('login-btn');btn.disabled=true;btn.textContent='연결 중...';
   try{
-    _msalApp=new msal.PublicClientApplication({
-      auth:{clientId:cid,authority:'https://login.microsoftonline.com/common',redirectUri:window.location.origin+window.location.pathname},
-      cache:{cacheLocation:'sessionStorage'},
-    });
-    await _msalApp.initialize();
-    await _msalApp.loginPopup({scopes:['Files.ReadWrite','User.Read']});
+    _tok=tok;
+    // 토큰 유효성 확인
+    const user=await ghGet(`${GH}/user`);
+    _ghUser=user.login;localStorage.setItem('gh_tok',tok);
     await bootApp();
   }catch(e){
-    showErr('로그인 실패: '+e.message);
-    btn.disabled=false;btn.textContent='Microsoft 계정으로 로그인';
+    showErr('연결 실패: 토큰을 확인하세요. (gist 권한 필요)');
+    btn.disabled=false;btn.textContent='GitHub 연결';
   }
 }
 
-function showErr(msg){
-  const el=document.getElementById('login-err');
-  el.textContent=msg;el.style.display='block';
-}
-
 async function bootApp(){
-  setSyncBadge('syncing','⟳ 불러오는 중');
-  // 사용자 정보
-  _token=await getToken();
-  const uRes=await fetch(`${GRAPH}/me`,{headers:{Authorization:`Bearer ${_token}`}});
-  _user=await uRes.json();
-  const name=_user.displayName||'';
-  document.getElementById('p-avatar').textContent=name[0]?.toUpperCase()||'?';
-  document.getElementById('p-name').textContent=name;
-  document.getElementById('p-email').textContent=_user.mail||_user.userPrincipalName||'';
+  setSB('busy','⟳ 불러오는 중');
+  // 기존 Gist ID 복원
+  _gistId=localStorage.getItem('gh_gist')||null;
 
-  // OneDrive에서 데이터 불러오기
-  const [weightsData,logData,historyData]=await Promise.all([
-    odDownload('minigpt-weights.json').catch(()=>null),
-    odDownload('minigpt-log.json').catch(()=>null),
-    odDownload('chat-history.json').catch(()=>null),
-  ]);
+  // 모델 초기화
+  _model=newModel();_opt=new Adam();
 
-  if(weightsData){_model=fromJSON(weightsData);addSystemMsg('OneDrive에서 가중치를 불러왔습니다.')}
-  else{_model=newModel();addSystemMsg('새 모델로 시작합니다.')}
-  if(logData)_log=logData;
-  if(historyData&&historyData.length){_history=historyData;renderHistory()}
-  _opt=new Adam();
+  // Gist에서 데이터 로드
+  if(_gistId){
+    try{
+      const gist=await ghGet(`${GH}/gists/${_gistId}`);
+      const w=await readGistFile(gist,'weights');
+      const l=await readGistFile(gist,'log');
+      const h=await readGistFile(gist,'history');
+      if(w){_model=fromJ(w);_opt=new Adam();sysMsg('GitHub Gist에서 데이터를 불러왔습니다.')}
+      if(l)_log=l;
+      if(h&&h.length){_hist=h;renderHist()}
+      updateGistInfo(gist);
+    }catch(e){
+      if(e.message.includes('404')){_gistId=null;localStorage.removeItem('gh_gist');sysMsg('저장된 Gist를 찾을 수 없습니다. 새로 시작합니다.')}
+      else sysMsg('Gist 불러오기 실패: '+e.message);
+    }
+  } else {
+    sysMsg('첫 저장 시 GitHub Gist가 자동 생성됩니다.');
+    document.getElementById('gist-info').textContent='첫 저장 시 자동 생성';
+  }
 
-  updateStats();setSyncBadge('synced');
+  updateStats();setSB(_gistId?'ok':'busy');
 
-  // UI 전환
+  // 화면 전환
   document.getElementById('login-screen').style.display='none';
   document.getElementById('chat-wrap').classList.add('show');
 
   // 페이지 종료 전 저장
-  window.addEventListener('beforeunload',()=>{if(_dirty)saveAllToOneDrive()});
+  window.addEventListener('beforeunload',()=>{if(_dirty)saveToGist()});
 }
 
-// ── 자동 로그인 시도 ──────────────────────────────────────────────────────────
+// ── 자동 로그인 ───────────────────────────────────────────────────────────────
 (async()=>{
-  const cid=getClientId();
-  if(!cid)return;
-  document.getElementById('client-id').value=cid;
-  try{
-    _msalApp=new msal.PublicClientApplication({
-      auth:{clientId:cid,authority:'https://login.microsoftonline.com/common',redirectUri:window.location.origin+window.location.pathname},
-      cache:{cacheLocation:'sessionStorage'},
-    });
-    await _msalApp.initialize();
-    const accs=_msalApp.getAllAccounts();
-    if(accs.length>0){await bootApp()}
-  }catch{}
+  const saved=localStorage.getItem('gh_tok');
+  if(saved){document.getElementById('tok-input').value=saved;_tok=saved;try{const u=await ghGet(`${GH}/user`);_ghUser=u.login;await bootApp()}catch{}}
 })();
 </script>
 </body>
