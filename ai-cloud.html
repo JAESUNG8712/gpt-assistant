@@ -1,0 +1,545 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="AI Cloud">
+<title>AI Cloud</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+:root{
+  --bg:#090912;--s:#11111a;--s2:#181824;--b:#222232;
+  --acc:#a78bfa;--g:#34d399;--text:#e2e2ef;
+  --dim:#5a5a7a;--err:#f87171;--warn:#fbbf24;--gh:#24292f;
+  --safe:env(safe-area-inset-bottom,0px);
+}
+html,body{height:100%;background:var(--bg);color:var(--text);font-family:'Segoe UI',system-ui,-apple-system,sans-serif;overscroll-behavior:none}
+body{display:flex;flex-direction:column;height:100dvh}
+
+header{background:var(--s);border-bottom:1px solid var(--b);padding:10px 16px;padding-top:calc(10px + env(safe-area-inset-top,0px));display:flex;align-items:center;gap:10px;flex-shrink:0;min-height:52px}
+.logo{font-size:1rem;font-weight:800;background:linear-gradient(135deg,var(--acc),#60a5fa);-webkit-background-clip:text;-webkit-text-fill-color:transparent;flex:1}
+#sync-badge{font-size:.68rem;padding:3px 9px;border-radius:10px;font-weight:600;white-space:nowrap;border:1px solid var(--b);color:var(--dim);background:var(--s2)}
+#sync-badge.ok{background:#0a1f14;color:var(--g);border-color:#1a4a2a}
+#sync-badge.busy{background:#1a1a0d;color:var(--warn);border-color:#3a3a1a}
+#sync-badge.err{background:#1f0a0a;color:var(--err);border-color:#3a1a1a}
+.hbtn{background:none;border:1px solid var(--b);color:var(--dim);border-radius:7px;padding:5px 10px;font-size:.75rem;cursor:pointer}
+.hbtn:hover{color:var(--text);border-color:var(--acc)}
+
+/* Login */
+#login-screen{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:20px;gap:18px;text-align:center}
+#login-screen h2{font-size:1.2rem;font-weight:700}
+#login-screen p{font-size:.85rem;color:var(--dim);line-height:1.7;max-width:360px}
+.field{width:100%;max-width:380px;display:flex;flex-direction:column;gap:5px;text-align:left}
+.field label{font-size:.76rem;color:var(--dim)}
+.field input{background:var(--s2);border:1px solid var(--b);color:var(--text);border-radius:8px;padding:10px 12px;font-size:.88rem;font-family:monospace;outline:none;width:100%}
+.field input:focus{border-color:var(--acc)}
+.field .hint{font-size:.72rem;color:var(--dim);line-height:1.6}
+.field .hint a{color:var(--acc);text-decoration:none}
+.field .hint a:hover{text-decoration:underline}
+.gh-btn{display:flex;align-items:center;justify-content:center;gap:10px;padding:13px 24px;background:var(--gh);color:#fff;border:none;border-radius:10px;font-size:.92rem;font-weight:600;cursor:pointer;min-height:48px;font-family:inherit;transition:opacity .2s;width:100%;max-width:380px}
+.gh-btn:hover{opacity:.85}
+.gh-btn:disabled{opacity:.5;cursor:not-allowed}
+#login-err{font-size:.82rem;color:var(--err);display:none;max-width:380px}
+
+/* Chat */
+#chat-wrap{flex:1;display:none;flex-direction:column;overflow:hidden}
+#chat-wrap.show{display:flex}
+#msgs{flex:1;overflow-y:auto;padding:14px 12px;display:flex;flex-direction:column;gap:12px;-webkit-overflow-scrolling:touch}
+.msg{display:flex;gap:8px;max-width:820px;width:100%}
+.msg.user{align-self:flex-end;flex-direction:row-reverse}
+.msg.ai{align-self:flex-start}
+.av{width:30px;height:30px;border-radius:50%;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:.72rem;font-weight:700}
+.msg.user .av{background:#2a2060}
+.msg.ai .av{background:#0d1a30}
+.bub{padding:10px 14px;border-radius:12px;font-size:.9rem;white-space:pre-wrap;word-break:break-word;line-height:1.65;max-width:calc(100% - 38px)}
+.msg.user .bub{background:#1e1a40;border-radius:12px 4px 12px 12px}
+.msg.ai .bub{background:var(--s);border:1px solid var(--b);border-radius:4px 12px 12px 12px}
+.streaming::after{content:'▌';animation:blink .7s step-end infinite;color:var(--acc)}
+@keyframes blink{50%{opacity:0}}
+.sys-msg{text-align:center;font-size:.74rem;color:var(--dim);padding:4px 0}
+
+/* Input */
+#input-area{padding:10px 12px;border-top:1px solid var(--b);background:var(--s);flex-shrink:0;padding-bottom:calc(10px + var(--safe))}
+.modes{display:flex;gap:8px;margin-bottom:8px;align-items:center}
+.chip{font-size:.74rem;padding:4px 10px;border-radius:8px;cursor:pointer;background:var(--s2);border:1px solid var(--b);color:var(--dim);transition:all .2s}
+.chip.on{background:#1a1040;color:var(--acc);border-color:var(--acc)}
+#step-sel{background:var(--s2);border:1px solid var(--b);color:var(--text);border-radius:6px;padding:3px 6px;font-size:.76rem;margin-left:auto;display:none}
+.irow{display:flex;gap:8px;align-items:flex-end}
+textarea#ti{flex:1;background:var(--s2);border:1px solid var(--b);color:var(--text);border-radius:10px;padding:10px 13px;font-size:.9rem;resize:none;min-height:44px;max-height:130px;font-family:inherit;outline:none;-webkit-appearance:none;transition:border-color .2s}
+textarea#ti:focus{border-color:var(--acc)}
+#sb{width:44px;height:44px;border:none;border-radius:10px;background:var(--acc);color:#fff;font-size:1.1rem;cursor:pointer;flex-shrink:0;transition:background .2s}
+#sb.tr{background:#238636}
+#sb:disabled{opacity:.4;cursor:not-allowed}
+.pbar{height:4px;background:var(--s2);border-radius:2px;overflow:hidden;margin-top:6px;display:none}
+.pfill{height:100%;background:var(--acc);transition:width .3s;border-radius:2px;width:0%}
+
+/* Panel */
+#ov{display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:50;backdrop-filter:blur(3px)}
+#ov.show{display:block}
+#panel{position:fixed;bottom:0;left:0;right:0;max-height:78vh;background:var(--s);border-top:1px solid var(--b);border-radius:20px 20px 0 0;z-index:51;padding:18px 18px;overflow-y:auto;transform:translateY(100%);transition:transform .28s cubic-bezier(.4,0,.2,1)}
+#panel.show{transform:translateY(0)}
+.ph{width:40px;height:4px;background:var(--b);border-radius:2px;margin:0 auto 16px;cursor:pointer}
+.ps{margin-bottom:16px;padding-bottom:16px;border-bottom:1px solid var(--b)}
+.ps:last-child{border:none;margin:0;padding:0}
+.ps h3{font-size:.78rem;font-weight:600;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;margin-bottom:10px}
+.sg{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.sv{background:var(--s2);border:1px solid var(--b);border-radius:8px;padding:10px;text-align:center}
+.svv{font-size:1.1rem;font-weight:700;color:var(--acc);display:block}
+.svl{font-size:.68rem;color:var(--dim);margin-top:2px}
+.pb{width:100%;padding:10px;border:1px solid var(--b);border-radius:8px;background:var(--s2);color:var(--text);font-size:.85rem;cursor:pointer;font-family:inherit;transition:all .2s;margin-top:6px}
+.pb:hover{border-color:var(--acc);color:var(--acc)}
+.pb.red{border-color:#3a1a1a;color:var(--err)}
+.pb.red:hover{background:#1f0a0a}
+.gist-info{background:var(--s2);border:1px solid var(--b);border-radius:8px;padding:10px;font-size:.76rem;color:var(--dim);word-break:break-all;line-height:1.6}
+.gist-info a{color:var(--acc);text-decoration:none}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">🧠 AI Cloud</div>
+  <div id="sync-badge">● 오프라인</div>
+  <button class="hbtn" onclick="togglePanel()">☰</button>
+</header>
+
+<!-- 로그인 화면 -->
+<div id="login-screen">
+  <div style="font-size:3rem">🐙</div>
+  <h2>GitHub로 시작하기</h2>
+  <p>GitHub 계정만 있으면 됩니다.<br>토큰 1개 발급으로 모든 기기에서<br>학습 내용이 자동 동기화됩니다.</p>
+
+  <div class="field">
+    <label>GitHub Personal Access Token</label>
+    <input type="password" id="tok-input" placeholder="ghp_xxxxxxxxxxxxxxxxxxxx">
+    <div class="hint">
+      발급 방법: <a href="https://github.com/settings/tokens/new?scopes=gist&description=AI-Cloud" target="_blank">github.com/settings/tokens</a><br>
+      → "Generate new token (classic)" → <strong>gist</strong> 체크 → 생성 → 복사
+    </div>
+  </div>
+
+  <button class="gh-btn" id="login-btn" onclick="connectGitHub()">
+    <svg width="20" height="20" viewBox="0 0 98 96" fill="#fff"><path d="M49 0C21.9 0 0 22 0 49.2c0 21.8 14 40.2 33.4 46.7 2.4.5 3.3-1 3.3-2.4v-8.4c-13.6 3-16.5-6.6-16.5-6.6-2.2-5.7-5.4-7.2-5.4-7.2-4.4-3 .3-3 .3-3 4.9.3 7.5 5 7.5 5 4.4 7.5 11.4 5.3 14.2 4.1.4-3.2 1.7-5.3 3.1-6.5-10.8-1.2-22.2-5.4-22.2-24.3 0-5.4 1.9-9.8 5-13.2-.5-1.2-2.2-6.2.5-13 0 0 4.1-1.3 13.4 5 3.9-1.1 8-1.6 12.2-1.6 4.1 0 8.3.5 12.2 1.6 9.2-6.3 13.3-5 13.3-5 2.7 6.8 1 11.8.5 13 3.1 3.4 5 7.8 5 13.2 0 18.9-11.5 23-22.4 24.2 1.8 1.5 3.3 4.5 3.3 9.2v13.6c0 1.3.9 2.9 3.4 2.4C84.1 89.3 98 71 98 49.2 98 22 76.1 0 49 0z"/></svg>
+    GitHub 연결
+  </button>
+  <div id="login-err"></div>
+</div>
+
+<!-- 채팅 -->
+<div id="chat-wrap">
+  <div id="msgs">
+    <div class="sys-msg" id="empty-hint">대화를 시작하거나 텍스트를 학습시켜 보세요</div>
+  </div>
+  <div id="input-area">
+    <div class="modes">
+      <div class="chip on" id="c-chat" onclick="setMode('chat')">💬 대화</div>
+      <div class="chip" id="c-train" onclick="setMode('train')">📚 학습</div>
+      <select id="step-sel">
+        <option value="100">100스텝</option>
+        <option value="300" selected>300스텝</option>
+        <option value="500">500스텝</option>
+      </select>
+    </div>
+    <div class="irow">
+      <textarea id="ti" rows="1" placeholder="메시지 입력..." onkeydown="handleKey(event)"></textarea>
+      <button id="sb" onclick="handleSend()">▶</button>
+    </div>
+    <div class="pbar" id="pbar"><div class="pfill" id="pfill"></div></div>
+  </div>
+</div>
+
+<!-- 패널 -->
+<div id="ov" onclick="closePanel()"></div>
+<div id="panel">
+  <div class="ph" onclick="closePanel()"></div>
+
+  <div class="ps">
+    <h3>모델 현황</h3>
+    <div class="sg">
+      <div class="sv"><span class="svv" id="st-p">-</span><div class="svl">파라미터</div></div>
+      <div class="sv"><span class="svv" id="st-s">0</span><div class="svl">학습 스텝</div></div>
+      <div class="sv"><span class="svv" id="st-l">-</span><div class="svl">손실값</div></div>
+    </div>
+  </div>
+
+  <div class="ps">
+    <h3>GitHub Gist 저장소</h3>
+    <div class="gist-info" id="gist-info">연결 대기중...</div>
+    <button class="pb" onclick="manualSave();closePanel()">지금 저장</button>
+    <button class="pb" onclick="loadFromGist();closePanel()">GitHub에서 불러오기</button>
+  </div>
+
+  <div class="ps">
+    <h3>대화 기록</h3>
+    <button class="pb" onclick="exportHistory();closePanel()">대화 기록 내보내기</button>
+    <button class="pb red" onclick="clearHistory();closePanel()">대화 기록 삭제</button>
+  </div>
+
+  <div class="ps">
+    <button class="pb red" onclick="disconnect();closePanel()">연결 해제 (토큰 삭제)</button>
+  </div>
+</div>
+
+<script>
+'use strict';
+// ══════════════════════════════════════════════════════════════════════════════
+// MiniGPT 엔진 (iPad/PC CPU로 실행 — 외부 의존성 없음)
+// ══════════════════════════════════════════════════════════════════════════════
+class M {
+  constructor(r,c,d){this.r=r;this.c=c;this.d=d instanceof Float32Array?d:new Float32Array(r*c)}
+  clone(){return new M(this.r,this.c,this.d.slice())}
+  static z(r,c){return new M(r,c)}
+  static fill(r,c,v){const m=new M(r,c);m.d.fill(v);return m}
+  static rn(r,c,std){const s=std??Math.sqrt(2/(r+c));const m=new M(r,c);for(let i=0;i<m.d.length;i+=2){const u=Math.random()||1e-10,u2=Math.random();const n=Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*u2);m.d[i]=n*s;if(i+1<m.d.length)m.d[i+1]=Math.sqrt(-2*Math.log(u))*Math.sin(2*Math.PI*u2)*s}return m}
+  add(B){const C=new M(this.r,this.c);for(let i=0;i<this.d.length;i++)C.d[i]=this.d[i]+B.d[i];return C}
+  sc(s){const C=new M(this.r,this.c);for(let i=0;i<this.d.length;i++)C.d[i]=this.d[i]*s;return C}
+  addIP(B){for(let i=0;i<this.d.length;i++)this.d[i]+=B.d[i];return this}
+  bias(b){const C=this.clone();for(let i=0;i<C.r;i++)for(let j=0;j<C.c;j++)C.d[i*C.c+j]+=b.d[j];return C}
+  sr(){const o=new M(1,this.c);for(let i=0;i<this.r;i++)for(let j=0;j<this.c;j++)o.d[j]+=this.d[i*this.c+j];return o}
+  row(i){return new M(1,this.c,this.d.slice(i*this.c,(i+1)*this.c))}
+  T(){const B=new M(this.c,this.r);for(let i=0;i<this.r;i++)for(let j=0;j<this.c;j++)B.d[j*this.r+i]=this.d[i*this.c+j];return B}
+  static mm(A,B){const C=new M(A.r,B.c);const ad=A.d,bd=B.d,cd=C.d,ac=A.c,bc=B.c;for(let i=0;i<A.r;i++){const ia=i*ac,ic=i*bc;for(let k=0;k<ac;k++){const a=ad[ia+k],kb=k*bc;for(let j=0;j<bc;j++)cd[ic+j]+=a*bd[kb+j]}}return C}
+  static sm(X){const R=new M(X.r,X.c);for(let i=0;i<X.r;i++){const o=i*X.c;let mx=-Infinity;for(let j=0;j<X.c;j++)if(X.d[o+j]>mx)mx=X.d[o+j];let s=0;for(let j=0;j<X.c;j++){R.d[o+j]=Math.exp(X.d[o+j]-mx);s+=R.d[o+j]}for(let j=0;j<X.c;j++)R.d[o+j]/=s}return R}
+  static smBk(dout,p){const dz=new M(p.r,p.c);for(let i=0;i<p.r;i++){const o=i*p.c;let dot=0;for(let j=0;j<p.c;j++)dot+=p.d[o+j]*dout.d[o+j];for(let j=0;j<p.c;j++)dz.d[o+j]=p.d[o+j]*(dout.d[o+j]-dot)}return dz}
+  relu(){const C=new M(this.r,this.c);for(let i=0;i<this.d.length;i++)C.d[i]=this.d[i]>0?this.d[i]:0;return C}
+  static rBk(dout,x){const dx=new M(x.r,x.c);for(let i=0;i<x.d.length;i++)dx.d[i]=x.d[i]>0?dout.d[i]:0;return dx}
+  static ln(X,g,b,eps=1e-5){const Y=new M(X.r,X.c);const ms=new Float32Array(X.r),rs=new Float32Array(X.r);for(let i=0;i<X.r;i++){const o=i*X.c;let mean=0;for(let j=0;j<X.c;j++)mean+=X.d[o+j];mean/=X.c;let v=0;for(let j=0;j<X.c;j++)v+=(X.d[o+j]-mean)**2;v/=X.c;const rstd=1/Math.sqrt(v+eps);ms[i]=mean;rs[i]=rstd;for(let j=0;j<X.c;j++)Y.d[o+j]=(X.d[o+j]-mean)*rstd*g.d[j]+b.d[j]}return{Y,ms,rs}}
+  static lnBk(dout,X,g,ms,rs){const T=X.r,d=X.c;const dX=new M(T,d);const dG=new Float32Array(d),dB=new Float32Array(d);for(let i=0;i<T;i++){const o=i*d,mean=ms[i],rstd=rs[i];let dx_h=0,sd=0;for(let j=0;j<d;j++){const xh=(X.d[o+j]-mean)*rstd;dx_h+=xh*dout.d[o+j]*g.d[j];sd+=dout.d[o+j]*g.d[j];dG[j]+=xh*dout.d[o+j];dB[j]+=dout.d[o+j]}for(let j=0;j<d;j++){const xh=(X.d[o+j]-mean)*rstd;dX.d[o+j]=rstd*(dout.d[o+j]*g.d[j]-(sd+xh*dx_h)/d)}}return{dX,dG:new M(1,d,dG),dB:new M(1,d,dB)}}
+  static cm(T){const Mx=new M(T,T);for(let i=0;i<T;i++)for(let j=i+1;j<T;j++)Mx.d[i*T+j]=-1e9;return Mx}
+}
+
+const Tok={
+  enc:t=>Array.from(new TextEncoder().encode(t)),
+  dec:a=>{try{return new TextDecoder().decode(new Uint8Array(a.filter(x=>x>=1&&x<=255)))}catch{return''}}
+};
+
+const CFG={V:256,C:128,D:64,H:2,L:2,F:128};
+const mkP=(r,c)=>({W:M.rn(r,c),G:M.z(r,c)});
+const mkB=s=>({W:M.z(1,s),G:M.z(1,s)});
+const mkN=s=>({gamma:{W:M.fill(1,s,1),G:M.z(1,s)},beta:{W:M.z(1,s),G:M.z(1,s)}});
+
+function newModel(){
+  const{V,C,D,H,L,F}=CFG,embed=M.rn(V,D,0.02),pos=M.rn(C,D,0.01),layers=[];
+  for(let l=0;l<L;l++)layers.push({Wq:mkP(D,D),bq:mkB(D),Wk:mkP(D,D),bk:mkB(D),Wv:mkP(D,D),bv:mkB(D),Wo:mkP(D,D),bo:mkB(D),W1:mkP(D,F),b1:mkB(F),W2:mkP(F,D),b2:mkB(D),ln1:mkN(D),ln2:mkN(D)});
+  return{cfg:CFG,embed,pos,layers,lmH:mkP(D,V),_eg:null};
+}
+
+function fwd(model,toks){
+  const{cfg:{D,H},embed,pos,layers,lmH}=model;const T=toks.length,hd=D/H;const cache={toks,T,lc:[]};
+  let X=new M(T,D);for(let i=0;i<T;i++)for(let d=0;d<D;d++)X.d[i*D+d]=embed.d[toks[i]*D+d]+pos.d[i*D+d];cache.X0=X;
+  for(let l=0;l<layers.length;l++){
+    const ly=layers[l],lc={};const Q=M.mm(X,ly.Wq.W).bias(ly.bq.W),K=M.mm(X,ly.Wk.W).bias(ly.bk.W),V=M.mm(X,ly.Wv.W).bias(ly.bv.W);
+    const co=M.z(T,D),ha=[],sc=1/Math.sqrt(hd);
+    for(let h=0;h<H;h++){const hs=h*hd,Qh=new M(T,hd),Kh=new M(T,hd),Vh=new M(T,hd);for(let i=0;i<T;i++)for(let d=0;d<hd;d++){Qh.d[i*hd+d]=Q.d[i*D+hs+d];Kh.d[i*hd+d]=K.d[i*D+hs+d];Vh.d[i*hd+d]=V.d[i*D+hs+d]}const at=M.sm(M.mm(Qh,Kh.T()).sc(sc).add(M.cm(T))),ch=M.mm(at,Vh);for(let i=0;i<T;i++)for(let d=0;d<hd;d++)co.d[i*D+hs+d]=ch.d[i*hd+d];ha.push({Qh,Kh,Vh,attn:at})}
+    const ap=M.mm(co,ly.Wo.W).bias(ly.bo.W),r1=X.add(ap),ln1=M.ln(r1,ly.ln1.gamma.W,ly.ln1.beta.W);
+    const ffp=M.mm(ln1.Y,ly.W1.W).bias(ly.b1.W),h1=ffp.relu(),ff=M.mm(h1,ly.W2.W).bias(ly.b2.W),r2=ln1.Y.add(ff),ln2=M.ln(r2,ly.ln2.gamma.W,ly.ln2.beta.W);
+    lc.X=X;lc.Q=Q;lc.K=K;lc.V=V;lc.ha=ha;lc.co=co;lc.ap=ap;lc.r1=r1;lc.ln1=ln1;lc.h1=h1;lc.ffp=ffp;lc.ff=ff;lc.r2=r2;lc.ln2=ln2;cache.lc.push(lc);X=ln2.Y;
+  }
+  cache.Xf=X;return{logits:M.mm(X,lmH.W),cache};
+}
+
+function lossGrad(logits,targets){
+  const T=targets.length,V=logits.c;let L=0;const dL=M.z(T,V);
+  for(let i=0;i<T;i++){const o=i*V;let mx=-Infinity;for(let j=0;j<V;j++)if(logits.d[o+j]>mx)mx=logits.d[o+j];let s=0;const p=new Float32Array(V);for(let j=0;j<V;j++){p[j]=Math.exp(logits.d[o+j]-mx);s+=p[j]}for(let j=0;j<V;j++)p[j]/=s;L-=Math.log(Math.max(p[targets[i]],1e-10));for(let j=0;j<V;j++)dL.d[o+j]=p[j]/T;dL.d[o+targets[i]]-=1/T}
+  return{loss:L/T,dL};
+}
+
+function bwd(model,cache,dL){
+  const{cfg:{D,H},embed,layers,lmH}=model;const{T,toks,lc}=cache;const hd=D/H,sc=1/Math.sqrt(hd);
+  lmH.G.addIP(M.mm(cache.Xf.T(),dL));let dX=M.mm(dL,lmH.W.T());
+  for(let l=layers.length-1;l>=0;l--){
+    const ly=layers[l],c=lc[l];const{dX:dL2,dG:g2,dB:b2}=M.lnBk(dX,c.r2,ly.ln2.gamma.W,c.ln2.ms,c.ln2.rs);ly.ln2.gamma.G.addIP(g2);ly.ln2.beta.G.addIP(b2);
+    ly.b2.G.addIP(dL2.sr());ly.W2.G.addIP(M.mm(c.h1.T(),dL2));const dH=M.rBk(M.mm(dL2,ly.W2.W.T()),c.ffp);
+    ly.b1.G.addIP(dH.sr());ly.W1.G.addIP(M.mm(c.ln1.Y.T(),dH));
+    const{dX:dL1,dG:g1,dB:b1}=M.lnBk(M.mm(dH,ly.W1.W.T()).add(dL2),c.r1,ly.ln1.gamma.W,c.ln1.ms,c.ln1.rs);ly.ln1.gamma.G.addIP(g1);ly.ln1.beta.G.addIP(b1);
+    ly.bo.G.addIP(dL1.sr());ly.Wo.G.addIP(M.mm(c.co.T(),dL1));const dCo=M.mm(dL1,ly.Wo.W.T());
+    const dQ=M.z(T,D),dK=M.z(T,D),dV=M.z(T,D);
+    for(let h=0;h<H;h++){const hs=h*hd;const{Qh,Kh,Vh,attn}=c.ha[h];const dCh=new M(T,hd);for(let i=0;i<T;i++)for(let d=0;d<hd;d++)dCh.d[i*hd+d]=dCo.d[i*D+hs+d];const dA=M.mm(dCh,Vh.T()),dVh=M.mm(attn.T(),dCh),dS=M.smBk(dA,attn).sc(sc);const dQh=M.mm(dS,Kh),dKh=M.mm(dS.T(),Qh);for(let i=0;i<T;i++)for(let d=0;d<hd;d++){dQ.d[i*D+hs+d]+=dQh.d[i*hd+d];dK.d[i*D+hs+d]+=dKh.d[i*hd+d];dV.d[i*D+hs+d]+=dVh.d[i*hd+d]}}
+    ly.bq.G.addIP(dQ.sr());ly.bk.G.addIP(dK.sr());ly.bv.G.addIP(dV.sr());ly.Wq.G.addIP(M.mm(c.X.T(),dQ));ly.Wk.G.addIP(M.mm(c.X.T(),dK));ly.Wv.G.addIP(M.mm(c.X.T(),dV));
+    dX=dL1.add(M.mm(dQ,ly.Wq.W.T()).add(M.mm(dK,ly.Wk.W.T())).add(M.mm(dV,ly.Wv.W.T())));
+  }
+  if(!model._eg)model._eg=M.z(embed.r,embed.c);
+  for(let i=0;i<T;i++){const tk=toks[i],o=i*D;for(let d=0;d<D;d++)model._eg.d[tk*D+d]+=dX.d[o+d]}
+}
+
+class Adam{
+  constructor(){this.t=0;this._s=new Map()}
+  step(ps,embed,eG){
+    this.t++;const lr=3e-4,b1=0.9,b2=0.999,eps=1e-8,wd=0.01,t=this.t,bc1=1-b1**t,bc2=1-b2**t;
+    const u=(W,G)=>{if(!this._s.has(W))this._s.set(W,{m:new Float32Array(W.d.length),v:new Float32Array(W.d.length)});const{m,v}=this._s.get(W);for(let i=0;i<W.d.length;i++){const g=G.d[i]+wd*W.d[i];m[i]=b1*m[i]+(1-b1)*g;v[i]=b2*v[i]+(1-b2)*g*g;W.d[i]-=lr*(m[i]/bc1)/(Math.sqrt(v[i]/bc2)+eps)}};
+    for(const p of ps)u(p.W,p.G);
+    if(embed&&eG){if(!this._s.has(embed))this._s.set(embed,{m:new Float32Array(embed.d.length),v:new Float32Array(embed.d.length)});const{m,v}=this._s.get(embed);for(let i=0;i<embed.r;i++){let has=false;const o=i*embed.c;for(let d=0;d<embed.c;d++)if(eG.d[o+d]!==0){has=true;break}if(!has)continue;for(let d=0;d<embed.c;d++){const g=eG.d[o+d]+wd*embed.d[o+d];m[o+d]=b1*m[o+d]+(1-b1)*g;v[o+d]=b2*v[o+d]+(1-b2)*g*g;embed.d[o+d]-=lr*(m[o+d]/bc1)/(Math.sqrt(v[o+d]/bc2)+eps)}}}
+  }
+  static clip(ps,eg,mn=1.0){let n2=0;for(const p of ps)for(const g of p.G.d)n2+=g*g;if(eg)for(const g of eg.d)n2+=g*g;const n=Math.sqrt(n2);if(n>mn){const s=mn/n;for(const p of ps)for(let i=0;i<p.G.d.length;i++)p.G.d[i]*=s;if(eg)for(let i=0;i<eg.d.length;i++)eg.d[i]*=s}}
+}
+
+function allPs(m){const p=[];for(const l of m.layers){for(const k of['Wq','bq','Wk','bk','Wv','bv','Wo','bo','W1','b1','W2','b2'])p.push(l[k]);p.push(l.ln1.gamma,l.ln1.beta,l.ln2.gamma,l.ln2.beta)}p.push(m.lmH);return p}
+function zeroG(m){for(const p of allPs(m))p.G.d.fill(0);if(m._eg)m._eg.d.fill(0)}
+function pcnt(m){return allPs(m).reduce((s,p)=>s+p.W.d.length,0)+m.embed.d.length+m.pos.d.length}
+
+const sM=m=>({r:m.r,c:m.c,d:Array.from(m.d)});
+const dM=s=>new M(s.r,s.c,new Float32Array(s.d));
+const mkLP=s=>({W:dM(s.W),G:M.z(dM(s.W).r,dM(s.W).c)});
+function toJ(model){return{cfg:model.cfg,embed:sM(model.embed),pos:sM(model.pos),lmH:{W:sM(model.lmH.W)},layers:model.layers.map(l=>({Wq:{W:sM(l.Wq.W)},bq:{W:sM(l.bq.W)},Wk:{W:sM(l.Wk.W)},bk:{W:sM(l.bk.W)},Wv:{W:sM(l.Wv.W)},bv:{W:sM(l.bv.W)},Wo:{W:sM(l.Wo.W)},bo:{W:sM(l.bo.W)},W1:{W:sM(l.W1.W)},b1:{W:sM(l.b1.W)},W2:{W:sM(l.W2.W)},b2:{W:sM(l.b2.W)},ln1:{gamma:{W:sM(l.ln1.gamma.W)},beta:{W:sM(l.ln1.beta.W)}},ln2:{gamma:{W:sM(l.ln2.gamma.W)},beta:{W:sM(l.ln2.beta.W)}}}))};}
+function fromJ(j){const model=newModel();model.embed=dM(j.embed);model.pos=dM(j.pos);model.lmH={W:dM(j.lmH.W),G:M.z(CFG.D,CFG.V)};model.layers=j.layers.map(l=>({Wq:mkLP(l.Wq),bq:mkLP(l.bq),Wk:mkLP(l.Wk),bk:mkLP(l.bk),Wv:mkLP(l.Wv),bv:mkLP(l.bv),Wo:mkLP(l.Wo),bo:mkLP(l.bo),W1:mkLP(l.W1),b1:mkLP(l.b1),W2:mkLP(l.W2),b2:mkLP(l.b2),ln1:{gamma:mkLP(l.ln1.gamma),beta:mkLP(l.ln1.beta)},ln2:{gamma:mkLP(l.ln2.gamma),beta:mkLP(l.ln2.beta)}}));return model;}
+
+function gen(model,prompt,{maxNew=200,temp=0.8,topK=40}={}){
+  let toks=Tok.enc(prompt);if(!toks.length)toks=[10];const out=[],V=model.cfg.V;
+  for(let s=0;s<maxNew;s++){const ctx=toks.slice(-model.cfg.C);const{logits}=fwd(model,ctx);const T=ctx.length,sc=new Float32Array(V);for(let j=0;j<V;j++)sc[j]=logits.d[(T-1)*V+j]/Math.max(temp,1e-6);if(topK<V){const sv=[...sc].map((v,i)=>({v,i})).sort((a,b)=>b.v-a.v);const th=sv[topK].v;for(let j=0;j<V;j++)if(sc[j]<th)sc[j]=-1e9}let mx=-Infinity;for(let j=0;j<V;j++)if(sc[j]>mx)mx=sc[j];let sum=0;const p=new Float32Array(V);for(let j=0;j<V;j++){p[j]=Math.exp(sc[j]-mx);sum+=p[j]}let r=Math.random()*sum,nt=V-1;for(let j=0;j<V;j++){r-=p[j];if(r<=0){nt=j;break}}toks.push(nt);out.push(nt);}return Tok.dec(out);
+}
+
+// ── 데이터 압축 (GitHub Gist 파일 크기 감소) ─────────────────────────────────
+async function compress(obj){
+  try{
+    const cs=new CompressionStream('deflate');const w=cs.writable.getWriter();
+    w.write(new TextEncoder().encode(JSON.stringify(obj)));w.close();
+    const buf=await new Response(cs.readable).arrayBuffer();
+    return{_compressed:true,data:btoa(String.fromCharCode(...new Uint8Array(buf)))};
+  }catch{return obj}
+}
+async function decompress(obj){
+  if(!obj?._compressed)return obj;
+  try{
+    const bytes=Uint8Array.from(atob(obj.data),c=>c.charCodeAt(0));
+    const ds=new DecompressionStream('deflate');const w=ds.writable.getWriter();
+    w.write(bytes);w.close();
+    return JSON.parse(await new Response(ds.readable).text());
+  }catch{return obj}
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// GitHub Gist 저장소
+// ══════════════════════════════════════════════════════════════════════════════
+const GH='https://api.github.com';
+let _tok=null,_gistId=null,_ghUser=null;
+
+function ghHeaders(){return{'Authorization':`Bearer ${_tok}`,'Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28','Content-Type':'application/json'}}
+
+async function ghGet(url){const r=await fetch(url,{headers:ghHeaders()});if(!r.ok)throw new Error(`GitHub ${r.status}`);return r.json()}
+async function ghPost(url,body){const r=await fetch(url,{method:'POST',headers:ghHeaders(),body:JSON.stringify(body)});if(!r.ok)throw new Error(`GitHub ${r.status}: ${await r.text()}`);return r.json()}
+async function ghPatch(url,body){const r=await fetch(url,{method:'PATCH',headers:ghHeaders(),body:JSON.stringify(body)});if(!r.ok)throw new Error(`GitHub ${r.status}: ${await r.text()}`);return r.json()}
+
+// Gist 파일 읽기 (대용량 파일은 raw_url로 폴백)
+async function readGistFile(gist,name){
+  const f=gist.files?.[name];if(!f)return null;
+  const raw=f.truncated?await(await fetch(f.raw_url)).text():f.content;
+  return decompress(JSON.parse(raw));
+}
+
+async function loadFromGist(){
+  if(!_tok||!_gistId)return;
+  setSB('busy','⟳ 불러오는 중');
+  try{
+    const gist=await ghGet(`${GH}/gists/${_gistId}`);
+    const w=await readGistFile(gist,'weights');
+    const l=await readGistFile(gist,'log');
+    const h=await readGistFile(gist,'history');
+    if(w){_model=fromJ(w);_opt=new Adam();sysMsg('GitHub Gist에서 가중치를 불러왔습니다.')}
+    if(l)_log=l;
+    if(h&&h.length){_hist=h;renderHist()}
+    updateStats();setSB('ok');
+  }catch(e){setSB('err','⚠ '+e.message.slice(0,20));sysMsg('불러오기 실패: '+e.message)}
+}
+
+async function saveToGist(){
+  if(!_tok||_saving)return;
+  _saving=true;setSB('busy','⟳ 저장 중');
+  try{
+    const[cw,cl,ch]=await Promise.all([compress(toJ(_model)),compress(_log),compress(_hist)]);
+    const files={
+      'weights':{content:JSON.stringify(cw)},
+      'log':{content:JSON.stringify(cl)},
+      'history':{content:JSON.stringify(ch)},
+    };
+    if(_gistId){
+      await ghPatch(`${GH}/gists/${_gistId}`,{files});
+    } else {
+      const g=await ghPost(`${GH}/gists`,{description:`AI-Cloud MiniGPT — ${_ghUser||'user'}`,public:false,files});
+      _gistId=g.id;localStorage.setItem('gh_gist',_gistId);
+      updateGistInfo(g);
+    }
+    _dirty=false;setSB('ok','☁ 저장됨');
+  }catch(e){setSB('err','⚠ 저장실패')}
+  finally{_saving=false}
+}
+
+function updateGistInfo(gist){
+  const el=document.getElementById('gist-info');
+  if(!gist){el.textContent='연결 안됨';return}
+  const url=`https://gist.github.com/${_gistId}`;
+  el.innerHTML=`ID: <a href="${url}" target="_blank">${_gistId.slice(0,12)}...</a><br>비공개 Gist (본인만 접근 가능)`;
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// 앱 상태
+// ══════════════════════════════════════════════════════════════════════════════
+let _model=null,_opt=null,_log={steps:0,losses:[],chars:0};
+let _hist=[],_dirty=false,_saving=false,_mode='chat';
+let _autoTimer=null;
+
+function schedSave(){_dirty=true;clearTimeout(_autoTimer);_autoTimer=setTimeout(saveToGist,30000)}
+
+// ── 학습 ─────────────────────────────────────────────────────────────────────
+async function trainText(text,steps,onProg){
+  const toks=Tok.enc(text);_log.chars+=text.length;const C=_model.cfg.C;
+  for(let i=0;i<steps;i++){
+    if(toks.length<C+1)break;
+    const st=Math.floor(Math.random()*(toks.length-C)),inp=toks.slice(st,st+C),tgt=toks.slice(st+1,st+C+1);
+    zeroG(_model);const{logits,cache}=fwd(_model,inp);const{loss,dL}=lossGrad(logits,tgt);
+    bwd(_model,cache,dL);Adam.clip(allPs(_model),_model._eg,1.0);_opt.step(allPs(_model),_model.embed,_model._eg);
+    _log.steps++;_log.losses.push(parseFloat(loss.toFixed(4)));if(_log.losses.length>300)_log.losses=_log.losses.slice(-300);
+    if(i%10===0){onProg&&onProg({step:i+1,total:steps,loss});await new Promise(r=>setTimeout(r,0))}
+  }
+}
+
+// ── 대화 ─────────────────────────────────────────────────────────────────────
+async function doChat(userMsg){
+  _hist.push({role:'user',content:userMsg,ts:Date.now()});
+  const aiBub=addBub('ai');aiBub.classList.add('streaming');
+  let full='';
+  for(let i=0;i<12;i++){full+=gen(_model,userMsg+full,{maxNew:25,temp:0.8});aiBub.textContent=full;scrollMsgs();await new Promise(r=>setTimeout(r,0))}
+  aiBub.classList.remove('streaming');
+  _hist.push({role:'ai',content:full,ts:Date.now()});
+  trainText(userMsg+'\n'+full+'\n',50,null).catch(()=>{});
+  schedSave();
+  if(_hist.length%10===0)saveToGist();
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// UI
+// ══════════════════════════════════════════════════════════════════════════════
+function setSB(state,msg){
+  const b=document.getElementById('sync-badge');
+  b.className=state==='ok'?'ok':state==='busy'?'busy':state==='err'?'err':'';
+  b.textContent=msg||(state==='ok'?'☁ 저장됨':state==='busy'?'⟳ 저장 중':state==='err'?'⚠ 오류':'● 오프라인');
+}
+
+function setMode(m){
+  _mode=m;
+  document.getElementById('c-chat').classList.toggle('on',m==='chat');
+  document.getElementById('c-train').classList.toggle('on',m==='train');
+  document.getElementById('step-sel').style.display=m==='train'?'':'none';
+  document.getElementById('sb').className=m==='train'?'tr':'';
+  document.getElementById('ti').placeholder=m==='chat'?'메시지 입력... (Enter 전송)':'학습할 텍스트를 입력하세요...';
+}
+
+function addBub(role,text=''){
+  const h=document.getElementById('empty-hint');if(h)h.remove();
+  const w=document.createElement('div');w.className='msg '+role;
+  const av=document.createElement('div');av.className='av';av.textContent=role==='user'?'나':'AI';
+  const b=document.createElement('div');b.className='bub';b.textContent=text;
+  w.appendChild(av);w.appendChild(b);document.getElementById('msgs').appendChild(w);
+  scrollMsgs();return b;
+}
+function sysMsg(t){const e=document.createElement('div');e.className='sys-msg';e.textContent=t;document.getElementById('msgs').appendChild(e);scrollMsgs()}
+function scrollMsgs(){const c=document.getElementById('msgs');c.scrollTop=c.scrollHeight}
+function renderHist(){document.getElementById('msgs').innerHTML='';for(const m of _hist)addBub(m.role,m.content)}
+
+async function handleSend(){
+  const ti=document.getElementById('ti'),text=ti.value.trim();if(!text)return;
+  const sb=document.getElementById('sb');sb.disabled=true;ti.value='';ti.style.height='auto';
+  if(_mode==='chat'){
+    addBub('user',text);await doChat(text);
+  } else {
+    const steps=parseInt(document.getElementById('step-sel').value);
+    const pbar=document.getElementById('pbar'),pfill=document.getElementById('pfill');
+    pbar.style.display='block';sysMsg(`학습 시작: ${text.length}자 / ${steps} 스텝`);
+    await trainText(text,steps,({step,total,loss})=>{pfill.style.width=(step/total*100)+'%'});
+    pbar.style.display='none';pfill.style.width='0%';
+    sysMsg(`학습 완료 — 손실: ${_log.losses.slice(-1)[0]?.toFixed(4)||'-'}`);
+    updateStats();saveToGist();
+  }
+  sb.disabled=false;ti.focus();
+}
+
+function handleKey(e){if(e.key==='Enter'&&!e.shiftKey&&!e.isComposing){e.preventDefault();handleSend()}}
+
+const ti=document.getElementById('ti');
+ti.addEventListener('input',()=>{ti.style.height='auto';ti.style.height=Math.min(ti.scrollHeight,130)+'px'});
+
+function updateStats(){
+  if(!_model)return;
+  document.getElementById('st-p').textContent=(pcnt(_model)/1000).toFixed(0)+'K';
+  document.getElementById('st-s').textContent=_log.steps;
+  const r=_log.losses.slice(-20);
+  document.getElementById('st-l').textContent=r.length?(r.reduce((a,b)=>a+b,0)/r.length).toFixed(3):'-';
+}
+
+function togglePanel(){document.getElementById('panel').classList.toggle('show');document.getElementById('ov').classList.toggle('show')}
+function closePanel(){document.getElementById('panel').classList.remove('show');document.getElementById('ov').classList.remove('show')}
+
+function exportHistory(){
+  const b=new Blob([JSON.stringify(_hist,null,2)],{type:'application/json'});
+  const u=URL.createObjectURL(b);const a=document.createElement('a');a.href=u;a.download='chat-history.json';a.click();URL.revokeObjectURL(u);
+}
+function clearHistory(){if(!confirm('대화 기록을 삭제하시겠습니까?'))return;_hist=[];document.getElementById('msgs').innerHTML='<div class="sys-msg" id="empty-hint">대화를 시작하거나 텍스트를 학습시켜 보세요</div>';schedSave()}
+function disconnect(){if(!confirm('GitHub 토큰을 삭제하고 로그아웃하시겠습니까?'))return;localStorage.removeItem('gh_tok');localStorage.removeItem('gh_gist');location.reload()}
+function manualSave(){saveToGist()}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// GitHub 연결
+// ══════════════════════════════════════════════════════════════════════════════
+function showErr(msg){const e=document.getElementById('login-err');e.textContent=msg;e.style.display='block'}
+
+async function connectGitHub(){
+  const tok=(document.getElementById('tok-input').value.trim())||localStorage.getItem('gh_tok');
+  if(!tok||!tok.startsWith('gh')){showErr('올바른 GitHub 토큰을 입력하세요 (ghp_ 또는 github_pat_ 로 시작)');return}
+  const btn=document.getElementById('login-btn');btn.disabled=true;btn.textContent='연결 중...';
+  try{
+    _tok=tok;
+    // 토큰 유효성 확인
+    const user=await ghGet(`${GH}/user`);
+    _ghUser=user.login;localStorage.setItem('gh_tok',tok);
+    await bootApp();
+  }catch(e){
+    showErr('연결 실패: 토큰을 확인하세요. (gist 권한 필요)');
+    btn.disabled=false;btn.textContent='GitHub 연결';
+  }
+}
+
+async function bootApp(){
+  setSB('busy','⟳ 불러오는 중');
+  // 기존 Gist ID 복원
+  _gistId=localStorage.getItem('gh_gist')||null;
+
+  // 모델 초기화
+  _model=newModel();_opt=new Adam();
+
+  // Gist에서 데이터 로드
+  if(_gistId){
+    try{
+      const gist=await ghGet(`${GH}/gists/${_gistId}`);
+      const w=await readGistFile(gist,'weights');
+      const l=await readGistFile(gist,'log');
+      const h=await readGistFile(gist,'history');
+      if(w){_model=fromJ(w);_opt=new Adam();sysMsg('GitHub Gist에서 데이터를 불러왔습니다.')}
+      if(l)_log=l;
+      if(h&&h.length){_hist=h;renderHist()}
+      updateGistInfo(gist);
+    }catch(e){
+      if(e.message.includes('404')){_gistId=null;localStorage.removeItem('gh_gist');sysMsg('저장된 Gist를 찾을 수 없습니다. 새로 시작합니다.')}
+      else sysMsg('Gist 불러오기 실패: '+e.message);
+    }
+  } else {
+    sysMsg('첫 저장 시 GitHub Gist가 자동 생성됩니다.');
+    document.getElementById('gist-info').textContent='첫 저장 시 자동 생성';
+  }
+
+  updateStats();setSB(_gistId?'ok':'busy');
+
+  // 화면 전환
+  document.getElementById('login-screen').style.display='none';
+  document.getElementById('chat-wrap').classList.add('show');
+
+  // 페이지 종료 전 저장
+  window.addEventListener('beforeunload',()=>{if(_dirty)saveToGist()});
+}
+
+// ── 자동 로그인 ───────────────────────────────────────────────────────────────
+(async()=>{
+  const saved=localStorage.getItem('gh_tok');
+  if(saved){document.getElementById('tok-input').value=saved;_tok=saved;try{const u=await ghGet(`${GH}/user`);_ghUser=u.login;await bootApp()}catch{}}
+})();
+</script>
+</body>
+</html>

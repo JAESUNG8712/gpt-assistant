@@ -1,0 +1,650 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="MiniGPT">
+<title>MiniGPT — iPad</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+:root{--bg:#0a0a0f;--s:#13131c;--s2:#1a1a26;--b:#252535;--acc:#a78bfa;--g:#34d399;--text:#e2e2ef;--dim:#666;--err:#f87171;--warn:#fbbf24;--safe:env(safe-area-inset-bottom,0px)}
+html,body{height:100%;background:var(--bg);color:var(--text);font-family:'Segoe UI',system-ui,-apple-system,sans-serif;overscroll-behavior:none}
+body{display:flex;flex-direction:column;height:100dvh}
+
+header{background:var(--s);border-bottom:1px solid var(--b);padding:12px 18px;padding-top:calc(12px + env(safe-area-inset-top,0px));display:flex;align-items:center;gap:10px;flex-shrink:0}
+header h1{font-size:1rem;font-weight:700;flex:1}
+.chip{font-size:.68rem;padding:2px 8px;border-radius:7px;font-weight:600;background:#1a0d30;color:var(--acc);border:1px solid #3a1a60}
+
+nav{display:flex;background:var(--s);border-bottom:1px solid var(--b);flex-shrink:0;overflow-x:auto}
+.nav-btn{flex:1;min-width:70px;padding:10px 8px;font-size:.78rem;background:none;border:none;color:var(--dim);cursor:pointer;border-bottom:2px solid transparent;white-space:nowrap;font-family:inherit}
+.nav-btn.active{color:var(--acc);border-bottom-color:var(--acc)}
+
+.tab{flex:1;overflow-y:auto;padding:14px;display:none;flex-direction:column;gap:14px;-webkit-overflow-scrolling:touch;padding-bottom:calc(14px + var(--safe))}
+.tab.show{display:flex}
+
+.card{background:var(--s);border:1px solid var(--b);border-radius:10px;padding:16px}
+.card h2{font-size:.9rem;font-weight:600;margin-bottom:10px}
+.card p{font-size:.82rem;color:var(--dim);line-height:1.65}
+
+.stats{display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin:10px 0}
+.stat{background:var(--s2);border:1px solid var(--b);border-radius:8px;padding:10px;text-align:center}
+.stat-val{font-size:1.2rem;font-weight:700;color:var(--acc);display:block}
+.stat-lbl{font-size:.68rem;color:var(--dim);margin-top:2px}
+
+label.lbl{font-size:.76rem;color:var(--dim);display:block;margin-bottom:4px;margin-top:10px}
+textarea,input,select{background:var(--s2);border:1px solid var(--b);color:var(--text);border-radius:8px;padding:9px 12px;font-family:inherit;font-size:.88rem;outline:none;width:100%;-webkit-appearance:none}
+textarea{resize:vertical}
+textarea:focus,input:focus{border-color:var(--acc)}
+
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:11px 16px;border:none;border-radius:8px;font-size:.86rem;font-weight:600;cursor:pointer;min-height:44px;font-family:inherit;transition:opacity .2s;width:100%}
+.btn:disabled{opacity:.4}
+.btn.primary{background:var(--acc);color:#000}
+.btn.success{background:var(--g);color:#000}
+.btn.outline{background:transparent;border:1px solid var(--b);color:var(--text)}
+.btn.danger{background:var(--err);color:#000}
+.btn-row{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+.btn-row .btn{flex:1;min-width:120px}
+
+.progress-bar{height:8px;background:var(--s2);border-radius:4px;overflow:hidden;margin:8px 0}
+.progress-fill{height:100%;background:var(--acc);transition:width .4s;border-radius:4px}
+.log-box{background:var(--s2);border:1px solid var(--b);border-radius:8px;padding:10px;font-family:monospace;font-size:.75rem;max-height:130px;overflow-y:auto;line-height:1.6;color:var(--dim)}
+.ok{color:var(--g)}.err{color:var(--err)}.info{color:var(--acc)}
+
+/* Chat */
+#chat-area{min-height:180px;max-height:320px;overflow-y:auto;padding:10px;background:var(--s2);border:1px solid var(--b);border-radius:8px;display:flex;flex-direction:column;gap:9px;-webkit-overflow-scrolling:touch}
+.msg{display:flex;gap:8px}
+.msg.user{flex-direction:row-reverse}
+.av{width:28px;height:28px;border-radius:50%;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:.68rem;font-weight:700}
+.msg.user .av{background:#252060}
+.msg.ai .av{background:#0d1a0d}
+.bub{padding:9px 12px;border-radius:10px;font-size:.86rem;white-space:pre-wrap;word-break:break-word;line-height:1.6;max-width:85%}
+.msg.user .bub{background:#1e1a40}
+.msg.ai .bub{background:var(--s);border:1px solid var(--b)}
+.streaming::after{content:'▌';animation:blink .7s step-end infinite;color:var(--acc)}
+@keyframes blink{50%{opacity:0}}
+
+/* Sync section */
+.sync-step{display:flex;gap:10px;align-items:flex-start;padding:10px 0;border-bottom:1px solid var(--b)}
+.sync-step:last-child{border-bottom:none}
+.sync-num{width:24px;height:24px;border-radius:50%;background:var(--acc);color:#000;font-size:.72rem;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0;margin-top:2px}
+.sync-body strong{display:block;font-size:.86rem;margin-bottom:3px}
+.sync-body p{font-size:.8rem;color:var(--dim);line-height:1.5}
+
+canvas{width:100%;height:100px;border-radius:8px;background:var(--s2);border:1px solid var(--b)}
+
+/* Status badge */
+#status-badge{font-size:.72rem;padding:2px 8px;border-radius:7px;background:#0d1a0d;color:var(--g);border:1px solid #1a3a1a}
+#status-badge.offline{background:#1a0d0d;color:var(--err);border-color:#3a1a1a}
+#status-badge.training{background:#1a1a0d;color:var(--warn);border-color:#3a3a1a}
+</style>
+</head>
+<body>
+
+<header>
+  <h1>🧠 MiniGPT</h1>
+  <span class="chip">iPad 독립 실행</span>
+  <span id="status-badge">초기화중...</span>
+</header>
+
+<nav>
+  <button class="nav-btn active" onclick="showTab('status')">상태</button>
+  <button class="nav-btn" onclick="showTab('train')">학습</button>
+  <button class="nav-btn" onclick="showTab('chat')">대화</button>
+  <button class="nav-btn" onclick="showTab('sync')">PC 동기화</button>
+</nav>
+
+<!-- 상태 -->
+<div id="tab-status" class="tab show">
+  <div class="card">
+    <h2>모델 현황</h2>
+    <div class="stats">
+      <div class="stat"><span class="stat-val" id="v-params">-</span><div class="stat-lbl">파라미터</div></div>
+      <div class="stat"><span class="stat-val" id="v-steps">0</span><div class="stat-lbl">학습 스텝</div></div>
+      <div class="stat"><span class="stat-val" id="v-loss">-</span><div class="stat-lbl">최근 손실</div></div>
+      <div class="stat"><span class="stat-val" id="v-chars">0</span><div class="stat-lbl">학습 글자</div></div>
+    </div>
+    <canvas id="loss-canvas"></canvas>
+  </div>
+  <div class="card">
+    <h2>이 앱에 대하여</h2>
+    <p>외부 서버 없이 iPad Safari에서 완전히 실행되는 자체 AI 엔진입니다.<br><br>
+    • 트랜스포머 아키텍처 (순수 JavaScript 수학 구현)<br>
+    • 학습 데이터: IndexedDB에 로컬 저장<br>
+    • PC와 가중치 파일로 동기화 가능<br><br>
+    처음엔 랜덤 출력 → 학습 누적 시 의미있는 패턴 생성</p>
+  </div>
+</div>
+
+<!-- 학습 -->
+<div id="tab-train" class="tab">
+  <div class="card">
+    <h2>텍스트 학습</h2>
+    <label class="lbl">학습할 텍스트</label>
+    <textarea id="train-text" rows="7" placeholder="학습시킬 내용을 입력하세요...&#10;대화문, 업무 문서, 자주 쓰는 표현 등"></textarea>
+    <label class="lbl">스텝 수</label>
+    <select id="train-steps">
+      <option value="100">100 (약 10초)</option>
+      <option value="300" selected>300 (약 30초)</option>
+      <option value="500">500 (약 1분)</option>
+      <option value="1000">1000 (약 2분)</option>
+    </select>
+    <div class="btn-row">
+      <button class="btn primary" id="train-btn" onclick="startTrain()">학습 시작</button>
+      <button class="btn outline" onclick="loadSample()">샘플 로드</button>
+    </div>
+    <div class="progress-bar"><div class="progress-fill" id="train-prog" style="width:0%"></div></div>
+    <div id="train-status" style="font-size:.78rem;color:var(--dim);margin:4px 0"></div>
+    <div class="log-box" id="train-log"></div>
+  </div>
+</div>
+
+<!-- 대화 -->
+<div id="tab-chat" class="tab">
+  <div class="card" style="flex:1;display:flex;flex-direction:column;gap:10px">
+    <h2>자체 AI와 대화</h2>
+    <div id="chat-area">
+      <div style="text-align:center;color:var(--dim);font-size:.8rem;padding:20px">학습 후 대화를 시작하세요</div>
+    </div>
+    <input type="text" id="chat-input" placeholder="메시지 입력..." onkeydown="if(event.key==='Enter')sendChat()">
+    <div class="btn-row">
+      <button class="btn primary" onclick="sendChat()">생성</button>
+      <button class="btn outline" onclick="clearChat()">초기화</button>
+    </div>
+    <label class="lbl">온도 (창의성): <span id="temp-display">0.8</span></label>
+    <input type="range" id="temperature" min="0.1" max="2" step="0.1" value="0.8"
+      oninput="document.getElementById('temp-display').textContent=this.value">
+  </div>
+</div>
+
+<!-- PC 동기화 -->
+<div id="tab-sync" class="tab">
+  <!-- OneDrive 자동 동기화 -->
+  <div class="card" style="background:linear-gradient(135deg,#0d0d1a,#001020);border-color:#003a73">
+    <h2 style="color:#4da6ff">☁️ OneDrive 자동 동기화 (권장)</h2>
+    <p style="margin-bottom:12px">파일 전달 없이 OneDrive로 PC↔iPad 학습 내용을 자동 공유합니다.</p>
+    <a href="onedrive-sync.html" style="display:inline-flex;align-items:center;gap:6px;padding:10px 16px;background:#0078d4;color:#fff;border-radius:8px;font-size:.86rem;font-weight:600;text-decoration:none">
+      OneDrive 설정하기 →
+    </a>
+  </div>
+  <div class="card">
+    <h2>수동 파일 전달 (OneDrive 없을 때)</h2>
+    <div class="sync-step">
+      <div class="sync-num">1</div>
+      <div class="sync-body">
+        <strong>PC에서 가중치 다운로드</strong>
+        <p>PC 브라우저에서 접속:<br>
+        <code style="color:var(--acc);font-size:.8rem">http://localhost:3000/engine/export</code><br>
+        → <code>minigpt-weights.json</code> 파일 다운로드</p>
+      </div>
+    </div>
+    <div class="sync-step">
+      <div class="sync-num">2</div>
+      <div class="sync-body">
+        <strong>iPad로 파일 전달</strong>
+        <p>iCloud Drive, 이메일 첨부, AirDrop, USB 중 하나로 전달</p>
+      </div>
+    </div>
+    <div class="sync-step">
+      <div class="sync-num">3</div>
+      <div class="sync-body">
+        <strong>아래에서 파일 불러오기</strong>
+      </div>
+    </div>
+    <label class="lbl">가중치 파일 선택</label>
+    <input type="file" id="import-file" accept=".json">
+    <div class="btn-row" style="margin-top:8px">
+      <button class="btn success" onclick="importWeights()">가중치 불러오기 (PC → iPad)</button>
+    </div>
+    <div id="import-result" style="display:none;margin-top:8px;font-size:.82rem;padding:8px;border-radius:7px"></div>
+  </div>
+
+  <div class="card">
+    <h2>iPad → PC (가중치 내보내기)</h2>
+    <div class="sync-step">
+      <div class="sync-num">1</div>
+      <div class="sync-body">
+        <strong>아래 버튼으로 파일 저장</strong>
+        <p>iPad에서 학습된 가중치를 JSON 파일로 내보냅니다</p>
+      </div>
+    </div>
+    <div class="sync-step">
+      <div class="sync-num">2</div>
+      <div class="sync-body">
+        <strong>PC의 동기화 페이지에 업로드</strong>
+        <p><code style="color:var(--acc);font-size:.8rem">http://localhost:3000/engine-studio.html</code><br>
+        → 가중치 가져오기 섹션에 파일 업로드<br>
+        또는 PC 터미널에서:<br>
+        <code style="color:var(--acc);font-size:.8rem">curl -X POST http://localhost:3000/engine/import -H "Content-Type: application/json" -d @minigpt-weights.json</code></p>
+      </div>
+    </div>
+    <div class="btn-row">
+      <button class="btn primary" onclick="exportWeights()">가중치 내보내기 (iPad → PC)</button>
+    </div>
+    <div id="export-result" style="display:none;margin-top:8px;font-size:.82rem;padding:8px;border-radius:7px"></div>
+  </div>
+
+  <div class="card">
+    <h2>위험 구역</h2>
+    <div class="btn-row">
+      <button class="btn danger" onclick="resetAll()">iPad 모델 초기화</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// ══════════════════════════════════════════════════════════════════════════════
+// ENGINE CODE — 순수 JavaScript, 외부 의존성 없음
+// ══════════════════════════════════════════════════════════════════════════════
+
+// ── Matrix ────────────────────────────────────────────────────────────────────
+class Matrix {
+  constructor(r,c,d=null){this.rows=r;this.cols=c;this.data=d instanceof Float32Array?d:new Float32Array(r*c)}
+  get(i,j){return this.data[i*this.cols+j]}set(i,j,v){this.data[i*this.cols+j]=v}
+  clone(){return new Matrix(this.rows,this.cols,this.data.slice())}
+  static zeros(r,c){return new Matrix(r,c)}
+  static fill(r,c,v){const m=new Matrix(r,c);m.data.fill(v);return m}
+  static randn(r,c,std){const s=std??Math.sqrt(2/(r+c));const m=new Matrix(r,c);for(let i=0;i<m.data.length;i+=2){const u1=Math.random()||1e-10,u2=Math.random();const n=Math.sqrt(-2*Math.log(u1))*Math.cos(2*Math.PI*u2);m.data[i]=n*s;if(i+1<m.data.length)m.data[i+1]=Math.sqrt(-2*Math.log(u1))*Math.sin(2*Math.PI*u2)*s}return m}
+  add(B){const C=new Matrix(this.rows,this.cols);for(let i=0;i<this.data.length;i++)C.data[i]=this.data[i]+B.data[i];return C}
+  sub(B){const C=new Matrix(this.rows,this.cols);for(let i=0;i<this.data.length;i++)C.data[i]=this.data[i]-B.data[i];return C}
+  mul(B){const C=new Matrix(this.rows,this.cols);for(let i=0;i<this.data.length;i++)C.data[i]=this.data[i]*B.data[i];return C}
+  scale(s){const C=new Matrix(this.rows,this.cols);for(let i=0;i<this.data.length;i++)C.data[i]=this.data[i]*s;return C}
+  addInPlace(B){for(let i=0;i<this.data.length;i++)this.data[i]+=B.data[i];return this}
+  addBias(b){const C=this.clone();for(let i=0;i<C.rows;i++)for(let j=0;j<C.cols;j++)C.data[i*C.cols+j]+=b.data[j];return C}
+  sumRows(){const o=new Matrix(1,this.cols);for(let i=0;i<this.rows;i++)for(let j=0;j<this.cols;j++)o.data[j]+=this.data[i*this.cols+j];return o}
+  row(i){return new Matrix(1,this.cols,this.data.slice(i*this.cols,(i+1)*this.cols))}
+  T(){const B=new Matrix(this.cols,this.rows);for(let i=0;i<this.rows;i++)for(let j=0;j<this.cols;j++)B.data[j*this.rows+i]=this.data[i*this.cols+j];return B}
+  static matmul(A,B){const C=new Matrix(A.rows,B.cols);const Ad=A.data,Bd=B.data,Cd=C.data,Ac=A.cols,Bc=B.cols;for(let i=0;i<A.rows;i++){const iA=i*Ac,iC=i*Bc;for(let k=0;k<Ac;k++){const aik=Ad[iA+k],kB=k*Bc;for(let j=0;j<Bc;j++)Cd[iC+j]+=aik*Bd[kB+j]}}return C}
+  static softmax(X){const R=new Matrix(X.rows,X.cols);for(let i=0;i<X.rows;i++){const o=i*X.cols;let mx=-Infinity;for(let j=0;j<X.cols;j++)if(X.data[o+j]>mx)mx=X.data[o+j];let s=0;for(let j=0;j<X.cols;j++){R.data[o+j]=Math.exp(X.data[o+j]-mx);s+=R.data[o+j]}for(let j=0;j<X.cols;j++)R.data[o+j]/=s}return R}
+  static softmaxBackward(dout,p){const dz=new Matrix(p.rows,p.cols);for(let i=0;i<p.rows;i++){const o=i*p.cols;let dot=0;for(let j=0;j<p.cols;j++)dot+=p.data[o+j]*dout.data[o+j];for(let j=0;j<p.cols;j++)dz.data[o+j]=p.data[o+j]*(dout.data[o+j]-dot)}return dz}
+  relu(){const C=new Matrix(this.rows,this.cols);for(let i=0;i<this.data.length;i++)C.data[i]=this.data[i]>0?this.data[i]:0;return C}
+  static reluBwd(dout,x){const dx=new Matrix(x.rows,x.cols);for(let i=0;i<x.data.length;i++)dx.data[i]=x.data[i]>0?dout.data[i]:0;return dx}
+  static layerNorm(X,g,b,eps=1e-5){const Y=new Matrix(X.rows,X.cols);const means=new Float32Array(X.rows),rstds=new Float32Array(X.rows);for(let i=0;i<X.rows;i++){const o=i*X.cols;let mean=0;for(let j=0;j<X.cols;j++)mean+=X.data[o+j];mean/=X.cols;let v=0;for(let j=0;j<X.cols;j++)v+=(X.data[o+j]-mean)**2;v/=X.cols;const rstd=1/Math.sqrt(v+eps);means[i]=mean;rstds[i]=rstd;for(let j=0;j<X.cols;j++)Y.data[o+j]=(X.data[o+j]-mean)*rstd*g.data[j]+b.data[j]}return{Y,means,rstds}}
+  static layerNormBwd(dout,X,g,means,rstds){const T=X.rows,d=X.cols;const dX=new Matrix(T,d);const dG=new Float32Array(d),dB=new Float32Array(d);for(let i=0;i<T;i++){const o=i*d,mean=means[i],rstd=rstds[i];let dot_xh=0,sum_do=0;for(let j=0;j<d;j++){const xh=(X.data[o+j]-mean)*rstd;dot_xh+=xh*dout.data[o+j]*g.data[j];sum_do+=dout.data[o+j]*g.data[j];dG[j]+=xh*dout.data[o+j];dB[j]+=dout.data[o+j]}for(let j=0;j<d;j++){const xh=(X.data[o+j]-mean)*rstd;dX.data[o+j]=rstd*(dout.data[o+j]*g.data[j]-(sum_do+xh*dot_xh)/d)}}return{dX,dGamma:new Matrix(1,d,dG),dBeta:new Matrix(1,d,dB)}}
+  static causalMask(T){const M=new Matrix(T,T);for(let i=0;i<T;i++)for(let j=i+1;j<T;j++)M.data[i*T+j]=-1e9;return M}
+}
+
+// ── Tokenizer (byte-level) ────────────────────────────────────────────────────
+const Tok={
+  encode(t){return Array.from(new TextEncoder().encode(t))},
+  decode(a){try{return new TextDecoder().decode(new Uint8Array(a.filter(x=>x>=1&&x<=255)))}catch{return''}},
+};
+
+// ── Model config & init ───────────────────────────────────────────────────────
+const CFG={vocabSize:256,ctxLen:128,dim:64,numHeads:2,numLayers:2,ffDim:128};
+function mkP(r,c){return{W:Matrix.randn(r,c),grad:Matrix.zeros(r,c)}}
+function mkB(s){return{W:Matrix.zeros(1,s),grad:Matrix.zeros(1,s)}}
+function mkN(s){return{gamma:{W:Matrix.fill(1,s,1),grad:Matrix.zeros(1,s)},beta:{W:Matrix.zeros(1,s),grad:Matrix.zeros(1,s)}}}
+function newModel(cfg=CFG){
+  const{vocabSize:V,ctxLen:C,dim:d,numHeads:nh,numLayers:nl,ffDim:ff}=cfg;
+  const embed=Matrix.randn(V,d,0.02),posEmbed=Matrix.randn(C,d,0.01);
+  const layers=[];
+  for(let l=0;l<nl;l++)layers.push({Wq:mkP(d,d),bq:mkB(d),Wk:mkP(d,d),bk:mkB(d),Wv:mkP(d,d),bv:mkB(d),Wo:mkP(d,d),bo:mkB(d),W1:mkP(d,ff),b1:mkB(ff),W2:mkP(ff,d),b2:mkB(d),ln1:mkN(d),ln2:mkN(d)});
+  const lmHead=mkP(d,V);
+  return{cfg,embed,posEmbed,layers,lmHead,_embedGrad:null};
+}
+
+// ── Forward ───────────────────────────────────────────────────────────────────
+function forward(model,tokens){
+  const{cfg:{dim,numHeads},embed,posEmbed,layers,lmHead}=model;
+  const T=tokens.length,hd=dim/numHeads;
+  const cache={tokens,T,layerCaches:[]};
+  let X=new Matrix(T,dim);
+  for(let i=0;i<T;i++)for(let d=0;d<dim;d++)X.data[i*dim+d]=embed.data[tokens[i]*dim+d]+posEmbed.data[i*dim+d];
+  cache.X0=X;
+  for(let l=0;l<layers.length;l++){
+    const lyr=layers[l],lc={};
+    const Q=Matrix.matmul(X,lyr.Wq.W).addBias(lyr.bq.W);
+    const K=Matrix.matmul(X,lyr.Wk.W).addBias(lyr.bk.W);
+    const V=Matrix.matmul(X,lyr.Wv.W).addBias(lyr.bv.W);
+    const ctxOut=Matrix.zeros(T,dim),headAttn=[],sc=1/Math.sqrt(hd);
+    for(let h=0;h<numHeads;h++){
+      const hs=h*hd;
+      const Qh=new Matrix(T,hd),Kh=new Matrix(T,hd),Vh=new Matrix(T,hd);
+      for(let i=0;i<T;i++)for(let d=0;d<hd;d++){Qh.data[i*hd+d]=Q.data[i*dim+hs+d];Kh.data[i*hd+d]=K.data[i*dim+hs+d];Vh.data[i*hd+d]=V.data[i*dim+hs+d]}
+      const scores=Matrix.matmul(Qh,Kh.T()).scale(sc).add(Matrix.causalMask(T));
+      const attn=Matrix.softmax(scores);
+      const ctx_h=Matrix.matmul(attn,Vh);
+      for(let i=0;i<T;i++)for(let d=0;d<hd;d++)ctxOut.data[i*dim+hs+d]=ctx_h.data[i*hd+d];
+      headAttn.push({Qh,Kh,Vh,scores,attn,ctx_h});
+    }
+    const attnProj=Matrix.matmul(ctxOut,lyr.Wo.W).addBias(lyr.bo.W);
+    const res1=X.add(attnProj);
+    const ln1=Matrix.layerNorm(res1,lyr.ln1.gamma.W,lyr.ln1.beta.W);
+    const ffPre=Matrix.matmul(ln1.Y,lyr.W1.W).addBias(lyr.b1.W);
+    const h1=ffPre.relu();
+    const ff=Matrix.matmul(h1,lyr.W2.W).addBias(lyr.b2.W);
+    const res2=ln1.Y.add(ff);
+    const ln2=Matrix.layerNorm(res2,lyr.ln2.gamma.W,lyr.ln2.beta.W);
+    lc.X=X;lc.Q=Q;lc.K=K;lc.V=V;lc.headAttn=headAttn;lc.ctxOut=ctxOut;lc.attnProj=attnProj;lc.res1=res1;lc.ln1=ln1;lc.h1=h1;lc.ffPre=ffPre;lc.ff=ff;lc.res2=res2;lc.ln2=ln2;
+    cache.layerCaches.push(lc);X=ln2.Y;
+  }
+  cache.Xfinal=X;
+  return{logits:Matrix.matmul(X,lmHead.W),cache};
+}
+
+// ── Loss ─────────────────────────────────────────────────────────────────────
+function crossEntropy(logits,targets){
+  const T=targets.length,V=logits.cols;
+  let L=0;const dL=Matrix.zeros(T,V);
+  for(let i=0;i<T;i++){
+    const o=i*V;let mx=-Infinity;
+    for(let j=0;j<V;j++)if(logits.data[o+j]>mx)mx=logits.data[o+j];
+    let s=0;const p=new Float32Array(V);
+    for(let j=0;j<V;j++){p[j]=Math.exp(logits.data[o+j]-mx);s+=p[j]}
+    for(let j=0;j<V;j++)p[j]/=s;
+    L-=Math.log(Math.max(p[targets[i]],1e-10));
+    for(let j=0;j<V;j++)dL.data[o+j]=p[j]/T;
+    dL.data[o+targets[i]]-=1/T;
+  }
+  return{loss:L/T,dLogits:dL};
+}
+
+// ── Backward ─────────────────────────────────────────────────────────────────
+function backward(model,cache,dLogits){
+  const{cfg:{dim,numHeads},embed,layers,lmHead}=model;
+  const{T,tokens,layerCaches}=cache;const hd=dim/numHeads,sc=1/Math.sqrt(hd);
+  lmHead.grad.addInPlace(Matrix.matmul(cache.Xfinal.T(),dLogits));
+  let dX=Matrix.matmul(dLogits,lmHead.W.T());
+  for(let l=layers.length-1;l>=0;l--){
+    const lyr=layers[l],lc=layerCaches[l];
+    const{dX:dLN2,dGamma:dgLN2,dBeta:dbLN2}=Matrix.layerNormBwd(dX,lc.res2,lyr.ln2.gamma.W,lc.ln2.means,lc.ln2.rstds);
+    lyr.ln2.gamma.grad.addInPlace(dgLN2);lyr.ln2.beta.grad.addInPlace(dbLN2);
+    lyr.b2.grad.addInPlace(dLN2.sumRows());lyr.W2.grad.addInPlace(Matrix.matmul(lc.h1.T(),dLN2));
+    const dH1=Matrix.reluBwd(Matrix.matmul(dLN2,lyr.W2.W.T()),lc.ffPre);
+    lyr.b1.grad.addInPlace(dH1.sumRows());lyr.W1.grad.addInPlace(Matrix.matmul(lc.ln1.Y.T(),dH1));
+    const dAfterLN1=Matrix.matmul(dH1,lyr.W1.W.T()).add(dLN2);
+    const{dX:dLN1,dGamma:dgLN1,dBeta:dbLN1}=Matrix.layerNormBwd(dAfterLN1,lc.res1,lyr.ln1.gamma.W,lc.ln1.means,lc.ln1.rstds);
+    lyr.ln1.gamma.grad.addInPlace(dgLN1);lyr.ln1.beta.grad.addInPlace(dbLN1);
+    lyr.bo.grad.addInPlace(dLN1.sumRows());lyr.Wo.grad.addInPlace(Matrix.matmul(lc.ctxOut.T(),dLN1));
+    const dCtxOut=Matrix.matmul(dLN1,lyr.Wo.W.T());
+    const dQ=Matrix.zeros(T,dim),dK=Matrix.zeros(T,dim),dV=Matrix.zeros(T,dim);
+    for(let h=0;h<numHeads;h++){
+      const hs=h*hd;const{Qh,Kh,Vh,attn}=lc.headAttn[h];
+      const dCtxH=new Matrix(T,hd);
+      for(let i=0;i<T;i++)for(let d=0;d<hd;d++)dCtxH.data[i*hd+d]=dCtxOut.data[i*dim+hs+d];
+      const dAttn=Matrix.matmul(dCtxH,Vh.T());
+      const dVh=Matrix.matmul(attn.T(),dCtxH);
+      const dSc=Matrix.softmaxBackward(dAttn,attn).scale(sc);
+      const dQh=Matrix.matmul(dSc,Kh),dKh=Matrix.matmul(dSc.T(),Qh);
+      for(let i=0;i<T;i++)for(let d=0;d<hd;d++){dQ.data[i*dim+hs+d]+=dQh.data[i*hd+d];dK.data[i*dim+hs+d]+=dKh.data[i*hd+d];dV.data[i*dim+hs+d]+=dVh.data[i*hd+d]}
+    }
+    lyr.bq.grad.addInPlace(dQ.sumRows());lyr.bk.grad.addInPlace(dK.sumRows());lyr.bv.grad.addInPlace(dV.sumRows());
+    lyr.Wq.grad.addInPlace(Matrix.matmul(lc.X.T(),dQ));lyr.Wk.grad.addInPlace(Matrix.matmul(lc.X.T(),dK));lyr.Wv.grad.addInPlace(Matrix.matmul(lc.X.T(),dV));
+    dX=dLN1.add(Matrix.matmul(dQ,lyr.Wq.W.T()).add(Matrix.matmul(dK,lyr.Wk.W.T())).add(Matrix.matmul(dV,lyr.Wv.W.T())));
+  }
+  if(!model._embedGrad)model._embedGrad=Matrix.zeros(embed.rows,embed.cols);
+  for(let i=0;i<T;i++){const tk=tokens[i],o=i*dim;for(let d=0;d<dim;d++)model._embedGrad.data[tk*dim+d]+=dX.data[o+d]}
+}
+
+// ── Adam optimizer ────────────────────────────────────────────────────────────
+class Adam{
+  constructor({lr=3e-4,b1=0.9,b2=0.999,eps=1e-8,wd=0.01}={}){this.lr=lr;this.b1=b1;this.b2=b2;this.eps=eps;this.wd=wd;this.t=0;this._s=new Map()}
+  step(params,embed,embedGrad){
+    this.t++;const{lr,b1,b2,eps,wd,t}=this;const bc1=1-b1**t,bc2=1-b2**t;
+    const upd=(W,grad)=>{if(!this._s.has(W))this._s.set(W,{m:new Float32Array(W.data.length),v:new Float32Array(W.data.length)});const{m,v}=this._s.get(W);for(let i=0;i<W.data.length;i++){const g=grad.data[i]+wd*W.data[i];m[i]=b1*m[i]+(1-b1)*g;v[i]=b2*v[i]+(1-b2)*g*g;W.data[i]-=lr*(m[i]/bc1)/(Math.sqrt(v[i]/bc2)+eps)}};
+    for(const p of params)upd(p.W,p.grad);
+    if(embed&&embedGrad){if(!this._s.has(embed))this._s.set(embed,{m:new Float32Array(embed.data.length),v:new Float32Array(embed.data.length)});const{m,v}=this._s.get(embed);for(let i=0;i<embed.rows;i++){let has=false;const o=i*embed.cols;for(let d=0;d<embed.cols;d++)if(embedGrad.data[o+d]!==0){has=true;break}if(!has)continue;for(let d=0;d<embed.cols;d++){const g=embedGrad.data[o+d]+wd*embed.data[o+d];m[o+d]=b1*m[o+d]+(1-b1)*g;v[o+d]=b2*v[o+d]+(1-b2)*g*g;embed.data[o+d]-=lr*(m[o+d]/bc1)/(Math.sqrt(v[o+d]/bc2)+eps)}}}
+  }
+  static clip(params,embedGrad,maxN=1.0){let n2=0;for(const p of params)for(const g of p.grad.data)n2+=g*g;if(embedGrad)for(const g of embedGrad.data)n2+=g*g;const n=Math.sqrt(n2);if(n>maxN){const s=maxN/n;for(const p of params)for(let i=0;i<p.grad.data.length;i++)p.grad.data[i]*=s;if(embedGrad)for(let i=0;i<embedGrad.data.length;i++)embedGrad.data[i]*=s}return n}
+}
+
+function allParams(model){const p=[];for(const l of model.layers){for(const k of['Wq','bq','Wk','bk','Wv','bv','Wo','bo','W1','b1','W2','b2'])p.push(l[k]);p.push(l.ln1.gamma,l.ln1.beta,l.ln2.gamma,l.ln2.beta)}p.push(model.lmHead);return p}
+function zeroGrads(model){for(const p of allParams(model))p.grad.data.fill(0);if(model._embedGrad)model._embedGrad.data.fill(0)}
+
+// ── Serialise / load ──────────────────────────────────────────────────────────
+function serM(m){return{rows:m.rows,cols:m.cols,data:Array.from(m.data)}}
+function desM(s){return new Matrix(s.rows,s.cols,new Float32Array(s.data))}
+function mkLP(s){return{W:desM(s.W),grad:Matrix.zeros(desM(s.W).rows,desM(s.W).cols)}}
+function toJSON(model){
+  return{cfg:model.cfg,embed:serM(model.embed),posEmbed:serM(model.posEmbed),lmHead:{W:serM(model.lmHead.W)},
+    layers:model.layers.map(l=>({Wq:{W:serM(l.Wq.W)},bq:{W:serM(l.bq.W)},Wk:{W:serM(l.Wk.W)},bk:{W:serM(l.bk.W)},Wv:{W:serM(l.Wv.W)},bv:{W:serM(l.bv.W)},Wo:{W:serM(l.Wo.W)},bo:{W:serM(l.bo.W)},W1:{W:serM(l.W1.W)},b1:{W:serM(l.b1.W)},W2:{W:serM(l.W2.W)},b2:{W:serM(l.b2.W)},ln1:{gamma:{W:serM(l.ln1.gamma.W)},beta:{W:serM(l.ln1.beta.W)}},ln2:{gamma:{W:serM(l.ln2.gamma.W)},beta:{W:serM(l.ln2.beta.W)}}}))}
+}
+function fromJSON(j){
+  const model=newModel(j.cfg);
+  model.embed=desM(j.embed);model.posEmbed=desM(j.posEmbed);model.lmHead={W:desM(j.lmHead.W),grad:Matrix.zeros(j.cfg.dim,j.cfg.vocabSize)};
+  model.layers=j.layers.map(l=>({Wq:mkLP(l.Wq),bq:mkLP(l.bq),Wk:mkLP(l.Wk),bk:mkLP(l.bk),Wv:mkLP(l.Wv),bv:mkLP(l.bv),Wo:mkLP(l.Wo),bo:mkLP(l.bo),W1:mkLP(l.W1),b1:mkLP(l.b1),W2:mkLP(l.W2),b2:mkLP(l.b2),ln1:{gamma:mkLP(l.ln1.gamma),beta:mkLP(l.ln1.beta)},ln2:{gamma:mkLP(l.ln2.gamma),beta:mkLP(l.ln2.beta)}}));
+  return model;
+}
+
+// ── Generate ──────────────────────────────────────────────────────────────────
+function generate(model,prompt,{maxNew=200,temperature=0.8,topK=40}={}){
+  const ctxLen=model.cfg.ctxLen,V=model.cfg.vocabSize;
+  let tokens=Tok.encode(prompt);if(!tokens.length)tokens=[10];
+  const out=[];
+  for(let s=0;s<maxNew;s++){
+    const ctx=tokens.slice(-ctxLen);
+    const{logits}=forward(model,ctx);
+    const T=ctx.length,sc=new Float32Array(V);
+    for(let j=0;j<V;j++)sc[j]=logits.data[(T-1)*V+j]/Math.max(temperature,1e-6);
+    if(topK<V){const sorted=[...sc].map((v,i)=>({v,i})).sort((a,b)=>b.v-a.v);const thr=sorted[topK].v;for(let j=0;j<V;j++)if(sc[j]<thr)sc[j]=-1e9}
+    let mx=-Infinity;for(let j=0;j<V;j++)if(sc[j]>mx)mx=sc[j];
+    let sum=0;const p=new Float32Array(V);for(let j=0;j<V;j++){p[j]=Math.exp(sc[j]-mx);sum+=p[j]}
+    let r=Math.random()*sum,nt=V-1;for(let j=0;j<V;j++){r-=p[j];if(r<=0){nt=j;break}}
+    tokens.push(nt);out.push(nt);
+  }
+  return Tok.decode(out);
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// IndexedDB persistence
+// ══════════════════════════════════════════════════════════════════════════════
+let _db=null;
+async function openDB(){
+  if(_db)return _db;
+  return new Promise((res,rej)=>{
+    const req=indexedDB.open('minigpt-ipad',1);
+    req.onupgradeneeded=e=>{const db=e.target.result;if(!db.objectStoreNames.contains('store'))db.createObjectStore('store')};
+    req.onsuccess=e=>{_db=e.target.result;res(_db)};
+    req.onerror=e=>rej(e.target.error);
+  });
+}
+async function dbGet(key){const db=await openDB();return new Promise((res,rej)=>{const tx=db.transaction('store','readonly');const req=tx.objectStore('store').get(key);req.onsuccess=e=>res(e.target.result);req.onerror=e=>rej(e.target.error)})}
+async function dbSet(key,val){const db=await openDB();return new Promise((res,rej)=>{const tx=db.transaction('store','readwrite');const req=tx.objectStore('store').put(val,key);req.onsuccess=()=>res();req.onerror=e=>rej(e.target.error)})}
+async function dbDel(key){const db=await openDB();return new Promise((res,rej)=>{const tx=db.transaction('store','readwrite');tx.objectStore('store').delete(key);tx.oncomplete=()=>res();tx.onerror=e=>rej(e.target.error)})}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// App state
+// ══════════════════════════════════════════════════════════════════════════════
+let _model=null,_opt=null,_log={steps:0,losses:[],trainedChars:0},_training=false;
+
+async function initModel(){
+  const saved=await dbGet('weights');
+  const savedLog=await dbGet('log');
+  if(saved){try{_model=fromJSON(saved);console.log('[MiniGPT] 저장된 가중치 로드')}catch{_model=newModel()}}
+  else{_model=newModel()}
+  if(savedLog)try{_log=savedLog}catch{}
+  _opt=new Adam();
+  updateStatus();
+}
+
+async function saveState(){
+  await dbSet('weights',toJSON(_model));
+  await dbSet('log',_log);
+}
+
+function paramCount(){return allParams(_model).reduce((s,p)=>s+p.W.data.length,0)+_model.embed.data.length+_model.posEmbed.data.length}
+
+// ── Training loop (async, yields every 10 steps) ──────────────────────────────
+async function trainModel(text,steps,onProgress){
+  if(_training)return;_training=true;
+  setBadge('training');
+  const tokens=Tok.encode(text);_log.trainedChars+=text.length;
+  const ctxLen=_model.cfg.ctxLen;
+  for(let i=0;i<steps;i++){
+    if(tokens.length<ctxLen+1)break;
+    const st=Math.floor(Math.random()*(tokens.length-ctxLen));
+    const inp=tokens.slice(st,st+ctxLen),tgt=tokens.slice(st+1,st+ctxLen+1);
+    zeroGrads(_model);
+    const{logits,cache}=forward(_model,inp);
+    const{loss:L,dLogits}=crossEntropy(logits,tgt);
+    backward(_model,cache,dLogits);
+    Adam.clip(allParams(_model),_model._embedGrad,1.0);
+    _opt.step(allParams(_model),_model.embed,_model._embedGrad);
+    _log.steps++;_log.losses.push(parseFloat(L.toFixed(4)));if(_log.losses.length>200)_log.losses=_log.losses.slice(-200);
+    if(i%10===0){onProgress&&onProgress({step:i+1,total:steps,loss:L});await new Promise(r=>setTimeout(r,0))}
+  }
+  await saveState();
+  _training=false;
+  setBadge('ready');
+  updateStatus();
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// UI
+// ══════════════════════════════════════════════════════════════════════════════
+function showTab(name){
+  document.querySelectorAll('.tab').forEach(t=>t.classList.remove('show'));
+  document.querySelectorAll('.nav-btn').forEach(b=>b.classList.remove('active'));
+  document.getElementById('tab-'+name).classList.add('show');
+  event.target.classList.add('active');
+  if(name==='status')drawLoss();
+}
+
+function setBadge(state){
+  const b=document.getElementById('status-badge');
+  if(state==='ready'){b.textContent='준비됨';b.className=''}
+  else if(state==='training'){b.textContent='학습중...';b.className='training'}
+  else if(state==='offline'){b.textContent='오프라인 모드';b.className='offline'}
+}
+
+function updateStatus(){
+  if(!_model)return;
+  document.getElementById('v-params').textContent=(paramCount()/1000).toFixed(0)+'K';
+  document.getElementById('v-steps').textContent=_log.steps;
+  document.getElementById('v-chars').textContent=_log.trainedChars.toLocaleString();
+  const recent=_log.losses.slice(-50);
+  document.getElementById('v-loss').textContent=recent.length?( recent.reduce((a,b)=>a+b,0)/recent.length).toFixed(3):'-';
+  drawLoss();
+  setBadge(_training?'training':'ready');
+}
+
+function drawLoss(){
+  const canvas=document.getElementById('loss-canvas');
+  if(!canvas||_log.losses.length<2)return;
+  const ctx=canvas.getContext('2d');
+  canvas.width=canvas.offsetWidth;canvas.height=100;
+  const W=canvas.width,H=canvas.height,data=_log.losses;
+  const mn=Math.min(...data),mx=Math.max(...data),range=mx-mn||1;
+  ctx.clearRect(0,0,W,H);
+  ctx.strokeStyle='#a78bfa';ctx.lineWidth=2;ctx.beginPath();
+  data.forEach((v,i)=>{const x=i/(data.length-1)*W,y=H-((v-mn)/range)*(H-20)-10;i===0?ctx.moveTo(x,y):ctx.lineTo(x,y)});
+  ctx.stroke();
+  ctx.fillStyle='#666';ctx.font='11px monospace';
+  ctx.fillText('손실 '+mx.toFixed(3),4,14);ctx.fillText(mn.toFixed(3),4,H-4);
+}
+
+// Training UI
+async function startTrain(){
+  const text=document.getElementById('train-text').value.trim();
+  const steps=parseInt(document.getElementById('train-steps').value);
+  if(!text)return alert('텍스트를 입력하세요');
+  const btn=document.getElementById('train-btn');
+  btn.disabled=true;
+  const log=document.getElementById('train-log');
+  const prog=document.getElementById('train-prog');
+  const status=document.getElementById('train-status');
+  log.innerHTML='';
+  const addLog=(msg,cls='')=>{log.innerHTML+=`<div class="${cls}">${msg}</div>`;log.scrollTop=log.scrollHeight};
+  addLog(`학습 시작 — ${text.length}자, ${steps} 스텝`,'info');
+  await trainModel(text,steps,({step,total,loss})=>{
+    prog.style.width=(step/total*100)+'%';
+    status.textContent=`스텝 ${step}/${total} — 손실: ${loss?.toFixed(4)||'-'}`;
+    if(step%50===0||step===total)addLog(`[${step}] loss=${loss?.toFixed(4)}`,'ok');
+  });
+  addLog('완료! 가중치 저장됨','ok');
+  btn.disabled=false;prog.style.width='100%';
+}
+
+function loadSample(){
+  document.getElementById('train-text').value=`안녕하세요. 무엇을 도와드릴까요?\n\n사용자: 오늘 업무 일정 알려줘\nAI: 오전 9시 팀 미팅, 오후 2시 보고서 작성, 오후 4시 고객 미팅이 있습니다.\n\n사용자: 감사합니다\nAI: 언제든지 질문해 주세요. 도움이 되어 기쁩니다.\n\n사용자: AI란 무엇인가요?\nAI: 인공지능은 컴퓨터가 인간의 지능을 모방하여 학습하고 문제를 해결하는 기술입니다.`;
+}
+
+// Chat UI
+function addMsg(role,text=''){
+  const area=document.getElementById('chat-area');
+  const first=area.querySelector('[style*="text-align"]');if(first)area.removeChild(first);
+  const row=document.createElement('div');row.className='msg '+role;
+  const av=document.createElement('div');av.className='av';av.textContent=role==='user'?'나':'AI';
+  const bub=document.createElement('div');bub.className='bub';bub.textContent=text;
+  row.appendChild(av);row.appendChild(bub);area.appendChild(row);area.scrollTop=area.scrollHeight;
+  return bub;
+}
+function clearChat(){document.getElementById('chat-area').innerHTML='<div style="text-align:center;color:var(--dim);font-size:.8rem;padding:20px">학습 후 대화를 시작하세요</div>'}
+
+async function sendChat(){
+  const input=document.getElementById('chat-input');
+  const prompt=input.value.trim();if(!prompt)return;
+  input.value='';
+  addMsg('user',prompt);
+  const aiBub=addMsg('ai');aiBub.classList.add('streaming');
+  const temp=parseFloat(document.getElementById('temperature').value);
+  // Run generation (yields to UI every chunk)
+  let full='';
+  for(let chunk=0;chunk<10;chunk++){
+    const part=generate(_model,prompt+full,{maxNew:30,temperature:temp});
+    full+=part;aiBub.textContent=full;
+    document.getElementById('chat-area').scrollTop=9999;
+    await new Promise(r=>setTimeout(r,0));
+  }
+  aiBub.classList.remove('streaming');
+  // Background: learn from this exchange
+  trainModel(prompt+'\n'+full+'\n',30,null).catch(()=>{});
+}
+
+// Sync: import weights from file
+async function importWeights(){
+  const file=document.getElementById('import-file').files[0];
+  if(!file)return alert('파일을 선택하세요');
+  const res=document.getElementById('import-result');
+  try{
+    const text=await file.text();
+    const bundle=JSON.parse(text);
+    const weights=bundle.weights||bundle;// support both bundle and raw weights format
+    const log=bundle.log||null;
+    _model=fromJSON(weights);
+    _opt=new Adam();
+    if(log)_log=log;
+    await saveState();
+    res.style.cssText='display:block;background:#0a1f14;border:1px solid #1a3a24;color:#34d399';
+    res.textContent='가져오기 완료! PC의 학습 내용이 이 iPad에 로드되었습니다.';
+    updateStatus();
+  }catch(e){
+    res.style.cssText='display:block;background:#1f0a0a;border:1px solid #3a1a1a;color:#f87171';
+    res.textContent='오류: '+e.message;
+  }
+}
+
+// Sync: export weights to file
+async function exportWeights(){
+  if(!_model){alert('모델이 없습니다');return}
+  const res=document.getElementById('export-result');
+  try{
+    const bundle={weights:toJSON(_model),log:_log,exportedAt:new Date().toISOString(),device:'iPad'};
+    const json=JSON.stringify(bundle);
+    const blob=new Blob([json],{type:'application/json'});
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement('a');a.href=url;a.download='minigpt-weights.json';a.click();
+    URL.revokeObjectURL(url);
+    res.style.cssText='display:block;background:#0a1f14;border:1px solid #1a3a24;color:#34d399';
+    res.textContent='저장 완료! minigpt-weights.json 파일을 PC로 전달하세요.';
+  }catch(e){
+    res.style.cssText='display:block;background:#1f0a0a;border:1px solid #3a1a1a;color:#f87171';
+    res.textContent='오류: '+e.message;
+  }
+}
+
+async function resetAll(){
+  if(!confirm('iPad의 모든 학습 내용을 삭제하시겠습니까?'))return;
+  await dbDel('weights');await dbDel('log');
+  _model=newModel();_opt=new Adam();_log={steps:0,losses:[],trainedChars:0};
+  updateStatus();alert('초기화 완료');
+}
+
+// ── Boot ──────────────────────────────────────────────────────────────────────
+setBadge('offline');
+initModel().then(()=>{setBadge('ready');updateStatus()});
+setInterval(updateStatus,10000);
+</script>
+</body>
+</html>

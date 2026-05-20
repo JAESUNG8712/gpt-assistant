@@ -1,0 +1,406 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MiniGPT 엔진 스튜디오</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+:root{--bg:#0a0a0f;--s:#13131c;--s2:#1a1a26;--b:#252535;--acc:#a78bfa;--g:#34d399;--text:#e2e2ef;--dim:#666;--err:#f87171;--warn:#fbbf24}
+body{font-family:'Segoe UI',system-ui,sans-serif;background:var(--bg);color:var(--text);min-height:100vh}
+a{color:var(--acc)}
+header{background:var(--s);border-bottom:1px solid var(--b);padding:14px 22px;display:flex;align-items:center;gap:14px}
+header h1{font-size:1.1rem;font-weight:700;flex:1}
+.chip{font-size:.72rem;padding:3px 9px;border-radius:8px;font-weight:600}
+.chip.custom{background:#1a0d30;color:var(--acc);border:1px solid #3a1a60}
+.chip.scratch{background:#0d1a0d;color:var(--g);border:1px solid #1a3a1a}
+nav{display:flex;gap:0;border-bottom:1px solid var(--b);background:var(--s)}
+.nav-btn{padding:10px 20px;font-size:.85rem;background:none;border:none;color:var(--dim);cursor:pointer;border-bottom:2px solid transparent;transition:all .2s}
+.nav-btn.active{color:var(--acc);border-bottom-color:var(--acc)}
+.page{max-width:900px;margin:0 auto;padding:22px 18px;display:flex;flex-direction:column;gap:20px}
+.hidden{display:none}
+
+/* Cards */
+.card{background:var(--s);border:1px solid var(--b);border-radius:12px;padding:20px}
+.card h2{font-size:.95rem;font-weight:600;margin-bottom:14px}
+.card p{font-size:.85rem;color:var(--dim);line-height:1.6}
+
+/* Stats grid */
+.stats{display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:10px;margin:12px 0}
+.stat{background:var(--s2);border:1px solid var(--b);border-radius:9px;padding:12px;text-align:center}
+.stat-val{font-size:1.4rem;font-weight:700;color:var(--acc);display:block}
+.stat-lbl{font-size:.72rem;color:var(--dim);margin-top:3px}
+
+/* Loss chart */
+#loss-canvas{width:100%;height:120px;border:1px solid var(--b);border-radius:8px;background:var(--s2)}
+
+/* Inputs */
+textarea,input,select{background:var(--s2);border:1px solid var(--b);color:var(--text);border-radius:8px;padding:9px 12px;font-family:inherit;font-size:.88rem;outline:none;transition:border-color .2s;width:100%}
+textarea{resize:vertical}
+textarea:focus,input:focus{border-color:var(--acc)}
+.row{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:10px}
+.lbl{font-size:.78rem;color:var(--dim);margin-bottom:4px;display:block}
+
+/* Buttons */
+.btn{padding:10px 18px;border:none;border-radius:8px;font-size:.86rem;font-weight:600;cursor:pointer;transition:opacity .2s;min-height:40px;font-family:inherit}
+.btn:disabled{opacity:.4;cursor:not-allowed}
+.btn:hover:not(:disabled){opacity:.85}
+.btn.primary{background:var(--acc);color:#000}
+.btn.success{background:var(--g);color:#000}
+.btn.danger{background:var(--err);color:#000}
+.btn.sm{padding:6px 12px;font-size:.78rem;min-height:32px}
+
+/* Progress */
+.progress-bar{height:8px;background:var(--s2);border-radius:4px;overflow:hidden;margin:8px 0}
+.progress-fill{height:100%;background:var(--acc);transition:width .3s;border-radius:4px;width:0%}
+.log{background:var(--s2);border:1px solid var(--b);border-radius:8px;padding:10px;font-family:monospace;font-size:.78rem;max-height:150px;overflow-y:auto;line-height:1.6;color:var(--dim)}
+.log .ok{color:var(--g)}
+.log .err{color:var(--err)}
+.log .info{color:var(--acc)}
+
+/* Chat */
+#chat-msgs{min-height:200px;max-height:400px;overflow-y:auto;display:flex;flex-direction:column;gap:10px;padding:10px;background:var(--s2);border:1px solid var(--b);border-radius:8px;margin-bottom:10px}
+.msg-row{display:flex;gap:8px}
+.msg-row.user{flex-direction:row-reverse}
+.msg-av{width:28px;height:28px;border-radius:50%;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:.7rem;font-weight:700}
+.msg-row.user .msg-av{background:#252060}
+.msg-row.ai .msg-av{background:#0d1a0d}
+.msg-bub{padding:9px 12px;border-radius:10px;font-size:.87rem;line-height:1.6;white-space:pre-wrap;max-width:85%}
+.msg-row.user .msg-bub{background:#1e1a40}
+.msg-row.ai .msg-bub{background:var(--s);border:1px solid var(--b)}
+.streaming::after{content:'▌';animation:blink .7s step-end infinite;color:var(--acc)}
+@keyframes blink{50%{opacity:0}}
+
+/* Architecture diagram */
+.arch{display:flex;flex-direction:column;gap:6px;align-items:center;padding:16px 0}
+.arch-block{border-radius:8px;padding:8px 20px;font-size:.8rem;text-align:center;min-width:200px}
+.arch-arrow{color:var(--dim);font-size:.9rem}
+</style>
+</head>
+<body>
+<header>
+  <h1>🧠 MiniGPT 엔진 스튜디오</h1>
+  <span class="chip custom">순수 JS 구현</span>
+  <span class="chip scratch">외부 AI 없음</span>
+  <a href="/ai-chat.html" style="font-size:.8rem;color:var(--dim)">← 돌아가기</a>
+</header>
+<nav>
+  <button class="nav-btn active" onclick="showTab('overview')">개요</button>
+  <button class="nav-btn" onclick="showTab('train')">학습</button>
+  <button class="nav-btn" onclick="showTab('chat')">생성/대화</button>
+  <button class="nav-btn" onclick="showTab('arch')">아키텍처</button>
+</nav>
+
+<!-- OVERVIEW -->
+<div id="tab-overview" class="page">
+  <div class="card">
+    <h2>모델 상태</h2>
+    <div class="stats">
+      <div class="stat"><span class="stat-val" id="s-params">-</span><div class="stat-lbl">파라미터 수</div></div>
+      <div class="stat"><span class="stat-val" id="s-steps">0</span><div class="stat-lbl">학습 스텝</div></div>
+      <div class="stat"><span class="stat-val" id="s-chars">0</span><div class="stat-lbl">학습한 글자</div></div>
+      <div class="stat"><span class="stat-val" id="s-loss">-</span><div class="stat-lbl">최근 손실값</div></div>
+    </div>
+    <canvas id="loss-canvas"></canvas>
+  </div>
+  <div class="card">
+    <h2>이 엔진에 대하여</h2>
+    <p>이 AI는 외부 라이브러리 없이 <strong>순수 JavaScript 행렬 연산</strong>으로 구현된 트랜스포머입니다.<br><br>
+    • <strong>임베딩 → 셀프 어텐션 → 피드포워드</strong> 블록 2개<br>
+    • 역전파(Backpropagation)를 직접 수학 공식으로 구현<br>
+    • Adam 옵티마이저로 학습<br>
+    • 대화할수록, 텍스트를 더 많이 학습할수록 향상<br><br>
+    처음엔 품질이 낮지만 <strong>1000 스텝 이상</strong> 학습하면 패턴을 익히기 시작합니다.</p>
+  </div>
+</div>
+
+<!-- TRAIN -->
+<div id="tab-train" class="page hidden">
+  <div class="card">
+    <h2>텍스트로 학습시키기</h2>
+    <p style="margin-bottom:12px">학습 데이터를 붙여넣으세요. 대화문, 문서, 어떤 텍스트든 가능합니다.<br>양이 많을수록, 반복 학습할수록 AI가 향상됩니다.</p>
+    <label class="lbl">학습 텍스트</label>
+    <textarea id="train-text" rows="8" placeholder="학습시킬 텍스트를 입력하세요...&#10;예: 대화 내용, 업무 문서, 자주 쓰는 표현 등"></textarea>
+    <div class="row">
+      <div>
+        <label class="lbl">학습 스텝</label>
+        <select id="train-steps" style="width:100px">
+          <option value="100">100 (빠름)</option>
+          <option value="300" selected>300 (권장)</option>
+          <option value="500">500</option>
+          <option value="1000">1000 (느림)</option>
+        </select>
+      </div>
+      <button class="btn primary" id="train-btn" onclick="startTraining()">학습 시작</button>
+      <button class="btn sm" onclick="loadSample()">샘플 텍스트</button>
+    </div>
+    <div class="progress-bar" style="margin-top:14px"><div class="progress-fill" id="train-prog"></div></div>
+    <div id="train-status" style="font-size:.8rem;color:var(--dim);margin:4px 0"></div>
+    <div class="log" id="train-log"></div>
+  </div>
+  <div class="card">
+    <h2>위험: 모델 초기화</h2>
+    <p style="margin-bottom:10px">모든 학습된 가중치를 삭제하고 처음부터 다시 시작합니다.</p>
+    <button class="btn danger sm" onclick="resetModel()">모델 초기화 (학습 내용 삭제)</button>
+  </div>
+</div>
+
+<!-- CHAT -->
+<div id="tab-chat" class="page hidden">
+  <div class="card">
+    <h2>자체 AI와 대화</h2>
+    <p style="margin-bottom:12px">학습이 적을수록 무작위 텍스트가 생성됩니다. 학습이 많아질수록 의미있는 패턴이 나타납니다.</p>
+    <div id="chat-msgs">
+      <div style="color:var(--dim);font-size:.82rem;text-align:center;padding:20px">학습이 충분히 되면 의미있는 응답이 생성됩니다</div>
+    </div>
+    <div class="row" style="margin-bottom:8px">
+      <div style="flex:1">
+        <input type="text" id="chat-input" placeholder="메시지 입력..." onkeydown="if(e.key==='Enter')sendChat()">
+      </div>
+      <button class="btn primary" onclick="sendChat()">생성</button>
+    </div>
+    <div class="row">
+      <div>
+        <label class="lbl">온도 (창의성)</label>
+        <input type="range" id="temperature" min="0.1" max="2" step="0.1" value="0.8" style="width:120px;padding:4px">
+        <span id="temp-val" style="font-size:.8rem;color:var(--acc)">0.8</span>
+      </div>
+      <div>
+        <label class="lbl">최대 생성 길이</label>
+        <select id="max-new" style="width:100px">
+          <option value="100">100자</option>
+          <option value="200" selected>200자</option>
+          <option value="400">400자</option>
+        </select>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ARCH -->
+<div id="tab-arch" class="page hidden">
+  <div class="card">
+    <h2>MiniGPT 아키텍처</h2>
+    <div class="arch">
+      <div class="arch-block" style="background:#1a1030;border:1px solid var(--acc)">입력 텍스트 → 바이트 토크나이저<br><small style="color:var(--dim)">256 바이트 어휘 (한글/영어 모두 지원)</small></div>
+      <div class="arch-arrow">↓</div>
+      <div class="arch-block" style="background:#101a10;border:1px solid var(--g)">임베딩 레이어<br><small style="color:var(--dim)">256 vocab × 64 dim + 위치 인코딩</small></div>
+      <div class="arch-arrow">↓ × 2 반복</div>
+      <div class="arch-block" style="background:#1a1525;border:1px solid #8b5cf6">
+        트랜스포머 블록<br>
+        <small style="color:var(--dim)">멀티헤드 셀프 어텐션 (2헤드, 32dim)<br>피드포워드 (64→128→64)<br>레이어 정규화 × 2</small>
+      </div>
+      <div class="arch-arrow">↓</div>
+      <div class="arch-block" style="background:#1a1010;border:1px solid var(--err)">LM 헤드 (64 → 256)<br><small style="color:var(--dim)">다음 토큰 확률 예측</small></div>
+      <div class="arch-arrow">↓</div>
+      <div class="arch-block" style="background:#101a10;border:1px solid var(--g)">온도 샘플링 → 출력 텍스트</div>
+    </div>
+    <div style="margin-top:14px">
+      <p><strong>학습 방법:</strong> 역전파(Backpropagation) — 손실값이 낮아질수록 AI가 향상됩니다</p>
+      <p style="margin-top:6px"><strong>옵티마이저:</strong> Adam — 각 파라미터마다 적응형 학습률 조정</p>
+      <p style="margin-top:6px"><strong>전체 파라미터:</strong> <span id="arch-params">로딩중...</span> (순수 JS Float32Array로 저장)</p>
+    </div>
+  </div>
+</div>
+
+<script>
+// ── Tab navigation ──
+function showTab(name) {
+  document.querySelectorAll('.page').forEach(p => p.classList.add('hidden'));
+  document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
+  document.getElementById('tab-' + name).classList.remove('hidden');
+  event.target.classList.add('active');
+  if (name === 'overview') drawLoss();
+}
+
+// ── Status ──
+let lossHistory = [];
+async function loadStatus() {
+  try {
+    const d = await fetch('/engine/status').then(r => r.json());
+    document.getElementById('s-params').textContent = d.params ? (d.params / 1000).toFixed(0) + 'K' : '-';
+    document.getElementById('s-steps').textContent = d.steps || 0;
+    document.getElementById('s-chars').textContent = (d.trainedChars || 0).toLocaleString();
+    document.getElementById('s-loss').textContent = d.avgLoss || '-';
+    document.getElementById('arch-params').textContent = d.params ? d.params.toLocaleString() + '개' : '-';
+    lossHistory = d.recentLoss || [];
+    drawLoss();
+  } catch {}
+}
+
+function drawLoss() {
+  const canvas = document.getElementById('loss-canvas');
+  if (!canvas || lossHistory.length < 2) return;
+  const ctx = canvas.getContext('2d');
+  canvas.width = canvas.offsetWidth; canvas.height = 120;
+  const W = canvas.width, H = canvas.height;
+  const min = Math.min(...lossHistory), max = Math.max(...lossHistory);
+  const range = max - min || 1;
+  ctx.clearRect(0, 0, W, H);
+  ctx.strokeStyle = '#a78bfa'; ctx.lineWidth = 2;
+  ctx.beginPath();
+  lossHistory.forEach((v, i) => {
+    const x = (i / (lossHistory.length - 1)) * W;
+    const y = H - ((v - min) / range) * (H - 20) - 10;
+    i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+  });
+  ctx.stroke();
+  ctx.fillStyle = '#666'; ctx.font = '11px monospace';
+  ctx.fillText('손실: ' + max.toFixed(3), 6, 16);
+  ctx.fillText(min.toFixed(3), 6, H - 6);
+}
+
+// ── Training ──
+async function startTraining() {
+  const text = document.getElementById('train-text').value.trim();
+  const steps = parseInt(document.getElementById('train-steps').value);
+  if (!text) return alert('텍스트를 입력하세요');
+  const btn = document.getElementById('train-btn');
+  btn.disabled = true; btn.textContent = '학습중...';
+  const log = document.getElementById('train-log');
+  const prog = document.getElementById('train-prog');
+  const status = document.getElementById('train-status');
+  log.innerHTML = '';
+  const addLog = (msg, cls = '') => {
+    log.innerHTML += `<div class="${cls}">${msg}</div>`;
+    log.scrollTop = log.scrollHeight;
+  };
+  addLog(`학습 시작: ${text.length}자 텍스트, ${steps} 스텝`, 'info');
+
+  try {
+    const r = await fetch('/engine/train', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text, steps }),
+    });
+    const reader = r.body.getReader();
+    const dec = new TextDecoder();
+    let buf = '';
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      const parts = buf.split('\n\n'); buf = parts.pop();
+      for (const part of parts) {
+        const em = part.match(/^event: (\w+)/m);
+        const dm = part.match(/^data: (.+)$/m);
+        if (!em || !dm) continue;
+        const data = JSON.parse(dm[1]);
+        if (em[1] === 'progress') {
+          const pct = (data.step / data.total * 100).toFixed(0);
+          prog.style.width = pct + '%';
+          status.textContent = `스텝 ${data.step}/${data.total} — 손실: ${data.loss?.toFixed(4) || '-'}`;
+          if (data.step % 50 === 0) addLog(`[${data.step}] loss=${data.loss?.toFixed(4)}`, 'ok');
+          lossHistory.push(data.loss); if (lossHistory.length > 200) lossHistory.shift();
+          drawLoss();
+        } else if (em[1] === 'done') {
+          addLog(`완료! 평균 손실: ${data.avgLoss?.toFixed(4)}, 누적 스텝: ${data.totalSteps}`, 'ok');
+          loadStatus();
+        } else if (em[1] === 'error') {
+          addLog('오류: ' + data.error, 'err');
+        }
+      }
+    }
+  } catch(e) {
+    addLog('오류: ' + e.message, 'err');
+  } finally {
+    btn.disabled = false; btn.textContent = '학습 시작';
+    prog.style.width = '100%';
+  }
+}
+
+function loadSample() {
+  document.getElementById('train-text').value =
+`안녕하세요. 저는 AI 어시스턴트입니다.
+무엇을 도와드릴까요?
+
+사용자: 오늘 날씨가 어때요?
+AI: 오늘은 맑고 화창한 날씨입니다. 산책하기 좋은 날이에요.
+
+사용자: 업무 효율을 높이는 방법은?
+AI: 포모도로 기법을 활용해 25분 집중, 5분 휴식을 반복하세요.
+할 일 목록을 작성하고 우선순위를 정하는 것도 중요합니다.
+
+사용자: 감사합니다.
+AI: 언제든지 질문해 주세요. 도움이 되어 기쁩니다.`;
+}
+
+async function resetModel() {
+  if (!confirm('모든 학습 내용이 삭제됩니다. 계속하시겠습니까?')) return;
+  const r = await fetch('/engine/reset', { method: 'POST' });
+  const d = await r.json();
+  alert(d.message);
+}
+
+// ── Chat / Generation ──
+document.addEventListener('DOMContentLoaded', () => {
+  const tempSlider = document.getElementById('temperature');
+  const tempVal    = document.getElementById('temp-val');
+  if (tempSlider) tempSlider.oninput = () => tempVal.textContent = tempSlider.value;
+  const chatInput = document.getElementById('chat-input');
+  if (chatInput) chatInput.onkeydown = e => { if (e.key === 'Enter') sendChat(); };
+});
+
+function addMsg(role, text='') {
+  const msgs = document.getElementById('chat-msgs');
+  const first = msgs.querySelector('[style]');
+  if (first) msgs.removeChild(first);
+  const row = document.createElement('div');
+  row.className = 'msg-row ' + role;
+  const av = document.createElement('div');
+  av.className = 'msg-av';
+  av.textContent = role === 'user' ? '나' : 'AI';
+  const bub = document.createElement('div');
+  bub.className = 'msg-bub';
+  bub.textContent = text;
+  row.appendChild(av); row.appendChild(bub);
+  msgs.appendChild(row);
+  msgs.scrollTop = msgs.scrollHeight;
+  return bub;
+}
+
+async function sendChat() {
+  const input = document.getElementById('chat-input');
+  const prompt = input.value.trim();
+  if (!prompt) return;
+  input.value = '';
+  addMsg('user', prompt);
+  const aiBub = addMsg('ai');
+  aiBub.classList.add('streaming');
+  let fullText = '';
+  try {
+    const r = await fetch('/engine/chat', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        prompt,
+        maxNew: parseInt(document.getElementById('max-new').value),
+        temperature: parseFloat(document.getElementById('temperature').value),
+      }),
+    });
+    const reader = r.body.getReader();
+    const dec = new TextDecoder();
+    let buf = '';
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      const parts = buf.split('\n\n'); buf = parts.pop();
+      for (const part of parts) {
+        const em = part.match(/^event: (\w+)/m);
+        const dm = part.match(/^data: (.+)$/m);
+        if (!em || !dm) continue;
+        const data = JSON.parse(dm[1]);
+        if (em[1] === 'token') { fullText += data.token; aiBub.textContent = fullText; }
+      }
+    }
+  } catch(e) {
+    aiBub.textContent = '오류: ' + e.message;
+  } finally {
+    aiBub.classList.remove('streaming');
+  }
+}
+
+loadStatus();
+setInterval(loadStatus, 15000);
+</script>
+</body>
+</html>
