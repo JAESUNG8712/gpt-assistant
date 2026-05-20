@@ -3,9 +3,10 @@ const cors = require("cors");
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
-const aiRouter     = require("./routes/ai");
-const syncRouter   = require("./routes/sync");
-const engineRouter = require("./routes/engine");
+const aiRouter       = require("./routes/ai");
+const syncRouter     = require("./routes/sync");
+const engineRouter   = require("./routes/engine");
+const onedriveRouter = require("./routes/onedrive");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -149,6 +150,7 @@ app.use(express.static(path.join(__dirname, "public")));
 app.use("/ai", aiRouter);
 app.use("/sync", syncRouter);
 app.use("/engine", engineRouter);
+app.use("/onedrive", onedriveRouter);
 
 // ── API Routes ────────────────────────────────────────────────────────────────
 
