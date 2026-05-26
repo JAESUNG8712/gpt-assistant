@@ -1,46 +1,118 @@
 {
+  "defaultTeam": [
+    "agent-t01",
+    "agent-t02",
+    "agent-t03",
+    "agent-t04",
+    "agent-t05",
+    "agent-t06",
+    "agent-t07",
+    "agent-t08"
+  ],
   "agents": [
     {
-      "id": "agent-001",
-      "name": "코딩 어시스턴트",
-      "description": "코드 작성, 디버깅, 코드 리뷰를 도와주는 에이전트",
-      "category": "development",
-      "icon": "💻"
+      "id": "agent-t01",
+      "role": "planner",
+      "name": "기획자",
+      "description": "사용자의 요구사항을 정확히 파악하고 전체 프로젝트를 기획·설계합니다. 기능 정의, 우선순위 결정, 일정 조율을 담당합니다.",
+      "icon": "🗂️",
+      "skills": [
+        "요구사항 분석",
+        "기능 기획",
+        "일정 관리",
+        "와이어프레임"
+      ]
     },
     {
-      "id": "agent-002",
-      "name": "문서 작성 도우미",
-      "description": "보고서, 이메일, 문서 작성을 도와주는 에이전트",
-      "category": "writing",
-      "icon": "📝"
+      "id": "agent-t02",
+      "role": "frontend",
+      "name": "프론트엔드 개발자",
+      "description": "UI/UX 구현, 반응형 디자인, 사용자 인터랙션을 담당합니다. HTML/CSS/JS 및 프레임워크 개발을 처리합니다.",
+      "icon": "🖥️",
+      "skills": [
+        "HTML/CSS/JS",
+        "React/Vue",
+        "반응형 UI",
+        "성능 최적화"
+      ]
     },
     {
-      "id": "agent-003",
-      "name": "데이터 분석가",
-      "description": "데이터 분석 및 시각화를 도와주는 에이전트",
-      "category": "data",
-      "icon": "📊"
+      "id": "agent-t03",
+      "role": "backend",
+      "name": "백엔드 개발자",
+      "description": "서버 로직, API 설계, 데이터베이스 연동을 담당합니다. 비즈니스 로직과 서버 인프라를 구현합니다.",
+      "icon": "⚙️",
+      "skills": [
+        "REST API",
+        "DB 설계",
+        "서버 로직",
+        "인증/인가"
+      ]
     },
     {
-      "id": "agent-004",
-      "name": "번역 전문가",
-      "description": "다국어 번역 및 현지화를 도와주는 에이전트",
-      "category": "language",
-      "icon": "🌐"
+      "id": "agent-t04",
+      "role": "network",
+      "name": "네트워크 개발자",
+      "description": "네트워크 아키텍처, 통신 프로토콜, 인프라 구성을 담당합니다. 서버 배포와 네트워크 최적화를 처리합니다.",
+      "icon": "🌐",
+      "skills": [
+        "TCP/IP",
+        "서버 배포",
+        "CDN/로드밸런서",
+        "WebSocket"
+      ]
     },
     {
-      "id": "agent-005",
-      "name": "수학 튜터",
-      "description": "수학 문제 풀이 및 개념 설명을 도와주는 에이전트",
-      "category": "education",
-      "icon": "🔢"
+      "id": "agent-t05",
+      "role": "security",
+      "name": "보안 담당자",
+      "description": "취약점 분석, 보안 정책 수립, 코드 보안 리뷰를 담당합니다. OWASP 기준 보안 점검과 침투 테스트를 수행합니다.",
+      "icon": "🔒",
+      "skills": [
+        "취약점 분석",
+        "보안 감사",
+        "암호화",
+        "접근 제어"
+      ]
     },
     {
-      "id": "agent-006",
-      "name": "HR 어시스턴트",
-      "description": "인사관리, 채용, 성과평가를 도와주는 에이전트",
-      "category": "hr",
-      "icon": "👥"
+      "id": "agent-t06",
+      "role": "qa",
+      "name": "QA 담당자 1",
+      "description": "기능 테스트, 회귀 테스트, 시나리오 기반 검증을 담당합니다. 결함 발견 및 재현 보고를 처리합니다.",
+      "icon": "🧪",
+      "skills": [
+        "기능 테스트",
+        "시나리오 설계",
+        "결함 리포팅",
+        "테스트 케이스"
+      ]
+    },
+    {
+      "id": "agent-t07",
+      "role": "qa",
+      "name": "QA 담당자 2",
+      "description": "성능 테스트, 호환성 테스트, 자동화 테스트를 담당합니다. 부하 테스트 및 크로스 브라우저 검증을 처리합니다.",
+      "icon": "🔬",
+      "skills": [
+        "성능 테스트",
+        "자동화 테스트",
+        "부하 테스트",
+        "크로스브라우저"
+      ]
+    },
+    {
+      "id": "agent-t08",
+      "role": "documentation",
+      "name": "매뉴얼 및 문서 작성자",
+      "description": "사용자 매뉴얼, API 문서, 개발 가이드, 운영 절차서 작성을 담당합니다. 기술 문서를 체계적으로 관리합니다.",
+      "icon": "📚",
+      "skills": [
+        "사용자 매뉴얼",
+        "API 문서",
+        "개발 가이드",
+        "운영 절차서"
+      ]
     }
   ],
   "accounts": [
@@ -48,13 +120,42 @@
       "id": "acc-001",
       "email": "myangle87@naver.com",
       "name": "jaesung8712",
-      "pinnedAgents": ["agent-001", "agent-003"]
+      "pinnedAgents": [
+        "agent-t01",
+        "agent-t02",
+        "agent-t03",
+        "agent-t04",
+        "agent-t05",
+        "agent-t06",
+        "agent-t07",
+        "agent-t08"
+      ],
+      "memory": {
+        "teamConfig": "default-8-member-team",
+        "configuredAt": "2026-05-26T00:00:00.000Z",
+        "notes": "기획자 1명, 프론트엔드 1명, 백엔드 1명, 네트워크 1명, 보안 1명, QA 2명, 문서작성자 1명으로 구성된 팀. 변경 요청 전까지 유지.",
+        "projectContext": [],
+        "decisions": []
+      }
     },
     {
       "id": "acc-002",
       "email": "test@example.com",
       "name": "testuser",
-      "pinnedAgents": []
+      "pinnedAgents": [
+        "agent-t01",
+        "agent-t02",
+        "agent-t03",
+        "agent-t04",
+        "agent-t05",
+        "agent-t06",
+        "agent-t07",
+        "agent-t08"
+      ],
+      "memory": {
+        "projectContext": [],
+        "decisions": []
+      }
     }
   ]
 }
