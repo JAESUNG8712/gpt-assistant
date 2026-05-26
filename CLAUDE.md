@@ -43,6 +43,34 @@
 
 ---
 
+## 자체 AI 시스템 (`ai/` 디렉토리)
+
+사용자가 직접 소유하는 AI 어시스턴트. 유료 서비스 의존 없이 운영 가능.
+
+### 구조
+- `ai/main.py` — FastAPI 서버 (모든 API 엔드포인트)
+- `ai/llm.py` — Groq API 연동 (Llama 3.1 8B, 무료)
+- `ai/memory.py` — SQLite(대화이력) + ChromaDB(벡터RAG)
+- `ai/search.py` — DuckDuckGo 인터넷 검색 학습
+- `ai/backup.py` — OneDrive 백업 (Microsoft Graph API)
+- `ai/static/index.html` — iPad PWA 채팅 UI
+
+### 배포 방법 (Render.com 무료)
+1. `ai/` 폴더를 Render Web Service로 배포
+2. 환경변수 `GROQ_API_KEY` 설정 (https://console.groq.com 무료 발급)
+3. Disk 마운트: `/app/data` 1GB (대화/학습 데이터 영속 저장)
+4. iPad Safari에서 배포 URL 접속 → "홈 화면에 추가" → PWA로 사용
+
+### OneDrive 백업 설정
+- Azure Portal에서 앱 등록 후 Client ID/Secret/Refresh Token 발급
+- `.env` 파일에 설정하면 UI에서 버튼 한 번으로 백업
+
+### 파인튜닝 (추후)
+- 파인튜닝은 GPU 필요 → Google Colab 또는 Hugging Face 무료 컴퓨트 활용
+- 현재는 RAG(검색 증강 생성)로 동일한 효과 구현
+
+---
+
 ## 프로젝트 기록
 
 <!-- 중요한 결정 사항, 요구사항, 변경 이력을 여기에 추가 -->
@@ -50,3 +78,4 @@
 - 2026-05-26: 8인 팀 에이전트 구성 확정 (기획자 1, FE 1, BE 1, 네트워크 1, 보안 1, QA 2, 문서 1)
 - 2026-05-26: 에이전트 미설정 계정에 기본팀 자동 적용 기능 구현
 - 2026-05-26: 프로젝트 맥락 영속 저장 기능(메모리 API) 구현
+- 2026-05-26: 자체 AI 시스템 구현 (Groq+RAG+OneDrive 백업, iPad PWA)
