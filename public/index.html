@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>GPT Assistant - 고정된 에이전트</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: #f0f2f5;
+      color: #1a1a2e;
+      min-height: 100vh;
+    }
+
+    header {
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: white;
+      padding: 20px 32px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+    }
+
+    header h1 { font-size: 1.4rem; font-weight: 700; }
+    header span { font-size: 1.8rem; }
+
+    .container { max-width: 960px; margin: 0 auto; padding: 32px 16px; }
+
+    .account-card {
+      background: white;
+      border-radius: 16px;
+      padding: 24px;
+      margin-bottom: 24px;
+      box-shadow: 0 2px 12px rgba(0,0,0,0.08);
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+
+    .account-avatar {
+      width: 52px; height: 52px;
+      background: linear-gradient(135deg, #667eea, #764ba2);
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1.4rem;
+      color: white;
+      font-weight: 700;
+      flex-shrink: 0;
+    }
+
+    .account-info h2 { font-size: 1.1rem; font-weight: 600; }
+    .account-info p { font-size: 0.85rem; color: #666; margin-top: 2px; }
+
+    .section-title {
+      font-size: 1rem;
+      font-weight: 700;
+      color: #444;
+      margin-bottom: 16px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .badge {
+      background: #667eea;
+      color: white;
+      border-radius: 20px;
+      padding: 2px 10px;
+      font-size: 0.75rem;
+      font-weight: 600;
+    }
+
+    .empty-state {
+      text-align: center;
+      padding: 40px;
+      color: #999;
+      background: white;
+      border-radius: 16px;
+      box-shadow: 0 2px 12px rgba(0,0,0,0.08);
+    }
+
+    .empty-state .emoji { font-size: 3rem; margin-bottom: 12px; }
+    .empty-state p { font-size: 0.95rem; }
+
+    .agents-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+      gap: 16px;
+      margin-bottom: 32px;
+    }
+
+    .agent-card {
+      background: white;
+      border-radius: 14px;
+      padding: 20px;
+      box-shadow: 0 2px 12px rgba(0,0,0,0.08);
+      transition: transform 0.2s, box-shadow 0.2s;
+      position: relative;
+    }
+
+    .agent-card:hover {
+      transform: translateY(-3px);
+      box-shadow: 0 6px 20px rgba(0,0,0,0.12);
+    }
+
+    .pinned-badge {
+      position: absolute;
+      top: 12px;
+      right: 12px;
+      background: #ffd700;
+      color: #7a5900;
+      font-size: 0.65rem;
+      font-weight: 700;
+      padding: 2px 8px;
+      border-radius: 20px;
+    }
+
+    .agent-icon { font-size: 2.2rem; margin-bottom: 10px; }
+    .agent-name { font-size: 1rem; font-weight: 700; margin-bottom: 6px; }
+    .agent-desc { font-size: 0.82rem; color: #666; line-height: 1.5; }
+
+    .category-tag {
+      display: inline-block;
+      margin-top: 10px;
+      background: #f0f2f5;
+      color: #555;
+      font-size: 0.72rem;
+      padding: 3px 10px;
+      border-radius: 20px;
+      font-weight: 600;
+    }
+
+    .btn {
+      margin-top: 14px;
+      width: 100%;
+      padding: 9px;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 0.85rem;
+      font-weight: 600;
+      transition: background 0.2s;
+    }
+
+    .btn-unpin {
+      background: #fff0f0;
+      color: #e53e3e;
+      border: 1px solid #fed7d7;
+    }
+
+    .btn-unpin:hover { background: #fed7d7; }
+
+    .btn-pin {
+      background: #f0f4ff;
+      color: #667eea;
+      border: 1px solid #c3d0ff;
+    }
+
+    .btn-pin:hover { background: #c3d0ff; }
+
+    .account-selector {
+      display: flex;
+      gap: 10px;
+      margin-bottom: 24px;
+      flex-wrap: wrap;
+    }
+
+    .account-btn {
+      padding: 8px 18px;
+      border-radius: 25px;
+      border: 2px solid #ddd;
+      background: white;
+      cursor: pointer;
+      font-size: 0.85rem;
+      font-weight: 600;
+      transition: all 0.2s;
+      color: #555;
+    }
+
+    .account-btn.active {
+      background: linear-gradient(135deg, #667eea, #764ba2);
+      color: white;
+      border-color: transparent;
+    }
+
+    .loading { text-align: center; padding: 40px; color: #999; }
+  </style>
+</head>
+<body>
+
+<header>
+  <span>🤖</span>
+  <h1>GPT Assistant - 에이전트 관리</h1>
+</header>
+
+<div class="container">
+  <div id="account-selector" class="account-selector"></div>
+  <div id="account-info" class="account-card" style="display:none">
+    <div class="account-avatar" id="avatar"></div>
+    <div class="account-info">
+      <h2 id="account-name"></h2>
+      <p id="account-email"></p>
+    </div>
+  </div>
+
+  <div id="pinned-section">
+    <div class="section-title">
+      📌 고정된 에이전트 <span class="badge" id="pinned-count">0</span>
+    </div>
+    <div id="pinned-agents" class="agents-grid"></div>
+  </div>
+
+  <div id="all-section" style="margin-top:32px">
+    <div class="section-title">🤖 전체 에이전트</div>
+    <div id="all-agents" class="agents-grid"></div>
+  </div>
+</div>
+
+<script>
+  let currentAccount = null;
+  let allAgents = [];
+  let accounts = [];
+
+  async function fetchAccounts() {
+    const res = await fetch('/api/accounts');
+    const data = await res.json();
+    accounts = data.accounts;
+    renderAccountSelector();
+    if (accounts.length > 0) selectAccount(accounts[0].id);
+  }
+
+  function renderAccountSelector() {
+    const el = document.getElementById('account-selector');
+    el.innerHTML = accounts.map(acc => `
+      <button class="account-btn" onclick="selectAccount('${acc.id}')" id="btn-${acc.id}">
+        ${acc.name} (${acc.email})
+      </button>
+    `).join('');
+  }
+
+  async function selectAccount(accountId) {
+    accounts.forEach(a => {
+      const btn = document.getElementById(`btn-${a.id}`);
+      if (btn) btn.classList.toggle('active', a.id === accountId);
+    });
+
+    const res = await fetch(`/api/accounts/${accountId}/pinned-agents`);
+    const data = await res.json();
+    currentAccount = data.account;
+
+    document.getElementById('account-info').style.display = 'flex';
+    document.getElementById('avatar').textContent = data.account.name[0].toUpperCase();
+    document.getElementById('account-name').textContent = data.account.name;
+    document.getElementById('account-email').textContent = data.account.email;
+    document.getElementById('pinned-count').textContent = data.count;
+
+    const pinnedIds = data.pinnedAgents.map(a => a.id);
+
+    renderPinnedAgents(data.pinnedAgents);
+    renderAllAgents(allAgents, pinnedIds);
+  }
+
+  function renderPinnedAgents(agents) {
+    const el = document.getElementById('pinned-agents');
+    if (agents.length === 0) {
+      el.innerHTML = `<div class="empty-state" style="grid-column:1/-1">
+        <div class="emoji">📭</div>
+        <p>고정된 에이전트가 없습니다.<br>아래에서 원하는 에이전트를 고정해보세요.</p>
+      </div>`;
+      return;
+    }
+    el.innerHTML = agents.map(a => `
+      <div class="agent-card">
+        <span class="pinned-badge">📌 고정됨</span>
+        <div class="agent-icon">${a.icon}</div>
+        <div class="agent-name">${a.name}</div>
+        <div class="agent-desc">${a.description}</div>
+        <span class="category-tag">${a.category}</span>
+        <button class="btn btn-unpin" onclick="unpinAgent('${a.id}')">고정 해제</button>
+      </div>
+    `).join('');
+  }
+
+  function renderAllAgents(agents, pinnedIds) {
+    const el = document.getElementById('all-agents');
+    el.innerHTML = agents.map(a => {
+      const isPinned = pinnedIds.includes(a.id);
+      return `
+        <div class="agent-card">
+          ${isPinned ? '<span class="pinned-badge">📌 고정됨</span>' : ''}
+          <div class="agent-icon">${a.icon}</div>
+          <div class="agent-name">${a.name}</div>
+          <div class="agent-desc">${a.description}</div>
+          <span class="category-tag">${a.category}</span>
+          ${isPinned
+            ? `<button class="btn btn-unpin" onclick="unpinAgent('${a.id}')">고정 해제</button>`
+            : `<button class="btn btn-pin" onclick="pinAgent('${a.id}')">📌 고정하기</button>`
+          }
+        </div>
+      `;
+    }).join('');
+  }
+
+  async function pinAgent(agentId) {
+    await fetch(`/api/accounts/${currentAccount.id}/pinned-agents/${agentId}`, { method: 'POST' });
+    await selectAccount(currentAccount.id);
+  }
+
+  async function unpinAgent(agentId) {
+    await fetch(`/api/accounts/${currentAccount.id}/pinned-agents/${agentId}`, { method: 'DELETE' });
+    await selectAccount(currentAccount.id);
+  }
+
+  async function fetchAgents() {
+    const res = await fetch('/api/agents');
+    const data = await res.json();
+    allAgents = data.agents;
+  }
+
+  (async () => {
+    await fetchAgents();
+    await fetchAccounts();
+  })();
+</script>
+</body>
+</html>
