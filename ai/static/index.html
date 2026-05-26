@@ -504,9 +504,20 @@
     setTimeout(() => t.classList.remove('show'), 3000);
   }
 
+  // ── 모델 정보 ─────────────────────────────
+  async function loadModelInfo() {
+    try {
+      const r = await fetch('/model-info');
+      const d = await r.json();
+      document.getElementById('model-badge').textContent =
+        `${d.model} · ${d.provider}`;
+    } catch {}
+  }
+
   // ── 초기화 ───────────────────────────────
   loadStats();
   loadDocs();
+  loadModelInfo();
 </script>
 </body>
 </html>
