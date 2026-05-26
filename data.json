@@ -1,0 +1,60 @@
+{
+  "agents": [
+    {
+      "id": "agent-001",
+      "name": "코딩 어시스턴트",
+      "description": "코드 작성, 디버깅, 코드 리뷰를 도와주는 에이전트",
+      "category": "development",
+      "icon": "💻"
+    },
+    {
+      "id": "agent-002",
+      "name": "문서 작성 도우미",
+      "description": "보고서, 이메일, 문서 작성을 도와주는 에이전트",
+      "category": "writing",
+      "icon": "📝"
+    },
+    {
+      "id": "agent-003",
+      "name": "데이터 분석가",
+      "description": "데이터 분석 및 시각화를 도와주는 에이전트",
+      "category": "data",
+      "icon": "📊"
+    },
+    {
+      "id": "agent-004",
+      "name": "번역 전문가",
+      "description": "다국어 번역 및 현지화를 도와주는 에이전트",
+      "category": "language",
+      "icon": "🌐"
+    },
+    {
+      "id": "agent-005",
+      "name": "수학 튜터",
+      "description": "수학 문제 풀이 및 개념 설명을 도와주는 에이전트",
+      "category": "education",
+      "icon": "🔢"
+    },
+    {
+      "id": "agent-006",
+      "name": "HR 어시스턴트",
+      "description": "인사관리, 채용, 성과평가를 도와주는 에이전트",
+      "category": "hr",
+      "icon": "👥"
+    }
+  ],
+  "accounts": [
+    {
+      "id": "acc-001",
+      "email": "myangle87@naver.com",
+      "name": "jaesung8712",
+      "pinnedAgents": ["agent-001", "agent-003"]
+    },
+    {
+      "id": "acc-002",
+      "email": "test@example.com",
+      "name": "testuser",
+      "pinnedAgents": []
+    }
+  ]
+}
