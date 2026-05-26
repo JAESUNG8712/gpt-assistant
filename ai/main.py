@@ -120,6 +120,11 @@ async def backup_onedrive():
 
 # ── 메인 UI ───────────────────────────────────────────
 
+@app.get("/model-info")
+def model_info():
+    return llm.current_model_info()
+
+
 @app.get("/", response_class=HTMLResponse)
 def index():
     with open("static/index.html", encoding="utf-8") as f:
