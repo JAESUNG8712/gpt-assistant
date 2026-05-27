@@ -89,24 +89,36 @@ class _Engine:
         n2 = math.sqrt(sum(x * x for x in v2.values())) or 1e-9
         return dot / (n1 * n2)
 
-    def search(self, query: str, n: int = 4, persona: str = None,
-               min_score: float = 0.07) -> List[Tuple[str, str, float, dict]]:
+    def search(self, query: str, n: int = 3, persona: str = None,
+               min_score: float = 0.10) -> List[Tuple[str, str, float, dict]]:
         if self._dirty:
             self._build()
         if not self._qa:
             return []
 
         qv = self._qvec(query)
+        query_lower = query.lower()
         results = []
         for i, (q, a, meta) in enumerate(self._qa):
             p = meta.get('persona', '')
             if persona and p and p != persona:
                 continue
             s = self._cos(qv, self._vecs[i])
+            # 질문 텍스트에 쿼리 핵심 단어가 정확히 포함되면 가산
+            q_lower = q.lower()
+            exact_tokens = [t for t in _tok(query_lower) if len(t) >= 3 and t in q_lower]
+            if exact_tokens:
+                match_ratio = len(exact_tokens) / max(len(_tok(query_lower)), 1)
+                s = s * (1.0 + 0.5 * match_ratio)
             if s >= min_score:
                 results.append((q, a, s, meta))
 
         results.sort(key=lambda x: x[2], reverse=True)
+
+        # 1위가 압도적으로 높으면 1개만 반환 (확신도 높음)
+        if len(results) >= 2 and results[0][2] - results[1][2] > 0.20:
+            return results[:1]
+
         return results[:n]
 
 
@@ -349,7 +361,7 @@ async def local_stream(
         if context:
             engine.add(context[:600], context, {'persona': persona, 'source': 'context'})
 
-        results = engine.search(search_q, n=4, persona=persona)
+        results = engine.search(search_q, persona=persona)
         response = _compose(query, results, persona)
 
     # 자연스러운 청크 스트리밍
