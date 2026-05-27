@@ -16,12 +16,15 @@ from knowledge_base import get_all_knowledge
 
 mem.init_db()
 
-# 서버 시작 시 지식베이스 자동 로드
+# 서버 시작 시 지식베이스 자동 로드 (실패해도 서버는 계속 실행)
 def load_knowledge():
-    items = get_all_knowledge()
-    for text, meta in items:
-        mem.store_memory(text, meta)
-    print(f"✅ 지식베이스 로드 완료: {len(items)}개 청크")
+    try:
+        items = get_all_knowledge()
+        for text, meta in items:
+            mem.store_memory(text, meta)
+        print(f"✅ 지식베이스 로드 완료: {len(items)}개 청크")
+    except Exception as e:
+        print(f"⚠️ 지식베이스 로드 실패 (서버는 계속 실행): {e}")
 
 load_knowledge()
 
@@ -151,7 +154,21 @@ async def backup_onedrive():
 def model_info():
     return llm.current_model_info()
 
+@app.get("/health")
+def health():
+    return {"status": "ok"}
+
 @app.get("/", response_class=HTMLResponse)
 def index():
-    with open("static/index.html", encoding="utf-8") as f:
-        return f.read()
+    import os
+    # 여러 경로 시도 (배포 환경마다 working directory가 다를 수 있음)
+    candidates = [
+        "static/index.html",
+        os.path.join(os.path.dirname(__file__), "static", "index.html"),
+        "/app/static/index.html",
+    ]
+    for path in candidates:
+        if os.path.exists(path):
+            with open(path, encoding="utf-8") as f:
+                return f.read()
+    return HTMLResponse("<h1>static/index.html 파일을 찾을 수 없습니다</h1>", status_code=500)
