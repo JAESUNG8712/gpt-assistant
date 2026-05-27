@@ -7,3 +7,4 @@ ai/.env
 
 # AI 데이터 (로컬 학습 데이터, 서버에서 관리)
 ai/data/
+__pycache__/
