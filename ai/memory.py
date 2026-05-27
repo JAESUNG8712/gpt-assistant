@@ -41,6 +41,14 @@ def init_db():
             source TEXT DEFAULT '',
             created_at TEXT NOT NULL
         )""")
+        c.execute("""CREATE TABLE IF NOT EXISTS feedback (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            question TEXT NOT NULL,
+            answer TEXT NOT NULL,
+            rating INTEGER NOT NULL,
+            persona TEXT DEFAULT 'hr',
+            created_at TEXT NOT NULL
+        )""")
 
 
 # ── 대화 이력 ─────────────────────────────────────────
@@ -154,6 +162,25 @@ def list_documents() -> list:
             "SELECT name, source, persona, created_at FROM documents ORDER BY id DESC"
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+def save_feedback(question: str, answer: str, rating: int, persona: str = "hr"):
+    with _conn() as c:
+        c.execute(
+            "INSERT INTO feedback (question, answer, rating, persona, created_at) VALUES (?,?,?,?,?)",
+            (question[:500], answer[:1000], rating, persona, datetime.now().isoformat())
+        )
+
+def get_feedback_stats() -> dict:
+    with _conn() as c:
+        rows = c.execute("""
+            SELECT persona,
+                   SUM(CASE WHEN rating=1 THEN 1 ELSE 0 END) as good,
+                   SUM(CASE WHEN rating=-1 THEN 1 ELSE 0 END) as bad,
+                   COUNT(*) as total
+            FROM feedback GROUP BY persona
+        """).fetchall()
+        return {r['persona']: {'good': r['good'], 'bad': r['bad'], 'total': r['total']} for r in rows}
 
 
 def memory_stats() -> dict:
