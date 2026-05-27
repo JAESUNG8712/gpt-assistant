@@ -382,19 +382,9 @@
     document.getElementById('sb-title').textContent = `${currentPersona.icon} ${currentPersona.name}`;
     document.getElementById('sb-desc').textContent = currentPersona.description;
 
-    // 웰컴 화면 업데이트
-    const welcome = document.getElementById('welcome');
-    if (welcome) {
-      document.getElementById('welcome-icon').textContent = currentPersona.icon;
-      document.getElementById('welcome-title').textContent = `${currentPersona.name}와 대화하세요`;
-      document.getElementById('welcome-desc').textContent = currentPersona.description;
-      const chips = WELCOME_CHIPS[id] || [];
-      document.getElementById('welcome-chips').innerHTML = chips.map(c =>
-        `<div class="chip" onclick="quickAsk('${c.label}',${c.search})">${c.label}</div>`
-      ).join('');
-    }
-
-    // 메시지 화면 초기화 (페르소나 전환 시)
+    // 메시지 화면 초기화 — clearMessages()가 웰컴 화면도 함께 갱신
+    // (이전: 별도 welcome 업데이트 블록이 있었으나 두 번째 탭 전환 시
+    //  #welcome-icon 등 서브 ID가 없어 TypeError → clearMessages 미실행 버그 수정)
     clearMessages();
     loadStats();
   }
