@@ -1,9 +1,12 @@
 """
-LLM 라우터 — API 키 자동 감지 후 최선의 제공자 선택
-  auto   → GROQ_API_KEY 있으면 Groq, GEMINI_API_KEY 있으면 Gemini, 없으면 local (기본)
-  groq   → Groq API (무료, llama-3.3-70b, GPT급 품질)
-  gemini → Google Gemini API (무료, gemini-2.0-flash-lite)
-  local  → 자체 TF-IDF 엔진 (API 키 불필요, 제한적)
+LLM 라우터 — 다중 제공자 자동 폴백
+우선순위: OpenRouter → Groq → Gemini → 자체 TF-IDF 엔진
+429(한도초과) 발생 시 다음 제공자로 자동 전환
+
+무료 API 키 발급:
+  OpenRouter : https://openrouter.ai  (무료 모델 한도 없음, 추천)
+  Groq       : https://console.groq.com  (하루 14,400건)
+  Gemini     : https://aistudio.google.com  (하루 1,500건)
 """
 import os
 import httpx
@@ -11,14 +14,18 @@ import json
 import asyncio
 from typing import AsyncGenerator
 
-# ── 제공자 선택 ──────────────────────────────────────
-LLM_PROVIDER = os.getenv("LLM_PROVIDER", "auto")   # 기본값: 자동 감지
+# ── 제공자 우선순위 설정 ─────────────────────────────
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", "auto")
 
-# Groq 설정 (무료, https://console.groq.com)
+# OpenRouter (무료 모델 한도 없음, 추천)
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
+OPENROUTER_MODEL   = os.getenv("OPENROUTER_MODEL", "meta-llama/llama-3.1-8b-instruct:free")
+
+# Groq (하루 14,400건 무료)
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
-GROQ_MODEL   = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")   # GPT-4급 품질
+GROQ_MODEL   = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
 
-# Google Gemini 설정 (무료, https://aistudio.google.com)
+# Google Gemini (하루 1,500건 무료)
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 GEMINI_MODEL   = os.getenv("GEMINI_MODEL", "gemini-2.0-flash-lite")
 
@@ -28,29 +35,36 @@ SYSTEM_PROMPT = """당신은 사용자만을 위한 전용 AI 어시스턴트입
 - 참고한 정보가 있으면 [출처: ...] 형식으로 명시합니다."""
 
 
-# ── 자체 엔진 스트리밍 ─────────────────────────────────
+# ── 자체 엔진 폴백 ────────────────────────────────────
 async def _local_stream(messages: list, context: str, system: str) -> AsyncGenerator[str, None]:
     from engine import local_stream
     async for token in local_stream(messages, context=context, system_prompt=system):
         yield token
 
 
-# ── Groq 스트리밍 ──────────────────────────────────────
-async def _groq_stream(messages: list, system: str) -> AsyncGenerator[str, None]:
+# ── OpenAI 호환 스트리밍 (OpenRouter / Groq 공용) ────────
+async def _openai_compat_stream(
+    messages: list,
+    system: str,
+    api_key: str,
+    base_url: str,
+    model: str,
+    extra_headers: dict = None,
+) -> AsyncGenerator[str, None]:
+    """OpenAI 형식 API 공통 스트리밍 (OpenRouter·Groq 모두 동일 포맷)"""
     payload = {
-        "model": GROQ_MODEL,
+        "model": model,
         "messages": [{"role": "system", "content": system}] + messages,
         "temperature": 0.7,
         "max_tokens": 2048,
         "stream": True,
     }
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    if extra_headers:
+        headers.update(extra_headers)
+
     async with httpx.AsyncClient(timeout=60) as client:
-        async with client.stream(
-            "POST",
-            "https://api.groq.com/openai/v1/chat/completions",
-            headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
-            json=payload,
-        ) as resp:
+        async with client.stream("POST", base_url, headers=headers, json=payload) as resp:
             resp.raise_for_status()
             async for line in resp.aiter_lines():
                 if line.startswith("data: "):
@@ -65,13 +79,36 @@ async def _groq_stream(messages: list, system: str) -> AsyncGenerator[str, None]
                         pass
 
 
-# ── Gemini 단일 시도 ──────────────────────────────────
+async def _openrouter_stream(messages: list, system: str) -> AsyncGenerator[str, None]:
+    async for token in _openai_compat_stream(
+        messages, system,
+        api_key=OPENROUTER_API_KEY,
+        base_url="https://openrouter.ai/api/v1/chat/completions",
+        model=OPENROUTER_MODEL,
+        extra_headers={
+            "HTTP-Referer": "https://gpt-assistant-production-320d.up.railway.app",
+            "X-Title": "나만의 AI 어시스턴트",
+        },
+    ):
+        yield token
+
+
+async def _groq_stream(messages: list, system: str) -> AsyncGenerator[str, None]:
+    async for token in _openai_compat_stream(
+        messages, system,
+        api_key=GROQ_API_KEY,
+        base_url="https://api.groq.com/openai/v1/chat/completions",
+        model=GROQ_MODEL,
+    ):
+        yield token
+
+
+# ── Gemini 스트리밍 (별도 포맷) ───────────────────────
 async def _gemini_once(messages: list, system: str) -> AsyncGenerator[str, None]:
     contents = []
     for m in messages:
         role = "user" if m["role"] == "user" else "model"
         contents.append({"role": role, "parts": [{"text": m["content"]}]})
-
     payload = {
         "system_instruction": {"parts": [{"text": system}]},
         "contents": contents,
@@ -101,63 +138,106 @@ async def _gemini_once(messages: list, system: str) -> AsyncGenerator[str, None]
                         pass
 
 
-# ── Gemini 스트리밍 (429 자동 재시도) ────────────────────
 async def _gemini_stream(messages: list, system: str) -> AsyncGenerator[str, None]:
-    delays = [10, 20]
-    for attempt in range(3):
+    for attempt in range(2):
         try:
             async for token in _gemini_once(messages, system):
                 yield token
             return
         except httpx.HTTPStatusError as e:
-            status = e.response.status_code
-            if status == 429 and attempt < 2:
-                wait = delays[attempt]
-                yield f"\n⏳ 요청이 너무 많습니다. {wait}초 후 재시도합니다..."
-                await asyncio.sleep(wait)
-                yield "\r" + " " * 60 + "\r"
+            if e.response.status_code == 429 and attempt == 0:
+                await asyncio.sleep(15)
                 continue
-            safe_msg = str(e).split("key=")[0] + "key=***"
-            raise RuntimeError(f"Gemini API 오류 [{status}]: {safe_msg}") from None
-        except Exception as e:
-            raise RuntimeError(f"Gemini 연결 오류: {type(e).__name__}") from None
+            raise
+        except Exception:
+            raise
 
 
-# ── 실제 사용할 제공자 결정 ──────────────────────────
-def _resolve_provider() -> str:
-    """환경변수 기반으로 실제 사용할 제공자를 결정"""
+# ── 제공자 우선순위 결정 ──────────────────────────────
+def _provider_chain() -> list[str]:
+    """사용 가능한 제공자를 우선순위 순서로 반환"""
     if LLM_PROVIDER != "auto":
-        return LLM_PROVIDER
+        return [LLM_PROVIDER]
+
+    chain = []
+    if OPENROUTER_API_KEY:
+        chain.append("openrouter")   # 1순위: 무료 모델 한도 없음
     if GROQ_API_KEY:
-        return "groq"
+        chain.append("groq")         # 2순위: 하루 14,400건
     if GEMINI_API_KEY:
-        return "gemini"
-    return "local"
+        chain.append("gemini")       # 3순위: 하루 1,500건
+    chain.append("local")            # 최후 폴백: 자체 엔진
+    return chain
 
 
-# ── 공통 인터페이스 ───────────────────────────────────
+def _resolve_provider() -> str:
+    return _provider_chain()[0]
+
+
+# ── 공통 스트리밍 인터페이스 ──────────────────────────
 async def chat_stream(
     messages: list,
     context: str = "",
     system_prompt: str = None,
 ) -> AsyncGenerator[str, None]:
-    provider = _resolve_provider()
     system = system_prompt or SYSTEM_PROMPT
+    chain = _provider_chain()
 
-    # 외부 LLM은 컨텍스트를 시스템 프롬프트에 주입
-    if context and provider != "local":
-        system += f"\n\n[참고 정보 — 아래 내용을 우선적으로 활용해 답변하세요]\n{context}"
+    for i, provider in enumerate(chain):
+        is_last = (i == len(chain) - 1)
 
-    if provider == "gemini":
-        async for token in _gemini_stream(messages, system):
-            yield token
-    elif provider == "groq":
-        async for token in _groq_stream(messages, system):
-            yield token
-    else:
-        # 자체 TF-IDF 엔진 (API 키 없을 때 폴백)
-        async for token in _local_stream(messages, context, system):
-            yield token
+        if provider != "local" and context:
+            sys_with_ctx = system + f"\n\n[참고 정보 — 아래 내용을 우선적으로 활용해 답변하세요]\n{context}"
+        else:
+            sys_with_ctx = system
+
+        try:
+            if provider == "openrouter":
+                async for token in _openrouter_stream(messages, sys_with_ctx):
+                    yield token
+                return
+
+            elif provider == "groq":
+                async for token in _groq_stream(messages, sys_with_ctx):
+                    yield token
+                return
+
+            elif provider == "gemini":
+                async for token in _gemini_stream(messages, sys_with_ctx):
+                    yield token
+                return
+
+            else:  # local
+                async for token in _local_stream(messages, context, system):
+                    yield token
+                return
+
+        except httpx.HTTPStatusError as e:
+            status = e.response.status_code
+            if status == 429 and not is_last:
+                # 한도 초과 → 다음 제공자로 자동 전환
+                next_p = chain[i + 1]
+                yield f"\n⚠️ {provider} 한도 초과 → {next_p}로 자동 전환 중...\n"
+                await asyncio.sleep(1)
+                continue
+            elif not is_last:
+                next_p = chain[i + 1]
+                yield f"\n⚠️ {provider} 오류 → {next_p}로 자동 전환 중...\n"
+                await asyncio.sleep(1)
+                continue
+            else:
+                yield f"\n⚠️ 모든 AI 서비스 연결 실패. 잠시 후 다시 시도해주세요."
+                return
+
+        except Exception as e:
+            if not is_last:
+                next_p = chain[i + 1]
+                yield f"\n⚠️ {provider} 오류 → {next_p}로 전환 중...\n"
+                await asyncio.sleep(1)
+                continue
+            else:
+                yield f"\n⚠️ 오류: {type(e).__name__}. 잠시 후 다시 시도해주세요."
+                return
 
 
 async def chat(messages: list, context: str = "") -> str:
@@ -168,15 +248,15 @@ async def chat(messages: list, context: str = "") -> str:
 
 
 def current_model_info() -> dict:
-    provider = _resolve_provider()
-    if provider == "gemini":
-        return {"provider": "Google Gemini", "model": GEMINI_MODEL, "free": True, "type": "GPT급"}
-    if provider == "groq":
-        return {"provider": "Groq", "model": GROQ_MODEL, "free": True, "type": "GPT급"}
-    return {
-        "provider": "자체 TF-IDF 엔진",
-        "model": "키워드 검색 (API 키 없음)",
-        "free": True,
-        "type": "기본형",
-        "note": "GROQ_API_KEY 또는 GEMINI_API_KEY 설정 시 GPT급으로 업그레이드"
+    chain = _provider_chain()
+    primary = chain[0]
+    labels = {
+        "openrouter": {"provider": "OpenRouter", "model": OPENROUTER_MODEL, "limit": "무제한(무료)"},
+        "groq":       {"provider": "Groq",        "model": GROQ_MODEL,        "limit": "14,400건/일"},
+        "gemini":     {"provider": "Google Gemini","model": GEMINI_MODEL,      "limit": "1,500건/일"},
+        "local":      {"provider": "자체 TF-IDF 엔진", "model": "키워드 검색", "limit": "무제한"},
     }
+    info = labels.get(primary, labels["local"])
+    info["free"] = True
+    info["fallback_chain"] = " → ".join(chain)
+    return info
