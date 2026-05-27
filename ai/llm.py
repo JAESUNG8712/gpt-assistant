@@ -87,7 +87,7 @@ async def _openrouter_stream(messages: list, system: str) -> AsyncGenerator[str,
         model=OPENROUTER_MODEL,
         extra_headers={
             "HTTP-Referer": "https://gpt-assistant-production-320d.up.railway.app",
-            "X-Title": "나만의 AI 어시스턴트",
+            "X-Title": "My AI Assistant",
         },
     ):
         yield token
