@@ -13,7 +13,7 @@ GROQ_MODEL   = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
 
 # Google Gemini 설정 (무료, https://aistudio.google.com/app/apikey)
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-GEMINI_MODEL   = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
+GEMINI_MODEL   = os.getenv("GEMINI_MODEL", "gemini-2.0-flash-lite")  # 2025 최신 무료 모델
 
 SYSTEM_PROMPT = """당신은 사용자만을 위한 전용 AI 어시스턴트입니다.
 - 사용자의 과거 대화, 업로드한 문서, 인터넷 검색 결과를 바탕으로 답변합니다.
