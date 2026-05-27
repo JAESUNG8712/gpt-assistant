@@ -91,10 +91,10 @@ async def _gemini_stream(messages: list, system: str) -> AsyncGenerator[str, Non
 
 
 # ── 공통 인터페이스 ───────────────────────────────────
-async def chat_stream(messages: list, context: str = "") -> AsyncGenerator[str, None]:
-    system = SYSTEM_PROMPT
+async def chat_stream(messages: list, context: str = "", system_prompt: str = None) -> AsyncGenerator[str, None]:
+    system = system_prompt or SYSTEM_PROMPT
     if context:
-        system += f"\n\n[참고 정보]\n{context}"
+        system += f"\n\n[참고 정보 — 아래 내용을 바탕으로 답변하세요]\n{context}"
 
     if LLM_PROVIDER == "gemini":
         async for token in _gemini_stream(messages, system):
