@@ -214,29 +214,36 @@ async def chat_stream(
 
         except httpx.HTTPStatusError as e:
             status = e.response.status_code
-            if status == 429 and not is_last:
-                # 한도 초과 → 다음 제공자로 자동 전환
+            # 실제 오류 내용을 로그에 남김
+            try:
+                err_body = e.response.text[:300]
+            except Exception:
+                err_body = str(e)[:300]
+            print(f"[{provider}] HTTP {status} 오류: {err_body}")
+
+            if not is_last:
                 next_p = chain[i + 1]
-                yield f"\n⚠️ {provider} 한도 초과 → {next_p}로 자동 전환 중...\n"
-                await asyncio.sleep(1)
-                continue
-            elif not is_last:
-                next_p = chain[i + 1]
-                yield f"\n⚠️ {provider} 오류 → {next_p}로 자동 전환 중...\n"
+                if status == 401:
+                    yield f"\n⚠️ [{provider}] API 키가 올바르지 않습니다 → {next_p}로 전환 중...\n\n"
+                elif status == 429:
+                    yield f"\n⚠️ [{provider}] 요청 한도 초과 → {next_p}로 자동 전환 중...\n\n"
+                else:
+                    yield f"\n⚠️ [{provider}] 오류 {status} → {next_p}로 전환 중...\n\n"
                 await asyncio.sleep(1)
                 continue
             else:
-                yield f"\n⚠️ 모든 AI 서비스 연결 실패. 잠시 후 다시 시도해주세요."
+                yield f"\n⚠️ [{provider}] 오류 {status}: {err_body[:100]}"
                 return
 
         except Exception as e:
+            print(f"[{provider}] 예외 발생: {type(e).__name__}: {e}")
             if not is_last:
                 next_p = chain[i + 1]
-                yield f"\n⚠️ {provider} 오류 → {next_p}로 전환 중...\n"
+                yield f"\n⚠️ [{provider}] 연결 오류({type(e).__name__}) → {next_p}로 전환 중...\n\n"
                 await asyncio.sleep(1)
                 continue
             else:
-                yield f"\n⚠️ 오류: {type(e).__name__}. 잠시 후 다시 시도해주세요."
+                yield f"\n⚠️ [{provider}] 오류: {type(e).__name__}: {str(e)[:100]}"
                 return
 
 
