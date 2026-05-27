@@ -1,7 +1,6 @@
 fastapi
 uvicorn[standard]
 httpx
-chromadb
 python-multipart
 duckduckgo-search
 python-dotenv
