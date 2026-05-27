@@ -68,13 +68,19 @@ async def chat(req: ChatRequest):
     collected = []
 
     async def generate():
-        async for token in llm.chat_stream(history, context, system_prompt=persona["system_prompt"]):
-            collected.append(token)
-            yield token
-        ai_reply = "".join(collected)
-        mem.save_message("user", user_msg, persona=req.persona)
-        mem.save_message("assistant", ai_reply, persona=req.persona)
-        mem.store_conversation_memory(user_msg, ai_reply, persona_id=req.persona)
+        try:
+            async for token in llm.chat_stream(history, context, system_prompt=persona["system_prompt"]):
+                collected.append(token)
+                yield token
+            ai_reply = "".join(collected)
+            mem.save_message("user", user_msg, persona=req.persona)
+            mem.save_message("assistant", ai_reply, persona=req.persona)
+            mem.store_conversation_memory(user_msg, ai_reply, persona_id=req.persona)
+        except Exception as e:
+            import traceback
+            err = f"[오류] {type(e).__name__}: {e}\n{traceback.format_exc()}"
+            print(err)
+            yield f"\n⚠️ 오류 발생: {type(e).__name__}: {e}\nRailway Logs를 확인해주세요."
 
     return StreamingResponse(generate(), media_type="text/plain; charset=utf-8")
 
