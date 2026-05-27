@@ -12,7 +12,20 @@ import os
 import httpx
 import json
 import asyncio
+import time
 from typing import AsyncGenerator
+
+# ── 429 쿨다운 캐시 (서버 메모리 내, 재시작 시 초기화) ────
+_rate_limit_until: dict[str, float] = {}  # provider → 쿨다운 만료 타임스탬프
+
+def _is_cooling_down(provider: str) -> bool:
+    """해당 제공자가 아직 쿨다운 중이면 True"""
+    return time.time() < _rate_limit_until.get(provider, 0)
+
+def _set_cooldown(provider: str, seconds: int = 3600):
+    """429 발생 시 지정 시간(기본 1시간) 동안 해당 제공자 스킵"""
+    _rate_limit_until[provider] = time.time() + seconds
+    print(f"[{provider}] 429 쿨다운 설정: {seconds//60}분 후 재시도 가능")
 
 # ── 제공자 우선순위 설정 ─────────────────────────────
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "auto")
@@ -173,9 +186,12 @@ async def _gemini_stream(messages: list, system: str) -> AsyncGenerator[str, Non
                 yield token
             return
         except httpx.HTTPStatusError as e:
-            if e.response.status_code == 429 and attempt == 0:
-                await asyncio.sleep(15)
-                continue
+            if e.response.status_code == 429:
+                if attempt == 0:
+                    await asyncio.sleep(15)
+                    continue
+                else:
+                    _set_cooldown("gemini", seconds=3600)
             raise
         except Exception:
             raise
@@ -183,18 +199,18 @@ async def _gemini_stream(messages: list, system: str) -> AsyncGenerator[str, Non
 
 # ── 제공자 우선순위 결정 ──────────────────────────────
 def _provider_chain() -> list[str]:
-    """사용 가능한 제공자를 우선순위 순서로 반환"""
+    """사용 가능한 제공자를 우선순위 순서로 반환 (쿨다운 중인 제공자 자동 제외)"""
     if LLM_PROVIDER != "auto":
         return [LLM_PROVIDER]
 
     chain = []
-    if OPENROUTER_API_KEY:
+    if OPENROUTER_API_KEY and not _is_cooling_down("openrouter"):
         chain.append("openrouter")   # 1순위: 무료 모델 한도 없음
-    if GROQ_API_KEY:
+    if GROQ_API_KEY and not _is_cooling_down("groq"):
         chain.append("groq")         # 2순위: 하루 14,400건
-    if GEMINI_API_KEY:
+    if GEMINI_API_KEY and not _is_cooling_down("gemini"):
         chain.append("gemini")       # 3순위: 하루 1,500건
-    chain.append("local")            # 최후 폴백: 자체 엔진
+    chain.append("local")            # 최후 폴백: 자체 엔진 (항상 포함)
     return chain
 
 
@@ -254,12 +270,17 @@ async def chat_stream(
                 if status == 401:
                     yield f"\n⚠️ [{provider}] API 키가 올바르지 않습니다 → {next_p}로 전환 중...\n\n"
                 elif status == 429:
-                    yield f"\n⚠️ [{provider}] 요청 한도 초과 → {next_p}로 자동 전환 중...\n\n"
+                    _set_cooldown(provider, seconds=3600)  # 1시간 쿨다운
+                    remaining = _rate_limit_until.get(provider, 0) - time.time()
+                    mins = int(remaining // 60)
+                    yield f"\n⚠️ [{provider}] 일일 한도 초과 ({mins}분 후 자동 복구) → {next_p}로 전환 중...\n\n"
                 else:
                     yield f"\n⚠️ [{provider}] 오류 {status} → {next_p}로 전환 중...\n\n"
                 await asyncio.sleep(1)
                 continue
             else:
+                if status == 429:
+                    _set_cooldown(provider, seconds=3600)
                 yield f"\n⚠️ [{provider}] 오류 {status}: {err_body[:100]}"
                 return
 
@@ -286,7 +307,7 @@ def current_model_info() -> dict:
     chain = _provider_chain()
     primary = chain[0]
     labels = {
-        "openrouter": {"provider": "OpenRouter", "model": OPENROUTER_MODEL, "limit": "무제한(무료)"},
+        "openrouter": {"provider": "OpenRouter", "model": OPENROUTER_MODEL, "limit": "200건/일(무료)"},
         "groq":       {"provider": "Groq",        "model": GROQ_MODEL,        "limit": "14,400건/일"},
         "gemini":     {"provider": "Google Gemini","model": GEMINI_MODEL,      "limit": "1,500건/일"},
         "local":      {"provider": "자체 TF-IDF 엔진", "model": "키워드 검색", "limit": "무제한"},
@@ -294,4 +315,14 @@ def current_model_info() -> dict:
     info = labels.get(primary, labels["local"])
     info["free"] = True
     info["fallback_chain"] = " → ".join(chain)
+
+    # 쿨다운 중인 제공자 표시
+    cooling = {}
+    for p in ["openrouter", "groq", "gemini"]:
+        if _is_cooling_down(p):
+            remaining = int(_rate_limit_until[p] - time.time())
+            cooling[p] = f"{remaining // 60}분 후 복구"
+    if cooling:
+        info["cooling_down"] = cooling
+
     return info
