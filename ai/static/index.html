@@ -81,6 +81,36 @@
       padding: 8px 12px; background: var(--persona-color); color: #fff;
       border: none; border-radius: 8px; cursor: pointer; font-weight: 700; font-size: 0.8rem;
     }
+    .know-area textarea {
+      width: 100%; padding: 8px 10px; background: var(--surface2);
+      border: 1px solid var(--border); border-radius: 8px; color: var(--text);
+      font-size: 0.8rem; resize: vertical; min-height: 60px; font-family: inherit; margin-bottom: 6px;
+    }
+    .know-area textarea:focus { outline: none; border-color: var(--persona-color); }
+    .know-area input {
+      width: 100%; padding: 8px 10px; background: var(--surface2);
+      border: 1px solid var(--border); border-radius: 8px; color: var(--text);
+      font-size: 0.8rem; margin-bottom: 6px;
+    }
+    .know-area input:focus { outline: none; border-color: var(--persona-color); }
+    .know-area button {
+      width: 100%; padding: 8px; background: var(--persona-color); color: #fff;
+      border: none; border-radius: 8px; cursor: pointer; font-weight: 700; font-size: 0.8rem;
+    }
+    /* 마크다운 렌더링 */
+    .msg-bubble h2 { font-size: 1.05em; font-weight: 700; margin: 10px 0 5px; }
+    .msg-bubble h3 { font-size: 0.95em; font-weight: 700; margin: 8px 0 4px; }
+    .msg-bubble strong { font-weight: 700; }
+    .msg-bubble code { background: #0d1117; padding: 1px 5px; border-radius: 3px; font-size: 0.85em; font-family: monospace; }
+    .msg-bubble pre { background: #0d1117; padding: 10px 12px; border-radius: 8px; overflow-x: auto; font-size: 0.8em; margin: 6px 0; font-family: monospace; white-space: pre; }
+    .msg-bubble table { border-collapse: collapse; width: 100%; margin: 6px 0; font-size: 0.82em; }
+    .msg-bubble th, .msg-bubble td { border: 1px solid var(--border); padding: 5px 8px; text-align: left; }
+    .msg-bubble th { background: var(--surface2); font-weight: 700; }
+    .msg-bubble hr { border: none; border-top: 1px solid var(--border); margin: 10px 0; }
+    .msg-bubble ul, .msg-bubble ol { padding-left: 18px; margin: 4px 0; }
+    .msg-bubble li { margin: 2px 0; }
+    .msg-bubble blockquote { border-left: 3px solid var(--persona-color); padding-left: 10px; color: var(--text-dim); margin: 6px 0; }
+    .search-on-badge { font-size: 0.68rem; background: #1a3a1a; color: #4caf50; border: 1px solid #2e7d32; padding: 2px 8px; border-radius: 10px; margin-left: 6px; }
 
     /* ── 채팅 영역 ───────────────── */
     .chat-area { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
@@ -223,6 +253,14 @@
         <div class="search-row">
           <input type="text" id="search-query" placeholder="검색어..." onkeydown="if(event.key==='Enter')learnSearch()">
           <button onclick="learnSearch()">학습</button>
+        </div>
+      </div>
+      <div class="sidebar-section">
+        <label>✍️ 지식 직접 추가</label>
+        <div class="know-area">
+          <input type="text" id="know-q" placeholder="질문 (예: 퇴직금 계산 방법)">
+          <textarea id="know-a" placeholder="답변 내용을 입력하세요..." rows="3"></textarea>
+          <button onclick="addKnowledge()">+ 지식 추가</button>
         </div>
       </div>
       <div class="sidebar-section">
@@ -374,15 +412,17 @@
   }
 
   // ── 채팅 ─────────────────────────────────
-  function appendMsg(role, content, isTyping = false) {
+  function appendMsg(role, content, isTyping = false, useSearch = false) {
     const welcome = document.getElementById('welcome');
     if (welcome) welcome.remove();
     const msgs = document.getElementById('messages');
     const div = document.createElement('div');
     div.className = `msg ${role}${isTyping ? ' typing' : ''}`;
+    const searchBadge = (role === 'user' && useSearch)
+      ? '<span class="search-on-badge">🌐 검색 포함</span>' : '';
     div.innerHTML = `
       <div class="msg-avatar">${role === 'user' ? '👤' : currentPersona?.icon || '🤖'}</div>
-      <div class="msg-bubble">${escHtml(content)}</div>`;
+      <div class="msg-bubble">${role === 'user' ? escHtml(content) + searchBadge : (isTyping ? '' : renderMd(content))}</div>`;
     msgs.appendChild(div);
     msgs.scrollTop = msgs.scrollHeight;
     return div;
@@ -390,6 +430,58 @@
 
   function escHtml(s) {
     return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  }
+
+  // ── 마크다운 렌더러 ──────────────────────────────
+  function renderMd(text) {
+    let s = escHtml(text);
+
+    // 코드블록 (``` ... ```) — 먼저 처리해야 내부 마크다운 영향 없음
+    s = s.replace(/```[\w]*\n([\s\S]*?)```/g, (_, code) =>
+      `<pre>${code.trimEnd()}</pre>`);
+    s = s.replace(/```([\s\S]*?)```/g, (_, code) =>
+      `<pre>${code.trim()}</pre>`);
+
+    // 테이블 (|...|...|)
+    s = s.replace(/((?:\|.+\|\n?)+)/g, (block) => {
+      const rows = block.trim().split('\n').filter(r => r.trim());
+      if (rows.length < 2) return block;
+      let html = '<table>';
+      rows.forEach((row, i) => {
+        if (/^\|[-| :]+\|$/.test(row.trim())) return; // 구분선 건너뜀
+        const cells = row.split('|').filter((_, ci) => ci > 0 && ci < row.split('|').length - 1);
+        const tag = i === 0 ? 'th' : 'td';
+        html += '<tr>' + cells.map(c => `<${tag}>${c.trim()}</${tag}>`).join('') + '</tr>';
+      });
+      return html + '</table>';
+    });
+
+    // ## 제목
+    s = s.replace(/^## (.+)$/gm, '<h2>$1</h2>');
+    s = s.replace(/^### (.+)$/gm, '<h3>$1</h3>');
+
+    // 인용 (> ...)
+    s = s.replace(/^&gt; (.+)$/gm, '<blockquote>$1</blockquote>');
+
+    // **굵게**
+    s = s.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+
+    // 인라인 코드
+    s = s.replace(/`([^`]+)`/g, '<code>$1</code>');
+
+    // 수평선
+    s = s.replace(/^---+$/gm, '<hr>');
+
+    // - 불릿 리스트
+    s = s.replace(/^- (.+)$/gm, '<li>$1</li>');
+    s = s.replace(/(<li>.*<\/li>\n?)+/g, m => `<ul>${m}</ul>`);
+
+    // 줄바꿈
+    s = s.replace(/\n/g, '<br>');
+    // <br> 뒤 중복 정리
+    s = s.replace(/(<\/h[23]>|<\/ul>|<\/pre>|<\/table>|<hr>)<br>/g, '$1');
+
+    return s;
   }
 
   async function sendMessage() {
@@ -400,7 +492,7 @@
     const useSearch = document.getElementById('use-search').checked;
     input.value = '';
     autoResize(input);
-    appendMsg('user', msg);
+    appendMsg('user', msg, false, useSearch);
     isLoading = true;
     document.getElementById('send-btn').disabled = true;
 
@@ -421,10 +513,13 @@
         const { done, value } = await reader.read();
         if (done) break;
         full += dec.decode(value, { stream: true });
+        // 스트리밍 중에는 텍스트, 완료 후 마크다운 렌더링
         bubble.textContent = full;
         document.getElementById('messages').scrollTop = 99999;
       }
       aiDiv.classList.remove('typing');
+      // 완료 후 마크다운 렌더링 적용
+      bubble.innerHTML = renderMd(full);
     } catch (e) {
       bubble.textContent = '오류: ' + e.message;
       aiDiv.classList.remove('typing');
@@ -463,6 +558,28 @@
       await loadStats();
     } catch { showToast('❌ 업로드 실패'); }
     input.value = '';
+  }
+
+  // ── 직접 지식 추가 ───────────────────────
+  async function addKnowledge() {
+    const q = document.getElementById('know-q').value.trim();
+    const a = document.getElementById('know-a').value.trim();
+    if (!q || !a || !currentPersona) { showToast('❌ 질문과 답변을 입력하세요'); return; }
+    showToast('✍️ 지식 추가 중...');
+    try {
+      const r = await fetch('/learn/text', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ question: q, answer: a, persona: currentPersona.id }),
+      });
+      const d = await r.json();
+      if (d.ok) {
+        showToast(`✅ "${q}" 학습 완료`);
+        document.getElementById('know-q').value = '';
+        document.getElementById('know-a').value = '';
+        await loadStats();
+      }
+    } catch { showToast('❌ 지식 추가 실패'); }
   }
 
   // ── 검색 학습 ────────────────────────────

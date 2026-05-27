@@ -1,8 +1,9 @@
 """
-LLM 라우터 — 자체 엔진 (기본값) 또는 외부 API 선택
-LLM_PROVIDER=local  → 자체 TF-IDF 엔진 (무료, 외부 API 불필요) ← 기본값
-LLM_PROVIDER=groq   → Groq API (무료, 키 필요)
-LLM_PROVIDER=gemini → Google Gemini API (무료, 키 필요)
+LLM 라우터 — API 키 자동 감지 후 최선의 제공자 선택
+  auto   → GROQ_API_KEY 있으면 Groq, GEMINI_API_KEY 있으면 Gemini, 없으면 local (기본)
+  groq   → Groq API (무료, llama-3.3-70b, GPT급 품질)
+  gemini → Google Gemini API (무료, gemini-2.0-flash-lite)
+  local  → 자체 TF-IDF 엔진 (API 키 불필요, 제한적)
 """
 import os
 import httpx
@@ -11,13 +12,13 @@ import asyncio
 from typing import AsyncGenerator
 
 # ── 제공자 선택 ──────────────────────────────────────
-LLM_PROVIDER = os.getenv("LLM_PROVIDER", "local")  # 기본값: 자체 엔진
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", "auto")   # 기본값: 자동 감지
 
-# Groq 설정
+# Groq 설정 (무료, https://console.groq.com)
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
-GROQ_MODEL   = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
+GROQ_MODEL   = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")   # GPT-4급 품질
 
-# Google Gemini 설정
+# Google Gemini 설정 (무료, https://aistudio.google.com)
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 GEMINI_MODEL   = os.getenv("GEMINI_MODEL", "gemini-2.0-flash-lite")
 
@@ -122,24 +123,39 @@ async def _gemini_stream(messages: list, system: str) -> AsyncGenerator[str, Non
             raise RuntimeError(f"Gemini 연결 오류: {type(e).__name__}") from None
 
 
+# ── 실제 사용할 제공자 결정 ──────────────────────────
+def _resolve_provider() -> str:
+    """환경변수 기반으로 실제 사용할 제공자를 결정"""
+    if LLM_PROVIDER != "auto":
+        return LLM_PROVIDER
+    if GROQ_API_KEY:
+        return "groq"
+    if GEMINI_API_KEY:
+        return "gemini"
+    return "local"
+
+
 # ── 공통 인터페이스 ───────────────────────────────────
 async def chat_stream(
     messages: list,
     context: str = "",
     system_prompt: str = None,
 ) -> AsyncGenerator[str, None]:
+    provider = _resolve_provider()
     system = system_prompt or SYSTEM_PROMPT
-    if context and LLM_PROVIDER != "local":
-        system += f"\n\n[참고 정보 — 아래 내용을 바탕으로 답변하세요]\n{context}"
 
-    if LLM_PROVIDER == "gemini":
+    # 외부 LLM은 컨텍스트를 시스템 프롬프트에 주입
+    if context and provider != "local":
+        system += f"\n\n[참고 정보 — 아래 내용을 우선적으로 활용해 답변하세요]\n{context}"
+
+    if provider == "gemini":
         async for token in _gemini_stream(messages, system):
             yield token
-    elif LLM_PROVIDER == "groq":
+    elif provider == "groq":
         async for token in _groq_stream(messages, system):
             yield token
     else:
-        # 기본값: 자체 TF-IDF 엔진 (외부 API 불필요)
+        # 자체 TF-IDF 엔진 (API 키 없을 때 폴백)
         async for token in _local_stream(messages, context, system):
             yield token
 
@@ -152,14 +168,15 @@ async def chat(messages: list, context: str = "") -> str:
 
 
 def current_model_info() -> dict:
-    if LLM_PROVIDER == "gemini":
-        return {"provider": "Google Gemini", "model": GEMINI_MODEL, "free": True}
-    if LLM_PROVIDER == "groq":
-        return {"provider": "Groq", "model": GROQ_MODEL, "free": True}
+    provider = _resolve_provider()
+    if provider == "gemini":
+        return {"provider": "Google Gemini", "model": GEMINI_MODEL, "free": True, "type": "GPT급"}
+    if provider == "groq":
+        return {"provider": "Groq", "model": GROQ_MODEL, "free": True, "type": "GPT급"}
     return {
-        "provider": "자체 AI 엔진",
-        "model": "TF-IDF 한국어 지식 검색",
+        "provider": "자체 TF-IDF 엔진",
+        "model": "키워드 검색 (API 키 없음)",
         "free": True,
-        "external_api": False,
-        "description": "외부 API 없이 완전 독립 실행"
+        "type": "기본형",
+        "note": "GROQ_API_KEY 또는 GEMINI_API_KEY 설정 시 GPT급으로 업그레이드"
     }
