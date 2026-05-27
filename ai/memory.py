@@ -1,5 +1,4 @@
 import sqlite3
-import chromadb
 import os
 import hashlib
 from datetime import datetime
@@ -10,6 +9,7 @@ CHROMA_PATH = os.getenv("CHROMA_PATH", "/tmp/chroma")
 
 os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
 os.makedirs(CHROMA_PATH, exist_ok=True)
+
 
 # ── SQLite — 대화 이력 ────────────────────────────────
 
@@ -32,6 +32,15 @@ def init_db():
             name TEXT NOT NULL,
             source TEXT NOT NULL,
             persona TEXT DEFAULT 'hr',
+            created_at TEXT NOT NULL
+        )""")
+        # 벡터 검색 불가 시 폴백용 텍스트 저장소
+        c.execute("""CREATE TABLE IF NOT EXISTS vector_fallback (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            doc_id TEXT UNIQUE NOT NULL,
+            content TEXT NOT NULL,
+            source TEXT DEFAULT '',
+            persona TEXT DEFAULT '',
             created_at TEXT NOT NULL
         )""")
 
@@ -69,44 +78,103 @@ def clear_history(persona: str = None):
 
 
 # ── ChromaDB — 벡터 기반 장기 기억 (RAG) ─────────────
+# 초기화 실패 시 SQLite 폴백으로 자동 전환 (앱은 계속 실행)
 
-_chroma = chromadb.PersistentClient(path=CHROMA_PATH)
-_col    = _chroma.get_or_create_collection("memory")
+_col = None
+CHROMA_AVAILABLE = False
+
+def _init_chroma():
+    global _col, CHROMA_AVAILABLE
+    try:
+        import chromadb
+        client = chromadb.PersistentClient(path=CHROMA_PATH)
+        _col = client.get_or_create_collection("memory")
+        CHROMA_AVAILABLE = True
+        print("✅ ChromaDB 초기화 성공")
+    except Exception as e:
+        print(f"⚠️ ChromaDB 초기화 실패 → SQLite 폴백 모드로 실행: {e}")
+        CHROMA_AVAILABLE = False
+
+_init_chroma()
+
 
 def _doc_id(text: str) -> str:
     return hashlib.md5(text.encode()).hexdigest()
 
+
+# ── 벡터 저장 ─────────────────────────────────────────
+
 def store_memory(text: str, metadata: dict = None):
-    doc_id = _doc_id(text)
-    _col.upsert(
-        ids=[doc_id],
-        documents=[text],
-        metadatas=[metadata or {}],
-    )
+    meta = metadata or {}
+    if CHROMA_AVAILABLE and _col is not None:
+        try:
+            _col.upsert(
+                ids=[_doc_id(text)],
+                documents=[text],
+                metadatas=[meta],
+            )
+            return
+        except Exception as e:
+            print(f"⚠️ ChromaDB 저장 실패 → SQLite 폴백: {e}")
+
+    # SQLite 폴백
+    with _conn() as c:
+        c.execute(
+            """INSERT OR REPLACE INTO vector_fallback
+               (doc_id, content, source, persona, created_at)
+               VALUES (?,?,?,?,?)""",
+            (
+                _doc_id(text),
+                text,
+                meta.get("source", ""),
+                meta.get("persona", ""),
+                datetime.now().isoformat(),
+            ),
+        )
+
+
+# ── 벡터 검색 ─────────────────────────────────────────
 
 def retrieve_context(query: str, n: int = 5, persona_id: str = None) -> str:
-    if _col.count() == 0:
-        return ""
+    if CHROMA_AVAILABLE and _col is not None:
+        try:
+            count = _col.count()
+            if count == 0:
+                return ""
+            if persona_id:
+                results = _col.query(
+                    query_texts=[query],
+                    n_results=min(n, count),
+                    where={"persona": {"$eq": persona_id}},
+                )
+            else:
+                results = _col.query(query_texts=[query], n_results=min(n, count))
 
-    try:
+            docs  = results.get("documents", [[]])[0]
+            metas = results.get("metadatas", [[]])[0]
+            parts = []
+            for doc, meta in zip(docs, metas):
+                src = meta.get("source", "기억")
+                parts.append(f"[{src}]\n{doc}")
+            return "\n\n".join(parts)
+        except Exception as e:
+            print(f"⚠️ ChromaDB 검색 실패 → SQLite 폴백: {e}")
+
+    # SQLite 폴백: 키워드 포함된 내용 반환
+    with _conn() as c:
+        keywords = query.split()[:3]
+        conditions = " OR ".join(["content LIKE ?" for _ in keywords])
+        params = [f"%{kw}%" for kw in keywords]
         if persona_id:
-            results = _col.query(
-                query_texts=[query],
-                n_results=min(n, _col.count()),
-                where={"persona": {"$eq": persona_id}},
-            )
-        else:
-            results = _col.query(query_texts=[query], n_results=min(n, _col.count()))
-    except Exception:
-        results = _col.query(query_texts=[query], n_results=min(n, _col.count()))
-
-    docs  = results.get("documents", [[]])[0]
-    metas = results.get("metadatas", [[]])[0]
-    parts = []
-    for doc, meta in zip(docs, metas):
-        src = meta.get("source", "기억")
-        parts.append(f"[{src}]\n{doc}")
+            conditions = f"({conditions}) AND persona=?"
+            params.append(persona_id)
+        rows = c.execute(
+            f"SELECT content, source FROM vector_fallback WHERE {conditions} LIMIT ?",
+            params + [n],
+        ).fetchall()
+    parts = [f"[{r['source'] or '기억'}]\n{r['content']}" for r in rows]
     return "\n\n".join(parts)
+
 
 def store_conversation_memory(user_msg: str, ai_msg: str, persona_id: str = "hr"):
     text = f"사용자: {user_msg}\nAI: {ai_msg}"
@@ -139,8 +207,20 @@ def memory_stats() -> dict:
     with _conn() as c:
         msg_count = c.execute("SELECT COUNT(*) FROM conversations").fetchone()[0]
         doc_count = c.execute("SELECT COUNT(*) FROM documents").fetchone()[0]
+        fallback_count = c.execute("SELECT COUNT(*) FROM vector_fallback").fetchone()[0]
+
+    vector_count = 0
+    if CHROMA_AVAILABLE and _col is not None:
+        try:
+            vector_count = _col.count()
+        except Exception:
+            vector_count = fallback_count
+    else:
+        vector_count = fallback_count
+
     return {
         "conversations": msg_count,
         "documents": doc_count,
-        "vector_chunks": _col.count(),
+        "vector_chunks": vector_count,
+        "chroma_available": CHROMA_AVAILABLE,
     }
