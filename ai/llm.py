@@ -18,8 +18,21 @@ from typing import AsyncGenerator
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "auto")
 
 # OpenRouter (무료 모델 한도 없음, 추천)
+# 무료 모델 목록: https://openrouter.ai/models?q=free
+# 추천 무료 모델:
+#   meta-llama/llama-3.3-70b-instruct:free  ← 고품질, 70B
+#   meta-llama/llama-3.1-8b-instruct:free   ← 빠름, 8B (구버전)
+#   deepseek/deepseek-r1:free               ← 추론 특화
+#   google/gemma-3-27b-it:free              ← Google 27B
+#   mistralai/mistral-7b-instruct:free      ← 안정적
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
-OPENROUTER_MODEL   = os.getenv("OPENROUTER_MODEL", "meta-llama/llama-3.1-8b-instruct:free")
+OPENROUTER_MODEL   = os.getenv("OPENROUTER_MODEL", "meta-llama/llama-3.3-70b-instruct:free")
+# 기본 모델 404 시 자동으로 시도할 대체 모델들
+OPENROUTER_FALLBACK_MODELS = [
+    "meta-llama/llama-3.1-8b-instruct:free",
+    "mistralai/mistral-7b-instruct:free",
+    "google/gemma-3-4b-it:free",
+]
 
 # Groq (하루 14,400건 무료)
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
@@ -80,17 +93,32 @@ async def _openai_compat_stream(
 
 
 async def _openrouter_stream(messages: list, system: str) -> AsyncGenerator[str, None]:
-    async for token in _openai_compat_stream(
-        messages, system,
-        api_key=OPENROUTER_API_KEY,
-        base_url="https://openrouter.ai/api/v1/chat/completions",
-        model=OPENROUTER_MODEL,
-        extra_headers={
-            "HTTP-Referer": "https://gpt-assistant-production-320d.up.railway.app",
-            "X-Title": "My AI Assistant",
-        },
-    ):
-        yield token
+    """404 발생 시 대체 모델로 자동 재시도"""
+    base_url = "https://openrouter.ai/api/v1/chat/completions"
+    extra_headers = {
+        "HTTP-Referer": "https://gpt-assistant-production-320d.up.railway.app",
+        "X-Title": "My AI Assistant",
+    }
+    models_to_try = [OPENROUTER_MODEL] + OPENROUTER_FALLBACK_MODELS
+
+    for model in models_to_try:
+        try:
+            async for token in _openai_compat_stream(
+                messages, system,
+                api_key=OPENROUTER_API_KEY,
+                base_url=base_url,
+                model=model,
+                extra_headers=extra_headers,
+            ):
+                yield token
+            return  # 성공
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 404:
+                print(f"[openrouter] 모델 '{model}' 없음(404), 다음 모델 시도...")
+                continue  # 다음 모델로
+            raise  # 404 외 오류는 상위로 전파
+    # 모든 모델 실패
+    raise RuntimeError(f"OpenRouter: 사용 가능한 무료 모델 없음. 시도한 모델: {models_to_try}")
 
 
 async def _groq_stream(messages: list, system: str) -> AsyncGenerator[str, None]:
