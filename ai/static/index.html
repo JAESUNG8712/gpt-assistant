@@ -13,214 +13,180 @@
       --surface: #161b22;
       --surface2: #21262d;
       --border: #30363d;
-      --primary: #58a6ff;
       --text: #e6edf3;
       --text-dim: #8b949e;
-      --user-bg: #1f6feb;
       --ai-bg: #21262d;
-      --danger: #f85149;
-      --success: #3fb950;
       --safe-bottom: env(safe-area-inset-bottom, 0px);
+
+      /* 페르소나 색상 (JS로 덮어씀) */
+      --persona-color: #1565c0;
+      --persona-bg: #e3f2fd;
     }
 
     * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; height: 100dvh; background: var(--bg); color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; overflow: hidden; }
 
-    html, body {
-      height: 100%; height: 100dvh;
-      background: var(--bg);
-      color: var(--text);
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-      overflow: hidden;
-    }
-
-    /* 레이아웃 */
     .app { display: flex; height: 100%; height: 100dvh; }
 
-    /* 사이드바 */
+    /* ── 사이드바 ─────────────────── */
     .sidebar {
       width: 260px; flex-shrink: 0;
-      background: var(--surface);
-      border-right: 1px solid var(--border);
-      display: flex; flex-direction: column;
-      overflow: hidden;
+      background: var(--surface); border-right: 1px solid var(--border);
+      display: flex; flex-direction: column; overflow: hidden;
     }
     @media (max-width: 680px) {
       .sidebar { display: none; }
-      .sidebar.open { display: flex; position: fixed; inset: 0; z-index: 100; width: 80%; }
+      .sidebar.open { display: flex; position: fixed; inset: 0; z-index: 100; width: 82%; }
     }
+    .sidebar-header { padding: 16px; border-bottom: 1px solid var(--border); }
+    .sidebar-header h2 { font-size: 0.9rem; font-weight: 700; color: var(--persona-color); }
+    .sidebar-header p { font-size: 0.72rem; color: var(--text-dim); margin-top: 2px; }
 
-    .sidebar-header {
-      padding: 18px 16px 12px;
-      border-bottom: 1px solid var(--border);
-    }
-    .sidebar-header h2 { font-size: 0.9rem; font-weight: 700; color: var(--primary); }
-    .sidebar-header p { font-size: 0.72rem; color: var(--text-dim); margin-top: 3px; }
-
+    .sidebar-body { flex: 1; overflow-y: auto; padding-bottom: 12px; }
     .sidebar-section { padding: 14px 12px 0; }
     .sidebar-section label {
-      font-size: 0.7rem; font-weight: 700; color: var(--text-dim);
-      text-transform: uppercase; letter-spacing: 0.08em;
-      display: block; margin-bottom: 8px;
+      font-size: 0.68rem; font-weight: 700; color: var(--text-dim);
+      text-transform: uppercase; letter-spacing: 0.08em; display: block; margin-bottom: 8px;
     }
 
-    .stats-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 14px; }
-    .stat-box {
-      background: var(--surface2); border-radius: 8px; padding: 10px;
-      text-align: center;
-    }
-    .stat-box strong { display: block; font-size: 1.2rem; color: var(--primary); }
+    .stats-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 12px; }
+    .stat-box { background: var(--surface2); border-radius: 8px; padding: 10px; text-align: center; }
+    .stat-box strong { display: block; font-size: 1.2rem; color: var(--persona-color); }
     .stat-box span { font-size: 0.68rem; color: var(--text-dim); }
 
     .sidebar-btn {
-      width: 100%; padding: 9px 12px;
-      background: var(--surface2); border: 1px solid var(--border);
-      border-radius: 8px; color: var(--text);
-      font-size: 0.82rem; cursor: pointer;
-      display: flex; align-items: center; gap: 8px;
+      width: 100%; padding: 9px 12px; background: var(--surface2);
+      border: 1px solid var(--border); border-radius: 8px; color: var(--text);
+      font-size: 0.82rem; cursor: pointer; display: flex; align-items: center; gap: 8px;
       margin-bottom: 6px; transition: background 0.15s;
     }
     .sidebar-btn:hover { background: var(--border); }
-    .sidebar-btn.danger { color: var(--danger); }
+    .sidebar-btn.danger { color: #f85149; }
 
     .upload-area {
-      border: 1px dashed var(--border); border-radius: 8px;
-      padding: 14px; text-align: center;
-      cursor: pointer; margin-bottom: 8px;
-      transition: border-color 0.2s;
-      font-size: 0.78rem; color: var(--text-dim);
+      border: 1px dashed var(--border); border-radius: 8px; padding: 14px;
+      text-align: center; cursor: pointer; margin-bottom: 8px;
+      font-size: 0.78rem; color: var(--text-dim); transition: all 0.2s;
     }
-    .upload-area:hover { border-color: var(--primary); color: var(--primary); }
+    .upload-area:hover { border-color: var(--persona-color); color: var(--persona-color); }
 
-    .search-input-row {
-      display: flex; gap: 6px; margin-bottom: 6px;
+    .search-row { display: flex; gap: 6px; margin-bottom: 6px; }
+    .search-row input {
+      flex: 1; padding: 8px 10px; background: var(--surface2);
+      border: 1px solid var(--border); border-radius: 8px; color: var(--text); font-size: 0.8rem;
     }
-    .search-input-row input {
-      flex: 1; padding: 8px 10px;
-      background: var(--surface2); border: 1px solid var(--border);
-      border-radius: 8px; color: var(--text); font-size: 0.8rem;
-    }
-    .search-input-row input:focus { outline: none; border-color: var(--primary); }
-    .search-input-row button {
-      padding: 8px 12px;
-      background: var(--primary); color: #000;
+    .search-row input:focus { outline: none; border-color: var(--persona-color); }
+    .search-row button {
+      padding: 8px 12px; background: var(--persona-color); color: #fff;
       border: none; border-radius: 8px; cursor: pointer; font-weight: 700; font-size: 0.8rem;
     }
 
-    .doc-list { font-size: 0.75rem; color: var(--text-dim); max-height: 100px; overflow-y: auto; }
-    .doc-item { padding: 4px 0; border-bottom: 1px solid var(--border); }
-
-    /* 채팅 영역 */
-    .chat-area {
-      flex: 1; display: flex; flex-direction: column; overflow: hidden;
-    }
+    /* ── 채팅 영역 ───────────────── */
+    .chat-area { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
 
     .chat-header {
       background: var(--surface); border-bottom: 1px solid var(--border);
-      padding: 12px 16px; display: flex; align-items: center; gap: 10px;
+      padding: 10px 16px; display: flex; align-items: center; gap: 10px; flex-shrink: 0;
     }
-    .menu-btn {
-      display: none; background: none; border: none; color: var(--text);
-      font-size: 1.2rem; cursor: pointer; padding: 4px;
-    }
+    .menu-btn { display: none; background: none; border: none; color: var(--text); font-size: 1.3rem; cursor: pointer; }
     @media (max-width: 680px) { .menu-btn { display: block; } }
 
+    .header-persona { display: flex; align-items: center; gap: 8px; }
+    .header-persona-icon { font-size: 1.3rem; }
+    .header-persona-name { font-size: 0.95rem; font-weight: 700; }
     .model-badge {
-      font-size: 0.7rem; background: var(--surface2); border: 1px solid var(--border);
+      font-size: 0.68rem; background: var(--surface2); border: 1px solid var(--border);
       padding: 3px 10px; border-radius: 20px; color: var(--text-dim); margin-left: auto;
     }
 
+    /* ── 페르소나 선택 탭 ────────── */
+    .persona-bar {
+      display: flex; gap: 0; background: var(--surface2);
+      border-bottom: 1px solid var(--border); flex-shrink: 0;
+    }
+    .persona-tab {
+      flex: 1; padding: 10px 6px; cursor: pointer;
+      display: flex; flex-direction: column; align-items: center; gap: 3px;
+      border-bottom: 3px solid transparent; transition: all 0.2s;
+      font-size: 0.72rem; color: var(--text-dim);
+    }
+    .persona-tab .tab-icon { font-size: 1.3rem; }
+    .persona-tab .tab-name { font-weight: 600; font-size: 0.7rem; }
+    .persona-tab.active { color: var(--persona-color); border-bottom-color: var(--persona-color); }
+    .persona-tab:hover { background: var(--surface); }
+
+    /* ── 메시지 목록 ─────────────── */
     .messages {
-      flex: 1; overflow-y: auto; padding: 20px 16px;
-      display: flex; flex-direction: column; gap: 16px;
-      scroll-behavior: smooth;
+      flex: 1; overflow-y: auto; padding: 16px;
+      display: flex; flex-direction: column; gap: 14px; scroll-behavior: smooth;
     }
     .messages::-webkit-scrollbar { width: 4px; }
     .messages::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
 
     .msg { display: flex; gap: 10px; max-width: 100%; }
     .msg.user { flex-direction: row-reverse; }
-
     .msg-avatar {
       width: 32px; height: 32px; border-radius: 50%;
       display: flex; align-items: center; justify-content: center;
       font-size: 0.9rem; flex-shrink: 0; margin-top: 2px;
     }
-    .msg.user .msg-avatar { background: var(--user-bg); }
+    .msg.user .msg-avatar { background: var(--persona-color); }
     .msg.ai .msg-avatar { background: var(--surface2); border: 1px solid var(--border); }
 
     .msg-bubble {
-      max-width: 75%; padding: 12px 16px; border-radius: 14px;
-      font-size: 0.88rem; line-height: 1.65; white-space: pre-wrap; word-break: break-word;
+      max-width: 76%; padding: 11px 15px; border-radius: 14px;
+      font-size: 0.88rem; line-height: 1.7; white-space: pre-wrap; word-break: break-word;
     }
-    .msg.user .msg-bubble { background: var(--user-bg); border-radius: 14px 4px 14px 14px; }
-    .msg.ai .msg-bubble {
-      background: var(--ai-bg); border: 1px solid var(--border);
-      border-radius: 4px 14px 14px 14px;
-    }
+    .msg.user .msg-bubble { background: var(--persona-color); border-radius: 14px 4px 14px 14px; }
+    .msg.ai  .msg-bubble { background: var(--ai-bg); border: 1px solid var(--border); border-radius: 4px 14px 14px 14px; }
 
-    .typing .msg-bubble::after {
-      content: '▋'; animation: blink 0.7s infinite;
-    }
-    @keyframes blink { 0%,100% { opacity:1; } 50% { opacity:0; } }
+    .typing .msg-bubble::after { content: '▋'; animation: blink 0.7s infinite; }
+    @keyframes blink { 0%,100%{opacity:1}50%{opacity:0} }
 
-    /* 입력창 */
+    /* ── 웰컴 ────────────────────── */
+    .welcome { text-align: center; color: var(--text-dim); margin: auto; padding: 32px 20px; }
+    .welcome .persona-welcome-icon { font-size: 3rem; margin-bottom: 10px; }
+    .welcome h3 { font-size: 1.1rem; color: var(--text); margin-bottom: 8px; }
+    .welcome p { font-size: 0.84rem; line-height: 1.8; }
+    .chips { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; margin-top: 14px; }
+    .chip {
+      background: var(--surface2); border: 1px solid var(--border);
+      padding: 6px 14px; border-radius: 20px; font-size: 0.78rem; cursor: pointer;
+      transition: all 0.15s; color: var(--text);
+    }
+    .chip:hover { border-color: var(--persona-color); color: var(--persona-color); }
+
+    /* ── 입력창 ──────────────────── */
     .input-area {
       background: var(--surface); border-top: 1px solid var(--border);
-      padding: 12px 16px;
-      padding-bottom: calc(12px + var(--safe-bottom));
+      padding: 10px 16px; padding-bottom: calc(10px + var(--safe-bottom)); flex-shrink: 0;
     }
-
-    .search-toggle {
-      display: flex; align-items: center; gap: 6px;
-      font-size: 0.75rem; color: var(--text-dim); margin-bottom: 8px; cursor: pointer;
-    }
-    .search-toggle input { accent-color: var(--primary); }
-
+    .search-toggle { display: flex; align-items: center; gap: 6px; font-size: 0.75rem; color: var(--text-dim); margin-bottom: 8px; cursor: pointer; }
+    .search-toggle input { accent-color: var(--persona-color); }
     .input-row { display: flex; gap: 10px; }
     .input-row textarea {
       flex: 1; background: var(--surface2); border: 1px solid var(--border);
-      border-radius: 12px; color: var(--text); font-size: 0.9rem;
-      padding: 12px 14px; resize: none; max-height: 120px; min-height: 44px;
-      line-height: 1.5; font-family: inherit;
+      border-radius: 12px; color: var(--text); font-size: 0.9rem; padding: 11px 14px;
+      resize: none; max-height: 120px; min-height: 44px; line-height: 1.5; font-family: inherit;
     }
-    .input-row textarea:focus { outline: none; border-color: var(--primary); }
+    .input-row textarea:focus { outline: none; border-color: var(--persona-color); }
     .send-btn {
-      width: 44px; height: 44px; border-radius: 12px;
-      background: var(--primary); border: none; cursor: pointer;
-      display: flex; align-items: center; justify-content: center;
-      font-size: 1.1rem; color: #000; transition: opacity 0.2s; flex-shrink: 0;
-      align-self: flex-end;
+      width: 44px; height: 44px; border-radius: 12px; background: var(--persona-color);
+      border: none; cursor: pointer; display: flex; align-items: center; justify-content: center;
+      font-size: 1.1rem; color: #fff; transition: opacity 0.2s; flex-shrink: 0; align-self: flex-end;
     }
     .send-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 
-    /* 토스트 */
+    /* ── 토스트 & 오버레이 ─────────── */
     .toast {
       position: fixed; bottom: 80px; left: 50%; transform: translateX(-50%);
       background: var(--surface2); border: 1px solid var(--border);
-      padding: 10px 20px; border-radius: 25px; font-size: 0.82rem;
+      padding: 9px 20px; border-radius: 25px; font-size: 0.82rem;
       opacity: 0; transition: opacity 0.3s; z-index: 999; white-space: nowrap;
     }
     .toast.show { opacity: 1; }
-
-    .welcome {
-      text-align: center; color: var(--text-dim); margin: auto;
-      padding: 40px 20px;
-    }
-    .welcome h3 { font-size: 1.1rem; margin-bottom: 10px; color: var(--text); }
-    .welcome p { font-size: 0.85rem; line-height: 1.8; }
-    .chips { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; margin-top: 16px; }
-    .chip {
-      background: var(--surface2); border: 1px solid var(--border);
-      padding: 6px 14px; border-radius: 20px; font-size: 0.8rem; cursor: pointer;
-      transition: background 0.15s;
-    }
-    .chip:hover { background: var(--border); }
-
-    /* 오버레이 */
-    .overlay {
-      display: none; position: fixed; inset: 0;
-      background: rgba(0,0,0,0.5); z-index: 99;
-    }
+    .overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 99; }
     .overlay.show { display: block; }
   </style>
 </head>
@@ -231,13 +197,10 @@
   <!-- 사이드바 -->
   <aside class="sidebar" id="sidebar">
     <div class="sidebar-header">
-      <h2>🤖 나만의 AI</h2>
-      <p>대화할수록 똑똑해지는 전용 어시스턴트</p>
+      <h2 id="sb-title">🤖 나만의 AI</h2>
+      <p id="sb-desc">전용 AI 어시스턴트</p>
     </div>
-
-    <div style="flex:1; overflow-y:auto; padding-bottom:12px;">
-
-      <!-- 메모리 통계 -->
+    <div class="sidebar-body">
       <div class="sidebar-section">
         <label>📊 학습 현황</label>
         <div class="stats-grid">
@@ -248,69 +211,58 @@
           </div>
         </div>
       </div>
-
-      <!-- 문서 학습 -->
       <div class="sidebar-section">
         <label>📄 문서 학습</label>
         <div class="upload-area" onclick="document.getElementById('file-input').click()">
           📁 파일 선택 (txt, md, csv)
         </div>
-        <input type="file" id="file-input" style="display:none" accept=".txt,.md,.csv,.json"
-               onchange="uploadDocument(this)">
-        <div class="doc-list" id="doc-list"></div>
+        <input type="file" id="file-input" style="display:none" accept=".txt,.md,.csv,.json" onchange="uploadDocument(this)">
       </div>
-
-      <!-- 인터넷 검색 학습 -->
       <div class="sidebar-section">
         <label>🌐 인터넷 검색 학습</label>
-        <div class="search-input-row">
-          <input type="text" id="search-query" placeholder="검색어 입력..." onkeydown="if(event.key==='Enter')learnSearch()">
+        <div class="search-row">
+          <input type="text" id="search-query" placeholder="검색어..." onkeydown="if(event.key==='Enter')learnSearch()">
           <button onclick="learnSearch()">학습</button>
         </div>
       </div>
-
-      <!-- OneDrive 백업 -->
       <div class="sidebar-section">
         <label>☁️ 백업</label>
-        <button class="sidebar-btn" onclick="backupOneDrive()">
-          <span>💾</span> OneDrive에 백업
-        </button>
+        <button class="sidebar-btn" onclick="backupOneDrive()">💾 OneDrive 백업</button>
       </div>
-
-      <!-- 대화 초기화 -->
       <div class="sidebar-section">
         <label>⚙️ 설정</label>
-        <button class="sidebar-btn danger" onclick="clearHistory()">
-          <span>🗑️</span> 대화 기록 초기화
-        </button>
+        <button class="sidebar-btn danger" onclick="clearHistory()">🗑️ 현재 페르소나 대화 초기화</button>
       </div>
     </div>
   </aside>
 
-  <!-- 채팅 영역 -->
+  <!-- 채팅 -->
   <main class="chat-area">
     <header class="chat-header">
       <button class="menu-btn" onclick="openSidebar()">☰</button>
-      <strong style="font-size:0.95rem">나만의 AI 어시스턴트</strong>
-      <span class="model-badge" id="model-badge">Llama 3.1 8B · Groq</span>
+      <div class="header-persona">
+        <span class="header-persona-icon" id="h-icon">🤖</span>
+        <span class="header-persona-name" id="h-name">나만의 AI</span>
+      </div>
+      <span class="model-badge" id="model-badge">로딩 중...</span>
     </header>
+
+    <!-- 페르소나 선택 탭 -->
+    <div class="persona-bar" id="persona-bar"></div>
 
     <div class="messages" id="messages">
       <div class="welcome" id="welcome">
-        <h3>안녕하세요! 나만의 AI입니다 🤖</h3>
-        <p>대화할수록 학습하고 기억합니다.<br>문서를 업로드하거나 인터넷 검색으로 지식을 추가할 수 있어요.</p>
-        <div class="chips">
-          <div class="chip" onclick="quickAsk('오늘 뭘 도와드릴까요?')">뭘 할 수 있어?</div>
-          <div class="chip" onclick="quickAsk('간단한 파이썬 코드 예시를 보여줘')">코드 작성</div>
-          <div class="chip" onclick="quickAsk('최신 AI 트렌드를 검색해서 알려줘', true)">🌐 최신 정보 검색</div>
-        </div>
+        <div class="persona-welcome-icon" id="welcome-icon">🤖</div>
+        <h3 id="welcome-title">전문가를 선택하세요</h3>
+        <p id="welcome-desc">위의 탭에서 원하는 전문가를 선택하고 대화를 시작하세요.</p>
+        <div class="chips" id="welcome-chips"></div>
       </div>
     </div>
 
     <div class="input-area">
       <label class="search-toggle">
         <input type="checkbox" id="use-search">
-        🌐 인터넷 검색 후 답변 (최신 정보 포함)
+        🌐 인터넷 검색 후 답변
       </label>
       <div class="input-row">
         <textarea id="msg-input" placeholder="메시지를 입력하세요..." rows="1"
@@ -324,40 +276,112 @@
 <div class="toast" id="toast"></div>
 
 <script>
+  // ── 상태 ─────────────────────────────────
+  let currentPersona = null;
+  let personas = [];
   let isLoading = false;
 
-  // ── 통계 로드 ──────────────────────────────
-  async function loadStats() {
-    try {
-      const r = await fetch('/memory/stats');
-      const d = await r.json();
-      document.getElementById('stat-conv').textContent = d.conversations;
-      document.getElementById('stat-doc').textContent = d.documents;
-      document.getElementById('stat-vec').textContent = d.vector_chunks;
-    } catch {}
+  const WELCOME_CHIPS = {
+    hr: [
+      { label: '연차 계산법 알려줘', search: false },
+      { label: '퇴직금 어떻게 계산해?', search: false },
+      { label: '4대보험 요율이 어떻게 돼?', search: false },
+      { label: '직장 내 괴롭힘 신고 방법', search: false },
+    ],
+    dev: [
+      { label: 'Python 리스트 컴프리헨션 예시', search: false },
+      { label: 'React useState 훅 사용법', search: false },
+      { label: 'SQL JOIN 종류 설명해줘', search: false },
+      { label: 'Git 브랜치 전략 알려줘', search: false },
+    ],
+    travel: [
+      { label: '제주도 3박4일 여행 코스', search: false },
+      { label: '동남아 항공권 싸게 사는 법', search: false },
+      { label: '일본 여행 준비물 체크리스트', search: false },
+      { label: '여행자 보험 어떻게 가입해?', search: false },
+    ],
+  };
+
+  // ── 색상 적용 ─────────────────────────────
+  function applyPersonaColor(persona) {
+    document.documentElement.style.setProperty('--persona-color', persona.color);
+    document.documentElement.style.setProperty('--persona-bg', persona.bg);
   }
 
-  async function loadDocs() {
-    try {
-      const r = await fetch('/memory/documents');
-      const d = await r.json();
-      const el = document.getElementById('doc-list');
-      el.innerHTML = d.documents.slice(0, 5).map(doc =>
-        `<div class="doc-item">📄 ${doc.name}</div>`
-      ).join('') || '<div style="font-size:0.75rem;color:var(--text-dim);padding:4px 0">업로드된 문서 없음</div>';
-    } catch {}
+  // ── 페르소나 로드 ────────────────────────
+  async function loadPersonas() {
+    const r = await fetch('/personas');
+    const d = await r.json();
+    personas = d.personas;
+    renderPersonaBar();
+    selectPersona(personas[0].id);
   }
 
-  // ── 채팅 ──────────────────────────────────
+  function renderPersonaBar() {
+    const bar = document.getElementById('persona-bar');
+    bar.innerHTML = personas.map(p => `
+      <div class="persona-tab" id="tab-${p.id}" onclick="selectPersona('${p.id}')">
+        <span class="tab-icon">${p.icon}</span>
+        <span class="tab-name">${p.name}</span>
+      </div>`).join('');
+  }
+
+  function selectPersona(id) {
+    currentPersona = personas.find(p => p.id === id);
+    if (!currentPersona) return;
+
+    // 탭 활성화
+    document.querySelectorAll('.persona-tab').forEach(t => t.classList.remove('active'));
+    const tab = document.getElementById(`tab-${id}`);
+    if (tab) tab.classList.add('active');
+
+    // 색상 적용
+    applyPersonaColor(currentPersona);
+
+    // 헤더 업데이트
+    document.getElementById('h-icon').textContent = currentPersona.icon;
+    document.getElementById('h-name').textContent = currentPersona.name;
+    document.getElementById('sb-title').textContent = `${currentPersona.icon} ${currentPersona.name}`;
+    document.getElementById('sb-desc').textContent = currentPersona.description;
+
+    // 웰컴 화면 업데이트
+    const welcome = document.getElementById('welcome');
+    if (welcome) {
+      document.getElementById('welcome-icon').textContent = currentPersona.icon;
+      document.getElementById('welcome-title').textContent = `${currentPersona.name}와 대화하세요`;
+      document.getElementById('welcome-desc').textContent = currentPersona.description;
+      const chips = WELCOME_CHIPS[id] || [];
+      document.getElementById('welcome-chips').innerHTML = chips.map(c =>
+        `<div class="chip" onclick="quickAsk('${c.label}',${c.search})">${c.label}</div>`
+      ).join('');
+    }
+
+    // 메시지 화면 초기화 (페르소나 전환 시)
+    clearMessages();
+    loadStats();
+  }
+
+  function clearMessages() {
+    const msgs = document.getElementById('messages');
+    msgs.innerHTML = `<div class="welcome" id="welcome">
+      <div class="persona-welcome-icon">${currentPersona.icon}</div>
+      <h3>${currentPersona.name}와 대화하세요</h3>
+      <p>${currentPersona.description}</p>
+      <div class="chips">${(WELCOME_CHIPS[currentPersona.id]||[]).map(c=>
+        `<div class="chip" onclick="quickAsk('${c.label}',${c.search})">${c.label}</div>`
+      ).join('')}</div>
+    </div>`;
+  }
+
+  // ── 채팅 ─────────────────────────────────
   function appendMsg(role, content, isTyping = false) {
     const welcome = document.getElementById('welcome');
     if (welcome) welcome.remove();
-
     const msgs = document.getElementById('messages');
     const div = document.createElement('div');
     div.className = `msg ${role}${isTyping ? ' typing' : ''}`;
     div.innerHTML = `
-      <div class="msg-avatar">${role === 'user' ? '👤' : '🤖'}</div>
+      <div class="msg-avatar">${role === 'user' ? '👤' : currentPersona?.icon || '🤖'}</div>
       <div class="msg-bubble">${escHtml(content)}</div>`;
     msgs.appendChild(div);
     msgs.scrollTop = msgs.scrollHeight;
@@ -371,12 +395,11 @@
   async function sendMessage() {
     const input = document.getElementById('msg-input');
     const msg = input.value.trim();
-    if (!msg || isLoading) return;
+    if (!msg || isLoading || !currentPersona) return;
 
     const useSearch = document.getElementById('use-search').checked;
     input.value = '';
     autoResize(input);
-
     appendMsg('user', msg);
     isLoading = true;
     document.getElementById('send-btn').disabled = true;
@@ -389,10 +412,9 @@
       const resp = await fetch('/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: msg, use_search: useSearch }),
+        body: JSON.stringify({ message: msg, persona: currentPersona.id, use_search: useSearch }),
       });
       if (!resp.ok) throw new Error(await resp.text());
-
       const reader = resp.body.getReader();
       const dec = new TextDecoder();
       while (true) {
@@ -400,14 +422,13 @@
         if (done) break;
         full += dec.decode(value, { stream: true });
         bubble.textContent = full;
-        document.getElementById('messages').scrollTop = 9999;
+        document.getElementById('messages').scrollTop = 99999;
       }
       aiDiv.classList.remove('typing');
     } catch (e) {
-      bubble.textContent = '오류가 발생했습니다: ' + e.message;
+      bubble.textContent = '오류: ' + e.message;
       aiDiv.classList.remove('typing');
     }
-
     isLoading = false;
     document.getElementById('send-btn').disabled = false;
     await loadStats();
@@ -428,35 +449,35 @@
     el.style.height = Math.min(el.scrollHeight, 120) + 'px';
   }
 
-  // ── 문서 업로드 ───────────────────────────
+  // ── 문서 업로드 ──────────────────────────
   async function uploadDocument(input) {
     const file = input.files[0];
-    if (!file) return;
+    if (!file || !currentPersona) return;
     const fd = new FormData();
     fd.append('file', file);
     showToast('📄 문서 학습 중...');
     try {
-      const r = await fetch('/learn/document', { method: 'POST', body: fd });
+      const r = await fetch(`/learn/document?persona=${currentPersona.id}`, { method: 'POST', body: fd });
       const d = await r.json();
-      showToast(`✅ "${d.filename}" 학습 완료 (${d.chars.toLocaleString()}자)`);
-      await loadDocs(); await loadStats();
+      showToast(`✅ "${d.filename}" 학습 완료`);
+      await loadStats();
     } catch { showToast('❌ 업로드 실패'); }
     input.value = '';
   }
 
-  // ── 인터넷 검색 학습 ─────────────────────
+  // ── 검색 학습 ────────────────────────────
   async function learnSearch() {
     const q = document.getElementById('search-query').value.trim();
-    if (!q) return;
+    if (!q || !currentPersona) return;
     showToast('🌐 검색 학습 중...');
     try {
       const r = await fetch('/learn/search', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query: q }),
+        body: JSON.stringify({ query: q, persona: currentPersona.id }),
       });
       const d = await r.json();
-      showToast(`✅ "${q}" 검색 결과 ${d.learned}건 학습 완료`);
+      showToast(`✅ "${q}" ${d.learned}건 학습 완료`);
       document.getElementById('search-query').value = '';
       await loadStats();
     } catch { showToast('❌ 검색 실패'); }
@@ -469,24 +490,39 @@
       const r = await fetch('/backup/onedrive', { method: 'POST' });
       const d = await r.json();
       showToast(`✅ 백업 완료: ${d.filename}`);
-    } catch (e) {
-      showToast('⚠️ 백업 실패 (OneDrive 설정 확인)');
-    }
+    } catch { showToast('⚠️ 백업 실패 (OneDrive 설정 확인)'); }
   }
 
-  // ── 대화 초기화 ───────────────────────────
+  // ── 대화 초기화 ──────────────────────────
   async function clearHistory() {
-    if (!confirm('대화 기록을 모두 삭제할까요?\n(학습된 기억은 유지됩니다)')) return;
-    await fetch('/history', { method: 'DELETE' });
-    document.getElementById('messages').innerHTML =
-      `<div class="welcome" id="welcome">
-        <h3>대화 기록이 초기화되었습니다 🤖</h3>
-        <p>학습된 기억(RAG)은 유지됩니다.</p>
-       </div>`;
+    if (!currentPersona) return;
+    if (!confirm(`[${currentPersona.name}] 대화 기록을 삭제할까요?\n학습된 지식은 유지됩니다.`)) return;
+    await fetch(`/history?persona=${currentPersona.id}`, { method: 'DELETE' });
+    clearMessages();
     await loadStats();
   }
 
-  // ── 사이드바 (모바일) ─────────────────────
+  // ── 통계 ─────────────────────────────────
+  async function loadStats() {
+    try {
+      const r = await fetch('/memory/stats');
+      const d = await r.json();
+      document.getElementById('stat-conv').textContent = d.conversations;
+      document.getElementById('stat-doc').textContent = d.documents;
+      document.getElementById('stat-vec').textContent = d.vector_chunks;
+    } catch {}
+  }
+
+  // ── 모델 정보 ────────────────────────────
+  async function loadModelInfo() {
+    try {
+      const r = await fetch('/model-info');
+      const d = await r.json();
+      document.getElementById('model-badge').textContent = `${d.model} · ${d.provider}`;
+    } catch {}
+  }
+
+  // ── 사이드바 ─────────────────────────────
   function openSidebar() {
     document.getElementById('sidebar').classList.add('open');
     document.getElementById('overlay').classList.add('show');
@@ -504,20 +540,10 @@
     setTimeout(() => t.classList.remove('show'), 3000);
   }
 
-  // ── 모델 정보 ─────────────────────────────
-  async function loadModelInfo() {
-    try {
-      const r = await fetch('/model-info');
-      const d = await r.json();
-      document.getElementById('model-badge').textContent =
-        `${d.model} · ${d.provider}`;
-    } catch {}
-  }
-
   // ── 초기화 ───────────────────────────────
-  loadStats();
-  loadDocs();
+  loadPersonas();
   loadModelInfo();
+  loadStats();
 </script>
 </body>
 </html>
