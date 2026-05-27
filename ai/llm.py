@@ -1,17 +1,23 @@
+"""
+LLM 라우터 — 자체 엔진 (기본값) 또는 외부 API 선택
+LLM_PROVIDER=local  → 자체 TF-IDF 엔진 (무료, 외부 API 불필요) ← 기본값
+LLM_PROVIDER=groq   → Groq API (무료, 키 필요)
+LLM_PROVIDER=gemini → Google Gemini API (무료, 키 필요)
+"""
 import os
 import httpx
 import json
 import asyncio
 from typing import AsyncGenerator
 
-# ── 제공자 선택 ──────────────────────────────────────────
-LLM_PROVIDER = os.getenv("LLM_PROVIDER", "groq")
+# ── 제공자 선택 ──────────────────────────────────────
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", "local")  # 기본값: 자체 엔진
 
-# Groq 설정 (무료, https://console.groq.com)
+# Groq 설정
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 GROQ_MODEL   = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
 
-# Google Gemini 설정 (무료, https://aistudio.google.com/app/apikey)
+# Google Gemini 설정
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 GEMINI_MODEL   = os.getenv("GEMINI_MODEL", "gemini-2.0-flash-lite")
 
@@ -21,7 +27,14 @@ SYSTEM_PROMPT = """당신은 사용자만을 위한 전용 AI 어시스턴트입
 - 참고한 정보가 있으면 [출처: ...] 형식으로 명시합니다."""
 
 
-# ── Groq 스트리밍 ─────────────────────────────────────
+# ── 자체 엔진 스트리밍 ─────────────────────────────────
+async def _local_stream(messages: list, context: str, system: str) -> AsyncGenerator[str, None]:
+    from engine import local_stream
+    async for token in local_stream(messages, context=context, system_prompt=system):
+        yield token
+
+
+# ── Groq 스트리밍 ──────────────────────────────────────
 async def _groq_stream(messages: list, system: str) -> AsyncGenerator[str, None]:
     payload = {
         "model": GROQ_MODEL,
@@ -89,22 +102,20 @@ async def _gemini_once(messages: list, system: str) -> AsyncGenerator[str, None]
 
 # ── Gemini 스트리밍 (429 자동 재시도) ────────────────────
 async def _gemini_stream(messages: list, system: str) -> AsyncGenerator[str, None]:
-    delays = [10, 20]  # 재시도 대기 시간(초)
+    delays = [10, 20]
     for attempt in range(3):
         try:
             async for token in _gemini_once(messages, system):
                 yield token
-            return  # 성공 시 종료
+            return
         except httpx.HTTPStatusError as e:
             status = e.response.status_code
             if status == 429 and attempt < 2:
                 wait = delays[attempt]
                 yield f"\n⏳ 요청이 너무 많습니다. {wait}초 후 재시도합니다..."
                 await asyncio.sleep(wait)
-                # 이전에 보낸 안내 메시지를 지우기 위한 빈 줄
                 yield "\r" + " " * 60 + "\r"
                 continue
-            # API 키 노출 방지: URL에서 key= 이후 제거
             safe_msg = str(e).split("key=")[0] + "key=***"
             raise RuntimeError(f"Gemini API 오류 [{status}]: {safe_msg}") from None
         except Exception as e:
@@ -118,14 +129,18 @@ async def chat_stream(
     system_prompt: str = None,
 ) -> AsyncGenerator[str, None]:
     system = system_prompt or SYSTEM_PROMPT
-    if context:
+    if context and LLM_PROVIDER != "local":
         system += f"\n\n[참고 정보 — 아래 내용을 바탕으로 답변하세요]\n{context}"
 
     if LLM_PROVIDER == "gemini":
         async for token in _gemini_stream(messages, system):
             yield token
-    else:
+    elif LLM_PROVIDER == "groq":
         async for token in _groq_stream(messages, system):
+            yield token
+    else:
+        # 기본값: 자체 TF-IDF 엔진 (외부 API 불필요)
+        async for token in _local_stream(messages, context, system):
             yield token
 
 
@@ -139,4 +154,12 @@ async def chat(messages: list, context: str = "") -> str:
 def current_model_info() -> dict:
     if LLM_PROVIDER == "gemini":
         return {"provider": "Google Gemini", "model": GEMINI_MODEL, "free": True}
-    return {"provider": "Groq", "model": GROQ_MODEL, "free": True}
+    if LLM_PROVIDER == "groq":
+        return {"provider": "Groq", "model": GROQ_MODEL, "free": True}
+    return {
+        "provider": "자체 AI 엔진",
+        "model": "TF-IDF 한국어 지식 검색",
+        "free": True,
+        "external_api": False,
+        "description": "외부 API 없이 완전 독립 실행"
+    }

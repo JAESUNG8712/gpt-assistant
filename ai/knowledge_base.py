@@ -1,532 +1,1094 @@
 """
-각 페르소나별 사전 학습 지식 베이스.
-서버 시작 시 ChromaDB에 자동으로 로드됩니다.
+자체 AI 지식베이스 — HR / 개발 / 여행 페르소나
+각 Q&A는 TF-IDF 엔진에 로드되어 검색에 활용됩니다.
 """
 
-KNOWLEDGE = {
-    "hr": [
-        {
-            "title": "채용 프로세스 전체 흐름",
-            "content": """채용 프로세스는 크게 7단계로 나뉩니다.
-1. 채용 계획: 인력 수요 파악, 직무기술서(JD) 작성, 채용 공고 사이트 결정
-2. 채용 공고: 사람인, 잡코리아, 링크드인, 원티드 등 플랫폼 활용
-3. 서류 전형: 이력서·자기소개서 검토, 지원자격 적합도 평가
-4. 1차 면접(실무): 직무역량, 기술 적합도 확인
-5. 2차 면접(임원): 조직문화 적합도, 리더십, 성장가능성 평가
-6. 처우 협의: 연봉, 직급, 시작일 협의
-7. 입사 온보딩: 오리엔테이션, 부서 배치, 멘토 배정"""
-        },
-        {
-            "title": "4대보험 계산법과 요율",
-            "content": """4대보험 2024년 기준 요율 (근로자 부담분):
-- 국민연금: 보수월액의 4.5% (사업주도 4.5% 부담)
-- 건강보험: 보수월액의 3.545% (장기요양보험 0.9182% 별도)
-- 고용보험: 보수월액의 0.9% (사업주 추가 부담)
-- 산재보험: 전액 사업주 부담 (업종별 상이)
+KNOWLEDGE = [
 
-급여 250만원 기준 근로자 공제액:
-- 국민연금: 112,500원
-- 건강보험: 88,620원 + 장기요양 8,130원
-- 고용보험: 22,500원
-- 합계 약 231,750원 공제"""
-        },
-        {
-            "title": "근로기준법 핵심 내용",
-            "content": """근로기준법 주요 조항:
-- 법정 근로시간: 주 40시간, 1일 8시간
-- 연장근로: 주 12시간 한도, 가산수당 50%
-- 야간근로(22시~06시): 가산수당 50%
-- 휴일근로: 가산수당 50%(8시간 이내), 100%(초과)
-- 최저임금 2024년: 시간당 9,860원
-- 주휴수당: 주 15시간 이상 근무 시 유급 주휴일 1일 보장
-- 퇴직금: 1년 이상 근무 시 30일분 평균임금 × 근속연수"""
-        },
-        {
-            "title": "연차 유급휴가 계산법",
-            "content": """연차휴가 발생 기준 (근로기준법 제60조):
-- 1년 미만 근무: 매월 개근 시 1일씩 최대 11일 발생
-- 1년 이상 근무: 15일 기본 + 2년마다 1일 추가 (최대 25일)
-- 계산 예시:
-  * 1년차: 15일
-  * 3년차: 16일 (15 + 1)
-  * 5년차: 17일 (15 + 2)
-  * 21년차 이상: 25일 (상한)
-- 연차수당: 미사용 연차 × 1일 통상임금
-- 연차사용촉진제도 활용 시 미사용 연차수당 면제 가능"""
-        },
-        {
-            "title": "KPI와 OKR 성과관리",
-            "content": """KPI(핵심성과지표) vs OKR(목표-핵심결과):
+    # ══════════════════════════════════════════════
+    #  HR — 인사 전문가
+    # ══════════════════════════════════════════════
 
-KPI:
-- 정량적 목표치를 설정하고 달성 여부로 평가
-- 예: 매출 목표 10억, 고객 만족도 90점 이상
-- 연 1~2회 평가, 보상과 직결
+    {
+        "persona": "hr",
+        "q": "퇴직금 계산 방법 퇴직금 얼마나 받을 수 있나요 퇴직금 계산해줘",
+        "a": """## 퇴직금 계산 방법
 
-OKR:
-- Objective(목표) + Key Results(핵심결과) 3~5개
-- 예: O=고객 경험 혁신, KR1=NPS 50점 달성, KR2=이탈률 20% 감소
-- 분기별 설정·검토, 도전적 목표(달성률 70%가 이상적)
-- 보상과 직결하지 않음 → 도전적 목표 설정 유도
+**기본 공식**
+> 퇴직금 = 평균임금 × 30일 × (재직일수 ÷ 365)
 
-성과면담 핵심: STAR 기법 활용
-- Situation(상황) → Task(과제) → Action(행동) → Result(결과)"""
-        },
-        {
-            "title": "직장 내 괴롭힘 방지법",
-            "content": """직장 내 괴롭힘 방지법 (2019년 7월 시행):
-- 정의: 지위/관계 우위를 이용해 업무상 적정 범위를 넘는 신체적·정신적 고통 행위
-- 해당 행위: 폭언, 모욕, 따돌림, 과도한 업무 부여, 사적 심부름 강요
-- 신고 절차: 사용자에게 신고 → 즉시 조사 → 피해자 분리·보호 → 징계 조치
-- 사용자 의무: 신고접수 시 즉시 조사, 피해자 불이익 처우 금지
-- 위반 시: 3년 이하 징역 또는 3천만원 이하 벌금
-- 신고 기관: 고용노동부 고객상담센터 1350"""
-        },
-        {
-            "title": "퇴직금 계산법",
-            "content": """퇴직금 계산 공식:
-퇴직금 = 1일 평균임금 × 30일 × (재직일수 / 365)
+**평균임금 계산**
+퇴직 전 3개월간 받은 임금 총액 ÷ 해당 기간의 총 일수
 
-평균임금: 퇴직일 이전 3개월 임금 총액 ÷ 해당 기간 일수
+**예시** (월급 300만원, 3년 근무)
+- 평균임금: 9,000,000원 ÷ 92일 ≒ 97,826원/일
+- 퇴직금: 97,826 × 30 × 3 ≒ **8,804,340원**
 
-예시 계산 (월급 300만원, 3년 근무):
-- 3개월 임금: 900만원
-- 3개월 일수: 91일
-- 1일 평균임금: 약 98,901원
-- 퇴직금: 98,901 × 30 × (1,095/365) = 약 8,910,990원 ≈ 891만원
+**핵심 조건**
+- 1년 이상 계속 근무 + 주 15시간 이상 → 퇴직금 발생
+- 1년 미만은 퇴직금 없음
+- 퇴직 후 **14일 이내** 지급 의무 (위반 시 형사처벌)
 
-퇴직연금 종류:
-- DB형(확정급여): 회사가 운용, 퇴직 시 확정 금액 수령
-- DC형(확정기여): 매년 연봉의 1/12 이상 개인 계좌 적립, 본인이 운용"""
-        },
-    ],
+**계산 도구**: 고용노동부 퇴직금 계산기 (moel.go.kr) 무료 이용 가능""",
+    },
 
-    "dev": [
-        {
-            "title": "Python 핵심 문법과 자주 쓰는 패턴",
-            "content": """Python 자주 쓰는 핵심 패턴:
+    {
+        "persona": "hr",
+        "q": "연차 계산 연차 며칠 연차 일수 유급휴가 며칠",
+        "a": """## 연차 유급휴가 계산
 
-리스트 컴프리헨션:
-squares = [x**2 for x in range(10) if x % 2 == 0]
+**1년 미만 근무자**
+- 매월 개근 시 1일 발생 → 최대 11일
 
-딕셔너리 컴프리헨션:
-word_len = {word: len(word) for word in ['apple', 'banana']}
+**1년 이상 근무자**
+| 근속연수 | 연차일수 |
+|--------|--------|
+| 1년 | 15일 |
+| 3년 | 16일 |
+| 5년 | 17일 |
+| 7년 | 18일 |
+| 21년 이상 | 25일 (최대) |
 
-f-string (권장):
-name = "홍길동"
-print(f"안녕하세요, {name}님! 나이: {2024 - 1990}세")
+→ 3년째부터 2년마다 1일씩 추가
 
-데코레이터:
-def timer(func):
-    import time
-    def wrapper(*args, **kwargs):
-        start = time.time()
-        result = func(*args, **kwargs)
-        print(f"실행 시간: {time.time()-start:.3f}초")
-        return result
-    return wrapper
+**미사용 연차**
+- 연차수당으로 지급 (1일 × 통상임금)
+- 회사가 **연차 촉진제도** 운영 시 미지급 가능
 
-컨텍스트 매니저:
-with open('file.txt', 'r', encoding='utf-8') as f:
-    content = f.read()
+**반차**: 연차 0.5일 = 4시간 (회사 취업규칙에 따라 다름)""",
+    },
 
-enumerate와 zip:
-for i, val in enumerate(['a', 'b', 'c']):
-    print(i, val)
-for a, b in zip([1,2,3], ['x','y','z']):
-    print(a, b)"""
-        },
-        {
-            "title": "JavaScript/TypeScript 핵심 문법",
-            "content": """JavaScript/TypeScript 핵심:
+    {
+        "persona": "hr",
+        "q": "최저임금 2024 2025 시급 얼마 최저시급",
+        "a": """## 최저임금 현황
 
-비동기 처리 (async/await):
-async function fetchData(url) {
-  try {
-    const res = await fetch(url);
-    const data = await res.json();
-    return data;
-  } catch (err) {
-    console.error('오류:', err);
-  }
-}
+| 연도 | 시간급 | 일급(8시간) | 월급(209시간) |
+|-----|-------|-----------|------------|
+| 2024년 | **9,860원** | 78,880원 | 2,060,740원 |
+| 2025년 | **10,030원** | 80,240원 | 2,096,270원 |
 
-구조 분해 할당:
-const { name, age = 25 } = user;
-const [first, ...rest] = array;
+**적용 대상**
+- 1인 이상 사업장의 모든 근로자 (정규직·비정규직·외국인 동일)
+- 수습 3개월 이내: 10% 감액 가능 (1년 이상 계약 & 단순노무 제외)
 
-스프레드 연산자:
-const merged = { ...obj1, ...obj2 };
-const combined = [...arr1, ...arr2];
+**위반 시**: 3년 이하 징역 또는 2,000만원 이하 벌금""",
+    },
 
-TypeScript 타입 정의:
-interface User {
-  id: number;
-  name: string;
-  email?: string;  // 선택적 속성
-}
-type Result<T> = { data: T; error: null } | { data: null; error: string };
+    {
+        "persona": "hr",
+        "q": "4대보험 요율 국민연금 건강보험 고용보험 산재보험",
+        "a": """## 4대보험 요율 (2025년 기준)
 
-화살표 함수와 고차함수:
-const doubled = [1,2,3].map(x => x * 2);
-const evens = [1,2,3,4].filter(x => x % 2 === 0);
-const sum = [1,2,3,4].reduce((acc, x) => acc + x, 0);"""
-        },
-        {
-            "title": "React 핵심 훅과 패턴",
-            "content": """React 자주 쓰는 훅:
+| 구분 | 근로자 | 사업주 |
+|-----|------|------|
+| 국민연금 | 4.5% | 4.5% |
+| 건강보험 | 3.545% | 3.545% |
+| 장기요양 | 건강보험료의 12.95% | 同 |
+| 고용보험 | 0.9% | 0.9~1.85% |
+| 산재보험 | 없음 | 업종별 상이 |
 
-useState:
-const [count, setCount] = useState(0);
-const [user, setUser] = useState({ name: '', age: 0 });
+**월급 300만원 근로자 부담 예시**
+- 국민연금: 135,000원 / 건강보험: 106,350원
+- 장기요양: 13,773원 / 고용보험: 27,000원
+- **합계: 약 282,000원**
 
-useEffect:
-useEffect(() => {
-  // 마운트 시 실행
-  fetchUser(id).then(setUser);
-  return () => { /* 언마운트 시 클린업 */ };
-}, [id]); // id 바뀔 때마다 재실행
+**10인 미만 사업장**: 두루누리 지원금으로 최대 80% 지원""",
+    },
 
-useCallback (함수 메모이제이션):
-const handleClick = useCallback(() => {
-  setCount(c => c + 1);
-}, []); // 의존성 없으면 한 번만 생성
+    {
+        "persona": "hr",
+        "q": "주 52시간 연장근로 야근 시간외수당 계산",
+        "a": """## 주 52시간 근무제 & 시간외수당
 
-useMemo (값 메모이제이션):
-const expensiveResult = useMemo(() => heavyCalc(data), [data]);
+**기본 구조**
+- 법정 근로: 주 40시간
+- 연장 근로: 주 최대 12시간 (합의 필요)
+- 합계: **주 52시간 한도**
 
-커스텀 훅:
-function useFetch(url) {
-  const [data, setData] = useState(null);
-  const [loading, setLoading] = useState(true);
-  useEffect(() => {
-    fetch(url).then(r => r.json()).then(d => {
-      setData(d); setLoading(false);
-    });
-  }, [url]);
-  return { data, loading };
-}"""
-        },
-        {
-            "title": "FastAPI 백엔드 개발 패턴",
-            "content": """FastAPI 핵심 패턴:
+**시간외수당**
+| 구분 | 지급률 |
+|-----|------|
+| 연장근로 | 통상임금 × 1.5 |
+| 야간근로 (22~06시) | 통상임금 × 1.5 |
+| 휴일근로 | 통상임금 × 1.5~2.0 |
 
-기본 CRUD 엔드포인트:
-from fastapi import FastAPI, HTTPException
+**적용 대상**: 5인 이상 사업장
+(5인 미만은 주 52시간 제한 없음, 연장수당 미적용)""",
+    },
+
+    {
+        "persona": "hr",
+        "q": "육아휴직 신청 기간 급여 지원금",
+        "a": """## 육아휴직 안내
+
+**대상**: 만 8세 이하 또는 초등 2학년 이하 자녀를 둔 근로자
+**기간**: 최대 **1년** (부모 각각 1년, 합산 최대 2년)
+
+**육아휴직 급여**
+| 기간 | 지급률 | 월 상한 |
+|-----|------|------|
+| 1~3개월 | 통상임금 80% | 150만원 |
+| 4~6개월 | 통상임금 50% | 120만원 |
+| 7개월~ | 통상임금 50% | 100만원 |
+
+**3+3 육아휴직제** (생후 12개월 내)
+- 부모 동시·순차 휴직 시 첫 3개월 각 100% (월 상한 300만원)
+
+**신청**: 30일 전 서면 신청 → 고용보험 포털(ei.go.kr)에서 급여 신청""",
+    },
+
+    {
+        "persona": "hr",
+        "q": "해고 부당해고 해고예고 절차 해고통보",
+        "a": """## 해고 절차
+
+**정당한 해고 요건**
+- 사회통념상 합리적 이유 필요
+- **서면 통보** 의무 (구두 해고는 무효)
+- **30일 전** 예고 또는 30일분 통상임금 지급
+
+**부당해고 구제**
+- 해고일로부터 **3개월 이내** 노동위원회 신청
+- 복직 또는 해고기간 임금 상당액 지급 명령
+
+**해고 예고 면제**
+- 천재지변 등 부득이한 사유
+- 근로자 귀책 (횡령, 무단결근 5일 이상 등)
+- 일용직 3개월 미만
+
+**부당해고 신고**: 고용노동부 1350 (무료)""",
+    },
+
+    {
+        "persona": "hr",
+        "q": "근로계약서 필수 항목 작성 방법",
+        "a": """## 근로계약서 필수 기재사항
+
+**법정 필수 항목** (근로기준법 제17조)
+1. **임금**: 구성항목, 계산방법, 지급방법
+2. **소정근로시간**: 시작~종료 시간
+3. **휴일**: 주휴일 등
+4. **연차 유급휴가**: 일수 및 사용 방법
+5. **취업 장소 및 업무 내용**
+
+**중요 사항**
+- 서면 작성 후 **근로자에게 반드시 교부** (미교부 시 500만원 이하 과태료)
+- 전자계약서도 인정
+- 최저임금 미달 조항은 자동 무효
+- 기간제: 최대 2년 (초과 시 무기계약 자동 전환)""",
+    },
+
+    {
+        "persona": "hr",
+        "q": "직장 내 괴롭힘 신고 처리",
+        "a": """## 직장 내 괴롭힘
+
+**법적 정의**: 직장 지위·관계 우위를 이용해 업무상 적정 범위를 넘어 신체·정신적 고통을 주거나 근무환경을 악화시키는 행위
+
+**해당 사례**
+- 폭언·욕설·모욕
+- 부당한 업무 배제 또는 과도한 업무 부과
+- 사적 심부름 강요
+- 따돌림·험담·소문 유포
+
+**신고 방법**
+1. 사업주에게 신고 → 즉시 조사 의무
+2. 고용노동부: **1350** (무료 상담)
+3. 국민신문고: 익명 신고 가능
+
+**보호**: 신고자 불이익 처우 금지 (위반 시 3년 이하 징역 또는 3천만원 이하 벌금)""",
+    },
+
+    {
+        "persona": "hr",
+        "q": "연봉협상 방법 팁 인상률",
+        "a": """## 연봉 협상 전략
+
+**사전 준비**
+1. 시장 조사: 잡코리아·사람인·크레딧잡 동종업계 연봉 확인
+2. 실적 정리: 지난 1년 기여도·성과 수치화
+3. 목표 연봉: 현재 대비 10~20% 높게 설정
+
+**핵심 원칙**
+- 먼저 숫자 제시 말고 기대치 질문하기
+- "얼마나 필요한가"보다 "얼마나 기여했는가" 중심
+- 연봉 외 복리후생도 협상 (재택·교육비·장비)
+
+**흔한 실수**
+- 개인 사정(대출, 생활비) 언급 → 금물
+- 그 자리에서 바로 수락 → 24시간 검토 후 답변
+
+**통상 인상률**
+- 물가 반영: 3~5% / 우수 성과: 7~15% / 이직 시: 15~30%""",
+    },
+
+    {
+        "persona": "hr",
+        "q": "출산전후휴가 산전후 임신 출산 휴가 급여",
+        "a": """## 출산전후휴가
+
+**기간**: **90일** (다태아 120일) — 출산 후 45일 이상 의무 사용
+
+**급여 지급**
+- 우선지원 대상기업: 전체 고용보험 부담
+- 대규모 기업(300인↑): 최초 60일 사업주, 나머지 30일 고용보험
+
+**급여 수준**: 통상임금 100% (월 상한 210만원)
+
+**배우자 출산휴가**: 10일 유급 (출생일로부터 90일 이내)
+
+**신청 방법**
+1. 사업주에게 서면 신청
+2. 고용보험 포털(ei.go.kr) 온라인 급여 신청
+
+**사업주 거부 불가** (위반 시 500만원 이하 벌금)""",
+    },
+
+    {
+        "persona": "hr",
+        "q": "성과평가 KPI OKR 인사고과 방법",
+        "a": """## 성과평가 방법
+
+### KPI (Key Performance Indicators)
+- 목표 달성도를 수치로 측정
+- 예: 매출 달성률, 고객 만족도, 결함률
+- 분기/반기/연간 단위 측정
+
+### OKR (Objectives and Key Results)
+- **O**: 방향성 있는 정성적 목표
+- **KR**: 달성 확인용 정량 지표 3~5개
+- 도전적 목표 (60~70% 달성이 성공 기준)
+- 구글·인텔 등 글로벌 기업 활용
+
+### 등급 분포 예시
+| 등급 | 비율 | 처우 |
+|-----|-----|-----|
+| S | 10% | 최고 인상·성과급 |
+| A | 20% | 우수 처우 |
+| B | 50% | 기본 |
+| C/D | 20% | 하위 처우 |""",
+    },
+
+    # ══════════════════════════════════════════════
+    #  DEV — 코드 개발자
+    # ══════════════════════════════════════════════
+
+    {
+        "persona": "dev",
+        "q": "Python 기초 문법 변수 함수 클래스 파이썬",
+        "a": """## Python 핵심 문법
+
+### 변수와 자료형
+```python
+name = "홍길동"        # str
+age = 30               # int
+scores = [90, 85, 92]  # list
+info = {"name": "홍길동", "age": 30}  # dict
+```
+
+### 함수
+```python
+def greet(name: str, greeting: str = "안녕하세요") -> str:
+    return f"{greeting}, {name}님!"
+
+result = greet("홍길동")  # "안녕하세요, 홍길동님!"
+```
+
+### 클래스
+```python
+class Person:
+    def __init__(self, name: str, age: int):
+        self.name = name
+        self.age = age
+
+    def introduce(self) -> str:
+        return f"저는 {self.name}이고 {self.age}살입니다."
+
+p = Person("홍길동", 30)
+print(p.introduce())
+```
+
+### 리스트 컴프리헨션
+```python
+squares = [x**2 for x in range(10)]
+evens = [x for x in range(20) if x % 2 == 0]
+```""",
+    },
+
+    {
+        "persona": "dev",
+        "q": "FastAPI 사용법 API 만들기 엔드포인트",
+        "a": """## FastAPI 빠른 시작
+
+### 설치
+```bash
+pip install fastapi uvicorn[standard]
+```
+
+### 기본 서버
+```python
+from fastapi import FastAPI
 from pydantic import BaseModel
 
 app = FastAPI()
 
+@app.get("/")
+def root():
+    return {"message": "Hello!"}
+
 class Item(BaseModel):
     name: str
     price: float
-    is_active: bool = True
 
-items_db = {}
+@app.post("/items")
+def create_item(item: Item):
+    return {"created": item}
 
 @app.get("/items/{item_id}")
-async def get_item(item_id: int):
-    if item_id not in items_db:
-        raise HTTPException(status_code=404, detail="아이템 없음")
-    return items_db[item_id]
+def get_item(item_id: int, q: str = None):
+    return {"id": item_id, "query": q}
+```
 
-@app.post("/items/", status_code=201)
-async def create_item(item: Item):
-    item_id = len(items_db) + 1
-    items_db[item_id] = item
-    return {"id": item_id, **item.dict()}
+### 실행
+```bash
+uvicorn main:app --reload --port 8000
+```
 
-의존성 주입:
-from fastapi import Depends
+### 자동 API 문서
+- Swagger UI: http://localhost:8000/docs""",
+    },
 
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
+    {
+        "persona": "dev",
+        "q": "Git 명령어 기초 브랜치 커밋 푸시 풀",
+        "a": """## Git 핵심 명령어
 
-@app.get("/users/")
-def get_users(db=Depends(get_db)):
-    return db.query(User).all()"""
-        },
-        {
-            "title": "SQL 핵심 쿼리와 최적화",
-            "content": """SQL 자주 쓰는 쿼리 패턴:
+### 기본 워크플로우
+```bash
+git status                    # 변경 상태 확인
+git add .                     # 스테이징
+git commit -m "메시지"         # 커밋
+git push origin main          # 원격 저장소 푸시
+git pull origin main          # 원격 변경사항 가져오기
+```
 
-집계 함수:
-SELECT department, COUNT(*) as cnt, AVG(salary) as avg_sal
+### 브랜치
+```bash
+git checkout -b feature/login  # 생성+이동
+git merge feature/login        # 병합
+git branch -d feature/login    # 삭제
+```
+
+### 되돌리기
+```bash
+git restore <file>             # 워킹 디렉토리 변경 취소
+git reset HEAD~1               # 마지막 커밋 취소 (변경사항 유지)
+git revert <commit-id>         # 커밋 되돌리기 (새 커밋 생성)
+```
+
+### 초기 설정
+```bash
+git config --global user.name "홍길동"
+git config --global user.email "hong@email.com"
+```""",
+    },
+
+    {
+        "persona": "dev",
+        "q": "SQL 쿼리 기초 SELECT INSERT UPDATE DELETE JOIN",
+        "a": """## SQL 핵심 쿼리
+
+### SELECT (조회)
+```sql
+SELECT name, age FROM users WHERE age >= 20 ORDER BY age DESC;
+
+SELECT department, COUNT(*) as cnt, AVG(salary) as avg_salary
 FROM employees
-WHERE is_active = 1
-GROUP BY department
-HAVING COUNT(*) > 5
-ORDER BY avg_sal DESC;
+GROUP BY department HAVING COUNT(*) > 5;
+```
 
-JOIN 종류:
--- INNER JOIN: 두 테이블 모두 일치하는 행
-SELECT u.name, o.total
+### INSERT / UPDATE / DELETE
+```sql
+INSERT INTO users (name, email) VALUES ('홍길동', 'hong@email.com');
+UPDATE users SET age = 31 WHERE id = 1;
+DELETE FROM users WHERE id = 1;
+```
+
+### JOIN
+```sql
+-- INNER JOIN
+SELECT u.name, o.product
 FROM users u
 INNER JOIN orders o ON u.id = o.user_id;
 
--- LEFT JOIN: 왼쪽 테이블 모든 행 + 일치하는 오른쪽
-SELECT u.name, COUNT(o.id) as order_count
+-- LEFT JOIN (오른쪽 없으면 NULL)
+SELECT u.name, o.product
 FROM users u
-LEFT JOIN orders o ON u.id = o.user_id
-GROUP BY u.id;
+LEFT JOIN orders o ON u.id = o.user_id;
+```
 
-윈도우 함수:
-SELECT name, salary,
-  RANK() OVER (PARTITION BY dept ORDER BY salary DESC) as rank,
-  AVG(salary) OVER (PARTITION BY dept) as dept_avg
-FROM employees;
-
-인덱스 최적화:
--- 자주 검색하는 컬럼에 인덱스
+### 인덱스 (검색 속도 향상)
+```sql
 CREATE INDEX idx_email ON users(email);
--- WHERE, JOIN, ORDER BY에 사용하는 컬럼 우선"""
-        },
-        {
-            "title": "Git 워크플로우와 협업",
-            "content": """Git 핵심 명령어와 워크플로우:
+```""",
+    },
 
-기본 워크플로우:
-git clone <url>           # 저장소 복제
-git checkout -b feature/x # 기능 브랜치 생성
-git add .                 # 변경사항 스테이징
-git commit -m "feat: 로그인 기능 추가"  # 커밋
-git push origin feature/x # 원격에 푸시
-# GitHub에서 PR 생성 → 리뷰 → merge
+    {
+        "persona": "dev",
+        "q": "Python 비동기 async await asyncio",
+        "a": """## Python 비동기 프로그래밍
 
-커밋 메시지 컨벤션 (Conventional Commits):
-feat: 새 기능
-fix: 버그 수정
-docs: 문서 수정
-style: 코드 포맷 (로직 변경 없음)
-refactor: 리팩토링
-test: 테스트 추가
-chore: 빌드/설정 변경
+### 기본 개념
+동기: 순서대로 하나씩 / 비동기: 기다리는 동안 다른 작업 처리
 
-유용한 명령어:
-git stash          # 변경사항 임시 저장
-git stash pop      # 임시 저장 복원
-git log --oneline  # 커밋 히스토리 한 줄로
-git rebase -i HEAD~3  # 최근 3개 커밋 정리
-git cherry-pick <sha>  # 특정 커밋만 가져오기"""
-        },
-        {
-            "title": "알고리즘 핵심 패턴 (Python)",
-            "content": """자주 나오는 알고리즘 패턴:
+### async / await
+```python
+import asyncio
 
-투 포인터:
-def two_sum(nums, target):
-    left, right = 0, len(nums) - 1
-    while left < right:
-        s = nums[left] + nums[right]
-        if s == target: return [left, right]
-        elif s < target: left += 1
-        else: right -= 1
+async def fetch_data(url: str) -> str:
+    await asyncio.sleep(1)  # HTTP 요청 대기 시뮬레이션
+    return f"data from {url}"
 
-슬라이딩 윈도우:
-def max_sum_subarray(nums, k):
-    window_sum = sum(nums[:k])
-    max_sum = window_sum
-    for i in range(k, len(nums)):
-        window_sum += nums[i] - nums[i-k]
-        max_sum = max(max_sum, window_sum)
-    return max_sum
+async def main():
+    # 병렬 실행 (빠름) ⚡
+    r1, r2 = await asyncio.gather(
+        fetch_data("url1"),
+        fetch_data("url2"),
+    )
 
-BFS (최단 경로):
-from collections import deque
-def bfs(graph, start):
-    visited = {start}
-    queue = deque([start])
-    while queue:
-        node = queue.popleft()
-        for neighbor in graph[node]:
-            if neighbor not in visited:
-                visited.add(neighbor)
-                queue.append(neighbor)
+asyncio.run(main())
+```
 
-동적 프로그래밍 (피보나치):
-def fib(n, memo={}):
-    if n in memo: return memo[n]
-    if n <= 1: return n
-    memo[n] = fib(n-1) + fib(n-2)
-    return memo[n]"""
-        },
-    ],
+### FastAPI에서 비동기
+```python
+import httpx
 
-    "travel": [
-        {
-            "title": "한국 국내 여행지 추천",
-            "content": """한국 주요 여행지 가이드:
+@app.get("/data")
+async def get_data():
+    async with httpx.AsyncClient() as client:
+        response = await client.get("https://api.example.com/data")
+        return response.json()
+```
 
-제주도:
-- 한라산 등반 (성판악/관음사 코스, 6~8시간)
-- 성산일출봉 (유네스코 세계자연유산)
-- 협재·함덕 해수욕장
-- 카카오프렌즈 빌리지, 테디베어 뮤지엄
-- 맛집: 흑돼지 바비큐, 갈치조림, 고등어회
-- 렌터카 필수, 성수기(7~8월) 2~3개월 전 예약
+### 비동기 스트리밍
+```python
+async def stream_numbers():
+    for i in range(10):
+        yield i
+        await asyncio.sleep(0.1)
+```""",
+    },
 
-부산:
-- 해운대·광안리 해수욕장
-- 감천문화마을 (마추픽추 느낌의 벽화 마을)
-- 자갈치시장 (해산물)
-- 국제시장, 남포동 BIFF 광장
-- 송정·기장 서핑
-- KTX 서울-부산 2시간 30분
+    {
+        "persona": "dev",
+        "q": "알고리즘 시간복잡도 Big-O 빅오",
+        "a": """## 알고리즘 시간복잡도
 
-경주:
-- 불국사·석굴암 (유네스코)
-- 경주 야경: 동궁과 월지(안압지)
-- 첨성대, 대릉원 고분군
-- 황리단길 (MZ 감성 카페·맛집)
-- 당일치기 or 1박 2일 추천"""
-        },
-        {
-            "title": "동남아 여행 완벽 가이드",
-            "content": """동남아 인기 여행지:
+### Big-O 표기법 (빠름 → 느림)
+| 복잡도 | 명칭 | 예시 |
+|-------|-----|-----|
+| O(1) | 상수 | 배열 인덱스 접근 |
+| O(log n) | 로그 | 이진 탐색 |
+| O(n) | 선형 | 리스트 순차 탐색 |
+| O(n log n) | 선형로그 | 병합정렬 |
+| O(n²) | 제곱 | 이중 for문 |
 
-태국 방콕:
-- 왕궁·왓포·왓아룬 (3대 사원)
-- 카오산로드 (배낭여행자 거리)
-- 짜뚜짝 시장 (주말 벼룩시장)
-- 아시아티크 (야시장)
-- 툭툭, 수상버스 이용 추천
-- 비자: 30일 무비자
-- 최적 시기: 11~2월 (건기)
+### Python 자료구조별 복잡도
+```python
+# 리스트
+lst.append(x)    # O(1)  ← 빠름
+x in lst         # O(n)  ← 느림!
 
-베트남 다낭/호이안:
-- 미케 해수욕장 (세계 6대 해변)
-- 바나힐 (케이블카, 골든브릿지)
-- 호이안 구시가지 야경 (유네스코)
-- 쌀국수(포), 반미, 화이트로즈 만두
-- 비자: 45일 무비자 (2023년부터)
-- 항공: 인천-다낭 직항 5시간
+# 딕셔너리 / 셋
+key in d         # O(1)  ← 빠름!
+d[key] = val     # O(1)  ← 빠름!
+```
 
-발리:
-- 우붓 (계단식 논, 원숭이 숲)
-- 꾸따·스미냑·짐바란 해변
-- 탕쿠반 프라후 화산
-- 서핑 (레슨 추천): 반냑 비치
-- 비자: 30일 무비자, 도착비자 $35
-- 이동: 국내선 덴파사르(DPS) 공항"""
-        },
-        {
-            "title": "일본 여행 완벽 가이드",
-            "content": """일본 주요 여행지:
+### 이진 탐색 예시 O(log n)
+```python
+import bisect
+arr = [1, 3, 5, 7, 9]
+pos = bisect.bisect_left(arr, 5)  # → 2
+```""",
+    },
 
-도쿄:
-- 신주쿠·시부야·아키하바라·하라주쿠
-- 아사쿠사 (센소지 절)
-- 팀랩 (미디어아트 전시)
-- 도쿄 디즈니랜드/씨
-- IC카드(Suica/Pasmo) 필수
-- 라멘, 스시, 야키토리, 돈카츠
+    {
+        "persona": "dev",
+        "q": "Docker 기초 컨테이너 이미지 도커파일",
+        "a": """## Docker 기초
 
-오사카:
-- 도톤보리 (글리코 간판, 타코야키)
-- 오사카성
-- 우메다 스카이빌딩
-- 유니버설 스튜디오 재팬 (USJ)
-- 닛폰바시 (전자상가)
+### Dockerfile 예시 (FastAPI)
+```dockerfile
+FROM python:3.12-slim
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install -r requirements.txt --no-cache-dir
+COPY . .
+EXPOSE 8000
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+```
 
-교토:
-- 아라시야마 대나무숲
-- 기온 (게이샤 거리)
-- 후시미 이나리 신사 (수천 개 도리이)
-- 킨카쿠지 (금각사)
-- 렌터 자전거로 이동 편리
+### 주요 명령어
+```bash
+docker build -t my-app:latest .       # 이미지 빌드
+docker run -d -p 8000:8000 my-app     # 실행
+docker ps                              # 컨테이너 목록
+docker logs my-app                     # 로그 확인
+docker exec -it my-app bash            # 내부 접속
+docker stop my-app && docker rm my-app # 중지·삭제
+```
 
-교통:
-- JR패스 (신칸센 무제한): 7일권 약 5만엔
-- 비자: 한국 여권 90일 무비자"""
-        },
-        {
-            "title": "항공권 저렴하게 구하는 방법",
-            "content": """항공권 최저가 구하기 노하우:
+### Docker Compose
+```yaml
+version: '3'
+services:
+  api:
+    build: .
+    ports: ["8000:8000"]
+  db:
+    image: postgres:15
+    environment:
+      POSTGRES_PASSWORD: secret
+```""",
+    },
 
-예약 시기:
-- 국내선: 출발 1~3개월 전
-- 단거리 국제선 (일본·동남아): 2~4개월 전
-- 장거리 (유럽·미주): 3~6개월 전
-- 화요일·수요일 검색 시 저렴한 경우 많음
+    {
+        "persona": "dev",
+        "q": "REST API 설계 HTTP 메서드 URL",
+        "a": """## REST API 설계 원칙
 
-저가항공 활용:
-- 국내: 제주항공, 진에어, 티웨이, 에어서울
-- 동남아: 에어아시아, 비엣젯, 스쿠트
-- 일본: 피치항공, 제트스타, 에어아시아재팬
+### HTTP 메서드 & URL
+```
+GET    /users           # 목록 조회
+GET    /users/1         # 단건 조회
+POST   /users           # 생성
+PUT    /users/1         # 전체 수정
+PATCH  /users/1         # 부분 수정
+DELETE /users/1         # 삭제
+GET    /users/1/orders  # 관계 리소스
+```
 
-꿀팁:
-- 구글 플라이트에서 날짜 유연하게 검색
-- 스카이스캐너 '전체 날짜' 검색으로 최저가 달 확인
-- 프로모 알림 설정 (카카오 채널, 항공사 앱)
-- 경유편: 직항보다 20~40% 저렴, 시간 여유 필요
-- 마일리지 카드 활용 (KB국민 항공마일리지카드 등)
-- 기내 수하물 추가 비용 계산해서 비교 (저가항공 함정)"""
-        },
-        {
-            "title": "여행 준비 완벽 체크리스트",
-            "content": """여행 준비 단계별 체크리스트:
+### URL 설계 규칙
+```
+✅ /users, /users/1, /posts/1/comments
+❌ /getUser, /createUser, /user_list, /users/delete/1
+```
 
-출발 2~3개월 전:
-□ 여권 유효기간 확인 (잔여 6개월 이상)
-□ 항공권 예약
-□ 숙소 예약 (성수기는 더 일찍)
-□ 비자 필요 여부 확인
+### 응답 코드
+| 코드 | 의미 |
+|-----|-----|
+| 200 | 성공 |
+| 201 | 생성 성공 |
+| 400 | 잘못된 요청 |
+| 401 | 인증 필요 |
+| 403 | 권한 없음 |
+| 404 | 없는 리소스 |
+| 500 | 서버 오류 |""",
+    },
 
-출발 1개월 전:
-□ 여행자 보험 가입 (해외 의료비 중요)
-□ 환전 또는 트래블 카드 준비
-□ 해외 데이터 로밍/유심 준비
-□ 국제운전면허증 (렌터카 계획 시)
+    {
+        "persona": "dev",
+        "q": "클린 코드 좋은 코드 가독성 원칙",
+        "a": """## 클린 코드 핵심 원칙
 
-출발 1주일 전:
-□ 짐 싸기 (위탁 수하물 무게 확인)
-□ 숙소·항공권 예약 확인서 출력/저장
-□ 여행지 주요 정보 오프라인 저장
-□ 비상 연락처 메모
+### 1. 의미 있는 이름
+```python
+# ❌ 나쁜 예
+def fn(d, n): return d * n
 
-여행 중 필수:
-- 여권·신용카드 사본 따로 보관
-- 현금 + 카드 분리 보관
-- 대사관 연락처 저장 (긴급 시)
-- 여행지 지역 앱 설치 (그랩, 고젝 등)"""
-        },
-        {
-            "title": "환전과 여행 경비 절약 팁",
-            "content": """환전 & 여행 경비 절약:
+# ✅ 좋은 예
+def calculate_total_price(daily_rate: float, days: int) -> float:
+    return daily_rate * days
+```
 
-환전 방법 비교:
-1. 은행 환전: 우대율 최대 90% (인터넷뱅킹 신청)
-2. 공항 환전소: 수수료 높음 (비추)
-3. 트래블 카드 (하나 트래블로그, 신한 SOL트래블): 수수료 없음, 현지 ATM 출금 가능
-4. 현지 ATM: 글로벌 카드 수수료 확인 필요
-5. 달러로 미리 환전 후 현지 환전 (동남아 유리)
+### 2. 함수는 하나의 일만
+```python
+# ✅ 역할 분리
+def register_user(user: User) -> None:
+    _validate(user)
+    _save(user)
+    _notify(user)
+```
 
-경비 절약 팁:
-- 숙소: 에어비앤비 vs 호스텔 vs 부티크호텔 비교
-- 식비: 현지인 식당, 시장, 편의점 활용
-- 교통: 대중교통 우선, 우버/그랩 활용
-- 관광: 무료 미술관·공원 먼저, 시티패스 비교
-- 쇼핑: 면세한도 $800 (1인), 부가세 환급(VAT Refund) 챙기기
+### 3. 매직 넘버 제거
+```python
+# ❌  if age > 19:
+# ✅
+ADULT_AGE = 19
+if age > ADULT_AGE:
+```
 
-여행자 보험 핵심:
-- 해외 의료비 1억 이상 보장 상품 선택
-- 여행취소보험 포함 여부 확인
-- 출발 전 가입 필수 (출발 후 불가)"""
-        },
-    ],
+### 4. 타입 힌트 사용
+```python
+def send_email(to: str, subject: str, body: str) -> bool: ...
+```
+
+### 5. 에러 처리
+```python
+try:
+    result = int(user_input)
+except ValueError:
+    print("숫자를 입력해주세요.")
+```""",
+    },
+
+    {
+        "persona": "dev",
+        "q": "데이터베이스 SQL NoSQL 차이 선택 기준",
+        "a": """## SQL vs NoSQL 선택 가이드
+
+### SQL (관계형)
+**대표**: PostgreSQL, MySQL, SQLite
+- 데이터 일관성 강함 (ACID)
+- 복잡한 조인·집계 쿼리
+- 스키마 명확, 유지보수 용이
+
+**사용 케이스**: 쇼핑몰, 금융, 사용자 관리
+
+### NoSQL (비관계형)
+**대표**: MongoDB, Redis, DynamoDB
+- 스키마 유연 (JSON 저장)
+- 수평 확장 용이, 대규모 트래픽
+
+**사용 케이스**: SNS 피드(MongoDB), 세션·캐시(Redis)
+
+### 선택 기준
+| 상황 | 선택 |
+|-----|-----|
+| 데이터 구조 고정됨 | SQL |
+| 데이터 구조 자주 바뀜 | NoSQL |
+| 복잡한 관계·조인 필요 | SQL |
+| 엄청난 쓰기 속도 필요 | NoSQL |
+| 소규모 프로젝트 | SQLite |
+| 캐싱·세션 | Redis |
+
+**실전 조합**: PostgreSQL (주 DB) + Redis (캐시)""",
+    },
+
+    {
+        "persona": "dev",
+        "q": "React 컴포넌트 훅 useState useEffect",
+        "a": """## React 핵심 개념
+
+### 컴포넌트
+```jsx
+function Greeting({ name, age }) {
+  return <div><h1>안녕하세요, {name}님!</h1><p>나이: {age}살</p></div>;
 }
+<Greeting name="홍길동" age={30} />
+```
 
+### useState — 상태 관리
+```jsx
+import { useState } from 'react';
+
+function Counter() {
+  const [count, setCount] = useState(0);
+  return (
+    <div>
+      <p>카운트: {count}</p>
+      <button onClick={() => setCount(count + 1)}>+1</button>
+    </div>
+  );
+}
+```
+
+### useEffect — 사이드 이펙트
+```jsx
+import { useState, useEffect } from 'react';
+
+function UserProfile({ userId }) {
+  const [user, setUser] = useState(null);
+
+  useEffect(() => {
+    fetch(`/api/users/${userId}`)
+      .then(r => r.json())
+      .then(data => setUser(data));
+  }, [userId]);  // userId 바뀔 때마다 실행
+
+  if (!user) return <p>로딩 중...</p>;
+  return <h2>{user.name}</h2>;
+}
+```""",
+    },
+
+    {
+        "persona": "dev",
+        "q": "디버깅 방법 버그 찾기 오류 해결",
+        "a": """## 디버깅 기법
+
+### Python 내장 디버거
+```python
+breakpoint()  # Python 3.7+ 중단점
+# n(next), s(step), c(continue), p 변수명, q(quit)
+```
+
+### 로깅으로 디버깅
+```python
+import logging
+logging.basicConfig(level=logging.DEBUG)
+logger = logging.getLogger(__name__)
+
+def process(data):
+    logger.debug(f"입력값: {data}")
+    result = data * 2
+    logger.info(f"처리 결과: {result}")
+    return result
+```
+
+### 자주 하는 실수와 해결
+```python
+# AttributeError → None 체크
+if result is not None:
+    print(result.value)
+
+# TypeError → 타입 확인
+print(type(variable))
+
+# KeyError → dict.get() 사용
+value = d.get("key", "default")
+
+# IndexError → 길이 확인
+if len(lst) > index:
+    print(lst[index])
+```""",
+    },
+
+    # ══════════════════════════════════════════════
+    #  TRAVEL — 여행 전문가
+    # ══════════════════════════════════════════════
+
+    {
+        "persona": "travel",
+        "q": "제주도 여행 코스 일정 추천 3박4일",
+        "a": """## 제주도 3박 4일 추천 코스
+
+### 1일차 — 동쪽 탐방
+🌅 **성산일출봉** → **우도 당일치기** → **섭지코지** → 저녁: 제주 흑돼지
+
+### 2일차 — 중산간 & 남쪽
+🌿 **사려니숲길** 트레킹 → **산굼부리** → **표선해비치해변** → 저녁: 은갈치 조림
+
+### 3일차 — 서쪽 & 한라산
+⛰️ **한라산** 영실 코스 (3~4시간) → **주상절리대** → **중문관광단지**
+
+### 4일차 — 북쪽 시내
+🎨 **제주 원도심·동문시장** → **함덕해수욕장** → 귀가
+
+**렌트카 필수** 🚗 (공항에서 픽업, 대중교통 불편)
+**최적 시기**: 4~5월 (봄꽃), 9~10월 (성수기 후 한산)""",
+    },
+
+    {
+        "persona": "travel",
+        "q": "일본 도쿄 여행 코스 추천 일정",
+        "a": """## 도쿄 4박 5일 추천 코스
+
+### 1일차 — 신주쿠·시부야
+🗼 도쿄 도청 전망대(무료) → 하라주쿠 → 시부야 스크램블
+
+### 2일차 — 아사쿠사·아키하바라
+⛩️ 아사쿠사 센소지 → 나카미세 거리 → 아키하바라
+
+### 3일차 — 나카메구로·다이칸야마
+☕ 감성 카페 거리 → 다이칸야마 T-SITE → 에비스
+
+### 4일차 — 원하는 테마
+🎢 디즈니씨 또는 닛코 당일치기
+
+### 5일차 — 쇼핑
+🛍️ 긴자 → 이케부쿠로 → 공항 이동
+
+**예산 (1인 기준)**
+- 항공: 20~40만원 (LCC) / 숙박: 5~10만원/박
+- 교통: 스이카 카드 충전해서 사용""",
+    },
+
+    {
+        "persona": "travel",
+        "q": "태국 방콕 여행 추천 코스 팁",
+        "a": """## 태국 방콕 여행 가이드
+
+### 필수 명소
+- **왕궁·에메랄드 사원** (복장: 어깨·무릎 덮기)
+- **왓 포** (와불상, 타이 마사지 학교)
+- **카오산 로드** (배낭여행자의 성지)
+- **짜뚜짝 주말 시장** (토·일요일만)
+- **아시아티크** (야시장 + 대관람차)
+
+### 먹거리
+| 음식 | 가격 |
+|-----|-----|
+| 팟타이 | 60~100밧 |
+| 쏨땀 | 50~80밧 |
+| 타이 마사지 | 200~300밧/시간 |
+
+### 실용 팁
+- **교통**: 그랩(Grab) 앱 필수
+- **환전**: 현지 수퍼리치 환전소가 유리
+- **물**: 생수 구매 필수 (수돗물 음용 금지)
+- **비자**: 30일 무비자 (한국 여권)
+- **최적 시기**: 11~2월 (건기, 선선)""",
+    },
+
+    {
+        "persona": "travel",
+        "q": "베트남 다낭 호이안 여행 코스",
+        "a": """## 베트남 다낭·호이안 가이드
+
+### 다낭 추천
+- **미케 해변** (4km 백사장)
+- **바나힐** (골든브릿지, 케이블카)
+- **한강 용교** (토·일 오후 9시 불 뿜기 쇼)
+
+### 호이안 추천
+- **올드타운** (유네스코 유산, 야경 환상적)
+- **투본강 유등 축제** (매달 14일 전후)
+- **바이크 논길 투어** (1~2만원)
+
+### 먹거리
+- **까오러우**: 호이안 전통 면
+- **바잉미**: 베트남식 바게트 (20,000동)
+- 해산물 요리 (매우 저렴)
+
+### 실용 정보
+- 다낭↔호이안 그랩: 약 200,000동 (25분)
+- **비자**: 45일 무비자 (한국 여권, 2023년~)
+- **최적 시기**: 2~8월 (건기)""",
+    },
+
+    {
+        "persona": "travel",
+        "q": "항공권 싸게 사는 법 저렴한 항공권 구매",
+        "a": """## 항공권 저렴하게 구하는 법
+
+### 구매 타이밍
+- 국내선: 출발 1~3개월 전
+- 단거리 국제선 (일본·동남아): 출발 2~4개월 전
+- 장거리 (유럽·미주): 출발 3~6개월 전
+
+### 검색 도구
+1. **구글 플라이트** — 날짜별 가격 캘린더 (최고 추천)
+2. **스카이스캐너** — "한달 중 가장 싸게" 유연 검색
+3. **카약** — 가격 예측 기능
+4. **네이버 항공권** — 국내 항공사 특가
+
+### 실전 팁
+- 가격 알림 설정 → 가격 내리면 바로 구매
+- 직항보다 경유 → 20~40% 저렴
+- LCC 특가: 제주항공·에어부산·티웨이 앱 알림
+- **주중 출발** → 5~15% 저렴
+
+### 최고의 특가 기회
+- 항공사 창립기념일 / 블랙프라이데이 (11월 마지막 주) / 연초 신년 특가""",
+    },
+
+    {
+        "persona": "travel",
+        "q": "숙박 예약 호텔 에어비앤비 저렴하게",
+        "a": """## 숙박 예약 완벽 가이드
+
+### 플랫폼 비교
+| 플랫폼 | 특징 | 추천 |
+|-------|-----|-----|
+| 부킹닷컴 | 무료취소 많음 | 유럽, 장거리 |
+| 에어비앤비 | 아파트·주방 | 장기 체류 |
+| 아고다 | 동남아 강점 | 아시아 여행 |
+| 야놀자/여기어때 | 국내 강점 | 국내 여행 |
+
+### 저렴하게 예약하는 법
+1. 앱 전용가 (모바일 앱 할인)
+2. 무료취소 옵션 예약 → 가격 내리면 취소 후 재예약
+3. 호텔 공식 홈페이지 직접 예약 (멤버십 할인)
+4. 카드사 제휴 할인 확인
+
+### 체크인 팁
+- 얼리체크인/레이트체크아웃 정중히 요청
+- 업그레이드 요청 (성수기 외 가능)
+- 리뷰는 최신 순으로 확인""",
+    },
+
+    {
+        "persona": "travel",
+        "q": "환전 팁 해외여행 환율 우대",
+        "a": """## 해외여행 환전 완벽 가이드
+
+### 환전 방법 (환율 유리한 순)
+
+1. **하나은행 앱 환전** ⭐ 최추천
+   - 환율 우대 90~100%
+   - 앱 신청 → 공항 하나은행 ATM 수령
+
+2. **케이뱅크/카카오뱅크 앱 환전**
+   - 달러·엔화 우대 환율
+
+3. **트래블 카드** (해외 수수료 무료)
+   - 하나 트래블로그: 30개국 수수료 없음
+   - 신한 SOL트래블: 전 세계 ATM 수수료 무료
+
+4. **공항 환전소** ← 비추천 (가장 불리)
+
+### 국가별 팁
+| 여행지 | 추천 방법 |
+|-------|---------|
+| 일본 | 엔화 환전 후 현금 |
+| 태국 | 달러 후 현지 환전소 |
+| 유럽 | 유로 환전 + 카드 |
+
+**원칙**: 소규모 상점은 현금, 대형마트·호텔은 카드""",
+    },
+
+    {
+        "persona": "travel",
+        "q": "여행 보험 필요성 가입 방법",
+        "a": """## 해외여행 보험
+
+### 왜 필요한가?
+- 미국 맹장 수술: 약 3,000만원
+- 항공·수하물 지연 보상
+- 여행 취소 보상
+- **여행 보험은 필수!**
+
+### 가입 방법 (저렴한 순)
+1. **카드사 무료 여행자보험 확인** (항공권·숙박 카드 결제 시 자동 가입)
+2. **인터넷 가입**: 삼성화재·현대해상·KB손보 홈페이지 (1주일 동남아 약 1.5~3만원)
+3. **공항 보험 부스** (편리하지만 20~30% 비쌈)
+
+### 보험 청구 준비
+- 현지 병원: 진단서·영수증 **영문** 발급 요청
+- 수하물 분실: 항공사에 신고 후 PIR(분실확인서) 수령
+- 귀국 후 보험사 앱에서 서류 제출""",
+    },
+
+    {
+        "persona": "travel",
+        "q": "유럽 배낭여행 비용 코스 추천",
+        "a": """## 유럽 배낭여행 가이드
+
+### 인기 루트
+- **서유럽 핵심**: 파리 → 암스테르담 → 런던
+- **남유럽 감성**: 바르셀로나 → 마드리드 → 리스본
+- **이탈리아 집중**: 로마 → 피렌체 → 베네치아
+
+### 예산 (1인 2주)
+| 항목 | 서유럽 | 동유럽 |
+|-----|------|------|
+| 항공 | 80~150만원 | 80~150만원 |
+| 숙박/박 | 4~8만원 | 2~4만원 |
+| 식비/일 | 3~6만원 | 1~3만원 |
+| **총합** | **250~400만원** | **150~250만원** |
+
+### 교통 팁
+- **플릭스버스**: 국가 간 야간 버스 (매우 저렴)
+- **라이언에어**: 유럽 내 LCC (1~5만원)
+- **유레일 패스**: 다국가 이동 잦으면 유리
+
+### 숙박
+- 호스텔 도미토리: 2~4만원/박 (소셜 분위기)""",
+    },
+
+    {
+        "persona": "travel",
+        "q": "부산 여행 코스 추천 맛집",
+        "a": """## 부산 2박 3일 코스
+
+### 1일차 — 해운대·광안리
+🌊 해운대 해수욕장 → 동백섬 → 광안리 해변 → 광안대교 야경
+
+### 2일차 — 남포동·자갈치
+⚓ 자갈치 시장 → 씨앗호떡(BIFF광장) → 용두산공원·부산타워
+
+### 3일차 — 감천·영도
+🎨 감천문화마을 → 영도 흰여울문화마을 → 귀가
+
+### 필수 맛집
+| 음식 | 추천 장소 |
+|-----|---------|
+| 밀면 | 가야밀면 (서면) |
+| 돼지국밥 | 쌍둥이돼지국밥 |
+| 씨앗호떡 | 남포동 BIFF광장 |
+| 어묵 | 삼진어묵 본점 |
+
+### 교통
+- KTX: 서울→부산 2시간 30분 (6~8만원)
+- 시내: 지하철 1일권 4,500원
+
+**최적 시기**: 9~11월 (선선하고 야경 최고)""",
+    },
+
+    {
+        "persona": "travel",
+        "q": "해외여행 짐 싸기 체크리스트 준비물",
+        "a": """## 해외여행 짐 체크리스트
+
+### 필수 서류
+- ✅ 여권 (유효기간 **6개월 이상** 확인!)
+- ✅ 항공권·숙박 예약 확인서
+- ✅ 여행 보험증서
+- ✅ 비자 (필요 국가)
+
+### 의류 (1주일 기준)
+- 속옷 5~7벌
+- 상의 3~4벌 (레이어드 가능하게)
+- 하의 2~3벌
+- 가벼운 겉옷 (비행기 추위 대비)
+- 걷기 편한 운동화 필수
+
+### 전자기기
+- 스마트폰 + 충전기
+- 보조배터리 (기내 수하물!)
+- **멀티 어댑터** (국가별 콘센트 다름)
+
+### 상비약
+- 소화제·지사제·두통약·밴드
+
+### 짐 줄이기 팁
+- 샴푸·선크림은 현지 구매
+- 압축 팩 활용
+- 1주일 이하: **7kg 기내 수하물만** 도전 가능""",
+    },
+
+    {
+        "persona": "travel",
+        "q": "필리핀 세부 보라카이 여행 추천",
+        "a": """## 필리핀 여행 가이드
+
+### 보라카이 🏖️
+- **화이트비치**: 세계 최고 수준 백사장
+- **D-몰**: 쇼핑·식당 집결지
+- **선셋 세일링**: 1인 약 25,000원
+- **이사·파이어쇼**: 저녁 해변 공연
+
+### 세부 🐠
+- **오슬롭 고래상어**: 세부 남부 (새벽 5시 출발 투어)
+- **말라파스쿠아**: 쓰레기상어 다이빙
+- **막탄 섬**: 리조트·해양 액티비티
+- **시티 투어**: SM몰, 마젤란 십자가
+
+### 실용 정보
+| 항목 | 내용 |
+|-----|-----|
+| 비자 | 30일 무비자 |
+| 화폐 | 필리핀 페소 (1만원 ≒ 380페소) |
+| 항공 | 인천→세부 직항 3.5시간 |
+| 최적 시기 | 11~5월 (건기) |
+
+### 안전 팁
+- 밤 늦은 시간 혼자 이동 자제
+- 택시 미터기 확인 또는 그랩(Grab) 앱 사용""",
+    },
+
+]
+
+
+# ── 하위 호환성 ──────────────────────────────────────
 
 def get_all_knowledge():
-    """모든 페르소나의 지식을 (텍스트, 메타데이터) 리스트로 반환"""
-    items = []
-    for persona_id, chunks in KNOWLEDGE.items():
-        for chunk in chunks:
-            text = f"[{chunk['title']}]\n{chunk['content']}"
-            meta = {"source": f"지식베이스:{chunk['title']}", "persona": persona_id}
-            items.append((text, meta))
-    return items
+    """이전 버전과의 호환성 유지"""
+    result = []
+    for item in KNOWLEDGE:
+        text = f"Q: {item['q']}\nA: {item['a']}"
+        meta = {"source": "지식베이스", "persona": item.get("persona", "")}
+        result.append((text, meta))
+    return result
