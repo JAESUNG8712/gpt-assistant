@@ -218,6 +218,16 @@
     .toast.show { opacity: 1; }
     .overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 99; }
     .overlay.show { display: block; }
+    .feedback-row { display: flex; gap: 8px; margin-top: 6px; }
+    .fb-btn {
+      background: none; border: 1px solid var(--border); border-radius: 20px;
+      padding: 3px 10px; cursor: pointer; font-size: 0.78rem; color: var(--text-dim);
+      transition: all 0.15s;
+    }
+    .fb-btn:hover { background: var(--surface2); }
+    .fb-btn.good:hover { border-color: #3fb950; color: #3fb950; }
+    .fb-btn.bad:hover  { border-color: #f85149; color: #f85149; }
+    .fb-btn.selected   { opacity: 0.5; cursor: default; }
   </style>
 </head>
 <body>
@@ -510,6 +520,16 @@
       aiDiv.classList.remove('typing');
       // 완료 후 마크다운 렌더링 적용
       bubble.innerHTML = renderMd(full);
+      // 피드백 버튼 추가
+      const fbRow = document.createElement('div');
+      fbRow.className = 'feedback-row';
+      const escapedFull = full.replace(/\\/g,'\\\\').replace(/'/g,"\\'").replace(/\n/g,'\\n');
+      const escapedMsg = msg.replace(/\\/g,'\\\\').replace(/'/g,"\\'");
+      fbRow.innerHTML = `
+        <span style="font-size:0.72rem;color:var(--text-dim);">이 답변이 도움됐나요?</span>
+        <button class="fb-btn good" onclick="sendFeedback(this,1,'${escapedMsg}','${escapedFull}','${currentPersona.id}')">👍 도움돼요</button>
+        <button class="fb-btn bad"  onclick="sendFeedback(this,-1,'${escapedMsg}','${escapedFull}','${currentPersona.id}')">👎 별로예요</button>`;
+      aiDiv.querySelector('.msg-bubble').appendChild(fbRow);
     } catch (e) {
       bubble.textContent = '오류: ' + e.message;
       aiDiv.classList.remove('typing');
@@ -645,6 +665,20 @@
     t.textContent = msg;
     t.classList.add('show');
     setTimeout(() => t.classList.remove('show'), 3000);
+  }
+
+  // ── 피드백 ───────────────────────────────
+  async function sendFeedback(btn, rating, question, answer, persona) {
+    if (btn.classList.contains('selected')) return;
+    btn.parentElement.querySelectorAll('.fb-btn').forEach(b => b.classList.add('selected'));
+    try {
+      await fetch('/feedback', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ question, answer: answer.substring(0, 1000), rating, persona })
+      });
+      showToast(rating === 1 ? '👍 피드백 감사합니다!' : '👎 개선에 반영하겠습니다!');
+    } catch {}
   }
 
   // ── 초기화 ───────────────────────────────

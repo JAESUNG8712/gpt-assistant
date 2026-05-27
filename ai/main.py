@@ -151,6 +151,26 @@ def learn_text(req: TextLearnRequest):
     return {"ok": True, "question": q, "persona": req.persona}
 
 
+# ── 피드백 ───────────────────────────────────────────
+
+class FeedbackRequest(BaseModel):
+    question: str
+    answer: str
+    rating: int  # 1 = 좋아요, -1 = 별로
+    persona: str = DEFAULT_PERSONA
+
+@app.post("/feedback")
+def receive_feedback(req: FeedbackRequest):
+    if req.rating not in (1, -1):
+        raise HTTPException(400, "rating은 1 또는 -1만 허용")
+    mem.save_feedback(req.question, req.answer, req.rating, req.persona)
+    return {"ok": True}
+
+@app.get("/feedback/stats")
+def feedback_stats():
+    return mem.get_feedback_stats()
+
+
 # ── 메모리 통계 ───────────────────────────────────────
 
 @app.get("/memory/stats")
