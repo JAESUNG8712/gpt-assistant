@@ -280,14 +280,33 @@ def _compose(query: str, results: List, persona: str) -> str:
     return _NO_ANSWER.get(persona, _NO_ANSWER[''])
 
 
-# ── 7. 스트리밍 인터페이스 ──────────────────────────────
+# ── 7. 웹 검색·문서 컨텍스트 직접 응답 ──────────────────
+
+def _compose_with_context(query: str, context: str, persona: str) -> str:
+    """웹 검색 결과나 문서 RAG가 있을 때 직접 활용한 응답 생성"""
+    prefix = _PERSONA_PREFIX.get(persona, '')
+    ctx = context.strip()
+    # 너무 길면 자름
+    if len(ctx) > 3000:
+        ctx = ctx[:3000] + "\n\n...(내용 일부 생략)"
+
+    return (
+        f"{prefix}"
+        f"**검색 결과를 바탕으로 답변드립니다.**\n\n"
+        f"{ctx}\n\n"
+        f"---\n"
+        f"💡 위 내용은 실시간 검색 결과입니다. 더 자세한 내용이 필요하시면 추가 질문해 주세요."
+    )
+
+
+# ── 8. 스트리밍 인터페이스 ──────────────────────────────
 
 async def local_stream(
     messages: List[dict],
     context: str = '',
     system_prompt: str = None,
 ) -> AsyncGenerator[str, None]:
-    """메인 스트리밍 함수 — llm.py에서 호출"""
+    """메인 스트리밍 함수 — llm.py에서 호출 (API 키 없을 때 폴백)"""
 
     engine = get_engine()
 
@@ -305,29 +324,30 @@ async def local_stream(
     # 페르소나 감지
     persona = detect_persona(system_prompt)
 
-    # 컨텍스트 확장: 이전 assistant 답변도 검색에 활용
-    ctx_parts = [query]
-    for m in reversed(messages[:-1]):
-        if m.get('role') == 'assistant':
-            ctx_parts.append(m['content'][:200])
-            break
-    search_q = ' '.join(ctx_parts)
+    # 외부 컨텍스트 (웹 검색 결과, 문서 RAG)가 충분히 있으면 직접 사용
+    # → TF-IDF 기존 지식과 경쟁하지 않고 무조건 우선 적용
+    if context and len(context.strip()) > 100:
+        response = _compose_with_context(query, context, persona)
+    else:
+        # 컨텍스트 없을 때: 지식베이스 TF-IDF 검색
+        ctx_parts = [query]
+        for m in reversed(messages[:-1]):
+            if m.get('role') == 'assistant':
+                ctx_parts.append(m['content'][:200])
+                break
+        search_q = ' '.join(ctx_parts)
 
-    # 외부 컨텍스트 (문서 업로드, 웹 검색)가 있으면 엔진에 추가
-    if context:
-        engine.add(context[:600], context, {'persona': persona, 'source': 'context'})
+        # 동적으로 추가된 내용은 엔진에 등록
+        if context:
+            engine.add(context[:600], context, {'persona': persona, 'source': 'context'})
 
-    # 지식 검색
-    results = engine.search(search_q, n=4, persona=persona)
-
-    # 응답 생성
-    response = _compose(query, results, persona)
+        results = engine.search(search_q, n=4, persona=persona)
+        response = _compose(query, results, persona)
 
     # 자연스러운 청크 스트리밍
     buf = ''
     for ch in response:
         buf += ch
-        # 줄바꿈이나 문장 부호에서, 또는 20자마다 flush
         if ch in ('\n', '。', '!', '?') or len(buf) >= 25:
             yield buf
             buf = ''

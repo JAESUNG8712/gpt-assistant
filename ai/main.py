@@ -127,6 +127,30 @@ def learn_search(req: SearchRequest):
     return {"ok": True, "query": req.query, "learned": len(results), "results": results}
 
 
+# ── 직접 지식 추가 ────────────────────────────────────
+
+class TextLearnRequest(BaseModel):
+    question: str
+    answer: str
+    persona: str = DEFAULT_PERSONA
+
+@app.post("/learn/text")
+def learn_text(req: TextLearnRequest):
+    """질문-답변 쌍을 직접 지식베이스에 추가"""
+    from engine import get_engine
+    engine = get_engine()
+    q = req.question.strip()
+    a = req.answer.strip()
+    if not q or not a:
+        raise HTTPException(400, "질문과 답변을 모두 입력하세요.")
+    engine.add(q, a, {'persona': req.persona, 'source': '직접입력'})
+    mem.store_memory(
+        f"Q: {q}\nA: {a}",
+        {'source': '직접입력', 'persona': req.persona}
+    )
+    return {"ok": True, "question": q, "persona": req.persona}
+
+
 # ── 메모리 통계 ───────────────────────────────────────
 
 @app.get("/memory/stats")
