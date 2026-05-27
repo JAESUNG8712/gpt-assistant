@@ -4,10 +4,12 @@ import os
 import hashlib
 from datetime import datetime
 
-DB_PATH     = os.getenv("DB_PATH", "data/memory.db")
-CHROMA_PATH = os.getenv("CHROMA_PATH", "data/chroma")
+# Disk 없는 무료 배포 환경에서는 /tmp 사용 (항상 쓰기 가능)
+DB_PATH     = os.getenv("DB_PATH", "/tmp/memory.db")
+CHROMA_PATH = os.getenv("CHROMA_PATH", "/tmp/chroma")
 
-os.makedirs("data", exist_ok=True)
+os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+os.makedirs(CHROMA_PATH, exist_ok=True)
 
 # SQLite — 대화 이력
 def _conn():
