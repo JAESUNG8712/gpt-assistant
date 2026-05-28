@@ -11,6 +11,7 @@ import memory as mem
 import llm
 import search as srch
 import backup as bkp
+import law_search as law
 from personas import PERSONAS, DEFAULT_PERSONA
 
 mem.init_db()
@@ -50,9 +51,15 @@ async def chat(req: ChatRequest):
         results = srch.search_and_learn(user_msg)
         search_ctx = srch.format_search_context(results)
 
+    # law.go.kr 법령 검색 (법 관련 질문 자동 감지)
+    law_ctx = ""
+    if law.is_law_question(user_msg):
+        law_results = await law.search_law(user_msg)
+        law_ctx = law.format_law_context(law_results)
+
     # RAG: 벡터 기억에서 관련 내용 검색
     rag_ctx = mem.retrieve_context(user_msg, persona_id=req.persona)
-    context = "\n\n".join(filter(None, [rag_ctx, search_ctx]))
+    context = "\n\n".join(filter(None, [law_ctx, rag_ctx, search_ctx]))
 
     # 최근 대화 이력
     history = mem.get_recent_messages(10)
