@@ -68,7 +68,8 @@ async def chat(req: ChatRequest):
             ai_reply = "".join(collected)
             mem.save_message("user", user_msg, persona=req.persona)
             mem.save_message("assistant", ai_reply, persona=req.persona)
-            mem.store_conversation_memory(user_msg, ai_reply, persona_id=req.persona)
+            # 대화 기록은 conversations 테이블에만 저장 (TF-IDF 엔진에 넣지 않음)
+            # → 엔진에 저장하면 다른 질문 검색 시 오염 발생
         except Exception as e:
             import traceback
             err = f"[오류] {type(e).__name__}: {e}\n{traceback.format_exc()}"
