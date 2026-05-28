@@ -114,7 +114,7 @@ def store_memory(text: str, metadata: dict = None):
 
 
 def retrieve_context(query: str, n: int = 5, persona_id: str = None) -> str:
-    """TF-IDF 엔진에서 관련 컨텍스트 검색"""
+    """TF-IDF 엔진에서 관련 컨텍스트 검색 (대화 기록 제외, 지식베이스·문서만 반환)"""
     try:
         from engine import get_engine
         engine = get_engine()
@@ -123,6 +123,9 @@ def retrieve_context(query: str, n: int = 5, persona_id: str = None) -> str:
             return ""
         parts = []
         for q, a, score, meta in results:
+            # 이전 대화 기록은 컨텍스트에서 제외 (다른 질문을 오염시킴)
+            if meta.get("source") == "대화":
+                continue
             parts.append(a[:500])
         return "\n\n".join(parts)
     except Exception as e:
