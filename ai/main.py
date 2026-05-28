@@ -61,22 +61,32 @@ async def chat(req: ChatRequest):
     rag_ctx = mem.retrieve_context(user_msg, persona_id=req.persona)
     context = "\n\n".join(filter(None, [law_ctx, rag_ctx, search_ctx]))
 
+    # 로컬 KB에 자료가 없는 경우 자동 학습 플래그
+    no_local_data = not bool(rag_ctx) and not bool(law_ctx)
+
     # 최근 대화 이력
     history = mem.get_recent_messages(10)
     history.append({"role": "user", "content": user_msg})
 
-    collected = []
-
     async def generate():
+        collected = []
         try:
+            if no_local_data:
+                yield "> 📭 로컬 지식베이스에 자료가 없어 AI 지식으로 답변합니다. 이 내용은 자동 학습됩니다.\n\n"
+
             async for token in llm.chat_stream(history, context, system_prompt=persona["system_prompt"]):
                 collected.append(token)
                 yield token
+
             ai_reply = "".join(collected)
             mem.save_message("user", user_msg, persona=req.persona)
             mem.save_message("assistant", ai_reply, persona=req.persona)
-            # 대화 기록은 conversations 테이블에만 저장 (TF-IDF 엔진에 넣지 않음)
-            # → 엔진에 저장하면 다른 질문 검색 시 오염 발생
+
+            # 자동 학습: 로컬 자료가 없었던 경우 Q&A를 KB에 영구 저장
+            if no_local_data and ai_reply.strip():
+                mem.auto_learn(user_msg, ai_reply, persona=req.persona)
+                yield "\n\n---\n> ✅ 자동 학습 완료 — 다음부터는 로컬 저장 자료로 답변합니다."
+
         except Exception as e:
             import traceback
             err = f"[오류] {type(e).__name__}: {e}\n{traceback.format_exc()}"
