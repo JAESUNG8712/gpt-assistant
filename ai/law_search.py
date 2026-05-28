@@ -11,7 +11,19 @@ from ddgs import DDGS
 
 LAW_API_KEY = os.getenv("LAW_API_KEY", "")
 _API_BASE = "https://www.law.go.kr/DRF"
-_TIMEOUT = 10.0
+_TIMEOUT = 4.0  # 짧게 — 연결 안 되면 빠르게 포기
+
+# 서킷브레이커: ConnectError 발생 시 일정 시간 API 호출 차단
+import time as _time
+_api_blocked_until: float = 0.0
+
+def _is_api_blocked() -> bool:
+    return _time.time() < _api_blocked_until
+
+def _block_api(seconds: int = 3600):
+    global _api_blocked_until
+    _api_blocked_until = _time.time() + seconds
+    print(f"⚠️ law.go.kr API 차단 (해외 IP 또는 네트워크 오류) — {seconds//60}분 후 재시도")
 
 # 쿼리 축약명 → 법령정보 공식 검색어
 _LAW_ALIAS_TO_SEARCH = {
@@ -73,7 +85,7 @@ def _get_mst(law: dict) -> str:
 
 async def search_law_api(query: str) -> list[dict]:
     """국가법령정보 오픈API 비동기 검색"""
-    if not LAW_API_KEY:
+    if not LAW_API_KEY or _is_api_blocked():
         return []
 
     search_name = _get_search_name(query)
@@ -166,6 +178,9 @@ async def search_law_api(query: str) -> list[dict]:
 
             return results
 
+        except httpx.ConnectError:
+            _block_api(seconds=3600)
+            return []
         except Exception as e:
             print(f"⚠️ law.go.kr API 오류: {type(e).__name__}: {e}")
             return []
