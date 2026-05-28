@@ -158,6 +158,23 @@ def store_document(text: str, filename: str, persona_id: str = "hr"):
         )
 
 
+def auto_learn(question: str, answer: str, persona: str = "hr"):
+    """자동 학습: Q&A 쌍을 KB에 영구 저장 (재시작 후에도 유지)"""
+    content = f"Q: {question}\nA: {answer[:1500]}"
+    with _conn() as c:
+        c.execute(
+            "INSERT INTO learned_knowledge (content, persona, source, created_at) VALUES (?,?,?,?)",
+            (content, persona, "자동학습", datetime.now().isoformat()),
+        )
+    # 엔진이 이미 로드된 경우에만 실시간 반영 (미로드 시 재시작 때 SQLite에서 자동 복원)
+    try:
+        import engine as eng
+        if eng._kb_loaded:
+            eng._engine.add(question, answer[:2000], {"persona": persona, "source": "자동학습"})
+    except Exception as e:
+        print(f"⚠️ 자동학습 엔진 반영 실패: {e}")
+
+
 def list_documents() -> list:
     with _conn() as c:
         rows = c.execute(
