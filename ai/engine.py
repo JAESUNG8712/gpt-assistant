@@ -116,7 +116,7 @@ class _Engine:
             if article_nums:
                 qa_text = q + ' ' + a[:300]
                 matched = any(
-                    re.search(rf'제?{num}조', qa_text) for num in article_nums
+                    re.search(rf'(제{num}조|(?<![0-9]){num}조)', qa_text) for num in article_nums
                 )
                 if matched:
                     s *= 2.5  # 정확한 조항 번호 일치 → 2.5배 부스트
