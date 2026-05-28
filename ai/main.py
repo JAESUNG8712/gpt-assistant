@@ -68,13 +68,20 @@ async def chat(req: ChatRequest):
     history = mem.get_recent_messages(10)
     history.append({"role": "user", "content": user_msg})
 
+    from datetime import date as _date
+    today = _date.today()
+    system_with_date = (
+        persona["system_prompt"]
+        + f"\n\n오늘 날짜: {today.strftime('%Y년 %m월 %d일')} ({today.year}년)"
+    )
+
     async def generate():
         collected = []
         try:
             if no_local_data:
                 yield "> 📭 로컬 지식베이스에 자료가 없어 AI 지식으로 답변합니다. 이 내용은 자동 학습됩니다.\n\n"
 
-            async for token in llm.chat_stream(history, context, system_prompt=persona["system_prompt"]):
+            async for token in llm.chat_stream(history, context, system_prompt=system_with_date):
                 collected.append(token)
                 yield token
 
