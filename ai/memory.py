@@ -123,8 +123,7 @@ def retrieve_context(query: str, n: int = 5, persona_id: str = None) -> str:
             return ""
         parts = []
         for q, a, score, meta in results:
-            src = meta.get("source", "지식베이스")
-            parts.append(f"[{src}]\n{a[:500]}")
+            parts.append(a[:500])
         return "\n\n".join(parts)
     except Exception as e:
         print(f"⚠️ 컨텍스트 검색 실패: {e}")
