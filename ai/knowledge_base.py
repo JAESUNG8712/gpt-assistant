@@ -3,6 +3,7 @@
 각 Q&A는 TF-IDF 엔진에 로드되어 검색에 활용됩니다.
 """
 from knowledge_labor_laws import LABOR_LAW_KNOWLEDGE
+from knowledge_hr_management import HR_MANAGEMENT_KNOWLEDGE
 
 KNOWLEDGE = [
 
@@ -3247,7 +3248,7 @@ E (Evaluation): 평가 — 효과 측정
 ]
 
 # 노동법 전체 조항 병합
-KNOWLEDGE = KNOWLEDGE + LABOR_LAW_KNOWLEDGE
+KNOWLEDGE = KNOWLEDGE + LABOR_LAW_KNOWLEDGE + HR_MANAGEMENT_KNOWLEDGE
 
 
 # ── 하위 호환성 ──────────────────────────────────────
