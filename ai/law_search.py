@@ -11,7 +11,7 @@ from ddgs import DDGS
 
 LAW_API_KEY = os.getenv("LAW_API_KEY", "")
 _API_BASE = "https://www.law.go.kr/DRF"
-_TIMEOUT = 8.0
+_TIMEOUT = 10.0
 
 # 쿼리 축약명 → 법령정보 공식 검색어
 _LAW_ALIAS_TO_SEARCH = {
@@ -44,11 +44,9 @@ def is_law_question(text: str) -> bool:
 
 
 def _get_search_name(query: str) -> str:
-    """쿼리에서 공식 법령 검색명 추출"""
     for alias, official in _LAW_ALIAS_TO_SEARCH.items():
         if alias in query:
             return official
-    # 법령명이 명시되지 않은 경우 쿼리 그대로
     return query
 
 
@@ -57,12 +55,20 @@ def _extract_article_nums(query: str) -> list[str]:
 
 
 def _flatten_list(val) -> list:
-    """API 응답에서 단일 dict가 오는 경우 list로 통일"""
     if val is None:
         return []
     if isinstance(val, dict):
         return [val]
     return val
+
+
+def _get_mst(law: dict) -> str:
+    """API 버전마다 필드명이 다를 수 있으므로 여러 후보를 시도"""
+    for key in ("법령MST", "법령MST번호", "MST", "mst"):
+        v = str(law.get(key, "")).strip()
+        if v:
+            return v
+    return ""
 
 
 async def search_law_api(query: str) -> list[dict]:
@@ -75,7 +81,7 @@ async def search_law_api(query: str) -> list[dict]:
 
     async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
         try:
-            # 1단계: 법령 검색 → MST 번호 획득
+            # 1단계: 법령 검색 → MST 번호 획득 (display=5로 여러 개 받아 정확한 법 선택)
             r1 = await client.get(
                 f"{_API_BASE}/lawSearch.do",
                 params={
@@ -83,17 +89,26 @@ async def search_law_api(query: str) -> list[dict]:
                     "target": "law",
                     "type": "JSON",
                     "query": search_name,
-                    "display": 1,
+                    "display": 5,
                 },
             )
             data = r1.json()
-            laws = _flatten_list(data.get("LawSearch", {}).get("law"))
-            if not laws:
+            all_laws = _flatten_list(data.get("LawSearch", {}).get("law"))
+            if not all_laws:
+                print(f"⚠️ law.go.kr 검색 결과 없음: query={search_name}, raw={str(data)[:200]}")
                 return []
 
-            mst = laws[0].get("법령MST번호", "")
+            # 시행령·시행규칙 제외하고 법률 우선 선택
+            laws = [l for l in all_laws if "시행령" not in l.get("법령명한글", "")
+                    and "시행규칙" not in l.get("법령명한글", "")]
+            if not laws:
+                laws = all_laws
+
+            mst = _get_mst(laws[0])
             law_name_kr = laws[0].get("법령명한글", search_name)
+
             if not mst:
+                print(f"⚠️ MST 없음. 법령 데이터: {laws[0]}")
                 return []
 
             # 2단계: 법령 본문 조회
@@ -111,16 +126,25 @@ async def search_law_api(query: str) -> list[dict]:
                 law_data.get("법령", {}).get("조문", {}).get("조문단위")
             )
 
-            # 특정 조문 필터링
+            if not articles:
+                print(f"⚠️ 조문 없음. law_data keys: {list(law_data.get('법령', {}).keys())}")
+                return []
+
+            # 특정 조문 필터링 — int 비교로 정확히 매칭 (7 ≠ 76, 107)
             if article_nums:
-                matched = [a for a in articles if str(a.get("조문번호", "")) in article_nums]
-                articles = matched if matched else articles[:5]
+                target_nums = set(int(n) for n in article_nums if n.isdigit())
+                matched = [
+                    a for a in articles
+                    if str(a.get("조문번호", "")).strip().isdigit()
+                    and int(a.get("조문번호", -1)) in target_nums
+                ]
+                articles = matched if matched else articles[:3]
             else:
                 articles = articles[:5]
 
             results = []
             for article in articles:
-                num = article.get("조문번호", "")
+                num = str(article.get("조문번호", "")).strip()
                 title = article.get("조문제목", "")
                 content = article.get("조문내용", "")
 
@@ -131,8 +155,10 @@ async def search_law_api(query: str) -> list[dict]:
                 )
 
                 body = content + ("\n" + clause_text if clause_text else "")
+                if not body.strip():
+                    continue
                 results.append({
-                    "title": f"{law_name_kr} 제{num}조{'  ' + title if title else ''}",
+                    "title": f"{law_name_kr} 제{num}조{('  ' + title) if title else ''}",
                     "body": body.strip(),
                     "url": f"https://www.law.go.kr/법령/{law_name_kr}",
                     "source": "law.go.kr API",
@@ -141,12 +167,12 @@ async def search_law_api(query: str) -> list[dict]:
             return results
 
         except Exception as e:
-            print(f"⚠️ law.go.kr API 오류: {e}")
+            print(f"⚠️ law.go.kr API 오류: {type(e).__name__}: {e}")
             return []
 
 
 def search_law_ddg(query: str, max_results: int = 3) -> list[dict]:
-    """DuckDuckGo site:law.go.kr 검색 (폴백)"""
+    """DuckDuckGo site:law.go.kr 검색 — 조항 번호 지정 쿼리엔 사용하지 않음"""
     try:
         with DDGS() as ddgs:
             results = []
@@ -164,11 +190,16 @@ def search_law_ddg(query: str, max_results: int = 3) -> list[dict]:
 
 
 async def search_law(query: str) -> list[dict]:
-    """법령 검색 진입점: Open API 우선, 실패 시 DuckDuckGo 폴백"""
+    """법령 검색 진입점: Open API 우선, 실패 시 조항 없는 일반 쿼리만 DuckDuckGo 폴백"""
     results = await search_law_api(query)
     if not results:
-        print("ℹ️ law.go.kr API 결과 없음 → DuckDuckGo 폴백")
-        results = search_law_ddg(query)
+        article_nums = _extract_article_nums(query)
+        if not article_nums:
+            # 조항 번호 없는 일반 법령 질문만 DDG 폴백 허용
+            print("ℹ️ law.go.kr API 결과 없음 → DuckDuckGo 폴백")
+            results = search_law_ddg(query)
+        else:
+            print("ℹ️ law.go.kr API 결과 없음 (조항 쿼리 → DDG 폴백 생략)")
     return results
 
 
