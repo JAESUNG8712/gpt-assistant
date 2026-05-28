@@ -2,6 +2,7 @@
 자체 AI 지식베이스 — HR / 개발 / 여행 페르소나
 각 Q&A는 TF-IDF 엔진에 로드되어 검색에 활용됩니다.
 """
+from knowledge_labor_laws import LABOR_LAW_KNOWLEDGE
 
 KNOWLEDGE = [
 
@@ -3244,6 +3245,9 @@ E (Evaluation): 평가 — 효과 측정
     },
 
 ]
+
+# 노동법 전체 조항 병합
+KNOWLEDGE = KNOWLEDGE + LABOR_LAW_KNOWLEDGE
 
 
 # ── 하위 호환성 ──────────────────────────────────────
