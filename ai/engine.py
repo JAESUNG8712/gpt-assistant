@@ -24,9 +24,35 @@ _STOP = {
     '알려주세요','설명해주세요','알고싶습니다',
 }
 
+# ── 법률명 별칭 매핑 ──────────────────────────────────
+_LAW_NAMES = {
+    '근로기준법': ['근로기준법'],
+    '퇴직급여법': ['퇴직급여법', '퇴직급여보장법', '근로자퇴직급여', '퇴직급여 보장법'],
+    '일가정양립법': ['일가정양립법', '남녀고용평등', '육아휴직법', '가족양립'],
+    '최저임금법': ['최저임금법', '최저임금'],
+    '기간제법': ['기간제법', '기간제 및 단시간', '기간제근로자'],
+}
+
+def _detect_law(text: str) -> str:
+    """쿼리 또는 문서에서 법률명 감지"""
+    for law_key, aliases in _LAW_NAMES.items():
+        if any(alias in text for alias in aliases):
+            return law_key
+    return ''
+
 def _tok(text: str) -> List[str]:
     text = re.sub(r'[^\w가-힣a-zA-Z0-9\s]', ' ', text)
-    return [w.lower() for w in text.split() if len(w) >= 2 and w not in _STOP]
+    tokens = []
+    for w in text.split():
+        if len(w) < 2 or w in _STOP:
+            continue
+        w_lower = w.lower()
+        # 조항 번호 정규화: "3조" → "제3조", "제3조" → "제3조" (동일 토큰으로)
+        if re.match(r'^\d+조$', w_lower):
+            tokens.append(f'제{w_lower}')
+        else:
+            tokens.append(w_lower)
+    return tokens
 
 def _feat(text: str) -> List[str]:
     t = _tok(text)
@@ -100,8 +126,9 @@ class _Engine:
         if not self._qa:
             return []
 
-        # 조항 번호 패턴 추출 (예: "1조", "제1조", "17조" 등)
+        # 조항 번호 + 법률명 추출
         article_nums = re.findall(r'제?(\d+)조', query)
+        query_law = _detect_law(query)  # 쿼리에서 법률명 감지
 
         qv = self._qvec(query)
         query_lower = query.lower()
@@ -112,18 +139,26 @@ class _Engine:
                 continue
             s = self._cos(qv, self._vecs[i])
 
-            # 조항 번호가 쿼리에 있으면: 해당 번호 포함 항목에 대폭 가산, 미포함 항목은 감산
             if article_nums:
                 qa_text = q + ' ' + a[:300]
-                matched = any(
+                article_matched = any(
                     re.search(rf'(제{num}조|(?<![0-9]){num}조)', qa_text) for num in article_nums
                 )
-                if matched:
-                    s *= 2.5  # 정확한 조항 번호 일치 → 2.5배 부스트
+                if query_law:
+                    # 법률명까지 지정된 경우: 법률 + 조항 모두 일치해야 부스트
+                    # q(제목)만으로 법률명 판정 — 답변 내 다른 법 언급에 오염되지 않도록
+                    doc_law = _detect_law(q)
+                    law_matched = (doc_law == query_law)
+                    if article_matched and law_matched:
+                        s *= 3.0   # 법률 + 조항 완전 일치
+                    elif article_matched and not law_matched:
+                        s *= 0.1   # 조항은 맞지만 다른 법률 → 강하게 감산
+                    else:
+                        s *= 0.2   # 조항 불일치
                 else:
-                    s *= 0.3  # 조항 번호 미일치 → 크게 감산
+                    # 법률명 없이 조항만 지정
+                    s *= 2.5 if article_matched else 0.3
 
-            # 질문 텍스트에 쿼리 핵심 단어가 정확히 포함되면 가산
             else:
                 q_lower = q.lower()
                 exact_tokens = [t for t in _tok(query_lower) if len(t) >= 3 and t in q_lower]
