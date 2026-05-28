@@ -200,6 +200,20 @@ def _load_knowledge():
     except Exception as e:
         print(f"⚠️ 지식베이스 로드 실패: {e}")
 
+    # law.go.kr 원문 캐시 (fetch_laws.py 또는 GitHub Actions가 생성)
+    try:
+        import json as _json, os as _os
+        cache_path = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "law_data_cache.json")
+        if _os.path.exists(cache_path) and _os.path.getsize(cache_path) > 10:
+            with open(cache_path, encoding="utf-8") as f:
+                cached = _json.load(f)
+            for item in cached:
+                _engine.add(item['q'], item['a'],
+                            {'persona': item.get('persona', 'hr'), 'source': 'law.go.kr'})
+            print(f"  📚 law.go.kr 원문 캐시: {len(cached)}개 조문")
+    except Exception as e:
+        print(f"⚠️ law.go.kr 캐시 로드 실패: {e}")
+
     # 자동학습·직접입력·문서 업로드 등 동적 학습 데이터 복원 (재시작 후에도 유지)
     try:
         import sqlite3, os
