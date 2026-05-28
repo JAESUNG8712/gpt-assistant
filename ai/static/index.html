@@ -374,7 +374,7 @@
       </div>`).join('');
   }
 
-  function selectPersona(id) {
+  async function selectPersona(id) {
     currentPersona = personas.find(p => p.id === id);
     if (!currentPersona) return;
 
@@ -392,11 +392,37 @@
     document.getElementById('sb-title').textContent = `${currentPersona.icon} ${currentPersona.name}`;
     document.getElementById('sb-desc').textContent = currentPersona.description;
 
-    // 메시지 화면 초기화 — clearMessages()가 웰컴 화면도 함께 갱신
-    // (이전: 별도 welcome 업데이트 블록이 있었으나 두 번째 탭 전환 시
-    //  #welcome-icon 등 서브 ID가 없어 TypeError → clearMessages 미실행 버그 수정)
-    clearMessages();
+    // 이전 대화 이력 불러오기
+    await loadHistory();
     loadStats();
+  }
+
+  async function loadHistory() {
+    if (!currentPersona) return;
+    try {
+      const r = await fetch(`/history?persona=${currentPersona.id}&limit=50`);
+      const d = await r.json();
+      const msgs = d.history || [];
+
+      if (msgs.length === 0) {
+        clearMessages();
+        return;
+      }
+
+      const container = document.getElementById('messages');
+      container.innerHTML = '';
+      msgs.forEach(m => {
+        const div = document.createElement('div');
+        div.className = `msg ${m.role}`;
+        div.innerHTML = `
+          <div class="msg-avatar">${m.role === 'user' ? '👤' : currentPersona.icon}</div>
+          <div class="msg-bubble">${m.role === 'user' ? escHtml(m.content) : renderMd(m.content)}</div>`;
+        container.appendChild(div);
+      });
+      container.scrollTop = container.scrollHeight;
+    } catch (e) {
+      clearMessages();
+    }
   }
 
   function clearMessages() {
