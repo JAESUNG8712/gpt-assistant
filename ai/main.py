@@ -251,6 +251,8 @@ def health():
         "disk_free_mb": round(disk.free / 1024 / 1024),
         "db_exists": os.path.exists(db_path),
         "db_size_kb": round(os.path.getsize(db_path) / 1024) if os.path.exists(db_path) else 0,
+        "law_api_key_set": bool(os.getenv("LAW_API_KEY")),
+        "law_api_blocked": law._is_api_blocked(),
     }
 
 @app.get("/", response_class=HTMLResponse)
