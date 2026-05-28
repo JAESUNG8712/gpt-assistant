@@ -294,29 +294,12 @@ def _compose(query: str, results: List, persona: str) -> str:
 
 # ── 7. 웹 검색·문서 컨텍스트 직접 응답 ──────────────────
 
-_PERSONA_PREFIX = {
-    'hr':     '인사 전문가로서 답변 드리겠습니다.\n\n',
-    'dev':    '개발자 관점에서 설명해 드리겠습니다.\n\n',
-    'travel': '여행 전문가로서 안내해 드리겠습니다.\n\n',
-    '':       '',
-}
-
-
 def _compose_with_context(query: str, context: str, persona: str) -> str:
     """웹 검색 결과나 문서 RAG가 있을 때 직접 활용한 응답 생성"""
-    prefix = _PERSONA_PREFIX.get(persona, '')
     ctx = context.strip()
-    # 너무 길면 자름
     if len(ctx) > 3000:
         ctx = ctx[:3000] + "\n\n...(내용 일부 생략)"
-
-    return (
-        f"{prefix}"
-        f"**검색 결과를 바탕으로 답변드립니다.**\n\n"
-        f"{ctx}\n\n"
-        f"---\n"
-        f"💡 위 내용은 실시간 검색 결과입니다. 더 자세한 내용이 필요하시면 추가 질문해 주세요."
-    )
+    return ctx
 
 
 # ── 8. 스트리밍 인터페이스 ──────────────────────────────
