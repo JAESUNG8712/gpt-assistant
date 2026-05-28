@@ -12,21 +12,11 @@ import llm
 import search as srch
 import backup as bkp
 from personas import PERSONAS, DEFAULT_PERSONA
-from knowledge_base import get_all_knowledge
 
 mem.init_db()
 
-# 서버 시작 시 지식베이스 자동 로드 (실패해도 서버는 계속 실행)
-def load_knowledge():
-    try:
-        items = get_all_knowledge()
-        for text, meta in items:
-            mem.store_memory(text, meta)
-        print(f"✅ 지식베이스 로드 완료: {len(items)}개 청크")
-    except Exception as e:
-        print(f"⚠️ 지식베이스 로드 실패 (서버는 계속 실행): {e}")
-
-load_knowledge()
+# 지식베이스는 engine.py의 _load_knowledge()가 자동 로드 (중복 로드 제거)
+# → main.py에서 별도 load_knowledge() 호출 불필요
 
 app = FastAPI(title="나만의 AI 어시스턴트")
 app.mount("/static", StaticFiles(directory="static"), name="static")
