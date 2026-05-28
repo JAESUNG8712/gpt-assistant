@@ -2,5 +2,5 @@ fastapi
 uvicorn[standard]
 httpx
 python-multipart
-duckduckgo-search
+ddgs
 python-dotenv
