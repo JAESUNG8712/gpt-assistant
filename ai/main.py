@@ -208,7 +208,20 @@ def model_info():
 
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    import os, shutil
+    db_path = os.getenv("DB_PATH", "/tmp/memory.db")
+    data_dir = os.path.dirname(db_path)
+    disk = shutil.disk_usage(data_dir)
+    return {
+        "status": "ok",
+        "db_path": db_path,
+        "disk_persistent": not db_path.startswith("/tmp"),
+        "disk_total_mb": round(disk.total / 1024 / 1024),
+        "disk_used_mb": round(disk.used / 1024 / 1024),
+        "disk_free_mb": round(disk.free / 1024 / 1024),
+        "db_exists": os.path.exists(db_path),
+        "db_size_kb": round(os.path.getsize(db_path) / 1024) if os.path.exists(db_path) else 0,
+    }
 
 @app.get("/", response_class=HTMLResponse)
 def index():
