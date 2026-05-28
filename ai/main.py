@@ -206,6 +206,21 @@ async def backup_onedrive():
 def model_info():
     return llm.current_model_info()
 
+@app.get("/debug/law")
+async def debug_law(q: str = "근로기준법 제7조"):
+    """law.go.kr API 원본 응답 확인용 (개발 디버그)"""
+    import httpx
+    api_key = os.getenv("LAW_API_KEY", "")
+    if not api_key:
+        return {"error": "LAW_API_KEY 없음"}
+    search_name = law._get_search_name(q)
+    async with httpx.AsyncClient(timeout=10) as client:
+        r1 = await client.get(
+            "https://www.law.go.kr/DRF/lawSearch.do",
+            params={"OC": api_key, "target": "law", "type": "JSON", "query": search_name, "display": 5},
+        )
+        return {"query": q, "search_name": search_name, "raw": r1.json()}
+
 @app.get("/health")
 def health():
     import os, shutil
