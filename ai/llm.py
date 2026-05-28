@@ -231,7 +231,7 @@ async def chat_stream(
         is_last = (i == len(chain) - 1)
 
         if provider != "local" and context:
-            sys_with_ctx = system + f"\n\n[참고 정보 — 아래 내용을 우선적으로 활용해 답변하세요]\n{context}"
+            sys_with_ctx = system + f"\n\n참고 정보:\n{context}"
         else:
             sys_with_ctx = system
 
