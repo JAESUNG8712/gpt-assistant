@@ -96,6 +96,9 @@ class _Engine:
         if not self._qa:
             return []
 
+        # 조항 번호 패턴 추출 (예: "1조", "제1조", "17조" 등)
+        article_nums = re.findall(r'제?(\d+)조', query)
+
         qv = self._qvec(query)
         query_lower = query.lower()
         results = []
@@ -104,12 +107,26 @@ class _Engine:
             if persona and p and p != persona:
                 continue
             s = self._cos(qv, self._vecs[i])
+
+            # 조항 번호가 쿼리에 있으면: 해당 번호 포함 항목에 대폭 가산, 미포함 항목은 감산
+            if article_nums:
+                qa_text = q + ' ' + a[:300]
+                matched = any(
+                    re.search(rf'제?{num}조', qa_text) for num in article_nums
+                )
+                if matched:
+                    s *= 2.5  # 정확한 조항 번호 일치 → 2.5배 부스트
+                else:
+                    s *= 0.3  # 조항 번호 미일치 → 크게 감산
+
             # 질문 텍스트에 쿼리 핵심 단어가 정확히 포함되면 가산
-            q_lower = q.lower()
-            exact_tokens = [t for t in _tok(query_lower) if len(t) >= 3 and t in q_lower]
-            if exact_tokens:
-                match_ratio = len(exact_tokens) / max(len(_tok(query_lower)), 1)
-                s = s * (1.0 + 0.5 * match_ratio)
+            else:
+                q_lower = q.lower()
+                exact_tokens = [t for t in _tok(query_lower) if len(t) >= 3 and t in q_lower]
+                if exact_tokens:
+                    match_ratio = len(exact_tokens) / max(len(_tok(query_lower)), 1)
+                    s = s * (1.0 + 0.5 * match_ratio)
+
             if s >= min_score:
                 results.append((q, a, s, meta))
 
