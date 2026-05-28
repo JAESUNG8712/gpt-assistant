@@ -197,9 +197,32 @@ def _load_knowledge():
         from knowledge_base import KNOWLEDGE
         for item in KNOWLEDGE:
             _engine.add(item['q'], item['a'], {'persona': item.get('persona', '')})
-        print(f"✅ 자체 AI 엔진 초기화 완료: {_engine.count()}개 지식 항목 로드")
     except Exception as e:
         print(f"⚠️ 지식베이스 로드 실패: {e}")
+
+    # 자동학습·직접입력·문서 업로드 등 동적 학습 데이터 복원 (재시작 후에도 유지)
+    try:
+        import sqlite3, os
+        db_path = os.getenv("DB_PATH", "/tmp/memory.db")
+        if os.path.exists(db_path):
+            conn = sqlite3.connect(db_path)
+            rows = conn.execute(
+                "SELECT content, persona, source FROM learned_knowledge"
+            ).fetchall()
+            conn.close()
+            for content, persona, source in rows:
+                if content.startswith("Q: ") and "\nA: " in content:
+                    parts = content.split("\nA: ", 1)
+                    q = parts[0][3:].strip()
+                    a = parts[1].strip()
+                else:
+                    q = content[:200]
+                    a = content
+                _engine.add(q, a, {"persona": persona, "source": source})
+    except Exception as e:
+        print(f"⚠️ 동적 학습 데이터 복원 실패: {e}")
+
+    print(f"✅ 자체 AI 엔진 초기화 완료: {_engine.count()}개 지식 항목 로드")
 
 
 def teach(text: str, persona: str = '', source: str = 'learned'):
