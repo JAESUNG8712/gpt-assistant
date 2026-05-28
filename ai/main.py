@@ -209,17 +209,32 @@ def model_info():
 @app.get("/debug/law")
 async def debug_law(q: str = "근로기준법 제7조"):
     """law.go.kr API 원본 응답 확인용 (개발 디버그)"""
-    import httpx
+    import httpx, traceback
     api_key = os.getenv("LAW_API_KEY", "")
     if not api_key:
-        return {"error": "LAW_API_KEY 없음"}
+        return {"ok": False, "error": "LAW_API_KEY 환경변수 없음"}
     search_name = law._get_search_name(q)
-    async with httpx.AsyncClient(timeout=10) as client:
-        r1 = await client.get(
-            "https://www.law.go.kr/DRF/lawSearch.do",
-            params={"OC": api_key, "target": "law", "type": "JSON", "query": search_name, "display": 5},
-        )
-        return {"query": q, "search_name": search_name, "raw": r1.json()}
+    url = "https://www.law.go.kr/DRF/lawSearch.do"
+    params = {"OC": api_key, "target": "law", "type": "JSON", "query": search_name, "display": 5}
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            r1 = await client.get(url, params=params)
+            return {
+                "ok": True,
+                "query": q,
+                "search_name": search_name,
+                "http_status": r1.status_code,
+                "raw": r1.json(),
+            }
+    except Exception as e:
+        return {
+            "ok": False,
+            "query": q,
+            "search_name": search_name,
+            "error_type": type(e).__name__,
+            "error": str(e),
+            "traceback": traceback.format_exc()[-500:],
+        }
 
 @app.get("/health")
 def health():
