@@ -45,29 +45,6 @@ async def chat(req: ChatRequest):
 
     persona = PERSONAS.get(req.persona, PERSONAS[DEFAULT_PERSONA])
 
-    # 인터넷 검색 학습
-    search_ctx = ""
-    if req.use_search:
-        results = srch.search_and_learn(user_msg)
-        search_ctx = srch.format_search_context(results)
-
-    # law.go.kr 법령 검색 (법 관련 질문 자동 감지)
-    law_ctx = ""
-    if law.is_law_question(user_msg):
-        law_results = await law.search_law(user_msg)
-        law_ctx = law.format_law_context(law_results)
-
-    # RAG: 벡터 기억에서 관련 내용 검색
-    rag_ctx = mem.retrieve_context(user_msg, persona_id=req.persona)
-    context = "\n\n".join(filter(None, [law_ctx, rag_ctx, search_ctx]))
-
-    # 로컬 KB에 자료가 없는 경우 자동 학습 플래그
-    no_local_data = not bool(rag_ctx) and not bool(law_ctx)
-
-    # 최근 대화 이력
-    history = mem.get_recent_messages(10)
-    history.append({"role": "user", "content": user_msg})
-
     from datetime import date as _date
     today = _date.today()
     system_with_date = (
@@ -75,30 +52,76 @@ async def chat(req: ChatRequest):
         + f"\n\n오늘 날짜: {today.strftime('%Y년 %m월 %d일')} ({today.year}년)"
     )
 
+    # ── 1단계: 로컬 KB 검색 (점수 포함) ──────────────────
+    kb = mem.retrieve_best(user_msg, persona_id=req.persona)
+    rag_ctx    = kb["context"]
+    best_score = kb["best_score"]
+    top_answer = kb["top_answer"]
+
+    # ── 2단계: law.go.kr 법령 검색 (법 관련 질문만) ──────
+    law_ctx = ""
+    if law.is_law_question(user_msg):
+        law_results = await law.search_law(user_msg)
+        law_ctx = law.format_law_context(law_results)
+
+    # ── 3단계: 인터넷 검색 (사용자가 명시 요청 시) ────────
+    search_ctx = ""
+    if req.use_search:
+        results = srch.search_and_learn(user_msg)
+        search_ctx = srch.format_search_context(results)
+
+    # ── 신뢰도 판정 ───────────────────────────────────────
+    # HIGH  (≥0.55): 로컬 KB 직접 서빙 — LLM 호출 없음
+    # MED   (≥0.10): 로컬 KB를 컨텍스트로 LLM 보강 답변
+    # LOW   (< 0.10): 로컬 자료 없음 → LLM 생성 → 자동 학습
+    KB_DIRECT  = 0.55
+    KB_CONTEXT = 0.10
+
+    # law.go.kr에서 실시간 원문이 온 경우 → LLM 보강 (law_ctx 우선)
+    has_law_rt  = bool(law_ctx)
+    kb_direct   = (best_score >= KB_DIRECT) and not has_law_rt and not bool(search_ctx)
+    no_local    = (best_score < KB_CONTEXT) and not has_law_rt
+
+    history = mem.get_recent_messages(10)
+    history.append({"role": "user", "content": user_msg})
+
     async def generate():
         collected = []
         try:
-            if no_local_data:
-                yield "> 📭 로컬 지식베이스에 자료가 없어 AI 지식으로 답변합니다. 이 내용은 자동 학습됩니다.\n\n"
+            # ── 경로 A: 고신뢰 KB 직접 서빙 ──────────────
+            if kb_direct:
+                # LLM을 쓰지 않고 KB 답변을 그대로 스트리밍
+                chunk_size = 150
+                for i in range(0, len(top_answer), chunk_size):
+                    chunk = top_answer[i:i + chunk_size]
+                    collected.append(chunk)
+                    yield chunk
+                    import asyncio; await asyncio.sleep(0)
 
-            async for token in llm.chat_stream(history, context, system_prompt=system_with_date):
-                collected.append(token)
-                yield token
+            # ── 경로 B: LLM 보강 (중간 신뢰도 or 법령 실시간) ──
+            else:
+                context = "\n\n".join(filter(None, [law_ctx, rag_ctx, search_ctx]))
+
+                if no_local:
+                    yield "> 📭 로컬 자료 없음 — AI 지식으로 답변 후 자동 학습합니다.\n\n"
+
+                async for token in llm.chat_stream(history, context, system_prompt=system_with_date):
+                    collected.append(token)
+                    yield token
 
             ai_reply = "".join(collected)
             mem.save_message("user", user_msg, persona=req.persona)
             mem.save_message("assistant", ai_reply, persona=req.persona)
 
-            # 자동 학습: 로컬 자료가 없었던 경우 Q&A를 KB에 영구 저장
-            if no_local_data and ai_reply.strip():
+            # ── 자동 학습: 로컬 자료 없었던 경우 영구 저장 ──
+            if no_local and ai_reply.strip():
                 mem.auto_learn(user_msg, ai_reply, persona=req.persona)
                 yield "\n\n---\n> ✅ 자동 학습 완료 — 다음부터는 로컬 저장 자료로 답변합니다."
 
         except Exception as e:
             import traceback
-            err = f"[오류] {type(e).__name__}: {e}\n{traceback.format_exc()}"
-            print(err)
-            yield f"\n⚠️ 오류 발생: {type(e).__name__}: {e}\nRailway Logs를 확인해주세요."
+            print(f"[오류] {type(e).__name__}: {e}\n{traceback.format_exc()}")
+            yield f"\n⚠️ 오류: {type(e).__name__}: {e}"
 
     return StreamingResponse(generate(), media_type="text/plain; charset=utf-8")
 

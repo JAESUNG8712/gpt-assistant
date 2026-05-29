@@ -115,22 +115,52 @@ def store_memory(text: str, metadata: dict = None):
 
 def retrieve_context(query: str, n: int = 5, persona_id: str = None) -> str:
     """TF-IDF 엔진에서 관련 컨텍스트 검색 (대화 기록 제외, 지식베이스·문서만 반환)"""
+    result = retrieve_best(query, n=n, persona_id=persona_id)
+    return result["context"]
+
+
+def retrieve_best(query: str, n: int = 5, persona_id: str = None) -> dict:
+    """
+    TF-IDF 검색 결과를 점수와 함께 반환.
+    Returns:
+        {
+          "context": str,       # LLM에 전달할 컨텍스트 (500자 조각 합산)
+          "best_score": float,  # 최고 유사도 점수 (0.0 ~ 1.0+)
+          "top_answer": str,    # 1위 KB 항목 전체 답변 (직접 서빙용)
+          "top_question": str,  # 1위 KB 항목 질문
+        }
+    """
+    empty = {"context": "", "best_score": 0.0, "top_answer": "", "top_question": ""}
     try:
         from engine import get_engine
         engine = get_engine()
         results = engine.search(query, n=n, persona=persona_id)
         if not results:
-            return ""
+            return empty
+
         parts = []
+        best_score = 0.0
+        top_answer = ""
+        top_question = ""
+
         for q, a, score, meta in results:
-            # 이전 대화 기록은 컨텍스트에서 제외 (다른 질문을 오염시킴)
             if meta.get("source") == "대화":
                 continue
+            if score > best_score:
+                best_score = score
+                top_answer = a
+                top_question = q
             parts.append(a[:500])
-        return "\n\n".join(parts)
+
+        return {
+            "context": "\n\n".join(parts),
+            "best_score": best_score,
+            "top_answer": top_answer,
+            "top_question": top_question,
+        }
     except Exception as e:
         print(f"⚠️ 컨텍스트 검색 실패: {e}")
-        return ""
+        return empty
 
 
 def store_conversation_memory(user_msg: str, ai_msg: str, persona_id: str = "hr"):
