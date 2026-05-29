@@ -12,6 +12,7 @@ import llm
 import search as srch
 import backup as bkp
 import law_search as law
+import calculator as calc
 from personas import PERSONAS, DEFAULT_PERSONA
 
 mem.init_db()
@@ -52,6 +53,10 @@ async def chat(req: ChatRequest):
         + f"\n\n오늘 날짜: {today.strftime('%Y년 %m월 %d일')} ({today.year}년)"
     )
 
+    # ── 0단계: Python 직접 계산 (날짜 기반 HR 계산 질문) ─
+    # LLM / KB 상태에 무관하게 정확한 수치를 계산해 반환
+    direct_calc = calc.try_annual_leave_calc(user_msg)
+
     # ── 1단계: 로컬 KB 검색 (점수 포함) ──────────────────
     kb = mem.retrieve_best(user_msg, persona_id=req.persona)
     rag_ctx    = kb["context"]
@@ -71,6 +76,7 @@ async def chat(req: ChatRequest):
         search_ctx = srch.format_search_context(results)
 
     # ── 신뢰도 판정 ───────────────────────────────────────
+    # CALC  : Python 직접 계산 결과 있음 → 계산 결과 + LLM 보강
     # HIGH  (≥0.55): 로컬 KB 직접 서빙 — LLM 호출 없음
     # MED   (≥0.10): 로컬 KB를 컨텍스트로 LLM 보강 답변
     # LOW   (< 0.10): 로컬 자료 없음 → LLM 생성 → 자동 학습
@@ -79,24 +85,36 @@ async def chat(req: ChatRequest):
 
     # law.go.kr에서 실시간 원문이 온 경우 → LLM 보강 (law_ctx 우선)
     has_law_rt  = bool(law_ctx)
-    kb_direct   = (best_score >= KB_DIRECT) and not has_law_rt and not bool(search_ctx)
-    no_local    = (best_score < KB_CONTEXT) and not has_law_rt
+    # 날짜 계산이 있으면 KB 직접서빙 비활성화 (LLM이 계산 결과를 해석해야 함)
+    kb_direct   = (best_score >= KB_DIRECT) and not has_law_rt and not bool(search_ctx) and not direct_calc
+    no_local    = (best_score < KB_CONTEXT) and not has_law_rt and not direct_calc
 
     history = mem.get_recent_messages(10)
     history.append({"role": "user", "content": user_msg})
 
     async def generate():
+        import asyncio
         collected = []
         try:
+            # ── 경로 CALC: Python 직접 계산 결과 있음 ────────
+            if direct_calc:
+                # 계산 결과를 바로 스트리밍 (LLM 불필요)
+                chunk_size = 150
+                for i in range(0, len(direct_calc), chunk_size):
+                    chunk = direct_calc[i:i + chunk_size]
+                    collected.append(chunk)
+                    yield chunk
+                    await asyncio.sleep(0)
+
             # ── 경로 A: 고신뢰 KB 직접 서빙 ──────────────
-            if kb_direct:
+            elif kb_direct:
                 # LLM을 쓰지 않고 KB 답변을 그대로 스트리밍
                 chunk_size = 150
                 for i in range(0, len(top_answer), chunk_size):
                     chunk = top_answer[i:i + chunk_size]
                     collected.append(chunk)
                     yield chunk
-                    import asyncio; await asyncio.sleep(0)
+                    await asyncio.sleep(0)
 
             # ── 경로 B: LLM 보강 (중간 신뢰도 or 법령 실시간) ──
             else:
