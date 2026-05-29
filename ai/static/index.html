@@ -231,6 +231,35 @@
     .tip-label { font-size: 0.72rem; color: var(--text-dim); margin-bottom: 2px; }
     .tip-query { font-weight: 500; color: var(--persona-color); }
 
+    /* ── AI 생각 블록 ─────────────── */
+    .think-block {
+      background: rgba(255,193,7,0.05); border: 1px solid rgba(255,193,7,0.22);
+      border-left: 3px solid #c8922a; border-radius: 8px; margin-bottom: 10px; overflow: hidden;
+    }
+    .think-header {
+      padding: 7px 11px; cursor: pointer; display: flex; align-items: center;
+      justify-content: space-between; color: #c8922a; user-select: none; font-size: 0.8em;
+    }
+    .think-header:hover { background: rgba(255,193,7,0.07); }
+    .think-content {
+      padding: 8px 12px 10px; color: var(--text-dim); border-top: 1px solid rgba(255,193,7,0.18);
+      white-space: pre-wrap; line-height: 1.55; font-size: 0.81em; max-height: 280px; overflow-y: auto;
+    }
+    .think-block.collapsed .think-content { display: none; }
+    .think-toggle { transition: transform 0.2s; font-size: 0.7em; margin-left: 6px; }
+    .think-block.collapsed .think-toggle { transform: rotate(-90deg); }
+    .think-block.streaming .think-header { animation: thinkPulse 1.2s ease-in-out infinite; }
+    @keyframes thinkPulse { 0%,100%{opacity:1} 50%{opacity:0.55} }
+
+    /* 생각 모드 버튼 */
+    .think-mode-btn {
+      background: none; border: 1px solid var(--border); border-radius: 14px;
+      padding: 3px 10px; font-size: 0.73rem; color: var(--text-dim); cursor: pointer; transition: all 0.15s;
+    }
+    .think-mode-btn:hover { border-color: var(--persona-color); }
+    .think-mode-btn.prompt { border-color: #c8922a; color: #c8922a; }
+    .think-mode-btn.deep { border-color: #e67e22; color: #e67e22; background: rgba(230,126,34,0.08); }
+
     /* ── 토스트 & 오버레이 ─────────── */
     .toast {
       position: fixed; bottom: 80px; left: 50%; transform: translateX(-50%);
@@ -336,7 +365,10 @@
           <input type="checkbox" id="use-search">
           🌐 인터넷 검색 후 답변
         </label>
-        <button class="tips-btn" onclick="toggleTips()">💡 검색 팁</button>
+        <div style="display:flex;gap:6px;align-items:center;">
+          <button class="think-mode-btn" id="think-mode-btn" onclick="cycleThinkingMode()" title="AI 생각 모드: 꺼짐">🧠 생각 꺼짐</button>
+          <button class="tips-btn" onclick="toggleTips()">💡 검색 팁</button>
+        </div>
       </div>
       <div class="search-tips" id="search-tips">
         <div class="tips-title">✅ 정확한 답변을 위한 검색 방법</div>
@@ -358,6 +390,7 @@
   let currentPersona = null;
   let personas = [];
   let isLoading = false;
+  let thinkingMode = 'off'; // "off" | "prompt" | "deep"
 
   const WELCOME_CHIPS = {
     hr: [
@@ -526,6 +559,57 @@
     return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
   }
 
+  // ── 생각 모드 ─────────────────────────────────────
+  const THINK_MODES = ['off', 'prompt', 'deep'];
+  const THINK_LABELS = { off: '🧠 생각 꺼짐', prompt: '🧠 빠른 생각', deep: '🧠 깊은 생각' };
+  const THINK_TITLES = {
+    off:    'AI 생각 모드: 꺼짐 (클릭하면 활성화)',
+    prompt: '빠른 생각 모드: 단일 호출로 추론 과정 포함 (클릭하면 깊은 생각으로)',
+    deep:   '깊은 생각 모드: 2단계 분석 후 답변 (클릭하면 꺼짐)',
+  };
+
+  function cycleThinkingMode() {
+    const idx = THINK_MODES.indexOf(thinkingMode);
+    thinkingMode = THINK_MODES[(idx + 1) % THINK_MODES.length];
+    const btn = document.getElementById('think-mode-btn');
+    btn.textContent = THINK_LABELS[thinkingMode];
+    btn.title = THINK_TITLES[thinkingMode];
+    btn.className = `think-mode-btn ${thinkingMode === 'off' ? '' : thinkingMode}`;
+  }
+
+  function parseThinking(text) {
+    const startIdx = text.indexOf('<think>');
+    if (startIdx === -1) return { hasThinking: false, answer: text };
+    const endIdx = text.indexOf('</think>');
+    const thinking = endIdx !== -1
+      ? text.substring(startIdx + 7, endIdx)
+      : text.substring(startIdx + 7);
+    const answer = endIdx !== -1 ? text.substring(endIdx + 8).trimStart() : '';
+    const before = text.substring(0, startIdx).trim();
+    return { hasThinking: true, thinkingComplete: endIdx !== -1, before, thinking, answer };
+  }
+
+  function renderWithThinking(full, bubble) {
+    const p = parseThinking(full);
+    if (!p.hasThinking) { bubble.textContent = full; return; }
+
+    const statusIcon = p.thinkingComplete ? '✅' : '⏳';
+    const statusText = p.thinkingComplete ? '생각 완료 — 클릭하여 펼치기/접기' : '생각 중...';
+    const blockClass = 'think-block' +
+      (p.thinkingComplete ? ' collapsed' : ' streaming');
+
+    let html = p.before ? `<div>${renderMd(p.before)}</div>` : '';
+    html += `<div class="${blockClass}">` +
+      `<div class="think-header" onclick="this.parentElement.classList.toggle('collapsed')">` +
+      `<span>${statusIcon} AI 생각 과정 &nbsp;<small style="font-weight:400">${statusText}</small></span>` +
+      `<span class="think-toggle">▼</span></div>` +
+      `<div class="think-content">${escHtml(p.thinking)}</div>` +
+      `</div>`;
+    if (p.answer) html += renderMd(p.answer);
+
+    bubble.innerHTML = html;
+  }
+
   // ── 마크다운 렌더러 ──────────────────────────────
   function renderMd(text) {
     let s = escHtml(text);
@@ -598,7 +682,12 @@
       const resp = await fetch('/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: msg, persona: currentPersona.id, use_search: useSearch }),
+        body: JSON.stringify({
+          message: msg,
+          persona: currentPersona.id,
+          use_search: useSearch,
+          thinking_mode: thinkingMode,
+        }),
       });
       if (!resp.ok) throw new Error(await resp.text());
       const reader = resp.body.getReader();
@@ -607,17 +696,30 @@
         const { done, value } = await reader.read();
         if (done) break;
         full += dec.decode(value, { stream: true });
-        // 스트리밍 중에는 텍스트, 완료 후 마크다운 렌더링
-        bubble.textContent = full;
+        // 생각 모드면 <think> 파싱 렌더링, 아니면 텍스트
+        if (thinkingMode !== 'off') {
+          renderWithThinking(full, bubble);
+        } else {
+          bubble.textContent = full;
+        }
         document.getElementById('messages').scrollTop = 99999;
       }
       aiDiv.classList.remove('typing');
-      // 완료 후 마크다운 렌더링 적용
-      bubble.innerHTML = renderMd(full);
-      // 피드백 버튼 추가
+
+      // 최종 렌더링
+      if (thinkingMode !== 'off') {
+        renderWithThinking(full, bubble);
+      } else {
+        bubble.innerHTML = renderMd(full);
+      }
+
+      // 피드백 버튼 (thinking 모드면 answer 부분만 사용)
+      const feedbackText = thinkingMode !== 'off'
+        ? (parseThinking(full).answer || full)
+        : full;
       const fbRow = document.createElement('div');
       fbRow.className = 'feedback-row';
-      const escapedFull = full.replace(/\\/g,'\\\\').replace(/'/g,"\\'").replace(/\n/g,'\\n');
+      const escapedFull = feedbackText.replace(/\\/g,'\\\\').replace(/'/g,"\\'").replace(/\n/g,'\\n');
       const escapedMsg = msg.replace(/\\/g,'\\\\').replace(/'/g,"\\'");
       fbRow.innerHTML = `
         <span style="font-size:0.72rem;color:var(--text-dim);">이 답변이 도움됐나요?</span>

@@ -56,6 +56,7 @@ class ChatRequest(BaseModel):
     message: str
     persona: str = DEFAULT_PERSONA
     use_search: bool = False
+    thinking_mode: str = "off"  # "off" | "prompt" | "deep"
 
 @app.post("/chat")
 async def chat(req: ChatRequest):
@@ -155,7 +156,7 @@ async def chat(req: ChatRequest):
                 if no_local:
                     yield "> 📭 로컬 자료 없음 — AI 지식으로 답변 후 자동 학습합니다.\n\n"
 
-                async for token in llm.chat_stream(history, context, system_prompt=system_with_date):
+                async for token in llm.chat_stream(history, context, system_prompt=system_with_date, thinking_mode=req.thinking_mode):
                     collected.append(token)
                     yield token
 
