@@ -1,4 +1,5 @@
 import os
+import re
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.responses import StreamingResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
@@ -13,6 +14,24 @@ import search as srch
 import backup as bkp
 import law_search as law
 import calculator as calc
+
+# ── 복합어 정규화 (띄어쓰기 변형 → 정확한 검색어) ─────
+_COMPOUND_MAP = [
+    ('희망 퇴직', '희망퇴직'), ('권고 사직', '권고사직'), ('정리 해고', '정리해고'),
+    ('부당 해고', '부당해고'), ('연장 근로', '연장근로'), ('야간 근로', '야간근로'),
+    ('주휴 수당', '주휴수당'), ('연차 수당', '연차수당'), ('최저 임금', '최저임금'),
+    ('육아 휴직', '육아휴직'), ('출산 휴가', '출산휴가'), ('근로 계약', '근로계약'),
+    ('퇴직 금', '퇴직금'), ('퇴직 연금', '퇴직연금'), ('4대 보험', '4대보험'),
+    ('임금 체불', '임금체불'), ('직장 내', '직장내'), ('통상 임금', '통상임금'),
+    ('포괄 임금', '포괄임금'), ('연봉 협상', '연봉협상'), ('성과 급', '성과급'),
+]
+
+def _normalize_query(text: str) -> str:
+    """사용자가 띄어쓰기로 입력한 복합어를 붙여서 KB 검색 정확도 향상"""
+    result = text
+    for spaced, compact in _COMPOUND_MAP:
+        result = result.replace(spaced, compact)
+    return result
 from personas import PERSONAS, DEFAULT_PERSONA
 
 mem.init_db()
@@ -44,6 +63,9 @@ async def chat(req: ChatRequest):
     if not user_msg:
         raise HTTPException(400, "메시지를 입력하세요.")
 
+    # 복합어 정규화: "희망 퇴직" → "희망퇴직" 등 띄어쓰기 변형 통일
+    search_msg = _normalize_query(user_msg)
+
     persona = PERSONAS.get(req.persona, PERSONAS[DEFAULT_PERSONA])
 
     from datetime import date as _date
@@ -58,22 +80,22 @@ async def chat(req: ChatRequest):
     # (연차·퇴직금·실수령액·연장수당·주휴수당·최저임금·4대보험 등)
     direct_calc = calc.try_any_calc(user_msg)
 
-    # ── 1단계: 로컬 KB 검색 (점수 포함) ──────────────────
-    kb = mem.retrieve_best(user_msg, persona_id=req.persona)
+    # ── 1단계: 로컬 KB 검색 (정규화된 쿼리 사용) ────────
+    kb = mem.retrieve_best(search_msg, persona_id=req.persona)
     rag_ctx    = kb["context"]
     best_score = kb["best_score"]
     top_answer = kb["top_answer"]
 
     # ── 2단계: law.go.kr 법령 검색 (법 관련 질문만) ──────
     law_ctx = ""
-    if law.is_law_question(user_msg):
-        law_results = await law.search_law(user_msg)
+    if law.is_law_question(search_msg):
+        law_results = await law.search_law(search_msg)
         law_ctx = law.format_law_context(law_results)
 
     # ── 3단계: 인터넷 검색 (사용자가 명시 요청 시) ────────
     search_ctx = ""
     if req.use_search:
-        results = srch.search_and_learn(user_msg)
+        results = srch.search_and_learn(search_msg)
         search_ctx = srch.format_search_context(results)
 
     # ── 신뢰도 판정 ───────────────────────────────────────
@@ -123,7 +145,7 @@ async def chat(req: ChatRequest):
                 # 질문 관련성 지시: 무관한 컨텍스트를 LLM이 포함하지 않도록 명시
                 if raw_ctx:
                     context = (
-                        f"[주의: 아래 참고 자료 중 사용자 질문 '{user_msg[:60]}'"
+                        f"[주의: 아래 참고 자료 중 사용자 질문 '{search_msg[:60]}'"
                         f"와 직접 관련된 내용만 사용하세요. 질문 주제와 다른 내용(다른 법 조항, 다른 HR 주제 등)은 답변에 포함하지 마세요.]\n\n"
                         + raw_ctx
                     )
