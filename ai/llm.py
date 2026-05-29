@@ -269,31 +269,28 @@ async def chat_stream(
             if not is_last:
                 next_p = chain[i + 1]
                 if status == 401:
-                    yield f"\n⚠️ [{provider}] API 키가 올바르지 않습니다 → {next_p}로 전환 중...\n\n"
+                    print(f"[{provider}] API 키 오류 → {next_p}로 전환")
                 elif status == 429:
                     _set_cooldown(provider, seconds=3600)  # 1시간 쿨다운
-                    remaining = _rate_limit_until.get(provider, 0) - time.time()
-                    mins = int(remaining // 60)
-                    yield f"\n⚠️ [{provider}] 일일 한도 초과 ({mins}분 후 자동 복구) → {next_p}로 전환 중...\n\n"
+                    print(f"[{provider}] 429 한도초과 → {next_p}로 전환")
                 else:
-                    yield f"\n⚠️ [{provider}] 오류 {status} → {next_p}로 전환 중...\n\n"
+                    print(f"[{provider}] 오류 {status} → {next_p}로 전환")
                 await asyncio.sleep(1)
                 continue
             else:
                 if status == 429:
                     _set_cooldown(provider, seconds=3600)
-                yield f"\n⚠️ [{provider}] 오류 {status}: {err_body[:100]}"
+                yield f"\n⚠️ 일시적인 오류가 발생했습니다 (코드 {status}). 잠시 후 다시 시도해 주세요."
                 return
 
         except Exception as e:
             print(f"[{provider}] 예외 발생: {type(e).__name__}: {e}")
             if not is_last:
-                next_p = chain[i + 1]
-                yield f"\n⚠️ [{provider}] 연결 오류({type(e).__name__}) → {next_p}로 전환 중...\n\n"
+                print(f"[{provider}] → {chain[i + 1]}로 전환")
                 await asyncio.sleep(1)
                 continue
             else:
-                yield f"\n⚠️ [{provider}] 오류: {type(e).__name__}: {str(e)[:100]}"
+                yield f"\n⚠️ 일시적인 연결 오류가 발생했습니다. 잠시 후 다시 시도해 주세요."
                 return
 
 
