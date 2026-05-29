@@ -53,9 +53,10 @@ async def chat(req: ChatRequest):
         + f"\n\n오늘 날짜: {today.strftime('%Y년 %m월 %d일')} ({today.year}년)"
     )
 
-    # ── 0단계: Python 직접 계산 (날짜 기반 HR 계산 질문) ─
+    # ── 0단계: Python 직접 계산 (날짜·금액 기반 HR 계산 질문) ─
     # LLM / KB 상태에 무관하게 정확한 수치를 계산해 반환
-    direct_calc = calc.try_annual_leave_calc(user_msg)
+    # (연차·퇴직금·실수령액·연장수당·주휴수당·최저임금·4대보험 등)
+    direct_calc = calc.try_any_calc(user_msg)
 
     # ── 1단계: 로컬 KB 검색 (점수 포함) ──────────────────
     kb = mem.retrieve_best(user_msg, persona_id=req.persona)
