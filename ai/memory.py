@@ -187,7 +187,9 @@ def retrieve_best(query: str, n: int = 5, persona_id: str = None) -> dict:
                 if not _has_topic_overlap(query, top_question):
                     break  # 주제 불일치 → 컨텍스트 전체 제외
             if i == 0 or score >= best_score * 0.7:
-                parts.append(a[:500])
+                # 1위 항목은 최대 1000자 (판례 등 긴 내용 보존), 나머지는 500자
+                limit = 1000 if i == 0 else 500
+                parts.append(a[:limit])
 
         return {
             "context": "\n\n".join(parts),
