@@ -208,6 +208,29 @@
     }
     .send-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 
+    /* ── 검색 팁 ─────────────── */
+    .input-top-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+    .tips-btn {
+      background: none; border: 1px solid var(--border); border-radius: 14px;
+      padding: 3px 10px; font-size: 0.73rem; color: var(--text-dim); cursor: pointer;
+      transition: all 0.15s;
+    }
+    .tips-btn:hover { border-color: var(--persona-color); color: var(--persona-color); }
+    .search-tips {
+      display: none; background: var(--surface2); border: 1px solid var(--border);
+      border-radius: 12px; padding: 12px 14px; margin-bottom: 10px; font-size: 0.78rem;
+    }
+    .search-tips.open { display: block; }
+    .tips-title { font-weight: 600; color: var(--text); margin-bottom: 10px; }
+    .tips-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+    .tip-item {
+      background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+      padding: 7px 10px; cursor: pointer; transition: all 0.15s;
+    }
+    .tip-item:hover { border-color: var(--persona-color); }
+    .tip-label { font-size: 0.72rem; color: var(--text-dim); margin-bottom: 2px; }
+    .tip-query { font-weight: 500; color: var(--persona-color); }
+
     /* ── 토스트 & 오버레이 ─────────── */
     .toast {
       position: fixed; bottom: 80px; left: 50%; transform: translateX(-50%);
@@ -308,12 +331,19 @@
     </div>
 
     <div class="input-area">
-      <label class="search-toggle">
-        <input type="checkbox" id="use-search">
-        🌐 인터넷 검색 후 답변
-      </label>
+      <div class="input-top-row">
+        <label class="search-toggle">
+          <input type="checkbox" id="use-search">
+          🌐 인터넷 검색 후 답변
+        </label>
+        <button class="tips-btn" onclick="toggleTips()">💡 검색 팁</button>
+      </div>
+      <div class="search-tips" id="search-tips">
+        <div class="tips-title">✅ 정확한 답변을 위한 검색 방법</div>
+        <div class="tips-grid" id="tips-grid"></div>
+      </div>
       <div class="input-row">
-        <textarea id="msg-input" placeholder="메시지를 입력하세요..." rows="1"
+        <textarea id="msg-input" placeholder="예: 희망퇴직 판례, 야간수당 계산, 연차 며칠..." rows="1"
           onkeydown="handleKey(event)" oninput="autoResize(this)"></textarea>
         <button class="send-btn" id="send-btn" onclick="sendMessage()">↑</button>
       </div>
@@ -331,22 +361,56 @@
 
   const WELCOME_CHIPS = {
     hr: [
-      { label: '연차 계산법 알려줘', search: false },
-      { label: '퇴직금 어떻게 계산해?', search: false },
-      { label: '4대보험 요율이 어떻게 돼?', search: false },
-      { label: '직장 내 괴롭힘 신고 방법', search: false },
+      { label: '연차 며칠인지 계산해줘', search: false },
+      { label: '희망퇴직 판례 알려줘', search: false },
+      { label: '야간수당 계산 방법', search: false },
+      { label: '4대보험 요율 2025', search: false },
     ],
     dev: [
-      { label: 'Python 리스트 컴프리헨션 예시', search: false },
-      { label: 'React useState 훅 사용법', search: false },
-      { label: 'SQL JOIN 종류 설명해줘', search: false },
-      { label: 'Git 브랜치 전략 알려줘', search: false },
+      { label: 'FastAPI 서버 만드는 법', search: false },
+      { label: 'Groq API 연동 코드', search: false },
+      { label: 'SQLite CRUD 예시', search: false },
+      { label: 'Railway 배포 방법', search: false },
     ],
     travel: [
       { label: '제주도 3박4일 여행 코스', search: false },
       { label: '동남아 항공권 싸게 사는 법', search: false },
       { label: '일본 여행 준비물 체크리스트', search: false },
       { label: '여행자 보험 어떻게 가입해?', search: false },
+    ],
+  };
+
+  // ── 페르소나별 검색 팁 (효과적인 검색어 예시) ─
+  const SEARCH_TIPS = {
+    hr: [
+      { label: '판례 조회', query: '희망퇴직 판례' },
+      { label: '수당 계산', query: '야간수당 계산' },
+      { label: '연차 계산', query: '연차 며칠' },
+      { label: '퇴직금', query: '퇴직금 계산' },
+      { label: '법 조항', query: '근로기준법 제23조' },
+      { label: '부당해고', query: '부당해고 판례' },
+      { label: '최저임금', query: '최저임금 2025' },
+      { label: '4대보험', query: '4대보험 요율' },
+    ],
+    dev: [
+      { label: 'API 서버', query: 'FastAPI 서버 만들기' },
+      { label: 'LLM 연동', query: 'Groq API 연동' },
+      { label: '배포', query: 'Railway 배포' },
+      { label: '테스트', query: 'pytest 테스트 작성' },
+      { label: 'DB', query: 'SQLite CRUD' },
+      { label: '비동기', query: 'asyncio async await' },
+      { label: '환경설정', query: 'Python 가상환경 설치' },
+      { label: '스트리밍', query: 'FastAPI 스트리밍 응답' },
+    ],
+    travel: [
+      { label: '국내여행', query: '제주도 3박4일 코스' },
+      { label: '일본', query: '도쿄 여행 일정' },
+      { label: '동남아', query: '태국 방콕 여행 팁' },
+      { label: '항공권', query: '항공권 싸게 사는 법' },
+      { label: '환전', query: '해외여행 환전 방법' },
+      { label: '보험', query: '여행자 보험 가입' },
+      { label: '유럽', query: '유럽 배낭여행 비용' },
+      { label: '숙박', query: '호텔 저렴하게 예약' },
     ],
   };
 
@@ -391,6 +455,10 @@
     document.getElementById('h-name').textContent = currentPersona.name;
     document.getElementById('sb-title').textContent = `${currentPersona.icon} ${currentPersona.name}`;
     document.getElementById('sb-desc').textContent = currentPersona.description;
+
+    // 검색 팁 업데이트
+    renderSearchTips(id);
+    document.getElementById('search-tips').classList.remove('open');
 
     // 이전 대화 이력 불러오기
     await loadHistory();
@@ -569,6 +637,27 @@
     document.getElementById('msg-input').value = msg;
     document.getElementById('use-search').checked = search;
     sendMessage();
+  }
+
+  function toggleTips() {
+    const tips = document.getElementById('search-tips');
+    tips.classList.toggle('open');
+  }
+
+  function renderSearchTips(personaId) {
+    const grid = document.getElementById('tips-grid');
+    const items = SEARCH_TIPS[personaId] || [];
+    grid.innerHTML = items.map(t => `
+      <div class="tip-item" onclick="useTip('${t.query}')">
+        <div class="tip-label">${t.label}</div>
+        <div class="tip-query">${t.query}</div>
+      </div>`).join('');
+  }
+
+  function useTip(query) {
+    document.getElementById('msg-input').value = query;
+    document.getElementById('search-tips').classList.remove('open');
+    document.getElementById('msg-input').focus();
   }
 
   function handleKey(e) {
