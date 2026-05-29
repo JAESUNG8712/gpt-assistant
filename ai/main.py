@@ -108,8 +108,8 @@ async def chat(req: ChatRequest):
 
     # law.go.kr에서 실시간 원문이 온 경우 → LLM 보강 (law_ctx 우선)
     has_law_rt  = bool(law_ctx)
-    # 날짜 계산이 있으면 KB 직접서빙 비활성화 (LLM이 계산 결과를 해석해야 함)
-    kb_direct   = (best_score >= KB_DIRECT) and not has_law_rt and not bool(search_ctx) and not direct_calc
+    # rag_ctx 비어있으면 주제 불일치로 overlap 필터 통과 못한 것 → 직접서빙 금지
+    kb_direct   = (best_score >= KB_DIRECT) and bool(rag_ctx) and not has_law_rt and not bool(search_ctx) and not direct_calc
     no_local    = (best_score < KB_CONTEXT) and not has_law_rt and not direct_calc
 
     history = mem.get_recent_messages(10)
