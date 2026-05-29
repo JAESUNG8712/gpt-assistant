@@ -143,6 +143,7 @@ def retrieve_best(query: str, n: int = 5, persona_id: str = None) -> dict:
         top_answer = ""
         top_question = ""
 
+        # 최고 점수 항목 먼저 파악
         for q, a, score, meta in results:
             if meta.get("source") == "대화":
                 continue
@@ -150,7 +151,43 @@ def retrieve_best(query: str, n: int = 5, persona_id: str = None) -> dict:
                 best_score = score
                 top_answer = a
                 top_question = q
-            parts.append(a[:500])
+
+        # 컨텍스트 포함 기준:
+        # - best_score < 0.15: 관련도 너무 낮음 → 컨텍스트 전체 제외
+        # - best_score 0.15~0.25: 쿼리↔매칭항목 간 핵심 단어 겹침 확인 후 포함 여부 결정
+        #   (겹치는 단어 없으면 무관한 항목이 1위일 가능성 높음 → 제외)
+        # - best_score >= 0.25: 1위 항목 + 1위 점수의 70% 이상인 항목 포함
+        CONTEXT_ABS_MIN = 0.15
+        CONTEXT_OVERLAP_MIN = 0.25  # 이 점수 미만이면 주제 겹침도 함께 확인
+
+        def _has_topic_overlap(user_q: str, match_q: str) -> bool:
+            import re as _re
+            # 구별력 없는 범용 단어 제외 (조작어, 법률 일반어 등)
+            STOP = {
+                # 조작어/검색어
+                '방법', '알려줘', '어떻게', '주세요', '알아봐', '이란', '하는',
+                '대한', '관련', '경우', '때는', '이면', '하면', '것은', '무엇',
+                '해줘', '있나', '알고', '궁금', '질문', '입니다', '있어요',
+                # 법률 일반어 (너무 흔해 구별력 없음)
+                '판례', '기준', '처리', '절차', '규정', '조항', '해당', '적용',
+                '내용', '관한', '따른', '위한', '통한', '이상', '이하', '미만',
+                '근거', '의무', '권리', '규칙', '법률', '법령', '위반', '처벌',
+            }
+            words = set(_re.findall(r'[가-힣]{2,}', user_q)) - STOP
+            match_words = set(_re.findall(r'[가-힣]{2,}', match_q)) - STOP
+            return bool(words & match_words)
+
+        for i, (q, a, score, meta) in enumerate(results):
+            if meta.get("source") == "대화":
+                continue
+            if best_score < CONTEXT_ABS_MIN:
+                break  # 관련도 불충분 → 컨텍스트 없음
+            # 낮은 점수 구간: 1위 항목이 실제 관련 있는지 주제 겹침 확인
+            if best_score < CONTEXT_OVERLAP_MIN and i == 0:
+                if not _has_topic_overlap(query, top_question):
+                    break  # 주제 불일치 → 컨텍스트 전체 제외
+            if i == 0 or score >= best_score * 0.7:
+                parts.append(a[:500])
 
         return {
             "context": "\n\n".join(parts),

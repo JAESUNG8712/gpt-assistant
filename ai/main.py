@@ -119,7 +119,16 @@ async def chat(req: ChatRequest):
 
             # ── 경로 B: LLM 보강 (중간 신뢰도 or 법령 실시간) ──
             else:
-                context = "\n\n".join(filter(None, [law_ctx, rag_ctx, search_ctx]))
+                raw_ctx = "\n\n".join(filter(None, [law_ctx, rag_ctx, search_ctx]))
+                # 질문 관련성 지시: 무관한 컨텍스트를 LLM이 포함하지 않도록 명시
+                if raw_ctx:
+                    context = (
+                        f"[주의: 아래 참고 자료 중 사용자 질문 '{user_msg[:60]}'"
+                        f"와 직접 관련된 내용만 사용하세요. 질문 주제와 다른 내용(다른 법 조항, 다른 HR 주제 등)은 답변에 포함하지 마세요.]\n\n"
+                        + raw_ctx
+                    )
+                else:
+                    context = ""
 
                 if no_local:
                     yield "> 📭 로컬 자료 없음 — AI 지식으로 답변 후 자동 학습합니다.\n\n"
