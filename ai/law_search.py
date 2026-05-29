@@ -186,12 +186,27 @@ async def search_law_api(query: str) -> list[dict]:
             return []
 
 
-def search_law_ddg(query: str, max_results: int = 3) -> list[dict]:
+def _extract_core_terms(query: str) -> str:
+    """쿼리에서 핵심 법률 용어만 추출 (DDG 검색 정밀도 향상)"""
+    # 법률 용어 우선 추출
+    law_terms = re.findall(
+        r'근로기준법|퇴직급여|퇴직금|연차|최저임금|고용보험|산재|육아휴직|기간제|해고|임금|'
+        r'희망퇴직|권고사직|정리해고|주휴|연장근로|야간근로|성희롱|괴롭힘|근로계약|4대보험',
+        query
+    )
+    if law_terms:
+        return " ".join(law_terms[:3])  # 최대 3개 핵심 용어로 제한
+    # 법률 용어가 없으면 앞 10자만 사용
+    return query[:20]
+
+
+def search_law_ddg(query: str, max_results: int = 2) -> list[dict]:
     """DuckDuckGo site:law.go.kr 검색 — 조항 번호 지정 쿼리엔 사용하지 않음"""
+    core = _extract_core_terms(query)
     try:
         with DDGS() as ddgs:
             results = []
-            for r in ddgs.text(f"site:law.go.kr {query}", max_results=max_results):
+            for r in ddgs.text(f"site:law.go.kr {core}", max_results=max_results):
                 results.append({
                     "title": r.get("title", ""),
                     "body": r.get("body", ""),
