@@ -327,7 +327,8 @@
       </div>
       <div class="sidebar-section">
         <label>☁️ 백업</label>
-        <button class="sidebar-btn" onclick="backupOneDrive()">💾 OneDrive 백업</button>
+        <button class="sidebar-btn" onclick="backupDownload()">⬇️ 직접 다운로드</button>
+        <button class="sidebar-btn" id="btn-gdrive" onclick="backupGoogleDrive()">📁 Google Drive</button>
       </div>
       <div class="sidebar-section">
         <label>⚙️ 설정</label>
@@ -832,14 +833,59 @@
     } catch { showToast('❌ 검색 실패'); }
   }
 
-  // ── OneDrive 백업 ────────────────────────
-  async function backupOneDrive() {
-    showToast('☁️ OneDrive 백업 중...');
+  // ── 직접 다운로드 백업 ───────────────────
+  function backupDownload() {
+    showToast('⬇️ 백업 파일 다운로드 중...');
+    const a = document.createElement('a');
+    a.href = '/backup/download';
+    a.download = '';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => showToast('✅ 다운로드 완료!'), 500);
+  }
+
+  // ── Google Drive 백업 ────────────────────
+  async function initGoogleDriveStatus() {
     try {
-      const r = await fetch('/backup/onedrive', { method: 'POST' });
+      const r = await fetch('/backup/google-status');
       const d = await r.json();
-      showToast(`✅ 백업 완료: ${d.filename}`);
-    } catch { showToast('⚠️ 백업 실패 (OneDrive 설정 확인)'); }
+      const btn = document.getElementById('btn-gdrive');
+      if (d.connected) {
+        btn.textContent = '✅ Google Drive 백업';
+        btn.style.borderColor = '#34a853';
+      } else if (d.configured) {
+        btn.textContent = '🔑 Google 로그인 필요';
+      } else {
+        btn.textContent = '📁 Google Drive (미설정)';
+        btn.style.opacity = '0.6';
+      }
+    } catch {}
+  }
+
+  async function backupGoogleDrive() {
+    const status = await fetch('/backup/google-status').then(r => r.json()).catch(() => ({}));
+
+    if (!status.configured) {
+      showToast('⚠️ GDRIVE_CLIENT_ID 등 환경변수를 먼저 설정하세요.');
+      return;
+    }
+
+    if (!status.connected) {
+      // 아직 로그인 안 됨 → Google OAuth 창 열기
+      const r = await fetch('/backup/google-auth');
+      const d = await r.json();
+      window.open(d.auth_url, '_blank', 'width=500,height=600');
+      showToast('🔑 Google 로그인 후 이 버튼을 다시 눌러주세요.');
+      return;
+    }
+
+    showToast('📁 Google Drive 업로드 중...');
+    try {
+      const r = await fetch('/backup/google-drive', { method: 'POST' });
+      const d = await r.json();
+      showToast(`✅ Drive 업로드 완료: ${d.filename}`);
+    } catch { showToast('⚠️ Google Drive 백업 실패'); }
   }
 
   // ── 대화 초기화 ──────────────────────────
@@ -907,6 +953,7 @@
   loadPersonas();
   loadModelInfo();
   loadStats();
+  initGoogleDriveStatus();
 </script>
 </body>
 </html>

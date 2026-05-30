@@ -2,7 +2,7 @@ import asyncio
 import os
 import re
 from fastapi import FastAPI, UploadFile, File, HTTPException
-from fastapi.responses import StreamingResponse, HTMLResponse
+from fastapi.responses import StreamingResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from dotenv import load_dotenv
@@ -326,11 +326,44 @@ def knowledge_stats():
     }
 
 
-# ── OneDrive 백업 ─────────────────────────────────────
+# ── 백업 ──────────────────────────────────────────────
 
-@app.post("/backup/onedrive")
-async def backup_onedrive():
-    result = await bkp.backup_to_onedrive()
+@app.get("/backup/download")
+def backup_download():
+    zip_bytes, filename = bkp.backup_download()
+    return Response(
+        content=zip_bytes,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@app.get("/backup/google-status")
+def backup_google_status():
+    return {
+        "configured": bkp.gdrive_configured(),
+        "connected":  bkp.gdrive_connected(),
+    }
+
+
+@app.get("/backup/google-auth")
+def backup_google_auth():
+    if not bkp.gdrive_configured():
+        raise HTTPException(400, "GDRIVE_CLIENT_ID / GDRIVE_CLIENT_SECRET / GDRIVE_REDIRECT_URI 환경변수를 설정하세요.")
+    return {"auth_url": bkp.gdrive_auth_url()}
+
+
+@app.get("/backup/google-callback")
+async def backup_google_callback(code: str = ""):
+    if not code:
+        raise HTTPException(400, "code 파라미터 없음")
+    await bkp.gdrive_exchange_code(code)
+    return HTMLResponse("<h2>✅ Google Drive 연동 완료!</h2><p>이 창을 닫고 앱으로 돌아가세요.</p>")
+
+
+@app.post("/backup/google-drive")
+async def backup_google_drive():
+    result = await bkp.backup_to_gdrive()
     if not result["ok"]:
         raise HTTPException(400, result["error"])
     return result
