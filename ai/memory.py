@@ -49,6 +49,59 @@ def init_db():
             persona TEXT DEFAULT 'hr',
             created_at TEXT NOT NULL
         )""")
+        # 정적 KB 항목 해시 추적 (중복 방지용)
+        c.execute("""CREATE TABLE IF NOT EXISTS kb_static_index (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            content_hash TEXT UNIQUE NOT NULL,
+            persona TEXT DEFAULT '',
+            source TEXT DEFAULT '',
+            created_at TEXT NOT NULL
+        )""")
+    # 정적 KB를 SQLite에 영구 저장 (엔진 재시작 후에도 검색 가능)
+    _seed_static_kb_to_db()
+
+
+def _seed_static_kb_to_db():
+    """정적 KB(Python 파일)를 SQLite learned_knowledge에 영구 저장.
+    content_hash 기반 중복 방지 — 서버 재시작 시 재실행해도 안전."""
+    import hashlib
+    try:
+        from knowledge_base import KNOWLEDGE
+    except Exception as e:
+        print(f"⚠️ KB 시드 스킵: {e}")
+        return
+
+    new_count = 0
+    with _conn() as c:
+        existing = {row[0] for row in c.execute("SELECT content_hash FROM kb_static_index")}
+        rows_kb, rows_idx = [], []
+        for item in KNOWLEDGE:
+            q = item.get("q", "").strip()
+            a = item.get("a", "").strip()
+            if not q or not a:
+                continue
+            content = f"Q: {q}\nA: {a}"
+            h = hashlib.md5(content[:500].encode()).hexdigest()
+            if h in existing:
+                continue
+            persona = item.get("persona", "")
+            now = datetime.now().isoformat()
+            rows_kb.append((content[:2000], persona, "정적KB", now))
+            rows_idx.append((h, persona, "정적KB", now))
+
+        if rows_kb:
+            c.executemany(
+                "INSERT INTO learned_knowledge (content, persona, source, created_at) VALUES (?,?,?,?)",
+                rows_kb,
+            )
+            c.executemany(
+                "INSERT OR IGNORE INTO kb_static_index (content_hash, persona, source, created_at) VALUES (?,?,?,?)",
+                rows_idx,
+            )
+            new_count = len(rows_kb)
+
+    if new_count:
+        print(f"  💾 정적 KB {new_count}개 → SQLite 영구 저장 완료")
 
 
 # ── 대화 이력 ─────────────────────────────────────────

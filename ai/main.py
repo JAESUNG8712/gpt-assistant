@@ -283,6 +283,49 @@ def list_documents():
     return {"documents": mem.list_documents()}
 
 
+# ── 지식 통계 ─────────────────────────────────────────
+
+@app.get("/knowledge/stats")
+def knowledge_stats():
+    """로드된 KB 항목 수, 페르소나별 분포, SQLite 영구 저장 현황"""
+    import sqlite3
+    from engine import get_engine
+    engine = get_engine()
+
+    persona_counts: dict = {}
+    for q, a, meta in engine._qa:
+        p = meta.get("persona", "(공통)")
+        persona_counts[p] = persona_counts.get(p, 0) + 1
+
+    db_path = os.getenv("DB_PATH", "/tmp/memory.db")
+    db_static = 0
+    db_dynamic = 0
+    if os.path.exists(db_path):
+        try:
+            conn = sqlite3.connect(db_path)
+            db_static = conn.execute(
+                "SELECT COUNT(*) FROM learned_knowledge WHERE source='정적KB'"
+            ).fetchone()[0]
+            db_dynamic = conn.execute(
+                "SELECT COUNT(*) FROM learned_knowledge WHERE source!='정적KB'"
+            ).fetchone()[0]
+            conn.close()
+        except Exception:
+            pass
+
+    return {
+        "engine_total": engine.count(),
+        "engine_by_persona": persona_counts,
+        "db_static_kb": db_static,
+        "db_dynamic_learned": db_dynamic,
+        "persistent_storage": {
+            "python_files": "영구 (git 커밋됨)",
+            "sqlite_static": f"{db_static}개 정적KB → SQLite 백업",
+            "sqlite_dynamic": f"{db_dynamic}개 동적 학습 데이터",
+        },
+    }
+
+
 # ── OneDrive 백업 ─────────────────────────────────────
 
 @app.post("/backup/onedrive")
