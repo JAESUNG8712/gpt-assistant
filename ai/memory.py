@@ -113,12 +113,6 @@ def store_memory(text: str, metadata: dict = None):
         print(f"⚠️ 엔진 학습 실패: {e}")
 
 
-def retrieve_context(query: str, n: int = 5, persona_id: str = None) -> str:
-    """TF-IDF 엔진에서 관련 컨텍스트 검색 (대화 기록 제외, 지식베이스·문서만 반환)"""
-    result = retrieve_best(query, n=n, persona_id=persona_id)
-    return result["context"]
-
-
 def retrieve_best(query: str, n: int = 5, persona_id: str = None) -> dict:
     """
     TF-IDF 검색 결과를 점수와 함께 반환.

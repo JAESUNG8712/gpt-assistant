@@ -1,3 +1,4 @@
+import asyncio
 import os
 import re
 from fastapi import FastAPI, UploadFile, File, HTTPException
@@ -125,7 +126,6 @@ async def chat(req: ChatRequest):
     history.append({"role": "user", "content": user_msg})
 
     async def generate():
-        import asyncio
         collected = []
         try:
             # ── 경로 CALC: Python 직접 계산 결과 있음 ────────
