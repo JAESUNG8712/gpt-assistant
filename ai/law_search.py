@@ -44,12 +44,15 @@ _LAW_ALIAS_TO_SEARCH = {
 
 # 법 관련 질문 감지 패턴
 _LAW_DETECT = [
-    r'제\s*\d+\s*조',
-    r'(?<!\d)\d+\s*조(?!\d)',
-    r'노동법|근로기준법|퇴직급여|최저임금|기간제|육아휴직|남녀고용|일가정|산업안전|고용보험|산재|근로계약|해고|임금|근로시간',
-    r'법률?|법령|조항|조문|규정|시행령|시행규칙',
-    r'위반|처벌|과태료|형사|손해배상|판례',
+    r'제\s*\d+\s*조',                   # 조항 번호 명시 (근로기준법 제23조 등)
+    r'(?<!\d)\d+\s*조(?!\d)',           # 숫자 + 조
+    r'근로기준법|퇴직급여법|최저임금법|기간제법|산업안전보건법|고용보험법|남녀고용평등법|노동조합법',  # 법률 이름 직접 언급
+    r'법률?|법령|조항|조문|시행령|시행규칙',   # 법령 문서 명시
+    r'위반|처벌|과태료|형사처벌|손해배상',     # 법적 제재 (판례 단독 제외)
 ]
+# ※ "판례" 단독은 법령 검색 트리거에서 제외:
+#   "희망퇴직 판례", "야간수당 판례" 같은 일반 판례 질문은 KB가 직접 서빙
+#   법령 API를 트리거하면 DDG에서 무관한 판례가 혼입되는 문제 방지
 
 def is_law_question(text: str) -> bool:
     return any(re.search(p, text) for p in _LAW_DETECT)
@@ -186,12 +189,27 @@ async def search_law_api(query: str) -> list[dict]:
             return []
 
 
-def search_law_ddg(query: str, max_results: int = 3) -> list[dict]:
+def _extract_core_terms(query: str) -> str:
+    """쿼리에서 핵심 법률 용어만 추출 (DDG 검색 정밀도 향상)"""
+    # 법률 용어 우선 추출
+    law_terms = re.findall(
+        r'근로기준법|퇴직급여|퇴직금|연차|최저임금|고용보험|산재|육아휴직|기간제|해고|임금|'
+        r'희망퇴직|권고사직|정리해고|주휴|연장근로|야간근로|성희롱|괴롭힘|근로계약|4대보험',
+        query
+    )
+    if law_terms:
+        return " ".join(law_terms[:3])  # 최대 3개 핵심 용어로 제한
+    # 법률 용어가 없으면 앞 10자만 사용
+    return query[:20]
+
+
+def search_law_ddg(query: str, max_results: int = 2) -> list[dict]:
     """DuckDuckGo site:law.go.kr 검색 — 조항 번호 지정 쿼리엔 사용하지 않음"""
+    core = _extract_core_terms(query)
     try:
         with DDGS() as ddgs:
             results = []
-            for r in ddgs.text(f"site:law.go.kr {query}", max_results=max_results):
+            for r in ddgs.text(f"site:law.go.kr {core}", max_results=max_results):
                 results.append({
                     "title": r.get("title", ""),
                     "body": r.get("body", ""),

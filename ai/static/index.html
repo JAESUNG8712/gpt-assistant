@@ -208,6 +208,58 @@
     }
     .send-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 
+    /* ── 검색 팁 ─────────────── */
+    .input-top-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+    .tips-btn {
+      background: none; border: 1px solid var(--border); border-radius: 14px;
+      padding: 3px 10px; font-size: 0.73rem; color: var(--text-dim); cursor: pointer;
+      transition: all 0.15s;
+    }
+    .tips-btn:hover { border-color: var(--persona-color); color: var(--persona-color); }
+    .search-tips {
+      display: none; background: var(--surface2); border: 1px solid var(--border);
+      border-radius: 12px; padding: 12px 14px; margin-bottom: 10px; font-size: 0.78rem;
+    }
+    .search-tips.open { display: block; }
+    .tips-title { font-weight: 600; color: var(--text); margin-bottom: 10px; }
+    .tips-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+    .tip-item {
+      background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+      padding: 7px 10px; cursor: pointer; transition: all 0.15s;
+    }
+    .tip-item:hover { border-color: var(--persona-color); }
+    .tip-label { font-size: 0.72rem; color: var(--text-dim); margin-bottom: 2px; }
+    .tip-query { font-weight: 500; color: var(--persona-color); }
+
+    /* ── AI 생각 블록 ─────────────── */
+    .think-block {
+      background: rgba(255,193,7,0.05); border: 1px solid rgba(255,193,7,0.22);
+      border-left: 3px solid #c8922a; border-radius: 8px; margin-bottom: 10px; overflow: hidden;
+    }
+    .think-header {
+      padding: 7px 11px; cursor: pointer; display: flex; align-items: center;
+      justify-content: space-between; color: #c8922a; user-select: none; font-size: 0.8em;
+    }
+    .think-header:hover { background: rgba(255,193,7,0.07); }
+    .think-content {
+      padding: 8px 12px 10px; color: var(--text-dim); border-top: 1px solid rgba(255,193,7,0.18);
+      line-height: 1.55; font-size: 0.81em; max-height: 280px; overflow-y: auto;
+    }
+    .think-block.collapsed .think-content { display: none; }
+    .think-toggle { transition: transform 0.2s; font-size: 0.7em; margin-left: 6px; }
+    .think-block.collapsed .think-toggle { transform: rotate(-90deg); }
+    .think-block.streaming .think-header { animation: thinkPulse 1.2s ease-in-out infinite; }
+    @keyframes thinkPulse { 0%,100%{opacity:1} 50%{opacity:0.55} }
+
+    /* 생각 모드 버튼 */
+    .think-mode-btn {
+      background: none; border: 1px solid var(--border); border-radius: 14px;
+      padding: 3px 10px; font-size: 0.73rem; color: var(--text-dim); cursor: pointer; transition: all 0.15s;
+    }
+    .think-mode-btn:hover { border-color: var(--persona-color); }
+    .think-mode-btn.prompt { border-color: #c8922a; color: #c8922a; }
+    .think-mode-btn.deep { border-color: #e67e22; color: #e67e22; background: rgba(230,126,34,0.08); }
+
     /* ── 토스트 & 오버레이 ─────────── */
     .toast {
       position: fixed; bottom: 80px; left: 50%; transform: translateX(-50%);
@@ -275,7 +327,8 @@
       </div>
       <div class="sidebar-section">
         <label>☁️ 백업</label>
-        <button class="sidebar-btn" onclick="backupOneDrive()">💾 OneDrive 백업</button>
+        <button class="sidebar-btn" onclick="backupDownload()">⬇️ 직접 다운로드</button>
+        <button class="sidebar-btn" id="btn-gdrive" onclick="backupGoogleDrive()">📁 Google Drive</button>
       </div>
       <div class="sidebar-section">
         <label>⚙️ 설정</label>
@@ -308,12 +361,22 @@
     </div>
 
     <div class="input-area">
-      <label class="search-toggle">
-        <input type="checkbox" id="use-search">
-        🌐 인터넷 검색 후 답변
-      </label>
+      <div class="input-top-row">
+        <label class="search-toggle">
+          <input type="checkbox" id="use-search">
+          🌐 인터넷 검색 후 답변
+        </label>
+        <div style="display:flex;gap:6px;align-items:center;">
+          <button class="think-mode-btn" id="think-mode-btn" onclick="cycleThinkingMode()" title="AI 생각 모드: 꺼짐">🧠 생각 꺼짐</button>
+          <button class="tips-btn" onclick="toggleTips()">💡 검색 팁</button>
+        </div>
+      </div>
+      <div class="search-tips" id="search-tips">
+        <div class="tips-title">✅ 정확한 답변을 위한 검색 방법</div>
+        <div class="tips-grid" id="tips-grid"></div>
+      </div>
       <div class="input-row">
-        <textarea id="msg-input" placeholder="메시지를 입력하세요..." rows="1"
+        <textarea id="msg-input" placeholder="예: 희망퇴직 판례, 야간수당 계산, 연차 며칠..." rows="1"
           onkeydown="handleKey(event)" oninput="autoResize(this)"></textarea>
         <button class="send-btn" id="send-btn" onclick="sendMessage()">↑</button>
       </div>
@@ -328,25 +391,60 @@
   let currentPersona = null;
   let personas = [];
   let isLoading = false;
+  let thinkingMode = 'off'; // "off" | "prompt" | "deep"
 
   const WELCOME_CHIPS = {
     hr: [
-      { label: '연차 계산법 알려줘', search: false },
-      { label: '퇴직금 어떻게 계산해?', search: false },
-      { label: '4대보험 요율이 어떻게 돼?', search: false },
-      { label: '직장 내 괴롭힘 신고 방법', search: false },
+      { label: '연차 며칠인지 계산해줘', search: false },
+      { label: '희망퇴직 판례 알려줘', search: false },
+      { label: '야간수당 계산 방법', search: false },
+      { label: '4대보험 요율 2025', search: false },
     ],
     dev: [
-      { label: 'Python 리스트 컴프리헨션 예시', search: false },
-      { label: 'React useState 훅 사용법', search: false },
-      { label: 'SQL JOIN 종류 설명해줘', search: false },
-      { label: 'Git 브랜치 전략 알려줘', search: false },
+      { label: 'FastAPI 서버 만드는 법', search: false },
+      { label: 'Groq API 연동 코드', search: false },
+      { label: 'SQLite CRUD 예시', search: false },
+      { label: 'Railway 배포 방법', search: false },
     ],
     travel: [
       { label: '제주도 3박4일 여행 코스', search: false },
       { label: '동남아 항공권 싸게 사는 법', search: false },
       { label: '일본 여행 준비물 체크리스트', search: false },
       { label: '여행자 보험 어떻게 가입해?', search: false },
+    ],
+  };
+
+  // ── 페르소나별 검색 팁 (효과적인 검색어 예시) ─
+  const SEARCH_TIPS = {
+    hr: [
+      { label: '판례 조회', query: '희망퇴직 판례' },
+      { label: '수당 계산', query: '야간수당 계산' },
+      { label: '연차 계산', query: '연차 며칠' },
+      { label: '퇴직금', query: '퇴직금 계산' },
+      { label: '법 조항', query: '근로기준법 제23조' },
+      { label: '부당해고', query: '부당해고 판례' },
+      { label: '최저임금', query: '최저임금 2025' },
+      { label: '4대보험', query: '4대보험 요율' },
+    ],
+    dev: [
+      { label: 'API 서버', query: 'FastAPI 서버 만들기' },
+      { label: 'LLM 연동', query: 'Groq API 연동' },
+      { label: '배포', query: 'Railway 배포' },
+      { label: '테스트', query: 'pytest 테스트 작성' },
+      { label: 'DB', query: 'SQLite CRUD' },
+      { label: '비동기', query: 'asyncio async await' },
+      { label: '환경설정', query: 'Python 가상환경 설치' },
+      { label: '스트리밍', query: 'FastAPI 스트리밍 응답' },
+    ],
+    travel: [
+      { label: '국내여행', query: '제주도 3박4일 코스' },
+      { label: '일본', query: '도쿄 여행 일정' },
+      { label: '동남아', query: '태국 방콕 여행 팁' },
+      { label: '항공권', query: '항공권 싸게 사는 법' },
+      { label: '환전', query: '해외여행 환전 방법' },
+      { label: '보험', query: '여행자 보험 가입' },
+      { label: '유럽', query: '유럽 배낭여행 비용' },
+      { label: '숙박', query: '호텔 저렴하게 예약' },
     ],
   };
 
@@ -391,6 +489,10 @@
     document.getElementById('h-name').textContent = currentPersona.name;
     document.getElementById('sb-title').textContent = `${currentPersona.icon} ${currentPersona.name}`;
     document.getElementById('sb-desc').textContent = currentPersona.description;
+
+    // 검색 팁 업데이트
+    renderSearchTips(id);
+    document.getElementById('search-tips').classList.remove('open');
 
     // 이전 대화 이력 불러오기
     await loadHistory();
@@ -458,6 +560,57 @@
     return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
   }
 
+  // ── 생각 모드 ─────────────────────────────────────
+  const THINK_MODES = ['off', 'prompt', 'deep'];
+  const THINK_LABELS = { off: '🧠 생각 꺼짐', prompt: '🧠 빠른 생각', deep: '🧠 깊은 생각' };
+  const THINK_TITLES = {
+    off:    'AI 생각 모드: 꺼짐 (클릭하면 활성화)',
+    prompt: '빠른 생각 모드: 단일 호출로 추론 과정 포함 (클릭하면 깊은 생각으로)',
+    deep:   '깊은 생각 모드: 2단계 분석 후 답변 (클릭하면 꺼짐)',
+  };
+
+  function cycleThinkingMode() {
+    const idx = THINK_MODES.indexOf(thinkingMode);
+    thinkingMode = THINK_MODES[(idx + 1) % THINK_MODES.length];
+    const btn = document.getElementById('think-mode-btn');
+    btn.textContent = THINK_LABELS[thinkingMode];
+    btn.title = THINK_TITLES[thinkingMode];
+    btn.className = 'think-mode-btn' + (thinkingMode !== 'off' ? ' ' + thinkingMode : '');
+  }
+
+  function parseThinking(text) {
+    const startIdx = text.indexOf('<think>');
+    if (startIdx === -1) return { hasThinking: false, answer: text };
+    const endIdx = text.indexOf('</think>');
+    const thinking = endIdx !== -1
+      ? text.substring(startIdx + 7, endIdx)
+      : text.substring(startIdx + 7);
+    const answer = endIdx !== -1 ? text.substring(endIdx + 8).trimStart() : '';
+    const before = text.substring(0, startIdx).trim();
+    return { hasThinking: true, thinkingComplete: endIdx !== -1, before, thinking, answer };
+  }
+
+  function renderWithThinking(full, bubble) {
+    const p = parseThinking(full);
+    if (!p.hasThinking) { bubble.textContent = full; return; }
+
+    const statusIcon = p.thinkingComplete ? '✅' : '⏳';
+    const statusText = p.thinkingComplete ? '생각 완료 — 클릭하여 펼치기/접기' : '생각 중...';
+    const blockClass = 'think-block' +
+      (p.thinkingComplete ? ' collapsed' : ' streaming');
+
+    let html = p.before ? `<div>${renderMd(p.before)}</div>` : '';
+    html += `<div class="${blockClass}">` +
+      `<div class="think-header" onclick="this.parentElement.classList.toggle('collapsed')">` +
+      `<span>${statusIcon} AI 생각 과정 &nbsp;<small style="font-weight:400">${statusText}</small></span>` +
+      `<span class="think-toggle">▼</span></div>` +
+      `<div class="think-content">${renderMd(p.thinking)}</div>` +
+      `</div>`;
+    if (p.answer) html += renderMd(p.answer);
+
+    bubble.innerHTML = html;
+  }
+
   // ── 마크다운 렌더러 ──────────────────────────────
   function renderMd(text) {
     let s = escHtml(text);
@@ -475,7 +628,8 @@
       let html = '<table>';
       rows.forEach((row, i) => {
         if (/^\|[-| :]+\|$/.test(row.trim())) return; // 구분선 건너뜀
-        const cells = row.split('|').filter((_, ci) => ci > 0 && ci < row.split('|').length - 1);
+        const parts = row.split('|');
+        const cells = parts.filter((_, ci) => ci > 0 && ci < parts.length - 1);
         const tag = i === 0 ? 'th' : 'td';
         html += '<tr>' + cells.map(c => `<${tag}>${c.trim()}</${tag}>`).join('') + '</tr>';
       });
@@ -530,26 +684,48 @@
       const resp = await fetch('/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: msg, persona: currentPersona.id, use_search: useSearch }),
+        body: JSON.stringify({
+          message: msg,
+          persona: currentPersona.id,
+          use_search: useSearch,
+          thinking_mode: thinkingMode,
+        }),
       });
       if (!resp.ok) throw new Error(await resp.text());
       const reader = resp.body.getReader();
       const dec = new TextDecoder();
+      let lastRenderLen = 0;
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
         full += dec.decode(value, { stream: true });
-        // 스트리밍 중에는 텍스트, 완료 후 마크다운 렌더링
-        bubble.textContent = full;
+        // 생각 모드: 50자 이상 증가했을 때만 리렌더 (DOM 조작 최소화)
+        if (thinkingMode !== 'off') {
+          if (full.length - lastRenderLen >= 50) {
+            renderWithThinking(full, bubble);
+            lastRenderLen = full.length;
+          }
+        } else {
+          bubble.textContent = full;
+        }
         document.getElementById('messages').scrollTop = 99999;
       }
       aiDiv.classList.remove('typing');
-      // 완료 후 마크다운 렌더링 적용
-      bubble.innerHTML = renderMd(full);
-      // 피드백 버튼 추가
+
+      // 최종 렌더링
+      if (thinkingMode !== 'off') {
+        renderWithThinking(full, bubble);
+      } else {
+        bubble.innerHTML = renderMd(full);
+      }
+
+      // 피드백 버튼 (thinking 모드면 answer 부분만 사용)
+      const feedbackText = thinkingMode !== 'off'
+        ? (parseThinking(full).answer || full)
+        : full;
       const fbRow = document.createElement('div');
       fbRow.className = 'feedback-row';
-      const escapedFull = full.replace(/\\/g,'\\\\').replace(/'/g,"\\'").replace(/\n/g,'\\n');
+      const escapedFull = feedbackText.replace(/\\/g,'\\\\').replace(/'/g,"\\'").replace(/\n/g,'\\n');
       const escapedMsg = msg.replace(/\\/g,'\\\\').replace(/'/g,"\\'");
       fbRow.innerHTML = `
         <span style="font-size:0.72rem;color:var(--text-dim);">이 답변이 도움됐나요?</span>
@@ -569,6 +745,27 @@
     document.getElementById('msg-input').value = msg;
     document.getElementById('use-search').checked = search;
     sendMessage();
+  }
+
+  function toggleTips() {
+    const tips = document.getElementById('search-tips');
+    tips.classList.toggle('open');
+  }
+
+  function renderSearchTips(personaId) {
+    const grid = document.getElementById('tips-grid');
+    const items = SEARCH_TIPS[personaId] || [];
+    grid.innerHTML = items.map(t => `
+      <div class="tip-item" onclick="useTip('${t.query}')">
+        <div class="tip-label">${t.label}</div>
+        <div class="tip-query">${t.query}</div>
+      </div>`).join('');
+  }
+
+  function useTip(query) {
+    document.getElementById('msg-input').value = query;
+    document.getElementById('search-tips').classList.remove('open');
+    document.getElementById('msg-input').focus();
   }
 
   function handleKey(e) {
@@ -636,14 +833,59 @@
     } catch { showToast('❌ 검색 실패'); }
   }
 
-  // ── OneDrive 백업 ────────────────────────
-  async function backupOneDrive() {
-    showToast('☁️ OneDrive 백업 중...');
+  // ── 직접 다운로드 백업 ───────────────────
+  function backupDownload() {
+    showToast('⬇️ 백업 파일 다운로드 중...');
+    const a = document.createElement('a');
+    a.href = '/backup/download';
+    a.download = '';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => showToast('✅ 다운로드 완료!'), 500);
+  }
+
+  // ── Google Drive 백업 ────────────────────
+  async function initGoogleDriveStatus() {
     try {
-      const r = await fetch('/backup/onedrive', { method: 'POST' });
+      const r = await fetch('/backup/google-status');
       const d = await r.json();
-      showToast(`✅ 백업 완료: ${d.filename}`);
-    } catch { showToast('⚠️ 백업 실패 (OneDrive 설정 확인)'); }
+      const btn = document.getElementById('btn-gdrive');
+      if (d.connected) {
+        btn.textContent = '✅ Google Drive 백업';
+        btn.style.borderColor = '#34a853';
+      } else if (d.configured) {
+        btn.textContent = '🔑 Google 로그인 필요';
+      } else {
+        btn.textContent = '📁 Google Drive (미설정)';
+        btn.style.opacity = '0.6';
+      }
+    } catch {}
+  }
+
+  async function backupGoogleDrive() {
+    const status = await fetch('/backup/google-status').then(r => r.json()).catch(() => ({}));
+
+    if (!status.configured) {
+      showToast('⚠️ GDRIVE_CLIENT_ID 등 환경변수를 먼저 설정하세요.');
+      return;
+    }
+
+    if (!status.connected) {
+      // 아직 로그인 안 됨 → Google OAuth 창 열기
+      const r = await fetch('/backup/google-auth');
+      const d = await r.json();
+      window.open(d.auth_url, '_blank', 'width=500,height=600');
+      showToast('🔑 Google 로그인 후 이 버튼을 다시 눌러주세요.');
+      return;
+    }
+
+    showToast('📁 Google Drive 업로드 중...');
+    try {
+      const r = await fetch('/backup/google-drive', { method: 'POST' });
+      const d = await r.json();
+      showToast(`✅ Drive 업로드 완료: ${d.filename}`);
+    } catch { showToast('⚠️ Google Drive 백업 실패'); }
   }
 
   // ── 대화 초기화 ──────────────────────────
@@ -711,6 +953,7 @@
   loadPersonas();
   loadModelInfo();
   loadStats();
+  initGoogleDriveStatus();
 </script>
 </body>
 </html>

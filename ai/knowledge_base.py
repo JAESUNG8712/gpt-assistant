@@ -3,6 +3,14 @@
 각 Q&A는 TF-IDF 엔진에 로드되어 검색에 활용됩니다.
 """
 from knowledge_labor_laws import LABOR_LAW_KNOWLEDGE
+from knowledge_hr_management import HR_MANAGEMENT_KNOWLEDGE
+from knowledge_payroll import PAYROLL_KNOWLEDGE
+from knowledge_practical_qa import PRACTICAL_QA_KNOWLEDGE
+from knowledge_dev_coding import DEV_CODING_KNOWLEDGE
+from knowledge_travel_additions import TRAVEL_KNOWLEDGE
+from knowledge_extra_additions import EXTRA_KNOWLEDGE
+from knowledge_hr_gaps import HR_GAP_KNOWLEDGE
+from knowledge_dev_gaps import DEV_GAP_KNOWLEDGE, TRAVEL_GAP_KNOWLEDGE
 
 KNOWLEDGE = [
 
@@ -2446,7 +2454,7 @@ if len(lst) > index:
     # ── 권고사직·희망퇴직 ────────────────────────
     {
         "persona": "hr",
-        "q": "권고사직 희망퇴직 절차 합의 해고 구분 실업급여",
+        "q": "권고사직 희망퇴직 절차 합의 해고 구분 실업급여 희망퇴직 판례 권고사직 판례 대법원 강요",
         "a": """## 권고사직·희망퇴직 법적 이해
 
 ### 권고사직이란?
@@ -2479,6 +2487,40 @@ if len(lst) > index:
 ### 사직서 강요 = 부당해고
 - 빈 사직서 작성 강요 → 부당해고
 - "사직서 안 내면 해고" → 강박에 의한 의사 표시 → 취소 가능""",
+    },
+
+    {
+        "persona": "hr",
+        "q": "희망퇴직 판례 권고사직 판례 판례 기준 대법원 강요 합의 퇴직 자발적 부당",
+        "a": """## 희망퇴직·권고사직 주요 판례
+
+### 핵심 판단 기준
+자발적 동의인지 **강요·압박에 의한 동의**인지가 핵심입니다.
+
+### 대표 판례
+
+**대법 2019다277325**
+> 퇴직 의사 표시가 사용자의 강요나 착오에 의한 경우, 또는 근로자가 합리적 판단을 할 여지가 없었다면 실질적 해고와 동일하게 볼 수 있다.
+- 판단 포인트: 사직 검토 시간 충분히 주었는가?
+
+**대법 2005다5452**
+> 사용자가 근로자에게 사직서를 요구하면서 "거부하면 징계해고 하겠다"고 한 경우 — 자유로운 의사 아님 → 사직 무효
+- 적용: 협박·불이익 경고 하에 받은 사직서는 무효
+
+**서울고법 2018나2036xxx (유사 판결 다수)**
+- 희망퇴직 신청 기간이 지나치게 촉박(1~2일)하면 자발적 의사 인정 어려움
+- 특정 직원만 반복 면담·압박한 경우 → 강요로 인정
+
+### 실무 체크리스트 (권고사직 시)
+1. **충분한 검토 기간 부여** (최소 3~7일 권장)
+2. **서면 안내** — 패키지 조건, 거부 가능 명시
+3. **개별 면담 횟수** — 반복·집중 압박 금지
+4. **이의 제기 권리** 명시
+5. **"거부하면 해고"** 언급 절대 금지
+
+### 희망퇴직 후 번복
+- 합의 해지 성립 전: 사직 철회 가능
+- 합의 해지 성립 후: 번복 어려움 (단, 강요 입증 시 취소 소송 가능)""",
     },
 
     # ── 휴직·복직 ───────────────────────────────
@@ -3247,7 +3289,7 @@ E (Evaluation): 평가 — 효과 측정
 ]
 
 # 노동법 전체 조항 병합
-KNOWLEDGE = KNOWLEDGE + LABOR_LAW_KNOWLEDGE
+KNOWLEDGE = KNOWLEDGE + LABOR_LAW_KNOWLEDGE + HR_MANAGEMENT_KNOWLEDGE + PAYROLL_KNOWLEDGE + PRACTICAL_QA_KNOWLEDGE + DEV_CODING_KNOWLEDGE + TRAVEL_KNOWLEDGE + EXTRA_KNOWLEDGE + HR_GAP_KNOWLEDGE + DEV_GAP_KNOWLEDGE + TRAVEL_GAP_KNOWLEDGE
 
 
 # ── 하위 호환성 ──────────────────────────────────────
