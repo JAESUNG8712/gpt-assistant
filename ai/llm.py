@@ -58,8 +58,34 @@ GEMINI_MODEL   = os.getenv("GEMINI_MODEL", "gemini-2.0-flash-lite")
 SYSTEM_PROMPT = """당신은 사용자만을 위한 전용 AI 어시스턴트입니다.
 - 사용자의 과거 대화, 업로드한 문서, 인터넷 검색 결과를 바탕으로 답변합니다.
 - 한국어로 자연스럽게 대화합니다.
-- 질문한 내용만 정확히 답한다. 관련 없는 다른 조항·주제는 포함하지 않는다.
-- 특정 조항(예: 제1조)을 물으면 그 조항만 설명한다. 다른 조항은 언급하지 않는다."""
+- 질문한 내용만 정확히 답한다. 관련 없는 다른 조항·주제는 절대 포함하지 않는다.
+- 특정 조항(예: 제1조)을 물으면 그 조항만 설명한다. 다른 조항은 언급하지 않는다.
+- 참고 정보 중 질문과 무관한 내용(다른 HR 주제, 다른 법 조항 등)은 완전히 무시한다.
+- 답변 범위를 사용자가 질문한 주제로 엄격히 제한한다."""
+
+# ── 생각(Thinking) 모드 프롬프트 ───────────────────────
+# 방법2: 단일 호출, 모델에게 <think> 태그로 추론 유도
+THINKING_PROMPT_ADDITION = """
+답변하기 전 반드시 아래 형식으로 생각 과정을 먼저 작성하세요:
+
+<think>
+- 질문의 핵심 요구사항:
+- 관련 법률/규정/개념:
+- 주의할 예외나 조건:
+- 답변 구성 방향:
+</think>
+
+위 분석을 바탕으로 사용자에게 최종 답변을 작성하세요."""
+
+# 방법3: 2단계 호출 중 1단계 — 분석 전용 시스템 프롬프트
+DEEP_ANALYSIS_PROMPT = """당신은 질문 분석 전문가입니다. 주어진 질문을 아래 형식으로 간결하게 분석하세요 (400자 이내):
+
+1. 핵심 요구사항: 사용자가 정확히 원하는 것
+2. 관련 법률/규정/개념 키워드
+3. 주의해야 할 예외나 특수 조건
+4. 최적 답변 구성 방향
+
+최종 답변은 절대 작성하지 마세요. 분석·계획만 간결하게 작성하세요."""
 
 
 # ── 자체 엔진 폴백 ────────────────────────────────────
@@ -215,8 +241,41 @@ def _provider_chain() -> list[str]:
     return chain
 
 
-def _resolve_provider() -> str:
-    return _provider_chain()[0]
+# ── 방법3: 2단계 깊은 생각 ────────────────────────────
+async def _deep_thinking_chat(
+    messages: list,
+    context: str,
+    final_system: str,
+) -> AsyncGenerator[str, None]:
+    """1단계: 질문 분석 → 2단계: 분석 기반 최종 답변"""
+    yield "<think>\n"
+    thinking_parts: list[str] = []
+
+    # 1단계: 분석 호출 (KB 컨텍스트도 분석에 활용)
+    async for token in chat_stream(
+        messages,
+        context=context,
+        system_prompt=DEEP_ANALYSIS_PROMPT,
+        thinking_mode="off",
+    ):
+        thinking_parts.append(token)
+        yield token
+
+    thinking = "".join(thinking_parts)
+    yield "\n</think>\n"
+
+    # 2단계: 분석 결과 + KB 컨텍스트로 최종 답변
+    combined_context = f"[사전 분석 결과]\n{thinking}"
+    if context:
+        combined_context += f"\n\n[참고 자료]\n{context}"
+
+    async for token in chat_stream(
+        messages,
+        context=combined_context,
+        system_prompt=final_system,
+        thinking_mode="off",
+    ):
+        yield token
 
 
 # ── 공통 스트리밍 인터페이스 ──────────────────────────
@@ -224,9 +283,20 @@ async def chat_stream(
     messages: list,
     context: str = "",
     system_prompt: str = None,
+    thinking_mode: str = "off",  # "off" | "prompt" | "deep"
 ) -> AsyncGenerator[str, None]:
     system = system_prompt or SYSTEM_PROMPT
     chain = _provider_chain()
+
+    # 방법2: 프롬프트 기반 추론 — 시스템 프롬프트에 <think> 지시 추가
+    if thinking_mode == "prompt":
+        system = system + "\n\n" + THINKING_PROMPT_ADDITION
+
+    # 방법3: 2단계 깊은 생각 — 별도 함수 위임
+    if thinking_mode == "deep":
+        async for token in _deep_thinking_chat(messages, context, system):
+            yield token
+        return
 
     for i, provider in enumerate(chain):
         is_last = (i == len(chain) - 1)
@@ -269,31 +339,28 @@ async def chat_stream(
             if not is_last:
                 next_p = chain[i + 1]
                 if status == 401:
-                    yield f"\n⚠️ [{provider}] API 키가 올바르지 않습니다 → {next_p}로 전환 중...\n\n"
+                    print(f"[{provider}] API 키 오류 → {next_p}로 전환")
                 elif status == 429:
                     _set_cooldown(provider, seconds=3600)  # 1시간 쿨다운
-                    remaining = _rate_limit_until.get(provider, 0) - time.time()
-                    mins = int(remaining // 60)
-                    yield f"\n⚠️ [{provider}] 일일 한도 초과 ({mins}분 후 자동 복구) → {next_p}로 전환 중...\n\n"
+                    print(f"[{provider}] 429 한도초과 → {next_p}로 전환")
                 else:
-                    yield f"\n⚠️ [{provider}] 오류 {status} → {next_p}로 전환 중...\n\n"
+                    print(f"[{provider}] 오류 {status} → {next_p}로 전환")
                 await asyncio.sleep(1)
                 continue
             else:
                 if status == 429:
                     _set_cooldown(provider, seconds=3600)
-                yield f"\n⚠️ [{provider}] 오류 {status}: {err_body[:100]}"
+                yield f"\n⚠️ 일시적인 오류가 발생했습니다 (코드 {status}). 잠시 후 다시 시도해 주세요."
                 return
 
         except Exception as e:
             print(f"[{provider}] 예외 발생: {type(e).__name__}: {e}")
             if not is_last:
-                next_p = chain[i + 1]
-                yield f"\n⚠️ [{provider}] 연결 오류({type(e).__name__}) → {next_p}로 전환 중...\n\n"
+                print(f"[{provider}] → {chain[i + 1]}로 전환")
                 await asyncio.sleep(1)
                 continue
             else:
-                yield f"\n⚠️ [{provider}] 오류: {type(e).__name__}: {str(e)[:100]}"
+                yield f"\n⚠️ 일시적인 연결 오류가 발생했습니다. 잠시 후 다시 시도해 주세요."
                 return
 
 
