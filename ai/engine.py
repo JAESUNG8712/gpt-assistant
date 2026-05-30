@@ -215,13 +215,14 @@ def _load_knowledge():
         print(f"⚠️ law.go.kr 캐시 로드 실패: {e}")
 
     # 자동학습·직접입력·문서 업로드 등 동적 학습 데이터 복원 (재시작 후에도 유지)
+    # "정적KB" 소스는 Python KB 파일에서 이미 로드되었으므로 건너뜀 (중복 방지)
     try:
         import sqlite3, os
         db_path = os.getenv("DB_PATH", "/tmp/memory.db")
         if os.path.exists(db_path):
             conn = sqlite3.connect(db_path)
             rows = conn.execute(
-                "SELECT content, persona, source FROM learned_knowledge"
+                "SELECT content, persona, source FROM learned_knowledge WHERE source != '정적KB'"
             ).fetchall()
             conn.close()
             for content, persona, source in rows:
