@@ -345,7 +345,7 @@ def try_salary_calc(text: str) -> Optional[str]:
     annual_label = f"(연봉 환산: {r['monthly']*12:,}원)" if '연봉' in tl else ""
 
     return (
-        f"## 급여 실수령액 계산 (2024년 기준)\n\n"
+        f"## 급여 실수령액 계산 ({date.today().year}년 기준)\n\n"
         f"**월 급여**: {monthly:,}원 {annual_label}\n"
         f"**부양가족**: {deps}명\n\n"
         f"### 공제 항목\n"
@@ -686,6 +686,18 @@ _MIN_WAGE_KEYWORDS = [
 ]
 MIN_WAGE_2024 = 9_860
 MIN_WAGE_2025 = 10_030
+MIN_WAGE_2026 = 10_320
+
+
+def _current_min_wage() -> tuple[int, int]:
+    """현재 연도 최저임금과 연도 반환"""
+    today = date.today()
+    if today.year >= 2026:
+        return MIN_WAGE_2026, today.year
+    elif today.year >= 2025:
+        return MIN_WAGE_2025, today.year
+    else:
+        return MIN_WAGE_2024, today.year
 
 
 def try_min_wage_check(text: str) -> Optional[str]:
@@ -713,9 +725,7 @@ def try_min_wage_check(text: str) -> Optional[str]:
     if hourly is None:
         return None
 
-    today = date.today()
-    min_wage = MIN_WAGE_2025 if today.year >= 2025 else MIN_WAGE_2024
-    year = today.year
+    min_wage, year = _current_min_wage()
 
     diff = hourly - min_wage
     if diff < 0:
@@ -744,7 +754,8 @@ def try_min_wage_check(text: str) -> Optional[str]:
         f"{action}\n\n"
         f"| 연도 | 최저시급 | 월환산(209h) |\n|------|---------|-------------|\n"
         f"| 2024년 | 9,860원 | 2,060,740원 |\n"
-        f"| 2025년 | 10,030원 | 2,096,270원 |"
+        f"| 2025년 | 10,030원 | 2,096,270원 |\n"
+        f"| 2026년 | 10,320원 | 2,156,880원 |"
     )
 
 
@@ -785,7 +796,7 @@ def try_insurance_calc(text: str) -> Optional[str]:
     employer_employment = int(amt * 0.009)
 
     return (
-        f"## 4대보험료 계산 (2024년 기준)\n\n"
+        f"## 4대보험료 계산 ({date.today().year}년 기준)\n\n"
         f"**월 보수월액**: {amt:,}원\n\n"
         f"| 보험 종류 | 요율 | 근로자 부담 | 사업주 부담 |\n"
         f"|-----------|------|------------|------------|\n"
