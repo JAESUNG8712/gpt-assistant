@@ -627,7 +627,8 @@
       let html = '<table>';
       rows.forEach((row, i) => {
         if (/^\|[-| :]+\|$/.test(row.trim())) return; // 구분선 건너뜀
-        const cells = row.split('|').filter((_, ci) => ci > 0 && ci < row.split('|').length - 1);
+        const parts = row.split('|');
+        const cells = parts.filter((_, ci) => ci > 0 && ci < parts.length - 1);
         const tag = i === 0 ? 'th' : 'td';
         html += '<tr>' + cells.map(c => `<${tag}>${c.trim()}</${tag}>`).join('') + '</tr>';
       });

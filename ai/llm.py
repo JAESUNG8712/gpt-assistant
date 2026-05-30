@@ -241,10 +241,6 @@ def _provider_chain() -> list[str]:
     return chain
 
 
-def _resolve_provider() -> str:
-    return _provider_chain()[0]
-
-
 # ── 방법3: 2단계 깊은 생각 ────────────────────────────
 async def _deep_thinking_chat(
     messages: list,
