@@ -243,7 +243,7 @@
     .think-header:hover { background: rgba(255,193,7,0.07); }
     .think-content {
       padding: 8px 12px 10px; color: var(--text-dim); border-top: 1px solid rgba(255,193,7,0.18);
-      white-space: pre-wrap; line-height: 1.55; font-size: 0.81em; max-height: 280px; overflow-y: auto;
+      line-height: 1.55; font-size: 0.81em; max-height: 280px; overflow-y: auto;
     }
     .think-block.collapsed .think-content { display: none; }
     .think-toggle { transition: transform 0.2s; font-size: 0.7em; margin-left: 6px; }
@@ -574,7 +574,7 @@
     const btn = document.getElementById('think-mode-btn');
     btn.textContent = THINK_LABELS[thinkingMode];
     btn.title = THINK_TITLES[thinkingMode];
-    btn.className = `think-mode-btn ${thinkingMode === 'off' ? '' : thinkingMode}`;
+    btn.className = 'think-mode-btn' + (thinkingMode !== 'off' ? ' ' + thinkingMode : '');
   }
 
   function parseThinking(text) {
@@ -603,7 +603,7 @@
       `<div class="think-header" onclick="this.parentElement.classList.toggle('collapsed')">` +
       `<span>${statusIcon} AI 생각 과정 &nbsp;<small style="font-weight:400">${statusText}</small></span>` +
       `<span class="think-toggle">▼</span></div>` +
-      `<div class="think-content">${escHtml(p.thinking)}</div>` +
+      `<div class="think-content">${renderMd(p.thinking)}</div>` +
       `</div>`;
     if (p.answer) html += renderMd(p.answer);
 
@@ -692,13 +692,17 @@
       if (!resp.ok) throw new Error(await resp.text());
       const reader = resp.body.getReader();
       const dec = new TextDecoder();
+      let lastRenderLen = 0;
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
         full += dec.decode(value, { stream: true });
-        // 생각 모드면 <think> 파싱 렌더링, 아니면 텍스트
+        // 생각 모드: 50자 이상 증가했을 때만 리렌더 (DOM 조작 최소화)
         if (thinkingMode !== 'off') {
-          renderWithThinking(full, bubble);
+          if (full.length - lastRenderLen >= 50) {
+            renderWithThinking(full, bubble);
+            lastRenderLen = full.length;
+          }
         } else {
           bubble.textContent = full;
         }

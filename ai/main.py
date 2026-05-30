@@ -109,8 +109,16 @@ async def chat(req: ChatRequest):
 
     # law.go.kr에서 실시간 원문이 온 경우 → LLM 보강 (law_ctx 우선)
     has_law_rt  = bool(law_ctx)
-    # rag_ctx 비어있으면 주제 불일치로 overlap 필터 통과 못한 것 → 직접서빙 금지
-    kb_direct   = (best_score >= KB_DIRECT) and bool(rag_ctx) and not has_law_rt and not bool(search_ctx) and not direct_calc
+    # rag_ctx 비어있으면 overlap 필터 실패 → 직접서빙 금지
+    # thinking 모드일 때는 항상 LLM을 거쳐야 <think> 블록이 생성됨
+    kb_direct   = (
+        best_score >= KB_DIRECT
+        and bool(rag_ctx)
+        and req.thinking_mode == "off"
+        and not has_law_rt
+        and not bool(search_ctx)
+        and not direct_calc
+    )
     no_local    = (best_score < KB_CONTEXT) and not has_law_rt and not direct_calc
 
     history = mem.get_recent_messages(10)
@@ -161,12 +169,16 @@ async def chat(req: ChatRequest):
                     yield token
 
             ai_reply = "".join(collected)
+            # <think>...</think> 태그를 DB/KB 저장 전에 제거
+            # (생각 과정이 대화 이력·자동학습 KB에 오염되는 것 방지)
+            ai_reply_clean = re.sub(r'<think>[\s\S]*?</think>\s*', '', ai_reply).strip()
+
             mem.save_message("user", user_msg, persona=req.persona)
-            mem.save_message("assistant", ai_reply, persona=req.persona)
+            mem.save_message("assistant", ai_reply_clean or ai_reply, persona=req.persona)
 
             # ── 자동 학습: 로컬 자료 없었던 경우 영구 저장 ──
-            if no_local and ai_reply.strip():
-                mem.auto_learn(user_msg, ai_reply, persona=req.persona)
+            if no_local and ai_reply_clean.strip():
+                mem.auto_learn(user_msg, ai_reply_clean, persona=req.persona)
                 yield "\n\n---\n> ✅ 자동 학습 완료 — 다음부터는 로컬 저장 자료로 답변합니다."
 
         except Exception as e:
