@@ -7,6 +7,8 @@ from knowledge_hr_management import HR_MANAGEMENT_KNOWLEDGE
 from knowledge_payroll import PAYROLL_KNOWLEDGE
 from knowledge_practical_qa import PRACTICAL_QA_KNOWLEDGE
 from knowledge_dev_coding import DEV_CODING_KNOWLEDGE
+from knowledge_travel_additions import TRAVEL_KNOWLEDGE
+from knowledge_extra_additions import EXTRA_KNOWLEDGE
 
 KNOWLEDGE = [
 
@@ -3285,7 +3287,7 @@ E (Evaluation): 평가 — 효과 측정
 ]
 
 # 노동법 전체 조항 병합
-KNOWLEDGE = KNOWLEDGE + LABOR_LAW_KNOWLEDGE + HR_MANAGEMENT_KNOWLEDGE + PAYROLL_KNOWLEDGE + PRACTICAL_QA_KNOWLEDGE + DEV_CODING_KNOWLEDGE
+KNOWLEDGE = KNOWLEDGE + LABOR_LAW_KNOWLEDGE + HR_MANAGEMENT_KNOWLEDGE + PAYROLL_KNOWLEDGE + PRACTICAL_QA_KNOWLEDGE + DEV_CODING_KNOWLEDGE + TRAVEL_KNOWLEDGE + EXTRA_KNOWLEDGE
 
 
 # ── 하위 호환성 ──────────────────────────────────────
