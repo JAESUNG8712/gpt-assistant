@@ -575,6 +575,12 @@
       { label: '일본 여행 준비물 체크리스트', search: false },
       { label: '여행자 보험 어떻게 가입해?', search: false },
     ],
+    company: [
+      { label: '연차 휴가 신청 방법', search: false },
+      { label: '재택근무 규정 알려줘', search: false },
+      { label: '경비 처리 절차', search: false },
+      { label: '출장 신청 방법', search: false },
+    ],
   };
 
   // ── 페르소나별 검색 팁 (효과적인 검색어 예시) ─
@@ -608,6 +614,16 @@
       { label: '보험', query: '여행자 보험 가입' },
       { label: '유럽', query: '유럽 배낭여행 비용' },
       { label: '숙박', query: '호텔 저렴하게 예약' },
+    ],
+    company: [
+      { label: '휴가 정책', query: '연차 휴가 신청' },
+      { label: '복무 규정', query: '출퇴근 근무 규정' },
+      { label: '경비/출장', query: '출장 경비 처리' },
+      { label: '재택근무', query: '재택근무 신청 방법' },
+      { label: '징계 절차', query: '징계 처리 절차' },
+      { label: '보안 정책', query: '정보 보안 규정' },
+      { label: '급여 정책', query: '급여 지급 규정' },
+      { label: '교육/훈련', query: '사내 교육 신청' },
     ],
   };
 
@@ -657,9 +673,12 @@
     renderSearchTips(id);
     document.getElementById('search-tips').classList.remove('open');
 
-    // dev 페르소나: Gemini 배지 표시
+    // use_coding 기능 활성화 페르소나: Gemini 배지 표시
     const geminiBadge = document.getElementById('gemini-badge');
-    if (geminiBadge) geminiBadge.style.display = id === 'dev' ? '' : 'none';
+    if (geminiBadge) {
+      const hasCoding = currentPersona.features && currentPersona.features.use_coding;
+      geminiBadge.style.display = hasCoding ? '' : 'none';
+    }
 
     // 이전 대화 이력 불러오기
     await loadHistory();

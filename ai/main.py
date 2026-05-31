@@ -69,6 +69,7 @@ async def chat(req: ChatRequest):
     search_msg = _normalize_query(user_msg)
 
     persona = PERSONAS.get(req.persona, PERSONAS[DEFAULT_PERSONA])
+    persona_features = persona.get("features", {})
 
     from datetime import date as _date
     today = _date.today()
@@ -88,9 +89,9 @@ async def chat(req: ChatRequest):
     best_score = kb["best_score"]
     top_answer = kb["top_answer"]
 
-    # ── 2단계: law.go.kr 법령 검색 (법 관련 질문만) ──────
+    # ── 2단계: law.go.kr 법령 검색 (법 관련 질문만, 페르소나 허용 시) ──────
     law_ctx = ""
-    if law.is_law_question(search_msg):
+    if persona_features.get("use_law", True) and law.is_law_question(search_msg):
         law_results = await law.search_law(search_msg)
         law_ctx = law.format_law_context(law_results)
 
@@ -163,7 +164,7 @@ async def chat(req: ChatRequest):
                 if no_local:
                     yield "> 📭 로컬 자료 없음 — AI 지식으로 답변 후 자동 학습합니다.\n\n"
 
-                if req.persona == "dev":
+                if persona_features.get("use_coding", False):
                     async for token in llm.chat_stream_coding(history, context, system_prompt=system_with_date):
                         collected.append(token)
                         yield token
