@@ -163,9 +163,14 @@ async def chat(req: ChatRequest):
                 if no_local:
                     yield "> 📭 로컬 자료 없음 — AI 지식으로 답변 후 자동 학습합니다.\n\n"
 
-                async for token in llm.chat_stream(history, context, system_prompt=system_with_date, thinking_mode=req.thinking_mode):
-                    collected.append(token)
-                    yield token
+                if req.persona == "dev":
+                    async for token in llm.chat_stream_coding(history, context, system_prompt=system_with_date):
+                        collected.append(token)
+                        yield token
+                else:
+                    async for token in llm.chat_stream(history, context, system_prompt=system_with_date, thinking_mode=req.thinking_mode):
+                        collected.append(token)
+                        yield token
 
             ai_reply = "".join(collected)
             # <think>...</think> 태그를 DB/KB 저장 전에 제거
