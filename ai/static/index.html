@@ -280,6 +280,103 @@
     .fb-btn.good:hover { border-color: #3fb950; color: #3fb950; }
     .fb-btn.bad:hover  { border-color: #f85149; color: #f85149; }
     .fb-btn.selected   { opacity: 0.5; cursor: default; }
+
+    /* ── Python 코드 실행 패널 ─────────────── */
+    .code-toggle-btn {
+      background: #1f3a1f; border: 1px solid #2ea043; border-radius: 8px;
+      color: #3fb950; font-size: 0.78rem; font-weight: 600; padding: 5px 10px;
+      cursor: pointer; transition: all 0.15s; white-space: nowrap;
+    }
+    .code-toggle-btn:hover, .code-toggle-btn.active { background: #2ea043; color: #fff; }
+
+    .code-modal {
+      display: none; position: fixed; inset: 0; z-index: 200;
+      background: rgba(0,0,0,0.7); align-items: flex-end;
+      animation: fadeIn 0.15s ease;
+    }
+    .code-modal.open { display: flex; }
+    @keyframes fadeIn { from { opacity:0 } to { opacity:1 } }
+
+    .code-modal-inner {
+      width: 100%; max-width: 860px; margin: 0 auto;
+      background: var(--surface); border-radius: 16px 16px 0 0;
+      border: 1px solid var(--border); border-bottom: none;
+      display: flex; flex-direction: column;
+      max-height: 90dvh; overflow: hidden;
+    }
+    @media (min-width: 900px) {
+      .code-modal { align-items: center; }
+      .code-modal-inner {
+        border-radius: 16px; border-bottom: 1px solid var(--border);
+        max-height: 80dvh; margin: auto;
+      }
+    }
+
+    .code-modal-header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 14px 16px; border-bottom: 1px solid var(--border);
+      background: var(--surface2); flex-shrink: 0;
+    }
+    .code-modal-header span { font-weight: 700; font-size: 0.95rem; color: #3fb950; }
+    .pyodide-status {
+      font-size: 0.72rem; color: var(--text-dim);
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 6px; padding: 3px 8px;
+    }
+    .code-close-btn {
+      background: none; border: none; color: var(--text-dim);
+      font-size: 1.1rem; cursor: pointer; padding: 2px 6px; border-radius: 4px;
+    }
+    .code-close-btn:hover { background: var(--border); color: var(--text); }
+
+    .code-editor-wrap { flex: 1; min-height: 0; overflow: hidden; position: relative; }
+    .code-editor {
+      width: 100%; height: 100%; min-height: 160px; max-height: 340px;
+      padding: 14px 16px; background: #0d1117; color: #e6edf3;
+      font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', Menlo, monospace;
+      font-size: 0.88rem; line-height: 1.6; border: none; resize: none;
+      outline: none; tab-size: 4;
+    }
+
+    .code-toolbar {
+      display: flex; gap: 8px; padding: 10px 14px;
+      border-top: 1px solid var(--border); background: var(--surface2);
+      flex-shrink: 0; flex-wrap: wrap;
+    }
+    .run-btn {
+      background: #2ea043; border: none; border-radius: 8px; color: #fff;
+      font-size: 0.85rem; font-weight: 700; padding: 8px 18px; cursor: pointer;
+      transition: background 0.15s;
+    }
+    .run-btn:hover { background: #3fb950; }
+    .run-btn:disabled { background: #21262d; color: var(--text-dim); cursor: default; }
+    .code-toolbar-btn {
+      background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+      color: var(--text-dim); font-size: 0.82rem; padding: 7px 12px; cursor: pointer;
+      transition: all 0.15s;
+    }
+    .code-toolbar-btn:hover { border-color: var(--persona-color); color: var(--text); }
+    .sample-select {
+      background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+      color: var(--text); font-size: 0.8rem; padding: 7px 10px; cursor: pointer;
+    }
+
+    .code-output-wrap {
+      flex-shrink: 0; border-top: 1px solid var(--border); max-height: 200px; overflow-y: auto;
+    }
+    .code-output-label {
+      font-size: 0.7rem; font-weight: 700; color: var(--text-dim);
+      text-transform: uppercase; letter-spacing: 0.08em;
+      padding: 6px 16px 2px; background: var(--surface2);
+    }
+    .code-output {
+      margin: 0; padding: 12px 16px; background: #0a0c10; color: #e6edf3;
+      font-family: 'JetBrains Mono', 'Fira Code', Menlo, monospace;
+      font-size: 0.84rem; line-height: 1.5; white-space: pre-wrap; word-break: break-all;
+      min-height: 48px;
+    }
+    .code-output.error { color: #f85149; }
+    .code-output .antigravity-line { color: #f0c040; font-weight: bold; }
   </style>
 </head>
 <body>
@@ -345,7 +442,10 @@
         <span class="header-persona-icon" id="h-icon">🤖</span>
         <span class="header-persona-name" id="h-name">나만의 AI</span>
       </div>
-      <span class="model-badge" id="model-badge">로딩 중...</span>
+      <div style="display:flex;gap:8px;align-items:center;">
+        <button class="code-toggle-btn" id="code-toggle-btn" onclick="toggleCodePanel()" title="Python 코드 실행">🐍 Python</button>
+        <span class="model-badge" id="model-badge">로딩 중...</span>
+      </div>
     </header>
 
     <!-- 페르소나 선택 탭 -->
@@ -385,6 +485,41 @@
 </div>
 
 <div class="toast" id="toast"></div>
+
+<!-- ── Python 코드 실행 모달 ──────────────────── -->
+<div class="code-modal" id="code-modal" onclick="handleCodeModalClick(event)">
+  <div class="code-modal-inner" id="code-modal-inner">
+    <div class="code-modal-header">
+      <span>🐍 Python 코드 실행 환경</span>
+      <div style="display:flex;gap:8px;align-items:center;">
+        <span class="pyodide-status" id="pyodide-status">대기 중</span>
+        <button class="code-close-btn" onclick="toggleCodePanel()">✕</button>
+      </div>
+    </div>
+    <div class="code-editor-wrap">
+      <textarea id="code-editor" class="code-editor"
+        placeholder="# Python 코드를 입력하세요&#10;print('Hello, World!')&#10;&#10;# 🚀 Easter egg: import antigravity"
+        onkeydown="handleCodeKey(event)" spellcheck="false" autocorrect="off" autocapitalize="off"></textarea>
+    </div>
+    <div class="code-toolbar">
+      <button id="run-btn" class="run-btn" onclick="runCode()">▶ 실행 (Ctrl+Enter)</button>
+      <select class="sample-select" onchange="loadSample(this.value);this.value=''">
+        <option value="">📝 예시 코드...</option>
+        <option value="hello">Hello World</option>
+        <option value="fib">피보나치 수열</option>
+        <option value="comprehension">리스트 컴프리헨션</option>
+        <option value="class">클래스 예제</option>
+        <option value="gravity">🚀 antigravity</option>
+      </select>
+      <button class="code-toolbar-btn" onclick="clearCode()">🗑 지우기</button>
+      <button class="code-toolbar-btn" onclick="copyCode()">📋 복사</button>
+    </div>
+    <div class="code-output-wrap">
+      <div class="code-output-label">출력</div>
+      <pre id="code-output" class="code-output">▶ 실행 버튼을 누르면 Python 코드가 실행됩니다.</pre>
+    </div>
+  </div>
+</div>
 
 <script>
   // ── 상태 ─────────────────────────────────
@@ -954,6 +1089,201 @@
   loadModelInfo();
   loadStats();
   initGoogleDriveStatus();
+
+  // ══════════════════════════════════════════
+  //  Python 코드 실행 환경 (Pyodide)
+  // ══════════════════════════════════════════
+  let pyodide = null;
+  let pyodideReady = false;
+  let pyodideLoading = false;
+
+  const CODE_SAMPLES = {
+    hello: `# Hello World\nprint("Hello, World!")\nprint("Python 코드 실행 환경 🐍")\n\nname = "개발자"\nprint(f"안녕하세요, {name}님!")`,
+    fib: `# 피보나치 수열\ndef fibonacci(n):\n    a, b = 0, 1\n    result = []\n    for _ in range(n):\n        result.append(a)\n        a, b = b, a + b\n    return result\n\nprint("피보나치 수열 (20개):")\nprint(fibonacci(20))`,
+    comprehension: `# 리스트 컴프리헨션\nsquares = [x**2 for x in range(1, 11)]\nprint("제곱수:", squares)\n\neven = [x for x in range(20) if x % 2 == 0]\nprint("짝수:", even)\n\n# 딕셔너리 컴프리헨션\nword_len = {w: len(w) for w in ["Python", "is", "awesome"]}\nprint("단어 길이:", word_len)`,
+    class: `# 클래스 예제\nclass BankAccount:\n    def __init__(self, owner, balance=0):\n        self.owner = owner\n        self.balance = balance\n\n    def deposit(self, amount):\n        self.balance += amount\n        print(f"입금 {amount:,}원 → 잔액 {self.balance:,}원")\n\n    def withdraw(self, amount):\n        if amount > self.balance:\n            print("잔액 부족!")\n        else:\n            self.balance -= amount\n            print(f"출금 {amount:,}원 → 잔액 {self.balance:,}원")\n\nacc = BankAccount("홍길동", 100000)\nacc.deposit(50000)\nacc.withdraw(30000)\nacc.withdraw(200000)`,
+    gravity: `import antigravity`,
+  };
+
+  // Pyodide 초기화 (첫 runCode 시 자동 로드)
+  async function loadPyodideEnv() {
+    if (pyodideReady) return true;
+    if (pyodideLoading) return false;
+    pyodideLoading = true;
+
+    const statusEl = document.getElementById('pyodide-status');
+    statusEl.textContent = '⏳ Python 로딩 중...';
+    statusEl.style.color = '#f0c040';
+
+    try {
+      // Pyodide CDN 스크립트 동적 로드
+      if (!window.loadPyodide) {
+        await new Promise((resolve, reject) => {
+          const s = document.createElement('script');
+          s.src = 'https://cdn.jsdelivr.net/pyodide/v0.27.4/full/pyodide.js';
+          s.onload = resolve;
+          s.onerror = () => reject(new Error('Pyodide 스크립트 로드 실패'));
+          document.head.appendChild(s);
+        });
+      }
+
+      pyodide = await window.loadPyodide({
+        indexURL: 'https://cdn.jsdelivr.net/pyodide/v0.27.4/full/',
+      });
+
+      // stdout / stderr 리디렉션
+      pyodide.runPython(`
+import sys, io
+
+class _Capture:
+    def __init__(self): self._buf = []
+    def write(self, s): self._buf.append(str(s))
+    def flush(self): pass
+    def getvalue(self): return ''.join(self._buf)
+    def clear(self): self._buf.clear()
+
+_stdout = _Capture()
+_stderr = _Capture()
+sys.stdout = _stdout
+sys.stderr = _stderr
+      `);
+
+      pyodideReady = true;
+      statusEl.textContent = '✅ Python 3.x (Pyodide)';
+      statusEl.style.color = '#3fb950';
+      return true;
+    } catch (e) {
+      statusEl.textContent = '❌ 로드 실패';
+      statusEl.style.color = '#f85149';
+      pyodideLoading = false;
+      setOutput(`Pyodide 로드 실패: ${e.message}\n\n네트워크 연결을 확인하거나 잠시 후 다시 시도해주세요.`, true);
+      return false;
+    }
+  }
+
+  async function runCode() {
+    const code = document.getElementById('code-editor').value;
+    if (!code.trim()) return;
+
+    const btn = document.getElementById('run-btn');
+
+    // ── antigravity Easter egg ──────────────
+    if (/^\s*import\s+antigravity\s*$/m.test(code) ||
+        /^\s*from\s+antigravity\s+import/m.test(code)) {
+      setOutput(
+        '🚀  Python이 날아오릅니다!\n\n' +
+        '   import antigravity 실행됨...\n' +
+        '   https://antigravity.google/ 열리는 중...\n\n' +
+        '   ✈️  xkcd.com/353 — "I\'m using my new computer."\n' +
+        '       "It\'s a Mac. I can run Python on it!"\n' +
+        '       "Python 2 or 3?" "It flies now! It flies!"\n\n' +
+        '   ─────────────────────────────────────────\n' +
+        '   antigravity 모듈은 Python 인터프리터에 내장된\n' +
+        '   Easter egg입니다. 실행 시 XKCD #353 페이지를\n' +
+        '   브라우저에서 엽니다 🐍',
+        false, true
+      );
+      window.open('https://antigravity.google/', '_blank');
+      return;
+    }
+
+    btn.disabled = true;
+    btn.textContent = '⏳ 실행 중...';
+    setOutput('실행 중...');
+
+    const ok = await loadPyodideEnv();
+    if (!ok) { btn.disabled = false; btn.textContent = '▶ 실행 (Ctrl+Enter)'; return; }
+
+    try {
+      // 캡처 버퍼 초기화
+      pyodide.runPython('_stdout.clear(); _stderr.clear()');
+
+      // 코드 실행
+      const result = pyodide.runPython(code);
+
+      const stdout = pyodide.runPython('_stdout.getvalue()');
+      const stderr = pyodide.runPython('_stderr.getvalue()');
+
+      let out = '';
+      if (stdout) out += stdout;
+      if (stderr) out += (out ? '\n' : '') + `⚠️  stderr:\n${stderr}`;
+      // 마지막 표현식 결과 출력 (REPL 방식)
+      if (result !== undefined && result !== null && String(result) !== 'None') {
+        out += (out ? '\n' : '') + String(result);
+      }
+      setOutput(out || '(출력 없음)');
+    } catch (e) {
+      setOutput(e.message, true);
+    }
+
+    btn.disabled = false;
+    btn.textContent = '▶ 실행 (Ctrl+Enter)';
+  }
+
+  function setOutput(text, isError = false, isGravity = false) {
+    const el = document.getElementById('code-output');
+    el.className = 'code-output' + (isError ? ' error' : '');
+    if (isGravity) {
+      el.innerHTML = text.replace(/🚀.*$/m, m => `<span class="antigravity-line">${m}</span>`);
+    } else {
+      el.textContent = text;
+    }
+  }
+
+  function handleCodeKey(e) {
+    // Ctrl+Enter or Cmd+Enter → 실행
+    if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+      e.preventDefault();
+      runCode();
+      return;
+    }
+    // Tab → 공백 4칸 삽입
+    if (e.key === 'Tab') {
+      e.preventDefault();
+      const ta = e.target;
+      const s = ta.selectionStart, end = ta.selectionEnd;
+      ta.value = ta.value.substring(0, s) + '    ' + ta.value.substring(end);
+      ta.selectionStart = ta.selectionEnd = s + 4;
+    }
+  }
+
+  function toggleCodePanel() {
+    const modal = document.getElementById('code-modal');
+    const btn = document.getElementById('code-toggle-btn');
+    const isOpen = modal.classList.toggle('open');
+    btn.classList.toggle('active', isOpen);
+    if (isOpen) {
+      document.getElementById('code-editor').focus();
+      // Pyodide 미리 로드 시작
+      if (!pyodideReady && !pyodideLoading) {
+        document.getElementById('pyodide-status').textContent = '클릭하면 로드됩니다';
+      }
+    }
+  }
+
+  function handleCodeModalClick(e) {
+    // 배경 클릭 시 닫기
+    if (e.target === document.getElementById('code-modal')) toggleCodePanel();
+  }
+
+  function loadSample(key) {
+    if (!key) return;
+    document.getElementById('code-editor').value = CODE_SAMPLES[key] || '';
+    document.getElementById('code-output').textContent = '▶ 실행 버튼을 누르면 Python 코드가 실행됩니다.';
+    document.getElementById('code-editor').focus();
+  }
+
+  function clearCode() {
+    document.getElementById('code-editor').value = '';
+    document.getElementById('code-output').textContent = '▶ 실행 버튼을 누르면 Python 코드가 실행됩니다.';
+    document.getElementById('code-editor').focus();
+  }
+
+  function copyCode() {
+    const code = document.getElementById('code-editor').value;
+    if (!code) return;
+    navigator.clipboard.writeText(code).then(() => showToast('📋 코드 복사됨!'));
+  }
 </script>
 </body>
 </html>
