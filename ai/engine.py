@@ -40,6 +40,28 @@ def _detect_law(text: str) -> str:
             return law_key
     return ''
 
+# 한국어 어미 제거 — "계산해줘"→"계산", "며칠인지"→"며칠", "2026년"→"2026"
+_KR_SUFFIXES = [
+    '해주세요', '해줄래', '해봐줘', '해봐', '해줘',
+    '하는방법', '하는법', '방법은', '이란무엇', '이란뭐',
+    '인가요', '인지요', '인가', '인지',
+    '이에요', '예요', '이죠', '이야', '죠', '이야',
+    '하나요', '나요', '아요', '어요',
+    '해요', '하요',
+]
+
+def _strip_kr(word: str) -> str:
+    """한국어 어미·조사 제거 후 어근 반환"""
+    # 숫자+년/월/일 → 숫자만
+    m = re.match(r'^(\d+)(년도?|월|일)$', word)
+    if m:
+        return m.group(1)
+    for suf in _KR_SUFFIXES:
+        if word.endswith(suf) and len(word) > len(suf) + 1:
+            return word[:-len(suf)]
+    return word
+
+
 def _tok(text: str) -> List[str]:
     text = re.sub(r'[^\w가-힣a-zA-Z0-9\s]', ' ', text)
     tokens = []
@@ -47,11 +69,15 @@ def _tok(text: str) -> List[str]:
         if len(w) < 2 or w in _STOP:
             continue
         w_lower = w.lower()
-        # 조항 번호 정규화: "3조" → "제3조", "제3조" → "제3조" (동일 토큰으로)
+        # 조항 번호 정규화: "3조" → "제3조"
         if re.match(r'^\d+조$', w_lower):
             tokens.append(f'제{w_lower}')
-        else:
-            tokens.append(w_lower)
+            continue
+        # 한국어 어미 제거 후 어근 추가 (원형도 함께 보존)
+        root = _strip_kr(w_lower)
+        if root != w_lower and len(root) >= 2 and root not in _STOP:
+            tokens.append(root)   # 어근 (계산, 며칠 등)
+        tokens.append(w_lower)   # 원형도 보존
     return tokens
 
 def _feat(text: str) -> List[str]:
@@ -82,8 +108,8 @@ class _Engine:
             self._dirty = False
             return
 
-        # 질문 + 답변 앞부분으로 인덱스
-        all_f = [_feat(q + ' ' + a[:300]) for q, a, _ in self._qa]
+        # q 필드 3배 가중치 부스트: q 토큰을 3번 반복 → q 키워드 일치 시 점수 대폭 상승
+        all_f = [_feat(q + ' ' + q + ' ' + q + ' ' + a[:200]) for q, a, _ in self._qa]
 
         # IDF
         df: Dict[str, int] = defaultdict(int)
