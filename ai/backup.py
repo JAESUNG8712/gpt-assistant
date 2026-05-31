@@ -8,7 +8,8 @@ import pickle
 from datetime import datetime
 from pathlib import Path
 
-DB_PATH      = os.getenv("DB_PATH", "/tmp/memory.db")
+_APP_DIR = os.path.dirname(os.path.abspath(__file__))
+DB_PATH  = os.getenv("DB_PATH", os.path.join(_APP_DIR, "data", "memory.db"))
 TOKEN_PATH   = os.getenv("GDRIVE_TOKEN_PATH", "/tmp/gdrive_token.pkl")
 
 # Google Drive OAuth2 설정 (환경변수)

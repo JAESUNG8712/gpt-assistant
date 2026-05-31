@@ -6,8 +6,14 @@ import sqlite3
 import os
 from datetime import datetime
 
-DB_PATH = os.getenv("DB_PATH", "/tmp/memory.db")
-os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+# 기본 DB 경로: 앱 디렉토리 기준 상대 경로 (재시작 후에도 유지)
+# Render.com: 디스크를 {app_dir}/data 에 마운트하면 자동으로 영속 저장
+# 환경변수로 덮어쓰기 가능: DB_PATH=/app/data/memory.db
+_APP_DIR = os.path.dirname(os.path.abspath(__file__))
+DB_PATH = os.getenv("DB_PATH", os.path.join(_APP_DIR, "data", "memory.db"))
+_db_dir = os.path.dirname(DB_PATH)
+if _db_dir:
+    os.makedirs(_db_dir, exist_ok=True)
 
 
 # ── SQLite 연결 ───────────────────────────────────────
@@ -263,11 +269,26 @@ def store_conversation_memory(user_msg: str, ai_msg: str, persona_id: str = "hr"
 
 
 def store_document(text: str, filename: str, persona_id: str = "hr"):
-    """업로드 문서를 청크로 나눠 엔진에 학습"""
+    """업로드 문서를 청크로 나눠 엔진에 학습 — 동일 파일 재업로드 시 기존 청크 교체"""
+    src = f"문서:{filename}"
+    # 기존 동일 파일 청크 삭제 (SQLite)
+    with _conn() as c:
+        c.execute(
+            "DELETE FROM learned_knowledge WHERE source=? AND persona=?",
+            (src, persona_id),
+        )
+    # 엔진에서도 소프트 삭제
+    try:
+        from engine import get_engine, _kb_loaded
+        if _kb_loaded:
+            get_engine().delete_by_source(src, persona_id)
+    except Exception:
+        pass
+
     chunks = [text[i:i + 500] for i in range(0, len(text), 400)]
     for i, chunk in enumerate(chunks):
         store_memory(chunk, {
-            "source": f"문서:{filename}",
+            "source": src,
             "persona": persona_id,
             "chunk": i,
         })
@@ -278,21 +299,59 @@ def store_document(text: str, filename: str, persona_id: str = "hr"):
         )
 
 
-def auto_learn(question: str, answer: str, persona: str = "hr"):
-    """자동 학습: Q&A 쌍을 KB에 영구 저장 (재시작 후에도 유지)"""
+def upsert_knowledge(question: str, answer: str, persona: str,
+                     source: str = "직접입력") -> bool:
+    """Q&A를 KB에 저장 — 동일 질문이 있으면 최신 내용으로 업데이트, 없으면 신규 추가.
+    Returns True if updated (existing replaced), False if inserted (new entry).
+    """
     content = f"Q: {question}\nA: {answer[:1500]}"
+    now = datetime.now().isoformat()
+    q_lower = question.strip().lower()
+
     with _conn() as c:
-        c.execute(
-            "INSERT INTO learned_knowledge (content, persona, source, created_at) VALUES (?,?,?,?)",
-            (content, persona, "자동학습", datetime.now().isoformat()),
-        )
-    # 엔진이 이미 로드된 경우에만 실시간 반영 (미로드 시 재시작 때 SQLite에서 자동 복원)
+        rows = c.execute(
+            "SELECT id, content FROM learned_knowledge"
+            " WHERE persona=? AND source NOT IN ('정적KB') ORDER BY id DESC",
+            (persona,),
+        ).fetchall()
+
+        existing_id = None
+        for row in rows:
+            rc = dict(row)["content"]
+            if rc.startswith("Q: ") and "\nA: " in rc:
+                eq = rc.split("\nA: ", 1)[0][3:].strip().lower()
+                if eq == q_lower:
+                    existing_id = dict(row)["id"]
+                    break
+
+        if existing_id:
+            c.execute(
+                "UPDATE learned_knowledge SET content=?, source=?, created_at=? WHERE id=?",
+                (content, source, now, existing_id),
+            )
+            updated = True
+        else:
+            c.execute(
+                "INSERT INTO learned_knowledge (content, persona, source, created_at) VALUES (?,?,?,?)",
+                (content, persona, source, now),
+            )
+            updated = False
+
+    # 엔진: 기존 동일 질문 삭제 후 새 버전 추가
     try:
-        import engine as eng
-        if eng._kb_loaded:
-            eng._engine.add(question, answer[:2000], {"persona": persona, "source": "자동학습"})
+        from engine import get_engine, _kb_loaded
+        if _kb_loaded:
+            get_engine().delete_by_q(question, persona)
+            get_engine().add(question, answer[:2000], {"persona": persona, "source": source})
     except Exception as e:
-        print(f"⚠️ 자동학습 엔진 반영 실패: {e}")
+        print(f"⚠️ 엔진 학습 실패: {e}")
+
+    return updated
+
+
+def auto_learn(question: str, answer: str, persona: str = "hr"):
+    """자동 학습: Q&A 쌍을 KB에 영구 저장 — 동일 질문이 있으면 최신으로 업데이트"""
+    upsert_knowledge(question, answer, persona, source="자동학습")
 
 
 def list_documents() -> list:

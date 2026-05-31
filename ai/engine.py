@@ -144,13 +144,36 @@ class _Engine:
         self._vecs: List[Dict[str, float]] = []
         self._idf: Dict[str, float] = {}
         self._dirty = True
+        self._deleted: set = set()   # 소프트 삭제된 인덱스
 
     def add(self, q: str, a: str, meta: dict = None):
         self._qa.append((q, a, meta or {}))
         self._dirty = True
 
     def count(self) -> int:
-        return len(self._qa)
+        return len(self._qa) - len(self._deleted)
+
+    def delete_by_q(self, question: str, persona: str = None):
+        """동일 질문의 기존 항목을 소프트 삭제 (검색에서 제외)"""
+        q_lower = question.strip().lower()
+        for i, (q, a, meta) in enumerate(self._qa):
+            if i in self._deleted:
+                continue
+            if q.strip().lower() == q_lower:
+                if persona is None or meta.get("persona") == persona:
+                    self._deleted.add(i)
+                    self._dirty = True
+
+    def delete_by_source(self, source: str, persona: str = None):
+        """특정 소스(예: '문서:파일명')의 모든 항목 소프트 삭제"""
+        for i, (q, a, meta) in enumerate(self._qa):
+            if i in self._deleted:
+                continue
+            if meta.get("source") == source:
+                if persona is None or meta.get("persona") == persona:
+                    self._deleted.add(i)
+        if self._deleted:
+            self._dirty = True
 
     def _build(self):
         N = len(self._qa)
@@ -210,6 +233,8 @@ class _Engine:
         query_lower = query.lower()
         results = []
         for i, (q, a, meta) in enumerate(self._qa):
+            if i in self._deleted:
+                continue
             p = meta.get('persona', '')
             if persona and p and p != persona:
                 continue
@@ -293,15 +318,40 @@ def _load_knowledge():
     # 자동학습·직접입력·문서 업로드 등 동적 학습 데이터 복원 (재시작 후에도 유지)
     # "정적KB" 소스는 Python KB 파일에서 이미 로드되었으므로 건너뜀 (중복 방지)
     try:
-        import sqlite3, os
-        db_path = os.getenv("DB_PATH", "/tmp/memory.db")
-        if os.path.exists(db_path):
+        import sqlite3, os as _os
+        _here = _os.path.dirname(_os.path.abspath(__file__))
+        db_path = _os.getenv("DB_PATH", _os.path.join(_here, "data", "memory.db"))
+        if _os.path.exists(db_path):
             conn = sqlite3.connect(db_path)
             rows = conn.execute(
-                "SELECT content, persona, source FROM learned_knowledge WHERE source != '정적KB'"
+                "SELECT id, content, persona, source FROM learned_knowledge"
+                " WHERE source != '정적KB' ORDER BY id ASC"
             ).fetchall()
             conn.close()
-            for content, persona, source in rows:
+
+            # Q&A 형식 항목은 같은 질문이 여러 개면 최신(id 큰 것)만 사용
+            # source가 직접입력·자동학습인 경우만 중복 제거; 문서 청크는 모두 포함
+            DEDUP_SOURCES = ("직접입력", "자동학습")
+            qa_latest: dict = {}   # (q_lower, persona) → (content, source)
+            chunks = []            # 문서 청크 등 비-QA 항목
+
+            for row_id, content, persona, source in rows:
+                is_qa = content.startswith("Q: ") and "\nA: " in content
+                if is_qa and source in DEDUP_SOURCES:
+                    q_lower = content.split("\nA: ", 1)[0][3:].strip().lower()
+                    qa_latest[(q_lower, persona)] = (content, source)  # 최신이 덮어씀
+                else:
+                    chunks.append((content, persona, source))
+
+            # 중복 제거된 Q&A 항목 로드
+            for (q_lower, persona), (content, source) in qa_latest.items():
+                parts = content.split("\nA: ", 1)
+                q = parts[0][3:].strip()
+                a = parts[1].strip()
+                _engine.add(q, a, {"persona": persona, "source": source})
+
+            # 문서 청크 등 나머지 항목 로드
+            for content, persona, source in chunks:
                 if content.startswith("Q: ") and "\nA: " in content:
                     parts = content.split("\nA: ", 1)
                     q = parts[0][3:].strip()
