@@ -242,19 +242,14 @@ class TextLearnRequest(BaseModel):
 
 @app.post("/learn/text")
 def learn_text(req: TextLearnRequest):
-    """질문-답변 쌍을 직접 지식베이스에 추가"""
-    from engine import get_engine
-    engine = get_engine()
+    """질문-답변 쌍을 직접 지식베이스에 추가 — 동일 질문이 있으면 최신으로 업데이트"""
     q = req.question.strip()
     a = req.answer.strip()
     if not q or not a:
         raise HTTPException(400, "질문과 답변을 모두 입력하세요.")
-    engine.add(q, a, {'persona': req.persona, 'source': '직접입력'})
-    mem.store_memory(
-        f"Q: {q}\nA: {a}",
-        {'source': '직접입력', 'persona': req.persona}
-    )
-    return {"ok": True, "question": q, "persona": req.persona}
+    updated = mem.upsert_knowledge(q, a, req.persona, source="직접입력")
+    return {"ok": True, "question": q, "persona": req.persona,
+            "action": "updated" if updated else "inserted"}
 
 
 # ── 피드백 ───────────────────────────────────────────
@@ -302,7 +297,7 @@ def knowledge_stats():
         p = meta.get("persona", "(공통)")
         persona_counts[p] = persona_counts.get(p, 0) + 1
 
-    db_path = os.getenv("DB_PATH", "/tmp/memory.db")
+    db_path = mem.DB_PATH
     db_static = 0
     db_dynamic = 0
     if os.path.exists(db_path):
@@ -413,7 +408,7 @@ async def debug_law(q: str = "근로기준법 제7조"):
 @app.get("/health")
 def health():
     import os, shutil
-    db_path = os.getenv("DB_PATH", "/tmp/memory.db")
+    db_path = mem.DB_PATH
     data_dir = os.path.dirname(db_path)
     disk = shutil.disk_usage(data_dir)
     return {
