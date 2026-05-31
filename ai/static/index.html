@@ -382,6 +382,27 @@
     }
     .code-output.error { color: #f85149; }
     .code-output .antigravity-line { color: #f0c040; font-weight: bold; }
+
+    /* ── 채팅 코드 블록 툴바 ────────── */
+    .code-block-wrap { margin: 6px 0; }
+    .code-block-wrap pre { border-radius: 0 0 8px 8px !important; margin: 0 !important; }
+    .code-block-toolbar {
+      display: flex; gap: 6px; justify-content: flex-end; align-items: center;
+      background: #161b22; border-radius: 8px 8px 0 0; padding: 5px 10px;
+      border: 1px solid var(--border); border-bottom: none;
+    }
+    .code-to-python-btn {
+      background: #1f3a1f; border: 1px solid #2ea043; border-radius: 5px;
+      color: #3fb950; font-size: 0.7rem; font-weight: 600; padding: 2px 9px;
+      cursor: pointer; transition: all 0.15s;
+    }
+    .code-to-python-btn:hover { background: #2ea043; color: #fff; }
+    .code-copy-inline-btn {
+      background: var(--surface2); border: 1px solid var(--border); border-radius: 5px;
+      color: var(--text-dim); font-size: 0.7rem; padding: 2px 8px;
+      cursor: pointer; transition: all 0.15s;
+    }
+    .code-copy-inline-btn:hover { background: var(--border); color: var(--text); }
   </style>
 </head>
 <body>
@@ -533,6 +554,7 @@
   let personas = [];
   let isLoading = false;
   let thinkingMode = 'off'; // "off" | "prompt" | "deep"
+  let _codeBlockCounter = 0;
 
   const WELCOME_CHIPS = {
     hr: [
@@ -761,10 +783,18 @@
     let s = escHtml(text);
 
     // 코드블록 (``` ... ```) — 먼저 처리해야 내부 마크다운 영향 없음
-    s = s.replace(/```[\w]*\n([\s\S]*?)```/g, (_, code) =>
-      `<pre>${code.trimEnd()}</pre>`);
-    s = s.replace(/```([\s\S]*?)```/g, (_, code) =>
-      `<pre>${code.trim()}</pre>`);
+    s = s.replace(/```([\w]*)\n([\s\S]*?)```/g, (_, lang, code) => {
+      const id = `cb-${++_codeBlockCounter}`;
+      const isPy = !lang || /^(python|py|Python)$/.test(lang);
+      const pyBtn = isPy
+        ? `<button class="code-to-python-btn" onclick="sendToPython('${id}')">🐍 실행</button>`
+        : '';
+      return `<div class="code-block-wrap"><div class="code-block-toolbar">${pyBtn}<button class="code-copy-inline-btn" onclick="copyCodeBlock('${id}')">📋 복사</button></div><pre id="${id}">${code.trimEnd()}</pre></div>`;
+    });
+    s = s.replace(/```([\s\S]*?)```/g, (_, code) => {
+      const id = `cb-${++_codeBlockCounter}`;
+      return `<div class="code-block-wrap"><div class="code-block-toolbar"><button class="code-to-python-btn" onclick="sendToPython('${id}')">🐍 실행</button><button class="code-copy-inline-btn" onclick="copyCodeBlock('${id}')">📋 복사</button></div><pre id="${id}">${code.trim()}</pre></div>`;
+    });
 
     // 테이블 (|...|...|)
     s = s.replace(/((?:\|.+\|\n?)+)/g, (block) => {
@@ -876,6 +906,13 @@
         <span style="font-size:0.72rem;color:var(--text-dim);">이 답변이 도움됐나요?</span>
         <button class="fb-btn good" onclick="sendFeedback(this,1,'${escapedMsg}','${escapedFull}','${currentPersona.id}')">👍 도움돼요</button>
         <button class="fb-btn bad"  onclick="sendFeedback(this,-1,'${escapedMsg}','${escapedFull}','${currentPersona.id}')">👎 별로예요</button>`;
+      // 📋 복사 버튼 — 클로저로 캡처해 escaping 없이 정확히 전달
+      const copyBtn = document.createElement('button');
+      copyBtn.className = 'fb-btn';
+      copyBtn.textContent = '📋 복사';
+      const _q = msg, _a = feedbackText;
+      copyBtn.onclick = () => copyQA(_q, _a);
+      fbRow.appendChild(copyBtn);
       aiDiv.querySelector('.msg-bubble').appendChild(fbRow);
     } catch (e) {
       bubble.textContent = '오류: ' + e.message;
@@ -1293,6 +1330,29 @@ sys.stderr = _stderr
     const code = document.getElementById('code-editor').value;
     if (!code) return;
     navigator.clipboard.writeText(code).then(() => showToast('📋 코드 복사됨!'));
+  }
+
+  // ── 채팅 코드 블록 → Python 패널 ─────────────
+  function sendToPython(id) {
+    const pre = document.getElementById(id);
+    if (!pre) return;
+    document.getElementById('code-editor').value = pre.textContent;
+    const modal = document.getElementById('code-modal');
+    if (!modal.classList.contains('open')) toggleCodePanel();
+    document.getElementById('code-editor').focus();
+    showToast('🐍 코드를 Python 패널로 보냈습니다!');
+  }
+
+  function copyCodeBlock(id) {
+    const pre = document.getElementById(id);
+    if (!pre) return;
+    navigator.clipboard.writeText(pre.textContent).then(() => showToast('📋 코드 복사됨!'));
+  }
+
+  // ── 질문+답변 복사 ─────────────────────────
+  function copyQA(question, answer) {
+    const text = `[질문]\n${question}\n\n[답변]\n${answer}`;
+    navigator.clipboard.writeText(text).then(() => showToast('📋 질문+답변 복사됨!'));
   }
 </script>
 </body>
