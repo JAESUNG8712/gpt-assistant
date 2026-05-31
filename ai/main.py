@@ -101,12 +101,11 @@ async def chat(req: ChatRequest):
         search_ctx = srch.format_search_context(results)
 
     # ── 신뢰도 판정 ───────────────────────────────────────
-    # CALC  : Python 직접 계산 결과 있음 → 계산 결과 + LLM 보강
-    # HIGH  (≥0.55): 로컬 KB 직접 서빙 — LLM 호출 없음
-    # MED   (≥0.10): 로컬 KB를 컨텍스트로 LLM 보강 답변
-    # LOW   (< 0.10): 로컬 자료 없음 → LLM 생성 → 자동 학습
-    KB_DIRECT  = 0.55
-    KB_CONTEXT = 0.10
+    # CALC       : Python 직접 계산 결과 있음 → 계산 결과 직접 서빙
+    # KB (≥0.15) : 로컬 KB 직접 서빙 — LLM 호출 없음
+    # CLAUDE(<0.15): KB에 없는 질문 → Claude 호출
+    KB_DIRECT  = 0.15   # 이 점수 이상이면 KB로 직접 답변 (LLM 불필요)
+    KB_CONTEXT = 0.10   # LLM 호출 시 컨텍스트 포함 기준
 
     # law.go.kr에서 실시간 원문이 온 경우 → LLM 보강 (law_ctx 우선)
     has_law_rt  = bool(law_ctx)
