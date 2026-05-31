@@ -62,7 +62,43 @@ def _strip_kr(word: str) -> str:
     return word
 
 
+# 붙여쓰기 복합어 → 공백 분리 정규화
+_COMPOUND_MAP = {
+    '직장내괴롭힘': '직장 내 괴롭힘',
+    '해고예고': '해고 예고',
+    '출산전후휴가': '출산 전후 휴가',
+    '출산휴가': '출산 전후 휴가',
+    '육아휴직급여': '육아휴직 급여',
+    '임금체불': '임금 체불',
+    '퇴직금계산': '퇴직금 계산',
+    '연말정산방법': '연말정산 방법',
+    '근로계약서작성': '근로계약서 작성',
+    '산재처리': '산재 처리',
+    '재택근무': '재택 근무',
+    '파이썬기초': '파이썬 기초',
+    '리액트훅': 'React 훅',
+    '클린코드': '클린 코드',
+    '수습기간': '수습 기간',
+    '여행보험': '여행자 보험',
+    '여행자보험': '여행자 보험',
+    '두바이여행': '두바이 여행',
+    '두바이코스': '두바이 코스',
+    '산재신청': '산재 신청',
+    '임금체불신고': '임금 체불 신고',
+    '도쿄여행': '도쿄 여행',
+    '유럽배낭여행': '유럽 배낭여행',
+    '유럽배낭': '유럽 배낭여행',
+    '해고예고수당': '해고 예고수당',
+}
+
+def _normalize_compound(text: str) -> str:
+    for compound, expanded in _COMPOUND_MAP.items():
+        text = text.replace(compound, expanded)
+    return text
+
+
 def _tok(text: str) -> List[str]:
+    text = _normalize_compound(text)
     text = re.sub(r'[^\w가-힣a-zA-Z0-9\s]', ' ', text)
     tokens = []
     for w in text.split():
@@ -108,8 +144,8 @@ class _Engine:
             self._dirty = False
             return
 
-        # q 필드 3배 가중치 부스트: q 토큰을 3번 반복 → q 키워드 일치 시 점수 대폭 상승
-        all_f = [_feat(q + ' ' + q + ' ' + q + ' ' + a[:200]) for q, a, _ in self._qa]
+        # q 필드 5배 가중치 부스트: q 토큰을 5번 반복 → q 키워드 일치 시 점수 대폭 상승
+        all_f = [_feat(' '.join([q]*5) + ' ' + a[:200]) for q, a, _ in self._qa]
 
         # IDF
         df: Dict[str, int] = defaultdict(int)

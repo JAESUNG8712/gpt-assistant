@@ -183,7 +183,7 @@ EXTRA_KNOWLEDGE = [
 
     {
         "persona": "dev",
-        "q": "TypeScript 기초 타입 인터페이스 제네릭 tsconfig",
+        "q": "TypeScript 사용법 TypeScript 사용법 TypeScript 사용법 TypeScript 기초 타입 인터페이스 제네릭 타입스크립트 입문",
         "a": """## TypeScript 핵심 정리
 
 ### 기본 타입
@@ -340,7 +340,7 @@ router.push('/home')
 
     {
         "persona": "dev",
-        "q": "Next.js 기초 App Router 서버 컴포넌트 SSR SSG",
+        "q": "Next.js 기초 App Router 서버 컴포넌트 SSR SSG Next.js 사용법 넥스트 Next.js 입문 Next.js 시작 nextjs 라우팅",
         "a": """## Next.js 13+ App Router 핵심
 
 ### App Router 구조
