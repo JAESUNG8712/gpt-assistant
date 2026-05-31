@@ -1,10 +1,11 @@
 """
 LLM 라우터 — 다중 제공자 자동 폴백
-우선순위: OpenRouter → Groq → Gemini → 자체 TF-IDF 엔진
+우선순위: Claude → OpenRouter → Groq → Gemini → 자체 TF-IDF 엔진
 429(한도초과) 발생 시 다음 제공자로 자동 전환
 
 무료 API 키 발급:
-  OpenRouter : https://openrouter.ai  (무료 모델 한도 없음, 추천)
+  Claude     : https://console.anthropic.com  (추천)
+  OpenRouter : https://openrouter.ai  (무료 모델 한도 없음)
   Groq       : https://console.groq.com  (하루 14,400건)
   Gemini     : https://aistudio.google.com  (하루 1,500건)
 """
@@ -30,7 +31,11 @@ def _set_cooldown(provider: str, seconds: int = 3600):
 # ── 제공자 우선순위 설정 ─────────────────────────────
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "auto")
 
-# OpenRouter (무료 모델 한도 없음, 추천)
+# Anthropic Claude (추천 — 고품질, 유료)
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+ANTHROPIC_MODEL   = os.getenv("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001")
+
+# OpenRouter (무료 모델 한도 없음)
 # 무료 모델 목록: https://openrouter.ai/models?q=free
 # 추천 무료 모델:
 #   meta-llama/llama-3.3-70b-instruct:free  ← 고품질, 70B
@@ -86,6 +91,41 @@ DEEP_ANALYSIS_PROMPT = """당신은 질문 분석 전문가입니다. 주어진 
 4. 최적 답변 구성 방향
 
 최종 답변은 절대 작성하지 마세요. 분석·계획만 간결하게 작성하세요."""
+
+
+# ── Anthropic Claude 스트리밍 ────────────────────────
+async def _claude_stream(messages: list, system: str) -> AsyncGenerator[str, None]:
+    payload = {
+        "model":      ANTHROPIC_MODEL,
+        "max_tokens": 2048,
+        "system":     system,
+        "messages":   messages,
+        "stream":     True,
+    }
+    headers = {
+        "x-api-key":         ANTHROPIC_API_KEY,
+        "anthropic-version": "2023-06-01",
+        "content-type":      "application/json",
+    }
+    async with httpx.AsyncClient(timeout=60) as client:
+        async with client.stream(
+            "POST",
+            "https://api.anthropic.com/v1/messages",
+            headers=headers,
+            json=payload,
+        ) as resp:
+            resp.raise_for_status()
+            async for line in resp.aiter_lines():
+                if line.startswith("data: "):
+                    chunk = line[6:]
+                    try:
+                        data = json.loads(chunk)
+                        if data.get("type") == "content_block_delta":
+                            text = data.get("delta", {}).get("text", "")
+                            if text:
+                                yield text
+                    except Exception:
+                        pass
 
 
 # ── 자체 엔진 폴백 ────────────────────────────────────
@@ -231,12 +271,14 @@ def _provider_chain() -> list[str]:
         return [LLM_PROVIDER]
 
     chain = []
+    if ANTHROPIC_API_KEY and not _is_cooling_down("claude"):
+        chain.append("claude")       # 1순위: Anthropic Claude (고품질)
     if OPENROUTER_API_KEY and not _is_cooling_down("openrouter"):
-        chain.append("openrouter")   # 1순위: 무료 모델 한도 없음
+        chain.append("openrouter")   # 2순위: 무료 모델 한도 없음
     if GROQ_API_KEY and not _is_cooling_down("groq"):
-        chain.append("groq")         # 2순위: 하루 14,400건
+        chain.append("groq")         # 3순위: 하루 14,400건
     if GEMINI_API_KEY and not _is_cooling_down("gemini"):
-        chain.append("gemini")       # 3순위: 하루 1,500건
+        chain.append("gemini")       # 4순위: 하루 1,500건
     chain.append("local")            # 최후 폴백: 자체 엔진 (항상 포함)
     return chain
 
@@ -307,7 +349,12 @@ async def chat_stream(
             sys_with_ctx = system
 
         try:
-            if provider == "openrouter":
+            if provider == "claude":
+                async for token in _claude_stream(messages, sys_with_ctx):
+                    yield token
+                return
+
+            elif provider == "openrouter":
                 async for token in _openrouter_stream(messages, sys_with_ctx):
                     yield token
                 return
@@ -375,10 +422,11 @@ def current_model_info() -> dict:
     chain = _provider_chain()
     primary = chain[0]
     labels = {
-        "openrouter": {"provider": "OpenRouter", "model": OPENROUTER_MODEL, "limit": "200건/일(무료)"},
-        "groq":       {"provider": "Groq",        "model": GROQ_MODEL,        "limit": "14,400건/일"},
-        "gemini":     {"provider": "Google Gemini","model": GEMINI_MODEL,      "limit": "1,500건/일"},
-        "local":      {"provider": "자체 TF-IDF 엔진", "model": "키워드 검색", "limit": "무제한"},
+        "claude":     {"provider": "Anthropic Claude", "model": ANTHROPIC_MODEL,  "limit": "유료 종량제"},
+        "openrouter": {"provider": "OpenRouter",        "model": OPENROUTER_MODEL, "limit": "200건/일(무료)"},
+        "groq":       {"provider": "Groq",              "model": GROQ_MODEL,       "limit": "14,400건/일"},
+        "gemini":     {"provider": "Google Gemini",     "model": GEMINI_MODEL,     "limit": "1,500건/일"},
+        "local":      {"provider": "자체 TF-IDF 엔진",  "model": "키워드 검색",    "limit": "무제한"},
     }
     info = labels.get(primary, labels["local"])
     info["free"] = True
@@ -386,7 +434,7 @@ def current_model_info() -> dict:
 
     # 쿨다운 중인 제공자 표시
     cooling = {}
-    for p in ["openrouter", "groq", "gemini"]:
+    for p in ["claude", "openrouter", "groq", "gemini"]:
         if _is_cooling_down(p):
             remaining = int(_rate_limit_until[p] - time.time())
             cooling[p] = f"{remaining // 60}분 후 복구"
