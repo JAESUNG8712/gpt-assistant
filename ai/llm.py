@@ -57,8 +57,9 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 GROQ_MODEL   = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
 
 # Google Gemini (하루 1,500건 무료)
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-GEMINI_MODEL   = os.getenv("GEMINI_MODEL", "gemini-2.0-flash-lite")
+GEMINI_API_KEY     = os.getenv("GEMINI_API_KEY", "")
+GEMINI_MODEL       = os.getenv("GEMINI_MODEL", "gemini-2.0-flash-lite")
+GEMINI_CODING_MODEL = os.getenv("GEMINI_CODING_MODEL", "gemini-2.0-flash")
 
 SYSTEM_PROMPT = """당신은 사용자만을 위한 전용 AI 어시스턴트입니다.
 - 사용자의 과거 대화, 업로드한 문서, 인터넷 검색 결과를 바탕으로 답변합니다.
@@ -212,7 +213,8 @@ async def _groq_stream(messages: list, system: str) -> AsyncGenerator[str, None]
 
 
 # ── Gemini 스트리밍 (별도 포맷) ───────────────────────
-async def _gemini_once(messages: list, system: str) -> AsyncGenerator[str, None]:
+async def _gemini_once(messages: list, system: str, model: str = None) -> AsyncGenerator[str, None]:
+    model = model or GEMINI_MODEL
     contents = []
     for m in messages:
         role = "user" if m["role"] == "user" else "model"
@@ -220,11 +222,11 @@ async def _gemini_once(messages: list, system: str) -> AsyncGenerator[str, None]
     payload = {
         "system_instruction": {"parts": [{"text": system}]},
         "contents": contents,
-        "generationConfig": {"temperature": 0.7, "maxOutputTokens": 2048},
+        "generationConfig": {"temperature": 0.7, "maxOutputTokens": 4096},
     }
     url = (
         f"https://generativelanguage.googleapis.com/v1beta/models/"
-        f"{GEMINI_MODEL}:streamGenerateContent?alt=sse&key={GEMINI_API_KEY}"
+        f"{model}:streamGenerateContent?alt=sse&key={GEMINI_API_KEY}"
     )
     async with httpx.AsyncClient(timeout=60) as client:
         async with client.stream("POST", url, json=payload) as resp:
@@ -250,6 +252,26 @@ async def _gemini_stream(messages: list, system: str) -> AsyncGenerator[str, Non
     for attempt in range(2):
         try:
             async for token in _gemini_once(messages, system):
+                yield token
+            return
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 429:
+                if attempt == 0:
+                    await asyncio.sleep(15)
+                    continue
+                else:
+                    _set_cooldown("gemini", seconds=3600)
+            raise
+        except Exception:
+            raise
+
+
+# ── Gemini 코딩 전용 스트리밍 ─────────────────────────
+async def _gemini_coding_stream(messages: list, system: str) -> AsyncGenerator[str, None]:
+    """코딩 요청 전용 — 고품질 모델(gemini-2.0-flash) 사용"""
+    for attempt in range(2):
+        try:
+            async for token in _gemini_once(messages, system, model=GEMINI_CODING_MODEL):
                 yield token
             return
         except httpx.HTTPStatusError as e:
@@ -409,6 +431,34 @@ async def chat_stream(
             else:
                 yield f"\n⚠️ 일시적인 연결 오류가 발생했습니다. 잠시 후 다시 시도해 주세요."
                 return
+
+
+async def chat_stream_coding(
+    messages: list,
+    context: str = "",
+    system_prompt: str = None,
+) -> AsyncGenerator[str, None]:
+    """코딩 특화 스트리밍 — Gemini 우선, 폴백: 일반 체인
+    dev 페르소나에서 호출됨. Gemini 없으면 일반 _provider_chain() 사용.
+    """
+    system = system_prompt or SYSTEM_PROMPT
+    sys_with_ctx = system + f"\n\n참고 정보:\n{context}" if context else system
+
+    if GEMINI_API_KEY and not _is_cooling_down("gemini"):
+        try:
+            async for token in _gemini_coding_stream(messages, sys_with_ctx):
+                yield token
+            return
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 429:
+                _set_cooldown("gemini", seconds=3600)
+            print(f"[gemini-coding] HTTP {e.response.status_code} → 일반 체인으로 전환")
+        except Exception as e:
+            print(f"[gemini-coding] {type(e).__name__}: {e} → 일반 체인으로 전환")
+
+    # 폴백: 일반 체인 (context는 이미 sys_with_ctx에 포함 → 빈 문자열 전달)
+    async for token in chat_stream(messages, context=context, system_prompt=system_prompt):
+        yield token
 
 
 async def chat(messages: list, context: str = "") -> str:

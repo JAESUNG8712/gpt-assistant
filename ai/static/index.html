@@ -111,6 +111,11 @@
     .msg-bubble li { margin: 2px 0; }
     .msg-bubble blockquote { border-left: 3px solid var(--persona-color); padding-left: 10px; color: var(--text-dim); margin: 6px 0; }
     .search-on-badge { font-size: 0.68rem; background: #1a3a1a; color: #4caf50; border: 1px solid #2e7d32; padding: 2px 8px; border-radius: 10px; margin-left: 6px; }
+    .gemini-badge {
+      font-size: 0.68rem; background: #0d1f3c; color: #7baaf7;
+      border: 1px solid #4285f4; padding: 3px 10px; border-radius: 20px;
+      display: flex; align-items: center; gap: 4px; white-space: nowrap;
+    }
 
     /* ── 채팅 영역 ───────────────── */
     .chat-area { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
@@ -444,6 +449,7 @@
       </div>
       <div style="display:flex;gap:8px;align-items:center;">
         <button class="code-toggle-btn" id="code-toggle-btn" onclick="toggleCodePanel()" title="Python 코드 실행">🐍 Python</button>
+        <span class="gemini-badge" id="gemini-badge" style="display:none">✨ Gemini</span>
         <span class="model-badge" id="model-badge">로딩 중...</span>
       </div>
     </header>
@@ -628,6 +634,10 @@
     // 검색 팁 업데이트
     renderSearchTips(id);
     document.getElementById('search-tips').classList.remove('open');
+
+    // dev 페르소나: Gemini 배지 표시
+    const geminiBadge = document.getElementById('gemini-badge');
+    if (geminiBadge) geminiBadge.style.display = id === 'dev' ? '' : 'none';
 
     // 이전 대화 이력 불러오기
     await loadHistory();
