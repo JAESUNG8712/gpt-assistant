@@ -206,18 +206,105 @@ def clear_history(persona: str = None):
     return {"ok": True}
 
 
+# ── 파일 텍스트 추출 유틸 ──────────────────────────────
+
+def _extract_text(content: bytes, filename: str) -> str:
+    """PDF / DOCX / TXT에서 텍스트 추출"""
+    ext = filename.rsplit(".", 1)[-1].lower()
+
+    if ext == "pdf":
+        try:
+            from pdfminer.high_level import extract_text as _pdf_text
+            import io
+            return _pdf_text(io.BytesIO(content))
+        except ImportError:
+            pass
+        try:
+            import subprocess
+            r = subprocess.run(["pdftotext", "-", "-"], input=content, capture_output=True, timeout=30)
+            if r.returncode == 0:
+                return r.stdout.decode("utf-8", errors="ignore")
+        except Exception:
+            pass
+        raise HTTPException(422, "PDF 파싱 실패. pdfminer.six 패키지가 필요합니다.")
+
+    if ext in ("docx",):
+        try:
+            from docx import Document as _Docx
+            import io
+            doc = _Docx(io.BytesIO(content))
+            return "\n".join(p.text for p in doc.paragraphs if p.text.strip())
+        except ImportError:
+            raise HTTPException(422, "DOCX 파싱 실패. python-docx 패키지가 필요합니다.")
+
+    # txt, md, csv 등 텍스트 계열
+    try:
+        return content.decode("utf-8")
+    except UnicodeDecodeError:
+        return content.decode("euc-kr", errors="ignore")
+
+
 # ── 문서 학습 ─────────────────────────────────────────
 
 @app.post("/learn/document")
 async def learn_document(file: UploadFile = File(...), persona: str = DEFAULT_PERSONA):
     content = await file.read()
-    try:
-        text = content.decode("utf-8")
-    except UnicodeDecodeError:
-        text = content.decode("euc-kr", errors="ignore")
-
+    text = _extract_text(content, file.filename)
     mem.store_document(text, file.filename, persona_id=persona)
     return {"ok": True, "filename": file.filename, "chars": len(text)}
+
+
+# ── 이력서 분석 ────────────────────────────────────────
+
+@app.post("/analyze/resume")
+async def analyze_resume(
+    file: UploadFile = File(...),
+    job_desc: str = "",
+    analysis_type: str = "full",
+):
+    """이력서/자소서 파일을 업로드하면 LLM이 분석 결과를 스트리밍으로 반환"""
+    content = await file.read()
+    resume_text = _extract_text(content, file.filename)
+
+    if not resume_text.strip():
+        raise HTTPException(400, "파일에서 텍스트를 추출할 수 없습니다.")
+
+    # 분석 유형별 프롬프트
+    type_prompts = {
+        "summary": "핵심 프로필 요약 (3~5줄) 만 작성해 주세요.",
+        "feedback": "강점과 개선 제안을 항목별로 상세히 작성해 주세요.",
+        "full": (
+            "아래 순서로 분석해 주세요:\n"
+            "1. 핵심 프로필 요약 (3줄)\n"
+            "2. 강점 분석\n"
+            "3. 개선 제안 (항목별 구체적 피드백)\n"
+            "4. 전반적 평가 (A~F 등급 + 이유)"
+        ),
+    }
+    task = type_prompts.get(analysis_type, type_prompts["full"])
+
+    job_section = f"\n\n지원 직무/회사 정보:\n{job_desc}" if job_desc.strip() else ""
+    system = PERSONAS["resume"]["system_prompt"]
+
+    user_message = (
+        f"아래 이력서를 분석해 주세요. {task}"
+        f"{job_section}\n\n"
+        f"--- 이력서 내용 ---\n{resume_text[:8000]}"
+    )
+
+    messages = [{"role": "user", "content": user_message}]
+
+    async def stream():
+        collected = []
+        async for token in llm.chat_stream(messages, context="", system_prompt=system):
+            collected.append(token)
+            yield token
+        ai_reply = "".join(collected)
+        clean = re.sub(r"<think>[\s\S]*?</think>\s*", "", ai_reply).strip()
+        mem.save_message("user", f"[이력서 분석: {file.filename}]", persona="resume")
+        mem.save_message("assistant", clean or ai_reply, persona="resume")
+
+    return StreamingResponse(stream(), media_type="text/plain; charset=utf-8")
 
 
 # ── 인터넷 검색 학습 ──────────────────────────────────
