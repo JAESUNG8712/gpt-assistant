@@ -403,6 +403,68 @@
       cursor: pointer; transition: all 0.15s;
     }
     .code-copy-inline-btn:hover { background: var(--border); color: var(--text); }
+
+    /* ── 이력서 분석 ────────────────────────── */
+    .resume-row {
+      display: none; align-items: center; gap: 8px;
+      padding: 6px 12px 0;
+    }
+    .resume-row.visible { display: flex; }
+    .resume-upload-btn {
+      display: flex; align-items: center; gap: 6px;
+      padding: 7px 14px; background: var(--persona-color); color: #fff;
+      border: none; border-radius: 20px; cursor: pointer;
+      font-size: 0.82rem; font-weight: 700; transition: opacity 0.15s;
+      white-space: nowrap;
+    }
+    .resume-upload-btn:hover { opacity: 0.85; }
+
+    .resume-modal-overlay {
+      display: none; position: fixed; inset: 0;
+      background: rgba(0,0,0,0.65); z-index: 200;
+      align-items: center; justify-content: center; padding: 16px;
+    }
+    .resume-modal-overlay.open { display: flex; }
+    .resume-modal {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 16px; padding: 24px; width: 100%; max-width: 480px;
+      display: flex; flex-direction: column; gap: 14px;
+    }
+    .resume-modal h3 { font-size: 1rem; font-weight: 700; }
+    .resume-drop-zone {
+      border: 2px dashed var(--border); border-radius: 10px; padding: 24px 16px;
+      text-align: center; cursor: pointer; transition: all 0.2s;
+      font-size: 0.85rem; color: var(--text-dim);
+    }
+    .resume-drop-zone:hover, .resume-drop-zone.drag-over {
+      border-color: var(--persona-color); color: var(--persona-color);
+    }
+    .resume-drop-zone .drop-icon { font-size: 2rem; margin-bottom: 6px; }
+    .resume-drop-zone .drop-filename { font-size: 0.8rem; color: var(--persona-color); font-weight: 600; margin-top: 4px; }
+    .resume-modal label.form-label {
+      font-size: 0.75rem; font-weight: 700; color: var(--text-dim);
+      text-transform: uppercase; letter-spacing: 0.06em;
+    }
+    .resume-modal select {
+      width: 100%; padding: 9px 12px; background: var(--surface2);
+      border: 1px solid var(--border); border-radius: 8px;
+      color: var(--text); font-size: 0.85rem; cursor: pointer;
+    }
+    .resume-modal textarea {
+      width: 100%; padding: 9px 12px; background: var(--surface2);
+      border: 1px solid var(--border); border-radius: 8px;
+      color: var(--text); font-size: 0.82rem; resize: vertical;
+      min-height: 70px; font-family: inherit;
+    }
+    .resume-modal textarea:focus, .resume-modal select:focus { outline: none; border-color: var(--persona-color); }
+    .resume-modal-btns { display: flex; gap: 8px; justify-content: flex-end; }
+    .resume-modal-btns button {
+      padding: 9px 20px; border-radius: 8px; font-size: 0.85rem;
+      font-weight: 700; cursor: pointer; border: none;
+    }
+    .btn-cancel { background: var(--surface2); color: var(--text-dim); border: 1px solid var(--border) !important; }
+    .btn-analyze { background: var(--persona-color); color: #fff; }
+    .btn-analyze:disabled { opacity: 0.5; cursor: default; }
   </style>
 </head>
 <body>
@@ -429,9 +491,9 @@
       <div class="sidebar-section">
         <label>📄 문서 학습</label>
         <div class="upload-area" onclick="document.getElementById('file-input').click()">
-          📁 파일 선택 (txt, md, csv)
+          📁 파일 선택 (txt, md, pdf, docx...)
         </div>
-        <input type="file" id="file-input" style="display:none" accept=".txt,.md,.csv,.json" onchange="uploadDocument(this)">
+        <input type="file" id="file-input" style="display:none" accept=".txt,.md,.csv,.json,.pdf,.docx" onchange="uploadDocument(this)">
       </div>
       <div class="sidebar-section">
         <label>🌐 인터넷 검색 학습</label>
@@ -488,6 +550,13 @@
     </div>
 
     <div class="input-area">
+      <!-- 이력서 분석 버튼 (resume 페르소나에서만 표시) -->
+      <div class="resume-row" id="resume-row">
+        <button class="resume-upload-btn" onclick="openResumeModal()">
+          📄 이력서 / 자소서 분석
+        </button>
+        <span style="font-size:0.75rem;color:var(--text-dim);">PDF · DOCX · TXT 지원</span>
+      </div>
       <div class="input-top-row">
         <label class="search-toggle">
           <input type="checkbox" id="use-search">
@@ -512,6 +581,47 @@
 </div>
 
 <div class="toast" id="toast"></div>
+
+<!-- ── 이력서 분석 모달 ───────────────────────── -->
+<div class="resume-modal-overlay" id="resume-modal-overlay" onclick="handleResumeOverlayClick(event)">
+  <div class="resume-modal">
+    <h3>📄 이력서 / 자기소개서 분석</h3>
+
+    <!-- 파일 드롭 존 -->
+    <div class="resume-drop-zone" id="resume-drop-zone"
+         onclick="document.getElementById('resume-file-input').click()"
+         ondragover="resumeDragOver(event)" ondragleave="resumeDragLeave(event)"
+         ondrop="resumeDrop(event)">
+      <div class="drop-icon">📂</div>
+      <div>클릭하거나 파일을 여기에 드래그하세요</div>
+      <div style="font-size:0.72rem;margin-top:4px;">PDF · DOCX · TXT</div>
+      <div class="drop-filename" id="resume-drop-filename" style="display:none"></div>
+    </div>
+    <input type="file" id="resume-file-input" style="display:none"
+           accept=".pdf,.docx,.txt,.md" onchange="resumeFileSelected(this)">
+
+    <!-- 분석 유형 -->
+    <div>
+      <label class="form-label">분석 유형</label>
+      <select id="resume-analysis-type">
+        <option value="full">전체 분석 (요약 + 강점 + 개선안 + 등급)</option>
+        <option value="feedback">첨삭 집중 (강점 + 구체적 개선 제안)</option>
+        <option value="summary">핵심 요약만 (3~5줄 프로필 요약)</option>
+      </select>
+    </div>
+
+    <!-- 지원 직무 (선택) -->
+    <div>
+      <label class="form-label">지원 직무 / 회사 (선택)</label>
+      <textarea id="resume-job-desc" placeholder="예: 네이버 백엔드 개발자 (3년 이상) — 입력하면 맞춤 피드백 제공"></textarea>
+    </div>
+
+    <div class="resume-modal-btns">
+      <button class="btn-cancel" onclick="closeResumeModal()">취소</button>
+      <button class="btn-analyze" id="resume-analyze-btn" onclick="submitResumeAnalysis()" disabled>분석 시작</button>
+    </div>
+  </div>
+</div>
 
 <!-- ── Python 코드 실행 모달 ──────────────────── -->
 <div class="code-modal" id="code-modal" onclick="handleCodeModalClick(event)">
@@ -678,6 +788,13 @@
     if (geminiBadge) {
       const hasCoding = currentPersona.features && currentPersona.features.use_coding;
       geminiBadge.style.display = hasCoding ? '' : 'none';
+    }
+
+    // 이력서 분석 버튼 표시/숨김 (file_analysis feature)
+    const resumeRow = document.getElementById('resume-row');
+    if (resumeRow) {
+      const hasFileAnalysis = currentPersona.features && currentPersona.features.file_analysis;
+      resumeRow.classList.toggle('visible', !!hasFileAnalysis);
     }
 
     // 이전 대화 이력 불러오기
@@ -979,6 +1096,119 @@
   }
 
   // ── 문서 업로드 ──────────────────────────
+  // ── 이력서 분석 모달 ─────────────────────────
+  let resumeSelectedFile = null;
+
+  function openResumeModal() {
+    resumeSelectedFile = null;
+    document.getElementById('resume-drop-filename').style.display = 'none';
+    document.getElementById('resume-drop-filename').textContent = '';
+    document.getElementById('resume-file-input').value = '';
+    document.getElementById('resume-job-desc').value = '';
+    document.getElementById('resume-analysis-type').value = 'full';
+    document.getElementById('resume-analyze-btn').disabled = true;
+    document.getElementById('resume-modal-overlay').classList.add('open');
+  }
+
+  function closeResumeModal() {
+    document.getElementById('resume-modal-overlay').classList.remove('open');
+  }
+
+  function handleResumeOverlayClick(e) {
+    if (e.target === document.getElementById('resume-modal-overlay')) closeResumeModal();
+  }
+
+  function resumeFileSelected(input) {
+    const file = input.files[0];
+    if (!file) return;
+    resumeSelectedFile = file;
+    const label = document.getElementById('resume-drop-filename');
+    label.textContent = `✅ ${file.name}`;
+    label.style.display = 'block';
+    document.getElementById('resume-analyze-btn').disabled = false;
+  }
+
+  function resumeDragOver(e) {
+    e.preventDefault();
+    document.getElementById('resume-drop-zone').classList.add('drag-over');
+  }
+
+  function resumeDragLeave() {
+    document.getElementById('resume-drop-zone').classList.remove('drag-over');
+  }
+
+  function resumeDrop(e) {
+    e.preventDefault();
+    document.getElementById('resume-drop-zone').classList.remove('drag-over');
+    const file = e.dataTransfer.files[0];
+    if (!file) return;
+    resumeSelectedFile = file;
+    const label = document.getElementById('resume-drop-filename');
+    label.textContent = `✅ ${file.name}`;
+    label.style.display = 'block';
+    document.getElementById('resume-analyze-btn').disabled = false;
+  }
+
+  async function submitResumeAnalysis() {
+    if (!resumeSelectedFile) return;
+
+    const analysisType = document.getElementById('resume-analysis-type').value;
+    const jobDesc = document.getElementById('resume-job-desc').value.trim();
+    const btn = document.getElementById('resume-analyze-btn');
+
+    btn.disabled = true;
+    btn.textContent = '분석 중...';
+    closeResumeModal();
+
+    // 사용자 메시지로 파일명 표시
+    addMessage('user', `📄 이력서 분석 요청: ${resumeSelectedFile.name}${jobDesc ? '\n지원 직무: ' + jobDesc : ''}`);
+
+    // AI 응답 버블 생성
+    const msgId = 'resume-analysis-' + Date.now();
+    const msgs = document.getElementById('messages');
+    const div = document.createElement('div');
+    div.className = 'msg ai';
+    div.id = msgId;
+    div.innerHTML = `<div class="msg-avatar">${currentPersona ? currentPersona.icon : '📄'}</div>
+      <div class="msg-bubble" id="${msgId}-bubble"><span class="typing-dot">●</span><span class="typing-dot">●</span><span class="typing-dot">●</span></div>`;
+    msgs.appendChild(div);
+    msgs.scrollTop = msgs.scrollHeight;
+
+    try {
+      const fd = new FormData();
+      fd.append('file', resumeSelectedFile);
+      fd.append('analysis_type', analysisType);
+      if (jobDesc) fd.append('job_desc', jobDesc);
+
+      const r = await fetch('/analyze/resume', { method: 'POST', body: fd });
+      if (!r.ok) {
+        const err = await r.json().catch(() => ({ detail: '알 수 없는 오류' }));
+        document.getElementById(`${msgId}-bubble`).textContent = `⚠️ 오류: ${err.detail}`;
+        return;
+      }
+
+      const reader = r.body.getReader();
+      const decoder = new TextDecoder();
+      let full = '';
+      const bubble = document.getElementById(`${msgId}-bubble`);
+      bubble.innerHTML = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        full += decoder.decode(value, { stream: true });
+        bubble.innerHTML = renderMarkdown(full);
+        msgs.scrollTop = msgs.scrollHeight;
+      }
+      if (!full.trim()) bubble.textContent = '(분석 결과가 없습니다)';
+    } catch (e) {
+      document.getElementById(`${msgId}-bubble`).textContent = `⚠️ 네트워크 오류: ${e.message}`;
+    } finally {
+      btn.disabled = false;
+      btn.textContent = '분석 시작';
+    }
+  }
+
   async function uploadDocument(input) {
     const file = input.files[0];
     if (!file || !currentPersona) return;
