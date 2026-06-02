@@ -1,0 +1,959 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="나만의 AI">
+  <title>나만의 AI 어시스턴트</title>
+  <style>
+    :root {
+      --bg: #0d1117;
+      --surface: #161b22;
+      --surface2: #21262d;
+      --border: #30363d;
+      --text: #e6edf3;
+      --text-dim: #8b949e;
+      --ai-bg: #21262d;
+      --safe-bottom: env(safe-area-inset-bottom, 0px);
+
+      /* 페르소나 색상 (JS로 덮어씀) */
+      --persona-color: #1565c0;
+      --persona-bg: #e3f2fd;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; height: 100dvh; background: var(--bg); color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; overflow: hidden; }
+
+    .app { display: flex; height: 100%; height: 100dvh; }
+
+    /* ── 사이드바 ─────────────────── */
+    .sidebar {
+      width: 260px; flex-shrink: 0;
+      background: var(--surface); border-right: 1px solid var(--border);
+      display: flex; flex-direction: column; overflow: hidden;
+    }
+    @media (max-width: 680px) {
+      .sidebar { display: none; }
+      .sidebar.open { display: flex; position: fixed; inset: 0; z-index: 100; width: 82%; }
+    }
+    .sidebar-header { padding: 16px; border-bottom: 1px solid var(--border); }
+    .sidebar-header h2 { font-size: 0.9rem; font-weight: 700; color: var(--persona-color); }
+    .sidebar-header p { font-size: 0.72rem; color: var(--text-dim); margin-top: 2px; }
+
+    .sidebar-body { flex: 1; overflow-y: auto; padding-bottom: 12px; }
+    .sidebar-section { padding: 14px 12px 0; }
+    .sidebar-section label {
+      font-size: 0.68rem; font-weight: 700; color: var(--text-dim);
+      text-transform: uppercase; letter-spacing: 0.08em; display: block; margin-bottom: 8px;
+    }
+
+    .stats-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 12px; }
+    .stat-box { background: var(--surface2); border-radius: 8px; padding: 10px; text-align: center; }
+    .stat-box strong { display: block; font-size: 1.2rem; color: var(--persona-color); }
+    .stat-box span { font-size: 0.68rem; color: var(--text-dim); }
+
+    .sidebar-btn {
+      width: 100%; padding: 9px 12px; background: var(--surface2);
+      border: 1px solid var(--border); border-radius: 8px; color: var(--text);
+      font-size: 0.82rem; cursor: pointer; display: flex; align-items: center; gap: 8px;
+      margin-bottom: 6px; transition: background 0.15s;
+    }
+    .sidebar-btn:hover { background: var(--border); }
+    .sidebar-btn.danger { color: #f85149; }
+
+    .upload-area {
+      border: 1px dashed var(--border); border-radius: 8px; padding: 14px;
+      text-align: center; cursor: pointer; margin-bottom: 8px;
+      font-size: 0.78rem; color: var(--text-dim); transition: all 0.2s;
+    }
+    .upload-area:hover { border-color: var(--persona-color); color: var(--persona-color); }
+
+    .search-row { display: flex; gap: 6px; margin-bottom: 6px; }
+    .search-row input {
+      flex: 1; padding: 8px 10px; background: var(--surface2);
+      border: 1px solid var(--border); border-radius: 8px; color: var(--text); font-size: 0.8rem;
+    }
+    .search-row input:focus { outline: none; border-color: var(--persona-color); }
+    .search-row button {
+      padding: 8px 12px; background: var(--persona-color); color: #fff;
+      border: none; border-radius: 8px; cursor: pointer; font-weight: 700; font-size: 0.8rem;
+    }
+    .know-area textarea {
+      width: 100%; padding: 8px 10px; background: var(--surface2);
+      border: 1px solid var(--border); border-radius: 8px; color: var(--text);
+      font-size: 0.8rem; resize: vertical; min-height: 60px; font-family: inherit; margin-bottom: 6px;
+    }
+    .know-area textarea:focus { outline: none; border-color: var(--persona-color); }
+    .know-area input {
+      width: 100%; padding: 8px 10px; background: var(--surface2);
+      border: 1px solid var(--border); border-radius: 8px; color: var(--text);
+      font-size: 0.8rem; margin-bottom: 6px;
+    }
+    .know-area input:focus { outline: none; border-color: var(--persona-color); }
+    .know-area button {
+      width: 100%; padding: 8px; background: var(--persona-color); color: #fff;
+      border: none; border-radius: 8px; cursor: pointer; font-weight: 700; font-size: 0.8rem;
+    }
+    /* 마크다운 렌더링 */
+    .msg-bubble h2 { font-size: 1.05em; font-weight: 700; margin: 10px 0 5px; }
+    .msg-bubble h3 { font-size: 0.95em; font-weight: 700; margin: 8px 0 4px; }
+    .msg-bubble strong { font-weight: 700; }
+    .msg-bubble code { background: #0d1117; padding: 1px 5px; border-radius: 3px; font-size: 0.85em; font-family: monospace; }
+    .msg-bubble pre { background: #0d1117; padding: 10px 12px; border-radius: 8px; overflow-x: auto; font-size: 0.8em; margin: 6px 0; font-family: monospace; white-space: pre; }
+    .msg-bubble table { border-collapse: collapse; width: 100%; margin: 6px 0; font-size: 0.82em; }
+    .msg-bubble th, .msg-bubble td { border: 1px solid var(--border); padding: 5px 8px; text-align: left; }
+    .msg-bubble th { background: var(--surface2); font-weight: 700; }
+    .msg-bubble hr { border: none; border-top: 1px solid var(--border); margin: 10px 0; }
+    .msg-bubble ul, .msg-bubble ol { padding-left: 18px; margin: 4px 0; }
+    .msg-bubble li { margin: 2px 0; }
+    .msg-bubble blockquote { border-left: 3px solid var(--persona-color); padding-left: 10px; color: var(--text-dim); margin: 6px 0; }
+    .search-on-badge { font-size: 0.68rem; background: #1a3a1a; color: #4caf50; border: 1px solid #2e7d32; padding: 2px 8px; border-radius: 10px; margin-left: 6px; }
+
+    /* ── 채팅 영역 ───────────────── */
+    .chat-area { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+
+    .chat-header {
+      background: var(--surface); border-bottom: 1px solid var(--border);
+      padding: 10px 16px; display: flex; align-items: center; gap: 10px; flex-shrink: 0;
+    }
+    .menu-btn { display: none; background: none; border: none; color: var(--text); font-size: 1.3rem; cursor: pointer; }
+    @media (max-width: 680px) { .menu-btn { display: block; } }
+
+    .header-persona { display: flex; align-items: center; gap: 8px; }
+    .header-persona-icon { font-size: 1.3rem; }
+    .header-persona-name { font-size: 0.95rem; font-weight: 700; }
+    .model-badge {
+      font-size: 0.68rem; background: var(--surface2); border: 1px solid var(--border);
+      padding: 3px 10px; border-radius: 20px; color: var(--text-dim); margin-left: auto;
+    }
+
+    /* ── 페르소나 선택 탭 ────────── */
+    .persona-bar {
+      display: flex; gap: 0; background: var(--surface2);
+      border-bottom: 1px solid var(--border); flex-shrink: 0;
+    }
+    .persona-tab {
+      flex: 1; padding: 10px 6px; cursor: pointer;
+      display: flex; flex-direction: column; align-items: center; gap: 3px;
+      border-bottom: 3px solid transparent; transition: all 0.2s;
+      font-size: 0.72rem; color: var(--text-dim);
+    }
+    .persona-tab .tab-icon { font-size: 1.3rem; }
+    .persona-tab .tab-name { font-weight: 600; font-size: 0.7rem; }
+    .persona-tab.active { color: var(--persona-color); border-bottom-color: var(--persona-color); }
+    .persona-tab:hover { background: var(--surface); }
+
+    /* ── 메시지 목록 ─────────────── */
+    .messages {
+      flex: 1; overflow-y: auto; padding: 16px;
+      display: flex; flex-direction: column; gap: 14px; scroll-behavior: smooth;
+    }
+    .messages::-webkit-scrollbar { width: 4px; }
+    .messages::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+    .msg { display: flex; gap: 10px; max-width: 100%; }
+    .msg.user { flex-direction: row-reverse; }
+    .msg-avatar {
+      width: 32px; height: 32px; border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 0.9rem; flex-shrink: 0; margin-top: 2px;
+    }
+    .msg.user .msg-avatar { background: var(--persona-color); }
+    .msg.ai .msg-avatar { background: var(--surface2); border: 1px solid var(--border); }
+
+    .msg-bubble {
+      max-width: 76%; padding: 11px 15px; border-radius: 14px;
+      font-size: 0.88rem; line-height: 1.7; white-space: pre-wrap; word-break: break-word;
+    }
+    .msg.user .msg-bubble { background: var(--persona-color); border-radius: 14px 4px 14px 14px; }
+    .msg.ai  .msg-bubble { background: var(--ai-bg); border: 1px solid var(--border); border-radius: 4px 14px 14px 14px; }
+
+    .typing .msg-bubble::after { content: '▋'; animation: blink 0.7s infinite; }
+    @keyframes blink { 0%,100%{opacity:1}50%{opacity:0} }
+
+    /* ── 웰컴 ────────────────────── */
+    .welcome { text-align: center; color: var(--text-dim); margin: auto; padding: 32px 20px; }
+    .welcome .persona-welcome-icon { font-size: 3rem; margin-bottom: 10px; }
+    .welcome h3 { font-size: 1.1rem; color: var(--text); margin-bottom: 8px; }
+    .welcome p { font-size: 0.84rem; line-height: 1.8; }
+    .chips { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; margin-top: 14px; }
+    .chip {
+      background: var(--surface2); border: 1px solid var(--border);
+      padding: 6px 14px; border-radius: 20px; font-size: 0.78rem; cursor: pointer;
+      transition: all 0.15s; color: var(--text);
+    }
+    .chip:hover { border-color: var(--persona-color); color: var(--persona-color); }
+
+    /* ── 입력창 ──────────────────── */
+    .input-area {
+      background: var(--surface); border-top: 1px solid var(--border);
+      padding: 10px 16px; padding-bottom: calc(10px + var(--safe-bottom)); flex-shrink: 0;
+    }
+    .search-toggle { display: flex; align-items: center; gap: 6px; font-size: 0.75rem; color: var(--text-dim); margin-bottom: 8px; cursor: pointer; }
+    .search-toggle input { accent-color: var(--persona-color); }
+    .input-row { display: flex; gap: 10px; }
+    .input-row textarea {
+      flex: 1; background: var(--surface2); border: 1px solid var(--border);
+      border-radius: 12px; color: var(--text); font-size: 0.9rem; padding: 11px 14px;
+      resize: none; max-height: 120px; min-height: 44px; line-height: 1.5; font-family: inherit;
+    }
+    .input-row textarea:focus { outline: none; border-color: var(--persona-color); }
+    .send-btn {
+      width: 44px; height: 44px; border-radius: 12px; background: var(--persona-color);
+      border: none; cursor: pointer; display: flex; align-items: center; justify-content: center;
+      font-size: 1.1rem; color: #fff; transition: opacity 0.2s; flex-shrink: 0; align-self: flex-end;
+    }
+    .send-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    /* ── 검색 팁 ─────────────── */
+    .input-top-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+    .tips-btn {
+      background: none; border: 1px solid var(--border); border-radius: 14px;
+      padding: 3px 10px; font-size: 0.73rem; color: var(--text-dim); cursor: pointer;
+      transition: all 0.15s;
+    }
+    .tips-btn:hover { border-color: var(--persona-color); color: var(--persona-color); }
+    .search-tips {
+      display: none; background: var(--surface2); border: 1px solid var(--border);
+      border-radius: 12px; padding: 12px 14px; margin-bottom: 10px; font-size: 0.78rem;
+    }
+    .search-tips.open { display: block; }
+    .tips-title { font-weight: 600; color: var(--text); margin-bottom: 10px; }
+    .tips-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+    .tip-item {
+      background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+      padding: 7px 10px; cursor: pointer; transition: all 0.15s;
+    }
+    .tip-item:hover { border-color: var(--persona-color); }
+    .tip-label { font-size: 0.72rem; color: var(--text-dim); margin-bottom: 2px; }
+    .tip-query { font-weight: 500; color: var(--persona-color); }
+
+    /* ── AI 생각 블록 ─────────────── */
+    .think-block {
+      background: rgba(255,193,7,0.05); border: 1px solid rgba(255,193,7,0.22);
+      border-left: 3px solid #c8922a; border-radius: 8px; margin-bottom: 10px; overflow: hidden;
+    }
+    .think-header {
+      padding: 7px 11px; cursor: pointer; display: flex; align-items: center;
+      justify-content: space-between; color: #c8922a; user-select: none; font-size: 0.8em;
+    }
+    .think-header:hover { background: rgba(255,193,7,0.07); }
+    .think-content {
+      padding: 8px 12px 10px; color: var(--text-dim); border-top: 1px solid rgba(255,193,7,0.18);
+      line-height: 1.55; font-size: 0.81em; max-height: 280px; overflow-y: auto;
+    }
+    .think-block.collapsed .think-content { display: none; }
+    .think-toggle { transition: transform 0.2s; font-size: 0.7em; margin-left: 6px; }
+    .think-block.collapsed .think-toggle { transform: rotate(-90deg); }
+    .think-block.streaming .think-header { animation: thinkPulse 1.2s ease-in-out infinite; }
+    @keyframes thinkPulse { 0%,100%{opacity:1} 50%{opacity:0.55} }
+
+    /* 생각 모드 버튼 */
+    .think-mode-btn {
+      background: none; border: 1px solid var(--border); border-radius: 14px;
+      padding: 3px 10px; font-size: 0.73rem; color: var(--text-dim); cursor: pointer; transition: all 0.15s;
+    }
+    .think-mode-btn:hover { border-color: var(--persona-color); }
+    .think-mode-btn.prompt { border-color: #c8922a; color: #c8922a; }
+    .think-mode-btn.deep { border-color: #e67e22; color: #e67e22; background: rgba(230,126,34,0.08); }
+
+    /* ── 토스트 & 오버레이 ─────────── */
+    .toast {
+      position: fixed; bottom: 80px; left: 50%; transform: translateX(-50%);
+      background: var(--surface2); border: 1px solid var(--border);
+      padding: 9px 20px; border-radius: 25px; font-size: 0.82rem;
+      opacity: 0; transition: opacity 0.3s; z-index: 999; white-space: nowrap;
+    }
+    .toast.show { opacity: 1; }
+    .overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 99; }
+    .overlay.show { display: block; }
+    .feedback-row { display: flex; gap: 8px; margin-top: 6px; }
+    .fb-btn {
+      background: none; border: 1px solid var(--border); border-radius: 20px;
+      padding: 3px 10px; cursor: pointer; font-size: 0.78rem; color: var(--text-dim);
+      transition: all 0.15s;
+    }
+    .fb-btn:hover { background: var(--surface2); }
+    .fb-btn.good:hover { border-color: #3fb950; color: #3fb950; }
+    .fb-btn.bad:hover  { border-color: #f85149; color: #f85149; }
+    .fb-btn.selected   { opacity: 0.5; cursor: default; }
+  </style>
+</head>
+<body>
+<div class="overlay" id="overlay" onclick="closeSidebar()"></div>
+
+<div class="app">
+  <!-- 사이드바 -->
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-header">
+      <h2 id="sb-title">🤖 나만의 AI</h2>
+      <p id="sb-desc">전용 AI 어시스턴트</p>
+    </div>
+    <div class="sidebar-body">
+      <div class="sidebar-section">
+        <label>📊 학습 현황</label>
+        <div class="stats-grid">
+          <div class="stat-box"><strong id="stat-conv">-</strong><span>대화 수</span></div>
+          <div class="stat-box"><strong id="stat-doc">-</strong><span>문서 수</span></div>
+          <div class="stat-box" style="grid-column:1/-1">
+            <strong id="stat-vec">-</strong><span>기억 청크 (RAG)</span>
+          </div>
+        </div>
+      </div>
+      <div class="sidebar-section">
+        <label>📄 문서 학습</label>
+        <div class="upload-area" onclick="document.getElementById('file-input').click()">
+          📁 파일 선택 (txt, md, csv)
+        </div>
+        <input type="file" id="file-input" style="display:none" accept=".txt,.md,.csv,.json" onchange="uploadDocument(this)">
+      </div>
+      <div class="sidebar-section">
+        <label>🌐 인터넷 검색 학습</label>
+        <div class="search-row">
+          <input type="text" id="search-query" placeholder="검색어..." onkeydown="if(event.key==='Enter')learnSearch()">
+          <button onclick="learnSearch()">학습</button>
+        </div>
+      </div>
+      <div class="sidebar-section">
+        <label>✍️ 지식 직접 추가</label>
+        <div class="know-area">
+          <input type="text" id="know-q" placeholder="질문 (예: 퇴직금 계산 방법)">
+          <textarea id="know-a" placeholder="답변 내용을 입력하세요..." rows="3"></textarea>
+          <button onclick="addKnowledge()">+ 지식 추가</button>
+        </div>
+      </div>
+      <div class="sidebar-section">
+        <label>☁️ 백업</label>
+        <button class="sidebar-btn" onclick="backupDownload()">⬇️ 직접 다운로드</button>
+        <button class="sidebar-btn" id="btn-gdrive" onclick="backupGoogleDrive()">📁 Google Drive</button>
+      </div>
+      <div class="sidebar-section">
+        <label>⚙️ 설정</label>
+        <button class="sidebar-btn danger" onclick="clearHistory()">🗑️ 현재 페르소나 대화 초기화</button>
+      </div>
+    </div>
+  </aside>
+
+  <!-- 채팅 -->
+  <main class="chat-area">
+    <header class="chat-header">
+      <button class="menu-btn" onclick="openSidebar()">☰</button>
+      <div class="header-persona">
+        <span class="header-persona-icon" id="h-icon">🤖</span>
+        <span class="header-persona-name" id="h-name">나만의 AI</span>
+      </div>
+      <span class="model-badge" id="model-badge">로딩 중...</span>
+    </header>
+
+    <!-- 페르소나 선택 탭 -->
+    <div class="persona-bar" id="persona-bar"></div>
+
+    <div class="messages" id="messages">
+      <div class="welcome" id="welcome">
+        <div class="persona-welcome-icon" id="welcome-icon">🤖</div>
+        <h3 id="welcome-title">전문가를 선택하세요</h3>
+        <p id="welcome-desc">위의 탭에서 원하는 전문가를 선택하고 대화를 시작하세요.</p>
+        <div class="chips" id="welcome-chips"></div>
+      </div>
+    </div>
+
+    <div class="input-area">
+      <div class="input-top-row">
+        <label class="search-toggle">
+          <input type="checkbox" id="use-search">
+          🌐 인터넷 검색 후 답변
+        </label>
+        <div style="display:flex;gap:6px;align-items:center;">
+          <button class="think-mode-btn" id="think-mode-btn" onclick="cycleThinkingMode()" title="AI 생각 모드: 꺼짐">🧠 생각 꺼짐</button>
+          <button class="tips-btn" onclick="toggleTips()">💡 검색 팁</button>
+        </div>
+      </div>
+      <div class="search-tips" id="search-tips">
+        <div class="tips-title">✅ 정확한 답변을 위한 검색 방법</div>
+        <div class="tips-grid" id="tips-grid"></div>
+      </div>
+      <div class="input-row">
+        <textarea id="msg-input" placeholder="예: 희망퇴직 판례, 야간수당 계산, 연차 며칠..." rows="1"
+          onkeydown="handleKey(event)" oninput="autoResize(this)"></textarea>
+        <button class="send-btn" id="send-btn" onclick="sendMessage()">↑</button>
+      </div>
+    </div>
+  </main>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+  // ── 상태 ─────────────────────────────────
+  let currentPersona = null;
+  let personas = [];
+  let isLoading = false;
+  let thinkingMode = 'off'; // "off" | "prompt" | "deep"
+
+  const WELCOME_CHIPS = {
+    hr: [
+      { label: '연차 며칠인지 계산해줘', search: false },
+      { label: '희망퇴직 판례 알려줘', search: false },
+      { label: '야간수당 계산 방법', search: false },
+      { label: '4대보험 요율 2025', search: false },
+    ],
+    dev: [
+      { label: 'FastAPI 서버 만드는 법', search: false },
+      { label: 'Groq API 연동 코드', search: false },
+      { label: 'SQLite CRUD 예시', search: false },
+      { label: 'Railway 배포 방법', search: false },
+    ],
+    travel: [
+      { label: '제주도 3박4일 여행 코스', search: false },
+      { label: '동남아 항공권 싸게 사는 법', search: false },
+      { label: '일본 여행 준비물 체크리스트', search: false },
+      { label: '여행자 보험 어떻게 가입해?', search: false },
+    ],
+  };
+
+  // ── 페르소나별 검색 팁 (효과적인 검색어 예시) ─
+  const SEARCH_TIPS = {
+    hr: [
+      { label: '판례 조회', query: '희망퇴직 판례' },
+      { label: '수당 계산', query: '야간수당 계산' },
+      { label: '연차 계산', query: '연차 며칠' },
+      { label: '퇴직금', query: '퇴직금 계산' },
+      { label: '법 조항', query: '근로기준법 제23조' },
+      { label: '부당해고', query: '부당해고 판례' },
+      { label: '최저임금', query: '최저임금 2025' },
+      { label: '4대보험', query: '4대보험 요율' },
+    ],
+    dev: [
+      { label: 'API 서버', query: 'FastAPI 서버 만들기' },
+      { label: 'LLM 연동', query: 'Groq API 연동' },
+      { label: '배포', query: 'Railway 배포' },
+      { label: '테스트', query: 'pytest 테스트 작성' },
+      { label: 'DB', query: 'SQLite CRUD' },
+      { label: '비동기', query: 'asyncio async await' },
+      { label: '환경설정', query: 'Python 가상환경 설치' },
+      { label: '스트리밍', query: 'FastAPI 스트리밍 응답' },
+    ],
+    travel: [
+      { label: '국내여행', query: '제주도 3박4일 코스' },
+      { label: '일본', query: '도쿄 여행 일정' },
+      { label: '동남아', query: '태국 방콕 여행 팁' },
+      { label: '항공권', query: '항공권 싸게 사는 법' },
+      { label: '환전', query: '해외여행 환전 방법' },
+      { label: '보험', query: '여행자 보험 가입' },
+      { label: '유럽', query: '유럽 배낭여행 비용' },
+      { label: '숙박', query: '호텔 저렴하게 예약' },
+    ],
+  };
+
+  // ── 색상 적용 ─────────────────────────────
+  function applyPersonaColor(persona) {
+    document.documentElement.style.setProperty('--persona-color', persona.color);
+    document.documentElement.style.setProperty('--persona-bg', persona.bg);
+  }
+
+  // ── 페르소나 로드 ────────────────────────
+  async function loadPersonas() {
+    const r = await fetch('/personas');
+    const d = await r.json();
+    personas = d.personas;
+    renderPersonaBar();
+    selectPersona(personas[0].id);
+  }
+
+  function renderPersonaBar() {
+    const bar = document.getElementById('persona-bar');
+    bar.innerHTML = personas.map(p => `
+      <div class="persona-tab" id="tab-${p.id}" onclick="selectPersona('${p.id}')">
+        <span class="tab-icon">${p.icon}</span>
+        <span class="tab-name">${p.name}</span>
+      </div>`).join('');
+  }
+
+  async function selectPersona(id) {
+    currentPersona = personas.find(p => p.id === id);
+    if (!currentPersona) return;
+
+    // 탭 활성화
+    document.querySelectorAll('.persona-tab').forEach(t => t.classList.remove('active'));
+    const tab = document.getElementById(`tab-${id}`);
+    if (tab) tab.classList.add('active');
+
+    // 색상 적용
+    applyPersonaColor(currentPersona);
+
+    // 헤더 업데이트
+    document.getElementById('h-icon').textContent = currentPersona.icon;
+    document.getElementById('h-name').textContent = currentPersona.name;
+    document.getElementById('sb-title').textContent = `${currentPersona.icon} ${currentPersona.name}`;
+    document.getElementById('sb-desc').textContent = currentPersona.description;
+
+    // 검색 팁 업데이트
+    renderSearchTips(id);
+    document.getElementById('search-tips').classList.remove('open');
+
+    // 이전 대화 이력 불러오기
+    await loadHistory();
+    loadStats();
+  }
+
+  async function loadHistory() {
+    if (!currentPersona) return;
+    try {
+      const r = await fetch(`/history?persona=${currentPersona.id}&limit=50`);
+      const d = await r.json();
+      const msgs = d.history || [];
+
+      if (msgs.length === 0) {
+        clearMessages();
+        return;
+      }
+
+      const container = document.getElementById('messages');
+      container.innerHTML = '';
+      msgs.forEach(m => {
+        const div = document.createElement('div');
+        div.className = `msg ${m.role}`;
+        div.innerHTML = `
+          <div class="msg-avatar">${m.role === 'user' ? '👤' : currentPersona.icon}</div>
+          <div class="msg-bubble">${m.role === 'user' ? escHtml(m.content) : renderMd(m.content)}</div>`;
+        container.appendChild(div);
+      });
+      container.scrollTop = container.scrollHeight;
+    } catch (e) {
+      clearMessages();
+    }
+  }
+
+  function clearMessages() {
+    const msgs = document.getElementById('messages');
+    msgs.innerHTML = `<div class="welcome" id="welcome">
+      <div class="persona-welcome-icon">${currentPersona.icon}</div>
+      <h3>${currentPersona.name}와 대화하세요</h3>
+      <p>${currentPersona.description}</p>
+      <div class="chips">${(WELCOME_CHIPS[currentPersona.id]||[]).map(c=>
+        `<div class="chip" onclick="quickAsk('${c.label}',${c.search})">${c.label}</div>`
+      ).join('')}</div>
+    </div>`;
+  }
+
+  // ── 채팅 ─────────────────────────────────
+  function appendMsg(role, content, isTyping = false, useSearch = false) {
+    const welcome = document.getElementById('welcome');
+    if (welcome) welcome.remove();
+    const msgs = document.getElementById('messages');
+    const div = document.createElement('div');
+    div.className = `msg ${role}${isTyping ? ' typing' : ''}`;
+    const searchBadge = (role === 'user' && useSearch)
+      ? '<span class="search-on-badge">🌐 검색 포함</span>' : '';
+    div.innerHTML = `
+      <div class="msg-avatar">${role === 'user' ? '👤' : currentPersona?.icon || '🤖'}</div>
+      <div class="msg-bubble">${role === 'user' ? escHtml(content) + searchBadge : (isTyping ? '' : renderMd(content))}</div>`;
+    msgs.appendChild(div);
+    msgs.scrollTop = msgs.scrollHeight;
+    return div;
+  }
+
+  function escHtml(s) {
+    return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  }
+
+  // ── 생각 모드 ─────────────────────────────────────
+  const THINK_MODES = ['off', 'prompt', 'deep'];
+  const THINK_LABELS = { off: '🧠 생각 꺼짐', prompt: '🧠 빠른 생각', deep: '🧠 깊은 생각' };
+  const THINK_TITLES = {
+    off:    'AI 생각 모드: 꺼짐 (클릭하면 활성화)',
+    prompt: '빠른 생각 모드: 단일 호출로 추론 과정 포함 (클릭하면 깊은 생각으로)',
+    deep:   '깊은 생각 모드: 2단계 분석 후 답변 (클릭하면 꺼짐)',
+  };
+
+  function cycleThinkingMode() {
+    const idx = THINK_MODES.indexOf(thinkingMode);
+    thinkingMode = THINK_MODES[(idx + 1) % THINK_MODES.length];
+    const btn = document.getElementById('think-mode-btn');
+    btn.textContent = THINK_LABELS[thinkingMode];
+    btn.title = THINK_TITLES[thinkingMode];
+    btn.className = 'think-mode-btn' + (thinkingMode !== 'off' ? ' ' + thinkingMode : '');
+  }
+
+  function parseThinking(text) {
+    const startIdx = text.indexOf('<think>');
+    if (startIdx === -1) return { hasThinking: false, answer: text };
+    const endIdx = text.indexOf('</think>');
+    const thinking = endIdx !== -1
+      ? text.substring(startIdx + 7, endIdx)
+      : text.substring(startIdx + 7);
+    const answer = endIdx !== -1 ? text.substring(endIdx + 8).trimStart() : '';
+    const before = text.substring(0, startIdx).trim();
+    return { hasThinking: true, thinkingComplete: endIdx !== -1, before, thinking, answer };
+  }
+
+  function renderWithThinking(full, bubble) {
+    const p = parseThinking(full);
+    if (!p.hasThinking) { bubble.textContent = full; return; }
+
+    const statusIcon = p.thinkingComplete ? '✅' : '⏳';
+    const statusText = p.thinkingComplete ? '생각 완료 — 클릭하여 펼치기/접기' : '생각 중...';
+    const blockClass = 'think-block' +
+      (p.thinkingComplete ? ' collapsed' : ' streaming');
+
+    let html = p.before ? `<div>${renderMd(p.before)}</div>` : '';
+    html += `<div class="${blockClass}">` +
+      `<div class="think-header" onclick="this.parentElement.classList.toggle('collapsed')">` +
+      `<span>${statusIcon} AI 생각 과정 &nbsp;<small style="font-weight:400">${statusText}</small></span>` +
+      `<span class="think-toggle">▼</span></div>` +
+      `<div class="think-content">${renderMd(p.thinking)}</div>` +
+      `</div>`;
+    if (p.answer) html += renderMd(p.answer);
+
+    bubble.innerHTML = html;
+  }
+
+  // ── 마크다운 렌더러 ──────────────────────────────
+  function renderMd(text) {
+    let s = escHtml(text);
+
+    // 코드블록 (``` ... ```) — 먼저 처리해야 내부 마크다운 영향 없음
+    s = s.replace(/```[\w]*\n([\s\S]*?)```/g, (_, code) =>
+      `<pre>${code.trimEnd()}</pre>`);
+    s = s.replace(/```([\s\S]*?)```/g, (_, code) =>
+      `<pre>${code.trim()}</pre>`);
+
+    // 테이블 (|...|...|)
+    s = s.replace(/((?:\|.+\|\n?)+)/g, (block) => {
+      const rows = block.trim().split('\n').filter(r => r.trim());
+      if (rows.length < 2) return block;
+      let html = '<table>';
+      rows.forEach((row, i) => {
+        if (/^\|[-| :]+\|$/.test(row.trim())) return; // 구분선 건너뜀
+        const parts = row.split('|');
+        const cells = parts.filter((_, ci) => ci > 0 && ci < parts.length - 1);
+        const tag = i === 0 ? 'th' : 'td';
+        html += '<tr>' + cells.map(c => `<${tag}>${c.trim()}</${tag}>`).join('') + '</tr>';
+      });
+      return html + '</table>';
+    });
+
+    // ## 제목
+    s = s.replace(/^## (.+)$/gm, '<h2>$1</h2>');
+    s = s.replace(/^### (.+)$/gm, '<h3>$1</h3>');
+
+    // 인용 (> ...)
+    s = s.replace(/^&gt; (.+)$/gm, '<blockquote>$1</blockquote>');
+
+    // **굵게**
+    s = s.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+
+    // 인라인 코드
+    s = s.replace(/`([^`]+)`/g, '<code>$1</code>');
+
+    // 수평선
+    s = s.replace(/^---+$/gm, '<hr>');
+
+    // - 불릿 리스트
+    s = s.replace(/^- (.+)$/gm, '<li>$1</li>');
+    s = s.replace(/(<li>.*<\/li>\n?)+/g, m => `<ul>${m}</ul>`);
+
+    // 줄바꿈
+    s = s.replace(/\n/g, '<br>');
+    // <br> 뒤 중복 정리
+    s = s.replace(/(<\/h[23]>|<\/ul>|<\/pre>|<\/table>|<hr>)<br>/g, '$1');
+
+    return s;
+  }
+
+  async function sendMessage() {
+    const input = document.getElementById('msg-input');
+    const msg = input.value.trim();
+    if (!msg || isLoading || !currentPersona) return;
+
+    const useSearch = document.getElementById('use-search').checked;
+    input.value = '';
+    autoResize(input);
+    appendMsg('user', msg, false, useSearch);
+    isLoading = true;
+    document.getElementById('send-btn').disabled = true;
+
+    const aiDiv = appendMsg('ai', '', true);
+    const bubble = aiDiv.querySelector('.msg-bubble');
+    let full = '';
+
+    try {
+      const resp = await fetch('/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          message: msg,
+          persona: currentPersona.id,
+          use_search: useSearch,
+          thinking_mode: thinkingMode,
+        }),
+      });
+      if (!resp.ok) throw new Error(await resp.text());
+      const reader = resp.body.getReader();
+      const dec = new TextDecoder();
+      let lastRenderLen = 0;
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        full += dec.decode(value, { stream: true });
+        // 생각 모드: 50자 이상 증가했을 때만 리렌더 (DOM 조작 최소화)
+        if (thinkingMode !== 'off') {
+          if (full.length - lastRenderLen >= 50) {
+            renderWithThinking(full, bubble);
+            lastRenderLen = full.length;
+          }
+        } else {
+          bubble.textContent = full;
+        }
+        document.getElementById('messages').scrollTop = 99999;
+      }
+      aiDiv.classList.remove('typing');
+
+      // 최종 렌더링
+      if (thinkingMode !== 'off') {
+        renderWithThinking(full, bubble);
+      } else {
+        bubble.innerHTML = renderMd(full);
+      }
+
+      // 피드백 버튼 (thinking 모드면 answer 부분만 사용)
+      const feedbackText = thinkingMode !== 'off'
+        ? (parseThinking(full).answer || full)
+        : full;
+      const fbRow = document.createElement('div');
+      fbRow.className = 'feedback-row';
+      const escapedFull = feedbackText.replace(/\\/g,'\\\\').replace(/'/g,"\\'").replace(/\n/g,'\\n');
+      const escapedMsg = msg.replace(/\\/g,'\\\\').replace(/'/g,"\\'");
+      fbRow.innerHTML = `
+        <span style="font-size:0.72rem;color:var(--text-dim);">이 답변이 도움됐나요?</span>
+        <button class="fb-btn good" onclick="sendFeedback(this,1,'${escapedMsg}','${escapedFull}','${currentPersona.id}')">👍 도움돼요</button>
+        <button class="fb-btn bad"  onclick="sendFeedback(this,-1,'${escapedMsg}','${escapedFull}','${currentPersona.id}')">👎 별로예요</button>`;
+      aiDiv.querySelector('.msg-bubble').appendChild(fbRow);
+    } catch (e) {
+      bubble.textContent = '오류: ' + e.message;
+      aiDiv.classList.remove('typing');
+    }
+    isLoading = false;
+    document.getElementById('send-btn').disabled = false;
+    await loadStats();
+  }
+
+  function quickAsk(msg, search = false) {
+    document.getElementById('msg-input').value = msg;
+    document.getElementById('use-search').checked = search;
+    sendMessage();
+  }
+
+  function toggleTips() {
+    const tips = document.getElementById('search-tips');
+    tips.classList.toggle('open');
+  }
+
+  function renderSearchTips(personaId) {
+    const grid = document.getElementById('tips-grid');
+    const items = SEARCH_TIPS[personaId] || [];
+    grid.innerHTML = items.map(t => `
+      <div class="tip-item" onclick="useTip('${t.query}')">
+        <div class="tip-label">${t.label}</div>
+        <div class="tip-query">${t.query}</div>
+      </div>`).join('');
+  }
+
+  function useTip(query) {
+    document.getElementById('msg-input').value = query;
+    document.getElementById('search-tips').classList.remove('open');
+    document.getElementById('msg-input').focus();
+  }
+
+  function handleKey(e) {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+  }
+
+  function autoResize(el) {
+    el.style.height = 'auto';
+    el.style.height = Math.min(el.scrollHeight, 120) + 'px';
+  }
+
+  // ── 문서 업로드 ──────────────────────────
+  async function uploadDocument(input) {
+    const file = input.files[0];
+    if (!file || !currentPersona) return;
+    const fd = new FormData();
+    fd.append('file', file);
+    showToast('📄 문서 학습 중...');
+    try {
+      const r = await fetch(`/learn/document?persona=${currentPersona.id}`, { method: 'POST', body: fd });
+      const d = await r.json();
+      showToast(`✅ "${d.filename}" 학습 완료`);
+      await loadStats();
+    } catch { showToast('❌ 업로드 실패'); }
+    input.value = '';
+  }
+
+  // ── 직접 지식 추가 ───────────────────────
+  async function addKnowledge() {
+    const q = document.getElementById('know-q').value.trim();
+    const a = document.getElementById('know-a').value.trim();
+    if (!q || !a || !currentPersona) { showToast('❌ 질문과 답변을 입력하세요'); return; }
+    showToast('✍️ 지식 추가 중...');
+    try {
+      const r = await fetch('/learn/text', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ question: q, answer: a, persona: currentPersona.id }),
+      });
+      const d = await r.json();
+      if (d.ok) {
+        showToast(`✅ "${q}" 학습 완료`);
+        document.getElementById('know-q').value = '';
+        document.getElementById('know-a').value = '';
+        await loadStats();
+      }
+    } catch { showToast('❌ 지식 추가 실패'); }
+  }
+
+  // ── 검색 학습 ────────────────────────────
+  async function learnSearch() {
+    const q = document.getElementById('search-query').value.trim();
+    if (!q || !currentPersona) return;
+    showToast('🌐 검색 학습 중...');
+    try {
+      const r = await fetch('/learn/search', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query: q, persona: currentPersona.id }),
+      });
+      const d = await r.json();
+      showToast(`✅ "${q}" ${d.learned}건 학습 완료`);
+      document.getElementById('search-query').value = '';
+      await loadStats();
+    } catch { showToast('❌ 검색 실패'); }
+  }
+
+  // ── 직접 다운로드 백업 ───────────────────
+  function backupDownload() {
+    showToast('⬇️ 백업 파일 다운로드 중...');
+    const a = document.createElement('a');
+    a.href = '/backup/download';
+    a.download = '';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => showToast('✅ 다운로드 완료!'), 500);
+  }
+
+  // ── Google Drive 백업 ────────────────────
+  async function initGoogleDriveStatus() {
+    try {
+      const r = await fetch('/backup/google-status');
+      const d = await r.json();
+      const btn = document.getElementById('btn-gdrive');
+      if (d.connected) {
+        btn.textContent = '✅ Google Drive 백업';
+        btn.style.borderColor = '#34a853';
+      } else if (d.configured) {
+        btn.textContent = '🔑 Google 로그인 필요';
+      } else {
+        btn.textContent = '📁 Google Drive (미설정)';
+        btn.style.opacity = '0.6';
+      }
+    } catch {}
+  }
+
+  async function backupGoogleDrive() {
+    const status = await fetch('/backup/google-status').then(r => r.json()).catch(() => ({}));
+
+    if (!status.configured) {
+      showToast('⚠️ GDRIVE_CLIENT_ID 등 환경변수를 먼저 설정하세요.');
+      return;
+    }
+
+    if (!status.connected) {
+      // 아직 로그인 안 됨 → Google OAuth 창 열기
+      const r = await fetch('/backup/google-auth');
+      const d = await r.json();
+      window.open(d.auth_url, '_blank', 'width=500,height=600');
+      showToast('🔑 Google 로그인 후 이 버튼을 다시 눌러주세요.');
+      return;
+    }
+
+    showToast('📁 Google Drive 업로드 중...');
+    try {
+      const r = await fetch('/backup/google-drive', { method: 'POST' });
+      const d = await r.json();
+      showToast(`✅ Drive 업로드 완료: ${d.filename}`);
+    } catch { showToast('⚠️ Google Drive 백업 실패'); }
+  }
+
+  // ── 대화 초기화 ──────────────────────────
+  async function clearHistory() {
+    if (!currentPersona) return;
+    if (!confirm(`[${currentPersona.name}] 대화 기록을 삭제할까요?\n학습된 지식은 유지됩니다.`)) return;
+    await fetch(`/history?persona=${currentPersona.id}`, { method: 'DELETE' });
+    clearMessages();
+    await loadStats();
+  }
+
+  // ── 통계 ─────────────────────────────────
+  async function loadStats() {
+    try {
+      const r = await fetch('/memory/stats');
+      const d = await r.json();
+      document.getElementById('stat-conv').textContent = d.conversations;
+      document.getElementById('stat-doc').textContent = d.documents;
+      document.getElementById('stat-vec').textContent = d.vector_chunks;
+    } catch {}
+  }
+
+  // ── 모델 정보 ────────────────────────────
+  async function loadModelInfo() {
+    try {
+      const r = await fetch('/model-info');
+      const d = await r.json();
+      document.getElementById('model-badge').textContent = `${d.model} · ${d.provider}`;
+    } catch {}
+  }
+
+  // ── 사이드바 ─────────────────────────────
+  function openSidebar() {
+    document.getElementById('sidebar').classList.add('open');
+    document.getElementById('overlay').classList.add('show');
+  }
+  function closeSidebar() {
+    document.getElementById('sidebar').classList.remove('open');
+    document.getElementById('overlay').classList.remove('show');
+  }
+
+  // ── 토스트 ───────────────────────────────
+  function showToast(msg) {
+    const t = document.getElementById('toast');
+    t.textContent = msg;
+    t.classList.add('show');
+    setTimeout(() => t.classList.remove('show'), 3000);
+  }
+
+  // ── 피드백 ───────────────────────────────
+  async function sendFeedback(btn, rating, question, answer, persona) {
+    if (btn.classList.contains('selected')) return;
+    btn.parentElement.querySelectorAll('.fb-btn').forEach(b => b.classList.add('selected'));
+    try {
+      await fetch('/feedback', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ question, answer: answer.substring(0, 1000), rating, persona })
+      });
+      showToast(rating === 1 ? '👍 피드백 감사합니다!' : '👎 개선에 반영하겠습니다!');
+    } catch {}
+  }
+
+  // ── 초기화 ───────────────────────────────
+  loadPersonas();
+  loadModelInfo();
+  loadStats();
+  initGoogleDriveStatus();
+</script>
+</body>
+</html>

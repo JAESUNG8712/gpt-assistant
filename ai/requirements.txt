@@ -1,0 +1,10 @@
+fastapi
+uvicorn[standard]
+httpx
+python-multipart
+ddgs
+python-dotenv
+aiohttp
+pykrx
+apscheduler
+anthropic
