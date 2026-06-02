@@ -33,6 +33,55 @@ def _normalize_query(text: str) -> str:
     for spaced, compact in _COMPOUND_MAP:
         result = result.replace(spaced, compact)
     return result
+
+
+def _parse_answer_header(answer: str):
+    """답변 첫 줄에서 (제목, 출처) 추출. Returns (title, citation)."""
+    first_line = answer.split('\n')[0].strip().rstrip(':').strip()
+    m = re.search(r'\((.+)\)\s*$', first_line)
+    if m:
+        citation = m.group(1)
+        title = first_line[:m.start()].strip()
+        return title, citation
+    return first_line, ""
+
+
+def _format_company_results(top_results: list, best_score: float) -> str:
+    """company 페르소나: 관련 규정 복수 결과 + 출처 포맷.
+    - 1위 점수의 40% 이상 항목 최대 4개 표시
+    - 각 항목에 제목·출처·본문 구분 표시
+    """
+    if not top_results:
+        return ""
+
+    # 관련 항목 필터: 1위 점수의 40% 이상, 최소 0.10
+    rel_min = max(best_score * 0.40, 0.10)
+    filtered = [(q, a, s) for q, a, s in top_results if s >= rel_min][:4]
+    if not filtered:
+        filtered = [top_results[0]]
+
+    if len(filtered) == 1:
+        q, a, s = filtered[0]
+        title, cite = _parse_answer_header(a)
+        body = '\n'.join(a.split('\n')[1:]).lstrip('\n')
+        header = f"**{title}**"
+        if cite:
+            header += f"\n📌 출처: {cite}"
+        return header + "\n\n" + body if body else a
+
+    SEP = "─" * 22
+    parts = [f"📋 **관련 규정 {len(filtered)}건** 검색됨\n"]
+    for i, (q, a, s) in enumerate(filtered, 1):
+        title, cite = _parse_answer_header(a)
+        body = '\n'.join(a.split('\n')[1:]).lstrip('\n')
+        header = f"{SEP}\n**{i}. {title}**"
+        if cite:
+            header += f"\n📌 출처: {cite}"
+        parts.append(header + "\n\n" + (body if body else a))
+
+    return '\n'.join(parts)
+
+
 from personas import PERSONAS, DEFAULT_PERSONA
 
 mem.init_db()
@@ -84,10 +133,11 @@ async def chat(req: ChatRequest):
     direct_calc = calc.try_any_calc(user_msg)
 
     # ── 1단계: 로컬 KB 검색 (정규화된 쿼리 사용) ────────
-    kb = mem.retrieve_best(search_msg, persona_id=req.persona)
-    rag_ctx    = kb["context"]
-    best_score = kb["best_score"]
-    top_answer = kb["top_answer"]
+    kb = mem.retrieve_best(search_msg, n=6, persona_id=req.persona)
+    rag_ctx     = kb["context"]
+    best_score  = kb["best_score"]
+    top_answer  = kb["top_answer"]
+    top_results = kb.get("top_results", [])  # company 다중 결과용
 
     # ── 2단계: law.go.kr 법령 검색 (법 관련 질문만, 페르소나 허용 시) ──────
     law_ctx = ""
@@ -147,11 +197,13 @@ async def chat(req: ChatRequest):
 
             # ── 경로 A: 고신뢰 KB 직접 서빙 ──────────────
             elif kb_direct:
-                # LLM을 쓰지 않고 KB 답변을 그대로 스트리밍
-                answer = top_answer
-                # company 중간 신뢰도(0.10~0.14): 관련 규정 안내 prefix
-                if company_kb_only and best_score < KB_DIRECT:
-                    answer = "관련 규정을 안내해 드립니다.\n\n" + answer
+                if company_kb_only:
+                    # 관련 규정 복수 표시 + 출처(조항) 안내
+                    answer = _format_company_results(top_results, best_score)
+                    if not answer:
+                        answer = top_answer
+                else:
+                    answer = top_answer
                 chunk_size = 150
                 for i in range(0, len(answer), chunk_size):
                     chunk = answer[i:i + chunk_size]
