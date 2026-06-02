@@ -92,6 +92,16 @@
 ### 환경 변수
 - `DART_API_KEY` — DART OpenAPI (https://opendart.fss.or.kr)
 - `BOK_API_KEY` — 한국은행 ECOS API (https://ecos.bok.or.kr)
+- `ANTHROPIC_API_KEY` — Claude API (https://console.anthropic.com) — 미설정 시 규칙 기반 분석으로 fallback
+
+### Claude API 통합
+- 모델: `claude-opus-4-8` (적응형 사고 `thinking: adaptive`)
+- 적용 위치: `ai/stock_analysis/utils/claude_client.py`
+  - `analyze_stock_opinion()` — 종목별 AI 투자의견 (StockAnalyzer)
+  - `generate_executive_summary()` — 시황 종합 요약 (ReportWriter)
+  - `generate_action_plan()` — 실행 가능한 투자 액션 플랜 (ReportWriter)
+- Prompt caching 적용 (시스템 프롬프트 고정 텍스트)
+- API 키 미설정 시 자동 fallback → 규칙 기반 분석 유지
 
 ### API
 - `GET  /stock/team` — 팀 구성 조회
@@ -111,3 +121,4 @@
 - 2026-05-26: 프로젝트 맥락 영속 저장 기능(메모리 API) 구현
 - 2026-05-26: 자체 AI 시스템 구현 (Groq+RAG+OneDrive 백업, iPad PWA)
 - 2026-06-02: 주식 분석 11인 에이전트 팀 구현 (DART+KRX+매크로+지정학+검증3회+정기보고서)
+- 2026-06-02: Claude API (claude-opus-4-8) 통합 — 종목별 AI 투자의견·시황요약·액션플랜 자동 생성, prompt caching 적용
