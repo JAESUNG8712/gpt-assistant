@@ -1,36 +1,18 @@
 <!DOCTYPE html>
-<!-- This file is intentionally replaced by the AI Assistant landing page -->
 <html lang="ko">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<meta name="apple-mobile-web-app-capable" content="yes">
-<meta http-equiv="refresh" content="0;url=ai-cloud.html">
-<title>AI Assistant</title>
-<style>
-*{margin:0;padding:0;box-sizing:border-box}
-body{font-family:system-ui,sans-serif;background:#0a0a0f;color:#e2e2ef;display:flex;align-items:center;justify-content:center;min-height:100dvh;flex-direction:column;gap:16px;padding:20px;text-align:center}
-a{color:#a78bfa;font-size:1rem}
-p{color:#666;font-size:.88rem}
-</style>
-</head>
-<body>
-<div style="font-size:2.5rem">🧠</div>
-<p>자가 학습 AI 어시스턴트</p>
-<a href="engine-ipad.html">MiniGPT 엔진 열기 →</a>
-<p style="margin-top:8px;font-size:.78rem">잠시 후 자동으로 이동합니다...</p>
-</body>
-</html>
+<meta name="viewport" content="width=device-width,initial-scale=1.0,viewport-fit=cover">
 <title>인사평가 통합 시스템 v18.1</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,'Malgun Gothic','맑은 고딕',sans-serif;font-size:14px;background:#f1f5f9;color:#1e293b}
 ::-webkit-scrollbar{width:5px;height:5px}::-webkit-scrollbar-thumb{background:#cbd5e1;border-radius:3px}
-#app{display:flex;height:100vh;overflow:hidden}
+#app{display:flex;height:100vh;height:100dvh;overflow:hidden}
 #sidebar{width:210px;background:#0f172a;color:#94a3b8;display:flex;flex-direction:column;flex-shrink:0;overflow-y:auto}
 #main{flex:1;display:flex;flex-direction:column;overflow:hidden}
 #topbar{background:#fff;border-bottom:1px solid #e2e8f0;padding:10px 20px;display:flex;justify-content:space-between;align-items:center;flex-shrink:0;gap:12px}
-#content{flex:1;overflow-y:auto;padding:20px}
+#content{flex:1;overflow-y:auto;padding:20px;-webkit-overflow-scrolling:touch}
 /* Login */
 #login-wrap{position:fixed;inset:0;background:linear-gradient(135deg,#0f172a 0%,#1e3a5f 50%,#0f172a 100%);display:flex;align-items:center;justify-content:center;padding:20px;z-index:9999}
 .login-box{background:#fff;border-radius:20px;padding:36px;width:100%;max-width:420px;box-shadow:0 25px 60px rgba(0,0,0,.4)}
@@ -49,9 +31,9 @@ html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,'Malgun Gothi
 .sb-stage.goal{background:#1e3a5f;color:#93c5fd}.sb-stage.perf{background:#14532d;color:#86efac}
 .sb-nav{padding:6px 8px;flex:1}
 .sb-sec{font-size:10px;color:#475569;font-weight:600;text-transform:uppercase;letter-spacing:.5px;padding:10px 8px 4px}
-.sb-btn{display:flex;align-items:center;gap:7px;padding:7px 10px;border-radius:8px;cursor:pointer;font-size:12px;color:#94a3b8;transition:background .15s,color .15s;border:none;background:none;width:100%;text-align:left}
+.sb-btn{display:flex;align-items:center;gap:7px;padding:8px 10px;border-radius:8px;cursor:pointer;font-size:12px;color:#94a3b8;transition:background .15s,color .15s;border:none;background:none;width:100%;text-align:left;line-height:1.3}
 .sb-btn:hover{background:#1e293b;color:#e2e8f0}.sb-btn.active{background:#2563eb;color:#fff}
-.sb-btn .si{font-size:14px;width:16px;text-align:center}
+.sb-btn .si{font-size:14px;width:16px;text-align:center;flex-shrink:0}
 .sb-footer{padding:10px 12px;border-top:1px solid #1e293b;font-size:11px;color:#475569}
 /* Cards */
 .card{background:#fff;border-radius:12px;border:1px solid #e2e8f0;margin-bottom:14px}
@@ -265,10 +247,10 @@ input[type=file]{display:none}
   .filter-bar .fc{font-size:11px;padding:6px 8px}
   .filter-bar select.fc{max-width:130px}
 
-  /* Buttons */
-  .btn{padding:6px 10px;font-size:11px}
-  .btn-sm{padding:4px 7px;font-size:10px}
-  .btn-lg{padding:9px 16px;font-size:12px}
+  /* Buttons — min 44px touch target */
+  .btn{padding:10px 12px;font-size:12px;min-height:44px}
+  .btn-sm{padding:6px 10px;font-size:11px;min-height:36px}
+  .btn-lg{padding:12px 18px;font-size:13px;min-height:48px}
 
   /* Tables */
   .tbl-wrap{overflow-x:auto;-webkit-overflow-scrolling:touch}
@@ -276,19 +258,21 @@ input[type=file]{display:none}
   th,td{padding:6px 8px;font-size:11px}
   th{font-size:10px}
 
-  /* Modal */
+  /* Modal — bottom sheet on mobile */
   .modal-ov{padding:0;align-items:flex-end}
   .modal,.modal-sm,.modal-md,.modal-lg{
     max-width:100vw;width:100%;margin:0;
     border-radius:16px 16px 0 0;
-    max-height:90vh}
-  .modal-body{max-height:65vh;padding:14px}
-  .modal-foot{padding:10px 14px;flex-wrap:wrap;gap:6px}
+    max-height:92vh}
+  .modal-head{padding:14px 16px}
+  .modal-close{width:44px;height:44px;font-size:20px}
+  .modal-body{max-height:65vh;padding:14px;-webkit-overflow-scrolling:touch}
+  .modal-foot{padding:10px 14px;flex-wrap:wrap;gap:6px;padding-bottom:max(10px,env(safe-area-inset-bottom))}
   .modal-foot .btn{flex:1;min-width:0;justify-content:center}
 
-  /* Forms */
+  /* Forms — 16px prevents iOS auto-zoom on focus */
   .fg{margin-bottom:10px}
-  .fc{padding:7px 9px;font-size:12px}
+  .fc{padding:10px 12px;font-size:16px;min-height:44px}
 
   /* Tabs → scrollable */
   .tabs{overflow-x:auto;gap:3px;padding:3px}
@@ -308,10 +292,10 @@ input[type=file]{display:none}
   /* Stage banner */
   .stage-banner{flex-direction:column;gap:6px;padding:10px 12px}
 
-  /* Comp evaluation score buttons */
+  /* Comp evaluation score buttons — 44px touch target */
   .comp-q-row{grid-template-columns:1fr;gap:6px}
   .comp-score-btns{justify-content:flex-start;flex-wrap:wrap}
-  .comp-score-btn{width:32px;height:32px;font-size:12px}
+  .comp-score-btn{width:44px;height:44px;font-size:14px}
 
   /* Toast */
   .toast{left:10px;right:10px;top:auto;bottom:14px;max-width:none}
@@ -326,9 +310,102 @@ input[type=file]{display:none}
   #content{padding:6px}
   .stat-grid{grid-template-columns:1fr}
   .card-head h3{font-size:12px}
-  .btn-sm{font-size:10px;padding:3px 6px}
+  .btn-sm{font-size:11px;padding:6px 8px;min-height:36px}
+  .test-accs{grid-template-columns:1fr 1fr}
 }
 
+/* ── Login screen mobile ── */
+@media(max-width:600px){
+  .login-box{padding:24px 18px;border-radius:16px}
+  .login-logo{width:52px;height:52px;font-size:16px;margin-bottom:12px}
+  .test-accs{grid-template-columns:1fr 1fr;gap:6px}
+  .ta-btn{padding:10px 8px;min-height:44px}
+  #login-wrap input.fc{font-size:16px;min-height:48px}
+}
+
+
+/* ── Demo mode banner ── */
+#demo-bar{display:none;background:linear-gradient(90deg,#f59e0b,#d97706);color:#fff;
+  padding:7px 14px;font-size:11px;font-weight:700;align-items:center;gap:8px;
+  border-bottom:2px solid rgba(0,0,0,.1);flex-shrink:0}
+#demo-bar.on{display:flex}
+#demo-bar .demo-reset{margin-left:auto;background:rgba(0,0,0,.18);border:none;color:#fff;
+  padding:3px 10px;border-radius:5px;cursor:pointer;font-size:11px;font-weight:700;min-height:28px}
+#demo-bar .demo-reset:hover{background:rgba(0,0,0,.3)}
+.login-demo-note{background:linear-gradient(135deg,#fffbeb,#fef3c7);border:1px solid #fcd34d;
+  border-radius:10px;padding:10px 14px;margin-top:10px;font-size:11px;color:#92400e;text-align:center}
+.login-demo-note strong{display:block;font-size:13px;color:#b45309;margin-bottom:3px}
+
+/* ── Safe area (iPhone X+ notch / home indicator) ── */
+@supports(padding:max(0px)){
+  #topbar{
+    padding-left:max(20px,env(safe-area-inset-left));
+    padding-right:max(20px,env(safe-area-inset-right))}
+  #content{
+    padding-left:max(8px,env(safe-area-inset-left));
+    padding-right:max(8px,env(safe-area-inset-right));
+    padding-bottom:max(20px,env(safe-area-inset-bottom))}
+  #sidebar{padding-bottom:env(safe-area-inset-bottom,0)}
+}
+
+/* ── Period / Stage cards ── */
+.period-card{padding:14px 16px;border-radius:12px;border:2px solid #e2e8f0;background:#fff;transition:border-color .2s,background .2s}
+.period-card.pc-goal{border-color:#2563eb;background:#eff6ff}
+.period-card.pc-perf{border-color:#16a34a;background:#f0fdf4}
+.period-card.pc-comp{border-color:#7c3aed;background:#faf5ff}
+.period-card.pc-leader{border-color:#d97706;background:#fffbeb}
+.period-card.pc-talent{border-color:#0f766e;background:#f0fdfa}
+.period-prog{height:5px;background:#e2e8f0;border-radius:3px;margin:8px 0 4px;overflow:hidden}
+.period-prog-fill{height:100%;border-radius:3px;transition:width .4s}
+.dday{display:inline-flex;align-items:center;padding:2px 8px;border-radius:20px;font-size:11px;font-weight:700;line-height:1.5}
+.dday-green{background:#dcfce7;color:#166534}
+.dday-blue{background:#dbeafe;color:#1d4ed8}
+.dday-gray{background:#f1f5f9;color:#64748b}
+.dday-red{background:#fee2e2;color:#b91c1c}
+.stage-flow{display:flex;align-items:center;gap:0;padding:10px 14px;background:#f8fafc;border-radius:10px;margin-bottom:16px;overflow-x:auto}
+.sf-node{display:flex;flex-direction:column;align-items:center;gap:3px;min-width:72px;flex-shrink:0}
+.sf-dot{width:30px;height:30px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:13px;border:2px solid #e2e8f0;background:#fff;flex-shrink:0}
+.sf-node.sf-active .sf-dot{border-color:#2563eb;background:#2563eb;color:#fff;box-shadow:0 0 0 3px #bfdbfe}
+.sf-node.sf-done .sf-dot{border-color:#16a34a;background:#f0fdf4;color:#16a34a}
+.sf-label{font-size:10px;color:#94a3b8;text-align:center;white-space:nowrap}
+.sf-sub{font-size:9px;color:#cbd5e1;text-align:center}
+.sf-node.sf-active .sf-label{color:#2563eb;font-weight:700}
+.sf-node.sf-done .sf-label{color:#16a34a}
+.sf-line{flex:1;min-width:16px;height:2px;background:#e2e8f0;margin-bottom:13px}
+.sf-line.sf-done{background:#16a34a}
+.result-pub-row{display:flex;align-items:center;gap:10px;padding:12px 14px;border:1.5px solid #e2e8f0;border-radius:10px;background:#fff;margin-bottom:8px;transition:border-color .2s,background .2s}
+.result-pub-row.pub-on{border-color:#16a34a;background:#f0fdf4}
+.lp-card{padding:14px 16px;border-radius:12px;border:1.5px solid #e2e8f0;background:#fff;margin-bottom:10px;cursor:pointer;transition:border-color .2s,box-shadow .2s}
+.lp-card:hover{border-color:#2563eb;box-shadow:0 2px 8px #2563eb18}
+.lp-card.lp-watch{border-left:4px solid #f59e0b}
+.lp-card.lp-pip{border-left:4px solid #dc2626}
+.lp-card.lp-improved{border-left:4px solid #16a34a}
+.lp-card.lp-terminated{border-left:4px solid #94a3b8;opacity:.7}
+.lp-status-watch{background:#fef3c7;color:#92400e;padding:2px 8px;border-radius:20px;font-size:11px;font-weight:700}
+.lp-status-pip{background:#fee2e2;color:#b91c1c;padding:2px 8px;border-radius:20px;font-size:11px;font-weight:700}
+.lp-status-improved{background:#dcfce7;color:#166534;padding:2px 8px;border-radius:20px;font-size:11px;font-weight:700}
+.lp-status-terminated{background:#f1f5f9;color:#64748b;padding:2px 8px;border-radius:20px;font-size:11px;font-weight:700}
+.score-bar{height:6px;background:#e2e8f0;border-radius:3px;overflow:hidden;margin-top:4px}
+.score-bar-fill{height:100%;border-radius:3px;background:#2563eb;transition:width .4s}
+.weight-slider-row{display:flex;align-items:center;gap:10px;margin-bottom:12px}
+.weight-slider-row label{min-width:90px;font-size:13px;font-weight:600;color:#374151}
+.weight-slider-row input[type=range]{flex:1}
+.weight-slider-row .weight-val{min-width:36px;text-align:right;font-size:13px;font-weight:700;color:#2563eb}
+.formula-preview{background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:12px 16px;font-size:12px;color:#374151;line-height:1.8;margin-top:8px}
+.eval-status-toggle{display:flex;gap:6px;margin:10px 0}
+.est-btn{flex:1;padding:9px 8px;border-radius:8px;border:2px solid #e2e8f0;background:#fff;cursor:pointer;font-size:11px;font-weight:700;text-align:center;transition:all .15s;line-height:1.4}
+.est-btn.est-on{border-color:#16a34a;background:#f0fdf4;color:#15803d}
+.est-btn.est-off{border-color:#dc2626;background:#fef2f2;color:#b91c1c}
+
+/* ── Touch UX ── */
+*{-webkit-tap-highlight-color:transparent}
+button,a,[role=button]{touch-action:manipulation}
+
+/* ── Sidebar scroll on mobile ── */
+@media(max-width:900px){
+  #sidebar{-webkit-overflow-scrolling:touch}
+  .sb-btn{min-height:44px;padding:10px}
+}
 
 /* ── Card-style tables on very small screens ── */
 @media(max-width:480px){
@@ -1013,13 +1090,14 @@ let kpiEntries=[
 ];
 
 let changeRequests=[];
+let lowPerfData=[]; // [{id,empId,year,flaggedDate,flaggedBy,status:"watch"|"pip"|"improved"|"terminated",pipStart,pipEnd,pipGoal,notes:[{date,content,authorId}],manualFlag}]
 let settings={
   // KPI
   stage:"performance", evalYear:2026,
-  kpiGoalStart:"", kpiGoalEnd:"",       // 등록단계 기간
-  kpiPerfStart:"", kpiPerfEnd:"",        // 결과입력단계 기간
+  kpiGoalStart:"", kpiGoalEnd:"",
+  kpiPerfStart:"", kpiPerfEnd:"",
   kpiResultPublished:false,
-  kpiResultYear:2026,                     // 공개 연도
+  kpiResultYear:2026,
   // 역량평가 (팀장/팀원)
   compEvalEnabled:true,
   compEvalYear:2026,
@@ -1032,6 +1110,11 @@ let settings={
   leadershipEvalStart:"", leadershipEvalEnd:"",
   leadershipResultPublished:false,
   leadershipResultYear:2026,
+  // 종합 성과 점수 가중치 (합계=100%)
+  scoreWeights:{kpi:60,comp:20,ls:20},
+  // 저성과 인력 자동 감지 기준
+  lowPerfThreshold:60,    // 이 점수 미만이면 저성과 대상
+  lowPerfConsecYears:2,   // 연속 N년 저성과 시 자동 등록
 };
 // Period check helpers
 function isInPeriod(start,end){
@@ -1176,6 +1259,8 @@ let serverConfig = {
   retryCount: 0,
   maxRetry: 3,
 };
+// Pre-embedded server URL — replaced when admin generates a client app download
+const _PRESET_SRV = "";
 let _serverAutoSaveTimer = null;
 let _serverHeartbeatTimer = null;
 let _serverRetryTimer = null;
@@ -1194,26 +1279,56 @@ let _autoKpiDraftTimer = null;          // lock keys held by this client
 // ── Auto-detect: if served from http server, use same origin ──
 (function detectServerOrigin(){
   try {
+    // Priority 1: Pre-embedded URL (admin generated client app download)
+    if(_PRESET_SRV){ serverConfig.url=_PRESET_SRV; serverConfig.enabled=true; return; }
+    // Priority 2: ?srv= URL parameter (admin shared link)
+    const srvParam = new URLSearchParams(location.search).get('srv');
+    if(srvParam){ serverConfig.url=decodeURIComponent(srvParam); serverConfig.enabled=true; return; }
     const proto = location.protocol;
     const host = location.hostname;
     // GitHub Pages / static hosting — skip server mode
     const isStaticHost = host.endsWith("github.io") || host.endsWith("netlify.app") || host.endsWith("vercel.app") || host === "";
     if((proto === "http:" || proto === "https:") && !isStaticHost){
-      // Served from a real HTTP server — same origin is the data server
-      const origin = location.origin;
-      serverConfig.url = origin;
+      serverConfig.url = location.origin;
       serverConfig.enabled = true;
-      console.log("[Server] Auto-detected:", origin);
     } else if(proto !== "http:" && proto !== "https:"){
-      // Opened as file:// — try last saved server URL from localStorage
       try {
         const saved = localStorage.getItem("hr_kpi_server_url");
-        if(saved){ serverConfig.url=saved; serverConfig.enabled=true; console.log("[Server] Restored from localStorage:", saved); }
+        if(saved){ serverConfig.url=saved; serverConfig.enabled=true; }
       } catch(e){}
     }
-    // else: static hosting (github.io etc.) → localStorage only mode
+    // else: static hosting → localStorage only mode
   } catch(e){}
 })();
+
+// ── Demo mode: ?demo=1 forces localStorage-only mode with persistence ──
+const _demoMode = (()=>{
+  try{ return new URLSearchParams(location.search).has('demo'); }
+  catch(e){ return false; }
+})();
+if(_demoMode){ serverConfig.enabled=false; serverConfig.url=""; }
+
+// ── Demo localStorage persistence ──
+const _LS_DEMO_STATE = 'hr_kpi_demo_state';
+let _demoSaveTimer = null;
+function _saveDemoState(){
+  if(!_demoMode) return;
+  try{ localStorage.setItem(_LS_DEMO_STATE, JSON.stringify(getFullState())); }
+  catch(e){ console.warn('[Demo] save failed:', e); }
+}
+function _loadDemoState(){
+  if(!_demoMode) return false;
+  try{
+    const raw = localStorage.getItem(_LS_DEMO_STATE);
+    if(!raw) return false;
+    applyState(JSON.parse(raw), true);
+    console.log('[Demo] State loaded from localStorage');
+    return true;
+  } catch(e){ console.warn('[Demo] load failed:', e); return false; }
+}
+function _clearDemoState(){
+  try{ localStorage.removeItem(_LS_DEMO_STATE); }catch(e){}
+}
 
 // ── Server API helpers ──
 async function serverRequest(method, endpoint, body=null, timeout=8000){
@@ -1259,6 +1374,10 @@ async function checkServerConnection(){
 
 // Debounced auto-save: waits 2s after last change, then saves once
 function autoSaveDebounced(){
+  if(_demoMode){
+    clearTimeout(_demoSaveTimer);
+    _demoSaveTimer = setTimeout(_saveDemoState, 1500);
+  }
   if(!serverConfig.enabled || !serverConfig.url) return;
   if(_serverDebounceTimer) clearTimeout(_serverDebounceTimer);
   _serverDebounceTimer = setTimeout(()=>{
@@ -1836,10 +1955,16 @@ function executeDownload(empId){
   closeModal();showToast(`${e.name}님의 인사정보가 다운로드되었습니다.`,"success");
 }
 
-function dlCSV(fn,headers,rows){
+async function dlCSV(fn,headers,rows){
   const bom="\uFEFF",csv=bom+[headers.join(","),...rows.map(r=>r.map(c=>`"${String(c==null?"":c).replace(/"/g,"'")}"`).join(","))].join("\n");
-  const url=URL.createObjectURL(new Blob([csv],{type:"text/csv;charset=utf-8;"}));
-  const a=document.createElement("a");a.href=url;a.download=fn;a.click();URL.revokeObjectURL(url);
+  const blob=new Blob([csv],{type:"text/csv;charset=utf-8;"});
+  if(navigator.canShare && navigator.canShare({files:[new File([blob],fn,{type:blob.type})]})){
+    try{ await navigator.share({files:[new File([blob],fn,{type:blob.type})],title:fn}); return; }
+    catch(e){ if(e.name==="AbortError") return; }
+  }
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement("a");a.href=url;a.download=fn;a.click();
+  setTimeout(()=>URL.revokeObjectURL(url),1000);
 }
 function showToast(msg,type="success"){
   const t=document.createElement("div");t.className=`toast toast-${type}`;t.textContent=msg;
@@ -3720,16 +3845,29 @@ function getFullState(action=""){
       gradeAdjustHistory:JSON.parse(JSON.stringify(gradeAdjustHistory)),
       evaluatorConfig:JSON.parse(JSON.stringify(evaluatorConfig)),
       tieNotifications:JSON.parse(JSON.stringify(tieNotifications)),
+      lowPerfData:JSON.parse(JSON.stringify(lowPerfData)),
       _idCounter:_id
     }
   };
 }
 
-function exportBackup(){
+async function exportBackup(){
   const state=getFullState();
   const json=JSON.stringify(state,null,2);
   const bom="\uFEFF";
-  const url=URL.createObjectURL(new Blob([bom+json],{type:"application/json;charset=utf-8;"}));
+  const filename=`HR_KPI_\uBC31\uC5C5_${new Date().toISOString().slice(0,19).replace(/:/g,"-")}.json`;
+  const blob=new Blob([bom+json],{type:"application/json;charset=utf-8;"});
+  // iOS Safari: Web Share API \u2192 \uACF5\uC720 \uC2DC\uD2B8(\uD30C\uC77C \uC571 \uC800\uC7A5 / AirDrop \uB4F1)
+  if(navigator.canShare && navigator.canShare({files:[new File([blob],filename,{type:blob.type})]})){
+    try{
+      await navigator.share({files:[new File([blob],filename,{type:blob.type})],title:"HR KPI \uBC31\uC5C5"});
+      showToast("\uACF5\uC720 \uC644\uB8CC","success");
+      saveAutoSnapshot("manual_export");
+      return;
+    }catch(e){ if(e.name==="AbortError") return; }
+  }
+  // Desktop / Android: \uC77C\uBC18 \uB2E4\uC6B4\uB85C\uB4DC
+  const url=URL.createObjectURL(blob);
   const a=document.createElement("a");a.href=url;
   a.download=`HR_KPI_백업_${new Date().toISOString().slice(0,19).replace(/:/g,"-")}.json`;
   a.click();URL.revokeObjectURL(url);
@@ -3766,11 +3904,19 @@ function applyState(state,skipUndo=false){
   if(d.kpiEntries&&Array.isArray(d.kpiEntries))kpiEntries=d.kpiEntries;
   if(d.changeRequests&&Array.isArray(d.changeRequests))changeRequests=d.changeRequests;
   if(d.settings&&typeof d.settings==="object")settings={...settings,...d.settings};
+  if(d.settings?.scoreWeights)settings.scoreWeights={...settings.scoreWeights,...d.settings.scoreWeights};
   if(d.orgDB&&typeof d.orgDB==="object")orgDB={...orgDB,...d.orgDB};
   if(d.gradeSettings&&typeof d.gradeSettings==="object")gradeSettings={...gradeSettings,...d.gradeSettings};
+  if(d.promotionSettings&&typeof d.promotionSettings==="object")promotionSettings={...promotionSettings,...d.promotionSettings};
+  if(d.coreTalentPool&&Array.isArray(d.coreTalentPool))coreTalentPool=d.coreTalentPool;
+  if(d.talentDevPlans&&Array.isArray(d.talentDevPlans))talentDevPlans=d.talentDevPlans;
+  if(d.coreTalentSettings&&typeof d.coreTalentSettings==="object")coreTalentSettings={...coreTalentSettings,...d.coreTalentSettings};
+  if(d.compGradeResults&&typeof d.compGradeResults==="object")compGradeResults={...compGradeResults,...d.compGradeResults};
+  if(d.gradeAdjustHistory&&Array.isArray(d.gradeAdjustHistory))gradeAdjustHistory=d.gradeAdjustHistory;
+  if(d.evaluatorConfig&&typeof d.evaluatorConfig==="object")evaluatorConfig={...evaluatorConfig,...d.evaluatorConfig};
   if(d.tieNotifications&&Array.isArray(d.tieNotifications))tieNotifications=d.tieNotifications;
+  if(d.lowPerfData&&Array.isArray(d.lowPerfData))lowPerfData=d.lowPerfData;
   if(d._idCounter&&typeof d._idCounter==="number")_id=d._idCounter;
-  // sync currentUser
   if(currentUser){const updated=employees.find(e=>e.id===currentUser.id);if(updated)currentUser=updated;}
 }
 
@@ -4461,20 +4607,25 @@ function renderLogin(){
   let wrap=document.getElementById("login-wrap");
   if(!wrap){wrap=document.createElement("div");wrap.id="login-wrap";document.body.appendChild(wrap);}
   wrap.style.display="flex";
+  const _srvIndicator = serverConfig.enabled
+    ? `<div style="text-align:center;font-size:11px;color:#16a34a;margin-bottom:12px">🟢 서버 연결됨 · ${h(serverConfig.url)}</div>`
+    : _demoMode ? "" : `<div style="text-align:center;font-size:11px;color:#94a3b8;margin-bottom:12px">⚫ 서버 미연결 (데모 데이터)</div>`;
   wrap.innerHTML=`<div class="login-box">
     <div class="login-logo">HR</div>
-    <h1 style="text-align:center;font-size:18px;font-weight:800;color:#1e293b;margin-bottom:4px">인사평가 통합 시스템</h1>
-    <p style="text-align:center;font-size:11px;color:#94a3b8;margin-bottom:20px">HR &amp; KPI Management System v18.1</p>
+    <h1 style="text-align:center;font-size:18px;font-weight:800;color:#1e293b;margin-bottom:2px">인사평가 통합 시스템</h1>
+    <p style="text-align:center;font-size:11px;color:#94a3b8;margin-bottom:14px">HR KPI Integrated Evaluation System</p>
+    ${_srvIndicator}
     <div id="login-err"></div>
-    <div class="fg"><label class="fl">아이디</label><input class="fc" id="l-id" placeholder="로그인 ID" onkeydown="if(event.key==='Enter')doLogin()"></div>
-    <div class="fg"><label class="fl">비밀번호</label><input class="fc" id="l-pw" type="password" placeholder="비밀번호" onkeydown="if(event.key==='Enter')doLogin()"></div>
+    <div class="fg"><label class="fl">아이디 (로그인 ID)</label><input class="fc" id="l-id" placeholder="예) admin, leader01 …" autocomplete="username" onkeydown="if(event.key==='Enter')document.getElementById('l-pw').focus()"></div>
+    <div class="fg"><label class="fl">비밀번호</label><input class="fc" id="l-pw" type="password" placeholder="비밀번호 입력" autocomplete="current-password" onkeydown="if(event.key==='Enter')doLogin()"></div>
     <button class="btn btn-primary btn-lg" style="width:100%;justify-content:center;margin-bottom:14px" onclick="doLogin()">로그인</button>
     <div style="background:#f8fafc;border-radius:10px;padding:12px">
-      <p class="fz11 fw6 text-gray mb2">테스트 계정</p>
+      <p class="fz11 fw6 text-gray mb2">빠른 로그인 (샘플 계정)</p>
       <div class="test-accs">
-        ${[{r:"관리자",i:"admin",p:"Admin@123"},{r:"경영지원본부장",i:"director01",p:"Director@1"},{r:"IT사업본부장",i:"director03",p:"Director@3"},{r:"영업본부장",i:"director04",p:"Director@3"},{r:"인사팀장",i:"leader01",p:"Leader@123"},{r:"플랫폼개발팀장",i:"leader02",p:"Leader@234"},{r:"팀원(경영지원)",i:"member01",p:"Member@123"},{r:"팀원(IT)",i:"member03",p:"Member@345"}].map(a=>`<div class="ta-btn" onclick="setLogin('${a.i}','${a.p}')"><div class="ta-role">${a.r}</div><div class="ta-id">${a.i}</div></div>`).join("")}
+        ${[{r:"관리자",i:"admin",p:"Admin@123"},{r:"경영지원본부장",i:"director01",p:"Director@1"},{r:"IT사업본부장",i:"director03",p:"Director@3"},{r:"영업본부장",i:"director04",p:"Director@3"},{r:"인사팀장",i:"leader01",p:"Leader@123"},{r:"플랫폼개발팀장",i:"leader02",p:"Leader@234"},{r:"팀원(경영지원)",i:"member01",p:"Member@123"},{r:"팀원(IT)",i:"member03",p:"Member@345"}].map(a=>`<div class="ta-btn" onclick="setLogin('${a.i}','${a.p}')"><div class="ta-role">${a.r}</div><div class="ta-id fz11 text-gray">${a.i}</div></div>`).join("")}
       </div>
     </div>
+    ${_demoMode ? `<div class="login-demo-note"><strong>🔍 데모 모드</strong>서버 없이 브라우저에서 바로 사용합니다.<br>변경 내용은 이 기기에 자동 저장됩니다.</div>` : ""}
   </div>`;
 }
 function setLogin(id,pw){const li=$("#l-id"),lp=$("#l-pw");if(li)li.value=id;if(lp)lp.value=pw;}
@@ -4511,50 +4662,62 @@ function render(){
   const app=$("#app");if(!app)return;
   if(!currentUser){renderLogin();return;}
   const wrap=document.getElementById("login-wrap");if(wrap)wrap.style.display="none";
-  app.innerHTML=`<div id="sidebar"></div><div id="main"><div id="topbar"><button id="mobile-menu-btn" onclick="toggleSidebar()" title="메뉴">☰</button><h1 style="font-size:14px;font-weight:700;color:#1e293b" id="page-title"></h1><div class="flex items-c gap3"><span class="fz12 text-gray">${h(currentUser.name)} (${ROLES[currentUser.role]})</span><button class="btn btn-secondary btn-sm" onclick="logout()">로그아웃</button></div></div><div id="content"></div></div>`;
+  const _demoBannerHtml = _demoMode ? `<div id="demo-bar" class="on">🔍 데모 모드 — 데이터는 이 브라우저에만 저장됩니다 (서버 미연결)<button class="demo-reset" onclick="if(confirm('데모 데이터를 초기화하고 기본값으로 되돌릴까요?')){_clearDemoState();location.reload()}">초기화</button></div>` : "";
+  app.innerHTML=`<div id="sidebar"></div><div id="main">${_demoBannerHtml}<div id="topbar"><button id="mobile-menu-btn" onclick="toggleSidebar()" title="메뉴">☰</button><h1 style="font-size:14px;font-weight:700;color:#1e293b" id="page-title"></h1><div class="flex items-c gap3"><span class="fz12 text-gray">${h(currentUser.name)} (${ROLES[currentUser.role]})</span><button class="btn btn-secondary btn-sm" onclick="logout()">로그아웃</button></div></div><div id="content"></div></div>`;
   renderSidebar();renderPage();
 }
 function renderSidebar(){
   const stage=settings.stage;
   const menus=[
-    {id:"dashboard",label:"대시보드",icon:"◉",roles:["admin","director","leader","member"]},
+    {id:"dashboard",label:"대시보드",icon:"◉",desc:"현황 요약",roles:["admin","director","leader","member"]},
     {id:"profile-sep",type:"sep",label:"내 정보",roles:["admin","director","leader","member"]},
-    {id:"my-profile",label:"내 정보",icon:"👤",roles:["admin","director","leader","member"]},
+    {id:"my-profile",label:"내 프로필",icon:"👤",desc:"개인정보·이력",roles:["admin","director","leader","member"]},
     {id:"hr-sep",type:"sep",label:"인사 관리",roles:["admin","director","leader"]},
-    {id:"hr-register",label:"입사자 등록",icon:"＋",roles:["admin"]},
-    {id:"hr-list",label:"직원 목록",icon:"☰",roles:["admin","director","leader"]},
-    {id:"hr-changes",label:"인사 변동 관리",icon:"↻",roles:["admin"]},
+    {id:"hr-register",label:"신규 직원 등록",icon:"＋",desc:"입사자 정보 입력",roles:["admin"]},
+    {id:"hr-list",label:"직원 목록",icon:"☰",desc:"전체 직원 조회·관리",roles:["admin","director","leader"]},
+    {id:"hr-changes",label:"발령·변동 이력",icon:"↻",desc:"인사 변동 등록·조회",roles:["admin"]},
     {id:"kpi-sep",type:"sep",label:"KPI 평가",roles:["admin","director","leader","member"]},
-    ...(stage==="goal"?[{id:"kpi",label:"KPI 등록/관리",icon:"◎",roles:["admin","director","leader","member"]}]:[{id:"kpi-results",label:"KPI 자체평가 점수 입력",icon:"✎",roles:["admin","director","leader","member"]}]),
-    {id:"first-eval",label:"1차 평가",icon:"①",roles:["admin","leader"]},
-    {id:"second-eval",label:"2차 평가",icon:"②",roles:["admin","director"]},
-    {id:"kpi-amend",label:"수정 승인",icon:"✏",roles:["admin","director","leader"]},
-    {id:"my-kpi",label:"나의 KPI 조회",icon:"⊕",roles:["admin","director","leader","member"]},
-    {id:"grade-view",label:"KPI 등급 조회",icon:"🏆",roles:["admin","director","leader"]},
+    ...(stage==="goal"
+      ?[{id:"kpi",label:"KPI 목표 등록",icon:"◎",desc:"목표 작성·제출",roles:["admin","director","leader","member"]}]
+      :[{id:"kpi-results",label:"KPI 결과 입력",icon:"✎",desc:"자체평가 점수 입력",roles:["admin","director","leader","member"]}]),
+    {id:"first-eval",label:"1차 평가 (팀장)",icon:"①",desc:"팀원 KPI 1차 평가",roles:["admin","leader"]},
+    {id:"second-eval",label:"2차 평가 (본부장)",icon:"②",desc:"팀장·팀원 최종 평가",roles:["admin","director"]},
+    {id:"kpi-amend",label:"수정 요청 승인",icon:"✏",desc:"KPI 수정 승인·반려",roles:["admin","director","leader"]},
+    {id:"my-kpi",label:"나의 KPI",icon:"⊕",desc:"내 KPI 현황 조회",roles:["admin","director","leader","member"]},
+    {id:"grade-view",label:"KPI 등급 현황",icon:"🏆",desc:"등급 분포·결과 조회",roles:["admin","director","leader"]},
     {id:"comp-sep",type:"sep",label:"역량/리더십 평가",roles:(settings.compEvalEnabled||settings.leadershipEvalEnabled)?["admin","director","leader","member"]:["admin"]},
     ...((settings.compEvalEnabled||settings.leadershipEvalEnabled)?[
-      {id:"comp-eval",label:"다면평가 진행",icon:"⭐",roles:["admin","director","leader","member"]},
-      {id:"comp-grade-view",label:"역량평가 등급 조회",icon:"📊",roles:["admin"]}
-    ]:[{id:"comp-settings-shortcut",label:"평가 설정 (종료)",icon:"⚙",roles:["admin"]}]),
+      {id:"comp-eval",label:"다면평가 진행",icon:"⭐",desc:"역량·리더십 평가",roles:["admin","director","leader","member"]},
+      {id:"comp-grade-view",label:"역량평가 등급",icon:"📊",desc:"역량평가 결과 조회",roles:["admin"]}
+    ]:[{id:"comp-settings-shortcut",label:"평가 설정하기",icon:"⚙",desc:"역량평가 활성화 필요",roles:["admin"]}]),
     {id:"promo-sep",type:"sep",label:"승진 심사",roles:["admin"]},
-    {id:"promotion-mgmt",label:"승진 심사 관리",icon:"🏅",roles:["admin"]},
-    {id:"talent-sep",type:"sep",label:"핵심인재",roles:["admin"]},
-    {id:"core-talent",label:"핵심인재 관리",icon:"⭐",roles:["admin"]},
-    {id:"talent-dev",label:"육성 계획/실적",icon:"📋",roles:["admin","director","leader","member"]},
-    {id:"set-sep",type:"sep",label:"설정",roles:["admin","director","leader","member"]},
-    {id:"settings",label:"운영 설정",icon:"⚙",roles:["admin"]},
-    {id:"data-mgmt",label:"데이터 관리",icon:"💾",roles:["admin"]},
-    {id:"history",label:"수정 이력",icon:"⊞",roles:["admin"]},
-    {id:"change-pw",label:"비밀번호 변경",icon:"⊙",roles:["admin","director","leader","member"]},
+    {id:"promotion-mgmt",label:"승진 심사 관리",icon:"🏅",desc:"승진 대상자 심사",roles:["admin"]},
+    {id:"talent-sep",type:"sep",label:"핵심인재",roles:["admin","director","leader","member"]},
+    {id:"core-talent",label:"핵심인재 관리",icon:"⭐",desc:"핵심인재 선발·관리",roles:["admin"]},
+    {id:"talent-dev",label:"육성 계획·실적",icon:"📋",desc:"역량 개발 계획 관리",roles:["admin","director","leader","member"]},
+    {id:"lowperf-sep",type:"sep",label:"저성과 관리",roles:["admin","director"]},
+    {id:"low-performer",label:"저성과 인력 관리",icon:"📉",desc:"장기 저성과·개선 계획",roles:["admin","director"]},
+    {id:"set-sep",type:"sep",label:"시스템",roles:["admin","director","leader","member"]},
+    {id:"settings",label:"운영 설정",icon:"⚙",desc:"평가 단계·조직 설정",roles:["admin"]},
+    {id:"data-mgmt",label:"데이터 관리",icon:"💾",desc:"백업·복원·내보내기",roles:["admin"]},
+    {id:"history",label:"수정 이력",icon:"⊞",desc:"변경 이력 감사",roles:["admin"]},
+    {id:"change-pw",label:"비밀번호 변경",icon:"⊙",desc:"내 비밀번호 수정",roles:["admin","director","leader","member"]},
   ];
-  const titles={dashboard:"대시보드","my-profile":"내 정보","hr-register":"입사자 등록","hr-list":"직원 목록","hr-changes":"인사 변동 관리",kpi:"KPI 등록/관리","kpi-results":"KPI 결과 입력","my-kpi":"나의 KPI 조회","grade-view":"KPI 등급 조회","comp-grade-view":"역량평가 등급 조회","comp-eval":"다면평가 진행","comp-eval":"역량/리더십 평가","first-eval":"1차 평가","second-eval":"2차 평가","kpi-amend":"수정 승인",settings:"운영 설정",history:"수정 이력","change-pw":"비밀번호 변경"};
+  const titles={dashboard:"대시보드","my-profile":"내 프로필","hr-register":"신규 직원 등록","hr-list":"직원 목록","hr-changes":"발령·변동 이력",kpi:"KPI 목표 등록","kpi-results":"KPI 결과 입력","my-kpi":"나의 KPI","grade-view":"KPI 등급 현황","comp-grade-view":"역량평가 등급","comp-eval":"다면평가 진행","first-eval":"1차 평가","second-eval":"2차 평가","kpi-amend":"수정 요청 승인",settings:"운영 설정",history:"수정 이력","change-pw":"비밀번호 변경","data-mgmt":"데이터 관리","core-talent":"핵심인재 관리","talent-dev":"육성 계획·실적","promotion-mgmt":"승진 심사 관리","low-performer":"저성과 인력 관리"};
   const ptEl=$("#page-title");if(ptEl)ptEl.textContent=titles[currentPage]||"";
   const sb=$("#sidebar");if(!sb)return;
-  const visible=menus.filter(m=>!m.roles||m.roles.includes(currentUser.role));
+  // Filter by role + per-user custom permission overrides (admin-managed)
+  const perms=currentUser.menuPerms||{};
+  const visible=menus.filter(m=>{
+    if(!m.roles) return true;
+    if(!m.roles.includes(currentUser.role)) return false;
+    if(perms[m.id]===false) return false;
+    return true;
+  });
   sb.innerHTML=`<div class="sb-logo"><div class="sb-logo-box"><div class="sb-icon">HR</div><div><div class="sb-title">인사평가 시스템</div><div class="sb-ver">v18.1</div></div></div></div>
   <div class="sb-stage ${stage==="goal"?"goal":"perf"}">${stage==="goal"?"🎯 KPI 등록 단계":"📝 결과 입력 단계"}</div>
   <nav class="sb-nav">${visible.map(m=>m.type==="sep"?`<div class="sb-sec">${m.label}</div>`:
-    `<button class="sb-btn${currentPage===m.id?" active":""}" onclick="gotoPage('${m.id}')"><span class="si">${m.icon}</span><span>${m.label}</span></button>`).join("")}</nav>
+    `<button class="sb-btn${currentPage===m.id?" active":""}" onclick="gotoPage('${m.id}')"><span class="si">${m.icon}</span><span style="flex:1;text-align:left"><span style="display:block">${m.label}</span>${m.desc?`<span style="display:block;font-size:10px;opacity:.6;font-weight:400">${m.desc}</span>`:""}</span></button>`).join("")}</nav>
   <div class="sb-footer"><div style="font-size:12px;color:#94a3b8;font-weight:600">${h(currentUser.name)}</div><div>${ROLES[currentUser.role]} · ${h(currentUser.dept)}</div>
     <div style="margin-top:8px;padding:6px 8px;background:#1e293b;border-radius:6px;cursor:pointer" onclick="openServerSettingsModal()">
       <div style="display:flex;align-items:center;gap:5px;font-size:11px">
@@ -4570,7 +4733,7 @@ function renderSidebar(){
 }
 function gotoPage(p){currentPage=p;renderPage();renderSidebar();}
 function renderPage(){
-  const pages={dashboard:renderDashboard,"my-profile":renderMyProfile,"hr-register":renderHRRegister,"hr-list":renderHRList,"hr-changes":renderHRChanges,kpi:()=>renderKPI(false),"kpi-results":()=>renderKPI(true),"my-kpi":renderMyKPI,"grade-view":renderGradeView,"comp-grade-view":renderCompGradeView,"comp-settings-shortcut":()=>gotoPage("settings"),"comp-eval":renderCompEval,"data-mgmt":renderDataManagementPage,"core-talent":renderCoreTalentPage,"talent-dev":renderTalentDevPage,"promotion-mgmt":renderPromotionPageStandalone,"activity-log":()=>{loadActivityFromServer();},"first-eval":()=>{approvalTab="eval";approvalSearch={name:"",dept:""};renderApprovals();},"second-eval":()=>{approvalTab="eval";approvalSearch={name:"",dept:""};renderApprovals();},"kpi-amend":()=>{approvalTab="requests";approvalSearch={name:"",dept:""};renderApprovals();},settings:renderSettings,history:renderHistory,"change-pw":renderChangePW};
+  const pages={dashboard:renderDashboard,"my-profile":renderMyProfile,"hr-register":renderHRRegister,"hr-list":renderHRList,"hr-changes":renderHRChanges,kpi:()=>renderKPI(false),"kpi-results":()=>renderKPI(true),"my-kpi":renderMyKPI,"grade-view":renderGradeView,"comp-grade-view":renderCompGradeView,"comp-settings-shortcut":()=>gotoPage("settings"),"comp-eval":renderCompEval,"data-mgmt":renderDataManagementPage,"core-talent":renderCoreTalentPage,"talent-dev":renderTalentDevPage,"promotion-mgmt":renderPromotionPageStandalone,"low-performer":renderLowPerformer,"activity-log":()=>{loadActivityFromServer();},"first-eval":()=>{approvalTab="eval";approvalSearch={name:"",dept:""};renderApprovals();},"second-eval":()=>{approvalTab="eval";approvalSearch={name:"",dept:""};renderApprovals();},"kpi-amend":()=>{approvalTab="requests";approvalSearch={name:"",dept:""};renderApprovals();},settings:renderSettings,history:renderHistory,"change-pw":renderChangePW};
   const fn=pages[currentPage];const c=$("#content");if(c&&fn){c.innerHTML="";fn();}
 }
 
@@ -8290,157 +8453,224 @@ function renderMyKPI(){
 
 // ==================== SETTINGS ====================
 function renderSettings(){
-  const tabs2=[{id:"main",label:"운영 설정"},{id:"org",label:"조직 관리"},{id:"ranks",label:"직급 체계"},{id:"grades",label:"KPI 등급 비율"},{id:"comp-settings",label:"역량평가 설정"},{id:"comp-grades",label:"역량평가 등급 비율"}];
+  const tabs2=[{id:"main",label:"운영 설정"},{id:"formula",label:"계산식 설정"},{id:"org",label:"조직 관리"},{id:"ranks",label:"직급 체계"},{id:"grades",label:"KPI 등급 비율"},{id:"comp-settings",label:"역량평가 설정"},{id:"comp-grades",label:"역량평가 등급 비율"},{id:"deploy",label:"🚀 배포·권한 관리"}];
   const c=$("#content");
   c.innerHTML=`<div class="tabs">${tabs2.map(t=>`<button class="tab-btn${settingsTab===t.id?" active":""}" onclick="settingsTab='${t.id}';renderSettings()">${t.label}</button>`).join("")}</div><div id="settings-content"></div>`;
   if(settingsTab==="main")renderSettingsMain();
+  else if(settingsTab==="formula")renderFormulaSettings();
   else if(settingsTab==="org")renderSettingsOrg();
   else if(settingsTab==="ranks")renderSettingsRanks();
   else if(settingsTab==="grades")renderSettingsGrades();
   else if(settingsTab==="comp-settings")renderCompEvalSettings();
   else if(settingsTab==="comp-grades")renderCompGradeRatioSettings();
-  else renderCompGradeRatioSettings();
+  else if(settingsTab==="deploy")renderSettingsDeploy();
+  else renderSettingsMain();
 }
 function renderSettingsMain(){
   const year=settings.evalYear;
   const pending=kpiEntries.filter(k=>k.year===year&&k.finalStatus==="approved"&&!k.finalConfirmed);
   const confirmed=kpiEntries.filter(k=>k.year===year&&k.finalConfirmed);
   const yrs=Array.from({length:26},(_,i)=>2020+i);
-  const today=new Date().toISOString().slice(0,10);
   const el=$("#settings-content");if(!el)return;
+  function pStatus(start,end){
+    if(!start&&!end)return{label:"기간 미설정",cls:"dday-gray",pct:0,msg:""};
+    const now=new Date();now.setHours(0,0,0,0);
+    const s=start?new Date(start):null;const e=end?new Date(end):null;
+    if(s)s.setHours(0,0,0,0);if(e)e.setHours(0,0,0,0);
+    if(e&&now>e){const d=Math.round((now-e)/86400000);return{label:`D+${d} 종료`,cls:"dday-gray",pct:100,msg:"기간이 종료되었습니다."};}
+    if(s&&now<s){const d=Math.round((s-now)/86400000);return{label:`D-${d} 시작 전`,cls:"dday-blue",pct:0,msg:`${d}일 후 시작`};}
+    if(s&&e){const pct=Math.min(100,Math.max(0,Math.round((now-s)/(e-s)*100)));const d=Math.round((e-now)/86400000);return{label:`D-${d} 마감`,cls:d<=3?"dday-red":"dday-green",pct,msg:`${pct}% 진행 · ${d}일 남음`};}
+    if(s){const d=Math.round((now-s)/86400000);return{label:`+${d}일째`,cls:"dday-green",pct:50,msg:"종료일 미설정"};}
+    return{label:"확인",cls:"dday-gray",pct:0,msg:""};
+  }
+  function vDates(s,e,label){return s&&e&&s>e?`<div class="fz11 mt1" style="color:#dc2626">⚠️ ${label} 시작일이 종료일보다 늦습니다.</div>`:""}
+  const gSt=pStatus(settings.kpiGoalStart,settings.kpiGoalEnd);
+  const pSt=pStatus(settings.kpiPerfStart,settings.kpiPerfEnd);
+  const cSt=pStatus(settings.compEvalStart,settings.compEvalEnd);
+  const lSt=pStatus(settings.leadershipEvalStart,settings.leadershipEvalEnd);
+  const planSt=pStatus(coreTalentSettings.planStart,coreTalentSettings.planEnd);
+  const achSt=pStatus(coreTalentSettings.achieveStart,coreTalentSettings.achieveEnd);
+  const isGoal=settings.stage==="goal";const isPerf=settings.stage==="performance";
   el.innerHTML=`
-  <!-- KPI 평가 운영 단계 -->
-  <div class="card"><div class="card-head"><h3>📊 KPI 평가 운영 단계</h3></div><div class="card-body">
-    <div class="g2 mb3">
-      <div class="fg"><label class="fl">KPI 평가 연도</label>
-        <select class="fc" style="width:130px" onchange="setEvalYear(Number(this.value))">${yrs.map(y=>`<option value="${y}"${settings.evalYear===y?" selected":""}>${y}년</option>`).join("")}</select>
+  <div class="card"><div class="card-head">
+    <h3>📊 KPI 평가 운영 단계</h3>
+    <div class="flex items-c gap2"><label class="fl" style="margin-bottom:0;white-space:nowrap">평가 연도</label><select class="fc" style="width:110px" onchange="setEvalYear(Number(this.value))">${yrs.map(y=>`<option value="${y}"${settings.evalYear===y?" selected":""}>${y}년</option>`).join("")}</select></div>
+  </div><div class="card-body">
+    <div class="stage-flow">
+      <div class="sf-node ${isGoal?"sf-active":gSt.pct>=100?"sf-done":""}">
+        <div class="sf-dot">🎯</div><div class="sf-label">KPI 등록</div>
+        <div class="sf-sub">${settings.kpiGoalStart?settings.kpiGoalStart.slice(5).replace("-","/"):"-"}</div>
+      </div>
+      <div class="sf-line${!isGoal&&gSt.pct>=100?" sf-done":""}"></div>
+      <div class="sf-node ${isPerf?"sf-active":pSt.pct>=100?"sf-done":""}">
+        <div class="sf-dot">📝</div><div class="sf-label">결과 입력</div>
+        <div class="sf-sub">${settings.kpiPerfStart?settings.kpiPerfStart.slice(5).replace("-","/"):"-"}</div>
+      </div>
+      <div class="sf-line${settings.kpiResultPublished?" sf-done":""}"></div>
+      <div class="sf-node ${settings.kpiResultPublished?"sf-done":""}">
+        <div class="sf-dot">✅</div><div class="sf-label">결과 공개</div>
+        <div class="sf-sub">${settings.kpiResultPublished?"공개 중":"대기"}</div>
       </div>
     </div>
-    <p class="fz12 text-gray mb3">현재 단계: <strong class="text-blue">${settings.stage==="goal"?"KPI 등록 단계":"KPI 결과 입력 단계"}</strong> ${isKpiStageOpen()?"· "+badge("운영 중","green"):"· "+badge("기간 외","gray")}</p>
     <div class="g2">
-      <div style="padding:14px;border-radius:10px;border:2px solid ${settings.stage==="goal"?"#2563eb":"#e2e8f0"};background:${settings.stage==="goal"?"#eff6ff":"#fff"}">
-        <div class="flex items-c gap2 mb2"><span style="font-size:18px">🎯</span><button class="btn btn-sm ${settings.stage==="goal"?"btn-primary":"btn-secondary"}" onclick="setStage('goal')">KPI 등록 단계 선택</button></div>
-        <div class="g2 mt2">
-          <div class="fg"><label class="fl">시작일</label><input class="fc" type="date" value="${settings.kpiGoalStart||""}" onchange="settings.kpiGoalStart=this.value;renderSettingsMain()"></div>
-          <div class="fg"><label class="fl">종료일</label><input class="fc" type="date" value="${settings.kpiGoalEnd||""}" onchange="settings.kpiGoalEnd=this.value;renderSettingsMain()"></div>
+      <div class="period-card ${isGoal?"pc-goal":""}">
+        <div class="flex items-c gap2 mb2 wrap">
+          <span style="font-size:15px">🎯</span><span class="fw7 fz12">KPI 등록 단계</span>
+          <span class="dday ${gSt.cls}">${gSt.label}</span>
+          ${isGoal?`<span style="margin-left:auto">${badge("현재 단계","blue")}</span>`:""}
         </div>
-        ${settings.kpiGoalStart||settings.kpiGoalEnd?`<div class="fz11 text-gray mt2">${settings.kpiGoalStart||"시작일 미설정"} ~ ${settings.kpiGoalEnd||"종료일 미설정"} · ${isInPeriod(settings.kpiGoalStart,settings.kpiGoalEnd)?badge("기간 내","green"):badge("기간 외","gray")}</div>`:""}
+        <div class="period-prog"><div class="period-prog-fill" style="width:${gSt.pct}%;background:${isGoal?"#2563eb":"#94a3b8"}"></div></div>
+        ${gSt.msg?`<div class="fz11 text-gray mb1">${gSt.msg}</div>`:""}
+        <div class="g2 mt2">
+          <div class="fg"><label class="fl">시작일</label><input class="fc" type="date" value="${settings.kpiGoalStart||""}" onchange="settings.kpiGoalStart=this.value;autoSaveDebounced();renderSettingsMain()"></div>
+          <div class="fg"><label class="fl">종료일</label><input class="fc" type="date" value="${settings.kpiGoalEnd||""}" onchange="settings.kpiGoalEnd=this.value;autoSaveDebounced();renderSettingsMain()"></div>
+        </div>
+        ${vDates(settings.kpiGoalStart,settings.kpiGoalEnd,"KPI 등록")}
+        <button class="btn btn-sm ${isGoal?"btn-primary":"btn-secondary"} mt2" style="width:100%;justify-content:center" onclick="setStage('goal')">${isGoal?"✓ 현재 단계":"이 단계로 전환"}</button>
       </div>
-      <div style="padding:14px;border-radius:10px;border:2px solid ${settings.stage==="performance"?"#16a34a":"#e2e8f0"};background:${settings.stage==="performance"?"#f0fdf4":"#fff"}">
-        <div class="flex items-c gap2 mb2"><span style="font-size:18px">📝</span><button class="btn btn-sm ${settings.stage==="performance"?"btn-success":"btn-secondary"}" onclick="setStage('performance')">결과 입력 단계 선택</button></div>
-        <div class="g2 mt2">
-          <div class="fg"><label class="fl">시작일</label><input class="fc" type="date" value="${settings.kpiPerfStart||""}" onchange="settings.kpiPerfStart=this.value;renderSettingsMain()"></div>
-          <div class="fg"><label class="fl">종료일</label><input class="fc" type="date" value="${settings.kpiPerfEnd||""}" onchange="settings.kpiPerfEnd=this.value;renderSettingsMain()"></div>
+      <div class="period-card ${isPerf?"pc-perf":""}">
+        <div class="flex items-c gap2 mb2 wrap">
+          <span style="font-size:15px">📝</span><span class="fw7 fz12">결과 입력 단계</span>
+          <span class="dday ${pSt.cls}">${pSt.label}</span>
+          ${isPerf?`<span style="margin-left:auto">${badge("현재 단계","green")}</span>`:""}
         </div>
-        ${settings.kpiPerfStart||settings.kpiPerfEnd?`<div class="fz11 text-gray mt2">${settings.kpiPerfStart||"시작일 미설정"} ~ ${settings.kpiPerfEnd||"종료일 미설정"} · ${isInPeriod(settings.kpiPerfStart,settings.kpiPerfEnd)?badge("기간 내","green"):badge("기간 외","gray")}</div>`:""}
+        <div class="period-prog"><div class="period-prog-fill" style="width:${pSt.pct}%;background:${isPerf?"#16a34a":"#94a3b8"}"></div></div>
+        ${pSt.msg?`<div class="fz11 text-gray mb1">${pSt.msg}</div>`:""}
+        <div class="g2 mt2">
+          <div class="fg"><label class="fl">시작일</label><input class="fc" type="date" value="${settings.kpiPerfStart||""}" onchange="settings.kpiPerfStart=this.value;autoSaveDebounced();renderSettingsMain()"></div>
+          <div class="fg"><label class="fl">종료일</label><input class="fc" type="date" value="${settings.kpiPerfEnd||""}" onchange="settings.kpiPerfEnd=this.value;autoSaveDebounced();renderSettingsMain()"></div>
+        </div>
+        ${vDates(settings.kpiPerfStart,settings.kpiPerfEnd,"결과 입력")}
+        <button class="btn btn-sm ${isPerf?"btn-success":"btn-secondary"} mt2" style="width:100%;justify-content:center" onclick="setStage('performance')">${isPerf?"✓ 현재 단계":"이 단계로 전환"}</button>
       </div>
     </div>
     <div class="info-note mt3 fz11">📌 기간이 설정된 경우 해당 기간 외에는 KPI 등록·수정·삭제가 제한됩니다. 기간 미설정 시 제한 없음.</div>
   </div></div>
 
-  <!-- 역량 평가 운영 단계 -->
-  <div class="card"><div class="card-head"><h3>⭐ 역량 평가 (팀장·팀원) 운영 단계</h3></div><div class="card-body">
-    <div class="g2">
-      <div class="fg"><label class="fl">역량평가 연도</label>
-        <select class="fc" style="width:130px" onchange="settings.compEvalYear=Number(this.value);showToast('역량평가 연도 변경됨','success');broadcastSettingsChange('역량평가 연도: '+this.value+'년')">${yrs.map(y=>`<option value="${y}"${settings.compEvalYear===y?" selected":""}>${y}년</option>`).join("")}</select>
+  <div class="card"><div class="card-head">
+    <h3>⭐ 역량 평가 (팀장·팀원) 운영</h3>
+    <div class="flex items-c gap2"><label class="fl" style="margin-bottom:0;white-space:nowrap">평가 연도</label><select class="fc" style="width:110px" onchange="settings.compEvalYear=Number(this.value);showToast('역량평가 연도 변경됨','success');broadcastSettingsChange('역량평가 연도: '+this.value+'년')">${yrs.map(y=>`<option value="${y}"${settings.compEvalYear===y?" selected":""}>${y}년</option>`).join("")}</select></div>
+  </div><div class="card-body">
+    <div class="eval-status-toggle">
+      <button class="est-btn ${settings.compEvalEnabled?"est-on":""}" onclick="settings.compEvalEnabled=true;showToast('역량평가 진행 중으로 변경되었습니다.','success');autoSaveDebounced();renderSettingsMain();renderSidebar();broadcastSettingsChange('역량평가: 진행 중')">✅ 진행 중<br><span style="font-weight:400;font-size:10px">메뉴 활성화</span></button>
+      <button class="est-btn ${!settings.compEvalEnabled?"est-off":""}" onclick="settings.compEvalEnabled=false;showToast('역량평가가 종료 처리되었습니다.','info');autoSaveDebounced();renderSettingsMain();renderSidebar();broadcastSettingsChange('역량평가: 종료')">🔚 종료<br><span style="font-weight:400;font-size:10px">접근 차단</span></button>
+    </div>
+    <div class="period-card ${settings.compEvalEnabled?"pc-comp":""}">
+      <div class="flex items-c gap2 mb2 wrap">
+        <span class="fz12 fw7">평가 기간</span>
+        <span class="dday ${cSt.cls}">${cSt.label}</span>
+        ${isCompEvalOpen()?badge("기간 내","green"):badge("기간 외","gray")}
       </div>
+      <div class="period-prog"><div class="period-prog-fill" style="width:${cSt.pct}%;background:#7c3aed"></div></div>
+      ${cSt.msg?`<div class="fz11 text-gray mb1">${cSt.msg}</div>`:""}
+      <div class="g2 mt2">
+        <div class="fg"><label class="fl">시작일</label><input class="fc" type="date" value="${settings.compEvalStart||""}" onchange="settings.compEvalStart=this.value;autoSaveDebounced();renderSettingsMain()"></div>
+        <div class="fg"><label class="fl">종료일</label><input class="fc" type="date" value="${settings.compEvalEnd||""}" onchange="settings.compEvalEnd=this.value;autoSaveDebounced();renderSettingsMain()"></div>
+      </div>
+      ${vDates(settings.compEvalStart,settings.compEvalEnd,"역량평가")}
     </div>
-    <p class="fz12 text-gray mt3 mb3">현재 상태: <strong class="${settings.compEvalEnabled?"text-green":"text-gray"}">${settings.compEvalEnabled?"진행 중":"종료"}</strong> ${isCompEvalOpen()?"· "+badge("기간 내","green"):"· "+badge("기간 외","gray")}</p>
-    <div class="g2">
-      <button onclick="settings.compEvalEnabled=true;showToast('역량평가 진행 중으로 변경되었습니다.','success');renderSettingsMain();renderSidebar();broadcastSettingsChange('역량평가: 진행 중')" style="padding:14px;border-radius:10px;border:2px solid ${settings.compEvalEnabled?"#16a34a":"#e2e8f0"};background:${settings.compEvalEnabled?"#f0fdf4":"#fff"};cursor:pointer;text-align:left">
-        <div style="font-size:18px;margin-bottom:6px">✅</div><div class="fw7 fz12">진행 중</div>
-        <div class="fz11 text-gray mt2">역량 평가 메뉴가 사용자에게 활성화됩니다.</div>
-      </button>
-      <button onclick="settings.compEvalEnabled=false;showToast('역량평가가 종료 처리되었습니다.','info');renderSettingsMain();renderSidebar();broadcastSettingsChange('역량평가: 종료')" style="padding:14px;border-radius:10px;border:2px solid ${!settings.compEvalEnabled?"#dc2626":"#e2e8f0"};background:${!settings.compEvalEnabled?"#fef2f2":"#fff"};cursor:pointer;text-align:left">
-        <div style="font-size:18px;margin-bottom:6px">🔚</div><div class="fw7 fz12">종료</div>
-        <div class="fz11 text-gray mt2">사용자 접근 불가. 관리자는 결과 확인 가능.</div>
-      </button>
-    </div>
-    <div class="g2 mt3">
-      <div class="fg"><label class="fl">평가 시작일</label><input class="fc" type="date" value="${settings.compEvalStart||""}" onchange="settings.compEvalStart=this.value;renderSettingsMain()"></div>
-      <div class="fg"><label class="fl">평가 종료일</label><input class="fc" type="date" value="${settings.compEvalEnd||""}" onchange="settings.compEvalEnd=this.value;renderSettingsMain()"></div>
-    </div>
-    ${settings.compEvalStart||settings.compEvalEnd?`<div class="fz11 text-gray mt2">${settings.compEvalStart||"시작일 미설정"} ~ ${settings.compEvalEnd||"종료일 미설정"}</div>`:""}
-    <div class="info-note mt3 fz11">📌 종료일 이후에는 평가 제출이 자동으로 차단됩니다. 기간 미설정 시 상태 설정만으로 제어합니다.</div>
+    <div class="info-note mt2 fz11">📌 종료일 이후에는 평가 제출이 자동으로 차단됩니다. 기간 미설정 시 상태 설정만으로 제어합니다.</div>
   </div></div>
 
-  <!-- 리더십 평가 운영 단계 -->
-  <div class="card"><div class="card-head"><h3>🏆 리더십 평가 (사업부장) 운영 단계</h3></div><div class="card-body">
-    <div class="g2">
-      <div class="fg"><label class="fl">리더십평가 연도</label>
-        <select class="fc" style="width:130px" onchange="settings.leadershipEvalYear=Number(this.value);showToast('리더십평가 연도 변경됨','success');broadcastSettingsChange('리더십평가 연도: '+this.value+'년')">${yrs.map(y=>`<option value="${y}"${settings.leadershipEvalYear===y?" selected":""}>${y}년</option>`).join("")}</select>
+  <div class="card"><div class="card-head">
+    <h3>🏆 리더십 평가 (사업부장) 운영</h3>
+    <div class="flex items-c gap2"><label class="fl" style="margin-bottom:0;white-space:nowrap">평가 연도</label><select class="fc" style="width:110px" onchange="settings.leadershipEvalYear=Number(this.value);showToast('리더십평가 연도 변경됨','success');broadcastSettingsChange('리더십평가 연도: '+this.value+'년')">${yrs.map(y=>`<option value="${y}"${settings.leadershipEvalYear===y?" selected":""}>${y}년</option>`).join("")}</select></div>
+  </div><div class="card-body">
+    <div class="eval-status-toggle">
+      <button class="est-btn ${settings.leadershipEvalEnabled?"est-on":""}" onclick="settings.leadershipEvalEnabled=true;showToast('리더십평가 진행 중으로 변경되었습니다.','success');autoSaveDebounced();renderSettingsMain();renderSidebar();broadcastSettingsChange('리더십평가: 진행 중')">✅ 진행 중<br><span style="font-weight:400;font-size:10px">메뉴 활성화</span></button>
+      <button class="est-btn ${!settings.leadershipEvalEnabled?"est-off":""}" onclick="settings.leadershipEvalEnabled=false;showToast('리더십평가가 종료 처리되었습니다.','info');autoSaveDebounced();renderSettingsMain();renderSidebar();broadcastSettingsChange('리더십평가: 종료')">🔚 종료<br><span style="font-weight:400;font-size:10px">접근 차단</span></button>
+    </div>
+    <div class="period-card ${settings.leadershipEvalEnabled?"pc-leader":""}">
+      <div class="flex items-c gap2 mb2 wrap">
+        <span class="fz12 fw7">평가 기간</span>
+        <span class="dday ${lSt.cls}">${lSt.label}</span>
+        ${isLeadershipEvalOpen()?badge("기간 내","green"):badge("기간 외","gray")}
       </div>
-    </div>
-    <p class="fz12 text-gray mt3 mb3">현재 상태: <strong class="${settings.leadershipEvalEnabled?"text-green":"text-gray"}">${settings.leadershipEvalEnabled?"진행 중":"종료"}</strong> ${isLeadershipEvalOpen()?"· "+badge("기간 내","green"):"· "+badge("기간 외","gray")}</p>
-    <div class="g2">
-      <button onclick="settings.leadershipEvalEnabled=true;showToast('리더십평가 진행 중으로 변경되었습니다.','success');renderSettingsMain();renderSidebar();broadcastSettingsChange('리더십평가: 진행 중')" style="padding:14px;border-radius:10px;border:2px solid ${settings.leadershipEvalEnabled?"#16a34a":"#e2e8f0"};background:${settings.leadershipEvalEnabled?"#f0fdf4":"#fff"};cursor:pointer;text-align:left">
-        <div style="font-size:18px;margin-bottom:6px">✅</div><div class="fw7 fz12">진행 중</div>
-        <div class="fz11 text-gray mt2">리더십 평가 메뉴가 사업부장에게 활성화됩니다.</div>
-      </button>
-      <button onclick="settings.leadershipEvalEnabled=false;showToast('리더십평가가 종료 처리되었습니다.','info');renderSettingsMain();renderSidebar();broadcastSettingsChange('리더십평가: 종료')" style="padding:14px;border-radius:10px;border:2px solid ${!settings.leadershipEvalEnabled?"#dc2626":"#e2e8f0"};background:${!settings.leadershipEvalEnabled?"#fef2f2":"#fff"};cursor:pointer;text-align:left">
-        <div style="font-size:18px;margin-bottom:6px">🔚</div><div class="fw7 fz12">종료</div>
-        <div class="fz11 text-gray mt2">사용자 접근 불가. 관리자는 결과 확인 가능.</div>
-      </button>
-    </div>
-    <div class="g2 mt3">
-      <div class="fg"><label class="fl">평가 시작일</label><input class="fc" type="date" value="${settings.leadershipEvalStart||""}" onchange="settings.leadershipEvalStart=this.value;renderSettingsMain()"></div>
-      <div class="fg"><label class="fl">평가 종료일</label><input class="fc" type="date" value="${settings.leadershipEvalEnd||""}" onchange="settings.leadershipEvalEnd=this.value;renderSettingsMain()"></div>
+      <div class="period-prog"><div class="period-prog-fill" style="width:${lSt.pct}%;background:#d97706"></div></div>
+      ${lSt.msg?`<div class="fz11 text-gray mb1">${lSt.msg}</div>`:""}
+      <div class="g2 mt2">
+        <div class="fg"><label class="fl">시작일</label><input class="fc" type="date" value="${settings.leadershipEvalStart||""}" onchange="settings.leadershipEvalStart=this.value;autoSaveDebounced();renderSettingsMain()"></div>
+        <div class="fg"><label class="fl">종료일</label><input class="fc" type="date" value="${settings.leadershipEvalEnd||""}" onchange="settings.leadershipEvalEnd=this.value;autoSaveDebounced();renderSettingsMain()"></div>
+      </div>
+      ${vDates(settings.leadershipEvalStart,settings.leadershipEvalEnd,"리더십평가")}
     </div>
   </div></div>
 
-  <!-- 평가 결과 공개 -->
   <div class="card"><div class="card-head"><h3>📢 평가 결과 공개 설정</h3></div><div class="card-body">
-    <p class="fz12 text-gray mb3">유형별, 연도별로 공개 여부를 설정합니다. 공개 후 해당 직원이 본인의 결과를 확인할 수 있습니다.</p>
-    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px">
-      <div style="padding:14px;border:1.5px solid ${settings.kpiResultPublished?"#16a34a":"#e2e8f0"};border-radius:10px;background:${settings.kpiResultPublished?"#f0fdf4":"#fff"}">
-        <div class="flex items-c gap2 mb2"><span style="font-size:18px">📊</span><span class="fw7 fz12">KPI 평가 결과</span></div>
-        <div class="mb2">${settings.kpiResultPublished?badge("공개 중","green"):badge("비공개","gray")}</div>
-        <div class="fg mb2"><label class="fl">공개 연도</label><select class="fc" onchange="settings.kpiResultYear=Number(this.value);renderSettingsMain()">${yrs.map(y=>`<option value="${y}"${settings.kpiResultYear===y?" selected":""}>${y}년</option>`).join("")}</select></div>
-        <div class="flex gap2 mb2">
-          <div style="text-align:center;flex:1"><div class="fw7 fz16 text-blue">${pending.length}</div><div class="fz11 text-gray">미공개</div></div>
-          <div style="text-align:center;flex:1"><div class="fw7 fz16" style="color:#7c3aed">${confirmed.length}</div><div class="fz11 text-gray">공개완료</div></div>
+    <p class="fz12 text-gray mb3">유형별·연도별로 공개 여부를 설정합니다. 공개 후 해당 직원이 본인의 결과를 확인할 수 있습니다.</p>
+    <div class="result-pub-row ${settings.kpiResultPublished?"pub-on":""}">
+      <span style="font-size:20px">📊</span>
+      <div style="flex:1">
+        <div class="flex items-c gap2"><span class="fw7 fz13">KPI 평가 결과</span>${settings.kpiResultPublished?badge("공개 중","green"):badge("비공개","gray")}</div>
+        <div class="flex items-c gap2 mt1 wrap">
+          <select class="fc" style="width:90px;padding:3px 6px;font-size:12px" onchange="settings.kpiResultYear=Number(this.value);renderSettingsMain()">${yrs.map(y=>`<option value="${y}"${settings.kpiResultYear===y?" selected":""}>${y}년</option>`).join("")}</select>
+          <span class="fz11 text-gray">미공개 ${pending.length}건 · 공개완료 ${confirmed.length}건</span>
         </div>
-        <button class="btn btn-sm ${settings.kpiResultPublished?"btn-secondary":"btn-success"}" style="width:100%;justify-content:center;margin-bottom:6px" onclick="toggleResultPublish('kpi')">${settings.kpiResultPublished?"🔒 비공개로 전환":"📢 KPI 결과 공개"}</button>
-        ${!settings.kpiResultPublished&&pending.length?`<button class="btn btn-success btn-sm" style="width:100%;justify-content:center" onclick="finalConfirmAll()">전체 확정+공개 (${pending.length}건)</button>`:""}
       </div>
-      <div style="padding:14px;border:1.5px solid ${settings.compResultPublished?"#16a34a":"#e2e8f0"};border-radius:10px;background:${settings.compResultPublished?"#f0fdf4":"#fff"}">
-        <div class="flex items-c gap2 mb2"><span style="font-size:18px">⭐</span><span class="fw7 fz12">역량 평가 결과</span></div>
-        <div class="mb2">${settings.compResultPublished?badge("공개 중","green"):badge("비공개","gray")}</div>
-        <div class="fg mb2"><label class="fl">공개 연도</label><select class="fc" onchange="settings.compResultYear=Number(this.value);renderSettingsMain()">${yrs.map(y=>`<option value="${y}"${settings.compResultYear===y?" selected":""}>${y}년</option>`).join("")}</select></div>
-        <div class="fz11 text-gray mb3">팀장/팀원 역량 평가 등급 및 점수</div>
-        <button class="btn btn-sm ${settings.compResultPublished?"btn-secondary":"btn-success"}" style="width:100%;justify-content:center" onclick="toggleResultPublish('comp')">${settings.compResultPublished?"🔒 비공개로 전환":"📢 역량평가 결과 공개"}</button>
+      <div class="flex flex-col gap1" style="align-items:flex-end">
+        <button class="btn btn-sm ${settings.kpiResultPublished?"btn-secondary":"btn-success"}" onclick="toggleResultPublish('kpi')">${settings.kpiResultPublished?"🔒 비공개":"📢 공개"}</button>
+        ${!settings.kpiResultPublished&&pending.length?`<button class="btn btn-success btn-sm" onclick="finalConfirmAll()">전체 확정 (${pending.length})</button>`:""}
       </div>
-      <div style="padding:14px;border:1.5px solid ${settings.leadershipResultPublished?"#16a34a":"#e2e8f0"};border-radius:10px;background:${settings.leadershipResultPublished?"#f0fdf4":"#fff"}">
-        <div class="flex items-c gap2 mb2"><span style="font-size:18px">🏆</span><span class="fw7 fz12">리더십 평가 결과</span></div>
-        <div class="mb2">${settings.leadershipResultPublished?badge("공개 중","green"):badge("비공개","gray")}</div>
-        <div class="fg mb2"><label class="fl">공개 연도</label><select class="fc" onchange="settings.leadershipResultYear=Number(this.value);renderSettingsMain()">${yrs.map(y=>`<option value="${y}"${settings.leadershipResultYear===y?" selected":""}>${y}년</option>`).join("")}</select></div>
-        <div class="fz11 text-gray mb3">사업부장 리더십 평가 등급 및 점수</div>
-        <button class="btn btn-sm ${settings.leadershipResultPublished?"btn-secondary":"btn-success"}" style="width:100%;justify-content:center" onclick="toggleResultPublish('leadership')">${settings.leadershipResultPublished?"🔒 비공개로 전환":"📢 리더십평가 결과 공개"}</button>
+    </div>
+    <div class="result-pub-row ${settings.compResultPublished?"pub-on":""}">
+      <span style="font-size:20px">⭐</span>
+      <div style="flex:1">
+        <div class="flex items-c gap2"><span class="fw7 fz13">역량 평가 결과</span>${settings.compResultPublished?badge("공개 중","green"):badge("비공개","gray")}</div>
+        <div class="flex items-c gap2 mt1">
+          <select class="fc" style="width:90px;padding:3px 6px;font-size:12px" onchange="settings.compResultYear=Number(this.value);renderSettingsMain()">${yrs.map(y=>`<option value="${y}"${settings.compResultYear===y?" selected":""}>${y}년</option>`).join("")}</select>
+          <span class="fz11 text-gray">팀장/팀원 역량 평가 등급·점수</span>
+        </div>
       </div>
+      <button class="btn btn-sm ${settings.compResultPublished?"btn-secondary":"btn-success"}" onclick="toggleResultPublish('comp')">${settings.compResultPublished?"🔒 비공개":"📢 공개"}</button>
+    </div>
+    <div class="result-pub-row ${settings.leadershipResultPublished?"pub-on":""}">
+      <span style="font-size:20px">🏆</span>
+      <div style="flex:1">
+        <div class="flex items-c gap2"><span class="fw7 fz13">리더십 평가 결과</span>${settings.leadershipResultPublished?badge("공개 중","green"):badge("비공개","gray")}</div>
+        <div class="flex items-c gap2 mt1">
+          <select class="fc" style="width:90px;padding:3px 6px;font-size:12px" onchange="settings.leadershipResultYear=Number(this.value);renderSettingsMain()">${yrs.map(y=>`<option value="${y}"${settings.leadershipResultYear===y?" selected":""}>${y}년</option>`).join("")}</select>
+          <span class="fz11 text-gray">사업부장 리더십 평가 등급·점수</span>
+        </div>
+      </div>
+      <button class="btn btn-sm ${settings.leadershipResultPublished?"btn-secondary":"btn-success"}" onclick="toggleResultPublish('leadership')">${settings.leadershipResultPublished?"🔒 비공개":"📢 공개"}</button>
     </div>
   </div></div>
 
-  <!-- 핵심인재 육성 계획 운영 기간 -->
   <div class="card"><div class="card-head"><h3>⭐ 핵심인재 육성 계획 운영 기간</h3></div><div class="card-body">
     <div class="g2 mb2">
-      <div style="padding:12px;border:1.5px solid ${coreTalentSettings.planStage==="open"?"#16a34a":"#e2e8f0"};border-radius:10px;background:${coreTalentSettings.planStage==="open"?"#f0fdf4":"#fff"}">
-        <div class="fw7 fz12 mb1">📋 육성 계획서 작성 기간</div>
-        <div class="mb2">${coreTalentSettings.planStage==="open"?badge("운영 중","green"):badge("마감","gray")}</div>
-        <div class="fg mb2"><label class="fl">시작일</label><input class="fc" type="date" value="${coreTalentSettings.planStart||""}" onchange="coreTalentSettings.planStart=this.value;renderSettingsMain()"></div>
-        <div class="fg mb2"><label class="fl">종료일</label><input class="fc" type="date" value="${coreTalentSettings.planEnd||""}" onchange="coreTalentSettings.planEnd=this.value;renderSettingsMain()"></div>
-        <button class="btn btn-sm ${coreTalentSettings.planStage==="open"?"btn-secondary":"btn-success"}" style="width:100%;justify-content:center" onclick="coreTalentSettings.planStage=coreTalentSettings.planStage==='open'?'closed':'open';broadcastSettingsChange('핵심인재 계획서 기간 변경');renderSettingsMain()">${coreTalentSettings.planStage==="open"?"🔒 계획서 작성 마감":"📝 계획서 작성 기간 열기"}</button>
+      <div class="period-card ${coreTalentSettings.planStage==="open"?"pc-talent":""}">
+        <div class="flex items-c gap2 mb2 wrap">
+          <span style="font-size:15px">📋</span><span class="fw7 fz12">육성 계획서 작성</span>
+          <span class="dday ${planSt.cls}">${planSt.label}</span>
+          ${coreTalentSettings.planStage==="open"?badge("운영 중","green"):badge("마감","gray")}
+        </div>
+        <div class="period-prog"><div class="period-prog-fill" style="width:${planSt.pct}%;background:#0f766e"></div></div>
+        ${planSt.msg?`<div class="fz11 text-gray mb1">${planSt.msg}</div>`:""}
+        <div class="g2 mt2">
+          <div class="fg"><label class="fl">시작일</label><input class="fc" type="date" value="${coreTalentSettings.planStart||""}" onchange="coreTalentSettings.planStart=this.value;autoSaveDebounced();renderSettingsMain()"></div>
+          <div class="fg"><label class="fl">종료일</label><input class="fc" type="date" value="${coreTalentSettings.planEnd||""}" onchange="coreTalentSettings.planEnd=this.value;autoSaveDebounced();renderSettingsMain()"></div>
+        </div>
+        ${vDates(coreTalentSettings.planStart,coreTalentSettings.planEnd,"계획서")}
+        <button class="btn btn-sm ${coreTalentSettings.planStage==="open"?"btn-secondary":"btn-success"} mt2" style="width:100%;justify-content:center" onclick="coreTalentSettings.planStage=coreTalentSettings.planStage==='open'?'closed':'open';broadcastSettingsChange('핵심인재 계획서 기간 변경');autoSaveDebounced();renderSettingsMain()">${coreTalentSettings.planStage==="open"?"🔒 계획서 작성 마감":"📝 계획서 작성 기간 열기"}</button>
       </div>
-      <div style="padding:12px;border:1.5px solid ${coreTalentSettings.achieveStage==="open"?"#16a34a":"#e2e8f0"};border-radius:10px;background:${coreTalentSettings.achieveStage==="open"?"#f0fdf4":"#fff"}">
-        <div class="fw7 fz12 mb1">📊 육성 실적 작성 기간</div>
-        <div class="mb2">${coreTalentSettings.achieveStage==="open"?badge("운영 중","green"):badge("마감","gray")}</div>
-        <div class="fg mb2"><label class="fl">시작일</label><input class="fc" type="date" value="${coreTalentSettings.achieveStart||""}" onchange="coreTalentSettings.achieveStart=this.value;renderSettingsMain()"></div>
-        <div class="fg mb2"><label class="fl">종료일</label><input class="fc" type="date" value="${coreTalentSettings.achieveEnd||""}" onchange="coreTalentSettings.achieveEnd=this.value;renderSettingsMain()"></div>
-        <button class="btn btn-sm ${coreTalentSettings.achieveStage==="open"?"btn-secondary":"btn-success"}" style="width:100%;justify-content:center" onclick="coreTalentSettings.achieveStage=coreTalentSettings.achieveStage==='open'?'closed':'open';broadcastSettingsChange('핵심인재 실적 기간 변경');renderSettingsMain()">${coreTalentSettings.achieveStage==="open"?"🔒 실적 작성 마감":"📈 실적 작성 기간 열기"}</button>
+      <div class="period-card ${coreTalentSettings.achieveStage==="open"?"pc-talent":""}">
+        <div class="flex items-c gap2 mb2 wrap">
+          <span style="font-size:15px">📊</span><span class="fw7 fz12">육성 실적 작성</span>
+          <span class="dday ${achSt.cls}">${achSt.label}</span>
+          ${coreTalentSettings.achieveStage==="open"?badge("운영 중","green"):badge("마감","gray")}
+        </div>
+        <div class="period-prog"><div class="period-prog-fill" style="width:${achSt.pct}%;background:#0f766e"></div></div>
+        ${achSt.msg?`<div class="fz11 text-gray mb1">${achSt.msg}</div>`:""}
+        <div class="g2 mt2">
+          <div class="fg"><label class="fl">시작일</label><input class="fc" type="date" value="${coreTalentSettings.achieveStart||""}" onchange="coreTalentSettings.achieveStart=this.value;autoSaveDebounced();renderSettingsMain()"></div>
+          <div class="fg"><label class="fl">종료일</label><input class="fc" type="date" value="${coreTalentSettings.achieveEnd||""}" onchange="coreTalentSettings.achieveEnd=this.value;autoSaveDebounced();renderSettingsMain()"></div>
+        </div>
+        ${vDates(coreTalentSettings.achieveStart,coreTalentSettings.achieveEnd,"실적")}
+        <button class="btn btn-sm ${coreTalentSettings.achieveStage==="open"?"btn-secondary":"btn-success"} mt2" style="width:100%;justify-content:center" onclick="coreTalentSettings.achieveStage=coreTalentSettings.achieveStage==='open'?'closed':'open';broadcastSettingsChange('핵심인재 실적 기간 변경');autoSaveDebounced();renderSettingsMain()">${coreTalentSettings.achieveStage==="open"?"🔒 실적 작성 마감":"📈 실적 작성 기간 열기"}</button>
       </div>
     </div>
   </div></div>
 
-  <!-- 비밀번호 초기화 -->
   <div class="card"><div class="card-head"><h3>🔑 비밀번호 초기화</h3></div><div class="card-body">
     <div class="flex gap2 items-c">
       <div style="flex:1"><label class="fl">직원 선택</label><select class="fc" id="reset-emp"><option value="">선택</option>${employees.filter(e=>e.active).map(e=>`<option value="${e.id}">${h(e.name)} (${h(e.loginId)})</option>`).join("")}</select></div>
@@ -8457,6 +8687,376 @@ function toggleResultPublish(type){
   renderSettingsMain();
   broadcastSettingsChange(`${labels[type]} 결과 ${settings[key]?"공개":"비공개"}`);
 }
+
+// ==================== 계산식 설정 ====================
+function renderFormulaSettings(){
+  const el=$("#settings-content");if(!el)return;
+  const w=settings.scoreWeights||{kpi:60,comp:20,ls:20};
+  const total=(w.kpi||0)+(w.comp||0)+(w.ls||0);
+  const ok=total===100;
+  const yrs=Array.from({length:26},(_,i)=>2020+i);
+  el.innerHTML=`
+  <div class="card"><div class="card-head"><h3>⚖️ 종합 성과 점수 가중치</h3></div><div class="card-body">
+    <p class="fz12 text-gray mb3">KPI, 역량평가, 리더십평가 점수를 합산할 때 각 항목의 반영 비율입니다. 합계가 100%가 되어야 합니다.</p>
+    <div class="weight-slider-row">
+      <label>📊 KPI 성과</label>
+      <input type="range" min="0" max="100" step="5" value="${w.kpi}" id="w-kpi" oninput="_onWeightChange()">
+      <span class="weight-val" id="w-kpi-val">${w.kpi}%</span>
+    </div>
+    <div class="weight-slider-row">
+      <label>⭐ 역량평가</label>
+      <input type="range" min="0" max="100" step="5" value="${w.comp}" id="w-comp" oninput="_onWeightChange()">
+      <span class="weight-val" id="w-comp-val">${w.comp}%</span>
+    </div>
+    <div class="weight-slider-row">
+      <label>🏆 리더십평가</label>
+      <input type="range" min="0" max="100" step="5" value="${w.ls}" id="w-ls" oninput="_onWeightChange()">
+      <span class="weight-val" id="w-ls-val">${w.ls}%</span>
+    </div>
+    <div class="flex items-c gap2 mb3">
+      <span class="fz13 fw7">합계: <span id="w-total" style="color:${ok?"#16a34a":"#dc2626"}">${total}%</span></span>
+      ${ok?badge("정상","green"):`<span style="font-size:11px;color:#dc2626">⚠️ 합계가 100%가 되도록 조정해주세요</span>`}
+    </div>
+    <div class="formula-preview">
+      <strong>현재 종합 점수 계산식:</strong><br>
+      종합 성과 점수 = KPI점수 × ${w.kpi}% + 역량평가점수 × ${w.comp}% + 리더십평가점수 × ${w.ls}%<br>
+      <span class="text-gray fz11">※ 리더십평가 미대상(팀원/팀장)은 역량평가 비중을 ${w.comp+w.ls}%로 계산합니다.</span>
+    </div>
+    <button class="btn btn-primary mt3" onclick="_saveWeights()" ${ok?"":"disabled"}>💾 가중치 저장</button>
+  </div></div>
+
+  <div class="card"><div class="card-head"><h3>📐 KPI 점수 산정 방식</h3></div><div class="card-body">
+    <div class="formula-preview">
+      <strong>KPI 최종 점수 계산 방식 (현재 고정):</strong><br>
+      KPI 점수 = Σ(각 KPI 항목 최종점수 × 비중%) / 100<br><br>
+      <strong>예시:</strong><br>
+      KPI 항목1: 최종 90점 × 비중 50% = 45점<br>
+      KPI 항목2: 최종 80점 × 비중 30% = 24점<br>
+      KPI 항목3: 최종 70점 × 비중 20% = 14점<br>
+      → <strong>종합 KPI 점수 = 83점</strong>
+    </div>
+    <div class="info-note mt3 fz11">📌 KPI 비중 합계는 반드시 100%가 되어야 하며, 각 항목 평가는 100점 만점 기준입니다.</div>
+  </div></div>
+
+  <div class="card"><div class="card-head"><h3>🏅 KPI 등급 기준 방식</h3></div><div class="card-body">
+    <div class="g2">
+      <div class="period-card ${(settings.gradeMethod||"ratio")==="ratio"?"pc-goal":""}">
+        <div class="flex items-c gap2 mb2"><span style="font-size:15px">📊</span><span class="fw7 fz12">비율 배분 방식 (현재 사용)</span></div>
+        <div class="fz12 text-gray">전체 직원을 점수 순서로 정렬 후 상위 N%에 S, A, B, C, D 등급을 배분합니다. 부서별 등급 비율은 [KPI 등급 비율] 탭에서 설정합니다.</div>
+        <button class="btn btn-primary btn-sm mt2" onclick="settings.gradeMethod='ratio';autoSaveDebounced();renderFormulaSettings()">✓ 이 방식 사용</button>
+      </div>
+      <div class="period-card ${(settings.gradeMethod||"ratio")==="threshold"?"pc-perf":""}">
+        <div class="flex items-c gap2 mb2"><span style="font-size:15px">🎯</span><span class="fw7 fz12">절대 점수 기준 방식</span></div>
+        <div class="fz12 text-gray mb2">점수 구간에 따라 등급을 부여합니다. 아래 점수 기준을 직접 설정합니다.</div>
+        ${(settings.gradeMethod||"ratio")==="threshold"?`
+        <div class="g2 mb2">
+          ${[{g:"S",k:"threshS",def:95},{g:"A",k:"threshA",def:85},{g:"B",k:"threshB",def:70},{g:"C",k:"threshC",def:60}].map(r=>`
+          <div class="fg"><label class="fl">${r.g}등급 기준 (이상)</label><input class="fc" type="number" min="0" max="100" value="${settings[r.k]||r.def}" onchange="settings.${r.k}=Number(this.value);autoSaveDebounced()"></div>`).join("")}
+        </div>
+        <div class="fz11 text-gray">S≥${settings.threshS||95} / A≥${settings.threshA||85} / B≥${settings.threshB||70} / C≥${settings.threshC||60} / D:미달</div>
+        `:""}
+        <button class="btn btn-sm ${(settings.gradeMethod||"ratio")==="threshold"?"btn-success":"btn-secondary"} mt2" onclick="settings.gradeMethod='threshold';autoSaveDebounced();renderFormulaSettings()">이 방식 사용</button>
+      </div>
+    </div>
+  </div></div>`;
+}
+function _onWeightChange(){
+  const kpi=Number($("#w-kpi")?.value||0);
+  const comp=Number($("#w-comp")?.value||0);
+  const ls=Number($("#w-ls")?.value||0);
+  const t=kpi+comp+ls;
+  if($("#w-kpi-val"))$("#w-kpi-val").textContent=kpi+"%";
+  if($("#w-comp-val"))$("#w-comp-val").textContent=comp+"%";
+  if($("#w-ls-val"))$("#w-ls-val").textContent=ls+"%";
+  const tel=$("#w-total");if(tel){tel.textContent=t+"%";tel.style.color=t===100?"#16a34a":"#dc2626";}
+}
+function _saveWeights(){
+  const kpi=Number($("#w-kpi")?.value||0);
+  const comp=Number($("#w-comp")?.value||0);
+  const ls=Number($("#w-ls")?.value||0);
+  if(kpi+comp+ls!==100){showToast("가중치 합계가 100%가 되어야 합니다.","error");return;}
+  settings.scoreWeights={kpi,comp,ls};
+  autoSaveDebounced();
+  showToast("가중치가 저장되었습니다.","success");
+  broadcastSettingsChange("계산식 가중치 변경");
+}
+
+// ==================== 저성과 인력 관리 ====================
+function _calcOverallScore(empId,year){
+  const w=settings.scoreWeights||{kpi:60,comp:20,ls:20};
+  const emp=employees.find(e=>e.id===empId);
+  if(!emp)return null;
+  // KPI: weighted average of approved/confirmed entries
+  const kpis=kpiEntries.filter(k=>k.userId===empId&&k.year===year&&k.finalStatus==="approved"&&k.finalConfirmed);
+  let kpiScore=null;
+  if(kpis.length){
+    let sum=0,wSum=0;
+    kpis.forEach(k=>{if(k.finalScore!=null){sum+=k.finalScore*(k.weight||0);wSum+=k.weight||0;}});
+    if(wSum>0)kpiScore=Math.round(sum/wSum*10)/10;
+  }
+  // Competency/Leadership: stored in compGradeResults[empId][year].score
+  // (directors have leadership score, members/leaders have comp score — same field)
+  const compScore=compGradeResults[empId]?.[year]?.score??null;
+  if(kpiScore==null&&compScore==null)return null;
+  const kW=w.kpi||60;
+  const cW=(w.comp||20)+(w.ls||20); // comp+ls weights merged into single eval score
+  if(kpiScore!=null&&compScore!=null)return Math.round((kpiScore*kW+compScore*cW)/100);
+  if(kpiScore!=null)return Math.round(kpiScore);
+  return Math.round(compScore);
+}
+function _lpStatusLabel(status){
+  const m={watch:"관찰 중",pip:"PIP 시행",improved:"개선 완료",terminated:"퇴직 처리"};
+  return m[status]||status;
+}
+function _lpStatusClass(status){
+  const m={watch:"lp-status-watch",pip:"lp-status-pip",improved:"lp-status-improved",terminated:"lp-status-terminated"};
+  return m[status]||"";
+}
+function _lpCardClass(status){
+  const m={watch:"lp-watch",pip:"lp-pip",improved:"lp-improved",terminated:"lp-terminated"};
+  return m[status]||"";
+}
+function _getLpRecord(empId,year){return lowPerfData.find(r=>r.empId===empId&&r.year===year);}
+function _saveLpRecord(rec){
+  const idx=lowPerfData.findIndex(r=>r.id===rec.id);
+  if(idx>=0)lowPerfData[idx]=rec;else lowPerfData.push(rec);
+  autoSaveDebounced();
+}
+function _autoDetectLowPerf(){
+  const thr=settings.lowPerfThreshold??60;
+  const years=Array.from({length:5},(_,i)=>settings.evalYear-i).filter(y=>y>0);
+  const flagged=[];
+  employees.filter(e=>e.active&&e.role!=="admin").forEach(emp=>{
+    const lowYrs=years.filter(y=>{
+      const sc=_calcOverallScore(emp.id,y);
+      return sc!=null&&sc<thr;
+    });
+    if(lowYrs.length>=1)flagged.push({emp,lowYrs,scores:Object.fromEntries(years.map(y=>[y,_calcOverallScore(emp.id,y)]))});
+  });
+  return flagged;
+}
+function renderLowPerformer(){
+  const c=$("#content");if(!c)return;
+  const yearOpts=Array.from({length:6},(_,i)=>settings.evalYear-i);
+  const thr=settings.lowPerfThreshold??60;
+  const cYrs=settings.lowPerfConsecYears??2;
+  const statusFilter=window._lpStatusFilter||"all";
+  const detected=_autoDetectLowPerf();
+  const registered=lowPerfData.filter(r=>statusFilter==="all"||r.status===statusFilter);
+  const counts={watch:lowPerfData.filter(r=>r.status==="watch").length,pip:lowPerfData.filter(r=>r.status==="pip").length,improved:lowPerfData.filter(r=>r.status==="improved").length,terminated:lowPerfData.filter(r=>r.status==="terminated").length};
+  c.innerHTML=`
+  <div class="stat-grid" style="grid-template-columns:repeat(4,1fr);margin-bottom:14px">
+    <div class="stat-box" style="cursor:pointer;border:1.5px solid ${statusFilter==="watch"?"#f59e0b":"transparent"}" onclick="window._lpStatusFilter='watch';renderLowPerformer()">
+      <div class="ico">👁</div><div class="num" style="color:#d97706">${counts.watch}</div><div class="lbl">관찰 중</div>
+    </div>
+    <div class="stat-box" style="cursor:pointer;border:1.5px solid ${statusFilter==="pip"?"#dc2626":"transparent"}" onclick="window._lpStatusFilter='pip';renderLowPerformer()">
+      <div class="ico">⚠️</div><div class="num" style="color:#dc2626">${counts.pip}</div><div class="lbl">PIP 시행</div>
+    </div>
+    <div class="stat-box" style="cursor:pointer;border:1.5px solid ${statusFilter==="improved"?"#16a34a":"transparent"}" onclick="window._lpStatusFilter='improved';renderLowPerformer()">
+      <div class="ico">✅</div><div class="num" style="color:#16a34a">${counts.improved}</div><div class="lbl">개선 완료</div>
+    </div>
+    <div class="stat-box" style="cursor:pointer;border:1.5px solid ${statusFilter==="all"?"#2563eb":"transparent"}" onclick="window._lpStatusFilter='all';renderLowPerformer()">
+      <div class="ico">📋</div><div class="num">${lowPerfData.length}</div><div class="lbl">전체 등록</div>
+    </div>
+  </div>
+
+  ${detected.length?`<div class="card"><div class="card-head">
+    <h3>🔍 자동 감지 대상 (${settings.evalYear}년 기준 점수 ${thr}점 미만)</h3>
+    <div class="flex gap2">
+      <button class="btn btn-secondary btn-sm" onclick="_openLpSettings()">⚙ 감지 기준 설정</button>
+    </div>
+  </div><div class="card-body">
+    <div class="info-note mb3 fz11">📌 아래 직원들은 설정된 기준에 따라 저성과로 감지되었습니다. 필요 시 직접 등록하여 관리하세요.</div>
+    ${detected.map(({emp,lowYrs,scores})=>{
+      const existing=lowPerfData.find(r=>r.empId===emp.id&&r.year===settings.evalYear);
+      const score=scores[settings.evalYear];
+      return`<div class="flex items-c gap2 mb2 p2" style="background:#fef9c3;border-radius:8px;padding:8px 12px">
+        <span style="font-size:16px">⚠️</span>
+        <div style="flex:1">
+          <span class="fw7">${h(emp.name)}</span> <span class="text-gray fz12">${h(emp.dept||"")} · ${h(emp.rank||"")}</span>
+          <div class="fz11 text-gray mt1">종합점수 ${score!=null?score+"점":"미산정"} (${settings.evalYear}년) · 저성과 ${lowYrs.length}년</div>
+        </div>
+        ${existing?`<span class="lp-status-${existing.status}">${_lpStatusLabel(existing.status)}</span>`
+          :`<button class="btn btn-warning btn-sm" onclick="_registerLowPerf('${emp.id}',${settings.evalYear})">등록</button>`}
+      </div>`;
+    }).join("")}
+  </div></div>`:`<div class="card"><div class="card-head"><h3>🔍 자동 감지</h3><button class="btn btn-secondary btn-sm" onclick="_openLpSettings()">⚙ 기준 설정</button></div>
+  <div class="card-body"><div class="info-note fz12">현재 ${thr}점 미만의 저성과 직원이 감지되지 않았습니다. <span class="text-gray">기준: ${settings.evalYear}년 종합 점수 ${thr}점 미만</span></div></div></div>`}
+
+  <div class="card"><div class="card-head">
+    <h3>📋 저성과 인력 등록 현황</h3>
+    <button class="btn btn-primary btn-sm" onclick="_openManualLpRegister()">+ 직접 등록</button>
+  </div><div class="card-body">
+    ${registered.length===0?`<div class="info-note fz12">등록된 저성과 인력이 없습니다.</div>`
+    :registered.sort((a,b)=>a.status.localeCompare(b.status)).map(rec=>{
+      const emp=employees.find(e=>e.id===rec.empId);if(!emp)return"";
+      const sc=_calcOverallScore(rec.empId,rec.year)??rec.overallScore;
+      const lastNote=rec.notes?.slice(-1)[0];
+      return`<div class="lp-card ${_lpCardClass(rec.status)}" onclick="_openLpDetail('${rec.id}')">
+        <div class="flex items-c gap2">
+          <div style="flex:1">
+            <div class="flex items-c gap2 mb1">
+              <span class="fw7">${h(emp.name)}</span>
+              <span class="text-gray fz12">${h(emp.dept||"")} ${h(emp.team||"")} · ${h(emp.rank||"")}</span>
+              <span class="${_lpStatusClass(rec.status)}">${_lpStatusLabel(rec.status)}</span>
+              <span class="fz11 text-gray">${rec.year}년</span>
+            </div>
+            ${sc!=null?`<div class="flex items-c gap2"><div class="score-bar" style="flex:1"><div class="score-bar-fill" style="width:${Math.min(100,sc)}%;background:${sc<40?"#dc2626":sc<60?"#f59e0b":"#2563eb"}"></div></div><span class="fz11 fw7" style="min-width:30px">${sc}점</span></div>`:""}
+            ${rec.pipStart&&rec.pipEnd?`<div class="fz11 text-gray mt1">PIP: ${rec.pipStart} ~ ${rec.pipEnd} · ${rec.pipGoal?h(rec.pipGoal.slice(0,30))+"…":""}</div>`:""}
+            ${lastNote?`<div class="fz11 text-gray mt1">최근 노트: ${h(lastNote.content.slice(0,40))}… (${lastNote.date})</div>`:""}
+          </div>
+          <span style="color:#94a3b8;font-size:18px">›</span>
+        </div>
+      </div>`;
+    }).join("")}
+  </div></div>`;
+}
+function _openLpSettings(){
+  showModal(`<div class="modal modal-sm"><div class="modal-head"><h2>⚙ 저성과 감지 기준 설정</h2><button class="modal-close" onclick="closeModal()">×</button></div>
+  <div class="modal-body">
+    <div class="fg mb3"><label class="fl">저성과 기준 점수 (미만)</label>
+      <input class="fc" type="number" id="lp-thr" min="0" max="100" value="${settings.lowPerfThreshold??60}">
+      <div class="fz11 text-gray mt1">이 점수 미만의 종합 성과 점수를 받은 직원을 감지합니다.</div>
+    </div>
+    <div class="fg mb3"><label class="fl">연속 저성과 기준 연수</label>
+      <input class="fc" type="number" id="lp-yrs" min="1" max="5" value="${settings.lowPerfConsecYears??2}">
+      <div class="fz11 text-gray mt1">N년 연속으로 기준 이하 점수 시 자동 강조 표시합니다.</div>
+    </div>
+  </div>
+  <div class="modal-foot">
+    <button class="btn btn-secondary" onclick="closeModal()">취소</button>
+    <button class="btn btn-primary" onclick="_saveLpSettings()">저장</button>
+  </div></div>`);
+}
+function _saveLpSettings(){
+  const thr=Number($("#lp-thr")?.value);
+  const yrs=Number($("#lp-yrs")?.value);
+  if(thr<0||thr>100){showToast("점수는 0~100 사이여야 합니다.","error");return;}
+  if(yrs<1||yrs>5){showToast("연수는 1~5 사이여야 합니다.","error");return;}
+  settings.lowPerfThreshold=thr;
+  settings.lowPerfConsecYears=yrs;
+  autoSaveDebounced();
+  showToast("감지 기준이 저장되었습니다.","success");
+  closeModal();
+  renderLowPerformer();
+}
+function _registerLowPerf(empId,year){
+  const rec={id:genId(),empId,year,flaggedDate:new Date().toISOString().slice(0,10),flaggedBy:currentUser.id,status:"watch",notes:[],manualFlag:false,overallScore:_calcOverallScore(empId,year)};
+  lowPerfData.push(rec);
+  autoSaveDebounced();
+  showToast("저성과 인력으로 등록되었습니다.","success");
+  renderLowPerformer();
+}
+function _openManualLpRegister(){
+  const yrs=Array.from({length:6},(_,i)=>settings.evalYear-i);
+  const emps=employees.filter(e=>e.active&&e.role!=="admin");
+  showModal(`<div class="modal modal-sm"><div class="modal-head"><h2>+ 저성과 인력 직접 등록</h2><button class="modal-close" onclick="closeModal()">×</button></div>
+  <div class="modal-body">
+    <div class="fg mb2"><label class="fl">직원 선택</label>
+      <select class="fc" id="lp-emp">${emps.map(e=>`<option value="${e.id}">${h(e.name)} (${h(e.dept||"")} / ${h(e.rank||"")})</option>`).join("")}</select></div>
+    <div class="fg mb2"><label class="fl">평가 연도</label>
+      <select class="fc" id="lp-year">${yrs.map(y=>`<option value="${y}"${y===settings.evalYear?" selected":""}>${y}년</option>`).join("")}</select></div>
+    <div class="fg mb3"><label class="fl">초기 상태</label>
+      <select class="fc" id="lp-status"><option value="watch">관찰 중</option><option value="pip">PIP 시행</option></select></div>
+    <div class="fg mb2"><label class="fl">사유 (선택)</label>
+      <textarea class="fc" id="lp-reason" rows="2" placeholder="등록 사유를 입력하세요"></textarea></div>
+  </div>
+  <div class="modal-foot">
+    <button class="btn btn-secondary" onclick="closeModal()">취소</button>
+    <button class="btn btn-warning" onclick="_doManualLpRegister()">등록</button>
+  </div></div>`);
+}
+function _doManualLpRegister(){
+  const empId=$("#lp-emp")?.value;const year=Number($("#lp-year")?.value);
+  const status=$("#lp-status")?.value||"watch";
+  const reason=$("#lp-reason")?.value?.trim()||"";
+  if(!empId){showToast("직원을 선택하세요.","error");return;}
+  if(lowPerfData.find(r=>r.empId===empId&&r.year===year)){showToast("이미 등록된 직원/연도입니다.","error");return;}
+  const rec={id:genId(),empId,year,flaggedDate:new Date().toISOString().slice(0,10),flaggedBy:currentUser.id,status,notes:reason?[{date:new Date().toISOString().slice(0,10),content:reason,authorId:currentUser.id}]:[],manualFlag:true,overallScore:_calcOverallScore(empId,year)};
+  lowPerfData.push(rec);
+  autoSaveDebounced();
+  showToast("등록이 완료되었습니다.","success");
+  closeModal();
+  renderLowPerformer();
+}
+function _openLpDetail(recId){
+  const rec=lowPerfData.find(r=>r.id===recId);if(!rec)return;
+  const emp=employees.find(e=>e.id===rec.empId);if(!emp)return;
+  const sc=_calcOverallScore(rec.empId,rec.year)??rec.overallScore;
+  // Score history
+  const yrsHist=Array.from({length:5},(_,i)=>rec.year-i).filter(y=>y>0).reverse();
+  const histRows=yrsHist.map(y=>{const s=_calcOverallScore(rec.empId,y);return s!=null?`<div class="flex items-c gap2 mb1"><span class="fz12 text-gray" style="min-width:40px">${y}년</span><div class="score-bar" style="flex:1"><div class="score-bar-fill" style="width:${Math.min(100,s)}%;background:${s<40?"#dc2626":s<60?"#f59e0b":"#2563eb"}"></div></div><span class="fz12 fw7" style="min-width:30px">${s}점</span></div>`:""}).join("");
+  showModal(`<div class="modal modal-md"><div class="modal-head">
+    <h2>📉 ${h(emp.name)} 저성과 관리</h2><button class="modal-close" onclick="closeModal()">×</button>
+  </div><div class="modal-body" style="max-height:70vh;overflow-y:auto">
+    <div class="flex items-c gap2 mb3">
+      <span class="${_lpStatusClass(rec.status)}">${_lpStatusLabel(rec.status)}</span>
+      <span class="text-gray fz12">${rec.year}년 · 등록: ${rec.flaggedDate}</span>
+    </div>
+    ${sc!=null?`<div class="card mb3"><div class="card-body">
+      <div class="fw7 fz13 mb2">종합 성과 점수: <span style="color:${sc<60?"#dc2626":"#2563eb"}">${sc}점</span></div>
+      ${histRows}
+    </div></div>`:""}
+    <div class="card mb3"><div class="card-head"><h3>⚠ 성과 개선 계획 (PIP)</h3></div><div class="card-body">
+      <div class="g2 mb2">
+        <div class="fg"><label class="fl">PIP 시작일</label><input class="fc" type="date" id="pip-start" value="${rec.pipStart||""}"></div>
+        <div class="fg"><label class="fl">PIP 종료일</label><input class="fc" type="date" id="pip-end" value="${rec.pipEnd||""}"></div>
+      </div>
+      <div class="fg mb2"><label class="fl">개선 목표</label><textarea class="fc" id="pip-goal" rows="2" placeholder="구체적인 개선 목표를 입력하세요">${h(rec.pipGoal||"")}</textarea></div>
+    </div></div>
+    <div class="card mb3"><div class="card-head"><h3>📝 상태 변경</h3></div><div class="card-body">
+      <div class="eval-status-toggle">
+        ${["watch","pip","improved","terminated"].map(s=>`<button class="est-btn ${rec.status===s?"est-on":""}" onclick="_setLpStatus('${recId}','${s}')">${{watch:"👁 관찰 중",pip:"⚠ PIP 시행",improved:"✅ 개선 완료",terminated:"🔚 퇴직 처리"}[s]}</button>`).join("")}
+      </div>
+    </div></div>
+    <div class="card"><div class="card-head"><h3>💬 면담·노트 기록</h3></div><div class="card-body">
+      <div class="fg mb2"><textarea class="fc" id="lp-note-input" rows="2" placeholder="면담 내용, 조치 사항, 진행 상황 등을 기록하세요"></textarea></div>
+      <button class="btn btn-primary btn-sm" onclick="_addLpNote('${recId}')">노트 추가</button>
+      <div class="mt3">${(rec.notes||[]).slice().reverse().map(n=>{
+        const auth=employees.find(e=>e.id===n.authorId);
+        return`<div style="border-left:3px solid #e2e8f0;padding:8px 12px;margin-bottom:8px;background:#f8fafc;border-radius:0 6px 6px 0">
+          <div class="fz11 text-gray mb1">${n.date} · ${h(auth?.name||"관리자")}</div>
+          <div class="fz12">${h(n.content)}</div>
+        </div>`;
+      }).join("")||`<div class="fz12 text-gray">기록된 노트가 없습니다.</div>`}</div>
+    </div></div>
+  </div>
+  <div class="modal-foot">
+    <button class="btn btn-error btn-sm" onclick="if(confirm('삭제하시겠습니까?')){lowPerfData=lowPerfData.filter(r=>r.id!=='${recId}');autoSaveDebounced();closeModal();renderLowPerformer();}">삭제</button>
+    <button class="btn btn-secondary" onclick="closeModal()">닫기</button>
+    <button class="btn btn-primary" onclick="_saveLpDetail('${recId}')">저장</button>
+  </div></div>`);
+}
+function _saveLpDetail(recId){
+  const rec=lowPerfData.find(r=>r.id===recId);if(!rec)return;
+  rec.pipStart=$("#pip-start")?.value||"";
+  rec.pipEnd=$("#pip-end")?.value||"";
+  rec.pipGoal=$("#pip-goal")?.value?.trim()||"";
+  _saveLpRecord(rec);
+  showToast("저장되었습니다.","success");
+  closeModal();
+  renderLowPerformer();
+}
+function _setLpStatus(recId,status){
+  const rec=lowPerfData.find(r=>r.id===recId);if(!rec)return;
+  rec.status=status;
+  _saveLpRecord(rec);
+  showToast(`상태가 "${_lpStatusLabel(status)}"으로 변경되었습니다.`,"success");
+  closeModal();
+  renderLowPerformer();
+}
+function _addLpNote(recId){
+  const rec=lowPerfData.find(r=>r.id===recId);if(!rec)return;
+  const content=$("#lp-note-input")?.value?.trim();
+  if(!content){showToast("내용을 입력하세요.","error");return;}
+  if(!rec.notes)rec.notes=[];
+  rec.notes.push({date:new Date().toISOString().slice(0,10),content,authorId:currentUser.id});
+  _saveLpRecord(rec);
+  showToast("노트가 추가되었습니다.","success");
+  closeModal();
+  _openLpDetail(recId);
+}
+
 function renderSettingsOrg(){
   const el=$("#settings-content");if(!el)return;
   el.innerHTML=`<div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
@@ -8643,6 +9243,214 @@ function renderHistory(){
   </div></div>`;
 }
 
+// ==================== DEPLOY & PERMISSIONS ====================
+// Canonical menu list (mirrors renderSidebar, used for permission matrix)
+function _allMenuItems(){
+  return[
+    {id:"dashboard",label:"대시보드"},{id:"my-profile",label:"내 프로필"},
+    {id:"hr-register",label:"신규 직원 등록"},{id:"hr-list",label:"직원 목록"},
+    {id:"hr-changes",label:"발령·변동 이력"},
+    {id:"kpi",label:"KPI 목표 등록"},{id:"kpi-results",label:"KPI 결과 입력"},
+    {id:"first-eval",label:"1차 평가"},{id:"second-eval",label:"2차 평가"},
+    {id:"kpi-amend",label:"수정 요청 승인"},{id:"my-kpi",label:"나의 KPI"},
+    {id:"grade-view",label:"KPI 등급 현황"},
+    {id:"comp-eval",label:"다면평가 진행"},{id:"comp-grade-view",label:"역량평가 등급"},
+    {id:"promotion-mgmt",label:"승진 심사 관리"},
+    {id:"core-talent",label:"핵심인재 관리"},{id:"talent-dev",label:"육성 계획·실적"},
+    {id:"low-performer",label:"저성과 인력 관리"},
+    {id:"settings",label:"운영 설정"},{id:"data-mgmt",label:"데이터 관리"},
+    {id:"history",label:"수정 이력"},{id:"change-pw",label:"비밀번호 변경"},
+  ];
+}
+
+function renderSettingsDeploy(){
+  const el=$("#settings-content");if(!el)return;
+  const srv=serverConfig.url||"";
+  const origin=location.origin;
+  const basePath=location.pathname.replace(/\/[^/]*$/,"/")||"/";
+  const shareLink=srv?`${origin}${basePath}index.html?srv=${encodeURIComponent(srv)}`:"";
+  const activeEmps=employees.filter(e=>e.active&&e.id!==currentUser.id);
+  const permEmpId=window._permEditEmpId||(activeEmps[0]?.id||null);
+  const selEmp=employees.find(e=>e.id===permEmpId);
+  const allMenus=_allMenuItems();
+
+  el.innerHTML=`
+  <!-- ① 서버 연결 설정 -->
+  <div class="card mb3">
+    <div class="card-head"><h3>🌐 서버 연결 설정</h3></div>
+    <div class="card-body">
+      <p class="fz12 text-gray mb3">현재 앱이 연결된 데이터 서버 주소입니다. Railway 등 배포 서버의 URL을 입력하세요.</p>
+      <div class="fg">
+        <label class="fl">서버 URL</label>
+        <div class="flex gap2">
+          <input class="fc" id="deploy-srv-url" value="${h(srv)}" placeholder="https://your-app.up.railway.app" style="flex:1">
+          <button class="btn btn-primary" onclick="_saveDeploySrv()">저장·연결</button>
+          <button class="btn btn-secondary" onclick="_testDeploySrv()">연결 테스트</button>
+        </div>
+      </div>
+      <div id="deploy-srv-status" class="fz12 mt2"></div>
+    </div>
+  </div>
+
+  <!-- ② 배포 링크 공유 -->
+  <div class="card mb3">
+    <div class="card-head"><h3>🔗 팀원 배포 링크</h3></div>
+    <div class="card-body">
+      <p class="fz12 text-gray mb3">아래 링크를 팀원에게 공유하면, 서버 주소가 자동으로 설정된 앱이 열립니다.<br>모바일·PC 모두 지원합니다. 로그인 후 각자의 권한에 맞는 메뉴만 표시됩니다.</p>
+      ${shareLink?`
+        <div class="fg">
+          <label class="fl">배포 링크 (복사해서 팀원에게 전달)</label>
+          <div class="flex gap2">
+            <input class="fc" id="share-link-input" value="${h(shareLink)}" readonly style="flex:1;font-size:12px;background:#f8fafc">
+            <button class="btn btn-secondary" onclick="_copyShareLink()">복사</button>
+          </div>
+        </div>
+        <div class="info-note mt2">💡 이 링크를 카카오톡·메일·QR코드 등으로 팀원에게 전달하세요. 서버 URL이 변경되면 링크도 새로 생성하세요.</div>
+      `:`<div class="alert alert-warning">서버 URL을 먼저 입력하고 저장하면 배포 링크가 생성됩니다.</div>`}
+    </div>
+  </div>
+
+  <!-- ③ 클라이언트 앱 다운로드 -->
+  <div class="card mb3">
+    <div class="card-head"><h3>📦 클라이언트 앱 다운로드</h3></div>
+    <div class="card-body">
+      <p class="fz12 text-gray mb3">서버 주소가 미리 설정된 HTML 파일을 다운로드합니다.<br>팀원이 이 파일을 열면 서버 입력 없이 바로 연결됩니다. 인트라넷·오프라인 환경에 적합합니다.</p>
+      ${srv?`<button class="btn btn-primary" onclick="generateClientApp('${h(srv)}')">📥 클라이언트 앱 다운로드 (hr-client.html)</button>`
+           :`<button class="btn btn-secondary" disabled>서버 URL을 먼저 설정하세요</button>`}
+      <div class="warn-note mt3">⚠️ 다운로드한 파일에는 서버 주소가 포함됩니다. 외부에 유출되지 않도록 주의하세요.</div>
+    </div>
+  </div>
+
+  <!-- ④ 메뉴 권한 관리 -->
+  <div class="card">
+    <div class="card-head">
+      <h3>🔐 메뉴 접근 권한 관리</h3>
+      <span class="fz11 text-gray">역할 기본 권한에서 개별 메뉴를 추가 제한할 수 있습니다</span>
+    </div>
+    <div class="card-body">
+      <div class="flex gap2 mb3 wrap">
+        <div class="fg" style="min-width:200px;margin:0">
+          <label class="fl">직원 선택</label>
+          <select class="fc" onchange="window._permEditEmpId=Number(this.value);renderSettingsDeploy()">
+            ${activeEmps.map(e=>`<option value="${e.id}"${e.id===permEmpId?" selected":""}>${h(e.name)} (${ROLES[e.role]||e.role})</option>`).join("")}
+          </select>
+        </div>
+        ${selEmp?`<div class="fg" style="margin:0;align-self:flex-end">
+          <button class="btn btn-ghost btn-sm" onclick="_resetMenuPerms(${selEmp.id})">역할 기본값으로 초기화</button>
+        </div>`:""}
+      </div>
+      ${selEmp?`
+        <p class="fz11 text-gray mb2">
+          <strong>${h(selEmp.name)}</strong>님의 역할: <span class="badge bg-blue">${ROLES[selEmp.role]||selEmp.role}</span>
+          · 체크 해제 시 해당 메뉴가 숨겨집니다
+        </p>
+        <div class="g3" id="perm-matrix">
+          ${allMenus.map(m=>{
+            const perms=selEmp.menuPerms||{};
+            const checked=perms[m.id]!==false;
+            return`<label style="display:flex;align-items:center;gap:6px;padding:6px 8px;border:1px solid #e2e8f0;border-radius:6px;cursor:pointer;font-size:12px;${checked?"background:#f0fdf4":"background:#fef2f2"}">
+              <input type="checkbox" ${checked?"checked":""} onchange="_toggleMenuPerm(${selEmp.id},'${m.id}',this.checked)" style="width:16px;height:16px;cursor:pointer">
+              <span>${m.label}</span>
+            </label>`;
+          }).join("")}
+        </div>
+        <div class="flex gap2 mt3">
+          <button class="btn btn-primary" onclick="_saveAllMenuPerms(${selEmp.id})">권한 저장</button>
+          <button class="btn btn-ghost" onclick="_resetMenuPerms(${selEmp.id})">초기화</button>
+        </div>
+      `:`<p class="fz13 text-gray tc p-empty">직원을 선택하면 메뉴 권한을 설정할 수 있습니다.</p>`}
+    </div>
+  </div>`;
+}
+
+// ── Deploy helpers ──
+function _saveDeploySrv(){
+  const url=($("#deploy-srv-url")?.value||"").trim();
+  if(url){ serverConfig.url=url; serverConfig.enabled=true; try{localStorage.setItem("hr_kpi_server_url",url);}catch(e){} }
+  else{ serverConfig.url=""; serverConfig.enabled=false; try{localStorage.removeItem("hr_kpi_server_url");}catch(e){} }
+  showToast("서버 주소가 저장되었습니다.","success");
+  renderSettingsDeploy();
+  if(url){ checkServerConnection().then(ok=>{if(ok){connectSSE();startServerAutoSave();}}); }
+}
+async function _testDeploySrv(){
+  const url=($("#deploy-srv-url")?.value||"").trim();
+  const el=$("#deploy-srv-status");
+  if(!url||!el){showToast("URL을 먼저 입력하세요.","error");return;}
+  el.innerHTML=`<span class="text-gray">연결 테스트 중...</span>`;
+  try{
+    const r=await fetch(url.replace(/\/+$/,"")+"/status",{signal:AbortSignal.timeout(5000)});
+    const j=await r.json();
+    if(j.ok) el.innerHTML=`<span class="text-green">✓ 연결 성공 · 직원 ${j.meta?.empCount||0}명 · 버전 ${j.version||0}</span>`;
+    else el.innerHTML=`<span class="text-red">✗ 서버 응답 오류: ${j.message||"알 수 없음"}</span>`;
+  }catch(e){el.innerHTML=`<span class="text-red">✗ 연결 실패: ${e.message}</span>`;}
+}
+function _copyShareLink(){
+  const el=$("#share-link-input");
+  if(!el)return;
+  navigator.clipboard?.writeText(el.value).then(()=>showToast("링크가 복사되었습니다.","success"))
+    .catch(()=>{el.select();document.execCommand("copy");showToast("복사되었습니다.","success");});
+}
+
+// ── Per-user menu permission helpers ──
+let _pendingPerms={}; // {empId: {menuId: bool}}
+function _toggleMenuPerm(empId,menuId,checked){
+  if(!_pendingPerms[empId]) _pendingPerms[empId]={};
+  _pendingPerms[empId][menuId]=checked;
+  // Update visual immediately
+  const lbl=event?.target?.closest("label");
+  if(lbl) lbl.style.background=checked?"#f0fdf4":"#fef2f2";
+}
+function _saveAllMenuPerms(empId){
+  const emp=employees.find(e=>e.id===empId);
+  if(!emp)return;
+  const cur=emp.menuPerms||{};
+  const changes=_pendingPerms[empId]||{};
+  emp.menuPerms={...cur,...changes};
+  // Clean up: remove entries that are `true` (default) to keep it lean
+  Object.keys(emp.menuPerms).forEach(k=>{ if(emp.menuPerms[k]===true) delete emp.menuPerms[k]; });
+  _pendingPerms[empId]={};
+  autoSaveDebounced();
+  showToast(`${h(emp.name)}님의 메뉴 권한이 저장되었습니다.`,"success");
+  renderSettingsDeploy();
+  if(currentUser.id===empId) renderSidebar();
+}
+function _resetMenuPerms(empId){
+  const emp=employees.find(e=>e.id===empId);
+  if(!emp)return;
+  emp.menuPerms={};
+  _pendingPerms[empId]={};
+  autoSaveDebounced();
+  showToast(`${h(emp.name)}님의 권한이 역할 기본값으로 초기화되었습니다.`,"success");
+  renderSettingsDeploy();
+}
+
+// ── Generate downloadable client app ──
+async function generateClientApp(srvUrl){
+  showToast("클라이언트 앱을 생성 중...","info");
+  try{
+    const srcUrl=location.pathname.replace(/\/[^/]*$/,"/")+location.pathname.split("/").pop().split("?")[0]||"index.html";
+    const resp=await fetch(srcUrl.replace(/\?.*/,""));
+    if(!resp.ok) throw new Error("HTML 파일을 가져올 수 없습니다: "+resp.status);
+    let html=await resp.text();
+    // Embed the server URL by replacing the _PRESET_SRV constant
+    html=html.replace('const _PRESET_SRV = "";',`const _PRESET_SRV = "${srvUrl.replace(/"/g,"\\\"")}";\n// generated by admin`);
+    // Strip demo mode from the client app
+    html=html.replace('const _demoMode = (()=>{\n  try{ return new URLSearchParams(location.search).has(\'demo\'); }\n  catch(e){ return false; }\n})();','const _demoMode = false; // disabled in client app');
+    const filename=`hr-client_${new Date().toISOString().slice(0,10)}.html`;
+    const blob=new Blob([html],{type:"text/html;charset=utf-8"});
+    if(navigator.canShare&&navigator.canShare({files:[new File([blob],filename,{type:blob.type})]})){
+      try{ await navigator.share({files:[new File([blob],filename,{type:blob.type})],title:"HR 클라이언트 앱"}); return; }
+      catch(e){ if(e.name==="AbortError") return; }
+    }
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement("a");a.href=url;a.download=filename;a.click();
+    setTimeout(()=>URL.revokeObjectURL(url),1000);
+    showToast("클라이언트 앱이 다운로드되었습니다.","success");
+  }catch(e){
+    showToast("생성 실패: "+e.message,"error");
+  }
+}
+
 // ==================== CHANGE PASSWORD ====================
 function dlAdjustHistory(){dlCSV(`등급수정이력_${new Date().toISOString().slice(0,10)}.csv`,["날짜","직원","부서","유형","연도","변경전","변경후","사유","수정자"],gradeAdjustHistory.map(r=>[r.adjustedAt?.slice(0,10)||"-",getEmpName(r.empId),r.dept||"-",r.type==="kpi"?"KPI":"역량",r.year,r.oldGrade,r.newGrade,r.reason,r.adjustedByName||"-"]));}
 function renderChangePW(){
@@ -8667,6 +9475,7 @@ function doChangePW(){
 }
 
 // ==================== START ====================
+if(_demoMode) _loadDemoState(); // restore saved employees/kpiEntries before login screen
 renderLogin();
 </script>
 </body>
