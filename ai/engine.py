@@ -75,7 +75,7 @@ def _strip_kr(word: str) -> str:
         return m.group(1)
     # 동사 어미 먼저 처리
     for suf in _KR_SUFFIXES:
-        if word.endswith(suf) and len(word) > len(suf) + 1:
+        if word.endswith(suf) and len(word) > len(suf):
             return word[:-len(suf)]
     # 격조사 처리 (어근이 2글자 이상인 경우만)
     for particle in _KR_PARTICLES:
@@ -191,9 +191,13 @@ def _tok(text: str) -> List[str]:
             continue
         # 한국어 어미 제거 후 어근 추가 (원형도 함께 보존)
         root = _strip_kr(w_lower)
-        if root != w_lower and len(root) >= 2 and root not in _STOP:
-            tokens.append(root)   # 어근 (계산, 며칠 등)
-        tokens.append(w_lower)   # 원형도 보존
+        if root != w_lower:
+            if len(root) >= 2 and root not in _STOP:
+                tokens.append(root)    # 어근 (계산, 며칠 등)
+                tokens.append(w_lower) # 원형도 보존
+            # else: 어근이 1글자 이하면 어미만 있는 것이므로 둘 다 제외 (e.g., 받아요→받)
+        else:
+            tokens.append(w_lower)   # 스트리핑 없었을 때
     return tokens
 
 def _feat(text: str) -> List[str]:
