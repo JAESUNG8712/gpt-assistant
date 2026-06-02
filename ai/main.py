@@ -115,11 +115,13 @@ async def chat(req: ChatRequest):
 
     # law.go.kr에서 실시간 원문이 온 경우 → LLM 보강 (law_ctx 우선)
     has_law_rt  = bool(law_ctx)
-    # rag_ctx 비어있으면 overlap 필터 실패 → 직접서빙 금지
+    # company 페르소나: rag_ctx가 비어있어도 top_answer가 있으면 KB 직접 서빙 허용
+    # (rag_ctx는 CONTEXT_ABS_MIN=0.15 미만에서 비워짐 → company의 0.10 임계값과 불일치 해소)
     # thinking 모드일 때는 항상 LLM을 거쳐야 <think> 블록이 생성됨
+    _has_kb_answer = bool(rag_ctx) or (company_kb_only and bool(top_answer))
     kb_direct   = (
         best_score >= kb_threshold
-        and bool(rag_ctx)
+        and _has_kb_answer
         and req.thinking_mode == "off"
         and not has_law_rt
         and not bool(search_ctx)
