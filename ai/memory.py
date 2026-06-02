@@ -183,7 +183,7 @@ def retrieve_best(query: str, n: int = 5, persona_id: str = None) -> dict:
           "top_question": str,  # 1위 KB 항목 질문
         }
     """
-    empty = {"context": "", "best_score": 0.0, "top_answer": "", "top_question": ""}
+    empty = {"context": "", "best_score": 0.0, "top_answer": "", "top_question": "", "top_results": []}
     try:
         from engine import get_engine
         engine = get_engine()
@@ -195,11 +195,13 @@ def retrieve_best(query: str, n: int = 5, persona_id: str = None) -> dict:
         best_score = 0.0
         top_answer = ""
         top_question = ""
+        top_results = []   # 대화 제외, 점수 내림차순 전체 결과 (company 다중 표시용)
 
-        # 최고 점수 항목 먼저 파악
+        # 최고 점수 항목 파악 + 전체 결과 수집
         for q, a, score, meta in results:
             if meta.get("source") == "대화":
                 continue
+            top_results.append((q, a, score))
             if score > best_score:
                 best_score = score
                 top_answer = a
@@ -254,6 +256,7 @@ def retrieve_best(query: str, n: int = 5, persona_id: str = None) -> dict:
             "best_score": best_score,
             "top_answer": top_answer,
             "top_question": top_question,
+            "top_results": top_results,
         }
     except Exception as e:
         print(f"⚠️ 컨텍스트 검색 실패: {e}")
