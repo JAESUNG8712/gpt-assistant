@@ -8,6 +8,12 @@ import os
 from datetime import datetime
 from typing import Dict, List, Optional
 
+from ..utils.claude_client import (
+    generate_executive_summary as claude_executive_summary,
+    generate_action_plan as claude_action_plan,
+    is_available as claude_available,
+)
+
 
 REPORTS_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "reports")
 os.makedirs(REPORTS_DIR, exist_ok=True)
@@ -44,6 +50,17 @@ class ReportWriter:
     def run(self) -> str:
         """전체 레포트 생성"""
         print("📝 [레포트] 최종 보고서 작성 시작")
+
+        # Claude AI 강화 섹션 사전 생성
+        self._ai_executive = ""
+        self._ai_action = ""
+        if claude_available():
+            print("🤖 [레포트] Claude AI로 시황요약·액션플랜 생성 중...")
+            top_picks = self._get_top_picks_list()
+            self._ai_executive = claude_executive_summary(
+                self.economic, self.geo, self.analyses, self.risk_val, self.logic_val
+            )
+            self._ai_action = claude_action_plan(top_picks, self.risk_val, self.economic)
 
         sections = [
             self._header(),
@@ -89,15 +106,18 @@ class ReportWriter:
         kospi_val = kospi.get("close", "N/A")
         kospi_chg = kospi.get("change_pct", 0)
 
+        ai_section = ""
+        if self._ai_executive:
+            ai_section = f"\n\n🤖 AI 시황 분석 (Claude):\n{self._ai_executive}"
+        else:
+            ai_section = f"\n\n💡 오늘의 핵심 메시지:\n  {self._get_key_message()}"
+
         return f"""【 종합 요약 (Executive Summary) 】
 ─────────────────────────────────────────────────────────────────────
 ▸ KOSPI: {kospi_val:,.1f} ({'+' if kospi_chg >= 0 else ''}{kospi_chg:.2f}%)
 ▸ 분석 종목: {total}개  |  매수 의견: {buy_count}개  |  관망/매도: {total - buy_count}개
 ▸ 포트폴리오 평균 리스크: {avg_risk:.0f}/100 ({portfolio_risk.get('포트폴리오위험수준', 'N/A')})
-▸ 지정학 리스크: {geo_risk.get('종합지정학리스크', 'N/A')}/100 ({geo_risk.get('수준', 'N/A')})
-
-💡 오늘의 핵심 메시지:
-  {self._get_key_message()}"""
+▸ 지정학 리스크: {geo_risk.get('종합지정학리스크', 'N/A')}/100 ({geo_risk.get('수준', 'N/A')}){ai_section}"""
 
     def _get_key_message(self) -> str:
         portfolio_risk = self.risk_val.get("_포트폴리오리스크", {})
@@ -320,6 +340,9 @@ class ReportWriter:
                 lines.append(f"  주요리스크: {' / '.join(opinion.get('주요리스크', []))}")
             if logic.get("검증이슈"):
                 lines.append(f"  ⚠️ 검증이슈: {' / '.join(logic.get('검증이슈', []))}")
+            ai_text = opinion.get("AI분석", "")
+            if ai_text:
+                lines.append(f"  🤖 AI분석: {ai_text}")
 
         return "\n".join(lines)
 
@@ -380,8 +403,15 @@ class ReportWriter:
         lines = ["【 오늘의 행동 계획 (Action Plan) 】",
                  "─────────────────────────────────────────────────────────────────────"]
 
-        if top_buys:
+        if self._ai_action:
+            lines.append("🤖 AI 액션 플랜 (Claude):")
+            lines.append(self._ai_action)
+            lines.append("")
+            lines.append("■ 매수 검토 종목 (규칙 기반):")
+        else:
             lines.append("■ 매수 검토 종목:")
+
+        if top_buys:
             for name, data in top_buys:
                 timing = data.get("매매시점", {})
                 intrinsic = data.get("내재가치", {})
@@ -400,6 +430,21 @@ class ReportWriter:
             lines.append(f"  🔍 {item}")
 
         return "\n".join(lines)
+
+    def _get_top_picks_list(self) -> list:
+        ranked = sorted(
+            self.analyses.items(),
+            key=lambda x: x[1].get("매매시점", {}).get("종합점수", 0),
+            reverse=True,
+        )
+        return [
+            {
+                "종목명": name,
+                "목표주가": data.get("투자의견", {}).get("목표주가", 0),
+                "의견": data.get("투자의견", {}).get("투자등급", "N/A"),
+            }
+            for name, data in ranked[:5]
+        ]
 
     def _footer(self) -> str:
         return f"""{'─'*70}

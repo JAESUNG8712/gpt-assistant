@@ -7,6 +7,8 @@ import math
 from datetime import datetime
 from typing import Dict, List, Optional
 
+from ..utils.claude_client import analyze_stock_opinion, is_available as claude_available
+
 
 class StockAnalyzer:
     """🔍 상세 분석 담당"""
@@ -44,6 +46,12 @@ class StockAnalyzer:
             if "error" in data:
                 continue
             self.analyses[corp_name] = self._analyze_stock(corp_name, data)
+
+        if claude_available():
+            print("🤖 [상세분석] Claude API로 AI 투자의견 보강 중...")
+            for corp_name, result in self.analyses.items():
+                ai_opinion = analyze_stock_opinion(corp_name, result)
+                result["투자의견"]["AI분석"] = ai_opinion
 
         print(f"🔍 [상세분석] {len(self.analyses)}개 종목 분석 완료")
         return self.analyses
