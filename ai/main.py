@@ -43,6 +43,19 @@ mem.init_db()
 app = FastAPI(title="나만의 AI 어시스턴트")
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
+# ── 주식 분석 시스템 통합 ─────────────────────────────
+try:
+    from stock_analysis.stock_api import router as stock_router, start_scheduler
+    app.include_router(stock_router)
+
+    @app.on_event("startup")
+    async def startup_scheduler():
+        start_scheduler(app)
+
+    print("✅ 주식 분석 시스템 로드 완료 (/stock/* 엔드포인트)")
+except Exception as _e:
+    print(f"⚠️  주식 분석 시스템 로드 실패: {_e}")
+
 
 # ── 페르소나 ──────────────────────────────────────────
 
