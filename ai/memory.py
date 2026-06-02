@@ -228,11 +228,12 @@ def retrieve_best(query: str, n: int = 5, persona_id: str = None) -> dict:
                 '개년', '개월', '년도', '이후', '이전', '현재', '최신',
             }
             words = set(_re.findall(r'[가-힣]{2,}', user_q)) - STOP
-            match_words = set(_re.findall(r'[가-힣]{2,}', match_q)) - STOP
             # 검색어가 모두 일반어라 필터 후 빈 경우 → 통과 (LLM이 판단)
             if not words:
                 return True
-            return bool(words & match_words)
+            # 부분문자열 매칭: '징계' in '징계를 받을...' → True
+            # (집합 교집합은 조사 붙은 형태와 매칭 실패 — e.g., '징계' ≠ '징계를')
+            return any(w in match_q for w in words)
 
         for i, (q, a, score, meta) in enumerate(results):
             if meta.get("source") == "대화":

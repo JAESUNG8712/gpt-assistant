@@ -108,12 +108,17 @@ async def chat(req: ChatRequest):
     KB_DIRECT  = 0.15   # 이 점수 이상이면 KB로 직접 답변 (LLM 불필요)
     KB_CONTEXT = 0.10   # LLM 호출 시 컨텍스트 포함 기준
 
+    # company 페르소나: 학습된 규정에서만 답변, 외부 LLM 호출 금지
+    # 중간 신뢰도(0.10~0.14)도 KB 직접 서빙 (임계값 낮춤)
+    company_kb_only = (req.persona == "company")
+    kb_threshold = KB_CONTEXT if company_kb_only else KB_DIRECT
+
     # law.go.kr에서 실시간 원문이 온 경우 → LLM 보강 (law_ctx 우선)
     has_law_rt  = bool(law_ctx)
     # rag_ctx 비어있으면 overlap 필터 실패 → 직접서빙 금지
     # thinking 모드일 때는 항상 LLM을 거쳐야 <think> 블록이 생성됨
     kb_direct   = (
-        best_score >= KB_DIRECT
+        best_score >= kb_threshold
         and bool(rag_ctx)
         and req.thinking_mode == "off"
         and not has_law_rt
@@ -141,9 +146,27 @@ async def chat(req: ChatRequest):
             # ── 경로 A: 고신뢰 KB 직접 서빙 ──────────────
             elif kb_direct:
                 # LLM을 쓰지 않고 KB 답변을 그대로 스트리밍
+                answer = top_answer
+                # company 중간 신뢰도(0.10~0.14): 관련 규정 안내 prefix
+                if company_kb_only and best_score < KB_DIRECT:
+                    answer = "관련 규정을 안내해 드립니다.\n\n" + answer
                 chunk_size = 150
-                for i in range(0, len(top_answer), chunk_size):
-                    chunk = top_answer[i:i + chunk_size]
+                for i in range(0, len(answer), chunk_size):
+                    chunk = answer[i:i + chunk_size]
+                    collected.append(chunk)
+                    yield chunk
+                    await asyncio.sleep(0)
+
+            # ── 경로 C: company 페르소나 — 등록된 규정 없음 안내 ──
+            elif company_kb_only:
+                # KB에서 답을 찾지 못한 경우 LLM 호출 없이 안내 메시지만 반환
+                no_answer_msg = (
+                    "현재 등록된 규정에서 확인되지 않습니다.\n"
+                    "인사팀에 문의해 주세요."
+                )
+                chunk_size = 150
+                for i in range(0, len(no_answer_msg), chunk_size):
+                    chunk = no_answer_msg[i:i + chunk_size]
                     collected.append(chunk)
                     yield chunk
                     await asyncio.sleep(0)
