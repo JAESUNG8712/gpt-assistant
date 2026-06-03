@@ -83,6 +83,7 @@ def _format_company_results(top_results: list, best_score: float) -> str:
 
 
 from personas import PERSONAS, DEFAULT_PERSONA
+from stock_analysis.stock_api import router as stock_router
 
 mem.init_db()
 
@@ -91,6 +92,9 @@ mem.init_db()
 
 app = FastAPI(title="나만의 AI 어시스턴트")
 app.mount("/static", StaticFiles(directory="static"), name="static")
+
+# 주식 분석 라우터 등록 (/stock/...)
+app.include_router(stock_router)
 
 
 # ── 페르소나 ──────────────────────────────────────────
