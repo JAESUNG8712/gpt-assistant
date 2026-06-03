@@ -6,3 +6,7 @@ ddgs
 python-dotenv
 pdfminer.six
 python-docx
+aiohttp
+pykrx
+apscheduler
+anthropic
