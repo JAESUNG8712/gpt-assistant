@@ -11,6 +11,7 @@ from datetime import datetime
 from typing import Dict, List, Optional
 
 from .agents.team_config import TEAM_CONFIG, ANALYSIS_PIPELINE, REPORT_SCHEDULE
+from .utils.email_sender import send_report, is_configured as email_configured
 from .agents.financial_collector import FinancialCollector
 from .agents.economic_collector import EconomicCollector
 from .agents.global_collector import GeopoliticsCollector, IndustryCollector
@@ -85,6 +86,14 @@ class StockAnalysisPipeline:
 
             self.last_report = report
             self.last_run = datetime.now()
+
+            # 이메일 자동 발송
+            if email_configured():
+                self.log("\n── 이메일 발송 ──")
+                send_report(report)
+            else:
+                self.log("    (이메일 미설정 — EMAIL_SENDER/EMAIL_PASSWORD/EMAIL_RECIPIENTS 설정 시 자동 발송)")
+
             return report
 
         except Exception as e:
