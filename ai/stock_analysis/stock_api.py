@@ -13,6 +13,7 @@ from pydantic import BaseModel
 
 from .pipeline import StockAnalysisPipeline, run_once
 from .agents.team_config import TEAM_CONFIG, ANALYSIS_PIPELINE, REPORT_SCHEDULE
+from .utils.email_sender import send_report, is_configured as email_configured
 
 router = APIRouter(prefix="/stock", tags=["주식분석"])
 
@@ -170,6 +171,36 @@ def get_report_by_filename(filename: str):
         content = f.read()
 
     return PlainTextResponse(content=content, media_type="text/plain; charset=utf-8")
+
+
+@router.post("/email/send", summary="최근 보고서 즉시 이메일 발송")
+def send_latest_report_email():
+    """저장된 최근 보고서를 이메일로 즉시 발송"""
+    if not email_configured():
+        raise HTTPException(
+            status_code=503,
+            detail="이메일 미설정. EMAIL_SENDER / EMAIL_PASSWORD / EMAIL_RECIPIENTS 환경변수를 설정하세요."
+        )
+    if _last_report is None:
+        raise HTTPException(status_code=404, detail="보고서 없음. /stock/analyze 먼저 실행하세요.")
+
+    success = send_report(_last_report)
+    if success:
+        return {"상태": "발송완료", "메시지": "이메일 발송 성공"}
+    raise HTTPException(status_code=500, detail="이메일 발송 실패. 서버 로그를 확인하세요.")
+
+
+@router.get("/email/status", summary="이메일 설정 상태 확인")
+def get_email_status():
+    """이메일 자동 발송 설정 상태"""
+    import os
+    configured = email_configured()
+    return {
+        "이메일설정완료": configured,
+        "발신자": os.getenv("EMAIL_SENDER", "미설정"),
+        "수신자": [r.strip() for r in os.getenv("EMAIL_RECIPIENTS", "").split(",") if r.strip()],
+        "상태": "활성" if configured else "비활성 — EMAIL_SENDER/EMAIL_PASSWORD/EMAIL_RECIPIENTS 설정 필요",
+    }
 
 
 def _next_report_time() -> str:
