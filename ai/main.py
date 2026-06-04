@@ -1,8 +1,9 @@
 import asyncio
 import os
 import re
+import glob as _glob
 from fastapi import FastAPI, UploadFile, File, HTTPException
-from fastapi.responses import StreamingResponse, HTMLResponse, Response
+from fastapi.responses import StreamingResponse, HTMLResponse, Response, FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from dotenv import load_dotenv
@@ -123,6 +124,35 @@ def _is_stock_pipeline_request(text: str) -> bool:
     t = text.replace(" ", "")
     return any(kw.replace(" ", "") in t for kw in _STOCK_PIPELINE_KEYWORDS)
 
+_STOCK_REPORTS_DIR = os.path.join(os.path.dirname(__file__), "stock_analysis", "reports")
+
+def _load_latest_stock_report(max_chars: int = 8000) -> str:
+    """저장된 가장 최신 보고서를 로드해 컨텍스트로 반환"""
+    if not os.path.isdir(_STOCK_REPORTS_DIR):
+        return ""
+    files = sorted(
+        _glob.glob(os.path.join(_STOCK_REPORTS_DIR, "report_*.txt")),
+        reverse=True,
+    )
+    if not files:
+        return ""
+    try:
+        with open(files[0], encoding="utf-8") as f:
+            content = f.read()
+        return content[:max_chars]
+    except Exception:
+        return ""
+
+def _list_stock_reports() -> list:
+    """저장된 보고서 파일 목록 반환 (최신순)"""
+    if not os.path.isdir(_STOCK_REPORTS_DIR):
+        return []
+    files = sorted(
+        _glob.glob(os.path.join(_STOCK_REPORTS_DIR, "report_*.txt")),
+        reverse=True,
+    )
+    return [os.path.basename(f) for f in files[:20]]
+
 def _extract_stock_targets(text: str) -> list:
     """메시지에서 종목명 추출"""
     from stock_analysis.utils.dart_client import CORP_CODES
@@ -173,6 +203,10 @@ async def chat(req: ChatRequest):
         results = srch.search_and_learn(search_msg)
         search_ctx = srch.format_search_context(results)
 
+    # ── 주식 페르소나: 파이프라인 트리거 여부 판단 ────────
+    stock_mode = persona_features.get("stock_mode", False)
+    run_stock_pipeline = stock_mode and _is_stock_pipeline_request(user_msg)
+
     # ── 신뢰도 판정 ───────────────────────────────────────
     # CALC       : Python 직접 계산 결과 있음 → 계산 결과 직접 서빙
     # KB (≥0.15) : 로컬 KB 직접 서빙 — LLM 호출 없음
@@ -201,12 +235,14 @@ async def chat(req: ChatRequest):
     )
     no_local    = (best_score < KB_CONTEXT) and not has_law_rt and not direct_calc
 
-    history = mem.get_recent_messages(10)
-    history.append({"role": "user", "content": user_msg})
+    # stock 페르소나: 파이프라인 미실행 일반 Q&A → 저장된 보고서를 컨텍스트로 주입
+    stock_report_ctx = ""
+    if stock_mode and not run_stock_pipeline:
+        stock_report_ctx = _load_latest_stock_report()
 
-    # ── 주식 페르소나: 파이프라인 트리거 여부 판단 ────────
-    stock_mode = persona_features.get("stock_mode", False)
-    run_stock_pipeline = stock_mode and _is_stock_pipeline_request(user_msg)
+    # 페르소나별 대화 이력 분리: 다른 페르소나 대화가 현재 페르소나 LLM을 혼동시키는 것을 방지
+    history = mem.get_recent_messages(10, persona=req.persona)
+    history.append({"role": "user", "content": user_msg})
 
     async def generate():
         collected = []
@@ -280,16 +316,26 @@ async def chat(req: ChatRequest):
 
             # ── 경로 B: LLM 보강 (중간 신뢰도 or 법령 실시간) ──
             else:
-                raw_ctx = "\n\n".join(filter(None, [law_ctx, rag_ctx, search_ctx]))
-                # 질문 관련성 지시: 무관한 컨텍스트를 LLM이 포함하지 않도록 명시
-                if raw_ctx:
+                # stock 페르소나: 저장된 보고서를 우선 컨텍스트로 사용
+                if stock_report_ctx:
+                    raw_ctx = stock_report_ctx
                     context = (
-                        f"[주의: 아래 참고 자료 중 사용자 질문 '{search_msg[:60]}'"
-                        f"와 직접 관련된 내용만 사용하세요. 질문 주제와 다른 내용(다른 법 조항, 다른 HR 주제 등)은 답변에 포함하지 마세요.]\n\n"
+                        f"[아래는 가장 최근 주식 분석 보고서입니다. "
+                        f"사용자 질문 '{search_msg[:60]}'에 관련된 내용을 이 보고서에서 찾아 답변하세요. "
+                        f"보고서에 없는 내용은 전문가 지식으로 보완하세요.]\n\n"
                         + raw_ctx
                     )
                 else:
-                    context = ""
+                    raw_ctx = "\n\n".join(filter(None, [law_ctx, rag_ctx, search_ctx]))
+                    # 질문 관련성 지시: 무관한 컨텍스트를 LLM이 포함하지 않도록 명시
+                    if raw_ctx:
+                        context = (
+                            f"[주의: 아래 참고 자료 중 사용자 질문 '{search_msg[:60]}'"
+                            f"와 직접 관련된 내용만 사용하세요. 질문 주제와 다른 내용(다른 법 조항, 다른 HR 주제 등)은 답변에 포함하지 마세요.]\n\n"
+                            + raw_ctx
+                        )
+                    else:
+                        context = ""
 
                 if no_local:
                     yield "> 📭 로컬 자료 없음 — AI 지식으로 답변 후 자동 학습합니다.\n\n"
@@ -585,6 +631,29 @@ async def backup_google_drive():
         raise HTTPException(400, result["error"])
     return result
 
+
+# ── 주식 보고서 다운로드 ──────────────────────────────
+
+@app.get("/stock/reports/list")
+def stock_reports_list():
+    """저장된 주식 분석 보고서 목록"""
+    files = _list_stock_reports()
+    return {"보고서목록": files, "총개수": len(files)}
+
+@app.get("/stock/download/{filename}")
+def stock_report_download(filename: str):
+    """주식 분석 보고서 파일 다운로드"""
+    if not filename.startswith("report_") or ".." in filename:
+        raise HTTPException(status_code=400, detail="잘못된 파일명")
+    filepath = os.path.join(_STOCK_REPORTS_DIR, filename)
+    if not os.path.exists(filepath):
+        raise HTTPException(status_code=404, detail="파일 없음")
+    return FileResponse(
+        filepath,
+        media_type="text/plain; charset=utf-8",
+        filename=filename,
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{filename}"},
+    )
 
 # ── 모델 정보 & 메인 UI ───────────────────────────────
 
