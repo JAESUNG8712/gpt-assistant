@@ -136,6 +136,10 @@ _LOWPRICE_KEYWORDS = [
     "만원 미만", "만원미만", "저가주", "소액주", "저평가 주", "저평가주",
     "싼 주식", "싼주식", "10000원 이하", "1만원 이하", "1만원미만",
     "저평가 종목", "저평가종목", "저평가 찾아", "저평가찾아",
+    "저평가된 종목", "저평가된종목", "저평가된 항목", "저평가된항목",
+    "저평가 항목", "저평가항목", "저평가 주식", "저평가주식",
+    "저평가 발굴", "저평가발굴", "저평가 추천", "저평가추천",
+    "숨겨진 종목", "숨겨진종목", "가치주", "소형주 저평가",
 ]
 
 def _is_stock_pipeline_request(text: str) -> bool:
@@ -454,15 +458,18 @@ async def chat(req: ChatRequest):
 
             # ── 경로 B: LLM 보강 (중간 신뢰도 or 법령 실시간) ──
             else:
-                # stock 페르소나: 저장된 보고서를 우선 컨텍스트로 사용
-                if stock_report_ctx:
-                    raw_ctx = stock_report_ctx
-                    context = (
-                        f"[아래는 가장 최근 주식 분석 보고서입니다. "
-                        f"사용자 질문 '{search_msg[:60]}'에 관련된 내용을 이 보고서에서 찾아 답변하세요. "
-                        f"보고서에 없는 내용은 전문가 지식으로 보완하세요.]\n\n"
-                        + raw_ctx
-                    )
+                if stock_mode:
+                    # stock 페르소나: 타 페르소나 KB 오염 차단
+                    # 저장된 보고서가 있으면 그것만 사용, 없으면 컨텍스트 없이 전문가 지식으로 답변
+                    if stock_report_ctx:
+                        context = (
+                            f"[아래는 가장 최근 주식 분석 보고서입니다. "
+                            f"사용자 질문 '{search_msg[:60]}'에 관련된 내용을 이 보고서에서 찾아 답변하세요. "
+                            f"보고서에 없는 내용은 전문가 주식 지식으로 보완하세요.]\n\n"
+                            + stock_report_ctx
+                        )
+                    else:
+                        context = ""
                 else:
                     raw_ctx = "\n\n".join(filter(None, [law_ctx, rag_ctx, search_ctx]))
                     # 질문 관련성 지시: 무관한 컨텍스트를 LLM이 포함하지 않도록 명시
