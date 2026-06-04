@@ -479,7 +479,10 @@
     </div>
     <div class="sidebar-body">
       <div class="sidebar-section" id="stock-reports-section" style="display:none">
-        <label>📥 분석 보고서 다운로드</label>
+        <label>📈 인기 종목 자동 수집</label>
+        <div id="popular-stocks-info" style="font-size:11px;color:#888;margin:4px 0">KRX 거래대금 상위 종목 자동 등록</div>
+        <button class="sidebar-btn" onclick="refreshPopularStocks()" id="btn-popular-refresh">🔄 인기 종목 갱신</button>
+        <label style="margin-top:10px">📥 분석 보고서 다운로드</label>
         <div id="stock-reports-list" style="margin-top:6px">
           <span style="font-size:12px;color:#888">보고서 로딩 중...</span>
         </div>
@@ -1280,6 +1283,34 @@
   }
 
   // ── 직접 다운로드 백업 ───────────────────
+  // ── 인기 종목 자동 수집 ──────────────────
+  async function refreshPopularStocks() {
+    const btn = document.getElementById('btn-popular-refresh');
+    const info = document.getElementById('popular-stocks-info');
+    if (btn) { btn.disabled = true; btn.textContent = '⏳ 수집 중...'; }
+    try {
+      const r = await fetch('/stock/popular/sync', { method: 'POST' });
+      const d = await r.json();
+      if (d['오류']) {
+        if (info) info.textContent = '❌ ' + d['오류'];
+        return;
+      }
+      const added = d['추가종목'] || [];
+      const total = d['총종목수'] || 0;
+      const time = d['갱신시각'] || '';
+      if (info) info.innerHTML =
+        `✅ 총 ${total}개 종목 등록 | ${time}<br>` +
+        (added.length > 0
+          ? `신규 추가: ${added.slice(0,8).join(', ')}${added.length > 8 ? ' 외 ' + (added.length-8) + '개' : ''}`
+          : '새로 추가된 종목 없음 (이미 최신)');
+      showToast(`✅ 인기 종목 ${total}개 등록 완료`);
+    } catch(e) {
+      if (info) info.textContent = '❌ 수집 실패';
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = '🔄 인기 종목 갱신'; }
+    }
+  }
+
   // ── 주식 보고서 다운로드 ─────────────────
   async function refreshStockReports() {
     const container = document.getElementById('stock-reports-list');

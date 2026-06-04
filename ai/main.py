@@ -690,6 +690,14 @@ async def backup_google_drive():
 
 # ── 주식 보고서 다운로드 ──────────────────────────────
 
+@app.post("/stock/popular/sync")
+async def stock_popular_sync(top_n: int = 50):
+    """KRX 거래대금 상위 종목 강제 갱신 (백그라운드 아님)"""
+    from stock_analysis.utils.popular_stocks import refresh_popular_stocks
+    result = refresh_popular_stocks(top_n=top_n, force=True)
+    return result
+
+
 @app.get("/stock/reports/list")
 def stock_reports_list():
     """저장된 주식 분석 보고서 목록"""

@@ -14,8 +14,15 @@ from pydantic import BaseModel
 from .pipeline import StockAnalysisPipeline, run_once
 from .agents.team_config import TEAM_CONFIG, ANALYSIS_PIPELINE, REPORT_SCHEDULE
 from .utils.email_sender import send_report, is_configured as email_configured
+from .utils.popular_stocks import refresh_popular_stocks, is_cache_fresh
 
 router = APIRouter(prefix="/stock", tags=["주식분석"])
+
+# 서버 시작 시 인기 종목 자동 등록 (캐시 신선하면 재사용)
+try:
+    refresh_popular_stocks(top_n=50, force=False)
+except Exception:
+    pass
 
 _pipeline: Optional[StockAnalysisPipeline] = None
 _analysis_running = False
@@ -189,6 +196,27 @@ def get_email_status():
         "발신자": os.getenv("EMAIL_SENDER", "미설정"),
         "수신자": [r.strip() for r in os.getenv("EMAIL_RECIPIENTS", "").split(",") if r.strip()],
         "상태": "활성" if configured else "비활성",
+    }
+
+
+@router.post("/popular/refresh", summary="인기 종목 강제 갱신")
+def refresh_popular(top_n: int = 50):
+    """KRX 거래대금 기준 상위 종목을 새로 수집해서 분석 대상에 자동 등록"""
+    result = refresh_popular_stocks(top_n=top_n, force=True)
+    return result
+
+
+@router.get("/popular", summary="현재 등록된 인기 종목 목록")
+def get_popular_stocks():
+    """자동 수집된 인기 종목 + 캐시 상태 조회"""
+    from .utils.popular_stocks import load_cache
+    from .utils.dart_client import CORP_CODES
+    cached, updated_at = load_cache()
+    return {
+        "인기종목": list(cached.keys()),
+        "총등록종목수": len(CORP_CODES),
+        "캐시갱신시각": updated_at or "미수집",
+        "캐시유효": is_cache_fresh(),
     }
 
 
