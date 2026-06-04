@@ -19,6 +19,39 @@ REPORTS_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "reports"
 os.makedirs(REPORTS_DIR, exist_ok=True)
 
 
+def _fmt_num(val, fmt=",", fallback="N/A"):
+    """값이 숫자이면 포맷, 아니면 fallback 반환"""
+    try:
+        v = float(val)
+        if fmt == ",":
+            return f"{v:,.0f}"
+        elif fmt == ",.1f":
+            return f"{v:,.1f}"
+        elif fmt == ".2f":
+            return f"{v:.2f}"
+        elif fmt == ".1f":
+            return f"{v:.1f}"
+        elif fmt == ".0f":
+            return f"{v:.0f}"
+        return str(v)
+    except (TypeError, ValueError):
+        return fallback if val in (None, "", "N/A") else str(val)
+
+
+def _fmt_chg(val, fmt=".2f"):
+    """등락률/변화 값 포맷 (부호 포함)"""
+    try:
+        v = float(val)
+        sign = "+" if v >= 0 else ""
+        if fmt == ".2f":
+            return f"{sign}{v:.2f}%"
+        elif fmt == ".1f":
+            return f"{sign}{v:.1f}%"
+        return f"{sign}{v}%"
+    except (TypeError, ValueError):
+        return str(val) if val not in (None, "") else "N/A"
+
+
 class ReportWriter:
     """📝 최종 레포트 작성자"""
 
@@ -110,7 +143,7 @@ class ReportWriter:
 
         return f"""【 종합 요약 (Executive Summary) 】
 ─────────────────────────────────────────────────────────────────────
-▸ KOSPI: {kospi_val:,.1f} ({'+' if kospi_chg >= 0 else ''}{kospi_chg:.2f}%)
+▸ KOSPI: {_fmt_num(kospi_val, ",.1f")} ({_fmt_chg(kospi_chg)})
 ▸ 분석 종목: {total}개  |  매수 의견: {buy_count}개  |  관망/매도: {total - buy_count}개
 ▸ 포트폴리오 평균 리스크: {avg_risk:.0f}/100 ({portfolio_risk.get('포트폴리오위험수준', 'N/A')})
 ▸ 지정학 리스크: {geo_risk.get('종합지정학리스크', 'N/A')}/100 ({geo_risk.get('수준', 'N/A')}){ai_section}"""
@@ -165,19 +198,19 @@ class ReportWriter:
   한미 금리차: {interest.get('한미금리차', 'N/A')}%p
 
 ■ 환율·물가
-  원달러: {usdkrw.get('현재', 'N/A'):,}원 ({usdkrw.get('방향', '')}
+  원달러: {_fmt_num(usdkrw.get('현재'), ",")}원 ({usdkrw.get('방향', '')}
     주요요인: {', '.join(usdkrw.get('주요요인', []))})
   한국 CPI: {kr_cpi.get('전년동월비', 'N/A')}% (핵심 {kr_cpi.get('코어CPI', 'N/A')}%)
   미국 CPI: {us_cpi.get('전년동월비', 'N/A')}% — {us_cpi.get('코멘트', '')}
 
 ■ 글로벌 지수
-  S&P500: {sp500.get('현재', 'N/A'):,} ({'+' if (sp500.get('전일대비_pct', 0) or 0) >= 0 else ''}{sp500.get('전일대비_pct', 0):.2f}%)
-  나스닥: {nasdaq.get('현재', 'N/A'):,} ({'+' if (nasdaq.get('전일대비_pct', 0) or 0) >= 0 else ''}{nasdaq.get('전일대비_pct', 0):.2f}%)
+  S&P500: {_fmt_num(sp500.get('현재'), ",")} ({_fmt_chg(sp500.get('전일대비_pct', 0))})
+  나스닥: {_fmt_num(nasdaq.get('현재'), ",")} ({_fmt_chg(nasdaq.get('전일대비_pct', 0))})
   VIX (공포지수): {vix.get('현재', 'N/A')} → {vix.get('수준', '')} ({vix.get('코멘트', '')})
 
 ■ 원자재
   WTI 원유: ${wti.get('현재', 'N/A')}/배럴 ({wti.get('방향', '')})
-  금: ${gold.get('현재', 'N/A'):,}/온스 ({gold.get('코멘트', '')})
+  금: ${_fmt_num(gold.get('현재'), ",")}/온스 ({gold.get('코멘트', '')})
 
 ■ 지정학·무역
   미중관계: {geo_issues.get('현황', 'N/A')}
