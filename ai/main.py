@@ -112,6 +112,24 @@ class ChatRequest(BaseModel):
     use_search: bool = False
     thinking_mode: str = "off"  # "off" | "prompt" | "deep"
 
+# ── 주식 분석 파이프라인 트리거 키워드 ──────────────────
+_STOCK_PIPELINE_KEYWORDS = [
+    "분석 보고서", "보고서 생성", "보고서 만들어", "보고서만들어", "전체 분석", "분석 실행",
+    "종목 분석해", "분석해줘", "분석 부탁", "분석 시작", "지금 분석",
+    "리포트", "report", "오늘 장", "오늘 분석",
+]
+
+def _is_stock_pipeline_request(text: str) -> bool:
+    t = text.replace(" ", "")
+    return any(kw.replace(" ", "") in t for kw in _STOCK_PIPELINE_KEYWORDS)
+
+def _extract_stock_targets(text: str) -> list:
+    """메시지에서 종목명 추출"""
+    from stock_analysis.utils.dart_client import CORP_CODES
+    found = [name for name in CORP_CODES if name in text]
+    return found if found else None
+
+
 @app.post("/chat")
 async def chat(req: ChatRequest):
     user_msg = req.message.strip()
@@ -186,11 +204,42 @@ async def chat(req: ChatRequest):
     history = mem.get_recent_messages(10)
     history.append({"role": "user", "content": user_msg})
 
+    # ── 주식 페르소나: 파이프라인 트리거 여부 판단 ────────
+    stock_mode = persona_features.get("stock_mode", False)
+    run_stock_pipeline = stock_mode and _is_stock_pipeline_request(user_msg)
+
     async def generate():
         collected = []
         try:
+            # ── 경로 STOCK: 주식 분석 파이프라인 실행 ────────
+            if run_stock_pipeline:
+                from stock_analysis.pipeline import run_once as stock_run_once
+                targets = _extract_stock_targets(user_msg)
+                notice = (
+                    f"📊 **주식 분석 파이프라인 실행 중...**\n"
+                    f"{'종목: ' + ', '.join(targets) if targets else '기본 15개 종목'} 분석\n"
+                    f"⏳ 30~60초 소요됩니다.\n\n"
+                )
+                for ch in notice:
+                    collected.append(ch)
+                    yield ch
+                    await asyncio.sleep(0)
+
+                try:
+                    report = await stock_run_once(targets)
+                    chunk_size = 200
+                    for i in range(0, len(report), chunk_size):
+                        chunk = report[i:i + chunk_size]
+                        collected.append(chunk)
+                        yield chunk
+                        await asyncio.sleep(0)
+                except Exception as e:
+                    err = f"\n\n❌ 분석 오류: {e}"
+                    collected.append(err)
+                    yield err
+
             # ── 경로 CALC: Python 직접 계산 결과 있음 ────────
-            if direct_calc:
+            elif direct_calc:
                 # 계산 결과를 바로 스트리밍 (LLM 불필요)
                 chunk_size = 150
                 for i in range(0, len(direct_calc), chunk_size):
