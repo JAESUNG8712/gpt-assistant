@@ -190,10 +190,13 @@ def _summarize_stock_report(report: str, targets: list) -> str:
     """전체 보고서에서 핵심 요약만 추출해 채팅용 답변 생성"""
     lines = report.splitlines()
     filename = _list_stock_reports()[0] if _list_stock_reports() else None
-    download_hint = (
-        f"\n\n📥 **상세 보고서 다운로드**: 사이드바 → '분석 보고서 다운로드' → `{filename}`"
-        if filename else ""
-    )
+    if filename:
+        download_hint = (
+            f"\n\n---\n"
+            f"[⬇️ 상세 분석 보고서 전체 다운로드 ({filename})](/stock/download/{filename})"
+        )
+    else:
+        download_hint = ""
 
     # 요약 섹션(Executive Summary) 추출
     summary_lines = []
