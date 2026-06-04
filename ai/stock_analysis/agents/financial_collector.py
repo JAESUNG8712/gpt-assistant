@@ -16,6 +16,7 @@ from ..utils.krx_client import (
     get_stock_price, get_investor_trading,
     get_market_valuation, get_short_selling,
 )
+from ..utils.securities_report import get_all_reports
 
 
 class FinancialCollector:
@@ -56,6 +57,7 @@ class FinancialCollector:
             tasks["수급"] = get_investor_trading(ticker, days=30)
             tasks["밸류에이션"] = get_market_valuation(ticker)
             tasks["공매도"] = get_short_selling(ticker, days=15)
+            tasks["증권사리포트"] = get_all_reports(ticker, corp_name)
 
         results = {}
         if tasks:

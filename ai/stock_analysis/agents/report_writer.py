@@ -98,6 +98,7 @@ class ReportWriter:
             self._executive_summary(),
             self._market_overview(),
             self._top_picks(),
+            self._securities_reports_section(),
             self._investor_flow(),
             self._sector_analysis(),
             self._detailed_stock_analysis(),
@@ -158,6 +159,42 @@ class ReportWriter:
             return "중립적 시장 — 섹터 선별, 분할 매수 전략 권장"
         else:
             return "리스크 주의 구간 — 비중 축소 및 현금 확보 권장"
+
+    def _securities_reports_section(self) -> str:
+        """수집된 증권사 리포트 컨센서스 섹션"""
+        lines = [
+            "【 증권사 애널리스트 리포트 컨센서스 】",
+            "─" * 65,
+        ]
+        found = False
+        for name, data in self.financial.items():
+            brokerage = data.get("증권사리포트", {})
+            if not brokerage or isinstance(brokerage, Exception):
+                continue
+            reports = brokerage.get("reports", [])
+            consensus = brokerage.get("consensus", {})
+            if not reports:
+                continue
+            found = True
+            lines += [
+                f"",
+                f"▶ {name}",
+                f"  컨센서스 목표주가: {consensus.get('평균목표주가','N/A')} "
+                f"(최고 {consensus.get('최고목표주가','N/A')} / 최저 {consensus.get('최저목표주가','N/A')})",
+                f"  수집 리포트: {consensus.get('리포트수',0)}건 | 의견분포: {consensus.get('의견분포',{})}",
+            ]
+            for r in reports[:4]:
+                firm = r.get("증권사","")
+                title = r.get("제목","")[:35]
+                date = r.get("날짜","")
+                tp = r.get("목표주가","")
+                op = r.get("투자의견","")
+                lines.append(f"    [{date}] {firm:<10} {op:<6} TP:{tp:<10} {title}")
+
+        if not found:
+            lines.append("  수집된 리포트 없음 (네이버 금융 연결 확인 필요)")
+
+        return "\n".join(lines)
 
     def _market_overview(self) -> str:
         eco = self.economic
