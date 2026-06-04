@@ -160,6 +160,60 @@ def _extract_stock_targets(text: str) -> list:
     return found if found else None
 
 
+def _summarize_stock_report(report: str, targets: list) -> str:
+    """전체 보고서에서 핵심 요약만 추출해 채팅용 답변 생성"""
+    lines = report.splitlines()
+    filename = _list_stock_reports()[0] if _list_stock_reports() else None
+    download_hint = (
+        f"\n\n📥 **상세 보고서 다운로드**: 사이드바 → '분석 보고서 다운로드' → `{filename}`"
+        if filename else ""
+    )
+
+    # 요약 섹션(Executive Summary) 추출
+    summary_lines = []
+    in_summary = False
+    for line in lines:
+        if "Executive Summary" in line or "종합 요약" in line:
+            in_summary = True
+        if in_summary:
+            summary_lines.append(line)
+            # 다음 섹션이 시작되면 종료
+            if len(summary_lines) > 3 and line.startswith("【") and "Executive Summary" not in line:
+                break
+
+    # 요청 종목 관련 섹션 추출
+    target_lines = []
+    if targets:
+        current_target = None
+        for line in lines:
+            for t in targets:
+                if t in line and ("【" in line or "■" in line or "▶" in line):
+                    current_target = t
+                    target_lines.append(line)
+                    break
+            else:
+                if current_target and target_lines:
+                    target_lines.append(line)
+                    # 5줄이면 다음 종목으로
+                    if len(target_lines) > 8:
+                        current_target = None
+
+    # 조합
+    parts = []
+    if summary_lines:
+        parts.append("\n".join(summary_lines[:15]).strip())
+    if target_lines:
+        parts.append("\n".join(target_lines[:20]).strip())
+
+    if parts:
+        body = "\n\n".join(parts)
+    else:
+        # fallback: 처음 30줄
+        body = "\n".join(lines[:30])
+
+    return body + download_hint
+
+
 @app.post("/chat")
 async def chat(req: ChatRequest):
     user_msg = req.message.strip()
@@ -251,9 +305,10 @@ async def chat(req: ChatRequest):
             if run_stock_pipeline:
                 from stock_analysis.pipeline import run_once as stock_run_once
                 targets = _extract_stock_targets(user_msg)
+                label = "종목: " + ", ".join(targets) if targets else "기본 15개 종목"
                 notice = (
                     f"📊 **주식 분석 파이프라인 실행 중...**\n"
-                    f"{'종목: ' + ', '.join(targets) if targets else '기본 15개 종목'} 분석\n"
+                    f"{label} 분석\n"
                     f"⏳ 30~60초 소요됩니다.\n\n"
                 )
                 for ch in notice:
@@ -263,9 +318,10 @@ async def chat(req: ChatRequest):
 
                 try:
                     report = await stock_run_once(targets)
-                    chunk_size = 200
-                    for i in range(0, len(report), chunk_size):
-                        chunk = report[i:i + chunk_size]
+                    summary = _summarize_stock_report(report, targets)
+                    chunk_size = 150
+                    for i in range(0, len(summary), chunk_size):
+                        chunk = summary[i:i + chunk_size]
                         collected.append(chunk)
                         yield chunk
                         await asyncio.sleep(0)
