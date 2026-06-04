@@ -110,6 +110,16 @@
     .msg-bubble ul, .msg-bubble ol { padding-left: 18px; margin: 4px 0; }
     .msg-bubble li { margin: 2px 0; }
     .msg-bubble blockquote { border-left: 3px solid var(--persona-color); padding-left: 10px; color: var(--text-dim); margin: 6px 0; }
+    .msg-bubble a { color: var(--persona-color); text-decoration: underline; }
+    .msg-bubble a.dl-btn {
+      display: inline-flex; align-items: center; gap: 6px;
+      margin: 8px 0; padding: 8px 16px;
+      background: var(--persona-color); color: #fff;
+      border-radius: 8px; font-weight: 600; font-size: 0.9em;
+      text-decoration: none; cursor: pointer;
+      transition: opacity .15s;
+    }
+    .msg-bubble a.dl-btn:hover { opacity: 0.85; }
     .search-on-badge { font-size: 0.68rem; background: #1a3a1a; color: #4caf50; border: 1px solid #2e7d32; padding: 2px 8px; border-radius: 10px; margin-left: 6px; }
     .gemini-badge {
       font-size: 0.68rem; background: #0d1f3c; color: #7baaf7;
@@ -479,14 +489,14 @@
     </div>
     <div class="sidebar-body">
       <div class="sidebar-section" id="stock-reports-section" style="display:none">
-        <label>📈 인기 종목 자동 수집</label>
-        <div id="popular-stocks-info" style="font-size:11px;color:#888;margin:4px 0">KRX 거래대금 상위 종목 자동 등록</div>
-        <button class="sidebar-btn" onclick="refreshPopularStocks()" id="btn-popular-refresh">🔄 인기 종목 갱신</button>
-        <label style="margin-top:10px">📥 분석 보고서 다운로드</label>
+        <label>📥 분석 보고서 다운로드</label>
         <div id="stock-reports-list" style="margin-top:6px">
           <span style="font-size:12px;color:#888">보고서 로딩 중...</span>
         </div>
         <button class="sidebar-btn" onclick="refreshStockReports()" style="margin-top:6px">🔄 목록 새로고침</button>
+        <label style="margin-top:14px">📈 인기 종목 자동 수집</label>
+        <div id="popular-stocks-info" style="font-size:11px;color:#888;margin:4px 0">KRX 거래대금 상위 종목 자동 등록</div>
+        <button class="sidebar-btn" onclick="refreshPopularStocks()" id="btn-popular-refresh">🔄 인기 종목 갱신</button>
       </div>
       <div class="sidebar-section">
         <label>📊 학습 현황</label>
@@ -981,6 +991,15 @@
     // 수평선
     s = s.replace(/^---+$/gm, '<hr>');
 
+    // 마크다운 링크 [text](url) — 다운로드 링크는 버튼으로, 일반 링크는 a 태그로
+    s = s.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, label, url) => {
+      if (url.startsWith('/stock/download/')) {
+        const filename = url.split('/').pop();
+        return `<a href="${url}" download="${filename}" class="dl-btn">⬇️ ${label}</a>`;
+      }
+      return `<a href="${url}" target="_blank" rel="noopener">${label}</a>`;
+    });
+
     // - 불릿 리스트
     s = s.replace(/^- (.+)$/gm, '<li>$1</li>');
     s = s.replace(/(<li>.*<\/li>\n?)+/g, m => `<ul>${m}</ul>`);
@@ -1323,11 +1342,15 @@
         container.innerHTML = '<span style="font-size:12px;color:#888">저장된 보고서 없음<br>분석 파이프라인 실행 후 보고서가 생성됩니다.</span>';
         return;
       }
-      container.innerHTML = files.map(f => {
+      container.innerHTML = files.map((f, i) => {
         const label = f.replace('report_', '').replace('.txt', '').replace(/_/g, ' ');
-        return `<div style="display:flex;align-items:center;gap:6px;margin-bottom:4px">
-          <span style="font-size:11px;color:#555;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${f}">${label}</span>
-          <button onclick="downloadStockReport('${f}')" style="font-size:11px;padding:2px 7px;border:1px solid #c62828;color:#c62828;background:#fff5f5;border-radius:4px;cursor:pointer;white-space:nowrap">⬇️ 다운로드</button>
+        const isLatest = i === 0;
+        return `<div style="margin-bottom:6px;padding:6px 8px;background:${isLatest ? '#1a0a0a' : 'transparent'};border:1px solid ${isLatest ? '#c62828' : '#333'};border-radius:6px">
+          <div style="font-size:11px;color:${isLatest ? '#ff8a8a' : '#888'};margin-bottom:4px">${isLatest ? '🆕 최신 ' : ''}${label}</div>
+          <a href="/stock/download/${f}" download="${f}"
+             style="display:inline-flex;align-items:center;gap:4px;padding:4px 10px;background:#c62828;color:#fff;border-radius:5px;font-size:12px;font-weight:600;text-decoration:none;cursor:pointer">
+            ⬇️ 다운로드
+          </a>
         </div>`;
       }).join('');
     } catch(e) {
