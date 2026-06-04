@@ -120,6 +120,17 @@ _STOCK_PIPELINE_KEYWORDS = [
     "리포트", "report", "오늘 장", "오늘 분석",
 ]
 
+# ── 증권사 리포트 단독 조회 트리거 키워드 ──────────────────
+_BROKER_REPORT_KEYWORDS = [
+    "증권사 리포트", "증권사리포트", "애널리스트 리포트", "애널리스트리포트",
+    "증권 리포트", "리서치 리포트", "목표주가 컨센서스", "컨센서스 조회",
+    "증권사 의견", "증권사의견", "애널리스트 의견", "리포트 찾아",
+]
+
+def _is_broker_report_request(text: str) -> bool:
+    t = text.replace(" ", "")
+    return any(kw.replace(" ", "") in t for kw in _BROKER_REPORT_KEYWORDS)
+
 # ── 저가주 스크리닝 트리거 키워드 ────────────────────────
 _LOWPRICE_KEYWORDS = [
     "만원 미만", "만원미만", "저가주", "소액주", "저평가 주", "저평가주",
@@ -272,6 +283,7 @@ async def chat(req: ChatRequest):
     stock_mode = persona_features.get("stock_mode", False)
     run_stock_pipeline = stock_mode and _is_stock_pipeline_request(user_msg)
     run_lowprice_screen = stock_mode and _is_lowprice_screen_request(user_msg)
+    run_broker_report = stock_mode and _is_broker_report_request(user_msg)
 
     # ── 신뢰도 판정 ───────────────────────────────────────
     # CALC       : Python 직접 계산 결과 있음 → 계산 결과 직접 서빙
@@ -341,6 +353,38 @@ async def chat(req: ChatRequest):
                     err = f"\n\n❌ 분석 오류: {e}"
                     collected.append(err)
                     yield err
+
+            # ── 경로 BROKER: 증권사 리포트 단독 조회 ──────────
+            elif run_broker_report:
+                targets = _extract_stock_targets(user_msg)
+                if not targets:
+                    msg = "🔍 조회할 종목명을 함께 입력해주세요.\n예: '삼성전자 증권사 리포트 찾아줘'"
+                    collected.append(msg)
+                    yield msg
+                else:
+                    notice = f"📋 **{', '.join(targets)} 증권사 리포트 수집 중...**\n⏳ 잠시 기다려주세요.\n\n"
+                    for ch in notice:
+                        collected.append(ch)
+                        yield ch
+                        await asyncio.sleep(0)
+                    try:
+                        from stock_analysis.utils.securities_report import get_all_reports
+                        from stock_analysis.utils.dart_client import STOCK_CODE_MAP
+                        results = []
+                        for name in targets:
+                            ticker = next((k for k, v in STOCK_CODE_MAP.items() if v == name), "")
+                            r = await get_all_reports(ticker, name)
+                            results.append(r.get("summary", f"{name}: 리포트 없음"))
+                        output = "\n\n".join(results)
+                        for i in range(0, len(output), 200):
+                            chunk = output[i:i+200]
+                            collected.append(chunk)
+                            yield chunk
+                            await asyncio.sleep(0)
+                    except Exception as e:
+                        err = f"\n\n❌ 리포트 수집 오류: {e}"
+                        collected.append(err)
+                        yield err
 
             # ── 경로 LOWPRICE: 저평가 저가주 스크리닝 ────────
             elif run_lowprice_screen:
