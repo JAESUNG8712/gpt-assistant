@@ -497,6 +497,9 @@
         <label style="margin-top:14px">📈 인기 종목 자동 수집</label>
         <div id="popular-stocks-info" style="font-size:11px;color:#888;margin:4px 0">KRX 거래대금 상위 종목 자동 등록</div>
         <button class="sidebar-btn" onclick="refreshPopularStocks()" id="btn-popular-refresh">🔄 인기 종목 갱신</button>
+        <label style="margin-top:14px">🧹 데이터 초기화</label>
+        <button class="sidebar-btn danger" onclick="resetStockHistory()" style="margin-top:4px">🗑️ 주식 대화 이력 초기화</button>
+        <div style="font-size:10px;color:#888;margin-top:3px">답변 오류 반복 시 초기화 후 재시도</div>
       </div>
       <div class="sidebar-section">
         <label>📊 학습 현황</label>
@@ -1420,6 +1423,20 @@
       const d = await r.json();
       showToast(`✅ Drive 업로드 완료: ${d.filename}`);
     } catch { showToast('⚠️ Google Drive 백업 실패'); }
+  }
+
+  // ── 주식 페르소나 오염 데이터 초기화 ──────
+  async function resetStockHistory() {
+    if (!confirm('주식 페르소나의 대화 이력과 자동학습 데이터를 초기화할까요?\n(답변이 계속 꼬일 때 사용)')) return;
+    try {
+      const r = await fetch('/history/stock/reset', { method: 'DELETE' });
+      const d = await r.json();
+      clearMessages();
+      await loadStats();
+      showToast('✅ 주식 대화 이력 초기화 완료');
+    } catch(e) {
+      showToast('❌ 초기화 실패');
+    }
   }
 
   // ── 대화 초기화 ──────────────────────────

@@ -118,6 +118,9 @@ _STOCK_PIPELINE_KEYWORDS = [
     "분석 보고서", "보고서 생성", "보고서 만들어", "보고서만들어", "전체 분석", "분석 실행",
     "종목 분석해", "분석해줘", "분석 부탁", "분석 시작", "지금 분석",
     "리포트", "report", "오늘 장", "오늘 분석",
+    "오늘 주요", "오늘주요", "증감 사유", "증감사유", "주가 현황", "주가현황",
+    "시장 현황", "시장현황", "장 현황", "장현황", "주식 현황", "주식현황",
+    "시황 분석", "시황분석", "오늘 시황", "오늘시황", "현재 시장", "현재시장",
 ]
 
 # ── 증권사 리포트 단독 조회 트리거 키워드 ──────────────────
@@ -506,7 +509,9 @@ async def chat(req: ChatRequest):
             mem.save_message("assistant", ai_reply_clean or ai_reply, persona=req.persona)
 
             # ── 자동 학습: 로컬 자료 없었던 경우 영구 저장 ──
-            if no_local and ai_reply_clean.strip():
+            # stock 페르소나는 실시간 시장 데이터 기반이어야 하므로 자동 학습 제외
+            # (LLM 일반 지식이 KB에 누적되면 이후 오염 답변 재발 위험)
+            if no_local and ai_reply_clean.strip() and not stock_mode:
                 mem.auto_learn(user_msg, ai_reply_clean, persona=req.persona)
                 yield "\n\n---\n> ✅ 자동 학습 완료 — 다음부터는 로컬 저장 자료로 답변합니다."
 
@@ -528,6 +533,21 @@ def history(limit: int = 30, persona: str = None):
 def clear_history(persona: str = None):
     mem.clear_history(persona=persona)
     return {"ok": True}
+
+@app.delete("/history/stock/reset")
+def reset_stock_history():
+    """stock 페르소나 대화 이력 + 자동학습 KB 완전 초기화 (오염 제거용)"""
+    import sqlite3
+    mem.clear_history(persona="stock")
+    try:
+        with sqlite3.connect(mem.DB_PATH) as con:
+            con.execute(
+                "DELETE FROM learned_knowledge WHERE persona='stock' AND source IN ('auto_learn','learned')"
+            )
+            con.commit()
+    except Exception:
+        pass
+    return {"ok": True, "message": "stock 페르소나 대화 이력 및 자동학습 데이터 초기화 완료"}
 
 
 # ── 파일 텍스트 추출 유틸 ──────────────────────────────
