@@ -478,6 +478,13 @@
       <p id="sb-desc">전용 AI 어시스턴트</p>
     </div>
     <div class="sidebar-body">
+      <div class="sidebar-section" id="stock-reports-section" style="display:none">
+        <label>📥 분석 보고서 다운로드</label>
+        <div id="stock-reports-list" style="margin-top:6px">
+          <span style="font-size:12px;color:#888">보고서 로딩 중...</span>
+        </div>
+        <button class="sidebar-btn" onclick="refreshStockReports()" style="margin-top:6px">🔄 목록 새로고침</button>
+      </div>
       <div class="sidebar-section">
         <label>📊 학습 현황</label>
         <div class="stats-grid">
@@ -795,6 +802,14 @@
     if (resumeRow) {
       const hasFileAnalysis = currentPersona.features && currentPersona.features.file_analysis;
       resumeRow.classList.toggle('visible', !!hasFileAnalysis);
+    }
+
+    // 주식 보고서 다운로드 섹션 표시/숨김 (stock_mode feature)
+    const stockSection = document.getElementById('stock-reports-section');
+    if (stockSection) {
+      const hasStockMode = currentPersona.features && currentPersona.features.stock_mode;
+      stockSection.style.display = hasStockMode ? '' : 'none';
+      if (hasStockMode) refreshStockReports();
     }
 
     // 이전 대화 이력 불러오기
@@ -1265,6 +1280,40 @@
   }
 
   // ── 직접 다운로드 백업 ───────────────────
+  // ── 주식 보고서 다운로드 ─────────────────
+  async function refreshStockReports() {
+    const container = document.getElementById('stock-reports-list');
+    if (!container) return;
+    try {
+      const r = await fetch('/stock/reports/list');
+      const d = await r.json();
+      const files = d['보고서목록'] || [];
+      if (files.length === 0) {
+        container.innerHTML = '<span style="font-size:12px;color:#888">저장된 보고서 없음<br>분석 파이프라인 실행 후 보고서가 생성됩니다.</span>';
+        return;
+      }
+      container.innerHTML = files.map(f => {
+        const label = f.replace('report_', '').replace('.txt', '').replace(/_/g, ' ');
+        return `<div style="display:flex;align-items:center;gap:6px;margin-bottom:4px">
+          <span style="font-size:11px;color:#555;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${f}">${label}</span>
+          <button onclick="downloadStockReport('${f}')" style="font-size:11px;padding:2px 7px;border:1px solid #c62828;color:#c62828;background:#fff5f5;border-radius:4px;cursor:pointer;white-space:nowrap">⬇️ 다운로드</button>
+        </div>`;
+      }).join('');
+    } catch(e) {
+      container.innerHTML = '<span style="font-size:12px;color:#c00">목록 불러오기 실패</span>';
+    }
+  }
+
+  function downloadStockReport(filename) {
+    const a = document.createElement('a');
+    a.href = `/stock/download/${filename}`;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    showToast('⬇️ 보고서 다운로드 중...');
+  }
+
   function backupDownload() {
     showToast('⬇️ 백업 파일 다운로드 중...');
     const a = document.createElement('a');
