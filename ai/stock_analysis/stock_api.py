@@ -199,6 +199,25 @@ def get_email_status():
     }
 
 
+@router.get("/screen/lowprice", summary="저평가 저가주 스크리닝 (만원 미만)", response_class=PlainTextResponse)
+async def screen_lowprice(
+    market: str = Query("ALL", description="KOSPI / KOSDAQ / ALL"),
+    max_price: int = Query(10000, description="주가 상한 (원)"),
+    max_pbr: float = Query(1.2, description="PBR 상한"),
+    max_per: float = Query(20.0, description="PER 상한"),
+    top_n: int = Query(20, description="결과 상위 N개"),
+):
+    """pykrx 기반 저평가 저가주 스크리닝"""
+    from .utils.low_price_screener import screen_low_price_stocks, format_report
+    try:
+        params = {"max_price": max_price, "max_pbr": max_pbr, "max_per": max_per, "top_n": top_n}
+        candidates = screen_low_price_stocks(market=market, params=params)
+        report = format_report(candidates)
+        return PlainTextResponse(content=report, media_type="text/plain; charset=utf-8")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.post("/popular/refresh", summary="인기 종목 강제 갱신")
 def refresh_popular(top_n: int = 50):
     """KRX 거래대금 기준 상위 종목을 새로 수집해서 분석 대상에 자동 등록"""

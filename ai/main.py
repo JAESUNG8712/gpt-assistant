@@ -120,9 +120,20 @@ _STOCK_PIPELINE_KEYWORDS = [
     "리포트", "report", "오늘 장", "오늘 분석",
 ]
 
+# ── 저가주 스크리닝 트리거 키워드 ────────────────────────
+_LOWPRICE_KEYWORDS = [
+    "만원 미만", "만원미만", "저가주", "소액주", "저평가 주", "저평가주",
+    "싼 주식", "싼주식", "10000원 이하", "1만원 이하", "1만원미만",
+    "저평가 종목", "저평가종목", "저평가 찾아", "저평가찾아",
+]
+
 def _is_stock_pipeline_request(text: str) -> bool:
     t = text.replace(" ", "")
     return any(kw.replace(" ", "") in t for kw in _STOCK_PIPELINE_KEYWORDS)
+
+def _is_lowprice_screen_request(text: str) -> bool:
+    t = text.replace(" ", "")
+    return any(kw.replace(" ", "") in t for kw in _LOWPRICE_KEYWORDS)
 
 _STOCK_REPORTS_DIR = os.path.join(os.path.dirname(__file__), "stock_analysis", "reports")
 
@@ -257,9 +268,10 @@ async def chat(req: ChatRequest):
         results = srch.search_and_learn(search_msg)
         search_ctx = srch.format_search_context(results)
 
-    # ── 주식 페르소나: 파이프라인 트리거 여부 판단 ────────
+    # ── 주식 페르소나: 파이프라인 / 스크리닝 트리거 여부 판단 ────────
     stock_mode = persona_features.get("stock_mode", False)
     run_stock_pipeline = stock_mode and _is_stock_pipeline_request(user_msg)
+    run_lowprice_screen = stock_mode and _is_lowprice_screen_request(user_msg)
 
     # ── 신뢰도 판정 ───────────────────────────────────────
     # CALC       : Python 직접 계산 결과 있음 → 계산 결과 직접 서빙
@@ -327,6 +339,32 @@ async def chat(req: ChatRequest):
                         await asyncio.sleep(0)
                 except Exception as e:
                     err = f"\n\n❌ 분석 오류: {e}"
+                    collected.append(err)
+                    yield err
+
+            # ── 경로 LOWPRICE: 저평가 저가주 스크리닝 ────────
+            elif run_lowprice_screen:
+                notice = "🔍 **저평가 저가주 스크리닝 중...**\nKOSPI + KOSDAQ 전체 종목 스캔 (만원 미만 / PBR < 1.2 / PER 0.5~20)\n⏳ 30~60초 소요됩니다.\n\n"
+                for ch in notice:
+                    collected.append(ch)
+                    yield ch
+                    await asyncio.sleep(0)
+                try:
+                    from stock_analysis.utils.low_price_screener import (
+                        screen_low_price_stocks, format_report
+                    )
+                    candidates = await asyncio.get_event_loop().run_in_executor(
+                        None, screen_low_price_stocks, "ALL", None
+                    )
+                    report = format_report(candidates)
+                    chunk_size = 200
+                    for i in range(0, len(report), chunk_size):
+                        chunk = report[i:i + chunk_size]
+                        collected.append(chunk)
+                        yield chunk
+                        await asyncio.sleep(0)
+                except Exception as e:
+                    err = f"\n\n❌ 스크리닝 오류: {e}"
                     collected.append(err)
                     yield err
 
