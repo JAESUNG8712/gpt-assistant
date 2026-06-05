@@ -189,7 +189,7 @@ def _build_consensus(reports: List[Dict]) -> Dict:
     for r in reports:
         # 목표주가 숫자 추출
         price_str = r.get("목표주가", "")
-        nums = re.findall(r'\d[\d,]+', price_str.replace(",", ""))
+        nums = re.findall(r'[\d,]+', price_str.replace(",", ""))
         if nums:
             try:
                 prices.append(int(nums[0]))

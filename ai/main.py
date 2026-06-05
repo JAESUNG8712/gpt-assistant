@@ -183,10 +183,9 @@ def _list_stock_reports() -> list:
     return [os.path.basename(f) for f in files[:20]]
 
 def _extract_stock_targets(text: str) -> list:
-    """메시지에서 종목명 추출"""
+    """메시지에서 종목명 추출 — 없으면 빈 리스트 반환"""
     from stock_analysis.utils.dart_client import CORP_CODES
-    found = [name for name in CORP_CODES if name in text]
-    return found if found else None
+    return [name for name in CORP_CODES if name in text]
 
 
 def _summarize_stock_report(report: str, targets: list) -> str:
@@ -338,8 +337,8 @@ async def chat(req: ChatRequest):
             # ── 경로 STOCK: 주식 분석 파이프라인 실행 ────────
             if run_stock_pipeline:
                 from stock_analysis.pipeline import run_once as stock_run_once
-                targets = _extract_stock_targets(user_msg)
-                label = "종목: " + ", ".join(targets) if targets else "기본 15개 종목"
+                targets = _extract_stock_targets(user_msg) or None
+                label = ("종목: " + ", ".join(targets)) if targets else "기본 15개 종목"
                 notice = (
                     f"📊 **주식 분석 파이프라인 실행 중...**\n"
                     f"{label} 분석\n"

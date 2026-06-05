@@ -44,7 +44,7 @@ async def get_stock_price(ticker: str, days: int = 30) -> dict:
             "high": int(latest["고가"]),
             "low": int(latest["저가"]),
             "volume": int(latest["거래량"]),
-            "change_pct": round((latest["종가"] - prev["종가"]) / prev["종가"] * 100, 2),
+            "change_pct": round((latest["종가"] - prev["종가"]) / prev["종가"] * 100, 2) if prev["종가"] else 0.0,
             "history": {
                 str(idx.strftime("%Y-%m-%d")): {
                     "close": int(row["종가"]),
@@ -142,7 +142,7 @@ async def get_index_data(index: str = "KOSPI", days: int = 30) -> dict:
             "index": index,
             "date": df.index[-1].strftime("%Y-%m-%d"),
             "close": float(latest["종가"]),
-            "change_pct": round((latest["종가"] - prev["종가"]) / prev["종가"] * 100, 2),
+            "change_pct": round((latest["종가"] - prev["종가"]) / prev["종가"] * 100, 2) if prev["종가"] else 0.0,
             "volume": int(latest["거래량"]),
         }
     except Exception as e:

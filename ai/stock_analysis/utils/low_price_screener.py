@@ -105,7 +105,7 @@ def screen_low_price_stocks(
                         "시가총액억": round(marcap / 1e8, 0),
                         "거래량": volume,
                         "저평가점수": score,
-                        "괴리율": round((bps - close) / bps * 100, 1) if bps > close else 0,
+                        "괴리율": round((bps - close) / bps * 100, 1) if bps > 0 and bps > close else 0,
                     })
                 except Exception:
                     continue
