@@ -1242,6 +1242,11 @@
         bubble.innerHTML = renderMd(full);
       }
 
+      // 주식 분석 완료 시 보고서 목록 자동 새로고침
+      if (currentPersona.features && currentPersona.features.stock_mode && full.includes('report_')) {
+        setTimeout(() => refreshStockReports(), 1000);
+      }
+
       // 피드백 버튼 (thinking 모드면 answer 부분만 사용)
       const feedbackText = thinkingMode !== 'off'
         ? (parseThinking(full).answer || full)
