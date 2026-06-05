@@ -186,8 +186,18 @@
     .msg.user .msg-bubble { background: var(--persona-color); border-radius: 14px 4px 14px 14px; }
     .msg.ai  .msg-bubble { background: var(--ai-bg); border: 1px solid var(--border); border-radius: 4px 14px 14px 14px; }
 
-    .typing .msg-bubble::after { content: '▋'; animation: blink 0.7s infinite; }
-    @keyframes blink { 0%,100%{opacity:1}50%{opacity:0} }
+    .typing .msg-bubble { min-width: 56px; }
+    .typing-dots { display: inline-flex; gap: 4px; align-items: center; padding: 2px 0; }
+    .typing-dots span {
+      width: 7px; height: 7px; border-radius: 50%; background: var(--text-dim);
+      animation: dotBounce 1.2s infinite ease-in-out;
+    }
+    .typing-dots span:nth-child(2) { animation-delay: 0.2s; }
+    .typing-dots span:nth-child(3) { animation-delay: 0.4s; }
+    @keyframes dotBounce {
+      0%,60%,100% { transform: translateY(0); opacity: 0.4; }
+      30% { transform: translateY(-6px); opacity: 1; }
+    }
 
     /* ── 웰컴 ────────────────────── */
     .welcome { text-align: center; color: var(--text-dim); margin: auto; padding: 32px 20px; }
@@ -414,6 +424,23 @@
     }
     .code-copy-inline-btn:hover { background: var(--border); color: var(--text); }
 
+    /* ── 주식 빠른 액션 바 ────────────────────── */
+    .stock-quick-bar {
+      display: none; padding: 6px 12px;
+      background: linear-gradient(135deg, rgba(198,40,40,0.08), rgba(198,40,40,0.03));
+      border-bottom: 1px solid rgba(198,40,40,0.2);
+      gap: 6px; flex-wrap: wrap; align-items: center;
+    }
+    .stock-quick-bar.visible { display: flex; }
+    .stock-chip {
+      padding: 4px 10px; background: rgba(198,40,40,0.12);
+      border: 1px solid rgba(198,40,40,0.3); border-radius: 14px;
+      font-size: 0.73rem; color: #ef9a9a; cursor: pointer;
+      transition: all 0.15s; white-space: nowrap;
+    }
+    .stock-chip:hover { background: #c62828; color: #fff; border-color: #c62828; }
+    .stock-quick-label { font-size: 0.68rem; color: rgba(198,40,40,0.7); font-weight: 700; white-space: nowrap; }
+
     /* ── 이력서 분석 ────────────────────────── */
     .resume-row {
       display: none; align-items: center; gap: 8px;
@@ -489,17 +516,19 @@
     </div>
     <div class="sidebar-body">
       <div class="sidebar-section" id="stock-reports-section" style="display:none">
-        <label>📥 분석 보고서 다운로드</label>
-        <div id="stock-reports-list" style="margin-top:6px">
+        <label>📥 분석 보고서</label>
+        <div id="stock-reports-list" style="margin-top:6px;max-height:180px;overflow-y:auto">
           <span style="font-size:12px;color:#888">보고서 로딩 중...</span>
         </div>
-        <button class="sidebar-btn" onclick="refreshStockReports()" style="margin-top:6px">🔄 목록 새로고침</button>
-        <label style="margin-top:14px">📈 인기 종목 자동 수집</label>
-        <div id="popular-stocks-info" style="font-size:11px;color:#888;margin:4px 0">KRX 거래대금 상위 종목 자동 등록</div>
+        <button class="sidebar-btn" onclick="refreshStockReports()" id="btn-report-refresh" style="margin-top:6px">🔄 목록 새로고침</button>
+        <div style="height:1px;background:var(--border);margin:12px 0"></div>
+        <label>📈 인기 종목 수집</label>
+        <div id="popular-stocks-info" style="font-size:10px;color:#888;margin:4px 0 6px;line-height:1.5">KRX 거래대금 상위 종목 자동 등록</div>
         <button class="sidebar-btn" onclick="refreshPopularStocks()" id="btn-popular-refresh">🔄 인기 종목 갱신</button>
-        <label style="margin-top:14px">🧹 데이터 초기화</label>
+        <div style="height:1px;background:var(--border);margin:12px 0"></div>
+        <label>🧹 초기화</label>
         <button class="sidebar-btn danger" onclick="resetStockHistory()" style="margin-top:4px">🗑️ 주식 대화 이력 초기화</button>
-        <div style="font-size:10px;color:#888;margin-top:3px">답변 오류 반복 시 초기화 후 재시도</div>
+        <div style="font-size:10px;color:#888;margin-top:3px;line-height:1.4">답변 오류 반복 시 초기화 후 재시도</div>
       </div>
       <div class="sidebar-section">
         <label>📊 학습 현황</label>
@@ -563,6 +592,16 @@
     <!-- 페르소나 선택 탭 -->
     <div class="persona-bar" id="persona-bar"></div>
 
+    <!-- 주식 빠른 액션 바 -->
+    <div class="stock-quick-bar" id="stock-quick-bar">
+      <span class="stock-quick-label">📈 빠른 분석:</span>
+      <span class="stock-chip" onclick="quickAsk('오늘 시황 분석해줘')">오늘 시황</span>
+      <span class="stock-chip" onclick="quickAsk('만원 미만 저평가 주식 찾아줘')">저평가 발굴</span>
+      <span class="stock-chip" onclick="quickAsk('삼성전자 분석해줘')">삼성전자</span>
+      <span class="stock-chip" onclick="quickAsk('SK하이닉스 분석해줘')">SK하이닉스</span>
+      <span class="stock-chip" onclick="quickAsk('전체 주식 분석 보고서 생성')">전체 보고서</span>
+    </div>
+
     <div class="messages" id="messages">
       <div class="welcome" id="welcome">
         <div class="persona-welcome-icon" id="welcome-icon">🤖</div>
@@ -597,8 +636,9 @@
       <div class="input-row">
         <textarea id="msg-input" placeholder="예: 희망퇴직 판례, 야간수당 계산, 연차 며칠..." rows="1"
           onkeydown="handleKey(event)" oninput="autoResize(this)"></textarea>
-        <button class="send-btn" id="send-btn" onclick="sendMessage()">↑</button>
+        <button class="send-btn" id="send-btn" onclick="sendMessage()" title="전송 (Enter)">↑</button>
       </div>
+      <div style="text-align:right;font-size:0.65rem;color:var(--text-dim);margin-top:4px;opacity:0.6">Enter 전송 &nbsp;·&nbsp; Shift+Enter 줄바꿈</div>
     </div>
   </main>
 </div>
@@ -714,6 +754,18 @@
       { label: '경비 처리 절차', search: false },
       { label: '출장 신청 방법', search: false },
     ],
+    stock: [
+      { label: '오늘 시황 분석해줘', search: false },
+      { label: '저평가 종목 찾아줘', search: false },
+      { label: '삼성전자 분석해줘', search: false },
+      { label: '만원 미만 저평가 주식', search: false },
+    ],
+    resume: [
+      { label: '이력서 첨삭 받기', search: false },
+      { label: '자기소개서 작성 팁', search: false },
+      { label: '면접 준비 방법', search: false },
+      { label: '연봉 협상 전략', search: false },
+    ],
   };
 
   // ── 페르소나별 검색 팁 (효과적인 검색어 예시) ─
@@ -757,6 +809,22 @@
       { label: '보안 정책', query: '정보 보안 규정' },
       { label: '급여 정책', query: '급여 지급 규정' },
       { label: '교육/훈련', query: '사내 교육 신청' },
+    ],
+    stock: [
+      { label: '시황 분석', query: '오늘 시황 분석해줘' },
+      { label: '저평가 발굴', query: '만원 미만 저평가 주식 찾아줘' },
+      { label: '삼성전자', query: '삼성전자 분석해줘' },
+      { label: 'SK하이닉스', query: 'SK하이닉스 분석해줘' },
+      { label: '수급 분석', query: '외국인 기관 수급 현황 분석' },
+      { label: '증권사 리포트', query: '삼성전자 증권사 리포트 찾아줘' },
+      { label: '전체 보고서', query: '전체 주식 분석 보고서 생성' },
+      { label: '거시경제', query: '금리 환율 현황 분석' },
+    ],
+    resume: [
+      { label: '첨삭 요청', query: '이력서 첨삭해줘' },
+      { label: '자소서 팁', query: '자기소개서 잘 쓰는 법' },
+      { label: '면접 준비', query: '면접 준비 어떻게 하나요' },
+      { label: '연봉 협상', query: '연봉 협상 전략 알려줘' },
     ],
   };
 
@@ -828,6 +896,25 @@
       if (hasStockMode) refreshStockReports();
     }
 
+    // 모바일: 페르소나 선택 후 사이드바 자동 닫기
+    if (window.innerWidth <= 680) closeSidebar();
+
+    // 주식 빠른 액션 바 표시/숨김
+    const stockBar = document.getElementById('stock-quick-bar');
+    if (stockBar) stockBar.style.display = (currentPersona.features && currentPersona.features.stock_mode) ? '' : 'none';
+
+    // placeholder 페르소나별 변경
+    const input = document.getElementById('msg-input');
+    const placeholders = {
+      hr: '예: 희망퇴직 판례, 야간수당 계산, 연차 며칠...',
+      dev: '예: FastAPI 서버 만드는 법, async 사용법...',
+      travel: '예: 제주도 3박4일 코스, 항공권 싸게 사는 법...',
+      company: '예: 연차 신청 방법, 재택근무 규정...',
+      stock: '예: 삼성전자 분석해줘, 오늘 시황, 저평가 종목...',
+      resume: '예: 이력서 첨삭, 면접 준비 방법...',
+    };
+    if (input) input.placeholder = placeholders[id] || '메시지를 입력하세요...';
+
     // 이전 대화 이력 불러오기
     await loadHistory();
     loadStats();
@@ -882,9 +969,10 @@
     div.className = `msg ${role}${isTyping ? ' typing' : ''}`;
     const searchBadge = (role === 'user' && useSearch)
       ? '<span class="search-on-badge">🌐 검색 포함</span>' : '';
+    const typingDots = `<div class="typing-dots"><span></span><span></span><span></span></div>`;
     div.innerHTML = `
       <div class="msg-avatar">${role === 'user' ? '👤' : currentPersona?.icon || '🤖'}</div>
-      <div class="msg-bubble">${role === 'user' ? escHtml(content) + searchBadge : (isTyping ? '' : renderMd(content))}</div>`;
+      <div class="msg-bubble">${role === 'user' ? escHtml(content) + searchBadge : (isTyping ? typingDots : renderMd(content))}</div>`;
     msgs.appendChild(div);
     msgs.scrollTop = msgs.scrollHeight;
     return div;
@@ -1201,7 +1289,7 @@
     closeResumeModal();
 
     // 사용자 메시지로 파일명 표시
-    addMessage('user', `📄 이력서 분석 요청: ${resumeSelectedFile.name}${jobDesc ? '\n지원 직무: ' + jobDesc : ''}`);
+    appendMsg('user', `📄 이력서 분석 요청: ${resumeSelectedFile.name}${jobDesc ? '\n지원 직무: ' + jobDesc : ''}`);
 
     // AI 응답 버블 생성
     const msgId = 'resume-analysis-' + Date.now();
@@ -1210,7 +1298,7 @@
     div.className = 'msg ai';
     div.id = msgId;
     div.innerHTML = `<div class="msg-avatar">${currentPersona ? currentPersona.icon : '📄'}</div>
-      <div class="msg-bubble" id="${msgId}-bubble"><span class="typing-dot">●</span><span class="typing-dot">●</span><span class="typing-dot">●</span></div>`;
+      <div class="msg-bubble" id="${msgId}-bubble"><div class="typing-dots"><span></span><span></span><span></span></div></div>`;
     msgs.appendChild(div);
     msgs.scrollTop = msgs.scrollHeight;
 
@@ -1237,7 +1325,7 @@
         const { done, value } = await reader.read();
         if (done) break;
         full += decoder.decode(value, { stream: true });
-        bubble.innerHTML = renderMarkdown(full);
+        bubble.innerHTML = renderMd(full);
         msgs.scrollTop = msgs.scrollHeight;
       }
       if (!full.trim()) bubble.textContent = '(분석 결과가 없습니다)';
@@ -1336,28 +1424,37 @@
   // ── 주식 보고서 다운로드 ─────────────────
   async function refreshStockReports() {
     const container = document.getElementById('stock-reports-list');
+    const btn = document.getElementById('btn-report-refresh');
     if (!container) return;
+    container.innerHTML = '<span style="font-size:11px;color:#888">⏳ 불러오는 중...</span>';
+    if (btn) { btn.disabled = true; btn.textContent = '⏳ 로딩 중...'; }
     try {
       const r = await fetch('/stock/reports/list');
       const d = await r.json();
       const files = d['보고서목록'] || [];
       if (files.length === 0) {
-        container.innerHTML = '<span style="font-size:12px;color:#888">저장된 보고서 없음<br>분석 파이프라인 실행 후 보고서가 생성됩니다.</span>';
+        container.innerHTML = `<div style="font-size:11px;color:#888;line-height:1.6;padding:8px;background:var(--surface2);border-radius:6px;border:1px dashed var(--border)">
+          📭 저장된 보고서 없음<br>
+          <span style="font-size:10px">"전체 보고서 생성" 또는<br>"분석해줘"로 생성하세요.</span>
+        </div>`;
         return;
       }
       container.innerHTML = files.map((f, i) => {
         const label = f.replace('report_', '').replace('.txt', '').replace(/_/g, ' ');
         const isLatest = i === 0;
-        return `<div style="margin-bottom:6px;padding:6px 8px;background:${isLatest ? '#1a0a0a' : 'transparent'};border:1px solid ${isLatest ? '#c62828' : '#333'};border-radius:6px">
-          <div style="font-size:11px;color:${isLatest ? '#ff8a8a' : '#888'};margin-bottom:4px">${isLatest ? '🆕 최신 ' : ''}${label}</div>
+        return `<div style="margin-bottom:5px;padding:6px 8px;background:${isLatest ? 'rgba(198,40,40,0.08)' : 'var(--surface2)'};border:1px solid ${isLatest ? '#c62828' : 'var(--border)'};border-radius:6px">
+          <div style="font-size:10px;color:${isLatest ? '#ef9a9a' : 'var(--text-dim)'};margin-bottom:4px">${isLatest ? '🆕 ' : ''}${label}</div>
           <a href="/stock/download/${f}" download="${f}"
-             style="display:inline-flex;align-items:center;gap:4px;padding:4px 10px;background:#c62828;color:#fff;border-radius:5px;font-size:12px;font-weight:600;text-decoration:none;cursor:pointer">
+             style="display:inline-flex;align-items:center;gap:4px;padding:4px 10px;background:${isLatest ? '#c62828' : 'var(--surface)'};border:1px solid ${isLatest ? '#c62828' : 'var(--border)'};color:${isLatest ? '#fff' : 'var(--text-dim)'};border-radius:5px;font-size:11px;font-weight:600;text-decoration:none;cursor:pointer;transition:all 0.15s"
+             onmouseover="this.style.opacity='0.8'" onmouseout="this.style.opacity='1'">
             ⬇️ 다운로드
           </a>
         </div>`;
       }).join('');
     } catch(e) {
-      container.innerHTML = '<span style="font-size:12px;color:#c00">목록 불러오기 실패</span>';
+      container.innerHTML = '<span style="font-size:11px;color:#f85149">❌ 목록 불러오기 실패</span>';
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = '🔄 목록 새로고침'; }
     }
   }
 

@@ -184,11 +184,11 @@ class ReportWriter:
                 f"  수집 리포트: {consensus.get('리포트수',0)}건 | 의견분포: {consensus.get('의견분포',{})}",
             ]
             for r in reports[:4]:
-                firm = r.get("증권사","")
-                title = r.get("제목","")[:35]
-                date = r.get("날짜","")
-                tp = r.get("목표주가","")
-                op = r.get("투자의견","")
+                firm = str(r.get("증권사") or "미상")[:10]
+                title = str(r.get("제목") or "")[:35]
+                date = str(r.get("날짜") or "날짜미상")
+                tp = str(r.get("목표주가") or "-")[:10]
+                op = str(r.get("투자의견") or "중립")[:6]
                 lines.append(f"    [{date}] {firm:<10} {op:<6} TP:{tp:<10} {title}")
 
         if not found:

@@ -209,6 +209,8 @@ class StockAnalyzer:
         return 100 - (100 / (1 + rs))
 
     def _calc_bollinger(self, closes: list, period: int = 20) -> Dict:
+        if not closes:
+            return {"upper": 0, "mid": 0, "lower": 0}
         data = closes[-period:] if len(closes) >= period else closes
         mid = sum(data) / len(data)
         variance = sum((x - mid) ** 2 for x in data) / len(data)
