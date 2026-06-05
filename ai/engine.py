@@ -271,7 +271,8 @@ class _Engine:
             return
 
         # q 필드 5배 가중치 부스트: q 토큰을 5번 반복 → q 키워드 일치 시 점수 대폭 상승
-        all_f = [_feat(' '.join([q]*5) + ' ' + a[:200]) for q, a, _ in self._qa]
+        # 답변 컨텍스트 200→400자로 확장 → 긴 답변 검색 정확도 향상
+        all_f = [_feat(' '.join([q]*5) + ' ' + a[:400]) for q, a, _ in self._qa]
 
         # IDF
         df: Dict[str, int] = defaultdict(int)
@@ -642,11 +643,19 @@ async def local_stream(
         response = _compose_with_context(query, context, persona)
     else:
         # 컨텍스트 없을 때: 지식베이스 TF-IDF 검색
+        # 최근 4턴(user+ai 각2회)을 검색 쿼리에 포함 → 대화 맥락 유지
         ctx_parts = [query]
+        turn_count = 0
         for m in reversed(messages[:-1]):
-            if m.get('role') == 'assistant':
-                ctx_parts.append(m['content'][:200])
+            if turn_count >= 4:
                 break
+            role = m.get('role', '')
+            if role == 'user':
+                ctx_parts.append(m['content'][:120])
+                turn_count += 1
+            elif role == 'assistant':
+                ctx_parts.append(m['content'][:150])
+                turn_count += 1
         search_q = ' '.join(ctx_parts)
 
         # 동적으로 추가된 내용은 엔진에 등록

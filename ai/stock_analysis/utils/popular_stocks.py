@@ -163,16 +163,16 @@ def fetch_popular_stocks(top_n: int = 50, market: str = "ALL") -> Tuple[Dict[str
     Returns: (결과 dict, 사용된 소스 이름)
     """
     # 1순위: pykrx
-    result = _fetch_via_pykrx(top_n, market)
-    if result:
-        return result, "pykrx"
+    pykrx_result = _fetch_via_pykrx(top_n, market)
+    if pykrx_result:
+        return pykrx_result, "pykrx"
 
     # 2순위: 네이버 금융
-    result = _fetch_via_naver(top_n)
-    if result:
-        return result, "네이버금융"
+    naver_result = _fetch_via_naver(top_n)
+    if naver_result:
+        return naver_result, "네이버금융"
 
-    # 3순위: 정적 목록
+    # 3순위: 정적 목록 (항상 성공)
     return dict(list(_STATIC_FALLBACK.items())[:top_n]), "정적목록"
 
 

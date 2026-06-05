@@ -354,7 +354,15 @@ def upsert_knowledge(question: str, answer: str, persona: str,
 
 
 def auto_learn(question: str, answer: str, persona: str = "hr"):
-    """자동 학습: Q&A 쌍을 KB에 영구 저장 — 동일 질문이 있으면 최신으로 업데이트"""
+    """자동 학습: 품질 검증 후 KB 영구 저장"""
+    # 품질 게이트 1: 너무 짧은 Q/A 제외
+    if len(question.strip()) < 8 or len(answer.strip()) < 60:
+        return
+    # 품질 게이트 2: 에러·오류 메시지 제외
+    lower_a = answer.lower()
+    if any(kw in lower_a for kw in ["traceback", "error:", "exception:", "오류 발생", "알 수 없는 오류"]):
+        return
+    # 품질 게이트 3: 기존 KB와 중복 여부 (이미 engine.py upsert에서 동일 질문 체크)
     upsert_knowledge(question, answer, persona, source="자동학습")
 
 
