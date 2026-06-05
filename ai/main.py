@@ -186,7 +186,19 @@ def _list_stock_reports() -> list:
 def _extract_stock_targets(text: str) -> list:
     """메시지에서 종목명 추출 — 없으면 빈 리스트 반환"""
     from stock_analysis.utils.dart_client import CORP_CODES
-    return [name for name in CORP_CODES if name in text]
+    # 공백 정규화: "LG 전자" → "LG전자" 매칭
+    text_norm = text.replace(" ", "").replace(" ", "")
+    # 긴 이름 우선 정렬 (구체적 매칭이 짧은 substring보다 먼저)
+    candidates = sorted(CORP_CODES.keys(), key=len, reverse=True)
+    matched, matched_norm = [], []
+    for name in candidates:
+        name_norm = name.replace(" ", "")
+        if name_norm in text_norm:
+            # 이미 매칭된 더 구체적인 이름의 부분집합이면 제외 ("LG" < "LG전자")
+            if not any(name_norm in m for m in matched_norm):
+                matched.append(name)
+                matched_norm.append(name_norm)
+    return matched
 
 
 def _summarize_stock_report(report: str, targets: list) -> str:
