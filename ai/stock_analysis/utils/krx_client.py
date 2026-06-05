@@ -1,9 +1,11 @@
 """
 KRX(한국거래소) 시세·투자자별 매매 동향 수집
-pykrx 라이브러리 활용
+pykrx → 네이버금융 스크래핑 → mock 순으로 fallback
 """
 
 import asyncio
+import re
+import time
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -12,6 +14,22 @@ try:
     HAS_PYKRX = True
 except ImportError:
     HAS_PYKRX = False
+
+try:
+    import requests as _requests
+    HAS_REQUESTS = True
+except ImportError:
+    HAS_REQUESTS = False
+
+_NAVER_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/120.0.0.0 Safari/537.36"
+    ),
+    "Referer": "https://finance.naver.com/",
+    "Accept-Language": "ko-KR,ko;q=0.9",
+}
 
 
 def get_today() -> str:
@@ -22,39 +40,160 @@ def get_date_before(days: int) -> str:
     return (datetime.now() - timedelta(days=days)).strftime("%Y%m%d")
 
 
-async def get_stock_price(ticker: str, days: int = 30) -> dict:
-    if not HAS_PYKRX:
-        return _mock_price_data(ticker)
+# ── 네이버 금융: 종목명 → ticker 자동 탐색 ─────────────────
 
+def lookup_ticker_by_name(name: str) -> Optional[str]:
+    """네이버 금융 자동완성 API로 종목명 → KRX 티커 변환"""
+    if not HAS_REQUESTS:
+        return None
     try:
-        end = get_today()
-        start = get_date_before(days)
-        df = krx_stock.get_market_ohlcv_by_date(start, end, ticker)
-        if df.empty:
-            return {"error": f"{ticker} 데이터 없음"}
+        name_norm = name.replace(" ", "")
+        url = "https://ac.stock.naver.com/ac"
+        resp = _requests.get(
+            url,
+            params={"q": name_norm, "target": "stock"},
+            headers=_NAVER_HEADERS,
+            timeout=6,
+        )
+        data = resp.json()
+        items = data.get("items", [])
+        for group in items:
+            for item in (group if isinstance(group, list) else []):
+                code = item.get("code", "")
+                item_name = item.get("name", "").replace(" ", "")
+                if code and len(code) == 6 and item_name == name_norm:
+                    return code
+        # 첫 번째 결과라도 반환
+        for group in items:
+            for item in (group if isinstance(group, list) else []):
+                code = item.get("code", "")
+                if code and len(code) == 6:
+                    return code
+    except Exception:
+        pass
+    return None
 
-        latest = df.iloc[-1]
-        prev = df.iloc[-2] if len(df) > 1 else df.iloc[-1]
+
+# ── 네이버 금융: 실시간 시세 스크래핑 ─────────────────────
+
+def _fetch_naver_price(ticker: str) -> dict:
+    """네이버 금융 시세 페이지에서 현재가·등락률·거래량 스크래핑"""
+    if not HAS_REQUESTS:
+        return {}
+    try:
+        url = "https://finance.naver.com/item/sise.naver"
+        resp = _requests.get(url, params={"code": ticker}, headers=_NAVER_HEADERS, timeout=8)
+        html = resp.content.decode("euc-kr", errors="replace")
+
+        def extract(pattern):
+            m = re.search(pattern, html)
+            return m.group(1).replace(",", "") if m else ""
+
+        now_val = extract(r'<strong[^>]*id="_nowVal"[^>]*>([\d,]+)<')
+        change_pct = extract(r'<span[^>]*id="_rate"[^>]*>([-\d.]+)<')
+        volume = extract(r'<strong[^>]*id="_quant"[^>]*>([\d,]+)<')
+        high = extract(r'고가</th>[^<]*<td[^>]*><span[^>]*>([\d,]+)<')
+        low = extract(r'저가</th>[^<]*<td[^>]*><span[^>]*>([\d,]+)<')
+
+        if not now_val:
+            return {}
+
+        close = int(now_val)
+        return {
+            "ticker": ticker,
+            "date": datetime.now().strftime("%Y-%m-%d"),
+            "close": close,
+            "open": close,
+            "high": int(high) if high else close,
+            "low": int(low) if low else close,
+            "volume": int(volume) if volume else 0,
+            "change_pct": float(change_pct) if change_pct else 0.0,
+            "_source": "naver",
+        }
+    except Exception:
+        return {}
+
+
+def _fetch_naver_valuation(ticker: str) -> dict:
+    """네이버 금융 종목 메인 페이지에서 PER·PBR·EPS·BPS 스크래핑"""
+    if not HAS_REQUESTS:
+        return {}
+    try:
+        url = "https://finance.naver.com/item/main.naver"
+        resp = _requests.get(url, params={"code": ticker}, headers=_NAVER_HEADERS, timeout=8)
+        html = resp.content.decode("euc-kr", errors="replace")
+
+        def extract(label):
+            pattern = rf'{label}</th>[^<]*<td[^>]*>([\d,.N/A]+)<'
+            m = re.search(pattern, html)
+            if m:
+                val = m.group(1).replace(",", "").strip()
+                try:
+                    return float(val)
+                except ValueError:
+                    return 0.0
+            return 0.0
+
+        per = extract("PER")
+        pbr = extract("PBR")
+        eps = extract("EPS")
+        bps = extract("BPS")
 
         return {
             "ticker": ticker,
-            "date": df.index[-1].strftime("%Y-%m-%d"),
-            "close": int(latest["종가"]),
-            "open": int(latest["시가"]),
-            "high": int(latest["고가"]),
-            "low": int(latest["저가"]),
-            "volume": int(latest["거래량"]),
-            "change_pct": round((latest["종가"] - prev["종가"]) / prev["종가"] * 100, 2) if prev["종가"] else 0.0,
-            "history": {
-                str(idx.strftime("%Y-%m-%d")): {
-                    "close": int(row["종가"]),
-                    "volume": int(row["거래량"]),
-                }
-                for idx, row in df.iterrows()
-            },
+            "date": datetime.now().strftime("%Y-%m-%d"),
+            "PER": per,
+            "PBR": pbr,
+            "EPS": eps,
+            "BPS": bps,
+            "DIV": 0.0,
+            "DPS": 0,
+            "_source": "naver",
         }
-    except Exception as e:
-        return {"error": str(e), "ticker": ticker}
+    except Exception:
+        return {}
+
+
+# ── 공개 API ───────────────────────────────────────────────
+
+async def get_stock_price(ticker: str, days: int = 30) -> dict:
+    if HAS_PYKRX:
+        try:
+            end = get_today()
+            start = get_date_before(days)
+            df = krx_stock.get_market_ohlcv_by_date(start, end, ticker)
+            if df.empty:
+                return {"error": f"{ticker} 데이터 없음"}
+
+            latest = df.iloc[-1]
+            prev = df.iloc[-2] if len(df) > 1 else df.iloc[-1]
+
+            return {
+                "ticker": ticker,
+                "date": df.index[-1].strftime("%Y-%m-%d"),
+                "close": int(latest["종가"]),
+                "open": int(latest["시가"]),
+                "high": int(latest["고가"]),
+                "low": int(latest["저가"]),
+                "volume": int(latest["거래량"]),
+                "change_pct": round((latest["종가"] - prev["종가"]) / prev["종가"] * 100, 2) if prev["종가"] else 0.0,
+                "history": {
+                    str(idx.strftime("%Y-%m-%d")): {
+                        "close": int(row["종가"]),
+                        "volume": int(row["거래량"]),
+                    }
+                    for idx, row in df.iterrows()
+                },
+            }
+        except Exception as e:
+            pass  # pykrx 실패 시 네이버로 fallback
+
+    # 네이버 금융 fallback
+    naver_data = await asyncio.get_event_loop().run_in_executor(None, _fetch_naver_price, ticker)
+    if naver_data:
+        return naver_data
+
+    return _mock_price_data(ticker)
 
 
 async def get_investor_trading(ticker: str, days: int = 20) -> dict:
@@ -97,29 +236,32 @@ async def get_investor_trading(ticker: str, days: int = 20) -> dict:
 
 
 async def get_market_valuation(ticker: str) -> dict:
-    if not HAS_PYKRX:
-        return _mock_valuation_data(ticker)
+    if HAS_PYKRX:
+        try:
+            today = get_today()
+            start = get_date_before(5)
+            df = krx_stock.get_market_fundamental_by_date(start, today, ticker)
+            if not df.empty:
+                latest = df.iloc[-1]
+                return {
+                    "ticker": ticker,
+                    "date": df.index[-1].strftime("%Y-%m-%d"),
+                    "PER": float(latest.get("PER", 0)),
+                    "PBR": float(latest.get("PBR", 0)),
+                    "EPS": float(latest.get("EPS", 0)),
+                    "BPS": float(latest.get("BPS", 0)),
+                    "DIV": float(latest.get("DIV", 0)),
+                    "DPS": float(latest.get("DPS", 0)),
+                }
+        except Exception:
+            pass
 
-    try:
-        today = get_today()
-        start = get_date_before(5)
-        df = krx_stock.get_market_fundamental_by_date(start, today, ticker)
-        if df.empty:
-            return {"error": "밸류에이션 데이터 없음"}
+    # 네이버 금융 fallback
+    naver_val = await asyncio.get_event_loop().run_in_executor(None, _fetch_naver_valuation, ticker)
+    if naver_val:
+        return naver_val
 
-        latest = df.iloc[-1]
-        return {
-            "ticker": ticker,
-            "date": df.index[-1].strftime("%Y-%m-%d"),
-            "PER": float(latest.get("PER", 0)),
-            "PBR": float(latest.get("PBR", 0)),
-            "EPS": float(latest.get("EPS", 0)),
-            "BPS": float(latest.get("BPS", 0)),
-            "DIV": float(latest.get("DIV", 0)),
-            "DPS": float(latest.get("DPS", 0)),
-        }
-    except Exception as e:
-        return {"error": str(e)}
+    return _mock_valuation_data(ticker)
 
 
 async def get_index_data(index: str = "KOSPI", days: int = 30) -> dict:
@@ -180,7 +322,7 @@ def _mock_price_data(ticker: str) -> dict:
         "low": 74_200,
         "volume": 15_234_567,
         "change_pct": 0.87,
-        "_note": "pykrx 미설치 — 샘플 데이터",
+        "_note": "데이터 수집 불가 — 샘플 데이터",
     }
 
 
@@ -205,7 +347,7 @@ def _mock_valuation_data(ticker: str) -> dict:
         "BPS": 62_500,
         "DIV": 2.5,
         "DPS": 1_440,
-        "_note": "pykrx 미설치 — 샘플 데이터",
+        "_note": "데이터 수집 불가 — 샘플 데이터",
     }
 
 

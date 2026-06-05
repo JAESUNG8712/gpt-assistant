@@ -15,6 +15,7 @@ from ..utils.dart_client import (
 from ..utils.krx_client import (
     get_stock_price, get_investor_trading,
     get_market_valuation, get_short_selling,
+    lookup_ticker_by_name,
 )
 from ..utils.securities_report import get_all_reports
 
@@ -45,6 +46,14 @@ class FinancialCollector:
     async def _collect_single(self, corp_name: str) -> Dict:
         corp_code = CORP_CODES.get(corp_name)
         ticker = next((k for k, v in STOCK_CODE_MAP.items() if v == corp_name), None)
+
+        # ticker가 없으면 네이버 금융 자동완성으로 탐색 (LG CNS 등 신규 상장 종목)
+        if not ticker:
+            found = lookup_ticker_by_name(corp_name)
+            if found:
+                ticker = found
+                STOCK_CODE_MAP[found] = corp_name  # 캐시에 등록
+                print(f"💡 [{corp_name}] 네이버에서 ticker 발견: {found}")
 
         tasks = {}
         if corp_code:
