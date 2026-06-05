@@ -1402,7 +1402,10 @@
       const r = await fetch('/stock/popular/sync', { method: 'POST' });
       const d = await r.json();
       if (d['오류']) {
-        if (info) info.textContent = '❌ ' + d['오류'];
+        const hint = d['힌트'] ? `\n💡 ${d['힌트']}` : '';
+        if (info) info.innerHTML =
+          `❌ ${d['오류']}${hint ? '<br><small style="color:#aaa">' + d['힌트'] + '</small>' : ''}`;
+        showToast('❌ KRX 데이터 수집 실패');
         return;
       }
       const added = d['추가종목'] || [];

@@ -18,12 +18,12 @@ _CACHE_TTL_HOURS = 24  # 캐시 유효시간
 
 
 def _get_recent_trading_date() -> str:
-    """최근 거래일 반환 (주말 건너뜀)"""
+    """최근 거래일 반환 (주말 건너뜀, 장 미개장 시 전일로 후퇴)"""
     dt = datetime.now()
-    # 오전 9시 이전이면 전전일부터 탐색
+    # 오전 9시 이전이면 전일부터 탐색
     if dt.hour < 9:
         dt -= timedelta(days=1)
-    for _ in range(7):
+    for _ in range(10):
         if dt.weekday() < 5:  # 월~금
             return dt.strftime("%Y%m%d")
         dt -= timedelta(days=1)
@@ -38,22 +38,55 @@ def fetch_popular_stocks(top_n: int = 50, market: str = "ALL") -> Dict[str, str]
     if not HAS_PYKRX:
         return {}
 
-    date = _get_recent_trading_date()
     result: Dict[str, str] = {}
+    errors = []
+
+    # 최근 영업일 최대 3일치 후퇴 시도 (공휴일 대응)
+    base_dt = datetime.now()
+    if base_dt.hour < 9:
+        base_dt -= timedelta(days=1)
+
+    candidate_dates = []
+    tmp = base_dt
+    for _ in range(10):
+        if tmp.weekday() < 5:
+            candidate_dates.append(tmp.strftime("%Y%m%d"))
+            if len(candidate_dates) >= 3:
+                break
+        tmp -= timedelta(days=1)
 
     markets = ["KOSPI", "KOSDAQ"] if market == "ALL" else [market]
-    for mkt in markets:
-        try:
-            df = krx_stock.get_market_trading_value_by_ticker(date, date, mkt)
-            if df is None or df.empty:
+
+    for date in candidate_dates:
+        if result:
+            break
+        for mkt in markets:
+            try:
+                # get_market_ohlcv_by_ticker: 단일 날짜 OHLCV + 거래대금 반환
+                df = krx_stock.get_market_ohlcv_by_ticker(date, market=mkt)
+                if df is None or df.empty:
+                    continue
+                # 거래대금 컬럼명 후보
+                col = None
+                for candidate in ["거래대금", "TradingValue", "TRADING_VALUE"]:
+                    if candidate in df.columns:
+                        col = candidate
+                        break
+                if col is None:
+                    # 숫자형 컬럼 중 최대값 기준 fallback
+                    numeric_cols = df.select_dtypes(include="number").columns.tolist()
+                    if numeric_cols:
+                        col = numeric_cols[-1]  # 거래대금은 보통 마지막 숫자 컬럼
+                if col is None:
+                    continue
+                df = df.sort_values(col, ascending=False).head(top_n)
+                for ticker in df.index:
+                    name = krx_stock.get_market_ticker_name(ticker)
+                    if name and len(name) <= 15:  # ETF 등 긴 이름 제외
+                        result[name] = str(ticker)
+            except Exception as e:
+                errors.append(f"{mkt}/{date}: {e}")
                 continue
-            df = df.sort_values("거래대금", ascending=False).head(top_n)
-            for ticker in df.index:
-                name = krx_stock.get_market_ticker_name(ticker)
-                if name and len(name) <= 15:  # 너무 긴 이름(ETF 등) 제외
-                    result[name] = ticker
-        except Exception:
-            continue
 
     return result
 
@@ -117,7 +150,15 @@ def refresh_popular_stocks(top_n: int = 50, force: bool = False) -> Dict:
 
     popular = fetch_popular_stocks(top_n)
     if not popular:
-        return {"오류": "종목 수집 실패 (KRX 연결 확인)", "총종목수": len(CORP_CODES)}
+        # 실제 에러 정보를 포함해 반환
+        import traceback
+        return {
+            "오류": "KRX 데이터 수집 실패 — Railway 환경에서는 KRX 서버 접속이 제한될 수 있습니다. "
+                    "로컬에서 실행 중이라면 네트워크를 확인하세요.",
+            "총종목수": len(CORP_CODES),
+            "힌트": "pykrx는 KRX 웹에서 데이터를 스크래핑합니다. "
+                   "방화벽/프록시 환경에서 차단될 수 있습니다.",
+        }
 
     added = _register(popular, CORP_CODES, STOCK_CODE_MAP)
     save_cache(popular)
