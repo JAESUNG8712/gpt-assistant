@@ -21,8 +21,8 @@ router = APIRouter(prefix="/stock", tags=["주식분석"])
 # 서버 시작 시 인기 종목 자동 등록 (캐시 신선하면 재사용)
 try:
     refresh_popular_stocks(top_n=50, force=False)
-except Exception:
-    pass
+except Exception as e:
+    print(f"⚠️  인기 종목 초기 로드 실패 (무시): {e}")
 
 _pipeline: Optional[StockAnalysisPipeline] = None
 _analysis_running = False
@@ -65,8 +65,8 @@ def get_team_config():
 
 @router.post("/analyze", summary="주식 분석 즉시 실행 (비동기)")
 async def run_analysis(
+    background_tasks: BackgroundTasks,
     request: AnalysisRequest = AnalysisRequest(),
-    background_tasks: BackgroundTasks = None,
 ):
     global _analysis_running, _last_report, _last_run
 
