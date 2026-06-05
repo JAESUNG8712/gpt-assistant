@@ -1411,8 +1411,9 @@
       const added = d['추가종목'] || [];
       const total = d['총종목수'] || 0;
       const time = d['갱신시각'] || '';
+      const source = d['소스'] ? ` (${d['소스']})` : '';
       if (info) info.innerHTML =
-        `✅ 총 ${total}개 종목 등록 | ${time}<br>` +
+        `✅ 총 ${total}개 종목 등록 | ${time}${source}<br>` +
         (added.length > 0
           ? `신규 추가: ${added.slice(0,8).join(', ')}${added.length > 8 ? ' 외 ' + (added.length-8) + '개' : ''}`
           : '새로 추가된 종목 없음 (이미 최신)');
