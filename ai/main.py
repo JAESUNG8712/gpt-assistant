@@ -150,6 +150,25 @@ def _is_stock_pipeline_request(text: str) -> bool:
     t = text.replace(" ", "")
     return any(kw.replace(" ", "") in t for kw in _STOCK_PIPELINE_KEYWORDS)
 
+def _stock_name_with_request(text: str) -> bool:
+    """종목명 + 조회/분석 의도 동사 조합이면 파이프라인 트리거
+    예: 'LG전자 확인해줘', '삼성전자 어때?', '현대차 투자해도 돼?'
+    """
+    from stock_analysis.utils.dart_client import CORP_CODES
+    text_norm = text.replace(" ", "")
+    has_stock = any(name.replace(" ", "") in text_norm for name in CORP_CODES)
+    if not has_stock:
+        return False
+    _INTENT = [
+        "확인", "봐줘", "봐", "알려줘", "알려", "보여줘", "보여",
+        "어때", "어떤가", "어떨", "어떻", "어떠",
+        "투자", "매수", "매도", "살까", "팔까", "사야", "팔아야",
+        "추천", "전망", "예측", "주가", "시세", "현재가", "목표가",
+        "괜찮", "좋아", "올라", "내려", "상승", "하락",
+        "담아", "빠져", "들어가", "뺄까", "체크",
+    ]
+    return any(v in text for v in _INTENT)
+
 def _is_lowprice_screen_request(text: str) -> bool:
     t = text.replace(" ", "")
     return any(kw.replace(" ", "") in t for kw in _LOWPRICE_KEYWORDS)
@@ -270,6 +289,11 @@ async def chat(req: ChatRequest):
     persona = PERSONAS.get(req.persona, PERSONAS[DEFAULT_PERSONA])
     persona_features = persona.get("features", {})
 
+    # 페르소나에 deep_thinking 설정 시 thinking 모드 자동 활성화 (사용자가 off로 두더라도)
+    effective_thinking_mode = req.thinking_mode
+    if persona_features.get("deep_thinking") and req.thinking_mode == "off":
+        effective_thinking_mode = "prompt"
+
     from datetime import date as _date
     today = _date.today()
     system_with_date = (
@@ -303,7 +327,9 @@ async def chat(req: ChatRequest):
 
     # ── 주식 페르소나: 파이프라인 / 스크리닝 트리거 여부 판단 ────────
     stock_mode = persona_features.get("stock_mode", False)
-    run_stock_pipeline = stock_mode and _is_stock_pipeline_request(user_msg)
+    run_stock_pipeline = stock_mode and (
+        _is_stock_pipeline_request(user_msg) or _stock_name_with_request(user_msg)
+    )
     run_lowprice_screen = stock_mode and _is_lowprice_screen_request(user_msg)
     run_broker_report = stock_mode and _is_broker_report_request(user_msg)
 
@@ -328,7 +354,7 @@ async def chat(req: ChatRequest):
     kb_direct   = (
         best_score >= kb_threshold
         and _has_kb_answer
-        and req.thinking_mode == "off"
+        and effective_thinking_mode == "off"
         and not has_law_rt
         and not bool(search_ctx)
         and not direct_calc
@@ -531,7 +557,7 @@ async def chat(req: ChatRequest):
                         collected.append(token)
                         yield token
                 else:
-                    async for token in llm.chat_stream(history, context, system_prompt=system_with_date, thinking_mode=req.thinking_mode):
+                    async for token in llm.chat_stream(history, context, system_prompt=system_with_date, thinking_mode=effective_thinking_mode):
                         collected.append(token)
                         yield token
 

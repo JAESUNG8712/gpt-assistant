@@ -1222,8 +1222,11 @@
         const { done, value } = await reader.read();
         if (done) break;
         full += dec.decode(value, { stream: true });
+        // <think> 블록 자동 감지 (서버에서 deep_thinking 강제 활성화 시)
+        const hasThinkBlock = full.includes('<think>');
+        const activeThinking = thinkingMode !== 'off' || hasThinkBlock;
         // 생각 모드: 50자 이상 증가했을 때만 리렌더 (DOM 조작 최소화)
-        if (thinkingMode !== 'off') {
+        if (activeThinking) {
           if (full.length - lastRenderLen >= 50) {
             renderWithThinking(full, bubble);
             lastRenderLen = full.length;
@@ -1235,8 +1238,9 @@
       }
       aiDiv.classList.remove('typing');
 
-      // 최종 렌더링
-      if (thinkingMode !== 'off') {
+      // 최종 렌더링 (<think> 블록 있으면 자동으로 thinking 렌더러 사용)
+      const hasFinalThinkBlock = full.includes('<think>');
+      if (thinkingMode !== 'off' || hasFinalThinkBlock) {
         renderWithThinking(full, bubble);
       } else {
         bubble.innerHTML = renderMd(full);
@@ -1247,8 +1251,8 @@
         setTimeout(() => refreshStockReports(), 1000);
       }
 
-      // 피드백 버튼 (thinking 모드면 answer 부분만 사용)
-      const feedbackText = thinkingMode !== 'off'
+      // 피드백 버튼 (<think> 블록 있으면 answer 부분만 사용)
+      const feedbackText = (thinkingMode !== 'off' || hasFinalThinkBlock)
         ? (parseThinking(full).answer || full)
         : full;
       const fbRow = document.createElement('div');
