@@ -71,6 +71,47 @@
 
 ---
 
+## 주식 분석 에이전트 팀 (11명)
+
+`ai/stock_analysis/` 디렉토리의 주식 분석 전용 에이전트 팀.
+
+| 역할 | 담당 | 설명 |
+|---|---|---|
+| 👔 총괄 관리자 | 1명 | 전체 파이프라인 조율, 분석 대상 선정, 최종 승인 |
+| 💰 재무 자료 수집 | 1명 | DART 공시·재무제표, KRX 수급(외국인/기관/개인) |
+| 📊 경제 자료 수집 | 1명 | 금리·환율·물가·지수·원자재 등 거시경제 지표 |
+| 🌍 세계 동향 수집 1 | 1명 | 지정학 리스크, 무역 분쟁, 주요국 정치 |
+| 🌐 세계 동향 수집 2 | 1명 | 산업 트렌드, AI·반도체·배터리·바이오 동향 |
+| 📋 자료 취합 | 1명 | 4개 수집 에이전트 데이터 통합·정규화 |
+| 🔍 상세 분석 | 1명 | 저평가 스크리닝, DCF/PER/PBR, 매수·매도 시점 |
+| ✅ 교차 검증 1 | 1명 | 재무 데이터 이상치·회계 처리 검증 |
+| 🔬 교차 검증 2 | 1명 | 분석 논리 일관성·편향 검증 |
+| ⚠️ 교차 검증 3 | 1명 | 리스크 독립 검증, 스트레스 테스트 |
+| 📝 레포트 작성 | 1명 | 오전 7시 / 저녁 10시 정기 보고서 생성 |
+
+### 환경 변수
+- `DART_API_KEY` — DART OpenAPI (https://opendart.fss.or.kr)
+- `BOK_API_KEY` — 한국은행 ECOS API (https://ecos.bok.or.kr)
+- `ANTHROPIC_API_KEY` — Claude API (https://console.anthropic.com) — 미설정 시 규칙 기반 분석으로 fallback
+
+### Claude API 통합
+- 모델: `claude-opus-4-8` (적응형 사고 `thinking: adaptive`)
+- 적용 위치: `ai/stock_analysis/utils/claude_client.py`
+  - `analyze_stock_opinion()` — 종목별 AI 투자의견 (StockAnalyzer)
+  - `generate_executive_summary()` — 시황 종합 요약 (ReportWriter)
+  - `generate_action_plan()` — 실행 가능한 투자 액션 플랜 (ReportWriter)
+- Prompt caching 적용 (시스템 프롬프트 고정 텍스트)
+- API 키 미설정 시 자동 fallback → 규칙 기반 분석 유지
+
+### API
+- `GET  /stock/team` — 팀 구성 조회
+- `POST /stock/analyze` — 분석 실행 (백그라운드)
+- `GET  /stock/analyze/sync` — 분석 동기 실행
+- `GET  /stock/report/text` — 최근 보고서 텍스트
+- `GET  /stock/status` — 실행 상태
+
+---
+
 ## 프로젝트 기록
 
 <!-- 중요한 결정 사항, 요구사항, 변경 이력을 여기에 추가 -->
@@ -79,3 +120,5 @@
 - 2026-05-26: 에이전트 미설정 계정에 기본팀 자동 적용 기능 구현
 - 2026-05-26: 프로젝트 맥락 영속 저장 기능(메모리 API) 구현
 - 2026-05-26: 자체 AI 시스템 구현 (Groq+RAG+OneDrive 백업, iPad PWA)
+- 2026-06-02: 주식 분석 11인 에이전트 팀 구현 (DART+KRX+매크로+지정학+검증3회+정기보고서)
+- 2026-06-02: Claude API (claude-opus-4-8) 통합 — 종목별 AI 투자의견·시황요약·액션플랜 자동 생성, prompt caching 적용
