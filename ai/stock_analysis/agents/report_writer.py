@@ -235,8 +235,8 @@ class ReportWriter:
   한미 금리차: {interest.get('한미금리차', 'N/A')}%p
 
 ■ 환율·물가
-  원달러: {_fmt_num(usdkrw.get('현재'), ",")}원 ({usdkrw.get('방향', '')}
-    주요요인: {', '.join(usdkrw.get('주요요인', []))})
+  원달러: {_fmt_num(usdkrw.get('현재'), ",")}원 ({usdkrw.get('방향', '')})
+    주요요인: {', '.join(usdkrw.get('주요요인', []))}
   한국 CPI: {kr_cpi.get('전년동월비', 'N/A')}% (핵심 {kr_cpi.get('코어CPI', 'N/A')}%)
   미국 CPI: {us_cpi.get('전년동월비', 'N/A')}% — {us_cpi.get('코멘트', '')}
 
