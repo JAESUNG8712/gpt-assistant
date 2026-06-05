@@ -477,14 +477,37 @@ async def chat(req: ChatRequest):
             # ── 경로 B: LLM 보강 (중간 신뢰도 or 법령 실시간) ──
             else:
                 if stock_mode:
-                    # stock 페르소나: 타 페르소나 KB 오염 차단
-                    # 저장된 보고서가 있으면 그것만 사용, 없으면 컨텍스트 없이 전문가 지식으로 답변
+                    # stock 페르소나: 자동 인터넷 검색으로 최신 시장 정보 보강
+                    # 소스 상태 표시
+                    sources = []
                     if stock_report_ctx:
+                        sources.append("📋 최근 분석 보고서")
+                    # 항상 인터넷 검색 실행 (최신 시황/종목 정보 보강)
+                    yield "> 🔍 인터넷에서 최신 주식 정보 검색 중"
+                    auto_search_results = await asyncio.get_event_loop().run_in_executor(
+                        None, srch.search_and_learn, search_msg
+                    )
+                    auto_search_ctx = srch.format_search_context(auto_search_results)
+                    if auto_search_ctx:
+                        sources.append("🌐 실시간 인터넷 검색")
+                    sources.append("🧠 AI 주식 전문 지식")
+                    yield f" → {'  |  '.join(sources)}\n\n"
+
+                    # 컨텍스트 조합: 보고서 + 검색 결과
+                    ctx_parts = []
+                    if stock_report_ctx:
+                        ctx_parts.append(
+                            f"[최근 주식 분석 보고서]\n{stock_report_ctx}"
+                        )
+                    if auto_search_ctx:
+                        ctx_parts.append(
+                            f"[실시간 인터넷 검색 결과]\n{auto_search_ctx}"
+                        )
+                    if ctx_parts:
                         context = (
-                            f"[아래는 가장 최근 주식 분석 보고서입니다. "
-                            f"사용자 질문 '{search_msg[:60]}'에 관련된 내용을 이 보고서에서 찾아 답변하세요. "
-                            f"보고서에 없는 내용은 전문가 주식 지식으로 보완하세요.]\n\n"
-                            + stock_report_ctx
+                            f"[아래 자료를 참고해 사용자 질문 '{search_msg[:60]}'에 답변하세요. "
+                            f"자료에 없는 내용은 전문가 주식 지식으로 보완하세요.]\n\n"
+                            + "\n\n---\n\n".join(ctx_parts)
                         )
                     else:
                         context = ""
@@ -500,8 +523,8 @@ async def chat(req: ChatRequest):
                     else:
                         context = ""
 
-                if no_local:
-                    yield "> 📭 로컬 자료 없음 — AI 지식으로 답변 후 자동 학습합니다.\n\n"
+                    if no_local:
+                        yield "> 📭 로컬 자료 없음 — AI 지식으로 답변 후 자동 학습합니다.\n\n"
 
                 if persona_features.get("use_coding", False):
                     async for token in llm.chat_stream_coding(history, context, system_prompt=system_with_date):
