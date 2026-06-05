@@ -503,35 +503,109 @@ async def chat(req: ChatRequest):
             # ── 경로 B: LLM 보강 (중간 신뢰도 or 법령 실시간) ──
             else:
                 if stock_mode:
-                    # stock 페르소나: 자동 인터넷 검색으로 최신 시장 정보 보강
-                    # 소스 상태 표시
+                    # stock 페르소나: 뉴스 + 증권사 리포트 + 인터넷 검색 병렬 수집
                     sources = []
                     if stock_report_ctx:
                         sources.append("📋 최근 분석 보고서")
-                    # 항상 인터넷 검색 실행 (최신 시황/종목 정보 보강)
-                    yield "> 🔍 인터넷에서 최신 주식 정보 검색 중"
-                    auto_search_results = await asyncio.get_event_loop().run_in_executor(
+
+                    yield "> 🔍 뉴스·기사·증권사 리포트·인터넷 검색 중"
+
+                    # 언급 종목 추출
+                    _chat_targets = _extract_stock_targets(user_msg)
+
+                    # ① DuckDuckGo 일반 검색 (기존)
+                    _ddg_task = asyncio.get_event_loop().run_in_executor(
                         None, srch.search_and_learn, search_msg
                     )
+
+                    # ② 종목별 뉴스 수집 (병렬)
+                    _news_ctx = ""
+                    _news_task = None
+                    if _chat_targets:
+                        async def _collect_news():
+                            from stock_analysis.utils.news_collector import get_stock_news, format_news_context
+                            from stock_analysis.utils.dart_client import STOCK_CODE_MAP
+                            tasks_n = []
+                            for _n in _chat_targets[:3]:
+                                _tk = next((k for k, v in STOCK_CODE_MAP.items() if v == _n), "")
+                                tasks_n.append(get_stock_news(_n, _tk, max_results=6))
+                            results_n = await asyncio.gather(*tasks_n, return_exceptions=True)
+                            parts = []
+                            for res in results_n:
+                                if isinstance(res, Exception):
+                                    continue
+                                ctx = format_news_context(res)
+                                if ctx:
+                                    parts.append(ctx)
+                            return "\n\n".join(parts)
+                        _news_task = asyncio.ensure_future(_collect_news())
+
+                    # ③ 종목별 증권사 리포트 수집 (병렬)
+                    _broker_ctx = ""
+                    _broker_task = None
+                    if _chat_targets:
+                        async def _collect_broker():
+                            from stock_analysis.utils.securities_report import get_all_reports
+                            from stock_analysis.utils.dart_client import STOCK_CODE_MAP
+                            tasks_b = []
+                            for _n in _chat_targets[:3]:
+                                _tk = next((k for k, v in STOCK_CODE_MAP.items() if v == _n), "")
+                                tasks_b.append(get_all_reports(_tk, _n, max_reports=5))
+                            results_b = await asyncio.gather(*tasks_b, return_exceptions=True)
+                            parts = []
+                            for res in results_b:
+                                if isinstance(res, Exception):
+                                    continue
+                                s = res.get("summary", "")
+                                if s:
+                                    parts.append(s)
+                            return "\n\n".join(parts)
+                        _broker_task = asyncio.ensure_future(_collect_broker())
+
+                    # 모든 비동기 작업 완료 대기
+                    _gather_tasks = [_ddg_task]
+                    if _news_task:
+                        _gather_tasks.append(_news_task)
+                    if _broker_task:
+                        _gather_tasks.append(_broker_task)
+
+                    _gather_results = await asyncio.gather(*_gather_tasks, return_exceptions=True)
+
+                    auto_search_results = _gather_results[0] if not isinstance(_gather_results[0], Exception) else []
                     auto_search_ctx = srch.format_search_context(auto_search_results)
+
+                    idx = 1
+                    if _news_task:
+                        _news_ctx = _gather_results[idx] if not isinstance(_gather_results[idx], Exception) else ""
+                        idx += 1
+                    if _broker_task:
+                        _broker_ctx = _gather_results[idx] if not isinstance(_gather_results[idx], Exception) else ""
+
+                    # 소스 레이블 구성
+                    if _broker_ctx:
+                        sources.append("📊 증권사 애널리스트 리포트")
+                    if _news_ctx:
+                        sources.append("📰 최신 뉴스·기사")
                     if auto_search_ctx:
                         sources.append("🌐 실시간 인터넷 검색")
                     sources.append("🧠 AI 주식 전문 지식")
                     yield f" → {'  |  '.join(sources)}\n\n"
 
-                    # 컨텍스트 조합: 보고서 + 검색 결과
+                    # 컨텍스트 조합
                     ctx_parts = []
                     if stock_report_ctx:
-                        ctx_parts.append(
-                            f"[최근 주식 분석 보고서]\n{stock_report_ctx}"
-                        )
+                        ctx_parts.append(f"[최근 주식 분석 보고서]\n{stock_report_ctx}")
+                    if _broker_ctx:
+                        ctx_parts.append(f"[증권사 애널리스트 리포트 컨센서스]\n{_broker_ctx}")
+                    if _news_ctx:
+                        ctx_parts.append(f"[최신 뉴스·기사]\n{_news_ctx}")
                     if auto_search_ctx:
-                        ctx_parts.append(
-                            f"[실시간 인터넷 검색 결과]\n{auto_search_ctx}"
-                        )
+                        ctx_parts.append(f"[실시간 인터넷 검색 결과]\n{auto_search_ctx}")
+
                     if ctx_parts:
                         context = (
                             f"[아래 자료를 참고해 사용자 질문 '{search_msg[:60]}'에 답변하세요. "
+                            f"증권사 리포트·뉴스·검색 결과를 종합하여 전문가적 투자 분석을 제공하세요. "
                             f"자료에 없는 내용은 전문가 주식 지식으로 보완하세요.]\n\n"
                             + "\n\n---\n\n".join(ctx_parts)
                         )

@@ -99,6 +99,7 @@ class ReportWriter:
             self._market_overview(),
             self._top_picks(),
             self._securities_reports_section(),
+            self._news_section(),
             self._investor_flow(),
             self._sector_analysis(),
             self._detailed_stock_analysis(),
@@ -290,6 +291,49 @@ class ReportWriter:
         if warn_stocks:
             lines.append(f"  ⚠️  데이터 검증 주의 종목: {', '.join(warn_stocks)}")
             lines.append("       (재무데이터 이상 감지 — 투자 전 추가 확인 권장)")
+
+        return "\n".join(lines)
+
+    def _news_section(self) -> str:
+        """종목별 최신 뉴스·기사·전문가 의견 섹션"""
+        lines = [
+            "【 종목별 최신 뉴스 / 기사 / 전문가 의견 】",
+            "─" * 65,
+        ]
+        found = False
+        for name, data in self.financial.items():
+            news_data = data.get("뉴스", {})
+            if not news_data or isinstance(news_data, Exception):
+                continue
+            articles = news_data.get("articles", [])
+            if not articles:
+                continue
+            found = True
+            lines.append(f"\n▶ {name}  ({len(articles)}건)")
+            for a in articles[:5]:
+                date = str(a.get("날짜") or "")[:10]
+                source = str(a.get("출처") or "")[:15]
+                title = str(a.get("제목") or "")[:55]
+                summary = str(a.get("요약") or "")[:120]
+                prefix = f"[{date}] " if date else ""
+                src_label = f" ({source})" if source else ""
+                lines.append(f"  {prefix}{title}{src_label}")
+                if summary:
+                    lines.append(f"    → {summary}")
+
+            # 증권사 리포트에서 목표주가 추출해 함께 표시
+            brokerage = data.get("증권사리포트", {})
+            if brokerage and not isinstance(brokerage, Exception):
+                consensus = brokerage.get("consensus", {})
+                avg_tp = consensus.get("평균목표주가", "")
+                op_dist = consensus.get("의견분포", {})
+                if avg_tp and avg_tp != "N/A":
+                    lines.append(
+                        f"\n  📊 애널리스트 컨센서스 — 평균 목표주가: {avg_tp}  |  의견분포: {op_dist}"
+                    )
+
+        if not found:
+            lines.append("  수집된 뉴스 없음 (인터넷 연결 또는 ddgs 패키지 확인 필요)")
 
         return "\n".join(lines)
 

@@ -18,6 +18,7 @@ from ..utils.krx_client import (
     lookup_ticker_by_name,
 )
 from ..utils.securities_report import get_all_reports
+from ..utils.news_collector import get_stock_news
 
 
 class FinancialCollector:
@@ -67,6 +68,9 @@ class FinancialCollector:
             tasks["밸류에이션"] = get_market_valuation(ticker)
             tasks["공매도"] = get_short_selling(ticker, days=15)
             tasks["증권사리포트"] = get_all_reports(ticker, corp_name)
+
+        # 뉴스·기사·전문가 의견은 종목명만 있어도 수집 가능
+        tasks["뉴스"] = get_stock_news(corp_name, ticker or "")
 
         results = {}
         if tasks:
