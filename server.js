@@ -153,6 +153,7 @@ app.delete('/api/accounts/:accountId/memory/context/:entryId', (req, res) => {
   if (!account) return res.status(404).json({ error: '계정을 찾을 수 없습니다.' });
 
   const id = parseInt(req.params.entryId);
+  if (!account.memory) account.memory = { projectContext: [], decisions: [] };
   account.memory.projectContext = (account.memory.projectContext || []).filter(e => e.id !== id);
   writeData(data);
   res.json({ message: '항목이 삭제되었습니다.' });
