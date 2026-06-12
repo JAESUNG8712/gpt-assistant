@@ -725,12 +725,21 @@
         : full;
       const fbRow = document.createElement('div');
       fbRow.className = 'feedback-row';
-      const escapedFull = feedbackText.replace(/\\/g,'\\\\').replace(/'/g,"\\'").replace(/\n/g,'\\n');
-      const escapedMsg = msg.replace(/\\/g,'\\\\').replace(/'/g,"\\'");
-      fbRow.innerHTML = `
-        <span style="font-size:0.72rem;color:var(--text-dim);">이 답변이 도움됐나요?</span>
-        <button class="fb-btn good" onclick="sendFeedback(this,1,'${escapedMsg}','${escapedFull}','${currentPersona.id}')">👍 도움돼요</button>
-        <button class="fb-btn bad"  onclick="sendFeedback(this,-1,'${escapedMsg}','${escapedFull}','${currentPersona.id}')">👎 별로예요</button>`;
+      const fbLabel = document.createElement('span');
+      fbLabel.style.fontSize = '0.72rem';
+      fbLabel.style.color = 'var(--text-dim)';
+      fbLabel.textContent = '이 답변이 도움됐나요?';
+      const fbGood = document.createElement('button');
+      fbGood.className = 'fb-btn good';
+      fbGood.textContent = '👍 도움돼요';
+      fbGood.addEventListener('click', () => sendFeedback(fbGood, 1, msg, feedbackText, currentPersona.id));
+      const fbBad = document.createElement('button');
+      fbBad.className = 'fb-btn bad';
+      fbBad.textContent = '👎 별로예요';
+      fbBad.addEventListener('click', () => sendFeedback(fbBad, -1, msg, feedbackText, currentPersona.id));
+      fbRow.appendChild(fbLabel);
+      fbRow.appendChild(fbGood);
+      fbRow.appendChild(fbBad);
       aiDiv.querySelector('.msg-bubble').appendChild(fbRow);
     } catch (e) {
       bubble.textContent = '오류: ' + e.message;

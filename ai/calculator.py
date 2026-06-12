@@ -396,7 +396,7 @@ def try_retirement_calc(text: str) -> Optional[str]:
             break
         dates_found.append(d)
         # 찾은 날짜 제거해 다음 날짜 파싱
-        m = re.search(r'\d{2,4}년\s*\d{1,2}월(?:\s*\d{1,2}일)?', temp)
+        m = re.search(r'\d{2,4}년\s*\d{1,2}월(?:\s*\d{1,2}일)?|\d{2,4}[.\-/]\d{1,2}[.\-/]\d{1,2}', temp)
         if m:
             temp = temp[m.end():]
         else:
@@ -431,7 +431,11 @@ def try_retirement_calc(text: str) -> Optional[str]:
                     total_days = int(m.group(1)) * 30
                 # "1년 미만" 특수 처리
                 elif '1년 미만' in tl or '1년미만' in tl:
-                    total_days = 300  # 1년 미만 대표값
+                    return (
+                        "## 퇴직금 계산 결과\n\n"
+                        "⚠️ **퇴직금 수급 불가**: 퇴직금은 계속 근로기간 **1년 이상**인 경우에만 발생합니다.\n\n"
+                        "1년(365일) 미만 근무 시 퇴직금이 발생하지 않습니다."
+                    )
 
     if not total_days or total_days < 365:
         if total_days is not None and total_days < 365:
@@ -557,17 +561,17 @@ def try_overtime_calc(text: str) -> Optional[str]:
     rows = []
     total = 0
 
-    if overtime_h:
+    if overtime_h is not None:
         pay = int(hourly * 1.5 * overtime_h)
         total += pay
         rows.append(f"| 연장근로 {overtime_h:.0f}h | 시급×1.5×{overtime_h:.0f} | {pay:,}원 |")
 
-    if night_h:
+    if night_h is not None:
         night_pay = int(hourly * 0.5 * night_h)  # 야간 가산분만
         total += night_pay
         rows.append(f"| 야간가산 {night_h:.0f}h | 시급×0.5×{night_h:.0f} | {night_pay:,}원 |")
 
-    if holiday_h_8:
+    if holiday_h_8 is not None:
         over8 = max(0, holiday_h_8 - 8)
         within8 = min(holiday_h_8, 8)
         p8  = int(hourly * 1.5 * within8)

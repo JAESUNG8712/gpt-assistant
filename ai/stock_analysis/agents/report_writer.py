@@ -192,7 +192,6 @@ class ReportWriter:
   {events_str}"""
 
     def _top_picks(self) -> str:
-        from .analyzer import StockAnalyzer
         # 분석 결과에서 직접 추출
         ranked = sorted(
             self.analyses.items(),
