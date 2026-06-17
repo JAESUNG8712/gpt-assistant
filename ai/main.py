@@ -241,7 +241,8 @@ def _summarize_stock_report(report: str, targets: list) -> str:
         if in_summary:
             summary_lines.append(line)
             # 다음 섹션이 시작되면 종료
-            if len(summary_lines) > 3 and line.startswith("【") and "Executive Summary" not in line:
+            if (len(summary_lines) > 3 and line.startswith("【")
+                    and "Executive Summary" not in line and "종합 요약" not in line):
                 break
 
     # 요청 종목 관련 섹션 추출
@@ -359,7 +360,7 @@ async def chat(req: ChatRequest):
         and not bool(search_ctx)
         and not direct_calc
     )
-    no_local    = (best_score < KB_CONTEXT) and not has_law_rt and not direct_calc
+    no_local    = (best_score < KB_CONTEXT) and not has_law_rt and not direct_calc and not bool(search_ctx)
 
     # stock 페르소나: 파이프라인 미실행 일반 Q&A → 저장된 보고서를 컨텍스트로 주입
     stock_report_ctx = ""
@@ -675,11 +676,14 @@ def reset_stock_history():
     import sqlite3
     mem.clear_history(persona="stock")
     try:
-        with sqlite3.connect(mem.DB_PATH) as con:
+        con = sqlite3.connect(mem.DB_PATH)
+        try:
             con.execute(
                 "DELETE FROM learned_knowledge WHERE persona='stock' AND source IN ('auto_learn','learned')"
             )
             con.commit()
+        finally:
+            con.close()
     except Exception:
         pass
     return {"ok": True, "message": "stock 페르소나 대화 이력 및 자동학습 데이터 초기화 완료"}
@@ -869,13 +873,15 @@ def knowledge_stats():
     if os.path.exists(db_path):
         try:
             conn = sqlite3.connect(db_path)
-            db_static = conn.execute(
-                "SELECT COUNT(*) FROM learned_knowledge WHERE source='정적KB'"
-            ).fetchone()[0]
-            db_dynamic = conn.execute(
-                "SELECT COUNT(*) FROM learned_knowledge WHERE source!='정적KB'"
-            ).fetchone()[0]
-            conn.close()
+            try:
+                db_static = conn.execute(
+                    "SELECT COUNT(*) FROM learned_knowledge WHERE source='정적KB'"
+                ).fetchone()[0]
+                db_dynamic = conn.execute(
+                    "SELECT COUNT(*) FROM learned_knowledge WHERE source!='정적KB'"
+                ).fetchone()[0]
+            finally:
+                conn.close()
         except Exception:
             pass
 
