@@ -50,9 +50,10 @@
 ### 구조
 - `ai/main.py` — FastAPI 서버 (모든 API 엔드포인트)
 - `ai/llm.py` — Groq API 연동 (Llama 3.1 8B, 무료)
-- `ai/memory.py` — SQLite(대화이력) + ChromaDB(벡터RAG)
+- `ai/memory.py` — SQLite(대화이력·학습지식·문서·피드백 저장)
+- `ai/engine.py` — 자체 TF-IDF 검색 엔진 (ChromaDB는 완전 제거, 벡터DB 미사용)
 - `ai/search.py` — DuckDuckGo 인터넷 검색 학습
-- `ai/backup.py` — OneDrive 백업 (Microsoft Graph API)
+- `ai/backup.py` — 직접 다운로드(ZIP) + Google Drive 백업 (OAuth2)
 - `ai/static/index.html` — iPad PWA 채팅 UI
 
 ### 배포 방법 (Render.com 무료)
@@ -61,9 +62,13 @@
 3. Disk 마운트: `/app/data` 1GB (대화/학습 데이터 영속 저장)
 4. iPad Safari에서 배포 URL 접속 → "홈 화면에 추가" → PWA로 사용
 
-### OneDrive 백업 설정
-- Azure Portal에서 앱 등록 후 Client ID/Secret/Refresh Token 발급
-- `.env` 파일에 설정하면 UI에서 버튼 한 번으로 백업
+### 백업 (직접 다운로드 + Google Drive)
+- `GET /backup/download` — DB 전체를 ZIP(SQL 덤프 + 카테고리별 JSON + manifest)으로 즉시 다운로드
+- Google Drive 연동(선택): Google Cloud Console에서 OAuth2 Client ID/Secret 발급 후 `GDRIVE_CLIENT_ID`, `GDRIVE_CLIENT_SECRET`, `GDRIVE_REDIRECT_URI` 환경변수 설정 → UI에서 Google 로그인 1회 후 버튼으로 백업
+
+### 검색 엔진 (TF-IDF, ChromaDB 미사용)
+- `ai/engine.py`의 자체 TF-IDF 엔진이 정적 KB(`ai/knowledge_*.py`)와 학습된 지식(`learned_knowledge` 테이블)을 통합 검색
+- 학습/추가 시 `_dirty` 플래그로 표시되고 다음 검색 시 전체 corpus를 재구축하는 구조 (대규모 데이터에선 재구축 비용 고려 필요)
 
 ### 파인튜닝 (추후)
 - 파인튜닝은 GPU 필요 → Google Colab 또는 Hugging Face 무료 컴퓨트 활용
@@ -122,3 +127,7 @@
 - 2026-05-26: 자체 AI 시스템 구현 (Groq+RAG+OneDrive 백업, iPad PWA)
 - 2026-06-02: 주식 분석 11인 에이전트 팀 구현 (DART+KRX+매크로+지정학+검증3회+정기보고서)
 - 2026-06-02: Claude API (claude-opus-4-8) 통합 — 종목별 AI 투자의견·시황요약·액션플랜 자동 생성, prompt caching 적용
+- 2026-06-17: 백업 구조 개선 — `ai/backup.py`에 카테고리별 JSON 추출(by_category/*.json) + manifest.json 추가, ZIP 다운로드/Google Drive 백업 모두 적용
+- 2026-06-17: 법률 KB 검색 정확도 개선 — `knowledge_legal.py`/`knowledge_legal2.py` 65개 항목 중 정확도 80% 미만 44개 항목의 `q` 필드에 자연어 변형 키워드 보강 (전체 정확도 67.1% → 92.8%, `test_legal_kb_accuracy.py`로 검증)
+- 2026-06-17: 문서/코드 불일치 수정 — CLAUDE.md의 ChromaDB 설명을 실제 구현(TF-IDF `ai/engine.py`)에 맞게 수정, OneDrive→Google Drive 백업 설명 수정
+- 2026-06-17: 법률 KB 확장 — `ai/knowledge_legal3.py` 신설, 모자보건법·일가정양립법(남녀고용평등법)·영유아보육법·아동수당법 등 가족·돌봄 관련 법령 추가
