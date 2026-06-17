@@ -1,0 +1,493 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>GPT Assistant - 팀 에이전트 관리</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: #f0f2f5;
+      color: #1a1a2e;
+      min-height: 100vh;
+    }
+
+    header {
+      background: linear-gradient(135deg, #1a1a2e 0%, #16213e 60%, #0f3460 100%);
+      color: white;
+      padding: 18px 32px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      box-shadow: 0 2px 12px rgba(0,0,0,0.2);
+    }
+    .header-left { display: flex; align-items: center; gap: 12px; }
+    header h1 { font-size: 1.25rem; font-weight: 700; }
+    .header-badge {
+      background: #e94560;
+      color: white;
+      font-size: 0.7rem;
+      padding: 3px 10px;
+      border-radius: 20px;
+      font-weight: 700;
+    }
+
+    nav {
+      background: white;
+      border-bottom: 1px solid #e8e8e8;
+      display: flex;
+      gap: 0;
+      padding: 0 32px;
+    }
+    .nav-tab {
+      padding: 14px 20px;
+      cursor: pointer;
+      font-size: 0.88rem;
+      font-weight: 600;
+      color: #888;
+      border-bottom: 3px solid transparent;
+      transition: all 0.2s;
+    }
+    .nav-tab.active { color: #0f3460; border-bottom-color: #0f3460; }
+    .nav-tab:hover { color: #0f3460; }
+
+    .container { max-width: 1000px; margin: 0 auto; padding: 28px 16px; }
+
+    .page { display: none; }
+    .page.active { display: block; }
+
+    /* 계정 카드 */
+    .account-card {
+      background: white;
+      border-radius: 14px;
+      padding: 20px 24px;
+      margin-bottom: 24px;
+      box-shadow: 0 2px 10px rgba(0,0,0,0.07);
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+    .account-avatar {
+      width: 48px; height: 48px;
+      background: linear-gradient(135deg, #0f3460, #e94560);
+      border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 1.3rem; color: white; font-weight: 700; flex-shrink: 0;
+    }
+    .account-info h2 { font-size: 1rem; font-weight: 700; }
+    .account-info p { font-size: 0.82rem; color: #888; margin-top: 2px; }
+    .account-meta {
+      margin-left: auto;
+      text-align: right;
+      font-size: 0.78rem;
+      color: #aaa;
+    }
+    .account-meta strong { color: #0f3460; font-size: 1.1rem; display: block; }
+
+    /* 섹션 타이틀 */
+    .section-title {
+      font-size: 0.95rem;
+      font-weight: 700;
+      color: #333;
+      margin-bottom: 14px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .count-badge {
+      background: #0f3460;
+      color: white;
+      border-radius: 20px;
+      padding: 2px 10px;
+      font-size: 0.72rem;
+      font-weight: 700;
+    }
+
+    /* 팀 그리드 */
+    .team-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+      gap: 14px;
+      margin-bottom: 28px;
+    }
+
+    .agent-card {
+      background: white;
+      border-radius: 14px;
+      padding: 18px;
+      box-shadow: 0 2px 10px rgba(0,0,0,0.07);
+      transition: transform 0.2s, box-shadow 0.2s;
+      position: relative;
+      border-top: 4px solid transparent;
+    }
+    .agent-card:hover { transform: translateY(-3px); box-shadow: 0 6px 18px rgba(0,0,0,0.11); }
+    .agent-card.pinned { border-top-color: #0f3460; }
+
+    .role-badge {
+      position: absolute; top: 12px; right: 12px;
+      font-size: 0.62rem; font-weight: 700;
+      padding: 2px 8px; border-radius: 20px;
+    }
+    .role-planner    { background: #e8f4fd; color: #0077b6; }
+    .role-frontend   { background: #fff3e0; color: #e65100; }
+    .role-backend    { background: #e8f5e9; color: #2e7d32; }
+    .role-network    { background: #f3e5f5; color: #6a1b9a; }
+    .role-security   { background: #fce4ec; color: #c62828; }
+    .role-qa         { background: #e0f2f1; color: #00695c; }
+    .role-documentation { background: #fff8e1; color: #f57f17; }
+
+    .agent-icon { font-size: 2rem; margin-bottom: 10px; }
+    .agent-name { font-size: 0.95rem; font-weight: 700; margin-bottom: 6px; }
+    .agent-desc { font-size: 0.78rem; color: #666; line-height: 1.5; }
+
+    .skills-list {
+      display: flex; flex-wrap: wrap; gap: 4px; margin-top: 10px;
+    }
+    .skill-tag {
+      background: #f0f2f5;
+      color: #555;
+      font-size: 0.68rem;
+      padding: 2px 8px;
+      border-radius: 20px;
+      font-weight: 600;
+    }
+
+    .btn {
+      margin-top: 12px;
+      width: 100%;
+      padding: 8px;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 0.8rem;
+      font-weight: 600;
+      transition: all 0.2s;
+    }
+    .btn-unpin { background: #fff0f0; color: #e53e3e; border: 1px solid #fed7d7; }
+    .btn-unpin:hover { background: #fed7d7; }
+    .btn-pin { background: #e8f0fe; color: #0f3460; border: 1px solid #c3d0ff; }
+    .btn-pin:hover { background: #c3d0ff; }
+
+    /* 빈 상태 */
+    .empty-state {
+      text-align: center; padding: 40px; color: #999;
+      background: white; border-radius: 14px;
+      box-shadow: 0 2px 10px rgba(0,0,0,0.07);
+      grid-column: 1/-1;
+    }
+    .empty-state .emoji { font-size: 2.5rem; margin-bottom: 10px; }
+
+    /* 메모리 페이지 */
+    .memory-note {
+      background: #fffbe6;
+      border: 1px solid #ffe58f;
+      border-radius: 10px;
+      padding: 12px 16px;
+      font-size: 0.84rem;
+      color: #7a5900;
+      margin-bottom: 20px;
+      line-height: 1.6;
+    }
+
+    .memory-form {
+      background: white;
+      border-radius: 14px;
+      padding: 20px;
+      box-shadow: 0 2px 10px rgba(0,0,0,0.07);
+      margin-bottom: 20px;
+    }
+    .memory-form textarea {
+      width: 100%; padding: 10px 14px;
+      border: 1px solid #ddd; border-radius: 8px;
+      font-size: 0.88rem; resize: vertical;
+      min-height: 80px; font-family: inherit;
+      color: #333;
+    }
+    .memory-form textarea:focus { outline: none; border-color: #0f3460; }
+    .form-row { display: flex; gap: 10px; margin-top: 10px; }
+    .form-select {
+      padding: 8px 12px; border: 1px solid #ddd; border-radius: 8px;
+      font-size: 0.83rem; color: #555; background: white;
+    }
+    .btn-save {
+      padding: 8px 20px; background: #0f3460; color: white;
+      border: none; border-radius: 8px; cursor: pointer;
+      font-size: 0.83rem; font-weight: 700;
+    }
+    .btn-save:hover { background: #1a4a80; }
+
+    .memory-list { display: flex; flex-direction: column; gap: 10px; }
+    .memory-item {
+      background: white; border-radius: 12px; padding: 14px 16px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+      display: flex; gap: 12px; align-items: flex-start;
+    }
+    .memory-item-type {
+      flex-shrink: 0; font-size: 0.65rem; font-weight: 700;
+      padding: 3px 8px; border-radius: 20px; margin-top: 2px;
+    }
+    .type-note { background: #e8f4fd; color: #0077b6; }
+    .type-decision { background: #fce4ec; color: #c62828; }
+    .type-requirement { background: #e8f5e9; color: #2e7d32; }
+    .memory-item-content { flex: 1; font-size: 0.85rem; line-height: 1.6; color: #333; }
+    .memory-item-date { font-size: 0.72rem; color: #bbb; margin-top: 4px; }
+    .btn-delete-mem {
+      flex-shrink: 0; background: none; border: none;
+      cursor: pointer; color: #ccc; font-size: 1rem; padding: 0 4px;
+    }
+    .btn-delete-mem:hover { color: #e53e3e; }
+
+    /* 계정 전환 */
+    .account-selector { display: flex; gap: 8px; margin-bottom: 20px; flex-wrap: wrap; }
+    .account-btn {
+      padding: 7px 16px; border-radius: 25px; border: 2px solid #ddd;
+      background: white; cursor: pointer; font-size: 0.82rem; font-weight: 600;
+      color: #666; transition: all 0.2s;
+    }
+    .account-btn.active {
+      background: #0f3460; color: white; border-color: transparent;
+    }
+
+    .info-banner {
+      background: linear-gradient(135deg, #0f3460, #e94560);
+      color: white; border-radius: 12px;
+      padding: 14px 20px; margin-bottom: 20px;
+      font-size: 0.84rem; line-height: 1.7;
+    }
+    .info-banner strong { font-size: 0.95rem; display: block; margin-bottom: 4px; }
+  </style>
+</head>
+<body>
+
+<header>
+  <div class="header-left">
+    <span style="font-size:1.5rem">🤖</span>
+    <h1>GPT Assistant</h1>
+    <span class="header-badge">팀 에이전트</span>
+  </div>
+</header>
+
+<nav>
+  <div class="nav-tab active" onclick="showPage('team')">📌 고정된 팀</div>
+  <div class="nav-tab" onclick="showPage('all')">🤖 전체 에이전트</div>
+  <div class="nav-tab" onclick="showPage('memory')">🧠 프로젝트 기억</div>
+</nav>
+
+<div class="container">
+  <div class="account-selector" id="account-selector"></div>
+
+  <!-- 팀 페이지 -->
+  <div class="page active" id="page-team">
+    <div class="info-banner">
+      <strong>📋 현재 팀 구성</strong>
+      에이전트가 미설정된 계정에는 기본 8인 팀이 자동 적용됩니다.
+      팀 구성을 변경하지 않으면 이 설정이 계속 유지됩니다.
+    </div>
+    <div id="account-info" class="account-card" style="display:none">
+      <div class="account-avatar" id="avatar"></div>
+      <div class="account-info">
+        <h2 id="account-name"></h2>
+        <p id="account-email"></p>
+      </div>
+      <div class="account-meta">
+        <strong id="pinned-count">0</strong>
+        명 고정됨
+      </div>
+    </div>
+    <div class="section-title">📌 고정된 에이전트 <span class="count-badge" id="pinned-count2">0</span></div>
+    <div id="pinned-agents" class="team-grid"></div>
+  </div>
+
+  <!-- 전체 에이전트 페이지 -->
+  <div class="page" id="page-all">
+    <div class="section-title">🤖 전체 에이전트 목록</div>
+    <div id="all-agents" class="team-grid"></div>
+  </div>
+
+  <!-- 메모리 페이지 -->
+  <div class="page" id="page-memory">
+    <div class="memory-note">
+      💡 <strong>프로젝트 기억</strong> — 이곳에 저장된 내용은 변경하지 않는 한 계속 유지됩니다.
+      중요한 결정 사항, 요구사항, 메모를 기록해두세요.
+    </div>
+    <div class="memory-form">
+      <textarea id="memory-input" placeholder="기억할 내용을 입력하세요 (요구사항, 결정 사항, 메모 등)..."></textarea>
+      <div class="form-row">
+        <select class="form-select" id="memory-type">
+          <option value="note">📝 메모</option>
+          <option value="requirement">✅ 요구사항</option>
+          <option value="decision">🔴 결정 사항</option>
+        </select>
+        <button class="btn-save" onclick="saveMemory()">저장</button>
+      </div>
+    </div>
+    <div class="section-title">🧠 저장된 기억 <span class="count-badge" id="memory-count">0</span></div>
+    <div id="memory-list" class="memory-list"></div>
+  </div>
+</div>
+
+<script>
+  let currentAccount = null;
+  let allAgents = [];
+  let accounts = [];
+
+  function showPage(name) {
+    document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+    document.querySelectorAll('.nav-tab').forEach(t => t.classList.remove('active'));
+    document.getElementById('page-' + name).classList.add('active');
+    const tabs = { team: 0, all: 1, memory: 2 };
+    document.querySelectorAll('.nav-tab')[tabs[name]].classList.add('active');
+    if (name === 'memory' && currentAccount) loadMemory();
+  }
+
+  function roleBadgeClass(role) {
+    const map = {
+      planner: 'role-planner',
+      frontend: 'role-frontend',
+      backend: 'role-backend',
+      network: 'role-network',
+      security: 'role-security',
+      qa: 'role-qa',
+      documentation: 'role-documentation'
+    };
+    return map[role] || 'role-planner';
+  }
+
+  function roleLabel(role) {
+    const map = {
+      planner: '기획',
+      frontend: 'FE',
+      backend: 'BE',
+      network: 'NW',
+      security: '보안',
+      qa: 'QA',
+      documentation: '문서'
+    };
+    return map[role] || role;
+  }
+
+  function agentCardHTML(agent, isPinned) {
+    return `
+      <div class="agent-card ${isPinned ? 'pinned' : ''}">
+        <span class="role-badge ${roleBadgeClass(agent.role)}">${roleLabel(agent.role)}</span>
+        <div class="agent-icon">${agent.icon}</div>
+        <div class="agent-name">${agent.name}</div>
+        <div class="agent-desc">${agent.description}</div>
+        <div class="skills-list">
+          ${(agent.skills || []).map(s => `<span class="skill-tag">${s}</span>`).join('')}
+        </div>
+        ${isPinned
+          ? `<button class="btn btn-unpin" onclick="unpinAgent('${agent.id}')">고정 해제</button>`
+          : `<button class="btn btn-pin" onclick="pinAgent('${agent.id}')">📌 고정하기</button>`}
+      </div>`;
+  }
+
+  async function fetchAccounts() {
+    const res = await fetch('/api/accounts');
+    accounts = (await res.json()).accounts;
+    renderAccountSelector();
+    if (accounts.length > 0) await selectAccount(accounts[0].id);
+  }
+
+  function renderAccountSelector() {
+    document.getElementById('account-selector').innerHTML = accounts.map(acc =>
+      `<button class="account-btn" onclick="selectAccount('${acc.id}')" id="btn-${acc.id}">
+        ${acc.name} (${acc.email})
+      </button>`
+    ).join('');
+  }
+
+  async function selectAccount(accountId) {
+    accounts.forEach(a => {
+      const btn = document.getElementById(`btn-${a.id}`);
+      if (btn) btn.classList.toggle('active', a.id === accountId);
+    });
+
+    const res = await fetch(`/api/accounts/${accountId}/pinned-agents`);
+    const data = await res.json();
+    currentAccount = data.account;
+
+    // 계정 카드
+    document.getElementById('account-info').style.display = 'flex';
+    document.getElementById('avatar').textContent = data.account.name[0].toUpperCase();
+    document.getElementById('account-name').textContent = data.account.name;
+    document.getElementById('account-email').textContent = data.account.email;
+    document.getElementById('pinned-count').textContent = data.count;
+    document.getElementById('pinned-count2').textContent = data.count;
+
+    const pinnedIds = data.pinnedAgents.map(a => a.id);
+
+    // 고정된 에이전트
+    const pinnedEl = document.getElementById('pinned-agents');
+    if (data.pinnedAgents.length === 0) {
+      pinnedEl.innerHTML = `<div class="empty-state"><div class="emoji">📭</div><p>고정된 에이전트가 없습니다.</p></div>`;
+    } else {
+      pinnedEl.innerHTML = data.pinnedAgents.map(a => agentCardHTML(a, true)).join('');
+    }
+
+    // 전체 에이전트
+    document.getElementById('all-agents').innerHTML =
+      allAgents.map(a => agentCardHTML(a, pinnedIds.includes(a.id))).join('');
+  }
+
+  async function pinAgent(agentId) {
+    await fetch(`/api/accounts/${currentAccount.id}/pinned-agents/${agentId}`, { method: 'POST' });
+    await selectAccount(currentAccount.id);
+  }
+
+  async function unpinAgent(agentId) {
+    await fetch(`/api/accounts/${currentAccount.id}/pinned-agents/${agentId}`, { method: 'DELETE' });
+    await selectAccount(currentAccount.id);
+  }
+
+  async function loadMemory() {
+    if (!currentAccount) return;
+    const res = await fetch(`/api/accounts/${currentAccount.id}/memory`);
+    const data = await res.json();
+    const ctx = data.memory.projectContext || [];
+    document.getElementById('memory-count').textContent = ctx.length;
+
+    const listEl = document.getElementById('memory-list');
+    if (ctx.length === 0) {
+      listEl.innerHTML = `<div class="empty-state"><div class="emoji">🧠</div><p>저장된 기억이 없습니다.</p></div>`;
+      return;
+    }
+    const typeLabel = { note: '📝 메모', requirement: '✅ 요구사항', decision: '🔴 결정 사항' };
+    const typeClass = { note: 'type-note', requirement: 'type-requirement', decision: 'type-decision' };
+    listEl.innerHTML = [...ctx].reverse().map(e => `
+      <div class="memory-item">
+        <span class="memory-item-type ${typeClass[e.type] || 'type-note'}">${typeLabel[e.type] || e.type}</span>
+        <div style="flex:1">
+          <div class="memory-item-content">${e.content}</div>
+          <div class="memory-item-date">${new Date(e.savedAt).toLocaleString('ko-KR')}</div>
+        </div>
+        <button class="btn-delete-mem" onclick="deleteMemory(${e.id})">✕</button>
+      </div>`).join('');
+  }
+
+  async function saveMemory() {
+    const content = document.getElementById('memory-input').value.trim();
+    const type = document.getElementById('memory-type').value;
+    if (!content) return alert('내용을 입력해주세요.');
+    await fetch(`/api/accounts/${currentAccount.id}/memory/context`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content, type })
+    });
+    document.getElementById('memory-input').value = '';
+    await loadMemory();
+  }
+
+  async function deleteMemory(entryId) {
+    await fetch(`/api/accounts/${currentAccount.id}/memory/context/${entryId}`, { method: 'DELETE' });
+    await loadMemory();
+  }
+
+  (async () => {
+    const res = await fetch('/api/agents');
+    allAgents = (await res.json()).agents;
+    await fetchAccounts();
+  })();
+</script>
+</body>
+</html>
