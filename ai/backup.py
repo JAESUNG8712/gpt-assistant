@@ -53,13 +53,16 @@ def _make_zip() -> tuple[bytes, str]:
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         counts = {}
         if os.path.exists(DB_PATH):
-            with sqlite3.connect(DB_PATH) as src:
+            src = sqlite3.connect(DB_PATH)
+            try:
                 dump = "\n".join(src.iterdump())
                 zf.writestr("memory.sql", dump)
 
                 for rel_path, rows in _export_tables_json(src).items():
                     zf.writestr(rel_path, json.dumps(rows, ensure_ascii=False, indent=2))
                     counts[rel_path] = len(rows)
+            finally:
+                src.close()
 
         manifest = {
             "backed_up_at": datetime.now().isoformat(),
