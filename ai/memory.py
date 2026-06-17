@@ -67,6 +67,15 @@ def init_db():
             source TEXT DEFAULT '',
             created_at TEXT NOT NULL
         )""")
+        # 피드백 기반 검색 가중치 (질문+페르소나 단위, 좋아요/싫어요로 점수 보정)
+        c.execute("""CREATE TABLE IF NOT EXISTS feedback_boost (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            persona TEXT NOT NULL,
+            q_lower TEXT NOT NULL,
+            boost REAL NOT NULL DEFAULT 1.0,
+            updated_at TEXT NOT NULL,
+            UNIQUE(persona, q_lower)
+        )""")
     # 정적 KB를 SQLite에 영구 저장 (엔진 재시작 후에도 검색 가능)
     _seed_static_kb_to_db()
 
@@ -384,6 +393,37 @@ def save_feedback(question: str, answer: str, rating: int, persona: str = "hr"):
             "INSERT INTO feedback (question, answer, rating, persona, created_at) VALUES (?,?,?,?,?)",
             (question[:500], answer[:1000], rating, persona, datetime.now().isoformat())
         )
+
+def apply_feedback_boost(persona: str, question: str, rating: int) -> float:
+    """피드백을 질문 단위 가중치로 누적 반영.
+    👍: 즉시 1.0 이상으로 끌어올려 유사 질문 검색 시 우선 노출.
+    👎: 점수를 낮춰 KB_CONTEXT 임계값 아래로 떨어지면 다음 질문 시 새로 생성되도록 유도."""
+    q_lower = question.strip().lower()
+    now = datetime.now().isoformat()
+    with _conn() as c:
+        row = c.execute(
+            "SELECT boost FROM feedback_boost WHERE persona=? AND q_lower=?",
+            (persona, q_lower),
+        ).fetchone()
+        cur = row["boost"] if row else 1.0
+        if rating > 0:
+            boost = min(max(cur, 1.0) * 1.3, 3.0)
+        else:
+            boost = max(cur * 0.4, 0.05)
+        c.execute(
+            "INSERT INTO feedback_boost (persona, q_lower, boost, updated_at) VALUES (?,?,?,?)"
+            " ON CONFLICT(persona, q_lower) DO UPDATE SET boost=?, updated_at=?",
+            (persona, q_lower, boost, now, boost, now),
+        )
+    return boost
+
+
+def get_feedback_boosts() -> dict:
+    """(persona, q_lower) -> boost 전체 맵 — 엔진 로드 시 1회 호출"""
+    with _conn() as c:
+        rows = c.execute("SELECT persona, q_lower, boost FROM feedback_boost").fetchall()
+    return {(r["persona"], r["q_lower"]): r["boost"] for r in rows}
+
 
 def get_feedback_stats() -> dict:
     with _conn() as c:
