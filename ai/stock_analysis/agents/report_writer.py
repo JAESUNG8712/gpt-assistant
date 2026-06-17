@@ -98,6 +98,7 @@ class ReportWriter:
             self._executive_summary(),
             self._market_overview(),
             self._top_picks(),
+            self._undervalued_picks(),
             self._securities_reports_section(),
             self._news_section(),
             self._investor_flow(),
@@ -292,6 +293,47 @@ class ReportWriter:
             lines.append(f"  ⚠️  데이터 검증 주의 종목: {', '.join(warn_stocks)}")
             lines.append("       (재무데이터 이상 감지 — 투자 전 추가 확인 권장)")
 
+        return "\n".join(lines)
+
+    def _undervalued_picks(self) -> str:
+        """분석 대상 종목 중 저평가/강한저평가 등급만 별도로 모아 보여주는 섹션"""
+        candidates = [
+            (name, data) for name, data in self.analyses.items()
+            if data.get("내재가치", {}).get("저평가판단") in ("강한저평가", "저평가")
+        ]
+        candidates.sort(
+            key=lambda x: x[1].get("내재가치", {}).get("저평가스코어", 0),
+            reverse=True,
+        )
+
+        lines = ["【 현재 저평가 종목 】",
+                 "─────────────────────────────────────────────────────────────────────"]
+
+        if not candidates:
+            lines.append("  현재 분석 대상 종목 중 저평가 등급에 해당하는 종목이 없습니다.")
+            lines.append("  (시장 전체 만원 미만 저가주 스크리닝은 '저평가 종목 발굴'로 별도 요청 가능)")
+            return "\n".join(lines)
+
+        lines.append(
+            f"{'종목명':<16} {'등급':<8} {'현재가':>10} {'PER':>6} {'PBR':>6} "
+            f"{'상승여력':>8} {'저평가점수':>10}"
+        )
+        lines.append("─" * 70)
+        for name, data in candidates:
+            intrinsic = data.get("내재가치", {})
+            grade = intrinsic.get("저평가판단", "N/A")
+            current = data.get("현재가", 0)
+            per = intrinsic.get("현재PER", "N/A")
+            pbr = intrinsic.get("현재PBR", "N/A")
+            upside = intrinsic.get("상승여력", 0)
+            score = intrinsic.get("저평가스코어", 0)
+            lines.append(
+                f"{name:<16} {grade:<8} {current:>10,} {str(per):>6} {str(pbr):>6} "
+                f"{upside:>+7.1f}% {score:>10}"
+            )
+
+        lines.append("")
+        lines.append("  ℹ️  시장 전체(만원 미만 저가주) 추가 스크리닝은 '저평가 종목 발굴' 요청으로 별도 조회 가능")
         return "\n".join(lines)
 
     def _news_section(self) -> str:
