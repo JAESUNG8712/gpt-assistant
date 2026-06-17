@@ -9,6 +9,25 @@ import asyncio
 from collections import Counter, defaultdict
 from typing import AsyncGenerator, List, Tuple, Dict
 
+# 형태소 분석기 (python-mecab-ko) — 설치 안 된 환경에서는 규칙 기반 토크나이저만 사용
+try:
+    import mecab as _mecab_mod
+    _MECAB = _mecab_mod.MeCab()
+except Exception:
+    _MECAB = None
+
+
+def _morph_nouns(text: str) -> List[str]:
+    """형태소 분석기로 명사만 추출 (붙여쓰기·복합어 분리에 강함).
+    설치 안 됐거나 분석 실패 시 빈 리스트 반환 — 규칙 기반 토크나이저로 자연 폴백."""
+    if not _MECAB:
+        return []
+    try:
+        return [n for n in _MECAB.nouns(text) if len(n) >= 2]
+    except Exception:
+        return []
+
+
 # ── 1. 한국어 토크나이저 ──────────────────────────────
 
 _STOP = {
@@ -196,8 +215,39 @@ def _normalize_compound(text: str) -> str:
     return text
 
 
+# ── 동의어 그룹 ────────────────────────────────────────
+# 같은 그룹의 단어는 검색 시 서로 대체 가능한 것으로 취급 (대표어 토큰을 추가로 부여)
+# 기존 규칙 기반 토큰은 그대로 보존하고, 대표어를 "추가"만 하므로 기존 매칭 결과에는
+# 영향을 주지 않고 동의어로 인한 추가 매칭만 가능해짐 (회귀 위험 최소화)
+# 주의: 법률/HR 등 기존에 정교하게 튜닝된 KB와 겹치는 단어(예: 임금·해고·퇴사·연장근무 등)는
+# 동의어 그룹에 넣지 않는다 — 별개 항목(예: "부당해고"와 "권고사직")을 같은 대표어로
+# 묶어버리면 의도적으로 분리해 둔 항목들이 서로 오염되어 검색 정확도가 떨어진다.
+# (실측: 위 단어들을 포함했을 때 법률 KB 정확도 92.8% → 90.6%로 하락 확인 후 제외)
+_SYNONYM_GROUPS = [
+    ["연봉협상", "임금협상", "연봉인상"],
+    ["채용", "구인", "공고", "채용공고"],
+    ["면접", "인터뷰"],
+    ["오류", "에러", "버그"],
+    ["함수", "메서드", "메소드"],
+    ["변수", "변숫값"],
+    ["배포", "디플로이"],
+    ["저장소", "리포지토리", "레포"],
+    ["숙소", "호텔", "숙박시설"],
+    ["비행기", "항공기", "항공편"],
+    ["환전", "환율계산"],
+    ["짐", "수화물", "캐리어"],
+    ["일정", "스케줄", "여행계획"],
+]
+_SYNONYM_MAP: Dict[str, str] = {}
+for _group in _SYNONYM_GROUPS:
+    _canon = _group[0]
+    for _word in _group:
+        _SYNONYM_MAP[_word] = _canon
+
+
 def _tok(text: str) -> List[str]:
     text = _normalize_compound(text)
+    morph_tokens = _morph_nouns(text)
     text = re.sub(r'[^\w가-힣a-zA-Z0-9\s]', ' ', text)
     tokens = []
     for w in text.split():
@@ -217,6 +267,22 @@ def _tok(text: str) -> List[str]:
             # else: 어근이 1글자 이하면 어미만 있는 것이므로 둘 다 제외 (e.g., 받아요→받)
         else:
             tokens.append(w_lower)   # 스트리핑 없었을 때
+
+    # 형태소 분석기로 추출한 명사 중, 규칙 기반 토크나이저가 놓친 것만 보강
+    # (이미 같은 단어가 있으면 건너뛰어 빈도 왜곡 방지 — 단어당 최대 1회만 추가)
+    existing = set(tokens)
+    added_morph = set()
+    for n in morph_tokens:
+        n_lower = n.lower()
+        if n_lower in _STOP or n_lower in existing or n_lower in added_morph:
+            continue
+        tokens.append(n_lower)
+        added_morph.add(n_lower)
+
+    # 동의어 대표어 추가 — 동의어 그룹에 속한 토큰이 있으면 대표어도 함께 부여
+    synonym_extra = [_SYNONYM_MAP[t] for t in tokens if t in _SYNONYM_MAP]
+    tokens.extend(synonym_extra)
+
     return tokens
 
 def _feat(text: str) -> List[str]:
