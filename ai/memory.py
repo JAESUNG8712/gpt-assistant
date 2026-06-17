@@ -19,8 +19,12 @@ if _db_dir:
 # ── SQLite 연결 ───────────────────────────────────────
 
 def _conn():
-    c = sqlite3.connect(DB_PATH)
+    # busy_timeout: 동시 쓰기 시 즉시 "database is locked" 에러 대신 대기 후 재시도
+    # WAL: 읽기와 쓰기가 서로 블로킹하지 않도록 동시성 향상
+    c = sqlite3.connect(DB_PATH, timeout=10)
     c.row_factory = sqlite3.Row
+    c.execute("PRAGMA journal_mode=WAL")
+    c.execute("PRAGMA busy_timeout=10000")
     return c
 
 

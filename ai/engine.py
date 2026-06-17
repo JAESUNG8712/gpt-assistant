@@ -413,11 +413,13 @@ def _load_knowledge():
         db_path = _os.getenv("DB_PATH", _os.path.join(_here, "data", "memory.db"))
         if _os.path.exists(db_path):
             conn = sqlite3.connect(db_path)
-            rows = conn.execute(
-                "SELECT id, content, persona, source FROM learned_knowledge"
-                " WHERE source != '정적KB' ORDER BY id ASC"
-            ).fetchall()
-            conn.close()
+            try:
+                rows = conn.execute(
+                    "SELECT id, content, persona, source FROM learned_knowledge"
+                    " WHERE source != '정적KB' ORDER BY id ASC"
+                ).fetchall()
+            finally:
+                conn.close()
 
             # Q&A 형식 항목은 같은 질문이 여러 개면 최신(id 큰 것)만 사용
             # source가 직접입력·자동학습인 경우만 중복 제거; 문서 청크는 모두 포함
