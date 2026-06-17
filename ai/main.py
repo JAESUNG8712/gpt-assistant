@@ -658,12 +658,14 @@ async def chat(req: ChatRequest):
             mem.save_message("user", user_msg, persona=req.persona)
             mem.save_message("assistant", ai_reply_clean or ai_reply, persona=req.persona)
 
-            # ── 자동 학습: 로컬 자료 없었던 경우 영구 저장 ──
-            # stock 페르소나는 실시간 시장 데이터 기반이어야 하므로 자동 학습 제외
+            # ── 자동 학습: 검색·로컬 KB 활용 여부와 무관하게 모든 답변을 영구 RAG에 누적 ──
+            # 같은 질문은 upsert_knowledge가 최신 내용으로 갱신하므로 중복 적재되지 않음
+            # stock 페르소나는 실시간 시장 데이터 기반이어야 하므로 자동 학습에서 계속 제외
             # (LLM 일반 지식이 KB에 누적되면 이후 오염 답변 재발 위험)
-            if no_local and ai_reply_clean.strip() and not stock_mode:
+            if ai_reply_clean.strip() and not stock_mode:
                 mem.auto_learn(user_msg, ai_reply_clean, persona=req.persona)
-                yield "\n\n---\n> ✅ 자동 학습 완료 — 다음부터는 로컬 저장 자료로 답변합니다."
+                if no_local:
+                    yield "\n\n---\n> ✅ 자동 학습 완료 — 다음부터는 로컬 저장 자료로 답변합니다."
 
         except Exception as e:
             import traceback
@@ -849,6 +851,10 @@ def receive_feedback(req: FeedbackRequest):
     if req.rating not in (1, -1):
         raise HTTPException(400, "rating은 1 또는 -1만 허용")
     mem.save_feedback(req.question, req.answer, req.rating, req.persona)
+    # 좋아요 → 동일/유사 질문 검색 가중치 상승, 싫어요 → 가중치 하락(다음엔 새 답변 유도)
+    boost = mem.apply_feedback_boost(req.persona, req.question, req.rating)
+    from engine import set_feedback_boost
+    set_feedback_boost(req.persona, req.question.strip().lower(), boost)
     return {"ok": True}
 
 @app.get("/feedback/stats")

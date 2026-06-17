@@ -293,6 +293,18 @@ def _feat(text: str) -> List[str]:
 
 # ── 2. TF-IDF 검색 엔진 ──────────────────────────────
 
+_FEEDBACK_BOOST: Dict[Tuple[str, str], float] = {}   # (persona, q_lower) -> boost
+
+
+def set_feedback_boost(persona: str, q_lower: str, boost: float):
+    """피드백 발생 즉시(서버 재시작 없이) 검색 가중치에 반영"""
+    _FEEDBACK_BOOST[(persona or '', q_lower)] = boost
+
+
+def _feedback_boost_for(persona: str, q: str) -> float:
+    return _FEEDBACK_BOOST.get((persona or '', q.strip().lower()), 1.0)
+
+
 class _Engine:
     def __init__(self):
         self._qa: List[Tuple[str, str, dict]] = []   # (질문텍스트, 답변, 메타)
@@ -423,6 +435,9 @@ class _Engine:
                     match_ratio = len(exact_tokens) / max(len(_tok(query_lower)), 1)
                     s = s * (1.0 + 0.5 * match_ratio)
 
+            # 피드백 가중치: 해당 항목 질문 기준 좋아요/싫어요 누적치를 점수에 반영
+            s *= _feedback_boost_for(p, q)
+
             if s >= min_score:
                 results.append((q, a, s, meta))
 
@@ -520,6 +535,14 @@ def _load_knowledge():
                 _engine.add(q, a, {"persona": persona, "source": source})
     except Exception as e:
         print(f"⚠️ 동적 학습 데이터 복원 실패: {e}")
+
+    # 피드백 가중치 복원 (서버 재시작 후에도 좋아요/싫어요 학습 효과 유지)
+    try:
+        from memory import get_feedback_boosts
+        for (persona, q_lower), boost in get_feedback_boosts().items():
+            _FEEDBACK_BOOST[(persona or '', q_lower)] = boost
+    except Exception as e:
+        print(f"⚠️ 피드백 가중치 복원 실패: {e}")
 
     print(f"✅ 자체 AI 엔진 초기화 완료: {_engine.count()}개 지식 항목 로드")
 
