@@ -220,8 +220,27 @@ def _extract_stock_targets(text: str) -> list:
     return matched
 
 
+def _extract_report_section(lines: list, header_keywords: list, max_lines: int = 20) -> list:
+    """'【 ... 】' 헤더로 시작하는 보고서 섹션 하나를 키워드로 찾아 추출"""
+    out = []
+    in_section = False
+    for line in lines:
+        is_header = line.strip().startswith("【")
+        if is_header and any(kw in line for kw in header_keywords):
+            in_section = True
+        elif is_header and in_section:
+            break  # 다음 섹션 시작 → 종료
+        if in_section:
+            out.append(line)
+            if len(out) >= max_lines:
+                break
+    return out
+
+
 def _summarize_stock_report(report: str, targets: list) -> str:
-    """전체 보고서에서 핵심 요약만 추출해 채팅용 답변 생성"""
+    """전체 보고서에서 핵심 요약만 추출해 채팅용 답변 생성
+    종합 요약뿐 아니라 TOP 추천 종목·저평가 종목도 항상 포함시켜
+    채팅 응답의 중간 내용(추천 종목 등)이 비지 않도록 한다."""
     lines = report.splitlines()
     filename = _list_stock_reports()[0] if _list_stock_reports() else None
     if filename:
@@ -232,18 +251,9 @@ def _summarize_stock_report(report: str, targets: list) -> str:
     else:
         download_hint = ""
 
-    # 요약 섹션(Executive Summary) 추출
-    summary_lines = []
-    in_summary = False
-    for line in lines:
-        if "Executive Summary" in line or "종합 요약" in line:
-            in_summary = True
-        if in_summary:
-            summary_lines.append(line)
-            # 다음 섹션이 시작되면 종료
-            if (len(summary_lines) > 3 and line.startswith("【")
-                    and "Executive Summary" not in line and "종합 요약" not in line):
-                break
+    summary_lines = _extract_report_section(lines, ["Executive Summary", "종합 요약"], max_lines=15)
+    top_picks_lines = _extract_report_section(lines, ["TOP 추천 종목"], max_lines=15)
+    undervalued_lines = _extract_report_section(lines, ["저평가 종목"], max_lines=15)
 
     # 요청 종목 관련 섹션 추출
     target_lines = []
@@ -262,10 +272,14 @@ def _summarize_stock_report(report: str, targets: list) -> str:
                     if len(target_lines) > 8:
                         current_target = None
 
-    # 조합
+    # 조합 — 종합 요약 + TOP 추천 종목 + 저평가 종목은 항상 포함
     parts = []
     if summary_lines:
-        parts.append("\n".join(summary_lines[:15]).strip())
+        parts.append("\n".join(summary_lines).strip())
+    if top_picks_lines:
+        parts.append("\n".join(top_picks_lines).strip())
+    if undervalued_lines:
+        parts.append("\n".join(undervalued_lines).strip())
     if target_lines:
         parts.append("\n".join(target_lines[:20]).strip())
 
