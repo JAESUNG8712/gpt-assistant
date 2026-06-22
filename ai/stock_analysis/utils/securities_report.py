@@ -163,7 +163,8 @@ async def get_all_reports(ticker: str, stock_name: str, max_reports: int = 5) ->
     if isinstance(ddg_reports, Exception):
         ddg_reports = []
 
-    all_reports = naver_reports + ddg_reports
+    # 목표주가·투자의견이 전혀 없는 빈 항목(파싱 실패) 제거 — 신뢰 불가 placeholder 방지
+    all_reports = [r for r in (naver_reports + ddg_reports) if _is_meaningful(r)]
 
     # 컨센서스 집계
     consensus = _build_consensus(all_reports)
@@ -238,6 +239,11 @@ def _format_summary(name: str, reports: List[Dict], consensus: Dict) -> str:
 
 
 # ── 헬퍼 ──────────────────────────────────────────────
+
+def _is_meaningful(r: Dict) -> bool:
+    """목표주가·투자의견 중 하나라도 실제 값이 있어야 신뢰 가능한 리포트로 취급"""
+    return bool(r.get("목표주가")) or bool(r.get("투자의견"))
+
 
 def _clean(html: str) -> str:
     text = re.sub(r'<[^>]+>', '', html)
