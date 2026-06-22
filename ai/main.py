@@ -349,7 +349,7 @@ async def chat(req: ChatRequest):
     # ── 3단계: 인터넷 검색 (사용자가 명시 요청 시) ────────
     search_ctx = ""
     if req.use_search:
-        results = srch.search_and_learn(search_msg)
+        results = srch.search_and_learn(search_msg, persona_id=req.persona)
         search_ctx = srch.format_search_context(results)
 
     # ── 주식 페르소나: 파이프라인 / 스크리닝 트리거 여부 판단 ────────
