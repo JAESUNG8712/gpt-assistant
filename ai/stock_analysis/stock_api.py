@@ -212,7 +212,7 @@ async def screen_lowprice(
     try:
         params = {"max_price": max_price, "max_pbr": max_pbr, "max_per": max_per, "top_n": top_n}
         candidates = screen_low_price_stocks(market=market, params=params)
-        report = format_report(candidates)
+        report = format_report(candidates, params=params)
         return PlainTextResponse(content=report, media_type="text/plain; charset=utf-8")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
