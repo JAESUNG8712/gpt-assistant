@@ -4,6 +4,7 @@
 """
 
 import asyncio
+import html as _html
 import re
 from datetime import datetime
 from typing import Dict, List, Optional
@@ -34,82 +35,98 @@ FIRM_ALIASES = {
 async def fetch_naver_research(ticker: str, page_size: int = 10) -> List[Dict]:
     """
     네이버 금융 리서치에서 특정 종목 애널리스트 리포트 목록 수집
-    Returns: [{증권사, 제목, 날짜, 목표주가, 투자의견, 링크}]
+    Returns: [{증권사, 제목, 날짜, 목표주가, 투자의견, 링크, nid}]
+
+    주의: company_list.naver는 searchType=itemCode&itemCode={ticker}로 조회해야 종목별
+    필터링이 적용됨. searchType=priceTo&code={ticker}는 종목과 무관한 전체 목표주가
+    변경 리스트를 반환하므로 사용하지 않음(과거 잘못된 파라미터로 인한 버그).
     """
     url = "https://finance.naver.com/research/company_list.naver"
     params = {
-        "searchType": "priceTo",
+        "searchType": "itemCode",
+        "itemCode": ticker,
         "x": "0", "y": "0",
-        "code": ticker,
-        "pageSize": page_size,
     }
     try:
-        async with aiohttp.ClientSession(headers=HEADERS) as session:
+        async with aiohttp.ClientSession(headers=HEADERS, trust_env=True) as session:
             async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as resp:
                 if resp.status != 200:
                     return []
                 html = await resp.text(encoding="euc-kr", errors="replace")
-        return _parse_naver_research(html, ticker)
+        reports = _parse_naver_research(html, ticker)[:page_size]
+        await _enrich_with_target_opinion(reports)
+        return reports
     except Exception:
         return []
 
 
 def _parse_naver_research(html: str, ticker: str) -> List[Dict]:
-    """네이버 금융 리서치 HTML 파싱"""
+    """네이버 금융 리서치 종목별 리포트 목록 HTML 파싱
+    실제 테이블 구조: 종목명 | 제목(nid 링크) | 증권사 | 첨부(PDF) | 작성일 | 조회수
+    목표주가·투자의견은 이 목록 페이지에 없고 개별 리포트 본문에만 있어
+    _enrich_with_target_opinion()에서 본문을 추가로 가져와 채운다.
+    """
     reports = []
 
-    # 각 보고서 행 추출 (td 패턴)
-    # 네이버 금융 리서치 테이블 구조:
-    # 종목명 | 증권사 | 제목 | 목표주가 | 투자의견 | 날짜
     rows = re.findall(
-        r'<td class="tit"[^>]*>.*?</td>.*?'
-        r'<td[^>]*>(.*?)</td>.*?'   # 증권사
-        r'<td[^>]*>(.*?)</td>.*?'   # 제목 (a href)
-        r'<td[^>]*>(.*?)</td>.*?'   # 목표주가
-        r'<td[^>]*>(.*?)</td>.*?'   # 투자의견
-        r'<td[^>]*>(.*?)</td>',     # 날짜
+        r'<td[^>]*>\s*<a[^>]+href="/item/main\.naver[^"]*"[^>]*>.*?</a>\s*</td>\s*'
+        r'<td[^>]*>\s*<a[^>]+href="company_read\.naver\?nid=(\d+)[^"]*"[^>]*>(.*?)</a>\s*</td>\s*'
+        r'<td[^>]*>(.*?)</td>.*?'              # 증권사
+        r'<td class="date"[^>]*>([\d.]+)</td>',  # 작성일
         html, re.DOTALL
     )
 
-    # 대안 파싱: 개별 패턴으로 추출
-    if not rows:
-        # 제목 + 링크
-        titles = re.findall(
-            r'href="(/research/company_read\.naver\?nid=(\d+))"[^>]*>(.*?)</a>',
-            html
-        )
-        # 증권사
-        firms = re.findall(r'<td class="file"[^>]*>(.*?)</td>', html, re.DOTALL)
-        # 목표주가
-        prices = re.findall(r'<td class="num"[^>]*>([\d,]+|N/A|-)</td>', html)
-        # 투자의견
-        opinions = re.findall(r'<td class="opinion"[^>]*>(.*?)</td>', html, re.DOTALL)
-        # 날짜
-        dates = re.findall(r'<td class="date"[^>]*>(\d{4}\.\d{2}\.\d{2})</td>', html)
+    for nid, title, firm, date in rows:
+        reports.append({
+            "증권사": _normalize_firm(_clean(firm)),
+            "제목": _clean(title),
+            "날짜": date,
+            "목표주가": "",
+            "투자의견": "",
+            "링크": f"https://finance.naver.com/research/company_read.naver?nid={nid}",
+            "nid": nid,
+        })
 
-        for i, (path, nid, title) in enumerate(titles):
-            firm = _clean(firms[i]) if i < len(firms) else ""
-            price = prices[i].replace(",", "") if i < len(prices) else ""
-            opinion = _clean(opinions[i]) if i < len(opinions) else ""
-            date = dates[i] if i < len(dates) else ""
-            reports.append({
-                "증권사": _normalize_firm(firm),
-                "제목": _clean(title),
-                "날짜": date,
-                "목표주가": f"{int(price):,}원" if price.isdigit() else price,
-                "투자의견": opinion,
-                "링크": f"https://finance.naver.com{path}",
-                "nid": nid,
-            })
+    return reports
 
-    return reports[:10]
+
+async def _enrich_with_target_opinion(reports: List[Dict], max_fetch: int = 5) -> None:
+    """목록에 없는 목표가·투자의견을 개별 리포트 본문에서 가져와 채움(상위 max_fetch건)"""
+    targets = reports[:max_fetch]
+    if not targets:
+        return
+    bodies = await asyncio.gather(
+        *(fetch_report_summary(r["nid"]) for r in targets),
+        return_exceptions=True,
+    )
+    for r, body in zip(targets, bodies):
+        if isinstance(body, Exception) or not body:
+            continue
+        price, opinion = _extract_report_meta(body)
+        if price:
+            r["목표주가"] = price
+        if opinion:
+            r["투자의견"] = opinion
+
+
+def _extract_report_meta(body: str) -> tuple:
+    """리포트 본문 텍스트에서 '목표가 480,000 | 투자의견 Buy' 형태의 목표가·투자의견 추출"""
+    price = ""
+    m = re.search(r'목표가\s+([\d,]+)', body)
+    if m:
+        price = f"{m.group(1)}원"
+    opinion = ""
+    m = re.search(r'투자의견\s+([A-Za-z가-힣]+)', body)
+    if m:
+        opinion = m.group(1)
+    return price, opinion
 
 
 async def fetch_report_summary(nid: str) -> str:
     """개별 리포트 요약 텍스트 수집"""
     url = f"https://finance.naver.com/research/company_read.naver?nid={nid}"
     try:
-        async with aiohttp.ClientSession(headers=HEADERS) as session:
+        async with aiohttp.ClientSession(headers=HEADERS, trust_env=True) as session:
             async with session.get(url, timeout=aiohttp.ClientTimeout(total=8)) as resp:
                 if resp.status != 200:
                     return ""
@@ -126,7 +143,17 @@ async def fetch_report_summary(nid: str) -> str:
 
 
 async def search_reports_ddg(stock_name: str) -> List[Dict]:
-    """DuckDuckGo로 증권사 리포트 뉴스/기사 보조 수집"""
+    """DuckDuckGo로 증권사 리포트 뉴스/기사 보조 수집
+
+    DDGS 호출은 동기 블로킹 I/O라 그대로 코루틴 안에서 실행하면 asyncio.gather()로
+    fetch_naver_research()와 함께 묶일 때 이벤트 루프를 점유해 네이버 쪽 요청이
+    타임아웃되는 문제가 있었음 — run_in_executor로 별도 스레드에서 실행해 해결.
+    """
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, _search_reports_ddg_sync, stock_name)
+
+
+def _search_reports_ddg_sync(stock_name: str) -> List[Dict]:
     try:
         from ddgs import DDGS
         query = f"{stock_name} 증권사 리포트 목표주가 투자의견 site:finance.naver.com OR site:brokerage.co.kr"
@@ -196,8 +223,8 @@ def _build_consensus(reports: List[Dict]) -> Dict:
                 prices.append(int(nums[0]))
             except ValueError:
                 pass
-        # 투자의견 집계
-        op = r.get("투자의견", "")
+        # 투자의견 집계 (영문 등급도 한글 버킷으로 정규화)
+        op = _normalize_opinion(r.get("투자의견", ""))
         for key in opinions:
             if key in op or key.replace("비중확대", "BUY") in op:
                 opinions[key] += 1
@@ -240,6 +267,19 @@ def _format_summary(name: str, reports: List[Dict], consensus: Dict) -> str:
 
 # ── 헬퍼 ──────────────────────────────────────────────
 
+_OPINION_EN_TO_KR = {
+    "buy": "매수", "strongbuy": "매수", "overweight": "비중확대",
+    "hold": "중립", "neutral": "중립", "marketperform": "시장수익률",
+    "sell": "매도", "underweight": "매도",
+}
+
+
+def _normalize_opinion(op: str) -> str:
+    """영문 투자의견(Buy/Hold/Sell 등)을 한글 버킷명으로 정규화"""
+    key = re.sub(r'[^a-zA-Z]', '', op).lower()
+    return _OPINION_EN_TO_KR.get(key, op)
+
+
 def _is_meaningful(r: Dict) -> bool:
     """목표주가·투자의견 중 하나라도 실제 값이 있어야 신뢰 가능한 리포트로 취급"""
     return bool(r.get("목표주가")) or bool(r.get("투자의견"))
@@ -247,6 +287,7 @@ def _is_meaningful(r: Dict) -> bool:
 
 def _clean(html: str) -> str:
     text = re.sub(r'<[^>]+>', '', html)
+    text = _html.unescape(text)
     return re.sub(r'\s+', ' ', text).strip()
 
 

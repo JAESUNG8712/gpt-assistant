@@ -1124,7 +1124,7 @@ async def fetch(session, url):
         return await resp.text()
 
 async def fetch_all(urls):
-    async with aiohttp.ClientSession() as session:
+    async with aiohttp.ClientSession(trust_env=True) as session:
         tasks = [fetch(session, url) for url in urls]
         return await asyncio.gather(*tasks)
 

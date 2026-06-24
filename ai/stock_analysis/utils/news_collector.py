@@ -4,6 +4,7 @@
 """
 
 import asyncio
+import html as _html
 import re
 from typing import List, Dict
 
@@ -26,6 +27,7 @@ _HEADERS = {
 
 def _clean_html(text: str) -> str:
     text = re.sub(r"<[^>]+>", "", text)
+    text = _html.unescape(text)
     return re.sub(r"\s+", " ", text).strip()
 
 
@@ -45,16 +47,17 @@ def _fetch_naver_finance_news(ticker: str, max_results: int = 5) -> List[Dict]:
         )
         html = resp.content.decode("euc-kr", errors="replace")
 
-        titles = re.findall(r'<td class="title"[^>]*><a[^>]+title="([^"]+)"', html)
-        sources = re.findall(r'<td class="info"[^>]*>(.*?)</td>', html)
-        dates = re.findall(r'<td class="date"[^>]*>(\d{4}\.\d{2}\.\d{2})', html)
+        # 실제 마크업은 title 속성이 아니라 <a class="tit">링크텍스트</a> 형태로 제목을 담음
+        titles = re.findall(r'<td class="title">\s*<a[^>]*>(.*?)</a>', html, re.DOTALL)
+        sources = re.findall(r'<td class="info"[^>]*>(.*?)</td>', html, re.DOTALL)
+        dates = re.findall(r'<td class="date"[^>]*>\s*(\d{4}\.\d{2}\.\d{2})', html)
 
         results = []
         for i, title in enumerate(titles[:max_results]):
             src = _clean_html(sources[i]) if i < len(sources) else ""
             date = dates[i] if i < len(dates) else ""
             results.append({
-                "제목": title,
+                "제목": _clean_html(title),
                 "요약": "",
                 "출처": src,
                 "날짜": date,
