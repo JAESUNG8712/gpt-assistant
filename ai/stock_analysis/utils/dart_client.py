@@ -121,7 +121,7 @@ async def fetch_financial_statements(corp_code: str, year: str, report_type: str
     }
 
     try:
-        async with aiohttp.ClientSession() as session:
+        async with aiohttp.ClientSession(trust_env=True) as session:
             async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as resp:
                 data = await resp.json()
                 if data.get("status") == "000":
@@ -139,7 +139,7 @@ async def fetch_company_info(corp_code: str) -> dict:
     params = {"crtfc_key": DART_API_KEY, "corp_code": corp_code}
 
     try:
-        async with aiohttp.ClientSession() as session:
+        async with aiohttp.ClientSession(trust_env=True) as session:
             async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as resp:
                 data = await resp.json()
                 return data if data.get("status") == "000" else {"error": data.get("message")}
@@ -160,7 +160,7 @@ async def fetch_dividend_info(corp_code: str, year: str) -> dict:
     }
 
     try:
-        async with aiohttp.ClientSession() as session:
+        async with aiohttp.ClientSession(trust_env=True) as session:
             async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as resp:
                 data = await resp.json()
                 return data if data.get("status") == "000" else {"error": data.get("message")}
@@ -181,7 +181,7 @@ async def fetch_major_shareholders(corp_code: str, year: str) -> dict:
     }
 
     try:
-        async with aiohttp.ClientSession() as session:
+        async with aiohttp.ClientSession(trust_env=True) as session:
             async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as resp:
                 data = await resp.json()
                 return data if data.get("status") == "000" else {"error": data.get("message")}
@@ -206,7 +206,7 @@ async def search_disclosures(corp_name: str, days: int = 30) -> list:
     }
 
     try:
-        async with aiohttp.ClientSession() as session:
+        async with aiohttp.ClientSession(trust_env=True) as session:
             async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as resp:
                 data = await resp.json()
                 return data.get("list", []) if data.get("status") == "000" else []
