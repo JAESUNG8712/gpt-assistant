@@ -2,6 +2,7 @@ import asyncio
 import os
 import re
 import glob as _glob
+from datetime import datetime as _datetime
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.responses import StreamingResponse, HTMLResponse, Response, FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -186,6 +187,41 @@ def _is_lowprice_screen_request(text: str) -> bool:
     return any(kw.replace(" ", "") in t for kw in _LOWPRICE_KEYWORDS)
 
 _STOCK_REPORTS_DIR = os.path.join(os.path.dirname(__file__), "stock_analysis", "reports")
+_ANSWERS_DIR = os.path.join(os.path.dirname(__file__), "stock_analysis", "reports", "answers")
+os.makedirs(_ANSWERS_DIR, exist_ok=True)
+
+
+def _summarize_long_text(content: str, label: str, max_chars: int = 3500) -> str:
+    """답변 원문이 너무 길면 앞부분만 보여주고 전체는 파일로 저장해 다운로드 링크로 제공"""
+    if len(content) <= max_chars:
+        return content
+    ts = _datetime.now().strftime("%Y%m%d_%H%M%S")
+    safe_label = re.sub(r"[^0-9A-Za-z가-힣_-]", "", label)[:30] or "answer"
+    filename = f"answer_{safe_label}_{ts}.txt"
+    with open(os.path.join(_ANSWERS_DIR, filename), "w", encoding="utf-8") as f:
+        f.write(content)
+    head = content[:max_chars].rstrip()
+    return (
+        f"{head}\n\n...(내용이 길어 핵심만 표시했습니다)\n\n---\n"
+        f"[⬇️ 전체 내용 다운로드 ({filename})](/answer/download/{filename})"
+    )
+
+
+def _format_reference_links(items: list, max_items: int = 5) -> str:
+    """[{title,url}] 형태의 참고 자료 목록을 마크다운 링크 섹션으로 변환"""
+    seen, links = set(), []
+    for it in items:
+        url = str(it.get("url") or "").strip()
+        if not url or not url.startswith("http") or url in seen:
+            continue
+        seen.add(url)
+        title = str(it.get("title") or url).strip().replace("\n", " ")[:60]
+        links.append(f"- [{title}]({url})")
+        if len(links) >= max_items:
+            break
+    if not links:
+        return ""
+    return "\n\n---\n📎 **참고 자료**\n" + "\n".join(links)
 
 def _load_latest_stock_report(max_chars: int = 8000) -> str:
     """저장된 가장 최신 보고서를 로드해 컨텍스트로 반환"""
@@ -264,8 +300,10 @@ def _summarize_stock_report(report: str, targets: list) -> str:
         download_hint = ""
 
     summary_lines = _extract_report_section(lines, ["Executive Summary", "종합 요약"], max_lines=15)
+    market_lines = _extract_report_section(lines, ["시장 환경"], max_lines=20)
     top_picks_lines = _extract_report_section(lines, ["TOP 추천 종목"], max_lines=15)
     undervalued_lines = _extract_report_section(lines, ["저평가 종목"], max_lines=15)
+    broker_lines = _extract_report_section(lines, ["증권사 애널리스트 리포트"], max_lines=15)
 
     # 요청 종목 관련 섹션 추출
     target_lines = []
@@ -285,13 +323,19 @@ def _summarize_stock_report(report: str, targets: list) -> str:
                         current_target = None
 
     # 조합 — 종합 요약 + TOP 추천 종목 + 저평가 종목은 항상 포함
+    # 특정 종목을 지목하지 않은 일반 "현황" 질문일 때는 시장 환경·증권사 컨센서스도 추가해
+    # 막연한 한 줄 요약이 아니라 실제 수치가 담긴 현황으로 보이도록 함
     parts = []
     if summary_lines:
         parts.append("\n".join(summary_lines).strip())
+    if not targets and market_lines:
+        parts.append("\n".join(market_lines).strip())
     if top_picks_lines:
         parts.append("\n".join(top_picks_lines).strip())
     if undervalued_lines:
         parts.append("\n".join(undervalued_lines).strip())
+    if not targets and broker_lines:
+        parts.append("\n".join(broker_lines).strip())
     if target_lines:
         parts.append("\n".join(target_lines[:20]).strip())
 
@@ -446,11 +490,16 @@ async def chat(req: ChatRequest):
                         from stock_analysis.utils.securities_report import get_all_reports
                         from stock_analysis.utils.dart_client import STOCK_CODE_MAP
                         results = []
+                        link_items = []
                         for name in targets:
                             ticker = next((k for k, v in STOCK_CODE_MAP.items() if v == name), "")
                             r = await get_all_reports(ticker, name)
                             results.append(r.get("summary", f"{name}: 리포트 없음"))
+                            for rep in r.get("reports", []):
+                                link_items.append({"title": f"{name} - {rep.get('제목','')}", "url": rep.get("링크", "")})
                         output = "\n\n".join(results)
+                        output = _summarize_long_text(output, "broker_" + "_".join(targets))
+                        output += _format_reference_links(link_items)
                         for i in range(0, len(output), 200):
                             chunk = output[i:i+200]
                             collected.append(chunk)
@@ -476,6 +525,7 @@ async def chat(req: ChatRequest):
                         None, screen_low_price_stocks, "ALL", None
                     )
                     report = format_report(candidates)
+                    report = _summarize_long_text(report, "lowprice")
                     chunk_size = 200
                     for i in range(0, len(report), chunk_size):
                         chunk = report[i:i + chunk_size]
@@ -529,6 +579,7 @@ async def chat(req: ChatRequest):
 
             # ── 경로 B: LLM 보강 (중간 신뢰도 or 법령 실시간) ──
             else:
+                reference_items = []  # 답변 끝에 붙일 참고 자료 링크 ([{title, url}])
                 if stock_mode:
                     # stock 페르소나: 뉴스 + 증권사 리포트 + 인터넷 검색 병렬 수집
                     sources = []
@@ -580,12 +631,14 @@ async def chat(req: ChatRequest):
                                 tasks_b.append(get_all_reports(_tk, _n, max_reports=5))
                             results_b = await asyncio.gather(*tasks_b, return_exceptions=True)
                             parts = []
-                            for res in results_b:
+                            for _n, res in zip(_chat_targets[:3], results_b):
                                 if isinstance(res, Exception):
                                     continue
                                 s = res.get("summary", "")
                                 if s:
                                     parts.append(s)
+                                for rep in res.get("reports", []):
+                                    reference_items.append({"title": f"{_n} - {rep.get('제목','')}", "url": rep.get("링크", "")})
                             return "\n\n".join(parts)
                         _broker_task = asyncio.ensure_future(_collect_broker())
 
@@ -600,6 +653,8 @@ async def chat(req: ChatRequest):
 
                     auto_search_results = _gather_results[0] if not isinstance(_gather_results[0], Exception) else []
                     auto_search_ctx = srch.format_search_context(auto_search_results)
+                    for r in auto_search_results:
+                        reference_items.append({"title": r.get("title", ""), "url": r.get("url", "")})
 
                     idx = 1
                     if _news_task:
@@ -639,6 +694,14 @@ async def chat(req: ChatRequest):
                     else:
                         context = ""
                 else:
+                    if law_ctx:
+                        reference_items.extend(
+                            {"title": r.get("title", ""), "url": r.get("url", "")} for r in law_results
+                        )
+                    if search_ctx:
+                        reference_items.extend(
+                            {"title": r.get("title", ""), "url": r.get("url", "")} for r in results
+                        )
                     raw_ctx = "\n\n".join(filter(None, [law_ctx, rag_ctx, search_ctx]))
                     # 질문 관련성 지시: 무관한 컨텍스트를 LLM이 포함하지 않도록 명시
                     if raw_ctx:
@@ -661,6 +724,11 @@ async def chat(req: ChatRequest):
                     async for token in llm.chat_stream(history, context, system_prompt=system_with_date, thinking_mode=effective_thinking_mode):
                         collected.append(token)
                         yield token
+
+                ref_footer = _format_reference_links(reference_items)
+                if ref_footer:
+                    collected.append(ref_footer)
+                    yield ref_footer
 
             ai_reply = "".join(collected)
             # <think>...</think> 태그를 DB/KB 저장 전에 제거
@@ -995,6 +1063,21 @@ def stock_report_download(filename: str):
     if not filename.startswith("report_") or ".." in filename:
         raise HTTPException(status_code=400, detail="잘못된 파일명")
     filepath = os.path.join(_STOCK_REPORTS_DIR, filename)
+    if not os.path.exists(filepath):
+        raise HTTPException(status_code=404, detail="파일 없음")
+    return FileResponse(
+        filepath,
+        media_type="text/plain; charset=utf-8",
+        filename=filename,
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{filename}"},
+    )
+
+@app.get("/answer/download/{filename}")
+def answer_download(filename: str):
+    """길어서 요약 표시된 채팅 답변의 전체 원문 다운로드"""
+    if not filename.startswith("answer_") or ".." in filename:
+        raise HTTPException(status_code=400, detail="잘못된 파일명")
+    filepath = os.path.join(_ANSWERS_DIR, filename)
     if not os.path.exists(filepath):
         raise HTTPException(status_code=404, detail="파일 없음")
     return FileResponse(
