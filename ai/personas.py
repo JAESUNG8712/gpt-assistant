@@ -189,9 +189,11 @@ _AUTO_CLASSIFY_KEYWORDS = {
 }
 
 
-def classify_persona(text: str) -> str:
-    """입력 텍스트의 키워드를 분석해 가장 적합한 전문 페르소나 id를 반환.
-    매칭되는 도메인이 없으면 기본 페르소나(hr)로 폴백."""
+def classify_personas(text: str, top_k: int = 2) -> list:
+    """입력 텍스트를 분석해 관련도 높은 전문 페르소나 id 목록을 반환(다중 매칭 지원).
+    여러 도메인에 걸친 질문(예: 인사+주식)이면 상위 페르소나를 함께 채택해
+    종합 답변(build_combined_persona)에 쓸 수 있게 한다.
+    매칭되는 도메인이 없으면 기본 페르소나만 반환."""
     t = (text or "").lower()
     scores = {pid: sum(1 for kw in kws if kw in t) for pid, kws in _AUTO_CLASSIFY_KEYWORDS.items()}
 
@@ -202,5 +204,46 @@ def classify_persona(text: str) -> str:
     except Exception:
         pass
 
-    best_id, best_score = max(scores.items(), key=lambda kv: kv[1])
-    return best_id if best_score > 0 else DEFAULT_PERSONA
+    ranked = sorted(((pid, s) for pid, s in scores.items() if s > 0), key=lambda kv: kv[1], reverse=True)
+    if not ranked:
+        return [DEFAULT_PERSONA]
+
+    top_score = ranked[0][1]
+    # 1위 점수의 50% 이상인 도메인까지 함께 채택 (최대 top_k개)
+    selected = [pid for pid, s in ranked[:top_k] if s >= top_score * 0.5]
+    return selected or [ranked[0][0]]
+
+
+def classify_persona(text: str) -> str:
+    """단일 페르소나 id만 필요한 호출부를 위한 호환 wrapper."""
+    return classify_personas(text, top_k=1)[0]
+
+
+def build_combined_persona(persona_ids: list) -> dict:
+    """다중 페르소나를 하나의 종합 전문가 system_prompt/features로 병합.
+    단일 id면 해당 페르소나를 그대로 반환."""
+    ids = [pid for pid in persona_ids if pid in PERSONAS] or [DEFAULT_PERSONA]
+    if len(ids) == 1:
+        return PERSONAS[ids[0]]
+
+    selected = [PERSONAS[pid] for pid in ids]
+    sections = "\n\n".join(f"[{p['name']} 관점]\n{p['system_prompt']}" for p in selected)
+    combined_prompt = (
+        "이 질문은 여러 전문 분야에 걸쳐 있습니다. 아래 각 분야 전문가의 지식과 답변 규칙을 모두 적용해 "
+        "분야별로 나누지 말고 하나의 통합된 전문가 답변으로 종합하세요.\n\n"
+        f"{sections}\n\n"
+        "[종합 답변 규칙] 각 분야 관점을 자연스럽게 엮어 하나의 일관된 답변으로 작성합니다. "
+        "\"인사 전문가로서\", \"주식 분석가로서\" 같은 분야 구분 머리말이나 섹션 나누기 없이, "
+        "필요한 모든 분야의 통찰을 통합해 답합니다."
+    )
+    merged_features = {}
+    for p in selected:
+        for k, v in p.get("features", {}).items():
+            merged_features[k] = merged_features.get(k, False) or v
+
+    return {
+        "id": "+".join(ids),
+        "name": " + ".join(p["name"] for p in selected),
+        "system_prompt": combined_prompt,
+        "features": merged_features,
+    }

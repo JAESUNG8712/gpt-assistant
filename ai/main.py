@@ -85,7 +85,7 @@ def _format_company_results(top_results: list, best_score: float) -> str:
     return '\n'.join(parts)
 
 
-from personas import PERSONAS, DEFAULT_PERSONA, classify_persona
+from personas import PERSONAS, DEFAULT_PERSONA, classify_personas, build_combined_persona
 from stock_analysis.stock_api import router as stock_router
 
 mem.init_db()
@@ -429,12 +429,16 @@ async def chat(req: ChatRequest):
     # 복합어 정규화: "희망 퇴직" → "희망퇴직" 등 띄어쓰기 변형 통일
     search_msg = _normalize_query(user_msg)
 
-    # "auto"(통합 검색) 선택 시 질문 내용을 분석해 가장 적합한 전문 페르소나로 자동 라우팅
+    # "auto"(통합 검색) 선택 시 질문 내용을 분석해 가장 적합한 전문 페르소나(들)로 자동 라우팅.
+    # 여러 도메인에 걸친 질문(예: 인사+주식)이면 build_combined_persona로 종합 답변 생성.
+    # persona_id는 KB/대화이력 저장 등 단일 키가 필요한 곳에 쓰는 대표(1순위) 도메인.
     persona_id = req.persona
+    matched_persona_ids = [persona_id]
     if persona_id == "auto":
-        persona_id = classify_persona(search_msg)
+        matched_persona_ids = classify_personas(search_msg)
+        persona_id = matched_persona_ids[0]
 
-    persona = PERSONAS.get(persona_id, PERSONAS[DEFAULT_PERSONA])
+    persona = build_combined_persona(matched_persona_ids)
     persona_features = persona.get("features", {})
     stock_mode = persona_features.get("stock_mode", False)
 
@@ -672,6 +676,10 @@ async def chat(req: ChatRequest):
             # ── 경로 B: LLM 보강 (중간 신뢰도 or 법령 실시간) ──
             else:
                 reference_items = []  # 답변 끝에 붙일 참고 자료 링크 ([{title, url}])
+                if len(matched_persona_ids) > 1:
+                    combo_notice = f"🔎 **{persona['name']} 통합 분석**\n\n"
+                    collected.append(combo_notice)
+                    yield combo_notice
                 if stock_mode:
                     # stock 페르소나: 뉴스 + 증권사 리포트 + 인터넷 검색 병렬 수집
                     sources = []
