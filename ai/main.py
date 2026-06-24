@@ -85,7 +85,7 @@ def _format_company_results(top_results: list, best_score: float) -> str:
     return '\n'.join(parts)
 
 
-from personas import PERSONAS, DEFAULT_PERSONA
+from personas import PERSONAS, DEFAULT_PERSONA, classify_persona
 from stock_analysis.stock_api import router as stock_router
 
 mem.init_db()
@@ -429,8 +429,14 @@ async def chat(req: ChatRequest):
     # 복합어 정규화: "희망 퇴직" → "희망퇴직" 등 띄어쓰기 변형 통일
     search_msg = _normalize_query(user_msg)
 
-    persona = PERSONAS.get(req.persona, PERSONAS[DEFAULT_PERSONA])
+    # "auto"(통합 검색) 선택 시 질문 내용을 분석해 가장 적합한 전문 페르소나로 자동 라우팅
+    persona_id = req.persona
+    if persona_id == "auto":
+        persona_id = classify_persona(search_msg)
+
+    persona = PERSONAS.get(persona_id, PERSONAS[DEFAULT_PERSONA])
     persona_features = persona.get("features", {})
+    stock_mode = persona_features.get("stock_mode", False)
 
     # 페르소나에 deep_thinking 설정 시 thinking 모드 자동 활성화 (사용자가 off로 두더라도)
     effective_thinking_mode = req.thinking_mode
@@ -450,7 +456,7 @@ async def chat(req: ChatRequest):
     direct_calc = calc.try_any_calc(user_msg)
 
     # ── 1단계: 로컬 KB 검색 (정규화된 쿼리 사용) ────────
-    kb = mem.retrieve_best(search_msg, n=6, persona_id=req.persona)
+    kb = mem.retrieve_best(search_msg, n=6, persona_id=persona_id)
     rag_ctx     = kb["context"]
     best_score  = kb["best_score"]
     top_answer  = kb["top_answer"]
@@ -462,14 +468,22 @@ async def chat(req: ChatRequest):
         law_results = await law.search_law(search_msg)
         law_ctx = law.format_law_context(law_results)
 
-    # ── 3단계: 인터넷 검색 (사용자가 명시 요청 시) ────────
+    # ── 3단계: 인터넷 검색 ───────────────────────────────
+    # 사용자가 명시 요청한 경우뿐 아니라, 로컬 KB 신뢰도가 낮을 때도 자동으로 보강 검색
+    # (company는 사내 문서 전용 정책상 제외, stock은 자체 리포트/뉴스 수집 경로를 이미 사용)
+    KB_CONTEXT = 0.10   # LLM 호출 시 컨텍스트 포함 기준 / 자동 웹검색 트리거 기준
+    auto_web_search = (
+        not req.use_search
+        and not stock_mode
+        and persona_id != "company"
+        and best_score < KB_CONTEXT
+    )
     search_ctx = ""
-    if req.use_search:
-        results = srch.search_and_learn(search_msg, persona_id=req.persona)
+    if req.use_search or auto_web_search:
+        results = srch.search_and_learn(search_msg, persona_id=persona_id)
         search_ctx = srch.format_search_context(results)
 
     # ── 주식 페르소나: 파이프라인 / 스크리닝 트리거 여부 판단 ────────
-    stock_mode = persona_features.get("stock_mode", False)
     run_stock_pipeline = stock_mode and (
         _is_stock_pipeline_request(user_msg) or _stock_name_with_request(user_msg)
     )
@@ -481,11 +495,10 @@ async def chat(req: ChatRequest):
     # KB (≥0.15) : 로컬 KB 직접 서빙 — LLM 호출 없음
     # CLAUDE(<0.15): KB에 없는 질문 → Claude 호출
     KB_DIRECT  = 0.15   # 이 점수 이상이면 KB로 직접 답변 (LLM 불필요)
-    KB_CONTEXT = 0.10   # LLM 호출 시 컨텍스트 포함 기준
 
     # company 페르소나: 학습된 규정에서만 답변, 외부 LLM 호출 금지
     # 중간 신뢰도(0.10~0.14)도 KB 직접 서빙 (임계값 낮춤)
-    company_kb_only = (req.persona == "company")
+    company_kb_only = (persona_id == "company")
     kb_threshold = KB_CONTEXT if company_kb_only else KB_DIRECT
 
     # law.go.kr에서 실시간 원문이 온 경우 → LLM 보강 (law_ctx 우선)
@@ -510,7 +523,7 @@ async def chat(req: ChatRequest):
         stock_report_ctx = _load_latest_stock_report()
 
     # 페르소나별 대화 이력 분리: 다른 페르소나 대화가 현재 페르소나 LLM을 혼동시키는 것을 방지
-    history = mem.get_recent_messages(10, persona=req.persona)
+    history = mem.get_recent_messages(10, persona=persona_id)
     history.append({"role": "user", "content": user_msg})
 
     async def generate():
@@ -814,15 +827,15 @@ async def chat(req: ChatRequest):
             # (생각 과정이 대화 이력·자동학습 KB에 오염되는 것 방지)
             ai_reply_clean = re.sub(r'<think>[\s\S]*?</think>\s*', '', ai_reply).strip()
 
-            mem.save_message("user", user_msg, persona=req.persona)
-            mem.save_message("assistant", ai_reply_clean or ai_reply, persona=req.persona)
+            mem.save_message("user", user_msg, persona=persona_id)
+            mem.save_message("assistant", ai_reply_clean or ai_reply, persona=persona_id)
 
             # ── 자동 학습: 검색·로컬 KB 활용 여부와 무관하게 모든 답변을 영구 RAG에 누적 ──
             # 같은 질문은 upsert_knowledge가 최신 내용으로 갱신하므로 중복 적재되지 않음
             # stock 페르소나는 실시간 시장 데이터 기반이어야 하므로 자동 학습에서 계속 제외
             # (LLM 일반 지식이 KB에 누적되면 이후 오염 답변 재발 위험)
             if ai_reply_clean.strip() and not stock_mode:
-                mem.auto_learn(user_msg, ai_reply_clean, persona=req.persona)
+                mem.auto_learn(user_msg, ai_reply_clean, persona=persona_id)
                 if no_local:
                     yield "\n\n---\n> ✅ 자동 학습 완료 — 다음부터는 로컬 저장 자료로 답변합니다."
 

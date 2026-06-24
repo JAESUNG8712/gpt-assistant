@@ -1,4 +1,17 @@
 PERSONAS = {
+    "auto": {
+        "id": "auto",
+        "name": "통합 검색",
+        "icon": "🔎",
+        "color": "#374151",
+        "bg": "#f3f4f6",
+        "description": "질문 내용을 분석해 인사·개발·여행·주식 전문가 중 가장 적합한 답변을 자동으로 제공",
+        "system_prompt": "",  # 분류된 페르소나의 system_prompt로 요청 시점에 교체됨
+        "features": {
+            "use_law": True,
+            "use_coding": True,
+        },
+    },
     "hr": {
         "id": "hr",
         "name": "인사 전문가",
@@ -150,3 +163,44 @@ Python, JavaScript/TypeScript, React, FastAPI, SQL/NoSQL, Git, 알고리즘, 디
 }
 
 DEFAULT_PERSONA = "hr"
+
+# ── 통합 검색(auto) 자동 분류 ──────────────────────────
+# company(사내 문서 전용)·resume(파일 업로드 전용)는 문맥상 명시적 선택이 필요하므로 제외
+_AUTO_CLASSIFY_KEYWORDS = {
+    "stock": [
+        "주식", "종목", "주가", "증권", "코스피", "코스닥", "매수", "매도",
+        "per", "pbr", "배당", "시황", "수급", "증권사", "리포트", "투자",
+        "etf", "공매도", "상한가", "하한가", "목표가", "외국인", "기관",
+    ],
+    "dev": [
+        "코드", "개발", "함수", "에러", "오류", "버그", "api", "fastapi",
+        "python", "javascript", "타입스크립트", "react", "sql", "서버",
+        "배포", "git", "깃", "디버그", "알고리즘", "리팩토링", "프로그래밍",
+    ],
+    "travel": [
+        "여행", "항공권", "숙소", "숙박", "비자", "환전", "관광", "호텔",
+        "여권", "패키지여행", "배낭여행", "항공", "공항", "여행지", "일정짜",
+    ],
+    "hr": [
+        "퇴직금", "연차", "근로기준법", "급여", "채용", "면접", "4대보험",
+        "야간수당", "주휴수당", "최저임금", "인사", "노무", "산재", "해고",
+        "근로계약", "연봉", "휴직", "출산휴가", "육아휴직",
+    ],
+}
+
+
+def classify_persona(text: str) -> str:
+    """입력 텍스트의 키워드를 분석해 가장 적합한 전문 페르소나 id를 반환.
+    매칭되는 도메인이 없으면 기본 페르소나(hr)로 폴백."""
+    t = (text or "").lower()
+    scores = {pid: sum(1 for kw in kws if kw in t) for pid, kws in _AUTO_CLASSIFY_KEYWORDS.items()}
+
+    try:
+        from stock_analysis.utils.dart_client import CORP_CODES
+        if any(name in (text or "") for name in CORP_CODES):
+            scores["stock"] = scores.get("stock", 0) + 2
+    except Exception:
+        pass
+
+    best_id, best_score = max(scores.items(), key=lambda kv: kv[1])
+    return best_id if best_score > 0 else DEFAULT_PERSONA
