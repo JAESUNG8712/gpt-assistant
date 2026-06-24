@@ -153,17 +153,20 @@ def _calc_score(close: float, per: float, pbr: float, bps: float,
     return min(score, 100)
 
 
-def format_report(candidates: List[Dict], date: str = "") -> str:
+def format_report(candidates: List[Dict], date: str = "", params: Optional[Dict] = None) -> str:
     """스크리닝 결과를 보고서 형태로 포맷"""
     if not candidates:
         return "조건에 맞는 저평가 저가주를 찾지 못했습니다."
 
+    p = {**DEFAULT_PARAMS, **(params or {})}
     now = date or datetime.now().strftime("%Y-%m-%d %H:%M")
     lines = [
         f"{'='*65}",
         f"💰 저평가 저가주 스크리닝 보고서 | {now}",
         f"{'='*65}",
-        f"기준: 주가 < 10,000원 | PBR < 1.2 | PER 0.5~20 | 시총 300억+ | 거래량 5만+",
+        f"기준: 주가 < {p['max_price']:,}원 | PBR < {p['max_pbr']} | "
+        f"PER {p['min_per']}~{p['max_per']} | 시총 {p['min_marcap']/1e8:,.0f}억+ | "
+        f"거래량 {p['min_volume']:,}+",
         f"대상: KOSPI + KOSDAQ 전체",
         "",
         f"{'순위':<4} {'종목명':<14} {'시장':<7} {'현재가':>7} {'PER':>6} {'PBR':>5} "

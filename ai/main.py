@@ -3,6 +3,7 @@ import os
 import re
 import glob as _glob
 from datetime import datetime as _datetime
+from typing import Dict, Optional
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.responses import StreamingResponse, HTMLResponse, Response, FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -185,6 +186,48 @@ def _stock_name_with_request(text: str) -> bool:
 def _is_lowprice_screen_request(text: str) -> bool:
     t = text.replace(" ", "")
     return any(kw.replace(" ", "") in t for kw in _LOWPRICE_KEYWORDS)
+
+
+def _parse_won_amount(text: str) -> Optional[int]:
+    """'1만원', '5천원', '1만5천원', '20000원' 형태의 금액 표현을 원 단위 정수로 변환"""
+    t = text.replace(",", "").replace(" ", "")
+    m = re.search(r'(\d+(?:\.\d+)?)만(?:(\d+(?:\.\d+)?)천)?원', t)
+    if m:
+        amount = float(m.group(1)) * 10_000
+        if m.group(2):
+            amount += float(m.group(2)) * 1_000
+        return int(amount)
+    m = re.search(r'(\d+(?:\.\d+)?)천원', t)
+    if m:
+        return int(float(m.group(1)) * 1_000)
+    m = re.search(r'(\d+)원', t)
+    if m:
+        return int(m.group(1))
+    return None
+
+
+def _parse_lowprice_params(text: str) -> Optional[Dict]:
+    """사용자 메시지에서 저평가 스크리닝 기준(가격 상한·PBR·PER)을 추출
+    예: '5천원 이하 저평가주', 'PBR 1 이하', 'PER 10 이하인 저평가 종목'
+    명시되지 않은 항목은 low_price_screener.DEFAULT_PARAMS 값을 그대로 사용
+    """
+    params: Dict = {}
+
+    price_m = re.search(r'([0-9,]+\s*(?:만\s*\d*\s*천?|천)?\s*원)\s*(이하|미만|이내)', text)
+    if price_m:
+        amount = _parse_won_amount(price_m.group(1))
+        if amount:
+            params["max_price"] = amount
+
+    pbr_m = re.search(r'PBR\s*([\d.]+)\s*(이하|미만)', text, re.IGNORECASE)
+    if pbr_m:
+        params["max_pbr"] = float(pbr_m.group(1))
+
+    per_m = re.search(r'PER\s*([\d.]+)\s*(이하|미만)', text, re.IGNORECASE)
+    if per_m:
+        params["max_per"] = float(per_m.group(1))
+
+    return params or None
 
 _STOCK_REPORTS_DIR = os.path.join(os.path.dirname(__file__), "stock_analysis", "reports")
 _ANSWERS_DIR = os.path.join(os.path.dirname(__file__), "stock_analysis", "reports", "answers")
@@ -512,19 +555,26 @@ async def chat(req: ChatRequest):
 
             # ── 경로 LOWPRICE: 저평가 저가주 스크리닝 ────────
             elif run_lowprice_screen:
-                notice = "🔍 **저평가 저가주 스크리닝 중...**\nKOSPI + KOSDAQ 전체 종목 스캔 (만원 미만 / PBR < 1.2 / PER 0.5~20)\n⏳ 30~60초 소요됩니다.\n\n"
+                from stock_analysis.utils.low_price_screener import (
+                    screen_low_price_stocks, format_report, DEFAULT_PARAMS
+                )
+                lowprice_params = _parse_lowprice_params(user_msg)
+                p = {**DEFAULT_PARAMS, **(lowprice_params or {})}
+                notice = (
+                    f"🔍 **저평가 저가주 스크리닝 중...**\n"
+                    f"KOSPI + KOSDAQ 전체 종목 스캔 (가격 < {p['max_price']:,}원 / "
+                    f"PBR < {p['max_pbr']} / PER {p['min_per']}~{p['max_per']})\n"
+                    f"⏳ 30~60초 소요됩니다.\n\n"
+                )
                 for ch in notice:
                     collected.append(ch)
                     yield ch
                     await asyncio.sleep(0)
                 try:
-                    from stock_analysis.utils.low_price_screener import (
-                        screen_low_price_stocks, format_report
-                    )
                     candidates = await asyncio.get_event_loop().run_in_executor(
-                        None, screen_low_price_stocks, "ALL", None
+                        None, screen_low_price_stocks, "ALL", lowprice_params
                     )
-                    report = format_report(candidates)
+                    report = format_report(candidates, params=lowprice_params)
                     report = _summarize_long_text(report, "lowprice")
                     chunk_size = 200
                     for i in range(0, len(report), chunk_size):
