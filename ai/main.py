@@ -206,11 +206,25 @@ def _parse_won_amount(text: str) -> Optional[int]:
     return None
 
 
+_RELAX_KEYWORDS = [
+    "상향", "올려", "올리", "완화", "느슨", "넓게", "넓혀", "늘려",
+    "늘리", "더 많이", "여유있게", "범위 넓", "범위넓",
+]
+_TIGHTEN_KEYWORDS = [
+    "하향", "낮춰", "낮추", "엄격", "좁게", "좁혀", "줄여", "줄이",
+    "더 적게", "타이트", "범위 좁", "범위좁",
+]
+
+
 def _parse_lowprice_params(text: str) -> Optional[Dict]:
     """사용자 메시지에서 저평가 스크리닝 기준(가격 상한·PBR·PER)을 추출
-    예: '5천원 이하 저평가주', 'PBR 1 이하', 'PER 10 이하인 저평가 종목'
-    명시되지 않은 항목은 low_price_screener.DEFAULT_PARAMS 값을 그대로 사용
+    1) 절대값 표현 우선: '5천원 이하 저평가주', 'PBR 1 이하', 'PER 10 이하인 저평가 종목'
+    2) 절대값이 없으면 상대 조정 표현 처리: '기준 상향 조정', '조건 완화', '더 엄격하게' 등
+       → 기존 결과가 0건이거나 너무 적을 때 기준 자체(만원/PBR/PER)를 넓히거나 좁혀달라는 의도
+    명시/추론되지 않은 항목은 low_price_screener.DEFAULT_PARAMS 값을 그대로 사용
     """
+    from stock_analysis.utils.low_price_screener import DEFAULT_PARAMS
+
     params: Dict = {}
 
     price_m = re.search(r'([0-9,]+\s*(?:만\s*\d*\s*천?|천)?\s*원)\s*(이하|미만|이내)', text)
@@ -226,6 +240,21 @@ def _parse_lowprice_params(text: str) -> Optional[Dict]:
     per_m = re.search(r'PER\s*([\d.]+)\s*(이하|미만)', text, re.IGNORECASE)
     if per_m:
         params["max_per"] = float(per_m.group(1))
+
+    if params:
+        return params
+
+    # 절대값이 없을 때만 상대 조정 키워드로 기준 자체를 넓히거나(완화) 좁힘(강화)
+    if any(kw in text for kw in _RELAX_KEYWORDS):
+        if "max_price" not in params:
+            params["max_price"] = int(DEFAULT_PARAMS["max_price"] * 1.5)
+        params["max_pbr"] = round(DEFAULT_PARAMS["max_pbr"] * 1.5, 2)
+        params["max_per"] = round(DEFAULT_PARAMS["max_per"] * 1.3, 1)
+    elif any(kw in text for kw in _TIGHTEN_KEYWORDS):
+        if "max_price" not in params:
+            params["max_price"] = int(DEFAULT_PARAMS["max_price"] * 0.7)
+        params["max_pbr"] = round(DEFAULT_PARAMS["max_pbr"] * 0.7, 2)
+        params["max_per"] = round(DEFAULT_PARAMS["max_per"] * 0.7, 1)
 
     return params or None
 
