@@ -77,7 +77,12 @@ class ReportWriter:
 
         now = datetime.now()
         self.report_time = now
-        self.time_label = "오전 7시" if now.hour < 12 else "저녁 10시"
+        if abs(now.hour - 7) <= 1:
+            self.time_label = "오전 7시"
+        elif abs(now.hour - 22) <= 1:
+            self.time_label = "저녁 10시"
+        else:
+            self.time_label = now.strftime("%H시 %M분 (수동 실행)")
         self.date_str = now.strftime("%Y년 %m월 %d일")
 
     def run(self) -> str:
