@@ -121,7 +121,7 @@ def generate_executive_summary(
         key=lambda x: x[1].get("매매시점", {}).get("종합점수", 0),
         reverse=True,
     )[:3]
-    top_names = [f"{k}({v.get('투자의견', {}).get('의견', '?')})" for k, v in top_stocks]
+    top_names = [f"{k}({v.get('투자의견', {}).get('투자등급', '?')})" for k, v in top_stocks]
 
     eco_summary = {
         "KOSPI": economic_data.get("지수", {}).get("KOSPI", {}).get("close", "N/A"),

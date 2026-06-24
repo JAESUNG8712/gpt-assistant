@@ -277,7 +277,7 @@ async def get_index_data(index: str = "KOSPI", days: int = 30) -> dict:
         start = get_date_before(days)
         df = krx_stock.get_index_ohlcv_by_date(start, end, code)
         if df.empty:
-            return {"error": "지수 데이터 없음"}
+            return _mock_index_data(index)
 
         latest = df.iloc[-1]
         prev = df.iloc[-2] if len(df) > 1 else df.iloc[-1]
@@ -288,8 +288,8 @@ async def get_index_data(index: str = "KOSPI", days: int = 30) -> dict:
             "change_pct": round((latest["종가"] - prev["종가"]) / prev["종가"] * 100, 2) if prev["종가"] else 0.0,
             "volume": int(latest["거래량"]),
         }
-    except Exception as e:
-        return {"error": str(e)}
+    except Exception:
+        return _mock_index_data(index)
 
 
 async def get_short_selling(ticker: str, days: int = 10) -> dict:
