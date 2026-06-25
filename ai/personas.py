@@ -10,6 +10,7 @@ PERSONAS = {
         "features": {
             "use_law": True,
             "use_coding": True,
+            "stock_mode": True,  # 통합 검색에서도 주식 질문을 자동 처리하므로 주식 사이드바(보고서·스크리닝 설정) 항상 노출
         },
     },
     "hr": {
