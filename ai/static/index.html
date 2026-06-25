@@ -215,6 +215,26 @@
     .persona-tab.active .tab-icon { transform: scale(1.15); }
     .persona-tab:not(.active):hover { background: var(--surface3); color: var(--text); }
 
+    /* ── 통합 검색 + 전문가 직접 선택(접힘) ────── */
+    .persona-tab.persona-main { flex: 2; }
+    .persona-more-wrap { position: relative; flex: 1; min-width: 56px; }
+    .persona-more-menu {
+      display: none; position: absolute; top: 100%; right: 0; z-index: 30;
+      background: var(--surface2); border: 1px solid var(--border); border-radius: 10px;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.18); padding: 4px; min-width: 160px;
+    }
+    .persona-more-menu.open { display: block; }
+    .persona-more-item {
+      display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-radius: 7px;
+      cursor: pointer; font-size: 0.78rem; color: var(--text-dim); white-space: nowrap;
+    }
+    .persona-more-item .tab-icon { font-size: 1rem; }
+    .persona-more-item:hover { background: var(--surface3); color: var(--text); }
+    .persona-more-item.active { color: var(--persona-color); font-weight: 700; }
+    .msg-persona-tag {
+      font-size: 0.66rem; color: var(--text-dim); margin: 0 0 3px 2px; opacity: 0.8;
+    }
+
     /* ── 메시지 목록 ─────────────── */
     .messages {
       flex: 1; overflow-y: auto; padding: 16px;
@@ -933,19 +953,45 @@
 
   function renderPersonaBar() {
     const bar = document.getElementById('persona-bar');
-    bar.innerHTML = personas.map(p => `
-      <div class="persona-tab" id="tab-${p.id}" onclick="selectPersona('${p.id}')">
-        <span class="tab-icon">${p.icon}</span>
-        <span class="tab-name">${p.name}</span>
-      </div>`).join('');
+    const autoP = personas.find(p => p.id === 'auto') || personas[0];
+    const others = personas.filter(p => p.id !== autoP.id);
+    bar.innerHTML = `
+      <div class="persona-tab persona-main" id="tab-${autoP.id}" onclick="selectPersona('${autoP.id}')">
+        <span class="tab-icon">${autoP.icon}</span>
+        <span class="tab-name">${autoP.name}</span>
+      </div>
+      <div class="persona-more-wrap">
+        <div class="persona-tab" id="persona-more-btn" onclick="togglePersonaMore(event)">
+          <span class="tab-icon">⚙️</span>
+          <span class="tab-name">전문가 직접 선택</span>
+        </div>
+        <div class="persona-more-menu" id="persona-more-menu">
+          ${others.map(p => `
+            <div class="persona-more-item" id="tab-${p.id}" onclick="selectPersona('${p.id}'); closePersonaMore();">
+              <span class="tab-icon">${p.icon}</span><span class="tab-name">${p.name}</span>
+            </div>`).join('')}
+        </div>
+      </div>`;
   }
+
+  function togglePersonaMore(e) {
+    e.stopPropagation();
+    document.getElementById('persona-more-menu').classList.toggle('open');
+  }
+  function closePersonaMore() {
+    document.getElementById('persona-more-menu').classList.remove('open');
+  }
+  document.addEventListener('click', (e) => {
+    const menu = document.getElementById('persona-more-menu');
+    if (menu && !e.target.closest('.persona-more-wrap')) menu.classList.remove('open');
+  });
 
   async function selectPersona(id) {
     currentPersona = personas.find(p => p.id === id);
     if (!currentPersona) return;
 
     // 탭 활성화
-    document.querySelectorAll('.persona-tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.persona-tab, .persona-more-item').forEach(t => t.classList.remove('active'));
     const tab = document.getElementById(`tab-${id}`);
     if (tab) tab.classList.add('active');
 
@@ -1011,8 +1057,13 @@
 
   async function loadHistory() {
     if (!currentPersona) return;
+    // auto(통합 검색)는 모든 페르소나의 대화를 하나의 타임라인으로 합쳐서 보여준다.
+    // 백엔드는 여전히 메시지마다 분류된 페르소나(m.persona)로 분리 저장하므로,
+    // 각 답변 위에 실제 처리한 전문가를 작게 표시해 구분한다.
+    const isAuto = currentPersona.id === 'auto';
+    const url = isAuto ? `/history?limit=50` : `/history?persona=${currentPersona.id}&limit=50`;
     try {
-      const r = await fetch(`/history?persona=${currentPersona.id}&limit=50`);
+      const r = await fetch(url);
       const d = await r.json();
       const msgs = d.history || [];
 
@@ -1026,9 +1077,12 @@
       msgs.forEach(m => {
         const div = document.createElement('div');
         div.className = `msg ${m.role}`;
+        const msgPersona = (isAuto && m.persona) ? personas.find(p => p.id === m.persona) : null;
+        const tag = (m.role !== 'user' && msgPersona && msgPersona.id !== 'auto')
+          ? `<div class="msg-persona-tag">${msgPersona.icon} ${msgPersona.name}</div>` : '';
         div.innerHTML = `
-          <div class="msg-avatar">${m.role === 'user' ? '👤' : currentPersona.icon}</div>
-          <div class="msg-bubble">${m.role === 'user' ? escHtml(m.content) : renderMd(m.content)}</div>`;
+          <div class="msg-avatar">${m.role === 'user' ? '👤' : (msgPersona ? msgPersona.icon : currentPersona.icon)}</div>
+          <div class="msg-bubble">${tag}${m.role === 'user' ? escHtml(m.content) : renderMd(m.content)}</div>`;
         container.appendChild(div);
       });
       container.scrollTop = container.scrollHeight;
