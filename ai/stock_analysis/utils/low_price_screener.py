@@ -202,11 +202,12 @@ def _candidate_pool() -> Dict[str, str]:
         cached, _ = load_cache()
         pool.update(cached)
         if len(pool) < 30:
-            fetched, _ = fetch_popular_stocks(top_n=80)
+            fetched, source = fetch_popular_stocks(top_n=80)
             pool.update(fetched)
+            print(f"[lowprice_screener] 인기종목 신규수집 소스={source} {len(fetched)}개")
         pool.update(_STATIC_FALLBACK)
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[lowprice_screener] 후보군 수집 실패: {e}")
     return pool
 
 
@@ -214,21 +215,26 @@ def _screen_via_naver(params: Optional[Dict] = None) -> List[Dict]:
     """pykrx 전체 종목 스캔 실패 시: 인기 종목 후보군을 네이버 모바일 API로 개별 조회.
     전체 시장 스캔이 아니라 후보군(최대 ~150종목) 한정 스캔이라 커버리지가 좁다."""
     if not HAS_REQUESTS:
+        print("[lowprice_screener] requests 모듈 없음 — 네이버 fallback 불가")
         return []
 
     p = {**DEFAULT_PARAMS, **(params or {})}
     pool = _candidate_pool()
+    print(f"[lowprice_screener] 네이버 fallback 후보군 {len(pool)}개 조회 시작")
     if not pool:
         return []
 
     candidates = []
+    ok, fail = 0, 0
     with ThreadPoolExecutor(max_workers=10) as ex:
         futures = {ex.submit(_fetch_naver_snapshot, ticker): (name, ticker) for name, ticker in pool.items()}
         for fut in as_completed(futures):
             name, ticker = futures[fut]
             snap = fut.result()
             if not snap:
+                fail += 1
                 continue
+            ok += 1
             close, volume, marcap = snap["close"], snap["volume"], snap["marcap"]
             per, pbr, bps, div = snap["per"], snap["pbr"], snap["bps"], snap["div"]
 
@@ -259,6 +265,7 @@ def _screen_via_naver(params: Optional[Dict] = None) -> List[Dict]:
                 "괴리율": round((bps - close) / bps * 100, 1) if bps and close and bps > 0 and bps > close else 0,
             })
 
+    print(f"[lowprice_screener] 네이버 fallback 조회 결과 성공={ok} 실패={fail} 기준통과={len(candidates)}")
     candidates.sort(key=lambda x: x["저평가점수"], reverse=True)
     return candidates[:p["top_n"]]
 
