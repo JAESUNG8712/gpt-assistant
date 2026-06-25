@@ -76,6 +76,12 @@ def init_db():
             updated_at TEXT NOT NULL,
             UNIQUE(persona, q_lower)
         )""")
+        # 앱 전역 설정 (key-value, JSON 직렬화) — 재배포/재시작 후에도 유지되는 사용자 설정값
+        c.execute("""CREATE TABLE IF NOT EXISTS app_settings (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )""")
     # 정적 KB를 SQLite에 영구 저장 (엔진 재시작 후에도 검색 가능)
     _seed_static_kb_to_db()
 
@@ -456,3 +462,28 @@ def memory_stats() -> dict:
         "learned_items": learned_count,
         "engine": "자체 TF-IDF 엔진 (외부 API 없음)",
     }
+
+
+def save_setting(key: str, value: dict):
+    """앱 전역 설정 저장 (JSON 직렬화) — 재배포/재시작 후에도 유지"""
+    import json
+    now = datetime.now().isoformat()
+    with _conn() as c:
+        c.execute(
+            "INSERT INTO app_settings (key, value, updated_at) VALUES (?,?,?)"
+            " ON CONFLICT(key) DO UPDATE SET value=?, updated_at=?",
+            (key, json.dumps(value, ensure_ascii=False), now, json.dumps(value, ensure_ascii=False), now),
+        )
+
+
+def get_setting(key: str, default: dict = None) -> dict:
+    """저장된 앱 전역 설정 조회. 없으면 default 반환"""
+    import json
+    with _conn() as c:
+        row = c.execute("SELECT value FROM app_settings WHERE key=?", (key,)).fetchone()
+    if not row:
+        return default
+    try:
+        return json.loads(row["value"])
+    except Exception:
+        return default

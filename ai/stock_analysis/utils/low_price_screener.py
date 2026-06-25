@@ -27,9 +27,9 @@ def _recent_date() -> str:
 
 # 스크리닝 기본값
 DEFAULT_PARAMS = {
-    "max_price":      10_000,   # 주가 상한 (원)
+    "max_price":      20_000,   # 주가 상한 (원)
     "min_marcap":     30_000_000_000,  # 시가총액 최소 300억 (유령주 제외)
-    "max_pbr":        1.2,      # PBR 상한 (장부가치 대비 저평가)
+    "max_pbr":        1.5,      # PBR 상한 (장부가치 대비 저평가)
     "min_per":        0.5,      # PER 최소 (적자 기업 제외)
     "max_per":        20.0,     # PER 상한 (지나치게 고평가 제외)
     "min_volume":     50_000,   # 최소 일 거래량 (유동성 확보)
