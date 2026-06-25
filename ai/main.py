@@ -605,6 +605,9 @@ async def chat(req: ChatRequest):
                     screen_low_price_stocks, format_report, DEFAULT_PARAMS
                 )
                 lowprice_params = _parse_lowprice_params(user_msg)
+                saved_settings = mem.get_setting("lowprice_screen")
+                # 채팅 중 명시한 조건이 최우선, 없으면 앱에서 저장한 설정, 둘 다 없으면 코드 기본값
+                lowprice_params = lowprice_params or saved_settings
                 p = {**DEFAULT_PARAMS, **(lowprice_params or {})}
                 notice = (
                     f"🔍 **저평가 저가주 스크리닝 중...**\n"
@@ -1150,6 +1153,30 @@ async def stock_popular_sync(top_n: int = 50):
     result = refresh_popular_stocks(top_n=top_n, force=True)
     return result
 
+
+class LowPriceSettingsRequest(BaseModel):
+    max_price: Optional[int] = None
+    max_pbr: Optional[float] = None
+    max_per: Optional[float] = None
+
+@app.get("/stock/lowprice/settings")
+def get_lowprice_settings():
+    """저평가 저가주 스크리닝 기준 조회 — 앱 저장값이 있으면 우선, 없으면 코드 기본값"""
+    from stock_analysis.utils.low_price_screener import DEFAULT_PARAMS
+    saved = mem.get_setting("lowprice_screen") or {}
+    return {**DEFAULT_PARAMS, **saved}
+
+@app.post("/stock/lowprice/settings")
+def save_lowprice_settings(req: LowPriceSettingsRequest):
+    """저평가 저가주 스크리닝 기준을 앱 내에서 저장 — 이후 채팅에서 별도 조건을 명시하지 않으면 이 값을 사용"""
+    params = {k: v for k, v in req.dict().items() if v is not None}
+    if not params:
+        raise HTTPException(400, "변경할 값이 없습니다")
+    saved = mem.get_setting("lowprice_screen") or {}
+    saved.update(params)
+    mem.save_setting("lowprice_screen", saved)
+    from stock_analysis.utils.low_price_screener import DEFAULT_PARAMS
+    return {"ok": True, "settings": {**DEFAULT_PARAMS, **saved}}
 
 @app.get("/stock/reports/list")
 def stock_reports_list():
