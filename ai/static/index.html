@@ -634,6 +634,20 @@
         <div id="popular-stocks-info" style="font-size:10px;color:var(--text-dim);margin:4px 0 6px;line-height:1.5">KRX 거래대금 상위 종목 자동 등록</div>
         <button class="sidebar-btn" onclick="refreshPopularStocks()" id="btn-popular-refresh">🔄 인기 종목 갱신</button>
         <div style="height:1px;background:var(--border);margin:12px 0"></div>
+        <label>💰 저평가 스크리닝 기준</label>
+        <div style="display:flex;gap:6px;margin-top:6px">
+          <div style="flex:1">
+            <div style="font-size:10px;color:var(--text-dim);margin-bottom:2px">가격 이하(원)</div>
+            <input type="number" id="lp-max-price" step="1000" placeholder="20000" style="width:100%;padding:6px 8px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:0.82rem">
+          </div>
+          <div style="flex:1">
+            <div style="font-size:10px;color:var(--text-dim);margin-bottom:2px">PBR 이하</div>
+            <input type="number" id="lp-max-pbr" step="0.1" placeholder="1.5" style="width:100%;padding:6px 8px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:0.82rem">
+          </div>
+        </div>
+        <button class="sidebar-btn" onclick="saveLowpriceSettings()" id="btn-lp-save" style="margin-top:6px">💾 기준 저장</button>
+        <div style="font-size:10px;color:var(--text-dim);margin-top:3px;line-height:1.4">저장 후 "저평가 종목 찾아줘" 요청 시 이 기준이 기본 적용됩니다 (채팅에서 직접 조건을 말하면 그 값이 우선)</div>
+        <div style="height:1px;background:var(--border);margin:12px 0"></div>
         <label>🧹 초기화</label>
         <button class="sidebar-btn danger" onclick="resetStockHistory()" style="margin-top:4px">🗑️ 주식 대화 이력 초기화</button>
         <div style="font-size:10px;color:var(--text-dim);margin-top:3px;line-height:1.4">답변 오류 반복 시 초기화 후 재시도</div>
@@ -1034,7 +1048,7 @@
     if (stockSection) {
       const hasStockMode = currentPersona.features && currentPersona.features.stock_mode;
       stockSection.style.display = hasStockMode ? '' : 'none';
-      if (hasStockMode) refreshStockReports();
+      if (hasStockMode) { refreshStockReports(); loadLowpriceSettings(); }
     }
 
     // 모바일: 페르소나 선택 후 사이드바 자동 닫기
@@ -1627,6 +1641,42 @@
       container.innerHTML = '<span style="font-size:11px;color:#d32f2f">❌ 목록 불러오기 실패</span>';
     } finally {
       if (btn) { btn.disabled = false; btn.textContent = '🔄 목록 새로고침'; }
+    }
+  }
+
+  // ── 저평가 스크리닝 기준 설정 ─────────────
+  async function loadLowpriceSettings() {
+    try {
+      const r = await fetch('/stock/lowprice/settings');
+      const d = await r.json();
+      const priceEl = document.getElementById('lp-max-price');
+      const pbrEl = document.getElementById('lp-max-pbr');
+      if (priceEl && d.max_price != null) priceEl.value = d.max_price;
+      if (pbrEl && d.max_pbr != null) pbrEl.value = d.max_pbr;
+    } catch(e) {}
+  }
+
+  async function saveLowpriceSettings() {
+    const priceEl = document.getElementById('lp-max-price');
+    const pbrEl = document.getElementById('lp-max-pbr');
+    const btn = document.getElementById('btn-lp-save');
+    const body = {};
+    if (priceEl && priceEl.value) body.max_price = parseInt(priceEl.value, 10);
+    if (pbrEl && pbrEl.value) body.max_pbr = parseFloat(pbrEl.value);
+    if (Object.keys(body).length === 0) { showToast('⚠️ 값을 입력하세요'); return; }
+    if (btn) { btn.disabled = true; btn.textContent = '⏳ 저장 중...'; }
+    try {
+      const r = await fetch('/stock/lowprice/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (!r.ok) throw new Error();
+      showToast('✅ 스크리닝 기준 저장 완료');
+    } catch(e) {
+      showToast('❌ 저장 실패');
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = '💾 기준 저장'; }
     }
   }
 
