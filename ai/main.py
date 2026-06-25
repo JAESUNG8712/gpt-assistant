@@ -620,9 +620,20 @@ async def chat(req: ChatRequest):
                     yield ch
                     await asyncio.sleep(0)
                 try:
-                    candidates = await asyncio.get_event_loop().run_in_executor(
+                    # pykrx 차단 시 네이버 fallback까지 합쳐 60초를 훌쩍 넘기는 경우가 있어
+                    # (관찰된 사례: 응답이 안내문구만 남고 끊김) 일부 리버스 프록시가
+                    # 일정 시간 응답 데이터가 없으면 연결을 끊는다. 결과를 기다리는 동안
+                    # 보이지 않는 문자(zero-width space)를 주기적으로 흘려보내 커넥션을 유지한다.
+                    future = asyncio.get_event_loop().run_in_executor(
                         None, screen_low_price_stocks, "ALL", lowprice_params
                     )
+                    while True:
+                        done, _ = await asyncio.wait({future}, timeout=4)
+                        if done:
+                            break
+                        collected.append("​")
+                        yield "​"
+                    candidates = future.result()
                     report = format_report(candidates, params=lowprice_params)
                     report = _summarize_long_text(report, "lowprice")
                     chunk_size = 200
