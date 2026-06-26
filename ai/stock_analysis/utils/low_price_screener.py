@@ -4,9 +4,17 @@
 
 pykrx가 클라우드 환경(Railway 등)에서 KRX 직접 API 호출이 차단되어 빈 결과만
 반환하는 경우가 있음(이미 popular_stocks.py/krx_client.py에서 같은 문제로
-네이버 금융 fallback을 쓰고 있음) — 이 모듈도 pykrx 전체 종목 스캔이 실패하면
-네이버 모바일 API로 후보 종목군(인기 종목 캐시)을 개별 조회하는 fallback을 쓴다.
-전체 시장 스캔은 아니므로 pykrx 정상 동작 시보다 커버리지가 좁다.
+네이버 금융 fallback을 쓰고 있음). 이 모듈은 pykrx 전체 종목 스캔이 실패하면
+2단계로 네이버 금융을 이용해 KOSPI+KOSDAQ 전 종목을 스캔한다.
+  1단계: finance.naver.com 시가총액 순위 페이지(전 종목, 페이지네이션)에서
+         종목코드/현재가/PER/거래량/시가총액을 긁어와 가격·PER·거래량·시총
+         기준으로 1차 필터링 (PBR 정보가 없는 페이지라 PBR 필터는 아직 적용 안 함)
+  2단계: 1차 통과 종목만 네이버 모바일 API로 개별 조회해 PBR/BPS/배당률을
+         얻고 최종 필터·점수 계산
+전체 종목을 긁지만 1차 필터로 후보를 좁혀두기 때문에 2단계 호출 수가
+적어 실행 시간이 과도하게 늘지 않는다. 1단계 자체가 실패하면(네트워크
+차단 등) 인기 종목 캐시 기반의 좁은 후보군 fallback(_screen_via_naver)으로
+한 번 더 재시도한다.
 """
 
 import os
@@ -68,7 +76,7 @@ def screen_low_price_stocks(
     Returns: 점수 순 정렬된 후보 종목 리스트
     """
     if not HAS_PYKRX:
-        return _screen_via_naver(params) or _mock_results()
+        return _screen_full_market_via_naver(params) or _screen_via_naver(params) or _mock_results()
 
     p = {**DEFAULT_PARAMS, **(params or {})}
     date = _recent_date()
@@ -139,7 +147,7 @@ def screen_low_price_stocks(
     # pykrx가 모든 시장에서 전체 종목 시세 자체를 못 가져온 경우(클라우드 IP 차단 등)
     # — 조건에 안 맞아 0건인 것과 구분해 네이버 fallback으로 재시도
     if not fetched_any_market:
-        return _screen_via_naver(params) or _mock_results()
+        return _screen_full_market_via_naver(params) or _screen_via_naver(params) or _mock_results()
 
     # 점수 내림차순 정렬
     candidates.sort(key=lambda x: x["저평가점수"], reverse=True)
@@ -192,6 +200,146 @@ def _fetch_naver_snapshot(ticker: str) -> Optional[Dict]:
         }
     except Exception:
         return None
+
+
+# ── 네이버 전체 시장 순위 페이지 스캔 (pykrx 차단 시 1순위 fallback) ──
+
+_MARKET_SUM_URL = "https://finance.naver.com/sise/sise_market_sum.naver"
+_MAX_KOSPI_PAGES = 30   # KOSPI 상장종목 ~960개 → 50개/페이지 기준 여유있게
+_MAX_KOSDAQ_PAGES = 45  # KOSDAQ 상장종목 ~1,700개 → 50개/페이지 기준 여유있게
+
+
+def _fetch_market_summary_page(sosok: str, page: int) -> List[Dict]:
+    """네이버 금융 시가총액 순위 페이지 1개 파싱 → [{ticker,name,close,marcap_eok,volume,per,market}]"""
+    if not HAS_REQUESTS:
+        return []
+    try:
+        resp = requests.get(
+            _MARKET_SUM_URL, params={"sosok": sosok, "page": page},
+            headers=_NAVER_HEADERS, timeout=8,
+        )
+        html = resp.content.decode("euc-kr", errors="replace")
+    except Exception:
+        return []
+
+    market = "KOSPI" if sosok == "0" else "KOSDAQ"
+    rows = re.findall(r"<tr[^>]*>.*?</tr>", html, re.S)
+    out = []
+    for r in rows:
+        m = re.search(r'code=(\d{6})[^>]*>([^<]+)</a>', r)
+        if not m:
+            continue
+        ticker, name = m.group(1), m.group(2).strip()
+        tds = [re.sub(r"<[^>]+>", "", t).strip() for t in re.findall(r"<td[^>]*>(.*?)</td>", r, re.S)]
+        if len(tds) < 11:
+            continue
+        try:
+            close = float(tds[2].replace(",", "") or 0)
+            marcap_eok = float(tds[6].replace(",", "") or 0)
+            volume = float(tds[9].replace(",", "") or 0)
+            per = float(tds[10].replace(",", "") or 0)
+        except ValueError:
+            continue
+        out.append({
+            "ticker": ticker, "name": name, "close": close,
+            "marcap_eok": marcap_eok, "volume": volume, "per": per, "market": market,
+        })
+    return out
+
+
+def _fetch_full_market_listing() -> List[Dict]:
+    """KOSPI+KOSDAQ 전 종목 시가총액 순위를 병렬로 긁어와 중복 제거 후 반환"""
+    if not HAS_REQUESTS:
+        return []
+
+    tasks = [("0", p) for p in range(1, _MAX_KOSPI_PAGES + 1)]
+    tasks += [("1", p) for p in range(1, _MAX_KOSDAQ_PAGES + 1)]
+
+    rows: List[Dict] = []
+    with ThreadPoolExecutor(max_workers=16) as ex:
+        futures = [ex.submit(_fetch_market_summary_page, sosok, page) for sosok, page in tasks]
+        for fut in as_completed(futures):
+            rows.extend(fut.result())
+
+    seen = set()
+    listing = []
+    for r in rows:
+        if r["ticker"] in seen:
+            continue
+        seen.add(r["ticker"])
+        listing.append(r)
+    return listing
+
+
+def _screen_full_market_via_naver(params: Optional[Dict] = None) -> List[Dict]:
+    """pykrx 전체 종목 스캔 실패 시 1순위 fallback: 네이버 시가총액 순위 페이지로
+    KOSPI+KOSDAQ 전 종목을 1차 필터링(가격/PER/거래량/시총)한 뒤, 통과한 종목만
+    네이버 모바일 API로 개별 조회해 PBR/BPS/배당률을 확인하고 최종 필터링한다."""
+    if not HAS_REQUESTS:
+        print("[lowprice_screener] requests 모듈 없음 — 전체시장 네이버 fallback 불가")
+        return []
+
+    p = {**DEFAULT_PARAMS, **(params or {})}
+    listing = _fetch_full_market_listing()
+    print(f"[lowprice_screener] 전체시장 종목 {len(listing)}개 수집")
+    if not listing:
+        return []
+
+    stage1 = [
+        r for r in listing
+        if 0 < r["close"] < p["max_price"]
+        and r["marcap_eok"] * 1e8 >= p["min_marcap"]
+        and r["volume"] >= p["min_volume"]
+        and p["min_per"] <= r["per"] <= p["max_per"]
+    ]
+    print(f"[lowprice_screener] 1차 필터(가격/PER/거래량/시총) 통과 {len(stage1)}개 — PBR 확인 단계 진입")
+    if not stage1:
+        return []
+
+    candidates = []
+    ok, fail = 0, 0
+    with ThreadPoolExecutor(max_workers=16) as ex:
+        futures = {ex.submit(_fetch_naver_snapshot, r["ticker"]): r for r in stage1}
+        for fut in as_completed(futures):
+            row = futures[fut]
+            snap = fut.result()
+            if not snap:
+                fail += 1
+                continue
+            ok += 1
+            close, volume, marcap = snap["close"], snap["volume"], snap["marcap"]
+            per, pbr, bps, div = snap["per"], snap["pbr"], snap["bps"], snap["div"]
+
+            if close <= 0 or close >= p["max_price"]:
+                continue
+            if marcap and marcap < p["min_marcap"]:
+                continue
+            if volume < p["min_volume"]:
+                continue
+            if pbr <= 0 or pbr > p["max_pbr"]:
+                continue
+            if per < p["min_per"] or per > p["max_per"]:
+                continue
+
+            score = _calc_score(close, per, pbr, bps, div, volume, marcap)
+            candidates.append({
+                "종목코드": row["ticker"],
+                "종목명": row["name"],
+                "시장": row["market"],
+                "현재가": close,
+                "PER": round(per, 1),
+                "PBR": round(pbr, 2),
+                "BPS": int(bps),
+                "배당수익률": round(div, 2),
+                "시가총액억": round(marcap / 1e8, 0),
+                "거래량": volume,
+                "저평가점수": score,
+                "괴리율": round((bps - close) / bps * 100, 1) if bps and close and bps > 0 and bps > close else 0,
+            })
+
+    print(f"[lowprice_screener] 전체시장 PBR 확인 결과 성공={ok} 실패={fail} 최종통과={len(candidates)}")
+    candidates.sort(key=lambda x: x["저평가점수"], reverse=True)
+    return candidates[:p["top_n"]]
 
 
 def _candidate_pool() -> Dict[str, str]:
