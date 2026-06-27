@@ -362,7 +362,8 @@ def _summarize_stock_report(report: str, targets: list) -> str:
     종합 요약뿐 아니라 TOP 추천 종목·저평가 종목도 항상 포함시켜
     채팅 응답의 중간 내용(추천 종목 등)이 비지 않도록 한다."""
     lines = report.splitlines()
-    filename = _list_stock_reports()[0] if _list_stock_reports() else None
+    _reports = _list_stock_reports()
+    filename = _reports[0] if _reports else None
     if filename:
         download_hint = (
             f"\n\n---\n"
