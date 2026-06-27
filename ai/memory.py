@@ -4,6 +4,7 @@
 """
 import sqlite3
 import os
+import contextlib
 from datetime import datetime
 
 # 기본 DB 경로: 앱 디렉토리 기준 상대 경로 (재시작 후에도 유지)
@@ -18,14 +19,21 @@ if _db_dir:
 
 # ── SQLite 연결 ───────────────────────────────────────
 
+@contextlib.contextmanager
 def _conn():
     # busy_timeout: 동시 쓰기 시 즉시 "database is locked" 에러 대신 대기 후 재시도
     # WAL: 읽기와 쓰기가 서로 블로킹하지 않도록 동시성 향상
+    # contextmanager로 감싸 `with _conn() as c:` 블록 종료 시 연결이 항상 close되도록 함
+    # (sqlite3.Connection을 그대로 with에 넘기면 commit/rollback만 되고 close되지 않아 누수됨)
     c = sqlite3.connect(DB_PATH, timeout=10)
     c.row_factory = sqlite3.Row
     c.execute("PRAGMA journal_mode=WAL")
     c.execute("PRAGMA busy_timeout=10000")
-    return c
+    try:
+        with c:
+            yield c
+    finally:
+        c.close()
 
 
 def init_db():
