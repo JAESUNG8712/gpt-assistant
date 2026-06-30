@@ -720,7 +720,7 @@
       </div>
     </div>
 
-    <div id="chat-body">
+    <div id="chat-body" style="flex:1;display:flex;flex-direction:column;min-height:0;overflow:hidden">
       <!-- 주식 빠른 액션 바 -->
       <div class="stock-quick-bar" id="stock-quick-bar">
         <span class="stock-quick-label">📈 빠른 분석:</span>
@@ -773,8 +773,8 @@
     </div><!-- /chat-body -->
 
     <!-- ── 예산관리 뷰 ──────────────────── -->
-    <div id="budget-view" style="display:none;flex:1;min-height:0">
-      <iframe id="budget-iframe" src="" style="width:100%;height:100%;border:none;background:var(--bg)"></iframe>
+    <div id="budget-view" style="display:none;flex:1;flex-direction:column;min-height:0;overflow:hidden">
+      <iframe id="budget-iframe" src="" style="width:100%;flex:1;border:none;background:var(--bg)"></iframe>
     </div>
   </main>
 </div>
@@ -2023,7 +2023,8 @@ sys.stderr = _stderr
     document.querySelectorAll('.persona-tab, .persona-more-item').forEach(t => t.classList.remove('active'));
     document.getElementById('budget-tab').classList.add('active');
     document.getElementById('chat-body').style.display = 'none';
-    document.getElementById('budget-view').style.display = 'flex';
+    const bv = document.getElementById('budget-view');
+    bv.style.display = 'flex';
     if (!budgetViewLoaded) {
       document.getElementById('budget-iframe').src = '/static/budget.html';
       budgetViewLoaded = true;
