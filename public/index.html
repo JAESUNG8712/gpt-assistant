@@ -18334,12 +18334,12 @@ function _roomRenderDay(rooms,viewRoom,selDate){
     const cells=plans.map(({room,plan})=>{
       const cell=plan[i];
       if(!cell.render)return"";
-      if(cell.items.length)return `<td rowspan="${cell.rowspan}" style="padding:0;border-bottom:none">${_roomCellsHtml(cell,cols,room)}</td>`;
+      if(cell.items.length)return `<td rowspan="${cell.rowspan}" style="padding:0;border-bottom:none;height:${cell.rowspan*32}px;vertical-align:top">${_roomCellsHtml(cell,cols,room)}</td>`;
       const colKey=`${room.id}|${selDate}`;
       const marked=_roomPendingMark(colKey,time);
       const range=marked?_roomMarkRange(colKey):null;
       const showLabel=range&&range.mid===i;
-      return `<td style="cursor:pointer;padding:0;${marked?"background:#60a5fa;border-bottom:none":""}" onclick="_roomCellClick('${room.id}','${selDate}','${time}')" onmouseenter="_roomCellHover('${room.id}|${selDate}','${time}')"><div style="height:100%;min-height:18px;display:flex;align-items:center;justify-content:center">${showLabel?'<span class="fz10" style="color:#fff;font-weight:600">선택됨</span>':""}</div></td>`;
+      return `<td style="cursor:pointer;padding:0;height:32px;vertical-align:top;${marked?"background:#60a5fa;border-bottom:none":""}" onclick="_roomCellClick('${room.id}','${selDate}','${time}')" onmouseenter="_roomCellHover('${room.id}|${selDate}','${time}')"><div style="height:100%;min-height:18px;display:flex;align-items:center;justify-content:center">${showLabel?'<span class="fz10" style="color:#fff;font-weight:600">선택됨</span>':""}</div></td>`;
     }).join("");
     return `<tr style="height:32px"><td class="fz11 text-gray" style="width:50px">${time}</td>${cells}</tr>`;
   }).join("");
@@ -18365,12 +18365,12 @@ function _roomRenderWeek(rooms,viewRoom,selDate){
     const cells=plans.map(({date,plan})=>{
       const cell=plan[i];
       if(!cell.render)return"";
-      if(cell.items.length)return `<td rowspan="${cell.rowspan}" style="padding:0;border-bottom:none">${_roomCellsHtml(cell,rooms,singleRoom)}</td>`;
+      if(cell.items.length)return `<td rowspan="${cell.rowspan}" style="padding:0;border-bottom:none;height:${cell.rowspan*30}px;vertical-align:top">${_roomCellsHtml(cell,rooms,singleRoom)}</td>`;
       const colKey=`${filterRoom||"all"}|${date}`;
       const marked=_roomPendingMark(colKey,time);
       const range=marked?_roomMarkRange(colKey):null;
       const showLabel=range&&range.mid===i;
-      return `<td style="cursor:pointer;padding:0;${marked?"background:#60a5fa;border-bottom:none":""}" onclick="_roomCellClick(${filterRoom?`'${filterRoom}'`:"null"},'${date}','${time}')" onmouseenter="_roomCellHover('${filterRoom||"all"}|${date}','${time}')"><div style="height:100%;min-height:18px;display:flex;align-items:center;justify-content:center">${showLabel?'<span class="fz10" style="color:#fff;font-weight:600">선택됨</span>':""}</div></td>`;
+      return `<td style="cursor:pointer;padding:0;height:30px;vertical-align:top;${marked?"background:#60a5fa;border-bottom:none":""}" onclick="_roomCellClick(${filterRoom?`'${filterRoom}'`:"null"},'${date}','${time}')" onmouseenter="_roomCellHover('${filterRoom||"all"}|${date}','${time}')"><div style="height:100%;min-height:18px;display:flex;align-items:center;justify-content:center">${showLabel?'<span class="fz10" style="color:#fff;font-weight:600">선택됨</span>':""}</div></td>`;
     }).join("");
     return `<tr style="height:30px"><td class="fz11 text-gray" style="width:50px">${time}</td>${cells}</tr>`;
   }).join("");
