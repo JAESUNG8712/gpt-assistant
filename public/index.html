@@ -18218,36 +18218,81 @@ function _roomColorOf(room){
   return _ROOM_COLOR_PALETTE[idx>=0?idx%_ROOM_COLOR_PALETTE.length:0];
 }
 function _roomSlotsList(){const s=[];for(let h2=7;h2<=21;h2++)s.push(`${String(h2).padStart(2,"0")}:00`);return s;}
-function _roomColumnCellPlan(dayRsv){
+function _roomRange(r){return {start:r.date,end:r.endDate||r.date};}
+function _roomCoversDate(r,ds){const {start,end}=_roomRange(r);return ds>=start&&ds<=end;}
+function _roomDaySlice(r,ds){
+  if(!_roomCoversDate(r,ds))return null;
+  const {start,end}=_roomRange(r);
+  if(ds===start&&ds===end)return {start:r.startTime,end:r.endTime};
+  if(ds===start)return {start:r.startTime,end:"22:00"};
+  if(ds===end)return {start:"07:00",end:r.endTime};
+  return {start:"07:00",end:"22:00"};
+}
+function _roomConflicts(roomId,startDate,endDate,startTime,endTime,allDay,excludeId){
+  return roomReservations.some(r=>{
+    if(excludeId&&r.id===excludeId)return false;
+    if(r.roomId!==roomId)return false;
+    const rEnd=r.endDate||r.date;
+    if(endDate<r.date||startDate>rEnd)return false;
+    if(allDay||r.allDay)return true;
+    if(startDate!==endDate||r.date!==rEnd)return true;
+    return r.startTime<endTime&&r.endTime>startTime;
+  });
+}
+function _roomColumnCellPlan(dayRsv,ds){
   const slots=_roomSlotsList();
-  const plan=slots.map(()=>({render:false,rowspan:1,items:[]}));
-  let i=0;
-  while(i<slots.length){
-    const time=slots[i];
-    const startList=dayRsv.filter(r=>r.startTime===time);
-    if(startList.length){
-      let span=Math.max(...startList.map(r=>Math.max(1,parseInt(r.endTime)-parseInt(r.startTime))));
-      span=Math.min(span,slots.length-i);
-      plan[i]={render:true,rowspan:span,items:startList};
-      i+=span;
-    }else{
-      plan[i]={render:true,rowspan:1,items:[]};
-      i+=1;
+  const plan=slots.map(()=>({render:true,rowspan:1,items:[]}));
+  const sliced=dayRsv.filter(r=>!r.allDay).map(r=>{const sl=_roomDaySlice(r,ds);return sl?{r,start:sl.start,end:sl.end}:null;}).filter(Boolean)
+    .sort((a,b)=>a.start.localeCompare(b.start)||a.end.localeCompare(b.end));
+  const clusters=[];
+  sliced.forEach(item=>{
+    let cluster=clusters.find(c=>item.start<c.end&&item.end>c.start);
+    if(!cluster){cluster={start:item.start,end:item.end,items:[]};clusters.push(cluster);}
+    cluster.start=cluster.start<item.start?cluster.start:item.start;
+    cluster.end=cluster.end>item.end?cluster.end:item.end;
+    cluster.items.push(item);
+  });
+  let merged=true;
+  while(merged){
+    merged=false;
+    for(let i=0;i<clusters.length&&!merged;i++){
+      for(let j=i+1;j<clusters.length;j++){
+        if(clusters[i].start<clusters[j].end&&clusters[i].end>clusters[j].start){
+          clusters[i].start=clusters[i].start<clusters[j].start?clusters[i].start:clusters[j].start;
+          clusters[i].end=clusters[i].end>clusters[j].end?clusters[i].end:clusters[j].end;
+          clusters[i].items=clusters[i].items.concat(clusters[j].items);
+          clusters.splice(j,1);
+          merged=true;break;
+        }
+      }
     }
   }
+  clusters.forEach(cluster=>{
+    const startIdx=slots.indexOf(cluster.start);
+    if(startIdx<0)return;
+    let span=Math.max(1,parseInt(cluster.end)-parseInt(cluster.start));
+    span=Math.min(span,slots.length-startIdx);
+    plan[startIdx]={render:true,rowspan:span,items:cluster.items.map(it=>({...it.r,_effStart:it.start,_effEnd:it.end}))};
+    for(let k=1;k<span;k++)plan[startIdx+k]={render:false,rowspan:1,items:[]};
+  });
   return plan;
 }
 function _roomBlockHtml(rsv,room){
   const canEdit=rsv.bookedBy===currentUser.id||currentUser.role==="admin";
-  return `<div style="background:${_roomColorOf(room)};color:white;padding:3px 8px;font-size:11px;display:flex;justify-content:space-between;align-items:center;gap:4px;height:100%;width:100%;box-sizing:border-box;${canEdit?"cursor:pointer":""}" title="${h(rsv.title)} (${h(getEmpName(rsv.bookedBy))}, ${rsv.startTime}~${rsv.endTime})" ${canEdit?`onclick="event.stopPropagation();openRoomEditModal('${rsv.id}')"`:""}>
+  const timeLabel=rsv._effStart&&rsv._effEnd?`${rsv._effStart}~${rsv._effEnd}`:`${rsv.startTime}~${rsv.endTime}`;
+  return `<div style="position:relative;background:${_roomColorOf(room)};color:white;padding:3px 22px 3px 8px;font-size:11px;height:100%;width:100%;box-sizing:border-box;border-top:2px solid rgba(255,255,255,.85);text-align:center;display:flex;align-items:center;justify-content:center;${canEdit?"cursor:pointer":""}" title="${h(rsv.title)} (${h(getEmpName(rsv.bookedBy))}, ${h(timeLabel)})" ${canEdit?`onclick="event.stopPropagation();openRoomEditModal('${rsv.id}')"`:""}>
     <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${room?h(room.name)+": ":""}${h(rsv.title)}${rsv.seriesId?" 🔁":""}</span>
-    ${canEdit?`<button style="background:transparent;border:none;color:white;cursor:pointer;font-size:11px;flex:none" onclick="event.stopPropagation();deleteRoomReservation('${rsv.id}')">✕</button>`:""}
+    ${canEdit?`<button style="position:absolute;right:2px;top:50%;transform:translateY(-50%);background:transparent;border:none;color:white;cursor:pointer;font-size:11px" onclick="event.stopPropagation();deleteRoomReservation('${rsv.id}')">✕</button>`:""}
   </div>`;
 }
 function _roomCellsHtml(cell,rooms,singleRoom){
   if(!cell.items.length)return"";
   if(cell.items.length===1)return _roomBlockHtml(cell.items[0],singleRoom||rooms.find(r=>r.id===cell.items[0].roomId));
   return `<div style="display:flex;gap:1px;height:100%;width:100%">${cell.items.map(it=>`<div style="flex:1;min-width:0;height:100%">${_roomBlockHtml(it,singleRoom||rooms.find(r=>r.id===it.roomId))}</div>`).join("")}</div>`;
+}
+function _roomAllDayBarHtml(rsv,room){
+  const canEdit=rsv.bookedBy===currentUser.id||currentUser.role==="admin";
+  return `<div style="background:${_roomColorOf(room)};color:white;border-radius:3px;padding:2px 6px;font-size:10px;margin-bottom:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-align:center;${canEdit?"cursor:pointer":""}" title="${h(rsv.title)} (종일${rsv.endDate&&rsv.endDate!==rsv.date?", "+h(rsv.date)+"~"+h(rsv.endDate):""})" ${canEdit?`onclick="event.stopPropagation();openRoomEditModal('${rsv.id}')"`:""}>종일 · ${room?h(room.name)+": ":""}${h(rsv.title)}</div>`;
 }
 function _roomCellClick(roomId,date,time){
   const colKey=`${roomId||"all"}|${date}`;
@@ -18329,7 +18374,13 @@ function _roomRenderDay(rooms,viewRoom,selDate){
   const cols=viewRoom==="all"?rooms:rooms.filter(r=>r.id===viewRoom);
   if(!cols.length)return `<div class="card"><div class="card-body text-gray" style="text-align:center;padding:30px">회의실을 찾을 수 없습니다.</div></div>`;
   const slots=_roomSlotsList();
-  const plans=cols.map(room=>({room,plan:_roomColumnCellPlan(roomReservations.filter(r=>r.roomId===room.id&&r.date===selDate))}));
+  const colRsv=cols.map(room=>roomReservations.filter(r=>r.roomId===room.id&&_roomCoversDate(r,selDate)));
+  const plans=cols.map((room,ci)=>({room,plan:_roomColumnCellPlan(colRsv[ci],selDate)}));
+  const hasAllDay=colRsv.some(list=>list.some(r=>r.allDay));
+  const allDayRow=hasAllDay?`<tr><td class="fz11 text-gray" style="width:50px">종일</td>${cols.map((room,ci)=>{
+    const items=colRsv[ci].filter(r=>r.allDay);
+    return `<td style="vertical-align:top;padding:2px">${items.map(r=>_roomAllDayBarHtml(r,room)).join("")}</td>`;
+  }).join("")}</tr>`:"";
   const rows=slots.map((time,i)=>{
     const cells=plans.map(({room,plan})=>{
       const cell=plan[i];
@@ -18344,7 +18395,7 @@ function _roomRenderDay(rooms,viewRoom,selDate){
     return `<tr style="height:32px"><td class="fz11 text-gray" style="width:50px">${time}</td>${cells}</tr>`;
   }).join("");
   return `<div class="card"><div class="card-head"><h3>🗓 ${selDate} 예약 현황</h3></div><div class="card-body" style="padding:0"><div class="tbl-wrap"><table style="table-layout:fixed">
-    <thead><tr><th style="width:50px">시간</th>${cols.map(r=>`<th style="color:${_roomColorOf(r)}">${h(r.name)}</th>`).join("")}</tr></thead><tbody>${rows}</tbody>
+    <thead><tr><th style="width:50px">시간</th>${cols.map(r=>`<th style="color:${_roomColorOf(r)};text-align:center">${h(r.name)}</th>`).join("")}</tr></thead><tbody>${allDayRow}${rows}</tbody>
   </table></div></div></div><div class="fz11 text-gray" style="margin-top:4px">시간 칸을 클릭해 시작 시간을 선택하고, 종료하고 싶은 시간 칸을 다시 클릭하면 예약 모달이 열립니다.</div>`;
 }
 function _roomWeekDates(dateStr){
@@ -18353,6 +18404,42 @@ function _roomWeekDates(dateStr){
   const monday=new Date(d);monday.setDate(d.getDate()-day);
   return Array.from({length:7},(_,i)=>{const x=new Date(monday);x.setDate(monday.getDate()+i);return x.toISOString().slice(0,10);});
 }
+function _roomWeekAllDayPlan(dates,filterRoom){
+  const weekStart=dates[0],weekEnd=dates[6];
+  const items=roomReservations.filter(r=>r.allDay&&(!filterRoom||r.roomId===filterRoom)&&!((r.endDate||r.date)<weekStart||r.date>weekEnd));
+  const sorted=items.map(r=>{
+    const s=r.date<weekStart?weekStart:r.date;
+    const e=(r.endDate||r.date)>weekEnd?weekEnd:(r.endDate||r.date);
+    return {r,s,e};
+  }).sort((a,b)=>a.s.localeCompare(b.s));
+  const lanes=[];
+  const placed=sorted.map(item=>{
+    let lane=0;
+    while(lanes[lane]&&lanes[lane].some(seg=>!(item.e<seg.s||item.s>seg.e)))lane++;
+    if(!lanes[lane])lanes[lane]=[];
+    lanes[lane].push({s:item.s,e:item.e});
+    return {...item,lane};
+  });
+  return {placed,laneCount:lanes.length};
+}
+function _roomDateSpanRowHtml(dates,laneItems,rooms,filterRoom){
+  let cells="";
+  let i=0;
+  while(i<dates.length){
+    const ds=dates[i];
+    const item=laneItems.find(it=>it.s===ds);
+    if(item){
+      const span=dates.indexOf(item.e)-dates.indexOf(item.s)+1;
+      const room=rooms.find(r=>r.id===item.r.roomId);
+      cells+=`<td colspan="${span}" style="padding:2px">${_roomAllDayBarHtml(item.r,filterRoom?null:room)}</td>`;
+      i+=span;
+    }else{
+      cells+=`<td></td>`;
+      i+=1;
+    }
+  }
+  return cells;
+}
 function _roomRenderWeek(rooms,viewRoom,selDate){
   const dates=_roomWeekDates(selDate);
   const filterRoom=viewRoom==="all"?null:viewRoom;
@@ -18360,7 +18447,12 @@ function _roomRenderWeek(rooms,viewRoom,selDate){
   if(filterRoom&&!singleRoom)return `<div class="card"><div class="card-body text-gray" style="text-align:center;padding:30px">회의실을 찾을 수 없습니다.</div></div>`;
   const slots=_roomSlotsList();
   const WD=["월","화","수","목","금","토","일"];
-  const plans=dates.map(date=>({date,plan:_roomColumnCellPlan(roomReservations.filter(r=>r.date===date&&(!filterRoom||r.roomId===filterRoom)))}));
+  const plans=dates.map(date=>({date,plan:_roomColumnCellPlan(roomReservations.filter(r=>(!filterRoom||r.roomId===filterRoom)&&_roomCoversDate(r,date)),date)}));
+  const {placed:allDayPlaced,laneCount:allDayLanes}=_roomWeekAllDayPlan(dates,filterRoom);
+  const allDayRows=allDayLanes?Array.from({length:allDayLanes},(_,lane)=>{
+    const laneItems=allDayPlaced.filter(p=>p.lane===lane);
+    return `<tr><td class="fz11 text-gray" style="width:50px">${lane===0?"종일":""}</td>${_roomDateSpanRowHtml(dates,laneItems,rooms,filterRoom)}</tr>`;
+  }).join(""):"";
   const rows=slots.map((time,i)=>{
     const cells=plans.map(({date,plan})=>{
       const cell=plan[i];
@@ -18375,7 +18467,7 @@ function _roomRenderWeek(rooms,viewRoom,selDate){
     return `<tr style="height:30px"><td class="fz11 text-gray" style="width:50px">${time}</td>${cells}</tr>`;
   }).join("");
   return `<div class="card"><div class="card-head"><h3>🗓 ${singleRoom?h(singleRoom.name)+" ":"전체 회의실 "}주간 예약 현황 (${dates[0]}~${dates[6]})</h3></div><div class="card-body" style="padding:0"><div class="tbl-wrap"><table style="table-layout:fixed">
-    <thead><tr><th style="width:50px">시간</th>${dates.map((d,i)=>`<th class="fz11">${WD[i]}<br>${d.slice(5)}</th>`).join("")}</tr></thead><tbody>${rows}</tbody>
+    <thead><tr><th style="width:50px">시간</th>${dates.map((d,i)=>`<th class="fz11" style="text-align:center">${WD[i]}<br>${d.slice(5)}</th>`).join("")}</tr></thead><tbody>${allDayRows}${rows}</tbody>
   </table></div></div></div><div class="fz11 text-gray" style="margin-top:4px">시간 칸을 클릭해 시작 시간을 선택하고, 종료하고 싶은 시간 칸을 다시 클릭하면 예약 모달이 열립니다.</div>`;
 }
 function _roomMonthDates(dateStr){
@@ -18394,8 +18486,8 @@ function _roomRenderMonth(rooms,viewRoom,selDate){
   const cellsHtml=days.map(d=>{
     const ds=d.toISOString().slice(0,10);
     const inMonth=d.getMonth()===month;
-    const dayRsv=roomReservations.filter(r=>r.date===ds&&(!filterRoom||r.roomId===filterRoom)).sort((a,b)=>a.startTime.localeCompare(b.startTime));
-    const chips=dayRsv.slice(0,4).map(r=>{const room=rooms.find(x=>x.id===r.roomId);return `<div style="background:${_roomColorOf(room)};color:white;border-radius:3px;padding:1px 4px;font-size:10px;margin-bottom:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${h(r.title)} (${h(room?.name||"")}, ${r.startTime}~${r.endTime})">${r.startTime} ${h(r.title)}</div>`;}).join("");
+    const dayRsv=roomReservations.filter(r=>(!filterRoom||r.roomId===filterRoom)&&_roomCoversDate(r,ds)).sort((a,b)=>(a.allDay?"00:00":a.startTime).localeCompare(b.allDay?"00:00":b.startTime));
+    const chips=dayRsv.slice(0,4).map(r=>{const room=rooms.find(x=>x.id===r.roomId);return `<div style="background:${_roomColorOf(room)};color:white;border-radius:3px;padding:1px 4px;font-size:10px;margin-bottom:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-align:center" title="${h(r.title)} (${h(room?.name||"")}, ${r.allDay?"종일":r.startTime+"~"+r.endTime})">${r.allDay?"종일":r.startTime} ${h(r.title)}</div>`;}).join("");
     const more=dayRsv.length>4?`<div class="fz10 text-gray">+${dayRsv.length-4}건 더보기</div>`:"";
     return `<td style="vertical-align:top;height:90px;cursor:pointer;${inMonth?"":"background:#f8fafc"}" onclick="window._roomSelDate='${ds}';window._roomPeriod='day';renderRoomBookingPage()">
       <div class="fz11" style="font-weight:600;color:${inMonth?"#1e293b":"#cbd5e1"};margin-bottom:2px">${d.getDate()}</div>
@@ -18416,6 +18508,11 @@ function openRoomBookingModal(roomId,date,defaultStart,defaultEnd){
     <div class="fg"><label class="fl">회의실 <span class="req">*</span></label><select class="fc" id="rsv-room">${rooms.map(r=>`<option value="${r.id}" ${room&&room.id===r.id?"selected":""}>${h(r.name)} (${r.capacity}인·${h(r.location||"")})</option>`).join("")}</select></div>
     <div class="fg"><label class="fl">예약 제목 <span class="req">*</span></label><input class="fc" id="rsv-title" placeholder="예: 주간 팀 미팅"></div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+      <div class="fg"><label class="fl">시작일</label><input class="fc" type="date" id="rsv-date" value="${date}"></div>
+      <div class="fg"><label class="fl">종료일</label><input class="fc" type="date" id="rsv-end-date" value="${date}"></div>
+    </div>
+    <div class="fg"><label class="fz11" style="display:flex;align-items:center;gap:6px"><input type="checkbox" id="rsv-allday" onchange="_rsvAllDayToggle()">종일</label></div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px" id="rsv-time-wrap">
       <div class="fg"><label class="fl">시작 시간</label><select class="fc" id="rsv-start">${timeOpts}</select></div>
       <div class="fg"><label class="fl">종료 시간</label><select class="fc" id="rsv-end">${timeOpts}</select></div>
     </div>
@@ -18440,6 +18537,10 @@ function _rsvRecurToggle(){
   const v=$("#rsv-recur")?.value;
   const wrap=$("#rsv-recur-wrap");if(wrap)wrap.style.display=v==="none"?"none":"";
   const wd=$("#rsv-weekday-wrap");if(wd)wd.style.display=v==="weekday"?"":"none";
+}
+function _rsvAllDayToggle(){
+  const all=$("#rsv-allday")?.checked;
+  const wrap=$("#rsv-time-wrap");if(wrap)wrap.style.display=all?"none":"";
 }
 function _roomNextHour(t){const h2=(+String(t).split(":")[0]||9)+1;return `${String(Math.min(h2,22)).padStart(2,"0")}:00`;}
 function _roomRecurDates(startDate,recurType,recurStart,recurEnd,weekdays){
@@ -18469,27 +18570,36 @@ function _roomRecurDates(startDate,recurType,recurStart,recurEnd,weekdays){
 function saveRoomReservation(date){
   const roomId=$("#rsv-room")?.value;
   const title=$("#rsv-title")?.value.trim();
-  const start=$("#rsv-start")?.value;const end=$("#rsv-end")?.value;
+  const allDay=$("#rsv-allday")?.checked||false;
+  const start=allDay?"07:00":$("#rsv-start")?.value;const end=allDay?"22:00":$("#rsv-end")?.value;
+  const baseDate=$("#rsv-date")?.value||date;
+  const baseEndDate=$("#rsv-end-date")?.value||baseDate;
   const recur=$("#rsv-recur")?.value||"none";
   if(!roomId){showToast("회의실을 선택하세요.","error");return;}
   if(!title){showToast("예약 제목을 입력하세요.","error");return;}
-  if(!start||!end||start>=end){showToast("종료 시간은 시작 시간 이후여야 합니다.","error");return;}
-  let dates;
-  if(recur==="none")dates=[date];
+  if(!allDay&&(!start||!end||start>=end)){showToast("종료 시간은 시작 시간 이후여야 합니다.","error");return;}
+  if(baseEndDate<baseDate){showToast("종료일은 시작일 이후여야 합니다.","error");return;}
+  const spanDays=Math.round((new Date(baseEndDate+"T00:00:00")-new Date(baseDate+"T00:00:00"))/86400000);
+  let starts;
+  if(recur==="none")starts=[baseDate];
   else{
-    const recurStart=$("#rsv-recur-start")?.value||date;
-    const recurEnd=$("#rsv-recur-end")?.value||date;
+    const recurStart=$("#rsv-recur-start")?.value||baseDate;
+    const recurEnd=$("#rsv-recur-end")?.value||baseDate;
     const weekdays=Array.from(document.querySelectorAll(".rsv-weekday:checked")).map(cb=>Number(cb.value));
     if(recur==="weekday"&&!weekdays.length){showToast("반복할 요일을 1개 이상 선택하세요.","error");return;}
-    dates=_roomRecurDates(date,recur,recurStart,recurEnd,weekdays);
+    starts=_roomRecurDates(baseDate,recur,recurStart,recurEnd,weekdays);
   }
-  const conflicts=dates.filter(d=>roomReservations.some(r=>r.roomId===roomId&&r.date===d&&r.startTime<end&&r.endTime>start));
-  if(conflicts.length===dates.length){showToast(`모든 날짜에 이미 예약이 있어 등록할 수 없습니다.`,"error");return;}
-  if(conflicts.length&&!confirm(`다음 날짜는 이미 예약이 있어 건너뜁니다:\n${conflicts.join(", ")}\n나머지 ${dates.length-conflicts.length}건을 등록하시겠습니까?`))return;
+  const pairs=starts.map(d=>{
+    const ed=new Date(d+"T00:00:00");ed.setDate(ed.getDate()+spanDays);
+    return {start:d,end:ed.toISOString().slice(0,10)};
+  });
+  const conflicts=pairs.filter(p=>_roomConflicts(roomId,p.start,p.end,start,end,allDay,null));
+  if(conflicts.length===pairs.length){showToast(`모든 날짜에 이미 예약이 있어 등록할 수 없습니다.`,"error");return;}
+  if(conflicts.length&&!confirm(`다음 날짜는 이미 예약이 있어 건너뜁니다:\n${conflicts.map(c=>c.start).join(", ")}\n나머지 ${pairs.length-conflicts.length}건을 등록하시겠습니까?`))return;
   const seriesId=recur!=="none"?`series-${Date.now()}`:null;
-  const toCreate=dates.filter(d=>!conflicts.includes(d));
-  toCreate.forEach((d,i)=>{
-    roomReservations.push({id:`rsv-${Date.now()}-${i}`,roomId,date:d,startTime:start,endTime:end,title,bookedBy:currentUser.id,bookedAt:new Date().toISOString(),seriesId});
+  const toCreate=pairs.filter(p=>!conflicts.includes(p));
+  toCreate.forEach((p,i)=>{
+    roomReservations.push({id:`rsv-${Date.now()}-${i}`,roomId,date:p.start,endDate:p.end,startTime:start,endTime:end,allDay,title,bookedBy:currentUser.id,bookedAt:new Date().toISOString(),seriesId});
   });
   closeModal();autoSaveToServerIfEnabled();showToast(`예약이 완료되었습니다.${toCreate.length>1?` (${toCreate.length}건)`:""}`,"success");renderRoomBookingPage();
 }
@@ -18511,6 +18621,11 @@ function openRoomEditModal(rsvId){
     <div class="fg"><label class="fl">회의실 <span class="req">*</span></label><select class="fc" id="rsv-edit-room">${rooms.map(r=>`<option value="${r.id}" ${rsv.roomId===r.id?"selected":""}>${h(r.name)} (${r.capacity}인·${h(r.location||"")})</option>`).join("")}</select></div>
     <div class="fg"><label class="fl">예약 제목 <span class="req">*</span></label><input class="fc" id="rsv-edit-title" value="${h(rsv.title)}"></div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+      <div class="fg"><label class="fl">시작일</label><input class="fc" type="date" id="rsv-edit-date" value="${rsv.date}"></div>
+      <div class="fg"><label class="fl">종료일</label><input class="fc" type="date" id="rsv-edit-end-date" value="${rsv.endDate||rsv.date}"></div>
+    </div>
+    <div class="fg"><label class="fz11" style="display:flex;align-items:center;gap:6px"><input type="checkbox" id="rsv-edit-allday" ${rsv.allDay?"checked":""} onchange="_rsvEditAllDayToggle()">종일</label></div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px" id="rsv-edit-time-wrap">
       <div class="fg"><label class="fl">시작 시간</label><select class="fc" id="rsv-edit-start">${timeOpts}</select></div>
       <div class="fg"><label class="fl">종료 시간</label><select class="fc" id="rsv-edit-end">${timeOpts}</select></div>
     </div>
@@ -18520,19 +18635,26 @@ function openRoomEditModal(rsvId){
     <button class="btn btn-secondary" onclick="closeModal()">닫기</button>
     <button class="btn btn-primary" onclick="saveRoomReservationEdit('${rsv.id}')">저장</button>
   </div></div>`);
-  setTimeout(()=>{const s=$("#rsv-edit-start"),e=$("#rsv-edit-end");if(s)s.value=rsv.startTime;if(e)e.value=rsv.endTime;},50);
+  setTimeout(()=>{const s=$("#rsv-edit-start"),e=$("#rsv-edit-end");if(s)s.value=rsv.startTime;if(e)e.value=rsv.endTime;_rsvEditAllDayToggle();},50);
+}
+function _rsvEditAllDayToggle(){
+  const all=$("#rsv-edit-allday")?.checked;
+  const wrap=$("#rsv-edit-time-wrap");if(wrap)wrap.style.display=all?"none":"";
 }
 function saveRoomReservationEdit(rsvId){
   const rsv=roomReservations.find(r=>r.id===rsvId);if(!rsv)return;
   const roomId=$("#rsv-edit-room")?.value;
   const title=$("#rsv-edit-title")?.value.trim();
-  const start=$("#rsv-edit-start")?.value;const end=$("#rsv-edit-end")?.value;
+  const allDay=$("#rsv-edit-allday")?.checked||false;
+  const start=allDay?"07:00":$("#rsv-edit-start")?.value;const end=allDay?"22:00":$("#rsv-edit-end")?.value;
+  const startDate=$("#rsv-edit-date")?.value||rsv.date;
+  const endDate=$("#rsv-edit-end-date")?.value||startDate;
   if(!roomId){showToast("회의실을 선택하세요.","error");return;}
   if(!title){showToast("예약 제목을 입력하세요.","error");return;}
-  if(!start||!end||start>=end){showToast("종료 시간은 시작 시간 이후여야 합니다.","error");return;}
-  const conflict=roomReservations.some(r=>r.id!==rsvId&&r.roomId===roomId&&r.date===rsv.date&&r.startTime<end&&r.endTime>start);
-  if(conflict){showToast("해당 시간에 이미 예약이 있습니다.","error");return;}
-  rsv.roomId=roomId;rsv.title=title;rsv.startTime=start;rsv.endTime=end;
+  if(!allDay&&(!start||!end||start>=end)){showToast("종료 시간은 시작 시간 이후여야 합니다.","error");return;}
+  if(endDate<startDate){showToast("종료일은 시작일 이후여야 합니다.","error");return;}
+  if(_roomConflicts(roomId,startDate,endDate,start,end,allDay,rsvId)){showToast("해당 일시에 이미 예약이 있습니다.","error");return;}
+  rsv.roomId=roomId;rsv.title=title;rsv.startTime=start;rsv.endTime=end;rsv.date=startDate;rsv.endDate=endDate;rsv.allDay=allDay;
   closeModal();autoSaveToServerIfEnabled();showToast("예약이 수정되었습니다.","success");renderRoomBookingPage();
 }
 function deleteRoomReservationSeries(seriesId){
