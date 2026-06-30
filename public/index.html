@@ -1457,6 +1457,7 @@ let payrollAdjustments=[]; // 급여 조정(경조사비/인센티브/추가금�
 let leaveUsagePlans=[]; // 연차 사용촉진제도 - 개인별 연간 연차 사용계획서 (1차 7월/2차 10월)
 let boardPosts=[]; // 게시판/공지사항
 let roomReservations=[]; // 회의실 예약
+let roomReservationTombstones=[]; // 삭제된 예약 id 기록 {id,ts} - 서버 병합 시 삭제가 되살아나지 않도록 함
 let certLog=[]; // 증명서 발급 이력 (영구 보존)
 let certRequests=[]; // 증명서 발급 신청 {id,empId,empName,certType,certTitle,reason,submitTo,status:"pending"|"approved"|"rejected",requestedAt,processedAt,processedBy,processedByName,rejectReason,issuedAt}
 let welfarePoints=[]; // 복지포인트 [{id,empId,points,type:"grant"|"use",desc,date,by}]
@@ -4479,6 +4480,7 @@ function getFullState(action=""){
       leaveUsagePlans:JSON.parse(JSON.stringify(leaveUsagePlans)),
       boardPosts:JSON.parse(JSON.stringify(boardPosts)),
       roomReservations:JSON.parse(JSON.stringify(roomReservations)),
+      roomReservationTombstones:JSON.parse(JSON.stringify(roomReservationTombstones)),
       certLog:JSON.parse(JSON.stringify(certLog)),
       certRequests:JSON.parse(JSON.stringify(certRequests)),
       welfarePoints:JSON.parse(JSON.stringify(welfarePoints)),
@@ -4621,7 +4623,16 @@ function applyState(state,skipUndo=false){
   if(d.payrollAdjustments&&Array.isArray(d.payrollAdjustments))payrollAdjustments=d.payrollAdjustments;
   if(d.leaveUsagePlans&&Array.isArray(d.leaveUsagePlans))leaveUsagePlans=d.leaveUsagePlans;
   if(d.boardPosts&&Array.isArray(d.boardPosts))boardPosts=d.boardPosts;
-  if(d.roomReservations&&Array.isArray(d.roomReservations))roomReservations=d.roomReservations;
+  if(d.roomReservationTombstones&&Array.isArray(d.roomReservationTombstones)){
+    const byId={};
+    [...roomReservationTombstones,...d.roomReservationTombstones].forEach(t=>{if(t&&t.id!=null&&(!byId[t.id]||t.ts>byId[t.id].ts))byId[t.id]=t;});
+    const cutoff=Date.now()-30*24*60*60*1000;
+    roomReservationTombstones=Object.values(byId).filter(t=>t.ts>=cutoff);
+  }
+  if(d.roomReservations&&Array.isArray(d.roomReservations)){
+    const deadIds=new Set(roomReservationTombstones.map(t=>t.id));
+    roomReservations=d.roomReservations.filter(r=>!deadIds.has(r.id));
+  }
   if(d.certLog&&Array.isArray(d.certLog))certLog=d.certLog;
   if(d.certRequests&&Array.isArray(d.certRequests))certRequests=d.certRequests;
   if(d.welfarePoints&&Array.isArray(d.welfarePoints))welfarePoints=d.welfarePoints;
@@ -18627,6 +18638,7 @@ function deleteRoomReservation(rsvId){
   if(!(rsv.bookedBy===currentUser.id||currentUser.role==="admin")){showToast("취소 권한이 없습니다.","error");return false;}
   if(!confirm(rsv.seriesId?"이 날짜의 예약만 취소하시겠습니까? (반복 전체를 취소하려면 '내 예약 내역'에서 🔁 전체취소를 이용하세요)":"예약을 취소하시겠습니까?"))return false;
   roomReservations=roomReservations.filter(r=>r.id!==rsvId);
+  roomReservationTombstones.push({id:rsvId,ts:Date.now()});
   autoSaveToServerIfEnabled();showToast("예약이 취소되었습니다.","info");renderRoomBookingPage();
   return true;
 }
@@ -18678,6 +18690,8 @@ function saveRoomReservationEdit(rsvId){
 }
 function deleteRoomReservationSeries(seriesId){
   if(!confirm("이 반복 예약의 모든 일정을 취소하시겠습니까?"))return;
+  const now=Date.now();
+  roomReservations.filter(r=>r.seriesId===seriesId).forEach(r=>roomReservationTombstones.push({id:r.id,ts:now}));
   roomReservations=roomReservations.filter(r=>r.seriesId!==seriesId);
   autoSaveToServerIfEnabled();showToast("반복 예약이 모두 취소되었습니다.","info");renderRoomBookingPage();
 }

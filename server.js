@@ -507,6 +507,24 @@ function mergeArrayById(serverArr, clientArr) {
 // Everything else in clientData (settings, orgDB, gradeSettings, etc. — small
 // singleton config objects) is left to simple last-write-wins via the spread
 // below, since they're rarely edited concurrently and don't have per-record ids.
+// Deleted-record tombstones: a plain union merge of id-keyed arrays can never
+// distinguish "this client doesn't know about this record" (keep it) from
+// "this client deleted this record" (drop it), so a deletion that's still
+// only in transit can get silently resurrected by another client's concurrent
+// save. roomReservationTombstones records {id, ts} of locally-deleted
+// reservation ids; mergeTombstones unions both sides (newest ts wins, entries
+// older than 30 days are pruned) so the merged tombstone set can filter
+// resurrected ids back out of the merged roomReservations array.
+function mergeTombstones(serverList, clientList) {
+  const byId = {};
+  for (const t of [...(serverList || []), ...(clientList || [])]) {
+    if (!t || t.id == null) continue;
+    if (!byId[t.id] || t.ts > byId[t.id].ts) byId[t.id] = t;
+  }
+  const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1000;
+  return Object.values(byId).filter(t => t.ts >= cutoff);
+}
+
 function smartMerge(serverData, clientData) {
   if (!serverData) return clientData;
   const merged = { ...serverData, ...clientData };
@@ -514,6 +532,12 @@ function smartMerge(serverData, clientData) {
     if (clientData[field] !== undefined || serverData[field] !== undefined) {
       merged[field] = mergeArrayById(serverData[field], clientData[field]);
     }
+  }
+  const tombstones = mergeTombstones(serverData.roomReservationTombstones, clientData.roomReservationTombstones);
+  merged.roomReservationTombstones = tombstones;
+  if (tombstones.length && Array.isArray(merged.roomReservations)) {
+    const deadIds = new Set(tombstones.map(t => t.id));
+    merged.roomReservations = merged.roomReservations.filter(r => !deadIds.has(r.id));
   }
   return merged;
 }
