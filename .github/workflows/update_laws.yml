@@ -1,0 +1,44 @@
+name: 법령 데이터 자동 업데이트
+
+on:
+  schedule:
+    # 매주 월요일 오전 2시 UTC (한국시간 오전 11시)
+    - cron: '0 2 * * 1'
+  workflow_dispatch:
+    # 수동 실행 가능 (GitHub Actions 탭 → Run workflow)
+
+jobs:
+  update-laws:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 코드 체크아웃
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Python 3.11 설정
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 의존성 설치
+        run: pip install httpx
+
+      - name: 법령 데이터 다운로드
+        env:
+          LAW_API_KEY: ${{ secrets.LAW_API_KEY }}
+        run: python ai/fetch_laws.py
+
+      - name: 변경사항 확인 및 커밋
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git add ai/law_data_cache.json
+          if git diff --staged --quiet; then
+            echo "변경사항 없음 — 커밋 건너뜀"
+          else
+            git commit -m "chore: 법령 데이터 자동 업데이트 $(date +'%Y-%m-%d')"
+            git push
+            echo "✅ 법령 데이터 업데이트 완료"
+          fi

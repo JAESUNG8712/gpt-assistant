@@ -1,0 +1,8 @@
+node_modules
+hr-data*.json*
+*.log
+.git
+.env
+ai/.env
+ai/data
+.claude
