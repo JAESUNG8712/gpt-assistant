@@ -772,9 +772,46 @@
     </div><!-- /input-area -->
     </div><!-- /chat-body -->
 
-    <!-- ── 예산관리 뷰 ──────────────────── -->
-    <div id="budget-view" style="display:none;flex:1;flex-direction:column;min-height:0;overflow:hidden">
-      <iframe id="budget-iframe" src="" style="width:100%;flex:1;border:none;background:var(--bg)"></iframe>
+    <!-- ── 예산관리 뷰 (인라인) ──────────────────── -->
+    <div id="budget-view" style="display:none;flex:1;flex-direction:column;min-height:0;overflow:hidden;background:var(--bg)">
+
+      <!-- 툴바 -->
+      <div id="bgt-toolbar" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:10px 14px;background:var(--surface);border-bottom:1px solid var(--border);flex-shrink:0">
+        <span style="font-size:0.92rem;font-weight:700;margin-right:8px;white-space:nowrap">📊 예산관리 시트</span>
+        <button class="sidebar-btn" onclick="document.getElementById('bgt-file-input').click()">📂 업로드 (xlsx/csv)</button>
+        <input type="file" id="bgt-file-input" accept=".xlsx,.xls,.csv" style="display:none" onchange="bgtUpload(this)">
+        <button class="sidebar-btn" style="background:#1a3a5c;border-color:#3b6fc4;color:#5a9cf0" onclick="bgtSave()">💾 저장</button>
+        <button class="sidebar-btn" onclick="bgtDownload()">⬇️ xlsx 다운로드</button>
+        <button class="sidebar-btn" onclick="bgtAddRow()">➕ 행</button>
+        <button class="sidebar-btn" onclick="bgtAddCol()">➕ 열</button>
+        <span id="bgt-status" style="font-size:0.75rem;color:var(--text-dim);margin-left:4px"></span>
+      </div>
+      <div style="font-size:0.72rem;color:var(--text-dim);padding:5px 14px;flex-shrink:0;background:var(--surface)">
+        셀 클릭 후 직접 입력 또는 엑셀에서 복사 → 셀에 붙여넣기(Ctrl+V). 수식: <code>=SUM(A1:A5)</code> <code>=AVERAGE(B2:B4)</code> <code>=MAX()</code> <code>=MIN()</code> <code>=COUNT()</code>, 사칙연산 및 셀참조 지원.
+      </div>
+
+      <!-- 그리드 -->
+      <div style="overflow:auto;flex:1;min-height:0;padding:10px 14px">
+        <table id="bgt-sheet" style="border-collapse:collapse;font-size:0.8rem"></table>
+      </div>
+
+      <!-- 스냅샷 영역 -->
+      <div style="padding:10px 14px;border-top:1px solid var(--border);flex-shrink:0;background:var(--surface)">
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px">
+          <input id="bgt-snap-label" type="text" placeholder="예: 2026-06 최종" style="background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:5px 8px;font-size:0.78rem;width:160px">
+          <button class="sidebar-btn" onclick="bgtSaveSnap()">📌 월별 최종 자료로 저장</button>
+          <span id="bgt-snap-status" style="font-size:0.75rem;color:var(--text-dim)"></span>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <span style="font-size:0.78rem;color:var(--text-dim)">비교:</span>
+          <select id="bgt-cmp-a" style="background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:5px 8px;font-size:0.78rem"><option value="current">현재 시트</option></select>
+          <span style="font-size:0.78rem;color:var(--text-dim)">vs</span>
+          <select id="bgt-cmp-b" style="background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:5px 8px;font-size:0.78rem"><option value="current">현재 시트</option></select>
+          <button class="sidebar-btn" onclick="bgtCompare()">🔍 비교</button>
+          <button class="sidebar-btn danger" onclick="bgtDeleteSnap()">🗑️ 스냅샷 삭제</button>
+        </div>
+        <div id="bgt-diff" style="margin-top:8px;overflow-x:auto;font-size:0.78rem"></div>
+      </div>
     </div>
   </main>
 </div>
@@ -2018,23 +2055,236 @@ sys.stderr = _stderr
   }
 
   // ── 예산관리 탭 ─────────────────────
-  let budgetViewLoaded = false;
+  let bgtGrid = [];
+  const BGT_MIN_ROWS = 20, BGT_MIN_COLS = 12;
+
   function showBudgetView() {
     document.querySelectorAll('.persona-tab, .persona-more-item').forEach(t => t.classList.remove('active'));
     document.getElementById('budget-tab').classList.add('active');
     document.getElementById('chat-body').style.display = 'none';
-    const bv = document.getElementById('budget-view');
-    bv.style.display = 'flex';
-    if (!budgetViewLoaded) {
-      document.getElementById('budget-iframe').src = '/static/budget.html';
-      budgetViewLoaded = true;
-    }
+    document.getElementById('budget-view').style.display = 'flex';
+    bgtLoad();
   }
 
   function showChatView() {
     document.getElementById('budget-tab').classList.remove('active');
     document.getElementById('budget-view').style.display = 'none';
     document.getElementById('chat-body').style.display = '';
+  }
+
+  // ── 예산 그리드 헬퍼 ──────────────────────────
+  function bgtColLetters(idx) {
+    let s = '', n = idx + 1;
+    while (n > 0) { const r = (n-1)%26; s = String.fromCharCode(65+r)+s; n=Math.floor((n-1)/26); }
+    return s;
+  }
+  function bgtColIdx(letters) {
+    let n = 0;
+    for (const ch of letters.toUpperCase()) n = n*26+(ch.charCodeAt(0)-64);
+    return n-1;
+  }
+  function bgtEnsureSize() {
+    while (bgtGrid.length < BGT_MIN_ROWS) bgtGrid.push([]);
+    const mc = Math.max(BGT_MIN_COLS, ...bgtGrid.map(r=>r.length));
+    bgtGrid.forEach(r => { while (r.length < mc) r.push(''); });
+  }
+  function bgtStatus(msg, ok=true) {
+    const el = document.getElementById('bgt-status');
+    el.textContent = msg; el.style.color = ok ? '#3fb950' : '#e57373';
+  }
+
+  async function bgtLoad() {
+    try {
+      const res = await fetch('/budget/grid');
+      const data = await res.json();
+      bgtGrid = (data.rows||[]).map(r => r.map(c => c==null?'':String(c)));
+    } catch(e) { bgtGrid = []; }
+    bgtEnsureSize();
+    bgtRender();
+    bgtLoadSnaps();
+  }
+
+  function bgtRender() {
+    const table = document.getElementById('bgt-sheet');
+    const nRows = bgtGrid.length;
+    const nCols = Math.max(...bgtGrid.map(r=>r.length), BGT_MIN_COLS);
+    let html = '<tr><th style="background:var(--surface2);border:1px solid var(--border);min-width:36px;padding:2px 6px;text-align:center;position:sticky;left:0;top:0;z-index:3;color:var(--text-dim)"></th>';
+    for (let c=0;c<nCols;c++) html+=`<th style="background:var(--surface2);border:1px solid var(--border);min-width:90px;padding:2px 8px;text-align:center;position:sticky;top:0;z-index:2;color:var(--text-dim);font-weight:600">${bgtColLetters(c)}</th>`;
+    html+='</tr>';
+    for (let r=0;r<nRows;r++) {
+      html+=`<tr><td style="background:var(--surface2);border:1px solid var(--border);padding:2px 6px;text-align:center;position:sticky;left:0;z-index:1;color:var(--text-dim)">${r+1}</td>`;
+      for (let c=0;c<nCols;c++) {
+        const raw=(bgtGrid[r]&&bgtGrid[r][c]!=null)?bgtGrid[r][c]:'';
+        const disp=bgtRenderCell(raw);
+        const isErr=String(disp).startsWith('#ERR');
+        html+=`<td contenteditable data-r="${r}" data-c="${c}" data-raw="${bgtEscAttr(raw)}" style="border:1px solid var(--border);min-width:90px;height:26px;padding:2px 6px;white-space:nowrap;overflow:hidden;outline:none;color:${isErr?'#e57373':'var(--text)'}">${bgtEscHtml(disp)}</td>`;
+      }
+      html+='</tr>';
+    }
+    table.innerHTML=html;
+    table.querySelectorAll('td[contenteditable]').forEach(td=>{
+      td.addEventListener('focus', e=>{ e.target.textContent=e.target.getAttribute('data-raw')||''; });
+      td.addEventListener('blur', e=>{
+        const r=+e.target.dataset.r, c=+e.target.dataset.c;
+        const raw=e.target.textContent.trim();
+        while(bgtGrid.length<=r) bgtGrid.push([]);
+        while(bgtGrid[r].length<=c) bgtGrid[r].push('');
+        bgtGrid[r][c]=raw;
+        e.target.setAttribute('data-raw',bgtEscAttr(raw));
+        const disp=bgtRenderCell(raw);
+        e.target.textContent=disp;
+        e.target.style.color=String(disp).startsWith('#ERR')?'#e57373':'var(--text)';
+      });
+      td.addEventListener('paste', e=>{
+        e.preventDefault();
+        const text=(e.clipboardData||window.clipboardData).getData('text/plain');
+        const sr=+e.target.dataset.r, sc=+e.target.dataset.c;
+        const lines=text.replace(/\r/g,'').split('\n');
+        while(lines.length&&lines[lines.length-1]==='') lines.pop();
+        lines.forEach((line,i)=>{
+          const cells=line.split('\t');
+          cells.forEach((val,j)=>{
+            const r=sr+i, c=sc+j;
+            while(bgtGrid.length<=r) bgtGrid.push([]);
+            while(bgtGrid[r].length<=c) bgtGrid[r].push('');
+            bgtGrid[r][c]=val;
+          });
+        });
+        bgtEnsureSize(); bgtRender();
+      });
+      td.addEventListener('focus', e=>{ e.target.style.background='rgba(59,111,196,0.18)'; });
+      td.addEventListener('blur', e=>{ e.target.style.background=''; });
+    });
+  }
+
+  function bgtEscHtml(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+  function bgtEscAttr(s){ return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;'); }
+
+  // ── 수식 평가기 (eval 미사용) ──────────────────
+  function bgtRenderCell(raw) {
+    if(typeof raw!=='string'||!raw.startsWith('=')) return raw;
+    try { return bgtEvalFormula(raw.slice(1)); } catch(e) { return '#ERR'; }
+  }
+  function bgtCellVal(ref, vis) {
+    const m=/^([A-Za-z]+)(\d+)$/.exec(ref);
+    if(!m) throw new Error('ref');
+    const col=bgtColIdx(m[1]), row=parseInt(m[2],10)-1;
+    const key=`${row}_${col}`;
+    if(vis.has(key)) throw new Error('circular');
+    const raw=(bgtGrid[row]&&bgtGrid[row][col]!=null)?bgtGrid[row][col]:'';
+    if(typeof raw==='string'&&raw.startsWith('=')){ vis.add(key); const v=bgtEvalFormula(raw.slice(1),vis); vis.delete(key); return v; }
+    const n=Number(String(raw).replace(/,/g,''));
+    return isNaN(n)?0:n;
+  }
+  function bgtRangeVals(a,b,vis) {
+    const ma=/^([A-Za-z]+)(\d+)$/.exec(a), mb=/^([A-Za-z]+)(\d+)$/.exec(b);
+    const c1=bgtColIdx(ma[1]),r1=parseInt(ma[2],10)-1, c2=bgtColIdx(mb[1]),r2=parseInt(mb[2],10)-1;
+    const vals=[];
+    for(let r=Math.min(r1,r2);r<=Math.max(r1,r2);r++) for(let c=Math.min(c1,c2);c<=Math.max(c1,c2);c++) vals.push(bgtCellVal(bgtColLetters(c)+(r+1),vis));
+    return vals;
+  }
+  const BGT_FUNCS={SUM:v=>v.reduce((a,b)=>a+b,0),AVERAGE:v=>v.length?v.reduce((a,b)=>a+b,0)/v.length:0,MAX:v=>v.length?Math.max(...v):0,MIN:v=>v.length?Math.min(...v):0,COUNT:v=>v.length};
+  function bgtEvalFormula(expr, vis) {
+    vis=vis||new Set();
+    const toks=bgtTokenize(expr); let pos=0;
+    const peek=()=>toks[pos], next=()=>toks[pos++];
+    function expr_() {
+      let v=term(); while(peek()==='+' || peek()==='-'){ const op=next(); v=op==='+'?v+term():v-term(); } return v;
+    }
+    function term() {
+      let v=factor(); while(peek()==='*'||peek()==='/'){const op=next();const r=factor();v=op==='*'?v*r:v/r;} return v;
+    }
+    function factor() {
+      if(peek()==='-'){next();return -factor();} if(peek()==='+'){next();return factor();}
+      if(peek()==='('){next();const v=expr_();if(peek()!==')')throw new Error(')');next();return v;}
+      const t=next(); if(t===undefined) throw new Error('eof');
+      if(/^[A-Za-z_]+$/.test(t)&&BGT_FUNCS[t.toUpperCase()]){
+        const fn=t.toUpperCase(); if(next()!=='(')throw new Error('(');
+        const args=[]; if(peek()!==')'){ args.push(rangeOrExpr()); while(peek()===','){next();args.push(rangeOrExpr());} }
+        if(next()!==')')throw new Error(')'); return BGT_FUNCS[fn](args.flat());
+      }
+      if(/^[A-Za-z]+\d+$/.test(t)){if(peek()===':'){next();const t2=next();return bgtRangeVals(t,t2,vis);} return bgtCellVal(t,vis);}
+      const n=Number(t); if(!isNaN(n)) return n; throw new Error('token:'+t);
+    }
+    function rangeOrExpr(){ const v=expr_(); return Array.isArray(v)?v:[v]; }
+    const result=expr_(); return Array.isArray(result)?result.reduce((a,b)=>a+b,0):result;
+  }
+  function bgtTokenize(s) {
+    const re=/\s*([A-Za-z]+\d+|[A-Za-z_]+|\d+\.?\d*|[()+\-*/,:])\s*/g;
+    const toks=[]; let m, last=0;
+    while((m=re.exec(s))!==null){ if(m.index!==last)throw new Error('invalid'); toks.push(m[1]); last=re.lastIndex; }
+    if(last!==s.length) throw new Error('trailing'); return toks;
+  }
+
+  // ── 저장 / 업로드 / 다운로드 ──
+  function bgtAddRow(){ bgtGrid.push([]); bgtEnsureSize(); bgtRender(); }
+  function bgtAddCol(){ bgtGrid.forEach(r=>r.push('')); bgtEnsureSize(); bgtRender(); }
+
+  async function bgtSave() {
+    bgtStatus('저장 중...');
+    try {
+      const res=await fetch('/budget/grid',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({rows:bgtGrid})});
+      if(!res.ok) throw new Error();
+      bgtStatus('저장되었습니다.');
+    } catch(e){ bgtStatus('저장 오류',false); }
+  }
+
+  async function bgtUpload(input) {
+    if(!input.files.length) return;
+    const fd=new FormData(); fd.append('file',input.files[0]);
+    bgtStatus('업로드 중...');
+    try {
+      const res=await fetch('/budget/grid/upload',{method:'POST',body:fd});
+      const json=await res.json();
+      if(!res.ok) throw new Error(json.detail||'실패');
+      bgtStatus(`업로드 완료 (${json.rows}행)`);
+      await bgtLoad();
+    } catch(e){ bgtStatus('업로드 오류: '+e.message, false); }
+    input.value='';
+  }
+
+  function bgtDownload(){ window.open('/budget/grid/download','_blank'); }
+
+  // ── 스냅샷 ──
+  async function bgtLoadSnaps() {
+    const res=await fetch('/budget/grid/snapshots');
+    const {snapshots}=await res.json();
+    ['bgt-cmp-a','bgt-cmp-b'].forEach(id=>{
+      const sel=document.getElementById(id);
+      sel.innerHTML='<option value="current">현재 시트</option>'+snapshots.map(s=>`<option value="${s.id}">${bgtEscHtml(s.label)} (${s.createdAt})</option>`).join('');
+    });
+  }
+  async function bgtSaveSnap() {
+    const label=document.getElementById('bgt-snap-label').value.trim();
+    const st=document.getElementById('bgt-snap-status');
+    if(!label){ st.textContent='라벨을 입력하세요.'; st.style.color='#e57373'; return; }
+    st.textContent='저장 중...'; st.style.color='var(--text-dim)';
+    const res=await fetch('/budget/grid/snapshot',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({label,rows:bgtGrid})});
+    if(res.ok){ st.textContent='저장됨'; st.style.color='#3fb950'; bgtLoadSnaps(); }
+    else { st.textContent='오류'; st.style.color='#e57373'; }
+  }
+  async function bgtDeleteSnap() {
+    const id=document.getElementById('bgt-cmp-a').value;
+    if(id==='current'){ alert('비교 A에서 스냅샷을 선택하세요.'); return; }
+    if(!confirm('삭제할까요?')) return;
+    await fetch('/budget/grid/snapshot/'+id,{method:'DELETE'}); bgtLoadSnaps();
+  }
+  async function bgtCompare() {
+    const a=document.getElementById('bgt-cmp-a').value, b=document.getElementById('bgt-cmp-b').value;
+    const area=document.getElementById('bgt-diff'); area.textContent='비교 중...';
+    try {
+      const res=await fetch(`/budget/grid/compare?a=${encodeURIComponent(a)}&b=${encodeURIComponent(b)}`);
+      const data=await res.json();
+      if(!res.ok) throw new Error(data.detail||'비교 실패');
+      if(!data.diffs.length){ area.innerHTML='<p style="color:var(--text-dim)">차이가 없습니다.</p>'; return; }
+      let html='<table style="border-collapse:collapse"><tr><th style="border:1px solid var(--border);padding:4px 8px;background:var(--surface2)">셀</th><th style="border:1px solid var(--border);padding:4px 8px;background:var(--surface2)">이전</th><th style="border:1px solid var(--border);padding:4px 8px;background:var(--surface2)">이후</th><th style="border:1px solid var(--border);padding:4px 8px;background:var(--surface2)">증감</th></tr>';
+      data.diffs.forEach(d=>{
+        const cls=d.delta==null?'':(d.delta>0?'color:#3fb950':'color:#e57373');
+        const dtxt=d.delta==null?'-':(d.delta>0?'+'+d.delta.toLocaleString():d.delta.toLocaleString());
+        html+=`<tr><td style="border:1px solid var(--border);padding:4px 8px">${d.cell}</td><td style="border:1px solid var(--border);padding:4px 8px">${bgtEscHtml(d.before)}</td><td style="border:1px solid var(--border);padding:4px 8px">${bgtEscHtml(d.after)}</td><td style="border:1px solid var(--border);padding:4px 8px;${cls}">${dtxt}</td></tr>`;
+      });
+      area.innerHTML=html+'</table>';
+    } catch(e){ area.textContent='오류: '+e.message; }
   }
 
   function loadSample(key) {
