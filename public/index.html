@@ -18239,6 +18239,7 @@ function _roomConflicts(roomId,startDate,endDate,startTime,endTime,allDay,exclud
     return r.startTime<endTime&&r.endTime>startTime;
   });
 }
+function _roomTimeToMin(t){const p=String(t).split(":");return (parseInt(p[0],10)||0)*60+(parseInt(p[1],10)||0);}
 function _roomColumnCellPlan(dayRsv,ds){
   const slots=_roomSlotsList();
   const plan=slots.map(()=>({render:true,rowspan:1,items:[]}));
@@ -18272,7 +18273,22 @@ function _roomColumnCellPlan(dayRsv,ds){
     if(startIdx<0)return;
     let span=Math.max(1,parseInt(cluster.end)-parseInt(cluster.start));
     span=Math.min(span,slots.length-startIdx);
-    plan[startIdx]={render:true,rowspan:span,items:cluster.items.map(it=>({...it.r,_effStart:it.start,_effEnd:it.end}))};
+    const laneEnds=[];
+    const placed=cluster.items.slice().sort((a,b)=>a.start.localeCompare(b.start)||a.end.localeCompare(b.end)).map(it=>{
+      let lane=0;
+      while(laneEnds[lane]!==undefined&&laneEnds[lane]>it.start)lane++;
+      laneEnds[lane]=it.end;
+      return {...it,lane};
+    });
+    const laneCount=laneEnds.length;
+    const clusterStartMin=_roomTimeToMin(cluster.start),clusterEndMin=_roomTimeToMin(cluster.end);
+    const totalMin=Math.max(1,clusterEndMin-clusterStartMin);
+    const items=placed.map(it=>{
+      const sMin=_roomTimeToMin(it.start),eMin=_roomTimeToMin(it.end);
+      return {...it.r,_effStart:it.start,_effEnd:it.end,_lane:it.lane,_laneCount:laneCount,
+        _topPct:((sMin-clusterStartMin)/totalMin)*100,_heightPct:((eMin-sMin)/totalMin)*100};
+    });
+    plan[startIdx]={render:true,rowspan:span,items};
     for(let k=1;k<span;k++)plan[startIdx+k]={render:false,rowspan:1,items:[]};
   });
   return plan;
@@ -18280,15 +18296,17 @@ function _roomColumnCellPlan(dayRsv,ds){
 function _roomBlockHtml(rsv,room){
   const canEdit=rsv.bookedBy===currentUser.id||currentUser.role==="admin";
   const timeLabel=rsv._effStart&&rsv._effEnd?`${rsv._effStart}~${rsv._effEnd}`:`${rsv.startTime}~${rsv.endTime}`;
-  return `<div style="position:relative;background:${_roomColorOf(room)};color:white;padding:3px 22px 3px 8px;font-size:11px;height:100%;width:100%;box-sizing:border-box;border-top:2px solid rgba(255,255,255,.85);text-align:center;display:flex;align-items:center;justify-content:center;${canEdit?"cursor:pointer":""}" title="${h(rsv.title)} (${h(getEmpName(rsv.bookedBy))}, ${h(timeLabel)})" ${canEdit?`onclick="event.stopPropagation();openRoomEditModal('${rsv.id}')"`:""}>
+  const lane=rsv._lane||0,laneCount=rsv._laneCount||1;
+  const top=rsv._topPct!=null?rsv._topPct:0,height=rsv._heightPct!=null?rsv._heightPct:100;
+  const left=(lane/laneCount)*100,width=(1/laneCount)*100;
+  return `<div style="position:absolute;top:${top}%;height:${height}%;left:calc(${left}% + 1px);width:calc(${width}% - 2px);background:${_roomColorOf(room)};color:white;padding:3px 22px 3px 8px;font-size:11px;box-sizing:border-box;border-top:2px solid rgba(255,255,255,.85);border-bottom:2px solid rgba(255,255,255,.85);text-align:center;display:flex;align-items:center;justify-content:center;overflow:hidden;${canEdit?"cursor:pointer":""}" title="${h(rsv.title)} (${h(getEmpName(rsv.bookedBy))}, ${h(timeLabel)})" ${canEdit?`onclick="event.stopPropagation();openRoomEditModal('${rsv.id}')"`:""}>
     <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${room?h(room.name)+": ":""}${h(rsv.title)}${rsv.seriesId?" 🔁":""}</span>
     ${canEdit?`<button style="position:absolute;right:2px;top:50%;transform:translateY(-50%);background:transparent;border:none;color:white;cursor:pointer;font-size:11px" onclick="event.stopPropagation();deleteRoomReservation('${rsv.id}')">✕</button>`:""}
   </div>`;
 }
 function _roomCellsHtml(cell,rooms,singleRoom){
   if(!cell.items.length)return"";
-  if(cell.items.length===1)return _roomBlockHtml(cell.items[0],singleRoom||rooms.find(r=>r.id===cell.items[0].roomId));
-  return `<div style="display:flex;gap:1px;height:100%;width:100%">${cell.items.map(it=>`<div style="flex:1;min-width:0;height:100%">${_roomBlockHtml(it,singleRoom||rooms.find(r=>r.id===it.roomId))}</div>`).join("")}</div>`;
+  return `<div style="position:relative;height:100%;width:100%">${cell.items.map(it=>_roomBlockHtml(it,singleRoom||rooms.find(r=>r.id===it.roomId))).join("")}</div>`;
 }
 function _roomAllDayBarHtml(rsv,room){
   const canEdit=rsv.bookedBy===currentUser.id||currentUser.role==="admin";
