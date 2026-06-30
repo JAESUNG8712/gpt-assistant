@@ -18163,6 +18163,8 @@ function renderRoomBookingPage(){
     c.innerHTML=`<div class="card"><div class="card-body" style="text-align:center;padding:40px;color:#94a3b8">회의실이 등록되어 있지 않습니다.<br><button class="btn btn-primary mt3" onclick="gotoPage('room-settings')">⚙ 설정에서 추가하기</button></div></div>`;
     return;
   }
+  const view=window._roomView||"room";
+  if(view==="all")return renderRoomBookingAllRoomsView();
   const today=new Date().toISOString().slice(0,10);
   const selDate=window._roomSelDate||today;
   const selRoom=window._roomSelRoom||rooms[0]?.id;
@@ -18173,13 +18175,14 @@ function renderRoomBookingPage(){
   const slotRows=slots.map(time=>{
     const rsv=dayRsv.find(r=>r.startTime<=time&&r.endTime>time);
     const room=rooms.find(r=>r.id===selRoom);
-    return`<tr style="height:36px"><td class="fz11 text-gray" style="width:50px">${time}</td><td>${rsv?`<div style="background:${room?.color||"#3b82f6"};color:white;border-radius:4px;padding:3px 8px;font-size:12px;display:flex;justify-content:space-between;align-items:center"><span>${h(rsv.title)} <span style="opacity:.7">(${h(getEmpName(rsv.bookedBy))}, ${rsv.startTime}~${rsv.endTime})</span></span>${rsv.bookedBy===currentUser.id||currentUser.role==="admin"?`<button style="background:transparent;border:none;color:white;cursor:pointer;font-size:11px" onclick="deleteRoomReservation('${rsv.id}')">✕</button>`:""}</div>`:`<div style="height:20px"></div>`}</td></tr>`;
+    return`<tr style="height:36px"><td class="fz11 text-gray" style="width:50px">${time}</td><td>${rsv?`<div style="background:${room?.color||"#3b82f6"};color:white;border-radius:4px;padding:3px 8px;font-size:12px;display:flex;justify-content:space-between;align-items:center"><span>${h(rsv.title)}${rsv.seriesId?" 🔁":""} <span style="opacity:.7">(${h(getEmpName(rsv.bookedBy))}, ${rsv.startTime}~${rsv.endTime})</span></span>${rsv.bookedBy===currentUser.id||currentUser.role==="admin"?`<button style="background:transparent;border:none;color:white;cursor:pointer;font-size:11px" onclick="deleteRoomReservation('${rsv.id}')">✕</button>`:""}</div>`:`<div style="height:20px"></div>`}</td></tr>`;
   }).join("");
-  c.innerHTML=`<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px">
+  c.innerHTML=`<div style="display:grid;grid-template-columns:1fr 1fr auto;gap:10px;margin-bottom:12px;align-items:end">
     <div class="fg"><label class="fl">날짜</label><input class="fc" type="date" value="${selDate}" onchange="window._roomSelDate=this.value;renderRoomBookingPage()"></div>
     <div class="fg"><label class="fl">회의실</label><select class="fc" onchange="window._roomSelRoom=this.value;renderRoomBookingPage()">
       ${rooms.map(r=>`<option value="${r.id}" ${r.id===selRoom?"selected":""}>${h(r.name)} (${r.capacity}인·${h(r.location||"")})</option>`).join("")}
     </select></div>
+    <button class="btn btn-secondary btn-sm" onclick="window._roomView='all';renderRoomBookingPage()">전체 회의실 보기</button>
   </div>
   <div class="card" style="margin-bottom:12px"><div class="card-head"><h3>🗓 ${selDate} 예약 현황</h3>
     <button class="btn btn-primary btn-sm" onclick="openRoomBookingModal('${selRoom}','${selDate}')">+ 예약하기</button>
@@ -18187,10 +18190,31 @@ function renderRoomBookingPage(){
     <thead><tr><th style="width:50px">시간</th><th>예약</th></tr></thead><tbody>${slotRows}</tbody>
   </table></div></div></div>
   ${myRsv.length>0?`<div class="card"><div class="card-head"><h3>내 예약 내역</h3></div><div class="card-body" style="padding:0"><div class="tbl-wrap"><table><thead><tr><th>날짜</th><th>회의실</th><th>시간</th><th>제목</th><th></th></tr></thead><tbody>
-    ${myRsv.slice(0,10).map(r=>{const rm=rooms.find(x=>x.id===r.roomId);return`<tr><td>${r.date}</td><td style="color:${rm?.color||"#3b82f6"}">${h(rm?.name||"")}</td><td>${r.startTime}~${r.endTime}</td><td>${h(r.title)}</td><td><button class="btn btn-danger btn-sm" onclick="deleteRoomReservation('${r.id}')">취소</button></td></tr>`;}).join("")}
+    ${myRsv.slice(0,10).map(r=>{const rm=rooms.find(x=>x.id===r.roomId);return`<tr><td>${r.date}</td><td style="color:${rm?.color||"#3b82f6"}">${h(rm?.name||"")}</td><td>${r.startTime}~${r.endTime}</td><td>${h(r.title)}${r.seriesId?" 🔁":""}</td><td><button class="btn btn-danger btn-sm" onclick="deleteRoomReservation('${r.id}')">취소</button>${r.seriesId?` <button class="btn btn-danger btn-sm" onclick="deleteRoomReservationSeries('${r.seriesId}')">반복 전체취소</button>`:""}</td></tr>`;}).join("")}
   </tbody></table></div></div></div>`:""}`;
 }
-function openRoomBookingModal(roomId,date){
+function renderRoomBookingAllRoomsView(){
+  const c=$("#content");
+  const rooms=settings.meetingRooms||[];
+  const today=new Date().toISOString().slice(0,10);
+  const selDate=window._roomSelDate||today;
+  const slots=[];for(let h2=7;h2<=21;h2++)slots.push(`${String(h2).padStart(2,"0")}:00`);
+  const slotRows=slots.map(time=>{
+    const cells=rooms.map(room=>{
+      const rsv=roomReservations.find(r=>r.roomId===room.id&&r.date===selDate&&r.startTime<=time&&r.endTime>time);
+      return `<td>${rsv?`<div title="${h(rsv.title)} (${h(getEmpName(rsv.bookedBy))}, ${rsv.startTime}~${rsv.endTime})" style="background:${room.color||"#3b82f6"};color:white;border-radius:4px;padding:3px 6px;font-size:11px;cursor:pointer" onclick="deleteRoomReservation('${rsv.id}')">${h(rsv.title)}${rsv.seriesId?" 🔁":""}</div>`:`<div style="height:18px;cursor:pointer" onclick="openRoomBookingModal('${room.id}','${selDate}','${time}')"></div>`}</td>`;
+    }).join("");
+    return `<tr style="height:32px"><td class="fz11 text-gray" style="width:50px">${time}</td>${cells}</tr>`;
+  }).join("");
+  c.innerHTML=`<div style="display:grid;grid-template-columns:1fr auto;gap:10px;margin-bottom:12px;align-items:end">
+    <div class="fg"><label class="fl">날짜</label><input class="fc" type="date" value="${selDate}" onchange="window._roomSelDate=this.value;renderRoomBookingPage()"></div>
+    <button class="btn btn-secondary btn-sm" onclick="window._roomView='room';renderRoomBookingPage()">회의실별 보기</button>
+  </div>
+  <div class="card"><div class="card-head"><h3>🗓 ${selDate} 전체 회의실 예약 현황</h3></div><div class="card-body" style="padding:0"><div class="tbl-wrap"><table style="table-layout:fixed">
+    <thead><tr><th style="width:50px">시간</th>${rooms.map(r=>`<th>${h(r.name)}</th>`).join("")}</tr></thead><tbody>${slotRows}</tbody>
+  </table></div></div></div>`;
+}
+function openRoomBookingModal(roomId,date,defaultStart){
   const rooms=settings.meetingRooms||[];
   const room=rooms.find(r=>r.id===roomId);
   const times=[];for(let h2=7;h2<=22;h2++)times.push(`${String(h2).padStart(2,"0")}:00`);
@@ -18201,23 +18225,52 @@ function openRoomBookingModal(roomId,date){
       <div class="fg"><label class="fl">시작 시간</label><select class="fc" id="rsv-start">${timeOpts}</select></div>
       <div class="fg"><label class="fl">종료 시간</label><select class="fc" id="rsv-end">${timeOpts}</select></div>
     </div>
+    <div class="fg"><label class="fl">반복</label><select class="fc" id="rsv-recur" onchange="$('#rsv-recur-wrap').style.display=this.value==='none'?'none':''">
+      <option value="none">반복 안 함</option><option value="daily">매일</option><option value="weekly">매주</option>
+    </select></div>
+    <div class="fg" id="rsv-recur-wrap" style="display:none"><label class="fl">반복 종료일</label><input class="fc" type="date" id="rsv-recur-end" value="${date}"></div>
   </div><div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal()">취소</button><button class="btn btn-primary" onclick="saveRoomReservation('${roomId}','${date}')">예약</button></div></div>`);
-  setTimeout(()=>{const s=$("#rsv-start"),e=$("#rsv-end");if(s)s.value="09:00";if(e)e.value="10:00";},50);
+  setTimeout(()=>{const s=$("#rsv-start"),e=$("#rsv-end");if(s)s.value=defaultStart||"09:00";if(e)e.value=_roomNextHour(defaultStart||"09:00");},50);
 }
+function _roomNextHour(t){const h2=(+String(t).split(":")[0]||9)+1;return `${String(Math.min(h2,22)).padStart(2,"0")}:00`;}
 function saveRoomReservation(roomId,date){
   const title=$("#rsv-title")?.value.trim();
   const start=$("#rsv-start")?.value;const end=$("#rsv-end")?.value;
+  const recur=$("#rsv-recur")?.value||"none";
+  const recurEnd=$("#rsv-recur-end")?.value||date;
   if(!title){showToast("예약 제목을 입력하세요.","error");return;}
   if(!start||!end||start>=end){showToast("종료 시간은 시작 시간 이후여야 합니다.","error");return;}
-  // Check overlap
-  const conflict=roomReservations.find(r=>r.roomId===roomId&&r.date===date&&r.startTime<end&&r.endTime>start);
-  if(conflict){showToast(`이미 예약된 시간대입니다. (${conflict.startTime}~${conflict.endTime})`,`error`);return;}
-  roomReservations.push({id:`rsv-${Date.now()}`,roomId,date,startTime:start,endTime:end,title,bookedBy:currentUser.id,bookedAt:new Date().toISOString()});
-  closeModal();autoSaveToServerIfEnabled();showToast("예약이 완료되었습니다.","success");renderRoomBookingPage();
+  const dates=[date];
+  if(recur!=="none"){
+    const step=recur==="daily"?1:7;
+    let d=new Date(date+"T00:00:00");
+    const endD=new Date(recurEnd+"T00:00:00");
+    while(true){
+      d=new Date(d);d.setDate(d.getDate()+step);
+      if(d>endD)break;
+      dates.push(d.toISOString().slice(0,10));
+    }
+  }
+  const conflicts=dates.filter(d=>roomReservations.some(r=>r.roomId===roomId&&r.date===d&&r.startTime<end&&r.endTime>start));
+  if(conflicts.length===dates.length){showToast(`모든 날짜에 이미 예약이 있어 등록할 수 없습니다.`,"error");return;}
+  if(conflicts.length&&!confirm(`다음 날짜는 이미 예약이 있어 건너뜁니다:\n${conflicts.join(", ")}\n나머지 ${dates.length-conflicts.length}건을 등록하시겠습니까?`))return;
+  const seriesId=recur!=="none"?`series-${Date.now()}`:null;
+  const toCreate=dates.filter(d=>!conflicts.includes(d));
+  toCreate.forEach((d,i)=>{
+    roomReservations.push({id:`rsv-${Date.now()}-${i}`,roomId,date:d,startTime:start,endTime:end,title,bookedBy:currentUser.id,bookedAt:new Date().toISOString(),seriesId});
+  });
+  closeModal();autoSaveToServerIfEnabled();showToast(`예약이 완료되었습니다.${toCreate.length>1?` (${toCreate.length}건)`:""}`,"success");renderRoomBookingPage();
 }
 function deleteRoomReservation(rsvId){
-  if(!confirm("예약을 취소하시겠습니까?"))return;
-  roomReservations=roomReservations.filter(r=>r.id!==rsvId);autoSaveToServerIfEnabled();showToast("예약이 취소되었습니다.","info");renderRoomBookingPage();
+  const rsv=roomReservations.find(r=>r.id===rsvId);if(!rsv)return;
+  if(!confirm(rsv.seriesId?"이 날짜의 예약만 취소하시겠습니까? (반복 전체를 취소하려면 '내 예약 내역'에서 🔁 전체취소를 이용하세요)":"예약을 취소하시겠습니까?"))return;
+  roomReservations=roomReservations.filter(r=>r.id!==rsvId);
+  autoSaveToServerIfEnabled();showToast("예약이 취소되었습니다.","info");renderRoomBookingPage();
+}
+function deleteRoomReservationSeries(seriesId){
+  if(!confirm("이 반복 예약의 모든 일정을 취소하시겠습니까?"))return;
+  roomReservations=roomReservations.filter(r=>r.seriesId!==seriesId);
+  autoSaveToServerIfEnabled();showToast("반복 예약이 모두 취소되었습니다.","info");renderRoomBookingPage();
 }
 
 // ==================== 복지포인트 (Welfare Points) ====================
