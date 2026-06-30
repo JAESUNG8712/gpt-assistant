@@ -18246,7 +18246,8 @@ function _roomBlockHtml(rsv,room){
 }
 function _roomCellsHtml(cell,rooms,singleRoom){
   if(!cell.items.length)return"";
-  return `<div style="display:flex;flex-direction:column;gap:1px;height:100%">${cell.items.map(it=>_roomBlockHtml(it,singleRoom||rooms.find(r=>r.id===it.roomId))).join("")}</div>`;
+  if(cell.items.length===1)return _roomBlockHtml(cell.items[0],singleRoom||rooms.find(r=>r.id===cell.items[0].roomId));
+  return `<div style="display:flex;gap:1px;height:100%;width:100%">${cell.items.map(it=>`<div style="flex:1;min-width:0;height:100%">${_roomBlockHtml(it,singleRoom||rooms.find(r=>r.id===it.roomId))}</div>`).join("")}</div>`;
 }
 function _roomCellClick(roomId,date,time){
   const colKey=`${roomId||"all"}|${date}`;
@@ -18313,6 +18314,17 @@ function _roomPendingMark(colKey,time){
   const hi=pending.time<hoverT?hoverT:pending.time;
   return time>=lo&&time<=hi;
 }
+function _roomMarkRange(colKey){
+  const pending=window._roomPendingClick;
+  if(!pending||pending.colKey!==colKey)return null;
+  const hoverT=window._roomHoverTime;
+  const slots=_roomSlotsList();
+  const loT=hoverT&&pending.time>hoverT?hoverT:pending.time;
+  const hiT=hoverT&&pending.time>hoverT?pending.time:(hoverT||pending.time);
+  const lo=slots.indexOf(loT),hi=slots.indexOf(hiT);
+  if(lo<0||hi<0)return null;
+  return {lo,hi,mid:lo+Math.floor((hi-lo)/2)};
+}
 function _roomRenderDay(rooms,viewRoom,selDate){
   const cols=viewRoom==="all"?rooms:rooms.filter(r=>r.id===viewRoom);
   if(!cols.length)return `<div class="card"><div class="card-body text-gray" style="text-align:center;padding:30px">회의실을 찾을 수 없습니다.</div></div>`;
@@ -18325,7 +18337,9 @@ function _roomRenderDay(rooms,viewRoom,selDate){
       if(cell.items.length)return `<td rowspan="${cell.rowspan}" style="padding:0;border-bottom:none">${_roomCellsHtml(cell,cols,room)}</td>`;
       const colKey=`${room.id}|${selDate}`;
       const marked=_roomPendingMark(colKey,time);
-      return `<td style="cursor:pointer;padding:0;${marked?"background:#60a5fa;border-bottom:none":""}" onclick="_roomCellClick('${room.id}','${selDate}','${time}')" onmouseenter="_roomCellHover('${room.id}|${selDate}','${time}')"><div style="height:100%;min-height:18px;display:flex;align-items:center;justify-content:center">${marked?'<span class="fz10" style="color:#fff;font-weight:600">선택됨</span>':""}</div></td>`;
+      const range=marked?_roomMarkRange(colKey):null;
+      const showLabel=range&&range.mid===i;
+      return `<td style="cursor:pointer;padding:0;${marked?"background:#60a5fa;border-bottom:none":""}" onclick="_roomCellClick('${room.id}','${selDate}','${time}')" onmouseenter="_roomCellHover('${room.id}|${selDate}','${time}')"><div style="height:100%;min-height:18px;display:flex;align-items:center;justify-content:center">${showLabel?'<span class="fz10" style="color:#fff;font-weight:600">선택됨</span>':""}</div></td>`;
     }).join("");
     return `<tr style="height:32px"><td class="fz11 text-gray" style="width:50px">${time}</td>${cells}</tr>`;
   }).join("");
@@ -18351,10 +18365,12 @@ function _roomRenderWeek(rooms,viewRoom,selDate){
     const cells=plans.map(({date,plan})=>{
       const cell=plan[i];
       if(!cell.render)return"";
-      if(cell.items.length)return `<td rowspan="${cell.rowspan}" style="padding:2px">${_roomCellsHtml(cell,rooms,singleRoom)}</td>`;
+      if(cell.items.length)return `<td rowspan="${cell.rowspan}" style="padding:0;border-bottom:none">${_roomCellsHtml(cell,rooms,singleRoom)}</td>`;
       const colKey=`${filterRoom||"all"}|${date}`;
       const marked=_roomPendingMark(colKey,time);
-      return `<td style="cursor:pointer;${marked?"background:#dbeafe":""}" onclick="_roomCellClick(${filterRoom?`'${filterRoom}'`:"null"},'${date}','${time}')" onmouseenter="_roomCellHover('${filterRoom||"all"}|${date}','${time}')"><div style="height:18px">${marked?'<div class="fz10" style="text-align:center;color:#2563eb">선택됨</div>':""}</div></td>`;
+      const range=marked?_roomMarkRange(colKey):null;
+      const showLabel=range&&range.mid===i;
+      return `<td style="cursor:pointer;padding:0;${marked?"background:#60a5fa;border-bottom:none":""}" onclick="_roomCellClick(${filterRoom?`'${filterRoom}'`:"null"},'${date}','${time}')" onmouseenter="_roomCellHover('${filterRoom||"all"}|${date}','${time}')"><div style="height:100%;min-height:18px;display:flex;align-items:center;justify-content:center">${showLabel?'<span class="fz10" style="color:#fff;font-weight:600">선택됨</span>':""}</div></td>`;
     }).join("");
     return `<tr style="height:30px"><td class="fz11 text-gray" style="width:50px">${time}</td>${cells}</tr>`;
   }).join("");
