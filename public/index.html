@@ -14849,7 +14849,45 @@ function renderPmsUtilizationPage(){
 let _pmsWorklogDate=new Date().toISOString().slice(0,10);
 let _pmsWorklogBlocks=[];
 let _pmsWorklogLoadedDate=null;
+let _pmsWorklogView="day";
+let _pmsWorklogWeekData=null;
+let _pmsWorklogTeamData=null;
 function _wlMin(t){const p=String(t||"").split(":");return (+p[0]||0)*60+(+p[1]||0);}
+function _pmsWeekDates(dateStr){
+  const d=new Date(dateStr+"T00:00:00");
+  const dow=(d.getDay()+6)%7; // 0=Mon
+  const mon=new Date(d);mon.setDate(d.getDate()-dow);
+  return Array.from({length:7},(_,i)=>{const x=new Date(mon);x.setDate(mon.getDate()+i);return x.toISOString().slice(0,10);});
+}
+function _pmsTimelineHtml(blocks,heightPx){
+  const sorted=[...blocks].sort((a,b)=>_wlMin(a.startTime)-_wlMin(b.startTime));
+  const colors=["#3b82f6","#10b981","#f59e0b","#8b5cf6","#ef4444","#06b6d4","#ec4899","#84cc16"];
+  const segs=sorted.map((b,i)=>{
+    const s=_wlMin(b.startTime),e=_wlMin(b.endTime);
+    const left=(s/1440*100).toFixed(3),width=Math.max(0.3,(e-s)/1440*100).toFixed(3);
+    return `<div title="${h(_pmsProjectName(b.projectId))} - ${h(b.task)} (${b.startTime}~${b.endTime})" style="position:absolute;left:${left}%;width:${width}%;top:0;bottom:0;background:${colors[i%colors.length]};border-radius:3px"></div>`;
+  }).join("");
+  return `<div style="position:relative;height:${heightPx}px;background:#f1f5f9;border-radius:6px">${segs}</div>`;
+}
+async function _pmsWorklogLoadWeek(){
+  if(!serverConfig.url)return;
+  const dates=_pmsWeekDates(_pmsWorklogDate);
+  const results=await Promise.all(dates.map(d=>serverRequest("GET",`/api/pms/worklogs?employeeId=${currentUser.id}&date=${d}`)));
+  _pmsWorklogWeekData=dates.map((d,i)=>({date:d,blocks:(results[i]?.ok&&results[i].worklogs&&results[i].worklogs[0])?results[i].worklogs[0].blocks||[]:[]}));
+  if(currentPage==="pms-worklog")renderPmsWorklogPage();
+}
+async function _pmsWorklogLoadTeam(){
+  if(!serverConfig.url)return;
+  const r=await serverRequest("GET",`/api/pms/worklogs?date=${_pmsWorklogDate}`);
+  _pmsWorklogTeamData=(r?.ok&&r.worklogs)?r.worklogs:[];
+  if(currentPage==="pms-worklog")renderPmsWorklogPage();
+}
+function _pmsWorklogSetView(v){
+  _pmsWorklogView=v;_pmsWorklogWeekData=null;_pmsWorklogTeamData=null;
+  if(v==="week")_pmsWorklogLoadWeek();
+  else if(v==="team")_pmsWorklogLoadTeam();
+  else renderPmsWorklogPage();
+}
 async function _pmsWorklogLoad(){
   if(!serverConfig.url)return;
   const r=await serverRequest("GET",`/api/pms/worklogs?employeeId=${currentUser.id}&date=${_pmsWorklogDate}`);
@@ -14860,9 +14898,16 @@ async function _pmsWorklogLoad(){
 function _pmsWorklogProjects(){
   return pmsProjects.filter(p=>p.status==="active"&&(p.members||[]).map(String).includes(String(currentUser.id)));
 }
+function _pmsWorklogViewTabs(){
+  const tabs=[["day","일간"],["week","주간"]];
+  if(["admin","leader","director"].includes(currentUser.role))tabs.push(["team","팀 전체"]);
+  return tabs.map(([v,label])=>`<button class="btn btn-sm ${_pmsWorklogView===v?"btn-primary":"btn-secondary"}" onclick="_pmsWorklogSetView('${v}')">${label}</button>`).join(" ");
+}
 function renderPmsWorklogPage(){
   const c=$("#content");if(!c)return;
   if(!serverConfig.url){c.innerHTML=_erpNoServerHtml("일일 업무 투입");return;}
+  if(_pmsWorklogView==="week")return renderPmsWorklogWeekView();
+  if(_pmsWorklogView==="team")return renderPmsWorklogTeamView();
   if(_pmsWorklogLoadedDate!==_pmsWorklogDate){c.innerHTML=`<div class="card"><div class="card-body text-gray" style="text-align:center;padding:30px">불러오는 중...</div></div>`;_pmsWorklogLoad();return;}
   const sorted=[..._pmsWorklogBlocks].sort((a,b)=>_wlMin(a.startTime)-_wlMin(b.startTime));
   const total=sorted.reduce((s,b)=>s+(_wlMin(b.endTime)-_wlMin(b.startTime)),0);
@@ -14878,7 +14923,7 @@ function renderPmsWorklogPage(){
     return `<tr><td><span style="display:inline-block;width:8px;height:8px;border-radius:2px;background:${colors[i%colors.length]};margin-right:6px"></span>${h(_pmsProjectName(b.projectId))}</td><td>${h(b.task)}</td><td>${b.startTime} ~ ${b.endTime}</td><td style="text-align:right">${mins}분</td><td class="fz11">${h(b.memo||"")}</td><td><button class="btn btn-secondary btn-sm" onclick="openPmsWorklogModal(${i})">수정</button> <button class="btn btn-danger btn-sm" onclick="deletePmsWorklogBlock(${i})">삭제</button></td></tr>`;
   }).join("");
   c.innerHTML=`<div class="card"><div class="card-head"><h3>⏱ 일일 업무 투입</h3>
-    <input class="fc" type="date" style="width:auto" value="${_pmsWorklogDate}" onchange="_pmsWorklogDate=this.value;_pmsWorklogLoadedDate=null;renderPmsWorklogPage()">
+    <div class="flex gap2" style="align-items:center">${_pmsWorklogViewTabs()}<input class="fc" type="date" style="width:auto" value="${_pmsWorklogDate}" onchange="_pmsWorklogDate=this.value;_pmsWorklogLoadedDate=null;renderPmsWorklogPage()"></div>
   </div><div class="card-body">
     <div class="fz13 ${total>1440?"text-red":"text-gray"}" style="margin-bottom:6px">합계: <b>${Math.floor(total/60)}시간 ${total%60}분</b> / 24시간${total>1440?" — 24시간을 초과했습니다!":""}</div>
     <div style="position:relative;height:28px;background:#f1f5f9;border-radius:6px;margin-bottom:22px">${segs}${ticks}</div>
@@ -14887,6 +14932,38 @@ function renderPmsWorklogPage(){
     </tbody></table></div>
     <button class="btn btn-primary btn-sm mt2" onclick="openPmsWorklogModal()">+ 업무 추가</button>
   </div></div>`;
+}
+function renderPmsWorklogWeekView(){
+  const c=$("#content");if(!c)return;
+  if(!_pmsWorklogWeekData){c.innerHTML=`<div class="card"><div class="card-body text-gray" style="text-align:center;padding:30px">불러오는 중...</div></div>`;_pmsWorklogLoadWeek();return;}
+  const dayNames=["월","화","수","목","금","토","일"];
+  const rows=_pmsWorklogWeekData.map((d,i)=>{
+    const total=d.blocks.reduce((s,b)=>s+(_wlMin(b.endTime)-_wlMin(b.startTime)),0);
+    const isToday=d.date===_pmsWorklogDate;
+    return `<div style="display:grid;grid-template-columns:90px 1fr 90px;gap:10px;align-items:center;margin-bottom:8px;${isToday?"background:#eff6ff;border-radius:6px;padding:4px":""}">
+      <div class="fz12" style="cursor:pointer" onclick="_pmsWorklogDate='${d.date}';_pmsWorklogSetView('day')">${dayNames[i]} ${d.date.slice(5)}</div>
+      ${_pmsTimelineHtml(d.blocks,22)}
+      <div class="fz11 text-gray" style="text-align:right">${Math.floor(total/60)}시간 ${total%60}분</div>
+    </div>`;
+  }).join("");
+  c.innerHTML=`<div class="card"><div class="card-head"><h3>⏱ 일일 업무 투입 - 주간 보기</h3>
+    <div class="flex gap2" style="align-items:center">${_pmsWorklogViewTabs()}<input class="fc" type="date" style="width:auto" value="${_pmsWorklogDate}" onchange="_pmsWorklogDate=this.value;_pmsWorklogWeekData=null;renderPmsWorklogPage()"></div>
+  </div><div class="card-body">${rows}</div></div>`;
+}
+function renderPmsWorklogTeamView(){
+  const c=$("#content");if(!c)return;
+  if(!_pmsWorklogTeamData){c.innerHTML=`<div class="card"><div class="card-body text-gray" style="text-align:center;padding:30px">불러오는 중...</div></div>`;_pmsWorklogLoadTeam();return;}
+  const rows=_pmsWorklogTeamData.length?_pmsWorklogTeamData.map(w=>{
+    const total=(w.blocks||[]).reduce((s,b)=>s+(_wlMin(b.endTime)-_wlMin(b.startTime)),0);
+    return `<div style="display:grid;grid-template-columns:120px 1fr 90px;gap:10px;align-items:center;margin-bottom:8px">
+      <div class="fz12">${h(_recruitEmpName?_recruitEmpName(w.employeeId):w.employeeId)}</div>
+      ${_pmsTimelineHtml(w.blocks||[],22)}
+      <div class="fz11 text-gray" style="text-align:right">${Math.floor(total/60)}시간 ${total%60}분</div>
+    </div>`;
+  }).join(""):`<div class="text-gray fz12" style="text-align:center;padding:20px">등록된 업무가 없습니다.</div>`;
+  c.innerHTML=`<div class="card"><div class="card-head"><h3>⏱ 일일 업무 투입 - 팀 전체</h3>
+    <div class="flex gap2" style="align-items:center">${_pmsWorklogViewTabs()}<input class="fc" type="date" style="width:auto" value="${_pmsWorklogDate}" onchange="_pmsWorklogDate=this.value;_pmsWorklogTeamData=null;renderPmsWorklogPage()"></div>
+  </div><div class="card-body">${rows}</div></div>`;
 }
 function openPmsWorklogModal(idx){
   const sorted=[..._pmsWorklogBlocks].sort((a,b)=>_wlMin(a.startTime)-_wlMin(b.startTime));
