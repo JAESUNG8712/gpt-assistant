@@ -16201,25 +16201,23 @@ function renderRecruitEvalDetailPage(){
   </div>`).join("");
   const combinedSummary=evals.length?`<div class="fz12" style="background:#f8fafc;border-radius:6px;padding:8px;margin-bottom:6px">🤖 ${h(_ivAutoSummary(evals))}</div><div class="fz12">면접관 ${evals.length}명 평가 · 평균 총점 <b>${avgTotal}점</b></div><div class="fz12 text-gray" style="margin-top:4px">${evals.map(e=>h(e.comment||"")).filter(Boolean).join(" / ")||"종합의견 없음"}</div>`:`<div class="text-gray fz12">아직 등록된 평가가 없습니다.</div>`;
   c.innerHTML=`<div class="card"><div class="card-head"><button class="btn btn-secondary btn-sm" onclick="gotoPage('recruit-eval')">‹ 목록으로</button><h3>📝 면접 평가 - ${h(cd?cd.name:"")} (${iv.round}차)</h3></div><div class="card-body">
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
-      <div style="border:1px solid #e2e8f0;border-radius:8px;padding:10px">
-        <div style="font-weight:600;font-size:13px;margin-bottom:6px">지원자 정보</div>
-        <div class="fz12">이력서: ${cd?.resume?`<button class="btn btn-secondary btn-sm" onclick="downloadRecruitResume('${cd.id}')">다운로드</button>`:"없음"}</div>
-        <div class="fz12" style="margin-top:6px"><b>최종학력</b><br>${h(cd?.finalEducation||"-")}</div>
-        <div class="fz12" style="margin-top:6px"><b>경력사항</b><br>${(cd?.careerHistory||"-").split("\n").map(h).join("<br>")}</div>
-        <div class="fz12" style="margin-top:6px"><b>마지막 연봉</b> ${h(cd?.lastSalary||"-")} &nbsp;/&nbsp; <b>희망 연봉</b> ${h(cd?.desiredSalary||"-")}</div>
-        ${cd?.careerGaps?`<div class="fz12" style="margin-top:6px;color:#dc2626"><b>학력·경력 간 공백</b><br>${cd.careerGaps.split("\n").map(h).join("<br>")}</div>`:""}
-        <div class="fz12" style="margin-top:6px"><b>교육 및 대외활동 이력</b><br>${(cd?.activities||"-").split("\n").map(l=>/^\[.+\]$/.test(l)?`<b>${h(l)}</b>`:h(l)).join("<br>")}</div>
-        <div class="fz12" style="margin-top:6px"><b>이력서 요약</b><br>${h(cd?.resumeSummary||"-")}</div>
-        <div class="fz12" style="margin-top:6px"><b>장점</b><br>${h(cd?.strengths||"-")}</div>
-        <div class="fz12" style="margin-top:6px"><b>단점</b><br>${h(cd?.weaknesses||"-")}</div>
-      </div>
-      <div style="border:1px solid #e2e8f0;border-radius:8px;padding:10px">
-        <div style="font-weight:600;font-size:13px;margin-bottom:6px">채용공고 요건</div>
-        <div class="fz12"><b>채용 목적</b><br>${h(job?.purpose||"-")}</div>
-        <div class="fz12" style="margin-top:6px"><b>수행 업무</b><br>${h(job?.responsibilities||"-")}</div>
-        <div class="fz12" style="margin-top:6px"><b>필요 경력연수</b> ${job?.requiredYears!=null?job.requiredYears+"년":"-"}</div>
-      </div>
+    <div style="border:1px solid #e2e8f0;border-radius:8px;padding:10px;margin-bottom:12px">
+      <div style="font-weight:600;font-size:13px;margin-bottom:6px">채용공고 요건</div>
+      <div class="fz12"><b>채용 목적</b><br>${h(job?.purpose||"-")}</div>
+      <div class="fz12" style="margin-top:6px"><b>수행 업무</b><br>${h(job?.responsibilities||"-")}</div>
+      <div class="fz12" style="margin-top:6px"><b>필요 경력연수</b> ${job?.requiredYears!=null?job.requiredYears+"년":"-"}</div>
+    </div>
+    <div style="border:1px solid #e2e8f0;border-radius:8px;padding:10px;margin-bottom:12px">
+      <div style="font-weight:600;font-size:13px;margin-bottom:6px">지원자 정보</div>
+      <div class="fz12">이력서: ${cd?.resume?`<button class="btn btn-secondary btn-sm" onclick="downloadRecruitResume('${cd.id}')">다운로드</button>`:"없음"}</div>
+      <div class="fz12" style="margin-top:6px"><b>최종학력</b><br>${h(cd?.finalEducation||"-")}</div>
+      <div class="fz12" style="margin-top:6px"><b>경력사항</b><br>${(cd?.careerHistory||"-").split("\n").map(h).join("<br>")}</div>
+      <div class="fz12" style="margin-top:6px"><b>마지막 연봉</b> ${h(cd?.lastSalary||"-")} &nbsp;/&nbsp; <b>희망 연봉</b> ${h(cd?.desiredSalary||"-")}</div>
+      ${cd?.careerGaps?`<div class="fz12" style="margin-top:6px;color:#dc2626"><b>학력·경력 간 공백</b><br>${cd.careerGaps.split("\n").map(h).join("<br>")}</div>`:""}
+      <div class="fz12" style="margin-top:6px"><b>교육 및 대외활동 이력</b><br>${(cd?.activities||"-").split("\n").map(l=>/^\[.+\]$/.test(l)?`<b>${h(l)}</b>`:h(l)).join("<br>")}</div>
+      <div class="fz12" style="margin-top:6px"><b>이력서 요약</b><br>${h(cd?.resumeSummary||"-")}</div>
+      <div class="fz12" style="margin-top:6px"><b>장점</b><br>${h(cd?.strengths||"-")}</div>
+      <div class="fz12" style="margin-top:6px"><b>단점</b><br>${h(cd?.weaknesses||"-")}</div>
     </div>
     ${pastApps.length?`<div style="border-top:1px solid #e2e8f0;padding-top:12px;margin-bottom:12px">
       <div style="font-weight:600;font-size:13px;margin-bottom:6px">⚠ 동일인 과거 지원이력</div>
