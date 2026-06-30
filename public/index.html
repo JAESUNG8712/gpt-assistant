@@ -18238,14 +18238,15 @@ function _roomColumnCellPlan(dayRsv){
   return plan;
 }
 function _roomBlockHtml(rsv,room){
-  return `<div style="background:${_roomColorOf(room)};color:white;border-radius:4px;padding:3px 8px;font-size:11px;display:flex;justify-content:space-between;align-items:center;gap:4px" title="${h(rsv.title)} (${h(getEmpName(rsv.bookedBy))}, ${rsv.startTime}~${rsv.endTime})">
+  const canEdit=rsv.bookedBy===currentUser.id||currentUser.role==="admin";
+  return `<div style="background:${_roomColorOf(room)};color:white;padding:3px 8px;font-size:11px;display:flex;justify-content:space-between;align-items:center;gap:4px;height:100%;width:100%;box-sizing:border-box;${canEdit?"cursor:pointer":""}" title="${h(rsv.title)} (${h(getEmpName(rsv.bookedBy))}, ${rsv.startTime}~${rsv.endTime})" ${canEdit?`onclick="event.stopPropagation();openRoomEditModal('${rsv.id}')"`:""}>
     <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${room?h(room.name)+": ":""}${h(rsv.title)}${rsv.seriesId?" 🔁":""}</span>
-    ${rsv.bookedBy===currentUser.id||currentUser.role==="admin"?`<button style="background:transparent;border:none;color:white;cursor:pointer;font-size:11px;flex:none" onclick="event.stopPropagation();deleteRoomReservation('${rsv.id}')">✕</button>`:""}
+    ${canEdit?`<button style="background:transparent;border:none;color:white;cursor:pointer;font-size:11px;flex:none" onclick="event.stopPropagation();deleteRoomReservation('${rsv.id}')">✕</button>`:""}
   </div>`;
 }
 function _roomCellsHtml(cell,rooms,singleRoom){
   if(!cell.items.length)return"";
-  return `<div style="display:flex;flex-direction:column;gap:2px;height:100%">${cell.items.map(it=>_roomBlockHtml(it,singleRoom||rooms.find(r=>r.id===it.roomId))).join("")}</div>`;
+  return `<div style="display:flex;flex-direction:column;gap:1px;height:100%">${cell.items.map(it=>_roomBlockHtml(it,singleRoom||rooms.find(r=>r.id===it.roomId))).join("")}</div>`;
 }
 function _roomCellClick(roomId,date,time){
   const colKey=`${roomId||"all"}|${date}`;
@@ -18321,10 +18322,10 @@ function _roomRenderDay(rooms,viewRoom,selDate){
     const cells=plans.map(({room,plan})=>{
       const cell=plan[i];
       if(!cell.render)return"";
-      if(cell.items.length)return `<td rowspan="${cell.rowspan}" style="padding:2px">${_roomCellsHtml(cell,cols,room)}</td>`;
+      if(cell.items.length)return `<td rowspan="${cell.rowspan}" style="padding:0;border-bottom:none">${_roomCellsHtml(cell,cols,room)}</td>`;
       const colKey=`${room.id}|${selDate}`;
       const marked=_roomPendingMark(colKey,time);
-      return `<td style="cursor:pointer;${marked?"background:#dbeafe":""}" onclick="_roomCellClick('${room.id}','${selDate}','${time}')" onmouseenter="_roomCellHover('${room.id}|${selDate}','${time}')"><div style="height:18px">${marked?'<div class="fz10" style="text-align:center;color:#2563eb">선택됨</div>':""}</div></td>`;
+      return `<td style="cursor:pointer;padding:0;${marked?"background:#60a5fa;border-bottom:none":""}" onclick="_roomCellClick('${room.id}','${selDate}','${time}')" onmouseenter="_roomCellHover('${room.id}|${selDate}','${time}')"><div style="height:100%;min-height:18px;display:flex;align-items:center;justify-content:center">${marked?'<span class="fz10" style="color:#fff;font-weight:600">선택됨</span>':""}</div></td>`;
     }).join("");
     return `<tr style="height:32px"><td class="fz11 text-gray" style="width:50px">${time}</td>${cells}</tr>`;
   }).join("");
@@ -18477,10 +18478,46 @@ function saveRoomReservation(date){
   closeModal();autoSaveToServerIfEnabled();showToast(`예약이 완료되었습니다.${toCreate.length>1?` (${toCreate.length}건)`:""}`,"success");renderRoomBookingPage();
 }
 function deleteRoomReservation(rsvId){
-  const rsv=roomReservations.find(r=>r.id===rsvId);if(!rsv)return;
-  if(!confirm(rsv.seriesId?"이 날짜의 예약만 취소하시겠습니까? (반복 전체를 취소하려면 '내 예약 내역'에서 🔁 전체취소를 이용하세요)":"예약을 취소하시겠습니까?"))return;
+  const rsv=roomReservations.find(r=>r.id===rsvId);if(!rsv)return false;
+  if(!(rsv.bookedBy===currentUser.id||currentUser.role==="admin")){showToast("취소 권한이 없습니다.","error");return false;}
+  if(!confirm(rsv.seriesId?"이 날짜의 예약만 취소하시겠습니까? (반복 전체를 취소하려면 '내 예약 내역'에서 🔁 전체취소를 이용하세요)":"예약을 취소하시겠습니까?"))return false;
   roomReservations=roomReservations.filter(r=>r.id!==rsvId);
   autoSaveToServerIfEnabled();showToast("예약이 취소되었습니다.","info");renderRoomBookingPage();
+  return true;
+}
+function openRoomEditModal(rsvId){
+  const rsv=roomReservations.find(r=>r.id===rsvId);if(!rsv)return;
+  if(!(rsv.bookedBy===currentUser.id||currentUser.role==="admin"))return;
+  const rooms=settings.meetingRooms||[];
+  const times=[];for(let h2=7;h2<=22;h2++)times.push(`${String(h2).padStart(2,"0")}:00`);
+  const timeOpts=times.map(t=>`<option value="${t}">${t}</option>`).join("");
+  openModal(`<div class="modal-box" style="max-width:440px"><div class="modal-head"><h3>🗓 예약 수정 (${rsv.date})</h3></div><div class="modal-body">
+    <div class="fg"><label class="fl">회의실 <span class="req">*</span></label><select class="fc" id="rsv-edit-room">${rooms.map(r=>`<option value="${r.id}" ${rsv.roomId===r.id?"selected":""}>${h(r.name)} (${r.capacity}인·${h(r.location||"")})</option>`).join("")}</select></div>
+    <div class="fg"><label class="fl">예약 제목 <span class="req">*</span></label><input class="fc" id="rsv-edit-title" value="${h(rsv.title)}"></div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+      <div class="fg"><label class="fl">시작 시간</label><select class="fc" id="rsv-edit-start">${timeOpts}</select></div>
+      <div class="fg"><label class="fl">종료 시간</label><select class="fc" id="rsv-edit-end">${timeOpts}</select></div>
+    </div>
+    ${rsv.seriesId?`<div class="fz11 text-gray" style="margin-top:6px">🔁 반복 예약의 일부입니다. 이 수정/취소는 이 날짜에만 적용됩니다.</div>`:""}
+  </div><div class="modal-foot">
+    <button class="btn btn-danger" onclick="if(deleteRoomReservation('${rsv.id}'))closeModal()">예약 취소</button>
+    <button class="btn btn-secondary" onclick="closeModal()">닫기</button>
+    <button class="btn btn-primary" onclick="saveRoomReservationEdit('${rsv.id}')">저장</button>
+  </div></div>`);
+  setTimeout(()=>{const s=$("#rsv-edit-start"),e=$("#rsv-edit-end");if(s)s.value=rsv.startTime;if(e)e.value=rsv.endTime;},50);
+}
+function saveRoomReservationEdit(rsvId){
+  const rsv=roomReservations.find(r=>r.id===rsvId);if(!rsv)return;
+  const roomId=$("#rsv-edit-room")?.value;
+  const title=$("#rsv-edit-title")?.value.trim();
+  const start=$("#rsv-edit-start")?.value;const end=$("#rsv-edit-end")?.value;
+  if(!roomId){showToast("회의실을 선택하세요.","error");return;}
+  if(!title){showToast("예약 제목을 입력하세요.","error");return;}
+  if(!start||!end||start>=end){showToast("종료 시간은 시작 시간 이후여야 합니다.","error");return;}
+  const conflict=roomReservations.some(r=>r.id!==rsvId&&r.roomId===roomId&&r.date===rsv.date&&r.startTime<end&&r.endTime>start);
+  if(conflict){showToast("해당 시간에 이미 예약이 있습니다.","error");return;}
+  rsv.roomId=roomId;rsv.title=title;rsv.startTime=start;rsv.endTime=end;
+  closeModal();autoSaveToServerIfEnabled();showToast("예약이 수정되었습니다.","success");renderRoomBookingPage();
 }
 function deleteRoomReservationSeries(seriesId){
   if(!confirm("이 반복 예약의 모든 일정을 취소하시겠습니까?"))return;
