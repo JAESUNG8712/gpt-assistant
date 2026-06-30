@@ -18,6 +18,7 @@ import search as srch
 import backup as bkp
 import law_search as law
 import calculator as calc
+import budget_store as budget
 
 # ── 복합어 정규화 (띄어쓰기 변형 → 정확한 검색어) ─────
 _COMPOUND_MAP = [
@@ -1210,6 +1211,42 @@ def stock_report_download(filename: str):
         filename=filename,
         headers={"Content-Disposition": f"attachment; filename*=UTF-8''{filename}"},
     )
+
+@app.post("/budget/upload/headcount")
+async def budget_upload_headcount(file: UploadFile = File(...)):
+    """① 부서별 월 인원 현황 업로드 — 동일 부서/월 재업로드 시 자동 갱신"""
+    content = await file.read()
+    try:
+        rows = budget.parse_rows(content, file.filename)
+    except Exception:
+        raise HTTPException(status_code=400, detail="파일을 읽을 수 없습니다. (xlsx/csv만 지원)")
+    upserted, depts = budget.upsert_headcount(rows)
+    return {"message": "인원 현황이 반영되었습니다.", "upserted": upserted, "depts": depts}
+
+@app.post("/budget/upload/detail")
+async def budget_upload_detail(file: UploadFile = File(...)):
+    """② 판관/용역/경상 상세 업로드 — ①의 부서와 자동 연계, 동일 키 재업로드 시 자동 갱신"""
+    content = await file.read()
+    try:
+        rows = budget.parse_rows(content, file.filename)
+    except Exception:
+        raise HTTPException(status_code=400, detail="파일을 읽을 수 없습니다. (xlsx/csv만 지원)")
+    upserted, depts = budget.upsert_detail(rows)
+    return {"message": "예산 상세(판관/용역/경상) 내역이 반영되었습니다.", "upserted": upserted, "depts": depts}
+
+@app.get("/budget/data")
+def budget_data():
+    return budget.read_budget()
+
+@app.get("/budget/summary")
+def budget_summary():
+    """부서 기준으로 인원 현황과 판관/용역/경상 상세를 연계한 통합 요약 (중복 없이 합산)"""
+    return {"summary": budget.build_summary()}
+
+@app.delete("/budget/data")
+def budget_reset():
+    budget.write_budget(budget._empty())
+    return {"message": "예산 데이터가 초기화되었습니다."}
 
 @app.get("/answer/download/{filename}")
 def answer_download(filename: str):

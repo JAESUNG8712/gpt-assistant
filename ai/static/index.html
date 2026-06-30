@@ -706,6 +706,7 @@
       </div>
       <div style="display:flex;gap:8px;align-items:center;">
         <button class="code-toggle-btn" id="code-toggle-btn" onclick="toggleCodePanel()" title="Python 코드 실행">🐍 Python</button>
+        <button class="code-toggle-btn" id="budget-toggle-btn" onclick="toggleBudgetPanel()" title="사업부별 예산 관리" style="background:#1a2e4a;border-color:#3b6fc4;color:#5a9cf0">📊 예산</button>
         <span class="gemini-badge" id="gemini-badge" style="display:none">✨ Gemini</span>
         <span class="model-badge" id="model-badge">로딩 중...</span>
       </div>
@@ -839,6 +840,40 @@
     <div class="code-output-wrap">
       <div class="code-output-label">출력</div>
       <pre id="code-output" class="code-output">▶ 실행 버튼을 누르면 Python 코드가 실행됩니다.</pre>
+    </div>
+  </div>
+</div>
+
+<!-- ── 사업부별 예산 관리 모달 ──────────────────── -->
+<div class="code-modal" id="budget-modal" onclick="handleBudgetModalClick(event)">
+  <div class="code-modal-inner" style="max-width:1100px">
+    <div class="code-modal-header">
+      <span style="color:#5a9cf0">📊 사업부별 예산 관리</span>
+      <button class="code-close-btn" onclick="toggleBudgetPanel()">✕</button>
+    </div>
+    <div style="padding:14px 16px;overflow-y:auto;flex:1;min-height:0">
+      <p style="font-size:0.78rem;color:var(--text-dim);line-height:1.6;margin-bottom:12px">
+        ① 부서별 월 인원 현황 파일을 올리면 자동 반영됩니다.<br>
+        ② 판관/용역/경상 상세 파일(부문·팀·항목별 월 금액)을 올리면 ①의 부서와 자동 연계되어 통합 요약에 합산됩니다.<br>
+        같은 부서/월(또는 부서·팀·항목·구분·월) 데이터를 다시 올리면 기존 값이 자동으로 최신 값으로 갱신됩니다(중복 누적 없음).
+        한쪽 파일에만 있는 부서/월도 빠짐없이 반영되어 ①만/②만 표시로 구분됩니다.
+      </p>
+      <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:14px">
+        <div style="flex:1;min-width:260px;border:1px dashed var(--border-bright);border-radius:8px;padding:12px">
+          <div style="font-size:0.8rem;font-weight:600;margin-bottom:8px">① 부서별 월 인원 현황 (xlsx/csv)</div>
+          <input type="file" id="budget-file-headcount" accept=".xlsx,.xls,.csv" style="width:100%;font-size:0.78rem;color:var(--text)">
+          <button class="sidebar-btn" style="margin-top:8px" onclick="uploadBudgetFile('headcount')">업로드</button>
+          <div class="status" id="budget-status-headcount" style="font-size:0.76rem;margin-top:6px;min-height:14px"></div>
+        </div>
+        <div style="flex:1;min-width:260px;border:1px dashed var(--border-bright);border-radius:8px;padding:12px">
+          <div style="font-size:0.8rem;font-weight:600;margin-bottom:8px">② 판관/용역/경상 상세 (xlsx/csv)</div>
+          <input type="file" id="budget-file-detail" accept=".xlsx,.xls,.csv" style="width:100%;font-size:0.78rem;color:var(--text)">
+          <button class="sidebar-btn" style="margin-top:8px" onclick="uploadBudgetFile('detail')">업로드</button>
+          <div class="status" id="budget-status-detail" style="font-size:0.76rem;margin-top:6px;min-height:14px"></div>
+        </div>
+      </div>
+      <button class="sidebar-btn danger" style="margin-bottom:14px" onclick="resetBudgetData()">🗑️ 전체 데이터 초기화</button>
+      <div id="budget-summary-area" style="overflow-x:auto;font-size:0.76rem"></div>
     </div>
   </div>
 </div>
@@ -1999,6 +2034,108 @@ sys.stderr = _stderr
   function handleCodeModalClick(e) {
     // 배경 클릭 시 닫기
     if (e.target === document.getElementById('code-modal')) toggleCodePanel();
+  }
+
+  // ── 사업부별 예산 관리 ─────────────────────
+  function toggleBudgetPanel() {
+    const modal = document.getElementById('budget-modal');
+    const btn = document.getElementById('budget-toggle-btn');
+    const isOpen = modal.classList.toggle('open');
+    btn.classList.toggle('active', isOpen);
+    if (isOpen) loadBudgetSummary();
+  }
+
+  function handleBudgetModalClick(e) {
+    if (e.target === document.getElementById('budget-modal')) toggleBudgetPanel();
+  }
+
+  async function uploadBudgetFile(type) {
+    const input = document.getElementById('budget-file-' + type);
+    const statusEl = document.getElementById('budget-status-' + type);
+    if (!input.files.length) {
+      statusEl.textContent = '파일을 선택해주세요.';
+      statusEl.style.color = '#c0392b';
+      return;
+    }
+    const fd = new FormData();
+    fd.append('file', input.files[0]);
+    statusEl.textContent = '업로드 중...';
+    statusEl.style.color = 'var(--text-dim)';
+    try {
+      const res = await fetch('/budget/upload/' + type, { method: 'POST', body: fd });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.detail || '업로드 실패');
+      statusEl.textContent = `완료: ${json.message} (반영 ${json.upserted}건)`;
+      statusEl.style.color = '#3fb950';
+      loadBudgetSummary();
+    } catch (e) {
+      statusEl.textContent = '오류: ' + e.message;
+      statusEl.style.color = '#c0392b';
+    }
+  }
+
+  async function resetBudgetData() {
+    if (!confirm('업로드된 모든 예산 데이터를 초기화할까요?')) return;
+    await fetch('/budget/data', { method: 'DELETE' });
+    loadBudgetSummary();
+  }
+
+  function _fmtBudget(n) {
+    if (n === null || n === undefined) return '-';
+    return Number(n).toLocaleString();
+  }
+
+  async function loadBudgetSummary() {
+    const area = document.getElementById('budget-summary-area');
+    area.textContent = '로딩 중...';
+    const res = await fetch('/budget/summary');
+    const { summary } = await res.json();
+    if (!summary.length) {
+      area.innerHTML = '<p style="color:var(--text-dim)">업로드된 데이터가 없습니다.</p>';
+      return;
+    }
+
+    const months = Array.from({ length: 12 }, (_, i) => i + 1);
+    const th = (label) => `<th style="border:1px solid var(--border);padding:4px 6px;background:var(--surface2)">${label}</th>`;
+    const td = (val) => `<td style="border:1px solid var(--border);padding:4px 6px;text-align:right">${val}</td>`;
+    const tdLbl = (val) => `<td style="border:1px solid var(--border);padding:4px 6px;text-align:left">${val}</td>`;
+
+    let html = '';
+    const grand = months.map(() => ({ headcount: 0, 판관: 0, 용역: 0, 경상: 0, totalAmount: 0 }));
+
+    summary.forEach(dept => {
+      html += `<h4 style="margin:12px 0 6px">${dept.dept}</h4>`;
+      html += `<table style="width:100%;border-collapse:collapse;margin-bottom:10px"><tr>${th('구분')}${months.map(m => th(m + '월')).join('')}</tr>`;
+      html += `<tr>${tdLbl('인원수')}${dept.months.map(d => td(_fmtBudget(d.headcount))).join('')}</tr>`;
+      html += `<tr>${tdLbl('판관')}${dept.months.map(d => td(_fmtBudget(d.판관))).join('')}</tr>`;
+      html += `<tr>${tdLbl('용역')}${dept.months.map(d => td(_fmtBudget(d.용역))).join('')}</tr>`;
+      html += `<tr>${tdLbl('경상')}${dept.months.map(d => td(_fmtBudget(d.경상))).join('')}</tr>`;
+      html += `<tr>${tdLbl('합계금액')}${dept.months.map(d => td(_fmtBudget(d.totalAmount))).join('')}</tr>`;
+      html += `<tr>${tdLbl('데이터 출처')}${dept.months.map(d => {
+        if (d.hasHeadcountData && d.hasDetailData) return td('①+②');
+        if (d.hasHeadcountData) return td('①만');
+        if (d.hasDetailData) return td('②만');
+        return td('-');
+      }).join('')}</tr></table>`;
+
+      dept.months.forEach((d, idx) => {
+        if (d.headcount) grand[idx].headcount += d.headcount;
+        grand[idx].판관 += d.판관;
+        grand[idx].용역 += d.용역;
+        grand[idx].경상 += d.경상;
+        grand[idx].totalAmount += d.totalAmount;
+      });
+    });
+
+    html += `<h4 style="margin:12px 0 6px">전체 합계 (중복 제외 합산)</h4>`;
+    html += `<table style="width:100%;border-collapse:collapse"><tr>${th('구분')}${months.map(m => th(m + '월')).join('')}</tr>`;
+    html += `<tr>${tdLbl('인원수')}${grand.map(g => td(_fmtBudget(g.headcount))).join('')}</tr>`;
+    html += `<tr>${tdLbl('판관')}${grand.map(g => td(_fmtBudget(g.판관))).join('')}</tr>`;
+    html += `<tr>${tdLbl('용역')}${grand.map(g => td(_fmtBudget(g.용역))).join('')}</tr>`;
+    html += `<tr>${tdLbl('경상')}${grand.map(g => td(_fmtBudget(g.경상))).join('')}</tr>`;
+    html += `<tr>${tdLbl('합계금액')}${grand.map(g => td(_fmtBudget(g.totalAmount))).join('')}</tr></table>`;
+
+    area.innerHTML = html;
   }
 
   function loadSample(key) {
