@@ -16627,10 +16627,13 @@ function removeFinalApprover(empId){
 }
 
 // ==================== 외부 시스템 연동 (메신저/캘린더/ERP) ====================
+let _calOptStage=null; // 캘린더 연동 옵션 저장 전 임시 편집본
 function renderIntegrationsPage(){
   const c=$("#content");if(!c)return;
   const whs=integrationSettings.webhooks||[];
   const cal=integrationSettings.calendar||{};
+  if(!_calOptStage)_calOptStage={includeLeave:!!cal.includeLeave,includeRoomBooking:!!cal.includeRoomBooking};
+  const calDirty=_calOptStage.includeLeave!==!!cal.includeLeave||_calOptStage.includeRoomBooking!==!!cal.includeRoomBooking;
   c.innerHTML=`<div class="card mb3"><div class="card-head"><h3>🔔 메신저/알림 연동</h3><button class="btn btn-primary btn-sm" onclick="openWebhookModal()">+ 웹훅 추가</button></div>
   <div class="card-body">
   <div class="fz12 text-gray mb3">Slack, 카카오워크 등의 Incoming Webhook URL을 등록하면, 선택한 이벤트가 발생할 때 알림 메시지를 전송합니다. (외부 서비스의 CORS 정책에 따라 실제 수신 여부는 연동 채널에서 직접 확인하세요.)</div>
@@ -16645,8 +16648,9 @@ function renderIntegrationsPage(){
   <div class="card mb3"><div class="card-head"><h3>📅 캘린더 연동</h3></div>
   <div class="card-body">
   <div class="fz12 text-gray mb3">내 일정(승인된 휴가·근태, 회의실 예약)을 iCalendar(.ics) 파일로 내보내 Google 캘린더, Outlook 등에서 가져오기(구독)할 수 있습니다.</div>
-  <label style="display:flex;align-items:center;gap:6px;cursor:pointer;margin-bottom:6px"><input type="checkbox" ${cal.includeLeave?"checked":""} onchange="toggleCalendarOption('includeLeave')"> 승인된 휴가/근태 일정 포함</label>
-  <label style="display:flex;align-items:center;gap:6px;cursor:pointer;margin-bottom:10px"><input type="checkbox" ${cal.includeRoomBooking?"checked":""} onchange="toggleCalendarOption('includeRoomBooking')"> 내 회의실 예약 일정 포함</label>
+  ${calDirty?`<div class="card mb3" style="background:#fffbeb;border:1px solid #fcd34d"><div class="card-body" style="display:flex;align-items:center;justify-content:space-between;gap:10px"><span class="fz12">⚠ 저장하지 않은 변경 사항이 있습니다.</span><div style="display:flex;gap:6px"><button class="btn btn-secondary btn-sm" onclick="_calOptStage=null;renderIntegrationsPage()">변경 취소</button><button class="btn btn-primary btn-sm" onclick="_saveCalOptStage()">💾 변경사항 저장</button></div></div></div>`:""}
+  <label style="display:flex;align-items:center;gap:6px;cursor:pointer;margin-bottom:6px"><input type="checkbox" ${_calOptStage.includeLeave?"checked":""} onchange="_calOptStage.includeLeave=this.checked;renderIntegrationsPage()"> 승인된 휴가/근태 일정 포함</label>
+  <label style="display:flex;align-items:center;gap:6px;cursor:pointer;margin-bottom:10px"><input type="checkbox" ${_calOptStage.includeRoomBooking?"checked":""} onchange="_calOptStage.includeRoomBooking=this.checked;renderIntegrationsPage()"> 내 회의실 예약 일정 포함</label>
   <button class="btn btn-primary btn-sm" onclick="downloadCalendarFeed()">📥 내 캘린더 파일 다운로드 (.ics)</button>
   </div></div>
 
@@ -16656,9 +16660,11 @@ function renderIntegrationsPage(){
   <button class="btn btn-primary btn-sm" onclick="exportPayrollForErp()">📤 당월 급여 데이터 내보내기 (CSV)</button>
   </div></div>`;
 }
-function toggleCalendarOption(key){
-  integrationSettings={...integrationSettings,calendar:{...integrationSettings.calendar,[key]:!integrationSettings.calendar[key]}};
-  autoSaveToServerIfEnabled();renderIntegrationsPage();
+function _saveCalOptStage(){
+  if(!_calOptStage)return;
+  integrationSettings={...integrationSettings,calendar:{...integrationSettings.calendar,includeLeave:_calOptStage.includeLeave,includeRoomBooking:_calOptStage.includeRoomBooking}};
+  _calOptStage=null;
+  autoSaveToServerIfEnabled();showToast("캘린더 연동 설정이 저장되었습니다.","success");renderIntegrationsPage();
 }
 function openWebhookModal(id){
   const wh=id?(integrationSettings.webhooks||[]).find(w=>String(w.id)===String(id)):null;
