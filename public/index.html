@@ -13879,7 +13879,7 @@ function renderApprovalTemplateAdmin(){
   </div>
   <div class="card-body fz12" style="color:#64748b;padding:6px 16px 4px">${badge("사용","green")} 표시된 양식만 [기안하기]에서 선택할 수 있습니다. 기본 양식은 직접 수정할 수 없으며, [복제]로 수정 가능한 사본을 만들 수 있습니다.</div>
   <div class="card-body" style="padding:0"><div class="tbl-wrap"><table><thead><tr><th>양식명</th><th>카테고리</th><th>항목수</th><th>결재방식</th><th>구분</th><th>사용여부</th><th>관리</th></tr></thead><tbody>
-  ${all.map(t=>{const active=isTplActive(t.id);return`<tr><td>${t.icon||"📄"} <strong>${h(t.name)}</strong></td><td>${t.category==="attendance"?"근태":"일반"}</td><td>${(t.fields||[]).length}개</td><td>${t.approvalType==="hierarchy"?"계층형":"수동"}</td><td>${t.builtin?badge("기본","gray"):badge("커스텀","blue")}</td><td><label style="cursor:pointer;display:inline-flex;align-items:center;gap:5px"><input type="checkbox" ${active?"checked":""} onchange="toggleTplActive('${t.id}')">${active?badge("사용","green"):badge("미사용","gray")}</label></td><td>${!t.builtin?`<button class="btn btn-secondary btn-sm" onclick="openEditTemplateModal('${t.id}')">수정</button> <button class="btn btn-danger btn-sm" onclick="deleteApprovalTemplate('${t.id}')">삭제</button>`:`<button class="btn btn-secondary btn-sm" onclick="viewTemplateModal('${t.id}')">보기</button> <button class="btn btn-secondary btn-sm" onclick="duplicateApprovalTemplate('${t.id}')" title="복제하여 수정 가능한 사본 만들기">복제</button>`}</td></tr>`;}).join("")}
+  ${all.map(t=>{const active=isTplActive(t.id);return`<tr style="cursor:pointer" onclick="viewTemplateModal('${t.id}')" title="클릭하여 미리보기"><td>${t.icon||"📄"} <strong>${h(t.name)}</strong></td><td>${t.category==="attendance"?"근태":"일반"}</td><td>${(t.fields||[]).length}개</td><td>${t.approvalType==="hierarchy"?"계층형":"수동"}</td><td>${t.builtin?badge("기본","gray"):badge("커스텀","blue")}</td><td onclick="event.stopPropagation()"><label style="cursor:pointer;display:inline-flex;align-items:center;gap:5px"><input type="checkbox" ${active?"checked":""} onchange="toggleTplActive('${t.id}')">${active?badge("사용","green"):badge("미사용","gray")}</label></td><td onclick="event.stopPropagation()">${!t.builtin?`<button class="btn btn-secondary btn-sm" onclick="openEditTemplateModal('${t.id}')">수정</button> <button class="btn btn-danger btn-sm" onclick="deleteApprovalTemplate('${t.id}')">삭제</button>`:`<button class="btn btn-secondary btn-sm" onclick="viewTemplateModal('${t.id}')">보기</button> <button class="btn btn-secondary btn-sm" onclick="duplicateApprovalTemplate('${t.id}')" title="복제하여 수정 가능한 사본 만들기">복제</button>`}</td></tr>`;}).join("")}
   </tbody></table></div></div></div>`;
 }
 let _tplFields=[];
@@ -13909,11 +13909,11 @@ function viewTemplateModal(id){
   const fieldsHtml=(tpl.fields||[]).map(f=>`<div style="display:flex;gap:8px;align-items:center;background:#f8fafc;padding:8px;border-radius:6px;margin-bottom:5px">
     <span style="flex:2">${h(f.label)}</span><span style="flex:1;color:#64748b">${f.type}</span><span style="color:${f.req?"#ef4444":"#94a3b8"}">${f.req?"필수":"선택"}</span></div>`).join("")||`<div class="text-gray fz12">항목이 없습니다.</div>`;
   openModal(`<div class="modal-box" style="max-width:560px"><div class="modal-head"><h3>${tpl.icon||"📄"} ${h(tpl.name)} — 양식 구성 보기</h3></div><div class="modal-body">
-    <div class="fz12" style="color:#64748b;margin-bottom:10px">${badge("기본 양식","gray")} 기본 양식은 직접 수정할 수 없습니다. 변경하려면 [복제]로 커스텀 사본을 만든 뒤 수정하세요.</div>
+    <div class="fz12" style="color:#64748b;margin-bottom:10px">${tpl.builtin?`${badge("기본 양식","gray")} 기본 양식은 직접 수정할 수 없습니다. 변경하려면 [복제]로 커스텀 사본을 만든 뒤 수정하세요.`:`${badge("커스텀 양식","blue")} 직접 수정하거나 삭제할 수 있습니다.`}</div>
     <div class="fg"><label class="fl">카테고리</label><div class="fz13">${tpl.category==="attendance"?"근태":"일반"}</div></div>
     <div class="fg"><label class="fl">결재 방식</label><div class="fz13">${tpl.approvalType==="hierarchy"?"계층형 (팀원→팀장→사업부장)":tpl.approvalType==="direct_superior"?"직속 상급자 (팀원→팀장, 팀장→사업부장)":"수동 설정"}</div></div>
     <div class="fg"><label class="fl">양식 항목 (${(tpl.fields||[]).length}개)</label>${fieldsHtml}</div>
-  </div><div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal()">닫기</button><button class="btn btn-primary" onclick="closeModal();duplicateApprovalTemplate('${id}')">복제하여 수정</button></div></div>`);
+  </div><div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal()">닫기</button>${tpl.builtin?`<button class="btn btn-primary" onclick="closeModal();duplicateApprovalTemplate('${id}')">복제하여 수정</button>`:`<button class="btn btn-primary" onclick="closeModal();openEditTemplateModal('${id}')">수정</button>`}</div></div>`);
 }
 function renderTplFieldsList(){
   const el=$("#tpl-fields-list");if(!el)return;
@@ -19080,7 +19080,7 @@ function _renderWelfareAwardTab(){
 
   el.innerHTML=`
   <div class="card"><div class="card-head"><h3>🏆 (최)우수사원 선정 관리</h3>
-    <div class="flex gap2"><button class="btn btn-secondary btn-sm" onclick="_dlAwardHistory()">📥 명단 다운로드</button><button class="btn btn-primary btn-sm" onclick="openAwardRegisterModal()">+ 선정 등록</button></div>
+    <div class="flex gap2"><button class="btn btn-secondary btn-sm" onclick="_dlAwardHistory()">📥 명단 다운로드</button><button class="btn btn-secondary btn-sm" onclick="_dlAwardUploadTemplate()">📄 업로드 양식</button><label class="btn btn-secondary btn-sm" style="cursor:pointer">📤 엑셀 업로드<input type="file" accept=".csv" style="display:none" onchange="handleAwardUpload(this)"></label><button class="btn btn-primary btn-sm" onclick="openAwardRegisterModal()">+ 선정 등록</button></div>
   </div><div class="card-body" style="padding:0">
     ${allAwards.length?`<div class="tbl-wrap"><table><thead><tr><th>이름</th><th>부서</th><th>연도/반기</th><th>날짜</th><th>사유</th><th>비고</th><th>삭제</th></tr></thead><tbody>
     ${allAwards.map(({emp,hh})=>`<tr><td><strong>${h(emp.name)}</strong></td><td class="fz12 text-gray">${h(emp.dept)}</td><td>${hh.year?`${hh.year}년 ${hh.half||""}`:"-"}</td><td>${h(hh.date)}</td><td class="fz12">${h(hh.reason||"-")}</td><td class="fz12 text-gray">${h(hh.note||"-")}</td><td><button class="btn btn-danger btn-sm" onclick="_removeAward(${emp.id},${hh.id})">삭제</button></td></tr>`).join("")}
@@ -19092,6 +19092,64 @@ function _dlAwardHistory(){
   employees.forEach(e=>(e.hrHistory||[]).filter(hh=>hh.type==="award").forEach(hh=>allAwards.push({emp:e,hh})));
   allAwards.sort((a,b)=>b.hh.date.localeCompare(a.hh.date));
   dlCSV(`우수사원_선정명단_${new Date().toISOString().slice(0,10)}.csv`,["이름","사번","부서","팀","선정일","내용","비고"],allAwards.map(({emp,hh})=>[emp.name,emp.empNo,emp.dept,emp.team,hh.date,hh.desc,hh.note||"-"]));
+}
+function _dlAwardUploadTemplate(){
+  const active=employees.filter(e=>e.active).sort((a,b)=>(a.dept+(a.team||"")).localeCompare(b.dept+(b.team||"")));
+  const headers=["사번","이름","부서","팀","연도","반기","구분","선정일","선정사유","비고"];
+  const curYear=new Date().getFullYear();
+  const rows=active.map(e=>[e.empNo,e.name,e.dept,e.team||"",curYear,"","","","",""]);
+  dlCSV(`우수사원_선정_일괄등록_양식_${new Date().toISOString().slice(0,10)}.csv`,headers,rows);
+  showToast("업로드 양식을 다운로드했습니다. '연도/반기/구분/선정일/선정사유' 칸을 채운 뒤 업로드하세요.","success");
+}
+let _awardBulkChanges=[];
+function handleAwardUpload(input){
+  const file=input.files[0];if(!file)return;
+  const reader=new FileReader();
+  reader.onload=ev=>{
+    try{
+      const lines=ev.target.result.split(/\r?\n/).filter(l=>l.trim());
+      if(!lines.length){showToast("파일이 비어 있습니다.","error");input.value="";return;}
+      const rows=lines.map(parseCSVLine);
+      const header=rows[0];
+      const iEmpNo=header.indexOf("사번"),iYear=header.indexOf("연도"),iHalf=header.indexOf("반기"),iTier=header.indexOf("구분"),iDate=header.indexOf("선정일"),iReason=header.indexOf("선정사유"),iNote=header.indexOf("비고");
+      if(iEmpNo<0||iYear<0||iDate<0||iReason<0){showToast("올바른 양식의 파일이 아닙니다. (사번/연도/선정일/선정사유 열 필요)","error");input.value="";return;}
+      const changes=[];
+      for(let i=1;i<rows.length;i++){
+        const r=rows[i];if(!r[iEmpNo])continue;
+        const year=parseInt(r[iYear]),half=(r[iHalf]||"").trim(),tier=(r[iTier]||"").trim()||"우수",date=(r[iDate]||"").trim(),reason=(r[iReason]||"").trim(),note=(r[iNote]||"").trim();
+        if(!year||!date||!reason)continue;
+        const emp=employees.find(e=>e.empNo===r[iEmpNo]);
+        if(!emp){changes.push({empNo:r[iEmpNo],name:r[header.indexOf("이름")]||"",year,half,tier,date,reason,note,invalid:true});continue;}
+        changes.push({empId:emp.id,empNo:emp.empNo,name:emp.name,dept:emp.dept,year,half,tier,date,reason,note,recent:_awardRecentlySelected(emp,year)});
+      }
+      if(!changes.length){showToast("적용할 등록 건이 없습니다. (연도/선정일/선정사유 미입력)","info");input.value="";return;}
+      _showAwardBulkPreview(changes);
+    }catch(err){showToast("파일 파싱 오류: "+err.message,"error");}
+  };
+  reader.readAsText(file,"UTF-8");
+  input.value="";
+}
+function _showAwardBulkPreview(changes){
+  _awardBulkChanges=changes;
+  const valid=changes.filter(c=>!c.invalid),invalid=changes.filter(c=>c.invalid);
+  const rowsHtml=changes.map(c=>`<tr${c.invalid?' style="opacity:.5"':""}><td>${h(c.name)}</td><td class="text-gray">${h(c.empNo)}</td><td>${h(c.dept||"-")}</td><td>${c.year}년 ${h(c.half||"")}</td><td>${h(c.tier)}</td><td>${h(c.date)}</td><td class="fz12">${h(c.reason)}</td><td>${c.invalid?badge("사번 없음","red"):c.recent?badge("최근 선정","yellow"):badge("정상","green")}</td></tr>`).join("");
+  showModal(`<div class="modal-box" style="max-width:780px"><div class="modal-head"><h3>📋 우수사원 선정 일괄 등록 미리보기</h3></div>
+  <div class="modal-body">
+    <div class="text-gray fz12" style="margin-bottom:8px">총 ${changes.length}건 감지됨 (적용 가능 ${valid.length}건${invalid.length?`, 사번 매칭 실패 ${invalid.length}건`:""}).</div>
+    <div class="tbl-wrap" style="max-height:360px;overflow:auto"><table><thead><tr><th>이름</th><th>사번</th><th>부서</th><th>연도/반기</th><th>구분</th><th>선정일</th><th>사유</th><th>상태</th></tr></thead><tbody>${rowsHtml}</tbody></table></div>
+  </div>
+  <div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal()">취소</button><button class="btn btn-primary" onclick="_applyAwardBulkChanges()" ${valid.length?"":"disabled"}>적용 (${valid.length}건)</button></div></div>`);
+}
+function _applyAwardBulkChanges(){
+  const changes=(_awardBulkChanges||[]).filter(c=>!c.invalid);
+  let cnt=0;
+  changes.forEach(c=>{
+    const emp=getEmp(c.empId);if(!emp)return;
+    if(!emp.hrHistory)emp.hrHistory=[];
+    emp.hrHistory.push({id:genId(),type:"award",date:c.date,year:c.year,half:c.half,tier:c.tier,reason:c.reason,desc:`${c.tier}사원 선정 (${c.year}년 ${c.half||""})`,before:"-",after:"-",note:c.note||""});
+    cnt++;
+  });
+  closeModal();autoSaveToServerIfEnabled();showToast(`${cnt}건의 우수사원 선정이 등록되었습니다.`,"success");renderWelfareSettingsPage();
 }
 // 최근 2개년(당해 포함) 내 이미 선정된 인원 여부 확인 — 재선정 불가 표기에 사용
 function _awardRecentlySelected(emp,year){
