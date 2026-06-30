@@ -776,14 +776,14 @@
     <div id="budget-view" style="display:none;flex:1;flex-direction:column;min-height:0;overflow:hidden;background:var(--bg)">
 
       <!-- 툴바 -->
-      <div id="bgt-toolbar" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:10px 14px;background:var(--surface);border-bottom:1px solid var(--border);flex-shrink:0">
-        <span style="font-size:0.92rem;font-weight:700;margin-right:8px;white-space:nowrap">📊 예산관리 시트</span>
-        <button class="sidebar-btn" onclick="document.getElementById('bgt-file-input').click()">📂 업로드 (xlsx/csv)</button>
+      <div id="bgt-toolbar" style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;padding:8px 14px;background:var(--surface2);border-bottom:2px solid var(--border-bright);flex-shrink:0">
+        <span style="font-size:0.9rem;font-weight:700;margin-right:6px;white-space:nowrap;color:var(--text-bright)">📊 예산관리</span>
+        <button onclick="document.getElementById('bgt-file-input').click()" style="padding:6px 12px;background:var(--surface3);border:1px solid var(--border-bright);border-radius:7px;color:var(--text-bright);font-size:0.8rem;cursor:pointer;white-space:nowrap">📂 파일 업로드</button>
         <input type="file" id="bgt-file-input" accept=".xlsx,.xls,.csv" style="display:none" onchange="bgtUpload(this)">
-        <button class="sidebar-btn" style="background:#1a3a5c;border-color:#3b6fc4;color:#5a9cf0" onclick="bgtSave()">💾 저장</button>
-        <button class="sidebar-btn" onclick="bgtDownload()">⬇️ xlsx 다운로드</button>
-        <button class="sidebar-btn" onclick="bgtAddRow()">➕ 행</button>
-        <button class="sidebar-btn" onclick="bgtAddCol()">➕ 열</button>
+        <button onclick="bgtSave()" style="padding:6px 12px;background:#1565c0;border:1px solid #1565c0;border-radius:7px;color:#fff;font-size:0.8rem;cursor:pointer;white-space:nowrap">💾 저장</button>
+        <button onclick="bgtDownload()" style="padding:6px 12px;background:var(--surface3);border:1px solid var(--border-bright);border-radius:7px;color:var(--text-bright);font-size:0.8rem;cursor:pointer;white-space:nowrap">⬇️ xlsx 다운로드</button>
+        <button onclick="bgtAddRow()" style="padding:6px 10px;background:var(--surface3);border:1px solid var(--border-bright);border-radius:7px;color:var(--text-bright);font-size:0.8rem;cursor:pointer">➕ 행 추가</button>
+        <button onclick="bgtAddCol()" style="padding:6px 10px;background:var(--surface3);border:1px solid var(--border-bright);border-radius:7px;color:var(--text-bright);font-size:0.8rem;cursor:pointer">➕ 열 추가</button>
         <span id="bgt-status" style="font-size:0.75rem;color:var(--text-dim);margin-left:4px"></span>
       </div>
       <div style="font-size:0.72rem;color:var(--text-dim);padding:5px 14px;flex-shrink:0;background:var(--surface)">
@@ -799,7 +799,7 @@
       <div style="padding:10px 14px;border-top:1px solid var(--border);flex-shrink:0;background:var(--surface)">
         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px">
           <input id="bgt-snap-label" type="text" placeholder="예: 2026-06 최종" style="background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:5px 8px;font-size:0.78rem;width:160px">
-          <button class="sidebar-btn" onclick="bgtSaveSnap()">📌 월별 최종 자료로 저장</button>
+          <button onclick="bgtSaveSnap()" style="padding:5px 12px;background:var(--persona-color);border:1px solid var(--persona-color);border-radius:6px;color:#fff;font-size:0.78rem;cursor:pointer;white-space:nowrap">📌 월별 최종 저장</button>
           <span id="bgt-snap-status" style="font-size:0.75rem;color:var(--text-dim)"></span>
         </div>
         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
@@ -807,8 +807,8 @@
           <select id="bgt-cmp-a" style="background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:5px 8px;font-size:0.78rem"><option value="current">현재 시트</option></select>
           <span style="font-size:0.78rem;color:var(--text-dim)">vs</span>
           <select id="bgt-cmp-b" style="background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:5px 8px;font-size:0.78rem"><option value="current">현재 시트</option></select>
-          <button class="sidebar-btn" onclick="bgtCompare()">🔍 비교</button>
-          <button class="sidebar-btn danger" onclick="bgtDeleteSnap()">🗑️ 스냅샷 삭제</button>
+          <button onclick="bgtCompare()" style="padding:5px 10px;background:var(--surface3);border:1px solid var(--border-bright);border-radius:6px;color:var(--text-bright);font-size:0.78rem;cursor:pointer">🔍 비교</button>
+          <button onclick="bgtDeleteSnap()" style="padding:5px 10px;background:var(--surface3);border:1px solid var(--border-bright);border-radius:6px;color:#c0392b;font-size:0.78rem;cursor:pointer">🗑️ 삭제</button>
         </div>
         <div id="bgt-diff" style="margin-top:8px;overflow-x:auto;font-size:0.78rem"></div>
       </div>
@@ -2062,7 +2062,11 @@ sys.stderr = _stderr
     document.querySelectorAll('.persona-tab, .persona-more-item').forEach(t => t.classList.remove('active'));
     document.getElementById('budget-tab').classList.add('active');
     document.getElementById('chat-body').style.display = 'none';
-    document.getElementById('budget-view').style.display = 'flex';
+    const bv = document.getElementById('budget-view');
+    bv.style.display = 'flex';
+    // 즉시 현재 그리드 렌더 (빈 화면 방지), 이후 서버 데이터로 갱신
+    bgtEnsureSize();
+    bgtRender();
     bgtLoad();
   }
 
