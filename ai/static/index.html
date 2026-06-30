@@ -773,7 +773,7 @@
     </div><!-- /chat-body -->
 
     <!-- ── 예산관리 뷰 (인라인) ──────────────────── -->
-    <div id="budget-view" style="display:none;flex:1;flex-direction:column;min-height:0;overflow:hidden;background:var(--bg)">
+    <div id="budget-view" style="display:none;flex:1;flex-direction:column;min-height:0;overflow:hidden;background:#f0f4ff">
 
       <!-- 툴바 -->
       <div id="bgt-toolbar" style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;padding:8px 14px;background:var(--surface2);border-bottom:2px solid var(--border-bright);flex-shrink:0">
@@ -791,7 +791,16 @@
       </div>
 
       <!-- 그리드 -->
-      <div style="overflow:auto;flex:1;min-height:0;padding:10px 14px">
+      <div style="overflow:auto;flex:1;min-height:0;padding:10px 14px;min-height:200px">
+        <div id="bgt-empty" style="display:none;padding:40px 20px;text-align:center;color:var(--text-dim)">
+          <div style="font-size:2.5rem;margin-bottom:12px">📊</div>
+          <div style="font-size:1rem;font-weight:600;margin-bottom:8px;color:var(--text-bright)">예산 시트가 비어있습니다</div>
+          <div style="font-size:0.82rem;line-height:1.7">
+            <b>📂 파일 업로드</b> 버튼으로 엑셀/CSV를 가져오거나,<br>
+            <b>➕ 행 추가</b>/<b>➕ 열 추가</b>로 직접 입력하거나,<br>
+            엑셀에서 셀을 복사(Ctrl+C) 후 <b>빈 셀을 클릭하고 Ctrl+V</b>로 붙여넣으세요.
+          </div>
+        </div>
         <table id="bgt-sheet" style="border-collapse:collapse;font-size:0.8rem"></table>
       </div>
 
@@ -2110,8 +2119,12 @@ sys.stderr = _stderr
 
   function bgtRender() {
     const table = document.getElementById('bgt-sheet');
+    const empty = document.getElementById('bgt-empty');
     const nRows = bgtGrid.length;
     const nCols = Math.max(...bgtGrid.map(r=>r.length), BGT_MIN_COLS);
+    // 모든 셀이 비어있으면 안내 메시지 표시 (그리드는 그대로 렌더)
+    const hasData = bgtGrid.some(row => row.some(c => c !== ''));
+    if (empty) empty.style.display = hasData ? 'none' : 'block';
     let html = '<tr><th style="background:var(--surface2);border:1px solid var(--border);min-width:36px;padding:2px 6px;text-align:center;position:sticky;left:0;top:0;z-index:3;color:var(--text-dim)"></th>';
     for (let c=0;c<nCols;c++) html+=`<th style="background:var(--surface2);border:1px solid var(--border);min-width:90px;padding:2px 8px;text-align:center;position:sticky;top:0;z-index:2;color:var(--text-dim);font-weight:600">${bgtColLetters(c)}</th>`;
     html+='</tr>';

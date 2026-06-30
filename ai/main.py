@@ -1408,7 +1408,7 @@ def health():
 @app.get("/", response_class=HTMLResponse)
 def index():
     import os
-    # 여러 경로 시도 (배포 환경마다 working directory가 다를 수 있음)
+    from fastapi.responses import HTMLResponse as _HR
     candidates = [
         "static/index.html",
         os.path.join(os.path.dirname(__file__), "static", "index.html"),
@@ -1417,7 +1417,11 @@ def index():
     for path in candidates:
         if os.path.exists(path):
             with open(path, encoding="utf-8") as f:
-                return f.read()
+                content = f.read()
+            return _HR(content, headers={
+                "Cache-Control": "no-store, no-cache, must-revalidate",
+                "Pragma": "no-cache",
+            })
     return HTMLResponse("<h1>static/index.html 파일을 찾을 수 없습니다</h1>", status_code=500)
 
 
