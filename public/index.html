@@ -5670,7 +5670,7 @@ function renderSidebar(){
   _menuGroupsCache=menuGroups;
   const groupOrder=SIDEBAR_DEFAULT_ORDER.filter(g=>menuGroups[g]);
   const menus=groupOrder.flatMap(g=>menuGroups[g]);
-  const titles={dashboard:"대시보드","my-profile":"내 프로필","hr-register":"신규 직원 등록","hr-list":"직원 목록","hr-changes":"발령·변동 이력",kpi:"KPI 목표 등록","kpi-results":"KPI 결과 입력","my-kpi":"나의 KPI","grade-view":"KPI 등급 현황","comp-grade-view":"역량평가 등급","comp-eval":"다면평가 진행","first-eval":"1차 평가","second-eval":"2차 평가","kpi-amend":"수정 요청 승인","eval-progress":"평가 진행 상황",settings:"운영 설정",history:"수정 이력","change-pw":"비밀번호 변경","data-mgmt":"데이터 관리","core-talent":"핵심인재 관리","talent-dev":"육성 계획·실적","promotion-mgmt":"승진 심사 관리","low-performer":"저성과 인력 관리","approval-draft":"기안하기","approval-outbox":"상신함","approval-inbox":"결재함","approval-receive":"수신함","approval-cc-inbox":"참조함","approval-completed":"완료함","attendance":"근태 현황","att-calendar":"캘린더","leave-mgmt":"연차 관리","payslip":"급여 명세서","approval-templates":"결재 양식 관리","integrations":"연동 설정","orgchart":"조직도","certificate":"증명서 발급","hr-stats":"인사 통계","board":"게시판","room-booking":"회의실 예약","welfare-points":"복지포인트","mandatory-training":"법정의무교육","hr-welfare-points":"복지포인트 현황(전체)","hr-mandatory-training":"법정의무교육 현황(전체)","hr-attendance":"근태 현황(전체)","hr-leave-mgmt":"연차 관리(전체)","welfare-status":"복지 현황","long-service-award":"장기근속 포상","award-history":"(최)우수사원 선정 이력","salary-info":"급여 기준 정보","welfare-settings":"복지 제도 설정","notification-center":"알림","acct-partners":"거래처 관리","acct-accounts":"계정과목","acct-vouchers":"전표 관리","acct-tax-invoices":"세금계산서","sales-quotations":"견적서 관리","sales-dashboard":"영업 실적 대시보드","sales-purchase-orders":"발주서 관리","inv-items":"품목 관리","inv-locations":"위치 관리","inv-stock":"재고 현황","inv-purchase-requests":"구매요청","pms-projects":"프로젝트 관리","pms-allocation":"내 투입률 입력","pms-my-projects":"내가 투입된 프로젝트","pms-utilization":"가동률 현황","pms-worklog":"일일 업무 투입","recruit-jobs":"채용공고 관리","recruit-candidates":"지원자 관리","recruit-eval":"면접 일정/평가 입력","recruit-dashboard":"채용 현황 대시보드","eval-ops":"평가 운영","settings-org":"조직 관리","settings-ranks":"직급 체계","attend-settings":"근태 설정","payroll-settings":"급여 관리","payroll-mgmt":"급여 종합 관리","company-info":"회사 기본 정보","room-settings":"회의실 관리","deploy-perm":"권한 관리"};
+  const titles={dashboard:"대시보드","my-profile":"내 프로필","hr-register":"신규 직원 등록","hr-list":"직원 목록","hr-changes":"발령·변동 이력",kpi:"KPI 목표 등록","kpi-results":"KPI 결과 입력","my-kpi":"나의 KPI","grade-view":"KPI 등급 현황","comp-grade-view":"역량평가 등급","comp-eval":"다면평가 진행","first-eval":"1차 평가","second-eval":"2차 평가","kpi-amend":"수정 요청 승인","eval-progress":"평가 진행 상황",settings:"운영 설정",history:"수정 이력","change-pw":"비밀번호 변경","data-mgmt":"데이터 관리","core-talent":"핵심인재 관리","talent-dev":"육성 계획·실적","promotion-mgmt":"승진 심사 관리","low-performer":"저성과 인력 관리","approval-draft":"기안하기","approval-outbox":"상신함","approval-inbox":"결재함","approval-receive":"수신함","approval-cc-inbox":"참조함","approval-completed":"완료함","attendance":"근태 현황","att-calendar":"캘린더","leave-mgmt":"연차 관리","payslip":"급여 명세서","approval-templates":"결재 양식 관리","integrations":"연동 설정","orgchart":"조직도","certificate":"증명서 발급","hr-stats":"인사 통계","board":"게시판","room-booking":"회의실 예약","welfare-points":"복지포인트","mandatory-training":"법정의무교육","hr-welfare-points":"복지포인트 현황(전체)","hr-mandatory-training":"법정의무교육 현황(전체)","hr-attendance":"근태 현황(전체)","hr-leave-mgmt":"연차 관리(전체)","welfare-status":"복지 현황","long-service-award":"장기근속 포상","award-history":"(최)우수사원 선정 이력","salary-info":"급여 기준 정보","welfare-settings":"복지 제도 설정","notification-center":"알림","acct-partners":"거래처 관리","acct-accounts":"계정과목","acct-vouchers":"전표 관리","acct-tax-invoices":"세금계산서","sales-quotations":"견적서 관리","sales-dashboard":"영업 실적 대시보드","sales-purchase-orders":"발주서 관리","inv-items":"품목 관리","inv-locations":"위치 관리","inv-stock":"재고 현황","inv-purchase-requests":"구매요청","pms-projects":"프로젝트 관리","pms-allocation":"내 투입률 입력","pms-my-projects":"내가 투입된 프로젝트","pms-utilization":"가동률 현황","pms-worklog":"일일 업무 투입","recruit-jobs":"채용공고 관리","recruit-candidates":"지원자 관리","recruit-eval":"면접 일정/평가 입력","recruit-eval-detail":"면접 평가 상세","recruit-dashboard":"채용 현황 대시보드","eval-ops":"평가 운영","settings-org":"조직 관리","settings-ranks":"직급 체계","attend-settings":"근태 설정","payroll-settings":"급여 관리","payroll-mgmt":"급여 종합 관리","company-info":"회사 기본 정보","room-settings":"회의실 관리","deploy-perm":"권한 관리"};
   const ptEl=$("#page-title");if(ptEl)ptEl.textContent=titles[currentPage]||"";
   const sb=$("#sidebar");if(!sb)return;
   // Filter by role + per-user custom permission overrides (admin-managed)
@@ -5760,7 +5760,7 @@ const PAGE_ROLES={
   "eval-ops":["admin"],"settings-org":["admin"],"settings-ranks":["admin"],"attend-settings":["admin"],
   "payroll-settings":["admin"],"company-info":["admin"],"room-settings":["admin"],"deploy-perm":["admin"],
   "pms-utilization":["admin","director","leader"],"sales-dashboard":["admin"],
-  "recruit-jobs":["admin","leader","director","member"],"recruit-candidates":["admin","leader","director","member"],"recruit-eval":["admin","director","leader","member"],"recruit-dashboard":["admin","director","leader"],
+  "recruit-jobs":["admin","leader","director","member"],"recruit-candidates":["admin","leader","director","member"],"recruit-eval":["admin","director","leader","member"],"recruit-eval-detail":["admin","director","leader","member"],"recruit-dashboard":["admin","director","leader"],
 };
 function _pageAccessDenied(){
   const c=$("#content");if(!c)return;
@@ -5880,7 +5880,7 @@ function renderCategoryLanding(catKey){
 function renderPage(){
   if(currentPage&&currentPage.startsWith("cat:")){renderCategoryLanding(currentPage.slice(4));renderCatNav();const attendBar=document.getElementById("attend-bar");if(attendBar)attendBar.innerHTML=(currentUser&&currentPage==="dashboard")?_renderTeamTodayWidget(currentUser):"";return;}
   if(currentPage&&currentPage.startsWith("board-")){renderBoardPage();renderCatNav();const attendBar=document.getElementById("attend-bar");if(attendBar)attendBar.innerHTML=(currentUser&&currentPage==="dashboard")?_renderTeamTodayWidget(currentUser):"";return;}
-  const pages={dashboard:renderDashboard,"my-profile":renderMyProfile,"hr-register":renderHRRegister,"hr-list":renderHRList,"hr-changes":renderHRChanges,kpi:()=>renderKPI(false),"kpi-results":()=>renderKPI(true),"my-kpi":renderMyKPI,"grade-view":renderGradeView,"comp-grade-view":renderCompGradeView,"comp-settings-shortcut":()=>gotoPage("eval-ops"),"comp-eval":renderCompEval,"data-mgmt":renderDataManagementPage,"core-talent":renderCoreTalentPage,"talent-dev":renderTalentDevPage,"promotion-mgmt":renderPromotionPageStandalone,"low-performer":renderLowPerformer,"activity-log":()=>{loadActivityFromServer();},"first-eval":()=>{approvalTab="eval";approvalSearch={name:"",dept:""};renderApprovals();},"second-eval":()=>{approvalTab="eval";approvalSearch={name:"",dept:""};renderApprovals();},"kpi-amend":()=>{approvalTab="requests";approvalSearch={name:"",dept:""};renderApprovals();},"eval-progress":renderEvalProgressPage,settings:renderSettings,"eval-ops":renderEvalOpsPage,"settings-org":renderSettingsOrgPage,"settings-ranks":renderSettingsRanksPage,"attend-settings":renderAttendSettings,"payroll-settings":renderPayrollSettings,"company-info":renderCompanyInfo,"room-settings":renderRoomSettings,"deploy-perm":renderDeployPermPage,history:renderHistory,"change-pw":renderChangePW,"approval-draft":renderApprovalDraftPage,"approval-outbox":renderApprovalOutbox,"approval-inbox":renderApprovalInbox,"approval-receive":renderApprovalReceive,"approval-cc-inbox":renderApprovalCcInbox,"approval-completed":renderApprovalCompleted,"attendance":renderAttendancePage,"att-calendar":renderAttendanceCalendarPage,"leave-mgmt":renderLeaveManagementPage,"payslip":renderPayslipPage,"approval-templates":renderApprovalTemplateAdmin,"integrations":renderIntegrationsPage,"orgchart":renderOrgChartPage,"certificate":renderCertPage,"hr-stats":renderHRStatsPage,"board":renderBoardPage,"room-booking":renderRoomBookingPage,"welfare-points":renderWelfarePointsPage,"mandatory-training":renderMandatoryTrainingPage,"welfare-status":renderWelfareStatusPage,"long-service-award":renderLongServiceAwardPage,"award-history":renderAwardHistoryPage,"hr-welfare-points":renderHrWelfarePointsPage,"hr-mandatory-training":renderHrMandatoryTrainingPage,"hr-attendance":renderHrAttendancePage,"hr-leave-mgmt":renderHrLeaveManagementPage,"payroll-mgmt":renderPayrollMgmtPage,"salary-info":renderSalaryInfoPage,"welfare-settings":renderWelfareSettingsPage,"notification-center":renderNotificationCenterPage,"acct-partners":renderAcctPartnersPage,"acct-accounts":renderAcctAccountsPage,"acct-vouchers":renderAcctVouchersPage,"acct-tax-invoices":renderAcctTaxInvoicesPage,"sales-quotations":renderSalesQuotationsPage,"sales-dashboard":renderSalesDashboardPage,"sales-purchase-orders":renderSalesPurchaseOrdersPage,"inv-items":renderInvItemsPage,"inv-locations":renderInvLocationsPage,"inv-stock":renderInvStockPage,"inv-stock-log":renderInvStockLogPage,"inv-purchase-requests":renderPurchaseRequestsPage,"pms-projects":renderPmsProjectsPage,"pms-allocation":renderPmsAllocationPage,"pms-my-projects":renderPmsMyProjectsPage,"pms-utilization":renderPmsUtilizationPage,"pms-worklog":renderPmsWorklogPage,"recruit-jobs":renderRecruitJobsPage,"recruit-candidates":renderRecruitCandidatesPage,"recruit-eval":renderRecruitEvalPage,"recruit-dashboard":renderRecruitDashboardPage};
+  const pages={dashboard:renderDashboard,"my-profile":renderMyProfile,"hr-register":renderHRRegister,"hr-list":renderHRList,"hr-changes":renderHRChanges,kpi:()=>renderKPI(false),"kpi-results":()=>renderKPI(true),"my-kpi":renderMyKPI,"grade-view":renderGradeView,"comp-grade-view":renderCompGradeView,"comp-settings-shortcut":()=>gotoPage("eval-ops"),"comp-eval":renderCompEval,"data-mgmt":renderDataManagementPage,"core-talent":renderCoreTalentPage,"talent-dev":renderTalentDevPage,"promotion-mgmt":renderPromotionPageStandalone,"low-performer":renderLowPerformer,"activity-log":()=>{loadActivityFromServer();},"first-eval":()=>{approvalTab="eval";approvalSearch={name:"",dept:""};renderApprovals();},"second-eval":()=>{approvalTab="eval";approvalSearch={name:"",dept:""};renderApprovals();},"kpi-amend":()=>{approvalTab="requests";approvalSearch={name:"",dept:""};renderApprovals();},"eval-progress":renderEvalProgressPage,settings:renderSettings,"eval-ops":renderEvalOpsPage,"settings-org":renderSettingsOrgPage,"settings-ranks":renderSettingsRanksPage,"attend-settings":renderAttendSettings,"payroll-settings":renderPayrollSettings,"company-info":renderCompanyInfo,"room-settings":renderRoomSettings,"deploy-perm":renderDeployPermPage,history:renderHistory,"change-pw":renderChangePW,"approval-draft":renderApprovalDraftPage,"approval-outbox":renderApprovalOutbox,"approval-inbox":renderApprovalInbox,"approval-receive":renderApprovalReceive,"approval-cc-inbox":renderApprovalCcInbox,"approval-completed":renderApprovalCompleted,"attendance":renderAttendancePage,"att-calendar":renderAttendanceCalendarPage,"leave-mgmt":renderLeaveManagementPage,"payslip":renderPayslipPage,"approval-templates":renderApprovalTemplateAdmin,"integrations":renderIntegrationsPage,"orgchart":renderOrgChartPage,"certificate":renderCertPage,"hr-stats":renderHRStatsPage,"board":renderBoardPage,"room-booking":renderRoomBookingPage,"welfare-points":renderWelfarePointsPage,"mandatory-training":renderMandatoryTrainingPage,"welfare-status":renderWelfareStatusPage,"long-service-award":renderLongServiceAwardPage,"award-history":renderAwardHistoryPage,"hr-welfare-points":renderHrWelfarePointsPage,"hr-mandatory-training":renderHrMandatoryTrainingPage,"hr-attendance":renderHrAttendancePage,"hr-leave-mgmt":renderHrLeaveManagementPage,"payroll-mgmt":renderPayrollMgmtPage,"salary-info":renderSalaryInfoPage,"welfare-settings":renderWelfareSettingsPage,"notification-center":renderNotificationCenterPage,"acct-partners":renderAcctPartnersPage,"acct-accounts":renderAcctAccountsPage,"acct-vouchers":renderAcctVouchersPage,"acct-tax-invoices":renderAcctTaxInvoicesPage,"sales-quotations":renderSalesQuotationsPage,"sales-dashboard":renderSalesDashboardPage,"sales-purchase-orders":renderSalesPurchaseOrdersPage,"inv-items":renderInvItemsPage,"inv-locations":renderInvLocationsPage,"inv-stock":renderInvStockPage,"inv-stock-log":renderInvStockLogPage,"inv-purchase-requests":renderPurchaseRequestsPage,"pms-projects":renderPmsProjectsPage,"pms-allocation":renderPmsAllocationPage,"pms-my-projects":renderPmsMyProjectsPage,"pms-utilization":renderPmsUtilizationPage,"pms-worklog":renderPmsWorklogPage,"recruit-jobs":renderRecruitJobsPage,"recruit-candidates":renderRecruitCandidatesPage,"recruit-eval":renderRecruitEvalPage,"recruit-eval-detail":renderRecruitEvalDetailPage,"recruit-dashboard":renderRecruitDashboardPage};
   const fn=pages[currentPage];const c=$("#content");
   if(c&&fn){
     c.innerHTML="";
@@ -15075,7 +15075,7 @@ function renderRecruitJobsPage(){
     ${canManage?`<button class="btn btn-primary btn-sm" onclick="openRecruitJobModal()">+ 채용공고 등록</button>`:""}
   </div></div>
   <div class="card-body" style="padding:0"><div class="tbl-wrap"><table><thead><tr><th>제목</th><th>부서/팀</th><th>모집인원</th><th>필요경력</th><th>전형단계</th><th>상태</th><th>관리</th></tr></thead><tbody>
-  ${recruitJobs.length?recruitJobs.map(j=>`<tr><td>${h(j.title)}${j.docFile?` <button class="btn btn-secondary btn-sm" onclick="downloadRecruitJobDoc('${j.id}')" title="첨부 문서 다운로드">📎</button>`:""}</td><td>${h(j.department||"-")}${j.team?(" / "+h(j.team)):""}</td><td>${j.headcount}</td><td>${j.requiredYears!=null?j.requiredYears+"년":"-"}</td><td class="fz11">${(j.stages||[]).map(s=>h(s)).join(" → ")}</td><td>${j.status==="open"?badge("진행중","green"):badge("마감","gray")}</td><td>${canManage?`<button class="btn btn-secondary btn-sm" onclick="openRecruitJobModal('${j.id}')">수정</button> ${j.status==="open"?`<button class="btn btn-danger btn-sm" onclick="closeRecruitJob('${j.id}')">마감</button>`:""}`:"-"}</td></tr>`).join(""):`<tr><td colspan="7" class="text-gray" style="text-align:center;padding:20px">등록된 채용공고가 없습니다.</td></tr>`}
+  ${recruitJobs.length?recruitJobs.map(j=>`<tr><td>${h(j.title)}${j.docFile?` <button class="btn btn-secondary btn-sm" onclick="downloadRecruitJobDoc('${j.id}')" title="첨부 문서 다운로드">📎</button>`:""}</td><td>${h(j.department||"-")}${j.team?(" / "+h(j.team)):""}</td><td>${j.headcount}</td><td>${j.requiredYears!=null?j.requiredYears+"년":"-"}</td><td class="fz11">${(j.stages||[]).map(s=>h(s)).join(" → ")}</td><td>${j.status==="open"?badge("진행중","green"):badge("마감","gray")}</td><td>${canManage?`${j.status==="open"?`<button class="btn btn-primary btn-sm" onclick="openRecruitCandidateModal('${j.id}')">+ 지원자 등록</button> `:""}<button class="btn btn-secondary btn-sm" onclick="openRecruitJobModal('${j.id}')">수정</button> ${j.status==="open"?`<button class="btn btn-danger btn-sm" onclick="closeRecruitJob('${j.id}')">마감</button>`:""}`:"-"}</td></tr>`).join(""):`<tr><td colspan="7" class="text-gray" style="text-align:center;padding:20px">등록된 채용공고가 없습니다.</td></tr>`}
   </tbody></table></div></div></div>`;
 }
 let _rjDocFile=null;
@@ -15209,11 +15209,12 @@ function renderRecruitCandidatesPage(){
 }
 let _rcResumeFile=null;
 let _rceResumeFile=null;
-function openRecruitCandidateModal(){
+function openRecruitCandidateModal(jobId){
   _rcResumeFile=null;
   if(!recruitJobs.length){showToast("먼저 채용공고를 등록하세요.","error");return;}
-  openModal(`<div class="modal-box"><div class="modal-head"><h3>🧑‍💼 지원자 등록</h3></div><div class="modal-body">
-    <div class="fg"><label class="fl">채용공고 <span class="req">*</span></label><select class="fc" id="rc-job">${recruitJobs.filter(j=>j.status==="open").map(j=>`<option value="${j.id}">${h(j.title)}</option>`).join("")}</select></div>
+  const lockJob=jobId&&recruitJobs.find(j=>j.id===jobId);
+  openModal(`<div class="modal-box"><div class="modal-head"><h3>🧑‍💼 지원자 등록${lockJob?` - ${h(lockJob.title)}`:""}</h3></div><div class="modal-body">
+    <div class="fg"><label class="fl">채용공고 <span class="req">*</span></label>${lockJob?`<input class="fc" value="${h(lockJob.title)}" disabled><input type="hidden" id="rc-job" value="${lockJob.id}">`:`<select class="fc" id="rc-job">${recruitJobs.filter(j=>j.status==="open").map(j=>`<option value="${j.id}">${h(j.title)}</option>`).join("")}</select>`}</div>
     <div class="fg"><label class="fl">이력서 파일 업로드</label>
       <input type="file" id="rc-resume" style="display:none" accept=".pdf,.docx,.hwp,.txt" onchange="_rcReadResume(this)">
       <div id="rc-resume-drop" style="border:2px dashed #cbd5e1;border-radius:8px;padding:14px;text-align:center;cursor:pointer;background:#f8fafc" onclick="document.getElementById('rc-resume').click()" ondragover="event.preventDefault();this.style.background='#eff6ff';this.style.borderColor='#60a5fa'" ondragleave="this.style.background='#f8fafc';this.style.borderColor='#cbd5e1'" ondrop="_rcDropResume(event)">
@@ -15863,7 +15864,7 @@ async function saveRecruitCandidate(){
   }
   if(!r?.ok){showToast(r?.message||"저장에 실패했습니다.","error");return;}
   recruitCandidates.unshift(r.candidate);
-  closeModal();showToast("등록되었습니다.","success");renderRecruitCandidatesPage();
+  closeModal();showToast("등록되었습니다.","success");renderPage();
 }
 function _rceApplyParsedResume(text,llmFields){
   let parsed=_rcParseResumeText(text);
@@ -16047,7 +16048,7 @@ function renderRecruitEvalPage(){
     const canceled=iv.status==="canceled";
     const canManage=_recruitCanManageInterviews();
     return `<tr${canceled?` style="opacity:.55"`:""}><td>${h(cd?cd.name:"-")}</td><td>${h(job?job.title:"-")}</td><td>${iv.round}차</td><td class="fz11">${h(iv.schedule||"-")}</td><td class="fz11">${h(iv.location||"-")}</td><td class="fz11">${(iv.interviewerIds||[]).map(_recruitEmpName).map(h).join(", ")}</td><td>${resumeBrief(cd)}</td><td>${canceled?badge("취소됨","red"):(myEval?badge("평가완료","green"):badge("평가대기","gray"))}</td><td>
-      <button class="btn btn-secondary btn-sm" onclick="openRecruitEvalDetail('${iv.id}')">상세/평가</button>
+      <button class="btn btn-secondary btn-sm" onclick="gotoRecruitEvalDetail('${iv.id}')">상세/평가</button>
       ${canManage&&!canceled?`<button class="btn btn-secondary btn-sm" onclick="openRecruitInterviewEditModal('${iv.id}')">수정</button> <button class="btn btn-danger btn-sm" onclick="cancelRecruitInterview('${iv.id}')">취소</button>`:""}
     </td></tr>`;
   };
@@ -16170,11 +16171,22 @@ function _ivAutoSummary(evals){
   const verdict=avgTotal>=RECRUIT_PASS_SCORE?`통과 기준(${RECRUIT_PASS_SCORE}점) 이상`:`통과 기준(${RECRUIT_PASS_SCORE}점) 미달`;
   return `면접관 ${evals.length}명 평균 ${avgTotal}점 / ${RECRUIT_MAX_SCORE}점 (${verdict}). 강점: ${best.k}(${best.avg}점), 보완 필요: ${worst.k}(${worst.avg}점).`;
 }
-function openRecruitEvalDetail(interviewId){
-  const iv=recruitInterviews.find(i=>i.id===interviewId);if(!iv)return;
+function gotoRecruitEvalDetail(interviewId){
+  window._recruitEvalDetailId=interviewId;
+  gotoPage("recruit-eval-detail");
+}
+function openRecruitEvalDetail(interviewId){gotoRecruitEvalDetail(interviewId);}
+function renderRecruitEvalDetailPage(){
+  const c=$("#content");if(!c)return;
+  const interviewId=window._recruitEvalDetailId;
+  const iv=recruitInterviews.find(i=>i.id===interviewId);
+  if(!iv){c.innerHTML=`<div class="card"><div class="card-body text-gray" style="text-align:center;padding:30px">면접 정보를 찾을 수 없습니다.<br><button class="btn btn-secondary btn-sm" style="margin-top:10px" onclick="gotoPage('recruit-eval')">목록으로</button></div></div>`;return;}
   const cd=_recruitCandById(iv.candidateId);
   const job=recruitJobs.find(j=>j.id===iv.jobId);
-  if(_ivIsDecided(cd,job)&&!_recruitCanManageInterviews()){showToast("전형이 종료되어 더 이상 열람할 수 없습니다.","error");return;}
+  if(_ivIsDecided(cd,job)&&!_recruitCanManageInterviews()){
+    c.innerHTML=`<div class="card"><div class="card-body text-gray" style="text-align:center;padding:30px">전형이 종료되어 더 이상 열람할 수 없습니다.<br><button class="btn btn-secondary btn-sm" style="margin-top:10px" onclick="gotoPage('recruit-eval')">목록으로</button></div></div>`;
+    return;
+  }
   const myId=String(currentUser.id);
   const isInterviewer=(iv.interviewerIds||[]).map(String).includes(myId);
   const myEval=(iv.evaluations||[]).find(e=>String(e.interviewerId)===myId);
@@ -16188,7 +16200,7 @@ function openRecruitEvalDetail(interviewId){
     <div class="fz12" style="margin-top:6px">${h(e.comment||"")}</div>
   </div>`).join("");
   const combinedSummary=evals.length?`<div class="fz12" style="background:#f8fafc;border-radius:6px;padding:8px;margin-bottom:6px">🤖 ${h(_ivAutoSummary(evals))}</div><div class="fz12">면접관 ${evals.length}명 평가 · 평균 총점 <b>${avgTotal}점</b></div><div class="fz12 text-gray" style="margin-top:4px">${evals.map(e=>h(e.comment||"")).filter(Boolean).join(" / ")||"종합의견 없음"}</div>`:`<div class="text-gray fz12">아직 등록된 평가가 없습니다.</div>`;
-  openModal(`<div class="modal-box" style="max-width:720px"><div class="modal-head"><h3>📝 면접 평가 - ${h(cd?cd.name:"")} (${iv.round}차)</h3></div><div class="modal-body">
+  c.innerHTML=`<div class="card"><div class="card-head"><button class="btn btn-secondary btn-sm" onclick="gotoPage('recruit-eval')">‹ 목록으로</button><h3>📝 면접 평가 - ${h(cd?cd.name:"")} (${iv.round}차)</h3></div><div class="card-body">
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
       <div style="border:1px solid #e2e8f0;border-radius:8px;padding:10px">
         <div style="font-weight:600;font-size:13px;margin-bottom:6px">지원자 정보</div>
@@ -16225,7 +16237,7 @@ function openRecruitEvalDetail(interviewId){
       <div style="font-weight:600;font-size:13px;margin:10px 0 6px">종합 Summary</div>
       ${combinedSummary}
     </div>
-  </div><div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal()">닫기</button></div></div>`);
+  </div></div>`;
 }
 async function saveRecruitEval(interviewId){
   const iv=recruitInterviews.find(i=>i.id===interviewId);
@@ -16239,7 +16251,8 @@ async function saveRecruitEval(interviewId){
   const r=await serverRequest("POST",`/api/recruit/interviews/${interviewId}/evaluation`,body);
   if(!r?.ok){showToast(r?.message||"저장에 실패했습니다.","error");return;}
   const idx=recruitInterviews.findIndex(i=>i.id===interviewId);if(idx>=0)recruitInterviews[idx]=r.interview;
-  closeModal();showToast("평가가 저장되었습니다.","success");renderRecruitEvalPage();
+  showToast("평가가 저장되었습니다.","success");
+  if(currentPage==="recruit-eval-detail")renderRecruitEvalDetailPage();else renderRecruitEvalPage();
 }
 
 // ── 채용 관리: 채용 현황 대시보드 ──────────────────────────────────────────────
