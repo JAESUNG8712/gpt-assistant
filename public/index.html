@@ -18612,8 +18612,9 @@ function saveRoomReservation(date){
     return {start:d,end:ed.toISOString().slice(0,10)};
   });
   const conflicts=pairs.filter(p=>_roomConflicts(roomId,p.start,p.end,start,end,allDay,null));
+  if(recur==="none"&&conflicts.length){showToast(`${baseDate} 해당 시간대에 이미 예약이 있습니다. 동일 시간대 예약은 등록할 수 없습니다.`,"error");return;}
   if(conflicts.length===pairs.length){showToast(`모든 날짜에 이미 예약이 있어 등록할 수 없습니다.`,"error");return;}
-  if(conflicts.length&&!confirm(`다음 날짜는 이미 예약이 있어 건너뜁니다:\n${conflicts.map(c=>c.start).join(", ")}\n나머지 ${pairs.length-conflicts.length}건을 등록하시겠습니까?`))return;
+  if(conflicts.length){showToast(`다음 날짜는 이미 예약이 있어 제외하고 등록합니다: ${conflicts.map(c=>c.start).join(", ")}`,"error");}
   const seriesId=recur!=="none"?`series-${Date.now()}`:null;
   const toCreate=pairs.filter(p=>!conflicts.includes(p));
   toCreate.forEach((p,i)=>{
@@ -18671,7 +18672,7 @@ function saveRoomReservationEdit(rsvId){
   if(!title){showToast("예약 제목을 입력하세요.","error");return;}
   if(!allDay&&(!start||!end||start>=end)){showToast("종료 시간은 시작 시간 이후여야 합니다.","error");return;}
   if(endDate<startDate){showToast("종료일은 시작일 이후여야 합니다.","error");return;}
-  if(_roomConflicts(roomId,startDate,endDate,start,end,allDay,rsvId)){showToast("해당 일시에 이미 예약이 있습니다.","error");return;}
+  if(_roomConflicts(roomId,startDate,endDate,start,end,allDay,rsvId)){showToast("해당 시간대에 이미 예약이 있습니다. 동일 시간대 예약은 등록할 수 없습니다.","error");return;}
   rsv.roomId=roomId;rsv.title=title;rsv.startTime=start;rsv.endTime=end;rsv.date=startDate;rsv.endDate=endDate;rsv.allDay=allDay;
   closeModal();autoSaveToServerIfEnabled();showToast("예약이 수정되었습니다.","success");renderRoomBookingPage();
 }
