@@ -1596,6 +1596,7 @@ function getCompGradeSettings(dept){
 
 // ==================== STATE ====================
 let currentUser=null,currentPage="dashboard";
+let _settingsMainStage=null; // 운영 설정 메인 화면 저장 전 임시 편집본
 let kpiSelUserId=0,hrChgEmpId="",approvalTab="list",settingsTab="main";
 let _evalOpsTab="main";
 let _welfareSettingsTab="health";
@@ -11061,6 +11062,20 @@ function renderDeployPermPage(){
   renderSettingsDeploy();
 }
 function renderSettingsMain(){
+  if(!_settingsMainStage)_settingsMainStage={
+    kpiGoalStart:settings.kpiGoalStart,kpiGoalEnd:settings.kpiGoalEnd,
+    kpiPerfStart:settings.kpiPerfStart,kpiPerfEnd:settings.kpiPerfEnd,
+    compEvalEnabled:settings.compEvalEnabled,compEvalStart:settings.compEvalStart,compEvalEnd:settings.compEvalEnd,
+    leadershipEvalEnabled:settings.leadershipEvalEnabled,leadershipEvalStart:settings.leadershipEvalStart,leadershipEvalEnd:settings.leadershipEvalEnd,
+    planStart:coreTalentSettings.planStart,planEnd:coreTalentSettings.planEnd,planStage:coreTalentSettings.planStage,
+    achieveStart:coreTalentSettings.achieveStart,achieveEnd:coreTalentSettings.achieveEnd,achieveStage:coreTalentSettings.achieveStage,
+  };
+  const st=_settingsMainStage;
+  const dirty=st.kpiGoalStart!==settings.kpiGoalStart||st.kpiGoalEnd!==settings.kpiGoalEnd||st.kpiPerfStart!==settings.kpiPerfStart||st.kpiPerfEnd!==settings.kpiPerfEnd
+    ||st.compEvalEnabled!==settings.compEvalEnabled||st.compEvalStart!==settings.compEvalStart||st.compEvalEnd!==settings.compEvalEnd
+    ||st.leadershipEvalEnabled!==settings.leadershipEvalEnabled||st.leadershipEvalStart!==settings.leadershipEvalStart||st.leadershipEvalEnd!==settings.leadershipEvalEnd
+    ||st.planStart!==coreTalentSettings.planStart||st.planEnd!==coreTalentSettings.planEnd||st.planStage!==coreTalentSettings.planStage
+    ||st.achieveStart!==coreTalentSettings.achieveStart||st.achieveEnd!==coreTalentSettings.achieveEnd||st.achieveStage!==coreTalentSettings.achieveStage;
   const year=settings.evalYear;
   const pending=kpiEntries.filter(k=>k.year===year&&k.finalStatus==="approved"&&!k.finalConfirmed);
   const confirmed=kpiEntries.filter(k=>k.year===year&&k.finalConfirmed);
@@ -11078,14 +11093,21 @@ function renderSettingsMain(){
     return{label:"확인",cls:"dday-gray",pct:0,msg:""};
   }
   function vDates(s,e,label){return s&&e&&s>e?`<div class="fz11 mt1" style="color:#dc2626">⚠️ ${label} 시작일이 종료일보다 늦습니다.</div>`:""}
-  const gSt=pStatus(settings.kpiGoalStart,settings.kpiGoalEnd);
-  const pSt=pStatus(settings.kpiPerfStart,settings.kpiPerfEnd);
-  const cSt=pStatus(settings.compEvalStart,settings.compEvalEnd);
-  const lSt=pStatus(settings.leadershipEvalStart,settings.leadershipEvalEnd);
-  const planSt=pStatus(coreTalentSettings.planStart,coreTalentSettings.planEnd);
-  const achSt=pStatus(coreTalentSettings.achieveStart,coreTalentSettings.achieveEnd);
+  const gSt=pStatus(st.kpiGoalStart,st.kpiGoalEnd);
+  const pSt=pStatus(st.kpiPerfStart,st.kpiPerfEnd);
+  const cSt=pStatus(st.compEvalStart,st.compEvalEnd);
+  const lSt=pStatus(st.leadershipEvalStart,st.leadershipEvalEnd);
+  const planSt=pStatus(st.planStart,st.planEnd);
+  const achSt=pStatus(st.achieveStart,st.achieveEnd);
   const isGoal=settings.stage==="goal";const isPerf=settings.stage==="performance";
   el.innerHTML=`
+  ${dirty?`<div class="card mb3" style="border:1px solid #f59e0b;background:#fffbeb"><div class="card-body" style="display:flex;align-items:center;gap:10px;padding:10px 14px">
+    <span class="fz12" style="color:#b45309">⚠ 저장하지 않은 변경 사항이 있습니다.</span>
+    <div style="margin-left:auto;display:flex;gap:8px">
+      <button class="btn btn-secondary btn-sm" onclick="_settingsMainStage=null;renderSettingsMain()">변경 취소</button>
+      <button class="btn btn-primary btn-sm" onclick="_saveSettingsMain()">💾 변경사항 저장</button>
+    </div>
+  </div></div>`:""}
   <div class="card"><div class="card-head">
     <h3>📊 KPI 평가 운영 단계</h3>
     <div class="flex items-c gap2"><label class="fl" style="margin-bottom:0;white-space:nowrap">평가 연도</label><select class="fc" style="width:110px" onchange="setEvalYear(Number(this.value))">${yrs.map(y=>`<option value="${y}"${settings.evalYear===y?" selected":""}>${y}년</option>`).join("")}</select></div>
@@ -11116,10 +11138,10 @@ function renderSettingsMain(){
         <div class="period-prog"><div class="period-prog-fill" style="width:${gSt.pct}%;background:${isGoal?"#2563eb":"#94a3b8"}"></div></div>
         ${gSt.msg?`<div class="fz11 text-gray mb1">${gSt.msg}</div>`:""}
         <div class="g2 mt2">
-          <div class="fg"><label class="fl">시작일</label><input class="fc" type="date" value="${settings.kpiGoalStart||""}" onchange="settings.kpiGoalStart=this.value;autoSaveDebounced();renderSettingsMain()"></div>
-          <div class="fg"><label class="fl">종료일</label><input class="fc" type="date" value="${settings.kpiGoalEnd||""}" onchange="settings.kpiGoalEnd=this.value;autoSaveDebounced();renderSettingsMain()"></div>
+          <div class="fg"><label class="fl">시작일</label><input class="fc" type="date" value="${st.kpiGoalStart||""}" onchange="_settingsMainStage.kpiGoalStart=this.value;renderSettingsMain()"></div>
+          <div class="fg"><label class="fl">종료일</label><input class="fc" type="date" value="${st.kpiGoalEnd||""}" onchange="_settingsMainStage.kpiGoalEnd=this.value;renderSettingsMain()"></div>
         </div>
-        ${vDates(settings.kpiGoalStart,settings.kpiGoalEnd,"KPI 등록")}
+        ${vDates(st.kpiGoalStart,st.kpiGoalEnd,"KPI 등록")}
         <button class="btn btn-sm ${isGoal?"btn-primary":"btn-secondary"} mt2" style="width:100%;justify-content:center" onclick="setStage('goal')">${isGoal?"✓ 현재 단계":"이 단계로 전환"}</button>
       </div>
       <div class="period-card ${isPerf?"pc-perf":""}">
@@ -11131,10 +11153,10 @@ function renderSettingsMain(){
         <div class="period-prog"><div class="period-prog-fill" style="width:${pSt.pct}%;background:${isPerf?"#16a34a":"#94a3b8"}"></div></div>
         ${pSt.msg?`<div class="fz11 text-gray mb1">${pSt.msg}</div>`:""}
         <div class="g2 mt2">
-          <div class="fg"><label class="fl">시작일</label><input class="fc" type="date" value="${settings.kpiPerfStart||""}" onchange="settings.kpiPerfStart=this.value;autoSaveDebounced();renderSettingsMain()"></div>
-          <div class="fg"><label class="fl">종료일</label><input class="fc" type="date" value="${settings.kpiPerfEnd||""}" onchange="settings.kpiPerfEnd=this.value;autoSaveDebounced();renderSettingsMain()"></div>
+          <div class="fg"><label class="fl">시작일</label><input class="fc" type="date" value="${st.kpiPerfStart||""}" onchange="_settingsMainStage.kpiPerfStart=this.value;renderSettingsMain()"></div>
+          <div class="fg"><label class="fl">종료일</label><input class="fc" type="date" value="${st.kpiPerfEnd||""}" onchange="_settingsMainStage.kpiPerfEnd=this.value;renderSettingsMain()"></div>
         </div>
-        ${vDates(settings.kpiPerfStart,settings.kpiPerfEnd,"결과 입력")}
+        ${vDates(st.kpiPerfStart,st.kpiPerfEnd,"결과 입력")}
         <button class="btn btn-sm ${isPerf?"btn-success":"btn-secondary"} mt2" style="width:100%;justify-content:center" onclick="setStage('performance')">${isPerf?"✓ 현재 단계":"이 단계로 전환"}</button>
       </div>
     </div>
@@ -11146,10 +11168,10 @@ function renderSettingsMain(){
     <div class="flex items-c gap2"><label class="fl" style="margin-bottom:0;white-space:nowrap">평가 연도</label><select class="fc" style="width:110px" onchange="settings.compEvalYear=Number(this.value);showToast('역량평가 연도 변경됨','success');broadcastSettingsChange('역량평가 연도: '+this.value+'년')">${yrs.map(y=>`<option value="${y}"${settings.compEvalYear===y?" selected":""}>${y}년</option>`).join("")}</select></div>
   </div><div class="card-body">
     <div class="eval-status-toggle">
-      <button class="est-btn ${settings.compEvalEnabled?"est-on":""}" onclick="settings.compEvalEnabled=true;showToast('역량평가 진행 중으로 변경되었습니다.','success');autoSaveDebounced();renderSettingsMain();renderSidebar();broadcastSettingsChange('역량평가: 진행 중')">✅ 진행 중<br><span style="font-weight:400;font-size:10px">메뉴 활성화</span></button>
-      <button class="est-btn ${!settings.compEvalEnabled?"est-off":""}" onclick="settings.compEvalEnabled=false;showToast('역량평가가 종료 처리되었습니다.','info');autoSaveDebounced();renderSettingsMain();renderSidebar();broadcastSettingsChange('역량평가: 종료')">🔚 종료<br><span style="font-weight:400;font-size:10px">접근 차단</span></button>
+      <button class="est-btn ${st.compEvalEnabled?"est-on":""}" onclick="_settingsMainStage.compEvalEnabled=true;renderSettingsMain()">✅ 진행 중<br><span style="font-weight:400;font-size:10px">메뉴 활성화</span></button>
+      <button class="est-btn ${!st.compEvalEnabled?"est-off":""}" onclick="_settingsMainStage.compEvalEnabled=false;renderSettingsMain()">🔚 종료<br><span style="font-weight:400;font-size:10px">접근 차단</span></button>
     </div>
-    <div class="period-card ${settings.compEvalEnabled?"pc-comp":""}">
+    <div class="period-card ${st.compEvalEnabled?"pc-comp":""}">
       <div class="flex items-c gap2 mb2 wrap">
         <span class="fz12 fw7">평가 기간</span>
         <span class="dday ${cSt.cls}">${cSt.label}</span>
@@ -11158,10 +11180,10 @@ function renderSettingsMain(){
       <div class="period-prog"><div class="period-prog-fill" style="width:${cSt.pct}%;background:#7c3aed"></div></div>
       ${cSt.msg?`<div class="fz11 text-gray mb1">${cSt.msg}</div>`:""}
       <div class="g2 mt2">
-        <div class="fg"><label class="fl">시작일</label><input class="fc" type="date" value="${settings.compEvalStart||""}" onchange="settings.compEvalStart=this.value;autoSaveDebounced();renderSettingsMain()"></div>
-        <div class="fg"><label class="fl">종료일</label><input class="fc" type="date" value="${settings.compEvalEnd||""}" onchange="settings.compEvalEnd=this.value;autoSaveDebounced();renderSettingsMain()"></div>
+        <div class="fg"><label class="fl">시작일</label><input class="fc" type="date" value="${st.compEvalStart||""}" onchange="_settingsMainStage.compEvalStart=this.value;renderSettingsMain()"></div>
+        <div class="fg"><label class="fl">종료일</label><input class="fc" type="date" value="${st.compEvalEnd||""}" onchange="_settingsMainStage.compEvalEnd=this.value;renderSettingsMain()"></div>
       </div>
-      ${vDates(settings.compEvalStart,settings.compEvalEnd,"역량평가")}
+      ${vDates(st.compEvalStart,st.compEvalEnd,"역량평가")}
     </div>
     <div class="info-note mt2 fz11">📌 종료일 이후에는 평가 제출이 자동으로 차단됩니다. 기간 미설정 시 상태 설정만으로 제어합니다.</div>
   </div></div>
@@ -11171,10 +11193,10 @@ function renderSettingsMain(){
     <div class="flex items-c gap2"><label class="fl" style="margin-bottom:0;white-space:nowrap">평가 연도</label><select class="fc" style="width:110px" onchange="settings.leadershipEvalYear=Number(this.value);showToast('리더십평가 연도 변경됨','success');broadcastSettingsChange('리더십평가 연도: '+this.value+'년')">${yrs.map(y=>`<option value="${y}"${settings.leadershipEvalYear===y?" selected":""}>${y}년</option>`).join("")}</select></div>
   </div><div class="card-body">
     <div class="eval-status-toggle">
-      <button class="est-btn ${settings.leadershipEvalEnabled?"est-on":""}" onclick="settings.leadershipEvalEnabled=true;showToast('리더십평가 진행 중으로 변경되었습니다.','success');autoSaveDebounced();renderSettingsMain();renderSidebar();broadcastSettingsChange('리더십평가: 진행 중')">✅ 진행 중<br><span style="font-weight:400;font-size:10px">메뉴 활성화</span></button>
-      <button class="est-btn ${!settings.leadershipEvalEnabled?"est-off":""}" onclick="settings.leadershipEvalEnabled=false;showToast('리더십평가가 종료 처리되었습니다.','info');autoSaveDebounced();renderSettingsMain();renderSidebar();broadcastSettingsChange('리더십평가: 종료')">🔚 종료<br><span style="font-weight:400;font-size:10px">접근 차단</span></button>
+      <button class="est-btn ${st.leadershipEvalEnabled?"est-on":""}" onclick="_settingsMainStage.leadershipEvalEnabled=true;renderSettingsMain()">✅ 진행 중<br><span style="font-weight:400;font-size:10px">메뉴 활성화</span></button>
+      <button class="est-btn ${!st.leadershipEvalEnabled?"est-off":""}" onclick="_settingsMainStage.leadershipEvalEnabled=false;renderSettingsMain()">🔚 종료<br><span style="font-weight:400;font-size:10px">접근 차단</span></button>
     </div>
-    <div class="period-card ${settings.leadershipEvalEnabled?"pc-leader":""}">
+    <div class="period-card ${st.leadershipEvalEnabled?"pc-leader":""}">
       <div class="flex items-c gap2 mb2 wrap">
         <span class="fz12 fw7">평가 기간</span>
         <span class="dday ${lSt.cls}">${lSt.label}</span>
@@ -11183,10 +11205,10 @@ function renderSettingsMain(){
       <div class="period-prog"><div class="period-prog-fill" style="width:${lSt.pct}%;background:#d97706"></div></div>
       ${lSt.msg?`<div class="fz11 text-gray mb1">${lSt.msg}</div>`:""}
       <div class="g2 mt2">
-        <div class="fg"><label class="fl">시작일</label><input class="fc" type="date" value="${settings.leadershipEvalStart||""}" onchange="settings.leadershipEvalStart=this.value;autoSaveDebounced();renderSettingsMain()"></div>
-        <div class="fg"><label class="fl">종료일</label><input class="fc" type="date" value="${settings.leadershipEvalEnd||""}" onchange="settings.leadershipEvalEnd=this.value;autoSaveDebounced();renderSettingsMain()"></div>
+        <div class="fg"><label class="fl">시작일</label><input class="fc" type="date" value="${st.leadershipEvalStart||""}" onchange="_settingsMainStage.leadershipEvalStart=this.value;renderSettingsMain()"></div>
+        <div class="fg"><label class="fl">종료일</label><input class="fc" type="date" value="${st.leadershipEvalEnd||""}" onchange="_settingsMainStage.leadershipEvalEnd=this.value;renderSettingsMain()"></div>
       </div>
-      ${vDates(settings.leadershipEvalStart,settings.leadershipEvalEnd,"리더십평가")}
+      ${vDates(st.leadershipEvalStart,st.leadershipEvalEnd,"리더십평가")}
     </div>
   </div></div>
 
@@ -11232,35 +11254,35 @@ function renderSettingsMain(){
 
   <div class="card"><div class="card-head"><h3>⭐ 핵심인재 육성 계획 운영 기간</h3></div><div class="card-body">
     <div class="g2 mb2">
-      <div class="period-card ${coreTalentSettings.planStage==="open"?"pc-talent":""}">
+      <div class="period-card ${st.planStage==="open"?"pc-talent":""}">
         <div class="flex items-c gap2 mb2 wrap">
           <span style="font-size:15px">📋</span><span class="fw7 fz12">육성 계획서 작성</span>
           <span class="dday ${planSt.cls}">${planSt.label}</span>
-          ${coreTalentSettings.planStage==="open"?badge("운영 중","green"):badge("마감","gray")}
+          ${st.planStage==="open"?badge("운영 중","green"):badge("마감","gray")}
         </div>
         <div class="period-prog"><div class="period-prog-fill" style="width:${planSt.pct}%;background:#0f766e"></div></div>
         ${planSt.msg?`<div class="fz11 text-gray mb1">${planSt.msg}</div>`:""}
         <div class="g2 mt2">
-          <div class="fg"><label class="fl">시작일</label><input class="fc" type="date" value="${coreTalentSettings.planStart||""}" onchange="coreTalentSettings.planStart=this.value;autoSaveDebounced();renderSettingsMain()"></div>
-          <div class="fg"><label class="fl">종료일</label><input class="fc" type="date" value="${coreTalentSettings.planEnd||""}" onchange="coreTalentSettings.planEnd=this.value;autoSaveDebounced();renderSettingsMain()"></div>
+          <div class="fg"><label class="fl">시작일</label><input class="fc" type="date" value="${st.planStart||""}" onchange="_settingsMainStage.planStart=this.value;renderSettingsMain()"></div>
+          <div class="fg"><label class="fl">종료일</label><input class="fc" type="date" value="${st.planEnd||""}" onchange="_settingsMainStage.planEnd=this.value;renderSettingsMain()"></div>
         </div>
-        ${vDates(coreTalentSettings.planStart,coreTalentSettings.planEnd,"계획서")}
-        <button class="btn btn-sm ${coreTalentSettings.planStage==="open"?"btn-secondary":"btn-success"} mt2" style="width:100%;justify-content:center" onclick="coreTalentSettings.planStage=coreTalentSettings.planStage==='open'?'closed':'open';broadcastSettingsChange('핵심인재 계획서 기간 변경');autoSaveDebounced();renderSettingsMain()">${coreTalentSettings.planStage==="open"?"🔒 계획서 작성 마감":"📝 계획서 작성 기간 열기"}</button>
+        ${vDates(st.planStart,st.planEnd,"계획서")}
+        <button class="btn btn-sm ${st.planStage==="open"?"btn-secondary":"btn-success"} mt2" style="width:100%;justify-content:center" onclick="_settingsMainStage.planStage=_settingsMainStage.planStage==='open'?'closed':'open';renderSettingsMain()">${st.planStage==="open"?"🔒 계획서 작성 마감":"📝 계획서 작성 기간 열기"}</button>
       </div>
-      <div class="period-card ${coreTalentSettings.achieveStage==="open"?"pc-talent":""}">
+      <div class="period-card ${st.achieveStage==="open"?"pc-talent":""}">
         <div class="flex items-c gap2 mb2 wrap">
           <span style="font-size:15px">📊</span><span class="fw7 fz12">육성 실적 작성</span>
           <span class="dday ${achSt.cls}">${achSt.label}</span>
-          ${coreTalentSettings.achieveStage==="open"?badge("운영 중","green"):badge("마감","gray")}
+          ${st.achieveStage==="open"?badge("운영 중","green"):badge("마감","gray")}
         </div>
         <div class="period-prog"><div class="period-prog-fill" style="width:${achSt.pct}%;background:#0f766e"></div></div>
         ${achSt.msg?`<div class="fz11 text-gray mb1">${achSt.msg}</div>`:""}
         <div class="g2 mt2">
-          <div class="fg"><label class="fl">시작일</label><input class="fc" type="date" value="${coreTalentSettings.achieveStart||""}" onchange="coreTalentSettings.achieveStart=this.value;autoSaveDebounced();renderSettingsMain()"></div>
-          <div class="fg"><label class="fl">종료일</label><input class="fc" type="date" value="${coreTalentSettings.achieveEnd||""}" onchange="coreTalentSettings.achieveEnd=this.value;autoSaveDebounced();renderSettingsMain()"></div>
+          <div class="fg"><label class="fl">시작일</label><input class="fc" type="date" value="${st.achieveStart||""}" onchange="_settingsMainStage.achieveStart=this.value;renderSettingsMain()"></div>
+          <div class="fg"><label class="fl">종료일</label><input class="fc" type="date" value="${st.achieveEnd||""}" onchange="_settingsMainStage.achieveEnd=this.value;renderSettingsMain()"></div>
         </div>
-        ${vDates(coreTalentSettings.achieveStart,coreTalentSettings.achieveEnd,"실적")}
-        <button class="btn btn-sm ${coreTalentSettings.achieveStage==="open"?"btn-secondary":"btn-success"} mt2" style="width:100%;justify-content:center" onclick="coreTalentSettings.achieveStage=coreTalentSettings.achieveStage==='open'?'closed':'open';broadcastSettingsChange('핵심인재 실적 기간 변경');autoSaveDebounced();renderSettingsMain()">${coreTalentSettings.achieveStage==="open"?"🔒 실적 작성 마감":"📈 실적 작성 기간 열기"}</button>
+        ${vDates(st.achieveStart,st.achieveEnd,"실적")}
+        <button class="btn btn-sm ${st.achieveStage==="open"?"btn-secondary":"btn-success"} mt2" style="width:100%;justify-content:center" onclick="_settingsMainStage.achieveStage=_settingsMainStage.achieveStage==='open'?'closed':'open';renderSettingsMain()">${st.achieveStage==="open"?"🔒 실적 작성 마감":"📈 실적 작성 기간 열기"}</button>
       </div>
     </div>
   </div></div>
@@ -11276,6 +11298,21 @@ function renderSettingsMain(){
     <p style="color:#6b7280;margin-bottom:12px">샘플 데이터 또는 기존 테스트 데이터를 모두 삭제하고 새로 시작할 때 사용합니다.</p>
     <button class="btn btn-danger" onclick="openResetAllModal()">⚠️ 전체 데이터 삭제</button>
   </div></div>`;
+}
+function _saveSettingsMain(){
+  if(!_settingsMainStage)return;
+  const st=_settingsMainStage;
+  settings.kpiGoalStart=st.kpiGoalStart;settings.kpiGoalEnd=st.kpiGoalEnd;
+  settings.kpiPerfStart=st.kpiPerfStart;settings.kpiPerfEnd=st.kpiPerfEnd;
+  settings.compEvalEnabled=st.compEvalEnabled;settings.compEvalStart=st.compEvalStart;settings.compEvalEnd=st.compEvalEnd;
+  settings.leadershipEvalEnabled=st.leadershipEvalEnabled;settings.leadershipEvalStart=st.leadershipEvalStart;settings.leadershipEvalEnd=st.leadershipEvalEnd;
+  coreTalentSettings.planStart=st.planStart;coreTalentSettings.planEnd=st.planEnd;coreTalentSettings.planStage=st.planStage;
+  coreTalentSettings.achieveStart=st.achieveStart;coreTalentSettings.achieveEnd=st.achieveEnd;coreTalentSettings.achieveStage=st.achieveStage;
+  _settingsMainStage=null;
+  autoSaveToServerIfEnabled();
+  showToast("운영 설정이 저장되었습니다.","success");
+  renderSettingsMain();renderSidebar();
+  broadcastSettingsChange("운영 설정 변경");
 }
 function toggleResultPublish(type){
   const labels={kpi:"KPI",comp:"역량",leadership:"리더십"};
