@@ -3,6 +3,7 @@ services:
   - type: web
     name: my-ai-assistant
     runtime: python
+    rootDir: ai
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
     disk:
