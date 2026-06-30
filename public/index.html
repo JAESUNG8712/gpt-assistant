@@ -11900,12 +11900,29 @@ function addRankRule(){orgDB.rankRules.push({id:genId(),rank:"신규직급",labe
 function removeRankRule(i){orgDB.rankRules.splice(i,1);renderRankRulesTable();}
 function moveRankRule(i,dir){const tmp=orgDB.rankRules[i];orgDB.rankRules[i]=orgDB.rankRules[i+dir];orgDB.rankRules[i+dir]=tmp;renderRankRulesTable();}
 
+let _gradeStage=null; // KPI 등급 비율 설정 저장 전 임시 편집본 {cw,depts:{}}
+function _gradeStageInit(){if(!_gradeStage)_gradeStage={cw:JSON.parse(JSON.stringify(companyWideRatios)),depts:{}};}
+function _gradeStageDept(d){_gradeStageInit();if(!_gradeStage.depts[d])_gradeStage.depts[d]=JSON.parse(JSON.stringify(getGradeSettings(d)));return _gradeStage.depts[d];}
+function _gradeStageDirty(){
+  if(!_gradeStage)return false;
+  if(JSON.stringify(_gradeStage.cw)!==JSON.stringify(companyWideRatios))return true;
+  return Object.keys(_gradeStage.depts).some(d=>JSON.stringify(_gradeStage.depts[d])!==JSON.stringify(getGradeSettings(d)));
+}
+function _saveGradeStage(){
+  if(!_gradeStage)return;
+  companyWideRatios=_gradeStage.cw;
+  Object.keys(_gradeStage.depts).forEach(d=>{gradeSettings[d]=_gradeStage.depts[d];});
+  _gradeStage=null;
+  autoSaveToServerIfEnabled();showToast("KPI 등급 비율 설정이 저장되었습니다.","success");renderSettingsGrades();
+  _broadcastGradeChange();
+}
 function renderSettingsGrades(){
   const el=$("#settings-content");if(!el)return;
+  _gradeStageInit();
   const year=settings.evalYear;
   const gc={S:"#fef9c3",A:"#dcfce7",B:"#dbeafe",C:"#fce7f3",D:"#f1f5f9"};
   function gradeRow(r,ri,dep,pool,typ){
-    const dKey=dep?`getGradeSettings('${dep}').${pool}`:`companyWideRatios.${typ}.${pool}`;
+    const dKey=dep?`_gradeStageDept('${dep}').${pool}`:`_gradeStage.cw.${typ}.${pool}`;
     const membs=employees.filter(e=>e.active&&e.role===pool&&(!dep||e.dept===dep));
     const total=membs.length;
     const tgt=Math.max(0,Math.round(r.pct/100*total));
@@ -11913,7 +11930,7 @@ function renderSettingsGrades(){
     const diff=act-tgt;
     return`<div style="display:flex;align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid #f1f5f9">
       <span style="width:24px;height:24px;display:inline-flex;align-items:center;justify-content:center;border-radius:50%;font-size:11px;font-weight:800;background:${gc[r.grade]||"#f1f5f9"};flex-shrink:0">${r.grade}</span>
-      <input class="fc" type="number" min="0" max="100" value="${r.pct}" style="width:62px" onchange="${dKey}[${ri}].pct=Number(this.value);renderSettingsGrades();_broadcastGradeChange()">%
+      <input class="fc" type="number" min="0" max="100" value="${r.pct}" style="width:62px" onchange="${dKey}[${ri}].pct=Number(this.value);renderSettingsGrades()">%
       <span class="fz11 text-gray" style="min-width:40px">→ ${tgt}명</span>
       <span class="fz11 fw6" style="min-width:40px;color:${diff>0?"#dc2626":diff<0?"#d97706":"#16a34a"}">(현 ${act}명${diff!==0?(diff>0?" +"+diff:" "+diff):" ✓"})</span>
       <button class="btn btn-ghost btn-sm" onclick="${dKey}.splice(${ri},1);renderSettingsGrades()">×</button>
@@ -11923,7 +11940,7 @@ function renderSettingsGrades(){
     const sum=ratios.reduce((s,r)=>s+r.pct,0);
     const total=employees.filter(e=>e.active&&e.role===pool&&(!dep||e.dept===dep)).length;
     const safeId=(dep||"cw")+"_"+pool;
-    const dKey=dep?`getGradeSettings('${dep}').${pool}`:`companyWideRatios.${typ}.${pool}`;
+    const dKey=dep?`_gradeStageDept('${dep}').${pool}`:`_gradeStage.cw.${typ}.${pool}`;
     return`<div>
       <div class="sec-title">${label} <span class="fz11 ${sum===100?"text-green":"text-red"}">(합계 ${sum}%)</span> <span class="fz11 text-gray">대상 ${total}명</span></div>
       ${ratios.map((r,ri)=>gradeRow(r,ri,dep,pool,typ)).join("")}
@@ -11933,19 +11950,27 @@ function renderSettingsGrades(){
       </div>
     </div>`;
   }
+  const dirty=_gradeStageDirty();
   el.innerHTML=`
   <div class="info-note mb3">📊 KPI 등급 비율 설정. <strong>전사 기준</strong>을 먼저 설정하고, 사업부별로 조정하세요. 목표인원(→)과 현재배분(현) 차이를 실시간으로 확인할 수 있습니다.</div>
   <div class="flex gap2 mb3 wrap">
     <button class="btn btn-teal btn-sm" onclick="renderKpiGradeCompare()">📊 KPI 등급 비율 비교 보기</button>
     <button class="btn btn-secondary btn-sm" onclick="window._ratioTab='kpi';dlRatioCompare()">📥 비율 비교 다운로드</button>
   </div>
+  ${dirty?`<div class="card mb3" style="border:1px solid #f59e0b;background:#fffbeb"><div class="card-body" style="display:flex;align-items:center;gap:10px;padding:10px 14px">
+    <span class="fz12" style="color:#b45309">⚠ 저장하지 않은 변경 사항이 있습니다.</span>
+    <div style="margin-left:auto;display:flex;gap:8px">
+      <button class="btn btn-secondary btn-sm" onclick="_gradeStage=null;renderSettingsGrades()">변경 취소</button>
+      <button class="btn btn-primary btn-sm" onclick="_saveGradeStage()">💾 변경사항 저장</button>
+    </div>
+  </div></div>`:""}
   <div class="card"><div class="card-head"><h3>🌐 전사 기준 KPI 등급 비율</h3><span class="fz11 text-gray">사업부별 비율은 이 기준을 초과할 수 없습니다</span></div>
   <div class="card-body"><div class="g2">
-    ${gradeBlock(companyWideRatios.kpi.member,null,"member","팀원","kpi")}
-    ${gradeBlock(companyWideRatios.kpi.leader,null,"leader","팀장","kpi")}
+    ${gradeBlock(_gradeStage.cw.kpi.member,null,"member","팀원","kpi")}
+    ${gradeBlock(_gradeStage.cw.kpi.leader,null,"leader","팀장","kpi")}
   </div></div></div>
   ${orgDB.depts.map(d=>{
-    const gs=getGradeSettings(d);
+    const gs=_gradeStageDept(d);
     const mCnt=employees.filter(e=>e.active&&e.dept===d&&e.role==="member").length;
     const lCnt=employees.filter(e=>e.active&&e.dept===d&&e.role==="leader").length;
     return`<div class="card"><div class="card-head"><h3>🏢 ${h(d)}</h3><span class="fz11 text-gray">팀원 ${mCnt}명 · 팀장 ${lCnt}명</span></div>
