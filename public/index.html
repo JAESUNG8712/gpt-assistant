@@ -1716,6 +1716,32 @@ const weightTotal=entries=>entries.reduce((s,e)=>s+Number(e.weight||0),0);
 const calcWeighted=entries=>{let t=0;entries.forEach(e=>{const sc=e.finalScore!=null?e.finalScore:(e.secondScore!=null?e.secondScore:null);if(sc!=null)t+=sc*(e.weight/100);});return Math.round(t*100)/100;};
 const getEmp=id=>{const sid=String(id);return employees.find(e=>String(e.id)===sid);};
 const getEmpName=id=>{const e=getEmp(id);return e?e.name:"-";};
+// currentUser는 로그인 시점의 employees 레코드를 가리키지만, 조직도에서 인사발령(부서/팀 이동)이
+// 일어나면 employees 배열 항목이 새 객체로 교체되어 currentUser가 옛 부서/팀을 가진 채로 남는다.
+// 부서/팀이 필요한 곳에서는 항상 이 함수로 최신 레코드를 조회한다.
+const _liveUser=()=>getEmp(currentUser?.id)||currentUser;
+// 조직(부서/팀) 단위로 표시되는 모든 구성원 목록에 공통 적용하는 정렬 규칙:
+// 1) 직책자(팀장/사업부장/부문장 등 orgDB.positions에 정의된 직책)를 맨 위로,
+// 2) 그 외에는 직급(orgDB.ranks 순서, 높은 직급 먼저) 순으로,
+// 3) 직급이 같으면 입사일이 빠른(연차가 높은) 순으로 정렬한다.
+function _orgSortEmps(emps){
+  const ranks=orgDB.ranks||[];
+  const positions=orgDB.positions||[];
+  return (emps||[]).slice().sort((a,b)=>{
+    const aPos=a.position&&positions.includes(a.position)?1:0;
+    const bPos=b.position&&positions.includes(b.position)?1:0;
+    if(aPos!==bPos)return bPos-aPos;
+    if(aPos&&bPos){
+      const ai=positions.indexOf(a.position),bi=positions.indexOf(b.position);
+      if(ai!==bi)return bi-ai;
+    }
+    const ar=ranks.indexOf(a.rank),br=ranks.indexOf(b.rank);
+    if(ar!==br)return br-ar;
+    const ah=a.hire||"9999-12-31",bh=b.hire||"9999-12-31";
+    if(ah!==bh)return ah.localeCompare(bh);
+    return String(a.name||"").localeCompare(String(b.name||""));
+  });
+}
 const getKpi=id=>kpiEntries.find(k=>k.id===id);
 const getGrade=s=>{if(s==null||s==="")return"-";const n=Number(s);if(n>=90)return"S";if(n>=80)return"A";if(n>=70)return"B";if(n>=60)return"C";return"D";};
 const gradeColor=g=>({S:"yellow",A:"green",B:"blue",C:"pink",D:"gray"}[g]||"gray");
@@ -3348,7 +3374,7 @@ function openEvaluatorConfigModal(targetId, year){
   const makeCandidateRows=(candidates, groupLabel, groupClass)=>{
     if(!candidates.length)return'';
     return`<tr style="background:#f1f5f9"><td colspan="3" class="fw7 fz11" style="padding:6px 10px;color:#374151">${groupLabel}</td></tr>`+
-    candidates.map(e=>{
+    _orgSortEmps(candidates).map(e=>{
       const isRec=recIds.has(e.id);
       const isFix=fixedIds.has(e.id);
       return`<tr style="background:${isFix?"#eff6ff":""}">
@@ -6630,6 +6656,7 @@ function buildTeamMembersSection(u){
   if(u.role==="leader")members=employees.filter(e=>e.active&&e.dept===u.dept&&e.team===u.team&&e.id!==u.id);
   else if(u.role==="director")members=employees.filter(e=>e.active&&e.dept===u.dept&&e.id!==u.id);
   else if(u.role==="admin")members=employees.filter(e=>e.active&&e.id!==u.id);
+  members=_orgSortEmps(members);
   if(!members.length)return"";
   return`<div class="card">
     <div class="card-head"><h3>${u.role==="leader"?"👥 팀원 정보":u.role==="director"?"🏢 본부 직원 정보":"👥 전체 직원"}</h3>
@@ -17274,7 +17301,7 @@ function renderOrgChartPage(){
     const deptCollapsed=isDeptCollapsed(dept);
     treeItems.push({type:"dept",dept,count:deptEmps.length,collapsed:deptCollapsed});
     if(deptCollapsed)return;
-    deptDirectors.forEach(d=>treeItems.push({type:"emp",emp:d,indent:2}));
+    _orgSortEmps(deptDirectors).forEach(d=>treeItems.push({type:"emp",emp:d,indent:2}));
     teams.forEach(team=>{
       const tEmps=deptEmps.filter(e=>e.team===team);
       const teamCollapsed=isTeamCollapsed(dept,team);
@@ -17282,10 +17309,10 @@ function renderOrgChartPage(){
       if(teamCollapsed)return;
       const leader=tEmps.find(e=>e.role==="leader");
       if(leader)treeItems.push({type:"emp",emp:leader,indent:3,isLeader:true});
-      tEmps.filter(e=>e.role!=="leader"&&e.role!=="director").forEach(m=>treeItems.push({type:"emp",emp:m,indent:3}));
+      _orgSortEmps(tEmps.filter(e=>e.role!=="leader"&&e.role!=="director")).forEach(m=>treeItems.push({type:"emp",emp:m,indent:3}));
     });
     const noTeam=deptEmps.filter(e=>!e.team&&e.role!=="director");
-    noTeam.forEach(m=>treeItems.push({type:"emp",emp:m,indent:2}));
+    _orgSortEmps(noTeam).forEach(m=>treeItems.push({type:"emp",emp:m,indent:2}));
   });
   const treeHtml=treeItems.map(item=>{
     if(item.type==="dept")return`<div onclick="_orgToggleCollapse('dept:${h(item.dept)}')" style="padding:8px 12px;background:#1e3a8a;color:white;border-radius:6px;margin-bottom:4px;font-size:12px;font-weight:700;cursor:pointer;display:flex;align-items:center;gap:6px"><span style="display:inline-block;width:10px">${item.collapsed?"▸":"▾"}</span>🏢 ${h(item.dept)} <span style="opacity:.7;font-weight:400">(${item.count}명)</span></div>`;
@@ -19435,8 +19462,8 @@ function renderAttendanceCalendarPage(){
   _attCalYear=now.getFullYear();_attCalMonth=now.getMonth()+1;
   _attCalEmpId=currentUser.id;
   _calScope="personal";
-  _calDept=currentUser.dept||"";
-  _calTeam=currentUser.team||"";
+  _calDept=_liveUser().dept||"";
+  _calTeam=_liveUser().team||"";
   const isAdmin=["admin","director","leader"].includes(currentUser.role);
   const scopes=_calAvailableScopes();
   c.innerHTML=`<div class="card"><div class="card-head" style="flex-wrap:wrap;gap:8px">
@@ -19468,8 +19495,8 @@ function renderAttendanceCalendarPage(){
 }
 function _calSwitchScope(scope){
   _calScope=scope;
-  if(scope==="team"){_calDept=currentUser.dept||orgDB.depts[0]||"";_calTeam=currentUser.team||(getTeams(_calDept)[0]||"");}
-  else if(scope==="dept"){_calDept=currentUser.dept||orgDB.depts[0]||"";}
+  if(scope==="team"){_calDept=_liveUser().dept||orgDB.depts[0]||"";_calTeam=_liveUser().team||(getTeams(_calDept)[0]||"");}
+  else if(scope==="dept"){_calDept=_liveUser().dept||orgDB.depts[0]||"";}
   document.querySelectorAll('#cal-scope-tabs button').forEach(b=>b.classList.remove("btn-primary"));
   document.querySelectorAll('#cal-scope-tabs button').forEach(b=>b.classList.add("btn-secondary"));
   const activeBtn=document.getElementById(`cal-scope-${scope}`);
@@ -19520,12 +19547,12 @@ function _calEventsInScope(){
   });
 }
 function _calEffectiveDept(){
-  if(_calScope==="personal"){const e=getEmp(_attCalEmpId||currentUser.id);return e?e.dept:currentUser.dept;}
-  return _calDept||currentUser.dept;
+  if(_calScope==="personal"){const e=getEmp(_attCalEmpId||currentUser.id);return e?e.dept:_liveUser().dept;}
+  return _calDept||_liveUser().dept;
 }
 function _calEffectiveTeam(){
-  if(_calScope==="personal"){const e=getEmp(_attCalEmpId||currentUser.id);return e?e.team:currentUser.team;}
-  return _calTeam||currentUser.team;
+  if(_calScope==="personal"){const e=getEmp(_attCalEmpId||currentUser.id);return e?e.team:_liveUser().team;}
+  return _calTeam||_liveUser().team;
 }
 function _calEventsOnDate(ds){
   return _calEventsInScope().filter(ev=>ev.startDate<=ds&&ev.endDate>=ds);
@@ -19693,9 +19720,9 @@ function saveScheduleEvent(eventId){
   if(endDate<startDate){showToast("종료일은 시작일보다 빠를 수 없습니다.","error");return;}
   if(!_calCanRegister(scope)){showToast("해당 범위로 일정을 등록할 권한이 없습니다.","error");return;}
   if(eventId){
-    scheduleEvents=scheduleEvents.map(e=>String(e.id)===String(eventId)?{...e,title,scope,startDate,endDate,memo,dept:currentUser.dept,team:currentUser.team}:e);
+    scheduleEvents=scheduleEvents.map(e=>String(e.id)===String(eventId)?{...e,title,scope,startDate,endDate,memo,dept:_liveUser().dept,team:_liveUser().team}:e);
   }else{
-    scheduleEvents.push({id:`sch-${genId()}`,authorId:currentUser.id,title,scope,startDate,endDate,memo,dept:currentUser.dept,team:currentUser.team,createdAt:new Date().toISOString()});
+    scheduleEvents.push({id:`sch-${genId()}`,authorId:currentUser.id,title,scope,startDate,endDate,memo,dept:_liveUser().dept,team:_liveUser().team,createdAt:new Date().toISOString()});
   }
   closeModal();autoSaveToServerIfEnabled();
   showToast(eventId?"일정이 수정되었습니다.":"일정이 등록되었습니다.","success");
