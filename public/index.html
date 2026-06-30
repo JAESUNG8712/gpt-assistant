@@ -17885,7 +17885,7 @@ function _renderGPSSettingsLegacy(){
     </div>
     <div class="fg"><label class="fl">네이버 지도 Client ID</label>
       <div style="display:flex;gap:8px"><input class="fc" id="s-naver-cid" value="${h(settings.naverMapClientId||"")}" placeholder="네이버 지도 Client ID 입력" style="flex:1">
-        <button class="btn btn-secondary" onclick="saveNaverClientId();loadNaverMapForAdmin()">🗺 지도 불러오기</button>
+        <button class="btn btn-secondary" onclick="loadNaverMapForAdmin()">🗺 지도 불러오기</button>
       </div>
     </div>
     <div id="naver-map-admin" style="width:100%;height:260px;border-radius:8px;overflow:hidden;margin-bottom:10px;display:${settings.gpsLat?'block':'none'}"></div>
@@ -17912,18 +17912,45 @@ function _renderGPSSettingsLegacy(){
   if(settings.gpsLat&&settings.naverMapClientId&&window.naver?.maps)setTimeout(_initAdminNaverMap,100);
 }
 // ==================== 근태 설정 페이지 ====================
+let _opsStage=null; // 근태/급여/회사정보/회의실 설정 저장 전 임시 편집본
+function _opsStageSnapshot(){
+  return {
+    workStartHour:settings.workStartHour||9,workEndHour:settings.workEndHour||18,
+    workDays:settings.workDays||[1,2,3,4,5],companyHolidays:settings.companyHolidays||[],
+    gpsEnabled:!!settings.gpsEnabled,naverMapClientId:settings.naverMapClientId||"",
+    gpsLocations:settings.gpsLocations||[],customPayItems:settings.customPayItems||[],
+    flexWorkOptions:settings.flexWorkOptions||[],meetingRooms:settings.meetingRooms||[],
+    boardCategories:settings.boardCategories||[],companyName:settings.companyName||"",
+    ceoName:settings.ceoName||"",certStamp:settings.certStamp||"",
+  };
+}
+function _opsStageInit(){ if(!_opsStage)_opsStage=JSON.parse(JSON.stringify(_opsStageSnapshot())); }
+function _opsStageDirty(){ return !!_opsStage&&JSON.stringify(_opsStage)!==JSON.stringify(_opsStageSnapshot()); }
+function _cancelOpsStage(){ _opsStage=null;renderGPSSettings(); }
+function _saveOpsStage(){
+  if(!_opsStage)return;
+  Object.assign(settings,_opsStage);
+  _opsStage=null;
+  autoSaveToServerIfEnabled();
+  showToast("설정이 저장되었습니다.","success");
+  renderGPSSettings();renderSidebar();
+}
+function _opsDirtyBannerHtml(){
+  return _opsStageDirty()?`<div class="card mb3" style="background:#fffbeb;border:1px solid #fcd34d"><div class="card-body" style="display:flex;align-items:center;justify-content:space-between;gap:10px"><span class="fz12">⚠ 저장하지 않은 변경 사항이 있습니다.</span><div style="display:flex;gap:6px"><button class="btn btn-secondary btn-sm" onclick="_cancelOpsStage()">변경 취소</button><button class="btn btn-primary btn-sm" onclick="_saveOpsStage()">💾 변경사항 저장</button></div></div></div>`:"";
+}
 function renderAttendSettings(){
   const c=$("#content");if(!c)return;
-  const wdays=settings.workDays||[1,2,3,4,5];
+  _opsStageInit();
+  const wdays=_opsStage.workDays;
   const dayLabels=["일","월","화","수","목","금","토"];
   const dayCheckboxes=[0,1,2,3,4,5,6].map(d=>`<label style="display:inline-flex;align-items:center;gap:4px;font-size:12px;cursor:pointer;padding:4px 8px;border-radius:6px;background:${wdays.includes(d)?"#dbeafe":"#f1f5f9"};border:1px solid ${wdays.includes(d)?"#93c5fd":"#e2e8f0"}"><input type="checkbox" ${wdays.includes(d)?"checked":""} onchange="_toggleWorkDay(${d})" style="margin:0">${dayLabels[d]}</label>`).join("");
-  const compHols=(settings.companyHolidays||[]).sort();
-  const locs=settings.gpsLocations||[];
-  c.innerHTML=`
+  const compHols=[..._opsStage.companyHolidays].sort();
+  const locs=_opsStage.gpsLocations;
+  c.innerHTML=_opsDirtyBannerHtml()+`
   <div class="card" style="margin-bottom:14px"><div class="card-head"><h3>⏰ 근무시간 및 근무일 설정</h3></div><div class="card-body">
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px">
-      <div class="fg"><label class="fl">출근 시간</label><select class="fc" id="s-wstart" onchange="settings.workStartHour=+this.value;autoSaveDebounced()">${Array.from({length:12},(_,i)=>i+6).map(h2=>`<option value="${h2}" ${(settings.workStartHour||9)===h2?"selected":""}>${String(h2).padStart(2,"0")}:00</option>`).join("")}</select></div>
-      <div class="fg"><label class="fl">퇴근 시간</label><select class="fc" id="s-wend" onchange="settings.workEndHour=+this.value;autoSaveDebounced()">${Array.from({length:12},(_,i)=>i+12).map(h2=>`<option value="${h2}" ${(settings.workEndHour||18)===h2?"selected":""}>${String(h2).padStart(2,"0")}:00</option>`).join("")}</select></div>
+      <div class="fg"><label class="fl">출근 시간</label><select class="fc" id="s-wstart" onchange="_opsStage.workStartHour=+this.value;renderAttendSettings()">${Array.from({length:12},(_,i)=>i+6).map(h2=>`<option value="${h2}" ${_opsStage.workStartHour===h2?"selected":""}>${String(h2).padStart(2,"0")}:00</option>`).join("")}</select></div>
+      <div class="fg"><label class="fl">퇴근 시간</label><select class="fc" id="s-wend" onchange="_opsStage.workEndHour=+this.value;renderAttendSettings()">${Array.from({length:12},(_,i)=>i+12).map(h2=>`<option value="${h2}" ${_opsStage.workEndHour===h2?"selected":""}>${String(h2).padStart(2,"0")}:00</option>`).join("")}</select></div>
     </div>
     <div class="fg"><label class="fl">근무 요일</label><div style="display:flex;gap:6px;flex-wrap:wrap">${dayCheckboxes}</div></div>
     <div class="fg" style="margin-top:12px"><label class="fl">회사 지정 휴일 추가 <span class="fz11 text-gray">(날짜 선택 후 추가)</span></label>
@@ -17935,19 +17962,19 @@ function renderAttendSettings(){
   <div class="card" style="margin-bottom:14px"><div class="card-head"><h3>📍 GPS 출퇴근 설정</h3></div><div class="card-body">
     <div class="fg" style="display:flex;align-items:center;gap:12px;margin-bottom:14px">
       <label class="fl" style="margin:0;flex:none">GPS 출퇴근 활성화</label>
-      <button class="est-btn ${settings.gpsEnabled?"est-on":""}" onclick="settings.gpsEnabled=true;autoSaveDebounced();renderAttendSettings()">✅ 활성</button>
-      <button class="est-btn ${!settings.gpsEnabled?"est-off":""}" onclick="settings.gpsEnabled=false;autoSaveDebounced();renderAttendSettings()">🔚 비활성</button>
+      <button class="est-btn ${_opsStage.gpsEnabled?"est-on":""}" onclick="_opsStage.gpsEnabled=true;renderAttendSettings()">✅ 활성</button>
+      <button class="est-btn ${!_opsStage.gpsEnabled?"est-off":""}" onclick="_opsStage.gpsEnabled=false;renderAttendSettings()">🔚 비활성</button>
     </div>
     <div class="fg"><label class="fl">네이버 지도 Client ID <span class="fz11 text-gray">(developers.naver.com에서 발급)</span></label>
-      <div style="display:flex;gap:8px"><input class="fc" id="s-naver-cid" value="${h(settings.naverMapClientId||"")}" placeholder="네이버 지도 Client ID 입력" style="flex:1">
-        <button class="btn btn-secondary" onclick="saveNaverClientId();loadNaverMapForAdmin()">🗺 지도 불러오기</button>
+      <div style="display:flex;gap:8px"><input class="fc" id="s-naver-cid" value="${h(_opsStage.naverMapClientId)}" placeholder="네이버 지도 Client ID 입력" style="flex:1" oninput="_opsStage.naverMapClientId=this.value">
+        <button class="btn btn-secondary" onclick="loadNaverMapForAdmin()">🗺 지도 불러오기</button>
       </div>
     </div>
     <div id="naver-map-admin" style="width:100%;height:260px;border-radius:8px;overflow:hidden;margin-bottom:10px;display:${settings.gpsLat?'block':'none'}"></div>
     <div class="card-head" style="padding:0;margin-bottom:8px"><h3 style="font-size:13px">📌 GPS 위치 관리</h3>
       <button class="btn btn-primary btn-sm" onclick="_addGpsLocation()">+ 위치 추가</button>
     </div>
-    ${(()=>{if(!locs.length&&settings.gpsLat){return`<div style="background:#fffbeb;padding:8px 12px;border-radius:6px;border:1px solid #fde68a;margin-bottom:8px;font-size:12px">⚠ 기존 단일 위치 설정이 있습니다. "위치 추가"로 위치를 등록해 주세요.</div><div style="background:#f8fafc;border-radius:8px;padding:10px 14px;margin-bottom:8px;display:flex;align-items:center;gap:12px"><div class="fz12"><strong>기존 위치</strong><div class="fz11 text-gray">위도 ${settings.gpsLat?.toFixed(6)||""}, 경도 ${settings.gpsLng?.toFixed(6)||""}, 반경 ${settings.gpsRadius||200}m</div></div><button class="btn btn-secondary btn-sm" onclick="_migrateGpsLocation()">새 위치로 전환</button></div>`;} if(!locs.length)return`<div style="padding:14px;text-align:center;color:#94a3b8;font-size:12px">등록된 GPS 위치가 없습니다. "위치 추가"를 클릭하세요.</div>`;return`<div class="tbl-wrap"><table><thead><tr><th>위치명</th><th>위도</th><th>경도</th><th>반경(m)</th><th>삭제</th></tr></thead><tbody>${locs.map((loc,i)=>`<tr><td><input class="fc" value="${h(loc.name||"")}" style="width:100px" placeholder="예: 본사" oninput="settings.gpsLocations[${i}].name=this.value;autoSaveDebounced()"></td><td><input class="fc" type="number" step="0.000001" value="${loc.lat||""}" style="width:110px" placeholder="37.5665" oninput="settings.gpsLocations[${i}].lat=+this.value;autoSaveDebounced()"></td><td><input class="fc" type="number" step="0.000001" value="${loc.lng||""}" style="width:110px" placeholder="126.9780" oninput="settings.gpsLocations[${i}].lng=+this.value;autoSaveDebounced()"></td><td><input class="fc" type="number" value="${loc.radius||200}" style="width:80px" oninput="settings.gpsLocations[${i}].radius=+this.value;autoSaveDebounced()"></td><td><button class="btn btn-danger btn-sm" onclick="settings.gpsLocations.splice(${i},1);autoSaveDebounced();renderAttendSettings()">삭제</button></td></tr>`).join("")}</tbody></table></div>`;})()}
+    ${(()=>{if(!locs.length&&settings.gpsLat){return`<div style="background:#fffbeb;padding:8px 12px;border-radius:6px;border:1px solid #fde68a;margin-bottom:8px;font-size:12px">⚠ 기존 단일 위치 설정이 있습니다. "위치 추가"로 위치를 등록해 주세요.</div><div style="background:#f8fafc;border-radius:8px;padding:10px 14px;margin-bottom:8px;display:flex;align-items:center;gap:12px"><div class="fz12"><strong>기존 위치</strong><div class="fz11 text-gray">위도 ${settings.gpsLat?.toFixed(6)||""}, 경도 ${settings.gpsLng?.toFixed(6)||""}, 반경 ${settings.gpsRadius||200}m</div></div><button class="btn btn-secondary btn-sm" onclick="_migrateGpsLocation()">새 위치로 전환</button></div>`;} if(!locs.length)return`<div style="padding:14px;text-align:center;color:#94a3b8;font-size:12px">등록된 GPS 위치가 없습니다. "위치 추가"를 클릭하세요.</div>`;return`<div class="tbl-wrap"><table><thead><tr><th>위치명</th><th>위도</th><th>경도</th><th>반경(m)</th><th>삭제</th></tr></thead><tbody>${locs.map((loc,i)=>`<tr><td><input class="fc" value="${h(loc.name||"")}" style="width:100px" placeholder="예: 본사" oninput="_opsStage.gpsLocations[${i}].name=this.value"></td><td><input class="fc" type="number" step="0.000001" value="${loc.lat||""}" style="width:110px" placeholder="37.5665" oninput="_opsStage.gpsLocations[${i}].lat=+this.value"></td><td><input class="fc" type="number" step="0.000001" value="${loc.lng||""}" style="width:110px" placeholder="126.9780" oninput="_opsStage.gpsLocations[${i}].lng=+this.value"></td><td><input class="fc" type="number" value="${loc.radius||200}" style="width:80px" oninput="_opsStage.gpsLocations[${i}].radius=+this.value"></td><td><button class="btn btn-danger btn-sm" onclick="_opsStage.gpsLocations.splice(${i},1);renderAttendSettings()">삭제</button></td></tr>`).join("")}</tbody></table></div>`;})()}
     <div class="fz12 text-gray" style="background:#fffbeb;padding:10px;border-radius:6px;border:1px solid #fde68a;margin-top:8px">
       ⚠ 네이버 지도를 사용하려면 <strong>developers.naver.com</strong>에서 애플리케이션 등록 후 Client ID 발급 필요.
     </div>
@@ -17956,12 +17983,12 @@ function renderAttendSettings(){
   <div class="card"><div class="card-head"><h3>⏱ 유연근무제 시간 옵션 관리</h3>
     <button class="btn btn-primary btn-sm" onclick="_addFlexWorkOption()">+ 옵션 추가</button>
   </div><div class="card-body" style="padding:0">
-    ${(settings.flexWorkOptions||[]).length===0?`<div style="padding:20px;text-align:center;color:#94a3b8">등록된 유연근무 시간 옵션이 없습니다.</div>`:`<div class="tbl-wrap"><table><thead><tr><th>표시 이름</th><th>출근 시간</th><th>퇴근 시간</th><th>삭제</th></tr></thead><tbody>
-    ${(settings.flexWorkOptions||[]).map((fo,i)=>`<tr>
-      <td><input class="fc" value="${h(fo.label)}" style="min-width:160px" oninput="settings.flexWorkOptions[${i}].label=this.value;autoSaveDebounced()"></td>
-      <td><select class="fc" style="width:110px" onchange="settings.flexWorkOptions[${i}].startHour=+this.value;autoSaveDebounced()">${Array.from({length:17},(_,k)=>6+k*0.5).map(t=>`<option value="${t}" ${(fo.startHour||9)===t?"selected":""}>${_fmtHour(t)}</option>`).join("")}</select></td>
-      <td><select class="fc" style="width:110px" onchange="settings.flexWorkOptions[${i}].endHour=+this.value;autoSaveDebounced()">${Array.from({length:21},(_,k)=>12+k*0.5).map(t=>`<option value="${t}" ${(fo.endHour||18)===t?"selected":""}>${_fmtHour(t)}</option>`).join("")}</select></td>
-      <td><button class="btn btn-danger btn-sm" onclick="settings.flexWorkOptions.splice(${i},1);autoSaveDebounced();renderAttendSettings()">삭제</button></td>
+    ${_opsStage.flexWorkOptions.length===0?`<div style="padding:20px;text-align:center;color:#94a3b8">등록된 유연근무 시간 옵션이 없습니다.</div>`:`<div class="tbl-wrap"><table><thead><tr><th>표시 이름</th><th>출근 시간</th><th>퇴근 시간</th><th>삭제</th></tr></thead><tbody>
+    ${_opsStage.flexWorkOptions.map((fo,i)=>`<tr>
+      <td><input class="fc" value="${h(fo.label)}" style="min-width:160px" oninput="_opsStage.flexWorkOptions[${i}].label=this.value"></td>
+      <td><select class="fc" style="width:110px" onchange="_opsStage.flexWorkOptions[${i}].startHour=+this.value;renderAttendSettings()">${Array.from({length:17},(_,k)=>6+k*0.5).map(t=>`<option value="${t}" ${(fo.startHour||9)===t?"selected":""}>${_fmtHour(t)}</option>`).join("")}</select></td>
+      <td><select class="fc" style="width:110px" onchange="_opsStage.flexWorkOptions[${i}].endHour=+this.value;renderAttendSettings()">${Array.from({length:21},(_,k)=>12+k*0.5).map(t=>`<option value="${t}" ${(fo.endHour||18)===t?"selected":""}>${_fmtHour(t)}</option>`).join("")}</select></td>
+      <td><button class="btn btn-danger btn-sm" onclick="_opsStage.flexWorkOptions.splice(${i},1);renderAttendSettings()">삭제</button></td>
     </tr>`).join("")}
     </tbody></table></div>`}
   </div></div>`;
@@ -17970,20 +17997,21 @@ function renderAttendSettings(){
 // ==================== 급여 관리 페이지 ====================
 function renderPayrollSettings(){
   const c=$("#content");if(!c)return;
-  c.innerHTML=`
+  _opsStageInit();
+  c.innerHTML=_opsDirtyBannerHtml()+`
   <div class="card"><div class="card-head"><h3>💰 급여 추가 항목 관리</h3>
     <button class="btn btn-primary btn-sm" onclick="_addCustomPayItem()">+ 항목 추가</button>
   </div><div class="card-body" style="padding:8px 14px 0">
     <div class="fz11 text-gray" style="margin-bottom:6px">※ 기본급·직책수당·연장근로수당 등은 과세 항목이며, 식대·연구수당은 항상 비과세로 처리됩니다. 직책수당은 팀장만, 연구수당은 R&BD센터 소속만 지급되며, 상무 이상(임원)은 연장근로수당이 지급되지 않습니다. 추가 지급 항목은 "비과세" 체크 여부에 따라 소득세·4대보험 산정 시 자동 반영됩니다.</div>
   </div><div class="card-body" style="padding:0">
-    ${(settings.customPayItems||[]).length===0?`<div style="padding:20px;text-align:center;color:#94a3b8">추가 급여 항목이 없습니다. (기본: 기본급, 연장근로수당, 식대, 연구수당, 직책수당)</div>`:`<div class="tbl-wrap"><table><thead><tr><th>항목명</th><th>구분</th><th>금액(원)</th><th>비과세</th><th>적용</th><th>삭제</th></tr></thead><tbody>
-    ${(settings.customPayItems||[]).map((ci,i)=>`<tr>
-      <td><input class="fc" value="${h(ci.name)}" style="min-width:100px" oninput="settings.customPayItems[${i}].name=this.value;autoSaveDebounced()"></td>
-      <td><select class="fc" style="width:80px" onchange="settings.customPayItems[${i}].type=this.value;autoSaveDebounced();renderPayrollSettings()"><option value="pay" ${ci.type==="pay"?"selected":""}>지급</option><option value="deduct" ${ci.type==="deduct"?"selected":""}>공제</option></select></td>
-      <td><input class="fc" type="number" value="${ci.amount||0}" style="width:100px" oninput="settings.customPayItems[${i}].amount=+this.value;autoSaveDebounced()"></td>
-      <td style="text-align:center">${ci.type==="pay"?`<input type="checkbox" ${ci.taxable===false?"checked":""} onchange="settings.customPayItems[${i}].taxable=!this.checked;autoSaveDebounced()" style="width:18px;height:18px;cursor:pointer" title="체크 시 비과세 항목으로 처리(소득세·4대보험 산정 제외)">`:`<span class="fz11 text-gray">-</span>`}</td>
-      <td><input type="checkbox" ${ci.enabled!==false?"checked":""} onchange="settings.customPayItems[${i}].enabled=this.checked;autoSaveDebounced()" style="width:18px;height:18px;cursor:pointer"></td>
-      <td><button class="btn btn-danger btn-sm" onclick="settings.customPayItems.splice(${i},1);autoSaveDebounced();renderPayrollSettings()">삭제</button></td>
+    ${_opsStage.customPayItems.length===0?`<div style="padding:20px;text-align:center;color:#94a3b8">추가 급여 항목이 없습니다. (기본: 기본급, 연장근로수당, 식대, 연구수당, 직책수당)</div>`:`<div class="tbl-wrap"><table><thead><tr><th>항목명</th><th>구분</th><th>금액(원)</th><th>비과세</th><th>적용</th><th>삭제</th></tr></thead><tbody>
+    ${_opsStage.customPayItems.map((ci,i)=>`<tr>
+      <td><input class="fc" value="${h(ci.name)}" style="min-width:100px" oninput="_opsStage.customPayItems[${i}].name=this.value"></td>
+      <td><select class="fc" style="width:80px" onchange="_opsStage.customPayItems[${i}].type=this.value;renderPayrollSettings()"><option value="pay" ${ci.type==="pay"?"selected":""}>지급</option><option value="deduct" ${ci.type==="deduct"?"selected":""}>공제</option></select></td>
+      <td><input class="fc" type="number" value="${ci.amount||0}" style="width:100px" oninput="_opsStage.customPayItems[${i}].amount=+this.value"></td>
+      <td style="text-align:center">${ci.type==="pay"?`<input type="checkbox" ${ci.taxable===false?"checked":""} onchange="_opsStage.customPayItems[${i}].taxable=!this.checked" style="width:18px;height:18px;cursor:pointer" title="체크 시 비과세 항목으로 처리(소득세·4대보험 산정 제외)">`:`<span class="fz11 text-gray">-</span>`}</td>
+      <td><input type="checkbox" ${ci.enabled!==false?"checked":""} onchange="_opsStage.customPayItems[${i}].enabled=this.checked" style="width:18px;height:18px;cursor:pointer"></td>
+      <td><button class="btn btn-danger btn-sm" onclick="_opsStage.customPayItems.splice(${i},1);renderPayrollSettings()">삭제</button></td>
     </tr>`).join("")}
     </tbody></table></div>`}
   </div></div>`;
@@ -17991,15 +18019,16 @@ function renderPayrollSettings(){
 // ==================== 회사 기본 정보 페이지 ====================
 function renderCompanyInfo(){
   const c=$("#content");if(!c)return;
-  c.innerHTML=`
+  _opsStageInit();
+  c.innerHTML=_opsDirtyBannerHtml()+`
   <div class="card"><div class="card-head"><h3>🏛 회사 기본 정보</h3></div><div class="card-body">
-    <div class="fg"><label class="fl">회사명 (증명서용·조직도)</label><input class="fc" id="s-cname" value="${h(settings.companyName||"")}" placeholder="(주)회사명" oninput="settings.companyName=this.value;autoSaveDebounced()"></div>
-    <div class="fg"><label class="fl">대표이사명 (조직도 최상단 표시)</label><input class="fc" id="s-ceoname" value="${h(settings.ceoName||"")}" placeholder="대표이사 성명" oninput="settings.ceoName=this.value;autoSaveDebounced()"></div>
+    <div class="fg"><label class="fl">회사명 (증명서용·조직도)</label><input class="fc" id="s-cname" value="${h(_opsStage.companyName)}" placeholder="(주)회사명" oninput="_opsStage.companyName=this.value"></div>
+    <div class="fg"><label class="fl">대표이사명 (조직도 최상단 표시)</label><input class="fc" id="s-ceoname" value="${h(_opsStage.ceoName)}" placeholder="대표이사 성명" oninput="_opsStage.ceoName=this.value"></div>
     <div class="fg"><label class="fl">대표자 직인 이미지 <span class="fz11 text-gray">(PNG/JPG, 투명 배경 권장)</span></label>
       <div style="display:flex;align-items:center;gap:10px">
-        ${settings.certStamp?`<img src="${settings.certStamp}" style="width:60px;height:60px;object-fit:contain;border:1px solid #e2e8f0;border-radius:6px;background:#f8fafc">`:`<div style="width:60px;height:60px;border:2px dashed #cbd5e1;border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:10px;color:#94a3b8">도장없음</div>`}
+        ${_opsStage.certStamp?`<img src="${_opsStage.certStamp}" style="width:60px;height:60px;object-fit:contain;border:1px solid #e2e8f0;border-radius:6px;background:#f8fafc">`:`<div style="width:60px;height:60px;border:2px dashed #cbd5e1;border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:10px;color:#94a3b8">도장없음</div>`}
         <div><input type="file" accept="image/*" id="stamp-file-input" style="display:none" onchange="uploadCertStamp(event)"><button class="btn btn-secondary btn-sm" onclick="document.getElementById('stamp-file-input').click()">📷 이미지 업로드</button>
-        ${settings.certStamp?`<button class="btn btn-danger btn-sm" style="margin-top:4px" onclick="settings.certStamp='';autoSaveDebounced();renderCompanyInfo()">삭제</button>`:""}</div>
+        ${_opsStage.certStamp?`<button class="btn btn-danger btn-sm" style="margin-top:4px" onclick="_opsStage.certStamp='';renderCompanyInfo()">삭제</button>`:""}</div>
       </div>
     </div>
   </div></div>`;
@@ -18007,27 +18036,28 @@ function renderCompanyInfo(){
 // ==================== 회의실 관리 페이지 ====================
 function renderRoomSettings(){
   const c=$("#content");if(!c)return;
-  const rooms=(settings.meetingRooms||[]);
+  _opsStageInit();
+  const rooms=_opsStage.meetingRooms;
   const roomRows=rooms.map((r,i)=>`<tr>
-    <td><input class="fc" style="min-width:100px" value="${h(r.name)}" oninput="settings.meetingRooms[${i}].name=this.value;autoSaveDebounced()"></td>
-    <td><input class="fc" type="number" style="width:60px" value="${r.capacity||10}" oninput="settings.meetingRooms[${i}].capacity=+this.value;autoSaveDebounced()"></td>
-    <td><input class="fc" style="width:80px" value="${h(r.location||"")}" oninput="settings.meetingRooms[${i}].location=this.value;autoSaveDebounced()"></td>
-    <td><input type="color" value="${r.color||"#3b82f6"}" style="width:40px;height:32px;border:none;cursor:pointer" onchange="settings.meetingRooms[${i}].color=this.value;autoSaveDebounced()"></td>
-    <td><button class="btn btn-danger btn-sm" onclick="settings.meetingRooms.splice(${i},1);autoSaveDebounced();renderRoomSettings()">삭제</button></td>
+    <td><input class="fc" style="min-width:100px" value="${h(r.name)}" oninput="_opsStage.meetingRooms[${i}].name=this.value"></td>
+    <td><input class="fc" type="number" style="width:60px" value="${r.capacity||10}" oninput="_opsStage.meetingRooms[${i}].capacity=+this.value"></td>
+    <td><input class="fc" style="width:80px" value="${h(r.location||"")}" oninput="_opsStage.meetingRooms[${i}].location=this.value"></td>
+    <td><input type="color" value="${r.color||"#3b82f6"}" style="width:40px;height:32px;border:none;cursor:pointer" onchange="_opsStage.meetingRooms[${i}].color=this.value"></td>
+    <td><button class="btn btn-danger btn-sm" onclick="_opsStage.meetingRooms.splice(${i},1);renderRoomSettings()">삭제</button></td>
   </tr>`).join("");
-  const cats=settings.boardCategories||[];
+  const cats=_opsStage.boardCategories;
   const roleLabels={admin:"관리자",director:"사업부장",leader:"팀장",member:"팀원"};
   const catRows=cats.map((cat,i)=>{
     const wr=cat.writeRoles||["admin","director","leader","member"];
     return`<tr>
-      <td><input class="fc" style="min-width:50px" value="${h(cat.icon||"")}" oninput="settings.boardCategories[${i}].icon=this.value;autoSaveDebounced()" placeholder="🏷"></td>
-      <td><input class="fc" style="min-width:100px" value="${h(cat.name)}" oninput="settings.boardCategories[${i}].name=this.value;autoSaveDebounced()"></td>
+      <td><input class="fc" style="min-width:50px" value="${h(cat.icon||"")}" oninput="_opsStage.boardCategories[${i}].icon=this.value" placeholder="🏷"></td>
+      <td><input class="fc" style="min-width:100px" value="${h(cat.name)}" oninput="_opsStage.boardCategories[${i}].name=this.value"></td>
       <td style="font-size:11px;white-space:nowrap">${["admin","director","leader","member"].map(r=>`<label style="display:inline-flex;align-items:center;gap:2px;margin-right:5px;cursor:pointer"><input type="checkbox" ${wr.includes(r)?"checked":""} onchange="_toggleBoardWriteRole(${i},'${r}',this.checked)" style="cursor:pointer"> ${roleLabels[r]}</label>`).join("")}</td>
-      <td style="text-align:center"><input type="checkbox" ${cat.allowAnonymous?"checked":""} onchange="settings.boardCategories[${i}].allowAnonymous=this.checked;autoSaveDebounced()" style="width:16px;height:16px;cursor:pointer"></td>
-      <td><button class="btn btn-danger btn-sm" onclick="settings.boardCategories.splice(${i},1);autoSaveDebounced();renderRoomSettings()">삭제</button></td>
+      <td style="text-align:center"><input type="checkbox" ${cat.allowAnonymous?"checked":""} onchange="_opsStage.boardCategories[${i}].allowAnonymous=this.checked" style="width:16px;height:16px;cursor:pointer"></td>
+      <td><button class="btn btn-danger btn-sm" onclick="_opsStage.boardCategories.splice(${i},1);renderRoomSettings()">삭제</button></td>
     </tr>`;
   }).join("");
-  c.innerHTML=`
+  c.innerHTML=_opsDirtyBannerHtml()+`
   <div class="card" style="margin-bottom:14px"><div class="card-head"><h3>📌 게시판 카테고리 관리</h3>
     <button class="btn btn-primary btn-sm" onclick="_addBoardCategory()">+ 추가</button>
   </div><div class="card-body" style="padding:0">
@@ -18040,67 +18070,69 @@ function renderRoomSettings(){
     <div class="tbl-wrap"><table><thead><tr><th>회의실명</th><th>수용인원</th><th>위치</th><th>색상</th><th>삭제</th></tr></thead><tbody>${roomRows}</tbody></table></div>`}
   </div></div>`;
 }
-function saveNaverClientId(){settings.naverMapClientId=$("#s-naver-cid")?.value.trim()||"";autoSaveDebounced();}
 function addMeetingRoom(){
-  if(!settings.meetingRooms)settings.meetingRooms=[];
-  settings.meetingRooms.push({id:`room-${Date.now()}`,name:"새 회의실",capacity:10,location:"",color:"#6366f1"});
-  autoSaveDebounced();renderRoomSettings();
+  _opsStageInit();
+  _opsStage.meetingRooms.push({id:`room-${Date.now()}`,name:"새 회의실",capacity:10,location:"",color:"#6366f1"});
+  renderRoomSettings();
 }
 function _addFlexWorkOption(){
-  if(!settings.flexWorkOptions)settings.flexWorkOptions=[];
-  settings.flexWorkOptions.push({id:`flex-${genId()}`,label:"9시 출근 ~ 18시 퇴근",startHour:9,endHour:18});
-  autoSaveDebounced();renderAttendSettings();
+  _opsStageInit();
+  _opsStage.flexWorkOptions.push({id:`flex-${genId()}`,label:"9시 출근 ~ 18시 퇴근",startHour:9,endHour:18});
+  renderAttendSettings();
 }
 function uploadCertStamp(e){
   const file=e.target.files[0];if(!file)return;
+  _opsStageInit();
   const reader=new FileReader();
-  reader.onload=ev=>{settings.certStamp=ev.target.result;autoSaveDebounced();renderCompanyInfo();showToast("직인 이미지가 저장되었습니다.","success");};
+  reader.onload=ev=>{_opsStage.certStamp=ev.target.result;renderCompanyInfo();showToast("이미지를 불러왔습니다. 변경사항 저장을 눌러 반영하세요.","info");};
   reader.readAsDataURL(file);
 }
 function _toggleWorkDay(d){
-  if(!settings.workDays)settings.workDays=[1,2,3,4,5];
-  const idx=settings.workDays.indexOf(d);
-  if(idx>=0)settings.workDays.splice(idx,1);else settings.workDays.push(d);
-  autoSaveDebounced();renderAttendSettings();
+  _opsStageInit();
+  const idx=_opsStage.workDays.indexOf(d);
+  if(idx>=0)_opsStage.workDays.splice(idx,1);else _opsStage.workDays.push(d);
+  renderAttendSettings();
 }
 function _addCompanyHoliday(){
   const d=document.getElementById("s-chol-date")?.value;if(!d){showToast("날짜를 선택하세요.","error");return;}
-  if(!settings.companyHolidays)settings.companyHolidays=[];
-  if(!settings.companyHolidays.includes(d)){settings.companyHolidays.push(d);autoSaveDebounced();showToast(`${d} 휴일 등록 완료`,"success");}
+  _opsStageInit();
+  if(!_opsStage.companyHolidays.includes(d)){_opsStage.companyHolidays.push(d);showToast(`${d} 휴일이 추가되었습니다. 변경사항 저장을 눌러 반영하세요.`,"info");}
   else showToast("이미 등록된 날짜입니다.","info");
   renderAttendSettings();
 }
 function _removeCompanyHoliday(d){
-  settings.companyHolidays=(settings.companyHolidays||[]).filter(x=>x!==d);autoSaveDebounced();renderAttendSettings();
+  _opsStageInit();
+  _opsStage.companyHolidays=_opsStage.companyHolidays.filter(x=>x!==d);renderAttendSettings();
 }
 function _addBoardCategory(){
-  if(!settings.boardCategories)settings.boardCategories=[];
-  settings.boardCategories.push({id:'cat-'+Date.now(),name:'새 게시판',icon:'📋',writeRoles:["admin","director","leader","member"],allowAnonymous:false});
-  autoSaveDebounced();renderRoomSettings();
+  _opsStageInit();
+  _opsStage.boardCategories.push({id:'cat-'+Date.now(),name:'새 게시판',icon:'📋',writeRoles:["admin","director","leader","member"],allowAnonymous:false});
+  renderRoomSettings();
 }
 function _toggleBoardWriteRole(idx,role,checked){
-  if(!settings.boardCategories[idx].writeRoles)settings.boardCategories[idx].writeRoles=["admin","director","leader","member"];
-  const wr=settings.boardCategories[idx].writeRoles;
+  _opsStageInit();
+  if(!_opsStage.boardCategories[idx].writeRoles)_opsStage.boardCategories[idx].writeRoles=["admin","director","leader","member"];
+  const wr=_opsStage.boardCategories[idx].writeRoles;
   if(checked&&!wr.includes(role))wr.push(role);
-  else if(!checked)settings.boardCategories[idx].writeRoles=wr.filter(r=>r!==role);
-  autoSaveDebounced();
+  else if(!checked)_opsStage.boardCategories[idx].writeRoles=wr.filter(r=>r!==role);
+  renderRoomSettings();
 }
 function _addCustomPayItem(){
-  if(!settings.customPayItems)settings.customPayItems=[];
-  settings.customPayItems.push({id:'cpi-'+Date.now(),name:'추가수당',type:'pay',amount:0,enabled:true});
-  autoSaveDebounced();renderPayrollSettings();
+  _opsStageInit();
+  _opsStage.customPayItems.push({id:'cpi-'+Date.now(),name:'추가수당',type:'pay',amount:0,enabled:true});
+  renderPayrollSettings();
 }
 function _addGpsLocation(){
-  if(!settings.gpsLocations)settings.gpsLocations=[];
-  settings.gpsLocations.push({id:`loc-${Date.now()}`,name:"",lat:"",lng:"",radius:200});
-  autoSaveDebounced();renderAttendSettings();
+  _opsStageInit();
+  _opsStage.gpsLocations.push({id:`loc-${Date.now()}`,name:"",lat:"",lng:"",radius:200});
+  renderAttendSettings();
 }
 function _migrateGpsLocation(){
   if(!settings.gpsLat)return;
-  if(!settings.gpsLocations)settings.gpsLocations=[];
-  settings.gpsLocations.push({id:`loc-${Date.now()}`,name:"본사",lat:settings.gpsLat,lng:settings.gpsLng,radius:settings.gpsRadius||200});
+  _opsStageInit();
+  _opsStage.gpsLocations.push({id:`loc-${Date.now()}`,name:"본사",lat:settings.gpsLat,lng:settings.gpsLng,radius:settings.gpsRadius||200});
   delete settings.gpsLat;delete settings.gpsLng;delete settings.gpsRadius;
-  autoSaveDebounced();renderAttendSettings();showToast("기존 위치가 새 위치 목록으로 전환되었습니다.","success");
+  autoSaveToServerIfEnabled();renderAttendSettings();showToast("기존 위치가 새 위치 목록으로 전환되었습니다.","success");
 }
 function _fmtHour(h){return`${Math.floor(h).toString().padStart(2,"0")}:${h%1?"30":"00"}`;}
 
