@@ -19381,18 +19381,70 @@ function _attCalRefresh(){
   else _calRenderAggregateGrid(grid);
   _calRenderEventList();
 }
-function _calRenderPersonalGrid(grid){
-  const yr=_attCalYear,mo=_attCalMonth,empId=_attCalEmpId||currentUser.id;
+function _calWeeksOfMonth(yr,mo){
   const first=new Date(yr,mo-1,1);const last=new Date(yr,mo,0);
   const startDow=first.getDay();
+  const gridStart=new Date(first);gridStart.setDate(first.getDate()-startDow);
+  const totalCells=Math.ceil((startDow+last.getDate())/7)*7;
+  const weeks=[];
+  for(let w=0;w<totalCells/7;w++){
+    const week=[];
+    for(let i=0;i<7;i++){
+      const x=new Date(gridStart);x.setDate(gridStart.getDate()+w*7+i);
+      week.push({ds:x.toISOString().slice(0,10),inMonth:x.getMonth()===mo-1,dow:x.getDay()});
+    }
+    weeks.push(week);
+  }
+  return weeks;
+}
+function _calEventColor(ev){
+  const SCOPE_COLOR={company:"#0891b2",dept:"#7c3aed",team:"#ea580c"};
+  if(SCOPE_COLOR[ev.scope])return SCOPE_COLOR[ev.scope];
+  const s=String(ev.authorId);let hc=0;for(let i=0;i<s.length;i++)hc=(hc*31+s.charCodeAt(i))|0;
+  return _ROOM_COLOR_PALETTE[Math.abs(hc)%_ROOM_COLOR_PALETTE.length];
+}
+function _calWeekEventBars(week,events){
+  const weekStart=week[0].ds,weekEnd=week[6].ds;
+  const weekEvents=events.filter(ev=>ev.startDate<=weekEnd&&ev.endDate>=weekStart)
+    .sort((a,b)=>a.startDate.localeCompare(b.startDate)||b.endDate.localeCompare(a.endDate));
+  const lanes=[];
+  const placed=weekEvents.map(ev=>{
+    const startCol=ev.startDate<weekStart?0:week.findIndex(d=>d.ds===ev.startDate);
+    const endCol=ev.endDate>weekEnd?6:week.findIndex(d=>d.ds===ev.endDate);
+    let lane=0;
+    while(lanes[lane]&&lanes[lane].some(seg=>!(endCol<seg.startCol||startCol>seg.endCol)))lane++;
+    if(!lanes[lane])lanes[lane]=[];
+    lanes[lane].push({startCol,endCol});
+    return {ev,startCol,endCol,lane,clipStart:ev.startDate<weekStart,clipEnd:ev.endDate>weekEnd};
+  });
+  return {placed,laneCount:lanes.length};
+}
+function _calEventBarHtml(item,cellH){
+  const {ev,startCol,endCol,lane,clipStart,clipEnd}=item;
+  const color=_calEventColor(ev);
+  const leftPct=startCol/7*100,widthPct=(endCol-startCol+1)/7*100;
+  const top=cellH-6-(lane+1)*18;
+  const rl=clipStart?"10px":"2px",rr=clipEnd?"10px":"2px";
+  return `<div onclick="event.stopPropagation();openScheduleEventModal('${ev.id}')" title="${h(ev.title)} (${h(ev.startDate)}~${h(ev.endDate)})" style="position:absolute;pointer-events:auto;left:calc(${leftPct}% + 2px);width:calc(${widthPct}% - 4px);top:${top}px;height:16px;line-height:16px;background:${color};color:#fff;font-size:10px;padding:0 6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer;border-radius:${rl} ${rr} ${rr} ${rl};box-sizing:border-box">${clipStart?"◀ ":""}${h(ev.title)}${clipEnd?" ▶":""}</div>`;
+}
+function _calRenderWeekRow(week,cellBodyFn,events){
+  const {placed,laneCount}=_calWeekEventBars(week,events);
+  const cellH=Math.max(80,34+laneCount*18);
+  const cellsHtml=week.map(d=>cellBodyFn(d,cellH)).join("");
+  const barsHtml=placed.map(p=>_calEventBarHtml(p,cellH)).join("");
+  return `<div style="position:relative;margin-bottom:2px"><div class="cal-grid" style="margin-bottom:0">${cellsHtml}</div><div style="position:absolute;left:0;right:0;top:0;bottom:0;pointer-events:none">${barsHtml}</div></div>`;
+}
+function _calRenderPersonalGrid(grid){
+  const yr=_attCalYear,mo=_attCalMonth,empId=_attCalEmpId||currentUser.id;
   const today=new Date().toISOString().slice(0,10);
   const dayNames=["일","월","화","수","목","금","토"];
-  let html=`<div class="cal-grid">`;
-  html+=dayNames.map((d,i)=>`<div style="text-align:center;font-size:11px;font-weight:700;padding:4px 0;color:${i===0?"#ef4444":i===6?"#2563eb":"#64748b"}">${d}</div>`).join("");
-  for(let i=0;i<startDow;i++)html+=`<div class="cal-cell other-month"></div>`;
-  for(let d=1;d<=last.getDate();d++){
-    const ds=`${yr}-${String(mo).padStart(2,"0")}-${String(d).padStart(2,"0")}`;
-    const dow=new Date(yr,mo-1,d).getDay();
+  const weeks=_calWeeksOfMonth(yr,mo);
+  const events=_calEventsInScope();
+  let html=`<div class="cal-grid" style="margin-bottom:4px">${dayNames.map((d,i)=>`<div style="text-align:center;font-size:11px;font-weight:700;padding:4px 0;color:${i===0?"#ef4444":i===6?"#2563eb":"#64748b"}">${d}</div>`).join("")}</div>`;
+  html+=weeks.map(week=>_calRenderWeekRow(week,(d,cellH)=>{
+    const {ds,inMonth,dow}=d;
+    if(!inMonth)return `<div class="cal-cell other-month" style="min-height:${cellH}px"></div>`;
+    const dNum=parseInt(ds.slice(8,10),10);
     const holiday=_isHoliday(ds);
     const isToday=ds===today;
     const rec=attendanceRecords.find(r=>String(r.empId)===String(empId)&&r.date===ds);
@@ -19410,12 +19462,10 @@ function _calRenderPersonalGrid(grid){
       else if(rec.checkIn)tags+=`<span class="cal-tag" style="background:#f0fdf4;color:#16a34a">${rec.checkIn.slice(0,5)}</span>`;
       else if(s==="normal")tags+=`<span class="cal-tag" style="background:#f0fdf4;color:#16a34a">정상</span>`;
     }
-    _calEventsOnDate(ds).forEach(ev=>{tags+=`<span class="cal-tag" style="background:#ede9fe;color:#6d28d9;cursor:pointer" onclick="event.stopPropagation();openScheduleEventModal('${ev.id}')">📌 ${h(ev.title.length>6?ev.title.slice(0,6)+"…":ev.title)}</span>`;});
     const isWknd=dow===0||dow===6;
-    html+=`<div class="cal-cell${isToday?" today":""}${(holiday&&!holiday.includes("요일"))||isWknd?" holiday":""}" style="cursor:pointer" title="더블클릭하여 일정 등록" ondblclick="openScheduleEventModal(null,'${ds}')">
-      <div class="cal-date" style="color:${dow===0||(holiday&&!holiday.includes("요일"))?"#ef4444":dow===6?"#2563eb":"#1e293b"}">${d}</div>${tags}</div>`;
-  }
-  html+=`</div>`;
+    return `<div class="cal-cell${isToday?" today":""}${(holiday&&!holiday.includes("요일"))||isWknd?" holiday":""}" style="min-height:${cellH}px;cursor:pointer" title="더블클릭하여 일정 등록" ondblclick="openScheduleEventModal(null,'${ds}')">
+      <div class="cal-date" style="color:${dow===0||(holiday&&!holiday.includes("요일"))?"#ef4444":dow===6?"#2563eb":"#1e293b"}">${dNum}</div>${tags}</div>`;
+  },events)).join("");
   grid.innerHTML=html;
 }
 function _calRenderAggregateGrid(grid){
@@ -19426,18 +19476,17 @@ function _calRenderAggregateGrid(grid){
   else if(_calScope==="dept")scopeEmps=employees.filter(e=>e.active&&e.dept===dept);
   else scopeEmps=employees.filter(e=>e.active);
   const empIds=scopeEmps.map(e=>String(e.id));
-  const first=new Date(yr,mo-1,1);const last=new Date(yr,mo,0);
-  const startDow=first.getDay();
   const today=new Date().toISOString().slice(0,10);
   const dayNames=["일","월","화","수","목","금","토"];
   const STATUS_TAG={vacation:["휴가","vacation"],annual_leave:["휴가","vacation"],half_day:["반차","vacation"],biztrip:["출장","biztrip"],training:["교육","remote"],sick:["병가","sick"],absent:["결근","sick"]};
+  const weeks=_calWeeksOfMonth(yr,mo);
+  const events=_calEventsInScope();
   let html=`<div class="fz12 text-gray mb2">표시 대상: <strong>${scopeEmps.length}명</strong> (${_calScope==="team"?h(dept)+" / "+h(team):_calScope==="dept"?h(dept):"전사"})</div>`;
-  html+=`<div class="cal-grid">`;
-  html+=dayNames.map((d,i)=>`<div style="text-align:center;font-size:11px;font-weight:700;padding:4px 0;color:${i===0?"#ef4444":i===6?"#2563eb":"#64748b"}">${d}</div>`).join("");
-  for(let i=0;i<startDow;i++)html+=`<div class="cal-cell other-month"></div>`;
-  for(let d=1;d<=last.getDate();d++){
-    const ds=`${yr}-${String(mo).padStart(2,"0")}-${String(d).padStart(2,"0")}`;
-    const dow=new Date(yr,mo-1,d).getDay();
+  html+=`<div class="cal-grid" style="margin-bottom:4px">${dayNames.map((d,i)=>`<div style="text-align:center;font-size:11px;font-weight:700;padding:4px 0;color:${i===0?"#ef4444":i===6?"#2563eb":"#64748b"}">${d}</div>`).join("")}</div>`;
+  html+=weeks.map(week=>_calRenderWeekRow(week,(d,cellH)=>{
+    const {ds,inMonth,dow}=d;
+    if(!inMonth)return `<div class="cal-cell other-month" style="min-height:${cellH}px"></div>`;
+    const dNum=parseInt(ds.slice(8,10),10);
     const holiday=_isHoliday(ds);
     const isToday=ds===today;
     const recs=attendanceRecords.filter(r=>empIds.includes(String(r.empId))&&r.date===ds&&STATUS_TAG[r.status]);
@@ -19446,12 +19495,10 @@ function _calRenderAggregateGrid(grid){
     let tags="";
     if(holiday&&typeof holiday==="string"&&!holiday.includes("요일"))tags+=`<span class="cal-tag holiday-tag">${h(holiday.length>6?holiday.slice(0,6)+"…":holiday)}</span>`;
     Object.keys(counts).forEach(label=>{const c=counts[label];tags+=`<span class="cal-tag ${c.cls}" title="${h(c.names.join(', '))}">${h(label)} ${c.n}</span>`;});
-    _calEventsOnDate(ds).forEach(ev=>{tags+=`<span class="cal-tag" style="background:#ede9fe;color:#6d28d9;cursor:pointer" onclick="event.stopPropagation();openScheduleEventModal('${ev.id}')">📌 ${h(ev.title.length>6?ev.title.slice(0,6)+"…":ev.title)}</span>`;});
     const isWknd=dow===0||dow===6;
-    html+=`<div class="cal-cell${isToday?" today":""}${(holiday&&!holiday.includes("요일"))||isWknd?" holiday":""}" style="cursor:pointer" title="더블클릭하여 일정 등록" ondblclick="openScheduleEventModal(null,'${ds}')">
-      <div class="cal-date" style="color:${dow===0||(holiday&&!holiday.includes("요일"))?"#ef4444":dow===6?"#2563eb":"#1e293b"}">${d}</div>${tags}</div>`;
-  }
-  html+=`</div>`;
+    return `<div class="cal-cell${isToday?" today":""}${(holiday&&!holiday.includes("요일"))||isWknd?" holiday":""}" style="min-height:${cellH}px;cursor:pointer" title="더블클릭하여 일정 등록" ondblclick="openScheduleEventModal(null,'${ds}')">
+      <div class="cal-date" style="color:${dow===0||(holiday&&!holiday.includes("요일"))?"#ef4444":dow===6?"#2563eb":"#1e293b"}">${dNum}</div>${tags}</div>`;
+  },events)).join("");
   grid.innerHTML=html;
 }
 function _calRenderEventList(){
