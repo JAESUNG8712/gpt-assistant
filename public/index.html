@@ -14926,7 +14926,8 @@ function renderPmsWorklogPage(){
     <div class="flex gap2" style="align-items:center">${_pmsWorklogViewTabs()}<input class="fc" type="date" style="width:auto" value="${_pmsWorklogDate}" onchange="_pmsWorklogDate=this.value;_pmsWorklogLoadedDate=null;renderPmsWorklogPage()"></div>
   </div><div class="card-body">
     <div class="fz13 ${total>1440?"text-red":"text-gray"}" style="margin-bottom:6px">합계: <b>${Math.floor(total/60)}시간 ${total%60}분</b> / 24시간${total>1440?" — 24시간을 초과했습니다!":""}</div>
-    <div style="position:relative;height:28px;background:#f1f5f9;border-radius:6px;margin-bottom:22px">${segs}${ticks}</div>
+    <div class="fz11 text-gray" style="margin-bottom:4px">막대를 드래그하면 시간을 선택해 새 업무를 추가할 수 있습니다.</div>
+    <div id="wl-bar" style="position:relative;height:28px;background:#f1f5f9;border-radius:6px;margin-bottom:22px;cursor:crosshair" onmousedown="_wlBarMouseDown(event)">${segs}${ticks}</div>
     <div class="tbl-wrap"><table><thead><tr><th>프로젝트</th><th>업무</th><th>시간</th><th>소요</th><th>메모</th><th>관리</th></tr></thead><tbody>
     ${rows||`<tr><td colspan="6" class="text-gray" style="text-align:center;padding:20px">등록된 업무가 없습니다.</td></tr>`}
     </tbody></table></div>
@@ -14965,7 +14966,35 @@ function renderPmsWorklogTeamView(){
     <div class="flex gap2" style="align-items:center">${_pmsWorklogViewTabs()}<input class="fc" type="date" style="width:auto" value="${_pmsWorklogDate}" onchange="_pmsWorklogDate=this.value;_pmsWorklogTeamData=null;renderPmsWorklogPage()"></div>
   </div><div class="card-body">${rows}</div></div>`;
 }
-function openPmsWorklogModal(idx){
+function _wlSnap5(min){return Math.max(0,Math.min(1440,Math.round(min/5)*5));}
+function _wlMinToHHMM(min){return `${String(Math.floor(min/60)).padStart(2,"0")}:${String(min%60).padStart(2,"0")}`;}
+function _wlBarMouseDown(e){
+  const bar=$("#wl-bar");if(!bar||e.button!==0)return;
+  const rect=bar.getBoundingClientRect();
+  const startMin=_wlSnap5(((e.clientX-rect.left)/rect.width)*1440);
+  const preview=document.createElement("div");
+  preview.id="wl-drag-preview";
+  preview.style.cssText="position:absolute;top:0;bottom:0;background:rgba(59,130,246,.4);border:1px solid #3b82f6;border-radius:3px;pointer-events:none";
+  bar.appendChild(preview);
+  const update=(min)=>{
+    const s=Math.min(startMin,min),en=Math.max(startMin,min);
+    preview.style.left=(s/1440*100).toFixed(3)+"%";
+    preview.style.width=Math.max(0.3,(en-s)/1440*100).toFixed(3)+"%";
+    preview.dataset.s=s;preview.dataset.e=en;
+  };
+  update(startMin);
+  const onMove=(ev)=>{const min=_wlSnap5(((ev.clientX-rect.left)/rect.width)*1440);update(min);};
+  const onUp=()=>{
+    document.removeEventListener("mousemove",onMove);
+    document.removeEventListener("mouseup",onUp);
+    const s=+preview.dataset.s,en=+preview.dataset.e;
+    preview.remove();
+    if(en-s>=5)openPmsWorklogModal(null,_wlMinToHHMM(s),_wlMinToHHMM(Math.max(en,s+5)));
+  };
+  document.addEventListener("mousemove",onMove);
+  document.addEventListener("mouseup",onUp);
+}
+function openPmsWorklogModal(idx,defaultStart,defaultEnd){
   const sorted=[..._pmsWorklogBlocks].sort((a,b)=>_wlMin(a.startTime)-_wlMin(b.startTime));
   const b=idx!=null?sorted[idx]:null;
   const myProjects=_pmsWorklogProjects();
@@ -14974,8 +15003,8 @@ function openPmsWorklogModal(idx){
     <div class="fg"><label class="fl">프로젝트 <span class="req">*</span></label><select class="fc" id="wl-project" ${myProjects.length?"":"disabled"}>${myProjects.length?myProjects.map(p=>`<option value="${p.id}" ${b&&String(b.projectId)===String(p.id)?"selected":""}>${h(p.name)}</option>`).join(""):`<option value="">투입 인원으로 등록된 진행중 프로젝트가 없습니다</option>`}</select></div>
     <div class="fg"><label class="fl">업무명 <span class="req">*</span></label><input class="fc" id="wl-task" value="${b?h(b.task):""}"></div>
     <div class="flex gap2">
-      <div class="fg" style="flex:1"><label class="fl">시작 시간 <span class="req">*</span></label><input class="fc" type="time" id="wl-start" value="${b?b.startTime:""}"></div>
-      <div class="fg" style="flex:1"><label class="fl">종료 시간 <span class="req">*</span></label><input class="fc" type="time" id="wl-end" value="${b?b.endTime:""}"></div>
+      <div class="fg" style="flex:1"><label class="fl">시작 시간 <span class="req">*</span></label><input class="fc" type="time" id="wl-start" value="${b?b.startTime:(defaultStart||"")}"></div>
+      <div class="fg" style="flex:1"><label class="fl">종료 시간 <span class="req">*</span></label><input class="fc" type="time" id="wl-end" value="${b?b.endTime:(defaultEnd||"")}"></div>
     </div>
     <div class="fg"><label class="fl">메모</label><input class="fc" id="wl-memo" value="${b?h(b.memo||""):""}"></div>
   </div><div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal()">취소</button><button class="btn btn-primary" onclick="savePmsWorklogBlock()">저장</button></div></div>`);
@@ -16127,10 +16156,25 @@ function _ivEvalLocked(iv,cd,job){
   const roundStageIdx=Math.min(iv.round,stages.length-1);
   return statusIdx>roundStageIdx;
 }
+function _ivIsDecided(cd,job){
+  if(!cd||!job)return false;
+  const stages=(job.stages&&job.stages.length)?job.stages:[];
+  return stages.length>0&&cd.status===stages[stages.length-1];
+}
+function _ivAutoSummary(evals){
+  if(!evals.length)return"";
+  const avgTotal=_round2(evals.reduce((s,e)=>s+(e.totalScore||0),0)/evals.length);
+  const catAvg=RECRUIT_SCORE_CATEGORIES.map(k=>({k,avg:_round2(evals.reduce((s,e)=>s+(e.scores?.[k]||0),0)/evals.length)}));
+  const best=catAvg.reduce((a,b)=>b.avg>a.avg?b:a);
+  const worst=catAvg.reduce((a,b)=>b.avg<a.avg?b:a);
+  const verdict=avgTotal>=RECRUIT_PASS_SCORE?`통과 기준(${RECRUIT_PASS_SCORE}점) 이상`:`통과 기준(${RECRUIT_PASS_SCORE}점) 미달`;
+  return `면접관 ${evals.length}명 평균 ${avgTotal}점 / ${RECRUIT_MAX_SCORE}점 (${verdict}). 강점: ${best.k}(${best.avg}점), 보완 필요: ${worst.k}(${worst.avg}점).`;
+}
 function openRecruitEvalDetail(interviewId){
   const iv=recruitInterviews.find(i=>i.id===interviewId);if(!iv)return;
   const cd=_recruitCandById(iv.candidateId);
   const job=recruitJobs.find(j=>j.id===iv.jobId);
+  if(_ivIsDecided(cd,job)&&!_recruitCanManageInterviews()){showToast("전형이 종료되어 더 이상 열람할 수 없습니다.","error");return;}
   const myId=String(currentUser.id);
   const isInterviewer=(iv.interviewerIds||[]).map(String).includes(myId);
   const myEval=(iv.evaluations||[]).find(e=>String(e.interviewerId)===myId);
@@ -16143,7 +16187,7 @@ function openRecruitEvalDetail(interviewId){
     <div class="fz11 text-gray" style="margin-top:4px">${RECRUIT_SCORE_CATEGORIES.map(k=>`${k} ${e.scores?.[k]??"-"}`).join(" / ")}</div>
     <div class="fz12" style="margin-top:6px">${h(e.comment||"")}</div>
   </div>`).join("");
-  const combinedSummary=evals.length?`<div class="fz12">면접관 ${evals.length}명 평가 · 평균 총점 <b>${avgTotal}점</b></div><div class="fz12 text-gray" style="margin-top:4px">${evals.map(e=>h(e.comment||"")).filter(Boolean).join(" / ")||"종합의견 없음"}</div>`:`<div class="text-gray fz12">아직 등록된 평가가 없습니다.</div>`;
+  const combinedSummary=evals.length?`<div class="fz12" style="background:#f8fafc;border-radius:6px;padding:8px;margin-bottom:6px">🤖 ${h(_ivAutoSummary(evals))}</div><div class="fz12">면접관 ${evals.length}명 평가 · 평균 총점 <b>${avgTotal}점</b></div><div class="fz12 text-gray" style="margin-top:4px">${evals.map(e=>h(e.comment||"")).filter(Boolean).join(" / ")||"종합의견 없음"}</div>`:`<div class="text-gray fz12">아직 등록된 평가가 없습니다.</div>`;
   openModal(`<div class="modal-box" style="max-width:720px"><div class="modal-head"><h3>📝 면접 평가 - ${h(cd?cd.name:"")} (${iv.round}차)</h3></div><div class="modal-body">
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
       <div style="border:1px solid #e2e8f0;border-radius:8px;padding:10px">
