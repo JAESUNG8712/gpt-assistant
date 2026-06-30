@@ -13883,11 +13883,14 @@ function renderApprovalTemplateAdmin(){
   else if(_tplFilter.status==="inactive") all=all.filter(t=>!isTplActive(t.id));
   if(_tplFilter.sort==="name") all=[...all].sort((a,b)=>a.name.localeCompare(b.name));
   else if(_tplFilter.sort==="category") all=[...all].sort((a,b)=>(a.category||"").localeCompare(b.category||"")||a.name.localeCompare(b.name));
+  if(!_chainStage)_chainStage={includeLeader:approvalChainSettings.includeLeader,includeDirector:approvalChainSettings.includeDirector};
+  const chainDirty=_chainStage.includeLeader!==approvalChainSettings.includeLeader||_chainStage.includeDirector!==approvalChainSettings.includeDirector;
   c.innerHTML=`<div class="card mb3"><div class="card-head"><h3>🔗 결재라인 설정</h3></div>
   <div class="card-body">
   <div class="fz12 text-gray mb3">결재 양식의 결재방식이 "계층형"일 때 자동으로 구성되는 결재선의 단계를 설정합니다.</div>
-  <label style="display:flex;align-items:center;gap:6px;cursor:pointer;margin-bottom:6px"><input type="checkbox" ${approvalChainSettings.includeLeader?"checked":""} onchange="toggleChainSetting('includeLeader')"> 팀장 단계 포함 <span class="fz11 text-gray">(팀원이 기안 시 팀장이 1차 결재)</span></label>
-  <label style="display:flex;align-items:center;gap:6px;cursor:pointer;margin-bottom:10px"><input type="checkbox" ${approvalChainSettings.includeDirector?"checked":""} onchange="toggleChainSetting('includeDirector')"> 사업부장 단계 포함 <span class="fz11 text-gray">(팀원/팀장이 기안 시 사업부장 결재)</span></label>
+  <label style="display:flex;align-items:center;gap:6px;cursor:pointer;margin-bottom:6px"><input type="checkbox" ${_chainStage.includeLeader?"checked":""} onchange="_chainStage.includeLeader=this.checked;renderApprovalTemplateAdmin()"> 팀장 단계 포함 <span class="fz11 text-gray">(팀원이 기안 시 팀장이 1차 결재)</span></label>
+  <label style="display:flex;align-items:center;gap:6px;cursor:pointer;margin-bottom:10px"><input type="checkbox" ${_chainStage.includeDirector?"checked":""} onchange="_chainStage.includeDirector=this.checked;renderApprovalTemplateAdmin()"> 사업부장 단계 포함 <span class="fz11 text-gray">(팀원/팀장이 기안 시 사업부장 결재)</span></label>
+  ${chainDirty?`<div style="display:flex;gap:8px;margin-bottom:10px"><button class="btn btn-secondary btn-sm" onclick="_chainStage=null;renderApprovalTemplateAdmin()">변경 취소</button><button class="btn btn-primary btn-sm" onclick="_saveChainStage()">💾 변경사항 저장</button></div>`:""}
   <div class="fg"><label class="fl">최종 결재자 <span class="fz11 text-gray">(모든 결재선 마지막에 추가로 포함될 결재자, 예: 대표이사)</span></label>
     <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:6px">${(approvalChainSettings.finalApprovers||[]).map(fa=>`<span class="badge bg-purple" style="display:inline-flex;align-items:center;gap:4px">${h(getEmpName(fa.empId))} · ${h(fa.label)} <span style="cursor:pointer" onclick="removeFinalApprover(${fa.empId})">✕</span></span>`).join("")||`<span class="text-gray fz12">설정된 최종 결재자가 없습니다.</span>`}</div>
     <button class="btn btn-secondary btn-sm" onclick="addFinalApprover()">+ 최종 결재자 추가</button>
@@ -16569,9 +16572,12 @@ async function loadPurchaseRequestsFromServer(){
   if(currentPage==="inv-purchase-requests") renderPurchaseRequestsPage();
 }
 
-function toggleChainSetting(key){
-  approvalChainSettings={...approvalChainSettings,[key]:!approvalChainSettings[key]};
-  autoSaveToServerIfEnabled();renderApprovalTemplateAdmin();
+let _chainStage=null; // 결재라인 설정(팀장/사업부장 단계 포함 여부) 저장 전 임시 편집본
+function _saveChainStage(){
+  if(!_chainStage)return;
+  approvalChainSettings={...approvalChainSettings,includeLeader:_chainStage.includeLeader,includeDirector:_chainStage.includeDirector};
+  _chainStage=null;
+  autoSaveToServerIfEnabled();showToast("결재라인 설정이 저장되었습니다.","success");renderApprovalTemplateAdmin();
 }
 function addFinalApprover(){
   openOrgPicker({multi:false,exclude:(approvalChainSettings.finalApprovers||[]).map(fa=>fa.empId),title:"최종 결재자 추가",onConfirm:ids=>{
