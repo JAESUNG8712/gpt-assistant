@@ -2,6 +2,9 @@ import os
 import json
 import csv
 import io
+import re
+import uuid
+import datetime
 
 import memory as mem
 
@@ -11,14 +14,22 @@ CATEGORIES = ["판관", "용역", "경상"]
 
 
 def _empty():
-    return {"headcount": [], "items": [], "uploads": []}
+    return {"headcount": [], "items": [], "uploads": [], "grid": [], "snapshots": []}
+
+
+def _now_iso():
+    return datetime.datetime.now().isoformat(timespec="seconds")
 
 
 def read_budget():
     if not os.path.exists(BUDGET_FILE):
         return _empty()
     with open(BUDGET_FILE, "r", encoding="utf-8") as f:
-        return json.load(f)
+        data = json.load(f)
+    for key, default in _empty().items():
+        if key not in data:
+            data[key] = default
+    return data
 
 
 def write_budget(data):
@@ -155,3 +166,134 @@ def build_summary():
         summary.append({"dept": dept, "months": months})
 
     return summary
+
+
+# ------------------- 엑셀형 그리드 (예산 시트) -------------------
+
+def get_grid():
+    data = read_budget()
+    return data.get("grid") or []
+
+
+def save_grid(rows):
+    data = read_budget()
+    data["grid"] = rows
+    data["grid_updated_at"] = _now_iso()
+    write_budget(data)
+    return True
+
+
+def parse_grid(content: bytes, filename: str):
+    """업로드 파일(xlsx/csv)을 그대로 2차원 문자열 배열(grid)로 변환"""
+    if filename.lower().endswith((".xlsx", ".xls")):
+        import openpyxl
+        wb = openpyxl.load_workbook(io.BytesIO(content), data_only=True)
+        sheet = wb.worksheets[0]
+        rows = []
+        for r in sheet.iter_rows(values_only=True):
+            rows.append(["" if v is None else str(v) for v in r])
+        return rows
+    else:
+        text = content.decode("utf-8-sig")
+        reader = csv.reader(io.StringIO(text))
+        return [list(row) for row in reader]
+
+
+def export_grid_xlsx(rows):
+    import openpyxl
+    wb = openpyxl.Workbook()
+    sheet = wb.active
+    sheet.title = "예산"
+    for r_idx, row in enumerate(rows, start=1):
+        for c_idx, val in enumerate(row, start=1):
+            cell = sheet.cell(row=r_idx, column=c_idx)
+            if isinstance(val, str) and val.startswith("="):
+                cell.value = val
+            else:
+                num = to_number(val)
+                cell.value = num if num is not None else val
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return buf
+
+
+# ------------------- 스냅샷(월별 최종 자료) -------------------
+
+def list_snapshots():
+    data = read_budget()
+    return [
+        {"id": s["id"], "label": s["label"], "createdAt": s["createdAt"], "rows": len(s["grid"])}
+        for s in data.get("snapshots", [])
+    ]
+
+
+def save_snapshot(label, rows):
+    data = read_budget()
+    snapshots = data.setdefault("snapshots", [])
+    existing = next((s for s in snapshots if s["label"] == label), None)
+    if existing:
+        existing["grid"] = rows
+        existing["createdAt"] = _now_iso()
+        snap_id = existing["id"]
+    else:
+        snap_id = str(uuid.uuid4())
+        snapshots.append({
+            "id": snap_id, "label": label, "grid": rows, "createdAt": _now_iso()
+        })
+    write_budget(data)
+    return snap_id
+
+
+def get_snapshot(snap_id):
+    data = read_budget()
+    return next((s for s in data.get("snapshots", []) if s["id"] == snap_id), None)
+
+
+def delete_snapshot(snap_id):
+    data = read_budget()
+    before = len(data.get("snapshots", []))
+    data["snapshots"] = [s for s in data.get("snapshots", []) if s["id"] != snap_id]
+    write_budget(data)
+    return before != len(data["snapshots"])
+
+
+_CELL_RE = re.compile(r"^[A-Za-z]+\d+$")
+
+
+def _col_letters(idx):
+    """0-based column index -> Excel-style letters"""
+    letters = ""
+    idx += 1
+    while idx > 0:
+        idx, rem = divmod(idx - 1, 26)
+        letters = chr(65 + rem) + letters
+    return letters
+
+
+def compare_rows(rows_a, rows_b):
+    """두 그리드(rows_a=기준, rows_b=비교대상)를 셀 단위로 비교, 숫자면 차이 계산"""
+    n_rows = max(len(rows_a), len(rows_b))
+    diffs = []
+    for r in range(n_rows):
+        row_a = rows_a[r] if r < len(rows_a) else []
+        row_b = rows_b[r] if r < len(rows_b) else []
+        n_cols = max(len(row_a), len(row_b))
+        for c in range(n_cols):
+            val_a = row_a[c] if c < len(row_a) else ""
+            val_b = row_b[c] if c < len(row_b) else ""
+            val_a = "" if val_a is None else str(val_a)
+            val_b = "" if val_b is None else str(val_b)
+            if val_a == val_b:
+                continue
+            num_a = to_number(val_a)
+            num_b = to_number(val_b)
+            delta = None
+            if num_a is not None and num_b is not None:
+                delta = num_b - num_a
+            diffs.append({
+                "cell": f"{_col_letters(c)}{r + 1}",
+                "row": r, "col": c,
+                "before": val_a, "after": val_b, "delta": delta
+            })
+    return diffs

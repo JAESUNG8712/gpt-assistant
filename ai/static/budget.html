@@ -1,0 +1,445 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>예산관리</title>
+<style>
+  :root {
+    --bg:#0d1117; --surface:#161b22; --surface2:#1c2330; --border:#30363d;
+    --text:#e6edf3; --text-dim:#8b949e; --accent:#3b6fc4;
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+  .toolbar {
+    display:flex; gap:8px; align-items:center; flex-wrap:wrap;
+    padding:10px 14px; background:var(--surface); border-bottom:1px solid var(--border);
+    position:sticky; top:0; z-index:5;
+  }
+  .toolbar h2 { font-size:0.95rem; margin:0 12px 0 0; white-space:nowrap; }
+  button {
+    background:var(--surface2); color:var(--text); border:1px solid var(--border);
+    border-radius:6px; padding:6px 10px; font-size:0.78rem; cursor:pointer;
+  }
+  button:hover { background:#242c3a; }
+  button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+  button.danger { color:#e57373; border-color:#5a2a2a; }
+  input[type=file] { display:none; }
+  .status { font-size:0.75rem; color:var(--text-dim); margin-left:6px; }
+  .grid-wrap { overflow:auto; padding:10px 14px; }
+  table.sheet { border-collapse:collapse; font-size:0.8rem; }
+  table.sheet th, table.sheet td {
+    border:1px solid var(--border); min-width:90px; height:26px; padding:2px 6px;
+    white-space:nowrap; overflow:hidden;
+  }
+  table.sheet th {
+    background:var(--surface2); position:sticky; top:0; color:var(--text-dim);
+    font-weight:600; text-align:center; z-index:2;
+  }
+  table.sheet th.row-head {
+    position:sticky; left:0; z-index:3; min-width:36px;
+  }
+  table.sheet td.row-head {
+    background:var(--surface2); position:sticky; left:0; text-align:center; color:var(--text-dim); z-index:1;
+  }
+  table.sheet td[contenteditable] { outline:none; cursor:text; }
+  table.sheet td[contenteditable]:focus { background:rgba(59,111,196,0.18); }
+  table.sheet td.formula-err { color:#e57373; }
+  .snap-area { padding:10px 14px; border-top:1px solid var(--border); }
+  .snap-row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:8px; }
+  select { background:var(--surface2); color:var(--text); border:1px solid var(--border); border-radius:6px; padding:5px 8px; font-size:0.78rem; }
+  table.diff { border-collapse:collapse; font-size:0.78rem; margin-top:8px; }
+  table.diff th, table.diff td { border:1px solid var(--border); padding:4px 8px; }
+  table.diff th { background:var(--surface2); }
+  .delta-pos { color:#5fd17a; }
+  .delta-neg { color:#e57373; }
+  .hint { font-size:0.72rem; color:var(--text-dim); padding:0 14px 8px; }
+</style>
+</head>
+<body>
+
+<div class="toolbar">
+  <h2>📊 예산관리 시트</h2>
+  <button onclick="document.getElementById('file-input').click()">📂 업로드</button>
+  <input type="file" id="file-input" accept=".xlsx,.xls,.csv" onchange="uploadGrid(this)">
+  <button class="primary" onclick="saveGrid()">💾 저장</button>
+  <button onclick="downloadGrid()">⬇️ 다운로드(xlsx)</button>
+  <button onclick="addRow()">➕ 행 추가</button>
+  <button onclick="addCol()">➕ 열 추가</button>
+  <span class="status" id="status"></span>
+</div>
+<div class="hint">셀을 클릭해 직접 입력하거나, 엑셀에서 복사한 범위를 셀에 붙여넣기(Ctrl+V) 하세요. 함수 입력: <code>=SUM(A1:A5)</code>, <code>=AVERAGE(B1:B3)</code>, <code>=MAX()</code>, <code>=MIN()</code>, <code>=COUNT()</code>, 사칙연산(+ - * /) 및 셀 참조 지원.</div>
+
+<div class="grid-wrap">
+  <table class="sheet" id="sheet"></table>
+</div>
+
+<div class="snap-area">
+  <div class="snap-row">
+    <input type="text" id="snap-label" placeholder="예: 2026-06 최종" style="background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:5px 8px;font-size:0.78rem">
+    <button onclick="saveSnapshot()">📌 월별 최종 자료로 저장(스냅샷)</button>
+    <span class="status" id="snap-status"></span>
+  </div>
+  <div class="snap-row">
+    <span style="font-size:0.78rem;color:var(--text-dim)">비교:</span>
+    <select id="cmp-a"><option value="current">현재 작업 시트</option></select>
+    <span style="font-size:0.78rem;color:var(--text-dim)">vs</span>
+    <select id="cmp-b"><option value="current">현재 작업 시트</option></select>
+    <button onclick="compareSnapshots()">🔍 비교</button>
+    <button class="danger" onclick="deleteSelectedSnapshot()">🗑️ 선택 스냅샷 삭제</button>
+  </div>
+  <div id="diff-area"></div>
+</div>
+
+<script>
+let grid = [];
+const MIN_ROWS = 20, MIN_COLS = 12;
+
+function colLetters(idx) {
+  let s = '', n = idx + 1;
+  while (n > 0) { const r = (n - 1) % 26; s = String.fromCharCode(65 + r) + s; n = Math.floor((n - 1) / 26); }
+  return s;
+}
+
+function ensureMinSize() {
+  while (grid.length < MIN_ROWS) grid.push([]);
+  const maxCols = Math.max(MIN_COLS, ...grid.map(r => r.length));
+  grid.forEach(r => { while (r.length < maxCols) r.push(''); });
+}
+
+function setStatus(msg, ok = true) {
+  const el = document.getElementById('status');
+  el.textContent = msg;
+  el.style.color = ok ? '#5fd17a' : '#e57373';
+}
+
+async function loadGrid() {
+  try {
+    const res = await fetch('/budget/grid');
+    const data = await res.json();
+    grid = (data.rows || []).map(r => r.map(c => c == null ? '' : String(c)));
+  } catch (e) {
+    grid = [];
+  }
+  ensureMinSize();
+  renderSheet();
+  loadSnapshotOptions();
+}
+
+function renderSheet() {
+  const table = document.getElementById('sheet');
+  const nRows = grid.length, nCols = Math.max(...grid.map(r => r.length), MIN_COLS);
+  let html = '<tr><th class="row-head"></th>';
+  for (let c = 0; c < nCols; c++) html += `<th>${colLetters(c)}</th>`;
+  html += '</tr>';
+  for (let r = 0; r < nRows; r++) {
+    html += `<tr><td class="row-head">${r + 1}</td>`;
+    for (let c = 0; c < nCols; c++) {
+      const raw = (grid[r] && grid[r][c] != null) ? grid[r][c] : '';
+      const display = renderCell(raw);
+      html += `<td contenteditable data-r="${r}" data-c="${c}" data-raw="${escapeAttr(raw)}">${escapeHtml(display)}</td>`;
+    }
+    html += '</tr>';
+  }
+  table.innerHTML = html;
+
+  table.querySelectorAll('td[contenteditable]').forEach(td => {
+    td.addEventListener('focus', onCellFocus);
+    td.addEventListener('blur', onCellBlur);
+    td.addEventListener('paste', onCellPaste);
+  });
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+function escapeAttr(s) {
+  return String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;');
+}
+
+function onCellFocus(e) {
+  const td = e.target;
+  const raw = td.getAttribute('data-raw') || '';
+  td.textContent = raw;
+}
+
+function onCellBlur(e) {
+  const td = e.target;
+  const r = +td.dataset.r, c = +td.dataset.c;
+  const raw = td.textContent.trim();
+  while (grid.length <= r) grid.push([]);
+  while (grid[r].length <= c) grid[r].push('');
+  grid[r][c] = raw;
+  td.setAttribute('data-raw', escapeAttr(raw));
+  const display = renderCell(raw);
+  td.classList.toggle('formula-err', String(display).startsWith('#ERR'));
+  td.textContent = display;
+}
+
+function onCellPaste(e) {
+  e.preventDefault();
+  const text = (e.clipboardData || window.clipboardData).getData('text/plain');
+  const td = e.target;
+  const startR = +td.dataset.r, startC = +td.dataset.c;
+  const lines = text.replace(/\r/g, '').split('\n');
+  while (lines.length && lines[lines.length - 1] === '') lines.pop();
+  lines.forEach((line, i) => {
+    const cells = line.split('\t');
+    cells.forEach((val, j) => {
+      const r = startR + i, c = startC + j;
+      while (grid.length <= r) grid.push([]);
+      while (grid[r].length <= c) grid[r].push('');
+      grid[r][c] = val;
+    });
+  });
+  ensureMinSize();
+  renderSheet();
+}
+
+function addRow() { grid.push([]); ensureMinSize(); renderSheet(); }
+function addCol() { grid.forEach(r => r.push('')); ensureMinSize(); renderSheet(); }
+
+// ── 안전한 수식 평가기 (eval 미사용, 화이트리스트 파서) ──
+function renderCell(raw) {
+  if (typeof raw !== 'string' || !raw.startsWith('=')) return raw;
+  try {
+    const val = evalFormula(raw.slice(1));
+    return val;
+  } catch (e) {
+    return '#ERR';
+  }
+}
+
+function cellValue(ref, visiting) {
+  const m = /^([A-Za-z]+)(\d+)$/.exec(ref);
+  if (!m) throw new Error('bad ref');
+  const col = colIndexFromLetters(m[1]);
+  const row = parseInt(m[2], 10) - 1;
+  const key = `${row}_${col}`;
+  if (visiting.has(key)) throw new Error('circular');
+  const raw = (grid[row] && grid[row][col] != null) ? grid[row][col] : '';
+  if (typeof raw === 'string' && raw.startsWith('=')) {
+    visiting.add(key);
+    const v = evalFormula(raw.slice(1), visiting);
+    visiting.delete(key);
+    return v;
+  }
+  const n = Number(String(raw).replace(/,/g, ''));
+  return isNaN(n) ? 0 : n;
+}
+
+function colIndexFromLetters(letters) {
+  let n = 0;
+  for (const ch of letters.toUpperCase()) n = n * 26 + (ch.charCodeAt(0) - 64);
+  return n - 1;
+}
+
+function rangeValues(a, b, visiting) {
+  const ma = /^([A-Za-z]+)(\d+)$/.exec(a), mb = /^([A-Za-z]+)(\d+)$/.exec(b);
+  const c1 = colIndexFromLetters(ma[1]), r1 = parseInt(ma[2], 10) - 1;
+  const c2 = colIndexFromLetters(mb[1]), r2 = parseInt(mb[2], 10) - 1;
+  const vals = [];
+  for (let r = Math.min(r1, r2); r <= Math.max(r1, r2); r++) {
+    for (let c = Math.min(c1, c2); c <= Math.max(c1, c2); c++) {
+      vals.push(cellValue(`${colLetters(c)}${r + 1}`, visiting));
+    }
+  }
+  return vals;
+}
+
+const FUNCS = {
+  SUM: vals => vals.reduce((a, b) => a + b, 0),
+  AVERAGE: vals => vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : 0,
+  MAX: vals => vals.length ? Math.max(...vals) : 0,
+  MIN: vals => vals.length ? Math.min(...vals) : 0,
+  COUNT: vals => vals.length,
+};
+
+function evalFormula(expr, visiting) {
+  visiting = visiting || new Set();
+  const tokens = tokenize(expr);
+  let pos = 0;
+
+  function peek() { return tokens[pos]; }
+  function next() { return tokens[pos++]; }
+
+  function parseExpr() {
+    let v = parseTerm();
+    while (peek() === '+' || peek() === '-') {
+      const op = next();
+      const rhs = parseTerm();
+      v = op === '+' ? v + rhs : v - rhs;
+    }
+    return v;
+  }
+  function parseTerm() {
+    let v = parseFactor();
+    while (peek() === '*' || peek() === '/') {
+      const op = next();
+      const rhs = parseFactor();
+      v = op === '*' ? v * rhs : v / rhs;
+    }
+    return v;
+  }
+  function parseFactor() {
+    if (peek() === '-') { next(); return -parseFactor(); }
+    if (peek() === '+') { next(); return parseFactor(); }
+    if (peek() === '(') {
+      next();
+      const v = parseExpr();
+      if (peek() !== ')') throw new Error('paren');
+      next();
+      return v;
+    }
+    const t = next();
+    if (t === undefined) throw new Error('eof');
+    if (/^[A-Za-z_]+$/.test(t) && FUNCS[t.toUpperCase()]) {
+      const fname = t.toUpperCase();
+      if (next() !== '(') throw new Error('expect (');
+      const args = [];
+      if (peek() !== ')') {
+        args.push(parseRangeOrExpr());
+        while (peek() === ',') { next(); args.push(parseRangeOrExpr()); }
+      }
+      if (next() !== ')') throw new Error('expect )');
+      return FUNCS[fname](args.flat());
+    }
+    if (/^[A-Za-z]+\d+$/.test(t)) {
+      if (peek() === ':') {
+        next();
+        const t2 = next();
+        return rangeValues(t, t2, visiting);
+      }
+      return cellValue(t, visiting);
+    }
+    const n = Number(t);
+    if (!isNaN(n)) return n;
+    throw new Error('bad token: ' + t);
+  }
+  function parseRangeOrExpr() {
+    const v = parseExpr();
+    return Array.isArray(v) ? v : [v];
+  }
+
+  const result = parseExpr();
+  if (Array.isArray(result)) return result.reduce((a, b) => a + b, 0);
+  return result;
+}
+
+function tokenize(s) {
+  const re = /\s*([A-Za-z]+\d+|[A-Za-z_]+|\d+\.?\d*|[()+\-*/,:])\s*/g;
+  const tokens = [];
+  let m;
+  let lastIndex = 0;
+  while ((m = re.exec(s)) !== null) {
+    if (m.index !== lastIndex) throw new Error('invalid char');
+    tokens.push(m[1]);
+    lastIndex = re.lastIndex;
+  }
+  if (lastIndex !== s.length) throw new Error('invalid trailing');
+  return tokens;
+}
+
+// ── 저장/업로드/다운로드 ──
+async function saveGrid() {
+  setStatus('저장 중...');
+  try {
+    const res = await fetch('/budget/grid', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ rows: grid })
+    });
+    if (!res.ok) throw new Error('실패');
+    setStatus('저장되었습니다.');
+  } catch (e) {
+    setStatus('저장 오류: ' + e.message, false);
+  }
+}
+
+async function uploadGrid(input) {
+  if (!input.files.length) return;
+  const fd = new FormData();
+  fd.append('file', input.files[0]);
+  setStatus('업로드 중...');
+  try {
+    const res = await fetch('/budget/grid/upload', { method: 'POST', body: fd });
+    const json = await res.json();
+    if (!res.ok) throw new Error(json.detail || '업로드 실패');
+    setStatus(`업로드 완료 (${json.rows}행)`);
+    await loadGrid();
+  } catch (e) {
+    setStatus('업로드 오류: ' + e.message, false);
+  }
+  input.value = '';
+}
+
+function downloadGrid() {
+  window.location.href = '/budget/grid/download';
+}
+
+// ── 스냅샷 ──
+async function loadSnapshotOptions() {
+  const res = await fetch('/budget/grid/snapshots');
+  const { snapshots } = await res.json();
+  const selA = document.getElementById('cmp-a'), selB = document.getElementById('cmp-b');
+  [selA, selB].forEach(sel => {
+    sel.innerHTML = '<option value="current">현재 작업 시트</option>' +
+      snapshots.map(s => `<option value="${s.id}">${escapeHtml(s.label)} (${s.createdAt})</option>`).join('');
+  });
+}
+
+async function saveSnapshot() {
+  const label = document.getElementById('snap-label').value.trim();
+  const statusEl = document.getElementById('snap-status');
+  if (!label) { statusEl.textContent = '라벨을 입력하세요.'; statusEl.style.color = '#e57373'; return; }
+  statusEl.textContent = '저장 중...';
+  try {
+    const res = await fetch('/budget/grid/snapshot', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ label, rows: grid })
+    });
+    if (!res.ok) throw new Error('실패');
+    statusEl.textContent = '스냅샷이 저장되었습니다.';
+    statusEl.style.color = '#5fd17a';
+    loadSnapshotOptions();
+  } catch (e) {
+    statusEl.textContent = '오류: ' + e.message;
+    statusEl.style.color = '#e57373';
+  }
+}
+
+async function deleteSelectedSnapshot() {
+  const sel = document.getElementById('cmp-a');
+  const id = sel.value;
+  if (id === 'current') { alert('스냅샷을 선택하세요 (비교 A).'); return; }
+  if (!confirm('선택한 스냅샷을 삭제할까요?')) return;
+  await fetch('/budget/grid/snapshot/' + id, { method: 'DELETE' });
+  loadSnapshotOptions();
+}
+
+async function compareSnapshots() {
+  const a = document.getElementById('cmp-a').value;
+  const b = document.getElementById('cmp-b').value;
+  const area = document.getElementById('diff-area');
+  area.textContent = '비교 중...';
+  try {
+    const res = await fetch(`/budget/grid/compare?a=${encodeURIComponent(a)}&b=${encodeURIComponent(b)}`);
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || '비교 실패');
+    if (!data.diffs.length) { area.innerHTML = '<p style="color:var(--text-dim);font-size:0.8rem">차이가 없습니다.</p>'; return; }
+    let html = `<table class="diff"><tr><th>셀</th><th>이전</th><th>이후</th><th>증감</th></tr>`;
+    data.diffs.forEach(d => {
+      const deltaCls = d.delta == null ? '' : (d.delta > 0 ? 'delta-pos' : (d.delta < 0 ? 'delta-neg' : ''));
+      const deltaTxt = d.delta == null ? '-' : (d.delta > 0 ? '+' + d.delta.toLocaleString() : d.delta.toLocaleString());
+      html += `<tr><td>${d.cell}</td><td>${escapeHtml(d.before)}</td><td>${escapeHtml(d.after)}</td><td class="${deltaCls}">${deltaTxt}</td></tr>`;
+    });
+    html += '</table>';
+    area.innerHTML = html;
+  } catch (e) {
+    area.textContent = '오류: ' + e.message;
+  }
+}
+
+loadGrid();
+</script>
+</body>
+</html>

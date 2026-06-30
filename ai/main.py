@@ -1248,6 +1248,93 @@ def budget_reset():
     budget.write_budget(budget._empty())
     return {"message": "예산 데이터가 초기화되었습니다."}
 
+
+class GridSaveRequest(BaseModel):
+    rows: list
+
+
+class SnapshotRequest(BaseModel):
+    label: str
+    rows: list
+
+
+@app.get("/budget/grid")
+def budget_grid_get():
+    return {"rows": budget.get_grid()}
+
+
+@app.post("/budget/grid")
+def budget_grid_save(req: GridSaveRequest):
+    budget.save_grid(req.rows)
+    return {"message": "저장되었습니다."}
+
+
+@app.post("/budget/grid/upload")
+async def budget_grid_upload(file: UploadFile = File(...)):
+    content = await file.read()
+    try:
+        rows = budget.parse_grid(content, file.filename)
+    except Exception:
+        raise HTTPException(status_code=400, detail="파일을 읽을 수 없습니다. (xlsx/csv만 지원)")
+    budget.save_grid(rows)
+    return {"message": "업로드되었습니다.", "rows": len(rows)}
+
+
+@app.get("/budget/grid/download")
+def budget_grid_download():
+    rows = budget.get_grid()
+    buf = budget.export_grid_xlsx(rows)
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": "attachment; filename*=UTF-8''budget.xlsx"},
+    )
+
+
+@app.get("/budget/grid/snapshots")
+def budget_snapshots_list():
+    return {"snapshots": budget.list_snapshots()}
+
+
+@app.post("/budget/grid/snapshot")
+def budget_snapshot_save(req: SnapshotRequest):
+    snap_id = budget.save_snapshot(req.label, req.rows)
+    return {"message": "스냅샷이 저장되었습니다.", "id": snap_id}
+
+
+@app.get("/budget/grid/snapshot/{snap_id}")
+def budget_snapshot_get(snap_id: str):
+    snap = budget.get_snapshot(snap_id)
+    if not snap:
+        raise HTTPException(status_code=404, detail="스냅샷을 찾을 수 없습니다.")
+    return snap
+
+
+@app.delete("/budget/grid/snapshot/{snap_id}")
+def budget_snapshot_delete(snap_id: str):
+    ok = budget.delete_snapshot(snap_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="스냅샷을 찾을 수 없습니다.")
+    return {"message": "삭제되었습니다."}
+
+
+@app.get("/budget/grid/compare")
+def budget_grid_compare(a: str = "current", b: str = "current"):
+    """a, b는 스냅샷 id 또는 'current'(현재 작업 그리드)"""
+    def _rows_of(key):
+        if key == "current":
+            return budget.get_grid()
+        snap = budget.get_snapshot(key)
+        if not snap:
+            raise HTTPException(status_code=404, detail=f"스냅샷을 찾을 수 없습니다: {key}")
+        return snap["grid"]
+
+    rows_a = _rows_of(a)
+    rows_b = _rows_of(b)
+    diffs = budget.compare_rows(rows_a, rows_b)
+    return {"diffs": diffs, "count": len(diffs)}
+
+
 @app.get("/answer/download/{filename}")
 def answer_download(filename: str):
     """길어서 요약 표시된 채팅 답변의 전체 원문 다운로드"""
