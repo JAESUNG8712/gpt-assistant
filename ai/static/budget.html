@@ -194,7 +194,7 @@
 
   <button class="btn" onclick="document.getElementById('file-input').click()">📂 업로드</button>
   <input type="file" id="file-input" accept=".xlsx,.xls,.csv" style="display:none" onchange="upload(this)">
-  <button class="btn btn-primary" onclick="save()">💾 저장</button>
+  <button id="save-btn" class="btn" onclick="save()">💾 저장</button>
   <button class="btn" onclick="download()">⬇️ xlsx</button>
   <div class="toolbar-sep"></div>
 
@@ -341,11 +341,29 @@ let fOrigPrefix = '';         // 드래그 시작 시 수식의 앵커 이전 �
 
 // ── 행/열 전체 선택
 let selMode = 'cell';   // 'cell' | 'row' | 'col'
-let selRowIdx = null;   // 선택된 행 인덱스
-let selColIdx = null;   // 선택된 열 인덱스
+let selRowIdx = null;   // 마지막 선택 행 (Shift 기준)
+let selColIdx = null;   // 마지막 선택 열 (Shift 기준)
+let selRows = new Set(); // 선택된 행 인덱스 집합
+let selCols = new Set(); // 선택된 열 인덱스 집합
+
+// ── 미저장 변경 추적
+let isDirty = false;
+function markDirty() {
+  if (isDirty) return;
+  isDirty = true;
+  const btn = document.getElementById('save-btn');
+  if (btn) { btn.textContent = '💾 저장 *'; btn.classList.add('btn-primary'); }
+}
+function markClean() {
+  isDirty = false;
+  const btn = document.getElementById('save-btn');
+  if (btn) { btn.textContent = '💾 저장'; btn.classList.remove('btn-primary'); }
+}
 
 // 범위 내 여부
 function inSel(r, c) {
+  if (selMode==='row') return selRows.has(r);
+  if (selMode==='col') return selCols.has(c);
   if (!selectedCell) return false;
   const r1=Math.min(selectedCell.r,(selEnd||selectedCell).r);
   const r2=Math.max(selectedCell.r,(selEnd||selectedCell).r);
@@ -533,14 +551,14 @@ function render() {
   for (let c=0; c<nCols; c++) {
     let cls = '';
     if (sortState && sortState.col===c) cls=(sortState.dir==='asc'?' sort-asc':' sort-desc');
-    if (selMode==='col' && selColIdx===c) cls+=' col-selected';
-    html += `<th class="${cls}" onclick="selectCol(${c})" ondblclick="sortByCol(${c})" oncontextmenu="rowColCtxMenu(event,'col',${c})" title="클릭:열선택 / 더블클릭:정렬">${colLetters(c)}</th>`;
+    if (selMode==='col' && selCols.has(c)) cls+=' col-selected';
+    html += `<th class="${cls}" onclick="selectCol(${c},event.shiftKey)" ondblclick="sortByCol(${c})" oncontextmenu="rowColCtxMenu(event,'col',${c})" title="클릭:열선택 / Shift+클릭:다중선택 / 더블클릭:정렬">${colLetters(c)}</th>`;
   }
   html += '</tr>';
 
   for (let r=0; r<nRows; r++) {
-    const rhCls = (selMode==='row' && selRowIdx===r) ? ' row-selected' : '';
-    html += `<tr><td class="rh${rhCls}" onclick="selectRow(${r})" oncontextmenu="rowColCtxMenu(event,'row',${r})">${r+1}</td>`;
+    const rhCls = (selMode==='row' && selRows.has(r)) ? ' row-selected' : '';
+    html += `<tr><td class="rh${rhCls}" onclick="selectRow(${r},event.shiftKey)" oncontextmenu="rowColCtxMenu(event,'row',${r})">${r+1}</td>`;
     for (let c=0; c<nCols; c++) {
       const raw = (g[r]&&g[r][c]!=null) ? g[r][c] : '';
       const disp = renderCell(raw);
@@ -716,6 +734,7 @@ function commitEdit() {
     td.classList.toggle('err', String(disp).startsWith('#ERR')||String(disp).startsWith('#DIV'));
   }
   editMode = false;
+  if (newVal !== oldVal) markDirty();
   updateFormulaBar();
   recomputeAll();
 }
@@ -870,8 +889,8 @@ document.addEventListener('keydown', e => {
     case 'F2': e.preventDefault(); enterEdit(selectedCell.r, selectedCell.c); break;
     case 'Delete': case 'Backspace':
       e.preventDefault();
-      if (selMode==='row' && selRowIdx!=null) { delRowAt(selRowIdx); }
-      else if (selMode==='col' && selColIdx!=null) { delColAt(selColIdx); }
+      if (selMode==='row' && selRows.size>0) { delSelectedRows(); }
+      else if (selMode==='col' && selCols.size>0) { delSelectedCols(); }
       else if (selEnd) {
         pushUndo();
         const r1=Math.min(selectedCell.r,selEnd.r), r2=Math.max(selectedCell.r,selEnd.r);
@@ -906,63 +925,84 @@ function applyFormulaBar() {
   while(g.length<=r) g.push([]);
   while(g[r].length<=c) g[r].push('');
   g[r][c] = val;
-  render(); updateFormulaBar();
+  render(); markDirty(); updateFormulaBar();
 }
 
 // ══════════════════════════════════════════
 // 행/열 전체 선택 & 컨텍스트 메뉴
 // ══════════════════════════════════════════
-function selectCol(c) {
-  selMode = 'col'; selColIdx = c; selRowIdx = null;
-  const g = grid();
-  selectedCell = {r:0, c};
-  selEnd = {r: Math.max(g.length-1, 0), c};
+function selectCol(c, shiftKey) {
   editMode = false; formulaRefMode = false;
-  render();
-  updateFormulaBar();
+  if (selMode === 'col' && shiftKey && selColIdx != null) {
+    // Shift+클릭: 마지막 선택~현재 사이 범위 추가
+    const lo = Math.min(selColIdx, c), hi = Math.max(selColIdx, c);
+    for (let i = lo; i <= hi; i++) selCols.add(i);
+  } else {
+    selCols = new Set([c]);
+    selColIdx = c;
+  }
+  selMode = 'col'; selRowIdx = null; selRows = new Set();
+  const g = grid();
+  const colArr = [...selCols].sort((a,b)=>a-b);
+  selectedCell = {r:0, c: colArr[0]};
+  selEnd = {r: Math.max(g.length-1, 0), c: colArr[colArr.length-1]};
+  render(); updateFormulaBar();
   const pt = document.getElementById('paste-trap');
   if (pt) pt.focus();
 }
 
-function selectRow(r) {
-  selMode = 'row'; selRowIdx = r; selColIdx = null;
+function selectRow(r, shiftKey) {
+  editMode = false; formulaRefMode = false;
+  if (selMode === 'row' && shiftKey && selRowIdx != null) {
+    const lo = Math.min(selRowIdx, r), hi = Math.max(selRowIdx, r);
+    for (let i = lo; i <= hi; i++) selRows.add(i);
+  } else {
+    selRows = new Set([r]);
+    selRowIdx = r;
+  }
+  selMode = 'row'; selColIdx = null; selCols = new Set();
   const g = grid();
   const nCols = Math.max(MIN_COLS, ...g.map(row=>row.length));
-  selectedCell = {r, c:0};
-  selEnd = {r, c: nCols-1};
-  editMode = false; formulaRefMode = false;
-  render();
-  updateFormulaBar();
+  const rowArr = [...selRows].sort((a,b)=>a-b);
+  selectedCell = {r: rowArr[0], c:0};
+  selEnd = {r: rowArr[rowArr.length-1], c: nCols-1};
+  render(); updateFormulaBar();
   const pt = document.getElementById('paste-trap');
   if (pt) pt.focus();
 }
 
 function clearRowColSel() {
   selMode = 'cell'; selRowIdx = null; selColIdx = null;
+  selRows = new Set(); selCols = new Set();
 }
 
 function rowColCtxMenu(e, type, idx) {
   e.preventDefault();
-  // 기존 메뉴 제거
   const old = document.getElementById('rc-ctx-menu');
   if (old) old.remove();
 
-  if (type==='row') selectRow(idx);
-  else selectCol(idx);
+  // 우클릭한 행/열이 현재 선택에 없으면 단독 선택
+  if (type==='row' && !selRows.has(idx)) selectRow(idx, false);
+  if (type==='col' && !selCols.has(idx)) selectCol(idx, false);
+
+  const selCount = type==='row' ? selRows.size : selCols.size;
+  const delLabel = selCount > 1
+    ? (type==='row' ? `선택한 ${selCount}개 행 삭제` : `선택한 ${selCount}개 열 삭제`)
+    : (type==='row' ? '행 삭제' : '열 삭제');
 
   const menu = document.createElement('div');
   menu.id = 'rc-ctx-menu';
   menu.style.cssText = `position:fixed;z-index:9999;background:#fff;border:1px solid #cdd3dc;border-radius:8px;
-    box-shadow:0 4px 16px rgba(0,0,0,.15);padding:4px 0;min-width:170px;font-size:0.82rem;`;
+    box-shadow:0 4px 16px rgba(0,0,0,.15);padding:4px 0;min-width:180px;font-size:0.82rem;`;
   menu.innerHTML = type==='row'
     ? `<div class="cm-item" onclick="insertRowAt(${idx},'above')">위에 행 삽입</div>
        <div class="cm-item" onclick="insertRowAt(${idx},'below')">아래에 행 삽입</div>
        <div class="cm-sep"></div>
-       <div class="cm-item cm-del" onclick="delRowAt(${idx})">행 삭제</div>`
+       <div class="cm-item cm-del" onclick="delSelectedRows()">${delLabel}</div>`
     : `<div class="cm-item" onclick="insertColAt(${idx},'left')">왼쪽에 열 삽입</div>
        <div class="cm-item" onclick="insertColAt(${idx},'right')">오른쪽에 열 삽입</div>
        <div class="cm-sep"></div>
-       <div class="cm-item cm-del" onclick="delColAt(${idx})">열 삭제</div>`;
+       <div class="cm-item cm-del" onclick="delSelectedCols()">${delLabel}</div>`;
 
   // 위치
   let x = e.clientX, y = e.clientY;
@@ -976,35 +1016,44 @@ function rowColCtxMenu(e, type, idx) {
   setTimeout(() => document.addEventListener('mousedown', close), 10);
 }
 
-function delRowAt(r) {
+function delSelectedRows() {
   const old = document.getElementById('rc-ctx-menu'); if (old) old.remove();
   const g = grid();
-  if (g.length <= 1) { setStatus('행을 더 이상 삭제할 수 없음', false); return; }
+  const toDelete = [...selRows].sort((a,b)=>b-a); // 뒤에서부터 삭제
+  if (g.length - toDelete.length < 1) { setStatus('행을 더 이상 삭제할 수 없음', false); return; }
   pushUndo();
-  g.splice(r, 1);
+  toDelete.forEach(r => g.splice(r, 1));
   clearRowColSel(); selectedCell = null; selEnd = null;
-  ensureSize(); render(); setStatus(`✅ ${r+1}행 삭제됨`);
+  ensureSize(); render(); markDirty(); setStatus(`✅ ${toDelete.length}개 행 삭제됨`);
 }
 
-function delColAt(c) {
+function delSelectedCols() {
   const old = document.getElementById('rc-ctx-menu'); if (old) old.remove();
   const g = grid();
   const nCols = Math.max(...g.map(row=>row.length), 0);
-  if (nCols <= 1) { setStatus('열을 더 이상 삭제할 수 없음', false); return; }
+  const toDelete = [...selCols].sort((a,b)=>b-a);
+  if (nCols - toDelete.length < 1) { setStatus('열을 더 이상 삭제할 수 없음', false); return; }
   pushUndo();
-  g.forEach(row => { if (row.length > c) row.splice(c, 1); });
-  // 스타일도 열 삭제 반영
+  toDelete.forEach(c => {
+    g.forEach(row => { if (row.length > c) row.splice(c, 1); });
+  });
+  // 스타일 재계산 (여러 열 삭제 후 인덱스 조정)
   const st = styles();
   const newSt = {};
   Object.keys(st).forEach(k => {
     const [kr, kc] = k.split('_').map(Number);
-    if (kc === c) return;
-    newSt[`${kr}_${kc > c ? kc-1 : kc}`] = st[k];
+    if (selCols.has(kc)) return;
+    const shift = toDelete.filter(dc => dc < kc).length;
+    newSt[`${kr}_${kc - shift}`] = st[k];
   });
   cellStyles[activeSheet] = newSt;
   clearRowColSel(); selectedCell = null; selEnd = null;
-  ensureSize(); render(); setStatus(`✅ ${colLetters(c)}열 삭제됨`);
+  ensureSize(); render(); markDirty(); setStatus(`✅ ${toDelete.length}개 열 삭제됨`);
 }
+
+// 하위 호환 (단일 삭제)
+function delRowAt(r) { selRows = new Set([r]); delSelectedRows(); }
+function delColAt(c) { selCols = new Set([c]); delSelectedCols(); }
 
 function insertRowAt(r, pos) {
   const old = document.getElementById('rc-ctx-menu'); if (old) old.remove();
@@ -1014,7 +1063,7 @@ function insertRowAt(r, pos) {
   const insertIdx = pos==='above' ? r : r+1;
   g.splice(insertIdx, 0, new Array(nCols).fill(''));
   clearRowColSel(); selectedCell = {r: insertIdx, c:0}; selEnd = null;
-  render(); setStatus(`✅ ${insertIdx+1}행에 행 삽입됨`);
+  render(); markDirty(); setStatus(`✅ ${insertIdx+1}행에 행 삽입됨`);
 }
 
 function insertColAt(c, pos) {
@@ -1032,7 +1081,7 @@ function insertColAt(c, pos) {
   });
   cellStyles[activeSheet] = newSt;
   clearRowColSel(); selectedCell = {r:0, c: insertIdx}; selEnd = null;
-  render(); setStatus(`✅ ${colLetters(insertIdx)}열에 열 삽입됨`);
+  render(); markDirty(); setStatus(`✅ ${colLetters(insertIdx)}열에 열 삽입됨`);
 }
 
 // ══════════════════════════════════════════
@@ -1094,7 +1143,7 @@ function clearCell(r,c) {
   if(g[r]&&g[r][c]!==undefined) g[r][c]='';
   const td=getCellEl(r,c);
   if(td){td.setAttribute('data-raw','');td.textContent='';}
-  updateFormulaBar();
+  markDirty(); updateFormulaBar();
 }
 
 function pasteAt(sr, sc, text) {
@@ -1116,7 +1165,7 @@ function pasteAt(sr, sc, text) {
   const nc=Math.max(MIN_COLS, maxC+1, ...g.map(r=>r.length));
   g.forEach(r=>{ while(r.length<nc) r.push(''); });
   while(g.length<Math.max(MIN_ROWS, maxR+1)) g.push(new Array(nc).fill(''));
-  render();
+  render(); markDirty();
   setStatus(`✅ ${lines.length}행 × ${lines[0]?.split('\t').length||1}열 붙여넣음`);
 }
 
@@ -1199,7 +1248,7 @@ async function save() {
       fetch('/budget/grid',{method:'POST',headers:{'Content-Type':'application/json'},
         body:JSON.stringify({rows:grid()})})
     ]);
-    if(r1.ok) setStatus('✅ 저장됨');
+    if(r1.ok) { markClean(); setStatus('✅ 저장됨'); }
     else setStatus('저장 실패',false);
   } catch(e) { setStatus('저장 실패',false); }
 }
