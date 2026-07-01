@@ -111,6 +111,8 @@
   td.fref-3 { outline: 2px solid #f57f17 !important; background:rgba(245,127,23,0.08) !important; }
   td.fref-4 { outline: 2px solid #6a1b9a !important; background:rgba(106,27,154,0.08) !important; }
   td.fref-5 { outline: 2px solid #00695c !important; background:rgba(0,105,92,0.08) !important; }
+  /* 드래그 중 즉시 참조 범위 표시 */
+  td.fref-drag { outline: 2px dashed #1565c0 !important; background:rgba(21,101,192,0.12) !important; }
   th.sort-asc::after { content:' ↑'; color:var(--accent); }
   th.sort-desc::after { content:' ↓'; color:var(--accent); }
   td.rh {
@@ -421,6 +423,7 @@ let fDragAnchor = null;       // 드래그 시작 셀
 let fOrigPrefix = '';         // 드래그 시작 시 수식의 앵커 이전 부분
 // ── 크로스시트 수식 입력 모드
 let crossSheetEdit = null;    // {sheet, cell, formulaVal} — 타 시트 이동 중 수식 입력 상태
+let suppressBlurCommit = false; // 시트 탭 클릭 시 blur→commitEdit 억제 플래그
 
 // ── 행/열 전체 선택
 let selMode = 'cell';   // 'cell' | 'row' | 'col'
@@ -499,7 +502,15 @@ window.onload = () => {
     setStatus(`✅ ${r2-r1+1}행 × ${c2-c1+1}열 복사됨`);
   });
   // 전역 mouseup: 수식 드래그 종료
-  document.addEventListener('mouseup', () => { fDragAnchor = null; });
+  document.addEventListener('mouseup', () => {
+    if (fDragAnchor) {
+      fDragAnchor = null;
+      clearRefRangeHighlight();
+      // 드래그 끝난 후 수식 바 기준으로 전체 참조 하이라이트 재적용
+      const fi = document.getElementById('formula-input');
+      if (fi && formulaRefMode) applyFormulaRefHighlights(fi.value);
+    }
+  });
 };
 
 async function load() {
@@ -549,9 +560,11 @@ function renderTabs() {
     if (isOrigin) tab.style.cssText='border-top:3px solid #1565c0;font-weight:700;';
     tab.textContent = isOrigin ? `↩ ${name}` : name;
     tab.title = isOrigin ? '클릭: 수식 입력 원본 시트로 복귀' : '더블클릭: 이름변경 / 우클릭: 메뉴';
+    tab.addEventListener('mousedown', () => { suppressBlurCommit = true; });
+    tab.addEventListener('mouseup', () => { suppressBlurCommit = false; });
     tab.onclick = () => {
+      suppressBlurCommit = false;
       if (crossSheetEdit && isOrigin) {
-        // 원본 시트 탭 클릭 시 수식 확정
         const fi = document.getElementById('formula-input');
         commitCrossSheetEdit(fi ? fi.value : crossSheetEdit.formulaVal);
       } else {
@@ -606,26 +619,33 @@ function switchSheet(name) {
   if (name === activeSheet) return;
   // 수식 입력 중 → 크로스시트 모드: 편집 유지하고 시트만 전환
   const fi = document.getElementById('formula-input');
-  const inFormula = fi && fi.value.startsWith('=');
+  // 셀 직접 편집 중이면 textContent에서 최신 수식 읽기 (fi.value가 stale일 수 있음)
+  let currentFormula = fi ? fi.value : '';
+  if (editMode && selectedCell) {
+    const td = getCellEl(selectedCell.r, selectedCell.c);
+    if (td && td.contentEditable === 'true') currentFormula = td.textContent;
+  }
+  const inFormula = currentFormula.startsWith('=');
   if (inFormula && (editMode || document.activeElement === fi)) {
     // 현재 수식 상태 저장
     if (!crossSheetEdit) {
       crossSheetEdit = {
         sheet: activeSheet,
         cell: selectedCell ? {...selectedCell} : null,
-        formulaVal: fi.value,
+        formulaVal: currentFormula,
         editMode: editMode
       };
     } else {
-      crossSheetEdit.formulaVal = fi.value;
+      crossSheetEdit.formulaVal = currentFormula;
     }
-    // 편집 셀을 수식 바만으로 관리하도록 셀 editable 해제 (값은 유지)
+    // 편집 셀 editable 해제, 수식 바에 최신값 표시
     if (editMode && selectedCell) {
       const td = getCellEl(selectedCell.r, selectedCell.c);
       if (td) { td.contentEditable = 'false'; td.classList.remove('editing'); }
     }
+    if (fi) fi.value = currentFormula;
     editMode = false;
-    formulaRefMode = true; // 셀 클릭 시 참조 삽입 상태 유지
+    formulaRefMode = true;
     activeSheet = name; sortState = null; selectedCell = null; selEnd = null;
     ensureSize(); renderTabs(); render(); loadSnaps();
     showCrossSheetBanner();
@@ -722,12 +742,13 @@ function render() {
     td.addEventListener('mousedown', e => {
       // 수식 참조 모드: 수식 입력 중 다른 셀 클릭 → 주소 삽입
       checkFormulaRef();
-      if (formulaRefMode && selectedCell && !(selectedCell.r===r&&selectedCell.c===c)) {
+      const sameCell = selectedCell && selectedCell.r===r && selectedCell.c===c;
+      if (formulaRefMode && (crossSheetEdit || !sameCell)) {
         e.preventDefault();
         startFormulaRef(r, c);
         return;
       }
-      if (formulaRefMode && editMode && (selectedCell.r===r&&selectedCell.c===c)) {
+      if (formulaRefMode && editMode && sameCell) {
         return; // 같은 셀은 무시
       }
 
@@ -761,9 +782,10 @@ function render() {
       enterEdit(r, c);
     });
 
-    // 편집 중 blur → 커밋
+    // 편집 중 blur → 커밋 (시트 탭 클릭 시는 억제)
     td.addEventListener('blur', e => {
       if (editMode && selectedCell && selectedCell.r===r && selectedCell.c===c) {
+        if (suppressBlurCommit) return;
         commitEdit();
       }
     });
@@ -775,7 +797,14 @@ function render() {
       else if (e.key==='Tab') { e.preventDefault(); commitEdit(); moveSel(0,e.shiftKey?-1:1); }
       else if (e.key==='Escape') { e.preventDefault(); cancelEdit(); }
     });
-    td.addEventListener('input', () => { if (editMode) checkFormulaRef(); });
+    td.addEventListener('input', () => {
+      if (editMode) {
+        checkFormulaRef();
+        // formula-input과 항상 동기화 (switchSheet에서 최신 수식 읽을 수 있도록)
+        const fi = document.getElementById('formula-input');
+        if (fi) fi.value = td.textContent;
+      }
+    });
 
     // 붙여넣기는 document 레벨 핸들러에서 처리 (편집 모드 아닐 때)
   });
@@ -1022,6 +1051,8 @@ function startFormulaRef(r, c) {
   // 크로스시트 모드면 시트명 접두어 추가
   const addrSheet = crossSheetEdit ? activeSheet : null;
   applyFormulaRefAddr(makeSheetAddr(addrSheet, cellAddr(r, c)));
+  // 클릭 즉시 셀 하이라이트
+  showRefRangeHighlight(r, c, r, c);
 }
 
 function makeSheetAddr(sheetName, cellRef) {
@@ -1039,6 +1070,25 @@ function updateFormulaRef(r, c) {
   const base = (r1===r2&&c1===c2) ? cellAddr(r,c) : `${cellAddr(r1,c1)}:${cellAddr(r2,c2)}`;
   const addrSheet = crossSheetEdit ? activeSheet : null;
   applyFormulaRefAddr(makeSheetAddr(addrSheet, base));
+  // 드래그 중 범위 실시간 하이라이트
+  showRefRangeHighlight(r1, c1, r2, c2);
+}
+
+// 수식 참조 셀 드래그 중 즉시 하이라이트 (현재 시트 내)
+let _refHighEls = []; // 현재 하이라이트된 td 목록
+function showRefRangeHighlight(r1, c1, r2, c2) {
+  _refHighEls.forEach(el => el.classList.remove('fref-drag'));
+  _refHighEls = [];
+  for (let r=r1; r<=r2; r++) {
+    for (let c=c1; c<=c2; c++) {
+      const td = document.querySelector(`#sheet td[data-r="${r}"][data-c="${c}"]`);
+      if (td) { td.classList.add('fref-drag'); _refHighEls.push(td); }
+    }
+  }
+}
+function clearRefRangeHighlight() {
+  _refHighEls.forEach(el => el.classList.remove('fref-drag'));
+  _refHighEls = [];
 }
 
 // 수식 입력줄 input 이벤트
