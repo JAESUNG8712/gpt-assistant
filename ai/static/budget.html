@@ -297,11 +297,22 @@
 let sheets = { 'Sheet1': [] };
 let activeSheet = 'Sheet1';
 let cellStyles = {};          // {sheetName: {'r_c': {bold,align,fontSize}}}
-let selectedCell = null;      // {r, c}
-let editMode = false;         // 편집 중 여부
+let selectedCell = null;      // {r, c} — 앵커 셀
+let selEnd = null;            // {r, c} — 범위 끝 (다중 선택 시)
+let editMode = false;
 let sortState = null;
 let tableFontSize = 12;
 const MIN_ROWS = 25, MIN_COLS = 14;
+
+// 범위 내 여부
+function inSel(r, c) {
+  if (!selectedCell) return false;
+  const r1=Math.min(selectedCell.r,(selEnd||selectedCell).r);
+  const r2=Math.max(selectedCell.r,(selEnd||selectedCell).r);
+  const c1=Math.min(selectedCell.c,(selEnd||selectedCell).c);
+  const c2=Math.max(selectedCell.c,(selEnd||selectedCell).c);
+  return r>=r1&&r<=r2&&c>=c1&&c<=c2;
+}
 
 function grid() { return sheets[activeSheet]; }
 function styles() { return cellStyles[activeSheet] || (cellStyles[activeSheet] = {}); }
@@ -364,8 +375,10 @@ function renderTabs() {
     const tab = document.createElement('span');
     tab.className = 'sheet-tab' + (name===activeSheet?' active':'');
     tab.textContent = name;
+    tab.title = '더블클릭: 이름변경 / 우클릭: 메뉴';
     tab.onclick = () => switchSheet(name);
     tab.ondblclick = () => renameSheet(name, tab);
+    tab.oncontextmenu = e => { e.preventDefault(); showTabMenu(e, name, tab); };
     c.appendChild(tab);
   });
   const add = document.createElement('span');
@@ -373,10 +386,45 @@ function renderTabs() {
   add.onclick = addSheet; c.appendChild(add);
 }
 
+// 시트 탭 우클릭 컨텍스트 메뉴
+function showTabMenu(e, name, tabEl) {
+  document.getElementById('tab-ctx-menu')?.remove();
+  const menu = document.createElement('div');
+  menu.id = 'tab-ctx-menu';
+  menu.style.cssText = `position:fixed;left:${e.clientX}px;top:${e.clientY}px;
+    background:var(--surface);border:1px solid var(--border-bright);border-radius:8px;
+    box-shadow:0 4px 16px rgba(0,0,0,0.15);z-index:200;min-width:130px;padding:4px 0;font-size:0.8rem;`;
+  const items = [
+    ['✏️ 이름 변경', () => renameSheet(name, document.querySelector(`.sheet-tab.active`) || tabEl)],
+    ['🗑️ 삭제', () => deleteSheet(name)],
+  ];
+  items.forEach(([label, fn]) => {
+    const item = document.createElement('div');
+    item.textContent = label;
+    item.style.cssText = 'padding:7px 14px;cursor:pointer;color:var(--text-bright)';
+    item.onmouseenter = () => item.style.background='var(--surface2)';
+    item.onmouseleave = () => item.style.background='';
+    item.onclick = () => { menu.remove(); fn(); };
+    menu.appendChild(item);
+  });
+  document.body.appendChild(menu);
+  const close = e2 => { if(!menu.contains(e2.target)){menu.remove();document.removeEventListener('mousedown',close);} };
+  setTimeout(() => document.addEventListener('mousedown', close), 0);
+}
+
+function deleteSheet(name) {
+  const keys = Object.keys(sheets);
+  if (keys.length <= 1) { setStatus('마지막 시트는 삭제할 수 없습니다', false); return; }
+  if (!confirm(`'${name}' 시트를 삭제하시겠습니까?`)) return;
+  delete sheets[name]; delete cellStyles[name];
+  if (activeSheet === name) activeSheet = Object.keys(sheets)[0];
+  ensureSize(); renderTabs(); render(); updateFormulaBar();
+}
+
 function switchSheet(name) {
   if (editMode) commitEdit();
-  activeSheet = name; sortState = null; selectedCell = null;
-  ensureSize(); renderTabs(); render(); updateFormulaBar();
+  activeSheet = name; sortState = null; selectedCell = null; selEnd = null;
+  ensureSize(); renderTabs(); render(); updateFormulaBar(); loadSnaps();
 }
 
 function addSheet() {
@@ -428,8 +476,9 @@ function render() {
       const disp = renderCell(raw);
       const isErr = String(disp).startsWith('#ERR') || String(disp).startsWith('#DIV');
       const sty = st[sk(r,c)] || {};
-      const isSel = selectedCell && selectedCell.r===r && selectedCell.c===c;
-      const isEd = editMode && isSel;
+      const isSel = inSel(r, c);
+      const isAnchor = selectedCell && selectedCell.r===r && selectedCell.c===c;
+      const isEd = editMode && isAnchor;
       let cls = 'cell';
       if (isErr) cls+=' err';
       if (sty.bold) cls+=' bold';
@@ -439,7 +488,7 @@ function render() {
       else if (isSel) cls+=' selected';
       const fsize = sty.fontSize || tableFontSize;
       const dispHtml = isEd ? escHtml(raw) : escHtml(String(disp));
-      html += `<td class="${cls}" contenteditable="${isEd}" data-r="${r}" data-c="${c}" data-raw="${escAttr(raw)}" style="font-size:${fsize}px">${dispHtml}</td>`;
+      html += `<td class="${cls}" tabindex="-1" contenteditable="${isEd}" data-r="${r}" data-c="${c}" data-raw="${escAttr(raw)}" style="font-size:${fsize}px;outline:none">${dispHtml}</td>`;
     }
     html += '</tr>';
   }
@@ -449,17 +498,24 @@ function render() {
   document.querySelectorAll('#sheet td.cell').forEach(td => {
     const r = +td.dataset.r, c = +td.dataset.c;
 
-    // 클릭 → 셀 선택 (편집 모드 아닐 때)
+    // 클릭 → 셀 선택
     td.addEventListener('mousedown', e => {
       if (editMode && !(selectedCell&&selectedCell.r===r&&selectedCell.c===c)) {
-        e.preventDefault();
-        commitEdit();
-        selectCell(r, c);
+        e.preventDefault(); commitEdit();
+        if (e.shiftKey && selectedCell) { selEnd={r,c}; highlightSel(); updateFormulaBarRange(); }
+        else selectCell(r, c);
         return;
       }
       if (!editMode) {
         e.preventDefault();
-        selectCell(r, c);
+        if (e.shiftKey && selectedCell) {
+          // shift+클릭: 범위 확장
+          selEnd = {r, c};
+          selectedCell = selectedCell; // anchor 유지
+          highlightSel(); updateFormulaBarRange();
+        } else {
+          selectCell(r, c);
+        }
       }
     });
 
@@ -499,14 +555,34 @@ function render() {
 // ══════════════════════════════════════════
 function selectCell(r, c) {
   selectedCell = {r, c};
+  selEnd = null;
   editMode = false;
+  highlightSel();
   updateFormulaBar();
-  // highlight: 가볍게 클래스만 변경 (전체 재렌더 없이)
+  // 포커스를 td에 주어야 paste 이벤트 수신 가능
+  const td = getCellEl(r, c);
+  if (td) { td.focus(); td.scrollIntoView({block:'nearest',inline:'nearest'}); }
+}
+
+function highlightSel() {
   document.querySelectorAll('#sheet td.selected, #sheet td.editing').forEach(el => {
     el.classList.remove('selected','editing');
   });
-  const td = getCellEl(r, c);
-  if (td) { td.classList.add('selected'); td.scrollIntoView({block:'nearest',inline:'nearest'}); }
+  document.querySelectorAll('#sheet td.cell').forEach(td => {
+    if (inSel(+td.dataset.r, +td.dataset.c)) td.classList.add('selected');
+  });
+}
+
+function updateFormulaBarRange() {
+  const refEl = document.getElementById('cell-ref');
+  const fi = document.getElementById('formula-input');
+  if (!selectedCell) { refEl.textContent='-'; fi.value=''; return; }
+  if (selEnd && (selEnd.r!==selectedCell.r||selEnd.c!==selectedCell.c)) {
+    refEl.textContent = `${cellAddr(selectedCell.r,selectedCell.c)}:${cellAddr(selEnd.r,selEnd.c)}`;
+    fi.value = '';
+  } else {
+    updateFormulaBar();
+  }
 }
 
 function enterEdit(r, c, initChar=null) {
@@ -590,16 +666,36 @@ function moveSel(dr, dc) {
 }
 
 // ══════════════════════════════════════════
-// 전역 붙여넣기 (셀 선택 상태에서 Ctrl+V)
+// 전역 복사(Ctrl+C) / 붙여넣기(Ctrl+V)
 // ══════════════════════════════════════════
+document.addEventListener('copy', e => {
+  if (document.querySelector('.modal-overlay.open')) return;
+  if (editMode) return;
+  if (!selectedCell) return;
+  if (document.activeElement===document.getElementById('formula-input')) return;
+  e.preventDefault();
+  const r1=Math.min(selectedCell.r,(selEnd||selectedCell).r);
+  const r2=Math.max(selectedCell.r,(selEnd||selectedCell).r);
+  const c1=Math.min(selectedCell.c,(selEnd||selectedCell).c);
+  const c2=Math.max(selectedCell.c,(selEnd||selectedCell).c);
+  const g=grid();
+  let tsv='';
+  for(let r=r1;r<=r2;r++){
+    const row=[];
+    for(let c=c1;c<=c2;c++) row.push(String(renderCell(g[r]?.[c]??'')));
+    tsv+=row.join('\t')+'\n';
+  }
+  e.clipboardData.setData('text/plain', tsv.trimEnd());
+  setStatus(`✅ ${r2-r1+1}행 × ${c2-c1+1}열 복사됨`);
+});
+
 document.addEventListener('paste', e => {
   if (document.querySelector('.modal-overlay.open')) return;
-  if (editMode) return; // 편집 중이면 td 내부 붙여넣기
+  if (editMode) return;
   if (!selectedCell) return;
-  // 수식 입력줄이 포커스된 경우 제외
-  if (document.activeElement === document.getElementById('formula-input')) return;
+  if (document.activeElement===document.getElementById('formula-input')) return;
   e.preventDefault();
-  const text = (e.clipboardData || window.clipboardData).getData('text/plain');
+  const text=(e.clipboardData||window.clipboardData).getData('text/plain');
   if (!text) return;
   pasteAt(selectedCell.r, selectedCell.c, text);
 });
@@ -622,19 +718,45 @@ document.addEventListener('keydown', e => {
     return;
   }
 
+  const nRows=grid().length, nCols=(grid()[0]||[]).length;
+  const clampR=r=>Math.max(0,Math.min(nRows-1,r));
+  const clampC=c=>Math.max(0,Math.min(nCols-1,c));
+
   switch(e.key) {
-    case 'ArrowUp':    e.preventDefault(); moveSel(-1,0); break;
-    case 'ArrowDown':  e.preventDefault(); moveSel(1,0); break;
-    case 'ArrowLeft':  e.preventDefault(); moveSel(0,-1); break;
-    case 'ArrowRight': e.preventDefault(); moveSel(0,1); break;
+    case 'ArrowUp': case 'ArrowDown': case 'ArrowLeft': case 'ArrowRight': {
+      e.preventDefault();
+      const dr={'ArrowUp':-1,'ArrowDown':1,'ArrowLeft':0,'ArrowRight':0}[e.key];
+      const dc={'ArrowUp':0,'ArrowDown':0,'ArrowLeft':-1,'ArrowRight':1}[e.key];
+      if (e.shiftKey) {
+        // Shift+방향키: 범위 확장
+        const base = selEnd || selectedCell;
+        selEnd = {r:clampR(base.r+dr), c:clampC(base.c+dc)};
+        highlightSel(); updateFormulaBarRange();
+        const tdEnd = getCellEl(selEnd.r, selEnd.c);
+        if (tdEnd) tdEnd.scrollIntoView({block:'nearest',inline:'nearest'});
+      } else {
+        moveSel(dr, dc);
+      }
+      break;
+    }
     case 'Enter': e.preventDefault();
       if (e.shiftKey) moveSel(-1,0); else enterEdit(selectedCell.r, selectedCell.c); break;
     case 'Tab': e.preventDefault(); moveSel(0, e.shiftKey?-1:1); break;
     case 'F2': e.preventDefault(); enterEdit(selectedCell.r, selectedCell.c); break;
     case 'Delete': case 'Backspace':
-      e.preventDefault(); clearCell(selectedCell.r, selectedCell.c); break;
+      e.preventDefault();
+      if (selEnd) {
+        // 범위 삭제
+        const r1=Math.min(selectedCell.r,selEnd.r), r2=Math.max(selectedCell.r,selEnd.r);
+        const c1=Math.min(selectedCell.c,selEnd.c), c2=Math.max(selectedCell.c,selEnd.c);
+        const g=grid();
+        for(let r=r1;r<=r2;r++) for(let c=c1;c<=c2;c++) { if(g[r]) g[r][c]=''; }
+        render();
+      } else {
+        clearCell(selectedCell.r, selectedCell.c);
+      }
+      break;
     default:
-      // 인쇄 가능한 문자 입력 시 편집 모드 진입
       if (e.key.length===1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
         enterEdit(selectedCell.r, selectedCell.c, e.key);
       }
@@ -857,9 +979,22 @@ async function loadSnaps() {
     ['cmp-a','cmp-b'].forEach(id=>{
       const sel=document.getElementById(id);
       while(sel.options.length>1) sel.remove(1);
+      // 다른 시트들을 옵션에 추가
+      Object.keys(sheets).forEach(name => {
+        const opt=document.createElement('option');
+        opt.value='sheet:'+name;
+        opt.textContent=`📋 시트: ${name}`;
+        sel.appendChild(opt);
+      });
+      // 구분선
+      if(snaps.length) {
+        const sep=document.createElement('option');
+        sep.disabled=true; sep.textContent='── 최종 저장 스냅샷 ──';
+        sel.appendChild(sep);
+      }
       snaps.forEach(s=>{
         const opt=document.createElement('option');
-        opt.value=s.id;opt.textContent=`${s.label} (${s.createdAt.slice(0,10)})`;
+        opt.value=s.id;opt.textContent=`📌 ${s.label} (${s.createdAt.slice(0,10)})`;
         sel.appendChild(opt);
       });
     });
@@ -889,20 +1024,44 @@ async function deleteSnap() {
 
 async function compare() {
   const a=document.getElementById('cmp-a').value, b=document.getElementById('cmp-b').value;
+  // sheet: 접두사인 경우 클라이언트에서 직접 비교
+  function getRows(val) {
+    if (val==='current') return grid();
+    if (val.startsWith('sheet:')) return sheets[val.slice(6)] || [];
+    return null; // 서버 스냅샷
+  }
+  const rowsA=getRows(a), rowsB=getRows(b);
+  if (rowsA && rowsB) {
+    // 로컬 시트 비교
+    const diffs=[];
+    const nr=Math.max(rowsA.length,rowsB.length);
+    const nc=Math.max(...[rowsA,rowsB].map(g=>Math.max(0,...g.map(r=>r.length))));
+    for(let r=0;r<nr;r++) for(let c=0;c<nc;c++){
+      const va=rowsA[r]?.[c]??'', vb=rowsB[r]?.[c]??'';
+      if(String(va)!==String(vb)){
+        const na=parseFloat(String(va).replace(/,/g,'')), nb=parseFloat(String(vb).replace(/,/g,''));
+        diffs.push({cell:cellAddr(r,c),before:String(va),after:String(vb),delta:(!isNaN(na)&&!isNaN(nb))?nb-na:null});
+      }
+    }
+    showDiff(diffs); return;
+  }
   try {
     const r=await fetch(`/budget/grid/compare?a=${a}&b=${b}`);
     const d=await r.json();
-    const diffs=d.diffs||[];
-    const el=document.getElementById('diff');
-    if(!diffs.length){el.innerHTML='<span style="color:#2e7d32">차이 없음</span>';return;}
-    let html=`<b>${diffs.length}개 셀 변경:</b><br><table class="diff-table"><tr><th>셀</th><th>이전</th><th>이후</th><th>차이</th></tr>`;
-    diffs.slice(0,50).forEach(df=>{
-      const delta=df.delta!=null?(df.delta>=0?`<span style="color:#2e7d32">+${df.delta.toLocaleString()}</span>`:`<span style="color:#c62828">${df.delta.toLocaleString()}</span>`):'-';
-      html+=`<tr><td>${df.cell}</td><td>${escHtml(df.before)}</td><td>${escHtml(df.after)}</td><td>${delta}</td></tr>`;
-    });
-    html+='</table>';
-    el.innerHTML=html;
+    showDiff(d.diffs||[]);
   } catch(e){document.getElementById('diff').textContent='비교 실패';}
+}
+
+function showDiff(diffs) {
+  const el=document.getElementById('diff');
+  if(!diffs.length){el.innerHTML='<span style="color:#2e7d32">차이 없음</span>';return;}
+  let html=`<b>${diffs.length}개 셀 변경:</b><br><table class="diff-table"><tr><th>셀</th><th>이전</th><th>이후</th><th>차이</th></tr>`;
+  diffs.slice(0,50).forEach(df=>{
+    const delta=df.delta!=null?(df.delta>=0?`<span style="color:#2e7d32">+${df.delta.toLocaleString()}</span>`:`<span style="color:#c62828">${df.delta.toLocaleString()}</span>`):'-';
+    html+=`<tr><td>${df.cell}</td><td>${escHtml(df.before)}</td><td>${escHtml(df.after)}</td><td>${delta}</td></tr>`;
+  });
+  html+='</table>';
+  el.innerHTML=html;
 }
 
 // ══════════════════════════════════════════
