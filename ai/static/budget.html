@@ -113,6 +113,12 @@
   td.fref-5 { outline: 2px solid #00695c !important; background:rgba(0,105,92,0.08) !important; }
   /* 드래그 중 즉시 참조 범위 표시 */
   td.fref-drag { outline: 2px dashed #1565c0 !important; background:rgba(21,101,192,0.12) !important; }
+  td.frozen-row { position:sticky !important; top:var(--frozen-row-top,23px); z-index:4 !important; background:var(--surface,#fff); }
+  td.frozen-col { position:sticky !important; left:var(--frozen-col-left,42px); z-index:3 !important; background:var(--surface,#fff); }
+  td.frozen-row.frozen-col { z-index:5 !important; }
+  td.frozen-row { border-bottom:2px solid #1565c0 !important; }
+  td.frozen-col { border-right:2px solid #1565c0 !important; }
+  th.frozen-col-header { position:sticky !important; left:var(--frozen-col-left,42px); z-index:5 !important; border-right:2px solid #1565c0 !important; }
   th.sort-asc::after { content:' ↑'; color:var(--accent); }
   th.sort-desc::after { content:' ↓'; color:var(--accent); }
   td.rh {
@@ -281,6 +287,8 @@
   <div class="toolbar-sep"></div>
   <button class="btn" onclick="openSizeDialog()" title="열너비/행높이 설정">📐크기</button>
   <div class="toolbar-sep"></div>
+  <button class="btn" id="btn-freeze" onclick="openFreezeDialog()" title="행/열 고정">🔒고정</button>
+  <div class="toolbar-sep"></div>
 
   <button class="btn" onclick="openPayroll()" style="color:#1b5e20;border-color:#388e3c">📋 급여대장 자동계산</button>
   <button class="btn" onclick="openTaxCalc()" style="color:#e65100;border-color:#ef6c00">🧮 세금·보험 계산</button>
@@ -396,6 +404,8 @@ const MIN_ROWS = 25, MIN_COLS = 14;
 let wrapMode = false;
 let colWidths = {};
 let rowHeights = {};
+let frozenRows = 0;   // 상단 고정 행 수
+let frozenCols = 0;   // 좌측 고정 열 수 (row header 제외)
 let dragSrcRow = null, dragSrcCol = null;
 
 // ── Undo 스택
@@ -708,18 +718,33 @@ function render() {
   const nRows = g.length;
   const nCols = Math.max(MIN_COLS, ...g.map(r=>r.length));
 
+  // 고정 행 top 오프셋 계산 (헤더 th 높이 23px 가정)
+  const HEADER_H = 23;
+  const frozenRowTops = [];
+  let _topAcc = HEADER_H;
+  for (let ri=0; ri<frozenRows; ri++) { frozenRowTops.push(_topAcc); _topAcc += (rowHeights[ri]||24); }
+  // 고정 열 left 오프셋 계산 (row header 42px)
+  const RH_W = 42;
+  const frozenColLefts = [];
+  let _leftAcc = RH_W;
+  for (let ci=0; ci<frozenCols; ci++) { frozenColLefts.push(_leftAcc); _leftAcc += (colWidths[ci]||90); }
+
   let html = `<tr><th class="rh" onclick="selectAll()" title="전체 선택" style="cursor:pointer"></th>`;
   for (let c=0; c<nCols; c++) {
     let cls = '';
     if (sortState && sortState.col===c) cls=(sortState.dir==='asc'?' sort-asc':' sort-desc');
     if (selMode==='col' && selCols.has(c)) cls+=' col-selected';
-    html += `<th class="${cls}" style="width:${colWidths[c]||90}px;position:relative" draggable="true" ondragstart="onColDragStart(event,${c})" ondragover="onColDragOver(event,${c})" ondrop="onColDrop(event,${c})" onclick="selectCol(${c},event.shiftKey)" ondblclick="sortByCol(${c})" oncontextmenu="rowColCtxMenu(event,'col',${c})" title="클릭:열선택 / 드래그:순서변경 / 더블클릭:정렬">${colLetters(c)}<span class="col-resize-handle" onmousedown="startColResize(event,${c})"></span></th>`;
+    let thStyle = `width:${colWidths[c]||90}px;position:relative`;
+    if (c < frozenCols) { cls += ' frozen-col-header'; thStyle += `;left:${frozenColLefts[c]}px`; }
+    html += `<th class="${cls}" style="${thStyle}" draggable="true" ondragstart="onColDragStart(event,${c})" ondragover="onColDragOver(event,${c})" ondrop="onColDrop(event,${c})" onclick="selectCol(${c},event.shiftKey)" ondblclick="sortByCol(${c})" oncontextmenu="rowColCtxMenu(event,'col',${c})" title="클릭:열선택 / 드래그:순서변경 / 더블클릭:정렬">${colLetters(c)}<span class="col-resize-handle" onmousedown="startColResize(event,${c})"></span></th>`;
   }
   html += '</tr>';
 
   for (let r=0; r<nRows; r++) {
     const rhCls = (selMode==='row' && selRows.has(r)) ? ' row-selected' : '';
-    html += `<tr><td class="rh${rhCls}" draggable="true" ondragstart="onRowDragStart(event,${r})" ondragover="onRowDragOver(event,${r})" ondrop="onRowDrop(event,${r})" onclick="selectRow(${r},event.shiftKey)" oncontextmenu="rowColCtxMenu(event,'row',${r})" style="height:${rowHeights[r]||24}px">${r+1}<span class="row-resize-handle" onmousedown="startRowResize(event,${r})"></span></td>`;
+    let trStyle = '';
+    if (r < frozenRows) trStyle = `style="position:sticky;top:${frozenRowTops[r]}px;z-index:2"`;
+    html += `<tr ${trStyle}><td class="rh${rhCls}" draggable="true" ondragstart="onRowDragStart(event,${r})" ondragover="onRowDragOver(event,${r})" ondrop="onRowDrop(event,${r})" onclick="selectRow(${r},event.shiftKey)" oncontextmenu="rowColCtxMenu(event,'row',${r})" style="height:${rowHeights[r]||24}px">${r+1}<span class="row-resize-handle" onmousedown="startRowResize(event,${r})"></span></td>`;
     for (let c=0; c<nCols; c++) {
       const raw = (g[r]&&g[r][c]!=null) ? g[r][c] : '';
       const disp = renderCell(raw);
@@ -735,6 +760,9 @@ function render() {
       if (sty.align==='right') cls+=' align-right';
       if (isEd) cls+=' editing';
       else if (isSel) cls+=' selected';
+      const isFR = r < frozenRows, isFC = c < frozenCols;
+      if (isFR) cls += ' frozen-row';
+      if (isFC) cls += ' frozen-col';
       const fsize = sty.fontSize || tableFontSize;
       const dispHtml = isEd ? escHtml(raw) : (wrapMode ? escHtml(String(disp)).replace(/\n/g,'<br>') : escHtml(String(disp)));
       let cellStyle = `font-size:${fsize}px;outline:none;min-width:${colWidths[c]||90}px;width:${colWidths[c]||90}px;white-space:${wrapMode?'pre-wrap':'nowrap'}`;
@@ -744,6 +772,8 @@ function render() {
       if (sty.borderBottom) cellStyle += `;border-bottom:${sty.borderBottom}`;
       if (sty.borderLeft) cellStyle += `;border-left:${sty.borderLeft}`;
       if (sty.borderRight) cellStyle += `;border-right:${sty.borderRight}`;
+      if (isFR) cellStyle += `;top:${frozenRowTops[r]}px`;
+      if (isFC) cellStyle += `;left:${frozenColLefts[c]}px`;
       html += `<td class="${cls}" tabindex="-1" contenteditable="${isEd}" data-r="${r}" data-c="${c}" data-raw="${escAttr(raw)}" style="${cellStyle}">${dispHtml}</td>`;
     }
     html += '</tr>';
@@ -892,13 +922,13 @@ function enterEdit(r, c, initChar=null) {
   td.contentEditable = 'true';
   td.classList.remove('selected'); td.classList.add('editing');
   if (initChar !== null) {
-    td.textContent = initChar;
+    td.textContent = '';
   } else {
     td.textContent = grid()[r]?.[c] ?? '';
   }
   td.focus();
   placeCursorEnd(td);
-  document.getElementById('formula-input').value = td.textContent;
+  document.getElementById('formula-input').value = initChar ?? (grid()[r]?.[c] ?? '');
 }
 
 function commitEdit() {
@@ -1945,6 +1975,30 @@ function toggleWrap() {
     td.style.whiteSpace = wrapMode ? 'pre-wrap' : 'nowrap';
   });
   setStatus(wrapMode ? '줄바꿈 ON' : '줄바꿈 OFF');
+}
+
+function openFreezeDialog() {
+  const cur = document.getElementById('freeze-dialog');
+  if (cur) { cur.style.display = cur.style.display==='none'||cur.style.display==='' ? 'flex' : 'none'; return; }
+  const d = document.createElement('div');
+  d.id = 'freeze-dialog';
+  d.style.cssText = 'position:fixed;top:80px;left:50%;transform:translateX(-50%);background:var(--surface2,#fff);border:1px solid var(--border,#ccc);border-radius:8px;padding:16px 20px;z-index:9999;display:flex;flex-direction:column;gap:10px;min-width:220px;box-shadow:0 4px 16px rgba(0,0,0,0.15)';
+  d.innerHTML = `<b style="font-size:0.9rem">행/열 고정 (구글 시트)</b>
+<label style="font-size:0.82rem">고정 행 수 (0=해제): <input id="frz-rows" type="number" min="0" max="20" value="${frozenRows}" style="width:60px;padding:2px 4px;border:1px solid var(--border,#ccc);border-radius:4px"></label>
+<label style="font-size:0.82rem">고정 열 수 (0=해제): <input id="frz-cols" type="number" min="0" max="10" value="${frozenCols}" style="width:60px;padding:2px 4px;border:1px solid var(--border,#ccc);border-radius:4px"></label>
+<div style="display:flex;gap:8px">
+  <button class="btn btn-primary" onclick="applyFreeze()">적용</button>
+  <button class="btn" onclick="document.getElementById('freeze-dialog').style.display='none'">닫기</button>
+</div>`;
+  document.body.appendChild(d);
+}
+function applyFreeze() {
+  frozenRows = Math.max(0, +document.getElementById('frz-rows').value||0);
+  frozenCols = Math.max(0, +document.getElementById('frz-cols').value||0);
+  document.getElementById('freeze-dialog').style.display='none';
+  render();
+  const btn = document.getElementById('btn-freeze');
+  if (btn) btn.style.fontWeight = (frozenRows||frozenCols) ? '700' : '';
 }
 
 function openSizeDialog() {
