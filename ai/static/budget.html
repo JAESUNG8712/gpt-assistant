@@ -547,7 +547,7 @@ function render() {
   const nRows = g.length;
   const nCols = Math.max(MIN_COLS, ...g.map(r=>r.length));
 
-  let html = `<tr><th class="rh"></th>`;
+  let html = `<tr><th class="rh" onclick="selectAll()" title="전체 선택" style="cursor:pointer"></th>`;
   for (let c=0; c<nCols; c++) {
     let cls = '';
     if (sortState && sortState.col===c) cls=(sortState.dir==='asc'?' sort-asc':' sort-desc');
@@ -974,6 +974,22 @@ function selectRow(r, shiftKey) {
 function clearRowColSel() {
   selMode = 'cell'; selRowIdx = null; selColIdx = null;
   selRows = new Set(); selCols = new Set();
+}
+
+function selectAll() {
+  const g = grid();
+  const nRows = g.length;
+  const nCols = Math.max(MIN_COLS, ...g.map(row => row.length));
+  selMode = 'cell';
+  selRows = new Set(); selCols = new Set();
+  selRowIdx = null; selColIdx = null;
+  selectedCell = {r: 0, c: 0};
+  selEnd = {r: nRows - 1, c: nCols - 1};
+  editMode = false; formulaRefMode = false;
+  highlightSel(); updateFormulaBar();
+  const pt = document.getElementById('paste-trap');
+  if (pt) pt.focus();
+  setStatus(`✅ 전체 선택 (${nRows}행 × ${nCols}열)`);
 }
 
 function rowColCtxMenu(e, type, idx) {
