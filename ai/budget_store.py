@@ -183,6 +183,35 @@ def save_grid(rows):
     return True
 
 
+def get_sheets():
+    """멀티시트 데이터 반환 — {sheets, active, styles}"""
+    data = read_budget()
+    if "sheets" in data:
+        return {
+            "sheets": data["sheets"],
+            "active": data.get("active", list(data["sheets"].keys())[0]),
+            "styles": data.get("styles", {}),
+        }
+    # 기존 단일 grid → Sheet1으로 마이그레이션
+    grid = data.get("grid") or []
+    return {"sheets": {"Sheet1": grid}, "active": "Sheet1", "styles": {}}
+
+
+def save_sheets(payload: dict):
+    """멀티시트 데이터 저장 — payload: {sheets, active, styles}"""
+    data = read_budget()
+    data["sheets"] = payload.get("sheets", {})
+    data["active"] = payload.get("active", "Sheet1")
+    data["styles"] = payload.get("styles", {})
+    data["sheets_updated_at"] = _now_iso()
+    # 하위 호환: 활성 시트를 grid에도 동기
+    active = data["active"]
+    if active in data["sheets"]:
+        data["grid"] = data["sheets"][active]
+    write_budget(data)
+    return True
+
+
 def parse_grid(content: bytes, filename: str):
     """업로드 파일(xlsx/csv)을 그대로 2차원 문자열 배열(grid)로 변환"""
     if filename.lower().endswith((".xlsx", ".xls")):

@@ -1318,6 +1318,20 @@ def budget_snapshot_delete(snap_id: str):
     return {"message": "삭제되었습니다."}
 
 
+@app.get("/budget/sheets")
+def budget_get_sheets():
+    """멀티시트 전체 데이터 조회"""
+    return budget.get_sheets()
+
+
+@app.post("/budget/sheets")
+async def budget_save_sheets(request: Request):
+    """멀티시트 전체 데이터 저장"""
+    payload = await request.json()
+    budget.save_sheets(payload)
+    return {"ok": True}
+
+
 @app.get("/budget/grid/compare")
 def budget_grid_compare(a: str = "current", b: str = "current"):
     """a, b는 스냅샷 id 또는 'current'(현재 작업 그리드)"""

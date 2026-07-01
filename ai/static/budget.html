@@ -10,92 +10,195 @@
     --bg:#f4f6f9; --surface:#fff; --surface2:#f3f5f8; --surface3:#eaedf2;
     --border:#e2e6ec; --border-bright:#cdd3dc;
     --text:#41474f; --text-bright:#1a1d23; --text-dim:#818a94;
-    --accent:#1565c0;
+    --accent:#1565c0; --accent-bg:#e3f2fd;
   }
   * { box-sizing:border-box; margin:0; padding:0; }
   html, body { height:100%; background:var(--bg); color:var(--text-bright);
     font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Noto Sans KR',sans-serif; }
   body { display:flex; flex-direction:column; overflow:hidden; }
 
+  /* ── 툴바 ── */
   .toolbar {
-    display:flex; gap:6px; align-items:center; flex-wrap:wrap;
-    padding:10px 16px; background:var(--surface); border-bottom:2px solid var(--border-bright);
+    display:flex; gap:4px; align-items:center; flex-wrap:wrap;
+    padding:6px 12px; background:var(--surface); border-bottom:1px solid var(--border-bright);
     flex-shrink:0;
   }
-  .toolbar-title { font-size:1rem; font-weight:700; margin-right:8px; white-space:nowrap; color:var(--text-bright); }
+  .toolbar-sep { width:1px; height:22px; background:var(--border-bright); margin:0 4px; flex-shrink:0; }
   .btn {
-    padding:6px 12px; border-radius:7px; font-size:0.82rem; cursor:pointer;
+    padding:5px 10px; border-radius:6px; font-size:0.8rem; cursor:pointer;
     border:1px solid var(--border-bright); background:var(--surface3); color:var(--text-bright);
-    white-space:nowrap;
+    white-space:nowrap; line-height:1;
   }
   .btn:hover { background:var(--border-bright); }
   .btn-primary { background:var(--accent); border-color:var(--accent); color:#fff; }
   .btn-primary:hover { background:#1251a3; }
-  .btn-danger { color:#c0392b; }
-  #status { font-size:0.75rem; color:var(--text-dim); margin-left:4px; }
-
-  .hint {
-    font-size:0.72rem; color:var(--text-dim); padding:5px 16px;
-    background:var(--surface); flex-shrink:0;
-    border-bottom:1px solid var(--border);
+  .btn-icon { padding:5px 7px; font-size:0.85rem; }
+  .btn-back { color:var(--accent); border-color:var(--accent); font-weight:600; }
+  select.toolbar-sel {
+    padding:4px 6px; font-size:0.8rem; border:1px solid var(--border-bright);
+    border-radius:6px; background:var(--surface3); color:var(--text-bright); cursor:pointer;
   }
-  .hint code { background:var(--surface3); padding:1px 4px; border-radius:3px; font-size:0.7rem; }
+  #status { font-size:0.72rem; color:var(--text-dim); margin-left:4px; white-space:nowrap; }
 
-  .grid-wrap { overflow:auto; flex:1; padding:12px 16px; }
+  /* ── 수식 입력줄 ── */
+  .formula-bar {
+    display:flex; align-items:center; gap:6px; padding:4px 12px;
+    background:var(--surface); border-bottom:1px solid var(--border);
+    flex-shrink:0;
+  }
+  .formula-bar .cell-ref {
+    font-size:0.8rem; font-weight:600; color:var(--accent);
+    min-width:50px; text-align:center;
+    border:1px solid var(--border); border-radius:4px; padding:3px 6px;
+    background:var(--surface2);
+  }
+  .formula-bar .fx { font-size:0.78rem; color:var(--text-dim); font-style:italic; }
+  .formula-bar input {
+    flex:1; border:1px solid var(--border); border-radius:4px; padding:3px 8px;
+    font-size:0.82rem; font-family:monospace; background:var(--surface2); color:var(--text-bright);
+  }
+  .formula-bar input:focus { outline:none; border-color:var(--accent); background:#fff; }
+
+  /* ── 그리드 ── */
+  .grid-wrap { overflow:auto; flex:1; padding:0; position:relative; }
   table { border-collapse:collapse; font-size:0.82rem; }
-  th, td { border:1px solid var(--border); padding:2px 6px; white-space:nowrap; overflow:hidden; }
-  th { background:var(--surface2); color:var(--text-dim); font-weight:600; text-align:center;
-       position:sticky; top:0; z-index:2; min-width:90px; }
-  th.rh { position:sticky; left:0; top:0; z-index:3; min-width:36px; }
-  td.rh { background:var(--surface2); position:sticky; left:0; z-index:1;
-           text-align:center; color:var(--text-dim); }
-  td[contenteditable] { outline:none; cursor:text; height:26px; min-width:90px; color:var(--text); }
-  td[contenteditable]:focus { background:rgba(21,101,192,0.1); }
+  th, td { border:1px solid var(--border); padding:1px 4px; white-space:nowrap; overflow:hidden; }
+  th {
+    background:var(--surface2); color:var(--text-dim); font-weight:600;
+    text-align:center; position:sticky; top:0; z-index:2; min-width:90px;
+    user-select:none; cursor:pointer;
+  }
+  th:hover { background:var(--border-bright); }
+  th.rh { position:sticky; left:0; top:0; z-index:3; min-width:42px; cursor:default; }
+  th.sort-asc::after { content:' ↑'; color:var(--accent); }
+  th.sort-desc::after { content:' ↓'; color:var(--accent); }
+  td.rh {
+    background:var(--surface2); position:sticky; left:0; z-index:1;
+    text-align:center; color:var(--text-dim); min-width:42px; cursor:default;
+    user-select:none;
+  }
+  td[contenteditable] { outline:none; cursor:cell; height:24px; min-width:90px; color:var(--text); }
+  td[contenteditable].selected { background:var(--accent-bg) !important; outline:2px solid var(--accent); outline-offset:-2px; }
   td.err { color:#e57373; }
+  td.bold { font-weight:700; }
+  td.align-center { text-align:center; }
+  td.align-right { text-align:right; }
 
+  /* ── 빈 상태 ── */
   .empty-state { padding:60px 20px; text-align:center; color:var(--text-dim); }
   .empty-state .icon { font-size:3rem; margin-bottom:16px; }
   .empty-state h3 { font-size:1rem; font-weight:600; color:var(--text-bright); margin-bottom:10px; }
-  .empty-state p { font-size:0.85rem; line-height:1.8; }
+  .empty-state p { font-size:0.85rem; line-height:1.9; }
 
+  /* ── 시트 탭 ── */
+  .sheet-tabs {
+    display:flex; align-items:center; gap:2px; padding:4px 12px 0;
+    background:var(--surface); border-top:1px solid var(--border); flex-shrink:0;
+  }
+  .sheet-tab {
+    padding:5px 14px; font-size:0.78rem; border:1px solid var(--border);
+    border-bottom:none; border-radius:6px 6px 0 0; cursor:pointer;
+    background:var(--surface2); color:var(--text-dim); user-select:none;
+  }
+  .sheet-tab.active { background:var(--surface); color:var(--accent); font-weight:600; border-color:var(--border-bright); }
+  .sheet-tab:hover:not(.active) { background:var(--border); }
+  .sheet-tab-add { padding:4px 10px; font-size:1rem; color:var(--text-dim); cursor:pointer; border-radius:4px; }
+  .sheet-tab-add:hover { background:var(--surface3); color:var(--accent); }
+
+  /* ── 스냅샷 영역 ── */
   .snap-area {
-    padding:10px 16px; border-top:1px solid var(--border);
+    padding:8px 12px; border-top:1px solid var(--border);
     background:var(--surface); flex-shrink:0;
+    display:flex; gap:8px; align-items:center; flex-wrap:wrap;
   }
-  .snap-row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:8px; }
-  .snap-row:last-child { margin-bottom:0; }
-  input[type=text], select {
+  .snap-area input[type=text], .snap-area select {
     background:var(--surface2); color:var(--text-bright); border:1px solid var(--border);
-    border-radius:6px; padding:5px 8px; font-size:0.78rem;
+    border-radius:6px; padding:4px 8px; font-size:0.78rem;
   }
-  #snap-label { width:160px; }
-  #diff { margin-top:8px; font-size:0.78rem; overflow-x:auto; }
+  #snap-label { width:150px; }
+  #diff { margin-top:6px; font-size:0.76rem; width:100%; }
   .diff-table { border-collapse:collapse; }
-  .diff-table th, .diff-table td { border:1px solid var(--border); padding:3px 8px; }
+  .diff-table th, .diff-table td { border:1px solid var(--border); padding:2px 8px; }
   .diff-table th { background:var(--surface2); }
-  .diff-add { color:#2e7d32; }
-  .diff-sub { color:#c62828; }
+
+  /* ── 세금 계산기 모달 ── */
+  .modal-overlay {
+    display:none; position:fixed; inset:0; background:rgba(0,0,0,0.4);
+    z-index:100; align-items:center; justify-content:center;
+  }
+  .modal-overlay.open { display:flex; }
+  .modal {
+    background:var(--surface); border-radius:12px; padding:24px;
+    width:min(520px, 94vw); max-height:90vh; overflow-y:auto;
+    box-shadow:0 8px 40px rgba(0,0,0,0.18);
+  }
+  .modal h3 { font-size:1rem; font-weight:700; margin-bottom:16px; color:var(--text-bright); }
+  .modal-grid { display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:14px; }
+  .modal-grid label { font-size:0.78rem; color:var(--text-dim); display:block; margin-bottom:3px; }
+  .modal-grid input {
+    width:100%; padding:6px 8px; border:1px solid var(--border); border-radius:6px;
+    font-size:0.82rem; background:var(--surface2); color:var(--text-bright);
+  }
+  .modal-grid input:focus { outline:none; border-color:var(--accent); }
+  .tax-result { background:var(--surface2); border-radius:8px; padding:14px; margin-bottom:14px; }
+  .tax-row { display:flex; justify-content:space-between; align-items:center; padding:4px 0; font-size:0.82rem; border-bottom:1px solid var(--border); }
+  .tax-row:last-child { border-bottom:none; font-weight:700; color:var(--accent); }
+  .tax-row span:first-child { color:var(--text-dim); }
+  .tax-row span:last-child { font-family:monospace; }
+  .modal-btns { display:flex; gap:8px; justify-content:flex-end; }
+  .tax-note { font-size:0.7rem; color:var(--text-dim); margin-top:8px; line-height:1.6; }
 </style>
 </head>
 <body>
 
 <!-- 툴바 -->
 <div class="toolbar">
-  <button class="btn" onclick="window.location.href='/'" style="margin-right:4px;color:#1565c0;border-color:#1565c0">← AI 어시스트</button>
-  <span class="toolbar-title">📊 예산관리</span>
-  <button class="btn" onclick="document.getElementById('file-input').click()">📂 파일 업로드</button>
-  <input type="file" id="file-input" accept=".xlsx,.xls,.csv" onchange="upload(this)">
+  <button class="btn btn-back" onclick="window.location.href='/'">← AI 어시스트</button>
+  <div class="toolbar-sep"></div>
+  <span style="font-size:0.88rem;font-weight:700;color:var(--text-bright);margin-right:2px">📊 예산관리</span>
+  <div class="toolbar-sep"></div>
+
+  <!-- 파일 -->
+  <button class="btn" onclick="document.getElementById('file-input').click()">📂 업로드</button>
+  <input type="file" id="file-input" accept=".xlsx,.xls,.csv" style="display:none" onchange="upload(this)">
   <button class="btn btn-primary" onclick="save()">💾 저장</button>
-  <button class="btn" onclick="download()">⬇️ xlsx 다운로드</button>
-  <button class="btn" onclick="addRow()">➕ 행 추가</button>
-  <button class="btn" onclick="addCol()">➕ 열 추가</button>
+  <button class="btn" onclick="download()">⬇️ xlsx</button>
+  <div class="toolbar-sep"></div>
+
+  <!-- 행/열 -->
+  <button class="btn btn-icon" onclick="addRow()" title="행 추가">➕행</button>
+  <button class="btn btn-icon" onclick="addCol()" title="열 추가">➕열</button>
+  <button class="btn btn-icon" onclick="delRow()" title="선택 행 삭제">➖행</button>
+  <div class="toolbar-sep"></div>
+
+  <!-- 서식 -->
+  <select class="toolbar-sel" id="font-size-sel" onchange="applyFontSize(this.value)" title="글자 크기">
+    <option value="10">10px</option>
+    <option value="11">11px</option>
+    <option value="12" selected>12px</option>
+    <option value="13">13px</option>
+    <option value="14">14px</option>
+    <option value="16">16px</option>
+    <option value="18">18px</option>
+  </select>
+  <button class="btn btn-icon" id="btn-bold" onclick="toggleBold()" title="굵게">B</button>
+  <button class="btn btn-icon" onclick="applyAlign('left')" title="왼쪽 정렬">◀</button>
+  <button class="btn btn-icon" onclick="applyAlign('center')" title="가운데 정렬">■</button>
+  <button class="btn btn-icon" onclick="applyAlign('right')" title="오른쪽 정렬">▶</button>
+  <div class="toolbar-sep"></div>
+
+  <!-- 세금계산기 -->
+  <button class="btn" onclick="openTaxCalc()" style="color:#e65100;border-color:#e65100">🧮 세금·보험 자동계산</button>
+  <div class="toolbar-sep"></div>
   <span id="status"></span>
 </div>
 
-<!-- 힌트 -->
-<div class="hint">
-  셀 클릭 후 직접 입력 · 엑셀에서 복사(Ctrl+C) 후 셀 클릭하고 Ctrl+V 붙여넣기 ·
-  수식: <code>=SUM(A1:A5)</code> <code>=AVERAGE(B2:D2)</code> <code>=A1+B1*2</code>
+<!-- 수식 입력줄 -->
+<div class="formula-bar">
+  <span class="cell-ref" id="cell-ref">-</span>
+  <span class="fx">fx</span>
+  <input type="text" id="formula-input" placeholder="셀을 클릭하거나 수식을 입력하세요 (예: =SUM(A1:A5))"
+    onkeydown="formulaKeydown(event)" onblur="formulaBlur()">
 </div>
 
 <!-- 그리드 -->
@@ -104,55 +207,193 @@
     <div class="icon">📊</div>
     <h3>예산 시트가 비어 있습니다</h3>
     <p>
-      <b>📂 파일 업로드</b>로 엑셀·CSV를 가져오거나,<br>
-      <b>➕ 행/열 추가</b>로 직접 입력하거나,<br>
-      엑셀에서 셀 복사 후 <b>빈 셀 클릭 → Ctrl+V</b>로 붙여넣으세요.
+      📂 <b>업로드</b>로 엑셀·CSV 가져오기<br>
+      ➕행/➕열 버튼으로 직접 입력<br>
+      엑셀에서 Ctrl+C → 셀 클릭 → <b>Ctrl+V</b> 붙여넣기<br>
+      수식: <code>=SUM(A1:A5)</code> <code>=AVERAGE(B1:B3)</code> <code>=A1*1.1</code>
     </p>
   </div>
   <table id="sheet"></table>
 </div>
 
+<!-- 시트 탭 -->
+<div class="sheet-tabs" id="sheet-tabs">
+  <span class="sheet-tab-add" onclick="addSheet()" title="시트 추가">＋</span>
+</div>
+
 <!-- 스냅샷 영역 -->
 <div class="snap-area">
-  <div class="snap-row">
-    <input type="text" id="snap-label" placeholder="예: 2026-06 최종">
-    <button class="btn btn-primary" onclick="saveSnap()">📌 월별 최종 저장</button>
-    <span id="snap-status" style="font-size:0.75rem;color:var(--text-dim)"></span>
+  <input type="text" id="snap-label" placeholder="예: 2026-07 최종">
+  <button class="btn btn-primary" onclick="saveSnap()">📌 최종 저장</button>
+  <span id="snap-status" style="font-size:0.72rem;color:var(--text-dim)"></span>
+  <div class="toolbar-sep"></div>
+  <span style="font-size:0.75rem;color:var(--text-dim)">비교:</span>
+  <select id="cmp-a"><option value="current">현재 시트</option></select>
+  <span style="font-size:0.75rem;color:var(--text-dim)">vs</span>
+  <select id="cmp-b"><option value="current">현재 시트</option></select>
+  <button class="btn" onclick="compare()">🔍 비교</button>
+  <button class="btn" onclick="deleteSnap()" style="color:#c0392b">🗑️ 삭제</button>
+  <div id="diff" style="width:100%"></div>
+</div>
+
+<!-- 세금·보험 자동계산 모달 -->
+<div class="modal-overlay" id="tax-modal">
+  <div class="modal">
+    <h3>🧮 세금·사회보험 자동계산 <span style="font-size:0.7rem;font-weight:400;color:var(--text-dim)">(2025년 기준)</span></h3>
+    <div class="modal-grid">
+      <div>
+        <label>월 기본급 (원)</label>
+        <input type="number" id="t-base" placeholder="3000000" oninput="calcTax()">
+      </div>
+      <div>
+        <label>월 수당 합계 (원)</label>
+        <input type="number" id="t-allowance" placeholder="0" oninput="calcTax()">
+      </div>
+      <div>
+        <label>부양가족 수 (본인 포함)</label>
+        <input type="number" id="t-family" value="1" min="1" max="20" oninput="calcTax()">
+      </div>
+      <div>
+        <label>20세 이하 자녀 수</label>
+        <input type="number" id="t-child" value="0" min="0" oninput="calcTax()">
+      </div>
+    </div>
+
+    <div class="tax-result" id="tax-result">
+      <div style="font-size:0.78rem;color:var(--text-dim);text-align:center;padding:10px">월 기본급을 입력하면 자동 계산됩니다</div>
+    </div>
+
+    <div class="tax-note">
+      ※ 국민연금 4.5% · 건강보험 3.545% · 장기요양 건강보험료×12.95% · 고용보험 0.9% (2025년 요율)<br>
+      ※ 퇴직연금은 월 급여 총액의 1/12 (법정 최소 적립 기준)<br>
+      ※ 소득세는 근로소득 간이세액표 기준 추정값입니다. 정확한 세액은 원천징수 세액표 확인 요망.<br>
+      ※ 주민세 = 소득세의 10%
+    </div>
+
+    <div class="modal-btns" style="margin-top:14px">
+      <button class="btn" onclick="closeTaxModal()">닫기</button>
+      <button class="btn btn-primary" onclick="insertTaxToSheet()">📋 시트에 삽입</button>
+    </div>
   </div>
-  <div class="snap-row">
-    <span style="font-size:0.78rem;color:var(--text-dim)">비교:</span>
-    <select id="cmp-a"><option value="current">현재 시트</option></select>
-    <span style="font-size:0.78rem;color:var(--text-dim)">vs</span>
-    <select id="cmp-b"><option value="current">현재 시트</option></select>
-    <button class="btn" onclick="compare()">🔍 비교</button>
-    <button class="btn btn-danger" onclick="deleteSnap()">🗑️ 삭제</button>
-  </div>
-  <div id="diff"></div>
 </div>
 
 <script>
-let grid = [];
+// ══════════════════════════════════════════
+// 데이터 모델
+// ══════════════════════════════════════════
+let sheets = { 'Sheet1': [] };   // {sheetName: rows[][]}
+let activeSheet = 'Sheet1';
+let cellStyles = {};             // {sheetName: {'r_c': {bold,align,fontSize}}}
+let selectedCell = null;         // {r, c}
+let sortState = null;            // {col, dir}
 const MIN_ROWS = 20, MIN_COLS = 12;
 
-// ── 초기화 ──────────────────────────────────────────
+function grid() { return sheets[activeSheet]; }
+function styles() { return cellStyles[activeSheet] || (cellStyles[activeSheet] = {}); }
+function styleKey(r, c) { return `${r}_${c}`; }
+
+// ══════════════════════════════════════════
+// 초기화
+// ══════════════════════════════════════════
 window.onload = () => { load(); };
 
 async function load() {
   try {
-    const r = await fetch('/budget/grid');
-    const d = await r.json();
-    grid = (d.rows || []).map(row => row.map(c => c == null ? '' : String(c)));
-  } catch(e) { grid = []; }
+    const r = await fetch('/budget/sheets');
+    if (r.ok) {
+      const d = await r.json();
+      sheets = d.sheets || { 'Sheet1': [] };
+      activeSheet = d.active || Object.keys(sheets)[0];
+      cellStyles = d.styles || {};
+    } else {
+      // 구형 /budget/grid API fallback
+      const r2 = await fetch('/budget/grid');
+      const d2 = await r2.json();
+      const rows = (d2.rows || []).map(row => row.map(c => c == null ? '' : String(c)));
+      sheets = { 'Sheet1': rows };
+    }
+  } catch(e) { sheets = { 'Sheet1': [] }; }
   ensureSize();
+  renderTabs();
   render();
   loadSnaps();
 }
 
-// ── 그리드 헬퍼 ─────────────────────────────────────
+// ══════════════════════════════════════════
+// 시트 탭
+// ══════════════════════════════════════════
+function renderTabs() {
+  const container = document.getElementById('sheet-tabs');
+  container.innerHTML = '';
+  Object.keys(sheets).forEach(name => {
+    const tab = document.createElement('span');
+    tab.className = 'sheet-tab' + (name === activeSheet ? ' active' : '');
+    tab.textContent = name;
+    tab.onclick = () => switchSheet(name);
+    tab.ondblclick = () => renameSheet(name, tab);
+    container.appendChild(tab);
+  });
+  const addBtn = document.createElement('span');
+  addBtn.className = 'sheet-tab-add';
+  addBtn.textContent = '＋';
+  addBtn.title = '시트 추가';
+  addBtn.onclick = addSheet;
+  container.appendChild(addBtn);
+}
+
+function switchSheet(name) {
+  activeSheet = name;
+  sortState = null;
+  selectedCell = null;
+  ensureSize();
+  renderTabs();
+  render();
+  updateFormulaBar();
+}
+
+function addSheet() {
+  let i = Object.keys(sheets).length + 1;
+  let name = `Sheet${i}`;
+  while (sheets[name]) name = `Sheet${++i}`;
+  sheets[name] = [];
+  activeSheet = name;
+  ensureSize();
+  renderTabs();
+  render();
+}
+
+function renameSheet(oldName, tabEl) {
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.value = oldName;
+  input.style.cssText = 'width:90px;font-size:0.78rem;padding:2px 4px;border:1px solid var(--accent);border-radius:4px';
+  tabEl.replaceWith(input);
+  input.focus();
+  input.select();
+  const commit = () => {
+    const newName = input.value.trim() || oldName;
+    if (newName !== oldName && !sheets[newName]) {
+      sheets[newName] = sheets[oldName];
+      delete sheets[oldName];
+      if (cellStyles[oldName]) { cellStyles[newName] = cellStyles[oldName]; delete cellStyles[oldName]; }
+      if (activeSheet === oldName) activeSheet = newName;
+    }
+    renderTabs();
+  };
+  input.onblur = commit;
+  input.onkeydown = e => { if (e.key === 'Enter') input.blur(); if (e.key === 'Escape') { input.value = oldName; input.blur(); } };
+}
+
+// ══════════════════════════════════════════
+// 그리드 헬퍼
+// ══════════════════════════════════════════
 function ensureSize() {
-  while (grid.length < MIN_ROWS) grid.push([]);
-  const mc = Math.max(MIN_COLS, ...grid.map(r => r.length));
-  grid.forEach(r => { while (r.length < mc) r.push(''); });
+  Object.keys(sheets).forEach(name => {
+    const g = sheets[name];
+    while (g.length < MIN_ROWS) g.push([]);
+    const mc = Math.max(MIN_COLS, ...g.map(r => r.length));
+    g.forEach(r => { while (r.length < mc) r.push(''); });
+  });
 }
 
 function colLetters(idx) {
@@ -165,61 +406,85 @@ function colIdx(letters) {
   for (const ch of letters.toUpperCase()) n = n*26 + (ch.charCodeAt(0)-64);
   return n-1;
 }
+function cellAddr(r, c) { return `${colLetters(c)}${r+1}`; }
 
 function hasData() {
-  return grid.some(row => row.some(c => c !== ''));
+  return grid().some(row => row.some(c => c !== ''));
 }
+
+// ══════════════════════════════════════════
+// 렌더링
+// ══════════════════════════════════════════
+let tableFontSize = 12;
 
 function render() {
   const empty = document.getElementById('empty-state');
   const table = document.getElementById('sheet');
   empty.style.display = hasData() ? 'none' : 'block';
 
-  const nRows = grid.length;
-  const nCols = Math.max(MIN_COLS, ...grid.map(r => r.length));
-  let html = '<tr><th class="rh"></th>';
-  for (let c = 0; c < nCols; c++) html += `<th>${colLetters(c)}</th>`;
+  const g = grid();
+  const st = styles();
+  const nRows = g.length;
+  const nCols = Math.max(MIN_COLS, ...g.map(r => r.length));
+
+  // 헤더 행
+  let html = `<tr><th class="rh"></th>`;
+  for (let c = 0; c < nCols; c++) {
+    let cls = '';
+    if (sortState && sortState.col === c) cls = sortState.dir === 'asc' ? ' sort-asc' : ' sort-desc';
+    html += `<th class="${cls}" data-col="${c}" onclick="sortByCol(${c})">${colLetters(c)}</th>`;
+  }
   html += '</tr>';
+
   for (let r = 0; r < nRows; r++) {
     html += `<tr><td class="rh">${r+1}</td>`;
     for (let c = 0; c < nCols; c++) {
-      const raw = (grid[r] && grid[r][c] != null) ? grid[r][c] : '';
+      const raw = (g[r] && g[r][c] != null) ? g[r][c] : '';
       const disp = renderCell(raw);
       const isErr = String(disp).startsWith('#ERR');
-      html += `<td contenteditable${isErr ? ' class="err"' : ''} data-r="${r}" data-c="${c}" data-raw="${escAttr(raw)}">${escHtml(disp)}</td>`;
+      const sk = styleKey(r, c);
+      const sty = st[sk] || {};
+      const isSel = selectedCell && selectedCell.r === r && selectedCell.c === c;
+      let cls = '';
+      if (isErr) cls += ' err';
+      if (sty.bold) cls += ' bold';
+      if (sty.align === 'center') cls += ' align-center';
+      if (sty.align === 'right') cls += ' align-right';
+      if (isSel) cls += ' selected';
+      const fsize = sty.fontSize || tableFontSize;
+      html += `<td contenteditable class="${cls.trim()}" data-r="${r}" data-c="${c}" data-raw="${escAttr(raw)}" style="font-size:${fsize}px">${escHtml(disp)}</td>`;
     }
     html += '</tr>';
   }
   table.innerHTML = html;
+  table.style.fontSize = tableFontSize + 'px';
 
+  // 이벤트 등록
   table.querySelectorAll('td[contenteditable]').forEach(td => {
+    td.addEventListener('click', e => selectCell(+td.dataset.r, +td.dataset.c));
     td.addEventListener('focus', e => {
-      e.target.textContent = e.target.getAttribute('data-raw') || '';
+      selectCell(+td.dataset.r, +td.dataset.c);
+      td.textContent = td.getAttribute('data-raw') || '';
     });
-    td.addEventListener('blur', e => {
-      const r = +e.target.dataset.r, c = +e.target.dataset.c;
-      const raw = e.target.textContent.trim();
-      while (grid.length <= r) grid.push([]);
-      while (grid[r].length <= c) grid[r].push('');
-      grid[r][c] = raw;
-      e.target.setAttribute('data-raw', escAttr(raw));
-      const disp = renderCell(raw);
-      e.target.textContent = disp;
-      e.target.className = String(disp).startsWith('#ERR') ? 'err' : '';
+    td.addEventListener('blur', e => commitCell(td));
+    td.addEventListener('keydown', e => {
+      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); moveSel(1, 0); }
+      if (e.key === 'Tab') { e.preventDefault(); moveSel(0, e.shiftKey ? -1 : 1); }
+      if (e.key === 'Escape') { td.textContent = renderCell(td.getAttribute('data-raw')||''); td.blur(); }
     });
     td.addEventListener('paste', e => {
       e.preventDefault();
       const text = (e.clipboardData || window.clipboardData).getData('text/plain');
-      const sr = +e.target.dataset.r, sc = +e.target.dataset.c;
+      const sr = +td.dataset.r, sc = +td.dataset.c;
       const lines = text.replace(/\r/g, '').split('\n');
       while (lines.length && lines[lines.length-1] === '') lines.pop();
       lines.forEach((line, i) => {
-        const cells = line.split('\t');
-        cells.forEach((val, j) => {
+        line.split('\t').forEach((val, j) => {
           const r = sr+i, c = sc+j;
-          while (grid.length <= r) grid.push([]);
-          while (grid[r].length <= c) grid[r].push('');
-          grid[r][c] = val;
+          const g = grid();
+          while (g.length <= r) g.push([]);
+          while (g[r].length <= c) g[r].push('');
+          g[r][c] = val;
         });
       });
       ensureSize(); render();
@@ -227,7 +492,165 @@ function render() {
   });
 }
 
-// ── 수식 평가 (eval 미사용) ──────────────────────────
+function commitCell(td) {
+  const r = +td.dataset.r, c = +td.dataset.c;
+  const raw = td.textContent.trim();
+  const g = grid();
+  while (g.length <= r) g.push([]);
+  while (g[r].length <= c) g[r].push('');
+  g[r][c] = raw;
+  td.setAttribute('data-raw', escAttr(raw));
+  const disp = renderCell(raw);
+  td.textContent = disp;
+  td.className = td.className.replace(/\berr\b/g, '').trim();
+  if (String(disp).startsWith('#ERR')) td.classList.add('err');
+  // 수식 참조하는 셀 재계산
+  recomputeAll();
+}
+
+function recomputeAll() {
+  const table = document.getElementById('sheet');
+  table.querySelectorAll('td[contenteditable]').forEach(td => {
+    const raw = td.getAttribute('data-raw') || '';
+    if (!raw.startsWith('=')) return;
+    const disp = renderCell(raw);
+    td.textContent = disp;
+    if (String(disp).startsWith('#ERR')) td.classList.add('err');
+    else td.classList.remove('err');
+  });
+}
+
+// ══════════════════════════════════════════
+// 셀 선택 & 수식 입력줄
+// ══════════════════════════════════════════
+function selectCell(r, c) {
+  selectedCell = {r, c};
+  updateFormulaBar();
+}
+
+function updateFormulaBar() {
+  const refEl = document.getElementById('cell-ref');
+  const fi = document.getElementById('formula-input');
+  if (!selectedCell) { refEl.textContent = '-'; fi.value = ''; return; }
+  const {r, c} = selectedCell;
+  refEl.textContent = cellAddr(r, c);
+  const raw = (grid()[r] && grid()[r][c] != null) ? grid()[r][c] : '';
+  fi.value = raw;
+}
+
+function formulaKeydown(e) {
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    applyFormulaInput();
+  }
+  if (e.key === 'Escape') {
+    updateFormulaBar();
+  }
+}
+
+function formulaBlur() {
+  // 수식 입력줄에서 blur 시 자동 적용하지 않음 (Enter 필요)
+}
+
+function applyFormulaInput() {
+  if (!selectedCell) return;
+  const {r, c} = selectedCell;
+  const val = document.getElementById('formula-input').value;
+  const g = grid();
+  while (g.length <= r) g.push([]);
+  while (g[r].length <= c) g[r].push('');
+  g[r][c] = val;
+  render();
+  updateFormulaBar();
+}
+
+function moveSel(dr, dc) {
+  if (!selectedCell) return;
+  const r = Math.max(0, Math.min(grid().length-1, selectedCell.r + dr));
+  const c = Math.max(0, Math.min((grid()[0]||[]).length-1, selectedCell.c + dc));
+  selectedCell = {r, c};
+  const table = document.getElementById('sheet');
+  const td = table.querySelector(`td[data-r="${r}"][data-c="${c}"]`);
+  if (td) { td.focus(); }
+}
+
+// ══════════════════════════════════════════
+// 정렬
+// ══════════════════════════════════════════
+function sortByCol(col) {
+  const g = grid();
+  const dir = (sortState && sortState.col === col && sortState.dir === 'asc') ? 'desc' : 'asc';
+  sortState = {col, dir};
+  // 헤더 행(첫 행)은 고정 여부 판단: 첫 행이 숫자가 아니면 헤더로 간주
+  const firstIsHeader = g.length > 0 && isNaN(Number(String(g[0][col]).replace(/,/g, '')|| 'x'));
+  const header = firstIsHeader ? g.slice(0, 1) : [];
+  const body = firstIsHeader ? g.slice(1) : g.slice();
+  body.sort((a, b) => {
+    const va = a[col] != null ? a[col] : '';
+    const vb = b[col] != null ? b[col] : '';
+    const na = Number(String(va).replace(/,/g, '')), nb = Number(String(vb).replace(/,/g, ''));
+    if (!isNaN(na) && !isNaN(nb)) return dir === 'asc' ? na - nb : nb - na;
+    return dir === 'asc' ? String(va).localeCompare(String(vb), 'ko') : String(vb).localeCompare(String(va), 'ko');
+  });
+  sheets[activeSheet] = [...header, ...body];
+  ensureSize();
+  render();
+}
+
+// ══════════════════════════════════════════
+// 서식
+// ══════════════════════════════════════════
+function applyFontSize(size) {
+  tableFontSize = +size;
+  if (selectedCell) {
+    const sk = styleKey(selectedCell.r, selectedCell.c);
+    styles()[sk] = styles()[sk] || {};
+    styles()[sk].fontSize = +size;
+  }
+  render();
+}
+
+function toggleBold() {
+  if (!selectedCell) { setStatus('셀을 먼저 선택하세요', false); return; }
+  const sk = styleKey(selectedCell.r, selectedCell.c);
+  const st = styles();
+  st[sk] = st[sk] || {};
+  st[sk].bold = !st[sk].bold;
+  render();
+}
+
+function applyAlign(align) {
+  if (!selectedCell) { setStatus('셀을 먼저 선택하세요', false); return; }
+  const sk = styleKey(selectedCell.r, selectedCell.c);
+  const st = styles();
+  st[sk] = st[sk] || {};
+  st[sk].align = align;
+  render();
+}
+
+// ══════════════════════════════════════════
+// 행/열 추가·삭제
+// ══════════════════════════════════════════
+function addRow() {
+  const pos = selectedCell ? selectedCell.r + 1 : grid().length;
+  grid().splice(pos, 0, []);
+  ensureSize(); render();
+}
+function addCol() {
+  grid().forEach(r => r.push(''));
+  ensureSize(); render();
+}
+function delRow() {
+  if (!selectedCell) { setStatus('삭제할 행을 선택하세요', false); return; }
+  const r = selectedCell.r;
+  if (grid().length <= 1) return;
+  grid().splice(r, 1);
+  selectedCell = null; ensureSize(); render();
+}
+
+// ══════════════════════════════════════════
+// 수식 평가 (eval 미사용)
+// ══════════════════════════════════════════
 function renderCell(raw) {
   if (typeof raw !== 'string' || !raw.startsWith('=')) return raw;
   try { return evalFormula(raw.slice(1)); } catch(e) { return '#ERR'; }
@@ -238,7 +661,7 @@ function cellVal(ref, vis) {
   const col = colIdx(m[1]), row = parseInt(m[2], 10) - 1;
   const key = `${row}_${col}`;
   if (vis.has(key)) throw new Error('circular');
-  const raw = (grid[row] && grid[row][col] != null) ? grid[row][col] : '';
+  const raw = (grid()[row] && grid()[row][col] != null) ? grid()[row][col] : '';
   if (typeof raw === 'string' && raw.startsWith('=')) {
     vis.add(key); const v = evalFormula(raw.slice(1), vis); vis.delete(key); return v;
   }
@@ -255,20 +678,24 @@ function rangeVals(a, b, vis) {
   return vals;
 }
 const FUNCS = {
-  SUM: v => v.reduce((a,b) => a+b, 0),
-  AVERAGE: v => v.length ? v.reduce((a,b) => a+b, 0)/v.length : 0,
+  SUM: v => v.reduce((a,b)=>a+b, 0),
+  AVERAGE: v => v.length ? v.reduce((a,b)=>a+b,0)/v.length : 0,
   MAX: v => v.length ? Math.max(...v) : 0,
   MIN: v => v.length ? Math.min(...v) : 0,
-  COUNT: v => v.length
+  COUNT: v => v.length,
+  ROUND: v => v.length >= 2 ? Math.round(v[0] * Math.pow(10, v[1])) / Math.pow(10, v[1]) : Math.round(v[0]),
+  IF: v => v.length >= 3 ? (v[0] ? v[1] : v[2]) : 0,
+  ABS: v => Math.abs(v[0] || 0),
+  INT: v => Math.floor(v[0] || 0),
 };
 function evalFormula(expr, vis) {
   vis = vis || new Set();
   const toks = tokenize(expr); let pos = 0;
   const peek = () => toks[pos], next = () => toks[pos++];
   function expr_() { let v=term(); while(peek()==='+'||peek()==='-'){const op=next();v=op==='+'?v+term():v-term();} return v; }
-  function term() { let v=factor(); while(peek()==='*'||peek()==='/'){const op=next();const r=factor();v=op==='*'?v*r:v/r;} return v; }
+  function term() { let v=unary(); while(peek()==='*'||peek()==='/'){const op=next();const r=unary();v=op==='*'?v*r:(r===0?'#DIV/0':v/r);} return v; }
+  function unary() { if(peek()==='-'){next();return -factor();} if(peek()==='+'){next();return factor();} return factor(); }
   function factor() {
-    if(peek()==='-'){next();return -factor();} if(peek()==='+'){next();return factor();}
     if(peek()==='('){next();const v=expr_();if(peek()!==')')throw new Error(')');next();return v;}
     const t=next(); if(t===undefined) throw new Error('eof');
     if(/^[A-Za-z_]+$/.test(t)&&FUNCS[t.toUpperCase()]){
@@ -289,25 +716,33 @@ function tokenize(s) {
   if(last!==s.length) throw new Error('trailing'); return toks;
 }
 
-// ── 유틸 ────────────────────────────────────────────
+// ══════════════════════════════════════════
+// 유틸
+// ══════════════════════════════════════════
 function escHtml(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 function escAttr(s){ return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;'); }
+function fmt(n){ return Math.round(n).toLocaleString('ko-KR'); }
 function setStatus(msg, ok=true) {
   const el = document.getElementById('status');
   el.textContent = msg; el.style.color = ok ? '#2e7d32' : '#c62828';
-  if (ok) setTimeout(() => { el.textContent = ''; }, 3000);
+  if (ok) setTimeout(()=>{ el.textContent=''; }, 3000);
 }
 
-// ── 저장 / 업로드 / 다운로드 ────────────────────────
-function addRow() { grid.push([]); ensureSize(); render(); }
-function addCol() { grid.forEach(r => r.push('')); ensureSize(); render(); }
-
+// ══════════════════════════════════════════
+// 저장 / 업로드 / 다운로드
+// ══════════════════════════════════════════
 async function save() {
   setStatus('저장 중...');
   try {
-    const r = await fetch('/budget/grid', {
+    // 멀티 시트 저장
+    const r = await fetch('/budget/sheets', {
       method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({rows: grid})
+      body: JSON.stringify({sheets, active: activeSheet, styles: cellStyles})
+    });
+    // 구형 단일 그리드도 함께 저장 (하위 호환)
+    await fetch('/budget/grid', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({rows: grid()})
     });
     if (r.ok) setStatus('✅ 저장됨');
     else setStatus('저장 실패', false);
@@ -321,14 +756,18 @@ async function upload(input) {
   try {
     const r = await fetch('/budget/grid/upload', {method:'POST', body:fd});
     const d = await r.json();
-    if (r.ok) { setStatus(`✅ ${d.rows}행 업로드됨`); await load(); }
-    else setStatus(d.detail || '업로드 실패', false);
+    if (r.ok) {
+      sheets[activeSheet] = d.rows ? d.rows.map(row=>row.map(c=>c==null?'':String(c))) : [];
+      setStatus(`✅ ${d.rows}행 업로드됨`);
+      ensureSize(); render();
+    } else setStatus(d.detail||'업로드 실패', false);
   } catch(e) { setStatus('업로드 실패', false); }
   input.value = '';
 }
 
 async function download() {
   try {
+    await save();
     const r = await fetch('/budget/grid/download');
     const blob = await r.blob();
     const url = URL.createObjectURL(blob);
@@ -337,7 +776,9 @@ async function download() {
   } catch(e) { setStatus('다운로드 실패', false); }
 }
 
-// ── 스냅샷 ──────────────────────────────────────────
+// ══════════════════════════════════════════
+// 스냅샷
+// ══════════════════════════════════════════
 async function loadSnaps() {
   try {
     const r = await fetch('/budget/grid/snapshots');
@@ -361,9 +802,10 @@ async function saveSnap() {
   const st = document.getElementById('snap-status');
   st.textContent = '저장 중...';
   try {
+    await save();
     const r = await fetch('/budget/grid/snapshot', {
       method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({label, rows: grid})
+      body: JSON.stringify({label, rows: grid()})
     });
     if (r.ok) { st.textContent='✅ 저장됨'; st.style.color='#2e7d32'; loadSnaps(); }
     else { st.textContent='실패'; st.style.color='#c62828'; }
@@ -372,7 +814,7 @@ async function saveSnap() {
 
 async function deleteSnap() {
   const id = document.getElementById('cmp-a').value;
-  if (id === 'current') { alert('스냅샷을 선택하세요'); return; }
+  if (id === 'current') { alert('삭제할 스냅샷을 선택하세요'); return; }
   if (!confirm('이 스냅샷을 삭제하시겠습니까?')) return;
   await fetch('/budget/grid/snapshot/'+id, {method:'DELETE'});
   loadSnaps();
@@ -389,13 +831,125 @@ async function compare() {
     if (!diffs.length) { el.innerHTML='<span style="color:#2e7d32">차이 없음</span>'; return; }
     let html = `<b>${diffs.length}개 셀 변경:</b><br><table class="diff-table"><tr><th>셀</th><th>이전</th><th>이후</th><th>차이</th></tr>`;
     diffs.slice(0,50).forEach(df => {
-      const delta = df.delta != null ? (df.delta >= 0 ? `<span class="diff-add">+${df.delta.toLocaleString()}</span>` : `<span class="diff-sub">${df.delta.toLocaleString()}</span>`) : '-';
+      const delta = df.delta != null ? (df.delta>=0?`<span style="color:#2e7d32">+${df.delta.toLocaleString()}</span>`:`<span style="color:#c62828">${df.delta.toLocaleString()}</span>`) : '-';
       html += `<tr><td>${df.cell}</td><td>${escHtml(df.before)}</td><td>${escHtml(df.after)}</td><td>${delta}</td></tr>`;
     });
     html += '</table>';
     el.innerHTML = html;
   } catch(e) { document.getElementById('diff').textContent = '비교 실패'; }
 }
+
+// ══════════════════════════════════════════
+// 세금·보험 자동계산 (2025년 기준)
+// ══════════════════════════════════════════
+let taxData = null;
+
+function openTaxCalc() {
+  document.getElementById('tax-modal').classList.add('open');
+  calcTax();
+}
+function closeTaxModal() {
+  document.getElementById('tax-modal').classList.remove('open');
+}
+
+function calcTax() {
+  const base = parseFloat(document.getElementById('t-base').value) || 0;
+  const allowance = parseFloat(document.getElementById('t-allowance').value) || 0;
+  const family = parseInt(document.getElementById('t-family').value) || 1;
+  const child = parseInt(document.getElementById('t-child').value) || 0;
+  if (base <= 0) {
+    document.getElementById('tax-result').innerHTML = '<div style="font-size:0.78rem;color:var(--text-dim);text-align:center;padding:10px">월 기본급을 입력하면 자동 계산됩니다</div>';
+    taxData = null; return;
+  }
+  const total = base + allowance;
+
+  // 4대보험 (근로자 부담분)
+  const pension = Math.floor(total * 0.045);                          // 국민연금 4.5%
+  const health = Math.floor(total * 0.03545);                         // 건강보험 3.545%
+  const longterm = Math.floor(health * 0.1295);                       // 장기요양 12.95%
+  const employ = Math.floor(total * 0.009);                           // 고용보험 0.9%
+  const social = pension + health + longterm + employ;
+
+  // 퇴직연금 (회사 부담 - 법정 최소 1/12)
+  const retire = Math.floor(total / 12);
+
+  // 소득세 추정 (근로소득 간이세액표 기준 단순화)
+  const annualTaxable = (total - social) * 12;
+  let annualTax = 0;
+  const brackets = [
+    [14000000, 0.06, 0],
+    [50000000, 0.15, 1260000],
+    [88000000, 0.24, 5760000],
+    [150000000, 0.35, 15440000],
+    [300000000, 0.38, 19940000],
+    [500000000, 0.40, 25940000],
+    [1000000000, 0.42, 35940000],
+    [Infinity,  0.45, 65940000],
+  ];
+  for (const [limit, rate, deduct] of brackets) {
+    if (annualTaxable <= limit) { annualTax = Math.max(0, annualTaxable * rate - deduct); break; }
+  }
+  // 부양가족 공제 (연 150만원/인, 자녀 1인당 200만원)
+  const deduction = (family - 1) * 1500000 + child * 2000000;
+  annualTax = Math.max(0, annualTax - deduction * 0.06);
+  const incomeTax = Math.floor(annualTax / 12);
+  const residentTax = Math.floor(incomeTax * 0.1);
+  const totalDeduct = social + incomeTax + residentTax;
+  const netPay = total - totalDeduct;
+
+  taxData = { total, pension, health, longterm, employ, social, retire, incomeTax, residentTax, totalDeduct, netPay };
+
+  document.getElementById('tax-result').innerHTML = `
+    <div class="tax-row"><span>월 급여 총액</span><span>${fmt(total)}원</span></div>
+    <div class="tax-row"><span>국민연금 (4.5%)</span><span>△ ${fmt(pension)}원</span></div>
+    <div class="tax-row"><span>건강보험 (3.545%)</span><span>△ ${fmt(health)}원</span></div>
+    <div class="tax-row"><span>장기요양 (건보료×12.95%)</span><span>△ ${fmt(longterm)}원</span></div>
+    <div class="tax-row"><span>고용보험 (0.9%)</span><span>△ ${fmt(employ)}원</span></div>
+    <div class="tax-row"><span>소득세 (간이세액표)</span><span>△ ${fmt(incomeTax)}원</span></div>
+    <div class="tax-row"><span>주민세 (소득세×10%)</span><span>△ ${fmt(residentTax)}원</span></div>
+    <div style="border-top:2px solid var(--border-bright);margin:6px 0"></div>
+    <div class="tax-row"><span>공제 합계</span><span>△ ${fmt(totalDeduct)}원</span></div>
+    <div class="tax-row"><span>실수령액</span><span>${fmt(netPay)}원</span></div>
+    <div style="border-top:1px solid var(--border);margin:6px 0"></div>
+    <div class="tax-row"><span>퇴직연금 적립 (회사, 1/12)</span><span>${fmt(retire)}원</span></div>
+  `;
+}
+
+function insertTaxToSheet() {
+  if (!taxData) { alert('먼저 월 기본급을 입력하세요'); return; }
+  const r = selectedCell ? selectedCell.r : 0;
+  const c = selectedCell ? selectedCell.c : 0;
+  const g = grid();
+  const rows = [
+    ['구분', '금액(원)', '비고'],
+    ['월 급여 총액', taxData.total, '기본급+수당'],
+    ['국민연금', -taxData.pension, '4.5% (근로자)'],
+    ['건강보험', -taxData.health, '3.545% (근로자)'],
+    ['장기요양', -taxData.longterm, '건보료×12.95%'],
+    ['고용보험', -taxData.employ, '0.9% (근로자)'],
+    ['소득세', -taxData.incomeTax, '간이세액표 기준'],
+    ['주민세', -taxData.residentTax, '소득세×10%'],
+    ['공제 합계', -taxData.totalDeduct, ''],
+    ['실수령액', taxData.netPay, ''],
+    ['퇴직연금(회사)', taxData.retire, '1/12 적립'],
+  ];
+  rows.forEach((row, i) => {
+    row.forEach((val, j) => {
+      const tr = r+i, tc = c+j;
+      while (g.length <= tr) g.push([]);
+      while (g[tr].length <= tc) g[tr].push('');
+      g[tr][tc] = String(val);
+    });
+  });
+  ensureSize(); render();
+  closeTaxModal();
+  setStatus('✅ 시트에 삽입됨');
+}
+
+// 모달 외부 클릭 닫기
+document.getElementById('tax-modal').addEventListener('click', e => {
+  if (e.target === e.currentTarget) closeTaxModal();
+});
 </script>
 </body>
 </html>
