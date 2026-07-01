@@ -57,6 +57,31 @@
   }
   #formula-input:focus { outline:none; border-color:var(--accent); background:#fff; }
 
+  /* ── 수식 자동완성 & 함수 힌트 ── */
+  #fn-autocomplete {
+    position:absolute; z-index:1000; background:#fff;
+    border:1px solid var(--border-bright); border-radius:6px;
+    box-shadow:0 4px 16px rgba(0,0,0,.15); max-height:180px; overflow-y:auto;
+    font-size:0.78rem; min-width:200px;
+  }
+  #fn-autocomplete .ac-item {
+    padding:5px 10px; cursor:pointer; white-space:nowrap;
+  }
+  #fn-autocomplete .ac-item:hover, #fn-autocomplete .ac-item.ac-active {
+    background:var(--accent-bg); color:var(--accent);
+  }
+  #fn-autocomplete .ac-item b { color:var(--accent); }
+  #fn-tip {
+    position:absolute; z-index:1000; background:#1a1d23; color:#e8eaf0;
+    border-radius:6px; padding:6px 10px; font-size:0.75rem;
+    box-shadow:0 4px 12px rgba(0,0,0,.3); pointer-events:none;
+    max-width:400px; line-height:1.6; white-space:pre-wrap;
+  }
+  #fn-tip .tip-fn { color:#80cbc4; font-weight:700; }
+  #fn-tip .tip-arg { color:#fff176; }
+  #fn-tip .tip-cur { color:#ffcc02; font-weight:700; text-decoration:underline; }
+  #fn-tip .tip-desc { color:#b0bec5; font-size:0.7rem; display:block; margin-top:2px; }
+
   /* ── 그리드 ── */
   .grid-outer {
     flex:1; overflow:hidden; position:relative;
@@ -257,6 +282,10 @@
   <input type="text" id="formula-input" placeholder="셀 클릭 후 수식 입력 (예: =SUM(A1:A5))"
     onkeydown="fbarKeydown(event)" onblur="fbarBlur()" oninput="onFormulaBarInput()">
 </div>
+
+<!-- 수식 자동완성 드롭다운 & 함수 힌트 -->
+<div id="fn-autocomplete" style="display:none"></div>
+<div id="fn-tip" style="display:none"></div>
 
 <!-- 그리드 -->
 <div class="grid-outer">
@@ -882,7 +911,7 @@ function updateFormulaRef(r, c) {
 }
 
 // 수식 입력줄 input 이벤트
-function onFormulaBarInput() { checkFormulaRef(); }
+function onFormulaBarInput() { checkFormulaRef(); updateFnUI(); }
 
 function moveSel(dr, dc) {
   if (!selectedCell) { if(!dr&&!dc) return; selectedCell={r:0,c:0}; }
@@ -966,8 +995,28 @@ document.addEventListener('keydown', e => {
 // 수식 입력줄 이벤트
 // ══════════════════════════════════════════
 function fbarKeydown(e) {
-  if (e.key==='Enter') { e.preventDefault(); applyFormulaBar(); }
-  if (e.key==='Escape') { e.preventDefault(); updateFormulaBar(); }
+  // 자동완성 드롭다운이 열려있을 때 키 처리
+  const ac = document.getElementById('fn-autocomplete');
+  if (ac.style.display !== 'none') {
+    if (e.key==='ArrowDown'||e.key==='ArrowUp') {
+      e.preventDefault();
+      const items = ac.querySelectorAll('.ac-item');
+      let idx = [...items].findIndex(el=>el.classList.contains('ac-active'));
+      if (e.key==='ArrowDown') idx=Math.min(idx+1,items.length-1);
+      else idx=Math.max(idx-1,0);
+      items.forEach((el,i)=>el.classList.toggle('ac-active',i===idx));
+      items[idx]?.scrollIntoView({block:'nearest'});
+      return;
+    }
+    if (e.key==='Tab'||e.key==='Enter') {
+      e.preventDefault();
+      const active=ac.querySelector('.ac-item.ac-active')||ac.querySelector('.ac-item');
+      if (active) { acInsert(active.dataset.fn); return; }
+    }
+    if (e.key==='Escape') { hideFnUI(); return; }
+  }
+  if (e.key==='Enter') { e.preventDefault(); applyFormulaBar(); hideFnUI(); }
+  if (e.key==='Escape') { e.preventDefault(); updateFormulaBar(); hideFnUI(); }
 }
 function fbarBlur() { /* Enter 없이 blur 시 자동 적용 안 함 */ }
 function applyFormulaBar() {
@@ -1152,6 +1201,185 @@ function insertColAt(c, pos) {
   clearRowColSel(); selectedCell = {r:0, c: insertIdx}; selEnd = null;
   render(); markDirty(); setStatus(`✅ ${colLetters(insertIdx)}열에 열 삽입됨`);
 }
+
+// ══════════════════════════════════════════
+// 함수 자동완성 & 인수 힌트 (Excel IntelliSense)
+// ══════════════════════════════════════════
+const FN_HINTS = {
+  SUM:      {sig:'SUM(숫자1, [숫자2], ...)',        args:['숫자1','숫자2,...'],  desc:'범위 또는 숫자들의 합계'},
+  AVERAGE:  {sig:'AVERAGE(숫자1, [숫자2], ...)',    args:['숫자1','숫자2,...'],  desc:'평균값'},
+  MAX:      {sig:'MAX(숫자1, [숫자2], ...)',         args:['숫자1','숫자2,...'],  desc:'최댓값'},
+  MIN:      {sig:'MIN(숫자1, [숫자2], ...)',         args:['숫자1','숫자2,...'],  desc:'최솟값'},
+  COUNT:    {sig:'COUNT(값1, ...)',                  args:['값1,...'],            desc:'숫자 셀 개수'},
+  COUNTA:   {sig:'COUNTA(값1, ...)',                 args:['값1,...'],            desc:'비어있지 않은 셀 개수'},
+  IF:       {sig:'IF(조건, 참값, 거짓값)',           args:['조건','참값','거짓값'], desc:'조건에 따라 값 반환'},
+  IFS:      {sig:'IFS(조건1, 값1, [조건2, 값2], ...)', args:['조건1','값1','조건2','값2','...'], desc:'여러 조건 중 첫 번째 참 값 반환'},
+  IFERROR:  {sig:'IFERROR(값, 오류시값)',           args:['값','오류시값'],      desc:'오류 시 대체 값 반환'},
+  IFNA:     {sig:'IFNA(값, #N/A시값)',              args:['값','#N/A시값'],      desc:'#N/A 오류 시 대체 값'},
+  SUMIF:    {sig:'SUMIF(조건범위, 조건, [합계범위])', args:['조건범위','조건','합계범위'], desc:'조건에 맞는 셀 합계'},
+  SUMIFS:   {sig:'SUMIFS(합계범위, 조건범위1, 조건1, [조건범위2, 조건2], ...)', args:['합계범위','조건범위1','조건1','조건범위2','조건2','...'], desc:'여러 조건에 맞는 합계'},
+  COUNTIF:  {sig:'COUNTIF(범위, 조건)',             args:['범위','조건'],        desc:'조건에 맞는 셀 수'},
+  COUNTIFS: {sig:'COUNTIFS(범위1, 조건1, [범위2, 조건2], ...)', args:['범위1','조건1','범위2','조건2','...'], desc:'여러 조건에 맞는 셀 수'},
+  AVERAGEIF:{sig:'AVERAGEIF(범위, 조건, [평균범위])', args:['범위','조건','평균범위'], desc:'조건에 맞는 셀 평균'},
+  AVERAGEIFS:{sig:'AVERAGEIFS(평균범위, 조건범위1, 조건1, ...)', args:['평균범위','조건범위1','조건1','...'], desc:'여러 조건 평균'},
+  VLOOKUP:  {sig:'VLOOKUP(검색값, 범위, 열번호, [정확일치])', args:['검색값','범위','열번호','정확일치(0=정확)'], desc:'세로 방향 검색 후 값 반환'},
+  HLOOKUP:  {sig:'HLOOKUP(검색값, 범위, 행번호, [정확일치])', args:['검색값','범위','행번호','정확일치'], desc:'가로 방향 검색'},
+  MATCH:    {sig:'MATCH(검색값, 범위, [일치방법])', args:['검색값','범위','일치방법(0=정확)'], desc:'값의 위치(순서) 반환'},
+  INDEX:    {sig:'INDEX(범위, 행번호, [열번호])',   args:['범위','행번호','열번호'], desc:'범위에서 행/열 위치의 값 반환'},
+  RANK:     {sig:'RANK(값, 범위, [순서])',          args:['값','범위','순서(0=내림)'], desc:'범위 내 순위'},
+  SUMPRODUCT:{sig:'SUMPRODUCT(배열1, [배열2], ...)', args:['배열1','배열2,...'],  desc:'배열을 곱한 후 합산'},
+  ROUND:    {sig:'ROUND(숫자, 자릿수)',             args:['숫자','자릿수'],       desc:'반올림'},
+  ROUNDUP:  {sig:'ROUNDUP(숫자, 자릿수)',           args:['숫자','자릿수'],       desc:'올림'},
+  ROUNDDOWN:{sig:'ROUNDDOWN(숫자, 자릿수)',         args:['숫자','자릿수'],       desc:'내림'},
+  ABS:      {sig:'ABS(숫자)',                       args:['숫자'],               desc:'절댓값'},
+  INT:      {sig:'INT(숫자)',                       args:['숫자'],               desc:'소수점 버림 정수'},
+  MOD:      {sig:'MOD(숫자, 나누는수)',             args:['숫자','나누는수'],     desc:'나머지'},
+  POWER:    {sig:'POWER(밑수, 지수)',               args:['밑수','지수'],         desc:'거듭제곱'},
+  SQRT:     {sig:'SQRT(숫자)',                      args:['숫자'],               desc:'제곱근'},
+  CEILING:  {sig:'CEILING(숫자, 단위)',             args:['숫자','단위'],         desc:'단위 배수로 올림'},
+  FLOOR:    {sig:'FLOOR(숫자, 단위)',               args:['숫자','단위'],         desc:'단위 배수로 내림'},
+  LARGE:    {sig:'LARGE(범위, 순위)',               args:['범위','순위'],         desc:'k번째로 큰 값'},
+  SMALL:    {sig:'SMALL(범위, 순위)',               args:['범위','순위'],         desc:'k번째로 작은 값'},
+  MEDIAN:   {sig:'MEDIAN(숫자1, ...)',              args:['숫자1,...'],           desc:'중간값(중앙값)'},
+  STDEV:    {sig:'STDEV(숫자1, ...)',               args:['숫자1,...'],           desc:'표준편차'},
+  LEN:      {sig:'LEN(텍스트)',                     args:['텍스트'],             desc:'문자열 길이'},
+  LEFT:     {sig:'LEFT(텍스트, 문자수)',            args:['텍스트','문자수'],     desc:'왼쪽에서 문자수만큼'},
+  RIGHT:    {sig:'RIGHT(텍스트, 문자수)',           args:['텍스트','문자수'],     desc:'오른쪽에서 문자수만큼'},
+  MID:      {sig:'MID(텍스트, 시작, 문자수)',       args:['텍스트','시작위치','문자수'], desc:'중간 부분 추출'},
+  TRIM:     {sig:'TRIM(텍스트)',                    args:['텍스트'],             desc:'앞뒤 공백 제거'},
+  UPPER:    {sig:'UPPER(텍스트)',                   args:['텍스트'],             desc:'대문자 변환'},
+  LOWER:    {sig:'LOWER(텍스트)',                   args:['텍스트'],             desc:'소문자 변환'},
+  CONCAT:   {sig:'CONCAT(텍스트1, ...)',            args:['텍스트1','텍스트2','...'], desc:'문자열 연결'},
+  TEXT:     {sig:'TEXT(숫자, 형식)',                args:['숫자','형식'],         desc:'숫자를 텍스트로 변환'},
+  VALUE:    {sig:'VALUE(텍스트)',                   args:['텍스트'],             desc:'텍스트를 숫자로 변환'},
+  TODAY:    {sig:'TODAY()',                         args:[],                     desc:'오늘 날짜'},
+  NOW:      {sig:'NOW()',                           args:[],                     desc:'현재 날짜와 시간'},
+  YEAR:     {sig:'YEAR(날짜)',                      args:['날짜'],               desc:'연도 반환'},
+  MONTH:    {sig:'MONTH(날짜)',                     args:['날짜'],               desc:'월 반환'},
+  DAY:      {sig:'DAY(날짜)',                       args:['날짜'],               desc:'일 반환'},
+};
+
+let acAcIdx = 0;
+
+function hideFnUI() {
+  document.getElementById('fn-autocomplete').style.display = 'none';
+  document.getElementById('fn-tip').style.display = 'none';
+}
+
+function acInsert(fnName) {
+  const fi = document.getElementById('formula-input');
+  const val = fi.value;
+  const cp = fi.selectionStart;
+  // 커서 앞 마지막 함수명 토큰 찾기 (알파벳만)
+  const before = val.slice(0, cp);
+  const m = /([A-Za-z_]+)$/.exec(before);
+  if (m) {
+    const start = cp - m[1].length;
+    fi.value = val.slice(0, start) + fnName + '(' + val.slice(cp);
+    const newPos = start + fnName.length + 1;
+    fi.setSelectionRange(newPos, newPos);
+  }
+  hideFnUI();
+  fi.focus();
+  updateFnUI();
+}
+
+function updateFnUI() {
+  const fi = document.getElementById('formula-input');
+  const val = fi.value;
+  const cp = fi.selectionStart || val.length;
+
+  // = 로 시작하는 수식이 아니면 숨기기
+  if (!val.startsWith('=')) { hideFnUI(); return; }
+
+  const expr = val.slice(1, cp); // = 제거
+  const ac = document.getElementById('fn-autocomplete');
+  const tip = document.getElementById('fn-tip');
+
+  // 커서 앞부분 분석
+  const before = expr;
+
+  // ── 함수 힌트: 열린 괄호 안에 있는지 확인
+  // 가장 마지막 열린 함수 찾기
+  const fnStack = []; // {name, parenPos}
+  let inStr = false;
+  for (let i = 0; i < before.length; i++) {
+    const ch = before[i];
+    if (ch==='"') { inStr=!inStr; continue; }
+    if (inStr) continue;
+    if (/[A-Za-z_]/.test(ch)) {
+      let w = ''; const s=i;
+      while(i<before.length&&/[A-Za-z0-9_]/.test(before[i])) w+=before[i++]; i--;
+      if (i+1<before.length && before[i+1]==='(') fnStack.push({name:w.toUpperCase(), pos:i+1});
+    } else if (ch==='(') {
+      // 익명 괄호
+    } else if (ch===')') {
+      fnStack.pop();
+    }
+  }
+
+  // 현재 커서가 함수 인수 안에 있으면 힌트 표시
+  if (fnStack.length > 0) {
+    const curFn = fnStack[fnStack.length-1];
+    const hint = FN_HINTS[curFn.name];
+    if (hint) {
+      // 현재 인수 인덱스: 커서까지 콤마 수 세기 (괄호 depth 고려)
+      const inside = before.slice(before.indexOf('(', curFn.pos) + 1);
+      let depth=0, commas=0, inS=false;
+      for (const ch of inside) {
+        if (ch==='"') inS=!inS;
+        if (inS) continue;
+        if (ch==='(') depth++;
+        else if (ch===')') { if(depth===0) break; depth--; }
+        else if (ch===','&&depth===0) commas++;
+      }
+      const argIdx = commas;
+
+      // 힌트 HTML 생성
+      const argParts = hint.args.map((a, i) => {
+        const cls = i===argIdx ? 'tip-cur' : 'tip-arg';
+        return `<span class="${cls}">${escHtml(a)}</span>`;
+      });
+      tip.innerHTML = `<span class="tip-fn">${curFn.name}</span>(<span>${argParts.join(', ')}</span>)<span class="tip-desc">${escHtml(hint.desc)}</span>`;
+
+      // 위치: formula-input 아래
+      const fiRect = fi.getBoundingClientRect();
+      tip.style.display = 'block';
+      tip.style.left = fiRect.left + 'px';
+      tip.style.top = (fiRect.bottom + 4) + 'px';
+      ac.style.display = 'none';
+      return;
+    }
+  }
+  tip.style.display = 'none';
+
+  // ── 자동완성: 커서 앞 알파벳 단어가 함수명 접두사
+  const wordM = /([A-Za-z_]{1,})$/.exec(before);
+  if (wordM && wordM[1].length >= 1) {
+    const prefix = wordM[1].toUpperCase();
+    const matches = Object.keys(FN_HINTS).filter(k => k.startsWith(prefix) && k !== prefix);
+    if (matches.length > 0) {
+      ac.innerHTML = matches.map((fn, i) => {
+        const bold = `<b>${fn.slice(0, prefix.length)}</b>${fn.slice(prefix.length)}`;
+        return `<div class="ac-item${i===0?' ac-active':''}" data-fn="${fn}" onclick="acInsert('${fn}')">${bold} <span style="color:#90a4ae;font-size:0.7rem">${FN_HINTS[fn].desc}</span></div>`;
+      }).join('');
+      const fiRect = fi.getBoundingClientRect();
+      ac.style.display = 'block';
+      ac.style.left = fiRect.left + 'px';
+      ac.style.top = (fiRect.bottom + 2) + 'px';
+      return;
+    }
+  }
+  ac.style.display = 'none';
+}
+
+// 수식 입력줄 클릭 시도 UI 업데이트, 외부 클릭 시 닫기
+document.addEventListener('mousedown', e => {
+  const ac=document.getElementById('fn-autocomplete');
+  const tip=document.getElementById('fn-tip');
+  const fi=document.getElementById('formula-input');
+  if (!ac.contains(e.target) && e.target!==fi) hideFnUI();
+});
 
 // ══════════════════════════════════════════
 // 정렬
@@ -1447,51 +1675,59 @@ function renderCell(raw) {
   if (typeof raw!=='string'||!raw.startsWith('=')) return raw;
   try { return evalFormula(raw.slice(1)); } catch(e) { return '#ERR'; }
 }
+// 시트 그리드 가져오기 (없으면 현재 시트)
+function getGrid(sheetName) {
+  if (!sheetName) return grid();
+  return sheets[sheetName] || grid();
+}
+
 // 셀 값을 숫자로 반환 (수식 계산용)
-function cellVal(ref, vis) {
+function cellVal(ref, vis, sheetName) {
   const m=/^([A-Za-z]+)(\d+)$/.exec(ref);
   if(!m) throw new Error('ref');
   const col=colIdx(m[1]), row=parseInt(m[2],10)-1;
-  const key=`${row}_${col}`;
-  if(vis.has(key)) throw new Error('circular');
-  const raw=(grid()[row]&&grid()[row][col]!=null)?grid()[row][col]:'';
+  const scopeKey=(sheetName||'')+'!'+row+'_'+col;
+  if(vis.has(scopeKey)) throw new Error('circular');
+  const g=getGrid(sheetName);
+  const raw=(g[row]&&g[row][col]!=null)?g[row][col]:'';
   if(typeof raw==='string'&&raw.startsWith('=')){
-    vis.add(key);const v=evalFormula(raw.slice(1),vis);vis.delete(key);return v;
+    vis.add(scopeKey);const v=evalFormula(raw.slice(1),vis,sheetName);vis.delete(scopeKey);return v;
   }
   const n=Number(String(raw).replace(/,/g,''));
   return isNaN(n)?0:n;
 }
 // 셀 원시 값(문자열 포함) 반환
-function cellRaw(ref, vis) {
+function cellRaw(ref, vis, sheetName) {
   const m=/^([A-Za-z]+)(\d+)$/.exec(ref);
   if(!m) return '';
   const col=colIdx(m[1]), row=parseInt(m[2],10)-1;
-  const key=`${row}_${col}`;
-  if(vis&&vis.has(key)) return '';
-  const raw=(grid()[row]&&grid()[row][col]!=null)?grid()[row][col]:'';
+  const scopeKey=(sheetName||'')+'!'+row+'_'+col;
+  if(vis&&vis.has(scopeKey)) return '';
+  const g=getGrid(sheetName);
+  const raw=(g[row]&&g[row][col]!=null)?g[row][col]:'';
   if(typeof raw==='string'&&raw.startsWith('=')){
-    const v=evalFormula(raw.slice(1),vis||new Set());
+    const v=evalFormula(raw.slice(1),vis||new Set(),sheetName);
     return typeof v==='number'?v:String(v);
   }
   return raw;
 }
-function rangeVals(a,b,vis) {
+function rangeVals(a,b,vis,sheetName) {
   const ma=/^([A-Za-z]+)(\d+)$/.exec(a),mb=/^([A-Za-z]+)(\d+)$/.exec(b);
   const c1=colIdx(ma[1]),r1=parseInt(ma[2],10)-1,c2=colIdx(mb[1]),r2=parseInt(mb[2],10)-1;
   const vals=[];
   for(let r=Math.min(r1,r2);r<=Math.max(r1,r2);r++)
     for(let c=Math.min(c1,c2);c<=Math.max(c1,c2);c++)
-      vals.push(cellVal(colLetters(c)+(r+1),vis));
+      vals.push(cellVal(colLetters(c)+(r+1),vis,sheetName));
   return vals;
 }
 // 범위를 원시값(문자열 포함) 배열로 반환
-function rangeRaws(a,b,vis) {
+function rangeRaws(a,b,vis,sheetName) {
   const ma=/^([A-Za-z]+)(\d+)$/.exec(a),mb=/^([A-Za-z]+)(\d+)$/.exec(b);
   const c1=colIdx(ma[1]),r1=parseInt(ma[2],10)-1,c2=colIdx(mb[1]),r2=parseInt(mb[2],10)-1;
   const vals=[];
   for(let r=Math.min(r1,r2);r<=Math.max(r1,r2);r++)
     for(let c=Math.min(c1,c2);c<=Math.max(c1,c2);c++)
-      vals.push(cellRaw(colLetters(c)+(r+1),vis));
+      vals.push(cellRaw(colLetters(c)+(r+1),vis,sheetName));
   return vals;
 }
 
@@ -1520,7 +1756,7 @@ function matchCond(val, cond) {
 
 // 범위 메타 파싱 (SUMIFS 등에서 범위 토큰 pair 필요)
 // evalFormula에서 범위 처리를 위해 RANGE 마커 객체 도입
-class RangeRef { constructor(a,b){this.a=a;this.b=b;} }
+class RangeRef { constructor(a,b,sheet){this.a=a;this.b=b;this.sheet=sheet||null;} }
 
 const FUNCS = {
   SUM: v=>v.reduce((a,b)=>a+(+b||0),0),
@@ -1561,76 +1797,72 @@ const FUNCS = {
     if(!(v[0] instanceof RangeRef)||v.length<2) return '#ERR';
     const cond=v[1]; const rng=v[0];
     const sumRng=v[2] instanceof RangeRef ? v[2] : rng;
-    const cr=rangeRaws(rng.a,rng.b), sr=rangeVals(sumRng.a,sumRng.b);
+    const cr=rangeRaws(rng.a,rng.b,undefined,rng.sheet), sr=rangeVals(sumRng.a,sumRng.b,undefined,sumRng.sheet);
     return cr.reduce((acc,val,i)=>matchCond(val,cond)?acc+(+sr[i]||0):acc,0);
   },
   COUNTIF: v=>{
     if(!(v[0] instanceof RangeRef)||v.length<2) return '#ERR';
-    const cr=rangeRaws(v[0].a,v[0].b), cond=v[1];
+    const cr=rangeRaws(v[0].a,v[0].b,undefined,v[0].sheet), cond=v[1];
     return cr.filter(val=>matchCond(val,cond)).length;
   },
   AVERAGEIF: v=>{
     if(!(v[0] instanceof RangeRef)||v.length<2) return '#ERR';
     const cond=v[1]; const rng=v[0];
     const sumRng=v[2] instanceof RangeRef ? v[2] : rng;
-    const cr=rangeRaws(rng.a,rng.b), sr=rangeVals(sumRng.a,sumRng.b);
+    const cr=rangeRaws(rng.a,rng.b,undefined,rng.sheet), sr=rangeVals(sumRng.a,sumRng.b,undefined,sumRng.sheet);
     const matched=cr.reduce((acc,val,i)=>matchCond(val,cond)?[...acc,+sr[i]||0]:acc,[]);
     return matched.length?matched.reduce((a,b)=>a+b,0)/matched.length:0;
   },
-  // SUMIFS(합계범위, 조건범위1, 조건1, ...)
   SUMIFS: v=>{
     if(!(v[0] instanceof RangeRef)) return '#ERR';
-    const sumR=rangeVals(v[0].a,v[0].b);
+    const sumR=rangeVals(v[0].a,v[0].b,undefined,v[0].sheet);
     let mask=sumR.map(()=>true);
     for(let i=1;i+1<v.length;i+=2){
       if(!(v[i] instanceof RangeRef)) return '#ERR';
-      const cr=rangeRaws(v[i].a,v[i].b); const cond=v[i+1];
+      const cr=rangeRaws(v[i].a,v[i].b,undefined,v[i].sheet); const cond=v[i+1];
       cr.forEach((val,idx)=>{ if(!matchCond(val,cond)) mask[idx]=false; });
     }
     return sumR.reduce((acc,val,i)=>mask[i]?acc+(+val||0):acc,0);
   },
   COUNTIFS: v=>{
     if(!(v[0] instanceof RangeRef)||v.length<2) return '#ERR';
-    const len=rangeRaws(v[0].a,v[0].b).length;
+    const len=rangeRaws(v[0].a,v[0].b,undefined,v[0].sheet).length;
     let mask=Array(len).fill(true);
     for(let i=0;i+1<v.length;i+=2){
       if(!(v[i] instanceof RangeRef)) return '#ERR';
-      const cr=rangeRaws(v[i].a,v[i].b); const cond=v[i+1];
+      const cr=rangeRaws(v[i].a,v[i].b,undefined,v[i].sheet); const cond=v[i+1];
       cr.forEach((val,idx)=>{ if(!matchCond(val,cond)) mask[idx]=false; });
     }
     return mask.filter(Boolean).length;
   },
   AVERAGEIFS: v=>{
     if(!(v[0] instanceof RangeRef)||v.length<2) return '#ERR';
-    const sumR=rangeVals(v[0].a,v[0].b);
+    const sumR=rangeVals(v[0].a,v[0].b,undefined,v[0].sheet);
     let mask=sumR.map(()=>true);
     for(let i=1;i+1<v.length;i+=2){
       if(!(v[i] instanceof RangeRef)) return '#ERR';
-      const cr=rangeRaws(v[i].a,v[i].b); const cond=v[i+1];
+      const cr=rangeRaws(v[i].a,v[i].b,undefined,v[i].sheet); const cond=v[i+1];
       cr.forEach((val,idx)=>{ if(!matchCond(val,cond)) mask[idx]=false; });
     }
     const matched=sumR.filter((_,i)=>mask[i]);
     return matched.length?matched.reduce((a,b)=>a+(+b||0),0)/matched.length:0;
   },
-  // VLOOKUP(검색값, 범위, 열번호, [근사일치])
   VLOOKUP: v=>{
     if(!(v[1] instanceof RangeRef)||v.length<3) return '#N/A';
-    const lookup=v[0], colNum=Math.round(+v[2]), exact=v[3]===0||v[3]===false;
+    const lookup=v[0], colNum=Math.round(+v[2]), exact=v[3]===0||v[3]===false||v[3]===undefined;
+    const sn=v[1].sheet;
     const ma=/^([A-Za-z]+)(\d+)$/.exec(v[1].a), mb=/^([A-Za-z]+)(\d+)$/.exec(v[1].b);
     const c1=colIdx(ma[1]),r1=parseInt(ma[2],10)-1,r2=parseInt(mb[2],10)-1;
     const lStr=String(lookup).toLowerCase().trim();
     for(let r=r1;r<=r2;r++){
-      const key=cellRaw(colLetters(c1)+(r+1));
-      if(exact?String(key).toLowerCase().trim()===lStr:String(key).toLowerCase().trim()===lStr){
-        return cellRaw(colLetters(c1+colNum-1)+(r+1));
-      }
+      const key=cellRaw(colLetters(c1)+(r+1),undefined,sn);
+      if(String(key).toLowerCase().trim()===lStr) return cellRaw(colLetters(c1+colNum-1)+(r+1),undefined,sn);
     }
-    // 근사 일치: 마지막으로 lookup 이하인 값
     if(!exact){
       let result='#N/A';
       for(let r=r1;r<=r2;r++){
-        const key=+cellRaw(colLetters(c1)+(r+1));
-        if(!isNaN(key)&&key<=(+lookup)) result=cellRaw(colLetters(c1+colNum-1)+(r+1));
+        const key=+cellRaw(colLetters(c1)+(r+1),undefined,sn);
+        if(!isNaN(key)&&key<=(+lookup)) result=cellRaw(colLetters(c1+colNum-1)+(r+1),undefined,sn);
         else break;
       }
       return result;
@@ -1639,58 +1871,47 @@ const FUNCS = {
   },
   HLOOKUP: v=>{
     if(!(v[1] instanceof RangeRef)||v.length<3) return '#N/A';
-    const lookup=v[0], rowNum=Math.round(+v[2]);
+    const lookup=v[0], rowNum=Math.round(+v[2]), sn=v[1].sheet;
     const ma=/^([A-Za-z]+)(\d+)$/.exec(v[1].a), mb=/^([A-Za-z]+)(\d+)$/.exec(v[1].b);
     const c1=colIdx(ma[1]),r1=parseInt(ma[2],10)-1,c2=colIdx(mb[1]);
     const lStr=String(lookup).toLowerCase().trim();
     for(let c=c1;c<=c2;c++){
-      const key=cellRaw(colLetters(c)+(r1+1));
-      if(String(key).toLowerCase().trim()===lStr) return cellRaw(colLetters(c)+(r1+rowNum));
+      const key=cellRaw(colLetters(c)+(r1+1),undefined,sn);
+      if(String(key).toLowerCase().trim()===lStr) return cellRaw(colLetters(c)+(r1+rowNum),undefined,sn);
     }
     return '#N/A';
   },
-  // MATCH(검색값, 범위, [일치방법])
   MATCH: v=>{
     if(!(v[1] instanceof RangeRef)) return '#N/A';
-    const lookup=v[0], type=v[2]===undefined?1:+v[2];
-    const raws=rangeRaws(v[1].a,v[1].b);
+    const lookup=v[0], type=v[2]===undefined?1:+v[2], sn=v[1].sheet;
+    const raws=rangeRaws(v[1].a,v[1].b,undefined,sn);
     const lStr=String(lookup).toLowerCase().trim();
-    if(type===0){ // 정확일치
+    if(type===0){
       const idx=raws.findIndex(x=>String(x).toLowerCase().trim()===lStr);
       return idx>=0?idx+1:'#N/A';
     }
-    if(type===1){ // 오름차순 근사
-      let res='#N/A';
-      for(let i=0;i<raws.length;i++){ if((+raws[i])<=(+lookup)) res=i+1; else break; }
-      return res;
-    }
-    if(type===-1){ // 내림차순 근사
-      for(let i=0;i<raws.length;i++){ if((+raws[i])<=(+lookup)) return i+1; }
-      return '#N/A';
-    }
+    if(type===1){ let res='#N/A'; for(let i=0;i<raws.length;i++){ if((+raws[i])<=(+lookup)) res=i+1; else break; } return res; }
+    if(type===-1){ for(let i=0;i<raws.length;i++){ if((+raws[i])<=(+lookup)) return i+1; } return '#N/A'; }
     return '#N/A';
   },
-  // INDEX(범위, 행번호, [열번호])
   INDEX: v=>{
     if(!(v[0] instanceof RangeRef)) return '#ERR';
+    const sn=v[0].sheet;
     const ma=/^([A-Za-z]+)(\d+)$/.exec(v[0].a);
     const c1=colIdx(ma[1]), r1=parseInt(ma[2],10)-1;
     const rowOff=Math.round(+v[1]||0)-1, colOff=Math.round(+v[2]||1)-1;
-    return cellRaw(colLetters(c1+colOff)+(r1+rowOff+1));
+    return cellRaw(colLetters(c1+colOff)+(r1+rowOff+1),undefined,sn);
   },
-  // RANK(값, 범위, [순서])
   RANK: v=>{
     if(!(v[1] instanceof RangeRef)) return '#ERR';
-    const num=+v[0], asc=v[2]&&+v[2]===1;
-    const vals=rangeVals(v[1].a,v[1].b).map(x=>+x||0).filter(x=>!isNaN(x));
+    const num=+v[0], asc=v[2]&&+v[2]===1, sn=v[1].sheet;
+    const vals=rangeVals(v[1].a,v[1].b,undefined,sn).map(x=>+x||0).filter(x=>!isNaN(x));
     const sorted=asc?[...vals].sort((a,b)=>a-b):[...vals].sort((a,b)=>b-a);
     const idx=sorted.indexOf(num);
     return idx>=0?idx+1:'#N/A';
   },
-  // SUMPRODUCT
   SUMPRODUCT: v=>{
-    // 인수가 RangeRef인 것들의 배열을 element-wise 곱해서 합산
-    const arrs=v.map(x=>x instanceof RangeRef?rangeVals(x.a,x.b):[+x||0]);
+    const arrs=v.map(x=>x instanceof RangeRef?rangeVals(x.a,x.b,undefined,x.sheet):[+x||0]);
     const len=Math.min(...arrs.map(a=>a.length));
     let sum=0;
     for(let i=0;i<len;i++) sum+=arrs.reduce((prod,arr)=>prod*(+arr[i]||0),1);
@@ -1715,7 +1936,8 @@ const FUNCS = {
   STDEV: v=>{ const a=v.flat().map(x=>+x).filter(x=>!isNaN(x)); if(a.length<2) return 0; const mean=a.reduce((s,x)=>s+x,0)/a.length; return Math.sqrt(a.reduce((s,x)=>s+(x-mean)**2,0)/(a.length-1)); },
 };
 function tokenize(s) {
-  // 문자열 리터럴 "...", 비교연산자 >=/<=/=/<>/>/< , 셀주소, 함수명, 숫자, 연산자
+  // 문자열 리터럴 "...", 시트참조 Sheet1!A1 또는 'Sheet 1'!A1:B5,
+  // 비교연산자, 셀주소, 함수명, 숫자, 연산자
   const toks=[]; let i=0;
   while(i<s.length){
     if(s[i]===' '||s[i]==='\t'){i++;continue;}
@@ -1729,6 +1951,20 @@ function tokenize(s) {
       }
       toks.push({type:'str',val:str}); continue;
     }
+    // 작은따옴표로 묶인 시트명 'Sheet 1'!A1
+    if(s[i]==="'"){
+      let sn=''; i++;
+      while(i<s.length&&s[i]!=="'") sn+=s[i++];
+      i++; // 닫는 '
+      if(s[i]==='!'){
+        i++;
+        let cell='';while(i<s.length&&/[A-Za-z0-9]/.test(s[i]))cell+=s[i++];
+        toks.push({type:'cell',val:cell,sheet:sn});
+      } else {
+        toks.push({type:'str',val:sn});
+      }
+      continue;
+    }
     // 비교 연산자
     if((s[i]==='<'&&(s[i+1]==='='||s[i+1]==='>'))||(s[i]==='>'&&s[i+1]==='=')){
       toks.push({type:'op',val:s.slice(i,i+2)});i+=2;continue;
@@ -1741,9 +1977,15 @@ function tokenize(s) {
       let n='';while(i<s.length&&((s[i]>='0'&&s[i]<='9')||s[i]==='.'))n+=s[i++];
       toks.push({type:'num',val:+n});continue;
     }
-    // 셀주소 or 함수명/키워드 (알파벳 시작)
+    // 알파벳 시작: 시트참조 Sheet1!A1, 셀주소, 함수명
     if(/[A-Za-z_]/.test(s[i])){
       let w='';while(i<s.length&&/[A-Za-z0-9_]/.test(s[i]))w+=s[i++];
+      // Sheet1!A1 형태 체크
+      if(s[i]==='!'){
+        i++;
+        let cell='';while(i<s.length&&/[A-Za-z0-9]/.test(s[i]))cell+=s[i++];
+        toks.push({type:'cell',val:cell,sheet:w}); continue;
+      }
       toks.push({type:/^[A-Za-z]+\d+$/.test(w)?'cell':'name',val:w});continue;
     }
     // 단일 문자 연산자/구분자
@@ -1752,7 +1994,7 @@ function tokenize(s) {
   return toks;
 }
 
-function evalFormula(expr,vis) {
+function evalFormula(expr,vis,ctxSheet) {
   vis=vis||new Set();
   const toks=tokenize(expr); let pos=0;
   const peek=()=>toks[pos], next=()=>toks[pos++];
@@ -1817,11 +2059,16 @@ function evalFormula(expr,vis) {
       if(fn==='TRUE') return true; if(fn==='FALSE') return false;
       throw new Error('unknown:'+fn);
     }
-    // 셀 주소
+    // 셀 주소 (시트명 포함 가능: t.sheet)
     if(t.type==='cell'){
       next();
-      if(peekVal()===':'){next();const t2=next();if(t2?.type!=='cell')throw new Error('range');return new RangeRef(t.val,t2.val);}
-      return cellVal(t.val,vis);
+      const sn=t.sheet||null;
+      if(peekVal()===':'){
+        next();const t2=next();
+        if(t2?.type!=='cell')throw new Error('range');
+        return new RangeRef(t.val,t2.val,sn||t2.sheet||null);
+      }
+      return cellVal(t.val,vis,sn);
     }
     throw new Error('tok:'+JSON.stringify(t));
   }
