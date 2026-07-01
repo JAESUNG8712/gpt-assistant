@@ -104,6 +104,13 @@
   th:hover:not(:first-child) { background:#dde3ec; }
   th.rh { position:sticky; left:0; top:0; z-index:3; width:42px; cursor:default; }
   th.col-selected { background:#bbdefb !important; color:var(--accent); }
+  /* 수식 참조 셀 하이라이트 (최대 6가지 색) */
+  td.fref-0 { outline: 2px solid #1565c0 !important; background:rgba(21,101,192,0.08) !important; }
+  td.fref-1 { outline: 2px solid #c62828 !important; background:rgba(198,40,40,0.08) !important; }
+  td.fref-2 { outline: 2px solid #2e7d32 !important; background:rgba(46,125,50,0.08) !important; }
+  td.fref-3 { outline: 2px solid #f57f17 !important; background:rgba(245,127,23,0.08) !important; }
+  td.fref-4 { outline: 2px solid #6a1b9a !important; background:rgba(106,27,154,0.08) !important; }
+  td.fref-5 { outline: 2px solid #00695c !important; background:rgba(0,105,92,0.08) !important; }
   th.sort-asc::after { content:' ↑'; color:var(--accent); }
   th.sort-desc::after { content:' ↓'; color:var(--accent); }
   td.rh {
@@ -280,7 +287,8 @@
   <span class="cell-ref-box" id="cell-ref">-</span>
   <span class="fx-label">fx</span>
   <input type="text" id="formula-input" placeholder="셀 클릭 후 수식 입력 (예: =SUM(A1:A5))"
-    onkeydown="fbarKeydown(event)" onblur="fbarBlur()" oninput="onFormulaBarInput()">
+    onkeydown="fbarKeydown(event)" onblur="fbarBlur()" oninput="onFormulaBarInput()"
+    onfocus="applyFormulaRefHighlights(this.value)">
 </div>
 
 <!-- 수식 자동완성 드롭다운 & 함수 힌트 -->
@@ -816,6 +824,7 @@ function commitEdit() {
     td.classList.toggle('err', String(disp).startsWith('#ERR')||String(disp).startsWith('#DIV'));
   }
   editMode = false;
+  clearFormulaRefHighlights();
   if (newVal !== oldVal) markDirty();
   updateFormulaBar();
   recomputeAll();
@@ -832,6 +841,7 @@ function cancelEdit() {
     td.classList.remove('editing'); td.classList.add('selected');
   }
   editMode = false;
+  clearFormulaRefHighlights();
   updateFormulaBar();
 }
 
@@ -911,7 +921,12 @@ function updateFormulaRef(r, c) {
 }
 
 // 수식 입력줄 input 이벤트
-function onFormulaBarInput() { checkFormulaRef(); updateFnUI(); }
+function onFormulaBarInput() {
+  checkFormulaRef();
+  updateFnUI();
+  const fbar = document.getElementById('formula-input');
+  if (fbar) applyFormulaRefHighlights(fbar.value);
+}
 
 function moveSel(dr, dc) {
   if (!selectedCell) { if(!dr&&!dc) return; selectedCell={r:0,c:0}; }
@@ -1018,7 +1033,10 @@ function fbarKeydown(e) {
   if (e.key==='Enter') { e.preventDefault(); applyFormulaBar(); hideFnUI(); }
   if (e.key==='Escape') { e.preventDefault(); updateFormulaBar(); hideFnUI(); }
 }
-function fbarBlur() { /* Enter 없이 blur 시 자동 적용 안 함 */ }
+function fbarBlur() {
+  clearFormulaRefHighlights();
+  /* Enter 없이 blur 시 자동 적용 안 함 */
+}
 function applyFormulaBar() {
   if (!selectedCell) return;
   const {r,c} = selectedCell;
@@ -1264,6 +1282,55 @@ let acAcIdx = 0;
 function hideFnUI() {
   document.getElementById('fn-autocomplete').style.display = 'none';
   document.getElementById('fn-tip').style.display = 'none';
+}
+
+// ── 수식 참조 셀 하이라이트 ──────────────────────────────
+function clearFormulaRefHighlights() {
+  document.querySelectorAll('td[class*="fref-"]').forEach(td => {
+    td.className = td.className.replace(/\bfref-\d\b/g, '').trim();
+  });
+}
+function applyFormulaRefHighlights(formula) {
+  clearFormulaRefHighlights();
+  if (!formula || !formula.startsWith('=')) return;
+  // 수식에서 셀/범위 참조 추출 (같은 시트만 하이라이트)
+  const expr = formula.slice(1);
+  // Sheet!Ref 또는 그냥 Ref 패턴 추출
+  const refRe = /(?:'[^']+'\!|[A-Za-z]\w*\!)?([A-Za-z]+\d*(?::[A-Za-z]+\d*)?)/g;
+  const groups = []; // [{sheet, a, b}]
+  let m;
+  const toks = tokenize(expr);
+  // 토큰에서 cell 토큰만 수집, 범위 페어 묶기
+  for (let i = 0; i < toks.length; i++) {
+    const t = toks[i];
+    if (t.type !== 'cell') continue;
+    const sheet = t.sheet || null;
+    let a = t.val, b = t.val;
+    if (toks[i+1]?.type === 'sym' && toks[i+1]?.val === ':' && toks[i+2]?.type === 'cell') {
+      b = toks[i+2].val; i += 2;
+    }
+    // 같은 시트(또는 시트명 없음 = 현재 시트)의 것만 하이라이트
+    const resolvedSheet = sheet ? resolveSheet(sheet) : activeSheet;
+    if (resolvedSheet !== activeSheet) continue;
+    // 기존 그룹과 같은 범위면 skip (색 인덱스 재사용)
+    let gi = groups.findIndex(g => g.a === a && g.b === b);
+    if (gi < 0) { gi = groups.length; groups.push({a, b}); }
+    if (gi >= 6) continue;
+    // 실제 셀 TD에 클래스 적용
+    const pa = parseRangeCorner(a), pb = parseRangeCorner(b);
+    if (!pa || !pb) continue;
+    const g = getGrid(activeSheet);
+    const maxRow = Math.max(g.length - 1, 0);
+    const c1=Math.min(pa.col,pb.col), c2=Math.max(pa.col,pb.col);
+    const r1=Math.min(pa.row??0, pb.row??0);
+    const r2=Math.min(Math.max(pa.row??maxRow, pb.row??maxRow), maxRow);
+    for (let r = r1; r <= r2; r++) {
+      for (let c = c1; c <= c2; c++) {
+        const td = document.querySelector(`#sheet td[data-r="${r}"][data-c="${c}"]`);
+        if (td) td.classList.add(`fref-${gi}`);
+      }
+    }
+  }
 }
 
 function acInsert(fnName) {
@@ -1678,7 +1745,14 @@ function renderCell(raw) {
 // 시트 그리드 가져오기 (없으면 현재 시트)
 function getGrid(sheetName) {
   if (!sheetName) return grid();
-  return sheets[sheetName] || grid();
+  // 대소문자 무시 매칭
+  const key = Object.keys(sheets).find(k => k.toLowerCase() === sheetName.toLowerCase());
+  return (key ? sheets[key] : null) || grid();
+}
+function resolveSheet(sheetName) {
+  if (!sheetName) return activeSheet;
+  const key = Object.keys(sheets).find(k => k.toLowerCase() === sheetName.toLowerCase());
+  return key || sheetName;
 }
 
 // 셀 값을 숫자로 반환 (수식 계산용)
@@ -1711,22 +1785,38 @@ function cellRaw(ref, vis, sheetName) {
   }
   return raw;
 }
+// 범위 끝점 파싱 — 열전체(S:S), 행전체(1:1), 일반(A1) 모두 처리
+function parseRangeCorner(ref) {
+  const m=/^([A-Za-z]+)(\d+)?$/.exec(ref.trim());
+  if(!m) return null;
+  return { col: colIdx(m[1]), row: m[2] != null ? parseInt(m[2],10)-1 : null };
+}
 function rangeVals(a,b,vis,sheetName) {
-  const ma=/^([A-Za-z]+)(\d+)$/.exec(a),mb=/^([A-Za-z]+)(\d+)$/.exec(b);
-  const c1=colIdx(ma[1]),r1=parseInt(ma[2],10)-1,c2=colIdx(mb[1]),r2=parseInt(mb[2],10)-1;
+  const pa=parseRangeCorner(a), pb=parseRangeCorner(b);
+  if(!pa||!pb) return [];
+  const g=getGrid(sheetName);
+  const maxRow=Math.max(g.length-1,0);
+  const c1=Math.min(pa.col,pb.col), c2=Math.max(pa.col,pb.col);
+  const r1=Math.min(pa.row??0, pb.row??0);
+  const r2=Math.min(Math.max(pa.row??maxRow, pb.row??maxRow), maxRow);
   const vals=[];
-  for(let r=Math.min(r1,r2);r<=Math.max(r1,r2);r++)
-    for(let c=Math.min(c1,c2);c<=Math.max(c1,c2);c++)
+  for(let r=r1;r<=r2;r++)
+    for(let c=c1;c<=c2;c++)
       vals.push(cellVal(colLetters(c)+(r+1),vis,sheetName));
   return vals;
 }
 // 범위를 원시값(문자열 포함) 배열로 반환
 function rangeRaws(a,b,vis,sheetName) {
-  const ma=/^([A-Za-z]+)(\d+)$/.exec(a),mb=/^([A-Za-z]+)(\d+)$/.exec(b);
-  const c1=colIdx(ma[1]),r1=parseInt(ma[2],10)-1,c2=colIdx(mb[1]),r2=parseInt(mb[2],10)-1;
+  const pa=parseRangeCorner(a), pb=parseRangeCorner(b);
+  if(!pa||!pb) return [];
+  const g=getGrid(sheetName);
+  const maxRow=Math.max(g.length-1,0);
+  const c1=Math.min(pa.col,pb.col), c2=Math.max(pa.col,pb.col);
+  const r1=Math.min(pa.row??0, pb.row??0);
+  const r2=Math.min(Math.max(pa.row??maxRow, pb.row??maxRow), maxRow);
   const vals=[];
-  for(let r=Math.min(r1,r2);r<=Math.max(r1,r2);r++)
-    for(let c=Math.min(c1,c2);c<=Math.max(c1,c2);c++)
+  for(let r=r1;r<=r2;r++)
+    for(let c=c1;c<=c2;c++)
       vals.push(cellRaw(colLetters(c)+(r+1),vis,sheetName));
   return vals;
 }
@@ -1851,8 +1941,10 @@ const FUNCS = {
     if(!(v[1] instanceof RangeRef)||v.length<3) return '#N/A';
     const lookup=v[0], colNum=Math.round(+v[2]), exact=v[3]===0||v[3]===false||v[3]===undefined;
     const sn=v[1].sheet;
-    const ma=/^([A-Za-z]+)(\d+)$/.exec(v[1].a), mb=/^([A-Za-z]+)(\d+)$/.exec(v[1].b);
-    const c1=colIdx(ma[1]),r1=parseInt(ma[2],10)-1,r2=parseInt(mb[2],10)-1;
+    const pa=parseRangeCorner(v[1].a), pb=parseRangeCorner(v[1].b);
+    if(!pa||!pb) return '#N/A';
+    const g=getGrid(sn); const maxRow=Math.max(g.length-1,0);
+    const c1=Math.min(pa.col,pb.col), r1=Math.min(pa.row??0,pb.row??0), r2=Math.min(Math.max(pa.row??maxRow,pb.row??maxRow),maxRow);
     const lStr=String(lookup).toLowerCase().trim();
     for(let r=r1;r<=r2;r++){
       const key=cellRaw(colLetters(c1)+(r+1),undefined,sn);
@@ -1872,12 +1964,14 @@ const FUNCS = {
   HLOOKUP: v=>{
     if(!(v[1] instanceof RangeRef)||v.length<3) return '#N/A';
     const lookup=v[0], rowNum=Math.round(+v[2]), sn=v[1].sheet;
-    const ma=/^([A-Za-z]+)(\d+)$/.exec(v[1].a), mb=/^([A-Za-z]+)(\d+)$/.exec(v[1].b);
-    const c1=colIdx(ma[1]),r1=parseInt(ma[2],10)-1,c2=colIdx(mb[1]);
+    const hpa=parseRangeCorner(v[1].a), hpb=parseRangeCorner(v[1].b);
+    if(!hpa||!hpb) return '#N/A';
+    const hg=getGrid(sn); const hMaxRow=Math.max(hg.length-1,0);
+    const hc1=Math.min(hpa.col,hpb.col), hc2=Math.max(hpa.col,hpb.col), hr1=Math.min(hpa.row??0,hpb.row??0);
     const lStr=String(lookup).toLowerCase().trim();
-    for(let c=c1;c<=c2;c++){
-      const key=cellRaw(colLetters(c)+(r1+1),undefined,sn);
-      if(String(key).toLowerCase().trim()===lStr) return cellRaw(colLetters(c)+(r1+rowNum),undefined,sn);
+    for(let c=hc1;c<=hc2;c++){
+      const key=cellRaw(colLetters(c)+(hr1+1),undefined,sn);
+      if(String(key).toLowerCase().trim()===lStr) return cellRaw(colLetters(c)+(hr1+rowNum),undefined,sn);
     }
     return '#N/A';
   },
@@ -1985,6 +2079,12 @@ function tokenize(s) {
         i++;
         let cell='';while(i<s.length&&/[A-Za-z0-9]/.test(s[i]))cell+=s[i++];
         toks.push({type:'cell',val:cell,sheet:w}); continue;
+      }
+      // 열 전체 참조(S:S)는 다음 토큰 ':' 뒤에 올 같은 열 문자로 확인
+      if(/^[A-Za-z]+$/.test(w)&&s[i]===':'){
+        // 다음이 또 열문자(열전체범위 S:S)면 cell 토큰으로 처리
+        const peek2=/^[A-Za-z]+(\d+)?/.exec(s.slice(i+1));
+        if(peek2){toks.push({type:'cell',val:w});continue;}
       }
       toks.push({type:/^[A-Za-z]+\d+$/.test(w)?'cell':'name',val:w});continue;
     }
