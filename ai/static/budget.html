@@ -1447,6 +1447,7 @@ function renderCell(raw) {
   if (typeof raw!=='string'||!raw.startsWith('=')) return raw;
   try { return evalFormula(raw.slice(1)); } catch(e) { return '#ERR'; }
 }
+// 셀 값을 숫자로 반환 (수식 계산용)
 function cellVal(ref, vis) {
   const m=/^([A-Za-z]+)(\d+)$/.exec(ref);
   if(!m) throw new Error('ref');
@@ -1460,6 +1461,20 @@ function cellVal(ref, vis) {
   const n=Number(String(raw).replace(/,/g,''));
   return isNaN(n)?0:n;
 }
+// 셀 원시 값(문자열 포함) 반환
+function cellRaw(ref, vis) {
+  const m=/^([A-Za-z]+)(\d+)$/.exec(ref);
+  if(!m) return '';
+  const col=colIdx(m[1]), row=parseInt(m[2],10)-1;
+  const key=`${row}_${col}`;
+  if(vis&&vis.has(key)) return '';
+  const raw=(grid()[row]&&grid()[row][col]!=null)?grid()[row][col]:'';
+  if(typeof raw==='string'&&raw.startsWith('=')){
+    const v=evalFormula(raw.slice(1),vis||new Set());
+    return typeof v==='number'?v:String(v);
+  }
+  return raw;
+}
 function rangeVals(a,b,vis) {
   const ma=/^([A-Za-z]+)(\d+)$/.exec(a),mb=/^([A-Za-z]+)(\d+)$/.exec(b);
   const c1=colIdx(ma[1]),r1=parseInt(ma[2],10)-1,c2=colIdx(mb[1]),r2=parseInt(mb[2],10)-1;
@@ -1469,41 +1484,357 @@ function rangeVals(a,b,vis) {
       vals.push(cellVal(colLetters(c)+(r+1),vis));
   return vals;
 }
+// 범위를 원시값(문자열 포함) 배열로 반환
+function rangeRaws(a,b,vis) {
+  const ma=/^([A-Za-z]+)(\d+)$/.exec(a),mb=/^([A-Za-z]+)(\d+)$/.exec(b);
+  const c1=colIdx(ma[1]),r1=parseInt(ma[2],10)-1,c2=colIdx(mb[1]),r2=parseInt(mb[2],10)-1;
+  const vals=[];
+  for(let r=Math.min(r1,r2);r<=Math.max(r1,r2);r++)
+    for(let c=Math.min(c1,c2);c<=Math.max(c1,c2);c++)
+      vals.push(cellRaw(colLetters(c)+(r+1),vis));
+  return vals;
+}
+
+// 조건 일치 헬퍼: 와일드카드 * ? 지원
+function matchCond(val, cond) {
+  const v = String(val).toLowerCase().trim();
+  const c = String(cond).toLowerCase().trim();
+  // 비교 연산자: >=, <=, <>, >, <
+  const opM = /^(>=|<=|<>|>|<)(.*)$/.exec(c);
+  if (opM) {
+    const n1=parseFloat(v.replace(/,/g,'')), n2=parseFloat(opM[2].replace(/,/g,''));
+    if (!isNaN(n1)&&!isNaN(n2)) {
+      const op=opM[1];
+      return op==='>='?n1>=n2:op==='<='?n1<=n2:op==='<>'?n1!==n2:op==='>'?n1>n2:n1<n2;
+    }
+    if (opM[1]==='<>') return v!==opM[2].toLowerCase().trim();
+    return false;
+  }
+  // 와일드카드
+  if (c.includes('*')||c.includes('?')) {
+    const re=new RegExp('^'+c.replace(/[.+^${}()|[\]\\]/g,'\\$&').replace(/\*/g,'.*').replace(/\?/g,'.')+'$');
+    return re.test(v);
+  }
+  return v===c;
+}
+
+// 범위 메타 파싱 (SUMIFS 등에서 범위 토큰 pair 필요)
+// evalFormula에서 범위 처리를 위해 RANGE 마커 객체 도입
+class RangeRef { constructor(a,b){this.a=a;this.b=b;} }
+
 const FUNCS = {
-  SUM:v=>v.reduce((a,b)=>a+b,0),
-  AVERAGE:v=>v.length?v.reduce((a,b)=>a+b,0)/v.length:0,
-  MAX:v=>v.length?Math.max(...v):0, MIN:v=>v.length?Math.min(...v):0,
-  COUNT:v=>v.length,
-  ROUND:v=>v.length>=2?Math.round(v[0]*Math.pow(10,v[1]))/Math.pow(10,v[1]):Math.round(v[0]||0),
-  IF:v=>v.length>=3?(v[0]?v[1]:v[2]):0,
-  ABS:v=>Math.abs(v[0]||0), INT:v=>Math.floor(v[0]||0),
+  SUM: v=>v.reduce((a,b)=>a+(+b||0),0),
+  AVERAGE: v=>{ const ns=v.filter(x=>!isNaN(+x)); return ns.length?ns.reduce((a,b)=>a+(+b),0)/ns.length:0; },
+  MAX: v=>v.length?Math.max(...v.map(x=>+x||0)):0,
+  MIN: v=>v.length?Math.min(...v.map(x=>+x||0)):0,
+  COUNT: v=>v.filter(x=>!isNaN(+x)&&x!=='').length,
+  COUNTA: v=>v.filter(x=>x!==''&&x!=null).length,
+  ROUND: v=>v.length>=2?Math.round(v[0]*Math.pow(10,v[1]))/Math.pow(10,v[1]):Math.round(v[0]||0),
+  ROUNDUP: v=>{ const p=Math.pow(10,v[1]||0); return Math.ceil((v[0]||0)*p)/p; },
+  ROUNDDOWN: v=>{ const p=Math.pow(10,v[1]||0); return Math.floor((v[0]||0)*p)/p; },
+  IF: v=>v.length>=3?(v[0]?v[1]:v[2]):0,
+  IFS: v=>{ for(let i=0;i+1<v.length;i+=2){if(v[i]) return v[i+1];} return '#N/A'; },
+  ABS: v=>Math.abs(v[0]||0),
+  INT: v=>Math.floor(v[0]||0),
+  MOD: v=>v.length>=2?(v[1]===0?'#DIV/0':((v[0]%v[1])+v[1])%v[1]):0,
+  POWER: v=>Math.pow(v[0]||0,v[1]||0),
+  SQRT: v=>v[0]>=0?Math.sqrt(v[0]):'#NUM',
+  LEN: v=>String(v[0]??'').length,
+  LEFT: v=>String(v[0]??'').slice(0,v[1]??1),
+  RIGHT: v=>{ const s=String(v[0]??''); return s.slice(Math.max(0,s.length-(v[1]??1))); },
+  MID: v=>String(v[0]??'').slice((v[1]??1)-1,(v[1]??1)-1+(v[2]??1)),
+  TRIM: v=>String(v[0]??'').trim(),
+  UPPER: v=>String(v[0]??'').toUpperCase(),
+  LOWER: v=>String(v[0]??'').toLowerCase(),
+  CONCATENATE: v=>v.map(x=>x??'').join(''),
+  CONCAT: v=>v.map(x=>x??'').join(''),
+  TEXT: v=>{ const n=+v[0]; return isNaN(n)?String(v[0]??''):n.toLocaleString(); },
+  VALUE: v=>{ const n=parseFloat(String(v[0]??'').replace(/,/g,'')); return isNaN(n)?'#VALUE':n; },
+  ISNUMBER: v=>typeof v[0]==='number'||(!isNaN(+v[0])&&v[0]!==''),
+  ISBLANK: v=>v[0]===''||v[0]==null,
+  ISERROR: v=>typeof v[0]==='string'&&v[0].startsWith('#'),
+  NOT: v=>!v[0],
+  AND: v=>v.every(Boolean),
+  OR: v=>v.some(Boolean),
+  // 집계 (SUMIF / COUNTIF / AVERAGEIF)
+  SUMIF: v=>{
+    if(!(v[0] instanceof RangeRef)||v.length<2) return '#ERR';
+    const cond=v[1]; const rng=v[0];
+    const sumRng=v[2] instanceof RangeRef ? v[2] : rng;
+    const cr=rangeRaws(rng.a,rng.b), sr=rangeVals(sumRng.a,sumRng.b);
+    return cr.reduce((acc,val,i)=>matchCond(val,cond)?acc+(+sr[i]||0):acc,0);
+  },
+  COUNTIF: v=>{
+    if(!(v[0] instanceof RangeRef)||v.length<2) return '#ERR';
+    const cr=rangeRaws(v[0].a,v[0].b), cond=v[1];
+    return cr.filter(val=>matchCond(val,cond)).length;
+  },
+  AVERAGEIF: v=>{
+    if(!(v[0] instanceof RangeRef)||v.length<2) return '#ERR';
+    const cond=v[1]; const rng=v[0];
+    const sumRng=v[2] instanceof RangeRef ? v[2] : rng;
+    const cr=rangeRaws(rng.a,rng.b), sr=rangeVals(sumRng.a,sumRng.b);
+    const matched=cr.reduce((acc,val,i)=>matchCond(val,cond)?[...acc,+sr[i]||0]:acc,[]);
+    return matched.length?matched.reduce((a,b)=>a+b,0)/matched.length:0;
+  },
+  // SUMIFS(합계범위, 조건범위1, 조건1, ...)
+  SUMIFS: v=>{
+    if(!(v[0] instanceof RangeRef)) return '#ERR';
+    const sumR=rangeVals(v[0].a,v[0].b);
+    let mask=sumR.map(()=>true);
+    for(let i=1;i+1<v.length;i+=2){
+      if(!(v[i] instanceof RangeRef)) return '#ERR';
+      const cr=rangeRaws(v[i].a,v[i].b); const cond=v[i+1];
+      cr.forEach((val,idx)=>{ if(!matchCond(val,cond)) mask[idx]=false; });
+    }
+    return sumR.reduce((acc,val,i)=>mask[i]?acc+(+val||0):acc,0);
+  },
+  COUNTIFS: v=>{
+    if(!(v[0] instanceof RangeRef)||v.length<2) return '#ERR';
+    const len=rangeRaws(v[0].a,v[0].b).length;
+    let mask=Array(len).fill(true);
+    for(let i=0;i+1<v.length;i+=2){
+      if(!(v[i] instanceof RangeRef)) return '#ERR';
+      const cr=rangeRaws(v[i].a,v[i].b); const cond=v[i+1];
+      cr.forEach((val,idx)=>{ if(!matchCond(val,cond)) mask[idx]=false; });
+    }
+    return mask.filter(Boolean).length;
+  },
+  AVERAGEIFS: v=>{
+    if(!(v[0] instanceof RangeRef)||v.length<2) return '#ERR';
+    const sumR=rangeVals(v[0].a,v[0].b);
+    let mask=sumR.map(()=>true);
+    for(let i=1;i+1<v.length;i+=2){
+      if(!(v[i] instanceof RangeRef)) return '#ERR';
+      const cr=rangeRaws(v[i].a,v[i].b); const cond=v[i+1];
+      cr.forEach((val,idx)=>{ if(!matchCond(val,cond)) mask[idx]=false; });
+    }
+    const matched=sumR.filter((_,i)=>mask[i]);
+    return matched.length?matched.reduce((a,b)=>a+(+b||0),0)/matched.length:0;
+  },
+  // VLOOKUP(검색값, 범위, 열번호, [근사일치])
+  VLOOKUP: v=>{
+    if(!(v[1] instanceof RangeRef)||v.length<3) return '#N/A';
+    const lookup=v[0], colNum=Math.round(+v[2]), exact=v[3]===0||v[3]===false;
+    const ma=/^([A-Za-z]+)(\d+)$/.exec(v[1].a), mb=/^([A-Za-z]+)(\d+)$/.exec(v[1].b);
+    const c1=colIdx(ma[1]),r1=parseInt(ma[2],10)-1,r2=parseInt(mb[2],10)-1;
+    const lStr=String(lookup).toLowerCase().trim();
+    for(let r=r1;r<=r2;r++){
+      const key=cellRaw(colLetters(c1)+(r+1));
+      if(exact?String(key).toLowerCase().trim()===lStr:String(key).toLowerCase().trim()===lStr){
+        return cellRaw(colLetters(c1+colNum-1)+(r+1));
+      }
+    }
+    // 근사 일치: 마지막으로 lookup 이하인 값
+    if(!exact){
+      let result='#N/A';
+      for(let r=r1;r<=r2;r++){
+        const key=+cellRaw(colLetters(c1)+(r+1));
+        if(!isNaN(key)&&key<=(+lookup)) result=cellRaw(colLetters(c1+colNum-1)+(r+1));
+        else break;
+      }
+      return result;
+    }
+    return '#N/A';
+  },
+  HLOOKUP: v=>{
+    if(!(v[1] instanceof RangeRef)||v.length<3) return '#N/A';
+    const lookup=v[0], rowNum=Math.round(+v[2]);
+    const ma=/^([A-Za-z]+)(\d+)$/.exec(v[1].a), mb=/^([A-Za-z]+)(\d+)$/.exec(v[1].b);
+    const c1=colIdx(ma[1]),r1=parseInt(ma[2],10)-1,c2=colIdx(mb[1]);
+    const lStr=String(lookup).toLowerCase().trim();
+    for(let c=c1;c<=c2;c++){
+      const key=cellRaw(colLetters(c)+(r1+1));
+      if(String(key).toLowerCase().trim()===lStr) return cellRaw(colLetters(c)+(r1+rowNum));
+    }
+    return '#N/A';
+  },
+  // MATCH(검색값, 범위, [일치방법])
+  MATCH: v=>{
+    if(!(v[1] instanceof RangeRef)) return '#N/A';
+    const lookup=v[0], type=v[2]===undefined?1:+v[2];
+    const raws=rangeRaws(v[1].a,v[1].b);
+    const lStr=String(lookup).toLowerCase().trim();
+    if(type===0){ // 정확일치
+      const idx=raws.findIndex(x=>String(x).toLowerCase().trim()===lStr);
+      return idx>=0?idx+1:'#N/A';
+    }
+    if(type===1){ // 오름차순 근사
+      let res='#N/A';
+      for(let i=0;i<raws.length;i++){ if((+raws[i])<=(+lookup)) res=i+1; else break; }
+      return res;
+    }
+    if(type===-1){ // 내림차순 근사
+      for(let i=0;i<raws.length;i++){ if((+raws[i])<=(+lookup)) return i+1; }
+      return '#N/A';
+    }
+    return '#N/A';
+  },
+  // INDEX(범위, 행번호, [열번호])
+  INDEX: v=>{
+    if(!(v[0] instanceof RangeRef)) return '#ERR';
+    const ma=/^([A-Za-z]+)(\d+)$/.exec(v[0].a);
+    const c1=colIdx(ma[1]), r1=parseInt(ma[2],10)-1;
+    const rowOff=Math.round(+v[1]||0)-1, colOff=Math.round(+v[2]||1)-1;
+    return cellRaw(colLetters(c1+colOff)+(r1+rowOff+1));
+  },
+  // RANK(값, 범위, [순서])
+  RANK: v=>{
+    if(!(v[1] instanceof RangeRef)) return '#ERR';
+    const num=+v[0], asc=v[2]&&+v[2]===1;
+    const vals=rangeVals(v[1].a,v[1].b).map(x=>+x||0).filter(x=>!isNaN(x));
+    const sorted=asc?[...vals].sort((a,b)=>a-b):[...vals].sort((a,b)=>b-a);
+    const idx=sorted.indexOf(num);
+    return idx>=0?idx+1:'#N/A';
+  },
+  // SUMPRODUCT
+  SUMPRODUCT: v=>{
+    // 인수가 RangeRef인 것들의 배열을 element-wise 곱해서 합산
+    const arrs=v.map(x=>x instanceof RangeRef?rangeVals(x.a,x.b):[+x||0]);
+    const len=Math.min(...arrs.map(a=>a.length));
+    let sum=0;
+    for(let i=0;i<len;i++) sum+=arrs.reduce((prod,arr)=>prod*(+arr[i]||0),1);
+    return sum;
+  },
+  // IFERROR(값, 오류시값)
+  IFERROR: v=>{ const val=v[0]; return (typeof val==='string'&&val.startsWith('#'))?v[1]:val; },
+  IFNA: v=>{ const val=v[0]; return val==='#N/A'?v[1]:val; },
+  // 날짜/시간 (기본)
+  TODAY: ()=>{ const d=new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; },
+  NOW: ()=>new Date().toLocaleString('ko-KR'),
+  YEAR: v=>new Date(v[0]).getFullYear()||'#VALUE',
+  MONTH: v=>new Date(v[0]).getMonth()+1||'#VALUE',
+  DAY: v=>new Date(v[0]).getDate()||'#VALUE',
+  // 수학 추가
+  CEILING: v=>{ const p=v[1]||1; return Math.ceil((v[0]||0)/p)*p; },
+  FLOOR: v=>{ const p=v[1]||1; return Math.floor((v[0]||0)/p)*p; },
+  TRUNC: v=>Math.trunc(v[0]||0),
+  LARGE: v=>{ if(!(v[0] instanceof RangeRef)) return '#ERR'; const s=[...rangeVals(v[0].a,v[0].b)].sort((a,b)=>b-a); return s[(+v[1]||1)-1]??'#NUM'; },
+  SMALL: v=>{ if(!(v[0] instanceof RangeRef)) return '#ERR'; const s=[...rangeVals(v[0].a,v[0].b)].sort((a,b)=>a-b); return s[(+v[1]||1)-1]??'#NUM'; },
+  MEDIAN: v=>{ const s=v.flat().map(x=>+x).filter(x=>!isNaN(x)).sort((a,b)=>a-b); if(!s.length) return 0; const m=Math.floor(s.length/2); return s.length%2?s[m]:(s[m-1]+s[m])/2; },
+  STDEV: v=>{ const a=v.flat().map(x=>+x).filter(x=>!isNaN(x)); if(a.length<2) return 0; const mean=a.reduce((s,x)=>s+x,0)/a.length; return Math.sqrt(a.reduce((s,x)=>s+(x-mean)**2,0)/(a.length-1)); },
 };
+function tokenize(s) {
+  // 문자열 리터럴 "...", 비교연산자 >=/<=/=/<>/>/< , 셀주소, 함수명, 숫자, 연산자
+  const toks=[]; let i=0;
+  while(i<s.length){
+    if(s[i]===' '||s[i]==='\t'){i++;continue;}
+    // 문자열 리터럴 "..."
+    if(s[i]==='"'){
+      let str=''; i++;
+      while(i<s.length){
+        if(s[i]==='"'&&s[i+1]==='"'){str+='"';i+=2;}
+        else if(s[i]==='"'){i++;break;}
+        else{str+=s[i++];}
+      }
+      toks.push({type:'str',val:str}); continue;
+    }
+    // 비교 연산자
+    if((s[i]==='<'&&(s[i+1]==='='||s[i+1]==='>'))||(s[i]==='>'&&s[i+1]==='=')){
+      toks.push({type:'op',val:s.slice(i,i+2)});i+=2;continue;
+    }
+    if(s[i]==='='&&s[i+1]==='='){toks.push({type:'op',val:'='});i+=2;continue;}
+    // 단일 비교
+    if('<>='.includes(s[i])&&s[i+1]!=='='){toks.push({type:'op',val:s[i]});i++;continue;}
+    // 숫자
+    if((s[i]>='0'&&s[i]<='9')||(s[i]==='.'&&s[i+1]>='0'&&s[i+1]<='9')){
+      let n='';while(i<s.length&&((s[i]>='0'&&s[i]<='9')||s[i]==='.'))n+=s[i++];
+      toks.push({type:'num',val:+n});continue;
+    }
+    // 셀주소 or 함수명/키워드 (알파벳 시작)
+    if(/[A-Za-z_]/.test(s[i])){
+      let w='';while(i<s.length&&/[A-Za-z0-9_]/.test(s[i]))w+=s[i++];
+      toks.push({type:/^[A-Za-z]+\d+$/.test(w)?'cell':'name',val:w});continue;
+    }
+    // 단일 문자 연산자/구분자
+    toks.push({type:'sym',val:s[i]}); i++;
+  }
+  return toks;
+}
+
 function evalFormula(expr,vis) {
   vis=vis||new Set();
   const toks=tokenize(expr); let pos=0;
   const peek=()=>toks[pos], next=()=>toks[pos++];
-  function ex(){let v=term();while(peek()==='+'||peek()==='-'){const op=next();v=op==='+'?v+term():v-term();}return v;}
-  function term(){let v=unary();while(peek()==='*'||peek()==='/'){const op=next();const r=unary();v=op==='*'?v*r:(r===0?'#DIV/0':v/r);}return v;}
-  function unary(){if(peek()==='-'){next();return -factor();}if(peek()==='+'){next();return factor();}return factor();}
-  function factor(){
-    if(peek()==='('){next();const v=ex();if(peek()!==')')throw new Error(')');next();return v;}
-    const t=next();if(t===undefined) throw new Error('eof');
-    if(/^[A-Za-z_]+$/.test(t)&&FUNCS[t.toUpperCase()]){
-      const fn=t.toUpperCase();if(next()!=='(')throw new Error('(');
-      const args=[];if(peek()!==')'){args.push(rangeOrEx());while(peek()===','){next();args.push(rangeOrEx());}}
-      if(next()!==')')throw new Error(')');return FUNCS[fn](args.flat());
+  const peekVal=()=>toks[pos]?.val;
+
+  // 비교 표현식 (최저 우선순위)
+  function cmpEx(){
+    let v=addEx();
+    while(peek()&&peek().type==='op'&&['>=','<=','<>','>','<','='].includes(peek().val)){
+      const op=next().val; const r=addEx();
+      if(op==='>=') v=v>=r; else if(op==='<=') v=v<=r;
+      else if(op==='<>') v=String(v).toLowerCase()!==String(r).toLowerCase();
+      else if(op==='>') v=v>r; else if(op==='<') v=v<r;
+      else v=String(v).toLowerCase()===String(r).toLowerCase();
     }
-    if(/^[A-Za-z]+\d+$/.test(t)){if(peek()===':'){next();const t2=next();return rangeVals(t,t2,vis);}return cellVal(t,vis);}
-    const n=Number(t);if(!isNaN(n)) return n;throw new Error('tok:'+t);
+    return v;
   }
-  function rangeOrEx(){const v=ex();return Array.isArray(v)?v:[v];}
-  const result=ex();return Array.isArray(result)?result.reduce((a,b)=>a+b,0):result;
-}
-function tokenize(s) {
-  const re=/\s*([A-Za-z]+\d+|[A-Za-z_]+|\d+\.?\d*|[()+\-*/,:])\s*/g;
-  const toks=[];let m,last=0;
-  while((m=re.exec(s))!==null){if(m.index!==last)throw new Error('inv');toks.push(m[1]);last=re.lastIndex;}
-  if(last!==s.length) throw new Error('trail');return toks;
+  function addEx(){
+    let v=term();
+    while(peek()&&peek().type==='sym'&&(peekVal()==='+' ||peekVal()==='-')){
+      const op=next().val;
+      const r=term();
+      // 문자열 + 숫자 혼합: 숫자로 강제
+      v=op==='+'?(typeof v==='string'||typeof r==='string'?String(v)+String(r):(+v)+(+r)):(+v)-(+r);
+    }
+    return v;
+  }
+  function term(){
+    let v=unary();
+    while(peek()&&peek().type==='sym'&&(peekVal()==='*'||peekVal()==='/')){
+      const op=next().val;const r=unary();
+      v=op==='*'?(+v)*(+r):((+r)===0?'#DIV/0!':(+v)/(+r));
+    }
+    return v;
+  }
+  function unary(){
+    if(peek()?.type==='sym'&&peekVal()==='-'){next();return -(+factor());}
+    if(peek()?.type==='sym'&&peekVal()==='+'){next();return factor();}
+    return factor();
+  }
+  function factor(){
+    const t=peek();
+    if(!t) throw new Error('eof');
+    // 괄호
+    if(t.type==='sym'&&t.val==='('){next();const v=cmpEx();if(peekVal()!==')')throw new Error(')');next();return v;}
+    // 문자열 리터럴
+    if(t.type==='str'){next();return t.val;}
+    // 숫자
+    if(t.type==='num'){next();return t.val;}
+    // 함수 or 이름
+    if(t.type==='name'){
+      next();
+      const fn=t.val.toUpperCase();
+      if(FUNCS[fn]){
+        if(peekVal()!=='(') throw new Error('(');next();
+        const args=[];
+        if(peekVal()!==')'){args.push(fnArg());while(peekVal()===','){next();args.push(fnArg());}}
+        if(peekVal()!==')') throw new Error(')');next();
+        return FUNCS[fn](args);
+      }
+      // FALSE/TRUE
+      if(fn==='TRUE') return true; if(fn==='FALSE') return false;
+      throw new Error('unknown:'+fn);
+    }
+    // 셀 주소
+    if(t.type==='cell'){
+      next();
+      if(peekVal()===':'){next();const t2=next();if(t2?.type!=='cell')throw new Error('range');return new RangeRef(t.val,t2.val);}
+      return cellVal(t.val,vis);
+    }
+    throw new Error('tok:'+JSON.stringify(t));
+  }
+  // 함수 인수: 범위 또는 비교식 (RangeRef를 플래트하지 않고 그대로 전달)
+  function fnArg(){
+    const v=cmpEx();
+    // cmpEx 결과가 RangeRef면 그대로
+    return v;
+  }
+  const result=cmpEx();
+  // 함수 최상위 결과가 RangeRef면 합산
+  if(result instanceof RangeRef) return rangeVals(result.a,result.b,vis).reduce((a,b)=>a+b,0);
+  return result;
 }
 
 // ══════════════════════════════════════════
