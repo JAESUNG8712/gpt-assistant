@@ -1,0 +1,16 @@
+# Render.com 무료 배포 설정
+services:
+  - type: web
+    name: my-ai-assistant
+    runtime: python
+    buildCommand: pip install -r ai/requirements.txt
+    startCommand: cd ai && uvicorn main:app --host 0.0.0.0 --port $PORT
+    disk:
+      name: ai-data
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: GROQ_API_KEY
+        sync: false
+      - key: DB_PATH
+        value: /var/data/memory.db
