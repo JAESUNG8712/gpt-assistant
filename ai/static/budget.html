@@ -239,61 +239,297 @@
   /* 채우기 핸들 */
   #fill-handle { position:fixed;width:8px;height:8px;background:#1565c0;border:2px solid #fff;cursor:crosshair;z-index:200;display:none;box-shadow:0 0 0 1px #1565c0; }
   #fill-preview { position:fixed;pointer-events:none;z-index:199;border:2px dashed #1565c0;display:none; }
+
+  /* ── 엑셀형 리본 툴바 ── */
+  .ribbon { background:var(--surface);border-bottom:2px solid #1565c0;flex-shrink:0; }
+  .ribbon-tabs { display:flex;gap:0;padding:0 8px;background:#f0f4fa; }
+  .ribbon-tab { padding:5px 16px;font-size:0.76rem;cursor:pointer;border:1px solid transparent;border-bottom:none;border-radius:6px 6px 0 0;color:var(--text-dim);user-select:none; }
+  .ribbon-tab.active { background:var(--surface);border-color:var(--border-bright);color:var(--accent);font-weight:700;margin-bottom:-1px;z-index:1;position:relative; }
+  .ribbon-tab:hover:not(.active) { background:#dde3ec;color:var(--text-bright); }
+  .ribbon-panel { display:none;align-items:stretch;gap:0;padding:4px 6px;min-height:54px;flex-wrap:wrap; }
+  .ribbon-panel.active { display:flex; }
+  .ribbon-group { display:flex;flex-direction:column;align-items:center;padding:0 8px;border-right:1px solid var(--border);min-width:0; }
+  .ribbon-group:last-child { border-right:none; }
+  .ribbon-group-label { font-size:0.62rem;color:var(--text-dim);margin-top:2px;white-space:nowrap; }
+  .ribbon-btns { display:flex;gap:2px;align-items:center;flex:1;flex-wrap:wrap; }
+  .rbtn { padding:3px 7px;border-radius:4px;font-size:0.77rem;cursor:pointer;border:1px solid transparent;background:transparent;color:var(--text-bright);white-space:nowrap;line-height:1.3;user-select:none;transition:background 0.1s; }
+  .rbtn:hover { background:var(--surface3);border-color:var(--border-bright); }
+  .rbtn.active { background:var(--accent-bg);border-color:var(--accent);color:var(--accent);font-weight:700; }
+  .rbtn-icon { font-size:1rem;display:block;text-align:center;line-height:1.4; }
+  .rbtn-text { font-size:0.62rem;display:block;text-align:center;line-height:1; }
+  .rsel { padding:2px 4px;font-size:0.77rem;border:1px solid var(--border-bright);border-radius:4px;background:var(--surface3);color:var(--text-bright);cursor:pointer;max-width:90px; }
+  .color-btn { width:26px;height:26px;border:1px solid var(--border-bright);border-radius:4px;cursor:pointer;padding:1px; }
+
+  /* 숫자 서식 표시 */
+  td.cell.fmt-currency::before, td.cell.fmt-comma::before { content:''; }
+  td.cell.fmt-currency { } /* handled inline */
+  td.cell.italic { font-style:italic; }
+  td.cell.underline { text-decoration:underline; }
+  td.cell.strikethrough { text-decoration:line-through; }
+  td.cell.underline.strikethrough { text-decoration:underline line-through; }
+
+  /* 병합 셀 */
+  td.cell.merged-hidden { display:none; }
+  td.cell.merged-main { overflow:hidden; }
+
+  /* 조건부 서식 */
+  #sheet.no-gridlines td.cell { border-color:transparent; }
+  .rbtn-active { background:var(--accent-bg) !important;color:var(--accent) !important;border-color:var(--accent) !important; }
+  td.cf-green { background:#e8f5e9 !important;color:#2e7d32 !important; }
+  td.cf-yellow { background:#fffde7 !important;color:#f57f17 !important; }
+  td.cf-red { background:#ffebee !important;color:#c62828 !important; }
+  td.cf-blue { background:#e3f2fd !important;color:#1565c0 !important; }
+
+  /* 자동필터 화살표 */
+  .filter-arrow { position:absolute;right:2px;top:50%;transform:translateY(-50%);font-size:0.6rem;cursor:pointer;color:var(--text-dim);z-index:3; }
+  .filter-arrow.active { color:var(--accent); }
+  .filter-dropdown { position:fixed;background:#fff;border:1px solid var(--border-bright);border-radius:6px;box-shadow:0 4px 16px rgba(0,0,0,.15);z-index:2000;min-width:160px;max-height:260px;overflow-y:auto;font-size:0.78rem; }
+  .filter-dropdown label { display:flex;align-items:center;gap:6px;padding:4px 10px;cursor:pointer; }
+  .filter-dropdown label:hover { background:var(--accent-bg); }
+  .filter-dropdown .fd-actions { display:flex;gap:6px;padding:6px 10px;border-top:1px solid var(--border); }
+
+  /* 상태바 */
+  #status-bar { padding:2px 14px;font-size:0.72rem;color:var(--text-dim);background:var(--surface2);border-top:1px solid var(--border);display:flex;gap:16px;align-items:center;flex-shrink:0; }
+  #status-bar span { white-space:nowrap; }
+
+  /* 조건부 서식 패널 */
+  #cf-panel { position:fixed;top:90px;left:50%;transform:translateX(-50%);background:#fff;border:1px solid var(--border-bright);border-radius:8px;padding:14px 16px;z-index:3000;min-width:300px;box-shadow:0 4px 20px rgba(0,0,0,.15);display:none;flex-direction:column;gap:8px; }
+  #cf-panel label { font-size:0.76rem;color:var(--text-dim);display:block; }
+  #cf-panel select, #cf-panel input[type=number] { border:1px solid var(--border);border-radius:4px;padding:3px 6px;font-size:0.8rem;background:var(--surface2);width:100%; }
+  #cf-rules { font-size:0.74rem;margin-top:4px; }
+  #cf-rules .cf-rule-item { display:flex;align-items:center;gap:6px;padding:3px 0;border-bottom:1px solid var(--border); }
+
+  /* 데이터 유효성 드롭다운 */
+  .cell-dropdown { position:fixed;background:#fff;border:1px solid var(--border-bright);border-radius:4px;box-shadow:0 4px 12px rgba(0,0,0,.15);z-index:2000;font-size:0.78rem;min-width:120px; }
+  .cell-dropdown-item { padding:4px 10px;cursor:pointer; }
+  .cell-dropdown-item:hover { background:var(--accent-bg); }
 </style>
 </head>
 <body>
 
-<!-- 툴바 -->
-<div class="toolbar">
-  <button class="btn btn-back" onclick="window.location.href='/'">← AI 어시스트</button>
-  <div class="toolbar-sep"></div>
-  <span style="font-size:0.85rem;font-weight:700;color:var(--text-bright)">📊 예산관리</span>
-  <div class="toolbar-sep"></div>
+<!-- 엑셀형 리본 -->
+<div class="ribbon">
+  <!-- 빠른 실행 도구 모음 -->
+  <div style="display:flex;align-items:center;gap:4px;padding:2px 10px;background:#1565c0;color:#fff;">
+    <button class="btn btn-back" onclick="window.location.href='/'" style="background:transparent;border-color:rgba(255,255,255,0.4);color:#fff;padding:2px 8px;font-size:0.72rem">← 홈</button>
+    <span style="font-size:0.82rem;font-weight:700;margin:0 6px">📊 예산관리</span>
+    <button onclick="save()" id="save-btn" title="저장 (Ctrl+S)" style="background:transparent;border:none;color:#fff;cursor:pointer;font-size:0.9rem;padding:2px 4px">💾</button>
+    <button onclick="undo()" title="실행 취소 (Ctrl+Z)" style="background:transparent;border:none;color:#fff;cursor:pointer;font-size:0.9rem;padding:2px 4px">↩</button>
+    <button onclick="redo()" title="다시 실행 (Ctrl+Y)" style="background:transparent;border:none;color:#fff;cursor:pointer;font-size:0.9rem;padding:2px 4px">↪</button>
+    <span id="status" style="font-size:0.72rem;color:rgba(255,255,255,0.85);margin-left:8px"></span>
+  </div>
+  <!-- 탭 -->
+  <div class="ribbon-tabs">
+    <div class="ribbon-tab active" onclick="switchRibbonTab('home',this)">홈</div>
+    <div class="ribbon-tab" onclick="switchRibbonTab('insert',this)">삽입</div>
+    <div class="ribbon-tab" onclick="switchRibbonTab('formula',this)">수식</div>
+    <div class="ribbon-tab" onclick="switchRibbonTab('data',this)">데이터</div>
+    <div class="ribbon-tab" onclick="switchRibbonTab('view',this)">보기</div>
+  </div>
+  <!-- 홈 패널 -->
+  <div class="ribbon-panel active" id="rpanel-home">
+    <!-- 클립보드 -->
+    <div class="ribbon-group">
+      <div class="ribbon-btns">
+        <div style="display:flex;flex-direction:column;gap:2px">
+          <button class="rbtn" onclick="doCopy()" title="복사 Ctrl+C"><span class="rbtn-icon">📋</span><span class="rbtn-text">복사</span></button>
+          <button class="rbtn" onclick="doCut()" title="잘라내기 Ctrl+X"><span class="rbtn-icon" style="font-size:0.8rem">✂️</span><span class="rbtn-text">잘라내기</span></button>
+          <button class="rbtn" onclick="doPaste()" title="붙여넣기 Ctrl+V"><span class="rbtn-icon" style="font-size:0.8rem">📌</span><span class="rbtn-text">붙여넣기</span></button>
+        </div>
+      </div>
+      <span class="ribbon-group-label">클립보드</span>
+    </div>
+    <!-- 글꼴 -->
+    <div class="ribbon-group">
+      <div class="ribbon-btns" style="flex-direction:column;gap:2px">
+        <div style="display:flex;gap:2px;align-items:center">
+          <select class="rsel" id="font-size-sel" onchange="applyFontSize(this.value)" style="width:56px">
+            <option value="9">9</option><option value="10">10</option><option value="11">11</option>
+            <option value="12" selected>12</option><option value="13">13</option>
+            <option value="14">14</option><option value="16">16</option>
+            <option value="18">18</option><option value="20">20</option><option value="24">24</option>
+          </select>
+          <button class="rbtn" onclick="adjustFontSize(-1)" title="글꼴 크기 줄이기">A↓</button>
+          <button class="rbtn" onclick="adjustFontSize(1)" title="글꼴 크기 늘리기">A↑</button>
+        </div>
+        <div style="display:flex;gap:2px;align-items:center">
+          <button class="rbtn" id="btn-bold" onclick="toggleBold()" style="font-weight:700;min-width:26px" title="굵게 Ctrl+B">B</button>
+          <button class="rbtn" id="btn-italic" onclick="toggleItalic()" style="font-style:italic;min-width:26px" title="기울임 Ctrl+I">I</button>
+          <button class="rbtn" id="btn-underline" onclick="toggleUnderline()" style="text-decoration:underline;min-width:26px" title="밑줄 Ctrl+U">U</button>
+          <button class="rbtn" id="btn-strike" onclick="toggleStrike()" style="text-decoration:line-through;min-width:26px" title="취소선">S</button>
+          <div style="display:flex;flex-direction:column;gap:1px">
+            <label style="font-size:0.6rem;color:var(--text-dim)">글자색</label>
+            <input type="color" class="color-btn" id="font-color-picker" value="#000000" onchange="applyFontColor(this.value)" title="글자 색">
+          </div>
+          <div style="display:flex;flex-direction:column;gap:1px">
+            <label style="font-size:0.6rem;color:var(--text-dim)">배경</label>
+            <input type="color" class="color-btn" id="cell-color-picker" value="#ffffff" onchange="applyCellColor(this.value)" title="셀 배경색">
+          </div>
+        </div>
+      </div>
+      <span class="ribbon-group-label">글꼴</span>
+    </div>
+    <!-- 맞춤 -->
+    <div class="ribbon-group">
+      <div class="ribbon-btns" style="flex-direction:column;gap:2px">
+        <div style="display:flex;gap:2px">
+          <button class="rbtn" onclick="applyAlign('left')" title="왼쪽 맞춤">≡</button>
+          <button class="rbtn" onclick="applyAlign('center')" title="가운데 맞춤">☰</button>
+          <button class="rbtn" onclick="applyAlign('right')" title="오른쪽 맞춤">≡→</button>
+          <button class="rbtn" id="btn-wrap" onclick="toggleWrap()" title="줄 바꿈">↵</button>
+        </div>
+        <div style="display:flex;gap:2px">
+          <button class="rbtn" onclick="mergeCells()" title="병합하고 가운데 맞춤" style="font-size:0.7rem">⊞병합</button>
+          <button class="rbtn" onclick="unmergeCells()" title="병합 해제" style="font-size:0.7rem">⊟해제</button>
+          <select class="rsel" id="border-sel" onchange="applyBorder(this.value)" style="width:70px">
+            <option value="">테두리</option>
+            <option value="all">전체</option>
+            <option value="outer">외곽</option>
+            <option value="bottom">아래</option>
+            <option value="top">위</option>
+            <option value="none">없음</option>
+          </select>
+        </div>
+      </div>
+      <span class="ribbon-group-label">맞춤</span>
+    </div>
+    <!-- 표시 형식 -->
+    <div class="ribbon-group">
+      <div class="ribbon-btns" style="flex-direction:column;gap:2px">
+        <div style="display:flex;gap:2px">
+          <select class="rsel" id="numfmt-sel" onchange="applyNumFmt(this.value)" style="width:90px">
+            <option value="">일반</option>
+            <option value="currency">₩ 통화</option>
+            <option value="percent">% 퍼센트</option>
+            <option value="comma">쉼표 (1,000)</option>
+            <option value="decimal2">소수 2자리</option>
+            <option value="decimal0">정수</option>
+            <option value="date">날짜 (YYYY-MM-DD)</option>
+            <option value="text">텍스트</option>
+          </select>
+        </div>
+        <div style="display:flex;gap:2px">
+          <button class="rbtn" onclick="applyNumFmt('currency')" title="통화 형식">₩</button>
+          <button class="rbtn" onclick="applyNumFmt('percent')" title="퍼센트 형식">%</button>
+          <button class="rbtn" onclick="applyNumFmt('comma')" title="쉼표 형식">,</button>
+          <button class="rbtn" onclick="changeDecimal(1)" title="소수 자릿수 늘리기">.0+</button>
+          <button class="rbtn" onclick="changeDecimal(-1)" title="소수 자릿수 줄이기">.0-</button>
+        </div>
+      </div>
+      <span class="ribbon-group-label">표시 형식</span>
+    </div>
+    <!-- 셀 -->
+    <div class="ribbon-group">
+      <div class="ribbon-btns" style="flex-direction:column;gap:2px">
+        <div style="display:flex;gap:2px">
+          <button class="rbtn" onclick="addRow()" title="행 삽입">➕행</button>
+          <button class="rbtn" onclick="addCol()" title="열 삽입">➕열</button>
+          <button class="rbtn" onclick="delRow()" title="행 삭제">➖행</button>
+          <button class="rbtn" onclick="delCol()" title="열 삭제">➖열</button>
+        </div>
+        <div style="display:flex;gap:2px">
+          <button class="rbtn" onclick="openSizeDialog()" title="열너비/행높이">📐</button>
+          <button class="rbtn" id="btn-freeze" onclick="openFreezeDialog()" title="틀 고정">🔒</button>
+          <button class="rbtn" onclick="openCfPanel()" title="조건부 서식">🎨</button>
+          <button class="rbtn" id="btn-filter" onclick="toggleAutoFilter()" title="자동 필터">▽필터</button>
+        </div>
+      </div>
+      <span class="ribbon-group-label">셀</span>
+    </div>
+  </div>
 
-  <button class="btn" onclick="document.getElementById('file-input').click()">📂 업로드</button>
-  <input type="file" id="file-input" accept=".xlsx,.xls,.csv" style="display:none" onchange="upload(this)">
-  <button id="save-btn" class="btn" onclick="save()">💾 저장</button>
-  <button class="btn" onclick="download()">⬇️ xlsx</button>
-  <div class="toolbar-sep"></div>
+  <!-- 삽입 패널 -->
+  <div class="ribbon-panel" id="rpanel-insert">
+    <div class="ribbon-group">
+      <div class="ribbon-btns">
+        <button class="rbtn" onclick="addSheet()"><span class="rbtn-icon">📋</span><span class="rbtn-text">시트 추가</span></button>
+        <button class="rbtn" onclick="document.getElementById('file-input').click()"><span class="rbtn-icon">📂</span><span class="rbtn-text">업로드</span></button>
+        <input type="file" id="file-input" accept=".xlsx,.xls,.csv" style="display:none" onchange="upload(this)">
+        <button class="rbtn" onclick="download()"><span class="rbtn-icon">⬇️</span><span class="rbtn-text">xlsx저장</span></button>
+      </div>
+      <span class="ribbon-group-label">삽입</span>
+    </div>
+    <div class="ribbon-group">
+      <div class="ribbon-btns">
+        <button class="rbtn" onclick="insertRowAbove()"><span class="rbtn-icon">⬆️</span><span class="rbtn-text">위 행 삽입</span></button>
+        <button class="rbtn" onclick="insertRowBelow()"><span class="rbtn-icon">⬇️</span><span class="rbtn-text">아래 행 삽입</span></button>
+        <button class="rbtn" onclick="insertColLeft()"><span class="rbtn-icon">⬅️</span><span class="rbtn-text">왼쪽 열 삽입</span></button>
+        <button class="rbtn" onclick="insertColRight()"><span class="rbtn-icon">➡️</span><span class="rbtn-text">오른쪽 열 삽입</span></button>
+      </div>
+      <span class="ribbon-group-label">행/열</span>
+    </div>
+    <div class="ribbon-group">
+      <div class="ribbon-btns">
+        <button class="rbtn" onclick="openDataValidation()"><span class="rbtn-icon">✅</span><span class="rbtn-text">데이터 유효성</span></button>
+      </div>
+      <span class="ribbon-group-label">유효성</span>
+    </div>
+  </div>
 
-  <button class="btn" onclick="addRow()" title="행 추가">➕행</button>
-  <button class="btn" onclick="addCol()" title="열 추가">➕열</button>
-  <button class="btn" onclick="delRow()" title="선택 행 삭제">➖행</button>
-  <div class="toolbar-sep"></div>
+  <!-- 수식 패널 -->
+  <div class="ribbon-panel" id="rpanel-formula">
+    <div class="ribbon-group">
+      <div class="ribbon-btns">
+        <button class="rbtn" onclick="insertAutoSum()"><span class="rbtn-icon">Σ</span><span class="rbtn-text">자동 합계</span></button>
+        <button class="rbtn" onclick="insertAvg()"><span class="rbtn-icon">x̄</span><span class="rbtn-text">평균</span></button>
+        <button class="rbtn" onclick="insertCount()"><span class="rbtn-icon">#</span><span class="rbtn-text">개수</span></button>
+        <button class="rbtn" onclick="insertMax()"><span class="rbtn-icon">↑</span><span class="rbtn-text">최대</span></button>
+        <button class="rbtn" onclick="insertMin()"><span class="rbtn-icon">↓</span><span class="rbtn-text">최소</span></button>
+      </div>
+      <span class="ribbon-group-label">함수 라이브러리</span>
+    </div>
+    <div class="ribbon-group">
+      <div class="ribbon-btns">
+        <button class="rbtn" onclick="toggleShowFormulas()" id="btn-show-formula"><span class="rbtn-icon">fx</span><span class="rbtn-text">수식 표시</span></button>
+      </div>
+      <span class="ribbon-group-label">수식 감사</span>
+    </div>
+  </div>
 
-  <select class="toolbar-sel" id="font-size-sel" onchange="applyFontSize(this.value)">
-    <option value="10">10px</option><option value="11">11px</option>
-    <option value="12" selected>12px</option><option value="13">13px</option>
-    <option value="14">14px</option><option value="16">16px</option>
-    <option value="18">18px</option>
-  </select>
-  <button class="btn" id="btn-bold" onclick="toggleBold()" style="font-weight:700">B</button>
-  <button class="btn" onclick="applyAlign('left')">◀</button>
-  <button class="btn" onclick="applyAlign('center')">■</button>
-  <button class="btn" onclick="applyAlign('right')">▶</button>
-  <button class="btn" id="btn-wrap" onclick="toggleWrap()" title="자동 줄바꿈">↵줄바꿈</button>
-  <div class="toolbar-sep"></div>
-  <label style="font-size:0.72rem;color:var(--text-dim)">배경</label>
-  <input type="color" id="cell-color-picker" value="#ffffff" onchange="applyCellColor(this.value)" title="셀 배경색" style="width:28px;height:24px;padding:1px;border:1px solid var(--border-bright);border-radius:4px;cursor:pointer">
-  <button class="btn" onclick="applyCellColor('none')" title="배경색 지우기">✕색</button>
-  <div class="toolbar-sep"></div>
-  <label style="font-size:0.72rem;color:var(--text-dim)">테두리</label>
-  <select class="toolbar-sel" id="border-sel" onchange="applyBorder(this.value)">
-    <option value="">테두리</option>
-    <option value="all">전체</option>
-    <option value="outer">외곽</option>
-    <option value="none">없음</option>
-  </select>
-  <div class="toolbar-sep"></div>
-  <button class="btn" onclick="openSizeDialog()" title="열너비/행높이 설정">📐크기</button>
-  <div class="toolbar-sep"></div>
-  <button class="btn" id="btn-freeze" onclick="openFreezeDialog()" title="행/열 고정">🔒고정</button>
-  <div class="toolbar-sep"></div>
+  <!-- 데이터 패널 -->
+  <div class="ribbon-panel" id="rpanel-data">
+    <div class="ribbon-group">
+      <div class="ribbon-btns">
+        <button class="rbtn" onclick="sortByColAsc()"><span class="rbtn-icon">↑A</span><span class="rbtn-text">오름차순</span></button>
+        <button class="rbtn" onclick="sortByColDesc()"><span class="rbtn-icon">↓Z</span><span class="rbtn-text">내림차순</span></button>
+        <button class="rbtn" id="btn-filter2" onclick="toggleAutoFilter()"><span class="rbtn-icon">▽</span><span class="rbtn-text">필터</span></button>
+        <button class="rbtn" onclick="clearAllFilters()"><span class="rbtn-icon">✕</span><span class="rbtn-text">필터 지우기</span></button>
+      </div>
+      <span class="ribbon-group-label">정렬 및 필터</span>
+    </div>
+    <div class="ribbon-group">
+      <div class="ribbon-btns">
+        <button class="rbtn" onclick="removeDuplicates()"><span class="rbtn-icon">🗑</span><span class="rbtn-text">중복 제거</span></button>
+      </div>
+      <span class="ribbon-group-label">데이터 도구</span>
+    </div>
+    <div class="ribbon-group">
+      <div class="ribbon-btns">
+        <button class="rbtn" onclick="openPayroll()" style="color:#1b5e20"><span class="rbtn-icon">📋</span><span class="rbtn-text">급여 자동계산</span></button>
+        <button class="rbtn" onclick="openTaxCalc()" style="color:#e65100"><span class="rbtn-icon">🧮</span><span class="rbtn-text">세금·보험</span></button>
+        <button class="rbtn" onclick="insertTaxTemplate()" style="color:#6a1b9a"><span class="rbtn-icon">📝</span><span class="rbtn-text">세금 자동삽입</span></button>
+      </div>
+      <span class="ribbon-group-label">세금 계산</span>
+    </div>
+  </div>
 
-  <button class="btn" onclick="openPayroll()" style="color:#1b5e20;border-color:#388e3c">📋 급여대장 자동계산</button>
-  <button class="btn" onclick="openTaxCalc()" style="color:#e65100;border-color:#ef6c00">🧮 세금·보험 계산</button>
-  <div class="toolbar-sep"></div>
-  <span id="status"></span>
+  <!-- 보기 패널 -->
+  <div class="ribbon-panel" id="rpanel-view">
+    <div class="ribbon-group">
+      <div class="ribbon-btns">
+        <button class="rbtn" id="btn-freeze2" onclick="openFreezeDialog()"><span class="rbtn-icon">🔒</span><span class="rbtn-text">틀 고정</span></button>
+        <button class="rbtn" onclick="resetFreeze()"><span class="rbtn-icon">🔓</span><span class="rbtn-text">고정 해제</span></button>
+      </div>
+      <span class="ribbon-group-label">창</span>
+    </div>
+    <div class="ribbon-group">
+      <div class="ribbon-btns">
+        <button class="rbtn" id="btn-gridlines" onclick="toggleGridlines()" class="active"><span class="rbtn-icon">⊞</span><span class="rbtn-text">눈금선</span></button>
+        <button class="rbtn" onclick="toggleShowFormulas()" id="btn-show-formula2"><span class="rbtn-icon">fx</span><span class="rbtn-text">수식 표시</span></button>
+      </div>
+      <span class="ribbon-group-label">표시</span>
+    </div>
+  </div>
 </div>
 
 <!-- 수식 입력줄 -->
@@ -329,6 +565,15 @@
 <!-- 시트 탭 -->
 <div class="sheet-tabs" id="sheet-tabs"></div>
 
+<!-- 상태바 -->
+<div id="status-bar">
+  <span id="sb-mode">준비</span>
+  <span id="sb-sum" style="display:none">합계: <b id="sb-sum-val"></b></span>
+  <span id="sb-avg" style="display:none">평균: <b id="sb-avg-val"></b></span>
+  <span id="sb-cnt" style="display:none">개수: <b id="sb-cnt-val"></b></span>
+  <span id="sb-sel" style="display:none;margin-left:auto">선택: <b id="sb-sel-val"></b></span>
+</div>
+
 <!-- 스냅샷 영역 -->
 <div class="snap-area">
   <input type="text" id="snap-label" placeholder="예: 2026-07 최종">
@@ -344,8 +589,49 @@
   <div id="diff" style="width:100%"></div>
 </div>
 
+<!-- 조건부 서식 패널 -->
+<div id="cf-panel">
+  <b style="font-size:0.88rem">🎨 조건부 서식</b>
+  <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+    <select id="cf-op" onchange="document.getElementById('cf-val2-wrap').style.display=this.value==='between'?'inline':'none'" style="border:1px solid var(--border);border-radius:4px;padding:3px 6px;font-size:0.78rem;background:var(--surface2)">
+      <option value="gt">초과</option><option value="gte">이상</option>
+      <option value="lt">미만</option><option value="lte">이하</option>
+      <option value="eq">같음</option><option value="ne">다름</option>
+      <option value="between">범위</option><option value="contains">포함</option>
+    </select>
+    <input type="number" id="cf-val1" placeholder="값" style="width:70px;border:1px solid var(--border);border-radius:4px;padding:3px 6px;font-size:0.78rem">
+    <span id="cf-val2-wrap" style="display:none">~<input type="number" id="cf-val2" placeholder="값" style="width:70px;border:1px solid var(--border);border-radius:4px;padding:3px 6px;font-size:0.78rem"></span>
+    <select id="cf-color" style="border:1px solid var(--border);border-radius:4px;padding:3px 6px;font-size:0.78rem;background:var(--surface2)">
+      <option value="cf-green">🟢 초록 (크면)</option>
+      <option value="cf-red">🔴 빨강 (작으면)</option>
+      <option value="cf-yellow">🟡 노랑 (주의)</option>
+      <option value="cf-blue">🔵 파랑 (강조)</option>
+    </select>
+    <button class="btn btn-primary" onclick="addCfRule()" style="font-size:0.76rem;padding:3px 8px">추가</button>
+    <button class="btn" onclick="document.getElementById('cf-panel').style.display='none'" style="font-size:0.76rem;padding:3px 8px">닫기</button>
+  </div>
+  <div id="cf-rules"></div>
+</div>
+
+<!-- 데이터 유효성 패널 -->
+<div id="dv-panel" style="position:fixed;top:90px;left:50%;transform:translateX(-50%);background:#fff;border:1px solid var(--border-bright);border-radius:8px;padding:14px 16px;z-index:3000;min-width:300px;box-shadow:0 4px 20px rgba(0,0,0,.15);display:none;flex-direction:column;gap:8px">
+  <b style="font-size:0.88rem">✅ 데이터 유효성 검사</b>
+  <select id="dv-type" style="border:1px solid var(--border);border-radius:4px;padding:3px 6px;font-size:0.78rem;background:var(--surface2)">
+    <option value="list">목록 (드롭다운)</option>
+    <option value="number">숫자 범위</option>
+    <option value="date">날짜</option>
+    <option value="text">텍스트 길이</option>
+  </select>
+  <input type="text" id="dv-list" placeholder="항목1,항목2,항목3 (쉼표로 구분)" style="border:1px solid var(--border);border-radius:4px;padding:3px 6px;font-size:0.78rem;width:100%">
+  <div style="display:flex;gap:6px">
+    <button class="btn btn-primary" onclick="applyDataValidation()" style="font-size:0.76rem">적용</button>
+    <button class="btn" onclick="clearDataValidation()" style="font-size:0.76rem">지우기</button>
+    <button class="btn" onclick="document.getElementById('dv-panel').style.display='none'" style="font-size:0.76rem">닫기</button>
+  </div>
+</div>
+
 <!-- ════ 세금·보험 자동계산 모달 ════ -->
-<div class="modal-overlay" id="tax-modal" onclick="if(e=>e.target===e.currentTarget)(closeTaxModal())">
+<div class="modal-overlay" id="tax-modal" onclick="if(event.target===this)closeTaxModal()">
   <div class="modal">
     <h3>🧮 세금·사회보험 자동계산 <span style="font-size:0.68rem;font-weight:400;color:var(--text-dim)">(2025년 기준)</span></h3>
     <div class="modal-grid">
@@ -394,41 +680,68 @@
 // ══════════════════════════════════════════
 let sheets = { 'Sheet1': [] };
 let activeSheet = 'Sheet1';
-let cellStyles = {};          // {sheetName: {'r_c': {bold,align,fontSize}}}
+let cellStyles = {};          // {sheetName: {'r_c': {bold,italic,underline,strike,align,fontSize,fontColor,bgColor,numFmt,decimalPlaces,border*}}}
 let selectedCell = null;      // {r, c} — 앵커 셀
 let selEnd = null;            // {r, c} — 범위 끝 (다중 선택 시)
 let editMode = false;
 let sortState = null;
 let tableFontSize = 12;
-const MIN_ROWS = 25, MIN_COLS = 14;
+const MIN_ROWS = 30, MIN_COLS = 16;
 let wrapMode = false;
 let colWidths = {};
 let rowHeights = {};
-let frozenRows = 0;   // 상단 고정 행 수
-let frozenCols = 0;   // 좌측 고정 열 수 (row header 제외)
+let frozenRows = 0;
+let frozenCols = 0;
 let dragSrcRow = null, dragSrcCol = null;
+let mergedCells = {};         // {sheetName: {'r_c': {rows,cols}}} 병합 마스터, 'r_c_hidden': true 숨김
+let conditionalFormats = {};  // {sheetName: [{op,val1,val2,cls,range?}]}
+let dataValidations = {};     // {sheetName: {'r_c': {type,list,min,max}}}
+let autoFilterRow = {};       // {sheetName: rowIndex} 필터 헤더 행
+let filterValues = {};        // {sheetName: {col: Set of allowed values}} null=모두허용
+let hiddenRows = {};          // {sheetName: Set of hidden row indices}
+let showFormulas = false;
+let showGridlines = true;
 
-// ── Undo 스택
+// ── Undo / Redo 스택
 const undoStack = [];
+const redoStack = [];
 const MAX_UNDO = 50;
-function pushUndo() {
-  undoStack.push({
+function snapState() {
+  return {
     sheets: JSON.parse(JSON.stringify(sheets)),
     activeSheet,
     cellStyles: JSON.parse(JSON.stringify(cellStyles)),
     colWidths: JSON.parse(JSON.stringify(colWidths)),
     rowHeights: JSON.parse(JSON.stringify(rowHeights)),
-  });
+    mergedCells: JSON.parse(JSON.stringify(mergedCells)),
+    conditionalFormats: JSON.parse(JSON.stringify(conditionalFormats)),
+    dataValidations: JSON.parse(JSON.stringify(dataValidations)),
+  };
+}
+function pushUndo() {
+  undoStack.push(snapState());
+  redoStack.length = 0; // 새 변경 시 redo 초기화
   if (undoStack.length > MAX_UNDO) undoStack.shift();
+}
+function restoreState(st) {
+  sheets = st.sheets; activeSheet = st.activeSheet; cellStyles = st.cellStyles;
+  colWidths = st.colWidths || {}; rowHeights = st.rowHeights || {};
+  mergedCells = st.mergedCells || {}; conditionalFormats = st.conditionalFormats || {};
+  dataValidations = st.dataValidations || {};
+  selectedCell = null; selEnd = null; editMode = false;
+  renderTabs(); render(); updateFormulaBar(); loadSnaps();
 }
 function undo() {
   if (!undoStack.length) { setStatus('되돌릴 내용 없음', false); return; }
-  const st = undoStack.pop();
-  sheets = st.sheets; activeSheet = st.activeSheet; cellStyles = st.cellStyles;
-  colWidths = st.colWidths || {}; rowHeights = st.rowHeights || {};
-  selectedCell = null; selEnd = null; editMode = false;
-  renderTabs(); render(); updateFormulaBar(); loadSnaps();
-  setStatus('↩️ 실행 취소');
+  redoStack.push(snapState());
+  restoreState(undoStack.pop());
+  setStatus('↩ 실행 취소');
+}
+function redo() {
+  if (!redoStack.length) { setStatus('다시 실행할 내용 없음', false); return; }
+  undoStack.push(snapState());
+  restoreState(redoStack.pop());
+  setStatus('↪ 다시 실행');
 }
 
 // ── 수식 셀 클릭/드래그 참조 입력
@@ -549,6 +862,9 @@ async function load() {
       cellStyles = d.styles || {};
       colWidths = d.colWidths || {};
       rowHeights = d.rowHeights || {};
+      mergedCells = d.mergedCells || {};
+      conditionalFormats = d.conditionalFormats || {};
+      dataValidations = d.dataValidations || {};
     } else {
       const r2 = await fetch('/budget/grid');
       if (r2.ok) {
@@ -740,15 +1056,42 @@ function render() {
   }
   html += '</tr>';
 
+  const cfRules = (conditionalFormats[activeSheet] || []);
+  const mCells = mergedCells[activeSheet] || {};
+  const hRows = hiddenRows[activeSheet] || new Set();
+  const afRow = autoFilterRow[activeSheet];
+  const fVals = filterValues[activeSheet] || {};
+
+  // 필터 헤더 행에 자동 필터 화살표 추가
+  let html_col_row = `<tr><th class="rh" onclick="selectAll()" title="전체 선택" style="cursor:pointer"></th>`;
+  for (let c=0; c<nCols; c++) {
+    let cls = '';
+    if (sortState && sortState.col===c) cls=(sortState.dir==='asc'?' sort-asc':' sort-desc');
+    if (selMode==='col' && selCols.has(c)) cls+=' col-selected';
+    let thStyle = `width:${colWidths[c]||90}px;position:relative`;
+    if (c < frozenCols) { cls += ' frozen-col-header'; thStyle += `;left:${frozenColLefts[c]}px`; }
+    const afArrow = (afRow !== undefined) ? `<span class="filter-arrow${fVals[c]?' active':''}" onclick="openFilterDropdown(event,${c})" title="필터">▼</span>` : '';
+    html_col_row += `<th class="${cls}" style="${thStyle}" draggable="true" ondragstart="onColDragStart(event,${c})" ondragover="onColDragOver(event,${c})" ondrop="onColDrop(event,${c})" onclick="selectCol(${c},event.shiftKey)" ondblclick="sortByCol(${c})" oncontextmenu="rowColCtxMenu(event,'col',${c})" title="클릭:열선택 / 드래그:순서변경 / 더블클릭:정렬">${colLetters(c)}${afArrow}<span class="col-resize-handle" onmousedown="startColResize(event,${c})"></span></th>`;
+  }
+  html = html_col_row + '</tr>';
+
   for (let r=0; r<nRows; r++) {
+    if (hRows.has(r)) continue; // 숨겨진 행
     const rhCls = (selMode==='row' && selRows.has(r)) ? ' row-selected' : '';
     let trStyle = '';
     if (r < frozenRows) trStyle = `style="position:sticky;top:${frozenRowTops[r]}px;z-index:2"`;
     html += `<tr ${trStyle}><td class="rh${rhCls}" draggable="true" ondragstart="onRowDragStart(event,${r})" ondragover="onRowDragOver(event,${r})" ondrop="onRowDrop(event,${r})" onclick="selectRow(${r},event.shiftKey)" oncontextmenu="rowColCtxMenu(event,'row',${r})" style="height:${rowHeights[r]||24}px">${r+1}<span class="row-resize-handle" onmousedown="startRowResize(event,${r})"></span></td>`;
     for (let c=0; c<nCols; c++) {
+      // 병합 셀 처리
+      const msk = sk(r,c);
+      if (mCells[msk+'_hidden']) { continue; } // 숨겨진 병합 셀은 생략
+      const merge = mCells[msk];
+
       const raw = (g[r]&&g[r][c]!=null) ? g[r][c] : '';
-      const disp = renderCell(raw);
-      const isErr = String(disp).startsWith('#ERR') || String(disp).startsWith('#DIV');
+      const dispRaw = showFormulas ? raw : raw;
+      const disp = showFormulas ? raw : renderCell(raw);
+      const dispFormatted = showFormulas ? raw : applyNumFmtDisplay(disp, (st[sk(r,c)]||{}).numFmt, (st[sk(r,c)]||{}).decimalPlaces);
+      const isErr = !showFormulas && (String(disp).startsWith('#ERR') || String(disp).startsWith('#DIV'));
       const sty = st[sk(r,c)] || {};
       const isSel = inSel(r, c);
       const isAnchor = selectedCell && selectedCell.r===r && selectedCell.c===c;
@@ -756,6 +1099,9 @@ function render() {
       let cls = 'cell';
       if (isErr) cls+=' err';
       if (sty.bold) cls+=' bold';
+      if (sty.italic) cls+=' italic';
+      if (sty.underline) cls+=' underline';
+      if (sty.strike) cls+=' strikethrough';
       if (sty.align==='center') cls+=' align-center';
       if (sty.align==='right') cls+=' align-right';
       if (isEd) cls+=' editing';
@@ -763,9 +1109,28 @@ function render() {
       const isFR = r < frozenRows, isFC = c < frozenCols;
       if (isFR) cls += ' frozen-row';
       if (isFC) cls += ' frozen-col';
+      // 조건부 서식
+      if (!isEd) {
+        const numVal = parseFloat(String(disp).replace(/,/g,''));
+        for (const cf of cfRules) {
+          let match = false;
+          if (cf.op==='gt') match = !isNaN(numVal) && numVal > cf.val1;
+          else if (cf.op==='gte') match = !isNaN(numVal) && numVal >= cf.val1;
+          else if (cf.op==='lt') match = !isNaN(numVal) && numVal < cf.val1;
+          else if (cf.op==='lte') match = !isNaN(numVal) && numVal <= cf.val1;
+          else if (cf.op==='eq') match = String(disp) === String(cf.val1);
+          else if (cf.op==='ne') match = String(disp) !== String(cf.val1);
+          else if (cf.op==='between') match = !isNaN(numVal) && numVal >= cf.val1 && numVal <= cf.val2;
+          else if (cf.op==='contains') match = String(disp).includes(String(cf.val1));
+          if (match) { cls += ' ' + cf.cls; break; }
+        }
+      }
       const fsize = sty.fontSize || tableFontSize;
-      const dispHtml = isEd ? escHtml(raw) : (wrapMode ? escHtml(String(disp)).replace(/\n/g,'<br>') : escHtml(String(disp)));
+      const editDispHtml = escHtml(raw);
+      const viewDispHtml = wrapMode ? escHtml(String(dispFormatted)).replace(/\n/g,'<br>') : escHtml(String(dispFormatted));
+      const dispHtml = isEd ? editDispHtml : viewDispHtml;
       let cellStyle = `font-size:${fsize}px;outline:none;min-width:${colWidths[c]||90}px;width:${colWidths[c]||90}px;white-space:${wrapMode?'pre-wrap':'nowrap'}`;
+      if (sty.fontColor) cellStyle += `;color:${sty.fontColor}`;
       if (sty.bgColor) cellStyle += `;background:${sty.bgColor}`;
       if (sty.border) cellStyle += `;border:${sty.border}`;
       if (sty.borderTop) cellStyle += `;border-top:${sty.borderTop}`;
@@ -774,7 +1139,17 @@ function render() {
       if (sty.borderRight) cellStyle += `;border-right:${sty.borderRight}`;
       if (isFR) cellStyle += `;top:${frozenRowTops[r]}px`;
       if (isFC) cellStyle += `;left:${frozenColLefts[c]}px`;
-      html += `<td class="${cls}" tabindex="-1" contenteditable="${isEd}" data-r="${r}" data-c="${c}" data-raw="${escAttr(raw)}" style="${cellStyle}">${dispHtml}</td>`;
+      // 병합 처리
+      let spanAttrs = '';
+      if (merge) {
+        spanAttrs = ` rowspan="${merge.rows||1}" colspan="${merge.cols||1}"`;
+        cls += ' merged-main';
+        cellStyle += `;overflow:hidden`;
+      }
+      // 데이터 유효성 드롭다운 버튼
+      const dv = (dataValidations[activeSheet]||{})[msk];
+      const dvBtn = (dv && dv.type==='list' && !isEd) ? `<span onclick="openCellDropdown(event,${r},${c})" style="position:absolute;right:2px;top:50%;transform:translateY(-50%);font-size:0.6rem;cursor:pointer;color:var(--text-dim)">▼</span>` : '';
+      html += `<td class="${cls}"${spanAttrs} tabindex="-1" contenteditable="${isEd}" data-r="${r}" data-c="${c}" data-raw="${escAttr(raw)}" style="${cellStyle};position:relative">${dispHtml}${dvBtn}</td>`;
     }
     html += '</tr>';
   }
@@ -900,6 +1275,7 @@ function highlightSel() {
     const sum=nums.reduce((a,b)=>a+b,0);
     setStatus(`선택: ${nums.length}개 | 합계: ${sum.toLocaleString('ko-KR')} | 평균: ${(sum/nums.length).toLocaleString('ko-KR',{maximumFractionDigits:2})}`, true);
   }
+  updateStatusBar();
 }
 
 function updateFormulaBarRange() {
@@ -2655,7 +3031,7 @@ async function save() {
   try {
     const [r1, r2] = await Promise.all([
       fetch('/budget/sheets',{method:'POST',headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({sheets,active:activeSheet,styles:cellStyles,colWidths,rowHeights})}),
+        body:JSON.stringify({sheets,active:activeSheet,styles:cellStyles,colWidths,rowHeights,mergedCells,conditionalFormats,dataValidations})}),
       fetch('/budget/grid',{method:'POST',headers:{'Content-Type':'application/json'},
         body:JSON.stringify({rows:grid()})})
     ]);
@@ -3028,6 +3404,524 @@ function placeCursorEnd(el){
     range.selectNodeContents(el);range.collapse(false);
     sel.removeAllRanges();sel.addRange(range);
   }catch(e){}
+}
+
+// ══════════════════════════════════════════
+// 리본 탭 전환
+// ══════════════════════════════════════════
+function switchRibbonTab(tab, el) {
+  document.querySelectorAll('.ribbon-tab').forEach(t=>t.classList.remove('active'));
+  document.querySelectorAll('.ribbon-panel').forEach(p=>p.classList.remove('active'));
+  el.classList.add('active');
+  const panel = document.getElementById('rpanel-'+tab);
+  if (panel) panel.classList.add('active');
+}
+
+// ══════════════════════════════════════════
+// 텍스트 서식
+// ══════════════════════════════════════════
+function getSelCellCoords() {
+  const gRows = grid()?.length || MIN_ROWS;
+  const gCols = Math.max(MIN_COLS, ...(grid()||[]).map(r=>r.length));
+  if (selMode==='row') {
+    const rr=[]; selRows.forEach(r=>{ for(let c=0;c<gCols;c++) rr.push({r,c}); }); return rr;
+  }
+  if (selMode==='col') {
+    const rr=[]; selCols.forEach(c=>{ for(let r=0;r<gRows;r++) rr.push({r,c}); }); return rr;
+  }
+  if (!selectedCell) return [];
+  const r1=Math.min(selectedCell.r,(selEnd||selectedCell).r);
+  const r2=Math.max(selectedCell.r,(selEnd||selectedCell).r);
+  const c1=Math.min(selectedCell.c,(selEnd||selectedCell).c);
+  const c2=Math.max(selectedCell.c,(selEnd||selectedCell).c);
+  const rr=[];
+  for(let r=r1;r<=r2;r++) for(let c=c1;c<=c2;c++) rr.push({r,c});
+  return rr;
+}
+
+function toggleStyleProp(prop) {
+  const cells = getSelCellCoords();
+  if (!cells.length) return;
+  pushUndo();
+  const st = styles();
+  // 전부 켜져 있으면 끄기, 아니면 켜기
+  const allOn = cells.every(({r,c})=>st[sk(r,c)]?.[prop]);
+  cells.forEach(({r,c})=>{
+    if (!st[sk(r,c)]) st[sk(r,c)] = {};
+    st[sk(r,c)][prop] = !allOn;
+  });
+  markDirty(); render();
+}
+
+// toggleBold는 기존 정의(2289행) 사용
+function toggleItalic() { toggleStyleProp('italic'); }
+function toggleUnderline() { toggleStyleProp('underline'); }
+function toggleStrike()    { toggleStyleProp('strike'); }
+
+function applyFontColor(color) {
+  const cells = getSelCellCoords();
+  if (!cells.length) return;
+  pushUndo();
+  const st = styles();
+  cells.forEach(({r,c})=>{ if(!st[sk(r,c)]) st[sk(r,c)]={};  st[sk(r,c)].fontColor = color||''; });
+  markDirty(); render();
+}
+
+function applyBgColor(color) {
+  const cells = getSelCellCoords();
+  if (!cells.length) return;
+  pushUndo();
+  const st = styles();
+  cells.forEach(({r,c})=>{ if(!st[sk(r,c)]) st[sk(r,c)]={};  st[sk(r,c)].bgColor = color||''; });
+  markDirty(); render();
+}
+
+function adjustFontSize(delta) {
+  const cells = getSelCellCoords();
+  if (!cells.length) return;
+  pushUndo();
+  const st = styles();
+  cells.forEach(({r,c})=>{
+    if (!st[sk(r,c)]) st[sk(r,c)]={};
+    const cur = parseInt(st[sk(r,c)].fontSize)||12;
+    st[sk(r,c)].fontSize = Math.max(6, Math.min(72, cur+delta));
+  });
+  markDirty(); render();
+}
+
+// ══════════════════════════════════════════
+// 표시 형식
+// ══════════════════════════════════════════
+function applyNumFmt(fmt) {
+  const cells = getSelCellCoords();
+  if (!cells.length) return;
+  pushUndo();
+  const st = styles();
+  cells.forEach(({r,c})=>{ if(!st[sk(r,c)]) st[sk(r,c)]={};  st[sk(r,c)].numFmt = fmt; });
+  markDirty(); render();
+}
+
+function applyNumFmtDisplay(val, fmt, dec) {
+  if (val==='' || val===null || val===undefined) return val;
+  const n = parseFloat(val);
+  if (isNaN(n)) return val;
+  const places = (dec !== undefined && dec !== null) ? dec : 2;
+  switch(fmt) {
+    case 'currency':  return '₩' + n.toLocaleString('ko-KR', {minimumFractionDigits:0,maximumFractionDigits:0});
+    case 'percent':   return (n*100).toFixed(places) + '%';
+    case 'comma':     return n.toLocaleString('ko-KR', {minimumFractionDigits:places,maximumFractionDigits:places});
+    case 'number':    return n.toLocaleString('ko-KR', {minimumFractionDigits:places,maximumFractionDigits:places});
+    case 'scientific':return n.toExponential(places);
+    case 'date':      try{ return new Date(n).toLocaleDateString('ko-KR'); }catch(e){ return val; }
+    default: return val;
+  }
+}
+
+function changeDecimal(delta) {
+  const cells = getSelCellCoords();
+  if (!cells.length) return;
+  pushUndo();
+  const st = styles();
+  cells.forEach(({r,c})=>{
+    if (!st[sk(r,c)]) st[sk(r,c)]={};
+    const cur = st[sk(r,c)].decimalPlaces ?? 2;
+    st[sk(r,c)].decimalPlaces = Math.max(0, Math.min(10, cur+delta));
+  });
+  markDirty(); render();
+}
+
+// ══════════════════════════════════════════
+// 상태 표시줄 업데이트
+// ══════════════════════════════════════════
+function updateStatusBar() {
+  const cells = getSelCellCoords();
+  const bar = document.getElementById('status-bar');
+  if (!bar) return;
+  const vals = cells.map(({r,c})=>grid()?.[r]?.[c]).filter(v=>v!==''&&v!==null&&v!==undefined);
+  const nums = vals.map(v=>parseFloat(v)).filter(v=>!isNaN(v));
+  let info = '';
+  if (cells.length>1) {
+    info += `선택: ${cells.length}셀 `;
+    if (nums.length) {
+      const sum = nums.reduce((a,b)=>a+b,0);
+      info += `| 합계: ${sum.toLocaleString('ko-KR')} | 평균: ${(sum/nums.length).toLocaleString('ko-KR',{maximumFractionDigits:2})} | 개수: ${nums.length}`;
+    }
+  }
+  bar.textContent = info;
+}
+
+// ══════════════════════════════════════════
+// 셀 병합 / 해제
+// ══════════════════════════════════════════
+function mergeCells() {
+  if (!selectedCell || !selEnd) { setStatus('범위를 먼저 선택하세요', false); return; }
+  const r1=Math.min(selectedCell.r,selEnd.r), r2=Math.max(selectedCell.r,selEnd.r);
+  const c1=Math.min(selectedCell.c,selEnd.c), c2=Math.max(selectedCell.c,selEnd.c);
+  if (r1===r2 && c1===c2) { setStatus('병합할 셀이 1개입니다', false); return; }
+  pushUndo();
+  if (!mergedCells[activeSheet]) mergedCells[activeSheet]={};
+  const mc = mergedCells[activeSheet];
+  // 기존 병합 먼저 해제
+  for(let r=r1;r<=r2;r++) for(let c=c1;c<=c2;c++) { delete mc[sk(r,c)]; delete mc[sk(r,c)+'_hidden']; }
+  mc[sk(r1,c1)] = {rows:r2-r1+1, cols:c2-c1+1};
+  for(let r=r1;r<=r2;r++) for(let c=c1;c<=c2;c++) {
+    if (r===r1&&c===c1) continue;
+    mc[sk(r,c)+'_hidden']=true;
+  }
+  markDirty(); render(); setStatus('셀 병합 완료');
+}
+
+function unmergeCells() {
+  if (!selectedCell) return;
+  pushUndo();
+  if (!mergedCells[activeSheet]) mergedCells[activeSheet]={};
+  const mc = mergedCells[activeSheet];
+  const cells = getSelCellCoords();
+  cells.forEach(({r,c})=>{
+    const m = mc[sk(r,c)];
+    if (m) {
+      for(let rr=r;rr<r+m.rows;rr++) for(let cc=c;cc<c+m.cols;cc++) {
+        delete mc[sk(rr,cc)]; delete mc[sk(rr,cc)+'_hidden'];
+      }
+    }
+  });
+  markDirty(); render(); setStatus('셀 병합 해제');
+}
+
+// ══════════════════════════════════════════
+// 자동 필터
+// ══════════════════════════════════════════
+function toggleAutoFilter() {
+  if (!selectedCell) return;
+  const sh = activeSheet;
+  if (autoFilterRow[sh] !== undefined) {
+    delete autoFilterRow[sh]; delete filterValues[sh]; hiddenRows[sh] = new Set();
+    setStatus('자동 필터 해제');
+  } else {
+    autoFilterRow[sh] = selectedCell.r;
+    filterValues[sh] = {};
+    hiddenRows[sh] = new Set();
+    setStatus('자동 필터 적용됨');
+  }
+  render();
+}
+
+function openFilterDropdown(e, col) {
+  e.stopPropagation();
+  const sh = activeSheet;
+  const hRow = autoFilterRow[sh];
+  if (hRow === undefined) return;
+  closeFilterDropdown();
+  const allVals = [];
+  const g = grid();
+  const _rows = g?.length||MIN_ROWS;
+  for (let r = hRow+1; r < _rows; r++) { const v = g?.[r]?.[col]||''; allVals.push(v); }
+  const unique = [...new Set(allVals)].sort();
+  const allowed = filterValues[sh]?.[col] ?? null; // null = all
+  let html = `<div style="padding:6px 10px;font-weight:700;border-bottom:1px solid var(--border)">필터: ${colLetters(col)}</div>`;
+  html += `<div style="padding:4px 10px"><label><input type="checkbox" id="flt-all" ${!allowed?'checked':''}> (전체 선택)</label></div>`;
+  html += `<div style="max-height:160px;overflow-y:auto">`;
+  unique.forEach(v=>{ const chk = !allowed||allowed.has(v); html+=`<div style="padding:2px 10px"><label><input type="checkbox" class="flt-item" value="${escAttr(v)}" ${chk?'checked':''}> ${escHtml(v)||'(공백)'}</label></div>`; });
+  html += `</div><div style="padding:6px 10px;border-top:1px solid var(--border);display:flex;gap:6px">
+    <button class="btn btn-primary" style="font-size:0.72rem;padding:3px 8px" onclick="applyFilterDropdown(${col})">확인</button>
+    <button class="btn" style="font-size:0.72rem;padding:3px 8px" onclick="closeFilterDropdown()">취소</button></div>`;
+  const dd = document.createElement('div');
+  dd.id = 'filter-dropdown';
+  dd.style.cssText = 'position:fixed;z-index:2000;background:#fff;border:1px solid var(--border-bright);border-radius:6px;box-shadow:0 4px 16px rgba(0,0,0,.18);min-width:180px;font-size:0.78rem';
+  const rect = e.target.getBoundingClientRect();
+  dd.style.left = rect.left + 'px'; dd.style.top = (rect.bottom+2) + 'px';
+  dd.innerHTML = html;
+  document.body.appendChild(dd);
+  document.getElementById('flt-all').addEventListener('change', function() {
+    document.querySelectorAll('.flt-item').forEach(cb=>cb.checked=this.checked);
+  });
+}
+
+function closeFilterDropdown() {
+  const d = document.getElementById('filter-dropdown');
+  if (d) d.remove();
+}
+
+function applyFilterDropdown(col) {
+  const sh = activeSheet;
+  const hRow = autoFilterRow[sh];
+  const items = [...document.querySelectorAll('.flt-item')];
+  const allChecked = items.every(i=>i.checked);
+  if (allChecked) { if(filterValues[sh]) delete filterValues[sh][col]; }
+  else { if(!filterValues[sh]) filterValues[sh]={}; filterValues[sh][col]=new Set(items.filter(i=>i.checked).map(i=>i.value)); }
+  // 숨길 행 계산
+  if (!hiddenRows[sh]) hiddenRows[sh]=new Set();
+  hiddenRows[sh] = new Set();
+  const g = grid();
+  const fv = filterValues[sh]||{};
+  const _nrows = g?.length||MIN_ROWS;
+  for (let r = hRow+1; r < _nrows; r++) {
+    const hide = Object.entries(fv).some(([c,set])=> set && !set.has(g?.[r]?.[parseInt(c)]||''));
+    if (hide) hiddenRows[sh].add(r);
+  }
+  closeFilterDropdown(); render();
+}
+
+function clearAllFilters() {
+  const sh = activeSheet;
+  filterValues[sh] = {}; hiddenRows[sh] = new Set();
+  render(); setStatus('모든 필터 초기화');
+}
+
+// ══════════════════════════════════════════
+// 보기 옵션
+// ══════════════════════════════════════════
+function toggleShowFormulas() {
+  showFormulas = !showFormulas;
+  ['btn-show-formula','btn-show-formula2'].forEach(id=>{
+    const b=document.getElementById(id); if(b) b.classList.toggle('rbtn-active', showFormulas);
+  });
+  render();
+}
+
+function toggleGridlines() {
+  showGridlines = !showGridlines;
+  const tbl = document.getElementById('sheet');
+  if (tbl) tbl.classList.toggle('no-gridlines', !showGridlines);
+  const b = document.getElementById('btn-gridlines');
+  if (b) b.classList.toggle('rbtn-active', !showGridlines);
+}
+
+// ══════════════════════════════════════════
+// 조건부 서식
+// ══════════════════════════════════════════
+function openCfPanel() {
+  const p = document.getElementById('cf-panel');
+  if (!p) return;
+  p.style.display = p.style.display==='none'||!p.style.display ? 'block' : 'none';
+}
+
+function addCfRule() {
+  const op   = document.getElementById('cf-op')?.value || 'gt';
+  const val1 = document.getElementById('cf-val1')?.value || '';
+  const val2 = document.getElementById('cf-val2')?.value || '';
+  const cls  = document.getElementById('cf-color')?.value || 'cf-green';
+  if (!val1 && op!=='between') { setStatus('값을 입력하세요', false); return; }
+  pushUndo();
+  if (!conditionalFormats[activeSheet]) conditionalFormats[activeSheet]=[];
+  conditionalFormats[activeSheet].push({op,val1,val2,cls});
+  markDirty(); render(); setStatus('조건부 서식 추가됨');
+  const p = document.getElementById('cf-panel'); if(p) p.style.display='none';
+}
+
+function clearCfRules() {
+  pushUndo();
+  conditionalFormats[activeSheet]=[];
+  markDirty(); render(); setStatus('조건부 서식 초기화');
+}
+
+function evalCfRule(rule, val) {
+  const n = parseFloat(val); const n1 = parseFloat(rule.val1); const n2 = parseFloat(rule.val2);
+  switch(rule.op) {
+    case 'gt': return !isNaN(n)&&!isNaN(n1)&&n>n1;
+    case 'gte': return !isNaN(n)&&!isNaN(n1)&&n>=n1;
+    case 'lt': return !isNaN(n)&&!isNaN(n1)&&n<n1;
+    case 'lte': return !isNaN(n)&&!isNaN(n1)&&n<=n1;
+    case 'eq': return String(val)===String(rule.val1);
+    case 'neq': return String(val)!==String(rule.val1);
+    case 'between': return !isNaN(n)&&!isNaN(n1)&&!isNaN(n2)&&n>=Math.min(n1,n2)&&n<=Math.max(n1,n2);
+    case 'contains': return String(val).includes(rule.val1);
+    default: return false;
+  }
+}
+
+// ══════════════════════════════════════════
+// 데이터 유효성 검사
+// ══════════════════════════════════════════
+function openDataValidation() {
+  const p = document.getElementById('dv-panel');
+  if (!p) return;
+  p.style.display = p.style.display==='none'||!p.style.display ? 'block' : 'none';
+}
+
+function applyDataValidation() {
+  if (!selectedCell) { setStatus('셀을 선택하세요', false); return; }
+  const type = document.getElementById('dv-type')?.value || 'list';
+  const list = document.getElementById('dv-list')?.value || '';
+  pushUndo();
+  if (!dataValidations[activeSheet]) dataValidations[activeSheet]={};
+  const cells = getSelCellCoords();
+  cells.forEach(({r,c})=>{
+    dataValidations[activeSheet][sk(r,c)] = {type, list};
+  });
+  markDirty(); render(); setStatus('데이터 유효성 검사 설정됨');
+  const p = document.getElementById('dv-panel'); if(p) p.style.display='none';
+}
+
+function clearDataValidation() {
+  if (!selectedCell) return;
+  pushUndo();
+  const cells = getSelCellCoords();
+  cells.forEach(({r,c})=>{ if(dataValidations[activeSheet]) delete dataValidations[activeSheet][sk(r,c)]; });
+  markDirty(); render(); setStatus('데이터 유효성 검사 해제');
+}
+
+function openCellDropdown(e, r, c) {
+  e.stopPropagation();
+  const dv = dataValidations[activeSheet]?.[sk(r,c)];
+  if (!dv||dv.type!=='list') return;
+  const items = dv.list.split(',').map(s=>s.trim()).filter(Boolean);
+  closeFilterDropdown();
+  let html = '';
+  items.forEach(v=>{ html+=`<div class="ac-item" onclick="setCellFromDropdown(${r},${c},'${escAttr(v)}')">${escHtml(v)}</div>`; });
+  const dd = document.createElement('div');
+  dd.id='filter-dropdown'; dd.className='fn-autocomplete';
+  dd.style.cssText='position:fixed;z-index:2000;background:#fff;border:1px solid var(--border-bright);border-radius:6px;box-shadow:0 4px 16px rgba(0,0,0,.18);min-width:120px;font-size:0.78rem;max-height:180px;overflow-y:auto';
+  const rect=e.target.getBoundingClientRect();
+  dd.style.left=rect.left+'px'; dd.style.top=(rect.bottom+2)+'px';
+  dd.innerHTML=html; document.body.appendChild(dd);
+}
+
+function setCellFromDropdown(r, c, val) {
+  closeFilterDropdown();
+  pushUndo(); setCell(r,c,val); markDirty(); render();
+  selectCell(r,c);
+}
+
+// ══════════════════════════════════════════
+// 수식 삽입 (수식 탭)
+// ══════════════════════════════════════════
+function insertFormulaAtSel(fstr) {
+  if (!selectedCell) return;
+  const {r,c} = selectedCell;
+  const cur = grid()?.[r]?.[c]||'';
+  const formula = cur.startsWith('=') ? cur.slice(0,-1)+'+'+fstr : '='+fstr;
+  pushUndo(); setCell(r,c,formula); markDirty(); render(); selectCell(r,c);
+  const fi = document.getElementById('formula-input');
+  if(fi) fi.value=formula;
+}
+
+function insertAutoSum() {
+  if (!selectedCell) return;
+  const {r,c}=selectedCell;
+  // 위 방향으로 연속 숫자 찾기
+  let top=r-1;
+  while(top>=0 && !isNaN(parseFloat(grid()?.[top]?.[c]||''))) top--;
+  const startR = top+1;
+  const formula = startR<r ? `=SUM(${colLetters(c)}${startR+1}:${colLetters(c)}${r})` : `=SUM(${colLetters(c)}1:${colLetters(c)}${r})`;
+  pushUndo(); setCell(r,c,formula); markDirty(); render(); selectCell(r,c);
+}
+
+function insertAvg() {
+  if (!selectedCell) return; const {r,c}=selectedCell;
+  let top=r-1; while(top>=0 && !isNaN(parseFloat(grid()?.[top]?.[c]||''))) top--;
+  const formula=`=AVERAGE(${colLetters(c)}${top+2}:${colLetters(c)}${r})`;
+  pushUndo(); setCell(r,c,formula); markDirty(); render(); selectCell(r,c);
+}
+function insertCount() {
+  if (!selectedCell) return; const {r,c}=selectedCell;
+  let top=r-1; while(top>=0 && !isNaN(parseFloat(grid()?.[top]?.[c]||''))) top--;
+  pushUndo(); setCell(r,c,`=COUNT(${colLetters(c)}${top+2}:${colLetters(c)}${r})`); markDirty(); render();
+}
+function insertMax() {
+  if (!selectedCell) return; const {r,c}=selectedCell;
+  let top=r-1; while(top>=0 && !isNaN(parseFloat(grid()?.[top]?.[c]||''))) top--;
+  pushUndo(); setCell(r,c,`=MAX(${colLetters(c)}${top+2}:${colLetters(c)}${r})`); markDirty(); render();
+}
+function insertMin() {
+  if (!selectedCell) return; const {r,c}=selectedCell;
+  let top=r-1; while(top>=0 && !isNaN(parseFloat(grid()?.[top]?.[c]||''))) top--;
+  pushUndo(); setCell(r,c,`=MIN(${colLetters(c)}${top+2}:${colLetters(c)}${r})`); markDirty(); render();
+}
+
+// ══════════════════════════════════════════
+// 세금 자동 계산 템플릿 삽입
+// ══════════════════════════════════════════
+function insertTaxTemplate() {
+  const shName = '급여세금계산';
+  let name = shName, i=1;
+  while(sheets[name]) name=shName+'_'+i++;
+  pushUndo();
+  sheets[name] = Array.from({length:MIN_ROWS},()=>Array(MIN_COLS).fill(''));
+  const g = sheets[name];
+  // 헤더
+  g[0][0]='항목'; g[0][1]='금액(원)'; g[0][2]='비고';
+  // 입력 행
+  const items=[
+    ['기본급','','직접 입력'],
+    ['식대','','비과세 한도 200,000원'],
+    ['차량유지비','','비과세'],
+    ['기타수당','',''],
+  ];
+  items.forEach(([a,b,c],i)=>{ g[i+1][0]=a; g[i+1][1]=b||''; g[i+1][2]=c; });
+  const r = items.length+1;
+  g[r][0]='급여합계'; g[r][1]=`=SUM(B2:B${r})`; g[r][2]='자동계산';
+  g[r+1][0]='과세표준'; g[r+1][1]=`=B${r+1}-MIN(200000,B3)-MIN(200000,B4)`; g[r+1][2]='식대·차량 비과세 차감';
+  const taxR = r+1;
+  g[taxR+1][0]='국민연금(4.5%)'; g[taxR+1][1]=`=ROUND(B${taxR+1}*0.045,0)`; g[taxR+1][2]='근로자 부담';
+  g[taxR+2][0]='건강보험(3.545%)'; g[taxR+2][1]=`=ROUND(B${taxR+1}*0.03545,0)`; g[taxR+2][2]='근로자 부담';
+  g[taxR+3][0]='장기요양보험'; g[taxR+3][1]=`=ROUND(B${taxR+3}*0.1295,0)`; g[taxR+3][2]='건강보험×12.95%';
+  g[taxR+4][0]='고용보험(0.9%)'; g[taxR+4][1]=`=ROUND(B${taxR+1}*0.009,0)`; g[taxR+4][2]='근로자 부담';
+  g[taxR+5][0]='소득세(간이세액)'; g[taxR+5][1]=`=ROUND(MAX(0,B${taxR+1}-1500000)*0.06+MAX(0,B${taxR+1}-5000000)*0.09,0)`; g[taxR+5][2]='간이 추정(정확도 주의)';
+  g[taxR+6][0]='지방소득세(10%)'; g[taxR+6][1]=`=ROUND(B${taxR+6}*0.1,0)`; g[taxR+6][2]='소득세×10%';
+  const deductR = taxR+6;
+  g[deductR+1][0]='공제합계'; g[deductR+1][1]=`=SUM(B${taxR+2}:B${deductR+1})`; g[deductR+1][2]='자동계산';
+  g[deductR+2][0]='실수령액'; g[deductR+2][1]=`=B${r+1}-B${deductR+2}`; g[deductR+2][2]='자동계산';
+  g[deductR+4][0]='퇴직연금(회사부담,8.33%)'; g[deductR+4][1]=`=ROUND(B${r+1}*0.0833,0)`; g[deductR+4][2]='회사 부담 (별도)';
+  activeSheet=name; ensureSize(); renderTabs(); render();
+  setStatus(`✅ '${name}' 세금 계산 시트 삽입됨 — B2:B5에 급여 항목을 입력하세요`);
+}
+
+// ══════════════════════════════════════════
+// 데이터 정렬 / 중복 제거 (단축 함수)
+// ══════════════════════════════════════════
+function sortByColAsc()  { if(selectedCell) sortByCol(selectedCell.c, true); }
+function sortByColDesc() { if(selectedCell) sortByCol(selectedCell.c, false); }
+
+function removeDuplicates() {
+  pushUndo();
+  const g = grid();
+  const seen = new Set();
+  const kept = [];
+  for (let r=0; r<g.length; r++) {
+    const row = g[r]||[];
+    const key = row.join('\t');
+    if (!seen.has(key)) { seen.add(key); kept.push([...row]); }
+  }
+  while(kept.length<MIN_ROWS) kept.push(Array(MIN_COLS).fill(''));
+  sheets[activeSheet]=kept;
+  markDirty(); render(); setStatus(`중복 제거 완료`);
+}
+
+// ══════════════════════════════════════════
+// 행/열 삽입 (리본 버튼용)
+// ══════════════════════════════════════════
+function insertRowAbove() { if(selectedCell) insertRowAt(selectedCell.r, 'before'); }
+function insertRowBelow() { if(selectedCell) insertRowAt(selectedCell.r, 'after'); }
+function insertColLeft()  { if(selectedCell) insertColAt(selectedCell.c, 'before'); }
+function insertColRight() { if(selectedCell) insertColAt(selectedCell.c, 'after'); }
+function delCol()         { if(selectedCell) delColAt(selectedCell.c); }
+
+// ══════════════════════════════════════════
+// 고정 창 해제
+// ══════════════════════════════════════════
+function resetFreeze() {
+  frozenRows=0; frozenCols=0;
+  render(); setStatus('고정 창 해제');
+}
+
+// ══════════════════════════════════════════
+// 클립보드 래퍼
+// ══════════════════════════════════════════
+function doCopy()  { document.execCommand('copy'); }
+function doCut()   { document.execCommand('cut');  }
+function doPaste() { document.execCommand('paste'); }
+
+// ══════════════════════════════════════════
+// 시트 추가 래퍼
+// ══════════════════════════════════════════
+function addSheetBtn() {
+  const name = prompt('새 시트 이름:', `Sheet${Object.keys(sheets).length+1}`);
+  if (!name) return;
+  if (sheets[name]) { setStatus('이미 존재하는 시트명입니다', false); return; }
+  sheets[name] = Array.from({length:MIN_ROWS},()=>Array(MIN_COLS).fill(''));
+  activeSheet = name;
+  ensureSize(); renderTabs(); render();
 }
 </script>
 </body>
