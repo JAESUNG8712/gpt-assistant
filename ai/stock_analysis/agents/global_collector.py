@@ -122,7 +122,7 @@ class GeopoliticsCollector:
 
     def _calc_risk_index(self) -> Dict:
         return {
-            "종합지정학리스크": 45,  # 0~100 (낮을수록 안전)
+            "종합지정학리스크": 45,
             "수준": "중간",
             "주요리스크": [
                 "미중 관세 재협상 실패 가능성",
@@ -262,7 +262,6 @@ class IndustryCollector:
         }
 
     def get_industry_opportunities(self) -> list:
-        """산업별 투자 기회 요약"""
         return [
             {"섹터": "반도체", "기회": "HBM·AI반도체 수요 폭발", "위험": "중국 규제, 삼성 납품 지연"},
             {"섹터": "배터리", "기회": "IRA 수혜, EV 전환", "위험": "중국 LFP 경쟁, 수요 둔화"},

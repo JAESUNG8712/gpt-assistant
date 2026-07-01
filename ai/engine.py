@@ -9,6 +9,25 @@ import asyncio
 from collections import Counter, defaultdict
 from typing import AsyncGenerator, List, Tuple, Dict
 
+# 형태소 분석기 (python-mecab-ko) — 설치 안 된 환경에서는 규칙 기반 토크나이저만 사용
+try:
+    import mecab as _mecab_mod
+    _MECAB = _mecab_mod.MeCab()
+except Exception:
+    _MECAB = None
+
+
+def _morph_nouns(text: str) -> List[str]:
+    """형태소 분석기로 명사만 추출 (붙여쓰기·복합어 분리에 강함).
+    설치 안 됐거나 분석 실패 시 빈 리스트 반환 — 규칙 기반 토크나이저로 자연 폴백."""
+    if not _MECAB:
+        return []
+    try:
+        return [n for n in _MECAB.nouns(text) if len(n) >= 2]
+    except Exception:
+        return []
+
+
 # ── 1. 한국어 토크나이저 ──────────────────────────────
 
 _STOP = {
@@ -46,8 +65,25 @@ _KR_SUFFIXES = [
     '하는방법', '하는법', '방법은', '이란무엇', '이란뭐',
     '인가요', '인지요', '인가', '인지',
     '이에요', '예요', '이죠', '이야', '죠', '이야',
-    '하나요', '나요', '아요', '어요',
-    '해요', '하요',
+    '하나요', '되나요', '나요', '아요', '어요',
+    '해요', '하요', '하면', '이면',
+    # 비교·조사 어미
+    '보다', '에서는', '한테서', '이랑', '이지만',
+    # 동사 과거형 어미
+    '했는데', '됐는데', '았는데', '었는데',
+    '했어요', '됐어요', '었어요', '았어요',
+    '했을때', '됐을때', '했을',
+]
+
+# 한국어 격조사 — 단어에 붙어서 토큰을 분리하는 경우 처리
+# 긴 것부터 순서대로 배치해야 정확하게 매칭됨
+_KR_PARTICLES = [
+    '에서는', '에게는', '으로는', '로부터', '에게서',
+    '으로도', '로도', '에도', '에서', '에게', '으로', '이나', '이고',
+    '이며', '이라', '이란', '이랑', '이면', '이지',
+    '에는', '는데', '은데', '는요', '은요',
+    '는', '은', '를', '을', '의', '도', '만', '로', '와', '과',
+    '나', '고', '며', '라', '에',
 ]
 
 def _strip_kr(word: str) -> str:
@@ -56,9 +92,14 @@ def _strip_kr(word: str) -> str:
     m = re.match(r'^(\d+)(년도?|월|일)$', word)
     if m:
         return m.group(1)
+    # 동사 어미 먼저 처리
     for suf in _KR_SUFFIXES:
-        if word.endswith(suf) and len(word) > len(suf) + 1:
+        if word.endswith(suf) and len(word) > len(suf):
             return word[:-len(suf)]
+    # 격조사 처리 (어근이 2글자 이상인 경우만)
+    for particle in _KR_PARTICLES:
+        if word.endswith(particle) and len(word) - len(particle) >= 2:
+            return word[:-len(particle)]
     return word
 
 
@@ -69,6 +110,8 @@ _COMPOUND_MAP = {
     '출산전후휴가': '출산 전후 휴가',
     '출산휴가': '출산 전후 휴가',
     '육아휴직급여': '육아휴직 급여',
+    '육아휴직': '육아 휴직',          # "육아휴직은" → "육아 휴직은" → 토큰 "육아","휴직" 분리
+    '육아기근로': '육아기 근로',
     '임금체불': '임금 체불',
     '퇴직금계산': '퇴직금 계산',
     '연말정산방법': '연말정산 방법',
@@ -89,7 +132,82 @@ _COMPOUND_MAP = {
     '유럽배낭여행': '유럽 배낭여행',
     '유럽배낭': '유럽 배낭여행',
     '해고예고수당': '해고 예고수당',
+    # 법률 자연어 표현 정규화
+    '계약갱신요청': '계약갱신청구권 거절',
+    '계약갱신거절': '계약갱신청구권 거절',
+    '스토킹당했': '스토킹 신고',
+    '스토킹피해': '스토킹 피해',
+    '전세사기당했': '전세사기 피해',
+    '보이스피싱당했': '보이스피싱 피해',
+    '사기당했': '사기죄 피해',
+    # 사내규정 복합어 — 취업규칙 관련
+    '수유시간': '수유 시간',
+    '소정근로시간': '소정 근로 시간',
+    '소정근로': '소정 근로',
+    '연장근로수당': '연장 근로수당',
+    '야간근로수당': '야간 근로수당',
+    '휴일근로수당': '휴일 근로수당',
+    '연장근로': '연장 근로',
+    '야간근로': '야간 근로',
+    '직장내성희롱': '직장 내 성희롱',
+    '업무상재해': '업무상 재해',
+    '정년퇴직': '정년 퇴직',
+    '퇴직급여': '퇴직 급여',
+    '징계위원회': '징계 위원회',
+    '감봉처분': '감봉 처분',
+    '정직처분': '정직 처분',
+    '사내규정': '사내 규정',
+    # 사내규정 복합어 — 기존
+    '시차출퇴근제': '시차 출퇴근제',
+    '출장일비': '출장 일비',
+    '고충처리위원회': '고충처리 위원회',
+    '고충처리위원': '고충처리 위원',
+    '노사협의회': '노사 협의회',
+    '선거관리위원회': '선거관리 위원회',
+    '임원퇴직급여': '임원 퇴직급여',
+    '임원상여금': '임원 상여금',
+    '복지카드포인트': '복지카드 포인트',
+    '장기근속자': '장기근속 자',
+    '사내대출': '사내 대출',
+    '건강검진비': '건강검진 비용',
+    '가족돌봄휴가': '가족돌봄 휴가',
+    '자녀돌봄': '자녀 돌봄',
+    '연차휴가': '연차 휴가',
+    '대체휴가': '대체 휴가',
+    '경조휴가': '경조 휴가',
+    '경조금': '경조 금',
+    '건강수당': '건강 수당',
+    '학위취득': '학위 취득',
+    '교육비지원': '교육비 지원',
+    '인재추천': '인재 추천',
+    '사내행사': '사내 행사',
+    '노트북관리': '노트북 관리',
+    '소프트웨어관리': '소프트웨어 관리',
+    '장기근속포상': '장기근속 포상',
+    '우수직원포상': '우수직원 포상',
+    '우수직원': '우수 직원',
+    '사원증재발급': '사원증 재발급',
+    '명함신청': '명함 신청',
+    '복장규정': '복장 규정',
+    '천안사무실': '천안 사무실',
+    '전사공통휴무': '전사 공통 휴무',
+    '자녀출산': '자녀 출산',
+    '임원관리규정': '임원 관리 규정',
+    '해외출장규정': '해외출장 규정',
+    '경비규정': '경비 규정',
+    '주근무지': '주 근무지',
+    '휴일근무': '휴일 근무',
+    '야근식대': '야근 식대',
+    '비밀유지': '비밀 유지',
+    '조의금': '경조 금',
+    '프로젝트': 'PJT',
+    '회식비': '회식 비용',
+    '유연근무제': '시차 출퇴근제',
+    '밥값': '식대',
+    '근로자위원': '근로자 위원',
+    '고충처리': '고충 처리',
 }
+
 
 def _normalize_compound(text: str) -> str:
     for compound, expanded in _COMPOUND_MAP.items():
@@ -97,8 +215,39 @@ def _normalize_compound(text: str) -> str:
     return text
 
 
+# ── 동의어 그룹 ────────────────────────────────────────
+# 같은 그룹의 단어는 검색 시 서로 대체 가능한 것으로 취급 (대표어 토큰을 추가로 부여)
+# 기존 규칙 기반 토큰은 그대로 보존하고, 대표어를 "추가"만 하므로 기존 매칭 결과에는
+# 영향을 주지 않고 동의어로 인한 추가 매칭만 가능해짐 (회귀 위험 최소화)
+# 주의: 법률/HR 등 기존에 정교하게 튜닝된 KB와 겹치는 단어(예: 임금·해고·퇴사·연장근무 등)는
+# 동의어 그룹에 넣지 않는다 — 별개 항목(예: "부당해고"와 "권고사직")을 같은 대표어로
+# 묶어버리면 의도적으로 분리해 둔 항목들이 서로 오염되어 검색 정확도가 떨어진다.
+# (실측: 위 단어들을 포함했을 때 법률 KB 정확도 92.8% → 90.6%로 하락 확인 후 제외)
+_SYNONYM_GROUPS = [
+    ["연봉협상", "임금협상", "연봉인상"],
+    ["채용", "구인", "공고", "채용공고"],
+    ["면접", "인터뷰"],
+    ["오류", "에러", "버그"],
+    ["함수", "메서드", "메소드"],
+    ["변수", "변숫값"],
+    ["배포", "디플로이"],
+    ["저장소", "리포지토리", "레포"],
+    ["숙소", "호텔", "숙박시설"],
+    ["비행기", "항공기", "항공편"],
+    ["환전", "환율계산"],
+    ["짐", "수화물", "캐리어"],
+    ["일정", "스케줄", "여행계획"],
+]
+_SYNONYM_MAP: Dict[str, str] = {}
+for _group in _SYNONYM_GROUPS:
+    _canon = _group[0]
+    for _word in _group:
+        _SYNONYM_MAP[_word] = _canon
+
+
 def _tok(text: str) -> List[str]:
     text = _normalize_compound(text)
+    morph_tokens = _morph_nouns(text)
     text = re.sub(r'[^\w가-힣a-zA-Z0-9\s]', ' ', text)
     tokens = []
     for w in text.split():
@@ -111,9 +260,29 @@ def _tok(text: str) -> List[str]:
             continue
         # 한국어 어미 제거 후 어근 추가 (원형도 함께 보존)
         root = _strip_kr(w_lower)
-        if root != w_lower and len(root) >= 2 and root not in _STOP:
-            tokens.append(root)   # 어근 (계산, 며칠 등)
-        tokens.append(w_lower)   # 원형도 보존
+        if root != w_lower:
+            if len(root) >= 2 and root not in _STOP:
+                tokens.append(root)    # 어근 (계산, 며칠 등)
+                tokens.append(w_lower) # 원형도 보존
+            # else: 어근이 1글자 이하면 어미만 있는 것이므로 둘 다 제외 (e.g., 받아요→받)
+        else:
+            tokens.append(w_lower)   # 스트리핑 없었을 때
+
+    # 형태소 분석기로 추출한 명사 중, 규칙 기반 토크나이저가 놓친 것만 보강
+    # (이미 같은 단어가 있으면 건너뛰어 빈도 왜곡 방지 — 단어당 최대 1회만 추가)
+    existing = set(tokens)
+    added_morph = set()
+    for n in morph_tokens:
+        n_lower = n.lower()
+        if n_lower in _STOP or n_lower in existing or n_lower in added_morph:
+            continue
+        tokens.append(n_lower)
+        added_morph.add(n_lower)
+
+    # 동의어 대표어 추가 — 동의어 그룹에 속한 토큰이 있으면 대표어도 함께 부여
+    synonym_extra = [_SYNONYM_MAP[t] for t in tokens if t in _SYNONYM_MAP]
+    tokens.extend(synonym_extra)
+
     return tokens
 
 def _feat(text: str) -> List[str]:
@@ -124,19 +293,54 @@ def _feat(text: str) -> List[str]:
 
 # ── 2. TF-IDF 검색 엔진 ──────────────────────────────
 
+_FEEDBACK_BOOST: Dict[Tuple[str, str], float] = {}   # (persona, q_lower) -> boost
+
+
+def set_feedback_boost(persona: str, q_lower: str, boost: float):
+    """피드백 발생 즉시(서버 재시작 없이) 검색 가중치에 반영"""
+    _FEEDBACK_BOOST[(persona or '', q_lower)] = boost
+
+
+def _feedback_boost_for(persona: str, q: str) -> float:
+    return _FEEDBACK_BOOST.get((persona or '', q.strip().lower()), 1.0)
+
+
 class _Engine:
     def __init__(self):
         self._qa: List[Tuple[str, str, dict]] = []   # (질문텍스트, 답변, 메타)
         self._vecs: List[Dict[str, float]] = []
         self._idf: Dict[str, float] = {}
         self._dirty = True
+        self._deleted: set = set()   # 소프트 삭제된 인덱스
 
     def add(self, q: str, a: str, meta: dict = None):
         self._qa.append((q, a, meta or {}))
         self._dirty = True
 
     def count(self) -> int:
-        return len(self._qa)
+        return len(self._qa) - len(self._deleted)
+
+    def delete_by_q(self, question: str, persona: str = None):
+        """동일 질문의 기존 항목을 소프트 삭제 (검색에서 제외)"""
+        q_lower = question.strip().lower()
+        for i, (q, a, meta) in enumerate(self._qa):
+            if i in self._deleted:
+                continue
+            if q.strip().lower() == q_lower:
+                if persona is None or meta.get("persona") == persona:
+                    self._deleted.add(i)
+                    self._dirty = True
+
+    def delete_by_source(self, source: str, persona: str = None):
+        """특정 소스(예: '문서:파일명')의 모든 항목 소프트 삭제"""
+        for i, (q, a, meta) in enumerate(self._qa):
+            if i in self._deleted:
+                continue
+            if meta.get("source") == source:
+                if persona is None or meta.get("persona") == persona:
+                    self._deleted.add(i)
+        if self._deleted:
+            self._dirty = True
 
     def _build(self):
         N = len(self._qa)
@@ -145,7 +349,8 @@ class _Engine:
             return
 
         # q 필드 5배 가중치 부스트: q 토큰을 5번 반복 → q 키워드 일치 시 점수 대폭 상승
-        all_f = [_feat(' '.join([q]*5) + ' ' + a[:200]) for q, a, _ in self._qa]
+        # 답변 컨텍스트 200→400자로 확장 → 긴 답변 검색 정확도 향상
+        all_f = [_feat(' '.join([q]*5) + ' ' + a[:400]) for q, a, _ in self._qa]
 
         # IDF
         df: Dict[str, int] = defaultdict(int)
@@ -196,6 +401,8 @@ class _Engine:
         query_lower = query.lower()
         results = []
         for i, (q, a, meta) in enumerate(self._qa):
+            if i in self._deleted:
+                continue
             p = meta.get('persona', '')
             if persona and p and p != persona:
                 continue
@@ -227,6 +434,9 @@ class _Engine:
                 if exact_tokens:
                     match_ratio = len(exact_tokens) / max(len(_tok(query_lower)), 1)
                     s = s * (1.0 + 0.5 * match_ratio)
+
+            # 피드백 가중치: 해당 항목 질문 기준 좋아요/싫어요 누적치를 점수에 반영
+            s *= _feedback_boost_for(p, q)
 
             if s >= min_score:
                 results.append((q, a, s, meta))
@@ -279,15 +489,42 @@ def _load_knowledge():
     # 자동학습·직접입력·문서 업로드 등 동적 학습 데이터 복원 (재시작 후에도 유지)
     # "정적KB" 소스는 Python KB 파일에서 이미 로드되었으므로 건너뜀 (중복 방지)
     try:
-        import sqlite3, os
-        db_path = os.getenv("DB_PATH", "/tmp/memory.db")
-        if os.path.exists(db_path):
+        import sqlite3, os as _os
+        _here = _os.path.dirname(_os.path.abspath(__file__))
+        db_path = _os.getenv("DB_PATH", _os.path.join(_here, "data", "memory.db"))
+        if _os.path.exists(db_path):
             conn = sqlite3.connect(db_path)
-            rows = conn.execute(
-                "SELECT content, persona, source FROM learned_knowledge WHERE source != '정적KB'"
-            ).fetchall()
-            conn.close()
-            for content, persona, source in rows:
+            try:
+                rows = conn.execute(
+                    "SELECT id, content, persona, source FROM learned_knowledge"
+                    " WHERE source != '정적KB' ORDER BY id ASC"
+                ).fetchall()
+            finally:
+                conn.close()
+
+            # Q&A 형식 항목은 같은 질문이 여러 개면 최신(id 큰 것)만 사용
+            # source가 직접입력·자동학습인 경우만 중복 제거; 문서 청크는 모두 포함
+            DEDUP_SOURCES = ("직접입력", "자동학습")
+            qa_latest: dict = {}   # (q_lower, persona) → (content, source)
+            chunks = []            # 문서 청크 등 비-QA 항목
+
+            for row_id, content, persona, source in rows:
+                is_qa = content.startswith("Q: ") and "\nA: " in content
+                if is_qa and source in DEDUP_SOURCES:
+                    q_lower = content.split("\nA: ", 1)[0][3:].strip().lower()
+                    qa_latest[(q_lower, persona)] = (content, source)  # 최신이 덮어씀
+                else:
+                    chunks.append((content, persona, source))
+
+            # 중복 제거된 Q&A 항목 로드
+            for (q_lower, persona), (content, source) in qa_latest.items():
+                parts = content.split("\nA: ", 1)
+                q = parts[0][3:].strip()
+                a = parts[1].strip()
+                _engine.add(q, a, {"persona": persona, "source": source})
+
+            # 문서 청크 등 나머지 항목 로드
+            for content, persona, source in chunks:
                 if content.startswith("Q: ") and "\nA: " in content:
                     parts = content.split("\nA: ", 1)
                     q = parts[0][3:].strip()
@@ -298,6 +535,14 @@ def _load_knowledge():
                 _engine.add(q, a, {"persona": persona, "source": source})
     except Exception as e:
         print(f"⚠️ 동적 학습 데이터 복원 실패: {e}")
+
+    # 피드백 가중치 복원 (서버 재시작 후에도 좋아요/싫어요 학습 효과 유지)
+    try:
+        from memory import get_feedback_boosts
+        for (persona, q_lower), boost in get_feedback_boosts().items():
+            _FEEDBACK_BOOST[(persona or '', q_lower)] = boost
+    except Exception as e:
+        print(f"⚠️ 피드백 가중치 복원 실패: {e}")
 
     print(f"✅ 자체 AI 엔진 초기화 완료: {_engine.count()}개 지식 항목 로드")
 
@@ -489,11 +734,19 @@ async def local_stream(
         response = _compose_with_context(query, context, persona)
     else:
         # 컨텍스트 없을 때: 지식베이스 TF-IDF 검색
+        # 최근 4턴(user+ai 각2회)을 검색 쿼리에 포함 → 대화 맥락 유지
         ctx_parts = [query]
+        turn_count = 0
         for m in reversed(messages[:-1]):
-            if m.get('role') == 'assistant':
-                ctx_parts.append(m['content'][:200])
+            if turn_count >= 4:
                 break
+            role = m.get('role', '')
+            if role == 'user':
+                ctx_parts.append(m['content'][:120])
+                turn_count += 1
+            elif role == 'assistant':
+                ctx_parts.append(m['content'][:150])
+                turn_count += 1
         search_q = ' '.join(ctx_parts)
 
         # 동적으로 추가된 내용은 엔진에 등록

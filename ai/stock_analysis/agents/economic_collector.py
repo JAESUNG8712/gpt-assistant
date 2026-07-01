@@ -7,12 +7,44 @@ import asyncio
 import aiohttp
 import json
 import os
-from datetime import datetime
-from typing import Dict
+from datetime import datetime, timedelta
+from typing import Dict, Optional
 
 
-BOK_API_KEY = os.getenv("BOK_API_KEY", "")  # 한국은행 ECOS API 키
+BOK_API_KEY = os.getenv("BOK_API_KEY", "")
 BOK_BASE_URL = "https://ecos.bok.or.kr/api"
+
+
+async def _fetch_bok_latest(stat_code: str, item_code: str, cycle: str = "M",
+                             lookback_periods: int = 12) -> Optional[dict]:
+    """한국은행 ECOS 통계 API에서 지정 통계의 가장 최근 값 1건을 조회.
+    BOK_API_KEY 미설정/요청 실패/데이터 없음 시 None 반환 (호출부에서 정적 fallback 사용)."""
+    if not BOK_API_KEY:
+        return None
+
+    end = datetime.now()
+    if cycle == "D":
+        start = end - timedelta(days=lookback_periods)
+        fmt = "%Y%m%d"
+    else:
+        start = end - timedelta(days=31 * lookback_periods)
+        fmt = "%Y%m"
+
+    url = (
+        f"{BOK_BASE_URL}/StatisticSearch/{BOK_API_KEY}/json/kr/1/100/"
+        f"{stat_code}/{cycle}/{start.strftime(fmt)}/{end.strftime(fmt)}/{item_code}"
+    )
+    try:
+        async with aiohttp.ClientSession(trust_env=True) as session:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                data = await resp.json()
+                rows = data.get("StatisticSearch", {}).get("row", [])
+                if not rows:
+                    return None
+                latest = rows[-1]
+                return {"value": float(latest["DATA_VALUE"]), "time": latest["TIME"]}
+    except Exception:
+        return None
 
 
 class EconomicCollector:
@@ -46,21 +78,31 @@ class EconomicCollector:
             "경제캘린더": calendar if not isinstance(calendar, Exception) else {"error": str(calendar)},
             "수집시각": datetime.now().isoformat(),
         }
+        self.results["시장심리"] = self.get_market_sentiment()
 
         print("📊 [경제수집] 완료")
         return self.results
 
     async def _collect_interest_rates(self) -> Dict:
-        """한국·미국 금리 데이터"""
-        # BOK ECOS API 없을 시 최신 알려진 수치 반환 (2026년 기준 추정치)
+        # 한국기준금리(722Y001/0101000)는 BOK_API_KEY 설정 시 ECOS에서 실시간 조회,
+        # 미설정/조회실패 시 아래 정적값으로 fallback (그 외 항목은 ECOS에 안정적인
+        # 동등 시계열이 없어 정적값 유지)
+        rate_info = {
+            "현재": 3.00,
+            "단위": "%",
+            "결정일": "2025-11-28",
+            "방향": "동결",
+            "코멘트": "물가안정 목표 2% 수렴 중, 완화 기조 전환 가능성 관찰",
+            "_데이터출처": "정적 샘플 (BOK_API_KEY 미설정)",
+        }
+        live = await _fetch_bok_latest("722Y001", "0101000", cycle="M")
+        if live:
+            rate_info["현재"] = live["value"]
+            rate_info["결정일"] = live["time"]
+            rate_info["_데이터출처"] = "한국은행 ECOS API (실시간)"
+
         return {
-            "한국기준금리": {
-                "현재": 3.00,
-                "단위": "%",
-                "결정일": "2025-11-28",
-                "방향": "동결",
-                "코멘트": "물가안정 목표 2% 수렴 중, 완화 기조 전환 가능성 관찰",
-            },
+            "한국기준금리": rate_info,
             "미국연방기금금리": {
                 "현재": 4.25,
                 "목표범위": "4.25~4.50%",
@@ -76,15 +118,24 @@ class EconomicCollector:
         }
 
     async def _collect_exchange_rates(self) -> Dict:
-        """주요 통화 환율"""
+        # 원달러(USD/KRW) 매매기준율(731Y003/0000001)은 BOK_API_KEY 설정 시
+        # ECOS에서 실시간 조회, 미설정/조회실패 시 정적값 fallback
+        usd_krw = {
+            "현재": 1_378.0,
+            "전일대비": -3.5,
+            "1개월전": 1_412.0,
+            "방향": "원화강세",
+            "주요요인": ["미국 관세 완화 기대", "외국인 주식 순매수"],
+            "_데이터출처": "정적 샘플 (BOK_API_KEY 미설정)",
+        }
+        live = await _fetch_bok_latest("731Y003", "0000001", cycle="D", lookback_periods=30)
+        if live:
+            usd_krw["전일대비"] = None
+            usd_krw["현재"] = live["value"]
+            usd_krw["_데이터출처"] = f"한국은행 ECOS API (실시간, 기준일 {live['time']})"
+
         return {
-            "원달러(USD/KRW)": {
-                "현재": 1_378.0,
-                "전일대비": -3.5,
-                "1개월전": 1_412.0,
-                "방향": "원화강세",
-                "주요요인": ["미국 관세 완화 기대", "외국인 주식 순매수"],
-            },
+            "원달러(USD/KRW)": usd_krw,
             "원유로(EUR/KRW)": 1_520.0,
             "원엔(JPY/KRW)": 9.15,
             "달러인덱스(DXY)": 99.8,
@@ -92,7 +143,6 @@ class EconomicCollector:
         }
 
     async def _collect_inflation(self) -> Dict:
-        """물가 지표"""
         return {
             "한국CPI": {
                 "전년동월비": 2.1,
@@ -111,7 +161,6 @@ class EconomicCollector:
         }
 
     async def _collect_market_indices(self) -> Dict:
-        """글로벌 주요 지수"""
         try:
             from ..utils.krx_client import get_index_data
             kospi = await get_index_data("KOSPI")
@@ -132,7 +181,6 @@ class EconomicCollector:
         }
 
     async def _collect_commodities(self) -> Dict:
-        """원자재 가격"""
         return {
             "WTI원유": {"현재": 78.5, "단위": "USD/배럴", "1개월변화": -3.2, "방향": "하락"},
             "브렌트원유": {"현재": 82.1, "단위": "USD/배럴"},
@@ -144,7 +192,6 @@ class EconomicCollector:
         }
 
     async def _collect_economic_calendar(self) -> Dict:
-        """주요 경제 일정"""
         return {
             "이번주_주요일정": [
                 {"날짜": "2026-06-04", "이벤트": "미국 ISM 서비스업 PMI 발표"},
@@ -166,7 +213,6 @@ class EconomicCollector:
         }
 
     def get_market_sentiment(self) -> str:
-        """시장 전반 심리 판단"""
         vix = self.results.get("지수", {}).get("공포지수(VIX)", {}).get("현재", 20)
         if vix < 15:
             return "과열 (탐욕)"
@@ -178,7 +224,6 @@ class EconomicCollector:
             return "공포 (패닉)"
 
     def get_macro_signal(self) -> Dict:
-        """거시경제 신호 종합"""
         return {
             "금리방향": "인하사이클 진입 예상 (2026년 하반기)",
             "환율": "원화 완만한 강세 예상 (무역흑자, 외인유입)",

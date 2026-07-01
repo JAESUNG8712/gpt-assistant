@@ -13,7 +13,6 @@ from typing import Optional
 DART_API_KEY = os.getenv("DART_API_KEY", "")
 DART_BASE_URL = "https://opendart.fss.or.kr/api"
 
-# 주요 종목 DART 고유번호 매핑 (corp_code)
 CORP_CODES = {
     "삼성전자": "00126380",
     "SK하이닉스": "00164779",
@@ -30,9 +29,42 @@ CORP_CODES = {
     "LG화학": "00346810",
     "삼성SDI": "00126371",
     "현대모비스": "00164758",
+    # 추가 종목
+    "LG전자": "00401731",
+    "LG씨앤에스": "01188768",
+    "LG CNS": "01188768",
+    "LGCNS": "01188768",
+    "LG": "00120139",
+    "대우건설": "00047019",
+    "SK텔레콤": "00178079",
+    "SK이노베이션": "00631518",
+    "KT": "00307508",
+    "포스코": "00354900",
+    "삼성물산": "00149655",
+    "삼성생명": "00150004",
+    "하이브": "01313883",
+    "카카오뱅크": "01390409",
+    "크래프톤": "01410980",
+    "두산에너빌리티": "00178703",
+    # AI 테마 종목
+    "효성중공업": "00817829",
+    "LS일렉트릭": "00575945",
+    "두산로보틱스": "01710695",
+    "대한광통신": "00105994",
+    "스피어": "01862530",
+    # AI 인프라·반도체·데이터센터
+    "HD현대일렉트릭": "00552949",
+    "제일엠앤에스": "01162810",
+    "이수페타시스": "00583055",
+    "코어라인소프트": "01629809",
+    "리노공업": "00361052",
+    "RFHIC": "01046754",
+    "아이큐어": "01252730",
+    "서진시스템": "01065390",
+    "오픈엣지테크놀로지": "01702461",
+    "퓨리오사AI": "01762345",
 }
 
-# 종목코드 → 사명 역매핑
 STOCK_CODE_MAP = {
     "005930": "삼성전자",
     "000660": "SK하이닉스",
@@ -49,14 +81,34 @@ STOCK_CODE_MAP = {
     "051910": "LG화학",
     "006400": "삼성SDI",
     "012330": "현대모비스",
+    # 추가 종목
+    "066570": "LG전자",
+    "003550": "LG",
+    "047040": "대우건설",
+    "034730": "SK",
+    "017670": "SK텔레콤",
+    "096770": "SK이노베이션",
+    "030200": "KT",
+    "028260": "삼성물산",
+    "032830": "삼성생명",
+    "352820": "하이브",
+    "323410": "카카오뱅크",
+    "259960": "크래프톤",
+    "042660": "두산에너빌리티",
+    # AI 테마 종목
+    "298040": "효성중공업",
+    "010120": "LS일렉트릭",
+    "454910": "두산로보틱스",
+    "010170": "대한광통신",
+    "403360": "스피어",
+    "267260": "HD현대일렉트릭",
+    "033320": "이수페타시스",
+    "014620": "서진시스템",
+    "408100": "오픈엣지테크놀로지",
 }
 
 
 async def fetch_financial_statements(corp_code: str, year: str, report_type: str = "11011") -> dict:
-    """
-    재무제표 조회 (단일 회사 주요계정)
-    report_type: 11011=사업보고서, 11012=반기보고서, 11013=1분기, 11014=3분기
-    """
     if not DART_API_KEY:
         return _mock_financial_data(corp_code, year)
 
@@ -69,7 +121,7 @@ async def fetch_financial_statements(corp_code: str, year: str, report_type: str
     }
 
     try:
-        async with aiohttp.ClientSession() as session:
+        async with aiohttp.ClientSession(trust_env=True) as session:
             async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as resp:
                 data = await resp.json()
                 if data.get("status") == "000":
@@ -80,7 +132,6 @@ async def fetch_financial_statements(corp_code: str, year: str, report_type: str
 
 
 async def fetch_company_info(corp_code: str) -> dict:
-    """기업 기본 정보 조회"""
     if not DART_API_KEY:
         return _mock_company_info(corp_code)
 
@@ -88,7 +139,7 @@ async def fetch_company_info(corp_code: str) -> dict:
     params = {"crtfc_key": DART_API_KEY, "corp_code": corp_code}
 
     try:
-        async with aiohttp.ClientSession() as session:
+        async with aiohttp.ClientSession(trust_env=True) as session:
             async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as resp:
                 data = await resp.json()
                 return data if data.get("status") == "000" else {"error": data.get("message")}
@@ -97,7 +148,6 @@ async def fetch_company_info(corp_code: str) -> dict:
 
 
 async def fetch_dividend_info(corp_code: str, year: str) -> dict:
-    """배당 정보 조회"""
     if not DART_API_KEY:
         return _mock_dividend_data()
 
@@ -110,7 +160,7 @@ async def fetch_dividend_info(corp_code: str, year: str) -> dict:
     }
 
     try:
-        async with aiohttp.ClientSession() as session:
+        async with aiohttp.ClientSession(trust_env=True) as session:
             async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as resp:
                 data = await resp.json()
                 return data if data.get("status") == "000" else {"error": data.get("message")}
@@ -119,7 +169,6 @@ async def fetch_dividend_info(corp_code: str, year: str) -> dict:
 
 
 async def fetch_major_shareholders(corp_code: str, year: str) -> dict:
-    """대주주 현황 조회"""
     if not DART_API_KEY:
         return _mock_shareholders_data()
 
@@ -132,7 +181,7 @@ async def fetch_major_shareholders(corp_code: str, year: str) -> dict:
     }
 
     try:
-        async with aiohttp.ClientSession() as session:
+        async with aiohttp.ClientSession(trust_env=True) as session:
             async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as resp:
                 data = await resp.json()
                 return data if data.get("status") == "000" else {"error": data.get("message")}
@@ -141,7 +190,6 @@ async def fetch_major_shareholders(corp_code: str, year: str) -> dict:
 
 
 async def search_disclosures(corp_name: str, days: int = 30) -> list:
-    """최근 공시 검색"""
     if not DART_API_KEY:
         return _mock_disclosures(corp_name)
 
@@ -158,7 +206,7 @@ async def search_disclosures(corp_name: str, days: int = 30) -> list:
     }
 
     try:
-        async with aiohttp.ClientSession() as session:
+        async with aiohttp.ClientSession(trust_env=True) as session:
             async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as resp:
                 data = await resp.json()
                 return data.get("list", []) if data.get("status") == "000" else []
@@ -167,7 +215,6 @@ async def search_disclosures(corp_name: str, days: int = 30) -> list:
 
 
 def _parse_financial_statements(items: list) -> dict:
-    """DART 재무데이터 파싱"""
     result = {}
     for item in items:
         account = item.get("account_nm", "")
@@ -183,10 +230,7 @@ def _parse_financial_statements(items: list) -> dict:
     return result
 
 
-# ── Mock 데이터 (API 키 없을 때 / 개발·테스트용) ───────────────────────
-
 def _mock_financial_data(corp_code: str, year: str) -> dict:
-    """실제 DART API 키 없을 때 사용하는 샘플 구조 반환"""
     return {
         "매출액": {"current": 2_365_000_000_000, "previous": 2_020_000_000_000},
         "영업이익": {"current": 65_000_000_000, "previous": -4_580_000_000_000},

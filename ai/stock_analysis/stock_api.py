@@ -14,10 +14,16 @@ from pydantic import BaseModel
 from .pipeline import StockAnalysisPipeline, run_once
 from .agents.team_config import TEAM_CONFIG, ANALYSIS_PIPELINE, REPORT_SCHEDULE
 from .utils.email_sender import send_report, is_configured as email_configured
+from .utils.popular_stocks import refresh_popular_stocks, is_cache_fresh
 
 router = APIRouter(prefix="/stock", tags=["주식분석"])
 
-# 전역 파이프라인 인스턴스
+# 서버 시작 시 인기 종목 자동 등록 (캐시 신선하면 재사용)
+try:
+    refresh_popular_stocks(top_n=50, force=False)
+except Exception as e:
+    print(f"⚠️  인기 종목 초기 로드 실패 (무시): {e}")
+
 _pipeline: Optional[StockAnalysisPipeline] = None
 _analysis_running = False
 _last_report: Optional[str] = None
@@ -37,7 +43,6 @@ class AnalysisRequest(BaseModel):
 
 @router.get("/team", summary="에이전트 팀 구성 조회")
 def get_team_config():
-    """11명 에이전트 팀 구성 및 파이프라인 정보 반환"""
     return {
         "팀구성": [
             {
@@ -58,12 +63,11 @@ def get_team_config():
     }
 
 
-@router.post("/analyze", summary="주식 분석 즉시 실행")
+@router.post("/analyze", summary="주식 분석 즉시 실행 (비동기)")
 async def run_analysis(
+    background_tasks: BackgroundTasks,
     request: AnalysisRequest = AnalysisRequest(),
-    background_tasks: BackgroundTasks = None,
 ):
-    """전체 분석 파이프라인 즉시 실행 (비동기)"""
     global _analysis_running, _last_report, _last_run
 
     if _analysis_running:
@@ -88,11 +92,10 @@ async def run_analysis(
     }
 
 
-@router.get("/analyze/sync", summary="주식 분석 동기 실행 (직접 응답)")
+@router.get("/analyze/sync", summary="주식 분석 동기 실행")
 async def run_analysis_sync(
     stocks: Optional[str] = Query(None, description="콤마 구분 종목명 (예: 삼성전자,SK하이닉스)"),
 ):
-    """분석 결과를 직접 반환 (시간 소요됨)"""
     target = [s.strip() for s in stocks.split(",")] if stocks else None
 
     try:
@@ -104,7 +107,6 @@ async def run_analysis_sync(
 
 @router.get("/report", summary="최근 분석 보고서 조회")
 def get_latest_report():
-    """가장 최근 생성된 보고서 반환"""
     if _last_report is None:
         raise HTTPException(
             status_code=404,
@@ -118,7 +120,6 @@ def get_latest_report():
 
 @router.get("/report/text", summary="최근 보고서 텍스트 형식", response_class=PlainTextResponse)
 def get_latest_report_text():
-    """보고서를 plain text로 반환"""
     if _last_report is None:
         return PlainTextResponse("보고서 없음. /stock/analyze 실행 후 조회하세요.")
     return PlainTextResponse(content=_last_report, media_type="text/plain; charset=utf-8")
@@ -136,7 +137,6 @@ def get_status():
 
 @router.get("/reports/list", summary="저장된 보고서 목록")
 def list_reports():
-    """저장된 보고서 파일 목록 반환"""
     import os
     reports_dir = os.path.join(os.path.dirname(__file__), "reports")
     if not os.path.exists(reports_dir):
@@ -150,13 +150,11 @@ def list_reports():
     return {
         "보고서목록": files[:20],
         "총개수": len(files),
-        "저장경로": reports_dir,
     }
 
 
 @router.get("/reports/{filename}", summary="특정 보고서 조회", response_class=PlainTextResponse)
 def get_report_by_filename(filename: str):
-    """파일명으로 특정 보고서 조회"""
     import os
     if not filename.startswith("report_") or ".." in filename:
         raise HTTPException(status_code=400, detail="잘못된 파일명")
@@ -173,9 +171,8 @@ def get_report_by_filename(filename: str):
     return PlainTextResponse(content=content, media_type="text/plain; charset=utf-8")
 
 
-@router.post("/email/send", summary="최근 보고서 즉시 이메일 발송")
+@router.post("/email/send", summary="최근 보고서 이메일 발송")
 def send_latest_report_email():
-    """저장된 최근 보고서를 이메일로 즉시 발송"""
     if not email_configured():
         raise HTTPException(
             status_code=503,
@@ -187,34 +184,73 @@ def send_latest_report_email():
     success = send_report(_last_report)
     if success:
         return {"상태": "발송완료", "메시지": "이메일 발송 성공"}
-    raise HTTPException(status_code=500, detail="이메일 발송 실패. 서버 로그를 확인하세요.")
+    raise HTTPException(status_code=500, detail="이메일 발송 실패.")
 
 
 @router.get("/email/status", summary="이메일 설정 상태 확인")
 def get_email_status():
-    """이메일 자동 발송 설정 상태"""
     import os
     configured = email_configured()
     return {
         "이메일설정완료": configured,
         "발신자": os.getenv("EMAIL_SENDER", "미설정"),
         "수신자": [r.strip() for r in os.getenv("EMAIL_RECIPIENTS", "").split(",") if r.strip()],
-        "상태": "활성" if configured else "비활성 — EMAIL_SENDER/EMAIL_PASSWORD/EMAIL_RECIPIENTS 설정 필요",
+        "상태": "활성" if configured else "비활성",
+    }
+
+
+@router.get("/screen/lowprice", summary="저평가 저가주 스크리닝 (만원 미만)", response_class=PlainTextResponse)
+async def screen_lowprice(
+    market: str = Query("ALL", description="KOSPI / KOSDAQ / ALL"),
+    max_price: int = Query(10000, description="주가 상한 (원)"),
+    max_pbr: float = Query(1.2, description="PBR 상한"),
+    max_per: float = Query(20.0, description="PER 상한"),
+    top_n: int = Query(20, description="결과 상위 N개"),
+):
+    """pykrx 기반 저평가 저가주 스크리닝"""
+    from .utils.low_price_screener import screen_low_price_stocks, format_report
+    try:
+        params = {"max_price": max_price, "max_pbr": max_pbr, "max_per": max_per, "top_n": top_n}
+        candidates = screen_low_price_stocks(market=market, params=params)
+        report = format_report(candidates, params=params)
+        return PlainTextResponse(content=report, media_type="text/plain; charset=utf-8")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/popular/refresh", summary="인기 종목 강제 갱신")
+def refresh_popular(top_n: int = 50):
+    """KRX 거래대금 기준 상위 종목을 새로 수집해서 분석 대상에 자동 등록"""
+    result = refresh_popular_stocks(top_n=top_n, force=True)
+    return result
+
+
+@router.get("/popular", summary="현재 등록된 인기 종목 목록")
+def get_popular_stocks():
+    """자동 수집된 인기 종목 + 캐시 상태 조회"""
+    from .utils.popular_stocks import load_cache
+    from .utils.dart_client import CORP_CODES
+    cached, updated_at = load_cache()
+    return {
+        "인기종목": list(cached.keys()),
+        "총등록종목수": len(CORP_CODES),
+        "캐시갱신시각": updated_at or "미수집",
+        "캐시유효": is_cache_fresh(),
     }
 
 
 def _next_report_time() -> str:
     now = datetime.now()
     if now.hour < 7:
-        return f"오늘 07:00 (오전 정기 보고서)"
+        return "오늘 07:00 (오전 정기 보고서)"
     elif now.hour < 22:
-        return f"오늘 22:00 (저녁 정기 보고서)"
+        return "오늘 22:00 (저녁 정기 보고서)"
     else:
-        return f"내일 07:00 (오전 정기 보고서)"
+        return "내일 07:00 (오전 정기 보고서)"
 
 
-def start_scheduler(app, target_stocks=None):
-    """FastAPI lifespan에서 APScheduler 시작"""
+def start_scheduler(target_stocks=None):
+    """FastAPI lifespan에서 APScheduler 시작 (선택사항)"""
     try:
         from apscheduler.schedulers.asyncio import AsyncIOScheduler
         from apscheduler.triggers.cron import CronTrigger
@@ -246,5 +282,4 @@ def start_scheduler(app, target_stocks=None):
 
     except ImportError:
         print("⚠️  APScheduler 미설치 — 자동 스케줄 비활성화")
-        print("    pip install apscheduler 후 재시작 필요")
         return None

@@ -273,6 +273,7 @@
   <div class="nav-tab active" onclick="showPage('team')">📌 고정된 팀</div>
   <div class="nav-tab" onclick="showPage('all')">🤖 전체 에이전트</div>
   <div class="nav-tab" onclick="showPage('memory')">🧠 프로젝트 기억</div>
+  <div class="nav-tab" onclick="showPage('budget')">📊 예산 관리</div>
 </nav>
 
 <div class="container">
@@ -326,6 +327,11 @@
     <div class="section-title">🧠 저장된 기억 <span class="count-badge" id="memory-count">0</span></div>
     <div id="memory-list" class="memory-list"></div>
   </div>
+
+  <!-- 예산 관리 페이지 -->
+  <div class="page" id="page-budget">
+    <iframe id="budget-frame" src="" style="width:100%; height:calc(100vh - 160px); border:none; border-radius:10px; background:#f0f2f5"></iframe>
+  </div>
 </div>
 
 <script>
@@ -337,9 +343,13 @@
     document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
     document.querySelectorAll('.nav-tab').forEach(t => t.classList.remove('active'));
     document.getElementById('page-' + name).classList.add('active');
-    const tabs = { team: 0, all: 1, memory: 2 };
+    const tabs = { team: 0, all: 1, memory: 2, budget: 3 };
     document.querySelectorAll('.nav-tab')[tabs[name]].classList.add('active');
     if (name === 'memory' && currentAccount) loadMemory();
+    if (name === 'budget') {
+      const frame = document.getElementById('budget-frame');
+      if (!frame.src) frame.src = '/budget.html';
+    }
   }
 
   function roleBadgeClass(role) {

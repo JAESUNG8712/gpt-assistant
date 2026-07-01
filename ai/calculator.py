@@ -104,8 +104,138 @@ def _fmt(n: int) -> str:
 _ANNUAL_LEAVE_KEYWORDS = [
     '연차', '유급휴가', '연월차', '휴가 며칠', '휴가 몇 일', '휴가 갯수',
     '연차 몇', '연차 갯수', '연차 개수', '휴가 개수', '연차일수',
+    '연차 총', '총 연차', '연차 발생', '누적 연차',
 ]
 _JOIN_KEYWORDS = ['입사', '입사일', '시작', '취업', '입산']
+
+
+# ── 기간별 연차 누적 계산 ─────────────────────────────────────────
+
+def _calc_leaves_in_period(join_date: date, end_date: date) -> list:
+    """입사일부터 end_date까지 발생하는 모든 연차 반환.
+    Returns: list of (grant_date, days, gtype)
+             gtype: 'monthly' | '1년차' | '2년차' | ...
+    """
+    import calendar as _cal
+    grants = []
+
+    # 1년 미만 월별 연차 (month 1 ~ 11)
+    for mo_offset in range(1, 12):
+        mo = join_date.month + mo_offset
+        yr = join_date.year
+        while mo > 12:
+            mo -= 12; yr += 1
+        try:
+            gd = date(yr, mo, join_date.day)
+        except ValueError:
+            gd = date(yr, mo, _cal.monthrange(yr, mo)[1])
+        if gd > end_date:
+            break
+        grants.append((gd, 1, 'monthly'))
+
+    # 1년 이상 연차 (year_offset = 1, 2, 3, ...)
+    for yr_offset in range(1, 50):
+        try:
+            gd = date(join_date.year + yr_offset, join_date.month, join_date.day)
+        except ValueError:
+            import calendar as _cal2
+            gd = date(join_date.year + yr_offset, join_date.month,
+                      _cal2.monthrange(join_date.year + yr_offset, join_date.month)[1])
+        if gd > end_date:
+            break
+        days = min(15 + (yr_offset - 1) // 2, 25)
+        grants.append((gd, days, f'{yr_offset}년차'))
+
+    return grants
+
+
+def try_annual_leave_period_calc(text: str) -> Optional[str]:
+    """기간별 연차 발생 총계 계산.
+    Handles: "26년 1월 입사자, 26년부터 27년까지 연차 총 갯수"
+    """
+    tl = text.lower()
+
+    # 연차 관련 키워드 필수
+    if not any(kw in tl for kw in _ANNUAL_LEAVE_KEYWORDS):
+        return None
+
+    # 기간 패턴 감지 (단순 연차 조회와 구분)
+    has_range = bool(re.search(r'\d{2,4}년.{0,6}부터.{0,10}\d{2,4}년.{0,6}까지', tl))
+    has_until = bool(re.search(r'\d{2,4}년.{0,6}까지', tl)) and any(k in tl for k in _JOIN_KEYWORDS)
+    has_total = ('총' in tl or '합계' in tl or '누적' in tl) and bool(re.search(r'\d{2,4}년', tl))
+    if not (has_range or has_until or has_total):
+        return None
+
+    # 입사일
+    join_date = _parse_date(text)
+    if not join_date:
+        return None
+
+    # 모든 연도 추출 → from_year / to_year 결정
+    years = sorted({
+        (2000 + int(m.group(1))) if int(m.group(1)) < 100 else int(m.group(1))
+        for m in re.finditer(r'(\d{2,4})년', text)
+        if 2020 <= ((2000 + int(m.group(1))) if int(m.group(1)) < 100 else int(m.group(1))) <= 2060
+    })
+    if len(years) < 2:
+        return None
+
+    from_year = min(years)
+    to_year   = max(years)
+    if to_year < join_date.year:
+        return None
+
+    grants = _calc_leaves_in_period(join_date, date(to_year, 12, 31))
+    if not grants:
+        return None
+
+    # 연도별 그룹핑
+    by_year: dict = {}
+    for gd, days, gtype in grants:
+        yr = gd.year
+        if yr not in by_year:
+            by_year[yr] = {'monthly': 0, 'annual': []}
+        if gtype == 'monthly':
+            by_year[yr]['monthly'] += 1
+        else:
+            by_year[yr]['annual'].append((gd, days, gtype))
+
+    rows = []
+    grand_total = 0
+    for yr in sorted(by_year.keys()):
+        parts, yr_total = [], 0
+
+        m_cnt = by_year[yr]['monthly']
+        if m_cnt:
+            parts.append(f"월 연차 1일×{m_cnt}개월")
+            yr_total += m_cnt
+
+        for gd, days, gtype in by_year[yr]['annual']:
+            yr_num = int(gtype.replace('년차', ''))
+            extra = (yr_num - 1) // 2
+            desc = f"15+{extra}일" if extra else "15일"
+            parts.append(f"{gtype} {desc} ({gd.strftime('%m.%d')} 발생)")
+            yr_total += days
+
+        grand_total += yr_total
+        rows.append(f"| {yr}년 | {' + '.join(parts)} | **{yr_total}일** |")
+
+    table = "\n".join(rows)
+
+    return (
+        f"## 연차 발생 현황 ({from_year}~{to_year}년)\n\n"
+        f"| 항목 | 내용 |\n|------|------|\n"
+        f"| 입사일 | {join_date.strftime('%Y년 %m월 %d일')} |\n"
+        f"| 조회 기간 | {from_year}년 ~ {to_year}년 |\n\n"
+        f"### 연도별 연차 발생\n"
+        f"| 연도 | 발생 내역 | 합계 |\n|------|-----------|------|\n"
+        f"{table}\n\n"
+        f"### 총 발생 연차: **{grand_total}일**\n\n"
+        f"> 근로기준법 제60조 기준\n"
+        f"> 1년 미만: 월 1일 (최대 11일) / 1년 이상: 15일 기본, 3년차부터 2년마다 1일 추가 (최대 25일)"
+    )
+
+
 
 
 def _calc_annual_leave_result(join_date: date, today: date) -> dict:
@@ -396,7 +526,7 @@ def try_retirement_calc(text: str) -> Optional[str]:
             break
         dates_found.append(d)
         # 찾은 날짜 제거해 다음 날짜 파싱
-        m = re.search(r'\d{2,4}년\s*\d{1,2}월(?:\s*\d{1,2}일)?', temp)
+        m = re.search(r'\d{2,4}년\s*\d{1,2}월(?:\s*\d{1,2}일)?|\d{2,4}[.\-/]\d{1,2}[.\-/]\d{1,2}', temp)
         if m:
             temp = temp[m.end():]
         else:
@@ -431,7 +561,11 @@ def try_retirement_calc(text: str) -> Optional[str]:
                     total_days = int(m.group(1)) * 30
                 # "1년 미만" 특수 처리
                 elif '1년 미만' in tl or '1년미만' in tl:
-                    total_days = 300  # 1년 미만 대표값
+                    return (
+                        "## 퇴직금 계산 결과\n\n"
+                        "⚠️ **퇴직금 수급 불가**: 퇴직금은 계속 근로기간 **1년 이상**인 경우에만 발생합니다.\n\n"
+                        "1년(365일) 미만 근무 시 퇴직금이 발생하지 않습니다."
+                    )
 
     if not total_days or total_days < 365:
         if total_days is not None and total_days < 365:
@@ -557,17 +691,17 @@ def try_overtime_calc(text: str) -> Optional[str]:
     rows = []
     total = 0
 
-    if overtime_h:
+    if overtime_h is not None:
         pay = int(hourly * 1.5 * overtime_h)
         total += pay
         rows.append(f"| 연장근로 {overtime_h:.0f}h | 시급×1.5×{overtime_h:.0f} | {pay:,}원 |")
 
-    if night_h:
+    if night_h is not None:
         night_pay = int(hourly * 0.5 * night_h)  # 야간 가산분만
         total += night_pay
         rows.append(f"| 야간가산 {night_h:.0f}h | 시급×0.5×{night_h:.0f} | {night_pay:,}원 |")
 
-    if holiday_h_8:
+    if holiday_h_8 is not None:
         over8 = max(0, holiday_h_8 - 8)
         within8 = min(holiday_h_8, 8)
         p8  = int(hourly * 1.5 * within8)
@@ -819,9 +953,11 @@ def try_any_calc(text: str) -> Optional[str]:
     """
     모든 계산기를 순서대로 시도.
     계산 가능한 첫 번째 결과를 반환, 모두 해당 없으면 None.
+    기간 계산은 단순 연차 계산보다 먼저 시도.
     """
     for fn in [
-        try_annual_leave_calc,
+        try_annual_leave_period_calc,   # 기간별 누적 연차 (우선)
+        try_annual_leave_calc,          # 현재 기준 단일 연차
         try_retirement_calc,
         try_salary_calc,
         try_overtime_calc,

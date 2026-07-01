@@ -19,6 +19,39 @@ REPORTS_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "reports"
 os.makedirs(REPORTS_DIR, exist_ok=True)
 
 
+def _fmt_num(val, fmt=",", fallback="N/A"):
+    """값이 숫자이면 포맷, 아니면 fallback 반환"""
+    try:
+        v = float(val)
+        if fmt == ",":
+            return f"{v:,.0f}"
+        elif fmt == ",.1f":
+            return f"{v:,.1f}"
+        elif fmt == ".2f":
+            return f"{v:.2f}"
+        elif fmt == ".1f":
+            return f"{v:.1f}"
+        elif fmt == ".0f":
+            return f"{v:.0f}"
+        return str(v)
+    except (TypeError, ValueError):
+        return fallback if val in (None, "", "N/A") else str(val)
+
+
+def _fmt_chg(val, fmt=".2f"):
+    """등락률/변화 값 포맷 (부호 포함)"""
+    try:
+        v = float(val)
+        sign = "+" if v >= 0 else ""
+        if fmt == ".2f":
+            return f"{sign}{v:.2f}%"
+        elif fmt == ".1f":
+            return f"{sign}{v:.1f}%"
+        return f"{sign}{v}%"
+    except (TypeError, ValueError):
+        return str(val) if val not in (None, "") else "N/A"
+
+
 class ReportWriter:
     """📝 최종 레포트 작성자"""
 
@@ -44,14 +77,17 @@ class ReportWriter:
 
         now = datetime.now()
         self.report_time = now
-        self.time_label = "오전 7시" if now.hour < 12 else "저녁 10시"
+        if abs(now.hour - 7) <= 1:
+            self.time_label = "오전 7시"
+        elif abs(now.hour - 22) <= 1:
+            self.time_label = "저녁 10시"
+        else:
+            self.time_label = now.strftime("%H시 %M분 (수동 실행)")
         self.date_str = now.strftime("%Y년 %m월 %d일")
 
     def run(self) -> str:
-        """전체 레포트 생성"""
         print("📝 [레포트] 최종 보고서 작성 시작")
 
-        # Claude AI 강화 섹션 사전 생성
         self._ai_executive = ""
         self._ai_action = ""
         if claude_available():
@@ -67,6 +103,9 @@ class ReportWriter:
             self._executive_summary(),
             self._market_overview(),
             self._top_picks(),
+            self._undervalued_picks(),
+            self._securities_reports_section(),
+            self._news_section(),
             self._investor_flow(),
             self._sector_analysis(),
             self._detailed_stock_analysis(),
@@ -77,8 +116,6 @@ class ReportWriter:
         ]
 
         report = "\n\n".join(sections)
-
-        # 파일 저장
         self._save_report(report)
 
         print("📝 [레포트] 완료")
@@ -114,7 +151,7 @@ class ReportWriter:
 
         return f"""【 종합 요약 (Executive Summary) 】
 ─────────────────────────────────────────────────────────────────────
-▸ KOSPI: {kospi_val:,.1f} ({'+' if kospi_chg >= 0 else ''}{kospi_chg:.2f}%)
+▸ KOSPI: {_fmt_num(kospi_val, ",.1f")} ({_fmt_chg(kospi_chg)})
 ▸ 분석 종목: {total}개  |  매수 의견: {buy_count}개  |  관망/매도: {total - buy_count}개
 ▸ 포트폴리오 평균 리스크: {avg_risk:.0f}/100 ({portfolio_risk.get('포트폴리오위험수준', 'N/A')})
 ▸ 지정학 리스크: {geo_risk.get('종합지정학리스크', 'N/A')}/100 ({geo_risk.get('수준', 'N/A')}){ai_section}"""
@@ -122,7 +159,6 @@ class ReportWriter:
     def _get_key_message(self) -> str:
         portfolio_risk = self.risk_val.get("_포트폴리오리스크", {})
         avg_risk = portfolio_risk.get("평균리스크점수", 50)
-        macro_signal = self.economic.get("종합판단", "")
 
         if avg_risk < 30:
             return "시장 환경 우호적 — 저평가 우량주 선별 매수 적기"
@@ -130,6 +166,42 @@ class ReportWriter:
             return "중립적 시장 — 섹터 선별, 분할 매수 전략 권장"
         else:
             return "리스크 주의 구간 — 비중 축소 및 현금 확보 권장"
+
+    def _securities_reports_section(self) -> str:
+        """수집된 증권사 리포트 컨센서스 섹션"""
+        lines = [
+            "【 증권사 애널리스트 리포트 컨센서스 】",
+            "─" * 65,
+        ]
+        found = False
+        for name, data in self.financial.items():
+            brokerage = data.get("증권사리포트", {})
+            if not brokerage or isinstance(brokerage, Exception):
+                continue
+            reports = brokerage.get("reports", [])
+            consensus = brokerage.get("consensus", {})
+            if not reports:
+                continue
+            found = True
+            lines += [
+                f"",
+                f"▶ {name}",
+                f"  컨센서스 목표주가: {consensus.get('평균목표주가','N/A')} "
+                f"(최고 {consensus.get('최고목표주가','N/A')} / 최저 {consensus.get('최저목표주가','N/A')})",
+                f"  수집 리포트: {consensus.get('리포트수',0)}건 | 의견분포: {consensus.get('의견분포',{})}",
+            ]
+            for r in reports[:4]:
+                firm = str(r.get("증권사") or "미상")[:10]
+                title = str(r.get("제목") or "")[:35]
+                date = str(r.get("날짜") or "날짜미상")
+                tp = str(r.get("목표주가") or "-")[:10]
+                op = str(r.get("투자의견") or "중립")[:6]
+                lines.append(f"    [{date}] {firm:<10} {op:<6} TP:{tp:<10} {title}")
+
+        if not found:
+            lines.append("  수집된 리포트 없음 (네이버 금융 연결 확인 필요)")
+
+        return "\n".join(lines)
 
     def _market_overview(self) -> str:
         eco = self.economic
@@ -170,19 +242,19 @@ class ReportWriter:
   한미 금리차: {interest.get('한미금리차', 'N/A')}%p
 
 ■ 환율·물가
-  원달러: {usdkrw.get('현재', 'N/A'):,}원 ({usdkrw.get('방향', '')}
-    주요요인: {', '.join(usdkrw.get('주요요인', []))})
+  원달러: {_fmt_num(usdkrw.get('현재'), ",")}원 ({usdkrw.get('방향', '')})
+    주요요인: {', '.join(usdkrw.get('주요요인', []))}
   한국 CPI: {kr_cpi.get('전년동월비', 'N/A')}% (핵심 {kr_cpi.get('코어CPI', 'N/A')}%)
   미국 CPI: {us_cpi.get('전년동월비', 'N/A')}% — {us_cpi.get('코멘트', '')}
 
 ■ 글로벌 지수
-  S&P500: {sp500.get('현재', 'N/A'):,} ({'+' if (sp500.get('전일대비_pct', 0) or 0) >= 0 else ''}{sp500.get('전일대비_pct', 0):.2f}%)
-  나스닥: {nasdaq.get('현재', 'N/A'):,} ({'+' if (nasdaq.get('전일대비_pct', 0) or 0) >= 0 else ''}{nasdaq.get('전일대비_pct', 0):.2f}%)
+  S&P500: {_fmt_num(sp500.get('현재'), ",")} ({_fmt_chg(sp500.get('전일대비_pct', 0))})
+  나스닥: {_fmt_num(nasdaq.get('현재'), ",")} ({_fmt_chg(nasdaq.get('전일대비_pct', 0))})
   VIX (공포지수): {vix.get('현재', 'N/A')} → {vix.get('수준', '')} ({vix.get('코멘트', '')})
 
 ■ 원자재
   WTI 원유: ${wti.get('현재', 'N/A')}/배럴 ({wti.get('방향', '')})
-  금: ${gold.get('현재', 'N/A'):,}/온스 ({gold.get('코멘트', '')})
+  금: ${_fmt_num(gold.get('현재'), ",")}/온스 ({gold.get('코멘트', '')})
 
 ■ 지정학·무역
   미중관계: {geo_issues.get('현황', 'N/A')}
@@ -192,8 +264,6 @@ class ReportWriter:
   {events_str}"""
 
     def _top_picks(self) -> str:
-        from .analyzer import StockAnalyzer
-        # 분석 결과에서 직접 추출
         ranked = sorted(
             self.analyses.items(),
             key=lambda x: x[1].get("매매시점", {}).get("종합점수", 0),
@@ -222,13 +292,95 @@ class ReportWriter:
                 f"{current:>10,} {target:>10,} {upside:>+7.1f}% {action:<12}"
             )
 
-        # 검증 경고 반영
         lines.append("")
-        flagged = self.data_val
-        warn_stocks = [n for n, v in flagged.items() if v.get("경고") and not n.startswith("_")]
+        warn_stocks = [n for n, v in self.data_val.items() if v.get("경고") and not n.startswith("_")]
         if warn_stocks:
             lines.append(f"  ⚠️  데이터 검증 주의 종목: {', '.join(warn_stocks)}")
             lines.append("       (재무데이터 이상 감지 — 투자 전 추가 확인 권장)")
+
+        return "\n".join(lines)
+
+    def _undervalued_picks(self) -> str:
+        """분석 대상 종목 중 저평가/강한저평가 등급만 별도로 모아 보여주는 섹션"""
+        candidates = [
+            (name, data) for name, data in self.analyses.items()
+            if data.get("내재가치", {}).get("저평가판단") in ("강한저평가", "저평가")
+        ]
+        candidates.sort(
+            key=lambda x: x[1].get("내재가치", {}).get("저평가스코어", 0),
+            reverse=True,
+        )
+
+        lines = ["【 현재 저평가 종목 】",
+                 "─────────────────────────────────────────────────────────────────────"]
+
+        if not candidates:
+            lines.append("  현재 분석 대상 종목 중 저평가 등급에 해당하는 종목이 없습니다.")
+            lines.append("  (시장 전체 만원 미만 저가주 스크리닝은 '저평가 종목 발굴'로 별도 요청 가능)")
+            return "\n".join(lines)
+
+        lines.append(
+            f"{'종목명':<16} {'등급':<8} {'현재가':>10} {'PER':>6} {'PBR':>6} "
+            f"{'상승여력':>8} {'저평가점수':>10}"
+        )
+        lines.append("─" * 70)
+        for name, data in candidates:
+            intrinsic = data.get("내재가치", {})
+            grade = intrinsic.get("저평가판단", "N/A")
+            current = data.get("현재가", 0)
+            per = intrinsic.get("현재PER", "N/A")
+            pbr = intrinsic.get("현재PBR", "N/A")
+            upside = intrinsic.get("상승여력", 0)
+            score = intrinsic.get("저평가스코어", 0)
+            lines.append(
+                f"{name:<16} {grade:<8} {current:>10,} {str(per):>6} {str(pbr):>6} "
+                f"{upside:>+7.1f}% {score:>10}"
+            )
+
+        lines.append("")
+        lines.append("  ℹ️  시장 전체(만원 미만 저가주) 추가 스크리닝은 '저평가 종목 발굴' 요청으로 별도 조회 가능")
+        return "\n".join(lines)
+
+    def _news_section(self) -> str:
+        """종목별 최신 뉴스·기사·전문가 의견 섹션"""
+        lines = [
+            "【 종목별 최신 뉴스 / 기사 / 전문가 의견 】",
+            "─" * 65,
+        ]
+        found = False
+        for name, data in self.financial.items():
+            news_data = data.get("뉴스", {})
+            if not news_data or isinstance(news_data, Exception):
+                continue
+            articles = news_data.get("articles", [])
+            if not articles:
+                continue
+            found = True
+            lines.append(f"\n▶ {name}  ({len(articles)}건)")
+            for a in articles[:5]:
+                date = str(a.get("날짜") or "")[:10]
+                source = str(a.get("출처") or "")[:15]
+                title = str(a.get("제목") or "")[:55]
+                summary = str(a.get("요약") or "")[:120]
+                prefix = f"[{date}] " if date else ""
+                src_label = f" ({source})" if source else ""
+                lines.append(f"  {prefix}{title}{src_label}")
+                if summary:
+                    lines.append(f"    → {summary}")
+
+            # 증권사 리포트에서 목표주가 추출해 함께 표시
+            brokerage = data.get("증권사리포트", {})
+            if brokerage and not isinstance(brokerage, Exception):
+                consensus = brokerage.get("consensus", {})
+                avg_tp = consensus.get("평균목표주가", "")
+                op_dist = consensus.get("의견분포", {})
+                if avg_tp and avg_tp != "N/A":
+                    lines.append(
+                        f"\n  📊 애널리스트 컨센서스 — 평균 목표주가: {avg_tp}  |  의견분포: {op_dist}"
+                    )
+
+        if not found:
+            lines.append("  수집된 뉴스 없음 (인터넷 연결 또는 ddgs 패키지 확인 필요)")
 
         return "\n".join(lines)
 
@@ -363,7 +515,6 @@ class ReportWriter:
                 lines.append(f"  {warn}")
             lines.append("")
 
-        # 고위험 종목 목록
         high_risk = [
             (name, v) for name, v in self.risk_val.items()
             if not name.startswith("_") and v.get("리스크점수", 0) >= 50
@@ -458,7 +609,6 @@ class ReportWriter:
 {'='*70}"""
 
     def _save_report(self, report: str):
-        """보고서 파일 저장"""
         timestamp = self.report_time.strftime("%Y%m%d_%H%M")
         filename = f"report_{timestamp}.txt"
         filepath = os.path.join(REPORTS_DIR, filename)
@@ -466,7 +616,6 @@ class ReportWriter:
         with open(filepath, "w", encoding="utf-8") as f:
             f.write(report)
 
-        # JSON 구조화 데이터도 저장
         json_data = {
             "생성시각": self.report_time.isoformat(),
             "분석종목": {

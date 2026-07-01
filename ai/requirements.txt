@@ -4,7 +4,10 @@ httpx
 python-multipart
 ddgs
 python-dotenv
+pdfminer.six
+python-docx
 aiohttp
 pykrx
 apscheduler
 anthropic
+openpyxl

@@ -39,7 +39,6 @@ class DataAggregator:
         return aggregated
 
     def _normalize_financial(self) -> Dict:
-        """재무 데이터 정규화"""
         normalized = {}
         for name, data in self.financial.items():
             if isinstance(data, Exception):
@@ -84,16 +83,13 @@ class DataAggregator:
         }
 
     def _create_summary(self) -> Dict:
-        """통합 요약 생성"""
         corp_count = len([k for k, v in self.financial.items() if "error" not in v])
 
-        # 저평가 후보 집계
         undervalued = [
             name for name, data in self.financial.items()
             if data.get("파생지표", {}).get("저평가스코어", 0) >= 40
         ]
 
-        # 수급 강세 종목
         supply_strong = [
             name for name, data in self.financial.items()
             if data.get("수급", {}).get("외국인합계", {}).get("방향") == "매수우위"
@@ -110,10 +106,8 @@ class DataAggregator:
         }
 
     def _assess_data_quality(self) -> Dict:
-        """데이터 품질 평가"""
         issues = []
 
-        # 샘플 데이터 여부 확인
         sample_count = sum(
             1 for data in self.financial.values()
             if "_note" in str(data) and "샘플" in str(data.get("재무제표", {}).get("_note", ""))
