@@ -218,7 +218,7 @@
   <span class="cell-ref-box" id="cell-ref">-</span>
   <span class="fx-label">fx</span>
   <input type="text" id="formula-input" placeholder="셀 클릭 후 수식 입력 (예: =SUM(A1:A5))"
-    onkeydown="fbarKeydown(event)" onblur="fbarBlur()">
+    onkeydown="fbarKeydown(event)" onblur="fbarBlur()" oninput="onFormulaBarInput()">
 </div>
 
 <!-- 그리드 -->
@@ -227,6 +227,8 @@
     <table id="sheet"></table>
   </div>
 </div>
+<!-- 붙여넣기/복사/키보드 이벤트 수신용 숨김 트랩 -->
+<textarea id="paste-trap" tabindex="-1" style="position:fixed;opacity:0;width:1px;height:1px;top:-9999px;left:-9999px;resize:none;overflow:hidden"></textarea>
 
 <!-- 시트 탭 -->
 <div class="sheet-tabs" id="sheet-tabs"></div>
@@ -304,6 +306,31 @@ let sortState = null;
 let tableFontSize = 12;
 const MIN_ROWS = 25, MIN_COLS = 14;
 
+// ── Undo 스택
+const undoStack = [];
+const MAX_UNDO = 50;
+function pushUndo() {
+  undoStack.push({
+    sheets: JSON.parse(JSON.stringify(sheets)),
+    activeSheet,
+    cellStyles: JSON.parse(JSON.stringify(cellStyles)),
+  });
+  if (undoStack.length > MAX_UNDO) undoStack.shift();
+}
+function undo() {
+  if (!undoStack.length) { setStatus('되돌릴 내용 없음', false); return; }
+  const st = undoStack.pop();
+  sheets = st.sheets; activeSheet = st.activeSheet; cellStyles = st.cellStyles;
+  selectedCell = null; selEnd = null; editMode = false;
+  renderTabs(); render(); updateFormulaBar(); loadSnaps();
+  setStatus('↩️ 실행 취소');
+}
+
+// ── 수식 셀 클릭/드래그 참조 입력
+let formulaRefMode = false;   // 수식 입력 중 셀 클릭으로 주소 삽입 가능한 상태
+let fDragAnchor = null;       // 드래그 시작 셀
+let fOrigPrefix = '';         // 드래그 시작 시 수식의 앵커 이전 부분
+
 // 범위 내 여부
 function inSel(r, c) {
   if (!selectedCell) return false;
@@ -331,7 +358,35 @@ function getCellEl(r,c){ return document.querySelector(`#sheet td[data-r="${r}"]
 // ══════════════════════════════════════════
 // 초기화
 // ══════════════════════════════════════════
-window.onload = () => load();
+window.onload = () => {
+  load();
+  // paste-trap: 셀 선택 상태에서 Ctrl+V 안정적 수신
+  const pt = document.getElementById('paste-trap');
+  pt.addEventListener('paste', e => {
+    if (editMode || !selectedCell) return;
+    e.preventDefault();
+    const text = (e.clipboardData || window.clipboardData).getData('text/plain');
+    if (text) pasteAt(selectedCell.r, selectedCell.c, text);
+  });
+  pt.addEventListener('copy', e => {
+    if (editMode || !selectedCell) return;
+    e.preventDefault();
+    const r1=Math.min(selectedCell.r,(selEnd||selectedCell).r);
+    const r2=Math.max(selectedCell.r,(selEnd||selectedCell).r);
+    const c1=Math.min(selectedCell.c,(selEnd||selectedCell).c);
+    const c2=Math.max(selectedCell.c,(selEnd||selectedCell).c);
+    const g=grid(); let tsv='';
+    for(let r=r1;r<=r2;r++){
+      const row=[];
+      for(let c=c1;c<=c2;c++) row.push(String(renderCell(g[r]?.[c]??'')));
+      tsv+=row.join('\t')+'\n';
+    }
+    e.clipboardData.setData('text/plain', tsv.trimEnd());
+    setStatus(`✅ ${r2-r1+1}행 × ${c2-c1+1}열 복사됨`);
+  });
+  // 전역 mouseup: 수식 드래그 종료
+  document.addEventListener('mouseup', () => { fDragAnchor = null; });
+};
 
 async function load() {
   try {
@@ -498,8 +553,19 @@ function render() {
   document.querySelectorAll('#sheet td.cell').forEach(td => {
     const r = +td.dataset.r, c = +td.dataset.c;
 
-    // 클릭 → 셀 선택
+    // 클릭 → 셀 선택 or 수식 참조 입력
     td.addEventListener('mousedown', e => {
+      // 수식 참조 모드: 수식 입력 중 다른 셀 클릭 → 주소 삽입
+      checkFormulaRef();
+      if (formulaRefMode && selectedCell && !(selectedCell.r===r&&selectedCell.c===c)) {
+        e.preventDefault();
+        startFormulaRef(r, c);
+        return;
+      }
+      if (formulaRefMode && editMode && (selectedCell.r===r&&selectedCell.c===c)) {
+        return; // 같은 셀은 무시
+      }
+
       if (editMode && !(selectedCell&&selectedCell.r===r&&selectedCell.c===c)) {
         e.preventDefault(); commitEdit();
         if (e.shiftKey && selectedCell) { selEnd={r,c}; highlightSel(); updateFormulaBarRange(); }
@@ -509,13 +575,18 @@ function render() {
       if (!editMode) {
         e.preventDefault();
         if (e.shiftKey && selectedCell) {
-          // shift+클릭: 범위 확장
           selEnd = {r, c};
-          selectedCell = selectedCell; // anchor 유지
           highlightSel(); updateFormulaBarRange();
         } else {
           selectCell(r, c);
         }
+      }
+    });
+
+    // 수식 드래그: mouseover로 범위 주소 업데이트
+    td.addEventListener('mouseover', e => {
+      if (fDragAnchor && formulaRefMode) {
+        updateFormulaRef(r, c);
       }
     });
 
@@ -539,6 +610,7 @@ function render() {
       else if (e.key==='Tab') { e.preventDefault(); commitEdit(); moveSel(0,e.shiftKey?-1:1); }
       else if (e.key==='Escape') { e.preventDefault(); cancelEdit(); }
     });
+    td.addEventListener('input', () => { if (editMode) checkFormulaRef(); });
 
     // 붙여넣기는 document 레벨 핸들러에서 처리 (편집 모드 아닐 때)
   });
@@ -557,11 +629,15 @@ function selectCell(r, c) {
   selectedCell = {r, c};
   selEnd = null;
   editMode = false;
+  formulaRefMode = false;
+  fDragAnchor = null;
   highlightSel();
   updateFormulaBar();
-  // 포커스를 td에 주어야 paste 이벤트 수신 가능
+  // paste-trap에 포커스 → paste/copy 이벤트를 안정적으로 수신
+  const pt = document.getElementById('paste-trap');
+  if (pt) pt.focus();
   const td = getCellEl(r, c);
-  if (td) { td.focus(); td.scrollIntoView({block:'nearest',inline:'nearest'}); }
+  if (td) td.scrollIntoView({block:'nearest',inline:'nearest'});
 }
 
 function highlightSel() {
@@ -606,6 +682,10 @@ function commitEdit() {
   if (!editMode || !selectedCell) { editMode=false; return; }
   const {r,c} = selectedCell;
   const td = getCellEl(r,c);
+  // undo 전에 값이 실제로 변경되는지 확인 후 push
+  const newVal = td ? td.textContent.trim() : '';
+  const oldVal = grid()[r]?.[c] ?? '';
+  if (newVal !== oldVal) pushUndo();
   if (td) {
     const raw = td.textContent.trim();
     const g = grid();
@@ -657,6 +737,65 @@ function updateFormulaBar() {
   fi.value = (grid()[r]&&grid()[r][c]!=null) ? grid()[r][c] : '';
 }
 
+// ── 수식 셀 참조 입력 헬퍼 ──
+function checkFormulaRef() {
+  // 현재 수식 내용이 셀 클릭 참조를 받을 수 있는 상태인지 확인
+  let v = '';
+  if (editMode && selectedCell) {
+    const td = getCellEl(selectedCell.r, selectedCell.c);
+    if (td && td.contentEditable==='true') v = td.textContent;
+  }
+  const fi = document.getElementById('formula-input');
+  if (document.activeElement===fi) v = fi.value;
+  if (!v.startsWith('=')) { formulaRefMode=false; return; }
+  const last = v.trimEnd().slice(-1);
+  formulaRefMode = ['(', ',', '+', '-', '*', '/', '=', ':'].includes(last);
+}
+
+function getFormulaEl() {
+  const fi = document.getElementById('formula-input');
+  if (document.activeElement===fi) return {el:fi, type:'bar'};
+  if (editMode && selectedCell) {
+    const td = getCellEl(selectedCell.r, selectedCell.c);
+    if (td && td.contentEditable==='true') return {el:td, type:'cell'};
+  }
+  return null;
+}
+
+function applyFormulaRefAddr(addr) {
+  const src = getFormulaEl();
+  if (!src) return;
+  if (src.type==='bar') {
+    src.el.value = fOrigPrefix + addr;
+  } else {
+    src.el.textContent = fOrigPrefix + addr;
+    placeCursorEnd(src.el);
+    document.getElementById('formula-input').value = src.el.textContent;
+  }
+}
+
+function startFormulaRef(r, c) {
+  // 드래그 시작: 현재 수식에서 prefix 저장 후 셀 주소 삽입
+  const src = getFormulaEl();
+  if (!src) return;
+  const v = src.type==='bar' ? src.el.value : src.el.textContent;
+  // 마지막 셀 참조 또는 범위를 제거하고 prefix 저장
+  fOrigPrefix = v.replace(/[A-Za-z]+\d*:[A-Za-z]+\d*$/, '').replace(/[A-Za-z]+\d+$/, '');
+  fDragAnchor = {r, c};
+  applyFormulaRefAddr(cellAddr(r, c));
+}
+
+function updateFormulaRef(r, c) {
+  if (!fDragAnchor) return;
+  const r1=Math.min(fDragAnchor.r,r), r2=Math.max(fDragAnchor.r,r);
+  const c1=Math.min(fDragAnchor.c,c), c2=Math.max(fDragAnchor.c,c);
+  const addr = (r1===r2&&c1===c2) ? cellAddr(r,c) : `${cellAddr(r1,c1)}:${cellAddr(r2,c2)}`;
+  applyFormulaRefAddr(addr);
+}
+
+// 수식 입력줄 input 이벤트
+function onFormulaBarInput() { checkFormulaRef(); }
+
 function moveSel(dr, dc) {
   if (!selectedCell) { if(!dr&&!dc) return; selectedCell={r:0,c:0}; }
   const nRows=grid().length, nCols=(grid()[0]||[]).length;
@@ -665,40 +804,7 @@ function moveSel(dr, dc) {
   selectCell(r,c);
 }
 
-// ══════════════════════════════════════════
-// 전역 복사(Ctrl+C) / 붙여넣기(Ctrl+V)
-// ══════════════════════════════════════════
-document.addEventListener('copy', e => {
-  if (document.querySelector('.modal-overlay.open')) return;
-  if (editMode) return;
-  if (!selectedCell) return;
-  if (document.activeElement===document.getElementById('formula-input')) return;
-  e.preventDefault();
-  const r1=Math.min(selectedCell.r,(selEnd||selectedCell).r);
-  const r2=Math.max(selectedCell.r,(selEnd||selectedCell).r);
-  const c1=Math.min(selectedCell.c,(selEnd||selectedCell).c);
-  const c2=Math.max(selectedCell.c,(selEnd||selectedCell).c);
-  const g=grid();
-  let tsv='';
-  for(let r=r1;r<=r2;r++){
-    const row=[];
-    for(let c=c1;c<=c2;c++) row.push(String(renderCell(g[r]?.[c]??'')));
-    tsv+=row.join('\t')+'\n';
-  }
-  e.clipboardData.setData('text/plain', tsv.trimEnd());
-  setStatus(`✅ ${r2-r1+1}행 × ${c2-c1+1}열 복사됨`);
-});
-
-document.addEventListener('paste', e => {
-  if (document.querySelector('.modal-overlay.open')) return;
-  if (editMode) return;
-  if (!selectedCell) return;
-  if (document.activeElement===document.getElementById('formula-input')) return;
-  e.preventDefault();
-  const text=(e.clipboardData||window.clipboardData).getData('text/plain');
-  if (!text) return;
-  pasteAt(selectedCell.r, selectedCell.c, text);
-});
+// 복사/붙여넣기는 paste-trap (window.onload에서 등록)에서 처리
 
 // ══════════════════════════════════════════
 // 전역 키보드 (방향키 셀 이동)
@@ -721,6 +827,9 @@ document.addEventListener('keydown', e => {
   const nRows=grid().length, nCols=(grid()[0]||[]).length;
   const clampR=r=>Math.max(0,Math.min(nRows-1,r));
   const clampC=c=>Math.max(0,Math.min(nCols-1,c));
+
+  // Ctrl+Z: 실행 취소
+  if ((e.ctrlKey||e.metaKey) && e.key==='z') { e.preventDefault(); undo(); return; }
 
   switch(e.key) {
     case 'ArrowUp': case 'ArrowDown': case 'ArrowLeft': case 'ArrowRight': {
@@ -746,7 +855,7 @@ document.addEventListener('keydown', e => {
     case 'Delete': case 'Backspace':
       e.preventDefault();
       if (selEnd) {
-        // 범위 삭제
+        pushUndo();
         const r1=Math.min(selectedCell.r,selEnd.r), r2=Math.max(selectedCell.r,selEnd.r);
         const c1=Math.min(selectedCell.c,selEnd.c), c2=Math.max(selectedCell.c,selEnd.c);
         const g=grid();
@@ -787,6 +896,7 @@ function applyFormulaBar() {
 // ══════════════════════════════════════════
 function sortByCol(col) {
   if (editMode) commitEdit();
+  pushUndo();
   const g = grid();
   const dir = (sortState&&sortState.col===col&&sortState.dir==='asc') ? 'desc' : 'asc';
   sortState = {col, dir};
@@ -827,14 +937,15 @@ function applyAlign(align) {
 // ══════════════════════════════════════════
 // 행/열/셀 조작
 // ══════════════════════════════════════════
-function addRow() { const pos=selectedCell?selectedCell.r+1:grid().length; grid().splice(pos,0,[]); ensureSize();render(); }
-function addCol() { grid().forEach(r=>r.push('')); ensureSize();render(); }
+function addRow() { pushUndo(); const pos=selectedCell?selectedCell.r+1:grid().length; grid().splice(pos,0,[]); ensureSize();render(); }
+function addCol() { pushUndo(); grid().forEach(r=>r.push('')); ensureSize();render(); }
 function delRow() {
   if(!selectedCell){setStatus('삭제할 행 선택 필요',false);return;}
   if(grid().length<=1) return;
-  grid().splice(selectedCell.r,1); selectedCell=null; ensureSize();render();
+  pushUndo(); grid().splice(selectedCell.r,1); selectedCell=null; ensureSize();render();
 }
 function clearCell(r,c) {
+  pushUndo();
   const g=grid();
   if(g[r]&&g[r][c]!==undefined) g[r][c]='';
   const td=getCellEl(r,c);
@@ -843,18 +954,26 @@ function clearCell(r,c) {
 }
 
 function pasteAt(sr, sc, text) {
+  pushUndo();
   const lines = text.replace(/\r/g,'').split('\n');
   while(lines.length&&lines[lines.length-1]==='') lines.pop();
   const g=grid();
+  let maxR=0, maxC=0;
   lines.forEach((line,i)=>{
     line.split('\t').forEach((val,j)=>{
-      const r=sr+i,c=sc+j;
+      const r=sr+i, c=sc+j;
+      maxR=Math.max(maxR,r); maxC=Math.max(maxC,c);
       while(g.length<=r) g.push([]);
       while(g[r].length<=c) g[r].push('');
       g[r][c]=val;
     });
   });
-  ensureSize(); render();
+  // 모든 행을 같은 길이로 패딩 (자동 열 확장)
+  const nc=Math.max(MIN_COLS, maxC+1, ...g.map(r=>r.length));
+  g.forEach(r=>{ while(r.length<nc) r.push(''); });
+  while(g.length<Math.max(MIN_ROWS, maxR+1)) g.push(new Array(nc).fill(''));
+  render();
+  setStatus(`✅ ${lines.length}행 × ${lines[0]?.split('\t').length||1}열 붙여넣음`);
 }
 
 // ══════════════════════════════════════════
