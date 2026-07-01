@@ -3,444 +3,398 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>예산관리</title>
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>📊 예산관리</title>
 <style>
   :root {
-    --bg:#0d1117; --surface:#161b22; --surface2:#1c2330; --border:#30363d;
-    --text:#e6edf3; --text-dim:#8b949e; --accent:#3b6fc4;
+    --bg:#f4f6f9; --surface:#fff; --surface2:#f3f5f8; --surface3:#eaedf2;
+    --border:#e2e6ec; --border-bright:#cdd3dc;
+    --text:#41474f; --text-bright:#1a1d23; --text-dim:#818a94;
+    --accent:#1565c0;
   }
-  * { box-sizing: border-box; }
-  html, body { margin:0; height:100%; }
-  body { background:var(--bg); color:var(--text); font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; display:flex; flex-direction:column; }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  html, body { height:100%; background:var(--bg); color:var(--text-bright);
+    font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Noto Sans KR',sans-serif; }
+  body { display:flex; flex-direction:column; overflow:hidden; }
+
   .toolbar {
-    display:flex; gap:8px; align-items:center; flex-wrap:wrap;
-    padding:10px 14px; background:var(--surface); border-bottom:1px solid var(--border);
-    position:sticky; top:0; z-index:5;
+    display:flex; gap:6px; align-items:center; flex-wrap:wrap;
+    padding:10px 16px; background:var(--surface); border-bottom:2px solid var(--border-bright);
+    flex-shrink:0;
   }
-  .toolbar h2 { font-size:0.95rem; margin:0 12px 0 0; white-space:nowrap; }
-  button {
-    background:var(--surface2); color:var(--text); border:1px solid var(--border);
-    border-radius:6px; padding:6px 10px; font-size:0.78rem; cursor:pointer;
+  .toolbar-title { font-size:1rem; font-weight:700; margin-right:8px; white-space:nowrap; color:var(--text-bright); }
+  .btn {
+    padding:6px 12px; border-radius:7px; font-size:0.82rem; cursor:pointer;
+    border:1px solid var(--border-bright); background:var(--surface3); color:var(--text-bright);
+    white-space:nowrap;
   }
-  button:hover { background:#242c3a; }
-  button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
-  button.danger { color:#e57373; border-color:#5a2a2a; }
-  input[type=file] { display:none; }
-  .status { font-size:0.75rem; color:var(--text-dim); margin-left:6px; }
-  .grid-wrap { overflow:auto; padding:10px 14px; flex:1; min-height:0; }
-  table.sheet { border-collapse:collapse; font-size:0.8rem; }
-  table.sheet th, table.sheet td {
-    border:1px solid var(--border); min-width:90px; height:26px; padding:2px 6px;
-    white-space:nowrap; overflow:hidden;
+  .btn:hover { background:var(--border-bright); }
+  .btn-primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+  .btn-primary:hover { background:#1251a3; }
+  .btn-danger { color:#c0392b; }
+  #status { font-size:0.75rem; color:var(--text-dim); margin-left:4px; }
+
+  .hint {
+    font-size:0.72rem; color:var(--text-dim); padding:5px 16px;
+    background:var(--surface); flex-shrink:0;
+    border-bottom:1px solid var(--border);
   }
-  table.sheet th {
-    background:var(--surface2); position:sticky; top:0; color:var(--text-dim);
-    font-weight:600; text-align:center; z-index:2;
+  .hint code { background:var(--surface3); padding:1px 4px; border-radius:3px; font-size:0.7rem; }
+
+  .grid-wrap { overflow:auto; flex:1; padding:12px 16px; }
+  table { border-collapse:collapse; font-size:0.82rem; }
+  th, td { border:1px solid var(--border); padding:2px 6px; white-space:nowrap; overflow:hidden; }
+  th { background:var(--surface2); color:var(--text-dim); font-weight:600; text-align:center;
+       position:sticky; top:0; z-index:2; min-width:90px; }
+  th.rh { position:sticky; left:0; top:0; z-index:3; min-width:36px; }
+  td.rh { background:var(--surface2); position:sticky; left:0; z-index:1;
+           text-align:center; color:var(--text-dim); }
+  td[contenteditable] { outline:none; cursor:text; height:26px; min-width:90px; color:var(--text); }
+  td[contenteditable]:focus { background:rgba(21,101,192,0.1); }
+  td.err { color:#e57373; }
+
+  .empty-state { padding:60px 20px; text-align:center; color:var(--text-dim); }
+  .empty-state .icon { font-size:3rem; margin-bottom:16px; }
+  .empty-state h3 { font-size:1rem; font-weight:600; color:var(--text-bright); margin-bottom:10px; }
+  .empty-state p { font-size:0.85rem; line-height:1.8; }
+
+  .snap-area {
+    padding:10px 16px; border-top:1px solid var(--border);
+    background:var(--surface); flex-shrink:0;
   }
-  table.sheet th.row-head {
-    position:sticky; left:0; z-index:3; min-width:36px;
-  }
-  table.sheet td.row-head {
-    background:var(--surface2); position:sticky; left:0; text-align:center; color:var(--text-dim); z-index:1;
-  }
-  table.sheet td[contenteditable] { outline:none; cursor:text; }
-  table.sheet td[contenteditable]:focus { background:rgba(59,111,196,0.18); }
-  table.sheet td.formula-err { color:#e57373; }
-  .snap-area { padding:10px 14px; border-top:1px solid var(--border); }
   .snap-row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:8px; }
-  select { background:var(--surface2); color:var(--text); border:1px solid var(--border); border-radius:6px; padding:5px 8px; font-size:0.78rem; }
-  table.diff { border-collapse:collapse; font-size:0.78rem; margin-top:8px; }
-  table.diff th, table.diff td { border:1px solid var(--border); padding:4px 8px; }
-  table.diff th { background:var(--surface2); }
-  .delta-pos { color:#5fd17a; }
-  .delta-neg { color:#e57373; }
-  .hint { font-size:0.72rem; color:var(--text-dim); padding:0 14px 8px; }
+  .snap-row:last-child { margin-bottom:0; }
+  input[type=text], select {
+    background:var(--surface2); color:var(--text-bright); border:1px solid var(--border);
+    border-radius:6px; padding:5px 8px; font-size:0.78rem;
+  }
+  #snap-label { width:160px; }
+  #diff { margin-top:8px; font-size:0.78rem; overflow-x:auto; }
+  .diff-table { border-collapse:collapse; }
+  .diff-table th, .diff-table td { border:1px solid var(--border); padding:3px 8px; }
+  .diff-table th { background:var(--surface2); }
+  .diff-add { color:#2e7d32; }
+  .diff-sub { color:#c62828; }
 </style>
 </head>
 <body>
 
+<!-- 툴바 -->
 <div class="toolbar">
-  <h2>📊 예산관리 시트</h2>
-  <button onclick="document.getElementById('file-input').click()">📂 업로드</button>
-  <input type="file" id="file-input" accept=".xlsx,.xls,.csv" onchange="uploadGrid(this)">
-  <button class="primary" onclick="saveGrid()">💾 저장</button>
-  <button onclick="downloadGrid()">⬇️ 다운로드(xlsx)</button>
-  <button onclick="addRow()">➕ 행 추가</button>
-  <button onclick="addCol()">➕ 열 추가</button>
-  <span class="status" id="status"></span>
-</div>
-<div class="hint">셀을 클릭해 직접 입력하거나, 엑셀에서 복사한 범위를 셀에 붙여넣기(Ctrl+V) 하세요. 함수 입력: <code>=SUM(A1:A5)</code>, <code>=AVERAGE(B1:B3)</code>, <code>=MAX()</code>, <code>=MIN()</code>, <code>=COUNT()</code>, 사칙연산(+ - * /) 및 셀 참조 지원.</div>
-
-<div class="grid-wrap">
-  <table class="sheet" id="sheet"></table>
+  <span class="toolbar-title">📊 예산관리</span>
+  <button class="btn" onclick="document.getElementById('file-input').click()">📂 파일 업로드</button>
+  <input type="file" id="file-input" accept=".xlsx,.xls,.csv" onchange="upload(this)">
+  <button class="btn btn-primary" onclick="save()">💾 저장</button>
+  <button class="btn" onclick="download()">⬇️ xlsx 다운로드</button>
+  <button class="btn" onclick="addRow()">➕ 행 추가</button>
+  <button class="btn" onclick="addCol()">➕ 열 추가</button>
+  <span id="status"></span>
 </div>
 
+<!-- 힌트 -->
+<div class="hint">
+  셀 클릭 후 직접 입력 · 엑셀에서 복사(Ctrl+C) 후 셀 클릭하고 Ctrl+V 붙여넣기 ·
+  수식: <code>=SUM(A1:A5)</code> <code>=AVERAGE(B2:D2)</code> <code>=A1+B1*2</code>
+</div>
+
+<!-- 그리드 -->
+<div class="grid-wrap" id="grid-wrap">
+  <div class="empty-state" id="empty-state">
+    <div class="icon">📊</div>
+    <h3>예산 시트가 비어 있습니다</h3>
+    <p>
+      <b>📂 파일 업로드</b>로 엑셀·CSV를 가져오거나,<br>
+      <b>➕ 행/열 추가</b>로 직접 입력하거나,<br>
+      엑셀에서 셀 복사 후 <b>빈 셀 클릭 → Ctrl+V</b>로 붙여넣으세요.
+    </p>
+  </div>
+  <table id="sheet"></table>
+</div>
+
+<!-- 스냅샷 영역 -->
 <div class="snap-area">
   <div class="snap-row">
-    <input type="text" id="snap-label" placeholder="예: 2026-06 최종" style="background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:5px 8px;font-size:0.78rem">
-    <button onclick="saveSnapshot()">📌 월별 최종 자료로 저장(스냅샷)</button>
-    <span class="status" id="snap-status"></span>
+    <input type="text" id="snap-label" placeholder="예: 2026-06 최종">
+    <button class="btn btn-primary" onclick="saveSnap()">📌 월별 최종 저장</button>
+    <span id="snap-status" style="font-size:0.75rem;color:var(--text-dim)"></span>
   </div>
   <div class="snap-row">
     <span style="font-size:0.78rem;color:var(--text-dim)">비교:</span>
-    <select id="cmp-a"><option value="current">현재 작업 시트</option></select>
+    <select id="cmp-a"><option value="current">현재 시트</option></select>
     <span style="font-size:0.78rem;color:var(--text-dim)">vs</span>
-    <select id="cmp-b"><option value="current">현재 작업 시트</option></select>
-    <button onclick="compareSnapshots()">🔍 비교</button>
-    <button class="danger" onclick="deleteSelectedSnapshot()">🗑️ 선택 스냅샷 삭제</button>
+    <select id="cmp-b"><option value="current">현재 시트</option></select>
+    <button class="btn" onclick="compare()">🔍 비교</button>
+    <button class="btn btn-danger" onclick="deleteSnap()">🗑️ 삭제</button>
   </div>
-  <div id="diff-area"></div>
+  <div id="diff"></div>
 </div>
 
 <script>
 let grid = [];
 const MIN_ROWS = 20, MIN_COLS = 12;
 
+// ── 초기화 ──────────────────────────────────────────
+window.onload = () => { load(); };
+
+async function load() {
+  try {
+    const r = await fetch('/budget/grid');
+    const d = await r.json();
+    grid = (d.rows || []).map(row => row.map(c => c == null ? '' : String(c)));
+  } catch(e) { grid = []; }
+  ensureSize();
+  render();
+  loadSnaps();
+}
+
+// ── 그리드 헬퍼 ─────────────────────────────────────
+function ensureSize() {
+  while (grid.length < MIN_ROWS) grid.push([]);
+  const mc = Math.max(MIN_COLS, ...grid.map(r => r.length));
+  grid.forEach(r => { while (r.length < mc) r.push(''); });
+}
+
 function colLetters(idx) {
   let s = '', n = idx + 1;
-  while (n > 0) { const r = (n - 1) % 26; s = String.fromCharCode(65 + r) + s; n = Math.floor((n - 1) / 26); }
+  while (n > 0) { const r = (n-1)%26; s = String.fromCharCode(65+r)+s; n = Math.floor((n-1)/26); }
   return s;
 }
-
-function ensureMinSize() {
-  while (grid.length < MIN_ROWS) grid.push([]);
-  const maxCols = Math.max(MIN_COLS, ...grid.map(r => r.length));
-  grid.forEach(r => { while (r.length < maxCols) r.push(''); });
+function colIdx(letters) {
+  let n = 0;
+  for (const ch of letters.toUpperCase()) n = n*26 + (ch.charCodeAt(0)-64);
+  return n-1;
 }
 
-function setStatus(msg, ok = true) {
-  const el = document.getElementById('status');
-  el.textContent = msg;
-  el.style.color = ok ? '#5fd17a' : '#e57373';
+function hasData() {
+  return grid.some(row => row.some(c => c !== ''));
 }
 
-async function loadGrid() {
-  try {
-    const res = await fetch('/budget/grid');
-    const data = await res.json();
-    grid = (data.rows || []).map(r => r.map(c => c == null ? '' : String(c)));
-  } catch (e) {
-    grid = [];
-  }
-  ensureMinSize();
-  renderSheet();
-  loadSnapshotOptions();
-}
-
-function renderSheet() {
+function render() {
+  const empty = document.getElementById('empty-state');
   const table = document.getElementById('sheet');
-  const nRows = grid.length, nCols = Math.max(...grid.map(r => r.length), MIN_COLS);
-  let html = '<tr><th class="row-head"></th>';
+  empty.style.display = hasData() ? 'none' : 'block';
+
+  const nRows = grid.length;
+  const nCols = Math.max(MIN_COLS, ...grid.map(r => r.length));
+  let html = '<tr><th class="rh"></th>';
   for (let c = 0; c < nCols; c++) html += `<th>${colLetters(c)}</th>`;
   html += '</tr>';
   for (let r = 0; r < nRows; r++) {
-    html += `<tr><td class="row-head">${r + 1}</td>`;
+    html += `<tr><td class="rh">${r+1}</td>`;
     for (let c = 0; c < nCols; c++) {
       const raw = (grid[r] && grid[r][c] != null) ? grid[r][c] : '';
-      const display = renderCell(raw);
-      html += `<td contenteditable data-r="${r}" data-c="${c}" data-raw="${escapeAttr(raw)}">${escapeHtml(display)}</td>`;
+      const disp = renderCell(raw);
+      const isErr = String(disp).startsWith('#ERR');
+      html += `<td contenteditable${isErr ? ' class="err"' : ''} data-r="${r}" data-c="${c}" data-raw="${escAttr(raw)}">${escHtml(disp)}</td>`;
     }
     html += '</tr>';
   }
   table.innerHTML = html;
 
   table.querySelectorAll('td[contenteditable]').forEach(td => {
-    td.addEventListener('focus', onCellFocus);
-    td.addEventListener('blur', onCellBlur);
-    td.addEventListener('paste', onCellPaste);
-  });
-}
-
-function escapeHtml(s) {
-  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-}
-function escapeAttr(s) {
-  return String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;');
-}
-
-function onCellFocus(e) {
-  const td = e.target;
-  const raw = td.getAttribute('data-raw') || '';
-  td.textContent = raw;
-}
-
-function onCellBlur(e) {
-  const td = e.target;
-  const r = +td.dataset.r, c = +td.dataset.c;
-  const raw = td.textContent.trim();
-  while (grid.length <= r) grid.push([]);
-  while (grid[r].length <= c) grid[r].push('');
-  grid[r][c] = raw;
-  td.setAttribute('data-raw', escapeAttr(raw));
-  const display = renderCell(raw);
-  td.classList.toggle('formula-err', String(display).startsWith('#ERR'));
-  td.textContent = display;
-}
-
-function onCellPaste(e) {
-  e.preventDefault();
-  const text = (e.clipboardData || window.clipboardData).getData('text/plain');
-  const td = e.target;
-  const startR = +td.dataset.r, startC = +td.dataset.c;
-  const lines = text.replace(/\r/g, '').split('\n');
-  while (lines.length && lines[lines.length - 1] === '') lines.pop();
-  lines.forEach((line, i) => {
-    const cells = line.split('\t');
-    cells.forEach((val, j) => {
-      const r = startR + i, c = startC + j;
+    td.addEventListener('focus', e => {
+      e.target.textContent = e.target.getAttribute('data-raw') || '';
+    });
+    td.addEventListener('blur', e => {
+      const r = +e.target.dataset.r, c = +e.target.dataset.c;
+      const raw = e.target.textContent.trim();
       while (grid.length <= r) grid.push([]);
       while (grid[r].length <= c) grid[r].push('');
-      grid[r][c] = val;
+      grid[r][c] = raw;
+      e.target.setAttribute('data-raw', escAttr(raw));
+      const disp = renderCell(raw);
+      e.target.textContent = disp;
+      e.target.className = String(disp).startsWith('#ERR') ? 'err' : '';
+    });
+    td.addEventListener('paste', e => {
+      e.preventDefault();
+      const text = (e.clipboardData || window.clipboardData).getData('text/plain');
+      const sr = +e.target.dataset.r, sc = +e.target.dataset.c;
+      const lines = text.replace(/\r/g, '').split('\n');
+      while (lines.length && lines[lines.length-1] === '') lines.pop();
+      lines.forEach((line, i) => {
+        const cells = line.split('\t');
+        cells.forEach((val, j) => {
+          const r = sr+i, c = sc+j;
+          while (grid.length <= r) grid.push([]);
+          while (grid[r].length <= c) grid[r].push('');
+          grid[r][c] = val;
+        });
+      });
+      ensureSize(); render();
     });
   });
-  ensureMinSize();
-  renderSheet();
 }
 
-function addRow() { grid.push([]); ensureMinSize(); renderSheet(); }
-function addCol() { grid.forEach(r => r.push('')); ensureMinSize(); renderSheet(); }
-
-// ── 안전한 수식 평가기 (eval 미사용, 화이트리스트 파서) ──
+// ── 수식 평가 (eval 미사용) ──────────────────────────
 function renderCell(raw) {
   if (typeof raw !== 'string' || !raw.startsWith('=')) return raw;
-  try {
-    const val = evalFormula(raw.slice(1));
-    return val;
-  } catch (e) {
-    return '#ERR';
-  }
+  try { return evalFormula(raw.slice(1)); } catch(e) { return '#ERR'; }
 }
-
-function cellValue(ref, visiting) {
+function cellVal(ref, vis) {
   const m = /^([A-Za-z]+)(\d+)$/.exec(ref);
-  if (!m) throw new Error('bad ref');
-  const col = colIndexFromLetters(m[1]);
-  const row = parseInt(m[2], 10) - 1;
+  if (!m) throw new Error('ref');
+  const col = colIdx(m[1]), row = parseInt(m[2], 10) - 1;
   const key = `${row}_${col}`;
-  if (visiting.has(key)) throw new Error('circular');
+  if (vis.has(key)) throw new Error('circular');
   const raw = (grid[row] && grid[row][col] != null) ? grid[row][col] : '';
   if (typeof raw === 'string' && raw.startsWith('=')) {
-    visiting.add(key);
-    const v = evalFormula(raw.slice(1), visiting);
-    visiting.delete(key);
-    return v;
+    vis.add(key); const v = evalFormula(raw.slice(1), vis); vis.delete(key); return v;
   }
   const n = Number(String(raw).replace(/,/g, ''));
   return isNaN(n) ? 0 : n;
 }
-
-function colIndexFromLetters(letters) {
-  let n = 0;
-  for (const ch of letters.toUpperCase()) n = n * 26 + (ch.charCodeAt(0) - 64);
-  return n - 1;
-}
-
-function rangeValues(a, b, visiting) {
+function rangeVals(a, b, vis) {
   const ma = /^([A-Za-z]+)(\d+)$/.exec(a), mb = /^([A-Za-z]+)(\d+)$/.exec(b);
-  const c1 = colIndexFromLetters(ma[1]), r1 = parseInt(ma[2], 10) - 1;
-  const c2 = colIndexFromLetters(mb[1]), r2 = parseInt(mb[2], 10) - 1;
+  const c1=colIdx(ma[1]),r1=parseInt(ma[2],10)-1, c2=colIdx(mb[1]),r2=parseInt(mb[2],10)-1;
   const vals = [];
-  for (let r = Math.min(r1, r2); r <= Math.max(r1, r2); r++) {
-    for (let c = Math.min(c1, c2); c <= Math.max(c1, c2); c++) {
-      vals.push(cellValue(`${colLetters(c)}${r + 1}`, visiting));
-    }
-  }
+  for (let r=Math.min(r1,r2); r<=Math.max(r1,r2); r++)
+    for (let c=Math.min(c1,c2); c<=Math.max(c1,c2); c++)
+      vals.push(cellVal(colLetters(c)+(r+1), vis));
   return vals;
 }
-
 const FUNCS = {
-  SUM: vals => vals.reduce((a, b) => a + b, 0),
-  AVERAGE: vals => vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : 0,
-  MAX: vals => vals.length ? Math.max(...vals) : 0,
-  MIN: vals => vals.length ? Math.min(...vals) : 0,
-  COUNT: vals => vals.length,
+  SUM: v => v.reduce((a,b) => a+b, 0),
+  AVERAGE: v => v.length ? v.reduce((a,b) => a+b, 0)/v.length : 0,
+  MAX: v => v.length ? Math.max(...v) : 0,
+  MIN: v => v.length ? Math.min(...v) : 0,
+  COUNT: v => v.length
 };
-
-function evalFormula(expr, visiting) {
-  visiting = visiting || new Set();
-  const tokens = tokenize(expr);
-  let pos = 0;
-
-  function peek() { return tokens[pos]; }
-  function next() { return tokens[pos++]; }
-
-  function parseExpr() {
-    let v = parseTerm();
-    while (peek() === '+' || peek() === '-') {
-      const op = next();
-      const rhs = parseTerm();
-      v = op === '+' ? v + rhs : v - rhs;
+function evalFormula(expr, vis) {
+  vis = vis || new Set();
+  const toks = tokenize(expr); let pos = 0;
+  const peek = () => toks[pos], next = () => toks[pos++];
+  function expr_() { let v=term(); while(peek()==='+'||peek()==='-'){const op=next();v=op==='+'?v+term():v-term();} return v; }
+  function term() { let v=factor(); while(peek()==='*'||peek()==='/'){const op=next();const r=factor();v=op==='*'?v*r:v/r;} return v; }
+  function factor() {
+    if(peek()==='-'){next();return -factor();} if(peek()==='+'){next();return factor();}
+    if(peek()==='('){next();const v=expr_();if(peek()!==')')throw new Error(')');next();return v;}
+    const t=next(); if(t===undefined) throw new Error('eof');
+    if(/^[A-Za-z_]+$/.test(t)&&FUNCS[t.toUpperCase()]){
+      const fn=t.toUpperCase(); if(next()!=='(')throw new Error('(');
+      const args=[]; if(peek()!==')'){ args.push(rangeOrExpr()); while(peek()===','){next();args.push(rangeOrExpr());} }
+      if(next()!==')')throw new Error(')'); return FUNCS[fn](args.flat());
     }
-    return v;
+    if(/^[A-Za-z]+\d+$/.test(t)){if(peek()===':'){next();const t2=next();return rangeVals(t,t2,vis);} return cellVal(t,vis);}
+    const n=Number(t); if(!isNaN(n)) return n; throw new Error('token:'+t);
   }
-  function parseTerm() {
-    let v = parseFactor();
-    while (peek() === '*' || peek() === '/') {
-      const op = next();
-      const rhs = parseFactor();
-      v = op === '*' ? v * rhs : v / rhs;
-    }
-    return v;
-  }
-  function parseFactor() {
-    if (peek() === '-') { next(); return -parseFactor(); }
-    if (peek() === '+') { next(); return parseFactor(); }
-    if (peek() === '(') {
-      next();
-      const v = parseExpr();
-      if (peek() !== ')') throw new Error('paren');
-      next();
-      return v;
-    }
-    const t = next();
-    if (t === undefined) throw new Error('eof');
-    if (/^[A-Za-z_]+$/.test(t) && FUNCS[t.toUpperCase()]) {
-      const fname = t.toUpperCase();
-      if (next() !== '(') throw new Error('expect (');
-      const args = [];
-      if (peek() !== ')') {
-        args.push(parseRangeOrExpr());
-        while (peek() === ',') { next(); args.push(parseRangeOrExpr()); }
-      }
-      if (next() !== ')') throw new Error('expect )');
-      return FUNCS[fname](args.flat());
-    }
-    if (/^[A-Za-z]+\d+$/.test(t)) {
-      if (peek() === ':') {
-        next();
-        const t2 = next();
-        return rangeValues(t, t2, visiting);
-      }
-      return cellValue(t, visiting);
-    }
-    const n = Number(t);
-    if (!isNaN(n)) return n;
-    throw new Error('bad token: ' + t);
-  }
-  function parseRangeOrExpr() {
-    const v = parseExpr();
-    return Array.isArray(v) ? v : [v];
-  }
-
-  const result = parseExpr();
-  if (Array.isArray(result)) return result.reduce((a, b) => a + b, 0);
-  return result;
+  function rangeOrExpr(){ const v=expr_(); return Array.isArray(v)?v:[v]; }
+  const result=expr_(); return Array.isArray(result)?result.reduce((a,b)=>a+b,0):result;
 }
-
 function tokenize(s) {
-  const re = /\s*([A-Za-z]+\d+|[A-Za-z_]+|\d+\.?\d*|[()+\-*/,:])\s*/g;
-  const tokens = [];
-  let m;
-  let lastIndex = 0;
-  while ((m = re.exec(s)) !== null) {
-    if (m.index !== lastIndex) throw new Error('invalid char');
-    tokens.push(m[1]);
-    lastIndex = re.lastIndex;
-  }
-  if (lastIndex !== s.length) throw new Error('invalid trailing');
-  return tokens;
+  const re=/\s*([A-Za-z]+\d+|[A-Za-z_]+|\d+\.?\d*|[()+\-*/,:])\s*/g;
+  const toks=[]; let m, last=0;
+  while((m=re.exec(s))!==null){ if(m.index!==last)throw new Error('invalid'); toks.push(m[1]); last=re.lastIndex; }
+  if(last!==s.length) throw new Error('trailing'); return toks;
 }
 
-// ── 저장/업로드/다운로드 ──
-async function saveGrid() {
+// ── 유틸 ────────────────────────────────────────────
+function escHtml(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function escAttr(s){ return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;'); }
+function setStatus(msg, ok=true) {
+  const el = document.getElementById('status');
+  el.textContent = msg; el.style.color = ok ? '#2e7d32' : '#c62828';
+  if (ok) setTimeout(() => { el.textContent = ''; }, 3000);
+}
+
+// ── 저장 / 업로드 / 다운로드 ────────────────────────
+function addRow() { grid.push([]); ensureSize(); render(); }
+function addCol() { grid.forEach(r => r.push('')); ensureSize(); render(); }
+
+async function save() {
   setStatus('저장 중...');
   try {
-    const res = await fetch('/budget/grid', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ rows: grid })
+    const r = await fetch('/budget/grid', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({rows: grid})
     });
-    if (!res.ok) throw new Error('실패');
-    setStatus('저장되었습니다.');
-  } catch (e) {
-    setStatus('저장 오류: ' + e.message, false);
-  }
+    if (r.ok) setStatus('✅ 저장됨');
+    else setStatus('저장 실패', false);
+  } catch(e) { setStatus('저장 실패', false); }
 }
 
-async function uploadGrid(input) {
-  if (!input.files.length) return;
-  const fd = new FormData();
-  fd.append('file', input.files[0]);
+async function upload(input) {
+  const file = input.files[0]; if (!file) return;
   setStatus('업로드 중...');
+  const fd = new FormData(); fd.append('file', file);
   try {
-    const res = await fetch('/budget/grid/upload', { method: 'POST', body: fd });
-    const json = await res.json();
-    if (!res.ok) throw new Error(json.detail || '업로드 실패');
-    setStatus(`업로드 완료 (${json.rows}행)`);
-    await loadGrid();
-  } catch (e) {
-    setStatus('업로드 오류: ' + e.message, false);
-  }
+    const r = await fetch('/budget/grid/upload', {method:'POST', body:fd});
+    const d = await r.json();
+    if (r.ok) { setStatus(`✅ ${d.rows}행 업로드됨`); await load(); }
+    else setStatus(d.detail || '업로드 실패', false);
+  } catch(e) { setStatus('업로드 실패', false); }
   input.value = '';
 }
 
-function downloadGrid() {
-  window.location.href = '/budget/grid/download';
-}
-
-// ── 스냅샷 ──
-async function loadSnapshotOptions() {
-  const res = await fetch('/budget/grid/snapshots');
-  const { snapshots } = await res.json();
-  const selA = document.getElementById('cmp-a'), selB = document.getElementById('cmp-b');
-  [selA, selB].forEach(sel => {
-    sel.innerHTML = '<option value="current">현재 작업 시트</option>' +
-      snapshots.map(s => `<option value="${s.id}">${escapeHtml(s.label)} (${s.createdAt})</option>`).join('');
-  });
-}
-
-async function saveSnapshot() {
-  const label = document.getElementById('snap-label').value.trim();
-  const statusEl = document.getElementById('snap-status');
-  if (!label) { statusEl.textContent = '라벨을 입력하세요.'; statusEl.style.color = '#e57373'; return; }
-  statusEl.textContent = '저장 중...';
+async function download() {
   try {
-    const res = await fetch('/budget/grid/snapshot', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ label, rows: grid })
+    const r = await fetch('/budget/grid/download');
+    const blob = await r.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href=url; a.download='budget.xlsx'; a.click();
+    URL.revokeObjectURL(url);
+  } catch(e) { setStatus('다운로드 실패', false); }
+}
+
+// ── 스냅샷 ──────────────────────────────────────────
+async function loadSnaps() {
+  try {
+    const r = await fetch('/budget/grid/snapshots');
+    const d = await r.json();
+    const snaps = d.snapshots || [];
+    ['cmp-a','cmp-b'].forEach(id => {
+      const sel = document.getElementById(id);
+      while (sel.options.length > 1) sel.remove(1);
+      snaps.forEach(s => {
+        const opt = document.createElement('option');
+        opt.value = s.id; opt.textContent = `${s.label} (${s.createdAt.slice(0,10)})`;
+        sel.appendChild(opt);
+      });
     });
-    if (!res.ok) throw new Error('실패');
-    statusEl.textContent = '스냅샷이 저장되었습니다.';
-    statusEl.style.color = '#5fd17a';
-    loadSnapshotOptions();
-  } catch (e) {
-    statusEl.textContent = '오류: ' + e.message;
-    statusEl.style.color = '#e57373';
-  }
+  } catch(e) {}
 }
 
-async function deleteSelectedSnapshot() {
-  const sel = document.getElementById('cmp-a');
-  const id = sel.value;
-  if (id === 'current') { alert('스냅샷을 선택하세요 (비교 A).'); return; }
-  if (!confirm('선택한 스냅샷을 삭제할까요?')) return;
-  await fetch('/budget/grid/snapshot/' + id, { method: 'DELETE' });
-  loadSnapshotOptions();
+async function saveSnap() {
+  const label = document.getElementById('snap-label').value.trim();
+  if (!label) { alert('스냅샷 이름을 입력하세요'); return; }
+  const st = document.getElementById('snap-status');
+  st.textContent = '저장 중...';
+  try {
+    const r = await fetch('/budget/grid/snapshot', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({label, rows: grid})
+    });
+    if (r.ok) { st.textContent='✅ 저장됨'; st.style.color='#2e7d32'; loadSnaps(); }
+    else { st.textContent='실패'; st.style.color='#c62828'; }
+  } catch(e) { st.textContent='실패'; st.style.color='#c62828'; }
 }
 
-async function compareSnapshots() {
+async function deleteSnap() {
+  const id = document.getElementById('cmp-a').value;
+  if (id === 'current') { alert('스냅샷을 선택하세요'); return; }
+  if (!confirm('이 스냅샷을 삭제하시겠습니까?')) return;
+  await fetch('/budget/grid/snapshot/'+id, {method:'DELETE'});
+  loadSnaps();
+}
+
+async function compare() {
   const a = document.getElementById('cmp-a').value;
   const b = document.getElementById('cmp-b').value;
-  const area = document.getElementById('diff-area');
-  area.textContent = '비교 중...';
   try {
-    const res = await fetch(`/budget/grid/compare?a=${encodeURIComponent(a)}&b=${encodeURIComponent(b)}`);
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.detail || '비교 실패');
-    if (!data.diffs.length) { area.innerHTML = '<p style="color:var(--text-dim);font-size:0.8rem">차이가 없습니다.</p>'; return; }
-    let html = `<table class="diff"><tr><th>셀</th><th>이전</th><th>이후</th><th>증감</th></tr>`;
-    data.diffs.forEach(d => {
-      const deltaCls = d.delta == null ? '' : (d.delta > 0 ? 'delta-pos' : (d.delta < 0 ? 'delta-neg' : ''));
-      const deltaTxt = d.delta == null ? '-' : (d.delta > 0 ? '+' + d.delta.toLocaleString() : d.delta.toLocaleString());
-      html += `<tr><td>${d.cell}</td><td>${escapeHtml(d.before)}</td><td>${escapeHtml(d.after)}</td><td class="${deltaCls}">${deltaTxt}</td></tr>`;
+    const r = await fetch(`/budget/grid/compare?a=${a}&b=${b}`);
+    const d = await r.json();
+    const diffs = d.diffs || [];
+    const el = document.getElementById('diff');
+    if (!diffs.length) { el.innerHTML='<span style="color:#2e7d32">차이 없음</span>'; return; }
+    let html = `<b>${diffs.length}개 셀 변경:</b><br><table class="diff-table"><tr><th>셀</th><th>이전</th><th>이후</th><th>차이</th></tr>`;
+    diffs.slice(0,50).forEach(df => {
+      const delta = df.delta != null ? (df.delta >= 0 ? `<span class="diff-add">+${df.delta.toLocaleString()}</span>` : `<span class="diff-sub">${df.delta.toLocaleString()}</span>`) : '-';
+      html += `<tr><td>${df.cell}</td><td>${escHtml(df.before)}</td><td>${escHtml(df.after)}</td><td>${delta}</td></tr>`;
     });
     html += '</table>';
-    area.innerHTML = html;
-  } catch (e) {
-    area.textContent = '오류: ' + e.message;
-  }
+    el.innerHTML = html;
+  } catch(e) { document.getElementById('diff').textContent = '비교 실패'; }
 }
-
-loadGrid();
 </script>
 </body>
 </html>
