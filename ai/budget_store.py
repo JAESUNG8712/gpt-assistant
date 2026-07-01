@@ -191,18 +191,22 @@ def get_sheets():
             "sheets": data["sheets"],
             "active": data.get("active", list(data["sheets"].keys())[0]),
             "styles": data.get("styles", {}),
+            "colWidths": data.get("colWidths", {}),
+            "rowHeights": data.get("rowHeights", {}),
         }
     # 기존 단일 grid → Sheet1으로 마이그레이션
     grid = data.get("grid") or []
-    return {"sheets": {"Sheet1": grid}, "active": "Sheet1", "styles": {}}
+    return {"sheets": {"Sheet1": grid}, "active": "Sheet1", "styles": {}, "colWidths": {}, "rowHeights": {}}
 
 
 def save_sheets(payload: dict):
-    """멀티시트 데이터 저장 — payload: {sheets, active, styles}"""
+    """멀티시트 데이터 저장 — payload: {sheets, active, styles, colWidths, rowHeights}"""
     data = read_budget()
     data["sheets"] = payload.get("sheets", {})
     data["active"] = payload.get("active", "Sheet1")
     data["styles"] = payload.get("styles", {})
+    data["colWidths"] = payload.get("colWidths", {})
+    data["rowHeights"] = payload.get("rowHeights", {})
     data["sheets_updated_at"] = _now_iso()
     # 하위 호환: 활성 시트를 grid에도 동기
     active = data["active"]

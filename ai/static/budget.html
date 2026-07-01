@@ -110,6 +110,20 @@
   td.cell.align-center { text-align:center; }
   td.cell.align-right { text-align:right; }
 
+  /* ── 열/행 리사이즈 핸들 ── */
+  .col-resize-handle {
+    position:absolute; right:0; top:0; bottom:0; width:5px;
+    cursor:col-resize; background:transparent; z-index:10;
+  }
+  .col-resize-handle:hover { background:rgba(21,101,192,0.3); }
+  th { position:relative; }
+  .row-resize-handle {
+    position:absolute; left:0; right:0; bottom:0; height:5px;
+    cursor:row-resize; background:transparent; z-index:10;
+  }
+  .row-resize-handle:hover { background:rgba(21,101,192,0.3); }
+  td.rh { position:relative; }
+
   /* ── 시트 탭 ── */
   .sheet-tabs {
     display:flex; align-items:center; gap:2px; padding:4px 10px 0;
@@ -213,6 +227,21 @@
   <button class="btn" onclick="applyAlign('left')">◀</button>
   <button class="btn" onclick="applyAlign('center')">■</button>
   <button class="btn" onclick="applyAlign('right')">▶</button>
+  <button class="btn" id="btn-wrap" onclick="toggleWrap()" title="자동 줄바꿈">↵줄바꿈</button>
+  <div class="toolbar-sep"></div>
+  <label style="font-size:0.72rem;color:var(--text-dim)">배경</label>
+  <input type="color" id="cell-color-picker" value="#ffffff" onchange="applyCellColor(this.value)" title="셀 배경색" style="width:28px;height:24px;padding:1px;border:1px solid var(--border-bright);border-radius:4px;cursor:pointer">
+  <button class="btn" onclick="applyCellColor('none')" title="배경색 지우기">✕색</button>
+  <div class="toolbar-sep"></div>
+  <label style="font-size:0.72rem;color:var(--text-dim)">테두리</label>
+  <select class="toolbar-sel" id="border-sel" onchange="applyBorder(this.value)">
+    <option value="">테두리</option>
+    <option value="all">전체</option>
+    <option value="outer">외곽</option>
+    <option value="none">없음</option>
+  </select>
+  <div class="toolbar-sep"></div>
+  <button class="btn" onclick="openSizeDialog()" title="열너비/행높이 설정">📐크기</button>
   <div class="toolbar-sep"></div>
 
   <button class="btn" onclick="openPayroll()" style="color:#1b5e20;border-color:#388e3c">📋 급여대장 자동계산</button>
@@ -235,6 +264,14 @@
     <table id="sheet"></table>
   </div>
 </div>
+<!-- 크기 조정 다이얼로그 -->
+<div id="size-dialog" style="display:none;position:fixed;top:82px;left:50%;transform:translateX(-50%);z-index:500;background:#fff;border:1px solid #cdd3dc;border-radius:8px;padding:12px 16px;box-shadow:0 4px 16px rgba(0,0,0,.15);font-size:0.82rem;gap:10px;align-items:center;">
+  <label>열 너비: <input id="sz-width" type="number" min="20" max="500" placeholder="px" style="width:60px;border:1px solid #cdd3dc;border-radius:4px;padding:2px 4px"></label>
+  <label>행 높이: <input id="sz-height" type="number" min="18" max="300" placeholder="px" style="width:60px;border:1px solid #cdd3dc;border-radius:4px;padding:2px 4px"></label>
+  <button class="btn btn-primary" onclick="applySizeFromDialog()">적용</button>
+  <button class="btn" onclick="document.getElementById('size-dialog').style.display='none'">닫기</button>
+</div>
+
 <!-- 붙여넣기/복사/키보드 이벤트 수신용 숨김 트랩 -->
 <textarea id="paste-trap" tabindex="-1" style="position:fixed;opacity:0;width:1px;height:1px;top:-9999px;left:-9999px;resize:none;overflow:hidden"></textarea>
 
@@ -313,6 +350,10 @@ let editMode = false;
 let sortState = null;
 let tableFontSize = 12;
 const MIN_ROWS = 25, MIN_COLS = 14;
+let wrapMode = false;
+let colWidths = {};
+let rowHeights = {};
+let dragSrcRow = null, dragSrcCol = null;
 
 // ── Undo 스택
 const undoStack = [];
@@ -322,6 +363,8 @@ function pushUndo() {
     sheets: JSON.parse(JSON.stringify(sheets)),
     activeSheet,
     cellStyles: JSON.parse(JSON.stringify(cellStyles)),
+    colWidths: JSON.parse(JSON.stringify(colWidths)),
+    rowHeights: JSON.parse(JSON.stringify(rowHeights)),
   });
   if (undoStack.length > MAX_UNDO) undoStack.shift();
 }
@@ -329,6 +372,7 @@ function undo() {
   if (!undoStack.length) { setStatus('되돌릴 내용 없음', false); return; }
   const st = undoStack.pop();
   sheets = st.sheets; activeSheet = st.activeSheet; cellStyles = st.cellStyles;
+  colWidths = st.colWidths || {}; rowHeights = st.rowHeights || {};
   selectedCell = null; selEnd = null; editMode = false;
   renderTabs(); render(); updateFormulaBar(); loadSnaps();
   setStatus('↩️ 실행 취소');
@@ -427,6 +471,8 @@ async function load() {
       sheets = d.sheets && Object.keys(d.sheets).length ? d.sheets : {'Sheet1':[]};
       activeSheet = d.active || Object.keys(sheets)[0];
       cellStyles = d.styles || {};
+      colWidths = d.colWidths || {};
+      rowHeights = d.rowHeights || {};
     } else {
       const r2 = await fetch('/budget/grid');
       if (r2.ok) {
@@ -552,13 +598,13 @@ function render() {
     let cls = '';
     if (sortState && sortState.col===c) cls=(sortState.dir==='asc'?' sort-asc':' sort-desc');
     if (selMode==='col' && selCols.has(c)) cls+=' col-selected';
-    html += `<th class="${cls}" onclick="selectCol(${c},event.shiftKey)" ondblclick="sortByCol(${c})" oncontextmenu="rowColCtxMenu(event,'col',${c})" title="클릭:열선택 / Shift+클릭:다중선택 / 더블클릭:정렬">${colLetters(c)}</th>`;
+    html += `<th class="${cls}" style="width:${colWidths[c]||90}px;position:relative" draggable="true" ondragstart="onColDragStart(event,${c})" ondragover="onColDragOver(event,${c})" ondrop="onColDrop(event,${c})" onclick="selectCol(${c},event.shiftKey)" ondblclick="sortByCol(${c})" oncontextmenu="rowColCtxMenu(event,'col',${c})" title="클릭:열선택 / 드래그:순서변경 / 더블클릭:정렬">${colLetters(c)}<span class="col-resize-handle" onmousedown="startColResize(event,${c})"></span></th>`;
   }
   html += '</tr>';
 
   for (let r=0; r<nRows; r++) {
     const rhCls = (selMode==='row' && selRows.has(r)) ? ' row-selected' : '';
-    html += `<tr><td class="rh${rhCls}" onclick="selectRow(${r},event.shiftKey)" oncontextmenu="rowColCtxMenu(event,'row',${r})">${r+1}</td>`;
+    html += `<tr><td class="rh${rhCls}" draggable="true" ondragstart="onRowDragStart(event,${r})" ondragover="onRowDragOver(event,${r})" ondrop="onRowDrop(event,${r})" onclick="selectRow(${r},event.shiftKey)" oncontextmenu="rowColCtxMenu(event,'row',${r})" style="height:${rowHeights[r]||24}px">${r+1}<span class="row-resize-handle" onmousedown="startRowResize(event,${r})"></span></td>`;
     for (let c=0; c<nCols; c++) {
       const raw = (g[r]&&g[r][c]!=null) ? g[r][c] : '';
       const disp = renderCell(raw);
@@ -575,8 +621,15 @@ function render() {
       if (isEd) cls+=' editing';
       else if (isSel) cls+=' selected';
       const fsize = sty.fontSize || tableFontSize;
-      const dispHtml = isEd ? escHtml(raw) : escHtml(String(disp));
-      html += `<td class="${cls}" tabindex="-1" contenteditable="${isEd}" data-r="${r}" data-c="${c}" data-raw="${escAttr(raw)}" style="font-size:${fsize}px;outline:none">${dispHtml}</td>`;
+      const dispHtml = isEd ? escHtml(raw) : (wrapMode ? escHtml(String(disp)).replace(/\n/g,'<br>') : escHtml(String(disp)));
+      let cellStyle = `font-size:${fsize}px;outline:none;min-width:${colWidths[c]||90}px;width:${colWidths[c]||90}px;white-space:${wrapMode?'pre-wrap':'nowrap'}`;
+      if (sty.bgColor) cellStyle += `;background:${sty.bgColor}`;
+      if (sty.border) cellStyle += `;border:${sty.border}`;
+      if (sty.borderTop) cellStyle += `;border-top:${sty.borderTop}`;
+      if (sty.borderBottom) cellStyle += `;border-bottom:${sty.borderBottom}`;
+      if (sty.borderLeft) cellStyle += `;border-left:${sty.borderLeft}`;
+      if (sty.borderRight) cellStyle += `;border-right:${sty.borderRight}`;
+      html += `<td class="${cls}" tabindex="-1" contenteditable="${isEd}" data-r="${r}" data-c="${c}" data-raw="${escAttr(raw)}" style="${cellStyle}">${dispHtml}</td>`;
     }
     html += '</tr>';
   }
@@ -1124,23 +1177,204 @@ function sortByCol(col) {
 // ══════════════════════════════════════════
 // 서식
 // ══════════════════════════════════════════
-function applyFontSize(size) {
-  tableFontSize = +size;
-  if (selectedCell) {
-    const s = styles(); const key = sk(selectedCell.r, selectedCell.c);
-    s[key] = s[key]||{}; s[key].fontSize = +size;
+function getSelCells() {
+  const g = grid();
+  const nRows = g.length;
+  const nCols = Math.max(MIN_COLS, ...g.map(row=>row.length));
+  if (selMode==='row') {
+    const cells = [];
+    selRows.forEach(r => { for(let c=0;c<nCols;c++) cells.push({r,c}); });
+    return cells;
   }
-  render();
+  if (selMode==='col') {
+    const cells = [];
+    selCols.forEach(c => { for(let r=0;r<nRows;r++) cells.push({r,c}); });
+    return cells;
+  }
+  if (!selectedCell) return [];
+  const r1=Math.min(selectedCell.r,(selEnd||selectedCell).r);
+  const r2=Math.max(selectedCell.r,(selEnd||selectedCell).r);
+  const c1=Math.min(selectedCell.c,(selEnd||selectedCell).c);
+  const c2=Math.max(selectedCell.c,(selEnd||selectedCell).c);
+  const cells = [];
+  for(let r=r1;r<=r2;r++) for(let c=c1;c<=c2;c++) cells.push({r,c});
+  return cells;
 }
+
 function toggleBold() {
-  if (!selectedCell) { setStatus('셀을 먼저 선택하세요',false); return; }
-  const s=styles(), key=sk(selectedCell.r,selectedCell.c);
-  s[key]=s[key]||{}; s[key].bold=!s[key].bold; render();
+  const cells = getSelCells();
+  if (!cells.length) { setStatus('셀을 먼저 선택하세요',false); return; }
+  const s = styles();
+  const allBold = cells.every(({r,c}) => (s[sk(r,c)]||{}).bold);
+  cells.forEach(({r,c}) => { s[sk(r,c)]=s[sk(r,c)]||{}; s[sk(r,c)].bold=!allBold; });
+  markDirty(); render();
 }
 function applyAlign(align) {
-  if (!selectedCell) { setStatus('셀을 먼저 선택하세요',false); return; }
-  const s=styles(), key=sk(selectedCell.r,selectedCell.c);
-  s[key]=s[key]||{}; s[key].align=align; render();
+  const cells = getSelCells();
+  if (!cells.length) { setStatus('셀을 먼저 선택하세요',false); return; }
+  const s = styles();
+  cells.forEach(({r,c}) => { s[sk(r,c)]=s[sk(r,c)]||{}; s[sk(r,c)].align=align; });
+  markDirty(); render();
+}
+function applyFontSize(size) {
+  tableFontSize = +size;
+  const cells = getSelCells();
+  const s = styles();
+  cells.forEach(({r,c}) => { s[sk(r,c)]=s[sk(r,c)]||{}; s[sk(r,c)].fontSize=+size; });
+  markDirty(); render();
+}
+
+function applyCellColor(color) {
+  const cells = getSelCells();
+  if (!cells.length) { setStatus('셀을 먼저 선택하세요',false); return; }
+  const s = styles();
+  cells.forEach(({r,c}) => {
+    s[sk(r,c)] = s[sk(r,c)]||{};
+    if (color==='none') delete s[sk(r,c)].bgColor;
+    else s[sk(r,c)].bgColor = color;
+  });
+  markDirty(); render();
+}
+function applyBorder(type) {
+  if (!type) return;
+  const cells = getSelCells();
+  if (!cells.length) { document.getElementById('border-sel').value=''; return; }
+  const s = styles();
+  if (type==='none') {
+    cells.forEach(({r,c}) => { if(s[sk(r,c)]) { delete s[sk(r,c)].border; delete s[sk(r,c)].borderTop; delete s[sk(r,c)].borderBottom; delete s[sk(r,c)].borderLeft; delete s[sk(r,c)].borderRight; } });
+  } else if (type==='all') {
+    cells.forEach(({r,c}) => { s[sk(r,c)]=s[sk(r,c)]||{}; s[sk(r,c)].border='1px solid #555'; });
+  } else if (type==='outer') {
+    const rs = cells.map(c=>c.r), cs2 = cells.map(c=>c.c);
+    const r1=Math.min(...rs),r2=Math.max(...rs),c1=Math.min(...cs2),c2=Math.max(...cs2);
+    cells.forEach(({r,c}) => {
+      s[sk(r,c)]=s[sk(r,c)]||{};
+      const top=r===r1?'2px solid #333':'', bottom=r===r2?'2px solid #333':'';
+      const left=c===c1?'2px solid #333':'', right=c===c2?'2px solid #333':'';
+      s[sk(r,c)].borderTop=top; s[sk(r,c)].borderBottom=bottom;
+      s[sk(r,c)].borderLeft=left; s[sk(r,c)].borderRight=right;
+    });
+  }
+  document.getElementById('border-sel').value='';
+  markDirty(); render();
+}
+
+function toggleWrap() {
+  wrapMode = !wrapMode;
+  document.getElementById('btn-wrap').classList.toggle('btn-primary', wrapMode);
+  document.querySelectorAll('#sheet td.cell').forEach(td => {
+    td.style.whiteSpace = wrapMode ? 'pre-wrap' : 'nowrap';
+  });
+  setStatus(wrapMode ? '줄바꿈 ON' : '줄바꿈 OFF');
+}
+
+function openSizeDialog() {
+  const d = document.getElementById('size-dialog');
+  d.style.display = d.style.display==='none'||d.style.display==='' ? 'flex' : 'none';
+}
+function applySizeFromDialog() {
+  const wVal = +document.getElementById('sz-width').value;
+  const hVal = +document.getElementById('sz-height').value;
+  const cells = getSelCells();
+  if (wVal > 0) { const cs = new Set(cells.map(c=>c.c)); cs.forEach(c => colWidths[c]=wVal); }
+  if (hVal > 0) { const rs = new Set(cells.map(c=>c.r)); rs.forEach(r => rowHeights[r]=hVal); }
+  document.getElementById('size-dialog').style.display='none';
+  markDirty(); render();
+}
+
+function startColResize(e, c) {
+  e.preventDefault(); e.stopPropagation();
+  const startX = e.clientX;
+  const startW = colWidths[c] || 90;
+  const onMove = ev => {
+    colWidths[c] = Math.max(30, startW + ev.clientX - startX);
+    render();
+  };
+  const onUp = () => {
+    document.removeEventListener('mousemove', onMove);
+    document.removeEventListener('mouseup', onUp);
+    markDirty();
+  };
+  document.addEventListener('mousemove', onMove);
+  document.addEventListener('mouseup', onUp);
+}
+
+function startRowResize(e, r) {
+  e.preventDefault(); e.stopPropagation();
+  const startY = e.clientY;
+  const startH = rowHeights[r] || 24;
+  const onMove = ev => {
+    rowHeights[r] = Math.max(18, startH + ev.clientY - startY);
+    render();
+  };
+  const onUp = () => {
+    document.removeEventListener('mousemove', onMove);
+    document.removeEventListener('mouseup', onUp);
+    markDirty();
+  };
+  document.addEventListener('mousemove', onMove);
+  document.addEventListener('mouseup', onUp);
+}
+
+function onRowDragStart(e, r) {
+  dragSrcRow = r; dragSrcCol = null;
+  e.dataTransfer.effectAllowed = 'move';
+  e.dataTransfer.setData('text/plain', String(r));
+}
+function onRowDragOver(e, r) {
+  if (dragSrcRow == null) return;
+  e.preventDefault(); e.dataTransfer.dropEffect='move';
+}
+function onRowDrop(e, r) {
+  e.preventDefault();
+  if (dragSrcRow == null || dragSrcRow === r) return;
+  pushUndo();
+  const g = grid();
+  const [removed] = g.splice(dragSrcRow, 1);
+  g.splice(r, 0, removed);
+  const oldH = rowHeights[dragSrcRow];
+  const newHeights = {};
+  Object.keys(rowHeights).forEach(k => {
+    let ki = +k;
+    if (ki === dragSrcRow) return;
+    if (dragSrcRow < r) { newHeights[ki < dragSrcRow || ki > r ? ki : ki-1] = rowHeights[k]; }
+    else { newHeights[ki < r || ki > dragSrcRow ? ki : ki+1] = rowHeights[k]; }
+  });
+  if (oldH) newHeights[r] = oldH;
+  rowHeights = newHeights;
+  dragSrcRow = null;
+  markDirty(); render();
+}
+function onColDragStart(e, c) {
+  dragSrcCol = c; dragSrcRow = null;
+  e.dataTransfer.effectAllowed = 'move';
+  e.dataTransfer.setData('text/plain', String(c));
+}
+function onColDragOver(e, c) {
+  if (dragSrcCol == null) return;
+  e.preventDefault(); e.dataTransfer.dropEffect='move';
+}
+function onColDrop(e, c) {
+  e.preventDefault();
+  if (dragSrcCol == null || dragSrcCol === c) return;
+  pushUndo();
+  const g = grid();
+  g.forEach(row => {
+    const [removed] = row.splice(dragSrcCol, 1);
+    row.splice(c, 0, removed);
+  });
+  const oldW = colWidths[dragSrcCol];
+  const newWidths = {};
+  Object.keys(colWidths).forEach(k => {
+    let ki = +k;
+    if (ki === dragSrcCol) return;
+    if (dragSrcCol < c) { newWidths[ki < dragSrcCol || ki > c ? ki : ki-1] = colWidths[k]; }
+    else { newWidths[ki < c || ki > dragSrcCol ? ki : ki+1] = colWidths[k]; }
+  });
+  if (oldW) newWidths[c] = oldW;
+  colWidths = newWidths;
+  dragSrcCol = null;
+  markDirty(); render();
 }
 
 // ══════════════════════════════════════════
@@ -1162,14 +1396,36 @@ function clearCell(r,c) {
   markDirty(); updateFormulaBar();
 }
 
+function parseTSV(text) {
+  // RFC-4180 TSV: 셀 안 개행은 "..." 따옴표로 묶임
+  const rows = [];
+  let row = [], field = '', inQ = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (inQ) {
+      if (ch==='"' && text[i+1]==='"') { field+='"'; i++; }
+      else if (ch==='"') { inQ=false; }
+      else { field+=ch; }
+    } else {
+      if (ch==='"') { inQ=true; }
+      else if (ch==='\t') { row.push(field); field=''; }
+      else if (ch==='\r' && text[i+1]==='\n') { row.push(field); rows.push(row); row=[]; field=''; i++; }
+      else if (ch==='\n') { row.push(field); rows.push(row); row=[]; field=''; }
+      else { field+=ch; }
+    }
+  }
+  if (field||row.length) { row.push(field); rows.push(row); }
+  while(rows.length && rows[rows.length-1].every(f=>f==='')) rows.pop();
+  return rows;
+}
+
 function pasteAt(sr, sc, text) {
   pushUndo();
-  const lines = text.replace(/\r/g,'').split('\n');
-  while(lines.length&&lines[lines.length-1]==='') lines.pop();
+  const lines = parseTSV(text);
   const g=grid();
   let maxR=0, maxC=0;
-  lines.forEach((line,i)=>{
-    line.split('\t').forEach((val,j)=>{
+  lines.forEach((cols,i)=>{
+    cols.forEach((val,j)=>{
       const r=sr+i, c=sc+j;
       maxR=Math.max(maxR,r); maxC=Math.max(maxC,c);
       while(g.length<=r) g.push([]);
@@ -1177,12 +1433,11 @@ function pasteAt(sr, sc, text) {
       g[r][c]=val;
     });
   });
-  // 모든 행을 같은 길이로 패딩 (자동 열 확장)
   const nc=Math.max(MIN_COLS, maxC+1, ...g.map(r=>r.length));
   g.forEach(r=>{ while(r.length<nc) r.push(''); });
   while(g.length<Math.max(MIN_ROWS, maxR+1)) g.push(new Array(nc).fill(''));
   render(); markDirty();
-  setStatus(`✅ ${lines.length}행 × ${lines[0]?.split('\t').length||1}열 붙여넣음`);
+  setStatus(`✅ ${lines.length}행 × ${(lines[0]||[]).length}열 붙여넣음`);
 }
 
 // ══════════════════════════════════════════
@@ -1260,7 +1515,7 @@ async function save() {
   try {
     const [r1, r2] = await Promise.all([
       fetch('/budget/sheets',{method:'POST',headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({sheets,active:activeSheet,styles:cellStyles})}),
+        body:JSON.stringify({sheets,active:activeSheet,styles:cellStyles,colWidths,rowHeights})}),
       fetch('/budget/grid',{method:'POST',headers:{'Content-Type':'application/json'},
         body:JSON.stringify({rows:grid()})})
     ]);
