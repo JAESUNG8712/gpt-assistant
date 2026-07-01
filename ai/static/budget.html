@@ -419,6 +419,8 @@ function undo() {
 let formulaRefMode = false;   // 수식 입력 중 셀 클릭으로 주소 삽입 가능한 상태
 let fDragAnchor = null;       // 드래그 시작 셀
 let fOrigPrefix = '';         // 드래그 시작 시 수식의 앵커 이전 부분
+// ── 크로스시트 수식 입력 모드
+let crossSheetEdit = null;    // {sheet, cell, formulaVal} — 타 시트 이동 중 수식 입력 상태
 
 // ── 행/열 전체 선택
 let selMode = 'cell';   // 'cell' | 'row' | 'col'
@@ -542,12 +544,22 @@ function renderTabs() {
   c.innerHTML = '';
   Object.keys(sheets).forEach(name => {
     const tab = document.createElement('span');
-    tab.className = 'sheet-tab' + (name===activeSheet?' active':'');
-    tab.textContent = name;
-    tab.title = '더블클릭: 이름변경 / 우클릭: 메뉴';
-    tab.onclick = () => switchSheet(name);
-    tab.ondblclick = () => renameSheet(name, tab);
-    tab.oncontextmenu = e => { e.preventDefault(); showTabMenu(e, name, tab); };
+    const isOrigin = crossSheetEdit && name === crossSheetEdit.sheet;
+    tab.className = 'sheet-tab' + (name===activeSheet?' active':'') + (isOrigin?' origin-sheet':'');
+    if (isOrigin) tab.style.cssText='border-top:3px solid #1565c0;font-weight:700;';
+    tab.textContent = isOrigin ? `↩ ${name}` : name;
+    tab.title = isOrigin ? '클릭: 수식 입력 원본 시트로 복귀' : '더블클릭: 이름변경 / 우클릭: 메뉴';
+    tab.onclick = () => {
+      if (crossSheetEdit && isOrigin) {
+        // 원본 시트 탭 클릭 시 수식 확정
+        const fi = document.getElementById('formula-input');
+        commitCrossSheetEdit(fi ? fi.value : crossSheetEdit.formulaVal);
+      } else {
+        switchSheet(name);
+      }
+    };
+    tab.ondblclick = () => { if (!crossSheetEdit) renameSheet(name, tab); };
+    tab.oncontextmenu = e => { e.preventDefault(); if (!crossSheetEdit) showTabMenu(e, name, tab); };
     c.appendChild(tab);
   });
   const add = document.createElement('span');
@@ -591,6 +603,36 @@ function deleteSheet(name) {
 }
 
 function switchSheet(name) {
+  if (name === activeSheet) return;
+  // 수식 입력 중 → 크로스시트 모드: 편집 유지하고 시트만 전환
+  const fi = document.getElementById('formula-input');
+  const inFormula = fi && fi.value.startsWith('=');
+  if (inFormula && (editMode || document.activeElement === fi)) {
+    // 현재 수식 상태 저장
+    if (!crossSheetEdit) {
+      crossSheetEdit = {
+        sheet: activeSheet,
+        cell: selectedCell ? {...selectedCell} : null,
+        formulaVal: fi.value,
+        editMode: editMode
+      };
+    } else {
+      crossSheetEdit.formulaVal = fi.value;
+    }
+    // 편집 셀을 수식 바만으로 관리하도록 셀 editable 해제 (값은 유지)
+    if (editMode && selectedCell) {
+      const td = getCellEl(selectedCell.r, selectedCell.c);
+      if (td) { td.contentEditable = 'false'; td.classList.remove('editing'); }
+    }
+    editMode = false;
+    formulaRefMode = true; // 셀 클릭 시 참조 삽입 상태 유지
+    activeSheet = name; sortState = null; selectedCell = null; selEnd = null;
+    ensureSize(); renderTabs(); render(); loadSnaps();
+    showCrossSheetBanner();
+    return;
+  }
+  // 수식 입력 중 아닐 때 크로스시트 모드 정리
+  if (crossSheetEdit) crossSheetEdit = null;
   if (editMode) commitEdit();
   activeSheet = name; sortState = null; selectedCell = null; selEnd = null;
   ensureSize(); renderTabs(); render(); updateFormulaBar(); loadSnaps();
@@ -864,10 +906,68 @@ function updateFormulaBar() {
   fi.value = (grid()[r]&&grid()[r][c]!=null) ? grid()[r][c] : '';
 }
 
+// ── 크로스시트 배너 ──
+function showCrossSheetBanner() {
+  let banner = document.getElementById('cross-sheet-banner');
+  if (!banner) {
+    banner = document.createElement('div');
+    banner.id = 'cross-sheet-banner';
+    banner.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:9999;background:#1565c0;color:#fff;' +
+      'padding:6px 16px;font-size:0.85rem;display:flex;align-items:center;gap:12px;';
+    banner.innerHTML = `<span>📌 수식 입력 중 — 셀을 클릭하면 참조가 삽입됩니다. 원본 시트로 이동 후 Enter로 확정하세요.</span>` +
+      `<button onclick="abortCrossSheetEdit()" style="margin-left:auto;background:rgba(255,255,255,0.25);` +
+      `border:none;color:#fff;padding:2px 10px;border-radius:4px;cursor:pointer;">✕ 취소</button>`;
+    document.body.prepend(banner);
+  }
+}
+function hideCrossSheetBanner() {
+  const b = document.getElementById('cross-sheet-banner');
+  if (b) b.remove();
+}
+function abortCrossSheetEdit() {
+  crossSheetEdit = null;
+  formulaRefMode = false;
+  hideCrossSheetBanner();
+  const fi = document.getElementById('formula-input');
+  if (fi) fi.value = '';
+  activeSheet = Object.keys(sheets)[0] || 'Sheet1';
+  renderTabs(); render(); updateFormulaBar();
+}
+function commitCrossSheetEdit(formulaVal) {
+  if (!crossSheetEdit) return;
+  const {sheet, cell} = crossSheetEdit;
+  crossSheetEdit = null;
+  formulaRefMode = false;
+  hideCrossSheetBanner();
+  // 원본 시트로 복귀
+  activeSheet = sheet;
+  ensureSize(); renderTabs(); render();
+  if (cell) {
+    selectedCell = cell;
+    const g = grid();
+    while(g.length<=cell.r) g.push([]);
+    while(g[cell.r].length<=cell.c) g[cell.r].push('');
+    g[cell.r][cell.c] = formulaVal;
+    markDirty();
+    recomputeAll();
+    highlightSel();
+    updateFormulaBar();
+  }
+}
+
 // ── 수식 셀 참조 입력 헬퍼 ──
 function checkFormulaRef() {
   // 현재 수식 내용이 셀 클릭 참조를 받을 수 있는 상태인지 확인
   let v = '';
+  if (crossSheetEdit) {
+    // 크로스시트 모드: 수식 바 값 사용
+    const fi = document.getElementById('formula-input');
+    v = fi ? fi.value : crossSheetEdit.formulaVal;
+    if (!v.startsWith('=')) { formulaRefMode=false; return; }
+    const last = v.trimEnd().slice(-1);
+    formulaRefMode = ['(', ',', '+', '-', '*', '/', '=', ':'].includes(last);
+    return;
+  }
   if (editMode && selectedCell) {
     const td = getCellEl(selectedCell.r, selectedCell.c);
     if (td && td.contentEditable==='true') v = td.textContent;
@@ -890,6 +990,13 @@ function getFormulaEl() {
 }
 
 function applyFormulaRefAddr(addr) {
+  const fi = document.getElementById('formula-input');
+  // 크로스시트 모드: 수식 바에 직접 적용
+  if (crossSheetEdit) {
+    if (fi) fi.value = fOrigPrefix + addr;
+    if (crossSheetEdit) crossSheetEdit.formulaVal = fi ? fi.value : fOrigPrefix + addr;
+    return;
+  }
   const src = getFormulaEl();
   if (!src) return;
   if (src.type==='bar') {
@@ -897,27 +1004,41 @@ function applyFormulaRefAddr(addr) {
   } else {
     src.el.textContent = fOrigPrefix + addr;
     placeCursorEnd(src.el);
-    document.getElementById('formula-input').value = src.el.textContent;
+    if (fi) fi.value = src.el.textContent;
   }
 }
 
 function startFormulaRef(r, c) {
   // 드래그 시작: 현재 수식에서 prefix 저장 후 셀 주소 삽입
   const src = getFormulaEl();
-  if (!src) return;
-  const v = src.type==='bar' ? src.el.value : src.el.textContent;
-  // 마지막 셀 참조 또는 범위를 제거하고 prefix 저장
-  fOrigPrefix = v.replace(/[A-Za-z]+\d*:[A-Za-z]+\d*$/, '').replace(/[A-Za-z]+\d+$/, '');
+  const fi = document.getElementById('formula-input');
+  // 크로스시트 모드: 수식 바 값 기준으로 처리
+  const v = (src?.type==='bar' ? src.el.value : src?.el?.textContent) || (fi ? fi.value : '');
+  // 마지막 셀 참조 또는 범위(시트 접두어 포함)를 제거하고 prefix 저장
+  fOrigPrefix = v
+    .replace(/(?:'[^']*'\!|[A-Za-z]\w*\!)?[A-Za-z]+\d*:[A-Za-z]+\d*$/, '')
+    .replace(/(?:'[^']*'\!|[A-Za-z]\w*\!)?[A-Za-z]+\d+$/, '');
   fDragAnchor = {r, c};
-  applyFormulaRefAddr(cellAddr(r, c));
+  // 크로스시트 모드면 시트명 접두어 추가
+  const addrSheet = crossSheetEdit ? activeSheet : null;
+  applyFormulaRefAddr(makeSheetAddr(addrSheet, cellAddr(r, c)));
+}
+
+function makeSheetAddr(sheetName, cellRef) {
+  if (!sheetName) return cellRef;
+  // 시트명에 공백/특수문자 있으면 따옴표로 묶기
+  const needsQuote = /[\s!,\(\)\[\]'"]/.test(sheetName);
+  const prefix = needsQuote ? `'${sheetName}'!` : `${sheetName}!`;
+  return prefix + cellRef;
 }
 
 function updateFormulaRef(r, c) {
   if (!fDragAnchor) return;
   const r1=Math.min(fDragAnchor.r,r), r2=Math.max(fDragAnchor.r,r);
   const c1=Math.min(fDragAnchor.c,c), c2=Math.max(fDragAnchor.c,c);
-  const addr = (r1===r2&&c1===c2) ? cellAddr(r,c) : `${cellAddr(r1,c1)}:${cellAddr(r2,c2)}`;
-  applyFormulaRefAddr(addr);
+  const base = (r1===r2&&c1===c2) ? cellAddr(r,c) : `${cellAddr(r1,c1)}:${cellAddr(r2,c2)}`;
+  const addrSheet = crossSheetEdit ? activeSheet : null;
+  applyFormulaRefAddr(makeSheetAddr(addrSheet, base));
 }
 
 // 수식 입력줄 input 이벤트
@@ -1030,8 +1151,26 @@ function fbarKeydown(e) {
     }
     if (e.key==='Escape') { hideFnUI(); return; }
   }
-  if (e.key==='Enter') { e.preventDefault(); applyFormulaBar(); hideFnUI(); }
-  if (e.key==='Escape') { e.preventDefault(); updateFormulaBar(); hideFnUI(); }
+  if (e.key==='Enter') {
+    e.preventDefault();
+    hideFnUI();
+    const fi = document.getElementById('formula-input');
+    if (crossSheetEdit) {
+      // 크로스시트 모드: 원본 시트로 돌아가서 수식 확정
+      commitCrossSheetEdit(fi ? fi.value : '');
+    } else {
+      applyFormulaBar();
+    }
+  }
+  if (e.key==='Escape') {
+    e.preventDefault();
+    hideFnUI();
+    if (crossSheetEdit) {
+      abortCrossSheetEdit();
+    } else {
+      updateFormulaBar();
+    }
+  }
 }
 function fbarBlur() {
   clearFormulaRefHighlights();
@@ -2157,6 +2296,15 @@ function evalFormula(expr,vis,ctxSheet) {
       }
       // FALSE/TRUE
       if(fn==='TRUE') return true; if(fn==='FALSE') return false;
+      // 열 전체 참조: 순수 알파벳(행 번호 없음) → 셀/범위로 처리 (예: J:J의 두 번째 J)
+      if(/^[A-Za-z]+$/.test(t.val)){
+        const sn=t.sheet||null;
+        if(peekVal()===':'){
+          next();const t2=next();
+          return new RangeRef(t.val,t2?.val||t.val,sn||t2?.sheet||null);
+        }
+        return cellVal(t.val,vis,sn);
+      }
       throw new Error('unknown:'+fn);
     }
     // 셀 주소 (시트명 포함 가능: t.sheet)
@@ -2165,7 +2313,8 @@ function evalFormula(expr,vis,ctxSheet) {
       const sn=t.sheet||null;
       if(peekVal()===':'){
         next();const t2=next();
-        if(t2?.type!=='cell')throw new Error('range');
+        // name 타입도 허용 (열전체 참조 J:J에서 두 번째 J가 name으로 파싱되는 경우)
+        if(!t2||!['cell','name'].includes(t2.type))throw new Error('range');
         return new RangeRef(t.val,t2.val,sn||t2.sheet||null);
       }
       return cellVal(t.val,vis,sn);
