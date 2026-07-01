@@ -484,13 +484,7 @@ function render() {
       else if (e.key==='Escape') { e.preventDefault(); cancelEdit(); }
     });
 
-    // 붙여넣기 (편집 모드 아닐 때)
-    td.addEventListener('paste', e => {
-      if (editMode) return;
-      e.preventDefault();
-      const text=(e.clipboardData||window.clipboardData).getData('text/plain');
-      pasteAt(r, c, text);
-    });
+    // 붙여넣기는 document 레벨 핸들러에서 처리 (편집 모드 아닐 때)
   });
 
   // 편집 중인 셀 포커스 복원
@@ -594,6 +588,21 @@ function moveSel(dr, dc) {
   const c=Math.max(0,Math.min(nCols-1,selectedCell.c+dc));
   selectCell(r,c);
 }
+
+// ══════════════════════════════════════════
+// 전역 붙여넣기 (셀 선택 상태에서 Ctrl+V)
+// ══════════════════════════════════════════
+document.addEventListener('paste', e => {
+  if (document.querySelector('.modal-overlay.open')) return;
+  if (editMode) return; // 편집 중이면 td 내부 붙여넣기
+  if (!selectedCell) return;
+  // 수식 입력줄이 포커스된 경우 제외
+  if (document.activeElement === document.getElementById('formula-input')) return;
+  e.preventDefault();
+  const text = (e.clipboardData || window.clipboardData).getData('text/plain');
+  if (!text) return;
+  pasteAt(selectedCell.r, selectedCell.c, text);
+});
 
 // ══════════════════════════════════════════
 // 전역 키보드 (방향키 셀 이동)
