@@ -25,13 +25,11 @@ def _get_client():
 
 
 def is_available() -> bool:
-    """Claude API 사용 가능 여부"""
     return bool(os.getenv("ANTHROPIC_API_KEY"))
 
 
 MODEL = "claude-opus-4-8"
 
-# 시스템 프롬프트 (prompt caching용 — 고정 텍스트)
 _SYSTEM_PROMPT = """당신은 대한민국 최고 수준의 주식 투자 분석 전문가입니다.
 CFA(공인재무분석사), 증권사 리서치센터장 15년 경력의 관점으로 분석합니다.
 
@@ -46,7 +44,6 @@ CFA(공인재무분석사), 증권사 리서치센터장 15년 경력의 관점�
 
 
 def analyze_stock_opinion(stock_name: str, analysis_data: Dict) -> str:
-    """종목별 AI 투자의견 생성 (Claude)"""
     client = _get_client()
     if not client:
         return _fallback_opinion(analysis_data)
@@ -75,16 +72,16 @@ RSI(14): {technical.get('RSI_14', 50):.1f}
 [수급]
 외국인: {supply.get('외국인', {}).get('방향', 'N/A')} (강도 {supply.get('외국인', {}).get('강도점수', 0)}/100)
 기관: {supply.get('기관', {}).get('방향', 'N/A')} (강도 {supply.get('기관', {}).get('강도점수', 0)}/100)
-종합수급: {supply.get('종합수급방향', 'N/A')}
+종합수급: {supply.get('종합수급신호', 'N/A')}
 
 [매크로]
-섹터영향: {macro.get('섹터영향', 'N/A')}
-주요리스크: {', '.join(macro.get('주요리스크', [])) or '없음'}
+섹터영향: {macro.get('영향', 'N/A')}
+매크로종합: {macro.get('종합', 'N/A')}
+주요리스크: {macro.get('리스크', '없음')}
 
 [매매시점]
 종합점수: {timing.get('종합점수', 0)} (-100~+100)
-매수조건: {', '.join(timing.get('매수조건충족', [])) or '없음'}
-매도조건: {', '.join(timing.get('매도조건충족', [])) or '없음'}
+판단근거: {', '.join(timing.get('근거', [])) or '없음'}
 
 위 데이터를 종합해서 3-5문장으로 투자의견을 작성하세요.
 반드시 포함: 투자의견(매수/중립/매도), 목표주가 근거, 핵심 리스크 1가지, 매매전략 요약."""
@@ -93,7 +90,6 @@ RSI(14): {technical.get('RSI_14', 50):.1f}
         response = client.messages.create(
             model=MODEL,
             max_tokens=500,
-            thinking={"type": "adaptive"},
             system=[
                 {
                     "type": "text",
@@ -116,18 +112,16 @@ def generate_executive_summary(
     risk_val: Dict,
     logic_val: Dict,
 ) -> str:
-    """Claude로 종합 시황 요약 생성"""
     client = _get_client()
     if not client:
         return ""
 
-    # 상위 3개 종목 추출
     top_stocks = sorted(
         [(k, v) for k, v in analyses.items() if "매매시점" in v],
         key=lambda x: x[1].get("매매시점", {}).get("종합점수", 0),
         reverse=True,
     )[:3]
-    top_names = [f"{k}({v.get('투자의견', {}).get('의견', '?')})" for k, v in top_stocks]
+    top_names = [f"{k}({v.get('투자의견', {}).get('투자등급', '?')})" for k, v in top_stocks]
 
     eco_summary = {
         "KOSPI": economic_data.get("지수", {}).get("KOSPI", {}).get("close", "N/A"),
@@ -164,7 +158,6 @@ KOSPI: {eco_summary['KOSPI']}
         response = client.messages.create(
             model=MODEL,
             max_tokens=600,
-            thinking={"type": "adaptive"},
             system=[
                 {
                     "type": "text",
@@ -181,7 +174,6 @@ KOSPI: {eco_summary['KOSPI']}
 
 
 def generate_action_plan(top_picks: list, risk_val: Dict, economic_data: Dict) -> str:
-    """Claude로 실행 가능한 투자 액션 플랜 생성"""
     client = _get_client()
     if not client:
         return ""
@@ -215,7 +207,6 @@ def generate_action_plan(top_picks: list, risk_val: Dict, economic_data: Dict) -
         response = client.messages.create(
             model=MODEL,
             max_tokens=700,
-            thinking={"type": "adaptive"},
             system=[
                 {
                     "type": "text",
@@ -232,7 +223,6 @@ def generate_action_plan(top_picks: list, risk_val: Dict, economic_data: Dict) -
 
 
 def _extract_text(response) -> str:
-    """응답에서 텍스트 블록만 추출 (thinking 블록 제외)"""
     texts = []
     for block in response.content:
         if block.type == "text":
@@ -241,7 +231,6 @@ def _extract_text(response) -> str:
 
 
 def _fallback_opinion(analysis_data: Dict) -> str:
-    """Claude 미사용 시 규칙 기반 의견"""
     timing = analysis_data.get("매매시점", {})
     score = timing.get("종합점수", 0)
     intrinsic = analysis_data.get("내재가치", {})

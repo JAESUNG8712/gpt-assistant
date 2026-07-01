@@ -8,9 +8,14 @@ from knowledge_payroll import PAYROLL_KNOWLEDGE
 from knowledge_practical_qa import PRACTICAL_QA_KNOWLEDGE
 from knowledge_dev_coding import DEV_CODING_KNOWLEDGE
 from knowledge_travel_additions import TRAVEL_KNOWLEDGE
+from knowledge_company import COMPANY_KNOWLEDGE
 from knowledge_extra_additions import EXTRA_KNOWLEDGE
 from knowledge_hr_gaps import HR_GAP_KNOWLEDGE
 from knowledge_dev_gaps import DEV_GAP_KNOWLEDGE, TRAVEL_GAP_KNOWLEDGE
+from knowledge_legal import LEGAL_KNOWLEDGE
+from knowledge_legal2 import LEGAL_KNOWLEDGE2
+from knowledge_legal3 import LEGAL_KNOWLEDGE3
+from knowledge_resume import RESUME_KNOWLEDGE
 
 KNOWLEDGE = [
 
@@ -3289,7 +3294,7 @@ E (Evaluation): 평가 — 효과 측정
 ]
 
 # 노동법 전체 조항 병합
-KNOWLEDGE = KNOWLEDGE + LABOR_LAW_KNOWLEDGE + HR_MANAGEMENT_KNOWLEDGE + PAYROLL_KNOWLEDGE + PRACTICAL_QA_KNOWLEDGE + DEV_CODING_KNOWLEDGE + TRAVEL_KNOWLEDGE + EXTRA_KNOWLEDGE + HR_GAP_KNOWLEDGE + DEV_GAP_KNOWLEDGE + TRAVEL_GAP_KNOWLEDGE
+KNOWLEDGE = KNOWLEDGE + LABOR_LAW_KNOWLEDGE + HR_MANAGEMENT_KNOWLEDGE + PAYROLL_KNOWLEDGE + PRACTICAL_QA_KNOWLEDGE + DEV_CODING_KNOWLEDGE + TRAVEL_KNOWLEDGE + EXTRA_KNOWLEDGE + HR_GAP_KNOWLEDGE + DEV_GAP_KNOWLEDGE + TRAVEL_GAP_KNOWLEDGE + LEGAL_KNOWLEDGE + LEGAL_KNOWLEDGE2 + LEGAL_KNOWLEDGE3 + COMPANY_KNOWLEDGE + RESUME_KNOWLEDGE
 
 
 # ── 하위 호환성 ──────────────────────────────────────

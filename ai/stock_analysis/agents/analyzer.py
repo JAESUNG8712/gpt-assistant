@@ -24,7 +24,6 @@ class StockAnalyzer:
         "LG화학": "화학·소재",
     }
 
-    # 섹터별 적정 PER 기준 (업종 평균)
     SECTOR_FAIR_PER = {
         "반도체": 18, "배터리": 20, "바이오": 30,
         "자동차": 10, "철강·소재": 8, "금융": 7,
@@ -63,22 +62,11 @@ class StockAnalyzer:
         supply = data.get("수급", {})
         sector = self.SECTOR_MAP.get(name, "기타")
 
-        # ── 1. 내재가치 평가 ─────────────────────────────
         intrinsic = self._calc_intrinsic_value(name, data, sector)
-
-        # ── 2. 기술적 분석 ────────────────────────────────
         technical = self._technical_analysis(price_data)
-
-        # ── 3. 수급 분석 ──────────────────────────────────
         supply_analysis = self._supply_analysis(supply)
-
-        # ── 4. 섹터·매크로 연계 분석 ──────────────────────
         macro_factor = self._macro_factor_analysis(sector)
-
-        # ── 5. 매수·매도 시점 종합 판단 ───────────────────
         timing = self._timing_analysis(intrinsic, technical, supply_analysis, macro_factor)
-
-        # ── 6. 투자 의견 도출 ─────────────────────────────
         opinion = self._generate_opinion(timing, intrinsic, val, derived)
 
         return {
@@ -106,14 +94,10 @@ class StockAnalyzer:
         roe = derived.get("ROE", 0)
         fair_per = self.SECTOR_FAIR_PER.get(sector, 15)
 
-        # PER 기반 목표주가
         target_by_per = eps * fair_per if eps > 0 else 0
-
-        # PBR 기반 목표주가 (ROE 반영)
-        fair_pbr = roe / 10 if roe > 0 else 1.0  # ROE 10% = PBR 1.0 기준
+        fair_pbr = roe / 10 if roe > 0 else 1.0
         target_by_pbr = bps * fair_pbr if bps > 0 else 0
 
-        # 가중 평균 목표주가
         if target_by_per > 0 and target_by_pbr > 0:
             target_price = (target_by_per * 0.6 + target_by_pbr * 0.4)
         elif target_by_per > 0:
@@ -121,11 +105,10 @@ class StockAnalyzer:
         elif target_by_pbr > 0:
             target_price = target_by_pbr
         else:
-            target_price = price * 1.1  # 기본 10% 상승여력
+            target_price = price * 1.1
 
         upside = (target_price - price) / price * 100 if price > 0 else 0
 
-        # 저평가 여부
         undervalue_score = derived.get("저평가스코어", 0)
         if upside > 30 and undervalue_score >= 50:
             valuation_grade = "강한저평가"
@@ -150,7 +133,6 @@ class StockAnalyzer:
         }
 
     def _technical_analysis(self, price_data: Dict) -> Dict:
-        """이동평균, RSI, 추세 분석"""
         history = price_data.get("history", {})
         if not history:
             return {"상태": "데이터부족", "신호": "중립"}
@@ -161,18 +143,13 @@ class StockAnalyzer:
 
         current = closes[-1]
 
-        # 이동평균
         ma5 = sum(closes[-5:]) / 5
         ma20 = sum(closes[-20:]) / 20 if len(closes) >= 20 else ma5
         ma60 = sum(closes[-60:]) / 60 if len(closes) >= 60 else ma20
 
-        # RSI (14일)
         rsi = self._calc_rsi(closes, 14)
-
-        # 볼린저밴드 (20일)
         bb = self._calc_bollinger(closes, 20)
 
-        # 추세 판단
         if current > ma5 > ma20 > ma60:
             trend = "강한상승추세"
         elif current > ma20:
@@ -182,7 +159,6 @@ class StockAnalyzer:
         else:
             trend = "횡보"
 
-        # 기술적 신호
         signals = []
         if rsi < 30:
             signals.append("RSI과매도(매수신호)")
@@ -233,6 +209,8 @@ class StockAnalyzer:
         return 100 - (100 / (1 + rs))
 
     def _calc_bollinger(self, closes: list, period: int = 20) -> Dict:
+        if not closes:
+            return {"upper": 0, "mid": 0, "lower": 0}
         data = closes[-period:] if len(closes) >= period else closes
         mid = sum(data) / len(data)
         variance = sum((x - mid) ** 2 for x in data) / len(data)
@@ -240,7 +218,6 @@ class StockAnalyzer:
         return {"upper": mid + 2 * std, "mid": mid, "lower": mid - 2 * std}
 
     def _supply_analysis(self, supply: Dict) -> Dict:
-        """외국인·기관·개인 수급 분석"""
         if "error" in supply or not supply:
             return {"상태": "데이터부족"}
 
@@ -248,7 +225,6 @@ class StockAnalyzer:
         institution = supply.get("기관합계", {})
         individual = supply.get("개인", {})
 
-        # 수급 강도 점수 (-100 ~ +100)
         def score(data):
             net = data.get("순매수_전체", 0)
             recent = data.get("순매수_최근5일", 0)
@@ -261,7 +237,6 @@ class StockAnalyzer:
         foreign_score = score(foreign)
         institution_score = score(institution)
 
-        # 외국인·기관 동반 매수는 강한 신호
         if foreign_score > 30 and institution_score > 30:
             combined_signal = "강력매수신호 (외국인+기관 동반매수)"
         elif foreign_score > 30:
@@ -294,10 +269,7 @@ class StockAnalyzer:
         }
 
     def _macro_factor_analysis(self, sector: str) -> Dict:
-        """섹터별 매크로 영향 분석"""
         macro = self.economic
-        industry = self.industry
-
         base_rate_kr = macro.get("금리", {}).get("한국기준금리", {}).get("현재", 3.0)
         usdkrw = macro.get("환율", {}).get("원달러(USD/KRW)", {}).get("현재", 1380)
 
@@ -337,11 +309,9 @@ class StockAnalyzer:
 
     def _timing_analysis(self, intrinsic: Dict, technical: Dict,
                           supply: Dict, macro: Dict) -> Dict:
-        """매수·매도 시점 종합 판단"""
         signals = []
         score = 0
 
-        # 내재가치 신호
         upside = intrinsic.get("상승여력", 0)
         if upside > 30:
             score += 30
@@ -353,7 +323,6 @@ class StockAnalyzer:
             score -= 30
             signals.append("고평가 구간 (매도 고려)")
 
-        # 기술적 신호
         rsi = technical.get("RSI_14", 50)
         tech_signal = technical.get("종합신호", "중립")
         if tech_signal == "매수":
@@ -363,7 +332,6 @@ class StockAnalyzer:
             score -= 25
             signals.append(f"기술적 매도 신호 (RSI {rsi})")
 
-        # 수급 신호
         supply_signal = supply.get("종합수급신호", "")
         if "강력매수" in supply_signal:
             score += 30
@@ -375,7 +343,6 @@ class StockAnalyzer:
             score -= 20
             signals.append("외국인+기관 동반 매도")
 
-        # 매크로 신호
         macro_view = macro.get("종합", "중립")
         if macro_view == "긍정":
             score += 15
@@ -383,7 +350,6 @@ class StockAnalyzer:
         elif macro_view == "부정":
             score -= 15
 
-        # 최종 판단
         if score >= 60:
             action = "적극매수"
             buy_zone = "현재 구간"
@@ -391,7 +357,7 @@ class StockAnalyzer:
         elif score >= 30:
             action = "매수"
             buy_zone = "현재~5% 하락 시"
-            sell_zone = f"목표가의 90% 도달 시"
+            sell_zone = "목표가의 90% 도달 시"
         elif score >= 0:
             action = "관망"
             buy_zone = "10% 이상 추가 하락 시"
@@ -406,7 +372,7 @@ class StockAnalyzer:
             "매매행동": action,
             "매수구간": buy_zone,
             "매도구간": sell_zone,
-            "손절기준": f"매수가 대비 -8% 이탈 시",
+            "손절기준": "매수가 대비 -8% 이탈 시",
             "근거": signals,
         }
 
@@ -414,7 +380,6 @@ class StockAnalyzer:
                            val: Dict, derived: Dict) -> Dict:
         action = timing.get("매매행동", "관망")
         upside = intrinsic.get("상승여력", 0)
-        score = timing.get("종합점수", 0)
 
         if action in ["적극매수", "매수"]:
             rating = "BUY" if action == "적극매수" else "OVERWEIGHT"
@@ -454,7 +419,6 @@ class StockAnalyzer:
         return risks
 
     def get_top_picks(self, n: int = 5) -> list:
-        """상위 추천 종목"""
         ranked = sorted(
             self.analyses.items(),
             key=lambda x: x[1].get("매매시점", {}).get("종합점수", 0),

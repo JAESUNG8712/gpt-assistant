@@ -2796,7 +2796,7 @@ curl -X POST http://localhost:8000/chat -H "Content-Type: application/json" -d '
 ### Step 7: 배포 (Railway)
 ```bash
 # Procfile 생성
-echo "web: uvicorn main:app --host 0.0.0.0 --port \$PORT" > Procfile
+echo "web: uvicorn main:app --host 0.0.0.0 --port \\$PORT" > Procfile
 git add . && git commit -m "feat: AI 어시스턴트 초기 구현"
 git push origin main
 # Railway 대시보드에서 GitHub 연결 → 자동 배포

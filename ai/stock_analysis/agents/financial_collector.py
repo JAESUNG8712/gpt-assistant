@@ -15,7 +15,10 @@ from ..utils.dart_client import (
 from ..utils.krx_client import (
     get_stock_price, get_investor_trading,
     get_market_valuation, get_short_selling,
+    lookup_ticker_by_name,
 )
+from ..utils.securities_report import get_all_reports
+from ..utils.news_collector import get_stock_news
 
 
 class FinancialCollector:
@@ -23,11 +26,10 @@ class FinancialCollector:
 
     def __init__(self, target_stocks: List[str] = None):
         self.target_stocks = target_stocks or list(CORP_CODES.keys())
-        self.year = str(datetime.now().year - 1)  # 직전 사업연도
+        self.year = str(datetime.now().year - 1)
         self.results: Dict = {}
 
     async def run(self) -> Dict:
-        """전체 재무 데이터 수집 실행"""
         print(f"💰 [재무수집] {len(self.target_stocks)}개 종목 수집 시작")
 
         tasks = [self._collect_single(name) for name in self.target_stocks]
@@ -46,6 +48,14 @@ class FinancialCollector:
         corp_code = CORP_CODES.get(corp_name)
         ticker = next((k for k, v in STOCK_CODE_MAP.items() if v == corp_name), None)
 
+        # ticker가 없으면 네이버 금융 자동완성으로 탐색 (LG CNS 등 신규 상장 종목)
+        if not ticker:
+            found = lookup_ticker_by_name(corp_name)
+            if found:
+                ticker = found
+                STOCK_CODE_MAP[found] = corp_name  # 캐시에 등록
+                print(f"💡 [{corp_name}] 네이버에서 ticker 발견: {found}")
+
         tasks = {}
         if corp_code:
             tasks["재무제표"] = fetch_financial_statements(corp_code, self.year)
@@ -57,6 +67,10 @@ class FinancialCollector:
             tasks["수급"] = get_investor_trading(ticker, days=30)
             tasks["밸류에이션"] = get_market_valuation(ticker)
             tasks["공매도"] = get_short_selling(ticker, days=15)
+            tasks["증권사리포트"] = get_all_reports(ticker, corp_name)
+
+        # 뉴스·기사·전문가 의견은 종목명만 있어도 수집 가능
+        tasks["뉴스"] = get_stock_news(corp_name, ticker or "")
 
         results = {}
         if tasks:
@@ -64,12 +78,10 @@ class FinancialCollector:
             for key, val in zip(tasks.keys(), values):
                 results[key] = val if not isinstance(val, Exception) else {"error": str(val)}
 
-        # 파생 지표 계산
         results["파생지표"] = self._calc_derived(results)
         return results
 
     def _calc_derived(self, data: Dict) -> Dict:
-        """재무비율 등 파생 지표 계산"""
         derived = {}
         fs = data.get("재무제표", {})
         price_data = data.get("주가", {})
@@ -96,7 +108,6 @@ class FinancialCollector:
             if total_equity > 0:
                 derived["부채비율"] = round(total_debt / total_equity * 100, 2)
 
-            # 전년 대비 성장률
             prev_revenue = fs.get("매출액", {}).get("previous", 0)
             if prev_revenue > 0:
                 derived["매출성장률"] = round((revenue - prev_revenue) / prev_revenue * 100, 2)
@@ -105,7 +116,6 @@ class FinancialCollector:
             if prev_op > 0:
                 derived["영업이익성장률"] = round((op_profit - prev_op) / prev_op * 100, 2)
 
-            # 저평가 스코어 (간단)
             per = val.get("PER", 0)
             pbr = val.get("PBR", 0)
             roe = derived.get("ROE", 0)
@@ -128,7 +138,7 @@ class FinancialCollector:
             elif op_margin > 8:
                 undervalue_score += 10
 
-            derived["저평가스코어"] = undervalue_score  # 0~100
+            derived["저평가스코어"] = undervalue_score
 
         except Exception as e:
             derived["계산오류"] = str(e)
@@ -136,7 +146,6 @@ class FinancialCollector:
         return derived
 
     def get_investor_summary(self) -> List[Dict]:
-        """외국인·기관·개인 수급 요약"""
         summary = []
         for corp_name, data in self.results.items():
             supply = data.get("수급", {})
@@ -151,7 +160,6 @@ class FinancialCollector:
         return summary
 
     def get_undervalued_candidates(self, min_score: int = 40) -> List[Dict]:
-        """저평가 후보 종목 추출"""
         candidates = []
         for name, data in self.results.items():
             score = data.get("파생지표", {}).get("저평가스코어", 0)

@@ -27,22 +27,11 @@ def _get_config() -> dict:
 
 
 def is_configured() -> bool:
-    """이메일 설정 완료 여부"""
     cfg = _get_config()
     return bool(cfg["sender"] and cfg["password"] and cfg["recipients"])
 
 
 def send_report(report: str, label: str = "") -> bool:
-    """
-    보고서를 이메일로 발송
-
-    Args:
-        report: 보고서 텍스트
-        label: 보고서 레이블 (예: "오전 7시", "저녁 10시")
-
-    Returns:
-        발송 성공 여부
-    """
     if not is_configured():
         print("⚠️  이메일 설정 없음 — EMAIL_SENDER / EMAIL_PASSWORD / EMAIL_RECIPIENTS 환경변수 확인")
         return False
@@ -54,7 +43,6 @@ def send_report(report: str, label: str = "") -> bool:
 
     subject = f"📊 주식 분석 보고서 | {date_str} {time_label}"
 
-    # 첫 줄 요약 추출 (KOSPI 라인)
     preview = ""
     for line in report.splitlines():
         if "KOSPI" in line or "종합 요약" in line:
@@ -83,7 +71,6 @@ def send_report(report: str, label: str = "") -> bool:
 
     except smtplib.SMTPAuthenticationError:
         print("❌ 이메일 인증 실패 — Gmail 앱 비밀번호를 확인하세요")
-        print("   설정 방법: https://myaccount.google.com/apppasswords")
         return False
     except Exception as e:
         print(f"❌ 이메일 발송 실패: {e}")
@@ -91,8 +78,6 @@ def send_report(report: str, label: str = "") -> bool:
 
 
 def _build_html(report: str, date_str: str, time_label: str, preview: str) -> str:
-    """보고서를 HTML 이메일로 변환"""
-    # 섹션별로 파싱해서 HTML로 변환
     lines = report.splitlines()
     html_lines = []
 
