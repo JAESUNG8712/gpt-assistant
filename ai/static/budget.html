@@ -229,6 +229,10 @@
     background:var(--surface2); color:var(--text-bright); resize:vertical;
   }
   textarea.raw-paste:focus { outline:none; border-color:var(--accent); background:#fff; }
+
+  /* 채우기 핸들 */
+  #fill-handle { position:fixed;width:8px;height:8px;background:#1565c0;border:2px solid #fff;cursor:crosshair;z-index:200;display:none;box-shadow:0 0 0 1px #1565c0; }
+  #fill-preview { position:fixed;pointer-events:none;z-index:199;border:2px dashed #1565c0;display:none; }
 </style>
 </head>
 <body>
@@ -467,10 +471,22 @@ function colLetters(idx) {
   return s;
 }
 function colIdx(letters) {
-  let n=0; for(const ch of letters.toUpperCase()) n=n*26+(ch.charCodeAt(0)-64); return n-1;
+  let n=0; for(const ch of letters.replace(/\$/g,'').toUpperCase()) n=n*26+(ch.charCodeAt(0)-64); return n-1;
 }
 function cellAddr(r,c){ return `${colLetters(c)}${r+1}`; }
 function getCellEl(r,c){ return document.querySelector(`#sheet td[data-r="${r}"][data-c="${c}"]`); }
+
+function adjustFormula(formula, dr, dc) {
+  if (typeof formula !== 'string' || !formula.startsWith('=')) return formula;
+  return '=' + formula.slice(1).replace(
+    /((?:'[^']*'|[A-Za-z]\w*)!)?(\$?)([A-Za-z]+)(\$?)(\d+)/g,
+    (_, sheet, absC, col, absR, row) => {
+      const newCol = absC ? col : colLetters(Math.max(0, colIdx(col) + dc));
+      const newRow = absR ? row : String(Math.max(1, parseInt(row,10) + dr));
+      return (sheet||'') + absC + newCol + absR + newRow;
+    }
+  );
+}
 
 // ══════════════════════════════════════════
 // 초기화
@@ -833,6 +849,7 @@ function selectCell(r, c) {
   if (pt) pt.focus();
   const td = getCellEl(r, c);
   if (td) td.scrollIntoView({block:'nearest',inline:'nearest'});
+  updateFillHandle();
 }
 
 function highlightSel() {
@@ -842,6 +859,17 @@ function highlightSel() {
   document.querySelectorAll('#sheet td.cell').forEach(td => {
     if (inSel(+td.dataset.r, +td.dataset.c)) td.classList.add('selected');
   });
+  updateFillHandle();
+  // Status: sum/count/avg of numeric selection
+  const nums = getSelCells().map(({r,c})=>{
+    const g=grid(); const v=(g[r]&&g[r][c]!=null)?g[r][c]:'';
+    const n=+String(renderCell(v||'')).replace(/,/g,'');
+    return isNaN(n)?null:n;
+  }).filter(v=>v!==null);
+  if(nums.length>1){
+    const sum=nums.reduce((a,b)=>a+b,0);
+    setStatus(`선택: ${nums.length}개 | 합계: ${sum.toLocaleString('ko-KR')} | 평균: ${(sum/nums.length).toLocaleString('ko-KR',{maximumFractionDigits:2})}`, true);
+  }
 }
 
 function updateFormulaBarRange() {
@@ -899,6 +927,7 @@ function commitEdit() {
   if (newVal !== oldVal) markDirty();
   updateFormulaBar();
   recomputeAll();
+  updateFillHandle();
 }
 
 function cancelEdit() {
@@ -914,6 +943,7 @@ function cancelEdit() {
   editMode = false;
   clearFormulaRefHighlights();
   updateFormulaBar();
+  updateFillHandle();
 }
 
 function recomputeAll() {
@@ -1091,6 +1121,117 @@ function clearRefRangeHighlight() {
   _refHighEls = [];
 }
 
+// ══════════════════════════════════════════
+// 채우기 핸들 (Fill Handle)
+// ══════════════════════════════════════════
+let fillDragging = false;
+let fillAnchor = null;   // {r, c} — 드래그 시작 셀
+let fillCurrent = null;  // {r, c} — 현재 드래그 끝 셀
+
+function updateFillHandle() {
+  let fh = document.getElementById('fill-handle');
+  if (!fh) {
+    fh = document.createElement('div'); fh.id='fill-handle';
+    document.body.appendChild(fh);
+    fh.addEventListener('mousedown', fillHandleMousedown);
+  }
+  if (!selectedCell || selEnd || selMode!=='cell') { fh.style.display='none'; return; }
+  const td = getCellEl(selectedCell.r, selectedCell.c);
+  if (!td) { fh.style.display='none'; return; }
+  const rect = td.getBoundingClientRect();
+  fh.style.display='block';
+  fh.style.left=(rect.right-5)+'px';
+  fh.style.top=(rect.bottom-5)+'px';
+}
+
+function fillHandleMousedown(e) {
+  e.preventDefault(); e.stopPropagation();
+  fillDragging = true;
+  fillAnchor = {...selectedCell};
+  fillCurrent = {...selectedCell};
+  document.addEventListener('mousemove', fillHandleMousemove);
+  document.addEventListener('mouseup', fillHandleMouseup);
+}
+
+function fillHandleMousemove(e) {
+  if (!fillDragging) return;
+  // Find which cell the mouse is over
+  const el = document.elementFromPoint(e.clientX, e.clientY);
+  if (!el) return;
+  const td = el.closest('td[data-r]');
+  if (!td) return;
+  fillCurrent = {r:+td.dataset.r, c:+td.dataset.c};
+  // Show preview
+  showFillPreview();
+}
+
+function fillHandleMouseup(e) {
+  if (!fillDragging) return;
+  fillDragging = false;
+  document.removeEventListener('mousemove', fillHandleMousemove);
+  document.removeEventListener('mouseup', fillHandleMouseup);
+  hideFillPreview();
+  if (fillCurrent && fillAnchor) {
+    applyFill(fillAnchor, fillCurrent);
+  }
+  fillAnchor = null; fillCurrent = null;
+  updateFillHandle();
+}
+
+function showFillPreview() {
+  if (!fillAnchor || !fillCurrent) return;
+  let fp = document.getElementById('fill-preview');
+  if (!fp) { fp=document.createElement('div'); fp.id='fill-preview'; document.body.appendChild(fp); }
+  const {r:ar, c:ac} = fillAnchor;
+  const {r:fr, c:fc} = fillCurrent;
+  // Determine direction: prefer the larger delta
+  const dr = fr - ar, dc = fc - ac;
+  let r1=ar,c1=ac,r2=fr,c2=fc;
+  if (Math.abs(dr) >= Math.abs(dc)) { c2=ac; } // fill down
+  else { r2=ar; } // fill right
+  const td1 = getCellEl(Math.min(r1,r2),Math.min(c1,c2));
+  const td2 = getCellEl(Math.max(r1,r2),Math.max(c1,c2));
+  if (!td1||!td2) { fp.style.display='none'; return; }
+  const rect1=td1.getBoundingClientRect(), rect2=td2.getBoundingClientRect();
+  fp.style.display='block';
+  fp.style.left=rect1.left+'px'; fp.style.top=rect1.top+'px';
+  fp.style.width=(rect2.right-rect1.left)+'px'; fp.style.height=(rect2.bottom-rect1.top)+'px';
+}
+
+function hideFillPreview() {
+  const fp=document.getElementById('fill-preview');
+  if (fp) fp.style.display='none';
+}
+
+function applyFill(anchor, end) {
+  const {r:ar, c:ac} = anchor;
+  const {r:er, c:ec} = end;
+  const dr = er-ar, dc = ec-ac;
+  if (dr===0 && dc===0) return;
+  pushUndo();
+  const g = grid();
+  const srcVal = (g[ar]&&g[ar][ac]!=null) ? g[ar][ac] : '';
+  // Determine direction
+  if (Math.abs(dr) >= Math.abs(dc)) {
+    // Fill down (or up)
+    const step = dr>0?1:-1;
+    for (let r=ar+step; r!==er+step; r+=step) {
+      while(g.length<=r) g.push([]);
+      while(g[r].length<=ac) g[r].push('');
+      g[r][ac] = adjustFormula(srcVal, r-ar, 0);
+    }
+  } else {
+    // Fill right (or left)
+    const step = dc>0?1:-1;
+    while(g.length<=ar) g.push([]);
+    for (let c=ac+step; c!==ec+step; c+=step) {
+      while(g[ar].length<=c) g[ar].push('');
+      g[ar][c] = adjustFormula(srcVal, 0, c-ac);
+    }
+  }
+  markDirty(); render(); recomputeAll(); updateFillHandle();
+}
+
 // 수식 입력줄 input 이벤트
 function onFormulaBarInput() {
   checkFormulaRef();
@@ -1133,6 +1274,59 @@ document.addEventListener('keydown', e => {
 
   // Ctrl+Z: 실행 취소
   if ((e.ctrlKey||e.metaKey) && e.key==='z') { e.preventDefault(); undo(); return; }
+
+  if (e.ctrlKey && e.key==='d') {
+    e.preventDefault();
+    // Fill down: copy top of selection to all selected cells
+    if (!selectedCell) return;
+    const g=grid();
+    const r0=selectedCell.r, c0=selectedCell.c;
+    const rEnd=selEnd?Math.max(r0,selEnd.r):r0;
+    const c1=Math.min(c0,selEnd?selEnd.c:c0), c2=Math.max(c0,selEnd?selEnd.c:c0);
+    if(rEnd===r0) return;
+    pushUndo();
+    for(let c=c1;c<=c2;c++){
+      const src=(g[r0]&&g[r0][c]!=null)?g[r0][c]:'';
+      for(let r=r0+1;r<=rEnd;r++){
+        while(g.length<=r)g.push([]);while(g[r].length<=c)g[r].push('');
+        g[r][c]=adjustFormula(src,r-r0,0);
+      }
+    }
+    markDirty();render();recomputeAll();
+    return;
+  }
+  if (e.ctrlKey && e.key==='r') {
+    e.preventDefault();
+    if (!selectedCell) return;
+    const g=grid();
+    const r0=selectedCell.r, c0=selectedCell.c;
+    const cEnd=selEnd?Math.max(c0,selEnd.c):c0;
+    const r1=Math.min(r0,selEnd?selEnd.r:r0), r2=Math.max(r0,selEnd?selEnd.r:r0);
+    if(cEnd===c0) return;
+    pushUndo();
+    for(let r=r1;r<=r2;r++){
+      const src=(g[r]&&g[r][c0]!=null)?g[r][c0]:'';
+      while(g.length<=r)g.push([]);
+      for(let c=c0+1;c<=cEnd;c++){
+        while(g[r].length<=c)g[r].push('');
+        g[r][c]=adjustFormula(src,0,c-c0);
+      }
+    }
+    markDirty();render();recomputeAll();
+    return;
+  }
+  if (e.ctrlKey && e.shiftKey && e.key==='1') {
+    e.preventDefault();
+    const cells=getSelCells(); const s=styles();
+    cells.forEach(({r,c})=>{ s[sk(r,c)]=s[sk(r,c)]||{}; s[sk(r,c)].numFmt='comma'; });
+    markDirty();render(); return;
+  }
+  if (e.ctrlKey && e.shiftKey && e.key==='5') {
+    e.preventDefault();
+    const cells=getSelCells(); const s=styles();
+    cells.forEach(({r,c})=>{ s[sk(r,c)]=s[sk(r,c)]||{}; s[sk(r,c)].numFmt='pct'; });
+    markDirty();render(); return;
+  }
 
   switch(e.key) {
     case 'ArrowUp': case 'ArrowDown': case 'ArrowLeft': case 'ArrowRight': {
@@ -1181,6 +1375,7 @@ document.addEventListener('keydown', e => {
 // 수식 입력줄 이벤트
 // ══════════════════════════════════════════
 function fbarKeydown(e) {
+  if (e.key==='F4') { e.preventDefault(); toggleAbsRef(); return; }
   // 자동완성 드롭다운이 열려있을 때 키 처리
   const ac = document.getElementById('fn-autocomplete');
   if (ac.style.display !== 'none') {
@@ -1946,6 +2141,7 @@ function resolveSheet(sheetName) {
 
 // 셀 값을 숫자로 반환 (수식 계산용)
 function cellVal(ref, vis, sheetName) {
+  vis = vis || new Set();
   const m=/^([A-Za-z]+)(\d+)$/.exec(ref);
   if(!m) throw new Error('ref');
   const col=colIdx(m[1]), row=parseInt(m[2],10)-1;
@@ -1976,7 +2172,7 @@ function cellRaw(ref, vis, sheetName) {
 }
 // 범위 끝점 파싱 — 열전체(S:S), 행전체(1:1), 일반(A1) 모두 처리
 function parseRangeCorner(ref) {
-  const m=/^([A-Za-z]+)(\d+)?$/.exec(ref.trim());
+  const m=/^\$?([A-Za-z]+)\$?(\d+)?$/.exec(ref.trim());
   if(!m) return null;
   return { col: colIdx(m[1]), row: m[2] != null ? parseInt(m[2],10)-1 : null };
 }
@@ -2260,13 +2456,19 @@ function tokenize(s) {
       let n='';while(i<s.length&&((s[i]>='0'&&s[i]<='9')||s[i]==='.'))n+=s[i++];
       toks.push({type:'num',val:+n});continue;
     }
+    // $ 로 시작하는 절대참조: $A1, $A$1
+    if(s[i]==='$'){
+      let cell='$'; i++;
+      while(i<s.length&&/[A-Za-z$0-9]/.test(s[i]))cell+=s[i++];
+      toks.push({type:'cell',val:cell}); continue;
+    }
     // 알파벳 시작: 시트참조 Sheet1!A1, 셀주소, 함수명
     if(/[A-Za-z_]/.test(s[i])){
       let w='';while(i<s.length&&/[A-Za-z0-9_]/.test(s[i]))w+=s[i++];
       // Sheet1!A1 형태 체크
       if(s[i]==='!'){
         i++;
-        let cell='';while(i<s.length&&/[A-Za-z0-9]/.test(s[i]))cell+=s[i++];
+        let cell='';while(i<s.length&&/[A-Za-z0-9$]/.test(s[i]))cell+=s[i++];
         toks.push({type:'cell',val:cell,sheet:w}); continue;
       }
       // 열 전체 참조(S:S)는 다음 토큰 ':' 뒤에 올 같은 열 문자로 확인
@@ -2717,6 +2919,36 @@ function insertPayrollToSheet() {
 }
 
 function parseNum(v) { return parseFloat(String(v||'').replace(/[^0-9.-]/g,''))||0; }
+
+// ══════════════════════════════════════════
+// F4 절대참조 토글
+// ══════════════════════════════════════════
+function toggleAbsRef() {
+  const fi = document.getElementById('formula-input');
+  if (!fi || !fi.value.startsWith('=')) return;
+  const pos = fi.selectionStart;
+  const val = fi.value;
+  const cellRe = /\$?[A-Za-z]+\$?\d+/g;
+  let m;
+  while((m=cellRe.exec(val))!==null){
+    if(m.index<=pos && cellRe.lastIndex>=pos){
+      const ref=m[0];
+      const rm=/(\$?)([A-Za-z]+)(\$?)(\d+)/.exec(ref);
+      if(!rm) break;
+      const [,ac,col,ar,row]=rm;
+      // cycle: A1→$A$1→A$1→$A1→A1
+      let newRef;
+      if(!ac&&!ar) newRef='$'+col+'$'+row;
+      else if(ac&&ar) newRef=col+'$'+row;
+      else if(!ac&&ar) newRef='$'+col+row;
+      else newRef=col+row;
+      fi.value=val.slice(0,m.index)+newRef+val.slice(m.index+ref.length);
+      fi.setSelectionRange(m.index,m.index+newRef.length);
+      onFormulaBarInput();
+      return;
+    }
+  }
+}
 
 // ══════════════════════════════════════════
 // 유틸
