@@ -839,8 +839,8 @@ function render() {
     // 편집 중 키 이벤트
     td.addEventListener('keydown', e => {
       if (!editMode) return;
-      if (e.key==='Enter' && !e.shiftKey) { e.preventDefault(); commitEdit(); moveSel(1,0); }
-      else if (e.key==='Tab') { e.preventDefault(); commitEdit(); moveSel(0,e.shiftKey?-1:1); }
+      if (e.key==='Enter' && !e.shiftKey) { e.preventDefault(); e.stopPropagation(); commitEdit(); moveSel(1,0); }
+      else if (e.key==='Tab') { e.preventDefault(); e.stopPropagation(); commitEdit(); moveSel(0,e.shiftKey?-1:1); }
       else if (e.key==='Escape') { e.preventDefault(); cancelEdit(); }
     });
     td.addEventListener('input', () => {
@@ -1289,6 +1289,8 @@ document.addEventListener('keydown', e => {
   // 수식 입력줄 포커스 중이면 무시
   if (document.activeElement===document.getElementById('formula-input')) return;
 
+  // Ctrl+Z는 편집 중에도 허용 (먼저 처리)
+  if ((e.ctrlKey||e.metaKey) && e.key==='z' && editMode) { e.preventDefault(); cancelEdit(); undo(); return; }
   if (editMode) return; // 편집 중이면 td keydown이 처리
 
   if (!selectedCell) {
@@ -2287,13 +2289,18 @@ function matchCond(val, cond) {
 // evalFormula에서 범위 처리를 위해 RANGE 마커 객체 도입
 class RangeRef { constructor(a,b,sheet){this.a=a;this.b=b;this.sheet=sheet||null;} }
 
+// RangeRef 인수를 값 배열로 평탄화 (SUM/AVERAGE/MAX/MIN 등에서 사용)
+function flattenArgs(v) {
+  return v.flatMap(x => x instanceof RangeRef ? rangeVals(x.a, x.b, undefined, x.sheet) : [x]);
+}
+
 const FUNCS = {
-  SUM: v=>v.reduce((a,b)=>a+(+b||0),0),
-  AVERAGE: v=>{ const ns=v.filter(x=>!isNaN(+x)); return ns.length?ns.reduce((a,b)=>a+(+b),0)/ns.length:0; },
-  MAX: v=>v.length?Math.max(...v.map(x=>+x||0)):0,
-  MIN: v=>v.length?Math.min(...v.map(x=>+x||0)):0,
-  COUNT: v=>v.filter(x=>!isNaN(+x)&&x!=='').length,
-  COUNTA: v=>v.filter(x=>x!==''&&x!=null).length,
+  SUM: v=>{ const f=flattenArgs(v); return f.reduce((a,b)=>a+(+b||0),0); },
+  AVERAGE: v=>{ const ns=flattenArgs(v).filter(x=>x!==''&&x!=null&&!isNaN(+x)); return ns.length?ns.reduce((a,b)=>a+(+b),0)/ns.length:0; },
+  MAX: v=>{ const f=flattenArgs(v); return f.length?Math.max(...f.map(x=>+x||0)):0; },
+  MIN: v=>{ const f=flattenArgs(v); return f.length?Math.min(...f.map(x=>+x||0)):0; },
+  COUNT: v=>flattenArgs(v).filter(x=>!isNaN(+x)&&x!=='').length,
+  COUNTA: v=>flattenArgs(v).filter(x=>x!==''&&x!=null).length,
   ROUND: v=>v.length>=2?Math.round(v[0]*Math.pow(10,v[1]))/Math.pow(10,v[1]):Math.round(v[0]||0),
   ROUNDUP: v=>{ const p=Math.pow(10,v[1]||0); return Math.ceil((v[0]||0)*p)/p; },
   ROUNDDOWN: v=>{ const p=Math.pow(10,v[1]||0); return Math.floor((v[0]||0)*p)/p; },
