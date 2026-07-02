@@ -2732,7 +2732,7 @@ function resolveSheet(sheetName) {
 // 셀 값을 숫자로 반환 (수식 계산용)
 function cellVal(ref, vis, sheetName) {
   vis = vis || new Set();
-  const m=/^([A-Za-z]+)(\d+)$/.exec(ref);
+  const m=/^([A-Za-z]+)(\d+)$/.exec(String(ref).replace(/\$/g,''));
   if(!m) throw new Error('ref');
   const col=colIdx(m[1]), row=parseInt(m[2],10)-1;
   const scopeKey=(sheetName||'')+'!'+row+'_'+col;
@@ -2748,7 +2748,7 @@ function cellVal(ref, vis, sheetName) {
 }
 // 셀 원시 값(문자열 포함) 반환
 function cellRaw(ref, vis, sheetName) {
-  const m=/^([A-Za-z]+)(\d+)$/.exec(ref);
+  const m=/^([A-Za-z]+)(\d+)$/.exec(String(ref).replace(/\$/g,''));
   if(!m) return '';
   const col=colIdx(m[1]), row=parseInt(m[2],10)-1;
   const scopeKey=(sheetName||'')+'!'+row+'_'+col;
@@ -3002,7 +3002,7 @@ const FUNCS = {
   INDEX: v=>{
     if(!(v[0] instanceof RangeRef)) return '#ERR';
     const sn=v[0].sheet;
-    const ma=/^([A-Za-z]+)(\d+)$/.exec(v[0].a);
+    const ma=/^([A-Za-z]+)(\d+)$/.exec(String(v[0].a).replace(/\$/g,''));
     const c1=colIdx(ma[1]), r1=parseInt(ma[2],10)-1;
     const rowOff=Math.round(+v[1]||0)-1, colOff=Math.round(+v[2]||1)-1;
     return cellRaw(colLetters(c1+colOff)+(r1+rowOff+1),undefined,sn);
@@ -3096,6 +3096,12 @@ function tokenize(s) {
         i++;
         let cell='';while(i<s.length&&/[A-Za-z0-9$]/.test(s[i]))cell+=s[i++];
         toks.push({type:'cell',val:cell,sheet:w}); continue;
+      }
+      // A$1 형태: 열 문자 뒤 $행번호 (행만 절대참조)
+      if(/^[A-Za-z]+$/.test(w)&&s[i]==='$'&&/\d/.test(s[i+1]||'')){
+        let cell=w+'$'; i++;
+        while(i<s.length&&/\d/.test(s[i]))cell+=s[i++];
+        toks.push({type:'cell',val:cell}); continue;
       }
       // 열 전체 참조(S:S)는 다음 토큰 ':' 뒤에 올 같은 열 문자로 확인
       if(/^[A-Za-z]+$/.test(w)&&s[i]===':'){
@@ -3765,7 +3771,7 @@ function changeDecimal(delta) {
 // ══════════════════════════════════════════
 // 상태 표시줄 업데이트
 // ══════════════════════════════════════════
-const APP_BUILD = 'v2026.07.02-2';
+const APP_BUILD = 'v2026.07.02-3';
 function updateStatusBar() {
   const cells = getSelCellCoords();
   const mode = document.getElementById('sb-mode');
