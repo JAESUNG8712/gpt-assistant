@@ -806,15 +806,40 @@ function getCellEl(r,c){ return document.querySelector(`#sheet td[data-r="${r}"]
 
 function adjustFormula(formula, dr, dc) {
   if (typeof formula !== 'string' || !formula.startsWith('=')) return formula;
-  // 시트 접두어(한글 포함)는 그대로 유지, 뒤에 !가 붙은 이름(시트명)은 셀참조로 오인하지 않음
-  return '=' + formula.slice(1).replace(
+  // 원본이 소문자면 결과도 소문자 유지
+  const shiftCol = (col, d) => {
+    const nw = colLetters(Math.max(0, colIdx(col) + d));
+    return col === col.toLowerCase() ? nw.toLowerCase() : nw;
+  };
+  let body = formula.slice(1);
+  // 1) 일반 셀 참조 (A1, $A$1, Sheet!B3) — 시트 접두어는 유지
+  body = body.replace(
     /((?:'[^']*'|[A-Za-z_\uAC00-\uD7A3][A-Za-z0-9_\uAC00-\uD7A3]*)!)?(\$?)([A-Za-z]{1,3})(\$?)(\d+)(?![!\w\uAC00-\uD7A3])/g,
     (m, sheet, absC, col, absR, row) => {
-      const newCol = absC ? col : colLetters(Math.max(0, colIdx(col) + dc));
+      const newCol = absC ? col : shiftCol(col, dc);
       const newRow = absR ? row : String(Math.max(1, parseInt(row,10) + dr));
       return (sheet||'') + absC + newCol + absR + newRow;
     }
   );
+  // 2) 열 전체 범위 (v:v, 급여RAW!v:v, $C:$C) — 가로 드래그 시 열 이동, $는 고정
+  body = body.replace(
+    /(?<![\w\uAC00-\uD7A3$!'])((?:'[^']*'|[A-Za-z_\uAC00-\uD7A3][A-Za-z0-9_\uAC00-\uD7A3]*)!)?(\$?)([A-Za-z]{1,3}):((?:'[^']*'|[A-Za-z_\uAC00-\uD7A3][A-Za-z0-9_\uAC00-\uD7A3]*)!)?(\$?)([A-Za-z]{1,3})(?![\w\uAC00-\uD7A3!$(])/g,
+    (m, sh1, abs1, col1, sh2, abs2, col2) => {
+      const n1 = abs1 ? col1 : shiftCol(col1, dc);
+      const n2 = abs2 ? col2 : shiftCol(col2, dc);
+      return (sh1||'') + abs1 + n1 + ':' + (sh2||'') + abs2 + n2;
+    }
+  );
+  // 3) 행 전체 범위 (5:5, Sheet1!3:3) — 세로 드래그 시 행 이동, $는 고정
+  body = body.replace(
+    /(?<![\w\uAC00-\uD7A3$!':])((?:'[^']*'|[A-Za-z_\uAC00-\uD7A3][A-Za-z0-9_\uAC00-\uD7A3]*)!)?(\$?)(\d+):((?:'[^']*'|[A-Za-z_\uAC00-\uD7A3][A-Za-z0-9_\uAC00-\uD7A3]*)!)?(\$?)(\d+)(?![\w\uAC00-\uD7A3!$:.])/g,
+    (m, sh1, abs1, row1, sh2, abs2, row2) => {
+      const n1 = abs1 ? row1 : String(Math.max(1, parseInt(row1,10)+dr));
+      const n2 = abs2 ? row2 : String(Math.max(1, parseInt(row2,10)+dr));
+      return (sh1||'') + abs1 + n1 + ':' + (sh2||'') + abs2 + n2;
+    }
+  );
+  return '=' + body;
 }
 
 // ══════════════════════════════════════════
@@ -3992,7 +4017,7 @@ function changeDecimal(delta) {
 // ══════════════════════════════════════════
 // 상태 표시줄 업데이트
 // ══════════════════════════════════════════
-const APP_BUILD = 'v2026.07.02-11';
+const APP_BUILD = 'v2026.07.02-12';
 function updateStatusBar() {
   const cells = getSelCellCoords();
   const mode = document.getElementById('sb-mode');
