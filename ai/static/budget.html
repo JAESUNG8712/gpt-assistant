@@ -959,7 +959,15 @@ function renderTabs() {
     if (isOrigin) tab.style.cssText='border-top:3px solid #1565c0;font-weight:700;';
     tab.textContent = isOrigin ? `↩ ${name}` : name;
     tab.title = isOrigin ? '클릭: 수식 입력 원본 시트로 복귀' : '더블클릭: 이름변경 / 우클릭: 메뉴';
-    tab.addEventListener('mousedown', () => { suppressBlurCommit = true; });
+    tab.addEventListener('mousedown', (e) => {
+      suppressBlurCommit = true;
+      // 수식바에서 수식 입력 중 탭 클릭 시 blur로 포커스를 잃으면
+      // switchSheet가 수식 입력 상태를 인식하지 못해 편집이 종료됨 → 포커스 유지
+      const fi = document.getElementById('formula-input');
+      if (editMode || crossSheetEdit || (document.activeElement === fi && fi.value.startsWith('='))) {
+        e.preventDefault();
+      }
+    });
     tab.addEventListener('mouseup', () => { suppressBlurCommit = false; });
     tab.onclick = () => {
       suppressBlurCommit = false;
@@ -4071,7 +4079,7 @@ function changeDecimal(delta) {
 // ══════════════════════════════════════════
 // 상태 표시줄 업데이트
 // ══════════════════════════════════════════
-const APP_BUILD = 'v2026.07.02-14';
+const APP_BUILD = 'v2026.07.02-15';
 function updateStatusBar() {
   const cells = getSelCellCoords();
   const mode = document.getElementById('sb-mode');
