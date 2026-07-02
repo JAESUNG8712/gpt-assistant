@@ -2719,7 +2719,8 @@ function getGrid(sheetName) {
   if (!sheetName) return grid();
   // 대소문자 무시 매칭
   const key = Object.keys(sheets).find(k => k.toLowerCase() === sheetName.toLowerCase());
-  return (key ? sheets[key] : null) || grid();
+  if (!key) throw new Error('#REF!'); // 존재하지 않는 시트 → 엑셀처럼 #REF! (조용히 0 되던 문제 방지)
+  return sheets[key];
 }
 function resolveSheet(sheetName) {
   if (!sheetName) return activeSheet;
