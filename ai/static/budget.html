@@ -806,9 +806,10 @@ function getCellEl(r,c){ return document.querySelector(`#sheet td[data-r="${r}"]
 
 function adjustFormula(formula, dr, dc) {
   if (typeof formula !== 'string' || !formula.startsWith('=')) return formula;
+  // 시트 접두어(한글 포함)는 그대로 유지, 뒤에 !가 붙은 이름(시트명)은 셀참조로 오인하지 않음
   return '=' + formula.slice(1).replace(
-    /((?:'[^']*'|[A-Za-z]\w*)!)?(\$?)([A-Za-z]+)(\$?)(\d+)/g,
-    (_, sheet, absC, col, absR, row) => {
+    /((?:'[^']*'|[A-Za-z_\uAC00-\uD7A3][A-Za-z0-9_\uAC00-\uD7A3]*)!)?(\$?)([A-Za-z]{1,3})(\$?)(\d+)(?![!\w\uAC00-\uD7A3])/g,
+    (m, sheet, absC, col, absR, row) => {
       const newCol = absC ? col : colLetters(Math.max(0, colIdx(col) + dc));
       const newRow = absR ? row : String(Math.max(1, parseInt(row,10) + dr));
       return (sheet||'') + absC + newCol + absR + newRow;
@@ -1075,7 +1076,7 @@ function render() {
     if (selMode==='col' && selCols.has(c)) cls+=' col-selected';
     let thStyle = `width:${colWidths[c]||90}px;position:relative`;
     if (c < frozenCols) { cls += ' frozen-col-header'; thStyle += `;left:${frozenColLefts[c]}px`; }
-    html += `<th class="${cls}" style="${thStyle}" draggable="true" ondragstart="onColDragStart(event,${c})" ondragover="onColDragOver(event,${c})" ondrop="onColDrop(event,${c})" onclick="selectCol(${c},event.shiftKey)" ondblclick="sortByCol(${c})" oncontextmenu="rowColCtxMenu(event,'col',${c})" title="클릭:열선택 / 드래그:순서변경 / 더블클릭:정렬">${colLetters(c)}<span class="col-resize-handle" onmousedown="startColResize(event,${c})"></span></th>`;
+    html += `<th class="${cls}" style="${thStyle}" draggable="true" ondragstart="onColDragStart(event,${c})" ondragover="onColDragOver(event,${c})" ondrop="onColDrop(event,${c})" onmousedown="if(formulaRefMode||editMode||crossSheetEdit)event.preventDefault()" onclick="selectCol(${c},event.shiftKey)" ondblclick="sortByCol(${c})" oncontextmenu="rowColCtxMenu(event,'col',${c})" title="클릭:열선택 / 드래그:순서변경 / 더블클릭:정렬">${colLetters(c)}<span class="col-resize-handle" onmousedown="startColResize(event,${c})"></span></th>`;
   }
   html += '</tr>';
 
@@ -1094,7 +1095,7 @@ function render() {
     let thStyle = `width:${colWidths[c]||90}px;position:relative`;
     if (c < frozenCols) { cls += ' frozen-col-header'; thStyle += `;left:${frozenColLefts[c]}px`; }
     const afArrow = (afRow !== undefined) ? `<span class="filter-arrow${fVals[c]?' active':''}" onclick="openFilterDropdown(event,${c})" title="필터">▼</span>` : '';
-    html_col_row += `<th class="${cls}" style="${thStyle}" draggable="true" ondragstart="onColDragStart(event,${c})" ondragover="onColDragOver(event,${c})" ondrop="onColDrop(event,${c})" onclick="selectCol(${c},event.shiftKey)" ondblclick="sortByCol(${c})" oncontextmenu="rowColCtxMenu(event,'col',${c})" title="클릭:열선택 / 드래그:순서변경 / 더블클릭:정렬">${colLetters(c)}${afArrow}<span class="col-resize-handle" onmousedown="startColResize(event,${c})"></span></th>`;
+    html_col_row += `<th class="${cls}" style="${thStyle}" draggable="true" ondragstart="onColDragStart(event,${c})" ondragover="onColDragOver(event,${c})" ondrop="onColDrop(event,${c})" onmousedown="if(formulaRefMode||editMode||crossSheetEdit)event.preventDefault()" onclick="selectCol(${c},event.shiftKey)" ondblclick="sortByCol(${c})" oncontextmenu="rowColCtxMenu(event,'col',${c})" title="클릭:열선택 / 드래그:순서변경 / 더블클릭:정렬">${colLetters(c)}${afArrow}<span class="col-resize-handle" onmousedown="startColResize(event,${c})"></span></th>`;
   }
   html = html_col_row + '</tr>';
 
@@ -1103,7 +1104,7 @@ function render() {
     const rhCls = (selMode==='row' && selRows.has(r)) ? ' row-selected' : '';
     let trStyle = '';
     if (r < frozenRows) trStyle = `style="position:sticky;top:${frozenRowTops[r]}px;z-index:2"`;
-    html += `<tr ${trStyle}><td class="rh${rhCls}" draggable="true" ondragstart="onRowDragStart(event,${r})" ondragover="onRowDragOver(event,${r})" ondrop="onRowDrop(event,${r})" onclick="selectRow(${r},event.shiftKey)" oncontextmenu="rowColCtxMenu(event,'row',${r})" style="height:${rowHeights[r]||24}px">${r+1}<span class="row-resize-handle" onmousedown="startRowResize(event,${r})"></span></td>`;
+    html += `<tr ${trStyle}><td class="rh${rhCls}" draggable="true" ondragstart="onRowDragStart(event,${r})" ondragover="onRowDragOver(event,${r})" ondrop="onRowDrop(event,${r})" onmousedown="if(formulaRefMode||editMode||crossSheetEdit)event.preventDefault()" onclick="selectRow(${r},event.shiftKey)" oncontextmenu="rowColCtxMenu(event,'row',${r})" style="height:${rowHeights[r]||24}px">${r+1}<span class="row-resize-handle" onmousedown="startRowResize(event,${r})"></span></td>`;
     for (let c=0; c<nCols; c++) {
       // 병합 셀 처리
       const msk = sk(r,c);
@@ -1473,7 +1474,9 @@ function isRefEntryState(v) {
   const last = t.slice(-1);
   if (['(', ',', '+', '-', '*', '/', '=', ':', '&', '^', '<', '>'].includes(last)) return true;
   // 끝이 셀참조/범위(시트 접두어·절대참조 포함)이고, 그 앞이 구분자/시작이면 교체 모드
-  return /[(,+\-*/=:&^<>]\s*(?:'[^']*'!|[A-Za-z_\uAC00-\uD7A3][A-Za-z0-9_\uAC00-\uD7A3]*!)?\$?[A-Za-z]{1,3}\$?\d+(?::(?:'[^']*'!|[A-Za-z_\uAC00-\uD7A3][A-Za-z0-9_\uAC00-\uD7A3]*!)?\$?[A-Za-z]{1,3}\$?\d*)?$/.test(t);
+  const PFX = "(?:'[^']*'!|[A-Za-z_\\uAC00-\\uD7A3][A-Za-z0-9_\\uAC00-\\uD7A3]*!)?";
+  const CORNER = "(?:\\$?[A-Za-z]{1,3}\\$?\\d*|\\$?\\d+)";
+  return new RegExp("[(,+\\-*/=:&^<>]\\s*"+PFX+"(?:\\$?[A-Za-z]{1,3}\\$?\\d+|"+CORNER+":"+PFX+CORNER+")$").test(t);
 }
 
 function getFormulaEl() {
@@ -1505,6 +1508,15 @@ function applyFormulaRefAddr(addr) {
   }
 }
 
+// 수식 문자열 끝의 참조(셀 A1, 범위 A1:B2, 열 C:C, 행 5:5, 시트접두 포함)를 제거
+function stripTrailingRef(v) {
+  const PFX = "(?:'[^']*'!|[A-Za-z_\\uAC00-\\uD7A3][A-Za-z0-9_\\uAC00-\\uD7A3]*!)?";
+  const CORNER = "(?:\\$?[A-Za-z]{1,3}\\$?\\d*|\\$?\\d+)";
+  return v
+    .replace(new RegExp(PFX+CORNER+":"+PFX+CORNER+"$"), '')
+    .replace(new RegExp(PFX+"\\$?[A-Za-z]{1,3}\\$?\\d+$"), '');
+}
+
 function startFormulaRef(r, c) {
   // 드래그 시작: 현재 수식에서 prefix 저장 후 셀 주소 삽입
   const src = getFormulaEl();
@@ -1512,10 +1524,7 @@ function startFormulaRef(r, c) {
   // 크로스시트 모드: 수식 바 값 기준으로 처리
   const v = (src?.type==='bar' ? src.el.value : src?.el?.textContent) || (fi ? fi.value : '');
   // 마지막 셀 참조 또는 범위(시트 접두어 포함)를 제거하고 prefix 저장
-  const SHEET_PFX = "(?:'[^']*'!|[A-Za-z_\\uAC00-\\uD7A3][A-Za-z0-9_\\uAC00-\\uD7A3]*!)?";
-  fOrigPrefix = v
-    .replace(new RegExp(SHEET_PFX+"\\$?[A-Za-z]+\\$?\\d*:"+SHEET_PFX+"\\$?[A-Za-z]+\\$?\\d*$"), '')
-    .replace(new RegExp(SHEET_PFX+"\\$?[A-Za-z]+\\$?\\d+$"), '');
+  fOrigPrefix = stripTrailingRef(v);
   fDragAnchor = {r, c};
   // 크로스시트 모드면 시트명 접두어 추가
   const addrSheet = crossSheetEdit ? activeSheet : null;
@@ -1953,7 +1962,25 @@ function applyFormulaBar() {
 // ══════════════════════════════════════════
 // 행/열 전체 선택 & 컨텍스트 메뉴
 // ══════════════════════════════════════════
+// 수식 입력 중 열/행 머리글 클릭 → C:C / 5:5 참조 삽입 (엑셀과 동일)
+function headerRefClick(kind, idx) {
+  checkFormulaRef();
+  if (!formulaRefMode) return false;
+  const src = getFormulaEl();
+  const fi = document.getElementById('formula-input');
+  const v = (src?.type==='bar' ? src.el.value : src?.el?.textContent) || (fi ? fi.value : '');
+  if (!v.startsWith('=')) return false;
+  fOrigPrefix = stripTrailingRef(v);
+  fDragAnchor = null;
+  const addr = kind==='col'
+    ? colLetters(idx)+':'+colLetters(idx)
+    : (idx+1)+':'+(idx+1);
+  applyFormulaRefAddr(makeSheetAddr(crossSheetEdit ? activeSheet : null, addr));
+  return true;
+}
+
 function selectCol(c, shiftKey) {
+  if (headerRefClick('col', c)) return;
   editMode = false; formulaRefMode = false;
   if (selMode === 'col' && shiftKey && selColIdx != null) {
     // Shift+클릭: 마지막 선택~현재 사이 범위 추가
@@ -1974,6 +2001,7 @@ function selectCol(c, shiftKey) {
 }
 
 function selectRow(r, shiftKey) {
+  if (headerRefClick('row', r)) return;
   editMode = false; formulaRefMode = false;
   if (selMode === 'row' && shiftKey && selRowIdx != null) {
     const lo = Math.min(selRowIdx, r), hi = Math.max(selRowIdx, r);
@@ -2733,7 +2761,10 @@ function cellRaw(ref, vis, sheetName) {
 }
 // 범위 끝점 파싱 — 열전체(S:S), 행전체(1:1), 일반(A1) 모두 처리
 function parseRangeCorner(ref) {
-  const m=/^\$?([A-Za-z]+)\$?(\d+)?$/.exec(ref.trim());
+  const t=ref.trim();
+  const rm=/^\$?(\d+)$/.exec(t);
+  if(rm) return { col: null, row: parseInt(rm[1],10)-1 };  // 행 전체 (5:5)
+  const m=/^\$?([A-Za-z]+)\$?(\d+)?$/.exec(t);
   if(!m) return null;
   return { col: colIdx(m[1]), row: m[2] != null ? parseInt(m[2],10)-1 : null };
 }
@@ -2742,7 +2773,8 @@ function rangeVals(a,b,vis,sheetName) {
   if(!pa||!pb) return [];
   const g=getGrid(sheetName);
   const maxRow=Math.max(g.length-1,0);
-  const c1=Math.min(pa.col,pb.col), c2=Math.max(pa.col,pb.col);
+  const maxCol=Math.max(0,...g.map(r=>r.length-1));
+  const c1=Math.min(pa.col??0,pb.col??0), c2=Math.min(Math.max(pa.col??maxCol,pb.col??maxCol),maxCol);
   const r1=Math.min(pa.row??0, pb.row??0);
   const r2=Math.min(Math.max(pa.row??maxRow, pb.row??maxRow), maxRow);
   const vals=[];
@@ -2757,7 +2789,8 @@ function rangeRaws(a,b,vis,sheetName) {
   if(!pa||!pb) return [];
   const g=getGrid(sheetName);
   const maxRow=Math.max(g.length-1,0);
-  const c1=Math.min(pa.col,pb.col), c2=Math.max(pa.col,pb.col);
+  const maxCol=Math.max(0,...g.map(r=>r.length-1));
+  const c1=Math.min(pa.col??0,pb.col??0), c2=Math.min(Math.max(pa.col??maxCol,pb.col??maxCol),maxCol);
   const r1=Math.min(pa.row??0, pb.row??0);
   const r2=Math.min(Math.max(pa.row??maxRow, pb.row??maxRow), maxRow);
   const vals=[];
@@ -2799,8 +2832,14 @@ function flattenArgs(v) {
   return v.flatMap(x => x instanceof RangeRef ? rangeRaws(x.a, x.b, undefined, x.sheet) : [x]);
 }
 // 숫자만 추출 (엑셀: 범위 내 텍스트·빈칸은 집계에서 무시)
+// 한국 예산 데이터 특성상 쉼표·공백·₩·원 단위가 붙은 숫자 텍스트도 숫자로 인정
+function looseNum(x) {
+  if (typeof x === 'number') return x;
+  if (x === '' || x == null || typeof x === 'boolean') return NaN;
+  return Number(String(x).replace(/[,\s₩원]/g,''));
+}
 function numsOf(f) {
-  return f.filter(x=>x!==''&&x!=null&&typeof x!=='boolean'&&!isNaN(+String(x).replace(/,/g,''))).map(x=>+String(x).replace(/,/g,''));
+  return f.map(looseNum).filter(x=>!isNaN(x));
 }
 
 const FUNCS = {
@@ -2851,7 +2890,7 @@ const FUNCS = {
     const cond=v[1]; const rng=v[0];
     const sumRng=v[2] instanceof RangeRef ? v[2] : rng;
     const cr=rangeRaws(rng.a,rng.b,undefined,rng.sheet), sr=rangeVals(sumRng.a,sumRng.b,undefined,sumRng.sheet);
-    return cr.reduce((acc,val,i)=>matchCond(val,cond)?acc+(+sr[i]||0):acc,0);
+    return cr.reduce((acc,val,i)=>matchCond(val,cond)?acc+(looseNum(sr[i])||0):acc,0);
   },
   COUNTIF: v=>{
     if(!(v[0] instanceof RangeRef)||v.length<2) return '#ERR';
@@ -2863,7 +2902,7 @@ const FUNCS = {
     const cond=v[1]; const rng=v[0];
     const sumRng=v[2] instanceof RangeRef ? v[2] : rng;
     const cr=rangeRaws(rng.a,rng.b,undefined,rng.sheet), sr=rangeVals(sumRng.a,sumRng.b,undefined,sumRng.sheet);
-    const matched=cr.reduce((acc,val,i)=>matchCond(val,cond)?[...acc,+sr[i]||0]:acc,[]);
+    const matched=cr.reduce((acc,val,i)=>matchCond(val,cond)?[...acc,looseNum(sr[i])||0]:acc,[]);
     return matched.length?matched.reduce((a,b)=>a+b,0)/matched.length:0;
   },
   SUMIFS: v=>{
@@ -2875,7 +2914,7 @@ const FUNCS = {
       const cr=rangeRaws(v[i].a,v[i].b,undefined,v[i].sheet); const cond=v[i+1];
       cr.forEach((val,idx)=>{ if(!matchCond(val,cond)) mask[idx]=false; });
     }
-    return sumR.reduce((acc,val,i)=>mask[i]?acc+(+val||0):acc,0);
+    return sumR.reduce((acc,val,i)=>mask[i]?acc+(looseNum(val)||0):acc,0);
   },
   COUNTIFS: v=>{
     if(!(v[0] instanceof RangeRef)||v.length<2) return '#ERR';
@@ -2898,7 +2937,7 @@ const FUNCS = {
       cr.forEach((val,idx)=>{ if(!matchCond(val,cond)) mask[idx]=false; });
     }
     const matched=sumR.filter((_,i)=>mask[i]);
-    return matched.length?matched.reduce((a,b)=>a+(+b||0),0)/matched.length:0;
+    return matched.length?matched.reduce((a,b)=>a+(looseNum(b)||0),0)/matched.length:0;
   },
   VLOOKUP: v=>{
     if(!(v[1] instanceof RangeRef)||v.length<3) return '#N/A';
@@ -2971,7 +3010,7 @@ const FUNCS = {
     const arrs=v.map(x=>x instanceof RangeRef?rangeVals(x.a,x.b,undefined,x.sheet):[+x||0]);
     const len=Math.min(...arrs.map(a=>a.length));
     let sum=0;
-    for(let i=0;i<len;i++) sum+=arrs.reduce((prod,arr)=>prod*(+arr[i]||0),1);
+    for(let i=0;i<len;i++) sum+=arrs.reduce((prod,arr)=>prod*(looseNum(arr[i])||0),1);
     return sum;
   },
   // IFERROR(값, 오류시값)
@@ -3145,8 +3184,17 @@ function evalFormula(expr,vis,ctxSheet) {
     if(t.type==='sym'&&t.val==='('){next();const v=cmpEx();if(peekVal()!==')')throw new Error(')');next();return v;}
     // 문자열 리터럴
     if(t.type==='str'){next();return t.val;}
-    // 숫자
-    if(t.type==='num'){next();return t.val;}
+    // 숫자 (뒤에 :숫자 → 행 전체 범위 5:5)
+    if(t.type==='num'){
+      next();
+      if(peekVal()===':'&&Number.isInteger(t.val)){
+        next();const t2=next();
+        if(t2&&(t2.type==='num'||(t2.type==='cell'&&/^\d+$/.test(t2.val))))
+          return new RangeRef(String(t.val),String(t2.val),t2.sheet||null);
+        throw new Error('range');
+      }
+      return t.val;
+    }
     // 함수 or 이름
     if(t.type==='name'){
       next();
@@ -3177,9 +3225,9 @@ function evalFormula(expr,vis,ctxSheet) {
       const sn=t.sheet||null;
       if(peekVal()===':'){
         next();const t2=next();
-        // name 타입도 허용 (열전체 참조 J:J에서 두 번째 J가 name으로 파싱되는 경우)
-        if(!t2||!['cell','name'].includes(t2.type))throw new Error('range');
-        return new RangeRef(t.val,t2.val,sn||t2.sheet||null);
+        // name(열전체 J:J)·num(행전체 Sheet1!5:5) 타입도 허용
+        if(!t2||!['cell','name','num'].includes(t2.type))throw new Error('range');
+        return new RangeRef(String(t.val),String(t2.val),sn||t2.sheet||null);
       }
       return cellVal(t.val,vis,sn);
     }
