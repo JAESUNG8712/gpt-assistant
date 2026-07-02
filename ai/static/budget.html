@@ -128,6 +128,8 @@
   }
   td.rh:hover { background:#dde3ec; }
   td.rh.row-selected { background:#bbdefb !important; color:var(--accent); font-weight:700; }
+  td.rh.drop-target { box-shadow: inset 0 2px 0 #1565c0, inset 0 -2px 0 #1565c0; }
+  th.drop-target { box-shadow: inset 2px 0 0 #1565c0, inset -2px 0 0 #1565c0; }
   .cm-item { padding:7px 16px; cursor:pointer; }
   .cm-item:hover { background:var(--accent-bg); }
   .cm-del { color:#c62828; }
@@ -1134,7 +1136,7 @@ function render() {
     if (selMode==='col' && selCols.has(c)) cls+=' col-selected';
     let thStyle = `width:${colWidths[c]||90}px;position:sticky;top:0`;
     if (c < frozenCols) { cls += ' frozen-col-header'; thStyle += `;left:${frozenColLefts[c]}px`; }
-    html += `<th class="${cls}" style="${thStyle}" draggable="true" ondragstart="if(!event.altKey){event.preventDefault();return;} onColDragStart(event,${c})" ondragover="onColDragOver(event,${c})" ondrop="onColDrop(event,${c})" onmousedown="if(formulaRefMode||editMode||crossSheetEdit){event.preventDefault();}else if(event.button===0&&!event.altKey){beginHdrDragSel('col',${c});}" onmouseover="extendHdrDragSel('col',${c})" onclick="selectCol(${c},event.shiftKey)" ondblclick="sortByCol(${c})" oncontextmenu="rowColCtxMenu(event,'col',${c})" title="클릭:열선택 / 드래그:다중선택 / Alt+드래그:순서변경 / 더블클릭:정렬">${colLetters(c)}<span class="col-resize-handle" onmousedown="startColResize(event,${c})" ondblclick="autoFitCol(event,${c})" title="드래그:너비조정 / 더블클릭:자동맞춤"></span></th>`;
+    html += `<th class="${cls}" style="${thStyle}" draggable="true" ondragstart="if(event.shiftKey){event.preventDefault();return;} onColDragStart(event,${c})" ondragend="clearColDropIndicator()" ondragover="onColDragOver(event,${c})" ondrop="onColDrop(event,${c})" onmousedown="if(formulaRefMode||editMode||crossSheetEdit){event.preventDefault();}else if(event.button===0&&event.shiftKey){beginHdrDragSel('col',${c});}" onmouseover="extendHdrDragSel('col',${c})" onclick="selectCol(${c},event.shiftKey)" ondblclick="sortByCol(${c})" oncontextmenu="rowColCtxMenu(event,'col',${c})" title="클릭:열선택 / 드래그:이동 / Shift+드래그:범위선택 / 더블클릭:정렬">${colLetters(c)}<span class="col-resize-handle" onmousedown="startColResize(event,${c})" ondblclick="autoFitCol(event,${c})" title="드래그:너비조정 / 더블클릭:자동맞춤"></span></th>`;
   }
   html += '</tr>';
 
@@ -1153,7 +1155,7 @@ function render() {
     let thStyle = `width:${colWidths[c]||90}px;position:sticky;top:0`;
     if (c < frozenCols) { cls += ' frozen-col-header'; thStyle += `;left:${frozenColLefts[c]}px`; }
     const afArrow = (afRow !== undefined) ? `<span class="filter-arrow${fVals[c]?' active':''}" onclick="openFilterDropdown(event,${c})" title="필터">▼</span>` : '';
-    html_col_row += `<th class="${cls}" style="${thStyle}" draggable="true" ondragstart="if(!event.altKey){event.preventDefault();return;} onColDragStart(event,${c})" ondragover="onColDragOver(event,${c})" ondrop="onColDrop(event,${c})" onmousedown="if(formulaRefMode||editMode||crossSheetEdit){event.preventDefault();}else if(event.button===0&&!event.altKey){beginHdrDragSel('col',${c});}" onmouseover="extendHdrDragSel('col',${c})" onclick="selectCol(${c},event.shiftKey)" ondblclick="sortByCol(${c})" oncontextmenu="rowColCtxMenu(event,'col',${c})" title="클릭:열선택 / 드래그:다중선택 / Alt+드래그:순서변경 / 더블클릭:정렬">${colLetters(c)}${afArrow}<span class="col-resize-handle" onmousedown="startColResize(event,${c})" ondblclick="autoFitCol(event,${c})" title="드래그:너비조정 / 더블클릭:자동맞춤"></span></th>`;
+    html_col_row += `<th class="${cls}" style="${thStyle}" draggable="true" ondragstart="if(event.shiftKey){event.preventDefault();return;} onColDragStart(event,${c})" ondragend="clearColDropIndicator()" ondragover="onColDragOver(event,${c})" ondrop="onColDrop(event,${c})" onmousedown="if(formulaRefMode||editMode||crossSheetEdit){event.preventDefault();}else if(event.button===0&&event.shiftKey){beginHdrDragSel('col',${c});}" onmouseover="extendHdrDragSel('col',${c})" onclick="selectCol(${c},event.shiftKey)" ondblclick="sortByCol(${c})" oncontextmenu="rowColCtxMenu(event,'col',${c})" title="클릭:열선택 / 드래그:이동 / Shift+드래그:범위선택 / 더블클릭:정렬">${colLetters(c)}${afArrow}<span class="col-resize-handle" onmousedown="startColResize(event,${c})" ondblclick="autoFitCol(event,${c})" title="드래그:너비조정 / 더블클릭:자동맞춤"></span></th>`;
   }
   html = html_col_row + '</tr>';
 
@@ -1162,7 +1164,7 @@ function render() {
     const rhCls = (selMode==='row' && selRows.has(r)) ? ' row-selected' : '';
     let trStyle = '';
     if (r < frozenRows) trStyle = `style="position:sticky;top:${frozenRowTops[r]}px;z-index:2"`;
-    html += `<tr ${trStyle}><td class="rh${rhCls}" draggable="true" ondragstart="if(!event.altKey){event.preventDefault();return;} onRowDragStart(event,${r})" ondragover="onRowDragOver(event,${r})" ondrop="onRowDrop(event,${r})" onmousedown="if(formulaRefMode||editMode||crossSheetEdit){event.preventDefault();}else if(event.button===0&&!event.altKey){beginHdrDragSel('row',${r});}" onmouseover="extendHdrDragSel('row',${r})" onclick="selectRow(${r},event.shiftKey)" oncontextmenu="rowColCtxMenu(event,'row',${r})" title="클릭:행선택 / 드래그:다중선택 / Alt+드래그:순서변경" style="height:${rowHeights[r]||24}px">${r+1}<span class="row-resize-handle" onmousedown="startRowResize(event,${r})" ondblclick="autoFitRow(event,${r})" title="드래그:높이조정 / 더블클릭:자동맞춤"></span></td>`;
+    html += `<tr ${trStyle}><td class="rh${rhCls}" draggable="true" ondragstart="if(event.shiftKey){event.preventDefault();return;} onRowDragStart(event,${r})" ondragend="clearRowDropIndicator()" ondragover="onRowDragOver(event,${r})" ondrop="onRowDrop(event,${r})" onmousedown="if(formulaRefMode||editMode||crossSheetEdit){event.preventDefault();}else if(event.button===0&&event.shiftKey){beginHdrDragSel('row',${r});}" onmouseover="extendHdrDragSel('row',${r})" onclick="selectRow(${r},event.shiftKey)" oncontextmenu="rowColCtxMenu(event,'row',${r})" title="클릭:행선택 / 드래그:이동 / Shift+드래그:범위선택" style="height:${rowHeights[r]||24}px">${r+1}<span class="row-resize-handle" onmousedown="startRowResize(event,${r})" ondblclick="autoFitRow(event,${r})" title="드래그:높이조정 / 더블클릭:자동맞춤"></span></td>`;
     for (let c=0; c<nCols; c++) {
       // 병합 셀 처리
       const msk = sk(r,c);
@@ -2295,9 +2297,16 @@ function delSelectedRows() {
   const toDelete = [...selRows].sort((a,b)=>b-a); // 뒤에서부터 삭제
   if (g.length - toDelete.length < 1) { setStatus('행을 더 이상 삭제할 수 없음', false); return; }
   pushUndo();
-  toDelete.forEach(r => g.splice(r, 1));
+  // 연속 구간별로 묶어 한번에 시프트 (서식·병합·유효성·수식 참조가 삭제된 만큼 위로 딸려 올라감)
+  const groups = []; let g1=toDelete[toDelete.length-1], g2=g1;
+  for (let i=toDelete.length-2;i>=0;i--) { if (toDelete[i]===g2+1) g2=toDelete[i]; else { groups.push([g1,g2]); g1=g2=toDelete[i]; } }
+  groups.push([g1,g2]);
+  groups.reverse().forEach(([lo,hi]) => {
+    g.splice(lo, hi-lo+1);
+    shiftRowState(activeSheet, lo, -(hi-lo+1));
+  });
   clearRowColSel(); selectedCell = null; selEnd = null;
-  ensureSize(); render(); markDirty(); setStatus(`✅ ${toDelete.length}개 행 삭제됨`);
+  ensureSize(); render(); recomputeAll(); markDirty(); setStatus(`✅ ${toDelete.length}개 행 삭제됨 (서식·수식 참조 자동 조정)`);
 }
 
 function delSelectedCols() {
@@ -2307,21 +2316,15 @@ function delSelectedCols() {
   const toDelete = [...selCols].sort((a,b)=>b-a);
   if (nCols - toDelete.length < 1) { setStatus('열을 더 이상 삭제할 수 없음', false); return; }
   pushUndo();
-  toDelete.forEach(c => {
-    g.forEach(row => { if (row.length > c) row.splice(c, 1); });
+  const groups = []; let g1=toDelete[toDelete.length-1], g2=g1;
+  for (let i=toDelete.length-2;i>=0;i--) { if (toDelete[i]===g2+1) g2=toDelete[i]; else { groups.push([g1,g2]); g1=g2=toDelete[i]; } }
+  groups.push([g1,g2]);
+  groups.reverse().forEach(([lo,hi]) => {
+    g.forEach(row => { if (row.length > lo) row.splice(lo, hi-lo+1); });
+    shiftColState(activeSheet, lo, -(hi-lo+1));
   });
-  // 스타일 재계산 (여러 열 삭제 후 인덱스 조정)
-  const st = styles();
-  const newSt = {};
-  Object.keys(st).forEach(k => {
-    const [kr, kc] = k.split('_').map(Number);
-    if (selCols.has(kc)) return;
-    const shift = toDelete.filter(dc => dc < kc).length;
-    newSt[`${kr}_${kc - shift}`] = st[k];
-  });
-  cellStyles[activeSheet] = newSt;
   clearRowColSel(); selectedCell = null; selEnd = null;
-  ensureSize(); render(); markDirty(); setStatus(`✅ ${toDelete.length}개 열 삭제됨`);
+  ensureSize(); render(); recomputeAll(); markDirty(); setStatus(`✅ ${toDelete.length}개 열 삭제됨 (서식·수식 참조 자동 조정)`);
 }
 
 // 하위 호환 (단일 삭제)
@@ -2334,9 +2337,10 @@ function insertRowAt(r, pos) {
   const nCols = Math.max(MIN_COLS, ...g.map(row=>row.length));
   pushUndo();
   const insertIdx = pos==='above' ? r : r+1;
+  shiftRowState(activeSheet, insertIdx, 1); // 삽입 지점 이후 서식·병합·수식 참조를 먼저 한 칸 밀어둠
   g.splice(insertIdx, 0, new Array(nCols).fill(''));
   clearRowColSel(); selectedCell = {r: insertIdx, c:0}; selEnd = null;
-  render(); markDirty(); setStatus(`✅ ${insertIdx+1}행에 행 삽입됨`);
+  render(); recomputeAll(); markDirty(); setStatus(`✅ ${insertIdx+1}행에 행 삽입됨 (서식·수식 참조 자동 조정)`);
 }
 
 function insertColAt(c, pos) {
@@ -2344,17 +2348,10 @@ function insertColAt(c, pos) {
   const g = grid();
   pushUndo();
   const insertIdx = pos==='left' ? c : c+1;
+  shiftColState(activeSheet, insertIdx, 1);
   g.forEach(row => row.splice(insertIdx, 0, ''));
-  // 스타일 열 인덱스 조정
-  const st = styles();
-  const newSt = {};
-  Object.keys(st).forEach(k => {
-    const [kr, kc] = k.split('_').map(Number);
-    newSt[`${kr}_${kc >= insertIdx ? kc+1 : kc}`] = st[k];
-  });
-  cellStyles[activeSheet] = newSt;
   clearRowColSel(); selectedCell = {r:0, c: insertIdx}; selEnd = null;
-  render(); markDirty(); setStatus(`✅ ${colLetters(insertIdx)}열에 열 삽입됨`);
+  render(); recomputeAll(); markDirty(); setStatus(`✅ ${colLetters(insertIdx)}열에 열 삽입됨 (서식·수식 참조 자동 조정)`);
 }
 
 // ══════════════════════════════════════════
@@ -2785,10 +2782,12 @@ function onRowDragStart(e, r) {
 function onRowDragOver(e, r) {
   if (dragSrcRow == null) return;
   e.preventDefault(); e.dataTransfer.dropEffect='move';
+  document.querySelectorAll('td.rh.drop-target').forEach(el=>el.classList.remove('drop-target'));
+  e.currentTarget.classList.add('drop-target');
 }
 function onRowDrop(e, r) {
   e.preventDefault();
-  if (dragSrcRow == null || dragSrcRow === r) return;
+  if (dragSrcRow == null || dragSrcRow === r) { dragSrcRow=null; clearRowDropIndicator(); return; }
   pushUndo();
   const g = grid();
   const [removed] = g.splice(dragSrcRow, 1);
@@ -2803,8 +2802,16 @@ function onRowDrop(e, r) {
   });
   if (oldH) newHeights[r] = oldH;
   rowHeights = newHeights;
+  // 셀 서식·병합·데이터유효성·이 행을 참조하던 모든 수식 주소를 새 위치로 이동
+  moveRowState(activeSheet, dragSrcRow, r);
   dragSrcRow = null;
-  markDirty(); render();
+  clearRowDropIndicator();
+  selectedCell = {r, c:0}; selEnd = null;
+  markDirty(); render(); recomputeAll(); highlightSel();
+  setStatus(`✅ 행 이동 완료 (서식·수식 참조 자동 조정)`);
+}
+function clearRowDropIndicator() {
+  document.querySelectorAll('td.rh.drop-target').forEach(el=>el.classList.remove('drop-target'));
 }
 function onColDragStart(e, c) {
   dragSrcCol = c; dragSrcRow = null;
@@ -2814,10 +2821,12 @@ function onColDragStart(e, c) {
 function onColDragOver(e, c) {
   if (dragSrcCol == null) return;
   e.preventDefault(); e.dataTransfer.dropEffect='move';
+  document.querySelectorAll('th.drop-target').forEach(el=>el.classList.remove('drop-target'));
+  e.currentTarget.classList.add('drop-target');
 }
 function onColDrop(e, c) {
   e.preventDefault();
-  if (dragSrcCol == null || dragSrcCol === c) return;
+  if (dragSrcCol == null || dragSrcCol === c) { dragSrcCol=null; clearColDropIndicator(); return; }
   pushUndo();
   const g = grid();
   g.forEach(row => {
@@ -2834,8 +2843,15 @@ function onColDrop(e, c) {
   });
   if (oldW) newWidths[c] = oldW;
   colWidths = newWidths;
+  moveColState(activeSheet, dragSrcCol, c);
   dragSrcCol = null;
-  markDirty(); render();
+  clearColDropIndicator();
+  selectedCell = {r:0, c}; selEnd = null;
+  markDirty(); render(); recomputeAll(); highlightSel();
+  setStatus(`✅ 열 이동 완료 (서식·수식 참조 자동 조정)`);
+}
+function clearColDropIndicator() {
+  document.querySelectorAll('th.drop-target').forEach(el=>el.classList.remove('drop-target'));
 }
 
 // ══════════════════════════════════════════
@@ -2882,6 +2898,178 @@ function parseTSV(text) {
 
 // 내부 복사 붙여넣기: 수식 원본을 상대 오프셋으로 조정, 단일 셀 → 선택 범위 전체 채움 (엑셀과 동일)
 // 모든 시트의 수식 셀에 변환 함수 적용
+function stripSheetPrefix(pfx) {
+  if (!pfx) return null;
+  const bare = pfx.slice(0, -1); // 끝의 '!' 제거
+  return bare.startsWith("'") && bare.endsWith("'") ? bare.slice(1, -1) : bare;
+}
+
+// 행/열 인덱스가 매핑되는 키('r_c' 형태)를 가진 맵을 rowMapFn/colMapFn에 따라 재배치
+// mapFn(idx) => 새 idx, 또는 null이면 해당 항목 삭제(구조에서 제거된 행/열)
+function remapRowKeyedMap(obj, sheetName, mapFn) {
+  const sheetMap = obj[sheetName];
+  if (!sheetMap) return;
+  const next = {};
+  Object.keys(sheetMap).forEach(k => {
+    const m = /^(-?\d+)_(-?\d+)(_hidden)?$/.exec(k);
+    if (!m) { next[k] = sheetMap[k]; return; }
+    const nr = mapFn(+m[1]);
+    if (nr == null) return; // 삭제된 행에 속한 항목은 제거
+    next[`${nr}_${m[2]}${m[3]||''}`] = sheetMap[k];
+  });
+  obj[sheetName] = next;
+}
+function remapColKeyedMap(obj, sheetName, mapFn) {
+  const sheetMap = obj[sheetName];
+  if (!sheetMap) return;
+  const next = {};
+  Object.keys(sheetMap).forEach(k => {
+    const m = /^(-?\d+)_(-?\d+)(_hidden)?$/.exec(k);
+    if (!m) { next[k] = sheetMap[k]; return; }
+    const nc = mapFn(+m[2]);
+    if (nc == null) return;
+    next[`${m[1]}_${nc}${m[3]||''}`] = sheetMap[k];
+  });
+  obj[sheetName] = next;
+}
+
+// 행 삽입/삭제: fromIndex 이상인 항목을 delta만큼 이동 (delta<0이면 삭제된 행 항목은 제거)
+function shiftRowState(sheetName, fromIndex, delta) {
+  const mapFn = r => {
+    if (delta > 0) return r >= fromIndex ? r + delta : r;
+    const cnt = -delta;
+    if (r >= fromIndex + cnt) return r - cnt;
+    if (r >= fromIndex) return null; // 삭제 대상 행
+    return r;
+  };
+  [cellStyles, mergedCells, dataValidations].forEach(o => remapRowKeyedMap(o, sheetName, mapFn));
+  if (hiddenRows[sheetName]) {
+    const ns = new Set();
+    hiddenRows[sheetName].forEach(r => { const nr = mapFn(r); if (nr != null) ns.add(nr); });
+    hiddenRows[sheetName] = ns;
+  }
+  if (autoFilterRow[sheetName] !== undefined) {
+    const nr = mapFn(autoFilterRow[sheetName]);
+    if (nr == null) delete autoFilterRow[sheetName]; else autoFilterRow[sheetName] = nr;
+  }
+  shiftFormulaRowRefs(sheetName, fromIndex, delta);
+}
+// 열 삽입/삭제: 위와 동일한 논리를 열 축에 적용
+function shiftColState(sheetName, fromIndex, delta) {
+  const mapFn = c => {
+    if (delta > 0) return c >= fromIndex ? c + delta : c;
+    const cnt = -delta;
+    if (c >= fromIndex + cnt) return c - cnt;
+    if (c >= fromIndex) return null;
+    return c;
+  };
+  [cellStyles, mergedCells, dataValidations].forEach(o => remapColKeyedMap(o, sheetName, mapFn));
+  if (filterValues[sheetName]) {
+    const nv = {};
+    Object.keys(filterValues[sheetName]).forEach(k => {
+      const nc = mapFn(+k); if (nc != null) nv[nc] = filterValues[sheetName][k];
+    });
+    filterValues[sheetName] = nv;
+  }
+  shiftFormulaColRefs(sheetName, fromIndex, delta);
+}
+
+// 수식 내 행 참조를 rowMapFn에 따라 갱신 (단일 셀 참조 + 행전체 범위 5:5)
+function remapFormulaRowRefs(sheetName, rowMapFn) {
+  const CELL_RE = /((?:'[^']*'|[A-Za-z_\uAC00-\uD7A3][A-Za-z0-9_\uAC00-\uD7A3]*)!)?(\$?)([A-Za-z]{1,3})(\$?)(\d+)(?![!\w\uAC00-\uD7A3])/g;
+  const ROWRANGE_RE = /(?<![\w\uAC00-\uD7A3$!':])((?:'[^']*'|[A-Za-z_\uAC00-\uD7A3][A-Za-z0-9_\uAC00-\uD7A3]*)!)?(\$?)(\d+):((?:'[^']*'|[A-Za-z_\uAC00-\uD7A3][A-Za-z0-9_\uAC00-\uD7A3]*)!)?(\$?)(\d+)(?![\w\uAC00-\uD7A3!$:.])/g;
+  transformAllFormulas((v, formulaSheet) => {
+    let body = v.slice(1);
+    body = body.replace(ROWRANGE_RE, (m, sh1, abs1, row1, sh2, abs2, row2) => {
+      const rs1 = stripSheetPrefix(sh1) || formulaSheet, rs2 = stripSheetPrefix(sh2) || formulaSheet;
+      if (rs1.toLowerCase() !== sheetName.toLowerCase() && rs2.toLowerCase() !== sheetName.toLowerCase()) return m;
+      const n1 = rs1.toLowerCase()===sheetName.toLowerCase() ? rowMapFn(+row1-1) : +row1-1;
+      const n2 = rs2.toLowerCase()===sheetName.toLowerCase() ? rowMapFn(+row2-1) : +row2-1;
+      if (n1==null || n2==null) return '#REF!';
+      return (sh1||'')+abs1+(n1+1)+':'+(sh2||'')+abs2+(n2+1);
+    });
+    body = body.replace(CELL_RE, (m, shPfx, absC, col, absR, rowS) => {
+      const refSheet = stripSheetPrefix(shPfx) || formulaSheet;
+      if (refSheet.toLowerCase() !== sheetName.toLowerCase()) return m;
+      const nr = rowMapFn(parseInt(rowS,10)-1);
+      if (nr == null) return '#REF!';
+      return (shPfx||'')+absC+col+absR+(nr+1);
+    });
+    return '=' + body;
+  });
+}
+function remapFormulaColRefs(sheetName, colMapFn) {
+  const CELL_RE = /((?:'[^']*'|[A-Za-z_\uAC00-\uD7A3][A-Za-z0-9_\uAC00-\uD7A3]*)!)?(\$?)([A-Za-z]{1,3})(\$?)(\d+)(?![!\w\uAC00-\uD7A3])/g;
+  const COLRANGE_RE = /(?<![\w\uAC00-\uD7A3$!'])((?:'[^']*'|[A-Za-z_\uAC00-\uD7A3][A-Za-z0-9_\uAC00-\uD7A3]*)!)?(\$?)([A-Za-z]{1,3}):((?:'[^']*'|[A-Za-z_\uAC00-\uD7A3][A-Za-z0-9_\uAC00-\uD7A3]*)!)?(\$?)([A-Za-z]{1,3})(?![\w\uAC00-\uD7A3!$(])/g;
+  transformAllFormulas((v, formulaSheet) => {
+    let body = v.slice(1);
+    const shiftColLetter = (col, mapped) => mapped == null ? null : (col===col.toLowerCase() ? colLetters(mapped).toLowerCase() : colLetters(mapped));
+    body = body.replace(COLRANGE_RE, (m, sh1, abs1, col1, sh2, abs2, col2) => {
+      const rs1 = stripSheetPrefix(sh1) || formulaSheet, rs2 = stripSheetPrefix(sh2) || formulaSheet;
+      if (rs1.toLowerCase() !== sheetName.toLowerCase() && rs2.toLowerCase() !== sheetName.toLowerCase()) return m;
+      const n1 = rs1.toLowerCase()===sheetName.toLowerCase() ? colMapFn(colIdx(col1)) : colIdx(col1);
+      const n2 = rs2.toLowerCase()===sheetName.toLowerCase() ? colMapFn(colIdx(col2)) : colIdx(col2);
+      if (n1==null || n2==null) return '#REF!';
+      return (sh1||'')+abs1+shiftColLetter(col1,n1)+':'+(sh2||'')+abs2+shiftColLetter(col2,n2);
+    });
+    body = body.replace(CELL_RE, (m, shPfx, absC, col, absR, rowS) => {
+      const refSheet = stripSheetPrefix(shPfx) || formulaSheet;
+      if (refSheet.toLowerCase() !== sheetName.toLowerCase()) return m;
+      const nc = colMapFn(colIdx(col));
+      if (nc == null) return '#REF!';
+      return (shPfx||'')+absC+shiftColLetter(col,nc)+absR+rowS;
+    });
+    return '=' + body;
+  });
+}
+function shiftFormulaRowRefs(sheetName, fromIndex, delta) {
+  remapFormulaRowRefs(sheetName, r => {
+    if (delta > 0) return r >= fromIndex ? r + delta : r;
+    const cnt = -delta;
+    if (r >= fromIndex + cnt) return r - cnt;
+    if (r >= fromIndex) return null;
+    return r;
+  });
+}
+function shiftFormulaColRefs(sheetName, fromIndex, delta) {
+  remapFormulaColRefs(sheetName, c => {
+    if (delta > 0) return c >= fromIndex ? c + delta : c;
+    const cnt = -delta;
+    if (c >= fromIndex + cnt) return c - cnt;
+    if (c >= fromIndex) return null;
+    return c;
+  });
+}
+// 행/열 전체 이동(드래그 앤 드롭): from → to, 사이 행/열은 한 칸씩 밀림
+function moveRowState(sheetName, from, to) {
+  const mapFn = r => {
+    if (r === from) return to;
+    if (from < to && r > from && r <= to) return r - 1;
+    if (to < from && r >= to && r < from) return r + 1;
+    return r;
+  };
+  [cellStyles, mergedCells, dataValidations].forEach(o => remapRowKeyedMap(o, sheetName, mapFn));
+  if (hiddenRows[sheetName]) {
+    const ns = new Set(); hiddenRows[sheetName].forEach(r => ns.add(mapFn(r))); hiddenRows[sheetName] = ns;
+  }
+  if (autoFilterRow[sheetName] !== undefined) autoFilterRow[sheetName] = mapFn(autoFilterRow[sheetName]);
+  remapFormulaRowRefs(sheetName, mapFn);
+}
+function moveColState(sheetName, from, to) {
+  const mapFn = c => {
+    if (c === from) return to;
+    if (from < to && c > from && c <= to) return c - 1;
+    if (to < from && c >= to && c < from) return c + 1;
+    return c;
+  };
+  [cellStyles, mergedCells, dataValidations].forEach(o => remapColKeyedMap(o, sheetName, mapFn));
+  if (filterValues[sheetName]) {
+    const nv = {}; Object.keys(filterValues[sheetName]).forEach(k => { nv[mapFn(+k)] = filterValues[sheetName][k]; });
+    filterValues[sheetName] = nv;
+  }
+  remapFormulaColRefs(sheetName, mapFn);
+}
+
 function transformAllFormulas(fn) {
   Object.keys(sheets).forEach(shName => {
     const g = sheets[shName];
@@ -3474,6 +3662,11 @@ function tokenize(s) {
         if(peek2){toks.push({type:'cell',val:w});continue;}
       }
       toks.push({type:/^[A-Za-z]+\d+$/.test(w)?'cell':'name',val:w});continue;
+    }
+    // 오류 리터럴(#REF!, #VALUE! 등) — 삽입된 그대로 값으로 전파
+    if (s[i]==='#') {
+      const em = /^#(REF|VALUE|DIV\/0|N\/A|NUM|NULL|NAME\?)!?/.exec(s.slice(i));
+      if (em) { toks.push({type:'str', val: em[0]}); i += em[0].length; continue; }
     }
     // 단일 문자 연산자/구분자
     toks.push({type:'sym',val:s[i]}); i++;
@@ -4136,7 +4329,7 @@ function changeDecimal(delta) {
 // ══════════════════════════════════════════
 // 상태 표시줄 업데이트
 // ══════════════════════════════════════════
-const APP_BUILD = 'v2026.07.02-16';
+const APP_BUILD = 'v2026.07.02-18';
 function updateStatusBar() {
   const cells = getSelCellCoords();
   const mode = document.getElementById('sb-mode');
