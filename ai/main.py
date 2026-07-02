@@ -107,6 +107,17 @@ if not os.getenv("DB_PATH"):
     )
 
 app = FastAPI(title="나만의 AI 어시스턴트")
+
+
+@app.middleware("http")
+async def no_cache_html(request, call_next):
+    """HTML은 항상 최신 배포 코드가 로드되도록 캐시 금지 (iPad PWA 스테일 캐시 방지)"""
+    response = await call_next(request)
+    if request.url.path.endswith(".html") or request.url.path == "/":
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
+        response.headers["Pragma"] = "no-cache"
+    return response
+
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 # 주식 분석 라우터 등록 (/stock/...)
