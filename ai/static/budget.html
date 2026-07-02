@@ -2952,13 +2952,12 @@ function matchCond(val, cond) {
     return re.test(v);
   }
   if (v===c) return true;
-  // 텍스트 조건은 부분일치 허용: "경영지원부문" → "경영지원부문 회계팀"도 매칭
-  // (숫자 조건은 기존대로 정확 일치 유지)
-  const cn=parseFloat(c.replace(/,/g,''));
-  if (c!=='' && (isNaN(cn) || String(cn)!==c.replace(/,/g,''))) return v.includes(c);
+  // 기본은 정확 일치 (부분일치는 이중 집계를 유발: "경영지원부문" 상위행 + "경영지원부문 회계팀" 개별행이
+  // 함께 있으면 두 번 합산됨). 부분일치가 필요하면 엑셀처럼 조건에 *를 사용: "경영지원부문*"
   // 숫자 조건: 표기 차이(1,000 vs 1000) 흡수
+  const cn=parseFloat(c.replace(/,/g,''));
   const vn=parseFloat(v.replace(/,/g,''));
-  return !isNaN(cn)&&!isNaN(vn)&&cn===vn;
+  return !isNaN(cn)&&!isNaN(vn)&&String(cn)===c.replace(/,/g,'')&&cn===vn;
 }
 
 // 범위 메타 파싱 (SUMIFS 등에서 범위 토큰 pair 필요)
@@ -3901,7 +3900,7 @@ function changeDecimal(delta) {
 // ══════════════════════════════════════════
 // 상태 표시줄 업데이트
 // ══════════════════════════════════════════
-const APP_BUILD = 'v2026.07.02-8';
+const APP_BUILD = 'v2026.07.02-9';
 function updateStatusBar() {
   const cells = getSelCellCoords();
   const mode = document.getElementById('sb-mode');
