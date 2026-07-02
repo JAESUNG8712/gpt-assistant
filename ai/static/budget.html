@@ -828,6 +828,11 @@ window.onload = () => {
     if (editMode || !selectedCell) return;
     e.preventDefault();
     const text = (e.clipboardData || window.clipboardData).getData('text/plain');
+    // 내부 복사(수식 포함)인지 확인: 클립보드 내용이 복사 시점 스냅샷과 같으면 원본 수식 사용
+    if (clipSrc && clipSrc.rawData && text === clipSrc.tsvSnapshot) {
+      pasteInternal();
+      return;
+    }
     if (text) pasteAt(selectedCell.r, selectedCell.c, text);
   });
   pt.addEventListener('copy', e => {
@@ -837,14 +842,15 @@ window.onload = () => {
     const r2=Math.max(selectedCell.r,(selEnd||selectedCell).r);
     const c1=Math.min(selectedCell.c,(selEnd||selectedCell).c);
     const c2=Math.max(selectedCell.c,(selEnd||selectedCell).c);
-    const g=grid(); let tsv='';
+    const g=grid(); let tsv=''; const rawData=[];
     for(let r=r1;r<=r2;r++){
-      const row=[];
-      for(let c=c1;c<=c2;c++) row.push(String(renderCell(g[r]?.[c]??'')));
-      tsv+=row.join('\t')+'\n';
+      const row=[]; const rawRow=[];
+      for(let c=c1;c<=c2;c++){ row.push(String(renderCell(g[r]?.[c]??''))); rawRow.push(String(g[r]?.[c]??'')); }
+      tsv+=row.join('\t')+'\n'; rawData.push(rawRow);
     }
     e.clipboardData.setData('text/plain', tsv.trimEnd());
     setClipSrc(r1,c1,r2,c2,false);
+    clipSrc.rawData = rawData; clipSrc.tsvSnapshot = tsv.trimEnd();
     setStatus(`✅ ${r2-r1+1}행 × ${c2-c1+1}열 복사됨`);
   });
   pt.addEventListener('cut', e => {
@@ -854,14 +860,15 @@ window.onload = () => {
     const r2=Math.max(selectedCell.r,(selEnd||selectedCell).r);
     const c1=Math.min(selectedCell.c,(selEnd||selectedCell).c);
     const c2=Math.max(selectedCell.c,(selEnd||selectedCell).c);
-    const g=grid(); let tsv='';
+    const g=grid(); let tsv=''; const rawData=[];
     for(let r=r1;r<=r2;r++){
-      const row=[];
-      for(let c=c1;c<=c2;c++) row.push(String(renderCell(g[r]?.[c]??'')));
-      tsv+=row.join('\t')+'\n';
+      const row=[]; const rawRow=[];
+      for(let c=c1;c<=c2;c++){ row.push(String(renderCell(g[r]?.[c]??''))); rawRow.push(String(g[r]?.[c]??'')); }
+      tsv+=row.join('\t')+'\n'; rawData.push(rawRow);
     }
     e.clipboardData.setData('text/plain', tsv.trimEnd());
     setClipSrc(r1,c1,r2,c2,true);
+    clipSrc.rawData = rawData; clipSrc.tsvSnapshot = tsv.trimEnd();
     setStatus(`✂️ ${r2-r1+1}행 × ${c2-c1+1}열 잘라내기 — 붙여넣을 위치에서 Ctrl+V`);
   });
   // 전역 mouseup: 수식 드래그 종료
@@ -1128,6 +1135,7 @@ function render() {
       if (sty.strike) cls+=' strikethrough';
       if (sty.align==='center') cls+=' align-center';
       if (sty.align==='right') cls+=' align-right';
+      else if (!sty.align && ['comma','currency','number','percent','scientific'].includes(sty.numFmt)) cls+=' align-right';
       if (isEd) cls+=' editing';
       else if (isSel) cls+=' selected';
       const isFR = r < frozenRows, isFC = c < frozenCols;
@@ -1343,11 +1351,11 @@ function commitEdit() {
   const {r,c} = selectedCell;
   const td = getCellEl(r,c);
   // undo 전에 값이 실제로 변경되는지 확인 후 push
-  const newVal = td ? td.textContent.trim() : '';
+  const newVal = td ? autoCloseParens(td.textContent.trim()) : '';
   const oldVal = grid()[r]?.[c] ?? '';
   if (newVal !== oldVal) pushUndo();
   if (td) {
-    const raw = td.textContent.trim();
+    const raw = autoCloseParens(td.textContent.trim());
     const g = grid();
     while(g.length<=r) g.push([]);
     while(g[r].length<=c) g[r].push('');
@@ -1355,7 +1363,8 @@ function commitEdit() {
     td.setAttribute('data-raw', raw);
     td.contentEditable = 'false';
     const disp = renderCell(raw);
-    td.textContent = disp;
+    const sty = styles()[sk(r,c)]||{};
+    td.textContent = showFormulas ? raw : applyNumFmtDisplay(disp, sty.numFmt, sty.decimalPlaces);
     td.classList.remove('editing'); td.classList.add('selected');
     td.classList.toggle('err', String(disp).startsWith('#ERR')||String(disp).startsWith('#DIV'));
   }
@@ -1384,13 +1393,29 @@ function cancelEdit() {
 }
 
 function recomputeAll() {
+  const st = styles();
   document.querySelectorAll('#sheet td.cell').forEach(td => {
     const raw = td.getAttribute('data-raw') || '';
     if (!raw.startsWith('=')) return;
+    const r=+td.dataset.r, c=+td.dataset.c;
     const disp = renderCell(raw);
-    td.textContent = disp;
+    const sty = st[sk(r,c)]||{};
+    td.textContent = showFormulas ? raw : applyNumFmtDisplay(disp, sty.numFmt, sty.decimalPlaces);
     td.classList.toggle('err', String(disp).startsWith('#ERR')||String(disp).startsWith('#DIV'));
   });
+}
+
+// 수식 끝 괄호 누락 시 자동 보완: '=SUM(A1:A3' → '=SUM(A1:A3)'
+function autoCloseParens(v) {
+  if (typeof v!=='string' || !v.startsWith('=')) return v;
+  let depth=0, inStr=false;
+  for (let i=0;i<v.length;i++) {
+    const ch=v[i];
+    if (ch==='"') inStr=!inStr;
+    else if (!inStr && ch==='(') depth++;
+    else if (!inStr && ch===')') depth--;
+  }
+  return depth>0 ? v + ')'.repeat(depth) : v;
 }
 
 function updateFormulaBar() {
@@ -1431,6 +1456,7 @@ function abortCrossSheetEdit() {
 }
 function commitCrossSheetEdit(formulaVal) {
   if (!crossSheetEdit) return;
+  formulaVal = autoCloseParens(formulaVal);
   const {sheet, cell} = crossSheetEdit;
   crossSheetEdit = null;
   formulaRefMode = false;
@@ -1958,7 +1984,7 @@ function fbarBlur() {
 function applyFormulaBar() {
   if (!selectedCell) return;
   const {r,c} = selectedCell;
-  const val = document.getElementById('formula-input').value;
+  const val = autoCloseParens(document.getElementById('formula-input').value);
   const g = grid();
   while(g.length<=r) g.push([]);
   while(g[r].length<=c) g[r].push('');
@@ -2685,6 +2711,50 @@ function parseTSV(text) {
   if (field||row.length) { row.push(field); rows.push(row); }
   while(rows.length && rows[rows.length-1].every(f=>f==='')) rows.pop();
   return rows;
+}
+
+// 내부 복사 붙여넣기: 수식 원본을 상대 오프셋으로 조정, 단일 셀 → 선택 범위 전체 채움 (엑셀과 동일)
+function pasteInternal() {
+  const src = clipSrc.rawData;
+  const srcRows = src.length, srcCols = src[0].length;
+  const sr = Math.min(selectedCell.r,(selEnd||selectedCell).r);
+  const sc = Math.min(selectedCell.c,(selEnd||selectedCell).c);
+  const er = Math.max(selectedCell.r,(selEnd||selectedCell).r);
+  const ec = Math.max(selectedCell.c,(selEnd||selectedCell).c);
+  pushUndo();
+  const g = grid();
+  if (clipSrc.cut) {
+    // 잘라내기 = 이동: 수식 참조 조정 없이 그대로 옮기고 원본 삭제 (엑셀과 동일)
+    for (let r=0; r<srcRows; r++) {
+      while(g.length<=sr+r) g.push([]);
+      for (let c=0; c<srcCols; c++) {
+        while(g[sr+r].length<=sc+c) g[sr+r].push('');
+        g[sr+r][sc+c] = src[r][c];
+      }
+    }
+    for (let r=clipSrc.r1; r<=clipSrc.r2; r++)
+      for (let c=clipSrc.c1; c<=clipSrc.c2; c++) {
+        const inDst = r>=sr && r<sr+srcRows && c>=sc && c<sc+srcCols;
+        if (!inDst && g[r]) g[r][c]='';
+      }
+    clearClipSrc();
+  } else {
+    // 복사: 선택이 원본보다 크면 타일 반복(단일 셀 → 선택 전체), 수식은 상대 오프셋 조정
+    const selBigger = (er-sr+1) > srcRows || (ec-sc+1) > srcCols;
+    const dr2 = selBigger ? er : sr + srcRows - 1;
+    const dc2 = selBigger ? ec : sc + srcCols - 1;
+    for (let r=sr; r<=dr2; r++) {
+      while(g.length<=r) g.push([]);
+      for (let c=sc; c<=dc2; c++) {
+        while(g[r].length<=c) g[r].push('');
+        const or = (r-sr)%srcRows, oc = (c-sc)%srcCols;
+        const srcR = clipSrc.r1 + or, srcC = clipSrc.c1 + oc;
+        g[r][c] = adjustFormula(src[or][oc], r-srcR, c-srcC);
+      }
+    }
+  }
+  markDirty(); render(); recomputeAll();
+  setStatus('✅ 붙여넣기 완료');
 }
 
 function pasteAt(sr, sc, text) {
@@ -3789,7 +3859,7 @@ function changeDecimal(delta) {
 // ══════════════════════════════════════════
 // 상태 표시줄 업데이트
 // ══════════════════════════════════════════
-const APP_BUILD = 'v2026.07.02-4';
+const APP_BUILD = 'v2026.07.02-5';
 function updateStatusBar() {
   const cells = getSelCellCoords();
   const mode = document.getElementById('sb-mode');
