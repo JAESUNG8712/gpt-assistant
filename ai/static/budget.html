@@ -3143,6 +3143,50 @@ function matchCond(val, cond) {
 // evalFormula에서 범위 처리를 위해 RANGE 마커 객체 도입
 class RangeRef { constructor(a,b,sheet){this.a=a;this.b=b;this.sheet=sheet||null;} }
 
+// RangeRef → 실제 좌표 사각형 {sheet,r1,r2,c1,c2}
+function rangeRect(rr) {
+  const pa=parseRangeCorner(rr.a), pb=parseRangeCorner(rr.b);
+  if(!pa||!pb) return null;
+  const g=getGrid(rr.sheet);
+  const maxRow=Math.max(g.length-1,0);
+  const maxCol=Math.max(0,...g.map(r=>r.length-1));
+  return {
+    sheet: rr.sheet,
+    r1: Math.min(pa.row??0, pb.row??0),
+    r2: Math.min(Math.max(pa.row??maxRow, pb.row??maxRow), maxRow),
+    c1: Math.min(pa.col??0, pb.col??0),
+    c2: Math.min(Math.max(pa.col??maxCol, pb.col??maxCol), maxCol),
+  };
+}
+function cellRawAt(sheetName, r, c) {
+  return cellRaw(colLetters(c)+(r+1), undefined, sheetName);
+}
+// SUMIFS/COUNTIFS/AVERAGEIFS 공용: 기준 사각형 R에 대한 조건 마스크 계산
+// 조건 범위가 R과 같은 모양이면 요소별, 1열이면 행 조건, 1행이면 열 조건 (2D 매트릭스 집계 지원)
+function buildIfsMask(R, pairs) {
+  const nR=R.r2-R.r1+1, nC=R.c2-R.c1+1;
+  const mask = Array.from({length:nR},()=>Array(nC).fill(true));
+  for (const [rng, cond] of pairs) {
+    const C = rangeRect(rng);
+    if (!C) return null;
+    const cR=C.r2-C.r1+1, cC=C.c2-C.c1+1;
+    if (cR===nR && cC===nC) {
+      for(let i=0;i<nR;i++) for(let j=0;j<nC;j++)
+        if(mask[i][j] && !matchCond(cellRawAt(C.sheet,C.r1+i,C.c1+j),cond)) mask[i][j]=false;
+    } else if (cC===1) {
+      // 행 조건: 절대 행 번호 기준으로 정렬 (기준 사각형의 각 행)
+      for(let i=0;i<nR;i++)
+        if(!matchCond(cellRawAt(C.sheet,R.r1+i,C.c1),cond)) mask[i].fill(false);
+    } else if (cR===1) {
+      // 열 조건: 기준 사각형의 각 열
+      for(let j=0;j<nC;j++)
+        if(!matchCond(cellRawAt(C.sheet,C.r1,R.c1+j),cond))
+          for(let i=0;i<nR;i++) mask[i][j]=false;
+    } else return null;
+  }
+  return mask;
+}
+
 // RangeRef 인수를 값 배열로 평탄화 (SUM/AVERAGE/MAX/MIN 등에서 사용)
 function flattenArgs(v) {
   return v.flatMap(x => x instanceof RangeRef ? rangeRaws(x.a, x.b, undefined, x.sheet) : [x]);
@@ -3223,37 +3267,50 @@ const FUNCS = {
   },
   SUMIFS: v=>{
     if(!(v[0] instanceof RangeRef)) return '#ERR';
-    const sumR=rangeVals(v[0].a,v[0].b,undefined,v[0].sheet);
-    let mask=sumR.map(()=>true);
+    const R = rangeRect(v[0]);
+    if(!R) return '#ERR';
+    const pairs=[];
     for(let i=1;i+1<v.length;i+=2){
       if(!(v[i] instanceof RangeRef)) return '#ERR';
-      const cr=rangeRaws(v[i].a,v[i].b,undefined,v[i].sheet); const cond=v[i+1];
-      cr.forEach((val,idx)=>{ if(!matchCond(val,cond)) mask[idx]=false; });
+      pairs.push([v[i], v[i+1]]);
     }
-    return sumR.reduce((acc,val,i)=>mask[i]?acc+(looseNum(val)||0):acc,0);
+    const mask = buildIfsMask(R, pairs);
+    if(!mask) return '#VALUE!';
+    let sum=0;
+    for(let i=0;i<mask.length;i++) for(let j=0;j<mask[i].length;j++)
+      if(mask[i][j]) sum += looseNum(cellRawAt(R.sheet, R.r1+i, R.c1+j))||0;
+    return sum;
   },
   COUNTIFS: v=>{
     if(!(v[0] instanceof RangeRef)||v.length<2) return '#ERR';
-    const len=rangeRaws(v[0].a,v[0].b,undefined,v[0].sheet).length;
-    let mask=Array(len).fill(true);
+    const R = rangeRect(v[0]);
+    if(!R) return '#ERR';
+    const pairs=[];
     for(let i=0;i+1<v.length;i+=2){
       if(!(v[i] instanceof RangeRef)) return '#ERR';
-      const cr=rangeRaws(v[i].a,v[i].b,undefined,v[i].sheet); const cond=v[i+1];
-      cr.forEach((val,idx)=>{ if(!matchCond(val,cond)) mask[idx]=false; });
+      pairs.push([v[i], v[i+1]]);
     }
-    return mask.filter(Boolean).length;
+    const mask = buildIfsMask(R, pairs);
+    if(!mask) return '#VALUE!';
+    let n=0;
+    for(let i=0;i<mask.length;i++) for(let j=0;j<mask[i].length;j++) if(mask[i][j]) n++;
+    return n;
   },
   AVERAGEIFS: v=>{
     if(!(v[0] instanceof RangeRef)||v.length<2) return '#ERR';
-    const sumR=rangeVals(v[0].a,v[0].b,undefined,v[0].sheet);
-    let mask=sumR.map(()=>true);
+    const R = rangeRect(v[0]);
+    if(!R) return '#ERR';
+    const pairs=[];
     for(let i=1;i+1<v.length;i+=2){
       if(!(v[i] instanceof RangeRef)) return '#ERR';
-      const cr=rangeRaws(v[i].a,v[i].b,undefined,v[i].sheet); const cond=v[i+1];
-      cr.forEach((val,idx)=>{ if(!matchCond(val,cond)) mask[idx]=false; });
+      pairs.push([v[i], v[i+1]]);
     }
-    const matched=sumR.filter((_,i)=>mask[i]);
-    return matched.length?matched.reduce((a,b)=>a+(looseNum(b)||0),0)/matched.length:0;
+    const mask = buildIfsMask(R, pairs);
+    if(!mask) return '#VALUE!';
+    let sum=0, n=0;
+    for(let i=0;i<mask.length;i++) for(let j=0;j<mask[i].length;j++)
+      if(mask[i][j]) { sum += looseNum(cellRawAt(R.sheet, R.r1+i, R.c1+j))||0; n++; }
+    return n ? sum/n : 0;
   },
   VLOOKUP: v=>{
     if(!(v[1] instanceof RangeRef)||v.length<3) return '#N/A';
@@ -4079,7 +4136,7 @@ function changeDecimal(delta) {
 // ══════════════════════════════════════════
 // 상태 표시줄 업데이트
 // ══════════════════════════════════════════
-const APP_BUILD = 'v2026.07.02-15';
+const APP_BUILD = 'v2026.07.02-16';
 function updateStatusBar() {
   const cells = getSelCellCoords();
   const mode = document.getElementById('sb-mode');
