@@ -3322,7 +3322,7 @@ function evalFormula(expr,vis,ctxSheet) {
       if(peekVal()===':'&&Number.isInteger(t.val)){
         next();const t2=next();
         if(t2&&(t2.type==='num'||(t2.type==='cell'&&/^\d+$/.test(t2.val))))
-          return new RangeRef(String(t.val),String(t2.val),t2.sheet||null);
+          return new RangeRef(String(t.val),String(t2.val),t2.sheet||ctxSheet||null);
         throw new Error('range');
       }
       return t.val;
@@ -3342,10 +3342,10 @@ function evalFormula(expr,vis,ctxSheet) {
       if(fn==='TRUE') return true; if(fn==='FALSE') return false;
       // 열 전체 참조: 순수 알파벳(행 번호 없음) → 셀/범위로 처리 (예: J:J의 두 번째 J)
       if(/^[A-Za-z]+$/.test(t.val)){
-        const sn=t.sheet||null;
+        const sn=t.sheet||ctxSheet||null;
         if(peekVal()===':'){
           next();const t2=next();
-          return new RangeRef(t.val,t2?.val||t.val,sn||t2?.sheet||null);
+          return new RangeRef(t.val,t2?.val||t.val,t.sheet||t2?.sheet||ctxSheet||null);
         }
         return cellVal(t.val,vis,sn);
       }
@@ -3354,12 +3354,12 @@ function evalFormula(expr,vis,ctxSheet) {
     // 셀 주소 (시트명 포함 가능: t.sheet)
     if(t.type==='cell'){
       next();
-      const sn=t.sheet||null;
+      const sn=t.sheet||ctxSheet||null;
       if(peekVal()===':'){
         next();const t2=next();
         // name(열전체 J:J)·num(행전체 Sheet1!5:5) 타입도 허용
         if(!t2||!['cell','name','num'].includes(t2.type))throw new Error('range');
-        return new RangeRef(String(t.val),String(t2.val),sn||t2.sheet||null);
+        return new RangeRef(String(t.val),String(t2.val),t.sheet||t2.sheet||ctxSheet||null);
       }
       return cellVal(t.val,vis,sn);
     }
@@ -3858,7 +3858,8 @@ function applyNumFmt(fmt) {
 
 function applyNumFmtDisplay(val, fmt, dec) {
   if (val==='' || val===null || val===undefined) return val;
-  const n = parseFloat(val);
+  // 쉼표·공백 등이 섞인 숫자 텍스트도 전체 숫자로 인식 (parseFloat('1,234')가 1로 잘리는 문제 방지)
+  const n = looseNum(val);
   if (isNaN(n)) return val;
   const places = (dec !== undefined && dec !== null) ? dec : (fmt==='comma'||fmt==='currency' ? 0 : 2);
   switch(fmt) {
@@ -3888,7 +3889,7 @@ function changeDecimal(delta) {
 // ══════════════════════════════════════════
 // 상태 표시줄 업데이트
 // ══════════════════════════════════════════
-const APP_BUILD = 'v2026.07.02-6';
+const APP_BUILD = 'v2026.07.02-7';
 function updateStatusBar() {
   const cells = getSelCellCoords();
   const mode = document.getElementById('sb-mode');
