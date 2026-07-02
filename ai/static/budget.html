@@ -1428,20 +1428,20 @@ function commitCrossSheetEdit(formulaVal) {
   crossSheetEdit = null;
   formulaRefMode = false;
   hideCrossSheetBanner();
-  // 원본 시트로 복귀
+  // 원본 시트로 복귀 → 값 먼저 기록 후 렌더 (렌더 전 기록해야 표시됨)
   activeSheet = sheet;
-  ensureSize(); renderTabs(); render();
+  ensureSize();
   if (cell) {
     selectedCell = cell;
     const g = grid();
     while(g.length<=cell.r) g.push([]);
     while(g[cell.r].length<=cell.c) g[cell.r].push('');
+    pushUndo();
     g[cell.r][cell.c] = formulaVal;
     markDirty();
-    recomputeAll();
-    highlightSel();
-    updateFormulaBar();
   }
+  renderTabs(); render();
+  if (cell) { highlightSel(); updateFormulaBar(); }
 }
 
 // ── 수식 셀 참조 입력 헬퍼 ──
@@ -1453,8 +1453,7 @@ function checkFormulaRef() {
     const fi = document.getElementById('formula-input');
     v = fi ? fi.value : crossSheetEdit.formulaVal;
     if (!v.startsWith('=')) { formulaRefMode=false; return; }
-    const last = v.trimEnd().slice(-1);
-    formulaRefMode = ['(', ',', '+', '-', '*', '/', '=', ':'].includes(last);
+    formulaRefMode = isRefEntryState(v);
     return;
   }
   if (editMode && selectedCell) {
@@ -1464,8 +1463,17 @@ function checkFormulaRef() {
   const fi = document.getElementById('formula-input');
   if (document.activeElement===fi) v = fi.value;
   if (!v.startsWith('=')) { formulaRefMode=false; return; }
-  const last = v.trimEnd().slice(-1);
-  formulaRefMode = ['(', ',', '+', '-', '*', '/', '=', ':'].includes(last);
+  formulaRefMode = isRefEntryState(v);
+}
+
+// 수식이 셀 클릭 참조를 받을 수 있는 상태인지 (엑셀 포인트 모드와 동일)
+// 1) 연산자/구분자로 끝남 → 새 참조 삽입   2) 셀참조/범위로 끝남 → 클릭 시 그 참조를 교체
+function isRefEntryState(v) {
+  const t = v.trimEnd();
+  const last = t.slice(-1);
+  if (['(', ',', '+', '-', '*', '/', '=', ':', '&', '^', '<', '>'].includes(last)) return true;
+  // 끝이 셀참조/범위(시트 접두어·절대참조 포함)이고, 그 앞이 구분자/시작이면 교체 모드
+  return /[(,+\-*/=:&^<>]\s*(?:'[^']*'!|[A-Za-z_\uAC00-\uD7A3][A-Za-z0-9_\uAC00-\uD7A3]*!)?\$?[A-Za-z]{1,3}\$?\d+(?::(?:'[^']*'!|[A-Za-z_\uAC00-\uD7A3][A-Za-z0-9_\uAC00-\uD7A3]*!)?\$?[A-Za-z]{1,3}\$?\d*)?$/.test(t);
 }
 
 function getFormulaEl() {
@@ -1504,9 +1512,10 @@ function startFormulaRef(r, c) {
   // 크로스시트 모드: 수식 바 값 기준으로 처리
   const v = (src?.type==='bar' ? src.el.value : src?.el?.textContent) || (fi ? fi.value : '');
   // 마지막 셀 참조 또는 범위(시트 접두어 포함)를 제거하고 prefix 저장
+  const SHEET_PFX = "(?:'[^']*'!|[A-Za-z_\\uAC00-\\uD7A3][A-Za-z0-9_\\uAC00-\\uD7A3]*!)?";
   fOrigPrefix = v
-    .replace(/(?:'[^']*'\!|[A-Za-z]\w*\!)?[A-Za-z]+\d*:[A-Za-z]+\d*$/, '')
-    .replace(/(?:'[^']*'\!|[A-Za-z]\w*\!)?[A-Za-z]+\d+$/, '');
+    .replace(new RegExp(SHEET_PFX+"\\$?[A-Za-z]+\\$?\\d*:"+SHEET_PFX+"\\$?[A-Za-z]+\\$?\\d*$"), '')
+    .replace(new RegExp(SHEET_PFX+"\\$?[A-Za-z]+\\$?\\d+$"), '');
   fDragAnchor = {r, c};
   // 크로스시트 모드면 시트명 접두어 추가
   const addrSheet = crossSheetEdit ? activeSheet : null;
@@ -1704,7 +1713,7 @@ function dataEdge(r, c, dr, dc) {
   const val = (rr,cc) => String((g[rr]&&g[rr][cc])??'').trim();
   const inB = (rr,cc) => rr>=0&&rr<=maxR&&cc>=0&&cc<=maxC;
   let nr=r+dr, nc=c+dc;
-  if (!inB(nr,nc)) return {r:clampR(r), c:clampC(c)};
+  if (!inB(nr,nc)) return {r:Math.max(0,Math.min(maxR,r)), c:Math.max(0,Math.min(maxC,c))};
   if (val(r,c)!=='' && val(nr,nc)!=='') {
     // 연속 데이터 블록 안: 블록의 마지막 데이터 칸까지
     while (inB(nr+dr,nc+dc) && val(nr+dr,nc+dc)!=='') { nr+=dr; nc+=dc; }
@@ -1741,6 +1750,27 @@ document.addEventListener('keydown', e => {
   // Ctrl+Z는 편집 중에도 허용 (먼저 처리)
   if ((e.ctrlKey||e.metaKey) && e.key==='z' && editMode) { e.preventDefault(); cancelEdit(); undo(); return; }
   if (editMode) return; // 편집 중이면 td keydown이 처리
+
+  // 크로스시트 수식 입력 모드: 타이핑은 수식 바로 전달 (엑셀 포인트 모드)
+  if (crossSheetEdit) {
+    const fi = document.getElementById('formula-input');
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      commitCrossSheetEdit(fi ? fi.value : crossSheetEdit.formulaVal);
+      return;
+    }
+    if (e.key === 'Escape') { e.preventDefault(); abortCrossSheetEdit(); return; }
+    if (e.key === 'Backspace') {
+      e.preventDefault();
+      if (fi && fi.value.length > 1) { fi.value = fi.value.slice(0,-1); crossSheetEdit.formulaVal = fi.value; onFormulaBarInput(); }
+      return;
+    }
+    if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      e.preventDefault();
+      if (fi) { fi.value += e.key; crossSheetEdit.formulaVal = fi.value; onFormulaBarInput(); }
+      return;
+    }
+  }
 
   if (!selectedCell) {
     if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Enter','Tab'].includes(e.key)) {
@@ -3010,9 +3040,9 @@ function tokenize(s) {
       while(i<s.length&&/[A-Za-z$0-9]/.test(s[i]))cell+=s[i++];
       toks.push({type:'cell',val:cell}); continue;
     }
-    // 알파벳 시작: 시트참조 Sheet1!A1, 셀주소, 함수명
-    if(/[A-Za-z_]/.test(s[i])){
-      let w='';while(i<s.length&&/[A-Za-z0-9_]/.test(s[i]))w+=s[i++];
+    // 알파벳/한글 시작: 시트참조 Sheet1!A1·판매!A1, 셀주소, 함수명
+    if(/[A-Za-z_\uAC00-\uD7A3]/.test(s[i])){
+      let w='';while(i<s.length&&/[A-Za-z0-9_\uAC00-\uD7A3]/.test(s[i]))w+=s[i++];
       // Sheet1!A1 형태 체크
       if(s[i]==='!'){
         i++;
