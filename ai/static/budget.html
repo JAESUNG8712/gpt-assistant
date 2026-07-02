@@ -1047,9 +1047,16 @@ function renameSheet(oldName, tabEl) {
   const commit = () => {
     const nw = inp.value.trim() || oldName;
     if (nw!==oldName && !sheets[nw]) {
+      pushUndo();
       sheets[nw] = sheets[oldName]; delete sheets[oldName];
       if (cellStyles[oldName]) { cellStyles[nw]=cellStyles[oldName]; delete cellStyles[oldName]; }
+      ['mergedCells','conditionalFormats','dataValidations'].forEach(k=>{
+        const o = window[k]; if (o && o[oldName]) { o[nw]=o[oldName]; delete o[oldName]; }
+      });
       if (activeSheet===oldName) activeSheet=nw;
+      // 모든 시트의 수식에서 옛 시트명 참조를 새 이름으로 갱신
+      renameSheetInFormulas(oldName, nw);
+      markDirty(); render();
     }
     renderTabs();
   };
@@ -2755,6 +2762,56 @@ function parseTSV(text) {
 }
 
 // 내부 복사 붙여넣기: 수식 원본을 상대 오프셋으로 조정, 단일 셀 → 선택 범위 전체 채움 (엑셀과 동일)
+// 모든 시트의 수식 셀에 변환 함수 적용
+function transformAllFormulas(fn) {
+  Object.keys(sheets).forEach(shName => {
+    const g = sheets[shName];
+    for (let r=0; r<g.length; r++) {
+      const row = g[r]; if (!row) continue;
+      for (let c=0; c<row.length; c++) {
+        const v = row[c];
+        if (typeof v==='string' && v.startsWith('=')) {
+          const nv = fn(v, shName);
+          if (nv !== v) row[c] = nv;
+        }
+      }
+    }
+  });
+}
+
+// 시트명 변경 시 수식 내 참조 갱신: old!A1 / 'old name'!A1 → new
+function renameSheetInFormulas(oldName, newName) {
+  const needsQuote = /[\s!,\(\)\[\]'"]/.test(newName);
+  const newPrefix = needsQuote ? "'"+newName+"'!" : newName+'!';
+  const esc = oldName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  // 다른 시트명의 일부(MySheet1! 안의 Sheet1!)를 오인하지 않도록 앞 경계 확인
+  const re = new RegExp("(?<![A-Za-z0-9_\uAC00-\uD7A3'])(?:'"+esc+"'|"+esc+")!", 'gi');
+  transformAllFormulas(v => '=' + v.slice(1).replace(re, newPrefix));
+}
+
+// 잘라내기 이동 시: 이동한 셀을 참조하던 모든 수식의 주소를 새 위치로 갱신 (엑셀과 동일)
+function retargetMovedRefs(srcSheet, r1, c1, r2, c2, dstSheet, dr, dc) {
+  const SHEET_RE = "((?:'[^']*'|[A-Za-z_\uAC00-\uD7A3][A-Za-z0-9_\uAC00-\uD7A3]*)!)?";
+  const REF_RE = new RegExp(SHEET_RE + "(\\$?)([A-Za-z]{1,3})(\\$?)(\\d+)(?![!\\w\uAC00-\uD7A3])", 'g');
+  const stripQ = x => x ? x.slice(0, -1).replace(/^'|'$/g, '') : null;
+  const dstNeedsQuote = /[\s!,\(\)\[\]'"]/.test(dstSheet);
+  const dstPrefix = dstNeedsQuote ? "'"+dstSheet+"'!" : dstSheet+'!';
+  transformAllFormulas((v, formulaSheet) => {
+    return '=' + v.slice(1).replace(REF_RE, (m, shPfx, absC, colL, absR, rowS) => {
+      const refSheet = stripQ(shPfx) || formulaSheet;
+      if (refSheet.toLowerCase() !== srcSheet.toLowerCase()) return m;
+      const rr = parseInt(rowS,10)-1, cc = colIdx(colL);
+      if (rr<r1 || rr>r2 || cc<c1 || cc>c2) return m;
+      // 이동 대상 → 새 주소로 재작성
+      const nr = rr+dr, nc = cc+dc;
+      const newRef = absC + colLetters(nc) + absR + (nr+1);
+      // 수식이 있는 시트와 대상 시트가 같으면 접두어 생략, 다르면 새 시트 접두어
+      const pfx = (dstSheet.toLowerCase()===formulaSheet.toLowerCase()) ? '' : dstPrefix;
+      return pfx + newRef;
+    });
+  });
+}
+
 function pasteInternal() {
   const src = clipSrc.rawData;
   const srcRows = src.length, srcCols = src[0].length;
@@ -2778,6 +2835,9 @@ function pasteInternal() {
         const inDst = r>=sr && r<sr+srcRows && c>=sc && c<sc+srcCols;
         if (!inDst && g[r]) g[r][c]='';
       }
+    // 이동한 셀을 참조하던 수식들을 새 위치로 자동 갱신 (엑셀과 동일)
+    retargetMovedRefs(clipSrc.sheet, clipSrc.r1, clipSrc.c1, clipSrc.r2, clipSrc.c2,
+                      activeSheet, sr-clipSrc.r1, sc-clipSrc.c1);
     clearClipSrc();
   } else {
     // 복사: 선택이 원본보다 크면 타일 반복(단일 셀 → 선택 전체), 수식은 상대 오프셋 조정
@@ -3900,7 +3960,7 @@ function changeDecimal(delta) {
 // ══════════════════════════════════════════
 // 상태 표시줄 업데이트
 // ══════════════════════════════════════════
-const APP_BUILD = 'v2026.07.02-9';
+const APP_BUILD = 'v2026.07.02-10';
 function updateStatusBar() {
   const cells = getSelCellCoords();
   const mode = document.getElementById('sb-mode');
