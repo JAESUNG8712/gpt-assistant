@@ -2821,7 +2821,14 @@ function matchCond(val, cond) {
     const re=new RegExp('^'+c.replace(/[.+^${}()|[\]\\]/g,'\\$&').replace(/\*/g,'.*').replace(/\?/g,'.')+'$');
     return re.test(v);
   }
-  return v===c;
+  if (v===c) return true;
+  // 텍스트 조건은 부분일치 허용: "경영지원부문" → "경영지원부문 회계팀"도 매칭
+  // (숫자 조건은 기존대로 정확 일치 유지)
+  const cn=parseFloat(c.replace(/,/g,''));
+  if (c!=='' && (isNaN(cn) || String(cn)!==c.replace(/,/g,''))) return v.includes(c);
+  // 숫자 조건: 표기 차이(1,000 vs 1000) 흡수
+  const vn=parseFloat(v.replace(/,/g,''));
+  return !isNaN(cn)&&!isNaN(vn)&&cn===vn;
 }
 
 // 범위 메타 파싱 (SUMIFS 등에서 범위 토큰 pair 필요)
