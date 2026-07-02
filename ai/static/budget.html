@@ -1616,8 +1616,11 @@ function updateFillHandle() {
     fh.addEventListener('mousedown', fillHandleMousedown);
     fh.addEventListener('dblclick', e => { e.preventDefault(); e.stopPropagation(); autoFillDown(); });
   }
-  if (!selectedCell || selEnd || selMode!=='cell') { fh.style.display='none'; return; }
-  const td = getCellEl(selectedCell.r, selectedCell.c);
+  if (!selectedCell || selMode!=='cell') { fh.style.display='none'; return; }
+  // 다중 선택 시 선택 영역의 우하단 셀에 표시 (엑셀과 동일)
+  const br = Math.max(selectedCell.r,(selEnd||selectedCell).r);
+  const bc = Math.max(selectedCell.c,(selEnd||selectedCell).c);
+  const td = getCellEl(br, bc);
   if (!td) { fh.style.display='none'; return; }
   const rect = td.getBoundingClientRect();
   fh.style.display='block';
@@ -1625,11 +1628,17 @@ function updateFillHandle() {
   fh.style.top=(rect.bottom-5)+'px';
 }
 
+let fillSrcRect = null; // 드래그 시작 시점의 선택 영역 (다중 셀 채우기용)
 function fillHandleMousedown(e) {
   e.preventDefault(); e.stopPropagation();
   fillDragging = true;
-  fillAnchor = {...selectedCell};
-  fillCurrent = {...selectedCell};
+  const r1=Math.min(selectedCell.r,(selEnd||selectedCell).r);
+  const r2=Math.max(selectedCell.r,(selEnd||selectedCell).r);
+  const c1=Math.min(selectedCell.c,(selEnd||selectedCell).c);
+  const c2=Math.max(selectedCell.c,(selEnd||selectedCell).c);
+  fillSrcRect = {r1,c1,r2,c2};
+  fillAnchor = {r:r2, c:c2};
+  fillCurrent = {r:r2, c:c2};
   document.addEventListener('mousemove', fillHandleMousemove);
   document.addEventListener('mouseup', fillHandleMouseup);
 }
@@ -1685,31 +1694,51 @@ function hideFillPreview() {
 }
 
 function applyFill(anchor, end) {
-  const {r:ar, c:ac} = anchor;
+  const rect = fillSrcRect || {r1:anchor.r, c1:anchor.c, r2:anchor.r, c2:anchor.c};
+  const {r1,c1,r2,c2} = rect;
+  const srcRows = r2-r1+1, srcCols = c2-c1+1;
   const {r:er, c:ec} = end;
-  const dr = er-ar, dc = ec-ac;
-  if (dr===0 && dc===0) return;
+  const dr = er-r2, du = r1-er, dc = ec-c2, dl = c1-ec;
+  if (er>=r1 && er<=r2 && ec>=c1 && ec<=c2) return; // 영역 안 → 무시
   pushUndo();
   const g = grid();
-  const srcVal = (g[ar]&&g[ar][ac]!=null) ? g[ar][ac] : '';
-  // Determine direction
-  if (Math.abs(dr) >= Math.abs(dc)) {
-    // Fill down (or up)
-    const step = dr>0?1:-1;
-    for (let r=ar+step; r!==er+step; r+=step) {
-      while(g.length<=r) g.push([]);
-      while(g[r].length<=ac) g[r].push('');
-      g[r][ac] = adjustFormula(srcVal, r-ar, 0);
-    }
-  } else {
-    // Fill right (or left)
-    const step = dc>0?1:-1;
-    while(g.length<=ar) g.push([]);
-    for (let c=ac+step; c!==ec+step; c+=step) {
-      while(g[ar].length<=c) g[ar].push('');
-      g[ar][c] = adjustFormula(srcVal, 0, c-ac);
-    }
+  const put = (r,c,v)=>{ while(g.length<=r) g.push([]); while(g[r].length<=c) g[r].push(''); g[r][c]=v; };
+  // 방향: 세로/가로 중 더 크게 움직인 쪽 (엑셀과 동일)
+  const vert = Math.max(dr,du) >= Math.max(dc,dl);
+  if (vert && dr>0) {
+    // 아래로: 선택 영역 패턴 반복, 각 열은 자기 열의 수식/값 기준
+    for (let r=r2+1; r<=er; r++)
+      for (let c=c1; c<=c2; c++) {
+        const srcR = r1 + (r-r2-1)%srcRows;
+        put(r,c, adjustFormula(g[srcR]?.[c]??'', r-srcR, 0));
+      }
+    selectedCell={r:r1,c:c1}; selEnd={r:er,c:c2};
+  } else if (vert && du>0) {
+    // 위로
+    for (let r=r1-1; r>=er; r--)
+      for (let c=c1; c<=c2; c++) {
+        const srcR = r2 - (r1-1-r)%srcRows;
+        put(r,c, adjustFormula(g[srcR]?.[c]??'', r-srcR, 0));
+      }
+    selectedCell={r:er,c:c1}; selEnd={r:r2,c:c2};
+  } else if (dc>0) {
+    // 오른쪽으로
+    for (let c=c2+1; c<=ec; c++)
+      for (let r=r1; r<=r2; r++) {
+        const srcC = c1 + (c-c2-1)%srcCols;
+        put(r,c, adjustFormula(g[r]?.[srcC]??'', 0, c-srcC));
+      }
+    selectedCell={r:r1,c:c1}; selEnd={r:r2,c:ec};
+  } else if (dl>0) {
+    // 왼쪽으로
+    for (let c=c1-1; c>=ec; c--)
+      for (let r=r1; r<=r2; r++) {
+        const srcC = c2 - (c1-1-c)%srcCols;
+        put(r,c, adjustFormula(g[r]?.[srcC]??'', 0, c-srcC));
+      }
+    selectedCell={r:r1,c:ec}; selEnd={r:r2,c:c2};
   }
+  fillSrcRect = null;
   markDirty(); render(); recomputeAll(); updateFillHandle();
 }
 
@@ -3859,7 +3888,7 @@ function changeDecimal(delta) {
 // ══════════════════════════════════════════
 // 상태 표시줄 업데이트
 // ══════════════════════════════════════════
-const APP_BUILD = 'v2026.07.02-5';
+const APP_BUILD = 'v2026.07.02-6';
 function updateStatusBar() {
   const cells = getSelCellCoords();
   const mode = document.getElementById('sb-mode');
@@ -4417,15 +4446,16 @@ function autoFillDown() {
   const c2=Math.max(selectedCell.c,(selEnd||selectedCell).c);
   const g = grid();
   const val=(r,c)=>String((g[r]&&g[r][c])??'').trim();
-  // 가이드: 왼쪽 열(c1-1)과 오른쪽 열(c2+1)의 연속 데이터 끝 행
+  // 가이드: 좌우에서 가장 가까운 데이터 열(빈 열은 건너뜀)의 연속 데이터 끝 행
+  const maxCol = Math.max(0,...g.map(row=>row.length-1));
+  const guides = [];
+  for (let gc=c1-1; gc>=0; gc--) { if (val(r2,gc)!==''||val(r2+1,gc)!=='') { guides.push(gc); break; } }
+  for (let gc=c2+1; gc<=maxCol; gc++) { if (val(r2,gc)!==''||val(r2+1,gc)!=='') { guides.push(gc); break; } }
   let lastRow = -1;
-  [c1-1, c2+1].forEach(gc=>{
-    if (gc<0) return;
+  guides.forEach(gc=>{
     let r=r2;
     while (r+1<g.length && val(r+1,gc)!=='') r++;
-    // 가이드 열에 r2 아래로 데이터가 이어져 있어야 유효
-    if (r>r2 && val(r2+1,gc)!=='') lastRow=Math.max(lastRow,r);
-    else if (val(r2,gc)!=='' && r>r2) lastRow=Math.max(lastRow,r);
+    if (r>r2) lastRow=Math.max(lastRow,r);
   });
   if (lastRow<=r2) { setStatus('채울 기준(좌우 인접 데이터)이 없습니다', false); return; }
   pushUndo();
