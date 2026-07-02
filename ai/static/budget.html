@@ -275,6 +275,11 @@
   /* 조건부 서식 */
   #sheet.no-gridlines td.cell { border-color:transparent; }
   .rbtn-active { background:var(--accent-bg) !important;color:var(--accent) !important;border-color:var(--accent) !important; }
+  @keyframes ants { to { background-position: 100% 0, -100% 100%, 0 -100%, 100% 100%; } }
+  td.cell.ants-t { border-top:2px dashed #1a73e8 !important; }
+  td.cell.ants-b { border-bottom:2px dashed #1a73e8 !important; }
+  td.cell.ants-l { border-left:2px dashed #1a73e8 !important; }
+  td.cell.ants-r { border-right:2px dashed #1a73e8 !important; }
   td.cf-green { background:#e8f5e9 !important;color:#2e7d32 !important; }
   td.cf-yellow { background:#fffde7 !important;color:#f57f17 !important; }
   td.cf-red { background:#ffebee !important;color:#c62828 !important; }
@@ -838,7 +843,25 @@ window.onload = () => {
       tsv+=row.join('\t')+'\n';
     }
     e.clipboardData.setData('text/plain', tsv.trimEnd());
+    setClipSrc(r1,c1,r2,c2,false);
     setStatus(`✅ ${r2-r1+1}행 × ${c2-c1+1}열 복사됨`);
+  });
+  pt.addEventListener('cut', e => {
+    if (editMode || !selectedCell) return;
+    e.preventDefault();
+    const r1=Math.min(selectedCell.r,(selEnd||selectedCell).r);
+    const r2=Math.max(selectedCell.r,(selEnd||selectedCell).r);
+    const c1=Math.min(selectedCell.c,(selEnd||selectedCell).c);
+    const c2=Math.max(selectedCell.c,(selEnd||selectedCell).c);
+    const g=grid(); let tsv='';
+    for(let r=r1;r<=r2;r++){
+      const row=[];
+      for(let c=c1;c<=c2;c++) row.push(String(renderCell(g[r]?.[c]??'')));
+      tsv+=row.join('\t')+'\n';
+    }
+    e.clipboardData.setData('text/plain', tsv.trimEnd());
+    setClipSrc(r1,c1,r2,c2,true);
+    setStatus(`✂️ ${r2-r1+1}행 × ${c2-c1+1}열 잘라내기 — 붙여넣을 위치에서 Ctrl+V`);
   });
   // 전역 mouseup: 수식 드래그 종료
   document.addEventListener('mouseup', () => {
@@ -1235,6 +1258,7 @@ function render() {
     const td = getCellEl(selectedCell.r, selectedCell.c);
     if (td) { td.focus(); placeCursorEnd(td); }
   }
+  applyClipAnts(); // 복사/잘라내기 점선 테두리 유지
 }
 
 // ══════════════════════════════════════════
@@ -1646,6 +1670,55 @@ function onFormulaBarInput() {
   if (fbar) applyFormulaRefHighlights(fbar.value);
 }
 
+// ── 복사/잘라내기 원본 표시 (점선 테두리)
+let clipSrc = null; // {r1,c1,r2,c2,cut}
+function setClipSrc(r1,c1,r2,c2,cut) {
+  clipSrc = {r1,c1,r2,c2,cut,sheet:activeSheet};
+  applyClipAnts();
+}
+function clearClipSrc() {
+  clipSrc = null;
+  document.querySelectorAll('#sheet td.ants-t,#sheet td.ants-b,#sheet td.ants-l,#sheet td.ants-r')
+    .forEach(td=>td.classList.remove('ants-t','ants-b','ants-l','ants-r'));
+}
+function applyClipAnts() {
+  document.querySelectorAll('#sheet td.ants-t,#sheet td.ants-b,#sheet td.ants-l,#sheet td.ants-r')
+    .forEach(td=>td.classList.remove('ants-t','ants-b','ants-l','ants-r'));
+  if (!clipSrc || clipSrc.sheet!==activeSheet) return;
+  const {r1,c1,r2,c2} = clipSrc;
+  for (let r=r1;r<=r2;r++) for (let c=c1;c<=c2;c++) {
+    const td = getCellEl(r,c);
+    if (!td) continue;
+    if (r===r1) td.classList.add('ants-t');
+    if (r===r2) td.classList.add('ants-b');
+    if (c===c1) td.classList.add('ants-l');
+    if (c===c2) td.classList.add('ants-r');
+  }
+}
+
+// 엑셀 Ctrl+방향키 점프: 데이터 블록의 가장자리 셀 찾기
+function dataEdge(r, c, dr, dc) {
+  const g = grid();
+  const maxR = Math.max(g.length-1, MIN_ROWS-1);
+  const maxC = Math.max(MIN_COLS-1, ...g.map(row=>row.length-1));
+  const val = (rr,cc) => String((g[rr]&&g[rr][cc])??'').trim();
+  const inB = (rr,cc) => rr>=0&&rr<=maxR&&cc>=0&&cc<=maxC;
+  let nr=r+dr, nc=c+dc;
+  if (!inB(nr,nc)) return {r:clampR(r), c:clampC(c)};
+  if (val(r,c)!=='' && val(nr,nc)!=='') {
+    // 연속 데이터 블록 안: 블록의 마지막 데이터 칸까지
+    while (inB(nr+dr,nc+dc) && val(nr+dr,nc+dc)!=='') { nr+=dr; nc+=dc; }
+    return {r:nr, c:nc};
+  }
+  // 빈칸 통과 후 다음 데이터 칸으로
+  while (inB(nr,nc) && val(nr,nc)==='') { nr+=dr; nc+=dc; }
+  if (!inB(nr,nc)) {
+    // 데이터 없음 → 시트 가장자리
+    return {r: dr!==0 ? (dr>0?maxR:0) : r, c: dc!==0 ? (dc>0?maxC:0) : c};
+  }
+  return {r:nr, c:nc};
+}
+
 function moveSel(dr, dc) {
   if (!selectedCell) { if(!dr&&!dc) return; selectedCell={r:0,c:0}; }
   const nRows=grid().length, nCols=(grid()[0]||[]).length;
@@ -1741,13 +1814,18 @@ document.addEventListener('keydown', e => {
       e.preventDefault();
       const dr={'ArrowUp':-1,'ArrowDown':1,'ArrowLeft':0,'ArrowRight':0}[e.key];
       const dc={'ArrowUp':0,'ArrowDown':0,'ArrowLeft':-1,'ArrowRight':1}[e.key];
-      if (e.shiftKey) {
-        // Shift+방향키: 범위 확장
+      if (e.ctrlKey && e.shiftKey) {
+        // Ctrl+Shift+방향키: 데이터 끝까지 블럭 선택 (엑셀과 동일)
         const base = selEnd || selectedCell;
-        selEnd = {r:clampR(base.r+dr), c:clampC(base.c+dc)};
+        const edge = dataEdge(base.r, base.c, dr, dc);
+        selEnd = edge;
         highlightSel(); updateFormulaBarRange();
         const tdEnd = getCellEl(selEnd.r, selEnd.c);
         if (tdEnd) tdEnd.scrollIntoView({block:'nearest',inline:'nearest'});
+      } else if (e.ctrlKey || e.shiftKey) {
+        // Ctrl+방향키 / Shift+방향키: 해당 방향 데이터의 마지막 칸으로 점프
+        const edge = dataEdge(selectedCell.r, selectedCell.c, dr, dc);
+        selectCell(edge.r, edge.c);
       } else {
         moveSel(dr, dc);
       }
@@ -1757,6 +1835,8 @@ document.addEventListener('keydown', e => {
       if (e.shiftKey) moveSel(-1,0); else enterEdit(selectedCell.r, selectedCell.c); break;
     case 'Tab': e.preventDefault(); moveSel(0, e.shiftKey?-1:1); break;
     case 'F2': e.preventDefault(); enterEdit(selectedCell.r, selectedCell.c); break;
+    case 'Escape':
+      e.preventDefault(); clearClipSrc(); break;
     case 'Delete': case 'Backspace':
       e.preventDefault();
       if (selMode==='row' && selRows.size>0) { delSelectedRows(); }
@@ -2547,6 +2627,17 @@ function pasteAt(sr, sc, text) {
   const nc=Math.max(MIN_COLS, maxC+1, ...g.map(r=>r.length));
   g.forEach(r=>{ while(r.length<nc) r.push(''); });
   while(g.length<Math.max(MIN_ROWS, maxR+1)) g.push(new Array(nc).fill(''));
+  // 잘라내기였으면 원본 삭제 (엑셀 이동 동작)
+  if (clipSrc && clipSrc.cut) {
+    const srcG = sheets[clipSrc.sheet] || g;
+    for (let r=clipSrc.r1; r<=clipSrc.r2; r++)
+      for (let c=clipSrc.c1; c<=clipSrc.c2; c++) {
+        // 붙여넣은 영역과 겹치면 지우지 않음
+        const inDst = clipSrc.sheet===activeSheet && r>=sr && r<=maxR && c>=sc && c<=maxC;
+        if (!inDst && srcG[r]) srcG[r][c]='';
+      }
+  }
+  clearClipSrc();
   render(); markDirty();
   setStatus(`✅ ${lines.length}행 × ${(lines[0]||[]).length}열 붙여넣음`);
 }
@@ -2556,7 +2647,14 @@ function pasteAt(sr, sc, text) {
 // ══════════════════════════════════════════
 function renderCell(raw) {
   if (typeof raw!=='string'||!raw.startsWith('=')) return raw;
-  try { return evalFormula(raw.slice(1)); } catch(e) { return '#ERR'; }
+  try {
+    const v = evalFormula(raw.slice(1));
+    if (typeof v==='boolean') return v?'TRUE':'FALSE'; // 엑셀식 표시
+    return v;
+  } catch(e) {
+    const msg=String(e&&e.message||'');
+    return msg.startsWith('#')?msg:'#ERR'; // #VALUE!/#DIV/0! 등 전달
+  }
 }
 // 시트 그리드 가져오기 (없으면 현재 시트)
 function getGrid(sheetName) {
@@ -2584,8 +2682,9 @@ function cellVal(ref, vis, sheetName) {
   if(typeof raw==='string'&&raw.startsWith('=')){
     vis.add(scopeKey);const v=evalFormula(raw.slice(1),vis,sheetName);vis.delete(scopeKey);return v;
   }
+  if(raw===''||raw==null) return 0;
   const n=Number(String(raw).replace(/,/g,''));
-  return isNaN(n)?0:n;
+  return isNaN(n)?raw:n;
 }
 // 셀 원시 값(문자열 포함) 반환
 function cellRaw(ref, vis, sheetName) {
@@ -2667,20 +2766,24 @@ class RangeRef { constructor(a,b,sheet){this.a=a;this.b=b;this.sheet=sheet||null
 
 // RangeRef 인수를 값 배열로 평탄화 (SUM/AVERAGE/MAX/MIN 등에서 사용)
 function flattenArgs(v) {
-  return v.flatMap(x => x instanceof RangeRef ? rangeVals(x.a, x.b, undefined, x.sheet) : [x]);
+  return v.flatMap(x => x instanceof RangeRef ? rangeRaws(x.a, x.b, undefined, x.sheet) : [x]);
+}
+// 숫자만 추출 (엑셀: 범위 내 텍스트·빈칸은 집계에서 무시)
+function numsOf(f) {
+  return f.filter(x=>x!==''&&x!=null&&typeof x!=='boolean'&&!isNaN(+String(x).replace(/,/g,''))).map(x=>+String(x).replace(/,/g,''));
 }
 
 const FUNCS = {
-  SUM: v=>{ const f=flattenArgs(v); return f.reduce((a,b)=>a+(+b||0),0); },
-  AVERAGE: v=>{ const ns=flattenArgs(v).filter(x=>x!==''&&x!=null&&!isNaN(+x)); return ns.length?ns.reduce((a,b)=>a+(+b),0)/ns.length:0; },
-  MAX: v=>{ const f=flattenArgs(v); return f.length?Math.max(...f.map(x=>+x||0)):0; },
-  MIN: v=>{ const f=flattenArgs(v); return f.length?Math.min(...f.map(x=>+x||0)):0; },
-  COUNT: v=>flattenArgs(v).filter(x=>!isNaN(+x)&&x!=='').length,
+  SUM: v=>numsOf(flattenArgs(v)).reduce((a,b)=>a+b,0),
+  AVERAGE: v=>{ const ns=numsOf(flattenArgs(v)); return ns.length?ns.reduce((a,b)=>a+b,0)/ns.length:'#DIV/0!'; },
+  MAX: v=>{ const ns=numsOf(flattenArgs(v)); return ns.length?Math.max(...ns):0; },
+  MIN: v=>{ const ns=numsOf(flattenArgs(v)); return ns.length?Math.min(...ns):0; },
+  COUNT: v=>numsOf(flattenArgs(v)).length,
   COUNTA: v=>flattenArgs(v).filter(x=>x!==''&&x!=null).length,
   ROUND: v=>v.length>=2?Math.round(v[0]*Math.pow(10,v[1]))/Math.pow(10,v[1]):Math.round(v[0]||0),
   ROUNDUP: v=>{ const p=Math.pow(10,v[1]||0); return Math.ceil((v[0]||0)*p)/p; },
   ROUNDDOWN: v=>{ const p=Math.pow(10,v[1]||0); return Math.floor((v[0]||0)*p)/p; },
-  IF: v=>v.length>=3?(v[0]?v[1]:v[2]):0,
+  IF: v=>v.length>=2?(v[0]?v[1]:(v.length>=3?v[2]:false)):'#ERR',
   IFS: v=>{ for(let i=0;i+1<v.length;i+=2){if(v[i]) return v[i+1];} return '#N/A'; },
   ABS: v=>Math.abs(v[0]||0),
   INT: v=>Math.floor(v[0]||0),
@@ -2696,7 +2799,15 @@ const FUNCS = {
   LOWER: v=>String(v[0]??'').toLowerCase(),
   CONCATENATE: v=>v.map(x=>x??'').join(''),
   CONCAT: v=>v.map(x=>x??'').join(''),
-  TEXT: v=>{ const n=+v[0]; return isNaN(n)?String(v[0]??''):n.toLocaleString(); },
+  TEXT: v=>{
+    const n=+v[0]; const fmt=String(v[1]??'');
+    if(isNaN(n)) return String(v[0]??'');
+    if(!fmt) return n.toLocaleString();
+    if(/%$/.test(fmt)){ const d=(fmt.match(/0\.(0+)/)||[,''])[1].length; return (n*100).toFixed(d)+'%'; }
+    const dm=fmt.match(/[0#]\.(0+)/); const dec=dm?dm[1].length:0;
+    const comma=fmt.includes(',');
+    return comma?n.toLocaleString('ko-KR',{minimumFractionDigits:dec,maximumFractionDigits:dec}):n.toFixed(dec);
+  },
   VALUE: v=>{ const n=parseFloat(String(v[0]??'').replace(/,/g,'')); return isNaN(n)?'#VALUE':n; },
   ISNUMBER: v=>typeof v[0]==='number'||(!isNaN(+v[0])&&v[0]!==''),
   ISBLANK: v=>v[0]===''||v[0]==null,
@@ -2848,8 +2959,8 @@ const FUNCS = {
   TRUNC: v=>Math.trunc(v[0]||0),
   LARGE: v=>{ if(!(v[0] instanceof RangeRef)) return '#ERR'; const s=[...rangeVals(v[0].a,v[0].b)].sort((a,b)=>b-a); return s[(+v[1]||1)-1]??'#NUM'; },
   SMALL: v=>{ if(!(v[0] instanceof RangeRef)) return '#ERR'; const s=[...rangeVals(v[0].a,v[0].b)].sort((a,b)=>a-b); return s[(+v[1]||1)-1]??'#NUM'; },
-  MEDIAN: v=>{ const s=v.flat().map(x=>+x).filter(x=>!isNaN(x)).sort((a,b)=>a-b); if(!s.length) return 0; const m=Math.floor(s.length/2); return s.length%2?s[m]:(s[m-1]+s[m])/2; },
-  STDEV: v=>{ const a=v.flat().map(x=>+x).filter(x=>!isNaN(x)); if(a.length<2) return 0; const mean=a.reduce((s,x)=>s+x,0)/a.length; return Math.sqrt(a.reduce((s,x)=>s+(x-mean)**2,0)/(a.length-1)); },
+  MEDIAN: v=>{ const s=flattenArgs(v).map(x=>+x).filter(x=>!isNaN(x)).sort((a,b)=>a-b); if(!s.length) return 0; const m=Math.floor(s.length/2); return s.length%2?s[m]:(s[m-1]+s[m])/2; },
+  STDEV: v=>{ const a=flattenArgs(v).map(x=>+x).filter(x=>!isNaN(x)); if(a.length<2) return 0; const mean=a.reduce((s,x)=>s+x,0)/a.length; return Math.sqrt(a.reduce((s,x)=>s+(x-mean)**2,0)/(a.length-1)); },
 };
 function tokenize(s) {
   // 문자열 리터럴 "...", 시트참조 Sheet1!A1 또는 'Sheet 1'!A1:B5,
@@ -2928,15 +3039,38 @@ function evalFormula(expr,vis,ctxSheet) {
   const peek=()=>toks[pos], next=()=>toks[pos++];
   const peekVal=()=>toks[pos]?.val;
 
+  // 산술용 숫자 강제: 빈값→0, 불리언→1/0, 숫자문자열→숫자, 그 외 텍스트→#VALUE!
+  function toNum(x){
+    if(typeof x==='number') return x;
+    if(typeof x==='boolean') return x?1:0;
+    if(x===''||x==null) return 0;
+    if(typeof x==='string'&&x.startsWith('#')) throw new Error(x);
+    const n=Number(String(x).replace(/,/g,''));
+    if(isNaN(n)) throw new Error('#VALUE!');
+    return n;
+  }
   // 비교 표현식 (최저 우선순위)
   function cmpEx(){
-    let v=addEx();
+    let v=catEx();
     while(peek()&&peek().type==='op'&&['>=','<=','<>','>','<','='].includes(peek().val)){
-      const op=next().val; const r=addEx();
-      if(op==='>=') v=v>=r; else if(op==='<=') v=v<=r;
-      else if(op==='<>') v=String(v).toLowerCase()!==String(r).toLowerCase();
-      else if(op==='>') v=v>r; else if(op==='<') v=v<r;
-      else v=String(v).toLowerCase()===String(r).toLowerCase();
+      const op=next().val; const r=catEx();
+      // 숫자끼리는 숫자 비교, 그 외 대소문자 무시 문자열 비교 (엑셀과 동일)
+      const bothNum=(typeof v==='number'||!isNaN(+v)&&v!=='')&&(typeof r==='number'||!isNaN(+r)&&r!=='');
+      const a=bothNum?+v:String(v).toLowerCase(), b=bothNum?+r:String(r).toLowerCase();
+      if(op==='>=') v=a>=b; else if(op==='<=') v=a<=b;
+      else if(op==='<>') v=a!==b;
+      else if(op==='>') v=a>b; else if(op==='<') v=a<b;
+      else v=a===b;
+    }
+    return v;
+  }
+  // & 문자열 연결 (엑셀 연산자)
+  function catEx(){
+    let v=addEx();
+    while(peek()&&peek().type==='sym'&&peekVal()==='&'){
+      next(); const r=addEx();
+      const fs=x=>typeof x==='boolean'?(x?'TRUE':'FALSE'):String(x??'');
+      v=fs(v)+fs(r);
     }
     return v;
   }
@@ -2945,23 +3079,34 @@ function evalFormula(expr,vis,ctxSheet) {
     while(peek()&&peek().type==='sym'&&(peekVal()==='+' ||peekVal()==='-')){
       const op=next().val;
       const r=term();
-      // 문자열 + 숫자 혼합: 숫자로 강제
-      v=op==='+'?(typeof v==='string'||typeof r==='string'?String(v)+String(r):(+v)+(+r)):(+v)-(+r);
+      v=op==='+'?toNum(v)+toNum(r):toNum(v)-toNum(r);
     }
     return v;
   }
   function term(){
-    let v=unary();
+    let v=powEx();
     while(peek()&&peek().type==='sym'&&(peekVal()==='*'||peekVal()==='/')){
-      const op=next().val;const r=unary();
-      v=op==='*'?(+v)*(+r):((+r)===0?'#DIV/0!':(+v)/(+r));
+      const op=next().val;const r=powEx();
+      v=op==='*'?toNum(v)*toNum(r):(toNum(r)===0?'#DIV/0!':toNum(v)/toNum(r));
+    }
+    return v;
+  }
+  // ^ 거듭제곱 (엑셀 연산자)
+  function powEx(){
+    let v=unary();
+    while(peek()&&peek().type==='sym'&&peekVal()==='^'){
+      next(); const r=unary();
+      v=Math.pow(toNum(v),toNum(r));
     }
     return v;
   }
   function unary(){
-    if(peek()?.type==='sym'&&peekVal()==='-'){next();return -(+factor());}
-    if(peek()?.type==='sym'&&peekVal()==='+'){next();return factor();}
-    return factor();
+    if(peek()?.type==='sym'&&peekVal()==='-'){next();return -toNum(unary());}
+    if(peek()?.type==='sym'&&peekVal()==='+'){next();return unary();}
+    let v=factor();
+    // % 접미 연산자 (엑셀: 50% = 0.5)
+    while(peek()?.type==='sym'&&peekVal()==='%'){next();v=toNum(v)/100;}
+    return v;
   }
   function factor(){
     const t=peek();
