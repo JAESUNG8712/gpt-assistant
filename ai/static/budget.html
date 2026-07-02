@@ -1704,6 +1704,34 @@ function hideFillPreview() {
   if (fp) fp.style.display='none';
 }
 
+// 소스 값 배열의 패턴 분석 (엑셀 채우기 시리즈)
+// axis: 'row'(세로 채우기) | 'col'(가로 채우기)
+function analyzeSeries(vals, axis) {
+  const n = vals.length;
+  if (n < 2) return {type:'repeat'};
+  // 1) 전부 숫자 → 등차수열 (10,20 → 30,40 / 5,3 → 1,-1)
+  const nums = vals.map(v => looseNum(v));
+  if (nums.every(x => !isNaN(x)) && vals.every(v => String(v).trim() !== '')) {
+    const step = (nums[n-1] - nums[0]) / (n - 1);
+    // 균일한 등차인지 확인 (불규칙하면 반복)
+    const uniform = nums.every((x,i) => i===0 || Math.abs((x-nums[i-1]) - step) < 1e-9);
+    if (uniform) return {type:'num', first:nums[0], last:nums[n-1], step};
+    return {type:'repeat'};
+  }
+  // 2) 전부 수식 → 참조 간격 패턴 (=A1,=A3 → =A5,=A7)
+  if (vals.every(v => typeof v==='string' && v.startsWith('='))) {
+    for (const d of [1,2,3,4,5,6,7,8,9,10]) {
+      const dr = axis==='row' ? d : 0, dc = axis==='row' ? 0 : d;
+      if (vals.every((v,i) => i===0 || adjustFormula(vals[i-1], dr, dc) === v))
+        return {type:'formula', d};
+    }
+  }
+  return {type:'repeat'};
+}
+function fmtSeriesNum(x) {
+  return Number.isInteger(x) ? String(x) : String(+x.toFixed(10));
+}
+
 function applyFill(anchor, end) {
   const rect = fillSrcRect || {r1:anchor.r, c1:anchor.c, r2:anchor.r, c2:anchor.c};
   const {r1,c1,r2,c2} = rect;
@@ -1716,38 +1744,42 @@ function applyFill(anchor, end) {
   const put = (r,c,v)=>{ while(g.length<=r) g.push([]); while(g[r].length<=c) g[r].push(''); g[r][c]=v; };
   // 방향: 세로/가로 중 더 크게 움직인 쪽 (엑셀과 동일)
   const vert = Math.max(dr,du) >= Math.max(dc,dl);
-  if (vert && dr>0) {
-    // 아래로: 선택 영역 패턴 반복, 각 열은 자기 열의 수식/값 기준
-    for (let r=r2+1; r<=er; r++)
-      for (let c=c1; c<=c2; c++) {
-        const srcR = r1 + (r-r2-1)%srcRows;
-        put(r,c, adjustFormula(g[srcR]?.[c]??'', r-srcR, 0));
-      }
-    selectedCell={r:r1,c:c1}; selEnd={r:er,c:c2};
-  } else if (vert && du>0) {
-    // 위로
-    for (let r=r1-1; r>=er; r--)
-      for (let c=c1; c<=c2; c++) {
-        const srcR = r2 - (r1-1-r)%srcRows;
-        put(r,c, adjustFormula(g[srcR]?.[c]??'', r-srcR, 0));
-      }
-    selectedCell={r:er,c:c1}; selEnd={r:r2,c:c2};
-  } else if (dc>0) {
-    // 오른쪽으로
-    for (let c=c2+1; c<=ec; c++)
-      for (let r=r1; r<=r2; r++) {
-        const srcC = c1 + (c-c2-1)%srcCols;
-        put(r,c, adjustFormula(g[r]?.[srcC]??'', 0, c-srcC));
-      }
-    selectedCell={r:r1,c:c1}; selEnd={r:r2,c:ec};
-  } else if (dl>0) {
-    // 왼쪽으로
-    for (let c=c1-1; c>=ec; c--)
-      for (let r=r1; r<=r2; r++) {
-        const srcC = c2 - (c1-1-c)%srcCols;
-        put(r,c, adjustFormula(g[r]?.[srcC]??'', 0, c-srcC));
-      }
-    selectedCell={r:r1,c:ec}; selEnd={r:r2,c:c2};
+  if (vert && (dr>0 || du>0)) {
+    const down = dr>0;
+    for (let c=c1; c<=c2; c++) {
+      const vals = []; for (let r=r1; r<=r2; r++) vals.push(String(g[r]?.[c]??''));
+      const ser = analyzeSeries(vals, 'row');
+      const fill = (r, k) => {
+        if (ser.type==='num') put(r, c, fmtSeriesNum((down?ser.last:ser.first) + (down?1:-1)*ser.step*k));
+        else if (ser.type==='formula') put(r, c, adjustFormula(down?vals[vals.length-1]:vals[0], (down?1:-1)*ser.d*k, 0));
+        else {
+          const srcR = down ? r1 + (r-r2-1)%srcRows : r2 - (r1-1-r)%srcRows;
+          put(r, c, adjustFormula(g[srcR]?.[c]??'', r-srcR, 0));
+        }
+      };
+      if (down) { for (let r=r2+1; r<=er; r++) fill(r, r-r2); }
+      else { for (let r=r1-1; r>=er; r--) fill(r, r1-r); }
+    }
+    if (down) { selectedCell={r:r1,c:c1}; selEnd={r:er,c:c2}; }
+    else { selectedCell={r:er,c:c1}; selEnd={r:r2,c:c2}; }
+  } else if (dc>0 || dl>0) {
+    const right = dc>0;
+    for (let r=r1; r<=r2; r++) {
+      const vals = []; for (let c=c1; c<=c2; c++) vals.push(String(g[r]?.[c]??''));
+      const ser = analyzeSeries(vals, 'col');
+      const fill = (c, k) => {
+        if (ser.type==='num') put(r, c, fmtSeriesNum((right?ser.last:ser.first) + (right?1:-1)*ser.step*k));
+        else if (ser.type==='formula') put(r, c, adjustFormula(right?vals[vals.length-1]:vals[0], 0, (right?1:-1)*ser.d*k));
+        else {
+          const srcC = right ? c1 + (c-c2-1)%srcCols : c2 - (c1-1-c)%srcCols;
+          put(r, c, adjustFormula(g[r]?.[srcC]??'', 0, c-srcC));
+        }
+      };
+      if (right) { for (let c=c2+1; c<=ec; c++) fill(c, c-c2); }
+      else { for (let c=c1-1; c>=ec; c--) fill(c, c1-c); }
+    }
+    if (right) { selectedCell={r:r1,c:c1}; selEnd={r:r2,c:ec}; }
+    else { selectedCell={r:r1,c:ec}; selEnd={r:r2,c:c2}; }
   }
   fillSrcRect = null;
   markDirty(); render(); recomputeAll(); updateFillHandle();
@@ -3960,7 +3992,7 @@ function changeDecimal(delta) {
 // ══════════════════════════════════════════
 // 상태 표시줄 업데이트
 // ══════════════════════════════════════════
-const APP_BUILD = 'v2026.07.02-10';
+const APP_BUILD = 'v2026.07.02-11';
 function updateStatusBar() {
   const cells = getSelCellCoords();
   const mode = document.getElementById('sb-mode');
