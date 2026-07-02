@@ -246,7 +246,7 @@
   .ribbon-tab { padding:5px 16px;font-size:0.76rem;cursor:pointer;border:1px solid transparent;border-bottom:none;border-radius:6px 6px 0 0;color:var(--text-dim);user-select:none; }
   .ribbon-tab.active { background:var(--surface);border-color:var(--border-bright);color:var(--accent);font-weight:700;margin-bottom:-1px;z-index:1;position:relative; }
   .ribbon-tab:hover:not(.active) { background:#dde3ec;color:var(--text-bright); }
-  .ribbon-panel { display:none;align-items:stretch;gap:0;padding:4px 6px;min-height:54px;flex-wrap:wrap; }
+  .ribbon-panel { display:none;align-items:stretch;gap:0;padding:2px 6px;min-height:46px;flex-wrap:wrap; }
   .ribbon-panel.active { display:flex; }
   .ribbon-group { display:flex;flex-direction:column;align-items:center;padding:0 8px;border-right:1px solid var(--border);min-width:0; }
   .ribbon-group:last-child { border-right:none; }
@@ -256,6 +256,7 @@
   .rbtn:hover { background:var(--surface3);border-color:var(--border-bright); }
   .rbtn.active { background:var(--accent-bg);border-color:var(--accent);color:var(--accent);font-weight:700; }
   .rbtn-icon { font-size:1rem;display:block;text-align:center;line-height:1.4; }
+  .rbtn-h { font-size:0.74rem;padding:4px 8px; }
   .rbtn-text { font-size:0.62rem;display:block;text-align:center;line-height:1; }
   .rsel { padding:2px 4px;font-size:0.77rem;border:1px solid var(--border-bright);border-radius:4px;background:var(--surface3);color:var(--text-bright);cursor:pointer;max-width:90px; }
   .color-btn { width:26px;height:26px;border:1px solid var(--border-bright);border-radius:4px;cursor:pointer;padding:1px; }
@@ -336,11 +337,9 @@
     <!-- 클립보드 -->
     <div class="ribbon-group">
       <div class="ribbon-btns">
-        <div style="display:flex;flex-direction:column;gap:2px">
-          <button class="rbtn" onclick="doCopy()" title="복사 Ctrl+C"><span class="rbtn-icon">📋</span><span class="rbtn-text">복사</span></button>
-          <button class="rbtn" onclick="doCut()" title="잘라내기 Ctrl+X"><span class="rbtn-icon" style="font-size:0.8rem">✂️</span><span class="rbtn-text">잘라내기</span></button>
-          <button class="rbtn" onclick="doPaste()" title="붙여넣기 Ctrl+V"><span class="rbtn-icon" style="font-size:0.8rem">📌</span><span class="rbtn-text">붙여넣기</span></button>
-        </div>
+        <button class="rbtn rbtn-h" onclick="doCopy()" title="복사 Ctrl+C">📋 복사</button>
+        <button class="rbtn rbtn-h" onclick="doCut()" title="잘라내기 Ctrl+X">✂️ 잘라내기</button>
+        <button class="rbtn rbtn-h" onclick="doPaste()" title="붙여넣기 Ctrl+V">📌 붙여넣기</button>
       </div>
       <span class="ribbon-group-label">클립보드</span>
     </div>
@@ -1077,7 +1076,7 @@ function render() {
     if (selMode==='col' && selCols.has(c)) cls+=' col-selected';
     let thStyle = `width:${colWidths[c]||90}px;position:relative`;
     if (c < frozenCols) { cls += ' frozen-col-header'; thStyle += `;left:${frozenColLefts[c]}px`; }
-    html += `<th class="${cls}" style="${thStyle}" draggable="true" ondragstart="onColDragStart(event,${c})" ondragover="onColDragOver(event,${c})" ondrop="onColDrop(event,${c})" onmousedown="if(formulaRefMode||editMode||crossSheetEdit)event.preventDefault()" onclick="selectCol(${c},event.shiftKey)" ondblclick="sortByCol(${c})" oncontextmenu="rowColCtxMenu(event,'col',${c})" title="클릭:열선택 / 드래그:순서변경 / 더블클릭:정렬">${colLetters(c)}<span class="col-resize-handle" onmousedown="startColResize(event,${c})"></span></th>`;
+    html += `<th class="${cls}" style="${thStyle}" draggable="true" ondragstart="if(!event.altKey){event.preventDefault();return;} onColDragStart(event,${c})" ondragover="onColDragOver(event,${c})" ondrop="onColDrop(event,${c})" onmousedown="if(formulaRefMode||editMode||crossSheetEdit){event.preventDefault();}else if(event.button===0&&!event.altKey){beginHdrDragSel('col',${c});}" onmouseover="extendHdrDragSel('col',${c})" onclick="selectCol(${c},event.shiftKey)" ondblclick="sortByCol(${c})" oncontextmenu="rowColCtxMenu(event,'col',${c})" title="클릭:열선택 / 드래그:다중선택 / Alt+드래그:순서변경 / 더블클릭:정렬">${colLetters(c)}<span class="col-resize-handle" onmousedown="startColResize(event,${c})" ondblclick="autoFitCol(event,${c})" title="드래그:너비조정 / 더블클릭:자동맞춤"></span></th>`;
   }
   html += '</tr>';
 
@@ -1096,7 +1095,7 @@ function render() {
     let thStyle = `width:${colWidths[c]||90}px;position:relative`;
     if (c < frozenCols) { cls += ' frozen-col-header'; thStyle += `;left:${frozenColLefts[c]}px`; }
     const afArrow = (afRow !== undefined) ? `<span class="filter-arrow${fVals[c]?' active':''}" onclick="openFilterDropdown(event,${c})" title="필터">▼</span>` : '';
-    html_col_row += `<th class="${cls}" style="${thStyle}" draggable="true" ondragstart="onColDragStart(event,${c})" ondragover="onColDragOver(event,${c})" ondrop="onColDrop(event,${c})" onmousedown="if(formulaRefMode||editMode||crossSheetEdit)event.preventDefault()" onclick="selectCol(${c},event.shiftKey)" ondblclick="sortByCol(${c})" oncontextmenu="rowColCtxMenu(event,'col',${c})" title="클릭:열선택 / 드래그:순서변경 / 더블클릭:정렬">${colLetters(c)}${afArrow}<span class="col-resize-handle" onmousedown="startColResize(event,${c})"></span></th>`;
+    html_col_row += `<th class="${cls}" style="${thStyle}" draggable="true" ondragstart="if(!event.altKey){event.preventDefault();return;} onColDragStart(event,${c})" ondragover="onColDragOver(event,${c})" ondrop="onColDrop(event,${c})" onmousedown="if(formulaRefMode||editMode||crossSheetEdit){event.preventDefault();}else if(event.button===0&&!event.altKey){beginHdrDragSel('col',${c});}" onmouseover="extendHdrDragSel('col',${c})" onclick="selectCol(${c},event.shiftKey)" ondblclick="sortByCol(${c})" oncontextmenu="rowColCtxMenu(event,'col',${c})" title="클릭:열선택 / 드래그:다중선택 / Alt+드래그:순서변경 / 더블클릭:정렬">${colLetters(c)}${afArrow}<span class="col-resize-handle" onmousedown="startColResize(event,${c})" ondblclick="autoFitCol(event,${c})" title="드래그:너비조정 / 더블클릭:자동맞춤"></span></th>`;
   }
   html = html_col_row + '</tr>';
 
@@ -1105,7 +1104,7 @@ function render() {
     const rhCls = (selMode==='row' && selRows.has(r)) ? ' row-selected' : '';
     let trStyle = '';
     if (r < frozenRows) trStyle = `style="position:sticky;top:${frozenRowTops[r]}px;z-index:2"`;
-    html += `<tr ${trStyle}><td class="rh${rhCls}" draggable="true" ondragstart="onRowDragStart(event,${r})" ondragover="onRowDragOver(event,${r})" ondrop="onRowDrop(event,${r})" onmousedown="if(formulaRefMode||editMode||crossSheetEdit)event.preventDefault()" onclick="selectRow(${r},event.shiftKey)" oncontextmenu="rowColCtxMenu(event,'row',${r})" style="height:${rowHeights[r]||24}px">${r+1}<span class="row-resize-handle" onmousedown="startRowResize(event,${r})"></span></td>`;
+    html += `<tr ${trStyle}><td class="rh${rhCls}" draggable="true" ondragstart="if(!event.altKey){event.preventDefault();return;} onRowDragStart(event,${r})" ondragover="onRowDragOver(event,${r})" ondrop="onRowDrop(event,${r})" onmousedown="if(formulaRefMode||editMode||crossSheetEdit){event.preventDefault();}else if(event.button===0&&!event.altKey){beginHdrDragSel('row',${r});}" onmouseover="extendHdrDragSel('row',${r})" onclick="selectRow(${r},event.shiftKey)" oncontextmenu="rowColCtxMenu(event,'row',${r})" title="클릭:행선택 / 드래그:다중선택 / Alt+드래그:순서변경" style="height:${rowHeights[r]||24}px">${r+1}<span class="row-resize-handle" onmousedown="startRowResize(event,${r})" ondblclick="autoFitRow(event,${r})" title="드래그:높이조정 / 더블클릭:자동맞춤"></span></td>`;
     for (let c=0; c<nCols; c++) {
       // 병합 셀 처리
       const msk = sk(r,c);
@@ -1211,14 +1210,20 @@ function render() {
           highlightSel(); updateFormulaBarRange();
         } else {
           selectCell(r, c);
+          cellDragSel = true; // 드래그로 범위 확장 시작
         }
       }
     });
 
-    // 수식 드래그: mouseover로 범위 주소 업데이트
+    // 수식 드래그: mouseover로 범위 주소 업데이트 / 셀 드래그 다중 선택
     td.addEventListener('mouseover', e => {
       if (fDragAnchor && formulaRefMode) {
         updateFormulaRef(r, c);
+        return;
+      }
+      if (cellDragSel && selectedCell && !editMode) {
+        selEnd = {r, c};
+        highlightSel(); updateFormulaBarRange();
       }
     });
 
@@ -1583,6 +1588,7 @@ function updateFillHandle() {
     fh = document.createElement('div'); fh.id='fill-handle';
     document.body.appendChild(fh);
     fh.addEventListener('mousedown', fillHandleMousedown);
+    fh.addEventListener('dblclick', e => { e.preventDefault(); e.stopPropagation(); autoFillDown(); });
   }
   if (!selectedCell || selEnd || selMode!=='cell') { fh.style.display='none'; return; }
   const td = getCellEl(selectedCell.r, selectedCell.c);
@@ -2061,13 +2067,20 @@ function rowColCtxMenu(e, type, idx) {
   menu.id = 'rc-ctx-menu';
   menu.style.cssText = `position:fixed;z-index:9999;background:#fff;border:1px solid #cdd3dc;border-radius:8px;
     box-shadow:0 4px 16px rgba(0,0,0,.15);padding:4px 0;min-width:180px;font-size:0.82rem;`;
+  const sizeLabel = selCount>1 ? ` (${selCount}개)` : '';
   menu.innerHTML = type==='row'
     ? `<div class="cm-item" onclick="insertRowAt(${idx},'above')">위에 행 삽입</div>
        <div class="cm-item" onclick="insertRowAt(${idx},'below')">아래에 행 삽입</div>
        <div class="cm-sep"></div>
+       <div class="cm-item" onclick="promptRowHeight(${idx})">행 높이 조정${sizeLabel}...</div>
+       <div class="cm-item" onclick="autoFitRowMenu(${idx})">행 높이 자동 맞춤${sizeLabel}</div>
+       <div class="cm-sep"></div>
        <div class="cm-item cm-del" onclick="delSelectedRows()">${delLabel}</div>`
     : `<div class="cm-item" onclick="insertColAt(${idx},'left')">왼쪽에 열 삽입</div>
        <div class="cm-item" onclick="insertColAt(${idx},'right')">오른쪽에 열 삽입</div>
+       <div class="cm-sep"></div>
+       <div class="cm-item" onclick="promptColWidth(${idx})">열 너비 조정${sizeLabel}...</div>
+       <div class="cm-item" onclick="autoFitColMenu(${idx})">열 너비 자동 맞춤${sizeLabel}</div>
        <div class="cm-sep"></div>
        <div class="cm-item cm-del" onclick="delSelectedCols()">${delLabel}</div>`;
 
@@ -2536,8 +2549,11 @@ function startColResize(e, c) {
   e.preventDefault(); e.stopPropagation();
   const startX = e.clientX;
   const startW = colWidths[c] || 90;
+  // 여러 열 선택 중이고 그 안의 열이면 전체에 동일 적용
+  const targets = (selMode==='col' && selCols.has(c) && selCols.size>1) ? [...selCols] : [c];
   const onMove = ev => {
-    colWidths[c] = Math.max(30, startW + ev.clientX - startX);
+    const w = Math.max(30, startW + ev.clientX - startX);
+    targets.forEach(cc=>{ colWidths[cc]=w; });
     render();
   };
   const onUp = () => {
@@ -2553,8 +2569,10 @@ function startRowResize(e, r) {
   e.preventDefault(); e.stopPropagation();
   const startY = e.clientY;
   const startH = rowHeights[r] || 24;
+  const targets = (selMode==='row' && selRows.has(r) && selRows.size>1) ? [...selRows] : [r];
   const onMove = ev => {
-    rowHeights[r] = Math.max(18, startH + ev.clientY - startY);
+    const h = Math.max(18, startH + ev.clientY - startY);
+    targets.forEach(rr=>{ rowHeights[rr]=h; });
     render();
   };
   const onUp = () => {
@@ -3771,7 +3789,7 @@ function changeDecimal(delta) {
 // ══════════════════════════════════════════
 // 상태 표시줄 업데이트
 // ══════════════════════════════════════════
-const APP_BUILD = 'v2026.07.02-3';
+const APP_BUILD = 'v2026.07.02-4';
 function updateStatusBar() {
   const cells = getSelCellCoords();
   const mode = document.getElementById('sb-mode');
@@ -4222,6 +4240,137 @@ document.addEventListener('mousedown', e => {
   const dd = document.getElementById('filter-dropdown');
   if (dd && !dd.contains(e.target)) closeFilterDropdown();
 });
+
+// ══════════════════════════════════════════
+// 자동 맞춤 (크기조정 핸들 더블클릭)
+// ══════════════════════════════════════════
+const _measureCanvas = document.createElement('canvas');
+function measureTextWidth(text, fontSize) {
+  const ctx = _measureCanvas.getContext('2d');
+  ctx.font = `${fontSize||12}px -apple-system,BlinkMacSystemFont,'Segoe UI','Noto Sans KR',sans-serif`;
+  return ctx.measureText(String(text)).width;
+}
+function autoFitCol(e, c) {
+  e.preventDefault(); e.stopPropagation();
+  const targets = (selMode==='col' && selCols.has(c) && selCols.size>1) ? [...selCols] : [c];
+  const g = grid(); const st = styles();
+  targets.forEach(cc=>{
+    let max = 30;
+    for (let r=0; r<g.length; r++) {
+      const raw = g[r]?.[cc]; if (raw==null||raw==='') continue;
+      const disp = renderCell(raw);
+      const fs = (st[sk(r,cc)]||{}).fontSize || 12;
+      const bold = (st[sk(r,cc)]||{}).bold ? 1.08 : 1;
+      max = Math.max(max, measureTextWidth(disp, fs)*bold + 14);
+    }
+    colWidths[cc] = Math.min(400, Math.ceil(max));
+  });
+  markDirty(); render(); setStatus('열 너비 자동 맞춤');
+}
+function autoFitRow(e, r) {
+  e.preventDefault(); e.stopPropagation();
+  const targets = (selMode==='row' && selRows.has(r) && selRows.size>1) ? [...selRows] : [r];
+  const g = grid(); const st = styles();
+  targets.forEach(rr=>{
+    let maxFs = 12;
+    (g[rr]||[]).forEach((v,cc)=>{ if(v!==''&&v!=null) maxFs=Math.max(maxFs,(st[sk(rr,cc)]||{}).fontSize||12); });
+    rowHeights[rr] = Math.max(18, Math.ceil(maxFs*1.7));
+  });
+  markDirty(); render(); setStatus('행 높이 자동 맞춤');
+}
+
+// ══════════════════════════════════════════
+// 행/열 너비·높이 직접 입력 (우클릭 메뉴)
+// ══════════════════════════════════════════
+function promptColWidth(c) {
+  document.getElementById('rc-ctx-menu')?.remove();
+  const targets = (selMode==='col' && selCols.has(c) && selCols.size>1) ? [...selCols] : [c];
+  const cur = colWidths[c] || 90;
+  const v = prompt(`열 너비 (px)${targets.length>1?` — 선택된 ${targets.length}개 열에 적용`:''}:`, cur);
+  if (v==null) return;
+  const w = Math.max(30, Math.min(600, parseInt(v,10)||90));
+  targets.forEach(cc=>{ colWidths[cc]=w; });
+  markDirty(); render();
+}
+function promptRowHeight(r) {
+  document.getElementById('rc-ctx-menu')?.remove();
+  const targets = (selMode==='row' && selRows.has(r) && selRows.size>1) ? [...selRows] : [r];
+  const cur = rowHeights[r] || 24;
+  const v = prompt(`행 높이 (px)${targets.length>1?` — 선택된 ${targets.length}개 행에 적용`:''}:`, cur);
+  if (v==null) return;
+  const h = Math.max(18, Math.min(300, parseInt(v,10)||24));
+  targets.forEach(rr=>{ rowHeights[rr]=h; });
+  markDirty(); render();
+}
+function autoFitColMenu(c) { document.getElementById('rc-ctx-menu')?.remove(); autoFitCol(new Event('x'), c); }
+function autoFitRowMenu(r) { document.getElementById('rc-ctx-menu')?.remove(); autoFitRow(new Event('x'), r); }
+
+// ══════════════════════════════════════════
+// 마우스 드래그 셀/헤더 다중 선택
+// ══════════════════════════════════════════
+let cellDragSel = false;   // 셀 드래그 선택 중
+let hdrDragSel = null;     // {type:'row'|'col', start} 헤더 드래그 선택 중
+function beginHdrDragSel(type, idx) { hdrDragSel = {type, start: idx}; }
+function extendHdrDragSel(type, idx) {
+  if (!hdrDragSel || hdrDragSel.type!==type) return;
+  const lo = Math.min(hdrDragSel.start, idx), hi = Math.max(hdrDragSel.start, idx);
+  if (type==='col') {
+    selCols = new Set(); for(let i=lo;i<=hi;i++) selCols.add(i);
+    selColIdx = hdrDragSel.start; selMode='col'; selRows=new Set(); selRowIdx=null;
+    const g=grid();
+    selectedCell={r:0,c:lo}; selEnd={r:g.length-1,c:hi};
+  } else {
+    selRows = new Set(); for(let i=lo;i<=hi;i++) selRows.add(i);
+    selRowIdx = hdrDragSel.start; selMode='row'; selCols=new Set(); selColIdx=null;
+    const g=grid();
+    const nCols=Math.max(MIN_COLS,...g.map(row=>row.length));
+    selectedCell={r:lo,c:0}; selEnd={r:hi,c:nCols-1};
+  }
+  // 주의: 드래그 중 render()로 DOM을 재생성하면 커서 아래 요소가 사라져
+  // mouseup 이벤트가 유실됨 → 하이라이트만 제자리 갱신
+  highlightSel(); updateFormulaBar();
+}
+document.addEventListener('mouseup', () => {
+  const wasHdr = hdrDragSel;
+  cellDragSel = false; hdrDragSel = null;
+  if (wasHdr) render(); // 드래그 종료 후 헤더 강조 등 전체 반영
+});
+
+// ══════════════════════════════════════════
+// 채우기 핸들 더블클릭 → 인접 데이터 길이만큼 자동 채우기 (엑셀과 동일)
+// ══════════════════════════════════════════
+function autoFillDown() {
+  if (!selectedCell) return;
+  const r1=Math.min(selectedCell.r,(selEnd||selectedCell).r);
+  const r2=Math.max(selectedCell.r,(selEnd||selectedCell).r);
+  const c1=Math.min(selectedCell.c,(selEnd||selectedCell).c);
+  const c2=Math.max(selectedCell.c,(selEnd||selectedCell).c);
+  const g = grid();
+  const val=(r,c)=>String((g[r]&&g[r][c])??'').trim();
+  // 가이드: 왼쪽 열(c1-1)과 오른쪽 열(c2+1)의 연속 데이터 끝 행
+  let lastRow = -1;
+  [c1-1, c2+1].forEach(gc=>{
+    if (gc<0) return;
+    let r=r2;
+    while (r+1<g.length && val(r+1,gc)!=='') r++;
+    // 가이드 열에 r2 아래로 데이터가 이어져 있어야 유효
+    if (r>r2 && val(r2+1,gc)!=='') lastRow=Math.max(lastRow,r);
+    else if (val(r2,gc)!=='' && r>r2) lastRow=Math.max(lastRow,r);
+  });
+  if (lastRow<=r2) { setStatus('채울 기준(좌우 인접 데이터)이 없습니다', false); return; }
+  pushUndo();
+  for (let c=c1;c<=c2;c++) {
+    const src = g[r2]?.[c] ?? '';
+    if (src==='') continue;
+    for (let r=r2+1;r<=lastRow;r++) {
+      while(g.length<=r) g.push([]);
+      while(g[r].length<=c) g[r].push('');
+      g[r][c] = adjustFormula(src, r-r2, 0);
+    }
+  }
+  markDirty(); render(); recomputeAll();
+  setStatus(`✅ ${lastRow-r2}행 자동 채우기 완료`);
+}
 </script>
 </body>
 </html>
