@@ -359,11 +359,11 @@
           <button class="rbtn" id="btn-strike" onclick="toggleStrike()" style="text-decoration:line-through;min-width:26px" title="취소선">S</button>
           <div style="display:flex;flex-direction:column;gap:1px">
             <label style="font-size:0.6rem;color:var(--text-dim)">글자색</label>
-            <input type="color" class="color-btn" id="font-color-picker" value="#000000" onchange="applyFontColor(this.value)" title="글자 색">
+            <button class="rbtn" onclick="openColorPalette(event,'font')" title="글자 색" style="min-width:34px"><span style="border-bottom:3px solid #c62828;padding:0 2px">가</span>▾</button>
           </div>
           <div style="display:flex;flex-direction:column;gap:1px">
             <label style="font-size:0.6rem;color:var(--text-dim)">배경</label>
-            <input type="color" class="color-btn" id="cell-color-picker" value="#ffffff" onchange="applyCellColor(this.value)" title="셀 배경색">
+            <button class="rbtn" onclick="openColorPalette(event,'bg')" title="셀 배경색" style="min-width:34px"><span style="background:#fff59d;padding:0 3px;border:1px solid var(--border)">&nbsp;</span>▾</button>
           </div>
         </div>
       </div>
@@ -3876,16 +3876,25 @@ function sortByColDesc() { if(selectedCell) sortByCol(selectedCell.c, false); }
 function removeDuplicates() {
   pushUndo();
   const g = grid();
+  // 범위 선택 시 해당 범위 행만, 아니면 시트 전체(빈 행 제외)
+  let r1=0, r2=g.length-1;
+  if (selectedCell && selEnd && selEnd.r!==selectedCell.r) {
+    r1=Math.min(selectedCell.r,selEnd.r); r2=Math.max(selectedCell.r,selEnd.r);
+  }
   const seen = new Set();
   const kept = [];
-  for (let r=0; r<g.length; r++) {
+  let removed = 0;
+  for (let r=r1; r<=r2; r++) {
     const row = g[r]||[];
     const key = row.join('\t');
-    if (!seen.has(key)) { seen.add(key); kept.push([...row]); }
+    const isEmpty = row.every(c=>!String(c||'').trim());
+    if (isEmpty || !seen.has(key)) { if(!isEmpty) seen.add(key); kept.push([...row]); }
+    else removed++;
   }
-  while(kept.length<MIN_ROWS) kept.push(Array(MIN_COLS).fill(''));
-  sheets[activeSheet]=kept;
-  markDirty(); render(); setStatus(`중복 제거 완료`);
+  while (kept.length < r2-r1+1) kept.push(Array(Math.max(MIN_COLS,...g.map(x=>x.length))).fill(''));
+  for (let r=r1; r<=r2; r++) g[r] = kept[r-r1];
+  markDirty(); render();
+  setStatus(removed ? `✅ 중복 ${removed}행 제거됨` : '중복된 행이 없습니다');
 }
 
 // ══════════════════════════════════════════
@@ -3923,6 +3932,55 @@ function addSheetBtn() {
   activeSheet = name;
   ensureSize(); renderTabs(); render();
 }
+
+// ══════════════════════════════════════════
+// 색상 팔레트 (프리셋 + 세부 조정)
+// ══════════════════════════════════════════
+const PALETTE_COLORS = [
+  ['#000000','#434343','#666666','#999999','#b7b7b7','#cccccc','#efefef','#ffffff'],
+  ['#c62828','#e65100','#f9a825','#2e7d32','#1565c0','#4527a0','#ad1457','#6d4c41'],
+  ['#ef5350','#ff9800','#ffee58','#66bb6a','#42a5f5','#7e57c2','#ec407a','#a1887f'],
+  ['#ffcdd2','#ffe0b2','#fff9c4','#c8e6c9','#bbdefb','#d1c4e9','#f8bbd0','#d7ccc8'],
+];
+function openColorPalette(e, target) {
+  e.stopPropagation();
+  closeFilterDropdown();
+  const isFont = target === 'font';
+  let html = `<div style="padding:6px 8px;font-weight:700;font-size:0.72rem;border-bottom:1px solid var(--border)">${isFont?'글자색':'셀 배경색'}</div>`;
+  html += `<div style="padding:6px 8px">`;
+  PALETTE_COLORS.forEach(row=>{
+    html += `<div style="display:flex;gap:3px;margin-bottom:3px">`;
+    row.forEach(col=>{
+      html += `<span onclick="pickPaletteColor('${target}','${col}')" title="${col}" style="width:18px;height:18px;border-radius:3px;cursor:pointer;border:1px solid var(--border-bright);background:${col};display:inline-block"></span>`;
+    });
+    html += `</div>`;
+  });
+  html += `</div>`;
+  html += `<div style="padding:4px 8px;border-top:1px solid var(--border);display:flex;align-items:center;gap:6px">
+    <label style="font-size:0.72rem;cursor:pointer;display:flex;align-items:center;gap:4px">🎨 기타 색
+      <input type="color" value="${isFont?'#000000':'#ffffff'}" style="width:36px;height:22px;border:none;cursor:pointer;padding:0;background:none"
+        onchange="pickPaletteColor('${target}',this.value)">
+    </label>
+    <button class="btn" style="font-size:0.7rem;padding:2px 7px" onclick="pickPaletteColor('${target}','none')">색 없음</button>
+  </div>`;
+  const dd = document.createElement('div');
+  dd.id='filter-dropdown';
+  dd.style.cssText='position:fixed;z-index:2000;background:#fff;border:1px solid var(--border-bright);border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.18)';
+  const rect = e.currentTarget.getBoundingClientRect();
+  dd.style.left = rect.left+'px'; dd.style.top = (rect.bottom+3)+'px';
+  dd.innerHTML = html;
+  document.body.appendChild(dd);
+}
+function pickPaletteColor(target, color) {
+  closeFilterDropdown();
+  if (target==='font') applyFontColor(color==='none' ? '' : color);
+  else applyCellColor(color);
+}
+// 팔레트/필터 드롭다운 밖 클릭 시 닫기
+document.addEventListener('mousedown', e => {
+  const dd = document.getElementById('filter-dropdown');
+  if (dd && !dd.contains(e.target)) closeFilterDropdown();
+});
 </script>
 </body>
 </html>
