@@ -162,7 +162,7 @@
     cursor:row-resize; background:transparent; z-index:10;
   }
   .row-resize-handle:hover { background:rgba(21,101,192,0.3); }
-  td.rh { position:relative; }
+  /* sticky가 absolute 자식(리사이즈 핸들)의 기준이 되므로 relative 불필요 */
 
   /* ── 시트 탭 ── */
   .sheet-tabs {
@@ -1081,7 +1081,7 @@ function render() {
     let cls = '';
     if (sortState && sortState.col===c) cls=(sortState.dir==='asc'?' sort-asc':' sort-desc');
     if (selMode==='col' && selCols.has(c)) cls+=' col-selected';
-    let thStyle = `width:${colWidths[c]||90}px;position:relative`;
+    let thStyle = `width:${colWidths[c]||90}px;position:sticky;top:0`;
     if (c < frozenCols) { cls += ' frozen-col-header'; thStyle += `;left:${frozenColLefts[c]}px`; }
     html += `<th class="${cls}" style="${thStyle}" draggable="true" ondragstart="if(!event.altKey){event.preventDefault();return;} onColDragStart(event,${c})" ondragover="onColDragOver(event,${c})" ondrop="onColDrop(event,${c})" onmousedown="if(formulaRefMode||editMode||crossSheetEdit){event.preventDefault();}else if(event.button===0&&!event.altKey){beginHdrDragSel('col',${c});}" onmouseover="extendHdrDragSel('col',${c})" onclick="selectCol(${c},event.shiftKey)" ondblclick="sortByCol(${c})" oncontextmenu="rowColCtxMenu(event,'col',${c})" title="클릭:열선택 / 드래그:다중선택 / Alt+드래그:순서변경 / 더블클릭:정렬">${colLetters(c)}<span class="col-resize-handle" onmousedown="startColResize(event,${c})" ondblclick="autoFitCol(event,${c})" title="드래그:너비조정 / 더블클릭:자동맞춤"></span></th>`;
   }
@@ -1099,7 +1099,7 @@ function render() {
     let cls = '';
     if (sortState && sortState.col===c) cls=(sortState.dir==='asc'?' sort-asc':' sort-desc');
     if (selMode==='col' && selCols.has(c)) cls+=' col-selected';
-    let thStyle = `width:${colWidths[c]||90}px;position:relative`;
+    let thStyle = `width:${colWidths[c]||90}px;position:sticky;top:0`;
     if (c < frozenCols) { cls += ' frozen-col-header'; thStyle += `;left:${frozenColLefts[c]}px`; }
     const afArrow = (afRow !== undefined) ? `<span class="filter-arrow${fVals[c]?' active':''}" onclick="openFilterDropdown(event,${c})" title="필터">▼</span>` : '';
     html_col_row += `<th class="${cls}" style="${thStyle}" draggable="true" ondragstart="if(!event.altKey){event.preventDefault();return;} onColDragStart(event,${c})" ondragover="onColDragOver(event,${c})" ondrop="onColDrop(event,${c})" onmousedown="if(formulaRefMode||editMode||crossSheetEdit){event.preventDefault();}else if(event.button===0&&!event.altKey){beginHdrDragSel('col',${c});}" onmouseover="extendHdrDragSel('col',${c})" onclick="selectCol(${c},event.shiftKey)" ondblclick="sortByCol(${c})" oncontextmenu="rowColCtxMenu(event,'col',${c})" title="클릭:열선택 / 드래그:다중선택 / Alt+드래그:순서변경 / 더블클릭:정렬">${colLetters(c)}${afArrow}<span class="col-resize-handle" onmousedown="startColResize(event,${c})" ondblclick="autoFitCol(event,${c})" title="드래그:너비조정 / 더블클릭:자동맞춤"></span></th>`;
@@ -1294,6 +1294,10 @@ function selectCell(r, c) {
   const td = getCellEl(r, c);
   if (td) td.scrollIntoView({block:'nearest',inline:'nearest'});
   updateFillHandle();
+  // 수식 셀 선택 시 참조된 셀/범위를 색상으로 표시 (엑셀과 동일)
+  const rawSel = grid()?.[r]?.[c];
+  if (typeof rawSel==='string' && rawSel.startsWith('=')) applyFormulaRefHighlights(rawSel);
+  else clearFormulaRefHighlights();
 }
 
 function highlightSel() {
@@ -1987,6 +1991,7 @@ function fbarKeydown(e) {
   }
   if (e.key==='Enter') {
     e.preventDefault();
+    e.stopPropagation(); // blur 후 전역 핸들러가 같은 Enter로 enterEdit 하는 것 방지
     hideFnUI();
     const fi = document.getElementById('formula-input');
     if (crossSheetEdit) {
@@ -1995,6 +2000,13 @@ function fbarKeydown(e) {
     } else {
       applyFormulaBar();
     }
+    // 커밋 후 포인트 모드 종료: 수식바 포커스를 해제해야
+    // 다음 셀 클릭이 참조 삽입으로 오인되지 않음
+    formulaRefMode = false;
+    clearFormulaRefHighlights();
+    if (fi) fi.blur();
+    const pt = document.getElementById('paste-trap');
+    if (pt) pt.focus();
   }
   if (e.key==='Escape') {
     e.preventDefault();
@@ -3889,7 +3901,7 @@ function changeDecimal(delta) {
 // ══════════════════════════════════════════
 // 상태 표시줄 업데이트
 // ══════════════════════════════════════════
-const APP_BUILD = 'v2026.07.02-7';
+const APP_BUILD = 'v2026.07.02-8';
 function updateStatusBar() {
   const cells = getSelCellCoords();
   const mode = document.getElementById('sb-mode');
