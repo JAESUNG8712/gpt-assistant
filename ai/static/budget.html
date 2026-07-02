@@ -573,6 +573,7 @@
 <!-- 상태바 -->
 <div id="status-bar">
   <span id="sb-mode">준비</span>
+  <span id="sb-build" style="color:var(--text-dim)"></span>
   <span id="sb-sum" style="display:none">합계: <b id="sb-sum-val"></b></span>
   <span id="sb-avg" style="display:none">평균: <b id="sb-avg-val"></b></span>
   <span id="sb-cnt" style="display:none">개수: <b id="sb-cnt-val"></b></span>
@@ -3736,7 +3737,7 @@ function applyNumFmtDisplay(val, fmt, dec) {
   if (val==='' || val===null || val===undefined) return val;
   const n = parseFloat(val);
   if (isNaN(n)) return val;
-  const places = (dec !== undefined && dec !== null) ? dec : 2;
+  const places = (dec !== undefined && dec !== null) ? dec : (fmt==='comma'||fmt==='currency' ? 0 : 2);
   switch(fmt) {
     case 'currency':  return '₩' + n.toLocaleString('ko-KR', {minimumFractionDigits:0,maximumFractionDigits:0});
     case 'percent':   return (n*100).toFixed(places) + '%';
@@ -3764,21 +3765,24 @@ function changeDecimal(delta) {
 // ══════════════════════════════════════════
 // 상태 표시줄 업데이트
 // ══════════════════════════════════════════
+const APP_BUILD = 'v2026.07.02-2';
 function updateStatusBar() {
   const cells = getSelCellCoords();
-  const bar = document.getElementById('status-bar');
-  if (!bar) return;
+  const mode = document.getElementById('sb-mode');
+  const bld = document.getElementById('sb-build');
+  if (bld && !bld.textContent) bld.textContent = APP_BUILD;
+  if (!mode) return;
   const vals = cells.map(({r,c})=>grid()?.[r]?.[c]).filter(v=>v!==''&&v!==null&&v!==undefined);
-  const nums = vals.map(v=>parseFloat(v)).filter(v=>!isNaN(v));
-  let info = '';
+  const nums = vals.map(v=>looseNum(renderCell(v))).filter(v=>!isNaN(v));
+  let info = '준비';
   if (cells.length>1) {
-    info += `선택: ${cells.length}셀 `;
+    info = `선택: ${cells.length}셀`;
     if (nums.length) {
       const sum = nums.reduce((a,b)=>a+b,0);
-      info += `| 합계: ${sum.toLocaleString('ko-KR')} | 평균: ${(sum/nums.length).toLocaleString('ko-KR',{maximumFractionDigits:2})} | 개수: ${nums.length}`;
+      info += ` | 합계: ${sum.toLocaleString('ko-KR')} | 평균: ${(sum/nums.length).toLocaleString('ko-KR',{maximumFractionDigits:2})} | 개수: ${nums.length}`;
     }
   }
-  bar.textContent = info;
+  mode.textContent = info;
 }
 
 // ══════════════════════════════════════════
