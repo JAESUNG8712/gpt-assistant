@@ -89,7 +89,9 @@ RSI(14): {technical.get('RSI_14', 50):.1f}
     try:
         response = client.messages.create(
             model=MODEL,
-            max_tokens=500,
+            max_tokens=2000,
+            thinking={"type": "adaptive"},
+            output_config={"effort": "medium"},
             system=[
                 {
                     "type": "text",
@@ -157,7 +159,9 @@ KOSPI: {eco_summary['KOSPI']}
     try:
         response = client.messages.create(
             model=MODEL,
-            max_tokens=600,
+            max_tokens=2000,
+            thinking={"type": "adaptive"},
+            output_config={"effort": "medium"},
             system=[
                 {
                     "type": "text",
@@ -206,7 +210,9 @@ def generate_action_plan(top_picks: list, risk_val: Dict, economic_data: Dict) -
     try:
         response = client.messages.create(
             model=MODEL,
-            max_tokens=700,
+            max_tokens=2000,
+            thinking={"type": "adaptive"},
+            output_config={"effort": "medium"},
             system=[
                 {
                     "type": "text",

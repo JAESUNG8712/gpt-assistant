@@ -18,7 +18,15 @@ function readData() {
 }
 
 function writeData(data) {
-  fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2));
+  const tmpFile = `${DATA_FILE}.tmp`;
+  fs.writeFileSync(tmpFile, JSON.stringify(data, null, 2));
+  fs.renameSync(tmpFile, DATA_FILE);
+}
+
+let memoryEntrySeq = 0;
+function nextMemoryEntryId() {
+  memoryEntrySeq += 1;
+  return Date.now() * 1000 + (memoryEntrySeq % 1000);
 }
 
 // 에이전트 미설정 시 기본팀 자동 적용
@@ -124,7 +132,7 @@ app.post('/api/accounts/:accountId/memory/context', (req, res) => {
   if (!account.memory) account.memory = { projectContext: [], decisions: [] };
   if (!account.memory.projectContext) account.memory.projectContext = [];
 
-  const entry = { id: Date.now(), type, content, savedAt: new Date().toISOString() };
+  const entry = { id: nextMemoryEntryId(), type, content, savedAt: new Date().toISOString() };
   account.memory.projectContext.push(entry);
   writeData(data);
   res.json({ message: '맥락이 저장되었습니다.', entry });
@@ -142,7 +150,7 @@ app.post('/api/accounts/:accountId/memory/decisions', (req, res) => {
   if (!account.memory) account.memory = { projectContext: [], decisions: [] };
   if (!account.memory.decisions) account.memory.decisions = [];
 
-  const entry = { id: Date.now(), content, decidedAt: new Date().toISOString() };
+  const entry = { id: nextMemoryEntryId(), content, decidedAt: new Date().toISOString() };
   account.memory.decisions.push(entry);
   writeData(data);
   res.json({ message: '결정 사항이 저장되었습니다.', entry });

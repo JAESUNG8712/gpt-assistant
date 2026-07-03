@@ -73,9 +73,12 @@ async def run_analysis(
     if _analysis_running:
         raise HTTPException(status_code=429, detail="분석이 이미 실행 중입니다. 잠시 후 시도하세요.")
 
+    # 백그라운드 태스크가 실제로 시작되기 전(이벤트 루프 유휴 구간)에 들어오는
+    # 동시 요청을 막기 위해, 플래그는 태스크 실행 시점이 아니라 여기서 즉시 설정한다.
+    _analysis_running = True
+
     async def _run():
         global _analysis_running, _last_report, _last_run
-        _analysis_running = True
         try:
             report = await run_once(request.target_stocks)
             _last_report = report

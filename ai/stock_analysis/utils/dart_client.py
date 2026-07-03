@@ -105,6 +105,13 @@ STOCK_CODE_MAP = {
     "033320": "이수페타시스",
     "014620": "서진시스템",
     "408100": "오픈엣지테크놀로지",
+    "064400": "LG CNS",
+    "058470": "리노공업",
+    "218410": "RFHIC",
+    "175250": "아이큐어",
+    "412540": "제일엠앤에스",
+    "384470": "코어라인소프트",
+    # 퓨리오사AI는 비상장(private)이라 KRX 종목코드 없음 — CORP_CODES(DART 전용)에만 존재
 }
 
 
@@ -211,6 +218,7 @@ async def search_disclosures(corp_name: str, days: int = 30) -> list:
                 data = await resp.json()
                 return data.get("list", []) if data.get("status") == "000" else []
     except Exception as e:
+        print(f"⚠️  DART 공시 검색 오류 ({corp_name}): {e}")
         return []
 
 
@@ -218,8 +226,8 @@ def _parse_financial_statements(items: list) -> dict:
     result = {}
     for item in items:
         account = item.get("account_nm", "")
-        value = item.get("thstrm_amount", "0").replace(",", "")
-        prev_value = item.get("frmtrm_amount", "0").replace(",", "")
+        value = (item.get("thstrm_amount") or "0").replace(",", "")
+        prev_value = (item.get("frmtrm_amount") or "0").replace(",", "")
         try:
             result[account] = {
                 "current": int(value) if value else 0,

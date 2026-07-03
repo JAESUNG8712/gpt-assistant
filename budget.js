@@ -18,7 +18,9 @@ function readBudget() {
 }
 
 function writeBudget(data) {
-  fs.writeFileSync(BUDGET_FILE, JSON.stringify(data, null, 2));
+  const tmpFile = `${BUDGET_FILE}.tmp`;
+  fs.writeFileSync(tmpFile, JSON.stringify(data, null, 2));
+  fs.renameSync(tmpFile, BUDGET_FILE);
 }
 
 function parseSheet(buffer, filename) {

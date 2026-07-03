@@ -43,7 +43,7 @@
 <body>
 <header>
   <h1>📊 사업부별 예산 관리 (인원 / 판관·용역·경상)</h1>
-  <a href="/index.html">← 팀 에이전트 관리로</a>
+  <a href="/index.html" target="_top">← 팀 에이전트 관리로</a>
 </header>
 <main>
 
@@ -122,13 +122,23 @@ async function uploadFile(inputId, url, statusId) {
 
 async function resetData() {
   if (!confirm('업로드된 모든 예산 데이터를 초기화할까요?')) return;
-  await fetch('/api/budget/data', { method: 'DELETE' });
+  const res = await fetch('/api/budget/data', { method: 'DELETE' });
+  if (!res.ok) {
+    alert('초기화에 실패했습니다.');
+    return;
+  }
   loadAll();
 }
 
 function fmt(n) {
   if (n === null || n === undefined) return '-';
   return Number(n).toLocaleString();
+}
+
+function escapeHtml(str) {
+  return String(str ?? '').replace(/[&<>"']/g, c => (
+    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+  ));
 }
 
 async function loadSummary() {
@@ -144,7 +154,7 @@ async function loadSummary() {
   const grandTotals = MONTHS.map(()=>({headcount:0, 판관:0, 용역:0, 경상:0, totalAmount:0}));
 
   summary.forEach(dept => {
-    html += `<div class="dept-block"><h3>${dept.dept}</h3><table>
+    html += `<div class="dept-block"><h3>${escapeHtml(dept.dept)}</h3><table>
       <tr><th class="lbl">구분</th>${MONTHS.map(m=>`<th>${m}월</th>`).join('')}</tr>
       <tr><td class="lbl">인원수</td>${dept.months.map(d=>`<td>${fmt(d.headcount)}</td>`).join('')}</tr>
       <tr><td class="lbl">판관</td>${dept.months.map(d=>`<td>${fmt(d.판관)}</td>`).join('')}</tr>
@@ -195,14 +205,14 @@ function renderRaw() {
     if (!rawData.headcount.length) { area.innerHTML = '<p class="desc">데이터 없음</p>'; return; }
     let html = '<table><tr><th class="lbl">부서</th><th>월</th><th>인원수</th></tr>';
     rawData.headcount.sort((a,b)=> a.dept.localeCompare(b.dept) || a.month-b.month)
-      .forEach(h => html += `<tr><td class="lbl">${h.dept}</td><td>${h.month}월</td><td>${fmt(h.count)}</td></tr>`);
+      .forEach(h => html += `<tr><td class="lbl">${escapeHtml(h.dept)}</td><td>${h.month}월</td><td>${fmt(h.count)}</td></tr>`);
     html += '</table>';
     area.innerHTML = html;
   } else {
     if (!rawData.items.length) { area.innerHTML = '<p class="desc">데이터 없음</p>'; return; }
     let html = '<table><tr><th class="lbl">부문</th><th class="lbl">팀</th><th class="lbl">매출구분</th><th class="lbl">항목</th><th class="lbl">세부내역</th><th class="lbl">구분</th><th>월</th><th>금액</th></tr>';
     rawData.items.sort((a,b)=> a.dept.localeCompare(b.dept) || a.month-b.month)
-      .forEach(i => html += `<tr><td class="lbl">${i.dept}</td><td class="lbl">${i.team||''}</td><td class="lbl">${i.revenueType||''}</td><td class="lbl">${i.account||''}</td><td class="lbl">${i.detail||''}</td><td class="lbl">${i.category}</td><td>${i.month}월</td><td>${fmt(i.amount)}</td></tr>`);
+      .forEach(i => html += `<tr><td class="lbl">${escapeHtml(i.dept)}</td><td class="lbl">${escapeHtml(i.team)}</td><td class="lbl">${escapeHtml(i.revenueType)}</td><td class="lbl">${escapeHtml(i.account)}</td><td class="lbl">${escapeHtml(i.detail)}</td><td class="lbl">${escapeHtml(i.category)}</td><td>${i.month}월</td><td>${fmt(i.amount)}</td></tr>`);
     html += '</table>';
     area.innerHTML = html;
   }
