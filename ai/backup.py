@@ -1,5 +1,6 @@
 """백업 모듈 — 직접 다운로드 + Google Drive"""
 import os
+import secrets
 import sqlite3
 import json
 import zipfile
@@ -10,12 +11,16 @@ from pathlib import Path
 
 _APP_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH  = os.getenv("DB_PATH", os.path.join(_APP_DIR, "data", "memory.db"))
-TOKEN_PATH   = os.getenv("GDRIVE_TOKEN_PATH", "/tmp/gdrive_token.pkl")
+TOKEN_PATH        = os.getenv("GDRIVE_TOKEN_PATH", "/tmp/gdrive_token.json")
+_LEGACY_TOKEN_PATH = os.getenv("GDRIVE_TOKEN_PATH_LEGACY", "/tmp/gdrive_token.pkl")
 
 # Google Drive OAuth2 설정 (환경변수)
 GDRIVE_CLIENT_ID     = os.getenv("GDRIVE_CLIENT_ID", "")
 GDRIVE_CLIENT_SECRET = os.getenv("GDRIVE_CLIENT_SECRET", "")
 GDRIVE_REDIRECT_URI  = os.getenv("GDRIVE_REDIRECT_URI", "")  # 배포 URL + /backup/google-callback
+
+# OAuth CSRF 방지용 state — 인증 URL 발급 시 생성해 콜백에서 검증
+_pending_oauth_state: str | None = None
 
 
 # ── 공통: ZIP 생성 ────────────────────────────────────
@@ -91,8 +96,10 @@ def gdrive_configured() -> bool:
 
 
 def gdrive_auth_url() -> str:
-    """Google OAuth2 인증 URL 생성"""
+    """Google OAuth2 인증 URL 생성 (CSRF 방지용 state 포함)"""
+    global _pending_oauth_state
     import urllib.parse
+    _pending_oauth_state = secrets.token_urlsafe(24)
     params = {
         "client_id":     GDRIVE_CLIENT_ID,
         "redirect_uri":  GDRIVE_REDIRECT_URI,
@@ -100,12 +107,18 @@ def gdrive_auth_url() -> str:
         "scope":         "https://www.googleapis.com/auth/drive.file",
         "access_type":   "offline",
         "prompt":        "consent",
+        "state":         _pending_oauth_state,
     }
     return "https://accounts.google.com/o/oauth2/v2/auth?" + urllib.parse.urlencode(params)
 
 
-async def gdrive_exchange_code(code: str) -> bool:
-    """인증 코드 → 토큰 교환 후 저장"""
+async def gdrive_exchange_code(code: str, state: str = "") -> bool:
+    """인증 코드 → 토큰 교환 후 저장 (state가 발급 시 값과 다르면 CSRF로 간주해 거부)"""
+    global _pending_oauth_state
+    if not _pending_oauth_state or state != _pending_oauth_state:
+        raise ValueError("state 값이 일치하지 않습니다 (CSRF 의심 — 인증을 다시 시작하세요).")
+    _pending_oauth_state = None  # 1회용
+
     import httpx
     async with httpx.AsyncClient() as client:
         resp = await client.post(
@@ -121,17 +134,30 @@ async def gdrive_exchange_code(code: str) -> bool:
         resp.raise_for_status()
         token = resp.json()
 
-    Path(TOKEN_PATH).parent.mkdir(parents=True, exist_ok=True)
-    with open(TOKEN_PATH, "wb") as f:
-        pickle.dump(token, f)
+    _save_token(token)
     return True
 
 
+def _save_token(token: dict) -> None:
+    Path(TOKEN_PATH).parent.mkdir(parents=True, exist_ok=True)
+    with open(TOKEN_PATH, "w", encoding="utf-8") as f:
+        json.dump(token, f)
+
+
 def _load_token() -> dict | None:
-    if not os.path.exists(TOKEN_PATH):
-        return None
-    with open(TOKEN_PATH, "rb") as f:
-        return pickle.load(f)
+    if os.path.exists(TOKEN_PATH):
+        with open(TOKEN_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    # 이전 pickle 포맷 토큰이 남아있으면 1회 마이그레이션 (신뢰할 수 없는 소스의
+    # pickle 파일을 역직렬화하는 것을 피하기 위해 자기 자신이 이전에 쓴 레거시
+    # 경로에서만 읽는다)
+    if os.path.exists(_LEGACY_TOKEN_PATH):
+        with open(_LEGACY_TOKEN_PATH, "rb") as f:
+            token = pickle.load(f)
+        _save_token(token)
+        os.remove(_LEGACY_TOKEN_PATH)
+        return token
+    return None
 
 
 async def _refresh_access_token(token: dict) -> str:
@@ -152,8 +178,7 @@ async def _refresh_access_token(token: dict) -> str:
 
     # 갱신된 access_token 저장
     token["access_token"] = new_token["access_token"]
-    with open(TOKEN_PATH, "wb") as f:
-        pickle.dump(token, f)
+    _save_token(token)
     return token["access_token"]
 
 
@@ -200,4 +225,4 @@ async def backup_to_gdrive() -> dict:
 
 def gdrive_connected() -> bool:
     """Google Drive 연동 여부 확인"""
-    return os.path.exists(TOKEN_PATH)
+    return os.path.exists(TOKEN_PATH) or os.path.exists(_LEGACY_TOKEN_PATH)

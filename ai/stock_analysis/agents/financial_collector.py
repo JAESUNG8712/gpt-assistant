@@ -48,9 +48,12 @@ class FinancialCollector:
         corp_code = CORP_CODES.get(corp_name)
         ticker = next((k for k, v in STOCK_CODE_MAP.items() if v == corp_name), None)
 
-        # ticker가 없으면 네이버 금융 자동완성으로 탐색 (LG CNS 등 신규 상장 종목)
+        # ticker가 없으면 네이버 금융 자동완성으로 탐색 (신규 상장 종목 등)
+        # lookup_ticker_by_name은 동기 블로킹 HTTP 호출이므로 스레드 실행기로 넘긴다.
         if not ticker:
-            found = lookup_ticker_by_name(corp_name)
+            found = await asyncio.get_event_loop().run_in_executor(
+                None, lookup_ticker_by_name, corp_name
+            )
             if found:
                 ticker = found
                 STOCK_CODE_MAP[found] = corp_name  # 캐시에 등록

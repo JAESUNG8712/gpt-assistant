@@ -4,6 +4,7 @@
 API 키 발급: https://open.law.go.kr (무료)
 환경변수: LAW_API_KEY
 """
+import asyncio
 import os
 import re
 import httpx
@@ -229,8 +230,11 @@ async def search_law(query: str) -> list[dict]:
         article_nums = _extract_article_nums(query)
         if not article_nums:
             # 조항 번호 없는 일반 법령 질문만 DDG 폴백 허용
+            # search_law_ddg는 동기 블로킹 DDG 호출이므로 스레드 실행기로 넘긴다.
             print("ℹ️ law.go.kr API 결과 없음 → DuckDuckGo 폴백")
-            results = search_law_ddg(query)
+            results = await asyncio.get_event_loop().run_in_executor(
+                None, search_law_ddg, query
+            )
         else:
             print("ℹ️ law.go.kr API 결과 없음 (조항 쿼리 → DDG 폴백 생략)")
     return results

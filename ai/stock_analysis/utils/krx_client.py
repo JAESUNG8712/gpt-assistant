@@ -32,6 +32,11 @@ _NAVER_HEADERS = {
 }
 
 
+async def _run_sync(fn, *args):
+    """pykrx는 동기 블로킹 호출이므로 스레드 실행기로 넘겨 이벤트 루프가 멈추지 않게 한다."""
+    return await asyncio.get_event_loop().run_in_executor(None, fn, *args)
+
+
 def get_today() -> str:
     return datetime.now().strftime("%Y%m%d")
 
@@ -161,7 +166,7 @@ async def get_stock_price(ticker: str, days: int = 30) -> dict:
         try:
             end = get_today()
             start = get_date_before(days)
-            df = krx_stock.get_market_ohlcv_by_date(start, end, ticker)
+            df = await _run_sync(krx_stock.get_market_ohlcv_by_date, start, end, ticker)
             if df.empty:
                 return {"error": f"{ticker} 데이터 없음"}
 
@@ -203,7 +208,7 @@ async def get_investor_trading(ticker: str, days: int = 20) -> dict:
     try:
         end = get_today()
         start = get_date_before(days)
-        df = krx_stock.get_market_trading_value_by_date(start, end, ticker)
+        df = await _run_sync(krx_stock.get_market_trading_value_by_date, start, end, ticker)
         if df.empty:
             return _mock_investor_data(ticker)
 
@@ -241,7 +246,7 @@ async def get_market_valuation(ticker: str) -> dict:
         try:
             today = get_today()
             start = get_date_before(5)
-            df = krx_stock.get_market_fundamental_by_date(start, today, ticker)
+            df = await _run_sync(krx_stock.get_market_fundamental_by_date, start, today, ticker)
             if not df.empty:
                 latest = df.iloc[-1]
                 return {
@@ -275,7 +280,7 @@ async def get_index_data(index: str = "KOSPI", days: int = 30) -> dict:
     try:
         end = get_today()
         start = get_date_before(days)
-        df = krx_stock.get_index_ohlcv_by_date(start, end, code)
+        df = await _run_sync(krx_stock.get_index_ohlcv_by_date, start, end, code)
         if df.empty:
             return _mock_index_data(index)
 
@@ -299,7 +304,7 @@ async def get_short_selling(ticker: str, days: int = 10) -> dict:
     try:
         end = get_today()
         start = get_date_before(days)
-        df = krx_stock.get_shorting_balance_by_date(start, end, ticker)
+        df = await _run_sync(krx_stock.get_shorting_balance_by_date, start, end, ticker)
         if df.empty:
             return {"공매도잔고": 0}
         latest = df.iloc[-1]
