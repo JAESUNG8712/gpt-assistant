@@ -5087,6 +5087,7 @@ function connectSSE(){
         serverRequest("GET","/data",null,8000).then(r=>{
           if(r.ok && r.data){
             const d = r.data?.data || r.data;
+            _resetSettingStages(); // 다른 사용자의 저장 반영 시 낡은 편집본 폐기
             // Apply ALL data including settings
             if(d.employees){ employees=d.employees; if(currentUser){const u=employees.find(e=>e.id===currentUser.id);if(u)currentUser=u;} }
             if(d.kpiEntries) kpiEntries=d.kpiEntries;
@@ -5111,7 +5112,7 @@ function connectSSE(){
               });
               if(prev!==curr){
                 renderSidebar(); // menu might have changed (comp eval on/off)
-                showToast(`관리자가 설정을 변경했습니다 (${ev.savedBy})`, "info");
+                showToast(`관리자가 설정을 변경했습니다${ev.savedBy?` (${ev.savedBy})`:""}`, "info");
               }
             }
             // Apply org structure
@@ -12309,8 +12310,9 @@ async function _testDeploySrv(){
 function _copyShareLink(){
   const el=$("#share-link-input");
   if(!el)return;
-  navigator.clipboard?.writeText(el.value).then(()=>showToast("링크가 복사되었습니다.","success"))
-    .catch(()=>{el.select();document.execCommand("copy");showToast("복사되었습니다.","success");});
+  const fallback=()=>{el.select();document.execCommand("copy");showToast("복사되었습니다.","success");};
+  if(navigator.clipboard)navigator.clipboard.writeText(el.value).then(()=>showToast("링크가 복사되었습니다.","success")).catch(fallback);
+  else fallback();
 }
 
 // ── Per-user menu permission helpers ──
@@ -17971,85 +17973,19 @@ function renderGPSSettings(){
 // Legacy fallback for old settings page tab
 function _renderGPSSettingsLegacy(){
   const el=$("#settings-content");if(!el)return;
-  const rooms=(settings.meetingRooms||[]);
-  const roomRows=rooms.map((r,i)=>`<tr>
-    <td><input class="fc" style="min-width:100px" value="${h(r.name)}" oninput="settings.meetingRooms[${i}].name=this.value;autoSaveDebounced()"></td>
-    <td><input class="fc" type="number" style="width:60px" value="${r.capacity||10}" oninput="settings.meetingRooms[${i}].capacity=+this.value;autoSaveDebounced()"></td>
-    <td><input class="fc" style="width:80px" value="${h(r.location||"")}" oninput="settings.meetingRooms[${i}].location=this.value;autoSaveDebounced()"></td>
-    <td><input type="color" value="${r.color||"#3b82f6"}" style="width:40px;height:32px;border:none;cursor:pointer" onchange="settings.meetingRooms[${i}].color=this.value;autoSaveDebounced()"></td>
-    <td><button class="btn btn-danger btn-sm" onclick="settings.meetingRooms.splice(${i},1);autoSaveDebounced();renderGPSSettings()">삭제</button></td>
-  </tr>`).join("");
-  const cats=settings.boardCategories||[];
-  const catRows=cats.map((cat,i)=>`<tr>
-    <td><input class="fc" style="min-width:60px" value="${h(cat.icon||"")}" oninput="settings.boardCategories[${i}].icon=this.value;autoSaveDebounced()" placeholder="🏷"></td>
-    <td><input class="fc" style="min-width:100px" value="${h(cat.name)}" oninput="settings.boardCategories[${i}].name=this.value;autoSaveDebounced()"></td>
-    <td><button class="btn btn-danger btn-sm" onclick="settings.boardCategories.splice(${i},1);autoSaveDebounced();renderGPSSettings()">삭제</button></td>
-  </tr>`).join("");
-  const wdays=settings.workDays||[1,2,3,4,5];
-  const dayLabels=["일","월","화","수","목","금","토"];
-  const dayCheckboxes=[0,1,2,3,4,5,6].map(d=>`<label style="display:inline-flex;align-items:center;gap:4px;font-size:12px;cursor:pointer;padding:4px 8px;border-radius:6px;background:${wdays.includes(d)?"#dbeafe":"#f1f5f9"};border:1px solid ${wdays.includes(d)?"#93c5fd":"#e2e8f0"}"><input type="checkbox" ${wdays.includes(d)?"checked":""} onchange="_toggleWorkDay(${d})" style="margin:0">${dayLabels[d]}</label>`).join("");
-  const compHols=(settings.companyHolidays||[]).sort();
-  el.innerHTML=`
-  <div class="card" style="margin-bottom:14px"><div class="card-head"><h3>⏰ 근무시간 및 근무일 설정</h3></div><div class="card-body">
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px">
-      <div class="fg"><label class="fl">출근 시간</label><select class="fc" id="s-wstart" onchange="settings.workStartHour=+this.value;autoSaveDebounced()">${Array.from({length:12},(_,i)=>i+6).map(h2=>`<option value="${h2}" ${(settings.workStartHour||9)===h2?"selected":""}>${String(h2).padStart(2,"0")}:00</option>`).join("")}</select></div>
-      <div class="fg"><label class="fl">퇴근 시간</label><select class="fc" id="s-wend" onchange="settings.workEndHour=+this.value;autoSaveDebounced()">${Array.from({length:12},(_,i)=>i+12).map(h2=>`<option value="${h2}" ${(settings.workEndHour||18)===h2?"selected":""}>${String(h2).padStart(2,"0")}:00</option>`).join("")}</select></div>
-    </div>
-    <div class="fg"><label class="fl">근무 요일</label><div style="display:flex;gap:6px;flex-wrap:wrap">${dayCheckboxes}</div></div>
-    <div class="fg" style="margin-top:12px"><label class="fl">회사 지정 휴일 추가</label>
-      <div style="display:flex;gap:8px;margin-bottom:8px"><input class="fc" type="date" id="s-chol-date" style="flex:1"><button class="btn btn-secondary btn-sm" onclick="_addCompanyHoliday()">+ 추가</button></div>
-      ${compHols.length>0?`<div style="display:flex;flex-wrap:wrap;gap:6px">${compHols.map(d=>`<span style="background:#fef2f2;border:1px solid #fecaca;border-radius:6px;padding:3px 8px;font-size:12px;display:flex;align-items:center;gap:4px">${d} <button style="background:none;border:none;cursor:pointer;color:#dc2626;font-size:11px" onclick="_removeCompanyHoliday('${d}')">✕</button></span>`).join("")}</div>`:`<div class="fz12 text-gray">등록된 회사 지정 휴일이 없습니다.</div>`}
-    </div>
-  </div></div>
-  <div class="card" style="margin-bottom:14px"><div class="card-head"><h3>📌 게시판 카테고리 관리</h3>
-    <button class="btn btn-primary btn-sm" onclick="_addBoardCategory()">+ 추가</button>
-  </div><div class="card-body" style="padding:0">
-    ${cats.length===0?`<div style="padding:20px;text-align:center;color:#94a3b8">게시판 카테고리가 없습니다.</div>`:`<div class="tbl-wrap"><table><thead><tr><th>아이콘</th><th>이름</th><th>삭제</th></tr></thead><tbody>${catRows}</tbody></table></div>`}
-  </div></div>
-  <div class="card" style="margin-bottom:14px"><div class="card-head"><h3>🏢 회사 기본 정보</h3></div><div class="card-body">
-    <div class="fg"><label class="fl">회사명</label><input class="fc" id="s-cname" value="${h(settings.companyName||"")}" placeholder="(주)회사명" oninput="settings.companyName=this.value;autoSaveDebounced()"></div>
-    <div class="fg"><label class="fl">대표이사명</label><input class="fc" id="s-ceoname" value="${h(settings.ceoName||"")}" placeholder="대표이사 성명" oninput="settings.ceoName=this.value;autoSaveDebounced()"></div>
-    <div class="fg"><label class="fl">대표자 직인 이미지</label>
-      <div style="display:flex;align-items:center;gap:10px">
-        ${settings.certStamp?`<img src="${settings.certStamp}" style="width:60px;height:60px;object-fit:contain;border:1px solid #e2e8f0;border-radius:6px;background:#f8fafc">`:`<div style="width:60px;height:60px;border:2px dashed #cbd5e1;border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:10px;color:#94a3b8">도장없음</div>`}
-        <div><input type="file" accept="image/*" id="stamp-file-input" style="display:none" onchange="uploadCertStamp(event)"><button class="btn btn-secondary btn-sm" onclick="document.getElementById('stamp-file-input').click()">📷 이미지 업로드</button>
-        ${settings.certStamp?`<button class="btn btn-danger btn-sm" style="margin-top:4px" onclick="settings.certStamp='';autoSaveDebounced();renderGPSSettings()">삭제</button>`:""}</div>
-      </div>
-    </div>
-  </div></div>
-  <div class="card" style="margin-bottom:14px"><div class="card-head"><h3>📍 GPS 출퇴근 설정</h3></div><div class="card-body">
-    <div class="fg" style="display:flex;align-items:center;gap:12px;margin-bottom:14px">
-      <label class="fl" style="margin:0;flex:none">GPS 출퇴근 활성화</label>
-      <button class="est-btn ${settings.gpsEnabled?"est-on":""}" onclick="settings.gpsEnabled=true;autoSaveDebounced();renderGPSSettings()">✅ 활성</button>
-      <button class="est-btn ${!settings.gpsEnabled?"est-off":""}" onclick="settings.gpsEnabled=false;autoSaveDebounced();renderGPSSettings()">🔚 비활성</button>
-    </div>
-    <div class="fg"><label class="fl">네이버 지도 Client ID</label>
-      <div style="display:flex;gap:8px"><input class="fc" id="s-naver-cid" value="${h(settings.naverMapClientId||"")}" placeholder="네이버 지도 Client ID 입력" style="flex:1">
-        <button class="btn btn-secondary" onclick="loadNaverMapForAdmin()">🗺 지도 불러오기</button>
-      </div>
-    </div>
-    <div id="naver-map-admin" style="width:100%;height:260px;border-radius:8px;overflow:hidden;margin-bottom:10px;display:${settings.gpsLat?'block':'none'}"></div>
-    <div class="card-head" style="padding:0;margin-bottom:8px"><h3 style="font-size:13px">📌 GPS 위치 관리</h3>
-      <button class="btn btn-primary btn-sm" onclick="_addGpsLocation()">+ 위치 추가</button>
-    </div>
-    ${(()=>{const locs=settings.gpsLocations||[];if(!locs.length&&settings.gpsLat){return`<div style="background:#fffbeb;padding:8px 12px;border-radius:6px;border:1px solid #fde68a;margin-bottom:8px;font-size:12px">⚠ 기존 단일 위치 설정이 있습니다.</div><div style="background:#f8fafc;border-radius:8px;padding:10px 14px;margin-bottom:8px;display:flex;align-items:center;gap:12px"><div class="fz12"><strong>기존 위치</strong><div class="fz11 text-gray">위도 ${settings.gpsLat?.toFixed(6)||""}, 경도 ${settings.gpsLng?.toFixed(6)||""}, 반경 ${settings.gpsRadius||200}m</div></div><button class="btn btn-secondary btn-sm" onclick="_migrateGpsLocation()">새 위치로 전환</button></div>`;} if(!locs.length)return`<div style="padding:14px;text-align:center;color:#94a3b8;font-size:12px">등록된 GPS 위치가 없습니다.</div>`;return`<div class="tbl-wrap"><table><thead><tr><th>위치명</th><th>위도</th><th>경도</th><th>반경(m)</th><th>삭제</th></tr></thead><tbody>${locs.map((loc,i)=>`<tr><td><input class="fc" value="${h(loc.name||"")}" style="width:100px" oninput="settings.gpsLocations[${i}].name=this.value;autoSaveDebounced()"></td><td><input class="fc" type="number" step="0.000001" value="${loc.lat||""}" style="width:110px" oninput="settings.gpsLocations[${i}].lat=+this.value;autoSaveDebounced()"></td><td><input class="fc" type="number" step="0.000001" value="${loc.lng||""}" style="width:110px" oninput="settings.gpsLocations[${i}].lng=+this.value;autoSaveDebounced()"></td><td><input class="fc" type="number" value="${loc.radius||200}" style="width:80px" oninput="settings.gpsLocations[${i}].radius=+this.value;autoSaveDebounced()"></td><td><button class="btn btn-danger btn-sm" onclick="settings.gpsLocations.splice(${i},1);autoSaveDebounced();renderGPSSettings()">삭제</button></td></tr>`).join("")}</tbody></table></div>`;})()}
-  </div></div>
-  <div class="card" style="margin-bottom:14px"><div class="card-head"><h3>💰 급여 추가 항목 관리</h3>
-    <button class="btn btn-primary btn-sm" onclick="_addCustomPayItem()">+ 항목 추가</button>
-  </div><div class="card-body" style="padding:0">
-    ${(settings.customPayItems||[]).length===0?`<div style="padding:20px;text-align:center;color:#94a3b8">추가 급여 항목이 없습니다.</div>`:`<div class="tbl-wrap"><table><thead><tr><th>항목명</th><th>구분</th><th>금액(원)</th><th>적용</th><th>삭제</th></tr></thead><tbody>${(settings.customPayItems||[]).map((ci,i)=>`<tr><td><input class="fc" value="${h(ci.name)}" style="min-width:100px" oninput="settings.customPayItems[${i}].name=this.value;autoSaveDebounced()"></td><td><select class="fc" style="width:80px" onchange="settings.customPayItems[${i}].type=this.value;autoSaveDebounced()"><option value="pay" ${ci.type==="pay"?"selected":""}>지급</option><option value="deduct" ${ci.type==="deduct"?"selected":""}>공제</option></select></td><td><input class="fc" type="number" value="${ci.amount||0}" style="width:100px" oninput="settings.customPayItems[${i}].amount=+this.value;autoSaveDebounced()"></td><td><input type="checkbox" ${ci.enabled!==false?"checked":""} onchange="settings.customPayItems[${i}].enabled=this.checked;autoSaveDebounced()" style="width:18px;height:18px;cursor:pointer"></td><td><button class="btn btn-danger btn-sm" onclick="settings.customPayItems.splice(${i},1);autoSaveDebounced();renderGPSSettings()">삭제</button></td></tr>`).join("")}</tbody></table></div>`}
-  </div></div>
-  <div class="card" style="margin-bottom:14px"><div class="card-head"><h3>⏱ 유연근무제 시간 옵션 관리</h3>
-    <button class="btn btn-primary btn-sm" onclick="_addFlexWorkOption()">+ 옵션 추가</button>
-  </div><div class="card-body" style="padding:0">
-    ${(settings.flexWorkOptions||[]).length===0?`<div style="padding:20px;text-align:center;color:#94a3b8">등록된 유연근무 시간 옵션이 없습니다.</div>`:`<div class="tbl-wrap"><table><thead><tr><th>표시 이름</th><th>출근 시간</th><th>퇴근 시간</th><th>삭제</th></tr></thead><tbody>${(settings.flexWorkOptions||[]).map((fo,i)=>`<tr><td><input class="fc" value="${h(fo.label)}" style="min-width:160px" oninput="settings.flexWorkOptions[${i}].label=this.value;autoSaveDebounced()"></td><td><select class="fc" style="width:110px" onchange="settings.flexWorkOptions[${i}].startHour=+this.value;autoSaveDebounced()">${Array.from({length:17},(_,k)=>6+k*0.5).map(t=>`<option value="${t}" ${(fo.startHour||9)===t?"selected":""}>${_fmtHour(t)}</option>`).join("")}</select></td><td><select class="fc" style="width:110px" onchange="settings.flexWorkOptions[${i}].endHour=+this.value;autoSaveDebounced()">${Array.from({length:21},(_,k)=>12+k*0.5).map(t=>`<option value="${t}" ${(fo.endHour||18)===t?"selected":""}>${_fmtHour(t)}</option>`).join("")}</select></td><td><button class="btn btn-danger btn-sm" onclick="settings.flexWorkOptions.splice(${i},1);autoSaveDebounced();renderGPSSettings()">삭제</button></td></tr>`).join("")}</tbody></table></div>`}
-  </div></div>
-  <div class="card"><div class="card-head"><h3>🗓 회의실 관리</h3>
-    <button class="btn btn-primary btn-sm" onclick="addMeetingRoom()">+ 회의실 추가</button>
-  </div><div class="card-body" style="padding:0">
-    ${rooms.length===0?`<div style="padding:30px;text-align:center;color:#94a3b8">등록된 회의실이 없습니다.</div>`:`<div class="tbl-wrap"><table><thead><tr><th>회의실명</th><th>수용인원</th><th>위치</th><th>색상</th><th>삭제</th></tr></thead><tbody>${roomRows}</tbody></table></div>`}
+  // 기존 GPS·회의실 통합 탭은 전용 설정 페이지로 이전됨 (중복 편집 경로 제거)
+  const links=[
+    ["attend-settings","⏰ 근태 설정","근무시간·근무일·휴일, GPS 출퇴근, 유연근무 옵션"],
+    ["payroll-settings","💰 급여 설정","급여 추가 항목(지급/공제/비과세) 관리"],
+    ["company-info","🏛 회사 기본 정보","회사명·대표이사·직인 이미지"],
+    ["room-settings","🗓 회의실·게시판 설정","회의실 관리, 게시판 카테고리·작성 권한"],
+  ];
+  el.innerHTML=`<div class="card"><div class="card-head"><h3>📍 GPS·회의실 설정</h3></div><div class="card-body">
+    <div class="fz12 text-gray mb3">이 설정들은 전용 페이지로 이동되었습니다. 아래에서 이동할 설정을 선택하세요. (변경 사항은 각 페이지에서 저장 버튼을 눌러야 반영됩니다.)</div>
+    ${links.map(([pg,title,desc])=>`<button class="btn btn-secondary" style="display:flex;flex-direction:column;align-items:flex-start;gap:2px;width:100%;text-align:left;margin-bottom:8px;padding:10px 14px" onclick="gotoPage('${pg}')">
+      <span class="fw7">${title} →</span><span class="fz11 text-gray">${desc}</span>
+    </button>`).join("")}
   </div></div>`;
-  if(settings.gpsLat&&settings.naverMapClientId&&window.naver?.maps)setTimeout(_initAdminNaverMap,100);
 }
 // ==================== 근태 설정 페이지 ====================
 let _opsStage=null; // 근태/급여/회사정보/회의실 설정 저장 전 임시 편집본
