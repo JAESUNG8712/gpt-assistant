@@ -14043,10 +14043,19 @@ function renderAcctAccountsPage(){
   const c=$("#content");if(!c)return;
   if(!serverConfig.url){c.innerHTML=_acctNoServerHtml("계정과목 관리");return;}
   const TYPE_LABEL={asset:"자산",liability:"부채",equity:"자본",revenue:"수익",expense:"비용"};
-  c.innerHTML=`<div class="card"><div class="card-head"><h3>📒 계정과목 관리</h3><button class="btn btn-primary btn-sm" onclick="openAcctAccountModal()">+ 계정과목 추가</button></div>
-  <div class="card-body" style="padding:0"><div class="tbl-wrap"><table><thead><tr><th>코드</th><th>계정명</th><th>구분</th><th>세부분류</th><th>사용여부</th><th>관리</th></tr></thead><tbody>
-  ${acctAccounts.length?acctAccounts.map(a=>`<tr><td>${h(a.code)}</td><td>${h(a.name)}</td><td>${TYPE_LABEL[a.type]||a.type}</td><td>${h(a.category||"-")}</td><td>${a.active?badge("사용","green"):badge("미사용","gray")}</td><td><button class="btn btn-secondary btn-sm" onclick="openAcctAccountModal('${a.id}')">수정</button> <button class="btn btn-ghost btn-sm" onclick="_showRecordHistory('${h(a.name)}',_buildHistoryRows(${JSON.stringify(a).replace(/'/g,"&#39;")},[]))">이력</button> <button class="btn btn-danger btn-sm" onclick="deleteAcctAccount('${a.id}')">삭제</button></td></tr>`).join(""):`<tr><td colspan="6" class="text-gray" style="text-align:center;padding:20px">등록된 계정과목이 없습니다.</td></tr>`}
+  const q=(window._acctAccSearch||"").trim();
+  const rows=q?acctAccounts.filter(a=>[a.code,a.name,TYPE_LABEL[a.type],a.category].some(v=>(v||"").includes(q))):acctAccounts;
+  c.innerHTML=`<div class="card"><div class="card-head"><h3>📒 계정과목 관리</h3><div><button class="btn btn-secondary btn-sm" onclick="_dlAcctAccountsCSV()">📥 엑셀 다운로드</button> <button class="btn btn-primary btn-sm" onclick="openAcctAccountModal()">+ 계정과목 추가</button></div></div>
+  <div class="card-body">
+  <div class="fg" style="max-width:320px"><input class="fc" value="${h(q)}" placeholder="코드·계정명·구분·세부분류 검색" oninput="window._acctAccSearch=this.value;renderAcctAccountsPage()"></div>
+  <div class="tbl-wrap"><table><thead><tr><th>코드</th><th>계정명</th><th>구분</th><th>세부분류</th><th>사용여부</th><th>관리</th></tr></thead><tbody>
+  ${rows.length?rows.map(a=>`<tr><td>${h(a.code)}</td><td>${h(a.name)}</td><td>${TYPE_LABEL[a.type]||a.type}</td><td>${h(a.category||"-")}</td><td>${a.active?badge("사용","green"):badge("미사용","gray")}</td><td><button class="btn btn-secondary btn-sm" onclick="openAcctAccountModal('${a.id}')">수정</button> <button class="btn btn-ghost btn-sm" onclick="_showRecordHistory('${h(a.name)}',_buildHistoryRows(${JSON.stringify(a).replace(/'/g,"&#39;")},[]))">이력</button> <button class="btn btn-danger btn-sm" onclick="deleteAcctAccount('${a.id}')">삭제</button></td></tr>`).join(""):`<tr><td colspan="6" class="text-gray" style="text-align:center;padding:20px">${q?"검색 결과가 없습니다.":"등록된 계정과목이 없습니다."}</td></tr>`}
   </tbody></table></div></div></div>`;
+}
+function _dlAcctAccountsCSV(){
+  const TYPE_LABEL={asset:"자산",liability:"부채",equity:"자본",revenue:"수익",expense:"비용"};
+  dlCSV(`계정과목_${new Date().toISOString().slice(0,10)}.csv`,["코드","계정명","구분","세부분류","사용여부"],
+    acctAccounts.map(a=>[a.code,a.name,TYPE_LABEL[a.type]||a.type,a.category||"",a.active?"사용":"미사용"]));
 }
 function openAcctAccountModal(id){
   const a=id?acctAccounts.find(a=>a.id===id):null;
@@ -14098,10 +14107,27 @@ function _buildHistoryRows(record,stages){
 function renderAcctPartnersPage(){
   const c=$("#content");if(!c)return;
   if(!serverConfig.url){c.innerHTML=_acctNoServerHtml("거래처 관리");return;}
-  c.innerHTML=`<div class="card"><div class="card-head"><h3>🏢 거래처 관리</h3><div><button class="btn btn-secondary btn-sm" onclick="openPartnerBulkUploadModal()">📤 일괄 업로드</button> <button class="btn btn-primary btn-sm" onclick="openPartnerModal()">+ 거래처 추가</button></div></div>
-  <div class="card-body" style="padding:0"><div class="tbl-wrap"><table><thead><tr><th>거래처명</th><th>사업자번호</th><th>대표자</th><th>거래유형</th><th>담당자</th><th>연락처</th><th>사용여부</th><th>관리</th></tr></thead><tbody>
-  ${acctPartners.length?acctPartners.map(p=>`<tr><td>${h(p.name)}</td><td>${h(p.bizNo||"-")}</td><td>${h(p.ceoName||"-")}</td><td>${PARTNER_TYPE_LABEL[p.type]||p.type}</td><td>${h(p.contactName||"-")}</td><td>${h(p.phone||"-")}</td><td>${p.active?badge("사용","green"):badge("미사용","gray")}</td><td><button class="btn btn-secondary btn-sm" onclick="openPartnerModal('${p.id}')">수정</button> <button class="btn btn-ghost btn-sm" onclick="_showRecordHistory('${h(p.name)}',_buildHistoryRows(${JSON.stringify(p).replace(/'/g,"&#39;")},[]))">이력</button> <button class="btn btn-danger btn-sm" onclick="deletePartner('${p.id}')">삭제</button></td></tr>`).join(""):`<tr><td colspan="8" class="text-gray" style="text-align:center;padding:20px">등록된 거래처가 없습니다.</td></tr>`}
+  const f=window._acctPtnFilter||{q:"",type:"all"};
+  let rows=acctPartners;
+  if(f.type!=="all")rows=rows.filter(p=>p.type===f.type||p.type==="both");
+  if(f.q.trim()){const q=f.q.trim();rows=rows.filter(p=>[p.name,p.bizNo,p.ceoName,p.contactName,p.phone,p.email].some(v=>(v||"").includes(q)));}
+  c.innerHTML=`<div class="card"><div class="card-head"><h3>🏢 거래처 관리</h3><div><button class="btn btn-secondary btn-sm" onclick="_dlPartnersCSV()">📥 엑셀 다운로드</button> <button class="btn btn-secondary btn-sm" onclick="openPartnerBulkUploadModal()">📤 일괄 업로드</button> <button class="btn btn-primary btn-sm" onclick="openPartnerModal()">+ 거래처 추가</button></div></div>
+  <div class="card-body">
+  <div class="flex gap2 wrap mb3">
+    <input class="fc" style="max-width:280px" value="${h(f.q)}" placeholder="거래처명·사업자번호·대표자·담당자·연락처 검색" oninput="window._acctPtnFilter={...window._acctPtnFilter,q:this.value};renderAcctPartnersPage()">
+    <select class="fc" style="max-width:140px" onchange="window._acctPtnFilter={...window._acctPtnFilter,type:this.value};renderAcctPartnersPage()">
+      <option value="all" ${f.type==="all"?"selected":""}>전체 유형</option>
+      <option value="customer" ${f.type==="customer"?"selected":""}>매출처</option>
+      <option value="vendor" ${f.type==="vendor"?"selected":""}>매입처</option>
+    </select>
+  </div>
+  <div class="tbl-wrap"><table><thead><tr><th>거래처명</th><th>사업자번호</th><th>대표자</th><th>거래유형</th><th>담당자</th><th>연락처</th><th>사용여부</th><th>관리</th></tr></thead><tbody>
+  ${rows.length?rows.map(p=>`<tr><td>${h(p.name)}</td><td>${h(p.bizNo||"-")}</td><td>${h(p.ceoName||"-")}</td><td>${PARTNER_TYPE_LABEL[p.type]||p.type}</td><td>${h(p.contactName||"-")}</td><td>${h(p.phone||"-")}</td><td>${p.active?badge("사용","green"):badge("미사용","gray")}</td><td><button class="btn btn-secondary btn-sm" onclick="openPartnerModal('${p.id}')">수정</button> <button class="btn btn-ghost btn-sm" onclick="_showRecordHistory('${h(p.name)}',_buildHistoryRows(${JSON.stringify(p).replace(/'/g,"&#39;")},[]))">이력</button> <button class="btn btn-danger btn-sm" onclick="deletePartner('${p.id}')">삭제</button></td></tr>`).join(""):`<tr><td colspan="8" class="text-gray" style="text-align:center;padding:20px">${f.q||f.type!=="all"?"검색 결과가 없습니다.":"등록된 거래처가 없습니다."}</td></tr>`}
   </tbody></table></div></div></div>`;
+}
+function _dlPartnersCSV(){
+  dlCSV(`거래처_${new Date().toISOString().slice(0,10)}.csv`,["거래처명","사업자번호","대표자","거래유형","담당자","연락처","이메일","주소","사용여부"],
+    acctPartners.map(p=>[p.name,p.bizNo||"",p.ceoName||"",PARTNER_TYPE_LABEL[p.type]||p.type,p.contactName||"",p.phone||"",p.email||"",p.address||"",p.active?"사용":"미사용"]));
 }
 function openPartnerModal(id){
   const p=id?acctPartners.find(p=>p.id===id):null;
@@ -14194,9 +14220,23 @@ function renderAcctVouchersPage(){
   const c=$("#content");if(!c)return;
   if(!serverConfig.url){c.innerHTML=_acctNoServerHtml("전표 관리");return;}
   const STATUS_LABEL={draft:badge("임시","gray"),posted:badge("확정","green"),void:badge("취소","red")};
-  c.innerHTML=`<div class="card"><div class="card-head"><h3>🧾 전표 관리</h3><button class="btn btn-primary btn-sm" onclick="openVoucherModal()">+ 전표 작성</button></div>
-  <div class="card-body" style="padding:0"><div class="tbl-wrap"><table><thead><tr><th>전표번호</th><th>일자</th><th>거래처</th><th>내용</th><th>금액</th><th>상태</th><th>관리</th></tr></thead><tbody>
-  ${acctVouchers.length?acctVouchers.map(v=>`<tr><td>${h(v.voucherNo||"(임시)")}</td><td>${h(v.date)}</td><td>${h(v.partner||"-")}</td><td>${h(v.description||"-")}</td><td style="text-align:right">${v.amount.toLocaleString()}</td><td>${STATUS_LABEL[v.status]}</td><td>
+  const f=window._acctVchFilter||{q:"",status:"all"};
+  let rows=acctVouchers;
+  if(f.status!=="all")rows=rows.filter(v=>v.status===f.status);
+  if(f.q.trim()){const q=f.q.trim();rows=rows.filter(v=>[v.voucherNo,v.date,v.partner,v.description].some(x=>(x||"").includes(q)));}
+  c.innerHTML=`<div class="card"><div class="card-head"><h3>🧾 전표 관리</h3><div><button class="btn btn-secondary btn-sm" onclick="_dlVouchersCSV()">📥 엑셀 다운로드</button> <button class="btn btn-primary btn-sm" onclick="openVoucherModal()">+ 전표 작성</button></div></div>
+  <div class="card-body">
+  <div class="flex gap2 wrap mb3">
+    <input class="fc" style="max-width:280px" value="${h(f.q)}" placeholder="전표번호·일자·거래처·내용 검색" oninput="window._acctVchFilter={...window._acctVchFilter,q:this.value};renderAcctVouchersPage()">
+    <select class="fc" style="max-width:140px" onchange="window._acctVchFilter={...window._acctVchFilter,status:this.value};renderAcctVouchersPage()">
+      <option value="all" ${f.status==="all"?"selected":""}>전체 상태</option>
+      <option value="draft" ${f.status==="draft"?"selected":""}>임시</option>
+      <option value="posted" ${f.status==="posted"?"selected":""}>확정</option>
+      <option value="void" ${f.status==="void"?"selected":""}>취소</option>
+    </select>
+  </div>
+  <div class="tbl-wrap"><table><thead><tr><th>전표번호</th><th>일자</th><th>거래처</th><th>내용</th><th>금액</th><th>상태</th><th>관리</th></tr></thead><tbody>
+  ${rows.length?rows.map(v=>`<tr><td>${h(v.voucherNo||"(임시)")}</td><td>${h(v.date)}</td><td>${h(v.partner||"-")}</td><td>${h(v.description||"-")}</td><td style="text-align:right">${v.amount.toLocaleString()}</td><td>${STATUS_LABEL[v.status]}</td><td>
     <button class="btn btn-secondary btn-sm" onclick="viewVoucherModal('${v.id}')">보기</button>
     <button class="btn btn-ghost btn-sm" onclick="_showRecordHistory('${h(v.voucherNo||'전표')}',_buildHistoryRows(${JSON.stringify(v).replace(/'/g,"&#39;")},[['createdBy','createdAt','작성'],['postedBy','postedAt','확정'],['voidedBy','voidedAt','취소']]))">이력</button>
     ${v.status==="draft"?` <button class="btn btn-primary btn-sm" onclick="postVoucher('${v.id}')">확정</button> <button class="btn btn-danger btn-sm" onclick="deleteVoucherDraft('${v.id}')">삭제</button>`:""}
@@ -14281,10 +14321,23 @@ let _tiItems=[];
 function renderAcctTaxInvoicesPage(){
   const c=$("#content");if(!c)return;
   if(!serverConfig.url){c.innerHTML=_acctNoServerHtml("세금계산서");return;}
-  c.innerHTML=`<div class="card"><div class="card-head"><h3>📄 세금계산서 (사내 발행용)</h3><button class="btn btn-primary btn-sm" onclick="openTaxInvoiceModal()">+ 세금계산서 발행</button></div>
+  const f=window._acctTiFilter||{q:"",dir:"all"};
+  let rows=acctTaxInvoices;
+  if(f.dir!=="all")rows=rows.filter(t=>(t.direction==="purchase"?"purchase":"sales")===f.dir);
+  if(f.q.trim()){const q=f.q.trim();rows=rows.filter(t=>[t.invoiceNo,t.issueDate,t.partnerName,t.partnerBizNo].some(x=>(x||"").includes(q)));}
+  c.innerHTML=`<div class="card"><div class="card-head"><h3>📄 세금계산서 (사내 발행용)</h3><div><button class="btn btn-secondary btn-sm" onclick="_dlTaxInvoicesCSV()">📥 엑셀 다운로드</button> <button class="btn btn-primary btn-sm" onclick="openTaxInvoiceModal()">+ 세금계산서 발행</button></div></div>
   <div class="card-body fz12 text-gray" style="padding:8px 16px 0">국세청 전자세금계산서 연동 없이 사내 발행·출력용으로 관리합니다.</div>
-  <div class="card-body" style="padding:0"><div class="tbl-wrap"><table><thead><tr><th>구분</th><th>승인번호</th><th>발행일</th><th>거래처</th><th>공급가액</th><th>세액</th><th>합계</th><th>상태</th><th>관리</th></tr></thead><tbody>
-  ${acctTaxInvoices.length?acctTaxInvoices.map(t=>`<tr><td>${t.direction==="purchase"?badge("매입","orange"):badge("매출","blue")}</td><td>${h(t.invoiceNo)}</td><td>${h(t.issueDate)}</td><td>${h(t.partnerName)}</td><td style="text-align:right">${t.supplyTotal.toLocaleString()}</td><td style="text-align:right">${t.taxTotal.toLocaleString()}</td><td style="text-align:right">${t.grandTotal.toLocaleString()}</td><td>${t.status==="issued"?badge("발행","green"):badge("취소","red")}</td><td>
+  <div class="card-body">
+  <div class="flex gap2 wrap mb3">
+    <input class="fc" style="max-width:280px" value="${h(f.q)}" placeholder="승인번호·발행일·거래처·사업자번호 검색" oninput="window._acctTiFilter={...window._acctTiFilter,q:this.value};renderAcctTaxInvoicesPage()">
+    <select class="fc" style="max-width:140px" onchange="window._acctTiFilter={...window._acctTiFilter,dir:this.value};renderAcctTaxInvoicesPage()">
+      <option value="all" ${f.dir==="all"?"selected":""}>매출+매입</option>
+      <option value="sales" ${f.dir==="sales"?"selected":""}>매출만</option>
+      <option value="purchase" ${f.dir==="purchase"?"selected":""}>매입만</option>
+    </select>
+  </div>
+  <div class="tbl-wrap"><table><thead><tr><th>구분</th><th>승인번호</th><th>발행일</th><th>거래처</th><th>공급가액</th><th>세액</th><th>합계</th><th>상태</th><th>관리</th></tr></thead><tbody>
+  ${rows.length?rows.map(t=>`<tr><td>${t.direction==="purchase"?badge("매입","orange"):badge("매출","blue")}</td><td>${h(t.invoiceNo)}</td><td>${h(t.issueDate)}</td><td>${h(t.partnerName)}</td><td style="text-align:right">${t.supplyTotal.toLocaleString()}</td><td style="text-align:right">${t.taxTotal.toLocaleString()}</td><td style="text-align:right">${t.grandTotal.toLocaleString()}</td><td>${t.status==="issued"?badge("발행","green"):badge("취소","red")}</td><td>
     <button class="btn btn-secondary btn-sm" onclick="viewTaxInvoiceModal('${t.id}')">보기</button>
     <button class="btn btn-ghost btn-sm" onclick="_showRecordHistory('${h(t.invoiceNo)}',_buildHistoryRows(${JSON.stringify(t).replace(/'/g,"&#39;")},[['createdBy','createdAt','발행'],['voidedBy','voidedAt','취소']]))">이력</button>
     ${t.status==="issued"?` <button class="btn btn-danger btn-sm" onclick="voidTaxInvoice('${t.id}')">취소</button>`:""}
@@ -14340,6 +14393,15 @@ function viewTaxInvoiceModal(id){
     ${t.status==="void"?`<div class="fg"><label class="fl">취소 사유</label><div class="fz13">${h(t.voidReason)}</div></div>`:""}
   </div><div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal()">닫기</button><button class="btn btn-secondary" onclick="window.print()">🖨 출력</button></div></div>`);
 }
+function _dlVouchersCSV(){
+  const SL={draft:"임시",posted:"확정",void:"취소"};
+  dlCSV(`전표_${new Date().toISOString().slice(0,10)}.csv`,["전표번호","일자","거래처","내용","금액","상태"],
+    acctVouchers.map(v=>[v.voucherNo||"(임시)",v.date,v.partner||"",v.description||"",v.amount,SL[v.status]||v.status]));
+}
+function _dlTaxInvoicesCSV(){
+  dlCSV(`세금계산서_${new Date().toISOString().slice(0,10)}.csv`,["구분","승인번호","발행일","거래처","사업자번호","공급가액","세액","합계","상태"],
+    acctTaxInvoices.map(t=>[t.direction==="purchase"?"매입":"매출",t.invoiceNo,t.issueDate,t.partnerName,t.partnerBizNo||"",t.supplyTotal,t.taxTotal,t.grandTotal,t.status==="issued"?"발행":"취소"]));
+}
 async function voidTaxInvoice(id){
   const reason=prompt("세금계산서 취소 사유를 입력하세요.");if(!reason)return;
   const r=await serverRequest("POST",`/api/accounting/tax-invoices/${id}/void`,{reason,role:currentUser.role,user:currentUser.name});
@@ -14367,7 +14429,7 @@ function renderInvItemsPage(){
   if(!serverConfig.url){c.innerHTML=_erpNoServerHtml("품목 관리");return;}
   const q=(window._invItemSearch||"").trim();
   const rows=q?erpItems.filter(i=>[i.code,i.name,i.productName,i.assetNo,i.category].some(v=>(v||"").includes(q))):erpItems;
-  c.innerHTML=`<div class="card"><div class="card-head"><h3>🏷 품목 관리</h3><button class="btn btn-primary btn-sm" onclick="openItemModal()">+ 품목 추가</button></div>
+  c.innerHTML=`<div class="card"><div class="card-head"><h3>🏷 품목 관리</h3><div><button class="btn btn-secondary btn-sm" onclick="_dlInvItemsCSV()">📥 엑셀 다운로드</button> <button class="btn btn-primary btn-sm" onclick="openItemModal()">+ 품목 추가</button></div></div>
   <div class="card-body">
   <div class="fg" style="max-width:320px"><input class="fc" value="${h(q)}" placeholder="품목코드·품목명·제품명·분류·자산번호 검색" oninput="window._invItemSearch=this.value;renderInvItemsPage()"></div>
   <div class="tbl-wrap"><table><thead><tr><th>코드</th><th>품목명</th><th>제품명</th><th>단위</th><th>분류</th><th>안전재고</th><th>자산번호</th><th>사용여부</th><th>관리</th></tr></thead><tbody>
@@ -14404,6 +14466,18 @@ async function deleteItem(id){
   erpItems=erpItems.filter(i=>i.id!==id);showToast("삭제되었습니다.","info");renderInvItemsPage();
 }
 
+function _dlInvItemsCSV(){
+  dlCSV(`품목_${new Date().toISOString().slice(0,10)}.csv`,["코드","품목명","제품명","단위","분류","안전재고","자산번호","사용여부"],
+    erpItems.map(i=>[i.code,i.name,i.productName||"",i.unit||"",i.category||"",i.safetyStock||0,i.assetNo||"",i.active?"사용":"미사용"]));
+}
+function _dlInvStockCSV(){
+  dlCSV(`재고현황_${new Date().toISOString().slice(0,10)}.csv`,["품목","제품명","위치","현재재고","단위","안전재고","자산번호","상태"],
+    erpStock.filter(s=>s.qty!==0).map(s=>{const it=erpItems.find(i=>i.id===s.itemId);return[_erpItemName(s.itemId),it?.productName||"",_erpLocationName(s.locationId),s.qty,it?.unit||"",it?.safetyStock||0,it?.assetNo||"",it&&s.qty<(it.safetyStock||0)?"부족":"정상"];}));
+}
+function _dlStockLedgerCSV(){
+  dlCSV(`재고변동로그_${new Date().toISOString().slice(0,10)}.csv`,["일시","품목","위치","변동수량","유형","작성자","비고"],
+    erpStockLedger.map(l=>[l.createdAt?new Date(l.createdAt).toLocaleString("ko-KR"):"",_erpItemName(l.itemId),_erpLocationName(l.locationId),l.qty,l.type==="in"?"입고":"출고",l.createdBy||"",l.memo||""]));
+}
 // ── 창고/위치 관리 ───────────────────────────────────────────────────────────
 function renderInvLocationsPage(){
   const c=$("#content");if(!c)return;
@@ -14451,7 +14525,7 @@ function renderInvStockPage(){
     const q=f.q.trim();
     rows=rows.filter(s=>[s._item?.name,s._item?.productName,s._item?.code,s._item?.assetNo,_erpLocationName(s.locationId),String(s.qty)].some(v=>(v||"").toString().includes(q)));
   }
-  c.innerHTML=`<div class="card"><div class="card-head"><h3>📊 재고 현황</h3><div><button class="btn btn-secondary btn-sm" onclick="gotoPage('inv-stock-log')">📜 변동 로그</button> <button class="btn btn-secondary btn-sm" onclick="openStockTransferModal()">↔ 창고 이동</button> <button class="btn btn-primary btn-sm" onclick="openStockAdjustModal()">+ 재고 조정</button></div></div>
+  c.innerHTML=`<div class="card"><div class="card-head"><h3>📊 재고 현황</h3><div><button class="btn btn-secondary btn-sm" onclick="_dlInvStockCSV()">📥 엑셀 다운로드</button> <button class="btn btn-secondary btn-sm" onclick="gotoPage('inv-stock-log')">📜 변동 로그</button> <button class="btn btn-secondary btn-sm" onclick="openStockTransferModal()">↔ 창고 이동</button> <button class="btn btn-primary btn-sm" onclick="openStockAdjustModal()">+ 재고 조정</button></div></div>
   <div class="card-body">
   <div class="flex gap2 wrap mb3">
     <input class="fc" style="max-width:280px" value="${h(f.q)}" placeholder="품목·제품명·위치·자산번호·수량 검색" oninput="window._invStockFilter={...window._invStockFilter,q:this.value};renderInvStockPage()">
@@ -14481,7 +14555,7 @@ async function renderInvStockLogPage(){
   if(f.locationId)rows=rows.filter(l=>l.locationId===f.locationId);
   const q=(f.q||"").trim();
   if(q)rows=rows.filter(l=>[_erpItemName(l.itemId),_erpLocationName(l.locationId),l.createdBy,l.memo,l.refType].some(v=>(v||"").includes(q)));
-  c.innerHTML=`<div class="card"><div class="card-head"><h3>📜 재고 변동 로그</h3><button class="btn btn-secondary btn-sm" onclick="window._invLogFilter={};gotoPage('inv-stock')">← 재고 현황</button></div>
+  c.innerHTML=`<div class="card"><div class="card-head"><h3>📜 재고 변동 로그</h3><div><button class="btn btn-secondary btn-sm" onclick="_dlStockLedgerCSV()">📥 엑셀 다운로드</button> <button class="btn btn-secondary btn-sm" onclick="window._invLogFilter={};gotoPage('inv-stock')">← 재고 현황</button></div></div>
   <div class="card-body">
   <div class="flex gap2 wrap mb3">
     <input class="fc" style="max-width:280px" value="${h(f.q||"")}" placeholder="품목·위치·작성자·비고 검색" oninput="window._invLogFilter={...window._invLogFilter,q:this.value};renderInvStockLogPage()">
@@ -14534,9 +14608,25 @@ let _quoteItems=[];
 function renderSalesQuotationsPage(){
   const c=$("#content");if(!c)return;
   if(!serverConfig.url){c.innerHTML=_erpNoServerHtml("견적서 관리");return;}
-  c.innerHTML=`<div class="card"><div class="card-head"><h3>📃 견적서 관리</h3><button class="btn btn-primary btn-sm" onclick="openQuotationModal()">+ 견적서 작성</button></div>
-  <div class="card-body" style="padding:0"><div class="tbl-wrap"><table><thead><tr><th>견적번호</th><th>견적일</th><th>거래처</th><th>합계</th><th>상태</th><th>관리</th></tr></thead><tbody>
-  ${erpQuotations.length?erpQuotations.map(q=>`<tr><td>${h(q.quoteNo||"(임시)")}</td><td>${h(q.date)}</td><td>${h(q.partnerName)}</td><td style="text-align:right">${q.grandTotal.toLocaleString()}</td><td>${QUOTE_STATUS_LABEL[q.status]}</td><td>
+  const f=window._salesQtFilter||{q:"",status:"all"};
+  let rows=erpQuotations;
+  if(f.status!=="all")rows=rows.filter(x=>x.status===f.status);
+  if(f.q.trim()){const kw=f.q.trim();rows=rows.filter(x=>[x.quoteNo,x.date,x.partnerName].some(v=>(v||"").includes(kw)));}
+  c.innerHTML=`<div class="card"><div class="card-head"><h3>📃 견적서 관리</h3><div><button class="btn btn-secondary btn-sm" onclick="_dlQuotationsCSV()">📥 엑셀 다운로드</button> <button class="btn btn-primary btn-sm" onclick="openQuotationModal()">+ 견적서 작성</button></div></div>
+  <div class="card-body">
+  <div class="flex gap2 wrap mb3">
+    <input class="fc" style="max-width:280px" value="${h(f.q)}" placeholder="견적번호·견적일·거래처 검색" oninput="window._salesQtFilter={...window._salesQtFilter,q:this.value};renderSalesQuotationsPage()">
+    <select class="fc" style="max-width:140px" onchange="window._salesQtFilter={...window._salesQtFilter,status:this.value};renderSalesQuotationsPage()">
+      <option value="all" ${f.status==="all"?"selected":""}>전체 상태</option>
+      <option value="draft" ${f.status==="draft"?"selected":""}>임시</option>
+      <option value="sent" ${f.status==="sent"?"selected":""}>발송</option>
+      <option value="accepted" ${f.status==="accepted"?"selected":""}>수주확정</option>
+      <option value="shipped" ${f.status==="shipped"?"selected":""}>출고/매출</option>
+      <option value="rejected" ${f.status==="rejected"?"selected":""}>실주</option>
+    </select>
+  </div>
+  <div class="tbl-wrap"><table><thead><tr><th>견적번호</th><th>견적일</th><th>거래처</th><th>합계</th><th>상태</th><th>관리</th></tr></thead><tbody>
+  ${rows.length?rows.map(q=>`<tr><td>${h(q.quoteNo||"(임시)")}</td><td>${h(q.date)}</td><td>${h(q.partnerName)}</td><td style="text-align:right">${q.grandTotal.toLocaleString()}</td><td>${QUOTE_STATUS_LABEL[q.status]}</td><td>
     <button class="btn btn-secondary btn-sm" onclick="viewQuotationModal('${q.id}')">보기</button>
     <button class="btn btn-ghost btn-sm" onclick="_showRecordHistory('${h(q.quoteNo||'견적서')}',_buildHistoryRows(${JSON.stringify(q).replace(/'/g,"&#39;")},[['createdBy','createdAt','작성'],['sentBy','sentAt','발송'],['acceptedBy','acceptedAt','수주확정'],['shippedBy','shippedAt','출고/매출'],['rejectedBy','rejectedAt','실주처리']]))">이력</button>
     ${q.status==="draft"?` <button class="btn btn-primary btn-sm" onclick="sendQuotation('${q.id}')">발송</button> <button class="btn btn-danger btn-sm" onclick="deleteQuotationDraft('${q.id}')">삭제</button>`:""}
@@ -14544,6 +14634,11 @@ function renderSalesQuotationsPage(){
     ${q.status==="accepted"?` <button class="btn btn-primary btn-sm" onclick="shipQuotation('${q.id}')">출고/매출 처리</button>`:""}
   </td></tr>`).join(""):`<tr><td colspan="6" class="text-gray" style="text-align:center;padding:20px">등록된 견적서가 없습니다.</td></tr>`}
   </tbody></table></div></div></div>`;
+}
+function _dlQuotationsCSV(){
+  const SL={draft:"임시",sent:"발송",accepted:"수주확정",shipped:"출고/매출",rejected:"실주"};
+  dlCSV(`견적서_${new Date().toISOString().slice(0,10)}.csv`,["견적번호","견적일","거래처","공급가액","세액","합계","상태"],
+    erpQuotations.map(q=>[q.quoteNo||"(임시)",q.date,q.partnerName,q.supplyTotal,q.taxTotal,q.grandTotal,SL[q.status]||q.status]));
 }
 function openQuotationModal(){
   _quoteItems=[{itemId:"",name:"",qty:1,unitPrice:0}];
@@ -16388,15 +16483,35 @@ let _poItems=[];
 function renderSalesPurchaseOrdersPage(){
   const c=$("#content");if(!c)return;
   if(!serverConfig.url){c.innerHTML=_erpNoServerHtml("발주서 관리");return;}
-  c.innerHTML=`<div class="card"><div class="card-head"><h3>📦 발주서 관리</h3><button class="btn btn-primary btn-sm" onclick="openPOModal()">+ 발주서 작성</button></div>
-  <div class="card-body" style="padding:0"><div class="tbl-wrap"><table><thead><tr><th>발주번호</th><th>발주일</th><th>거래처</th><th>입고위치</th><th>합계</th><th>상태</th><th>관리</th></tr></thead><tbody>
-  ${erpPurchaseOrders.length?erpPurchaseOrders.map(p=>`<tr><td>${h(p.poNo||"(임시)")}</td><td>${h(p.date)}</td><td>${h(p.partnerName)}</td><td>${h(_erpLocationName(p.locationId))}</td><td style="text-align:right">${p.grandTotal.toLocaleString()}</td><td>${PO_STATUS_LABEL[p.status]}</td><td>
+  const f=window._salesPoFilter||{q:"",status:"all"};
+  let rows=erpPurchaseOrders;
+  if(f.status!=="all")rows=rows.filter(x=>x.status===f.status);
+  if(f.q.trim()){const kw=f.q.trim();rows=rows.filter(x=>[x.poNo,x.date,x.partnerName,_erpLocationName(x.locationId)].some(v=>(v||"").includes(kw)));}
+  c.innerHTML=`<div class="card"><div class="card-head"><h3>📦 발주서 관리</h3><div><button class="btn btn-secondary btn-sm" onclick="_dlPOsCSV()">📥 엑셀 다운로드</button> <button class="btn btn-primary btn-sm" onclick="openPOModal()">+ 발주서 작성</button></div></div>
+  <div class="card-body">
+  <div class="flex gap2 wrap mb3">
+    <input class="fc" style="max-width:280px" value="${h(f.q)}" placeholder="발주번호·발주일·거래처·입고위치 검색" oninput="window._salesPoFilter={...window._salesPoFilter,q:this.value};renderSalesPurchaseOrdersPage()">
+    <select class="fc" style="max-width:140px" onchange="window._salesPoFilter={...window._salesPoFilter,status:this.value};renderSalesPurchaseOrdersPage()">
+      <option value="all" ${f.status==="all"?"selected":""}>전체 상태</option>
+      <option value="draft" ${f.status==="draft"?"selected":""}>임시</option>
+      <option value="ordered" ${f.status==="ordered"?"selected":""}>발주확정</option>
+      <option value="received" ${f.status==="received"?"selected":""}>입고완료</option>
+      <option value="cancelled" ${f.status==="cancelled"?"selected":""}>취소</option>
+    </select>
+  </div>
+  <div class="tbl-wrap"><table><thead><tr><th>발주번호</th><th>발주일</th><th>거래처</th><th>입고위치</th><th>합계</th><th>상태</th><th>관리</th></tr></thead><tbody>
+  ${rows.length?rows.map(p=>`<tr><td>${h(p.poNo||"(임시)")}</td><td>${h(p.date)}</td><td>${h(p.partnerName)}</td><td>${h(_erpLocationName(p.locationId))}</td><td style="text-align:right">${p.grandTotal.toLocaleString()}</td><td>${PO_STATUS_LABEL[p.status]}</td><td>
     <button class="btn btn-secondary btn-sm" onclick="viewPOModal('${p.id}')">보기</button>
     <button class="btn btn-ghost btn-sm" onclick="_showRecordHistory('${h(p.poNo||'발주서')}',_buildHistoryRows(${JSON.stringify(p).replace(/'/g,"&#39;")},[['createdBy','createdAt','작성'],['orderedBy','orderedAt','발주확정'],['receivedBy','receivedAt','입고처리'],['cancelledBy','cancelledAt','취소']]))">이력</button>
     ${p.status==="draft"?` <button class="btn btn-primary btn-sm" onclick="confirmPO('${p.id}')">발주확정</button> <button class="btn btn-danger btn-sm" onclick="deletePODraft('${p.id}')">삭제</button>`:""}
     ${p.status==="ordered"?` <button class="btn btn-primary btn-sm" onclick="receivePO('${p.id}')">입고처리</button> <button class="btn btn-danger btn-sm" onclick="cancelPO('${p.id}')">취소</button>`:""}
   </td></tr>`).join(""):`<tr><td colspan="7" class="text-gray" style="text-align:center;padding:20px">등록된 발주서가 없습니다.</td></tr>`}
   </tbody></table></div></div></div>`;
+}
+function _dlPOsCSV(){
+  const SL={draft:"임시",ordered:"발주확정",received:"입고완료",cancelled:"취소"};
+  dlCSV(`발주서_${new Date().toISOString().slice(0,10)}.csv`,["발주번호","발주일","거래처","입고위치","공급가액","세액","합계","상태"],
+    erpPurchaseOrders.map(p=>[p.poNo||"(임시)",p.date,p.partnerName,_erpLocationName(p.locationId),p.supplyTotal,p.taxTotal,p.grandTotal,SL[p.status]||p.status]));
 }
 function openPOModal(){
   if(!erpItems.length){showToast("먼저 품목을 등록하세요.","error");return;}
@@ -16494,9 +16609,23 @@ function renderPurchaseRequestsPage(){
   if(!serverConfig.url){c.innerHTML=_erpNoServerHtml("구매요청");return;}
   if(!_prLoaded){c.innerHTML=`<div class="card"><div class="card-body p-empty">불러오는 중...</div></div>`;loadPurchaseRequestsFromServer();return;}
   const isAdmin=currentUser.role==="admin";
-  const list=erpPurchaseRequests;
-  c.innerHTML=`<div class="card"><div class="card-head"><h3>🛒 구매요청</h3><button class="btn btn-primary btn-sm" onclick="openPurchaseRequestModal()">+ 구매요청 작성</button></div>
-  <div class="card-body" style="padding:0"><div class="tbl-wrap"><table><thead><tr><th>요청일</th><th>요청자</th><th>합계</th><th>상태</th><th>관리</th></tr></thead><tbody>
+  const f=window._prFilter||{q:"",status:"all"};
+  let list=erpPurchaseRequests;
+  if(f.status!=="all")list=list.filter(x=>x.status===f.status);
+  if(f.q.trim()){const kw=f.q.trim();list=list.filter(x=>[x.date,x.requestedBy,x.memo].some(v=>(v||"").includes(kw)));}
+  c.innerHTML=`<div class="card"><div class="card-head"><h3>🛒 구매요청</h3><div>${isAdmin?`<button class="btn btn-secondary btn-sm" onclick="_dlPRsCSV()">📥 엑셀 다운로드</button> `:""}<button class="btn btn-primary btn-sm" onclick="openPurchaseRequestModal()">+ 구매요청 작성</button></div></div>
+  <div class="card-body">
+  <div class="flex gap2 wrap mb3">
+    <input class="fc" style="max-width:280px" value="${h(f.q)}" placeholder="요청일·요청자·메모 검색" oninput="window._prFilter={...window._prFilter,q:this.value};renderPurchaseRequestsPage()">
+    <select class="fc" style="max-width:140px" onchange="window._prFilter={...window._prFilter,status:this.value};renderPurchaseRequestsPage()">
+      <option value="all" ${f.status==="all"?"selected":""}>전체 상태</option>
+      <option value="pending" ${f.status==="pending"?"selected":""}>대기</option>
+      <option value="approved" ${f.status==="approved"?"selected":""}>승인됨</option>
+      <option value="rejected" ${f.status==="rejected"?"selected":""}>반려</option>
+      <option value="converted" ${f.status==="converted"?"selected":""}>발주전환</option>
+    </select>
+  </div>
+  <div class="tbl-wrap"><table><thead><tr><th>요청일</th><th>요청자</th><th>합계</th><th>상태</th><th>관리</th></tr></thead><tbody>
   ${list.length?list.map(pr=>`<tr><td>${h(pr.date)}</td><td>${h(pr.requestedBy)}</td><td style="text-align:right">${pr.grandTotal.toLocaleString()}</td><td>${PR_STATUS_LABEL[pr.status]}</td><td>
     <button class="btn btn-secondary btn-sm" onclick="viewPurchaseRequestModal('${pr.id}')">보기</button>
     ${pr.status==="pending"&&(isAdmin||String(pr.requestedById)===String(currentUser.id))?` <button class="btn btn-danger btn-sm" onclick="deletePurchaseRequest('${pr.id}')">삭제</button>`:""}
@@ -16504,6 +16633,11 @@ function renderPurchaseRequestsPage(){
     ${pr.status==="approved"&&isAdmin?` <button class="btn btn-primary btn-sm" onclick="openConvertToPOModal('${pr.id}')">발주 전환</button>`:""}
   </td></tr>`).join(""):`<tr><td colspan="5" class="text-gray" style="text-align:center;padding:20px">등록된 구매요청이 없습니다.</td></tr>`}
   </tbody></table></div></div></div>`;
+}
+function _dlPRsCSV(){
+  const SL={pending:"대기",approved:"승인됨",rejected:"반려",converted:"발주전환"};
+  dlCSV(`구매요청_${new Date().toISOString().slice(0,10)}.csv`,["요청일","요청자","합계","상태","메모"],
+    erpPurchaseRequests.map(pr=>[pr.date,pr.requestedBy,pr.grandTotal,SL[pr.status]||pr.status,pr.memo||""]));
 }
 function openPurchaseRequestModal(){
   if(!erpItems.length){showToast("등록된 품목이 없습니다. 관리자에게 문의하세요.","error");return;}
