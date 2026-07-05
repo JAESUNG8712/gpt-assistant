@@ -735,8 +735,17 @@ function restoreState(st) {
   colWidths = st.colWidths || {}; rowHeights = st.rowHeights || {};
   mergedCells = st.mergedCells || {}; conditionalFormats = st.conditionalFormats || {};
   dataValidations = st.dataValidations || {};
-  selectedCell = null; selEnd = null; editMode = false;
+  // 선택 위치는 유지 (엑셀처럼 실행취소 후에도 커서가 남아있도록), 범위 밖이면 보정
+  editMode = false;
+  const g = sheets[activeSheet] || [];
+  if (selectedCell) {
+    const maxR = Math.max(0, g.length-1);
+    const maxC = Math.max(0, ...g.map(r=>r.length-1), MIN_COLS-1);
+    selectedCell = {r: Math.min(selectedCell.r, maxR), c: Math.min(selectedCell.c, maxC)};
+    if (selEnd) selEnd = {r: Math.min(selEnd.r, maxR), c: Math.min(selEnd.c, maxC)};
+  }
   renderTabs(); render(); updateFormulaBar(); loadSnaps();
+  if (selectedCell) highlightSel();
 }
 function undo() {
   if (!undoStack.length) { setStatus('되돌릴 내용 없음', false); return; }
@@ -769,7 +778,17 @@ let selCols = new Set(); // 선택된 열 인덱스 집합
 
 // ── 미저장 변경 추적
 let isDirty = false;
+let autoSaveTimer = null;
+function scheduleAutoSave() {
+  clearTimeout(autoSaveTimer);
+  autoSaveTimer = setTimeout(() => {
+    // 편집·수식 입력 중에는 방해하지 않고 연기
+    if (editMode || crossSheetEdit || formulaRefMode) { scheduleAutoSave(); return; }
+    if (isDirty) save();
+  }, 3000);
+}
 function markDirty() {
+  scheduleAutoSave(); // 엑셀처럼 변경 사항을 자동 저장
   if (isDirty) return;
   isDirty = true;
   const btn = document.getElementById('save-btn');
@@ -1175,7 +1194,7 @@ function render() {
       const dispRaw = showFormulas ? raw : raw;
       const disp = showFormulas ? raw : renderCell(raw);
       const dispFormatted = showFormulas ? raw : applyNumFmtDisplay(disp, (st[sk(r,c)]||{}).numFmt, (st[sk(r,c)]||{}).decimalPlaces);
-      const isErr = !showFormulas && (String(disp).startsWith('#ERR') || String(disp).startsWith('#DIV'));
+      const isErr = !showFormulas && /^#(ERR|DIV|REF|VALUE|N\/A|NUM|NAME)/.test(String(disp));
       const sty = st[sk(r,c)] || {};
       const isSel = inSel(r, c);
       const isAnchor = selectedCell && selectedCell.r===r && selectedCell.c===c;
@@ -1234,7 +1253,8 @@ function render() {
       // 데이터 유효성 드롭다운 버튼
       const dv = (dataValidations[activeSheet]||{})[msk];
       const dvBtn = (dv && dv.type==='list' && !isEd) ? `<span onclick="openCellDropdown(event,${r},${c})" style="position:absolute;right:2px;top:50%;transform:translateY(-50%);font-size:0.6rem;cursor:pointer;color:var(--text-dim)">▼</span>` : '';
-      html += `<td class="${cls}"${spanAttrs} tabindex="-1" contenteditable="${isEd}" data-r="${r}" data-c="${c}" data-raw="${escAttr(raw)}" style="${cellStyle};position:relative">${dispHtml}${dvBtn}</td>`;
+      const errTip = isErr ? ` title="${String(disp).startsWith('#REF')?'참조 오류: 삭제되었거나 존재하지 않는 셀/시트를 가리킵니다':String(disp).startsWith('#DIV')?'0으로 나눌 수 없습니다':String(disp).startsWith('#VALUE')?'값 오류: 숫자가 필요한 곳에 텍스트가 있습니다':String(disp).startsWith('#N/A')?'일치하는 값을 찾을 수 없습니다':'수식 오류: 수식을 확인해 주세요'}"` : '';
+      html += `<td class="${cls}"${spanAttrs}${errTip} tabindex="-1" contenteditable="${isEd}" data-r="${r}" data-c="${c}" data-raw="${escAttr(raw)}" style="${cellStyle};position:relative">${dispHtml}${dvBtn}</td>`;
     }
     html += '</tr>';
   }
@@ -1971,6 +1991,11 @@ document.addEventListener('keydown', e => {
     }
   }
 
+  // 선택 여부와 무관한 전역 단축키 (실행취소/다시실행/저장)
+  if ((e.ctrlKey||e.metaKey) && e.key==='z') { e.preventDefault(); undo(); return; }
+  if ((e.ctrlKey||e.metaKey) && e.key==='y') { e.preventDefault(); redo(); return; }
+  if ((e.ctrlKey||e.metaKey) && e.key==='s') { e.preventDefault(); save(); return; }
+
   if (!selectedCell) {
     if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Enter','Tab'].includes(e.key)) {
       e.preventDefault(); selectedCell={r:0,c:0}; selectCell(0,0);
@@ -1983,7 +2008,21 @@ document.addEventListener('keydown', e => {
   const clampC=c=>Math.max(0,Math.min(nCols-1,c));
 
   // Ctrl+Z: 실행 취소
-  if ((e.ctrlKey||e.metaKey) && e.key==='z') { e.preventDefault(); undo(); return; }
+  // Ctrl+A: 전체 선택
+  if ((e.ctrlKey||e.metaKey) && e.key==='a') { e.preventDefault(); selectAll(); return; }
+  // Ctrl+B/I/U: 굵게/기울임/밑줄
+  if ((e.ctrlKey||e.metaKey) && e.key==='b') { e.preventDefault(); toggleBold(); return; }
+  if ((e.ctrlKey||e.metaKey) && e.key==='i') { e.preventDefault(); toggleItalic(); return; }
+  if ((e.ctrlKey||e.metaKey) && e.key==='u') { e.preventDefault(); toggleUnderline(); return; }
+  // Ctrl+Home / Ctrl+End: 시트 처음/데이터 끝으로
+  if ((e.ctrlKey||e.metaKey) && e.key==='Home') { e.preventDefault(); selectCell(0,0); return; }
+  if ((e.ctrlKey||e.metaKey) && e.key==='End') {
+    e.preventDefault();
+    const g=grid(); let mr=0, mc=0;
+    for(let r=0;r<g.length;r++) for(let c=0;c<(g[r]||[]).length;c++)
+      if(String(g[r][c]??'').trim()!==''){ mr=Math.max(mr,r); mc=Math.max(mc,c); }
+    selectCell(mr,mc); return;
+  }
 
   if (e.ctrlKey && e.key==='d') {
     e.preventDefault();
@@ -4329,7 +4368,7 @@ function changeDecimal(delta) {
 // ══════════════════════════════════════════
 // 상태 표시줄 업데이트
 // ══════════════════════════════════════════
-const APP_BUILD = 'v2026.07.02-18';
+const APP_BUILD = 'v2026.07.03-19';
 function updateStatusBar() {
   const cells = getSelCellCoords();
   const mode = document.getElementById('sb-mode');
