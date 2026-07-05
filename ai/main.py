@@ -280,20 +280,31 @@ def _summarize_long_text(content: str, label: str, max_chars: int = 3500) -> str
 
 
 def _format_reference_links(items: list, max_items: int = 5) -> str:
-    """[{title,url}] 형태의 참고 자료 목록을 마크다운 링크 섹션으로 변환"""
+    """[{title,url}] 형태의 참고 자료 목록을 마크다운 링크 섹션으로 변환.
+    클릭 시 해당 페이지로 바로 이동하도록 target=_blank 처리(프론트엔드 renderMd에서 적용)."""
+    from urllib.parse import urlparse
     seen, links = set(), []
     for it in items:
         url = str(it.get("url") or "").strip()
         if not url or not url.startswith("http") or url in seen:
             continue
         seen.add(url)
-        title = str(it.get("title") or url).strip().replace("\n", " ")[:60]
+        raw_title = str(it.get("title") or "").strip().replace("\n", " ")
+        if raw_title:
+            title = raw_title[:70]
+        else:
+            # 타이틀 없으면 도메인명을 표시
+            try:
+                domain = urlparse(url).netloc.removeprefix("www.")
+            except Exception:
+                domain = url[:40]
+            title = domain
         links.append(f"- [{title}]({url})")
         if len(links) >= max_items:
             break
     if not links:
         return ""
-    return "\n\n---\n📎 **참고 자료**\n" + "\n".join(links)
+    return "\n\n---\n📎 **참고 자료** (클릭하면 해당 페이지로 이동)\n" + "\n".join(links)
 
 def _load_latest_stock_report(max_chars: int = 8000) -> str:
     """저장된 가장 최신 보고서를 로드해 컨텍스트로 반환"""
@@ -667,6 +678,9 @@ async def chat(req: ChatRequest):
                         answer = top_answer
                 else:
                     answer = top_answer
+                # 출처 레이블: 어느 KB에서 나온 답변인지 사용자에게 표시
+                source_label = f"\n\n---\n📚 **출처**: 내부 지식베이스 (유사도 {best_score:.2f})"
+                answer = answer + source_label
                 chunk_size = 150
                 for i in range(0, len(answer), chunk_size):
                     chunk = answer[i:i + chunk_size]
@@ -802,8 +816,10 @@ async def chat(req: ChatRequest):
                     if ctx_parts:
                         context = (
                             f"[아래 자료를 참고해 사용자 질문 '{search_msg[:60]}'에 답변하세요. "
-                            f"증권사 리포트·뉴스·검색 결과를 종합하여 전문가적 투자 분석을 제공하세요. "
-                            f"자료에 없는 내용은 전문가 주식 지식으로 보완하세요.]\n\n"
+                            f"각 자료의 출처 레이블(예: [최신 뉴스], [증권사 리포트])을 답변 내에 명시하여 "
+                            f"사용자가 어느 자료에서 나온 정보인지 알 수 있게 하세요. "
+                            f"자료에 명시된 수치·사실만 사용하고, 자료에 없는 구체적 수치는 추측하지 마세요. "
+                            f"불확실한 내용은 '자료에서 확인되지 않음'으로 명시하세요.]\n\n"
                             + "\n\n---\n\n".join(ctx_parts)
                         )
                     else:
@@ -822,7 +838,11 @@ async def chat(req: ChatRequest):
                     if raw_ctx:
                         context = (
                             f"[주의: 아래 참고 자료 중 사용자 질문 '{search_msg[:60]}'"
-                            f"와 직접 관련된 내용만 사용하세요. 질문 주제와 다른 내용(다른 법 조항, 다른 HR 주제 등)은 답변에 포함하지 마세요.]\n\n"
+                            f"와 직접 관련된 내용만 사용하세요. "
+                            f"질문 주제와 다른 내용(다른 법 조항, 다른 HR 주제 등)은 답변에 포함하지 마세요. "
+                            f"자료에 명시된 수치·사실만 인용하고, 자료에 없는 내용은 절대 만들어내지 마세요. "
+                            f"불확실하거나 자료 밖의 내용은 '확인 필요' 또는 '자료에서 확인되지 않음'으로 표시하세요. "
+                            f"법령 원문·웹검색 결과 등 출처를 답변에서 간략히 언급하세요.]\n\n"
                             + raw_ctx
                         )
                     else:
