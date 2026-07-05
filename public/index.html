@@ -5804,6 +5804,10 @@ const PAGE_ROLES={
   "eval-ops":["admin"],"settings-org":["admin"],"settings-ranks":["admin"],"attend-settings":["admin"],
   "payroll-settings":["admin"],"company-info":["admin"],"room-settings":["admin"],"deploy-perm":["admin"],
   "pms-utilization":["admin","director","leader"],"sales-dashboard":["admin"],
+  "acct-partners":["admin"],"acct-accounts":["admin"],"acct-vouchers":["admin"],"acct-tax-invoices":["admin"],
+  "sales-quotations":["admin"],"sales-purchase-orders":["admin"],
+  "inv-items":["admin"],"inv-locations":["admin"],"inv-stock":["admin"],"inv-stock-log":["admin"],
+  "welfare-settings":["admin"],
   "recruit-jobs":["admin","leader","director","member"],"recruit-candidates":["admin","leader","director","member"],"recruit-eval":["admin","director","leader","member"],"recruit-eval-detail":["admin","director","leader","member"],"recruit-dashboard":["admin","director","leader"],
 };
 function _pageAccessDenied(){
@@ -5985,7 +5989,7 @@ function renderEvalProgressPage(){
         <div style="background:#f5f3ff;border-radius:10px;padding:12px;text-align:center"><div class="fz11 text-gray mb1">대상 인원</div><div style="font-size:24px;font-weight:800;color:#7c3aed">${scope.length}명</div></div>
         <div style="background:#f0fdf4;border-radius:10px;padding:12px;text-align:center"><div class="fz11 text-gray mb1">평가 제출</div><div style="font-size:24px;font-weight:800;color:#16a34a">${compResponses.filter(ev=>ev.year===year&&ev.type==="comp"&&ev.submittedAt&&scope.some(e=>e.id===ev.targetId)).length}건</div></div>
       </div>
-      <div style="text-align:right"><button class="btn btn-secondary btn-sm" onclick="gotoPage('comp-grade-view')">역량평가 등급 보기</button></div>
+      ${currentUser?.role==="admin"?`<div style="text-align:right"><button class="btn btn-secondary btn-sm" onclick="gotoPage('comp-grade-view')">역량평가 등급 보기</button></div>`:""}
       `:`<div class="p-empty">역량평가가 비활성화 상태입니다. 평가 운영 설정에서 활성화하세요.</div>`}
     </div>
   </div>
@@ -15039,7 +15043,14 @@ function renderPmsUtilizationPage(){
   const rows=Object.entries(byEmp).map(([empId,d])=>{
     const emp=employees.find(e=>String(e.id)===String(empId));
     const breakdown=Object.entries(d.byProject).map(([pid,mins])=>`${h(_pmsProjectName(pid))} ${Math.floor(mins/60)}h${mins%60}m`).join(", ");
-    return {empId,name:emp?emp.name:`#${empId}`,total:d.total,breakdown};
+    return {empId,emp,name:emp?emp.name:`#${empId}`,total:d.total,breakdown};
+  }).filter(r=>{
+    // 다른 조직 화면들과 동일한 스코프: 사업부장→소속 부서, 팀장→소속 부서+팀
+    if(!currentUser||currentUser.role==="admin")return true;
+    if(!r.emp)return false;
+    if(currentUser.role==="director")return r.emp.dept===currentUser.dept;
+    if(currentUser.role==="leader")return r.emp.dept===currentUser.dept&&r.emp.team===currentUser.team;
+    return String(r.empId)===String(currentUser.id);
   }).sort((a,b)=>b.total-a.total);
   c.innerHTML=`<div class="card"><div class="card-head"><h3>📊 가동률 현황</h3>
     <div class="flex gap2">
