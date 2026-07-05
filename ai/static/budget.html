@@ -1133,6 +1133,7 @@ function renameSheet(oldName, tabEl) {
 // 렌더링
 // ══════════════════════════════════════════
 function render() {
+  clearEvalCache(); // 데이터 변경 가능성이 있는 재렌더 시 계산 캐시 초기화
   const g = grid(), st = styles();
   const nRows = g.length;
   const nCols = Math.max(MIN_COLS, ...g.map(r=>r.length));
@@ -1470,6 +1471,7 @@ function cancelEdit() {
 }
 
 function recomputeAll() {
+  clearEvalCache();
   const st = styles();
   document.querySelectorAll('#sheet td.cell').forEach(td => {
     const raw = td.getAttribute('data-raw') || '';
@@ -1937,9 +1939,16 @@ function dataEdge(r, c, dr, dc) {
 
 function moveSel(dr, dc) {
   if (!selectedCell) { if(!dr&&!dc) return; selectedCell={r:0,c:0}; }
-  const nRows=grid().length, nCols=(grid()[0]||[]).length;
-  const r=Math.max(0,Math.min(nRows-1,selectedCell.r+dr));
-  const c=Math.max(0,Math.min(nCols-1,selectedCell.c+dc));
+  const g = grid();
+  let nRows=g.length, nCols=Math.max(MIN_COLS, ...g.map(row=>row.length));
+  let tr = selectedCell.r+dr, tc = selectedCell.c+dc;
+  // 마지막 행/열에서 그 방향으로 이동하면 시트가 자동 확장 (엑셀처럼 계속 이동 가능)
+  let grew = false;
+  if (tr >= nRows) { g.push(new Array(nCols).fill('')); nRows++; grew = true; }
+  if (tc >= nCols) { g.forEach(row => { while(row.length <= tc) row.push(''); }); nCols = tc+1; grew = true; }
+  if (grew) render();
+  const r=Math.max(0,Math.min(nRows-1,tr));
+  const c=Math.max(0,Math.min(nCols-1,tc));
   selectCell(r,c);
 }
 
@@ -3265,6 +3274,9 @@ function resolveSheet(sheetName) {
 }
 
 // 셀 값을 숫자로 반환 (수식 계산용)
+let _evalCache = new Map();
+function clearEvalCache() { _evalCache = new Map(); }
+
 function cellVal(ref, vis, sheetName) {
   vis = vis || new Set();
   const m=/^([A-Za-z]+)(\d+)$/.exec(String(ref).replace(/\$/g,''));
@@ -3275,7 +3287,11 @@ function cellVal(ref, vis, sheetName) {
   const g=getGrid(sheetName);
   const raw=(g[row]&&g[row][col]!=null)?g[row][col]:'';
   if(typeof raw==='string'&&raw.startsWith('=')){
-    vis.add(scopeKey);const v=evalFormula(raw.slice(1),vis,sheetName);vis.delete(scopeKey);return v;
+    const ck='v|'+scopeKey;
+    if(_evalCache.has(ck)) return _evalCache.get(ck);
+    vis.add(scopeKey);const v=evalFormula(raw.slice(1),vis,sheetName);vis.delete(scopeKey);
+    _evalCache.set(ck,v);
+    return v;
   }
   if(raw===''||raw==null) return 0;
   const n=Number(String(raw).replace(/,/g,''));
@@ -3291,8 +3307,12 @@ function cellRaw(ref, vis, sheetName) {
   const g=getGrid(sheetName);
   const raw=(g[row]&&g[row][col]!=null)?g[row][col]:'';
   if(typeof raw==='string'&&raw.startsWith('=')){
+    const ck='r|'+scopeKey;
+    if(_evalCache.has(ck)) return _evalCache.get(ck);
     const v=evalFormula(raw.slice(1),vis||new Set(),sheetName);
-    return typeof v==='number'?v:String(v);
+    const out = typeof v==='number'?v:String(v);
+    _evalCache.set(ck,out);
+    return out;
   }
   return raw;
 }
@@ -4368,7 +4388,7 @@ function changeDecimal(delta) {
 // ══════════════════════════════════════════
 // 상태 표시줄 업데이트
 // ══════════════════════════════════════════
-const APP_BUILD = 'v2026.07.03-19';
+const APP_BUILD = 'v2026.07.03-20';
 function updateStatusBar() {
   const cells = getSelCellCoords();
   const mode = document.getElementById('sb-mode');
