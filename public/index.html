@@ -4609,8 +4609,13 @@ function _migratePositionTiers(){
   if(changed)autoSaveDebounced();
 }
 
+function _resetSettingStages(){
+  // 설정 화면 저장 전 임시 편집본들을 폐기 (페이지 이동·서버 상태 반영 시 stale 편집본 방지)
+  try{_opsStage=null;_settingsMainStage=null;_chainStage=null;_gradeStage=null;_calOptStage=null;}catch(e){}
+}
 function applyState(state,skipUndo=false){
   if(!skipUndo)_lastRestoreUndo=getFullState();
+  _resetSettingStages();
   const d=state.data||state;
   if(d.employees&&Array.isArray(d.employees)){employees=d.employees;_ensureEmpDefaults(employees);}
   if(d.kpiEntries&&Array.isArray(d.kpiEntries))kpiEntries=d.kpiEntries;
@@ -5849,6 +5854,7 @@ function gotoPage(p){
   if(_MY_PAGE_PW_GUARD.has(p)&&currentUser&&!_myPagePwVerified){
     _requireMyPagePw(()=>gotoPage(p));return;
   }
+  if(currentPage!==p)_resetSettingStages();
   currentPage=p;
   // 사이드바 드릴다운 상태를 이동할 페이지의 대분류/중분류에 맞춰 동기화
   if(p&&p.startsWith("cat:")){
