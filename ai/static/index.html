@@ -712,7 +712,13 @@
     </header>
 
     <!-- 페르소나 선택 탭 -->
-    <div class="persona-bar" id="persona-bar"></div>
+    <div class="persona-bar" id="persona-bar-row" style="display:flex;align-items:center">
+      <div class="persona-bar" id="persona-bar" style="flex:1;border:none;padding:0;margin:0"></div>
+      <div class="persona-tab" id="budget-tab" onclick="window.location.href='/static/budget.html'" style="flex-shrink:0;margin-right:8px">
+        <span class="tab-icon">📊</span>
+        <span class="tab-name">예산관리</span>
+      </div>
+    </div>
 
     <!-- 주식 빠른 액션 바 -->
     <div class="stock-quick-bar" id="stock-quick-bar">

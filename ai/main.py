@@ -4,7 +4,7 @@ import re
 import glob as _glob
 from datetime import datetime as _datetime
 from typing import Dict, Optional
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException, Request
 from fastapi.responses import StreamingResponse, HTMLResponse, Response, FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -13,6 +13,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import memory as mem
+import budget_store as budget
 import llm
 import search as srch
 import backup as bkp
@@ -106,6 +107,15 @@ if not os.getenv("DB_PATH"):
     )
 
 app = FastAPI(title="나만의 AI 어시스턴트")
+@app.middleware("http")
+async def no_cache_html(request, call_next):
+    """HTML은 항상 최신 배포 코드가 로드되도록 캐시 금지 (iPad PWA 스테일 캐시 방지)"""
+    response = await call_next(request)
+    if request.url.path.endswith(".html") or request.url.path == "/":
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
+        response.headers["Pragma"] = "no-cache"
+    return response
+
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 # 주식 분석 라우터 등록 (/stock/...)
@@ -1281,6 +1291,145 @@ async def debug_law(q: str = "근로기준법 제7조"):
             "error": str(e),
             "traceback": traceback.format_exc()[-500:],
         }
+
+# ── 예산관리 (budget) API ─────────────────────────
+@app.post("/budget/upload/headcount")
+async def budget_upload_headcount(file: UploadFile = File(...)):
+    """① 부서별 월 인원 현황 업로드 — 동일 부서/월 재업로드 시 자동 갱신"""
+    content = await file.read()
+    try:
+        rows = budget.parse_rows(content, file.filename)
+    except Exception:
+        raise HTTPException(status_code=400, detail="파일을 읽을 수 없습니다. (xlsx/csv만 지원)")
+    upserted, depts = budget.upsert_headcount(rows)
+    return {"message": "인원 현황이 반영되었습니다.", "upserted": upserted, "depts": depts}
+
+@app.post("/budget/upload/detail")
+async def budget_upload_detail(file: UploadFile = File(...)):
+    """② 판관/용역/경상 상세 업로드 — ①의 부서와 자동 연계, 동일 키 재업로드 시 자동 갱신"""
+    content = await file.read()
+    try:
+        rows = budget.parse_rows(content, file.filename)
+    except Exception:
+        raise HTTPException(status_code=400, detail="파일을 읽을 수 없습니다. (xlsx/csv만 지원)")
+    upserted, depts = budget.upsert_detail(rows)
+    return {"message": "예산 상세(판관/용역/경상) 내역이 반영되었습니다.", "upserted": upserted, "depts": depts}
+
+@app.get("/budget/data")
+def budget_data():
+    return budget.read_budget()
+
+@app.get("/budget/summary")
+def budget_summary():
+    """부서 기준으로 인원 현황과 판관/용역/경상 상세를 연계한 통합 요약 (중복 없이 합산)"""
+    return {"summary": budget.build_summary()}
+
+@app.delete("/budget/data")
+def budget_reset():
+    budget.write_budget(budget._empty())
+    return {"message": "예산 데이터가 초기화되었습니다."}
+
+
+class GridSaveRequest(BaseModel):
+    rows: list
+
+
+class SnapshotRequest(BaseModel):
+    label: str
+    rows: list
+
+
+@app.get("/budget/grid")
+def budget_grid_get():
+    return {"rows": budget.get_grid()}
+
+
+@app.post("/budget/grid")
+def budget_grid_save(req: GridSaveRequest):
+    budget.save_grid(req.rows)
+    return {"message": "저장되었습니다."}
+
+
+@app.post("/budget/grid/upload")
+async def budget_grid_upload(file: UploadFile = File(...)):
+    content = await file.read()
+    try:
+        rows = budget.parse_grid(content, file.filename)
+    except Exception:
+        raise HTTPException(status_code=400, detail="파일을 읽을 수 없습니다. (xlsx/csv만 지원)")
+    budget.save_grid(rows)
+    return {"message": "업로드되었습니다.", "rows": len(rows)}
+
+
+@app.get("/budget/grid/download")
+def budget_grid_download():
+    rows = budget.get_grid()
+    buf = budget.export_grid_xlsx(rows)
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": "attachment; filename*=UTF-8''budget.xlsx"},
+    )
+
+
+@app.get("/budget/grid/snapshots")
+def budget_snapshots_list():
+    return {"snapshots": budget.list_snapshots()}
+
+
+@app.post("/budget/grid/snapshot")
+def budget_snapshot_save(req: SnapshotRequest):
+    snap_id = budget.save_snapshot(req.label, req.rows)
+    return {"message": "스냅샷이 저장되었습니다.", "id": snap_id}
+
+
+@app.get("/budget/grid/snapshot/{snap_id}")
+def budget_snapshot_get(snap_id: str):
+    snap = budget.get_snapshot(snap_id)
+    if not snap:
+        raise HTTPException(status_code=404, detail="스냅샷을 찾을 수 없습니다.")
+    return snap
+
+
+@app.delete("/budget/grid/snapshot/{snap_id}")
+def budget_snapshot_delete(snap_id: str):
+    ok = budget.delete_snapshot(snap_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="스냅샷을 찾을 수 없습니다.")
+    return {"message": "삭제되었습니다."}
+
+
+@app.get("/budget/sheets")
+def budget_get_sheets():
+    """멀티시트 전체 데이터 조회"""
+    return budget.get_sheets()
+
+
+@app.post("/budget/sheets")
+async def budget_save_sheets(request: Request):
+    """멀티시트 전체 데이터 저장"""
+    payload = await request.json()
+    budget.save_sheets(payload)
+    return {"ok": True}
+
+
+@app.get("/budget/grid/compare")
+def budget_grid_compare(a: str = "current", b: str = "current"):
+    """a, b는 스냅샷 id 또는 'current'(현재 작업 그리드)"""
+    def _rows_of(key):
+        if key == "current":
+            return budget.get_grid()
+        snap = budget.get_snapshot(key)
+        if not snap:
+            raise HTTPException(status_code=404, detail=f"스냅샷을 찾을 수 없습니다: {key}")
+        return snap["grid"]
+
+    rows_a = _rows_of(a)
+    rows_b = _rows_of(b)
+    diffs = budget.compare_rows(rows_a, rows_b)
+    return {"diffs": diffs, "count": len(diffs)}
+
+
 
 @app.get("/health")
 def health():
