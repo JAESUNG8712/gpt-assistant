@@ -13,6 +13,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import memory as mem
+import budget_store as budget
 import llm
 import search as srch
 import backup as bkp
@@ -107,7 +108,6 @@ if not os.getenv("DB_PATH"):
     )
 
 app = FastAPI(title="나만의 AI 어시스턴트")
-
 
 @app.middleware("http")
 async def no_cache_html(request, call_next):
@@ -292,20 +292,31 @@ def _summarize_long_text(content: str, label: str, max_chars: int = 3500) -> str
 
 
 def _format_reference_links(items: list, max_items: int = 5) -> str:
-    """[{title,url}] 형태의 참고 자료 목록을 마크다운 링크 섹션으로 변환"""
+    """[{title,url}] 형태의 참고 자료 목록을 마크다운 링크 섹션으로 변환.
+    클릭 시 해당 페이지로 바로 이동하도록 target=_blank 처리(프론트엔드 renderMd에서 적용)."""
+    from urllib.parse import urlparse
     seen, links = set(), []
     for it in items:
         url = str(it.get("url") or "").strip()
         if not url or not url.startswith("http") or url in seen:
             continue
         seen.add(url)
-        title = str(it.get("title") or url).strip().replace("\n", " ")[:60]
+        raw_title = str(it.get("title") or "").strip().replace("\n", " ")
+        if raw_title:
+            title = raw_title[:70]
+        else:
+            # 타이틀 없으면 도메인명을 표시
+            try:
+                domain = urlparse(url).netloc.removeprefix("www.")
+            except Exception:
+                domain = url[:40]
+            title = domain
         links.append(f"- [{title}]({url})")
         if len(links) >= max_items:
             break
     if not links:
         return ""
-    return "\n\n---\n📎 **참고 자료**\n" + "\n".join(links)
+    return "\n\n---\n📎 **참고 자료** (클릭하면 해당 페이지로 이동)\n" + "\n".join(links)
 
 def _load_latest_stock_report(max_chars: int = 8000) -> str:
     """저장된 가장 최신 보고서를 로드해 컨텍스트로 반환"""
@@ -679,6 +690,9 @@ async def chat(req: ChatRequest):
                         answer = top_answer
                 else:
                     answer = top_answer
+                # 출처 레이블: 어느 KB에서 나온 답변인지 사용자에게 표시
+                source_label = f"\n\n---\n📚 **출처**: 내부 지식베이스 (유사도 {best_score:.2f})"
+                answer = answer + source_label
                 chunk_size = 150
                 for i in range(0, len(answer), chunk_size):
                     chunk = answer[i:i + chunk_size]
@@ -814,8 +828,10 @@ async def chat(req: ChatRequest):
                     if ctx_parts:
                         context = (
                             f"[아래 자료를 참고해 사용자 질문 '{search_msg[:60]}'에 답변하세요. "
-                            f"증권사 리포트·뉴스·검색 결과를 종합하여 전문가적 투자 분석을 제공하세요. "
-                            f"자료에 없는 내용은 전문가 주식 지식으로 보완하세요.]\n\n"
+                            f"각 자료의 출처 레이블(예: [최신 뉴스], [증권사 리포트])을 답변 내에 명시하여 "
+                            f"사용자가 어느 자료에서 나온 정보인지 알 수 있게 하세요. "
+                            f"자료에 명시된 수치·사실만 사용하고, 자료에 없는 구체적 수치는 추측하지 마세요. "
+                            f"불확실한 내용은 '자료에서 확인되지 않음'으로 명시하세요.]\n\n"
                             + "\n\n---\n\n".join(ctx_parts)
                         )
                     else:
@@ -834,7 +850,11 @@ async def chat(req: ChatRequest):
                     if raw_ctx:
                         context = (
                             f"[주의: 아래 참고 자료 중 사용자 질문 '{search_msg[:60]}'"
-                            f"와 직접 관련된 내용만 사용하세요. 질문 주제와 다른 내용(다른 법 조항, 다른 HR 주제 등)은 답변에 포함하지 마세요.]\n\n"
+                            f"와 직접 관련된 내용만 사용하세요. "
+                            f"질문 주제와 다른 내용(다른 법 조항, 다른 HR 주제 등)은 답변에 포함하지 마세요. "
+                            f"자료에 명시된 수치·사실만 인용하고, 자료에 없는 내용은 절대 만들어내지 마세요. "
+                            f"불확실하거나 자료 밖의 내용은 '확인 필요' 또는 '자료에서 확인되지 않음'으로 표시하세요. "
+                            f"법령 원문·웹검색 결과 등 출처를 답변에서 간략히 언급하세요.]\n\n"
                             + raw_ctx
                         )
                     else:
@@ -1410,6 +1430,145 @@ async def debug_law(q: str = "근로기준법 제7조"):
             "error": str(e),
             "traceback": traceback.format_exc()[-500:],
         }
+
+# ── 예산관리 (budget) API ─────────────────────────
+@app.post("/budget/upload/headcount")
+async def budget_upload_headcount(file: UploadFile = File(...)):
+    """① 부서별 월 인원 현황 업로드 — 동일 부서/월 재업로드 시 자동 갱신"""
+    content = await file.read()
+    try:
+        rows = budget.parse_rows(content, file.filename)
+    except Exception:
+        raise HTTPException(status_code=400, detail="파일을 읽을 수 없습니다. (xlsx/csv만 지원)")
+    upserted, depts = budget.upsert_headcount(rows)
+    return {"message": "인원 현황이 반영되었습니다.", "upserted": upserted, "depts": depts}
+
+@app.post("/budget/upload/detail")
+async def budget_upload_detail(file: UploadFile = File(...)):
+    """② 판관/용역/경상 상세 업로드 — ①의 부서와 자동 연계, 동일 키 재업로드 시 자동 갱신"""
+    content = await file.read()
+    try:
+        rows = budget.parse_rows(content, file.filename)
+    except Exception:
+        raise HTTPException(status_code=400, detail="파일을 읽을 수 없습니다. (xlsx/csv만 지원)")
+    upserted, depts = budget.upsert_detail(rows)
+    return {"message": "예산 상세(판관/용역/경상) 내역이 반영되었습니다.", "upserted": upserted, "depts": depts}
+
+@app.get("/budget/data")
+def budget_data():
+    return budget.read_budget()
+
+@app.get("/budget/summary")
+def budget_summary():
+    """부서 기준으로 인원 현황과 판관/용역/경상 상세를 연계한 통합 요약 (중복 없이 합산)"""
+    return {"summary": budget.build_summary()}
+
+@app.delete("/budget/data")
+def budget_reset():
+    budget.write_budget(budget._empty())
+    return {"message": "예산 데이터가 초기화되었습니다."}
+
+
+class GridSaveRequest(BaseModel):
+    rows: list
+
+
+class SnapshotRequest(BaseModel):
+    label: str
+    rows: list
+
+
+@app.get("/budget/grid")
+def budget_grid_get():
+    return {"rows": budget.get_grid()}
+
+
+@app.post("/budget/grid")
+def budget_grid_save(req: GridSaveRequest):
+    budget.save_grid(req.rows)
+    return {"message": "저장되었습니다."}
+
+
+@app.post("/budget/grid/upload")
+async def budget_grid_upload(file: UploadFile = File(...)):
+    content = await file.read()
+    try:
+        rows = budget.parse_grid(content, file.filename)
+    except Exception:
+        raise HTTPException(status_code=400, detail="파일을 읽을 수 없습니다. (xlsx/csv만 지원)")
+    budget.save_grid(rows)
+    return {"message": "업로드되었습니다.", "rows": len(rows)}
+
+
+@app.get("/budget/grid/download")
+def budget_grid_download():
+    rows = budget.get_grid()
+    buf = budget.export_grid_xlsx(rows)
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": "attachment; filename*=UTF-8''budget.xlsx"},
+    )
+
+
+@app.get("/budget/grid/snapshots")
+def budget_snapshots_list():
+    return {"snapshots": budget.list_snapshots()}
+
+
+@app.post("/budget/grid/snapshot")
+def budget_snapshot_save(req: SnapshotRequest):
+    snap_id = budget.save_snapshot(req.label, req.rows)
+    return {"message": "스냅샷이 저장되었습니다.", "id": snap_id}
+
+
+@app.get("/budget/grid/snapshot/{snap_id}")
+def budget_snapshot_get(snap_id: str):
+    snap = budget.get_snapshot(snap_id)
+    if not snap:
+        raise HTTPException(status_code=404, detail="스냅샷을 찾을 수 없습니다.")
+    return snap
+
+
+@app.delete("/budget/grid/snapshot/{snap_id}")
+def budget_snapshot_delete(snap_id: str):
+    ok = budget.delete_snapshot(snap_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="스냅샷을 찾을 수 없습니다.")
+    return {"message": "삭제되었습니다."}
+
+
+@app.get("/budget/sheets")
+def budget_get_sheets():
+    """멀티시트 전체 데이터 조회"""
+    return budget.get_sheets()
+
+
+@app.post("/budget/sheets")
+async def budget_save_sheets(request: Request):
+    """멀티시트 전체 데이터 저장"""
+    payload = await request.json()
+    budget.save_sheets(payload)
+    return {"ok": True}
+
+
+@app.get("/budget/grid/compare")
+def budget_grid_compare(a: str = "current", b: str = "current"):
+    """a, b는 스냅샷 id 또는 'current'(현재 작업 그리드)"""
+    def _rows_of(key):
+        if key == "current":
+            return budget.get_grid()
+        snap = budget.get_snapshot(key)
+        if not snap:
+            raise HTTPException(status_code=404, detail=f"스냅샷을 찾을 수 없습니다: {key}")
+        return snap["grid"]
+
+    rows_a = _rows_of(a)
+    rows_b = _rows_of(b)
+    diffs = budget.compare_rows(rows_a, rows_b)
+    return {"diffs": diffs, "count": len(diffs)}
+
+
 
 @app.get("/health")
 def health():

@@ -1,6 +1,16 @@
 from ddgs import DDGS
 from memory import store_memory
 from datetime import datetime
+from urllib.parse import urlparse
+
+
+def _domain(url: str) -> str:
+    """URL에서 도메인명만 추출 (www. 제외)"""
+    try:
+        return urlparse(url).netloc.removeprefix("www.")
+    except Exception:
+        return url[:40]
+
 
 def web_search(query: str, max_results: int = 5) -> list[dict]:
     results = []
@@ -26,7 +36,17 @@ def search_and_learn(query: str, max_results: int = 5, persona_id: str = "hr") -
     return results
 
 def format_search_context(results: list[dict]) -> str:
+    """LLM 컨텍스트용: 각 결과에 출처 도메인을 명시해 LLM이 출처를 인용할 수 있게 함"""
     parts = []
-    for r in results:
-        parts.append(f"[{r['title']}]\n{r['body']}\n출처: {r['url']}")
+    for i, r in enumerate(results, 1):
+        url = r.get("url", "")
+        domain = _domain(url) if url else "출처 없음"
+        title = r.get("title", "").strip()
+        body = r.get("body", "").strip()
+        parts.append(
+            f"[검색결과 {i} | 출처: {domain}]\n"
+            f"제목: {title}\n"
+            f"내용: {body}\n"
+            f"URL: {url}"
+        )
     return "\n\n".join(parts)
