@@ -11,11 +11,12 @@ import os
 import sys
 import json
 import time
+import urllib.request
+import urllib.parse
 
 try:
     import httpx
 except ImportError:
-    import urllib.request, urllib.parse
     httpx = None
 
 LAW_API_KEY = os.getenv("LAW_API_KEY", "")

@@ -5,6 +5,7 @@ const path    = require("path");
 const os      = require("os");
 const bcrypt  = require("bcryptjs");
 const pool    = require("./db");
+const budgetRouter = require("./budget");
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
@@ -561,6 +562,7 @@ function addActivityLog(entry) {
 app.use(cors());
 app.use(express.json({ limit: "50mb" }));
 app.use(express.static(path.join(__dirname, "public")));
+app.use("/api/budget", budgetRouter);
 
 // ── Core API ──────────────────────────────────────────────────────────────────
 

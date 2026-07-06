@@ -8,7 +8,8 @@ import pickle
 from datetime import datetime
 from pathlib import Path
 
-DB_PATH      = os.getenv("DB_PATH", "/tmp/memory.db")
+_APP_DIR = os.path.dirname(os.path.abspath(__file__))
+DB_PATH  = os.getenv("DB_PATH", os.path.join(_APP_DIR, "data", "memory.db"))
 TOKEN_PATH   = os.getenv("GDRIVE_TOKEN_PATH", "/tmp/gdrive_token.pkl")
 
 # Google Drive OAuth2 설정 (환경변수)
@@ -19,20 +20,60 @@ GDRIVE_REDIRECT_URI  = os.getenv("GDRIVE_REDIRECT_URI", "")  # 배포 URL + /bac
 
 # ── 공통: ZIP 생성 ────────────────────────────────────
 
+# data/ 테이블 → 추출 시 파일명 매핑 (카테고리별로 분리 저장)
+_TABLES = {
+    "conversations":      "by_category/conversations.json",   # 대화 이력
+    "learned_knowledge":  "by_category/learned_knowledge.json",  # 정적KB + 자동학습 + 업로드 문서 청크
+    "documents":          "by_category/documents.json",       # 업로드 문서 목록
+    "feedback":           "by_category/feedback.json",        # 답변 평가(👍/👎)
+}
+
+
+def _export_tables_json(conn: sqlite3.Connection) -> dict:
+    """테이블별 전체 행을 사람이 읽기 쉬운 JSON으로 직렬화해 반환 {파일경로: row목록}"""
+    conn.row_factory = sqlite3.Row
+    exported = {}
+    for table, rel_path in _TABLES.items():
+        try:
+            rows = conn.execute(f"SELECT * FROM {table}").fetchall()
+        except sqlite3.OperationalError:
+            continue  # 테이블이 없는 구버전 DB 대비
+        exported[rel_path] = [dict(r) for r in rows]
+    return exported
+
+
 def _make_zip() -> tuple[bytes, str]:
-    """DB를 ZIP으로 압축해 (bytes, filename) 반환"""
+    """DB를 ZIP으로 압축해 (bytes, filename) 반환.
+    - memory.sql       : SQLite 전체 복원용 원본 덤프
+    - by_category/*.json : 카테고리별 사람이 읽을 수 있는 JSON (추출/검토용)
+    - manifest.json    : 백업 시각, 테이블별 건수 등 요약
+    """
     filename = f"gpt-assistant-backup-{datetime.now().strftime('%Y%m%d-%H%M%S')}.zip"
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        counts = {}
         if os.path.exists(DB_PATH):
-            with sqlite3.connect(DB_PATH) as src:
+            src = sqlite3.connect(DB_PATH)
+            try:
                 dump = "\n".join(src.iterdump())
-            zf.writestr("memory.sql", dump)
-        meta = {
+                zf.writestr("memory.sql", dump)
+
+                for rel_path, rows in _export_tables_json(src).items():
+                    zf.writestr(rel_path, json.dumps(rows, ensure_ascii=False, indent=2))
+                    counts[rel_path] = len(rows)
+            finally:
+                src.close()
+
+        manifest = {
             "backed_up_at": datetime.now().isoformat(),
             "db_path": DB_PATH,
+            "row_counts": counts,
+            "contents": {
+                "memory.sql": "SQLite 전체 덤프 (복원용: sqlite3 new.db < memory.sql)",
+                "by_category/*.json": "테이블별 JSON (열람/검색/추출용)",
+            },
         }
-        zf.writestr("meta.json", json.dumps(meta, ensure_ascii=False, indent=2))
+        zf.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2))
     return buf.getvalue(), filename
 
 
