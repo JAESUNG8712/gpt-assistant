@@ -1035,23 +1035,44 @@ def try_insurance_calc(text: str) -> Optional[str]:
 #  9. 통합 디스패처
 # ══════════════════════════════════════════════════════
 
+# 계산기 그룹: 같은 그룹 안에서는 첫 매칭만 사용 (기간 연차 vs 단일 연차처럼
+# 동일 주제의 대체 계산기), 서로 다른 그룹은 전부 수집해 종합 자료로 결합
+_CALC_GROUPS = [
+    ("연차",            [try_annual_leave_period_calc, try_annual_leave_calc]),
+    ("퇴직금",          [try_retirement_calc]),
+    ("급여 실수령액",   [try_salary_calc]),
+    ("연장·야간·휴일 수당", [try_overtime_calc]),
+    ("주휴수당",        [try_weekly_holiday_calc]),
+    ("최저임금",        [try_min_wage_check]),
+    ("4대보험",         [try_insurance_calc]),
+]
+
+
 def try_any_calc(text: str) -> Optional[str]:
     """
-    모든 계산기를 순서대로 시도.
-    계산 가능한 첫 번째 결과를 반환, 모두 해당 없으면 None.
-    기간 계산은 단순 연차 계산보다 먼저 시도.
+    모든 계산기를 시도해 매칭되는 결과를 전부 수집.
+    - 1개 매칭: 해당 결과 그대로 반환 (기존 동작)
+    - 2개 이상 매칭: 인식된 의도 목록 + 각 계산 결과를 결합한 종합 자료 반환
+      (예: "퇴직금이랑 연차 알려줘" → 퇴직금 + 연차 두 섹션)
+    - 매칭 없음: None
     """
-    for fn in [
-        try_annual_leave_period_calc,   # 기간별 누적 연차 (우선)
-        try_annual_leave_calc,          # 현재 기준 단일 연차
-        try_retirement_calc,
-        try_salary_calc,
-        try_overtime_calc,
-        try_weekly_holiday_calc,
-        try_min_wage_check,
-        try_insurance_calc,
-    ]:
-        result = fn(text)
-        if result:
-            return result
-    return None
+    results = []
+    for label, fns in _CALC_GROUPS:
+        for fn in fns:
+            r = fn(text)
+            if r:
+                results.append((label, r))
+                break
+    if not results:
+        return None
+    if len(results) == 1:
+        return results[0][1]
+
+    labels = [label for label, _ in results]
+    header = (
+        f"# 📊 종합 계산 결과\n\n"
+        f"질문에서 **{len(results)}가지** 계산 의도를 인식했습니다: "
+        + " · ".join(f"**{l}**" for l in labels)
+        + "\n\n---\n\n"
+    )
+    return header + "\n\n---\n\n".join(r for _, r in results)
