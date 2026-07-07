@@ -1,18 +1,21 @@
-# Render.com 무료 배포 설정
+# Render.com 무료 배포 설정 (Turso 클라우드 DB 사용 — 영속 디스크 불필요)
 services:
   - type: web
     name: my-ai-assistant
     runtime: python
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
-    disk:
-      name: ai-data
-      mountPath: /app/data
-      sizeGB: 1
     envVars:
       - key: GROQ_API_KEY
         sync: false
-      - key: DB_PATH
-        value: /app/data/memory.db
-      - key: CHROMA_PATH
-        value: /app/data/chroma
+      - key: TURSO_DATABASE_URL
+        sync: false
+      - key: TURSO_AUTH_TOKEN
+        sync: false
+      # 선택: Claude API, DART, 한국은행 API
+      # - key: ANTHROPIC_API_KEY
+      #   sync: false
+      # - key: DART_API_KEY
+      #   sync: false
+      # - key: BOK_API_KEY
+      #   sync: false

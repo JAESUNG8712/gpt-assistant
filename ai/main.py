@@ -1143,6 +1143,45 @@ def knowledge_stats():
     }
 
 
+# ── DB 이관 (Railway → Turso 1회용) ─────────────────────
+
+@app.post("/admin/import-db")
+async def admin_import_db(file: UploadFile = File(...)):
+    """Railway SQLite(memory.db) 또는 백업 ZIP을 업로드해 현재 DB로 이관.
+    ZIP 업로드 시 내부의 memory.db를 자동으로 찾아 사용."""
+    import tempfile, zipfile, shutil
+    import migrate_to_turso as mig
+
+    suffix = ".db" if file.filename.endswith(".db") else ".zip"
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+        shutil.copyfileobj(file.file, tmp)
+        tmp_path = tmp.name
+
+    db_path = tmp_path
+    extracted_dir = None
+    try:
+        if suffix == ".zip":
+            extracted_dir = tempfile.mkdtemp()
+            with zipfile.ZipFile(tmp_path, "r") as z:
+                z.extractall(extracted_dir)
+            candidates = []
+            for root, _, files in os.walk(extracted_dir):
+                for f in files:
+                    if f.endswith(".db"):
+                        candidates.append(os.path.join(root, f))
+            if not candidates:
+                raise HTTPException(400, "ZIP 안에서 .db 파일을 찾을 수 없습니다.")
+            db_path = candidates[0]
+
+        stats = mig.migrate(db_path)
+        total = sum(v.get("inserted", 0) for v in stats.values())
+        return {"ok": True, "total_inserted": total, "tables": stats}
+    finally:
+        os.unlink(tmp_path)
+        if extracted_dir:
+            shutil.rmtree(extracted_dir, ignore_errors=True)
+
+
 # ── 백업 ──────────────────────────────────────────────
 
 @app.get("/backup/download")
