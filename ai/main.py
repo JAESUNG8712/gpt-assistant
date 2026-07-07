@@ -19,6 +19,7 @@ import search as srch
 import backup as bkp
 import law_search as law
 import calculator as calc
+import intent_agent
 
 # ── 복합어 정규화 (띄어쓰기 변형 → 정확한 검색어) ─────
 _COMPOUND_MAP = [
@@ -482,8 +483,26 @@ async def chat(req: ChatRequest):
     # (연차·퇴직금·실수령액·연장수당·주휴수당·최저임금·4대보험 등)
     direct_calc = calc.try_any_calc(user_msg)
 
+    # ── 0.5단계: 의도 분석 에이전트 ──────────────────────
+    # 질문 의도를 파악해 검색 최적화 질의를 생성. 실패·타임아웃 시 원본 질의 그대로 사용.
+    # 제외: 직접 계산 즉답 경로(지연 불필요), company 페르소나(사내 문서 전용 — 외부 LLM 미사용 정책)
+    if direct_calc or persona_id == "company":
+        intent_info = {"ok": False, "intent": "", "refined_query": user_msg, "keywords": [], "answer_guide": ""}
+    else:
+        intent_info = await intent_agent.analyze(user_msg, persona_id)
+    refined_query = ""
+    if intent_info.get("ok"):
+        refined_query = _normalize_query(intent_info.get("refined_query", "").strip())
+
     # ── 1단계: 로컬 KB 검색 (정규화된 쿼리 사용) ────────
     kb = mem.retrieve_best(search_msg, n=6, persona_id=persona_id)
+    # 정제 질의가 있으면 두 질의 중 KB 매칭 점수가 높은 쪽을 채택
+    # (의도 분석이 빗나가도 원본 검색 결과보다 나빠지지 않도록 게이트)
+    if refined_query and refined_query != search_msg:
+        kb_refined = mem.retrieve_best(refined_query, n=6, persona_id=persona_id)
+        if kb_refined["best_score"] >= kb["best_score"]:
+            kb = kb_refined
+            search_msg = refined_query  # 이후 법령/웹 검색도 정제 질의 사용
     rag_ctx     = kb["context"]
     best_score  = kb["best_score"]
     top_answer  = kb["top_answer"]
@@ -827,8 +846,10 @@ async def chat(req: ChatRequest):
                         ctx_parts.append(f"[실시간 인터넷 검색 결과]\n{auto_search_ctx}")
 
                     if ctx_parts:
+                        _intent_ctx = intent_agent.format_intent_context(intent_info)
                         context = (
-                            f"[아래 자료를 참고해 사용자 질문 '{search_msg[:60]}'에 답변하세요. "
+                            (_intent_ctx + "\n\n" if _intent_ctx else "")
+                            + f"[아래 자료를 참고해 사용자 질문 '{search_msg[:60]}'에 답변하세요. "
                             f"각 자료의 출처 레이블(예: [최신 뉴스], [증권사 리포트])을 답변 내에 명시하여 "
                             f"사용자가 어느 자료에서 나온 정보인지 알 수 있게 하세요. "
                             f"자료에 명시된 수치·사실만 사용하고, 자료에 없는 구체적 수치는 추측하지 마세요. "
@@ -848,9 +869,11 @@ async def chat(req: ChatRequest):
                         )
                     raw_ctx = "\n\n".join(filter(None, [law_ctx, rag_ctx, search_ctx]))
                     # 질문 관련성 지시: 무관한 컨텍스트를 LLM이 포함하지 않도록 명시
+                    _intent_ctx = intent_agent.format_intent_context(intent_info)
                     if raw_ctx:
                         context = (
-                            f"[주의: 아래 참고 자료 중 사용자 질문 '{search_msg[:60]}'"
+                            (_intent_ctx + "\n\n" if _intent_ctx else "")
+                            + f"[주의: 아래 참고 자료 중 사용자 질문 '{search_msg[:60]}'"
                             f"와 직접 관련된 내용만 사용하세요. "
                             f"질문 주제와 다른 내용(다른 법 조항, 다른 HR 주제 등)은 답변에 포함하지 마세요. "
                             f"자료에 명시된 수치·사실만 인용하고, 자료에 없는 내용은 절대 만들어내지 마세요. "
@@ -859,7 +882,7 @@ async def chat(req: ChatRequest):
                             + raw_ctx
                         )
                     else:
-                        context = ""
+                        context = _intent_ctx
 
                     if no_local:
                         yield "> 📭 로컬 자료 없음 — AI 지식으로 답변 후 자동 학습합니다.\n\n"
