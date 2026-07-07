@@ -87,6 +87,32 @@ def _format_company_results(top_results: list, best_score: float) -> str:
     return '\n'.join(parts)
 
 
+def _company_rule_supplement(query: str) -> str:
+    """직접 계산(CALC) 결과에 붙일 사내 취업규칙 보충 섹션.
+    company KB에서 관련 규정을 찾으면 본문과 출처를 표시. 없으면 빈 문자열."""
+    try:
+        kb = mem.retrieve_best(query, n=3, persona_id="company")
+    except Exception:
+        return ""
+    if kb["best_score"] >= 0.15 and kb["top_answer"]:
+        title, cite = _parse_answer_header(kb["top_answer"])
+        body = "\n".join(kb["top_answer"].split("\n")[1:]).lstrip("\n") or kb["top_answer"]
+        return (
+            "\n\n---\n### 📋 회사 취업규칙 관련 규정\n"
+            + (f"**{title}**" + (f"\n📌 출처: {cite}" if cite else "") + "\n\n")
+            + body[:600]
+            + f"\n\n📚 사내 규정 KB 검색 결과 (유사도 {kb['best_score']:.2f})"
+            + " · 법정 기준과 다른 경우 근로자에게 유리한 쪽이 적용됩니다."
+        )
+    return ""
+
+
+_GENERIC_RULE_NOTE = (
+    "\n\n> 회사 취업규칙이 법정 기준보다 유리하게 정한 경우 취업규칙이 우선 적용됩니다. "
+    "(학습된 사내 규정에서 관련 조항을 찾지 못해 법정 기준으로만 계산했습니다.)"
+)
+
+
 from personas import PERSONAS, DEFAULT_PERSONA, classify_personas, build_combined_persona
 from stock_analysis.stock_api import router as stock_router
 
@@ -482,6 +508,14 @@ async def chat(req: ChatRequest):
     # LLM / KB 상태에 무관하게 정확한 수치를 계산해 반환
     # (연차·퇴직금·실수령액·연장수당·주휴수당·최저임금·4대보험 등)
     direct_calc = calc.try_any_calc(user_msg)
+    # 계산 결과에 사내 취업규칙 보충: KB에 관련 규정이 있으면 본문 표시,
+    # 없으면 연차 계산에 한해 일반 안내 문구 (그 외 계산은 취업규칙 무관한 경우가 많아 생략)
+    if direct_calc:
+        _rule_section = _company_rule_supplement(search_msg)
+        if _rule_section:
+            direct_calc += _rule_section
+        elif calc.detect_annual_leave_query(user_msg):
+            direct_calc += _GENERIC_RULE_NOTE
 
     # ── 0.5단계: 의도 분석 에이전트 ──────────────────────
     # 질문 의도를 파악해 검색 최적화 질의를 생성. 실패·타임아웃 시 원본 질의 그대로 사용.

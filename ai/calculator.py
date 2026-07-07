@@ -41,6 +41,39 @@ def _parse_date(text: str) -> Optional[date]:
     return None
 
 
+_DATE_PATTERNS = [
+    r'(\d{2,4})년\s*(\d{1,2})월\s*(\d{1,2})일',       # 24년 8월 17일
+    r'(\d{4})[.\-/](\d{1,2})[.\-/](\d{1,2})',          # 2024.08.17
+    r'(\d{2})[.\-/](\d{1,2})[.\-/](\d{1,2})',          # 24.8.17
+    r'(\d{2,4})년\s*(\d{1,2})월',                       # 24년 8월 (일 없음 → 1일)
+]
+
+
+def _parse_all_dates(text: str) -> list:
+    """질문 속 모든 날짜를 등장 순서대로 (시작위치, 끝위치, date) 목록으로 반환.
+    구체적 패턴(년월일)을 먼저 매치해 부분 패턴(년월)과의 중복을 방지."""
+    found = []  # (start, end, date)
+    for pi, pattern in enumerate(_DATE_PATTERNS):
+        for m in re.finditer(pattern, text):
+            # 이미 매치된 구간과 겹치면 스킵 (년월일 매치가 년월 재매치되는 것 차단)
+            if any(s < m.end() and m.start() < e for s, e, _ in found):
+                continue
+            g = m.groups()
+            y = int(g[0])
+            if y < 100:
+                y += 2000
+            mo = int(g[1])
+            d = int(g[2]) if len(g) >= 3 and g[2] is not None else 1
+            if pi == 3:  # 년월 패턴은 그룹이 2개
+                d = 1
+            try:
+                found.append((m.start(), m.end(), date(y, mo, d)))
+            except ValueError:
+                continue
+    found.sort(key=lambda t: t[0])
+    return found
+
+
 def _parse_amount(text: str) -> Optional[int]:
     """
     금액 표현 → 정수(원)
@@ -67,9 +100,11 @@ def _parse_amount(text: str) -> Optional[int]:
     m = re.search(r'(\d+(?:\.\d+)?)천', text)
     if m:
         return int(float(m.group(1)) * 1e3)
-    # 순수 숫자 (4자리 이상)
-    m = re.search(r'(\d{4,})', text)
-    if m:
+    # 순수 숫자 (4자리 이상) — 단, 날짜 표현("2024년" 등)의 숫자는 금액이 아니므로 제외
+    for m in re.finditer(r'(\d{4,})', text):
+        nxt = text[m.end():m.end() + 1]
+        if nxt in ('년', '월', '일'):
+            continue
         return int(m.group(1))
     return None
 
@@ -319,29 +354,60 @@ def _calc_annual_leave_result(join_date: date, today: date) -> dict:
 
 
 def try_annual_leave_calc(text: str) -> Optional[str]:
-    """연차 계산 (날짜 포함 질문 감지 시)"""
+    """연차 계산 (날짜 포함 질문 감지 시).
+    질문에 날짜가 2개 이상이면 입사일 외의 날짜를 기준일로 사용
+    (예: "24년 1월 1일 입사자는 26년 1월 1일에 몇 개?" → 기준일 2026-01-01)."""
     tl = text.lower()
     if not any(kw in tl for kw in _ANNUAL_LEAVE_KEYWORDS):
         return None
     if not (_parse_date(text) or any(kw in tl for kw in _JOIN_KEYWORDS)):
         return None
-    join_date = _parse_date(text)
-    if not join_date:
+
+    dates = _parse_all_dates(text)
+    if not dates:
         return None
+
     today = date.today()
-    if join_date > today:
+    explicit_asof = False
+
+    if len(dates) == 1:
+        join_date = dates[0][2]
+        as_of = today
+    else:
+        # '입사' 키워드에 인접(앞 8자/뒤 6자)한 날짜를 입사일로 판별
+        join_idx = None
+        for i, (s, e, d) in enumerate(dates):
+            near = text[max(0, s - 8):s] + text[e:e + 6]
+            if any(kw in near for kw in _JOIN_KEYWORDS):
+                join_idx = i
+                break
+        if join_idx is None:
+            # 인접 키워드 없으면 가장 이른 날짜를 입사일로 간주
+            join_idx = min(range(len(dates)), key=lambda i: dates[i][2])
+        join_date = dates[join_idx][2]
+        as_of = max(d for i, (s, e, d) in enumerate(dates) if i != join_idx)
+        explicit_asof = True
+
+    if explicit_asof and as_of < join_date:
+        return (
+            f"⚠️ 기준일({as_of.strftime('%Y.%m.%d')})이 "
+            f"입사일({join_date.strftime('%Y.%m.%d')})보다 앞섭니다. 날짜를 확인해주세요."
+        )
+    if not explicit_asof and join_date > today:
         return f"입사 예정일({join_date.strftime('%Y.%m.%d')})이 오늘보다 미래입니다."
-    r = _calc_annual_leave_result(join_date, today)
+
+    asof_label = "질문에 명시된 시점" if explicit_asof else "오늘"
+    r = _calc_annual_leave_result(join_date, as_of)
     return (
         f"## 연차 유급휴가 계산 결과\n\n"
         f"| 항목 | 내용 |\n|------|------|\n"
         f"| 입사일 | {join_date.strftime('%Y년 %m월 %d일')} |\n"
-        f"| 기준일 | {today.strftime('%Y년 %m월 %d일')} |\n"
+        f"| 기준일 | {as_of.strftime('%Y년 %m월 %d일')} ({asof_label}) |\n"
         f"| 근속기간 | {r['tenure']} ({r['leave_type']}) |\n"
-        f"| **현재 사용 가능 연차** | **{r['avail']}일** |\n"
+        f"| **사용 가능 연차** | **{r['avail']}일** |\n"
         f"| 계산 근거 | {r['calc_note']} |\n"
         f"| 다음 연차 발생 | {r['next_date'].strftime('%Y년 %m월 %d일')} ({r['next_days']}일 예정) |\n\n"
-        f"> 근로기준법 제60조 기준. 회사 취업규칙 확인 권장."
+        f"> 근로기준법 제60조 기준 (법정 최저 기준)."
     )
 
 
@@ -475,7 +541,7 @@ def try_salary_calc(text: str) -> Optional[str]:
     annual_label = f"(연봉 환산: {r['monthly']*12:,}원)" if '연봉' in tl else ""
 
     return (
-        f"## 급여 실수령액 계산 ({date.today().year}년 기준)\n\n"
+        f"## 급여 실수령액 계산 (2024년 요율 기준)\n\n"
         f"**월 급여**: {monthly:,}원 {annual_label}\n"
         f"**부양가족**: {deps}명\n\n"
         f"### 공제 항목\n"
@@ -490,6 +556,7 @@ def try_salary_calc(text: str) -> Optional[str]:
         f"### 결과\n"
         f"**실수령액: {r['net']:,}원** "
         f"({r['net']//10000:,}만 {r['net']%10000:,}원)\n\n"
+        f"> 2024년 4대보험 요율·간이세액표 기준 — 이후 연도 요율 변경 시 실제 금액과 차이가 있을 수 있습니다.\n"
         f"> 실제 공제액은 부양가족 수, 비과세 항목(식대 20만, 자가운전보조금 20만 등)에 따라 다를 수 있습니다.\n"
         f"> 정확한 계산: 국세청 홈택스 → 근로소득 간이세액표"
     )
@@ -821,6 +888,7 @@ _MIN_WAGE_KEYWORDS = [
 MIN_WAGE_2024 = 9_860
 MIN_WAGE_2025 = 10_030
 MIN_WAGE_2026 = 10_320
+_MIN_WAGE_TABLE = {2024: MIN_WAGE_2024, 2025: MIN_WAGE_2025, 2026: MIN_WAGE_2026}
 
 
 def _current_min_wage() -> tuple[int, int]:
@@ -832,6 +900,20 @@ def _current_min_wage() -> tuple[int, int]:
         return MIN_WAGE_2025, today.year
     else:
         return MIN_WAGE_2024, today.year
+
+
+def _question_year_min_wage(text: str) -> Optional[tuple[int, int]]:
+    """질문에 명시된 연도의 최저임금 반환. 보유 데이터(2024~2026) 밖이면 None.
+    (예: "2024년 시급 9,900원 위반?" → 2024년 기준으로 판정)"""
+    for m in re.finditer(r'(\d{2,4})년', text):
+        y = int(m.group(1))
+        if y < 100:
+            y += 2000
+        if y in _MIN_WAGE_TABLE:
+            return _MIN_WAGE_TABLE[y], y
+        if 2000 <= y <= 2060:
+            return None  # 명시된 연도가 데이터 밖 → 직접 계산 포기 (KB/LLM 경로로)
+    return _current_min_wage()
 
 
 def try_min_wage_check(text: str) -> Optional[str]:
@@ -859,7 +941,11 @@ def try_min_wage_check(text: str) -> Optional[str]:
     if hourly is None:
         return None
 
-    min_wage, year = _current_min_wage()
+    # 질문에 연도가 명시되면 그 연도 기준으로 판정 (데이터 밖 연도는 KB/LLM 경로로)
+    mw = _question_year_min_wage(text)
+    if mw is None:
+        return None
+    min_wage, year = mw
 
     diff = hourly - min_wage
     if diff < 0:
@@ -930,7 +1016,7 @@ def try_insurance_calc(text: str) -> Optional[str]:
     employer_employment = int(amt * 0.009)
 
     return (
-        f"## 4대보험료 계산 ({date.today().year}년 기준)\n\n"
+        f"## 4대보험료 계산 (2024년 요율 기준)\n\n"
         f"**월 보수월액**: {amt:,}원\n\n"
         f"| 보험 종류 | 요율 | 근로자 부담 | 사업주 부담 |\n"
         f"|-----------|------|------------|------------|\n"
