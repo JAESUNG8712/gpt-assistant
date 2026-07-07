@@ -99,11 +99,12 @@ mem.init_db()
 # 컨테이너 파일시스템이 초기화되면서 학습된 RAG 데이터가 전부 사라진다.
 # (Railway/Render 등은 명시적으로 Volume을 만들고 마운트 경로를 DB_PATH로
 # 지정해야 데이터가 유지됨 — 기본값은 앱 디렉토리 내부 임시 경로)
-if not os.getenv("DB_PATH"):
+if not os.getenv("DB_PATH") and not (os.getenv("TURSO_DATABASE_URL") and os.getenv("TURSO_AUTH_TOKEN")):
     print(
         "⚠️  DB_PATH 환경변수가 설정되지 않았습니다. "
         "현재 DB는 앱 디렉토리 내부에 저장되어 재배포 시 초기화됩니다. "
-        "영속 볼륨을 마운트하고 DB_PATH=<마운트경로>/memory.db 를 설정하세요."
+        "영속 볼륨을 마운트하고 DB_PATH=<마운트경로>/memory.db 를 설정하거나, "
+        "TURSO_DATABASE_URL + TURSO_AUTH_TOKEN으로 Turso 클라우드 DB를 사용하세요."
     )
 
 app = FastAPI(title="나만의 AI 어시스턴트")
