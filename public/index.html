@@ -15644,8 +15644,8 @@ function _rcParseResumeText(text){
   const phoneM=text.match(/01[0-9][-.\s]{0,2}\d{3,4}[-.\s]{0,2}\d{4}/); // OCR 보강 텍스트의 "010 - 1234 - 5678" 형태도 허용
   const lines=text.split(/\r?\n/).map(l=>l.trim().replace(/^[^가-힣a-zA-Z0-9]+/,"")).filter(Boolean);
   let name="";
-  const nonNameLabelRe=/사항$|^(?:기본정보|개인정보|인적사항|핵심역량|주요업무|업무경험|자기소개서|기타사항|정규직|계약직|인턴직|일반직)$/;
-  const sameLineM=text.match(/(?:이\s*름|성\s*명|name)\s*[:：]?\s*([가-힣]{1,4}(?:\s+[가-힣]{1,4}){0,3}|[a-zA-Z]{2,15})/i);
+  const nonNameLabelRe=/사항$|^(?:기본정보|개인정보|인적사항|핵심역량|주요업무|업무경험|자기소개서|기타사항|정규직|계약직|인턴직|일반직|인쇄하기|이력서번호|취업활동|휴대폰)$/;
+  const sameLineM=text.match(/(?:이\s*름|성\s*명|name|작성자)\s*[:：]?[ \t]*([가-힣]{1,4}(?:[ \t]+[가-힣]{1,4}){0,3}|[a-zA-Z]{2,15})/i);
   if(sameLineM&&!nonNameLabelRe.test(sameLineM[1].replace(/\s+/g,"")))name=sameLineM[1].replace(/\s+/g,"");
   if(!name){
     for(let i=0;i<lines.length;i++){
@@ -15669,7 +15669,71 @@ function _rcParseResumeText(text){
   }
   return{name,email:emailM?emailM[0]:"",phone:phoneM?phoneM[0]:""};
 }
+// OCR 보강 텍스트에서 재직기간이 일치하는 줄을 찾아 비어 있는 회사명을 채운다.
+// (잡코리아 등 인쇄용 PDF는 회사명을 이미지로만 렌더링 → 텍스트 레이어에 없음)
+const _RC_RANK_WORD_RE=/^(?:팀원|팀장|파트장|매니저|사원|주임|대리|과장|차장|부장|이사|상무|전무|수석|책임|선임|연구원|수석연구원|책임연구원|실장|본부장|그룹장|센터장|지점장|소장|대표)$/;
+function _rcCompanyFromOcrLine(line){
+  // 줄 앞의 날짜·기간 표기를 제거한 뒤, 직급/부서 단어가 나오기 전까지의 토큰을 회사명으로 취급
+  let s=line.replace(/\d{2,4}\s*\.\s*\d{1,2}\s*[~\-]\s*\d{2,4}\s*\.\s*\d{1,2}/g," ")
+            .replace(/\d+\s*년(?:\s*\d+\s*개월)?|\d+\s*개월/g," ").trim();
+  const toks=s.split(/\s+/).filter(Boolean);
+  const out=[];
+  for(const t of toks){
+    if(_RC_RANK_WORD_RE.test(t)||/팀$/.test(t))break;          // 직급·부서 단어에서 중단
+    if(!/^[\(\[]?[가-힣A-Za-z0-9()&·]+[\)\]]?$/.test(t))break;  // OCR 잡음 토큰에서 중단
+    if(!/[가-힣]/.test(t)&&!/^[A-Z0-9&().·-]{2,}$/.test(t))break; // 한글 없고 대문자 약어도 아닌 토큰(OCR 잡음)에서 중단
+    if(t.length<2&&!/[가-힣]/.test(t))break;
+    out.push(t);
+    if(out.length>=3)break;
+  }
+  const cand=out.join(" ").replace(/[.,·]+$/,"").trim();
+  if(cand.length<2||cand.length>25)return "";
+  if(/이력서|인쇄하기|주요직무|연봉|학력|경력|자격증|해외경험|졸업|학점|입사지원|취업활동|휴대폰|Email/i.test(cand))return "";
+  return cand;
+}
+function _rcFillCompaniesFromOcr(entries,ocrText){
+  if(!ocrText||!entries.length)return;
+  const lines=ocrText.split(/\r?\n/).map(l=>l.trim()).filter(Boolean);
+  const normDate=s=>String(s||"").replace(/[^0-9]/g,"");
+  const rangeRe=/(\d{2,4})\s*\.\s*(\d{1,2})\s*[~\-]\s*(\d{2,4})\s*\.\s*(\d{1,2})/;
+  // ① 직급 문자열 기반: 항목의 직급(예: "수석연구원 팀원")이 유일하면, 같은 직급이 들어간
+  //    OCR 줄의 앞부분을 회사명으로 사용 ("넥센타이어 수석연구원 팀원" → 넥센타이어)
+  const posCount={};
+  entries.forEach(e=>{const k=(e.position||"").replace(/\s+/g,"");if(k)posCount[k]=(posCount[k]||0)+1;});
+  entries.forEach(e=>{
+    if(e.company)return;
+    const pk=(e.position||"").replace(/\s+/g,"");
+    if(!pk||posCount[pk]!==1)return;
+    const toks=e.position.trim().split(/\s+/);
+    const suffix=toks.slice(-2).join("");
+    if(suffix.length<3)return;
+    for(const ln of lines){
+      if(!ln.replace(/\s+/g,"").includes(suffix))continue;
+      const cand=_rcCompanyFromOcrLine(ln);
+      if(cand){e.company=cand;break;}
+    }
+  });
+  // ② 재직기간 기반: 남은 항목은 같은 기간이 적힌 OCR 줄 주변에서 회사명 탐색
+  entries.forEach(e=>{
+    if(e.company)return;
+    const es=normDate(e.start),ee=normDate(e.end);
+    if(!es)return;
+    for(let i=0;i<lines.length;i++){
+      const m=lines[i].match(rangeRe);
+      if(!m)continue;
+      if(normDate(m[1]+m[2])!==es||normDate(m[3]+m[4])!==ee)continue;
+      // ① 기간이 있는 줄 자체에서 회사명 추출 → ② 인접 줄(±1, ±2) 순으로 시도
+      const cand=_rcCompanyFromOcrLine(lines[i])||_rcCompanyFromOcrLine(lines[i-1]||"")||_rcCompanyFromOcrLine(lines[i+1]||"")||_rcCompanyFromOcrLine(lines[i-2]||"")||_rcCompanyFromOcrLine(lines[i+2]||"");
+      if(cand){e.company=cand;break;}
+    }
+  });
+}
 function _rcParseResumeDetails(text){
+  // OCR 보강 섹션 분리: 본문 파싱은 원본 텍스트로만 하고(중복 항목 방지),
+  // OCR 텍스트는 비어 있는 회사명 채우기에만 사용한다.
+  const _ocrMarkIdx=text.indexOf("[OCR 보강 텍스트]");
+  const _ocrSupp=_ocrMarkIdx>=0?text.slice(_ocrMarkIdx+"[OCR 보강 텍스트]".length):"";
+  if(_ocrMarkIdx>=0)text=text.slice(0,_ocrMarkIdx);
   const cleanLine=l=>l.trim().replace(/^[^가-힣a-zA-Z0-9.\-]+/,"");
   const LABELS=new Set(RECRUIT_SECTION_LABELS);
   // 경력 항목의 주요업무가 아닌 줄(학력/병역/개인정보/자격증/어학 등)은 경력사항에서 제외
@@ -15773,8 +15837,57 @@ function _rcParseResumeDetails(text){
   const careerEntryRe=new RegExp(`^(.+?)\\s*/\\s*(.+?)\\s*/\\s*(${dateTok.source})\\s*~\\s*(${endTokSrc})$`);
   const certLikeRe=/^\d{4}\.\d{1,2}(\.\d{1,2})?\s*\//;
   const careerEntries=[];
+  // 잡코리아 인쇄형 레이아웃 전용 파서: "직급줄 → (설명) → 기간줄 → 기간(N년 N개월) → [연봉] → 주요직무"
+  // 순서로 나오는 구조를 인식. 학력/교육/해외경험 기간은 '주요직무·연봉' 표기가 없어 자동 제외됨.
+  if(/인쇄하기\s*-\s*이력서|jobkorea/i.test(text)){
+    const jkRange=/^(\d{2,4}\.\s*\d{1,2})\s*~\s*(\d{2,4}\.\s*\d{1,2})$/;
+    const jkTitleRange=/^(.{2,30}?)\s+(\d{2,4}\.\s*\d{1,2})\s*~\s*(\d{2,4}\.\s*\d{1,2})$/; // "수석연구원 팀원\t2018. 08 ~ 2021. 02"
+    const jkTitleRe=/(?:팀원|팀장|파트장|매니저|부장|과장|차장|대리|사원|주임|이사|상무|전무|연구원|실장|본부장|그룹장|센터장|소장|대표)\s*$/;
+    const jkDurRe=/^\d+\s*년(?:\s*\d+\s*개월)?$|^\d+\s*개월$/;
+    const jkJunkRe=/^--\s*\d+\s*of\s*\d+\s*--$|^https?:\/\/|인쇄하기|^경\s*력$|^\d+\/\d+$/;
+    for(let i=0;i<rawLines.length;i++){
+      let start="",end="",title="",titleAt=-1;
+      let m=rawLines[i].match(jkRange);
+      if(!m){
+        const tm=rawLines[i].match(jkTitleRange);
+        if(tm&&jkTitleRe.test(tm[1].trim())){title=tm[1].trim();m=[null,tm[2],tm[3]];}
+      }
+      if(!m)continue;
+      start=m[1];end=m[2];
+      // 뒤따르는 6줄 내에 '주요직무' 또는 '연봉'이 있어야 경력 항목으로 인정 (학력·교육·수상 제외)
+      let duty="",qualified=false;
+      for(let j=i+1,seen=0;j<rawLines.length&&seen<6;j++){
+        const fl=rawLines[j];
+        if(jkJunkRe.test(fl))continue;
+        seen++;
+        if(jkRange.test(fl)||jkTitleRange.test(fl))break;
+        if(/연봉\s*$/.test(fl)){qualified=true;continue;}
+        const dm=fl.match(/^(.*?)\s*주요직무\s*$/);
+        if(dm){duty=dm[1].trim();qualified=true;break;}
+        if(jkDurRe.test(fl))continue;
+      }
+      if(!qualified)continue;
+      // 직급줄: 기간줄 위쪽 최대 6줄에서 직급 어미로 끝나는 줄 탐색, 그 사이 줄은 설명으로
+      const descs=[];
+      if(!title){
+        for(let k=i-1,back=0;k>=0&&back<6;k--,back++){
+          const bl=rawLines[k];
+          if(jkRange.test(bl)||jkTitleRange.test(bl)||jkDurRe.test(bl)||LABELS.has(bl)||jkJunkRe.test(bl))break;
+          if(jkTitleRe.test(bl)&&bl.length<=30&&!/주요직무|연봉/.test(bl)){title=bl;titleAt=k;break;}
+        }
+        if(titleAt>=0)for(let k=titleAt+1;k<i;k++){if(!jkJunkRe.test(rawLines[k]))descs.push(rawLines[k]);}
+        else{ // 직급줄이 없으면 바로 위 1줄을 설명/직무로 사용 (예: "개발")
+          const prev=rawLines[i-1];
+          if(prev&&!jkRange.test(prev)&&!jkDurRe.test(prev)&&!LABELS.has(prev)&&!jkJunkRe.test(prev)&&prev.length<=30)title=prev;
+        }
+      }
+      const duties=[...descs];
+      if(duty)duties.push(duty);
+      careerEntries.push({position:title,company:"",start,end:end,duties});
+    }
+  }
   let openEntry=null;
-  rawLines.forEach(line=>{
+  if(careerEntries.length===0)rawLines.forEach(line=>{
     const m=line.match(careerEntryRe);
     if(m){
       openEntry={position:m[1].trim(),company:m[2].trim(),start:m[3],end:m[4],duties:[]};
@@ -15897,6 +16010,7 @@ function _rcParseResumeDetails(text){
     const ea=_rcParseDateLoose(a.end),eb=_rcParseDateLoose(b.end);
     return (eb?eb.t:0)-(ea?ea.t:0);
   });
+  _rcFillCompaniesFromOcr(careerEntries,_ocrSupp); // 마스킹 PDF: OCR 텍스트로 빈 회사명 보강
   const careerHistory=careerEntries.map((c,i)=>`${i+1}. ${c.start}~${c.end} | ${c.company} | ${c.position||""} | ${c.duties.length?c.duties.join("; "):"업무내용 미기재"}`).join("\n");
 
   // 연봉: 마지막(현재/최종/직전) 연봉과 희망연봉 구분, 범위/정성적 표현 허용, "현재직급/연봉" 등 복합 라벨도 인식

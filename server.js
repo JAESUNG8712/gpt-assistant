@@ -2778,7 +2778,9 @@ app.get("/api/recruit/candidates/:id", async (req, res) => {
 function _execFileP(cmd, args) {
   const { execFile } = require("child_process");
   return new Promise((resolve, reject) => {
-    execFile(cmd, args, { maxBuffer: 1024 * 1024 * 20 }, (err, stdout) => err ? reject(err) : resolve(stdout));
+    // OMP_THREAD_LIMIT=1: tesseract가 프로세스당 다수 스레드를 만들면 여러 페이지
+    // 동시 처리 시 CPU 경합으로 사실상 멈추는 문제 방지 (제한된 컨테이너 환경)
+    execFile(cmd, args, { maxBuffer: 1024 * 1024 * 20, timeout: 60000, env: { ...process.env, OMP_THREAD_LIMIT: "1" } }, (err, stdout) => err ? reject(err) : resolve(stdout));
   });
 }
 async function _ocrPdfBuffer(buffer) {
@@ -2790,25 +2792,28 @@ async function _ocrPdfBuffer(buffer) {
     await fs.promises.writeFile(pdfPath, buffer);
     await execFileP("pdftoppm", ["-png", "-r", "200", "-l", "8", pdfPath, pagePrefix]);
     const files = (await fs.promises.readdir(tmpDir)).filter(f => f.startsWith("page") && f.endsWith(".png")).sort();
-    const texts = await Promise.all(files.map(f => execFileP("tesseract", [path.join(tmpDir, f), "stdout", "-l", "kor+eng"])));
+    const texts = [];
+    for (const f of files) texts.push(await execFileP("tesseract", [path.join(tmpDir, f), "stdout", "-l", "kor+eng"]));
     return texts.join("\n");
   } finally {
     fs.promises.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
   }
 }
-async function _ocrPdfFirstPage(buffer) {
-  // 연락처 보강용 경량 OCR — 첫 페이지만 렌더링해 처리 시간을 최소화
+async function _ocrPdfPages(buffer, lastPage) {
+  // 마스킹된 인쇄용 PDF 보강 OCR — 연락처·회사명이 이미지로만 렌더링된 경우 사용.
+  // 회사명은 경력사항이 이어지는 2페이지 이후에도 나오므로 앞쪽 여러 페이지를 처리한다.
   const execFileP = _execFileP;
   const tmpDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "resume-ocr1-"));
   const pdfPath = path.join(tmpDir, "in.pdf");
   const pagePrefix = path.join(tmpDir, "page");
   try {
     await fs.promises.writeFile(pdfPath, buffer);
-    await execFileP("pdftoppm", ["-png", "-r", "200", "-f", "1", "-l", "1", pdfPath, pagePrefix]);
+    await execFileP("pdftoppm", ["-png", "-r", "200", "-f", "1", "-l", String(lastPage || 1), pdfPath, pagePrefix]);
     const files = (await fs.promises.readdir(tmpDir)).filter(f => f.startsWith("page") && f.endsWith(".png")).sort();
     if (!files.length) return "";
-    const out = await execFileP("tesseract", [path.join(tmpDir, files[0]), "stdout", "-l", "kor+eng"]);
-    return out;
+    const texts = [];
+    for (const f of files) texts.push(await execFileP("tesseract", [path.join(tmpDir, f), "stdout", "-l", "kor+eng"]));
+    return texts.join("\n");
   } finally {
     fs.promises.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
   }
@@ -2832,14 +2837,15 @@ app.post("/api/recruit/extract-pdf-text", async (req, res) => {
       }
     } else {
       // 텍스트 레이어는 있지만 연락처(휴대폰/이메일)가 없는 경우 — 잡코리아 등
-      // 채용 사이트 인쇄용 PDF는 개인정보를 이미지로만 렌더링하므로 텍스트 추출로는
-      // 연락처가 절대 나오지 않는다. 이때 1페이지만 OCR해 연락처 정보를 보강한다.
+      // 채용 사이트 인쇄용 PDF는 개인정보(연락처)와 회사명을 이미지로만 렌더링하므로
+      // 텍스트 추출로는 절대 나오지 않는다. 이때 앞 4페이지를 OCR해 보강 섹션으로 첨부한다.
+      // (프론트엔드 파서는 이 섹션에서 연락처를 찾고, 회사명이 빈 경력 항목을 채운다)
       const hasPhone = /01[0-9][-.\s]{0,2}\d{3,4}[-.\s]{0,2}\d{4}/.test(text);
       const hasEmail = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/.test(text);
       if (!hasPhone || !hasEmail) {
         try {
-          const ocrText = await _ocrPdfFirstPage(buffer);
-          if (ocrText && ocrText.trim()) text += "\n\n[연락처 OCR 보강]\n" + ocrText;
+          const ocrText = await _ocrPdfPages(buffer, 4);
+          if (ocrText && ocrText.trim()) text += "\n\n[OCR 보강 텍스트]\n" + ocrText;
         } catch (e) { /* OCR 도구 미설치 등 — 텍스트 추출 결과만 반환 */ }
       }
     }
