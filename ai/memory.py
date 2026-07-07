@@ -17,11 +17,18 @@ TURSO_TOKEN = os.getenv("TURSO_AUTH_TOKEN", "").strip()
 _USE_TURSO  = bool(TURSO_URL and TURSO_TOKEN)
 
 # ── 로컬 SQLite 경로 (Turso 미사용 시) ───────────────────
-DB_PATH = os.getenv("DB_PATH", os.path.join(_APP_DIR, "data", "memory.db"))
+_DEFAULT_DB = os.path.join(_APP_DIR, "data", "memory.db")
+DB_PATH = os.getenv("DB_PATH", _DEFAULT_DB)
 if not _USE_TURSO:
     _db_dir = os.path.dirname(DB_PATH)
     if _db_dir:
-        os.makedirs(_db_dir, exist_ok=True)
+        try:
+            os.makedirs(_db_dir, exist_ok=True)
+        except PermissionError:
+            # 지정된 경로에 권한이 없으면 앱 디렉토리 하위로 fallback
+            DB_PATH = _DEFAULT_DB
+            os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+            print(f"⚠️ DB_PATH 권한 없음 — fallback: {DB_PATH}")
 
 if _USE_TURSO:
     print(f"✅ Turso 클라우드 DB 사용: {TURSO_URL}")
