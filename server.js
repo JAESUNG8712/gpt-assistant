@@ -2796,6 +2796,23 @@ async function _ocrPdfBuffer(buffer) {
     fs.promises.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
   }
 }
+async function _ocrPdfFirstPage(buffer) {
+  // 연락처 보강용 경량 OCR — 첫 페이지만 렌더링해 처리 시간을 최소화
+  const execFileP = _execFileP;
+  const tmpDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "resume-ocr1-"));
+  const pdfPath = path.join(tmpDir, "in.pdf");
+  const pagePrefix = path.join(tmpDir, "page");
+  try {
+    await fs.promises.writeFile(pdfPath, buffer);
+    await execFileP("pdftoppm", ["-png", "-r", "200", "-f", "1", "-l", "1", pdfPath, pagePrefix]);
+    const files = (await fs.promises.readdir(tmpDir)).filter(f => f.startsWith("page") && f.endsWith(".png")).sort();
+    if (!files.length) return "";
+    const out = await execFileP("tesseract", [path.join(tmpDir, files[0]), "stdout", "-l", "kor+eng"]);
+    return out;
+  } finally {
+    fs.promises.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+  }
+}
 app.post("/api/recruit/extract-pdf-text", async (req, res) => {
   try {
     if (!requireRole(req, res, ["admin", "leader", "director"])) return;
@@ -2812,6 +2829,18 @@ app.post("/api/recruit/extract-pdf-text", async (req, res) => {
         text = await _ocrPdfBuffer(buffer);
       } catch (ocrErr) {
         return res.json({ ok: true, text: "", ocrFailed: true, message: "스캔된 PDF로 보이며 OCR 처리에 실패했습니다(서버에 poppler-utils/tesseract-ocr 필요): " + ocrErr.message });
+      }
+    } else {
+      // 텍스트 레이어는 있지만 연락처(휴대폰/이메일)가 없는 경우 — 잡코리아 등
+      // 채용 사이트 인쇄용 PDF는 개인정보를 이미지로만 렌더링하므로 텍스트 추출로는
+      // 연락처가 절대 나오지 않는다. 이때 1페이지만 OCR해 연락처 정보를 보강한다.
+      const hasPhone = /01[0-9][-.\s]{0,2}\d{3,4}[-.\s]{0,2}\d{4}/.test(text);
+      const hasEmail = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/.test(text);
+      if (!hasPhone || !hasEmail) {
+        try {
+          const ocrText = await _ocrPdfFirstPage(buffer);
+          if (ocrText && ocrText.trim()) text += "\n\n[연락처 OCR 보강]\n" + ocrText;
+        } catch (e) { /* OCR 도구 미설치 등 — 텍스트 추출 결과만 반환 */ }
       }
     }
     res.json({ ok: true, text });

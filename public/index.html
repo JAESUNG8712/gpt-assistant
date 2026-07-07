@@ -15641,7 +15641,7 @@ const RECRUIT_SECTION_LABELS=["학력사항","인적사항","경력사항","자�
 const RECRUIT_EDU_KEYWORDS=["교육","연수","과정","세미나","워크숍","강의","트레이닝","아카데미","부트캠프"];
 function _rcParseResumeText(text){
   const emailM=text.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/);
-  const phoneM=text.match(/01[0-9][-.\s]?\d{3,4}[-.\s]?\d{4}/);
+  const phoneM=text.match(/01[0-9][-.\s]{0,2}\d{3,4}[-.\s]{0,2}\d{4}/); // OCR 보강 텍스트의 "010 - 1234 - 5678" 형태도 허용
   const lines=text.split(/\r?\n/).map(l=>l.trim().replace(/^[^가-힣a-zA-Z0-9]+/,"")).filter(Boolean);
   let name="";
   const nonNameLabelRe=/사항$|^(?:기본정보|개인정보|인적사항|핵심역량|주요업무|업무경험|자기소개서|기타사항|정규직|계약직|인턴직|일반직)$/;
