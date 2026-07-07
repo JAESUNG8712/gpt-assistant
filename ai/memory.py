@@ -36,17 +36,17 @@ else:
     print(f"📁 로컬 SQLite 사용: {DB_PATH}")
 
 
-# ── Turso 호환 Row 래퍼 ───────────────────────────────────
+# ── Row / Cursor 호환 래퍼 ────────────────────────────────
 
 class _Row(dict):
-    """Turso 결과 tuple + 컬럼명 → sqlite3.Row 호환 dict.
+    """컬럼명+값 tuple → sqlite3.Row 호환 dict.
     r["col"], r[0], dict(r) 패턴을 모두 지원."""
 
     __slots__ = ("_vals",)
 
     def __init__(self, columns, values):
         super().__init__(zip(columns, values))
-        object.__setattr__(self, "_vals", values)
+        object.__setattr__(self, "_vals", tuple(values))
 
     def __getitem__(self, key):
         if isinstance(key, int):
@@ -61,64 +61,107 @@ class _EmptyCursor:
     def __iter__(self): return iter([])
 
 
-class _TursoCursor:
-    """libsql_experimental 커서 → sqlite3 커서 호환 래퍼."""
+class _InMemoryCursor:
+    """Turso HTTP 응답 rows를 sqlite3 커서처럼 감싸는 래퍼."""
 
-    def __init__(self, result):
-        self._r = result
-        desc = getattr(result, "description", None) or []
-        self._cols = [d[0] for d in desc]
-
-    def _wrap(self, row):
-        if row is None:
-            return None
-        if self._cols:
-            return _Row(self._cols, row)
-        return row
+    def __init__(self, cols, rows):
+        self._cols = cols
+        self._rows = rows  # list of tuples
 
     def fetchall(self):
-        return [self._wrap(r) for r in self._r.fetchall()]
+        return [_Row(self._cols, r) for r in self._rows]
 
     def fetchone(self):
-        return self._wrap(self._r.fetchone())
+        return _Row(self._cols, self._rows[0]) if self._rows else None
 
     def __iter__(self):
         return iter(self.fetchall())
 
 
-class _TursoConn:
-    """libsql_experimental 연결 → sqlite3 연결 호환 래퍼."""
+# ── Turso HTTP API 클라이언트 (순수 Python — Rust 불필요) ──
 
-    def __init__(self):
-        import libsql_experimental as libsql  # noqa: lazy import
-        self._c = libsql.connect(TURSO_URL, auth_token=TURSO_TOKEN)
-        self._dirty = False
+class _TursoHttpConn:
+    """Turso /v2/pipeline HTTP API 클라이언트.
+    libsql-experimental(Rust 빌드 필요) 대신 urllib로 동작."""
 
-    def execute(self, sql, params=()):
+    _BATCH = 80  # executemany 1회 HTTP 요청당 최대 행 수
+
+    def __init__(self, db_url: str, token: str):
+        # libsql://xxx.turso.io → https://xxx.turso.io/v2/pipeline
+        base = db_url.replace("libsql://", "https://").rstrip("/")
+        self._endpoint = base + "/v2/pipeline"
+        self._token = token
+
+    # ── 값 변환 ──────────────────────────────────────────
+    @staticmethod
+    def _enc(v):
+        """Python → Turso 타입 dict."""
+        if v is None:               return {"type": "null"}
+        if isinstance(v, bool):     return {"type": "integer", "value": "1" if v else "0"}
+        if isinstance(v, int):      return {"type": "integer", "value": str(v)}
+        if isinstance(v, float):    return {"type": "float",   "value": str(v)}
+        return {"type": "text", "value": str(v)}
+
+    @staticmethod
+    def _dec(v):
+        """Turso 타입 dict → Python."""
+        t, val = v.get("type"), v.get("value")
+        if t == "null":    return None
+        if t == "integer": return int(val)
+        if t == "float":   return float(val)
+        return val  # text / blob
+
+    # ── HTTP 전송 ─────────────────────────────────────────
+    def _send(self, requests: list) -> list:
+        import urllib.request, json as _j
+        body = _j.dumps({"requests": requests}).encode()
+        req = urllib.request.Request(
+            self._endpoint,
+            data=body,
+            headers={
+                "Authorization": f"Bearer {self._token}",
+                "Content-Type":  "application/json",
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return _j.loads(resp.read())["results"]
+
+    def _stmt(self, sql: str, params=()):
+        return {"sql": sql, "args": [self._enc(p) for p in params]}
+
+    # ── 공개 인터페이스 ───────────────────────────────────
+    def execute(self, sql: str, params=()):
         if sql.strip().upper().startswith("PRAGMA"):
             return _EmptyCursor()
-        result = self._c.execute(sql, list(params))
-        self._dirty = True
-        return _TursoCursor(result)
+        results = self._send([
+            {"type": "execute", "stmt": self._stmt(sql, params)},
+            {"type": "close"},
+        ])
+        r = results[0]
+        if r.get("type") == "error":
+            raise Exception(r.get("error", {}).get("message", "Turso error"))
+        data = r["response"]["result"]
+        cols = [c["name"] for c in data.get("cols", [])]
+        rows = [tuple(self._dec(v) for v in row) for row in data.get("rows", [])]
+        return _InMemoryCursor(cols, rows)
 
-    def executemany(self, sql, seq):
-        self._c.executemany(sql, [list(p) for p in seq])
-        self._dirty = True
+    def executemany(self, sql: str, seq):
+        items = list(seq)
+        for i in range(0, len(items), self._BATCH):
+            batch = items[i: i + self._BATCH]
+            reqs = [{"type": "execute", "stmt": self._stmt(sql, p)} for p in batch]
+            reqs.append({"type": "close"})
+            results = self._send(reqs)
+            for r in results:
+                if r.get("type") == "error":
+                    raise Exception(r.get("error", {}).get("message", "Turso executemany error"))
 
-    def commit(self):
-        self._c.commit()
-        self._dirty = False
+    def commit(self): pass   # HTTP API는 요청별 자동 커밋
+    def close(self):  pass
 
-    def close(self):
-        pass  # 연결 재사용 — Turso는 자체 풀링
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        if exc_type is None and self._dirty:
-            self._c.commit()
-        return False
+    def __enter__(self): return self
+    def __exit__(self, exc_type, exc_val, exc_tb): return False
 
 
 # ── 연결 컨텍스트 매니저 ──────────────────────────────────
@@ -126,7 +169,7 @@ class _TursoConn:
 @contextlib.contextmanager
 def _conn():
     if _USE_TURSO:
-        c = _TursoConn()
+        c = _TursoHttpConn(TURSO_URL, TURSO_TOKEN)
         try:
             yield c
         finally:
