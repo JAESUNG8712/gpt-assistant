@@ -490,6 +490,7 @@ async def chat(req: ChatRequest):
 
     # ── 2단계: law.go.kr 법령 검색 (법 관련 질문만, 페르소나 허용 시) ──────
     law_ctx = ""
+    law_results = []  # 아래 reference_items 참조 시 항상 정의되어 있어야 함
     if persona_features.get("use_law", True) and law.is_law_question(search_msg):
         law_results = await law.search_law(search_msg)
         law_ctx = law.format_law_context(law_results)
@@ -505,6 +506,7 @@ async def chat(req: ChatRequest):
         and best_score < KB_CONTEXT
     )
     search_ctx = ""
+    results = []  # 아래 reference_items 참조 시 항상 정의되어 있어야 함
     if req.use_search or auto_web_search:
         results = srch.search_and_learn(search_msg, persona_id=persona_id)
         search_ctx = srch.format_search_context(results)
