@@ -1574,10 +1574,10 @@ app.get("/api/erp/items", async (req, res) => {
 app.post("/api/erp/items", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
-    const { id, code, name, productName, assetNo, unit, category, safetyStock = 0, active = true } = req.body || {};
+    const { id, code, name, productName, assetNo, unit, category, safetyStock = 0, unitCost = 0, active = true } = req.body || {};
     if (!code || !name) return res.status(400).json({ ok: false, message: "품목코드, 품목명은 필수입니다." });
     const itemId = id || `item_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-    const item = { id: itemId, code, name, productName: productName || "", assetNo: assetNo || "", unit: unit || "EA", category: category || "", safetyStock: Number(safetyStock) || 0, active };
+    const item = { id: itemId, code, name, productName: productName || "", assetNo: assetNo || "", unit: unit || "EA", category: category || "", safetyStock: Number(safetyStock) || 0, unitCost: Number(unitCost) || 0, active };
     if (USE_JSON_FILE) {
       const idx = _fileErp.items.findIndex(i => i.id === itemId);
       if (idx >= 0) _fileErp.items[idx] = item; else _fileErp.items.push(item);
@@ -2282,6 +2282,47 @@ app.post("/api/erp/stock/adjust", async (req, res) => {
     }
     await pool.query("INSERT INTO erp_stock_ledger (id, item_id, location_id, data) VALUES ($1,$2,$3,$4)", [entry.id, itemId, locationId, entry]);
     res.json({ ok: true, entry });
+  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+});
+
+// 재고 실사: 여러 품목의 실사 수량을 한 번에 접수해 시스템 재고와의 차이만큼
+// 조정 원장(refType:"count")을 생성한다. 차이가 0인 품목은 원장을 남기지 않는다.
+app.post("/api/erp/stock/count", async (req, res) => {
+  try {
+    if (!requireAdmin(req, res)) return;
+    const { locationId, lines, user } = req.body || {};
+    if (!locationId || !Array.isArray(lines) || !lines.length)
+      return res.status(400).json({ ok: false, message: "위치와 실사 항목이 필요합니다." });
+    let ledger;
+    if (USE_JSON_FILE) ledger = _fileErp.stockLedger;
+    else { const { rows } = await pool.query("SELECT data FROM erp_stock_ledger WHERE location_id = $1", [locationId]); ledger = rows.map(r => r.data); }
+    const now = new Date().toISOString();
+    const countId = `count_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const entries = [];
+    for (const l of lines) {
+      const itemId = l.itemId, countedQty = Number(l.countedQty);
+      if (!itemId || !Number.isFinite(countedQty)) continue;
+      const current = ledger.filter(x => x.itemId === itemId && x.locationId === locationId)
+        .reduce((s, x) => s + (x.type === "out" ? -Math.abs(x.qty) : Math.abs(x.qty)), 0);
+      const diff = countedQty - current;
+      if (diff === 0) continue;
+      entries.push({
+        id: `sl_${Date.now()}_${Math.random().toString(36).slice(2, 8)}_${entries.length}`,
+        itemId, locationId, type: diff > 0 ? "in" : "out", qty: Math.abs(diff),
+        refType: "count", refId: countId, refNo: null,
+        memo: `재고실사 조정 (시스템 ${current} → 실사 ${countedQty})`,
+        createdBy: user || "unknown", createdAt: now,
+      });
+    }
+    if (USE_JSON_FILE) {
+      _fileErp.stockLedger.push(...entries);
+      _saveFileErp();
+      return res.json({ ok: true, adjusted: entries.length, entries });
+    }
+    for (const e of entries) {
+      await pool.query("INSERT INTO erp_stock_ledger (id, item_id, location_id, data) VALUES ($1,$2,$3,$4)", [e.id, e.itemId, e.locationId, e]);
+    }
+    res.json({ ok: true, adjusted: entries.length, entries });
   } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
 });
 

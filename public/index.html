@@ -15185,6 +15185,7 @@ function openItemModal(id){
     <div class="fg"><label class="fl">단위</label><input class="fc" id="item-unit" value="${h(i?.unit||"EA")}"></div>
     <div class="fg"><label class="fl">분류</label><input class="fc" id="item-category" value="${h(i?.category||"")}"></div>
     <div class="fg"><label class="fl">안전재고</label><input class="fc" type="number" id="item-safety" value="${i?.safetyStock||0}"></div>
+    <div class="fg"><label class="fl">표준원가 <span class="fz11 text-gray">(재고 평가액 산정용)</span></label><input class="fc" type="number" id="item-cost" value="${i?.unitCost||0}"></div>
     <div class="fg"><label class="fl">자산번호</label><input class="fc" id="item-asset" value="${h(i?.assetNo||"")}"></div>
     <div class="fg"><label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" id="item-active" ${i?.active!==false?"checked":""}> 사용</label></div>
   </div><div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal()">취소</button><button class="btn btn-primary" onclick="saveItem('${id||""}')">저장</button></div></div>`);
@@ -15192,7 +15193,7 @@ function openItemModal(id){
 async function saveItem(id){
   const code=$("#item-code")?.value.trim(),name=$("#item-name")?.value.trim();
   if(!code||!name){showToast("품목코드와 품목명을 입력하세요.","error");return;}
-  const body={id:id||undefined,code,name,productName:$("#item-pname")?.value.trim(),assetNo:$("#item-asset")?.value.trim(),unit:$("#item-unit")?.value.trim(),category:$("#item-category")?.value.trim(),safetyStock:+$("#item-safety")?.value||0,active:$("#item-active")?.checked,role:currentUser.role,user:currentUser.name};
+  const body={id:id||undefined,code,name,productName:$("#item-pname")?.value.trim(),assetNo:$("#item-asset")?.value.trim(),unit:$("#item-unit")?.value.trim(),category:$("#item-category")?.value.trim(),safetyStock:+$("#item-safety")?.value||0,unitCost:+$("#item-cost")?.value||0,active:$("#item-active")?.checked,role:currentUser.role,user:currentUser.name};
   const r=await serverRequest("POST","/api/erp/items",body);
   if(!r?.ok){showToast(r?.message||"저장에 실패했습니다.","error");return;}
   const idx=erpItems.findIndex(i=>i.id===r.item.id);
@@ -15207,12 +15208,12 @@ async function deleteItem(id){
 }
 
 function _dlInvItemsCSV(){
-  dlCSV(`품목_${new Date().toISOString().slice(0,10)}.csv`,["코드","품목명","제품명","단위","분류","안전재고","자산번호","사용여부"],
-    erpItems.map(i=>[i.code,i.name,i.productName||"",i.unit||"",i.category||"",i.safetyStock||0,i.assetNo||"",i.active?"사용":"미사용"]));
+  dlCSV(`품목_${new Date().toISOString().slice(0,10)}.csv`,["코드","품목명","제품명","단위","분류","안전재고","표준원가","자산번호","사용여부"],
+    erpItems.map(i=>[i.code,i.name,i.productName||"",i.unit||"",i.category||"",i.safetyStock||0,i.unitCost||0,i.assetNo||"",i.active?"사용":"미사용"]));
 }
 function _dlInvStockCSV(){
-  dlCSV(`재고현황_${new Date().toISOString().slice(0,10)}.csv`,["품목","제품명","위치","현재재고","단위","안전재고","자산번호","상태"],
-    erpStock.filter(s=>s.qty!==0).map(s=>{const it=erpItems.find(i=>i.id===s.itemId);return[_erpItemName(s.itemId),it?.productName||"",_erpLocationName(s.locationId),s.qty,it?.unit||"",it?.safetyStock||0,it?.assetNo||"",it&&s.qty<(it.safetyStock||0)?"부족":"정상"];}));
+  dlCSV(`재고현황_${new Date().toISOString().slice(0,10)}.csv`,["품목","제품명","위치","현재재고","단위","안전재고","평가액","자산번호","상태"],
+    erpStock.filter(s=>s.qty!==0).map(s=>{const it=erpItems.find(i=>i.id===s.itemId);return[_erpItemName(s.itemId),it?.productName||"",_erpLocationName(s.locationId),s.qty,it?.unit||"",it?.safetyStock||0,s.qty*(it?.unitCost||0),it?.assetNo||"",it&&s.qty<(it.safetyStock||0)?"부족":"정상"];}));
 }
 function _dlStockLedgerCSV(){
   dlCSV(`재고변동로그_${new Date().toISOString().slice(0,10)}.csv`,["일시","품목","위치","변동수량","유형","작성자","비고"],
@@ -15265,19 +15266,50 @@ function renderInvStockPage(){
     const q=f.q.trim();
     rows=rows.filter(s=>[s._item?.name,s._item?.productName,s._item?.code,s._item?.assetNo,_erpLocationName(s.locationId),String(s.qty)].some(v=>(v||"").toString().includes(q)));
   }
-  c.innerHTML=`<div class="card"><div class="card-head"><h3>📊 재고 현황</h3><div><button class="btn btn-secondary btn-sm" onclick="_dlInvStockCSV()">📥 엑셀 다운로드</button> <button class="btn btn-secondary btn-sm" onclick="gotoPage('inv-stock-log')">📜 변동 로그</button> <button class="btn btn-secondary btn-sm" onclick="openStockTransferModal()">↔ 창고 이동</button> <button class="btn btn-primary btn-sm" onclick="openStockAdjustModal()">+ 재고 조정</button></div></div>
+  const totalValue=rows.reduce((s,r)=>s+r.qty*(r._item?.unitCost||0),0);
+  c.innerHTML=`<div class="card"><div class="card-head"><h3>📊 재고 현황</h3><div><button class="btn btn-secondary btn-sm" onclick="_dlInvStockCSV()">📥 엑셀 다운로드</button> <button class="btn btn-secondary btn-sm" onclick="gotoPage('inv-stock-log')">📜 변동 로그</button> <button class="btn btn-secondary btn-sm" onclick="openStockTransferModal()">↔ 창고 이동</button> <button class="btn btn-secondary btn-sm" onclick="openStockCountModal()">📋 재고 실사</button> <button class="btn btn-primary btn-sm" onclick="openStockAdjustModal()">+ 재고 조정</button></div></div>
   <div class="card-body">
-  <div class="flex gap2 wrap mb3">
+  <div class="flex gap2 wrap mb3" style="align-items:center">
     <input class="fc" style="max-width:280px" value="${h(f.q)}" placeholder="품목·제품명·위치·자산번호·수량 검색" oninput="window._invStockFilter={...window._invStockFilter,q:this.value};renderInvStockPage()">
     <select class="fc" style="max-width:140px" onchange="window._invStockFilter={...window._invStockFilter,status:this.value};renderInvStockPage()">
       <option value="all" ${f.status==="all"?"selected":""}>전체 상태</option>
       <option value="low" ${f.status==="low"?"selected":""}>부족만</option>
       <option value="ok" ${f.status==="ok"?"selected":""}>정상만</option>
     </select>
+    <span class="fz12 text-gray">표준원가 기준 재고 평가액: <b>${totalValue.toLocaleString()}원</b></span>
   </div>
-  <div class="tbl-wrap"><table><thead><tr><th>품목</th><th>제품명</th><th>위치</th><th>현재 재고</th><th>안전재고</th><th>자산번호</th><th>상태</th><th>이력</th></tr></thead><tbody>
-  ${rows.length?rows.map(s=>`<tr><td>${h(_erpItemName(s.itemId))}</td><td>${h(s._item?.productName||"-")}</td><td>${h(_erpLocationName(s.locationId))}</td><td style="text-align:right">${s.qty.toLocaleString()} ${h(s._item?.unit||"")}</td><td style="text-align:right">${s._item?.safetyStock||0}</td><td>${h(s._item?.assetNo||"-")}</td><td>${s._low?badge("부족","red"):badge("정상","green")}</td><td><button class="btn btn-ghost btn-sm" onclick="window._invLogFilter={itemId:'${s.itemId}',locationId:'${s.locationId}'};gotoPage('inv-stock-log')">로그</button></td></tr>`).join(""):`<tr><td colspan="8" class="text-gray" style="text-align:center;padding:20px">${f.q||f.status!=="all"?"검색 결과가 없습니다.":"재고 데이터가 없습니다."}</td></tr>`}
+  <div class="tbl-wrap"><table><thead><tr><th>품목</th><th>제품명</th><th>위치</th><th>현재 재고</th><th>안전재고</th><th>평가액</th><th>자산번호</th><th>상태</th><th>이력</th></tr></thead><tbody>
+  ${rows.length?rows.map(s=>`<tr><td>${h(_erpItemName(s.itemId))}</td><td>${h(s._item?.productName||"-")}</td><td>${h(_erpLocationName(s.locationId))}</td><td style="text-align:right">${s.qty.toLocaleString()} ${h(s._item?.unit||"")}</td><td style="text-align:right">${s._item?.safetyStock||0}</td><td style="text-align:right">${(s.qty*(s._item?.unitCost||0)).toLocaleString()}</td><td>${h(s._item?.assetNo||"-")}</td><td>${s._low?badge("부족","red"):badge("정상","green")}</td><td><button class="btn btn-ghost btn-sm" onclick="window._invLogFilter={itemId:'${s.itemId}',locationId:'${s.locationId}'};gotoPage('inv-stock-log')">로그</button></td></tr>`).join(""):`<tr><td colspan="9" class="text-gray" style="text-align:center;padding:20px">${f.q||f.status!=="all"?"검색 결과가 없습니다.":"재고 데이터가 없습니다."}</td></tr>`}
   </tbody></table></div></div></div>`;
+}
+// ── 재고 실사: 위치 선택 후 전 품목의 현재 재고를 보여주고 실사 수량 입력 → 차이만 일괄 조정 ──
+let _stockCountLines=[];
+function openStockCountModal(){
+  if(!erpLocations.length){showToast("먼저 위치를 등록하세요.","error");return;}
+  openModal(`<div class="modal-box" style="max-width:640px"><div class="modal-head"><h3>📋 재고 실사</h3></div><div class="modal-body">
+    <div class="fg"><label class="fl">실사 위치 <span class="req">*</span></label><select class="fc" id="count-loc" onchange="_loadStockCountSheet()">${erpLocations.map(l=>`<option value="${l.id}">${h(l.name)}</option>`).join("")}</select></div>
+    <div class="fz11 text-gray mb2">시스템 재고와 다른 실사 수량만 입력하세요. 동일하면 조정되지 않습니다.</div>
+    <div id="count-sheet"></div>
+  </div><div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal()">취소</button><button class="btn btn-primary" onclick="submitStockCount()">실사 반영</button></div></div>`);
+  setTimeout(_loadStockCountSheet,30);
+}
+function _loadStockCountSheet(){
+  const locId=$("#count-loc")?.value;
+  const items=erpItems.filter(i=>i.active!==false).sort((a,b)=>a.code.localeCompare(b.code));
+  _stockCountLines=items.map(i=>({itemId:i.id,current:_erpStockQty(i.id,locId),countedQty:null}));
+  const el=$("#count-sheet");if(!el)return;
+  el.innerHTML=`<div class="tbl-wrap" style="max-height:340px;overflow:auto"><table><thead><tr><th>품목</th><th>시스템 재고</th><th>실사 수량</th></tr></thead><tbody>
+  ${_stockCountLines.map((l,i)=>`<tr><td>${h(_erpItemName(l.itemId))}</td><td style="text-align:right">${l.current}</td><td><input class="fc" type="number" style="width:100px" placeholder="${l.current}" oninput="_stockCountLines[${i}].countedQty=this.value===''?null:+this.value"></td></tr>`).join("")}
+  </tbody></table></div>`;
+}
+async function submitStockCount(){
+  const locId=$("#count-loc")?.value;
+  const lines=_stockCountLines.filter(l=>l.countedQty!==null&&l.countedQty!==l.current).map(l=>({itemId:l.itemId,countedQty:l.countedQty}));
+  if(!lines.length){showToast("시스템 재고와 다른 실사 수량이 없습니다.","info");closeModal();return;}
+  const r=await serverRequest("POST","/api/erp/stock/count",{locationId:locId,lines,role:currentUser.role,user:currentUser.name});
+  if(!r?.ok){showToast(r?.message||"실사 반영에 실패했습니다.","error");return;}
+  const rs=await serverRequest("GET","/api/erp/stock");if(rs?.ok)erpStock=rs.stock;
+  closeModal();showToast(`재고 실사가 반영되었습니다. (${r.adjusted}건 조정)`,"success");renderInvStockPage();
 }
 // ── 재고 변동 로그 (등록/수정자·시점 추적) ─────────────────────────────────────
 let erpStockLedger=[];
