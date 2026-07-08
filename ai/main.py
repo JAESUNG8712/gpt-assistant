@@ -542,6 +542,31 @@ async def chat(req: ChatRequest):
     top_answer  = kb["top_answer"]
     top_results = kb.get("top_results", [])  # company 다중 결과용
 
+    # ── company KB 우선 라우팅 ──────────────────────────
+    # auto 분류가 일반 페르소나(hr 등)로 갔지만, 실제로는 사내 문서(company KB)에
+    # 훨씬 정확한 답이 있는 경우 그쪽으로 전환. company는 자동분류 키워드에서
+    # 의도적으로 제외되어 있어(개인정보·접근범위 이슈로 명시적 선택 원칙), 이 경우
+    # "출장 규정" 같은 질문이 hr 페르소나로 떨어져 사내 규정과 무관한 일반 웹검색
+    # 결과(예: 공무원 여비규정)로 답변되는 문제가 있었음 — company KB 매칭 점수가
+    # 뚜렷하게 더 높을 때만(0.15 이상 & 현재 점수 초과) 전환해 오탐을 최소화.
+    if req.persona == "auto" and persona_id != "company" and not stock_mode:
+        kb_company = mem.retrieve_best(search_msg, n=6, persona_id="company")
+        if kb_company["best_score"] >= 0.15 and kb_company["best_score"] > best_score:
+            persona_id = "company"
+            matched_persona_ids = ["company"]
+            persona = build_combined_persona(matched_persona_ids)
+            persona_features = persona.get("features", {})
+            stock_mode = persona_features.get("stock_mode", False)
+            system_with_date = (
+                persona["system_prompt"]
+                + f"\n\n오늘 날짜: {today.strftime('%Y년 %m월 %d일')} ({today.year}년)"
+            )
+            kb = kb_company
+            rag_ctx     = kb["context"]
+            best_score  = kb["best_score"]
+            top_answer  = kb["top_answer"]
+            top_results = kb.get("top_results", [])
+
     # ── 2단계: law.go.kr 법령 검색 (법 관련 질문만, 페르소나 허용 시) ──────
     law_ctx = ""
     law_results = []  # 아래 reference_items 참조 시 항상 정의되어 있어야 함
