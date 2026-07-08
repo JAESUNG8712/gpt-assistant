@@ -8,7 +8,11 @@ import datetime
 
 import memory as mem
 
-BUDGET_FILE = os.path.join(os.path.dirname(mem.DB_PATH), "budget-data.json")
+# app_settings 테이블(Turso/SQLite, memory.save_setting·get_setting 경유)에 저장.
+# 과거에는 로컬 JSON 파일(budget-data.json)에 저장했으나, 컨테이너 재배포 시
+# 파일시스템이 초기화되는 배포 환경(Render 등)에서 데이터가 유실되는 문제가 있어
+# 대화·학습 데이터와 동일하게 DB에 영속 저장하도록 변경.
+_BUDGET_KEY = "budget_data"
 MONTHS = list(range(1, 13))
 CATEGORIES = ["판관", "용역", "경상"]
 
@@ -22,10 +26,9 @@ def _now_iso():
 
 
 def read_budget():
-    if not os.path.exists(BUDGET_FILE):
+    data = mem.get_setting(_BUDGET_KEY, None)
+    if data is None:
         return _empty()
-    with open(BUDGET_FILE, "r", encoding="utf-8") as f:
-        data = json.load(f)
     for key, default in _empty().items():
         if key not in data:
             data[key] = default
@@ -33,9 +36,7 @@ def read_budget():
 
 
 def write_budget(data):
-    os.makedirs(os.path.dirname(BUDGET_FILE), exist_ok=True)
-    with open(BUDGET_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+    mem.save_setting(_BUDGET_KEY, data)
 
 
 def to_number(v):
