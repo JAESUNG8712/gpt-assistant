@@ -2433,9 +2433,6 @@ function createCompSession(targetId,year){
 function getMyCompSessions(evaluatorId,year){
   return compSessions.filter(s=>s.year===year&&s.status==="open"&&s.evaluatorIds.includes(evaluatorId)&&!compResponses.find(r=>r.sessionId===s.id&&r.evaluatorId===evaluatorId));
 }
-function getCompResponse(sessionId,evaluatorId){
-  return compResponses.find(r=>r.sessionId===sessionId&&r.evaluatorId===evaluatorId);
-}
 function calcCompScore(sessionId){
   const session=compSessions.find(s=>s.id===sessionId);if(!session)return null;
   const responses=compResponses.filter(r=>r.sessionId===sessionId&&r.submittedAt);
@@ -3610,15 +3607,6 @@ function saveKpiResultDraft(id){
   showToast("임시 저장되었습니다. 계속 수정 후 [저장]을 눌러 확정하세요.","info");
 }
 
-function saveSelfEditDraft(){
-  const u=currentUser;if(!u)return;
-  try{
-    const d={email:document.getElementById("se-email")?.value.trim(),phone:document.getElementById("se-phone")?.value.trim(),address:document.getElementById("se-address")?.value.trim()};
-    sessionStorage.setItem("selfDraft_"+u.id,JSON.stringify(d));
-  }catch(e){}
-  saveDraftStatus();
-  showToast("임시 저장되었습니다.","info");
-}
 
 
 // ==================== EDUCATION MANAGEMENT ====================
@@ -3707,63 +3695,6 @@ function saveEduReg(empId){
 // ─── Bulk Education Registration ─────────────────────────────
 let _bulkEduTargets = []; // selected emp IDs for bulk edu
 
-function openBulkEduModal(){
-  const allEmps=employees.filter(e=>e.active&&e.role!=="admin");
-  const deptF=window._hrDeptFilter||"";
-  const filtered=deptF?allEmps.filter(e=>e.dept===deptF):allEmps;
-  showModal(`<div class="modal modal-lg"><div class="modal-head"><h2>📚 교육 일괄 등록</h2><button class="modal-close" onclick="closeModal()">×</button></div>
-  <div class="modal-body">
-    <div class="info-note mb3">📌 교육 이수 내역을 선택한 직원들에게 일괄 등록합니다.</div>
-    <div class="g2 mb3">
-      <div class="fg"><label class="fl">교육 유형 <span class="req">*</span></label>
-        <select class="fc" id="bulk-edu-type">${EDU_TYPE_OPTIONS.map(o=>`<option value="${o.val}">${o.label}</option>`).join("")}</select>
-      </div>
-      <div class="fg"><label class="fl">이수 완료일 <span class="req">*</span></label>
-        <input class="fc" type="date" id="bulk-edu-start" value="${new Date().toISOString().slice(0,10)}"></div>
-    </div>
-    <div class="fg mb2"><label class="fl">교육명 <span class="req">*</span></label>
-      <input class="fc" id="bulk-edu-name" placeholder="예: 2026년 직장내 성희롱 예방교육"></div>
-    <div class="g2 mb2">
-      <div class="fg"><label class="fl">교육기관</label>
-        <input class="fc" id="bulk-edu-institution" placeholder="예: 사내 교육팀"></div>
-      <div class="fg"><label class="fl">비고</label>
-        <input class="fc" id="bulk-edu-note" placeholder="수료증 번호 등"></div>
-    </div>
-    <div class="fg mb3"><label class="fl">교육기간 종료일 (선택)</label>
-      <input class="fc" type="date" id="bulk-edu-enddate" style="width:200px"></div>
-
-    <div style="border:1px solid #e2e8f0;border-radius:8px;overflow:hidden">
-      <div style="padding:8px 12px;background:#f8fafc;display:flex;align-items:center;gap:10px">
-        <input type="checkbox" id="bulk-edu-all" onchange="document.querySelectorAll('.bulk-edu-chk').forEach(c=>c.checked=this.checked)">
-        <span class="fz12 fw6">직원 선택 (총 ${filtered.length}명)</span>
-        <select class="fc" style="width:160px;margin-left:auto" onchange="filterBulkEduList(this.value)">
-          <option value="">전체 부서</option>${orgDB.depts.map(d=>`<option${deptF===d?" selected":""}>${h(d)}</option>`).join("")}
-        </select>
-      </div>
-      <div id="bulk-edu-emplist" style="max-height:250px;overflow-y:auto">
-        <table style="width:100%;border-collapse:collapse;font-size:12px">
-          <thead><tr style="background:#f1f5f9"><th style="padding:5px 10px"></th><th>이름</th><th>부서</th><th>팀</th><th>직급</th><th>법정교육</th></tr></thead>
-          <tbody>${filtered.map(e=>{
-            const hasLegal=checkLegalEdu(e).ok;
-            return`<tr style="border-bottom:1px solid #f1f5f9" class="bulk-edu-row" data-dept="${h(e.dept)}">
-              <td style="padding:5px 10px;text-align:center"><input type="checkbox" class="bulk-edu-chk" value="${e.id}"></td>
-              <td style="padding:5px 10px;font-weight:600">${h(e.name)}</td>
-              <td style="padding:5px 10px;font-size:11px;color:#6b7280">${h(e.dept)}</td>
-              <td style="padding:5px 10px;font-size:11px;color:#6b7280">${h(e.team)}</td>
-              <td style="padding:5px 10px;text-align:center">${h(e.rank)}</td>
-              <td style="padding:5px 10px;text-align:center">${hasLegal?badge("이수","green"):badge("미이수","gray")}</td>
-            </tr>`;
-          }).join("")}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  </div>
-  <div class="modal-foot">
-    <button class="btn btn-secondary" onclick="closeModal()">취소</button>
-    <button class="btn btn-primary" onclick="executeBulkEdu()">일괄 등록</button>
-  </div></div>`);
-}
 
 function filterBulkEduList(dept){
   document.querySelectorAll(".bulk-edu-row").forEach(row=>{
@@ -5395,14 +5326,6 @@ function toggleSidebar(){
   ov.classList.toggle("open");
 }
 // Close sidebar when a menu item is clicked on mobile
-function closeSidebarIfMobile(){
-  if(window.innerWidth<=900){
-    const sb=document.getElementById("sidebar");
-    const ov=document.getElementById("sidebar-overlay");
-    if(sb)sb.classList.remove("open");
-    if(ov)ov.classList.remove("open");
-  }
-}
 
 function renderLogin(){
   document.getElementById("app").innerHTML="";
@@ -6341,7 +6264,6 @@ function dashWDropNewRow(e,el){
   const emp=employees.find(e=>e.id===currentUser.id);if(emp)emp.dashWidgets=w;
   autoSaveDebounced();_dashDragSrcIdx=-1;_baseRenderDashboard();
 }
-function dashWToggleSize(wid){dashWSetSize(wid,"col",((currentUser.dashWidgetSizes||{})[wid]==="full"||(currentUser.dashWidgetSizes||{})[wid]?.cols===2)?1:2);}
 function dashWResizeStart(e,wid,startCols,startRows,mode){
   e.preventDefault();e.stopPropagation();
   const slot=e.currentTarget.closest(".dash-w-slot");
@@ -7527,89 +7449,6 @@ function getBeforeVal(emp,type){
   }
 }
 
-function dlHRChgTemplate(){
-  const rows=[
-    // 사번, 변동유형, 변동일, 변동내용, 변동후값, 비고
-    // 변동유형 코드: transfer(조직발령) salary(연봉변동) rank_change(직급변동) promotion(승진) position(직책임명) leave(휴직) return_leave(복직) retirement(퇴직) award(우수사원) core_talent(핵심인재)
-    // 임금인상 샘플
-    ["M001","salary","2026-01-01","2026년 정기 인상","55000000","정기 인상"],
-    ["M002","salary","2026-01-01","2026년 정기 인상","48000000","정기 인상"],
-    // 직급 변동 샘플
-    ["L001","rank_change","2026-03-01","직급 변동 - 주임 승급","주임","3년 근속"],
-    // 조직 발령 샘플
-    ["M003","transfer","2026-04-01","인사 발령","IT사업본부/인프라팀","부서 이동"],
-    // 승진
-    ["L002","promotion","2026-01-01","2026년 승진","차장","인사위원회 심의"],
-  ];
-  dlCSV("인사변동_일괄등록_양식.csv",["사번(필수)","변동유형코드(필수)","변동일YYYYMMDD(필수)","변동내용(필수)","변동후값(유형별상이)","비고"],rows);
-  showToast("양식이 다운로드되었습니다. 헤더(첫번째 줄)는 삭제하지 마세요.","info");
-}
-function handleHRChgBulkUpload(input){
-  const file=input.files[0];if(!file)return;
-  const reader=new FileReader();
-  reader.onload=ev=>{
-    try{
-      let raw=ev.target.result.replace(/^\uFEFF/,""); // strip BOM
-      const lines=raw.split(/\r?\n/).filter(l=>l.trim());
-      if(lines.length<2){showToast("데이터가 없습니다.","error");return;}
-      let added=0,failed=[],preview=[];
-      lines.slice(1).forEach((line,li)=>{
-        // Support both comma-separated and tab-separated
-        const cols=line.includes("\t")?line.split("\t"):line.split(",").map(c=>c.replace(/^"|"$/g,"").trim());
-        if(!cols[0]||!cols[0].trim())return; // skip empty rows
-        const empNo=cols[0].trim();const type=cols[1]?.trim();const date=cols[2]?.trim();const desc=cols[3]?.trim();
-        if(!empNo||!type||!date||!desc){failed.push(`줄${li+2}: 필수값 누락 (사번:${empNo}, 유형:${type})`);return;}
-        const emp=employees.find(e=>e.empNo===empNo||(e.loginId&&e.loginId===empNo));
-        if(!emp){failed.push(`줄${li+2}: 사번 "${empNo}" 직원 없음`);return;}
-        if(!HR_TYPES[type]){failed.push(`줄${li+2}: 유효하지 않은 유형 "${type}". 유효한 유형: ${Object.keys(HR_TYPES).join(",")}`);return;}
-        const after=(cols[4]||"").trim();const note=(cols[5]||"").trim();
-        const before=getBeforeVal(emp,type);
-        let updates={};
-        if(type==="salary"){
-          const v=Number(after.replace(/[^0-9]/g,""));
-          if(v){updates={salary:v};}else{failed.push(`줄${li+2}: 연봉값 "${after}" 숫자 아님`);return;}
-        }else if(type==="rank_change"||type==="promotion"){
-          if(after)updates={rank:after};
-        }else if(type==="position"){
-          if(after){updates={position:after};if(!orgDB.positions.includes(after))orgDB.positions.push(after);}
-        }else if(type==="transfer"){
-          const parts=after.split("/");
-          if(parts.length>=2){updates={dept:parts[0].trim(),team:parts[1].trim()};}
-          else if(parts.length===1){updates={team:parts[0].trim()};}
-        }else if(type==="retirement"){
-          updates={active:false,retireDate:date,retireReason:after||"기타"};
-        }
-        const newH={id:genId(),type,date,desc,before,after,note};
-        employees=employees.map(e=>e.id===emp.id?{...e,...updates,hrHistory:Array.isArray(e.hrHistory)?[...e.hrHistory,newH]:[newH]}:e);
-        // Sync currentUser if modified
-        if(currentUser&&currentUser.id===emp.id){const upd=employees.find(e=>e.id===emp.id);if(upd)currentUser=upd;}
-        preview.push(`✓ ${emp.name}: ${HR_TYPES[type]} (${after||"-"})`);
-        added++;
-      });
-      let msg=`${added}건 처리 완료`;
-      if(failed.length)msg+=` / ${failed.length}건 오류`;
-      showToast(msg,added>0?"success":"error");
-      if(failed.length>0){
-        console.warn("인사변동 업로드 오류:",failed);
-        showModal(`<div class="modal modal-md"><div class="modal-head"><h2>업로드 결과</h2><button class="modal-close" onclick="closeModal()">×</button></div>
-        <div class="modal-body">
-          <div class="success-note mb3">✅ 성공: ${added}건<br>${preview.slice(0,10).map(p=>`<div class="fz11">${h(p)}</div>`).join("")}${preview.length>10?`<div class="fz11 text-gray">외 ${preview.length-10}건...</div>`:""}</div>
-          ${failed.length?`<div class="alert alert-error">오류: ${failed.length}건<br>${failed.map(f=>`<div class="fz11">${h(f)}</div>`).join("")}</div>`:""}
-        </div>
-        <div class="modal-foot"><button class="btn btn-primary" onclick="closeModal()">확인</button></div></div>`);
-      }
-      renderHRChanges();
-    }catch(err){showToast("파일 파싱 오류: "+err.message,"error");console.error(err);}
-  };
-  reader.readAsText(file,"UTF-8");input.value="";
-}
-function dlHRChgList(){
-  const active=employees.filter(e=>e.role!=="admin");
-  let rows=active.flatMap(e=>(e.hrHistory||[]).map(hh=>[e.name,e.empNo,hh.date,HR_TYPES[hh.type]||hh.type,hh.desc,hh.before||"",hh.after||"",hh.note||""])).sort((a,b)=>b[2].localeCompare(a[2]));
-  if(hrChgFilter.type)rows=rows.filter(r=>{const k=Object.keys(HR_TYPES).find(k=>HR_TYPES[k]===r[3]);return k===hrChgFilter.type;});
-  if(hrChgFilter.search){const ss=hrChgFilter.search.toLowerCase();rows=rows.filter(r=>r[0].toLowerCase().includes(ss)||r[4].toLowerCase().includes(ss));}
-  dlCSV("인사변동_"+new Date().toISOString().slice(0,10)+".csv",["직원명","사번","날짜","변동유형","내용","변동전","변동후","비고"],rows);
-}
 
 function renderHRChanges(){
   const active=employees.filter(e=>e.active&&e.role!=="admin");
@@ -7786,37 +7625,6 @@ function getScopeEmps(){
   return employees.filter(e=>e.id===u.id&&e.active);
 }
 
-function applyKpiSearch(resultsMode){
-  const scope=getScopeEmps();
-  const name=(kpiSearch?.name||"").trim();
-  const dept=kpiSearch?.dept||"";
-  if(!name&&!dept){kpiSelUserId=currentUser.id;renderKPI(resultsMode);return;}
-  const matched=scope.filter(e=>
-    (!name||e.name.includes(name))&&
-    (!dept||e.dept===dept)
-  );
-  if(matched.length===1){
-    kpiSelUserId=matched[0].id;
-    renderKPI(resultsMode);
-  } else {
-    // Show matching list in cards area
-    const c=document.getElementById("kpi-cards-area");
-    if(!c)return;
-    if(!matched.length){c.innerHTML=`<div class="card"><div class="p-empty">검색 결과가 없습니다.</div></div>`;return;}
-    c.innerHTML=`<div class="card"><div class="card-head"><h3>검색 결과 (${matched.length}명)</h3></div>
-    <div class="card-body" style="padding:0"><div class="tbl-wrap"><table>
-      <thead><tr><th>이름</th><th>직위</th><th>부서</th><th>팀</th><th>선택</th></tr></thead>
-      <tbody>${matched.map(e=>`<tr>
-        <td><strong>${h(e.name)}</strong></td>
-        <td>${roleBadge(e.role)}</td>
-        <td>${h(e.dept)}</td>
-        <td>${h(e.team)}</td>
-        <td><button class="btn btn-primary btn-sm" onclick="kpiSelUserId=${e.id};kpiSearch={name:'',dept:''};renderKPI(${resultsMode})">선택</button></td>
-      </tr>`).join("")}
-      </tbody>
-    </table></div></div></div>`;
-  }
-}
 
 function renderKPI(resultsMode){
   if(!kpiSelUserId)kpiSelUserId=currentUser.id;
@@ -8461,8 +8269,7 @@ function rejectKpi(id,stage){
   const r=$("#rej-reason")?.value.trim();if(!r){showToast("반려 사유를 입력하세요.","error");return;}
   kpiEntries=kpiEntries.map(k=>k.id===id?{...k,[stage==="first"?"firstStatus":"finalStatus"]:"rejected",[stage==="first"?"firstReason":"finalReason"]:r}:k);closeModal();showToast("반려 처리되었습니다.","info");renderApprovals();
 }
-function openEvalScore(id){const k=getKpi(id);if(!k)return;openFirstEvalModal(k.userId,k.year);}
-function saveEvalScore(id){} // replaced by saveFirstEval
+ // replaced by saveFirstEval
 function approveRequest(rid){const r=changeRequests.find(x=>x.id===rid);if(!r)return;kpiEntries=kpiEntries.map(k=>k.id===r.kpiId?{...k,...(r.after||{})}:k);changeRequests=changeRequests.map(x=>x.id===rid?{...x,status:"approved",approvedBy:currentUser.id,processedAt:ts()}:x);showToast("수정 요청을 승인했습니다.","success");renderApprovals();}
 function rejectRequest(rid){changeRequests=changeRequests.map(x=>x.id===rid?{...x,status:"rejected",processedAt:ts()}:x);showToast("수정 요청을 반려했습니다.","info");renderApprovals();}
 function resolveTie(tieId,empId,grade){const tie=tieNotifications.find(t=>t.id===tieId);if(!tie)return;employees=employees.map(e=>{if(e.id!==empId)return e;const gr={...(e.gradeResults||{})};const existing=gr[tie.year]||{};gr[tie.year]={...existing,grade,resolvedBy:currentUser.id,resolvedAt:ts()};return{...e,gradeResults:gr};});showToast(getEmpName(empId)+" - "+grade+"등급 지정 완료","success");renderApprovals();}
@@ -8805,25 +8612,6 @@ function renderCompGradeRatioCompare(){
 }
 
 
-function enforceCompanyWideCap(dept,pool){
-  const gs=getCompGradeSettings(dept);
-  const cwRatios=companyWideRatios.comp[pool];
-  const allEmps=employees.filter(e=>e.active&&e.role!=="admin");
-  const deptEmps=allEmps.filter(e=>e.dept===dept&&e.role===pool);
-  const allPoolEmps=allEmps.filter(e=>e.role===pool);
-  if(!allPoolEmps.length)return;
-  gs[pool].forEach((r,i)=>{
-    const cwRatio=cwRatios.find(c=>c.grade===r.grade);
-    if(!cwRatio)return;
-    const cwMax=cwRatio.pct;
-    // calc how many this dept can have of this grade given company-wide cap
-    const cwMaxTotal=Math.round(cwMax/100*allPoolEmps.length);
-    const otherDeptCount=allEmps.filter(e=>e.dept!==dept&&e.role===pool).reduce((cnt,e)=>{const cg=getCompGradeResult(e.id,settings.compEvalYear||settings.evalYear);return cnt+(cg?.grade===r.grade?1:0);},0);
-    const remaining=cwMaxTotal-otherDeptCount;
-    const maxPct=Math.round(remaining/deptEmps.length*100);
-    if(r.pct>maxPct){gs[pool][i].pct=maxPct;}
-  });
-}
 
 
 
@@ -9163,15 +8951,6 @@ function openCtSettingsModal(){
   </div></div>`);
 }
 
-function addAdditionalCriteria(){
-  coreTalentSettings.additionalCriteria=coreTalentSettings.additionalCriteria||[];
-  coreTalentSettings.additionalCriteria.push({id:"ac"+Date.now(),name:"새 요건",description:"",type:"manual",required:false});
-  openCtSettingsModal();
-}
-function removeAdditionalCriteria(idx){
-  coreTalentSettings.additionalCriteria.splice(idx,1);
-  openCtSettingsModal();
-}
 function addCtBlock(){ coreTalentSettings.topBlocks.push({kpiRank:"A",compRank:"A"}); openCtSettingsModal(); }
 function removeCtBlock(i){ coreTalentSettings.topBlocks.splice(i,1); openCtSettingsModal(); }
 
@@ -10142,20 +9921,6 @@ function doBulkPromotion(){
   renderPromotionPage();
 }
 
-function registerLegalEdu(empId){
-  const emp=getEmp(empId); if(!emp) return;
-  showModal(`<div class="modal modal-sm"><div class="modal-head"><h2>법정의무교육 이수 등록</h2><button class="modal-close" onclick="closeModal()">×</button></div>
-  <div class="modal-body">
-    <div style="font-size:12px;font-weight:600;margin-bottom:12px">${h(emp.name)} (${h(emp.dept)})</div>
-    <div class="fg"><label class="fl">이수 완료일</label><input class="fc" type="date" id="edu-date" value="${new Date().toISOString().slice(0,10)}"></div>
-    <div class="fg"><label class="fl">교육명</label><input class="fc" id="edu-name" value="법정의무교육" placeholder="교육명"></div>
-    <div class="fg"><label class="fl">비고</label><input class="fc" id="edu-note" placeholder="기관명 등"></div>
-  </div>
-  <div class="modal-foot">
-    <button class="btn btn-secondary" onclick="closeModal()">취소</button>
-    <button class="btn btn-primary" onclick="doRegisterLegalEdu(${empId})">등록</button>
-  </div></div>`);
-}
 
 function doRegisterLegalEdu(empId){
   const date=document.getElementById("edu-date")?.value||new Date().toISOString().slice(0,10);
@@ -10289,50 +10054,6 @@ function tryAutoGradeAfterSecond(dept, year){
 }
 
 // Manual grade override with ratio check
-function openKpiGradeOverrideModal(empId, year){
-  const u=currentUser;
-  if(u.role!=="admin"&&u.role!=="director"){showToast("사업부장 또는 관리자만 수정 가능합니다.","error");return;}
-  const emp=getEmp(empId);if(!emp)return;
-  const current=(emp.gradeResults||{})[String(year)]?.grade||"-";
-  const dept=emp.dept;
-  const pool=emp.role;
-  const gs=getGradeSettings(dept);
-  const ratios=gs[pool]||[];
-  
-  // Count current grade allocations
-  const deptPoolEmps=employees.filter(e=>e.active&&e.dept===dept&&e.role===pool);
-  const total=deptPoolEmps.length;
-  const gradeCounts={};
-  ratios.forEach(r=>{gradeCounts[r.grade]=deptPoolEmps.filter(e=>(e.gradeResults||{})[String(year)]?.grade===r.grade).length;});
-  
-  const gradeOptions=ratios.map(r=>{
-    const max=Math.max(0,Math.round(r.pct/100*total));
-    const curr=gradeCounts[r.grade]||0;
-    const available=max-curr+(current===r.grade?1:0);
-    const canSelect=available>0;
-    return`<option value="${r.grade}" ${current===r.grade?"selected":""} ${!canSelect?"disabled":""}>
-      ${r.grade}등급 (배정: ${curr}/${max}명${!canSelect?" - 초과":""})</option>`;
-  }).join("");
-  
-  showModal(`<div class="modal modal-sm"><div class="modal-head"><h2>KPI 등급 수정 — ${h(emp.name)}</h2><button class="modal-close" onclick="closeModal()">×</button></div>
-  <div class="modal-body">
-    <div style="padding:10px;background:#f8fafc;border-radius:8px;font-size:12px;margin-bottom:14px">
-      <div class="fw7">${h(emp.name)} · ${h(emp.dept)} / ${h(emp.team)}</div>
-      <div class="text-gray mt2">${year}년 현재 등급: <strong>${current}</strong></div>
-    </div>
-    <div class="info-note mb3 fz11">📊 등급별 배정 가능 인원을 초과할 수 없습니다.</div>
-    <div class="fg"><label class="fl">변경할 등급</label>
-      <select class="fc" id="grade-override-sel">${gradeOptions}</select>
-    </div>
-    <div class="fg"><label class="fl">수정 사유 <span class="req">*</span></label>
-      <textarea class="fc" id="grade-override-reason" rows="2" placeholder="등급 수정 사유를 입력하세요"></textarea>
-    </div>
-  </div>
-  <div class="modal-foot">
-    <button class="btn btn-secondary" onclick="closeModal()">취소</button>
-    <button class="btn btn-primary" onclick="saveKpiGradeOverride(${empId},${year})">저장</button>
-  </div></div>`);
-}
 
 function saveKpiGradeOverride(empId, year){
   const newGrade=document.getElementById("grade-override-sel")?.value;
@@ -11582,7 +11303,6 @@ function _lpCardClass(status){
   const m={watch:"lp-watch",pip:"lp-pip",improved:"lp-improved",terminated:"lp-terminated"};
   return m[status]||"";
 }
-function _getLpRecord(empId,year){return lowPerfData.find(r=>r.empId===empId&&r.year===year);}
 function _saveLpRecord(rec){
   const idx=lowPerfData.findIndex(r=>r.id===rec.id);
   if(idx>=0)lowPerfData[idx]=rec;else lowPerfData.push(rec);
@@ -12860,7 +12580,6 @@ function _refToEmpIds(ref){
   if(ref.startsWith("team:")){const[d,t]=ref.slice(5).split("::");return employees.filter(e=>e.active&&e.dept===d&&e.team===t).map(e=>e.id);}
   return[];
 }
-function _refsToEmpIds(refs){return[...new Set((refs||[]).flatMap(_refToEmpIds))];}
 // 부서/팀 단위(그룹) 참조로 노출되는 인원 중, 개인별로 "그룹 노출 제외"가 설정된 사람은 숨김.
 // 단, 해당 인원이 직접(emp:/개인) 참조로도 지정된 경우는 정상 노출.
 function _refsToVisibleEmpIds(refs){
@@ -12962,9 +12681,6 @@ function confirmOrgPicker(){
   const sel=_orgPicker.allowGroups?_orgPicker.selected.slice():_orgPicker.selected.map(Number);
   if(_orgPicker.onConfirm)_orgPicker.onConfirm(sel);
   closeTopModal();
-}
-function _empChips(ids,onRemove){
-  return ids.map(id=>{const e=getEmp(id);return e?`<span class="badge bg-blue" style="display:inline-flex;align-items:center;gap:4px">${h(e.name)} <span style="cursor:pointer" onclick="${onRemove}(${id})">✕</span></span>`:"";}).join("")||`<span class="text-gray fz12">선택된 직원이 없습니다.</span>`;
 }
 function _vacationFormFieldsHtml(){
   return`<div class="fg"><label class="fl">휴가 종류 <span class="req">*</span></label><select class="fc" id="af-leaveType" onchange="_onVacationTypeChange()"><option value="">선택</option><option>연차</option><option>반차</option><option>병가</option><option>경조사</option><option>특별휴가</option><option>공가</option></select></div>
@@ -16232,7 +15948,6 @@ async function deletePmsWorklogBlock(idx){
 
 // ── 채용 관리: 채용공고 ────────────────────────────────────────────────────────
 function _recruitEnsureLoaded(){if(!_recruitLoaded)loadRecruitFromServer();}
-function _recruitCanManage(){return currentUser.role==="admin"||currentUser.role==="leader";}
 function _recruitJobTitle(id){const j=recruitJobs.find(j=>j.id===id);return j?j.title:"(삭제됨)";}
 function _rjEmpOptions(selectedIds){
   const sel=(selectedIds||[]).map(String);
@@ -17480,7 +17195,6 @@ function gotoRecruitEvalDetail(interviewId){
   window._recruitEvalDetailId=interviewId;
   gotoPage("recruit-eval-detail");
 }
-function openRecruitEvalDetail(interviewId){gotoRecruitEvalDetail(interviewId);}
 function renderRecruitEvalDetailPage(){
   const c=$("#content");if(!c)return;
   const interviewId=window._recruitEvalDetailId;
@@ -18319,81 +18033,7 @@ function _orgUnitCounts(){
   // 조직 위계: 회사(대표이사) - 본부/센터/실 - 팀 - 파트
   return{"본부/센터/실":orgDB.depts.length,"팀":Object.values(orgDB.teams).flat().length};
 }
-function _empTodayBadge(empId){
-  const today=new Date().toISOString().slice(0,10);
-  const rec=attendanceRecords.find(r=>String(r.empId)===String(empId)&&r.date===today);
-  if(!rec)return"";
-  const tagMap={vacation:["휴가","#f59e0b"],annual_leave:["휴가","#f59e0b"],half_day:["반차","#f59e0b"],biztrip:["출장","#3b82f6"],training:["교육","#8b5cf6"],sick:["병가","#ef4444"],absent:["결근","#ef4444"]};
-  const tag=tagMap[rec.status];
-  if(!tag)return"";
-  return`<span title="오늘의 근태정보" style="font-size:9px;font-weight:700;color:white;background:${tag[1]};border-radius:4px;padding:1px 5px;margin-left:4px;flex-shrink:0">${tag[0]}</span>`;
-}
-function _orgMoveDept(dept,dir){
-  if(currentUser.role!=="admin")return;
-  const arr=orgDB.depts;
-  const i=arr.indexOf(dept);
-  const j=i+dir;
-  if(i<0||j<0||j>=arr.length)return;
-  [arr[i],arr[j]]=[arr[j],arr[i]];
-  autoSaveDebounced();
-  renderOrgChartPage();
-}
-function _orgMoveTeam(dept,team,dir){
-  if(currentUser.role!=="admin")return;
-  const arr=orgDB.teams[dept];if(!arr)return;
-  const i=arr.indexOf(team);
-  const j=i+dir;
-  if(i<0||j<0||j>=arr.length)return;
-  [arr[i],arr[j]]=[arr[j],arr[i]];
-  autoSaveDebounced();
-  renderOrgChartPage();
-}
 let _orgDragData=null;
-function _orgDragStart(ev){
-  if(currentUser.role!=="admin")return;
-  const el=ev.currentTarget;
-  _orgDragData={type:el.dataset.orgType,dept:el.dataset.orgDept,team:el.dataset.orgTeam||null};
-  try{ev.dataTransfer.effectAllowed="move";ev.dataTransfer.setData("text/plain","");}catch(e){}
-  el.style.opacity="0.4";
-}
-function _orgDragEnd(ev){ ev.currentTarget.style.opacity=""; _orgDragData=null; }
-function _orgDragOver(ev){
-  if(currentUser.role!=="admin"||!_orgDragData)return;
-  const el=ev.currentTarget;
-  if(el.dataset.orgType!==_orgDragData.type)return;
-  if(_orgDragData.type==="team"&&el.dataset.orgDept!==_orgDragData.dept)return;
-  ev.preventDefault();
-  try{ev.dataTransfer.dropEffect="move";}catch(e){}
-  el.style.outline="2px dashed #3b82f6";
-  el.style.outlineOffset="-2px";
-}
-function _orgDragLeave(ev){ ev.currentTarget.style.outline=""; }
-function _orgDrop(ev){
-  ev.preventDefault();
-  const el=ev.currentTarget;
-  el.style.outline="";
-  if(currentUser.role!=="admin"||!_orgDragData)return;
-  const type=el.dataset.orgType;
-  if(type!==_orgDragData.type)return;
-  if(type==="dept"){
-    const arr=orgDB.depts;
-    const from=arr.indexOf(_orgDragData.dept);
-    const to=arr.indexOf(el.dataset.orgDept);
-    if(from<0||to<0||from===to)return;
-    arr.splice(from,1);arr.splice(to,0,_orgDragData.dept);
-  }else if(type==="team"){
-    const dept=el.dataset.orgDept;
-    if(dept!==_orgDragData.dept)return;
-    const arr=orgDB.teams[dept];if(!arr)return;
-    const from=arr.indexOf(_orgDragData.team);
-    const to=arr.indexOf(el.dataset.orgTeam);
-    if(from<0||to<0||from===to)return;
-    arr.splice(from,1);arr.splice(to,0,_orgDragData.team);
-  }
-  _orgDragData=null;
-  autoSaveDebounced();
-  renderOrgChartPage();
-}
 function _canViewOrgHistory(){
   if(!currentUser)return false;
   if(currentUser.role==="admin")return true;
@@ -20892,9 +20532,6 @@ function _calEffectiveDept(){
 function _calEffectiveTeam(){
   if(_calScope==="personal"){const e=getEmp(_attCalEmpId||currentUser.id);return e?e.team:_liveUser().team;}
   return _calTeam||_liveUser().team;
-}
-function _calEventsOnDate(ds){
-  return _calEventsInScope().filter(ev=>ev.startDate<=ds&&ev.endDate>=ds);
 }
 function _attCalRefresh(){
   const grid=document.getElementById("att-cal-grid");if(!grid)return;
