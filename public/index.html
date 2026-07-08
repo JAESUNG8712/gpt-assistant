@@ -1461,6 +1461,7 @@ let roomReservationTombstones=[]; // 삭제된 예약 id 기록 {id,ts} - 서버
 let certLog=[]; // 증명서 발급 이력 (영구 보존)
 let certRequests=[]; // 증명서 발급 신청 {id,empId,empName,certType,certTitle,reason,submitTo,status:"pending"|"approved"|"rejected",requestedAt,processedAt,processedBy,processedByName,rejectReason,issuedAt}
 let welfarePoints=[]; // 복지포인트 [{id,empId,points,type:"grant"|"use",desc,date,by}]
+let expenseClaims=[]; // 경비 청구 [{id,empId,empName,dept,team,title,items:[{date,category,amount,memo}],total,receipts,status:"pending"|"approved"|"rejected"|"paid",...}]
 let mandatoryTraining=[]; // 법정의무교육 이수 [{id,empId,trainingType,year,completedAt,method,note}]
 let healthCheckupLog=[]; // 종합검진 이수 이력 [{id,empId,year,completedAt,note}]
 let scheduleEvents=[]; // 캘린더 일정 [{id,authorId,title,startDate,endDate,scope:"personal"|"team"|"dept"|"company",dept,team,memo,color,createdAt}]
@@ -4511,6 +4512,7 @@ function getFullState(action=""){
       certLog:JSON.parse(JSON.stringify(certLog)),
       certRequests:JSON.parse(JSON.stringify(certRequests)),
       welfarePoints:JSON.parse(JSON.stringify(welfarePoints)),
+      expenseClaims:JSON.parse(JSON.stringify(expenseClaims)),
       mandatoryTraining:JSON.parse(JSON.stringify(mandatoryTraining)),
       healthCheckupLog:JSON.parse(JSON.stringify(healthCheckupLog)),
       scheduleEvents:JSON.parse(JSON.stringify(scheduleEvents)),
@@ -4668,6 +4670,7 @@ function applyState(state,skipUndo=false){
   if(d.certLog&&Array.isArray(d.certLog))certLog=d.certLog;
   if(d.certRequests&&Array.isArray(d.certRequests))certRequests=d.certRequests;
   if(d.welfarePoints&&Array.isArray(d.welfarePoints))welfarePoints=d.welfarePoints;
+  if(d.expenseClaims&&Array.isArray(d.expenseClaims))expenseClaims=d.expenseClaims;
   if(d.mandatoryTraining&&Array.isArray(d.mandatoryTraining))mandatoryTraining=d.mandatoryTraining;
   if(d.healthCheckupLog&&Array.isArray(d.healthCheckupLog))healthCheckupLog=d.healthCheckupLog;
   if(d.scheduleEvents&&Array.isArray(d.scheduleEvents))scheduleEvents=d.scheduleEvents;
@@ -5604,6 +5607,7 @@ function renderSidebar(){
       {id:"pay-sep",type:"sep",label:"급여",roles:["admin","director","leader","member"]},
       {id:"payslip",label:"급여 명세서",icon:"💰",desc:"월별 급여 내역 조회",roles:["admin","director","leader","member"]},
       {id:"salary-info",label:"급여 기준 정보",icon:"📑",desc:"전월 급여 기준·예상 퇴직금",roles:["admin","director","leader","member"]},
+      {id:"expense-claims",label:"경비 청구",icon:"🧾",desc:"법인카드·개인경비 청구/조회",roles:["admin","director","leader","member"]},
     ],
     "hr-sep":[
       {id:"hr-sep",type:"sep",label:"인사 관리",roles:["admin","director","leader"]},
@@ -5665,6 +5669,7 @@ function renderSidebar(){
       {id:"acct-vouchers",label:"전표 관리",icon:"🧾",desc:"전표 작성·확정·취소",roles:["admin"]},
       {id:"acct-tax-invoices",label:"세금계산서",icon:"📄",desc:"세금계산서 발행(사내용)",roles:["admin"]},
       {id:"acct-reports",label:"회계 리포트",icon:"📈",desc:"시산표·월별 손익·거래처별 집계",roles:["admin"]},
+      {id:"expense-admin",label:"경비 정산 관리",icon:"🧾",desc:"경비 청구 승인·반려·지급 처리",roles:["admin"]},
     ],
     "sales-sep":[
       {id:"sales-sep",type:"sep",label:"영업관리",roles:["admin"]},
@@ -5715,7 +5720,7 @@ function renderSidebar(){
   _menuGroupsCache=menuGroups;
   const groupOrder=SIDEBAR_DEFAULT_ORDER.filter(g=>menuGroups[g]);
   const menus=groupOrder.flatMap(g=>menuGroups[g]);
-  const titles={dashboard:"대시보드","my-profile":"내 프로필","hr-register":"신규 직원 등록","hr-list":"직원 목록","hr-changes":"발령·변동 이력",kpi:"KPI 목표 등록","kpi-results":"KPI 결과 입력","my-kpi":"나의 KPI","grade-view":"KPI 등급 현황","comp-grade-view":"역량평가 등급","comp-eval":"다면평가 진행","first-eval":"1차 평가","second-eval":"2차 평가","kpi-amend":"수정 요청 승인","eval-progress":"평가 진행 상황",settings:"운영 설정",history:"수정 이력","change-pw":"비밀번호 변경","data-mgmt":"데이터 관리","core-talent":"핵심인재 관리","talent-dev":"육성 계획·실적","promotion-mgmt":"승진 심사 관리","low-performer":"저성과 인력 관리","approval-draft":"기안하기","approval-outbox":"상신함","approval-inbox":"결재함","approval-receive":"수신함","approval-cc-inbox":"참조함","approval-completed":"완료함","attendance":"근태 현황","att-calendar":"캘린더","leave-mgmt":"연차 관리","payslip":"급여 명세서","approval-templates":"결재 양식 관리","integrations":"연동 설정","orgchart":"조직도","certificate":"증명서 발급","hr-stats":"인사 통계","board":"게시판","room-booking":"회의실 예약","welfare-points":"복지포인트","mandatory-training":"법정의무교육","hr-welfare-points":"복지포인트 현황(전체)","hr-mandatory-training":"법정의무교육 현황(전체)","hr-attendance":"근태 현황(전체)","hr-leave-mgmt":"연차 관리(전체)","welfare-status":"복지 현황","long-service-award":"장기근속 포상","award-history":"(최)우수사원 선정 이력","salary-info":"급여 기준 정보","welfare-settings":"복지 제도 설정","notification-center":"알림","acct-partners":"거래처 관리","acct-accounts":"계정과목","acct-vouchers":"전표 관리","acct-tax-invoices":"세금계산서","acct-reports":"회계 리포트","sales-quotations":"견적서 관리","sales-dashboard":"영업 실적 대시보드","sales-purchase-orders":"발주서 관리","inv-items":"품목 관리","inv-locations":"위치 관리","inv-stock":"재고 현황","inv-purchase-requests":"구매요청","pms-projects":"프로젝트 관리","pms-allocation":"내 투입률 입력","pms-my-projects":"내가 투입된 프로젝트","pms-utilization":"가동률 현황","pms-worklog":"일일 업무 투입","recruit-jobs":"채용공고 관리","recruit-candidates":"지원자 관리","recruit-eval":"면접 일정/평가 입력","recruit-eval-detail":"면접 평가 상세","recruit-dashboard":"채용 현황 대시보드","eval-ops":"평가 운영","settings-org":"조직 관리","settings-ranks":"직급 체계","attend-settings":"근태 설정","payroll-settings":"급여 관리","payroll-mgmt":"급여 종합 관리","company-info":"회사 기본 정보","room-settings":"회의실 관리","deploy-perm":"권한 관리"};
+  const titles={dashboard:"대시보드","my-profile":"내 프로필","hr-register":"신규 직원 등록","hr-list":"직원 목록","hr-changes":"발령·변동 이력",kpi:"KPI 목표 등록","kpi-results":"KPI 결과 입력","my-kpi":"나의 KPI","grade-view":"KPI 등급 현황","comp-grade-view":"역량평가 등급","comp-eval":"다면평가 진행","first-eval":"1차 평가","second-eval":"2차 평가","kpi-amend":"수정 요청 승인","eval-progress":"평가 진행 상황",settings:"운영 설정",history:"수정 이력","change-pw":"비밀번호 변경","data-mgmt":"데이터 관리","core-talent":"핵심인재 관리","talent-dev":"육성 계획·실적","promotion-mgmt":"승진 심사 관리","low-performer":"저성과 인력 관리","approval-draft":"기안하기","approval-outbox":"상신함","approval-inbox":"결재함","approval-receive":"수신함","approval-cc-inbox":"참조함","approval-completed":"완료함","attendance":"근태 현황","att-calendar":"캘린더","leave-mgmt":"연차 관리","payslip":"급여 명세서","approval-templates":"결재 양식 관리","integrations":"연동 설정","orgchart":"조직도","certificate":"증명서 발급","hr-stats":"인사 통계","board":"게시판","room-booking":"회의실 예약","welfare-points":"복지포인트","mandatory-training":"법정의무교육","hr-welfare-points":"복지포인트 현황(전체)","hr-mandatory-training":"법정의무교육 현황(전체)","hr-attendance":"근태 현황(전체)","hr-leave-mgmt":"연차 관리(전체)","welfare-status":"복지 현황","long-service-award":"장기근속 포상","award-history":"(최)우수사원 선정 이력","salary-info":"급여 기준 정보","welfare-settings":"복지 제도 설정","notification-center":"알림","acct-partners":"거래처 관리","acct-accounts":"계정과목","acct-vouchers":"전표 관리","acct-tax-invoices":"세금계산서","acct-reports":"회계 리포트","expense-claims":"경비 청구","expense-admin":"경비 정산 관리","sales-quotations":"견적서 관리","sales-dashboard":"영업 실적 대시보드","sales-purchase-orders":"발주서 관리","inv-items":"품목 관리","inv-locations":"위치 관리","inv-stock":"재고 현황","inv-purchase-requests":"구매요청","pms-projects":"프로젝트 관리","pms-allocation":"내 투입률 입력","pms-my-projects":"내가 투입된 프로젝트","pms-utilization":"가동률 현황","pms-worklog":"일일 업무 투입","recruit-jobs":"채용공고 관리","recruit-candidates":"지원자 관리","recruit-eval":"면접 일정/평가 입력","recruit-eval-detail":"면접 평가 상세","recruit-dashboard":"채용 현황 대시보드","eval-ops":"평가 운영","settings-org":"조직 관리","settings-ranks":"직급 체계","attend-settings":"근태 설정","payroll-settings":"급여 관리","payroll-mgmt":"급여 종합 관리","company-info":"회사 기본 정보","room-settings":"회의실 관리","deploy-perm":"권한 관리"};
   const ptEl=$("#page-title");if(ptEl)ptEl.textContent=titles[currentPage]||"";
   const sb=$("#sidebar");if(!sb)return;
   // Filter by role + per-user custom permission overrides (admin-managed)
@@ -5805,7 +5810,7 @@ const PAGE_ROLES={
   "eval-ops":["admin"],"settings-org":["admin"],"settings-ranks":["admin"],"attend-settings":["admin"],
   "payroll-settings":["admin"],"company-info":["admin"],"room-settings":["admin"],"deploy-perm":["admin"],
   "pms-utilization":["admin","director","leader"],"sales-dashboard":["admin"],
-  "acct-partners":["admin"],"acct-accounts":["admin"],"acct-vouchers":["admin"],"acct-tax-invoices":["admin"],"acct-reports":["admin"],
+  "acct-partners":["admin"],"acct-accounts":["admin"],"acct-vouchers":["admin"],"acct-tax-invoices":["admin"],"acct-reports":["admin"],"expense-admin":["admin"],
   "sales-quotations":["admin"],"sales-purchase-orders":["admin"],
   "inv-items":["admin"],"inv-locations":["admin"],"inv-stock":["admin"],"inv-stock-log":["admin"],
   "welfare-settings":["admin"],
@@ -5930,7 +5935,7 @@ function renderCategoryLanding(catKey){
 function renderPage(){
   if(currentPage&&currentPage.startsWith("cat:")){renderCategoryLanding(currentPage.slice(4));renderCatNav();const attendBar=document.getElementById("attend-bar");if(attendBar)attendBar.innerHTML=(currentUser&&currentPage==="dashboard")?_renderTeamTodayWidget(currentUser):"";return;}
   if(currentPage&&currentPage.startsWith("board-")){renderBoardPage();renderCatNav();const attendBar=document.getElementById("attend-bar");if(attendBar)attendBar.innerHTML=(currentUser&&currentPage==="dashboard")?_renderTeamTodayWidget(currentUser):"";return;}
-  const pages={dashboard:renderDashboard,"my-profile":renderMyProfile,"hr-register":renderHRRegister,"hr-list":renderHRList,"hr-changes":renderHRChanges,kpi:()=>renderKPI(false),"kpi-results":()=>renderKPI(true),"my-kpi":renderMyKPI,"grade-view":renderGradeView,"comp-grade-view":renderCompGradeView,"comp-settings-shortcut":()=>gotoPage("eval-ops"),"comp-eval":renderCompEval,"data-mgmt":renderDataManagementPage,"core-talent":renderCoreTalentPage,"talent-dev":renderTalentDevPage,"promotion-mgmt":renderPromotionPageStandalone,"low-performer":renderLowPerformer,"activity-log":()=>{loadActivityFromServer();},"first-eval":()=>{approvalTab="eval";approvalSearch={name:"",dept:""};renderApprovals();},"second-eval":()=>{approvalTab="eval";approvalSearch={name:"",dept:""};renderApprovals();},"kpi-amend":()=>{approvalTab="requests";approvalSearch={name:"",dept:""};renderApprovals();},"eval-progress":renderEvalProgressPage,settings:renderSettings,"eval-ops":renderEvalOpsPage,"settings-org":renderSettingsOrgPage,"settings-ranks":renderSettingsRanksPage,"attend-settings":renderAttendSettings,"payroll-settings":renderPayrollSettings,"company-info":renderCompanyInfo,"room-settings":renderRoomSettings,"deploy-perm":renderDeployPermPage,history:renderHistory,"change-pw":renderChangePW,"approval-draft":renderApprovalDraftPage,"approval-outbox":renderApprovalOutbox,"approval-inbox":renderApprovalInbox,"approval-receive":renderApprovalReceive,"approval-cc-inbox":renderApprovalCcInbox,"approval-completed":renderApprovalCompleted,"attendance":renderAttendancePage,"att-calendar":renderAttendanceCalendarPage,"leave-mgmt":renderLeaveManagementPage,"payslip":renderPayslipPage,"approval-templates":renderApprovalTemplateAdmin,"integrations":renderIntegrationsPage,"orgchart":renderOrgChartPage,"certificate":renderCertPage,"hr-stats":renderHRStatsPage,"board":renderBoardPage,"room-booking":renderRoomBookingPage,"welfare-points":renderWelfarePointsPage,"mandatory-training":renderMandatoryTrainingPage,"welfare-status":renderWelfareStatusPage,"long-service-award":renderLongServiceAwardPage,"award-history":renderAwardHistoryPage,"hr-welfare-points":renderHrWelfarePointsPage,"hr-mandatory-training":renderHrMandatoryTrainingPage,"hr-attendance":renderHrAttendancePage,"hr-leave-mgmt":renderHrLeaveManagementPage,"payroll-mgmt":renderPayrollMgmtPage,"salary-info":renderSalaryInfoPage,"welfare-settings":renderWelfareSettingsPage,"notification-center":renderNotificationCenterPage,"acct-partners":renderAcctPartnersPage,"acct-accounts":renderAcctAccountsPage,"acct-vouchers":renderAcctVouchersPage,"acct-tax-invoices":renderAcctTaxInvoicesPage,"acct-reports":renderAcctReportsPage,"sales-quotations":renderSalesQuotationsPage,"sales-dashboard":renderSalesDashboardPage,"sales-purchase-orders":renderSalesPurchaseOrdersPage,"inv-items":renderInvItemsPage,"inv-locations":renderInvLocationsPage,"inv-stock":renderInvStockPage,"inv-stock-log":renderInvStockLogPage,"inv-purchase-requests":renderPurchaseRequestsPage,"pms-projects":renderPmsProjectsPage,"pms-allocation":renderPmsAllocationPage,"pms-my-projects":renderPmsMyProjectsPage,"pms-utilization":renderPmsUtilizationPage,"pms-worklog":renderPmsWorklogPage,"recruit-jobs":renderRecruitJobsPage,"recruit-candidates":renderRecruitCandidatesPage,"recruit-eval":renderRecruitEvalPage,"recruit-eval-detail":renderRecruitEvalDetailPage,"recruit-dashboard":renderRecruitDashboardPage};
+  const pages={dashboard:renderDashboard,"my-profile":renderMyProfile,"hr-register":renderHRRegister,"hr-list":renderHRList,"hr-changes":renderHRChanges,kpi:()=>renderKPI(false),"kpi-results":()=>renderKPI(true),"my-kpi":renderMyKPI,"grade-view":renderGradeView,"comp-grade-view":renderCompGradeView,"comp-settings-shortcut":()=>gotoPage("eval-ops"),"comp-eval":renderCompEval,"data-mgmt":renderDataManagementPage,"core-talent":renderCoreTalentPage,"talent-dev":renderTalentDevPage,"promotion-mgmt":renderPromotionPageStandalone,"low-performer":renderLowPerformer,"activity-log":()=>{loadActivityFromServer();},"first-eval":()=>{approvalTab="eval";approvalSearch={name:"",dept:""};renderApprovals();},"second-eval":()=>{approvalTab="eval";approvalSearch={name:"",dept:""};renderApprovals();},"kpi-amend":()=>{approvalTab="requests";approvalSearch={name:"",dept:""};renderApprovals();},"eval-progress":renderEvalProgressPage,settings:renderSettings,"eval-ops":renderEvalOpsPage,"settings-org":renderSettingsOrgPage,"settings-ranks":renderSettingsRanksPage,"attend-settings":renderAttendSettings,"payroll-settings":renderPayrollSettings,"company-info":renderCompanyInfo,"room-settings":renderRoomSettings,"deploy-perm":renderDeployPermPage,history:renderHistory,"change-pw":renderChangePW,"approval-draft":renderApprovalDraftPage,"approval-outbox":renderApprovalOutbox,"approval-inbox":renderApprovalInbox,"approval-receive":renderApprovalReceive,"approval-cc-inbox":renderApprovalCcInbox,"approval-completed":renderApprovalCompleted,"attendance":renderAttendancePage,"att-calendar":renderAttendanceCalendarPage,"leave-mgmt":renderLeaveManagementPage,"payslip":renderPayslipPage,"approval-templates":renderApprovalTemplateAdmin,"integrations":renderIntegrationsPage,"orgchart":renderOrgChartPage,"certificate":renderCertPage,"hr-stats":renderHRStatsPage,"board":renderBoardPage,"room-booking":renderRoomBookingPage,"welfare-points":renderWelfarePointsPage,"mandatory-training":renderMandatoryTrainingPage,"welfare-status":renderWelfareStatusPage,"long-service-award":renderLongServiceAwardPage,"award-history":renderAwardHistoryPage,"hr-welfare-points":renderHrWelfarePointsPage,"hr-mandatory-training":renderHrMandatoryTrainingPage,"hr-attendance":renderHrAttendancePage,"hr-leave-mgmt":renderHrLeaveManagementPage,"payroll-mgmt":renderPayrollMgmtPage,"salary-info":renderSalaryInfoPage,"welfare-settings":renderWelfareSettingsPage,"notification-center":renderNotificationCenterPage,"acct-partners":renderAcctPartnersPage,"acct-accounts":renderAcctAccountsPage,"acct-vouchers":renderAcctVouchersPage,"acct-tax-invoices":renderAcctTaxInvoicesPage,"acct-reports":renderAcctReportsPage,"expense-claims":renderExpenseClaimsPage,"expense-admin":renderExpenseAdminPage,"sales-quotations":renderSalesQuotationsPage,"sales-dashboard":renderSalesDashboardPage,"sales-purchase-orders":renderSalesPurchaseOrdersPage,"inv-items":renderInvItemsPage,"inv-locations":renderInvLocationsPage,"inv-stock":renderInvStockPage,"inv-stock-log":renderInvStockLogPage,"inv-purchase-requests":renderPurchaseRequestsPage,"pms-projects":renderPmsProjectsPage,"pms-allocation":renderPmsAllocationPage,"pms-my-projects":renderPmsMyProjectsPage,"pms-utilization":renderPmsUtilizationPage,"pms-worklog":renderPmsWorklogPage,"recruit-jobs":renderRecruitJobsPage,"recruit-candidates":renderRecruitCandidatesPage,"recruit-eval":renderRecruitEvalPage,"recruit-eval-detail":renderRecruitEvalDetailPage,"recruit-dashboard":renderRecruitDashboardPage};
   const fn=pages[currentPage];const c=$("#content");
   if(c&&fn){
     c.innerHTML="";
@@ -14506,6 +14511,166 @@ function _dlAcctReportCSV(){
   }else{
     dlCSV(`거래처별집계_${_acctRptYear}_${d}.csv`,["거래처","매출건수","매출액","매입건수","매입액"],_acctRptPartnerRows().map(r=>[r.name,r.salesCnt,r.sales,r.purchaseCnt,r.purchase]));
   }
+}
+// ==================== 경비 정산 (경비 청구 → 승인 → 지급, 회계 전표 연동) ====================
+const EXPENSE_CATEGORIES=["교통비","식대","숙박비","소모품비","접대비","통신비","교육비","기타"];
+const EXPENSE_STATUS_LABEL={pending:badge("승인 대기","gray"),approved:badge("승인됨","blue"),rejected:badge("반려","red"),paid:badge("지급완료","green")};
+let _expItems=[];
+function renderExpenseClaimsPage(){
+  const c=$("#content");if(!c)return;
+  const mine=expenseClaims.filter(x=>String(x.empId)===String(currentUser.id))
+    .sort((a,b)=>(b.createdAt||"").localeCompare(a.createdAt||""));
+  c.innerHTML=`<div class="card"><div class="card-head"><h3>🧾 경비 청구</h3><button class="btn btn-primary btn-sm" onclick="openExpenseClaimModal()">+ 경비 청구 작성</button></div>
+  <div class="card-body fz12 text-gray" style="padding:8px 16px 0">법인카드 사용분·개인 지출 경비를 청구하면 관리자 승인 후 지급 처리됩니다.</div>
+  <div class="card-body" style="padding:0"><div class="tbl-wrap"><table><thead><tr><th>청구일</th><th>제목</th><th>항목수</th><th>합계</th><th>상태</th><th>관리</th></tr></thead><tbody>
+  ${mine.length?mine.map(x=>`<tr><td>${h((x.createdAt||"").slice(0,10))}</td><td>${h(x.title)}</td><td style="text-align:right">${(x.items||[]).length}</td><td style="text-align:right">${(x.total||0).toLocaleString()}원</td><td>${EXPENSE_STATUS_LABEL[x.status]||x.status}${x.status==="rejected"&&x.rejectReason?`<div class="fz10 text-gray">${h(x.rejectReason)}</div>`:""}</td><td>
+    <button class="btn btn-secondary btn-sm" onclick="viewExpenseClaimModal('${x.id}')">보기</button>
+    ${x.status==="pending"?` <button class="btn btn-danger btn-sm" onclick="deleteExpenseClaim('${x.id}')">회수</button>`:""}
+  </td></tr>`).join(""):`<tr><td colspan="6" class="text-gray" style="text-align:center;padding:20px">청구 내역이 없습니다. [+ 경비 청구 작성]으로 시작하세요.</td></tr>`}
+  </tbody></table></div></div></div>`;
+}
+function openExpenseClaimModal(){
+  _expItems=[{date:new Date().toISOString().slice(0,10),category:EXPENSE_CATEGORIES[0],amount:0,memo:""}];
+  openModal(`<div class="modal-box" style="max-width:640px"><div class="modal-head"><h3>🧾 경비 청구 작성</h3></div><div class="modal-body">
+    <div class="fg"><label class="fl">제목 <span class="req">*</span></label><input class="fc" id="exp-title" placeholder="예: 6월 출장 경비"></div>
+    <div class="fg"><label class="fl">경비 항목</label><div id="exp-items"></div>
+      <button class="btn btn-secondary btn-sm mt2" onclick="_expItems.push({date:new Date().toISOString().slice(0,10),category:EXPENSE_CATEGORIES[0],amount:0,memo:''});renderExpItems()">+ 항목 추가</button></div>
+    <div class="fg"><label class="fl">영수증 첨부 <span class="fz11 text-gray">(사진/PDF, 복수 선택 가능)</span></label><input class="fc" type="file" id="exp-files" multiple accept="image/*,.pdf"></div>
+    <div class="fw7" id="exp-total"></div>
+  </div><div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal()">취소</button><button class="btn btn-primary" onclick="saveExpenseClaim()">청구 제출</button></div></div>`);
+  setTimeout(renderExpItems,30);
+}
+function renderExpItems(){
+  const el=$("#exp-items");if(!el)return;
+  el.innerHTML=_expItems.map((it,i)=>`<div style="display:flex;gap:5px;align-items:center;margin-bottom:5px">
+    <input class="fc" type="date" style="flex:1.2" value="${it.date}" onchange="_expItems[${i}].date=this.value">
+    <select class="fc" style="flex:1" onchange="_expItems[${i}].category=this.value">${EXPENSE_CATEGORIES.map(cg=>`<option ${it.category===cg?"selected":""}>${cg}</option>`).join("")}</select>
+    <input class="fc" type="number" placeholder="금액" style="flex:1" value="${it.amount||""}" oninput="_expItems[${i}].amount=+this.value||0;_updateExpTotal()">
+    <input class="fc" placeholder="내용" style="flex:1.5" value="${h(it.memo||"")}" oninput="_expItems[${i}].memo=this.value">
+    <button class="btn btn-danger btn-sm" onclick="_expItems.splice(${i},1);renderExpItems()">✕</button>
+  </div>`).join("");
+  _updateExpTotal();
+}
+function _updateExpTotal(){
+  const el=$("#exp-total");if(!el)return;
+  el.textContent=`합계: ${_expItems.reduce((s,it)=>s+(it.amount||0),0).toLocaleString()}원`;
+}
+function saveExpenseClaim(){
+  const title=$("#exp-title")?.value.trim();
+  if(!title){showToast("제목을 입력하세요.","error");return;}
+  const items=_expItems.filter(it=>it.amount>0);
+  if(!items.length){showToast("금액이 입력된 경비 항목이 1건 이상 필요합니다.","error");return;}
+  const files=$("#exp-files")?.files;
+  const receipts=files&&files.length?Array.from(files).map(f=>({name:f.name,size:f.size})):[];
+  expenseClaims.push({id:genId(),empId:currentUser.id,empName:currentUser.name,dept:currentUser.dept||"",team:currentUser.team||"",
+    title,items,total:items.reduce((s,it)=>s+(it.amount||0),0),receipts,status:"pending",createdAt:new Date().toISOString()});
+  closeModal();autoSaveToServerIfEnabled();showToast("경비 청구가 제출되었습니다.","success");renderExpenseClaimsPage();
+}
+function deleteExpenseClaim(id){
+  const x=expenseClaims.find(x=>x.id===id);if(!x)return;
+  if(x.status!=="pending"){showToast("승인 대기 상태만 회수할 수 있습니다.","error");return;}
+  if(!confirm("이 경비 청구를 회수(삭제)하시겠습니까?"))return;
+  expenseClaims=expenseClaims.filter(c=>c.id!==id);
+  autoSaveToServerIfEnabled();showToast("회수되었습니다.","info");
+  currentPage==="expense-admin"?renderExpenseAdminPage():renderExpenseClaimsPage();
+}
+function viewExpenseClaimModal(id){
+  const x=expenseClaims.find(x=>x.id===id);if(!x)return;
+  openModal(`<div class="modal-box" style="max-width:600px"><div class="modal-head"><h3>🧾 ${h(x.title)}</h3></div><div class="modal-body">
+    <div class="fg"><label class="fl">청구자</label><div class="fz13">${h(x.empName)} (${h(x.dept)}${x.team?" / "+h(x.team):""}) · ${h((x.createdAt||"").slice(0,10))}</div></div>
+    <div class="fg"><label class="fl">항목</label><div class="tbl-wrap"><table><thead><tr><th>일자</th><th>분류</th><th>금액</th><th>내용</th></tr></thead><tbody>
+    ${(x.items||[]).map(it=>`<tr><td>${h(it.date)}</td><td>${h(it.category)}</td><td style="text-align:right">${(it.amount||0).toLocaleString()}</td><td>${h(it.memo||"-")}</td></tr>`).join("")}
+    </tbody></table></div></div>
+    <div class="fg"><label class="fl">합계</label><div class="fw7">${(x.total||0).toLocaleString()}원</div></div>
+    ${(x.receipts||[]).length?`<div class="fg"><label class="fl">영수증</label><div class="fz12">${x.receipts.map(r=>h(r.name)).join(", ")}</div></div>`:""}
+    <div class="fg"><label class="fl">상태</label><div>${EXPENSE_STATUS_LABEL[x.status]||x.status}
+      ${x.approvedBy?`<span class="fz11 text-gray"> 승인: ${h(x.approvedBy)} (${h((x.approvedAt||"").slice(0,10))})</span>`:""}
+      ${x.rejectReason?`<div class="fz12" style="color:#dc2626">반려 사유: ${h(x.rejectReason)}</div>`:""}
+      ${x.paidAt?`<span class="fz11 text-gray"> 지급일: ${h((x.paidAt||"").slice(0,10))}</span>`:""}
+      ${x.voucherId?`<div class="fz11 text-gray">연동 전표: ${h(x.voucherNo||x.voucherId)}</div>`:""}
+    </div></div>
+  </div><div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal()">닫기</button></div></div>`);
+}
+function renderExpenseAdminPage(){
+  const c=$("#content");if(!c)return;
+  const f=window._expAdminFilter||{q:"",status:"all"};
+  let rows=[...expenseClaims].sort((a,b)=>(b.createdAt||"").localeCompare(a.createdAt||""));
+  if(f.status!=="all")rows=rows.filter(x=>x.status===f.status);
+  if(f.q.trim()){const kw=f.q.trim();rows=rows.filter(x=>[x.empName,x.dept,x.team,x.title].some(v=>(v||"").includes(kw)));}
+  const pendingCnt=expenseClaims.filter(x=>x.status==="pending").length;
+  const apprCnt=expenseClaims.filter(x=>x.status==="approved").length;
+  c.innerHTML=`<div class="card"><div class="card-head"><h3>🧾 경비 정산 관리</h3><button class="btn btn-secondary btn-sm" onclick="_dlExpenseCSV()">📥 엑셀 다운로드</button></div>
+  <div class="card-body">
+  <div class="flex gap2 wrap mb3" style="align-items:center">
+    <input class="fc" style="max-width:260px" value="${h(f.q)}" placeholder="청구자·부서·제목 검색" oninput="window._expAdminFilter={...window._expAdminFilter,q:this.value};renderExpenseAdminPage()">
+    <select class="fc" style="max-width:140px" onchange="window._expAdminFilter={...window._expAdminFilter,status:this.value};renderExpenseAdminPage()">
+      <option value="all" ${f.status==="all"?"selected":""}>전체 상태</option>
+      <option value="pending" ${f.status==="pending"?"selected":""}>승인 대기</option>
+      <option value="approved" ${f.status==="approved"?"selected":""}>승인됨(지급 전)</option>
+      <option value="rejected" ${f.status==="rejected"?"selected":""}>반려</option>
+      <option value="paid" ${f.status==="paid"?"selected":""}>지급완료</option>
+    </select>
+    <span class="fz12 text-gray">대기 ${pendingCnt}건 · 지급 대기 ${apprCnt}건</span>
+  </div>
+  <div class="tbl-wrap"><table><thead><tr><th>청구일</th><th>청구자</th><th>부서</th><th>제목</th><th>합계</th><th>상태</th><th>관리</th></tr></thead><tbody>
+  ${rows.length?rows.map(x=>`<tr><td>${h((x.createdAt||"").slice(0,10))}</td><td>${h(x.empName)}</td><td>${h(x.dept)}${x.team?"/"+h(x.team):""}</td><td>${h(x.title)}</td><td style="text-align:right">${(x.total||0).toLocaleString()}</td><td>${EXPENSE_STATUS_LABEL[x.status]||x.status}</td><td>
+    <button class="btn btn-secondary btn-sm" onclick="viewExpenseClaimModal('${x.id}')">보기</button>
+    ${x.status==="pending"?` <button class="btn btn-primary btn-sm" onclick="approveExpenseClaim('${x.id}')">승인</button> <button class="btn btn-danger btn-sm" onclick="rejectExpenseClaim('${x.id}')">반려</button>`:""}
+    ${x.status==="approved"?` <button class="btn btn-primary btn-sm" onclick="openExpensePayModal('${x.id}')">지급 처리</button>`:""}
+  </td></tr>`).join(""):`<tr><td colspan="7" class="text-gray" style="text-align:center;padding:20px">${f.q||f.status!=="all"?"검색 결과가 없습니다.":"경비 청구 내역이 없습니다."}</td></tr>`}
+  </tbody></table></div></div></div>`;
+}
+function approveExpenseClaim(id){
+  const x=expenseClaims.find(x=>x.id===id);if(!x||x.status!=="pending")return;
+  x.status="approved";x.approvedBy=currentUser.name;x.approvedAt=new Date().toISOString();
+  autoSaveToServerIfEnabled();showToast("승인되었습니다. 지급 처리를 진행하세요.","success");renderExpenseAdminPage();
+}
+function rejectExpenseClaim(id){
+  const x=expenseClaims.find(x=>x.id===id);if(!x||x.status!=="pending")return;
+  const reason=prompt("반려 사유를 입력하세요.");if(!reason)return;
+  x.status="rejected";x.rejectReason=reason;x.approvedBy=currentUser.name;x.approvedAt=new Date().toISOString();
+  autoSaveToServerIfEnabled();showToast("반려되었습니다.","info");renderExpenseAdminPage();
+}
+function openExpensePayModal(id){
+  const x=expenseClaims.find(x=>x.id===id);if(!x||x.status!=="approved")return;
+  const canVoucher=!!serverConfig.url&&acctAccounts.length>=2;
+  const expenseAccs=acctAccounts.filter(a=>a.type==="expense"&&a.active!==false);
+  const assetAccs=acctAccounts.filter(a=>a.type==="asset"&&a.active!==false);
+  openModal(`<div class="modal-box" style="max-width:520px"><div class="modal-head"><h3>💸 지급 처리 — ${h(x.title)}</h3></div><div class="modal-body">
+    <div class="fg"><label class="fl">지급일</label><input class="fc" type="date" id="expay-date" value="${new Date().toISOString().slice(0,10)}"></div>
+    <div class="fg"><label class="fl">지급 방법</label><select class="fc" id="expay-method"><option>계좌이체</option><option>급여 합산</option><option>현금</option></select></div>
+    <div class="fg"><label class="fl">금액</label><div class="fw7">${(x.total||0).toLocaleString()}원</div></div>
+    ${canVoucher&&expenseAccs.length&&assetAccs.length?`
+    <div class="fg"><label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" id="expay-voucher" checked> 회계 전표 자동 생성 (임시 상태로 생성됨)</label></div>
+    <div class="fg"><label class="fl">차변(비용) 계정</label><select class="fc" id="expay-debit">${expenseAccs.map(a=>`<option value="${a.id}">${h(a.code)} ${h(a.name)}</option>`).join("")}</select></div>
+    <div class="fg"><label class="fl">대변(지급) 계정</label><select class="fc" id="expay-credit">${assetAccs.map(a=>`<option value="${a.id}" ${/보통예금|현금/.test(a.name)?"selected":""}>${h(a.code)} ${h(a.name)}</option>`).join("")}</select></div>
+    `:`<div class="fz12 text-gray">※ 회계 전표 자동 생성은 서버 연결 + 비용/자산 계정과목 등록 시 활성화됩니다.</div>`}
+  </div><div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal()">취소</button><button class="btn btn-primary" onclick="payExpenseClaim('${x.id}')">지급 완료</button></div></div>`);
+}
+async function payExpenseClaim(id){
+  const x=expenseClaims.find(x=>x.id===id);if(!x||x.status!=="approved")return;
+  const payDate=$("#expay-date")?.value||new Date().toISOString().slice(0,10);
+  const method=$("#expay-method")?.value||"계좌이체";
+  const makeVoucher=$("#expay-voucher")?.checked;
+  if(makeVoucher){
+    const debitAcc=$("#expay-debit")?.value,creditAcc=$("#expay-credit")?.value;
+    if(debitAcc&&creditAcc){
+      const body={date:payDate,description:`경비정산 - ${x.empName} ${x.title}`,partner:x.empName,partnerId:null,
+        lines:[{accountId:debitAcc,debit:x.total,credit:0,memo:x.title},{accountId:creditAcc,debit:0,credit:x.total,memo:`경비지급(${method})`}],
+        role:currentUser.role,user:currentUser.name};
+      const r=await serverRequest("POST","/api/accounting/vouchers",body);
+      if(r?.ok){acctVouchers.unshift(r.voucher);x.voucherId=r.voucher.id;x.voucherNo=r.voucher.voucherNo||"(임시)";}
+      else showToast("전표 생성 실패: "+(r?.message||"서버 오류")+" — 지급 처리는 계속 진행합니다.","warning");
+    }
+  }
+  x.status="paid";x.paidAt=payDate;x.payMethod=method;x.paidBy=currentUser.name;
+  closeModal();autoSaveToServerIfEnabled();showToast("지급 처리되었습니다."+(x.voucherId?" (회계 전표 임시 생성됨)":""),"success");renderExpenseAdminPage();
+}
+function _dlExpenseCSV(){
+  const SL={pending:"승인대기",approved:"승인됨",rejected:"반려",paid:"지급완료"};
+  const rows=[];
+  expenseClaims.forEach(x=>(x.items||[]).forEach(it=>rows.push([(x.createdAt||"").slice(0,10),x.empName,x.dept,x.team||"",x.title,it.date,it.category,it.amount,it.memo||"",SL[x.status]||x.status,(x.paidAt||"").slice(0,10)])));
+  dlCSV(`경비정산_${new Date().toISOString().slice(0,10)}.csv`,["청구일","청구자","부서","팀","제목","사용일","분류","금액","내용","상태","지급일"],rows);
 }
 // ==================== 영업관리(견적서·발주서) / 재고관리 ====================
 // 회계 모듈과 동일하게 서버-권위형: 번호 발급·상태 전환·재고 반영을 서버가 직접 처리한다.
