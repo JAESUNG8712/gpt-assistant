@@ -13716,8 +13716,15 @@ function renderPayrollMgmtPage(returnHtmlOnly){
         <button class="btn btn-secondary btn-sm" onclick="openPayAnnualModal('${emp.id}')">연간</button>
       </td></tr>`;
   }).join("");
-  const html=`<div class="card" id="payroll-mgmt-wrap"><div class="card-head"><h3>💵 급여 종합 관리</h3>
-    <button class="btn btn-primary btn-sm" onclick="exportPayrollMgmtCSV()">⬇ 엑셀 다운로드</button>
+  const locked=_payrollLocked(year,month);
+  const voucherKey=`${year}-${month}`;
+  const linkedVoucher=(settings.payrollVouchers||{})[voucherKey];
+  const html=`<div class="card" id="payroll-mgmt-wrap"><div class="card-head"><h3>💵 급여 종합 관리 ${locked?'<span class="badge bg-red" style="margin-left:6px">🔒 마감됨</span>':''}</h3>
+    <div>
+      ${locked?`<button class="btn btn-secondary btn-sm" onclick="unlockPayrollMonth()">🔓 마감 해제</button>`:`<button class="btn btn-secondary btn-sm" onclick="lockPayrollMonth()">🔒 급여 마감</button>`}
+      ${serverConfig.url?` <button class="btn btn-secondary btn-sm" onclick="openPayrollVoucherModal()">🧾 회계 전표 생성${linkedVoucher?" ✓":""}</button>`:""}
+      <button class="btn btn-primary btn-sm" onclick="exportPayrollMgmtCSV()">⬇ 엑셀 다운로드</button>
+    </div>
   </div>
   <div class="card-body" style="padding:10px 14px 6px">
     <div class="filter-bar" style="flex-wrap:wrap;gap:6px">
@@ -13796,8 +13803,74 @@ function openPayAdjustModal(empId){
     </div>
   </div><div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal()">닫기</button></div></div>`);
 }
+// ── 급여 마감(lock) + 급여→회계 자동전표 ──────────────────────────────────────
+function _payrollLocked(year,month){return (settings.payrollLockedMonths||[]).includes(`${year}-${month}`);}
+function lockPayrollMonth(){
+  const s=_payMgmtState;
+  if(!confirm(`${s.year}년 ${s.month}월 급여를 마감하시겠습니까?\n마감 후에는 해당 월의 급여 조정이 잠깁니다.`))return;
+  if(!settings.payrollLockedMonths)settings.payrollLockedMonths=[];
+  settings.payrollLockedMonths.push(`${s.year}-${s.month}`);
+  autoSaveToServerIfEnabled();showToast(`${s.year}년 ${s.month}월 급여가 마감되었습니다.`,"success");_payMgmtRefresh();
+}
+function unlockPayrollMonth(){
+  const s=_payMgmtState;
+  if(!confirm(`${s.year}년 ${s.month}월 급여 마감을 해제하시겠습니까?`))return;
+  settings.payrollLockedMonths=(settings.payrollLockedMonths||[]).filter(k=>k!==`${s.year}-${s.month}`);
+  autoSaveToServerIfEnabled();showToast("마감이 해제되었습니다.","info");_payMgmtRefresh();
+}
+function _payrollMonthTotals(){
+  const s=_payMgmtState;
+  const active=employees.filter(e=>e.active&&e.role!=="admin");
+  let gross=0,deduct=0,net=0;
+  active.forEach(emp=>{
+    const slip=payslips.find(p=>String(p.empId)===String(emp.id)&&p.year===s.year&&p.month===s.month)||calcStandardPayslip(emp,s.year,s.month);
+    gross+=slip.gross||0;deduct+=slip.totalDeduct||0;net+=slip.netPay||0;
+  });
+  return{gross,deduct,net,count:active.length};
+}
+function openPayrollVoucherModal(){
+  const s=_payMgmtState;
+  if(!serverConfig.url){showToast("서버 연결 시에만 사용할 수 있습니다.","error");return;}
+  if(!acctAccounts.length){showToast("먼저 회계 > 계정과목을 등록하세요.","error");return;}
+  const t=_payrollMonthTotals();
+  const expenseAccs=acctAccounts.filter(a=>a.type==="expense"&&a.active!==false);
+  const liabAccs=acctAccounts.filter(a=>a.type==="liability"&&a.active!==false);
+  const assetAccs=acctAccounts.filter(a=>a.type==="asset"&&a.active!==false);
+  if(!expenseAccs.length||!assetAccs.length){showToast("비용/자산 계정과목이 각각 1개 이상 필요합니다.","error");return;}
+  openModal(`<div class="modal-box" style="max-width:540px"><div class="modal-head"><h3>🧾 ${s.year}년 ${s.month}월 급여 전표 생성</h3></div><div class="modal-body">
+    <div class="fz12 mb3" style="background:#f8fafc;border-radius:8px;padding:10px 12px">
+      대상 ${t.count}명 · 지급 합계 <b>${t.gross.toLocaleString()}</b> / 공제 합계 <b>${t.deduct.toLocaleString()}</b> / 실지급 <b>${t.net.toLocaleString()}</b><br>
+      <span class="text-gray">분개: 차변 급여(비용) ${t.gross.toLocaleString()} = 대변 예수금(공제) ${t.deduct.toLocaleString()} + 대변 지급계정 ${t.net.toLocaleString()}</span>
+    </div>
+    <div class="fg"><label class="fl">전표일자</label><input class="fc" type="date" id="pv-date" value="${new Date().toISOString().slice(0,10)}"></div>
+    <div class="fg"><label class="fl">차변 — 급여 비용 계정</label><select class="fc" id="pv-expense">${expenseAccs.map(a=>`<option value="${a.id}" ${/급여|인건비/.test(a.name)?"selected":""}>${h(a.code)} ${h(a.name)}</option>`).join("")}</select></div>
+    <div class="fg"><label class="fl">대변 — 예수금(공제) 계정 ${liabAccs.length?"":"<span class='fz11 text-gray'>(부채 계정 없음 → 지급계정으로 합산)</span>"}</label>
+      ${liabAccs.length?`<select class="fc" id="pv-liab">${liabAccs.map(a=>`<option value="${a.id}" ${/예수금/.test(a.name)?"selected":""}>${h(a.code)} ${h(a.name)}</option>`).join("")}</select>`:`<input class="fc" disabled value="-">`}</div>
+    <div class="fg"><label class="fl">대변 — 지급(보통예금 등) 계정</label><select class="fc" id="pv-asset">${assetAccs.map(a=>`<option value="${a.id}" ${/보통예금|현금/.test(a.name)?"selected":""}>${h(a.code)} ${h(a.name)}</option>`).join("")}</select></div>
+    <div class="fz11 text-gray">전표는 '임시' 상태로 생성되며, 전표 관리에서 확인 후 확정하세요.</div>
+  </div><div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal()">취소</button><button class="btn btn-primary" onclick="createPayrollVoucher()">전표 생성</button></div></div>`);
+}
+async function createPayrollVoucher(){
+  const s=_payMgmtState;
+  const t=_payrollMonthTotals();
+  const date=$("#pv-date")?.value||new Date().toISOString().slice(0,10);
+  const expAcc=$("#pv-expense")?.value,liabAcc=$("#pv-liab")?.value,assetAcc=$("#pv-asset")?.value;
+  if(!expAcc||!assetAcc){showToast("계정을 선택하세요.","error");return;}
+  const lines=[{accountId:expAcc,debit:t.gross,credit:0,memo:`${s.year}년 ${s.month}월 급여`}];
+  if(liabAcc&&t.deduct>0)lines.push({accountId:liabAcc,debit:0,credit:t.deduct,memo:"4대보험·소득세 예수금"});
+  lines.push({accountId:assetAcc,debit:0,credit:liabAcc?t.net:t.gross,memo:"급여 실지급"});
+  const body={date,description:`${s.year}년 ${s.month}월 급여 (${t.count}명)`,partner:"",partnerId:null,lines,role:currentUser.role,user:currentUser.name};
+  const r=await serverRequest("POST","/api/accounting/vouchers",body);
+  if(!r?.ok){showToast(r?.message||"전표 생성에 실패했습니다.","error");return;}
+  acctVouchers.unshift(r.voucher);
+  if(!settings.payrollVouchers)settings.payrollVouchers={};
+  settings.payrollVouchers[`${s.year}-${s.month}`]=r.voucher.id;
+  closeModal();autoSaveToServerIfEnabled();
+  showToast(`급여 전표가 임시 생성되었습니다. 전표 관리에서 확정하세요.`,"success");_payMgmtRefresh();
+}
 function addPayAdjustment(empId){
   const s=_payMgmtState;
+  if(_payrollLocked(s.year,s.month)){showToast(`${s.year}년 ${s.month}월 급여는 마감되어 조정할 수 없습니다. 먼저 마감을 해제하세요.`,"error");return;}
   const category=$("#pay-adj-category").value;
   const amount=+$("#pay-adj-amount").value;
   const note=$("#pay-adj-note").value;
@@ -13807,6 +13880,8 @@ function addPayAdjustment(empId){
   openPayAdjustModal(empId);_payMgmtRefresh();
 }
 function deletePayAdjustment(id,empId){
+  const s=_payMgmtState;
+  if(_payrollLocked(s.year,s.month)){showToast(`${s.year}년 ${s.month}월 급여는 마감되어 조정할 수 없습니다.`,"error");return;}
   const idx=payrollAdjustments.findIndex(a=>a.id===id);
   if(idx>=0)payrollAdjustments.splice(idx,1);
   autoSaveToServerIfEnabled();showToast("조정 항목이 삭제되었습니다.","success");
