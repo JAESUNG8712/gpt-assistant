@@ -7123,6 +7123,29 @@ function renderHRListTbl(){
     </div></td>`:""}
   </tr>`;}).join("")}</tbody></table>`;
 }
+// ── 개인정보 마스킹 + 열람 로그: 민감 항목은 기본 마스킹 표시, 클릭 시에만 원문 노출 + 서버 활동로그 기록 ──
+const PII_MASKED_LABELS=new Set(["생년월일","주소","로그인ID"]);
+let _piiRevealed={}; // {`${empId}|${label}`:true} — 세션 내에서만 유지, 재조회 시 다시 마스킹
+function _maskPIIValue(label,val){
+  const s=String(val==null?"":val);
+  if(label==="생년월일"){const m=s.match(/^(\d{4})-\d{2}-\d{2}$/);return m?`${m[1]}-**-**`:s;}
+  if(label==="주소")return s.length>6?s.slice(0,6)+" ****":s;
+  if(label==="로그인ID")return s.length>2?s.slice(0,2)+"***":s;
+  return s;
+}
+function _piiFieldHtml(empId,label,val){
+  if(!PII_MASKED_LABELS.has(label)||val==null||val==="-")return h(String(val));
+  const key=`${empId}|${label}`;
+  if(_piiRevealed[key])return `${h(String(val))} <span class="fz10 text-gray" style="cursor:pointer" onclick="_togglePIIReveal(${empId},'${label}')" title="다시 가리기">🙈</span>`;
+  return `${h(_maskPIIValue(label,val))} <span class="fz10" style="cursor:pointer;color:#2563eb" onclick="_togglePIIReveal(${empId},'${label}')" title="클릭하여 원문 보기(열람 이력 기록됨)">👁 보기</span>`;
+}
+function _togglePIIReveal(empId,label){
+  const key=`${empId}|${label}`;
+  if(_piiRevealed[key])delete _piiRevealed[key];
+  else{_piiRevealed[key]=true;logAction("개인정보 열람",getEmpName(empId),empId,label);}
+  closeTopModal(); // showModal은 누적 스택 방식이라 기존 모달을 닫고 새로 열어야 중복 생성을 피함
+  openEmpDetail(empId);
+}
 function openEmpDetail(id){
   const e=getEmp(id);if(!e)return;
   const canViewPrivate=_canViewPrivateHR();
@@ -7164,7 +7187,7 @@ function openEmpDetail(id){
   }).join("")}`:"";
   showModal(`<div class="modal modal-lg"><div class="modal-head"><h2>${h(e.name)} 직원 정보</h2><button class="modal-close" onclick="closeModal()">×</button></div>
   <div class="modal-body">
-    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px">${fields.map(([l,v])=>`<div class="pf"><div class="pf-label">${l}</div><div class="pf-val" style="font-size:12px">${h(String(v))}</div></div>`).join("")}</div>
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px">${fields.map(([l,v])=>`<div class="pf"><div class="pf-label">${l}</div><div class="pf-val" style="font-size:12px">${_piiFieldHtml(e.id,l,v)}</div></div>`).join("")}</div>
     ${canViewPrivate?`<div class="mt3" style="background:#eff6ff;border-radius:8px;padding:10px;border:1px solid #bfdbfe">
       <div class="fz11 fw6" style="color:#1d4ed8;margin-bottom:4px">⚡ 경력 기준 직급 산정</div>
       <div class="fz11 text-gray">경력 ${e.totalCareer||0}년 기준 → 적정 직급: <strong class="text-blue">${rankInfo.rank}</strong> (현 직급연차 ${rankInfo.rankYear}년)${rankInfo.nextRank?" · 다음 직급까지 "+rankInfo.yearsToNext+"년":""}</div>
