@@ -1,0 +1,17 @@
+# HR+ERP 시스템 (Node/Express) Render.com 배포 설정
+# 영속 디스크(disk)를 반드시 mount해야 재배포·재시작 시 hr-data*.json이 초기화되지 않는다.
+services:
+  - type: web
+    name: hr-erp-system
+    runtime: node
+    buildCommand: npm install
+    startCommand: node server.js
+    disk:
+      name: hr-erp-data
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: DATA_FILE
+        value: /var/data/hr-data.json
+      # PostgreSQL을 쓰려면 DATABASE_URL을 설정하면 되며(그 경우 DATA_FILE은 무시됨),
+      # 미설정 시 위 DATA_FILE 경로의 JSON 파일 모드로 동작한다.
