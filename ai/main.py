@@ -597,6 +597,13 @@ async def chat(req: ChatRequest):
         and not bool(search_ctx)
         and not direct_calc
     )
+    # 자동학습 항목 오염 방어: 자동학습/대화 출처 항목은 저장 당시 질문(q)이 사용자 질문과
+    # 같아도 답변(a)이 다른 주제일 수 있음(과거 오답이 학습된 경우).
+    # 질문 핵심 단어가 답변에 전혀 없으면 직접 서빙하지 않고 LLM 재생성 경로로 강등.
+    if kb_direct and kb.get("top_source") in ("자동학습", "대화") \
+            and not mem.topic_overlap(search_msg, top_answer):
+        print(f"ℹ️ KB 직접 서빙 강등(자동학습 답변 주제 불일치): {search_msg[:50]}")
+        kb_direct = False
     no_local    = (best_score < KB_CONTEXT) and not has_law_rt and not direct_calc and not bool(search_ctx)
 
     # stock 페르소나: 파이프라인 미실행 일반 Q&A → 저장된 보고서를 컨텍스트로 주입
@@ -1242,6 +1249,57 @@ async def admin_import_db(file: UploadFile = File(...)):
         os.unlink(tmp_path)
         if extracted_dir:
             shutil.rmtree(extracted_dir, ignore_errors=True)
+
+
+# ── 학습 데이터 관리 (오답 학습 정리용) ─────────────────
+
+@app.get("/admin/learned")
+def admin_learned_list(q: str = "", persona: str = "", limit: int = 30):
+    """learned_knowledge 검색 — 잘못 학습된 항목을 찾을 때 사용.
+    예: /admin/learned?q=출장  (내용에 '출장' 포함 항목 조회)"""
+    where, params = [], []
+    if q:
+        where.append("content LIKE ?")
+        params.append(f"%{q}%")
+    if persona:
+        where.append("persona=?")
+        params.append(persona)
+    sql = "SELECT id, persona, source, created_at, content FROM learned_knowledge"
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY id DESC LIMIT ?"
+    params.append(max(1, min(int(limit), 200)))
+    with mem._conn() as c:
+        rows = [dict(r) for r in c.execute(sql, params).fetchall()]
+    for r in rows:
+        r["content"] = r["content"][:300]
+    return {"count": len(rows), "items": rows}
+
+
+@app.delete("/admin/learned/{item_id}")
+def admin_learned_delete(item_id: int):
+    """잘못 학습된 항목 삭제 — DB에서 제거하고 검색 엔진에서도 즉시 제외"""
+    with mem._conn() as c:
+        row = c.execute(
+            "SELECT id, persona, content FROM learned_knowledge WHERE id=?", (item_id,)
+        ).fetchone()
+        if not row:
+            raise HTTPException(404, f"id={item_id} 항목 없음")
+        row = dict(row)
+        c.execute("DELETE FROM learned_knowledge WHERE id=?", (item_id,))
+
+    # 엔진 소프트 삭제 (Q&A 형식이면 질문 기준, 재시작 시 DB 기준으로 완전 반영)
+    content = row["content"]
+    if content.startswith("Q: ") and "\nA: " in content:
+        question = content.split("\nA: ", 1)[0][3:].strip()
+        try:
+            from engine import get_engine, _kb_loaded
+            if _kb_loaded:
+                get_engine().delete_by_q(question, row["persona"] or None)
+        except Exception as e:
+            print(f"⚠️ 엔진 삭제 실패(재시작 시 반영됨): {e}")
+
+    return {"ok": True, "deleted": item_id, "content_preview": content[:120]}
 
 
 # ── 백업 ──────────────────────────────────────────────

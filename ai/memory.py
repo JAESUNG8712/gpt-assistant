@@ -323,6 +323,35 @@ def clear_history(persona: str = None):
             c.execute("DELETE FROM conversations")
 
 
+# ── 주제 겹침 검사 (검색 게이트 + 자동학습 품질 게이트 공용) ──
+
+_TOPIC_STOP = {
+    # 조작어/검색어
+    '방법', '알려줘', '어떻게', '주세요', '알아봐', '이란', '하는',
+    '대한', '관련', '경우', '때는', '이면', '하면', '것은', '무엇',
+    '해줘', '있나', '알고', '궁금', '질문', '입니다', '있어요',
+    '최근', '요약', '정리', '설명', '조회', '확인', '검색',
+    # 법률·HR 일반어 (너무 흔해 구별력 없음)
+    '판례', '기준', '처리', '절차', '규정', '조항', '해당', '적용',
+    '내용', '관한', '따른', '위한', '통한', '이상', '이하', '미만',
+    '근거', '의무', '권리', '규칙', '법률', '법령', '위반', '처벌',
+    # 숫자/단위 (단독으로는 구별력 없음)
+    '개년', '개월', '년도', '이후', '이전', '현재', '최신',
+}
+
+
+def topic_overlap(user_q: str, target_text: str) -> bool:
+    """질문의 핵심 단어(일반어 제외)가 대상 텍스트에 하나라도 등장하는지.
+    False면 질문과 대상이 서로 다른 주제일 가능성이 높음."""
+    import re as _re
+    words = set(_re.findall(r'[가-힣]{2,}', user_q)) - _TOPIC_STOP
+    # 질문이 모두 일반어라 필터 후 빈 경우 → 통과 (판단 불가)
+    if not words:
+        return True
+    # 부분문자열 매칭: '징계' in '징계를 받을...' → True
+    return any(w in target_text for w in words)
+
+
 # ── 지식 저장 & 검색 (engine.py TF-IDF 연동) ─────────────
 
 def store_memory(text: str, metadata: dict = None):
@@ -354,7 +383,8 @@ def retrieve_best(query: str, n: int = 5, persona_id: str = None) -> dict:
           "top_question": str,
         }
     """
-    empty = {"context": "", "best_score": 0.0, "top_answer": "", "top_question": "", "top_results": []}
+    empty = {"context": "", "best_score": 0.0, "top_answer": "", "top_question": "",
+             "top_results": [], "top_source": ""}
     try:
         from engine import get_engine
         engine = get_engine()
@@ -366,6 +396,7 @@ def retrieve_best(query: str, n: int = 5, persona_id: str = None) -> dict:
         best_score = 0.0
         top_answer = ""
         top_question = ""
+        top_source = ""
         top_results = []
 
         for q, a, score, meta in results:
@@ -376,32 +407,16 @@ def retrieve_best(query: str, n: int = 5, persona_id: str = None) -> dict:
                 best_score = score
                 top_answer = a
                 top_question = q
+                top_source = meta.get("source", "")
 
         CONTEXT_ABS_MIN = 0.15
-
-        def _has_topic_overlap(user_q: str, match_q: str) -> bool:
-            import re as _re
-            STOP = {
-                '방법', '알려줘', '어떻게', '주세요', '알아봐', '이란', '하는',
-                '대한', '관련', '경우', '때는', '이면', '하면', '것은', '무엇',
-                '해줘', '있나', '알고', '궁금', '질문', '입니다', '있어요',
-                '최근', '요약', '정리', '설명', '조회', '확인', '검색',
-                '판례', '기준', '처리', '절차', '규정', '조항', '해당', '적용',
-                '내용', '관한', '따른', '위한', '통한', '이상', '이하', '미만',
-                '근거', '의무', '권리', '규칙', '법률', '법령', '위반', '처벌',
-                '개년', '개월', '년도', '이후', '이전', '현재', '최신',
-            }
-            words = set(_re.findall(r'[가-힣]{2,}', user_q)) - STOP
-            if not words:
-                return True
-            return any(w in match_q for w in words)
 
         for i, (q, a, score, meta) in enumerate(results):
             if meta.get("source") == "대화":
                 continue
             if best_score < CONTEXT_ABS_MIN:
                 break
-            if i == 0 and not _has_topic_overlap(query, top_question):
+            if i == 0 and not topic_overlap(query, top_question):
                 break
             if i == 0 or score >= best_score * 0.7:
                 limit = 1000 if i == 0 else 500
@@ -413,6 +428,7 @@ def retrieve_best(query: str, n: int = 5, persona_id: str = None) -> dict:
             "top_answer": top_answer,
             "top_question": top_question,
             "top_results": top_results,
+            "top_source": top_source,
         }
     except Exception as e:
         print(f"⚠️ 컨텍스트 검색 실패: {e}")
@@ -512,6 +528,12 @@ def auto_learn(question: str, answer: str, persona: str = "hr"):
         return
     lower_a = answer.lower()
     if any(kw in lower_a for kw in ["traceback", "error:", "exception:", "오류 발생", "알 수 없는 오류"]):
+        return
+    # 품질 게이트 4: 질문 핵심 단어가 답변에 전혀 없으면 주제 불일치(오답 가능성 높음) → 저장 안 함
+    # (예: "출장 규정" 질문에 "직장 내 괴롭힘" 답변이 저장되어 이후 동일 질문마다
+    #  오답이 직접 서빙되는 KB 오염을 원천 차단)
+    if not topic_overlap(question, answer):
+        print(f"ℹ️ 자동학습 스킵(질문-답변 주제 불일치): {question[:50]}")
         return
     upsert_knowledge(question, answer, persona, source="자동학습")
 

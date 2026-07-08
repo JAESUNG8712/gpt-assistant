@@ -29,47 +29,68 @@ _TABLES = {
 }
 
 
-def _export_tables_json(conn: sqlite3.Connection) -> dict:
-    """테이블별 전체 행을 사람이 읽기 쉬운 JSON으로 직렬화해 반환 {파일경로: row목록}"""
-    conn.row_factory = sqlite3.Row
-    exported = {}
-    for table, rel_path in _TABLES.items():
-        try:
-            rows = conn.execute(f"SELECT * FROM {table}").fetchall()
-        except sqlite3.OperationalError:
-            continue  # 테이블이 없는 구버전 DB 대비
-        exported[rel_path] = [dict(r) for r in rows]
-    return exported
+def _sql_quote(v) -> str:
+    """SQL 덤프용 값 이스케이프"""
+    if v is None:
+        return "NULL"
+    if isinstance(v, bool):
+        return "1" if v else "0"
+    if isinstance(v, (int, float)):
+        return str(v)
+    return "'" + str(v).replace("'", "''") + "'"
 
 
 def _make_zip() -> tuple[bytes, str]:
     """DB를 ZIP으로 압축해 (bytes, filename) 반환.
-    - memory.sql       : SQLite 전체 복원용 원본 덤프
+    memory._conn()을 경유하므로 Turso(클라우드)·로컬 SQLite 어느 쪽이든 실데이터를 백업함.
+    - memory.sql       : 전체 복원용 SQL 덤프 (sqlite3 new.db < memory.sql)
     - by_category/*.json : 카테고리별 사람이 읽을 수 있는 JSON (추출/검토용)
     - manifest.json    : 백업 시각, 테이블별 건수 등 요약
     """
+    import memory as mem
+
     filename = f"gpt-assistant-backup-{datetime.now().strftime('%Y%m%d-%H%M%S')}.zip"
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         counts = {}
-        if os.path.exists(DB_PATH):
-            src = sqlite3.connect(DB_PATH)
-            try:
-                dump = "\n".join(src.iterdump())
-                zf.writestr("memory.sql", dump)
+        sql_lines = ["BEGIN TRANSACTION;"]
+        try:
+            # 테이블 목록 + DDL (Turso도 sqlite_master 지원)
+            with mem._conn() as c:
+                ddl_rows = [dict(r) for r in c.execute(
+                    "SELECT name, sql FROM sqlite_master"
+                    " WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+                ).fetchall()]
 
-                for rel_path, rows in _export_tables_json(src).items():
+            tables = []
+            for r in ddl_rows:
+                if r.get("sql"):
+                    sql_lines.append(r["sql"].rstrip(";") + ";")
+                tables.append(r["name"])
+
+            for table in tables:
+                with mem._conn() as c:
+                    rows = [dict(x) for x in c.execute(f"SELECT * FROM {table}").fetchall()]
+                counts[table] = len(rows)
+                for row in rows:
+                    cols = ", ".join(row.keys())
+                    vals = ", ".join(_sql_quote(v) for v in row.values())
+                    sql_lines.append(f"INSERT INTO {table} ({cols}) VALUES ({vals});")
+                rel_path = _TABLES.get(table)
+                if rel_path:
                     zf.writestr(rel_path, json.dumps(rows, ensure_ascii=False, indent=2))
-                    counts[rel_path] = len(rows)
-            finally:
-                src.close()
+
+            sql_lines.append("COMMIT;")
+            zf.writestr("memory.sql", "\n".join(sql_lines))
+        except Exception as e:
+            zf.writestr("error.txt", f"백업 중 오류: {type(e).__name__}: {e}")
 
         manifest = {
             "backed_up_at": datetime.now().isoformat(),
-            "db_path": DB_PATH,
+            "db_backend": "Turso (클라우드)" if mem._USE_TURSO else f"SQLite ({mem.DB_PATH})",
             "row_counts": counts,
             "contents": {
-                "memory.sql": "SQLite 전체 덤프 (복원용: sqlite3 new.db < memory.sql)",
+                "memory.sql": "SQL 전체 덤프 (복원용: sqlite3 new.db < memory.sql)",
                 "by_category/*.json": "테이블별 JSON (열람/검색/추출용)",
             },
         }
