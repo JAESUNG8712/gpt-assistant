@@ -656,15 +656,17 @@ async def chat(req: ChatRequest):
                     try:
                         from stock_analysis.utils.securities_report import get_all_reports
                         from stock_analysis.utils.dart_client import STOCK_CODE_MAP
-                        results = []
+                        # 주의: 'results'로 이름 지으면 generate() 전체에서 results가 지역변수로
+                        # 취급되어, 바깥(chat)의 results를 읽는 경로 B에서 UnboundLocalError 발생
+                        broker_summaries = []
                         link_items = []
                         for name in targets:
                             ticker = next((k for k, v in STOCK_CODE_MAP.items() if v == name), "")
                             r = await get_all_reports(ticker, name)
-                            results.append(r.get("summary", f"{name}: 리포트 없음"))
+                            broker_summaries.append(r.get("summary", f"{name}: 리포트 없음"))
                             for rep in r.get("reports", []):
                                 link_items.append({"title": f"{name} - {rep.get('제목','')}", "url": rep.get("링크", "")})
-                        output = "\n\n".join(results)
+                        output = "\n\n".join(broker_summaries)
                         output = _summarize_long_text(output, "broker_" + "_".join(targets))
                         output += _format_reference_links(link_items)
                         for i in range(0, len(output), 200):
