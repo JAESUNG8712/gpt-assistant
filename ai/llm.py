@@ -1,13 +1,14 @@
 """
 LLM 라우터 — 다중 제공자 자동 폴백
-우선순위: Claude → OpenRouter → Groq → Gemini → 자체 TF-IDF 엔진
+우선순위: Claude → OpenCode Zen → OpenRouter → Groq → Gemini → 자체 TF-IDF 엔진
 429(한도초과) 발생 시 다음 제공자로 자동 전환
 
 무료 API 키 발급:
-  Claude     : https://console.anthropic.com  (추천)
-  OpenRouter : https://openrouter.ai  (무료 모델 한도 없음)
-  Groq       : https://console.groq.com  (하루 14,400건)
-  Gemini     : https://aistudio.google.com  (하루 1,500건)
+  Claude       : https://console.anthropic.com  (추천, 유료)
+  OpenCode Zen : https://opencode.ai/auth  (무료 모델 5종 — deepseek-v4-flash-free 등)
+  OpenRouter   : https://openrouter.ai  (무료 모델 한도 없음)
+  Groq         : https://console.groq.com  (하루 14,400건)
+  Gemini       : https://aistudio.google.com  (하루 1,500건)
 """
 import os
 import httpx
@@ -50,6 +51,19 @@ OPENROUTER_FALLBACK_MODELS = [
     "meta-llama/llama-3.1-8b-instruct:free",
     "mistralai/mistral-7b-instruct:free",
     "google/gemma-3-4b-it:free",
+]
+
+# OpenCode Zen (무료 모델 게이트웨이 — https://opencode.ai/docs/zen)
+# OpenAI 호환 API. 무료 모델만 쓰면 과금 없음 (limited time free).
+# 키 발급: https://opencode.ai/auth 로그인 → API 키 복사
+OPENCODE_ZEN_API_KEY = os.getenv("OPENCODE_ZEN_API_KEY", "")
+ZEN_MODEL            = os.getenv("ZEN_MODEL", "deepseek-v4-flash-free")
+# 기본 모델 사용 불가(404/모델 종료) 시 자동으로 시도할 무료 대체 모델들
+ZEN_FALLBACK_MODELS = [
+    "nemotron-3-ultra-free",
+    "mimo-v2.5-free",
+    "hy3-free",
+    "north-mini-code-free",
 ]
 
 # Groq (하루 14,400건 무료)
@@ -215,6 +229,29 @@ async def _groq_stream(messages: list, system: str) -> AsyncGenerator[str, None]
         yield token
 
 
+async def _zen_stream(messages: list, system: str) -> AsyncGenerator[str, None]:
+    """OpenCode Zen — 무료 모델 사용, 모델 종료(404) 시 다른 무료 모델로 자동 재시도"""
+    base_url = "https://opencode.ai/zen/v1/chat/completions"
+    models_to_try = [ZEN_MODEL] + [m for m in ZEN_FALLBACK_MODELS if m != ZEN_MODEL]
+
+    for model in models_to_try:
+        try:
+            async for token in _openai_compat_stream(
+                messages, system,
+                api_key=OPENCODE_ZEN_API_KEY,
+                base_url=base_url,
+                model=model,
+            ):
+                yield token
+            return  # 성공
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code in (404, 400):
+                print(f"[zen] 모델 '{model}' 사용 불가({e.response.status_code}), 다음 무료 모델 시도...")
+                continue
+            raise
+    raise RuntimeError(f"OpenCode Zen: 사용 가능한 무료 모델 없음. 시도한 모델: {models_to_try}")
+
+
 # ── Gemini 스트리밍 (별도 포맷) ───────────────────────
 async def _gemini_once(messages: list, system: str, model: str = None) -> AsyncGenerator[str, None]:
     model = model or GEMINI_MODEL
@@ -298,12 +335,14 @@ def _provider_chain() -> list[str]:
     chain = []
     if ANTHROPIC_API_KEY and not _is_cooling_down("claude"):
         chain.append("claude")       # 1순위: Anthropic Claude (고품질)
+    if OPENCODE_ZEN_API_KEY and not _is_cooling_down("zen"):
+        chain.append("zen")          # 2순위: OpenCode Zen 무료 모델 (deepseek-v4-flash 등)
     if OPENROUTER_API_KEY and not _is_cooling_down("openrouter"):
-        chain.append("openrouter")   # 2순위: 무료 모델 한도 없음
+        chain.append("openrouter")   # 3순위: 무료 모델 한도 없음
     if GROQ_API_KEY and not _is_cooling_down("groq"):
-        chain.append("groq")         # 3순위: 하루 14,400건
+        chain.append("groq")         # 4순위: 하루 14,400건
     if GEMINI_API_KEY and not _is_cooling_down("gemini"):
-        chain.append("gemini")       # 4순위: 하루 1,500건
+        chain.append("gemini")       # 5순위: 하루 1,500건
     chain.append("local")            # 최후 폴백: 자체 엔진 (항상 포함)
     return chain
 
@@ -376,6 +415,11 @@ async def chat_stream(
         try:
             if provider == "claude":
                 async for token in _claude_stream(messages, sys_with_ctx):
+                    yield token
+                return
+
+            elif provider == "zen":
+                async for token in _zen_stream(messages, sys_with_ctx):
                     yield token
                 return
 
@@ -476,6 +520,7 @@ def current_model_info() -> dict:
     primary = chain[0]
     labels = {
         "claude":     {"provider": "Anthropic Claude", "model": ANTHROPIC_MODEL,  "limit": "유료 종량제"},
+        "zen":        {"provider": "OpenCode Zen",      "model": ZEN_MODEL,        "limit": "무료 모델(한시)"},
         "openrouter": {"provider": "OpenRouter",        "model": OPENROUTER_MODEL, "limit": "200건/일(무료)"},
         "groq":       {"provider": "Groq",              "model": GROQ_MODEL,       "limit": "14,400건/일"},
         "gemini":     {"provider": "Google Gemini",     "model": GEMINI_MODEL,     "limit": "1,500건/일"},
@@ -487,7 +532,7 @@ def current_model_info() -> dict:
 
     # 쿨다운 중인 제공자 표시
     cooling = {}
-    for p in ["claude", "openrouter", "groq", "gemini"]:
+    for p in ["claude", "zen", "openrouter", "groq", "gemini"]:
         if _is_cooling_down(p):
             remaining = int(_rate_limit_until[p] - time.time())
             cooling[p] = f"{remaining // 60}분 후 복구"
