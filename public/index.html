@@ -6926,7 +6926,22 @@ function submitRetire(id){
   const note=$("#rt-note")?.value.trim()||"";
   const newH={id:genId(),type:"retirement",date,desc:"퇴직 처리 - "+reason,before:"재직",after:"퇴직 ("+date+")",note};
   employees=employees.map(e=>e.id===id?{...e,active:false,retireDate:date,retireReason:reason,hrHistory:[...(e.hrHistory||[]),newH]}:e);
+  _cleanupRetiredEmpReferences(id,date);
   closeModal();showToast("퇴직 처리가 완료되었습니다.","info");renderHRListTbl();
+}
+// 퇴직자에 대한 미결 참조를 정리 — 퇴직 이후에도 결재 위임이 계속 대결자로 치환되거나,
+// 승인 시 급여에 반영될 수 있는 초과근무/경비 건이 그대로 남는 것을 방지
+function _cleanupRetiredEmpReferences(empId,retireDate){
+  const key=String(empId);
+  (approvalDelegations||[]).forEach(d=>{
+    if(String(d.empId)===key&&d.endDate>retireDate)d.endDate=retireDate; // 퇴직일 이후 위임 자동 만료
+  });
+  (expenseClaims||[]).forEach(x=>{
+    if(String(x.empId)===key&&x.status==="pending"){x.status="rejected";x.rejectReason="퇴직 처리로 자동 반려";x.approvedAt=new Date().toISOString();}
+  });
+  (overtimeRequests||[]).forEach(r=>{
+    if(String(r.empId)===key&&r.status==="pending"){r.status="rejected";r.rejectReason="퇴직 처리로 자동 반려";r.approvedAt=new Date().toISOString();}
+  });
 }
 
 function submitHRForm(){
@@ -14769,6 +14784,9 @@ function openDelegationModal(){
 function saveDelegation(){
   const delegateId=window._delegateId,start=$("#deleg-start")?.value,end=$("#deleg-end")?.value;
   if(!delegateId||!start||!end){showToast("대결자와 기간을 모두 입력하세요.","error");return;}
+  if(String(delegateId)===String(currentUser.id)){showToast("본인을 대결자로 지정할 수 없습니다.","error");return;}
+  const delegate=getEmp(delegateId);
+  if(!delegate||!delegate.active){showToast("재직 중인 직원만 대결자로 지정할 수 있습니다.","error");return;}
   if(end<start){showToast("종료일이 시작일보다 빠를 수 없습니다.","error");return;}
   approvalDelegations.push({id:genId(),empId:currentUser.id,empName:currentUser.name,delegateId,delegateName:getEmpName(delegateId),startDate:start,endDate:end,reason:$("#deleg-reason")?.value.trim()||"",createdAt:new Date().toISOString()});
   closeModal();autoSaveToServerIfEnabled();showToast("결재 위임이 등록되었습니다.","success");renderApprovalDelegationPage();
@@ -14832,6 +14850,7 @@ function openOnboardCreateModal(type){
   </div><div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal()">취소</button><button class="btn btn-primary" onclick="createOnboardFlow('${type}')">시작</button></div></div>`);
 }
 function createOnboardFlow(type){
+  if(currentUser.role!=="admin"){showToast("온보딩/오프보딩 절차 등록 권한이 없습니다.","error");return;}
   const empId=$("#ob-emp")?.value;
   const emp=getEmp(empId);
   if(!emp){showToast("대상 직원을 선택하세요.","error");return;}
@@ -14851,6 +14870,7 @@ function openOnboardDetailModal(id){
   </div><div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal()">닫기</button></div></div>`);
 }
 function toggleOnboardItem(flowId,idx,checked){
+  if(currentUser.role!=="admin"){showToast("체크리스트 처리 권한이 없습니다.","error");return;}
   const fl=onboardingFlows.find(f=>f.id===flowId);if(!fl||!fl.items[idx])return;
   fl.items[idx].done=checked;
   fl.items[idx].doneBy=checked?currentUser.name:"";
@@ -14861,6 +14881,7 @@ function toggleOnboardItem(flowId,idx,checked){
   if(fl.completedAt)showToast(`${fl.empName}님의 ${fl.type==="onboard"?"온보딩":"오프보딩"} 절차가 모두 완료되었습니다! 🎉`,"success");
 }
 function deleteOnboardFlow(id){
+  if(currentUser.role!=="admin"){showToast("삭제 권한이 없습니다.","error");return;}
   if(!confirm("이 절차를 삭제하시겠습니까?"))return;
   onboardingFlows=onboardingFlows.filter(f=>f.id!==id);
   autoSaveToServerIfEnabled();showToast("삭제되었습니다.","info");renderOnboardingPage();
@@ -15056,21 +15077,26 @@ function _dlOvertimeCSV(){
 }
 // ==================== 채권/채무 관리 (AR/AP — 수금·지급, 거래처별 잔액, 연령분석) ====================
 let _arApTab="balance"; // balance | payments | aging
+// 거래처 식별 키: partnerId가 있으면 그것으로(동명이인/거래처명 변경에도 정확히 매칭),
+// 자유 입력(전표에 거래처 미등록)일 때만 트림된 이름으로 대체 매칭한다.
+function _arApKey(partnerId,partnerName){
+  return partnerId?`id:${partnerId}`:`name:${String(partnerName||"(미지정)").trim()}`;
+}
 function _arApByPartner(){
-  // 발행 상태 세금계산서(매출→미수, 매입→미지급)와 수금/지급 기록을 거래처명 기준으로 집계
+  // 발행 상태 세금계산서(매출→미수, 매입→미지급)와 수금/지급 기록을 거래처(ID 우선) 기준으로 집계
   const by={};
-  const key=n=>String(n||"(미지정)").trim();
+  const nameFor=(partnerId,partnerName)=>partnerId?(_acctPartnerName(partnerId)||partnerName||"(미지정)"):String(partnerName||"(미지정)").trim();
   acctTaxInvoices.filter(t=>t.status==="issued").forEach(t=>{
-    const k=key(t.partnerName);
-    by[k]=by[k]||{sales:0,purchase:0,received:0,paidOut:0};
+    const k=_arApKey(t.partnerId,t.partnerName);
+    by[k]=by[k]||{name:nameFor(t.partnerId,t.partnerName),partnerId:t.partnerId||null,sales:0,purchase:0,received:0,paidOut:0};
     if(t.direction==="purchase")by[k].purchase+=t.grandTotal||0;else by[k].sales+=t.grandTotal||0;
   });
   acctPayments.forEach(p=>{
-    const k=key(p.partnerName);
-    by[k]=by[k]||{sales:0,purchase:0,received:0,paidOut:0};
+    const k=_arApKey(p.partnerId,p.partnerName);
+    by[k]=by[k]||{name:nameFor(p.partnerId,p.partnerName),partnerId:p.partnerId||null,sales:0,purchase:0,received:0,paidOut:0};
     if(p.direction==="in")by[k].received+=p.amount||0;else by[k].paidOut+=p.amount||0;
   });
-  return Object.entries(by).map(([name,d])=>({name,...d,ar:d.sales-d.received,ap:d.purchase-d.paidOut}))
+  return Object.values(by).map(d=>({...d,ar:d.sales-d.received,ap:d.purchase-d.paidOut}))
     .sort((a,b)=>(Math.abs(b.ar)+Math.abs(b.ap))-(Math.abs(a.ar)+Math.abs(a.ap)));
 }
 function _arAgingRows(){
@@ -15079,7 +15105,7 @@ function _arAgingRows(){
   const rows=[];
   _arApByPartner().filter(r=>r.ar>0.001).forEach(r=>{
     let remaining=r.ar;
-    const invs=acctTaxInvoices.filter(t=>t.status==="issued"&&t.direction!=="purchase"&&String(t.partnerName||"").trim()===r.name)
+    const invs=acctTaxInvoices.filter(t=>t.status==="issued"&&t.direction!=="purchase"&&_arApKey(t.partnerId,t.partnerName)===_arApKey(r.partnerId,r.name))
       .sort((a,b)=>(b.issueDate||"").localeCompare(a.issueDate||"")); // 최신부터 미수 배분
     const bucket={b30:0,b60:0,b90:0,b90p:0};
     for(const t of invs){
@@ -15103,8 +15129,8 @@ function renderAcctReceivablesPage(){
     const rows=_arApByPartner();
     body=rows.length?`<div class="tbl-wrap"><table><thead><tr><th>거래처</th><th>매출 누계</th><th>수금 누계</th><th style="background:#fef2f2">미수금</th><th>매입 누계</th><th>지급 누계</th><th style="background:#fffbeb">미지급금</th><th>관리</th></tr></thead><tbody>
     ${rows.map(r=>`<tr><td>${h(r.name)}</td><td style="text-align:right">${r.sales.toLocaleString()}</td><td style="text-align:right">${r.received.toLocaleString()}</td><td style="text-align:right;font-weight:${r.ar>0?700:400};color:${r.ar>0?"#dc2626":"#64748b"}">${r.ar.toLocaleString()}</td><td style="text-align:right">${r.purchase.toLocaleString()}</td><td style="text-align:right">${r.paidOut.toLocaleString()}</td><td style="text-align:right;font-weight:${r.ap>0?700:400};color:${r.ap>0?"#d97706":"#64748b"}">${r.ap.toLocaleString()}</td><td>
-      ${r.ar>0?`<button class="btn btn-primary btn-sm" onclick="openPaymentModal('in','${h(r.name)}',${r.ar})">수금 등록</button>`:""}
-      ${r.ap>0?` <button class="btn btn-secondary btn-sm" onclick="openPaymentModal('out','${h(r.name)}',${r.ap})">지급 등록</button>`:""}
+      ${r.ar>0?`<button class="btn btn-primary btn-sm" onclick="openPaymentModal('in','${h(r.name)}',${r.ar},'${r.partnerId||""}')">수금 등록</button>`:""}
+      ${r.ap>0?` <button class="btn btn-secondary btn-sm" onclick="openPaymentModal('out','${h(r.name)}',${r.ap},'${r.partnerId||""}')">지급 등록</button>`:""}
     </td></tr>`).join("")}
     </tbody></table></div>`:`<div class="p-empty">발행된 세금계산서·수금/지급 기록이 없습니다.</div>`;
   }else if(_arApTab==="payments"){
@@ -15126,10 +15152,10 @@ function renderAcctReceivablesPage(){
   ${body}
   </div></div>`;
 }
-function openPaymentModal(direction,partnerName,suggestAmount){
+function openPaymentModal(direction,partnerName,suggestAmount,partnerId){
   openModal(`<div class="modal-box" style="max-width:480px"><div class="modal-head"><h3>${direction==="in"?"💰 수금 등록":"💸 지급 등록"}</h3></div><div class="modal-body">
     <div class="fg"><label class="fl">일자 <span class="req">*</span></label><input class="fc" type="date" id="pay-date" value="${new Date().toISOString().slice(0,10)}"></div>
-    <div class="fg"><label class="fl">거래처 <span class="req">*</span></label>${acctPartners.length?`<select class="fc" id="pay-partner-id" onchange="$('#pay-partner').value=_acctPartnerName(this.value)"><option value="">직접 입력</option>${acctPartners.map(p=>`<option value="${p.id}" ${partnerName&&p.name===partnerName?"selected":""}>${h(p.name)}</option>`).join("")}</select>`:""}<input class="fc mt2" id="pay-partner" value="${h(partnerName||"")}" placeholder="거래처명 직접 입력"></div>
+    <div class="fg"><label class="fl">거래처 <span class="req">*</span></label>${acctPartners.length?`<select class="fc" id="pay-partner-id" onchange="$('#pay-partner').value=_acctPartnerName(this.value)"><option value="">직접 입력</option>${acctPartners.map(p=>`<option value="${p.id}" ${partnerId?p.id===partnerId?"selected":"":(partnerName&&p.name===partnerName?"selected":"")}>${h(p.name)}</option>`).join("")}</select>`:""}<input class="fc mt2" id="pay-partner" value="${h(partnerName||"")}" placeholder="거래처명 직접 입력"></div>
     <div class="fg"><label class="fl">금액 <span class="req">*</span></label><input class="fc" type="number" id="pay-amount" value="${suggestAmount||""}" placeholder="원 단위"></div>
     <div class="fg"><label class="fl">방법</label><select class="fc" id="pay-method"><option>계좌이체</option><option>현금</option><option>어음</option><option>카드</option><option>상계</option></select></div>
     <div class="fg"><label class="fl">비고</label><input class="fc" id="pay-memo"></div>
@@ -15272,17 +15298,20 @@ function renderExpenseAdminPage(){
   </tbody></table></div></div></div>`;
 }
 function approveExpenseClaim(id){
+  if(currentUser.role!=="admin"){showToast("경비 승인 권한이 없습니다.","error");return;}
   const x=expenseClaims.find(x=>x.id===id);if(!x||x.status!=="pending")return;
   x.status="approved";x.approvedBy=currentUser.name;x.approvedAt=new Date().toISOString();
   autoSaveToServerIfEnabled();showToast("승인되었습니다. 지급 처리를 진행하세요.","success");renderExpenseAdminPage();
 }
 function rejectExpenseClaim(id){
+  if(currentUser.role!=="admin"){showToast("경비 반려 권한이 없습니다.","error");return;}
   const x=expenseClaims.find(x=>x.id===id);if(!x||x.status!=="pending")return;
   const reason=prompt("반려 사유를 입력하세요.");if(!reason)return;
   x.status="rejected";x.rejectReason=reason;x.approvedBy=currentUser.name;x.approvedAt=new Date().toISOString();
   autoSaveToServerIfEnabled();showToast("반려되었습니다.","info");renderExpenseAdminPage();
 }
 function openExpensePayModal(id){
+  if(currentUser.role!=="admin"){showToast("경비 지급 권한이 없습니다.","error");return;}
   const x=expenseClaims.find(x=>x.id===id);if(!x||x.status!=="approved")return;
   const canVoucher=!!serverConfig.url&&acctAccounts.length>=2;
   const expenseAccs=acctAccounts.filter(a=>a.type==="expense"&&a.active!==false);
@@ -15299,6 +15328,7 @@ function openExpensePayModal(id){
   </div><div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal()">취소</button><button class="btn btn-primary" onclick="payExpenseClaim('${x.id}')">지급 완료</button></div></div>`);
 }
 async function payExpenseClaim(id){
+  if(currentUser.role!=="admin"){showToast("경비 지급 권한이 없습니다.","error");return;}
   const x=expenseClaims.find(x=>x.id===id);if(!x||x.status!=="approved")return;
   const payDate=$("#expay-date")?.value||new Date().toISOString().slice(0,10);
   const method=$("#expay-method")?.value||"계좌이체";
@@ -15311,7 +15341,12 @@ async function payExpenseClaim(id){
         role:currentUser.role,user:currentUser.name};
       const r=await serverRequest("POST","/api/accounting/vouchers",body);
       if(r?.ok){acctVouchers.unshift(r.voucher);x.voucherId=r.voucher.id;x.voucherNo=r.voucher.voucherNo||"(임시)";}
-      else showToast("전표 생성 실패: "+(r?.message||"서버 오류")+" — 지급 처리는 계속 진행합니다.","warning");
+      else{
+        // 전표 생성에 실패하면 회계 기록 없이 "지급완료"로 표시되는 불일치가 생기므로,
+        // 지급 처리 자체를 중단하고 사용자가 재시도하거나 전표 없이 지급할지 다시 선택하게 한다.
+        showToast("전표 생성에 실패했습니다: "+(r?.message||"서버 오류")+" — 지급 처리가 취소되었습니다. 다시 시도하거나 전표 자동 생성 체크를 해제하고 재시도하세요.","error");
+        return;
+      }
     }
   }
   x.status="paid";x.paidAt=payDate;x.payMethod=method;x.paidBy=currentUser.name;
