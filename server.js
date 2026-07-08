@@ -4,6 +4,7 @@ const fs      = require("fs");
 const path    = require("path");
 const os      = require("os");
 const bcrypt  = require("bcryptjs");
+const crypto  = require("crypto");
 const pool    = require("./db");
 const budgetRouter = require("./budget");
 
@@ -118,13 +119,53 @@ async function hashPlaintextPw(pw) {
 }
 function stripPwField(data) {
   if (!data || !Array.isArray(data.employees)) return data;
-  return { ...data, employees: data.employees.map(({ pw, ...rest }) => rest) };
+  return { ...data, employees: data.employees.map(({ pw, twoFactorSecret, ...rest }) => rest) };
 }
-// Single employee record (e.g. an employee_history row's `data` column) — strip its own pw field.
+// Single employee record (e.g. an employee_history row's `data` column) — strip its own pw
+// and 2FA secret fields, neither of which the client should ever receive back.
 function omitPw(emp) {
   if (!emp || typeof emp !== "object") return emp;
-  const { pw, ...rest } = emp;
+  const { pw, twoFactorSecret, ...rest } = emp;
   return rest;
+}
+
+// ── TOTP (RFC 6238) 2단계 인증 — 외부 의존성 없이 자체 구현 ────────────────────
+const TOTP_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+function base32Encode(buf) {
+  let bits = "", out = "";
+  for (const byte of buf) bits += byte.toString(2).padStart(8, "0");
+  for (let i = 0; i + 5 <= bits.length; i += 5) out += TOTP_ALPHABET[parseInt(bits.substr(i, 5), 2)];
+  return out;
+}
+function base32Decode(str) {
+  let bits = "", bytes = [];
+  for (const c of String(str || "").toUpperCase().replace(/[^A-Z2-7]/g, "")) {
+    const val = TOTP_ALPHABET.indexOf(c);
+    if (val === -1) continue;
+    bits += val.toString(2).padStart(5, "0");
+  }
+  for (let i = 0; i + 8 <= bits.length; i += 8) bytes.push(parseInt(bits.substr(i, 8), 2));
+  return Buffer.from(bytes);
+}
+function generateTotpSecret() { return base32Encode(crypto.randomBytes(20)); }
+function totpAt(secretBase32, forTimeMs) {
+  const key = base32Decode(secretBase32);
+  const counter = Math.floor(forTimeMs / 1000 / 30);
+  const buf = Buffer.alloc(8);
+  buf.writeBigUInt64BE(BigInt(counter));
+  const hmac = crypto.createHmac("sha1", key).update(buf).digest();
+  const offset = hmac[hmac.length - 1] & 0xf;
+  const code = ((hmac[offset] & 0x7f) << 24 | (hmac[offset + 1] & 0xff) << 16 | (hmac[offset + 2] & 0xff) << 8 | (hmac[offset + 3] & 0xff)) % 1000000;
+  return String(code).padStart(6, "0");
+}
+// ±1 스텝(30초) 오차를 허용해 클라이언트-서버 시계 오차에 대응
+function totpVerify(secretBase32, token) {
+  if (!/^\d{6}$/.test(String(token || "").trim())) return false;
+  const t = String(token).trim();
+  for (let w = -1; w <= 1; w++) {
+    if (totpAt(secretBase32, Date.now() + w * 30000) === t) return true;
+  }
+  return false;
 }
 
 // The client merges employees by `id` only (smartMerge), so two distinct
@@ -621,14 +662,45 @@ async function verifyCredentials(loginId, pw) {
 }
 
 // POST /login — verifies credentials against server-stored (hashed) passwords
-// without exposing any employee's password hash to the client.
+// without exposing any employee's password hash to the client. If the account
+// has 2FA enabled, a valid `otp` must also be supplied in the same request
+// (stateless — no server-side session between the password and OTP steps).
 app.post("/login", async (req, res) => {
   try {
-    const { loginId, pw } = req.body || {};
+    const { loginId, pw, otp } = req.body || {};
     if (!loginId || !pw) return res.status(400).json({ ok: false, message: "아이디와 비밀번호를 입력하세요." });
     const employee = await verifyCredentials(loginId, pw);
     if (!employee) return res.json({ ok: false, message: "아이디 또는 비밀번호가 올바르지 않습니다." });
+    if (employee.twoFactorEnabled) {
+      if (!otp) return res.json({ ok: true, requireOtp: true });
+      const data = await loadData();
+      const raw = (data.employees || []).find(e => e.loginId === loginId && e.active);
+      if (!raw || !raw.twoFactorSecret || !totpVerify(raw.twoFactorSecret, otp))
+        return res.json({ ok: false, requireOtp: true, message: "인증 코드가 올바르지 않습니다." });
+    }
     res.json({ ok: true, employee });
+  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+});
+
+// ── 2단계 인증(TOTP) 설정 ──────────────────────────────────────────────────────
+// 1) generate-secret: 비밀번호 재확인 후 새 시크릿 발급(아직 미저장 — 클라이언트가
+//    인증 앱에 등록하고 코드로 검증 성공해야 emp.twoFactorSecret/Enabled로 저장됨)
+app.post("/api/auth/2fa/generate-secret", async (req, res) => {
+  try {
+    const { loginId, pw } = req.body || {};
+    const employee = await verifyCredentials(loginId, pw);
+    if (!employee) return res.status(403).json({ ok: false, message: "비밀번호가 올바르지 않습니다." });
+    const secret = generateTotpSecret();
+    const otpauthUrl = `otpauth://totp/HR-ERP:${encodeURIComponent(loginId)}?secret=${secret}&issuer=HR-ERP`;
+    res.json({ ok: true, secret, otpauthUrl });
+  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+});
+// 2) verify-code: 설정 확인 및 로그인 화면에서의 순수 코드 검증(상태 없음)에 공용으로 사용
+app.post("/api/auth/2fa/verify-code", async (req, res) => {
+  try {
+    const { secret, otp } = req.body || {};
+    if (!secret || !otp) return res.status(400).json({ ok: false, message: "secret과 otp가 필요합니다." });
+    res.json({ ok: totpVerify(secret, otp) });
   } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
 });
 

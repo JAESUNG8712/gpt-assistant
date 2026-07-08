@@ -5475,6 +5475,7 @@ function _completeLogin(emp){
   }
   render();
 }
+let _pendingOtpLogin=null; // {loginId,pw} — 비밀번호 확인 후 OTP 입력 대기 중인 로그인
 function doLogin(){
   const id=$("#l-id")?.value.trim(),pw=$("#l-pw")?.value.trim();
   const emp=employees.find(e=>e.loginId===id&&e.pw===pw&&e.active);
@@ -5482,12 +5483,17 @@ function doLogin(){
   // No local plaintext match (real accounts no longer carry pw client-side) —
   // fall back to server-verified login if a server is configured.
   if(serverConfig.url){
-    serverRequest("POST","/login",{loginId:id,pw}).then(r=>{
+    const otp=$("#l-otp")?.value?.trim();
+    serverRequest("POST","/login",{loginId:id,pw,otp:otp||undefined}).then(r=>{
       if(r && r.ok && r.employee){
         const idx=employees.findIndex(e=>e.id===r.employee.id);
         if(idx>=0) employees[idx]={...employees[idx],...r.employee};
         else employees.push(r.employee);
+        _pendingOtpLogin=null;
         _completeLogin(r.employee);
+      } else if(r && r.requireOtp){
+        _pendingOtpLogin={loginId:id,pw};
+        _showOtpPrompt(r.message);
       } else {
         const el=$("#login-err");if(el)el.innerHTML=`<div class="alert alert-error">아이디 또는 비밀번호가 올바르지 않습니다.</div>`;
       }
@@ -5497,6 +5503,12 @@ function doLogin(){
     return;
   }
   const el=$("#login-err");if(el)el.innerHTML=`<div class="alert alert-error">아이디 또는 비밀번호가 올바르지 않습니다.</div>`;
+}
+function _showOtpPrompt(msg){
+  const el=$("#login-err");if(!el)return;
+  el.innerHTML=`${msg?`<div class="alert alert-error">${h(msg)}</div>`:""}
+  <div class="fg" style="margin-top:8px"><label class="fl">인증 앱의 6자리 코드</label><input class="fc" id="l-otp" maxlength="6" placeholder="123456" onkeydown="if(event.key==='Enter')doLogin()"></div>`;
+  setTimeout(()=>$("#l-otp")?.focus(),30);
 }
 function logout(){disconnectSSE();releaseAllMyLocks();_myPagePwVerified=false;currentUser=null;const app=$("#app");if(app)app.innerHTML="";renderLogin();}
 
@@ -12445,12 +12457,67 @@ async function generateClientApp(srvUrl){
 function dlAdjustHistory(){dlCSV(`등급수정이력_${new Date().toISOString().slice(0,10)}.csv`,["날짜","직원","부서","유형","연도","변경전","변경후","사유","수정자"],gradeAdjustHistory.map(r=>[r.adjustedAt?.slice(0,10)||"-",getEmpName(r.empId),r.dept||"-",r.type==="kpi"?"KPI":"역량",r.year,r.oldGrade,r.newGrade,r.reason,r.adjustedByName||"-"]));}
 function renderChangePW(){
   const c=$("#content");
-  c.innerHTML=`<div style="max-width:440px"><div class="card"><div class="card-head"><h3>비밀번호 변경</h3></div><div class="card-body">
+  const is2faOn=!!getEmp(currentUser.id)?.twoFactorEnabled;
+  c.innerHTML=`<div style="max-width:440px"><div class="card mb3"><div class="card-head"><h3>비밀번호 변경</h3></div><div class="card-body">
     <div class="fg"><label class="fl">현재 비밀번호 <span class="req">*</span></label><input class="fc" type="password" id="cp-cur"></div>
     <div class="fg"><label class="fl">새 비밀번호 <span class="req">*</span></label><input class="fc" type="password" id="cp-new" placeholder="6자 이상"></div>
     <div class="fg"><label class="fl">새 비밀번호 확인 <span class="req">*</span></label><input class="fc" type="password" id="cp-cf"></div>
     <button class="btn btn-primary btn-lg" style="width:100%;justify-content:center" onclick="doChangePW()">비밀번호 변경</button>
-  </div></div></div>`;
+  </div></div>
+  ${currentUser.role==="admin"?`<div class="card"><div class="card-head"><h3>🔐 2단계 인증(OTP)</h3></div><div class="card-body">
+    <div class="fz12 text-gray mb3">관리자 계정 보호를 위해 구글 OTP 등 표준 인증 앱(Authenticator)과 연동한 2단계 인증을 사용할 수 있습니다.</div>
+    <div class="fz13 mb3">현재 상태: ${is2faOn?badge("사용 중","green"):badge("미사용","gray")}</div>
+    ${is2faOn?`<button class="btn btn-danger" onclick="openDisable2faModal()">2단계 인증 해제</button>`:`<button class="btn btn-primary" onclick="openSetup2faModal()">2단계 인증 설정</button>`}
+  </div></div>`:""}
+  </div>`;
+}
+let _2faSetupSecret=null;
+function openSetup2faModal(){
+  openModal(`<div class="modal-box" style="max-width:420px"><div class="modal-head"><h3>🔐 2단계 인증 설정</h3></div><div class="modal-body">
+    <div class="fg"><label class="fl">현재 비밀번호 <span class="req">*</span></label><input class="fc" type="password" id="tfa-pw"></div>
+    <button class="btn btn-secondary btn-sm" onclick="_generate2faSecret()">인증 코드 발급</button>
+    <div id="tfa-secret-box" style="margin-top:10px"></div>
+  </div><div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal()">취소</button></div></div>`);
+}
+async function _generate2faSecret(){
+  const pw=$("#tfa-pw")?.value;
+  if(!pw){showToast("현재 비밀번호를 입력하세요.","error");return;}
+  if(!serverConfig.url){showToast("서버 연결 시에만 사용할 수 있습니다.","error");return;}
+  const r=await serverRequest("POST","/api/auth/2fa/generate-secret",{loginId:currentUser.loginId,pw});
+  if(!r?.ok){showToast(r?.message||"비밀번호가 올바르지 않습니다.","error");return;}
+  _2faSetupSecret=r.secret;
+  const el=$("#tfa-secret-box");
+  el.innerHTML=`<div class="fz12 mb2">인증 앱(Google Authenticator 등)에서 "직접 키 입력"으로 아래 키를 등록하세요.</div>
+  <div class="fz13 fw7" style="background:#f1f5f9;padding:8px 10px;border-radius:6px;letter-spacing:1px;word-break:break-all">${h(r.secret)}</div>
+  <div class="fg mt3"><label class="fl">앱에 표시된 6자리 코드 입력</label><input class="fc" id="tfa-code" maxlength="6" placeholder="123456"></div>
+  <button class="btn btn-primary mt2" onclick="_confirmEnable2fa()">인증 코드 확인 및 활성화</button>`;
+}
+async function _confirmEnable2fa(){
+  const code=$("#tfa-code")?.value.trim();
+  if(!code||!_2faSetupSecret){showToast("인증 코드를 입력하세요.","error");return;}
+  const r=await serverRequest("POST","/api/auth/2fa/verify-code",{secret:_2faSetupSecret,otp:code});
+  if(!r?.ok){showToast("인증 코드가 올바르지 않습니다.","error");return;}
+  employees=employees.map(e=>e.id===currentUser.id?{...e,twoFactorEnabled:true,twoFactorSecret:_2faSetupSecret}:e);
+  currentUser={...currentUser,twoFactorEnabled:true};
+  _2faSetupSecret=null;
+  autoSaveToServerIfEnabled();
+  closeModal();showToast("2단계 인증이 활성화되었습니다. 다음 로그인부터 인증 코드가 필요합니다.","success");renderChangePW();
+}
+function openDisable2faModal(){
+  openModal(`<div class="modal-box" style="max-width:380px"><div class="modal-head"><h3>2단계 인증 해제</h3></div><div class="modal-body">
+    <div class="fg"><label class="fl">인증 앱의 6자리 코드 입력 <span class="req">*</span></label><input class="fc" id="tfa-disable-code" maxlength="6" placeholder="123456"></div>
+  </div><div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal()">취소</button><button class="btn btn-danger" onclick="_confirmDisable2fa()">해제</button></div></div>`);
+}
+async function _confirmDisable2fa(){
+  const code=$("#tfa-disable-code")?.value.trim();
+  const emp=getEmp(currentUser.id);
+  if(!code||!emp?.twoFactorSecret){showToast("인증 코드를 입력하세요.","error");return;}
+  const r=await serverRequest("POST","/api/auth/2fa/verify-code",{secret:emp.twoFactorSecret,otp:code});
+  if(!r?.ok){showToast("인증 코드가 올바르지 않습니다.","error");return;}
+  employees=employees.map(e=>e.id===currentUser.id?{...e,twoFactorEnabled:false,twoFactorSecret:""}:e);
+  currentUser={...currentUser,twoFactorEnabled:false};
+  autoSaveToServerIfEnabled();
+  closeModal();showToast("2단계 인증이 해제되었습니다.","info");renderChangePW();
 }
 function _applyChangedPW(nw){
   employees=employees.map(e=>e.id===currentUser.id?{...e,pw:nw}:e);
