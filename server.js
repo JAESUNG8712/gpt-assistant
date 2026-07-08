@@ -19,7 +19,7 @@ const JSON_FILE     = process.env.DATA_FILE || path.join(__dirname, "hr-data.jso
 let _fileStore = { employees: [], kpiEntries: [] };
 // 회계 모듈 전용 저장소 (계정과목/전표/세금계산서) — 클라이언트 신뢰형 블롭과 분리해
 // 서버가 직접 번호 발급·차대변 검증·확정 후 불변성을 보장하는 트랜잭션 기반으로 관리한다.
-let _fileAccounting = { accounts: [], vouchers: [], taxInvoices: [], partners: [], voucherSeq: {}, taxInvoiceSeq: {} };
+let _fileAccounting = { accounts: [], vouchers: [], taxInvoices: [], partners: [], payments: [], voucherSeq: {}, taxInvoiceSeq: {} };
 // 영업/재고 모듈 전용 저장소 (품목·위치·견적서·발주서·재고 입출고 이력) — 회계 모듈과 동일하게
 // 클라이언트 신뢰형 블롭과 분리해 서버가 번호 발급·상태 전환·재고 반영을 직접 관리한다.
 let _fileErp = { items: [], locations: [], quotations: [], purchaseOrders: [], purchaseRequests: [], stockLedger: [], quoteSeq: {}, poSeq: {}, salesTargets: [] };
@@ -1412,6 +1412,52 @@ app.post("/api/accounting/tax-invoices/:id/void", async (req, res) => {
     const inv = { ...rows[0].data, status: "void", voidReason: reason, voidedBy: req.body.user || "unknown", voidedAt: new Date().toISOString() };
     await pool.query("UPDATE tax_invoices SET status = 'void', data = $2, updated_at = NOW() WHERE id = $1", [id, inv]);
     res.json({ ok: true, taxInvoice: inv });
+  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+});
+
+// ── 수금/지급 (AR/AP payments — 거래처별 미수·미지급 관리) ────────────────────
+// JSON 모드: _fileAccounting.payments / PG 모드: app_collections(acctPayments)
+app.get("/api/accounting/payments", async (req, res) => {
+  try {
+    if (USE_JSON_FILE) return res.json({ ok: true, payments: _fileAccounting.payments || [] });
+    const { rows } = await pool.query("SELECT data FROM app_collections WHERE collection = 'acctPayments' ORDER BY created_at");
+    res.json({ ok: true, payments: rows.map(r => r.data) });
+  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+});
+app.post("/api/accounting/payments", async (req, res) => {
+  try {
+    if (!requireAdmin(req, res)) return;
+    const { direction, date, partnerId, partnerName, amount, method, memo, taxInvoiceId, user } = req.body || {};
+    if (!["in", "out"].includes(direction)) return res.status(400).json({ ok: false, message: "direction은 in(수금) 또는 out(지급)이어야 합니다." });
+    if (!date || !partnerName || !(Number(amount) > 0)) return res.status(400).json({ ok: false, message: "일자, 거래처, 금액(0보다 큼)은 필수입니다." });
+    const payment = {
+      id: `pay_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      direction, date, partnerId: partnerId || null, partnerName,
+      amount: _round2(amount), method: method || "계좌이체", memo: memo || "",
+      taxInvoiceId: taxInvoiceId || null,
+      createdBy: user || "unknown", createdAt: new Date().toISOString(),
+    };
+    if (USE_JSON_FILE) {
+      if (!_fileAccounting.payments) _fileAccounting.payments = [];
+      _fileAccounting.payments.push(payment);
+      _saveFileAccounting();
+      return res.json({ ok: true, payment });
+    }
+    await pool.query("INSERT INTO app_collections (collection, id, data, updated_at) VALUES ('acctPayments',$1,$2,NOW())", [payment.id, payment]);
+    res.json({ ok: true, payment });
+  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+});
+app.post("/api/accounting/payments/:id/delete", async (req, res) => {
+  try {
+    if (!requireAdmin(req, res)) return;
+    const id = req.params.id;
+    if (USE_JSON_FILE) {
+      _fileAccounting.payments = (_fileAccounting.payments || []).filter(p => p.id !== id);
+      _saveFileAccounting();
+      return res.json({ ok: true });
+    }
+    await pool.query("DELETE FROM app_collections WHERE collection = 'acctPayments' AND id = $1", [id]);
+    res.json({ ok: true });
   } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
 });
 
