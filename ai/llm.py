@@ -132,6 +132,8 @@ async def _claude_stream(messages: list, system: str) -> AsyncGenerator[str, Non
             headers=headers,
             json=payload,
         ) as resp:
+            if resp.status_code >= 400:
+                await resp.aread()  # 스트리밍 응답은 본문을 먼저 읽어야 .text/.json()에서 실제 오류 확인 가능
             resp.raise_for_status()
             async for line in resp.aiter_lines():
                 if line.startswith("data: "):
@@ -176,6 +178,8 @@ async def _openai_compat_stream(
 
     async with httpx.AsyncClient(timeout=60) as client:
         async with client.stream("POST", base_url, headers=headers, json=payload) as resp:
+            if resp.status_code >= 400:
+                await resp.aread()
             resp.raise_for_status()
             async for line in resp.aiter_lines():
                 if line.startswith("data: "):
@@ -270,6 +274,8 @@ async def _gemini_once(messages: list, system: str, model: str = None) -> AsyncG
     )
     async with httpx.AsyncClient(timeout=60) as client:
         async with client.stream("POST", url, json=payload) as resp:
+            if resp.status_code >= 400:
+                await resp.aread()
             resp.raise_for_status()
             async for line in resp.aiter_lines():
                 if line.startswith("data: "):
