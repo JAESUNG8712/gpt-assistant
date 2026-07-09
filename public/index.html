@@ -17978,6 +17978,7 @@ function submitCertRequest(type){
   renderCertPage();renderSidebar();
 }
 function approveCertRequest(reqId){
+  if(currentUser.role!=="admin"){showToast("관리자만 승인할 수 있습니다.","error");return;}
   const r=certRequests.find(x=>x.id===reqId);if(!r||r.status!=="pending")return;
   r.status="approved";r.processedAt=new Date().toISOString();r.processedBy=currentUser.id;r.processedByName=currentUser.name;
   certLog.push({id:`clog-${Date.now()}`,docNo:_genCertDocNo(),empId:r.empId,empName:r.empName,certType:r.certTitle,issuedBy:currentUser.name,issuedById:currentUser.id,issuedAt:new Date().toISOString()});
@@ -17992,6 +17993,7 @@ function openCertRejectModal(reqId){
   </div>`);
 }
 function rejectCertRequest(reqId){
+  if(currentUser.role!=="admin"){showToast("관리자만 반려할 수 있습니다.","error");return;}
   const reason=$("#cr-reject-reason")?.value.trim();
   if(!reason){showToast("반려 사유를 입력하세요.","error");return;}
   const r=certRequests.find(x=>x.id===reqId);if(!r||r.status!=="pending")return;
