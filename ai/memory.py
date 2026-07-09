@@ -237,6 +237,15 @@ def init_db():
             value TEXT NOT NULL,
             updated_at TEXT NOT NULL
         )""")
+        c.execute("""CREATE TABLE IF NOT EXISTS share_links (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            token TEXT UNIQUE NOT NULL,
+            name TEXT DEFAULT '',
+            personas TEXT NOT NULL,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            expires_at TEXT DEFAULT '',
+            created_at TEXT NOT NULL
+        )""")
     _seed_static_kb_to_db()
 
 
@@ -641,3 +650,63 @@ def get_setting(key: str, default: dict = None) -> dict:
         return json.loads(row["value"])
     except Exception:
         return default
+
+
+# ── 공유 링크 (선택된 페르소나만 외부에 공개) ─────────────
+
+def _row_to_share(row: dict) -> dict:
+    import json
+    return {
+        "token": row["token"],
+        "name": row["name"],
+        "personas": json.loads(row["personas"]),
+        "enabled": bool(row["enabled"]),
+        "expires_at": row["expires_at"] or None,
+        "created_at": row["created_at"],
+    }
+
+
+def create_share_link(name: str, personas: list, expires_at: str = "") -> dict:
+    """공유 링크 생성. token은 URL-safe 랜덤 문자열."""
+    import json, secrets
+    token = secrets.token_urlsafe(16)
+    now = datetime.now().isoformat()
+    with _conn() as c:
+        c.execute(
+            "INSERT INTO share_links (token, name, personas, enabled, expires_at, created_at)"
+            " VALUES (?,?,?,1,?,?)",
+            (token, name, json.dumps(personas, ensure_ascii=False), expires_at, now),
+        )
+    return {"token": token, "name": name, "personas": personas,
+            "enabled": True, "expires_at": expires_at or None, "created_at": now}
+
+
+def get_share_link(token: str) -> dict:
+    """토큰으로 공유 링크 조회. 없으면 None. 만료 여부는 호출측에서 판단."""
+    with _conn() as c:
+        row = c.execute(
+            "SELECT token, name, personas, enabled, expires_at, created_at"
+            " FROM share_links WHERE token=?",
+            (token,),
+        ).fetchone()
+    if not row:
+        return None
+    return _row_to_share(dict(row))
+
+
+def list_share_links() -> list:
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT token, name, personas, enabled, expires_at, created_at"
+            " FROM share_links ORDER BY id DESC"
+        ).fetchall()
+    return [_row_to_share(dict(r)) for r in rows]
+
+
+def revoke_share_link(token: str) -> bool:
+    with _conn() as c:
+        row = c.execute("SELECT id FROM share_links WHERE token=?", (token,)).fetchone()
+        if not row:
+            return False
+        c.execute("DELETE FROM share_links WHERE token=?", (token,))
+    return True

@@ -15,7 +15,10 @@ import sys
 import os
 
 
-# 이관할 테이블과 컬럼 (kb_static_index는 init_db()가 재생성하므로 제외)
+# 이관할 테이블과 컬럼.
+# kb_static_index 반드시 포함 — 이 테이블이 비어있는 상태로 learned_knowledge만
+# 이관하면, 새 DB에서 init_db()의 _seed_static_kb_to_db()가 기존 정적 KB 항목의
+# 해시를 찾지 못해 전체를 중복 재삽입한다(2026-07-08 실제 발생, 73~수백 건 중복).
 _TABLES = {
     "conversations": ["role", "content", "persona", "created_at"],
     "learned_knowledge": ["content", "persona", "source", "created_at"],
@@ -23,6 +26,7 @@ _TABLES = {
     "feedback": ["question", "answer", "rating", "persona", "created_at"],
     "app_settings": ["key", "value", "updated_at"],
     "feedback_boost": ["persona", "q_lower", "boost", "updated_at"],
+    "kb_static_index": ["content_hash", "persona", "source", "created_at"],
 }
 
 

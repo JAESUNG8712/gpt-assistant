@@ -718,6 +718,10 @@
         <span class="tab-icon">📊</span>
         <span class="tab-name">예산관리</span>
       </div>
+      <div class="persona-tab" id="share-manage-btn" onclick="openShareModal()" style="flex-shrink:0;margin-right:8px">
+        <span class="tab-icon">🔗</span>
+        <span class="tab-name">공유 링크</span>
+      </div>
     </div>
 
     <!-- 주식 빠른 액션 바 -->
@@ -814,6 +818,34 @@
   </div>
 </div>
 
+<!-- ── 공유 링크 관리 모달 ────────────────────── -->
+<div class="resume-modal-overlay" id="share-modal-overlay" onclick="if(event.target===this) closeShareModal()">
+  <div class="resume-modal" style="max-width:520px">
+    <h3>🔗 공유 링크 관리</h3>
+    <p style="font-size:0.78rem;color:var(--text-dim);margin-top:-8px">
+      선택한 전문가(페르소나)만 사용할 수 있는 링크를 만들어 다른 사람에게 전달하세요.
+      다른 기능(예산관리, 학습 관리 등)은 공유 링크로는 접근할 수 없습니다.
+    </p>
+
+    <div>
+      <label class="form-label">링크 이름 (구분용, 선택)</label>
+      <textarea id="share-name-input" style="min-height:38px" placeholder="예: 협력사 공유용"></textarea>
+    </div>
+
+    <div>
+      <label class="form-label">공개할 전문가 선택</label>
+      <div id="share-persona-checks" style="display:flex;flex-wrap:wrap;gap:8px;margin-top:6px"></div>
+    </div>
+
+    <div class="resume-modal-btns">
+      <button class="btn-cancel" onclick="closeShareModal()">닫기</button>
+      <button class="btn-analyze" onclick="createShareLink()">+ 링크 생성</button>
+    </div>
+
+    <div id="share-list" style="display:flex;flex-direction:column;gap:8px;max-height:220px;overflow-y:auto;border-top:1px solid var(--border);padding-top:10px;margin-top:4px"></div>
+  </div>
+</div>
+
 <!-- ── Python 코드 실행 모달 ──────────────────── -->
 <div class="code-modal" id="code-modal" onclick="handleCodeModalClick(event)">
   <div class="code-modal-inner" id="code-modal-inner">
@@ -856,6 +888,10 @@
   let isLoading = false;
   let thinkingMode = 'off'; // "off" | "prompt" | "deep"
   let _codeBlockCounter = 0;
+  // 공유 링크(?share=TOKEN)로 접속한 경우 셋팅됨 — 채팅 요청마다 함께 전송,
+  // true면 예산관리·공유 링크 관리 등 소유자 전용 UI를 숨김
+  let shareToken = '';
+  let isSharedView = false;
 
   const WELCOME_CHIPS = {
     hr: [
@@ -964,11 +1000,54 @@
 
   // ── 페르소나 로드 ────────────────────────
   async function loadPersonas() {
+    const params = new URLSearchParams(window.location.search);
+    const token = params.get('share');
+
+    if (token) {
+      const ok = await initSharedView(token);
+      if (!ok) return; // 유효하지 않은 링크 — initSharedView가 안내 메시지 표시 후 중단
+    }
+
     const r = await fetch('/personas');
     const d = await r.json();
-    personas = d.personas;
+    personas = isSharedView
+      ? d.personas.filter(p => p.id === 'auto' || _sharedAllowedIds.includes(p.id))
+      : d.personas;
     renderPersonaBar();
     selectPersona(personas[0].id);
+
+    if (isSharedView) applySharedViewUI();
+  }
+
+  let _sharedAllowedIds = [];
+
+  // 공유 링크 유효성 확인 — 실패 시 안내만 표시하고 앱 초기화를 중단
+  async function initSharedView(token) {
+    try {
+      const r = await fetch(`/share/${encodeURIComponent(token)}`);
+      if (!r.ok) throw new Error(r.status === 410 ? '만료된 공유 링크입니다.' : '유효하지 않은 공유 링크입니다.');
+      const info = await r.json();
+      shareToken = token;
+      isSharedView = true;
+      _sharedAllowedIds = info.personas.map(p => p.id);
+      return true;
+    } catch (e) {
+      document.getElementById('messages').innerHTML = `
+        <div class="welcome">
+          <div class="persona-welcome-icon">⚠️</div>
+          <h3>${e.message}</h3>
+          <p style="color:var(--text-dim)">링크를 발급한 담당자에게 새 링크를 요청하세요.</p>
+        </div>`;
+      return false;
+    }
+  }
+
+  // 공유 뷰: 소유자 전용 UI(예산관리, 공유 링크 관리 등) 숨김
+  function applySharedViewUI() {
+    const budgetTab = document.getElementById('budget-tab');
+    if (budgetTab) budgetTab.style.display = 'none';
+    const shareBtn = document.getElementById('share-manage-btn');
+    if (shareBtn) shareBtn.style.display = 'none';
   }
 
   function renderPersonaBar() {
@@ -1321,6 +1400,7 @@
           persona: currentPersona.id,
           use_search: useSearch,
           thinking_mode: thinkingMode,
+          share_token: shareToken,
         }),
       });
       if (!resp.ok) throw new Error(await friendlyErrorMessage(resp));
@@ -1396,6 +1476,85 @@
     isLoading = false;
     document.getElementById('send-btn').disabled = false;
     await loadStats();
+  }
+
+  // ── 공유 링크 관리 (소유자 전용) ──────────────
+  function openShareModal() {
+    const wrap = document.getElementById('share-persona-checks');
+    wrap.innerHTML = personas.filter(p => p.id !== 'auto').map(p => `
+      <label style="display:flex;align-items:center;gap:5px;font-size:0.82rem;cursor:pointer;
+                     padding:5px 10px;border:1px solid var(--border);border-radius:16px;">
+        <input type="checkbox" value="${p.id}" class="share-persona-cb">
+        ${p.icon} ${p.name}
+      </label>`).join('');
+    document.getElementById('share-modal-overlay').classList.add('open');
+    loadShareList();
+  }
+
+  function closeShareModal() {
+    document.getElementById('share-modal-overlay').classList.remove('open');
+  }
+
+  async function createShareLink() {
+    const checked = [...document.querySelectorAll('.share-persona-cb:checked')].map(el => el.value);
+    if (!checked.length) { alert('공개할 전문가를 1개 이상 선택하세요.'); return; }
+    const name = document.getElementById('share-name-input').value.trim();
+    try {
+      const r = await fetch('/admin/share', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, personas: checked }),
+      });
+      if (!r.ok) throw new Error(await friendlyErrorMessage(r));
+      document.getElementById('share-name-input').value = '';
+      document.querySelectorAll('.share-persona-cb').forEach(el => el.checked = false);
+      await loadShareList();
+    } catch (e) {
+      alert('생성 실패: ' + e.message);
+    }
+  }
+
+  async function loadShareList() {
+    const listEl = document.getElementById('share-list');
+    try {
+      const r = await fetch('/admin/share');
+      const d = await r.json();
+      if (!d.items.length) {
+        listEl.innerHTML = '<div style="font-size:0.78rem;color:var(--text-dim)">생성된 공유 링크가 없습니다.</div>';
+        return;
+      }
+      listEl.innerHTML = d.items.map(it => {
+        const url = `${window.location.origin}${window.location.pathname}?share=${it.token}`;
+        const names = it.personas.map(pid => {
+          const p = personas.find(x => x.id === pid);
+          return p ? `${p.icon}${p.name}` : pid;
+        }).join(', ');
+        return `
+          <div style="border:1px solid var(--border);border-radius:8px;padding:8px 10px;font-size:0.78rem;">
+            <div style="font-weight:700;margin-bottom:2px;">${it.name || '(이름 없음)'}</div>
+            <div style="color:var(--text-dim);margin-bottom:6px;">${names}</div>
+            <div style="display:flex;gap:6px;align-items:center;">
+              <input readonly value="${url}" style="flex:1;font-size:0.72rem;padding:4px 6px;
+                background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);"
+                onclick="this.select()">
+              <button class="fb-btn" onclick="copyShareUrl('${url}')">복사</button>
+              <button class="fb-btn bad" onclick="revokeShareLink('${it.token}')">삭제</button>
+            </div>
+          </div>`;
+      }).join('');
+    } catch (e) {
+      listEl.innerHTML = '<div style="font-size:0.78rem;color:var(--text-dim)">목록을 불러오지 못했습니다.</div>';
+    }
+  }
+
+  function copyShareUrl(url) {
+    navigator.clipboard.writeText(url).then(() => showToast('링크가 복사되었습니다.'));
+  }
+
+  async function revokeShareLink(token) {
+    if (!confirm('이 공유 링크를 삭제하시겠습니까? 삭제하면 해당 링크로 더 이상 접속할 수 없습니다.')) return;
+    await fetch(`/admin/share/${token}`, { method: 'DELETE' });
+    await loadShareList();
   }
 
   function quickAsk(msg, search = false) {

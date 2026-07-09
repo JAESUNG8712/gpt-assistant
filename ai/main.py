@@ -165,6 +165,7 @@ class ChatRequest(BaseModel):
     persona: str = DEFAULT_PERSONA
     use_search: bool = False
     thinking_mode: str = "off"  # "off" | "prompt" | "deep"
+    share_token: str = ""  # 공유 링크로 접속한 방문자의 토큰 (비어있으면 소유자 세션)
 
 # ── 주식 분석 파이프라인 트리거 키워드 ──────────────────
 _STOCK_PIPELINE_KEYWORDS = [
@@ -479,6 +480,18 @@ async def chat(req: ChatRequest):
     # 복합어 정규화: "희망 퇴직" → "희망퇴직" 등 띄어쓰기 변형 통일
     search_msg = _normalize_query(user_msg)
 
+    # 공유 링크 접속 시: 허용된 페르소나 목록으로 라우팅 범위를 제한
+    allowed_personas = None
+    if req.share_token:
+        share = mem.get_share_link(req.share_token)
+        if not share or not share["enabled"]:
+            raise HTTPException(403, "유효하지 않은 공유 링크입니다.")
+        if share["expires_at"] and share["expires_at"] < _datetime.now().isoformat():
+            raise HTTPException(403, "만료된 공유 링크입니다.")
+        allowed_personas = share["personas"]
+        if req.persona != "auto" and req.persona not in allowed_personas:
+            raise HTTPException(403, "이 공유 링크에서 사용할 수 없는 전문가입니다.")
+
     # "auto"(통합 검색) 선택 시 질문 내용을 분석해 가장 적합한 전문 페르소나(들)로 자동 라우팅.
     # 여러 도메인에 걸친 질문(예: 인사+주식)이면 build_combined_persona로 종합 답변 생성.
     # persona_id는 KB/대화이력 저장 등 단일 키가 필요한 곳에 쓰는 대표(1순위) 도메인.
@@ -486,6 +499,10 @@ async def chat(req: ChatRequest):
     matched_persona_ids = [persona_id]
     if persona_id == "auto":
         matched_persona_ids = classify_personas(search_msg)
+        if allowed_personas is not None:
+            # 공유 링크 허용 범위와 교집합만 채택, 없으면 허용 목록의 첫 번째로 폴백
+            restricted = [p for p in matched_persona_ids if p in allowed_personas]
+            matched_persona_ids = restricted or [allowed_personas[0]]
         persona_id = matched_persona_ids[0]
 
     persona = build_combined_persona(matched_persona_ids)
@@ -549,7 +566,9 @@ async def chat(req: ChatRequest):
     # "출장 규정" 같은 질문이 hr 페르소나로 떨어져 사내 규정과 무관한 일반 웹검색
     # 결과(예: 공무원 여비규정)로 답변되는 문제가 있었음 — company KB 매칭 점수가
     # 뚜렷하게 더 높을 때만(0.15 이상 & 현재 점수 초과) 전환해 오탐을 최소화.
-    if req.persona == "auto" and persona_id != "company" and not stock_mode:
+    # 공유 링크 방문자에게는 링크 생성 시 명시적으로 company를 허용한 경우에만 전환
+    _company_routing_allowed = allowed_personas is None or "company" in allowed_personas
+    if req.persona == "auto" and persona_id != "company" and not stock_mode and _company_routing_allowed:
         kb_company = mem.retrieve_best(search_msg, n=6, persona_id="company")
         if kb_company["best_score"] >= 0.15 and kb_company["best_score"] > best_score:
             persona_id = "company"
@@ -1279,7 +1298,7 @@ async def admin_import_db(file: UploadFile = File(...)):
 # ── 학습 데이터 관리 (오답 학습 정리용) ─────────────────
 
 @app.get("/admin/learned")
-def admin_learned_list(q: str = "", persona: str = "", limit: int = 30):
+def admin_learned_list(q: str = "", persona: str = "", limit: int = 30, offset: int = 0):
     """learned_knowledge 검색 — 잘못 학습된 항목을 찾을 때 사용.
     예: /admin/learned?q=출장  (내용에 '출장' 포함 항목 조회)"""
     where, params = [], []
@@ -1292,13 +1311,67 @@ def admin_learned_list(q: str = "", persona: str = "", limit: int = 30):
     sql = "SELECT id, persona, source, created_at, content FROM learned_knowledge"
     if where:
         sql += " WHERE " + " AND ".join(where)
-    sql += " ORDER BY id DESC LIMIT ?"
+    sql += " ORDER BY id ASC LIMIT ? OFFSET ?"
     params.append(max(1, min(int(limit), 200)))
+    params.append(max(0, int(offset)))
     with mem._conn() as c:
         rows = [dict(r) for r in c.execute(sql, params).fetchall()]
     for r in rows:
         r["content"] = r["content"][:300]
     return {"count": len(rows), "items": rows}
+
+
+@app.get("/admin/learned/duplicates")
+def admin_learned_duplicates(apply: bool = False):
+    """전체 learned_knowledge에서 content 완전 일치 중복 그룹을 찾아 반환.
+    apply=true면 각 그룹에서 가장 오래된(id 최소) 항목만 남기고 나머지를 삭제.
+    Turso 이관 시 kb_static_index가 함께 이관되지 않아 정적 KB가 중복 시딩되는
+    문제(2026-07-08 발견)의 전 페르소나 전수 정리용."""
+    from collections import defaultdict
+    with mem._conn() as c:
+        rows = [dict(r) for r in c.execute(
+            "SELECT id, persona, source, created_at, content FROM learned_knowledge ORDER BY id ASC"
+        ).fetchall()]
+
+    by_content = defaultdict(list)
+    for r in rows:
+        by_content[r["content"]].append(r)
+
+    groups = [items for items in by_content.values() if len(items) > 1]
+    remove_ids = []
+    for items in groups:
+        items_sorted = sorted(items, key=lambda r: r["id"])
+        remove_ids.extend(r["id"] for r in items_sorted[1:])
+
+    result = {
+        "total_rows": len(rows),
+        "duplicate_groups": len(groups),
+        "duplicate_rows_to_remove": len(remove_ids),
+    }
+
+    if apply and remove_ids:
+        placeholders = ",".join("?" * len(remove_ids))
+        with mem._conn() as c:
+            c.execute(f"DELETE FROM learned_knowledge WHERE id IN ({placeholders})", remove_ids)
+        try:
+            from engine import get_engine, _kb_loaded
+            if _kb_loaded:
+                eng = get_engine()
+                removed_by_id = {r["id"]: r for items in groups for r in items[1:]}
+                for items in groups:
+                    items_sorted = sorted(items, key=lambda r: r["id"])
+                    for r in items_sorted[1:]:
+                        content = r["content"]
+                        if content.startswith("Q: ") and "\nA: " in content:
+                            question = content.split("\nA: ", 1)[0][3:].strip()
+                            eng.delete_by_q(question, r["persona"] or None)
+        except Exception as e:
+            print(f"⚠️ 엔진 삭제 실패(재시작 시 반영됨): {e}")
+        result["removed"] = len(remove_ids)
+    else:
+        result["removed_ids_preview"] = remove_ids[:20]
+
+    return result
 
 
 @app.delete("/admin/learned/{item_id}")
@@ -1325,6 +1398,56 @@ def admin_learned_delete(item_id: int):
             print(f"⚠️ 엔진 삭제 실패(재시작 시 반영됨): {e}")
 
     return {"ok": True, "deleted": item_id, "content_preview": content[:120]}
+
+
+# ── 공유 링크 (일부 페르소나만 URL로 외부 공개) ──────────
+
+class ShareCreateRequest(BaseModel):
+    name: str = ""
+    personas: list[str]
+    expires_at: str = ""  # ISO 문자열, 빈 값이면 만료 없음
+
+
+@app.post("/admin/share")
+def admin_share_create(req: ShareCreateRequest):
+    """선택한 페르소나만 접근 가능한 공유 링크 생성.
+    반환된 token을 프론트엔드가 '/?share=<token>' 형태 URL로 안내."""
+    invalid = [p for p in req.personas if p not in PERSONAS]
+    if not req.personas:
+        raise HTTPException(400, "공유할 페르소나를 1개 이상 선택하세요.")
+    if invalid:
+        raise HTTPException(400, f"존재하지 않는 페르소나: {invalid}")
+    link = mem.create_share_link(req.name.strip(), req.personas, req.expires_at.strip())
+    return {"ok": True, **link}
+
+
+@app.get("/admin/share")
+def admin_share_list():
+    return {"items": mem.list_share_links()}
+
+
+@app.delete("/admin/share/{token}")
+def admin_share_revoke(token: str):
+    ok = mem.revoke_share_link(token)
+    if not ok:
+        raise HTTPException(404, "존재하지 않는 공유 링크입니다.")
+    return {"ok": True, "revoked": token}
+
+
+@app.get("/share/{token}")
+def share_info(token: str):
+    """공유 링크 유효성 확인 — 프론트엔드가 페이지 로드 시 호출해 허용된
+    페르소나 목록만 UI에 노출하는 데 사용. 인증 없이 접근 가능(공유 링크 자체가 접근키)."""
+    share = mem.get_share_link(token)
+    if not share or not share["enabled"]:
+        raise HTTPException(404, "유효하지 않은 공유 링크입니다.")
+    if share["expires_at"] and share["expires_at"] < _datetime.now().isoformat():
+        raise HTTPException(410, "만료된 공유 링크입니다.")
+    personas_info = [
+        {"id": pid, "name": PERSONAS[pid]["name"], "icon": PERSONAS[pid]["icon"]}
+        for pid in share["personas"] if pid in PERSONAS
+    ]
+    return {"valid": True, "name": share["name"], "personas": personas_info}
 
 
 # ── 백업 ──────────────────────────────────────────────
