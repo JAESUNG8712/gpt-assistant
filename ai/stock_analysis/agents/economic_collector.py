@@ -5,7 +5,6 @@
 
 import asyncio
 import aiohttp
-import json
 import os
 from datetime import datetime, timedelta
 from typing import Dict, Optional
@@ -222,12 +221,3 @@ class EconomicCollector:
             return "경계 (불안)"
         else:
             return "공포 (패닉)"
-
-    def get_macro_signal(self) -> Dict:
-        return {
-            "금리방향": "인하사이클 진입 예상 (2026년 하반기)",
-            "환율": "원화 완만한 강세 예상 (무역흑자, 외인유입)",
-            "경기": "한국 수출 회복세, 내수 부진 지속",
-            "시장심리": self.get_market_sentiment(),
-            "종합판단": "중립~긍정. 반도체 업종 선도, 금리인하 기대 유효",
-        }

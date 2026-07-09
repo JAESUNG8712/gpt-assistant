@@ -6,7 +6,7 @@
 import json
 import os
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Dict
 
 from ..utils.claude_client import (
     generate_executive_summary as claude_executive_summary,

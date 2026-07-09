@@ -1047,19 +1047,24 @@ def clear_history(persona: str = None):
 @app.delete("/history/stock/reset")
 def reset_stock_history():
     """stock 페르소나 대화 이력 + 자동학습 KB 완전 초기화 (오염 제거용)"""
-    import sqlite3
     mem.clear_history(persona="stock")
     try:
-        con = sqlite3.connect(mem.DB_PATH)
-        try:
-            con.execute(
-                "DELETE FROM learned_knowledge WHERE persona='stock' AND source IN ('auto_learn','learned')"
+        # mem._conn() 경유 — Turso/로컬 SQLite 공용. auto_learn()이 실제로 쓰는
+        # source 값은 '자동학습'(한글)이며 'auto_learn'/'learned' 문자열은 존재한 적
+        # 없어 예전 코드는 이 필터가 항상 0건 매칭되는 상태였음(정적KB·직접입력은
+        # 보존 대상이라 의도적으로 제외).
+        with mem._conn() as c:
+            c.execute(
+                "DELETE FROM learned_knowledge WHERE persona='stock' AND source='자동학습'"
             )
-            con.commit()
-        finally:
-            con.close()
-    except Exception:
-        pass
+        try:
+            from engine import get_engine, _kb_loaded
+            if _kb_loaded:
+                get_engine().delete_by_source("자동학습", "stock")
+        except Exception:
+            pass
+    except Exception as e:
+        print(f"⚠️ stock 자동학습 KB 초기화 실패: {e}")
     return {"ok": True, "message": "stock 페르소나 대화 이력 및 자동학습 데이터 초기화 완료"}
 
 
@@ -1235,8 +1240,7 @@ def list_documents():
 
 @app.get("/knowledge/stats")
 def knowledge_stats():
-    """로드된 KB 항목 수, 페르소나별 분포, SQLite 영구 저장 현황"""
-    import sqlite3
+    """로드된 KB 항목 수, 페르소나별 분포, DB 영구 저장 현황"""
     from engine import get_engine
     engine = get_engine()
 
@@ -1245,32 +1249,30 @@ def knowledge_stats():
         p = meta.get("persona", "(공통)")
         persona_counts[p] = persona_counts.get(p, 0) + 1
 
-    db_path = mem.DB_PATH
+    # mem._conn() 경유 — Turso/로컬 SQLite 공용. 예전 코드는 sqlite3.connect(mem.DB_PATH)로
+    # 로컬 파일을 직접 열어, Turso 사용 시 그 파일이 없어 항상 0으로 나오는 문제가 있었음.
     db_static = 0
     db_dynamic = 0
-    if os.path.exists(db_path):
-        try:
-            conn = sqlite3.connect(db_path)
-            try:
-                db_static = conn.execute(
-                    "SELECT COUNT(*) FROM learned_knowledge WHERE source='정적KB'"
-                ).fetchone()[0]
-                db_dynamic = conn.execute(
-                    "SELECT COUNT(*) FROM learned_knowledge WHERE source!='정적KB'"
-                ).fetchone()[0]
-            finally:
-                conn.close()
-        except Exception:
-            pass
+    try:
+        with mem._conn() as c:
+            db_static = c.execute(
+                "SELECT COUNT(*) FROM learned_knowledge WHERE source='정적KB'"
+            ).fetchone()[0]
+            db_dynamic = c.execute(
+                "SELECT COUNT(*) FROM learned_knowledge WHERE source!='정적KB'"
+            ).fetchone()[0]
+    except Exception:
+        pass
 
     return {
         "engine_total": engine.count(),
         "engine_by_persona": persona_counts,
         "db_static_kb": db_static,
         "db_dynamic_learned": db_dynamic,
+        "db_backend": "Turso (클라우드)" if mem._USE_TURSO else f"SQLite ({mem.DB_PATH})",
         "persistent_storage": {
             "python_files": "영구 (git 커밋됨)",
-            "sqlite_static": f"{db_static}개 정적KB → SQLite 백업",
+            "sqlite_static": f"{db_static}개 정적KB → DB 백업",
             "sqlite_dynamic": f"{db_dynamic}개 동적 학습 데이터",
         },
     }
@@ -1377,7 +1379,6 @@ def admin_learned_duplicates(apply: bool = False):
             from engine import get_engine, _kb_loaded
             if _kb_loaded:
                 eng = get_engine()
-                removed_by_id = {r["id"]: r for items in groups for r in items[1:]}
                 for items in groups:
                     items_sorted = sorted(items, key=lambda r: r["id"])
                     for r in items_sorted[1:]:
@@ -1555,12 +1556,6 @@ def save_lowprice_settings(req: LowPriceSettingsRequest):
     mem.save_setting("lowprice_screen", saved)
     from stock_analysis.utils.low_price_screener import DEFAULT_PARAMS
     return {"ok": True, "settings": {**DEFAULT_PARAMS, **saved}}
-
-@app.get("/stock/reports/list")
-def stock_reports_list():
-    """저장된 주식 분석 보고서 목록"""
-    files = _list_stock_reports()
-    return {"보고서목록": files, "총개수": len(files)}
 
 @app.get("/stock/download/{filename}")
 def stock_report_download(filename: str):
@@ -1770,26 +1765,33 @@ def budget_grid_compare(a: str = "current", b: str = "current"):
 
 @app.get("/health")
 def health():
-    import os, shutil
-    db_path = mem.DB_PATH
-    data_dir = os.path.dirname(db_path)
-    disk = shutil.disk_usage(data_dir)
-    return {
+    import shutil
+    result = {
         "status": "ok",
-        "db_path": db_path,
-        "disk_persistent": not db_path.startswith("/tmp"),
-        "disk_total_mb": round(disk.total / 1024 / 1024),
-        "disk_used_mb": round(disk.used / 1024 / 1024),
-        "disk_free_mb": round(disk.free / 1024 / 1024),
-        "db_exists": os.path.exists(db_path),
-        "db_size_kb": round(os.path.getsize(db_path) / 1024) if os.path.exists(db_path) else 0,
+        "db_backend": "Turso (클라우드)" if mem._USE_TURSO else "SQLite (로컬)",
         "law_api_key_set": bool(os.getenv("LAW_API_KEY")),
         "law_api_blocked": law._is_api_blocked(),
     }
+    if mem._USE_TURSO:
+        # Turso 사용 시 로컬 디스크 지표는 무의미 — DB는 클라우드에 있음
+        result["turso_url"] = os.getenv("TURSO_DATABASE_URL", "")
+    else:
+        db_path = mem.DB_PATH
+        data_dir = os.path.dirname(db_path)
+        disk = shutil.disk_usage(data_dir)
+        result.update({
+            "db_path": db_path,
+            "disk_persistent": not db_path.startswith("/tmp"),
+            "disk_total_mb": round(disk.total / 1024 / 1024),
+            "disk_used_mb": round(disk.used / 1024 / 1024),
+            "disk_free_mb": round(disk.free / 1024 / 1024),
+            "db_exists": os.path.exists(db_path),
+            "db_size_kb": round(os.path.getsize(db_path) / 1024) if os.path.exists(db_path) else 0,
+        })
+    return result
 
 @app.get("/", response_class=HTMLResponse)
 def index():
-    import os
     # 여러 경로 시도 (배포 환경마다 working directory가 다를 수 있음)
     candidates = [
         "static/index.html",

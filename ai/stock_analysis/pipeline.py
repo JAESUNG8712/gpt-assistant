@@ -3,8 +3,6 @@
 """
 
 import asyncio
-import json
-import os
 import traceback
 from datetime import datetime
 from typing import Dict, List, Optional
@@ -54,7 +52,9 @@ class StockAnalysisPipeline:
                 await self._step1_collect()
 
             self.log("\n── STEP 2: 자료 취합 ──")
-            aggregated = self._step2_aggregate(
+            # 반환값(취합 결과)은 이후 단계에서 쓰이지 않지만, 호출 자체가
+            # 데이터 품질 이슈를 self.log()로 남기는 부수효과가 있어 유지함.
+            self._step2_aggregate(
                 financial_data, economic_data, geo_data, industry_data)
 
             self.log("\n── STEP 3: 상세 분석 ──")

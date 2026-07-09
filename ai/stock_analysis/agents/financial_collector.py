@@ -9,7 +9,7 @@ from typing import List, Dict
 
 from ..utils.dart_client import (
     CORP_CODES, STOCK_CODE_MAP,
-    fetch_financial_statements, fetch_company_info,
+    fetch_financial_statements,
     fetch_dividend_info, search_disclosures,
 )
 from ..utils.krx_client import (
@@ -87,7 +87,6 @@ class FinancialCollector:
     def _calc_derived(self, data: Dict) -> Dict:
         derived = {}
         fs = data.get("재무제표", {})
-        price_data = data.get("주가", {})
         val = data.get("밸류에이션", {})
 
         try:
@@ -147,35 +146,3 @@ class FinancialCollector:
             derived["계산오류"] = str(e)
 
         return derived
-
-    def get_investor_summary(self) -> List[Dict]:
-        summary = []
-        for corp_name, data in self.results.items():
-            supply = data.get("수급", {})
-            if "error" in supply:
-                continue
-            summary.append({
-                "종목": corp_name,
-                "외국인": supply.get("외국인합계", {}),
-                "기관": supply.get("기관합계", {}),
-                "개인": supply.get("개인", {}),
-            })
-        return summary
-
-    def get_undervalued_candidates(self, min_score: int = 40) -> List[Dict]:
-        candidates = []
-        for name, data in self.results.items():
-            score = data.get("파생지표", {}).get("저평가스코어", 0)
-            if score >= min_score:
-                val = data.get("밸류에이션", {})
-                derived = data.get("파생지표", {})
-                candidates.append({
-                    "종목": name,
-                    "저평가스코어": score,
-                    "PER": val.get("PER"),
-                    "PBR": val.get("PBR"),
-                    "ROE": derived.get("ROE"),
-                    "영업이익률": derived.get("영업이익률"),
-                    "현재가": data.get("주가", {}).get("close"),
-                })
-        return sorted(candidates, key=lambda x: x["저평가스코어"], reverse=True)

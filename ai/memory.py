@@ -364,19 +364,33 @@ def topic_overlap(user_q: str, target_text: str) -> bool:
 # ── 지식 저장 & 검색 (engine.py TF-IDF 연동) ─────────────
 
 def store_memory(text: str, metadata: dict = None):
-    """텍스트를 엔진에 학습시키고 DB에 영속 저장"""
+    """텍스트를 엔진에 학습시키고 DB에 영속 저장.
+    완전히 동일한 내용(같은 persona)이 이미 저장되어 있으면 스킵 — 다른 KB 쓰기
+    경로(upsert_knowledge/store_document)는 모두 중복 방지 로직이 있는데 이 함수만
+    없어서, search_and_learn()이 같거나 유사한 질의로 반복 호출될 때마다 동일한
+    웹검색 결과가 새 행으로 무제한 중복 저장되던 문제(KB 오염·비대화)를 방지."""
     meta = metadata or {}
     persona = meta.get("persona", "")
+    source = meta.get("source", "")
+    content = text[:2000]
 
     with _conn() as c:
-        c.execute(
-            "INSERT INTO learned_knowledge (content, persona, source, created_at) VALUES (?,?,?,?)",
-            (text[:2000], persona, meta.get("source", ""), datetime.now().isoformat()),
-        )
+        existing = c.execute(
+            "SELECT id FROM learned_knowledge WHERE content=? AND persona=? LIMIT 1",
+            (content, persona),
+        ).fetchone()
+        if not existing:
+            c.execute(
+                "INSERT INTO learned_knowledge (content, persona, source, created_at) VALUES (?,?,?,?)",
+                (content, persona, source, datetime.now().isoformat()),
+            )
+
+    if existing:
+        return
 
     try:
         from engine import teach
-        teach(text, persona=persona, source=meta.get("source", "learned"))
+        teach(text, persona=persona, source=source or "learned")
     except Exception as e:
         print(f"⚠️ 엔진 학습 실패: {e}")
 
@@ -442,15 +456,6 @@ def retrieve_best(query: str, n: int = 5, persona_id: str = None) -> dict:
     except Exception as e:
         print(f"⚠️ 컨텍스트 검색 실패: {e}")
         return empty
-
-
-def store_conversation_memory(user_msg: str, ai_msg: str, persona_id: str = "hr"):
-    text = f"사용자: {user_msg}\nAI: {ai_msg}"
-    store_memory(text, {
-        "source": "대화",
-        "persona": persona_id,
-        "at": datetime.now().isoformat(),
-    })
 
 
 def store_document(text: str, filename: str, persona_id: str = "hr"):

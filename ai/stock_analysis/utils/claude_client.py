@@ -4,8 +4,7 @@ Claude API 클라이언트 — Anthropic SDK 래퍼
 """
 
 import os
-import json
-from typing import Any, Dict, Optional
+from typing import Dict
 
 _client = None
 

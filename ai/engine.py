@@ -503,51 +503,52 @@ def _load_knowledge():
 
     # 자동학습·직접입력·문서 업로드 등 동적 학습 데이터 복원 (재시작 후에도 유지)
     # "정적KB" 소스는 Python KB 파일에서 이미 로드되었으므로 건너뜀 (중복 방지)
+    # memory._conn() 경유 — Turso/로컬 SQLite 어느 백엔드든 동일하게 동작
+    # (과거 이 블록이 sqlite3.connect(DB_PATH)로 로컬 파일을 직접 열었는데,
+    #  Turso 사용 시 그 로컬 파일이 존재하지 않아 조용히 아무것도 복원하지 못했음)
     try:
-        import sqlite3, os as _os
-        _here = _os.path.dirname(_os.path.abspath(__file__))
-        db_path = _os.getenv("DB_PATH", _os.path.join(_here, "data", "memory.db"))
-        if _os.path.exists(db_path):
-            conn = sqlite3.connect(db_path)
-            try:
-                rows = conn.execute(
-                    "SELECT id, content, persona, source FROM learned_knowledge"
-                    " WHERE source != '정적KB' ORDER BY id ASC"
-                ).fetchall()
-            finally:
-                conn.close()
+        from memory import _conn
+        with _conn() as c:
+            rows = [dict(r) for r in c.execute(
+                "SELECT id, content, persona, source FROM learned_knowledge"
+                " WHERE source != '정적KB' ORDER BY id ASC"
+            ).fetchall()]
 
-            # Q&A 형식 항목은 같은 질문이 여러 개면 최신(id 큰 것)만 사용
-            # source가 직접입력·자동학습인 경우만 중복 제거; 문서 청크는 모두 포함
-            DEDUP_SOURCES = ("직접입력", "자동학습")
-            qa_latest: dict = {}   # (q_lower, persona) → (content, source)
-            chunks = []            # 문서 청크 등 비-QA 항목
+        # Q&A 형식 항목은 같은 질문이 여러 개면 최신(id 큰 것)만 사용
+        # source가 직접입력·자동학습인 경우만 중복 제거; 문서 청크는 모두 포함
+        DEDUP_SOURCES = ("직접입력", "자동학습")
+        qa_latest: dict = {}   # (q_lower, persona) → (content, source)
+        chunks = []            # 문서 청크 등 비-QA 항목
 
-            for row_id, content, persona, source in rows:
-                is_qa = content.startswith("Q: ") and "\nA: " in content
-                if is_qa and source in DEDUP_SOURCES:
-                    q_lower = content.split("\nA: ", 1)[0][3:].strip().lower()
-                    qa_latest[(q_lower, persona)] = (content, source)  # 최신이 덮어씀
-                else:
-                    chunks.append((content, persona, source))
+        for row in rows:
+            content, persona, source = row["content"], row["persona"], row["source"]
+            is_qa = content.startswith("Q: ") and "\nA: " in content
+            if is_qa and source in DEDUP_SOURCES:
+                q_lower = content.split("\nA: ", 1)[0][3:].strip().lower()
+                qa_latest[(q_lower, persona)] = (content, source)  # 최신이 덮어씀
+            else:
+                chunks.append((content, persona, source))
 
-            # 중복 제거된 Q&A 항목 로드
-            for (q_lower, persona), (content, source) in qa_latest.items():
+        # 중복 제거된 Q&A 항목 로드
+        for (q_lower, persona), (content, source) in qa_latest.items():
+            parts = content.split("\nA: ", 1)
+            q = parts[0][3:].strip()
+            a = parts[1].strip()
+            _engine.add(q, a, {"persona": persona, "source": source})
+
+        # 문서 청크 등 나머지 항목 로드
+        for content, persona, source in chunks:
+            if content.startswith("Q: ") and "\nA: " in content:
                 parts = content.split("\nA: ", 1)
                 q = parts[0][3:].strip()
                 a = parts[1].strip()
-                _engine.add(q, a, {"persona": persona, "source": source})
+            else:
+                q = content[:200]
+                a = content
+            _engine.add(q, a, {"persona": persona, "source": source})
 
-            # 문서 청크 등 나머지 항목 로드
-            for content, persona, source in chunks:
-                if content.startswith("Q: ") and "\nA: " in content:
-                    parts = content.split("\nA: ", 1)
-                    q = parts[0][3:].strip()
-                    a = parts[1].strip()
-                else:
-                    q = content[:200]
-                    a = content
-                _engine.add(q, a, {"persona": persona, "source": source})
+        if rows:
+            print(f"  💾 동적 학습 데이터 {len(rows)}개 복원 완료")
     except Exception as e:
         print(f"⚠️ 동적 학습 데이터 복원 실패: {e}")
 

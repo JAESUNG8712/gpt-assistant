@@ -103,48 +103,6 @@ def _search_ddg_news(stock_name: str, max_results: int = 5) -> List[Dict]:
         return []
 
 
-# ── 네이버 증권 리서치 뉴스 ──────────────────────────────────
-
-def _fetch_naver_research_news(stock_name: str, max_results: int = 3) -> List[Dict]:
-    """네이버 금융 리서치 코너에서 해당 종목 관련 이슈 검색"""
-    if not HAS_REQUESTS:
-        return []
-    try:
-        url = "https://search.naver.com/search.naver"
-        query = f"{stock_name} 주가 분석 site:finance.naver.com"
-        resp = _requests.get(
-            url,
-            params={"where": "web", "query": query},
-            headers={**_HEADERS, "Referer": "https://search.naver.com/"},
-            timeout=6,
-        )
-        html = resp.content.decode("utf-8", errors="replace")
-
-        titles = re.findall(
-            r'<a[^>]+class="[^"]*link_tit[^"]*"[^>]*>(.*?)</a>', html, re.DOTALL
-        )[:max_results]
-        descriptions = re.findall(
-            r'<div[^>]+class="[^"]*dsc_wrap[^"]*"[^>]*>(.*?)</div>', html, re.DOTALL
-        )[:max_results]
-
-        results = []
-        for i, title in enumerate(titles):
-            title_clean = _clean_html(title)
-            desc = _clean_html(descriptions[i]) if i < len(descriptions) else ""
-            if not title_clean:
-                continue
-            results.append({
-                "제목": title_clean[:60],
-                "요약": desc[:200],
-                "출처": "네이버",
-                "날짜": "",
-                "유형": "웹검색",
-            })
-        return results
-    except Exception:
-        return []
-
-
 # ── 공개 API ────────────────────────────────────────────────
 
 async def get_stock_news(stock_name: str, ticker: str = "", max_results: int = 8) -> Dict:

@@ -6,8 +6,7 @@
 import asyncio
 import html as _html
 import re
-from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 import aiohttp
 

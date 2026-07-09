@@ -2,7 +2,6 @@
 ✅🔬⚠️ 교차 검증 에이전트 (3명)
 """
 
-from datetime import datetime
 from typing import Dict, List, Tuple
 
 
@@ -70,9 +69,6 @@ class FinancialDataValidator:
         self.issues = results
         print(f"✅ [검증1] 완료 — 이상 감지: {sum(1 for v in results.values() if v['상태'] != '검증통과')}건")
         return results
-
-    def get_clean_stocks(self) -> List[str]:
-        return [name for name, v in self.issues.items() if v["상태"] == "검증통과"]
 
     def get_flagged_stocks(self) -> List[Tuple[str, List]]:
         return [(name, v["경고"]) for name, v in self.issues.items() if v["경고"]]

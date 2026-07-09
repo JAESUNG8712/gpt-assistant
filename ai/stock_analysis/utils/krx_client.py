@@ -5,7 +5,6 @@ pykrx → 네이버금융 스크래핑 → mock 순으로 fallback
 
 import asyncio
 import re
-import time
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -190,7 +189,7 @@ async def get_stock_price(ticker: str, days: int = 30) -> dict:
                     for idx, row in df.iterrows()
                 },
             }
-        except Exception as e:
+        except Exception:
             pass  # pykrx 실패 시 네이버로 fallback
 
     # 네이버 금융 fallback

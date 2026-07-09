@@ -1868,16 +1868,6 @@
     }
   }
 
-  function downloadStockReport(filename) {
-    const a = document.createElement('a');
-    a.href = `/stock/download/${filename}`;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    showToast('⬇️ 보고서 다운로드 중...');
-  }
-
   function backupDownload() {
     showToast('⬇️ 백업 파일 다운로드 중...');
     const a = document.createElement('a');

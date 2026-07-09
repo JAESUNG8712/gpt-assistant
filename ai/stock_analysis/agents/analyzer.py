@@ -5,7 +5,7 @@
 
 import math
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Dict
 
 from ..utils.claude_client import analyze_stock_opinion, is_available as claude_available
 

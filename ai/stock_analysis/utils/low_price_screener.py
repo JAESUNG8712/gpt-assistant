@@ -17,7 +17,6 @@ pykrx가 클라우드 환경(Railway 등)에서 KRX 직접 API 호출이 차단�
 한 번 더 재시도한다.
 """
 
-import os
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta

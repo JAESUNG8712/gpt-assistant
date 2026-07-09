@@ -4,11 +4,8 @@ https://opendart.fss.or.kr/
 """
 
 import os
-import asyncio
 import aiohttp
-import json
 from datetime import datetime, timedelta
-from typing import Optional
 
 DART_API_KEY = os.getenv("DART_API_KEY", "")
 DART_BASE_URL = "https://opendart.fss.or.kr/api"
@@ -138,48 +135,11 @@ async def fetch_financial_statements(corp_code: str, year: str, report_type: str
         return {"error": str(e)}
 
 
-async def fetch_company_info(corp_code: str) -> dict:
-    if not DART_API_KEY:
-        return _mock_company_info(corp_code)
-
-    url = f"{DART_BASE_URL}/company.json"
-    params = {"crtfc_key": DART_API_KEY, "corp_code": corp_code}
-
-    try:
-        async with aiohttp.ClientSession(trust_env=True) as session:
-            async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as resp:
-                data = await resp.json()
-                return data if data.get("status") == "000" else {"error": data.get("message")}
-    except Exception as e:
-        return {"error": str(e)}
-
-
 async def fetch_dividend_info(corp_code: str, year: str) -> dict:
     if not DART_API_KEY:
         return _mock_dividend_data()
 
     url = f"{DART_BASE_URL}/alotMatter.json"
-    params = {
-        "crtfc_key": DART_API_KEY,
-        "corp_code": corp_code,
-        "bsns_year": year,
-        "reprt_code": "11011",
-    }
-
-    try:
-        async with aiohttp.ClientSession(trust_env=True) as session:
-            async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as resp:
-                data = await resp.json()
-                return data if data.get("status") == "000" else {"error": data.get("message")}
-    except Exception as e:
-        return {"error": str(e)}
-
-
-async def fetch_major_shareholders(corp_code: str, year: str) -> dict:
-    if not DART_API_KEY:
-        return _mock_shareholders_data()
-
-    url = f"{DART_BASE_URL}/hyslrSttus.json"
     params = {
         "crtfc_key": DART_API_KEY,
         "corp_code": corp_code,
@@ -252,28 +212,8 @@ def _mock_financial_data(corp_code: str, year: str) -> dict:
     }
 
 
-def _mock_company_info(corp_code: str) -> dict:
-    name = next((k for k, v in CORP_CODES.items() if v == corp_code), "Unknown")
-    return {
-        "corp_name": name,
-        "corp_code": corp_code,
-        "stock_code": "000000",
-        "ceo_nm": "대표이사명",
-        "induty_code": "제조업",
-        "_note": "샘플 데이터",
-    }
-
-
 def _mock_dividend_data() -> dict:
     return {"현금배당수익률": "2.5%", "주당현금배당금": "1,440원", "_note": "샘플 데이터"}
-
-
-def _mock_shareholders_data() -> dict:
-    return {
-        "최대주주": "이재용 외",
-        "지분율": "21.0%",
-        "_note": "샘플 데이터",
-    }
 
 
 def _mock_disclosures(corp_name: str) -> list:
