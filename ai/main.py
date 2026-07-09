@@ -51,6 +51,22 @@ def _parse_answer_header(answer: str):
     return first_line, ""
 
 
+def _split_kb_answer(a: str) -> tuple:
+    """저장된 KB 답변에서 (제목, 출처, 본문)을 분리. 첫 줄이 제목(+괄호 출처), 나머지가 본문.
+    KB 답변 3곳(company 복수결과·단일결과, 계산결과 보충)에서 동일 파싱이
+    중복 구현되어 있던 것을 통합."""
+    title, cite = _parse_answer_header(a)
+    body = '\n'.join(a.split('\n')[1:]).lstrip('\n')
+    return title, cite, body
+
+
+def _format_kb_header(title: str, cite: str) -> str:
+    header = f"**{title}**"
+    if cite:
+        header += f"\n📌 출처: {cite}"
+    return header
+
+
 def _format_company_results(top_results: list, best_score: float) -> str:
     """company 페르소나: 관련 규정 복수 결과 + 출처 포맷.
     - 1위 점수의 40% 이상 항목 최대 4개 표시
@@ -67,18 +83,14 @@ def _format_company_results(top_results: list, best_score: float) -> str:
 
     if len(filtered) == 1:
         q, a, s = filtered[0]
-        title, cite = _parse_answer_header(a)
-        body = '\n'.join(a.split('\n')[1:]).lstrip('\n')
-        header = f"**{title}**"
-        if cite:
-            header += f"\n📌 출처: {cite}"
+        title, cite, body = _split_kb_answer(a)
+        header = _format_kb_header(title, cite)
         return header + "\n\n" + body if body else a
 
     SEP = "─" * 22
     parts = [f"📋 **관련 규정 {len(filtered)}건** 검색됨\n"]
     for i, (q, a, s) in enumerate(filtered, 1):
-        title, cite = _parse_answer_header(a)
-        body = '\n'.join(a.split('\n')[1:]).lstrip('\n')
+        title, cite, body = _split_kb_answer(a)
         header = f"{SEP}\n**{i}. {title}**"
         if cite:
             header += f"\n📌 출처: {cite}"
@@ -95,11 +107,11 @@ def _company_rule_supplement(query: str) -> str:
     except Exception:
         return ""
     if kb["best_score"] >= 0.15 and kb["top_answer"]:
-        title, cite = _parse_answer_header(kb["top_answer"])
-        body = "\n".join(kb["top_answer"].split("\n")[1:]).lstrip("\n") or kb["top_answer"]
+        title, cite, body = _split_kb_answer(kb["top_answer"])
+        body = body or kb["top_answer"]
         return (
             "\n\n---\n### 📋 회사 취업규칙 관련 규정\n"
-            + (f"**{title}**" + (f"\n📌 출처: {cite}" if cite else "") + "\n\n")
+            + _format_kb_header(title, cite) + "\n\n"
             + body[:600]
             + f"\n\n📚 사내 규정 KB 검색 결과 (유사도 {kb['best_score']:.2f})"
             + " · 법정 기준과 다른 경우 근로자에게 유리한 쪽이 적용됩니다."
@@ -334,6 +346,22 @@ def _summarize_long_text(content: str, label: str, max_chars: int = 3500) -> str
     )
 
 
+async def _stream_chunks(text: str, chunk_size: int = 150):
+    """긴 텍스트를 chunk_size 단위로 잘라 순차 yield — /chat generate()의
+    여러 응답 경로(계산 결과, KB 직접 답변, 무응답 안내 등)에서 동일한
+    'chunk_size만큼 잘라 스트리밍' 로직이 반복 구현되어 있던 것을 통합."""
+    for i in range(0, len(text), chunk_size):
+        yield text[i:i + chunk_size]
+        await asyncio.sleep(0)
+
+
+def _ticker_for_name(name: str) -> str:
+    """종목명 → ticker 역방향 조회. STOCK_CODE_MAP은 지연 import(패키지 전체를
+    미리 로드하지 않기 위함)라 여러 곳에서 반복 구현되어 있던 것을 통합."""
+    from stock_analysis.utils.dart_client import STOCK_CODE_MAP
+    return next((k for k, v in STOCK_CODE_MAP.items() if v == name), "")
+
+
 def _format_reference_links(items: list, max_items: int = 5) -> str:
     """[{title,url}] 형태의 참고 자료 목록을 마크다운 링크 섹션으로 변환.
     클릭 시 해당 페이지로 바로 이동하도록 target=_blank 처리(프론트엔드 renderMd에서 적용)."""
@@ -521,21 +549,26 @@ async def chat(req: ChatRequest):
             matched_persona_ids = restricted or [allowed_personas[0]]
         persona_id = matched_persona_ids[0]
 
-    persona = build_combined_persona(matched_persona_ids)
-    persona_features = persona.get("features", {})
-    stock_mode = persona_features.get("stock_mode", False)
+    from datetime import date as _date
+    today = _date.today()
+
+    def _build_persona_context(ids: list):
+        """matched_persona_ids → (persona, persona_features, stock_mode, system_with_date).
+        company KB 우선 라우팅 전환 시에도 동일 로직을 재사용해 두 곳에서
+        따로 구현되어 있던 중복을 통합."""
+        p = build_combined_persona(ids)
+        feats = p.get("features", {})
+        return p, feats, feats.get("stock_mode", False), (
+            p["system_prompt"]
+            + f"\n\n오늘 날짜: {today.strftime('%Y년 %m월 %d일')} ({today.year}년)"
+        )
+
+    persona, persona_features, stock_mode, system_with_date = _build_persona_context(matched_persona_ids)
 
     # 페르소나에 deep_thinking 설정 시 thinking 모드 자동 활성화 (사용자가 off로 두더라도)
     effective_thinking_mode = req.thinking_mode
     if persona_features.get("deep_thinking") and req.thinking_mode == "off":
         effective_thinking_mode = "prompt"
-
-    from datetime import date as _date
-    today = _date.today()
-    system_with_date = (
-        persona["system_prompt"]
-        + f"\n\n오늘 날짜: {today.strftime('%Y년 %m월 %d일')} ({today.year}년)"
-    )
 
     # ── 0단계: Python 직접 계산 (날짜·금액 기반 HR 계산 질문) ─
     # LLM / KB 상태에 무관하게 정확한 수치를 계산해 반환
@@ -589,13 +622,7 @@ async def chat(req: ChatRequest):
         if kb_company["best_score"] >= 0.15 and kb_company["best_score"] > best_score:
             persona_id = "company"
             matched_persona_ids = ["company"]
-            persona = build_combined_persona(matched_persona_ids)
-            persona_features = persona.get("features", {})
-            stock_mode = persona_features.get("stock_mode", False)
-            system_with_date = (
-                persona["system_prompt"]
-                + f"\n\n오늘 날짜: {today.strftime('%Y년 %m월 %d일')} ({today.year}년)"
-            )
+            persona, persona_features, stock_mode, system_with_date = _build_persona_context(matched_persona_ids)
             kb = kb_company
             rag_ctx     = kb["context"]
             best_score  = kb["best_score"]
@@ -700,12 +727,9 @@ async def chat(req: ChatRequest):
                 try:
                     report = await stock_run_once(targets)
                     summary = _summarize_stock_report(report, targets)
-                    chunk_size = 150
-                    for i in range(0, len(summary), chunk_size):
-                        chunk = summary[i:i + chunk_size]
+                    async for chunk in _stream_chunks(summary):
                         collected.append(chunk)
                         yield chunk
-                        await asyncio.sleep(0)
                 except Exception as e:
                     err = f"\n\n❌ 분석 오류: {e}"
                     collected.append(err)
@@ -726,13 +750,12 @@ async def chat(req: ChatRequest):
                         await asyncio.sleep(0)
                     try:
                         from stock_analysis.utils.securities_report import get_all_reports
-                        from stock_analysis.utils.dart_client import STOCK_CODE_MAP
                         # 주의: 'results'로 이름 지으면 generate() 전체에서 results가 지역변수로
                         # 취급되어, 바깥(chat)의 results를 읽는 경로 B에서 UnboundLocalError 발생
                         broker_summaries = []
                         link_items = []
                         for name in targets:
-                            ticker = next((k for k, v in STOCK_CODE_MAP.items() if v == name), "")
+                            ticker = _ticker_for_name(name)
                             r = await get_all_reports(ticker, name)
                             broker_summaries.append(r.get("summary", f"{name}: 리포트 없음"))
                             for rep in r.get("reports", []):
@@ -740,11 +763,9 @@ async def chat(req: ChatRequest):
                         output = "\n\n".join(broker_summaries)
                         output = _summarize_long_text(output, "broker_" + "_".join(targets))
                         output += _format_reference_links(link_items)
-                        for i in range(0, len(output), 200):
-                            chunk = output[i:i+200]
+                        async for chunk in _stream_chunks(output, chunk_size=200):
                             collected.append(chunk)
                             yield chunk
-                            await asyncio.sleep(0)
                     except Exception as e:
                         err = f"\n\n❌ 리포트 수집 오류: {e}"
                         collected.append(err)
@@ -787,12 +808,9 @@ async def chat(req: ChatRequest):
                     candidates = future.result()
                     report = format_report(candidates, params=lowprice_params)
                     report = _summarize_long_text(report, "lowprice")
-                    chunk_size = 200
-                    for i in range(0, len(report), chunk_size):
-                        chunk = report[i:i + chunk_size]
+                    async for chunk in _stream_chunks(report, chunk_size=200):
                         collected.append(chunk)
                         yield chunk
-                        await asyncio.sleep(0)
                 except Exception as e:
                     err = f"\n\n❌ 스크리닝 오류: {e}"
                     collected.append(err)
@@ -801,12 +819,9 @@ async def chat(req: ChatRequest):
             # ── 경로 CALC: Python 직접 계산 결과 있음 ────────
             elif direct_calc:
                 # 계산 결과를 바로 스트리밍 (LLM 불필요)
-                chunk_size = 150
-                for i in range(0, len(direct_calc), chunk_size):
-                    chunk = direct_calc[i:i + chunk_size]
+                async for chunk in _stream_chunks(direct_calc):
                     collected.append(chunk)
                     yield chunk
-                    await asyncio.sleep(0)
 
             # ── 경로 A: 고신뢰 KB 직접 서빙 ──────────────
             elif kb_direct:
@@ -820,12 +835,9 @@ async def chat(req: ChatRequest):
                 # 출처 레이블: 어느 KB에서 나온 답변인지 사용자에게 표시
                 source_label = f"\n\n---\n📚 **출처**: 내부 지식베이스 (유사도 {best_score:.2f})"
                 answer = answer + source_label
-                chunk_size = 150
-                for i in range(0, len(answer), chunk_size):
-                    chunk = answer[i:i + chunk_size]
+                async for chunk in _stream_chunks(answer):
                     collected.append(chunk)
                     yield chunk
-                    await asyncio.sleep(0)
 
             # ── 경로 C: company 페르소나 — 등록된 규정 없음 안내 ──
             elif company_kb_only:
@@ -834,12 +846,9 @@ async def chat(req: ChatRequest):
                     "현재 등록된 규정에서 확인되지 않습니다.\n"
                     "인사팀에 문의해 주세요."
                 )
-                chunk_size = 150
-                for i in range(0, len(no_answer_msg), chunk_size):
-                    chunk = no_answer_msg[i:i + chunk_size]
+                async for chunk in _stream_chunks(no_answer_msg):
                     collected.append(chunk)
                     yield chunk
-                    await asyncio.sleep(0)
 
             # ── 경로 B: LLM 보강 (중간 신뢰도 or 법령 실시간) ──
             else:
@@ -870,11 +879,9 @@ async def chat(req: ChatRequest):
                     if _chat_targets:
                         async def _collect_news():
                             from stock_analysis.utils.news_collector import get_stock_news, format_news_context
-                            from stock_analysis.utils.dart_client import STOCK_CODE_MAP
                             tasks_n = []
                             for _n in _chat_targets[:3]:
-                                _tk = next((k for k, v in STOCK_CODE_MAP.items() if v == _n), "")
-                                tasks_n.append(get_stock_news(_n, _tk, max_results=6))
+                                tasks_n.append(get_stock_news(_n, _ticker_for_name(_n), max_results=6))
                             results_n = await asyncio.gather(*tasks_n, return_exceptions=True)
                             parts = []
                             for res in results_n:
@@ -892,11 +899,9 @@ async def chat(req: ChatRequest):
                     if _chat_targets:
                         async def _collect_broker():
                             from stock_analysis.utils.securities_report import get_all_reports
-                            from stock_analysis.utils.dart_client import STOCK_CODE_MAP
                             tasks_b = []
                             for _n in _chat_targets[:3]:
-                                _tk = next((k for k, v in STOCK_CODE_MAP.items() if v == _n), "")
-                                tasks_b.append(get_all_reports(_tk, _n, max_reports=5))
+                                tasks_b.append(get_all_reports(_ticker_for_name(_n), _n, max_reports=5))
                             results_b = await asyncio.gather(*tasks_b, return_exceptions=True)
                             parts = []
                             for _n, res in zip(_chat_targets[:3], results_b):
