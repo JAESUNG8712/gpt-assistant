@@ -73,9 +73,12 @@ async def run_analysis(
     if _analysis_running:
         raise HTTPException(status_code=429, detail="분석이 이미 실행 중입니다. 잠시 후 시도하세요.")
 
+    # 백그라운드 태스크가 실제로 시작되기 전(이벤트 루프 유휴 구간)에 들어오는
+    # 동시 요청을 막기 위해, 플래그는 태스크 실행 시점이 아니라 여기서 즉시 설정한다.
+    _analysis_running = True
+
     async def _run():
         global _analysis_running, _last_report, _last_run
-        _analysis_running = True
         try:
             report = await run_once(request.target_stocks)
             _last_report = report
@@ -211,7 +214,11 @@ async def screen_lowprice(
     from .utils.low_price_screener import screen_low_price_stocks, format_report
     try:
         params = {"max_price": max_price, "max_pbr": max_pbr, "max_per": max_per, "top_n": top_n}
-        candidates = screen_low_price_stocks(market=market, params=params)
+        # screen_low_price_stocks는 다수 종목을 순회하는 동기 블로킹 스캔이므로
+        # 스레드 실행기로 넘겨 이벤트 루프가 멈추지 않게 한다.
+        candidates = await asyncio.get_event_loop().run_in_executor(
+            None, lambda: screen_low_price_stocks(market=market, params=params)
+        )
         report = format_report(candidates, params=params)
         return PlainTextResponse(content=report, media_type="text/plain; charset=utf-8")
     except Exception as e:

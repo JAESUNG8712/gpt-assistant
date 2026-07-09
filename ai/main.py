@@ -134,6 +134,22 @@ if not os.getenv("DB_PATH") and not (os.getenv("TURSO_DATABASE_URL") and os.gete
         "TURSO_DATABASE_URL + TURSO_AUTH_TOKEN으로 Turso 클라우드 DB를 사용하세요."
     )
 
+BACKUP_TOKEN = os.getenv("BACKUP_TOKEN", "")
+if not BACKUP_TOKEN:
+    print(
+        "⚠️  BACKUP_TOKEN 환경변수가 설정되지 않았습니다. "
+        "/backup/download, /backup/google-auth, /backup/google-drive 가 인증 없이 "
+        "공개 접근 가능한 상태입니다(전체 대화·학습 DB 다운로드 포함). "
+        "배포 환경이 외부에 노출된다면 BACKUP_TOKEN을 설정하고 요청 시 "
+        "?token=<값> 을 함께 전달하세요."
+    )
+
+
+def _require_backup_token(token: str = "") -> None:
+    if BACKUP_TOKEN and token != BACKUP_TOKEN:
+        raise HTTPException(401, "유효한 token 파라미터가 필요합니다.")
+
+
 app = FastAPI(title="나만의 AI 어시스턴트")
 @app.middleware("http")
 async def no_cache_html(request, call_next):
@@ -606,7 +622,11 @@ async def chat(req: ChatRequest):
     search_ctx = ""
     results = []  # 아래 reference_items 참조 시 항상 정의되어 있어야 함
     if req.use_search or auto_web_search:
-        results = srch.search_and_learn(search_msg, persona_id=persona_id)
+        # search_and_learn은 동기 블로킹 DDG 검색 + SQLite 쓰기이므로
+        # 스레드 실행기로 넘겨 이벤트 루프가 멈추지 않게 한다.
+        results = await asyncio.get_event_loop().run_in_executor(
+            None, lambda: srch.search_and_learn(search_msg, persona_id=persona_id)
+        )
         search_ctx = srch.format_search_context(results)
 
     # ── 주식 페르소나: 파이프라인 / 스크리닝 트리거 여부 판단 ────────
@@ -1453,7 +1473,8 @@ def share_info(token: str):
 # ── 백업 ──────────────────────────────────────────────
 
 @app.get("/backup/download")
-def backup_download():
+def backup_download(token: str = ""):
+    _require_backup_token(token)
     zip_bytes, filename = bkp.backup_download()
     return Response(
         content=zip_bytes,
@@ -1471,22 +1492,27 @@ def backup_google_status():
 
 
 @app.get("/backup/google-auth")
-def backup_google_auth():
+def backup_google_auth(token: str = ""):
+    _require_backup_token(token)
     if not bkp.gdrive_configured():
         raise HTTPException(400, "GDRIVE_CLIENT_ID / GDRIVE_CLIENT_SECRET / GDRIVE_REDIRECT_URI 환경변수를 설정하세요.")
     return {"auth_url": bkp.gdrive_auth_url()}
 
 
 @app.get("/backup/google-callback")
-async def backup_google_callback(code: str = ""):
+async def backup_google_callback(code: str = "", state: str = ""):
     if not code:
         raise HTTPException(400, "code 파라미터 없음")
-    await bkp.gdrive_exchange_code(code)
+    try:
+        await bkp.gdrive_exchange_code(code, state)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
     return HTMLResponse("<h2>✅ Google Drive 연동 완료!</h2><p>이 창을 닫고 앱으로 돌아가세요.</p>")
 
 
 @app.post("/backup/google-drive")
-async def backup_google_drive():
+async def backup_google_drive(token: str = ""):
+    _require_backup_token(token)
     result = await bkp.backup_to_gdrive()
     if not result["ok"]:
         raise HTTPException(400, result["error"])
@@ -1499,7 +1525,10 @@ async def backup_google_drive():
 async def stock_popular_sync(top_n: int = 50):
     """KRX 거래대금 상위 종목 강제 갱신 (백그라운드 아님)"""
     from stock_analysis.utils.popular_stocks import refresh_popular_stocks
-    result = refresh_popular_stocks(top_n=top_n, force=True)
+    # refresh_popular_stocks는 동기 블로킹 KRX 스캔이므로 스레드 실행기로 넘긴다.
+    result = await asyncio.get_event_loop().run_in_executor(
+        None, lambda: refresh_popular_stocks(top_n=top_n, force=True)
+    )
     return result
 
 
@@ -1570,8 +1599,9 @@ def model_info():
     return llm.current_model_info()
 
 @app.get("/debug/law")
-async def debug_law(q: str = "근로기준법 제7조"):
+async def debug_law(q: str = "근로기준법 제7조", token: str = ""):
     """law.go.kr API 원본 응답 확인용 (개발 디버그)"""
+    _require_backup_token(token)
     import httpx, traceback
     api_key = os.getenv("LAW_API_KEY", "")
     if not api_key:

@@ -80,10 +80,18 @@ def _parse_amount(text: str) -> Optional[int]:
     지원: '300만원', '4800만', '1억2천만', '3.5억', '12000', '12,000원'
     """
     text = text.replace(',', '').replace(' ', '')
+    # 억+천만 (예: '1억2천만')
+    m = re.search(r'(\d+(?:\.\d+)?)억\s*(\d+(?:\.\d+)?)천만', text)
+    if m:
+        return int(float(m.group(1)) * 1e8 + float(m.group(2)) * 1e7)
     # 억+만
     m = re.search(r'(\d+(?:\.\d+)?)억\s*(\d+(?:\.\d+)?)만', text)
     if m:
         return int(float(m.group(1)) * 1e8 + float(m.group(2)) * 1e4)
+    # 억+천 (만 생략 구어체, 예: '1억5천' == '1억5천만원')
+    m = re.search(r'(\d+(?:\.\d+)?)억\s*(\d+(?:\.\d+)?)천(?!\d)', text)
+    if m:
+        return int(float(m.group(1)) * 1e8 + float(m.group(2)) * 1e7)
     # 억
     m = re.search(r'(\d+(?:\.\d+)?)억', text)
     if m:
@@ -430,12 +438,12 @@ _SALARY_AMT_KEYWORDS = ['월급', '연봉', '월 급여', '급여', '임금']
 
 
 def _calc_net_salary(monthly: int, deps: int = 1) -> dict:
-    """4대보험 + 소득세 공제 후 실수령액 계산 (2024년 기준)"""
+    """4대보험 + 소득세 공제 후 실수령액 계산 (2026년 기준)"""
     # 4대보험 상·하한 적용
     pension_base = min(max(monthly, 370_000), 5_900_000)
-    pension      = int(pension_base * 0.045)
-    health       = int(monthly * 0.03545)
-    ltcare       = int(health * 0.1295)
+    pension      = int(pension_base * 0.0475)
+    health       = int(monthly * 0.03595)
+    ltcare       = int(health * 0.1314)
     employment   = int(monthly * 0.009)
 
     # 근로소득세 (간이세액표 공식)
@@ -541,14 +549,14 @@ def try_salary_calc(text: str) -> Optional[str]:
     annual_label = f"(연봉 환산: {r['monthly']*12:,}원)" if '연봉' in tl else ""
 
     return (
-        f"## 급여 실수령액 계산 (2024년 요율 기준)\n\n"
+        f"## 급여 실수령액 계산 (2026년 요율 기준)\n\n"
         f"**월 급여**: {monthly:,}원 {annual_label}\n"
         f"**부양가족**: {deps}명\n\n"
         f"### 공제 항목\n"
         f"| 항목 | 금액 | 비율 |\n|------|------|------|\n"
-        f"| 국민연금 (4.5%) | {r['pension']:,}원 | |\n"
-        f"| 건강보험 (3.545%) | {r['health']:,}원 | |\n"
-        f"| 장기요양보험 (12.95%) | {r['ltcare']:,}원 | 건강보험료 기준 |\n"
+        f"| 국민연금 (4.75%) | {r['pension']:,}원 | |\n"
+        f"| 건강보험 (3.595%) | {r['health']:,}원 | |\n"
+        f"| 장기요양보험 (13.14%) | {r['ltcare']:,}원 | 건강보험료 기준 |\n"
         f"| 고용보험 (0.9%) | {r['employment']:,}원 | |\n"
         f"| 근로소득세 | {r['income_tax']:,}원 | 간이세액표 기준 |\n"
         f"| 지방소득세 (10%) | {r['local_tax']:,}원 | |\n"
@@ -556,7 +564,7 @@ def try_salary_calc(text: str) -> Optional[str]:
         f"### 결과\n"
         f"**실수령액: {r['net']:,}원** "
         f"({r['net']//10000:,}만 {r['net']%10000:,}원)\n\n"
-        f"> 2024년 4대보험 요율·간이세액표 기준 — 이후 연도 요율 변경 시 실제 금액과 차이가 있을 수 있습니다.\n"
+        f"> 2026년 4대보험 요율·간이세액표 기준 — 이후 연도 요율 변경 시 실제 금액과 차이가 있을 수 있습니다.\n"
         f"> 실제 공제액은 부양가족 수, 비과세 항목(식대 20만, 자가운전보조금 20만 등)에 따라 다를 수 있습니다.\n"
         f"> 정확한 계산: 국세청 홈택스 → 근로소득 간이세액표"
     )
@@ -1010,19 +1018,19 @@ def try_insurance_calc(text: str) -> Optional[str]:
         return None
 
     r = _calc_net_salary(amt, 1)
-    employer_pension    = int(min(max(amt, 370_000), 5_900_000) * 0.045)
-    employer_health     = int(amt * 0.03545)
-    employer_ltcare     = int(employer_health * 0.1295)
+    employer_pension    = int(min(max(amt, 370_000), 5_900_000) * 0.0475)
+    employer_health     = int(amt * 0.03595)
+    employer_ltcare     = int(employer_health * 0.1314)
     employer_employment = int(amt * 0.009)
 
     return (
-        f"## 4대보험료 계산 (2024년 요율 기준)\n\n"
+        f"## 4대보험료 계산 (2026년 요율 기준)\n\n"
         f"**월 보수월액**: {amt:,}원\n\n"
         f"| 보험 종류 | 요율 | 근로자 부담 | 사업주 부담 |\n"
         f"|-----------|------|------------|------------|\n"
-        f"| 국민연금 | 9% | {r['pension']:,}원 | {employer_pension:,}원 |\n"
-        f"| 건강보험 | 7.09% | {r['health']:,}원 | {employer_health:,}원 |\n"
-        f"| 장기요양보험 | (건강×12.95%) | {r['ltcare']:,}원 | {employer_ltcare:,}원 |\n"
+        f"| 국민연금 | 9.5% | {r['pension']:,}원 | {employer_pension:,}원 |\n"
+        f"| 건강보험 | 7.19% | {r['health']:,}원 | {employer_health:,}원 |\n"
+        f"| 장기요양보험 | (건강×13.14%) | {r['ltcare']:,}원 | {employer_ltcare:,}원 |\n"
         f"| 고용보험 | 1.8%(0.9%씩) | {r['employment']:,}원 | {employer_employment:,}원 |\n"
         f"| **근로자 합계** | | **{r['pension']+r['health']+r['ltcare']+r['employment']:,}원** | |\n"
         f"| **사업주 합계** | | | **{employer_pension+employer_health+employer_ltcare+employer_employment:,}원** |\n\n"

@@ -605,7 +605,7 @@ class ReportWriter:
   반드시 개인의 투자 성향과 리스크 허용 범위를 고려하여 판단하시기 바랍니다.
   과거 수익률이 미래 수익을 보장하지 않습니다.
 {'='*70}
-다음 보고서: {'저녁 10시' if self.report_time.hour < 12 else '익일 오전 7시'}
+다음 보고서: {'저녁 10시' if self.report_time.hour < 22 else '익일 오전 7시'}
 {'='*70}"""
 
     def _save_report(self, report: str):

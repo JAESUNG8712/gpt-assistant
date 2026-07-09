@@ -62,7 +62,7 @@ def send_report(report: str, label: str = "") -> bool:
 
     try:
         context = ssl.create_default_context()
-        with smtplib.SMTP_SSL(cfg["smtp_host"], cfg["smtp_port"], context=context) as server:
+        with smtplib.SMTP_SSL(cfg["smtp_host"], cfg["smtp_port"], context=context, timeout=30) as server:
             server.login(cfg["sender"], cfg["password"])
             server.sendmail(cfg["sender"], cfg["recipients"], msg.as_string())
 

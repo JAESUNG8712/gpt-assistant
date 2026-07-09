@@ -215,11 +215,6 @@ def classify_personas(text: str, top_k: int = 2) -> list:
     return selected or [ranked[0][0]]
 
 
-def classify_persona(text: str) -> str:
-    """단일 페르소나 id만 필요한 호출부를 위한 호환 wrapper."""
-    return classify_personas(text, top_k=1)[0]
-
-
 def build_combined_persona(persona_ids: list) -> dict:
     """다중 페르소나를 하나의 종합 전문가 system_prompt/features로 병합.
     단일 id면 해당 페르소나를 그대로 반환."""
