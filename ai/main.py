@@ -21,8 +21,16 @@ import law_search as law
 import calculator as calc
 import intent_agent
 
-# ── 복합어 정규화 (띄어쓰기 변형 → 정확한 검색어) ─────
-_COMPOUND_MAP = [
+# ── 사용자 입력 전처리: 띄어쓰기 복합어 → 붙여쓰기 (질의 조인) ─────
+# engine.py에도 이름이 비슷한 _COMPOUND_MAP이 있어 중복처럼 보이지만 방향이
+# 반대다 — engine.py 쪽은 색인/검색 시 "붙여쓰기 → 띄어쓰기"로 토큰을 분해하고,
+# 여기 _QUERY_JOIN_MAP은 사용자가 직접 입력한 "띄어쓰기 → 붙여쓰기"로 질의 자체를
+# 정규화한다. 실측 결과(21개 항목 전수) 이 조인 단계를 건너뛰면 검색 점수가
+# 동일하거나(4건) 최대 19배까지 떨어짐(17건, 예: "권고 사직" 0.76→0.04) —
+# KB의 q 필드가 붙여쓰기(compact) 위주로 저장돼 있어 q필드 5배 가중치의 이득을
+# 그대로 받으려면 질의도 붙여쓰기여야 하기 때문. 두 맵은 서로를 대체하지 않는
+# 별개의 보완 단계이므로 통합하지 않는다(2026-07-09 QA로 확인).
+_QUERY_JOIN_MAP = [
     ('희망 퇴직', '희망퇴직'), ('권고 사직', '권고사직'), ('정리 해고', '정리해고'),
     ('부당 해고', '부당해고'), ('연장 근로', '연장근로'), ('야간 근로', '야간근로'),
     ('주휴 수당', '주휴수당'), ('연차 수당', '연차수당'), ('최저 임금', '최저임금'),
@@ -35,7 +43,7 @@ _COMPOUND_MAP = [
 def _normalize_query(text: str) -> str:
     """사용자가 띄어쓰기로 입력한 복합어를 붙여서 KB 검색 정확도 향상"""
     result = text
-    for spaced, compact in _COMPOUND_MAP:
+    for spaced, compact in _QUERY_JOIN_MAP:
         result = result.replace(spaced, compact)
     return result
 
