@@ -56,20 +56,18 @@
 - `ai/backup.py` — 직접 다운로드(ZIP) + Google Drive 백업 (OAuth2)
 - `ai/static/index.html` — iPad PWA 채팅 UI
 
-### 배포 방법 (Render.com 무료)
-1. `ai/` 폴더를 Render Web Service로 배포
+### 배포 방법 (현재: Render.com 무료 + Turso 클라우드 DB)
+운영 URL: https://ai-assist-aosk.onrender.com
+1. `ai/` 폴더를 Render Web Service로 배포 (`ai/render.yaml` 참고)
 2. 환경변수 `GROQ_API_KEY` 설정 (https://console.groq.com 무료 발급)
-3. Disk 마운트: `/app/data` 1GB (대화/학습 데이터 영속 저장) — `ai/render.yaml`에 이미 정의되어 있음
+3. [turso.tech](https://turso.tech)에서 무료 DB 생성 후 `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN` 환경변수 설정
+   → 별도 디스크 마운트 불필요(Turso가 대화/학습 데이터를 클라우드에 영속 저장). 두 값을 설정하지 않으면
+   로컬 SQLite로 자동 전환되지만, Render 컨테이너는 재배포 시 초기화되므로 데이터가 유실됨.
 4. iPad Safari에서 배포 URL 접속 → "홈 화면에 추가" → PWA로 사용
 
-### 배포 방법 (Railway 사용 시 — 영속 디스크 필수 설정)
-`ai/railway.json`은 빌드/시작 커맨드만 정의하고 **Volume은 코드로 선언되지 않음** —
-Railway 대시보드에서 직접 만들어야 한다. 이걸 안 하면 매 재배포·컨테이너 재시작마다
-SQLite DB가 컨테이너 임시 파일시스템에 생성되어 학습된 RAG 데이터가 전부 초기화된다.
-1. Railway 프로젝트 → 서비스 선택 → **Volumes** 탭 → "New Volume" 생성
-2. Mount Path를 `/app/data`로 지정
-3. 서비스 환경변수에 `DB_PATH=/app/data/memory.db` 추가
-4. 재배포 후에도 `ai/data/memory.db`가 Volume에 저장되어 영속됨 (배포 로그에 `⚠️ DB_PATH 환경변수가 설정되지 않았습니다` 경고가 더 이상 안 뜨면 정상 설정됨)
+### 배포 이력 (참고용, 더 이상 사용하지 않음)
+- **Railway**: 2026-07-07 $5 플랜 해지, `ai/railway.json` 삭제됨. 로컬 SQLite + Volume 마운트 방식이었으나 위 Turso 방식으로 완전히 대체됨.
+- **Oracle Cloud Always Free**: 신용카드 3D Secure 인증 문제로 가입 실패, `ai/oracle-*.sh` 스크립트 삭제됨.
 
 ### 백업 (직접 다운로드 + Google Drive)
 - `GET /backup/download` — DB 전체를 ZIP(SQL 덤프 + 카테고리별 JSON + manifest)으로 즉시 다운로드

@@ -198,7 +198,7 @@ async def _openrouter_stream(messages: list, system: str) -> AsyncGenerator[str,
     """404 발생 시 대체 모델로 자동 재시도"""
     base_url = "https://openrouter.ai/api/v1/chat/completions"
     extra_headers = {
-        "HTTP-Referer": "https://gpt-assistant-production-320d.up.railway.app",
+        "HTTP-Referer": "https://ai-assist-aosk.onrender.com",
         "X-Title": "My AI Assistant",
     }
     models_to_try = [OPENROUTER_MODEL] + OPENROUTER_FALLBACK_MODELS
