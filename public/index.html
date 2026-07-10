@@ -7052,7 +7052,7 @@ function printHRLetter(empId,histId){
   const co=settings.companyName||"(주)회사";
   const typeNames={"transfer":"인사 발령","promotion":"승진 발령","rank_change":"직급 변경","position":"직책 부여","award":"포상"};
   const title=typeNames[hh.type]||"인사 발령";
-  const stampHtml=settings.certStamp?`<img src="${settings.certStamp}" style="width:80px;height:80px;object-fit:contain;position:absolute;right:20px;top:-10px" alt="직인">`:" (인)";
+  const stampHtml=settings.certStamp?`<img src="${h(settings.certStamp)}" style="width:80px;height:80px;object-fit:contain;position:absolute;right:20px;top:-10px" alt="직인">`:" (인)";
   const printWin=window.open("","_blank","width=800,height=700");
   if(!printWin)return;
   printWin.document.write(`<!DOCTYPE html><html lang="ko"><head><meta charset="UTF-8"><title>${title}</title>
@@ -18021,7 +18021,7 @@ function printCertificate(type,forEmpId){
   const salaryRow=emp.salary?`<tr><td style="padding:8px 12px;width:130px;background:#f8fafc;font-weight:700;border:1px solid #e2e8f0">기본급</td><td style="padding:8px 12px;border:1px solid #e2e8f0">${Number(emp.salary).toLocaleString()}원 / 월</td></tr>`:"";
   const bodyText={employment:"위 사람은 현재 당사에 재직 중임을 증명합니다.",career:"위 사람은 당사에서 아래와 같이 근무하였음을 증명합니다.",salary:"위 사람의 급여 수령 내역을 다음과 같이 확인합니다."};
   const extraRow=type==="salary"&&lastSlip?`<tr><td style="padding:8px 12px;background:#f8fafc;font-weight:700;border:1px solid #e2e8f0">최근 월 실수령</td><td style="padding:8px 12px;border:1px solid #e2e8f0;font-weight:700;color:#1d4ed8">${lastSlip.netPay.toLocaleString()}원 (${lastSlip.year}년 ${lastSlip.month}월)</td></tr>`:type==="salary"?salaryRow:"";
-  const stampHtml=settings.certStamp?`<img src="${settings.certStamp}" style="width:70px;height:70px;object-fit:contain;position:absolute;right:0;top:-8px;opacity:.85" alt="직인">`:` (인)`;
+  const stampHtml=settings.certStamp?`<img src="${h(settings.certStamp)}" style="width:70px;height:70px;object-fit:contain;position:absolute;right:0;top:-8px;opacity:.85" alt="직인">`:` (인)`;
   // Record issue log
   const docNo=_genCertDocNo();
   certLog.push({id:`clog-${Date.now()}`,docNo,empId:emp.id,empName:emp.name,certType:title,issuedBy:currentUser.name,issuedById:currentUser.id,issuedAt:new Date().toISOString()});
@@ -18315,7 +18315,7 @@ function renderCompanyInfo(){
     <div class="fg"><label class="fl">대표이사명 (조직도 최상단 표시)</label><input class="fc" id="s-ceoname" value="${h(_opsStage.ceoName)}" placeholder="대표이사 성명" oninput="_opsStage.ceoName=this.value"></div>
     <div class="fg"><label class="fl">대표자 직인 이미지 <span class="fz11 text-gray">(PNG/JPG, 투명 배경 권장)</span></label>
       <div style="display:flex;align-items:center;gap:10px">
-        ${_opsStage.certStamp?`<img src="${_opsStage.certStamp}" style="width:60px;height:60px;object-fit:contain;border:1px solid #e2e8f0;border-radius:6px;background:#f8fafc">`:`<div style="width:60px;height:60px;border:2px dashed #cbd5e1;border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:10px;color:#94a3b8">도장없음</div>`}
+        ${_opsStage.certStamp?`<img src="${h(_opsStage.certStamp)}" style="width:60px;height:60px;object-fit:contain;border:1px solid #e2e8f0;border-radius:6px;background:#f8fafc">`:`<div style="width:60px;height:60px;border:2px dashed #cbd5e1;border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:10px;color:#94a3b8">도장없음</div>`}
         <div><input type="file" accept="image/*" id="stamp-file-input" style="display:none" onchange="uploadCertStamp(event)"><button class="btn btn-secondary btn-sm" onclick="document.getElementById('stamp-file-input').click()">📷 이미지 업로드</button>
         ${_opsStage.certStamp?`<button class="btn btn-danger btn-sm" style="margin-top:4px" onclick="_opsStage.certStamp='';renderCompanyInfo()">삭제</button>`:""}</div>
       </div>

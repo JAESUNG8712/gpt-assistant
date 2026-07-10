@@ -36,8 +36,17 @@ function toNumber(v) {
   return Number.isNaN(n) ? null : n;
 }
 
+function requireAdmin(req, res) {
+  if ((req.body || {}).role !== 'admin') {
+    res.status(403).json({ error: '관리자만 사용할 수 있습니다.' });
+    return false;
+  }
+  return true;
+}
+
 // 부서별/월별 인원수 업로드 (첫번째 파일)
 router.post('/upload/headcount', upload.single('file'), (req, res) => {
+  if (!requireAdmin(req, res)) return;
   if (!req.file) return res.status(400).json({ error: '파일이 필요합니다.' });
 
   let rows;
@@ -80,6 +89,7 @@ router.post('/upload/headcount', upload.single('file'), (req, res) => {
 
 // 사업부/팀별 예산 상세(판관/용역/경상) 업로드 (두번째 파일)
 router.post('/upload/detail', upload.single('file'), (req, res) => {
+  if (!requireAdmin(req, res)) return;
   if (!req.file) return res.status(400).json({ error: '파일이 필요합니다.' });
 
   let rows;
@@ -181,6 +191,7 @@ router.get('/summary', (req, res) => {
 
 // 데이터 초기화
 router.delete('/data', (req, res) => {
+  if (!requireAdmin(req, res)) return;
   writeBudget({ headcount: [], items: [], uploads: [] });
   res.json({ message: '예산 데이터가 초기화되었습니다.' });
 });

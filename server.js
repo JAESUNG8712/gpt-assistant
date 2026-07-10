@@ -2644,14 +2644,14 @@ app.post("/api/pms/allocations", async (req, res) => {
     const percentNum = Number(percent);
     if (isNaN(percentNum) || percentNum <= 0) return res.status(400).json({ ok: false, message: "투입률은 0보다 큰 숫자여야 합니다." });
     if (role !== "admin" && String(employeeId) !== String(userId)) return res.status(403).json({ ok: false, message: "본인 투입률만 등록할 수 있습니다." });
-    if (id) return res.status(403).json({ ok: false, message: "확정된 투입률은 관리자만 변경할 수 있습니다." });
+    if (id && role !== "admin") return res.status(403).json({ ok: false, message: "확정된 투입률은 관리자만 변경할 수 있습니다." });
     if (role !== "admin") {
       const project = await _pmsProjectById(projectId);
       if (!project || !(project.members || []).map(String).includes(String(employeeId))) {
         return res.status(403).json({ ok: false, message: "투입 인원으로 등록된 프로젝트만 선택할 수 있습니다." });
       }
     }
-    const allocId = `alloc_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const allocId = id || `alloc_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const otherTotal = await _allocationMonthTotal(employeeId, year, month, allocId);
     if (otherTotal + percentNum > 100) return res.status(400).json({ ok: false, message: `투입률 합계가 100%를 초과합니다 (기존 ${otherTotal}% + 신규 ${percentNum}%).` });
     const alloc = {
