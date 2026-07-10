@@ -869,6 +869,7 @@ function describeSnapshotFields(snapshotData) {
 
 // POST /snapshots — create a full-DB confirmed snapshot, tagged by year
 app.post("/snapshots", async (req, res) => {
+  if (!requireAdmin(req, res)) return;
   const { year = new Date().getFullYear(), confirmedBy = "admin", notes = "" } = req.body || {};
   try {
     const data = await loadData();
@@ -940,6 +941,7 @@ app.get("/backups", async (req, res) => {
 
 // POST /backups/create — create a full-DB snapshot for the current year
 app.post("/backups/create", async (req, res) => {
+  if (!requireAdmin(req, res)) return;
   const { label = "수동 스냅샷", type = "manual" } = req.body || {};
   const year = parseInt(req.body.year || new Date().getFullYear());
   try {
@@ -1023,6 +1025,7 @@ app.get("/snapshots/:year/diff", async (req, res) => {
 // the snapshot (a true point-in-time restore); without it, those extra
 // records are simply left in place (snapshot data is merged in, not swapped).
 app.post("/restore", async (req, res) => {
+  if (!requireAdmin(req, res)) return;
   const name = req.body.name || "";
   const fields = Array.isArray(req.body.fields) && req.body.fields.length ? req.body.fields : null;
   const deleteExtras = !!req.body.deleteExtras;

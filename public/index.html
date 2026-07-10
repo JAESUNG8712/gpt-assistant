@@ -1811,7 +1811,7 @@ async function restoreServerBackup(name, fields, deleteExtras){
   if(!confirm(`"${name}" 백업에서 ${scopeMsg}를 복원하시겠습니까? 현재 데이터는 로컬 스냅샷으로 보관됩니다.`)) return;
   try {
     saveAutoSnapshot("pre_import");
-    const body = {name};
+    const body = {name, role:currentUser?.role, user:currentUser?.name};
     if(fields) body.fields = fields;
     if(deleteExtras) body.deleteExtras = true;
     const r = await serverRequest("POST", "/restore", body);
