@@ -354,23 +354,43 @@ async function persistData(data, changedBy = "system") {
     const existingKpiById = {};
     for (const k of (_fileStore.kpiEntries || [])) existingKpiById[k.id] = k;
 
+    // NOTE: GET /data strips `pw` before it ever reaches the client (see
+    // stripPwField), so the client can never learn the server-side bcrypt
+    // hash — it always resends each employee's original plaintext password
+    // on every save (getFullState() always includes the full `employees`
+    // array, on every autosave, for every module: leave requests, board
+    // posts, attendance edits, etc.). Previously this branch re-ran
+    // bcrypt.hash(pw,10) for every one of ~258 employees on every single
+    // save regardless of whether anything actually changed, which took
+    // 20+ seconds (measured) and blew past the client's 15s save timeout —
+    // the root cause of intermittent "저장이 안 되는" failures across the
+    // whole app. Only re-hash when the record is new or has genuinely been
+    // updated since the last save (same updatedAt-newer-than-stored check
+    // already used below to decide whether to record history); otherwise
+    // keep the existing hash untouched.
     const employees = await Promise.all((data.employees || []).map(async (rawEmp) => {
       const ex = existingById[rawEmp.id];
+      const oldTs = ex ? (ex.updatedAt || ex.createdAt || "") : "";
+      const newTs = rawEmp.updatedAt || rawEmp.createdAt || "";
+      const changed = !ex || newTs > oldTs;
       let pw = rawEmp.pw;
-      if (pw == null || pw === "") pw = ex?.pw;
+      if (!changed) pw = ex.pw;
+      else if (pw == null || pw === "") pw = ex?.pw;
       else pw = await hashPlaintextPw(pw);
       const emp = { ...rawEmp, pw };
       if (!ex) {
         _recordFileHistory("employees", emp.id, "insert", changedBy, emp);
-      } else {
-        const oldTs = ex.updatedAt || ex.createdAt || "";
-        const newTs = rawEmp.updatedAt || rawEmp.createdAt || "";
-        if (newTs >= oldTs) _recordFileHistory("employees", emp.id, "update", changedBy, emp);
+      } else if (changed) {
+        _recordFileHistory("employees", emp.id, "update", changedBy, emp);
       }
       return emp;
     }));
     const duplicateLoginIds = warnDuplicateLoginIds(employees);
 
+    // Same fix as above: only log kpi history when the record is new or
+    // genuinely newer than what's stored, instead of `>=` which re-logged
+    // a redundant "update" entry for every unchanged kpi entry on every
+    // save, flooding out real audit history against the MAX_FILE_HISTORY cap.
     for (const kpi of (data.kpiEntries || [])) {
       if (!kpi.id) continue;
       const ex = existingKpiById[kpi.id];
@@ -379,7 +399,7 @@ async function persistData(data, changedBy = "system") {
       } else {
         const oldTs = ex.updatedAt || ex.createdAt || "";
         const newTs = kpi.updatedAt || kpi.createdAt || "";
-        if (newTs >= oldTs) _recordFileHistory("kpi", kpi.id, "update", changedBy, kpi);
+        if (newTs > oldTs) _recordFileHistory("kpi", kpi.id, "update", changedBy, kpi);
       }
     }
     _saveFileHistory();
@@ -419,7 +439,14 @@ async function persistData(data, changedBy = "system") {
       } else {
         const oldTs = rows[0].data.updatedAt || rows[0].data.createdAt || "";
         const newTs = rawEmp.updatedAt || rawEmp.createdAt || "";
-        if (newTs >= oldTs) {
+        // Strictly-newer check (not >=): the client always resends every
+        // employee's plaintext pw on every save (GET /data strips the hash,
+        // so it can never echo it back), so an equal timestamp means "no
+        // real change" — treating it as a change re-ran bcrypt.hash(pw,10)
+        // for every employee on every save (20+ seconds for ~258 employees,
+        // blowing past the client's 15s save timeout). See matching fix in
+        // the JSON-file branch above.
+        if (newTs > oldTs) {
           let pw = rawEmp.pw;
           if (pw == null || pw === "") pw = rows[0].data.pw;
           else pw = await hashPlaintextPw(pw);
