@@ -1333,9 +1333,11 @@ async function _lookupPartnerBizNo(partnerId, dbClient) {
 }
 function _validateVoucherLines(lines, accounts) {
   if (!Array.isArray(lines) || lines.length < 2) return "전표에는 2개 이상의 분개 라인이 필요합니다.";
-  const accIds = new Set(accounts.map(a => a.id));
+  const accById = new Map(accounts.map(a => [a.id, a]));
   for (const l of lines) {
-    if (!accIds.has(l.accountId)) return `존재하지 않는 계정과목입니다: ${l.accountId}`;
+    const acc = accById.get(l.accountId);
+    if (!acc) return `존재하지 않는 계정과목입니다: ${l.accountId}`;
+    if (acc.active === false) return `미사용 처리된 계정과목은 전표에 사용할 수 없습니다: ${acc.code} ${acc.name}`;
     if ((Number(l.debit) || 0) > 0 && (Number(l.credit) || 0) > 0) return "한 라인에 차변과 대변을 동시에 입력할 수 없습니다.";
   }
   const debitSum = _round2(lines.reduce((s, l) => s + (Number(l.debit) || 0), 0));

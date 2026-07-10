@@ -13746,24 +13746,30 @@ function renderAcctVouchersPage(){
   </td></tr>`).join(""):`<tr><td colspan="7" class="text-gray" style="text-align:center;padding:20px">등록된 전표가 없습니다.</td></tr>`}
   </tbody></table></div></div></div>`;
 }
+// 전표에는 사용 중(active) 계정과목만 신규 선택 가능 — "미사용" 처리된 계정과목은
+// 계정과목 관리 화면의 사용여부 토글이 실질적으로 아무 효과가 없어지는 것을 막기 위해 제외한다.
+// (기존 전표 조회/이력 화면은 acctAccounts 전체에서 이름을 찾으므로 과거 전표는 그대로 보인다.)
+function _acctActiveAccounts(){const a=acctAccounts.filter(a=>a.active!==false);return a.length?a:acctAccounts;}
 function openVoucherModal(){
   if(!acctAccounts.length){showToast("먼저 계정과목을 등록하세요.","error");return;}
-  _voucherLines=[{accountId:acctAccounts[0].id,debit:0,credit:0,memo:""},{accountId:acctAccounts[0].id,debit:0,credit:0,memo:""}];
+  const first=_acctActiveAccounts()[0].id;
+  _voucherLines=[{accountId:first,debit:0,credit:0,memo:""},{accountId:first,debit:0,credit:0,memo:""}];
   openModal(`<div class="modal-box" style="max-width:720px"><div class="modal-head"><h3>🧾 전표 작성</h3></div><div class="modal-body">
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
       <div class="fg"><label class="fl">전표일자 <span class="req">*</span></label><input class="fc" type="date" id="vch-date" value="${new Date().toISOString().slice(0,10)}"></div>
       <div class="fg"><label class="fl">거래처</label>${acctPartners.length?`<select class="fc" id="vch-partner-id" onchange="$('#vch-partner').value=_acctPartnerName(this.value)"><option value="">직접 입력</option>${acctPartners.map(p=>`<option value="${p.id}">${h(p.name)}</option>`).join("")}</select>`:""}<input class="fc mt2" id="vch-partner" placeholder="거래처명 직접 입력"></div>
     </div>
     <div class="fg"><label class="fl">내용</label><input class="fc" id="vch-desc"></div>
-    <div class="fg"><label class="fl">분개 라인</label><div id="vch-lines"></div><button class="btn btn-secondary btn-sm mt2" onclick="_voucherLines.push({accountId:acctAccounts[0].id,debit:0,credit:0,memo:''});renderVoucherLines()">+ 라인 추가</button></div>
+    <div class="fg"><label class="fl">분개 라인</label><div id="vch-lines"></div><button class="btn btn-secondary btn-sm mt2" onclick="_voucherLines.push({accountId:_acctActiveAccounts()[0].id,debit:0,credit:0,memo:''});renderVoucherLines()">+ 라인 추가</button></div>
     <div class="fz12 text-gray" id="vch-balance"></div>
   </div><div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal()">취소</button><button class="btn btn-primary" onclick="saveVoucher()">저장 (임시)</button></div></div>`);
   setTimeout(renderVoucherLines,30);
 }
 function renderVoucherLines(){
   const el=$("#vch-lines");if(!el)return;
+  const opts=_acctActiveAccounts();
   el.innerHTML=_voucherLines.map((l,i)=>`<div style="display:flex;gap:5px;align-items:center;margin-bottom:5px">
-    <select class="fc" style="flex:2" onchange="_voucherLines[${i}].accountId=this.value;updateVoucherBalance()">${acctAccounts.map(a=>`<option value="${a.id}" ${l.accountId===a.id?"selected":""}>${h(a.code)} ${h(a.name)}</option>`).join("")}</select>
+    <select class="fc" style="flex:2" onchange="_voucherLines[${i}].accountId=this.value;updateVoucherBalance()">${opts.map(a=>`<option value="${a.id}" ${l.accountId===a.id?"selected":""}>${h(a.code)} ${h(a.name)}</option>`).join("")}</select>
     <input class="fc" type="number" placeholder="차변" style="flex:1" value="${l.debit||""}" oninput="_voucherLines[${i}].debit=+this.value||0;_voucherLines[${i}].credit=0;renderVoucherLines();updateVoucherBalance()">
     <input class="fc" type="number" placeholder="대변" style="flex:1" value="${l.credit||""}" oninput="_voucherLines[${i}].credit=+this.value||0;_voucherLines[${i}].debit=0;renderVoucherLines();updateVoucherBalance()">
     <input class="fc" placeholder="비고" style="flex:1" value="${h(l.memo||"")}" oninput="_voucherLines[${i}].memo=this.value">
