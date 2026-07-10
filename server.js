@@ -1319,6 +1319,18 @@ async function _getAccountsList() {
   const { rows } = await pool.query("SELECT id, data FROM accounts WHERE is_deleted = FALSE");
   return rows.map(r => ({ id: r.id, ...r.data }));
 }
+// 견적서 출고/발주서 입고 시 자동 발행되는 세금계산서에 거래처 마스터의 사업자번호를 채워 넣는다.
+// (수동 발행 세금계산서는 클라이언트가 거래처 선택 시 자동으로 채워 보내지만, 자동 발행 경로는
+// 거래처 마스터를 조회하지 않고 항상 빈 문자열을 넣고 있어 거래처 정보 불일치가 발생했었다.)
+async function _lookupPartnerBizNo(partnerId, dbClient) {
+  if (!partnerId) return "";
+  if (USE_JSON_FILE) {
+    const p = _fileAccounting.partners.find(p => p.id === partnerId);
+    return p?.bizNo || "";
+  }
+  const { rows } = await (dbClient || pool).query("SELECT data FROM partners WHERE id = $1", [partnerId]);
+  return rows[0]?.data?.bizNo || "";
+}
 function _validateVoucherLines(lines, accounts) {
   if (!Array.isArray(lines) || lines.length < 2) return "전표에는 2개 이상의 분개 라인이 필요합니다.";
   const accIds = new Set(accounts.map(a => a.id));
@@ -1907,7 +1919,7 @@ app.post("/api/erp/quotations/:id/ship", async (req, res) => {
       const inv = {
         id: `ti_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
         invoiceNo, status: "issued", direction: "sales",
-        issueDate: q.date, partnerId: q.partnerId || null, partnerName: q.partnerName, partnerBizNo: "",
+        issueDate: q.date, partnerId: q.partnerId || null, partnerName: q.partnerName, partnerBizNo: await _lookupPartnerBizNo(q.partnerId),
         ...invTotals,
         createdBy: user, createdAt: now, sourceType: "quotation", sourceId: q.id, sourceNo: q.quoteNo,
       };
@@ -1948,7 +1960,7 @@ app.post("/api/erp/quotations/:id/ship", async (req, res) => {
       const inv = {
         id: `ti_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
         invoiceNo, status: "issued", direction: "sales",
-        issueDate: q0.date, partnerId: q0.partnerId || null, partnerName: q0.partnerName, partnerBizNo: "",
+        issueDate: q0.date, partnerId: q0.partnerId || null, partnerName: q0.partnerName, partnerBizNo: await _lookupPartnerBizNo(q0.partnerId, client),
         ...invTotals,
         createdBy: user, createdAt: now, sourceType: "quotation", sourceId: q0.id, sourceNo: q0.quoteNo,
       };
@@ -2102,7 +2114,7 @@ app.post("/api/erp/purchase-orders/:id/receive", async (req, res) => {
       const inv = {
         id: `ti_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
         invoiceNo, status: "issued", direction: "purchase",
-        issueDate: po.date, partnerId: po.partnerId || null, partnerName: po.partnerName, partnerBizNo: "",
+        issueDate: po.date, partnerId: po.partnerId || null, partnerName: po.partnerName, partnerBizNo: await _lookupPartnerBizNo(po.partnerId),
         ...invTotals,
         createdBy: user, createdAt: now, sourceType: "po", sourceId: po.id, sourceNo: po.poNo,
       };
@@ -2136,7 +2148,7 @@ app.post("/api/erp/purchase-orders/:id/receive", async (req, res) => {
       const inv = {
         id: `ti_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
         invoiceNo, status: "issued", direction: "purchase",
-        issueDate: po0.date, partnerId: po0.partnerId || null, partnerName: po0.partnerName, partnerBizNo: "",
+        issueDate: po0.date, partnerId: po0.partnerId || null, partnerName: po0.partnerName, partnerBizNo: await _lookupPartnerBizNo(po0.partnerId, client),
         ...invTotals,
         createdBy: user, createdAt: now, sourceType: "po", sourceId: po0.id, sourceNo: po0.poNo,
       };
