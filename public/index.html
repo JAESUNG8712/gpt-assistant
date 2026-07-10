@@ -3879,6 +3879,8 @@ function getFullState(action=""){
     data:{
       employees:JSON.parse(JSON.stringify(employees)),
       kpiEntries:JSON.parse(JSON.stringify(kpiEntries)),
+      compSessions:JSON.parse(JSON.stringify(compSessions)),
+      compResponses:JSON.parse(JSON.stringify(compResponses)),
       changeRequests:JSON.parse(JSON.stringify(changeRequests)),
       settings:JSON.parse(JSON.stringify(settings)),
       orgDB:JSON.parse(JSON.stringify(orgDB)),
@@ -4021,6 +4023,8 @@ function applyState(state,skipUndo=false){
   const d=state.data||state;
   if(d.employees&&Array.isArray(d.employees)){employees=d.employees;_ensureEmpDefaults(employees);}
   if(d.kpiEntries&&Array.isArray(d.kpiEntries))kpiEntries=d.kpiEntries;
+  if(d.compSessions&&Array.isArray(d.compSessions))compSessions=d.compSessions;
+  if(d.compResponses&&Array.isArray(d.compResponses))compResponses=d.compResponses;
   if(d.changeRequests&&Array.isArray(d.changeRequests))changeRequests=d.changeRequests;
   if(d.settings&&typeof d.settings==="object")settings={...settings,...d.settings};
   if(d.settings?.scoreWeights)settings.scoreWeights={...settings.scoreWeights,...d.settings.scoreWeights};
