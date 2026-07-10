@@ -3135,14 +3135,14 @@ function saveEduReg(empId){
       if(e.id!==empId) return e;
       const hist=Array.isArray(e.hrHistory)?[...e.hrHistory]:[];
       hist.push(histEntry);
-      return{...e,hrHistory:hist,customFields:{...(e.customFields||{}),[promotionSettings.legalEduField]:true}};
+      return{...e,hrHistory:hist,customFields:{...(e.customFields||{}),[promotionSettings.legalEduField]:true},updatedAt:new Date().toISOString()};
     });
   } else {
     employees=employees.map(e=>{
       if(e.id!==empId) return e;
       const hist=Array.isArray(e.hrHistory)?[...e.hrHistory]:[];
       hist.push(histEntry);
-      return{...e,hrHistory:hist};
+      return{...e,hrHistory:hist,updatedAt:new Date().toISOString()};
     });
   }
   if(currentUser?.id===empId){const u=employees.find(e=>e.id===empId);if(u)currentUser=u;}
@@ -3184,8 +3184,8 @@ function executeBulkEdu(){
       if(e.id!==empId) return e;
       const hist=Array.isArray(e.hrHistory)?[...e.hrHistory]:[];
       hist.push(histEntry);
-      if(type==="edu_legal") return{...e,hrHistory:hist,customFields:{...(e.customFields||{}),[promotionSettings.legalEduField]:true}};
-      return{...e,hrHistory:hist};
+      if(type==="edu_legal") return{...e,hrHistory:hist,customFields:{...(e.customFields||{}),[promotionSettings.legalEduField]:true},updatedAt:new Date().toISOString()};
+      return{...e,hrHistory:hist,updatedAt:new Date().toISOString()};
     });
   });
   closeModal();
@@ -6333,8 +6333,13 @@ function submitRetire(id){
   if(!date||!reason){showToast("퇴직일과 사유를 입력하세요.","error");return;}
   const note=$("#rt-note")?.value.trim()||"";
   const newH={id:genId(),type:"retirement",date,desc:"퇴직 처리 - "+reason,before:"재직",after:"퇴직 ("+date+")",note};
-  employees=employees.map(e=>e.id===id?{...e,active:false,retireDate:date,retireReason:reason,hrHistory:[...(e.hrHistory||[]),newH]}:e);
+  employees=employees.map(e=>e.id===id?{...e,active:false,retireDate:date,retireReason:reason,hrHistory:[...(e.hrHistory||[]),newH],updatedAt:new Date().toISOString()}:e);
   _cleanupRetiredEmpReferences(id,date);
+  // NOTE: this call was missing — 퇴직 처리 showed a success toast but was
+  // never sent to the server, so the employee could show as still active
+  // again after a refresh/re-login unless an unrelated action happened to
+  // trigger a save afterward.
+  autoSaveToServerIfEnabled();
   closeModal();showToast("퇴직 처리가 완료되었습니다.","info");renderHRListTbl();
 }
 // 퇴직자에 대한 미결 참조를 정리 — 퇴직 이후에도 결재 위임이 계속 대결자로 치환되거나,
@@ -6361,10 +6366,16 @@ function submitHRForm(){
   if(employees.some(e=>e.empNo===v("#hr-empno")||e.loginId===loginId)){showToast("사번 또는 로그인ID가 중복됩니다.","error");return;}
   const career=Number(v("#hr-career"))||0;const edu=$("#hr-edu")?.value||"대학교 졸업";
   const rankCalc=calcAutoRank(career,edu);
-  const newEmp={id:genId(),loginId,pw:v("#hr-pw")||v("#hr-empno"),name:v("#hr-name"),empNo:v("#hr-empno"),role:$("#hr-role")?.value||"member",dept,team,birth:v("#hr-birth"),gender:$("#hr-gender")?.value||"남",nationality:$("#hr-nationality")?.value||"내국인",hire:v("#hr-hire"),jobGroup:$("#hr-jobgroup")?.value||"관리직",rank:$("#hr-rank")?.value||rankCalc.rank,rankYear:Number(v("#hr-rankyear"))||Math.max(1,Math.round(rankCalc.rankYear)),salary:Number(v("#hr-salary"))||0,edu,eduSchool:v("#hr-eduschool"),totalCareer:career,position:v("#hr-position"),email:v("#hr-email"),phone:v("#hr-phone"),address:v("#hr-address"),active:true,customFields:{...hrCustom},careers:[...hrCareers],hrHistory:[]};
+  const newEmp={id:genId(),loginId,pw:v("#hr-pw")||v("#hr-empno"),name:v("#hr-name"),empNo:v("#hr-empno"),role:$("#hr-role")?.value||"member",dept,team,birth:v("#hr-birth"),gender:$("#hr-gender")?.value||"남",nationality:$("#hr-nationality")?.value||"내국인",hire:v("#hr-hire"),jobGroup:$("#hr-jobgroup")?.value||"관리직",rank:$("#hr-rank")?.value||rankCalc.rank,rankYear:Number(v("#hr-rankyear"))||Math.max(1,Math.round(rankCalc.rankYear)),salary:Number(v("#hr-salary"))||0,edu,eduSchool:v("#hr-eduschool"),totalCareer:career,position:v("#hr-position"),email:v("#hr-email"),phone:v("#hr-phone"),address:v("#hr-address"),active:true,customFields:{...hrCustom},careers:[...hrCareers],hrHistory:[],updatedAt:new Date().toISOString()};
   employees.push(newEmp);
   if(dept&&!orgDB.depts.includes(dept)){orgDB.depts.push(dept);orgDB.teams[dept]=[];}
   if(dept&&team&&!getTeams(dept).includes(team)){if(!orgDB.teams[dept])orgDB.teams[dept]=[];orgDB.teams[dept].push(team);}
+  // NOTE: this call was missing — new-employee registration (입사 처리) showed
+  // a success toast but was never sent to the server on its own, so a newly
+  // registered employee could vanish on refresh unless an unrelated action
+  // happened to trigger a save afterward. Same class of bug as submitRetire()
+  // below and submitHRChange() above.
+  autoSaveToServerIfEnabled();
   showToast(`${newEmp.name} 님이 등록되었습니다.`,"success");hrCareers=[];hrCustom={};renderHRRegister();
 }
 async function extractDocxText(arrayBuffer){
@@ -6726,7 +6737,7 @@ function saveEmpEdit(id){
   const g=sel=>$(sel)?.value.trim()||"";
   const isActive=g("#ee-active")==="1";
   if(!isActive&&!g("#ee-retiredate")){showToast("퇴직일을 입력하세요.","error");return;}
-  employees=employees.map(e=>e.id===id?{...e,name:g("#ee-name"),empNo:g("#ee-empno"),birth:g("#ee-birth"),gender:g("#ee-gender"),nationality:g("#ee-nationality")||"내국인",hire:g("#ee-hire"),dept:g("#ee-dept"),team:g("#ee-team"),position:g("#ee-position"),rank:g("#ee-rank"),rankYear:Number(g("#ee-rankyear"))||1,jobGroup:g("#ee-jobgroup"),salary:Number(g("#ee-salary"))||0,totalCareer:Number(g("#ee-career"))||0,edu:g("#ee-edu"),eduSchool:g("#ee-eduschool"),email:g("#ee-email"),phone:g("#ee-phone"),address:g("#ee-address"),role:g("#ee-role"),active:isActive,retireDate:isActive?"":g("#ee-retiredate"),retireReason:isActive?"":g("#ee-retirereason"),careers:window._eeEditCareers||e.careers||[],leaves:window._eeEditLeaves||e.leaves||[]}:e);
+  employees=employees.map(e=>e.id===id?{...e,name:g("#ee-name"),empNo:g("#ee-empno"),birth:g("#ee-birth"),gender:g("#ee-gender"),nationality:g("#ee-nationality")||"내국인",hire:g("#ee-hire"),dept:g("#ee-dept"),team:g("#ee-team"),position:g("#ee-position"),rank:g("#ee-rank"),rankYear:Number(g("#ee-rankyear"))||1,jobGroup:g("#ee-jobgroup"),salary:Number(g("#ee-salary"))||0,totalCareer:Number(g("#ee-career"))||0,edu:g("#ee-edu"),eduSchool:g("#ee-eduschool"),email:g("#ee-email"),phone:g("#ee-phone"),address:g("#ee-address"),role:g("#ee-role"),active:isActive,retireDate:isActive?"":g("#ee-retiredate"),retireReason:isActive?"":g("#ee-retirereason"),careers:window._eeEditCareers||e.careers||[],leaves:window._eeEditLeaves||e.leaves||[],updatedAt:new Date().toISOString()}:e);
   if(id===currentUser.id){currentUser=employees.find(e=>e.id===id)||currentUser;}closeModal();showToast("직원 정보가 수정되었습니다.","success");autoSaveToServerIfEnabled();renderHRListTbl();
 }
 function openResetPwModal(id){
@@ -7032,13 +7043,22 @@ function submitHRChange(){
   const today=new Date().toISOString().slice(0,10);
   const isFuture=Object.keys(updates).length>0 && date>today;
   const newH={id:genId(),type,date,desc,before,after,note:$("#hc-note")?.value.trim()||"",applied:!isFuture,pendingUpdates:isFuture?updates:null};
+  const nowIso=new Date().toISOString();
   if(isFuture){
-    employees=employees.map(e=>e.id===Number(hrChgEmpId)?{...e,hrHistory:[...(e.hrHistory||[]),newH]}:e);
+    employees=employees.map(e=>e.id===Number(hrChgEmpId)?{...e,hrHistory:[...(e.hrHistory||[]),newH],updatedAt:nowIso}:e);
     showToast(`인사 변동 사항이 예정 등록되었습니다. (발령일 ${date}부터 자동 적용)`,"success");
   }else{
-    employees=employees.map(e=>e.id===Number(hrChgEmpId)?{...e,...updates,hrHistory:[...(e.hrHistory||[]),newH]}:e);
+    employees=employees.map(e=>e.id===Number(hrChgEmpId)?{...e,...updates,hrHistory:[...(e.hrHistory||[]),newH],updatedAt:nowIso}:e);
     showToast("인사 변동 사항이 등록되었습니다.","success");
   }
+  if(currentUser?.id===Number(hrChgEmpId)){const u=employees.find(e=>e.id===Number(hrChgEmpId));if(u)currentUser=u;}
+  // NOTE: this call was missing entirely — every 발령·변동 이력 registered
+  // through this form (전보/승진/직급변경/직책부여/포상/휴직/퇴직) showed a
+  // success toast but was never sent to the server, so it vanished on
+  // refresh/re-login unless some unrelated action happened to trigger a save
+  // afterward. Confirmed via Playwright: registered a transfer, reloaded from
+  // server without this fix → hrHistory entry absent.
+  autoSaveToServerIfEnabled();
   closeModal();renderHRChanges();
 }
 function _applyDueHRChanges(){
@@ -7054,7 +7074,7 @@ function _applyDueHRChanges(){
       }
       return hh;
     });
-    return touched?{...e,...upd,hrHistory:hist}:e;
+    return touched?{...e,...upd,hrHistory:hist,updatedAt:new Date().toISOString()}:e;
   });
   if(changed){saveAutoSnapshot("auto");autoSaveToServerIfEnabled();}
   return changed;
@@ -9356,7 +9376,7 @@ function doPromotion(empId, nextRank){
     if(e.id!==empId) return e;
     const hist=Array.isArray(e.hrHistory)?[...e.hrHistory]:[];
     hist.push({id:genId(),type:"promotion",date,desc:"승진 처리",before:oldRank,after:nextRank,note});
-    return{...e,rank:nextRank,rankYear:0,hrHistory:hist};
+    return{...e,rank:nextRank,rankYear:0,hrHistory:hist,updatedAt:new Date().toISOString()};
   });
   if(currentUser?.id===empId){const u=employees.find(e=>e.id===empId);if(u)currentUser=u;}
   closeModal();
@@ -9407,7 +9427,7 @@ function doBulkPromotion(){
       if(e.id!==emp.id) return e;
       const hist=Array.isArray(e.hrHistory)?[...e.hrHistory]:[];
       hist.push({id:genId(),type:"promotion",date,desc:"승진 처리 (일괄)",before:oldRank,after:nextRank,note:"일괄 승진 처리"});
-      return{...e,rank:nextRank,rankYear:0,hrHistory:hist};
+      return{...e,rank:nextRank,rankYear:0,hrHistory:hist,updatedAt:new Date().toISOString()};
     });
     logAction("promotion","일괄 승진",`emp:${emp.id}`,`${oldRank} → ${nextRank}`);
     cnt++;
@@ -9428,7 +9448,7 @@ function doRegisterLegalEdu(empId){
     const hist=Array.isArray(e.hrHistory)?[...e.hrHistory]:[];
     hist.push({id:genId(),type:"edu_legal",date,desc:name,before:"",after:"이수완료",note});
     const cf={...(e.customFields||{}),[promotionSettings.legalEduField]:true};
-    return{...e,hrHistory:hist,customFields:cf};
+    return{...e,hrHistory:hist,customFields:cf,updatedAt:new Date().toISOString()};
   });
   closeModal();
   showToast("법정의무교육 이수가 등록되었습니다.","success");
@@ -9470,7 +9490,7 @@ function doBulkLegalEdu(){
       if(e.id!==empId) return e;
       const hist=Array.isArray(e.hrHistory)?[...e.hrHistory]:[];
       hist.push({id:genId(),type:"edu_legal",date,desc:"법정의무교육",before:"",after:"이수완료",note:"일괄 등록"});
-      return{...e,hrHistory:hist,customFields:{...(e.customFields||{}),[promotionSettings.legalEduField]:true}};
+      return{...e,hrHistory:hist,customFields:{...(e.customFields||{}),[promotionSettings.legalEduField]:true},updatedAt:new Date().toISOString()};
     });
   });
   closeModal();
@@ -17722,10 +17742,10 @@ function _applyOrgBulkChanges(){
     const isFuture=c.date>today;
     const newH={id:genId(),type:"transfer",date:c.date,desc:`조직도 일괄 인사발령: ${c.from} → ${c.to}`,before:c.from,after:c.to,note:c.note||"",applied:!isFuture,pendingUpdates:isFuture?{dept:c.newDept,team:c.newTeam}:null};
     if(isFuture){
-      employees=employees.map(e=>e.id===emp.id?{...e,hrHistory:[...(e.hrHistory||[]),newH]}:e);
+      employees=employees.map(e=>e.id===emp.id?{...e,hrHistory:[...(e.hrHistory||[]),newH],updatedAt:new Date().toISOString()}:e);
       scheduledCnt++;
     }else{
-      employees=employees.map(e=>e.id===emp.id?{...e,dept:c.newDept,team:c.newTeam,hrHistory:[...(e.hrHistory||[]),newH]}:e);
+      employees=employees.map(e=>e.id===emp.id?{...e,dept:c.newDept,team:c.newTeam,hrHistory:[...(e.hrHistory||[]),newH],updatedAt:new Date().toISOString()}:e);
       appliedCnt++;
     }
   });
