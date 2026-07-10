@@ -6200,8 +6200,10 @@ function saveSelfEdit(canEditAll){
   const g=id=>$(id)?.value.trim()||"";
   const updates={email:g("#se-email"),phone:g("#se-phone"),address:g("#se-address"),edu:g("#se-edu")||currentUser.edu,eduSchool:g("#se-eduschool"),totalCareer:Number(g("#se-career"))||0,careers:[...selfCareers]};
   if(canEditAll){if(g("#se-name"))updates.name=g("#se-name");if(g("#se-birth"))updates.birth=g("#se-birth");}
+  updates.updatedAt=new Date().toISOString();
   employees=employees.map(e=>e.id===currentUser.id?{...e,...updates}:e);
   currentUser={...currentUser,...updates};
+  autoSaveToServerIfEnabled();
   closeModal();showToast("내 정보가 수정되었습니다.","success");renderMyProfile();renderSidebar();
 }
 
