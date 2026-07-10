@@ -1,4 +1,5 @@
 import asyncio
+import hmac
 import os
 import re
 import glob as _glob
@@ -154,19 +155,28 @@ if not os.getenv("DB_PATH") and not (os.getenv("TURSO_DATABASE_URL") and os.gete
         "TURSO_DATABASE_URL + TURSO_AUTH_TOKEN으로 Turso 클라우드 DB를 사용하세요."
     )
 
+if bkp.gdrive_configured() and not os.getenv("GDRIVE_TOKEN_PATH"):
+    print(
+        "⚠️  GDRIVE_TOKEN_PATH 환경변수가 설정되지 않아 Google Drive 연동 토큰이 "
+        "기본값(/tmp/gdrive_token.json)에 저장됩니다. 컨테이너 재시작·재배포 시 /tmp가 "
+        "초기화되는 배포 환경(Render/Railway 등)에서는 매번 Google 계정 재연동이 필요합니다. "
+        "영속 볼륨 경로로 GDRIVE_TOKEN_PATH=<마운트경로>/gdrive_token.json 을 설정하세요."
+    )
+
 BACKUP_TOKEN = os.getenv("BACKUP_TOKEN", "")
 if not BACKUP_TOKEN:
     print(
         "⚠️  BACKUP_TOKEN 환경변수가 설정되지 않았습니다. "
-        "/backup/download, /backup/google-auth, /backup/google-drive 가 인증 없이 "
-        "공개 접근 가능한 상태입니다(전체 대화·학습 DB 다운로드 포함). "
+        "/backup/download, /backup/google-auth, /backup/google-drive, /debug/law, "
+        "/admin/* (DB 이관·학습데이터 조회/삭제·공유링크 관리) 가 인증 없이 "
+        "공개 접근 가능한 상태입니다(전체 대화·학습 DB 다운로드/변조 포함). "
         "배포 환경이 외부에 노출된다면 BACKUP_TOKEN을 설정하고 요청 시 "
         "?token=<값> 을 함께 전달하세요."
     )
 
 
 def _require_backup_token(token: str = "") -> None:
-    if BACKUP_TOKEN and token != BACKUP_TOKEN:
+    if BACKUP_TOKEN and not hmac.compare_digest(token, BACKUP_TOKEN):
         raise HTTPException(401, "유효한 token 파라미터가 필요합니다.")
 
 
@@ -878,7 +888,7 @@ async def chat(req: ChatRequest):
 
                     # ① DuckDuckGo 일반 검색 (기존)
                     _ddg_task = asyncio.get_event_loop().run_in_executor(
-                        None, srch.search_and_learn, search_msg
+                        None, lambda: srch.search_and_learn(search_msg, persona_id=persona_id)
                     )
 
                     # ② 종목별 뉴스 수집 (병렬)
@@ -1124,7 +1134,8 @@ def _extract_text(content: bytes, filename: str) -> str:
 @app.post("/learn/document")
 async def learn_document(file: UploadFile = File(...), persona: str = DEFAULT_PERSONA):
     content = await file.read()
-    text = _extract_text(content, file.filename)
+    # PDF 파싱(pdfminer/pdftotext)은 최대 수십 초 걸리는 블로킹 호출이므로 스레드 실행기로 넘긴다.
+    text = await asyncio.get_event_loop().run_in_executor(None, _extract_text, content, file.filename)
     mem.store_document(text, file.filename, persona_id=persona)
     return {"ok": True, "filename": file.filename, "chars": len(text)}
 
@@ -1139,7 +1150,7 @@ async def analyze_resume(
 ):
     """이력서/자소서 파일을 업로드하면 LLM이 분석 결과를 스트리밍으로 반환"""
     content = await file.read()
-    resume_text = _extract_text(content, file.filename)
+    resume_text = await asyncio.get_event_loop().run_in_executor(None, _extract_text, content, file.filename)
 
     if not resume_text.strip():
         raise HTTPException(400, "파일에서 텍스트를 추출할 수 없습니다.")
@@ -1294,9 +1305,10 @@ def knowledge_stats():
 # ── DB 이관 (Railway → Turso 1회용) ─────────────────────
 
 @app.post("/admin/import-db")
-async def admin_import_db(file: UploadFile = File(...)):
+async def admin_import_db(file: UploadFile = File(...), token: str = ""):
     """Railway SQLite(memory.db) 또는 백업 ZIP을 업로드해 현재 DB로 이관.
     ZIP 업로드 시 내부의 memory.db를 자동으로 찾아 사용."""
+    _require_backup_token(token)
     import tempfile, zipfile, shutil
     import migrate_to_turso as mig
 
@@ -1333,9 +1345,10 @@ async def admin_import_db(file: UploadFile = File(...)):
 # ── 학습 데이터 관리 (오답 학습 정리용) ─────────────────
 
 @app.get("/admin/learned")
-def admin_learned_list(q: str = "", persona: str = "", limit: int = 30, offset: int = 0):
+def admin_learned_list(q: str = "", persona: str = "", limit: int = 30, offset: int = 0, token: str = ""):
     """learned_knowledge 검색 — 잘못 학습된 항목을 찾을 때 사용.
     예: /admin/learned?q=출장  (내용에 '출장' 포함 항목 조회)"""
+    _require_backup_token(token)
     where, params = [], []
     if q:
         where.append("content LIKE ?")
@@ -1357,11 +1370,12 @@ def admin_learned_list(q: str = "", persona: str = "", limit: int = 30, offset: 
 
 
 @app.get("/admin/learned/duplicates")
-def admin_learned_duplicates(apply: bool = False):
+def admin_learned_duplicates(apply: bool = False, token: str = ""):
     """전체 learned_knowledge에서 content 완전 일치 중복 그룹을 찾아 반환.
     apply=true면 각 그룹에서 가장 오래된(id 최소) 항목만 남기고 나머지를 삭제.
     Turso 이관 시 kb_static_index가 함께 이관되지 않아 정적 KB가 중복 시딩되는
     문제(2026-07-08 발견)의 전 페르소나 전수 정리용."""
+    _require_backup_token(token)
     from collections import defaultdict
     with mem._conn() as c:
         rows = [dict(r) for r in c.execute(
@@ -1409,8 +1423,9 @@ def admin_learned_duplicates(apply: bool = False):
 
 
 @app.delete("/admin/learned/{item_id}")
-def admin_learned_delete(item_id: int):
+def admin_learned_delete(item_id: int, token: str = ""):
     """잘못 학습된 항목 삭제 — DB에서 제거하고 검색 엔진에서도 즉시 제외"""
+    _require_backup_token(token)
     with mem._conn() as c:
         row = c.execute(
             "SELECT id, persona, content FROM learned_knowledge WHERE id=?", (item_id,)
@@ -1443,9 +1458,10 @@ class ShareCreateRequest(BaseModel):
 
 
 @app.post("/admin/share")
-def admin_share_create(req: ShareCreateRequest):
+def admin_share_create(req: ShareCreateRequest, token: str = ""):
     """선택한 페르소나만 접근 가능한 공유 링크 생성.
     반환된 token을 프론트엔드가 '/?share=<token>' 형태 URL로 안내."""
+    _require_backup_token(token)
     invalid = [p for p in req.personas if p not in PERSONAS]
     if not req.personas:
         raise HTTPException(400, "공유할 페르소나를 1개 이상 선택하세요.")
@@ -1456,16 +1472,18 @@ def admin_share_create(req: ShareCreateRequest):
 
 
 @app.get("/admin/share")
-def admin_share_list():
+def admin_share_list(token: str = ""):
+    _require_backup_token(token)
     return {"items": mem.list_share_links()}
 
 
-@app.delete("/admin/share/{token}")
-def admin_share_revoke(token: str):
-    ok = mem.revoke_share_link(token)
+@app.delete("/admin/share/{share_token}")
+def admin_share_revoke(share_token: str, token: str = ""):
+    _require_backup_token(token)
+    ok = mem.revoke_share_link(share_token)
     if not ok:
         raise HTTPException(404, "존재하지 않는 공유 링크입니다.")
-    return {"ok": True, "revoked": token}
+    return {"ok": True, "revoked": share_token}
 
 
 @app.get("/share/{token}")
@@ -1787,7 +1805,8 @@ def health():
     }
     if mem._USE_TURSO:
         # Turso 사용 시 로컬 디스크 지표는 무의미 — DB는 클라우드에 있음
-        result["turso_url"] = os.getenv("TURSO_DATABASE_URL", "")
+        # (URL 자체는 노출하지 않음 — 인증 없는 엔드포인트이므로 인프라 정보 최소 노출)
+        result["turso_configured"] = True
     else:
         db_path = mem.DB_PATH
         data_dir = os.path.dirname(db_path)

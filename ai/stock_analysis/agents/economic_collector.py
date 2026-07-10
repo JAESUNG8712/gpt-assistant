@@ -41,7 +41,12 @@ async def _fetch_bok_latest(stat_code: str, item_code: str, cycle: str = "M",
                 if not rows:
                     return None
                 latest = rows[-1]
-                return {"value": float(latest["DATA_VALUE"]), "time": latest["TIME"]}
+                prev = rows[-2] if len(rows) > 1 else None
+                return {
+                    "value": float(latest["DATA_VALUE"]),
+                    "time": latest["TIME"],
+                    "prev_value": float(prev["DATA_VALUE"]) if prev else None,
+                }
     except Exception:
         return None
 
@@ -99,6 +104,15 @@ class EconomicCollector:
             rate_info["현재"] = live["value"]
             rate_info["결정일"] = live["time"]
             rate_info["_데이터출처"] = "한국은행 ECOS API (실시간)"
+            prev = live.get("prev_value")
+            if prev is not None:
+                rate_info["방향"] = (
+                    "인상" if live["value"] > prev else "인하" if live["value"] < prev else "동결"
+                )
+            else:
+                rate_info["방향"] = "N/A"
+            # 실시간 수치로 갱신되었으므로, 별도로 갱신되지 않는 정적 코멘트는 제거
+            rate_info["코멘트"] = ""
 
         return {
             "한국기준금리": rate_info,
@@ -129,9 +143,17 @@ class EconomicCollector:
         }
         live = await _fetch_bok_latest("731Y003", "0000001", cycle="D", lookback_periods=30)
         if live:
-            usd_krw["전일대비"] = None
             usd_krw["현재"] = live["value"]
             usd_krw["_데이터출처"] = f"한국은행 ECOS API (실시간, 기준일 {live['time']})"
+            prev = live.get("prev_value")
+            if prev is not None:
+                usd_krw["전일대비"] = round(live["value"] - prev, 1)
+                usd_krw["방향"] = "원화강세" if live["value"] < prev else "원화약세" if live["value"] > prev else "보합"
+            else:
+                usd_krw["전일대비"] = None
+                usd_krw["방향"] = "N/A"
+            # 실시간 수치로 갱신되었으므로, 별도로 갱신되지 않는 정적 주요요인 텍스트는 제거
+            usd_krw["주요요인"] = []
 
         return {
             "원달러(USD/KRW)": usd_krw,
@@ -168,30 +190,33 @@ class EconomicCollector:
             kospi = {"close": 2_582.0, "change_pct": 0.45}
             kosdaq = {"close": 748.0, "change_pct": 0.82}
 
+        _static_note = "정적 샘플 — 실시간 API 미연동, 실제 값 아님"
         return {
             "KOSPI": kospi,
             "KOSDAQ": kosdaq,
-            "SP500": {"현재": 5_308.0, "전일대비_pct": 0.62, "_note": "최근 데이터 기준"},
-            "나스닥": {"현재": 16_780.0, "전일대비_pct": 0.75},
-            "다우존스": {"현재": 42_100.0, "전일대비_pct": 0.35},
-            "닛케이225": {"현재": 37_800.0, "전일대비_pct": -0.21},
-            "상해종합": {"현재": 3_180.0, "전일대비_pct": 0.15},
-            "공포지수(VIX)": {"현재": 18.5, "수준": "보통", "코멘트": "20 미만은 안정 국면"},
+            "SP500": {"현재": 5_308.0, "전일대비_pct": 0.62, "_note": _static_note},
+            "나스닥": {"현재": 16_780.0, "전일대비_pct": 0.75, "_note": _static_note},
+            "다우존스": {"현재": 42_100.0, "전일대비_pct": 0.35, "_note": _static_note},
+            "닛케이225": {"현재": 37_800.0, "전일대비_pct": -0.21, "_note": _static_note},
+            "상해종합": {"현재": 3_180.0, "전일대비_pct": 0.15, "_note": _static_note},
+            "공포지수(VIX)": {"현재": 18.5, "수준": "보통", "코멘트": "20 미만은 안정 국면", "_note": _static_note},
         }
 
     async def _collect_commodities(self) -> Dict:
+        _static_note = "정적 샘플 — 실시간 API 미연동, 실제 값 아님"
         return {
-            "WTI원유": {"현재": 78.5, "단위": "USD/배럴", "1개월변화": -3.2, "방향": "하락"},
-            "브렌트원유": {"현재": 82.1, "단위": "USD/배럴"},
-            "금": {"현재": 3_320.0, "단위": "USD/온스", "1년변화": +28.5, "코멘트": "안전자산 수요 강세"},
-            "구리": {"현재": 9_850.0, "단위": "USD/톤", "코멘트": "중국 경기 회복 기대 반영"},
-            "LNG": {"현재": 11.2, "단위": "USD/MMBtu"},
-            "철광석": {"현재": 105.0, "단위": "USD/톤"},
-            "반도체소재_실리콘": {"동향": "공급 타이트, 가격 상승 압력"},
+            "WTI원유": {"현재": 78.5, "단위": "USD/배럴", "1개월변화": -3.2, "방향": "하락", "_note": _static_note},
+            "브렌트원유": {"현재": 82.1, "단위": "USD/배럴", "_note": _static_note},
+            "금": {"현재": 3_320.0, "단위": "USD/온스", "1년변화": +28.5, "코멘트": "안전자산 수요 강세", "_note": _static_note},
+            "구리": {"현재": 9_850.0, "단위": "USD/톤", "코멘트": "중국 경기 회복 기대 반영", "_note": _static_note},
+            "LNG": {"현재": 11.2, "단위": "USD/MMBtu", "_note": _static_note},
+            "철광석": {"현재": 105.0, "단위": "USD/톤", "_note": _static_note},
+            "반도체소재_실리콘": {"동향": "공급 타이트, 가격 상승 압력", "_note": _static_note},
         }
 
     async def _collect_economic_calendar(self) -> Dict:
         return {
+            "_note": "정적 샘플 일정 — 실시간 캘린더 API 미연동, 날짜/이벤트가 실제와 다를 수 있음",
             "이번주_주요일정": [
                 {"날짜": "2026-06-04", "이벤트": "미국 ISM 서비스업 PMI 발표"},
                 {"날짜": "2026-06-05", "이벤트": "한국 외환보유액 발표"},

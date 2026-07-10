@@ -225,7 +225,7 @@ def _build_consensus(reports: List[Dict]) -> Dict:
         # 투자의견 집계 (영문 등급도 한글 버킷으로 정규화)
         op = _normalize_opinion(r.get("투자의견", ""))
         for key in opinions:
-            if key in op or key.replace("비중확대", "BUY") in op:
+            if key in op:
                 opinions[key] += 1
                 break
 

@@ -67,8 +67,10 @@ ZEN_FALLBACK_MODELS = [
 ]
 
 # Groq (하루 14,400건 무료)
+# 2026-06-17 Groq 공지: llama-3.3-70b-versatile / llama-3.1-8b-instant 무료·개발자 티어
+# 2026-08월부터 서빙 중단 예정 → 권장 대체 모델(openai/gpt-oss-120b)로 기본값 변경
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
-GROQ_MODEL   = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+GROQ_MODEL   = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
 
 # Google Gemini (하루 1,500건 무료)
 GEMINI_API_KEY     = os.getenv("GEMINI_API_KEY", "")

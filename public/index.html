@@ -332,6 +332,12 @@
   let allAgents = [];
   let accounts = [];
 
+  function escapeHtml(str) {
+    const div = document.createElement('div');
+    div.textContent = str == null ? '' : String(str);
+    return div.innerHTML;
+  }
+
   function showPage(name) {
     document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
     document.querySelectorAll('.nav-tab').forEach(t => t.classList.remove('active'));
@@ -457,10 +463,10 @@
     const typeClass = { note: 'type-note', requirement: 'type-requirement', decision: 'type-decision' };
     listEl.innerHTML = [...ctx].reverse().map(e => `
       <div class="memory-item">
-        <span class="memory-item-type ${typeClass[e.type] || 'type-note'}">${typeLabel[e.type] || e.type}</span>
+        <span class="memory-item-type ${typeClass[e.type] || 'type-note'}">${escapeHtml(typeLabel[e.type] || e.type)}</span>
         <div style="flex:1">
-          <div class="memory-item-content">${e.content}</div>
-          <div class="memory-item-date">${new Date(e.savedAt).toLocaleString('ko-KR')}</div>
+          <div class="memory-item-content">${escapeHtml(e.content)}</div>
+          <div class="memory-item-date">${escapeHtml(new Date(e.savedAt).toLocaleString('ko-KR'))}</div>
         </div>
         <button class="btn-delete-mem" onclick="deleteMemory(${e.id})">✕</button>
       </div>`).join('');

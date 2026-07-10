@@ -1,7 +1,6 @@
 """백업 모듈 — 직접 다운로드 + Google Drive"""
 import os
 import secrets
-import sqlite3
 import json
 import zipfile
 import io

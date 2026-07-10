@@ -261,7 +261,10 @@ class ReportWriter:
   관세영향: {str(trade.get('미국관세정책', {}).get('현황', 'N/A'))}
 
 ■ 이번 주 주요 일정
-  {events_str}"""
+  {events_str}
+
+ℹ️  데이터 출처 — 금리: {kr_rate.get('_데이터출처', 'N/A')} / 환율: {usdkrw.get('_데이터출처', 'N/A')}
+     글로벌 지수·원자재·일정: {sp500.get('_note') or wti.get('_note') or '정적 샘플 — 실시간 API 미연동'}"""
 
     def _top_picks(self) -> str:
         ranked = sorted(
@@ -297,6 +300,14 @@ class ReportWriter:
         if warn_stocks:
             lines.append(f"  ⚠️  데이터 검증 주의 종목: {', '.join(warn_stocks)}")
             lines.append("       (재무데이터 이상 감지 — 투자 전 추가 확인 권장)")
+
+        sample_stocks = [
+            n for n, v in self.data_val.items()
+            if not n.startswith("_") and any("샘플" in issue for issue in v.get("주의", []))
+        ]
+        if sample_stocks:
+            lines.append(f"  🚨 샘플(모의) 데이터로 계산된 종목: {', '.join(sample_stocks)}")
+            lines.append("       (DART_API_KEY 미설정 — 위 종목의 재무/밸류에이션 수치는 실제 값이 아닙니다)")
 
         return "\n".join(lines)
 

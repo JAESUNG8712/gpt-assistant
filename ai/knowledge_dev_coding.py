@@ -1687,13 +1687,13 @@ python3 simulate.py   # 서버 없이 실행
 ```
 ai/
 ├── main.py              # FastAPI 서버 (모든 API 엔드포인트)
-├── llm.py               # LLM 라우터 (OpenRouter → Groq → Gemini → Local)
+├── llm.py               # LLM 라우터 (Claude → OpenCode Zen → OpenRouter → Groq → Gemini → Local)
 ├── engine.py            # TF-IDF 검색 엔진 + 한국어 토크나이저
 ├── memory.py            # SQLite DB 관리 (대화이력, 학습 데이터)
 ├── calculator.py        # HR 날짜·금액 직접 계산기 (LLM 불필요)
-├── personas.py          # 페르소나 정의 (HR/Dev/Travel)
+├── personas.py          # 페르소나 정의 (HR/Dev/Travel/Company/Stock/Resume)
 ├── search.py            # DuckDuckGo 인터넷 검색
-├── backup.py            # OneDrive 백업 (Microsoft Graph API)
+├── backup.py            # Google Drive 백업 (OAuth2)
 ├── law_search.py        # law.go.kr 법령 실시간 검색
 ├── knowledge_base.py    # 지식베이스 통합 (여러 KB 파일 합산)
 ├── knowledge_labor_laws.py     # 노동법 371개 항목

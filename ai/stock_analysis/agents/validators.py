@@ -33,7 +33,9 @@ class FinancialDataValidator:
             val = data.get("밸류에이션", {})
 
             for metric, (lo, hi) in self.NORMAL_RANGES.items():
-                value = derived.get(metric) or val.get(metric)
+                value = derived.get(metric)
+                if value is None:
+                    value = val.get(metric)
                 if value is not None:
                     if not (lo <= value <= hi):
                         flags.append(f"⚠️ {metric} 비정상값: {value} (정상범위 {lo}~{hi})")
@@ -56,6 +58,8 @@ class FinancialDataValidator:
 
             if val.get("_note") and "샘플" in str(val.get("_note", "")):
                 issues.append("ℹ️ 밸류에이션: DART/KRX API 미연결 — 샘플 데이터 사용 중")
+            if fs.get("_note") and "샘플" in str(fs.get("_note", "")):
+                issues.append("🚨 재무제표: DART_API_KEY 미설정 — 샘플 데이터(실제 값 아님)로 계산됨")
 
             status = "검증통과" if not flags else "검토필요"
             results[corp_name] = {
