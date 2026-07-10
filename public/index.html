@@ -13856,9 +13856,10 @@ function openTaxInvoiceModal(){
   _tiItems=[{name:"",qty:1,unitPrice:0}];
   openModal(`<div class="modal-box" style="max-width:680px"><div class="modal-head"><h3>📄 세금계산서 발행</h3></div><div class="modal-body">
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+      <div class="fg"><label class="fl">구분 <span class="req">*</span></label><select class="fc" id="ti-direction"><option value="sales">매출</option><option value="purchase">매입</option></select></div>
       <div class="fg"><label class="fl">발행일 <span class="req">*</span></label><input class="fc" type="date" id="ti-date" value="${new Date().toISOString().slice(0,10)}"></div>
-      <div class="fg"><label class="fl">거래처 사업자번호</label><input class="fc" id="ti-bizno"></div>
     </div>
+    <div class="fg"><label class="fl">거래처 사업자번호</label><input class="fc" id="ti-bizno"></div>
     <div class="fg"><label class="fl">거래처명 <span class="req">*</span></label>${acctPartners.length?`<select class="fc" id="ti-partner-id" onchange="const p=acctPartners.find(p=>p.id===this.value);$('#ti-partner').value=p?p.name:'';$('#ti-bizno').value=p?p.bizNo||'':''"><option value="">직접 입력</option>${acctPartners.map(p=>`<option value="${p.id}">${h(p.name)}</option>`).join("")}</select>`:""}<input class="fc mt2" id="ti-partner" placeholder="거래처명 직접 입력"></div>
     <div class="fg"><label class="fl">품목</label><div id="ti-items"></div><button class="btn btn-secondary btn-sm mt2" onclick="_tiItems.push({name:'',qty:1,unitPrice:0});renderTiItems()">+ 품목 추가</button></div>
     <div class="fz12 text-gray" id="ti-totals"></div>
@@ -13883,7 +13884,7 @@ function updateTiTotals(){
 async function saveTaxInvoice(){
   const issueDate=$("#ti-date")?.value,partnerName=$("#ti-partner")?.value.trim();
   if(!issueDate||!partnerName){showToast("발행일과 거래처명을 입력하세요.","error");return;}
-  const body={issueDate,partnerId:$("#ti-partner-id")?.value||null,partnerName,partnerBizNo:$("#ti-bizno")?.value.trim(),items:_tiItems,role:currentUser.role,user:currentUser.name};
+  const body={issueDate,direction:$("#ti-direction")?.value==="purchase"?"purchase":"sales",partnerId:$("#ti-partner-id")?.value||null,partnerName,partnerBizNo:$("#ti-bizno")?.value.trim(),items:_tiItems,role:currentUser.role,user:currentUser.name};
   const r=await serverRequest("POST","/api/accounting/tax-invoices",body);
   if(!r?.ok){showToast(r?.message||"발행에 실패했습니다.","error");return;}
   acctTaxInvoices.unshift(r.taxInvoice);
