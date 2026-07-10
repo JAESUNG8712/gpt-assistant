@@ -18540,7 +18540,7 @@ function _showBoardAttachments(postId){
   const post=boardPosts.find(p=>p.id===postId);if(!post)return;
   const atts=(post.attachments||[]).filter(a=>a.type!=="image");
   if(!atts.length){showToast("첨부파일이 없습니다.","info");return;}
-  const html=atts.map(a=>`<a href="${a.data}" download="${h(a.name)}" style="display:flex;align-items:center;gap:8px;padding:8px 12px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:6px;margin-bottom:6px;text-decoration:none;color:#1e293b"><span style="font-size:18px">📄</span><span style="font-size:12px">${h(a.name)}</span></a>`).join("");
+  const html=atts.map(a=>`<a href="${h(a.data)}" download="${h(a.name)}" style="display:flex;align-items:center;gap:8px;padding:8px 12px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:6px;margin-bottom:6px;text-decoration:none;color:#1e293b"><span style="font-size:18px">📄</span><span style="font-size:12px">${h(a.name)}</span></a>`).join("");
   openModal(`<div class="modal-box" style="max-width:400px"><div class="modal-head"><h3>📎 첨부파일</h3><button class="modal-close" onclick="closeModal()">×</button></div><div class="modal-body">${html}</div><div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal()">닫기</button></div></div>`);
 }
 function openBoardPostModal(categoryId,editId){
@@ -18623,10 +18623,10 @@ function openBoardPostDetail(postId){
   const atts=post.attachments||[];
   const authorDisplay=post.isAnonymous?"익명":h(getEmpName(post.authorId));
   const contentHtml=post.content.split("\n").map(line=>{
-    if(line.startsWith("[img:")&&line.endsWith("]")){const src=line.slice(5,-1);return`<img src="${src}" style="max-width:100%;border-radius:6px;margin:6px 0">`;}
+    if(line.startsWith("[img:")&&line.endsWith("]")){const src=line.slice(5,-1);return`<img src="${h(src)}" style="max-width:100%;border-radius:6px;margin:6px 0">`;}
     return h(line);
   }).join("<br>");
-  const attHtml=atts.filter(a=>a.type!=="image").length>0?`<div style="margin-top:12px;padding:8px;background:#f8fafc;border-radius:6px;font-size:12px"><strong>📎 첨부파일</strong><div style="margin-top:4px">${atts.filter(a=>a.type!=="image").map(a=>`<a href="${a.data}" download="${h(a.name)}" style="display:inline-block;padding:2px 8px;background:#e2e8f0;border-radius:4px;margin:2px;font-size:11px;text-decoration:none;color:#1e293b">📄 ${h(a.name)}</a>`).join("")}</div></div>`:"";
+  const attHtml=atts.filter(a=>a.type!=="image").length>0?`<div style="margin-top:12px;padding:8px;background:#f8fafc;border-radius:6px;font-size:12px"><strong>📎 첨부파일</strong><div style="margin-top:4px">${atts.filter(a=>a.type!=="image").map(a=>`<a href="${h(a.data)}" download="${h(a.name)}" style="display:inline-block;padding:2px 8px;background:#e2e8f0;border-radius:4px;margin:2px;font-size:11px;text-decoration:none;color:#1e293b">📄 ${h(a.name)}</a>`).join("")}</div></div>`:"";
   openModal(`<div class="modal-box" style="max-width:660px"><div class="modal-head"><h3>${cat?.icon||"📌"} ${h(post.title)}</h3></div><div class="modal-body">
     <div style="color:#64748b;font-size:12px;margin-bottom:14px">${h(cat?.name||"")} · ${authorDisplay} · ${post.createdAt.slice(0,10)} · 조회 ${post.views}</div>
     <div style="line-height:1.8;min-height:80px;padding:14px;background:#f8fafc;border-radius:6px">${contentHtml}</div>
