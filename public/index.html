@@ -1501,6 +1501,14 @@ async function loadFromServer(){
       saveAutoSnapshot("pre_import"); // 현재 상태 스냅샷
       _step = "apply";
       applyState(r.data);
+      // r.version was never applied here before — _serverVersion stayed at its
+      // previous value (e.g. the initial -1 right after login), so every save
+      // made afterwards incorrectly believed the client was behind the server
+      // and took the smartMerge path instead of a direct write. That merge
+      // path silently drops any record missing an `id` field (see
+      // mergeArrayById) — the root cause of newly-created attendance/approval
+      // records occasionally vanishing on save right after a fresh load.
+      if(r.version) _serverVersion = r.version;
       serverConfig.lastLoaded = new Date().toISOString();
       serverConfig.statusMsg = `불러오기 완료 ${new Date().toLocaleTimeString("ko-KR")}`;
       showToast("서버에서 데이터를 불러왔습니다.","success");
@@ -12019,8 +12027,12 @@ function _applyAttendanceApproval(doc){
 }
 function _setAttRec(empId,date,status,note){
   const idx=attendanceRecords.findIndex(r=>r.empId===empId&&r.date===date);
-  if(idx>=0){attendanceRecords[idx].status=status;attendanceRecords[idx].note=note;}
-  else{attendanceRecords.push({empId,date,checkIn:"",checkOut:"",status,note});}
+  if(idx>=0){attendanceRecords[idx].status=status;attendanceRecords[idx].note=note;attendanceRecords[idx].updatedAt=new Date().toISOString();}
+  // attendanceRecords is a server-side ID_KEYED_LIST_FIELD (merged by `id` on
+  // conflict — see mergeArrayById in server.js); a record with no `id` is
+  // silently dropped by that merge instead of being kept, so every new record
+  // needs one (also true of the check-in push below).
+  else{attendanceRecords.push({id:`att-${empId}-${date}`,empId,date,checkIn:"",checkOut:"",status,note,updatedAt:new Date().toISOString()});}
 }
 
 // ── Approval Page Renderers ──
@@ -12449,8 +12461,11 @@ function _doGpsCheckIn(){
   const existing=attendanceRecords.find(r=>r.empId===currentUser.id&&r.date===today);
   _withGPS(pos=>{
     const now=new Date();
-    if(!existing)attendanceRecords.push({empId:currentUser.id,date:today,checkIn:_fmtTime(now),checkOut:"",status:"normal",note:""});
-    else{existing.checkIn=_fmtTime(now);existing.status="normal";}
+    // attendanceRecords is merged by `id` on the server (mergeArrayById) — a
+    // record with no id is silently dropped instead of kept whenever a
+    // save takes the smartMerge path (see _setAttRec for the same fix).
+    if(!existing)attendanceRecords.push({id:`att-${currentUser.id}-${today}`,empId:currentUser.id,date:today,checkIn:_fmtTime(now),checkOut:"",status:"normal",note:"",updatedAt:now.toISOString()});
+    else{existing.checkIn=_fmtTime(now);existing.status="normal";existing.updatedAt=now.toISOString();}
     autoSaveToServerIfEnabled();showToast(`출근 체크 완료 (${_fmtTime(now)})${pos?` — ${Math.round(pos.dist)}m`:""}`,`success`);_scheduleCheckoutReminders();renderPage();
   });
 }
@@ -12461,6 +12476,7 @@ function gpsCheckOut(){
   _withGPS(pos=>{
     const now=new Date();
     rec.checkOut=_fmtTime(now);
+    rec.updatedAt=now.toISOString();
     autoSaveToServerIfEnabled();_clearCheckoutReminders();showToast(`퇴근 체크 완료 (${_fmtTime(now)})${pos?` — ${Math.round(pos.dist)}m`:""}`,`success`);renderPage();
   });
 }
@@ -12873,10 +12889,15 @@ function calcStandardPayslip(emp,year,month){
     {label:"지방소득세(주민세) (10%)",amount:localTax},
     ...customDeductItemsList.filter(ci=>ci.amount>0),
   ];
-  return{empId:emp.id,year,month,gross,monthly,meal,transport,researchAllow,posAllow,customPay,customDeduct,adjustPay,adjustItems:empAdjustments,
+  // id is deterministic (emp+year+month, matching the uniqueness the callers
+  // already enforce via findIndex/find on those 3 fields) — payslips is a
+  // server-side ID_KEYED_LIST_FIELD (merged by `id`); a record with no id is
+  // silently dropped by that merge instead of being kept (see _setAttRec for
+  // the same bug/fix on attendanceRecords).
+  return{id:`payslip-${emp.id}-${year}-${month}`,empId:emp.id,year,month,gross,monthly,meal,transport,researchAllow,posAllow,customPay,customDeduct,adjustPay,adjustItems:empAdjustments,
     payItems,deductItems,taxableIncome,
     standardMonthlyHours,hourlyWage,overtimeHourlyWage,stdDailyHours,regularHours,overtimeHours,overtimeAllowance,
-    pension,health,care,employ,tax,localTax,totalDeduct,netPay:gross-totalDeduct,confirmed:false,confirmedAt:null};
+    pension,health,care,employ,tax,localTax,totalDeduct,netPay:gross-totalDeduct,confirmed:false,confirmedAt:null,updatedAt:new Date().toISOString()};
 }
 function _ensurePayslipHourFields(slip,emp){
   if(!slip||!emp)return slip;
@@ -13035,7 +13056,7 @@ function openAdminPayslipDetail(empId,year,month){
 function confirmPayslip(empId,year,month){
   const idx=payslips.findIndex(p=>String(p.empId)===String(empId)&&p.year===year&&p.month===month);
   if(idx<0){showToast("명세서를 먼저 생성하세요.","error");return;}
-  payslips[idx]={...payslips[idx],confirmed:true,confirmedAt:new Date().toISOString()};
+  payslips[idx]={...payslips[idx],confirmed:true,confirmedAt:new Date().toISOString(),updatedAt:new Date().toISOString()};
   autoSaveToServerIfEnabled();showToast("급여 명세서가 확정되었습니다.","success");renderPayslipPage();
 }
 let _payMgmtState={year:new Date().getFullYear(),month:new Date().getMonth()+1,dept:"",team:"",search:""};
