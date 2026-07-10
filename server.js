@@ -594,6 +594,27 @@ function mergeTombstones(serverList, clientList) {
   return Object.values(byId).filter(t => t.ts >= cutoff);
 }
 
+// Merges two plain objects keyed by an outer id (e.g. employee id) whose
+// values are themselves objects keyed by a second level (e.g. year) —
+// compGradeResults[empId][year] = {grade,score,...}. Unlike mergeArrayById,
+// this never collapses a non-array side to [] — it unions both sides key by
+// key so a concurrent save-conflict merge can't wipe out other employees'
+// already-computed grade results.
+function mergeNestedObject(serverObj, clientObj) {
+  const sOk = serverObj && typeof serverObj === "object" && !Array.isArray(serverObj);
+  const cOk = clientObj && typeof clientObj === "object" && !Array.isArray(clientObj);
+  if (!sOk) return cOk ? clientObj : {};
+  if (!cOk) return serverObj;
+  const merged = { ...serverObj };
+  for (const key of Object.keys(clientObj)) {
+    const sInner = merged[key], cInner = clientObj[key];
+    const sInnerOk = sInner && typeof sInner === "object" && !Array.isArray(sInner);
+    const cInnerOk = cInner && typeof cInner === "object" && !Array.isArray(cInner);
+    merged[key] = (sInnerOk && cInnerOk) ? { ...sInner, ...cInner } : cInner;
+  }
+  return merged;
+}
+
 function smartMerge(serverData, clientData) {
   if (!serverData) return clientData;
   const merged = { ...serverData, ...clientData };
@@ -601,6 +622,9 @@ function smartMerge(serverData, clientData) {
     if (clientData[field] !== undefined || serverData[field] !== undefined) {
       merged[field] = mergeArrayById(serverData[field], clientData[field]);
     }
+  }
+  if (clientData.compGradeResults !== undefined || serverData.compGradeResults !== undefined) {
+    merged.compGradeResults = mergeNestedObject(serverData.compGradeResults, clientData.compGradeResults);
   }
   const tombstones = mergeTombstones(serverData.roomReservationTombstones, clientData.roomReservationTombstones);
   merged.roomReservationTombstones = tombstones;
