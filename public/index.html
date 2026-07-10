@@ -8503,9 +8503,13 @@ function saveManualCompScore(empId){
   if(existing){
     existing.manualCompScore=score;
     existing.manualCompReason=document.getElementById("ct-comp-reason")?.value.trim()||"";
+    existing.updatedAt=new Date().toISOString();
   } else {
-    coreTalentPool.push({empId,year:yr,status:"candidate",manualCompScore:score,
-      manualCompReason:document.getElementById("ct-comp-reason")?.value.trim()||""});
+    // id is required — server.js's mergeArrayById() silently drops any
+    // coreTalentPool record without one during a save-conflict merge (see
+    // doAddToPool/saveBulkCompScores fix note below for the full story).
+    coreTalentPool.push({id:genId(),empId,year:yr,status:"candidate",manualCompScore:score,
+      manualCompReason:document.getElementById("ct-comp-reason")?.value.trim()||"",updatedAt:new Date().toISOString()});
   }
   closeModal();showToast("역량 점수가 저장되었습니다.","success");
   autoSaveToServerIfEnabled();
@@ -8578,8 +8582,9 @@ function saveBulkCompScores(){
     if(existing){
       existing.manualCompScore=score;
       existing.manualCompReason=reason;
+      existing.updatedAt=new Date().toISOString();
     } else {
-      coreTalentPool.push({empId:e.id,year:yr,status:"candidate",manualCompScore:score,manualCompReason:reason});
+      coreTalentPool.push({id:genId(),empId:e.id,year:yr,status:"candidate",manualCompScore:score,manualCompReason:reason,updatedAt:new Date().toISOString()});
     }
     saved++;
   });
@@ -8635,15 +8640,19 @@ function doAddToPool(){
   if(!empId||!track){showToast("직원과 Track을 선택하세요.","error");return;}
   const yr=coreTalentSettings.evalYear;
   const existing=coreTalentPool.findIndex(p=>p.empId===empId&&p.year===yr);
-  const entry={empId,year:yr,track,status:"candidate",reason,registeredAt:ts(),registeredBy:currentUser.name};
+  const entry={empId,year:yr,track,status:"candidate",reason,registeredAt:ts(),registeredBy:currentUser.name,updatedAt:new Date().toISOString()};
+  // id is required — server.js's mergeArrayById() treats coreTalentPool as an
+  // id-keyed collection and silently drops any record without an `id` on a
+  // save-conflict merge (confirmed: two saves racing wiped the whole pool to
+  // []). Preserve an existing record's id on update; assign a fresh one on insert.
   if(existing>=0) coreTalentPool[existing]={...coreTalentPool[existing],...entry};
-  else coreTalentPool.push(entry);
+  else coreTalentPool.push({id:genId(),...entry});
   // Record in employee hrHistory
   employees=employees.map(e=>{
     if(e.id!==empId)return e;
     const hist=Array.isArray(e.hrHistory)?[...e.hrHistory]:[];
     hist.push({id:genId(),type:"core_talent",date:ts().slice(0,10),desc:`${yr}년 핵심인재 Pool 등록 (${coreTalentSettings.tracks.find(t=>t.id===track)?.name||track})`,before:"",after:"Pool 등록",note:reason});
-    return{...e,hrHistory:hist};
+    return{...e,hrHistory:hist,updatedAt:new Date().toISOString()};
   });
   closeModal();showToast(`${getEmpName(empId)}님이 핵심인재 Pool에 등록되었습니다.`,"success");
   logAction("core_talent_pool","핵심인재 Pool 등록",`emp:${empId}`,`${yr}년 ${track}`);
@@ -8690,6 +8699,7 @@ function doSelectTalent(empId){
   pe.devPlan=document.getElementById("ct-sel-dev")?.value.trim()||"";
   pe.selectedAt=ts();
   pe.selectedBy=currentUser.name;
+  pe.updatedAt=new Date().toISOString();
   // Record in employee hrHistory
   employees=employees.map(e=>{
     if(e.id!==empId)return e;
@@ -8697,7 +8707,7 @@ function doSelectTalent(empId){
     hist.push({id:genId(),type:"core_talent",date:ts().slice(0,10),
       desc:`${yr}년 핵심인재 선발 확정 (${coreTalentSettings.tracks.find(t=>t.id===pe.track)?.name||pe.track})`,
       before:"Pool 등록",after:"선발 확정",note:comment});
-    return{...e,hrHistory:hist};
+    return{...e,hrHistory:hist,updatedAt:new Date().toISOString()};
   });
   closeModal();showToast(`${getEmpName(empId)}님이 ${yr}년 핵심인재로 선발 확정되었습니다.`,"success");
   logAction("core_talent_selected","핵심인재 선발 확정",`emp:${empId}`,`${yr}년`);
@@ -8737,12 +8747,13 @@ function doPoolOut(empId){
   pe.outDetail=detail;
   pe.outAt=ts();
   pe.outBy=currentUser.name;
+  pe.updatedAt=new Date().toISOString();
   employees=employees.map(e=>{
     if(e.id!==empId)return e;
     const hist=Array.isArray(e.hrHistory)?[...e.hrHistory]:[];
     hist.push({id:genId(),type:"core_talent",date:ts().slice(0,10),
       desc:`${yr}년 핵심인재 Pool Out (${reason})`,before:"선발",after:"Pool Out",note:detail});
-    return{...e,hrHistory:hist};
+    return{...e,hrHistory:hist,updatedAt:new Date().toISOString()};
   });
   closeModal();showToast(`${getEmpName(empId)}님이 Pool Out 처리되었습니다.`,"success");
   logAction("core_talent_out","핵심인재 Pool Out",`emp:${empId}`,reason);
