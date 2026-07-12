@@ -3568,7 +3568,7 @@ app.get("/api/recruit/interviews", async (req, res) => {
 app.post("/api/recruit/interviews", async (req, res) => {
   try {
     if (!requireRole(req, res, ["admin", "leader", "director"])) return;
-    const { jobId, candidateId, round, schedule, interviewerIds, location } = req.body || {};
+    const { jobId, candidateId, round, schedule, interviewerIds, location, leadInterviewerId } = req.body || {};
     if (!jobId || !candidateId || !round || !Array.isArray(interviewerIds) || !interviewerIds.length) {
       return res.status(400).json({ ok: false, message: "채용공고, 지원자, 면접 회차, 면접관은 필수입니다." });
     }
@@ -3576,9 +3576,12 @@ app.post("/api/recruit/interviews", async (req, res) => {
     if (!job) return res.status(404).json({ ok: false, message: "채용공고를 찾을 수 없습니다." });
     const id = `iv_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const now = new Date().toISOString();
+    const normInterviewerIds = interviewerIds.map(String);
     const interview = {
       id, jobId, candidateId, round: Number(round), schedule: schedule || "", location: location || "",
-      status: "scheduled", interviewerIds: interviewerIds.map(String), evaluations: [], createdAt: now, updatedAt: now,
+      status: "scheduled", interviewerIds: normInterviewerIds,
+      leadInterviewerId: (leadInterviewerId && normInterviewerIds.includes(String(leadInterviewerId))) ? String(leadInterviewerId) : "",
+      finalVerdict: null, evaluations: [], createdAt: now, updatedAt: now,
     };
     if (USE_JSON_FILE) {
       _fileRecruit.interviews.push(interview);
@@ -3597,13 +3600,18 @@ app.post("/api/recruit/interviews/:id", async (req, res) => {
   try {
     if (!requireRole(req, res, ["admin", "leader", "director"])) return;
     const id = req.params.id;
-    const { round, schedule, interviewerIds, location } = req.body || {};
+    const { round, schedule, interviewerIds, location, leadInterviewerId } = req.body || {};
     const interview = await _recruitInterviewById(id);
     if (!interview) return res.status(404).json({ ok: false, message: "면접 일정을 찾을 수 없습니다." });
     if (round != null) interview.round = Number(round);
     if (schedule != null) interview.schedule = schedule;
     if (location != null) interview.location = location;
     if (Array.isArray(interviewerIds) && interviewerIds.length) interview.interviewerIds = interviewerIds.map(String);
+    if (leadInterviewerId !== undefined) {
+      interview.leadInterviewerId = (leadInterviewerId && interview.interviewerIds.includes(String(leadInterviewerId))) ? String(leadInterviewerId) : "";
+    } else if (interview.leadInterviewerId && !interview.interviewerIds.includes(String(interview.leadInterviewerId))) {
+      interview.leadInterviewerId = "";
+    }
     interview.updatedAt = new Date().toISOString();
     if (USE_JSON_FILE) {
       _saveFileRecruit();
@@ -3662,6 +3670,33 @@ app.post("/api/recruit/interviews/:id/evaluation", async (req, res) => {
     const evaluation = { interviewerId: String(interviewerId), scores, totalScore, comment: comment || "", updatedAt: new Date().toISOString() };
     const idx = (interview.evaluations || []).findIndex(e => String(e.interviewerId) === String(interviewerId));
     if (idx >= 0) interview.evaluations[idx] = evaluation; else (interview.evaluations || (interview.evaluations = [])).push(evaluation);
+    interview.updatedAt = new Date().toISOString();
+    if (USE_JSON_FILE) {
+      _saveFileRecruit();
+      return res.json({ ok: true, interview });
+    }
+    await pool.query("UPDATE recruit_interviews SET data = $2, updated_at = NOW() WHERE id = $1", [id, interview]);
+    res.json({ ok: true, interview });
+  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+});
+
+const RECRUIT_VERDICTS = ["pass", "hold", "fail"];
+app.post("/api/recruit/interviews/:id/verdict", async (req, res) => {
+  try {
+    const id = req.params.id;
+    const { verdict, comment, userId, role } = req.body || {};
+    if (!RECRUIT_VERDICTS.includes(verdict)) {
+      return res.status(400).json({ ok: false, message: "판정 값이 올바르지 않습니다." });
+    }
+    const interview = await _recruitInterviewById(id);
+    if (!interview) return res.status(404).json({ ok: false, message: "면접 일정을 찾을 수 없습니다." });
+    if (!interview.leadInterviewerId) {
+      return res.status(400).json({ ok: false, message: "심사위원장이 지정되지 않아 최종 판정을 입력할 수 없습니다." });
+    }
+    if (role !== "admin" && String(userId) !== String(interview.leadInterviewerId)) {
+      return res.status(403).json({ ok: false, message: "지정된 심사위원장만 최종 판정을 입력할 수 있습니다." });
+    }
+    interview.finalVerdict = { verdict, comment: comment || "", decidedBy: String(userId), decidedAt: new Date().toISOString() };
     interview.updatedAt = new Date().toISOString();
     if (USE_JSON_FILE) {
       _saveFileRecruit();

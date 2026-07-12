@@ -16645,10 +16645,21 @@ function openRecruitInterviewModal(){
     </div>
     <div class="fg"><label class="fl">면접관 선택 <span class="req">*</span></label>
       <input class="fc" id="iv-interviewer-search" placeholder="이름으로 검색" style="margin-bottom:6px" oninput="_ivFilterInterviewers()">
-      <select class="fc" id="iv-interviewers" multiple size="6">${_rjEmpOptions([])}</select>
+      <select class="fc" id="iv-interviewers" multiple size="6" onchange="_ivRefreshLeadOptions()">${_rjEmpOptions([])}</select>
       <div class="fz11 text-gray" style="margin-top:4px">Ctrl(Cmd)+클릭으로 다중 선택. 선택된 면접관만 평가 내용을 볼 수 있습니다.</div>
     </div>
+    <div class="fg"><label class="fl">심사위원장 지정 (선택)</label>
+      <select class="fc" id="iv-lead"><option value="">지정 안함</option></select>
+      <div class="fz11 text-gray" style="margin-top:4px">심사위원장은 전체 평가를 취합해 최종 판정(합격/보류/불합격)을 입력할 수 있습니다. 면접관을 먼저 선택하세요.</div>
+    </div>
   </div><div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal()">취소</button><button class="btn btn-primary" onclick="saveRecruitInterview()">등록</button></div></div>`);
+}
+function _ivRefreshLeadOptions(){
+  const sel=$("#iv-interviewers");const lead=$("#iv-lead");if(!sel||!lead)return;
+  const ids=Array.from(sel.selectedOptions||[]).map(o=>o.value);
+  const cur=lead.value;
+  lead.innerHTML=`<option value="">지정 안함</option>${ids.map(id=>`<option value="${id}">${h(_recruitEmpName(id))}</option>`).join("")}`;
+  if(ids.includes(cur))lead.value=cur;
 }
 function _ivFindDuplicate(candidateId,round,excludeId){
   return recruitInterviews.find(iv=>iv.status!=="canceled"&&String(iv.id)!==String(excludeId)&&String(iv.candidateId)===String(candidateId)&&Number(iv.round)===Number(round));
@@ -16662,7 +16673,8 @@ async function saveRecruitInterview(){
   const round=Number($("#iv-round")?.value)||1;
   const dup=_ivFindDuplicate(candidateId,round);
   if(dup&&!confirm(`${h(cd.name)}님은 이미 ${round}차 면접 일정이 등록되어 있습니다 (${dup.schedule||"일정 미정"}).\n계속 새로 등록하시겠습니까?`))return;
-  const body={jobId:cd.jobId,candidateId,round,schedule:$("#iv-schedule")?.value,location:$("#iv-location")?.value.trim(),interviewerIds,role:currentUser.role,userId:currentUser.id};
+  const leadInterviewerId=$("#iv-lead")?.value||"";
+  const body={jobId:cd.jobId,candidateId,round,schedule:$("#iv-schedule")?.value,location:$("#iv-location")?.value.trim(),interviewerIds,leadInterviewerId,role:currentUser.role,userId:currentUser.id};
   const r=await serverRequest("POST","/api/recruit/interviews",body);
   if(!r?.ok){showToast(r?.message||"등록에 실패했습니다.","error");return;}
   recruitInterviews.unshift(r.interview);
@@ -16681,18 +16693,30 @@ function openRecruitInterviewEditModal(interviewId){
     </div>
     <div class="fg"><label class="fl">면접관 선택</label>
       <input class="fc" id="ive-interviewer-search" placeholder="이름으로 검색" style="margin-bottom:6px" oninput="_iveFilterInterviewers()">
-      <select class="fc" id="ive-interviewers" multiple size="6">${_rjEmpOptions(iv.interviewerIds||[])}</select>
+      <select class="fc" id="ive-interviewers" multiple size="6" onchange="_iveRefreshLeadOptions()">${_rjEmpOptions(iv.interviewerIds||[])}</select>
+    </div>
+    <div class="fg"><label class="fl">심사위원장 지정 (선택)</label>
+      <select class="fc" id="ive-lead"><option value="">지정 안함</option></select>
     </div>
   </div><div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal()">취소</button><button class="btn btn-primary" onclick="saveRecruitInterviewEdit('${iv.id}')">저장</button></div></div>`);
+  _iveRefreshLeadOptions(iv.leadInterviewerId||"");
 }
 function _iveFilterInterviewers(){
   const q=($("#ive-interviewer-search")?.value||"").trim().toLowerCase();
   const sel=$("#ive-interviewers");if(!sel)return;
   Array.from(sel.options).forEach(o=>{o.style.display=!q||o.textContent.toLowerCase().includes(q)?"":"none";});
 }
+function _iveRefreshLeadOptions(preselect){
+  const sel=$("#ive-interviewers");const lead=$("#ive-lead");if(!sel||!lead)return;
+  const ids=Array.from(sel.selectedOptions||[]).map(o=>o.value);
+  const cur=preselect!==undefined?preselect:lead.value;
+  lead.innerHTML=`<option value="">지정 안함</option>${ids.map(id=>`<option value="${id}">${h(_recruitEmpName(id))}</option>`).join("")}`;
+  if(ids.includes(cur))lead.value=cur;
+}
 async function saveRecruitInterviewEdit(interviewId){
   const interviewerIds=Array.from($("#ive-interviewers")?.selectedOptions||[]).map(o=>o.value);
-  const body={round:Number($("#ive-round")?.value)||1,schedule:$("#ive-schedule")?.value,location:$("#ive-location")?.value.trim(),interviewerIds,role:currentUser.role};
+  const leadInterviewerId=$("#ive-lead")?.value||"";
+  const body={round:Number($("#ive-round")?.value)||1,schedule:$("#ive-schedule")?.value,location:$("#ive-location")?.value.trim(),interviewerIds,leadInterviewerId,role:currentUser.role};
   const r=await serverRequest("POST",`/api/recruit/interviews/${interviewId}`,body);
   if(!r?.ok){showToast(r?.message||"수정에 실패했습니다.","error");return;}
   const idx=recruitInterviews.findIndex(i=>i.id===interviewId);if(idx>=0)recruitInterviews[idx]=r.interview;
@@ -16719,6 +16743,12 @@ function _ivIsDecided(cd,job){
   const stages=(job.stages&&job.stages.length)?job.stages:[];
   return stages.length>0&&cd.status===stages[stages.length-1];
 }
+const RECRUIT_SPREAD_WARN_SCORE=8;
+function _ivScoreSpread(evals){
+  if(evals.length<2)return 0;
+  const totals=evals.map(e=>e.totalScore||0);
+  return Math.max(...totals)-Math.min(...totals);
+}
 function _ivAutoSummary(evals){
   if(!evals.length)return"";
   const avgTotal=_round2(evals.reduce((s,e)=>s+(e.totalScore||0),0)/evals.length);
@@ -16726,7 +16756,9 @@ function _ivAutoSummary(evals){
   const best=catAvg.reduce((a,b)=>b.avg>a.avg?b:a);
   const worst=catAvg.reduce((a,b)=>b.avg<a.avg?b:a);
   const verdict=avgTotal>=RECRUIT_PASS_SCORE?`통과 기준(${RECRUIT_PASS_SCORE}점) 이상`:`통과 기준(${RECRUIT_PASS_SCORE}점) 미달`;
-  return `면접관 ${evals.length}명 평균 ${avgTotal}점 / ${RECRUIT_MAX_SCORE}점 (${verdict}). 강점: ${best.k}(${best.avg}점), 보완 필요: ${worst.k}(${worst.avg}점).`;
+  const spread=_ivScoreSpread(evals);
+  const spreadNote=spread>=RECRUIT_SPREAD_WARN_SCORE?` ⚠️ 심사위원 간 총점 편차 ${spread}점으로 큰 편입니다. 재논의를 권장합니다.`:"";
+  return `면접관 ${evals.length}명 평균 ${avgTotal}점 / ${RECRUIT_MAX_SCORE}점 (${verdict}). 강점: ${best.k}(${best.avg}점), 보완 필요: ${worst.k}(${worst.avg}점).${spreadNote}`;
 }
 function gotoRecruitEvalDetail(interviewId){
   window._recruitEvalDetailId=interviewId;
@@ -16756,6 +16788,26 @@ function renderRecruitEvalDetailPage(){
     <div class="fz12" style="margin-top:6px">${h(e.comment||"")}</div>
   </div>`).join("");
   const combinedSummary=evals.length?`<div class="fz12" style="background:#f8fafc;border-radius:6px;padding:8px;margin-bottom:6px">🤖 ${h(_ivAutoSummary(evals))}</div><div class="fz12">면접관 ${evals.length}명 평가 · 평균 총점 <b>${avgTotal}점</b></div><div class="fz12 text-gray" style="margin-top:4px">${evals.map(e=>h(e.comment||"")).filter(Boolean).join(" / ")||"종합의견 없음"}</div>`:`<div class="text-gray fz12">아직 등록된 평가가 없습니다.</div>`;
+  const myIdForVerdict=String(currentUser.id);
+  const leadName=iv.leadInterviewerId?_recruitEmpName(iv.leadInterviewerId):"";
+  const canVerdict=currentUser.role==="admin"||(iv.leadInterviewerId&&String(iv.leadInterviewerId)===myIdForVerdict);
+  const fv=iv.finalVerdict;
+  const verdictLabels={pass:"합격",hold:"보류",fail:"불합격"};
+  const verdictColors={pass:"green",hold:"gray",fail:"red"};
+  const defVerdict=fv?.verdict||"hold";
+  const verdictSectionHtml=`<div style="border-top:1px solid #e2e8f0;margin-top:14px;padding-top:12px">
+    <div style="font-weight:600;font-size:13px;margin-bottom:8px">🏆 최종 판정 ${leadName?`<span class="fz11 text-gray" style="font-weight:400">(심사위원장: ${h(leadName)})</span>`:""}</div>
+    ${fv?`<div class="fz12" style="margin-bottom:8px">${badge(verdictLabels[fv.verdict]||fv.verdict,verdictColors[fv.verdict]||"gray")} <span class="text-gray">${h(_recruitEmpName(fv.decidedBy))} · ${(fv.decidedAt||"").slice(0,16).replace("T"," ")}</span>${fv.comment?`<div class="fz12" style="margin-top:4px">${h(fv.comment)}</div>`:""}</div>`:""}
+    ${canVerdict?`<select class="fc" id="iv-verdict-sel" style="max-width:140px;display:inline-block;margin-right:8px">
+      <option value="pass" ${defVerdict==="pass"?"selected":""}>합격</option>
+      <option value="hold" ${defVerdict==="hold"?"selected":""}>보류</option>
+      <option value="fail" ${defVerdict==="fail"?"selected":""}>불합격</option>
+    </select>
+    <input class="fc" id="iv-verdict-comment" placeholder="판정 사유 (선택)" style="max-width:240px;display:inline-block;margin-right:8px" value="${h(fv?.comment||"")}">
+    <button class="btn btn-primary btn-sm" onclick="saveRecruitVerdict('${iv.id}')">${fv?"판정 수정":"최종 판정 저장"}</button>`
+    :(leadName?`<div class="text-gray fz12">지정된 심사위원장만 최종 판정을 입력할 수 있습니다.</div>`
+      :(_recruitCanManageInterviews()?`<div class="text-gray fz12">심사위원장이 지정되지 않았습니다. "면접 일정 수정"에서 지정할 수 있습니다.</div>`:""))}
+  </div>`;
   c.innerHTML=`<div class="card"><div class="card-head"><button class="btn btn-secondary btn-sm" onclick="gotoPage('recruit-eval')">‹ 목록으로</button><h3>📝 면접 평가 - ${h(cd?cd.name:"")} (${iv.round}차)</h3></div><div class="card-body">
     <div style="border:1px solid #e2e8f0;border-radius:8px;padding:10px;margin-bottom:12px">
       <div style="font-weight:600;font-size:13px;margin-bottom:6px">채용공고 요건</div>
@@ -16791,7 +16843,17 @@ function renderRecruitEvalDetailPage(){
       <div style="font-weight:600;font-size:13px;margin:10px 0 6px">종합 Summary</div>
       ${combinedSummary}
     </div>
+    ${verdictSectionHtml}
   </div></div>`;
+}
+async function saveRecruitVerdict(interviewId){
+  const verdict=$("#iv-verdict-sel")?.value;
+  const comment=$("#iv-verdict-comment")?.value.trim();
+  const r=await serverRequest("POST",`/api/recruit/interviews/${interviewId}/verdict`,{verdict,comment,userId:currentUser.id,role:currentUser.role});
+  if(!r?.ok){showToast(r?.message||"저장에 실패했습니다.","error");return;}
+  const idx=recruitInterviews.findIndex(i=>i.id===interviewId);if(idx>=0)recruitInterviews[idx]=r.interview;
+  showToast("최종 판정이 저장되었습니다.","success");
+  renderRecruitEvalDetailPage();
 }
 async function saveRecruitEval(interviewId){
   const iv=recruitInterviews.find(i=>i.id===interviewId);

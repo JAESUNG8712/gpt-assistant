@@ -29,6 +29,13 @@
   - 새 서버 헬퍼 `requireRole(req,res,allowed)` (`requireAdmin`과 동일한 스타일) — PMS 프로젝트 admin/leader 게이트에 사용.
   - JSON 파일 모드는 `_filePms={projects:[],allocations:[]}`를 별도 파일(`<datafile>-pms.json`)로 저장/로드 (`_fileAccounting`/`_fileErp`와 동일 패턴). Postgres 모드는 `pms_projects`/`pms_allocations`/`erp_sales_targets` 테이블(`data JSONB` 패턴) 사용.
 
+## 최근 완료된 기능 (커밋됨) — 추가
+- **채용 면접 평가 고도화 (다중 심사위원)**: 기존에도 면접관 다중 지정(`interviewerIds`)·면접관별 개별 평가(`evaluations`)는 지원하고 있었음. 여기에 3가지 보강:
+  1. **심사위원장 지정**: `interview.leadInterviewerId` 필드 신설(면접관 목록 중 1명, 선택). 면접 일정 등록/수정 모달에 "심사위원장 지정" 드롭다운 추가 — 면접관 다중선택(`#iv-interviewers`)의 `onchange`로 `#iv-lead` 옵션을 동적으로 재구성(`_ivRefreshLeadOptions`/`_iveRefreshLeadOptions`). 서버에서 `leadInterviewerId`가 `interviewerIds`에 없으면 자동으로 빈 값 처리(면접관 목록 수정 시에도 동일 검증).
+  2. **최종 판정**: `POST /api/recruit/interviews/:id/verdict` 신규 엔드포인트 — 심사위원장 본인 또는 admin만 합격/보류/불합격 판정 입력 가능(`interview.finalVerdict={verdict,comment,decidedBy,decidedAt}`). 심사위원장 미지정 시 400 에러. 면접 평가 상세 페이지 하단에 판정 폼/결과 표시.
+  3. **심사위원 간 평가 편차 경고**: `_ivAutoSummary()`에 `_ivScoreSpread()` 추가 — 면접관들의 총점(25점 만점) 최대-최소 차이가 8점 이상이면 자동 요약에 "⚠️ 심사위원 간 총점 편차 N점" 경고 문구 삽입.
+  - curl로 백엔드 검증(생성/수정 시 lead 유효성, verdict 권한 403/400) + Playwright로 등록·수정·상세 화면 콘솔 에러 0건 확인 완료.
+
 ## 진행 중 / 다음 작업
 현재 없음. 사용자 지시 대기 중.
 
