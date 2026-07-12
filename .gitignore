@@ -12,6 +12,7 @@ hr-data-history.json
 hr-data-accounting.json
 hr-data-erp.json
 hr-data-pms.json
+hr-data-recruit.json
 hr-snapshots.json
 *.log
 
