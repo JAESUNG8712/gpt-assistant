@@ -3,7 +3,10 @@ services:
   - type: web
     name: my-ai-assistant
     runtime: python
-    buildCommand: pip install -r ai/requirements.txt
+    # fetch_laws.py: law.go.kr에서 최신 법령을 받아 ai/law_data_cache.json을 갱신한다.
+    # LAW_API_KEY 미설정이거나 네트워크 실패 시에도 항상 exit 0으로 종료하고 기존
+    # 캐시를 그대로 두므로(레포에 커밋된 스냅샷) 빌드 실패 위험은 없다.
+    buildCommand: pip install -r ai/requirements.txt && python ai/fetch_laws.py
     startCommand: cd ai && uvicorn main:app --host 0.0.0.0 --port $PORT
     disk:
       name: ai-data
@@ -11,6 +14,8 @@ services:
       sizeGB: 1
     envVars:
       - key: GROQ_API_KEY
+        sync: false
+      - key: LAW_API_KEY
         sync: false
       - key: DB_PATH
         value: /var/data/memory.db
