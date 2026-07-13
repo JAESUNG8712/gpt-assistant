@@ -4535,10 +4535,15 @@ function connectSSE(){
       const svr = ev.version;
       if(svr && svr > _serverVersion){
         console.log(`[SSE] Data updated by ${ev.savedBy} (v${svr}): ${ev.action}`);
-        _serverVersion = svr;
+        // _serverVersion을 여기서 바로 올리면, 아직 로컬 employees 등 배열은 갱신되지
+        // 않은 채로(아래 GET /data가 완료되기 전) "이미 최신"이라고 착각하는 창이 생긴다.
+        // 그 사이에 이 클라이언트가 저장을 하나라도 하면 서버가 병합(smartMerge)을
+        // 건너뛰고 그대로 덮어써서, 방금 다른 사용자가 저장한 내용이 조용히 사라짐
+        // (재현 확인됨) — 그래서 실제로 로컬 데이터를 최신으로 반영한 뒤에 버전을 올린다.
         // Pull latest data and apply
         serverRequest("GET","/data",null,8000).then(r=>{
           if(r.ok && r.data){
+            _serverVersion = r.version || svr;
             const d = r.data?.data || r.data;
             _resetSettingStages(); // 다른 사용자의 저장 반영 시 낡은 편집본 폐기
             // Apply ALL data including settings
