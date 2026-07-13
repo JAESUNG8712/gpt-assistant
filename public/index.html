@@ -1422,6 +1422,19 @@ function autoSaveDebounced(){
     _doSave(true);
   }, 2000); // wait 2s after last change
 }
+// 디바운스된 저장이 실행되기 전에 새로고침/탭종료/뒤로가기 등으로 페이지를 벗어나면
+// 방금 입력한 내용이 서버에 전혀 반영되지 않은 채 조용히 사라지는 문제가 있었다.
+// sendBeacon/keepalive-fetch는 전체 상태 스냅샷(직원 수백 명 + 이력)이 브라우저의
+// 비콘 페이로드 상한(64KB 안팎)을 훌쩍 넘겨 거의 항상 큐잉 자체가 실패하므로
+// (실측: navigator.sendBeacon()이 false 반환), "몰래 보내기"로는 해결할 수 없다.
+// 대신 대기 중인 저장이 있을 때 브라우저 표준 이탈 확인 대화상자를 띄워, 사용자가
+// 직접 "머무르기"를 선택해 2초 디바운스가 정상 완료되도록 유도한다.
+window.addEventListener("beforeunload", (e)=>{
+  if(!_serverDebounceTimer || !serverConfig.enabled || !serverConfig.url) return;
+  e.preventDefault();
+  e.returnValue = "저장되지 않은 변경사항이 있습니다. 잠시 후 자동 저장됩니다 — 지금 나가면 변경사항이 유실될 수 있습니다.";
+  return e.returnValue;
+});
 
 async function saveToServer(silent=false){
   if(!serverConfig.enabled || !serverConfig.url) return;
@@ -2740,7 +2753,10 @@ function handleEvaluatorUpload(input,year){
         const target=employees.find(e=>e.empNo===targetEmpNo);
         if(!target){failed.push(`줄${li+2}: 사번 "${targetEmpNo}" 없음`);return;}
         const evalIds=[];
-        for(let i=3;i<cols.length;i+=2){
+        // dlEvaluatorList()가 만드는 헤더는 피평가자 5컬럼(사번/이름/직위/소속팀/평가유형)
+        // 뒤에 평가자 1명당 3컬럼(사번/이름/제출여부)이 반복되는 포맷이므로,
+        // 평가자 사번은 인덱스 5부터 3칸 간격으로 나타난다.
+        for(let i=5;i<cols.length;i+=3){
           const empNo=cols[i];if(!empNo)continue;
           const ev=employees.find(e=>e.empNo===empNo);
           if(ev)evalIds.push(ev.id);else failed.push(`줄${li+2}: 평가자 사번 "${empNo}" 없음`);
@@ -3635,21 +3651,27 @@ function parseComprehensiveCSV(lines){
             dept:cols[6],team:cols[7],birth:cols[8],gender:cols[9],hire:cols[10],jobGroup:cols[11]||"관리직",
             rank:cols[12],rankYear:Number(cols[13])||1,salary:Number(cols[14])||0,edu:cols[15]||"대학교 졸업",
             eduSchool:cols[16],totalCareer:Number(cols[17])||0,position:cols[18]||"",email:cols[19]||"",phone:cols[20]||"",address:cols[21]||""});
+        else result.errors.push(`행 ${li+1} (EMP): 이름 누락 또는 컬럼 수 부족`);
       }else if(sheet==="CAREER"){
         if(cols[1]&&cols[2])
           result.career.push({empNo:cols[1],company:cols[2],role:cols[3]||"",startDate:cols[4]||"",endDate:cols[5]||"",note:cols[6]||""});
+        else result.errors.push(`행 ${li+1} (CAREER): 사번 또는 회사명 누락`);
       }else if(sheet==="EDU"){
         if(cols[1]&&cols[3])
           result.edu.push({empNo:cols[1],type:cols[2]||"edu_general",name:cols[3],institution:cols[4]||"",date:cols[5]||"",startDate:cols[6]||"",endDate:cols[7]||"",note:cols[8]||""});
+        else result.errors.push(`행 ${li+1} (EDU): 사번 또는 교육명 누락`);
       }else if(sheet==="GRADE"){
         if(cols[1]&&cols[2])
           result.grade.push({empNo:cols[1],year:Number(cols[2]),kpiGrade:cols[3]||"",compGrade:cols[4]||"",kpiScore:Number(cols[5])||null,compScore:Number(cols[6])||null,note:cols[7]||""});
+        else result.errors.push(`행 ${li+1} (GRADE): 사번 또는 연도 누락`);
       }else if(sheet==="SALARY"){
         if(cols[1]&&cols[2])
           result.salary.push({empNo:cols[1],date:cols[2],before:Number(cols[3])||0,after:Number(cols[4])||0,reason:cols[5]||"",note:cols[6]||""});
+        else result.errors.push(`행 ${li+1} (SALARY): 사번 또는 일자 누락`);
       }else if(sheet==="HR"){
         if(cols[1]&&cols[2])
           result.hr.push({empNo:cols[1],type:cols[2],date:cols[3]||"",before:cols[4]||"",after:cols[5]||"",note:cols[6]||""});
+        else result.errors.push(`행 ${li+1} (HR): 사번 또는 변동유형 누락`);
       }
     }catch(e){result.errors.push(`행 ${li+1}: ${e.message}`);}
   });
@@ -3697,14 +3719,16 @@ function showBulkImportPreview(data){
   </div>
   <div class="modal-foot">
     <button class="btn btn-secondary" onclick="closeModal()">취소</button>
-    <button class="btn btn-primary" onclick="executeBulkImport(${JSON.stringify(t).replace(/</g,'&lt;').split('').map(c=>c).join('')})">업로드 실행</button>
+    <button class="btn btn-primary" onclick="executeBulkImport()">업로드 실행</button>
   </div></div>`);
   // Store data for execution
   window._pendingBulkImport=t;
 }
 
-function executeBulkImport(data){
-  // Use stored data (JSON.stringify in button attr has escaping issues for large data)
+function executeBulkImport(){
+  // onclick calls this with no arguments — passing the JSON via the attribute itself
+  // broke HTML parsing once the payload contained double quotes, so it's read from
+  // window._pendingBulkImport (set when the preview modal was opened) instead.
   const t=window._pendingBulkImport;
   if(!t){showToast("업로드 데이터를 찾을 수 없습니다.","error");return;}
   saveAutoSnapshot("pre_bulk_import");
@@ -4917,7 +4941,16 @@ function _showOtpPrompt(msg){
   <div class="fg" style="margin-top:8px"><label class="fl">인증 앱의 6자리 코드</label><input class="fc" id="l-otp" maxlength="6" placeholder="123456" onkeydown="if(event.key==='Enter')doLogin()"></div>`;
   setTimeout(()=>$("#l-otp")?.focus(),30);
 }
-function logout(){disconnectSSE();releaseAllMyLocks();_myPagePwVerified=false;currentUser=null;const app=$("#app");if(app)app.innerHTML="";renderLogin();}
+async function logout(){
+  // 대기 중인 디바운스 저장이 있으면 로그아웃으로 상태를 지우기 전에 먼저 완료한다
+  // (그러지 않으면 로그아웃 직전 입력한 내용이 서버에 반영되지 않은 채 유실됨).
+  if(_serverDebounceTimer){
+    clearTimeout(_serverDebounceTimer);
+    _serverDebounceTimer=null;
+    await _doSave(true).catch(()=>{});
+  }
+  disconnectSSE();releaseAllMyLocks();_myPagePwVerified=false;currentUser=null;const app=$("#app");if(app)app.innerHTML="";renderLogin();
+}
 
 // ==================== MAIN ====================
 function render(){
@@ -6797,7 +6830,19 @@ function doDeleteEmp(id){
   closeModal();showToast(`${e.name}님의 계정이 삭제되었습니다.`,"info");renderHRList();
 }
 function dlHRTemplate(){dlCSV("입사자_일괄등록_양식.csv",["로그인ID","초기비밀번호","이름","사번","권한","부서","팀","생년월일","성별","입사일","직군","직급","직급연차","연봉","최종학력","학교(졸업년도)","총경력년수","직책","이메일","연락처","주소"],[["member01","Member@123","홍길동","EMP-001","member","경영지원본부","인사팀","1993-05-10","남","2024-01-02","관리직","사원","1","42000000","대학교 졸업","서울대학교 (2018)","3","","hong@co.kr","010-0000-0000","서울시 강남구"]]);}
-function handleBulkUpload(input){const file=input.files[0];if(!file)return;const reader=new FileReader();reader.onload=ev=>{try{const lines=ev.target.result.split("\n").filter(l=>l.trim());if(lines.length<2){showToast("데이터가 없습니다.","error");return;}let added=0;lines.slice(1).forEach(line=>{const cols=line.split(",").map(c=>c.replace(/^"|"$/g,"").trim());if(cols.length<5||!cols[0])return;if(employees.some(e=>e.empNo===cols[3]||e.loginId===cols[0]))return;const career=Number(cols[16])||0;const edu=cols[14]||"대학교 졸업";const rankCalc=calcAutoRank(career,edu);employees.push({id:genId(),loginId:cols[0]||cols[3],pw:cols[1]||cols[3],name:cols[2],empNo:cols[3],role:cols[4]||"member",dept:cols[5]||"",team:cols[6]||"",birth:cols[7]||"",gender:cols[8]||"남",hire:cols[9]||"",jobGroup:cols[10]||"관리직",rank:cols[11]||rankCalc.rank,rankYear:Number(cols[12])||Math.max(1,Math.round(rankCalc.rankYear)),salary:Number(cols[13])||0,edu,eduSchool:cols[15]||"",totalCareer:career,position:cols[17]||"",email:cols[18]||"",phone:cols[19]||"",address:cols[20]||"",active:true,retireDate:"",retireReason:"",customFields:{},careers:[],hrHistory:[],gradeResults:{}});added++;});showToast(`${added}명이 등록되었습니다.`,"success");autoSaveToServerIfEnabled();renderHRList();}catch(err){showToast("파일 파싱 오류: "+err.message,"error");}};reader.readAsText(file,"UTF-8");input.value="";}
+function handleBulkUpload(input){const file=input.files[0];if(!file)return;const reader=new FileReader();reader.onload=ev=>{try{const lines=ev.target.result.split(/\r?\n/).filter(l=>l.trim());if(lines.length<2){showToast("데이터가 없습니다.","error");return;}let added=0;const skipped=[];lines.slice(1).forEach((line,li)=>{
+  // parseCSVLine()으로 따옴표로 감싼 필드 안의 콤마를 올바르게 처리(주소 등 자유입력값에 콤마가 있어도 뒤 컬럼이 밀리지 않음)
+  const cols=parseCSVLine(line);
+  if(cols.length<5||!cols[0]){skipped.push(`행 ${li+2}: 컬럼 수 부족 또는 로그인ID 없음`);return;}
+  if(!cols[2]||!cols[3]){skipped.push(`행 ${li+2}: 이름 또는 사번 없음`);return;}
+  if(employees.some(e=>e.empNo===cols[3]||e.loginId===cols[0])){skipped.push(`행 ${li+2}: 이미 등록된 사번/로그인ID (${cols[3]})`);return;}
+  const career=Number(cols[16])||0;const edu=cols[14]||"대학교 졸업";const rankCalc=calcAutoRank(career,edu);employees.push({id:genId(),loginId:cols[0]||cols[3],pw:cols[1]||cols[3],name:cols[2],empNo:cols[3],role:cols[4]||"member",dept:cols[5]||"",team:cols[6]||"",birth:cols[7]||"",gender:cols[8]||"남",hire:cols[9]||"",jobGroup:cols[10]||"관리직",rank:cols[11]||rankCalc.rank,rankYear:Number(cols[12])||Math.max(1,Math.round(rankCalc.rankYear)),salary:Number(cols[13])||0,edu,eduSchool:cols[15]||"",totalCareer:career,position:cols[17]||"",email:cols[18]||"",phone:cols[19]||"",address:cols[20]||"",active:true,retireDate:"",retireReason:"",customFields:{},careers:[],hrHistory:[],gradeResults:{}});added++;
+});
+// 예전에는 업로드 행 수와 등록된 수가 달라도 사유를 전혀 알려주지 않아 사용자가 직접 계산해서
+// 눈치채야 했음 — 몇 건이 왜 제외됐는지 토스트+콘솔로 명시한다.
+showToast(`${added}명이 등록되었습니다.`+(skipped.length?` (${skipped.length}건 제외됨 — 자세한 사유는 브라우저 콘솔 참고)`:""),"success");
+if(skipped.length)console.warn("[신규직원 일괄등록] 제외된 행:\n"+skipped.join("\n"));
+autoSaveToServerIfEnabled();renderHRList();}catch(err){showToast("파일 파싱 오류: "+err.message,"error");}};reader.readAsText(file,"UTF-8");input.value="";}
 function dlHRList(){dlCSV(`직원목록_${new Date().toISOString().slice(0,10)}.csv`,["이름","사번","권한","부서","팀","직급","직책","경력","연봉","입사일","상태"],getFilteredEmps().map(e=>[e.name,e.empNo,ROLES[e.role],e.dept,e.team,e.rank,e.position||"-",(e.totalCareer||0)+"년",fmtSalary(e.salary),e.hire,e.active?"재직":"퇴직"]));}
 function resetAllLoginToEmpNo(){
   const targets=employees.filter(e=>e.empNo&&e.role!=="admin");
@@ -6821,8 +6866,11 @@ function handleHRSpreadsheetImport(input){
       // 탭 구분자 우선, 없으면 쉼표
       const delim=text.includes("\t")?"\t":",";
       const rows=text.split(/\r?\n/).map(r=>r.split(delim).map(c=>c.replace(/^"|"$/g,"").trim()));
-      // 2줄 헤더 스킵, 빈 행 제거
-      const data=rows.slice(2).filter(r=>r[0]&&r[0].trim()&&r[1]&&r[1].trim());
+      // 2줄 헤더 스킵, 완전히 빈 줄만 제거(성명/사번 등 일부만 비어있는 행은 아래
+      // 오류 집계 로직이 처리하도록 여기서는 걸러내지 않는다 — 예전에는 성명·사번이
+      // 둘 다 빈 행이 여기서 조용히 삭제돼 "오류 0건"으로 표시되면서 아무 흔적 없이
+      // 누락되는 문제가 있었음)
+      const data=rows.slice(2).filter(r=>r.some(c=>c&&c.trim()));
       if(!data.length){showToast("데이터 행이 없습니다. 파일 형식을 확인하세요.","error");return;}
 
       // 컬럼 인덱스 (헤더 기준)
@@ -7302,7 +7350,7 @@ function submitKpi(id){
   const allKpis=kpiEntries.filter(ke=>ke.userId===k.userId&&ke.year===k.year);
   const wt=weightTotal(allKpis);
   if(wt!==100){showToast("KPI 비중 합계가 100%가 되어야 제출이 가능합니다. 현재: "+wt+"%","error");return;}
-  kpiEntries=kpiEntries.map(ke=>ke.id===id?{...ke,goalSub:1}:ke);showToast("KPI가 제출되었습니다.","success");logAction("kpi_submitted","KPI 제출","kpi:"+userId,`${kpiEntries.filter(k=>k.userId===userId&&k.year===year&&k.goalSub).length}건`);renderKPI(false);}
+  kpiEntries=kpiEntries.map(ke=>ke.id===id?{...ke,goalSub:1}:ke);showToast("KPI가 제출되었습니다.","success");logAction("kpi_submitted","KPI 제출","kpi:"+k.userId,`${kpiEntries.filter(ke=>ke.userId===k.userId&&ke.year===k.year&&ke.goalSub).length}건`);autoSaveToServerIfEnabled();renderKPI(false);}
 function deleteKpi(id){kpiEntries=kpiEntries.filter(k=>k.id!==id);showToast("KPI가 삭제되었습니다.","info");renderKPI(false);}
 function dlKpiCSV(userId,year){const emp=getEmp(userId);dlCSV(`KPI_${emp?.name||userId}_${year}.csv`,["KPI항목","비중","전년실적","목표","전년비","전략","평가기준","실적","달성율","세부내용","자체점수","차상위자점수"],kpiEntries.filter(k=>k.userId===userId&&k.year===year).map(k=>[k.item,k.weight+"%",k.prev,k.goal,k.yoy,k.strategy,k.evalCriteria||"",k.actual||"",k.rate||"",k.detail||"",k.selfScore??"",k.ceoScore??""]));}
 
@@ -11069,7 +11117,7 @@ function _doManualLpRegister(){
   renderLowPerformer();
 }
 function _openLpDetail(recId){
-  const rec=lowPerfData.find(r=>r.id===recId);if(!rec)return;
+  const rec=lowPerfData.find(r=>String(r.id)===String(recId));if(!rec)return;
   const emp=employees.find(e=>e.id===rec.empId);if(!emp)return;
   const sc=_calcOverallScore(rec.empId,rec.year)??rec.overallScore;
   // Score history
@@ -13690,11 +13738,18 @@ function _parsePartnerBulkFile(){
   reader.onload=e=>{
     const lines=String(e.target.result).split(/\r?\n/).filter(l=>l.trim());
     const rows=lines.slice(1).map(parseCSVLine).filter(r=>r[0]);
-    window._ptnBulkRows=rows.map(r=>({name:r[0],bizNo:r[1]||"",ceoName:r[2]||"",type:["customer","vendor","both"].includes(r[3])?r[3]:"vendor",contactName:r[4]||"",phone:r[5]||"",email:r[6]||"",address:r[7]||"",registerReason:r[8]||""}));
+    window._ptnBulkRows=rows.map(r=>{
+      const rawType=(r[3]||"").trim();
+      const validType=["customer","vendor","both"].includes(rawType);
+      // 거래유형이 customer/vendor/both가 아닌 값(오타 등)이면 예전엔 에러 없이 조용히
+      // "vendor"로 대체돼 사용자가 실수를 알아채기 어려웠음 — 대체된 행을 표시해준다.
+      return {name:r[0],bizNo:r[1]||"",ceoName:r[2]||"",type:validType?rawType:"vendor",typeInvalid:!validType,rawType,contactName:r[4]||"",phone:r[5]||"",email:r[6]||"",address:r[7]||"",registerReason:r[8]||""};
+    });
+    const invalidCnt=window._ptnBulkRows.filter(r=>r.typeInvalid).length;
     const box=$("#ptn-bulk-preview");
-    if(box)box.innerHTML=`<div class="info-note mt2 fz12">${window._ptnBulkRows.length}건 확인됨. 아래 "일괄 등록"을 눌러 등록을 완료하세요.</div>
+    if(box)box.innerHTML=`<div class="info-note mt2 fz12">${window._ptnBulkRows.length}건 확인됨${invalidCnt?` (⚠ 거래유형 값이 올바르지 않아 "매입처"로 자동 대체된 행 ${invalidCnt}건 — 아래 표에서 빨간 글씨 확인)`:""}. 아래 "일괄 등록"을 눌러 등록을 완료하세요.</div>
       <div class="tbl-wrap mt2" style="max-height:240px;overflow:auto"><table><thead><tr><th>거래처명</th><th>유형</th><th>대표자</th><th>담당자</th></tr></thead><tbody>
-      ${window._ptnBulkRows.map(r=>`<tr><td>${h(r.name)}</td><td>${PARTNER_TYPE_LABEL[r.type]||r.type}</td><td>${h(r.ceoName)}</td><td>${h(r.contactName)}</td></tr>`).join("")}
+      ${window._ptnBulkRows.map(r=>`<tr><td>${h(r.name)}</td><td>${r.typeInvalid?`<span style="color:#dc2626" title="원본 값: ${h(r.rawType||"(비어있음)")}">${PARTNER_TYPE_LABEL[r.type]||r.type} (자동대체)</span>`:PARTNER_TYPE_LABEL[r.type]||r.type}</td><td>${h(r.ceoName)}</td><td>${h(r.contactName)}</td></tr>`).join("")}
       </tbody></table></div>
       <button class="btn btn-primary btn-sm mt2" onclick="_executePartnerBulkUpload()">일괄 등록 (${window._ptnBulkRows.length}건)</button>`;
   };
@@ -14046,7 +14101,7 @@ function saveDelegation(){
 }
 function deleteDelegation(id){
   if(!confirm("이 위임을 삭제하시겠습니까?"))return;
-  approvalDelegations=approvalDelegations.filter(d=>d.id!==id);
+  approvalDelegations=approvalDelegations.filter(d=>String(d.id)!==String(id));
   autoSaveToServerIfEnabled();showToast("삭제되었습니다.","info");renderApprovalDelegationPage();
 }
 // ==================== 온보딩/오프보딩 체크리스트 ====================
@@ -14113,7 +14168,7 @@ function createOnboardFlow(type){
   closeModal();autoSaveToServerIfEnabled();showToast(`${emp.name}님의 ${type==="onboard"?"온보딩":"오프보딩"} 절차가 시작되었습니다.`,"success");renderOnboardingPage();
 }
 function openOnboardDetailModal(id){
-  const fl=onboardingFlows.find(f=>f.id===id);if(!fl)return;
+  const fl=onboardingFlows.find(f=>String(f.id)===String(id));if(!fl)return;
   openModal(`<div class="modal-box" style="max-width:520px"><div class="modal-head"><h3>${fl.type==="onboard"?"🟢":"🔴"} ${h(fl.empName)} — 체크리스트</h3></div><div class="modal-body">
     ${fl.items.map((it,i)=>`<label style="display:flex;align-items:center;gap:8px;padding:7px 4px;border-bottom:1px solid #f1f5f9;cursor:pointer">
       <input type="checkbox" ${it.done?"checked":""} onchange="toggleOnboardItem('${fl.id}',${i},this.checked)" style="width:16px;height:16px;cursor:pointer">
@@ -14136,7 +14191,7 @@ function toggleOnboardItem(flowId,idx,checked){
 function deleteOnboardFlow(id){
   if(currentUser.role!=="admin"){showToast("삭제 권한이 없습니다.","error");return;}
   if(!confirm("이 절차를 삭제하시겠습니까?"))return;
-  onboardingFlows=onboardingFlows.filter(f=>f.id!==id);
+  onboardingFlows=onboardingFlows.filter(f=>String(f.id)!==String(id));
   autoSaveToServerIfEnabled();showToast("삭제되었습니다.","info");renderOnboardingPage();
 }
 // ==================== 경영 대시보드 (매출·손익·인건비·인원·재고 통합 현황) ====================
@@ -14301,14 +14356,14 @@ function saveOvertimeRequest(){
   closeModal();autoSaveToServerIfEnabled();showToast("초과근무 신청이 제출되었습니다.","success");renderOvertimeReqPage();
 }
 function cancelOvertime(id){
-  const r=overtimeRequests.find(x=>x.id===id);
+  const r=overtimeRequests.find(x=>String(x.id)===String(id));
   if(!r||r.status!=="pending")return;
   if(!confirm("이 신청을 취소하시겠습니까?"))return;
-  overtimeRequests=overtimeRequests.filter(x=>x.id!==id);
+  overtimeRequests=overtimeRequests.filter(x=>String(x.id)!==String(id));
   autoSaveToServerIfEnabled();showToast("취소되었습니다.","info");renderOvertimeReqPage();
 }
 function approveOvertime(id){
-  const r=overtimeRequests.find(x=>x.id===id);
+  const r=overtimeRequests.find(x=>String(x.id)===String(id));
   if(!r||r.status!=="pending"||!_otCanApprove(r))return;
   const [y,m]=r.date.split("-").map(Number);
   if(_payrollLocked(y,m)){showToast(`${y}년 ${m}월 급여가 이미 마감되어 승인할 수 없습니다. 마감 해제 후 처리하세요.`,"error");return;}
@@ -14316,7 +14371,7 @@ function approveOvertime(id){
   autoSaveToServerIfEnabled();showToast(`승인되었습니다. ${y}년 ${m}월 급여에 수당이 반영됩니다.`,"success");renderOvertimeReqPage();
 }
 function rejectOvertime(id){
-  const r=overtimeRequests.find(x=>x.id===id);
+  const r=overtimeRequests.find(x=>String(x.id)===String(id));
   if(!r||r.status!=="pending"||!_otCanApprove(r))return;
   const reason=prompt("반려 사유를 입력하세요.");if(!reason)return;
   r.status="rejected";r.rejectReason=reason;r.approvedBy=currentUser.name;r.approvedAt=new Date().toISOString();
@@ -14497,15 +14552,15 @@ function saveExpenseClaim(){
   closeModal();autoSaveToServerIfEnabled();showToast("경비 청구가 제출되었습니다.","success");renderExpenseClaimsPage();
 }
 function deleteExpenseClaim(id){
-  const x=expenseClaims.find(x=>x.id===id);if(!x)return;
+  const x=expenseClaims.find(x=>String(x.id)===String(id));if(!x)return;
   if(x.status!=="pending"){showToast("승인 대기 상태만 회수할 수 있습니다.","error");return;}
   if(!confirm("이 경비 청구를 회수(삭제)하시겠습니까?"))return;
-  expenseClaims=expenseClaims.filter(c=>c.id!==id);
+  expenseClaims=expenseClaims.filter(c=>String(c.id)!==String(id));
   autoSaveToServerIfEnabled();showToast("회수되었습니다.","info");
   currentPage==="expense-admin"?renderExpenseAdminPage():renderExpenseClaimsPage();
 }
 function viewExpenseClaimModal(id){
-  const x=expenseClaims.find(x=>x.id===id);if(!x)return;
+  const x=expenseClaims.find(x=>String(x.id)===String(id));if(!x)return;
   openModal(`<div class="modal-box" style="max-width:600px"><div class="modal-head"><h3>🧾 ${h(x.title)}</h3></div><div class="modal-body">
     <div class="fg"><label class="fl">청구자</label><div class="fz13">${h(x.empName)} (${h(x.dept)}${x.team?" / "+h(x.team):""}) · ${h((x.createdAt||"").slice(0,10))}</div></div>
     <div class="fg"><label class="fl">항목</label><div class="tbl-wrap"><table><thead><tr><th>일자</th><th>분류</th><th>금액</th><th>내용</th></tr></thead><tbody>
@@ -14552,20 +14607,20 @@ function renderExpenseAdminPage(){
 }
 function approveExpenseClaim(id){
   if(currentUser.role!=="admin"){showToast("경비 승인 권한이 없습니다.","error");return;}
-  const x=expenseClaims.find(x=>x.id===id);if(!x||x.status!=="pending")return;
+  const x=expenseClaims.find(x=>String(x.id)===String(id));if(!x||x.status!=="pending")return;
   x.status="approved";x.approvedBy=currentUser.name;x.approvedAt=new Date().toISOString();
   autoSaveToServerIfEnabled();showToast("승인되었습니다. 지급 처리를 진행하세요.","success");renderExpenseAdminPage();
 }
 function rejectExpenseClaim(id){
   if(currentUser.role!=="admin"){showToast("경비 반려 권한이 없습니다.","error");return;}
-  const x=expenseClaims.find(x=>x.id===id);if(!x||x.status!=="pending")return;
+  const x=expenseClaims.find(x=>String(x.id)===String(id));if(!x||x.status!=="pending")return;
   const reason=prompt("반려 사유를 입력하세요.");if(!reason)return;
   x.status="rejected";x.rejectReason=reason;x.approvedBy=currentUser.name;x.approvedAt=new Date().toISOString();
   autoSaveToServerIfEnabled();showToast("반려되었습니다.","info");renderExpenseAdminPage();
 }
 function openExpensePayModal(id){
   if(currentUser.role!=="admin"){showToast("경비 지급 권한이 없습니다.","error");return;}
-  const x=expenseClaims.find(x=>x.id===id);if(!x||x.status!=="approved")return;
+  const x=expenseClaims.find(x=>String(x.id)===String(id));if(!x||x.status!=="approved")return;
   const canVoucher=!!serverConfig.url&&acctAccounts.length>=2;
   const expenseAccs=acctAccounts.filter(a=>a.type==="expense"&&a.active!==false);
   const assetAccs=acctAccounts.filter(a=>a.type==="asset"&&a.active!==false);
@@ -14582,7 +14637,7 @@ function openExpensePayModal(id){
 }
 async function payExpenseClaim(id){
   if(currentUser.role!=="admin"){showToast("경비 지급 권한이 없습니다.","error");return;}
-  const x=expenseClaims.find(x=>x.id===id);if(!x||x.status!=="approved")return;
+  const x=expenseClaims.find(x=>String(x.id)===String(id));if(!x||x.status!=="approved")return;
   const payDate=$("#expay-date")?.value||new Date().toISOString().slice(0,10);
   const method=$("#expay-method")?.value||"계좌이체";
   const makeVoucher=$("#expay-voucher")?.checked;
@@ -15350,6 +15405,10 @@ function _pmsWorklogViewTabs(){
 function renderPmsWorklogPage(){
   const c=$("#content");if(!c)return;
   if(!serverConfig.url){c.innerHTML=_erpNoServerHtml("일일 업무 투입");return;}
+  // 다른 PMS 화면(프로젝트 관리/투입률/가동률 등)을 한 번도 거치지 않고 세션에서
+  // 처음으로 이 화면에 들어오면 pmsProjects가 비어 있어 프로젝트 드롭다운이 비어보이는
+  // 문제가 있었다 — 다른 PMS 화면들과 동일하게 지연 로드를 보장한다.
+  _pmsEnsureLoaded();
   if(_pmsWorklogView==="week")return renderPmsWorklogWeekView();
   if(_pmsWorklogView==="team")return renderPmsWorklogTeamView();
   if(_pmsWorklogLoadedDate!==_pmsWorklogDate){c.innerHTML=`<div class="card"><div class="card-body text-gray" style="text-align:center;padding:30px">불러오는 중...</div></div>`;_pmsWorklogLoad();return;}
@@ -15471,6 +15530,9 @@ async function savePmsWorklogBlock(){
   const r=await serverRequest("POST","/api/pms/worklogs",{employeeId:currentUser.id,date:_pmsWorklogDate,blocks:next,role:currentUser.role,userId:currentUser.id});
   if(!r?.ok){showToast(r?.message||"저장에 실패했습니다.","error");return;}
   _pmsWorklogBlocks=r.worklog.blocks;
+  // "내 투입률 입력"/"가동률 현황"이 같은 세션에서 이미 조회된 적이 있으면 캐시된 합계를
+  // 그대로 보여주고 있었으므로, 방금 바뀐 업무 기록이 반영되도록 캐시를 무효화한다.
+  _pmsAllocLoadedKey=null;_pmsUtilLoadedKey=null;
   closeModal();showToast("저장되었습니다.","success");renderPmsWorklogPage();
 }
 async function deletePmsWorklogBlock(idx){
@@ -15480,6 +15542,7 @@ async function deletePmsWorklogBlock(idx){
   const r=await serverRequest("POST","/api/pms/worklogs",{employeeId:currentUser.id,date:_pmsWorklogDate,blocks:next,role:currentUser.role,userId:currentUser.id});
   if(!r?.ok){showToast(r?.message||"삭제에 실패했습니다.","error");return;}
   _pmsWorklogBlocks=r.worklog.blocks;
+  _pmsAllocLoadedKey=null;_pmsUtilLoadedKey=null;
   showToast("삭제되었습니다.","info");renderPmsWorklogPage();
 }
 
@@ -19639,7 +19702,13 @@ function handleAwardUpload(input){
       for(let i=1;i<rows.length;i++){
         const r=rows[i];if(!r[iEmpNo])continue;
         const year=parseInt(r[iYear]),half=(r[iHalf]||"").trim(),tier=(r[iTier]||"").trim()||"우수",date=(r[iDate]||"").trim(),reason=(r[iReason]||"").trim(),note=(r[iNote]||"").trim();
-        if(!year||!date||!reason)continue;
+        if(!year||!date||!reason){
+          // 예전에는 이 행을 그냥 continue로 건너뛰어 미리보기에 아예 나타나지 않고
+          // "몇 건이 제외됐다"는 안내도 없이 조용히 사라졌음 — 사번 매칭 실패와 동일하게
+          // 미리보기에 표시하고 제외 사유를 밝힌다.
+          changes.push({empNo:r[iEmpNo],name:r[header.indexOf("이름")]||"",year:year||"",half,tier,date,reason,note,invalid:true,invalidReason:"필수값 누락(연도/선정일/사유)"});
+          continue;
+        }
         const emp=employees.find(e=>e.empNo===r[iEmpNo]);
         if(!emp){changes.push({empNo:r[iEmpNo],name:r[header.indexOf("이름")]||"",year,half,tier,date,reason,note,invalid:true});continue;}
         changes.push({empId:emp.id,empNo:emp.empNo,name:emp.name,dept:emp.dept,year,half,tier,date,reason,note,recent:_awardRecentlySelected(emp,year)});
@@ -19654,10 +19723,10 @@ function handleAwardUpload(input){
 function _showAwardBulkPreview(changes){
   _awardBulkChanges=changes;
   const valid=changes.filter(c=>!c.invalid),invalid=changes.filter(c=>c.invalid);
-  const rowsHtml=changes.map(c=>`<tr${c.invalid?' style="opacity:.5"':""}><td>${h(c.name)}</td><td class="text-gray">${h(c.empNo)}</td><td>${h(c.dept||"-")}</td><td>${c.year}년 ${h(c.half||"")}</td><td>${h(c.tier)}</td><td>${h(c.date)}</td><td class="fz12">${h(c.reason)}</td><td>${c.invalid?badge("사번 없음","red"):c.recent?badge("최근 선정","yellow"):badge("정상","green")}</td></tr>`).join("");
+  const rowsHtml=changes.map(c=>`<tr${c.invalid?' style="opacity:.5"':""}><td>${h(c.name)}</td><td class="text-gray">${h(c.empNo)}</td><td>${h(c.dept||"-")}</td><td>${c.year}년 ${h(c.half||"")}</td><td>${h(c.tier)}</td><td>${h(c.date)}</td><td class="fz12">${h(c.reason)}</td><td>${c.invalid?badge(c.invalidReason||"사번 없음","red"):c.recent?badge("최근 선정","yellow"):badge("정상","green")}</td></tr>`).join("");
   showModal(`<div class="modal-box" style="max-width:780px"><div class="modal-head"><h3>📋 우수사원 선정 일괄 등록 미리보기</h3></div>
   <div class="modal-body">
-    <div class="text-gray fz12" style="margin-bottom:8px">총 ${changes.length}건 감지됨 (적용 가능 ${valid.length}건${invalid.length?`, 사번 매칭 실패 ${invalid.length}건`:""}).</div>
+    <div class="text-gray fz12" style="margin-bottom:8px">총 ${changes.length}건 감지됨 (적용 가능 ${valid.length}건${invalid.length?`, 제외 ${invalid.length}건`:""}).</div>
     <div class="tbl-wrap" style="max-height:360px;overflow:auto"><table><thead><tr><th>이름</th><th>사번</th><th>부서</th><th>연도/반기</th><th>구분</th><th>선정일</th><th>사유</th><th>상태</th></tr></thead><tbody>${rowsHtml}</tbody></table></div>
   </div>
   <div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal()">취소</button><button class="btn btn-primary" onclick="_applyAwardBulkChanges()" ${valid.length?"":"disabled"}>적용 (${valid.length}건)</button></div></div>`);

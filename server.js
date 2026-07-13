@@ -195,6 +195,19 @@ let _activityLog = [];
 let _locks       = {};      // { lockKey: { clientId, user, acquiredAt, expiresAt } }
 let _sseClients  = {};      // { clientId: { res, user, connectedAt } }
 
+// ── 저장 요청 직렬화 ──────────────────────────────────────────────────────────
+// 두 클라이언트가 거의 동시에 POST /save 하면, 버전 체크→(필요시)병합→실제 저장이
+// 서로 인터리빙되면서 나중에 끝난 요청이 먼저 끝난 요청의 변경사항을 통째로 덮어써
+// 데이터가 유실되는 문제가 있었다(응답은 ok:true인데 실제로는 반영 안 되는 경우 포함).
+// 이 큐로 "버전 체크 → 병합 → persistData" 전체를 하나의 원자적 구간으로 묶어,
+// 뒤에 도착한 요청은 앞선 요청이 완전히 끝난 뒤 최신 _dataVersion을 보고 판단하게 한다.
+let _saveMutex = Promise.resolve();
+function _withSaveLock(fn) {
+  const run = _saveMutex.then(fn, fn);
+  _saveMutex = run.then(() => {}, () => {});
+  return run;
+}
+
 // ── DB bootstrap ──────────────────────────────────────────────────────────────
 async function initDB() {
   if (USE_JSON_FILE) {
@@ -346,7 +359,14 @@ async function loadData() {
   for (const row of singRes.rows) result[row.key] = row.data;
   return result;
 }
+// Public entry point — acquires the save lock itself. Callers that are
+// already inside `_withSaveLock` (the /save route) must call
+// `_persistDataLocked` directly instead, to avoid deadlocking on the
+// non-reentrant mutex.
 async function persistData(data, changedBy = "system") {
+  return _withSaveLock(() => _persistDataLocked(data, changedBy));
+}
+async function _persistDataLocked(data, changedBy = "system") {
   if (USE_JSON_FILE) {
     // Save the full client state to the JSON file
     const existingById = {};
@@ -768,17 +788,23 @@ app.post("/save", async (req, res) => {
     : body;
 
   try {
-    let finalData = clientData;
-    let merged    = false;
+    const { finalData, merged, duplicateLoginIds } = await _withSaveLock(async () => {
+      let finalData = clientData;
+      let merged    = false;
 
-    if (clientData._version !== undefined && clientData._version < _dataVersion) {
-      const serverData = await loadData();
-      finalData = smartMerge(serverData, clientData);
-      merged    = true;
-    }
+      // Re-checked *inside* the lock so a request that arrived while another
+      // save was in flight sees the version that request just committed,
+      // instead of a stale snapshot taken before either had run.
+      if (clientData._version !== undefined && clientData._version < _dataVersion) {
+        const serverData = await loadData();
+        finalData = smartMerge(serverData, clientData);
+        merged    = true;
+      }
 
-    const changedBy = req.query.user || clientData._user || "unknown";
-    const { duplicateLoginIds } = await persistData(finalData, changedBy);
+      const changedBy = req.query.user || clientData._user || "unknown";
+      const { duplicateLoginIds } = await _persistDataLocked(finalData, changedBy);
+      return { finalData, merged, duplicateLoginIds };
+    });
 
     const meta = {
       empCount:  (finalData.employees  || []).length,
