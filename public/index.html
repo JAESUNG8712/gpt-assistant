@@ -2104,7 +2104,13 @@ function closeModal(){
   // We release KPI/emp locks when modal closes
   for(const key of Array.from(_myLocks)){
     if(key.startsWith("kpi:") || key.startsWith("emp:")) releaseLock(key);
-  }const m=$(".modal-ov");if(m)m.remove();}
+  }
+  // $(".modal-ov")(=querySelector, DOM 순서상 첫 번째 = 가장 먼저 열린/아래쪽 모달)를
+  // 지우고 있었는데, 모달 안에서 showModal()을 다시 호출해 모달이 쌓이는 화면(예: PMS
+  // 프로젝트 등록의 투입인원 추가/삭제)에서는 사용자가 보고 있는 맨 위(최신) 모달이 아니라
+  // 그 아래 이미 안 보이는 모달이 지워져, 저장 후에도 화면에 모달이 그대로 남아있는 것처럼
+  // 보이는 문제가 있었다. 항상 가장 나중에 열린(맨 위) 모달을 지우도록 통일.
+  const ms=document.querySelectorAll(".modal-ov");if(ms.length)ms[ms.length-1].remove();}
 
 
 
@@ -11109,7 +11115,10 @@ function _openManualLpRegister(){
   </div></div>`);
 }
 function _doManualLpRegister(){
-  const empId=$("#lp-emp")?.value;const year=Number($("#lp-year")?.value);
+  // <select>.value는 항상 문자열이라, 이걸 그대로 저장하면 employees[].id(숫자)와
+  // 엄격비교(===)하는 다른 모든 곳(목록 카드 렌더, 자동감지 중복표시 등)에서 매칭이
+  // 실패해 등록은 되지만 화면 어디에도 나타나지 않는 문제가 있었다 — 숫자로 변환해 저장.
+  const empId=Number($("#lp-emp")?.value)||null;const year=Number($("#lp-year")?.value);
   const status=$("#lp-status")?.value||"watch";
   const reason=$("#lp-reason")?.value?.trim()||"";
   if(!empId){showToast("직원을 선택하세요.","error");return;}
@@ -14184,7 +14193,7 @@ function openOnboardDetailModal(id){
 }
 function toggleOnboardItem(flowId,idx,checked){
   if(currentUser.role!=="admin"){showToast("체크리스트 처리 권한이 없습니다.","error");return;}
-  const fl=onboardingFlows.find(f=>f.id===flowId);if(!fl||!fl.items[idx])return;
+  const fl=onboardingFlows.find(f=>String(f.id)===String(flowId));if(!fl||!fl.items[idx])return;
   fl.items[idx].done=checked;
   fl.items[idx].doneBy=checked?currentUser.name:"";
   fl.items[idx].doneAt=checked?new Date().toISOString():"";
@@ -15182,11 +15191,15 @@ function _pmjAddMember(){
   if(!employees.some(e=>String(e.id)===id)){showToast("검색 목록에서 직원을 선택하세요.","error");return;}
   const draft=_pmjCurrentDraft();
   if(!_pmjDraftMembers.includes(id))_pmjDraftMembers.push(id);
+  // openModal()을 그냥 다시 부르면 기존 오버레이 위에 새 오버레이가 계속 쌓여서
+  // (예전엔 저장 후에도 모달이 화면에 남아있는 것처럼 보였음) 갱신 전에 기존 모달을 먼저 닫는다.
+  const prevOv=document.querySelector(".modal-ov");if(prevOv)prevOv.remove();
   openModal(_pmsProjectModalHtml(_pmjEditingProject,draft));
 }
 function _pmjRemoveMember(id){
   const draft=_pmjCurrentDraft();
   _pmjDraftMembers=_pmjDraftMembers.filter(m=>m!==id);
+  const prevOv=document.querySelector(".modal-ov");if(prevOv)prevOv.remove();
   openModal(_pmsProjectModalHtml(_pmjEditingProject,draft));
 }
 async function savePmsProject(id){
