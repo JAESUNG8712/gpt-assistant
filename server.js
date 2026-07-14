@@ -1,5 +1,7 @@
 const express = require("express");
 const cors    = require("cors");
+const helmet  = require("helmet");
+const rateLimit = require("express-rate-limit");
 const fs      = require("fs");
 const path    = require("path");
 const os      = require("os");
@@ -10,6 +12,53 @@ const budgetRouter = require("./budget");
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
+
+// ── 세션 토큰 (HMAC 서명, stateless) ────────────────────────────────────────────
+// /login 성공 시 발급되어 이후 모든 요청의 Authorization: Bearer <token> 헤더로 전달됨.
+// req.body.role을 그대로 신뢰하던 과거 방식(클라이언트가 role만 바꿔 보내면 관리자 권한
+// 우회 가능)을 대체하기 위해 도입 — role은 이제 서버가 로그인 시 검증한 값만 담긴 토큰에서
+// 읽는다. SESSION_SECRET 미설정 시 배포 로그에 경고를 남기고 프로세스 시작마다 임의 시크릿을
+// 생성한다(재시작 시 기존 토큰은 모두 무효화되어 재로그인이 필요해짐 — 운영 배포에서는
+// SESSION_SECRET 환경변수를 반드시 고정값으로 설정할 것).
+const SESSION_SECRET = process.env.SESSION_SECRET || crypto.randomBytes(32).toString("hex");
+if (!process.env.SESSION_SECRET) {
+  console.warn("⚠️  SESSION_SECRET 환경변수가 설정되지 않았습니다 — 임시 시크릿으로 동작하며, 서버 재시작 시 모든 로그인 세션이 무효화됩니다. 운영 배포에서는 반드시 고정값을 설정하세요.");
+}
+const SESSION_TTL_SEC = 12 * 60 * 60; // 12시간
+
+function signToken(payload) {
+  const body = Buffer.from(JSON.stringify({ ...payload, iat: Date.now(), exp: Date.now() + SESSION_TTL_SEC * 1000 })).toString("base64url");
+  const sig = crypto.createHmac("sha256", SESSION_SECRET).update(body).digest("base64url");
+  return `${body}.${sig}`;
+}
+function verifyToken(token) {
+  if (!token || typeof token !== "string" || !token.includes(".")) return null;
+  const [body, sig] = token.split(".");
+  const expected = crypto.createHmac("sha256", SESSION_SECRET).update(body).digest("base64url");
+  try {
+    if (!crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected))) return null;
+  } catch { return null; }
+  try {
+    const payload = JSON.parse(Buffer.from(body, "base64url").toString("utf8"));
+    if (!payload.exp || payload.exp < Date.now()) return null;
+    return payload;
+  } catch { return null; }
+}
+// 모든 요청에서 Authorization 헤더를 검증해 req.auth에 실어둔다(없거나 무효면 null).
+// 라우트 자체를 막지는 않고 값만 채워두며, 실제 인가는 requireAuth/requireAdmin/requireRole이 담당한다.
+function authenticate(req, res, next) {
+  const header = req.headers.authorization || "";
+  const token = header.startsWith("Bearer ") ? header.slice(7) : null;
+  req.auth = verifyToken(token);
+  next();
+}
+function requireAuth(req, res) {
+  if (!req.auth) {
+    res.status(401).json({ ok: false, message: "로그인이 필요합니다." });
+    return false;
+  }
+  return true;
+}
 
 // ── Storage mode ──────────────────────────────────────────────────────────────
 // When DATABASE_URL is not set, persist everything to a local JSON file.
@@ -672,9 +721,24 @@ function addActivityLog(entry) {
 
 // ── Middleware ────────────────────────────────────────────────────────────────
 app.use(cors());
+// CSP는 끈다: 프론트엔드(public/index.html)가 인라인 onclick 핸들러와 인라인 <script>를
+// 전면적으로 사용하는 구조라 기본 CSP를 켜면 앱 전체가 깨진다. 나머지 기본 보안 헤더
+// (X-Content-Type-Options, X-Frame-Options, HSTS 등)만 적용한다.
+app.use(helmet({ contentSecurityPolicy: false }));
 app.use(express.json({ limit: "50mb" }));
+app.use(authenticate);
 app.use(express.static(path.join(__dirname, "public")));
 app.use("/api/budget", budgetRouter);
+
+// /login 브루트포스 방어: IP당 15분에 20회로 제한(정상 사용자가 실수로 몇 번 틀리는
+// 정도는 통과시키되, 자동화된 무차별 대입 시도는 차단).
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { ok: false, message: "로그인 시도가 너무 많습니다. 잠시 후 다시 시도하세요." },
+});
 
 // ── Core API ──────────────────────────────────────────────────────────────────
 
@@ -714,6 +778,7 @@ app.get("/status", async (req, res) => {
 
 // GET /data
 app.get("/data", async (req, res) => {
+  if (!requireAuth(req, res)) return;
   try {
     const data = await loadData();
     res.json({ ok: true, data: stripPwField(data), version: _dataVersion });
@@ -736,7 +801,7 @@ async function verifyCredentials(loginId, pw) {
 // without exposing any employee's password hash to the client. If the account
 // has 2FA enabled, a valid `otp` must also be supplied in the same request
 // (stateless — no server-side session between the password and OTP steps).
-app.post("/login", async (req, res) => {
+app.post("/login", loginLimiter, async (req, res) => {
   try {
     const { loginId, pw, otp } = req.body || {};
     if (!loginId || !pw) return res.status(400).json({ ok: false, message: "아이디와 비밀번호를 입력하세요." });
@@ -749,7 +814,9 @@ app.post("/login", async (req, res) => {
       if (!raw || !raw.twoFactorSecret || !totpVerify(raw.twoFactorSecret, otp))
         return res.json({ ok: false, requireOtp: true, message: "인증 코드가 올바르지 않습니다." });
     }
-    res.json({ ok: true, employee });
+    // 서버가 실제로 검증한 계정 정보로만 토큰을 발급한다(클라이언트가 보낸 role은 무시).
+    const token = signToken({ empId: employee.id, loginId: employee.loginId, role: employee.role });
+    res.json({ ok: true, employee, token });
   } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
 });
 
@@ -775,8 +842,20 @@ app.post("/api/auth/2fa/verify-code", async (req, res) => {
   } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
 });
 
+// 완전히 새로 배포된 서버는 직원이 0명이라 아무도 /login으로 토큰을 발급받을 수 없다
+// (프론트엔드의 최초 admin 로그인은 클라이언트에 내장된 샘플 계정으로 로컬에서만
+// 이뤄지고, 그 계정 데이터를 서버에 처음 올리는 것이 바로 이 /save 호출이기 때문).
+// 그래서 employees가 하나도 없는 부트스트랩 상태에 한해서만 인증 없이 허용하고,
+// 데이터가 한 건이라도 생기면 그 이후부터는 무조건 인증을 요구한다.
+async function _employeesEmpty() {
+  if (USE_JSON_FILE) return (_fileStore.employees || []).length === 0;
+  const { rows } = await pool.query("SELECT COUNT(*) FROM employees WHERE is_deleted = FALSE");
+  return parseInt(rows[0].count, 10) === 0;
+}
+
 // POST /save
 app.post("/save", async (req, res) => {
+  if (!(await _employeesEmpty()) && !requireAuth(req, res)) return;
   const body = req.body;
   if (!body || typeof body !== "object")
     return res.status(400).json({ ok: false, message: "잘못된 데이터" });
@@ -857,6 +936,7 @@ app.get("/online", (req, res) => {
 
 // POST /lock
 app.post("/lock", (req, res) => {
+  if (!requireAuth(req, res)) return;
   const { key, userId, userName, targetLabel, ttlMs = 30 * 60 * 1000 } = req.body;
   if (!key || !userId)
     return res.status(400).json({ ok: false, message: "key, userId 필요" });
@@ -872,6 +952,7 @@ app.post("/lock", (req, res) => {
 
 // POST /unlock
 app.post("/unlock", (req, res) => {
+  if (!requireAuth(req, res)) return;
   const { key, userId, force } = req.body;
   if (!key) return res.status(400).json({ ok: false });
   const ex = _locks[key];
@@ -884,6 +965,7 @@ app.post("/unlock", (req, res) => {
 
 // POST /log
 app.post("/log", (req, res) => {
+  if (!requireAuth(req, res)) return;
   if (!req.body) return res.status(400).json({ ok: false });
   addActivityLog(req.body);
   res.json({ ok: true });
@@ -891,6 +973,7 @@ app.post("/log", (req, res) => {
 
 // GET /activity
 app.get("/activity", (req, res) => {
+  if (!requireAuth(req, res)) return;
   const limit = parseInt(req.query.limit) || 300;
   res.json({ ok: true, logs: _activityLog.slice(0, limit) });
 });
@@ -917,6 +1000,7 @@ function _saveFileHistory() {
 
 // GET /snapshots — list all annual snapshots
 app.get("/snapshots", async (req, res) => {
+  if (!requireAuth(req, res)) return;
   try {
     if (USE_JSON_FILE) {
       const snaps = Object.entries(_fileSnapshots).map(([y, s]) => ({
@@ -974,6 +1058,7 @@ app.post("/snapshots", async (req, res) => {
 // `fields` summary (name + record count) so the client can pick which parts
 // to restore instead of always restoring everything.
 app.get("/snapshots/:year", async (req, res) => {
+  if (!requireAuth(req, res)) return;
   try {
     const yr = parseInt(req.params.year);
     if (USE_JSON_FILE) {
@@ -993,6 +1078,7 @@ app.get("/snapshots/:year", async (req, res) => {
 
 // GET /backups
 app.get("/backups", async (req, res) => {
+  if (!requireAuth(req, res)) return;
   try {
     if (USE_JSON_FILE) {
       const backups = Object.entries(_fileSnapshots).map(([y, s]) => ({
@@ -1078,6 +1164,7 @@ function unionPreferSnapshot(curArr, snapArr) {
 // records currently exist that are NOT in the snapshot. Lets the client warn
 // "복원 시 N건이 삭제됩니다" before the admin opts into deleteExtras.
 app.get("/snapshots/:year/diff", async (req, res) => {
+  if (!requireAuth(req, res)) return;
   try {
     const yr = parseInt(req.params.year);
     const fields = (req.query.fields || "").split(",").map(f => f.trim()).filter(Boolean);
@@ -1172,6 +1259,7 @@ app.post("/restore", async (req, res) => {
 
 // GET /history/employee/:id
 app.get("/history/employee/:id", async (req, res) => {
+  if (!requireAuth(req, res)) return;
   if (USE_JSON_FILE) {
     const history = (_fileHistory.employees || [])
       .filter(h => h.employee_id === req.params.id)
@@ -1192,6 +1280,7 @@ app.get("/history/employee/:id", async (req, res) => {
 
 // GET /history/kpi/:id
 app.get("/history/kpi/:id", async (req, res) => {
+  if (!requireAuth(req, res)) return;
   if (USE_JSON_FILE) {
     const history = (_fileHistory.kpi || [])
       .filter(h => h.kpi_id === req.params.id)
@@ -1267,16 +1356,20 @@ function _nextAcctSeq(kind, year) {
   _fileAccounting[kind][year] = next;
   return next;
 }
+// 과거에는 req.body.role(클라이언트가 그대로 적어 보낸 값)을 그대로 신뢰했으나,
+// 이는 누구든 body에 role:"admin"만 넣어 보내면 인가를 우회할 수 있는 구조였다.
+// 이제는 /login에서 서버가 발급한 토큰(req.auth, authenticate 미들웨어가 검증)만 신뢰한다.
 function requireAdmin(req, res) {
-  if ((req.body || {}).role !== "admin") {
+  if (!requireAuth(req, res)) return false;
+  if (req.auth.role !== "admin") {
     res.status(403).json({ ok: false, message: "관리자만 사용할 수 있습니다." });
     return false;
   }
   return true;
 }
 function requireRole(req, res, allowed) {
-  const role = (req.body || {}).role;
-  if (!allowed.includes(role)) {
+  if (!requireAuth(req, res)) return false;
+  if (!allowed.includes(req.auth.role)) {
     res.status(403).json({ ok: false, message: "이 작업을 수행할 권한이 없습니다." });
     return false;
   }
@@ -1286,6 +1379,7 @@ function _round2(n) { return Math.round((Number(n) || 0) * 100) / 100; }
 
 // ── 계정과목 (Chart of accounts) ────────────────────────────────────────────
 app.get("/api/accounting/accounts", async (req, res) => {
+  if (!requireAuth(req, res)) return;
   try {
     if (USE_JSON_FILE) return res.json({ ok: true, accounts: _fileAccounting.accounts });
     const { rows } = await pool.query("SELECT id, data FROM accounts WHERE is_deleted = FALSE ORDER BY id");
@@ -1374,6 +1468,7 @@ function _validateVoucherLines(lines, accounts) {
 }
 
 app.get("/api/accounting/vouchers", async (req, res) => {
+  if (!requireAuth(req, res)) return;
   try {
     const year = req.query.year ? parseInt(req.query.year) : null;
     if (USE_JSON_FILE) {
@@ -1506,6 +1601,7 @@ function _buildTaxInvoiceTotals(items) {
 }
 
 app.get("/api/accounting/tax-invoices", async (req, res) => {
+  if (!requireAuth(req, res)) return;
   try {
     const year = req.query.year ? parseInt(req.query.year) : null;
     if (USE_JSON_FILE) {
@@ -1584,6 +1680,7 @@ app.post("/api/accounting/tax-invoices/:id/void", async (req, res) => {
 // ── 수금/지급 (AR/AP payments — 거래처별 미수·미지급 관리) ────────────────────
 // JSON 모드: _fileAccounting.payments / PG 모드: app_collections(acctPayments)
 app.get("/api/accounting/payments", async (req, res) => {
+  if (!requireAuth(req, res)) return;
   try {
     if (USE_JSON_FILE) return res.json({ ok: true, payments: _fileAccounting.payments || [] });
     const { rows } = await pool.query("SELECT data FROM app_collections WHERE collection = 'acctPayments' ORDER BY created_at");
@@ -1629,6 +1726,7 @@ app.post("/api/accounting/payments/:id/delete", async (req, res) => {
 
 // ── 거래처 (Business partners — customer/vendor master data) ─────────────────
 app.get("/api/accounting/partners", async (req, res) => {
+  if (!requireAuth(req, res)) return;
   try {
     if (USE_JSON_FILE) return res.json({ ok: true, partners: _fileAccounting.partners });
     const { rows } = await pool.query("SELECT id, data FROM partners WHERE is_deleted = FALSE ORDER BY id");
@@ -1730,6 +1828,7 @@ function _buildItemLineTotals(items) {
 
 // ── 품목 마스터 ───────────────────────────────────────────────────────────────
 app.get("/api/erp/items", async (req, res) => {
+  if (!requireAuth(req, res)) return;
   try {
     if (USE_JSON_FILE) return res.json({ ok: true, items: _fileErp.items });
     const { rows } = await pool.query("SELECT id, data FROM erp_items WHERE is_deleted = FALSE ORDER BY id");
@@ -1777,6 +1876,7 @@ app.post("/api/erp/items/:id/delete", async (req, res) => {
 
 // ── 창고/위치 마스터 ─────────────────────────────────────────────────────────
 app.get("/api/erp/locations", async (req, res) => {
+  if (!requireAuth(req, res)) return;
   try {
     if (USE_JSON_FILE) return res.json({ ok: true, locations: _fileErp.locations });
     const { rows } = await pool.query("SELECT id, data FROM erp_locations WHERE is_deleted = FALSE ORDER BY id");
@@ -1822,6 +1922,7 @@ app.post("/api/erp/locations/:id/delete", async (req, res) => {
 
 // ── 견적서 (Quotations) ─────────────────────────────────────────────────────
 app.get("/api/erp/quotations", async (req, res) => {
+  if (!requireAuth(req, res)) return;
   try {
     const year = req.query.year ? parseInt(req.query.year) : null;
     if (USE_JSON_FILE) {
@@ -2044,6 +2145,7 @@ app.delete("/api/erp/quotations/:id", async (req, res) => {
 
 // ── 발주서 (Purchase orders) ────────────────────────────────────────────────
 app.get("/api/erp/purchase-orders", async (req, res) => {
+  if (!requireAuth(req, res)) return;
   try {
     const year = req.query.year ? parseInt(req.query.year) : null;
     if (USE_JSON_FILE) {
@@ -2232,8 +2334,9 @@ app.delete("/api/erp/purchase-orders/:id", async (req, res) => {
 
 // ── 구매요청 (Purchase requests — 구성원이 요청, admin이 승인/반려/발주전환) ─────
 app.get("/api/erp/purchase-requests", async (req, res) => {
+  if (!requireAuth(req, res)) return;
   try {
-    const { role, userId } = req.query;
+    const { role, empId: userId } = req.auth;
     if (USE_JSON_FILE) {
       let list = _fileErp.purchaseRequests;
       if (role !== "admin") list = list.filter(r => String(r.requestedById) === String(userId));
@@ -2247,6 +2350,7 @@ app.get("/api/erp/purchase-requests", async (req, res) => {
 });
 
 app.post("/api/erp/purchase-requests", async (req, res) => {
+  if (!requireAuth(req, res)) return;
   try {
     const { date, items, memo, userId, user: requestedBy } = req.body || {};
     if (!date) return res.status(400).json({ ok: false, message: "요청일자는 필수입니다." });
@@ -2362,9 +2466,10 @@ app.post("/api/erp/purchase-requests/:id/convert-to-po", async (req, res) => {
 });
 
 app.delete("/api/erp/purchase-requests/:id", async (req, res) => {
+  if (!requireAuth(req, res)) return;
   try {
     const id = req.params.id;
-    const { role, userId } = req.body || {};
+    const { role, empId: userId } = req.auth;
     if (USE_JSON_FILE) {
       const pr = _fileErp.purchaseRequests.find(r => r.id === id);
       if (!pr) return res.status(404).json({ ok: false, message: "구매요청을 찾을 수 없습니다." });
@@ -2384,6 +2489,7 @@ app.delete("/api/erp/purchase-requests/:id", async (req, res) => {
 
 // ── 재고 (Stock — computed from ledger, plus manual adjustment) ──────────────
 app.get("/api/erp/stock", async (req, res) => {
+  if (!requireAuth(req, res)) return;
   try {
     let ledger;
     if (USE_JSON_FILE) {
@@ -2407,6 +2513,7 @@ app.get("/api/erp/stock", async (req, res) => {
 });
 
 app.get("/api/erp/stock/ledger", async (req, res) => {
+  if (!requireAuth(req, res)) return;
   try {
     const { itemId, locationId } = req.query;
     let ledger;
@@ -2533,6 +2640,7 @@ app.post("/api/erp/stock/transfer", async (req, res) => {
 
 // ── ERP: 영업 목표 (Sales targets — admin only CRUD, actuals computed client-side) ──
 app.get("/api/erp/sales-targets", async (req, res) => {
+  if (!requireAuth(req, res)) return;
   try {
     if (USE_JSON_FILE) return res.json({ ok: true, salesTargets: _fileErp.salesTargets });
     const { rows } = await pool.query("SELECT id, data FROM erp_sales_targets WHERE is_deleted = FALSE ORDER BY id");
@@ -2584,6 +2692,7 @@ app.post("/api/erp/sales-targets/:id/delete", async (req, res) => {
 
 // ── PMS: 프로젝트 투입률 관리 (Projects / monthly allocation %) ────────────────
 app.get("/api/pms/projects", async (req, res) => {
+  if (!requireAuth(req, res)) return;
   try {
     if (USE_JSON_FILE) return res.json({ ok: true, projects: _filePms.projects });
     const { rows } = await pool.query("SELECT id, data FROM pms_projects WHERE is_deleted = FALSE ORDER BY created_at DESC");
@@ -2703,6 +2812,7 @@ async function _allocationMonthTotal(employeeId, year, month, excludeId) {
 }
 
 app.get("/api/pms/allocations", async (req, res) => {
+  if (!requireAuth(req, res)) return;
   try {
     const { year, month, employeeId } = req.query;
     if (USE_JSON_FILE) {
@@ -2729,8 +2839,10 @@ async function _pmsProjectById(projectId) {
 }
 
 app.post("/api/pms/allocations", async (req, res) => {
+  if (!requireAuth(req, res)) return;
   try {
-    const { id, employeeId, year, month, projectId, percent, memo, role, userId } = req.body || {};
+    const { id, employeeId, year, month, projectId, percent, memo } = req.body || {};
+    const { role, empId: userId } = req.auth;
     if (!employeeId || !year || !month || !projectId) return res.status(400).json({ ok: false, message: "직원, 연도, 월, 프로젝트는 필수입니다." });
     const percentNum = Number(percent);
     if (isNaN(percentNum) || percentNum <= 0) return res.status(400).json({ ok: false, message: "투입률은 0보다 큰 숫자여야 합니다." });
@@ -2765,10 +2877,10 @@ app.post("/api/pms/allocations", async (req, res) => {
 });
 
 app.post("/api/pms/allocations/:id/delete", async (req, res) => {
+  if (!requireAuth(req, res)) return;
   try {
     const id = req.params.id;
-    const { role } = req.body || {};
-    if (role !== "admin") return res.status(403).json({ ok: false, message: "확정된 투입률은 관리자만 삭제할 수 있습니다." });
+    if (req.auth.role !== "admin") return res.status(403).json({ ok: false, message: "확정된 투입률은 관리자만 삭제할 수 있습니다." });
     if (USE_JSON_FILE) {
       const alloc = _filePms.allocations.find(a => a.id === id);
       if (!alloc) return res.status(404).json({ ok: false, message: "배정 내역을 찾을 수 없습니다." });
@@ -2801,6 +2913,7 @@ function _worklogBlocksValid(blocks) {
 }
 
 app.get("/api/pms/worklogs", async (req, res) => {
+  if (!requireAuth(req, res)) return;
   try {
     const { employeeId, date, year, month } = req.query;
     if (USE_JSON_FILE) {
@@ -2823,8 +2936,10 @@ app.get("/api/pms/worklogs", async (req, res) => {
 });
 
 app.post("/api/pms/worklogs", async (req, res) => {
+  if (!requireAuth(req, res)) return;
   try {
-    const { employeeId, date, blocks, role, userId } = req.body || {};
+    const { employeeId, date, blocks } = req.body || {};
+    const { role, empId: userId } = req.auth;
     if (!employeeId || !date) return res.status(400).json({ ok: false, message: "직원, 날짜는 필수입니다." });
     if (role !== "admin" && String(employeeId) !== String(userId)) return res.status(403).json({ ok: false, message: "본인 업무 기록만 등록할 수 있습니다." });
     const err = _worklogBlocksValid(blocks || []);
@@ -2878,8 +2993,9 @@ async function _recruitCanViewJob(job, userId, role) {
   return false;
 }
 app.get("/api/recruit/jobs", async (req, res) => {
+  if (!requireAuth(req, res)) return;
   try {
-    const { userId, role } = req.query;
+    const { role, empId: userId } = req.auth;
     let jobs;
     if (USE_JSON_FILE) {
       jobs = _fileRecruit.jobs;
@@ -2983,8 +3099,10 @@ async function _recruitVisibleCandidates(userId, role) {
   return visible;
 }
 app.get("/api/recruit/candidates", async (req, res) => {
+  if (!requireAuth(req, res)) return;
   try {
-    const { status, jobId, q, userId, role } = req.query;
+    const { status, jobId, q } = req.query;
+    const { role, empId: userId } = req.auth;
     let list = await _recruitVisibleCandidates(userId, role);
     if (status) list = list.filter(c => c.status === status);
     if (jobId) list = list.filter(c => String(c.jobId) === String(jobId));
@@ -2997,8 +3115,10 @@ app.get("/api/recruit/candidates", async (req, res) => {
 });
 
 app.get("/api/recruit/candidates/export", async (req, res) => {
+  if (!requireAuth(req, res)) return;
   try {
-    const { jobId, userId, role } = req.query;
+    const { jobId } = req.query;
+    const { role, empId: userId } = req.auth;
     let list = await _recruitVisibleCandidates(userId, role);
     if (jobId) list = list.filter(c => String(c.jobId) === String(jobId));
     const jobTitleOf = async (id) => { const j = await _recruitJobById(id); return j ? j.title : ""; };
@@ -3012,9 +3132,23 @@ app.get("/api/recruit/candidates/export", async (req, res) => {
   } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
 });
 
+// 리스트 조회(_recruitVisibleCandidates)와 동일한 열람 권한 규칙을 단건 조회에도 적용한다.
+// (과거엔 목록 API만 부서별 열람 제한이 걸려 있었고, id로 직접 조회하는 이 엔드포인트에는
+// 아무 권한 검사가 없어 지원자 ID만 알면 타 부서 지원자 정보까지 그대로 열람 가능했음)
+async function _recruitCanViewCandidate(candidate, userId, role) {
+  if (!candidate) return false;
+  if (!userId || !role || role === "admin") return true;
+  const interviews = await _recruitAllInterviews();
+  const isInterviewer = interviews.some(iv => String(iv.candidateId) === String(candidate.id) && (iv.interviewerIds || []).map(String).includes(String(userId)));
+  if (isInterviewer) return true;
+  const job = await _recruitJobById(candidate.jobId);
+  return job ? await _recruitCanViewJob(job, userId, role) : false;
+}
 app.get("/api/recruit/candidates/:id", async (req, res) => {
+  if (!requireAuth(req, res)) return;
   try {
     const id = req.params.id;
+    const { role, empId: userId } = req.auth;
     let candidate;
     if (USE_JSON_FILE) {
       candidate = _fileRecruit.candidates.find(c => c.id === id);
@@ -3023,6 +3157,7 @@ app.get("/api/recruit/candidates/:id", async (req, res) => {
       candidate = rows[0] ? rows[0].data : null;
     }
     if (!candidate) return res.status(404).json({ ok: false, message: "지원자를 찾을 수 없습니다." });
+    if (!(await _recruitCanViewCandidate(candidate, userId, role))) return res.status(403).json({ ok: false, message: "열람 권한이 없습니다." });
     const job = await _recruitJobById(candidate.jobId);
     res.json({ ok: true, candidate, job });
   } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
@@ -3489,8 +3624,10 @@ app.post("/api/recruit/candidates/:id", async (req, res) => {
 });
 
 app.get("/api/recruit/candidates/:id/resume", async (req, res) => {
+  if (!requireAuth(req, res)) return;
   try {
     const id = req.params.id;
+    const { role, empId: userId } = req.auth;
     let candidate;
     if (USE_JSON_FILE) {
       candidate = _fileRecruit.candidates.find(c => c.id === id);
@@ -3499,6 +3636,7 @@ app.get("/api/recruit/candidates/:id/resume", async (req, res) => {
       candidate = rows[0] ? rows[0].data : null;
     }
     if (!candidate || !candidate.resume) return res.status(404).json({ ok: false, message: "이력서를 찾을 수 없습니다." });
+    if (!(await _recruitCanViewCandidate(candidate, userId, role))) return res.status(403).json({ ok: false, message: "열람 권한이 없습니다." });
     res.json({ ok: true, resume: candidate.resume });
   } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
 });
@@ -3575,8 +3713,10 @@ async function _recruitInterviewById(interviewId) {
   return rows[0] ? rows[0].data : null;
 }
 app.get("/api/recruit/interviews", async (req, res) => {
+  if (!requireAuth(req, res)) return;
   try {
-    const { jobId, candidateId, userId, role } = req.query;
+    const { jobId, candidateId } = req.query;
+    const { role, empId: userId } = req.auth;
     let list = await _recruitAllInterviews();
     if (jobId) list = list.filter(i => String(i.jobId) === String(jobId));
     if (candidateId) list = list.filter(i => String(i.candidateId) === String(candidateId));
@@ -3669,9 +3809,11 @@ app.post("/api/recruit/interviews/:id/cancel", async (req, res) => {
 });
 
 app.post("/api/recruit/interviews/:id/evaluation", async (req, res) => {
+  if (!requireAuth(req, res)) return;
   try {
     const id = req.params.id;
-    const { interviewerId, scores, comment, role } = req.body || {};
+    const { interviewerId, scores, comment } = req.body || {};
+    const { role, empId: authUserId } = req.auth;
     if (!interviewerId || !scores || typeof scores !== "object") {
       return res.status(400).json({ ok: false, message: "면접관, 평가 점수는 필수입니다." });
     }
@@ -3679,6 +3821,11 @@ app.post("/api/recruit/interviews/:id/evaluation", async (req, res) => {
     if (!interview) return res.status(404).json({ ok: false, message: "면접 일정을 찾을 수 없습니다." });
     if (role !== "admin" && !interview.interviewerIds.map(String).includes(String(interviewerId))) {
       return res.status(403).json({ ok: false, message: "지정된 면접관만 평가를 입력할 수 있습니다." });
+    }
+    // interviewerId는 "누구의 평가로 기록할지"를 정하는 값이라 role만 검증해서는
+    // 다른 지정 면접관 행세로 남의 평가를 덮어쓸 수 있었다 — 본인 명의로만 입력 가능해야 한다.
+    if (role !== "admin" && String(interviewerId) !== String(authUserId)) {
+      return res.status(403).json({ ok: false, message: "본인 명의로만 평가를 입력할 수 있습니다." });
     }
     const candidate = USE_JSON_FILE
       ? _fileRecruit.candidates.find(c => c.id === interview.candidateId)
@@ -3708,9 +3855,11 @@ app.post("/api/recruit/interviews/:id/evaluation", async (req, res) => {
 
 const RECRUIT_VERDICTS = ["pass", "hold", "fail"];
 app.post("/api/recruit/interviews/:id/verdict", async (req, res) => {
+  if (!requireAuth(req, res)) return;
   try {
     const id = req.params.id;
-    const { verdict, comment, userId, role } = req.body || {};
+    const { verdict, comment } = req.body || {};
+    const { role, empId: userId } = req.auth;
     if (!RECRUIT_VERDICTS.includes(verdict)) {
       return res.status(400).json({ ok: false, message: "판정 값이 올바르지 않습니다." });
     }
@@ -3752,6 +3901,7 @@ app.post("/api/recruit/candidates/:id/delete", async (req, res) => {
 });
 
 app.get("/api/recruit/dashboard", async (req, res) => {
+  if (!requireAuth(req, res)) return;
   try {
     let jobs, candidates, interviews;
     if (USE_JSON_FILE) {

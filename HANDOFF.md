@@ -5,7 +5,7 @@
 - 작업 브랜치: `claude/mobile-hr-app-testing-rDc2F`
 - 실행: `npm install && npm start` → http://localhost:3000 (JSON 파일 모드, `DATABASE_URL` 없으면 자동)
 - 테스트 로그인: `admin` / `Admin@123` (실제 직원 256명으로 교체됨 — 로그인ID `u{사번}`, 비밀번호 `{역할}@{사번뒤4자리}`. 예: `u2008001`/`Director@8001`, `u2010009`/`Leader@0009`, `u2026007`/`Member@6007`. 전체 목록은 `public/index.html`의 `let employees=[...]` 참고)
-- 인증 모델: 실제 서버 세션/JWT 없음. 클라이언트가 role을 같이 보내고 서버는 `requireAdmin()` 등으로 단순 체크하는 신뢰 구조 (앱 전체에 일관됨, 의도된 설계)
+- 인증 모델(2026-07-14 변경): `/login` 성공 시 서버가 HMAC 서명 토큰을 발급하고, 이후 모든 요청은 `Authorization: Bearer <token>` 헤더로 전달한다. `requireAdmin()`/`requireRole()`는 이제 서버가 검증한 `req.auth.role`만 신뢰하며, 과거처럼 body/query의 `role`·`userId`를 그대로 믿지 않는다(신규 서버 재시작 시 미리 생성된 employees가 하나도 없는 "부트스트랩" 상태에 한해서만 `POST /save` 1회 호출을 인증 없이 허용 — 최초 배포 시 클라이언트 내장 샘플 admin 데이터를 서버에 최초 업로드하기 위함). `SESSION_SECRET` 환경변수를 반드시 고정값으로 설정할 것(미설정 시 재시작마다 전 세션 무효화). 이전에 있던 "역할별 필터링은 쿼리스트링(`?role=&userId=`) 기반" 방식도 서버가 토큰에서 직접 읽도록 변경됨.
 
 ## 최근 완료된 기능 (커밋됨)
 - 견적서 → 출고/매출 처리 연동 (`/api/erp/quotations/:id/ship`): 재고 차감 + 세금계산서 자동 발행, 상태 `accepted`→`shipped`
@@ -16,7 +16,7 @@
   1. 창고 간 이동 — `POST /api/erp/stock/transfer`, 재고관리 페이지에 "↔ 창고 이동" 모달
   2. 매입세금계산서 연동 — PO 입고처리(`/receive`) 시 자동 발행, `direction:"sales"|"purchase"` 필드로 매출/매입 구분 표시
   3. 안전재고 부족 알림 — 알림센터(admin) + 미확인 카운트 반영
-  4. 구매요청 승인 워크플로우 — 전 역할 요청 생성 가능, admin 승인/반려/발주전환, 신규 메뉴 `inv-purchase-requests`. 역할별 데이터 필터링은 쿼리스트링(`?role=&userId=`) 기반 (이 엔드포인트만 body 대신 query 사용하는 점 유의)
+  4. 구매요청 승인 워크플로우 — 전 역할 요청 생성 가능, admin 승인/반려/발주전환, 신규 메뉴 `inv-purchase-requests`. 역할별 데이터 필터링은 인증 토큰(`req.auth.role`/`req.auth.empId`) 기반으로 서버가 직접 판단(2026-07-14 이전에는 쿼리스트링 `?role=&userId=`을 그대로 신뢰했음 — 인증 구조 개편으로 수정됨)
 - **권한설정 UI 개편**: 설정→배포·권한 관리의 메뉴 권한 매트릭스를 대분류(전자결재/커뮤니케이션/내정보·근태/평가/인사/회계/영업관리/재고관리/시스템) 단위로 1차 그룹핑하고, 헤더 클릭 시 하위메뉴 상세조정 화면으로 펼치는 구조로 변경. 대분류 체크박스 클릭 시 하위 메뉴 전체 일괄 선택/해제(`_toggleCategoryPerm`). `_allMenuItems()`(플랫 배열) → `_allMenuItemsByCategory()`(카테고리별 그룹)로 데이터 구조 변경, 펼침 상태는 `_permExpandedCats`로 관리.
 - **기초데이터 시딩**: `server.js`에 `DEFAULT_ACCOUNTS`(표준 중소기업 계정과목 64건, 자산/부채/자본/수익/비용)와 `DEFAULT_LOCATIONS`(본사창고) 상수 추가. `initDB()`에서 최초 가동 시 계정과목/위치가 비어있는 경우에만 자동 시딩 — JSON 파일 모드(`_fileAccounting`/`_fileErp` 직접 채움)와 PostgreSQL 모드(JSONB `data` 컬럼에 INSERT) 둘 다 지원.
 - **직원 데이터 교체**: 기존 더미 직원(약 100명) 전부 삭제, 사용자가 첨부한 엑셀(`Rawdata_260609`, `Summary` 시트) 256명 실데이터로 교체. `admin` 계정만 유지. 직책 기준 역할 자동분류(대표이사/부문장/사업부장/센터장→director 8명, 팀장→leader 18명, 그외→member 230명). `dept`=엑셀 `사업부`, `team`=엑셀 `팀/파트`. 로그인ID는 `u{사번}`, 초기 비밀번호는 `{역할}@{사번뒤4자리}`.

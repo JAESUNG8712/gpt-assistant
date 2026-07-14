@@ -1304,6 +1304,21 @@ let _myPagePwVerified = false;     // 내정보·근태 비밀번호 재인증 �
 let _pendingRender = false;
 let _autoKpiDraftTimer = null;          // lock keys held by this client
 
+// ── 인증 토큰(서버가 /login에서 발급, Authorization: Bearer 헤더로 전달) ──
+// serverConfig.url이 임의의 서버(공유 링크 등)를 가리킬 수 있어 쿠키 기반 세션 대신
+// 명시적으로 첨부하는 Bearer 토큰 방식을 쓴다. 새로고침 후에도 재로그인하지 않도록
+// localStorage에 저장해 두되, 로그아웃 시 즉시 폐기한다.
+const _LS_AUTH_TOKEN = 'hr_kpi_auth_token';
+let _authToken = null;
+try { _authToken = localStorage.getItem(_LS_AUTH_TOKEN) || null; } catch(e){}
+function _setAuthToken(token){
+  _authToken = token || null;
+  try {
+    if(_authToken) localStorage.setItem(_LS_AUTH_TOKEN, _authToken);
+    else localStorage.removeItem(_LS_AUTH_TOKEN);
+  } catch(e){}
+}
+
 // ── Auto-detect: if served from http server, use same origin ──
 (function detectServerOrigin(){
   try {
@@ -1368,13 +1383,17 @@ async function serverRequest(method, endpoint, body=null, timeout=8000){
     signal: controller.signal,
     headers: {
       "Content-Type": "application/json",
-      "X-Client-ID": encodeURIComponent(currentUser?.name||"unknown")
+      "X-Client-ID": encodeURIComponent(currentUser?.name||"unknown"),
+      ...(_authToken ? { "Authorization": "Bearer " + _authToken } : {})
     }
   };
   if(body) opts.body = JSON.stringify(body);
   try {
     const res = await fetch(base + endpoint, opts);
     clearTimeout(tid);
+    // 토큰이 만료·무효화된 상태(재시작으로 세션 초기화 등) — 다음 요청부터는
+    // 무효 토큰을 계속 보내지 않도록 즉시 비운다. 재로그인은 사용자가 다시 시도할 때 처리됨.
+    if(res.status === 401) _setAuthToken(null);
     return await res.json();
   } catch(e) {
     clearTimeout(tid);
@@ -4928,6 +4947,7 @@ function doLogin(){
     const otp=$("#l-otp")?.value?.trim();
     serverRequest("POST","/login",{loginId:id,pw,otp:otp||undefined}).then(r=>{
       if(r && r.ok && r.employee){
+        _setAuthToken(r.token||null);
         const idx=employees.findIndex(e=>e.id===r.employee.id);
         if(idx>=0) employees[idx]={...employees[idx],...r.employee};
         else employees.push(r.employee);
@@ -4960,6 +4980,7 @@ async function logout(){
     _serverDebounceTimer=null;
     await _doSave(true).catch(()=>{});
   }
+  _setAuthToken(null);
   disconnectSSE();releaseAllMyLocks();_myPagePwVerified=false;currentUser=null;const app=$("#app");if(app)app.innerHTML="";renderLogin();
 }
 
@@ -11853,7 +11874,7 @@ function doChangePW(){
   // pw was stripped from this client (real server-backed account) — verify via server.
   if(!serverConfig.url){showToast("현재 비밀번호가 올바르지 않습니다.","error");return;}
   serverRequest("POST","/login",{loginId:currentUser.loginId,pw:cur}).then(r=>{
-    if(r && r.ok){_applyChangedPW(nw);}
+    if(r && r.ok){ if(r.token) _setAuthToken(r.token); _applyChangedPW(nw); }
     else{showToast("현재 비밀번호가 올바르지 않습니다.","error");}
   }).catch(()=>{showToast("현재 비밀번호 확인에 실패했습니다.","error");});
 }
