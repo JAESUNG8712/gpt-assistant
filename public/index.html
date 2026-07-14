@@ -4980,8 +4980,11 @@ async function logout(){
     _serverDebounceTimer=null;
     await _doSave(true).catch(()=>{});
   }
+  // 잠금 해제(/unlock)는 인증이 필요하므로 토큰을 지우기 전에 먼저 호출해야 한다
+  // (순서가 바뀌면 서버가 401로 거절해 잠금이 실제로는 안 풀린 채 남아있게 됨).
+  releaseAllMyLocks();
   _setAuthToken(null);
-  disconnectSSE();releaseAllMyLocks();_myPagePwVerified=false;currentUser=null;const app=$("#app");if(app)app.innerHTML="";renderLogin();
+  disconnectSSE();_myPagePwVerified=false;currentUser=null;const app=$("#app");if(app)app.innerHTML="";renderLogin();
 }
 
 // ==================== MAIN ====================
