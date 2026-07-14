@@ -1322,6 +1322,22 @@ function _setAuthToken(token){
     else localStorage.removeItem(_LS_AUTH_TOKEN);
   } catch(e){}
 }
+// 부트스트랩(서버 직원 0명) 로그인은 로컬 시드 계정과의 매칭으로 완료되어 토큰이 없다.
+// 그 세션에서 바로 이것저것 설정을 바꿔도(로그아웃 없이) 최초 저장 이후로는 서버에
+// 직원이 생겨 모든 요청에 인증이 필요해지는데, 토큰이 없어 그 저장들이 401로 계속
+// 조용히 실패하는 문제가 있었다. 부트스트랩 로그인 시 자격증명을 메모리에만 잠깐
+// 들고 있다가, 첫 저장이 성공한 직후 조용히 서버 /login을 다시 시도해 진짜 토큰으로
+// 업그레이드한다(재로그인 요구 없이). localStorage에는 저장하지 않고 로그아웃/토큰
+// 확보 즉시 비운다.
+let _bootstrapCreds = null;
+async function _tryUpgradeBootstrapToken(){
+  if(!_bootstrapCreds || _authToken) return;
+  const {loginId,pw} = _bootstrapCreds;
+  try{
+    const r = await serverRequest("POST","/login",{loginId,pw},5000);
+    if(r && r.ok && r.token){ _setAuthToken(r.token); _bootstrapCreds=null; }
+  }catch(e){}
+}
 
 // ── Auto-detect: if served from http server, use same origin ──
 (function detectServerOrigin(){
@@ -1479,6 +1495,7 @@ async function _doSave(silent=false){
     const state = getFullState();
     const r = await serverRequest("POST", "/save", state, 15000);
     if(r.ok){
+      if(_bootstrapCreds) _tryUpgradeBootstrapToken();
       _serverFailCount = 0;
       serverConfig.status = "connected";
       serverConfig.retryCount = 0;
@@ -4975,7 +4992,8 @@ function doLogin(){
   serverRequest("GET","/status",null,5000).then(sr=>{
     const isBootstrap = !(sr && sr.ok && sr.meta && sr.meta.empCount > 0);
     if(isBootstrap){
-      if(!_loginTryLocal(id,pw))_loginShowErr();
+      if(_loginTryLocal(id,pw)) _bootstrapCreds={loginId:id,pw};
+      else _loginShowErr();
       return;
     }
     const otp=$("#l-otp")?.value?.trim();
@@ -5017,6 +5035,7 @@ async function logout(){
   // (순서가 바뀌면 서버가 401로 거절해 잠금이 실제로는 안 풀린 채 남아있게 됨).
   releaseAllMyLocks();
   _setAuthToken(null);
+  _bootstrapCreds=null;
   disconnectSSE();_myPagePwVerified=false;currentUser=null;const app=$("#app");if(app)app.innerHTML="";renderLogin();
 }
 
@@ -5395,6 +5414,9 @@ function gotoPage(p){
   }
   const allowed=PAGE_ROLES[p];
   if(allowed&&currentUser&&!allowed.includes(currentUser.role)){currentPage=p;_pageAccessDenied();renderSidebar();_updateMobileTabNav();return;}
+  // 권한관리에서 개인별로 끈 메뉴는 사이드바에서만 숨겨질 뿐 gotoPage() 직접 호출(URL
+  // 조작 등)은 막지 못했다 — 사이드바 필터링과 동일한 menuPerms 기준을 여기서도 적용.
+  if(currentUser&&(currentUser.menuPerms||{})[p]===false){currentPage=p;_pageAccessDenied();renderSidebar();_updateMobileTabNav();return;}
   if(p==="talent-dev"&&!_canViewTalentDev()){currentPage=p;_pageAccessDenied();renderSidebar();_updateMobileTabNav();return;}
   if(p==="low-performer"&&!_canViewLowPerformer()){currentPage=p;_pageAccessDenied();renderSidebar();_updateMobileTabNav();return;}
   if(p==="hr-welfare-points"&&!_canViewWelfareAll()){currentPage=p;_pageAccessDenied();renderSidebar();_updateMobileTabNav();return;}

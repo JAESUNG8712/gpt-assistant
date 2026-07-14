@@ -962,6 +962,14 @@ app.post("/unlock", (req, res) => {
   const { key, userId, force } = req.body;
   if (!key) return res.status(400).json({ ok: false });
   const ex = _locks[key];
+  // force:true는 아직 만료되지 않은(30분 이내) 남의 잠금을 강제로 뺏는 것이므로, 이미
+  // 만료된 잠금(프론트가 "비활성 잠금"으로 판단해 일반 사용자에게도 버튼을 보여주는
+  // 경우) 또는 admin에게만 허용한다. 그 외에는 예전에는 인증만 있으면 누구든 force로
+  // 남의 진행 중인 편집 잠금을 강제로 풀 수 있었다.
+  const isExpired = !ex || Date.now() >= ex.expiresAt;
+  if (force && !isExpired && (!req.auth || req.auth.role !== "admin")) {
+    return res.status(403).json({ ok: false, message: "관리자만 잠금을 강제 해제할 수 있습니다." });
+  }
   if (ex && (ex.userId === userId || force)) {
     delete _locks[key];
     broadcastSSE("locks_update", _locks);
