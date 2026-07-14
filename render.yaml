@@ -15,3 +15,8 @@ services:
         value: /var/data/hr-data.json
       # PostgreSQL을 쓰려면 DATABASE_URL을 설정하면 되며(그 경우 DATA_FILE은 무시됨),
       # 미설정 시 위 DATA_FILE 경로의 JSON 파일 모드로 동작한다.
+      - key: SESSION_SECRET
+        generateValue: true
+        # 로그인 세션 토큰 서명용 고정 시크릿. 미설정 시 서버가 재시작될 때마다 임의
+        # 값으로 대체되어 기존 로그인 세션이 전부 무효화된다(전 직원 재로그인 필요).
+        # generateValue:true로 최초 배포 시 Render가 자동으로 랜덤값을 생성해 고정한다.
