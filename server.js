@@ -12,6 +12,12 @@ const budgetRouter = require("./budget");
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
+// Render 등 PaaS는 리버스 프록시를 거쳐 요청을 전달하며 X-Forwarded-For 헤더를 붙인다.
+// trust proxy를 켜지 않으면 express-rate-limit이 실제 클라이언트 IP를 신뢰할 수 없다고
+// 판단해 요청 처리 중 에러를 던지고(ERR_ERL_UNEXPECTED_X_FORWARDED_FOR), 그 여파로
+// /login 요청 자체가 정상 완료되지 못해 로그인해도 토큰이 발급되지 않는 문제가 있었다.
+// 1을 지정해 "맨 앞 프록시 1홉만 신뢰"하도록 설정(플랫폼이 직접 종단하는 표준 구성).
+app.set("trust proxy", 1);
 
 // ── 세션 토큰 (HMAC 서명, stateless) ────────────────────────────────────────────
 // /login 성공 시 발급되어 이후 모든 요청의 Authorization: Bearer <token> 헤더로 전달됨.
