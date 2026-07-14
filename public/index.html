@@ -4591,46 +4591,26 @@ function connectSSE(){
           if(r.ok && r.data){
             _serverVersion = r.version || svr;
             const d = r.data?.data || r.data;
-            _resetSettingStages(); // 다른 사용자의 저장 반영 시 낡은 편집본 폐기
-            // Apply ALL data including settings
-            if(d.employees){ employees=d.employees; if(currentUser){const u=employees.find(e=>e.id===currentUser.id);if(u)currentUser=u;} }
-            if(d.kpiEntries) kpiEntries=d.kpiEntries;
-            if(d.compSessions) compSessions=d.compSessions;
-            if(d.compResponses) compResponses=d.compResponses;
-            if(d.changeRequests) changeRequests=d.changeRequests;
-            if(d.gradeAdjustHistory) gradeAdjustHistory=d.gradeAdjustHistory;
-            if(d.compGradeResults) Object.assign(compGradeResults, d.compGradeResults);
-            if(d.evaluatorConfig) Object.assign(evaluatorConfig, d.evaluatorConfig);
-            // Apply settings (KPI stage, comp eval on/off, years, etc.)
-            if(d.settings && typeof d.settings==="object"){
-              const prev = JSON.stringify({
-                stage:settings.stage, compEvalEnabled:settings.compEvalEnabled,
-                leadershipEvalEnabled:settings.leadershipEvalEnabled,
-                evalYear:settings.evalYear
-              });
-              Object.assign(settings, d.settings);
-              const curr = JSON.stringify({
-                stage:settings.stage, compEvalEnabled:settings.compEvalEnabled,
-                leadershipEvalEnabled:settings.leadershipEvalEnabled,
-                evalYear:settings.evalYear
-              });
-              if(prev!==curr){
-                renderSidebar(); // menu might have changed (comp eval on/off)
-                showToast(`관리자가 설정을 변경했습니다${ev.savedBy?` (${ev.savedBy})`:""}`, "info");
-              }
+            // 예전엔 이 핸들러가 employees/kpiEntries 등 일부 필드만 손으로 골라 반영해서,
+            // 목록에 없는 필드(approvalDocs/expenseClaims/attendanceRecords 등 30여개)는
+            // 다른 사용자가 저장해도 실시간으로 반영되지 않고 새로고침해야만 보였다.
+            // applyState()는 로그인/수동 불러오기가 쓰는 것과 동일한 전체 필드 반영
+            // 로직이라 이걸 재사용하면 새 필드가 추가돼도 이 핸들러를 별도로 안 고쳐도 된다.
+            const prevSettings = JSON.stringify({
+              stage:settings.stage, compEvalEnabled:settings.compEvalEnabled,
+              leadershipEvalEnabled:settings.leadershipEvalEnabled,
+              evalYear:settings.evalYear
+            });
+            applyState({data: d}, true); // skipUndo: SSE로 인한 반영은 되돌리기 스냅샷을 안 남김
+            if(currentUser){ const u=employees.find(e=>e.id===currentUser.id); if(u) currentUser=u; }
+            const currSettings = JSON.stringify({
+              stage:settings.stage, compEvalEnabled:settings.compEvalEnabled,
+              leadershipEvalEnabled:settings.leadershipEvalEnabled,
+              evalYear:settings.evalYear
+            });
+            if(prevSettings!==currSettings){
+              showToast(`관리자가 설정을 변경했습니다${ev.savedBy?` (${ev.savedBy})`:""}`, "info");
             }
-            // Apply org structure
-            if(d.orgDB && typeof d.orgDB==="object"){
-              if(d.orgDB.depts) orgDB.depts=d.orgDB.depts;
-              if(d.orgDB.teams) orgDB.teams=d.orgDB.teams;
-              if(d.orgDB.ranks) orgDB.ranks=d.orgDB.ranks;
-              if(d.orgDB.positions) orgDB.positions=d.orgDB.positions;
-              if(d.orgDB.rankRules) orgDB.rankRules=d.orgDB.rankRules;
-            }
-            // Apply grade settings
-            if(d.gradeSettings) Object.assign(gradeSettings, d.gradeSettings);
-            if(d.compGradeSettings) Object.assign(compGradeSettings, d.compGradeSettings);
-            if(d.companyWideRatios && typeof d.companyWideRatios==="object") Object.assign(companyWideRatios, d.companyWideRatios);
             renderPageSafe();
             renderSidebar();
             serverConfig.statusMsg=`동기화 완료 ${new Date().toLocaleTimeString("ko-KR")} (${ev.savedBy})`;
@@ -4693,6 +4673,12 @@ async function acquireLock(lockKey, targetLabel){
       _myLocks.add(lockKey);
       _activeLocks[lockKey] = r.lock;
       updateLockUI();
+      return true;
+    } else if(!r.lock){
+      // r.lock이 없는 실패는 진짜 잠금 충돌이 아니라 인증 등 다른 이유로 요청 자체가
+      // 거부된 것이다(예: 부트스트랩 로그인 직후 아직 토큰이 없는 상태에서 편집 화면을
+      // 열면 /lock이 401을 반환하는데, 이걸 "다른 사용자가 수정 중"으로 잘못 표시해
+      // 혼란을 주고 있었다). 네트워크 오류와 동일하게 로컬에서는 허용한다.
       return true;
     } else {
       const lock = r.lock;
