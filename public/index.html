@@ -4717,8 +4717,18 @@ function releaseAllMyLocks(){
 }
 async function forceUnlockAndOpen(lockKey, targetLabel){
   try{
-    await serverRequest("POST","/unlock",{key:lockKey,userId:_clientId,userName:currentUser?.name||"unknown",force:true});
-  }catch(e){}
+    const r=await serverRequest("POST","/unlock",{key:lockKey,userId:_clientId,userName:currentUser?.name||"unknown",force:true});
+    // 예전엔 /unlock에 인증이 필요 없어서 이 응답을 확인 안 해도 항상 성공이었지만,
+    // 이제 토큰이 없거나 만료되면 401로 조용히 실패해서 잠금이 그대로 남아있는데도
+    // 아무 안내 없이 재시도만 반복되는 것처럼 보였다 — 실패 시 원인을 알려준다.
+    if(!r || !r.ok){
+      showToast(`강제 잠금 해제에 실패했습니다: ${r?.message||"알 수 없는 오류"}. 다시 로그인 후 시도해주세요.`,"error");
+      return;
+    }
+  }catch(e){
+    showToast("강제 잠금 해제 요청이 실패했습니다: "+e.message,"error");
+    return;
+  }
   delete _activeLocks[lockKey];
   const ok=await acquireLock(lockKey,targetLabel);
   if(ok){
