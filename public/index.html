@@ -4947,13 +4947,33 @@ function _completeLogin(emp){
   render();
 }
 let _pendingOtpLogin=null; // {loginId,pw} — 비밀번호 확인 후 OTP 입력 대기 중인 로그인
+function _loginShowErr(msg){
+  const el=$("#login-err");if(el)el.innerHTML=`<div class="alert alert-error">${h(msg||"아이디 또는 비밀번호가 올바르지 않습니다.")}</div>`;
+}
+function _loginTryLocal(id,pw){
+  const emp=employees.find(e=>e.loginId===id&&e.pw===pw&&e.active);
+  if(emp){_completeLogin(emp);return true;}
+  return false;
+}
 function doLogin(){
   const id=$("#l-id")?.value.trim(),pw=$("#l-pw")?.value.trim();
-  const emp=employees.find(e=>e.loginId===id&&e.pw===pw&&e.active);
-  if(emp){_completeLogin(emp);return;}
-  // No local plaintext match (real accounts no longer carry pw client-side) —
-  // fall back to server-verified login if a server is configured.
-  if(serverConfig.url){
+  if(!serverConfig.url){
+    if(!_loginTryLocal(id,pw))_loginShowErr();
+    return;
+  }
+  // 로컬 employees 배열에는 오프라인 데모용으로 하드코딩된 샘플 계정(admin/admin 등,
+  // 평문 pw 포함)이 항상 들어있다. 예전에는 이 로컬 매칭을 서버 로그인보다 먼저 시도해서,
+  // 서버가 정상 운영 중이며 실제 직원 데이터가 있는 상태에서도 admin/admin으로 로그인하면
+  // 서버의 /login을 단 한 번도 호출하지 않고 "로그인된 것처럼" 보이기만 했다 — 그 결과
+  // 인증 토큰이 전혀 발급되지 않아 이후 모든 인증 필요 기능이 조용히 실패했다.
+  // 서버에 직원이 이미 존재하면(정상 운영 중인 배포) 반드시 서버 인증을 거치도록 하고,
+  // 서버에 직원이 아예 없는 최초 배포(부트스트랩) 상태에서만 로컬 매칭으로 진행한다.
+  serverRequest("GET","/status",null,5000).then(sr=>{
+    const isBootstrap = !(sr && sr.ok && sr.meta && sr.meta.empCount > 0);
+    if(isBootstrap){
+      if(!_loginTryLocal(id,pw))_loginShowErr();
+      return;
+    }
     const otp=$("#l-otp")?.value?.trim();
     serverRequest("POST","/login",{loginId:id,pw,otp:otp||undefined}).then(r=>{
       if(r && r.ok && r.employee){
@@ -4967,14 +4987,13 @@ function doLogin(){
         _pendingOtpLogin={loginId:id,pw};
         _showOtpPrompt(r.message);
       } else {
-        const el=$("#login-err");if(el)el.innerHTML=`<div class="alert alert-error">아이디 또는 비밀번호가 올바르지 않습니다.</div>`;
+        _loginShowErr(r?.message);
       }
-    }).catch(()=>{
-      const el=$("#login-err");if(el)el.innerHTML=`<div class="alert alert-error">아이디 또는 비밀번호가 올바르지 않습니다.</div>`;
-    });
-    return;
-  }
-  const el=$("#login-err");if(el)el.innerHTML=`<div class="alert alert-error">아이디 또는 비밀번호가 올바르지 않습니다.</div>`;
+    }).catch(()=>_loginShowErr());
+  }).catch(()=>{
+    // 상태 확인 자체가 실패(네트워크 문제 등)한 경우에만 최후 수단으로 로컬 매칭 시도
+    if(!_loginTryLocal(id,pw))_loginShowErr();
+  });
 }
 function _showOtpPrompt(msg){
   const el=$("#login-err");if(!el)return;
