@@ -1043,7 +1043,11 @@ async def chat(req: ChatRequest):
             # 같은 질문은 upsert_knowledge가 최신 내용으로 갱신하므로 중복 적재되지 않음
             # stock 페르소나는 실시간 시장 데이터 기반이어야 하므로 자동 학습에서 계속 제외
             # (LLM 일반 지식이 KB에 누적되면 이후 오염 답변 재발 위험)
-            if ai_reply_clean.strip() and not stock_mode:
+            # LOCAL_FALLBACK_MARKER 포함 응답(모든 LLM API 소진 시 원본 자료 그대로 노출한
+            # 미합성 폴백)은 정상 답변이 아니므로 auto_learn에서 제외 — 안 그러면 이 저품질
+            # 원본 덤프가 KB에 학습되어 이후 정상 답변을 덮어쓰는 재오염 위험이 있음
+            from engine import LOCAL_FALLBACK_MARKER
+            if ai_reply_clean.strip() and not stock_mode and LOCAL_FALLBACK_MARKER not in ai_reply_clean:
                 mem.auto_learn(user_msg, ai_reply_clean, persona=persona_id)
                 if no_local:
                     yield "\n\n---\n> ✅ 자동 학습 완료 — 다음부터는 로컬 저장 자료로 답변합니다."

@@ -754,12 +754,29 @@ def _compose(query: str, results: List, persona: str) -> str:
 
 # ── 7. 웹 검색·문서 컨텍스트 직접 응답 ──────────────────
 
+# main.py가 LLM 전용으로 context 앞에 붙이는 지시문 블록 2종 — LLM 없이 이 텍스트를
+# 그대로 노출하면 내부 프롬프트가 사용자에게 유출됨. [의도 분석]은 태그만 괄호이고
+# 뒤따르는 안내문은 괄호 밖 한 줄짜리 텍스트라 별도 패턴으로 처리해야 함.
+_INTENT_LINE_RE = re.compile(r'^\[의도 분석\][^\n]*\n+', re.MULTILINE)
+_INSTRUCTION_BLOCK_RE = re.compile(r'\[(?:주의|아래 자료를 참고해)[^\[\]]*\]\s*\n*')
+
+LOCAL_FALLBACK_MARKER = "⚠️ AI 응답 생성 서비스에 일시적으로 연결할 수 없어"
+
+
 def _compose_with_context(query: str, context: str, persona: str) -> str:
-    """웹 검색 결과나 문서 RAG가 있을 때 직접 활용한 응답 생성"""
-    ctx = context.strip()
+    """웹 검색 결과나 문서 RAG가 있을 때 직접 활용한 응답 생성 — LLM API를 전혀 쓸 수 없을
+    때의 최후 폴백이라 실제 요약/합성은 못 하고 원본 자료를 그대로 보여줄 수밖에 없음.
+    main.py가 LLM에게만 전달하려던 지시문 블록은 제거하고, 합성되지 않은 원본임을
+    명시한다(합성 안 된 내용이 정상 답변처럼 auto_learn되어 KB가 오염되는 것도 방지 —
+    main.py는 LOCAL_FALLBACK_MARKER가 포함된 응답을 auto_learn에서 제외한다)."""
+    ctx = _INTENT_LINE_RE.sub('', context, count=1)
+    ctx = _INSTRUCTION_BLOCK_RE.sub('', ctx, count=1).strip()
     if len(ctx) > 3000:
         ctx = ctx[:3000] + "\n\n...(내용 일부 생략)"
-    return ctx
+    return (
+        f"{LOCAL_FALLBACK_MARKER}, 검색된 원본 자료를 그대로 보여드립니다. "
+        "아래 내용은 AI가 요약·검증하지 않은 원본이므로 참고용으로만 활용해 주세요.\n\n" + ctx
+    )
 
 
 # ── 8. 스트리밍 인터페이스 ──────────────────────────────
