@@ -1228,7 +1228,11 @@
   }
 
   function escHtml(s) {
-    return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    // renderMd()가 마크다운 링크를 <a href="${url}" title="${url}">로 그대로 삽입하므로
+    // url/텍스트에 " 가 섞이면 속성 밖으로 탈출해 임의 속성(onmouseover= 등) 주입이 가능했음 —
+    // 따옴표도 함께 이스케이프해 속성 문맥을 벗어날 수 없게 함.
+    return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+            .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
   }
 
   // ── 생각 모드 ─────────────────────────────────────
@@ -1531,7 +1535,7 @@
         }).join(', ');
         return `
           <div style="border:1px solid var(--border);border-radius:8px;padding:8px 10px;font-size:0.78rem;">
-            <div style="font-weight:700;margin-bottom:2px;">${it.name || '(이름 없음)'}</div>
+            <div style="font-weight:700;margin-bottom:2px;">${it.name ? escHtml(it.name) : '(이름 없음)'}</div>
             <div style="color:var(--text-dim);margin-bottom:6px;">${names}</div>
             <div style="display:flex;gap:6px;align-items:center;">
               <input readonly value="${url}" style="flex:1;font-size:0.72rem;padding:4px 6px;

@@ -1323,7 +1323,13 @@ async def admin_import_db(file: UploadFile = File(...), token: str = ""):
         if suffix == ".zip":
             extracted_dir = tempfile.mkdtemp()
             with zipfile.ZipFile(tmp_path, "r") as z:
-                z.extractall(extracted_dir)
+                # Zip Slip 방지: 압축 해제 대상 경로가 extracted_dir 밖으로 벗어나는
+                # 항목(경로에 "../" 등을 포함한 조작된 zip)은 무시하고 건너뜀.
+                base = os.path.realpath(extracted_dir)
+                for member in z.infolist():
+                    dest = os.path.realpath(os.path.join(base, member.filename))
+                    if dest == base or dest.startswith(base + os.sep):
+                        z.extract(member, base)
             candidates = []
             for root, _, files in os.walk(extracted_dir):
                 for f in files:
