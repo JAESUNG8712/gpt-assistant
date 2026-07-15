@@ -206,6 +206,13 @@ def list_personas():
 
 # ── 채팅 ──────────────────────────────────────────────
 
+# 메시지 길이 상한 — 검증 없이 그대로 검색·LLM 파이프라인에 흘려보내면 초대형 메시지
+# 1건(예: 32,000자)이 이벤트루프를 30~90초 이상 점유해 전체 앱(다른 요청 포함)이
+# 멈추는 DoS가 QA로 재현됨(main.py의 여러 블로킹 구간 run_in_executor 수정과는
+# 별개로, 애초에 이런 크기의 입력 자체를 막는 검증이 없었음)
+_MAX_CHAT_MESSAGE_LEN = 4000
+
+
 class ChatRequest(BaseModel):
     message: str
     persona: str = DEFAULT_PERSONA
@@ -538,6 +545,12 @@ async def chat(req: ChatRequest):
     user_msg = req.message.strip()
     if not user_msg:
         raise HTTPException(400, "메시지를 입력하세요.")
+    if len(user_msg) > _MAX_CHAT_MESSAGE_LEN:
+        raise HTTPException(
+            400,
+            f"메시지가 너무 깁니다 (최대 {_MAX_CHAT_MESSAGE_LEN}자, 현재 {len(user_msg)}자). "
+            "긴 문서는 /learn/document 업로드를 이용해 주세요.",
+        )
 
     # 복합어 정규화: "희망 퇴직" → "희망퇴직" 등 띄어쓰기 변형 통일
     search_msg = _normalize_query(user_msg)
