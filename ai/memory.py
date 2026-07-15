@@ -251,7 +251,11 @@ def init_db():
 
 def _seed_static_kb_to_db():
     """정적 KB(Python 파일)를 SQLite/Turso learned_knowledge에 영구 저장.
-    content_hash 기반 중복 방지 — 서버 재시작 시 재실행해도 안전."""
+    content_hash 기반 중복 방지 — 서버 재시작 시 재실행해도 안전.
+    같은 질문(q)의 답변이 소스 코드에서 수정된 경우, 예전 버전(옛 content_hash)의
+    DB 행을 새 버전 삽입 전에 삭제한다 — 그렇지 않으면 소스에서 수정/제거한
+    내용(예: 개인정보, 가상 데이터)이 예전 DB 행에 그대로 남아 계속 서빙되는
+    문제가 있었음(2026-07-15 실제 발견: PII 유출·가상 데이터 재노출 둘 다 이 문제로 발생)."""
     import hashlib
     try:
         from knowledge_base import KNOWLEDGE
@@ -260,8 +264,10 @@ def _seed_static_kb_to_db():
         return
 
     new_count = 0
+    stale_count = 0
     with _conn() as c:
         existing = {row[0] for row in c.execute("SELECT content_hash FROM kb_static_index")}
+        current_by_q = {}
         rows_kb, rows_idx = [], []
         for item in KNOWLEDGE:
             q = item.get("q", "").strip()
@@ -270,12 +276,36 @@ def _seed_static_kb_to_db():
                 continue
             content = f"Q: {q}\nA: {a}"
             h = hashlib.md5(content[:500].encode()).hexdigest()
+            persona = item.get("persona", "")
+            current_by_q[(persona, q.lower())] = h
             if h in existing:
                 continue
-            persona = item.get("persona", "")
             now = datetime.now().isoformat()
             rows_kb.append((content[:2000], persona, "정적KB", now))
             rows_idx.append((h, persona, "정적KB", now))
+
+        stale_rows = c.execute(
+            "SELECT id, persona, content FROM learned_knowledge WHERE source='정적KB'"
+        ).fetchall()
+        stale_ids = []
+        for row in stale_rows:
+            row = dict(row)
+            content = row["content"]
+            if not (content.startswith("Q: ") and "\nA: " in content):
+                continue
+            q_part = content.split("\nA: ", 1)[0][3:].strip().lower()
+            key = (row["persona"] or "", q_part)
+            expected_hash = current_by_q.get(key)
+            if expected_hash is None:
+                continue  # 이 질문은 이번 KNOWLEDGE 목록에 없음 — 건드리지 않음(안전)
+            actual_hash = hashlib.md5(content[:500].encode()).hexdigest()
+            if actual_hash != expected_hash:
+                stale_ids.append(row["id"])
+
+        if stale_ids:
+            placeholders = ",".join("?" * len(stale_ids))
+            c.execute(f"DELETE FROM learned_knowledge WHERE id IN ({placeholders})", stale_ids)
+            stale_count = len(stale_ids)
 
         if rows_kb:
             c.executemany(
@@ -290,6 +320,8 @@ def _seed_static_kb_to_db():
 
     if new_count:
         print(f"  💾 정적 KB {new_count}개 → DB 영구 저장 완료")
+    if stale_count:
+        print(f"  🧹 정적 KB {stale_count}개 예전 버전(소스 수정 전) 정리 완료")
 
 
 # ── 대화 이력 ─────────────────────────────────────────────
