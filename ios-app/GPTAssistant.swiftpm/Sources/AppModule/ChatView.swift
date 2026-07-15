@@ -2,6 +2,8 @@ import SwiftUI
 
 @MainActor
 struct ChatView: View {
+    private static let maxMessageLength = 4000
+
     @EnvironmentObject private var settings: AppSettings
 
     @State private var personas: [Persona] = Persona.fallbackList
@@ -149,6 +151,11 @@ struct ChatView: View {
         guard !text.isEmpty else { return }
         guard settings.baseURL != nil else {
             errorMessage = "설정 탭에서 서버 주소를 먼저 입력하세요."
+            return
+        }
+        // 서버(ai/main.py)가 메시지 4000자 초과를 400으로 거부하므로 미리 막는다.
+        guard text.count <= Self.maxMessageLength else {
+            errorMessage = "메시지가 너무 깁니다 (최대 \(Self.maxMessageLength)자, 현재 \(text.count)자)."
             return
         }
 

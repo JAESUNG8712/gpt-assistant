@@ -65,9 +65,12 @@ struct FeedbackRequestBody: Encodable {
 
 // MARK: - GET /health
 
+// `db_exists`/`disk_free_mb`는 Turso(클라우드 DB) 모드에서는 응답에 아예 빠진다
+// (ai/main.py의 /health가 로컬 SQLite일 때만 디스크 지표를 포함하므로) — 옵셔널로 둔다.
 struct HealthResponse: Decodable {
     let status: String
-    let db_exists: Bool
+    let db_backend: String?
+    let db_exists: Bool?
     let disk_free_mb: Int?
 }
 

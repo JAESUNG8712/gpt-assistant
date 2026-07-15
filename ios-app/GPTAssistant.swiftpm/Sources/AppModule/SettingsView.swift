@@ -54,7 +54,8 @@ struct SettingsView: View {
         do {
             let client = APIClient(settings: settings)
             let health = try await client.checkHealth()
-            statusMessage = "✅ 연결 성공 (status: \(health.status), DB: \(health.db_exists ? "있음" : "없음"))"
+            let backend = health.db_backend ?? (health.db_exists.map { $0 ? "SQLite (있음)" : "SQLite (없음)" } ?? "알 수 없음")
+            statusMessage = "✅ 연결 성공 (status: \(health.status), DB: \(backend))"
         } catch {
             statusMessage = "❌ \(error.localizedDescription)"
         }

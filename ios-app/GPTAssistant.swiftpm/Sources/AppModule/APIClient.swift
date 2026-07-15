@@ -96,8 +96,7 @@ final class APIClient {
                     if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
                         var errorData = Data()
                         for try await byte in bytes { errorData.append(byte) }
-                        let message = String(data: errorData, encoding: .utf8) ?? ""
-                        throw APIError.serverError(http.statusCode, message)
+                        throw APIError.fromResponse(statusCode: http.statusCode, data: errorData)
                     }
 
                     let decoder = IncrementalUTF8Decoder()
@@ -129,8 +128,7 @@ final class APIClient {
     private static func checkResponse(_ response: URLResponse, data: Data) throws {
         guard let http = response as? HTTPURLResponse else { return }
         guard (200..<300).contains(http.statusCode) else {
-            let message = String(data: data, encoding: .utf8) ?? ""
-            throw APIError.serverError(http.statusCode, message)
+            throw APIError.fromResponse(statusCode: http.statusCode, data: data)
         }
     }
 }
