@@ -114,6 +114,27 @@ struct ModuleCard: View {
     }
 }
 
+/// 홈 화면 "바로가기" 그리드용 소형 타일 — ModuleCard보다 간결한 버전.
+struct QuickLinkTile: View {
+    let icon: String
+    let title: String
+
+    var body: some View {
+        VStack(spacing: 8) {
+            Image(systemName: icon)
+                .font(.title3)
+                .foregroundStyle(AppTheme.accentDark)
+            Text(title)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(AppTheme.primaryText)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 14)
+        .background(AppTheme.accentLight.opacity(0.5))
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+    }
+}
+
 /// 빈 목록 표시 — 기존 다크 스타일 대신 밝은 테마에 맞춘 버전.
 struct EmptyState: View {
     let message: String

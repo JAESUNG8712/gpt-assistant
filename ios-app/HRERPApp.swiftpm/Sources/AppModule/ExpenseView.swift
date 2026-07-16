@@ -24,51 +24,49 @@ struct ExpenseView: View {
     }
 
     var body: some View {
-        NavigationStack {
-            AppScreen {
-                if myClaims.isEmpty {
-                    EmptyState(message: "제출한 경비청구가 없습니다.")
-                }
-                ForEach(myClaims) { claim in
-                    AppCard {
-                        HStack {
-                            Text(claim.title).font(.subheadline.weight(.semibold))
-                            Spacer()
-                            StatusPill(status: claim.status)
-                        }
-                        Text("\(Int(claim.total).formatted())원 · \(claim.items.count)건")
-                            .font(.subheadline)
-                            .foregroundStyle(AppTheme.secondaryText)
-                        HStack {
-                            Text(claim.createdAt.prefix(10)).font(.caption).foregroundStyle(AppTheme.secondaryText)
-                            Spacer()
-                            if claim.status == "pending" {
-                                Button("회수", role: .destructive) {
-                                    store.withdrawExpenseClaim(id: claim.id)
-                                    Task { await store.save(client: client, session: session) }
-                                }
-                                .font(.caption)
+        AppScreen {
+            if myClaims.isEmpty {
+                EmptyState(message: "제출한 경비청구가 없습니다.")
+            }
+            ForEach(myClaims) { claim in
+                AppCard {
+                    HStack {
+                        Text(claim.title).font(.subheadline.weight(.semibold))
+                        Spacer()
+                        StatusPill(status: claim.status)
+                    }
+                    Text("\(Int(claim.total).formatted())원 · \(claim.items.count)건")
+                        .font(.subheadline)
+                        .foregroundStyle(AppTheme.secondaryText)
+                    HStack {
+                        Text(claim.createdAt.prefix(10)).font(.caption).foregroundStyle(AppTheme.secondaryText)
+                        Spacer()
+                        if claim.status == "pending" {
+                            Button("회수", role: .destructive) {
+                                store.withdrawExpenseClaim(id: claim.id)
+                                Task { await store.save(client: client, session: session) }
                             }
+                            .font(.caption)
                         }
                     }
                 }
             }
-            .navigationTitle("경비청구")
-            .refreshable { await reload() }
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        showingNewClaim = true
-                    } label: {
-                        Image(systemName: "plus")
-                    }
+        }
+        .navigationTitle("경비청구")
+        .refreshable { await reload() }
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    showingNewClaim = true
+                } label: {
+                    Image(systemName: "plus")
                 }
             }
-            .sheet(isPresented: $showingNewClaim) {
-                NewExpenseClaimView(store: store)
-                    .environmentObject(settings)
-                    .environmentObject(session)
-            }
+        }
+        .sheet(isPresented: $showingNewClaim) {
+            NewExpenseClaimView(store: store)
+                .environmentObject(settings)
+                .environmentObject(session)
         }
     }
 }

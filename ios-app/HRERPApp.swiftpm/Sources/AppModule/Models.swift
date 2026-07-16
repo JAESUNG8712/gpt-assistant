@@ -94,6 +94,25 @@ struct ApprovalDocSummary: Decodable, Identifiable {
     }
 }
 
+// MARK: - 평가/KPI (kpiEntries) — 읽기 전용 요약만 제공
+// 자기평가→1차평가→2차평가→최종확정으로 이어지는 다면평가 워크플로 전체(초안 저장,
+// 점수 입력·수정, 동점자 처리 등)는 범위 밖이다. 여기서는 이미 입력된 값을 보여주기만 한다.
+
+struct KPIEntry: Decodable, Identifiable {
+    let id: Int
+    let userId: Int?
+    let year: Int?
+    let item: String
+    let weight: Double?
+    let goal: String?
+    let selfScore: Double?
+    let firstScore: Double?
+    let secondScore: Double?
+    let finalScore: Double?
+    let finalStatus: String?
+    let isDraft: Bool?
+}
+
 // MARK: - 경비청구 (expenseClaims)
 
 struct ExpenseItem: Codable {

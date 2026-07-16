@@ -8,53 +8,51 @@ struct SettingsView: View {
     @State private var isChecking = false
 
     var body: some View {
-        NavigationStack {
-            AppScreen {
-                if let employee = session.currentEmployee {
-                    AppCard(title: "로그인 계정") {
-                        LabeledContent("이름", value: employee.name)
-                        if let loginId = employee.loginId {
-                            LabeledContent("아이디", value: loginId)
-                        }
-                        if let role = employee.role {
-                            LabeledContent("역할", value: role)
-                        }
+        AppScreen {
+            if let employee = session.currentEmployee {
+                AppCard(title: "로그인 계정") {
+                    LabeledContent("이름", value: employee.name)
+                    if let loginId = employee.loginId {
+                        LabeledContent("아이디", value: loginId)
+                    }
+                    if let role = employee.role {
+                        LabeledContent("역할", value: role)
                     }
                 }
-
-                AppCard(title: "서버") {
-                    TextField("https://hrsystem-uweb.onrender.com", text: $settings.serverURLString)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .keyboardType(.URL)
-                        .appFieldStyle()
-
-                    Button {
-                        Task { await checkStatus() }
-                    } label: {
-                        if isChecking {
-                            ProgressView().tint(.white)
-                        } else {
-                            Text("연결 확인")
-                        }
-                    }
-                    .buttonStyle(AppPrimaryButtonStyle(isDisabled: settings.serverURLString.isEmpty || isChecking))
-                    .disabled(settings.serverURLString.isEmpty || isChecking)
-
-                    if !statusMessage.isEmpty {
-                        Text(statusMessage).font(.footnote).foregroundStyle(AppTheme.secondaryText)
-                    }
-                }
-
-                Button("로그아웃") {
-                    session.logout()
-                }
-                .buttonStyle(.bordered)
-                .tint(AppTheme.danger)
-                .frame(maxWidth: .infinity)
             }
-            .navigationTitle("설정")
+
+            AppCard(title: "서버") {
+                TextField("https://hrsystem-uweb.onrender.com", text: $settings.serverURLString)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .keyboardType(.URL)
+                    .appFieldStyle()
+
+                Button {
+                    Task { await checkStatus() }
+                } label: {
+                    if isChecking {
+                        ProgressView().tint(.white)
+                    } else {
+                        Text("연결 확인")
+                    }
+                }
+                .buttonStyle(AppPrimaryButtonStyle(isDisabled: settings.serverURLString.isEmpty || isChecking))
+                .disabled(settings.serverURLString.isEmpty || isChecking)
+
+                if !statusMessage.isEmpty {
+                    Text(statusMessage).font(.footnote).foregroundStyle(AppTheme.secondaryText)
+                }
+            }
+
+            Button("로그아웃") {
+                session.logout()
+            }
+            .buttonStyle(.bordered)
+            .tint(AppTheme.danger)
+            .frame(maxWidth: .infinity)
         }
+        .navigationTitle("설정")
     }
 
     private func checkStatus() async {

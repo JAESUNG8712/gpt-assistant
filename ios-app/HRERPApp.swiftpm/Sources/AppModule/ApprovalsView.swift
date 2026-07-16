@@ -27,52 +27,50 @@ struct ApprovalsView: View {
     }
 
     var body: some View {
-        NavigationStack {
-            AppScreen {
-                AppCard(title: "내가 결재할 문서 (\(toApprove.count))") {
-                    if toApprove.isEmpty {
-                        EmptyState(message: "결재할 문서가 없습니다.")
-                    } else {
-                        ForEach(toApprove) { doc in
-                            ApprovalRow(doc: doc).onTapGesture { selectedDoc = doc }
-                            if doc.id != toApprove.last?.id { Divider() }
-                        }
-                    }
-                }
-                AppCard(title: "내가 상신한 문서 (\(myOutbox.count))") {
-                    if myOutbox.isEmpty {
-                        EmptyState(message: "상신한 문서가 없습니다.")
-                    } else {
-                        ForEach(myOutbox) { doc in
-                            ApprovalRow(doc: doc).onTapGesture { selectedDoc = doc }
-                            if doc.id != myOutbox.last?.id { Divider() }
-                        }
+        AppScreen {
+            AppCard(title: "내가 결재할 문서 (\(toApprove.count))") {
+                if toApprove.isEmpty {
+                    EmptyState(message: "결재할 문서가 없습니다.")
+                } else {
+                    ForEach(toApprove) { doc in
+                        ApprovalRow(doc: doc).onTapGesture { selectedDoc = doc }
+                        if doc.id != toApprove.last?.id { Divider() }
                     }
                 }
             }
-            .navigationTitle("전자결재")
-            .refreshable { await reload() }
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        showingNewDoc = true
-                    } label: {
-                        Image(systemName: "square.and.pencil")
+            AppCard(title: "내가 상신한 문서 (\(myOutbox.count))") {
+                if myOutbox.isEmpty {
+                    EmptyState(message: "상신한 문서가 없습니다.")
+                } else {
+                    ForEach(myOutbox) { doc in
+                        ApprovalRow(doc: doc).onTapGesture { selectedDoc = doc }
+                        if doc.id != myOutbox.last?.id { Divider() }
                     }
                 }
             }
-            .sheet(item: $selectedDoc) { doc in
-                ApprovalDetailView(doc: doc, store: store, onDecided: {
-                    selectedDoc = nil
-                })
+        }
+        .navigationTitle("전자결재")
+        .refreshable { await reload() }
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    showingNewDoc = true
+                } label: {
+                    Image(systemName: "square.and.pencil")
+                }
+            }
+        }
+        .sheet(item: $selectedDoc) { doc in
+            ApprovalDetailView(doc: doc, store: store, onDecided: {
+                selectedDoc = nil
+            })
+            .environmentObject(settings)
+            .environmentObject(session)
+        }
+        .sheet(isPresented: $showingNewDoc) {
+            NewApprovalView(store: store)
                 .environmentObject(settings)
                 .environmentObject(session)
-            }
-            .sheet(isPresented: $showingNewDoc) {
-                NewApprovalView(store: store)
-                    .environmentObject(settings)
-                    .environmentObject(session)
-            }
         }
     }
 }

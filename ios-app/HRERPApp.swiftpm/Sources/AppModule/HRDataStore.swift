@@ -22,6 +22,7 @@ final class HRDataStore: ObservableObject {
     var attendanceRecords: [AttendanceRecord] { decodeArray("attendanceRecords") }
     var approvalDocs: [ApprovalDocSummary] { decodeArray("approvalDocs") }
     var expenseClaims: [ExpenseClaim] { decodeArray("expenseClaims") }
+    var kpiEntries: [KPIEntry] { decodeArray("kpiEntries") }
 
     // MARK: - 불러오기 / 저장
 
