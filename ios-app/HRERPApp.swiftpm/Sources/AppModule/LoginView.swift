@@ -9,6 +9,7 @@ struct LoginView: View {
     @State private var password = ""
     @State private var otp = ""
     @State private var requireOtp = false
+    @State private var isPasswordVisible = false
 
     var body: some View {
         NavigationStack {
@@ -24,7 +25,25 @@ struct LoginView: View {
                     TextField("아이디 (예: u2008001)", text: $loginId)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
-                    SecureField("비밀번호", text: $password)
+                    HStack {
+                        Group {
+                            if isPasswordVisible {
+                                TextField("비밀번호", text: $password)
+                            } else {
+                                SecureField("비밀번호", text: $password)
+                            }
+                        }
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+
+                        Button {
+                            isPasswordVisible.toggle()
+                        } label: {
+                            Image(systemName: isPasswordVisible ? "eye.slash" : "eye")
+                                .foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                    }
                     if requireOtp {
                         TextField("2단계 인증 코드", text: $otp)
                             .keyboardType(.numberPad)
