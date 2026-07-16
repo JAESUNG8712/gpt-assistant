@@ -27,26 +27,34 @@ struct EmployeeDirectoryView: View {
                 EmptyState(message: "검색 결과가 없습니다.")
             }
             ForEach(filtered) { employee in
-                AppCard {
-                    HStack(spacing: 12) {
-                        ZStack {
-                            Circle().fill(AppTheme.accentLight).frame(width: 36, height: 36)
-                            Text(String(employee.name.prefix(1)))
-                                .font(.caption.weight(.bold))
-                                .foregroundStyle(AppTheme.accentDark)
-                        }
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(employee.name).font(.subheadline.weight(.semibold))
-                            Text([employee.dept, employee.team, employee.position]
-                                .compactMap { $0 }
-                                .filter { !$0.isEmpty }
-                                .joined(separator: " · "))
+                NavigationLink {
+                    EmployeeDetailView(employee: employee)
+                } label: {
+                    AppCard {
+                        HStack(spacing: 12) {
+                            ZStack {
+                                Circle().fill(AppTheme.accentLight).frame(width: 36, height: 36)
+                                Text(String(employee.name.prefix(1)))
+                                    .font(.caption.weight(.bold))
+                                    .foregroundStyle(AppTheme.accentDark)
+                            }
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(employee.name).font(.subheadline.weight(.semibold))
+                                Text([employee.dept, employee.team, employee.position]
+                                    .compactMap { $0 }
+                                    .filter { !$0.isEmpty }
+                                    .joined(separator: " · "))
+                                    .font(.caption)
+                                    .foregroundStyle(AppTheme.secondaryText)
+                            }
+                            Spacer()
+                            Image(systemName: "chevron.right")
                                 .font(.caption)
                                 .foregroundStyle(AppTheme.secondaryText)
                         }
-                        Spacer()
                     }
                 }
+                .buttonStyle(.plain)
             }
         }
         .searchable(text: $query, prompt: "이름·부서·팀 검색")

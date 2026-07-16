@@ -118,6 +118,18 @@ final class HRDataStore: ObservableObject {
         raw["expenseClaims"] = list
     }
 
+    // MARK: - 전자결재: 신규 상신 (기존 문서는 손대지 않고 배열에 추가만 함)
+
+    func appendApprovalDoc(_ payload: NewApprovalDocPayload) throws {
+        var list = raw["approvalDocs"] as? [[String: Any]] ?? []
+        let data = try JSONEncoder().encode(payload)
+        guard let dict = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw APIError.serverError(0, "결재 문서 데이터 변환 실패")
+        }
+        list.append(dict)
+        raw["approvalDocs"] = list
+    }
+
     // MARK: - 전자결재: 승인/반려
     // ai/index.html의 approveApprovalDoc()/rejectApprovalDoc() 로직을 그대로 옮김:
     // 승인 시 다음 "waiting" 결재자를 "pending"으로 올리고, 더 없으면 문서 상태를 approved로.
