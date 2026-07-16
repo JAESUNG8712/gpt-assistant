@@ -26,48 +26,67 @@ struct DashboardView: View {
 
     var body: some View {
         NavigationStack {
-            List {
+            AppScreen {
                 if let employee = session.currentEmployee {
-                    Section("내 정보") {
-                        LabeledContent("이름", value: employee.name)
-                        if let dept = employee.dept, !dept.isEmpty {
-                            LabeledContent("부서", value: [dept, employee.team].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · "))
+                    HStack(spacing: 14) {
+                        ZStack {
+                            Circle().fill(AppTheme.accentLight).frame(width: 52, height: 52)
+                            Text(String(employee.name.prefix(1)))
+                                .font(.title3.weight(.bold))
+                                .foregroundStyle(AppTheme.accentDark)
                         }
-                        if let position = employee.position, !position.isEmpty {
-                            LabeledContent("직위", value: position)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(employee.name).font(.title3.weight(.bold)).foregroundStyle(AppTheme.primaryText)
+                            Text([employee.dept, employee.team, employee.position].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · "))
+                                .font(.caption)
+                                .foregroundStyle(AppTheme.secondaryText)
                         }
+                        Spacer()
                     }
                 }
 
-                Section("오늘 근태 (\(DateHelpers.todayDateString()))") {
+                HStack(spacing: 12) {
+                    StatTile(label: "내가 처리할 결재", value: "\(pendingApprovalCount)건", tint: AppTheme.warning)
+                    StatTile(label: "전체 직원", value: "\(store.employees.count)명", tint: AppTheme.accent)
+                }
+
+                AppCard(title: "오늘 근태 (\(DateHelpers.todayDateString()))") {
                     let record = todayRecord
                     let checkedIn = !(record?.checkIn ?? "").isEmpty
                     let checkedOut = !(record?.checkOut ?? "").isEmpty
 
-                    LabeledContent("출근", value: checkedIn ? record!.checkIn! : "-")
-                    LabeledContent("퇴근", value: checkedOut ? record!.checkOut! : "-")
                     HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("출근").font(.caption).foregroundStyle(AppTheme.secondaryText)
+                            Text(checkedIn ? record!.checkIn! : "-").font(.title3.weight(.semibold))
+                        }
+                        Spacer()
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("퇴근").font(.caption).foregroundStyle(AppTheme.secondaryText)
+                            Text(checkedOut ? record!.checkOut! : "-").font(.title3.weight(.semibold))
+                        }
+                        Spacer()
+                    }
+
+                    HStack(spacing: 10) {
                         Button("출근 체크") { Task { await checkIn() } }
-                            .buttonStyle(.borderedProminent)
+                            .buttonStyle(AppPrimaryButtonStyle(isDisabled: isSavingAttendance || checkedIn))
                             .disabled(isSavingAttendance || checkedIn)
                         Button("퇴근 체크") { Task { await checkOut() } }
                             .buttonStyle(.bordered)
+                            .tint(AppTheme.accent)
                             .disabled(isSavingAttendance || checkedOut)
                     }
                 }
 
-                Section("요약") {
-                    LabeledContent("내가 처리할 결재", value: "\(pendingApprovalCount)건")
-                    LabeledContent("전체 직원", value: "\(store.employees.count)명")
-                    if let lastLoaded = store.lastLoadedAt {
-                        LabeledContent("마지막 동기화", value: lastLoaded.formatted(date: .omitted, time: .shortened))
-                    }
+                if let lastLoaded = store.lastLoadedAt {
+                    Text("마지막 동기화: \(lastLoaded.formatted(date: .omitted, time: .shortened))")
+                        .font(.caption)
+                        .foregroundStyle(AppTheme.secondaryText)
                 }
 
                 if let error = store.lastError {
-                    Section {
-                        Text(error).font(.footnote).foregroundStyle(.red)
-                    }
+                    AppCard { Text(error).font(.footnote).foregroundStyle(AppTheme.danger) }
                 }
             }
             .navigationTitle("홈")

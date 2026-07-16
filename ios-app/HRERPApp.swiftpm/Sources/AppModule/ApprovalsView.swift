@@ -27,21 +27,25 @@ struct ApprovalsView: View {
 
     var body: some View {
         NavigationStack {
-            List {
-                Section("내가 결재할 문서 (\(toApprove.count))") {
+            AppScreen {
+                AppCard(title: "내가 결재할 문서 (\(toApprove.count))") {
                     if toApprove.isEmpty {
-                        ContentUnavailableFallback(message: "결재할 문서가 없습니다.")
-                    }
-                    ForEach(toApprove) { doc in
-                        ApprovalRow(doc: doc).onTapGesture { selectedDoc = doc }
+                        EmptyState(message: "결재할 문서가 없습니다.")
+                    } else {
+                        ForEach(toApprove) { doc in
+                            ApprovalRow(doc: doc).onTapGesture { selectedDoc = doc }
+                            if doc.id != toApprove.last?.id { Divider() }
+                        }
                     }
                 }
-                Section("내가 상신한 문서 (\(myOutbox.count))") {
+                AppCard(title: "내가 상신한 문서 (\(myOutbox.count))") {
                     if myOutbox.isEmpty {
-                        ContentUnavailableFallback(message: "상신한 문서가 없습니다.")
-                    }
-                    ForEach(myOutbox) { doc in
-                        ApprovalRow(doc: doc).onTapGesture { selectedDoc = doc }
+                        EmptyState(message: "상신한 문서가 없습니다.")
+                    } else {
+                        ForEach(myOutbox) { doc in
+                            ApprovalRow(doc: doc).onTapGesture { selectedDoc = doc }
+                            if doc.id != myOutbox.last?.id { Divider() }
+                        }
                     }
                 }
             }
@@ -63,50 +67,15 @@ private struct ApprovalRow: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(doc.title).font(.headline)
+            Text(doc.title).font(.subheadline.weight(.semibold)).foregroundStyle(AppTheme.primaryText)
             HStack {
-                StatusBadge(status: doc.status)
+                StatusPill(status: doc.status)
                 Spacer()
-                Text(doc.createdAt.prefix(10)).font(.caption).foregroundStyle(.secondary)
+                Text(doc.createdAt.prefix(10)).font(.caption).foregroundStyle(AppTheme.secondaryText)
             }
         }
-        .padding(.vertical, 2)
+        .padding(.vertical, 4)
         .contentShape(Rectangle())
-    }
-}
-
-struct StatusBadge: View {
-    let status: String
-
-    private var label: String {
-        switch status {
-        case "in_progress": return "진행중"
-        case "approved": return "승인완료"
-        case "rejected": return "반려"
-        case "cancelled": return "취소"
-        case "pending": return "대기"
-        case "waiting": return "대기"
-        default: return status
-        }
-    }
-
-    private var color: Color {
-        switch status {
-        case "approved": return .green
-        case "rejected": return .red
-        case "cancelled": return .gray
-        default: return .orange
-        }
-    }
-
-    var body: some View {
-        Text(label)
-            .font(.caption)
-            .padding(.horizontal, 6)
-            .padding(.vertical, 2)
-            .background(color.opacity(0.15))
-            .foregroundStyle(color)
-            .clipShape(Capsule())
     }
 }
 
@@ -133,44 +102,43 @@ private struct ApprovalDetailView: View {
 
     var body: some View {
         NavigationStack {
-            Form {
-                Section {
+            AppScreen {
+                AppCard {
                     LabeledContent("제목", value: doc.title)
-                    LabeledContent("상태") { StatusBadge(status: doc.status) }
+                    LabeledContent("상태") { StatusPill(status: doc.status) }
                     LabeledContent("상신일", value: doc.createdAt.prefix(16).replacingOccurrences(of: "T", with: " "))
                 }
 
-                Section("결재선") {
+                AppCard(title: "결재선") {
                     ForEach(Array(doc.approvers.enumerated()), id: \.offset) { index, approver in
                         HStack {
                             Text("\(index + 1)차 \(approver.label ?? "")")
                             Spacer()
-                            StatusBadge(status: approver.status)
+                            StatusPill(status: approver.status)
                         }
+                        if index != doc.approvers.count - 1 { Divider() }
                     }
                 }
 
                 if canDecide {
-                    Section("의견") {
+                    AppCard(title: "의견") {
                         TextField("결재 의견 (선택)", text: $comment, axis: .vertical)
-                    }
-                    Section {
-                        HStack {
+                            .appFieldStyle()
+
+                        HStack(spacing: 10) {
                             Button("승인") { Task { await decide(.approve) } }
-                                .buttonStyle(.borderedProminent)
+                                .buttonStyle(AppPrimaryButtonStyle(isDisabled: isDeciding))
                                 .disabled(isDeciding)
-                            Button("반려", role: .destructive) { Task { await decide(.reject) } }
+                            Button("반려") { Task { await decide(.reject) } }
                                 .buttonStyle(.bordered)
+                                .tint(AppTheme.danger)
                                 .disabled(isDeciding)
                         }
-                        .frame(maxWidth: .infinity)
                     }
                 }
 
                 if let errorMessage {
-                    Section {
-                        Text(errorMessage).font(.footnote).foregroundStyle(.red)
-                    }
+                    AppCard { Text(errorMessage).font(.footnote).foregroundStyle(AppTheme.danger) }
                 }
             }
             .navigationTitle("결재 상세")

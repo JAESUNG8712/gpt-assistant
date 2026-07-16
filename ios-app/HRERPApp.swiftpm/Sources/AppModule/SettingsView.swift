@@ -9,9 +9,9 @@ struct SettingsView: View {
 
     var body: some View {
         NavigationStack {
-            Form {
+            AppScreen {
                 if let employee = session.currentEmployee {
-                    Section("로그인 계정") {
+                    AppCard(title: "로그인 계정") {
                         LabeledContent("이름", value: employee.name)
                         if let loginId = employee.loginId {
                             LabeledContent("아이디", value: loginId)
@@ -22,33 +22,36 @@ struct SettingsView: View {
                     }
                 }
 
-                Section("서버") {
+                AppCard(title: "서버") {
                     TextField("https://hrsystem-uweb.onrender.com", text: $settings.serverURLString)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .keyboardType(.URL)
+                        .appFieldStyle()
 
                     Button {
                         Task { await checkStatus() }
                     } label: {
                         if isChecking {
-                            ProgressView()
+                            ProgressView().tint(.white)
                         } else {
                             Text("연결 확인")
                         }
                     }
+                    .buttonStyle(AppPrimaryButtonStyle(isDisabled: settings.serverURLString.isEmpty || isChecking))
                     .disabled(settings.serverURLString.isEmpty || isChecking)
 
                     if !statusMessage.isEmpty {
-                        Text(statusMessage).font(.footnote).foregroundStyle(.secondary)
+                        Text(statusMessage).font(.footnote).foregroundStyle(AppTheme.secondaryText)
                     }
                 }
 
-                Section {
-                    Button("로그아웃", role: .destructive) {
-                        session.logout()
-                    }
+                Button("로그아웃") {
+                    session.logout()
                 }
+                .buttonStyle(.bordered)
+                .tint(AppTheme.danger)
+                .frame(maxWidth: .infinity)
             }
             .navigationTitle("설정")
         }

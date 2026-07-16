@@ -15,22 +15,17 @@ struct AttendanceView: View {
 
     var body: some View {
         NavigationStack {
-            List {
+            AppScreen {
                 if myRecords.isEmpty {
-                    ContentUnavailableFallback(message: "근태 기록이 없습니다.")
+                    EmptyState(message: "근태 기록이 없습니다.")
                 }
                 ForEach(myRecords) { record in
-                    VStack(alignment: .leading, spacing: 4) {
+                    AppCard {
                         HStack {
-                            Text(record.date).font(.headline)
+                            Text(record.date).font(.subheadline.weight(.semibold))
                             Spacer()
                             if let status = record.status, !status.isEmpty, status != "normal" {
-                                Text(status)
-                                    .font(.caption)
-                                    .padding(.horizontal, 6)
-                                    .padding(.vertical, 2)
-                                    .background(Color.orange.opacity(0.2))
-                                    .clipShape(Capsule())
+                                StatusPill(status: status)
                             }
                         }
                         HStack(spacing: 16) {
@@ -38,34 +33,15 @@ struct AttendanceView: View {
                             Label(record.checkOut?.isEmpty == false ? record.checkOut! : "-", systemImage: "arrow.left.circle")
                         }
                         .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(AppTheme.secondaryText)
                         if let note = record.note, !note.isEmpty {
-                            Text(note).font(.caption).foregroundStyle(.secondary)
+                            Text(note).font(.caption).foregroundStyle(AppTheme.secondaryText)
                         }
                     }
-                    .padding(.vertical, 2)
                 }
             }
             .navigationTitle("내 근태")
             .refreshable { await reload() }
         }
-    }
-}
-
-/// iOS 17의 ContentUnavailableView 없이도(iOS 16 타깃) 동일한 느낌의 빈 상태 표시.
-struct ContentUnavailableFallback: View {
-    let message: String
-
-    var body: some View {
-        VStack(spacing: 8) {
-            Image(systemName: "tray")
-                .font(.largeTitle)
-                .foregroundStyle(.secondary)
-            Text(message)
-                .foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 40)
-        .listRowSeparator(.hidden)
     }
 }

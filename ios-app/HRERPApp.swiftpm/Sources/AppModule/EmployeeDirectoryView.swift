@@ -22,22 +22,35 @@ struct EmployeeDirectoryView: View {
     }
 
     var body: some View {
-        NavigationStack {
-            List(filtered) { employee in
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(employee.name).font(.headline)
-                    Text([employee.dept, employee.team, employee.position]
-                        .compactMap { $0 }
-                        .filter { !$0.isEmpty }
-                        .joined(separator: " · "))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                .padding(.vertical, 2)
+        AppScreen {
+            if filtered.isEmpty {
+                EmptyState(message: "검색 결과가 없습니다.")
             }
-            .searchable(text: $query, prompt: "이름·부서·팀 검색")
-            .navigationTitle("조직도 (\(filtered.count)명)")
-            .refreshable { await reload() }
+            ForEach(filtered) { employee in
+                AppCard {
+                    HStack(spacing: 12) {
+                        ZStack {
+                            Circle().fill(AppTheme.accentLight).frame(width: 36, height: 36)
+                            Text(String(employee.name.prefix(1)))
+                                .font(.caption.weight(.bold))
+                                .foregroundStyle(AppTheme.accentDark)
+                        }
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(employee.name).font(.subheadline.weight(.semibold))
+                            Text([employee.dept, employee.team, employee.position]
+                                .compactMap { $0 }
+                                .filter { !$0.isEmpty }
+                                .joined(separator: " · "))
+                                .font(.caption)
+                                .foregroundStyle(AppTheme.secondaryText)
+                        }
+                        Spacer()
+                    }
+                }
+            }
         }
+        .searchable(text: $query, prompt: "이름·부서·팀 검색")
+        .navigationTitle("조직도 (\(filtered.count)명)")
+        .refreshable { await reload() }
     }
 }

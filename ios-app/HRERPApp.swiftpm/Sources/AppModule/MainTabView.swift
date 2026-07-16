@@ -22,12 +22,13 @@ struct MainTabView: View {
             ExpenseView(store: store, reload: reload)
                 .tabItem { Label("경비청구", systemImage: "wonsign.circle") }
 
-            EmployeeDirectoryView(store: store, reload: reload)
-                .tabItem { Label("조직도", systemImage: "person.2") }
+            ERPHubView(store: store, reload: reload)
+                .tabItem { Label("더보기", systemImage: "square.grid.2x2") }
 
             SettingsView()
                 .tabItem { Label("설정", systemImage: "gearshape") }
         }
+        .tint(AppTheme.accent)
         .task {
             await reload()
         }

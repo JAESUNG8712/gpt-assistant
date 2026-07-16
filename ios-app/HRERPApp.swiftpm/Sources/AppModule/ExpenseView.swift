@@ -25,28 +25,29 @@ struct ExpenseView: View {
 
     var body: some View {
         NavigationStack {
-            List {
+            AppScreen {
                 if myClaims.isEmpty {
-                    ContentUnavailableFallback(message: "제출한 경비청구가 없습니다.")
+                    EmptyState(message: "제출한 경비청구가 없습니다.")
                 }
                 ForEach(myClaims) { claim in
-                    VStack(alignment: .leading, spacing: 4) {
+                    AppCard {
                         HStack {
-                            Text(claim.title).font(.headline)
+                            Text(claim.title).font(.subheadline.weight(.semibold))
                             Spacer()
-                            StatusBadge(status: claim.status)
+                            StatusPill(status: claim.status)
                         }
                         Text("\(Int(claim.total).formatted())원 · \(claim.items.count)건")
                             .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                        Text(claim.createdAt.prefix(10)).font(.caption).foregroundStyle(.secondary)
-                    }
-                    .padding(.vertical, 2)
-                    .swipeActions {
-                        if claim.status == "pending" {
-                            Button("회수", role: .destructive) {
-                                store.withdrawExpenseClaim(id: claim.id)
-                                Task { await store.save(client: client, session: session) }
+                            .foregroundStyle(AppTheme.secondaryText)
+                        HStack {
+                            Text(claim.createdAt.prefix(10)).font(.caption).foregroundStyle(AppTheme.secondaryText)
+                            Spacer()
+                            if claim.status == "pending" {
+                                Button("회수", role: .destructive) {
+                                    store.withdrawExpenseClaim(id: claim.id)
+                                    Task { await store.save(client: client, session: session) }
+                                }
+                                .font(.caption)
                             }
                         }
                     }

@@ -90,6 +90,80 @@ final class APIClient {
         return (try? JSONSerialization.jsonObject(with: raw) as? [String: Any]) ?? [:]
     }
 
+    // MARK: - 회계 / 영업재고 / PMS / 채용
+    // 위 GET /data 블롭과 달리 이 엔드포인트들은 서버가 전용 테이블로 직접 관리하는
+    // 독립 리소스라, 일반 Decodable로 디코드해도 데이터 유실 위험이 없다.
+
+    func fetchAccounts(token: String) async throws -> [Account] {
+        try await decodeList("api/accounting/accounts", token: token, rootKey: "accounts")
+    }
+
+    func fetchVouchers(token: String) async throws -> [Voucher] {
+        try await decodeList("api/accounting/vouchers", token: token, rootKey: "vouchers")
+    }
+
+    func fetchItems(token: String) async throws -> [InventoryItem] {
+        try await decodeList("api/erp/items", token: token, rootKey: "items")
+    }
+
+    func fetchLocations(token: String) async throws -> [WarehouseLocation] {
+        try await decodeList("api/erp/locations", token: token, rootKey: "locations")
+    }
+
+    func fetchQuotations(token: String) async throws -> [TradeDocument] {
+        try await decodeList("api/erp/quotations", token: token, rootKey: "quotations")
+    }
+
+    func fetchPurchaseOrders(token: String) async throws -> [TradeDocument] {
+        try await decodeList("api/erp/purchase-orders", token: token, rootKey: "purchaseOrders")
+    }
+
+    func fetchStock(token: String) async throws -> [StockLevel] {
+        try await decodeList("api/erp/stock", token: token, rootKey: "stock")
+    }
+
+    func fetchPMSProjects(token: String) async throws -> [PMSProject] {
+        try await decodeList("api/pms/projects", token: token, rootKey: "projects")
+    }
+
+    func fetchPMSAllocations(token: String) async throws -> [PMSAllocation] {
+        try await decodeList("api/pms/allocations", token: token, rootKey: "allocations")
+    }
+
+    func createPMSAllocation(_ payload: NewPMSAllocationPayload, token: String) async throws {
+        var request = URLRequest(url: try url("api/pms/allocations"))
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.httpBody = try JSONEncoder().encode(payload)
+
+        let (data, response) = try await session.data(for: request)
+        try Self.checkResponse(response, data: data)
+    }
+
+    func fetchRecruitJobs(token: String) async throws -> [RecruitJob] {
+        try await decodeList("api/recruit/jobs", token: token, rootKey: "jobs")
+    }
+
+    func fetchRecruitCandidates(token: String) async throws -> [RecruitCandidate] {
+        try await decodeList("api/recruit/candidates", token: token, rootKey: "candidates")
+    }
+
+    private func decodeList<T: Decodable>(_ path: String, token: String, rootKey: String) async throws -> [T] {
+        var request = URLRequest(url: try url(path))
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+
+        let (raw, response) = try await session.data(for: request)
+        try Self.checkResponse(response, data: raw)
+
+        guard let object = try JSONSerialization.jsonObject(with: raw) as? [String: Any] else {
+            throw APIError.serverError(0, "\(path) 응답 형식이 올바르지 않습니다.")
+        }
+        guard let array = object[rootKey] else { return [] }
+        let arrayData = try JSONSerialization.data(withJSONObject: array)
+        return try JSONDecoder().decode([T].self, from: arrayData)
+    }
+
     private static func checkResponse(_ response: URLResponse, data: Data) throws {
         guard let http = response as? HTTPURLResponse else { return }
         guard (200..<300).contains(http.statusCode) else {

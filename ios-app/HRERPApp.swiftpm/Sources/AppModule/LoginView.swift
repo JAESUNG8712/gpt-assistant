@@ -10,71 +10,108 @@ struct LoginView: View {
     @State private var otp = ""
     @State private var requireOtp = false
     @State private var isPasswordVisible = false
+    @State private var showServerField = false
+
+    private var isFormValid: Bool {
+        settings.baseURL != nil && !loginId.isEmpty && !password.isEmpty
+    }
 
     var body: some View {
-        NavigationStack {
-            Form {
-                Section("서버") {
-                    TextField("https://hrsystem-uweb.onrender.com", text: $settings.serverURLString)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .keyboardType(.URL)
+        ScrollView {
+            VStack(spacing: 20) {
+                VStack(spacing: 6) {
+                    ZStack {
+                        Circle().fill(AppTheme.accentLight).frame(width: 64, height: 64)
+                        Image(systemName: "building.2.fill").font(.title2).foregroundStyle(AppTheme.accentDark)
+                    }
+                    Text("인사 ERP")
+                        .font(.title.weight(.bold))
+                        .foregroundStyle(AppTheme.primaryText)
                 }
+                .padding(.top, 40)
 
-                Section("로그인") {
-                    TextField("아이디 (예: u2008001)", text: $loginId)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                    HStack {
-                        Group {
-                            if isPasswordVisible {
-                                TextField("비밀번호", text: $password)
-                            } else {
-                                SecureField("비밀번호", text: $password)
+                AppCard {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("아이디").font(.caption.weight(.semibold)).foregroundStyle(AppTheme.secondaryText)
+                        TextField("예: u2008001", text: $loginId)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .appFieldStyle()
+                    }
+
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("비밀번호").font(.caption.weight(.semibold)).foregroundStyle(AppTheme.secondaryText)
+                        HStack(spacing: 8) {
+                            Group {
+                                if isPasswordVisible {
+                                    TextField("비밀번호", text: $password)
+                                } else {
+                                    SecureField("비밀번호", text: $password)
+                                }
                             }
-                        }
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
 
-                        Button {
-                            isPasswordVisible.toggle()
-                        } label: {
-                            Image(systemName: isPasswordVisible ? "eye.slash" : "eye")
-                                .foregroundStyle(.secondary)
+                            Button {
+                                isPasswordVisible.toggle()
+                            } label: {
+                                Image(systemName: isPasswordVisible ? "eye.slash" : "eye")
+                                    .foregroundStyle(AppTheme.secondaryText)
+                            }
+                            .buttonStyle(.plain)
                         }
-                        .buttonStyle(.plain)
+                        .appFieldStyle()
                     }
+
                     if requireOtp {
-                        TextField("2단계 인증 코드", text: $otp)
-                            .keyboardType(.numberPad)
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("2단계 인증 코드").font(.caption.weight(.semibold)).foregroundStyle(AppTheme.secondaryText)
+                            TextField("6자리 코드", text: $otp)
+                                .keyboardType(.numberPad)
+                                .appFieldStyle()
+                        }
                     }
-                }
 
-                if let error = session.loginError {
-                    Section {
+                    if let error = session.loginError {
                         Text(error)
                             .font(.footnote)
-                            .foregroundStyle(.red)
+                            .foregroundStyle(AppTheme.danger)
                     }
-                }
 
-                Section {
                     Button {
                         Task { await login() }
                     } label: {
                         if session.isLoggingIn {
-                            ProgressView()
-                                .frame(maxWidth: .infinity)
+                            ProgressView().tint(.white)
                         } else {
                             Text("로그인")
-                                .frame(maxWidth: .infinity)
                         }
                     }
-                    .disabled(session.isLoggingIn || settings.baseURL == nil || loginId.isEmpty || password.isEmpty)
+                    .buttonStyle(AppPrimaryButtonStyle(isDisabled: !isFormValid))
+                    .disabled(session.isLoggingIn || !isFormValid)
+                    .padding(.top, 4)
                 }
+
+                DisclosureGroup("서버 설정", isExpanded: $showServerField) {
+                    TextField("https://hrsystem-uweb.onrender.com", text: $settings.serverURLString)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .keyboardType(.URL)
+                        .appFieldStyle()
+                        .padding(.top, 8)
+                }
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(AppTheme.secondaryText)
+                .padding(16)
+                .background(AppTheme.card)
+                .clipShape(RoundedRectangle(cornerRadius: 14))
+                .overlay(RoundedRectangle(cornerRadius: 14).stroke(AppTheme.border, lineWidth: 1))
             }
-            .navigationTitle("인사 ERP")
+            .padding(20)
+            .frame(maxWidth: 420)
+            .frame(maxWidth: .infinity)
         }
+        .background(AppTheme.background)
     }
 
     private func login() async {
