@@ -1,5 +1,10 @@
 import SwiftUI
 
+// MainActor로 격리되지 않은 최상위 상수 — @MainActor 타입(NewExpenseClaimView) 안의
+// static 프로퍼티였을 때는 nonisolated 컨텍스트(DraftItem의 기본값 초기화)에서 참조할 수
+// 없어 Swift 6 언어 모드에서 컴파일 에러가 났다.
+private let expenseCategories = ["교통비", "식대", "숙박비", "소모품비", "접대비", "통신비", "교육비", "기타"]
+
 @MainActor
 struct ExpenseView: View {
     @EnvironmentObject private var settings: AppSettings
@@ -74,12 +79,10 @@ private struct NewExpenseClaimView: View {
     @Environment(\.dismiss) private var dismiss
     @ObservedObject var store: HRDataStore
 
-    private static let categories = ["교통비", "식대", "숙박비", "소모품비", "접대비", "통신비", "교육비", "기타"]
-
     private struct DraftItem: Identifiable {
         let id = UUID()
         var date = DateHelpers.todayDateString()
-        var category = NewExpenseClaimView.categories[0]
+        var category = expenseCategories[0]
         var amount: Double = 0
         var memo = ""
     }
@@ -103,7 +106,7 @@ private struct NewExpenseClaimView: View {
                     ForEach($items) { $item in
                         VStack(alignment: .leading, spacing: 6) {
                             Picker("분류", selection: $item.category) {
-                                ForEach(Self.categories, id: \.self) { Text($0) }
+                                ForEach(expenseCategories, id: \.self) { Text($0) }
                             }
                             TextField("금액", value: $item.amount, format: .number)
                                 .keyboardType(.numberPad)
