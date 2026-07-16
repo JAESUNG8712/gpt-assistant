@@ -3,6 +3,9 @@ import SwiftUI
 /// 넓은 화면(iPad 가로모드로 창을 키우거나 Split View를 넓게 잡았을 때)에서 쓰는 레이아웃 —
 /// 실제 웹 앱과 동일하게 좌측에 전체 메뉴가 항상 보이는 사이드바 + 우측 상세 2단 구성.
 /// 좁은 화면에서는 RootView가 대신 MainTabView(하단 탭바)를 보여준다.
+///
+/// 상세 영역도 MainTabView와 동일한 이유로 `NavigationPath` 리셋이 아니라 `.id()` 강제
+/// 재생성 방식을 쓴다 — 자세한 설명은 MainTabView.swift 상단 주석 참고.
 @MainActor
 struct SidebarRootView: View {
     @EnvironmentObject private var settings: AppSettings
@@ -10,7 +13,7 @@ struct SidebarRootView: View {
     @StateObject private var store = HRDataStore()
 
     @State private var selection: AppSection? = .home
-    @State private var detailPath = NavigationPath()
+    @State private var detailResetID = UUID()
 
     private var client: APIClient { APIClient(settings: settings) }
 
@@ -24,15 +27,16 @@ struct SidebarRootView: View {
             .navigationTitle("인사 ERP")
             .listStyle(.sidebar)
         } detail: {
-            NavigationStack(path: $detailPath) {
+            NavigationStack {
                 destination
             }
+            .id(detailResetID)
         }
         .tint(AppTheme.accent)
         .onChange(of: selection) { _ in
             // 사이드바에서 다른 섹션을 고르면 이전 섹션에서 눌러 들어갔던 세부 화면이
-            // 그대로 남아있지 않도록 상세 영역의 push 스택을 리셋한다.
-            detailPath = NavigationPath()
+            // 그대로 남아있지 않도록 상세 영역의 NavigationStack을 통째로 새로 만든다.
+            detailResetID = UUID()
         }
         .task {
             await reload()

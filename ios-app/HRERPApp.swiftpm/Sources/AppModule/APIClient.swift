@@ -159,9 +159,14 @@ final class APIClient {
         guard let object = try JSONSerialization.jsonObject(with: raw) as? [String: Any] else {
             throw APIError.serverError(0, "\(path) 응답 형식이 올바르지 않습니다.")
         }
-        guard let array = object[rootKey] else { return [] }
-        let arrayData = try JSONSerialization.data(withJSONObject: array)
-        return try JSONDecoder().decode([T].self, from: arrayData)
+        guard let array = object[rootKey] as? [[String: Any]] else { return [] }
+        // 레코드 하나가 예상 형식과 안 맞아도(서버 스키마 변경, 부분 null 등) 그 항목만
+        // 건너뛰고 나머지는 정상 표시한다 — 예전엔 [T].self로 배열 전체를 한 번에 디코드해서
+        // 항목 하나만 깨져도 전체 목록이 통째로 실패했다(HRDataStore.decodeArray와 동일 패턴).
+        return array.compactMap { dict in
+            guard let data = try? JSONSerialization.data(withJSONObject: dict) else { return nil }
+            return try? JSONDecoder().decode(T.self, from: data)
+        }
     }
 
     private static func checkResponse(_ response: URLResponse, data: Data) throws {

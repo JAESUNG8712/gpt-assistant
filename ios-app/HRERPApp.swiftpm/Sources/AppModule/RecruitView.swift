@@ -96,7 +96,11 @@ struct RecruitView: View {
             async let c = client.fetchRecruitCandidates(token: token)
             (jobs, candidates) = try await (j, c)
         } catch {
-            errorMessage = error.localizedDescription
+            if case APIError.serverError(401, _) = error {
+                session.handleUnauthorized()
+            } else {
+                errorMessage = error.localizedDescription
+            }
         }
     }
 }

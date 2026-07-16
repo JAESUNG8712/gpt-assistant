@@ -21,6 +21,19 @@ struct PMSView: View {
             .sorted { ($0.year, $0.month) > ($1.year, $1.month) }
     }
 
+    /// 투입률 입력 시 고를 수 있는 프로젝트 목록 — 소속 팀원이 아닌 프로젝트까지 뜨면
+    /// 실수로 엉뚱한 프로젝트에 투입률을 입력하기 쉬워서, 내가 멤버로 등록된 프로젝트
+    /// (또는 멤버 제한이 아예 없는 프로젝트)로만 좁힌다. 관리자는 전체를 그대로 본다.
+    private var myProjects: [PMSProject] {
+        if session.currentEmployee?.role == "admin" { return projects }
+        guard let empId = session.currentEmployee?.id else { return projects }
+        let empIdString = String(empId)
+        return projects.filter { project in
+            guard let members = project.members, !members.isEmpty else { return true }
+            return members.contains(empIdString)
+        }
+    }
+
     var body: some View {
         AppScreen {
             AppCard(title: "프로젝트 (\(projects.count))") {
@@ -81,7 +94,7 @@ struct PMSView: View {
         .task { await load() }
         .refreshable { await load() }
         .sheet(isPresented: $showingNewAllocation) {
-            NewAllocationView(projects: projects) {
+            NewAllocationView(projects: myProjects) {
                 Task { await load() }
             }
             .environmentObject(settings)
@@ -99,7 +112,11 @@ struct PMSView: View {
             async let a = client.fetchPMSAllocations(token: token)
             (projects, allocations) = try await (p, a)
         } catch {
-            errorMessage = error.localizedDescription
+            if case APIError.serverError(401, _) = error {
+                session.handleUnauthorized()
+            } else {
+                errorMessage = error.localizedDescription
+            }
         }
     }
 }

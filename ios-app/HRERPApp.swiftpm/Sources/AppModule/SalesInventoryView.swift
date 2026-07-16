@@ -116,7 +116,11 @@ struct SalesInventoryView: View {
             async let s = client.fetchStock(token: token)
             (items, locations, quotations, purchaseOrders, stock) = try await (i, l, q, p, s)
         } catch {
-            errorMessage = error.localizedDescription
+            if case APIError.serverError(401, _) = error {
+                session.handleUnauthorized()
+            } else {
+                errorMessage = error.localizedDescription
+            }
         }
     }
 }

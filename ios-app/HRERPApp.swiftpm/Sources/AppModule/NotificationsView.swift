@@ -111,7 +111,11 @@ struct NotificationsView: View {
                 return (item, qty)
             }
         } catch {
-            errorMessage = error.localizedDescription
+            if case APIError.serverError(401, _) = error {
+                session.handleUnauthorized()
+            } else {
+                errorMessage = error.localizedDescription
+            }
         }
     }
 }

@@ -96,7 +96,11 @@ struct AccountingView: View {
             async let v = client.fetchVouchers(token: token)
             (accounts, vouchers) = try await (a, v)
         } catch {
-            errorMessage = error.localizedDescription
+            if case APIError.serverError(401, _) = error {
+                session.handleUnauthorized()
+            } else {
+                errorMessage = error.localizedDescription
+            }
         }
     }
 }
