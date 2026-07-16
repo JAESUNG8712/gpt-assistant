@@ -13,11 +13,18 @@ final class AppSettings: ObservableObject {
     }
 
     init() {
-        self.serverURLString = UserDefaults.standard.string(forKey: "hrerp.serverURLString") ?? Self.defaultServerURLString
+        let stored = UserDefaults.standard.string(forKey: "hrerp.serverURLString") ?? Self.defaultServerURLString
+        // 예전에 실수로 http://를 저장했던 값이 남아있으면 https로 고쳐서 되돌린다
+        // (App Transport Security가 http를 차단해 로그인이 조용히 실패하는 문제 재발 방지).
+        self.serverURLString = Self.upgradedToHTTPS(stored)
+    }
+
+    private static func upgradedToHTTPS(_ value: String) -> String {
+        value.hasPrefix("http://") ? "https://" + value.dropFirst("http://".count) : value
     }
 
     var baseURL: URL? {
-        let trimmed = serverURLString.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = Self.upgradedToHTTPS(serverURLString.trimmingCharacters(in: .whitespacesAndNewlines))
         guard !trimmed.isEmpty else { return nil }
         let normalized = trimmed.hasSuffix("/") ? String(trimmed.dropLast()) : trimmed
         guard let url = URL(string: normalized), url.scheme != nil, url.host != nil else { return nil }
