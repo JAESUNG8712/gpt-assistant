@@ -367,6 +367,15 @@
     return map[role] || role;
   }
 
+  function escapeHtml(str) {
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
   function agentCardHTML(agent, isPinned) {
     return `
       <div class="agent-card ${isPinned ? 'pinned' : ''}">
@@ -459,7 +468,7 @@
       <div class="memory-item">
         <span class="memory-item-type ${typeClass[e.type] || 'type-note'}">${typeLabel[e.type] || e.type}</span>
         <div style="flex:1">
-          <div class="memory-item-content">${e.content}</div>
+          <div class="memory-item-content">${escapeHtml(e.content)}</div>
           <div class="memory-item-date">${new Date(e.savedAt).toLocaleString('ko-KR')}</div>
         </div>
         <button class="btn-delete-mem" onclick="deleteMemory(${e.id})">✕</button>

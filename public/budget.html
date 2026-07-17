@@ -95,6 +95,15 @@
 <script>
 const MONTHS = Array.from({length:12}, (_,i)=>i+1);
 
+function escapeHtml(str) {
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 async function uploadFile(inputId, url, statusId) {
   const input = document.getElementById(inputId);
   const statusEl = document.getElementById(statusId);
@@ -144,7 +153,7 @@ async function loadSummary() {
   const grandTotals = MONTHS.map(()=>({headcount:0, 판관:0, 용역:0, 경상:0, totalAmount:0}));
 
   summary.forEach(dept => {
-    html += `<div class="dept-block"><h3>${dept.dept}</h3><table>
+    html += `<div class="dept-block"><h3>${escapeHtml(dept.dept)}</h3><table>
       <tr><th class="lbl">구분</th>${MONTHS.map(m=>`<th>${m}월</th>`).join('')}</tr>
       <tr><td class="lbl">인원수</td>${dept.months.map(d=>`<td>${fmt(d.headcount)}</td>`).join('')}</tr>
       <tr><td class="lbl">판관</td>${dept.months.map(d=>`<td>${fmt(d.판관)}</td>`).join('')}</tr>
@@ -195,14 +204,14 @@ function renderRaw() {
     if (!rawData.headcount.length) { area.innerHTML = '<p class="desc">데이터 없음</p>'; return; }
     let html = '<table><tr><th class="lbl">부서</th><th>월</th><th>인원수</th></tr>';
     rawData.headcount.sort((a,b)=> a.dept.localeCompare(b.dept) || a.month-b.month)
-      .forEach(h => html += `<tr><td class="lbl">${h.dept}</td><td>${h.month}월</td><td>${fmt(h.count)}</td></tr>`);
+      .forEach(h => html += `<tr><td class="lbl">${escapeHtml(h.dept)}</td><td>${h.month}월</td><td>${fmt(h.count)}</td></tr>`);
     html += '</table>';
     area.innerHTML = html;
   } else {
     if (!rawData.items.length) { area.innerHTML = '<p class="desc">데이터 없음</p>'; return; }
     let html = '<table><tr><th class="lbl">부문</th><th class="lbl">팀</th><th class="lbl">매출구분</th><th class="lbl">항목</th><th class="lbl">세부내역</th><th class="lbl">구분</th><th>월</th><th>금액</th></tr>';
     rawData.items.sort((a,b)=> a.dept.localeCompare(b.dept) || a.month-b.month)
-      .forEach(i => html += `<tr><td class="lbl">${i.dept}</td><td class="lbl">${i.team||''}</td><td class="lbl">${i.revenueType||''}</td><td class="lbl">${i.account||''}</td><td class="lbl">${i.detail||''}</td><td class="lbl">${i.category}</td><td>${i.month}월</td><td>${fmt(i.amount)}</td></tr>`);
+      .forEach(i => html += `<tr><td class="lbl">${escapeHtml(i.dept)}</td><td class="lbl">${escapeHtml(i.team||'')}</td><td class="lbl">${escapeHtml(i.revenueType||'')}</td><td class="lbl">${escapeHtml(i.account||'')}</td><td class="lbl">${escapeHtml(i.detail||'')}</td><td class="lbl">${escapeHtml(i.category)}</td><td>${i.month}월</td><td>${fmt(i.amount)}</td></tr>`);
     html += '</table>';
     area.innerHTML = html;
   }
