@@ -10,7 +10,9 @@ from pathlib import Path
 
 _APP_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH  = os.getenv("DB_PATH", os.path.join(_APP_DIR, "data", "memory.db"))
-TOKEN_PATH   = os.getenv("GDRIVE_TOKEN_PATH", "/tmp/gdrive_token.pkl")
+# DB_PATH와 같은 디렉터리(영속 볼륨)에 저장 — /tmp는 재배포/재시작마다 초기화되어
+# Google Drive 재인증이 매번 필요해지는 문제가 있었음
+TOKEN_PATH = os.getenv("GDRIVE_TOKEN_PATH", os.path.join(os.path.dirname(DB_PATH), "gdrive_token.pkl"))
 
 # Google Drive OAuth2 설정 (환경변수)
 GDRIVE_CLIENT_ID     = os.getenv("GDRIVE_CLIENT_ID", "")
