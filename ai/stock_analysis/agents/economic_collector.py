@@ -79,6 +79,7 @@ class EconomicCollector:
             "수집시각": datetime.now().isoformat(),
         }
         self.results["시장심리"] = self.get_market_sentiment()
+        self.results["종합판단"] = self.get_macro_signal()["종합판단"]
 
         print("📊 [경제수집] 완료")
         return self.results

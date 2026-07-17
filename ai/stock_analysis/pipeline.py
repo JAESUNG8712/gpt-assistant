@@ -58,7 +58,10 @@ class StockAnalysisPipeline:
                 financial_data, economic_data, geo_data, industry_data)
 
             self.log("\n── STEP 3: 상세 분석 ──")
-            analyses = self._step3_analyze(
+            # Claude API 동기 호출(analyzer.py)이 섞여 있어 별도 스레드에서 실행
+            # — 그대로 두면 FastAPI 이벤트 루프가 완전히 멈춰 /chat 등 다른 요청까지 정지된다.
+            analyses = await asyncio.to_thread(
+                self._step3_analyze,
                 financial_data, economic_data, geo_data, industry_data)
 
             self.log("\n── STEP 4: 교차 검증 ──")
@@ -66,7 +69,9 @@ class StockAnalysisPipeline:
                 financial_data, analyses, economic_data, geo_data, industry_data)
 
             self.log("\n── STEP 5: 최종 보고서 작성 ──")
-            report = self._step5_report(
+            # report_writer.py도 Claude API를 동기 호출하므로 동일하게 스레드로 분리
+            report = await asyncio.to_thread(
+                self._step5_report,
                 analyses, financial_data, economic_data,
                 geo_data, industry_data, data_val, logic_val, risk_val)
 

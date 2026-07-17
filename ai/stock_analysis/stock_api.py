@@ -73,9 +73,13 @@ async def run_analysis(
     if _analysis_running:
         raise HTTPException(status_code=429, detail="분석이 이미 실행 중입니다. 잠시 후 시도하세요.")
 
+    # 백그라운드 태스크가 실제로 실행되기 전(응답 반환 후)까지 플래그가 안 켜져 있으면
+    # 거의 동시에 들어온 두 번째 요청도 위 체크를 통과해 파이프라인이 중복 실행될 수 있어
+    # 핸들러에서 동기적으로 즉시 잠근다.
+    _analysis_running = True
+
     async def _run():
         global _analysis_running, _last_report, _last_run
-        _analysis_running = True
         try:
             report = await run_once(request.target_stocks)
             _last_report = report
@@ -211,7 +215,7 @@ async def screen_lowprice(
     from .utils.low_price_screener import screen_low_price_stocks, format_report
     try:
         params = {"max_price": max_price, "max_pbr": max_pbr, "max_per": max_per, "top_n": top_n}
-        candidates = screen_low_price_stocks(market=market, params=params)
+        candidates = await asyncio.to_thread(screen_low_price_stocks, market, params)
         report = format_report(candidates, params=params)
         return PlainTextResponse(content=report, media_type="text/plain; charset=utf-8")
     except Exception as e:
