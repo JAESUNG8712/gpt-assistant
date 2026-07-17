@@ -14,13 +14,17 @@ def _domain(url: str) -> str:
 
 def web_search(query: str, max_results: int = 5) -> list[dict]:
     results = []
-    with DDGS() as ddgs:
-        for r in ddgs.text(query, max_results=max_results):
-            results.append({
-                "title": r.get("title", ""),
-                "body":  r.get("body", ""),
-                "url":   r.get("href", ""),
-            })
+    try:
+        with DDGS() as ddgs:
+            for r in ddgs.text(query, max_results=max_results):
+                results.append({
+                    "title": r.get("title", ""),
+                    "body":  r.get("body", ""),
+                    "url":   r.get("href", ""),
+                })
+    except Exception as e:
+        print(f"⚠️ DuckDuckGo 검색 오류: {e}")
+        return []
     return results
 
 def search_and_learn(query: str, max_results: int = 5, persona_id: str = "hr") -> list[dict]:

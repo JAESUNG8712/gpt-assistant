@@ -1,4 +1,5 @@
 import asyncio
+import functools
 import os
 import re
 import glob as _glob
@@ -506,7 +507,9 @@ async def chat(req: ChatRequest):
     )
     search_ctx = ""
     if req.use_search or auto_web_search:
-        results = srch.search_and_learn(search_msg, persona_id=persona_id)
+        results = await asyncio.get_event_loop().run_in_executor(
+            None, functools.partial(srch.search_and_learn, search_msg, persona_id=persona_id)
+        )
         search_ctx = srch.format_search_context(results)
 
     # ── 주식 페르소나: 파이프라인 / 스크리닝 트리거 여부 판단 ────────
@@ -732,7 +735,7 @@ async def chat(req: ChatRequest):
 
                     # ① DuckDuckGo 일반 검색 (기존)
                     _ddg_task = asyncio.get_event_loop().run_in_executor(
-                        None, srch.search_and_learn, search_msg
+                        None, functools.partial(srch.search_and_learn, search_msg, persona_id=persona_id)
                     )
 
                     # ② 종목별 뉴스 수집 (병렬)
@@ -1283,13 +1286,13 @@ async def debug_law(q: str = "근로기준법 제7조"):
                 "raw": r1.json(),
             }
     except Exception as e:
+        print(f"[/debug/law 오류] {type(e).__name__}: {e}\n{traceback.format_exc()}")
         return {
             "ok": False,
             "query": q,
             "search_name": search_name,
             "error_type": type(e).__name__,
             "error": str(e),
-            "traceback": traceback.format_exc()[-500:],
         }
 
 # ── 예산관리 (budget) API ─────────────────────────
