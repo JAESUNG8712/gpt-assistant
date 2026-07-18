@@ -834,11 +834,18 @@ app.use("/api/budget", budgetRouter);
 
 // /login 브루트포스 방어: IP당 15분에 20회로 제한(정상 사용자가 실수로 몇 번 틀리는
 // 정도는 통과시키되, 자동화된 무차별 대입 시도는 차단).
+// skipSuccessfulRequests 없이는 "성공한" 로그인도 카운트에 포함돼, 같은 사무실
+// 공인IP 뒤에서 20명 넘는 직원이 15분 안에 정상적으로 로그인만 해도(월요일 출근
+// 시간대 등) 뒤늦게 로그인하는 직원들이 429로 막히는 문제가 있었다(부하 테스트
+// 에이전트가 실측: 같은 IP에서 30명 동시 로그인 시 20명만 성공, 11명 429).
+// 브루트포스 방어의 목적은 "틀린 비밀번호 시도" 횟수를 제한하는 것이지 정상
+// 로그인 총량을 제한하는 게 아니므로, 성공한 요청은 카운트에서 제외한다.
 const loginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 20,
   standardHeaders: true,
   legacyHeaders: false,
+  skipSuccessfulRequests: true,
   message: { ok: false, message: "로그인 시도가 너무 많습니다. 잠시 후 다시 시도하세요." },
 });
 
