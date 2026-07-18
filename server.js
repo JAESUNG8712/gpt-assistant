@@ -184,6 +184,31 @@ function omitPw(emp) {
   return rest;
 }
 
+// The client-trusted "full state blob" model (see docs/API_CONTRACT.md §1.2) means every
+// authenticated user's GET /data — and the equivalent data returned by POST /save's merge
+// response and snapshot restore — otherwise returns every OTHER employee's payslips
+// (exact salary) and kpiEntries (evaluation scores/comments) verbatim, regardless of role.
+// stripPwField() already keeps password hashes out of the wire; this does the same for
+// those two fields, using the PAGE_ROLES boundaries already enforced client-side
+// (public/index.html) as the source of truth for who legitimately needs broad access:
+//   - payslips: only "payroll-mgmt" (admin-only) manages other people's payslips, so
+//     every other role sees just their own.
+//   - kpiEntries: "first-eval"/"second-eval"/"grade-view"/"eval-progress" all exclude
+//     "member" (leader/director/admin need broad access to run evaluations; member does
+//     not), so member is narrowed to their own entries while other roles are untouched.
+// No-op when `auth` is absent (e.g. bootstrap-exempt paths never reach here with real data).
+function filterDataForRole(data, auth) {
+  if (!data || !auth) return data;
+  const out = { ...data };
+  if (auth.role !== "admin" && Array.isArray(out.payslips)) {
+    out.payslips = out.payslips.filter(p => p && String(p.empId) === String(auth.empId));
+  }
+  if (auth.role === "member" && Array.isArray(out.kpiEntries)) {
+    out.kpiEntries = out.kpiEntries.filter(k => k && String(k.userId) === String(auth.empId));
+  }
+  return out;
+}
+
 // ── TOTP (RFC 6238) 2단계 인증 — 외부 의존성 없이 자체 구현 ────────────────────
 const TOTP_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
 function base32Encode(buf) {
@@ -479,7 +504,33 @@ async function _persistDataLocked(data, changedBy = "system") {
     }
     _saveFileHistory();
 
-    _fileStore = { ...data, employees };
+    // payslips/kpiEntries are now filtered by role before ever reaching a non-admin/member
+    // client (see filterDataForRole in GET /data) — that client's local copy of these two
+    // fields is intentionally incomplete (only their own records), so a plain overwrite of
+    // `_fileStore.payslips`/`.kpiEntries` with `data.payslips`/`.kpiEntries` on their next
+    // autosave would wipe out every other employee's payslip/KPI record. Always merge these
+    // two fields by id against what's already stored (same union semantics smartMerge uses
+    // for a stale save) instead of trusting the incoming array to be the complete set, then
+    // apply this save's own tombstones so genuine deletions (e.g. deleteKpi()) still take
+    // effect.
+    const _tomb = data.recordTombstones || {};
+    function _mergeProtectedField(field) {
+      let merged = mergeArrayById(_fileStore[field], data[field]);
+      const dead = _tomb[field];
+      if (dead && dead.length) {
+        const deadIds = new Set(dead.map(t => t.id));
+        merged = merged.filter(r => !(r && deadIds.has(r.id)));
+      }
+      return merged;
+    }
+    const kpiEntriesFinal = _mergeProtectedField("kpiEntries");
+    const payslipsFinal   = _mergeProtectedField("payslips");
+
+    // Defense in depth alongside the smartMerge fix above: even for a save that skips
+    // smartMerge (client claims to be exactly at the current version), keep any existing
+    // collection the incoming payload doesn't mention instead of dropping it — a plain
+    // `{...data, employees}` would silently delete every field absent from `data`.
+    _fileStore = { ..._fileStore, ...data, employees, kpiEntries: kpiEntriesFinal, payslips: payslipsFinal };
     _dataVersion++;
     _lastSaved = new Date().toISOString();
     _fileStore._version = _dataVersion;
@@ -577,23 +628,44 @@ async function _persistDataLocked(data, changedBy = "system") {
     }
 
     // ── generic id-keyed collections (attendance, payslips, approvals, etc.) ──
+    // Historically upsert-only: a record removed from the client's array (a user clicking
+    // "삭제") was simply never re-sent, but nothing here ever issued a DELETE, so it stayed
+    // in app_collections forever and could resurface on the next full load. recordTombstones
+    // (see mergeArrayById/smartMerge) now records exactly which ids were locally deleted, so
+    // apply those as real deletes here — the same fix kpi_entries gets just below.
+    const recordTombstones = data.recordTombstones || {};
     for (const field of GENERIC_LIST_FIELDS) {
       const items = data[field];
-      if (!Array.isArray(items)) continue;
-      for (const item of items) {
-        if (!item || item.id == null) continue;
-        const { rows } = await client.query(
-          "SELECT data FROM app_collections WHERE collection = $1 AND id = $2",
-          [field, String(item.id)]
-        );
-        const oldTs = rows.length ? (rows[0].data.updatedAt || rows[0].data.createdAt || "") : "";
-        const newTs = item.updatedAt || item.createdAt || "";
-        if (rows.length && newTs < oldTs) continue; // server has a newer copy, keep it
-        await client.query(
-          `INSERT INTO app_collections (collection, id, data, updated_at) VALUES ($1,$2,$3,NOW())
-           ON CONFLICT (collection, id) DO UPDATE SET data = $3, updated_at = NOW()`,
-          [field, String(item.id), JSON.stringify(item)]
-        );
+      if (Array.isArray(items)) {
+        for (const item of items) {
+          if (!item || item.id == null) continue;
+          const { rows } = await client.query(
+            "SELECT data FROM app_collections WHERE collection = $1 AND id = $2",
+            [field, String(item.id)]
+          );
+          const oldTs = rows.length ? (rows[0].data.updatedAt || rows[0].data.createdAt || "") : "";
+          const newTs = item.updatedAt || item.createdAt || "";
+          if (rows.length && newTs < oldTs) continue; // server has a newer copy, keep it
+          await client.query(
+            `INSERT INTO app_collections (collection, id, data, updated_at) VALUES ($1,$2,$3,NOW())
+             ON CONFLICT (collection, id) DO UPDATE SET data = $3, updated_at = NOW()`,
+            [field, String(item.id), JSON.stringify(item)]
+          );
+        }
+      }
+      // roomReservations predates the generic recordTombstones mechanism and still tracks
+      // its own deletions in data.roomReservationTombstones (see mergeTombstones) — fold
+      // both sources in so DB mode actually deletes them too, not just JSON-file mode.
+      const extraDead = field === "roomReservations" ? (data.roomReservationTombstones || []) : [];
+      const deadIds = [...(recordTombstones[field] || []), ...extraDead].map(t => String(t.id));
+      if (deadIds.length) {
+        await client.query("DELETE FROM app_collections WHERE collection = $1 AND id = ANY($2)", [field, deadIds]);
+      }
+    }
+    {
+      const deadKpiIds = (recordTombstones.kpiEntries || []).map(t => t.id);
+      if (deadKpiIds.length) {
+        await client.query("DELETE FROM kpi_entries WHERE id = ANY($1)", [deadKpiIds]);
       }
     }
 
@@ -669,6 +741,19 @@ function mergeTombstones(serverList, clientList) {
   return Object.values(byId).filter(t => t.ts >= cutoff);
 }
 
+// Same idea as roomReservationTombstones/mergeTombstones above, generalized to every
+// id-keyed collection (employees, kpiEntries, approvalDocs, expenseClaims, ...) instead
+// of just room reservations. serverObj/clientObj are shaped {field: [{id,ts},...]}.
+// Merging per-field with mergeTombstones() keeps the newest tombstone for each id and
+// prunes entries older than 30 days, same as the room-reservation-only version.
+function mergeRecordTombstones(serverObj, clientObj) {
+  const merged = {};
+  for (const field of new Set([...Object.keys(serverObj || {}), ...Object.keys(clientObj || {})])) {
+    merged[field] = mergeTombstones((serverObj || {})[field], (clientObj || {})[field]);
+  }
+  return merged;
+}
+
 // Merges two plain objects keyed by an outer id (e.g. employee id) whose
 // values are themselves objects keyed by a second level (e.g. year) —
 // compGradeResults[empId][year] = {grade,score,...}. Unlike mergeArrayById,
@@ -693,9 +778,20 @@ function mergeNestedObject(serverObj, clientObj) {
 function smartMerge(serverData, clientData) {
   if (!serverData) return clientData;
   const merged = { ...serverData, ...clientData };
+  const recordTombstones = mergeRecordTombstones(serverData.recordTombstones, clientData.recordTombstones);
+  merged.recordTombstones = recordTombstones;
   for (const field of ID_KEYED_LIST_FIELDS) {
     if (clientData[field] !== undefined || serverData[field] !== undefined) {
-      merged[field] = mergeArrayById(serverData[field], clientData[field]);
+      let mergedField = mergeArrayById(serverData[field], clientData[field]);
+      // A record deleted by one client (tombstoned) can otherwise be resurrected here:
+      // mergeArrayById() only sees "present on one side" vs "present on both", so a
+      // stale client that still has the now-deleted record locally would win it back.
+      const dead = recordTombstones[field];
+      if (dead && dead.length && Array.isArray(mergedField)) {
+        const deadIds = new Set(dead.map(t => t.id));
+        mergedField = mergedField.filter(r => !(r && deadIds.has(r.id)));
+      }
+      merged[field] = mergedField;
     }
   }
   if (clientData.compGradeResults !== undefined || serverData.compGradeResults !== undefined) {
@@ -787,7 +883,7 @@ app.get("/data", async (req, res) => {
   if (!requireAuth(req, res)) return;
   try {
     const data = await loadData();
-    res.json({ ok: true, data: stripPwField(data), version: _dataVersion });
+    res.json({ ok: true, data: filterDataForRole(stripPwField(data), req.auth), version: _dataVersion });
   } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
 });
 
@@ -880,7 +976,17 @@ app.post("/save", async (req, res) => {
       // Re-checked *inside* the lock so a request that arrived while another
       // save was in flight sees the version that request just committed,
       // instead of a stale snapshot taken before either had run.
-      if (clientData._version !== undefined && clientData._version < _dataVersion) {
+      // Was `< _dataVersion` only, which trusted the client-supplied _version to decide
+      // whether a full-overwrite is safe. A client (even a non-admin one) sending a
+      // _version larger than the server's current value skipped smartMerge entirely and
+      // fell straight through to a full overwrite — in JSON-file mode that meant any
+      // collection field simply omitted from the request body (kpiEntries, approvalDocs,
+      // expenseClaims, ...) was silently deleted server-side (see _persistDataLocked).
+      // Merging whenever the versions merely differ (not just when client is behind)
+      // closes that gap; the client is always supposed to know the exact current
+      // version it started editing from, so anything other than an exact match is
+      // treated as "possibly stale/incomplete, merge to be safe."
+      if (clientData._version !== undefined && clientData._version !== _dataVersion) {
         const serverData = await loadData();
         finalData = smartMerge(serverData, clientData);
         merged    = true;
@@ -899,7 +1005,7 @@ app.post("/save", async (req, res) => {
     broadcastSSE("data_updated", { version: _dataVersion, meta }, req.query.clientId);
     res.json({
       ok: true, version: _dataVersion, merged,
-      mergedData: merged ? stripPwField(finalData) : undefined,
+      mergedData: merged ? filterDataForRole(stripPwField(finalData), req.auth) : undefined,
       meta,
       warnings: duplicateLoginIds && duplicateLoginIds.length ? { duplicateLoginIds } : undefined,
     });
@@ -1264,7 +1370,7 @@ app.post("/restore", async (req, res) => {
 
     const finalData = await loadData();
     broadcastSSE("data_restored", { name, fields: restoredFields, deletedExtras: deleteExtras, version: _dataVersion });
-    res.json({ ok: true, version: _dataVersion, restoredFields, deletedExtras: deleteExtras, data: stripPwField(finalData) });
+    res.json({ ok: true, version: _dataVersion, restoredFields, deletedExtras: deleteExtras, data: filterDataForRole(stripPwField(finalData), req.auth) });
   } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
 });
 

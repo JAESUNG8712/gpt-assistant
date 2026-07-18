@@ -915,6 +915,11 @@ let leaveUsagePlans=[]; // 연차 사용촉진제도 - 개인별 연간 연차 �
 let boardPosts=[]; // 게시판/공지사항
 let roomReservations=[]; // 회의실 예약
 let roomReservationTombstones=[]; // 삭제된 예약 id 기록 {id,ts} - 서버 병합 시 삭제가 되살아나지 않도록 함
+// roomReservations 전용 tombstone과 같은 목적을, 그 외 삭제 가능한 id-keyed 컬렉션(직원/저성과자
+// 관리대상/결재양식/급여조정/게시글/필수교육/건강검진/일정/경비청구/초과근무/온보딩/전결위임 등)
+// 전반에도 적용하기 위한 범용 버전. {필드명:[{id,ts},...]} 형태 - 삭제 시 _tombstone(field,id)로 기록.
+let recordTombstones={};
+function _tombstone(field,id){(recordTombstones[field]=recordTombstones[field]||[]).push({id,ts:Date.now()});}
 let certLog=[]; // 증명서 발급 이력 (영구 보존)
 let certRequests=[]; // 증명서 발급 신청 {id,empId,empName,certType,certTitle,reason,submitTo,status:"pending"|"approved"|"rejected",requestedAt,processedAt,processedBy,processedByName,rejectReason,issuedAt}
 let welfarePoints=[]; // 복지포인트 [{id,empId,points,type:"grant"|"use",desc,date,by}]
@@ -3978,6 +3983,7 @@ function getFullState(action=""){
       boardPosts:JSON.parse(JSON.stringify(boardPosts)),
       roomReservations:JSON.parse(JSON.stringify(roomReservations)),
       roomReservationTombstones:JSON.parse(JSON.stringify(roomReservationTombstones)),
+      recordTombstones:JSON.parse(JSON.stringify(recordTombstones)),
       certLog:JSON.parse(JSON.stringify(certLog)),
       certRequests:JSON.parse(JSON.stringify(certRequests)),
       welfarePoints:JSON.parse(JSON.stringify(welfarePoints)),
@@ -4152,6 +4158,37 @@ function applyState(state,skipUndo=false){
   if(d.healthCheckupLog&&Array.isArray(d.healthCheckupLog))healthCheckupLog=d.healthCheckupLog;
   if(d.scheduleEvents&&Array.isArray(d.scheduleEvents))scheduleEvents=d.scheduleEvents;
   if(d._idCounter&&typeof d._idCounter==="number")_id=d._idCounter;
+  if(d.recordTombstones&&typeof d.recordTombstones==="object"){
+    const cutoff=Date.now()-30*24*60*60*1000;
+    const merged={};
+    new Set([...Object.keys(recordTombstones||{}),...Object.keys(d.recordTombstones||{})]).forEach(f=>{
+      const byId={};
+      [...(recordTombstones[f]||[]),...(d.recordTombstones[f]||[])].forEach(t=>{if(t&&t.id!=null&&(!byId[t.id]||t.ts>byId[t.id].ts))byId[t.id]=t;});
+      merged[f]=Object.values(byId).filter(t=>t.ts>=cutoff);
+    });
+    recordTombstones=merged;
+  }
+  // 서버 병합(smartMerge) 또는 이 클라이언트의 지연된 저장이 삭제된 레코드를 되살릴 수 있으므로,
+  // 새로 받은 데이터에서도 로컬에 기록된 삭제 tombstone에 해당하는 id는 다시 걸러낸다.
+  const _tombFilter=(arr,f)=>{
+    const t=recordTombstones[f];
+    if(!t||!t.length||!Array.isArray(arr))return arr;
+    const dead=new Set(t.map(x=>x.id));
+    return arr.filter(r=>!dead.has(r&&r.id));
+  };
+  employees=_tombFilter(employees,"employees");
+  kpiEntries=_tombFilter(kpiEntries,"kpiEntries");
+  lowPerfData=_tombFilter(lowPerfData,"lowPerfData");
+  approvalTemplates=_tombFilter(approvalTemplates,"approvalTemplates");
+  payrollAdjustments=_tombFilter(payrollAdjustments,"payrollAdjustments");
+  boardPosts=_tombFilter(boardPosts,"boardPosts");
+  mandatoryTraining=_tombFilter(mandatoryTraining,"mandatoryTraining");
+  healthCheckupLog=_tombFilter(healthCheckupLog,"healthCheckupLog");
+  scheduleEvents=_tombFilter(scheduleEvents,"scheduleEvents");
+  expenseClaims=_tombFilter(expenseClaims,"expenseClaims");
+  overtimeRequests=_tombFilter(overtimeRequests,"overtimeRequests");
+  onboardingFlows=_tombFilter(onboardingFlows,"onboardingFlows");
+  approvalDelegations=_tombFilter(approvalDelegations,"approvalDelegations");
   if(currentUser){const updated=employees.find(e=>e.id===currentUser.id);if(updated)currentUser=updated;}
 }
 
@@ -5391,6 +5428,11 @@ async function _confirmMyPagePw(){
   finally{if(btn)btn.disabled=false;}
 }
 function gotoPage(p){
+  // 메뉴 이동은 항상 현재 화면 전체를 교체하므로, 열려있는 모달(예: 본인확인 비밀번호
+  // 확인창)이 있으면 먼저 닫는다 - 그렇지 않으면 새 페이지 컨텐츠 위에 이전 모달이 계속
+  // 남아 화면을 가리는 문제가 있었다(모바일 QA에서 발견: 근태 탭 진입 시 뜨는 본인확인
+  // 모달을 닫지 않고 다른 메뉴로 이동하면 모달이 사라지지 않고 계속 화면을 덮음).
+  if(document.querySelector(".modal-ov"))closeModal();
   // board-* 페이지: 해당 카테고리로 이동
   if(p&&p.startsWith("board-")){
     const catId=p.slice(6);
@@ -6901,6 +6943,8 @@ function doDeleteEmp(id){
   const e=getEmp(id);if(!e)return;
   const confirm=$("#del-confirm")?.value.trim();
   if(confirm!==e.name){showToast("직원 이름이 일치하지 않습니다.","error");return;}
+  _tombstone("employees",id);
+  kpiEntries.filter(k=>k.userId===id).forEach(k=>_tombstone("kpiEntries",k.id));
   employees=employees.filter(emp=>emp.id!==id);
   kpiEntries=kpiEntries.filter(k=>k.userId!==id);
   closeModal();showToast(`${e.name}님의 계정이 삭제되었습니다.`,"info");renderHRList();
@@ -7427,7 +7471,7 @@ function submitKpi(id){
   const wt=weightTotal(allKpis);
   if(wt!==100){showToast("KPI 비중 합계가 100%가 되어야 제출이 가능합니다. 현재: "+wt+"%","error");return;}
   kpiEntries=kpiEntries.map(ke=>ke.id===id?{...ke,goalSub:1}:ke);showToast("KPI가 제출되었습니다.","success");logAction("kpi_submitted","KPI 제출","kpi:"+k.userId,`${kpiEntries.filter(ke=>ke.userId===k.userId&&ke.year===k.year&&ke.goalSub).length}건`);autoSaveToServerIfEnabled();renderKPI(false);}
-function deleteKpi(id){kpiEntries=kpiEntries.filter(k=>k.id!==id);showToast("KPI가 삭제되었습니다.","info");renderKPI(false);}
+function deleteKpi(id){_tombstone("kpiEntries",id);kpiEntries=kpiEntries.filter(k=>k.id!==id);showToast("KPI가 삭제되었습니다.","info");renderKPI(false);}
 function dlKpiCSV(userId,year){const emp=getEmp(userId);dlCSV(`KPI_${emp?.name||userId}_${year}.csv`,["KPI항목","비중","전년실적","목표","전년비","전략","평가기준","실적","달성율","세부내용","자체점수","차상위자점수"],kpiEntries.filter(k=>k.userId===userId&&k.year===year).map(k=>[k.item,k.weight+"%",k.prev,k.goal,k.yoy,k.strategy,k.evalCriteria||"",k.actual||"",k.rate||"",k.detail||"",k.selfScore??"",k.ceoScore??""]));}
 
 // ==================== APPROVALS ====================
@@ -11238,7 +11282,7 @@ function _openLpDetail(recId){
     </div></div>
   </div>
   <div class="modal-foot">
-    <button class="btn btn-error btn-sm" onclick="if(confirm('삭제하시겠습니까?')){lowPerfData=lowPerfData.filter(r=>r.id!=='${recId}');autoSaveDebounced();closeModal();renderLowPerformer();}">삭제</button>
+    <button class="btn btn-error btn-sm" onclick="if(confirm('삭제하시겠습니까?')){_tombstone('lowPerfData','${recId}');lowPerfData=lowPerfData.filter(r=>r.id!=='${recId}');autoSaveDebounced();closeModal();renderLowPerformer();}">삭제</button>
     <button class="btn btn-secondary" onclick="closeModal()">닫기</button>
     <button class="btn btn-primary" onclick="_saveLpDetail('${recId}')">저장</button>
   </div></div>`);
@@ -13425,7 +13469,7 @@ function deletePayAdjustment(id,empId){
   const s=_payMgmtState;
   if(_payrollLocked(s.year,s.month)){showToast(`${s.year}년 ${s.month}월 급여는 마감되어 조정할 수 없습니다.`,"error");return;}
   const idx=payrollAdjustments.findIndex(a=>a.id===id);
-  if(idx>=0)payrollAdjustments.splice(idx,1);
+  if(idx>=0){_tombstone("payrollAdjustments",id);payrollAdjustments.splice(idx,1);}
   autoSaveToServerIfEnabled();showToast("조정 항목이 삭제되었습니다.","success");
   openPayAdjustModal(empId);_payMgmtRefresh();
 }
@@ -13658,7 +13702,7 @@ function saveApprovalTemplate(editId){
 }
 function deleteApprovalTemplate(id){
   if(!confirm("이 양식을 삭제하시겠습니까?"))return;
-  approvalTemplates=approvalTemplates.filter(t=>t.id!==id);autoSaveToServerIfEnabled();showToast("삭제되었습니다.","info");renderApprovalTemplateAdmin();
+  _tombstone("approvalTemplates",id);approvalTemplates=approvalTemplates.filter(t=>t.id!==id);autoSaveToServerIfEnabled();showToast("삭제되었습니다.","info");renderApprovalTemplateAdmin();
 }
 function duplicateApprovalTemplate(id){
   const src=getTpl(id);if(!src)return;
@@ -14189,6 +14233,7 @@ function saveDelegation(){
 }
 function deleteDelegation(id){
   if(!confirm("이 위임을 삭제하시겠습니까?"))return;
+  _tombstone("approvalDelegations",id);
   approvalDelegations=approvalDelegations.filter(d=>String(d.id)!==String(id));
   autoSaveToServerIfEnabled();showToast("삭제되었습니다.","info");renderApprovalDelegationPage();
 }
@@ -14279,6 +14324,7 @@ function toggleOnboardItem(flowId,idx,checked){
 function deleteOnboardFlow(id){
   if(currentUser.role!=="admin"){showToast("삭제 권한이 없습니다.","error");return;}
   if(!confirm("이 절차를 삭제하시겠습니까?"))return;
+  _tombstone("onboardingFlows",id);
   onboardingFlows=onboardingFlows.filter(f=>String(f.id)!==String(id));
   autoSaveToServerIfEnabled();showToast("삭제되었습니다.","info");renderOnboardingPage();
 }
@@ -14447,6 +14493,7 @@ function cancelOvertime(id){
   const r=overtimeRequests.find(x=>String(x.id)===String(id));
   if(!r||r.status!=="pending")return;
   if(!confirm("이 신청을 취소하시겠습니까?"))return;
+  _tombstone("overtimeRequests",r.id);
   overtimeRequests=overtimeRequests.filter(x=>String(x.id)!==String(id));
   autoSaveToServerIfEnabled();showToast("취소되었습니다.","info");renderOvertimeReqPage();
 }
@@ -14643,6 +14690,7 @@ function deleteExpenseClaim(id){
   const x=expenseClaims.find(x=>String(x.id)===String(id));if(!x)return;
   if(x.status!=="pending"){showToast("승인 대기 상태만 회수할 수 있습니다.","error");return;}
   if(!confirm("이 경비 청구를 회수(삭제)하시겠습니까?"))return;
+  _tombstone("expenseClaims",x.id);
   expenseClaims=expenseClaims.filter(c=>String(c.id)!==String(id));
   autoSaveToServerIfEnabled();showToast("회수되었습니다.","info");
   currentPage==="expense-admin"?renderExpenseAdminPage():renderExpenseClaimsPage();
@@ -18922,7 +18970,7 @@ function openBoardPostDetail(postId){
 }
 function deleteBoardPost(postId){
   if(!confirm("게시물을 삭제하시겠습니까?"))return;
-  boardPosts=boardPosts.filter(p=>p.id!==postId);autoSaveToServerIfEnabled();closeModal();renderBoardPage();showToast("삭제되었습니다.","info");
+  _tombstone("boardPosts",postId);boardPosts=boardPosts.filter(p=>p.id!==postId);autoSaveToServerIfEnabled();closeModal();renderBoardPage();showToast("삭제되었습니다.","info");
 }
 
 // ==================== MEETING ROOM BOOKING (회의실 예약) ====================
@@ -19698,6 +19746,7 @@ function _toggleHcTarget(empId,checked){
 function _toggleHcDone(empId,wasDone){
   const yr=new Date().getFullYear();
   if(wasDone){
+    healthCheckupLog.filter(l=>String(l.empId)===String(empId)&&l.year===yr).forEach(l=>_tombstone("healthCheckupLog",l.id));
     healthCheckupLog=healthCheckupLog.filter(l=>!(String(l.empId)===String(empId)&&l.year===yr));
   }else{
     healthCheckupLog.push({id:`hc-${Date.now()}-${empId}`,empId,year:yr,completedAt:new Date().toISOString().slice(0,10)});
@@ -20089,6 +20138,7 @@ function doBulkMarkTraining(trainingTypeId,yr){
   const checked=[...document.querySelectorAll(".bmt-chk:checked")].map(c=>c.value);
   if(!checked.length){showToast("직원을 선택하세요.","error");return;}
   checked.forEach(empId=>{
+    mandatoryTraining.filter(t=>String(t.empId)===String(empId)&&t.trainingType===trainingTypeId&&t.year===yr).forEach(t=>_tombstone("mandatoryTraining",t.id));
     mandatoryTraining=mandatoryTraining.filter(t=>!(String(t.empId)===String(empId)&&t.trainingType===trainingTypeId&&t.year===yr));
     mandatoryTraining.push({id:`mt-${Date.now()}-${empId}`,empId,trainingType:trainingTypeId,year:yr,completedAt,method:"집합교육",note:"일괄 등록",recordedBy:currentUser.id,recordedAt:new Date().toISOString()});
   });
@@ -20113,6 +20163,7 @@ function saveMarkTraining(empId){
   const yr=new Date(completedAt).getFullYear();
   const method=$("#mt-method")?.value||"";const note=$("#mt-note")?.value.trim()||"";
   // Remove existing entry for same year/type if any, then add new
+  mandatoryTraining.filter(t=>String(t.empId)===String(empId)&&t.trainingType===trainingType&&t.year===yr).forEach(t=>_tombstone("mandatoryTraining",t.id));
   mandatoryTraining=mandatoryTraining.filter(t=>!(String(t.empId)===String(empId)&&t.trainingType===trainingType&&t.year===yr));
   mandatoryTraining.push({id:`mt-${Date.now()}`,empId,trainingType,year:yr,completedAt,method,note,recordedBy:currentUser.id,recordedAt:new Date().toISOString()});
   closeModal();autoSaveToServerIfEnabled();showToast("이수 내역이 등록되었습니다.","success");renderMandatoryTrainingPage();
@@ -20471,6 +20522,7 @@ function deleteScheduleEvent(eventId){
   if(!ev)return;
   if(String(ev.authorId)!==String(currentUser.id)&&currentUser.role!=="admin"){showToast("본인이 등록한 일정만 삭제할 수 있습니다.","error");return;}
   if(!confirm("이 일정을 삭제하시겠습니까?"))return;
+  _tombstone("scheduleEvents",ev.id);
   scheduleEvents=scheduleEvents.filter(e=>String(e.id)!==String(eventId));
   closeModal();autoSaveToServerIfEnabled();
   showToast("일정이 삭제되었습니다.","info");
