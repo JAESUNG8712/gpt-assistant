@@ -6512,7 +6512,11 @@ function submitHRForm(){
   const v=id=>$(id)?.value.trim()||"";
   const dept=v("#hr-dept")==="__new__"?v("#hr-dept-new"):v("#hr-dept");
   const team=v("#hr-team")==="__new__"?v("#hr-team-new"):v("#hr-team");
-  if(!v("#hr-name")||!v("#hr-empno")||!v("#hr-hire")||!dept||!team){showToast("필수 항목을 모두 입력하세요.","error");return;}
+  // director는 본부(dept) 단위로 소속되고 팀이 없는 경우가 많다(예: 시드 데이터의
+  // 홍길동 - dept:"경영지원본부", team:""). team을 항상 필수로 요구하면 이런
+  // director 등록 자체가 막혀버려, director만 team 필수에서 제외.
+  const isDirectorRole=($("#hr-role")?.value||"member")==="director";
+  if(!v("#hr-name")||!v("#hr-empno")||!v("#hr-hire")||!dept||(!team&&!isDirectorRole)){showToast("필수 항목을 모두 입력하세요.","error");return;}
   const loginId=v("#hr-loginid")||v("#hr-empno");
   if(employees.some(e=>e.empNo===v("#hr-empno")||e.loginId===loginId)){showToast("사번 또는 로그인ID가 중복됩니다.","error");return;}
   const career=Number(v("#hr-career"))||0;const edu=$("#hr-edu")?.value||"대학교 졸업";
@@ -7591,8 +7595,13 @@ function renderApprovals(){
   const isSecondEvalPage=currentPage==="second-eval";
   const isAmendPage=currentPage==="kpi-amend";
   const tabs=[
-    // KPI 승인 현황 - 등록 단계에서만, 평가 전용 페이지가 아닐 때
-    ...(!isFirstEvalPage&&!isSecondEvalPage&&!isAmendPage&&settings.stage==="goal"?[{id:"list",label:"KPI 승인 현황"}]:[]),
+    // KPI 승인 현황(목표 1차승인/최종확정 처리) - "평가 전용 페이지가 아닐 때"로 막혀
+    // 있었는데, 정작 이 탭에 진입할 수 있는 사이드바 메뉴(first-eval/second-eval/
+    // kpi-amend)는 전부 저 세 페이지 중 하나라 이 탭이 한 번도 열릴 수 없었음(1차
+    // 승인 없이는 "1차 평가 입력" 탭에도 평가 대상이 안 뜨는 구조라, 결과적으로 KPI
+    // 승인 파이프라인 전체가 막혀 있었음 — QA에서 실측 확인). 평가 권한이 있는
+    // 역할에게는 어느 진입 페이지에서든 이 탭을 노출하도록 수정.
+    ...((u.role==="leader"||u.role==="director"||u.role==="admin")&&settings.stage==="goal"?[{id:"list",label:"KPI 승인 현황"}]:[]),
     // 1차 평가 - 팀장/관리자, 수정승인 페이지가 아닐 때
     ...(!isAmendPage&&(u.role==="leader"||u.role==="admin")&&!isSecondEvalPage?
       [{id:"eval",label:`1차 평가 입력${u.role==="leader"&&prog.pending>0?" 🔴":""}`}]:[]),
