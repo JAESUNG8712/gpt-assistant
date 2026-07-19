@@ -7474,7 +7474,7 @@ function openKpiReq(id){
     <div class="fg"><label class="fl">수정 요청 사유 <span class="req">*</span></label><textarea class="fc" id="rq-reason" rows="2" placeholder="수정이 필요한 이유를 입력하세요"></textarea></div>
   </div>
   <div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal()">취소</button><button class="btn btn-primary" onclick="submitKpiReq(${id})">요청 제출</button></div></div>`);}
-function submitKpiReq(id){const reason=$("#rq-reason")?.value.trim();if(!reason){showToast("수정 요청 사유를 입력하세요.","error");return;}const k=getKpi(id);changeRequests.push({id:genId(),kpiId:id,reqUserId:currentUser.id,status:"pending",reason,before:{actual:k.actual,rate:k.rate,detail:k.detail,selfScore:k.selfScore},after:{actual:$("#rq-actual")?.value.trim()||k.actual,rate:$("#rq-rate")?.value.trim()||k.rate,detail:$("#rq-detail")?.value.trim()||k.detail,selfScore:Number($("#rq-self")?.value)||k.selfScore},createdAt:ts()});closeModal();showToast("수정 요청이 제출되었습니다.","success");}
+function submitKpiReq(id){const reason=$("#rq-reason")?.value.trim();if(!reason){showToast("수정 요청 사유를 입력하세요.","error");return;}const k=getKpi(id);changeRequests.push({id:genId(),kpiId:id,reqUserId:currentUser.id,status:"pending",reason,before:{actual:k.actual,rate:k.rate,detail:k.detail,selfScore:k.selfScore},after:{actual:$("#rq-actual")?.value.trim()||k.actual,rate:$("#rq-rate")?.value.trim()||k.rate,detail:$("#rq-detail")?.value.trim()||k.detail,selfScore:Number($("#rq-self")?.value)||k.selfScore},createdAt:ts(),updatedAt:new Date().toISOString()});closeModal();showToast("수정 요청이 제출되었습니다.","success");}
 function submitKpi(id){
   const k=getKpi(id);if(!k)return;
   const allKpis=kpiEntries.filter(ke=>ke.userId===k.userId&&ke.year===k.year);
@@ -7966,10 +7966,10 @@ function rejectKpi(id,stage){
   kpiEntries=kpiEntries.map(k=>k.id===id?{...k,[stage==="first"?"firstStatus":"finalStatus"]:"rejected",[stage==="first"?"firstReason":"finalReason"]:r,updatedAt:new Date().toISOString()}:k);closeModal();showToast("반려 처리되었습니다.","info");renderApprovals();
 }
  // replaced by saveFirstEval
-function approveRequest(rid){const r=changeRequests.find(x=>x.id===rid);if(!r)return;kpiEntries=kpiEntries.map(k=>k.id===r.kpiId?{...k,...(r.after||{}),updatedAt:new Date().toISOString()}:k);changeRequests=changeRequests.map(x=>x.id===rid?{...x,status:"approved",approvedBy:currentUser.id,processedAt:ts()}:x);showToast("수정 요청을 승인했습니다.","success");renderApprovals();}
-function rejectRequest(rid){changeRequests=changeRequests.map(x=>x.id===rid?{...x,status:"rejected",processedAt:ts()}:x);showToast("수정 요청을 반려했습니다.","info");renderApprovals();}
+function approveRequest(rid){const r=changeRequests.find(x=>x.id===rid);if(!r)return;kpiEntries=kpiEntries.map(k=>k.id===r.kpiId?{...k,...(r.after||{}),updatedAt:new Date().toISOString()}:k);changeRequests=changeRequests.map(x=>x.id===rid?{...x,status:"approved",approvedBy:currentUser.id,processedAt:ts(),updatedAt:new Date().toISOString()}:x);showToast("수정 요청을 승인했습니다.","success");renderApprovals();}
+function rejectRequest(rid){changeRequests=changeRequests.map(x=>x.id===rid?{...x,status:"rejected",processedAt:ts(),updatedAt:new Date().toISOString()}:x);showToast("수정 요청을 반려했습니다.","info");renderApprovals();}
 function resolveTie(tieId,empId,grade){const tie=tieNotifications.find(t=>t.id===tieId);if(!tie)return;employees=employees.map(e=>{if(e.id!==empId)return e;const gr={...(e.gradeResults||{})};const existing=gr[tie.year]||{};gr[tie.year]={...existing,grade,resolvedBy:currentUser.id,resolvedAt:ts()};return{...e,gradeResults:gr};});showToast(getEmpName(empId)+" - "+grade+"등급 지정 완료","success");renderApprovals();}
-function markTieResolved(tieId){tieNotifications=tieNotifications.map(t=>t.id===tieId?{...t,resolved:true}:t);showToast("동점자 처리가 완료되었습니다.","success");renderApprovals();renderSidebar();}
+function markTieResolved(tieId){tieNotifications=tieNotifications.map(t=>t.id===tieId?{...t,resolved:true,updatedAt:new Date().toISOString()}:t);showToast("동점자 처리가 완료되었습니다.","success");renderApprovals();renderSidebar();}
 
 
 
@@ -11011,6 +11011,7 @@ function _lpCardClass(status){
   return m[status]||"";
 }
 function _saveLpRecord(rec){
+  rec.updatedAt=new Date().toISOString();
   const idx=lowPerfData.findIndex(r=>r.id===rec.id);
   if(idx>=0)lowPerfData[idx]=rec;else lowPerfData.push(rec);
   autoSaveDebounced();
@@ -14319,7 +14320,7 @@ function createOnboardFlow(type){
   if(!emp){showToast("대상 직원을 선택하세요.","error");return;}
   const items=($("#ob-items")?.value||"").split(/\n/).map(s=>s.trim()).filter(Boolean).map(label=>({label,done:false}));
   if(!items.length){showToast("체크리스트 항목이 필요합니다.","error");return;}
-  onboardingFlows.push({id:genId(),empId:emp.id,empName:emp.name,type,items,createdAt:new Date().toISOString(),createdBy:currentUser.name});
+  onboardingFlows.push({id:genId(),empId:emp.id,empName:emp.name,type,items,createdAt:new Date().toISOString(),createdBy:currentUser.name,updatedAt:new Date().toISOString()});
   closeModal();autoSaveToServerIfEnabled();showToast(`${emp.name}님의 ${type==="onboard"?"온보딩":"오프보딩"} 절차가 시작되었습니다.`,"success");renderOnboardingPage();
 }
 function openOnboardDetailModal(id){
@@ -14339,6 +14340,7 @@ function toggleOnboardItem(flowId,idx,checked){
   fl.items[idx].doneBy=checked?currentUser.name:"";
   fl.items[idx].doneAt=checked?new Date().toISOString():"";
   fl.completedAt=fl.items.every(i=>i.done)?new Date().toISOString():null;
+  fl.updatedAt=new Date().toISOString();
   autoSaveToServerIfEnabled();
   openOnboardDetailModal(flowId);renderOnboardingPage();
   if(fl.completedAt)showToast(`${fl.empName}님의 ${fl.type==="onboard"?"온보딩":"오프보딩"} 절차가 모두 완료되었습니다! 🎉`,"success");
@@ -14508,7 +14510,7 @@ function saveOvertimeRequest(){
   if(!date||!reason){showToast("일자와 사유를 입력하세요.","error");return;}
   if(!(hours>0)){showToast("시작/종료 시간을 확인하세요.","error");return;}
   overtimeRequests.push({id:genId(),empId:currentUser.id,empName:currentUser.name,dept:currentUser.dept||"",team:currentUser.team||"",
-    date,startTime:$("#ot-start").value,endTime:$("#ot-end").value,hours,type:$("#ot-type").value,reason,status:"pending",createdAt:new Date().toISOString()});
+    date,startTime:$("#ot-start").value,endTime:$("#ot-end").value,hours,type:$("#ot-type").value,reason,status:"pending",createdAt:new Date().toISOString(),updatedAt:new Date().toISOString()});
   closeModal();autoSaveToServerIfEnabled();showToast("초과근무 신청이 제출되었습니다.","success");renderOvertimeReqPage();
 }
 function cancelOvertime(id){
@@ -14524,14 +14526,14 @@ function approveOvertime(id){
   if(!r||r.status!=="pending"||!_otCanApprove(r))return;
   const [y,m]=r.date.split("-").map(Number);
   if(_payrollLocked(y,m)){showToast(`${y}년 ${m}월 급여가 이미 마감되어 승인할 수 없습니다. 마감 해제 후 처리하세요.`,"error");return;}
-  r.status="approved";r.approvedBy=currentUser.name;r.approvedAt=new Date().toISOString();
+  r.status="approved";r.approvedBy=currentUser.name;r.approvedAt=new Date().toISOString();r.updatedAt=new Date().toISOString();
   autoSaveToServerIfEnabled();showToast(`승인되었습니다. ${y}년 ${m}월 급여에 수당이 반영됩니다.`,"success");renderOvertimeReqPage();
 }
 function rejectOvertime(id){
   const r=overtimeRequests.find(x=>String(x.id)===String(id));
   if(!r||r.status!=="pending"||!_otCanApprove(r))return;
   const reason=prompt("반려 사유를 입력하세요.");if(!reason)return;
-  r.status="rejected";r.rejectReason=reason;r.approvedBy=currentUser.name;r.approvedAt=new Date().toISOString();
+  r.status="rejected";r.rejectReason=reason;r.approvedBy=currentUser.name;r.approvedAt=new Date().toISOString();r.updatedAt=new Date().toISOString();
   autoSaveToServerIfEnabled();showToast("반려되었습니다.","info");renderOvertimeReqPage();
 }
 function _dlOvertimeCSV(){
@@ -14705,7 +14707,7 @@ function saveExpenseClaim(){
   const files=$("#exp-files")?.files;
   const receipts=files&&files.length?Array.from(files).map(f=>({name:f.name,size:f.size})):[];
   expenseClaims.push({id:genId(),empId:currentUser.id,empName:currentUser.name,dept:currentUser.dept||"",team:currentUser.team||"",
-    title,items,total:items.reduce((s,it)=>s+(it.amount||0),0),receipts,status:"pending",createdAt:new Date().toISOString()});
+    title,items,total:items.reduce((s,it)=>s+(it.amount||0),0),receipts,status:"pending",createdAt:new Date().toISOString(),updatedAt:new Date().toISOString()});
   closeModal();autoSaveToServerIfEnabled();showToast("경비 청구가 제출되었습니다.","success");renderExpenseClaimsPage();
 }
 function deleteExpenseClaim(id){
@@ -14766,14 +14768,14 @@ function renderExpenseAdminPage(){
 function approveExpenseClaim(id){
   if(currentUser.role!=="admin"){showToast("경비 승인 권한이 없습니다.","error");return;}
   const x=expenseClaims.find(x=>String(x.id)===String(id));if(!x||x.status!=="pending")return;
-  x.status="approved";x.approvedBy=currentUser.name;x.approvedAt=new Date().toISOString();
+  x.status="approved";x.approvedBy=currentUser.name;x.approvedAt=new Date().toISOString();x.updatedAt=new Date().toISOString();
   autoSaveToServerIfEnabled();showToast("승인되었습니다. 지급 처리를 진행하세요.","success");renderExpenseAdminPage();
 }
 function rejectExpenseClaim(id){
   if(currentUser.role!=="admin"){showToast("경비 반려 권한이 없습니다.","error");return;}
   const x=expenseClaims.find(x=>String(x.id)===String(id));if(!x||x.status!=="pending")return;
   const reason=prompt("반려 사유를 입력하세요.");if(!reason)return;
-  x.status="rejected";x.rejectReason=reason;x.approvedBy=currentUser.name;x.approvedAt=new Date().toISOString();
+  x.status="rejected";x.rejectReason=reason;x.approvedBy=currentUser.name;x.approvedAt=new Date().toISOString();x.updatedAt=new Date().toISOString();
   autoSaveToServerIfEnabled();showToast("반려되었습니다.","info");renderExpenseAdminPage();
 }
 function openExpensePayModal(id){
@@ -18327,7 +18329,7 @@ function submitCertRequest(type){
   const reason=$("#cr-reason")?.value.trim();
   const submitTo=$("#cr-submit-to")?.value.trim();
   if(!reason){showToast("신청 사유를 입력하세요.","error");return;}
-  certRequests.push({id:`creq-${Date.now()}`,empId:currentUser.id,empName:currentUser.name,certType:type,certTitle:title,reason,submitTo,status:"pending",requestedAt:new Date().toISOString()});
+  certRequests.push({id:`creq-${Date.now()}`,empId:currentUser.id,empName:currentUser.name,certType:type,certTitle:title,reason,submitTo,status:"pending",requestedAt:new Date().toISOString(),updatedAt:new Date().toISOString()});
   autoSaveDebounced();
   closeModal();
   showToast("증명서 발급 신청이 접수되었습니다. 관리자 승인 후 발급받을 수 있습니다.","success");
@@ -18336,7 +18338,7 @@ function submitCertRequest(type){
 function approveCertRequest(reqId){
   if(currentUser.role!=="admin"){showToast("관리자만 승인할 수 있습니다.","error");return;}
   const r=certRequests.find(x=>x.id===reqId);if(!r||r.status!=="pending")return;
-  r.status="approved";r.processedAt=new Date().toISOString();r.processedBy=currentUser.id;r.processedByName=currentUser.name;
+  r.status="approved";r.processedAt=new Date().toISOString();r.processedBy=currentUser.id;r.processedByName=currentUser.name;r.updatedAt=new Date().toISOString();
   certLog.push({id:`clog-${Date.now()}`,docNo:_genCertDocNo(),empId:r.empId,empName:r.empName,certType:r.certTitle,issuedBy:currentUser.name,issuedById:currentUser.id,issuedAt:new Date().toISOString()});
   autoSaveDebounced();
   showToast(`${h(r.empName)}님의 ${h(r.certTitle)} 발급 신청을 승인했습니다.`,"success");
@@ -18353,7 +18355,7 @@ function rejectCertRequest(reqId){
   const reason=$("#cr-reject-reason")?.value.trim();
   if(!reason){showToast("반려 사유를 입력하세요.","error");return;}
   const r=certRequests.find(x=>x.id===reqId);if(!r||r.status!=="pending")return;
-  r.status="rejected";r.processedAt=new Date().toISOString();r.processedBy=currentUser.id;r.processedByName=currentUser.name;r.rejectReason=reason;
+  r.status="rejected";r.processedAt=new Date().toISOString();r.processedBy=currentUser.id;r.processedByName=currentUser.name;r.rejectReason=reason;r.updatedAt=new Date().toISOString();
   autoSaveDebounced();
   closeModal();
   showToast(`${h(r.empName)}님의 ${h(r.certTitle)} 발급 신청을 반려했습니다.`,"info");
@@ -20535,7 +20537,7 @@ function saveScheduleEvent(eventId){
   if(endDate<startDate){showToast("종료일은 시작일보다 빠를 수 없습니다.","error");return;}
   if(!_calCanRegister(scope)){showToast("해당 범위로 일정을 등록할 권한이 없습니다.","error");return;}
   if(eventId){
-    scheduleEvents=scheduleEvents.map(e=>String(e.id)===String(eventId)?{...e,title,scope,startDate,endDate,memo,dept:_liveUser().dept,team:_liveUser().team}:e);
+    scheduleEvents=scheduleEvents.map(e=>String(e.id)===String(eventId)?{...e,title,scope,startDate,endDate,memo,dept:_liveUser().dept,team:_liveUser().team,updatedAt:new Date().toISOString()}:e);
   }else{
     scheduleEvents.push({id:`sch-${genId()}`,authorId:currentUser.id,title,scope,startDate,endDate,memo,dept:_liveUser().dept,team:_liveUser().team,createdAt:new Date().toISOString()});
   }
