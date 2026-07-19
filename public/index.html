@@ -7607,7 +7607,14 @@ function renderApprovals(){
     // 승인 없이는 "1차 평가 입력" 탭에도 평가 대상이 안 뜨는 구조라, 결과적으로 KPI
     // 승인 파이프라인 전체가 막혀 있었음 — QA에서 실측 확인). 평가 권한이 있는
     // 역할에게는 어느 진입 페이지에서든 이 탭을 노출하도록 수정.
-    ...((u.role==="leader"||u.role==="director"||u.role==="admin")&&settings.stage==="goal"?[{id:"list",label:"KPI 승인 현황"}]:[]),
+    // 최초 수정 때는 "settings.stage==='goal'"일 때만 노출했는데(원래 코드 주석의
+    // "등록 단계에서만" 의도를 그대로 따른 것), 그 상태에서 admin이 미승인 KPI가
+    // 남아있는 채로 "결과 입력"(performance) 단계로 전환해버리면 이 탭이 다시
+    // 사라져 그 KPI들이 영구히 승인 불가 상태로 남는 문제가 있었음(회귀 재검증
+    // 에이전트가 실측 확인). 탭 안의 실제 승인/반려 액션은 이미 각 행 단위로
+    // firstStatus/finalStatus/역할을 보고 정확히 판단하므로 stage와 무관하게 항상
+    // 안전하게 표시할 수 있어, stage 조건 자체를 제거.
+    ...((u.role==="leader"||u.role==="director"||u.role==="admin")?[{id:"list",label:"KPI 승인 현황"}]:[]),
     // 1차 평가 - 팀장/관리자, 수정승인 페이지가 아닐 때
     ...(!isAmendPage&&(u.role==="leader"||u.role==="admin")&&!isSecondEvalPage?
       [{id:"eval",label:`1차 평가 입력${u.role==="leader"&&prog.pending>0?" 🔴":""}`}]:[]),
