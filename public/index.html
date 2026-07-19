@@ -15544,7 +15544,11 @@ async function _pmsWorklogLoad(){
   if(currentPage==="pms-worklog")renderPmsWorklogPage();
 }
 function _pmsWorklogProjects(){
-  return pmsProjects.filter(p=>p.status==="active"&&(p.members||[]).map(String).includes(String(currentUser.id)));
+  // server.js:3074의 POST /api/pms/worklogs는 admin이면 프로젝트 멤버가 아니어도
+  // 업무일지 등록을 허용하는데, 여기서는 그 예외 없이 항상 members 포함 여부로만
+  // 걸러서 admin이 스스로를 멤버로 등록해두지 않은 한 드롭다운이 항상 비어(disabled)
+  // "업무 추가" 자체가 불가능했음(QA에서 실측) — 서버와 동일한 admin 예외 추가.
+  return pmsProjects.filter(p=>p.status==="active"&&(currentUser.role==="admin"||(p.members||[]).map(String).includes(String(currentUser.id))));
 }
 function _pmsWorklogViewTabs(){
   const tabs=[["day","일간"],["week","주간"]];
