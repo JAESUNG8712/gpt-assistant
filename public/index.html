@@ -2208,7 +2208,13 @@ function execGenerateDummy(){
         const nameSrc=isFemale?NAMES_F:NAMES_M;
         const nameIdx=isFemale?fIdx++:mIdx++;
         const name=nameSrc[nameIdx%nameSrc.length];
-        const empNo=`DM${dept.slice(0,1)}${team.slice(0,1)}${String(employees.length+i+1).padStart(3,"0")}`;
+        // 사번을 그때그때 employees.length 기준으로 만들면, 이전 실행에서 이미
+        // employees가 늘어난 상태라 다음 실행 때는 매번 다른 사번이 나와 아래
+        // 중복 스킵 로직이 절대 걸리지 않고("중복 사번은 건너뜁니다"라는 안내와
+        // 달리) 반복 실행마다 같은 이름의 서로 다른 사람이 계속 쌓였음(QA에서
+        // 실측: 2회 실행 시 27명→47명, 동명이인 20명 중복 생성). dept/team/i만으로
+        // 결정되는 고정 사번으로 바꿔 재실행 시 실제로 같은 슬롯이 스킵되게 함.
+        const empNo=`DM${dept.slice(0,1)}${team.slice(0,1)}${String(i+1).padStart(3,"0")}`;
         if(employees.find(e=>e.empNo===empNo))return;
         const rankIdx=Math.min(i,RANKS.length-1);
         const rank=RANKS[Math.floor(Math.random()*3)];
