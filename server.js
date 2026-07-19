@@ -840,12 +840,20 @@ app.use("/api/budget", budgetRouter);
 // 에이전트가 실측: 같은 IP에서 30명 동시 로그인 시 20명만 성공, 11명 429).
 // 브루트포스 방어의 목적은 "틀린 비밀번호 시도" 횟수를 제한하는 것이지 정상
 // 로그인 총량을 제한하는 게 아니므로, 성공한 요청은 카운트에서 제외한다.
+// 주의: /login은 성공/실패 모두 HTTP 200으로 응답하고 결과는 JSON body의 `ok`
+// 필드로만 구분한다. skipSuccessfulRequests의 기본 판정 기준(requestWasSuccessful)은
+// statusCode<400 여부만 보므로, 그 기본값 그대로 두면 모든 로그인 시도(비밀번호가
+// 틀려도)가 "성공"으로 취급돼 카운트에서 전부 빠지고 브루트포스 방어가 완전히
+// 무력화된다(회귀 재검증 에이전트가 실측: 같은 계정에 틀린 비밀번호 60회 연속
+// 시도해도 429가 한 번도 발생하지 않음). /login 라우트가 실제 결과에 따라 채워주는
+// res.locals.loginOk를 판정 기준으로 사용해 진짜 성공만 카운트에서 제외한다.
 const loginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 20,
   standardHeaders: true,
   legacyHeaders: false,
   skipSuccessfulRequests: true,
+  requestWasSuccessful: (req, res) => res.locals.loginOk === true,
   message: { ok: false, message: "로그인 시도가 너무 많습니다. 잠시 후 다시 시도하세요." },
 });
 
@@ -911,13 +919,20 @@ async function verifyCredentials(loginId, pw) {
 // has 2FA enabled, a valid `otp` must also be supplied in the same request
 // (stateless — no server-side session between the password and OTP steps).
 app.post("/login", loginLimiter, async (req, res) => {
+  // /login always answers with HTTP 200 (success/failure both live in the JSON body's
+  // `ok` field, since that's what the client checks) — loginLimiter's
+  // skipSuccessfulRequests relies on requestWasSuccessful, whose default just checks
+  // `statusCode < 400`, so every attempt (right password or wrong) looked "successful"
+  // and the brute-force counter never incremented at all. res.locals.loginOk lets
+  // requestWasSuccessful (below) key off the real outcome instead of the status code.
+  res.locals.loginOk = false;
   try {
     const { loginId, pw, otp } = req.body || {};
     if (!loginId || !pw) return res.status(400).json({ ok: false, message: "아이디와 비밀번호를 입력하세요." });
     const employee = await verifyCredentials(loginId, pw);
     if (!employee) return res.json({ ok: false, message: "아이디 또는 비밀번호가 올바르지 않습니다." });
     if (employee.twoFactorEnabled) {
-      if (!otp) return res.json({ ok: true, requireOtp: true });
+      if (!otp) { res.locals.loginOk = true; return res.json({ ok: true, requireOtp: true }); }
       const data = await loadData();
       const raw = (data.employees || []).find(e => e.loginId === loginId && e.active);
       if (!raw || !raw.twoFactorSecret || !totpVerify(raw.twoFactorSecret, otp))
@@ -925,6 +940,7 @@ app.post("/login", loginLimiter, async (req, res) => {
     }
     // 서버가 실제로 검증한 계정 정보로만 토큰을 발급한다(클라이언트가 보낸 role은 무시).
     const token = signToken({ empId: employee.id, loginId: employee.loginId, role: employee.role });
+    res.locals.loginOk = true;
     res.json({ ok: true, employee, token });
   } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
 });
