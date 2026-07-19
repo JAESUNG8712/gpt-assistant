@@ -2240,7 +2240,7 @@ function execGenerateDummy(){
               const ss=Math.floor(Math.random()*20)+70;
               const cs=Math.min(100,ss+Math.floor(Math.random()*10)-3);
               const fs=cs;
-              const newK={id:genId(),userId:0,year:y,item:ki.item,weight:ki.w,prev:"-",goal:ki.item+" 달성",yoy:"-",strategy:"-",evalCriteria:"목표 대비 달성율",actual:"완료",rate:Math.floor(Math.random()*20+85)+"%",detail:"성실히 수행함",selfScore:ss,firstScore:Math.min(100,ss+Math.floor(Math.random()*6)-2),firstComment:"성실하게 업무를 수행하였습니다.",secondScore:cs,secondComment:"전반적으로 양호한 성과를 보였습니다.",secondCommentPublic:Math.random()>0.5,goalSub:1,firstStatus:"approved",firstReason:"",finalStatus:"approved",finalReason:"",finalConfirmed:true,finalScore:fs};
+              const newK={id:genId(),userId:0,year:y,item:ki.item,weight:ki.w,prev:"-",goal:ki.item+" 달성",yoy:"-",strategy:"-",evalCriteria:"목표 대비 달성율",actual:"완료",rate:Math.floor(Math.random()*20+85)+"%",detail:"성실히 수행함",selfScore:ss,firstScore:Math.min(100,ss+Math.floor(Math.random()*6)-2),firstComment:"성실하게 업무를 수행하였습니다.",secondScore:cs,secondComment:"전반적으로 양호한 성과를 보였습니다.",secondCommentPublic:Math.random()>0.5,goalSub:1,firstStatus:"approved",firstReason:"",finalStatus:"approved",finalReason:"",finalConfirmed:true,finalScore:fs,updatedAt:new Date().toISOString()};
               newK.userId=0; // placeholder, set after push
               kpiEntries.push(newK);addedKpi++;
               newK.userId=-1; // flag to update
@@ -3117,10 +3117,10 @@ function saveKpiDraft(userId, year, existingId){
       actual:"",rate:"",detail:"",selfScore:null,firstScore:null,firstComment:"",
       secondScore:null,secondComment:"",secondCommentPublic:false,
       goalSub:0,firstStatus:"",firstReason:"",finalStatus:"",finalReason:"",
-      finalConfirmed:false,finalScore:null,isDraft:true,draftSavedAt:draftAt});
+      finalConfirmed:false,finalScore:null,isDraft:true,draftSavedAt:draftAt,updatedAt:draftAt});
   } else {
     kpiEntries=kpiEntries.map(k=>k.id===existingId
-      ?{...k,item,weight:wt,prev,goal,yoy,strategy:str,evalCriteria:crit,isDraft:true,draftSavedAt:draftAt}
+      ?{...k,item,weight:wt,prev,goal,yoy,strategy:str,evalCriteria:crit,isDraft:true,draftSavedAt:draftAt,updatedAt:draftAt}
       :k);
   }
   saveDraftStatus();
@@ -3134,7 +3134,7 @@ function saveKpiResultDraft(id){
   const detail=(document.getElementById("kr-detail"))?.value.trim()||"";
   const s=(document.getElementById("kr-self"))?.value;
   kpiEntries=kpiEntries.map(k=>k.id===id
-    ?{...k,actual,rate,detail,selfScore:s?Number(s):k.selfScore,isDraft:true,draftSavedAt:new Date().toISOString()}
+    ?{...k,actual,rate,detail,selfScore:s?Number(s):k.selfScore,isDraft:true,draftSavedAt:new Date().toISOString(),updatedAt:new Date().toISOString()}
     :k);
   saveDraftStatus();
   autoSaveToServerIfEnabled();
@@ -4389,9 +4389,9 @@ function mergeImportData(parsed){
       if(!imp||!imp.id)return;
       const idx=kpiEntries.findIndex(k=>k.id===imp.id||(k.userId===imp.userId&&k.year===imp.year&&k.item===imp.item));
       if(idx>=0){
-        kpiEntries[idx]={...KPI_DEFAULTS,...kpiEntries[idx],...imp};
+        kpiEntries[idx]={...KPI_DEFAULTS,...kpiEntries[idx],...imp,updatedAt:imp.updatedAt||new Date().toISOString()};
       }else{
-        kpiEntries.push({...KPI_DEFAULTS,...imp});
+        kpiEntries.push({...KPI_DEFAULTS,...imp,updatedAt:imp.updatedAt||new Date().toISOString()});
       }
     });
   }
@@ -7420,7 +7420,7 @@ function openKpiAdd(userId,year){
   if(defJob)_aiKpiJobSampleShow("ka-job","ka-job-sample");
 }
 function saveKpiAdd(userId,year){
-  if(!isKpiStageOpen()&&settings.kpiGoalStart){showToast("KPI 등록 기간이 아닙니다.","error");return;}const item=$("#ka-item")?.value.trim(),wt=Number($("#ka-wt")?.value);if(!item||!wt){showToast("KPI 항목과 비중을 입력하세요.","error");return;}kpiEntries.push({id:genId(),userId,year,item,weight:wt,prev:$("#ka-prev")?.value.trim()||"",goal:$("#ka-goal")?.value.trim()||"",yoy:$("#ka-yoy")?.value.trim()||"",strategy:$("#ka-str")?.value.trim()||"",evalCriteria:$("#ka-crit")?.value.trim()||"",actual:"",rate:"",detail:"",selfScore:null,firstScore:null,firstComment:"",secondScore:null,secondComment:"",secondCommentPublic:false,goalSub:0,isDraft:false,firstStatus:"",firstReason:"",finalStatus:"",finalReason:"",finalConfirmed:false,finalScore:null});stopKpiAutoDraft();closeModal();showToast("KPI가 등록되었습니다.","success");autoSaveToServerIfEnabled();renderKPI(false);}
+  if(!isKpiStageOpen()&&settings.kpiGoalStart){showToast("KPI 등록 기간이 아닙니다.","error");return;}const item=$("#ka-item")?.value.trim(),wt=Number($("#ka-wt")?.value);if(!item||!wt){showToast("KPI 항목과 비중을 입력하세요.","error");return;}kpiEntries.push({id:genId(),userId,year,item,weight:wt,prev:$("#ka-prev")?.value.trim()||"",goal:$("#ka-goal")?.value.trim()||"",yoy:$("#ka-yoy")?.value.trim()||"",strategy:$("#ka-str")?.value.trim()||"",evalCriteria:$("#ka-crit")?.value.trim()||"",actual:"",rate:"",detail:"",selfScore:null,firstScore:null,firstComment:"",secondScore:null,secondComment:"",secondCommentPublic:false,goalSub:0,isDraft:false,firstStatus:"",firstReason:"",finalStatus:"",finalReason:"",finalConfirmed:false,finalScore:null,updatedAt:new Date().toISOString()});stopKpiAutoDraft();closeModal();showToast("KPI가 등록되었습니다.","success");autoSaveToServerIfEnabled();renderKPI(false);}
 function openKpiEdit(id){
   // Check if locked by another user
   if(isLockedByOther("kpi:"+id)){
@@ -7448,7 +7448,7 @@ function _openKpiEdit(id){const k=getKpi(id);if(!k)return;
   <div class="modal-foot"><button class="btn btn-ghost btn-sm" onclick="saveKpiDraft(null,null,${id})">💾 임시저장</button><div style="flex:1"></div><button class="btn btn-secondary" onclick="closeModal()">취소</button><button class="btn btn-primary" onclick="saveKpiEdit(${id})">저장</button></div></div>`);
   if(defJob)_aiKpiJobSampleShow("ke-job","ke-job-sample");}
 function saveKpiEdit(id){
-  if(!isKpiStageOpen()&&settings.kpiGoalStart){showToast("KPI 수정 기간이 아닙니다.","error");return;}const item=$("#ke-item")?.value.trim(),wt=Number($("#ke-wt")?.value);if(!item||!wt){showToast("항목과 비중을 입력하세요.","error");return;}kpiEntries=kpiEntries.map(k=>k.id===id?{...k,item,weight:wt,prev:$("#ke-prev")?.value.trim()||"",goal:$("#ke-goal")?.value.trim()||"",yoy:$("#ke-yoy")?.value.trim()||"",strategy:$("#ke-str")?.value.trim()||"",evalCriteria:$("#ke-crit")?.value.trim()||""}:k);closeModal();showToast("KPI가 수정되었습니다.","success");renderKPI(false);}
+  if(!isKpiStageOpen()&&settings.kpiGoalStart){showToast("KPI 수정 기간이 아닙니다.","error");return;}const item=$("#ke-item")?.value.trim(),wt=Number($("#ke-wt")?.value);if(!item||!wt){showToast("항목과 비중을 입력하세요.","error");return;}kpiEntries=kpiEntries.map(k=>k.id===id?{...k,item,weight:wt,prev:$("#ke-prev")?.value.trim()||"",goal:$("#ke-goal")?.value.trim()||"",yoy:$("#ke-yoy")?.value.trim()||"",strategy:$("#ke-str")?.value.trim()||"",evalCriteria:$("#ke-crit")?.value.trim()||"",updatedAt:new Date().toISOString()}:k);closeModal();showToast("KPI가 수정되었습니다.","success");renderKPI(false);}
 function openKpiResult(id){const k=getKpi(id);if(!k)return;
   if(k.userId!==currentUser.id&&currentUser.role!=="admin"){showToast("자체 평가는 본인만 입력할 수 있습니다.","error");return;}showModal(`<div class="modal modal-md"><div class="modal-head"><h2>KPI 결과 입력</h2><button class="modal-close" onclick="closeModal()">×</button></div>
   <div class="modal-body">
@@ -7460,7 +7460,7 @@ function openKpiResult(id){const k=getKpi(id);if(!k)return;
   </div>
   <div class="modal-foot"><button class="btn btn-ghost btn-sm" onclick="saveKpiResultDraft(${id})">💾 임시저장</button><div style="flex:1"></div><button class="btn btn-secondary" onclick="closeModal()">취소</button><button class="btn btn-primary" onclick="saveKpiResult(${id})">저장</button></div></div>`);}
 function saveKpiResult(id){
-  if(!isKpiStageOpen()&&settings.kpiPerfStart){showToast("KPI 결과 입력 기간이 아닙니다.","error");return;}const s=$("#kr-self")?.value;kpiEntries=kpiEntries.map(k=>k.id===id?{...k,actual:$("#kr-actual")?.value.trim()||"",rate:$("#kr-rate")?.value.trim()||"",detail:$("#kr-detail")?.value.trim()||"",selfScore:s?Number(s):null,perfSub:1,isDraft:false,draftSavedAt:null}:k);stopKpiAutoDraft();closeModal();showToast("결과가 저장되었습니다.","success");autoSaveToServerIfEnabled();renderKPI(true);}
+  if(!isKpiStageOpen()&&settings.kpiPerfStart){showToast("KPI 결과 입력 기간이 아닙니다.","error");return;}const s=$("#kr-self")?.value;kpiEntries=kpiEntries.map(k=>k.id===id?{...k,actual:$("#kr-actual")?.value.trim()||"",rate:$("#kr-rate")?.value.trim()||"",detail:$("#kr-detail")?.value.trim()||"",selfScore:s?Number(s):null,perfSub:1,isDraft:false,draftSavedAt:null,updatedAt:new Date().toISOString()}:k);stopKpiAutoDraft();closeModal();showToast("결과가 저장되었습니다.","success");autoSaveToServerIfEnabled();renderKPI(true);}
 function openKpiReq(id){
   const k=getKpi(id);if(!k)return;
   const ownerRole=getEmp(k.userId)?.role;const approverLabel=ownerRole==="leader"?"사업부장":"팀장";
@@ -7480,7 +7480,7 @@ function submitKpi(id){
   const allKpis=kpiEntries.filter(ke=>ke.userId===k.userId&&ke.year===k.year);
   const wt=weightTotal(allKpis);
   if(wt!==100){showToast("KPI 비중 합계가 100%가 되어야 제출이 가능합니다. 현재: "+wt+"%","error");return;}
-  kpiEntries=kpiEntries.map(ke=>ke.id===id?{...ke,goalSub:1}:ke);showToast("KPI가 제출되었습니다.","success");logAction("kpi_submitted","KPI 제출","kpi:"+k.userId,`${kpiEntries.filter(ke=>ke.userId===k.userId&&ke.year===k.year&&ke.goalSub).length}건`);autoSaveToServerIfEnabled();renderKPI(false);}
+  kpiEntries=kpiEntries.map(ke=>ke.id===id?{...ke,goalSub:1,updatedAt:new Date().toISOString()}:ke);showToast("KPI가 제출되었습니다.","success");logAction("kpi_submitted","KPI 제출","kpi:"+k.userId,`${kpiEntries.filter(ke=>ke.userId===k.userId&&ke.year===k.year&&ke.goalSub).length}건`);autoSaveToServerIfEnabled();renderKPI(false);}
 function deleteKpi(id){_tombstone("kpiEntries",id);kpiEntries=kpiEntries.filter(k=>k.id!==id);showToast("KPI가 삭제되었습니다.","info");renderKPI(false);}
 function dlKpiCSV(userId,year){const emp=getEmp(userId);dlCSV(`KPI_${emp?.name||userId}_${year}.csv`,["KPI항목","비중","전년실적","목표","전년비","전략","평가기준","실적","달성율","세부내용","자체점수","차상위자점수"],kpiEntries.filter(k=>k.userId===userId&&k.year===year).map(k=>[k.item,k.weight+"%",k.prev,k.goal,k.yoy,k.strategy,k.evalCriteria||"",k.actual||"",k.rate||"",k.detail||"",k.selfScore??"",k.ceoScore??""]));}
 
@@ -7856,7 +7856,7 @@ function saveFirstEval(memberId,year){
     if(k.userId===memberId&&k.year===year&&k.goalSub&&k.firstStatus==="approved"){
       const s=Number(document.getElementById("fs-"+k.id)?.value);
       const itemFeedback=document.getElementById("ff-"+k.id)?.value.trim()||"";
-      return{...k,firstScore:s,firstComment:comment,firstItemFeedback:itemFeedback};
+      return{...k,firstScore:s,firstComment:comment,firstItemFeedback:itemFeedback,updatedAt:new Date().toISOString()};
     }
     return k;
   });
@@ -7918,7 +7918,7 @@ function saveSecondEval(memberId,year){
     if(k.userId===memberId&&k.year===year&&k.goalSub&&k.firstStatus==="approved"){
       const s=Number(document.getElementById("ss-"+k.id)?.value);
       const itemFeedback=document.getElementById("sf-"+k.id)?.value.trim()||"";
-      return{...k,secondScore:s,secondComment:comment,secondCommentPublic:pub,secondItemFeedback:itemFeedback};
+      return{...k,secondScore:s,secondComment:comment,secondCommentPublic:pub,secondItemFeedback:itemFeedback,updatedAt:new Date().toISOString()};
     }
     return k;
   });
@@ -7930,7 +7930,7 @@ function saveSecondEval(memberId,year){
 function approveFirst(id){
   const k0=getKpi(id);if(!k0)return;
   if(k0.firstStatus==="approved"){showToast("이미 1차 승인된 항목입니다.","info");return;}
-  kpiEntries=kpiEntries.map(k=>k.id===id?{...k,firstStatus:"approved"}:k);showToast("1차 승인 처리되었습니다.","success");renderApprovals();
+  kpiEntries=kpiEntries.map(k=>k.id===id?{...k,firstStatus:"approved",updatedAt:new Date().toISOString()}:k);showToast("1차 승인 처리되었습니다.","success");renderApprovals();
 }
 function openFinalConfirmModal(id){
   const k=getKpi(id);if(!k)return;const emp=getEmp(k.userId);
@@ -7950,7 +7950,7 @@ function saveFinalConfirm(id){
   if(k0.finalStatus==="approved"){showToast("이미 최종 확정된 항목입니다.","info");closeModal();return;}
   const s=$("#fc-score")?.value;if(!s){showToast("최종 확정 점수를 입력하세요.","error");return;}
   const finalScore=Number(s);
-  kpiEntries=kpiEntries.map(k=>k.id===id?{...k,finalStatus:"approved",finalScore,secondScore:k.secondScore??finalScore}:k);
+  kpiEntries=kpiEntries.map(k=>k.id===id?{...k,finalStatus:"approved",finalScore,secondScore:k.secondScore??finalScore,updatedAt:new Date().toISOString()}:k);
   closeModal();showToast("최종 확정 처리되었습니다.","success");logAction("kpi_final_confirmed","KPI 최종확정","kpi:"+id);autoSaveToServerIfEnabled();
   const k=getKpi(id);if(k){const emp=getEmp(k.userId);if(emp)tryCalcDeptGradesSilent(emp.dept,k.year);}
   renderApprovals();
@@ -7963,10 +7963,10 @@ function rejectKpi(id,stage){
   const statusField=stage==="first"?"firstStatus":"finalStatus";
   if(k0[statusField]==="rejected"){showToast("이미 반려 처리된 항목입니다.","info");closeModal();return;}
   const r=$("#rej-reason")?.value.trim();if(!r){showToast("반려 사유를 입력하세요.","error");return;}
-  kpiEntries=kpiEntries.map(k=>k.id===id?{...k,[stage==="first"?"firstStatus":"finalStatus"]:"rejected",[stage==="first"?"firstReason":"finalReason"]:r}:k);closeModal();showToast("반려 처리되었습니다.","info");renderApprovals();
+  kpiEntries=kpiEntries.map(k=>k.id===id?{...k,[stage==="first"?"firstStatus":"finalStatus"]:"rejected",[stage==="first"?"firstReason":"finalReason"]:r,updatedAt:new Date().toISOString()}:k);closeModal();showToast("반려 처리되었습니다.","info");renderApprovals();
 }
  // replaced by saveFirstEval
-function approveRequest(rid){const r=changeRequests.find(x=>x.id===rid);if(!r)return;kpiEntries=kpiEntries.map(k=>k.id===r.kpiId?{...k,...(r.after||{})}:k);changeRequests=changeRequests.map(x=>x.id===rid?{...x,status:"approved",approvedBy:currentUser.id,processedAt:ts()}:x);showToast("수정 요청을 승인했습니다.","success");renderApprovals();}
+function approveRequest(rid){const r=changeRequests.find(x=>x.id===rid);if(!r)return;kpiEntries=kpiEntries.map(k=>k.id===r.kpiId?{...k,...(r.after||{}),updatedAt:new Date().toISOString()}:k);changeRequests=changeRequests.map(x=>x.id===rid?{...x,status:"approved",approvedBy:currentUser.id,processedAt:ts()}:x);showToast("수정 요청을 승인했습니다.","success");renderApprovals();}
 function rejectRequest(rid){changeRequests=changeRequests.map(x=>x.id===rid?{...x,status:"rejected",processedAt:ts()}:x);showToast("수정 요청을 반려했습니다.","info");renderApprovals();}
 function resolveTie(tieId,empId,grade){const tie=tieNotifications.find(t=>t.id===tieId);if(!tie)return;employees=employees.map(e=>{if(e.id!==empId)return e;const gr={...(e.gradeResults||{})};const existing=gr[tie.year]||{};gr[tie.year]={...existing,grade,resolvedBy:currentUser.id,resolvedAt:ts()};return{...e,gradeResults:gr};});showToast(getEmpName(empId)+" - "+grade+"등급 지정 완료","success");renderApprovals();}
 function markTieResolved(tieId){tieNotifications=tieNotifications.map(t=>t.id===tieId?{...t,resolved:true}:t);showToast("동점자 처리가 완료되었습니다.","success");renderApprovals();renderSidebar();}
@@ -11551,7 +11551,7 @@ function finalConfirmAll(){
     const grade=getGrade(score);
     return{...emp,gradeResults:{...(emp.gradeResults||{}),[String(yr)]:{grade,score,source:"kpi_confirm",computedAt:now}}};
   });
-  kpiEntries=kpiEntries.map(k=>k.year===yr&&k.finalStatus==="approved"?{...k,finalConfirmed:true,finalScore:null}:k);
+  kpiEntries=kpiEntries.map(k=>k.year===yr&&k.finalStatus==="approved"?{...k,finalConfirmed:true,finalScore:null,updatedAt:new Date().toISOString()}:k);
   broadcastSettingsChange("KPI 전체 확정 공개");showToast("최종 평가 결과가 공개 처리되었으며 승진 심사용 고과 등급에 반영되었습니다.","success");renderEvalOpsPage();}
 function resetPassword(){const id=Number($("#reset-emp")?.value),pw=$("#reset-pw")?.value.trim();if(!id||!pw){showToast("직원을 선택하고 비밀번호를 입력하세요.","error");return;}if(pw.length<6){showToast("비밀번호는 6자 이상이어야 합니다.","error");return;}employees=employees.map(e=>e.id===id?{...e,pw}:e);showToast(`${getEmpName(id)}님의 비밀번호가 초기화되었습니다.`,"success");if($("#reset-emp"))$("#reset-emp").value="";if($("#reset-pw"))$("#reset-pw").value="";}
 
