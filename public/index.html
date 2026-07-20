@@ -2739,8 +2739,8 @@ function saveEvaluators(targetId,year){
   const checked=[...document.querySelectorAll(".eval-chk:checked")].map(c=>Number(c.value));
   if(!checked.length){showToast("평가자를 최소 1명 이상 선택하세요.","error");return;}
   const existing=compSessions.find(s=>s.targetId===targetId&&s.year===year);
-  if(existing){compSessions=compSessions.map(s=>s.id===existing.id?{...s,evaluatorIds:checked}:s);}
-  else{compSessions.push({id:genId(),year,targetId,type:getCompType(getEmp(targetId)),evaluatorIds:checked,status:"open",createdAt:new Date().toISOString()});}
+  if(existing){compSessions=compSessions.map(s=>s.id===existing.id?{...s,evaluatorIds:checked,updatedAt:new Date().toISOString()}:s);}
+  else{compSessions.push({id:genId(),year,targetId,type:getCompType(getEmp(targetId)),evaluatorIds:checked,status:"open",createdAt:new Date().toISOString(),updatedAt:new Date().toISOString()});}
   closeModal();showToast(`평가자 ${checked.length}명이 저장되었습니다.`,"success");renderCompEval();
 }
 function dlCompFullResult(year){
@@ -2820,8 +2820,8 @@ function handleEvaluatorUpload(input,year){
         }
         if(!evalIds.length){failed.push(`줄${li+2}: 유효한 평가자 없음`);return;}
         const existing=compSessions.find(s=>s.targetId===target.id&&s.year===year);
-        if(existing){compSessions=compSessions.map(s=>s.id===existing.id?{...s,evaluatorIds:evalIds}:s);}
-        else{compSessions.push({id:genId(),year,targetId:target.id,type:getCompType(target),evaluatorIds:evalIds,status:"open",createdAt:new Date().toISOString()});}
+        if(existing){compSessions=compSessions.map(s=>s.id===existing.id?{...s,evaluatorIds:evalIds,updatedAt:new Date().toISOString()}:s);}
+        else{compSessions.push({id:genId(),year,targetId:target.id,type:getCompType(target),evaluatorIds:evalIds,status:"open",createdAt:new Date().toISOString(),updatedAt:new Date().toISOString()});}
         updated++;
       });
       showToast(`${updated}명 평가자 업데이트${failed.length?" (오류 "+failed.length+"건)":""}`,updated>0?"success":"error");
@@ -6514,7 +6514,7 @@ function _cleanupRetiredEmpReferences(empId,retireDate){
   });
 }
 
-function submitHRForm(){
+async function submitHRForm(){
   const v=id=>$(id)?.value.trim()||"";
   const dept=v("#hr-dept")==="__new__"?v("#hr-dept-new"):v("#hr-dept");
   const team=v("#hr-team")==="__new__"?v("#hr-team-new"):v("#hr-team");
@@ -6527,7 +6527,17 @@ function submitHRForm(){
   if(employees.some(e=>e.empNo===v("#hr-empno")||e.loginId===loginId)){showToast("사번 또는 로그인ID가 중복됩니다.","error");return;}
   const career=Number(v("#hr-career"))||0;const edu=$("#hr-edu")?.value||"대학교 졸업";
   const rankCalc=calcAutoRank(career,edu);
-  const newEmp={id:genId(),loginId,pw:v("#hr-pw")||v("#hr-empno"),name:v("#hr-name"),empNo:v("#hr-empno"),role:$("#hr-role")?.value||"member",dept,team,birth:v("#hr-birth"),gender:$("#hr-gender")?.value||"남",nationality:$("#hr-nationality")?.value||"내국인",hire:v("#hr-hire"),jobGroup:$("#hr-jobgroup")?.value||"관리직",rank:$("#hr-rank")?.value||rankCalc.rank,rankYear:Number(v("#hr-rankyear"))||Math.max(1,Math.round(rankCalc.rankYear)),salary:Number(v("#hr-salary"))||0,edu,eduSchool:v("#hr-eduschool"),totalCareer:career,position:v("#hr-position"),email:v("#hr-email"),phone:v("#hr-phone"),address:v("#hr-address"),active:true,customFields:{...hrCustom},careers:[...hrCareers],hrHistory:[],updatedAt:new Date().toISOString()};
+  // 예전엔 genId()(서버 스냅샷에서 시작해 이 세션 안에서만 증가하는 로컬 카운터)로
+  // id를 발급했는데, 여러 담당자가 거의 동시에 신규 직원을 등록하면 다들 같은
+  // 스냅샷에서 출발해 같은 id를 발급받아 한 명만 저장되고 나머지는 조용히 사라지는
+  // 문제가 있었다(실측: 30명 동시 등록 시 27명 유실). 서버가 원자적으로 발급하는
+  // id를 대신 사용 — 서버 연결이 안 되는 오프라인 데모 상황에서만 genId()로 대체.
+  let newId;
+  try{
+    const r=await serverRequest("POST","/api/employees/next-id",null,8000);
+    newId=r?.ok?r.id:genId();
+  }catch(e){ newId=genId(); }
+  const newEmp={id:newId,loginId,pw:v("#hr-pw")||v("#hr-empno"),name:v("#hr-name"),empNo:v("#hr-empno"),role:$("#hr-role")?.value||"member",dept,team,birth:v("#hr-birth"),gender:$("#hr-gender")?.value||"남",nationality:$("#hr-nationality")?.value||"내국인",hire:v("#hr-hire"),jobGroup:$("#hr-jobgroup")?.value||"관리직",rank:$("#hr-rank")?.value||rankCalc.rank,rankYear:Number(v("#hr-rankyear"))||Math.max(1,Math.round(rankCalc.rankYear)),salary:Number(v("#hr-salary"))||0,edu,eduSchool:v("#hr-eduschool"),totalCareer:career,position:v("#hr-position"),email:v("#hr-email"),phone:v("#hr-phone"),address:v("#hr-address"),active:true,customFields:{...hrCustom},careers:[...hrCareers],hrHistory:[],updatedAt:new Date().toISOString()};
   employees.push(newEmp);
   if(dept&&!orgDB.depts.includes(dept)){orgDB.depts.push(dept);orgDB.teams[dept]=[];}
   if(dept&&team&&!getTeams(dept).includes(team)){if(!orgDB.teams[dept])orgDB.teams[dept]=[];orgDB.teams[dept].push(team);}
@@ -11554,7 +11564,12 @@ function finalConfirmAll(){
   });
   kpiEntries=kpiEntries.map(k=>k.year===yr&&k.finalStatus==="approved"?{...k,finalConfirmed:true,finalScore:null,updatedAt:new Date().toISOString()}:k);
   broadcastSettingsChange("KPI 전체 확정 공개");showToast("최종 평가 결과가 공개 처리되었으며 승진 심사용 고과 등급에 반영되었습니다.","success");renderEvalOpsPage();}
-function resetPassword(){const id=Number($("#reset-emp")?.value),pw=$("#reset-pw")?.value.trim();if(!id||!pw){showToast("직원을 선택하고 비밀번호를 입력하세요.","error");return;}if(pw.length<6){showToast("비밀번호는 6자 이상이어야 합니다.","error");return;}employees=employees.map(e=>e.id===id?{...e,pw}:e);showToast(`${getEmpName(id)}님의 비밀번호가 초기화되었습니다.`,"success");if($("#reset-emp"))$("#reset-emp").value="";if($("#reset-pw"))$("#reset-pw").value="";}
+function resetPassword(){const id=Number($("#reset-emp")?.value),pw=$("#reset-pw")?.value.trim();if(!id||!pw){showToast("직원을 선택하고 비밀번호를 입력하세요.","error");return;}if(pw.length<6){showToast("비밀번호는 6자 이상이어야 합니다.","error");return;}
+  // updatedAt을 안 채우면 server.js의 비밀번호 재해싱 최적화(newTs>oldTs가 아니면
+  // "변경 없음"으로 간주해 기존 해시 유지)에 걸려, 화면에는 "초기화되었습니다"가 떠도
+  // 실제로는 새 비밀번호가 절대 저장되지 않고 예전 비밀번호가 계속 유효했음(동시성과
+  // 무관하게 항상 재현되는 결정적 버그 — QA에서 실측 확인).
+  employees=employees.map(e=>e.id===id?{...e,pw,updatedAt:new Date().toISOString()}:e);showToast(`${getEmpName(id)}님의 비밀번호가 초기화되었습니다.`,"success");if($("#reset-emp"))$("#reset-emp").value="";if($("#reset-pw"))$("#reset-pw").value="";autoSaveToServerIfEnabled();}
 
 // ==================== HISTORY ====================
 function renderHistory(){
@@ -13718,7 +13733,7 @@ function renderTplPreview(){
 }
 function saveApprovalTemplate(editId){
   const name=$("#tpl-name")?.value.trim();if(!name){showToast("양식명을 입력하세요.","error");return;}
-  const tpl={id:editId||`tpl-c-${Date.now()}`,name,icon:$("#tpl-icon")?.value||"📄",category:$("#tpl-cat")?.value||"general",approvalType:$("#tpl-atype")?.value||"hierarchy",fields:_tplFields.map((f,i)=>({...f,key:f.key||`field${i}`})),builtin:false};
+  const tpl={id:editId||`tpl-c-${Date.now()}`,name,icon:$("#tpl-icon")?.value||"📄",category:$("#tpl-cat")?.value||"general",approvalType:$("#tpl-atype")?.value||"hierarchy",fields:_tplFields.map((f,i)=>({...f,key:f.key||`field${i}`})),builtin:false,updatedAt:new Date().toISOString()};
   if(editId){const idx=approvalTemplates.findIndex(t=>t.id===editId);if(idx>=0)approvalTemplates[idx]=tpl;}
   else approvalTemplates.push(tpl);
   closeModal();autoSaveToServerIfEnabled();showToast("양식이 저장되었습니다.","success");renderApprovalTemplateAdmin();
@@ -13729,7 +13744,7 @@ function deleteApprovalTemplate(id){
 }
 function duplicateApprovalTemplate(id){
   const src=getTpl(id);if(!src)return;
-  const tpl={...JSON.parse(JSON.stringify(src)),id:`tpl-c-${Date.now()}`,name:src.name+" (복사본)",builtin:false};
+  const tpl={...JSON.parse(JSON.stringify(src)),id:`tpl-c-${Date.now()}`,name:src.name+" (복사본)",builtin:false,updatedAt:new Date().toISOString()};
   approvalTemplates.push(tpl);autoSaveToServerIfEnabled();showToast("복제되었습니다. 복사본을 수정하여 사용하세요.","success");renderApprovalTemplateAdmin();
 }
 // ── 회계 모듈 (계정과목 / 전표 관리 / 세금계산서) ─────────────────────────────
@@ -17683,7 +17698,7 @@ function submitLeavePlan(round){
   const year=new Date().getFullYear();
   const totalDays=_planDraftItems.reduce((s,it)=>s+(it.days||0),0);
   const idx=leaveUsagePlans.findIndex(p=>String(p.empId)===String(currentUser.id)&&p.year===year&&p.round===round);
-  const rec={id:idx>=0?leaveUsagePlans[idx].id:`leaveplan-${Date.now()}`,empId:currentUser.id,year,round,items:JSON.parse(JSON.stringify(_planDraftItems)),totalDays,submittedAt:new Date().toISOString()};
+  const rec={id:idx>=0?leaveUsagePlans[idx].id:`leaveplan-${Date.now()}`,empId:currentUser.id,year,round,items:JSON.parse(JSON.stringify(_planDraftItems)),totalDays,submittedAt:new Date().toISOString(),updatedAt:new Date().toISOString()};
   if(idx>=0)leaveUsagePlans[idx]=rec;else leaveUsagePlans.push(rec);
   autoSaveToServerIfEnabled();closeModal();showToast("연차 사용계획서가 제출되었습니다.","success");
   if(typeof renderLeaveManagementPage==="function"&&currentPage==="leave-mgmt")renderLeaveManagementPage();
@@ -19465,7 +19480,7 @@ function saveRoomReservationEdit(rsvId){
   if(!allDay&&(!start||!end||start>=end)){showToast("종료 시간은 시작 시간 이후여야 합니다.","error");return;}
   if(endDate<startDate){showToast("종료일은 시작일 이후여야 합니다.","error");return;}
   if(_roomConflicts(roomId,startDate,endDate,start,end,allDay,rsvId)){showToast("해당 시간대에 이미 예약이 있습니다. 동일 시간대 예약은 등록할 수 없습니다.","error");return;}
-  rsv.roomId=roomId;rsv.title=title;rsv.startTime=start;rsv.endTime=end;rsv.date=startDate;rsv.endDate=endDate;rsv.allDay=allDay;
+  rsv.roomId=roomId;rsv.title=title;rsv.startTime=start;rsv.endTime=end;rsv.date=startDate;rsv.endDate=endDate;rsv.allDay=allDay;rsv.updatedAt=new Date().toISOString();
   closeModal();autoSaveToServerIfEnabled();showToast("예약이 수정되었습니다.","success");renderRoomBookingPage();
 }
 function deleteRoomReservationSeries(seriesId){

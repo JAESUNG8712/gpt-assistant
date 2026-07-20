@@ -275,6 +275,38 @@ let _activityLog = [];
 let _locks       = {};      // { lockKey: { clientId, user, acquiredAt, expiresAt } }
 let _sseClients  = {};      // { clientId: { res, user, connectedAt } }
 
+// 신규 직원 id는 원래 클라이언트가 로컬 카운터(서버 _idCounter 스냅샷에서 시작해
+// 세션 안에서만 ++)로 발급했는데, 이 카운터는 "마지막으로 GET /data 했을 때"의
+// 스냅샷일 뿐이라 여러 HR 담당자가 거의 동시에 각자 신규 직원을 등록하면 전부 같은
+// 스냅샷에서 출발해 같은 id를 발급하는 경우가 흔했다 — mergeArrayById는 id로만
+// 레코드를 구분하므로 서로 다른 신규 입사자 등록이 하나의 id로 충돌해 한 명만
+// 남고 나머지는 조용히 사라졌다(실측: 30명 동시 등록 시 27명 유실). 서버가 원자적으로
+// 발급하는 이 엔드포인트로 교체해 충돌 가능성을 근본적으로 없앤다.
+let _nextEmployeeIdSeq = null;
+const EMPLOYEE_ID_SEQ_FILE = () => JSON_FILE.replace(/\.json$/, "-empidseq.json");
+async function _getNextEmployeeId() {
+  if (USE_JSON_FILE) {
+    if (_nextEmployeeIdSeq == null) {
+      let fromFile = 0;
+      try { fromFile = JSON.parse(fs.readFileSync(EMPLOYEE_ID_SEQ_FILE(), "utf8")).seq || 0; } catch {}
+      const fromData = Math.max(0, ...((_fileStore.employees || []).map(e => Number(e.id) || 0)));
+      _nextEmployeeIdSeq = Math.max(fromFile, fromData);
+    }
+    _nextEmployeeIdSeq++;
+    // fire-and-forget persist; even if this write is lost to a crash, the next startup
+    // re-derives a safe floor from the max existing employee id above.
+    fs.promises.writeFile(EMPLOYEE_ID_SEQ_FILE(), JSON.stringify({ seq: _nextEmployeeIdSeq }), "utf8").catch(() => {});
+    return _nextEmployeeIdSeq;
+  }
+  await pool.query(
+    "INSERT INTO app_meta (key, value) SELECT 'next_employee_id', (COALESCE(MAX(id::bigint), 0) + 1)::text FROM employees ON CONFLICT (key) DO NOTHING"
+  );
+  const { rows } = await pool.query(
+    "UPDATE app_meta SET value = (value::bigint + 1)::text WHERE key = 'next_employee_id' RETURNING value"
+  );
+  return Number(rows[0].value);
+}
+
 // ── 저장 요청 직렬화 ──────────────────────────────────────────────────────────
 // 두 클라이언트가 거의 동시에 POST /save 하면, 버전 체크→(필요시)병합→실제 저장이
 // 서로 인터리빙되면서 나중에 끝난 요청이 먼저 끝난 요청의 변경사항을 통째로 덮어써
@@ -899,6 +931,14 @@ app.get("/data", async (req, res) => {
   try {
     const data = await loadData();
     res.json({ ok: true, data: filterDataForRole(stripPwField(data), req.auth), version: _dataVersion });
+  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+});
+
+// POST /api/employees/next-id — see _getNextEmployeeId() for why this exists.
+app.post("/api/employees/next-id", async (req, res) => {
+  if (!requireAuth(req, res)) return;
+  try {
+    res.json({ ok: true, id: await _getNextEmployeeId() });
   } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
 });
 
@@ -2157,6 +2197,20 @@ app.post("/api/erp/quotations/:id/accept", async (req, res) => {
   } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
 });
 
+// erp_stock_ledger는 append-only 원장이라(현재고 = item+location의 모든 행 합) 그
+// item+location에 이미 존재하는 행만 잠그는 `SELECT ... FOR UPDATE`로는 동시성을 막을 수
+// 없다 — 동시에 들어오는 다른 트랜잭션의 새 INSERT는 그 잠금의 대상이 아니기 때문("phantom"
+// 문제). 실측 확인: FOR UPDATE를 쓰던 ship/transfer조차 재고가 마이너스로 내려갈 만큼
+// 동시 출고가 겹쳐 처리됐다. pg_advisory_xact_lock은 "그 시점에 존재하는 행"이 아니라
+// item+location이라는 논리적 키 자체에 잠금을 걸어, 그 조합을 다루는 모든 동시 요청을
+// 트랜잭션이 끝날 때까지 확실히 순번대로 세운다(요청 시점에 해당 행이 있었는지와 무관).
+// 여러 키를 한 트랜잭션에서 잠글 때는 항상 정렬된 순서로 잠가야 서로 다른 순서로 잠그는
+// 두 트랜잭션이 맞물려 교착(deadlock)되는 것을 막을 수 있다.
+async function _lockStockKeys(client, pairs) {
+  const keys = [...new Set(pairs.map(([itemId, locationId]) => `stock:${itemId}:${locationId}`))].sort();
+  for (const k of keys) await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [k]);
+}
+
 // 출고/매출 처리: 수주 확정된 견적서를 기준으로 재고 출고(원장 차감)와 세금계산서 발행을
 // 한 번에 처리한다. 재고 부족 시 거부, 성공 시 견적서는 'shipped'로 종결된다.
 app.post("/api/erp/quotations/:id/ship", async (req, res) => {
@@ -2209,6 +2263,7 @@ app.post("/api/erp/quotations/:id/ship", async (req, res) => {
       const q0 = rows[0].data;
       if (rows[0].status !== "accepted") { await client.query("ROLLBACK"); return res.status(400).json({ ok: false, message: "수주 확정된 견적서만 출고 처리할 수 있습니다." }); }
       if (!q0.locationId) { await client.query("ROLLBACK"); return res.status(400).json({ ok: false, message: "출고 위치가 지정되지 않은 견적서입니다." }); }
+      await _lockStockKeys(client, q0.lines.map(l => [l.itemId, q0.locationId]));
       for (const l of q0.lines) {
         const { rows: ledgerRows } = await client.query(
           "SELECT data FROM erp_stock_ledger WHERE item_id = $1 AND location_id = $2 FOR UPDATE", [l.itemId, q0.locationId]
@@ -2680,24 +2735,30 @@ app.post("/api/erp/stock/adjust", async (req, res) => {
     if (!["in", "out"].includes(type)) return res.status(400).json({ ok: false, message: "입고/출고 구분이 올바르지 않습니다." });
     const qtyNum = Math.abs(Number(qty) || 0);
     if (qtyNum <= 0) return res.status(400).json({ ok: false, message: "수량은 0보다 커야 합니다." });
-    let ledger;
-    if (USE_JSON_FILE) ledger = _fileErp.stockLedger;
-    else { const { rows } = await pool.query("SELECT data FROM erp_stock_ledger WHERE item_id = $1 AND location_id = $2", [itemId, locationId]); ledger = rows.map(r => r.data); }
-    const current = ledger.filter(l => l.itemId === itemId && l.locationId === locationId)
-      .reduce((s, l) => s + (l.type === "out" ? -Math.abs(l.qty) : Math.abs(l.qty)), 0);
-    if (type === "out" && current < qtyNum) return res.status(400).json({ ok: false, message: `현재 재고(${current})보다 많은 수량을 출고할 수 없습니다.` });
     const entry = {
       id: `sl_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
       itemId, locationId, type, qty: qtyNum, refType: "manual", refId: null, refNo: null,
       memo: memo || "", createdBy: user || "unknown", createdAt: new Date().toISOString(),
     };
     if (USE_JSON_FILE) {
+      const current = _fileErp.stockLedger.filter(l => l.itemId === itemId && l.locationId === locationId)
+        .reduce((s, l) => s + (l.type === "out" ? -Math.abs(l.qty) : Math.abs(l.qty)), 0);
+      if (type === "out" && current < qtyNum) return res.status(400).json({ ok: false, message: `현재 재고(${current})보다 많은 수량을 출고할 수 없습니다.` });
       _fileErp.stockLedger.push(entry);
       _saveFileErp();
       return res.json({ ok: true, entry });
     }
-    await pool.query("INSERT INTO erp_stock_ledger (id, item_id, location_id, data) VALUES ($1,$2,$3,$4)", [entry.id, itemId, locationId, entry]);
-    res.json({ ok: true, entry });
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      await _lockStockKeys(client, [[itemId, locationId]]);
+      const { rows } = await client.query("SELECT data FROM erp_stock_ledger WHERE item_id = $1 AND location_id = $2", [itemId, locationId]);
+      const current = rows.reduce((s, r) => s + (r.data.type === "out" ? -Math.abs(r.data.qty) : Math.abs(r.data.qty)), 0);
+      if (type === "out" && current < qtyNum) { await client.query("ROLLBACK"); return res.status(400).json({ ok: false, message: `현재 재고(${current})보다 많은 수량을 출고할 수 없습니다.` }); }
+      await client.query("INSERT INTO erp_stock_ledger (id, item_id, location_id, data) VALUES ($1,$2,$3,$4)", [entry.id, itemId, locationId, entry]);
+      await client.query("COMMIT");
+      res.json({ ok: true, entry });
+    } catch (e) { await client.query("ROLLBACK"); throw e; } finally { client.release(); }
   } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
 });
 
@@ -2709,36 +2770,58 @@ app.post("/api/erp/stock/count", async (req, res) => {
     const { locationId, lines, user } = req.body || {};
     if (!locationId || !Array.isArray(lines) || !lines.length)
       return res.status(400).json({ ok: false, message: "위치와 실사 항목이 필요합니다." });
-    let ledger;
-    if (USE_JSON_FILE) ledger = _fileErp.stockLedger;
-    else { const { rows } = await pool.query("SELECT data FROM erp_stock_ledger WHERE location_id = $1", [locationId]); ledger = rows.map(r => r.data); }
     const now = new Date().toISOString();
     const countId = `count_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-    const entries = [];
-    for (const l of lines) {
-      const itemId = l.itemId, countedQty = Number(l.countedQty);
-      if (!itemId || !Number.isFinite(countedQty)) continue;
-      const current = ledger.filter(x => x.itemId === itemId && x.locationId === locationId)
-        .reduce((s, x) => s + (x.type === "out" ? -Math.abs(x.qty) : Math.abs(x.qty)), 0);
-      const diff = countedQty - current;
-      if (diff === 0) continue;
-      entries.push({
-        id: `sl_${Date.now()}_${Math.random().toString(36).slice(2, 8)}_${entries.length}`,
-        itemId, locationId, type: diff > 0 ? "in" : "out", qty: Math.abs(diff),
-        refType: "count", refId: countId, refNo: null,
-        memo: `재고실사 조정 (시스템 ${current} → 실사 ${countedQty})`,
-        createdBy: user || "unknown", createdAt: now,
-      });
-    }
     if (USE_JSON_FILE) {
+      const ledger = _fileErp.stockLedger;
+      const entries = [];
+      for (const l of lines) {
+        const itemId = l.itemId, countedQty = Number(l.countedQty);
+        if (!itemId || !Number.isFinite(countedQty)) continue;
+        const current = ledger.filter(x => x.itemId === itemId && x.locationId === locationId)
+          .reduce((s, x) => s + (x.type === "out" ? -Math.abs(x.qty) : Math.abs(x.qty)), 0);
+        const diff = countedQty - current;
+        if (diff === 0) continue;
+        entries.push({
+          id: `sl_${Date.now()}_${Math.random().toString(36).slice(2, 8)}_${entries.length}`,
+          itemId, locationId, type: diff > 0 ? "in" : "out", qty: Math.abs(diff),
+          refType: "count", refId: countId, refNo: null,
+          memo: `재고실사 조정 (시스템 ${current} → 실사 ${countedQty})`,
+          createdBy: user || "unknown", createdAt: now,
+        });
+      }
       _fileErp.stockLedger.push(...entries);
       _saveFileErp();
       return res.json({ ok: true, adjusted: entries.length, entries });
     }
-    for (const e of entries) {
-      await pool.query("INSERT INTO erp_stock_ledger (id, item_id, location_id, data) VALUES ($1,$2,$3,$4)", [e.id, e.itemId, e.locationId, e]);
-    }
-    res.json({ ok: true, adjusted: entries.length, entries });
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      await _lockStockKeys(client, lines.filter(l => l.itemId).map(l => [l.itemId, locationId]));
+      const { rows } = await client.query("SELECT data FROM erp_stock_ledger WHERE location_id = $1", [locationId]);
+      const ledger = rows.map(r => r.data);
+      const entries = [];
+      for (const l of lines) {
+        const itemId = l.itemId, countedQty = Number(l.countedQty);
+        if (!itemId || !Number.isFinite(countedQty)) continue;
+        const current = ledger.filter(x => x.itemId === itemId && x.locationId === locationId)
+          .reduce((s, x) => s + (x.type === "out" ? -Math.abs(x.qty) : Math.abs(x.qty)), 0);
+        const diff = countedQty - current;
+        if (diff === 0) continue;
+        entries.push({
+          id: `sl_${Date.now()}_${Math.random().toString(36).slice(2, 8)}_${entries.length}`,
+          itemId, locationId, type: diff > 0 ? "in" : "out", qty: Math.abs(diff),
+          refType: "count", refId: countId, refNo: null,
+          memo: `재고실사 조정 (시스템 ${current} → 실사 ${countedQty})`,
+          createdBy: user || "unknown", createdAt: now,
+        });
+      }
+      for (const e of entries) {
+        await client.query("INSERT INTO erp_stock_ledger (id, item_id, location_id, data) VALUES ($1,$2,$3,$4)", [e.id, e.itemId, e.locationId, e]);
+      }
+      await client.query("COMMIT");
+      res.json({ ok: true, adjusted: entries.length, entries });
+    } catch (e) { await client.query("ROLLBACK"); throw e; } finally { client.release(); }
   } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
 });
 
@@ -2768,7 +2851,8 @@ app.post("/api/erp/stock/transfer", async (req, res) => {
     const client = await pool.connect();
     try {
       await client.query("BEGIN");
-      const { rows: ledgerRows } = await client.query("SELECT data FROM erp_stock_ledger WHERE item_id = $1 AND location_id = $2 FOR UPDATE", [itemId, fromLocationId]);
+      await _lockStockKeys(client, [[itemId, fromLocationId], [itemId, toLocationId]]);
+      const { rows: ledgerRows } = await client.query("SELECT data FROM erp_stock_ledger WHERE item_id = $1 AND location_id = $2", [itemId, fromLocationId]);
       const current = ledgerRows.reduce((s, r) => s + (r.data.type === "out" ? -Math.abs(r.data.qty) : Math.abs(r.data.qty)), 0);
       if (current < qtyNum) { await client.query("ROLLBACK"); return res.status(400).json({ ok: false, message: `출발 위치 재고 부족 (현재 ${current} / 이동 요청 ${qtyNum})` }); }
       const outEntry = { itemId, locationId: fromLocationId, type: "out", qty: qtyNum, refType: "transfer", refId: transferId, refNo: null, memo: memo || "", createdBy, createdAt: now };
@@ -2998,24 +3082,44 @@ app.post("/api/pms/allocations", async (req, res) => {
       }
     }
     const allocId = id || `alloc_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-    const otherTotal = await _allocationMonthTotal(employeeId, year, month, allocId);
-    if (otherTotal + percentNum > 100) return res.status(400).json({ ok: false, message: `투입률 합계가 100%를 초과합니다 (기존 ${otherTotal}% + 신규 ${percentNum}%).` });
     const alloc = {
       id: allocId, employeeId: String(employeeId), year: Number(year), month: Number(month),
       projectId, percent: percentNum, memo: memo || "", updatedAt: new Date().toISOString(),
     };
     if (USE_JSON_FILE) {
+      const otherTotal = await _allocationMonthTotal(employeeId, year, month, allocId);
+      if (otherTotal + percentNum > 100) return res.status(400).json({ ok: false, message: `투입률 합계가 100%를 초과합니다 (기존 ${otherTotal}% + 신규 ${percentNum}%).` });
       const idx = _filePms.allocations.findIndex(a => a.id === allocId);
       if (idx >= 0) _filePms.allocations[idx] = alloc; else _filePms.allocations.push(alloc);
       _saveFilePms();
       return res.json({ ok: true, allocation: alloc });
     }
-    await pool.query(
-      "INSERT INTO pms_allocations (id, employee_id, year, month, data) VALUES ($1,$2,$3,$4,$5) " +
-      "ON CONFLICT (id) DO UPDATE SET data = $5, employee_id = $2, year = $3, month = $4, updated_at = NOW()",
-      [allocId, Number(employeeId), Number(year), Number(month), alloc]
-    );
-    res.json({ ok: true, allocation: alloc });
+    // 여러 요청이 같은 직원·같은 달의 투입률을 거의 동시에 등록하면, 각자 "합계 조회 →
+    // 100% 이하인지 확인 → 등록"을 순서 보장 없이 수행해(check-then-act) 합계가 100%를
+    // 넘게 등록될 수 있었다(실측: 15건 동시 등록 시 캡이 완전히 무력화되어 합계 120%까지
+    // 초과). employeeId+year+month 조합에 advisory lock을 걸어 같은 달을 다루는 요청을
+    // 확실히 순번대로 세운다.
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [`alloc:${employeeId}:${year}:${month}`]);
+      const { rows } = await client.query(
+        "SELECT data FROM pms_allocations WHERE employee_id = $1 AND year = $2 AND month = $3 AND is_deleted = FALSE AND id != $4",
+        [employeeId, year, month, allocId]
+      );
+      const otherTotal = rows.reduce((s, r) => s + (Number(r.data.percent) || 0), 0);
+      if (otherTotal + percentNum > 100) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({ ok: false, message: `투입률 합계가 100%를 초과합니다 (기존 ${otherTotal}% + 신규 ${percentNum}%).` });
+      }
+      await client.query(
+        "INSERT INTO pms_allocations (id, employee_id, year, month, data) VALUES ($1,$2,$3,$4,$5) " +
+        "ON CONFLICT (id) DO UPDATE SET data = $5, employee_id = $2, year = $3, month = $4, updated_at = NOW()",
+        [allocId, Number(employeeId), Number(year), Number(month), alloc]
+      );
+      await client.query("COMMIT");
+      res.json({ ok: true, allocation: alloc });
+    } catch (e) { await client.query("ROLLBACK"); throw e; } finally { client.release(); }
   } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
 });
 
@@ -3697,6 +3801,42 @@ app.post("/api/hr/draft-eval-comment", async (req, res) => {
   } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
 });
 
+// The recruit routes below (candidates/:id, candidates/:id/status, interviews/:id,
+// interviews/:id/cancel, interviews/:id/evaluation, interviews/:id/verdict) all used to do
+// a plain `SELECT data ...` (no lock) → mutate the JS object → `UPDATE ... SET data = $2`
+// in Postgres mode, with no protection against two requests targeting the same row at
+// nearly the same time. Confirmed by concurrency testing: 10 interviewers submitting
+// evaluations for the same interview nearly simultaneously left only the last commit's
+// evaluation — the other 9 vanished silently (every request still got HTTP 200). JSON-file
+// mode happened to be safe only because it mutates a shared in-memory object with no
+// `await` in between (Node's single-threaded event loop can't interleave it), which is an
+// accident of implementation, not a design guarantee — Postgres mode's real `await` between
+// the SELECT and UPDATE is exactly the window where a second request's own SELECT..UPDATE
+// can interleave and silently lose the first request's write.
+// `SELECT ... FOR UPDATE` inside a transaction closes that window: a second request's
+// SELECT for the same row blocks until the first request's transaction commits, then reads
+// the already-merged data instead of a stale pre-commit snapshot.
+class _RecruitRouteError extends Error {
+  constructor(status, message) { super(message); this.status = status; }
+}
+async function _pgLockedUpdate(table, id, mutate) {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const { rows } = await client.query(`SELECT data FROM ${table} WHERE id = $1 AND is_deleted = FALSE FOR UPDATE`, [id]);
+    if (!rows.length) throw new _RecruitRouteError(404, "레코드를 찾을 수 없습니다.");
+    const data = await mutate(rows[0].data);
+    await client.query(`UPDATE ${table} SET data = $2, updated_at = NOW() WHERE id = $1`, [id, data]);
+    await client.query("COMMIT");
+    return data;
+  } catch (e) {
+    await client.query("ROLLBACK");
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
 app.post("/api/recruit/candidates", async (req, res) => {
   try {
     if (!requireRole(req, res, ["admin", "leader", "director"])) return;
@@ -3758,10 +3898,13 @@ app.post("/api/recruit/candidates/:id", async (req, res) => {
       _saveFileRecruit();
       return res.json({ ok: true, candidate: _recruitStripResume(candidate) });
     }
-    const { rows } = await pool.query("SELECT data FROM recruit_candidates WHERE id = $1 AND is_deleted = FALSE", [id]);
-    if (!rows.length) return res.status(404).json({ ok: false, message: "지원자를 찾을 수 없습니다." });
-    const candidate = applyEdits(rows[0].data);
-    await pool.query("UPDATE recruit_candidates SET data = $2, updated_at = NOW() WHERE id = $1", [id, candidate]);
+    let candidate;
+    try {
+      candidate = await _pgLockedUpdate("recruit_candidates", id, async (c) => applyEdits(c));
+    } catch (e) {
+      if (e instanceof _RecruitRouteError) return res.status(e.status).json({ ok: false, message: e.message });
+      throw e;
+    }
     res.json({ ok: true, candidate: _recruitStripResume(candidate) });
   } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
 });
@@ -3816,18 +3959,23 @@ app.post("/api/recruit/candidates/:id/status", async (req, res) => {
       _saveFileRecruit();
       return res.json({ ok: true, candidate });
     }
-    const { rows } = await pool.query("SELECT data FROM recruit_candidates WHERE id = $1 AND is_deleted = FALSE", [id]);
-    if (!rows.length) return res.status(404).json({ ok: false, message: "지원자를 찾을 수 없습니다." });
-    const candidate = rows[0].data;
-    const job = await _recruitJobById(candidate.jobId);
-    if (!job || !job.stages.includes(status)) return res.status(400).json({ ok: false, message: "해당 채용공고에 없는 전형 단계입니다." });
-    if (await checkReasonRequired(candidate, job) && !String(reason || "").trim()) {
-      return res.status(400).json({ ok: false, message: "통과 기준 미만 점수로 다음 단계 진행 시 사유를 입력해야 합니다." });
+    let candidate;
+    try {
+      candidate = await _pgLockedUpdate("recruit_candidates", id, async (c) => {
+        const job = await _recruitJobById(c.jobId);
+        if (!job || !job.stages.includes(status)) throw new _RecruitRouteError(400, "해당 채용공고에 없는 전형 단계입니다.");
+        if (await checkReasonRequired(c, job) && !String(reason || "").trim()) {
+          throw new _RecruitRouteError(400, "통과 기준 미만 점수로 다음 단계 진행 시 사유를 입력해야 합니다.");
+        }
+        c.status = status;
+        c.statusReason = reason || "";
+        c.updatedAt = new Date().toISOString();
+        return c;
+      });
+    } catch (e) {
+      if (e instanceof _RecruitRouteError) return res.status(e.status).json({ ok: false, message: e.message });
+      throw e;
     }
-    candidate.status = status;
-    candidate.statusReason = reason || "";
-    candidate.updatedAt = new Date().toISOString();
-    await pool.query("UPDATE recruit_candidates SET data = $2, updated_at = NOW() WHERE id = $1", [id, candidate]);
     res.json({ ok: true, candidate });
   } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
 });
@@ -3910,23 +4058,33 @@ app.post("/api/recruit/interviews/:id", async (req, res) => {
     if (!requireRole(req, res, ["admin", "leader", "director"])) return;
     const id = req.params.id;
     const { round, schedule, interviewerIds, location, leadInterviewerId } = req.body || {};
-    const interview = await _recruitInterviewById(id);
-    if (!interview) return res.status(404).json({ ok: false, message: "면접 일정을 찾을 수 없습니다." });
-    if (round != null) interview.round = Number(round);
-    if (schedule != null) interview.schedule = schedule;
-    if (location != null) interview.location = location;
-    if (Array.isArray(interviewerIds) && interviewerIds.length) interview.interviewerIds = interviewerIds.map(String);
-    if (leadInterviewerId !== undefined) {
-      interview.leadInterviewerId = (leadInterviewerId && interview.interviewerIds.includes(String(leadInterviewerId))) ? String(leadInterviewerId) : "";
-    } else if (interview.leadInterviewerId && !interview.interviewerIds.includes(String(interview.leadInterviewerId))) {
-      interview.leadInterviewerId = "";
-    }
-    interview.updatedAt = new Date().toISOString();
+    const applyEdits = (interview) => {
+      if (round != null) interview.round = Number(round);
+      if (schedule != null) interview.schedule = schedule;
+      if (location != null) interview.location = location;
+      if (Array.isArray(interviewerIds) && interviewerIds.length) interview.interviewerIds = interviewerIds.map(String);
+      if (leadInterviewerId !== undefined) {
+        interview.leadInterviewerId = (leadInterviewerId && interview.interviewerIds.includes(String(leadInterviewerId))) ? String(leadInterviewerId) : "";
+      } else if (interview.leadInterviewerId && !interview.interviewerIds.includes(String(interview.leadInterviewerId))) {
+        interview.leadInterviewerId = "";
+      }
+      interview.updatedAt = new Date().toISOString();
+      return interview;
+    };
     if (USE_JSON_FILE) {
+      const interview = _fileRecruit.interviews.find(i => i.id === id);
+      if (!interview) return res.status(404).json({ ok: false, message: "면접 일정을 찾을 수 없습니다." });
+      applyEdits(interview);
       _saveFileRecruit();
       return res.json({ ok: true, interview });
     }
-    await pool.query("UPDATE recruit_interviews SET data = $2, updated_at = NOW() WHERE id = $1", [id, interview]);
+    let interview;
+    try {
+      interview = await _pgLockedUpdate("recruit_interviews", id, async (iv) => applyEdits(iv));
+    } catch (e) {
+      if (e instanceof _RecruitRouteError) return res.status(e.status).json({ ok: false, message: e.message });
+      throw e;
+    }
     res.json({ ok: true, interview });
   } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
 });
@@ -3936,17 +4094,27 @@ app.post("/api/recruit/interviews/:id/cancel", async (req, res) => {
     if (!requireRole(req, res, ["admin", "leader", "director"])) return;
     const id = req.params.id;
     const { reason } = req.body || {};
-    const interview = await _recruitInterviewById(id);
-    if (!interview) return res.status(404).json({ ok: false, message: "면접 일정을 찾을 수 없습니다." });
-    interview.status = "canceled";
-    interview.cancelReason = reason || "";
-    interview.canceledAt = new Date().toISOString();
-    interview.updatedAt = interview.canceledAt;
+    const applyCancel = (interview) => {
+      interview.status = "canceled";
+      interview.cancelReason = reason || "";
+      interview.canceledAt = new Date().toISOString();
+      interview.updatedAt = interview.canceledAt;
+      return interview;
+    };
     if (USE_JSON_FILE) {
+      const interview = _fileRecruit.interviews.find(i => i.id === id);
+      if (!interview) return res.status(404).json({ ok: false, message: "면접 일정을 찾을 수 없습니다." });
+      applyCancel(interview);
       _saveFileRecruit();
       return res.json({ ok: true, interview });
     }
-    await pool.query("UPDATE recruit_interviews SET data = $2, updated_at = NOW() WHERE id = $1", [id, interview]);
+    let interview;
+    try {
+      interview = await _pgLockedUpdate("recruit_interviews", id, async (iv) => applyCancel(iv));
+    } catch (e) {
+      if (e instanceof _RecruitRouteError) return res.status(e.status).json({ ok: false, message: e.message });
+      throw e;
+    }
     res.json({ ok: true, interview });
   } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
 });
@@ -3960,38 +4128,57 @@ app.post("/api/recruit/interviews/:id/evaluation", async (req, res) => {
     if (!interviewerId || !scores || typeof scores !== "object") {
       return res.status(400).json({ ok: false, message: "면접관, 평가 점수는 필수입니다." });
     }
-    const interview = await _recruitInterviewById(id);
-    if (!interview) return res.status(404).json({ ok: false, message: "면접 일정을 찾을 수 없습니다." });
-    if (role !== "admin" && !interview.interviewerIds.map(String).includes(String(interviewerId))) {
-      return res.status(403).json({ ok: false, message: "지정된 면접관만 평가를 입력할 수 있습니다." });
-    }
-    // interviewerId는 "누구의 평가로 기록할지"를 정하는 값이라 role만 검증해서는
-    // 다른 지정 면접관 행세로 남의 평가를 덮어쓸 수 있었다 — 본인 명의로만 입력 가능해야 한다.
-    if (role !== "admin" && String(interviewerId) !== String(authUserId)) {
-      return res.status(403).json({ ok: false, message: "본인 명의로만 평가를 입력할 수 있습니다." });
-    }
-    const candidate = USE_JSON_FILE
-      ? _fileRecruit.candidates.find(c => c.id === interview.candidateId)
-      : (await pool.query("SELECT data FROM recruit_candidates WHERE id = $1 AND is_deleted = FALSE", [interview.candidateId])).rows[0]?.data;
-    const job = candidate ? await _recruitJobById(candidate.jobId) : null;
-    if (candidate && job) {
-      const stages = (job.stages && job.stages.length) ? job.stages : [];
-      const statusIdx = stages.indexOf(candidate.status);
-      const roundStageIdx = Math.min(interview.round, stages.length - 1);
-      if (statusIdx >= 0 && statusIdx > roundStageIdx) {
-        return res.status(400).json({ ok: false, message: "전형 단계가 진행되어 평가를 수정할 수 없습니다." });
+    // 각 면접관의 평가는 evaluations 배열 안 자기 interviewerId 항목만 upsert하는
+    // 구조라, 여러 면접관이 거의 동시에 제출하면(락 없는 SELECT→mutate→UPDATE) 나중에
+    // commit된 한 명의 평가만 남고 나머지는 조용히 사라졌다(실측: 10명 동시 제출 시
+    // 1명만 생존) — interview row를 _pgLockedUpdate로 잠가 순번대로 처리한다.
+    const applyEvaluation = async (interview) => {
+      if (role !== "admin" && !interview.interviewerIds.map(String).includes(String(interviewerId))) {
+        throw new _RecruitRouteError(403, "지정된 면접관만 평가를 입력할 수 있습니다.");
       }
-    }
-    const totalScore = RECRUIT_SCORE_CATEGORIES.reduce((s, k) => s + (Number(scores[k]) || 0), 0);
-    const evaluation = { interviewerId: String(interviewerId), scores, totalScore, comment: comment || "", updatedAt: new Date().toISOString() };
-    const idx = (interview.evaluations || []).findIndex(e => String(e.interviewerId) === String(interviewerId));
-    if (idx >= 0) interview.evaluations[idx] = evaluation; else (interview.evaluations || (interview.evaluations = [])).push(evaluation);
-    interview.updatedAt = new Date().toISOString();
+      // interviewerId는 "누구의 평가로 기록할지"를 정하는 값이라 role만 검증해서는
+      // 다른 지정 면접관 행세로 남의 평가를 덮어쓸 수 있었다 — 본인 명의로만 입력 가능해야 한다.
+      if (role !== "admin" && String(interviewerId) !== String(authUserId)) {
+        throw new _RecruitRouteError(403, "본인 명의로만 평가를 입력할 수 있습니다.");
+      }
+      const candidate = USE_JSON_FILE
+        ? _fileRecruit.candidates.find(c => c.id === interview.candidateId)
+        : (await pool.query("SELECT data FROM recruit_candidates WHERE id = $1 AND is_deleted = FALSE", [interview.candidateId])).rows[0]?.data;
+      const job = candidate ? await _recruitJobById(candidate.jobId) : null;
+      if (candidate && job) {
+        const stages = (job.stages && job.stages.length) ? job.stages : [];
+        const statusIdx = stages.indexOf(candidate.status);
+        const roundStageIdx = Math.min(interview.round, stages.length - 1);
+        if (statusIdx >= 0 && statusIdx > roundStageIdx) {
+          throw new _RecruitRouteError(400, "전형 단계가 진행되어 평가를 수정할 수 없습니다.");
+        }
+      }
+      const totalScore = RECRUIT_SCORE_CATEGORIES.reduce((s, k) => s + (Number(scores[k]) || 0), 0);
+      const evaluation = { interviewerId: String(interviewerId), scores, totalScore, comment: comment || "", updatedAt: new Date().toISOString() };
+      const idx = (interview.evaluations || []).findIndex(e => String(e.interviewerId) === String(interviewerId));
+      if (idx >= 0) interview.evaluations[idx] = evaluation; else (interview.evaluations || (interview.evaluations = [])).push(evaluation);
+      interview.updatedAt = new Date().toISOString();
+      return interview;
+    };
     if (USE_JSON_FILE) {
+      const interview = _fileRecruit.interviews.find(i => i.id === id);
+      if (!interview) return res.status(404).json({ ok: false, message: "면접 일정을 찾을 수 없습니다." });
+      try {
+        await applyEvaluation(interview);
+      } catch (e) {
+        if (e instanceof _RecruitRouteError) return res.status(e.status).json({ ok: false, message: e.message });
+        throw e;
+      }
       _saveFileRecruit();
       return res.json({ ok: true, interview });
     }
-    await pool.query("UPDATE recruit_interviews SET data = $2, updated_at = NOW() WHERE id = $1", [id, interview]);
+    let interview;
+    try {
+      interview = await _pgLockedUpdate("recruit_interviews", id, applyEvaluation);
+    } catch (e) {
+      if (e instanceof _RecruitRouteError) return res.status(e.status).json({ ok: false, message: e.message });
+      throw e;
+    }
     res.json({ ok: true, interview });
   } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
 });
@@ -4006,21 +4193,36 @@ app.post("/api/recruit/interviews/:id/verdict", async (req, res) => {
     if (!RECRUIT_VERDICTS.includes(verdict)) {
       return res.status(400).json({ ok: false, message: "판정 값이 올바르지 않습니다." });
     }
-    const interview = await _recruitInterviewById(id);
-    if (!interview) return res.status(404).json({ ok: false, message: "면접 일정을 찾을 수 없습니다." });
-    if (!interview.leadInterviewerId) {
-      return res.status(400).json({ ok: false, message: "심사위원장이 지정되지 않아 최종 판정을 입력할 수 없습니다." });
-    }
-    if (role !== "admin" && String(userId) !== String(interview.leadInterviewerId)) {
-      return res.status(403).json({ ok: false, message: "지정된 심사위원장만 최종 판정을 입력할 수 있습니다." });
-    }
-    interview.finalVerdict = { verdict, comment: comment || "", decidedBy: String(userId), decidedAt: new Date().toISOString() };
-    interview.updatedAt = new Date().toISOString();
+    const applyVerdict = (interview) => {
+      if (!interview.leadInterviewerId) {
+        throw new _RecruitRouteError(400, "심사위원장이 지정되지 않아 최종 판정을 입력할 수 없습니다.");
+      }
+      if (role !== "admin" && String(userId) !== String(interview.leadInterviewerId)) {
+        throw new _RecruitRouteError(403, "지정된 심사위원장만 최종 판정을 입력할 수 있습니다.");
+      }
+      interview.finalVerdict = { verdict, comment: comment || "", decidedBy: String(userId), decidedAt: new Date().toISOString() };
+      interview.updatedAt = new Date().toISOString();
+      return interview;
+    };
     if (USE_JSON_FILE) {
+      const interview = _fileRecruit.interviews.find(i => i.id === id);
+      if (!interview) return res.status(404).json({ ok: false, message: "면접 일정을 찾을 수 없습니다." });
+      try {
+        applyVerdict(interview);
+      } catch (e) {
+        if (e instanceof _RecruitRouteError) return res.status(e.status).json({ ok: false, message: e.message });
+        throw e;
+      }
       _saveFileRecruit();
       return res.json({ ok: true, interview });
     }
-    await pool.query("UPDATE recruit_interviews SET data = $2, updated_at = NOW() WHERE id = $1", [id, interview]);
+    let interview;
+    try {
+      interview = await _pgLockedUpdate("recruit_interviews", id, async (iv) => applyVerdict(iv));
+    } catch (e) {
+      if (e instanceof _RecruitRouteError) return res.status(e.status).json({ ok: false, message: e.message });
+      throw e;
+    }
     res.json({ ok: true, interview });
   } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
 });
