@@ -36,8 +36,17 @@ function toNumber(v) {
   return Number.isNaN(n) ? null : n;
 }
 
+// 과거에는 클라이언트가 body에 적어 보낸 role을 그대로 신뢰했다(server.js의 다른
+// 라우트들이 이미 폐기한 것과 동일한 취약 패턴) — 인증 토큰이 전혀 없어도 body에
+// role:"admin"만 넣으면 전체 예산 데이터 조회/업로드/삭제가 가능했다. 이 라우터는
+// server.js에서 `app.use(authenticate)` 이후에 마운트되므로 req.auth(서버가 검증한
+// 로그인 토큰)를 그대로 쓸 수 있다.
 function requireAdmin(req, res) {
-  if ((req.body || {}).role !== 'admin') {
+  if (!req.auth) {
+    res.status(401).json({ error: '로그인이 필요합니다.' });
+    return false;
+  }
+  if (req.auth.role !== 'admin') {
     res.status(403).json({ error: '관리자만 사용할 수 있습니다.' });
     return false;
   }
@@ -143,17 +152,20 @@ router.post('/upload/detail', upload.single('file'), (req, res) => {
 
 // 원본 데이터 조회
 router.get('/data', (req, res) => {
+  if (!requireAdmin(req, res)) return;
   res.json(readBudget());
 });
 
 // 업로드 이력
 router.get('/uploads', (req, res) => {
+  if (!requireAdmin(req, res)) return;
   const data = readBudget();
   res.json({ uploads: data.uploads });
 });
 
 // 사업부별/월별 통합 요약 (인원 + 판관/용역/경상 합산, 중복 제외)
 router.get('/summary', (req, res) => {
+  if (!requireAdmin(req, res)) return;
   const data = readBudget();
   const depts = [...new Set([
     ...data.headcount.map(h => h.dept),

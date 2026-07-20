@@ -186,25 +186,62 @@ function omitPw(emp) {
 
 // The client-trusted "full state blob" model (see docs/API_CONTRACT.md §1.2) means every
 // authenticated user's GET /data — and the equivalent data returned by POST /save's merge
-// response and snapshot restore — otherwise returns every OTHER employee's payslips
-// (exact salary) and kpiEntries (evaluation scores/comments) verbatim, regardless of role.
-// stripPwField() already keeps password hashes out of the wire; this does the same for
-// those two fields, using the PAGE_ROLES boundaries already enforced client-side
-// (public/index.html) as the source of truth for who legitimately needs broad access:
+// response and snapshot restore — otherwise returns every OTHER employee's sensitive
+// records verbatim, regardless of role. stripPwField() already keeps password hashes out
+// of the wire; this does the same for the fields below, using the PAGE_ROLES/client-side
+// visibility rules already enforced in public/index.html as the source of truth for who
+// legitimately needs broad access:
 //   - payslips: only "payroll-mgmt" (admin-only) manages other people's payslips, so
 //     every other role sees just their own.
 //   - kpiEntries: "first-eval"/"second-eval"/"grade-view"/"eval-progress" all exclude
 //     "member" (leader/director/admin need broad access to run evaluations; member does
 //     not), so member is narrowed to their own entries while other roles are untouched.
+//   - lowPerfData(저성과자 관리): 대상자 본인에게도 비공개인 자료(기록 자체에 "본인에게
+//     비공개" 문구가 들어있음, client의 _canViewLowPerformer()는 admin이거나
+//     settings.lowPerformerViewers에 등록된 직원만 true) — 그 외 전원은 전체를 빈 배열로.
+//   - coreTalentPool(핵심인재 풀): "core-talent" 관리 화면은 admin 전용, 비밀리에 검토되는
+//     승진 후보 정보라 admin이 아니면 본인 항목만 남긴다(talent-dev 페이지가 "내가
+//     선정되었는지"만 확인하면 되므로 본인 레코드는 유지해도 안전).
+//   - compResponses(다면평가 응답): 평가 대상자가 evaluatorId+자유텍스트(strengths/
+//     improvements/answers)를 보고 "누가 이 코멘트를 썼는지" 알 수 있어 평가 익명성이
+//     깨졌다(실측 확인) — admin 또는 본인이 제출한(evaluatorId===본인) 레코드는 원본 그대로,
+//     그 외(본인이 평가 대상인 레코드 포함)는 제출 여부 확인용 필드(id/sessionId/
+//     evaluatorId/submittedAt)만 남기고 코멘트·점수 내용은 제거한다.
+//   - welfarePoints(복지포인트 사용내역): desc 필드에 사용목적(의료비 등)이 그대로 들어가
+//     동료가 볼 수 있었다 — admin이거나 settings.welfarePointsViewers에 등록된 직원이
+//     아니면 본인 것만 남긴다(_canViewWelfareAll()과 동일 기준).
 // No-op when `auth` is absent (e.g. bootstrap-exempt paths never reach here with real data).
 function filterDataForRole(data, auth) {
   if (!data || !auth) return data;
   const out = { ...data };
+  const settings = out.settings || {};
+  const myId = String(auth.empId);
   if (auth.role !== "admin" && Array.isArray(out.payslips)) {
-    out.payslips = out.payslips.filter(p => p && String(p.empId) === String(auth.empId));
+    out.payslips = out.payslips.filter(p => p && String(p.empId) === myId);
   }
   if (auth.role === "member" && Array.isArray(out.kpiEntries)) {
-    out.kpiEntries = out.kpiEntries.filter(k => k && String(k.userId) === String(auth.empId));
+    out.kpiEntries = out.kpiEntries.filter(k => k && String(k.userId) === myId);
+  }
+  const canViewLowPerf = auth.role === "admin" ||
+    (settings.lowPerformerViewers || []).map(String).includes(myId);
+  if (!canViewLowPerf && Array.isArray(out.lowPerfData)) {
+    out.lowPerfData = [];
+  }
+  if (auth.role !== "admin" && Array.isArray(out.coreTalentPool)) {
+    out.coreTalentPool = out.coreTalentPool.filter(p => p && String(p.empId) === myId);
+  }
+  if (auth.role !== "admin" && Array.isArray(out.compResponses)) {
+    out.compResponses = out.compResponses.map(r => {
+      if (!r) return r;
+      if (String(r.evaluatorId) === myId) return r;
+      const { answers, collab, strengths, improvements, ...safe } = r;
+      return safe;
+    });
+  }
+  const canViewWelfareAll = auth.role === "admin" ||
+    (settings.welfarePointsViewers || []).map(String).includes(myId);
+  if (!canViewWelfareAll && Array.isArray(out.welfarePoints)) {
+    out.welfarePoints = out.welfarePoints.filter(w => w && String(w.empId) === myId);
   }
   return out;
 }
@@ -536,15 +573,17 @@ async function _persistDataLocked(data, changedBy = "system") {
     }
     _saveFileHistory();
 
-    // payslips/kpiEntries are now filtered by role before ever reaching a non-admin/member
-    // client (see filterDataForRole in GET /data) — that client's local copy of these two
-    // fields is intentionally incomplete (only their own records), so a plain overwrite of
-    // `_fileStore.payslips`/`.kpiEntries` with `data.payslips`/`.kpiEntries` on their next
-    // autosave would wipe out every other employee's payslip/KPI record. Always merge these
-    // two fields by id against what's already stored (same union semantics smartMerge uses
-    // for a stale save) instead of trusting the incoming array to be the complete set, then
-    // apply this save's own tombstones so genuine deletions (e.g. deleteKpi()) still take
-    // effect.
+    // payslips/kpiEntries/lowPerfData/coreTalentPool/welfarePoints are now filtered by role
+    // before ever reaching a non-privileged client (see filterDataForRole in GET /data) —
+    // that client's local copy of these fields is intentionally incomplete (only their own
+    // records, or empty entirely for lowPerfData), so a plain overwrite of `_fileStore[field]`
+    // with `data[field]` on their next autosave would wipe out every other employee's record.
+    // Always merge these fields by id against what's already stored (same union semantics
+    // smartMerge uses for a stale save) instead of trusting the incoming array to be the
+    // complete set, then apply this save's own tombstones so genuine deletions still take
+    // effect. Safe by construction: mergeArrayById only touches ids actually present in the
+    // incoming array, so ids a filtered client never received (and therefore can't send back)
+    // are left untouched from _fileStore.
     const _tomb = data.recordTombstones || {};
     function _mergeProtectedField(field) {
       let merged = mergeArrayById(_fileStore[field], data[field]);
@@ -555,14 +594,52 @@ async function _persistDataLocked(data, changedBy = "system") {
       }
       return merged;
     }
-    const kpiEntriesFinal = _mergeProtectedField("kpiEntries");
-    const payslipsFinal   = _mergeProtectedField("payslips");
+    const kpiEntriesFinal   = _mergeProtectedField("kpiEntries");
+    const payslipsFinal     = _mergeProtectedField("payslips");
+    const lowPerfDataFinal  = _mergeProtectedField("lowPerfData");
+    const coreTalentPoolFinal = _mergeProtectedField("coreTalentPool");
+    const welfarePointsFinal  = _mergeProtectedField("welfarePoints");
+    // compResponses is filtered differently — not whole-record hiding but per-record FIELD
+    // stripping (evaluator identity/content removed for records the requester didn't author,
+    // to protect multi-rater anonymity; see filterDataForRole). A stripped copy still carries
+    // the record's id with the *same* updatedAt/createdAt as the original, so plain
+    // mergeArrayById's ">=" tie-break would let the incoming stripped copy overwrite the full
+    // stored record on every non-admin autosave. Guard against that: an incoming record
+    // missing the content-only field `answers` (present only on a full/unstripped record) is
+    // treated as a redacted echo and ignored whenever a full record already exists server-side.
+    function _mergeCompResponses() {
+      const existingById = {};
+      for (const r of (_fileStore.compResponses || [])) if (r && r.id != null) existingById[r.id] = r;
+      const incoming = Array.isArray(data.compResponses) ? data.compResponses : [];
+      const merged = { ...existingById };
+      for (const item of incoming) {
+        if (!item || item.id == null) continue;
+        const ex = existingById[item.id];
+        if (ex && !("answers" in item)) continue; // redacted echo — keep the full stored record
+        if (!ex || (item.updatedAt || item.createdAt || "") >= (ex.updatedAt || ex.createdAt || "")) {
+          merged[item.id] = item;
+        }
+      }
+      let result = Object.values(merged);
+      const dead = _tomb.compResponses;
+      if (dead && dead.length) {
+        const deadIds = new Set(dead.map(t => t.id));
+        result = result.filter(r => !(r && deadIds.has(r.id)));
+      }
+      return result;
+    }
+    const compResponsesFinal = _mergeCompResponses();
 
     // Defense in depth alongside the smartMerge fix above: even for a save that skips
     // smartMerge (client claims to be exactly at the current version), keep any existing
     // collection the incoming payload doesn't mention instead of dropping it — a plain
     // `{...data, employees}` would silently delete every field absent from `data`.
-    _fileStore = { ..._fileStore, ...data, employees, kpiEntries: kpiEntriesFinal, payslips: payslipsFinal };
+    _fileStore = {
+      ..._fileStore, ...data, employees,
+      kpiEntries: kpiEntriesFinal, payslips: payslipsFinal,
+      lowPerfData: lowPerfDataFinal, coreTalentPool: coreTalentPoolFinal,
+      welfarePoints: welfarePointsFinal, compResponses: compResponsesFinal,
+    };
     _dataVersion++;
     _lastSaved = new Date().toISOString();
     _fileStore._version = _dataVersion;
@@ -675,6 +752,15 @@ async function _persistDataLocked(data, changedBy = "system") {
             "SELECT data FROM app_collections WHERE collection = $1 AND id = $2",
             [field, String(item.id)]
           );
+          // compResponses is filtered by filterDataForRole() with per-record FIELD stripping
+          // (evaluator identity/content removed for records the requester didn't author, to
+          // protect multi-rater anonymity), not whole-record hiding like the other generic
+          // fields — a redacted echo carries the same id/updatedAt as the real record, so the
+          // usual "newer wins" tie-break would let it silently overwrite the full stored
+          // content on every non-admin autosave. A record missing `answers` (present only on
+          // a full/unstripped record) is that redacted echo — ignore it whenever a full
+          // record already exists server-side, regardless of timestamp.
+          if (field === "compResponses" && rows.length && !("answers" in item)) continue;
           const oldTs = rows.length ? (rows[0].data.updatedAt || rows[0].data.createdAt || "") : "";
           const newTs = item.updatedAt || item.createdAt || "";
           if (rows.length && newTs < oldTs) continue; // server has a newer copy, keep it
@@ -814,7 +900,20 @@ function smartMerge(serverData, clientData) {
   merged.recordTombstones = recordTombstones;
   for (const field of ID_KEYED_LIST_FIELDS) {
     if (clientData[field] !== undefined || serverData[field] !== undefined) {
-      let mergedField = mergeArrayById(serverData[field], clientData[field]);
+      // compResponses is filtered by filterDataForRole() via per-record FIELD stripping
+      // (see the detailed comment in _persistDataLocked) rather than whole-record hiding —
+      // a redacted echo carries the same id/updatedAt as the real record, so plain
+      // mergeArrayById() would let it win the "newer wins" tie-break and overwrite the full
+      // stored content. Drop redacted echoes (missing `answers`) before merging whenever the
+      // server already has a full record for that id.
+      const clientArr = field === "compResponses" && Array.isArray(clientData[field])
+        ? clientData[field].filter(item => {
+            if (!item || item.id == null) return true;
+            const hasServerFull = Array.isArray(serverData[field]) && serverData[field].some(s => s && s.id === item.id && "answers" in s);
+            return !(hasServerFull && !("answers" in item));
+          })
+        : clientData[field];
+      let mergedField = mergeArrayById(serverData[field], clientArr);
       // A record deleted by one client (tombstoned) can otherwise be resurrected here:
       // mergeArrayById() only sees "present on one side" vs "present on both", so a
       // stale client that still has the now-deleted record locally would win it back.
@@ -1077,6 +1176,13 @@ app.post("/save", async (req, res) => {
 
 // GET /events — SSE
 app.get("/events", (req, res) => {
+  // 브라우저 내장 EventSource는 커스텀 헤더(Authorization)를 붙일 수 없어 다른 라우트처럼
+  // requireAuth를 그대로 쓸 수 없다 — 그래서 인증 자체가 아예 없었고, 로그인하지 않은
+  // 상태로도 실시간 이벤트(잠금 상태에 포함된 편집자 이름, 접속/이탈 이벤트의 사용자명 등)를
+  // 그대로 구독할 수 있었다. SSE에서 흔히 쓰는 방식대로 토큰을 쿼리스트링으로 전달받아
+  // authenticate 미들웨어와 동일한 verifyToken()으로 검증한다.
+  const auth = req.auth || verifyToken(req.query.token);
+  if (!auth) return res.status(401).json({ ok: false, message: "로그인이 필요합니다." });
   const clientId = req.query.clientId || `client_${Date.now()}`;
   const user     = req.query.user     || "unknown";
 
@@ -1103,6 +1209,7 @@ app.get("/events", (req, res) => {
 
 // GET /online
 app.get("/online", (req, res) => {
+  if (!requireAuth(req, res)) return;
   const users = Object.entries(_sseClients).map(([cid, c]) => ({
     clientId: cid, user: c.user, connectedAt: c.connectedAt,
   }));
@@ -1241,7 +1348,11 @@ app.post("/snapshots", async (req, res) => {
 // `fields` summary (name + record count) so the client can pick which parts
 // to restore instead of always restoring everything.
 app.get("/snapshots/:year", async (req, res) => {
-  if (!requireAuth(req, res)) return;
+  // /data·/save·/restore와 달리 이 라우트만 filterDataForRole()을 거치지 않아 taken
+  // member 토큰으로도 스냅샷 안의 타 직원 payslips(급여)·kpiEntries(평가 코멘트)가 그대로
+  // 반환되고 있었다(실측 확인) — "연도별 스냅샷" 기능 자체가 PAGE_ROLES상 admin 전용
+  // ("history" 페이지)이므로 requireAuth를 requireAdmin으로 승격해 원천 차단한다.
+  if (!requireAdmin(req, res)) return;
   try {
     const yr = parseInt(req.params.year);
     if (USE_JSON_FILE) {
@@ -1347,7 +1458,8 @@ function unionPreferSnapshot(curArr, snapArr) {
 // records currently exist that are NOT in the snapshot. Lets the client warn
 // "복원 시 N건이 삭제됩니다" before the admin opts into deleteExtras.
 app.get("/snapshots/:year/diff", async (req, res) => {
-  if (!requireAuth(req, res)) return;
+  // 같은 "연도별 스냅샷"(admin 전용) 기능의 일부 — /snapshots/:year와 동일하게 승격.
+  if (!requireAdmin(req, res)) return;
   try {
     const yr = parseInt(req.params.year);
     const fields = (req.query.fields || "").split(",").map(f => f.trim()).filter(Boolean);
@@ -1442,7 +1554,7 @@ app.post("/restore", async (req, res) => {
 
 // GET /history/employee/:id
 app.get("/history/employee/:id", async (req, res) => {
-  if (!requireAuth(req, res)) return;
+  if (!requireAdmin(req, res)) return;
   if (USE_JSON_FILE) {
     const history = (_fileHistory.employees || [])
       .filter(h => h.employee_id === req.params.id)
@@ -1463,7 +1575,7 @@ app.get("/history/employee/:id", async (req, res) => {
 
 // GET /history/kpi/:id
 app.get("/history/kpi/:id", async (req, res) => {
-  if (!requireAuth(req, res)) return;
+  if (!requireAdmin(req, res)) return;
   if (USE_JSON_FILE) {
     const history = (_fileHistory.kpi || [])
       .filter(h => h.kpi_id === req.params.id)
@@ -1484,6 +1596,7 @@ app.get("/history/kpi/:id", async (req, res) => {
 
 // GET /history/changes?since=ISO_DATE&table=employees|kpi_entries
 app.get("/history/changes", async (req, res) => {
+  if (!requireAdmin(req, res)) return;
   const since = req.query.since || new Date(Date.now() - 30 * 86400 * 1000).toISOString();
   const table = req.query.table;
   if (USE_JSON_FILE) {
@@ -1562,7 +1675,9 @@ function _round2(n) { return Math.round((Number(n) || 0) * 100) / 100; }
 
 // ── 계정과목 (Chart of accounts) ────────────────────────────────────────────
 app.get("/api/accounting/accounts", async (req, res) => {
-  if (!requireAuth(req, res)) return;
+  // 회계 모듈 조회 전체가 PAGE_ROLES상 admin 전용("acct-*")인데 requireAuth만 있어 member
+  // 토큰으로도 API 직접호출 시 전표·거래처·세금계산서 등 전체 조회가 가능했다(실측 확인).
+  if (!requireAdmin(req, res)) return;
   try {
     if (USE_JSON_FILE) return res.json({ ok: true, accounts: _fileAccounting.accounts });
     const { rows } = await pool.query("SELECT id, data FROM accounts WHERE is_deleted = FALSE ORDER BY id");
@@ -1651,7 +1766,7 @@ function _validateVoucherLines(lines, accounts) {
 }
 
 app.get("/api/accounting/vouchers", async (req, res) => {
-  if (!requireAuth(req, res)) return;
+  if (!requireAdmin(req, res)) return;
   try {
     const year = req.query.year ? parseInt(req.query.year) : null;
     if (USE_JSON_FILE) {
@@ -1784,7 +1899,7 @@ function _buildTaxInvoiceTotals(items) {
 }
 
 app.get("/api/accounting/tax-invoices", async (req, res) => {
-  if (!requireAuth(req, res)) return;
+  if (!requireAdmin(req, res)) return;
   try {
     const year = req.query.year ? parseInt(req.query.year) : null;
     if (USE_JSON_FILE) {
@@ -1863,7 +1978,7 @@ app.post("/api/accounting/tax-invoices/:id/void", async (req, res) => {
 // ── 수금/지급 (AR/AP payments — 거래처별 미수·미지급 관리) ────────────────────
 // JSON 모드: _fileAccounting.payments / PG 모드: app_collections(acctPayments)
 app.get("/api/accounting/payments", async (req, res) => {
-  if (!requireAuth(req, res)) return;
+  if (!requireAdmin(req, res)) return;
   try {
     if (USE_JSON_FILE) return res.json({ ok: true, payments: _fileAccounting.payments || [] });
     const { rows } = await pool.query("SELECT data FROM app_collections WHERE collection = 'acctPayments' ORDER BY created_at");
@@ -1909,7 +2024,7 @@ app.post("/api/accounting/payments/:id/delete", async (req, res) => {
 
 // ── 거래처 (Business partners — customer/vendor master data) ─────────────────
 app.get("/api/accounting/partners", async (req, res) => {
-  if (!requireAuth(req, res)) return;
+  if (!requireAdmin(req, res)) return;
   try {
     if (USE_JSON_FILE) return res.json({ ok: true, partners: _fileAccounting.partners });
     const { rows } = await pool.query("SELECT id, data FROM partners WHERE is_deleted = FALSE ORDER BY id");
@@ -2105,7 +2220,7 @@ app.post("/api/erp/locations/:id/delete", async (req, res) => {
 
 // ── 견적서 (Quotations) ─────────────────────────────────────────────────────
 app.get("/api/erp/quotations", async (req, res) => {
-  if (!requireAuth(req, res)) return;
+  if (!requireAdmin(req, res)) return;
   try {
     const year = req.query.year ? parseInt(req.query.year) : null;
     if (USE_JSON_FILE) {
@@ -2343,7 +2458,7 @@ app.delete("/api/erp/quotations/:id", async (req, res) => {
 
 // ── 발주서 (Purchase orders) ────────────────────────────────────────────────
 app.get("/api/erp/purchase-orders", async (req, res) => {
-  if (!requireAuth(req, res)) return;
+  if (!requireAdmin(req, res)) return;
   try {
     const year = req.query.year ? parseInt(req.query.year) : null;
     if (USE_JSON_FILE) {
@@ -2550,7 +2665,8 @@ app.get("/api/erp/purchase-requests", async (req, res) => {
 app.post("/api/erp/purchase-requests", async (req, res) => {
   if (!requireAuth(req, res)) return;
   try {
-    const { date, items, memo, userId, user: requestedBy } = req.body || {};
+    const { empId: userId } = req.auth;
+    const { date, items, memo, user: requestedBy } = req.body || {};
     if (!date) return res.status(400).json({ ok: false, message: "요청일자는 필수입니다." });
     if (!Array.isArray(items) || !items.length) return res.status(400).json({ ok: false, message: "품목을 1개 이상 입력하세요." });
     if (items.some(it => !it.itemId)) return res.status(400).json({ ok: false, message: "모든 라인에 품목을 선택하세요." });
@@ -2559,7 +2675,11 @@ app.post("/api/erp/purchase-requests", async (req, res) => {
       id: `pr_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
       status: "pending",
       date, ...totals, memo: memo || "",
-      requestedById: userId != null ? String(userId) : null, requestedBy: requestedBy || "unknown",
+      // 과거에는 req.body.userId(클라이언트가 그대로 적어 보낸 값)를 그대로 신뢰해, member
+      // 토큰으로도 userId만 admin의 id로 바꿔 보내면 admin 명의로 구매요청이 등록되고
+      // (아래 DELETE 라우트의 본인 소유권 검사가 이 값을 근거로 판단하므로) 실제 요청자가
+      // 삭제 권한까지 스푸핑할 수 있었다(실측 확인). 서버가 검증한 로그인 토큰(req.auth)만 신뢰한다.
+      requestedById: String(userId), requestedBy: requestedBy || "unknown",
       createdAt: new Date().toISOString(),
     };
     if (USE_JSON_FILE) {
@@ -2687,7 +2807,7 @@ app.delete("/api/erp/purchase-requests/:id", async (req, res) => {
 
 // ── 재고 (Stock — computed from ledger, plus manual adjustment) ──────────────
 app.get("/api/erp/stock", async (req, res) => {
-  if (!requireAuth(req, res)) return;
+  if (!requireAdmin(req, res)) return;
   try {
     let ledger;
     if (USE_JSON_FILE) {
@@ -2711,7 +2831,7 @@ app.get("/api/erp/stock", async (req, res) => {
 });
 
 app.get("/api/erp/stock/ledger", async (req, res) => {
-  if (!requireAuth(req, res)) return;
+  if (!requireAdmin(req, res)) return;
   try {
     const { itemId, locationId } = req.query;
     let ledger;
@@ -2867,7 +2987,7 @@ app.post("/api/erp/stock/transfer", async (req, res) => {
 
 // ── ERP: 영업 목표 (Sales targets — admin only CRUD, actuals computed client-side) ──
 app.get("/api/erp/sales-targets", async (req, res) => {
-  if (!requireAuth(req, res)) return;
+  if (!requireAdmin(req, res)) return;
   try {
     if (USE_JSON_FILE) return res.json({ ok: true, salesTargets: _fileErp.salesTargets });
     const { rows } = await pool.query("SELECT id, data FROM erp_sales_targets WHERE is_deleted = FALSE ORDER BY id");
@@ -3041,7 +3161,13 @@ async function _allocationMonthTotal(employeeId, year, month, excludeId) {
 app.get("/api/pms/allocations", async (req, res) => {
   if (!requireAuth(req, res)) return;
   try {
-    const { year, month, employeeId } = req.query;
+    const { role, empId: userId } = req.auth;
+    let { year, month, employeeId } = req.query;
+    // "가동률 현황"(pms-utilization) 화면은 PAGE_ROLES상 admin/director/leader 전용인데
+    // 이 API는 requireAuth만 있어 member 토큰으로 ?employeeId=<타인 id>를 직접 넣으면
+    // 무관 부서 타 직원의 프로젝트 투입률까지 그대로 조회됐다(실측 확인). member는
+    // 쿼리로 무엇을 보내든 본인 employeeId로 강제한다.
+    if (role === "member") employeeId = String(userId);
     if (USE_JSON_FILE) {
       let list = _filePms.allocations;
       if (year) list = list.filter(a => Number(a.year) === Number(year));
@@ -3162,7 +3288,12 @@ function _worklogBlocksValid(blocks) {
 app.get("/api/pms/worklogs", async (req, res) => {
   if (!requireAuth(req, res)) return;
   try {
-    const { employeeId, date, year, month } = req.query;
+    const { role, empId: userId } = req.auth;
+    let { employeeId, date, year, month } = req.query;
+    // "팀 전체" 보기(_pmsWorklogViewTabs)는 admin/leader/director에게만 노출되는데, 이
+    // API는 requireAuth만 있어 member가 employeeId 쿼리를 생략하거나 타인 id를 넣으면
+    // 전 직원의 업무일지가 그대로 조회됐다(실측 확인). member는 본인 employeeId로 강제한다.
+    if (role === "member") employeeId = String(userId);
     if (USE_JSON_FILE) {
       let list = _filePms.worklogs;
       if (employeeId) list = list.filter(w => String(w.employeeId) === String(employeeId));
@@ -3872,6 +4003,7 @@ app.post("/api/recruit/candidates/:id", async (req, res) => {
   try {
     if (!requireRole(req, res, ["admin", "leader", "director"])) return;
     const id = req.params.id;
+    const { role, empId: userId } = req.auth;
     const { name, email, phone, memo, resumeSummary, strengths, weaknesses, finalEducation, careerHistory, lastSalary, desiredSalary, activities, careerGaps, resume } = req.body || {};
     const applyEdits = (candidate) => {
       if (name != null) candidate.name = name;
@@ -3894,13 +4026,17 @@ app.post("/api/recruit/candidates/:id", async (req, res) => {
     if (USE_JSON_FILE) {
       const candidate = _fileRecruit.candidates.find(c => c.id === id);
       if (!candidate) return res.status(404).json({ ok: false, message: "지원자를 찾을 수 없습니다." });
+      if (!(await _recruitCanViewCandidate(candidate, userId, role))) return res.status(403).json({ ok: false, message: "수정 권한이 없습니다." });
       applyEdits(candidate);
       _saveFileRecruit();
       return res.json({ ok: true, candidate: _recruitStripResume(candidate) });
     }
     let candidate;
     try {
-      candidate = await _pgLockedUpdate("recruit_candidates", id, async (c) => applyEdits(c));
+      candidate = await _pgLockedUpdate("recruit_candidates", id, async (c) => {
+        if (!(await _recruitCanViewCandidate(c, userId, role))) throw new _RecruitRouteError(403, "수정 권한이 없습니다.");
+        return applyEdits(c);
+      });
     } catch (e) {
       if (e instanceof _RecruitRouteError) return res.status(e.status).json({ ok: false, message: e.message });
       throw e;
@@ -3931,6 +4067,7 @@ app.post("/api/recruit/candidates/:id/status", async (req, res) => {
   try {
     if (!requireRole(req, res, ["admin", "leader", "director"])) return;
     const id = req.params.id;
+    const { role, empId: userId } = req.auth;
     const { status, reason } = req.body || {};
     if (!status) return res.status(400).json({ ok: false, message: "변경할 전형 단계는 필수입니다." });
     const RECRUIT_PASS_SCORE = 15;
@@ -3948,6 +4085,7 @@ app.post("/api/recruit/candidates/:id/status", async (req, res) => {
     if (USE_JSON_FILE) {
       const candidate = _fileRecruit.candidates.find(c => c.id === id);
       if (!candidate) return res.status(404).json({ ok: false, message: "지원자를 찾을 수 없습니다." });
+      if (!(await _recruitCanViewCandidate(candidate, userId, role))) return res.status(403).json({ ok: false, message: "수정 권한이 없습니다." });
       const job = await _recruitJobById(candidate.jobId);
       if (!job || !job.stages.includes(status)) return res.status(400).json({ ok: false, message: "해당 채용공고에 없는 전형 단계입니다." });
       if (await checkReasonRequired(candidate, job) && !String(reason || "").trim()) {
@@ -3962,6 +4100,7 @@ app.post("/api/recruit/candidates/:id/status", async (req, res) => {
     let candidate;
     try {
       candidate = await _pgLockedUpdate("recruit_candidates", id, async (c) => {
+        if (!(await _recruitCanViewCandidate(c, userId, role))) throw new _RecruitRouteError(403, "수정 권한이 없습니다.");
         const job = await _recruitJobById(c.jobId);
         if (!job || !job.stages.includes(status)) throw new _RecruitRouteError(400, "해당 채용공고에 없는 전형 단계입니다.");
         if (await checkReasonRequired(c, job) && !String(reason || "").trim()) {
@@ -4057,6 +4196,7 @@ app.post("/api/recruit/interviews/:id", async (req, res) => {
   try {
     if (!requireRole(req, res, ["admin", "leader", "director"])) return;
     const id = req.params.id;
+    const { role, empId: userId } = req.auth;
     const { round, schedule, interviewerIds, location, leadInterviewerId } = req.body || {};
     const applyEdits = (interview) => {
       if (round != null) interview.round = Number(round);
@@ -4074,13 +4214,17 @@ app.post("/api/recruit/interviews/:id", async (req, res) => {
     if (USE_JSON_FILE) {
       const interview = _fileRecruit.interviews.find(i => i.id === id);
       if (!interview) return res.status(404).json({ ok: false, message: "면접 일정을 찾을 수 없습니다." });
+      if (!(await _recruitIsInterviewPrivileged(interview, userId, role))) return res.status(403).json({ ok: false, message: "수정 권한이 없습니다." });
       applyEdits(interview);
       _saveFileRecruit();
       return res.json({ ok: true, interview });
     }
     let interview;
     try {
-      interview = await _pgLockedUpdate("recruit_interviews", id, async (iv) => applyEdits(iv));
+      interview = await _pgLockedUpdate("recruit_interviews", id, async (iv) => {
+        if (!(await _recruitIsInterviewPrivileged(iv, userId, role))) throw new _RecruitRouteError(403, "수정 권한이 없습니다.");
+        return applyEdits(iv);
+      });
     } catch (e) {
       if (e instanceof _RecruitRouteError) return res.status(e.status).json({ ok: false, message: e.message });
       throw e;
@@ -4093,6 +4237,7 @@ app.post("/api/recruit/interviews/:id/cancel", async (req, res) => {
   try {
     if (!requireRole(req, res, ["admin", "leader", "director"])) return;
     const id = req.params.id;
+    const { role, empId: userId } = req.auth;
     const { reason } = req.body || {};
     const applyCancel = (interview) => {
       interview.status = "canceled";
@@ -4104,13 +4249,17 @@ app.post("/api/recruit/interviews/:id/cancel", async (req, res) => {
     if (USE_JSON_FILE) {
       const interview = _fileRecruit.interviews.find(i => i.id === id);
       if (!interview) return res.status(404).json({ ok: false, message: "면접 일정을 찾을 수 없습니다." });
+      if (!(await _recruitIsInterviewPrivileged(interview, userId, role))) return res.status(403).json({ ok: false, message: "취소 권한이 없습니다." });
       applyCancel(interview);
       _saveFileRecruit();
       return res.json({ ok: true, interview });
     }
     let interview;
     try {
-      interview = await _pgLockedUpdate("recruit_interviews", id, async (iv) => applyCancel(iv));
+      interview = await _pgLockedUpdate("recruit_interviews", id, async (iv) => {
+        if (!(await _recruitIsInterviewPrivileged(iv, userId, role))) throw new _RecruitRouteError(403, "취소 권한이 없습니다.");
+        return applyCancel(iv);
+      });
     } catch (e) {
       if (e instanceof _RecruitRouteError) return res.status(e.status).json({ ok: false, message: e.message });
       throw e;
@@ -4231,15 +4380,18 @@ app.post("/api/recruit/candidates/:id/delete", async (req, res) => {
   try {
     if (!requireRole(req, res, ["admin", "leader", "director"])) return;
     const id = req.params.id;
+    const { role, empId: userId } = req.auth;
     if (USE_JSON_FILE) {
       const candidate = _fileRecruit.candidates.find(c => c.id === id);
       if (!candidate) return res.status(404).json({ ok: false, message: "지원자를 찾을 수 없습니다." });
+      if (!(await _recruitCanViewCandidate(candidate, userId, role))) return res.status(403).json({ ok: false, message: "삭제 권한이 없습니다." });
       _fileRecruit.candidates = _fileRecruit.candidates.filter(c => c.id !== id);
       _saveFileRecruit();
       return res.json({ ok: true });
     }
     const { rows } = await pool.query("SELECT data FROM recruit_candidates WHERE id = $1 AND is_deleted = FALSE", [id]);
     if (!rows.length) return res.status(404).json({ ok: false, message: "지원자를 찾을 수 없습니다." });
+    if (!(await _recruitCanViewCandidate(rows[0].data, userId, role))) return res.status(403).json({ ok: false, message: "삭제 권한이 없습니다." });
     await pool.query("UPDATE recruit_candidates SET is_deleted = TRUE WHERE id = $1", [id]);
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ ok: false, message: e.message }); }

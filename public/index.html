@@ -4606,7 +4606,7 @@ function connectSSE(){
   if(!serverConfig.url || !currentUser) return;
   if(_sseSource){ _sseSource.close(); _sseSource=null; }
   const base = serverConfig.url.replace(/\/+$/,"");
-  const url = `${base}/events?clientId=${encodeURIComponent(_clientId)}&user=${encodeURIComponent(currentUser?.name||"unknown")}`;
+  const url = `${base}/events?clientId=${encodeURIComponent(_clientId)}&user=${encodeURIComponent(currentUser?.name||"unknown")}&token=${encodeURIComponent(_authToken||"")}`;
   console.log("[SSE] Connecting to:", url);
   try {
     _sseSource = new EventSource(url);

@@ -95,6 +95,16 @@
 <script>
 const MONTHS = Array.from({length:12}, (_,i)=>i+1);
 
+// index.html(메인 SPA)이 /login에서 발급받아 localStorage에 저장해둔 토큰을 그대로
+// 재사용한다(같은 오리진이라 localStorage 공유됨) - 이 페이지는 서버가 검증한 관리자
+// 로그인 없이는 예산 데이터를 전혀 읽거나 쓸 수 없다(요청에 Authorization 헤더가 없으면
+// 서버가 401로 거부).
+function _authHeaders() {
+  let token = null;
+  try { token = localStorage.getItem('hr_kpi_auth_token'); } catch (e) {}
+  return token ? { 'Authorization': 'Bearer ' + token } : {};
+}
+
 async function uploadFile(inputId, url, statusId) {
   const input = document.getElementById(inputId);
   const statusEl = document.getElementById(statusId);
@@ -108,7 +118,7 @@ async function uploadFile(inputId, url, statusId) {
   statusEl.textContent = '업로드 중...';
   statusEl.className = 'status';
   try {
-    const res = await fetch(url, { method: 'POST', body: fd });
+    const res = await fetch(url, { method: 'POST', headers: _authHeaders(), body: fd });
     const json = await res.json();
     if (!res.ok) throw new Error(json.error || '업로드 실패');
     statusEl.textContent = `완료: ${json.message} (반영 ${json.upserted}건)`;
@@ -122,7 +132,7 @@ async function uploadFile(inputId, url, statusId) {
 
 async function resetData() {
   if (!confirm('업로드된 모든 예산 데이터를 초기화할까요?')) return;
-  await fetch('/api/budget/data', { method: 'DELETE' });
+  await fetch('/api/budget/data', { method: 'DELETE', headers: _authHeaders() });
   loadAll();
 }
 
@@ -132,9 +142,13 @@ function fmt(n) {
 }
 
 async function loadSummary() {
-  const res = await fetch('/api/budget/summary');
-  const { summary } = await res.json();
+  const res = await fetch('/api/budget/summary', { headers: _authHeaders() });
   const area = document.getElementById('summaryArea');
+  if (!res.ok) {
+    area.innerHTML = '<p class="desc">관리자 로그인이 필요합니다. 메인 화면(index.html)에서 관리자로 로그인한 뒤 이 페이지를 다시 열어주세요.</p>';
+    return;
+  }
+  const { summary } = await res.json();
   if (!summary.length) {
     area.innerHTML = '<p class="desc">업로드된 데이터가 없습니다.</p>';
     return;
@@ -209,7 +223,12 @@ function renderRaw() {
 }
 
 async function loadAll() {
-  const res = await fetch('/api/budget/data');
+  const res = await fetch('/api/budget/data', { headers: _authHeaders() });
+  if (!res.ok) {
+    document.getElementById('rawArea').innerHTML = '<p class="desc">관리자 로그인이 필요합니다. 메인 화면(index.html)에서 관리자로 로그인한 뒤 이 페이지를 다시 열어주세요.</p>';
+    loadSummary();
+    return;
+  }
   rawData = await res.json();
   renderRaw();
   loadSummary();
