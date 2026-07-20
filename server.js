@@ -210,7 +210,48 @@ function omitPw(emp) {
 //   - welfarePoints(복지포인트 사용내역): desc 필드에 사용목적(의료비 등)이 그대로 들어가
 //     동료가 볼 수 있었다 — admin이거나 settings.welfarePointsViewers에 등록된 직원이
 //     아니면 본인 것만 남긴다(_canViewWelfareAll()과 동일 기준).
+//   - payrollAdjustments(급여 조정/인센티브/경조사비 금액): payslips와 동급 민감도 —
+//     admin 아니면 본인 것만.
+//   - gradeAdjustHistory(평가등급 조정 이력, 사유 포함): "comp-grade-view" 화면이 admin
+//     전용이라 admin 아니면 본인 것만.
+//   - certRequests(증명서 발급 신청, 사유에 "대출용" 등 개인 재무상황이 드러남): 승인/반려가
+//     client의 approveCertRequest()에서 admin 전용으로 하드코딩돼 있어 admin 아니면 본인 것만.
+//   - changeRequests(KPI 수정요청): kpiEntries와 동일한 코멘트를 담고 있어 kpiEntries와 동일한
+//     기준(member만 본인 것으로 제한, leader/director/admin은 평가 운영을 위해 그대로 유지).
+//   - attendanceRecords(근태): "hr-attendance" 화면이 admin/director 전용(leader 제외)이라
+//     admin·director 아니면(leader 포함) 본인 것만.
+//   - scheduleEvents(개인 일정): scope==="personal"인 항목만 작성자 본인에게만 남기고, team/
+//     dept/company scope는 원래 공개가 의도이므로 그대로 둔다.
+//   - compGradeResults(다면평가 최종등급/점수, {empId:{year:{...}}} 형태의 nested 싱글톤):
+//     admin 아니면 본인 키만 남긴다.
+//   - approvalDocs(전자결재): 결재선(상신자/결재자/참조자/수신자) 밖의 사람에게는 원래도
+//     노출되면 안 되는 설계인데(병가 사유 등 인사 문서가 섞여 있음) 서버가 전량 반환했다 —
+//     client의 결재함 화면들이 실제로 쓰는 가시성 규칙(authorId/approvers[].empId/
+//     _refsToVisibleEmpIds(receivers)/_refsToVisibleEmpIds(cc))을 그대로 서버에 재현한다.
 // No-op when `auth` is absent (e.g. bootstrap-exempt paths never reach here with real data).
+function _refToEmpIdsServer(ref, employees) {
+  if (typeof ref === "number") return [ref];
+  if (typeof ref !== "string") return [];
+  if (/^\d+$/.test(ref)) return [Number(ref)];
+  if (ref.startsWith("emp:")) return [Number(ref.slice(4))];
+  if (ref.startsWith("dept:")) { const d = ref.slice(5); return employees.filter(e => e.active && e.dept === d).map(e => e.id); }
+  if (ref.startsWith("team:")) { const [d, t] = ref.slice(5).split("::"); return employees.filter(e => e.active && e.dept === d && e.team === t).map(e => e.id); }
+  return [];
+}
+function _refsToVisibleEmpIdsServer(refs, employees) {
+  const direct = [], group = [];
+  (refs || []).forEach(ref => {
+    const isGroup = typeof ref === "string" && (ref.startsWith("dept:") || ref.startsWith("team:"));
+    (isGroup ? group : direct).push(..._refToEmpIdsServer(ref, employees));
+  });
+  const directSet = new Set(direct);
+  const visibleGroup = group.filter(id => {
+    if (directSet.has(id)) return true;
+    const e = employees.find(e => e.id === id);
+    return !(e && e.hideGroupApproval);
+  });
+  return [...new Set([...direct, ...visibleGroup])];
+}
 function filterDataForRole(data, auth) {
   if (!data || !auth) return data;
   const out = { ...data };
@@ -242,6 +283,39 @@ function filterDataForRole(data, auth) {
     (settings.welfarePointsViewers || []).map(String).includes(myId);
   if (!canViewWelfareAll && Array.isArray(out.welfarePoints)) {
     out.welfarePoints = out.welfarePoints.filter(w => w && String(w.empId) === myId);
+  }
+  if (auth.role !== "admin" && Array.isArray(out.payrollAdjustments)) {
+    out.payrollAdjustments = out.payrollAdjustments.filter(a => a && String(a.empId) === myId);
+  }
+  if (auth.role !== "admin" && Array.isArray(out.gradeAdjustHistory)) {
+    out.gradeAdjustHistory = out.gradeAdjustHistory.filter(a => a && String(a.empId) === myId);
+  }
+  if (auth.role !== "admin" && Array.isArray(out.certRequests)) {
+    out.certRequests = out.certRequests.filter(c => c && String(c.empId) === myId);
+  }
+  if (auth.role === "member" && Array.isArray(out.changeRequests)) {
+    out.changeRequests = out.changeRequests.filter(c => c && String(c.reqUserId) === myId);
+  }
+  if (auth.role !== "admin" && auth.role !== "director" && Array.isArray(out.attendanceRecords)) {
+    out.attendanceRecords = out.attendanceRecords.filter(r => r && String(r.empId) === myId);
+  }
+  if (auth.role !== "admin" && Array.isArray(out.scheduleEvents)) {
+    out.scheduleEvents = out.scheduleEvents.filter(s => !s || s.scope !== "personal" || String(s.authorId) === myId);
+  }
+  if (auth.role !== "admin" && out.compGradeResults && typeof out.compGradeResults === "object") {
+    out.compGradeResults = Object.prototype.hasOwnProperty.call(out.compGradeResults, myId)
+      ? { [myId]: out.compGradeResults[myId] } : {};
+  }
+  if (auth.role !== "admin" && Array.isArray(out.approvalDocs)) {
+    const employees = Array.isArray(out.employees) ? out.employees : [];
+    out.approvalDocs = out.approvalDocs.filter(d => {
+      if (!d) return false;
+      if (String(d.authorId) === myId) return true;
+      if (Array.isArray(d.approvers) && d.approvers.some(a => a && String(a.empId) === myId)) return true;
+      if (_refsToVisibleEmpIdsServer(d.receivers, employees).map(String).includes(myId)) return true;
+      if (_refsToVisibleEmpIdsServer(d.cc, employees).map(String).includes(myId)) return true;
+      return false;
+    });
   }
   return out;
 }
@@ -599,6 +673,22 @@ async function _persistDataLocked(data, changedBy = "system") {
     const lowPerfDataFinal  = _mergeProtectedField("lowPerfData");
     const coreTalentPoolFinal = _mergeProtectedField("coreTalentPool");
     const welfarePointsFinal  = _mergeProtectedField("welfarePoints");
+    const payrollAdjustmentsFinal = _mergeProtectedField("payrollAdjustments");
+    const gradeAdjustHistoryFinal = _mergeProtectedField("gradeAdjustHistory");
+    const certRequestsFinal       = _mergeProtectedField("certRequests");
+    const changeRequestsFinal     = _mergeProtectedField("changeRequests");
+    const attendanceRecordsFinal  = _mergeProtectedField("attendanceRecords");
+    const scheduleEventsFinal     = _mergeProtectedField("scheduleEvents");
+    const approvalDocsFinal       = _mergeProtectedField("approvalDocs");
+    // compGradeResults is a nested singleton ({empId:{year:{...}}}), not an id-keyed array —
+    // filterDataForRole() now narrows it to the requester's own key for non-admin, so (like the
+    // array fields above) a plain overwrite would wipe out every other employee's grade result.
+    // mergeNestedObject() unions per-employee/per-year keys from both sides instead (same helper
+    // smartMerge() already uses for the version-conflict path — this covers the direct-overwrite
+    // path too, which smartMerge never touches).
+    const compGradeResultsFinal = data.compGradeResults !== undefined
+      ? mergeNestedObject(_fileStore.compGradeResults, data.compGradeResults)
+      : _fileStore.compGradeResults;
     // compResponses is filtered differently — not whole-record hiding but per-record FIELD
     // stripping (evaluator identity/content removed for records the requester didn't author,
     // to protect multi-rater anonymity; see filterDataForRole). A stripped copy still carries
@@ -639,6 +729,10 @@ async function _persistDataLocked(data, changedBy = "system") {
       kpiEntries: kpiEntriesFinal, payslips: payslipsFinal,
       lowPerfData: lowPerfDataFinal, coreTalentPool: coreTalentPoolFinal,
       welfarePoints: welfarePointsFinal, compResponses: compResponsesFinal,
+      payrollAdjustments: payrollAdjustmentsFinal, gradeAdjustHistory: gradeAdjustHistoryFinal,
+      certRequests: certRequestsFinal, changeRequests: changeRequestsFinal,
+      attendanceRecords: attendanceRecordsFinal, scheduleEvents: scheduleEventsFinal,
+      approvalDocs: approvalDocsFinal, compGradeResults: compGradeResultsFinal,
     };
     _dataVersion++;
     _lastSaved = new Date().toISOString();
@@ -790,10 +884,20 @@ async function _persistDataLocked(data, changedBy = "system") {
     // ── singleton config blobs ─────────────────────────────────────────────────
     for (const key of SINGLETON_FIELDS) {
       if (data[key] === undefined) continue;
+      let valueToStore = data[key];
+      // compGradeResults is now narrowed to the requester's own key for non-admin by
+      // filterDataForRole() (see GET /data) — a plain overwrite here would wipe out every
+      // other employee's grade result on that requester's next autosave. Merge per-employee/
+      // per-year keys against what's already stored instead (same helper smartMerge() uses
+      // for the version-conflict path; this covers the direct-overwrite path too).
+      if (key === "compGradeResults") {
+        const { rows } = await client.query("SELECT data FROM app_singletons WHERE key = $1", [key]);
+        valueToStore = mergeNestedObject(rows.length ? rows[0].data : null, data[key]);
+      }
       await client.query(
         `INSERT INTO app_singletons (key, data, updated_at) VALUES ($1,$2,NOW())
          ON CONFLICT (key) DO UPDATE SET data = $2, updated_at = NOW()`,
-        [key, JSON.stringify(data[key])]
+        [key, JSON.stringify(valueToStore)]
       );
     }
 
@@ -1087,11 +1191,17 @@ app.post("/login", loginLimiter, async (req, res) => {
 // ── 2단계 인증(TOTP) 설정 ──────────────────────────────────────────────────────
 // 1) generate-secret: 비밀번호 재확인 후 새 시크릿 발급(아직 미저장 — 클라이언트가
 //    인증 앱에 등록하고 코드로 검증 성공해야 emp.twoFactorSecret/Enabled로 저장됨)
-app.post("/api/auth/2fa/generate-secret", async (req, res) => {
+// /login과 동일하게 verifyCredentials()로 비밀번호를 직접 검증하는 엔드포인트인데
+// loginLimiter가 없어, /login에는 20회/15분 제한이 걸려도 이 라우트로는 같은 계정 비밀번호를
+// 무제한 추측할 수 있었다(실측: 틀린 비밀번호 25회 연속 시도해도 429 없이 전부 즉시 403).
+// /login과 동일한 loginLimiter를 재사용해 같은 IP의 시도를 함께 카운트한다.
+app.post("/api/auth/2fa/generate-secret", loginLimiter, async (req, res) => {
+  res.locals.loginOk = false;
   try {
     const { loginId, pw } = req.body || {};
     const employee = await verifyCredentials(loginId, pw);
     if (!employee) return res.status(403).json({ ok: false, message: "비밀번호가 올바르지 않습니다." });
+    res.locals.loginOk = true;
     const secret = generateTotpSecret();
     const otpauthUrl = `otpauth://totp/HR-ERP:${encodeURIComponent(loginId)}?secret=${secret}&issuer=HR-ERP`;
     res.json({ ok: true, secret, otpauthUrl });
@@ -1263,7 +1373,9 @@ app.post("/log", (req, res) => {
 
 // GET /activity
 app.get("/activity", (req, res) => {
-  if (!requireAuth(req, res)) return;
+  // "activity-log" 페이지는 PAGE_ROLES상 admin 전용인데 requireAuth만 있어 member 토큰으로도
+  // 자유텍스트 target/detail이 담긴 활동 로그를 조회할 수 있었다(실측 확인).
+  if (!requireAdmin(req, res)) return;
   const limit = parseInt(req.query.limit) || 300;
   res.json({ ok: true, logs: _activityLog.slice(0, limit) });
 });
@@ -1290,7 +1402,9 @@ function _saveFileHistory() {
 
 // GET /snapshots — list all annual snapshots
 app.get("/snapshots", async (req, res) => {
-  if (!requireAuth(req, res)) return;
+  // "history" 페이지는 admin 전용이고, 목록 응답에도 admin이 입력한 notes(대외비 메모 등)가
+  // 포함돼 있어 /snapshots/:year와 동일하게 requireAdmin으로 승격한다.
+  if (!requireAdmin(req, res)) return;
   try {
     if (USE_JSON_FILE) {
       const snaps = Object.entries(_fileSnapshots).map(([y, s]) => ({
@@ -1372,7 +1486,8 @@ app.get("/snapshots/:year", async (req, res) => {
 
 // GET /backups
 app.get("/backups", async (req, res) => {
-  if (!requireAuth(req, res)) return;
+  // /snapshots의 별칭이며 동일하게 admin이 입력한 label(=notes)이 포함돼 있어 동일 기준 적용.
+  if (!requireAdmin(req, res)) return;
   try {
     if (USE_JSON_FILE) {
       const backups = Object.entries(_fileSnapshots).map(([y, s]) => ({
@@ -3393,15 +3508,23 @@ app.get("/api/recruit/jobs", async (req, res) => {
 app.post("/api/recruit/jobs", async (req, res) => {
   try {
     if (!requireRole(req, res, ["admin", "leader", "director"])) return;
+    const { role, empId: userId } = req.auth;
     const { id, title, department, team, headcount, stages, status, description, purpose, responsibilities, requiredYears, docFile, viewerIds, user: createdBy, userId: createdById } = req.body || {};
     if (!title) return res.status(400).json({ ok: false, message: "채용공고 제목은 필수입니다." });
     const jobId = id || `job_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const now = new Date().toISOString();
     const defaultStages = ["서류전형", "1차면접", "2차면접", "최종합격"];
+    // 이 라우트는 생성/수정을 겸하는데, 이전에는 department/team/headcount/status를 요청에
+    // 안 실어보내면(예: 부분 수정 폼) 무조건 기본값으로 덮어써서 기존 값이 조용히 날아갔다
+    // (실측: team "영업1팀"→"", headcount 2→1) — requiredYears/docFile/viewerIds/stages와
+    // 동일하게 "값이 안 왔으면 기존 값 유지" 패턴으로 통일한다.
     const buildJob = (existing) => ({
-      id: jobId, title, department: department || "", team: team || "", headcount: Number(headcount) || 1,
+      id: jobId, title,
+      department: department != null ? department : (existing ? existing.department : ""),
+      team: team != null ? team : (existing ? existing.team : ""),
+      headcount: headcount != null && headcount !== "" ? (Number(headcount) || 1) : (existing ? existing.headcount : 1),
       stages: Array.isArray(stages) && stages.length ? stages : (existing ? existing.stages : defaultStages),
-      status: status || "open",
+      status: status != null ? status : (existing ? existing.status : "open"),
       description: description || "", purpose: purpose || "", responsibilities: responsibilities || "",
       requiredYears: requiredYears != null && requiredYears !== "" ? Number(requiredYears) : (existing ? existing.requiredYears : null),
       docFile: docFile && docFile.fileName ? { fileName: docFile.fileName, type: docFile.type || "", data: docFile.data || "" } : (existing ? existing.docFile : null),
@@ -3411,6 +3534,13 @@ app.post("/api/recruit/jobs", async (req, res) => {
     });
     if (USE_JSON_FILE) {
       const existing = _fileRecruit.jobs.find(j => j.id === jobId);
+      // GET /api/recruit/jobs는 이미 _recruitCanViewJob으로 부서 스코프를 걸고 있는데,
+      // 같은 리소스를 수정하는 이 라우트는 role만 확인하고 그 검사가 없어 무관 부서
+      // 리더/디렉터도 다른 부서 공고를 수정할 수 있었다(실측 확인). 신규 생성(existing
+      // 없음)은 스코프 검사 대상이 아니므로 기존 공고를 수정하는 경우에만 적용한다.
+      if (existing && !(await _recruitCanViewJob(existing, userId, role))) {
+        return res.status(403).json({ ok: false, message: "수정 권한이 없습니다." });
+      }
       const job = buildJob(existing);
       const idx = _fileRecruit.jobs.findIndex(j => j.id === jobId);
       if (idx >= 0) _fileRecruit.jobs[idx] = job; else _fileRecruit.jobs.push(job);
@@ -3419,6 +3549,9 @@ app.post("/api/recruit/jobs", async (req, res) => {
     }
     const { rows } = await pool.query("SELECT data FROM recruit_jobs WHERE id = $1", [jobId]);
     const existing = rows[0] ? rows[0].data : null;
+    if (existing && !(await _recruitCanViewJob(existing, userId, role))) {
+      return res.status(403).json({ ok: false, message: "수정 권한이 없습니다." });
+    }
     const job = buildJob(existing);
     await pool.query(
       "INSERT INTO recruit_jobs (id, data) VALUES ($1,$2) ON CONFLICT (id) DO UPDATE SET data = $2, updated_at = NOW()",
@@ -3431,10 +3564,12 @@ app.post("/api/recruit/jobs", async (req, res) => {
 app.post("/api/recruit/jobs/:id/close", async (req, res) => {
   try {
     if (!requireRole(req, res, ["admin", "leader", "director"])) return;
+    const { role, empId: userId } = req.auth;
     const id = req.params.id;
     if (USE_JSON_FILE) {
       const job = _fileRecruit.jobs.find(j => j.id === id);
       if (!job) return res.status(404).json({ ok: false, message: "채용공고를 찾을 수 없습니다." });
+      if (!(await _recruitCanViewJob(job, userId, role))) return res.status(403).json({ ok: false, message: "마감 권한이 없습니다." });
       job.status = "closed";
       job.updatedAt = new Date().toISOString();
       _saveFileRecruit();
@@ -3442,6 +3577,7 @@ app.post("/api/recruit/jobs/:id/close", async (req, res) => {
     }
     const { rows } = await pool.query("SELECT data FROM recruit_jobs WHERE id = $1", [id]);
     if (!rows.length) return res.status(404).json({ ok: false, message: "채용공고를 찾을 수 없습니다." });
+    if (!(await _recruitCanViewJob(rows[0].data, userId, role))) return res.status(403).json({ ok: false, message: "마감 권한이 없습니다." });
     const job = { ...rows[0].data, status: "closed", updatedAt: new Date().toISOString() };
     await pool.query("UPDATE recruit_jobs SET data = $2, updated_at = NOW() WHERE id = $1", [id, job]);
     res.json({ ok: true, job });
@@ -4400,6 +4536,7 @@ app.post("/api/recruit/candidates/:id/delete", async (req, res) => {
 app.get("/api/recruit/dashboard", async (req, res) => {
   if (!requireAuth(req, res)) return;
   try {
+    const { role, empId: userId } = req.auth;
     let jobs, candidates, interviews;
     if (USE_JSON_FILE) {
       jobs = _fileRecruit.jobs;
@@ -4412,6 +4549,15 @@ app.get("/api/recruit/dashboard", async (req, res) => {
       candidates = candRows.rows.map(r => r.data);
       const intRows = await pool.query("SELECT data FROM recruit_interviews WHERE is_deleted = FALSE");
       interviews = intRows.rows.map(r => r.data);
+    }
+    // /api/recruit/jobs·/candidates는 이미 _recruitCanViewJob으로 부서 스코프를 거는데
+    // 이 대시보드는 그 필터가 없어, 무관 부서 리더가 GET으로는 원래 안 보이던 공고의 id를
+    // 여기서 알아낸 뒤 그 id로 지원자 상세(이름/이메일/휴대폰)까지 열람할 수 있었다(실측
+    // 확인, jobs 쓰기라우트 스코프 누락과 결합해 end-to-end로 재현됨). 동일한 필터 적용.
+    if (userId && role && role !== "admin") {
+      const filtered = [];
+      for (const job of jobs) { if (await _recruitCanViewJob(job, userId, role)) filtered.push(job); }
+      jobs = filtered;
     }
     const stats = jobs.map(job => {
       const jobCandidates = candidates.filter(c => String(c.jobId) === String(job.id));
@@ -4431,12 +4577,16 @@ app.get("/api/recruit/dashboard", async (req, res) => {
 });
 
 // ── Reset All Data ────────────────────────────────────────────────────────────
-app.post("/api/reset-all", async (req, res) => {
+// 전체 데이터 삭제라는 파괴적 동작을 비밀번호 검증만으로 허용하는데 rate limit이 없어
+// 무제한 비밀번호 추측이 가능했다(실측 확인) — /login과 동일한 loginLimiter 적용.
+app.post("/api/reset-all", loginLimiter, async (req, res) => {
+  res.locals.loginOk = false;
   try {
     const { loginId, pw } = req.body || {};
     const admin = await verifyCredentials(loginId, pw);
     if (!admin || admin.role !== "admin")
       return res.status(403).json({ ok: false, message: "관리자 인증이 필요합니다." });
+    res.locals.loginOk = true;
     if (USE_JSON_FILE) {
       _fileStore = { employees: [], kpiEntries: [] };
       _fileSnapshots = {};
