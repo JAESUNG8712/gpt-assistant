@@ -117,6 +117,37 @@ final class APIClient {
         try await decodeList("api/accounting/vouchers", token: token, rootKey: "vouchers")
     }
 
+    struct NewVoucherLine: Encodable {
+        let accountId: String
+        let debit: Double
+        let credit: Double
+        let memo: String
+    }
+
+    /// 관리자 전용(서버가 `requireAdmin`으로 검증). 생성된 전표는 "임시(draft)" 상태이며
+    /// 별도 확정(post) 절차가 있어야 정식 전표번호(voucherNo)가 붙는다 — index.html의
+    /// openExpensePayModal()/payExpenseClaim() 주석과 동일.
+    func createVoucher(
+        date: String, description: String, partner: String,
+        lines: [NewVoucherLine], role: String, user: String, token: String
+    ) async throws -> Voucher {
+        var request = URLRequest(url: try url("api/accounting/vouchers"))
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        struct Body: Encodable {
+            let date: String; let description: String; let partner: String
+            let lines: [NewVoucherLine]; let role: String; let user: String
+        }
+        request.httpBody = try JSONEncoder().encode(
+            Body(date: date, description: description, partner: partner, lines: lines, role: role, user: user)
+        )
+        let (data, response) = try await session.data(for: request)
+        try Self.checkResponse(response, data: data)
+        struct Response: Decodable { let ok: Bool; let voucher: Voucher }
+        return try JSONDecoder().decode(Response.self, from: data).voucher
+    }
+
     func fetchItems(token: String) async throws -> [InventoryItem] {
         try await decodeList("api/erp/items", token: token, rootKey: "items")
     }

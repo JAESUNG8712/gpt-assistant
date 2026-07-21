@@ -8,13 +8,24 @@ import SwiftUI
 /// 두 번 눌러야 이 목록이 보이던 버그)를 상위에서 path를 리셋하는 방식으로 고쳤다.
 @MainActor
 struct ERPHubView: View {
+    @EnvironmentObject private var session: SessionStore
     @ObservedObject var store: HRDataStore
     let reload: () async -> Void
+
+    private var isAdmin: Bool { session.currentEmployee?.role == "admin" }
 
     var body: some View {
         AppScreen {
             NavigationLink { NotificationsView(store: store, reload: reload) } label: {
                 ModuleCard(icon: "bell", title: "알림", subtitle: "결재 대기 · 경비청구 · 재고 부족")
+            }
+            if isAdmin {
+                NavigationLink { ExpenseAdminView(store: store, reload: reload) } label: {
+                    ModuleCard(icon: "wonsign.circle.fill", title: "경비 정산 관리", subtitle: "전체 청구 승인 · 반려 · 지급 처리")
+                }
+                NavigationLink { ApprovalAdminView(store: store, reload: reload) } label: {
+                    ModuleCard(icon: "checkmark.seal.fill", title: "전체 결재 관리", subtitle: "전 직원 결재 문서 조회 · 강제 반려")
+                }
             }
             NavigationLink { EmployeeDirectoryView(store: store, reload: reload) } label: {
                 ModuleCard(icon: "person.2", title: "조직도", subtitle: "\(store.employees.count)명 직원 검색")

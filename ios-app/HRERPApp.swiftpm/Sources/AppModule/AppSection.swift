@@ -5,8 +5,17 @@ import Foundation
 enum AppSection: String, CaseIterable, Identifiable {
     case home, attendance, approvals, expense, notifications, directory
     case accounting, salesInventory, pms, recruit, kpi, settings
+    case expenseAdmin, approvalAdmin
 
     var id: String { rawValue }
+
+    /// 관리자(`role=="admin"`)에게만 보이는 섹션 — 사이드바 목록을 만들 때 걸러낸다.
+    var adminOnly: Bool {
+        switch self {
+        case .expenseAdmin, .approvalAdmin: return true
+        default: return false
+        }
+    }
 
     var title: String {
         switch self {
@@ -22,6 +31,8 @@ enum AppSection: String, CaseIterable, Identifiable {
         case .recruit: return "채용"
         case .kpi: return "평가/KPI"
         case .settings: return "설정"
+        case .expenseAdmin: return "경비 정산 관리"
+        case .approvalAdmin: return "전체 결재 관리"
         }
     }
 
@@ -39,6 +50,8 @@ enum AppSection: String, CaseIterable, Identifiable {
         case .recruit: return "person.badge.plus"
         case .kpi: return "chart.line.uptrend.xyaxis"
         case .settings: return "gearshape"
+        case .expenseAdmin: return "wonsign.circle.fill"
+        case .approvalAdmin: return "checkmark.seal.fill"
         }
     }
 }

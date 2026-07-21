@@ -203,6 +203,54 @@ final class HRDataStore: ObservableObject {
         tombstone(field: "expenseClaims", id: id)
     }
 
+    // MARK: - 경비청구: 관리자 정산 처리 (index.html의 approveExpenseClaim/rejectExpenseClaim/
+    // payExpenseClaim을 옮김 — 서버가 empId 소유자 검증을 안 하므로, 호출 전 반드시
+    // 화면에서 role=="admin"인지 먼저 확인해야 한다.)
+
+    private func mutateExpenseClaim(id: Int, expectedStatus: String, _ mutate: (inout [String: Any]) -> Void) -> Bool {
+        var list = raw["expenseClaims"] as? [[String: Any]] ?? []
+        guard let index = list.firstIndex(where: { ($0["id"] as? Int) == id && ($0["status"] as? String) == expectedStatus }) else {
+            return false
+        }
+        var claim = list[index]
+        mutate(&claim)
+        claim["updatedAt"] = ISO8601DateFormatter().string(from: Date())
+        list[index] = claim
+        raw["expenseClaims"] = list
+        return true
+    }
+
+    @discardableResult
+    func approveExpenseClaim(id: Int, adminName: String) -> Bool {
+        mutateExpenseClaim(id: id, expectedStatus: "pending") { claim in
+            claim["status"] = "approved"
+            claim["approvedBy"] = adminName
+            claim["approvedAt"] = ISO8601DateFormatter().string(from: Date())
+        }
+    }
+
+    @discardableResult
+    func rejectExpenseClaim(id: Int, adminName: String, reason: String) -> Bool {
+        mutateExpenseClaim(id: id, expectedStatus: "pending") { claim in
+            claim["status"] = "rejected"
+            claim["rejectReason"] = reason
+            claim["approvedBy"] = adminName
+            claim["approvedAt"] = ISO8601DateFormatter().string(from: Date())
+        }
+    }
+
+    @discardableResult
+    func markExpensePaid(id: Int, payDate: String, payMethod: String, adminName: String, voucherId: String?, voucherNo: String?) -> Bool {
+        mutateExpenseClaim(id: id, expectedStatus: "approved") { claim in
+            claim["status"] = "paid"
+            claim["paidAt"] = payDate
+            claim["payMethod"] = payMethod
+            claim["paidBy"] = adminName
+            if let voucherId { claim["voucherId"] = voucherId }
+            if let voucherNo { claim["voucherNo"] = voucherNo }
+        }
+    }
+
     // MARK: - 삭제 표시(tombstone)
     // 서버의 smartMerge는 id가 같은 레코드를 "새로운 updatedAt이 이긴다" 방식으로만 병합해서,
     // 배열에서 그냥 지운 레코드는 동시 저장 충돌 시 상대방이 여전히 갖고 있던 옛 사본이
@@ -265,6 +313,37 @@ final class HRDataStore: ObservableObject {
         }
 
         doc["approvers"] = approvers
+        doc["updatedAt"] = nowISO
+        docs[docIndex] = doc
+        raw["approvalDocs"] = docs
+        return true
+    }
+
+    // MARK: - 전자결재: 관리자 강제 반려
+    // 웹 앱(index.html)에는 없는 기능 — 사용자 요청으로 추가한 관리자 전용 비상 조치.
+    // 정상 결재선에 없는 관리자가 강제로 개입하는 것이므로, 대기 중인 결재자 전원을
+    // "반려"로 남기고 코멘트에 관리자 이름·사유를 명시해 감사 기록이 남도록 한다
+    // (호출 전 반드시 화면에서 role=="admin"인지 먼저 확인해야 한다 — decideApproval과
+    // 달리 empId 소속 검증이 없다).
+
+    @discardableResult
+    func adminForceRejectApproval(docId: Int, adminName: String, reason: String) -> Bool {
+        var docs = raw["approvalDocs"] as? [[String: Any]] ?? []
+        guard let docIndex = docs.firstIndex(where: { ($0["id"] as? Int) == docId && ($0["status"] as? String) == "in_progress" }) else {
+            return false
+        }
+        var doc = docs[docIndex]
+        var approvers = doc["approvers"] as? [[String: Any]] ?? []
+        let nowISO = ISO8601DateFormatter().string(from: Date())
+        for i in approvers.indices {
+            let status = approvers[i]["status"] as? String
+            guard status == "pending" || status == "waiting" else { continue }
+            approvers[i]["status"] = "rejected"
+            approvers[i]["decidedAt"] = nowISO
+            approvers[i]["comment"] = "[관리자 강제 반려 - \(adminName)] \(reason)"
+        }
+        doc["approvers"] = approvers
+        doc["status"] = "rejected"
         doc["updatedAt"] = nowISO
         docs[docIndex] = doc
         raw["approvalDocs"] = docs

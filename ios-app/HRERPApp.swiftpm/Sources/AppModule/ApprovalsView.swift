@@ -92,8 +92,9 @@ private struct ApprovalRow: View {
     }
 }
 
+/// 결재함(내 것)과 관리자용 전체 결재 문서 화면(ApprovalAdminView)이 함께 쓴다.
 @MainActor
-private struct ApprovalDetailView: View {
+struct ApprovalDetailView: View {
     @EnvironmentObject private var settings: AppSettings
     @EnvironmentObject private var session: SessionStore
     @Environment(\.dismiss) private var dismiss
@@ -103,10 +104,12 @@ private struct ApprovalDetailView: View {
     let onDecided: () -> Void
 
     @State private var comment = ""
+    @State private var forceRejectReason = ""
     @State private var isDeciding = false
     @State private var errorMessage: String?
 
     private var client: APIClient { APIClient(settings: settings) }
+    private var isAdmin: Bool { session.currentEmployee?.role == "admin" }
 
     private var canDecide: Bool {
         guard let empId = session.currentEmployee?.id else { return false }
@@ -156,6 +159,20 @@ private struct ApprovalDetailView: View {
                     }
                 }
 
+                if isAdmin && doc.status == "in_progress" {
+                    AppCard(title: "관리자 강제 반려") {
+                        Text("정상 결재선에 없어도, 정체된 문서를 관리자 권한으로 즉시 반려 처리합니다. 대기 중인 결재자 전원이 반려 처리되고 사유가 감사 기록에 남습니다.")
+                            .font(.caption)
+                            .foregroundStyle(AppTheme.secondaryText)
+                        TextField("강제 반려 사유 (필수)", text: $forceRejectReason, axis: .vertical)
+                            .appFieldStyle()
+                        Button("관리자 강제 반려") { Task { await forceReject() } }
+                            .buttonStyle(.bordered)
+                            .tint(AppTheme.danger)
+                            .disabled(isDeciding || forceRejectReason.trimmingCharacters(in: .whitespaces).isEmpty)
+                    }
+                }
+
                 if let errorMessage {
                     AppCard { Text(errorMessage).font(.footnote).foregroundStyle(AppTheme.danger) }
                 }
@@ -174,6 +191,25 @@ private struct ApprovalDetailView: View {
         isDeciding = true
         defer { isDeciding = false }
         guard store.decideApproval(docId: doc.id, empId: empId, action: action, comment: comment) else {
+            errorMessage = "이미 처리된 문서입니다."
+            return
+        }
+        let saved = await store.save(client: client, session: session)
+        if saved {
+            onDecided()
+            dismiss()
+        } else {
+            errorMessage = store.lastError ?? "저장에 실패했습니다."
+        }
+    }
+
+    private func forceReject() async {
+        guard let admin = session.currentEmployee else { return }
+        let reason = forceRejectReason.trimmingCharacters(in: .whitespaces)
+        guard !reason.isEmpty else { return }
+        isDeciding = true
+        defer { isDeciding = false }
+        guard store.adminForceRejectApproval(docId: doc.id, adminName: admin.name, reason: reason) else {
             errorMessage = "이미 처리된 문서입니다."
             return
         }

@@ -16,11 +16,15 @@ struct SidebarRootView: View {
     @State private var detailResetID = UUID()
 
     private var client: APIClient { APIClient(settings: settings) }
+    private var isAdmin: Bool { session.currentEmployee?.role == "admin" }
+    private var visibleSections: [AppSection] {
+        AppSection.allCases.filter { !$0.adminOnly || isAdmin }
+    }
 
     var body: some View {
         NavigationSplitView {
             List(selection: $selection) {
-                ForEach(AppSection.allCases) { section in
+                ForEach(visibleSections) { section in
                     Label(section.title, systemImage: section.icon).tag(section)
                 }
             }
@@ -58,6 +62,8 @@ struct SidebarRootView: View {
         case .recruit: RecruitView()
         case .kpi: KPIView(store: store, reload: reload)
         case .settings: SettingsView()
+        case .expenseAdmin: ExpenseAdminView(store: store, reload: reload)
+        case .approvalAdmin: ApprovalAdminView(store: store, reload: reload)
         }
     }
 

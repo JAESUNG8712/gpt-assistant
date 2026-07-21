@@ -179,8 +179,15 @@ struct ExpenseClaim: Decodable, Identifiable {
     let title: String
     let items: [ExpenseItem]
     let total: Double
-    let status: String  // pending | approved | rejected
+    let status: String  // pending | approved | rejected | paid
     let createdAt: String
+    // 관리자 정산 관리 화면에서만 쓰는 필드 — index.html의 approveExpenseClaim/
+    // rejectExpenseClaim/payExpenseClaim이 채우는 것과 동일한 필드명.
+    let approvedBy: String?
+    let rejectReason: String?
+    let paidAt: String?
+    let payMethod: String?
+    let voucherNo: String?
 }
 
 /// 신규 경비청구 제출 전용 — 기존 청구 건을 건드리지 않고 배열에 새로 append만 하므로
