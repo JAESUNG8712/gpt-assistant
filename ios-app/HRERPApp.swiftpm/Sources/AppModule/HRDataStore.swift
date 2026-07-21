@@ -210,6 +210,70 @@ final class HRDataStore: ObservableObject {
         if claimsChanged { raw["expenseClaims"] = claims }
     }
 
+    // MARK: - 직원 관리: 발령·변동 이력 (유형별 필드 반영 + 미래 날짜 예약 적용)
+    // index.html의 submitHRChange()를 옮겼다. `updates`가 있고 `date`가 오늘 이후면
+    // 즉시 반영하지 않고 hrHistory에 `applied:false`+`pendingUpdates`로만 남긴다 —
+    // `applyDueHRChanges()`가 그 날짜가 된 뒤에 실제로 반영한다. 퇴직(retirement)은
+    // 대기중인 경비청구 자동 반려 등 부가 효과가 있는 `retireEmployee()`로 별도 처리한다
+    // (이 메서드로 active:false를 직접 넘기지 않는다).
+
+    @discardableResult
+    func appendHRChange(employeeId: Int, type: String, date: String, desc: String, before: String, after: String, note: String, updates: [String: Any]) -> Bool {
+        var list = raw["employees"] as? [[String: Any]] ?? []
+        guard let index = list.firstIndex(where: { ($0["id"] as? Int) == employeeId }) else { return false }
+        var emp = list[index]
+        let today = ISO8601DateFormatter().string(from: Date()).prefix(10).description
+        let isFuture = !updates.isEmpty && date > today
+        let historyEntry: [String: Any] = [
+            "id": newClientRecordId(), "type": type, "date": date, "desc": desc,
+            "before": before, "after": after, "note": note,
+            "applied": !isFuture,
+            "pendingUpdates": isFuture ? updates : NSNull(),
+        ]
+        var history = emp["hrHistory"] as? [[String: Any]] ?? []
+        history.append(historyEntry)
+        emp["hrHistory"] = history
+        if !isFuture {
+            for (key, value) in updates { emp[key] = value }
+        }
+        emp["updatedAt"] = ISO8601DateFormatter().string(from: Date())
+        list[index] = emp
+        raw["employees"] = list
+        return true
+    }
+
+    /// 예정된(hrHistory의 `applied:false`+`pendingUpdates`) 변경 중 날짜가 도래한 것을
+    /// 실제로 반영한다. 관리자가 조직도 화면에 들어올 때마다 확인한다(index.html의
+    /// `_applyDueHRChanges()`와 동일 로직).
+    @discardableResult
+    func applyDueHRChanges() -> Bool {
+        var list = raw["employees"] as? [[String: Any]] ?? []
+        var changed = false
+        let today = ISO8601DateFormatter().string(from: Date()).prefix(10).description
+        for i in list.indices {
+            var history = list[i]["hrHistory"] as? [[String: Any]] ?? []
+            var touched = false
+            var updatesToApply: [String: Any] = [:]
+            for j in history.indices {
+                guard (history[j]["applied"] as? Bool) == false,
+                      let pending = history[j]["pendingUpdates"] as? [String: Any],
+                      let entryDate = history[j]["date"] as? String,
+                      entryDate <= today else { continue }
+                for (key, value) in pending { updatesToApply[key] = value }
+                history[j]["applied"] = true
+                touched = true
+            }
+            guard touched else { continue }
+            for (key, value) in updatesToApply { list[i][key] = value }
+            list[i]["hrHistory"] = history
+            list[i]["updatedAt"] = ISO8601DateFormatter().string(from: Date())
+            changed = true
+        }
+        guard changed else { return false }
+        raw["employees"] = list
+        return true
+    }
+
     // MARK: - 경비청구: 신규 제출 (기존 청구 건은 손대지 않고 배열에 추가만 함)
 
     func appendExpenseClaim(_ payload: NewExpenseClaimPayload) throws {

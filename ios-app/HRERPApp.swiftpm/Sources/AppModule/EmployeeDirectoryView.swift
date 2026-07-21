@@ -10,6 +10,7 @@ struct EmployeeDirectoryView: View {
     @State private var query = ""
     @State private var showingNewEmployee = false
 
+    private var client: APIClient { APIClient(settings: settings) }
     private var isAdmin: Bool { session.currentEmployee?.role == "admin" }
 
     private var filtered: [Employee] {
@@ -89,6 +90,16 @@ struct EmployeeDirectoryView: View {
             .environmentObject(settings)
             .environmentObject(session)
         }
+        .task {
+            await checkDueHRChanges()
+        }
+    }
+
+    /// index.html의 `_applyDueHRChanges()`처럼, 예정된(미래 날짜) 발령·변동 이력 중
+    /// 날짜가 도래한 것을 조직도 화면에 들어올 때마다 확인해 반영한다.
+    private func checkDueHRChanges() async {
+        guard isAdmin, store.applyDueHRChanges() else { return }
+        await store.save(client: client, session: session)
     }
 }
 
