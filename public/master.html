@@ -1,0 +1,518 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="robots" content="noindex, nofollow">
+<title>🛡️ 마스터 관리자 콘솔</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body {
+    font-family: 'Consolas', 'Menlo', '맑은 고딕', -apple-system, BlinkMacSystemFont, sans-serif;
+    background: #0b0d12; color: #e6e8ee; min-height: 100%;
+  }
+
+  /* ── 최상단 경고 배너: 일반 제품 화면과 절대 헷갈리지 않도록 의도적으로 이질적인 배색 ── */
+  #warn-banner {
+    background: repeating-linear-gradient(135deg, #3a0d0d, #3a0d0d 14px, #290808 14px, #290808 28px);
+    color: #ff6b6b; border-bottom: 2px solid #ff2d2d;
+    padding: 8px 20px; font-size: 12px; font-weight: 700; letter-spacing: .04em;
+    display: flex; align-items: center; justify-content: center; gap: 8px; text-align: center;
+  }
+
+  header {
+    background: linear-gradient(135deg, #1a0b12 0%, #2a0f16 55%, #16060a 100%);
+    color: #fff; padding: 16px 28px; display: flex; align-items: center; justify-content: space-between;
+    border-bottom: 1px solid #4a1522; flex-wrap: wrap; gap: 10px;
+  }
+  header .brand { display: flex; align-items: center; gap: 10px; }
+  header .brand .badge {
+    background: #ff2d55; color: #fff; font-size: 11px; font-weight: 800; padding: 3px 9px;
+    border-radius: 4px; letter-spacing: .05em;
+  }
+  header h1 { font-size: 1.05rem; font-weight: 700; }
+  header .sub { font-size: .72rem; color: #c9a0ac; margin-top: 2px; }
+  header .right { display: flex; align-items: center; gap: 10px; font-size: .8rem; }
+  header .right button {
+    background: transparent; color: #ffb3c1; border: 1px solid #ff2d5580; padding: 6px 12px;
+    border-radius: 6px; cursor: pointer; font-size: .78rem;
+  }
+  header .right button:hover { background: #ff2d5522; }
+
+  main { max-width: 1300px; margin: 0 auto; padding: 24px 20px 60px; }
+
+  /* ── 로그인 화면 ── */
+  #login-screen {
+    min-height: calc(100vh - 90px); display: flex; align-items: center; justify-content: center;
+    padding: 40px 20px;
+  }
+  .login-card {
+    width: 100%; max-width: 380px; background: #14161d; border: 1px solid #2a2d3a;
+    border-radius: 12px; padding: 32px 28px; box-shadow: 0 10px 40px rgba(0,0,0,.5);
+  }
+  .login-card .icon { font-size: 32px; text-align: center; margin-bottom: 6px; }
+  .login-card h2 { text-align: center; font-size: 1.15rem; margin-bottom: 4px; color: #fff; }
+  .login-card .desc { text-align: center; font-size: .74rem; color: #8b8fa3; margin-bottom: 22px; }
+  .fg { margin-bottom: 14px; }
+  .fg label { display: block; font-size: .76rem; color: #b8bcd0; margin-bottom: 6px; font-weight: 600; }
+  .fg input {
+    width: 100%; padding: 10px 12px; border-radius: 7px; border: 1px solid #33364a;
+    background: #0e0f16; color: #e6e8ee; font-size: .88rem;
+  }
+  .fg input:focus { outline: none; border-color: #ff2d55; }
+  .btn-primary {
+    width: 100%; padding: 11px; border: none; border-radius: 7px; cursor: pointer;
+    background: linear-gradient(135deg, #ff2d55, #c81e46); color: #fff; font-weight: 700; font-size: .9rem;
+    margin-top: 6px;
+  }
+  .btn-primary:disabled { opacity: .6; cursor: not-allowed; }
+  .btn-primary:hover:not(:disabled) { filter: brightness(1.08); }
+  .err-msg {
+    display: none; background: #3a0d12; border: 1px solid #ff2d5580; color: #ff9fb0;
+    font-size: .78rem; padding: 9px 11px; border-radius: 7px; margin-bottom: 14px;
+  }
+
+  /* ── 대시보드 ── */
+  #dashboard-screen { display: none; }
+  .toolbar { display: flex; gap: 12px; align-items: center; margin-bottom: 16px; flex-wrap: wrap; }
+  .toolbar input {
+    flex: 1; min-width: 220px; padding: 9px 12px; border-radius: 7px; border: 1px solid #2a2d3a;
+    background: #14161d; color: #e6e8ee; font-size: .85rem;
+  }
+  .toolbar .refresh-btn {
+    background: #1c1f2b; color: #cfd2e6; border: 1px solid #33364a; padding: 9px 14px;
+    border-radius: 7px; cursor: pointer; font-size: .8rem;
+  }
+  .toolbar .refresh-btn:hover { background: #24273a; }
+
+  .layout { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(320px, 1fr); gap: 18px; align-items: start; }
+  @media (max-width: 900px) { .layout { grid-template-columns: 1fr; } }
+
+  .panel {
+    background: #14161d; border: 1px solid #2a2d3a; border-radius: 10px; padding: 18px; overflow-x: auto;
+  }
+
+  .co-table { width: 100%; border-collapse: collapse; font-size: .8rem; }
+  .co-table th, .co-table td { padding: 9px 8px; text-align: left; border-bottom: 1px solid #22242f; white-space: nowrap; }
+  .co-table th { color: #8b8fa3; font-weight: 600; font-size: .72rem; text-transform: uppercase; letter-spacing: .03em; }
+  .co-table tbody tr { cursor: pointer; transition: background .1s; }
+  .co-table tbody tr:hover { background: #1b1e2a; }
+  .co-table tbody tr.sel { background: #26101a; outline: 1px solid #ff2d5560; }
+  .co-name { font-weight: 700; color: #fff; }
+  .co-slug { color: #8b8fa3; font-family: monospace; }
+  .badge { font-size: .68rem; font-weight: 700; padding: 2px 8px; border-radius: 10px; }
+  .badge-active { background: #123a24; color: #4ade80; }
+  .badge-trial { background: #3a2f0d; color: #fbbf24; }
+  .badge-suspended { background: #3a0d0d; color: #f87171; }
+  .btn-mini {
+    background: #1c1f2b; color: #ffb3c1; border: 1px solid #ff2d5560; padding: 5px 10px;
+    border-radius: 6px; cursor: pointer; font-size: .72rem; white-space: nowrap;
+  }
+  .btn-mini:hover { background: #26101a; }
+
+  .empty-box, .err-box, .loading {
+    padding: 24px 10px; text-align: center; color: #8b8fa3; font-size: .82rem;
+  }
+  .err-box { color: #f87171; }
+
+  .panel-head { margin-bottom: 10px; }
+  .panel-head h3 { font-size: 1rem; color: #fff; margin-bottom: 2px; }
+  .panel-sub { font-size: .74rem; color: #8b8fa3; margin-bottom: 10px; }
+  .btn-enter {
+    background: linear-gradient(135deg, #ff2d55, #c81e46); color: #fff; border: none; padding: 9px 14px;
+    border-radius: 7px; cursor: pointer; font-size: .8rem; font-weight: 700; margin-top: 4px; margin-bottom: 4px;
+  }
+  .btn-enter:hover { filter: brightness(1.08); }
+  .hint { font-size: .72rem; color: #6b6f85; margin: 10px 0 14px; line-height: 1.5; }
+
+  .feature-row {
+    display: flex; align-items: center; gap: 10px; padding: 9px 0; border-bottom: 1px solid #22242f;
+  }
+  .fkey { flex: 1; font-family: monospace; font-size: .8rem; color: #e6e8ee; word-break: break-all; }
+  .fmeta { font-size: .68rem; color: #6b6f85; white-space: nowrap; }
+
+  .switch { position: relative; display: inline-block; width: 38px; height: 21px; flex-shrink: 0; }
+  .switch input { opacity: 0; width: 0; height: 0; }
+  .switch .slider {
+    position: absolute; cursor: pointer; inset: 0; background: #33364a; border-radius: 21px; transition: .15s;
+  }
+  .switch .slider::before {
+    content: ""; position: absolute; height: 15px; width: 15px; left: 3px; bottom: 3px;
+    background: #cfd2e6; border-radius: 50%; transition: .15s;
+  }
+  .switch input:checked + .slider { background: #22c55e; }
+  .switch input:checked + .slider::before { transform: translateX(17px); background: #fff; }
+
+  .add-feature-row { display: flex; gap: 8px; margin-top: 16px; }
+  .add-feature-row .txt {
+    flex: 1; padding: 8px 10px; border-radius: 6px; border: 1px solid #33364a;
+    background: #0e0f16; color: #e6e8ee; font-size: .8rem;
+  }
+
+  #m-toast {
+    position: fixed; bottom: 22px; left: 50%; transform: translateX(-50%) translateY(20px);
+    background: #1c1f2b; color: #e6e8ee; border: 1px solid #33364a; padding: 10px 18px;
+    border-radius: 8px; font-size: .82rem; opacity: 0; pointer-events: none; transition: .18s;
+    max-width: 90vw; text-align: center; z-index: 999;
+  }
+  #m-toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+  #m-toast.err { border-color: #ff2d5580; color: #ff9fb0; }
+</style>
+</head>
+<body>
+
+<div id="warn-banner">⚠ 마스터 관리자 콘솔 · 내부 전용 · 모든 접근/조작은 감사 로그에 기록됩니다 ⚠</div>
+
+<header>
+  <div class="brand">
+    <div>
+      <div style="display:flex;align-items:center;gap:8px">
+        <span class="badge">MASTER</span>
+        <h1>🛡️ 플랫폼 마스터 콘솔</h1>
+      </div>
+      <div class="sub">회사 관리자(admin)보다 상위 권한 · 일반 회사 사용자는 이 화면에 접근할 수 없습니다</div>
+    </div>
+  </div>
+  <div class="right" id="header-right"></div>
+</header>
+
+<main>
+
+  <!-- ── 로그인 화면 ── -->
+  <div id="login-screen">
+    <div class="login-card">
+      <div class="icon">🔐</div>
+      <h2>마스터 로그인</h2>
+      <div class="desc">플랫폼 운영자 전용 계정으로 로그인하세요</div>
+      <div class="err-msg" id="m-login-err"></div>
+      <div class="fg">
+        <label>로그인 ID</label>
+        <input id="m-login-id" placeholder="마스터 계정 ID" autocomplete="username" onkeydown="if(event.key==='Enter')document.getElementById('m-login-pw').focus()">
+      </div>
+      <div class="fg">
+        <label>비밀번호</label>
+        <input id="m-login-pw" type="password" placeholder="비밀번호" autocomplete="current-password" onkeydown="if(event.key==='Enter')doMasterLogin()">
+      </div>
+      <button class="btn-primary" id="m-login-btn" onclick="doMasterLogin()">로그인</button>
+    </div>
+  </div>
+
+  <!-- ── 대시보드 ── -->
+  <div id="dashboard-screen">
+    <div class="toolbar">
+      <input id="company-search" placeholder="회사명 또는 코드로 검색..." oninput="renderCompanyList(this.value)">
+      <button class="refresh-btn" onclick="loadCompanies()">↻ 새로고침</button>
+    </div>
+    <div class="layout">
+      <div class="panel" id="company-list-panel">
+        <div id="company-list-area" class="loading">불러오는 중...</div>
+      </div>
+      <div class="panel" id="feature-panel">
+        <div class="empty-box">왼쪽에서 회사를 선택하면 기능 설정을 볼 수 있습니다.</div>
+      </div>
+    </div>
+  </div>
+
+</main>
+
+<div id="m-toast"></div>
+
+<script>
+// ══════════════════════════════════════════════════════════════════
+// 마스터 관리자 콘솔 — public/budget.html과 동일한 패턴(SPA 밖 독립 정적
+// 페이지, 자체 인증/자체 스타일, index.html의 2만 줄짜리 전역 상태에 얹지
+// 않음)을 따른다. 인증 토큰은 index.html의 hr_kpi_auth_token과 절대
+// 충돌하지 않도록 완전히 다른 localStorage 키(master_auth_token)를 쓴다.
+// ══════════════════════════════════════════════════════════════════
+
+function $(sel){ return document.querySelector(sel); }
+function h(s){
+  return String(s==null?"":s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+const _LS_MASTER_TOKEN = 'master_auth_token';
+let _masterToken = null;
+try { _masterToken = localStorage.getItem(_LS_MASTER_TOKEN) || null; } catch(e){}
+function _setMasterToken(token){
+  _masterToken = token || null;
+  try {
+    if(_masterToken) localStorage.setItem(_LS_MASTER_TOKEN, _masterToken);
+    else localStorage.removeItem(_LS_MASTER_TOKEN);
+  } catch(e){}
+}
+
+let _companies = [];
+let _selectedCompany = null;
+let _features = [];
+
+// ── 공통 요청 헬퍼 ──────────────────────────────────────────────
+// 이 worktree에는 아직 서버 쪽 /master/* 라우트가 존재하지 않아(병행 세션이
+// 별도로 구현 중), 실제로 호출하면 Express 기본 404(HTML 페이지)가 온다.
+// res.json()이 그 HTML을 파싱하려다 던지는 예외를 여기서 흡수해, 화면에는
+// 항상 사람이 읽을 수 있는 오류 메시지만 보이도록 한다(크래시 없음).
+async function masterRequest(method, url, body){
+  const controller = new AbortController();
+  const tid = setTimeout(()=>controller.abort(), 10000);
+  const opts = {
+    method,
+    signal: controller.signal,
+    headers: {
+      'Content-Type': 'application/json',
+      ...(_masterToken ? { 'Authorization': 'Bearer ' + _masterToken } : {})
+    }
+  };
+  if(body) opts.body = JSON.stringify(body);
+  try {
+    const res = await fetch(url, opts);
+    clearTimeout(tid);
+    let json = null;
+    try { json = await res.json(); } catch(e) { /* JSON 아님 (예: 미배포 라우트의 HTML 404) */ }
+    if(!json){
+      return {
+        ok: false,
+        message: `서버 응답을 해석할 수 없습니다 (HTTP ${res.status}). 이 API가 아직 배포되지 않았을 수 있습니다.`,
+        _httpStatus: res.status
+      };
+    }
+    if(res.status === 401) _setMasterToken(null);
+    json._httpStatus = res.status;
+    return json;
+  } catch(e){
+    clearTimeout(tid);
+    return { ok: false, message: e.name === 'AbortError' ? '요청 시간이 초과되었습니다.' : ('네트워크 오류: ' + e.message) };
+  }
+}
+
+// ── 로그인 ──────────────────────────────────────────────────────
+function showLoginErr(msg){
+  const el = $('#m-login-err');
+  if(!el) return;
+  el.textContent = msg || '';
+  el.style.display = msg ? 'block' : 'none';
+}
+
+async function doMasterLogin(){
+  const loginId = ($('#m-login-id')?.value || '').trim();
+  const password = ($('#m-login-pw')?.value || '').trim();
+  if(!loginId || !password){ showLoginErr('아이디와 비밀번호를 입력하세요.'); return; }
+  const btn = $('#m-login-btn');
+  if(btn){ btn.disabled = true; btn.textContent = '로그인 중...'; }
+  const r = await masterRequest('POST', '/master/login', { loginId, password });
+  if(btn){ btn.disabled = false; btn.textContent = '로그인'; }
+  if(r && r.ok && r.token){
+    _setMasterToken(r.token);
+    showLoginErr('');
+    enterDashboard();
+  } else {
+    showLoginErr(r?.message || '로그인에 실패했습니다.');
+  }
+}
+
+function masterLogout(){
+  _setMasterToken(null);
+  _companies = []; _selectedCompany = null; _features = [];
+  showLoginScreen();
+}
+
+function showLoginScreen(){
+  $('#login-screen').style.display = 'flex';
+  $('#dashboard-screen').style.display = 'none';
+  $('#header-right').innerHTML = '';
+}
+function showDashboardScreen(){
+  $('#login-screen').style.display = 'none';
+  $('#dashboard-screen').style.display = 'block';
+  $('#header-right').innerHTML = '<button onclick="masterLogout()">로그아웃</button>';
+}
+
+async function enterDashboard(){
+  showDashboardScreen();
+  await loadCompanies();
+}
+
+// ── 회사 목록 ────────────────────────────────────────────────────
+async function loadCompanies(){
+  const area = $('#company-list-area');
+  area.className = 'loading';
+  area.textContent = '불러오는 중...';
+  const r = await masterRequest('GET', '/master/companies');
+  if(r && r.ok && Array.isArray(r.companies)){
+    _companies = r.companies;
+    renderCompanyList();
+  } else if(r && r._httpStatus === 401){
+    showToast('세션이 만료되었습니다. 다시 로그인하세요.', true);
+    masterLogout();
+  } else {
+    area.className = 'err-box';
+    area.innerHTML = `회사 목록을 불러오지 못했습니다.<br>${h(r?.message || '알 수 없는 오류')}`;
+  }
+}
+
+function statusLabel(s){
+  return { trial: '체험', active: '활성', suspended: '정지' }[s] || s || '-';
+}
+
+function renderCompanyList(filterVal){
+  const area = $('#company-list-area');
+  const q = (filterVal !== undefined ? filterVal : ($('#company-search')?.value || '')).trim().toLowerCase();
+  const list = _companies.filter(c => !q ||
+    (c.name || '').toLowerCase().includes(q) ||
+    (c.slug || '').toLowerCase().includes(q));
+
+  if(!_companies.length){
+    area.className = 'empty-box';
+    area.textContent = '등록된 회사가 없습니다.';
+    return;
+  }
+  if(!list.length){
+    area.className = 'empty-box';
+    area.textContent = '검색 결과가 없습니다.';
+    return;
+  }
+
+  area.className = '';
+  area.innerHTML = `<table class="co-table">
+    <thead><tr><th>회사명</th><th>코드</th><th>상태</th><th>직원</th><th>KPI</th><th>가입일</th><th></th></tr></thead>
+    <tbody>
+      ${list.map(c => `
+        <tr class="${_selectedCompany && String(_selectedCompany.id) === String(c.id) ? 'sel' : ''}" onclick="selectCompany('${h(c.id)}')">
+          <td class="co-name">${h(c.name)}</td>
+          <td class="co-slug">${h(c.slug)}</td>
+          <td><span class="badge badge-${h(c.status || '')}">${h(statusLabel(c.status))}</span></td>
+          <td>${c.empCount ?? '-'}</td>
+          <td>${c.kpiCount ?? '-'}</td>
+          <td>${c.createdAt ? new Date(c.createdAt).toLocaleDateString('ko-KR') : '-'}</td>
+          <td><button class="btn-mini" onclick="event.stopPropagation();enterCompany('${h(c.id)}')">이 회사로 들어가기</button></td>
+        </tr>`).join('')}
+    </tbody>
+  </table>`;
+}
+
+// ── 회사별 기능 토글 패널 ───────────────────────────────────────
+function selectCompany(id){
+  const c = _companies.find(x => String(x.id) === String(id));
+  if(!c) return;
+  _selectedCompany = c;
+  renderCompanyList();
+  loadFeatures(id);
+}
+
+function panelHeadHtml(){
+  const c = _selectedCompany;
+  return `<div class="panel-head">
+    <h3>⚙ ${h(c.name)} 기능 설정</h3>
+    <div class="panel-sub">코드: ${h(c.slug)} · 상태: ${h(statusLabel(c.status))}</div>
+    <button class="btn-enter" onclick="enterCompany('${h(c.id)}')">🔑 이 회사로 들어가기</button>
+  </div>`;
+}
+
+async function loadFeatures(id){
+  const panel = $('#feature-panel');
+  panel.innerHTML = panelHeadHtml() + '<div class="loading">불러오는 중...</div>';
+  const r = await masterRequest('GET', `/master/companies/${encodeURIComponent(id)}/features`);
+  if(r && r.ok && Array.isArray(r.features)){
+    _features = r.features;
+    renderFeaturePanel();
+  } else {
+    _features = [];
+    panel.innerHTML = panelHeadHtml() +
+      `<div class="err-box">기능 목록을 불러오지 못했습니다.<br>${h(r?.message || '알 수 없는 오류')}</div>` +
+      addFeatureFormHtml();
+  }
+}
+
+function addFeatureFormHtml(){
+  return `<div class="add-feature-row">
+    <input id="new-feature-key" class="txt" placeholder="새 기능 키 입력 (예: custom_dashboard_acme)" onkeydown="if(event.key==='Enter')addFeatureKey()">
+    <button class="btn-mini" onclick="addFeatureKey()">추가 + 켜기</button>
+  </div>`;
+}
+
+function renderFeaturePanel(){
+  const panel = $('#feature-panel');
+  panel.innerHTML = panelHeadHtml() +
+    `<p class="hint">등록되지 않은 기능 키는 기본적으로 <b>켜짐(enabled)</b>으로 취급됩니다. 아래 목록은 이 회사에 명시적으로 설정값이 저장된 항목만 표시됩니다 — 내장 모듈을 끄거나, 이 회사 전용으로 새로 만든 기능 키를 여기서 켤 수 있습니다.</p>
+    <div id="feature-list">
+      ${!_features.length ? '<div class="empty-box">명시적으로 설정된 기능이 없습니다 (모두 기본 활성화 상태).</div>' :
+        _features.map(f => `
+        <div class="feature-row">
+          <div class="fkey">${h(f.featureKey)}</div>
+          <label class="switch">
+            <input type="checkbox" ${f.enabled ? 'checked' : ''} onchange="toggleFeature('${h(f.featureKey)}', this.checked)">
+            <span class="slider"></span>
+          </label>
+          <div class="fmeta">${f.updatedAt ? new Date(f.updatedAt).toLocaleString('ko-KR') : ''}</div>
+        </div>`).join('')}
+    </div>` +
+    addFeatureFormHtml();
+}
+
+async function toggleFeature(key, enabled){
+  if(!_selectedCompany) return;
+  const r = await masterRequest('PUT',
+    `/master/companies/${encodeURIComponent(_selectedCompany.id)}/features/${encodeURIComponent(key)}`,
+    { enabled });
+  if(r && r.ok){
+    const f = _features.find(x => x.featureKey === key);
+    if(f){ f.enabled = enabled; f.updatedAt = new Date().toISOString(); }
+    else { _features.push({ featureKey: key, enabled, config: {}, updatedAt: new Date().toISOString() }); }
+    renderFeaturePanel();
+    showToast(`'${key}' 기능을 ${enabled ? '켰습니다' : '껐습니다'}.`);
+  } else {
+    showToast(`변경 실패: ${r?.message || '알 수 없는 오류'}`, true);
+    renderFeaturePanel(); // 실패 시 토글 스위치를 마지막으로 확인된 상태로 되돌림
+  }
+}
+
+async function addFeatureKey(){
+  const input = $('#new-feature-key');
+  const key = (input?.value || '').trim();
+  if(!key){ showToast('기능 키를 입력하세요.', true); return; }
+  if(!/^[a-zA-Z0-9_.-]+$/.test(key)){ showToast('기능 키는 영문/숫자/_/-/. 만 사용할 수 있습니다.', true); return; }
+  if(_features.some(f => f.featureKey === key)){ showToast('이미 존재하는 기능 키입니다.', true); return; }
+  if(!_selectedCompany) return;
+  const r = await masterRequest('PUT',
+    `/master/companies/${encodeURIComponent(_selectedCompany.id)}/features/${encodeURIComponent(key)}`,
+    { enabled: true });
+  if(r && r.ok){
+    _features.push({ featureKey: key, enabled: true, config: {}, updatedAt: new Date().toISOString() });
+    renderFeaturePanel();
+    showToast(`'${key}' 기능을 추가하고 켰습니다.`);
+  } else {
+    showToast(`추가 실패: ${r?.message || '알 수 없는 오류'}`, true);
+  }
+}
+
+// ── 이 회사로 들어가기(impersonation) ────────────────────────────
+async function enterCompany(id){
+  const c = _companies.find(x => String(x.id) === String(id)) || (_selectedCompany && String(_selectedCompany.id) === String(id) ? _selectedCompany : null);
+  const name = c ? c.name : id;
+  if(!confirm(`'${name}' 회사 관리자 권한으로 들어갑니다. 계속할까요?\n(이 작업과 이후 모든 조작은 감사 로그에 기록됩니다.)`)) return;
+  const r = await masterRequest('POST', `/master/companies/${encodeURIComponent(id)}/impersonate`);
+  if(r && r.ok && r.token){
+    // 메인 SPA(index.html)가 읽는 것과 정확히 같은 localStorage 키에 토큰을 심어 인계한다.
+    // 마스터 콘솔 자체의 토큰(master_auth_token)과는 별개의 키라 서로 덮어쓰지 않는다.
+    try { localStorage.setItem('hr_kpi_auth_token', r.token); } catch(e){}
+    showToast('회사 관리자 세션으로 전환합니다...');
+    setTimeout(() => { location.href = '/index.html'; }, 500);
+  } else {
+    showToast(`진입 실패: ${r?.message || '알 수 없는 오류'}`, true);
+  }
+}
+
+// ── 토스트 ───────────────────────────────────────────────────────
+function showToast(msg, isErr){
+  const t = $('#m-toast');
+  if(!t) return;
+  t.textContent = msg;
+  t.className = isErr ? 'show err' : 'show';
+  clearTimeout(t._hideTimer);
+  t._hideTimer = setTimeout(() => { t.className = ''; }, 3200);
+}
+
+// ── 부팅 ─────────────────────────────────────────────────────────
+if(_masterToken){ enterDashboard(); } else { showLoginScreen(); }
+</script>
+</body>
+</html>
