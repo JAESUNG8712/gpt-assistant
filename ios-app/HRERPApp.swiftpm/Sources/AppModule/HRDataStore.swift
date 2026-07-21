@@ -16,6 +16,9 @@ final class HRDataStore: ObservableObject {
     @Published var isLoading = false
     @Published var lastError: String?
 
+    private var inFlightReload: Task<Void, Never>?
+    private var inFlightSave: Task<Bool, Never>?
+
     // MARK: - 읽기 전용 타입 뷰
 
     var employees: [Employee] { decodeArray("employees") }
@@ -27,55 +30,77 @@ final class HRDataStore: ObservableObject {
     // MARK: - 불러오기 / 저장
 
     func reload(client: APIClient, session: SessionStore) async {
-        // 이미 reload/save가 진행 중이면 겹쳐서 또 보내지 않는다 — 두 요청이 거의 동시에
-        // 나가면 응답이 도착 순서대로 적용되면서(서버 처리 순서와 무관하게) 나중에 도착한
-        // 쪽이 최신 상태를 덮어쓸 수 있다. 화면에서 두 동작이 거의 동시에 트리거된 경우
-        // (예: 출근 체크 직후 다른 화면에서 결재 승인) 뒤쪽 호출은 조용히 건너뛴다.
-        guard !isLoading else { return }
+        // 이미 reload가 진행 중이면 그 결과를 그대로 기다린다 — reload는 서버 상태를
+        // 그대로 읽어오기만 할 뿐 로컬 변경분을 실어보내는 게 아니라서, 진행 중인 reload가
+        // 끝난 직후의 최신 상태를 그대로 재사용해도 안전하다(다시 요청할 필요 없음).
+        if let existing = inFlightReload {
+            await existing.value
+            return
+        }
         guard let token = session.token else { return }
-        isLoading = true
-        lastError = nil
-        defer { isLoading = false }
-        do {
-            let result = try await client.fetchData(token: token)
-            raw = result.data
-            version = result.version
-            lastLoadedAt = Date()
-            session.restoreEmployee(from: employees)
-        } catch {
-            if case APIError.serverError(401, _) = error {
-                session.handleUnauthorized()
-            } else {
-                lastError = error.localizedDescription
+        let task = Task<Void, Never> {
+            self.isLoading = true
+            self.lastError = nil
+            defer { self.isLoading = false }
+            do {
+                let result = try await client.fetchData(token: token)
+                self.raw = result.data
+                self.version = result.version
+                self.lastLoadedAt = Date()
+                session.restoreEmployee(from: self.employees)
+            } catch {
+                if case APIError.serverError(401, _) = error {
+                    session.handleUnauthorized()
+                } else {
+                    self.lastError = error.localizedDescription
+                }
             }
         }
+        inFlightReload = task
+        await task.value
+        inFlightReload = nil
     }
 
     @discardableResult
     func save(client: APIClient, session: SessionStore) async -> Bool {
-        // reload()와 동일한 이유로 겹치는 호출을 막는다 — 자세한 설명은 reload() 참고.
-        guard !isLoading else { return false }
-        guard let token = session.token else { return false }
-        isLoading = true
-        lastError = nil
-        defer { isLoading = false }
-        do {
-            let result = try await client.saveData(raw, version: version, token: token)
-            version = result.version
-            if result.merged, let mergedData = result.mergedData {
-                // 서버가 저장 시점 기준 최신 상태와 병합했다는 뜻 — 로컬 raw를 그 결과로 교체해
-                // 다음 화면이 다른 클라이언트의 동시 변경 내용까지 반영된 상태를 보게 한다.
-                raw = mergedData
-            }
-            return true
-        } catch {
-            if case APIError.serverError(401, _) = error {
-                session.handleUnauthorized()
-            } else {
-                lastError = error.localizedDescription
-            }
-            return false
+        // 이미 저장이 진행 중이면, 그냥 건너뛰지 않고 그 저장이 끝나길 기다린 뒤 다시
+        // 시도한다. 화면들은 대부분 "raw를 먼저 동기적으로 수정 → save() 호출" 순서로
+        // 동작하기 때문에(예: 경비청구 승인 처리), 겹치는 호출을 조용히 버리면 이미 반영된
+        // 로컬 변경이 서버에는 저장되지 않은 채 화면만 "처리 완료"로 보이는 불일치가 생길
+        // 수 있다 — 대기 후 재시도하면 그 사이의 모든 로컬 변경이 반영된 현재 raw로 다시
+        // 저장을 시도하므로 안전하다.
+        if let existing = inFlightSave {
+            _ = await existing.value
+            return await save(client: client, session: session)
         }
+        guard let token = session.token else { return false }
+        let task = Task<Bool, Never> {
+            self.isLoading = true
+            self.lastError = nil
+            defer { self.isLoading = false }
+            do {
+                let result = try await client.saveData(self.raw, version: self.version, token: token)
+                self.version = result.version
+                if result.merged, let mergedData = result.mergedData {
+                    // 서버가 저장 시점 기준 최신 상태와 병합했다는 뜻 — 로컬 raw를 그 결과로
+                    // 교체해 다음 화면이 다른 클라이언트의 동시 변경 내용까지 반영된 상태를
+                    // 보게 한다.
+                    self.raw = mergedData
+                }
+                return true
+            } catch {
+                if case APIError.serverError(401, _) = error {
+                    session.handleUnauthorized()
+                } else {
+                    self.lastError = error.localizedDescription
+                }
+                return false
+            }
+        }
+        inFlightSave = task
+        let result = await task.value
+        inFlightSave = nil
+        return result
     }
 
     // MARK: - 근태: 출근/퇴근 체크 (오늘 레코드가 있으면 갱신, 없으면 새로 추가)
@@ -110,6 +135,9 @@ final class HRDataStore: ObservableObject {
 
     // MARK: - 직원 관리(관리자 전용): 신규 등록 / 정보 수정 / 퇴직 처리
     // index.html의 submitHRForm()/submitHRChange()/submitRetire() 로직을 옮겼다.
+    // 아래 메서드들은 role을 받거나 검증하지 않는다 — 서버의 POST /save 자체가 role 검증이
+    // 없어서(README "알려진 한계" 참고), 호출 전 반드시 화면에서 role=="admin"인지 먼저
+    // 확인해야 한다(경비청구/전자결재 관리자 메서드와 동일한 전제).
 
     /// 급여 등 `Employee`(표시 전용 Decodable, 급여 필드 의도적 제외)에 없는 필드까지
     /// 관리자 수정 화면에서 미리 채워 보여주기 위해 raw 딕셔너리를 그대로 읽는다.
