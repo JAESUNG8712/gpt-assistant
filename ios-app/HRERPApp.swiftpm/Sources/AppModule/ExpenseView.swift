@@ -153,7 +153,7 @@ private struct NewExpenseClaimView: View {
         }
 
         let payload = NewExpenseClaimPayload(
-            id: Int(Date().timeIntervalSince1970 * 1000),
+            id: newClientRecordId(),
             empId: employee.id,
             empName: employee.name,
             dept: employee.dept ?? "",

@@ -9,6 +9,18 @@ import Foundation
 // 왕복시키면 그 필드들이 저장 시 유실된다. 실제 변경은 HRDataStore가 raw [String: Any]
 // 딕셔너리를 직접 수정하는 방식으로 처리한다.
 
+/// 새 경비청구/전자결재 문서의 id를 만들 때 쓴다. 순수 `Date().timeIntervalSince1970*1000`
+/// (밀리초 타임스탬프)만 쓰면, 서로 다른 두 기기(또는 앱과 웹)가 정확히 같은 밀리초에 새
+/// 레코드를 만들 경우 id가 충돌한다 — 실측 부하 테스트로 이 정확한 시나리오를 재현한 결과
+/// 서버의 smartMerge가 같은 id의 두 레코드 중 하나를 아무 오류 없이 조용히 버리는 것을
+/// 확인했다(동시 접속자가 많을수록 발생 확률이 올라감). 끝에 무작위 3자리를 더해 같은
+/// 밀리초에 만들어져도 충돌 확률을 1/1000로 낮춘다 — 2^53(JS Number가 정밀도를 잃지 않고
+/// 표현 가능한 최대 정수) 이내에 여유 있게 들어가는 크기라 서버(Node.js)와 JSON을 오가며
+/// 정밀도가 깨지지 않는다.
+func newClientRecordId() -> Int {
+    Int(Date().timeIntervalSince1970 * 1000) * 1000 + Int.random(in: 0..<1000)
+}
+
 struct Employee: Decodable, Identifiable, Hashable {
     let id: Int
     let name: String

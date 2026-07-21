@@ -282,7 +282,7 @@ private struct NewApprovalView: View {
             )
         }
         let payload = NewApprovalDocPayload(
-            id: Int(Date().timeIntervalSince1970 * 1000),
+            id: newClientRecordId(),
             templateId: "tpl-general",
             authorId: employee.id,
             title: docTitle,
