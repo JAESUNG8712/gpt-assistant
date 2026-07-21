@@ -159,6 +159,49 @@ struct KPIEntry: Decodable, Identifiable {
     let finalScore: Double?
     let finalStatus: String?
     let isDraft: Bool?
+    // 목표 등록/자체평가 쓰기 화면에서만 쓰는 필드.
+    let prev: String?
+    let yoy: String?
+    let strategy: String?
+    let evalCriteria: String?
+    let actual: String?
+    let rate: String?
+    let detail: String?
+    /// 0(또는 nil) = 목표 초안, 1 = 목표 제출 완료(index.html의 submitKpi()가 세팅).
+    let goalSub: Int?
+}
+
+/// 새 KPI 목표 항목 등록 전용 — index.html의 목표 등록 함수(7433번째 줄 근처)와 동일한
+/// 필드 기본값. 1차/2차평가·최종확정 등 평가자 필드는 전부 빈 값/nil로 시작한다.
+struct NewKPIGoalPayload: Encodable {
+    let id: Int
+    let userId: Int
+    let year: Int
+    let item: String
+    let weight: Double
+    let prev: String
+    let goal: String
+    let yoy: String
+    let strategy: String
+    let evalCriteria: String
+    let actual: String
+    let rate: String
+    let detail: String
+    let selfScore: Double?
+    let firstScore: Double?
+    let firstComment: String
+    let secondScore: Double?
+    let secondComment: String
+    let secondCommentPublic: Bool
+    let goalSub: Int
+    let isDraft: Bool
+    let firstStatus: String
+    let firstReason: String
+    let finalStatus: String
+    let finalReason: String
+    let finalConfirmed: Bool
+    let finalScore: Double?
+    let updatedAt: String
 }
 
 // MARK: - 경비청구 (expenseClaims)

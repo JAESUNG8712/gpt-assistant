@@ -350,6 +350,53 @@ final class HRDataStore: ObservableObject {
         return true
     }
 
+    // MARK: - 평가/KPI: 목표 등록/제출, 자체평가(결과) 입력 (본인 것만)
+    // index.html의 목표 등록 함수·submitKpi()·saveKpiResult()를 옮겼다. 1차/2차평가·
+    // 최종확정·등급조정 등 평가자·관리자 워크플로는 여러 팀원의 KPI를 한 번에 배치 처리하고
+    // 부서별 자동 등급 산정과도 얽혀 있어 범위 밖으로 뒀다(README 참고).
+
+    func appendKPIGoal(_ payload: NewKPIGoalPayload) throws {
+        var list = raw["kpiEntries"] as? [[String: Any]] ?? []
+        let data = try JSONEncoder().encode(payload)
+        guard let dict = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw APIError.serverError(0, "KPI 목표 데이터 변환 실패")
+        }
+        list.append(dict)
+        raw["kpiEntries"] = list
+    }
+
+    /// 웹 앱은 목표 비중(weight) 합계가 정확히 100%가 되어야 제출을 허용한다 — 호출 전
+    /// 화면에서 먼저 검증해야 한다(여기서는 다시 검증하지 않음).
+    @discardableResult
+    func submitKPIGoals(userId: Int, year: Int) -> Bool {
+        var list = raw["kpiEntries"] as? [[String: Any]] ?? []
+        var changed = false
+        let nowISO = ISO8601DateFormatter().string(from: Date())
+        for i in list.indices {
+            guard (list[i]["userId"] as? Int) == userId, (list[i]["year"] as? Int) == year else { continue }
+            list[i]["goalSub"] = 1
+            list[i]["updatedAt"] = nowISO
+            changed = true
+        }
+        guard changed else { return false }
+        raw["kpiEntries"] = list
+        return true
+    }
+
+    @discardableResult
+    func updateKPISelfEval(id: Int, actual: String, rate: String, detail: String, selfScore: Double?) -> Bool {
+        var list = raw["kpiEntries"] as? [[String: Any]] ?? []
+        guard let index = list.firstIndex(where: { ($0["id"] as? Int) == id }) else { return false }
+        list[index]["actual"] = actual
+        list[index]["rate"] = rate
+        list[index]["detail"] = detail
+        list[index]["selfScore"] = selfScore ?? NSNull()
+        list[index]["isDraft"] = false
+        list[index]["updatedAt"] = ISO8601DateFormatter().string(from: Date())
+        raw["kpiEntries"] = list
+        return true
+    }
+
     // MARK: - 변환 헬퍼
 
     private func decodeArray<T: Decodable>(_ key: String) -> [T] {
