@@ -115,8 +115,26 @@ final class HRDataStore: ObservableObject {
 
     func withdrawExpenseClaim(id: Int) {
         var list = raw["expenseClaims"] as? [[String: Any]] ?? []
+        let before = list.count
         list.removeAll { ($0["id"] as? Int) == id && (($0["status"] as? String) == "pending") }
+        guard list.count != before else { return }
         raw["expenseClaims"] = list
+        tombstone(field: "expenseClaims", id: id)
+    }
+
+    // MARK: - 삭제 표시(tombstone)
+    // 서버의 smartMerge는 id가 같은 레코드를 "새로운 updatedAt이 이긴다" 방식으로만 병합해서,
+    // 배열에서 그냥 지운 레코드는 동시 저장 충돌 시 상대방이 여전히 갖고 있던 옛 사본이
+    // 되살아날 수 있다(공식 웹 앱 `index.html`의 `_tombstone()`/`recordTombstones`와 서버의
+    // `mergeRecordTombstones()`가 바로 이 문제를 막기 위해 존재함). 그래서 배열에서 레코드를
+    // 지울 때는 반드시 `recordTombstones[field]`에 `{id, ts}`를 같이 남겨야 병합 시 되살아나지
+    // 않는다 — 웹 앱과 동일하게 ts는 epoch 밀리초.
+    private func tombstone(field: String, id: Int) {
+        var tombstones = raw["recordTombstones"] as? [String: Any] ?? [:]
+        var fieldList = tombstones[field] as? [[String: Any]] ?? []
+        fieldList.append(["id": id, "ts": Int(Date().timeIntervalSince1970 * 1000)])
+        tombstones[field] = fieldList
+        raw["recordTombstones"] = tombstones
     }
 
     // MARK: - 전자결재: 신규 상신 (기존 문서는 손대지 않고 배열에 추가만 함)
