@@ -235,6 +235,98 @@ final class APIClient {
         try await decodeList("api/erp/stock", token: token, rootKey: "stock")
     }
 
+    // MARK: - 영업재고 관리자 쓰기 (품목 등록, 재고 조정, 견적서/발주서 신규 작성)
+    // 견적서/발주서는 등록(draft) 단계까지만 지원한다 — 서버는 송부/수락/출고(견적서),
+    // 확정/입고/취소(발주서) 등 여러 단계 상태 전이 엔드포인트를 더 갖고 있지만, 각 단계마다
+    // 재고 반영·번호 발급 로직이 달라 전체를 옮기는 건 범위를 크게 벗어나 README에 다음
+    // 단계 후보로 남겨뒀다.
+
+    func createItem(
+        code: String, name: String, unit: String, category: String,
+        safetyStock: Double, unitCost: Double, active: Bool, token: String
+    ) async throws -> InventoryItem {
+        var request = URLRequest(url: try url("api/erp/items"))
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        struct Body: Encodable {
+            let code: String; let name: String; let unit: String; let category: String
+            let safetyStock: Double; let unitCost: Double; let active: Bool
+        }
+        request.httpBody = try JSONEncoder().encode(
+            Body(code: code, name: name, unit: unit, category: category, safetyStock: safetyStock, unitCost: unitCost, active: active)
+        )
+        let (data, response) = try await session.data(for: request)
+        try Self.checkResponse(response, data: data)
+        struct Response: Decodable { let ok: Bool; let item: InventoryItem }
+        return try JSONDecoder().decode(Response.self, from: data).item
+    }
+
+    /// `type`은 "in"(입고) 또는 "out"(출고). 출고 시 현재 재고보다 많은 수량은 서버가 거부한다.
+    func adjustStock(itemId: String, locationId: String, type: String, qty: Double, memo: String, user: String, token: String) async throws {
+        var request = URLRequest(url: try url("api/erp/stock/adjust"))
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        struct Body: Encodable {
+            let itemId: String; let locationId: String; let type: String; let qty: Double; let memo: String; let user: String
+        }
+        request.httpBody = try JSONEncoder().encode(
+            Body(itemId: itemId, locationId: locationId, type: type, qty: qty, memo: memo, user: user)
+        )
+        let (data, response) = try await session.data(for: request)
+        try Self.checkResponse(response, data: data)
+    }
+
+    struct NewTradeDocLine: Encodable {
+        let itemId: String
+        let name: String
+        let qty: Double
+        let unitPrice: Double
+    }
+
+    func createQuotation(
+        date: String, validUntil: String, partnerName: String, locationId: String?,
+        items: [NewTradeDocLine], memo: String, user: String, token: String
+    ) async throws -> TradeDocument {
+        var request = URLRequest(url: try url("api/erp/quotations"))
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        struct Body: Encodable {
+            let date: String; let validUntil: String; let partnerName: String; let locationId: String?
+            let items: [NewTradeDocLine]; let memo: String; let user: String
+        }
+        request.httpBody = try JSONEncoder().encode(
+            Body(date: date, validUntil: validUntil, partnerName: partnerName, locationId: locationId, items: items, memo: memo, user: user)
+        )
+        let (data, response) = try await session.data(for: request)
+        try Self.checkResponse(response, data: data)
+        struct Response: Decodable { let ok: Bool; let quotation: TradeDocument }
+        return try JSONDecoder().decode(Response.self, from: data).quotation
+    }
+
+    func createPurchaseOrder(
+        date: String, deliveryDate: String, partnerName: String, locationId: String,
+        items: [NewTradeDocLine], memo: String, user: String, token: String
+    ) async throws -> TradeDocument {
+        var request = URLRequest(url: try url("api/erp/purchase-orders"))
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        struct Body: Encodable {
+            let date: String; let deliveryDate: String; let partnerName: String; let locationId: String
+            let items: [NewTradeDocLine]; let memo: String; let user: String
+        }
+        request.httpBody = try JSONEncoder().encode(
+            Body(date: date, deliveryDate: deliveryDate, partnerName: partnerName, locationId: locationId, items: items, memo: memo, user: user)
+        )
+        let (data, response) = try await session.data(for: request)
+        try Self.checkResponse(response, data: data)
+        struct Response: Decodable { let ok: Bool; let purchaseOrder: TradeDocument }
+        return try JSONDecoder().decode(Response.self, from: data).purchaseOrder
+    }
+
     func fetchPMSProjects(token: String) async throws -> [PMSProject] {
         try await decodeList("api/pms/projects", token: token, rootKey: "projects")
     }
