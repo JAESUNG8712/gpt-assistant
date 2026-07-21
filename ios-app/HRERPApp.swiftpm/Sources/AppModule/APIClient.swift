@@ -327,6 +327,75 @@ final class APIClient {
         return try JSONDecoder().decode(Response.self, from: data).purchaseOrder
     }
 
+    // MARK: - 견적서/발주서 상태 전이
+    // index.html의 견적서(송부→수주확정→출고 / 반려)·발주서(발주확정→입고 / 취소) 상태
+    // 전이 함수들을 옮겼다. 둘 다 응답 키만 다르고("quotation" vs "purchaseOrder") 나머지
+    // 구조가 같아 공용 헬퍼로 처리한다.
+
+    private func postTradeDocAction(_ path: String, body: [String: String], responseKey: String, token: String) async throws -> TradeDocument {
+        var request = URLRequest(url: try url(path))
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.httpBody = try JSONEncoder().encode(body)
+        let (data, response) = try await session.data(for: request)
+        try Self.checkResponse(response, data: data)
+        guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let docData = object[responseKey] else {
+            throw APIError.serverError(0, "\(path) 응답 형식이 올바르지 않습니다.")
+        }
+        let docJSON = try JSONSerialization.data(withJSONObject: docData)
+        return try JSONDecoder().decode(TradeDocument.self, from: docJSON)
+    }
+
+    private func deleteTradeDoc(_ path: String, token: String) async throws {
+        var request = URLRequest(url: try url(path))
+        request.httpMethod = "DELETE"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        let (data, response) = try await session.data(for: request)
+        try Self.checkResponse(response, data: data)
+    }
+
+    func sendQuotation(id: String, user: String, token: String) async throws -> TradeDocument {
+        try await postTradeDocAction("api/erp/quotations/\(id)/send", body: ["user": user], responseKey: "quotation", token: token)
+    }
+
+    func acceptQuotation(id: String, user: String, token: String) async throws -> TradeDocument {
+        try await postTradeDocAction("api/erp/quotations/\(id)/accept", body: ["user": user], responseKey: "quotation", token: token)
+    }
+
+    /// 재고를 실제로 차감하고 세금계산서를 발행한다 — 재고 부족 시 서버가 거부한다.
+    func shipQuotation(id: String, user: String, token: String) async throws -> TradeDocument {
+        try await postTradeDocAction("api/erp/quotations/\(id)/ship", body: ["user": user], responseKey: "quotation", token: token)
+    }
+
+    func rejectQuotation(id: String, reason: String, user: String, token: String) async throws -> TradeDocument {
+        try await postTradeDocAction("api/erp/quotations/\(id)/reject", body: ["reason": reason, "user": user], responseKey: "quotation", token: token)
+    }
+
+    /// 임시(draft) 상태의 견적서만 삭제할 수 있다.
+    func deleteQuotation(id: String, token: String) async throws {
+        try await deleteTradeDoc("api/erp/quotations/\(id)", token: token)
+    }
+
+    func confirmPurchaseOrder(id: String, user: String, token: String) async throws -> TradeDocument {
+        try await postTradeDocAction("api/erp/purchase-orders/\(id)/confirm", body: ["user": user], responseKey: "purchaseOrder", token: token)
+    }
+
+    /// 재고를 실제로 입고 반영하고 세금계산서를 발행한다.
+    func receivePurchaseOrder(id: String, user: String, token: String) async throws -> TradeDocument {
+        try await postTradeDocAction("api/erp/purchase-orders/\(id)/receive", body: ["user": user], responseKey: "purchaseOrder", token: token)
+    }
+
+    func cancelPurchaseOrder(id: String, reason: String, user: String, token: String) async throws -> TradeDocument {
+        try await postTradeDocAction("api/erp/purchase-orders/\(id)/cancel", body: ["reason": reason, "user": user], responseKey: "purchaseOrder", token: token)
+    }
+
+    /// 임시(draft) 상태의 발주서만 삭제할 수 있다.
+    func deletePurchaseOrder(id: String, token: String) async throws {
+        try await deleteTradeDoc("api/erp/purchase-orders/\(id)", token: token)
+    }
+
     func fetchPMSProjects(token: String) async throws -> [PMSProject] {
         try await decodeList("api/pms/projects", token: token, rootKey: "projects")
     }

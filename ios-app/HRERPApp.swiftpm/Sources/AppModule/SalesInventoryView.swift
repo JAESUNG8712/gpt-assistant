@@ -1,5 +1,10 @@
 import SwiftUI
 
+private enum TradeDocKind: Equatable {
+    case quotation, purchaseOrder
+    var titleWord: String { self == .quotation ? "견적서" : "발주서" }
+}
+
 @MainActor
 struct SalesInventoryView: View {
     @EnvironmentObject private var settings: AppSettings
@@ -58,9 +63,9 @@ struct SalesInventoryView: View {
                     }
                 }
             case .quotations:
-                tradeDocList(quotations, emptyMessage: "등록된 견적서가 없습니다.")
+                tradeDocList(quotations, emptyMessage: "등록된 견적서가 없습니다.", kind: .quotation)
             case .purchaseOrders:
-                tradeDocList(purchaseOrders, emptyMessage: "등록된 발주서가 없습니다.")
+                tradeDocList(purchaseOrders, emptyMessage: "등록된 발주서가 없습니다.", kind: .purchaseOrder)
             case .stock:
                 if stock.isEmpty && !isLoading { EmptyState(message: "재고 이력이 없습니다.") }
                 ForEach(stock) { level in
@@ -123,22 +128,38 @@ struct SalesInventoryView: View {
     }
 
     @ViewBuilder
-    private func tradeDocList(_ docs: [TradeDocument], emptyMessage: String) -> some View {
+    private func tradeDocList(_ docs: [TradeDocument], emptyMessage: String, kind: TradeDocKind) -> some View {
         if docs.isEmpty && !isLoading { EmptyState(message: emptyMessage) }
         ForEach(docs) { doc in
-            AppCard {
-                HStack {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(doc.partnerName).font(.subheadline.weight(.semibold))
-                        Text("\(doc.date) · \(doc.docNo ?? "번호 미발행")")
-                            .font(.caption)
-                            .foregroundStyle(AppTheme.secondaryText)
-                    }
-                    Spacer()
-                    VStack(alignment: .trailing, spacing: 2) {
-                        Text("\(Int(doc.grandTotal).formatted())원").font(.subheadline.weight(.bold))
-                        StatusPill(status: doc.status)
-                    }
+            if isAdmin {
+                NavigationLink {
+                    TradeDocDetailView(doc: doc, kind: kind) { Task { await load() } }
+                        .environmentObject(settings)
+                        .environmentObject(session)
+                } label: {
+                    tradeDocRow(doc)
+                }
+                .buttonStyle(.plain)
+            } else {
+                tradeDocRow(doc)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func tradeDocRow(_ doc: TradeDocument) -> some View {
+        AppCard {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(doc.partnerName).font(.subheadline.weight(.semibold))
+                    Text("\(doc.date) · \(doc.docNo ?? "번호 미발행")")
+                        .font(.caption)
+                        .foregroundStyle(AppTheme.secondaryText)
+                }
+                Spacer()
+                VStack(alignment: .trailing, spacing: 2) {
+                    Text("\(Int(doc.grandTotal).formatted())원").font(.subheadline.weight(.bold))
+                    StatusPill(status: doc.status)
                 }
             }
         }
@@ -498,6 +519,166 @@ private struct NewPurchaseOrderView: View {
                 memo: memo, user: admin.name, token: token
             )
             onSaved()
+            dismiss()
+        } catch {
+            if case APIError.serverError(401, _) = error {
+                session.handleUnauthorized()
+            } else {
+                errorMessage = error.localizedDescription
+            }
+        }
+    }
+}
+
+/// index.html의 견적서(송부→수주확정→출고 / 반려)·발주서(발주확정→입고 / 취소) 상태 전이를
+/// 옮겼다 — 관리자 전용. NavigationLink로 push되므로(시트 아님) 자체 NavigationStack은
+/// 두지 않는다.
+@MainActor
+private struct TradeDocDetailView: View {
+    @EnvironmentObject private var settings: AppSettings
+    @EnvironmentObject private var session: SessionStore
+    @Environment(\.dismiss) private var dismiss
+    let kind: TradeDocKind
+    let onChanged: () -> Void
+
+    @State private var currentDoc: TradeDocument
+    @State private var reasonText = ""
+    @State private var isSaving = false
+    @State private var errorMessage: String?
+
+    private var client: APIClient { APIClient(settings: settings) }
+    private var userName: String { session.currentEmployee?.name ?? "" }
+
+    init(doc: TradeDocument, kind: TradeDocKind, onChanged: @escaping () -> Void) {
+        self.kind = kind
+        self.onChanged = onChanged
+        _currentDoc = State(initialValue: doc)
+    }
+
+    var body: some View {
+        AppScreen {
+            AppCard {
+                LabeledContent("거래처", value: currentDoc.partnerName)
+                LabeledContent("일자", value: currentDoc.date)
+                LabeledContent("문서번호", value: currentDoc.docNo?.isEmpty == false ? currentDoc.docNo! : "번호 미발행")
+                LabeledContent("상태") { StatusPill(status: currentDoc.status) }
+            }
+
+            AppCard(title: "품목") {
+                ForEach(Array(currentDoc.lines.enumerated()), id: \.offset) { index, line in
+                    HStack {
+                        Text(line.name).font(.subheadline)
+                        Spacer()
+                        Text("\(Int(line.qty).formatted())개 × \(Int(line.unitPrice).formatted())원")
+                            .font(.caption)
+                            .foregroundStyle(AppTheme.secondaryText)
+                    }
+                    if index != currentDoc.lines.count - 1 { Divider() }
+                }
+                HStack {
+                    Text("합계").font(.subheadline.weight(.semibold))
+                    Spacer()
+                    Text("\(Int(currentDoc.grandTotal).formatted())원").font(.subheadline.weight(.bold))
+                }
+            }
+
+            actionSection
+
+            if let errorMessage {
+                AppCard { Text(errorMessage).font(.footnote).foregroundStyle(AppTheme.danger) }
+            }
+        }
+        .navigationTitle("\(kind.titleWord) 상세")
+    }
+
+    @ViewBuilder
+    private var actionSection: some View {
+        switch (kind, currentDoc.status) {
+        case (.quotation, "draft"):
+            AppCard {
+                Button("발송") {
+                    Task { await run { token in try await client.sendQuotation(id: currentDoc.id, user: userName, token: token) } }
+                }
+                .buttonStyle(AppPrimaryButtonStyle(isDisabled: isSaving)).disabled(isSaving)
+                Button("삭제", role: .destructive) { Task { await deleteDraft() } }
+                    .buttonStyle(.bordered).tint(AppTheme.danger).disabled(isSaving)
+            }
+        case (.quotation, "sent"):
+            AppCard(title: "수주 처리") {
+                Button("수주 확정") {
+                    Task { await run { token in try await client.acceptQuotation(id: currentDoc.id, user: userName, token: token) } }
+                }
+                .buttonStyle(AppPrimaryButtonStyle(isDisabled: isSaving)).disabled(isSaving)
+                TextField("반려/실주 사유 *", text: $reasonText, axis: .vertical).appFieldStyle()
+                Button("반려 처리") {
+                    Task { await run { token in try await client.rejectQuotation(id: currentDoc.id, reason: reasonText, user: userName, token: token) } }
+                }
+                .buttonStyle(.bordered).tint(AppTheme.danger)
+                .disabled(isSaving || reasonText.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+        case (.quotation, "accepted"):
+            AppCard {
+                Button("출고 처리") {
+                    Task { await run { token in try await client.shipQuotation(id: currentDoc.id, user: userName, token: token) } }
+                }
+                .buttonStyle(AppPrimaryButtonStyle(isDisabled: isSaving)).disabled(isSaving)
+                Text("재고가 부족하면 서버가 거부합니다. 출고 처리 시 세금계산서가 함께 발행됩니다.")
+                    .font(.caption).foregroundStyle(AppTheme.secondaryText)
+            }
+        case (.purchaseOrder, "draft"):
+            AppCard {
+                Button("발주 확정") {
+                    Task { await run { token in try await client.confirmPurchaseOrder(id: currentDoc.id, user: userName, token: token) } }
+                }
+                .buttonStyle(AppPrimaryButtonStyle(isDisabled: isSaving)).disabled(isSaving)
+                Button("삭제", role: .destructive) { Task { await deleteDraft() } }
+                    .buttonStyle(.bordered).tint(AppTheme.danger).disabled(isSaving)
+            }
+        case (.purchaseOrder, "ordered"):
+            AppCard(title: "입고/취소") {
+                Button("입고 처리") {
+                    Task { await run { token in try await client.receivePurchaseOrder(id: currentDoc.id, user: userName, token: token) } }
+                }
+                .buttonStyle(AppPrimaryButtonStyle(isDisabled: isSaving)).disabled(isSaving)
+                TextField("취소 사유 *", text: $reasonText, axis: .vertical).appFieldStyle()
+                Button("취소 처리") {
+                    Task { await run { token in try await client.cancelPurchaseOrder(id: currentDoc.id, reason: reasonText, user: userName, token: token) } }
+                }
+                .buttonStyle(.bordered).tint(AppTheme.danger)
+                .disabled(isSaving || reasonText.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+        default:
+            EmptyView()
+        }
+    }
+
+    private func run(_ action: @escaping (String) async throws -> TradeDocument) async {
+        guard let token = session.token else { return }
+        isSaving = true
+        defer { isSaving = false }
+        do {
+            currentDoc = try await action(token)
+            onChanged()
+        } catch {
+            if case APIError.serverError(401, _) = error {
+                session.handleUnauthorized()
+            } else {
+                errorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    private func deleteDraft() async {
+        guard let token = session.token else { return }
+        isSaving = true
+        defer { isSaving = false }
+        do {
+            if kind == .quotation {
+                try await client.deleteQuotation(id: currentDoc.id, token: token)
+            } else {
+                try await client.deletePurchaseOrder(id: currentDoc.id, token: token)
+            }
+            onChanged()
             dismiss()
         } catch {
             if case APIError.serverError(401, _) = error {
