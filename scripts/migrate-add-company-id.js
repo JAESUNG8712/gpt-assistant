@@ -1,4 +1,4 @@
-// 멀티테넌트 전환 1단계: 기존(단일 회사) Postgres 데이터에 company_id를 백필한다.
+// 멀티테넌트 전환 1~2단계: 기존(단일 회사) Postgres 데이터에 company_id를 백필한다.
 //
 // 지금까지 이 시스템은 회사 구분이 전혀 없는 단일 테넌트였다. companies 테이블과
 // company_id 컬럼은 schema.sql에 이미 nullable로 추가되어 있으므로(서버 부팅 시
@@ -8,6 +8,23 @@
 // 부팅마다 자동 실행되는 schema.sql의 idempotent DDL과 달리, 이 백필은 명시적으로
 // 한 번만 실행하는 것이 목적이다(재실행해도 안전하지만 — 이미 company_id가 채워진
 // 행은 건드리지 않음 — 매 부팅마다 돌 이유가 없다).
+//
+// 2단계(app_collections/app_singletons, 2026-07-21 계획 문서 "마이그레이션 순서" 2단계)
+// 추가: 이 두 테이블은 1단계의 employees/kpi_entries와 달리 PRIMARY KEY 자체가
+// (company_id, collection, id) / (company_id, key) 복합키로 바뀐다(schema.sql 주석
+// 참고 — genId()가 회사 간에 공유되는 로컬 카운터라 id 충돌이 일상적으로 벌어지기
+// 때문). Postgres는 PRIMARY KEY 컬럼에 자동으로 NOT NULL을 강제하므로, 이 백필로
+// company_id의 NULL을 전부 없애기 **전까지는** schema.sql이 새 복합 PK로 전환하지
+// 않고 기존 단일열 PK를 유지한 채 대기한다(스킵 로그만 남김). 따라서 운영 배포 순서는
+// 반드시 다음과 같아야 한다:
+//   1) 새 schema.sql/server.js를 배포하기 **전에** 기존 서버가 떠 있는 상태에서(또는
+//      점검 시간을 잡고) 이 스크립트를 먼저 실행해 company_id를 전부 채운다.
+//   2) 그 다음 새 server.js를 배포/재기동한다 — 이번 재기동 시 schema.sql이 NULL
+//      잔여 0건을 확인하고 그제서야 복합 PK로 전환하며, 새 server.js의 upsert 쿼리
+//      (`ON CONFLICT (company_id, collection, id)` 등)가 그 시점부터 정상 동작한다.
+//   순서를 반대로 하면(새 server.js가 먼저 뜨는데 아직 NULL 행이 남아 PK가 구버전
+//   그대로인 경우) app_collections/app_singletons에 대한 모든 쓰기가 "ON CONFLICT
+//   specification과 일치하는 제약이 없다"는 오류로 실패한다.
 //
 // Usage:
 //   DATABASE_URL=postgres://... COMPANY_NAME="회사명" COMPANY_SLUG="company-slug" \
@@ -38,10 +55,22 @@ function slugify(name) {
 
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 
-// 백필 대상: company_id 컬럼이 nullable로 추가된 4개 테이블(1단계 범위).
-// 나머지 모듈(app_collections/accounting/erp/pms/recruit 등)은 후속 단계에서
-// company_id 컬럼 추가와 함께 각자 다룬다 — 이 스크립트의 범위 밖.
-const TABLES = ["employees", "kpi_entries", "employee_history", "kpi_history"];
+// 백필 대상: company_id 컬럼이 nullable로 추가된 테이블 전체.
+// 1단계: employees/kpi_entries(+history) — id 자체가 전역 유일 시퀀스라 company_id는
+//        단순 필터 컬럼으로만 추가됨(PK 변경 없음).
+// 2단계: app_collections/app_singletons — PRIMARY KEY 자체가 복합키로 바뀌므로(위 주석
+//        참고) 백필이 끝나야 schema.sql이 그 PK 전환을 수행한다. 컬럼명이 두 테이블 다
+//        동일하게 `company_id`이고, 아래 루프의 "company_id IS NULL인 행을 전부 이
+//        회사로 채운다"는 UPDATE는 이 두 테이블에도 그대로 적용 가능해 같은 루프에
+//        추가하는 것으로 충분하다(회사가 실제로는 하나뿐인 마이그레이션 이전 데이터라,
+//        collection/id 조합의 유일성은 이미 옛 PK가 보장하고 있었으므로 백필 자체가
+//        새 복합키를 위반할 일은 없다).
+// 나머지 모듈(accounting/erp/pms/recruit 등)은 아직 company_id 컬럼 자체가 없어
+// 후속 단계(계획 문서 3~5단계)에서 각자 다룬다 — 이 스크립트의 범위 밖.
+const TABLES = [
+  "employees", "kpi_entries", "employee_history", "kpi_history",
+  "app_collections", "app_singletons",
+];
 
 async function main() {
   console.log(`회사 백필 시작 (DATABASE_URL 대상)`);
@@ -100,15 +129,35 @@ async function main() {
     console.log(`  ${table}: NULL 잔여 ${remaining}건`);
   }
 
+  const LEGACY_TABLES = ["employees", "kpi_entries", "employee_history", "kpi_history"];
   if (allClear) {
     console.log("\n모든 대상 테이블의 company_id가 채워졌습니다.");
-    console.log("NOT NULL 제약은 이 스크립트가 자동으로 걸지 않습니다 — 데이터를 눈으로");
-    console.log("한 번 더 확인한 뒤, 별도로 다음을 실행해 제약을 걸어주세요:");
-    for (const table of TABLES) {
+    console.log(`NOT NULL 제약은 이 스크립트가 자동으로 걸지 않습니다(${LEGACY_TABLES.join(", ")} 한정 —`);
+    console.log("데이터를 눈으로 한 번 더 확인한 뒤, 별도로 다음을 실행해 제약을 걸어주세요:");
+    for (const table of LEGACY_TABLES) {
       console.log(`  ALTER TABLE ${table} ALTER COLUMN company_id SET NOT NULL;`);
+    }
+    // app_collections/app_singletons는 수동 ALTER가 필요 없다 — 복합 PRIMARY KEY로 전환되는
+    // 순간 Postgres가 NOT NULL을 자동으로 강제한다. 백필이 방금 끝났으니 schema.sql을 한 번
+    // 더 적용해(idempotent) 그 전환을 바로 이 자리에서 완료해본다 — 서버가 다음 재기동 때
+    // 어차피 똑같이 하지만, 운영자가 바로 결과를 확인할 수 있도록 여기서도 시도한다.
+    console.log("\napp_collections/app_singletons 복합 PK 전환 시도 (schema.sql 재적용)...");
+    await pool.query(schema);
+    const { rows: pkRows } = await pool.query(
+      `SELECT conname FROM pg_constraint WHERE conname IN ('app_collections_pk_company','app_singletons_pk_company')`
+    );
+    const migrated = new Set(pkRows.map(r => r.conname));
+    console.log(`  app_collections 복합 PK: ${migrated.has("app_collections_pk_company") ? "전환 완료" : "아직 아님(다음 서버 재기동 시 자동 재시도됨)"}`);
+    console.log(`  app_singletons  복합 PK: ${migrated.has("app_singletons_pk_company") ? "전환 완료" : "아직 아님(다음 서버 재기동 시 자동 재시도됨)"}`);
+    if (migrated.size === 2) {
+      console.log("\n두 테이블 모두 복합 PK로 전환되었습니다 — 이제 새 server.js를 배포/재기동해도 안전합니다.");
+    } else {
+      console.log("\n⚠ 아직 전환되지 않은 테이블이 있습니다. 위 로그(NOTICE)에서 원인을 확인하세요 —");
+      console.log("  보통은 이 스크립트가 미처 모르는 다른 테이블에 아직 company_id NULL 행이 남아있는 경우입니다.");
     }
   } else {
     console.log("\n⚠ 아직 company_id가 NULL인 행이 남아있습니다 — 원인을 확인하세요.");
+    console.log("  app_collections/app_singletons의 복합 PK 전환은 이 NULL이 전부 사라지기 전까지 보류됩니다.");
   }
 
   await pool.end();

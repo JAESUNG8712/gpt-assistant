@@ -351,23 +351,96 @@ CREATE INDEX IF NOT EXISTS idx_recruit_interviews_job       ON recruit_interview
 -- One row per record of every id-keyed list the client sends via getFullState()
 -- that doesn't have its own dedicated table. `collection` is the field name
 -- (e.g. 'attendanceRecords', 'payslips'); `id` is the record's own `id`.
+--
+-- company_id/PK 설계(멀티테넌트 2단계, 2026-07-21 계획 문서 "마이그레이션 순서" 2단계):
+-- 이 테이블의 `id`는 employees.id(_getNextEmployeeId()로 발급되는 진짜 전역 원자적 시퀀스)와
+-- 완전히 다르다 — 클라이언트(public/index.html)가 `let _id=547; const genId=()=>++_id;`로
+-- 브라우저 세션마다 로컬에서 547부터 증가시키는 평범한 카운터일 뿐이라, 서로 다른 두 회사가
+-- 거의 항상 같은 id(예: 둘 다 "548")를 만들어낸다 — 실사용에서 일상적으로 벌어지는 충돌이다.
+-- company_id를 단순 필터 컬럼으로만 추가하고 기존 PRIMARY KEY (collection, id)를 그대로
+-- 두면, 두 번째 회사가 생기는 즉시 PK 위반으로 저장이 실패한다. employees/kpi_entries(1단계)는
+-- id 자체가 전역 유일이라 company_id를 필터 컬럼으로만 추가해도 안전했지만, 이 테이블은
+-- 그 가정이 성립하지 않으므로 company_id를 PRIMARY KEY의 일부로 승격한다:
+-- PRIMARY KEY (company_id, collection, id) — 회사가 다르면 같은 (collection, id)라도 완전히
+-- 별개의 행으로 공존한다.
+--
+-- 기존(마이그레이션 전) 배포는 company_id 컬럼 자체가 없거나 nullable로 채워지지 않은 행이
+-- 남아있을 수 있다 — PRIMARY KEY 컬럼은 Postgres가 자동으로 NOT NULL을 강제하므로, 백필이
+-- 끝나기 전(company_id가 NULL인 행이 남아있는 동안)에는 새 복합 PK로 전환할 수 없다. 아래
+-- DO 블록은 NULL 잔여 행이 있으면 전환을 건너뛰고 기존 단일열 PK를 그대로 유지한다 —
+-- scripts/migrate-add-company-id.js로 백필을 마친 뒤 재부팅하면 그 다음 스키마 적용에서
+-- 안전하게 전환된다(운영 배포 순서: 백필 스크립트 먼저 실행 → 새 서버 코드 배포/재기동. 백필
+-- 전에 새 server.js 코드가 먼저 뜨면, app_collections 쓰기의 `ON CONFLICT (company_id,
+-- collection, id)`가 아직 마이그레이션 전인 옛 PK와 맞지 않아 오류가 나므로 반드시 이 순서를
+-- 지켜야 한다).
 CREATE TABLE IF NOT EXISTS app_collections (
   collection TEXT        NOT NULL,
   id         TEXT        NOT NULL,
+  company_id UUID,
   data       JSONB       NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  PRIMARY KEY (collection, id)
+  CONSTRAINT app_collections_pk_company PRIMARY KEY (company_id, collection, id)
 );
+-- 기존(company_id 컬럼 자체가 없던) 배포와의 호환을 위해 nullable로 추가 — 위 CREATE TABLE은
+-- 테이블이 아예 없던 신규 설치에서만 실행되므로(IF NOT EXISTS), 기존 테이블에는 이 ALTER가
+-- 실제로 컬럼을 채워 넣는다.
+ALTER TABLE app_collections ADD COLUMN IF NOT EXISTS company_id UUID;
 CREATE INDEX IF NOT EXISTS idx_app_collections_collection ON app_collections (collection);
+CREATE INDEX IF NOT EXISTS idx_app_collections_company_id ON app_collections (company_id);
+DO $$
+DECLARE remaining_null INTEGER;
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'app_collections_pk_company') THEN
+    SELECT COUNT(*) INTO remaining_null FROM app_collections WHERE company_id IS NULL;
+    IF remaining_null = 0 THEN
+      IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'app_collections_pkey') THEN
+        ALTER TABLE app_collections DROP CONSTRAINT app_collections_pkey;
+      END IF;
+      ALTER TABLE app_collections ADD CONSTRAINT app_collections_pk_company PRIMARY KEY (company_id, collection, id);
+    ELSE
+      RAISE NOTICE 'app_collections: company_id IS NULL 인 행이 %건 남아있어 복합 PK 전환을 건너뜁니다. scripts/migrate-add-company-id.js 백필 후 재기동하세요.', remaining_null;
+    END IF;
+  END IF;
+END $$;
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'app_collections_company_id_fkey') THEN
+    ALTER TABLE app_collections ADD CONSTRAINT app_collections_company_id_fkey FOREIGN KEY (company_id) REFERENCES companies(id);
+  END IF;
+END $$;
 
 -- ── Generic singleton config blobs (settings, orgDB, gradeSettings, etc.) ──────
--- One row per top-level config field that isn't a list of records.
+-- One row per top-level config field that isn't a list of records. 동일한 이유로
+-- PRIMARY KEY (company_id, key) 복합키로 승격 — 위 app_collections 주석 참고.
 CREATE TABLE IF NOT EXISTS app_singletons (
-  key        TEXT        PRIMARY KEY,
+  key        TEXT        NOT NULL,
+  company_id UUID,
   data       JSONB       NOT NULL,
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT app_singletons_pk_company PRIMARY KEY (company_id, key)
 );
+ALTER TABLE app_singletons ADD COLUMN IF NOT EXISTS company_id UUID;
+CREATE INDEX IF NOT EXISTS idx_app_singletons_company_id ON app_singletons (company_id);
+DO $$
+DECLARE remaining_null INTEGER;
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'app_singletons_pk_company') THEN
+    SELECT COUNT(*) INTO remaining_null FROM app_singletons WHERE company_id IS NULL;
+    IF remaining_null = 0 THEN
+      IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'app_singletons_pkey') THEN
+        ALTER TABLE app_singletons DROP CONSTRAINT app_singletons_pkey;
+      END IF;
+      ALTER TABLE app_singletons ADD CONSTRAINT app_singletons_pk_company PRIMARY KEY (company_id, key);
+    ELSE
+      RAISE NOTICE 'app_singletons: company_id IS NULL 인 행이 %건 남아있어 복합 PK 전환을 건너뜁니다. scripts/migrate-add-company-id.js 백필 후 재기동하세요.', remaining_null;
+    END IF;
+  END IF;
+END $$;
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'app_singletons_company_id_fkey') THEN
+    ALTER TABLE app_singletons ADD CONSTRAINT app_singletons_company_id_fkey FOREIGN KEY (company_id) REFERENCES companies(id);
+  END IF;
+END $$;
 
 -- ── Annual confirmed snapshots ────────────────────────────────────────────────
 -- 매년 최종 확정 시 전체 데이터를 스냅샷으로 보관 (절대 삭제 불가)

@@ -621,12 +621,13 @@ async function initDB() {
 const { ID_KEYED_LIST_FIELDS, GENERIC_LIST_FIELDS, SINGLETON_FIELDS } = require("./lib/collections");
 
 // ── Core DB helpers ───────────────────────────────────────────────────────────
-// companyId: employees/kpi_entries만 회사별 컬럼이 실제로 붙어있어(2026-07-20 스키마 작업)
-// 여기서 SQL WHERE로 직접 필터한다 — 이 세션이 명시적으로 다루는 범위. app_collections/
-// app_singletons(승인문서·경비청구·근태 등 나머지 20여개 필드)는 아직 company_id 컬럼 자체가
-// 없어(계획 문서의 2단계 이후 마이그레이션 대상) 그대로 전역 공유로 남는다 — 알려진 한계이며
-// 이번 세션의 구현 범위 밖. companyId를 생략하면(레거시 호출부 방어용) 기존처럼 전체를
-// 반환한다 — 단일 회사만 존재하는 배포에서는 이 기본 동작이 곧 정상 동작이다.
+// companyId: employees/kpi_entries(1단계, 2026-07-20)에 이어 app_collections/app_singletons
+// (2단계, 2026-07-21 — approvalDocs·expenseClaims·attendanceRecords·settings 등 나머지
+// 20여개 필드)도 이제 company_id로 스코프한다. 이 두 테이블은 employees/kpi_entries와 달리
+// PRIMARY KEY 자체가 (company_id, collection, id)/(company_id, key) 복합키다 — 클라이언트의
+// genId()가 회사 간에 공유되는 로컬 카운터(547부터 증가)라 서로 다른 회사가 같은 id를 만드는
+// 게 일상적이기 때문(schema.sql 주석 참고). companyId를 생략하면(레거시 호출부 방어용) 기존처럼
+// 전체를 반환한다 — 단일 회사만 존재하는 배포에서는 이 기본 동작이 곧 정상 동작이다.
 async function loadData(companyId) {
   if (USE_JSON_FILE) {
     // Return the full stored state so the client restores everything
@@ -635,11 +636,12 @@ async function loadData(companyId) {
   }
   const empParams = companyId ? [companyId] : [];
   const empFilter = companyId ? "AND company_id = $1" : "";
+  const collFilter = companyId ? "WHERE company_id = $1" : "";
   const [empRes, kpiRes, collRes, singRes] = await Promise.all([
     pool.query(`SELECT data FROM employees  WHERE is_deleted = FALSE ${empFilter} ORDER BY created_at`, empParams),
     pool.query(`SELECT data FROM kpi_entries WHERE is_deleted = FALSE ${empFilter} ORDER BY created_at`, empParams),
-    pool.query("SELECT collection, data FROM app_collections ORDER BY created_at"),
-    pool.query("SELECT key, data FROM app_singletons"),
+    pool.query(`SELECT collection, data FROM app_collections ${collFilter} ORDER BY created_at`, empParams),
+    pool.query(`SELECT key, data FROM app_singletons ${collFilter}`, empParams),
   ]);
   const result = {
     employees:  empRes.rows.map(r => r.data),
@@ -916,16 +918,34 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null) 
     // in app_collections forever and could resurface on the next full load. recordTombstones
     // (see mergeArrayById/smartMerge) now records exactly which ids were locally deleted, so
     // apply those as real deletes here — the same fix kpi_entries gets just below.
+    //
+    // company_id (2단계): 이 테이블의 PK가 (company_id, collection, id) 복합키로 바뀌었으므로
+    // (schema.sql 참고), "이미 존재하는 레코드인지" 조회하는 tie-break SELECT도 반드시
+    // company_id로 스코프해야 한다 — 스코프하지 않으면 id가 우연히 같은 다른 회사의 레코드를
+    // "기존 레코드"로 착각해(예: 그 회사의 최신 updatedAt이 이 회사가 지금 저장하려는 값보다
+    // 최신으로 보이면) 이 회사의 정당한 저장을 조용히 건너뛰는 버그가 생긴다. companyId는
+    // 항상 req.auth.companyId(서버가 검증한 토큰)에서만 오므로, 클라이언트가 다른 회사의
+    // company_id를 지정해 쓰기를 스푸핑할 방법 자체가 없다 — employees/kpi_entries처럼
+    // "다른 회사 소유면 건너뛴다"는 별도 방어 코드가 필요 없는 이유이기도 하다(회사가 다르면
+    // 애초에 별개의 PK 행이라 서로 절대 겹치지 않는다). company_id IS NULL(백필 전 레거시 행)도
+    // 함께 매칭해 마이그레이션 전환 기간 동안 자기 자신의 레거시 데이터를 정상적으로 이어받게
+    // 한다 — 이 완화는 tie-break 조회에만 적용하고, 실제 INSERT/UPDATE는 항상 이 요청의
+    // 진짜 companyId로만 기록한다.
     const recordTombstones = data.recordTombstones || {};
     for (const field of GENERIC_LIST_FIELDS) {
       const items = data[field];
       if (Array.isArray(items)) {
         for (const item of items) {
           if (!item || item.id == null) continue;
-          const { rows } = await client.query(
-            "SELECT data FROM app_collections WHERE collection = $1 AND id = $2",
-            [field, String(item.id)]
-          );
+          const { rows } = companyId
+            ? await client.query(
+                "SELECT data FROM app_collections WHERE collection = $1 AND id = $2 AND (company_id = $3 OR company_id IS NULL)",
+                [field, String(item.id), companyId]
+              )
+            : await client.query(
+                "SELECT data FROM app_collections WHERE collection = $1 AND id = $2",
+                [field, String(item.id)]
+              );
           // compResponses is filtered by filterDataForRole() with per-record FIELD stripping
           // (evaluator identity/content removed for records the requester didn't author, to
           // protect multi-rater anonymity), not whole-record hiding like the other generic
@@ -939,9 +959,9 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null) 
           const newTs = item.updatedAt || item.createdAt || "";
           if (rows.length && newTs < oldTs) continue; // server has a newer copy, keep it
           await client.query(
-            `INSERT INTO app_collections (collection, id, data, updated_at) VALUES ($1,$2,$3,NOW())
-             ON CONFLICT (collection, id) DO UPDATE SET data = $3, updated_at = NOW()`,
-            [field, String(item.id), JSON.stringify(item)]
+            `INSERT INTO app_collections (collection, id, company_id, data, updated_at) VALUES ($1,$2,$3,$4,NOW())
+             ON CONFLICT (company_id, collection, id) DO UPDATE SET data = $4, updated_at = NOW()`,
+            [field, String(item.id), companyId, JSON.stringify(item)]
           );
         }
       }
@@ -951,7 +971,14 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null) 
       const extraDead = field === "roomReservations" ? (data.roomReservationTombstones || []) : [];
       const deadIds = [...(recordTombstones[field] || []), ...extraDead].map(t => String(t.id));
       if (deadIds.length) {
-        await client.query("DELETE FROM app_collections WHERE collection = $1 AND id = ANY($2)", [field, deadIds]);
+        // (company_id = $3 OR $3 IS NULL): companyId가 있으면 이 회사 소유 행만(레거시 NULL
+        // 행은 건드리지 않음 — 삭제는 되돌릴 수 없는 작업이라 employees/kpiEntries의 /restore
+        // deleteExtras와 동일하게 보수적으로 처리), companyId를 모르면(레거시 호출부 방어용)
+        // 기존처럼 전역으로 삭제한다.
+        await client.query(
+          "DELETE FROM app_collections WHERE collection = $1 AND id = ANY($2) AND (company_id = $3 OR $3 IS NULL)",
+          [field, deadIds, companyId]
+        );
       }
     }
     {
@@ -965,6 +992,9 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null) 
     }
 
     // ── singleton config blobs ─────────────────────────────────────────────────
+    // company_id (2단계): app_singletons도 PK가 (company_id, key) 복합키로 바뀌었으므로
+    // 위 app_collections와 동일한 이유로 조회는 company_id(+레거시 NULL)로 스코프하고, 쓰기는
+    // 항상 이 요청의 진짜 companyId로만 기록한다.
     for (const key of SINGLETON_FIELDS) {
       if (data[key] === undefined) continue;
       let valueToStore = data[key];
@@ -974,13 +1004,15 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null) 
       // per-year keys against what's already stored instead (same helper smartMerge() uses
       // for the version-conflict path; this covers the direct-overwrite path too).
       if (key === "compGradeResults") {
-        const { rows } = await client.query("SELECT data FROM app_singletons WHERE key = $1", [key]);
+        const { rows } = companyId
+          ? await client.query("SELECT data FROM app_singletons WHERE key = $1 AND (company_id = $2 OR company_id IS NULL)", [key, companyId])
+          : await client.query("SELECT data FROM app_singletons WHERE key = $1", [key]);
         valueToStore = mergeNestedObject(rows.length ? rows[0].data : null, data[key]);
       }
       await client.query(
-        `INSERT INTO app_singletons (key, data, updated_at) VALUES ($1,$2,NOW())
-         ON CONFLICT (key) DO UPDATE SET data = $2, updated_at = NOW()`,
-        [key, JSON.stringify(valueToStore)]
+        `INSERT INTO app_singletons (key, company_id, data, updated_at) VALUES ($1,$2,$3,NOW())
+         ON CONFLICT (company_id, key) DO UPDATE SET data = $3, updated_at = NOW()`,
+        [key, companyId, JSON.stringify(valueToStore)]
       );
     }
 
@@ -1936,9 +1968,12 @@ function describeSnapshotFields(snapshotData) {
 
 // POST /snapshots — create a full-DB confirmed snapshot, tagged by year
 // 주의(알려진 한계): annual_snapshots 테이블 자체는 아직 company_id가 없다(계획 문서
-// 6단계 예정 — budget.js와 함께 Postgres 이전 대상). loadData(companyId)로 employees/
-// kpi_entries 부분만이라도 이 회사로 스코프하지만, app_collections/app_singletons에서
-// 오는 나머지 20여개 필드는 여전히 전역 공유 상태로 스냅샷에 담긴다.
+// 6단계 예정 — budget.js와 함께 Postgres 이전 대상). loadData(companyId)가 반환하는
+// employees/kpiEntries/app_collections/app_singletons 유래 필드는 전부(2단계, 2026-07-21
+// 완료) 이 회사로 스코프된 데이터라 스냅샷 *내용물*은 정확히 이 회사 것만 담긴다 — 다만
+// annual_snapshots 자체가 company_id 없이 eval_year 단독 PK(`ON CONFLICT (eval_year)`)라서,
+// 두 회사가 같은 연도에 스냅샷을 만들면 서로의 스냅샷 행을 덮어쓰는 문제는 여전히 남아있다
+// (내용물 유출은 아니고, 스냅샷 자체가 통째로 교체되는 가용성 문제 — 6단계에서 해결 예정).
 app.post("/snapshots", async (req, res) => {
   if (!requireAdmin(req, res)) return;
   const { year = new Date().getFullYear(), confirmedBy = "admin", notes = "" } = req.body || {};
@@ -2162,7 +2197,16 @@ app.post("/restore", async (req, res) => {
           );
           await pool.query("DELETE FROM kpi_entries WHERE id = ANY($1) AND (company_id = $2 OR $2 IS NULL)", [extraIds, companyId]);
         } else {
-          await pool.query("DELETE FROM app_collections WHERE collection = $1 AND id = ANY($2)", [field, extraIds]);
+          // 2단계(2026-07-21) 이전에는 여기 company_id 조건이 아예 없어, 회사 A의 스냅샷
+          // 복원이 우연히 같은 collection+id를 가진 회사 B의 살아있는 레코드까지 삭제할 수
+          // 있었다(app_collections가 아직 전역 공유였을 때는 collection+id 자체가 PK였으므로
+          // ANY($2) 매치가 곧 유일한 행을 가리켰지만, id는 클라이언트의 로컬 카운터라 두 회사가
+          // 같은 id를 쓰는 게 흔해 실제로 위험했다). 위 employees/kpiEntries 분기와 동일한
+          // (company_id = $N OR $N IS NULL) 패턴으로 이 회사(+레거시 NULL) 소유 행만 삭제한다.
+          await pool.query(
+            "DELETE FROM app_collections WHERE collection = $1 AND id = ANY($2) AND (company_id = $3 OR $3 IS NULL)",
+            [field, extraIds, companyId]
+          );
         }
       }
     }
@@ -2611,11 +2655,23 @@ app.post("/api/accounting/tax-invoices/:id/void", async (req, res) => {
 
 // ── 수금/지급 (AR/AP payments — 거래처별 미수·미지급 관리) ────────────────────
 // JSON 모드: _fileAccounting.payments / PG 모드: app_collections(acctPayments)
+// company_id (2단계, 2026-07-21 발견·수정): 이 3개 라우트는 loadData()/_persistDataLocked()를
+// 거치지 않고 app_collections를 직접 쿼리하고 있어, 회사 스코프 배선 대상에서 완전히 누락돼
+// 있었다 — 회사 B의 admin이 자기 회사에 로그인한 채로 이 API를 호출하면 회사 A를 포함한
+// 전 회사의 수금/지급 내역(거래처명·금액)을 그대로 보고 삭제까지 할 수 있는 상태였다.
+// acctPayments는 id에 `pay_${Date.now()}_${random}`을 쓰므로 회사 간 id 충돌 가능성은 사실상
+// 없지만(실사용상 문제였던 건 id 충돌이 아니라 스코프 누락 그 자체), 그래도 다른 라우트들과
+// 동일한 컬럼 구조(company_id가 PK의 일부)를 그대로 쓰므로 조회/쓰기/삭제 모두 일관되게
+// company_id를 채워 넣는다.
 app.get("/api/accounting/payments", async (req, res) => {
   if (!requireAdmin(req, res)) return;
   try {
     if (USE_JSON_FILE) return res.json({ ok: true, payments: _fileAccounting.payments || [] });
-    const { rows } = await pool.query("SELECT data FROM app_collections WHERE collection = 'acctPayments' ORDER BY created_at");
+    const companyId = req.auth.companyId || null;
+    const { rows } = await pool.query(
+      "SELECT data FROM app_collections WHERE collection = 'acctPayments' AND (company_id = $1 OR company_id IS NULL) ORDER BY created_at",
+      [companyId]
+    );
     res.json({ ok: true, payments: rows.map(r => r.data) });
   } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
 });
@@ -2638,7 +2694,11 @@ app.post("/api/accounting/payments", async (req, res) => {
       _saveFileAccounting();
       return res.json({ ok: true, payment });
     }
-    await pool.query("INSERT INTO app_collections (collection, id, data, updated_at) VALUES ('acctPayments',$1,$2,NOW())", [payment.id, payment]);
+    const companyId = req.auth.companyId || null;
+    await pool.query(
+      "INSERT INTO app_collections (collection, id, company_id, data, updated_at) VALUES ('acctPayments',$1,$2,$3,NOW())",
+      [payment.id, companyId, payment]
+    );
     res.json({ ok: true, payment });
   } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
 });
@@ -2651,7 +2711,11 @@ app.post("/api/accounting/payments/:id/delete", async (req, res) => {
       _saveFileAccounting();
       return res.json({ ok: true });
     }
-    await pool.query("DELETE FROM app_collections WHERE collection = 'acctPayments' AND id = $1", [id]);
+    const companyId = req.auth.companyId || null;
+    await pool.query(
+      "DELETE FROM app_collections WHERE collection = 'acctPayments' AND id = $1 AND (company_id = $2 OR $2 IS NULL)",
+      [id, companyId]
+    );
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
 });
