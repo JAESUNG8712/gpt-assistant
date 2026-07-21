@@ -1569,15 +1569,41 @@ app.post("/admin/bootstrap-migrate", async (req, res) => {
   const companySlug = (req.body && req.body.companySlug || "").trim();
   if (!companyName) return res.status(400).json({ ok: false, message: "companyName required" });
   const { execFile } = require("child_process");
+  const childEnv = { ...process.env, COMPANY_NAME: companyName };
+  if (companySlug) childEnv.COMPANY_SLUG = companySlug;
   execFile(
     process.execPath,
     [path.join(__dirname, "scripts", "migrate-add-company-id.js")],
-    { cwd: __dirname, timeout: 120000, maxBuffer: 1024 * 1024 * 10,
-      env: { ...process.env, COMPANY_NAME: companyName, COMPANY_SLUG: companySlug || undefined } },
+    { cwd: __dirname, timeout: 120000, maxBuffer: 1024 * 1024 * 10, env: childEnv },
     (err, stdout, stderr) => {
       res.json({ ok: !err, stdout, stderr, error: err ? err.message : null });
     }
   );
+});
+
+// ── TEMPORARY — 위 /admin/bootstrap-migrate와 같은 이유·같은 보안 패턴, 완료 확인 즉시
+// 이 블록도 함께 제거할 것. 운영 DB가 디스크 용량 부족(53100 disk_full)으로 백필 자체가
+// 실패해(트랜잭션 롤백돼 데이터 손상은 없음) 무엇이 공간을 차지하고 있는지 읽기 전용으로
+// 확인하기 위한 진단 엔드포인트 — 아무것도 쓰거나 지우지 않는다.
+app.get("/admin/db-size-report", async (req, res) => {
+  if (!process.env.MIGRATION_ADMIN_SECRET || req.headers["x-migration-secret"] !== process.env.MIGRATION_ADMIN_SECRET) {
+    return res.status(404).end();
+  }
+  try {
+    const totalRes = await pool.query("SELECT pg_size_pretty(pg_database_size(current_database())) AS total_size, pg_database_size(current_database()) AS total_bytes");
+    const tablesRes = await pool.query(`
+      SELECT t.relname AS table_name,
+             pg_size_pretty(pg_total_relation_size(t.relid)) AS total_size,
+             pg_total_relation_size(t.relid) AS total_bytes,
+             pg_size_pretty(pg_relation_size(t.relid)) AS table_only_size,
+             s.n_live_tup AS approx_row_count
+      FROM pg_catalog.pg_statio_user_tables t
+      JOIN pg_stat_user_tables s USING (relid)
+      ORDER BY pg_total_relation_size(t.relid) DESC
+      LIMIT 25
+    `);
+    res.json({ ok: true, total: totalRes.rows[0], tables: tablesRes.rows });
+  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
 });
 
 // /login과 동일한 이유로 전용 rate limiter가 필요하다(이 라우트도 항상 HTTP 200으로
