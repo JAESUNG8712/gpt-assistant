@@ -5,6 +5,18 @@ CREATE TABLE IF NOT EXISTS app_meta (
 );
 INSERT INTO app_meta (key, value) VALUES ('data_version', '0') ON CONFLICT DO NOTHING;
 
+-- ── 회사(테넌트) ──────────────────────────────────────────────────────────────
+-- 멀티테넌트 SaaS 전환(2026-07-20 계획, CLAUDE.md 참고)의 기반. gen_random_uuid()는
+-- pgcrypto 확장이 있어야 하는 Postgres 버전이 있어 명시적으로 활성화해둔다.
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+CREATE TABLE IF NOT EXISTS companies (
+  id         UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+  slug       TEXT        UNIQUE NOT NULL,
+  name       TEXT        NOT NULL,
+  status     TEXT        NOT NULL DEFAULT 'active' CHECK (status IN ('trial','active','suspended')),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 -- ── Employees ─────────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS employees (
   id         TEXT        PRIMARY KEY,
@@ -15,6 +27,28 @@ CREATE TABLE IF NOT EXISTS employees (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+-- company_id는 기존 단일 회사 데이터와의 호환을 위해 우선 nullable로 추가한다 — 마이그레이션
+-- 스크립트(scripts/migrate-add-company-id.js)가 기존 행을 전부 백필한 뒤에야 애플리케이션
+-- 차원에서 NOT NULL을 전제로 동작하게 된다(스키마 레벨 NOT NULL 제약은 백필 확인 후 별도로 건다).
+ALTER TABLE employees ADD COLUMN IF NOT EXISTS company_id UUID;
+CREATE INDEX IF NOT EXISTS idx_employees_company_id ON employees (company_id);
+-- ADD CONSTRAINT는 "IF NOT EXISTS" 구문이 없다. EXCEPTION WHEN duplicate_object로 잡는 방식은
+-- 제약이 실제로는 이미 존재하는데도 그 밑에 깔린 인덱스 쪽에서 duplicate_table로 먼저 걸려
+-- 잡히지 않는 경우가 있어(실측 확인 — 매 부팅마다 idempotent하게 재적용되는 이 스키마 파일의
+-- 특성상 반드시 안전해야 함), pg_constraint 카탈로그를 직접 확인하는 방식으로 통일한다.
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'employees_company_id_fkey') THEN
+    ALTER TABLE employees ADD CONSTRAINT employees_company_id_fkey FOREIGN KEY (company_id) REFERENCES companies(id);
+  END IF;
+END $$;
+-- loginId는 employees.data JSONB 안에 있어(전용 컬럼 아님) 생성 컬럼으로 뽑아내 회사 단위
+-- 유일성 제약을 건다. 과거엔 warnDuplicateLoginIds()로 경고만 하고 실제 DB 제약이 없었다.
+ALTER TABLE employees ADD COLUMN IF NOT EXISTS login_id TEXT GENERATED ALWAYS AS (data->>'loginId') STORED;
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'employees_company_login_id_uniq') THEN
+    ALTER TABLE employees ADD CONSTRAINT employees_company_login_id_uniq UNIQUE (company_id, login_id);
+  END IF;
+END $$;
 
 -- 변경 이력: 삽입·수정·삭제 모두 기록 (덮어쓰기 없음)
 CREATE TABLE IF NOT EXISTS employee_history (
@@ -25,8 +59,10 @@ CREATE TABLE IF NOT EXISTS employee_history (
   changed_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   data        JSONB       NOT NULL
 );
+ALTER TABLE employee_history ADD COLUMN IF NOT EXISTS company_id UUID;
 CREATE INDEX IF NOT EXISTS idx_emp_hist_employee_id ON employee_history (employee_id);
 CREATE INDEX IF NOT EXISTS idx_emp_hist_changed_at  ON employee_history (changed_at);
+CREATE INDEX IF NOT EXISTS idx_emp_hist_company_id  ON employee_history (company_id);
 
 -- ── KPI entries ───────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS kpi_entries (
@@ -40,8 +76,15 @@ CREATE TABLE IF NOT EXISTS kpi_entries (
   created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+ALTER TABLE kpi_entries ADD COLUMN IF NOT EXISTS company_id UUID;
 CREATE INDEX IF NOT EXISTS idx_kpi_employee_id ON kpi_entries (employee_id);
 CREATE INDEX IF NOT EXISTS idx_kpi_eval_year   ON kpi_entries (eval_year);
+CREATE INDEX IF NOT EXISTS idx_kpi_company_id  ON kpi_entries (company_id);
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'kpi_entries_company_id_fkey') THEN
+    ALTER TABLE kpi_entries ADD CONSTRAINT kpi_entries_company_id_fkey FOREIGN KEY (company_id) REFERENCES companies(id);
+  END IF;
+END $$;
 
 CREATE TABLE IF NOT EXISTS kpi_history (
   history_id BIGSERIAL   PRIMARY KEY,
@@ -51,8 +94,10 @@ CREATE TABLE IF NOT EXISTS kpi_history (
   changed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   data       JSONB       NOT NULL
 );
+ALTER TABLE kpi_history ADD COLUMN IF NOT EXISTS company_id UUID;
 CREATE INDEX IF NOT EXISTS idx_kpi_hist_kpi_id     ON kpi_history (kpi_id);
 CREATE INDEX IF NOT EXISTS idx_kpi_hist_changed_at ON kpi_history (changed_at);
+CREATE INDEX IF NOT EXISTS idx_kpi_hist_company_id ON kpi_history (company_id);
 
 -- ── Accounting: 계정과목 (chart of accounts) ──────────────────────────────────
 CREATE TABLE IF NOT EXISTS accounts (
