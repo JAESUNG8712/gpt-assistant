@@ -90,6 +90,21 @@ final class APIClient {
         return (try? JSONSerialization.jsonObject(with: raw) as? [String: Any]) ?? [:]
     }
 
+    // MARK: - 직원 관리(관리자 전용): 신규 등록용 원자적 id 발급
+    // 여러 관리자가 거의 동시에 신규 직원을 등록할 때 클라이언트가 각자 마지막으로 받은
+    // GET /data 스냅샷 기준으로 id를 만들면 충돌해서 한쪽이 사라진다(서버 쪽 실측 기록:
+    // 30명 동시 등록 시 27명 유실) — 서버가 원자적으로 발급하는 이 엔드포인트를 반드시 써야 한다.
+
+    func nextEmployeeId(token: String) async throws -> Int {
+        var request = URLRequest(url: try url("api/employees/next-id"))
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        let (data, response) = try await session.data(for: request)
+        try Self.checkResponse(response, data: data)
+        struct Response: Decodable { let ok: Bool; let id: Int }
+        return try JSONDecoder().decode(Response.self, from: data).id
+    }
+
     // MARK: - 회계 / 영업재고 / PMS / 채용
     // 위 GET /data 블롭과 달리 이 엔드포인트들은 서버가 전용 테이블로 직접 관리하는
     // 독립 리소스라, 일반 Decodable로 디코드해도 데이터 유실 위험이 없다.

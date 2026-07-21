@@ -108,6 +108,80 @@ final class HRDataStore: ObservableObject {
         raw["attendanceRecords"] = list
     }
 
+    // MARK: - 직원 관리(관리자 전용): 신규 등록 / 정보 수정 / 퇴직 처리
+    // index.html의 submitHRForm()/submitHRChange()/submitRetire() 로직을 옮겼다.
+
+    /// 급여 등 `Employee`(표시 전용 Decodable, 급여 필드 의도적 제외)에 없는 필드까지
+    /// 관리자 수정 화면에서 미리 채워 보여주기 위해 raw 딕셔너리를 그대로 읽는다.
+    func rawEmployeeDict(id: Int) -> [String: Any]? {
+        let list = raw["employees"] as? [[String: Any]] ?? []
+        return list.first { ($0["id"] as? Int) == id }
+    }
+
+    func createEmployee(_ payload: NewEmployeePayload) throws {
+        var list = raw["employees"] as? [[String: Any]] ?? []
+        let data = try JSONEncoder().encode(payload)
+        guard let dict = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw APIError.serverError(0, "직원 데이터 변환 실패")
+        }
+        list.append(dict)
+        raw["employees"] = list
+    }
+
+    /// `changes`로 넘긴 필드만 덮어쓰고 나머지(customFields/careers 등 이 앱이 모르는 필드
+    /// 포함)는 그대로 둔다. `historyDesc`가 있으면 웹 앱의 "발령·변동 이력"과 동일하게
+    /// hrHistory에 감사 기록을 한 건 추가한다.
+    func updateEmployee(id: Int, changes: [String: Any], historyDesc: (before: String, after: String, desc: String)?) {
+        var list = raw["employees"] as? [[String: Any]] ?? []
+        guard let index = list.firstIndex(where: { ($0["id"] as? Int) == id }) else { return }
+        var emp = list[index]
+        for (key, value) in changes { emp[key] = value }
+        emp["updatedAt"] = ISO8601DateFormatter().string(from: Date())
+        if let historyDesc {
+            var history = emp["hrHistory"] as? [[String: Any]] ?? []
+            history.append([
+                "id": newClientRecordId(), "type": "update",
+                "date": ISO8601DateFormatter().string(from: Date()).prefix(10).description,
+                "desc": historyDesc.desc, "before": historyDesc.before, "after": historyDesc.after, "note": "",
+            ])
+            emp["hrHistory"] = history
+        }
+        list[index] = emp
+        raw["employees"] = list
+    }
+
+    func retireEmployee(id: Int, date: String, reason: String, note: String) {
+        var list = raw["employees"] as? [[String: Any]] ?? []
+        guard let index = list.firstIndex(where: { ($0["id"] as? Int) == id }) else { return }
+        var emp = list[index]
+        emp["active"] = false
+        emp["retireDate"] = date
+        emp["retireReason"] = reason
+        emp["updatedAt"] = ISO8601DateFormatter().string(from: Date())
+        var history = emp["hrHistory"] as? [[String: Any]] ?? []
+        history.append([
+            "id": newClientRecordId(), "type": "retirement", "date": date,
+            "desc": "퇴직 처리 - \(reason)", "before": "재직", "after": "퇴직 (\(date))", "note": note,
+        ])
+        emp["hrHistory"] = history
+        list[index] = emp
+        raw["employees"] = list
+
+        // 웹 앱의 _cleanupRetiredEmpReferences()와 동일하게, 퇴직 처리 시 대기중인 경비청구를
+        // 자동 반려한다. approvalDelegations/overtimeRequests는 이 앱이 다루지 않는
+        // 컬렉션이라 손대지 않는다(범위 밖).
+        var claims = raw["expenseClaims"] as? [[String: Any]] ?? []
+        var claimsChanged = false
+        for i in claims.indices {
+            guard (claims[i]["empId"] as? Int) == id, (claims[i]["status"] as? String) == "pending" else { continue }
+            claims[i]["status"] = "rejected"
+            claims[i]["rejectReason"] = "퇴직 처리로 자동 반려"
+            claims[i]["approvedAt"] = ISO8601DateFormatter().string(from: Date())
+            claimsChanged = true
+        }
+        if claimsChanged { raw["expenseClaims"] = claims }
+    }
+
     // MARK: - 경비청구: 신규 제출 (기존 청구 건은 손대지 않고 배열에 추가만 함)
 
     func appendExpenseClaim(_ payload: NewExpenseClaimPayload) throws {

@@ -42,6 +42,42 @@ struct Employee: Decodable, Identifiable, Hashable {
     let edu: String?
     let eduSchool: String?
     let address: String?
+    let retireDate: String?
+}
+
+/// 관리자 전용 신규 직원 등록 — id는 반드시 `APIClient.nextEmployeeId(token:)`(서버 원자적
+/// 발급)로 받아온 값을 써야 한다(위 주석 참고). 새 레코드만 배열에 추가하므로(기존 레코드는
+/// 안 건드림) 이 앱이 모르는 필드가 없어 Encodable로 안전하게 왕복 가능.
+struct NewEmployeePayload: Encodable {
+    let id: Int
+    let loginId: String
+    let pw: String
+    let name: String
+    let empNo: String
+    let role: String
+    let dept: String
+    let team: String
+    let birth: String
+    let gender: String
+    let hire: String
+    let jobGroup: String
+    let rank: String
+    let rankYear: Int
+    let salary: Int
+    let edu: String
+    let eduSchool: String
+    let totalCareer: Int
+    let position: String
+    let email: String
+    let phone: String
+    let address: String
+    let active: Bool
+    let retireDate: String
+    let retireReason: String
+    let customFields: [String: String]
+    let careers: [String]
+    let hrHistory: [String]
+    let updatedAt: String
 }
 
 struct LoginResponse: Decodable {
