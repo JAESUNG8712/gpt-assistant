@@ -380,11 +380,51 @@ function warnDuplicateLoginIds(employees) {
 }
 
 // ── In-memory state (SSE / locks only) ───────────────────────────────────────
-let _dataVersion = 0;
-let _lastSaved   = null;
+// 멀티테넌트 전환 전에는 _dataVersion/_lastSaved가 프로세스 전체에 하나뿐인 스칼라였고,
+// _locks의 키도 평문("emp:123")이었으며 _sseClients/broadcastSSE는 붙어있는 모든 클라이언트에게
+// 무조건 전체 브로드캐스트했다 — 전 배포가 암묵적으로 "회사는 하나"라는 가정 위에 있었다는 뜻.
+// 회사가 둘 이상이면 이건 실제 테넌트 간 데이터 유출이 된다(다른 회사의 버전 변화량으로 활동
+// 수준이 흘러나가고, 잠금 키가 우연히 겹칠 수 있고, SSE로 다른 회사 사용자명·편집 현황이 그대로
+// 노출됨). JSON 파일 모드(자체 호스팅, 항상 단일 회사)는 이 구분이 필요 없으므로 아래 헬퍼들은
+// USE_JSON_FILE일 때 전부 하나의 고정 스코프(_GLOBAL_SCOPE)로 수렴해 기존 동작을 그대로 보존한다.
+const _GLOBAL_SCOPE = "__global__";
+function _scopeKey(companyId) {
+  return USE_JSON_FILE ? _GLOBAL_SCOPE : (companyId || _GLOBAL_SCOPE);
+}
+// companyId(또는 JSON 모드의 _GLOBAL_SCOPE) → { version, lastSaved } 낙관적 동시성 카운터.
+// 회사별로 완전히 독립된 버전 계열을 가지므로, 회사 A의 저장이 회사 B의 다음 저장에 "버전이
+// 달라졌으니 병합 필요"라는 불필요한(그리고 활동량을 흘리는) 신호를 주지 않는다.
+let _versionState = new Map();
+function _getVersion(companyId)   { return (_versionState.get(_scopeKey(companyId)) || { version: 0 }).version; }
+function _getLastSaved(companyId) { return (_versionState.get(_scopeKey(companyId)) || { lastSaved: null }).lastSaved; }
+function _setVersion(companyId, version, lastSaved = null) {
+  _versionState.set(_scopeKey(companyId), { version, lastSaved });
+}
+// _persistDataLocked 안에서 저장이 실제로 커밋된 뒤에만 호출 — 버전을 올리고 lastSaved를 찍는다.
+function _bumpVersion(companyId) {
+  const key = _scopeKey(companyId);
+  const st = { version: (_versionState.get(key) || { version: 0 }).version + 1, lastSaved: new Date().toISOString() };
+  _versionState.set(key, st);
+  return st;
+}
 let _activityLog = [];
-let _locks       = {};      // { lockKey: { clientId, user, acquiredAt, expiresAt } }
-let _sseClients  = {};      // { clientId: { res, user, connectedAt } }
+// 잠금 키도 회사별로 완전히 분리한다 — `${_scopeKey(companyId)}:${key}` 형태로 저장하고,
+// 클라이언트에는 항상 접두어를 벗긴 원래 키 형태로만 노출한다(_locksForCompany 참고).
+let _locks       = {};      // { "companyId:lockKey": { clientId, user, acquiredAt, expiresAt } }
+let _sseClients  = {};      // { clientId: { res, user, companyId, connectedAt } }
+function _locksForCompany(companyId) {
+  const prefix = `${_scopeKey(companyId)}:`;
+  const out = {};
+  for (const [k, v] of Object.entries(_locks)) {
+    if (k.startsWith(prefix)) out[k.slice(prefix.length)] = v;
+  }
+  return out;
+}
+function _onlineCountFor(companyId) {
+  // companyId가 없는 호출(비인증 GET /status 등)은 기존 동작(전체 합계)을 그대로 유지한다.
+  if (!companyId) return Object.keys(_sseClients).length;
+  return Object.values(_sseClients).filter(c => c.companyId === _scopeKey(companyId)).length;
+}
 
 // 신규 직원 id는 원래 클라이언트가 로컬 카운터(서버 _idCounter 스냅샷에서 시작해
 // 세션 안에서만 ++)로 발급했는데, 이 카운터는 "마지막으로 GET /data 했을 때"의
@@ -438,8 +478,8 @@ async function initDB() {
       try {
         const raw = fs.readFileSync(JSON_FILE, "utf8");
         _fileStore = JSON.parse(raw);
-        _dataVersion = _fileStore._version || 0;
-        console.log(`[Storage] JSON File mode. Loaded ${(_fileStore.employees||[]).length} employees, version=${_dataVersion}`);
+        _setVersion(null, _fileStore._version || 0);
+        console.log(`[Storage] JSON File mode. Loaded ${(_fileStore.employees||[]).length} employees, version=${_getVersion(null)}`);
       } catch (e) {
         console.warn("[Storage] Could not read data file, starting fresh:", e.message);
       }
@@ -522,11 +562,19 @@ async function initDB() {
   }
   const schema = fs.readFileSync(path.join(__dirname, "schema.sql"), "utf8");
   await pool.query(schema);
+  // data_version은 회사별로 완전히 분리된 카운터라 app_meta에 'data_version:<companyId>'
+  // 키로 여러 행 저장된다(레거시 단일 회사 배포에서 마이그레이션 전에 쓰던 'data_version'
+  // 단일 키는 아래에서 _GLOBAL_SCOPE로 그대로 흡수해 회귀 없이 이어받는다).
   const { rows } = await pool.query(
-    "SELECT value FROM app_meta WHERE key = 'data_version'"
+    "SELECT key, value FROM app_meta WHERE key = 'data_version' OR key LIKE 'data_version:%'"
   );
-  if (rows.length) _dataVersion = parseInt(rows[0].value) || 0;
-  console.log(`[DB] PostgreSQL ready. data_version=${_dataVersion}`);
+  let loadedCompanies = 0;
+  for (const r of rows) {
+    const scope = r.key === "data_version" ? _GLOBAL_SCOPE : r.key.slice("data_version:".length);
+    _versionState.set(scope, { version: parseInt(r.value) || 0, lastSaved: null });
+    loadedCompanies++;
+  }
+  console.log(`[DB] PostgreSQL ready. tracked data_version rows=${loadedCompanies}`);
 
   // 기초데이터 시딩 (최초 가동 시 비어있는 경우에만)
   const acctCount = await pool.query("SELECT COUNT(*) FROM accounts WHERE NOT is_deleted");
@@ -557,22 +605,30 @@ async function initDB() {
 const { ID_KEYED_LIST_FIELDS, GENERIC_LIST_FIELDS, SINGLETON_FIELDS } = require("./lib/collections");
 
 // ── Core DB helpers ───────────────────────────────────────────────────────────
-async function loadData() {
+// companyId: employees/kpi_entries만 회사별 컬럼이 실제로 붙어있어(2026-07-20 스키마 작업)
+// 여기서 SQL WHERE로 직접 필터한다 — 이 세션이 명시적으로 다루는 범위. app_collections/
+// app_singletons(승인문서·경비청구·근태 등 나머지 20여개 필드)는 아직 company_id 컬럼 자체가
+// 없어(계획 문서의 2단계 이후 마이그레이션 대상) 그대로 전역 공유로 남는다 — 알려진 한계이며
+// 이번 세션의 구현 범위 밖. companyId를 생략하면(레거시 호출부 방어용) 기존처럼 전체를
+// 반환한다 — 단일 회사만 존재하는 배포에서는 이 기본 동작이 곧 정상 동작이다.
+async function loadData(companyId) {
   if (USE_JSON_FILE) {
     // Return the full stored state so the client restores everything
     // (employees, kpiEntries, settings, coreTalentPool, lowPerfData, etc.)
-    return { ..._fileStore, _version: _dataVersion };
+    return { ..._fileStore, _version: _getVersion(companyId) };
   }
+  const empParams = companyId ? [companyId] : [];
+  const empFilter = companyId ? "AND company_id = $1" : "";
   const [empRes, kpiRes, collRes, singRes] = await Promise.all([
-    pool.query("SELECT data FROM employees  WHERE is_deleted = FALSE ORDER BY created_at"),
-    pool.query("SELECT data FROM kpi_entries WHERE is_deleted = FALSE ORDER BY created_at"),
+    pool.query(`SELECT data FROM employees  WHERE is_deleted = FALSE ${empFilter} ORDER BY created_at`, empParams),
+    pool.query(`SELECT data FROM kpi_entries WHERE is_deleted = FALSE ${empFilter} ORDER BY created_at`, empParams),
     pool.query("SELECT collection, data FROM app_collections ORDER BY created_at"),
     pool.query("SELECT key, data FROM app_singletons"),
   ]);
   const result = {
     employees:  empRes.rows.map(r => r.data),
     kpiEntries: kpiRes.rows.map(r => r.data),
-    _version:   _dataVersion,
+    _version:   _getVersion(companyId),
   };
   for (const field of GENERIC_LIST_FIELDS) result[field] = [];
   for (const row of collRes.rows) {
@@ -586,10 +642,10 @@ async function loadData() {
 // already inside `_withSaveLock` (the /save route) must call
 // `_persistDataLocked` directly instead, to avoid deadlocking on the
 // non-reentrant mutex.
-async function persistData(data, changedBy = "system") {
-  return _withSaveLock(() => _persistDataLocked(data, changedBy));
+async function persistData(data, changedBy = "system", companyId = null) {
+  return _withSaveLock(() => _persistDataLocked(data, changedBy, companyId));
 }
-async function _persistDataLocked(data, changedBy = "system") {
+async function _persistDataLocked(data, changedBy = "system", companyId = null) {
   if (USE_JSON_FILE) {
     // Save the full client state to the JSON file
     const existingById = {};
@@ -734,9 +790,8 @@ async function _persistDataLocked(data, changedBy = "system") {
       attendanceRecords: attendanceRecordsFinal, scheduleEvents: scheduleEventsFinal,
       approvalDocs: approvalDocsFinal, compGradeResults: compGradeResultsFinal,
     };
-    _dataVersion++;
-    _lastSaved = new Date().toISOString();
-    _fileStore._version = _dataVersion;
+    const verState = _bumpVersion(companyId);
+    _fileStore._version = verState.version;
     // Write atomically via a temp file
     const tmp = JSON_FILE + ".tmp";
     await fs.promises.writeFile(tmp, JSON.stringify(_fileStore, null, 2), "utf8");
@@ -748,22 +803,28 @@ async function _persistDataLocked(data, changedBy = "system") {
     await client.query("BEGIN");
 
     // ── employees upsert + history ────────────────────────────────────────────
+    // id 컬럼 자체는 여전히 전역 유일(설계상 회사마다 새 시퀀스를 쓰지 않음, _getNextEmployeeId
+    // 참고)이라 정상 흐름에서는 다른 회사의 id와 충돌하지 않는다. 그래도 클라이언트가 (스푸핑
+    // 등으로) 다른 회사 소유의 id를 보내는 경우에 대비해, 기존 행의 company_id가 요청자의
+    // company_id와 다르면 그 레코드는 조용히 건너뛴다(404/403 대신 무시 — 다른 회사 리소스의
+    // 존재 자체를 노출하지 않는다는 이 세션의 인가 원칙과 동일).
     for (const rawEmp of (data.employees || [])) {
       if (!rawEmp.id) continue;
       const { rows } = await client.query(
-        "SELECT data FROM employees WHERE id = $1", [rawEmp.id]
+        "SELECT data, company_id FROM employees WHERE id = $1", [rawEmp.id]
       );
+      if (rows.length && companyId && rows[0].company_id && rows[0].company_id !== companyId) continue;
       if (rows.length === 0) {
         let pw = rawEmp.pw;
         if (pw != null && pw !== "") pw = await hashPlaintextPw(pw);
         const emp = { ...rawEmp, pw };
         await client.query(
-          "INSERT INTO employees (id, data) VALUES ($1, $2)",
-          [emp.id, emp]
+          "INSERT INTO employees (id, data, company_id) VALUES ($1, $2, $3)",
+          [emp.id, emp, companyId]
         );
         await client.query(
-          "INSERT INTO employee_history (employee_id, action, changed_by, data) VALUES ($1,'insert',$2,$3)",
-          [emp.id, changedBy, emp]
+          "INSERT INTO employee_history (employee_id, action, changed_by, data, company_id) VALUES ($1,'insert',$2,$3,$4)",
+          [emp.id, changedBy, emp, companyId]
         );
       } else {
         const oldTs = rows[0].data.updatedAt || rows[0].data.createdAt || "";
@@ -785,15 +846,17 @@ async function _persistDataLocked(data, changedBy = "system") {
             [emp.id, emp]
           );
           await client.query(
-            "INSERT INTO employee_history (employee_id, action, changed_by, data) VALUES ($1,'update',$2,$3)",
-            [emp.id, changedBy, emp]
+            "INSERT INTO employee_history (employee_id, action, changed_by, data, company_id) VALUES ($1,'update',$2,$3,$4)",
+            [emp.id, changedBy, emp, companyId]
           );
         }
       }
     }
     let duplicateLoginIds = [];
     if ((data.employees || []).length) {
-      const { rows: allEmp } = await client.query("SELECT data FROM employees WHERE is_deleted = FALSE");
+      const { rows: allEmp } = companyId
+        ? await client.query("SELECT data FROM employees WHERE is_deleted = FALSE AND company_id = $1", [companyId])
+        : await client.query("SELECT data FROM employees WHERE is_deleted = FALSE");
       duplicateLoginIds = warnDuplicateLoginIds(allEmp.map(r => r.data));
     }
 
@@ -803,16 +866,17 @@ async function _persistDataLocked(data, changedBy = "system") {
       const empId   = kpi.employeeId || kpi.employee_id || null;
       const evalYear = kpi.year ? parseInt(kpi.year) : null;
       const { rows } = await client.query(
-        "SELECT data FROM kpi_entries WHERE id = $1", [kpi.id]
+        "SELECT data, company_id FROM kpi_entries WHERE id = $1", [kpi.id]
       );
+      if (rows.length && companyId && rows[0].company_id && rows[0].company_id !== companyId) continue;
       if (rows.length === 0) {
         await client.query(
-          "INSERT INTO kpi_entries (id, employee_id, eval_year, data) VALUES ($1,$2,$3,$4)",
-          [kpi.id, empId, evalYear, kpi]
+          "INSERT INTO kpi_entries (id, employee_id, eval_year, data, company_id) VALUES ($1,$2,$3,$4,$5)",
+          [kpi.id, empId, evalYear, kpi, companyId]
         );
         await client.query(
-          "INSERT INTO kpi_history (kpi_id, action, changed_by, data) VALUES ($1,'insert',$2,$3)",
-          [kpi.id, changedBy, kpi]
+          "INSERT INTO kpi_history (kpi_id, action, changed_by, data, company_id) VALUES ($1,'insert',$2,$3,$4)",
+          [kpi.id, changedBy, kpi, companyId]
         );
       } else {
         const oldTs = rows[0].data.updatedAt || rows[0].data.createdAt || "";
@@ -823,8 +887,8 @@ async function _persistDataLocked(data, changedBy = "system") {
             [kpi.id, kpi, empId, evalYear]
           );
           await client.query(
-            "INSERT INTO kpi_history (kpi_id, action, changed_by, data) VALUES ($1,'update',$2,$3)",
-            [kpi.id, changedBy, kpi]
+            "INSERT INTO kpi_history (kpi_id, action, changed_by, data, company_id) VALUES ($1,'update',$2,$3,$4)",
+            [kpi.id, changedBy, kpi, companyId]
           );
         }
       }
@@ -877,7 +941,10 @@ async function _persistDataLocked(data, changedBy = "system") {
     {
       const deadKpiIds = (recordTombstones.kpiEntries || []).map(t => t.id);
       if (deadKpiIds.length) {
-        await client.query("DELETE FROM kpi_entries WHERE id = ANY($1)", [deadKpiIds]);
+        await client.query(
+          companyId ? "DELETE FROM kpi_entries WHERE id = ANY($1) AND company_id = $2" : "DELETE FROM kpi_entries WHERE id = ANY($1)",
+          companyId ? [deadKpiIds, companyId] : [deadKpiIds]
+        );
       }
     }
 
@@ -901,12 +968,11 @@ async function _persistDataLocked(data, changedBy = "system") {
       );
     }
 
-    // ── bump version ──────────────────────────────────────────────────────────
-    _dataVersion++;
-    _lastSaved = new Date().toISOString();
+    // ── bump version (회사별로 분리된 카운터, _bumpVersion 참고) ──────────────────
+    const verState = _bumpVersion(companyId);
     await client.query(
-      "INSERT INTO app_meta (key, value) VALUES ('data_version', $1) ON CONFLICT (key) DO UPDATE SET value = $1",
-      [String(_dataVersion)]
+      "INSERT INTO app_meta (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = $2",
+      [`data_version:${_scopeKey(companyId)}`, String(verState.version)]
     );
 
     await client.query("COMMIT");
@@ -1042,10 +1108,17 @@ function smartMerge(serverData, clientData) {
 }
 
 // ── SSE helpers ───────────────────────────────────────────────────────────────
-function broadcastSSE(eventName, payload, excludeClientId = null) {
+// companyId를 넘기면 그 회사에 연결된 클라이언트에게만 전송한다(다른 회사 사용자명·접속
+// 여부·편집 잠금 상태가 노출되는 걸 막기 위함 — 멀티테넌트 전환 전에는 이 필터가 없어 붙어있는
+// 모든 클라이언트에게 무조건 브로드캐스트했다). companyId를 생략하면(레거시 호출부 방어용
+// 기본값) 기존처럼 전체 브로드캐스트한다 — JSON 파일 모드는 애초에 회사 구분이 없으므로 이
+// 기본 동작이 곧 정상 동작이다.
+function broadcastSSE(eventName, payload, excludeClientId = null, companyId = undefined) {
   const msg = `event: ${eventName}\ndata: ${JSON.stringify(payload)}\n\n`;
+  const scoped = companyId !== undefined ? _scopeKey(companyId) : null;
   for (const [cid, client] of Object.entries(_sseClients)) {
     if (cid === excludeClientId) continue;
+    if (scoped !== null && client.companyId !== scoped) continue;
     try { client.res.write(msg); } catch {}
   }
 }
@@ -1095,35 +1168,43 @@ const loginLimiter = rateLimit({
 // ── Core API ──────────────────────────────────────────────────────────────────
 
 // GET /status
+// 인증이 필수가 아닌 라우트(부트스트랩 이전에도 호출돼야 함)라 companyId를 모를 수 있다 —
+// 이미 로그인해 유효한 토큰을 보내는 호출은 그 회사로 스코프하고, 그렇지 않으면(레거시
+// 단일 회사 배포·최초 부트스트랩 전 등) 기존처럼 전체 합계를 반환한다.
 app.get("/status", async (req, res) => {
   try {
+    const companyId = req.auth?.companyId || null;
     if (USE_JSON_FILE) {
       return res.json({
         ok: true,
-        version: _dataVersion,
+        version: _getVersion(companyId),
         storageMode: "file",
         meta: {
-          lastSaved: _lastSaved,
+          lastSaved: _getLastSaved(companyId),
           empCount:  (_fileStore.employees  || []).length,
           kpiCount:  (_fileStore.kpiEntries || []).length,
         },
-        onlineCount: Object.keys(_sseClients).length,
+        onlineCount: _onlineCountFor(companyId),
       });
     }
     const [empRes, kpiRes] = await Promise.all([
-      pool.query("SELECT COUNT(*) FROM employees  WHERE is_deleted = FALSE"),
-      pool.query("SELECT COUNT(*) FROM kpi_entries WHERE is_deleted = FALSE"),
+      companyId
+        ? pool.query("SELECT COUNT(*) FROM employees  WHERE is_deleted = FALSE AND company_id = $1", [companyId])
+        : pool.query("SELECT COUNT(*) FROM employees  WHERE is_deleted = FALSE"),
+      companyId
+        ? pool.query("SELECT COUNT(*) FROM kpi_entries WHERE is_deleted = FALSE AND company_id = $1", [companyId])
+        : pool.query("SELECT COUNT(*) FROM kpi_entries WHERE is_deleted = FALSE"),
     ]);
     res.json({
       ok: true,
-      version: _dataVersion,
+      version: _getVersion(companyId),
       storageMode: "postgresql",
       meta: {
-        lastSaved:  _lastSaved,
+        lastSaved:  _getLastSaved(companyId),
         empCount:   parseInt(empRes.rows[0].count),
         kpiCount:   parseInt(kpiRes.rows[0].count),
       },
-      onlineCount: Object.keys(_sseClients).length,
+      onlineCount: _onlineCountFor(companyId),
     });
   } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
 });
@@ -1132,8 +1213,9 @@ app.get("/status", async (req, res) => {
 app.get("/data", async (req, res) => {
   if (!requireAuth(req, res)) return;
   try {
-    const data = await loadData();
-    res.json({ ok: true, data: filterDataForRole(stripPwField(data), req.auth), version: _dataVersion });
+    const companyId = req.auth.companyId || null;
+    const data = await loadData(companyId);
+    res.json({ ok: true, data: filterDataForRole(stripPwField(data), req.auth), version: _getVersion(companyId) });
   } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
 });
 
@@ -1145,11 +1227,36 @@ app.post("/api/employees/next-id", async (req, res) => {
   } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
 });
 
-// Verifies loginId/pw against server-stored (hashed or legacy-plaintext) records.
-// Returns the matched employee (without pw) on success, or null on failure.
-async function verifyCredentials(loginId, pw) {
+// ── 회사(테넌트) 식별 ────────────────────────────────────────────────────────
+// 회사 코드(companies.slug)는 사람이 입력하므로 대소문자/공백 표기 차이를 흡수한다.
+// 회사 가입(POST /api/companies/register)의 slug 생성과 로그인의 companyCode 조회 양쪽에서
+// 동일한 정규화를 거쳐야 "가입 시 만든 코드로 로그인이 안 된다"는 불일치가 생기지 않는다.
+function _slugify(str) {
+  return String(str || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9가-힣]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 60);
+}
+// slug(회사 코드) → company_id. JSON 파일 모드는 companies 테이블 자체가 없는 단일 회사
+// 배포판이라 항상 null(호출부에서 무시됨).
+async function _resolveCompanyId(companyCode) {
+  if (USE_JSON_FILE || !companyCode) return null;
+  const { rows } = await pool.query("SELECT id FROM companies WHERE slug = $1", [_slugify(companyCode)]);
+  return rows.length ? rows[0].id : null;
+}
+
+// Verifies loginId/pw against server-stored (hashed or legacy-plaintext) records,
+// scoped to a single company (companyId is a companies.id UUID in Postgres/SaaS
+// mode, or null in JSON file mode where there's no company concept at all).
+// Returns the matched employee (without pw) on success, or null on failure —
+// null covers "company not found", "loginId not found", and "wrong password"
+// alike, on purpose (계정 존재 여부를 추측할 수 없게 동일한 실패로 처리).
+async function verifyCredentials(companyId, loginId, pw) {
   if (!loginId || !pw) return null;
-  const data = await loadData();
+  if (!USE_JSON_FILE && !companyId) return null; // Postgres/SaaS 모드는 회사가 반드시 있어야 함
+  const data = await loadData(companyId);
   const emp = (data.employees || []).find(e => e.loginId === loginId && e.active);
   if (!emp || !emp.pw) return null;
   const valid = isHashedPw(emp.pw) ? await bcrypt.compare(pw, emp.pw) : emp.pw === pw;
@@ -1161,6 +1268,10 @@ async function verifyCredentials(loginId, pw) {
 // without exposing any employee's password hash to the client. If the account
 // has 2FA enabled, a valid `otp` must also be supplied in the same request
 // (stateless — no server-side session between the password and OTP steps).
+// Postgres/SaaS 모드는 이제 companyCode(회사 코드, companies.slug)가 필수다 — 로그인이
+// 이제 "회사 안에서" loginId/비밀번호를 검증하는 구조로 바뀌었기 때문(과거엔 loginId가
+// 서버 전체에서 유일하다고 가정했음). JSON 파일 모드(단일 회사 자체 호스팅)는 companyCode를
+// 아예 요구하지 않고 기존 그대로 동작한다.
 app.post("/login", loginLimiter, async (req, res) => {
   // /login always answers with HTTP 200 (success/failure both live in the JSON body's
   // `ok` field, since that's what the client checks) — loginLimiter's
@@ -1170,19 +1281,27 @@ app.post("/login", loginLimiter, async (req, res) => {
   // requestWasSuccessful (below) key off the real outcome instead of the status code.
   res.locals.loginOk = false;
   try {
-    const { loginId, pw, otp } = req.body || {};
-    if (!loginId || !pw) return res.status(400).json({ ok: false, message: "아이디와 비밀번호를 입력하세요." });
-    const employee = await verifyCredentials(loginId, pw);
+    const { companyCode, loginId, pw, otp } = req.body || {};
+    if (USE_JSON_FILE) {
+      if (!loginId || !pw) return res.status(400).json({ ok: false, message: "아이디와 비밀번호를 입력하세요." });
+    } else {
+      if (!companyCode || !loginId || !pw) return res.status(400).json({ ok: false, message: "회사 코드, 아이디, 비밀번호를 입력하세요." });
+    }
+    // 회사를 못 찾아도(companyId === null) 여기서 바로 끊지 않고 verifyCredentials까지
+    // 그대로 흘려보낸다 — "회사 없음"과 "아이디/비밀번호 틀림"을 같은 실패 메시지로
+    // 응답해 계정·회사 존재 여부를 추측할 수 없게 하기 위함.
+    const companyId = USE_JSON_FILE ? null : await _resolveCompanyId(companyCode);
+    const employee = await verifyCredentials(companyId, loginId, pw);
     if (!employee) return res.json({ ok: false, message: "아이디 또는 비밀번호가 올바르지 않습니다." });
     if (employee.twoFactorEnabled) {
       if (!otp) { res.locals.loginOk = true; return res.json({ ok: true, requireOtp: true }); }
-      const data = await loadData();
+      const data = await loadData(companyId);
       const raw = (data.employees || []).find(e => e.loginId === loginId && e.active);
       if (!raw || !raw.twoFactorSecret || !totpVerify(raw.twoFactorSecret, otp))
         return res.json({ ok: false, requireOtp: true, message: "인증 코드가 올바르지 않습니다." });
     }
     // 서버가 실제로 검증한 계정 정보로만 토큰을 발급한다(클라이언트가 보낸 role은 무시).
-    const token = signToken({ empId: employee.id, loginId: employee.loginId, role: employee.role });
+    const token = signToken({ empId: employee.id, loginId: employee.loginId, role: employee.role, companyId });
     res.locals.loginOk = true;
     res.json({ ok: true, employee, token });
   } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
@@ -1195,11 +1314,17 @@ app.post("/login", loginLimiter, async (req, res) => {
 // loginLimiter가 없어, /login에는 20회/15분 제한이 걸려도 이 라우트로는 같은 계정 비밀번호를
 // 무제한 추측할 수 있었다(실측: 틀린 비밀번호 25회 연속 시도해도 429 없이 전부 즉시 403).
 // /login과 동일한 loginLimiter를 재사용해 같은 IP의 시도를 함께 카운트한다.
+// companyId: 이 라우트는 보통 이미 로그인된 사용자가 본인 계정에 2FA를 설정하려고
+// 비밀번호를 재확인하는 흐름이라(설정 화면 진입 자체가 로그인 후이므로) 이미 붙어있는
+// Authorization 토큰의 companyId를 우선 사용하고, 없으면(레거시 호출) body의 companyCode로
+// 보조한다 — /login과 달리 프런트엔드가 아직 companyCode를 body에 채워 보내도록 갱신되지
+// 않았어도 로그인된 세션에서는 그대로 동작한다.
 app.post("/api/auth/2fa/generate-secret", loginLimiter, async (req, res) => {
   res.locals.loginOk = false;
   try {
-    const { loginId, pw } = req.body || {};
-    const employee = await verifyCredentials(loginId, pw);
+    const { loginId, pw, companyCode } = req.body || {};
+    const companyId = USE_JSON_FILE ? null : (req.auth?.companyId || await _resolveCompanyId(companyCode));
+    const employee = await verifyCredentials(companyId, loginId, pw);
     if (!employee) return res.status(403).json({ ok: false, message: "비밀번호가 올바르지 않습니다." });
     res.locals.loginOk = true;
     const secret = generateTotpSecret();
@@ -1216,11 +1341,129 @@ app.post("/api/auth/2fa/verify-code", async (req, res) => {
   } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
 });
 
+// ── 셀프서브 회사 가입 ──────────────────────────────────────────────────────────
+// 최소 loginLimiter(IP당 15분/20회)만큼, 계획 문서 지침대로 더 엄격하게 IP당 1시간/10회로
+// 제한한다 — 앱스토어 유통 특성상 여러 사용자가 통신사 NAT 뒤에서 같은 공인 IP를 공유할 수
+// 있어 정상 사용자를 과도하게 막지 않으면서도 자동화된 정크 회사 생성을 억제하는 값이다.
+const registerLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { ok: false, message: "요청이 너무 많습니다. 잠시 후 다시 시도하세요." },
+});
+
+// POST /api/companies/register — 셀프서브 회사 가입. 유일하게 인증 없이 쓰기가 허용되는
+// 경로다 — 과거 POST /save의 "직원이 0명이면 인증 없이 1회 허용"하던 부트스트랩 예외가
+// 이 역할을 대신했지만, 두 번째 회사가 가입하는 순간 "서버에 직원이 0명 = 아직 아무도
+// 안 만든 최초 상태"라는 가정 자체가 깨지므로(이미 다른 회사가 얼마든지 존재할 수 있음)
+// 그 예외는 완전히 폐기했다(_employeesEmpty()/POST /save 주석 참고). Postgres/SaaS 전용 —
+// companies 테이블이 아예 없는 JSON 파일 모드(자체 호스팅, 항상 단일 회사)에서는 이 개념
+// 자체가 필요 없다.
+//
+// 회사 생성 → 관리자 1명 생성 → 토큰 발급까지 하나의 DB 트랜잭션 안에서 처리해 "회사는
+// 만들어졌는데 관리자 계정이 없어 아무도 로그인할 수 없는" 반쪽짜리 상태가 남지 않게 한다.
+app.post("/api/companies/register", registerLimiter, async (req, res) => {
+  if (USE_JSON_FILE) {
+    return res.status(400).json({ ok: false, message: "이 서버는 단일 회사 자체 호스팅 모드로 동작 중이라 회사 가입을 지원하지 않습니다." });
+  }
+  try {
+    const { companyName, companyCode, adminName, loginId, password } = req.body || {};
+    if (!companyName || !adminName || !loginId || !password) {
+      return res.status(400).json({ ok: false, message: "회사명, 관리자 이름, 아이디, 비밀번호를 모두 입력하세요." });
+    }
+    if (String(password).length < 8) {
+      return res.status(400).json({ ok: false, message: "비밀번호는 8자 이상이어야 합니다." });
+    }
+    const baseSlug = _slugify(companyCode || companyName);
+    if (!baseSlug) {
+      return res.status(400).json({ ok: false, message: "회사 코드로 사용할 수 있는 문자가 없습니다(영문/숫자/한글을 포함해주세요)." });
+    }
+
+    // employees.id는 회사와 무관하게 여전히 전역 유일 시퀀스다(설계상 결정 — id 자체를
+    // 복합키로 바꾸는 대규모 리라이트를 피하기 위함, 계획 문서 참고). 트랜잭션 밖에서 먼저
+    // 발급받아도 안전하다(_getNextEmployeeId 자체가 원자적 증가라 이 트랜잭션의 성공 여부와
+    // 무관하게 독립적으로 유효하다 — 트랜잭션이 실패하면 그 번호는 그냥 비게 될 뿐이다).
+    const empId = await _getNextEmployeeId();
+
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      // 같은 baseSlug로 거의 동시에 가입 요청이 들어오면 아래 "빈 slug 찾기" 루프가
+      // 레이스 컨디션을 겪을 수 있어(둘 다 "company-2"가 비어있다고 보고 동시에 시도) advisory
+      // lock으로 같은 baseSlug의 가입 시도를 트랜잭션 안에서 직렬화한다.
+      await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [`company-register:${baseSlug}`]);
+
+      let slug = baseSlug, suffix = 1;
+      for (;;) {
+        const { rows } = await client.query("SELECT 1 FROM companies WHERE slug = $1", [slug]);
+        if (!rows.length) break;
+        suffix += 1;
+        slug = `${baseSlug}-${suffix}`;
+        if (suffix > 50) throw new Error("사용 가능한 회사 코드를 찾지 못했습니다. 다른 회사명을 입력해주세요.");
+      }
+
+      const companyRes = await client.query(
+        "INSERT INTO companies (slug, name, status) VALUES ($1,$2,'trial') RETURNING id, slug, name, status",
+        [slug, companyName]
+      );
+      const company = companyRes.rows[0];
+
+      // 참고: 계획 문서는 "기존 부트스트랩이 하던 것과 동일한 기초데이터 시딩"(DEFAULT_ACCOUNTS/
+      // DEFAULT_LOCATIONS)을 이 흐름에서도 언급하지만, 그 시딩은 initDB()가 서버 최초 가동 시
+      // (accounts/erp_locations 테이블이 비어있을 때) 이미 전역으로 1회 수행한다 — 그리고 그
+      // 두 테이블은 아직 company_id 컬럼 자체가 없다(회계/ERP 모듈은 계획 문서 3~4단계
+      // 마이그레이션 대상, 이번 세션 범위 밖). 따라서 회사마다 별도로 다시 시딩할 방법이
+      // 없고 필요하지도 않다 — 여기서는 관리자 1명 생성까지만 담당한다.
+      const now = new Date().toISOString();
+      const pwHash = await hashPlaintextPw(password);
+      const adminEmp = {
+        id: empId, loginId, pw: pwHash, name: adminName, empNo: "A001", role: "admin",
+        dept: "", team: "", birth: "", gender: "", hire: now.slice(0, 10), retireDate: "", retireReason: "",
+        jobGroup: "", rank: "", rankYear: 0, salary: 0, edu: "", eduSchool: "", totalCareer: 0,
+        active: true, position: "", email: "", phone: "", address: "", customFields: {},
+        careers: [], hrHistory: [], gradeResults: {}, createdAt: now, updatedAt: now,
+      };
+      await client.query(
+        "INSERT INTO employees (id, data, company_id) VALUES ($1,$2,$3)",
+        [String(empId), adminEmp, company.id]
+      );
+      await client.query(
+        "INSERT INTO employee_history (employee_id, action, changed_by, data, company_id) VALUES ($1,'insert',$2,$3,$4)",
+        [String(empId), "company-register", adminEmp, company.id]
+      );
+
+      await client.query("COMMIT");
+
+      // 서버가 방금 생성·검증한 값으로만 토큰을 발급한다(클라이언트가 보낸 role 등은 무시 —
+      // 이 세션 전체에 이미 적용된 하드닝 기조와 동일).
+      const token = signToken({ empId: adminEmp.id, loginId: adminEmp.loginId, role: adminEmp.role, companyId: company.id });
+      console.log(`[Companies] 신규 회사 가입: ${company.name} (slug=${company.slug}, id=${company.id})`);
+      res.json({
+        ok: true,
+        company: { id: company.id, slug: company.slug, name: company.name, status: company.status },
+        employee: omitPw(adminEmp),
+        token,
+      });
+    } catch (e) {
+      await client.query("ROLLBACK");
+      throw e;
+    } finally {
+      client.release();
+    }
+  } catch (e) {
+    res.status(500).json({ ok: false, message: e.message });
+  }
+});
+
 // 완전히 새로 배포된 서버는 직원이 0명이라 아무도 /login으로 토큰을 발급받을 수 없다
 // (프론트엔드의 최초 admin 로그인은 클라이언트에 내장된 샘플 계정으로 로컬에서만
 // 이뤄지고, 그 계정 데이터를 서버에 처음 올리는 것이 바로 이 /save 호출이기 때문).
-// 그래서 employees가 하나도 없는 부트스트랩 상태에 한해서만 인증 없이 허용하고,
-// 데이터가 한 건이라도 생기면 그 이후부터는 무조건 인증을 요구한다.
+// JSON 파일 모드(자체 호스팅, 항상 단일 회사)는 이 부트스트랩 예외를 아래 POST /save에서
+// 여전히 그대로 사용한다. Postgres/SaaS 모드는 "서버에 직원이 0명 = 아직 아무도 안 만든
+// 최초 상태"라는 가정이 두 번째 회사가 가입하는 순간 깨지므로(이미 다른 회사가 얼마든지
+// 존재할 수 있음) 이 함수를 부트스트랩 예외의 근거로 더 이상 쓰지 않는다 — 최초 회사/관리자
+// 계정 생성은 이제 POST /api/companies/register가 전담한다(아래 참고).
 async function _employeesEmpty() {
   if (USE_JSON_FILE) return (_fileStore.employees || []).length === 0;
   const { rows } = await pool.query("SELECT COUNT(*) FROM employees WHERE is_deleted = FALSE");
@@ -1229,7 +1472,11 @@ async function _employeesEmpty() {
 
 // POST /save
 app.post("/save", async (req, res) => {
-  if (!(await _employeesEmpty()) && !requireAuth(req, res)) return;
+  // Postgres/SaaS 모드는 항상 인증 필수(부트스트랩 예외 폐기, 위 주석 참고).
+  // JSON 파일 모드만 기존 부트스트랩 흐름(직원 0명일 때 1회 무인증 허용)을 그대로 유지한다.
+  const bootstrapExempt = USE_JSON_FILE && await _employeesEmpty();
+  if (!bootstrapExempt && !requireAuth(req, res)) return;
+  const companyId = req.auth?.companyId || null;
   const body = req.body;
   if (!body || typeof body !== "object")
     return res.status(400).json({ ok: false, message: "잘못된 데이터" });
@@ -1258,25 +1505,25 @@ app.post("/save", async (req, res) => {
       // closes that gap; the client is always supposed to know the exact current
       // version it started editing from, so anything other than an exact match is
       // treated as "possibly stale/incomplete, merge to be safe."
-      if (clientData._version !== undefined && clientData._version !== _dataVersion) {
-        const serverData = await loadData();
+      if (clientData._version !== undefined && clientData._version !== _getVersion(companyId)) {
+        const serverData = await loadData(companyId);
         finalData = smartMerge(serverData, clientData);
         merged    = true;
       }
 
       const changedBy = req.query.user || clientData._user || "unknown";
-      const { duplicateLoginIds } = await _persistDataLocked(finalData, changedBy);
+      const { duplicateLoginIds } = await _persistDataLocked(finalData, changedBy, companyId);
       return { finalData, merged, duplicateLoginIds };
     });
 
     const meta = {
       empCount:  (finalData.employees  || []).length,
       kpiCount:  (finalData.kpiEntries || []).length,
-      lastSaved: _lastSaved,
+      lastSaved: _getLastSaved(companyId),
     };
-    broadcastSSE("data_updated", { version: _dataVersion, meta }, req.query.clientId);
+    broadcastSSE("data_updated", { version: _getVersion(companyId), meta }, req.query.clientId, companyId);
     res.json({
-      ok: true, version: _dataVersion, merged,
+      ok: true, version: _getVersion(companyId), merged,
       mergedData: merged ? filterDataForRole(stripPwField(finalData), req.auth) : undefined,
       meta,
       warnings: duplicateLoginIds && duplicateLoginIds.length ? { duplicateLoginIds } : undefined,
@@ -1293,6 +1540,7 @@ app.get("/events", (req, res) => {
   // authenticate 미들웨어와 동일한 verifyToken()으로 검증한다.
   const auth = req.auth || verifyToken(req.query.token);
   if (!auth) return res.status(401).json({ ok: false, message: "로그인이 필요합니다." });
+  const companyId = auth.companyId || null;
   const clientId = req.query.clientId || `client_${Date.now()}`;
   const user     = req.query.user     || "unknown";
 
@@ -1301,10 +1549,13 @@ app.get("/events", (req, res) => {
   res.setHeader("Connection",    "keep-alive");
   res.flushHeaders();
 
-  _sseClients[clientId] = { res, user, connectedAt: new Date().toISOString() };
-  res.write(`event: connected\ndata: ${JSON.stringify({ clientId, version: _dataVersion })}\n\n`);
-  res.write(`event: locks_update\ndata: ${JSON.stringify(_locks)}\n\n`);
-  broadcastSSE("user_online", { clientId, user, action: "join" }, clientId);
+  // companyId는 항상 _scopeKey()로 정규화해 저장한다 — broadcastSSE/온라인 카운트가 같은
+  // 정규화된 값끼리 비교하므로(JSON 모드는 전부 _GLOBAL_SCOPE로 수렴) 그래야 일치한다.
+  _sseClients[clientId] = { res, user, companyId: _scopeKey(companyId), connectedAt: new Date().toISOString() };
+  res.write(`event: connected\ndata: ${JSON.stringify({ clientId, version: _getVersion(companyId) })}\n\n`);
+  // 다른 회사의 잠금 키가 섞여 들어오지 않도록 이 회사 소유분만(접두어를 벗겨) 전송한다.
+  res.write(`event: locks_update\ndata: ${JSON.stringify(_locksForCompany(companyId))}\n\n`);
+  broadcastSSE("user_online", { clientId, user, action: "join" }, clientId, companyId);
 
   const heartbeat = setInterval(() => {
     try { res.write(":heartbeat\n\n"); } catch { clearInterval(heartbeat); }
@@ -1313,41 +1564,49 @@ app.get("/events", (req, res) => {
   req.on("close", () => {
     clearInterval(heartbeat);
     delete _sseClients[clientId];
-    broadcastSSE("user_online", { clientId, user, action: "leave" });
+    broadcastSSE("user_online", { clientId, user, action: "leave" }, null, companyId);
   });
 });
 
 // GET /online
 app.get("/online", (req, res) => {
   if (!requireAuth(req, res)) return;
-  const users = Object.entries(_sseClients).map(([cid, c]) => ({
-    clientId: cid, user: c.user, connectedAt: c.connectedAt,
-  }));
+  const companyId = _scopeKey(req.auth.companyId || null);
+  const users = Object.entries(_sseClients)
+    .filter(([, c]) => c.companyId === companyId)
+    .map(([cid, c]) => ({ clientId: cid, user: c.user, connectedAt: c.connectedAt }));
   res.json({ ok: true, users });
 });
 
 // POST /lock
 app.post("/lock", (req, res) => {
   if (!requireAuth(req, res)) return;
+  const companyId = req.auth.companyId || null;
   const { key, userId, userName, targetLabel, ttlMs = 30 * 60 * 1000 } = req.body;
   if (!key || !userId)
     return res.status(400).json({ ok: false, message: "key, userId 필요" });
+  // 잠금 키를 회사별로 완전히 분리한다 — 접두어 없이는 이론상 두 회사가 같은 키(예: "emp:123",
+  // employee id는 전역 유일이라 실제로는 충돌하지 않지만 방어적으로) 로 서로의 잠금을
+  // 덮어쓰거나 뺏을 수 있었다.
+  const fullKey = `${_scopeKey(companyId)}:${key}`;
 
-  const ex = _locks[key];
+  const ex = _locks[fullKey];
   if (ex && ex.userId !== userId && Date.now() < ex.expiresAt)
     return res.json({ ok: false, lock: ex });
 
-  _locks[key] = { userId, userName, targetLabel, acquiredAt: Date.now(), expiresAt: Date.now() + ttlMs };
-  broadcastSSE("locks_update", _locks);
-  res.json({ ok: true, lock: _locks[key] });
+  _locks[fullKey] = { userId, userName, targetLabel, acquiredAt: Date.now(), expiresAt: Date.now() + ttlMs };
+  broadcastSSE("locks_update", _locksForCompany(companyId), null, companyId);
+  res.json({ ok: true, lock: _locks[fullKey] });
 });
 
 // POST /unlock
 app.post("/unlock", (req, res) => {
   if (!requireAuth(req, res)) return;
+  const companyId = req.auth.companyId || null;
   const { key, userId, force } = req.body;
   if (!key) return res.status(400).json({ ok: false });
-  const ex = _locks[key];
+  const fullKey = `${_scopeKey(companyId)}:${key}`;
+  const ex = _locks[fullKey];
   // force:true는 아직 만료되지 않은(30분 이내) 남의 잠금을 강제로 뺏는 것이므로, 이미
   // 만료된 잠금(프론트가 "비활성 잠금"으로 판단해 일반 사용자에게도 버튼을 보여주는
   // 경우) 또는 admin에게만 허용한다. 그 외에는 예전에는 인증만 있으면 누구든 force로
@@ -1357,8 +1616,8 @@ app.post("/unlock", (req, res) => {
     return res.status(403).json({ ok: false, message: "관리자만 잠금을 강제 해제할 수 있습니다." });
   }
   if (ex && (ex.userId === userId || force)) {
-    delete _locks[key];
-    broadcastSSE("locks_update", _locks);
+    delete _locks[fullKey];
+    broadcastSSE("locks_update", _locksForCompany(companyId), null, companyId);
   }
   res.json({ ok: true });
 });
@@ -1433,11 +1692,15 @@ function describeSnapshotFields(snapshotData) {
 }
 
 // POST /snapshots — create a full-DB confirmed snapshot, tagged by year
+// 주의(알려진 한계): annual_snapshots 테이블 자체는 아직 company_id가 없다(계획 문서
+// 6단계 예정 — budget.js와 함께 Postgres 이전 대상). loadData(companyId)로 employees/
+// kpi_entries 부분만이라도 이 회사로 스코프하지만, app_collections/app_singletons에서
+// 오는 나머지 20여개 필드는 여전히 전역 공유 상태로 스냅샷에 담긴다.
 app.post("/snapshots", async (req, res) => {
   if (!requireAdmin(req, res)) return;
   const { year = new Date().getFullYear(), confirmedBy = "admin", notes = "" } = req.body || {};
   try {
-    const data = await loadData();
+    const data = await loadData(req.auth.companyId);
     const yr = parseInt(year);
     const empCount = (data.employees || []).length;
     const kpiCount = (data.kpiEntries || []).length;
@@ -1517,7 +1780,7 @@ app.post("/backups/create", async (req, res) => {
   const { label = "수동 스냅샷", type = "manual" } = req.body || {};
   const year = parseInt(req.body.year || new Date().getFullYear());
   try {
-    const data = await loadData();
+    const data = await loadData(req.auth.companyId);
     if (!data.employees.length && !data.kpiEntries.length)
       return res.status(404).json({ ok: false, message: "데이터 없음" });
 
@@ -1582,7 +1845,7 @@ app.get("/snapshots/:year/diff", async (req, res) => {
 
     const snapshotData = await loadSnapshotData(yr);
     if (!snapshotData) return res.status(404).json({ ok: false, message: "스냅샷 없음" });
-    const current = await loadData();
+    const current = await loadData(req.auth.companyId);
 
     const diff = fields.map(f => {
       const extraIds = extraIdsNotInSnapshot(current[f], snapshotData[f]);
@@ -1606,11 +1869,12 @@ app.post("/restore", async (req, res) => {
   const yearMatch = name.match(/(\d{4})/);
   if (!yearMatch) return res.status(400).json({ ok: false, message: "name에서 연도를 찾을 수 없음" });
   const year = parseInt(yearMatch[1]);
+  const companyId = req.auth.companyId || null;
   try {
     const snapshotData = await loadSnapshotData(year);
     if (!snapshotData) return res.status(404).json({ ok: false, message: "스냅샷 없음" });
 
-    const current = await loadData();
+    const current = await loadData(companyId);
     const targetFields = fields || describeSnapshotFields(snapshotData).map(f => f.field);
     const dataToPersist = { ...current };
     const restoredFields = [];
@@ -1633,34 +1897,36 @@ app.post("/restore", async (req, res) => {
       restoredFields.push(f);
     }
 
-    await persistData(dataToPersist, req.body.user || "restore");
+    await persistData(dataToPersist, req.body.user || "restore", companyId);
 
     // persistData only ever inserts/updates; explicitly delete the extras
     // here when the caller opted into a true point-in-time restore.
+    // extraIds는 이미 companyId로 스코프된 `current`(loadData(companyId))에서 계산됐으므로
+    // 다른 회사 소유 id가 섞일 수 없지만, company_id 조건도 함께 걸어 방어를 한 겹 더 둔다.
     if (deleteExtras && !USE_JSON_FILE) {
       for (const [field, extraIds] of Object.entries(extrasByField)) {
         if (!extraIds.length) continue;
         if (field === "employees") {
           await pool.query(
-            "INSERT INTO employee_history (employee_id, action, changed_by, data) SELECT id, 'delete', $2, data FROM employees WHERE id = ANY($1)",
-            [extraIds, "restore"]
+            "INSERT INTO employee_history (employee_id, action, changed_by, data, company_id) SELECT id, 'delete', $2, data, company_id FROM employees WHERE id = ANY($1) AND (company_id = $3 OR $3 IS NULL)",
+            [extraIds, "restore", companyId]
           );
-          await pool.query("DELETE FROM employees WHERE id = ANY($1)", [extraIds]);
+          await pool.query("DELETE FROM employees WHERE id = ANY($1) AND (company_id = $2 OR $2 IS NULL)", [extraIds, companyId]);
         } else if (field === "kpiEntries") {
           await pool.query(
-            "INSERT INTO kpi_history (kpi_id, action, changed_by, data) SELECT id, 'delete', $2, data FROM kpi_entries WHERE id = ANY($1)",
-            [extraIds, "restore"]
+            "INSERT INTO kpi_history (kpi_id, action, changed_by, data, company_id) SELECT id, 'delete', $2, data, company_id FROM kpi_entries WHERE id = ANY($1) AND (company_id = $3 OR $3 IS NULL)",
+            [extraIds, "restore", companyId]
           );
-          await pool.query("DELETE FROM kpi_entries WHERE id = ANY($1)", [extraIds]);
+          await pool.query("DELETE FROM kpi_entries WHERE id = ANY($1) AND (company_id = $2 OR $2 IS NULL)", [extraIds, companyId]);
         } else {
           await pool.query("DELETE FROM app_collections WHERE collection = $1 AND id = ANY($2)", [field, extraIds]);
         }
       }
     }
 
-    const finalData = await loadData();
-    broadcastSSE("data_restored", { name, fields: restoredFields, deletedExtras: deleteExtras, version: _dataVersion });
-    res.json({ ok: true, version: _dataVersion, restoredFields, deletedExtras: deleteExtras, data: filterDataForRole(stripPwField(finalData), req.auth) });
+    const finalData = await loadData(companyId);
+    broadcastSSE("data_restored", { name, fields: restoredFields, deletedExtras: deleteExtras, version: _getVersion(companyId) }, null, companyId);
+    res.json({ ok: true, version: _getVersion(companyId), restoredFields, deletedExtras: deleteExtras, data: filterDataForRole(stripPwField(finalData), req.auth) });
   } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
 });
 
@@ -4579,11 +4845,22 @@ app.get("/api/recruit/dashboard", async (req, res) => {
 // ── Reset All Data ────────────────────────────────────────────────────────────
 // 전체 데이터 삭제라는 파괴적 동작을 비밀번호 검증만으로 허용하는데 rate limit이 없어
 // 무제한 비밀번호 추측이 가능했다(실측 확인) — /login과 동일한 loginLimiter 적용.
+// Postgres/SaaS 모드: verifyCredentials가 이제 회사 스코프라 이 라우트도 companyId가
+// 필요하다(이미 로그인된 세션의 토큰에서 우선 가져오고, 없으면 body의 companyCode로
+// 보조 — /api/auth/2fa/generate-secret과 동일한 패턴). 삭제 자체도 반드시 그 회사의
+// employees/kpi_entries만 지우도록 company_id로 필터한다 — 예전에는 회사 구분이 없어
+// "전체 데이터 삭제"가 정말 DB 전체(모든 회사)를 지웠는데, 멀티테넌트에서 그대로 두면
+// 한 회사의 admin이 자기 비밀번호만으로 다른 모든 회사의 데이터까지 지울 수 있는 셈이라
+// 반드시 회사 범위로 좁혀야 한다. annual_snapshots는 아직 company_id가 없는 전역
+// 테이블이라(알려진 한계, 계획 문서 6단계 예정) 이 회사 범위 삭제에서는 건드리지 않는다
+// (다른 회사의 확정 스냅샷까지 함께 지워지는 걸 막기 위해 — 예전 동작과 달리 이제 reset-all은
+// 스냅샷을 지우지 않는다).
 app.post("/api/reset-all", loginLimiter, async (req, res) => {
   res.locals.loginOk = false;
   try {
-    const { loginId, pw } = req.body || {};
-    const admin = await verifyCredentials(loginId, pw);
+    const { loginId, pw, companyCode } = req.body || {};
+    const companyId = USE_JSON_FILE ? null : (req.auth?.companyId || await _resolveCompanyId(companyCode));
+    const admin = await verifyCredentials(companyId, loginId, pw);
     if (!admin || admin.role !== "admin")
       return res.status(403).json({ ok: false, message: "관리자 인증이 필요합니다." });
     res.locals.loginOk = true;
@@ -4591,22 +4868,21 @@ app.post("/api/reset-all", loginLimiter, async (req, res) => {
       _fileStore = { employees: [], kpiEntries: [] };
       _fileSnapshots = {};
       _fileHistory = { employees: [], kpi: [] };
-      _dataVersion = 0;
+      _setVersion(null, 0);
       await persistData(_fileStore);
       const snapFile = JSON_FILE.replace(/\.json$/, "-snapshots.json");
       await fs.promises.writeFile(snapFile, JSON.stringify({}, null, 2), "utf8");
       const histFile = JSON_FILE.replace(/\.json$/, "-history.json");
       await fs.promises.writeFile(histFile, JSON.stringify({ employees: [], kpi: [] }, null, 2), "utf8");
     } else {
-      await pool.query("DELETE FROM kpi_history");
-      await pool.query("DELETE FROM employee_history");
-      await pool.query("DELETE FROM kpi_entries");
-      await pool.query("DELETE FROM employees");
-      await pool.query("DELETE FROM annual_snapshots");
-      await pool.query("UPDATE app_meta SET value='0' WHERE key='data_version'");
-      _dataVersion = 0;
+      await pool.query("DELETE FROM kpi_history WHERE company_id = $1", [companyId]);
+      await pool.query("DELETE FROM employee_history WHERE company_id = $1", [companyId]);
+      await pool.query("DELETE FROM kpi_entries WHERE company_id = $1", [companyId]);
+      await pool.query("DELETE FROM employees WHERE company_id = $1", [companyId]);
+      await pool.query("DELETE FROM app_meta WHERE key = $1", [`data_version:${_scopeKey(companyId)}`]);
+      _setVersion(companyId, 0);
     }
-    console.log("[Reset] All data cleared");
+    console.log(`[Reset] Company data cleared (companyId=${companyId || "(json-file/global)"})`);
     res.json({ ok: true });
   } catch (e) {
     res.status(500).json({ ok: false, message: e.message });
@@ -4639,7 +4915,10 @@ initDB()
       console.log("║      HR 인사평가 시스템 서버 시작됨          ║");
       console.log("╠══════════════════════════════════════════════╣");
       console.log(`║  저장 방식: ${USE_JSON_FILE ? "JSON 파일 (오프라인)" : "PostgreSQL (DB)  "}      ║`);
-      console.log(`║  데이터 버전: ${String(_dataVersion).padEnd(31)}║`);
+      // 버전은 이제 회사별로 분리돼 있어(멀티테넌트) 배너에는 단일 스칼라 대신 추적 중인
+      // 스코프(회사) 수를 보여준다. JSON 파일 모드는 여전히 하나의 전역 버전뿐이다.
+      const versionLabel = USE_JSON_FILE ? String(_getVersion(null)) : `회사 ${_versionState.size}개 추적 중`;
+      console.log(`║  데이터 버전: ${versionLabel.padEnd(31)}║`);
       console.log("╠══════════════════════════════════════════════╣");
       console.log(`║  이 PC에서 접속:                             ║`);
       console.log(`║    http://localhost:${PORT}                     ║`);
