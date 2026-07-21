@@ -17,6 +17,53 @@ CREATE TABLE IF NOT EXISTS companies (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+-- ── 마스터 관리자(플랫폼 운영자) ──────────────────────────────────────────────
+-- 계획 문서("마스터 관리자 + 회사별 기능 커스터마이징") 1단계 후속 — 회사 관리자
+-- (employees.role='admin')와는 완전히 별개의 인증 영역이다. 마스터는 특정 회사
+-- 소속 직원이 아니라 플랫폼 운영자이므로, HR 특화 필드로 가득한 employees.data
+-- (JSONB)에 억지로 끼워넣지 않고 독립 테이블 + 독립 로그인(POST /master/login)을
+-- 둔다. 셀프서브 가입 엔드포인트는 없다 — 마스터 계정은 항상 out-of-band로
+-- (SQL로 직접, scripts/seed-master-admin.js 참고) 발급한다.
+CREATE TABLE IF NOT EXISTS platform_admins (
+  id         UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+  login_id   TEXT        UNIQUE NOT NULL,
+  pw_hash    TEXT        NOT NULL,
+  name       TEXT        NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- 마스터는 impersonation으로 전 회사 데이터에 접근 가능해지므로, 그 권한을 내주는
+-- 순간(토큰 발급)과 그 권한으로 이뤄지는 모든 동작(기능 토글 등)의 감사 로그는
+-- 계획 문서상 선택이 아니라 필수다.
+CREATE TABLE IF NOT EXISTS master_audit_log (
+  id         BIGSERIAL   PRIMARY KEY,
+  master_id  UUID        REFERENCES platform_admins(id),
+  action     TEXT        NOT NULL,
+  company_id UUID        REFERENCES companies(id),
+  detail     JSONB       NOT NULL DEFAULT '{}',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_master_audit_log_master_id  ON master_audit_log (master_id);
+CREATE INDEX IF NOT EXISTS idx_master_audit_log_company_id ON master_audit_log (company_id);
+CREATE INDEX IF NOT EXISTS idx_master_audit_log_created_at ON master_audit_log (created_at);
+
+-- ── 회사별 기능 on/off ────────────────────────────────────────────────────────
+-- 내장 모듈(채용/회계/PMS 등)은 feature_key를 부여하고 기본값 enabled=true로 취급
+-- (행이 아예 없으면 isFeatureEnabled()가 true를 반환 — 기존 동작 그대로 유지,
+-- 하위호환). 특정 회사 전용 신규 기능은 기본 enabled=false로 행을 만들어 등록해
+-- 그 회사에서만 켠다. 이번 세션은 데이터 모델 + 마스터 콘솔 토글 API +
+-- isFeatureEnabled() 조회 헬퍼까지만 구현하고, 기존 라우트에 실제로 이 체크를
+-- 소급 적용하는 것은 범위 밖이다(server.js의 isFeatureEnabled() 주석과 이 작업의
+-- 커밋 메시지 참고).
+CREATE TABLE IF NOT EXISTS company_features (
+  company_id  UUID        NOT NULL REFERENCES companies(id),
+  feature_key TEXT        NOT NULL,
+  enabled     BOOLEAN     NOT NULL DEFAULT TRUE,
+  config      JSONB       NOT NULL DEFAULT '{}',
+  updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (company_id, feature_key)
+);
+
 -- ── Employees ─────────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS employees (
   id         TEXT        PRIMARY KEY,

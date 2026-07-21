@@ -32,8 +32,11 @@ if (!process.env.SESSION_SECRET) {
 }
 const SESSION_TTL_SEC = 12 * 60 * 60; // 12시간
 
-function signToken(payload) {
-  const body = Buffer.from(JSON.stringify({ ...payload, iat: Date.now(), exp: Date.now() + SESSION_TTL_SEC * 1000 })).toString("base64url");
+// ttlSec: optional override for the default 12h session TTL. Used by master-admin
+// impersonation tokens (POST /master/companies/:id/impersonate), which are meant to be
+// short-lived (1h) since they grant full access to a company's data.
+function signToken(payload, ttlSec = SESSION_TTL_SEC) {
+  const body = Buffer.from(JSON.stringify({ ...payload, iat: Date.now(), exp: Date.now() + ttlSec * 1000 })).toString("base64url");
   const sig = crypto.createHmac("sha256", SESSION_SECRET).update(body).digest("base64url");
   return `${body}.${sig}`;
 }
@@ -1463,6 +1466,218 @@ app.post("/api/companies/register", registerLimiter, async (req, res) => {
   }
 });
 
+// ── 마스터 관리자(플랫폼 운영자) ──────────────────────────────────────────────
+// 계획 문서 "마스터 관리자 + 회사별 기능 커스터마이징" 참고 — company_id/토큰 설계(1단계)
+// 위에 얹는 후속 단계다. 완전히 SaaS(Postgres) 전용 개념이라 JSON 파일 모드(자체 호스팅,
+// 항상 단일 회사)에서는 /master/* 전부 명시적으로 거부한다 — POST /api/companies/register가
+// 쓰는 것과 동일한 가드 패턴을 그대로 따른다.
+function _requireSaas(req, res) {
+  if (USE_JSON_FILE) {
+    res.status(400).json({ ok: false, message: "이 서버는 단일 회사 자체 호스팅 모드로 동작 중이라 마스터 관리자 기능을 지원하지 않습니다." });
+    return false;
+  }
+  return true;
+}
+// companies.id는 UUID 컬럼이라, req.params.id가 UUID 형식이 아닌 채로 그대로
+// pool.query에 넘기면 Postgres가 "invalid input syntax for type uuid"로 예외를
+// 던져 의도한 404(존재하지 않는 회사) 대신 500이 나간다(실측 확인). 형식이 애초에
+// UUID가 아니면 DB를 조회할 것도 없이 "존재하지 않는 회사"와 동일하게 404로
+// 응답한다 — 아래 /master/companies/:id/* 라우트 3곳 모두에서 사용.
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+function _requireValidCompanyIdParam(req, res) {
+  if (!UUID_RE.test(req.params.id)) {
+    res.status(404).json({ ok: false, message: "존재하지 않는 회사입니다." });
+    return false;
+  }
+  return true;
+}
+
+// requireAdmin/requireRole과 동일한 시그니처·반환 컨벤션(성공 시 true, 실패 시 이 함수가
+// 직접 res.status(...).json(...)을 쓰고 false를 반환)을 그대로 따른다. role==='master'인
+// 토큰만 통과시킨다 — 회사 로그인(POST /login, POST /api/companies/register)이 발급하는
+// 토큰은 role이 'admin'/'leader'/'director'/'member' 중 하나일 뿐 절대 'master'가 될 수
+// 없으므로(아래 두 라우트의 signToken 호출부 참고), 위조되거나 impersonation으로 얻은 회사
+// 토큰(role:'admin')으로 이 관문을 통과할 방법이 애초에 없다 — 새 우회 경로를 만들지 않기
+// 위해 requireMaster는 requireAdmin과 별개로 role 문자열만 비교한다.
+function requireMaster(req, res) {
+  if (!requireAuth(req, res)) return false;
+  if (req.auth.role !== "master") {
+    res.status(403).json({ ok: false, message: "마스터 관리자만 사용할 수 있습니다." });
+    return false;
+  }
+  return true;
+}
+
+// /login과 동일한 이유로 전용 rate limiter가 필요하다(이 라우트도 항상 HTTP 200으로
+// 응답하고 성공/실패는 JSON body의 `ok`로만 구분하므로, express-rate-limit의 기본
+// 성공 판정(statusCode<400)을 그대로 쓰면 브루트포스 방어가 무력화된다 — /login에 있는
+// 것과 동일한 문제, res.locals.masterLoginOk로 실제 결과를 판정 기준에 연결한다).
+// /login과는 별도의 카운터를 쓴다(loginLimiter를 공유하면 같은 IP에서 회사 로그인
+// 실패를 반복한 사용자가 마스터 로그인 시도 자체를 못 하게 되는 등 서로 다른 두
+// 자격증명 체계의 실패가 하나의 카운터에 섞이는 게 부적절하다고 판단).
+const masterLoginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  skipSuccessfulRequests: true,
+  requestWasSuccessful: (req, res) => res.locals.masterLoginOk === true,
+  message: { ok: false, message: "로그인 시도가 너무 많습니다. 잠시 후 다시 시도하세요." },
+});
+
+// POST /master/login — {loginId, password}. companyCode가 없다: 마스터는 특정 회사에
+// 속하지 않는 플랫폼 운영자 계정이라 회사 스코프 자체가 없다(platform_admins는
+// employees와 완전히 분리된 테이블, 셀프서브 가입 없음 — 계정은 항상 SQL로 직접
+// 발급, scripts/seed-master-admin.js 참고). 성공 시 발급하는 토큰의 payload 모양
+// ({masterId, loginId, role:'master'})은 회사 토큰({empId, loginId, role, companyId})과
+// 겹치는 필드가 없어(companyId/empId 부재) requireMaster가 role 문자열만 봐도 안전하다.
+app.post("/master/login", masterLoginLimiter, async (req, res) => {
+  res.locals.masterLoginOk = false;
+  if (!_requireSaas(req, res)) return;
+  try {
+    const { loginId, password } = req.body || {};
+    if (!loginId || !password) return res.status(400).json({ ok: false, message: "아이디와 비밀번호를 입력하세요." });
+    const { rows } = await pool.query("SELECT id, login_id, pw_hash, name FROM platform_admins WHERE login_id = $1", [loginId]);
+    const admin = rows[0];
+    // /login과 동일한 하드닝 기조: "아이디 없음"과 "비밀번호 틀림"을 구분하지 않는 동일한
+    // 실패 메시지로 응답해 계정 존재 여부를 추측할 수 없게 한다. 항상 hashPlaintextPw()로
+    // 해시된 값만 pw_hash에 들어간다는 것을 시딩 경로(scripts/seed-master-admin.js)에서
+    // 보장하므로, employees.pw와 달리 레거시 평문 허용 분기 없이 bcrypt.compare만 쓴다.
+    const valid = admin ? await bcrypt.compare(password, admin.pw_hash) : false;
+    if (!admin || !valid) return res.json({ ok: false, message: "아이디 또는 비밀번호가 올바르지 않습니다." });
+    res.locals.masterLoginOk = true;
+    const token = signToken({ masterId: admin.id, loginId: admin.login_id, role: "master" });
+    res.json({ ok: true, master: { id: admin.id, loginId: admin.login_id, name: admin.name }, token });
+  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+});
+
+// GET /master/companies — 전 회사 목록 + 가벼운 통계(직원 수/KPI 건수, GET /status가
+// 이미 쓰는 것과 동일한 집계 방식을 회사별로 한 번에 GROUP BY해 재사용).
+app.get("/master/companies", async (req, res) => {
+  if (!_requireSaas(req, res)) return;
+  if (!requireMaster(req, res)) return;
+  try {
+    const { rows: companies } = await pool.query(
+      "SELECT id, slug, name, status, created_at FROM companies ORDER BY created_at DESC"
+    );
+    const [{ rows: empCounts }, { rows: kpiCounts }] = await Promise.all([
+      pool.query("SELECT company_id, COUNT(*) FROM employees  WHERE is_deleted = FALSE AND company_id IS NOT NULL GROUP BY company_id"),
+      pool.query("SELECT company_id, COUNT(*) FROM kpi_entries WHERE is_deleted = FALSE AND company_id IS NOT NULL GROUP BY company_id"),
+    ]);
+    const empMap = Object.fromEntries(empCounts.map(r => [r.company_id, parseInt(r.count, 10)]));
+    const kpiMap = Object.fromEntries(kpiCounts.map(r => [r.company_id, parseInt(r.count, 10)]));
+    res.json({
+      ok: true,
+      companies: companies.map(c => ({
+        id: c.id, slug: c.slug, name: c.name, status: c.status, createdAt: c.created_at,
+        empCount: empMap[c.id] || 0, kpiCount: kpiMap[c.id] || 0,
+      })),
+    });
+  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+});
+
+// POST /master/companies/:id/impersonate — "이 회사로 들어가기". 계획 문서 설계 그대로:
+// 새 인가 체계를 만들지 않고 1단계에서 이미 만든 회사 스코프 로직(모든 requireAuth/
+// requireAdmin 라우트가 req.auth.companyId만 보고 동작)을 그대로 재사용한다 — 이 토큰이
+// role:'admin'으로 발급되는 순간부터 나머지 100개 이상의 라우트는 이게 impersonation인지
+// 실제 회사 admin 로그인인지 전혀 구분할 필요가 없다(actingAsMaster 필드는 감사 용도로만
+// 쓰인다, 위 POST /save의 changedBy 보강 참고). 감사 로그 기록이 실패하면(예: DB 순단)
+// 토큰 발급 자체도 실패해야 한다는 계획 문서 요구사항에 따라, INSERT를 signToken() 호출보다
+// 먼저 실행하고 실패 시 그대로 예외를 던져(catch에서 500) 토큰을 절대 내주지 않는다.
+app.post("/master/companies/:id/impersonate", async (req, res) => {
+  if (!_requireSaas(req, res)) return;
+  if (!requireMaster(req, res)) return;
+  if (!_requireValidCompanyIdParam(req, res)) return;
+  try {
+    const companyId = req.params.id;
+    const { rows } = await pool.query("SELECT id, slug, name FROM companies WHERE id = $1", [companyId]);
+    if (!rows.length) return res.status(404).json({ ok: false, message: "존재하지 않는 회사입니다." });
+    const company = rows[0];
+
+    await pool.query(
+      "INSERT INTO master_audit_log (master_id, action, company_id, detail) VALUES ($1,'impersonate',$2,$3)",
+      [req.auth.masterId, company.id, JSON.stringify({ masterLoginId: req.auth.loginId, companySlug: company.slug })]
+    );
+
+    // empId/loginId는 일부러 null — 이 토큰이 특정 직원 계정을 흉내내는 게 아니라 마스터가
+    // "회사 관리자 권한으로" 들어가는 것임을 분명히 한다(그래도 role:'admin'이라 회사
+    // 스코프 라우트는 정상 동작 — admin 권한이 필요한 대부분의 코드는 req.auth.role만 보지
+    // empId가 실제 직원 레코드와 일치하는지는 요구하지 않는다). 1시간 만료로 세션 TTL을
+    // 짧게 준다(기본 12시간보다 훨씬 민감한 권한이므로).
+    const token = signToken(
+      { empId: null, loginId: null, role: "admin", companyId: company.id, actingAsMaster: req.auth.masterId },
+      60 * 60
+    );
+    res.json({ ok: true, company: { id: company.id, slug: company.slug, name: company.name }, token });
+  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+});
+
+// company_features 조회 헬퍼 — 다른 라우트가 향후 점진적으로 도입할 수 있도록 만들어 둔다.
+// 행이 없으면(대부분의 내장 모듈이 해당) 기본 true를 반환한다(하위호환 — 계획 문서 명시:
+// "기존 내장 모듈은... 기본값 enabled=true, 기존 동작 그대로 유지"). 의도적으로 이번
+// 세션에는 이 헬퍼를 기존 라우트(채용/회계/PMS 등 100개 이상)에 실제로 배선하지 않는다 —
+// 그건 각 라우트마다 "이 기능이 꺼져 있으면 403" 분기를 새로 넣는 별도의 큰 작업이라
+// 위험도가 다르고, 이번 작업 범위(마스터 계층의 데이터 모델 + API)를 벗어난다. 커밋
+// 메시지에도 동일하게 명시.
+async function isFeatureEnabled(companyId, featureKey) {
+  if (USE_JSON_FILE || !companyId) return true;
+  const { rows } = await pool.query(
+    "SELECT enabled FROM company_features WHERE company_id = $1 AND feature_key = $2",
+    [companyId, featureKey]
+  );
+  return rows.length ? rows[0].enabled : true;
+}
+
+// GET /master/companies/:id/features — 그 회사의 feature_key별 설정 전체.
+app.get("/master/companies/:id/features", async (req, res) => {
+  if (!_requireSaas(req, res)) return;
+  if (!requireMaster(req, res)) return;
+  if (!_requireValidCompanyIdParam(req, res)) return;
+  try {
+    const companyId = req.params.id;
+    const { rows: companyRows } = await pool.query("SELECT id FROM companies WHERE id = $1", [companyId]);
+    if (!companyRows.length) return res.status(404).json({ ok: false, message: "존재하지 않는 회사입니다." });
+    const { rows } = await pool.query(
+      "SELECT feature_key, enabled, config, updated_at FROM company_features WHERE company_id = $1 ORDER BY feature_key",
+      [companyId]
+    );
+    res.json({
+      ok: true,
+      features: rows.map(r => ({ featureKey: r.feature_key, enabled: r.enabled, config: r.config, updatedAt: r.updated_at })),
+    });
+  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+});
+
+// PUT /master/companies/:id/features/:key — {enabled, config?}. upsert + 감사 로그.
+app.put("/master/companies/:id/features/:key", async (req, res) => {
+  if (!_requireSaas(req, res)) return;
+  if (!requireMaster(req, res)) return;
+  if (!_requireValidCompanyIdParam(req, res)) return;
+  try {
+    const companyId = req.params.id;
+    const featureKey = req.params.key;
+    const { enabled, config } = req.body || {};
+    if (typeof enabled !== "boolean")
+      return res.status(400).json({ ok: false, message: "enabled(boolean)는 필수입니다." });
+    const { rows: companyRows } = await pool.query("SELECT id FROM companies WHERE id = $1", [companyId]);
+    if (!companyRows.length) return res.status(404).json({ ok: false, message: "존재하지 않는 회사입니다." });
+
+    const { rows } = await pool.query(
+      `INSERT INTO company_features (company_id, feature_key, enabled, config, updated_at)
+       VALUES ($1,$2,$3,$4,NOW())
+       ON CONFLICT (company_id, feature_key) DO UPDATE SET enabled = $3, config = $4, updated_at = NOW()
+       RETURNING feature_key, enabled, config, updated_at`,
+      [companyId, featureKey, enabled, config || {}]
+    );
+    await pool.query(
+      "INSERT INTO master_audit_log (master_id, action, company_id, detail) VALUES ($1,'feature_toggle',$2,$3)",
+      [req.auth.masterId, companyId, JSON.stringify({ featureKey, enabled, config: config || {} })]
+    );
+    const row = rows[0];
+    res.json({ ok: true, feature: { featureKey: row.feature_key, enabled: row.enabled, config: row.config, updatedAt: row.updated_at } });
+  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+});
+
 // 완전히 새로 배포된 서버는 직원이 0명이라 아무도 /login으로 토큰을 발급받을 수 없다
 // (프론트엔드의 최초 admin 로그인은 클라이언트에 내장된 샘플 계정으로 로컬에서만
 // 이뤄지고, 그 계정 데이터를 서버에 처음 올리는 것이 바로 이 /save 호출이기 때문).
@@ -1518,7 +1733,15 @@ app.post("/save", async (req, res) => {
         merged    = true;
       }
 
-      const changedBy = req.query.user || clientData._user || "unknown";
+      // changedBy는 원래부터 클라이언트가 보낸 문자열을 그대로 신뢰하는 필드였다(req.auth
+      // 기반이 아님 — 기존 설계, 이번 작업 범위 밖). 다만 이 저장이 마스터 impersonation
+      // 토큰(actingAsMaster가 실린 토큰, POST /master/companies/:id/impersonate 참고)으로
+      // 이뤄졌다면, 클라이언트가 보낸 _user 값이 "관리자"처럼 평범해 보여도 employee_history/
+      // kpi_history에는 실제로 마스터가 대신 쓴 것임을 남겨야 한다(계획 문서: impersonation으로
+      // 이뤄진 쓰기 작업도 감사 대상). master_audit_log가 impersonate 발급 자체는 이미 기록하므로,
+      // 여기서는 그 토큰으로 실제 어떤 저장이 일어났는지를 기존 변경이력에 얹기만 한다.
+      const rawChangedBy = req.query.user || clientData._user || "unknown";
+      const changedBy = req.auth?.actingAsMaster ? `master:${req.auth.actingAsMaster} as ${rawChangedBy}` : rawChangedBy;
       const { duplicateLoginIds } = await _persistDataLocked(finalData, changedBy, companyId);
       return { finalData, merged, duplicateLoginIds };
     });
