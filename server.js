@@ -1553,6 +1553,33 @@ function requireMaster(req, res) {
   return true;
 }
 
+// ── TEMPORARY — 운영 DB 1회성 company_id 백필용, 완료 확인 즉시 이 블록 전체를 제거할 것.
+// 이 배포 환경은 Shell 접근이 유료 플랜 전용이라 scripts/migrate-add-company-id.js를
+// 운영자가 직접 실행할 방법이 없다. 이 서버 프로세스 자신은 이미 DATABASE_URL로 정상
+// 접속 중이므로, 그 경로를 그대로 빌려 이미 이번 세션 내내 반복 검증한 스크립트를
+// child process로 실행시키는 HTTP 트리거만 임시로 둔다(스크립트 자체 로직은 전혀
+// 건드리지 않음 — 코드 중복/드리프트 방지). x-migration-secret 헤더가 MIGRATION_ADMIN_SECRET
+// 환경변수와 정확히 일치할 때만 동작하고, 그 환경변수 자체가 설정 안 돼 있으면(기본 상태)
+// 항상 404 — 존재 자체를 드러내지 않는다(이 세션의 다른 "존재 비노출" 인가 패턴과 동일).
+app.post("/admin/bootstrap-migrate", async (req, res) => {
+  if (!process.env.MIGRATION_ADMIN_SECRET || req.headers["x-migration-secret"] !== process.env.MIGRATION_ADMIN_SECRET) {
+    return res.status(404).end();
+  }
+  const companyName = (req.body && req.body.companyName || "").trim();
+  const companySlug = (req.body && req.body.companySlug || "").trim();
+  if (!companyName) return res.status(400).json({ ok: false, message: "companyName required" });
+  const { execFile } = require("child_process");
+  execFile(
+    process.execPath,
+    [path.join(__dirname, "scripts", "migrate-add-company-id.js")],
+    { cwd: __dirname, timeout: 120000, maxBuffer: 1024 * 1024 * 10,
+      env: { ...process.env, COMPANY_NAME: companyName, COMPANY_SLUG: companySlug || undefined } },
+    (err, stdout, stderr) => {
+      res.json({ ok: !err, stdout, stderr, error: err ? err.message : null });
+    }
+  );
+});
+
 // /login과 동일한 이유로 전용 rate limiter가 필요하다(이 라우트도 항상 HTTP 200으로
 // 응답하고 성공/실패는 JSON body의 `ok`로만 구분하므로, express-rate-limit의 기본
 // 성공 판정(statusCode<400)을 그대로 쓰면 브루트포스 방어가 무력화된다 — /login에 있는
