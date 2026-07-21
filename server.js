@@ -1941,6 +1941,10 @@ app.post("/restore", async (req, res) => {
 // In JSON file mode, change history is persisted to hr-data-history.json (see _fileHistory).
 
 // GET /history/employee/:id
+// company_id로 스코프한다 — employee_history에 company_id 컬럼이 붙은(2026-07-20) 이후에도
+// 이 라우트는 그 필터가 없어, 회사 A의 admin이 회사 B 직원의 id만 알면(다른 API의 목록
+// 등을 통해 유추 가능) 변경이력 전체(과거 연락처·주소·연봉 등 PII 포함)를 조회할 수 있었다
+// — company_id를 모르는 legacy 단일 회사 배포/과거 데이터(NULL)는 그대로 보여준다.
 app.get("/history/employee/:id", async (req, res) => {
   if (!requireAdmin(req, res)) return;
   if (USE_JSON_FILE) {
@@ -1951,17 +1955,18 @@ app.get("/history/employee/:id", async (req, res) => {
     return res.json({ ok: true, history });
   }
   try {
+    const companyId = req.auth.companyId || null;
     const { rows } = await pool.query(
       `SELECT history_id, action, changed_by, changed_at, data
-       FROM employee_history WHERE employee_id = $1
+       FROM employee_history WHERE employee_id = $1 AND (company_id = $2 OR company_id IS NULL)
        ORDER BY changed_at DESC LIMIT 500`,
-      [req.params.id]
+      [req.params.id, companyId]
     );
     res.json({ ok: true, history: rows.map(r => ({ ...r, data: omitPw(r.data) })) });
   } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
 });
 
-// GET /history/kpi/:id
+// GET /history/kpi/:id — 위 /history/employee/:id와 동일한 이유로 company_id 스코프.
 app.get("/history/kpi/:id", async (req, res) => {
   if (!requireAdmin(req, res)) return;
   if (USE_JSON_FILE) {
@@ -1972,17 +1977,21 @@ app.get("/history/kpi/:id", async (req, res) => {
     return res.json({ ok: true, history });
   }
   try {
+    const companyId = req.auth.companyId || null;
     const { rows } = await pool.query(
       `SELECT history_id, action, changed_by, changed_at, data
-       FROM kpi_history WHERE kpi_id = $1
+       FROM kpi_history WHERE kpi_id = $1 AND (company_id = $2 OR company_id IS NULL)
        ORDER BY changed_at DESC LIMIT 500`,
-      [req.params.id]
+      [req.params.id, companyId]
     );
     res.json({ ok: true, history: rows });
   } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
 });
 
 // GET /history/changes?since=ISO_DATE&table=employees|kpi_entries
+// 위 두 라우트보다 더 심각한 형태의 같은 문제 — company_id 필터가 없으면 단건 조회가 아니라
+// 전 회사의 변경이력을 한 번에 벌크로 덤프해줘 버린다(회사 A의 admin이 회사 B~Z 전체의
+// 직원·평가 변경이력을 그대로 받아볼 수 있었음).
 app.get("/history/changes", async (req, res) => {
   if (!requireAdmin(req, res)) return;
   const since = req.query.since || new Date(Date.now() - 30 * 86400 * 1000).toISOString();
@@ -2004,18 +2013,19 @@ app.get("/history/changes", async (req, res) => {
     return res.json({ ok: true, ...results });
   }
   try {
+    const companyId = req.auth.companyId || null;
     const results = {};
     if (!table || table === "employees") {
       const { rows } = await pool.query(
-        "SELECT * FROM employee_history WHERE changed_at >= $1 ORDER BY changed_at DESC LIMIT 1000",
-        [since]
+        "SELECT * FROM employee_history WHERE changed_at >= $1 AND (company_id = $2 OR company_id IS NULL) ORDER BY changed_at DESC LIMIT 1000",
+        [since, companyId]
       );
       results.employeeChanges = rows.map(r => ({ ...r, data: omitPw(r.data) }));
     }
     if (!table || table === "kpi_entries") {
       const { rows } = await pool.query(
-        "SELECT * FROM kpi_history WHERE changed_at >= $1 ORDER BY changed_at DESC LIMIT 1000",
-        [since]
+        "SELECT * FROM kpi_history WHERE changed_at >= $1 AND (company_id = $2 OR company_id IS NULL) ORDER BY changed_at DESC LIMIT 1000",
+        [since, companyId]
       );
       results.kpiChanges = rows;
     }
