@@ -494,6 +494,20 @@ async function enterCompany(id){
     // 메인 SPA(index.html)가 읽는 것과 정확히 같은 localStorage 키에 토큰을 심어 인계한다.
     // 마스터 콘솔 자체의 토큰(master_auth_token)과는 별개의 키라 서로 덮어쓰지 않는다.
     try { localStorage.setItem('hr_kpi_auth_token', r.token); } catch(e){}
+    // index.html은 부팅 시 항상 로그인 화면을 띄우고(저장된 토큰만으로 자동 로그인하는
+    // 경로가 원래 없음), impersonate 토큰은 empId가 없어(서버가 의도적으로 null 발급 —
+    // 특정 직원을 사칭하는 게 아니라 "관리자 권한으로 들어가는" 것이므로) employees
+    // 목록에서 짝이 되는 실제 직원 레코드도 없다. 그래서 이 화면 전환에서만 쓰는
+    // 세션 전용(sessionStorage) 핸드오프 값으로 화면표시용 가상 신원을 함께 넘긴다 —
+    // index.html은 이 값을 currentUser 표시에만 쓰고 절대 employees 배열(자동저장 시
+    // 서버로 그대로 전송됨)에 넣지 않도록 주석돼 있음. id는 실제 직원 id와 절대 겹치지
+    // 않도록 "master:" 접두어를 붙인다.
+    try {
+      sessionStorage.setItem('_masterImpersonateHandoff', JSON.stringify({
+        id: `master:${Date.now()}`, name: `마스터 관리자 (${name} 대행)`,
+        role: 'admin', dept: '', team: '', active: true,
+      }));
+    } catch(e){}
     showToast('회사 관리자 세션으로 전환합니다...');
     setTimeout(() => { location.href = '/index.html'; }, 500);
   } else {

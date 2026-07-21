@@ -455,6 +455,19 @@ async function _getNextEmployeeId() {
   await pool.query(
     "INSERT INTO app_meta (key, value) SELECT 'next_employee_id', (COALESCE(MAX(id::bigint), 0) + 1)::text FROM employees ON CONFLICT (key) DO NOTHING"
   );
+  // 카운터가 최초 생성된 이후에도, POST /save의 범용 upsert 경로(회사 admin이 기존
+  // id를 그대로 들고 있는 직원 배열을 저장하는 정상 흐름 — 백업 복원 등)를 통해 이
+  // 카운터를 거치지 않고 그보다 큰 id의 직원이 추가될 수 있다. 그러면 카운터가 실제
+  // 데이터보다 뒤처져, 다음 발급 id가 이미 존재하는 id와 충돌해 신규 회사 가입/직원
+  // 등록이 500(duplicate key)으로 실패한다(실측 확인 — 클라이언트가 서버 인증 성공
+  // 후에도 로컬에 남아있던 잔여 employees 배열을 그대로 저장해버리는 별개의 버그를
+  // 조사하던 중 발견, public/index.html doLogin()/submitCompanyRegister() 참고).
+  // 매 호출마다 카운터를 "현재 값과 MAX(id)+1 중 더 큰 값"으로 올려 이 드리프트를
+  // 스스로 복구한다(절대 낮추지 않음 — 낮추면 오히려 새로운 충돌을 만듦). UPDATE는
+  // 행 잠금을 거니 동시 호출끼리도 안전하게 직렬화된다.
+  await pool.query(
+    "UPDATE app_meta SET value = GREATEST(value::bigint, (SELECT COALESCE(MAX(id::bigint),0)+1 FROM employees))::text WHERE key = 'next_employee_id'"
+  );
   const { rows } = await pool.query(
     "UPDATE app_meta SET value = (value::bigint + 1)::text WHERE key = 'next_employee_id' RETURNING value"
   );

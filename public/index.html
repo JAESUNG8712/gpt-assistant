@@ -5026,9 +5026,17 @@ function doLogin(){
     if(r && r.ok && r.employee){
       _setAuthToken(r.token||null);
       if(companyCode) _setCachedCompanyCode(companyCode);
-      const idx=employees.findIndex(e=>e.id===r.employee.id);
-      if(idx>=0) employees[idx]={...employees[idx],...r.employee};
-      else employees.push(r.employee);
+      // 로컬 employees 배열은 이 시점까지 오프라인 데모용 하드코딩 샘플 계정(admin/admin
+      // 등 평문 pw 포함, 위 코드 881번째 줄)이거나 이전에 로그인했던 다른 회사의 잔여
+      // 상태를 그대로 들고 있을 수 있다 — 병합(idx>=0?merge:push) 방식으로는 그 나머지
+      // 항목들이 배열에 계속 남는다. 서버가 실제로 인증에 성공한 이 시점부터는 서버가
+      // 준 이 회사의 데이터만이 진실이므로, 병합 대신 전체를 이 로그인 응답의 직원
+      // 한 명으로 완전히 교체한다(직원이 2명 이상인 회사는 곧이어 _completeLogin이
+      // 서버 empCount>1을 보고 loadFromServer()로 전체 명부를 마저 받아온다). 이렇게
+      // 하지 않으면, 특히 막 가입해 관리자 1명뿐인 신규 회사가 로그인 직후 자동저장을
+      // 하는 순간 데모/잔여 계정들이 실제 신규 회사의 직원 테이블에 그대로 생성되는
+      // 사고로 이어진다(실측 확인 — 마스터 콘솔 impersonation 핸드오프 검증 중 발견).
+      employees=[r.employee];
       _pendingOtpLogin=null;
       _completeLogin(r.employee);
     } else if(r && r.requireOtp){
@@ -5112,9 +5120,11 @@ async function submitCompanyRegister(){
     if(r && r.ok && r.token && r.employee){
       _setAuthToken(r.token);
       _setCachedCompanyCode(r.companyCode||companyCode||"");
-      const idx=employees.findIndex(e=>e.id===r.employee.id);
-      if(idx>=0) employees[idx]={...employees[idx],...r.employee};
-      else employees.push(r.employee);
+      // doLogin()과 동일한 이유로 병합이 아니라 교체한다 — 방금 막 생성된 신규 회사는
+      // 이 관리자 1명이 직원 전체이므로, 로컬에 남아있던 데모/잔여 계정을 들고 있으면
+      // 안 된다(위 doLogin() 주석 참고 — 신규 가입 직후 자동저장 시 데모 계정이 이
+      // 새 회사에 실제 직원으로 만들어지는 사고로 이어짐, 실측 확인).
+      employees=[r.employee];
       closeModal();
       _completeLogin(r.employee);
       showToast("회사가 생성되었습니다. 환영합니다!","success");
@@ -20781,8 +20791,25 @@ function _resetIdleTimer(){
 ["click","keydown","touchstart","mousemove"].forEach(ev=>document.addEventListener(ev,()=>{if(currentUser)_resetIdleTimer();},{passive:true}));
 
 // ==================== START ====================
+// 마스터 콘솔(master.html)의 "이 회사로 들어가기"에서 넘어온 경우에만 로그인 화면을
+// 건너뛴다 — master.html이 hr_kpi_auth_token(실제 인가는 항상 이 토큰으로 서버가
+// 판단)과 함께, 화면 표시 전용 세션 핸드오프 값을 sessionStorage에 심어둔다.
+// impersonate 토큰은 empId가 없어(서버가 의도적으로 null 발급) employees 배열에
+// 짝이 되는 실제 직원 레코드가 없으므로, 여기서 만드는 가상 신원은 절대
+// employees 배열에 넣지 않는다 — getFullState()가 employees를 그대로 자동저장으로
+// 서버에 보내는 구조라, 넣으면 그 회사의 실제 직원 테이블에 "master:..." id의
+// 가짜 레코드가 영구히 남게 된다. 1회성이라 즉시 sessionStorage에서 지운다.
+let _masterHandoff = null;
+try {
+  const raw = sessionStorage.getItem('_masterImpersonateHandoff');
+  if(raw){ _masterHandoff = JSON.parse(raw); sessionStorage.removeItem('_masterImpersonateHandoff'); }
+} catch(e){}
 if(_demoMode) _loadDemoState(); // restore saved employees/kpiEntries before login screen
-renderLogin();
+if(_masterHandoff && _authToken){
+  _completeLogin(_masterHandoff);
+} else {
+  renderLogin();
+}
 </script>
 </body>
 </html>
