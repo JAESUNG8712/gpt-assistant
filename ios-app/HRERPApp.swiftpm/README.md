@@ -139,7 +139,15 @@ AI 어시스턴트(`ai/main.py`)를 연동하는 `../GPTAssistant.swiftpm`과는
    `claude/mobile-hr-app-testing-rDc2F`).
 2. Swift Playgrounds에서 `ios-app/HRERPApp.swiftpm`을 엽니다 — 서버 URL은
    `AppSettings.defaultServerURLString`에 기본값으로 미리 채워져 있습니다.
-3. 로그인 화면에서 실제 계정(웹에서 쓰던 아이디/비밀번호)으로 로그인합니다.
+3. 로그인 화면에서 **회사 코드**(관리자에게 전달받은 값) + 실제 계정(웹에서 쓰던
+   아이디/비밀번호)으로 로그인합니다. 회사 코드는 실운영 서버가 어느 시점부터
+   `POST /login`에 새로 요구하기 시작한 필드로, 이 저장소의 `server.js`(현재 배포 브랜치
+   `claude/mobile-hr-app-testing-rDc2F` 기준)에는 아직 반영되어 있지 않아 정확한 필드
+   이름을 코드로 직접 확인하지 못했습니다 — 클라이언트는 관례적인 이름(`companyCode`)으로
+   JSON 바디에 실어 보내도록 구현해뒀으니, 실제 서버가 기대하는 키 이름이 다르다면
+   `APIClient.login()`의 `body["companyCode"]` 부분만 바꾸면 됩니다. 한 번 입력하면
+   서버 주소처럼 기기에 저장되어 다음 로그인부터는 다시 입력할 필요가 없고, 설정 화면에서도
+   나중에 바꿀 수 있습니다.
    `HANDOFF.md`에 적힌 시드 데이터 예시 계정은 이후 실사용 중 비밀번호가 바뀌었을 수 있어
    보장되지 않습니다.
 4. 로그인 후 하단 탭에서 홈/근태/전자결재/경비청구/더보기/설정을 확인합니다.

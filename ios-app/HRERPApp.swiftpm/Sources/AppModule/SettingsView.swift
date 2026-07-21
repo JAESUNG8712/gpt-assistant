@@ -28,6 +28,12 @@ struct SettingsView: View {
                     .keyboardType(.URL)
                     .appFieldStyle()
 
+                Text("회사 코드").font(.caption.weight(.semibold)).foregroundStyle(AppTheme.secondaryText)
+                TextField("관리자에게 전달받은 회사 코드", text: $settings.companyCode)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .appFieldStyle()
+
                 Button {
                     Task { await checkStatus() }
                 } label: {

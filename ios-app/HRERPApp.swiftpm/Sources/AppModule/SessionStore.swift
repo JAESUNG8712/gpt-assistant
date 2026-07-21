@@ -15,12 +15,12 @@ final class SessionStore: ObservableObject {
 
     var isAuthenticated: Bool { token != nil }
 
-    func login(loginId: String, password: String, otp: String?, client: APIClient) async -> Bool {
+    func login(loginId: String, password: String, otp: String?, companyCode: String?, client: APIClient) async -> Bool {
         isLoggingIn = true
         loginError = nil
         defer { isLoggingIn = false }
         do {
-            let response = try await client.login(loginId: loginId, password: password, otp: otp)
+            let response = try await client.login(loginId: loginId, password: password, otp: otp, companyCode: companyCode)
             if response.requireOtp == true {
                 loginError = response.message ?? "2단계 인증 코드를 입력하세요."
                 return false

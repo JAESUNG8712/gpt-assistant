@@ -13,7 +13,8 @@ struct LoginView: View {
     @State private var showServerField = false
 
     private var isFormValid: Bool {
-        settings.baseURL != nil && !loginId.isEmpty && !password.isEmpty
+        settings.baseURL != nil && !settings.companyCode.trimmingCharacters(in: .whitespaces).isEmpty
+            && !loginId.isEmpty && !password.isEmpty
     }
 
     var body: some View {
@@ -31,6 +32,14 @@ struct LoginView: View {
                 .padding(.top, 40)
 
                 AppCard {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("회사 코드").font(.caption.weight(.semibold)).foregroundStyle(AppTheme.secondaryText)
+                        TextField("관리자에게 전달받은 회사 코드", text: $settings.companyCode)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .appFieldStyle()
+                    }
+
                     VStack(alignment: .leading, spacing: 6) {
                         Text("아이디").font(.caption.weight(.semibold)).foregroundStyle(AppTheme.secondaryText)
                         TextField("예: u2008001", text: $loginId)
@@ -120,6 +129,7 @@ struct LoginView: View {
             loginId: loginId,
             password: password,
             otp: requireOtp ? otp : nil,
+            companyCode: settings.companyCode,
             client: client
         )
         if !success && session.loginError?.contains("2단계") == true {

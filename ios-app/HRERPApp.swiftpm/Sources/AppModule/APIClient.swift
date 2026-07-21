@@ -24,12 +24,17 @@ final class APIClient {
 
     // MARK: POST /login
 
-    func login(loginId: String, password: String, otp: String?) async throws -> LoginResponse {
+    func login(loginId: String, password: String, otp: String?, companyCode: String?) async throws -> LoginResponse {
         var request = URLRequest(url: try url("login"))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         var body: [String: String] = ["loginId": loginId, "pw": password]
         if let otp, !otp.isEmpty { body["otp"] = otp }
+        // 서버가 어느 시점부터 회사 코드도 함께 요구하기 시작했다(과거엔 없던 필드) —
+        // 값이 있을 때만 실어 보낸다.
+        if let companyCode, !companyCode.isEmpty {
+            body["companyCode"] = companyCode
+        }
         request.httpBody = try JSONEncoder().encode(body)
 
         let (data, response) = try await session.data(for: request)

@@ -12,11 +12,19 @@ final class AppSettings: ObservableObject {
         didSet { UserDefaults.standard.set(serverURLString, forKey: "hrerp.serverURLString") }
     }
 
+    /// 서버가 어느 시점부터 `POST /login`에 회사 코드 필드를 추가로 요구하기 시작했다
+    /// (기존엔 아이디/비밀번호만으로 로그인됐음). 회사마다 값이 다를 수 있어 서버 주소처럼
+    /// 매번 다시 입력하지 않도록 저장해둔다.
+    @Published var companyCode: String {
+        didSet { UserDefaults.standard.set(companyCode, forKey: "hrerp.companyCode") }
+    }
+
     init() {
         let stored = UserDefaults.standard.string(forKey: "hrerp.serverURLString") ?? Self.defaultServerURLString
         // 예전에 실수로 http://를 저장했던 값이 남아있으면 https로 고쳐서 되돌린다
         // (App Transport Security가 http를 차단해 로그인이 조용히 실패하는 문제 재발 방지).
         self.serverURLString = Self.upgradedToHTTPS(stored)
+        self.companyCode = UserDefaults.standard.string(forKey: "hrerp.companyCode") ?? ""
     }
 
     private static func upgradedToHTTPS(_ value: String) -> String {
