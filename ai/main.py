@@ -476,6 +476,30 @@ def _extract_report_section(lines: list, header_keywords: list, max_lines: int =
     return out
 
 
+def _top_n_stock_detail_lines(lines: list, n: int = 3) -> list:
+    """'종목별 상세 분석' 섹션(매매시점 종합점수 내림차순 정렬됨, report_writer.py 참고)에서
+    상위 n개 종목의 상세 블록만 추출 — AI 투자의견 narrative, 매수/매도구간, 손절기준,
+    핵심근거 등 표에는 없는 구체적 내용이 여기에만 있는데, 특정 종목을 지목하지 않은
+    일반 "현황" 질문에서는 지금까지 전혀 노출되지 않고 있었음."""
+    out = []
+    in_section = False
+    stock_count = 0
+    for line in lines:
+        is_header = line.strip().startswith("【")
+        if is_header and "종목별 상세 분석" in line:
+            in_section = True
+            continue
+        elif is_header and in_section:
+            break
+        if in_section:
+            if line.strip().startswith("▶"):
+                stock_count += 1
+                if stock_count > n:
+                    break
+            out.append(line)
+    return out
+
+
 def _summarize_stock_report(report: str, targets: list) -> str:
     """전체 보고서에서 핵심 요약만 추출해 채팅용 답변 생성
     종합 요약뿐 아니라 TOP 추천 종목·저평가 종목도 항상 포함시켜
@@ -496,6 +520,12 @@ def _summarize_stock_report(report: str, targets: list) -> str:
     top_picks_lines = _extract_report_section(lines, ["TOP 추천 종목"], max_lines=15)
     undervalued_lines = _extract_report_section(lines, ["저평가 종목"], max_lines=15)
     broker_lines = _extract_report_section(lines, ["증권사 애널리스트 리포트"], max_lines=15)
+    # 특정 종목을 지목하지 않은 일반 질문에서도 TOP 추천 종목 표만 보여주고 끝나지 않도록,
+    # 매매시점 점수 상위 3개 종목은 AI 투자의견·매수/매도구간·손절기준까지 상세 노출
+    top_detail_lines = [] if targets else _top_n_stock_detail_lines(lines, n=3)
+    # "오늘 뭘 해야 하나"에 대한 구체적 답 — AI 액션 플랜(있으면)·매수 검토 종목·손절 원칙·
+    # 모니터링 포인트가 이 섹션에만 있는데 지금까지 표만 보여주고 끝나 막연했던 부분
+    action_lines = _extract_report_section(lines, ["오늘의 행동 계획", "Action Plan"], max_lines=20)
 
     # 요청 종목 관련 섹션 추출
     target_lines = []
@@ -515,8 +545,9 @@ def _summarize_stock_report(report: str, targets: list) -> str:
                         current_target = None
 
     # 조합 — 종합 요약 + TOP 추천 종목 + 저평가 종목은 항상 포함
-    # 특정 종목을 지목하지 않은 일반 "현황" 질문일 때는 시장 환경·증권사 컨센서스도 추가해
-    # 막연한 한 줄 요약이 아니라 실제 수치가 담긴 현황으로 보이도록 함
+    # 특정 종목을 지목하지 않은 일반 "현황" 질문일 때는 시장 환경·증권사 컨센서스·
+    # 상위 종목 상세(AI 투자의견·매수매도구간·손절기준)·오늘의 행동 계획도 추가해
+    # 표만 나열된 막연한 요약이 아니라 실제 구체적 근거·행동 지침이 담긴 답변이 되도록 함
     parts = []
     if summary_lines:
         parts.append("\n".join(summary_lines).strip())
@@ -526,8 +557,12 @@ def _summarize_stock_report(report: str, targets: list) -> str:
         parts.append("\n".join(top_picks_lines).strip())
     if undervalued_lines:
         parts.append("\n".join(undervalued_lines).strip())
+    if top_detail_lines:
+        parts.append("【 핵심 종목 상세 (TOP 3) 】\n" + "\n".join(top_detail_lines).strip())
     if not targets and broker_lines:
         parts.append("\n".join(broker_lines).strip())
+    if not targets and action_lines:
+        parts.append("\n".join(action_lines).strip())
     if target_lines:
         parts.append("\n".join(target_lines[:20]).strip())
 
