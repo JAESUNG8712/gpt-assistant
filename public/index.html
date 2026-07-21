@@ -1327,21 +1327,20 @@ function _setAuthToken(token){
     else localStorage.removeItem(_LS_AUTH_TOKEN);
   } catch(e){}
 }
-// 부트스트랩(서버 직원 0명) 로그인은 로컬 시드 계정과의 매칭으로 완료되어 토큰이 없다.
-// 그 세션에서 바로 이것저것 설정을 바꿔도(로그아웃 없이) 최초 저장 이후로는 서버에
-// 직원이 생겨 모든 요청에 인증이 필요해지는데, 토큰이 없어 그 저장들이 401로 계속
-// 조용히 실패하는 문제가 있었다. 부트스트랩 로그인 시 자격증명을 메모리에만 잠깐
-// 들고 있다가, 첫 저장이 성공한 직후 조용히 서버 /login을 다시 시도해 진짜 토큰으로
-// 업그레이드한다(재로그인 요구 없이). localStorage에는 저장하지 않고 로그아웃/토큰
-// 확보 즉시 비운다.
-let _bootstrapCreds = null;
-async function _tryUpgradeBootstrapToken(){
-  if(!_bootstrapCreds || _authToken) return;
-  const {loginId,pw} = _bootstrapCreds;
-  try{
-    const r = await serverRequest("POST","/login",{loginId,pw},5000);
-    if(r && r.ok && r.token){ _setAuthToken(r.token); _bootstrapCreds=null; }
-  }catch(e){}
+// ── 멀티테넌트 회사 코드(로그인 시 companyCode로 서버에 전송) ──
+// "서버 직원 0명 = 부트스트랩"이라는 옛 가정은 회사가 둘 이상 가입하는 순간 성립하지
+// 않으므로 완전히 폐기되었다(신규 회사는 "회사 만들기" 화면에서 /api/companies/register로
+// 가입). 인가는 항상 서버가 토큰으로 판단하므로, 여기 캐시된 값은 다음 로그인 시
+// 회사 코드 입력란을 미리 채워주는 편의 용도로만 쓴다.
+const _LS_COMPANY_CODE = 'hr_kpi_company_code';
+let _cachedCompanyCode = null;
+try { _cachedCompanyCode = localStorage.getItem(_LS_COMPANY_CODE) || null; } catch(e){}
+function _setCachedCompanyCode(code){
+  _cachedCompanyCode = code || null;
+  try {
+    if(_cachedCompanyCode) localStorage.setItem(_LS_COMPANY_CODE, _cachedCompanyCode);
+    else localStorage.removeItem(_LS_COMPANY_CODE);
+  } catch(e){}
 }
 
 // ── Auto-detect: if served from http server, use same origin ──
@@ -1500,7 +1499,6 @@ async function _doSave(silent=false){
     const state = getFullState();
     const r = await serverRequest("POST", "/save", state, 15000);
     if(r.ok){
-      if(_bootstrapCreds) _tryUpgradeBootstrapToken();
       _serverFailCount = 0;
       serverConfig.status = "connected";
       serverConfig.retryCount = 0;
@@ -4942,9 +4940,11 @@ function renderLogin(){
         <h2>인사시스템 로그인</h2>
         <p class="lc-sub">HR KPI Integrated Evaluation System</p>
         <div id="login-err"></div>
+        <div class="fg"><label class="fl">회사 코드</label><input class="fc" id="l-company" value="${h(_cachedCompanyCode||"")}" placeholder="예) mycompany" autocomplete="organization" onkeydown="if(event.key==='Enter')document.getElementById('l-id').focus()"></div>
         <div class="fg"><label class="fl">아이디 (로그인 ID)</label><input class="fc" id="l-id" placeholder="예) admin, leader01 …" autocomplete="username" onkeydown="if(event.key==='Enter')document.getElementById('l-pw').focus()"></div>
         <div class="fg"><label class="fl">비밀번호</label><input class="fc" id="l-pw" type="password" placeholder="비밀번호 입력" autocomplete="current-password" onkeydown="if(event.key==='Enter')doLogin()"></div>
         <button class="btn btn-primary btn-lg" style="width:100%;justify-content:center;margin-bottom:14px" onclick="doLogin()">로그인</button>
+        ${serverConfig.url ? `<div class="login-alt-action" style="text-align:center;margin-bottom:14px"><a href="javascript:void(0)" class="fz12" onclick="openCompanyRegisterModal()" style="color:#2563eb;font-weight:600;text-decoration:none">회사가 처음이신가요? 회사 만들기</a></div>` : ""}
         ${window._isSharedDeployLink ? "" : `<div class="login-quick">
           <p class="fz11 fw6 mb2">빠른 로그인 (샘플 계정)</p>
           <div class="test-accs">
@@ -5006,6 +5006,7 @@ function _loginTryLocal(id,pw){
   return false;
 }
 function doLogin(){
+  const companyCode=$("#l-company")?.value.trim();
   const id=$("#l-id")?.value.trim(),pw=$("#l-pw")?.value.trim();
   if(!serverConfig.url){
     if(!_loginTryLocal(id,pw))_loginShowErr();
@@ -5016,33 +5017,28 @@ function doLogin(){
   // 서버가 정상 운영 중이며 실제 직원 데이터가 있는 상태에서도 admin/admin으로 로그인하면
   // 서버의 /login을 단 한 번도 호출하지 않고 "로그인된 것처럼" 보이기만 했다 — 그 결과
   // 인증 토큰이 전혀 발급되지 않아 이후 모든 인증 필요 기능이 조용히 실패했다.
-  // 서버에 직원이 이미 존재하면(정상 운영 중인 배포) 반드시 서버 인증을 거치도록 하고,
-  // 서버에 직원이 아예 없는 최초 배포(부트스트랩) 상태에서만 로컬 매칭으로 진행한다.
-  serverRequest("GET","/status",null,5000).then(sr=>{
-    const isBootstrap = !(sr && sr.ok && sr.meta && sr.meta.empCount > 0);
-    if(isBootstrap){
-      if(_loginTryLocal(id,pw)) _bootstrapCreds={loginId:id,pw};
-      else _loginShowErr();
-      return;
+  // 서버에 연결된 상태에서는 항상 서버 인증(회사 코드 포함)을 거친다 — "서버 직원 0명 =
+  // 부트스트랩"으로 로컬 매칭을 허용하던 옛 예외는 여러 회사가 공존하는 멀티테넌트
+  // 환경에서 더 이상 성립하지 않으므로 완전히 폐기했다(신규 회사는 "회사 만들기" 화면의
+  // POST /api/companies/register로 가입 즉시 토큰을 발급받는다).
+  const otp=$("#l-otp")?.value?.trim();
+  serverRequest("POST","/login",{companyCode:companyCode||undefined,loginId:id,pw,otp:otp||undefined}).then(r=>{
+    if(r && r.ok && r.employee){
+      _setAuthToken(r.token||null);
+      if(companyCode) _setCachedCompanyCode(companyCode);
+      const idx=employees.findIndex(e=>e.id===r.employee.id);
+      if(idx>=0) employees[idx]={...employees[idx],...r.employee};
+      else employees.push(r.employee);
+      _pendingOtpLogin=null;
+      _completeLogin(r.employee);
+    } else if(r && r.requireOtp){
+      _pendingOtpLogin={loginId:id,pw};
+      _showOtpPrompt(r.message);
+    } else {
+      _loginShowErr(r?.message);
     }
-    const otp=$("#l-otp")?.value?.trim();
-    serverRequest("POST","/login",{loginId:id,pw,otp:otp||undefined}).then(r=>{
-      if(r && r.ok && r.employee){
-        _setAuthToken(r.token||null);
-        const idx=employees.findIndex(e=>e.id===r.employee.id);
-        if(idx>=0) employees[idx]={...employees[idx],...r.employee};
-        else employees.push(r.employee);
-        _pendingOtpLogin=null;
-        _completeLogin(r.employee);
-      } else if(r && r.requireOtp){
-        _pendingOtpLogin={loginId:id,pw};
-        _showOtpPrompt(r.message);
-      } else {
-        _loginShowErr(r?.message);
-      }
-    }).catch(()=>_loginShowErr());
   }).catch(()=>{
-    // 상태 확인 자체가 실패(네트워크 문제 등)한 경우에만 최후 수단으로 로컬 매칭 시도
+    // 서버 요청 자체가 실패(네트워크 문제 등)한 경우에만 최후 수단으로 로컬 매칭 시도
     if(!_loginTryLocal(id,pw))_loginShowErr();
   });
 }
@@ -5052,6 +5048,86 @@ function _showOtpPrompt(msg){
   <div class="fg" style="margin-top:8px"><label class="fl">인증 앱의 6자리 코드</label><input class="fc" id="l-otp" maxlength="6" placeholder="123456" onkeydown="if(event.key==='Enter')doLogin()"></div>`;
   setTimeout(()=>$("#l-otp")?.focus(),30);
 }
+
+// ── 회사 만들기(셀프서브 SaaS 가입) ──────────────────────────────
+// "서버 직원 0명 = 부트스트랩" 로컬 매칭 로그인을 완전히 대체하는 신규 가입 플로우.
+// POST /api/companies/register 호출 한 번으로 회사 생성 + 관리자 계정 생성 + 토큰 발급이
+// 동시에 이뤄지므로, 성공 시 기존 로그인 성공 흐름(_completeLogin)을 그대로 재사용해
+// 자동 로그인한다. 완전 오프라인 데모 모드(serverConfig.url 없음)에서는 서버가 없어
+// 회사라는 개념 자체가 없으므로 이 화면에 진입할 수 없다(로그인 화면에서 링크 자체가
+// serverConfig.url이 있을 때만 노출됨).
+function openCompanyRegisterModal(){
+  if(!serverConfig.url){ showToast("서버에 연결된 상태에서만 이용할 수 있습니다.","info"); return; }
+  showModal(`<div class="modal modal-md"><div class="modal-head"><h2>🏢 회사 만들기</h2><button class="modal-close" onclick="closeModal()">×</button></div>
+  <div class="modal-body">
+    <div class="info-note mb3">📌 우리 회사를 새로 등록하고 관리자 계정을 만듭니다. 등록이 완료되면 바로 로그인됩니다.</div>
+    <div id="company-reg-err"></div>
+    <div class="fg"><label class="fl">회사명</label>
+      <input class="fc" id="cr-company-name" placeholder="예) (주)우리회사" autocomplete="organization">
+    </div>
+    <div class="fg"><label class="fl">회사 코드 <span class="fz11 text-gray">(선택 — 비우면 회사명에서 자동 생성됩니다)</span></label>
+      <input class="fc" id="cr-company-code" placeholder="예) mycompany">
+    </div>
+    <div class="fg"><label class="fl">관리자 이름</label>
+      <input class="fc" id="cr-admin-name" placeholder="예) 홍길동" autocomplete="name">
+    </div>
+    <div class="fg"><label class="fl">로그인 아이디</label>
+      <input class="fc" id="cr-login-id" placeholder="예) admin" autocomplete="username">
+    </div>
+    <div class="fg"><label class="fl">비밀번호</label>
+      <input class="fc" id="cr-pw" type="password" placeholder="비밀번호 입력" autocomplete="new-password" onkeydown="if(event.key==='Enter')submitCompanyRegister()">
+    </div>
+  </div>
+  <div class="modal-foot">
+    <button class="btn btn-secondary" onclick="closeModal()">취소</button>
+    <button class="btn btn-primary" id="cr-submit-btn" onclick="submitCompanyRegister()">회사 만들기</button>
+  </div></div>`);
+  // #login-wrap은 z-index:9999로 항상 최상단에 떠 있는데(로그인 전에는 다른 모달이 뜰 일이
+  // 없었던 기존 코드 구조), 일반 .modal-ov는 z-index:1000이라 그 뒤에 가려 클릭이 통과하지
+  // 않는다. 로그인 화면 위에서 뜨는 이 모달만 그 위로 올려준다.
+  const ovs=document.querySelectorAll(".modal-ov");
+  const ov=ovs[ovs.length-1];
+  if(ov) ov.style.zIndex="10000";
+  setTimeout(()=>$("#cr-company-name")?.focus(),30);
+}
+async function submitCompanyRegister(){
+  const errEl=$("#company-reg-err");
+  const showErr=(msg)=>{ if(errEl) errEl.innerHTML=`<div class="alert alert-error">${h(msg)}</div>`; };
+  if(errEl) errEl.innerHTML="";
+  const companyName=$("#cr-company-name")?.value.trim();
+  const companyCode=$("#cr-company-code")?.value.trim();
+  const adminName=$("#cr-admin-name")?.value.trim();
+  const loginId=$("#cr-login-id")?.value.trim();
+  const password=$("#cr-pw")?.value.trim();
+  if(!companyName){ showErr("회사명을 입력하세요."); return; }
+  if(!adminName){ showErr("관리자 이름을 입력하세요."); return; }
+  if(!loginId){ showErr("로그인 아이디를 입력하세요."); return; }
+  if(!password){ showErr("비밀번호를 입력하세요."); return; }
+  const btn=$("#cr-submit-btn");
+  if(btn){ btn.disabled=true; btn.textContent="처리 중..."; }
+  try{
+    const r=await serverRequest("POST","/api/companies/register",{
+      companyName, companyCode: companyCode||undefined, adminName, loginId, password
+    },15000);
+    if(r && r.ok && r.token && r.employee){
+      _setAuthToken(r.token);
+      _setCachedCompanyCode(r.companyCode||companyCode||"");
+      const idx=employees.findIndex(e=>e.id===r.employee.id);
+      if(idx>=0) employees[idx]={...employees[idx],...r.employee};
+      else employees.push(r.employee);
+      closeModal();
+      _completeLogin(r.employee);
+      showToast("회사가 생성되었습니다. 환영합니다!","success");
+    } else {
+      showErr(r?.message||"회사 등록에 실패했습니다.");
+    }
+  }catch(e){
+    showErr("서버 연결 실패: "+e.message);
+  }finally{
+    if(btn){ btn.disabled=false; btn.textContent="회사 만들기"; }
+  }
+}
+
 async function logout(){
   // 대기 중인 디바운스 저장이 있으면 로그아웃으로 상태를 지우기 전에 먼저 완료한다
   // (그러지 않으면 로그아웃 직전 입력한 내용이 서버에 반영되지 않은 채 유실됨).
@@ -5064,7 +5140,6 @@ async function logout(){
   // (순서가 바뀌면 서버가 401로 거절해 잠금이 실제로는 안 풀린 채 남아있게 됨).
   releaseAllMyLocks();
   _setAuthToken(null);
-  _bootstrapCreds=null;
   disconnectSSE();_myPagePwVerified=false;currentUser=null;const app=$("#app");if(app)app.innerHTML="";renderLogin();
 }
 
