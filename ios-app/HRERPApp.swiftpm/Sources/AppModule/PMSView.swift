@@ -193,7 +193,12 @@ private struct NewAllocationView: View {
             onSaved()
             dismiss()
         } catch {
-            errorMessage = error.localizedDescription
+            if case APIError.serverError(401, _) = error {
+                session.handleUnauthorized()
+                dismiss()
+            } else {
+                errorMessage = error.localizedDescription
+            }
         }
     }
 }

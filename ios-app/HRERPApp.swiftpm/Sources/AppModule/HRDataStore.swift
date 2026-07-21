@@ -27,6 +27,11 @@ final class HRDataStore: ObservableObject {
     // MARK: - 불러오기 / 저장
 
     func reload(client: APIClient, session: SessionStore) async {
+        // 이미 reload/save가 진행 중이면 겹쳐서 또 보내지 않는다 — 두 요청이 거의 동시에
+        // 나가면 응답이 도착 순서대로 적용되면서(서버 처리 순서와 무관하게) 나중에 도착한
+        // 쪽이 최신 상태를 덮어쓸 수 있다. 화면에서 두 동작이 거의 동시에 트리거된 경우
+        // (예: 출근 체크 직후 다른 화면에서 결재 승인) 뒤쪽 호출은 조용히 건너뛴다.
+        guard !isLoading else { return }
         guard let token = session.token else { return }
         isLoading = true
         lastError = nil
@@ -48,6 +53,8 @@ final class HRDataStore: ObservableObject {
 
     @discardableResult
     func save(client: APIClient, session: SessionStore) async -> Bool {
+        // reload()와 동일한 이유로 겹치는 호출을 막는다 — 자세한 설명은 reload() 참고.
+        guard !isLoading else { return false }
         guard let token = session.token else { return false }
         isLoading = true
         lastError = nil
