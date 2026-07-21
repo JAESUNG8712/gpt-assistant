@@ -93,7 +93,7 @@ struct LoginView: View {
                 }
 
                 DisclosureGroup("서버 설정", isExpanded: $showServerField) {
-                    TextField("https://hrsystem-uweb.onrender.com", text: $settings.serverURLString)
+                    TextField("https://your-server.example.com", text: $settings.serverURLString)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .keyboardType(.URL)

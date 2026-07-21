@@ -133,10 +133,11 @@ AI 어시스턴트(`ai/main.py`)를 연동하는 `../GPTAssistant.swiftpm`과는
 
 ## 사용 방법
 
-1. `server.js`를 배포합니다(예: `https://hrsystem-uweb.onrender.com`, 배포 브랜치
-   `claude/mobile-hr-app-testing-rDc2F`).
-2. Swift Playgrounds에서 `ios-app/HRERPApp.swiftpm`을 엽니다 — 서버 URL은
-   `AppSettings.defaultServerURLString`에 기본값으로 미리 채워져 있습니다.
+1. `server.js`를 배포합니다(배포 브랜치 `claude/mobile-hr-app-testing-rDc2F`).
+2. Swift Playgrounds에서 `ios-app/HRERPApp.swiftpm`을 엽니다 — 서버 주소는 더 이상
+   기본값으로 채워져 있지 않습니다(멀티테넌트 전환 전까지, 앱을 배포해도 실제 운영
+   서버로 자동 접속되지 않도록 의도적으로 비워둠). 로그인 화면의 "서버 설정"에서
+   배포한 서버 주소를 직접 입력해야 합니다.
 3. 로그인 화면에서 실제 계정(웹에서 쓰던 아이디/비밀번호)으로 로그인합니다.
    `HANDOFF.md`에 적힌 시드 데이터 예시 계정은 이후 실사용 중 비밀번호가 바뀌었을 수 있어
    보장되지 않습니다.
