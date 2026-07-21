@@ -17,8 +17,12 @@ struct SidebarRootView: View {
 
     private var client: APIClient { APIClient(settings: settings) }
     private var isAdmin: Bool { session.currentEmployee?.role == "admin" }
+    private var isEvaluator: Bool {
+        guard let role = session.currentEmployee?.role else { return false }
+        return ["leader", "director", "admin"].contains(role)
+    }
     private var visibleSections: [AppSection] {
-        AppSection.allCases.filter { !$0.adminOnly || isAdmin }
+        AppSection.allCases.filter { (!$0.adminOnly || isAdmin) && (!$0.evaluatorOnly || isEvaluator) }
     }
 
     var body: some View {
@@ -64,6 +68,7 @@ struct SidebarRootView: View {
         case .settings: SettingsView()
         case .expenseAdmin: ExpenseAdminView(store: store, reload: reload)
         case .approvalAdmin: ApprovalAdminView(store: store, reload: reload)
+        case .kpiApproval: KPIApprovalView(store: store, reload: reload)
         }
     }
 

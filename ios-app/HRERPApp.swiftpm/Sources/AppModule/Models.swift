@@ -169,6 +169,10 @@ struct KPIEntry: Decodable, Identifiable {
     let detail: String?
     /// 0(또는 nil) = 목표 초안, 1 = 목표 제출 완료(index.html의 submitKpi()가 세팅).
     let goalSub: Int?
+    // 평가자(팀장/사업부장/관리자) 워크플로 전용 필드.
+    let firstStatus: String?  // "approved" | "rejected" | nil(미처리)
+    let firstReason: String?
+    let finalReason: String?
 }
 
 /// 새 KPI 목표 항목 등록 전용 — index.html의 목표 등록 함수(7433번째 줄 근처)와 동일한

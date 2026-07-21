@@ -5,7 +5,7 @@ import Foundation
 enum AppSection: String, CaseIterable, Identifiable {
     case home, attendance, approvals, expense, notifications, directory
     case accounting, salesInventory, pms, recruit, kpi, settings
-    case expenseAdmin, approvalAdmin
+    case expenseAdmin, approvalAdmin, kpiApproval
 
     var id: String { rawValue }
 
@@ -13,6 +13,15 @@ enum AppSection: String, CaseIterable, Identifiable {
     var adminOnly: Bool {
         switch self {
         case .expenseAdmin, .approvalAdmin: return true
+        default: return false
+        }
+    }
+
+    /// KPI 평가자(팀장/사업부장/관리자)에게만 보이는 섹션 — `adminOnly`와 별개 기준이라
+    /// (leader/director도 포함) 따로 둔다.
+    var evaluatorOnly: Bool {
+        switch self {
+        case .kpiApproval: return true
         default: return false
         }
     }
@@ -33,6 +42,7 @@ enum AppSection: String, CaseIterable, Identifiable {
         case .settings: return "설정"
         case .expenseAdmin: return "경비 정산 관리"
         case .approvalAdmin: return "전체 결재 관리"
+        case .kpiApproval: return "KPI 평가 관리"
         }
     }
 
@@ -52,6 +62,7 @@ enum AppSection: String, CaseIterable, Identifiable {
         case .settings: return "gearshape"
         case .expenseAdmin: return "wonsign.circle.fill"
         case .approvalAdmin: return "checkmark.seal.fill"
+        case .kpiApproval: return "chart.bar.doc.horizontal.fill"
         }
     }
 }

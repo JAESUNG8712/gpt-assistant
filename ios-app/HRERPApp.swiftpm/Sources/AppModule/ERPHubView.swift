@@ -13,6 +13,10 @@ struct ERPHubView: View {
     let reload: () async -> Void
 
     private var isAdmin: Bool { session.currentEmployee?.role == "admin" }
+    private var isEvaluator: Bool {
+        guard let role = session.currentEmployee?.role else { return false }
+        return ["leader", "director", "admin"].contains(role)
+    }
 
     var body: some View {
         AppScreen {
@@ -25,6 +29,11 @@ struct ERPHubView: View {
                 }
                 NavigationLink { ApprovalAdminView(store: store, reload: reload) } label: {
                     ModuleCard(icon: "checkmark.seal.fill", title: "전체 결재 관리", subtitle: "전 직원 결재 문서 조회 · 강제 반려")
+                }
+            }
+            if isEvaluator {
+                NavigationLink { KPIApprovalView(store: store, reload: reload) } label: {
+                    ModuleCard(icon: "chart.bar.doc.horizontal.fill", title: "KPI 평가 관리", subtitle: "팀원 1차/2차 평가 · 최종 확정")
                 }
             }
             NavigationLink { EmployeeDirectoryView(store: store, reload: reload) } label: {

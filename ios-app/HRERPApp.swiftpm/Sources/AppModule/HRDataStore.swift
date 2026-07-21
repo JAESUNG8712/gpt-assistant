@@ -425,6 +425,92 @@ final class HRDataStore: ObservableObject {
         return true
     }
 
+    // MARK: - 평가/KPI: 평가자(팀장/사업부장/관리자) 워크플로
+    // index.html의 approveFirst()/rejectKpi()/saveFirstEval()/saveSecondEval()/
+    // saveFinalConfirm()을 옮겼다. 호출 전 반드시 화면에서 평가 권한(leader/director/admin +
+    // 담당 범위)을 먼저 확인해야 한다 — 서버는 이 검증을 하지 않는다.
+
+    @discardableResult
+    func approveKPIFirst(id: Int) -> Bool {
+        var list = raw["kpiEntries"] as? [[String: Any]] ?? []
+        guard let index = list.firstIndex(where: { ($0["id"] as? Int) == id }) else { return false }
+        list[index]["firstStatus"] = "approved"
+        list[index]["updatedAt"] = ISO8601DateFormatter().string(from: Date())
+        raw["kpiEntries"] = list
+        return true
+    }
+
+    /// `stage`는 "first" 또는 "final".
+    @discardableResult
+    func rejectKPI(id: Int, stage: String, reason: String) -> Bool {
+        var list = raw["kpiEntries"] as? [[String: Any]] ?? []
+        guard let index = list.firstIndex(where: { ($0["id"] as? Int) == id }) else { return false }
+        let statusKey = stage == "first" ? "firstStatus" : "finalStatus"
+        let reasonKey = stage == "first" ? "firstReason" : "finalReason"
+        list[index][statusKey] = "rejected"
+        list[index][reasonKey] = reason
+        list[index]["updatedAt"] = ISO8601DateFormatter().string(from: Date())
+        raw["kpiEntries"] = list
+        return true
+    }
+
+    /// `firstStatus=="approved"`인 팀원 한 명의 모든 KPI 항목에 1차 점수 + 공통 의견을
+    /// 한 번에 저장한다(웹의 팀원 단위 배치 모달과 동일).
+    @discardableResult
+    func saveKPIFirstEval(userId: Int, year: Int, scores: [Int: Double], comment: String) -> Bool {
+        var list = raw["kpiEntries"] as? [[String: Any]] ?? []
+        var changed = false
+        let nowISO = ISO8601DateFormatter().string(from: Date())
+        for i in list.indices {
+            guard (list[i]["userId"] as? Int) == userId, (list[i]["year"] as? Int) == year,
+                  (list[i]["firstStatus"] as? String) == "approved",
+                  let id = list[i]["id"] as? Int, let score = scores[id] else { continue }
+            list[i]["firstScore"] = score
+            list[i]["firstComment"] = comment
+            list[i]["updatedAt"] = nowISO
+            changed = true
+        }
+        guard changed else { return false }
+        raw["kpiEntries"] = list
+        return true
+    }
+
+    @discardableResult
+    func saveKPISecondEval(userId: Int, year: Int, scores: [Int: Double], comment: String, isPublic: Bool) -> Bool {
+        var list = raw["kpiEntries"] as? [[String: Any]] ?? []
+        var changed = false
+        let nowISO = ISO8601DateFormatter().string(from: Date())
+        for i in list.indices {
+            guard (list[i]["userId"] as? Int) == userId, (list[i]["year"] as? Int) == year,
+                  (list[i]["firstStatus"] as? String) == "approved",
+                  let id = list[i]["id"] as? Int, let score = scores[id] else { continue }
+            list[i]["secondScore"] = score
+            list[i]["secondComment"] = comment
+            list[i]["secondCommentPublic"] = isPublic
+            list[i]["updatedAt"] = nowISO
+            changed = true
+        }
+        guard changed else { return false }
+        raw["kpiEntries"] = list
+        return true
+    }
+
+    /// 2차점수(없으면 1차점수)가 기본값으로 쓰이지만, 화면에서 항상 명시적으로 받은
+    /// `finalScore`를 그대로 저장한다(웹의 최종확정 모달과 동일하게 기본값만 미리 채워줌).
+    @discardableResult
+    func finalizeKPI(id: Int, finalScore: Double) -> Bool {
+        var list = raw["kpiEntries"] as? [[String: Any]] ?? []
+        guard let index = list.firstIndex(where: { ($0["id"] as? Int) == id }) else { return false }
+        list[index]["finalStatus"] = "approved"
+        list[index]["finalScore"] = finalScore
+        if list[index]["secondScore"] == nil {
+            list[index]["secondScore"] = finalScore
+        }
+        list[index]["updatedAt"] = ISO8601DateFormatter().string(from: Date())
+        raw["kpiEntries"] = list
+        return true
+    }
+
     // MARK: - 변환 헬퍼
 
     private func decodeArray<T: Decodable>(_ key: String) -> [T] {
