@@ -117,6 +117,73 @@ final class APIClient {
         try await decodeList("api/accounting/vouchers", token: token, rootKey: "vouchers")
     }
 
+    /// 관리자 전용(서버가 `requireAdmin`으로 검증). `id`를 넘기면 그 계정을 수정(upsert),
+    /// 넘기지 않으면 서버가 새 id를 발급해 신규 등록한다.
+    func saveAccount(
+        id: String?, code: String, name: String, type: String, category: String, active: Bool, user: String, token: String
+    ) async throws -> Account {
+        var request = URLRequest(url: try url("api/accounting/accounts"))
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        struct Body: Encodable {
+            let id: String?; let code: String; let name: String
+            let type: String; let category: String; let active: Bool; let user: String
+        }
+        request.httpBody = try JSONEncoder().encode(
+            Body(id: id, code: code, name: name, type: type, category: category, active: active, user: user)
+        )
+        let (data, response) = try await session.data(for: request)
+        try Self.checkResponse(response, data: data)
+        struct Response: Decodable { let ok: Bool; let account: Account }
+        return try JSONDecoder().decode(Response.self, from: data).account
+    }
+
+    /// 전표에서 사용 중인 계정과목은 서버가 삭제를 거부하고 400을 반환한다(비활성화를 대신 안내).
+    func deleteAccount(id: String, token: String) async throws {
+        var request = URLRequest(url: try url("api/accounting/accounts/\(id)/delete"))
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        let (data, response) = try await session.data(for: request)
+        try Self.checkResponse(response, data: data)
+    }
+
+    /// 임시(draft) 전표를 확정한다 — 확정돼야 정식 전표번호(voucherNo)가 붙는다.
+    func postVoucher(id: String, user: String, token: String) async throws -> Voucher {
+        var request = URLRequest(url: try url("api/accounting/vouchers/\(id)/post"))
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.httpBody = try JSONEncoder().encode(["user": user])
+        let (data, response) = try await session.data(for: request)
+        try Self.checkResponse(response, data: data)
+        struct Response: Decodable { let ok: Bool; let voucher: Voucher }
+        return try JSONDecoder().decode(Response.self, from: data).voucher
+    }
+
+    /// 확정된(posted) 전표만 취소할 수 있다 — 임시(draft) 전표는 `deleteVoucher`로 지운다.
+    func voidVoucher(id: String, reason: String, user: String, token: String) async throws -> Voucher {
+        var request = URLRequest(url: try url("api/accounting/vouchers/\(id)/void"))
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        struct Body: Encodable { let reason: String; let user: String }
+        request.httpBody = try JSONEncoder().encode(Body(reason: reason, user: user))
+        let (data, response) = try await session.data(for: request)
+        try Self.checkResponse(response, data: data)
+        struct Response: Decodable { let ok: Bool; let voucher: Voucher }
+        return try JSONDecoder().decode(Response.self, from: data).voucher
+    }
+
+    /// 임시(draft) 상태의 전표만 삭제할 수 있다(확정된 전표는 `voidVoucher`로 취소).
+    func deleteVoucher(id: String, token: String) async throws {
+        var request = URLRequest(url: try url("api/accounting/vouchers/\(id)"))
+        request.httpMethod = "DELETE"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        let (data, response) = try await session.data(for: request)
+        try Self.checkResponse(response, data: data)
+    }
+
     struct NewVoucherLine: Encodable {
         let accountId: String
         let debit: Double
