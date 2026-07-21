@@ -151,6 +151,7 @@ struct RecruitJob: Decodable, Identifiable {
     let headcount: Int?
     let status: String
     let description: String?
+    let stages: [String]?
 }
 
 struct RecruitCandidate: Decodable, Identifiable {

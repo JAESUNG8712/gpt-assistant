@@ -354,6 +354,59 @@ final class APIClient {
         try await decodeList("api/recruit/candidates", token: token, rootKey: "candidates")
     }
 
+    // MARK: - 채용 관리자(admin/leader/director) 쓰기 — 공고 등록, 지원자 등록, 전형 단계 변경
+    // 서버는 이 3개 엔드포인트를 admin뿐 아니라 leader/director에게도 허용한다
+    // (requireRole(["admin","leader","director"])) — 다른 관리자 기능(경비/결재/회계/
+    // 영업재고)이 전부 admin 전용인 것과 다르다.
+
+    func saveRecruitJob(
+        id: String?, title: String, department: String, team: String, headcount: Int,
+        status: String, description: String, user: String, token: String
+    ) async throws -> RecruitJob {
+        var request = URLRequest(url: try url("api/recruit/jobs"))
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        struct Body: Encodable {
+            let id: String?; let title: String; let department: String; let team: String
+            let headcount: Int; let status: String; let description: String; let user: String
+        }
+        request.httpBody = try JSONEncoder().encode(
+            Body(id: id, title: title, department: department, team: team, headcount: headcount, status: status, description: description, user: user)
+        )
+        let (data, response) = try await session.data(for: request)
+        try Self.checkResponse(response, data: data)
+        struct Response: Decodable { let ok: Bool; let job: RecruitJob }
+        return try JSONDecoder().decode(Response.self, from: data).job
+    }
+
+    func createRecruitCandidate(jobId: String, name: String, email: String, phone: String, memo: String, user: String, token: String) async throws -> RecruitCandidate {
+        var request = URLRequest(url: try url("api/recruit/candidates"))
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        struct Body: Encodable {
+            let jobId: String; let name: String; let email: String; let phone: String; let memo: String; let user: String
+        }
+        request.httpBody = try JSONEncoder().encode(Body(jobId: jobId, name: name, email: email, phone: phone, memo: memo, user: user))
+        let (data, response) = try await session.data(for: request)
+        try Self.checkResponse(response, data: data)
+        struct Response: Decodable { let ok: Bool; let candidate: RecruitCandidate }
+        return try JSONDecoder().decode(Response.self, from: data).candidate
+    }
+
+    /// `status`는 반드시 해당 공고의 `stages` 목록에 있는 값이어야 한다(서버가 검증).
+    func updateRecruitCandidateStatus(id: String, status: String, reason: String, token: String) async throws {
+        var request = URLRequest(url: try url("api/recruit/candidates/\(id)/status"))
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        struct Body: Encodable { let status: String; let reason: String }
+        request.httpBody = try JSONEncoder().encode(Body(status: status, reason: reason))
+        let (data, response) = try await session.data(for: request)
+        try Self.checkResponse(response, data: data)
+    }
+
     private func decodeList<T: Decodable>(_ path: String, token: String, rootKey: String) async throws -> [T] {
         var request = URLRequest(url: try url(path))
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
