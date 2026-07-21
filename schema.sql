@@ -63,6 +63,11 @@ ALTER TABLE employee_history ADD COLUMN IF NOT EXISTS company_id UUID;
 CREATE INDEX IF NOT EXISTS idx_emp_hist_employee_id ON employee_history (employee_id);
 CREATE INDEX IF NOT EXISTS idx_emp_hist_changed_at  ON employee_history (changed_at);
 CREATE INDEX IF NOT EXISTS idx_emp_hist_company_id  ON employee_history (company_id);
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'employee_history_company_id_fkey') THEN
+    ALTER TABLE employee_history ADD CONSTRAINT employee_history_company_id_fkey FOREIGN KEY (company_id) REFERENCES companies(id);
+  END IF;
+END $$;
 
 -- ── KPI entries ───────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS kpi_entries (
@@ -97,6 +102,11 @@ CREATE TABLE IF NOT EXISTS kpi_history (
 ALTER TABLE kpi_history ADD COLUMN IF NOT EXISTS company_id UUID;
 CREATE INDEX IF NOT EXISTS idx_kpi_hist_kpi_id     ON kpi_history (kpi_id);
 CREATE INDEX IF NOT EXISTS idx_kpi_hist_changed_at ON kpi_history (changed_at);
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'kpi_history_company_id_fkey') THEN
+    ALTER TABLE kpi_history ADD CONSTRAINT kpi_history_company_id_fkey FOREIGN KEY (company_id) REFERENCES companies(id);
+  END IF;
+END $$;
 CREATE INDEX IF NOT EXISTS idx_kpi_hist_company_id ON kpi_history (company_id);
 
 -- ── Accounting: 계정과목 (chart of accounts) ──────────────────────────────────

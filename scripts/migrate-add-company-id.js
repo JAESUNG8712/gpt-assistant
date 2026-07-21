@@ -50,27 +50,45 @@ async function main() {
   console.log("스키마 확인/생성 완료.");
 
   const slug = process.env.COMPANY_SLUG || slugify(process.env.COMPANY_NAME);
+  // 회사 생성과 백필을 하나의 트랜잭션으로 묶는다 — 이전에는 회사 INSERT가 별도
+  // 쿼리(autocommit)로 커밋된 뒤 그 다음 백필 UPDATE가 (예: 중복 loginId로 인한
+  // UNIQUE(company_id, login_id) 위반으로) 실패하면, 소속 직원이 0명인 "고아
+  // companies 행"이 그대로 남는 문제가 실측 확인됐다(재실행하면 같은 slug를 재사용해
+  // 실사용상 치명적이진 않지만, 실패 메시지만 보고 재시도하지 않으면 계속 남을 수
+  // 있었음). 트랜잭션으로 묶으면 백필 중 어느 한 단계라도 실패 시 회사 생성까지
+  // 통째로 롤백되어 항상 "전부 성공" 또는 "아무 흔적도 없음" 둘 중 하나만 남는다.
+  const client = await pool.connect();
   let companyId;
-  const existing = await pool.query("SELECT id FROM companies WHERE slug = $1", [slug]);
-  if (existing.rows.length) {
-    companyId = existing.rows[0].id;
-    console.log(`기존 회사 재사용: slug="${slug}" id=${companyId}`);
-  } else {
-    const { rows } = await pool.query(
-      "INSERT INTO companies (slug, name, status) VALUES ($1,$2,'active') RETURNING id",
-      [slug, process.env.COMPANY_NAME]
-    );
-    companyId = rows[0].id;
-    console.log(`신규 회사 생성: slug="${slug}" name="${process.env.COMPANY_NAME}" id=${companyId}`);
-  }
+  try {
+    await client.query("BEGIN");
+    const existing = await client.query("SELECT id FROM companies WHERE slug = $1", [slug]);
+    if (existing.rows.length) {
+      companyId = existing.rows[0].id;
+      console.log(`기존 회사 재사용: slug="${slug}" id=${companyId}`);
+    } else {
+      const { rows } = await client.query(
+        "INSERT INTO companies (slug, name, status) VALUES ($1,$2,'active') RETURNING id",
+        [slug, process.env.COMPANY_NAME]
+      );
+      companyId = rows[0].id;
+      console.log(`신규 회사 생성: slug="${slug}" name="${process.env.COMPANY_NAME}" id=${companyId}`);
+    }
 
-  for (const table of TABLES) {
-    const before = await pool.query(`SELECT COUNT(*) FROM ${table} WHERE company_id IS NULL`);
-    const { rowCount } = await pool.query(
-      `UPDATE ${table} SET company_id = $1 WHERE company_id IS NULL`,
-      [companyId]
-    );
-    console.log(`  ${table}: ${rowCount}건 백필 (백필 전 NULL ${before.rows[0].count}건)`);
+    for (const table of TABLES) {
+      const before = await client.query(`SELECT COUNT(*) FROM ${table} WHERE company_id IS NULL`);
+      const { rowCount } = await client.query(
+        `UPDATE ${table} SET company_id = $1 WHERE company_id IS NULL`,
+        [companyId]
+      );
+      console.log(`  ${table}: ${rowCount}건 백필 (백필 전 NULL ${before.rows[0].count}건)`);
+    }
+    await client.query("COMMIT");
+  } catch (e) {
+    await client.query("ROLLBACK");
+    console.error("\n백필 실패 — 트랜잭션 전체(회사 생성 포함) 롤백됨, 고아 데이터 없음:", e.message);
+    throw e;
+  } finally {
+    client.release();
   }
 
   console.log("\n백필 후 잔여 NULL 확인 (전부 0이어야 안전):");
