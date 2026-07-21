@@ -1442,6 +1442,13 @@ app.post("/api/companies/register", registerLimiter, async (req, res) => {
       res.json({
         ok: true,
         company: { id: company.id, slug: company.slug, name: company.name, status: company.status },
+        // companyCode를 최상위 필드로도 함께 내려준다 — 클라이언트(public/index.html의
+        // submitCompanyRegister(), 별도 세션에서 동시 구현됨)가 응답의 slug를 그대로
+        // 안내하는 대신 계획 문서 필드명 그대로 r.companyCode를 읽어 로컬 캐시(다음
+        // 로그인 화면에 자동 채움)에 저장하도록 이미 작성돼 있어, company.slug 하나만
+        // 내려주면 회사명에서 자동 생성됐거나(-2 접미사 등) 사용자가 입력한 것과 실제
+        // 배정된 코드가 달라졌을 때 사용자가 그 코드를 알 방법이 없어진다.
+        companyCode: company.slug,
         employee: omitPw(adminEmp),
         token,
       });
