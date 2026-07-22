@@ -19,6 +19,15 @@ final class HRDataStore: ObservableObject {
     private var inFlightReload: Task<Void, Never>?
     private var inFlightSave: Task<Bool, Never>?
 
+    /// 직전에 데이터를 불러온 토큰. 로그인 토큰은 로그아웃 후 재로그인·다른 회사로 로그인
+    /// 등 세션이 바뀔 때마다 매번 새로 발급되므로(같은 계정이어도 `iat`가 달라 문자열이
+    /// 바뀐다), "토큰이 이전과 다르다"는 곧 "새 세션(회사) 시작"과 같은 뜻으로 쓴다.
+    private var loadedToken: String?
+    /// `reset()`을 부를 때마다 증가한다 — 리셋 시점에 이미 날아가 있던(이전 회사 세션의)
+    /// reload/save 응답이 나중에 도착해도, 그 응답을 만든 시점의 세대와 지금 세대가 다르면
+    /// 버려서 `raw`에 절대 반영되지 않도록 막는다.
+    private var generation = 0
+
     // MARK: - 읽기 전용 타입 뷰
 
     var employees: [Employee] { decodeArray("employees") }
@@ -26,6 +35,22 @@ final class HRDataStore: ObservableObject {
     var approvalDocs: [ApprovalDocSummary] { decodeArray("approvalDocs") }
     var expenseClaims: [ExpenseClaim] { decodeArray("expenseClaims") }
     var kpiEntries: [KPIEntry] { decodeArray("kpiEntries") }
+
+    // MARK: - 회사/세션 전환 시 로컬 캐시 초기화
+    // 서버의 멀티테넌시 구현에 컬렉션별 회사 필터링이 빠져있는 경우가 실측으로 확인된 바
+    // 있어(README "알려진 한계" 참고), 클라이언트 쪽에서도 이전 회사 세션의 `raw`(직원목록·
+    // 예약·게시글 등 서버가 내려준 모든 배열)가 한 순간이라도 새 회사 세션에 남아있지 않도록
+    // 방어적으로 완전히 비운다.
+    private func reset() {
+        generation += 1
+        inFlightReload = nil
+        inFlightSave = nil
+        raw = [:]
+        version = 0
+        lastLoadedAt = nil
+        lastError = nil
+        isLoading = false
+    }
 
     // MARK: - 불러오기 / 저장
 
@@ -38,17 +63,28 @@ final class HRDataStore: ObservableObject {
             return
         }
         guard let token = session.token else { return }
+        if loadedToken != token {
+            // 로그아웃 후 재로그인(같은 회사든 다른 회사든) — 토큰이 바뀌었다는 것 자체가
+            // 새 세션이 시작됐다는 뜻이므로, 이전 세션의 로컬 캐시를 먼저 완전히 비운 뒤에
+            // 새 데이터를 받아온다. 단순 새로고침(pull-to-refresh 등)은 토큰이 그대로라
+            // 이 분기를 타지 않아 화면이 비었다가 다시 채워지는 깜빡임도 없다.
+            reset()
+            loadedToken = token
+        }
+        let myGeneration = generation
         let task = Task<Void, Never> {
             self.isLoading = true
             self.lastError = nil
             defer { self.isLoading = false }
             do {
                 let result = try await client.fetchData(token: token)
+                guard self.generation == myGeneration else { return }
                 self.raw = result.data
                 self.version = result.version
                 self.lastLoadedAt = Date()
                 session.restoreEmployee(from: self.employees)
             } catch {
+                guard self.generation == myGeneration else { return }
                 if case APIError.serverError(401, _) = error {
                     session.handleUnauthorized()
                 } else {
@@ -74,12 +110,17 @@ final class HRDataStore: ObservableObject {
             return await save(client: client, session: session)
         }
         guard let token = session.token else { return false }
+        let myGeneration = generation
         let task = Task<Bool, Never> {
             self.isLoading = true
             self.lastError = nil
             defer { self.isLoading = false }
             do {
                 let result = try await client.saveData(self.raw, version: self.version, token: token)
+                // 저장 응답이 도착하기 전에 로그아웃→다른 회사 재로그인 등으로 세션이
+                // 바뀌었다면(reset() 호출됨) 이 응답은 이미 지나간 세션 것이므로 버린다 —
+                // 그대로 반영하면 새 회사 세션에 이전 회사의 저장 결과가 섞여 들어간다.
+                guard self.generation == myGeneration else { return false }
                 self.version = result.version
                 if result.merged, let mergedData = result.mergedData {
                     // 서버가 저장 시점 기준 최신 상태와 병합했다는 뜻 — 로컬 raw를 그 결과로
@@ -89,6 +130,7 @@ final class HRDataStore: ObservableObject {
                 }
                 return true
             } catch {
+                guard self.generation == myGeneration else { return false }
                 if case APIError.serverError(401, _) = error {
                     session.handleUnauthorized()
                 } else {
