@@ -4352,7 +4352,13 @@ async function _ocrPdfBuffer(buffer) {
   const pagePrefix = path.join(tmpDir, "page");
   try {
     await fs.promises.writeFile(pdfPath, buffer);
-    await execFileP("pdftoppm", ["-png", "-r", "200", "-l", "8", pdfPath, pagePrefix]);
+    // 4페이지 → 2페이지로 제한(해상도는 200dpi 유지) — Render Free 플랜(0.1 CPU)에서
+    // 8페이지는 실측 60초 이상 걸려 클라이언트/플랫폼 타임아웃으로 응답 자체가
+    // 유실된다(2026-07-22 Docker 런타임 전환 후 실측 확인). 처음엔 dpi를 150으로
+    // 낮춰봤으나 속도 개선은 미미한 반면(페이지 수가 진짜 원인) 이메일 등 작은
+    // 글자의 OCR 정확도가 떨어져(예: "artvita@naver.com"이 "artvita@na"로 잘림)
+    // 200dpi 그대로 두고 페이지 수만 줄이는 쪽으로 확정했다(실측 4~5초로 충분히 빠름).
+    await execFileP("pdftoppm", ["-png", "-r", "200", "-l", "2", pdfPath, pagePrefix]);
     const files = (await fs.promises.readdir(tmpDir)).filter(f => f.startsWith("page") && f.endsWith(".png")).sort();
     const texts = [];
     for (const f of files) texts.push(await execFileP("tesseract", [path.join(tmpDir, f), "stdout", "-l", "kor+eng"]));
@@ -4363,7 +4369,8 @@ async function _ocrPdfBuffer(buffer) {
 }
 async function _ocrPdfPages(buffer, lastPage) {
   // 마스킹된 인쇄용 PDF 보강 OCR — 연락처·회사명이 이미지로만 렌더링된 경우 사용.
-  // 회사명은 경력사항이 이어지는 2페이지 이후에도 나오므로 앞쪽 여러 페이지를 처리한다.
+  // 페이지 수/해상도 선택 이유는 위 _ocrPdfBuffer 주석 참고 — 200dpi 유지, 호출부에서
+  // lastPage를 2로 줄여 Render Free 플랜(0.1 CPU)에서도 타임아웃 없이 완료되게 한다.
   const execFileP = _execFileP;
   const tmpDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "resume-ocr1-"));
   const pdfPath = path.join(tmpDir, "in.pdf");
@@ -4400,13 +4407,16 @@ app.post("/api/recruit/extract-pdf-text", async (req, res) => {
     } else {
       // 텍스트 레이어는 있지만 연락처(휴대폰/이메일)가 없는 경우 — 잡코리아 등
       // 채용 사이트 인쇄용 PDF는 개인정보(연락처)와 회사명을 이미지로만 렌더링하므로
-      // 텍스트 추출로는 절대 나오지 않는다. 이때 앞 4페이지를 OCR해 보강 섹션으로 첨부한다.
-      // (프론트엔드 파서는 이 섹션에서 연락처를 찾고, 회사명이 빈 경력 항목을 채운다)
+      // 텍스트 추출로는 절대 나오지 않는다. 이때 앞 2페이지를 OCR해 보강 섹션으로 첨부한다
+      // (프론트엔드 파서는 이 섹션에서 연락처를 찾고, 회사명이 빈 경력 항목을 채운다).
+      // 연락처는 사실상 항상 1페이지에 있어 2페이지로도 충분하고, 4페이지는 Render
+      // Free 플랜(0.1 CPU)에서 타임아웃으로 응답이 통째로 유실되는 위험이 더 컸다
+      // (아래 _ocrPdfPages 주석 참고).
       const hasPhone = /01[0-9][-.\s]{0,2}\d{3,4}[-.\s]{0,2}\d{4}/.test(text);
       const hasEmail = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/.test(text);
       if (!hasPhone || !hasEmail) {
         try {
-          const ocrText = await _ocrPdfPages(buffer, 4);
+          const ocrText = await _ocrPdfPages(buffer, 2);
           if (ocrText && ocrText.trim()) text += "\n\n[OCR 보강 텍스트]\n" + ocrText;
         } catch (e) { /* OCR 도구 미설치 등 — 텍스트 추출 결과만 반환 */ }
       }

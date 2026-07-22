@@ -16705,7 +16705,7 @@ function _rcProcessResumeFile(file){
     const nameEl=document.getElementById("rc-resume-name");if(nameEl)nameEl.textContent=file.name;
     if(endpoint){
       try{
-        const r=await serverRequest("POST",endpoint,{dataUrl:reader.result,role:currentUser.role},30000);
+        const r=await serverRequest("POST",endpoint,{dataUrl:reader.result,role:currentUser.role},60000);
         if(!r?.ok){
           showToast(r?.message||"이력서 텍스트 추출에 실패했습니다.","error");
           _rcApplyParsedResume("",file);
@@ -16803,7 +16803,7 @@ function _rceReadResume(input,id){
     const nameEl=document.getElementById("rce-resume-name");if(nameEl)nameEl.textContent=file.name;
     if(endpoint){
       try{
-        const r=await serverRequest("POST",endpoint,{dataUrl:reader.result,role:currentUser.role},30000);
+        const r=await serverRequest("POST",endpoint,{dataUrl:reader.result,role:currentUser.role},60000);
         if(!r?.ok){showToast(r?.message||"이력서 텍스트 추출에 실패했습니다.","error");_rceApplyParsedResume("");return;}
         const txt=String(r.text||"");
         if(txt.trim().length<20){showToast(r.message||"이 파일에서 텍스트를 추출할 수 없습니다. 정보를 직접 입력해주세요.","error");}
