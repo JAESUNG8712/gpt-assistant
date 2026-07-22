@@ -88,6 +88,28 @@ DO $$ BEGIN
     ALTER TABLE employees ADD CONSTRAINT employees_company_id_fkey FOREIGN KEY (company_id) REFERENCES companies(id);
   END IF;
 END $$;
+-- app_collections/app_singletons의 복합 PK 전환과 동일한 이유·동일한 패턴 — 백필(scripts/
+-- migrate-add-company-id.js)이 끝나 company_id IS NULL인 행이 0건일 때만 NOT NULL로 승격한다.
+-- 이 제약이 없으면 company_id IS NULL인 행이 (company_id = $N OR $N IS NULL) 형태의 레거시
+-- 호환 폴백을 쓰는 조회 곳곳(server.js)에서 모든 회사에 조용히 노출될 수 있다. 과거엔 이
+-- 제약을 운영 DB에 수동 SQL로만 걸어 schema.sql과 실제 운영 스키마가 어긋난 적이 있었다
+-- (2026-07-22 디스크 장애 대응 기록 참고) — 재해복구/신규설치 경로에서도 항상 자동으로
+-- 걸리도록 여기 코드화한다.
+DO $$
+DECLARE remaining_null INTEGER;
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'employees' AND column_name = 'company_id' AND is_nullable = 'NO'
+  ) THEN
+    SELECT COUNT(*) INTO remaining_null FROM employees WHERE company_id IS NULL;
+    IF remaining_null = 0 THEN
+      ALTER TABLE employees ALTER COLUMN company_id SET NOT NULL;
+    ELSE
+      RAISE NOTICE 'employees: company_id IS NULL 인 행이 %건 남아있어 NOT NULL 제약을 건너뜁니다. scripts/migrate-add-company-id.js 백필 후 재기동하세요.', remaining_null;
+    END IF;
+  END IF;
+END $$;
 -- loginId는 employees.data JSONB 안에 있어(전용 컬럼 아님) 생성 컬럼으로 뽑아내 회사 단위
 -- 유일성 제약을 건다. 과거엔 warnDuplicateLoginIds()로 경고만 하고 실제 DB 제약이 없었다.
 ALTER TABLE employees ADD COLUMN IF NOT EXISTS login_id TEXT GENERATED ALWAYS AS (data->>'loginId') STORED;
@@ -115,6 +137,22 @@ DO $$ BEGIN
     ALTER TABLE employee_history ADD CONSTRAINT employee_history_company_id_fkey FOREIGN KEY (company_id) REFERENCES companies(id);
   END IF;
 END $$;
+-- employees의 NOT NULL 승격과 동일한 이유·동일한 패턴(위 주석 참고).
+DO $$
+DECLARE remaining_null INTEGER;
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'employee_history' AND column_name = 'company_id' AND is_nullable = 'NO'
+  ) THEN
+    SELECT COUNT(*) INTO remaining_null FROM employee_history WHERE company_id IS NULL;
+    IF remaining_null = 0 THEN
+      ALTER TABLE employee_history ALTER COLUMN company_id SET NOT NULL;
+    ELSE
+      RAISE NOTICE 'employee_history: company_id IS NULL 인 행이 %건 남아있어 NOT NULL 제약을 건너뜁니다. scripts/migrate-add-company-id.js 백필 후 재기동하세요.', remaining_null;
+    END IF;
+  END IF;
+END $$;
 
 -- ── KPI entries ───────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS kpi_entries (
@@ -137,6 +175,22 @@ DO $$ BEGIN
     ALTER TABLE kpi_entries ADD CONSTRAINT kpi_entries_company_id_fkey FOREIGN KEY (company_id) REFERENCES companies(id);
   END IF;
 END $$;
+-- employees의 NOT NULL 승격과 동일한 이유·동일한 패턴(위 주석 참고).
+DO $$
+DECLARE remaining_null INTEGER;
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'kpi_entries' AND column_name = 'company_id' AND is_nullable = 'NO'
+  ) THEN
+    SELECT COUNT(*) INTO remaining_null FROM kpi_entries WHERE company_id IS NULL;
+    IF remaining_null = 0 THEN
+      ALTER TABLE kpi_entries ALTER COLUMN company_id SET NOT NULL;
+    ELSE
+      RAISE NOTICE 'kpi_entries: company_id IS NULL 인 행이 %건 남아있어 NOT NULL 제약을 건너뜁니다. scripts/migrate-add-company-id.js 백필 후 재기동하세요.', remaining_null;
+    END IF;
+  END IF;
+END $$;
 
 CREATE TABLE IF NOT EXISTS kpi_history (
   history_id BIGSERIAL   PRIMARY KEY,
@@ -155,6 +209,22 @@ DO $$ BEGIN
   END IF;
 END $$;
 CREATE INDEX IF NOT EXISTS idx_kpi_hist_company_id ON kpi_history (company_id);
+-- employees의 NOT NULL 승격과 동일한 이유·동일한 패턴(위 주석 참고).
+DO $$
+DECLARE remaining_null INTEGER;
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'kpi_history' AND column_name = 'company_id' AND is_nullable = 'NO'
+  ) THEN
+    SELECT COUNT(*) INTO remaining_null FROM kpi_history WHERE company_id IS NULL;
+    IF remaining_null = 0 THEN
+      ALTER TABLE kpi_history ALTER COLUMN company_id SET NOT NULL;
+    ELSE
+      RAISE NOTICE 'kpi_history: company_id IS NULL 인 행이 %건 남아있어 NOT NULL 제약을 건너뜁니다. scripts/migrate-add-company-id.js 백필 후 재기동하세요.', remaining_null;
+    END IF;
+  END IF;
+END $$;
 
 -- ── Accounting: 계정과목 (chart of accounts) ──────────────────────────────────
 CREATE TABLE IF NOT EXISTS accounts (
