@@ -1560,6 +1560,62 @@ function requireMaster(req, res) {
 // /login과는 별도의 카운터를 쓴다(loginLimiter를 공유하면 같은 IP에서 회사 로그인
 // 실패를 반복한 사용자가 마스터 로그인 시도 자체를 못 하게 되는 등 서로 다른 두
 // 자격증명 체계의 실패가 하나의 카운터에 섞이는 게 부적절하다고 판단).
+// ── TEMPORARY — 오늘 잦은 회사코드 오타(printrobo 사고 등과 무관, 이번엔 "tirautech"를
+// "thirautech"로 바로잡는 요청)에 대응하기 위한 1회성 유틸리티. 이전 fix-company-name과
+// 동일한 보안 패턴(x-migration-secret 404 게이트). 완료 확인 즉시 제거할 것.
+app.post("/admin/fix-company-slug", async (req, res) => {
+  if (!process.env.MIGRATION_ADMIN_SECRET || req.headers["x-migration-secret"] !== process.env.MIGRATION_ADMIN_SECRET) {
+    return res.status(404).end();
+  }
+  const oldSlug = (req.body && req.body.oldSlug || "").trim();
+  const newSlug = (req.body && req.body.newSlug || "").trim();
+  if (!oldSlug || !newSlug) return res.status(400).json({ ok: false, message: "oldSlug, newSlug required" });
+  if (req.body.confirm !== true) return res.status(400).json({ ok: false, message: "confirm:true 가 명시적으로 필요합니다." });
+  try {
+    const dup = await pool.query(`SELECT 1 FROM companies WHERE slug = $1`, [newSlug]);
+    if (dup.rows.length) return res.status(409).json({ ok: false, message: `slug "${newSlug}" 는 이미 사용 중입니다.` });
+    const result = await pool.query(
+      `UPDATE companies SET slug = $1 WHERE slug = $2 RETURNING id, slug, name`,
+      [newSlug, oldSlug]
+    );
+    if (!result.rows.length) return res.status(404).json({ ok: false, message: "해당 slug의 회사를 찾을 수 없습니다." });
+    res.json({ ok: true, company: result.rows[0] });
+  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+});
+
+// ── TEMPORARY — 테넌트 격리 의심 사례(다른 회사 토큰으로 GET /data 호출 시
+// payrollAdjustments/boardPosts/roomReservations 등에 다른 회사 실데이터로 보이는 값이
+// 섞여 나온다는 사용자 제보) 진단용 읽기 전용 엔드포인트. app_collections는 오늘 복합 PK
+// (company_id, collection, id)로 전환 완료돼 company_id가 구조적으로 NULL일 수 없으므로,
+// 서버 조회 로직(엄격한 WHERE company_id=$1)이 실제로 다른 회사 행을 잘못 반환하는 건지,
+// 아니면 그 행 자체가 이미 (쓰기 시점에) 특정 회사 소유로 잘못 기록된 것인지(클라이언트가
+// 회사 전환 시 이전 회사의 로컬 캐시를 지우지 않고 재전송했을 가능성)를 실제 데이터로
+// 구분하기 위해 추가. 완료 확인 즉시 제거할 것.
+app.get("/admin/inspect-collection", async (req, res) => {
+  if (!process.env.MIGRATION_ADMIN_SECRET || req.headers["x-migration-secret"] !== process.env.MIGRATION_ADMIN_SECRET) {
+    return res.status(404).end();
+  }
+  const collection = req.query.collection;
+  if (!collection) return res.status(400).json({ ok: false, message: "collection required" });
+  try {
+    const { rows } = await pool.query(
+      `SELECT ac.id, ac.company_id, c.slug AS company_slug, c.name AS company_name,
+              ac.created_at, ac.updated_at, ac.data
+       FROM app_collections ac
+       LEFT JOIN companies c ON c.id = ac.company_id
+       WHERE ac.collection = $1
+       ORDER BY ac.updated_at DESC
+       LIMIT 200`,
+      [collection]
+    );
+    const nullCompanyCount = await pool.query(
+      `SELECT COUNT(*)::bigint AS c FROM app_collections WHERE collection = $1 AND company_id IS NULL`,
+      [collection]
+    );
+    res.json({ ok: true, collection, totalReturned: rows.length, nullCompanyIdCount: Number(nullCompanyCount.rows[0].c) || 0, rows });
+  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+});
+
 const masterLoginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 20,
