@@ -1606,6 +1606,31 @@ app.get("/admin/db-size-report", async (req, res) => {
   } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
 });
 
+// ── TEMPORARY — history-shrink-rebuild이 8996건짜리(수십 MB로 추정했던) employee_history를
+// CTAS 단계(락도 안 잡고 새 임시테이블에 데이터만 복사하는, 이론상 가장 작은 쓰기)에서조차
+// "No space left on device"로 실패시켜, 예상보다 훨씬 심각하게 디스크 여유가 0에 가까울
+// 가능성이 생겼다 — 정확한 원인 파악을 위한 읽기 전용 진단(락 없음, pg_column_size로
+// 실제 살아있는 행들의 순수 바이트 합만 계산, 파일 확장 없음). 완료 확인 즉시 제거할 것.
+app.get("/admin/table-live-bytes", async (req, res) => {
+  if (!process.env.MIGRATION_ADMIN_SECRET || req.headers["x-migration-secret"] !== process.env.MIGRATION_ADMIN_SECRET) {
+    return res.status(404).end();
+  }
+  const table = req.query.table;
+  if (!table || !/^[a-z_][a-z0-9_]*$/.test(table)) return res.status(400).json({ ok: false, message: "invalid table" });
+  try {
+    const existsRes = await pool.query(`SELECT 1 FROM pg_class WHERE relname = $1 AND relkind = 'r'`, [table]);
+    if (!existsRes.rows.length) return res.status(400).json({ ok: false, message: "table not found" });
+    const bytesRes = await pool.query(`SELECT count(*)::bigint AS row_count, COALESCE(sum(pg_column_size(t.*)),0)::bigint AS raw_bytes FROM ${table} t`);
+    const row = bytesRes.rows[0];
+    res.json({
+      ok: true, table,
+      rowCount: Number(row.row_count),
+      rawBytes: Number(row.raw_bytes),
+      rawSizePretty: `${(Number(row.raw_bytes) / 1024 / 1024).toFixed(2)} MB`,
+    });
+  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+});
+
 // ── TEMPORARY — employee_history/kpi_history가 6개월은커녕 한 달도 안 된 기간에 778MB로
 // 불어난 원인을 찾기 위한 읽기 전용 진단(위 미리보기가 days=180 기준 삭제 대상 0건으로
 // 나와, "오래된 것만 지우기" 전략 자체가 이번엔 안 맞는다는 게 드러난 뒤 추가). 날짜별
