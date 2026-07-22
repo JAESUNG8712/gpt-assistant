@@ -1581,6 +1581,27 @@ app.post("/admin/bootstrap-migrate", async (req, res) => {
   );
 });
 
+// ── TEMPORARY — bootstrap-migrate를 Windows PowerShell -Body 문자열 리터럴로 호출하면
+// 한글이 시스템 코드페이지로 깨져("????") DB에 그대로 들어간 사고가 반복 발생. 새 회사를
+// 다시 만들지 않고 회사명만 바로잡기 위한 1회성 유틸리티. 완료 확인 즉시 제거할 것.
+app.post("/admin/fix-company-name", async (req, res) => {
+  if (!process.env.MIGRATION_ADMIN_SECRET || req.headers["x-migration-secret"] !== process.env.MIGRATION_ADMIN_SECRET) {
+    return res.status(404).end();
+  }
+  const slug = (req.body && req.body.slug || "").trim();
+  const name = (req.body && req.body.name || "").trim();
+  if (!slug || !name) return res.status(400).json({ ok: false, message: "slug, name required" });
+  if (req.body.confirm !== true) return res.status(400).json({ ok: false, message: "confirm:true 가 명시적으로 필요합니다." });
+  try {
+    const result = await pool.query(
+      `UPDATE companies SET name = $1 WHERE slug = $2 RETURNING id, slug, name`,
+      [name, slug]
+    );
+    if (!result.rows.length) return res.status(404).json({ ok: false, message: "해당 slug의 회사를 찾을 수 없습니다." });
+    res.json({ ok: true, company: result.rows[0] });
+  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+});
+
 // ── TEMPORARY — 위 /admin/bootstrap-migrate와 같은 이유·같은 보안 패턴, 완료 확인 즉시
 // 이 블록도 함께 제거할 것. 운영 DB가 디스크 용량 부족(53100 disk_full)으로 백필 자체가
 // 실패해(트랜잭션 롤백돼 데이터 손상은 없음) 무엇이 공간을 차지하고 있는지 읽기 전용으로
