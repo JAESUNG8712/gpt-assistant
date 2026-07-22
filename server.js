@@ -1631,6 +1631,26 @@ app.get("/admin/table-live-bytes", async (req, res) => {
   } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
 });
 
+// ── TEMPORARY — 위 진단 결과 employee_history의 실제 필요 용량(12.76MB)조차 CTAS가
+// 감당 못 해, 디스크 여유가 그보다도 훨씬 적을 가능성이 확인됐다. 정확한 하한선을 알기
+// 위해 진짜로 최소 단위(1행, 8KB짜리 새 페이지 1장)조차 쓸 수 있는지 확인하는 극단적으로
+// 작은 쓰기 테스트 — 성공하면 즉시 DROP으로 원상복구한다. 완료 확인 즉시 제거할 것.
+app.post("/admin/disk-headroom-probe", async (req, res) => {
+  if (!process.env.MIGRATION_ADMIN_SECRET || req.headers["x-migration-secret"] !== process.env.MIGRATION_ADMIN_SECRET) {
+    return res.status(404).end();
+  }
+  const tmpName = "_disk_headroom_probe_tmp";
+  try {
+    await pool.query(`DROP TABLE IF EXISTS ${tmpName}`);
+    await pool.query(`CREATE TABLE ${tmpName} (x INT)`);
+    await pool.query(`INSERT INTO ${tmpName} VALUES (1)`);
+    await pool.query(`DROP TABLE ${tmpName}`);
+    res.json({ ok: true, message: "최소 단위(1행) 쓰기 성공 — 디스크에 최소한의 여유는 있음" });
+  } catch (e) {
+    res.status(500).json({ ok: false, message: e.message, note: "이것마저 실패하면 디스크 여유가 사실상 0바이트" });
+  }
+});
+
 // ── TEMPORARY — employee_history/kpi_history가 6개월은커녕 한 달도 안 된 기간에 778MB로
 // 불어난 원인을 찾기 위한 읽기 전용 진단(위 미리보기가 days=180 기준 삭제 대상 0건으로
 // 나와, "오래된 것만 지우기" 전략 자체가 이번엔 안 맞는다는 게 드러난 뒤 추가). 날짜별
