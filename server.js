@@ -1606,6 +1606,118 @@ app.get("/admin/db-size-report", async (req, res) => {
   } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
 });
 
+// ── TEMPORARY — 위 진단 엔드포인트로 확인된 디스크 부족 원인(employee_history/kpi_history
+// 두 감사이력 테이블이 전체 용량의 97%)을 해소하기 위한 이력 정리 3단계, 전부 완료 확인
+// 즉시 이 블록 전체를 제거할 것. 사용자 요구사항: "삭제하기 전에 내용 확인 후 진행" —
+// 그래서 미리보기(읽기전용) → 백업 다운로드(읽기전용) → 실행(명시적 승인 필요) 3단계로
+// 분리했다. 실행 단계도 오래된 이력만 지우고 employees/kpi_entries 등 실제 현재 데이터는
+// 전혀 건드리지 않는다 — employee_history/kpi_history는 "현재 값"이 아니라 "누가 언제
+// 뭘 바꿨는지"의 감사로그일 뿐이고, 현재 값은 employees/kpi_entries 테이블에 항상
+// 별도로 보존된다.
+const HISTORY_CLEANUP_TABLES = {
+  employee_history: { idCol: "history_id", tsCol: "changed_at" },
+  kpi_history:       { idCol: "history_id", tsCol: "changed_at" },
+};
+
+// GET /admin/history-cleanup-preview?days=180 — 읽기 전용. 지정 일수보다 오래된 이력이
+// 테이블별로 몇 건/어느 기간인지, 전체 대비 몇 %인지 보여준다. 여러 days 값으로 반복
+// 호출해 기준을 비교해볼 수 있다.
+app.get("/admin/history-cleanup-preview", async (req, res) => {
+  if (!process.env.MIGRATION_ADMIN_SECRET || req.headers["x-migration-secret"] !== process.env.MIGRATION_ADMIN_SECRET) {
+    return res.status(404).end();
+  }
+  try {
+    const days = Math.max(1, parseInt(req.query.days, 10) || 180);
+    const result = { ok: true, cutoffDays: days, tables: {} };
+    for (const [table, { tsCol }] of Object.entries(HISTORY_CLEANUP_TABLES)) {
+      const [{ rows: rangeRows }, { rows: oldRows }, { rows: sizeRows }] = await Promise.all([
+        pool.query(`SELECT MIN(${tsCol}) AS earliest, MAX(${tsCol}) AS latest FROM ${table}`),
+        pool.query(`SELECT COUNT(*)::bigint AS old_count, MIN(${tsCol}) AS oldest_deleted, MAX(${tsCol}) AS newest_deleted FROM ${table} WHERE ${tsCol} < now() - ($1 || ' days')::interval`, [days]),
+        pool.query(`SELECT pg_total_relation_size($1::regclass) AS total_bytes, (SELECT reltuples::bigint FROM pg_class WHERE relname = $1::name) AS approx_total_rows`, [table]),
+      ]);
+      const totalBytes = Number(sizeRows[0].total_bytes) || 0;
+      const approxTotalRows = Number(sizeRows[0].approx_total_rows) || 0;
+      const oldCount = Number(oldRows[0].old_count) || 0;
+      const estFreedBytes = approxTotalRows > 0 ? Math.round(totalBytes * (oldCount / approxTotalRows)) : 0;
+      result.tables[table] = {
+        earliestOverall: rangeRows[0].earliest, latestOverall: rangeRows[0].latest,
+        oldCount, oldestDeleted: oldRows[0].oldest_deleted, newestDeleted: oldRows[0].newest_deleted,
+        currentTotalSize: `${(totalBytes / 1024 / 1024).toFixed(1)} MB`,
+        estimatedSpaceFreed: `${(estFreedBytes / 1024 / 1024).toFixed(1)} MB`,
+      };
+    }
+    res.json(result);
+  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+});
+
+// GET /admin/history-export?secret=...&table=employee_history&days=180 — 읽기 전용, 실제로
+// 삭제될 행들을 NDJSON 파일로 스트리밍 다운로드(삭제 전 백업). PowerShell/curl이 아니라
+// 사용자가 이 URL을 직접 브라우저 주소창에 입력해서(다운로드는 브라우저가 처리하는 게
+// 훨씬 안정적 — 대용량 스트리밍이라) 받도록 설계했다. 그래서 이 엔드포인트만 예외적으로
+// 시크릿을 헤더가 아니라 쿼리스트링으로도 허용한다(브라우저 주소창은 커스텀 헤더를
+// 못 붙이므로). 커서 기반 페이지네이션으로 서버 메모리에 전체를 한 번에 올리지 않는다.
+app.get("/admin/history-export", async (req, res) => {
+  const secret = req.headers["x-migration-secret"] || req.query.secret;
+  if (!process.env.MIGRATION_ADMIN_SECRET || secret !== process.env.MIGRATION_ADMIN_SECRET) {
+    return res.status(404).end();
+  }
+  const table = req.query.table;
+  const cfg = HISTORY_CLEANUP_TABLES[table];
+  if (!cfg) return res.status(400).json({ ok: false, message: "table must be employee_history or kpi_history" });
+  const days = Math.max(1, parseInt(req.query.days, 10) || 180);
+  res.setHeader("Content-Type", "application/x-ndjson; charset=utf-8");
+  res.setHeader("Content-Disposition", `attachment; filename="${table}-backup-before-${days}d-cutoff.ndjson"`);
+  try {
+    let lastId = 0;
+    const batchSize = 2000;
+    let totalWritten = 0;
+    for (;;) {
+      const { rows } = await pool.query(
+        `SELECT * FROM ${table} WHERE ${cfg.tsCol} < now() - ($1 || ' days')::interval AND ${cfg.idCol} > $2 ORDER BY ${cfg.idCol} ASC LIMIT $3`,
+        [days, lastId, batchSize]
+      );
+      if (!rows.length) break;
+      for (const row of rows) res.write(JSON.stringify(row) + "\n");
+      totalWritten += rows.length;
+      lastId = rows[rows.length - 1][cfg.idCol];
+      if (rows.length < batchSize) break;
+    }
+    res.end();
+  } catch (e) {
+    // 스트리밍 중간에 헤더가 이미 나갔을 수 있어 res.status()를 쓸 수 없는 경우를 대비
+    try { res.write(`\n// EXPORT ERROR: ${e.message}\n`); } catch {}
+    res.end();
+  }
+});
+
+// POST /admin/history-cleanup-execute — {days, confirm:true, table}. 반드시 confirm:true를
+// 명시해야 동작(실수 방지). 오래된 행을 DELETE한 뒤 VACUUM FULL로 실제 디스크 공간을
+// OS에 반환한다(일반 DELETE+VACUUM은 그 테이블 안에서만 재사용 가능한 빈 공간이 될 뿐
+// 실제 파일 크기가 줄지 않아 "디스크 꽉 참" 자체는 해결이 안 됨 — VACUUM FULL이 테이블을
+// 통째로 다시 써서 파일을 축소해야 다른 테이블도 쓸 수 있는 공간이 실제로 생긴다).
+// VACUUM은 트랜잭션 블록 안에서 실행할 수 없어 DELETE와 별개의 문장으로 실행한다.
+app.post("/admin/history-cleanup-execute", async (req, res) => {
+  if (!process.env.MIGRATION_ADMIN_SECRET || req.headers["x-migration-secret"] !== process.env.MIGRATION_ADMIN_SECRET) {
+    return res.status(404).end();
+  }
+  const table = req.body && req.body.table;
+  const days = Math.max(1, parseInt(req.body && req.body.days, 10) || 180);
+  const cfg = HISTORY_CLEANUP_TABLES[table];
+  if (!cfg) return res.status(400).json({ ok: false, message: "table must be employee_history or kpi_history" });
+  if (req.body.confirm !== true) return res.status(400).json({ ok: false, message: "confirm:true 가 명시적으로 필요합니다(실수 방지)." });
+  try {
+    const before = await pool.query(`SELECT pg_total_relation_size($1) AS bytes`, [table]);
+    const del = await pool.query(`DELETE FROM ${table} WHERE ${cfg.tsCol} < now() - ($1 || ' days')::interval`, [days]);
+    await pool.query(`VACUUM (FULL, ANALYZE) ${table}`);
+    const after = await pool.query(`SELECT pg_total_relation_size($1) AS bytes`, [table]);
+    res.json({
+      ok: true, table, days, deletedRows: del.rowCount,
+      sizeBefore: `${(Number(before.rows[0].bytes) / 1024 / 1024).toFixed(1)} MB`,
+      sizeAfter: `${(Number(after.rows[0].bytes) / 1024 / 1024).toFixed(1)} MB`,
+    });
+  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+});
+
 // /login과 동일한 이유로 전용 rate limiter가 필요하다(이 라우트도 항상 HTTP 200으로
 // 응답하고 성공/실패는 JSON body의 `ok`로만 구분하므로, express-rate-limit의 기본
 // 성공 판정(statusCode<400)을 그대로 쓰면 브루트포스 방어가 무력화된다 — /login에 있는
