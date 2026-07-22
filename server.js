@@ -1602,6 +1602,34 @@ app.post("/admin/fix-company-name", async (req, res) => {
   } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
 });
 
+// ── TEMPORARY — scripts/migrate-add-company-id.js가 백필 완료 후 안내한 안전장치.
+// company_id 백필(NULL 잔여 0건 확인됨)이 끝난 뒤 이 4개 테이블에 NOT NULL 제약을 걸어
+// 이후 실수로 company_id 없는 행이 들어가는 것을 DB 차원에서 막는다. 완료 확인 즉시
+// 제거할 것.
+app.post("/admin/finalize-company-not-null", async (req, res) => {
+  if (!process.env.MIGRATION_ADMIN_SECRET || req.headers["x-migration-secret"] !== process.env.MIGRATION_ADMIN_SECRET) {
+    return res.status(404).end();
+  }
+  if (req.body.confirm !== true) return res.status(400).json({ ok: false, message: "confirm:true 가 명시적으로 필요합니다." });
+  const tables = ["employees", "kpi_entries", "employee_history", "kpi_history"];
+  const results = [];
+  for (const table of tables) {
+    try {
+      const nullCheck = await pool.query(`SELECT COUNT(*)::bigint AS c FROM ${table} WHERE company_id IS NULL`);
+      const nullCount = Number(nullCheck.rows[0].c) || 0;
+      if (nullCount > 0) {
+        results.push({ table, ok: false, message: `company_id NULL ${nullCount}건 남아있음 — 제약 미적용` });
+        continue;
+      }
+      await pool.query(`ALTER TABLE ${table} ALTER COLUMN company_id SET NOT NULL`);
+      results.push({ table, ok: true });
+    } catch (e) {
+      results.push({ table, ok: false, message: e.message });
+    }
+  }
+  res.json({ ok: results.every(r => r.ok), results });
+});
+
 // ── TEMPORARY — 위 /admin/bootstrap-migrate와 같은 이유·같은 보안 패턴, 완료 확인 즉시
 // 이 블록도 함께 제거할 것. 운영 DB가 디스크 용량 부족(53100 disk_full)으로 백필 자체가
 // 실패해(트랜잭션 롤백돼 데이터 손상은 없음) 무엇이 공간을 차지하고 있는지 읽기 전용으로
