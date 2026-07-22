@@ -16092,8 +16092,12 @@ async function _rcRequestCompanySuggestions(taId,text){
   const ta=document.getElementById(taId);
   if(!ta||!text||text.trim().length<20)return;
   const rows=_careerStrToRows(ta.value);
-  const entries=rows.map((r,idx)=>({idx,period:r.period,duties:r.duties})).filter((e,idx)=>!rows[idx].company);
-  if(!entries.length)return;
+  if(!rows.some(r=>!r.company))return;
+  // 이미 채워진 회사명(정규식/OCR로 확정된 값)도 함께 보내 AI가 "이력서에 기재된 순서" 상의
+  // 위치를 앵커로 삼아 정렬하게 한다 — 빈 항목만 따로 떼어 보내면 AI가 원문 어디에 넣어야
+  // 할지 기준이 없어 엉뚱한 항목(발주처명, 인접 항목의 회사명 등)을 짝지어버리는 문제가 있었다.
+  const entries=rows.map((r,idx)=>({idx,period:r.period,duties:r.duties,company:r.company||""}));
+  if(!entries.some(e=>!e.company))return;
   try{
     const r=await serverRequest("POST","/api/recruit/suggest-career-companies",{text,entries},30000);
     if(!r?.ok||!Array.isArray(r.suggestions))return;
@@ -16279,8 +16283,13 @@ function _rcFillCompaniesFromOcr(entries,ocrText){
       const m=lines[i].match(rangeRe);
       if(!m)continue;
       if(normDate(m[1]+m[2])!==es||normDate(m[3]+m[4])!==ee)continue;
-      // ① 기간이 있는 줄 자체에서 회사명 추출 → ② 인접 줄(±1, ±2) 순으로 시도
-      const cand=_rcCompanyFromOcrLine(lines[i])||_rcCompanyFromOcrLine(lines[i-1]||"")||_rcCompanyFromOcrLine(lines[i+1]||"")||_rcCompanyFromOcrLine(lines[i-2]||"")||_rcCompanyFromOcrLine(lines[i+2]||"");
+      // 기간이 적힌 줄 "자체"에서만 회사명을 추출한다(과거엔 ±1·±2 인접 줄도 시도했으나,
+      // 다단 표 레이아웃이 OCR로 한 줄씩 풀리면서 재직기간들이 한데 뭉치고 회사명·업무는
+      // 별도 블록으로 떨어져 나가는 이력서가 실측 확인됨 — 이런 경우 인접 줄 추측이
+      // 엉뚱한 항목의 회사명(또는 업무 문장 속 발주처명)을 잘못 붙여버려 "확정값"처럼
+      // 보이는 오답을 만들었다. 같은 줄 매칭만 허용하고, 못 찾으면 빈칸으로 남겨
+      // AI 추정(사람이 클릭해 승인) 단계로 넘긴다 — 틀린 확정값보다 빈칸이 안전하다.
+      const cand=_rcCompanyFromOcrLine(lines[i]);
       if(cand){e.company=cand;break;}
     }
   });
