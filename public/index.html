@@ -16726,11 +16726,23 @@ function _rcMergeLlmFields(parsed,details,llmFields){
     // "충남대학교"→"중남대학교") 이미 정확했던 정규식 결과를 AI가 무조건 덮어쓰면
     // 오히려 더 나쁜 값으로 바뀌는 문제가 있었다(2026-07-22 실운영 확인). AI는
     // 정규식이 못 찾은 빈 항목만 보완한다.
-    ["finalEducation","careerHistory","lastSalary","desiredSalary","activities","careerGaps","resumeSummary"].forEach(k=>{
+    ["finalEducation","lastSalary","desiredSalary","activities","careerGaps","resumeSummary"].forEach(k=>{
       if(String(merged[k]||"").trim())return;
       const v=String(llmFields[k]||"").trim();
       if(v)merged[k]=v;
     });
+    // careerHistory는 회사명이 포함된 구조화 데이터라 다른 필드와 다르게 취급한다.
+    // AI가 지어낸 회사명이 사람 확인 없이 "확정값"으로 들어가면 회사명 AI추정
+    // 기능(_rcRequestCompanySuggestions)에 적용한 것과 동일한 위험(발주처/고객사
+    // 혼동, 순서 오정렬)이 재현될 수 있어, 회사명만 비운 채로 채우고(기간/직급/
+    // 업무는 유지) 렌더링 이후 클릭-승인 절차를 그대로 타게 한다(2026-07-22).
+    if(!String(merged.careerHistory||"").trim()){
+      const v=String(llmFields.careerHistory||"").trim();
+      if(v){
+        const rows=_careerStrToRows(v).map(r=>({...r,company:""}));
+        merged.careerHistory=_careerRowsToStr(rows);
+      }
+    }
     ["name","email","phone"].forEach(k=>{
       if(String(p[k]||"").trim())return;
       const v=String(llmFields[k]||"").trim();
