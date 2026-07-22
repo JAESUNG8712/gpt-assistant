@@ -4945,18 +4945,11 @@ function renderLogin(){
         <div class="fg"><label class="fl">비밀번호</label><input class="fc" id="l-pw" type="password" placeholder="비밀번호 입력" autocomplete="current-password" onkeydown="if(event.key==='Enter')doLogin()"></div>
         <button class="btn btn-primary btn-lg" style="width:100%;justify-content:center;margin-bottom:14px" onclick="doLogin()">로그인</button>
         ${serverConfig.url ? `<div class="login-alt-action" style="text-align:center;margin-bottom:14px"><a href="javascript:void(0)" class="fz12" onclick="openCompanyRegisterModal()" style="color:#2563eb;font-weight:600;text-decoration:none">회사가 처음이신가요? 회사 만들기</a></div>` : ""}
-        ${window._isSharedDeployLink ? "" : `<div class="login-quick">
-          <p class="fz11 fw6 mb2">빠른 로그인 (샘플 계정)</p>
-          <div class="test-accs">
-            ${[{r:"관리자",i:"admin",p:"admin"}].map(a=>`<div class="ta-btn" onclick="setLogin('${a.i}','${a.p}')"><div class="ta-role">${a.r}</div><div class="ta-id">${a.i}</div></div>`).join("")}
-          </div>
-        </div>`}
         ${_demoMode ? `<div class="login-demo-note"><strong>🔍 데모 모드</strong>서버 없이 브라우저에서 바로 사용합니다.<br>변경 내용은 이 기기에 자동 저장됩니다.</div>` : ""}
       </div>
     </div>
   `;
 }
-function setLogin(id,pw){const li=$("#l-id"),lp=$("#l-pw");if(li)li.value=id;if(lp)lp.value=pw;}
 function _completeLogin(emp){
   const wrap=document.getElementById("login-wrap");if(wrap)wrap.style.display="none";
   currentUser=emp;currentPage="dashboard";myKpiYear=settings.evalYear;
