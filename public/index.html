@@ -16067,6 +16067,79 @@ function _careerSortRows(rows){
     return (db?db.t:0)-(da?da.t:0);
   });
 }
+// 재직기간("YYYY.MM~YYYY.MM"/"YYYY.MM~현재")으로부터 근속개월수를 계산한다.
+// 원본 이력서(잡코리아/사람인)가 표기하는 "N년 N개월"과 정확히 맞아떨어지도록
+// 시작월을 포함해서 세는(inclusive) 방식을 쓴다 — 예) 2015.10~2025.08은
+// (2025-2015)*12+(08-10)+1=119개월=9년11개월, 실제 원본 표기와 일치함을 확인했다.
+function _rcCareerMonths(period){
+  const m=String(period||"").match(/^(.+?)\s*~\s*(.+)$/);
+  if(!m)return null;
+  const s=_rcParseDateLoose(m[1]);
+  if(!s)return null;
+  let e;
+  if(/현재|재직중|진행중/.test(m[2])){const now=new Date();e={y:now.getFullYear(),mo:now.getMonth()+1};}
+  else e=_rcParseDateLoose(m[2]);
+  if(!e)return null;
+  const months=(e.y-s.y)*12+(e.mo-s.mo)+1;
+  return months>0?months:null;
+}
+function _rcFormatDuration(months){
+  if(months==null||months<=0)return"";
+  const y=Math.floor(months/12),mo=months%12;
+  if(y&&mo)return`${y}년 ${mo}개월`;
+  if(y)return`${y}년`;
+  return`${mo}개월`;
+}
+// 회사명이 빈 경력 항목에 한해 AI 추정 회사명을 물어보고, 입력칸에 절대 자동으로
+// 채우지 않고 "AI 추정: XXX (클릭하여 적용)" placeholder로만 보여준다 — 사람이 그
+// 칸을 클릭해야 실제 값이 된다(_rcApplyCompanySuggestion). 정규식/OCR 좌표 매칭과
+// 달리 AI는 확신이 없어도 그럴듯한 값을 지어낼 위험이 있어, 빈칸을 자동으로
+// 덮어쓰는 대신 사람의 최종 승인을 거치도록 설계했다(2026-07-22).
+async function _rcRequestCompanySuggestions(taId,text){
+  const ta=document.getElementById(taId);
+  if(!ta||!text||text.trim().length<20)return;
+  const rows=_careerStrToRows(ta.value);
+  const entries=rows.map((r,idx)=>({idx,period:r.period,duties:r.duties})).filter((e,idx)=>!rows[idx].company);
+  if(!entries.length)return;
+  try{
+    const r=await serverRequest("POST","/api/recruit/suggest-career-companies",{text,entries},30000);
+    if(!r?.ok||!Array.isArray(r.suggestions))return;
+    r.suggestions.forEach(s=>{
+      const company=String(s?.company||"").trim();
+      if(!company)return;
+      const input=document.getElementById(`${taId}-company-${s.idx}`);
+      if(!input||input.value.trim())return; // 그 사이 다른 값이 채워졌으면 건드리지 않음
+      input.dataset.suggestion=company;
+      input.placeholder=`AI 추정: ${company} (클릭하여 적용)`;
+      input.style.background="#fef9c3";
+      input.title="AI가 추정한 값입니다. 원문과 대조 후 클릭해서 적용하세요.";
+    });
+  }catch(e){ /* 실패해도 조용히 무시 — 빈칸은 그대로 담당자가 직접 채우면 된다 */ }
+}
+function _rcApplyCompanySuggestion(input){
+  if(!input||input.value.trim())return;
+  const sug=input.dataset.suggestion;
+  if(!sug)return;
+  input.value=sug;
+  delete input.dataset.suggestion;
+  input.style.background="";
+  input.placeholder="";
+  const taId=input.id.replace(/-company-\d+$/,"");
+  _syncCareerTable(taId);
+}
+function _rcUpdateCareerDurations(taId,rows){
+  const box=document.getElementById(taId+"-box");
+  if(!box)return;
+  let total=0;
+  rows.forEach((r,i)=>{
+    const months=_rcCareerMonths(r.period);
+    const el=document.getElementById(`${taId}-dur-${i}`);
+    if(el)el.textContent=months?_rcFormatDuration(months):"";
+    if(months)total+=months;
+  });
+  const totalEl=document.getElementById(taId+"-total");
+  if(totalEl)totalEl.textContent=total?`총 경력 ${_rcFormatDuration(total)}`:"";
+}
 function _renderCareerTable(taId){
   const ta=document.getElementById(taId);const box=document.getElementById(taId+"-box");
   if(!ta||!box)return;
@@ -16082,14 +16155,20 @@ function _renderCareerTable(taId){
       <th style="padding:6px;border:1px solid #e2e8f0;width:28px"></th>
     </tr></thead>
     <tbody>${rows.map((r,i)=>`<tr>
-      <td style="border:1px solid #e2e8f0;padding:2px"><input class="fc" style="border:none;font-size:12px;padding:4px" data-f="company" value="${h(r.company||"")}" oninput="_syncCareerTable('${taId}')"></td>
-      <td style="border:1px solid #e2e8f0;padding:2px"><input class="fc" style="border:none;font-size:12px;padding:4px" data-f="period" placeholder="YYYY.MM~YYYY.MM" value="${h(r.period||"")}" oninput="_syncCareerTable('${taId}')"></td>
+      <td style="border:1px solid #e2e8f0;padding:2px"><input id="${taId}-company-${i}" class="fc" style="border:none;font-size:12px;padding:4px" data-f="company" value="${h(r.company||"")}" oninput="_syncCareerTable('${taId}')" onclick="_rcApplyCompanySuggestion(this)"></td>
+      <td style="border:1px solid #e2e8f0;padding:2px">
+        <input class="fc" style="border:none;font-size:12px;padding:4px" data-f="period" placeholder="YYYY.MM~YYYY.MM" value="${h(r.period||"")}" oninput="_syncCareerTable('${taId}')">
+        <div id="${taId}-dur-${i}" class="fz11 text-gray" style="padding:0 4px">${h(_rcFormatDuration(_rcCareerMonths(r.period)))}</div>
+      </td>
       <td style="border:1px solid #e2e8f0;padding:2px"><input class="fc" style="border:none;font-size:12px;padding:4px" data-f="position" value="${h(r.position||"")}" oninput="_syncCareerTable('${taId}')"></td>
       <td style="border:1px solid #e2e8f0;padding:2px"><input class="fc" style="border:none;font-size:12px;padding:4px" data-f="duties" value="${h(r.duties||"")}" oninput="_syncCareerTable('${taId}')"></td>
       <td style="border:1px solid #e2e8f0;padding:2px;text-align:center"><button type="button" class="btn btn-ghost btn-sm" style="padding:2px 6px" onclick="_removeCareerRow('${taId}',${i})">✕</button></td>
     </tr>`).join("")}</tbody>
   </table>
-  <button type="button" class="btn btn-ghost btn-sm" onclick="_addCareerRow('${taId}')">+ 회사 추가</button>`;
+  <div style="display:flex;justify-content:space-between;align-items:center">
+    <button type="button" class="btn btn-ghost btn-sm" onclick="_addCareerRow('${taId}')">+ 회사 추가</button>
+    <span id="${taId}-total" class="fz12" style="font-weight:600">${h(rows.some(r=>_rcCareerMonths(r.period))?`총 경력 ${_rcFormatDuration(rows.reduce((s,r)=>s+(_rcCareerMonths(r.period)||0),0))}`:"")}</span>
+  </div>`;
 }
 function _syncCareerTable(taId){
   const ta=document.getElementById(taId);const box=document.getElementById(taId+"-box");
@@ -16097,6 +16176,7 @@ function _syncCareerTable(taId){
   const rows=[...box.querySelectorAll("tbody tr")].map(tr=>{
     const o={};tr.querySelectorAll("input[data-f]").forEach(inp=>o[inp.dataset.f]=inp.value.trim());return o;
   });
+  _rcUpdateCareerDurations(taId,rows);
   ta.value=_careerRowsToStr(rows);
 }
 function _addCareerRow(taId){
@@ -16678,6 +16758,7 @@ function _rcApplyParsedResume(text,file,llmFields){
   if(!$("#rc-name").value.trim()){$("#rc-name").value=file.name.replace(/\.[^.]+$/,"");}
   ["rc-activities","rc-summary"].forEach(id=>_autoGrow($("#"+id)));
   _renderCareerTable("rc-career");
+  if(text)_rcRequestCompanySuggestions("rc-career",text);
   showToast(filled?"이력서에서 정보를 자동으로 인식했습니다. 필요시 수정해주세요.":"이력서를 등록했습니다. 정보를 직접 입력해주세요.","info");
   const dups=_rcFindDuplicateCandidates($("#rc-name").value.trim(),$("#rc-phone").value.trim(),$("#rc-email").value.trim());
   if(dups.length)showToast(`⚠ 동일 연락처/이메일로 이미 지원한 이력이 있습니다 (${dups.map(c=>_recruitJobTitle(c.jobId)).join(", ")}).`,"error");
@@ -16798,6 +16879,7 @@ function _rceApplyParsedResume(text,llmFields){
   if(details.notableInfo&&$("#rce-memo")&&!$("#rce-memo").value.trim()){$("#rce-memo").value=details.notableInfo;filled=true;}
   ["rce-activities","rce-summary"].forEach(id=>_autoGrow($("#"+id)));
   _renderCareerTable("rce-career");
+  if(text)_rcRequestCompanySuggestions("rce-career",text);
   showToast(filled?"이력서에서 정보를 자동으로 인식했습니다. 필요시 수정해주세요.":"이력서를 등록했습니다. 정보를 직접 입력해주세요.","info");
 }
 function _rceReadResume(input,id){

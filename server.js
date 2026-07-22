@@ -4555,6 +4555,62 @@ app.post("/api/recruit/parse-resume-llm", async (req, res) => {
   } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
 });
 
+// 경력표에서 회사명이 빈 항목(대개 인쇄용 이력서 PDF가 회사명을 이미지로만 렌더링해
+// OCR 좌표 매칭으로도 못 찾은 경우, 2026-07-22 실측)에 한해 AI에게 후보를 물어보는
+// 용도. 클라이언트는 이 응답을 절대 입력칸에 자동으로 채우지 않고 "AI 추정값 —
+// 클릭하여 적용" 형태로만 보여준다(정규식/OCR 추출값과 달리 AI는 확신이 없어도
+// 그럴듯한 값을 지어낼 수 있어, 사람이 확인 후 직접 승인해야 실제 데이터가 되도록
+// 설계). 그래서 프롬프트도 "모르면 반드시 빈 문자열"을 강하게 요구한다.
+async function _groqSuggestCareerCompanies(text, entries) {
+  const apiKey = process.env.GROQ_API_KEY;
+  if (!apiKey) return null;
+  const system = `너는 한국어 이력서 원문을 읽고, 회사명이 비어있는 경력 항목의 회사명을 추정하는 도우미다.
+아래는 이력서 원문(OCR로 보강된 텍스트가 포함될 수 있고, 그 경우 글자가 잘못 인식돼 있거나 줄바꿈/표가 깨져 있을 수 있음)과, 회사명을 모르는 경력 항목 목록(재직기간·주요업무)이다.
+각 항목에 대해 원문에서 그 재직기간·업무와 짝이 맞는 회사명을 찾아 제시해라. 원문에서 확실히 찾을 수 없거나 확신이 없으면 절대 추측해서 지어내지 말고 반드시 빈 문자열로 남겨라.
+반드시 다음 JSON 스키마로만 응답해라(마크다운이나 설명 금지):
+{"suggestions": [{"idx": 0, "company": "회사명 또는 빈 문자열"}]}
+idx는 입력으로 준 항목의 idx 값과 정확히 일치해야 하고, 입력 항목 개수만큼 반드시 응답해라.`;
+  const userContent = JSON.stringify({ resumeText: text.slice(0, 12000), entries });
+  const resp = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: "Bearer " + apiKey },
+    body: JSON.stringify({
+      model: "llama-3.3-70b-versatile",
+      temperature: 0,
+      response_format: { type: "json_object" },
+      messages: [
+        { role: "system", content: system },
+        { role: "user", content: userContent },
+      ],
+    }),
+  });
+  if (!resp.ok) throw new Error("Groq API 오류 " + resp.status + ": " + (await resp.text()).slice(0, 300));
+  const data = await resp.json();
+  const content = data?.choices?.[0]?.message?.content || "{}";
+  const parsed = JSON.parse(content);
+  return Array.isArray(parsed?.suggestions) ? parsed.suggestions : [];
+}
+app.post("/api/recruit/suggest-career-companies", async (req, res) => {
+  try {
+    if (!requireRole(req, res, ["admin", "leader", "director"])) return;
+    const { text, entries } = req.body || {};
+    if (!text || typeof text !== "string" || text.trim().length < 20) {
+      return res.json({ ok: false, message: "분석할 텍스트가 부족합니다." });
+    }
+    if (!Array.isArray(entries) || !entries.length) {
+      return res.json({ ok: true, suggestions: [] });
+    }
+    let suggestions;
+    try {
+      suggestions = await _groqSuggestCareerCompanies(text, entries);
+    } catch (e) {
+      return res.json({ ok: false, message: "AI 분석에 실패했습니다: " + e.message });
+    }
+    if (suggestions === null) return res.json({ ok: false, message: "AI 분석 기능이 설정되지 않았습니다(GROQ_API_KEY 필요)." });
+    res.json({ ok: true, suggestions });
+  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+});
+
 async function _groqSummarizePeople(kind, people) {
   const apiKey = process.env.GROQ_API_KEY;
   if (!apiKey) return null;
