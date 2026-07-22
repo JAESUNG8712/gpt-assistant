@@ -1606,6 +1606,37 @@ app.get("/admin/db-size-report", async (req, res) => {
   } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
 });
 
+// ── TEMPORARY — employee_history/kpi_history가 6개월은커녕 한 달도 안 된 기간에 778MB로
+// 불어난 원인을 찾기 위한 읽기 전용 진단(위 미리보기가 days=180 기준 삭제 대상 0건으로
+// 나와, "오래된 것만 지우기" 전략 자체가 이번엔 안 맞는다는 게 드러난 뒤 추가). 날짜별
+// 건수 분포(특정 시점에 몰려있는지), record별 건수 상위(특정 레코드에 몰려있는지),
+// changed_by별 건수 상위(사람인지 스크립트/자동화인지)를 함께 보여준다. 완료 확인 즉시
+// 제거할 것.
+app.get("/admin/history-burst-report", async (req, res) => {
+  if (!process.env.MIGRATION_ADMIN_SECRET || req.headers["x-migration-secret"] !== process.env.MIGRATION_ADMIN_SECRET) {
+    return res.status(404).end();
+  }
+  const table = req.query.table;
+  const cfg = HISTORY_CLEANUP_TABLES[table];
+  if (!cfg) return res.status(400).json({ ok: false, message: "table must be employee_history or kpi_history" });
+  const idCol = table === "employee_history" ? "employee_id" : "kpi_id";
+  try {
+    const [byDay, byRecord, byChangedBy, byAction] = await Promise.all([
+      pool.query(`SELECT date_trunc('hour', ${cfg.tsCol}) AS hour_bucket, COUNT(*)::bigint AS cnt FROM ${table} GROUP BY 1 ORDER BY cnt DESC LIMIT 20`),
+      pool.query(`SELECT ${idCol} AS record_id, COUNT(*)::bigint AS cnt, MIN(${cfg.tsCol}) AS first_write, MAX(${cfg.tsCol}) AS last_write FROM ${table} GROUP BY 1 ORDER BY cnt DESC LIMIT 15`),
+      pool.query(`SELECT changed_by, COUNT(*)::bigint AS cnt FROM ${table} GROUP BY 1 ORDER BY cnt DESC LIMIT 15`),
+      pool.query(`SELECT action, COUNT(*)::bigint AS cnt FROM ${table} GROUP BY 1 ORDER BY cnt DESC`),
+    ]);
+    res.json({
+      ok: true, table,
+      topHoursByVolume: byDay.rows,
+      topRecordsByHistoryCount: byRecord.rows,
+      topChangedByValues: byChangedBy.rows,
+      byAction: byAction.rows,
+    });
+  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+});
+
 // ── TEMPORARY — 위 진단 엔드포인트로 확인된 디스크 부족 원인(employee_history/kpi_history
 // 두 감사이력 테이블이 전체 용량의 97%)을 해소하기 위한 이력 정리 3단계, 전부 완료 확인
 // 즉시 이 블록 전체를 제거할 것. 사용자 요구사항: "삭제하기 전에 내용 확인 후 진행" —
