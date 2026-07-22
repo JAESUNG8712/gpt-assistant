@@ -1806,6 +1806,126 @@ app.post("/admin/history-cleanup-execute", async (req, res) => {
   } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
 });
 
+// ── TEMPORARY — VACUUM FULL이 필요로 하는 임시공간(살아있는 행 재기록 + 인덱스 3개
+// 동시 재구축)조차 디스크에 없어 실패("could not extend file ... No space left on
+// device", employee_history 기준 살아있는 행 8996건뿐인데도 실패 실측 확인)해서 추가한
+// 대체 수단. VACUUM FULL과 달리 "작은 새 테이블 생성(인덱스 없음, 살아있는 행만) → 옛
+// 비대해진 테이블 DROP(이 시점에 535MB가 즉시 OS에 반환됨) → 새 테이블을 원래 이름으로
+// 교체 → 그 다음(공간이 넉넉해진 뒤) 인덱스/제약 재생성" 순서로 진행해 순간 최대
+// 임시공간 요구치를 훨씬 줄인다. 두 단계로 나눈 이유: 1단계(CREATE TABLE AS SELECT)는
+// 락 없이 실행해 그 사이 정상 서비스 트래픽(employee_history/kpi_history INSERT)을
+// 막지 않는다 — 대신 1단계 스냅샷 이후 2단계 락 획득 전 사이에 새로 쓰인 행이 있을 수
+// 있으므로, 2단계에서 ACCESS EXCLUSIVE 락을 잡은 직후 "임시테이블에 없는, 원본에만 있는
+// id"를 다시 긁어와 보정(catch-up insert)한 다음에 DROP한다 — 그래서 그 사이 유실되는
+// 행이 없다. 완료 확인 즉시 이 블록도 제거할 것.
+app.post("/admin/history-shrink-rebuild", async (req, res) => {
+  if (!process.env.MIGRATION_ADMIN_SECRET || req.headers["x-migration-secret"] !== process.env.MIGRATION_ADMIN_SECRET) {
+    return res.status(404).end();
+  }
+  const HISTORY_TABLE_SCHEMA = {
+    employee_history: {
+      idCol: "history_id",
+      recordIdCol: "employee_id",
+      fkConstraintName: "employee_history_company_id_fkey",
+      indexes: [
+        { name: "idx_emp_hist_employee_id", cols: "employee_id" },
+        { name: "idx_emp_hist_changed_at", cols: "changed_at" },
+        { name: "idx_emp_hist_company_id", cols: "company_id" },
+      ],
+    },
+    kpi_history: {
+      idCol: "history_id",
+      recordIdCol: "kpi_id",
+      fkConstraintName: "kpi_history_company_id_fkey",
+      indexes: [
+        { name: "idx_kpi_hist_kpi_id", cols: "kpi_id" },
+        { name: "idx_kpi_hist_changed_at", cols: "changed_at" },
+        { name: "idx_kpi_hist_company_id", cols: "company_id" },
+      ],
+    },
+  };
+  const table = req.body && req.body.table;
+  const cfg = HISTORY_TABLE_SCHEMA[table];
+  if (!cfg) return res.status(400).json({ ok: false, message: "table must be employee_history or kpi_history" });
+  if (req.body.confirm !== true) return res.status(400).json({ ok: false, message: "confirm:true 가 명시적으로 필요합니다(실수 방지)." });
+  const tmpTable = `${table}_shrink_tmp`;
+  const idCol = cfg.idCol;
+  try {
+    const before = await pool.query(`SELECT pg_total_relation_size($1::regclass) AS bytes`, [table]);
+    const seqRes = await pool.query(`SELECT pg_get_serial_sequence($1, $2) AS seq`, [table, idCol]);
+    const seqName = seqRes.rows[0].seq;
+    if (!seqName) throw new Error(`시퀀스를 찾을 수 없습니다: ${table}.${idCol}`);
+
+    // 1단계: 락 없이 작은 새 테이블 생성(인덱스/제약 없이 데이터만) — 실패해도 원본은 무사
+    await pool.query(`DROP TABLE IF EXISTS ${tmpTable}`);
+    await pool.query(`CREATE TABLE ${tmpTable} AS SELECT * FROM ${table}`);
+    const tmpCountRes = await pool.query(`SELECT COUNT(*)::bigint AS c FROM ${tmpTable}`);
+    const tmpCountAfterCtas = Number(tmpCountRes.rows[0].c) || 0;
+
+    // 2단계: 짧은 락으로 스왑 + 그 사이 유입된 행 보정 + 제약 일부 복구
+    const client = await pool.connect();
+    let swapOk = false, swapError = null, caughtUpRows = 0;
+    try {
+      await client.query("BEGIN");
+      await client.query(`LOCK TABLE ${table} IN ACCESS EXCLUSIVE MODE`);
+      const catchUp = await client.query(
+        `INSERT INTO ${tmpTable} SELECT * FROM ${table} WHERE ${idCol} > (SELECT COALESCE(MAX(${idCol}),0) FROM ${tmpTable})`
+      );
+      caughtUpRows = catchUp.rowCount || 0;
+      await client.query(`ALTER SEQUENCE ${seqName} OWNED BY NONE`);
+      await client.query(`DROP TABLE ${table}`);
+      await client.query(`ALTER TABLE ${tmpTable} RENAME TO ${table}`);
+      await client.query(`ALTER TABLE ${table} ALTER COLUMN ${idCol} SET DEFAULT nextval('${seqName}')`);
+      await client.query(`ALTER SEQUENCE ${seqName} OWNED BY ${table}.${idCol}`);
+      await client.query(`ALTER TABLE ${table} ADD PRIMARY KEY (${idCol})`);
+      await client.query(`ALTER TABLE ${table} ALTER COLUMN ${cfg.recordIdCol} SET NOT NULL`);
+      await client.query(`ALTER TABLE ${table} ALTER COLUMN action SET NOT NULL`);
+      await client.query(`ALTER TABLE ${table} ADD CONSTRAINT ${table}_action_check CHECK (action IN ('insert','update','delete'))`);
+      await client.query(`ALTER TABLE ${table} ALTER COLUMN changed_at SET NOT NULL`);
+      await client.query(`ALTER TABLE ${table} ALTER COLUMN changed_at SET DEFAULT NOW()`);
+      await client.query(`ALTER TABLE ${table} ALTER COLUMN data SET NOT NULL`);
+      await client.query(`ALTER TABLE ${table} ADD CONSTRAINT ${cfg.fkConstraintName} FOREIGN KEY (company_id) REFERENCES companies(id)`);
+      await client.query("COMMIT");
+      swapOk = true;
+    } catch (e) {
+      await client.query("ROLLBACK");
+      swapError = e.message;
+    } finally {
+      client.release();
+    }
+
+    if (!swapOk) {
+      return res.status(500).json({
+        ok: false, table, step: "swap", message: swapError,
+        note: `롤백됨 — 원본 ${table}은 그대로, 임시테이블 ${tmpTable}이 남아있을 수 있음(다음 시도에서 재사용/정리)`,
+      });
+    }
+
+    // 3단계: 공간이 확보된 뒤 인덱스 재생성(개별 실패해도 테이블 자체는 정상 — 계속 진행)
+    const indexResults = [];
+    for (const idx of cfg.indexes) {
+      try {
+        await pool.query(`CREATE INDEX ${idx.name} ON ${table} (${idx.cols})`);
+        indexResults.push({ name: idx.name, ok: true });
+      } catch (e) {
+        indexResults.push({ name: idx.name, ok: false, error: e.message });
+      }
+    }
+
+    const after = await pool.query(`SELECT pg_total_relation_size($1::regclass) AS bytes`, [table]);
+    const finalCount = await pool.query(`SELECT COUNT(*)::bigint AS c FROM ${table}`);
+    res.json({
+      ok: true, table,
+      rowsCopied: tmpCountAfterCtas, caughtUpRows, finalRowCount: Number(finalCount.rows[0].c) || 0,
+      indexResults,
+      sizeBefore: `${(Number(before.rows[0].bytes) / 1024 / 1024).toFixed(1)} MB`,
+      sizeAfter: `${(Number(after.rows[0].bytes) / 1024 / 1024).toFixed(1)} MB`,
+    });
+  } catch (e) {
+    res.status(500).json({ ok: false, table, step: "ctas", message: e.message });
+  }
+});
+
 // /login과 동일한 이유로 전용 rate limiter가 필요하다(이 라우트도 항상 HTTP 200으로
 // 응답하고 성공/실패는 JSON body의 `ok`로만 구분하므로, express-rate-limit의 기본
 // 성공 판정(statusCode<400)을 그대로 쓰면 브루트포스 방어가 무력화된다 — /login에 있는
