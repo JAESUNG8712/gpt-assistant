@@ -1650,29 +1650,45 @@ const HISTORY_CLEANUP_TABLES = {
   kpi_history:       { idCol: "history_id", tsCol: "changed_at" },
 };
 
-// GET /admin/history-cleanup-preview?days=180 — 읽기 전용. 지정 일수보다 오래된 이력이
-// 테이블별로 몇 건/어느 기간인지, 전체 대비 몇 %인지 보여준다. 여러 days 값으로 반복
-// 호출해 기준을 비교해볼 수 있다.
+// 세 엔드포인트(미리보기/백업/실행) 공통 WHERE절 빌더. days(기간 기준)와 changedBy(작성자
+// 기준)를 각각 독립적으로 선택할 수 있고 둘 다 주면 AND로 결합된다 — history-burst-report로
+// "unknown"(작성자 미상, 자동화 흔적으로 추정) 이 95% 이상을 차지하는 게 확인된 뒤, 기존
+// days 단독 기준(이번 운영 DB엔 안 맞음 — 전부 한 달 이내라 오래된 게 없었음)에 changedBy
+// 기준을 추가했다.
+function _historyWhereClause(cfg, days, changedBy) {
+  const conds = [];
+  const params = [];
+  if (days != null) { params.push(days); conds.push(`${cfg.tsCol} < now() - ($${params.length} || ' days')::interval`); }
+  if (changedBy != null) { params.push(changedBy); conds.push(`changed_by = $${params.length}`); }
+  if (!conds.length) throw new Error("days 또는 changedBy 중 하나는 필요합니다.");
+  return { where: conds.join(" AND "), params };
+}
+
+// GET /admin/history-cleanup-preview?days=180&changedBy=unknown — 읽기 전용. days와
+// changedBy 중 하나 이상을 지정하면 그 조건에 맞는 이력이 테이블별로 몇 건/어느 기간인지
+// 보여준다. 여러 조합으로 반복 호출해 기준을 비교해볼 수 있다.
 app.get("/admin/history-cleanup-preview", async (req, res) => {
   if (!process.env.MIGRATION_ADMIN_SECRET || req.headers["x-migration-secret"] !== process.env.MIGRATION_ADMIN_SECRET) {
     return res.status(404).end();
   }
   try {
-    const days = Math.max(1, parseInt(req.query.days, 10) || 180);
-    const result = { ok: true, cutoffDays: days, tables: {} };
-    for (const [table, { tsCol }] of Object.entries(HISTORY_CLEANUP_TABLES)) {
-      const [{ rows: rangeRows }, { rows: oldRows }, { rows: sizeRows }] = await Promise.all([
-        pool.query(`SELECT MIN(${tsCol}) AS earliest, MAX(${tsCol}) AS latest FROM ${table}`),
-        pool.query(`SELECT COUNT(*)::bigint AS old_count, MIN(${tsCol}) AS oldest_deleted, MAX(${tsCol}) AS newest_deleted FROM ${table} WHERE ${tsCol} < now() - ($1 || ' days')::interval`, [days]),
+    const days = req.query.days !== undefined ? Math.max(1, parseInt(req.query.days, 10) || 0) : null;
+    const changedBy = req.query.changedBy !== undefined ? String(req.query.changedBy) : null;
+    const result = { ok: true, criteria: { days, changedBy }, tables: {} };
+    for (const [table, cfg] of Object.entries(HISTORY_CLEANUP_TABLES)) {
+      const { where, params } = _historyWhereClause(cfg, days, changedBy);
+      const [{ rows: rangeRows }, { rows: matchRows }, { rows: sizeRows }] = await Promise.all([
+        pool.query(`SELECT MIN(${cfg.tsCol}) AS earliest, MAX(${cfg.tsCol}) AS latest FROM ${table}`),
+        pool.query(`SELECT COUNT(*)::bigint AS match_count, MIN(${cfg.tsCol}) AS oldest, MAX(${cfg.tsCol}) AS newest FROM ${table} WHERE ${where}`, params),
         pool.query(`SELECT pg_total_relation_size($1::regclass) AS total_bytes, (SELECT reltuples::bigint FROM pg_class WHERE relname = $1::name) AS approx_total_rows`, [table]),
       ]);
       const totalBytes = Number(sizeRows[0].total_bytes) || 0;
       const approxTotalRows = Number(sizeRows[0].approx_total_rows) || 0;
-      const oldCount = Number(oldRows[0].old_count) || 0;
-      const estFreedBytes = approxTotalRows > 0 ? Math.round(totalBytes * (oldCount / approxTotalRows)) : 0;
+      const matchCount = Number(matchRows[0].match_count) || 0;
+      const estFreedBytes = approxTotalRows > 0 ? Math.round(totalBytes * (matchCount / approxTotalRows)) : 0;
       result.tables[table] = {
         earliestOverall: rangeRows[0].earliest, latestOverall: rangeRows[0].latest,
-        oldCount, oldestDeleted: oldRows[0].oldest_deleted, newestDeleted: oldRows[0].newest_deleted,
+        matchCount, oldestMatch: matchRows[0].oldest, newestMatch: matchRows[0].newest,
         currentTotalSize: `${(totalBytes / 1024 / 1024).toFixed(1)} MB`,
         estimatedSpaceFreed: `${(estFreedBytes / 1024 / 1024).toFixed(1)} MB`,
       };
@@ -1681,12 +1697,13 @@ app.get("/admin/history-cleanup-preview", async (req, res) => {
   } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
 });
 
-// GET /admin/history-export?secret=...&table=employee_history&days=180 — 읽기 전용, 실제로
-// 삭제될 행들을 NDJSON 파일로 스트리밍 다운로드(삭제 전 백업). PowerShell/curl이 아니라
-// 사용자가 이 URL을 직접 브라우저 주소창에 입력해서(다운로드는 브라우저가 처리하는 게
-// 훨씬 안정적 — 대용량 스트리밍이라) 받도록 설계했다. 그래서 이 엔드포인트만 예외적으로
-// 시크릿을 헤더가 아니라 쿼리스트링으로도 허용한다(브라우저 주소창은 커스텀 헤더를
-// 못 붙이므로). 커서 기반 페이지네이션으로 서버 메모리에 전체를 한 번에 올리지 않는다.
+// GET /admin/history-export?secret=...&table=employee_history&days=180&changedBy=unknown —
+// 읽기 전용, 실제로 삭제될 행들을 NDJSON 파일로 스트리밍 다운로드(삭제 전 백업).
+// PowerShell/curl이 아니라 사용자가 이 URL을 직접 브라우저 주소창에 입력해서(다운로드는
+// 브라우저가 처리하는 게 훨씬 안정적 — 대용량 스트리밍이라) 받도록 설계했다. 그래서 이
+// 엔드포인트만 예외적으로 시크릿을 헤더가 아니라 쿼리스트링으로도 허용한다(브라우저
+// 주소창은 커스텀 헤더를 못 붙이므로). 커서 기반 페이지네이션으로 서버 메모리에 전체를
+// 한 번에 올리지 않는다.
 app.get("/admin/history-export", async (req, res) => {
   const secret = req.headers["x-migration-secret"] || req.query.secret;
   if (!process.env.MIGRATION_ADMIN_SECRET || secret !== process.env.MIGRATION_ADMIN_SECRET) {
@@ -1695,21 +1712,26 @@ app.get("/admin/history-export", async (req, res) => {
   const table = req.query.table;
   const cfg = HISTORY_CLEANUP_TABLES[table];
   if (!cfg) return res.status(400).json({ ok: false, message: "table must be employee_history or kpi_history" });
-  const days = Math.max(1, parseInt(req.query.days, 10) || 180);
+  const days = req.query.days !== undefined ? Math.max(1, parseInt(req.query.days, 10) || 0) : null;
+  const changedBy = req.query.changedBy !== undefined ? String(req.query.changedBy) : null;
+  let where, baseParams;
+  try { ({ where, params: baseParams } = _historyWhereClause(cfg, days, changedBy)); }
+  catch (e) { return res.status(400).json({ ok: false, message: e.message }); }
+  const tag = changedBy != null ? `changedBy-${changedBy}` : `${days}d-cutoff`;
   res.setHeader("Content-Type", "application/x-ndjson; charset=utf-8");
-  res.setHeader("Content-Disposition", `attachment; filename="${table}-backup-before-${days}d-cutoff.ndjson"`);
+  res.setHeader("Content-Disposition", `attachment; filename="${table}-backup-before-${tag}.ndjson"`);
   try {
     let lastId = 0;
     const batchSize = 2000;
-    let totalWritten = 0;
     for (;;) {
+      const idParamIdx = baseParams.length + 1;
+      const limitParamIdx = baseParams.length + 2;
       const { rows } = await pool.query(
-        `SELECT * FROM ${table} WHERE ${cfg.tsCol} < now() - ($1 || ' days')::interval AND ${cfg.idCol} > $2 ORDER BY ${cfg.idCol} ASC LIMIT $3`,
-        [days, lastId, batchSize]
+        `SELECT * FROM ${table} WHERE ${where} AND ${cfg.idCol} > $${idParamIdx} ORDER BY ${cfg.idCol} ASC LIMIT $${limitParamIdx}`,
+        [...baseParams, lastId, batchSize]
       );
       if (!rows.length) break;
       for (const row of rows) res.write(JSON.stringify(row) + "\n");
-      totalWritten += rows.length;
       lastId = rows[rows.length - 1][cfg.idCol];
       if (rows.length < batchSize) break;
     }
@@ -1721,28 +1743,32 @@ app.get("/admin/history-export", async (req, res) => {
   }
 });
 
-// POST /admin/history-cleanup-execute — {days, confirm:true, table}. 반드시 confirm:true를
-// 명시해야 동작(실수 방지). 오래된 행을 DELETE한 뒤 VACUUM FULL로 실제 디스크 공간을
-// OS에 반환한다(일반 DELETE+VACUUM은 그 테이블 안에서만 재사용 가능한 빈 공간이 될 뿐
-// 실제 파일 크기가 줄지 않아 "디스크 꽉 참" 자체는 해결이 안 됨 — VACUUM FULL이 테이블을
-// 통째로 다시 써서 파일을 축소해야 다른 테이블도 쓸 수 있는 공간이 실제로 생긴다).
-// VACUUM은 트랜잭션 블록 안에서 실행할 수 없어 DELETE와 별개의 문장으로 실행한다.
+// POST /admin/history-cleanup-execute — {table, days?, changedBy?, confirm:true}. 반드시
+// confirm:true를 명시해야 동작(실수 방지). 조건에 맞는 행을 DELETE한 뒤 VACUUM FULL로
+// 실제 디스크 공간을 OS에 반환한다(일반 DELETE+VACUUM은 그 테이블 안에서만 재사용 가능한
+// 빈 공간이 될 뿐 실제 파일 크기가 줄지 않아 "디스크 꽉 참" 자체는 해결이 안 됨 — VACUUM
+// FULL이 테이블을 통째로 다시 써서 파일을 축소해야 다른 테이블도 쓸 수 있는 공간이 실제로
+// 생긴다). VACUUM은 트랜잭션 블록 안에서 실행할 수 없어 DELETE와 별개의 문장으로 실행한다.
 app.post("/admin/history-cleanup-execute", async (req, res) => {
   if (!process.env.MIGRATION_ADMIN_SECRET || req.headers["x-migration-secret"] !== process.env.MIGRATION_ADMIN_SECRET) {
     return res.status(404).end();
   }
   const table = req.body && req.body.table;
-  const days = Math.max(1, parseInt(req.body && req.body.days, 10) || 180);
   const cfg = HISTORY_CLEANUP_TABLES[table];
   if (!cfg) return res.status(400).json({ ok: false, message: "table must be employee_history or kpi_history" });
+  const days = req.body && req.body.days !== undefined ? Math.max(1, parseInt(req.body.days, 10) || 0) : null;
+  const changedBy = req.body && req.body.changedBy !== undefined ? String(req.body.changedBy) : null;
   if (req.body.confirm !== true) return res.status(400).json({ ok: false, message: "confirm:true 가 명시적으로 필요합니다(실수 방지)." });
+  let where, params;
+  try { ({ where, params } = _historyWhereClause(cfg, days, changedBy)); }
+  catch (e) { return res.status(400).json({ ok: false, message: e.message }); }
   try {
-    const before = await pool.query(`SELECT pg_total_relation_size($1) AS bytes`, [table]);
-    const del = await pool.query(`DELETE FROM ${table} WHERE ${cfg.tsCol} < now() - ($1 || ' days')::interval`, [days]);
+    const before = await pool.query(`SELECT pg_total_relation_size($1::regclass) AS bytes`, [table]);
+    const del = await pool.query(`DELETE FROM ${table} WHERE ${where}`, params);
     await pool.query(`VACUUM (FULL, ANALYZE) ${table}`);
-    const after = await pool.query(`SELECT pg_total_relation_size($1) AS bytes`, [table]);
+    const after = await pool.query(`SELECT pg_total_relation_size($1::regclass) AS bytes`, [table]);
     res.json({
-      ok: true, table, days, deletedRows: del.rowCount,
+      ok: true, table, days, changedBy, deletedRows: del.rowCount,
       sizeBefore: `${(Number(before.rows[0].bytes) / 1024 / 1024).toFixed(1)} MB`,
       sizeAfter: `${(Number(after.rows[0].bytes) / 1024 / 1024).toFixed(1)} MB`,
     });
