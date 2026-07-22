@@ -1749,6 +1749,16 @@ app.get("/admin/history-export", async (req, res) => {
 // 빈 공간이 될 뿐 실제 파일 크기가 줄지 않아 "디스크 꽉 참" 자체는 해결이 안 됨 — VACUUM
 // FULL이 테이블을 통째로 다시 써서 파일을 축소해야 다른 테이블도 쓸 수 있는 공간이 실제로
 // 생긴다). VACUUM은 트랜잭션 블록 안에서 실행할 수 없어 DELETE와 별개의 문장으로 실행한다.
+// 실사용 중 발견: 디스크가 문자 그대로 0바이트 여유(원래 마이그레이션 실패의 원인)인
+// 상태에서는, 167,319건을 한 번의 DELETE로 지우고 한 번의 VACUUM FULL로 정리하는
+// 방식조차 "could not extend file ... No space left on device"로 실패했다(실측 확인,
+// PowerShell 500 응답 그대로) — DELETE/VACUUM FULL 모두 진행 중 임시로 WAL·새 파일
+// 공간이 필요한데 그 여유조차 없었던 것. 그래서 작은 배치(기본 2000건)로 나눠 지우고
+// 매 배치마다 일반 VACUUM(FULL 아님 — 훨씬 적은 임시공간만 필요, 커밋 경계마다
+// Postgres가 WAL을 회수할 기회를 준다)을 끼워 넣는 방식으로 바꿨다. 한 번의 HTTP
+// 호출은 배치 여러 개(기본 최대 15개)만 처리하고 남은 건수를 응답에 포함 — 사용자가
+// remaining이 0이 될 때까지 같은 요청을 반복 호출한다. 전부 지운 뒤에만(remaining=0)
+// vacuumFull:true를 함께 보내 최종 VACUUM FULL로 실제 디스크 공간을 OS에 반환한다.
 app.post("/admin/history-cleanup-execute", async (req, res) => {
   if (!process.env.MIGRATION_ADMIN_SECRET || req.headers["x-migration-secret"] !== process.env.MIGRATION_ADMIN_SECRET) {
     return res.status(404).end();
@@ -1759,16 +1769,37 @@ app.post("/admin/history-cleanup-execute", async (req, res) => {
   const days = req.body && req.body.days !== undefined ? Math.max(1, parseInt(req.body.days, 10) || 0) : null;
   const changedBy = req.body && req.body.changedBy !== undefined ? String(req.body.changedBy) : null;
   if (req.body.confirm !== true) return res.status(400).json({ ok: false, message: "confirm:true 가 명시적으로 필요합니다(실수 방지)." });
+  const batchSize = Math.max(100, Math.min(5000, parseInt(req.body.batchSize, 10) || 2000));
+  const maxBatches = Math.max(1, Math.min(30, parseInt(req.body.maxBatches, 10) || 15));
+  const vacuumFull = req.body.vacuumFull === true;
   let where, params;
   try { ({ where, params } = _historyWhereClause(cfg, days, changedBy)); }
   catch (e) { return res.status(400).json({ ok: false, message: e.message }); }
   try {
     const before = await pool.query(`SELECT pg_total_relation_size($1::regclass) AS bytes`, [table]);
-    const del = await pool.query(`DELETE FROM ${table} WHERE ${where}`, params);
-    await pool.query(`VACUUM (FULL, ANALYZE) ${table}`);
+    let deletedThisCall = 0;
+    for (let i = 0; i < maxBatches; i++) {
+      const limitIdx = params.length + 1;
+      const del = await pool.query(
+        `DELETE FROM ${table} WHERE ${cfg.idCol} IN (SELECT ${cfg.idCol} FROM ${table} WHERE ${where} LIMIT $${limitIdx})`,
+        [...params, batchSize]
+      );
+      deletedThisCall += del.rowCount;
+      if (del.rowCount === 0) break;
+      await pool.query(`VACUUM (ANALYZE) ${table}`); // FULL 아님 — 배치 사이 임시공간 최소화, trailing 빈 페이지는 이 단계에서도 기회가 되면 OS에 반환됨
+      if (del.rowCount < batchSize) break;
+    }
+    const remainingRes = await pool.query(`SELECT COUNT(*)::bigint AS remaining FROM ${table} WHERE ${where}`, params);
+    const remaining = Number(remainingRes.rows[0].remaining) || 0;
+    let vacuumFullOk = null, vacuumFullError = null;
+    if (vacuumFull) {
+      try { await pool.query(`VACUUM (FULL, ANALYZE) ${table}`); vacuumFullOk = true; }
+      catch (e) { vacuumFullOk = false; vacuumFullError = e.message; }
+    }
     const after = await pool.query(`SELECT pg_total_relation_size($1::regclass) AS bytes`, [table]);
     res.json({
-      ok: true, table, days, changedBy, deletedRows: del.rowCount,
+      ok: true, table, days, changedBy, deletedThisCall, remaining,
+      vacuumFullAttempted: vacuumFull, vacuumFullOk, vacuumFullError,
       sizeBefore: `${(Number(before.rows[0].bytes) / 1024 / 1024).toFixed(1)} MB`,
       sizeAfter: `${(Number(after.rows[0].bytes) / 1024 / 1024).toFixed(1)} MB`,
     });
