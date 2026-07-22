@@ -1651,6 +1651,75 @@ app.post("/admin/disk-headroom-probe", async (req, res) => {
   }
 });
 
+// ── TEMPORARY — history-shrink-rebuild(CTAS 방식)이 실제 필요 용량(12.76MB)조차 실패할
+// 정도로 디스크 여유가 없는 것으로 확인돼(disk-headroom-probe로 1행 쓰기조차 실패 확인)
+// 추가한 마지막 무료 시도. CTAS/VACUUM FULL은 항상 "완전히 새로운 파일"을 만들어야 해서
+// 새 디스크 블록이 필요하지만, 이미 여러 번 돌린 VACUUM(ANALYZE)이 지운 16만+건의 자리를
+// "같은 파일 안에서 재사용 가능"으로 이미 표시해뒀다 — 그래서 "새 파일"이 아니라 "같은
+// 테이블 안의 재사용 가능한 빈 자리"에 다시 쓰는 것은 새 디스크 블록 없이 될 가능성이
+// 있다. 파일 뒤쪽(ctid 기준 물리적으로 나중 위치)에 있는 살아있는 행을 골라 "복사해서
+// 다시 넣고(재사용 공간에 배치될 것으로 기대) → 원래 뒤쪽 것은 삭제"를 반복하면, 파일
+// 끝부분이 통째로 비게 되고 그러면 VACUUM이 그 빈 꼬리를 잘라내면서 실제로 디스크 공간이
+// 줄어들 수 있다. 매 배치를 트랜잭션으로 묶어 원자적으로 처리(삽입 실패 시 원본 삭제도
+// 함께 롤백돼 데이터 유실 없음). 완료 확인 즉시 제거할 것.
+app.post("/admin/history-compact-inplace", async (req, res) => {
+  if (!process.env.MIGRATION_ADMIN_SECRET || req.headers["x-migration-secret"] !== process.env.MIGRATION_ADMIN_SECRET) {
+    return res.status(404).end();
+  }
+  const COMPACT_TABLE_COLS = {
+    employee_history: "employee_id, action, changed_by, changed_at, data, company_id",
+    kpi_history: "kpi_id, action, changed_by, changed_at, data, company_id",
+  };
+  const table = req.body && req.body.table;
+  const cols = COMPACT_TABLE_COLS[table];
+  if (!cols) return res.status(400).json({ ok: false, message: "table must be employee_history or kpi_history" });
+  if (req.body.confirm !== true) return res.status(400).json({ ok: false, message: "confirm:true 가 명시적으로 필요합니다(실수 방지)." });
+  const idCol = "history_id";
+  const batchSize = Math.max(50, Math.min(2000, parseInt(req.body.batchSize, 10) || 500));
+  const maxRounds = Math.max(1, Math.min(20, parseInt(req.body.maxRounds, 10) || 10));
+  try {
+    const before = await pool.query(`SELECT pg_total_relation_size($1::regclass) AS bytes`, [table]);
+    let roundsDone = 0, rowsMoved = 0, lastError = null;
+    for (let i = 0; i < maxRounds; i++) {
+      const targetRes = await pool.query(
+        `SELECT ${idCol} FROM ${table} ORDER BY ctid DESC LIMIT $1`, [batchSize]
+      );
+      const ids = targetRes.rows.map(r => r[idCol]);
+      if (!ids.length) break;
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        await client.query(
+          `INSERT INTO ${table} (${cols}) SELECT ${cols} FROM ${table} WHERE ${idCol} = ANY($1::bigint[])`,
+          [ids]
+        );
+        await client.query(`DELETE FROM ${table} WHERE ${idCol} = ANY($1::bigint[])`, [ids]);
+        await client.query("COMMIT");
+        rowsMoved += ids.length;
+        roundsDone++;
+      } catch (e) {
+        await client.query("ROLLBACK");
+        lastError = e.message;
+        client.release();
+        break; // 실패하면 더 진행하지 않고 지금까지의 진행 상황만 보고(원본은 안전)
+      }
+      client.release();
+      await pool.query(`VACUUM (ANALYZE) ${table}`); // 트랜잭션 밖 — FSM 갱신 + 가능하면 빈 꼬리 페이지 절단
+    }
+    const after = await pool.query(`SELECT pg_total_relation_size($1::regclass) AS bytes`, [table]);
+    const remainingRes = await pool.query(`SELECT COUNT(*)::bigint AS c FROM ${table}`);
+    res.json({
+      ok: true, table, roundsDone, rowsMoved, lastError,
+      totalRowsRemaining: Number(remainingRes.rows[0].c) || 0,
+      sizeBefore: `${(Number(before.rows[0].bytes) / 1024 / 1024).toFixed(2)} MB`,
+      sizeAfter: `${(Number(after.rows[0].bytes) / 1024 / 1024).toFixed(2)} MB`,
+      note: "sizeAfter가 안 줄었어도 정상 — 빈 꼬리 페이지가 아직 안 생겼을 뿐. 같은 요청을 반복 호출해 rowsMoved가 계속 늘고 sizeAfter가 서서히 줄어드는지 확인할 것.",
+    });
+  } catch (e) {
+    res.status(500).json({ ok: false, table, message: e.message });
+  }
+});
+
 // ── TEMPORARY — employee_history/kpi_history가 6개월은커녕 한 달도 안 된 기간에 778MB로
 // 불어난 원인을 찾기 위한 읽기 전용 진단(위 미리보기가 days=180 기준 삭제 대상 0건으로
 // 나와, "오래된 것만 지우기" 전략 자체가 이번엔 안 맞는다는 게 드러난 뒤 추가). 날짜별
