@@ -1616,6 +1616,27 @@ app.get("/admin/inspect-collection", async (req, res) => {
   } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
 });
 
+// ── TEMPORARY — 위 inspect-collection으로 확인된 test 회사의 오염 데이터(티라유텍
+// app_collections 전체 21건이 test 가입 순간 클라이언트 로컬캐시 재전송으로 그대로
+// 복제됨) 정리용. company_id 하나로 지정한 회사의 app_collections 행 전체를 지운다
+// (그 회사가 아직 자체 데이터가 없는 순수 테스트/오염 상태일 때만 안전 — 사용 전 반드시
+// inspect-collection으로 내용 확인 후 진행). 완료 확인 즉시 제거할 것.
+app.post("/admin/purge-company-collections", async (req, res) => {
+  if (!process.env.MIGRATION_ADMIN_SECRET || req.headers["x-migration-secret"] !== process.env.MIGRATION_ADMIN_SECRET) {
+    return res.status(404).end();
+  }
+  const companySlug = (req.body && req.body.companySlug || "").trim();
+  if (!companySlug) return res.status(400).json({ ok: false, message: "companySlug required" });
+  if (req.body.confirm !== true) return res.status(400).json({ ok: false, message: "confirm:true 가 명시적으로 필요합니다." });
+  try {
+    const companyRes = await pool.query(`SELECT id, name FROM companies WHERE slug = $1`, [companySlug]);
+    if (!companyRes.rows.length) return res.status(404).json({ ok: false, message: "해당 slug의 회사를 찾을 수 없습니다." });
+    const companyId = companyRes.rows[0].id;
+    const del = await pool.query(`DELETE FROM app_collections WHERE company_id = $1`, [companyId]);
+    res.json({ ok: true, companySlug, companyId, deletedRows: del.rowCount });
+  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+});
+
 const masterLoginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 20,
