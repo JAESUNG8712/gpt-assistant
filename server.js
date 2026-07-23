@@ -82,6 +82,7 @@ let _fileAccounting = { accounts: [], vouchers: [], taxInvoices: [], partners: [
 // 영업/재고 모듈 전용 저장소 (품목·위치·견적서·발주서·재고 입출고 이력) — 회계 모듈과 동일하게
 // 클라이언트 신뢰형 블롭과 분리해 서버가 번호 발급·상태 전환·재고 반영을 직접 관리한다.
 let _fileErp = { items: [], locations: [], quotations: [], purchaseOrders: [], purchaseRequests: [], stockLedger: [], quoteSeq: {}, poSeq: {}, salesTargets: [] };
+let _fileAcctRcps = { issuances: [], schedule: [], valuations: [] };
 let _filePms = { projects: [], allocations: [], worklogs: [] };
 let _fileRecruit = { jobs: [], candidates: [], interviews: [] };
 
@@ -530,6 +531,16 @@ async function initDB() {
         console.log(`[Storage] Loaded accounting: ${_fileAccounting.accounts.length} accounts, ${_fileAccounting.vouchers.length} vouchers, ${_fileAccounting.taxInvoices.length} tax invoices, ${(_fileAccounting.partners||[]).length} partners`);
       } catch (e) {
         console.warn("[Storage] Could not read accounting file:", e.message);
+      }
+    }
+    // Load RCPS(상환전환우선주) module data from separate file
+    const rcpsFile = JSON_FILE.replace(/\.json$/, "-rcps.json");
+    if (fs.existsSync(rcpsFile)) {
+      try {
+        _fileAcctRcps = { ..._fileAcctRcps, ...JSON.parse(fs.readFileSync(rcpsFile, "utf8")) };
+        console.log(`[Storage] Loaded RCPS: ${_fileAcctRcps.issuances.length} issuances, ${_fileAcctRcps.schedule.length} schedule rows, ${_fileAcctRcps.valuations.length} valuations`);
+      } catch (e) {
+        console.warn("[Storage] Could not read RCPS file:", e.message);
       }
     }
     // Load sales/inventory (ERP) module data from separate file
@@ -2406,6 +2417,10 @@ function _saveFileAccounting() {
   const acctFile = JSON_FILE.replace(/\.json$/, "-accounting.json");
   fs.writeFileSync(acctFile, JSON.stringify(_fileAccounting, null, 2), "utf8");
 }
+function _saveFileAcctRcps() {
+  const rcpsFile = JSON_FILE.replace(/\.json$/, "-rcps.json");
+  fs.writeFileSync(rcpsFile, JSON.stringify(_fileAcctRcps, null, 2), "utf8");
+}
 function _nextAcctSeq(kind, year) {
   if (!_fileAccounting[kind]) _fileAccounting[kind] = {};
   const next = (_fileAccounting[kind][year] || 0) + 1;
@@ -2452,15 +2467,19 @@ app.get("/api/accounting/accounts", async (req, res) => {
 app.post("/api/accounting/accounts", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
-    const { id, code, name, type, category, active = true, user } = req.body || {};
+    const { id, code, name, type, category, costCategory: costCategoryRaw, costSubType: costSubTypeRaw, active = true, user } = req.body || {};
     if (!code || !name || !type)
       return res.status(400).json({ ok: false, message: "계정코드, 계정명, 구분은 필수입니다." });
+    // 원가구분: "mfg"(제조원가)|"sga"(판관비)|null. costSubType은 costCategory가 "mfg"일 때만
+    // 의미가 있으므로 그 외에는 항상 null로 정규화한다(원가명세서 집계 로직이 이 불변조건에 의존).
+    const costCategory = ["mfg", "sga"].includes(costCategoryRaw) ? costCategoryRaw : null;
+    const costSubType = costCategory === "mfg" && ["material", "labor", "overhead"].includes(costSubTypeRaw) ? costSubTypeRaw : null;
     const accId = id || `acc_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     if (USE_JSON_FILE) {
       const idx = _fileAccounting.accounts.findIndex(a => a.id === accId);
       const prevHist = idx >= 0 ? (_fileAccounting.accounts[idx].history || []) : [];
       const histEntry = { action: idx >= 0 ? "update" : "create", user: user || "unknown", at: new Date().toISOString() };
-      const acc = { id: accId, code, name, type, category: category || "", active, history: [...prevHist, histEntry] };
+      const acc = { id: accId, code, name, type, category: category || "", costCategory, costSubType, active, history: [...prevHist, histEntry] };
       if (idx >= 0) _fileAccounting.accounts[idx] = acc; else _fileAccounting.accounts.push(acc);
       _saveFileAccounting();
       return res.json({ ok: true, account: acc });
@@ -2471,7 +2490,7 @@ app.post("/api/accounting/accounts", async (req, res) => {
     );
     const prevHist = prevRows.length ? (prevRows[0].data.history || []) : [];
     const histEntry = { action: prevRows.length ? "update" : "create", user: user || "unknown", at: new Date().toISOString() };
-    const acc = { id: accId, code, name, type, category: category || "", active, history: [...prevHist, histEntry] };
+    const acc = { id: accId, code, name, type, category: category || "", costCategory, costSubType, active, history: [...prevHist, histEntry] };
     await pool.query(
       "INSERT INTO accounts (id, company_id, data) VALUES ($1,$2,$3) ON CONFLICT (company_id, id) DO UPDATE SET data = $3, updated_at = NOW()",
       [accId, companyId, acc]
@@ -2901,6 +2920,422 @@ app.post("/api/accounting/partners/:id/delete", async (req, res) => {
     await pool.query("UPDATE partners SET is_deleted = TRUE WHERE id = $1 AND (company_id = $2 OR company_id IS NULL)", [id, companyId]);
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+});
+
+// ── 원가명세서 (Cost statement) ───────────────────────────────────────────────
+// 계정과목에 태깅된 원가구분(costCategory/costSubType)을 기준으로, 확정(posted)된 전표의
+// 분개 라인 중 원가계정에 해당하는 것만(costCategory가 null이 아닌 계정) 차변 금액으로 집계한다.
+app.get("/api/accounting/cost-statement", async (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  try {
+    const { from, to } = req.query;
+    if (!from || !to) return res.status(400).json({ ok: false, message: "from, to 날짜 범위는 필수입니다." });
+    const companyId = req.auth.companyId || null;
+    let vouchers;
+    if (USE_JSON_FILE) {
+      vouchers = _fileAccounting.vouchers.filter(v => v.status === "posted" && v.date >= from && v.date <= to);
+    } else {
+      const { rows } = await pool.query(
+        "SELECT data FROM vouchers WHERE status = 'posted' AND voucher_date BETWEEN $1 AND $2 AND (company_id = $3 OR company_id IS NULL)",
+        [from, to, companyId]
+      );
+      vouchers = rows.map(r => r.data);
+    }
+    const accounts = await _getAccountsList(companyId);
+    const accById = new Map(accounts.map(a => [a.id, a]));
+    const mfg = { material: 0, labor: 0, overhead: 0, total: 0 };
+    const sga = { total: 0 };
+    const byAccountMap = new Map();
+    for (const v of vouchers) {
+      for (const l of (v.lines || [])) {
+        const acc = accById.get(l.accountId);
+        if (!acc || !acc.costCategory) continue;
+        const amount = _round2(l.debit) || 0;
+        if (amount === 0) continue;
+        if (acc.costCategory === "mfg") {
+          mfg.total = _round2(mfg.total + amount);
+          if (["material", "labor", "overhead"].includes(acc.costSubType)) {
+            mfg[acc.costSubType] = _round2(mfg[acc.costSubType] + amount);
+          }
+        } else if (acc.costCategory === "sga") {
+          sga.total = _round2(sga.total + amount);
+        } else {
+          continue; // 알 수 없는 원가구분 값은 집계에서 제외
+        }
+        const prev = byAccountMap.get(l.accountId) || {
+          accountId: l.accountId, code: acc.code, name: acc.name,
+          costCategory: acc.costCategory, costSubType: acc.costSubType || null, amount: 0,
+        };
+        prev.amount = _round2(prev.amount + amount);
+        byAccountMap.set(l.accountId, prev);
+      }
+    }
+    res.json({ ok: true, from, to, mfg, sga, byAccount: Array.from(byAccountMap.values()) });
+  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+});
+
+// ── RCPS(상환전환우선주) 발행·유효이자율법 상각·공정가치평가 ──────────────────────
+// 연 1회 이자지급·연단위 상각을 가정하는 단순화 모델이다(반기/월할 계산은 다루지 않음).
+// company_id는 이 모듈의 3개 테이블 모두 NOT NULL(레거시 데이터 없음, 백필 불필요)이므로
+// req.auth.companyId를 항상 그대로 채워 넣는다 — accounts/vouchers류처럼 "OR company_id IS NULL"
+// 로 레거시 단일회사 데이터를 함께 허용할 필요가 없다.
+function _yearsBetween(d1, d2) {
+  const ms = new Date(d2) - new Date(d1);
+  return Math.round(ms / (365.25 * 86400000));
+}
+function _addYearsStr(dateStr, k) {
+  const d = new Date(dateStr);
+  d.setUTCFullYear(d.getUTCFullYear() + k);
+  return d.toISOString().slice(0, 10);
+}
+// 전표를 곧바로 "확정(posted)" 상태로 생성한다 — 기존 POST vouchers(draft 생성) +
+// POST vouchers/:id/post(확정) 2단계 흐름과 완전히 동일한 company_id 스코프·차대검증
+// (_validateVoucherLines)·voucher_seq 채번 로직을 그대로 재사용해, RCPS 자동 전표(상각/평가손익)를
+// 한 번의 호출로 발행한다. 검증 실패 시 statusCode:400을 실어 던진다(호출부에서 그대로 응답).
+async function _issuePostedVoucher(companyId, { date, description, partnerId, partner, lines, user }) {
+  const accounts = await _getAccountsList(companyId);
+  const err = _validateVoucherLines(lines, accounts);
+  if (err) throw Object.assign(new Error(err), { statusCode: 400 });
+  const debitSum = _round2(lines.reduce((s, l) => s + (Number(l.debit) || 0), 0));
+  const year = new Date(date).getFullYear();
+  const baseVoucher = {
+    id: `v_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+    date, description: description || "", partner: partner || "", partnerId: partnerId || null,
+    lines: lines.map(l => ({ accountId: l.accountId, debit: _round2(l.debit) || 0, credit: _round2(l.credit) || 0, memo: l.memo || "" })),
+    amount: debitSum,
+    createdBy: user || "unknown", createdAt: new Date().toISOString(),
+  };
+  if (USE_JSON_FILE) {
+    const seq = _nextAcctSeq("voucherSeq", year);
+    const voucher = { ...baseVoucher, voucherNo: `JE-${year}-${String(seq).padStart(6, "0")}`, status: "posted", postedBy: user || "unknown", postedAt: new Date().toISOString() };
+    _fileAccounting.vouchers.push(voucher);
+    _saveFileAccounting();
+    return voucher;
+  }
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const { rows: seqRows } = await client.query(
+      "INSERT INTO voucher_seq (company_id, year, seq) VALUES ($1,$2,1) ON CONFLICT (company_id, year) DO UPDATE SET seq = voucher_seq.seq + 1 RETURNING seq",
+      [companyId, year]
+    );
+    const voucherNo = `JE-${year}-${String(seqRows[0].seq).padStart(6, "0")}`;
+    const voucher = { ...baseVoucher, voucherNo, status: "posted", postedBy: user || "unknown", postedAt: new Date().toISOString() };
+    await client.query("INSERT INTO vouchers (id, voucher_no, voucher_date, status, data, company_id) VALUES ($1,$2,$3,'posted',$4,$5)",
+      [voucher.id, voucherNo, date, voucher, companyId]);
+    await client.query("COMMIT");
+    return voucher;
+  } catch (e) { await client.query("ROLLBACK"); throw e; } finally { client.release(); }
+}
+
+app.post("/api/accounting/rcps/issuances", async (req, res) => {
+  try {
+    if (!requireAdmin(req, res)) return;
+    const companyId = req.auth.companyId || null;
+    const { name, issueDate, faceAmount, sharesIssued, parValue, couponRate, effectiveRate, maturityDate, user } = req.body || {};
+    let { redemptionAmount } = req.body || {};
+    if (!name || !issueDate || !(Number(faceAmount) > 0) || couponRate === undefined || couponRate === null ||
+        effectiveRate === undefined || effectiveRate === null || !maturityDate) {
+      return res.status(400).json({ ok: false, message: "name, issueDate, faceAmount, couponRate, effectiveRate, maturityDate는 필수입니다." });
+    }
+    if (!(new Date(maturityDate) > new Date(issueDate))) {
+      return res.status(400).json({ ok: false, message: "만기일은 발행일 이후여야 합니다." });
+    }
+    const faceAmt = Number(faceAmount);
+    const coupon = Number(couponRate);
+    const eff = Number(effectiveRate);
+    redemptionAmount = _round2(redemptionAmount != null && redemptionAmount !== "" ? Number(redemptionAmount) : faceAmt);
+    const N = _yearsBetween(issueDate, maturityDate);
+    if (N < 1) return res.status(400).json({ ok: false, message: "발행일과 만기일 사이는 최소 1년 이상이어야 합니다." });
+
+    // 유효이자율법 현재가치 계산: 매 회차 표시이자(statedInterestAmt) + 만기 상환금액을
+    // 유효이자율로 할인 → 부채요소 최초 인식액. 발행총액과의 차액이 자본/파생상품 요소.
+    const statedInterestAmt = _round2(faceAmt * coupon);
+    let liabilityInitial = 0;
+    for (let t = 1; t <= N; t++) liabilityInitial += statedInterestAmt / Math.pow(1 + eff, t);
+    liabilityInitial += redemptionAmount / Math.pow(1 + eff, N);
+    liabilityInitial = _round2(liabilityInitial);
+    const equityResidual = _round2(faceAmt - liabilityInitial);
+
+    const issuanceId = `rcps_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const issuance = {
+      id: issuanceId, name, issueDate, faceAmount: faceAmt,
+      sharesIssued: sharesIssued != null && sharesIssued !== "" ? Number(sharesIssued) : null,
+      parValue: parValue != null && parValue !== "" ? Number(parValue) : null,
+      couponRate: coupon, effectiveRate: eff, maturityDate, redemptionAmount,
+      liabilityInitial, equityResidual, status: "active", isDeleted: false,
+      createdBy: user || "unknown", createdAt: new Date().toISOString(),
+    };
+
+    // 상각표 생성: 마지막 회차는 반올림 누적오차 보정을 위해 amortization을
+    // (redemptionAmount - beginningBalance)로 강제해 endingBalance가 정확히 상환금액과 일치하게 만든다.
+    const schedule = [];
+    let beginningBalance = liabilityInitial;
+    for (let seq = 1; seq <= N; seq++) {
+      let effectiveInterest = _round2(beginningBalance * eff);
+      const statedInterest = statedInterestAmt;
+      let amortization = _round2(effectiveInterest - statedInterest);
+      let endingBalance = _round2(beginningBalance + amortization);
+      if (seq === N) {
+        amortization = _round2(redemptionAmount - beginningBalance);
+        effectiveInterest = _round2(amortization + statedInterest);
+        endingBalance = redemptionAmount;
+      }
+      schedule.push({
+        id: `rcpssch_${Date.now()}_${Math.random().toString(36).slice(2, 8)}_${seq}`,
+        issuanceId, seq, periodDate: _addYearsStr(issueDate, seq),
+        beginningBalance, statedInterest, effectiveInterest, amortization, endingBalance,
+        status: "pending", voucherId: null,
+      });
+      beginningBalance = endingBalance;
+    }
+
+    if (USE_JSON_FILE) {
+      _fileAcctRcps.issuances.push(issuance);
+      _fileAcctRcps.schedule.push(...schedule);
+      _saveFileAcctRcps();
+      return res.json({ ok: true, issuance, schedule });
+    }
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query("INSERT INTO rcps_issuances (id, company_id, data) VALUES ($1,$2,$3)", [issuanceId, companyId, issuance]);
+      for (const s of schedule) {
+        await client.query(
+          "INSERT INTO rcps_amortization_schedule (id, issuance_id, company_id, seq, data) VALUES ($1,$2,$3,$4,$5)",
+          [s.id, issuanceId, companyId, s.seq, s]
+        );
+      }
+      await client.query("COMMIT");
+    } catch (e) { await client.query("ROLLBACK"); throw e; } finally { client.release(); }
+    res.json({ ok: true, issuance, schedule });
+  } catch (e) { res.status(e.statusCode || 500).json({ ok: false, message: e.message }); }
+});
+
+app.get("/api/accounting/rcps/issuances", async (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  try {
+    if (USE_JSON_FILE) {
+      return res.json({ ok: true, issuances: _fileAcctRcps.issuances.filter(i => !i.isDeleted).sort((a, b) => b.issueDate.localeCompare(a.issueDate)) });
+    }
+    const companyId = req.auth.companyId || null;
+    const { rows } = await pool.query(
+      "SELECT id, data FROM rcps_issuances WHERE is_deleted = FALSE AND company_id = $1 ORDER BY data->>'issueDate' DESC",
+      [companyId]
+    );
+    res.json({ ok: true, issuances: rows.map(r => ({ id: r.id, ...r.data })) });
+  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+});
+
+app.get("/api/accounting/rcps/issuances/:id", async (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  try {
+    const id = req.params.id;
+    if (USE_JSON_FILE) {
+      const issuance = _fileAcctRcps.issuances.find(i => i.id === id && !i.isDeleted);
+      if (!issuance) return res.status(404).json({ ok: false, message: "RCPS 발행 건을 찾을 수 없습니다." });
+      const schedule = _fileAcctRcps.schedule.filter(s => s.issuanceId === id).sort((a, b) => a.seq - b.seq);
+      const valuations = _fileAcctRcps.valuations.filter(v => v.issuanceId === id).sort((a, b) => a.valuationDate.localeCompare(b.valuationDate));
+      return res.json({ ok: true, issuance, schedule, valuations });
+    }
+    const companyId = req.auth.companyId || null;
+    const { rows } = await pool.query("SELECT data FROM rcps_issuances WHERE id = $1 AND company_id = $2 AND is_deleted = FALSE", [id, companyId]);
+    if (!rows.length) return res.status(404).json({ ok: false, message: "RCPS 발행 건을 찾을 수 없습니다." });
+    const issuance = { id, ...rows[0].data };
+    const { rows: schedRows } = await pool.query("SELECT data FROM rcps_amortization_schedule WHERE issuance_id = $1 AND company_id = $2 ORDER BY seq", [id, companyId]);
+    const { rows: valRows } = await pool.query("SELECT data FROM rcps_fair_value_valuations WHERE issuance_id = $1 AND company_id = $2 ORDER BY data->>'valuationDate'", [id, companyId]);
+    res.json({ ok: true, issuance, schedule: schedRows.map(r => r.data), valuations: valRows.map(r => r.data) });
+  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+});
+
+app.get("/api/accounting/rcps/issuances/:id/schedule", async (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  try {
+    const id = req.params.id;
+    if (USE_JSON_FILE) {
+      return res.json({ ok: true, schedule: _fileAcctRcps.schedule.filter(s => s.issuanceId === id).sort((a, b) => a.seq - b.seq) });
+    }
+    const companyId = req.auth.companyId || null;
+    const { rows } = await pool.query("SELECT data FROM rcps_amortization_schedule WHERE issuance_id = $1 AND company_id = $2 ORDER BY seq", [id, companyId]);
+    res.json({ ok: true, schedule: rows.map(r => r.data) });
+  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+});
+
+app.get("/api/accounting/rcps/issuances/:id/valuations", async (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  try {
+    const id = req.params.id;
+    if (USE_JSON_FILE) {
+      return res.json({ ok: true, valuations: _fileAcctRcps.valuations.filter(v => v.issuanceId === id).sort((a, b) => a.valuationDate.localeCompare(b.valuationDate)) });
+    }
+    const companyId = req.auth.companyId || null;
+    const { rows } = await pool.query("SELECT data FROM rcps_fair_value_valuations WHERE issuance_id = $1 AND company_id = $2 ORDER BY data->>'valuationDate'", [id, companyId]);
+    res.json({ ok: true, valuations: rows.map(r => r.data) });
+  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+});
+
+app.post("/api/accounting/rcps/issuances/:id/delete", async (req, res) => {
+  try {
+    if (!requireAdmin(req, res)) return;
+    const id = req.params.id;
+    if (USE_JSON_FILE) {
+      const issuance = _fileAcctRcps.issuances.find(i => i.id === id && !i.isDeleted);
+      if (!issuance) return res.status(404).json({ ok: false, message: "RCPS 발행 건을 찾을 수 없습니다." });
+      const hasPosted = _fileAcctRcps.schedule.some(s => s.issuanceId === id && s.status === "posted");
+      const hasValuation = _fileAcctRcps.valuations.some(v => v.issuanceId === id);
+      if (hasPosted || hasValuation) return res.status(400).json({ ok: false, message: "이미 회계처리가 진행된 발행 건은 삭제할 수 없습니다." });
+      issuance.isDeleted = true;
+      _saveFileAcctRcps();
+      return res.json({ ok: true });
+    }
+    const companyId = req.auth.companyId || null;
+    const { rows } = await pool.query("SELECT 1 FROM rcps_issuances WHERE id = $1 AND company_id = $2 AND is_deleted = FALSE", [id, companyId]);
+    if (!rows.length) return res.status(404).json({ ok: false, message: "RCPS 발행 건을 찾을 수 없습니다." });
+    const { rows: postedRows } = await pool.query(
+      "SELECT 1 FROM rcps_amortization_schedule WHERE issuance_id = $1 AND company_id = $2 AND data->>'status' = 'posted' LIMIT 1", [id, companyId]
+    );
+    const { rows: valRows } = await pool.query(
+      "SELECT 1 FROM rcps_fair_value_valuations WHERE issuance_id = $1 AND company_id = $2 LIMIT 1", [id, companyId]
+    );
+    if (postedRows.length || valRows.length) return res.status(400).json({ ok: false, message: "이미 회계처리가 진행된 발행 건은 삭제할 수 없습니다." });
+    await pool.query("UPDATE rcps_issuances SET is_deleted = TRUE WHERE id = $1 AND company_id = $2", [id, companyId]);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+});
+
+app.post("/api/accounting/rcps/schedule/:scheduleId/post", async (req, res) => {
+  try {
+    if (!requireAdmin(req, res)) return;
+    const scheduleId = req.params.scheduleId;
+    const companyId = req.auth.companyId || null;
+    const { user, interestExpenseAccountId, cashAccountId, rcpsLiabilityAccountId } = req.body || {};
+    if (!interestExpenseAccountId || !cashAccountId || !rcpsLiabilityAccountId) {
+      return res.status(400).json({ ok: false, message: "이자비용, 현금, RCPS부채 계정과목은 모두 필수입니다." });
+    }
+    let scheduleRow, issuance;
+    if (USE_JSON_FILE) {
+      scheduleRow = _fileAcctRcps.schedule.find(s => s.id === scheduleId);
+      if (!scheduleRow) return res.status(404).json({ ok: false, message: "상각 스케줄을 찾을 수 없습니다." });
+      if (scheduleRow.status === "posted") return res.status(400).json({ ok: false, message: "이미 전표가 발행된 회차입니다." });
+      issuance = _fileAcctRcps.issuances.find(i => i.id === scheduleRow.issuanceId);
+    } else {
+      const { rows } = await pool.query("SELECT data FROM rcps_amortization_schedule WHERE id = $1 AND company_id = $2", [scheduleId, companyId]);
+      if (!rows.length) return res.status(404).json({ ok: false, message: "상각 스케줄을 찾을 수 없습니다." });
+      scheduleRow = rows[0].data;
+      if (scheduleRow.status === "posted") return res.status(400).json({ ok: false, message: "이미 전표가 발행된 회차입니다." });
+      const { rows: issRows } = await pool.query("SELECT data FROM rcps_issuances WHERE id = $1 AND company_id = $2", [scheduleRow.issuanceId, companyId]);
+      issuance = issRows[0]?.data;
+    }
+    if (!issuance) return res.status(404).json({ ok: false, message: "RCPS 발행 건을 찾을 수 없습니다." });
+
+    const { effectiveInterest, statedInterest, amortization } = scheduleRow;
+    // amortization>=0(할인발행 상각, 부채 증가)이면 세 번째 라인이 RCPS부채 대변, amortization<0
+    // (할증발행 상각, 부채 감소)이면 차변으로 뒤집는다. effectiveInterest는 이미 상각표 생성 시점에
+    // statedInterest+amortization으로 계산돼 있어 첫 번째 라인의 차변 금액은 두 경우 모두 동일하게
+    // 쓰면 자동으로 차대가 맞는다(할증발행: effectiveInterest+|amortization| = statedInterest = 대변합계).
+    const lines = amortization >= 0
+      ? [
+          { accountId: interestExpenseAccountId, debit: effectiveInterest, credit: 0 },
+          { accountId: cashAccountId, debit: 0, credit: statedInterest },
+          { accountId: rcpsLiabilityAccountId, debit: 0, credit: amortization },
+        ]
+      : [
+          { accountId: interestExpenseAccountId, debit: effectiveInterest, credit: 0 },
+          { accountId: cashAccountId, debit: 0, credit: statedInterest },
+          { accountId: rcpsLiabilityAccountId, debit: Math.abs(amortization), credit: 0 },
+        ];
+
+    const voucher = await _issuePostedVoucher(companyId, {
+      date: scheduleRow.periodDate,
+      description: `RCPS 상각 (${issuance.name} ${scheduleRow.seq}회차)`,
+      lines, user,
+    });
+
+    const updatedSchedule = { ...scheduleRow, status: "posted", voucherId: voucher.id };
+    if (USE_JSON_FILE) {
+      const idx = _fileAcctRcps.schedule.findIndex(s => s.id === scheduleId);
+      _fileAcctRcps.schedule[idx] = updatedSchedule;
+      _saveFileAcctRcps();
+    } else {
+      await pool.query("UPDATE rcps_amortization_schedule SET data = $3, updated_at = NOW() WHERE id = $1 AND company_id = $2", [scheduleId, companyId, updatedSchedule]);
+    }
+    res.json({ ok: true, schedule: updatedSchedule, voucher });
+  } catch (e) { res.status(e.statusCode || 500).json({ ok: false, message: e.message }); }
+});
+
+app.post("/api/accounting/rcps/valuations", async (req, res) => {
+  try {
+    if (!requireAdmin(req, res)) return;
+    const companyId = req.auth.companyId || null;
+    const { issuanceId, valuationDate, fairValue, method, memo, gainAccountId, lossAccountId, derivativeLiabilityAccountId, user } = req.body || {};
+    if (!issuanceId || !valuationDate || fairValue === undefined || fairValue === null || fairValue === "") {
+      return res.status(400).json({ ok: false, message: "issuanceId, valuationDate, fairValue는 필수입니다." });
+    }
+    let issuance, priorList;
+    if (USE_JSON_FILE) {
+      issuance = _fileAcctRcps.issuances.find(i => i.id === issuanceId && !i.isDeleted);
+      if (!issuance) return res.status(404).json({ ok: false, message: "RCPS 발행 건을 찾을 수 없습니다." });
+      priorList = _fileAcctRcps.valuations.filter(v => v.issuanceId === issuanceId).sort((a, b) => b.valuationDate.localeCompare(a.valuationDate));
+    } else {
+      const { rows } = await pool.query("SELECT data FROM rcps_issuances WHERE id = $1 AND company_id = $2 AND is_deleted = FALSE", [issuanceId, companyId]);
+      if (!rows.length) return res.status(404).json({ ok: false, message: "RCPS 발행 건을 찾을 수 없습니다." });
+      issuance = rows[0].data;
+      const { rows: valRows } = await pool.query(
+        "SELECT data FROM rcps_fair_value_valuations WHERE issuance_id = $1 AND company_id = $2 ORDER BY data->>'valuationDate' DESC", [issuanceId, companyId]
+      );
+      priorList = valRows.map(r => r.data);
+    }
+    const priorCarrying = priorList.length ? Number(priorList[0].fairValue) : Number(issuance.equityResidual);
+    const gainLoss = _round2(Number(fairValue) - priorCarrying);
+
+    let voucher = null;
+    if (gainLoss > 0) {
+      // 부채(파생상품) 장부금액 증가 = 평가손실
+      if (!lossAccountId || !derivativeLiabilityAccountId) {
+        return res.status(400).json({ ok: false, message: "평가손실 발생 시 lossAccountId, derivativeLiabilityAccountId는 필수입니다." });
+      }
+      voucher = await _issuePostedVoucher(companyId, {
+        date: valuationDate,
+        description: `RCPS 공정가치평가 (${issuance.name})`,
+        lines: [
+          { accountId: lossAccountId, debit: gainLoss, credit: 0 },
+          { accountId: derivativeLiabilityAccountId, debit: 0, credit: gainLoss },
+        ],
+        user,
+      });
+    } else if (gainLoss < 0) {
+      // 부채(파생상품) 장부금액 감소 = 평가이익
+      if (!gainAccountId || !derivativeLiabilityAccountId) {
+        return res.status(400).json({ ok: false, message: "평가이익 발생 시 gainAccountId, derivativeLiabilityAccountId는 필수입니다." });
+      }
+      voucher = await _issuePostedVoucher(companyId, {
+        date: valuationDate,
+        description: `RCPS 공정가치평가 (${issuance.name})`,
+        lines: [
+          { accountId: derivativeLiabilityAccountId, debit: Math.abs(gainLoss), credit: 0 },
+          { accountId: gainAccountId, debit: 0, credit: Math.abs(gainLoss) },
+        ],
+        user,
+      });
+    }
+
+    const valuation = {
+      id: `rcpsval_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      issuanceId, valuationDate, priorCarrying, fairValue: Number(fairValue), gainLoss,
+      method: method || "", memo: memo || "", voucherId: voucher ? voucher.id : null,
+      createdBy: user || "unknown", createdAt: new Date().toISOString(),
+    };
+    if (USE_JSON_FILE) {
+      _fileAcctRcps.valuations.push(valuation);
+      _saveFileAcctRcps();
+    } else {
+      await pool.query(
+        "INSERT INTO rcps_fair_value_valuations (id, issuance_id, company_id, data) VALUES ($1,$2,$3,$4)",
+        [valuation.id, issuanceId, companyId, valuation]
+      );
+    }
+    res.json({ ok: true, valuation, voucher });
+  } catch (e) { res.status(e.statusCode || 500).json({ ok: false, message: e.message }); }
 });
 
 // ── 영업/재고 모듈 (품목 / 위치 / 견적서 / 발주서 / 재고 입출고) ──────────────────
