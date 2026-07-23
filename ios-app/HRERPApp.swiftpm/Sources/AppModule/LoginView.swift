@@ -5,6 +5,7 @@ struct LoginView: View {
     @EnvironmentObject private var settings: AppSettings
     @EnvironmentObject private var session: SessionStore
 
+    @State private var companyCode = ""
     @State private var loginId = ""
     @State private var password = ""
     @State private var otp = ""
@@ -31,6 +32,14 @@ struct LoginView: View {
                 .padding(.top, 40)
 
                 AppCard {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("회사 코드").font(.caption.weight(.semibold)).foregroundStyle(AppTheme.secondaryText)
+                        TextField("자체호스팅 서버는 비워두세요", text: $companyCode)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .appFieldStyle()
+                    }
+
                     VStack(alignment: .leading, spacing: 6) {
                         Text("아이디").font(.caption.weight(.semibold)).foregroundStyle(AppTheme.secondaryText)
                         TextField("예: u2008001", text: $loginId)
@@ -120,6 +129,7 @@ struct LoginView: View {
             loginId: loginId,
             password: password,
             otp: requireOtp ? otp : nil,
+            companyCode: companyCode.trimmingCharacters(in: .whitespacesAndNewlines),
             client: client
         )
         if !success && session.loginError?.contains("2단계") == true {

@@ -24,12 +24,16 @@ final class APIClient {
 
     // MARK: POST /login
 
-    func login(loginId: String, password: String, otp: String?) async throws -> LoginResponse {
+    // companyCode: 멀티테넌트(Postgres/SaaS) 배포는 필수, 자체호스팅(JSON 파일 모드)은
+    // 회사 개념이 없어 무시된다 — 웹 클라이언트(public/index.html)의
+    // `companyCode:companyCode||undefined` 패턴과 동일하게, 비어 있으면 키 자체를 보내지 않는다.
+    func login(loginId: String, password: String, otp: String?, companyCode: String?) async throws -> LoginResponse {
         var request = URLRequest(url: try url("login"))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         var body: [String: String] = ["loginId": loginId, "pw": password]
         if let otp, !otp.isEmpty { body["otp"] = otp }
+        if let companyCode, !companyCode.isEmpty { body["companyCode"] = companyCode }
         request.httpBody = try JSONEncoder().encode(body)
 
         let (data, response) = try await session.data(for: request)
