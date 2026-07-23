@@ -1067,22 +1067,29 @@ let kpiSelUserId=0,hrChgEmpId="",approvalTab="list",settingsTab="main";
 let _evalOpsTab="main";
 let _welfareSettingsTab="health";
 // 회계 모듈: 서버가 직접 관리하는 데이터(클라이언트 신뢰 블롭과 분리, getFullState/applyState 미포함)
-let acctAccounts=[],acctVouchers=[],acctTaxInvoices=[],acctPartners=[],acctPayments=[],_acctLoaded=false;
+let acctAccounts=[],acctVouchers=[],acctTaxInvoices=[],acctPartners=[],acctPayments=[],acctRcpsIssuances=[],_acctLoaded=false;
+// 원가명세서 조회 기간 상태(회계 리포트 페이지의 _acctRptYear 등과 동일한 페이지 로컬 상태 패턴)
+let _costStmtFrom=new Date(new Date().getFullYear(),0,1).toISOString().slice(0,10),_costStmtTo=new Date().toISOString().slice(0,10);
+// RCPS 발행 상세(상각표·공정가치평가 이력) — 목록은 acctRcpsIssuances로 위 loadAccountingFromServer에서
+// 일괄 로드되지만, 상세는 데이터가 커질 수 있어 상세 화면 진입 시에만 지연 로드한다.
+let _rcpsDetail=null,_rcpsDetailId=null;
 async function loadAccountingFromServer(){
   if(!serverConfig.url){_acctLoaded=true;return;}
   try{
-    const [ra,rv,rt,rp,rpay]=await Promise.all([
+    const [ra,rv,rt,rp,rpay,rrcps]=await Promise.all([
       serverRequest("GET","/api/accounting/accounts"),
       serverRequest("GET","/api/accounting/vouchers"),
       serverRequest("GET","/api/accounting/tax-invoices"),
       serverRequest("GET","/api/accounting/partners"),
       serverRequest("GET","/api/accounting/payments"),
+      serverRequest("GET","/api/accounting/rcps/issuances"),
     ]);
     if(ra?.ok)acctAccounts=ra.accounts;
     if(rv?.ok)acctVouchers=rv.vouchers;
     if(rt?.ok)acctTaxInvoices=rt.taxInvoices;
     if(rp?.ok)acctPartners=rp.partners;
     if(rpay?.ok)acctPayments=rpay.payments;
+    if(rrcps?.ok)acctRcpsIssuances=rrcps.issuances;
   }catch(e){/* 오프라인/서버 미연결 시 회계 페이지에서 안내 표시 */}
   _acctLoaded=true;
   if(currentPage&&currentPage.startsWith("acct-"))renderPage();
@@ -5344,6 +5351,8 @@ function renderSidebar(){
       {id:"acct-sep",type:"sep",label:"회계",roles:["admin"]},
       {id:"acct-partners",label:"거래처 관리",icon:"🏢",desc:"거래처(매출처/매입처) 등록·관리",roles:["admin"]},
       {id:"acct-accounts",label:"계정과목",icon:"📒",desc:"계정과목 등록·관리",roles:["admin"]},
+      {id:"acct-cost-statement",label:"원가명세서",icon:"🏭",desc:"제조원가(재료비·노무비·경비)·판관비 명세",roles:["admin"]},
+      {id:"acct-rcps",label:"RCPS 관리",icon:"💠",desc:"상환전환우선주 발행·상각·공정가치평가",roles:["admin"]},
       {id:"acct-vouchers",label:"전표 관리",icon:"🧾",desc:"전표 작성·확정·취소",roles:["admin"]},
       {id:"acct-tax-invoices",label:"세금계산서",icon:"📄",desc:"세금계산서 발행(사내용)",roles:["admin"]},
       {id:"acct-reports",label:"회계 리포트",icon:"📈",desc:"시산표·월별 손익·거래처별 집계",roles:["admin"]},
@@ -5400,7 +5409,7 @@ function renderSidebar(){
   _menuGroupsCache=menuGroups;
   const groupOrder=SIDEBAR_DEFAULT_ORDER.filter(g=>menuGroups[g]);
   const menus=groupOrder.flatMap(g=>menuGroups[g]);
-  const titles={dashboard:"대시보드","my-profile":"내 프로필","hr-register":"신규 직원 등록","hr-list":"직원 목록","hr-changes":"발령·변동 이력",kpi:"KPI 목표 등록","kpi-results":"KPI 결과 입력","my-kpi":"나의 KPI","grade-view":"KPI 등급 현황","comp-grade-view":"역량평가 등급","comp-eval":"다면평가 진행","first-eval":"1차 평가","second-eval":"2차 평가","kpi-amend":"수정 요청 승인","eval-progress":"평가 진행 상황",settings:"운영 설정",history:"수정 이력","change-pw":"비밀번호 변경","data-mgmt":"데이터 관리","core-talent":"핵심인재 관리","talent-dev":"육성 계획·실적","promotion-mgmt":"승진 심사 관리","low-performer":"저성과 인력 관리","approval-draft":"기안하기","approval-outbox":"상신함","approval-inbox":"결재함","approval-receive":"수신함","approval-cc-inbox":"참조함","approval-completed":"완료함","attendance":"근태 현황","att-calendar":"캘린더","leave-mgmt":"연차 관리","payslip":"급여 명세서","approval-templates":"결재 양식 관리","integrations":"연동 설정","orgchart":"조직도","certificate":"증명서 발급","hr-stats":"인사 통계","board":"게시판","room-booking":"회의실 예약","welfare-points":"복지포인트","mandatory-training":"법정의무교육","hr-welfare-points":"복지포인트 현황(전체)","hr-mandatory-training":"법정의무교육 현황(전체)","hr-attendance":"근태 현황(전체)","hr-leave-mgmt":"연차 관리(전체)","welfare-status":"복지 현황","long-service-award":"장기근속 포상","award-history":"(최)우수사원 선정 이력","salary-info":"급여 기준 정보","welfare-settings":"복지 제도 설정","notification-center":"알림","acct-partners":"거래처 관리","acct-accounts":"계정과목","acct-vouchers":"전표 관리","acct-tax-invoices":"세금계산서","acct-reports":"회계 리포트","expense-claims":"경비 청구","expense-admin":"경비 정산 관리","acct-receivables":"채권/채무 관리","overtime-req":"초과근무 신청","exec-dashboard":"경영 대시보드","onboarding":"온보딩/오프보딩","approval-delegation":"결재 위임","sales-quotations":"견적서 관리","sales-dashboard":"영업 실적 대시보드","sales-purchase-orders":"발주서 관리","inv-items":"품목 관리","inv-locations":"위치 관리","inv-stock":"재고 현황","inv-purchase-requests":"구매요청","pms-projects":"프로젝트 관리","pms-allocation":"내 투입률 입력","pms-my-projects":"내가 투입된 프로젝트","pms-utilization":"가동률 현황","pms-worklog":"일일 업무 투입","recruit-jobs":"채용공고 관리","recruit-candidates":"지원자 관리","recruit-eval":"면접 일정/평가 입력","recruit-eval-detail":"면접 평가 상세","recruit-dashboard":"채용 현황 대시보드","eval-ops":"평가 운영","settings-org":"조직 관리","settings-ranks":"직급 체계","attend-settings":"근태 설정","payroll-settings":"급여 관리","payroll-mgmt":"급여 종합 관리","company-info":"회사 기본 정보","room-settings":"회의실 관리","deploy-perm":"권한 관리"};
+  const titles={dashboard:"대시보드","my-profile":"내 프로필","hr-register":"신규 직원 등록","hr-list":"직원 목록","hr-changes":"발령·변동 이력",kpi:"KPI 목표 등록","kpi-results":"KPI 결과 입력","my-kpi":"나의 KPI","grade-view":"KPI 등급 현황","comp-grade-view":"역량평가 등급","comp-eval":"다면평가 진행","first-eval":"1차 평가","second-eval":"2차 평가","kpi-amend":"수정 요청 승인","eval-progress":"평가 진행 상황",settings:"운영 설정",history:"수정 이력","change-pw":"비밀번호 변경","data-mgmt":"데이터 관리","core-talent":"핵심인재 관리","talent-dev":"육성 계획·실적","promotion-mgmt":"승진 심사 관리","low-performer":"저성과 인력 관리","approval-draft":"기안하기","approval-outbox":"상신함","approval-inbox":"결재함","approval-receive":"수신함","approval-cc-inbox":"참조함","approval-completed":"완료함","attendance":"근태 현황","att-calendar":"캘린더","leave-mgmt":"연차 관리","payslip":"급여 명세서","approval-templates":"결재 양식 관리","integrations":"연동 설정","orgchart":"조직도","certificate":"증명서 발급","hr-stats":"인사 통계","board":"게시판","room-booking":"회의실 예약","welfare-points":"복지포인트","mandatory-training":"법정의무교육","hr-welfare-points":"복지포인트 현황(전체)","hr-mandatory-training":"법정의무교육 현황(전체)","hr-attendance":"근태 현황(전체)","hr-leave-mgmt":"연차 관리(전체)","welfare-status":"복지 현황","long-service-award":"장기근속 포상","award-history":"(최)우수사원 선정 이력","salary-info":"급여 기준 정보","welfare-settings":"복지 제도 설정","notification-center":"알림","acct-partners":"거래처 관리","acct-accounts":"계정과목","acct-vouchers":"전표 관리","acct-tax-invoices":"세금계산서","acct-cost-statement":"원가명세서","acct-rcps":"RCPS 관리","acct-rcps-detail":"RCPS 발행 상세","acct-reports":"회계 리포트","expense-claims":"경비 청구","expense-admin":"경비 정산 관리","acct-receivables":"채권/채무 관리","overtime-req":"초과근무 신청","exec-dashboard":"경영 대시보드","onboarding":"온보딩/오프보딩","approval-delegation":"결재 위임","sales-quotations":"견적서 관리","sales-dashboard":"영업 실적 대시보드","sales-purchase-orders":"발주서 관리","inv-items":"품목 관리","inv-locations":"위치 관리","inv-stock":"재고 현황","inv-purchase-requests":"구매요청","pms-projects":"프로젝트 관리","pms-allocation":"내 투입률 입력","pms-my-projects":"내가 투입된 프로젝트","pms-utilization":"가동률 현황","pms-worklog":"일일 업무 투입","recruit-jobs":"채용공고 관리","recruit-candidates":"지원자 관리","recruit-eval":"면접 일정/평가 입력","recruit-eval-detail":"면접 평가 상세","recruit-dashboard":"채용 현황 대시보드","eval-ops":"평가 운영","settings-org":"조직 관리","settings-ranks":"직급 체계","attend-settings":"근태 설정","payroll-settings":"급여 관리","payroll-mgmt":"급여 종합 관리","company-info":"회사 기본 정보","room-settings":"회의실 관리","deploy-perm":"권한 관리"};
   const ptEl=$("#page-title");if(ptEl)ptEl.textContent=titles[currentPage]||"";
   const sb=$("#sidebar");if(!sb)return;
   // Filter by role + per-user custom permission overrides (admin-managed)
@@ -5490,7 +5499,7 @@ const PAGE_ROLES={
   "eval-ops":["admin"],"settings-org":["admin"],"settings-ranks":["admin"],"attend-settings":["admin"],
   "payroll-settings":["admin"],"company-info":["admin"],"room-settings":["admin"],"deploy-perm":["admin"],
   "pms-utilization":["admin","director","leader"],"sales-dashboard":["admin"],
-  "acct-partners":["admin"],"acct-accounts":["admin"],"acct-vouchers":["admin"],"acct-tax-invoices":["admin"],"acct-reports":["admin"],"expense-admin":["admin"],"acct-receivables":["admin"],"exec-dashboard":["admin"],"onboarding":["admin"],
+  "acct-partners":["admin"],"acct-accounts":["admin"],"acct-vouchers":["admin"],"acct-tax-invoices":["admin"],"acct-cost-statement":["admin"],"acct-rcps":["admin"],"acct-rcps-detail":["admin"],"acct-reports":["admin"],"expense-admin":["admin"],"acct-receivables":["admin"],"exec-dashboard":["admin"],"onboarding":["admin"],
   "sales-quotations":["admin"],"sales-purchase-orders":["admin"],
   "inv-items":["admin"],"inv-locations":["admin"],"inv-stock":["admin"],"inv-stock-log":["admin"],
   "welfare-settings":["admin"],
@@ -5623,7 +5632,7 @@ function renderCategoryLanding(catKey){
 function renderPage(){
   if(currentPage&&currentPage.startsWith("cat:")){renderCategoryLanding(currentPage.slice(4));renderCatNav();const attendBar=document.getElementById("attend-bar");if(attendBar)attendBar.innerHTML=(currentUser&&currentPage==="dashboard")?_renderTeamTodayWidget(currentUser):"";return;}
   if(currentPage&&currentPage.startsWith("board-")){renderBoardPage();renderCatNav();const attendBar=document.getElementById("attend-bar");if(attendBar)attendBar.innerHTML=(currentUser&&currentPage==="dashboard")?_renderTeamTodayWidget(currentUser):"";return;}
-  const pages={dashboard:renderDashboard,"my-profile":renderMyProfile,"hr-register":renderHRRegister,"hr-list":renderHRList,"hr-changes":renderHRChanges,kpi:()=>renderKPI(false),"kpi-results":()=>renderKPI(true),"my-kpi":renderMyKPI,"grade-view":renderGradeView,"comp-grade-view":renderCompGradeView,"comp-settings-shortcut":()=>gotoPage("eval-ops"),"comp-eval":renderCompEval,"data-mgmt":renderDataManagementPage,"core-talent":renderCoreTalentPage,"talent-dev":renderTalentDevPage,"promotion-mgmt":renderPromotionPageStandalone,"low-performer":renderLowPerformer,"activity-log":()=>{loadActivityFromServer();},"first-eval":()=>{approvalTab="eval";approvalSearch={name:"",dept:""};renderApprovals();},"second-eval":()=>{approvalTab="eval";approvalSearch={name:"",dept:""};renderApprovals();},"kpi-amend":()=>{approvalTab="requests";approvalSearch={name:"",dept:""};renderApprovals();},"eval-progress":renderEvalProgressPage,settings:renderSettings,"eval-ops":renderEvalOpsPage,"settings-org":renderSettingsOrgPage,"settings-ranks":renderSettingsRanksPage,"attend-settings":renderAttendSettings,"payroll-settings":renderPayrollSettings,"company-info":renderCompanyInfo,"room-settings":renderRoomSettings,"deploy-perm":renderDeployPermPage,history:renderHistory,"change-pw":renderChangePW,"approval-draft":renderApprovalDraftPage,"approval-outbox":renderApprovalOutbox,"approval-inbox":renderApprovalInbox,"approval-receive":renderApprovalReceive,"approval-cc-inbox":renderApprovalCcInbox,"approval-completed":renderApprovalCompleted,"attendance":renderAttendancePage,"att-calendar":renderAttendanceCalendarPage,"leave-mgmt":renderLeaveManagementPage,"payslip":renderPayslipPage,"approval-templates":renderApprovalTemplateAdmin,"integrations":renderIntegrationsPage,"orgchart":renderOrgChartPage,"certificate":renderCertPage,"hr-stats":renderHRStatsPage,"board":renderBoardPage,"room-booking":renderRoomBookingPage,"welfare-points":renderWelfarePointsPage,"mandatory-training":renderMandatoryTrainingPage,"welfare-status":renderWelfareStatusPage,"long-service-award":renderLongServiceAwardPage,"award-history":renderAwardHistoryPage,"hr-welfare-points":renderHrWelfarePointsPage,"hr-mandatory-training":renderHrMandatoryTrainingPage,"hr-attendance":renderHrAttendancePage,"hr-leave-mgmt":renderHrLeaveManagementPage,"payroll-mgmt":renderPayrollMgmtPage,"salary-info":renderSalaryInfoPage,"welfare-settings":renderWelfareSettingsPage,"notification-center":renderNotificationCenterPage,"acct-partners":renderAcctPartnersPage,"acct-accounts":renderAcctAccountsPage,"acct-vouchers":renderAcctVouchersPage,"acct-tax-invoices":renderAcctTaxInvoicesPage,"acct-reports":renderAcctReportsPage,"expense-claims":renderExpenseClaimsPage,"expense-admin":renderExpenseAdminPage,"acct-receivables":renderAcctReceivablesPage,"overtime-req":renderOvertimeReqPage,"exec-dashboard":renderExecDashboardPage,"onboarding":renderOnboardingPage,"approval-delegation":renderApprovalDelegationPage,"sales-quotations":renderSalesQuotationsPage,"sales-dashboard":renderSalesDashboardPage,"sales-purchase-orders":renderSalesPurchaseOrdersPage,"inv-items":renderInvItemsPage,"inv-locations":renderInvLocationsPage,"inv-stock":renderInvStockPage,"inv-stock-log":renderInvStockLogPage,"inv-purchase-requests":renderPurchaseRequestsPage,"pms-projects":renderPmsProjectsPage,"pms-allocation":renderPmsAllocationPage,"pms-my-projects":renderPmsMyProjectsPage,"pms-utilization":renderPmsUtilizationPage,"pms-worklog":renderPmsWorklogPage,"recruit-jobs":renderRecruitJobsPage,"recruit-candidates":renderRecruitCandidatesPage,"recruit-eval":renderRecruitEvalPage,"recruit-eval-detail":renderRecruitEvalDetailPage,"recruit-dashboard":renderRecruitDashboardPage};
+  const pages={dashboard:renderDashboard,"my-profile":renderMyProfile,"hr-register":renderHRRegister,"hr-list":renderHRList,"hr-changes":renderHRChanges,kpi:()=>renderKPI(false),"kpi-results":()=>renderKPI(true),"my-kpi":renderMyKPI,"grade-view":renderGradeView,"comp-grade-view":renderCompGradeView,"comp-settings-shortcut":()=>gotoPage("eval-ops"),"comp-eval":renderCompEval,"data-mgmt":renderDataManagementPage,"core-talent":renderCoreTalentPage,"talent-dev":renderTalentDevPage,"promotion-mgmt":renderPromotionPageStandalone,"low-performer":renderLowPerformer,"activity-log":()=>{loadActivityFromServer();},"first-eval":()=>{approvalTab="eval";approvalSearch={name:"",dept:""};renderApprovals();},"second-eval":()=>{approvalTab="eval";approvalSearch={name:"",dept:""};renderApprovals();},"kpi-amend":()=>{approvalTab="requests";approvalSearch={name:"",dept:""};renderApprovals();},"eval-progress":renderEvalProgressPage,settings:renderSettings,"eval-ops":renderEvalOpsPage,"settings-org":renderSettingsOrgPage,"settings-ranks":renderSettingsRanksPage,"attend-settings":renderAttendSettings,"payroll-settings":renderPayrollSettings,"company-info":renderCompanyInfo,"room-settings":renderRoomSettings,"deploy-perm":renderDeployPermPage,history:renderHistory,"change-pw":renderChangePW,"approval-draft":renderApprovalDraftPage,"approval-outbox":renderApprovalOutbox,"approval-inbox":renderApprovalInbox,"approval-receive":renderApprovalReceive,"approval-cc-inbox":renderApprovalCcInbox,"approval-completed":renderApprovalCompleted,"attendance":renderAttendancePage,"att-calendar":renderAttendanceCalendarPage,"leave-mgmt":renderLeaveManagementPage,"payslip":renderPayslipPage,"approval-templates":renderApprovalTemplateAdmin,"integrations":renderIntegrationsPage,"orgchart":renderOrgChartPage,"certificate":renderCertPage,"hr-stats":renderHRStatsPage,"board":renderBoardPage,"room-booking":renderRoomBookingPage,"welfare-points":renderWelfarePointsPage,"mandatory-training":renderMandatoryTrainingPage,"welfare-status":renderWelfareStatusPage,"long-service-award":renderLongServiceAwardPage,"award-history":renderAwardHistoryPage,"hr-welfare-points":renderHrWelfarePointsPage,"hr-mandatory-training":renderHrMandatoryTrainingPage,"hr-attendance":renderHrAttendancePage,"hr-leave-mgmt":renderHrLeaveManagementPage,"payroll-mgmt":renderPayrollMgmtPage,"salary-info":renderSalaryInfoPage,"welfare-settings":renderWelfareSettingsPage,"notification-center":renderNotificationCenterPage,"acct-partners":renderAcctPartnersPage,"acct-accounts":renderAcctAccountsPage,"acct-vouchers":renderAcctVouchersPage,"acct-tax-invoices":renderAcctTaxInvoicesPage,"acct-cost-statement":renderAcctCostStatementPage,"acct-rcps":renderAcctRcpsPage,"acct-rcps-detail":()=>{loadRcpsDetailFromServer();},"acct-reports":renderAcctReportsPage,"expense-claims":renderExpenseClaimsPage,"expense-admin":renderExpenseAdminPage,"acct-receivables":renderAcctReceivablesPage,"overtime-req":renderOvertimeReqPage,"exec-dashboard":renderExecDashboardPage,"onboarding":renderOnboardingPage,"approval-delegation":renderApprovalDelegationPage,"sales-quotations":renderSalesQuotationsPage,"sales-dashboard":renderSalesDashboardPage,"sales-purchase-orders":renderSalesPurchaseOrdersPage,"inv-items":renderInvItemsPage,"inv-locations":renderInvLocationsPage,"inv-stock":renderInvStockPage,"inv-stock-log":renderInvStockLogPage,"inv-purchase-requests":renderPurchaseRequestsPage,"pms-projects":renderPmsProjectsPage,"pms-allocation":renderPmsAllocationPage,"pms-my-projects":renderPmsMyProjectsPage,"pms-utilization":renderPmsUtilizationPage,"pms-worklog":renderPmsWorklogPage,"recruit-jobs":renderRecruitJobsPage,"recruit-candidates":renderRecruitCandidatesPage,"recruit-eval":renderRecruitEvalPage,"recruit-eval-detail":renderRecruitEvalDetailPage,"recruit-dashboard":renderRecruitDashboardPage};
   const fn=pages[currentPage];const c=$("#content");
   if(c&&fn){
     c.innerHTML="";
@@ -13958,9 +13967,18 @@ function renderAcctAccountsPage(){
   c.innerHTML=`<div class="card"><div class="card-head"><h3>📒 계정과목 관리</h3><div><button class="btn btn-secondary btn-sm" onclick="_dlAcctAccountsCSV()">📥 엑셀 다운로드</button> <button class="btn btn-primary btn-sm" onclick="openAcctAccountModal()">+ 계정과목 추가</button></div></div>
   <div class="card-body">
   <div class="fg" style="max-width:320px"><input class="fc" value="${h(q)}" placeholder="코드·계정명·구분·세부분류 검색" oninput="window._acctAccSearch=this.value;renderAcctAccountsPage()"></div>
-  <div class="tbl-wrap"><table><thead><tr><th>코드</th><th>계정명</th><th>구분</th><th>세부분류</th><th>사용여부</th><th>관리</th></tr></thead><tbody>
-  ${rows.length?rows.map(a=>`<tr><td>${h(a.code)}</td><td>${h(a.name)}</td><td>${TYPE_LABEL[a.type]||a.type}</td><td>${h(a.category||"-")}</td><td>${a.active?badge("사용","green"):badge("미사용","gray")}</td><td><button class="btn btn-secondary btn-sm" onclick="openAcctAccountModal('${a.id}')">수정</button> <button class="btn btn-ghost btn-sm" onclick="_showRecordHistory('${h(a.name)}',_buildHistoryRows(${JSON.stringify(a).replace(/'/g,"&#39;")},[]))">이력</button> <button class="btn btn-danger btn-sm" onclick="deleteAcctAccount('${a.id}')">삭제</button></td></tr>`).join(""):`<tr><td colspan="6" class="text-gray" style="text-align:center;padding:20px">${q?"검색 결과가 없습니다.":"등록된 계정과목이 없습니다."}</td></tr>`}
+  <div class="tbl-wrap"><table><thead><tr><th>코드</th><th>계정명</th><th>구분</th><th>세부분류</th><th>원가구분</th><th>사용여부</th><th>관리</th></tr></thead><tbody>
+  ${rows.length?rows.map(a=>`<tr><td>${h(a.code)}</td><td>${h(a.name)}</td><td>${TYPE_LABEL[a.type]||a.type}</td><td>${h(a.category||"-")}</td><td>${_costTagLabel(a.costCategory,a.costSubType)}</td><td>${a.active?badge("사용","green"):badge("미사용","gray")}</td><td><button class="btn btn-secondary btn-sm" onclick="openAcctAccountModal('${a.id}')">수정</button> <button class="btn btn-ghost btn-sm" onclick="_showRecordHistory('${h(a.name)}',_buildHistoryRows(${JSON.stringify(a).replace(/'/g,"&#39;")},[]))">이력</button> <button class="btn btn-danger btn-sm" onclick="deleteAcctAccount('${a.id}')">삭제</button></td></tr>`).join(""):`<tr><td colspan="7" class="text-gray" style="text-align:center;padding:20px">${q?"검색 결과가 없습니다.":"등록된 계정과목이 없습니다."}</td></tr>`}
   </tbody></table></div></div></div>`;
+}
+// 원가구분(costCategory/costSubType) 표시 라벨 — 원가명세서·계정과목 목록 공용
+function _costTagLabel(costCategory,costSubType){
+  if(costCategory==="sga")return badge("판관비","gray");
+  if(costCategory==="mfg"){
+    const sub={material:"재료비",labor:"노무비",overhead:"경비"}[costSubType]||"";
+    return badge("제조원가"+(sub?"·"+sub:""),"indigo");
+  }
+  return `<span class="text-gray fz11">-</span>`;
 }
 function _dlAcctAccountsCSV(){
   const TYPE_LABEL={asset:"자산",liability:"부채",equity:"자본",revenue:"수익",expense:"비용"};
@@ -13976,13 +13994,27 @@ function openAcctAccountModal(id){
       ${[["asset","자산"],["liability","부채"],["equity","자본"],["revenue","수익"],["expense","비용"]].map(([v,l])=>`<option value="${v}" ${a?.type===v?"selected":""}>${l}</option>`).join("")}
     </select></div>
     <div class="fg"><label class="fl">세부분류</label><input class="fc" id="acc-category" value="${h(a?.category||"")}"></div>
+    <div class="fg"><label class="fl">원가구분</label><select class="fc" id="acc-cost-category" onchange="_toggleCostSubTypeField()">
+      <option value="" ${!a?.costCategory?"selected":""}>없음</option>
+      <option value="mfg" ${a?.costCategory==="mfg"?"selected":""}>제조원가</option>
+      <option value="sga" ${a?.costCategory==="sga"?"selected":""}>판매관리비</option>
+    </select></div>
+    <div class="fg" id="acc-cost-subtype-wrap" style="display:${a?.costCategory==="mfg"?"block":"none"}"><label class="fl">제조원가 세부</label><select class="fc" id="acc-cost-subtype">
+      ${[["material","재료비"],["labor","노무비"],["overhead","경비"]].map(([v,l])=>`<option value="${v}" ${a?.costSubType===v?"selected":""}>${l}</option>`).join("")}
+    </select></div>
     <div class="fg"><label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" id="acc-active" ${a?.active!==false?"checked":""}> 사용</label></div>
   </div><div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal()">취소</button><button class="btn btn-primary" onclick="saveAcctAccount('${id||""}')">저장</button></div></div>`);
+}
+function _toggleCostSubTypeField(){
+  const wrap=$("#acc-cost-subtype-wrap");if(!wrap)return;
+  wrap.style.display=$("#acc-cost-category")?.value==="mfg"?"block":"none";
 }
 async function saveAcctAccount(id){
   const code=$("#acc-code")?.value.trim(),name=$("#acc-name")?.value.trim();
   if(!code||!name){showToast("계정코드와 계정명을 입력하세요.","error");return;}
-  const body={id:id||undefined,code,name,type:$("#acc-type")?.value,category:$("#acc-category")?.value.trim(),active:$("#acc-active")?.checked,role:currentUser.role,user:currentUser.name};
+  const costCategory=$("#acc-cost-category")?.value||null;
+  const costSubType=costCategory==="mfg"?($("#acc-cost-subtype")?.value||null):null;
+  const body={id:id||undefined,code,name,type:$("#acc-type")?.value,category:$("#acc-category")?.value.trim(),costCategory,costSubType,active:$("#acc-active")?.checked,role:currentUser.role,user:currentUser.name};
   const r=await serverRequest("POST","/api/accounting/accounts",body);
   if(!r?.ok){showToast(r?.message||"저장에 실패했습니다.","error");return;}
   const idx=acctAccounts.findIndex(a=>a.id===r.account.id);
@@ -14424,6 +14456,183 @@ function _dlAcctReportCSV(){
     dlCSV(`거래처별집계_${_acctRptYear}_${d}.csv`,["거래처","매출건수","매출액","매입건수","매입액"],_acctRptPartnerRows().map(r=>[r.name,r.salesCnt,r.sales,r.purchaseCnt,r.purchase]));
   }
 }
+// ==================== 원가명세서 ====================
+// 확정(posted) 전표 중 원가구분(costCategory/costSubType) 태깅된 계정의 라인만 차변 금액
+// 기준으로 집계한다 — acctVouchers/acctAccounts는 이미 loadAccountingFromServer()로 로드돼
+// 있으므로(회계 리포트 페이지의 시산표와 동일 패턴) 별도 API 호출 없이 클라이언트에서 계산한다.
+function _costStmtCompute(from,to){
+  const accById=new Map(acctAccounts.map(a=>[a.id,a]));
+  const mfg={material:0,labor:0,overhead:0,total:0};
+  const sga={total:0};
+  const byAccountMap=new Map();
+  acctVouchers.filter(v=>v.status==="posted"&&v.date>=from&&v.date<=to).forEach(v=>{
+    (v.lines||[]).forEach(l=>{
+      const a=accById.get(l.accountId);
+      if(!a||!a.costCategory)return;
+      const amt=Number(l.debit)||0;if(!amt)return;
+      if(a.costCategory==="mfg"){
+        const sub=["material","labor","overhead"].includes(a.costSubType)?a.costSubType:"overhead";
+        mfg[sub]+=amt;mfg.total+=amt;
+      }else if(a.costCategory==="sga"){
+        sga.total+=amt;
+      }
+      const key=a.id;
+      const row=byAccountMap.get(key)||{accountId:a.id,code:a.code,name:a.name,costCategory:a.costCategory,costSubType:a.costSubType||null,amount:0};
+      row.amount+=amt;byAccountMap.set(key,row);
+    });
+  });
+  return{mfg,sga,byAccount:[...byAccountMap.values()].sort((x,y)=>y.amount-x.amount)};
+}
+function renderAcctCostStatementPage(){
+  const c=$("#content");if(!c)return;
+  if(!serverConfig.url){c.innerHTML=_acctNoServerHtml("원가명세서");return;}
+  const r=_costStmtCompute(_costStmtFrom,_costStmtTo);
+  c.innerHTML=`<div class="card"><div class="card-head"><h3>🏭 원가명세서</h3>
+    <div class="flex gap2 items-c">
+      <input class="fc" type="date" style="width:auto" value="${h(_costStmtFrom)}" onchange="_costStmtFrom=this.value;renderAcctCostStatementPage()">
+      <span class="fz12 text-gray">~</span>
+      <input class="fc" type="date" style="width:auto" value="${h(_costStmtTo)}" onchange="_costStmtTo=this.value;renderAcctCostStatementPage()">
+    </div></div>
+  <div class="card-body">
+    <div class="fz11 text-gray mb3">계정과목에 등록된 원가구분(제조원가·판관비) 태그를 기준으로, 선택 기간 내 확정(posted)된 전표만 집계합니다. 계정과목 관리에서 원가구분을 먼저 지정하세요.</div>
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:16px">
+      <div class="stat-tile"><div class="stat-label">재료비</div><div class="stat-value">${r.mfg.material.toLocaleString()}</div></div>
+      <div class="stat-tile"><div class="stat-label">노무비</div><div class="stat-value">${r.mfg.labor.toLocaleString()}</div></div>
+      <div class="stat-tile"><div class="stat-label">제조경비</div><div class="stat-value">${r.mfg.overhead.toLocaleString()}</div></div>
+      <div class="stat-tile"><div class="stat-label">제조원가 합계</div><div class="stat-value text-blue">${r.mfg.total.toLocaleString()}</div></div>
+    </div>
+    <div class="mb3 p-2" style="background:#f8fafc;border-radius:8px;padding:10px 14px"><strong>판매관리비 합계:</strong> ${r.sga.total.toLocaleString()}원</div>
+    ${r.byAccount.length?`<div class="tbl-wrap"><table><thead><tr><th>코드</th><th>계정명</th><th>원가구분</th><th>금액</th></tr></thead><tbody>
+      ${r.byAccount.map(a=>`<tr><td>${h(a.code)}</td><td>${h(a.name)}</td><td>${_costTagLabel(a.costCategory,a.costSubType)}</td><td style="text-align:right">${a.amount.toLocaleString()}</td></tr>`).join("")}
+    </tbody></table></div>`:`<div class="p-empty">해당 기간에 원가구분이 태깅된 계정의 확정 전표가 없습니다.</div>`}
+  </div></div>`;
+}
+
+// ==================== RCPS(상환전환우선주) 발행·상각·공정가치평가 ====================
+function renderAcctRcpsPage(){
+  const c=$("#content");if(!c)return;
+  if(!serverConfig.url){c.innerHTML=_acctNoServerHtml("RCPS 관리");return;}
+  const rows=acctRcpsIssuances||[];
+  c.innerHTML=`<div class="card"><div class="card-head"><h3>💠 RCPS 관리</h3><button class="btn btn-primary btn-sm" onclick="openRcpsIssuanceModal()">+ 신규 발행 등록</button></div>
+  <div class="card-body">
+  <div class="fz11 text-gray mb3">상환전환우선주 발행 시 유효이자율법으로 상각표가 자동 계산됩니다. 회차별 상각전표 발행과 전환권 등 파생상품 요소의 공정가치평가는 발행 상세 화면에서 진행합니다.</div>
+  <div class="tbl-wrap"><table><thead><tr><th>발행명</th><th>발행일</th><th>액면금액</th><th>표시이자율</th><th>유효이자율</th><th>만기일</th><th>상태</th><th></th></tr></thead><tbody>
+  ${rows.length?rows.map(x=>`<tr><td><a href="#" onclick="openRcpsDetail('${x.id}');return false" style="color:#3b82f6;font-weight:600">${h(x.name)}</a></td><td>${h(x.issueDate)}</td><td style="text-align:right">${(x.faceAmount||0).toLocaleString()}</td><td>${((x.couponRate||0)*100).toFixed(2)}%</td><td>${((x.effectiveRate||0)*100).toFixed(2)}%</td><td>${h(x.maturityDate)}</td><td>${badge(x.status==="active"?"진행중":x.status,x.status==="active"?"blue":"gray")}</td><td><button class="btn btn-secondary btn-sm" onclick="openRcpsDetail('${x.id}')">상세</button></td></tr>`).join(""):`<tr><td colspan="8" class="text-gray" style="text-align:center;padding:20px">등록된 RCPS 발행이 없습니다.</td></tr>`}
+  </tbody></table></div></div></div>`;
+}
+function openRcpsIssuanceModal(){
+  openModal(`<div class="modal-box"><div class="modal-head"><h3>💠 RCPS 신규 발행 등록</h3></div><div class="modal-body">
+    <div class="fz11 text-gray mb2">연 1회 이자지급·연단위 상각을 가정합니다. 등록 즉시 유효이자율법 상각표가 자동 생성됩니다.</div>
+    <div class="fg"><label class="fl">발행명 <span class="req">*</span></label><input class="fc" id="rcps-name" placeholder="예: 1차 RCPS"></div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+      <div class="fg"><label class="fl">발행일 <span class="req">*</span></label><input class="fc" type="date" id="rcps-issue-date" value="${new Date().toISOString().slice(0,10)}"></div>
+      <div class="fg"><label class="fl">만기일 <span class="req">*</span></label><input class="fc" type="date" id="rcps-maturity-date"></div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+      <div class="fg"><label class="fl">액면(발행)총액 <span class="req">*</span></label><input class="fc" type="number" id="rcps-face-amount" placeholder="예: 1000000000"></div>
+      <div class="fg"><label class="fl">상환금액(만기)</label><input class="fc" type="number" id="rcps-redemption-amount" placeholder="비우면 액면총액과 동일"></div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+      <div class="fg"><label class="fl">발행주식수</label><input class="fc" type="number" id="rcps-shares"></div>
+      <div class="fg"><label class="fl">액면가</label><input class="fc" type="number" id="rcps-par-value"></div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+      <div class="fg"><label class="fl">표시이자율(%) <span class="req">*</span></label><input class="fc" type="number" step="0.01" id="rcps-coupon-rate" placeholder="예: 1"></div>
+      <div class="fg"><label class="fl">유효이자율(%) <span class="req">*</span></label><input class="fc" type="number" step="0.01" id="rcps-effective-rate" placeholder="예: 8"></div>
+    </div>
+  </div><div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal()">취소</button><button class="btn btn-primary" onclick="saveRcpsIssuance()">등록</button></div></div>`);
+}
+async function saveRcpsIssuance(){
+  const name=$("#rcps-name")?.value.trim(),issueDate=$("#rcps-issue-date")?.value,maturityDate=$("#rcps-maturity-date")?.value;
+  const faceAmount=Number($("#rcps-face-amount")?.value),couponRate=Number($("#rcps-coupon-rate")?.value),effectiveRate=Number($("#rcps-effective-rate")?.value);
+  if(!name||!issueDate||!maturityDate||!faceAmount||isNaN(couponRate)||isNaN(effectiveRate)){showToast("필수 항목을 모두 입력하세요.","error");return;}
+  const redemptionRaw=$("#rcps-redemption-amount")?.value;
+  const body={name,issueDate,maturityDate,faceAmount,
+    redemptionAmount:redemptionRaw?Number(redemptionRaw):undefined,
+    sharesIssued:Number($("#rcps-shares")?.value)||0,parValue:Number($("#rcps-par-value")?.value)||0,
+    couponRate:couponRate/100,effectiveRate:effectiveRate/100,user:currentUser.name};
+  const r=await serverRequest("POST","/api/accounting/rcps/issuances",body);
+  if(!r?.ok){showToast(r?.message||"등록에 실패했습니다.","error");return;}
+  acctRcpsIssuances.push(r.issuance);
+  closeModal();showToast("RCPS 발행이 등록되었습니다.","success");renderAcctRcpsPage();
+}
+async function loadRcpsDetailFromServer(){
+  const c=$("#content");if(!c)return;
+  if(!serverConfig.url){c.innerHTML=_acctNoServerHtml("RCPS 발행 상세");return;}
+  const id=_rcpsDetailId;
+  if(!id){gotoPage("acct-rcps");return;}
+  c.innerHTML=`<div class="p-empty">불러오는 중...</div>`;
+  const r=await serverRequest("GET",`/api/accounting/rcps/issuances/${id}`);
+  if(!r?.ok){c.innerHTML=`<div class="p-empty">발행 정보를 불러오지 못했습니다.</div>`;return;}
+  _rcpsDetail=r;
+  renderRcpsDetailPage();
+}
+function openRcpsDetail(id){_rcpsDetailId=id;_rcpsDetail=null;gotoPage("acct-rcps-detail");}
+function renderRcpsDetailPage(){
+  const c=$("#content");if(!c)return;
+  const d=_rcpsDetail;if(!d){loadRcpsDetailFromServer();return;}
+  const iss=d.issuance;
+  const schedRows=(d.schedule||[]).map(s=>`<tr><td>${s.seq}회차</td><td>${h(s.periodDate||"-")}</td><td style="text-align:right">${(s.beginningBalance||0).toLocaleString()}</td><td style="text-align:right">${(s.effectiveInterest||0).toLocaleString()}</td><td style="text-align:right">${(s.statedInterest||0).toLocaleString()}</td><td style="text-align:right">${(s.amortization||0).toLocaleString()}</td><td style="text-align:right">${(s.endingBalance||0).toLocaleString()}</td><td>${badge(s.status==="posted"?"전표발행":"대기",s.status==="posted"?"green":"gray")}</td><td>${s.status==="pending"?`<button class="btn btn-primary btn-sm" onclick="openRcpsSchedulePostModal('${s.id}')">상각전표 발행</button>`:"-"}</td></tr>`).join("");
+  const valRows=(d.valuations||[]).map(v=>`<tr><td>${h(v.valuationDate)}</td><td style="text-align:right">${(v.priorCarrying||0).toLocaleString()}</td><td style="text-align:right">${(v.fairValue||0).toLocaleString()}</td><td style="text-align:right;color:${(v.gainLoss||0)>=0?'#ef4444':'#16a34a'}">${(v.gainLoss||0).toLocaleString()}</td><td>${h(v.method||"-")}</td><td>${h(v.memo||"-")}</td></tr>`).join("");
+  c.innerHTML=`<div class="card"><div class="card-head"><h3>💠 ${h(iss.name)}</h3><button class="btn btn-secondary btn-sm" onclick="gotoPage('acct-rcps')">← 목록으로</button></div>
+  <div class="card-body">
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:16px">
+      <div class="stat-tile"><div class="stat-label">액면(발행)총액</div><div class="stat-value">${(iss.faceAmount||0).toLocaleString()}</div></div>
+      <div class="stat-tile"><div class="stat-label">부채요소 최초인식액</div><div class="stat-value">${(iss.liabilityInitial||0).toLocaleString()}</div></div>
+      <div class="stat-tile"><div class="stat-label">자본요소(파생상품) 인식액</div><div class="stat-value">${(iss.equityResidual||0).toLocaleString()}</div></div>
+      <div class="stat-tile"><div class="stat-label">만기일</div><div class="stat-value" style="font-size:16px">${h(iss.maturityDate)}</div></div>
+    </div>
+    <h4 class="mb2">📅 상각표(유효이자율법)</h4>
+    <div class="tbl-wrap mb4"><table><thead><tr><th>회차</th><th>일자</th><th>기초장부금액</th><th>유효이자</th><th>표시이자</th><th>상각액</th><th>기말장부금액</th><th>상태</th><th></th></tr></thead><tbody>${schedRows||`<tr><td colspan="9" class="text-gray" style="text-align:center;padding:16px">상각표가 없습니다.</td></tr>`}</tbody></table></div>
+    <h4 class="mb2">📈 공정가치평가 이력 <button class="btn btn-primary btn-sm" onclick="openRcpsValuationModal()">+ 평가 등록</button></h4>
+    <div class="tbl-wrap"><table><thead><tr><th>평가기준일</th><th>직전 장부금액</th><th>공정가치</th><th>평가손익</th><th>방법</th><th>메모</th></tr></thead><tbody>${valRows||`<tr><td colspan="6" class="text-gray" style="text-align:center;padding:16px">등록된 평가가 없습니다.</td></tr>`}</tbody></table></div>
+  </div></div>`;
+}
+// 상각전표 발행·공정가치평가는 회사마다 사용하는 계정과목이 달라, 등록된 계정과목 중에서
+// 직접 선택하게 한다(하드코딩 불가).
+function _acctSelectOptions(){return acctAccounts.filter(a=>a.active!==false).map(a=>`<option value="${a.id}">${h(a.code)} ${h(a.name)}</option>`).join("");}
+function openRcpsSchedulePostModal(scheduleId){
+  openModal(`<div class="modal-box"><div class="modal-head"><h3>상각전표 발행</h3></div><div class="modal-body">
+    <div class="fz11 text-gray mb2">이번 회차의 상각액을 전표로 즉시 확정 발행합니다. 계정과목을 지정하세요.</div>
+    <div class="fg"><label class="fl">이자비용 계정 <span class="req">*</span></label><select class="fc" id="rcps-post-interest-acc"><option value="">선택</option>${_acctSelectOptions()}</select></div>
+    <div class="fg"><label class="fl">현금 계정 <span class="req">*</span></label><select class="fc" id="rcps-post-cash-acc"><option value="">선택</option>${_acctSelectOptions()}</select></div>
+    <div class="fg"><label class="fl">RCPS부채 계정 <span class="req">*</span></label><select class="fc" id="rcps-post-liab-acc"><option value="">선택</option>${_acctSelectOptions()}</select></div>
+  </div><div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal()">취소</button><button class="btn btn-primary" onclick="confirmRcpsSchedulePost('${scheduleId}')">전표 발행</button></div></div>`);
+}
+async function confirmRcpsSchedulePost(scheduleId){
+  const interestExpenseAccountId=$("#rcps-post-interest-acc")?.value,cashAccountId=$("#rcps-post-cash-acc")?.value,rcpsLiabilityAccountId=$("#rcps-post-liab-acc")?.value;
+  if(!interestExpenseAccountId||!cashAccountId||!rcpsLiabilityAccountId){showToast("계정과목을 모두 선택하세요.","error");return;}
+  const r=await serverRequest("POST",`/api/accounting/rcps/schedule/${scheduleId}/post`,{interestExpenseAccountId,cashAccountId,rcpsLiabilityAccountId,user:currentUser.name});
+  if(!r?.ok){showToast(r?.message||"전표 발행에 실패했습니다.","error");return;}
+  closeModal();showToast("상각전표가 발행되었습니다.","success");
+  await loadAccountingFromServer();loadRcpsDetailFromServer();
+}
+function openRcpsValuationModal(){
+  const iss=_rcpsDetail?.issuance;if(!iss)return;
+  openModal(`<div class="modal-box"><div class="modal-head"><h3>공정가치평가 등록</h3></div><div class="modal-body">
+    <div class="fz11 text-gray mb2">전환권 등 파생상품 요소를 재평가합니다. 직전 평가액(없으면 최초 자본요소 인식액) 대비 평가손익이 자동 계산되어 전표가 발행됩니다.</div>
+    <div class="fg"><label class="fl">평가기준일 <span class="req">*</span></label><input class="fc" type="date" id="rcps-val-date" value="${new Date().toISOString().slice(0,10)}"></div>
+    <div class="fg"><label class="fl">공정가치 <span class="req">*</span></label><input class="fc" type="number" id="rcps-val-fv"></div>
+    <div class="fg"><label class="fl">평가방법</label><input class="fc" id="rcps-val-method" placeholder="예: 이항모형"></div>
+    <div class="fg"><label class="fl">메모</label><textarea class="fc" id="rcps-val-memo" rows="2"></textarea></div>
+    <div class="fg"><label class="fl">평가손실 계정(부채 증가 시)</label><select class="fc" id="rcps-val-loss-acc"><option value="">선택</option>${_acctSelectOptions()}</select></div>
+    <div class="fg"><label class="fl">평가이익 계정(부채 감소 시)</label><select class="fc" id="rcps-val-gain-acc"><option value="">선택</option>${_acctSelectOptions()}</select></div>
+    <div class="fg"><label class="fl">파생상품부채 계정 <span class="req">*</span></label><select class="fc" id="rcps-val-deriv-acc"><option value="">선택</option>${_acctSelectOptions()}</select></div>
+  </div><div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal()">취소</button><button class="btn btn-primary" onclick="confirmRcpsValuation()">등록</button></div></div>`);
+}
+async function confirmRcpsValuation(){
+  const issuanceId=_rcpsDetail?.issuance?.id;if(!issuanceId)return;
+  const valuationDate=$("#rcps-val-date")?.value,fairValue=Number($("#rcps-val-fv")?.value);
+  const derivativeLiabilityAccountId=$("#rcps-val-deriv-acc")?.value;
+  if(!valuationDate||isNaN(fairValue)||!derivativeLiabilityAccountId){showToast("필수 항목을 입력하세요.","error");return;}
+  const body={issuanceId,valuationDate,fairValue,method:$("#rcps-val-method")?.value.trim()||"",memo:$("#rcps-val-memo")?.value.trim()||"",
+    gainAccountId:$("#rcps-val-gain-acc")?.value||"",lossAccountId:$("#rcps-val-loss-acc")?.value||"",derivativeLiabilityAccountId,user:currentUser.name};
+  const r=await serverRequest("POST","/api/accounting/rcps/valuations",body);
+  if(!r?.ok){showToast(r?.message||"평가 등록에 실패했습니다.","error");return;}
+  closeModal();showToast("공정가치평가가 등록되었습니다.","success");
+  await loadAccountingFromServer();loadRcpsDetailFromServer();
+}
+
 // ==================== 결재 위임 (대결자 지정) ====================
 function renderApprovalDelegationPage(){
   const c=$("#content");if(!c)return;

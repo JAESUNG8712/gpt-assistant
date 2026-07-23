@@ -90,6 +90,14 @@
     <div id="rawArea" class="scroll"></div>
   </div>
 
+  <div class="card">
+    <h2>4. 사업계획</h2>
+    <p class="desc">기준연도 매출과 성장률·매출원가율·판관비 항목별 가정을 입력하면 다년도 추정 손익·잉여현금흐름을 자동 계산합니다.</p>
+    <button onclick="openBusinessPlanForm()">+ 신규 사업계획 작성</button>
+    <div id="bizPlanFormArea"></div>
+    <div id="bizPlanListArea" class="scroll" style="margin-top:14px">로딩 중...</div>
+  </div>
+
 </main>
 
 <script>
@@ -235,6 +243,134 @@ async function loadAll() {
 }
 
 loadAll();
+
+// ── 4. 사업계획(다년도 매출/비용 가정 → 추정 손익·현금흐름) ──────────────────────
+let bizPlans = [];
+let bizPlanSgaRowCount = 0;
+
+async function loadBusinessPlans() {
+  const area = document.getElementById('bizPlanListArea');
+  try {
+    const res = await fetch('/api/budget/business-plan', { headers: _authHeaders() });
+    if (!res.ok) { area.innerHTML = '<p class="desc">관리자 로그인이 필요합니다.</p>'; return; }
+    const json = await res.json();
+    bizPlans = json.plans || [];
+    renderBusinessPlans();
+  } catch (e) {
+    area.innerHTML = '<p class="desc">오류: ' + e.message + '</p>';
+  }
+}
+
+function renderBusinessPlans() {
+  const area = document.getElementById('bizPlanListArea');
+  if (!bizPlans.length) { area.innerHTML = '<p class="desc">작성된 사업계획이 없습니다.</p>'; return; }
+  let html = '';
+  bizPlans.forEach(p => {
+    html += `<div class="dept-block"><h3>${p.name} <button class="secondary" style="margin-top:0;padding:3px 10px;font-size:.72rem" onclick="deleteBusinessPlan('${p.id}')">삭제</button></h3>
+      <table><tr><th class="lbl">연도</th>${p.projection.map(r=>`<th>${r.year}</th>`).join('')}</tr>
+      <tr><td class="lbl">매출</td>${p.projection.map(r=>`<td>${fmt(r.revenue)}</td>`).join('')}</tr>
+      <tr><td class="lbl">매출원가</td>${p.projection.map(r=>`<td>${fmt(r.cogs)}</td>`).join('')}</tr>
+      <tr><td class="lbl">매출총이익</td>${p.projection.map(r=>`<td>${fmt(r.grossProfit)}</td>`).join('')}</tr>
+      <tr><td class="lbl">판관비</td>${p.projection.map(r=>`<td>${fmt(r.sga)}</td>`).join('')}</tr>
+      <tr><td class="lbl">영업이익</td>${p.projection.map(r=>`<td>${fmt(r.operatingProfit)}</td>`).join('')}</tr>
+      <tr class="grand-total"><td class="lbl">순이익</td>${p.projection.map(r=>`<td>${fmt(r.netIncome)}</td>`).join('')}</tr>
+      <tr><td class="lbl">잉여현금흐름</td>${p.projection.map(r=>`<td>${fmt(r.freeCashFlow)}</td>`).join('')}</tr>
+      </table></div>`;
+  });
+  area.innerHTML = html;
+}
+
+function openBusinessPlanForm() {
+  bizPlanSgaRowCount = 0;
+  const area = document.getElementById('bizPlanFormArea');
+  area.innerHTML = `<div class="dept-block" style="border:1px solid #e3e5eb;border-radius:8px;padding:14px;margin-top:10px">
+    <div class="upload-row">
+      <div class="upload-box"><label>사업계획명</label><input type="text" id="bp-name" placeholder="예: 2027-2029 사업계획"></div>
+      <div class="upload-box"><label>기준연도</label><input type="number" id="bp-base-year" value="${new Date().getFullYear()}"></div>
+      <div class="upload-box"><label>추정 연차 수</label><input type="number" id="bp-years" value="3" min="1" max="10"></div>
+    </div>
+    <div class="upload-row" style="margin-top:10px">
+      <div class="upload-box"><label>기준연도 매출</label><input type="number" id="bp-base-revenue" placeholder="예: 1000000000"></div>
+      <div class="upload-box"><label>매출 연평균 성장률(%)</label><input type="number" step="0.1" id="bp-revenue-growth" placeholder="예: 15"></div>
+      <div class="upload-box"><label>매출원가율(%)</label><input type="number" step="0.1" id="bp-cogs-ratio" placeholder="예: 60"></div>
+    </div>
+    <div class="upload-row" style="margin-top:10px">
+      <div class="upload-box"><label>법인세율(%, 기본 22)</label><input type="number" step="0.1" id="bp-tax-rate" placeholder="22"></div>
+      <div class="upload-box"><label>연간 감가상각(현금흐름 가산용, 선택)</label><input type="number" id="bp-depreciation" placeholder="0"></div>
+    </div>
+    <h3 style="margin-top:14px">판관비 항목</h3>
+    <div id="bp-sga-rows"></div>
+    <button onclick="addSgaItemRow()">+ 판관비 항목 추가</button>
+    <div style="margin-top:12px">
+      <button onclick="submitBusinessPlan()">저장</button>
+      <button class="secondary" onclick="document.getElementById('bizPlanFormArea').innerHTML=''">취소</button>
+    </div>
+    <div class="status" id="bp-status"></div>
+  </div>`;
+  addSgaItemRow();
+}
+
+function addSgaItemRow() {
+  const idx = bizPlanSgaRowCount++;
+  const wrap = document.getElementById('bp-sga-rows');
+  const row = document.createElement('div');
+  row.className = 'upload-row';
+  row.id = 'bp-sga-row-' + idx;
+  row.style.marginTop = '6px';
+  row.innerHTML = `
+    <div class="upload-box" style="min-width:160px"><label>항목명</label><input type="text" class="bp-sga-name" placeholder="예: 인건비"></div>
+    <div class="upload-box" style="min-width:160px"><label>기준연도 금액</label><input type="number" class="bp-sga-amount" placeholder="예: 200000000"></div>
+    <div class="upload-box" style="min-width:160px"><label>연간 증가율(%)</label><input type="number" step="0.1" class="bp-sga-growth" placeholder="예: 10"></div>
+    <button class="secondary" style="align-self:flex-end" onclick="document.getElementById('bp-sga-row-${idx}').remove()">제거</button>`;
+  wrap.appendChild(row);
+}
+
+async function submitBusinessPlan() {
+  const statusEl = document.getElementById('bp-status');
+  const name = document.getElementById('bp-name').value.trim();
+  const baseYear = Number(document.getElementById('bp-base-year').value);
+  const years = Number(document.getElementById('bp-years').value);
+  const baseRevenue = Number(document.getElementById('bp-base-revenue').value);
+  const revenueGrowthRate = Number(document.getElementById('bp-revenue-growth').value) / 100;
+  const cogsRatio = Number(document.getElementById('bp-cogs-ratio').value) / 100;
+  const taxRateInput = document.getElementById('bp-tax-rate').value;
+  const taxRate = taxRateInput ? Number(taxRateInput) / 100 : undefined;
+  const depreciation = Number(document.getElementById('bp-depreciation').value) || 0;
+  const sgaItems = [...document.querySelectorAll('#bp-sga-rows > div')].map(row => ({
+    name: row.querySelector('.bp-sga-name').value.trim(),
+    baseAmount: Number(row.querySelector('.bp-sga-amount').value) || 0,
+    growthRate: (Number(row.querySelector('.bp-sga-growth').value) || 0) / 100,
+  }));
+  if (!name || !baseYear || !years || !baseRevenue || isNaN(revenueGrowthRate) || isNaN(cogsRatio)) {
+    statusEl.textContent = '필수 항목을 모두 입력하세요.';
+    statusEl.className = 'status err';
+    return;
+  }
+  try {
+    const res = await fetch('/api/budget/business-plan', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ..._authHeaders() },
+      body: JSON.stringify({ name, baseYear, years, baseRevenue, revenueGrowthRate, cogsRatio, sgaItems, taxRate, depreciation }),
+    });
+    const json = await res.json();
+    if (!res.ok || !json.ok) throw new Error(json.message || '저장 실패');
+    statusEl.textContent = '저장되었습니다.';
+    statusEl.className = 'status ok';
+    document.getElementById('bizPlanFormArea').innerHTML = '';
+    loadBusinessPlans();
+  } catch (e) {
+    statusEl.textContent = '오류: ' + e.message;
+    statusEl.className = 'status err';
+  }
+}
+
+async function deleteBusinessPlan(id) {
+  if (!confirm('이 사업계획을 삭제하시겠습니까?')) return;
+  await fetch('/api/budget/business-plan/' + id, { method: 'DELETE', headers: _authHeaders() });
+  loadBusinessPlans();
+}
+
+loadBusinessPlans();
 </script>
 </body>
 </html>
