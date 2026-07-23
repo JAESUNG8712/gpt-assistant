@@ -6288,6 +6288,13 @@ function renderMyProfile(){
       </div>
     </div>
   </div>
+  <div class="card">
+    <div class="card-head"><h3>✍️ 전자결재 서명</h3></div>
+    <div class="card-body" style="display:flex;align-items:center;gap:14px;flex-wrap:wrap">
+      ${u.signature?`<img src="${u.signature}" alt="서명" style="height:56px;max-width:180px;border:1px solid #e2e8f0;border-radius:8px;background:#fff;padding:4px">`:`<div class="fz12 text-gray" style="padding:14px 0">등록된 서명이 없습니다. 전자결재 승인 시 이 서명이 문서에 표시됩니다.</div>`}
+      ${canEditSelf?`<button class="btn btn-secondary btn-sm" onclick="openSignatureModal()">${u.signature?"서명 변경":"서명 등록"}</button>`:""}
+    </div>
+  </div>
   ${(u.careers||[]).length?`<div class="card"><div class="card-head"><h3>📋 과거 경력</h3></div><div class="card-body">
     ${u.careers.map(c=>`<div style="font-size:12px;padding:5px 0;border-bottom:1px solid #f1f5f9"><strong>${h(c.co)}</strong> ${h(c.pos)} (${h(c.start||"")}~${h(c.end||"")}${calcCareerYears(c.start,c.end)?", "+calcCareerYears(c.start,c.end):""})${c.desc?`<div class="text-gray fz11" style="margin-top:2px">${h(c.desc)}</div>`:""}</div>`).join("")}
   </div></div>`:""}
@@ -6295,6 +6302,93 @@ function renderMyProfile(){
   ${buildKpiHistorySection(u.id)}
   ${canViewTeam?buildTeamMembersSection(u):""}
   `;
+}
+
+// ── 전자결재 개인 서명 등록 (그리기 캔버스 + 이미지 업로드) ──────────────────────
+// employees[].signature(base64 data URL, PNG)로 저장 — 회계/영업재고 등 서버 권위 모듈과
+// 달리 employees는 기존부터 client-trusted 전체 블롭(getFullState/applyState) 패턴을 쓰므로,
+// 새 서버 엔드포인트 없이 기존 필드 수정 자리(submitHRChange 등)와 동일하게 배열을 직접
+// mutate한 뒤 autoSaveToServerIfEnabled()로 저장한다.
+let _sigCtx=null,_sigDrawing=false,_sigHasStroke=false,_sigUploadDataUrl=null,_sigTab="draw";
+function openSignatureModal(){
+  showModal(`<div class="modal modal-sm"><div class="modal-head"><h2>✍️ 전자결재 서명 등록</h2><button class="modal-close" onclick="closeModal()">×</button></div>
+  <div class="modal-body">
+    <div class="fz12 text-gray mb2">여기서 등록한 서명은 회원님이 전자결재를 승인할 때 결재 문서에 표시됩니다.</div>
+    <div style="display:flex;gap:6px;margin-bottom:10px">
+      <button class="btn btn-sm" id="sig-tab-btn-draw" onclick="switchSignatureTab('draw')">🖊 그리기</button>
+      <button class="btn btn-sm" id="sig-tab-btn-upload" onclick="switchSignatureTab('upload')">📁 이미지 업로드</button>
+    </div>
+    <div id="sig-pane-draw">
+      <canvas id="sig-canvas" width="360" height="150" style="border:1px solid #cbd5e1;border-radius:8px;background:#fff;touch-action:none;cursor:crosshair;width:100%;max-width:360px;display:block"></canvas>
+      <div class="mt2"><button class="btn btn-ghost btn-sm" onclick="clearSignatureCanvas()">🗑 지우기</button></div>
+    </div>
+    <div id="sig-pane-upload" style="display:none">
+      <input class="fc" type="file" id="sig-file-input" accept="image/*" onchange="handleSignatureUpload(this)">
+      <div class="mt2"><img id="sig-upload-preview" style="display:none;max-height:120px;max-width:100%;border:1px solid #e2e8f0;border-radius:8px"></div>
+    </div>
+  </div>
+  <div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal()">취소</button><button class="btn btn-primary" onclick="confirmSaveSignature()">저장</button></div></div>`);
+  _sigTab="draw";_sigUploadDataUrl=null;_sigHasStroke=false;
+  setTimeout(()=>{initSignatureCanvas();_refreshSignatureTabButtons();},0);
+}
+function _refreshSignatureTabButtons(){
+  const bd=$("#sig-tab-btn-draw"),bu=$("#sig-tab-btn-upload");
+  if(bd)bd.className="btn btn-sm "+(_sigTab==="draw"?"btn-primary":"btn-secondary");
+  if(bu)bu.className="btn btn-sm "+(_sigTab==="upload"?"btn-primary":"btn-secondary");
+  const pd=$("#sig-pane-draw"),pu=$("#sig-pane-upload");
+  if(pd)pd.style.display=_sigTab==="draw"?"block":"none";
+  if(pu)pu.style.display=_sigTab==="upload"?"block":"none";
+}
+function switchSignatureTab(tab){_sigTab=tab;_refreshSignatureTabButtons();}
+function initSignatureCanvas(){
+  const cv=$("#sig-canvas");if(!cv)return;
+  _sigCtx=cv.getContext("2d");
+  _sigCtx.lineWidth=2.4;_sigCtx.lineCap="round";_sigCtx.lineJoin="round";_sigCtx.strokeStyle="#111827";
+  _sigHasStroke=false;
+  const posFromEvent=(ev)=>{
+    const rect=cv.getBoundingClientRect();
+    const scaleX=cv.width/rect.width,scaleY=cv.height/rect.height;
+    const p=ev.touches&&ev.touches.length?ev.touches[0]:ev;
+    return{x:(p.clientX-rect.left)*scaleX,y:(p.clientY-rect.top)*scaleY};
+  };
+  const start=(ev)=>{ev.preventDefault();_sigDrawing=true;const{x,y}=posFromEvent(ev);_sigCtx.beginPath();_sigCtx.moveTo(x,y);};
+  const move=(ev)=>{if(!_sigDrawing)return;ev.preventDefault();const{x,y}=posFromEvent(ev);_sigCtx.lineTo(x,y);_sigCtx.stroke();_sigHasStroke=true;};
+  const end=(ev)=>{_sigDrawing=false;};
+  cv.onmousedown=start;cv.onmousemove=move;window.addEventListener("mouseup",end);
+  cv.ontouchstart=start;cv.ontouchmove=move;cv.addEventListener("touchend",end);
+}
+function clearSignatureCanvas(){
+  const cv=$("#sig-canvas");if(!cv||!_sigCtx)return;
+  _sigCtx.clearRect(0,0,cv.width,cv.height);_sigHasStroke=false;
+}
+function handleSignatureUpload(input){
+  const file=input.files[0];if(!file)return;
+  const reader=new FileReader();
+  reader.onload=(ev)=>{
+    _sigUploadDataUrl=ev.target.result;
+    const prev=$("#sig-upload-preview");
+    if(prev){prev.src=_sigUploadDataUrl;prev.style.display="block";}
+  };
+  reader.readAsDataURL(file);
+}
+function confirmSaveSignature(){
+  let dataUrl=null;
+  if(_sigTab==="draw"){
+    if(!_sigHasStroke){showToast("서명을 그려주세요.","error");return;}
+    const cv=$("#sig-canvas");dataUrl=cv.toDataURL("image/png");
+  }else{
+    if(!_sigUploadDataUrl){showToast("서명 이미지를 선택하세요.","error");return;}
+    dataUrl=_sigUploadDataUrl;
+  }
+  saveMySignature(dataUrl);
+}
+function saveMySignature(dataUrl){
+  const uid=currentUser.id;
+  employees=employees.map(e=>e.id===uid?{...e,signature:dataUrl,updatedAt:new Date().toISOString()}:e);
+  currentUser={...currentUser,signature:dataUrl};
+  autoSaveToServerIfEnabled();
+  closeModal();showToast("서명이 등록되었습니다.","success");
+  if(currentPage==="my-profile")renderMyProfile();
 }
 
 function buildKpiHistorySection(empId){
@@ -12759,7 +12853,7 @@ function openApprovalDetail(docId){
     if(f.key==="flexOptionId"){const fo=(settings.flexWorkOptions||[]).find(o=>String(o.id)===String(v));v=fo?fo.label:v;}
     return`<tr><td style="width:120px;color:#64748b;padding:6px 8px">${h(f.label)}</td><td style="padding:6px 8px;font-weight:600">${h(v||"-")}</td></tr>`;
   }).join("");
-  const apRows=doc.approvers.map((a,i)=>`<tr><td>${i+1}차 (${h(a.label)})</td><td>${h(getEmpName(a.empId))}</td><td>${badge(a.status==="approved"?"승인":a.status==="rejected"?"반려":a.status==="pending"?"검토중":"대기",a.status==="approved"?"green":a.status==="rejected"?"red":a.status==="pending"?"yellow":"gray")}</td><td>${a.decidedAt?a.decidedAt.slice(0,10):"-"}</td><td style="max-width:160px;overflow:hidden;text-overflow:ellipsis">${h(a.comment||"-")}</td></tr>`).join("");
+  const apRows=doc.approvers.map((a,i)=>{const ae=getEmp(a.empId);const sigCell=a.status==="approved"?(ae?.signature?`<img src="${ae.signature}" alt="서명" style="height:26px;max-width:70px">`:`<span class="fz11 text-gray">미등록</span>`):"-";return`<tr><td>${i+1}차 (${h(a.label)})</td><td>${h(getEmpName(a.empId))}</td><td>${badge(a.status==="approved"?"승인":a.status==="rejected"?"반려":a.status==="pending"?"검토중":"대기",a.status==="approved"?"green":a.status==="rejected"?"red":a.status==="pending"?"yellow":"gray")}</td><td>${sigCell}</td><td>${a.decidedAt?a.decidedAt.slice(0,10):"-"}</td><td style="max-width:160px;overflow:hidden;text-overflow:ellipsis">${h(a.comment||"-")}</td></tr>`;}).join("");
   const uid=currentUser.id;
   const canDecide=doc.status==="in_progress"&&doc.approvers.some(a=>a.empId===uid&&a.status==="pending");
   const isAuthor=doc.authorId===uid;
@@ -12775,7 +12869,7 @@ function openApprovalDetail(docId){
     <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap">${badge(SM[doc.status]||doc.status,SC[doc.status]||"gray")}<span class="text-gray fz12">상신자: ${h(getEmpName(doc.authorId))}</span><span class="text-gray fz12">상신일: ${doc.createdAt.slice(0,10)}</span></div>
     <table style="width:100%;border-collapse:collapse;background:#f8fafc;border-radius:6px;overflow:hidden;margin-bottom:14px"><tbody>${fRows}</tbody></table>
     <h4 style="margin-bottom:8px">결재 현황</h4>
-    <div class="tbl-wrap"><table style="width:100%"><thead><tr><th>순서</th><th>결재자</th><th>상태</th><th>처리일</th><th>의견</th></tr></thead><tbody>${apRows}</tbody></table></div>
+    <div class="tbl-wrap"><table style="width:100%"><thead><tr><th>순서</th><th>결재자</th><th>상태</th><th>서명</th><th>처리일</th><th>의견</th></tr></thead><tbody>${apRows}</tbody></table></div>
     ${doc.receivers?.length>0?`<div class="mt3 fz12 text-gray">수신: ${doc.receivers.map(r=>h(_refLabel(r))).join(", ")}</div>`:""}
     ${doc.cc?.length>0?`<div class="fz12 text-gray">참조: ${doc.cc.map(r=>h(_refLabel(r))).join(", ")}</div>`:""}
     ${drBox}
