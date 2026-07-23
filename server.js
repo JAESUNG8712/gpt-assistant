@@ -2992,7 +2992,12 @@ function _addYearsStr(dateStr, k) {
 // POST vouchers/:id/post(확정) 2단계 흐름과 완전히 동일한 company_id 스코프·차대검증
 // (_validateVoucherLines)·voucher_seq 채번 로직을 그대로 재사용해, RCPS 자동 전표(상각/평가손익)를
 // 한 번의 호출로 발행한다. 검증 실패 시 statusCode:400을 실어 던진다(호출부에서 그대로 응답).
-async function _issuePostedVoucher(companyId, { date, description, partnerId, partner, lines, user }) {
+// externalClient: 호출부가 이미 트랜잭션을 열어둔 pg client가 있으면(예: 다른 행에 FOR UPDATE
+// 잠금을 건 상태) 그 커넥션을 그대로 재사용해 INSERT까지 처리한다 — 잠금을 쥔 채로 별도
+// pool.connect()를 또 호출하면(동시 요청이 많을 때 잠금 대기자들이 커넥션 풀을 다 점유해)
+// 커넥션 풀 고갈로 데드락에 준하는 상태에 빠질 수 있어, 이 경우 BEGIN/COMMIT/release는
+// 호출부 책임으로 남기고 여기서는 쿼리만 실행한다.
+async function _issuePostedVoucher(companyId, { date, description, partnerId, partner, lines, user }, externalClient) {
   const accounts = await _getAccountsList(companyId);
   const err = _validateVoucherLines(lines, accounts);
   if (err) throw Object.assign(new Error(err), { statusCode: 400 });
@@ -3011,6 +3016,17 @@ async function _issuePostedVoucher(companyId, { date, description, partnerId, pa
     _fileAccounting.vouchers.push(voucher);
     _saveFileAccounting();
     return voucher;
+  }
+  if (externalClient) {
+    const { rows: seqRows } = await externalClient.query(
+      "INSERT INTO voucher_seq (company_id, year, seq) VALUES ($1,$2,1) ON CONFLICT (company_id, year) DO UPDATE SET seq = voucher_seq.seq + 1 RETURNING seq",
+      [companyId, year]
+    );
+    const voucherNo = `JE-${year}-${String(seqRows[0].seq).padStart(6, "0")}`;
+    const voucher = { ...baseVoucher, voucherNo, status: "posted", postedBy: user || "unknown", postedAt: new Date().toISOString() };
+    await externalClient.query("INSERT INTO vouchers (id, voucher_no, voucher_date, status, data, company_id) VALUES ($1,$2,$3,'posted',$4,$5)",
+      [voucher.id, voucherNo, date, voucher, companyId]);
+    return voucher; // BEGIN/COMMIT/ROLLBACK/release는 호출부 책임
   }
   const client = await pool.connect();
   try {
@@ -3044,6 +3060,15 @@ app.post("/api/accounting/rcps/issuances", async (req, res) => {
     const faceAmt = Number(faceAmount);
     const coupon = Number(couponRate);
     const eff = Number(effectiveRate);
+    // couponRate/effectiveRate는 소수 표기(예: 5%→0.05)를 가정한다. 음수(비정상적인 이자율)나
+    // 1 이상(예: "150%"를 "1.5" 대신 "150"으로 잘못 입력)의 값은 계산 자체는 되지만 결과가
+    // 명백히 무의미해지므로(예: 유효이자율 15000%) 여기서 막는다.
+    if (!(coupon >= 0 && coupon < 1)) {
+      return res.status(400).json({ ok: false, message: "couponRate는 0 이상 1 미만의 소수여야 합니다(예: 연 5% → 0.05)." });
+    }
+    if (!(eff >= 0 && eff < 1)) {
+      return res.status(400).json({ ok: false, message: "effectiveRate는 0 이상 1 미만의 소수여야 합니다(예: 연 8% → 0.08)." });
+    }
     redemptionAmount = _round2(redemptionAmount != null && redemptionAmount !== "" ? Number(redemptionAmount) : faceAmt);
     const N = _yearsBetween(issueDate, maturityDate);
     if (N < 1) return res.status(400).json({ ok: false, message: "발행일과 만기일 사이는 최소 1년 이상이어야 합니다." });
@@ -3076,6 +3101,12 @@ app.post("/api/accounting/rcps/issuances", async (req, res) => {
       const statedInterest = statedInterestAmt;
       let amortization = _round2(effectiveInterest - statedInterest);
       let endingBalance = _round2(beginningBalance + amortization);
+      // periodDate는 원칙적으로 issueDate+seq년(연 1회 이자지급 가정)이지만, 마지막 회차만은
+      // maturityDate가 정확히 그 연배수가 아닐 수 있어(N이 반올림으로 정해지므로) issueDate+N년이
+      // 실제 만기일과 몇 달씩 어긋날 수 있다 — 그대로 두면 상환 시점보다 앞/뒤로 몇 달 어긋난
+      // 날짜에 마지막 상각전표가 잡혀 실제 만기와 안 맞는다. endingBalance를 redemptionAmount로
+      // 강제 보정하는 것과 동일한 취지로, 마지막 회차의 periodDate는 항상 실제 maturityDate로 맞춘다.
+      const periodDate = seq === N ? maturityDate : _addYearsStr(issueDate, seq);
       if (seq === N) {
         amortization = _round2(redemptionAmount - beginningBalance);
         effectiveInterest = _round2(amortization + statedInterest);
@@ -3083,7 +3114,7 @@ app.post("/api/accounting/rcps/issuances", async (req, res) => {
       }
       schedule.push({
         id: `rcpssch_${Date.now()}_${Math.random().toString(36).slice(2, 8)}_${seq}`,
-        issuanceId, seq, periodDate: _addYearsStr(issueDate, seq),
+        issuanceId, seq, periodDate,
         beginningBalance, statedInterest, effectiveInterest, amortization, endingBalance,
         status: "pending", voucherId: null,
       });
@@ -3203,64 +3234,106 @@ app.post("/api/accounting/rcps/issuances/:id/delete", async (req, res) => {
   } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
 });
 
+// scheduleId 단위로 "동시에 처리 중"인 요청을 직렬화하기 위한 가드. JSON 파일 모드는
+// (Postgres의 FOR UPDATE 잠금과 달리) 여러 요청이 각자 await 지점 사이에 인터리빙되며 같은
+// scheduleId를 동시에 통과할 수 있어 — 상태 확인은 동기적이지만 전표 발행(_issuePostedVoucher)이
+// 비동기라 그 사이에 다른 요청이 끼어들 수 있음 — 별도의 동기적 in-flight Set으로 막는다.
+const _rcpsSchedulePostInFlight = new Set();
+
 app.post("/api/accounting/rcps/schedule/:scheduleId/post", async (req, res) => {
+  const scheduleId = req.params.scheduleId;
+  let lockedJsonMode = false;
   try {
     if (!requireAdmin(req, res)) return;
-    const scheduleId = req.params.scheduleId;
     const companyId = req.auth.companyId || null;
     const { user, interestExpenseAccountId, cashAccountId, rcpsLiabilityAccountId } = req.body || {};
     if (!interestExpenseAccountId || !cashAccountId || !rcpsLiabilityAccountId) {
       return res.status(400).json({ ok: false, message: "이자비용, 현금, RCPS부채 계정과목은 모두 필수입니다." });
     }
     let scheduleRow, issuance;
+    let pgClient = null;
     if (USE_JSON_FILE) {
+      // 동시 요청 중 정확히 한 요청만 이 scheduleId를 처리하도록 동기적으로 선점한다.
+      if (_rcpsSchedulePostInFlight.has(scheduleId)) {
+        return res.status(409).json({ ok: false, message: "이 회차는 다른 요청이 이미 처리 중입니다. 잠시 후 다시 시도해주세요." });
+      }
+      _rcpsSchedulePostInFlight.add(scheduleId);
+      lockedJsonMode = true;
       scheduleRow = _fileAcctRcps.schedule.find(s => s.id === scheduleId);
       if (!scheduleRow) return res.status(404).json({ ok: false, message: "상각 스케줄을 찾을 수 없습니다." });
       if (scheduleRow.status === "posted") return res.status(400).json({ ok: false, message: "이미 전표가 발행된 회차입니다." });
       issuance = _fileAcctRcps.issuances.find(i => i.id === scheduleRow.issuanceId);
     } else {
-      const { rows } = await pool.query("SELECT data FROM rcps_amortization_schedule WHERE id = $1 AND company_id = $2", [scheduleId, companyId]);
-      if (!rows.length) return res.status(404).json({ ok: false, message: "상각 스케줄을 찾을 수 없습니다." });
+      // Postgres 모드: SELECT ... FOR UPDATE로 이 회차 행을 잠가, 같은 scheduleId를 노리는
+      // 동시 요청은 이 트랜잭션이 COMMIT/ROLLBACK될 때까지 뒤 요청의 SELECT에서 대기하게 만든다
+      // (vouchers/:id/post가 이미 쓰던 것과 동일한 패턴).
+      pgClient = await pool.connect();
+      await pgClient.query("BEGIN");
+      const { rows } = await pgClient.query(
+        "SELECT data FROM rcps_amortization_schedule WHERE id = $1 AND company_id = $2 FOR UPDATE",
+        [scheduleId, companyId]
+      );
+      if (!rows.length) {
+        await pgClient.query("ROLLBACK"); pgClient.release();
+        return res.status(404).json({ ok: false, message: "상각 스케줄을 찾을 수 없습니다." });
+      }
       scheduleRow = rows[0].data;
-      if (scheduleRow.status === "posted") return res.status(400).json({ ok: false, message: "이미 전표가 발행된 회차입니다." });
-      const { rows: issRows } = await pool.query("SELECT data FROM rcps_issuances WHERE id = $1 AND company_id = $2", [scheduleRow.issuanceId, companyId]);
+      if (scheduleRow.status === "posted") {
+        await pgClient.query("ROLLBACK"); pgClient.release();
+        return res.status(400).json({ ok: false, message: "이미 전표가 발행된 회차입니다." });
+      }
+      const { rows: issRows } = await pgClient.query("SELECT data FROM rcps_issuances WHERE id = $1 AND company_id = $2", [scheduleRow.issuanceId, companyId]);
       issuance = issRows[0]?.data;
     }
-    if (!issuance) return res.status(404).json({ ok: false, message: "RCPS 발행 건을 찾을 수 없습니다." });
-
-    const { effectiveInterest, statedInterest, amortization } = scheduleRow;
-    // amortization>=0(할인발행 상각, 부채 증가)이면 세 번째 라인이 RCPS부채 대변, amortization<0
-    // (할증발행 상각, 부채 감소)이면 차변으로 뒤집는다. effectiveInterest는 이미 상각표 생성 시점에
-    // statedInterest+amortization으로 계산돼 있어 첫 번째 라인의 차변 금액은 두 경우 모두 동일하게
-    // 쓰면 자동으로 차대가 맞는다(할증발행: effectiveInterest+|amortization| = statedInterest = 대변합계).
-    const lines = amortization >= 0
-      ? [
-          { accountId: interestExpenseAccountId, debit: effectiveInterest, credit: 0 },
-          { accountId: cashAccountId, debit: 0, credit: statedInterest },
-          { accountId: rcpsLiabilityAccountId, debit: 0, credit: amortization },
-        ]
-      : [
-          { accountId: interestExpenseAccountId, debit: effectiveInterest, credit: 0 },
-          { accountId: cashAccountId, debit: 0, credit: statedInterest },
-          { accountId: rcpsLiabilityAccountId, debit: Math.abs(amortization), credit: 0 },
-        ];
-
-    const voucher = await _issuePostedVoucher(companyId, {
-      date: scheduleRow.periodDate,
-      description: `RCPS 상각 (${issuance.name} ${scheduleRow.seq}회차)`,
-      lines, user,
-    });
-
-    const updatedSchedule = { ...scheduleRow, status: "posted", voucherId: voucher.id };
-    if (USE_JSON_FILE) {
-      const idx = _fileAcctRcps.schedule.findIndex(s => s.id === scheduleId);
-      _fileAcctRcps.schedule[idx] = updatedSchedule;
-      _saveFileAcctRcps();
-    } else {
-      await pool.query("UPDATE rcps_amortization_schedule SET data = $3, updated_at = NOW() WHERE id = $1 AND company_id = $2", [scheduleId, companyId, updatedSchedule]);
+    if (!issuance) {
+      if (pgClient) { await pgClient.query("ROLLBACK"); pgClient.release(); }
+      return res.status(404).json({ ok: false, message: "RCPS 발행 건을 찾을 수 없습니다." });
     }
-    res.json({ ok: true, schedule: updatedSchedule, voucher });
+
+    try {
+      const { effectiveInterest, statedInterest, amortization } = scheduleRow;
+      // amortization>=0(할인발행 상각, 부채 증가)이면 세 번째 라인이 RCPS부채 대변, amortization<0
+      // (할증발행 상각, 부채 감소)이면 차변으로 뒤집는다. effectiveInterest는 이미 상각표 생성 시점에
+      // statedInterest+amortization으로 계산돼 있어 첫 번째 라인의 차변 금액은 두 경우 모두 동일하게
+      // 쓰면 자동으로 차대가 맞는다(할증발행: effectiveInterest+|amortization| = statedInterest = 대변합계).
+      const lines = amortization >= 0
+        ? [
+            { accountId: interestExpenseAccountId, debit: effectiveInterest, credit: 0 },
+            { accountId: cashAccountId, debit: 0, credit: statedInterest },
+            { accountId: rcpsLiabilityAccountId, debit: 0, credit: amortization },
+          ]
+        : [
+            { accountId: interestExpenseAccountId, debit: effectiveInterest, credit: 0 },
+            { accountId: cashAccountId, debit: 0, credit: statedInterest },
+            { accountId: rcpsLiabilityAccountId, debit: Math.abs(amortization), credit: 0 },
+          ];
+
+      const voucher = await _issuePostedVoucher(companyId, {
+        date: scheduleRow.periodDate,
+        description: `RCPS 상각 (${issuance.name} ${scheduleRow.seq}회차)`,
+        lines, user,
+      }, pgClient);
+
+      const updatedSchedule = { ...scheduleRow, status: "posted", voucherId: voucher.id };
+      if (USE_JSON_FILE) {
+        const idx = _fileAcctRcps.schedule.findIndex(s => s.id === scheduleId);
+        _fileAcctRcps.schedule[idx] = updatedSchedule;
+        _saveFileAcctRcps();
+      } else {
+        await pgClient.query("UPDATE rcps_amortization_schedule SET data = $3, updated_at = NOW() WHERE id = $1 AND company_id = $2", [scheduleId, companyId, updatedSchedule]);
+        await pgClient.query("COMMIT");
+      }
+      res.json({ ok: true, schedule: updatedSchedule, voucher });
+    } catch (e) {
+      if (pgClient) await pgClient.query("ROLLBACK");
+      throw e;
+    } finally {
+      if (pgClient) pgClient.release();
+    }
   } catch (e) { res.status(e.statusCode || 500).json({ ok: false, message: e.message }); }
+  finally {
+    if (lockedJsonMode) _rcpsSchedulePostInFlight.delete(scheduleId);
+  }
 });
 
 app.post("/api/accounting/rcps/valuations", async (req, res) => {
