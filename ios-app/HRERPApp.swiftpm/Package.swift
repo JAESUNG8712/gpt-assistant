@@ -12,7 +12,7 @@ let package = Package(
         .iOSApplication(
             name: "인사 ERP",
             targets: ["AppModule"],
-            bundleIdentifier: "com.jaesung8712.hrerp",
+            bundleIdentifier: "com.jaesung8712.hrerp2",
             teamIdentifier: "",
             displayVersion: "1.0",
             bundleVersion: "1",
