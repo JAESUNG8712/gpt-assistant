@@ -15,3 +15,7 @@ ai/stock_analysis/reports/
 
 # Claude Code 로컬 도구 상태 (백그라운드 에이전트용 임시 git worktree 등) — 프로젝트 소스 아님
 .claude/
+
+# Swift Playgrounds가 프로젝트를 열 때마다 자동 생성하는 로컬 빌드 상태 — 기기마다 다르고
+# 소스가 아니므로 커밋하지 않는다.
+.swiftpm/
