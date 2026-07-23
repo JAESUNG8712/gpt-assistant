@@ -37,6 +37,113 @@ struct Voucher: Decodable, Identifiable {
     let createdAt: String
 }
 
+// MARK: - 원가명세서 (조회 전용, GET /api/accounting/cost-statement)
+
+struct CostStatementMfg: Decodable {
+    let material: Double
+    let labor: Double
+    let overhead: Double
+    let total: Double
+}
+
+struct CostStatementSga: Decodable {
+    let total: Double
+}
+
+struct CostStatementAccountRow: Decodable, Identifiable {
+    let accountId: String
+    let code: String
+    let name: String
+    let costCategory: String?
+    let costSubType: String?
+    let amount: Double
+
+    var id: String { accountId }
+}
+
+struct CostStatement: Decodable {
+    let from: String
+    let to: String
+    let mfg: CostStatementMfg
+    let sga: CostStatementSga
+    let byAccount: [CostStatementAccountRow]
+
+    enum CodingKeys: String, CodingKey {
+        case from, to, mfg, sga, byAccount
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        from = (try? c.decode(String.self, forKey: .from)) ?? ""
+        to = (try? c.decode(String.self, forKey: .to)) ?? ""
+        mfg = (try? c.decode(CostStatementMfg.self, forKey: .mfg)) ?? CostStatementMfg(material: 0, labor: 0, overhead: 0, total: 0)
+        sga = (try? c.decode(CostStatementSga.self, forKey: .sga)) ?? CostStatementSga(total: 0)
+        byAccount = (try? c.decode([CostStatementAccountRow].self, forKey: .byAccount)) ?? []
+    }
+}
+
+// MARK: - RCPS (상환전환우선주, 조회 전용)
+
+struct RcpsIssuance: Decodable, Identifiable {
+    let id: String
+    let name: String
+    let issueDate: String
+    let faceAmount: Double
+    let sharesIssued: Double?
+    let parValue: Double?
+    let couponRate: Double?
+    let effectiveRate: Double?
+    let maturityDate: String?
+    let redemptionAmount: Double?
+    let liabilityInitial: Double?
+    let equityResidual: Double?
+    let status: String
+    let createdBy: String?
+    let createdAt: String?
+}
+
+struct RcpsScheduleRow: Decodable, Identifiable {
+    let id: String
+    let seq: Int
+    let periodDate: String
+    let beginningBalance: Double
+    let effectiveInterest: Double
+    let statedInterest: Double
+    let amortization: Double
+    let endingBalance: Double
+    let status: String
+    let voucherId: String?
+}
+
+struct RcpsValuation: Decodable, Identifiable {
+    let id: String
+    let valuationDate: String
+    let priorCarrying: Double
+    let fairValue: Double
+    let gainLoss: Double
+    let method: String?
+    let memo: String?
+    let voucherId: String?
+    let createdAt: String?
+}
+
+struct RcpsIssuanceDetail: Decodable {
+    let issuance: RcpsIssuance
+    let schedule: [RcpsScheduleRow]
+    let valuations: [RcpsValuation]
+
+    enum CodingKeys: String, CodingKey {
+        case issuance, schedule, valuations
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        issuance = try c.decode(RcpsIssuance.self, forKey: .issuance)
+        schedule = (try? c.decode([RcpsScheduleRow].self, forKey: .schedule)) ?? []
+        valuations = (try? c.decode([RcpsValuation].self, forKey: .valuations)) ?? []
+    }
+}
+
 // MARK: - 영업/재고
 
 struct InventoryItem: Decodable, Identifiable {

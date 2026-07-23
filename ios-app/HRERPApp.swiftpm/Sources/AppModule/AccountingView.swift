@@ -8,16 +8,35 @@ struct AccountingView: View {
     private enum Tab: String, CaseIterable, Identifiable {
         case accounts = "계정과목"
         case vouchers = "전표"
+        case costStatement = "원가명세서"
+        case rcps = "RCPS"
         var id: String { rawValue }
     }
 
     @State private var tab: Tab = .accounts
     @State private var accounts: [Account] = []
     @State private var vouchers: [Voucher] = []
+    @State private var rcpsIssuances: [RcpsIssuance] = []
     @State private var isLoading = false
     @State private var errorMessage: String?
 
+    // 원가명세서는 목록이 아니라 기간 조회형이라, 초기 로딩(load())이 아니라 "조회" 버튼으로
+    // 별도 로드한다 — 기본 기간은 이번 달 1일 ~ 오늘.
+    @State private var costFrom: Date = Calendar.current.date(
+        from: Calendar.current.dateComponents([.year, .month], from: Date())
+    ) ?? Date()
+    @State private var costTo: Date = Date()
+    @State private var costStatement: CostStatement?
+    @State private var isLoadingCost = false
+    @State private var costErrorMessage: String?
+
     private var client: APIClient { APIClient(settings: settings) }
+    // 근태 기록(DateHelpers)과 달리 이건 "특정 시점"이 아니라 사용자가 고른 달력 날짜라,
+    // UTC로 강제 변환하면 시간대에 따라 하루가 밀릴 수 있다 — NewEmployeeView의 hireDate와
+    // 동일하게 로컬(시스템) 타임존 기준으로 yyyy-MM-dd를 만든다.
+    private var queryDateFormatter: DateFormatter {
+        let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd"; return f
+    }
 
     var body: some View {
         AppScreen {
@@ -79,6 +98,94 @@ struct AccountingView: View {
                         }
                     }
                 }
+
+            case .costStatement:
+                AppCard(title: "조회 기간") {
+                    DatePicker("시작일", selection: $costFrom, displayedComponents: .date)
+                    DatePicker("종료일", selection: $costTo, displayedComponents: .date)
+                    Button {
+                        Task { await loadCostStatement() }
+                    } label: {
+                        Text(isLoadingCost ? "조회 중..." : "조회")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(AppPrimaryButtonStyle(isDisabled: isLoadingCost))
+                    .disabled(isLoadingCost)
+                    .padding(.top, 4)
+                }
+
+                if let costErrorMessage {
+                    AppCard { Text(costErrorMessage).font(.footnote).foregroundStyle(AppTheme.danger) }
+                }
+
+                if let costStatement {
+                    AppCard(title: "제조원가 (\(costStatement.from) ~ \(costStatement.to))") {
+                        HStack(spacing: 10) {
+                            StatTile(label: "재료비", value: wonText(costStatement.mfg.material))
+                            StatTile(label: "노무비", value: wonText(costStatement.mfg.labor))
+                        }
+                        HStack(spacing: 10) {
+                            StatTile(label: "경비", value: wonText(costStatement.mfg.overhead))
+                            StatTile(label: "제조원가 합계", value: wonText(costStatement.mfg.total), tint: AppTheme.accentDark)
+                        }
+                    }
+                    AppCard(title: "판매관리비") {
+                        StatTile(label: "판관비 합계", value: wonText(costStatement.sga.total), tint: AppTheme.warning)
+                    }
+                    AppCard(title: "계정별 상세 (\(costStatement.byAccount.count))") {
+                        if costStatement.byAccount.isEmpty {
+                            EmptyState(message: "해당 기간의 원가 집계 내역이 없습니다.")
+                        } else {
+                            ForEach(costStatement.byAccount) { row in
+                                HStack {
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text("\(row.code)  \(row.name)").font(.subheadline.weight(.semibold))
+                                        Text([row.costCategory, row.costSubType].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · "))
+                                            .font(.caption)
+                                            .foregroundStyle(AppTheme.secondaryText)
+                                    }
+                                    Spacer()
+                                    Text(wonText(row.amount)).font(.subheadline.weight(.bold))
+                                }
+                                if row.id != costStatement.byAccount.last?.id {
+                                    Divider()
+                                }
+                            }
+                        }
+                    }
+                } else if !isLoadingCost {
+                    EmptyState(message: "기간을 선택하고 조회하세요.")
+                }
+
+            case .rcps:
+                if rcpsIssuances.isEmpty && !isLoading {
+                    EmptyState(message: "등록된 RCPS 발행 내역이 없습니다.")
+                }
+                ForEach(rcpsIssuances) { issuance in
+                    NavigationLink {
+                        RcpsIssuanceDetailView(issuanceId: issuance.id)
+                    } label: {
+                        AppCard {
+                            HStack {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(issuance.name).font(.subheadline.weight(.semibold))
+                                    Text("\(issuance.issueDate)\(issuance.maturityDate.map { " ~ \($0)" } ?? "")")
+                                        .font(.caption)
+                                        .foregroundStyle(AppTheme.secondaryText)
+                                }
+                                Spacer()
+                                VStack(alignment: .trailing, spacing: 2) {
+                                    Text(wonText(issuance.faceAmount)).font(.subheadline.weight(.bold))
+                                    StatusPill(status: issuance.status)
+                                }
+                                Image(systemName: "chevron.right")
+                                    .font(.caption)
+                                    .foregroundStyle(AppTheme.secondaryText)
+                            }
+                        }
+                    }
+                    .buttonStyle(.plain)
+                }
             }
         }
         .navigationTitle("회계")
@@ -94,12 +201,192 @@ struct AccountingView: View {
         do {
             async let a = client.fetchAccounts(token: token)
             async let v = client.fetchVouchers(token: token)
-            (accounts, vouchers) = try await (a, v)
+            async let r = client.fetchRcpsIssuances(token: token)
+            (accounts, vouchers, rcpsIssuances) = try await (a, v, r)
         } catch {
             if case APIError.serverError(401, _) = error {
                 session.handleUnauthorized()
             } else {
                 errorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    private func loadCostStatement() async {
+        guard let token = session.token else { return }
+        isLoadingCost = true
+        costErrorMessage = nil
+        defer { isLoadingCost = false }
+        do {
+            costStatement = try await client.fetchCostStatement(
+                from: queryDateFormatter.string(from: costFrom),
+                to: queryDateFormatter.string(from: costTo),
+                token: token
+            )
+        } catch {
+            if case APIError.serverError(401, _) = error {
+                session.handleUnauthorized()
+            } else {
+                costErrorMessage = error.localizedDescription
+            }
+        }
+    }
+}
+
+/// 웹 앱 표시 규칙(`Int(x).formatted())원`)과 동일한 원화 포맷 헬퍼 — 이 뷰 안 여러 곳(제조원가/
+/// 판관비/계정별 상세/RCPS 카드)에서 반복 사용해 한 곳으로 뺐다.
+private func wonText(_ amount: Double) -> String { "\(Int(amount).formatted())원" }
+
+/// RCPS 발행 1건의 상세 — 발행 정보 요약 + 유효이자율법 상각표 + 공정가치평가 이력.
+/// 조회 전용(README 명시): 상각전표 발행/공정가치평가 등록 등 쓰기 액션은 없음.
+@MainActor
+private struct RcpsIssuanceDetailView: View {
+    @EnvironmentObject private var settings: AppSettings
+    @EnvironmentObject private var session: SessionStore
+
+    let issuanceId: String
+
+    @State private var detail: RcpsIssuanceDetail?
+    @State private var isLoading = false
+    @State private var errorMessage: String?
+
+    private var client: APIClient { APIClient(settings: settings) }
+
+    var body: some View {
+        Group {
+            if let detail {
+                AppScreen {
+                    AppCard(title: "발행 정보") {
+                        row("발행명", detail.issuance.name)
+                        row("발행일", detail.issuance.issueDate)
+                        row("만기일", detail.issuance.maturityDate)
+                        row("액면금액", wonText(detail.issuance.faceAmount))
+                        if let sharesIssued = detail.issuance.sharesIssued {
+                            row("발행주식수", "\(Int(sharesIssued).formatted())주")
+                        }
+                        if let parValue = detail.issuance.parValue {
+                            row("액면가", wonText(parValue))
+                        }
+                        if let couponRate = detail.issuance.couponRate {
+                            row("표시이자율", "\(couponRate.formatted())%")
+                        }
+                        if let effectiveRate = detail.issuance.effectiveRate {
+                            row("유효이자율", "\(effectiveRate.formatted())%")
+                        }
+                        if let redemptionAmount = detail.issuance.redemptionAmount {
+                            row("상환금액", wonText(redemptionAmount))
+                        }
+                        if let liabilityInitial = detail.issuance.liabilityInitial {
+                            row("부채요소 최초인식액", wonText(liabilityInitial))
+                        }
+                        if let equityResidual = detail.issuance.equityResidual {
+                            row("자본요소 잔여", wonText(equityResidual))
+                        }
+                        HStack {
+                            Text("상태").font(.caption).foregroundStyle(AppTheme.secondaryText)
+                            Spacer()
+                            StatusPill(status: detail.issuance.status)
+                        }
+                    }
+
+                    AppCard(title: "상각표 (\(detail.schedule.count)회차)") {
+                        if detail.schedule.isEmpty {
+                            EmptyState(message: "등록된 상각표가 없습니다.")
+                        } else {
+                            ForEach(detail.schedule) { entry in
+                                VStack(alignment: .leading, spacing: 4) {
+                                    HStack {
+                                        Text("\(entry.seq)회차 · \(entry.periodDate)").font(.subheadline.weight(.semibold))
+                                        Spacer()
+                                        StatusPill(status: entry.status)
+                                    }
+                                    HStack {
+                                        Text("기초 \(wonText(entry.beginningBalance))")
+                                        Spacer()
+                                        Text("유효이자 \(wonText(entry.effectiveInterest))")
+                                    }
+                                    .font(.caption)
+                                    .foregroundStyle(AppTheme.secondaryText)
+                                    HStack {
+                                        Text("표시이자 \(wonText(entry.statedInterest))")
+                                        Spacer()
+                                        Text("상각액 \(wonText(entry.amortization))")
+                                    }
+                                    .font(.caption)
+                                    .foregroundStyle(AppTheme.secondaryText)
+                                    Text("기말 \(wonText(entry.endingBalance))")
+                                        .font(.caption.weight(.semibold))
+                                        .foregroundStyle(AppTheme.primaryText)
+                                }
+                                if entry.id != detail.schedule.last?.id {
+                                    Divider()
+                                }
+                            }
+                        }
+                    }
+
+                    AppCard(title: "공정가치평가 이력 (\(detail.valuations.count))") {
+                        if detail.valuations.isEmpty {
+                            EmptyState(message: "등록된 공정가치평가 이력이 없습니다.")
+                        } else {
+                            ForEach(detail.valuations) { valuation in
+                                VStack(alignment: .leading, spacing: 2) {
+                                    HStack {
+                                        Text(valuation.valuationDate).font(.subheadline.weight(.semibold))
+                                        Spacer()
+                                        Text(wonText(valuation.gainLoss))
+                                            .font(.subheadline.weight(.bold))
+                                            .foregroundStyle(valuation.gainLoss < 0 ? AppTheme.danger : AppTheme.success)
+                                    }
+                                    Text("직전장부 \(wonText(valuation.priorCarrying)) → 공정가치 \(wonText(valuation.fairValue))")
+                                        .font(.caption)
+                                        .foregroundStyle(AppTheme.secondaryText)
+                                    if let memo = valuation.memo, !memo.isEmpty {
+                                        Text(memo).font(.caption).foregroundStyle(AppTheme.secondaryText)
+                                    }
+                                }
+                                if valuation.id != detail.valuations.last?.id {
+                                    Divider()
+                                }
+                            }
+                        }
+                    }
+                }
+            } else if let errorMessage {
+                AppScreen {
+                    AppCard { Text(errorMessage).font(.footnote).foregroundStyle(AppTheme.danger) }
+                }
+            } else {
+                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        }
+        .navigationTitle(detail?.issuance.name ?? "RCPS 상세")
+        .task { await load() }
+    }
+
+    private func load() async {
+        guard let token = session.token else { return }
+        isLoading = true
+        errorMessage = nil
+        defer { isLoading = false }
+        do {
+            detail = try await client.fetchRcpsIssuanceDetail(id: issuanceId, token: token)
+        } catch {
+            if case APIError.serverError(401, _) = error {
+                session.handleUnauthorized()
+            } else {
+                errorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func row(_ label: String, _ value: String?) -> some View {
+        if let value, !value.isEmpty {
+            HStack {
+                Text(label).font(.caption).foregroundStyle(AppTheme.secondaryText)
+                Spacer()
+                Text(value).font(.subheadline)
             }
         }
     }

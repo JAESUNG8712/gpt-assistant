@@ -121,6 +121,39 @@ final class APIClient {
         try await decodeList("api/accounting/vouchers", token: token, rootKey: "vouchers")
     }
 
+    // 원가명세서 / RCPS(상환전환우선주) — 둘 다 조회 전용, 앱에는 쓰기 액션이 없다.
+    // 응답이 목록([rootKey])이 아니라 단일 객체({ok, from, to, mfg, ...} 등)라
+    // decodeList 대신 JSONDecoder로 응답 전체를 바로 디코드한다(모르는 "ok" 필드는
+    // CodingKeys에 없어 자동으로 무시됨).
+
+    func fetchCostStatement(from: String, to: String, token: String) async throws -> CostStatement {
+        guard var components = URLComponents(url: try url("api/accounting/cost-statement"), resolvingAgainstBaseURL: false) else {
+            throw APIError.invalidURL
+        }
+        components.queryItems = [URLQueryItem(name: "from", value: from), URLQueryItem(name: "to", value: to)]
+        guard let requestURL = components.url else { throw APIError.invalidURL }
+
+        var request = URLRequest(url: requestURL)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+
+        let (raw, response) = try await session.data(for: request)
+        try Self.checkResponse(response, data: raw)
+        return try JSONDecoder().decode(CostStatement.self, from: raw)
+    }
+
+    func fetchRcpsIssuances(token: String) async throws -> [RcpsIssuance] {
+        try await decodeList("api/accounting/rcps/issuances", token: token, rootKey: "issuances")
+    }
+
+    func fetchRcpsIssuanceDetail(id: String, token: String) async throws -> RcpsIssuanceDetail {
+        var request = URLRequest(url: try url("api/accounting/rcps/issuances").appendingPathComponent(id))
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+
+        let (raw, response) = try await session.data(for: request)
+        try Self.checkResponse(response, data: raw)
+        return try JSONDecoder().decode(RcpsIssuanceDetail.self, from: raw)
+    }
+
     func fetchItems(token: String) async throws -> [InventoryItem] {
         try await decodeList("api/erp/items", token: token, rootKey: "items")
     }
