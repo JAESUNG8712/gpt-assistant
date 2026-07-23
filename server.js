@@ -592,29 +592,35 @@ async function initDB() {
   }
   console.log(`[DB] PostgreSQL ready. tracked data_version rows=${loadedCompanies}`);
 
-  // 기초데이터 시딩 (최초 가동 시 비어있는 경우에만)
-  const acctCount = await pool.query("SELECT COUNT(*) FROM accounts WHERE NOT is_deleted");
-  if (parseInt(acctCount.rows[0].count) === 0) {
-    for (const a of DEFAULT_ACCOUNTS) {
-      const id = `acc_seed_${a.code}`;
-      await pool.query(
-        "INSERT INTO accounts (id, data) VALUES ($1,$2) ON CONFLICT (id) DO NOTHING",
-        [id, JSON.stringify({ id, ...a, active: true })]
-      );
-    }
-    console.log(`[DB] 기초 계정과목 ${DEFAULT_ACCOUNTS.length}건 시딩 완료`);
+  // 기초데이터(계정과목/위치) 전역 1회 시딩 로직 — 멀티테넌트 4단계(accounts/erp_locations에
+  // company_id 적용) 이전에는 "테이블이 비어있으면 전역으로 한 번" 시딩했지만, 이제 두 테이블
+  // 모두 (company_id, id) 복합 PK라 company_id는 물리적으로 NOT NULL이다(신규 설치는 스키마
+  // 적용 즉시 이 복합 PK로 전환됨 — 실측 확인: `ON CONFLICT (id)`가 더 이상 존재하지 않는
+  // 제약을 가리켜 서버 기동 자체가 실패했었음). 회사 없는 "전역 기초데이터"라는 개념 자체가
+  // 이 스키마에서 더 이상 성립하지 않으므로, 이 자리의 전역 시딩은 제거하고 회사별 시딩으로
+  // 대체했다 — 실제 시딩은 `/api/companies/register`(신규 가입 시 관리자 계정과 함께)에서
+  // `_seedCompanyDefaults()`로 수행한다. (레거시 백필 데이터의 company_id NULL 행은 그대로
+  // 유지되며, GET 라우트의 `(company_id = $N OR company_id IS NULL)` 패턴으로 계속 노출된다 —
+  // 이 자리에서 새로 만들지 않을 뿐이다.)
+}
+
+// 신규 가입 회사에 기초 계정과목/위치를 시딩한다(과거 "전역 최초 1회" 시딩을 대체 — 위 initDB()
+// 주석 참고). Postgres 트랜잭션 client를 받아 회사 등록과 같은 트랜잭션 안에서 실행된다.
+async function _seedCompanyDefaults(client, companyId) {
+  for (const a of DEFAULT_ACCOUNTS) {
+    const id = `acc_seed_${a.code}`;
+    await client.query(
+      "INSERT INTO accounts (id, company_id, data) VALUES ($1,$2,$3) ON CONFLICT (company_id, id) DO NOTHING",
+      [id, companyId, JSON.stringify({ id, ...a, active: true })]
+    );
   }
-  const locCount = await pool.query("SELECT COUNT(*) FROM erp_locations WHERE NOT is_deleted");
-  if (parseInt(locCount.rows[0].count) === 0) {
-    for (let i = 0; i < DEFAULT_LOCATIONS.length; i++) {
-      const l = DEFAULT_LOCATIONS[i];
-      const id = `loc_seed_${i + 1}`;
-      await pool.query(
-        "INSERT INTO erp_locations (id, data) VALUES ($1,$2) ON CONFLICT (id) DO NOTHING",
-        [id, JSON.stringify({ id, ...l })]
-      );
-    }
-    console.log(`[DB] 기초 위치(창고) ${DEFAULT_LOCATIONS.length}건 시딩 완료`);
+  for (let i = 0; i < DEFAULT_LOCATIONS.length; i++) {
+    const l = DEFAULT_LOCATIONS[i];
+    const id = `loc_seed_${i + 1}`;
+    await client.query(
+      "INSERT INTO erp_locations (id, company_id, data) VALUES ($1,$2,$3) ON CONFLICT (company_id, id) DO NOTHING",
+      [id, companyId, JSON.stringify({ id, ...l })]
+    );
   }
 }
 
@@ -1457,12 +1463,10 @@ app.post("/api/companies/register", registerLimiter, async (req, res) => {
       );
       const company = companyRes.rows[0];
 
-      // 참고: 계획 문서는 "기존 부트스트랩이 하던 것과 동일한 기초데이터 시딩"(DEFAULT_ACCOUNTS/
-      // DEFAULT_LOCATIONS)을 이 흐름에서도 언급하지만, 그 시딩은 initDB()가 서버 최초 가동 시
-      // (accounts/erp_locations 테이블이 비어있을 때) 이미 전역으로 1회 수행한다 — 그리고 그
-      // 두 테이블은 아직 company_id 컬럼 자체가 없다(회계/ERP 모듈은 계획 문서 3~4단계
-      // 마이그레이션 대상, 이번 세션 범위 밖). 따라서 회사마다 별도로 다시 시딩할 방법이
-      // 없고 필요하지도 않다 — 여기서는 관리자 1명 생성까지만 담당한다.
+      // 4단계(accounts/erp_locations에 company_id 적용)로 이 두 테이블도 회사별로 격리됐다 —
+      // 예전엔 initDB()가 서버 최초 가동 시 전역으로 1회만 시딩했지만(위 initDB() 주석 참고),
+      // 이제 그 전역 시딩은 구조적으로 불가능해져 제거됐다. 그 대신 회사가 새로 가입할 때마다
+      // 이 트랜잭션 안에서 기초 계정과목/위치를 함께 시딩한다.
       const now = new Date().toISOString();
       const pwHash = await hashPlaintextPw(password);
       const adminEmp = {
@@ -1480,6 +1484,7 @@ app.post("/api/companies/register", registerLimiter, async (req, res) => {
         "INSERT INTO employee_history (employee_id, action, changed_by, data, company_id) VALUES ($1,'insert',$2,$3,$4)",
         [String(empId), "company-register", adminEmp, company.id]
       );
+      await _seedCompanyDefaults(client, company.id);
 
       await client.query("COMMIT");
 
@@ -2435,7 +2440,11 @@ app.get("/api/accounting/accounts", async (req, res) => {
   if (!requireAdmin(req, res)) return;
   try {
     if (USE_JSON_FILE) return res.json({ ok: true, accounts: _fileAccounting.accounts });
-    const { rows } = await pool.query("SELECT id, data FROM accounts WHERE is_deleted = FALSE ORDER BY id");
+    const companyId = req.auth.companyId || null;
+    const { rows } = await pool.query(
+      "SELECT id, data FROM accounts WHERE is_deleted = FALSE AND (company_id = $1 OR company_id IS NULL) ORDER BY id",
+      [companyId]
+    );
     res.json({ ok: true, accounts: rows.map(r => ({ id: r.id, ...r.data })) });
   } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
 });
@@ -2456,13 +2465,16 @@ app.post("/api/accounting/accounts", async (req, res) => {
       _saveFileAccounting();
       return res.json({ ok: true, account: acc });
     }
-    const { rows: prevRows } = await pool.query("SELECT data FROM accounts WHERE id = $1", [accId]);
+    const companyId = req.auth.companyId || null;
+    const { rows: prevRows } = await pool.query(
+      "SELECT data FROM accounts WHERE id = $1 AND (company_id = $2 OR company_id IS NULL)", [accId, companyId]
+    );
     const prevHist = prevRows.length ? (prevRows[0].data.history || []) : [];
     const histEntry = { action: prevRows.length ? "update" : "create", user: user || "unknown", at: new Date().toISOString() };
     const acc = { id: accId, code, name, type, category: category || "", active, history: [...prevHist, histEntry] };
     await pool.query(
-      "INSERT INTO accounts (id, data) VALUES ($1,$2) ON CONFLICT (id) DO UPDATE SET data = $2, updated_at = NOW()",
-      [accId, acc]
+      "INSERT INTO accounts (id, company_id, data) VALUES ($1,$2,$3) ON CONFLICT (company_id, id) DO UPDATE SET data = $3, updated_at = NOW()",
+      [accId, companyId, acc]
     );
     res.json({ ok: true, account: acc });
   } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
@@ -2479,29 +2491,39 @@ app.post("/api/accounting/accounts/:id/delete", async (req, res) => {
       _saveFileAccounting();
       return res.json({ ok: true });
     }
-    const { rows } = await pool.query("SELECT 1 FROM vouchers WHERE data->'lines' @> $1::jsonb LIMIT 1", [JSON.stringify([{ accountId: id }])]);
+    const companyId = req.auth.companyId || null;
+    const { rows } = await pool.query(
+      "SELECT 1 FROM vouchers WHERE data->'lines' @> $1::jsonb AND (company_id = $2 OR company_id IS NULL) LIMIT 1",
+      [JSON.stringify([{ accountId: id }]), companyId]
+    );
     if (rows.length) return res.status(400).json({ ok: false, message: "전표에서 사용 중인 계정과목은 삭제할 수 없습니다. 비활성화를 이용하세요." });
-    await pool.query("UPDATE accounts SET is_deleted = TRUE WHERE id = $1", [id]);
+    await pool.query(
+      "UPDATE accounts SET is_deleted = TRUE WHERE id = $1 AND (company_id = $2 OR company_id IS NULL)", [id, companyId]
+    );
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
 });
 
 // ── 전표 (Journal vouchers) ──────────────────────────────────────────────────
-async function _getAccountsList() {
+async function _getAccountsList(companyId) {
   if (USE_JSON_FILE) return _fileAccounting.accounts;
-  const { rows } = await pool.query("SELECT id, data FROM accounts WHERE is_deleted = FALSE");
+  const { rows } = await pool.query(
+    "SELECT id, data FROM accounts WHERE is_deleted = FALSE AND (company_id = $1 OR company_id IS NULL)", [companyId || null]
+  );
   return rows.map(r => ({ id: r.id, ...r.data }));
 }
 // 견적서 출고/발주서 입고 시 자동 발행되는 세금계산서에 거래처 마스터의 사업자번호를 채워 넣는다.
 // (수동 발행 세금계산서는 클라이언트가 거래처 선택 시 자동으로 채워 보내지만, 자동 발행 경로는
 // 거래처 마스터를 조회하지 않고 항상 빈 문자열을 넣고 있어 거래처 정보 불일치가 발생했었다.)
-async function _lookupPartnerBizNo(partnerId, dbClient) {
+async function _lookupPartnerBizNo(partnerId, companyId, dbClient) {
   if (!partnerId) return "";
   if (USE_JSON_FILE) {
     const p = _fileAccounting.partners.find(p => p.id === partnerId);
     return p?.bizNo || "";
   }
-  const { rows } = await (dbClient || pool).query("SELECT data FROM partners WHERE id = $1", [partnerId]);
+  const { rows } = await (dbClient || pool).query(
+    "SELECT data FROM partners WHERE id = $1 AND (company_id = $2 OR company_id IS NULL)", [partnerId, companyId || null]
+  );
   return rows[0]?.data?.bizNo || "";
 }
 function _validateVoucherLines(lines, accounts) {
@@ -2529,9 +2551,10 @@ app.get("/api/accounting/vouchers", async (req, res) => {
       if (year) list = list.filter(v => new Date(v.date).getFullYear() === year);
       return res.json({ ok: true, vouchers: list.sort((a, b) => b.date.localeCompare(a.date)) });
     }
+    const companyId = req.auth.companyId || null;
     const { rows } = year
-      ? await pool.query("SELECT data FROM vouchers WHERE EXTRACT(YEAR FROM voucher_date) = $1 ORDER BY voucher_date DESC", [year])
-      : await pool.query("SELECT data FROM vouchers ORDER BY voucher_date DESC");
+      ? await pool.query("SELECT data FROM vouchers WHERE EXTRACT(YEAR FROM voucher_date) = $1 AND (company_id = $2 OR company_id IS NULL) ORDER BY voucher_date DESC", [year, companyId])
+      : await pool.query("SELECT data FROM vouchers WHERE (company_id = $1 OR company_id IS NULL) ORDER BY voucher_date DESC", [companyId]);
     res.json({ ok: true, vouchers: rows.map(r => r.data) });
   } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
 });
@@ -2539,9 +2562,10 @@ app.get("/api/accounting/vouchers", async (req, res) => {
 app.post("/api/accounting/vouchers", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
+    const companyId = req.auth.companyId || null;
     const { date, description, partner, partnerId, lines, user: createdBy } = req.body || {};
     if (!date) return res.status(400).json({ ok: false, message: "전표일자는 필수입니다." });
-    const accounts = await _getAccountsList();
+    const accounts = await _getAccountsList(companyId);
     const err = _validateVoucherLines(lines, accounts);
     if (err) return res.status(400).json({ ok: false, message: err });
     const debitSum = _round2(lines.reduce((s, l) => s + (Number(l.debit) || 0), 0));
@@ -2558,8 +2582,8 @@ app.post("/api/accounting/vouchers", async (req, res) => {
       _saveFileAccounting();
       return res.json({ ok: true, voucher });
     }
-    await pool.query("INSERT INTO vouchers (id, voucher_no, voucher_date, status, data) VALUES ($1,$2,$3,'draft',$4)",
-      [voucher.id, `DRAFT-${voucher.id}`, date, voucher]);
+    await pool.query("INSERT INTO vouchers (id, voucher_no, voucher_date, status, data, company_id) VALUES ($1,$2,$3,'draft',$4,$5)",
+      [voucher.id, `DRAFT-${voucher.id}`, date, voucher, companyId]);
     res.json({ ok: true, voucher });
   } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
 });
@@ -2568,6 +2592,7 @@ app.post("/api/accounting/vouchers/:id/post", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
     const id = req.params.id;
+    const companyId = req.auth.companyId || null;
     const year = new Date().getFullYear();
     if (USE_JSON_FILE) {
       const v = _fileAccounting.vouchers.find(v => v.id === id);
@@ -2584,12 +2609,12 @@ app.post("/api/accounting/vouchers/:id/post", async (req, res) => {
     const client = await pool.connect();
     try {
       await client.query("BEGIN");
-      const { rows } = await client.query("SELECT data, status FROM vouchers WHERE id = $1 FOR UPDATE", [id]);
+      const { rows } = await client.query("SELECT data, status FROM vouchers WHERE id = $1 AND (company_id = $2 OR company_id IS NULL) FOR UPDATE", [id, companyId]);
       if (!rows.length) { await client.query("ROLLBACK"); return res.status(404).json({ ok: false, message: "전표를 찾을 수 없습니다." }); }
       if (rows[0].status !== "draft") { await client.query("ROLLBACK"); return res.status(400).json({ ok: false, message: "임시 저장 상태의 전표만 확정할 수 있습니다." }); }
       const { rows: seqRows } = await client.query(
-        "INSERT INTO voucher_seq (year, seq) VALUES ($1,1) ON CONFLICT (year) DO UPDATE SET seq = voucher_seq.seq + 1 RETURNING seq",
-        [year]
+        "INSERT INTO voucher_seq (company_id, year, seq) VALUES ($1,$2,1) ON CONFLICT (company_id, year) DO UPDATE SET seq = voucher_seq.seq + 1 RETURNING seq",
+        [companyId, year]
       );
       const voucherNo = `JE-${year}-${String(seqRows[0].seq).padStart(6, "0")}`;
       const v = { ...rows[0].data, voucherNo, status: "posted", postedBy: req.body.user || "unknown", postedAt: new Date().toISOString() };
@@ -2604,6 +2629,7 @@ app.post("/api/accounting/vouchers/:id/void", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
     const id = req.params.id;
+    const companyId = req.auth.companyId || null;
     const reason = (req.body || {}).reason;
     if (!reason) return res.status(400).json({ ok: false, message: "취소 사유를 입력하세요." });
     if (USE_JSON_FILE) {
@@ -2614,7 +2640,7 @@ app.post("/api/accounting/vouchers/:id/void", async (req, res) => {
       _saveFileAccounting();
       return res.json({ ok: true, voucher: v });
     }
-    const { rows } = await pool.query("SELECT data FROM vouchers WHERE id = $1 AND status = 'posted'", [id]);
+    const { rows } = await pool.query("SELECT data FROM vouchers WHERE id = $1 AND status = 'posted' AND (company_id = $2 OR company_id IS NULL)", [id, companyId]);
     if (!rows.length) return res.status(400).json({ ok: false, message: "확정된 전표만 취소할 수 있습니다." });
     const v = { ...rows[0].data, status: "void", voidReason: reason, voidedBy: req.body.user || "unknown", voidedAt: new Date().toISOString() };
     await pool.query("UPDATE vouchers SET status = 'void', data = $2, updated_at = NOW() WHERE id = $1", [id, v]);
@@ -2626,6 +2652,7 @@ app.delete("/api/accounting/vouchers/:id", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
     const id = req.params.id;
+    const companyId = req.auth.companyId || null;
     if (USE_JSON_FILE) {
       const v = _fileAccounting.vouchers.find(v => v.id === id);
       if (!v) return res.status(404).json({ ok: false, message: "전표를 찾을 수 없습니다." });
@@ -2634,7 +2661,7 @@ app.delete("/api/accounting/vouchers/:id", async (req, res) => {
       _saveFileAccounting();
       return res.json({ ok: true });
     }
-    const { rows } = await pool.query("SELECT 1 FROM vouchers WHERE id = $1 AND status = 'draft'", [id]);
+    const { rows } = await pool.query("SELECT 1 FROM vouchers WHERE id = $1 AND status = 'draft' AND (company_id = $2 OR company_id IS NULL)", [id, companyId]);
     if (!rows.length) return res.status(400).json({ ok: false, message: "임시 저장 상태의 전표만 삭제할 수 있습니다." });
     await pool.query("DELETE FROM vouchers WHERE id = $1", [id]);
     res.json({ ok: true });
@@ -2662,9 +2689,10 @@ app.get("/api/accounting/tax-invoices", async (req, res) => {
       if (year) list = list.filter(t => new Date(t.issueDate).getFullYear() === year);
       return res.json({ ok: true, taxInvoices: list.sort((a, b) => b.issueDate.localeCompare(a.issueDate)) });
     }
+    const companyId = req.auth.companyId || null;
     const { rows } = year
-      ? await pool.query("SELECT data FROM tax_invoices WHERE EXTRACT(YEAR FROM issue_date) = $1 ORDER BY issue_date DESC", [year])
-      : await pool.query("SELECT data FROM tax_invoices ORDER BY issue_date DESC");
+      ? await pool.query("SELECT data FROM tax_invoices WHERE EXTRACT(YEAR FROM issue_date) = $1 AND (company_id = $2 OR company_id IS NULL) ORDER BY issue_date DESC", [year, companyId])
+      : await pool.query("SELECT data FROM tax_invoices WHERE (company_id = $1 OR company_id IS NULL) ORDER BY issue_date DESC", [companyId]);
     res.json({ ok: true, taxInvoices: rows.map(r => r.data) });
   } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
 });
@@ -2672,6 +2700,7 @@ app.get("/api/accounting/tax-invoices", async (req, res) => {
 app.post("/api/accounting/tax-invoices", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
+    const companyId = req.auth.companyId || null;
     const { issueDate, partnerId, partnerName, partnerBizNo, items, user: createdBy } = req.body || {};
     if (!issueDate || !partnerName) return res.status(400).json({ ok: false, message: "발행일과 거래처명은 필수입니다." });
     if (!Array.isArray(items) || !items.length) return res.status(400).json({ ok: false, message: "품목을 1개 이상 입력하세요." });
@@ -2696,12 +2725,12 @@ app.post("/api/accounting/tax-invoices", async (req, res) => {
     try {
       await client.query("BEGIN");
       const { rows: seqRows } = await client.query(
-        "INSERT INTO tax_invoice_seq (year, seq) VALUES ($1,1) ON CONFLICT (year) DO UPDATE SET seq = tax_invoice_seq.seq + 1 RETURNING seq",
-        [year]
+        "INSERT INTO tax_invoice_seq (company_id, year, seq) VALUES ($1,$2,1) ON CONFLICT (company_id, year) DO UPDATE SET seq = tax_invoice_seq.seq + 1 RETURNING seq",
+        [companyId, year]
       );
       inv.invoiceNo = `TI-${year}-${String(seqRows[0].seq).padStart(6, "0")}`;
-      await client.query("INSERT INTO tax_invoices (id, invoice_no, issue_date, status, data) VALUES ($1,$2,$3,'issued',$4)",
-        [inv.id, inv.invoiceNo, issueDate, inv]);
+      await client.query("INSERT INTO tax_invoices (id, invoice_no, issue_date, status, data, company_id) VALUES ($1,$2,$3,'issued',$4,$5)",
+        [inv.id, inv.invoiceNo, issueDate, inv, companyId]);
       await client.query("COMMIT");
       res.json({ ok: true, taxInvoice: inv });
     } catch (e) { await client.query("ROLLBACK"); throw e; } finally { client.release(); }
@@ -2712,6 +2741,7 @@ app.post("/api/accounting/tax-invoices/:id/void", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
     const id = req.params.id;
+    const companyId = req.auth.companyId || null;
     const reason = (req.body || {}).reason;
     if (!reason) return res.status(400).json({ ok: false, message: "취소 사유를 입력하세요." });
     if (USE_JSON_FILE) {
@@ -2722,7 +2752,7 @@ app.post("/api/accounting/tax-invoices/:id/void", async (req, res) => {
       _saveFileAccounting();
       return res.json({ ok: true, taxInvoice: inv });
     }
-    const { rows } = await pool.query("SELECT data FROM tax_invoices WHERE id = $1 AND status = 'issued'", [id]);
+    const { rows } = await pool.query("SELECT data FROM tax_invoices WHERE id = $1 AND status = 'issued' AND (company_id = $2 OR company_id IS NULL)", [id, companyId]);
     if (!rows.length) return res.status(400).json({ ok: false, message: "발행된 세금계산서만 취소할 수 있습니다." });
     const inv = { ...rows[0].data, status: "void", voidReason: reason, voidedBy: req.body.user || "unknown", voidedAt: new Date().toISOString() };
     await pool.query("UPDATE tax_invoices SET status = 'void', data = $2, updated_at = NOW() WHERE id = $1", [id, inv]);
@@ -2802,7 +2832,10 @@ app.get("/api/accounting/partners", async (req, res) => {
   if (!requireAdmin(req, res)) return;
   try {
     if (USE_JSON_FILE) return res.json({ ok: true, partners: _fileAccounting.partners });
-    const { rows } = await pool.query("SELECT id, data FROM partners WHERE is_deleted = FALSE ORDER BY id");
+    const companyId = req.auth.companyId || null;
+    const { rows } = await pool.query(
+      "SELECT id, data FROM partners WHERE is_deleted = FALSE AND (company_id = $1 OR company_id IS NULL) ORDER BY id", [companyId]
+    );
     res.json({ ok: true, partners: rows.map(r => ({ id: r.id, ...r.data })) });
   } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
 });
@@ -2810,6 +2843,7 @@ app.get("/api/accounting/partners", async (req, res) => {
 app.post("/api/accounting/partners", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
+    const companyId = req.auth.companyId || null;
     const { id, name, bizNo, ceoName, type, address, contactName, phone, email, registerReason, attachments, active = true, user } = req.body || {};
     if (!name || !type)
       return res.status(400).json({ ok: false, message: "거래처명, 거래유형은 필수입니다." });
@@ -2829,7 +2863,9 @@ app.post("/api/accounting/partners", async (req, res) => {
       _saveFileAccounting();
       return res.json({ ok: true, partner });
     }
-    const { rows: prevRows } = await pool.query("SELECT data FROM partners WHERE id = $1", [partnerId]);
+    const { rows: prevRows } = await pool.query(
+      "SELECT data FROM partners WHERE id = $1 AND (company_id = $2 OR company_id IS NULL)", [partnerId, companyId]
+    );
     const prevHist = prevRows.length ? (prevRows[0].data.history || []) : [];
     const histEntry = { action: prevRows.length ? "update" : "create", user: user || "unknown", at: new Date().toISOString() };
     const partner = {
@@ -2840,8 +2876,8 @@ app.post("/api/accounting/partners", async (req, res) => {
       active, history: [...prevHist, histEntry],
     };
     await pool.query(
-      "INSERT INTO partners (id, data) VALUES ($1,$2) ON CONFLICT (id) DO UPDATE SET data = $2, updated_at = NOW()",
-      [partnerId, partner]
+      "INSERT INTO partners (id, company_id, data) VALUES ($1,$2,$3) ON CONFLICT (company_id, id) DO UPDATE SET data = $3, updated_at = NOW()",
+      [partnerId, companyId, partner]
     );
     res.json({ ok: true, partner });
   } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
@@ -2851,6 +2887,7 @@ app.post("/api/accounting/partners/:id/delete", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
     const id = req.params.id;
+    const companyId = req.auth.companyId || null;
     if (USE_JSON_FILE) {
       const used = _fileAccounting.vouchers.some(v => v.partnerId === id) || _fileAccounting.taxInvoices.some(t => t.partnerId === id);
       if (used) return res.status(400).json({ ok: false, message: "전표 또는 세금계산서에서 사용 중인 거래처는 삭제할 수 없습니다. 비활성화를 이용하세요." });
@@ -2858,10 +2895,10 @@ app.post("/api/accounting/partners/:id/delete", async (req, res) => {
       _saveFileAccounting();
       return res.json({ ok: true });
     }
-    const { rows: vRows } = await pool.query("SELECT 1 FROM vouchers WHERE data->>'partnerId' = $1 LIMIT 1", [id]);
-    const { rows: tRows } = await pool.query("SELECT 1 FROM tax_invoices WHERE data->>'partnerId' = $1 LIMIT 1", [id]);
+    const { rows: vRows } = await pool.query("SELECT 1 FROM vouchers WHERE data->>'partnerId' = $1 AND (company_id = $2 OR company_id IS NULL) LIMIT 1", [id, companyId]);
+    const { rows: tRows } = await pool.query("SELECT 1 FROM tax_invoices WHERE data->>'partnerId' = $1 AND (company_id = $2 OR company_id IS NULL) LIMIT 1", [id, companyId]);
     if (vRows.length || tRows.length) return res.status(400).json({ ok: false, message: "전표 또는 세금계산서에서 사용 중인 거래처는 삭제할 수 없습니다. 비활성화를 이용하세요." });
-    await pool.query("UPDATE partners SET is_deleted = TRUE WHERE id = $1", [id]);
+    await pool.query("UPDATE partners SET is_deleted = TRUE WHERE id = $1 AND (company_id = $2 OR company_id IS NULL)", [id, companyId]);
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
 });
@@ -2901,10 +2938,15 @@ function _buildItemLineTotals(items) {
 
 // ── 품목 마스터 ───────────────────────────────────────────────────────────────
 app.get("/api/erp/items", async (req, res) => {
+  // 다른 회사 품목이 보이면 안 되므로 company_id로 필터하되, role 제약은 그대로 requireAuth
+  // 유지 — member도 구매요청(inv-purchase-requests) 등록을 위해 이 품목 목록을 조회해야 한다.
   if (!requireAuth(req, res)) return;
   try {
     if (USE_JSON_FILE) return res.json({ ok: true, items: _fileErp.items });
-    const { rows } = await pool.query("SELECT id, data FROM erp_items WHERE is_deleted = FALSE ORDER BY id");
+    const companyId = req.auth.companyId || null;
+    const { rows } = await pool.query(
+      "SELECT id, data FROM erp_items WHERE is_deleted = FALSE AND (company_id = $1 OR company_id IS NULL) ORDER BY id", [companyId]
+    );
     res.json({ ok: true, items: rows.map(r => ({ id: r.id, ...r.data })) });
   } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
 });
@@ -2912,6 +2954,7 @@ app.get("/api/erp/items", async (req, res) => {
 app.post("/api/erp/items", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
+    const companyId = req.auth.companyId || null;
     const { id, code, name, productName, assetNo, unit, category, safetyStock = 0, unitCost = 0, active = true } = req.body || {};
     if (!code || !name) return res.status(400).json({ ok: false, message: "품목코드, 품목명은 필수입니다." });
     const itemId = id || `item_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
@@ -2922,7 +2965,7 @@ app.post("/api/erp/items", async (req, res) => {
       _saveFileErp();
       return res.json({ ok: true, item });
     }
-    await pool.query("INSERT INTO erp_items (id, data) VALUES ($1,$2) ON CONFLICT (id) DO UPDATE SET data = $2, updated_at = NOW()", [itemId, item]);
+    await pool.query("INSERT INTO erp_items (id, company_id, data) VALUES ($1,$2,$3) ON CONFLICT (company_id, id) DO UPDATE SET data = $3, updated_at = NOW()", [itemId, companyId, item]);
     res.json({ ok: true, item });
   } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
 });
@@ -2931,6 +2974,7 @@ app.post("/api/erp/items/:id/delete", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
     const id = req.params.id;
+    const companyId = req.auth.companyId || null;
     if (USE_JSON_FILE) {
       const used = _fileErp.stockLedger.some(l => l.itemId === id) ||
         _fileErp.quotations.some(q => (q.lines || []).some(l => l.itemId === id)) ||
@@ -2940,19 +2984,23 @@ app.post("/api/erp/items/:id/delete", async (req, res) => {
       _saveFileErp();
       return res.json({ ok: true });
     }
-    const { rows } = await pool.query("SELECT 1 FROM erp_stock_ledger WHERE item_id = $1 LIMIT 1", [id]);
+    const { rows } = await pool.query("SELECT 1 FROM erp_stock_ledger WHERE item_id = $1 AND (company_id = $2 OR company_id IS NULL) LIMIT 1", [id, companyId]);
     if (rows.length) return res.status(400).json({ ok: false, message: "재고 이력 또는 문서에서 사용 중인 품목은 삭제할 수 없습니다. 비활성화를 이용하세요." });
-    await pool.query("UPDATE erp_items SET is_deleted = TRUE WHERE id = $1", [id]);
+    await pool.query("UPDATE erp_items SET is_deleted = TRUE WHERE id = $1 AND (company_id = $2 OR company_id IS NULL)", [id, companyId]);
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
 });
 
 // ── 창고/위치 마스터 ─────────────────────────────────────────────────────────
 app.get("/api/erp/locations", async (req, res) => {
+  // items와 동일하게 role은 requireAuth 유지, company_id 필터만 추가.
   if (!requireAuth(req, res)) return;
   try {
     if (USE_JSON_FILE) return res.json({ ok: true, locations: _fileErp.locations });
-    const { rows } = await pool.query("SELECT id, data FROM erp_locations WHERE is_deleted = FALSE ORDER BY id");
+    const companyId = req.auth.companyId || null;
+    const { rows } = await pool.query(
+      "SELECT id, data FROM erp_locations WHERE is_deleted = FALSE AND (company_id = $1 OR company_id IS NULL) ORDER BY id", [companyId]
+    );
     res.json({ ok: true, locations: rows.map(r => ({ id: r.id, ...r.data })) });
   } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
 });
@@ -2960,6 +3008,7 @@ app.get("/api/erp/locations", async (req, res) => {
 app.post("/api/erp/locations", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
+    const companyId = req.auth.companyId || null;
     const { id, name, address, active = true } = req.body || {};
     if (!name) return res.status(400).json({ ok: false, message: "위치명은 필수입니다." });
     const locId = id || `loc_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
@@ -2970,7 +3019,7 @@ app.post("/api/erp/locations", async (req, res) => {
       _saveFileErp();
       return res.json({ ok: true, location: loc });
     }
-    await pool.query("INSERT INTO erp_locations (id, data) VALUES ($1,$2) ON CONFLICT (id) DO UPDATE SET data = $2, updated_at = NOW()", [locId, loc]);
+    await pool.query("INSERT INTO erp_locations (id, company_id, data) VALUES ($1,$2,$3) ON CONFLICT (company_id, id) DO UPDATE SET data = $3, updated_at = NOW()", [locId, req.auth.companyId || null, loc]);
     res.json({ ok: true, location: loc });
   } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
 });
@@ -2979,6 +3028,7 @@ app.post("/api/erp/locations/:id/delete", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
     const id = req.params.id;
+    const companyId = req.auth.companyId || null;
     if (USE_JSON_FILE) {
       const used = _fileErp.stockLedger.some(l => l.locationId === id);
       if (used) return res.status(400).json({ ok: false, message: "재고 이력에서 사용 중인 위치는 삭제할 수 없습니다. 비활성화를 이용하세요." });
@@ -2986,9 +3036,9 @@ app.post("/api/erp/locations/:id/delete", async (req, res) => {
       _saveFileErp();
       return res.json({ ok: true });
     }
-    const { rows } = await pool.query("SELECT 1 FROM erp_stock_ledger WHERE location_id = $1 LIMIT 1", [id]);
+    const { rows } = await pool.query("SELECT 1 FROM erp_stock_ledger WHERE location_id = $1 AND (company_id = $2 OR company_id IS NULL) LIMIT 1", [id, companyId]);
     if (rows.length) return res.status(400).json({ ok: false, message: "재고 이력에서 사용 중인 위치는 삭제할 수 없습니다. 비활성화를 이용하세요." });
-    await pool.query("UPDATE erp_locations SET is_deleted = TRUE WHERE id = $1", [id]);
+    await pool.query("UPDATE erp_locations SET is_deleted = TRUE WHERE id = $1 AND (company_id = $2 OR company_id IS NULL)", [id, companyId]);
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
 });
@@ -3003,9 +3053,10 @@ app.get("/api/erp/quotations", async (req, res) => {
       if (year) list = list.filter(q => new Date(q.date).getFullYear() === year);
       return res.json({ ok: true, quotations: list.sort((a, b) => b.date.localeCompare(a.date)) });
     }
+    const companyId = req.auth.companyId || null;
     const { rows } = year
-      ? await pool.query("SELECT data FROM erp_quotations WHERE EXTRACT(YEAR FROM doc_date) = $1 ORDER BY doc_date DESC", [year])
-      : await pool.query("SELECT data FROM erp_quotations ORDER BY doc_date DESC");
+      ? await pool.query("SELECT data FROM erp_quotations WHERE EXTRACT(YEAR FROM doc_date) = $1 AND (company_id = $2 OR company_id IS NULL) ORDER BY doc_date DESC", [year, companyId])
+      : await pool.query("SELECT data FROM erp_quotations WHERE (company_id = $1 OR company_id IS NULL) ORDER BY doc_date DESC", [companyId]);
     res.json({ ok: true, quotations: rows.map(r => r.data) });
   } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
 });
@@ -3013,6 +3064,7 @@ app.get("/api/erp/quotations", async (req, res) => {
 app.post("/api/erp/quotations", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
+    const companyId = req.auth.companyId || null;
     const { date, validUntil, partnerId, partnerName, locationId, items, memo, user: createdBy } = req.body || {};
     if (!date || !partnerName) return res.status(400).json({ ok: false, message: "견적일자와 거래처명은 필수입니다." });
     if (!Array.isArray(items) || !items.length) return res.status(400).json({ ok: false, message: "품목을 1개 이상 입력하세요." });
@@ -3029,7 +3081,7 @@ app.post("/api/erp/quotations", async (req, res) => {
       _saveFileErp();
       return res.json({ ok: true, quotation: quote });
     }
-    await pool.query("INSERT INTO erp_quotations (id, doc_date, status, data) VALUES ($1,$2,'draft',$3)", [quote.id, date, quote]);
+    await pool.query("INSERT INTO erp_quotations (id, doc_date, status, data, company_id) VALUES ($1,$2,'draft',$3,$4)", [quote.id, date, quote, companyId]);
     res.json({ ok: true, quotation: quote });
   } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
 });
@@ -3038,6 +3090,7 @@ app.post("/api/erp/quotations/:id/send", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
     const id = req.params.id;
+    const companyId = req.auth.companyId || null;
     const year = new Date().getFullYear();
     if (USE_JSON_FILE) {
       const q = _fileErp.quotations.find(q => q.id === id);
@@ -3052,11 +3105,11 @@ app.post("/api/erp/quotations/:id/send", async (req, res) => {
     const client = await pool.connect();
     try {
       await client.query("BEGIN");
-      const { rows } = await client.query("SELECT data, status FROM erp_quotations WHERE id = $1 FOR UPDATE", [id]);
+      const { rows } = await client.query("SELECT data, status FROM erp_quotations WHERE id = $1 AND (company_id = $2 OR company_id IS NULL) FOR UPDATE", [id, companyId]);
       if (!rows.length) { await client.query("ROLLBACK"); return res.status(404).json({ ok: false, message: "견적서를 찾을 수 없습니다." }); }
       if (rows[0].status !== "draft") { await client.query("ROLLBACK"); return res.status(400).json({ ok: false, message: "임시 저장 상태의 견적서만 발송할 수 있습니다." }); }
       const { rows: seqRows } = await client.query(
-        "INSERT INTO erp_quote_seq (year, seq) VALUES ($1,1) ON CONFLICT (year) DO UPDATE SET seq = erp_quote_seq.seq + 1 RETURNING seq", [year]
+        "INSERT INTO erp_quote_seq (company_id, year, seq) VALUES ($1,$2,1) ON CONFLICT (company_id, year) DO UPDATE SET seq = erp_quote_seq.seq + 1 RETURNING seq", [companyId, year]
       );
       const quoteNo = `QT-${year}-${String(seqRows[0].seq).padStart(6, "0")}`;
       const q = { ...rows[0].data, quoteNo, status: "sent", sentBy: req.body.user || "unknown", sentAt: new Date().toISOString() };
@@ -3071,6 +3124,7 @@ app.post("/api/erp/quotations/:id/accept", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
     const id = req.params.id;
+    const companyId = req.auth.companyId || null;
     if (USE_JSON_FILE) {
       const q = _fileErp.quotations.find(q => q.id === id);
       if (!q) return res.status(404).json({ ok: false, message: "견적서를 찾을 수 없습니다." });
@@ -3079,7 +3133,7 @@ app.post("/api/erp/quotations/:id/accept", async (req, res) => {
       _saveFileErp();
       return res.json({ ok: true, quotation: q });
     }
-    const { rows } = await pool.query("SELECT data FROM erp_quotations WHERE id = $1 AND status = 'sent'", [id]);
+    const { rows } = await pool.query("SELECT data FROM erp_quotations WHERE id = $1 AND status = 'sent' AND (company_id = $2 OR company_id IS NULL)", [id, companyId]);
     if (!rows.length) return res.status(400).json({ ok: false, message: "발송된 견적서만 수주 확정할 수 있습니다." });
     const q = { ...rows[0].data, status: "accepted", acceptedBy: req.body.user || "unknown", acceptedAt: new Date().toISOString() };
     await pool.query("UPDATE erp_quotations SET status = 'accepted', data = $2, updated_at = NOW() WHERE id = $1", [id, q]);
@@ -3096,8 +3150,10 @@ app.post("/api/erp/quotations/:id/accept", async (req, res) => {
 // 트랜잭션이 끝날 때까지 확실히 순번대로 세운다(요청 시점에 해당 행이 있었는지와 무관).
 // 여러 키를 한 트랜잭션에서 잠글 때는 항상 정렬된 순서로 잠가야 서로 다른 순서로 잠그는
 // 두 트랜잭션이 맞물려 교착(deadlock)되는 것을 막을 수 있다.
-async function _lockStockKeys(client, pairs) {
-  const keys = [...new Set(pairs.map(([itemId, locationId]) => `stock:${itemId}:${locationId}`))].sort();
+// companyId를 키 문자열 앞에 붙여, 서로 다른 회사가 우연히 같은 itemId/locationId(레거시
+// 데이터 등)를 갖더라도 advisory lock이 회사 간에 섞이지 않게 한다.
+async function _lockStockKeys(client, companyId, pairs) {
+  const keys = [...new Set(pairs.map(([itemId, locationId]) => `stock:${companyId || ""}:${itemId}:${locationId}`))].sort();
   for (const k of keys) await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [k]);
 }
 
@@ -3107,6 +3163,7 @@ app.post("/api/erp/quotations/:id/ship", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
     const id = req.params.id;
+    const companyId = req.auth.companyId || null;
     const user = req.body.user || "unknown";
     const now = new Date().toISOString();
     if (USE_JSON_FILE) {
@@ -3135,7 +3192,7 @@ app.post("/api/erp/quotations/:id/ship", async (req, res) => {
       const inv = {
         id: `ti_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
         invoiceNo, status: "issued", direction: "sales",
-        issueDate: q.date, partnerId: q.partnerId || null, partnerName: q.partnerName, partnerBizNo: await _lookupPartnerBizNo(q.partnerId),
+        issueDate: q.date, partnerId: q.partnerId || null, partnerName: q.partnerName, partnerBizNo: await _lookupPartnerBizNo(q.partnerId, companyId),
         ...invTotals,
         createdBy: user, createdAt: now, sourceType: "quotation", sourceId: q.id, sourceNo: q.quoteNo,
       };
@@ -3148,40 +3205,40 @@ app.post("/api/erp/quotations/:id/ship", async (req, res) => {
     const client = await pool.connect();
     try {
       await client.query("BEGIN");
-      const { rows } = await client.query("SELECT data, status FROM erp_quotations WHERE id = $1 FOR UPDATE", [id]);
+      const { rows } = await client.query("SELECT data, status FROM erp_quotations WHERE id = $1 AND (company_id = $2 OR company_id IS NULL) FOR UPDATE", [id, companyId]);
       if (!rows.length) { await client.query("ROLLBACK"); return res.status(404).json({ ok: false, message: "견적서를 찾을 수 없습니다." }); }
       const q0 = rows[0].data;
       if (rows[0].status !== "accepted") { await client.query("ROLLBACK"); return res.status(400).json({ ok: false, message: "수주 확정된 견적서만 출고 처리할 수 있습니다." }); }
       if (!q0.locationId) { await client.query("ROLLBACK"); return res.status(400).json({ ok: false, message: "출고 위치가 지정되지 않은 견적서입니다." }); }
-      await _lockStockKeys(client, q0.lines.map(l => [l.itemId, q0.locationId]));
+      await _lockStockKeys(client, companyId, q0.lines.map(l => [l.itemId, q0.locationId]));
       for (const l of q0.lines) {
         const { rows: ledgerRows } = await client.query(
-          "SELECT data FROM erp_stock_ledger WHERE item_id = $1 AND location_id = $2 FOR UPDATE", [l.itemId, q0.locationId]
+          "SELECT data FROM erp_stock_ledger WHERE item_id = $1 AND location_id = $2 AND (company_id = $3 OR company_id IS NULL) FOR UPDATE", [l.itemId, q0.locationId, companyId]
         );
         const current = ledgerRows.reduce((sum, r) => sum + (r.data.type === "out" ? -Math.abs(r.data.qty) : Math.abs(r.data.qty)), 0);
         if (current < l.qty) { await client.query("ROLLBACK"); return res.status(400).json({ ok: false, message: `재고 부족: ${l.name || l.itemId} (현재 ${current} / 필요 ${l.qty})` }); }
       }
       for (const l of q0.lines) {
         await client.query(
-          "INSERT INTO erp_stock_ledger (id, item_id, location_id, data) VALUES ($1,$2,$3,$4)",
+          "INSERT INTO erp_stock_ledger (id, item_id, location_id, data, company_id) VALUES ($1,$2,$3,$4,$5)",
           [`sl_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`, l.itemId, q0.locationId,
-           { itemId: l.itemId, locationId: q0.locationId, type: "out", qty: l.qty, refType: "quotation", refId: q0.id, refNo: q0.quoteNo, memo: `견적 출고 (${q0.quoteNo})`, createdBy: user, createdAt: now }]
+           { itemId: l.itemId, locationId: q0.locationId, type: "out", qty: l.qty, refType: "quotation", refId: q0.id, refNo: q0.quoteNo, memo: `견적 출고 (${q0.quoteNo})`, createdBy: user, createdAt: now }, companyId]
         );
       }
       const year = new Date(q0.date).getFullYear();
       const { rows: seqRows } = await client.query(
-        "INSERT INTO tax_invoice_seq (year, seq) VALUES ($1,1) ON CONFLICT (year) DO UPDATE SET seq = tax_invoice_seq.seq + 1 RETURNING seq", [year]
+        "INSERT INTO tax_invoice_seq (company_id, year, seq) VALUES ($1,$2,1) ON CONFLICT (company_id, year) DO UPDATE SET seq = tax_invoice_seq.seq + 1 RETURNING seq", [companyId, year]
       );
       const invoiceNo = `TI-${year}-${String(seqRows[0].seq).padStart(6, "0")}`;
       const invTotals = _buildTaxInvoiceTotals(q0.lines);
       const inv = {
         id: `ti_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
         invoiceNo, status: "issued", direction: "sales",
-        issueDate: q0.date, partnerId: q0.partnerId || null, partnerName: q0.partnerName, partnerBizNo: await _lookupPartnerBizNo(q0.partnerId, client),
+        issueDate: q0.date, partnerId: q0.partnerId || null, partnerName: q0.partnerName, partnerBizNo: await _lookupPartnerBizNo(q0.partnerId, companyId, client),
         ...invTotals,
         createdBy: user, createdAt: now, sourceType: "quotation", sourceId: q0.id, sourceNo: q0.quoteNo,
       };
-      await client.query("INSERT INTO tax_invoices (id, invoice_no, issue_date, status, data) VALUES ($1,$2,$3,'issued',$4)", [inv.id, invoiceNo, q0.date, inv]);
+      await client.query("INSERT INTO tax_invoices (id, invoice_no, issue_date, status, data, company_id) VALUES ($1,$2,$3,'issued',$4,$5)", [inv.id, invoiceNo, q0.date, inv, companyId]);
       const q = { ...q0, status: "shipped", shippedBy: user, shippedAt: now, taxInvoiceId: inv.id, taxInvoiceNo: inv.invoiceNo };
       await client.query("UPDATE erp_quotations SET status = 'shipped', data = $2, updated_at = NOW() WHERE id = $1", [id, q]);
       await client.query("COMMIT");
@@ -3194,6 +3251,7 @@ app.post("/api/erp/quotations/:id/reject", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
     const id = req.params.id;
+    const companyId = req.auth.companyId || null;
     const reason = (req.body || {}).reason;
     if (!reason) return res.status(400).json({ ok: false, message: "반려/실주 사유를 입력하세요." });
     if (USE_JSON_FILE) {
@@ -3204,7 +3262,7 @@ app.post("/api/erp/quotations/:id/reject", async (req, res) => {
       _saveFileErp();
       return res.json({ ok: true, quotation: q });
     }
-    const { rows } = await pool.query("SELECT data FROM erp_quotations WHERE id = $1 AND status = 'sent'", [id]);
+    const { rows } = await pool.query("SELECT data FROM erp_quotations WHERE id = $1 AND status = 'sent' AND (company_id = $2 OR company_id IS NULL)", [id, companyId]);
     if (!rows.length) return res.status(400).json({ ok: false, message: "발송된 견적서만 처리할 수 있습니다." });
     const q = { ...rows[0].data, status: "rejected", rejectReason: reason, rejectedBy: req.body.user || "unknown", rejectedAt: new Date().toISOString() };
     await pool.query("UPDATE erp_quotations SET status = 'rejected', data = $2, updated_at = NOW() WHERE id = $1", [id, q]);
@@ -3216,6 +3274,7 @@ app.delete("/api/erp/quotations/:id", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
     const id = req.params.id;
+    const companyId = req.auth.companyId || null;
     if (USE_JSON_FILE) {
       const q = _fileErp.quotations.find(q => q.id === id);
       if (!q) return res.status(404).json({ ok: false, message: "견적서를 찾을 수 없습니다." });
@@ -3224,7 +3283,7 @@ app.delete("/api/erp/quotations/:id", async (req, res) => {
       _saveFileErp();
       return res.json({ ok: true });
     }
-    const { rows } = await pool.query("SELECT 1 FROM erp_quotations WHERE id = $1 AND status = 'draft'", [id]);
+    const { rows } = await pool.query("SELECT 1 FROM erp_quotations WHERE id = $1 AND status = 'draft' AND (company_id = $2 OR company_id IS NULL)", [id, companyId]);
     if (!rows.length) return res.status(400).json({ ok: false, message: "임시 저장 상태의 견적서만 삭제할 수 있습니다." });
     await pool.query("DELETE FROM erp_quotations WHERE id = $1", [id]);
     res.json({ ok: true });
@@ -3241,9 +3300,10 @@ app.get("/api/erp/purchase-orders", async (req, res) => {
       if (year) list = list.filter(p => new Date(p.date).getFullYear() === year);
       return res.json({ ok: true, purchaseOrders: list.sort((a, b) => b.date.localeCompare(a.date)) });
     }
+    const companyId = req.auth.companyId || null;
     const { rows } = year
-      ? await pool.query("SELECT data FROM erp_purchase_orders WHERE EXTRACT(YEAR FROM doc_date) = $1 ORDER BY doc_date DESC", [year])
-      : await pool.query("SELECT data FROM erp_purchase_orders ORDER BY doc_date DESC");
+      ? await pool.query("SELECT data FROM erp_purchase_orders WHERE EXTRACT(YEAR FROM doc_date) = $1 AND (company_id = $2 OR company_id IS NULL) ORDER BY doc_date DESC", [year, companyId])
+      : await pool.query("SELECT data FROM erp_purchase_orders WHERE (company_id = $1 OR company_id IS NULL) ORDER BY doc_date DESC", [companyId]);
     res.json({ ok: true, purchaseOrders: rows.map(r => r.data) });
   } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
 });
@@ -3251,6 +3311,7 @@ app.get("/api/erp/purchase-orders", async (req, res) => {
 app.post("/api/erp/purchase-orders", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
+    const companyId = req.auth.companyId || null;
     const { date, deliveryDate, partnerId, partnerName, locationId, items, memo, user: createdBy } = req.body || {};
     if (!date || !partnerName) return res.status(400).json({ ok: false, message: "발주일자와 거래처명은 필수입니다." });
     if (!locationId) return res.status(400).json({ ok: false, message: "입고 위치를 선택하세요." });
@@ -3269,7 +3330,7 @@ app.post("/api/erp/purchase-orders", async (req, res) => {
       _saveFileErp();
       return res.json({ ok: true, purchaseOrder: po });
     }
-    await pool.query("INSERT INTO erp_purchase_orders (id, doc_date, status, data) VALUES ($1,$2,'draft',$3)", [po.id, date, po]);
+    await pool.query("INSERT INTO erp_purchase_orders (id, doc_date, status, data, company_id) VALUES ($1,$2,'draft',$3,$4)", [po.id, date, po, companyId]);
     res.json({ ok: true, purchaseOrder: po });
   } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
 });
@@ -3278,6 +3339,7 @@ app.post("/api/erp/purchase-orders/:id/confirm", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
     const id = req.params.id;
+    const companyId = req.auth.companyId || null;
     const year = new Date().getFullYear();
     if (USE_JSON_FILE) {
       const po = _fileErp.purchaseOrders.find(p => p.id === id);
@@ -3292,11 +3354,11 @@ app.post("/api/erp/purchase-orders/:id/confirm", async (req, res) => {
     const client = await pool.connect();
     try {
       await client.query("BEGIN");
-      const { rows } = await client.query("SELECT data, status FROM erp_purchase_orders WHERE id = $1 FOR UPDATE", [id]);
+      const { rows } = await client.query("SELECT data, status FROM erp_purchase_orders WHERE id = $1 AND (company_id = $2 OR company_id IS NULL) FOR UPDATE", [id, companyId]);
       if (!rows.length) { await client.query("ROLLBACK"); return res.status(404).json({ ok: false, message: "발주서를 찾을 수 없습니다." }); }
       if (rows[0].status !== "draft") { await client.query("ROLLBACK"); return res.status(400).json({ ok: false, message: "임시 저장 상태의 발주서만 발주 확정할 수 있습니다." }); }
       const { rows: seqRows } = await client.query(
-        "INSERT INTO erp_po_seq (year, seq) VALUES ($1,1) ON CONFLICT (year) DO UPDATE SET seq = erp_po_seq.seq + 1 RETURNING seq", [year]
+        "INSERT INTO erp_po_seq (company_id, year, seq) VALUES ($1,$2,1) ON CONFLICT (company_id, year) DO UPDATE SET seq = erp_po_seq.seq + 1 RETURNING seq", [companyId, year]
       );
       const poNo = `PO-${year}-${String(seqRows[0].seq).padStart(6, "0")}`;
       const po = { ...rows[0].data, poNo, status: "ordered", orderedBy: req.body.user || "unknown", orderedAt: new Date().toISOString() };
@@ -3311,6 +3373,7 @@ app.post("/api/erp/purchase-orders/:id/receive", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
     const id = req.params.id;
+    const companyId = req.auth.companyId || null;
     const user = req.body.user || "unknown";
     if (USE_JSON_FILE) {
       const po = _fileErp.purchaseOrders.find(p => p.id === id);
@@ -3332,7 +3395,7 @@ app.post("/api/erp/purchase-orders/:id/receive", async (req, res) => {
       const inv = {
         id: `ti_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
         invoiceNo, status: "issued", direction: "purchase",
-        issueDate: po.date, partnerId: po.partnerId || null, partnerName: po.partnerName, partnerBizNo: await _lookupPartnerBizNo(po.partnerId),
+        issueDate: po.date, partnerId: po.partnerId || null, partnerName: po.partnerName, partnerBizNo: await _lookupPartnerBizNo(po.partnerId, companyId),
         ...invTotals,
         createdBy: user, createdAt: now, sourceType: "po", sourceId: po.id, sourceNo: po.poNo,
       };
@@ -3345,32 +3408,32 @@ app.post("/api/erp/purchase-orders/:id/receive", async (req, res) => {
     const client = await pool.connect();
     try {
       await client.query("BEGIN");
-      const { rows } = await client.query("SELECT data, status FROM erp_purchase_orders WHERE id = $1 FOR UPDATE", [id]);
+      const { rows } = await client.query("SELECT data, status FROM erp_purchase_orders WHERE id = $1 AND (company_id = $2 OR company_id IS NULL) FOR UPDATE", [id, companyId]);
       if (!rows.length) { await client.query("ROLLBACK"); return res.status(404).json({ ok: false, message: "발주서를 찾을 수 없습니다." }); }
       if (rows[0].status !== "ordered") { await client.query("ROLLBACK"); return res.status(400).json({ ok: false, message: "발주 확정 상태의 발주서만 입고 처리할 수 있습니다." }); }
       const po0 = rows[0].data;
       const now = new Date().toISOString();
       for (const l of po0.lines) {
         await client.query(
-          "INSERT INTO erp_stock_ledger (id, item_id, location_id, data) VALUES ($1,$2,$3,$4)",
+          "INSERT INTO erp_stock_ledger (id, item_id, location_id, data, company_id) VALUES ($1,$2,$3,$4,$5)",
           [`sl_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`, l.itemId, po0.locationId,
-           { itemId: l.itemId, locationId: po0.locationId, type: "in", qty: l.qty, refType: "po", refId: po0.id, refNo: po0.poNo, memo: `발주 입고 (${po0.poNo})`, createdBy: user, createdAt: now }]
+           { itemId: l.itemId, locationId: po0.locationId, type: "in", qty: l.qty, refType: "po", refId: po0.id, refNo: po0.poNo, memo: `발주 입고 (${po0.poNo})`, createdBy: user, createdAt: now }, companyId]
         );
       }
       const year = new Date(po0.date).getFullYear();
       const { rows: seqRows } = await client.query(
-        "INSERT INTO tax_invoice_seq (year, seq) VALUES ($1,1) ON CONFLICT (year) DO UPDATE SET seq = tax_invoice_seq.seq + 1 RETURNING seq", [year]
+        "INSERT INTO tax_invoice_seq (company_id, year, seq) VALUES ($1,$2,1) ON CONFLICT (company_id, year) DO UPDATE SET seq = tax_invoice_seq.seq + 1 RETURNING seq", [companyId, year]
       );
       const invoiceNo = `TI-${year}-${String(seqRows[0].seq).padStart(6, "0")}`;
       const invTotals = _buildTaxInvoiceTotals(po0.lines);
       const inv = {
         id: `ti_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
         invoiceNo, status: "issued", direction: "purchase",
-        issueDate: po0.date, partnerId: po0.partnerId || null, partnerName: po0.partnerName, partnerBizNo: await _lookupPartnerBizNo(po0.partnerId, client),
+        issueDate: po0.date, partnerId: po0.partnerId || null, partnerName: po0.partnerName, partnerBizNo: await _lookupPartnerBizNo(po0.partnerId, companyId, client),
         ...invTotals,
         createdBy: user, createdAt: now, sourceType: "po", sourceId: po0.id, sourceNo: po0.poNo,
       };
-      await client.query("INSERT INTO tax_invoices (id, invoice_no, issue_date, status, data) VALUES ($1,$2,$3,'issued',$4)", [inv.id, invoiceNo, po0.date, inv]);
+      await client.query("INSERT INTO tax_invoices (id, invoice_no, issue_date, status, data, company_id) VALUES ($1,$2,$3,'issued',$4,$5)", [inv.id, invoiceNo, po0.date, inv, companyId]);
       const po = { ...po0, status: "received", receivedBy: user, receivedAt: now, taxInvoiceId: inv.id, taxInvoiceNo: inv.invoiceNo };
       await client.query("UPDATE erp_purchase_orders SET status = 'received', data = $2, updated_at = NOW() WHERE id = $1", [id, po]);
       await client.query("COMMIT");
@@ -3383,6 +3446,7 @@ app.post("/api/erp/purchase-orders/:id/cancel", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
     const id = req.params.id;
+    const companyId = req.auth.companyId || null;
     const reason = (req.body || {}).reason;
     if (!reason) return res.status(400).json({ ok: false, message: "취소 사유를 입력하세요." });
     if (USE_JSON_FILE) {
@@ -3393,7 +3457,7 @@ app.post("/api/erp/purchase-orders/:id/cancel", async (req, res) => {
       _saveFileErp();
       return res.json({ ok: true, purchaseOrder: po });
     }
-    const { rows } = await pool.query("SELECT data FROM erp_purchase_orders WHERE id = $1 AND status != 'received'", [id]);
+    const { rows } = await pool.query("SELECT data FROM erp_purchase_orders WHERE id = $1 AND status != 'received' AND (company_id = $2 OR company_id IS NULL)", [id, companyId]);
     if (!rows.length) return res.status(400).json({ ok: false, message: "이미 입고 처리된 발주서는 취소할 수 없습니다." });
     const po = { ...rows[0].data, status: "cancelled", cancelReason: reason, cancelledBy: req.body.user || "unknown", cancelledAt: new Date().toISOString() };
     await pool.query("UPDATE erp_purchase_orders SET status = 'cancelled', data = $2, updated_at = NOW() WHERE id = $1", [id, po]);
@@ -3413,7 +3477,7 @@ app.delete("/api/erp/purchase-orders/:id", async (req, res) => {
       _saveFileErp();
       return res.json({ ok: true });
     }
-    const { rows } = await pool.query("SELECT 1 FROM erp_purchase_orders WHERE id = $1 AND status = 'draft'", [id]);
+    const { rows } = await pool.query("SELECT 1 FROM erp_purchase_orders WHERE id = $1 AND status = 'draft' AND (company_id = $2 OR company_id IS NULL)", [id, req.auth.companyId || null]);
     if (!rows.length) return res.status(400).json({ ok: false, message: "임시 저장 상태의 발주서만 삭제할 수 있습니다." });
     await pool.query("DELETE FROM erp_purchase_orders WHERE id = $1", [id]);
     res.json({ ok: true });
@@ -3425,14 +3489,15 @@ app.get("/api/erp/purchase-requests", async (req, res) => {
   if (!requireAuth(req, res)) return;
   try {
     const { role, empId: userId } = req.auth;
+    const companyId = req.auth.companyId || null;
     if (USE_JSON_FILE) {
       let list = _fileErp.purchaseRequests;
       if (role !== "admin") list = list.filter(r => String(r.requestedById) === String(userId));
       return res.json({ ok: true, purchaseRequests: list.slice().sort((a, b) => b.createdAt.localeCompare(a.createdAt)) });
     }
     const { rows } = role === "admin"
-      ? await pool.query("SELECT data FROM erp_purchase_requests ORDER BY created_at DESC")
-      : await pool.query("SELECT data FROM erp_purchase_requests WHERE data->>'requestedById' = $1 ORDER BY created_at DESC", [String(userId)]);
+      ? await pool.query("SELECT data FROM erp_purchase_requests WHERE (company_id = $1 OR company_id IS NULL) ORDER BY created_at DESC", [companyId])
+      : await pool.query("SELECT data FROM erp_purchase_requests WHERE data->>'requestedById' = $1 AND (company_id = $2 OR company_id IS NULL) ORDER BY created_at DESC", [String(userId), companyId]);
     res.json({ ok: true, purchaseRequests: rows.map(r => r.data) });
   } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
 });
@@ -3441,6 +3506,7 @@ app.post("/api/erp/purchase-requests", async (req, res) => {
   if (!requireAuth(req, res)) return;
   try {
     const { empId: userId } = req.auth;
+    const companyId = req.auth.companyId || null;
     const { date, items, memo, user: requestedBy } = req.body || {};
     if (!date) return res.status(400).json({ ok: false, message: "요청일자는 필수입니다." });
     if (!Array.isArray(items) || !items.length) return res.status(400).json({ ok: false, message: "품목을 1개 이상 입력하세요." });
@@ -3462,7 +3528,7 @@ app.post("/api/erp/purchase-requests", async (req, res) => {
       _saveFileErp();
       return res.json({ ok: true, purchaseRequest: pr });
     }
-    await pool.query("INSERT INTO erp_purchase_requests (id, doc_date, status, data) VALUES ($1,$2,'pending',$3)", [pr.id, date, pr]);
+    await pool.query("INSERT INTO erp_purchase_requests (id, doc_date, status, data, company_id) VALUES ($1,$2,'pending',$3,$4)", [pr.id, date, pr, companyId]);
     res.json({ ok: true, purchaseRequest: pr });
   } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
 });
@@ -3471,6 +3537,7 @@ app.post("/api/erp/purchase-requests/:id/approve", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
     const id = req.params.id;
+    const companyId = req.auth.companyId || null;
     const user = req.body.user || "unknown";
     if (USE_JSON_FILE) {
       const pr = _fileErp.purchaseRequests.find(r => r.id === id);
@@ -3480,7 +3547,7 @@ app.post("/api/erp/purchase-requests/:id/approve", async (req, res) => {
       _saveFileErp();
       return res.json({ ok: true, purchaseRequest: pr });
     }
-    const { rows } = await pool.query("SELECT data FROM erp_purchase_requests WHERE id = $1 AND status = 'pending'", [id]);
+    const { rows } = await pool.query("SELECT data FROM erp_purchase_requests WHERE id = $1 AND status = 'pending' AND (company_id = $2 OR company_id IS NULL)", [id, companyId]);
     if (!rows.length) return res.status(400).json({ ok: false, message: "대기 중인 요청만 승인할 수 있습니다." });
     const pr = { ...rows[0].data, status: "approved", approvedBy: user, approvedAt: new Date().toISOString() };
     await pool.query("UPDATE erp_purchase_requests SET status = 'approved', data = $2, updated_at = NOW() WHERE id = $1", [id, pr]);
@@ -3492,6 +3559,7 @@ app.post("/api/erp/purchase-requests/:id/reject", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
     const id = req.params.id;
+    const companyId = req.auth.companyId || null;
     const reason = (req.body || {}).reason;
     if (!reason) return res.status(400).json({ ok: false, message: "반려 사유를 입력하세요." });
     if (USE_JSON_FILE) {
@@ -3502,7 +3570,7 @@ app.post("/api/erp/purchase-requests/:id/reject", async (req, res) => {
       _saveFileErp();
       return res.json({ ok: true, purchaseRequest: pr });
     }
-    const { rows } = await pool.query("SELECT data FROM erp_purchase_requests WHERE id = $1 AND status = 'pending'", [id]);
+    const { rows } = await pool.query("SELECT data FROM erp_purchase_requests WHERE id = $1 AND status = 'pending' AND (company_id = $2 OR company_id IS NULL)", [id, companyId]);
     if (!rows.length) return res.status(400).json({ ok: false, message: "대기 중인 요청만 반려할 수 있습니다." });
     const pr = { ...rows[0].data, status: "rejected", rejectReason: reason, rejectedBy: req.body.user || "unknown", rejectedAt: new Date().toISOString() };
     await pool.query("UPDATE erp_purchase_requests SET status = 'rejected', data = $2, updated_at = NOW() WHERE id = $1", [id, pr]);
@@ -3514,6 +3582,7 @@ app.post("/api/erp/purchase-requests/:id/convert-to-po", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
     const id = req.params.id;
+    const companyId = req.auth.companyId || null;
     const { partnerId, partnerName, locationId, user: createdBy } = req.body || {};
     if (!partnerName) return res.status(400).json({ ok: false, message: "거래처명은 필수입니다." });
     if (!locationId) return res.status(400).json({ ok: false, message: "입고 위치를 선택하세요." });
@@ -3537,7 +3606,7 @@ app.post("/api/erp/purchase-requests/:id/convert-to-po", async (req, res) => {
     const client = await pool.connect();
     try {
       await client.query("BEGIN");
-      const { rows } = await client.query("SELECT data, status FROM erp_purchase_requests WHERE id = $1 FOR UPDATE", [id]);
+      const { rows } = await client.query("SELECT data, status FROM erp_purchase_requests WHERE id = $1 AND (company_id = $2 OR company_id IS NULL) FOR UPDATE", [id, companyId]);
       if (!rows.length) { await client.query("ROLLBACK"); return res.status(404).json({ ok: false, message: "구매요청을 찾을 수 없습니다." }); }
       if (rows[0].status !== "approved") { await client.query("ROLLBACK"); return res.status(400).json({ ok: false, message: "승인된 요청만 발주로 전환할 수 있습니다." }); }
       const pr0 = rows[0].data;
@@ -3549,7 +3618,7 @@ app.post("/api/erp/purchase-requests/:id/convert-to-po", async (req, res) => {
         memo: pr0.memo, createdBy: createdBy || "unknown", createdAt: new Date().toISOString(),
         sourcePurchaseRequestId: pr0.id,
       };
-      await client.query("INSERT INTO erp_purchase_orders (id, doc_date, status, data) VALUES ($1,$2,'draft',$3)", [po.id, po.date, po]);
+      await client.query("INSERT INTO erp_purchase_orders (id, doc_date, status, data, company_id) VALUES ($1,$2,'draft',$3,$4)", [po.id, po.date, po, companyId]);
       const pr = { ...pr0, status: "converted", convertedPoId: po.id, convertedAt: new Date().toISOString() };
       await client.query("UPDATE erp_purchase_requests SET status = 'converted', data = $2, updated_at = NOW() WHERE id = $1", [id, pr]);
       await client.query("COMMIT");
@@ -3563,6 +3632,7 @@ app.delete("/api/erp/purchase-requests/:id", async (req, res) => {
   try {
     const id = req.params.id;
     const { role, empId: userId } = req.auth;
+    const companyId = req.auth.companyId || null;
     if (USE_JSON_FILE) {
       const pr = _fileErp.purchaseRequests.find(r => r.id === id);
       if (!pr) return res.status(404).json({ ok: false, message: "구매요청을 찾을 수 없습니다." });
@@ -3572,7 +3642,7 @@ app.delete("/api/erp/purchase-requests/:id", async (req, res) => {
       _saveFileErp();
       return res.json({ ok: true });
     }
-    const { rows } = await pool.query("SELECT data FROM erp_purchase_requests WHERE id = $1 AND status = 'pending'", [id]);
+    const { rows } = await pool.query("SELECT data FROM erp_purchase_requests WHERE id = $1 AND status = 'pending' AND (company_id = $2 OR company_id IS NULL)", [id, companyId]);
     if (!rows.length) return res.status(400).json({ ok: false, message: "대기 중인 요청만 삭제할 수 있습니다." });
     if (role !== "admin" && String(rows[0].data.requestedById) !== String(userId)) return res.status(403).json({ ok: false, message: "본인 요청만 삭제할 수 있습니다." });
     await pool.query("DELETE FROM erp_purchase_requests WHERE id = $1", [id]);
@@ -3588,7 +3658,7 @@ app.get("/api/erp/stock", async (req, res) => {
     if (USE_JSON_FILE) {
       ledger = _fileErp.stockLedger;
     } else {
-      const { rows } = await pool.query("SELECT data FROM erp_stock_ledger");
+      const { rows } = await pool.query("SELECT data FROM erp_stock_ledger WHERE (company_id = $1 OR company_id IS NULL)", [req.auth.companyId || null]);
       ledger = rows.map(r => r.data);
     }
     const map = {};
@@ -3613,7 +3683,7 @@ app.get("/api/erp/stock/ledger", async (req, res) => {
     if (USE_JSON_FILE) {
       ledger = _fileErp.stockLedger;
     } else {
-      const { rows } = await pool.query("SELECT data FROM erp_stock_ledger");
+      const { rows } = await pool.query("SELECT data FROM erp_stock_ledger WHERE (company_id = $1 OR company_id IS NULL)", [req.auth.companyId || null]);
       ledger = rows.map(r => r.data);
     }
     if (itemId) ledger = ledger.filter(l => l.itemId === itemId);
@@ -3625,6 +3695,7 @@ app.get("/api/erp/stock/ledger", async (req, res) => {
 app.post("/api/erp/stock/adjust", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
+    const companyId = req.auth.companyId || null;
     const { itemId, locationId, type, qty, memo, user } = req.body || {};
     if (!itemId || !locationId) return res.status(400).json({ ok: false, message: "품목과 위치를 선택하세요." });
     if (!["in", "out"].includes(type)) return res.status(400).json({ ok: false, message: "입고/출고 구분이 올바르지 않습니다." });
@@ -3646,11 +3717,11 @@ app.post("/api/erp/stock/adjust", async (req, res) => {
     const client = await pool.connect();
     try {
       await client.query("BEGIN");
-      await _lockStockKeys(client, [[itemId, locationId]]);
-      const { rows } = await client.query("SELECT data FROM erp_stock_ledger WHERE item_id = $1 AND location_id = $2", [itemId, locationId]);
+      await _lockStockKeys(client, companyId, [[itemId, locationId]]);
+      const { rows } = await client.query("SELECT data FROM erp_stock_ledger WHERE item_id = $1 AND location_id = $2 AND (company_id = $3 OR company_id IS NULL)", [itemId, locationId, companyId]);
       const current = rows.reduce((s, r) => s + (r.data.type === "out" ? -Math.abs(r.data.qty) : Math.abs(r.data.qty)), 0);
       if (type === "out" && current < qtyNum) { await client.query("ROLLBACK"); return res.status(400).json({ ok: false, message: `현재 재고(${current})보다 많은 수량을 출고할 수 없습니다.` }); }
-      await client.query("INSERT INTO erp_stock_ledger (id, item_id, location_id, data) VALUES ($1,$2,$3,$4)", [entry.id, itemId, locationId, entry]);
+      await client.query("INSERT INTO erp_stock_ledger (id, item_id, location_id, data, company_id) VALUES ($1,$2,$3,$4,$5)", [entry.id, itemId, locationId, entry, companyId]);
       await client.query("COMMIT");
       res.json({ ok: true, entry });
     } catch (e) { await client.query("ROLLBACK"); throw e; } finally { client.release(); }
@@ -3662,6 +3733,7 @@ app.post("/api/erp/stock/adjust", async (req, res) => {
 app.post("/api/erp/stock/count", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
+    const companyId = req.auth.companyId || null;
     const { locationId, lines, user } = req.body || {};
     if (!locationId || !Array.isArray(lines) || !lines.length)
       return res.status(400).json({ ok: false, message: "위치와 실사 항목이 필요합니다." });
@@ -3692,8 +3764,8 @@ app.post("/api/erp/stock/count", async (req, res) => {
     const client = await pool.connect();
     try {
       await client.query("BEGIN");
-      await _lockStockKeys(client, lines.filter(l => l.itemId).map(l => [l.itemId, locationId]));
-      const { rows } = await client.query("SELECT data FROM erp_stock_ledger WHERE location_id = $1", [locationId]);
+      await _lockStockKeys(client, companyId, lines.filter(l => l.itemId).map(l => [l.itemId, locationId]));
+      const { rows } = await client.query("SELECT data FROM erp_stock_ledger WHERE location_id = $1 AND (company_id = $2 OR company_id IS NULL)", [locationId, companyId]);
       const ledger = rows.map(r => r.data);
       const entries = [];
       for (const l of lines) {
@@ -3712,7 +3784,7 @@ app.post("/api/erp/stock/count", async (req, res) => {
         });
       }
       for (const e of entries) {
-        await client.query("INSERT INTO erp_stock_ledger (id, item_id, location_id, data) VALUES ($1,$2,$3,$4)", [e.id, e.itemId, e.locationId, e]);
+        await client.query("INSERT INTO erp_stock_ledger (id, item_id, location_id, data, company_id) VALUES ($1,$2,$3,$4,$5)", [e.id, e.itemId, e.locationId, e, companyId]);
       }
       await client.query("COMMIT");
       res.json({ ok: true, adjusted: entries.length, entries });
@@ -3725,6 +3797,7 @@ app.post("/api/erp/stock/count", async (req, res) => {
 app.post("/api/erp/stock/transfer", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
+    const companyId = req.auth.companyId || null;
     const { itemId, fromLocationId, toLocationId, qty, memo, user } = req.body || {};
     if (!itemId || !fromLocationId || !toLocationId) return res.status(400).json({ ok: false, message: "품목과 출발/도착 위치를 선택하세요." });
     if (fromLocationId === toLocationId) return res.status(400).json({ ok: false, message: "출발 위치와 도착 위치가 같을 수 없습니다." });
@@ -3746,14 +3819,14 @@ app.post("/api/erp/stock/transfer", async (req, res) => {
     const client = await pool.connect();
     try {
       await client.query("BEGIN");
-      await _lockStockKeys(client, [[itemId, fromLocationId], [itemId, toLocationId]]);
-      const { rows: ledgerRows } = await client.query("SELECT data FROM erp_stock_ledger WHERE item_id = $1 AND location_id = $2", [itemId, fromLocationId]);
+      await _lockStockKeys(client, companyId, [[itemId, fromLocationId], [itemId, toLocationId]]);
+      const { rows: ledgerRows } = await client.query("SELECT data FROM erp_stock_ledger WHERE item_id = $1 AND location_id = $2 AND (company_id = $3 OR company_id IS NULL)", [itemId, fromLocationId, companyId]);
       const current = ledgerRows.reduce((s, r) => s + (r.data.type === "out" ? -Math.abs(r.data.qty) : Math.abs(r.data.qty)), 0);
       if (current < qtyNum) { await client.query("ROLLBACK"); return res.status(400).json({ ok: false, message: `출발 위치 재고 부족 (현재 ${current} / 이동 요청 ${qtyNum})` }); }
       const outEntry = { itemId, locationId: fromLocationId, type: "out", qty: qtyNum, refType: "transfer", refId: transferId, refNo: null, memo: memo || "", createdBy, createdAt: now };
       const inEntry = { itemId, locationId: toLocationId, type: "in", qty: qtyNum, refType: "transfer", refId: transferId, refNo: null, memo: memo || "", createdBy, createdAt: now };
-      await client.query("INSERT INTO erp_stock_ledger (id, item_id, location_id, data) VALUES ($1,$2,$3,$4)", [`sl_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`, itemId, fromLocationId, outEntry]);
-      await client.query("INSERT INTO erp_stock_ledger (id, item_id, location_id, data) VALUES ($1,$2,$3,$4)", [`sl_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`, itemId, toLocationId, inEntry]);
+      await client.query("INSERT INTO erp_stock_ledger (id, item_id, location_id, data, company_id) VALUES ($1,$2,$3,$4,$5)", [`sl_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`, itemId, fromLocationId, outEntry, companyId]);
+      await client.query("INSERT INTO erp_stock_ledger (id, item_id, location_id, data, company_id) VALUES ($1,$2,$3,$4,$5)", [`sl_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`, itemId, toLocationId, inEntry, companyId]);
       await client.query("COMMIT");
       res.json({ ok: true, transferId, outEntry, inEntry });
     } catch (e) { await client.query("ROLLBACK"); throw e; } finally { client.release(); }
@@ -3765,7 +3838,9 @@ app.get("/api/erp/sales-targets", async (req, res) => {
   if (!requireAdmin(req, res)) return;
   try {
     if (USE_JSON_FILE) return res.json({ ok: true, salesTargets: _fileErp.salesTargets });
-    const { rows } = await pool.query("SELECT id, data FROM erp_sales_targets WHERE is_deleted = FALSE ORDER BY id");
+    const { rows } = await pool.query(
+      "SELECT id, data FROM erp_sales_targets WHERE is_deleted = FALSE AND (company_id = $1 OR company_id IS NULL) ORDER BY id", [req.auth.companyId || null]
+    );
     res.json({ ok: true, salesTargets: rows.map(r => ({ id: r.id, ...r.data })) });
   } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
 });
@@ -3791,8 +3866,8 @@ app.post("/api/erp/sales-targets", async (req, res) => {
       return res.json({ ok: true, salesTarget: target });
     }
     await pool.query(
-      "INSERT INTO erp_sales_targets (id, data) VALUES ($1,$2) ON CONFLICT (id) DO UPDATE SET data = $2, updated_at = NOW()",
-      [targetId, target]
+      "INSERT INTO erp_sales_targets (id, company_id, data) VALUES ($1,$2,$3) ON CONFLICT (company_id, id) DO UPDATE SET data = $3, updated_at = NOW()",
+      [targetId, req.auth.companyId || null, target]
     );
     res.json({ ok: true, salesTarget: target });
   } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
@@ -3807,7 +3882,7 @@ app.post("/api/erp/sales-targets/:id/delete", async (req, res) => {
       _saveFileErp();
       return res.json({ ok: true });
     }
-    await pool.query("UPDATE erp_sales_targets SET is_deleted = TRUE WHERE id = $1", [id]);
+    await pool.query("UPDATE erp_sales_targets SET is_deleted = TRUE WHERE id = $1 AND (company_id = $2 OR company_id IS NULL)", [id, req.auth.companyId || null]);
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
 });
@@ -3817,7 +3892,10 @@ app.get("/api/pms/projects", async (req, res) => {
   if (!requireAuth(req, res)) return;
   try {
     if (USE_JSON_FILE) return res.json({ ok: true, projects: _filePms.projects });
-    const { rows } = await pool.query("SELECT id, data FROM pms_projects WHERE is_deleted = FALSE ORDER BY created_at DESC");
+    const { rows } = await pool.query(
+      "SELECT id, data FROM pms_projects WHERE is_deleted = FALSE AND (company_id = $1 OR company_id IS NULL) ORDER BY created_at DESC",
+      [req.auth.companyId || null]
+    );
     res.json({ ok: true, projects: rows.map(r => ({ id: r.id, ...r.data })) });
   } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
 });
@@ -3825,6 +3903,7 @@ app.get("/api/pms/projects", async (req, res) => {
 app.post("/api/pms/projects", async (req, res) => {
   try {
     if (!requireRole(req, res, ["admin", "leader"])) return;
+    const companyId = req.auth.companyId || null;
     const { id, name, startDate, endDate, partnerId, pmId, status, memo, members, user: createdBy, userId: createdById } = req.body || {};
     if (!name) return res.status(400).json({ ok: false, message: "프로젝트명은 필수입니다." });
     const projectId = id || `proj_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
@@ -3844,7 +3923,7 @@ app.post("/api/pms/projects", async (req, res) => {
       _saveFilePms();
       return res.json({ ok: true, project });
     }
-    const { rows } = await pool.query("SELECT data FROM pms_projects WHERE id = $1", [projectId]);
+    const { rows } = await pool.query("SELECT data FROM pms_projects WHERE id = $1 AND (company_id = $2 OR company_id IS NULL)", [projectId, companyId]);
     const existing = rows[0] ? rows[0].data : null;
     const project = {
       id: projectId, name, startDate: startDate || "", endDate: endDate || "",
@@ -3855,8 +3934,8 @@ app.post("/api/pms/projects", async (req, res) => {
       createdAt: existing ? existing.createdAt : now, updatedAt: now,
     };
     await pool.query(
-      "INSERT INTO pms_projects (id, data) VALUES ($1,$2) ON CONFLICT (id) DO UPDATE SET data = $2, updated_at = NOW()",
-      [projectId, project]
+      "INSERT INTO pms_projects (id, company_id, data) VALUES ($1,$2,$3) ON CONFLICT (company_id, id) DO UPDATE SET data = $3, updated_at = NOW()",
+      [projectId, companyId, project]
     );
     res.json({ ok: true, project });
   } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
@@ -3866,6 +3945,7 @@ app.post("/api/pms/projects/:id", async (req, res) => {
   try {
     if (!requireRole(req, res, ["admin", "leader"])) return;
     const id = req.params.id;
+    const companyId = req.auth.companyId || null;
     const { name, startDate, endDate, partnerId, pmId, status, memo, members } = req.body || {};
     if (USE_JSON_FILE) {
       const project = _filePms.projects.find(p => p.id === id);
@@ -3882,7 +3962,7 @@ app.post("/api/pms/projects/:id", async (req, res) => {
       _saveFilePms();
       return res.json({ ok: true, project });
     }
-    const { rows } = await pool.query("SELECT data FROM pms_projects WHERE id = $1", [id]);
+    const { rows } = await pool.query("SELECT data FROM pms_projects WHERE id = $1 AND (company_id = $2 OR company_id IS NULL)", [id, companyId]);
     if (!rows.length) return res.status(404).json({ ok: false, message: "프로젝트를 찾을 수 없습니다." });
     const project = { ...rows[0].data };
     if (name != null) project.name = name;
@@ -3903,6 +3983,7 @@ app.post("/api/pms/projects/:id/close", async (req, res) => {
   try {
     if (!requireRole(req, res, ["admin", "leader"])) return;
     const id = req.params.id;
+    const companyId = req.auth.companyId || null;
     if (USE_JSON_FILE) {
       const project = _filePms.projects.find(p => p.id === id);
       if (!project) return res.status(404).json({ ok: false, message: "프로젝트를 찾을 수 없습니다." });
@@ -3911,7 +3992,7 @@ app.post("/api/pms/projects/:id/close", async (req, res) => {
       _saveFilePms();
       return res.json({ ok: true, project });
     }
-    const { rows } = await pool.query("SELECT data FROM pms_projects WHERE id = $1", [id]);
+    const { rows } = await pool.query("SELECT data FROM pms_projects WHERE id = $1 AND (company_id = $2 OR company_id IS NULL)", [id, companyId]);
     if (!rows.length) return res.status(404).json({ ok: false, message: "프로젝트를 찾을 수 없습니다." });
     const project = { ...rows[0].data, status: "closed", updatedAt: new Date().toISOString() };
     await pool.query("UPDATE pms_projects SET data = $2, updated_at = NOW() WHERE id = $1", [id, project]);
@@ -3937,6 +4018,7 @@ app.get("/api/pms/allocations", async (req, res) => {
   if (!requireAuth(req, res)) return;
   try {
     const { role, empId: userId } = req.auth;
+    const companyId = req.auth.companyId || null;
     let { year, month, employeeId } = req.query;
     // "가동률 현황"(pms-utilization) 화면은 PAGE_ROLES상 admin/director/leader 전용인데
     // 이 API는 requireAuth만 있어 member 토큰으로 ?employeeId=<타인 id>를 직접 넣으면
@@ -3950,8 +4032,8 @@ app.get("/api/pms/allocations", async (req, res) => {
       if (employeeId) list = list.filter(a => String(a.employeeId) === String(employeeId));
       return res.json({ ok: true, allocations: list });
     }
-    const conditions = ["is_deleted = FALSE"];
-    const params = [];
+    const conditions = ["is_deleted = FALSE", "(company_id = $1 OR company_id IS NULL)"];
+    const params = [companyId];
     if (year) { params.push(Number(year)); conditions.push(`year = $${params.length}`); }
     if (month) { params.push(Number(month)); conditions.push(`month = $${params.length}`); }
     if (employeeId) { params.push(Number(employeeId)); conditions.push(`employee_id = $${params.length}`); }
@@ -3960,9 +4042,11 @@ app.get("/api/pms/allocations", async (req, res) => {
   } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
 });
 
-async function _pmsProjectById(projectId) {
+async function _pmsProjectById(projectId, companyId) {
   if (USE_JSON_FILE) return _filePms.projects.find(p => p.id === projectId) || null;
-  const { rows } = await pool.query("SELECT data FROM pms_projects WHERE id = $1 AND is_deleted = FALSE", [projectId]);
+  const { rows } = await pool.query(
+    "SELECT data FROM pms_projects WHERE id = $1 AND is_deleted = FALSE AND (company_id = $2 OR company_id IS NULL)", [projectId, companyId || null]
+  );
   return rows[0] ? rows[0].data : null;
 }
 
@@ -3971,13 +4055,14 @@ app.post("/api/pms/allocations", async (req, res) => {
   try {
     const { id, employeeId, year, month, projectId, percent, memo } = req.body || {};
     const { role, empId: userId } = req.auth;
+    const companyId = req.auth.companyId || null;
     if (!employeeId || !year || !month || !projectId) return res.status(400).json({ ok: false, message: "직원, 연도, 월, 프로젝트는 필수입니다." });
     const percentNum = Number(percent);
     if (isNaN(percentNum) || percentNum <= 0) return res.status(400).json({ ok: false, message: "투입률은 0보다 큰 숫자여야 합니다." });
     if (role !== "admin" && String(employeeId) !== String(userId)) return res.status(403).json({ ok: false, message: "본인 투입률만 등록할 수 있습니다." });
     if (id && role !== "admin") return res.status(403).json({ ok: false, message: "확정된 투입률은 관리자만 변경할 수 있습니다." });
     if (role !== "admin") {
-      const project = await _pmsProjectById(projectId);
+      const project = await _pmsProjectById(projectId, companyId);
       if (!project || !(project.members || []).map(String).includes(String(employeeId))) {
         return res.status(403).json({ ok: false, message: "투입 인원으로 등록된 프로젝트만 선택할 수 있습니다." });
       }
@@ -3999,14 +4084,14 @@ app.post("/api/pms/allocations", async (req, res) => {
     // 100% 이하인지 확인 → 등록"을 순서 보장 없이 수행해(check-then-act) 합계가 100%를
     // 넘게 등록될 수 있었다(실측: 15건 동시 등록 시 캡이 완전히 무력화되어 합계 120%까지
     // 초과). employeeId+year+month 조합에 advisory lock을 걸어 같은 달을 다루는 요청을
-    // 확실히 순번대로 세운다.
+    // 확실히 순번대로 세운다. companyId를 키 앞에 붙여 회사 간 잠금 충돌을 막는다.
     const client = await pool.connect();
     try {
       await client.query("BEGIN");
-      await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [`alloc:${employeeId}:${year}:${month}`]);
+      await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [`alloc:${companyId || ""}:${employeeId}:${year}:${month}`]);
       const { rows } = await client.query(
-        "SELECT data FROM pms_allocations WHERE employee_id = $1 AND year = $2 AND month = $3 AND is_deleted = FALSE AND id != $4",
-        [employeeId, year, month, allocId]
+        "SELECT data FROM pms_allocations WHERE employee_id = $1 AND year = $2 AND month = $3 AND is_deleted = FALSE AND id != $4 AND (company_id = $5 OR company_id IS NULL)",
+        [employeeId, year, month, allocId, companyId]
       );
       const otherTotal = rows.reduce((s, r) => s + (Number(r.data.percent) || 0), 0);
       if (otherTotal + percentNum > 100) {
@@ -4014,9 +4099,9 @@ app.post("/api/pms/allocations", async (req, res) => {
         return res.status(400).json({ ok: false, message: `투입률 합계가 100%를 초과합니다 (기존 ${otherTotal}% + 신규 ${percentNum}%).` });
       }
       await client.query(
-        "INSERT INTO pms_allocations (id, employee_id, year, month, data) VALUES ($1,$2,$3,$4,$5) " +
-        "ON CONFLICT (id) DO UPDATE SET data = $5, employee_id = $2, year = $3, month = $4, updated_at = NOW()",
-        [allocId, Number(employeeId), Number(year), Number(month), alloc]
+        "INSERT INTO pms_allocations (id, employee_id, year, month, data, company_id) VALUES ($1,$2,$3,$4,$5,$6) " +
+        "ON CONFLICT (company_id, id) DO UPDATE SET data = $5, employee_id = $2, year = $3, month = $4, updated_at = NOW()",
+        [allocId, Number(employeeId), Number(year), Number(month), alloc, companyId]
       );
       await client.query("COMMIT");
       res.json({ ok: true, allocation: alloc });
@@ -4028,6 +4113,7 @@ app.post("/api/pms/allocations/:id/delete", async (req, res) => {
   if (!requireAuth(req, res)) return;
   try {
     const id = req.params.id;
+    const companyId = req.auth.companyId || null;
     if (req.auth.role !== "admin") return res.status(403).json({ ok: false, message: "확정된 투입률은 관리자만 삭제할 수 있습니다." });
     if (USE_JSON_FILE) {
       const alloc = _filePms.allocations.find(a => a.id === id);
@@ -4036,9 +4122,9 @@ app.post("/api/pms/allocations/:id/delete", async (req, res) => {
       _saveFilePms();
       return res.json({ ok: true });
     }
-    const { rows } = await pool.query("SELECT data FROM pms_allocations WHERE id = $1 AND is_deleted = FALSE", [id]);
+    const { rows } = await pool.query("SELECT data FROM pms_allocations WHERE id = $1 AND is_deleted = FALSE AND (company_id = $2 OR company_id IS NULL)", [id, companyId]);
     if (!rows.length) return res.status(404).json({ ok: false, message: "배정 내역을 찾을 수 없습니다." });
-    await pool.query("UPDATE pms_allocations SET is_deleted = TRUE WHERE id = $1", [id]);
+    await pool.query("UPDATE pms_allocations SET is_deleted = TRUE WHERE id = $1 AND (company_id = $2 OR company_id IS NULL)", [id, companyId]);
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
 });
@@ -4064,6 +4150,7 @@ app.get("/api/pms/worklogs", async (req, res) => {
   if (!requireAuth(req, res)) return;
   try {
     const { role, empId: userId } = req.auth;
+    const companyId = req.auth.companyId || null;
     let { employeeId, date, year, month } = req.query;
     // "팀 전체" 보기(_pmsWorklogViewTabs)는 admin/leader/director에게만 노출되는데, 이
     // API는 requireAuth만 있어 member가 employeeId 쿼리를 생략하거나 타인 id를 넣으면
@@ -4077,8 +4164,8 @@ app.get("/api/pms/worklogs", async (req, res) => {
       if (month) list = list.filter(w => w.date && Number(w.date.slice(5, 7)) === Number(month));
       return res.json({ ok: true, worklogs: list });
     }
-    const conditions = ["is_deleted = FALSE"];
-    const params = [];
+    const conditions = ["is_deleted = FALSE", "(company_id = $1 OR company_id IS NULL)"];
+    const params = [companyId];
     if (employeeId) { params.push(Number(employeeId)); conditions.push(`employee_id = $${params.length}`); }
     if (date) { params.push(date); conditions.push(`work_date = $${params.length}`); }
     if (year) { params.push(String(year)); conditions.push(`EXTRACT(YEAR FROM work_date)::text = $${params.length}`); }
@@ -4093,13 +4180,14 @@ app.post("/api/pms/worklogs", async (req, res) => {
   try {
     const { employeeId, date, blocks } = req.body || {};
     const { role, empId: userId } = req.auth;
+    const companyId = req.auth.companyId || null;
     if (!employeeId || !date) return res.status(400).json({ ok: false, message: "직원, 날짜는 필수입니다." });
     if (role !== "admin" && String(employeeId) !== String(userId)) return res.status(403).json({ ok: false, message: "본인 업무 기록만 등록할 수 있습니다." });
     const err = _worklogBlocksValid(blocks || []);
     if (err) return res.status(400).json({ ok: false, message: err });
     if (role !== "admin") {
       for (const b of (blocks || [])) {
-        const project = await _pmsProjectById(b.projectId);
+        const project = await _pmsProjectById(b.projectId, companyId);
         if (!project || !(project.members || []).map(String).includes(String(employeeId))) {
           return res.status(403).json({ ok: false, message: "투입 인원으로 등록된 프로젝트만 선택할 수 있습니다." });
         }
@@ -4114,31 +4202,37 @@ app.post("/api/pms/worklogs", async (req, res) => {
       return res.json({ ok: true, worklog: record });
     }
     await pool.query(
-      "INSERT INTO pms_worklogs (id, employee_id, work_date, data) VALUES ($1,$2,$3,$4) " +
+      "INSERT INTO pms_worklogs (id, employee_id, work_date, data, company_id) VALUES ($1,$2,$3,$4,$5) " +
       "ON CONFLICT (id) DO UPDATE SET data = $4, updated_at = NOW()",
-      [id, Number(employeeId), date, record]
+      [id, Number(employeeId), date, record, companyId]
     );
     res.json({ ok: true, worklog: record });
   } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
 });
 
 // ── 채용 관리: 채용공고 ────────────────────────────────────────────────────────
-async function _recruitAllEmployees() {
+// company_id: 이 채용 모듈 helper들은 서로를 호출하며 얽혀 있어(job→emp→candidate→interview),
+// 아래에서 회사 범위를 빠짐없이 관통시키지 않으면 부서 스코프 검사(_recruitCanViewJob 등)
+// 이전에 다른 회사 데이터 자체가 조회돼버릴 수 있다 — companyId를 모든 helper의 첫/마지막
+// 인자로 일관되게 추가한다.
+async function _recruitAllEmployees(companyId) {
   if (USE_JSON_FILE) return _fileStore.employees || [];
-  const { rows } = await pool.query("SELECT data FROM employees WHERE is_deleted = FALSE");
+  const { rows } = await pool.query(
+    "SELECT data FROM employees WHERE is_deleted = FALSE AND (company_id = $1 OR company_id IS NULL)", [companyId || null]
+  );
   return rows.map(r => r.data);
 }
-async function _recruitEmpById(empId) {
-  const emps = await _recruitAllEmployees();
+async function _recruitEmpById(empId, companyId) {
+  const emps = await _recruitAllEmployees(companyId);
   return emps.find(e => String(e.id) === String(empId)) || null;
 }
 // 채용공고 열람 권한: 관리자, 등록자, 해당 부서 팀장/사업부장, 인사팀장, 관리자가 지정한 담당자
-async function _recruitCanViewJob(job, userId, role) {
+async function _recruitCanViewJob(job, userId, role, companyId) {
   if (!job) return false;
   if (role === "admin") return true;
   if (String(job.createdBy) === String(userId)) return true;
   if (Array.isArray(job.viewerIds) && job.viewerIds.map(String).includes(String(userId))) return true;
-  const emp = await _recruitEmpById(userId);
+  const emp = await _recruitEmpById(userId, companyId);
   if (!emp) return false;
   if (emp.role === "director" && emp.dept === job.department) return true;
   if (emp.role === "leader" && emp.dept === job.department && (!job.team || emp.team === job.team)) return true;
@@ -4149,16 +4243,17 @@ app.get("/api/recruit/jobs", async (req, res) => {
   if (!requireAuth(req, res)) return;
   try {
     const { role, empId: userId } = req.auth;
+    const companyId = req.auth.companyId || null;
     let jobs;
     if (USE_JSON_FILE) {
       jobs = _fileRecruit.jobs;
     } else {
-      const { rows } = await pool.query("SELECT id, data FROM recruit_jobs WHERE is_deleted = FALSE ORDER BY created_at DESC");
+      const { rows } = await pool.query("SELECT id, data FROM recruit_jobs WHERE is_deleted = FALSE AND (company_id = $1 OR company_id IS NULL) ORDER BY created_at DESC", [companyId]);
       jobs = rows.map(r => ({ id: r.id, ...r.data }));
     }
     if (userId && role && role !== "admin") {
       const filtered = [];
-      for (const job of jobs) { if (await _recruitCanViewJob(job, userId, role)) filtered.push(job); }
+      for (const job of jobs) { if (await _recruitCanViewJob(job, userId, role, companyId)) filtered.push(job); }
       jobs = filtered;
     }
     res.json({ ok: true, jobs });
@@ -4169,6 +4264,7 @@ app.post("/api/recruit/jobs", async (req, res) => {
   try {
     if (!requireRole(req, res, ["admin", "leader", "director"])) return;
     const { role, empId: userId } = req.auth;
+    const companyId = req.auth.companyId || null;
     const { id, title, department, team, headcount, stages, status, description, purpose, responsibilities, requiredYears, docFile, viewerIds, user: createdBy, userId: createdById } = req.body || {};
     if (!title) return res.status(400).json({ ok: false, message: "채용공고 제목은 필수입니다." });
     const jobId = id || `job_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
@@ -4198,7 +4294,7 @@ app.post("/api/recruit/jobs", async (req, res) => {
       // 같은 리소스를 수정하는 이 라우트는 role만 확인하고 그 검사가 없어 무관 부서
       // 리더/디렉터도 다른 부서 공고를 수정할 수 있었다(실측 확인). 신규 생성(existing
       // 없음)은 스코프 검사 대상이 아니므로 기존 공고를 수정하는 경우에만 적용한다.
-      if (existing && !(await _recruitCanViewJob(existing, userId, role))) {
+      if (existing && !(await _recruitCanViewJob(existing, userId, role, companyId))) {
         return res.status(403).json({ ok: false, message: "수정 권한이 없습니다." });
       }
       const job = buildJob(existing);
@@ -4207,15 +4303,15 @@ app.post("/api/recruit/jobs", async (req, res) => {
       _saveFileRecruit();
       return res.json({ ok: true, job });
     }
-    const { rows } = await pool.query("SELECT data FROM recruit_jobs WHERE id = $1", [jobId]);
+    const { rows } = await pool.query("SELECT data FROM recruit_jobs WHERE id = $1 AND (company_id = $2 OR company_id IS NULL)", [jobId, companyId]);
     const existing = rows[0] ? rows[0].data : null;
-    if (existing && !(await _recruitCanViewJob(existing, userId, role))) {
+    if (existing && !(await _recruitCanViewJob(existing, userId, role, companyId))) {
       return res.status(403).json({ ok: false, message: "수정 권한이 없습니다." });
     }
     const job = buildJob(existing);
     await pool.query(
-      "INSERT INTO recruit_jobs (id, data) VALUES ($1,$2) ON CONFLICT (id) DO UPDATE SET data = $2, updated_at = NOW()",
-      [jobId, job]
+      "INSERT INTO recruit_jobs (id, company_id, data) VALUES ($1,$2,$3) ON CONFLICT (company_id, id) DO UPDATE SET data = $3, updated_at = NOW()",
+      [jobId, companyId, job]
     );
     res.json({ ok: true, job });
   } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
@@ -4225,50 +4321,55 @@ app.post("/api/recruit/jobs/:id/close", async (req, res) => {
   try {
     if (!requireRole(req, res, ["admin", "leader", "director"])) return;
     const { role, empId: userId } = req.auth;
+    const companyId = req.auth.companyId || null;
     const id = req.params.id;
     if (USE_JSON_FILE) {
       const job = _fileRecruit.jobs.find(j => j.id === id);
       if (!job) return res.status(404).json({ ok: false, message: "채용공고를 찾을 수 없습니다." });
-      if (!(await _recruitCanViewJob(job, userId, role))) return res.status(403).json({ ok: false, message: "마감 권한이 없습니다." });
+      if (!(await _recruitCanViewJob(job, userId, role, companyId))) return res.status(403).json({ ok: false, message: "마감 권한이 없습니다." });
       job.status = "closed";
       job.updatedAt = new Date().toISOString();
       _saveFileRecruit();
       return res.json({ ok: true, job });
     }
-    const { rows } = await pool.query("SELECT data FROM recruit_jobs WHERE id = $1", [id]);
+    const { rows } = await pool.query("SELECT data FROM recruit_jobs WHERE id = $1 AND (company_id = $2 OR company_id IS NULL)", [id, companyId]);
     if (!rows.length) return res.status(404).json({ ok: false, message: "채용공고를 찾을 수 없습니다." });
-    if (!(await _recruitCanViewJob(rows[0].data, userId, role))) return res.status(403).json({ ok: false, message: "마감 권한이 없습니다." });
+    if (!(await _recruitCanViewJob(rows[0].data, userId, role, companyId))) return res.status(403).json({ ok: false, message: "마감 권한이 없습니다." });
     const job = { ...rows[0].data, status: "closed", updatedAt: new Date().toISOString() };
     await pool.query("UPDATE recruit_jobs SET data = $2, updated_at = NOW() WHERE id = $1", [id, job]);
     res.json({ ok: true, job });
   } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
 });
 
-async function _recruitJobById(jobId) {
+async function _recruitJobById(jobId, companyId) {
   if (USE_JSON_FILE) return _fileRecruit.jobs.find(j => j.id === jobId) || null;
-  const { rows } = await pool.query("SELECT data FROM recruit_jobs WHERE id = $1 AND is_deleted = FALSE", [jobId]);
+  const { rows } = await pool.query(
+    "SELECT data FROM recruit_jobs WHERE id = $1 AND is_deleted = FALSE AND (company_id = $2 OR company_id IS NULL)", [jobId, companyId || null]
+  );
   return rows[0] ? rows[0].data : null;
 }
 
 // ── 채용 관리: 지원자(이력서/평가) ──────────────────────────────────────────────
-async function _recruitAllCandidates() {
+async function _recruitAllCandidates(companyId) {
   if (USE_JSON_FILE) return _fileRecruit.candidates;
-  const { rows } = await pool.query("SELECT data FROM recruit_candidates WHERE is_deleted = FALSE ORDER BY created_at DESC");
+  const { rows } = await pool.query(
+    "SELECT data FROM recruit_candidates WHERE is_deleted = FALSE AND (company_id = $1 OR company_id IS NULL) ORDER BY created_at DESC", [companyId || null]
+  );
   return rows.map(r => r.data);
 }
 function _recruitStripResume(c) { return { ...c, resume: c.resume ? { fileName: c.resume.fileName, type: c.resume.type } : null }; }
-async function _recruitVisibleCandidates(userId, role) {
-  const all = await _recruitAllCandidates();
+async function _recruitVisibleCandidates(userId, role, companyId) {
+  const all = await _recruitAllCandidates(companyId);
   if (!userId || !role || role === "admin") return all;
-  const interviews = await _recruitAllInterviews();
+  const interviews = await _recruitAllInterviews(companyId);
   const interviewerCandidateIds = new Set(
     interviews.filter(iv => (iv.interviewerIds || []).map(String).includes(String(userId))).map(iv => String(iv.candidateId))
   );
   const visible = [];
   for (const c of all) {
     if (interviewerCandidateIds.has(String(c.id))) { visible.push(c); continue; }
-    const job = await _recruitJobById(c.jobId);
-    if (job && await _recruitCanViewJob(job, userId, role)) visible.push(c);
+    const job = await _recruitJobById(c.jobId, companyId);
+    if (job && await _recruitCanViewJob(job, userId, role, companyId)) visible.push(c);
   }
   return visible;
 }
@@ -4277,7 +4378,7 @@ app.get("/api/recruit/candidates", async (req, res) => {
   try {
     const { status, jobId, q } = req.query;
     const { role, empId: userId } = req.auth;
-    let list = await _recruitVisibleCandidates(userId, role);
+    let list = await _recruitVisibleCandidates(userId, role, req.auth.companyId || null);
     if (status) list = list.filter(c => c.status === status);
     if (jobId) list = list.filter(c => String(c.jobId) === String(jobId));
     if (q) {
@@ -4293,9 +4394,10 @@ app.get("/api/recruit/candidates/export", async (req, res) => {
   try {
     const { jobId } = req.query;
     const { role, empId: userId } = req.auth;
-    let list = await _recruitVisibleCandidates(userId, role);
+    const companyId = req.auth.companyId || null;
+    let list = await _recruitVisibleCandidates(userId, role, companyId);
     if (jobId) list = list.filter(c => String(c.jobId) === String(jobId));
-    const jobTitleOf = async (id) => { const j = await _recruitJobById(id); return j ? j.title : ""; };
+    const jobTitleOf = async (id) => { const j = await _recruitJobById(id, companyId); return j ? j.title : ""; };
     const esc = (v) => `"${String(v == null ? "" : v).replace(/"/g, '""')}"`;
     const header = ["채용공고", "지원자명", "연락처", "이메일", "전형단계", "지원일", "최종학력", "경력사항", "마지막연봉", "희망연봉", "학력·경력 공백", "교육/대외활동", "이력서 요약", "메모"];
     const lines = [header.map(esc).join(",")];
@@ -4309,30 +4411,31 @@ app.get("/api/recruit/candidates/export", async (req, res) => {
 // 리스트 조회(_recruitVisibleCandidates)와 동일한 열람 권한 규칙을 단건 조회에도 적용한다.
 // (과거엔 목록 API만 부서별 열람 제한이 걸려 있었고, id로 직접 조회하는 이 엔드포인트에는
 // 아무 권한 검사가 없어 지원자 ID만 알면 타 부서 지원자 정보까지 그대로 열람 가능했음)
-async function _recruitCanViewCandidate(candidate, userId, role) {
+async function _recruitCanViewCandidate(candidate, userId, role, companyId) {
   if (!candidate) return false;
   if (!userId || !role || role === "admin") return true;
-  const interviews = await _recruitAllInterviews();
+  const interviews = await _recruitAllInterviews(companyId);
   const isInterviewer = interviews.some(iv => String(iv.candidateId) === String(candidate.id) && (iv.interviewerIds || []).map(String).includes(String(userId)));
   if (isInterviewer) return true;
-  const job = await _recruitJobById(candidate.jobId);
-  return job ? await _recruitCanViewJob(job, userId, role) : false;
+  const job = await _recruitJobById(candidate.jobId, companyId);
+  return job ? await _recruitCanViewJob(job, userId, role, companyId) : false;
 }
 app.get("/api/recruit/candidates/:id", async (req, res) => {
   if (!requireAuth(req, res)) return;
   try {
     const id = req.params.id;
     const { role, empId: userId } = req.auth;
+    const companyId = req.auth.companyId || null;
     let candidate;
     if (USE_JSON_FILE) {
       candidate = _fileRecruit.candidates.find(c => c.id === id);
     } else {
-      const { rows } = await pool.query("SELECT data FROM recruit_candidates WHERE id = $1 AND is_deleted = FALSE", [id]);
+      const { rows } = await pool.query("SELECT data FROM recruit_candidates WHERE id = $1 AND is_deleted = FALSE AND (company_id = $2 OR company_id IS NULL)", [id, companyId]);
       candidate = rows[0] ? rows[0].data : null;
     }
     if (!candidate) return res.status(404).json({ ok: false, message: "지원자를 찾을 수 없습니다." });
-    if (!(await _recruitCanViewCandidate(candidate, userId, role))) return res.status(403).json({ ok: false, message: "열람 권한이 없습니다." });
-    const job = await _recruitJobById(candidate.jobId);
+    if (!(await _recruitCanViewCandidate(candidate, userId, role, companyId))) return res.status(403).json({ ok: false, message: "열람 권한이 없습니다." });
+    const job = await _recruitJobById(candidate.jobId, companyId);
     res.json({ ok: true, candidate, job });
   } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
 });
@@ -4820,11 +4923,16 @@ app.post("/api/hr/draft-eval-comment", async (req, res) => {
 class _RecruitRouteError extends Error {
   constructor(status, message) { super(message); this.status = status; }
 }
-async function _pgLockedUpdate(table, id, mutate) {
+// companyId: recruit_candidates/recruit_interviews는 nullable 단순 company_id 컬럼이라
+// (레거시 NULL 데이터 포함) 다른 회사 소유 id로는 아예 잠글 수 없도록 필터한다 — 회사가
+// 다르면 부서 스코프 검사(mutate 콜백 안의 _recruitCanViewCandidate 등) 이전에 404.
+async function _pgLockedUpdate(table, id, mutate, companyId) {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
-    const { rows } = await client.query(`SELECT data FROM ${table} WHERE id = $1 AND is_deleted = FALSE FOR UPDATE`, [id]);
+    const { rows } = await client.query(
+      `SELECT data FROM ${table} WHERE id = $1 AND is_deleted = FALSE AND (company_id = $2 OR company_id IS NULL) FOR UPDATE`, [id, companyId || null]
+    );
     if (!rows.length) throw new _RecruitRouteError(404, "레코드를 찾을 수 없습니다.");
     const data = await mutate(rows[0].data);
     await client.query(`UPDATE ${table} SET data = $2, updated_at = NOW() WHERE id = $1`, [id, data]);
@@ -4841,9 +4949,10 @@ async function _pgLockedUpdate(table, id, mutate) {
 app.post("/api/recruit/candidates", async (req, res) => {
   try {
     if (!requireRole(req, res, ["admin", "leader", "director"])) return;
+    const companyId = req.auth.companyId || null;
     const { jobId, name, email, phone, resume, memo, resumeSummary, strengths, weaknesses, finalEducation, careerHistory, lastSalary, desiredSalary, activities, careerGaps, user: createdBy } = req.body || {};
     if (!jobId || !name) return res.status(400).json({ ok: false, message: "채용공고, 지원자명은 필수입니다." });
-    const job = await _recruitJobById(jobId);
+    const job = await _recruitJobById(jobId, companyId);
     if (!job) return res.status(404).json({ ok: false, message: "채용공고를 찾을 수 없습니다." });
     const candidateId = `cand_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const now = new Date().toISOString();
@@ -4862,8 +4971,8 @@ app.post("/api/recruit/candidates", async (req, res) => {
       return res.json({ ok: true, candidate: _recruitStripResume(candidate) });
     }
     await pool.query(
-      "INSERT INTO recruit_candidates (id, job_id, data) VALUES ($1,$2,$3) ON CONFLICT (id) DO UPDATE SET data = $3, updated_at = NOW()",
-      [candidateId, jobId, candidate]
+      "INSERT INTO recruit_candidates (id, job_id, data, company_id) VALUES ($1,$2,$3,$4) ON CONFLICT (id) DO UPDATE SET data = $3, updated_at = NOW()",
+      [candidateId, jobId, candidate, companyId]
     );
     res.json({ ok: true, candidate: _recruitStripResume(candidate) });
   } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
@@ -4874,6 +4983,7 @@ app.post("/api/recruit/candidates/:id", async (req, res) => {
     if (!requireRole(req, res, ["admin", "leader", "director"])) return;
     const id = req.params.id;
     const { role, empId: userId } = req.auth;
+    const companyId = req.auth.companyId || null;
     const { name, email, phone, memo, resumeSummary, strengths, weaknesses, finalEducation, careerHistory, lastSalary, desiredSalary, activities, careerGaps, resume } = req.body || {};
     const applyEdits = (candidate) => {
       if (name != null) candidate.name = name;
@@ -4896,7 +5006,7 @@ app.post("/api/recruit/candidates/:id", async (req, res) => {
     if (USE_JSON_FILE) {
       const candidate = _fileRecruit.candidates.find(c => c.id === id);
       if (!candidate) return res.status(404).json({ ok: false, message: "지원자를 찾을 수 없습니다." });
-      if (!(await _recruitCanViewCandidate(candidate, userId, role))) return res.status(403).json({ ok: false, message: "수정 권한이 없습니다." });
+      if (!(await _recruitCanViewCandidate(candidate, userId, role, companyId))) return res.status(403).json({ ok: false, message: "수정 권한이 없습니다." });
       applyEdits(candidate);
       _saveFileRecruit();
       return res.json({ ok: true, candidate: _recruitStripResume(candidate) });
@@ -4904,9 +5014,9 @@ app.post("/api/recruit/candidates/:id", async (req, res) => {
     let candidate;
     try {
       candidate = await _pgLockedUpdate("recruit_candidates", id, async (c) => {
-        if (!(await _recruitCanViewCandidate(c, userId, role))) throw new _RecruitRouteError(403, "수정 권한이 없습니다.");
+        if (!(await _recruitCanViewCandidate(c, userId, role, companyId))) throw new _RecruitRouteError(403, "수정 권한이 없습니다.");
         return applyEdits(c);
-      });
+      }, companyId);
     } catch (e) {
       if (e instanceof _RecruitRouteError) return res.status(e.status).json({ ok: false, message: e.message });
       throw e;
@@ -4920,15 +5030,16 @@ app.get("/api/recruit/candidates/:id/resume", async (req, res) => {
   try {
     const id = req.params.id;
     const { role, empId: userId } = req.auth;
+    const companyId = req.auth.companyId || null;
     let candidate;
     if (USE_JSON_FILE) {
       candidate = _fileRecruit.candidates.find(c => c.id === id);
     } else {
-      const { rows } = await pool.query("SELECT data FROM recruit_candidates WHERE id = $1 AND is_deleted = FALSE", [id]);
+      const { rows } = await pool.query("SELECT data FROM recruit_candidates WHERE id = $1 AND is_deleted = FALSE AND (company_id = $2 OR company_id IS NULL)", [id, companyId]);
       candidate = rows[0] ? rows[0].data : null;
     }
     if (!candidate || !candidate.resume) return res.status(404).json({ ok: false, message: "이력서를 찾을 수 없습니다." });
-    if (!(await _recruitCanViewCandidate(candidate, userId, role))) return res.status(403).json({ ok: false, message: "열람 권한이 없습니다." });
+    if (!(await _recruitCanViewCandidate(candidate, userId, role, companyId))) return res.status(403).json({ ok: false, message: "열람 권한이 없습니다." });
     res.json({ ok: true, resume: candidate.resume });
   } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
 });
@@ -4938,6 +5049,7 @@ app.post("/api/recruit/candidates/:id/status", async (req, res) => {
     if (!requireRole(req, res, ["admin", "leader", "director"])) return;
     const id = req.params.id;
     const { role, empId: userId } = req.auth;
+    const companyId = req.auth.companyId || null;
     const { status, reason } = req.body || {};
     if (!status) return res.status(400).json({ ok: false, message: "변경할 전형 단계는 필수입니다." });
     const RECRUIT_PASS_SCORE = 15;
@@ -4946,7 +5058,7 @@ app.post("/api/recruit/candidates/:id/status", async (req, res) => {
       const curIdx = stages.indexOf(candidate.status);
       const newIdx = stages.indexOf(status);
       if (newIdx <= curIdx) return false;
-      const interviews = await _recruitAllInterviews();
+      const interviews = await _recruitAllInterviews(companyId);
       const evals = interviews.filter(iv => String(iv.candidateId) === String(candidate.id) && iv.status !== "canceled").flatMap(iv => iv.evaluations || []);
       if (!evals.length) return false;
       const avg = evals.reduce((s, e) => s + (e.totalScore || 0), 0) / evals.length;
@@ -4955,8 +5067,8 @@ app.post("/api/recruit/candidates/:id/status", async (req, res) => {
     if (USE_JSON_FILE) {
       const candidate = _fileRecruit.candidates.find(c => c.id === id);
       if (!candidate) return res.status(404).json({ ok: false, message: "지원자를 찾을 수 없습니다." });
-      if (!(await _recruitCanViewCandidate(candidate, userId, role))) return res.status(403).json({ ok: false, message: "수정 권한이 없습니다." });
-      const job = await _recruitJobById(candidate.jobId);
+      if (!(await _recruitCanViewCandidate(candidate, userId, role, companyId))) return res.status(403).json({ ok: false, message: "수정 권한이 없습니다." });
+      const job = await _recruitJobById(candidate.jobId, companyId);
       if (!job || !job.stages.includes(status)) return res.status(400).json({ ok: false, message: "해당 채용공고에 없는 전형 단계입니다." });
       if (await checkReasonRequired(candidate, job) && !String(reason || "").trim()) {
         return res.status(400).json({ ok: false, message: "통과 기준 미만 점수로 다음 단계 진행 시 사유를 입력해야 합니다." });
@@ -4970,8 +5082,8 @@ app.post("/api/recruit/candidates/:id/status", async (req, res) => {
     let candidate;
     try {
       candidate = await _pgLockedUpdate("recruit_candidates", id, async (c) => {
-        if (!(await _recruitCanViewCandidate(c, userId, role))) throw new _RecruitRouteError(403, "수정 권한이 없습니다.");
-        const job = await _recruitJobById(c.jobId);
+        if (!(await _recruitCanViewCandidate(c, userId, role, companyId))) throw new _RecruitRouteError(403, "수정 권한이 없습니다.");
+        const job = await _recruitJobById(c.jobId, companyId);
         if (!job || !job.stages.includes(status)) throw new _RecruitRouteError(400, "해당 채용공고에 없는 전형 단계입니다.");
         if (await checkReasonRequired(c, job) && !String(reason || "").trim()) {
           throw new _RecruitRouteError(400, "통과 기준 미만 점수로 다음 단계 진행 시 사유를 입력해야 합니다.");
@@ -4980,7 +5092,7 @@ app.post("/api/recruit/candidates/:id/status", async (req, res) => {
         c.statusReason = reason || "";
         c.updatedAt = new Date().toISOString();
         return c;
-      });
+      }, companyId);
     } catch (e) {
       if (e instanceof _RecruitRouteError) return res.status(e.status).json({ ok: false, message: e.message });
       throw e;
@@ -4992,24 +5104,28 @@ app.post("/api/recruit/candidates/:id/status", async (req, res) => {
 // ── 채용 관리: 면접 일정/평가 (1차·2차 구분, 면접관별 비공개 평가) ────────────────
 const RECRUIT_SCORE_CATEGORIES = ["태도", "전문지식", "적극성", "의사소통능력", "조직적합성"];
 // 면접 열람 권한: 관리자, 인사팀장, 면접 대상 채용공고를 볼 수 있는 등록자/담당자, 또는 본인이 면접관으로 지정된 경우
-async function _recruitIsInterviewPrivileged(interview, userId, role) {
+async function _recruitIsInterviewPrivileged(interview, userId, role, companyId) {
   if (role === "admin") return true;
-  const job = await _recruitJobById(interview.jobId);
-  if (job && await _recruitCanViewJob(job, userId, role)) return true;
+  const job = await _recruitJobById(interview.jobId, companyId);
+  if (job && await _recruitCanViewJob(job, userId, role, companyId)) return true;
   return false;
 }
 function _recruitFilterInterviewForViewer(interview, userId, privileged) {
   if (privileged) return interview;
   return { ...interview, evaluations: (interview.evaluations || []).filter(e => String(e.interviewerId) === String(userId)) };
 }
-async function _recruitAllInterviews() {
+async function _recruitAllInterviews(companyId) {
   if (USE_JSON_FILE) return _fileRecruit.interviews;
-  const { rows } = await pool.query("SELECT data FROM recruit_interviews WHERE is_deleted = FALSE ORDER BY created_at DESC");
+  const { rows } = await pool.query(
+    "SELECT data FROM recruit_interviews WHERE is_deleted = FALSE AND (company_id = $1 OR company_id IS NULL) ORDER BY created_at DESC", [companyId || null]
+  );
   return rows.map(r => r.data);
 }
-async function _recruitInterviewById(interviewId) {
+async function _recruitInterviewById(interviewId, companyId) {
   if (USE_JSON_FILE) return _fileRecruit.interviews.find(i => i.id === interviewId) || null;
-  const { rows } = await pool.query("SELECT data FROM recruit_interviews WHERE id = $1 AND is_deleted = FALSE", [interviewId]);
+  const { rows } = await pool.query(
+    "SELECT data FROM recruit_interviews WHERE id = $1 AND is_deleted = FALSE AND (company_id = $2 OR company_id IS NULL)", [interviewId, companyId || null]
+  );
   return rows[0] ? rows[0].data : null;
 }
 app.get("/api/recruit/interviews", async (req, res) => {
@@ -5017,12 +5133,13 @@ app.get("/api/recruit/interviews", async (req, res) => {
   try {
     const { jobId, candidateId } = req.query;
     const { role, empId: userId } = req.auth;
-    let list = await _recruitAllInterviews();
+    const companyId = req.auth.companyId || null;
+    let list = await _recruitAllInterviews(companyId);
     if (jobId) list = list.filter(i => String(i.jobId) === String(jobId));
     if (candidateId) list = list.filter(i => String(i.candidateId) === String(candidateId));
     const out = [];
     for (const interview of list) {
-      const privileged = await _recruitIsInterviewPrivileged(interview, userId, role);
+      const privileged = await _recruitIsInterviewPrivileged(interview, userId, role, companyId);
       const isInterviewer = (interview.interviewerIds || []).map(String).includes(String(userId));
       if (!privileged && !isInterviewer) continue;
       out.push(_recruitFilterInterviewForViewer(interview, userId, privileged));
@@ -5034,11 +5151,12 @@ app.get("/api/recruit/interviews", async (req, res) => {
 app.post("/api/recruit/interviews", async (req, res) => {
   try {
     if (!requireRole(req, res, ["admin", "leader", "director"])) return;
+    const companyId = req.auth.companyId || null;
     const { jobId, candidateId, round, schedule, interviewerIds, location, leadInterviewerId } = req.body || {};
     if (!jobId || !candidateId || !round || !Array.isArray(interviewerIds) || !interviewerIds.length) {
       return res.status(400).json({ ok: false, message: "채용공고, 지원자, 면접 회차, 면접관은 필수입니다." });
     }
-    const job = await _recruitJobById(jobId);
+    const job = await _recruitJobById(jobId, companyId);
     if (!job) return res.status(404).json({ ok: false, message: "채용공고를 찾을 수 없습니다." });
     const id = `iv_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const now = new Date().toISOString();
@@ -5055,8 +5173,8 @@ app.post("/api/recruit/interviews", async (req, res) => {
       return res.json({ ok: true, interview });
     }
     await pool.query(
-      "INSERT INTO recruit_interviews (id, job_id, candidate_id, data) VALUES ($1,$2,$3,$4) ON CONFLICT (id) DO UPDATE SET data = $4, updated_at = NOW()",
-      [id, jobId, candidateId, interview]
+      "INSERT INTO recruit_interviews (id, job_id, candidate_id, data, company_id) VALUES ($1,$2,$3,$4,$5) ON CONFLICT (id) DO UPDATE SET data = $4, updated_at = NOW()",
+      [id, jobId, candidateId, interview, companyId]
     );
     res.json({ ok: true, interview });
   } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
@@ -5067,6 +5185,7 @@ app.post("/api/recruit/interviews/:id", async (req, res) => {
     if (!requireRole(req, res, ["admin", "leader", "director"])) return;
     const id = req.params.id;
     const { role, empId: userId } = req.auth;
+    const companyId = req.auth.companyId || null;
     const { round, schedule, interviewerIds, location, leadInterviewerId } = req.body || {};
     const applyEdits = (interview) => {
       if (round != null) interview.round = Number(round);
@@ -5084,7 +5203,7 @@ app.post("/api/recruit/interviews/:id", async (req, res) => {
     if (USE_JSON_FILE) {
       const interview = _fileRecruit.interviews.find(i => i.id === id);
       if (!interview) return res.status(404).json({ ok: false, message: "면접 일정을 찾을 수 없습니다." });
-      if (!(await _recruitIsInterviewPrivileged(interview, userId, role))) return res.status(403).json({ ok: false, message: "수정 권한이 없습니다." });
+      if (!(await _recruitIsInterviewPrivileged(interview, userId, role, companyId))) return res.status(403).json({ ok: false, message: "수정 권한이 없습니다." });
       applyEdits(interview);
       _saveFileRecruit();
       return res.json({ ok: true, interview });
@@ -5092,9 +5211,9 @@ app.post("/api/recruit/interviews/:id", async (req, res) => {
     let interview;
     try {
       interview = await _pgLockedUpdate("recruit_interviews", id, async (iv) => {
-        if (!(await _recruitIsInterviewPrivileged(iv, userId, role))) throw new _RecruitRouteError(403, "수정 권한이 없습니다.");
+        if (!(await _recruitIsInterviewPrivileged(iv, userId, role, companyId))) throw new _RecruitRouteError(403, "수정 권한이 없습니다.");
         return applyEdits(iv);
-      });
+      }, companyId);
     } catch (e) {
       if (e instanceof _RecruitRouteError) return res.status(e.status).json({ ok: false, message: e.message });
       throw e;
@@ -5108,6 +5227,7 @@ app.post("/api/recruit/interviews/:id/cancel", async (req, res) => {
     if (!requireRole(req, res, ["admin", "leader", "director"])) return;
     const id = req.params.id;
     const { role, empId: userId } = req.auth;
+    const companyId = req.auth.companyId || null;
     const { reason } = req.body || {};
     const applyCancel = (interview) => {
       interview.status = "canceled";
@@ -5119,7 +5239,7 @@ app.post("/api/recruit/interviews/:id/cancel", async (req, res) => {
     if (USE_JSON_FILE) {
       const interview = _fileRecruit.interviews.find(i => i.id === id);
       if (!interview) return res.status(404).json({ ok: false, message: "면접 일정을 찾을 수 없습니다." });
-      if (!(await _recruitIsInterviewPrivileged(interview, userId, role))) return res.status(403).json({ ok: false, message: "취소 권한이 없습니다." });
+      if (!(await _recruitIsInterviewPrivileged(interview, userId, role, companyId))) return res.status(403).json({ ok: false, message: "취소 권한이 없습니다." });
       applyCancel(interview);
       _saveFileRecruit();
       return res.json({ ok: true, interview });
@@ -5127,9 +5247,9 @@ app.post("/api/recruit/interviews/:id/cancel", async (req, res) => {
     let interview;
     try {
       interview = await _pgLockedUpdate("recruit_interviews", id, async (iv) => {
-        if (!(await _recruitIsInterviewPrivileged(iv, userId, role))) throw new _RecruitRouteError(403, "취소 권한이 없습니다.");
+        if (!(await _recruitIsInterviewPrivileged(iv, userId, role, companyId))) throw new _RecruitRouteError(403, "취소 권한이 없습니다.");
         return applyCancel(iv);
-      });
+      }, companyId);
     } catch (e) {
       if (e instanceof _RecruitRouteError) return res.status(e.status).json({ ok: false, message: e.message });
       throw e;
@@ -5142,6 +5262,7 @@ app.post("/api/recruit/interviews/:id/evaluation", async (req, res) => {
   if (!requireAuth(req, res)) return;
   try {
     const id = req.params.id;
+    const companyId = req.auth.companyId || null;
     const { interviewerId, scores, comment } = req.body || {};
     const { role, empId: authUserId } = req.auth;
     if (!interviewerId || !scores || typeof scores !== "object") {
@@ -5162,8 +5283,8 @@ app.post("/api/recruit/interviews/:id/evaluation", async (req, res) => {
       }
       const candidate = USE_JSON_FILE
         ? _fileRecruit.candidates.find(c => c.id === interview.candidateId)
-        : (await pool.query("SELECT data FROM recruit_candidates WHERE id = $1 AND is_deleted = FALSE", [interview.candidateId])).rows[0]?.data;
-      const job = candidate ? await _recruitJobById(candidate.jobId) : null;
+        : (await pool.query("SELECT data FROM recruit_candidates WHERE id = $1 AND is_deleted = FALSE AND (company_id = $2 OR company_id IS NULL)", [interview.candidateId, companyId])).rows[0]?.data;
+      const job = candidate ? await _recruitJobById(candidate.jobId, companyId) : null;
       if (candidate && job) {
         const stages = (job.stages && job.stages.length) ? job.stages : [];
         const statusIdx = stages.indexOf(candidate.status);
@@ -5193,7 +5314,7 @@ app.post("/api/recruit/interviews/:id/evaluation", async (req, res) => {
     }
     let interview;
     try {
-      interview = await _pgLockedUpdate("recruit_interviews", id, applyEvaluation);
+      interview = await _pgLockedUpdate("recruit_interviews", id, applyEvaluation, companyId);
     } catch (e) {
       if (e instanceof _RecruitRouteError) return res.status(e.status).json({ ok: false, message: e.message });
       throw e;
@@ -5207,6 +5328,7 @@ app.post("/api/recruit/interviews/:id/verdict", async (req, res) => {
   if (!requireAuth(req, res)) return;
   try {
     const id = req.params.id;
+    const companyId = req.auth.companyId || null;
     const { verdict, comment } = req.body || {};
     const { role, empId: userId } = req.auth;
     if (!RECRUIT_VERDICTS.includes(verdict)) {
@@ -5237,7 +5359,7 @@ app.post("/api/recruit/interviews/:id/verdict", async (req, res) => {
     }
     let interview;
     try {
-      interview = await _pgLockedUpdate("recruit_interviews", id, async (iv) => applyVerdict(iv));
+      interview = await _pgLockedUpdate("recruit_interviews", id, async (iv) => applyVerdict(iv), companyId);
     } catch (e) {
       if (e instanceof _RecruitRouteError) return res.status(e.status).json({ ok: false, message: e.message });
       throw e;
@@ -5251,17 +5373,18 @@ app.post("/api/recruit/candidates/:id/delete", async (req, res) => {
     if (!requireRole(req, res, ["admin", "leader", "director"])) return;
     const id = req.params.id;
     const { role, empId: userId } = req.auth;
+    const companyId = req.auth.companyId || null;
     if (USE_JSON_FILE) {
       const candidate = _fileRecruit.candidates.find(c => c.id === id);
       if (!candidate) return res.status(404).json({ ok: false, message: "지원자를 찾을 수 없습니다." });
-      if (!(await _recruitCanViewCandidate(candidate, userId, role))) return res.status(403).json({ ok: false, message: "삭제 권한이 없습니다." });
+      if (!(await _recruitCanViewCandidate(candidate, userId, role, companyId))) return res.status(403).json({ ok: false, message: "삭제 권한이 없습니다." });
       _fileRecruit.candidates = _fileRecruit.candidates.filter(c => c.id !== id);
       _saveFileRecruit();
       return res.json({ ok: true });
     }
-    const { rows } = await pool.query("SELECT data FROM recruit_candidates WHERE id = $1 AND is_deleted = FALSE", [id]);
+    const { rows } = await pool.query("SELECT data FROM recruit_candidates WHERE id = $1 AND is_deleted = FALSE AND (company_id = $2 OR company_id IS NULL)", [id, companyId]);
     if (!rows.length) return res.status(404).json({ ok: false, message: "지원자를 찾을 수 없습니다." });
-    if (!(await _recruitCanViewCandidate(rows[0].data, userId, role))) return res.status(403).json({ ok: false, message: "삭제 권한이 없습니다." });
+    if (!(await _recruitCanViewCandidate(rows[0].data, userId, role, companyId))) return res.status(403).json({ ok: false, message: "삭제 권한이 없습니다." });
     await pool.query("UPDATE recruit_candidates SET is_deleted = TRUE WHERE id = $1", [id]);
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
@@ -5271,17 +5394,18 @@ app.get("/api/recruit/dashboard", async (req, res) => {
   if (!requireAuth(req, res)) return;
   try {
     const { role, empId: userId } = req.auth;
+    const companyId = req.auth.companyId || null;
     let jobs, candidates, interviews;
     if (USE_JSON_FILE) {
       jobs = _fileRecruit.jobs;
       candidates = _fileRecruit.candidates;
       interviews = _fileRecruit.interviews;
     } else {
-      const jobRows = await pool.query("SELECT data FROM recruit_jobs WHERE is_deleted = FALSE ORDER BY created_at DESC");
+      const jobRows = await pool.query("SELECT data FROM recruit_jobs WHERE is_deleted = FALSE AND (company_id = $1 OR company_id IS NULL) ORDER BY created_at DESC", [companyId]);
       jobs = jobRows.rows.map(r => r.data);
-      const candRows = await pool.query("SELECT data FROM recruit_candidates WHERE is_deleted = FALSE");
+      const candRows = await pool.query("SELECT data FROM recruit_candidates WHERE is_deleted = FALSE AND (company_id = $1 OR company_id IS NULL)", [companyId]);
       candidates = candRows.rows.map(r => r.data);
-      const intRows = await pool.query("SELECT data FROM recruit_interviews WHERE is_deleted = FALSE");
+      const intRows = await pool.query("SELECT data FROM recruit_interviews WHERE is_deleted = FALSE AND (company_id = $1 OR company_id IS NULL)", [companyId]);
       interviews = intRows.rows.map(r => r.data);
     }
     // /api/recruit/jobs·/candidates는 이미 _recruitCanViewJob으로 부서 스코프를 거는데
@@ -5290,7 +5414,7 @@ app.get("/api/recruit/dashboard", async (req, res) => {
     // 확인, jobs 쓰기라우트 스코프 누락과 결합해 end-to-end로 재현됨). 동일한 필터 적용.
     if (userId && role && role !== "admin") {
       const filtered = [];
-      for (const job of jobs) { if (await _recruitCanViewJob(job, userId, role)) filtered.push(job); }
+      for (const job of jobs) { if (await _recruitCanViewJob(job, userId, role, companyId)) filtered.push(job); }
       jobs = filtered;
     }
     const stats = jobs.map(job => {

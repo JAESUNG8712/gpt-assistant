@@ -10,15 +10,53 @@ const BUDGET_FILE = path.join(__dirname, 'budget-data.json');
 const MONTHS = Array.from({ length: 12 }, (_, i) => i + 1);
 const CATEGORIES = ['판관', '용역', '경상'];
 
-function readBudget() {
-  if (!fs.existsSync(BUDGET_FILE)) {
-    return { headcount: [], items: [], uploads: [] };
-  }
-  return JSON.parse(fs.readFileSync(BUDGET_FILE, 'utf8'));
+// company_id 네임스페이스 (멀티테넌트 4단계): 이 라우터는 Postgres/SaaS 모드에서도
+// budget-data.json 파일 하나를 그대로 쓰고 있어(다른 회계/ERP 모듈과 달리 전용 테이블이
+// 없음), 회사 구분 없이 전 회사가 같은 파일을 공유해 예산 데이터가 그대로 섞여 있었다.
+// 파일 최상위를 `{ [companyId]: { headcount, items, uploads } }` 구조로 바꾸고, 기존에
+// 이미 데이터가 있던(회사 개념 도입 전) 평면 구조 파일은 읽는 시점에 자동으로 `_legacy`
+// 키 아래로 감싸 마이그레이션한다 — 최상위에 headcount/items/uploads 배열이 직접 있으면
+// 레거시 평면 구조로 간주한다(반대로 신형식은 최상위 값이 항상 companyId(UUID) 또는
+// `_legacy` 키를 가진 객체이므로 이 두 형태는 구조적으로 겹치지 않는다). companyId가 없는
+// 호출(JSON 파일/자체호스팅 단일회사 모드)도 동일하게 `_legacy` 키를 사용해, 회사 개념이
+// 아예 없는 배포에서는 예전과 동일하게 단일 저장소로 계속 동작한다.
+function _emptyCompanyBudget() {
+  return { headcount: [], items: [], uploads: [] };
 }
 
-function writeBudget(data) {
-  fs.writeFileSync(BUDGET_FILE, JSON.stringify(data, null, 2));
+function _readAllBudget() {
+  if (!fs.existsSync(BUDGET_FILE)) return {};
+  let raw;
+  try {
+    raw = JSON.parse(fs.readFileSync(BUDGET_FILE, 'utf8'));
+  } catch (e) {
+    return {};
+  }
+  if (!raw || typeof raw !== 'object') return {};
+  if (Array.isArray(raw.headcount) || Array.isArray(raw.items) || Array.isArray(raw.uploads)) {
+    // 레거시 평면 구조 파일 — `_legacy` 네임스페이스로 감싸 마이그레이션.
+    return { _legacy: { headcount: raw.headcount || [], items: raw.items || [], uploads: raw.uploads || [] } };
+  }
+  return raw;
+}
+
+function _writeAllBudget(all) {
+  fs.writeFileSync(BUDGET_FILE, JSON.stringify(all, null, 2));
+}
+
+function _budgetKey(companyId) {
+  return companyId || '_legacy';
+}
+
+function readBudget(companyId) {
+  const all = _readAllBudget();
+  return all[_budgetKey(companyId)] || _emptyCompanyBudget();
+}
+
+function writeBudget(companyId, data) {
+  const all = _readAllBudget();
+  all[_budgetKey(companyId)] = data;
+  _writeAllBudget(all);
 }
 
 function parseSheet(buffer, filename) {
@@ -65,7 +103,8 @@ router.post('/upload/headcount', upload.single('file'), (req, res) => {
     return res.status(400).json({ error: '파일을 읽을 수 없습니다. (xlsx/csv만 지원)' });
   }
 
-  const data = readBudget();
+  const companyId = req.auth.companyId || null;
+  const data = readBudget(companyId);
   let upserted = 0;
 
   rows.forEach(row => {
@@ -92,7 +131,7 @@ router.post('/upload/headcount', upload.single('file'), (req, res) => {
     rows: rows.length
   });
 
-  writeBudget(data);
+  writeBudget(companyId, data);
   res.json({ message: '인원 현황이 반영되었습니다.', upserted, depts: [...new Set(rows.map(r => r['구분']).filter(Boolean))] });
 });
 
@@ -108,7 +147,8 @@ router.post('/upload/detail', upload.single('file'), (req, res) => {
     return res.status(400).json({ error: '파일을 읽을 수 없습니다. (xlsx/csv만 지원)' });
   }
 
-  const data = readBudget();
+  const companyId = req.auth.companyId || null;
+  const data = readBudget(companyId);
   let upserted = 0;
 
   rows.forEach(row => {
@@ -146,27 +186,27 @@ router.post('/upload/detail', upload.single('file'), (req, res) => {
     rows: rows.length
   });
 
-  writeBudget(data);
+  writeBudget(companyId, data);
   res.json({ message: '예산 상세(판관/용역/경상) 내역이 반영되었습니다.', upserted, depts: [...new Set(rows.map(r => r['부문']).filter(Boolean))] });
 });
 
 // 원본 데이터 조회
 router.get('/data', (req, res) => {
   if (!requireAdmin(req, res)) return;
-  res.json(readBudget());
+  res.json(readBudget(req.auth.companyId || null));
 });
 
 // 업로드 이력
 router.get('/uploads', (req, res) => {
   if (!requireAdmin(req, res)) return;
-  const data = readBudget();
+  const data = readBudget(req.auth.companyId || null);
   res.json({ uploads: data.uploads });
 });
 
 // 사업부별/월별 통합 요약 (인원 + 판관/용역/경상 합산, 중복 제외)
 router.get('/summary', (req, res) => {
   if (!requireAdmin(req, res)) return;
-  const data = readBudget();
+  const data = readBudget(req.auth.companyId || null);
   const depts = [...new Set([
     ...data.headcount.map(h => h.dept),
     ...data.items.map(i => i.dept)
@@ -201,10 +241,10 @@ router.get('/summary', (req, res) => {
   res.json({ summary });
 });
 
-// 데이터 초기화
+// 데이터 초기화 (본인 회사 데이터만 — 다른 회사 데이터는 건드리지 않음)
 router.delete('/data', (req, res) => {
   if (!requireAdmin(req, res)) return;
-  writeBudget({ headcount: [], items: [], uploads: [] });
+  writeBudget(req.auth.companyId || null, _emptyCompanyBudget());
   res.json({ message: '예산 데이터가 초기화되었습니다.' });
 });
 
