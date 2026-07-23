@@ -322,9 +322,16 @@ router.get('/summary', (req, res) => {
 });
 
 // 데이터 초기화 (본인 회사 데이터만 — 다른 회사 데이터는 건드리지 않음)
+// 프런트엔드(public/budget.html)의 확인창 문구가 "업로드된 모든 예산 데이터를
+// 초기화할까요?"로, 인원/판관·용역·경상 상세 "업로드" 데이터만을 가리킨다 — 사업계획
+// (businessPlans)은 파일 업로드가 아니라 화면에서 직접 입력하는 별개 기능이고 자체
+// 삭제 버튼(DELETE /business-plan/:id)도 따로 있으므로, 여기서 같이 지우면 사용자가
+// 예상치 못하게 사업계획 시나리오를 통째로 잃게 된다. businessPlans는 보존한다.
 router.delete('/data', (req, res) => {
   if (!requireAdmin(req, res)) return;
-  writeBudget(req.auth.companyId || null, _emptyCompanyBudget());
+  const companyId = req.auth.companyId || null;
+  const existing = readBudget(companyId);
+  writeBudget(companyId, { ..._emptyCompanyBudget(), businessPlans: existing.businessPlans });
   res.json({ message: '예산 데이터가 초기화되었습니다.' });
 });
 
