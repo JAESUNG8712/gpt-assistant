@@ -227,6 +227,15 @@ BEGIN
 END $$;
 
 -- ── Accounting: 계정과목 (chart of accounts) ──────────────────────────────────
+-- 멀티테넌트 4단계(회계/ERP/PMS/채용, 2026-07-23): accounts/partners/erp_items/erp_locations/
+-- erp_sales_targets/pms_projects/pms_allocations/recruit_jobs 8개 테이블은 id를 클라이언트가
+-- override 가능하다(server.js의 `const xId = id || \`prefix_${Date.now()}...\`` 패턴 — id가
+-- 요청 body에 있으면 그대로 쓴다). company_id 없이는 서로 다른 회사가 같은 id를 보낼 경우
+-- PK 충돌 위험이 있으므로, app_collections/app_singletons(2단계)와 동일하게 PRIMARY KEY를
+-- (company_id, id) 복합키로 승격한다(아래 각 테이블 반복 패턴, 상세 주석은 app_collections
+-- 섹션 참고). 나머지 회계/ERP/PMS/채용 테이블은 id가 항상 서버 생성(Date.now()+random)이라
+-- 충돌 위험이 낮아 employees/kpi_entries(1단계)와 동일하게 company_id를 단순 필터 컬럼으로만
+-- 추가한다.
 CREATE TABLE IF NOT EXISTS accounts (
   id         TEXT        PRIMARY KEY,
   data       JSONB       NOT NULL,
@@ -234,6 +243,28 @@ CREATE TABLE IF NOT EXISTS accounts (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+ALTER TABLE accounts ADD COLUMN IF NOT EXISTS company_id UUID;
+CREATE INDEX IF NOT EXISTS idx_accounts_company_id ON accounts (company_id);
+DO $$
+DECLARE remaining_null INTEGER;
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'accounts_pk_company') THEN
+    SELECT COUNT(*) INTO remaining_null FROM accounts WHERE company_id IS NULL;
+    IF remaining_null = 0 THEN
+      IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'accounts_pkey') THEN
+        ALTER TABLE accounts DROP CONSTRAINT accounts_pkey;
+      END IF;
+      ALTER TABLE accounts ADD CONSTRAINT accounts_pk_company PRIMARY KEY (company_id, id);
+    ELSE
+      RAISE NOTICE 'accounts: company_id IS NULL 인 행이 %건 남아있어 복합 PK 전환을 건너뜁니다. scripts/migrate-add-company-id.js 백필 후 재기동하세요.', remaining_null;
+    END IF;
+  END IF;
+END $$;
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'accounts_company_id_fkey') THEN
+    ALTER TABLE accounts ADD CONSTRAINT accounts_company_id_fkey FOREIGN KEY (company_id) REFERENCES companies(id);
+  END IF;
+END $$;
 
 -- ── Accounting: 거래처 (business partners — customer/vendor master data) ─────
 CREATE TABLE IF NOT EXISTS partners (
@@ -243,8 +274,34 @@ CREATE TABLE IF NOT EXISTS partners (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+ALTER TABLE partners ADD COLUMN IF NOT EXISTS company_id UUID;
+CREATE INDEX IF NOT EXISTS idx_partners_company_id ON partners (company_id);
+DO $$
+DECLARE remaining_null INTEGER;
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'partners_pk_company') THEN
+    SELECT COUNT(*) INTO remaining_null FROM partners WHERE company_id IS NULL;
+    IF remaining_null = 0 THEN
+      IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'partners_pkey') THEN
+        ALTER TABLE partners DROP CONSTRAINT partners_pkey;
+      END IF;
+      ALTER TABLE partners ADD CONSTRAINT partners_pk_company PRIMARY KEY (company_id, id);
+    ELSE
+      RAISE NOTICE 'partners: company_id IS NULL 인 행이 %건 남아있어 복합 PK 전환을 건너뜁니다. scripts/migrate-add-company-id.js 백필 후 재기동하세요.', remaining_null;
+    END IF;
+  END IF;
+END $$;
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'partners_company_id_fkey') THEN
+    ALTER TABLE partners ADD CONSTRAINT partners_company_id_fkey FOREIGN KEY (company_id) REFERENCES companies(id);
+  END IF;
+END $$;
 
 -- ── Accounting: 전표 (journal vouchers) — server-assigned number, immutable once posted ──
+-- id는 항상 서버 생성(Date.now()+random)이라 충돌 위험이 낮음 — company_id는 단순 필터 컬럼.
+-- voucher_no의 UNIQUE 제약은 전역 유일에서 회사 단위 유일(UNIQUE(company_id, voucher_no))로
+-- 바꾼다 — 각 회사가 JE-{year}-000001부터 독립적으로 번호를 매길 수 있어야 하기 때문이다
+-- (voucher_seq도 아래에서 (company_id, year) 복합 PK로 전환).
 CREATE TABLE IF NOT EXISTS vouchers (
   id           TEXT        PRIMARY KEY,
   voucher_no   TEXT        UNIQUE NOT NULL,
@@ -255,13 +312,69 @@ CREATE TABLE IF NOT EXISTS vouchers (
   updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_vouchers_date ON vouchers (voucher_date);
+ALTER TABLE vouchers ADD COLUMN IF NOT EXISTS company_id UUID;
+CREATE INDEX IF NOT EXISTS idx_vouchers_company_id ON vouchers (company_id);
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'vouchers_company_id_fkey') THEN
+    ALTER TABLE vouchers ADD CONSTRAINT vouchers_company_id_fkey FOREIGN KEY (company_id) REFERENCES companies(id);
+  END IF;
+END $$;
+DO $$
+DECLARE remaining_null INTEGER;
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'vouchers' AND column_name = 'company_id' AND is_nullable = 'NO'
+  ) THEN
+    SELECT COUNT(*) INTO remaining_null FROM vouchers WHERE company_id IS NULL;
+    IF remaining_null = 0 THEN
+      ALTER TABLE vouchers ALTER COLUMN company_id SET NOT NULL;
+    ELSE
+      RAISE NOTICE 'vouchers: company_id IS NULL 인 행이 %건 남아있어 NOT NULL 제약을 건너뜁니다. scripts/migrate-add-company-id.js 백필 후 재기동하세요.', remaining_null;
+    END IF;
+  END IF;
+END $$;
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'vouchers_company_voucher_no_uniq') THEN
+    IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'vouchers_voucher_no_key') THEN
+      ALTER TABLE vouchers DROP CONSTRAINT vouchers_voucher_no_key;
+    END IF;
+    ALTER TABLE vouchers ADD CONSTRAINT vouchers_company_voucher_no_uniq UNIQUE (company_id, voucher_no);
+  END IF;
+END $$;
 
+-- voucher_seq도 회사별로 분리한다 — PK를 (year)에서 (company_id, year)로 승격.
+-- id/seq 값 자체엔 클라이언트 override가 없어(서버가 ON CONFLICT로만 증가) 복합 PK 전환에
+-- NOT NULL 선행 조건이 accounts류와 동일하게 필요하다(PRIMARY KEY 컬럼은 자동 NOT NULL).
 CREATE TABLE IF NOT EXISTS voucher_seq (
   year INTEGER PRIMARY KEY,
   seq  INTEGER NOT NULL DEFAULT 0
 );
+ALTER TABLE voucher_seq ADD COLUMN IF NOT EXISTS company_id UUID;
+DO $$
+DECLARE remaining_null INTEGER;
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'voucher_seq_pk_company') THEN
+    SELECT COUNT(*) INTO remaining_null FROM voucher_seq WHERE company_id IS NULL;
+    IF remaining_null = 0 THEN
+      IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'voucher_seq_pkey') THEN
+        ALTER TABLE voucher_seq DROP CONSTRAINT voucher_seq_pkey;
+      END IF;
+      ALTER TABLE voucher_seq ADD CONSTRAINT voucher_seq_pk_company PRIMARY KEY (company_id, year);
+    ELSE
+      RAISE NOTICE 'voucher_seq: company_id IS NULL 인 행이 %건 남아있어 복합 PK 전환을 건너뜁니다. scripts/migrate-add-company-id.js 백필 후 재기동하세요.', remaining_null;
+    END IF;
+  END IF;
+END $$;
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'voucher_seq_company_id_fkey') THEN
+    ALTER TABLE voucher_seq ADD CONSTRAINT voucher_seq_company_id_fkey FOREIGN KEY (company_id) REFERENCES companies(id);
+  END IF;
+END $$;
 
 -- ── Accounting: 세금계산서 (사내 발행용) ───────────────────────────────────────
+-- vouchers와 동일한 패턴(위 주석 참고): company_id 단순 필터 컬럼 + invoice_no 유일성을
+-- 회사 단위로 완화.
 CREATE TABLE IF NOT EXISTS tax_invoices (
   id         TEXT        PRIMARY KEY,
   invoice_no TEXT        UNIQUE NOT NULL,
@@ -272,13 +385,66 @@ CREATE TABLE IF NOT EXISTS tax_invoices (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_tax_invoices_date ON tax_invoices (issue_date);
+ALTER TABLE tax_invoices ADD COLUMN IF NOT EXISTS company_id UUID;
+CREATE INDEX IF NOT EXISTS idx_tax_invoices_company_id ON tax_invoices (company_id);
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'tax_invoices_company_id_fkey') THEN
+    ALTER TABLE tax_invoices ADD CONSTRAINT tax_invoices_company_id_fkey FOREIGN KEY (company_id) REFERENCES companies(id);
+  END IF;
+END $$;
+DO $$
+DECLARE remaining_null INTEGER;
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'tax_invoices' AND column_name = 'company_id' AND is_nullable = 'NO'
+  ) THEN
+    SELECT COUNT(*) INTO remaining_null FROM tax_invoices WHERE company_id IS NULL;
+    IF remaining_null = 0 THEN
+      ALTER TABLE tax_invoices ALTER COLUMN company_id SET NOT NULL;
+    ELSE
+      RAISE NOTICE 'tax_invoices: company_id IS NULL 인 행이 %건 남아있어 NOT NULL 제약을 건너뜁니다. scripts/migrate-add-company-id.js 백필 후 재기동하세요.', remaining_null;
+    END IF;
+  END IF;
+END $$;
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'tax_invoices_company_invoice_no_uniq') THEN
+    IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'tax_invoices_invoice_no_key') THEN
+      ALTER TABLE tax_invoices DROP CONSTRAINT tax_invoices_invoice_no_key;
+    END IF;
+    ALTER TABLE tax_invoices ADD CONSTRAINT tax_invoices_company_invoice_no_uniq UNIQUE (company_id, invoice_no);
+  END IF;
+END $$;
 
+-- tax_invoice_seq도 voucher_seq와 동일한 패턴으로 (company_id, year) 복합 PK로 전환.
 CREATE TABLE IF NOT EXISTS tax_invoice_seq (
   year INTEGER PRIMARY KEY,
   seq  INTEGER NOT NULL DEFAULT 0
 );
+ALTER TABLE tax_invoice_seq ADD COLUMN IF NOT EXISTS company_id UUID;
+DO $$
+DECLARE remaining_null INTEGER;
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'tax_invoice_seq_pk_company') THEN
+    SELECT COUNT(*) INTO remaining_null FROM tax_invoice_seq WHERE company_id IS NULL;
+    IF remaining_null = 0 THEN
+      IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'tax_invoice_seq_pkey') THEN
+        ALTER TABLE tax_invoice_seq DROP CONSTRAINT tax_invoice_seq_pkey;
+      END IF;
+      ALTER TABLE tax_invoice_seq ADD CONSTRAINT tax_invoice_seq_pk_company PRIMARY KEY (company_id, year);
+    ELSE
+      RAISE NOTICE 'tax_invoice_seq: company_id IS NULL 인 행이 %건 남아있어 복합 PK 전환을 건너뜁니다. scripts/migrate-add-company-id.js 백필 후 재기동하세요.', remaining_null;
+    END IF;
+  END IF;
+END $$;
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'tax_invoice_seq_company_id_fkey') THEN
+    ALTER TABLE tax_invoice_seq ADD CONSTRAINT tax_invoice_seq_company_id_fkey FOREIGN KEY (company_id) REFERENCES companies(id);
+  END IF;
+END $$;
 
 -- ── ERP: 품목 마스터 ────────────────────────────────────────────────────────
+-- id 클라이언트 override 가능 — accounts와 동일한 (company_id, id) 복합 PK 패턴.
 CREATE TABLE IF NOT EXISTS erp_items (
   id         TEXT        PRIMARY KEY,
   data       JSONB       NOT NULL,
@@ -286,8 +452,31 @@ CREATE TABLE IF NOT EXISTS erp_items (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+ALTER TABLE erp_items ADD COLUMN IF NOT EXISTS company_id UUID;
+CREATE INDEX IF NOT EXISTS idx_erp_items_company_id ON erp_items (company_id);
+DO $$
+DECLARE remaining_null INTEGER;
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'erp_items_pk_company') THEN
+    SELECT COUNT(*) INTO remaining_null FROM erp_items WHERE company_id IS NULL;
+    IF remaining_null = 0 THEN
+      IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'erp_items_pkey') THEN
+        ALTER TABLE erp_items DROP CONSTRAINT erp_items_pkey;
+      END IF;
+      ALTER TABLE erp_items ADD CONSTRAINT erp_items_pk_company PRIMARY KEY (company_id, id);
+    ELSE
+      RAISE NOTICE 'erp_items: company_id IS NULL 인 행이 %건 남아있어 복합 PK 전환을 건너뜁니다. scripts/migrate-add-company-id.js 백필 후 재기동하세요.', remaining_null;
+    END IF;
+  END IF;
+END $$;
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'erp_items_company_id_fkey') THEN
+    ALTER TABLE erp_items ADD CONSTRAINT erp_items_company_id_fkey FOREIGN KEY (company_id) REFERENCES companies(id);
+  END IF;
+END $$;
 
 -- ── ERP: 창고/위치 마스터 ───────────────────────────────────────────────────
+-- erp_items와 동일한 패턴.
 CREATE TABLE IF NOT EXISTS erp_locations (
   id         TEXT        PRIMARY KEY,
   data       JSONB       NOT NULL,
@@ -295,8 +484,31 @@ CREATE TABLE IF NOT EXISTS erp_locations (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+ALTER TABLE erp_locations ADD COLUMN IF NOT EXISTS company_id UUID;
+CREATE INDEX IF NOT EXISTS idx_erp_locations_company_id ON erp_locations (company_id);
+DO $$
+DECLARE remaining_null INTEGER;
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'erp_locations_pk_company') THEN
+    SELECT COUNT(*) INTO remaining_null FROM erp_locations WHERE company_id IS NULL;
+    IF remaining_null = 0 THEN
+      IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'erp_locations_pkey') THEN
+        ALTER TABLE erp_locations DROP CONSTRAINT erp_locations_pkey;
+      END IF;
+      ALTER TABLE erp_locations ADD CONSTRAINT erp_locations_pk_company PRIMARY KEY (company_id, id);
+    ELSE
+      RAISE NOTICE 'erp_locations: company_id IS NULL 인 행이 %건 남아있어 복합 PK 전환을 건너뜁니다. scripts/migrate-add-company-id.js 백필 후 재기동하세요.', remaining_null;
+    END IF;
+  END IF;
+END $$;
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'erp_locations_company_id_fkey') THEN
+    ALTER TABLE erp_locations ADD CONSTRAINT erp_locations_company_id_fkey FOREIGN KEY (company_id) REFERENCES companies(id);
+  END IF;
+END $$;
 
 -- ── ERP: 견적서 (quotations) ────────────────────────────────────────────────
+-- id는 항상 서버 생성 — vouchers와 동일하게 단순 필터 컬럼.
 CREATE TABLE IF NOT EXISTS erp_quotations (
   id         TEXT        PRIMARY KEY,
   doc_date   DATE        NOT NULL,
@@ -306,9 +518,55 @@ CREATE TABLE IF NOT EXISTS erp_quotations (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_erp_quotations_date ON erp_quotations (doc_date);
+ALTER TABLE erp_quotations ADD COLUMN IF NOT EXISTS company_id UUID;
+CREATE INDEX IF NOT EXISTS idx_erp_quotations_company_id ON erp_quotations (company_id);
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'erp_quotations_company_id_fkey') THEN
+    ALTER TABLE erp_quotations ADD CONSTRAINT erp_quotations_company_id_fkey FOREIGN KEY (company_id) REFERENCES companies(id);
+  END IF;
+END $$;
+DO $$
+DECLARE remaining_null INTEGER;
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'erp_quotations' AND column_name = 'company_id' AND is_nullable = 'NO'
+  ) THEN
+    SELECT COUNT(*) INTO remaining_null FROM erp_quotations WHERE company_id IS NULL;
+    IF remaining_null = 0 THEN
+      ALTER TABLE erp_quotations ALTER COLUMN company_id SET NOT NULL;
+    ELSE
+      RAISE NOTICE 'erp_quotations: company_id IS NULL 인 행이 %건 남아있어 NOT NULL 제약을 건너뜁니다. scripts/migrate-add-company-id.js 백필 후 재기동하세요.', remaining_null;
+    END IF;
+  END IF;
+END $$;
+
+-- erp_quote_seq — voucher_seq와 동일한 패턴으로 (company_id, year) 복합 PK.
 CREATE TABLE IF NOT EXISTS erp_quote_seq ( year INTEGER PRIMARY KEY, seq INTEGER NOT NULL DEFAULT 0 );
+ALTER TABLE erp_quote_seq ADD COLUMN IF NOT EXISTS company_id UUID;
+DO $$
+DECLARE remaining_null INTEGER;
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'erp_quote_seq_pk_company') THEN
+    SELECT COUNT(*) INTO remaining_null FROM erp_quote_seq WHERE company_id IS NULL;
+    IF remaining_null = 0 THEN
+      IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'erp_quote_seq_pkey') THEN
+        ALTER TABLE erp_quote_seq DROP CONSTRAINT erp_quote_seq_pkey;
+      END IF;
+      ALTER TABLE erp_quote_seq ADD CONSTRAINT erp_quote_seq_pk_company PRIMARY KEY (company_id, year);
+    ELSE
+      RAISE NOTICE 'erp_quote_seq: company_id IS NULL 인 행이 %건 남아있어 복합 PK 전환을 건너뜁니다. scripts/migrate-add-company-id.js 백필 후 재기동하세요.', remaining_null;
+    END IF;
+  END IF;
+END $$;
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'erp_quote_seq_company_id_fkey') THEN
+    ALTER TABLE erp_quote_seq ADD CONSTRAINT erp_quote_seq_company_id_fkey FOREIGN KEY (company_id) REFERENCES companies(id);
+  END IF;
+END $$;
 
 -- ── ERP: 발주서 (purchase orders) ───────────────────────────────────────────
+-- erp_quotations와 동일한 패턴.
 CREATE TABLE IF NOT EXISTS erp_purchase_orders (
   id         TEXT        PRIMARY KEY,
   doc_date   DATE        NOT NULL,
@@ -318,9 +576,55 @@ CREATE TABLE IF NOT EXISTS erp_purchase_orders (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_erp_po_date ON erp_purchase_orders (doc_date);
+ALTER TABLE erp_purchase_orders ADD COLUMN IF NOT EXISTS company_id UUID;
+CREATE INDEX IF NOT EXISTS idx_erp_po_company_id ON erp_purchase_orders (company_id);
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'erp_purchase_orders_company_id_fkey') THEN
+    ALTER TABLE erp_purchase_orders ADD CONSTRAINT erp_purchase_orders_company_id_fkey FOREIGN KEY (company_id) REFERENCES companies(id);
+  END IF;
+END $$;
+DO $$
+DECLARE remaining_null INTEGER;
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'erp_purchase_orders' AND column_name = 'company_id' AND is_nullable = 'NO'
+  ) THEN
+    SELECT COUNT(*) INTO remaining_null FROM erp_purchase_orders WHERE company_id IS NULL;
+    IF remaining_null = 0 THEN
+      ALTER TABLE erp_purchase_orders ALTER COLUMN company_id SET NOT NULL;
+    ELSE
+      RAISE NOTICE 'erp_purchase_orders: company_id IS NULL 인 행이 %건 남아있어 NOT NULL 제약을 건너뜁니다. scripts/migrate-add-company-id.js 백필 후 재기동하세요.', remaining_null;
+    END IF;
+  END IF;
+END $$;
+
+-- erp_po_seq — voucher_seq와 동일한 패턴.
 CREATE TABLE IF NOT EXISTS erp_po_seq ( year INTEGER PRIMARY KEY, seq INTEGER NOT NULL DEFAULT 0 );
+ALTER TABLE erp_po_seq ADD COLUMN IF NOT EXISTS company_id UUID;
+DO $$
+DECLARE remaining_null INTEGER;
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'erp_po_seq_pk_company') THEN
+    SELECT COUNT(*) INTO remaining_null FROM erp_po_seq WHERE company_id IS NULL;
+    IF remaining_null = 0 THEN
+      IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'erp_po_seq_pkey') THEN
+        ALTER TABLE erp_po_seq DROP CONSTRAINT erp_po_seq_pkey;
+      END IF;
+      ALTER TABLE erp_po_seq ADD CONSTRAINT erp_po_seq_pk_company PRIMARY KEY (company_id, year);
+    ELSE
+      RAISE NOTICE 'erp_po_seq: company_id IS NULL 인 행이 %건 남아있어 복합 PK 전환을 건너뜁니다. scripts/migrate-add-company-id.js 백필 후 재기동하세요.', remaining_null;
+    END IF;
+  END IF;
+END $$;
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'erp_po_seq_company_id_fkey') THEN
+    ALTER TABLE erp_po_seq ADD CONSTRAINT erp_po_seq_company_id_fkey FOREIGN KEY (company_id) REFERENCES companies(id);
+  END IF;
+END $$;
 
 -- ── ERP: 구매요청 (purchase requests — 구성원 요청 → admin 승인/반려/발주 전환) ──
+-- id는 항상 서버 생성 — 단순 필터 컬럼.
 CREATE TABLE IF NOT EXISTS erp_purchase_requests (
   id         TEXT        PRIMARY KEY,
   doc_date   DATE        NOT NULL,
@@ -330,8 +634,32 @@ CREATE TABLE IF NOT EXISTS erp_purchase_requests (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_erp_pr_date ON erp_purchase_requests (doc_date);
+ALTER TABLE erp_purchase_requests ADD COLUMN IF NOT EXISTS company_id UUID;
+CREATE INDEX IF NOT EXISTS idx_erp_pr_company_id ON erp_purchase_requests (company_id);
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'erp_purchase_requests_company_id_fkey') THEN
+    ALTER TABLE erp_purchase_requests ADD CONSTRAINT erp_purchase_requests_company_id_fkey FOREIGN KEY (company_id) REFERENCES companies(id);
+  END IF;
+END $$;
+DO $$
+DECLARE remaining_null INTEGER;
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'erp_purchase_requests' AND column_name = 'company_id' AND is_nullable = 'NO'
+  ) THEN
+    SELECT COUNT(*) INTO remaining_null FROM erp_purchase_requests WHERE company_id IS NULL;
+    IF remaining_null = 0 THEN
+      ALTER TABLE erp_purchase_requests ALTER COLUMN company_id SET NOT NULL;
+    ELSE
+      RAISE NOTICE 'erp_purchase_requests: company_id IS NULL 인 행이 %건 남아있어 NOT NULL 제약을 건너뜁니다. scripts/migrate-add-company-id.js 백필 후 재기동하세요.', remaining_null;
+    END IF;
+  END IF;
+END $$;
 
 -- ── ERP: 재고 입출고 이력 (stock ledger) — append-only, 현재 재고는 합산으로 계산 ──
+-- id는 항상 서버 생성 — 단순 필터 컬럼. 재고 잠금(pg_advisory_xact_lock)은 server.js에서
+-- company_id를 잠금 키에 포함시켜 회사 간 잠금 간섭을 막는다(스키마 변경 아님).
 CREATE TABLE IF NOT EXISTS erp_stock_ledger (
   id          TEXT        PRIMARY KEY,
   item_id     TEXT        NOT NULL,
@@ -340,8 +668,31 @@ CREATE TABLE IF NOT EXISTS erp_stock_ledger (
   created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_erp_stock_item_loc ON erp_stock_ledger (item_id, location_id);
+ALTER TABLE erp_stock_ledger ADD COLUMN IF NOT EXISTS company_id UUID;
+CREATE INDEX IF NOT EXISTS idx_erp_stock_company_id ON erp_stock_ledger (company_id);
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'erp_stock_ledger_company_id_fkey') THEN
+    ALTER TABLE erp_stock_ledger ADD CONSTRAINT erp_stock_ledger_company_id_fkey FOREIGN KEY (company_id) REFERENCES companies(id);
+  END IF;
+END $$;
+DO $$
+DECLARE remaining_null INTEGER;
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'erp_stock_ledger' AND column_name = 'company_id' AND is_nullable = 'NO'
+  ) THEN
+    SELECT COUNT(*) INTO remaining_null FROM erp_stock_ledger WHERE company_id IS NULL;
+    IF remaining_null = 0 THEN
+      ALTER TABLE erp_stock_ledger ALTER COLUMN company_id SET NOT NULL;
+    ELSE
+      RAISE NOTICE 'erp_stock_ledger: company_id IS NULL 인 행이 %건 남아있어 NOT NULL 제약을 건너뜁니다. scripts/migrate-add-company-id.js 백필 후 재기동하세요.', remaining_null;
+    END IF;
+  END IF;
+END $$;
 
 -- ── ERP: 영업 목표 (월/연 단위 매출·수주 목표, 전체 또는 담당자별) ────────────
+-- id 클라이언트 override 가능 — accounts와 동일한 (company_id, id) 복합 PK 패턴.
 CREATE TABLE IF NOT EXISTS erp_sales_targets (
   id         TEXT        PRIMARY KEY,
   data       JSONB       NOT NULL,
@@ -349,8 +700,31 @@ CREATE TABLE IF NOT EXISTS erp_sales_targets (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+ALTER TABLE erp_sales_targets ADD COLUMN IF NOT EXISTS company_id UUID;
+CREATE INDEX IF NOT EXISTS idx_erp_sales_targets_company_id ON erp_sales_targets (company_id);
+DO $$
+DECLARE remaining_null INTEGER;
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'erp_sales_targets_pk_company') THEN
+    SELECT COUNT(*) INTO remaining_null FROM erp_sales_targets WHERE company_id IS NULL;
+    IF remaining_null = 0 THEN
+      IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'erp_sales_targets_pkey') THEN
+        ALTER TABLE erp_sales_targets DROP CONSTRAINT erp_sales_targets_pkey;
+      END IF;
+      ALTER TABLE erp_sales_targets ADD CONSTRAINT erp_sales_targets_pk_company PRIMARY KEY (company_id, id);
+    ELSE
+      RAISE NOTICE 'erp_sales_targets: company_id IS NULL 인 행이 %건 남아있어 복합 PK 전환을 건너뜁니다. scripts/migrate-add-company-id.js 백필 후 재기동하세요.', remaining_null;
+    END IF;
+  END IF;
+END $$;
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'erp_sales_targets_company_id_fkey') THEN
+    ALTER TABLE erp_sales_targets ADD CONSTRAINT erp_sales_targets_company_id_fkey FOREIGN KEY (company_id) REFERENCES companies(id);
+  END IF;
+END $$;
 
 -- ── PMS: 프로젝트 마스터 ────────────────────────────────────────────────────
+-- id 클라이언트 override 가능 — accounts와 동일한 (company_id, id) 복합 PK 패턴.
 CREATE TABLE IF NOT EXISTS pms_projects (
   id         TEXT        PRIMARY KEY,
   data       JSONB       NOT NULL,
@@ -358,8 +732,32 @@ CREATE TABLE IF NOT EXISTS pms_projects (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+ALTER TABLE pms_projects ADD COLUMN IF NOT EXISTS company_id UUID;
+CREATE INDEX IF NOT EXISTS idx_pms_projects_company_id ON pms_projects (company_id);
+DO $$
+DECLARE remaining_null INTEGER;
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'pms_projects_pk_company') THEN
+    SELECT COUNT(*) INTO remaining_null FROM pms_projects WHERE company_id IS NULL;
+    IF remaining_null = 0 THEN
+      IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'pms_projects_pkey') THEN
+        ALTER TABLE pms_projects DROP CONSTRAINT pms_projects_pkey;
+      END IF;
+      ALTER TABLE pms_projects ADD CONSTRAINT pms_projects_pk_company PRIMARY KEY (company_id, id);
+    ELSE
+      RAISE NOTICE 'pms_projects: company_id IS NULL 인 행이 %건 남아있어 복합 PK 전환을 건너뜁니다. scripts/migrate-add-company-id.js 백필 후 재기동하세요.', remaining_null;
+    END IF;
+  END IF;
+END $$;
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'pms_projects_company_id_fkey') THEN
+    ALTER TABLE pms_projects ADD CONSTRAINT pms_projects_company_id_fkey FOREIGN KEY (company_id) REFERENCES companies(id);
+  END IF;
+END $$;
 
 -- ── PMS: 직원별 월간 투입률(%) 배정 ──────────────────────────────────────────
+-- id 클라이언트 override 가능 — 동일한 (company_id, id) 복합 PK 패턴. 100% 캡 advisory
+-- lock(employeeId+year+month 키)은 server.js에서 company_id를 접두로 추가한다(스키마 변경 아님).
 CREATE TABLE IF NOT EXISTS pms_allocations (
   id          TEXT        PRIMARY KEY,
   employee_id INTEGER     NOT NULL,
@@ -371,8 +769,31 @@ CREATE TABLE IF NOT EXISTS pms_allocations (
   updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_pms_alloc_emp_period ON pms_allocations (employee_id, year, month);
+ALTER TABLE pms_allocations ADD COLUMN IF NOT EXISTS company_id UUID;
+CREATE INDEX IF NOT EXISTS idx_pms_allocations_company_id ON pms_allocations (company_id);
+DO $$
+DECLARE remaining_null INTEGER;
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'pms_allocations_pk_company') THEN
+    SELECT COUNT(*) INTO remaining_null FROM pms_allocations WHERE company_id IS NULL;
+    IF remaining_null = 0 THEN
+      IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'pms_allocations_pkey') THEN
+        ALTER TABLE pms_allocations DROP CONSTRAINT pms_allocations_pkey;
+      END IF;
+      ALTER TABLE pms_allocations ADD CONSTRAINT pms_allocations_pk_company PRIMARY KEY (company_id, id);
+    ELSE
+      RAISE NOTICE 'pms_allocations: company_id IS NULL 인 행이 %건 남아있어 복합 PK 전환을 건너뜁니다. scripts/migrate-add-company-id.js 백필 후 재기동하세요.', remaining_null;
+    END IF;
+  END IF;
+END $$;
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'pms_allocations_company_id_fkey') THEN
+    ALTER TABLE pms_allocations ADD CONSTRAINT pms_allocations_company_id_fkey FOREIGN KEY (company_id) REFERENCES companies(id);
+  END IF;
+END $$;
 
 -- ── PMS: 일일 업무 투입(분단위 타임라인) ─────────────────────────────────────
+-- id는 항상 서버 생성 — 단순 필터 컬럼.
 CREATE TABLE IF NOT EXISTS pms_worklogs (
   id          TEXT        PRIMARY KEY,
   employee_id INTEGER     NOT NULL,
@@ -383,8 +804,32 @@ CREATE TABLE IF NOT EXISTS pms_worklogs (
   updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_pms_worklogs_emp_date ON pms_worklogs (employee_id, work_date);
+ALTER TABLE pms_worklogs ADD COLUMN IF NOT EXISTS company_id UUID;
+CREATE INDEX IF NOT EXISTS idx_pms_worklogs_company_id ON pms_worklogs (company_id);
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'pms_worklogs_company_id_fkey') THEN
+    ALTER TABLE pms_worklogs ADD CONSTRAINT pms_worklogs_company_id_fkey FOREIGN KEY (company_id) REFERENCES companies(id);
+  END IF;
+END $$;
+DO $$
+DECLARE remaining_null INTEGER;
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'pms_worklogs' AND column_name = 'company_id' AND is_nullable = 'NO'
+  ) THEN
+    SELECT COUNT(*) INTO remaining_null FROM pms_worklogs WHERE company_id IS NULL;
+    IF remaining_null = 0 THEN
+      ALTER TABLE pms_worklogs ALTER COLUMN company_id SET NOT NULL;
+    ELSE
+      RAISE NOTICE 'pms_worklogs: company_id IS NULL 인 행이 %건 남아있어 NOT NULL 제약을 건너뜁니다. scripts/migrate-add-company-id.js 백필 후 재기동하세요.', remaining_null;
+    END IF;
+  END IF;
+END $$;
 
 -- ── 채용: 채용공고 ────────────────────────────────────────────────────────────
+-- id 클라이언트 override 가능 — accounts와 동일한 (company_id, id) 복합 PK 패턴. 부서 스코프
+-- 검사(_recruitCanViewJob 등)는 server.js가 담당하며 company_id 스코프는 그 이전 단계로 추가된다.
 CREATE TABLE IF NOT EXISTS recruit_jobs (
   id         TEXT        PRIMARY KEY,
   data       JSONB       NOT NULL,
@@ -392,8 +837,31 @@ CREATE TABLE IF NOT EXISTS recruit_jobs (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+ALTER TABLE recruit_jobs ADD COLUMN IF NOT EXISTS company_id UUID;
+CREATE INDEX IF NOT EXISTS idx_recruit_jobs_company_id ON recruit_jobs (company_id);
+DO $$
+DECLARE remaining_null INTEGER;
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'recruit_jobs_pk_company') THEN
+    SELECT COUNT(*) INTO remaining_null FROM recruit_jobs WHERE company_id IS NULL;
+    IF remaining_null = 0 THEN
+      IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'recruit_jobs_pkey') THEN
+        ALTER TABLE recruit_jobs DROP CONSTRAINT recruit_jobs_pkey;
+      END IF;
+      ALTER TABLE recruit_jobs ADD CONSTRAINT recruit_jobs_pk_company PRIMARY KEY (company_id, id);
+    ELSE
+      RAISE NOTICE 'recruit_jobs: company_id IS NULL 인 행이 %건 남아있어 복합 PK 전환을 건너뜁니다. scripts/migrate-add-company-id.js 백필 후 재기동하세요.', remaining_null;
+    END IF;
+  END IF;
+END $$;
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'recruit_jobs_company_id_fkey') THEN
+    ALTER TABLE recruit_jobs ADD CONSTRAINT recruit_jobs_company_id_fkey FOREIGN KEY (company_id) REFERENCES companies(id);
+  END IF;
+END $$;
 
 -- ── 채용: 지원자(이력서/평가 포함) ────────────────────────────────────────────
+-- id는 항상 서버 생성 — 단순 필터 컬럼.
 CREATE TABLE IF NOT EXISTS recruit_candidates (
   id         TEXT        PRIMARY KEY,
   job_id     TEXT        NOT NULL,
@@ -403,8 +871,31 @@ CREATE TABLE IF NOT EXISTS recruit_candidates (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_recruit_candidates_job ON recruit_candidates (job_id);
+ALTER TABLE recruit_candidates ADD COLUMN IF NOT EXISTS company_id UUID;
+CREATE INDEX IF NOT EXISTS idx_recruit_candidates_company_id ON recruit_candidates (company_id);
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'recruit_candidates_company_id_fkey') THEN
+    ALTER TABLE recruit_candidates ADD CONSTRAINT recruit_candidates_company_id_fkey FOREIGN KEY (company_id) REFERENCES companies(id);
+  END IF;
+END $$;
+DO $$
+DECLARE remaining_null INTEGER;
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'recruit_candidates' AND column_name = 'company_id' AND is_nullable = 'NO'
+  ) THEN
+    SELECT COUNT(*) INTO remaining_null FROM recruit_candidates WHERE company_id IS NULL;
+    IF remaining_null = 0 THEN
+      ALTER TABLE recruit_candidates ALTER COLUMN company_id SET NOT NULL;
+    ELSE
+      RAISE NOTICE 'recruit_candidates: company_id IS NULL 인 행이 %건 남아있어 NOT NULL 제약을 건너뜁니다. scripts/migrate-add-company-id.js 백필 후 재기동하세요.', remaining_null;
+    END IF;
+  END IF;
+END $$;
 
 -- ── 채용: 면접 일정 및 평가 ───────────────────────────────────────────────────
+-- id는 항상 서버 생성 — 단순 필터 컬럼.
 CREATE TABLE IF NOT EXISTS recruit_interviews (
   id           TEXT        PRIMARY KEY,
   job_id       TEXT        NOT NULL,
@@ -416,6 +907,28 @@ CREATE TABLE IF NOT EXISTS recruit_interviews (
 );
 CREATE INDEX IF NOT EXISTS idx_recruit_interviews_candidate ON recruit_interviews (candidate_id);
 CREATE INDEX IF NOT EXISTS idx_recruit_interviews_job       ON recruit_interviews (job_id);
+ALTER TABLE recruit_interviews ADD COLUMN IF NOT EXISTS company_id UUID;
+CREATE INDEX IF NOT EXISTS idx_recruit_interviews_company_id ON recruit_interviews (company_id);
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'recruit_interviews_company_id_fkey') THEN
+    ALTER TABLE recruit_interviews ADD CONSTRAINT recruit_interviews_company_id_fkey FOREIGN KEY (company_id) REFERENCES companies(id);
+  END IF;
+END $$;
+DO $$
+DECLARE remaining_null INTEGER;
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'recruit_interviews' AND column_name = 'company_id' AND is_nullable = 'NO'
+  ) THEN
+    SELECT COUNT(*) INTO remaining_null FROM recruit_interviews WHERE company_id IS NULL;
+    IF remaining_null = 0 THEN
+      ALTER TABLE recruit_interviews ALTER COLUMN company_id SET NOT NULL;
+    ELSE
+      RAISE NOTICE 'recruit_interviews: company_id IS NULL 인 행이 %건 남아있어 NOT NULL 제약을 건너뜁니다. scripts/migrate-add-company-id.js 백필 후 재기동하세요.', remaining_null;
+    END IF;
+  END IF;
+END $$;
 
 -- ── Generic HR/ERP collections (attendance, payslips, approvals, certs, etc.) ──
 -- One row per record of every id-keyed list the client sends via getFullState()
@@ -514,6 +1027,10 @@ END $$;
 
 -- ── Annual confirmed snapshots ────────────────────────────────────────────────
 -- 매년 최종 확정 시 전체 데이터를 스냅샷으로 보관 (절대 삭제 불가)
+-- id가 SERIAL이라 PK 충돌 위험은 없다(employees/kpi_entries와 동일 부류) — company_id는
+-- 단순 필터 컬럼으로 추가하고, eval_year의 UNIQUE 제약만 회사 단위(company_id, eval_year)로
+-- 완화한다(두 회사가 같은 연도에 각자 스냅샷을 만들 수 있어야 함 — 이전엔 eval_year 단독
+-- UNIQUE라 두 번째 회사가 스냅샷을 만들면 첫 회사 것과 충돌했다).
 CREATE TABLE IF NOT EXISTS annual_snapshots (
   id             SERIAL      PRIMARY KEY,
   eval_year      INTEGER     UNIQUE NOT NULL,
@@ -524,3 +1041,36 @@ CREATE TABLE IF NOT EXISTS annual_snapshots (
   confirmed_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   notes          TEXT
 );
+ALTER TABLE annual_snapshots ADD COLUMN IF NOT EXISTS company_id UUID;
+CREATE INDEX IF NOT EXISTS idx_annual_snapshots_company_id ON annual_snapshots (company_id);
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'annual_snapshots_company_id_fkey') THEN
+    ALTER TABLE annual_snapshots ADD CONSTRAINT annual_snapshots_company_id_fkey FOREIGN KEY (company_id) REFERENCES companies(id);
+  END IF;
+END $$;
+DO $$
+DECLARE remaining_null INTEGER;
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'annual_snapshots' AND column_name = 'company_id' AND is_nullable = 'NO'
+  ) THEN
+    SELECT COUNT(*) INTO remaining_null FROM annual_snapshots WHERE company_id IS NULL;
+    IF remaining_null = 0 THEN
+      ALTER TABLE annual_snapshots ALTER COLUMN company_id SET NOT NULL;
+    ELSE
+      RAISE NOTICE 'annual_snapshots: company_id IS NULL 인 행이 %건 남아있어 NOT NULL 제약을 건너뜁니다. scripts/migrate-add-company-id.js 백필 후 재기동하세요.', remaining_null;
+    END IF;
+  END IF;
+END $$;
+-- eval_year 단독 UNIQUE를 회사 단위 복합 UNIQUE로 교체. PRIMARY KEY가 아닌 일반 UNIQUE라
+-- NULL 잔여 여부와 무관하게 안전하게 전환 가능(NULL은 UNIQUE 제약에서 서로 다른 값으로
+-- 취급되어 여러 레거시 행이 공존해도 위반되지 않음).
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'annual_snapshots_company_eval_year_uniq') THEN
+    IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'annual_snapshots_eval_year_key') THEN
+      ALTER TABLE annual_snapshots DROP CONSTRAINT annual_snapshots_eval_year_key;
+    END IF;
+    ALTER TABLE annual_snapshots ADD CONSTRAINT annual_snapshots_company_eval_year_uniq UNIQUE (company_id, eval_year);
+  END IF;
+END $$;

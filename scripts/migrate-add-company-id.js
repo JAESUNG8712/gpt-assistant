@@ -26,6 +26,17 @@
 //   그대로인 경우) app_collections/app_singletons에 대한 모든 쓰기가 "ON CONFLICT
 //   specification과 일치하는 제약이 없다"는 오류로 실패한다.
 //
+// 4단계(회계/ERP/PMS/채용, 2026-07-23) 추가: 위와 동일한 두 부류로 나뉜다.
+//   - 복합 PK (company_id, id) 전환 대상(id를 클라이언트가 override 가능): accounts,
+//     partners, erp_items, erp_locations, erp_sales_targets, pms_projects,
+//     pms_allocations, recruit_jobs — 그리고 연도별 시퀀스 4개(voucher_seq,
+//     tax_invoice_seq, erp_quote_seq, erp_po_seq)는 (company_id, year) 복합 PK.
+//   - 단순 필터 컬럼(NOT NULL 승격만, PK 변경 없음, id가 항상 서버 생성): vouchers,
+//     tax_invoices, erp_quotations, erp_purchase_orders, erp_purchase_requests,
+//     erp_stock_ledger, pms_worklogs, recruit_candidates, recruit_interviews,
+//     annual_snapshots(단, PK가 아니라 UNIQUE(company_id, eval_year)로 전환).
+//   배포 순서는 위 2단계와 동일 — 백필 먼저, server.js 배포/재기동은 그다음.
+//
 // Usage:
 //   DATABASE_URL=postgres://... COMPANY_NAME="회사명" COMPANY_SLUG="company-slug" \
 //     node scripts/migrate-add-company-id.js
@@ -70,6 +81,24 @@ const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 const TABLES = [
   "employees", "kpi_entries", "employee_history", "kpi_history",
   "app_collections", "app_singletons",
+  // 4단계(회계/ERP/PMS/채용) — 복합 PK 전환 대상
+  "accounts", "partners", "erp_items", "erp_locations", "erp_sales_targets",
+  "pms_projects", "pms_allocations", "recruit_jobs",
+  "voucher_seq", "tax_invoice_seq", "erp_quote_seq", "erp_po_seq",
+  // 4단계 — 단순 필터 컬럼 대상(PK 변경 없음)
+  "vouchers", "tax_invoices", "erp_quotations", "erp_purchase_orders",
+  "erp_purchase_requests", "erp_stock_ledger", "pms_worklogs",
+  "recruit_candidates", "recruit_interviews", "annual_snapshots",
+];
+
+// 위 TABLES 중 PRIMARY KEY 자체가 복합키로 바뀌는(따라서 백필 후 schema.sql 재적용으로
+// 전환 여부를 확인해야 하는) 테이블 전체 — app_collections/app_singletons(2단계) +
+// 4단계 신규 12개(연도 시퀀스 4개 포함).
+const COMPOSITE_PK_TABLES = [
+  "app_collections", "app_singletons",
+  "accounts", "partners", "erp_items", "erp_locations", "erp_sales_targets",
+  "pms_projects", "pms_allocations", "recruit_jobs",
+  "voucher_seq", "tax_invoice_seq", "erp_quote_seq", "erp_po_seq",
 ];
 
 async function main() {
@@ -137,27 +166,31 @@ async function main() {
     for (const table of LEGACY_TABLES) {
       console.log(`  ALTER TABLE ${table} ALTER COLUMN company_id SET NOT NULL;`);
     }
-    // app_collections/app_singletons는 수동 ALTER가 필요 없다 — 복합 PRIMARY KEY로 전환되는
-    // 순간 Postgres가 NOT NULL을 자동으로 강제한다. 백필이 방금 끝났으니 schema.sql을 한 번
+    // COMPOSITE_PK_TABLES는 수동 ALTER가 필요 없다 — 복합 PRIMARY KEY로 전환되는 순간
+    // Postgres가 NOT NULL을 자동으로 강제한다. 백필이 방금 끝났으니 schema.sql을 한 번
     // 더 적용해(idempotent) 그 전환을 바로 이 자리에서 완료해본다 — 서버가 다음 재기동 때
     // 어차피 똑같이 하지만, 운영자가 바로 결과를 확인할 수 있도록 여기서도 시도한다.
-    console.log("\napp_collections/app_singletons 복합 PK 전환 시도 (schema.sql 재적용)...");
+    console.log(`\n복합 PK 전환 대상 ${COMPOSITE_PK_TABLES.length}개 테이블 전환 시도 (schema.sql 재적용)...`);
     await pool.query(schema);
+    const expectedConstraints = COMPOSITE_PK_TABLES.map((t) => `${t}_pk_company`);
     const { rows: pkRows } = await pool.query(
-      `SELECT conname FROM pg_constraint WHERE conname IN ('app_collections_pk_company','app_singletons_pk_company')`
+      `SELECT conname FROM pg_constraint WHERE conname = ANY($1)`,
+      [expectedConstraints]
     );
-    const migrated = new Set(pkRows.map(r => r.conname));
-    console.log(`  app_collections 복합 PK: ${migrated.has("app_collections_pk_company") ? "전환 완료" : "아직 아님(다음 서버 재기동 시 자동 재시도됨)"}`);
-    console.log(`  app_singletons  복합 PK: ${migrated.has("app_singletons_pk_company") ? "전환 완료" : "아직 아님(다음 서버 재기동 시 자동 재시도됨)"}`);
-    if (migrated.size === 2) {
-      console.log("\n두 테이블 모두 복합 PK로 전환되었습니다 — 이제 새 server.js를 배포/재기동해도 안전합니다.");
+    const migrated = new Set(pkRows.map((r) => r.conname));
+    for (const table of COMPOSITE_PK_TABLES) {
+      const conname = `${table}_pk_company`;
+      console.log(`  ${table}: ${migrated.has(conname) ? "복합 PK 전환 완료" : "아직 아님(다음 서버 재기동 시 자동 재시도됨)"}`);
+    }
+    if (migrated.size === COMPOSITE_PK_TABLES.length) {
+      console.log("\n모든 테이블이 복합 PK로 전환되었습니다 — 이제 새 server.js를 배포/재기동해도 안전합니다.");
     } else {
       console.log("\n⚠ 아직 전환되지 않은 테이블이 있습니다. 위 로그(NOTICE)에서 원인을 확인하세요 —");
       console.log("  보통은 이 스크립트가 미처 모르는 다른 테이블에 아직 company_id NULL 행이 남아있는 경우입니다.");
     }
   } else {
     console.log("\n⚠ 아직 company_id가 NULL인 행이 남아있습니다 — 원인을 확인하세요.");
-    console.log("  app_collections/app_singletons의 복합 PK 전환은 이 NULL이 전부 사라지기 전까지 보류됩니다.");
+    console.log("  복합 PK 전환 대상 테이블들은 이 NULL이 전부 사라지기 전까지 전환이 보류됩니다.");
   }
 
   await pool.end();
