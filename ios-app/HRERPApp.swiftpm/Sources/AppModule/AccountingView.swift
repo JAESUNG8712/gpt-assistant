@@ -233,9 +233,29 @@ struct AccountingView: View {
     }
 }
 
-/// 웹 앱 표시 규칙(`Int(x).formatted())원`)과 동일한 원화 포맷 헬퍼 — 이 뷰 안 여러 곳(제조원가/
-/// 판관비/계정별 상세/RCPS 카드)에서 반복 사용해 한 곳으로 뺐다.
-private func wonText(_ amount: Double) -> String { "\(Int(amount).formatted())원" }
+/// 웹 앱 표시 규칙(`x.toLocaleString()+"원"`)과 동일한 원화 포맷 헬퍼 — 이 뷰 안 여러 곳(전표/
+/// 제조원가/판관비/계정별 상세/RCPS 카드)에서 반복 사용해 한 곳으로 뺐다.
+/// `Int(amount)`로 통째로 자르면 전표 금액(대개 정수 원 단위)은 문제없지만, RCPS 상각표는
+/// 유효이자율법 계산상 원 단위 미만(예: 819,603,210.89원) 소수가 실제로 의미 있어 그대로
+/// 잘리면 웹 화면(원 단위 그대로 toLocaleString)과 다른 값을 보여주게 된다 — 소수부가 있을
+/// 때만 둘째 자리까지 보존한다.
+private func wonText(_ amount: Double) -> String {
+    let formatter = NumberFormatter()
+    formatter.numberStyle = .decimal
+    formatter.groupingSeparator = ","
+    formatter.minimumFractionDigits = 0
+    formatter.maximumFractionDigits = 2
+    let text = formatter.string(from: NSNumber(value: amount)) ?? "\(amount)"
+    return "\(text)원"
+}
+
+/// server.js는 couponRate/effectiveRate를 소수 표기로 저장한다(예: 연 5% → 0.05, RCPS 발행
+/// POST 라우트 주석 참고). 웹 클라이언트(public/index.html)도 표시 시 항상 `(x*100).toFixed(2)+"%"`로
+/// 변환하는데, 이 뷰는 그 변환 없이 원시 소수값 뒤에 그냥 "%"만 붙이고 있어 1%가 "0.01%"로
+/// 표시되는 버그가 있었다 — 웹과 동일한 규칙(×100, 소수 둘째 자리)으로 통일한다.
+private func percentText(_ rate: Double) -> String {
+    String(format: "%.2f%%", rate * 100)
+}
 
 /// RCPS 발행 1건의 상세 — 발행 정보 요약 + 유효이자율법 상각표 + 공정가치평가 이력.
 /// 조회 전용(README 명시): 상각전표 발행/공정가치평가 등록 등 쓰기 액션은 없음.
@@ -268,10 +288,10 @@ private struct RcpsIssuanceDetailView: View {
                             row("액면가", wonText(parValue))
                         }
                         if let couponRate = detail.issuance.couponRate {
-                            row("표시이자율", "\(couponRate.formatted())%")
+                            row("표시이자율", percentText(couponRate))
                         }
                         if let effectiveRate = detail.issuance.effectiveRate {
-                            row("유효이자율", "\(effectiveRate.formatted())%")
+                            row("유효이자율", percentText(effectiveRate))
                         }
                         if let redemptionAmount = detail.issuance.redemptionAmount {
                             row("상환금액", wonText(redemptionAmount))
