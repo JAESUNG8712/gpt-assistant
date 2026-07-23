@@ -443,6 +443,50 @@ DO $$ BEGIN
   END IF;
 END $$;
 
+-- ── Accounting: RCPS(상환전환우선주) 발행·상각·공정가치평가 ──────────────────
+-- 신규 기능(2026-07-23 착수, 기존 배포된 적 없음)이라 employees/accounts류와 달리 레거시
+-- NULL 데이터가 존재할 수 없다 — company_id를 처음부터 NOT NULL로 선언해도 안전하다
+-- (nullable→백필→NOT NULL 승격의 단계적 전환이 필요 없음). id는 항상 서버 생성
+-- (Date.now()+random)이라 단순 PK, 복합키 불필요.
+CREATE TABLE IF NOT EXISTS rcps_issuances (
+  id         TEXT        PRIMARY KEY,
+  company_id UUID        NOT NULL REFERENCES companies(id),
+  data       JSONB       NOT NULL,
+  is_deleted BOOLEAN     NOT NULL DEFAULT FALSE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_rcps_issuances_company_id ON rcps_issuances (company_id);
+
+-- 상각표: 발행 건당 만기까지의 유효이자율법 회차별 스케줄. 회차(seq)는 발행 시점에 서버가
+-- PV 계산으로 일괄 생성하며, 각 행은 이후 "상각전표 발행" 액션으로 개별 확정(전표 연결)된다.
+CREATE TABLE IF NOT EXISTS rcps_amortization_schedule (
+  id           TEXT        PRIMARY KEY,
+  issuance_id  TEXT        NOT NULL REFERENCES rcps_issuances(id),
+  company_id   UUID        NOT NULL REFERENCES companies(id),
+  seq          INTEGER     NOT NULL,
+  data         JSONB       NOT NULL,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_rcps_schedule_issuance ON rcps_amortization_schedule (issuance_id, seq);
+CREATE INDEX IF NOT EXISTS idx_rcps_schedule_company_id ON rcps_amortization_schedule (company_id);
+
+-- 공정가치평가: 전환권 등 내재파생상품 요소(발행총액-부채요소 최초인식액의 잔여, 자본/파생상품
+-- 요소)만을 대상으로 한 보고기간별 재평가 기록. 평가손익은 등록 시 서버가 직전 장부금액과
+-- 비교해 계산하고 전표를 자동 발행한다(공정가치 자체의 산정 방법론은 범위 밖 — 사용자가
+-- 외부 평가에서 얻은 공정가치 숫자를 입력).
+CREATE TABLE IF NOT EXISTS rcps_fair_value_valuations (
+  id          TEXT        PRIMARY KEY,
+  issuance_id TEXT        NOT NULL REFERENCES rcps_issuances(id),
+  company_id  UUID        NOT NULL REFERENCES companies(id),
+  data        JSONB       NOT NULL,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_rcps_valuations_issuance ON rcps_fair_value_valuations (issuance_id);
+CREATE INDEX IF NOT EXISTS idx_rcps_valuations_company_id ON rcps_fair_value_valuations (company_id);
+
 -- ── ERP: 품목 마스터 ────────────────────────────────────────────────────────
 -- id 클라이언트 override 가능 — accounts와 동일한 (company_id, id) 복합 PK 패턴.
 CREATE TABLE IF NOT EXISTS erp_items (
