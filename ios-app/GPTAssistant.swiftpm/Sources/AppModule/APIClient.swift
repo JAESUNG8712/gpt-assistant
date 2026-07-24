@@ -1,7 +1,11 @@
 import Foundation
 
 /// ai/main.py의 실제 엔드포인트에 맞춘 얇은 REST/스트리밍 클라이언트.
-final class APIClient {
+// settings(AppSettings, MainActor에서만 접근)는 baseURL을 읽는 순간에만 쓰고, session은
+// URLSession(Sendable)이라 인스턴스 자체를 액터 경계 밖으로 넘겨도 안전하다 — Swift 6
+// strict concurrency가 AppSettings의 비-Sendable 특성만으로 이 클래스 전체를 막는 것을
+// 우회하기 위해 명시.
+final class APIClient: @unchecked Sendable {
     private let settings: AppSettings
     private let session: URLSession
 

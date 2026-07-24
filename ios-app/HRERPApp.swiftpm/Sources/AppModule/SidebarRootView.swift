@@ -41,7 +41,7 @@ struct SidebarRootView: View {
             .id(detailResetID)
         }
         .tint(AppTheme.accent)
-        .onChange(of: selection) { _ in
+        .onChange(of: selection) {
             // 사이드바에서 다른 섹션을 고르면 이전 섹션에서 눌러 들어갔던 세부 화면이
             // 그대로 남아있지 않도록 상세 영역의 NavigationStack을 통째로 새로 만든다.
             detailResetID = UUID()

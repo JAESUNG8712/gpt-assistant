@@ -6,7 +6,11 @@ import Foundation
 /// 정적 타입 대신 JSONSerialization 기반 [String: Any]로 다룬다 — 이 앱이 모르는
 /// 필드(coreTalentPool, orgDB, settings 등 20개 이상)까지 포함해 있는 그대로 보존해야
 /// POST /save 시 데이터 유실이 없다.
-final class APIClient {
+// settings(AppSettings, MainActor에서만 접근)는 baseURL을 읽는 순간에만 쓰고, session은
+// URLSession(Sendable)이라 인스턴스 자체를 액터 경계 밖으로 넘겨도 안전하다 — Swift 6
+// strict concurrency가 AppSettings의 비-Sendable 특성만으로 이 클래스 전체를 막는 것을
+// 우회하기 위해 명시.
+final class APIClient: @unchecked Sendable {
     private let settings: AppSettings
     private let session: URLSession
 

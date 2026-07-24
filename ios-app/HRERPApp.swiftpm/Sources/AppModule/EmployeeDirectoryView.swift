@@ -36,7 +36,7 @@ struct EmployeeDirectoryView: View {
             }
             ForEach(filtered) { employee in
                 NavigationLink {
-                    EmployeeDetailView(employeeId: employee.id, store: store, reload: reload)
+                    EmployeeDetailView(store: store, employeeId: employee.id, reload: reload)
                 } label: {
                     AppCard {
                         HStack(spacing: 12) {

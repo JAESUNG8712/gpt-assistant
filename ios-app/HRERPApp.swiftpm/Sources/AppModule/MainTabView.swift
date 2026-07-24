@@ -74,7 +74,7 @@ struct MainTabView: View {
             .tag(Tab.settings)
         }
         .tint(AppTheme.accent)
-        .onChange(of: selectedTab) { newValue in
+        .onChange(of: selectedTab) { _, newValue in
             if newValue != .home { homeResetID = UUID() }
             if newValue != .attendance { attendanceResetID = UUID() }
             if newValue != .approvals { approvalsResetID = UUID() }
