@@ -6,13 +6,13 @@ import AppleProductTypes
 let package = Package(
     name: "HRERPApp",
     platforms: [
-        .iOS("16.0")
+        .iOS("26.0")
     ],
     products: [
         .iOSApplication(
             name: "인사 ERP",
             targets: ["AppModule"],
-            bundleIdentifier: "com.jaesung8712.hrerp2",
+            bundleIdentifier: "com.jaesung8712.hrerp",
             teamIdentifier: "",
             displayVersion: "1.0",
             bundleVersion: "1",

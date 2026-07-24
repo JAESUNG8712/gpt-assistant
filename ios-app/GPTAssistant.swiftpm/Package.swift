@@ -6,7 +6,7 @@ import AppleProductTypes
 let package = Package(
     name: "GPTAssistant",
     platforms: [
-        .iOS("16.0")
+        .iOS("26.0")
     ],
     products: [
         .iOSApplication(
