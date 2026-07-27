@@ -897,7 +897,7 @@ let changeRequests=[];
 let lowPerfData=[]; // [{id,empId,year,flaggedDate,flaggedBy,status:"watch"|"pip"|"improved"|"terminated",pipStart,pipEnd,pipGoal,notes:[{date,content,authorId}],manualFlag}]
 let approvalTemplates=[]; // 커스텀 결재 양식
 let disabledTplIds=[]; // 사용 중지된 양식 id 목록 (기본+커스텀 공통)
-let approvalChainSettings={includeLeader:true,includeDirector:true,finalApprovers:[]}; // 계층형 결재선 설정 (팀장/사업부장 단계 포함 여부, 최종 결재자 추가)
+let approvalChainSettings={includeLeader:true,includeDirector:true,finalApprovers:[],reminderDays:2}; // 계층형 결재선 설정 (팀장/사업부장 단계 포함 여부, 최종 결재자 추가, 결재 지연 리마인드 기준일)
 let integrationSettings={webhooks:[],calendar:{includeLeave:true,includeRoomBooking:true}}; // 외부 연동 설정 (메신저 웹훅, 캘린더 동기화)
 let integrationLogs=[]; // 연동 전송 이력 [{id,ts,webhookName,event,status,message}]
 const INTEGRATION_EVENTS=[
@@ -12353,6 +12353,22 @@ async function _autoRegisterVendorFromApproval(doc){
     showToast(r?.message||"거래처 자동 등록에 실패했습니다. 거래처 관리에서 직접 등록해주세요.","error");
   }
 }
+// ── 결재 지연 리마인드 ─────────────────────────────────────────────────────────
+// 현재 pending 상태인 결재 단계가 시작된 시점 = 이전 단계 결재자의 decidedAt
+// (1번째 결재자면 상신 시점). approvers는 순서대로 처리되므로 pending 바로 앞
+// 단계들은 전부 approved(전결로 스킵된 경우 포함)이거나 문서 자체가 아직 없던 것.
+function _apvPendingStepStartedAt(doc){
+  const idx=doc.approvers.findIndex(a=>a.status==="pending");
+  if(idx<0)return null;
+  if(idx===0)return doc.submittedAt||doc.createdAt;
+  return doc.approvers[idx-1].decidedAt||doc.submittedAt||doc.createdAt;
+}
+function _apvPendingDays(doc){
+  const started=_apvPendingStepStartedAt(doc);
+  if(!started)return 0;
+  return Math.floor((Date.now()-new Date(started).getTime())/86400000);
+}
+function _apvReminderThreshold(){return Math.max(1,approvalChainSettings.reminderDays||2);}
 function _erpLowStockItems(){
   return erpStock.filter(s=>{
     const item=erpItems.find(i=>i.id===s.itemId);
@@ -12793,7 +12809,7 @@ function renderApprovalInbox(){
   ${_apvFilterBar("renderApprovalInbox()")}
   <div class="card-body">
   ${toApprove.length>0?`<div style="background:#fef2f2;border:1px solid #fecaca;border-radius:8px;padding:12px;margin-bottom:16px"><div class="fw7 mb2" style="color:#dc2626">🔔 결재 대기 (${toApprove.length}건)</div>
-  <div class="tbl-wrap"><table><thead><tr><th>문서 제목</th><th>양식</th><th>상신자</th><th>상신일</th><th>처리</th></tr></thead><tbody>${toApprove.map(d=>{const tpl=getTpl(d.templateId);return`<tr><td><a href="#" onclick="openApprovalDetail('${d.id}');return false" style="color:#3b82f6;font-weight:600">${h(d.title)}</a></td><td>${tpl?.icon||"📄"} ${h(tpl?.name||"-")}</td><td>${h(getEmpName(d.authorId))}</td><td>${d.createdAt.slice(0,10)}</td><td style="display:flex;gap:4px"><button class="btn btn-primary btn-sm" onclick="openApprovalDecision('${d.id}','approve')">✅ 승인</button><button class="btn btn-danger btn-sm" onclick="openApprovalDecision('${d.id}','reject')">❌ 반려</button></td></tr>`;}).join("")}</tbody></table></div></div>`:`<div style="padding:20px;text-align:center;color:#94a3b8;font-size:13px">결재 대기 문서가 없습니다.</div>`}
+  <div class="tbl-wrap"><table><thead><tr><th>문서 제목</th><th>양식</th><th>상신자</th><th>상신일</th><th>대기</th><th>처리</th></tr></thead><tbody>${toApprove.map(d=>{const tpl=getTpl(d.templateId);const wd=_apvPendingDays(d);const delayed=wd>=_apvReminderThreshold();return`<tr><td><a href="#" onclick="openApprovalDetail('${d.id}');return false" style="color:#3b82f6;font-weight:600">${h(d.title)}</a></td><td>${tpl?.icon||"📄"} ${h(tpl?.name||"-")}</td><td>${h(getEmpName(d.authorId))}</td><td>${d.createdAt.slice(0,10)}</td><td>${delayed?badge(`⏰ ${wd}일째 지연`,"red"):badge(`${wd}일째`,"gray")}</td><td style="display:flex;gap:4px"><button class="btn btn-primary btn-sm" onclick="openApprovalDecision('${d.id}','approve')">✅ 승인</button><button class="btn btn-danger btn-sm" onclick="openApprovalDecision('${d.id}','reject')">❌ 반려</button></td></tr>`;}).join("")}</tbody></table></div></div>`:`<div style="padding:20px;text-align:center;color:#94a3b8;font-size:13px">결재 대기 문서가 없습니다.</div>`}
   ${currentUser.role==="admin"&&allApprovals.length>0?`<div class="fw6 mb2 mt3">전체 진행중 결재 (관리자)</div><div class="tbl-wrap" style="margin-bottom:16px"><table><thead><tr><th>문서</th><th>상신자</th><th>현재 결재자</th><th>상태</th></tr></thead><tbody>${allApprovals.map(d=>{const cur=d.approvers.find(a=>a.status==="pending");return`<tr><td><a href="#" onclick="openApprovalDetail('${d.id}');return false" style="color:#3b82f6">${h(d.title)}</a></td><td>${h(getEmpName(d.authorId))}</td><td>${cur?h(getEmpName(cur.empId)):"-"}</td><td>${badge("진행중","blue")}</td></tr>`;}).join("")}</tbody></table></div>`:""}
   ${receiveCnt>0?`<div style="background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:10px 14px;margin-top:8px;display:flex;align-items:center;gap:10px"><span style="font-size:18px">📨</span><span style="font-size:13px;color:#92400e">수신 문서 ${receiveCnt}건이 있습니다 — </span><button class="btn btn-secondary btn-sm" onclick="gotoPage('approval-receive')">수신함 열기</button></div>`:""}
 
@@ -13827,8 +13843,8 @@ function renderApprovalTemplateAdmin(){
   else if(_tplFilter.status==="inactive") all=all.filter(t=>!isTplActive(t.id));
   if(_tplFilter.sort==="name") all=[...all].sort((a,b)=>a.name.localeCompare(b.name));
   else if(_tplFilter.sort==="category") all=[...all].sort((a,b)=>(a.category||"").localeCompare(b.category||"")||a.name.localeCompare(b.name));
-  if(!_chainStage)_chainStage={includeLeader:approvalChainSettings.includeLeader,includeDirector:approvalChainSettings.includeDirector,leaderApprovalLimit:approvalChainSettings.leaderApprovalLimit||0,directorApprovalLimit:approvalChainSettings.directorApprovalLimit||0};
-  const chainDirty=_chainStage.includeLeader!==approvalChainSettings.includeLeader||_chainStage.includeDirector!==approvalChainSettings.includeDirector||_chainStage.leaderApprovalLimit!==(approvalChainSettings.leaderApprovalLimit||0)||_chainStage.directorApprovalLimit!==(approvalChainSettings.directorApprovalLimit||0);
+  if(!_chainStage)_chainStage={includeLeader:approvalChainSettings.includeLeader,includeDirector:approvalChainSettings.includeDirector,leaderApprovalLimit:approvalChainSettings.leaderApprovalLimit||0,directorApprovalLimit:approvalChainSettings.directorApprovalLimit||0,reminderDays:approvalChainSettings.reminderDays||2};
+  const chainDirty=_chainStage.includeLeader!==approvalChainSettings.includeLeader||_chainStage.includeDirector!==approvalChainSettings.includeDirector||_chainStage.leaderApprovalLimit!==(approvalChainSettings.leaderApprovalLimit||0)||_chainStage.directorApprovalLimit!==(approvalChainSettings.directorApprovalLimit||0)||_chainStage.reminderDays!==(approvalChainSettings.reminderDays||2);
   c.innerHTML=`<div class="card mb3"><div class="card-head"><h3>🔗 결재라인 설정</h3></div>
   <div class="card-body">
   <div class="fz12 text-gray mb3">결재 양식의 결재방식이 "계층형"일 때 자동으로 구성되는 결재선의 단계를 설정합니다.</div>
@@ -13839,6 +13855,9 @@ function renderApprovalTemplateAdmin(){
       <div style="display:flex;align-items:center;gap:6px"><span class="fz12">팀장 전결 한도</span><input class="fc" type="number" style="width:130px" value="${_chainStage.leaderApprovalLimit||0}" oninput="_chainStage.leaderApprovalLimit=+this.value||0"> 원</div>
       <div style="display:flex;align-items:center;gap:6px"><span class="fz12">사업부장 전결 한도</span><input class="fc" type="number" style="width:130px" value="${_chainStage.directorApprovalLimit||0}" oninput="_chainStage.directorApprovalLimit=+this.value||0"> 원</div>
     </div>
+  </div>
+  <div class="fg" style="margin-top:6px"><label class="fl">결재 지연 리마인드 <span class="fz11 text-gray">(결재자 차례가 된 후 이 일수 이상 처리되지 않으면 알림센터·결재함에 지연 표시)</span></label>
+    <div style="display:flex;align-items:center;gap:6px"><input class="fc" type="number" min="1" style="width:100px" value="${_chainStage.reminderDays||2}" oninput="_chainStage.reminderDays=Math.max(1,+this.value||1)"> 일 이상 대기 시 리마인드</div>
   </div>
   ${chainDirty?`<div style="display:flex;gap:8px;margin:10px 0"><button class="btn btn-secondary btn-sm" onclick="_chainStage=null;renderApprovalTemplateAdmin()">변경 취소</button><button class="btn btn-primary btn-sm" onclick="_saveChainStage()">💾 변경사항 저장</button></div>`:""}
   <div class="fg"><label class="fl">최종 결재자 <span class="fz11 text-gray">(모든 결재선 마지막에 추가로 포함될 결재자, 예: 대표이사)</span></label>
@@ -15349,7 +15368,7 @@ function renderInvStockPage(){
   if(!serverConfig.url){c.innerHTML=_erpNoServerHtml("재고 현황");return;}
   const f=window._invStockFilter||{q:"",status:"all"};
   let rows=erpStock.filter(s=>s.qty!==0).sort((a,b)=>_erpItemName(a.itemId).localeCompare(_erpItemName(b.itemId)));
-  rows=rows.map(s=>{const item=erpItems.find(i=>i.id===s.itemId);return{...s,_item:item,_low:item&&s.qty<(item.safetyStock||0)};});
+  rows=rows.map(s=>{const item=erpItems.find(i=>i.id===s.itemId);const low=item&&s.qty<(item.safetyStock||0);return{...s,_item:item,_low:low,_recQty:low?Math.max(0,(item.safetyStock||0)-s.qty):0};});
   if(f.status==="low")rows=rows.filter(s=>s._low);
   if(f.status==="ok")rows=rows.filter(s=>!s._low);
   if(f.q.trim()){
@@ -15368,8 +15387,9 @@ function renderInvStockPage(){
     </select>
     <span class="fz12 text-gray">표준원가 기준 재고 평가액: <b>${totalValue.toLocaleString()}원</b></span>
   </div>
-  <div class="tbl-wrap"><table><thead><tr><th>품목</th><th>제품명</th><th>위치</th><th>현재 재고</th><th>안전재고</th><th>평가액</th><th>자산번호</th><th>상태</th><th>이력</th></tr></thead><tbody>
-  ${rows.length?rows.map(s=>`<tr><td>${h(_erpItemName(s.itemId))}</td><td>${h(s._item?.productName||"-")}</td><td>${h(_erpLocationName(s.locationId))}</td><td style="text-align:right">${s.qty.toLocaleString()} ${h(s._item?.unit||"")}</td><td style="text-align:right">${s._item?.safetyStock||0}</td><td style="text-align:right">${(s.qty*(s._item?.unitCost||0)).toLocaleString()}</td><td>${h(s._item?.assetNo||"-")}</td><td>${s._low?badge("부족","red"):badge("정상","green")}</td><td><button class="btn btn-ghost btn-sm" onclick="window._invLogFilter={itemId:'${s.itemId}',locationId:'${s.locationId}'};gotoPage('inv-stock-log')">로그</button></td></tr>`).join(""):`<tr><td colspan="9" class="text-gray" style="text-align:center;padding:20px">${f.q||f.status!=="all"?"검색 결과가 없습니다.":"재고 데이터가 없습니다."}</td></tr>`}
+  <div class="fz11 text-gray mb2">추천 발주량 = 안전재고 − 현재 재고 (품목별 리드타임 정보가 없어 부족분 기준으로 계산됩니다)</div>
+  <div class="tbl-wrap"><table><thead><tr><th>품목</th><th>제품명</th><th>위치</th><th>현재 재고</th><th>안전재고</th><th>추천 발주량</th><th>평가액</th><th>자산번호</th><th>상태</th><th>이력</th></tr></thead><tbody>
+  ${rows.length?rows.map(s=>`<tr><td>${h(_erpItemName(s.itemId))}</td><td>${h(s._item?.productName||"-")}</td><td>${h(_erpLocationName(s.locationId))}</td><td style="text-align:right">${s.qty.toLocaleString()} ${h(s._item?.unit||"")}</td><td style="text-align:right">${s._item?.safetyStock||0}</td><td style="text-align:right">${s._low?`<b style="color:#dc2626">${s._recQty.toLocaleString()}</b> ${h(s._item?.unit||"")}`:"-"}</td><td style="text-align:right">${(s.qty*(s._item?.unitCost||0)).toLocaleString()}</td><td>${h(s._item?.assetNo||"-")}</td><td>${s._low?badge("부족","red"):badge("정상","green")}</td><td><button class="btn btn-ghost btn-sm" onclick="window._invLogFilter={itemId:'${s.itemId}',locationId:'${s.locationId}'};gotoPage('inv-stock-log')">로그</button></td></tr>`).join(""):`<tr><td colspan="10" class="text-gray" style="text-align:center;padding:20px">${f.q||f.status!=="all"?"검색 결과가 없습니다.":"재고 데이터가 없습니다."}</td></tr>`}
   </tbody></table></div></div></div>`;
 }
 // ── 재고 실사: 위치 선택 후 전 품목의 현재 재고를 보여주고 실사 수량 입력 → 차이만 일괄 조정 ──
@@ -17910,7 +17930,7 @@ async function loadPurchaseRequestsFromServer(){
 let _chainStage=null; // 결재라인 설정(팀장/사업부장 단계 포함 여부) 저장 전 임시 편집본
 function _saveChainStage(){
   if(!_chainStage)return;
-  approvalChainSettings={...approvalChainSettings,includeLeader:_chainStage.includeLeader,includeDirector:_chainStage.includeDirector,leaderApprovalLimit:_chainStage.leaderApprovalLimit||0,directorApprovalLimit:_chainStage.directorApprovalLimit||0};
+  approvalChainSettings={...approvalChainSettings,includeLeader:_chainStage.includeLeader,includeDirector:_chainStage.includeDirector,leaderApprovalLimit:_chainStage.leaderApprovalLimit||0,directorApprovalLimit:_chainStage.directorApprovalLimit||0,reminderDays:Math.max(1,_chainStage.reminderDays||2)};
   _chainStage=null;
   autoSaveToServerIfEnabled();showToast("결재라인 설정이 저장되었습니다.","success");renderApprovalTemplateAdmin();
 }
@@ -21090,9 +21110,15 @@ function renderNotificationCenterPage(){
   const mm=String(today.getMonth()+1).padStart(2,"0"),dd=String(today.getDate()).padStart(2,"0");
   const yr=today.getFullYear();
   // 1. Pending approvals (inbox)
+  const reminderThr=_apvReminderThreshold();
   approvalDocs.filter(d=>d.status==="in_progress"&&d.approvers.some(a=>String(a.empId)===String(u.id)&&a.status==="pending")).forEach(d=>{
     const author=getEmp(d.authorId);
     items.push({type:"approval",pri:0,icon:"📥",title:"결재 대기: "+_getDocTitle(d.templateId,d.formData||{}),desc:(author?.name||"?")+`님의 결재 요청`,date:d.submittedAt||d.createdAt,action:"approval-inbox"});
+    // 1b. 결재 지연 리마인드 — 현재 내 차례인 결재 단계가 기준일(기본 2일) 이상 처리되지 않고 대기 중이면 별도 강조
+    const waitDays=_apvPendingDays(d);
+    if(waitDays>=reminderThr){
+      items.push({type:"approval-delay",pri:0,icon:"⏰",title:`결재 지연: ${_getDocTitle(d.templateId,d.formData||{})} (${waitDays}일째 대기)`,desc:`${author?.name||"?"}님이 상신한 문서가 ${waitDays}일째 처리되지 않고 있습니다. 빠른 처리를 부탁드립니다.`,date:d.submittedAt||d.createdAt,action:"approval-inbox"});
+    }
   });
   // 2. Leave remaining <= 5 days
   const emp=getEmp(u.id);
