@@ -8,7 +8,7 @@ const os      = require("os");
 const bcrypt  = require("bcryptjs");
 const crypto  = require("crypto");
 const pool    = require("./db");
-const budgetRouter = require("./budget");
+const budgetRouterFactory = require("./budget");
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
@@ -1215,7 +1215,18 @@ app.use(helmet({ contentSecurityPolicy: false }));
 app.use(express.json({ limit: "50mb" }));
 app.use(authenticate);
 app.use(express.static(path.join(__dirname, "public")));
-app.use("/api/budget", budgetRouter);
+// 사업계획(팀별 작성 → 사업부장 승인 → 예산담당자+기획팀장 최종확정) 워크플로우가
+// 요청자의 dept/team을 알아야 해서, budget.js가 자체적으로 갖지 못하는 employees 조회를
+// 이 접근자로 주입한다. loadData()는 함수 선언(호이스팅)이라 이 시점(아직 텍스트상으로는
+// 뒤에 정의됨)에 참조해도 실제 실행은 요청이 들어온 뒤라 안전하다.
+async function getEmployeeProfileForBudget(companyId, empId) {
+  if (empId == null) return null;
+  const data = await loadData(companyId);
+  const emp = (data.employees || []).find(e => String(e.id) === String(empId));
+  if (!emp) return null;
+  return { dept: emp.dept || "", team: emp.team || "", role: emp.role, name: emp.name };
+}
+app.use("/api/budget", budgetRouterFactory({ getEmployeeProfile: getEmployeeProfileForBudget }));
 
 // /login 브루트포스 방어: IP당 15분에 20회로 제한(정상 사용자가 실수로 몇 번 틀리는
 // 정도는 통과시키되, 자동화된 무차별 대입 시도는 차단).
