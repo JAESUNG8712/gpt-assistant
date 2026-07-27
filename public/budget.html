@@ -104,13 +104,25 @@
   </div>
 
   <div class="card">
-    <h2>4. 사업계획</h2>
+    <h2>4. 사업계획 설정</h2>
+    <p class="desc">
+      예산담당자(전사 다수 지정 가능)와 기획팀장(전사 1명)이 최종승인을 담당합니다(관리자는 지정과 무관하게 항상 전권).
+      입력기간이 닫혀 있으면 팀원은 신규 사업계획을 작성할 수 없습니다(기존 계획 조회·워크플로우 진행은 계속 가능).
+    </p>
+    <div id="bizPlanSettingsArea">로딩 중...</div>
+  </div>
+
+  <div class="card">
+    <h2>5. 사업계획</h2>
     <p class="desc">
       기준연도 매출과 성장률·매출원가율·판관비 항목별 가정을 입력하면 다년도 추정 손익·잉여현금흐름과 함께
       비율 분석(매출총이익률/영업이익률/순이익률/전년대비 성장률)·손익분기점(BEP) 분석을 자동 계산합니다.
-      같은 이름의 "시나리오"(낙관/기본/보수 등)를 지정해두면 여러 계획을 체크박스로 선택해 나란히 비교할 수 있습니다.
+      같은 이름의 "시나리오"(낙관/기본/보수 등)를 지정해두면 여러 계획을 체크박스로 선택해 나란히 비교할 수 있습니다.<br>
+      팀별 계획은 작성(draft) → 사업부장 승인(잠금) → 예산담당자+기획팀장 최종승인 순으로 진행되며, 잠긴 뒤에는
+      "수정요청" → 관리자 승인을 거쳐야 다시 수정할 수 있습니다.
     </p>
-    <button onclick="openBusinessPlanForm()">+ 신규 사업계획 작성</button>
+    <button id="bp-new-btn" onclick="openBusinessPlanForm()">+ 신규 사업계획 작성</button>
+    <div id="bp-input-window-notice"></div>
     <div id="bizPlanFormArea"></div>
     <div class="card" style="margin-top:14px;padding:14px">
       <h2 style="font-size:.95rem">시나리오 비교</h2>
@@ -119,6 +131,14 @@
       <div id="bizPlanCompareArea" class="scroll" style="margin-top:10px"></div>
     </div>
     <div id="bizPlanListArea" class="scroll" style="margin-top:14px">로딩 중...</div>
+  </div>
+
+  <div class="card">
+    <h2>6. 사업부별 / 회사 전체 롤업</h2>
+    <p class="desc">팀별 사업계획을 사업부·회사 단위로 연도(절대연도) 기준 합산합니다. 기본은 사업부장 승인 이상만 반영합니다.</p>
+    <label style="font-size:.82rem"><input type="checkbox" id="bp-rollup-include-draft" class="compare-check"> 작성중(draft) 계획도 포함</label>
+    <button onclick="loadRollup()">조회</button>
+    <div id="bizPlanRollupArea" class="scroll" style="margin-top:10px"></div>
   </div>
 
 </main>
@@ -135,6 +155,28 @@ function _authHeaders() {
   try { token = localStorage.getItem('hr_kpi_auth_token'); } catch (e) {}
   return token ? { 'Authorization': 'Bearer ' + token } : {};
 }
+
+// 토큰(server.js signToken()의 base64url(JSON payload).서명 형식)의 payload를 UI 표시용으로만
+// 디코드한다 — 서명 검증은 하지 않는다(어차피 위조해도 실제 인가는 서버가 매 요청마다
+// req.auth로 재검증하므로, 여기서는 "지금 로그인한 사용자가 관리자인지/본인 empId가
+// 무엇인지"를 화면에 낙관적으로 보여주는 용도일 뿐). payload에는 { empId, loginId, role,
+// companyId, iat, exp }가 들어있다(server.js signToken() 호출부 참고).
+function _authPayload() {
+  let token = null;
+  try { token = localStorage.getItem('hr_kpi_auth_token'); } catch (e) {}
+  if (!token || token.indexOf('.') === -1) return null;
+  try {
+    const body = token.split('.')[0];
+    const b64 = body.replace(/-/g, '+').replace(/_/g, '/');
+    const pad = b64.length % 4 ? '='.repeat(4 - (b64.length % 4)) : '';
+    const json = decodeURIComponent(atob(b64 + pad).split('').map(c => '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2)).join(''));
+    return JSON.parse(json);
+  } catch (e) {
+    return null;
+  }
+}
+const _auth = _authPayload();
+function _isAdminUser() { return !!(_auth && _auth.role === 'admin'); }
 
 async function uploadFile(inputId, url, statusId) {
   const input = document.getElementById(inputId);
@@ -267,7 +309,102 @@ async function loadAll() {
 
 loadAll();
 
-// ── 4. 사업계획(다년도 매출/비용 가정 → 추정 손익·현금흐름 + 비율분석/BEP/시나리오비교/차트) ──
+// ── 4. 사업계획 설정(예산담당자/기획팀장 지정, 입력기간 on/off) ──
+let bizPlanSettings = { ownerIds: [], teamLeaderId: null, inputOpen: true };
+
+function _isBudgetOwnerOrLead() {
+  if (!_auth || _auth.empId === undefined || _auth.empId === null) return false;
+  const empId = String(_auth.empId);
+  const owners = (bizPlanSettings.ownerIds || []).map(String);
+  if (owners.includes(empId)) return true;
+  return bizPlanSettings.teamLeaderId != null && String(bizPlanSettings.teamLeaderId) === empId;
+}
+
+async function loadBizPlanSettings() {
+  const area = document.getElementById('bizPlanSettingsArea');
+  try {
+    const res = await fetch('/api/budget/business-plan/settings', { headers: _authHeaders() });
+    if (!res.ok) { area.innerHTML = '<p class="desc">로그인이 필요합니다. 메인 화면(index.html)에서 로그인한 뒤 이 페이지를 다시 열어주세요.</p>'; return; }
+    const json = await res.json();
+    bizPlanSettings = json.settings;
+    renderBizPlanSettings();
+    renderInputWindowNotice();
+  } catch (e) {
+    area.innerHTML = '<p class="desc">오류: ' + e.message + '</p>';
+  }
+}
+
+function renderBizPlanSettings() {
+  const area = document.getElementById('bizPlanSettingsArea');
+  const isAdmin = _isAdminUser();
+  const canToggle = isAdmin || _isBudgetOwnerOrLead();
+  let html = `<p>현재 입력기간: <b>${bizPlanSettings.inputOpen ? '열림 (팀별 신규 작성 가능)' : '닫힘 (팀별 신규 작성 불가)'}</b></p>`;
+  html += `<p style="margin-top:6px;font-size:.85rem;color:#444">예산담당자(사번): ${(bizPlanSettings.ownerIds || []).join(', ') || '(미지정)'}</p>`;
+  html += `<p style="font-size:.85rem;color:#444">기획팀장(사번): ${bizPlanSettings.teamLeaderId != null ? bizPlanSettings.teamLeaderId : '(미지정)'}</p>`;
+  html += '<div style="margin-top:8px">';
+  if (canToggle) {
+    html += `<button onclick="toggleInputWindow()">${bizPlanSettings.inputOpen ? '입력기간 닫기' : '입력기간 열기'}</button>`;
+  }
+  if (isAdmin) {
+    html += ` <button class="secondary" onclick="editBudgetRoster()">예산담당자/기획팀장 지정</button>`;
+  }
+  html += '</div><div class="status" id="bp-settings-status"></div>';
+  area.innerHTML = html;
+}
+
+async function toggleInputWindow() {
+  const statusEl = document.getElementById('bp-settings-status');
+  try {
+    const res = await fetch('/api/budget/business-plan/settings/input-window', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ..._authHeaders() },
+      body: JSON.stringify({ inputOpen: !bizPlanSettings.inputOpen }),
+    });
+    const json = await res.json();
+    if (!res.ok || !json.ok) throw new Error(json.error || '변경 실패');
+    bizPlanSettings = json.settings;
+    renderBizPlanSettings();
+    renderInputWindowNotice();
+  } catch (e) {
+    if (statusEl) { statusEl.textContent = '오류: ' + e.message; statusEl.className = 'status err'; }
+    else alert('오류: ' + e.message);
+  }
+}
+
+function editBudgetRoster() {
+  const ownerInput = prompt('예산담당자 사번을 쉼표로 구분해 입력하세요(빈 값=미지정):', (bizPlanSettings.ownerIds || []).join(','));
+  if (ownerInput === null) return;
+  const leadInput = prompt('기획팀장 사번을 입력하세요(빈 값=미지정):', bizPlanSettings.teamLeaderId != null ? String(bizPlanSettings.teamLeaderId) : '');
+  if (leadInput === null) return;
+  const ownerIds = ownerInput.split(',').map(s => s.trim()).filter(Boolean);
+  const teamLeaderId = leadInput.trim() || null;
+  fetch('/api/budget/business-plan/settings/roster', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ..._authHeaders() },
+    body: JSON.stringify({ ownerIds, teamLeaderId }),
+  }).then(r => r.json()).then(json => {
+    if (!json.ok) { alert('오류: ' + (json.error || '지정 실패')); return; }
+    bizPlanSettings = json.settings;
+    renderBizPlanSettings();
+  }).catch(e => alert('오류: ' + e.message));
+}
+
+// "신규 사업계획 작성" 버튼: 입력기간이 닫혀 있고 관리자가 아니면 비활성화 + 안내 문구.
+function renderInputWindowNotice() {
+  const btn = document.getElementById('bp-new-btn');
+  const notice = document.getElementById('bp-input-window-notice');
+  if (!btn || !notice) return;
+  const isAdmin = _isAdminUser();
+  if (!bizPlanSettings.inputOpen && !isAdmin) {
+    btn.disabled = true;
+    notice.innerHTML = '<p class="budget-note">현재 사업계획 입력기간이 아닙니다. 예산담당자·기획팀장에게 문의하세요.</p>';
+  } else {
+    btn.disabled = false;
+    notice.innerHTML = '';
+  }
+}
+
+// ── 5. 사업계획(다년도 매출/비용 가정 → 추정 손익·현금흐름 + 비율분석/BEP/시나리오비교/차트) ──
 let bizPlans = [];
 let bizPlanSgaRowCount = 0;
 let bizPlanEditingId = null; // null이면 신규작성, 값이 있으면 해당 id를 PUT으로 수정
@@ -335,6 +472,90 @@ function svgLineChart(series, xLabels) {
   return `<div class="chart-box">${svg}${legend}</div>`;
 }
 
+// 상태 배지(draft=회색 작성중 / divisionApproved=파랑 잠김 / finalConfirmed=초록 확정).
+function planStatusBadge(status) {
+  const map = {
+    draft: ['#888', '작성중'],
+    divisionApproved: ['#1a4d8f', '사업부장 승인됨(잠김)'],
+    finalConfirmed: ['#1a7d36', '최종확정'],
+  };
+  const info = map[status] || ['#888', status || '-'];
+  return `<span class="tag" style="background:${info[0]};color:#fff">${info[1]}</span>`;
+}
+
+// 대기 중인 수정요청 안내 배너 — 사유는 관리자·비관리자 모두에게 보여주고,
+// 승인/반려 액션 버튼은 planActionsHtml()에서 관리자에게만 별도로 붙인다.
+function editRequestBannerHtml(p) {
+  const who = p.editRequest.requestedByName || p.editRequest.requestedBy;
+  return `<div class="budget-note">수정요청 대기중: ${escapeAttr(p.editRequest.reason)}${who !== undefined ? ` (요청자: ${escapeAttr(who)})` : ''}</div>`;
+}
+
+// 상태별 액션 버튼 — 서버가 실제 권한을 최종 판단하므로, 여기서는 "이 상태에서 이 버튼이
+// 의미가 있는지"만 낙관적으로 계산해 보여주고, 거부되면 서버 에러 메시지를 그대로 alert.
+// 관리자는 PUT/삭제 라우트가 status/잠금과 무관하게 항상 허용하므로(server.js budget.js
+// 참고) 수정/삭제 버튼을 상태와 무관하게 항상 노출한다.
+function planActionsHtml(p) {
+  const isAdmin = _isAdminUser();
+  const btns = [];
+  if (isAdmin || p.status === 'draft') {
+    btns.push(`<button class="edit-btn" onclick="editBusinessPlan('${p.id}')">수정</button>`);
+  }
+  if (p.status === 'draft' && p.dept) {
+    btns.push(`<button onclick="approveDivisionPlan('${p.id}')">사업부장 승인</button>`);
+  }
+  if (p.status === 'divisionApproved') {
+    btns.push(`<button onclick="finalApprovePlan('${p.id}')">최종승인</button>`);
+  }
+  if ((p.status === 'divisionApproved' || p.status === 'finalConfirmed') && !p.editRequest) {
+    btns.push(`<button class="secondary" onclick="requestEditPlan('${p.id}')">수정요청</button>`);
+  }
+  if (p.editRequest && isAdmin) {
+    btns.push(`<button onclick="approveEditRequestPlan('${p.id}')">수정요청 승인</button>`);
+    btns.push(`<button class="secondary" onclick="rejectEditRequestPlan('${p.id}')">수정요청 반려</button>`);
+  }
+  if (isAdmin || p.status === 'draft') {
+    btns.push(`<button class="secondary" onclick="deleteBusinessPlan('${p.id}')">삭제</button>`);
+  }
+  return btns.join('');
+}
+
+async function _bizPlanAction(id, suffix, body) {
+  try {
+    const res = await fetch('/api/budget/business-plan/' + id + suffix, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ..._authHeaders() },
+      body: JSON.stringify(body || {}),
+    });
+    const json = await res.json();
+    if (!res.ok || !json.ok) throw new Error(json.error || '처리 실패');
+    loadBusinessPlans();
+  } catch (e) {
+    alert('오류: ' + e.message);
+  }
+}
+function approveDivisionPlan(id) {
+  if (!confirm('이 사업계획을 사업부장 승인(잠금)하시겠습니까?')) return;
+  _bizPlanAction(id, '/approve-division');
+}
+function finalApprovePlan(id) {
+  if (!confirm('이 사업계획을 최종승인하시겠습니까?')) return;
+  _bizPlanAction(id, '/final-approve');
+}
+function requestEditPlan(id) {
+  const reason = prompt('수정요청 사유를 입력하세요:');
+  if (reason === null) return;
+  if (!reason.trim()) { alert('사유를 입력하세요.'); return; }
+  _bizPlanAction(id, '/request-edit', { reason: reason.trim() });
+}
+function approveEditRequestPlan(id) {
+  if (!confirm('수정요청을 승인해 다시 작성중(draft) 상태로 되돌리시겠습니까? (기존 승인 이력은 초기화됩니다)')) return;
+  _bizPlanAction(id, '/edit-request/approve');
+}
+function rejectEditRequestPlan(id) {
+  if (!confirm('수정요청을 반려하시겠습니까?')) return;
+  _bizPlanAction(id, '/edit-request/reject');
+}
+
 function renderBusinessPlans() {
   const area = document.getElementById('bizPlanListArea');
   if (!bizPlans.length) { area.innerHTML = '<p class="desc">작성된 사업계획이 없습니다.</p>'; return; }
@@ -351,11 +572,12 @@ function renderBusinessPlans() {
       <h3>
         <input type="checkbox" class="compare-check" data-id="${p.id}" title="비교에 포함">
         ${p.name}${p.scenario ? `<span class="scenario-tag">${p.scenario}</span>` : ''}
-        <span class="plan-actions">
-          <button class="edit-btn" onclick="editBusinessPlan('${p.id}')">수정</button>
-          <button class="secondary" onclick="deleteBusinessPlan('${p.id}')">삭제</button>
-        </span>
+        ${planStatusBadge(p.status)}
+        ${p.planType === 'costOnly' ? '<span class="tag" style="background:#fdeaea;color:#a83232">비용예산</span>' : ''}
+        ${p.dept ? `<span class="tag" style="background:#eef1f7;color:#333">${escapeAttr(p.dept)}${p.team ? ' / ' + escapeAttr(p.team) : ''}</span>` : ''}
+        <span class="plan-actions">${planActionsHtml(p)}</span>
       </h3>
+      ${p.editRequest ? editRequestBannerHtml(p) : ''}
       <table><tr><th class="lbl">연도</th>${p.projection.map(r=>`<th>${r.year}</th>`).join('')}</tr>
       <tr><td class="lbl">매출</td>${p.projection.map(r=>`<td>${fmt(r.revenue)}</td>`).join('')}</tr>
       <tr><td class="lbl">매출원가</td>${p.projection.map(r=>`<td>${fmt(r.cogs)}</td>`).join('')}</tr>
@@ -391,6 +613,8 @@ function openBusinessPlanForm(editPlan) {
   bizPlanEditingId = editPlan ? editPlan.id : null;
   const a = editPlan ? (editPlan.assumptions || {}) : {};
   const years = editPlan ? (editPlan.years !== undefined ? editPlan.years : editPlan.projection.length) : 3;
+  const planType = editPlan ? (editPlan.planType || 'revenue') : 'revenue';
+  const isAdmin = _isAdminUser();
   const area = document.getElementById('bizPlanFormArea');
   area.innerHTML = `<div class="dept-block" style="border:1px solid #e3e5eb;border-radius:8px;padding:14px;margin-top:10px">
     <h3 style="margin-bottom:8px">${editPlan ? '사업계획 수정' : '신규 사업계획 작성'}</h3>
@@ -401,6 +625,22 @@ function openBusinessPlanForm(editPlan) {
       <div class="upload-box"><label>추정 연차 수</label><input type="number" id="bp-years" value="${years}" min="1" max="10"></div>
     </div>
     <div class="upload-row" style="margin-top:10px">
+      <div class="upload-box">
+        <label>계획 유형</label>
+        <label style="font-weight:400;display:inline-block;margin-top:4px"><input type="radio" name="bp-plan-type" value="revenue" ${planType !== 'costOnly' ? 'checked' : ''} onchange="toggleBpPlanType()"> 매출계획</label>
+        <label style="font-weight:400;display:inline-block;margin-left:12px"><input type="radio" name="bp-plan-type" value="costOnly" ${planType === 'costOnly' ? 'checked' : ''} onchange="toggleBpPlanType()"> 비용전용</label>
+      </div>
+      ${!editPlan ? `<div class="upload-box">
+        <label>소속</label>
+        ${isAdmin
+          ? `<div style="font-size:.72rem;color:#666;margin-bottom:2px">사업부(dept, 선택 — 비우면 회사 전체 계획)</div>
+             <input type="text" id="bp-dept" placeholder="예: 영업본부" style="margin-bottom:6px">
+             <div style="font-size:.72rem;color:#666;margin-bottom:2px">팀(team, 선택)</div>
+             <input type="text" id="bp-team" placeholder="예: 영업1팀">`
+          : `<div style="font-size:.85rem;color:#666;padding-top:6px">내 소속(자동 지정)</div>`}
+      </div>` : ''}
+    </div>
+    <div class="upload-row" id="bp-revenue-fields" style="margin-top:10px">
       <div class="upload-box"><label>기준연도 매출</label><input type="number" id="bp-base-revenue" placeholder="예: 1000000000" value="${editPlan ? a.baseRevenue : ''}"></div>
       <div class="upload-box"><label>매출 연평균 성장률(%)</label><input type="number" step="0.1" id="bp-revenue-growth" placeholder="예: 15" value="${editPlan ? pctInput(a.revenueGrowthRate) : ''}"></div>
       <div class="upload-box"><label>매출원가율(%)</label><input type="number" step="0.1" id="bp-cogs-ratio" placeholder="예: 60" value="${editPlan ? pctInput(a.cogsRatio) : ''}"></div>
@@ -423,6 +663,16 @@ function openBusinessPlanForm(editPlan) {
   } else {
     addSgaItemRow();
   }
+  toggleBpPlanType();
+}
+
+// planType==='costOnly' 선택 시 매출/성장률/원가율 입력 필드를 숨긴다(값은 submitBusinessPlan()에서
+// 0으로 자동 전송 — budget.js의 _normalizeBusinessPlanInput()도 costOnly면 동일하게 0을 기본값으로 처리).
+function toggleBpPlanType() {
+  const sel = document.querySelector('input[name="bp-plan-type"]:checked');
+  const isCostOnly = !!(sel && sel.value === 'costOnly');
+  const el = document.getElementById('bp-revenue-fields');
+  if (el) el.style.display = isCostOnly ? 'none' : 'flex';
 }
 
 // item을 넘기면(수정 모드) 기존 값으로 행을 채운다.
@@ -452,9 +702,15 @@ async function submitBusinessPlan() {
   const scenario = document.getElementById('bp-scenario').value.trim();
   const baseYear = Number(document.getElementById('bp-base-year').value);
   const years = Number(document.getElementById('bp-years').value);
-  const baseRevenue = Number(document.getElementById('bp-base-revenue').value);
-  const revenueGrowthRate = Number(document.getElementById('bp-revenue-growth').value) / 100;
-  const cogsRatio = Number(document.getElementById('bp-cogs-ratio').value) / 100;
+  const planTypeSel = document.querySelector('input[name="bp-plan-type"]:checked');
+  const planType = planTypeSel ? planTypeSel.value : 'revenue';
+  const isCostOnly = planType === 'costOnly';
+  // 비용전용(costOnly) 계획은 매출/성장률/원가율 입력 필드 자체를 숨겼으므로 항상 0으로
+  // 전송한다(budget.js의 _normalizeBusinessPlanInput()도 costOnly면 동일하게 0을 기본값으로
+  // 처리하지만, 필드가 숨겨져 값을 읽을 수 없는 프론트 쪽에서도 명시적으로 0을 보낸다).
+  const baseRevenue = isCostOnly ? 0 : Number(document.getElementById('bp-base-revenue').value);
+  const revenueGrowthRate = isCostOnly ? 0 : (Number(document.getElementById('bp-revenue-growth').value) / 100);
+  const cogsRatio = isCostOnly ? 0 : (Number(document.getElementById('bp-cogs-ratio').value) / 100);
   const taxRateInput = document.getElementById('bp-tax-rate').value;
   const taxRate = taxRateInput ? Number(taxRateInput) / 100 : undefined;
   const depreciation = Number(document.getElementById('bp-depreciation').value) || 0;
@@ -464,14 +720,25 @@ async function submitBusinessPlan() {
     growthRate: (Number(row.querySelector('.bp-sga-growth').value) || 0) / 100,
     fixed: row.querySelector('.bp-sga-fixed').checked,
   }));
-  if (!name || !baseYear || !years || !baseRevenue || isNaN(revenueGrowthRate) || isNaN(cogsRatio)) {
+  if (!name || !baseYear || !years || (!isCostOnly && (!baseRevenue || isNaN(revenueGrowthRate) || isNaN(cogsRatio)))) {
     statusEl.textContent = '필수 항목을 모두 입력하세요.';
     statusEl.className = 'status err';
     return;
   }
-  const payload = { name, scenario: scenario || null, baseYear, years, baseRevenue, revenueGrowthRate, cogsRatio, sgaItems, taxRate, depreciation };
+  const editing = bizPlanEditingId;
+  const payload = { name, scenario: scenario || null, baseYear, years, planType, baseRevenue, revenueGrowthRate, cogsRatio, sgaItems, taxRate, depreciation };
+  // dept/team은 신규 작성 시에만 의미가 있고(수정 시엔 변경 불가 — budget.js PUT 핸들러가
+  // dept/team을 아예 다루지 않음), 관리자만 직접 지정할 수 있다(그 외 사용자는 서버가 항상
+  // 본인 소속으로 강제하므로 굳이 보낼 필요가 없다).
+  if (!editing && _isAdminUser()) {
+    const deptEl = document.getElementById('bp-dept');
+    const teamEl = document.getElementById('bp-team');
+    const deptVal = deptEl ? deptEl.value.trim() : '';
+    const teamVal = teamEl ? teamEl.value.trim() : '';
+    if (deptVal) payload.dept = deptVal;
+    if (teamVal) payload.team = teamVal;
+  }
   try {
-    const editing = bizPlanEditingId;
     const url = editing ? ('/api/budget/business-plan/' + editing) : '/api/budget/business-plan';
     const method = editing ? 'PUT' : 'POST';
     const res = await fetch(url, {
@@ -558,6 +825,51 @@ function compareSelectedPlans() {
   area.innerHTML = html;
 }
 
+// ── 6. 사업부별/회사 전체 롤업 ──
+async function loadRollup() {
+  const includeDraft = document.getElementById('bp-rollup-include-draft').checked;
+  const area = document.getElementById('bizPlanRollupArea');
+  area.innerHTML = '로딩 중...';
+  try {
+    const res = await fetch('/api/budget/business-plan/rollup?includeDraft=' + includeDraft, { headers: _authHeaders() });
+    const json = await res.json();
+    if (!res.ok || !json.ok) throw new Error(json.error || '조회 실패');
+    renderRollup(json);
+  } catch (e) {
+    area.innerHTML = '<p class="desc">오류: ' + e.message + '</p>';
+  }
+}
+
+function rollupTable(rows) {
+  if (!rows.length) return '<p class="desc">데이터 없음</p>';
+  let html = '<table><tr><th class="lbl">연도</th>' + rows.map(r => `<th>${r.year}</th>`).join('') + '</tr>';
+  html += '<tr><td class="lbl">매출</td>' + rows.map(r => `<td>${fmt(r.revenue)}</td>`).join('') + '</tr>';
+  html += '<tr><td class="lbl">매출원가</td>' + rows.map(r => `<td>${fmt(r.cogs)}</td>`).join('') + '</tr>';
+  html += '<tr><td class="lbl">매출총이익</td>' + rows.map(r => `<td>${fmt(r.grossProfit)}</td>`).join('') + '</tr>';
+  html += '<tr><td class="lbl">판관비</td>' + rows.map(r => `<td>${fmt(r.sga)}</td>`).join('') + '</tr>';
+  html += '<tr><td class="lbl">영업이익</td>' + rows.map(r => `<td>${fmt(r.operatingProfit)}</td>`).join('') + '</tr>';
+  html += '<tr class="grand-total"><td class="lbl">순이익</td>' + rows.map(r => `<td>${fmt(r.netIncome)}</td>`).join('') + '</tr>';
+  html += '<tr><td class="lbl">잉여현금흐름</td>' + rows.map(r => `<td>${fmt(r.freeCashFlow)}</td>`).join('') + '</tr>';
+  html += '</table>';
+  return html;
+}
+
+function renderRollup(json) {
+  const area = document.getElementById('bizPlanRollupArea');
+  if (!json.byDept.length) { area.innerHTML = '<p class="desc">집계할 데이터가 없습니다.</p>'; return; }
+  let html = '';
+  json.byDept.forEach(d => {
+    html += `<div class="dept-block"><h3>${escapeAttr(d.dept)} <span style="font-weight:400;font-size:.75rem;color:#666">(계획 ${d.planCount}건)</span></h3>`;
+    html += rollupTable(d.projection);
+    html += '</div>';
+  });
+  html += `<div class="dept-block"><h3>회사 전체 <span style="font-weight:400;font-size:.75rem;color:#666">(계획 ${json.company.planCount}건)</span></h3>`;
+  html += rollupTable(json.company.projection);
+  html += '</div>';
+  area.innerHTML = html;
+}
+
+loadBizPlanSettings();
 loadBusinessPlans();
 </script>
 </body>
