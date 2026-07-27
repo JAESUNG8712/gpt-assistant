@@ -38,6 +38,19 @@
   .dept-block { margin-bottom: 18px; }
   .dept-block h3 { font-size: .9rem; margin-bottom: 6px; }
   .grand-total { font-weight: 700; background: #fdf1f1; }
+  .ratio-row td { color: #1a4d8f; }
+  .bep-card { background: #f4f7fc; border: 1px solid #d8e0ef; border-radius: 8px; padding: 10px 14px; margin: 10px 0; font-size: .8rem; line-height: 1.7; }
+  .bep-card b { display: block; margin-bottom: 4px; font-size: .84rem; }
+  .bep-metric { display: inline-block; margin-right: 18px; }
+  .bep-metric .v { font-weight: 700; color: #0f3460; }
+  .scenario-tag { display: inline-block; font-size: .68rem; padding: 1px 8px; border-radius: 10px; margin-left: 6px; background: #eef1f7; color: #1a1a2e; font-weight: 600; vertical-align: middle; }
+  .budget-note { font-size: .76rem; color: #8a6500; background: #fff8e6; border-radius: 6px; padding: 6px 10px; margin: 8px 0; }
+  .plan-actions { display: inline-flex; gap: 6px; margin-left: 8px; }
+  .plan-actions button { margin-top: 0; padding: 3px 10px; font-size: .72rem; }
+  .plan-actions button.edit-btn { background: #1a4d8f; }
+  .compare-check { margin-right: 6px; vertical-align: middle; }
+  .chart-legend span { font-size: .72rem; margin-right: 10px; }
+  .chart-box { margin-top: 8px; }
 </style>
 </head>
 <body>
@@ -92,9 +105,19 @@
 
   <div class="card">
     <h2>4. 사업계획</h2>
-    <p class="desc">기준연도 매출과 성장률·매출원가율·판관비 항목별 가정을 입력하면 다년도 추정 손익·잉여현금흐름을 자동 계산합니다.</p>
+    <p class="desc">
+      기준연도 매출과 성장률·매출원가율·판관비 항목별 가정을 입력하면 다년도 추정 손익·잉여현금흐름과 함께
+      비율 분석(매출총이익률/영업이익률/순이익률/전년대비 성장률)·손익분기점(BEP) 분석을 자동 계산합니다.
+      같은 이름의 "시나리오"(낙관/기본/보수 등)를 지정해두면 여러 계획을 체크박스로 선택해 나란히 비교할 수 있습니다.
+    </p>
     <button onclick="openBusinessPlanForm()">+ 신규 사업계획 작성</button>
     <div id="bizPlanFormArea"></div>
+    <div class="card" style="margin-top:14px;padding:14px">
+      <h2 style="font-size:.95rem">시나리오 비교</h2>
+      <p class="desc">비교하고 싶은 사업계획을 2개 이상 체크한 뒤 버튼을 누르세요. 계획별 기준연도가 달라도 "연차(Y1,Y2...)" 기준으로 비교합니다.</p>
+      <button class="secondary" onclick="compareSelectedPlans()">선택한 계획 비교</button>
+      <div id="bizPlanCompareArea" class="scroll" style="margin-top:10px"></div>
+    </div>
     <div id="bizPlanListArea" class="scroll" style="margin-top:14px">로딩 중...</div>
   </div>
 
@@ -244,9 +267,24 @@ async function loadAll() {
 
 loadAll();
 
-// ── 4. 사업계획(다년도 매출/비용 가정 → 추정 손익·현금흐름) ──────────────────────
+// ── 4. 사업계획(다년도 매출/비용 가정 → 추정 손익·현금흐름 + 비율분석/BEP/시나리오비교/차트) ──
 let bizPlans = [];
 let bizPlanSgaRowCount = 0;
+let bizPlanEditingId = null; // null이면 신규작성, 값이 있으면 해당 id를 PUT으로 수정
+const CHART_PALETTE = ['#0f3460', '#e94560', '#1a7d36', '#8a6500', '#6c3fb0', '#0e7c86'];
+
+function fmtPct(n) {
+  if (n === null || n === undefined || isNaN(n)) return '-';
+  return (n * 100).toFixed(1) + '%';
+}
+// 서버가 소수(0.15)로 주는 비율값을 수정 폼 입력칸에 사람이 읽는 %(15)로 되돌린다.
+function pctInput(n) {
+  if (n === null || n === undefined || isNaN(n)) return '';
+  return Math.round(n * 10000) / 100;
+}
+function escapeAttr(s) {
+  return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+}
 
 async function loadBusinessPlans() {
   const area = document.getElementById('bizPlanListArea');
@@ -261,66 +299,149 @@ async function loadBusinessPlans() {
   }
 }
 
+// 매출/영업이익/순이익 추이를 순수 SVG 선그래프로 그린다(외부 차트 라이브러리 미사용).
+// series: [{label, color, values:[num|null,...]}], xLabels: 각 포인트의 x축 라벨.
+// 여러 series를 겹쳐 그려서(단일 계획 상세=3개 지표, 시나리오 비교=여러 계획) 재사용한다.
+function svgLineChart(series, xLabels) {
+  const width = 520, height = 170, pad = 34;
+  const allVals = series.flatMap(s => s.values.filter(v => v !== null && v !== undefined));
+  if (!allVals.length) return '<p class="desc">표시할 데이터가 없습니다.</p>';
+  const maxV = Math.max(0, ...allVals);
+  const minV = Math.min(0, ...allVals);
+  const range = (maxV - minV) || Math.abs(maxV) || 1;
+  const n = xLabels.length;
+  const xStep = n > 1 ? (width - pad * 2) / (n - 1) : 0;
+  const xScale = i => pad + i * xStep;
+  const yScale = v => height - pad - ((v - minV) / range) * (height - pad * 2);
+
+  let svg = `<svg viewBox="0 0 ${width} ${height}" style="width:100%;max-width:${width}px;height:auto;background:#fbfcfe;border-radius:6px">`;
+  if (minV < 0 && maxV > 0) {
+    const zy = yScale(0).toFixed(1);
+    svg += `<line x1="${pad}" y1="${zy}" x2="${width - pad}" y2="${zy}" stroke="#ccc" stroke-dasharray="4,3"/>`;
+  }
+  series.forEach(s => {
+    const pts = s.values.map((v, i) => (v === null || v === undefined) ? null : `${xScale(i).toFixed(1)},${yScale(v).toFixed(1)}`).filter(Boolean).join(' ');
+    if (pts) svg += `<polyline points="${pts}" fill="none" stroke="${s.color}" stroke-width="2"/>`;
+    s.values.forEach((v, i) => {
+      if (v === null || v === undefined) return;
+      svg += `<circle cx="${xScale(i).toFixed(1)}" cy="${yScale(v).toFixed(1)}" r="2.6" fill="${s.color}"/>`;
+    });
+  });
+  xLabels.forEach((lbl, i) => {
+    svg += `<text x="${xScale(i).toFixed(1)}" y="${height - 8}" font-size="9" text-anchor="middle" fill="#666">${lbl}</text>`;
+  });
+  svg += '</svg>';
+  const legend = '<div class="chart-legend">' + series.map(s => `<span style="color:${s.color}">● ${s.label}</span>`).join('') + '</div>';
+  return `<div class="chart-box">${svg}${legend}</div>`;
+}
+
 function renderBusinessPlans() {
   const area = document.getElementById('bizPlanListArea');
   if (!bizPlans.length) { area.innerHTML = '<p class="desc">작성된 사업계획이 없습니다.</p>'; return; }
   let html = '';
   bizPlans.forEach(p => {
-    html += `<div class="dept-block"><h3>${p.name} <button class="secondary" style="margin-top:0;padding:3px 10px;font-size:.72rem" onclick="deleteBusinessPlan('${p.id}')">삭제</button></h3>
+    const be = p.breakEven || {};
+    const chart = svgLineChart([
+      { label: '매출', color: CHART_PALETTE[0], values: p.projection.map(r => r.revenue) },
+      { label: '영업이익', color: CHART_PALETTE[1], values: p.projection.map(r => r.operatingProfit) },
+      { label: '순이익', color: CHART_PALETTE[2], values: p.projection.map(r => r.netIncome) },
+    ], p.projection.map(r => r.year + '년'));
+
+    html += `<div class="dept-block" style="border:1px solid #e3e5eb;border-radius:8px;padding:12px">
+      <h3>
+        <input type="checkbox" class="compare-check" data-id="${p.id}" title="비교에 포함">
+        ${p.name}${p.scenario ? `<span class="scenario-tag">${p.scenario}</span>` : ''}
+        <span class="plan-actions">
+          <button class="edit-btn" onclick="editBusinessPlan('${p.id}')">수정</button>
+          <button class="secondary" onclick="deleteBusinessPlan('${p.id}')">삭제</button>
+        </span>
+      </h3>
       <table><tr><th class="lbl">연도</th>${p.projection.map(r=>`<th>${r.year}</th>`).join('')}</tr>
       <tr><td class="lbl">매출</td>${p.projection.map(r=>`<td>${fmt(r.revenue)}</td>`).join('')}</tr>
       <tr><td class="lbl">매출원가</td>${p.projection.map(r=>`<td>${fmt(r.cogs)}</td>`).join('')}</tr>
       <tr><td class="lbl">매출총이익</td>${p.projection.map(r=>`<td>${fmt(r.grossProfit)}</td>`).join('')}</tr>
+      <tr class="ratio-row"><td class="lbl">매출총이익률</td>${p.projection.map(r=>`<td>${fmtPct(r.grossMarginRatio)}</td>`).join('')}</tr>
       <tr><td class="lbl">판관비</td>${p.projection.map(r=>`<td>${fmt(r.sga)}</td>`).join('')}</tr>
       <tr><td class="lbl">영업이익</td>${p.projection.map(r=>`<td>${fmt(r.operatingProfit)}</td>`).join('')}</tr>
+      <tr class="ratio-row"><td class="lbl">영업이익률</td>${p.projection.map(r=>`<td>${fmtPct(r.operatingMarginRatio)}</td>`).join('')}</tr>
       <tr class="grand-total"><td class="lbl">순이익</td>${p.projection.map(r=>`<td>${fmt(r.netIncome)}</td>`).join('')}</tr>
+      <tr class="ratio-row"><td class="lbl">순이익률</td>${p.projection.map(r=>`<td>${fmtPct(r.netMarginRatio)}</td>`).join('')}</tr>
+      <tr class="ratio-row"><td class="lbl">전년대비 매출성장률</td>${p.projection.map(r=>`<td>${fmtPct(r.revenueGrowthYoY)}</td>`).join('')}</tr>
       <tr><td class="lbl">잉여현금흐름</td>${p.projection.map(r=>`<td>${fmt(r.freeCashFlow)}</td>`).join('')}</tr>
-      </table></div>`;
+      </table>
+      <div class="bep-card">
+        <b>손익분기점(BEP) 분석 — 기준연도 ${be.baseYear !== undefined ? be.baseYear : p.baseYear}</b>
+        <span class="bep-metric">고정비 <span class="v">${fmt(be.fixedCost)}</span></span>
+        <span class="bep-metric">변동비율 <span class="v">${fmtPct(be.variableCostRatio)}</span></span>
+        <span class="bep-metric">손익분기 매출액 <span class="v">${fmt(be.bepRevenue)}</span></span>
+        <span class="bep-metric">기준연도 매출 <span class="v">${fmt(be.currentRevenue)}</span></span>
+        <span class="bep-metric">안전마진율 <span class="v">${fmtPct(be.safetyMarginRatio)}</span></span>
+        ${be.note ? `<div class="status err">${be.note}</div>` : ''}
+      </div>
+      ${p.budgetComparison ? `<div class="budget-note">참고: 실제 업로드된(섹션 1~3) 판관비 실적 합계 ${fmt(p.budgetComparison.actualSga)}원이 이 계획의 기준연도 판관비 가정 ${fmt(p.budgetComparison.assumptionSga)}원과 ${fmtPct(p.budgetComparison.diffRatio)}(${fmt(p.budgetComparison.diff)}원) 차이가 있습니다.</div>` : ''}
+      ${chart}
+      </div>`;
   });
   area.innerHTML = html;
 }
 
-function openBusinessPlanForm() {
+// editPlan을 넘기면 기존 값으로 폼을 채워 PUT(수정) 모드로, 생략하면 빈 폼으로 POST(신규) 모드로 연다.
+function openBusinessPlanForm(editPlan) {
   bizPlanSgaRowCount = 0;
+  bizPlanEditingId = editPlan ? editPlan.id : null;
+  const a = editPlan ? (editPlan.assumptions || {}) : {};
+  const years = editPlan ? (editPlan.years !== undefined ? editPlan.years : editPlan.projection.length) : 3;
   const area = document.getElementById('bizPlanFormArea');
   area.innerHTML = `<div class="dept-block" style="border:1px solid #e3e5eb;border-radius:8px;padding:14px;margin-top:10px">
+    <h3 style="margin-bottom:8px">${editPlan ? '사업계획 수정' : '신규 사업계획 작성'}</h3>
     <div class="upload-row">
-      <div class="upload-box"><label>사업계획명</label><input type="text" id="bp-name" placeholder="예: 2027-2029 사업계획"></div>
-      <div class="upload-box"><label>기준연도</label><input type="number" id="bp-base-year" value="${new Date().getFullYear()}"></div>
-      <div class="upload-box"><label>추정 연차 수</label><input type="number" id="bp-years" value="3" min="1" max="10"></div>
+      <div class="upload-box"><label>사업계획명</label><input type="text" id="bp-name" placeholder="예: 2027-2029 사업계획" value="${editPlan ? escapeAttr(editPlan.name) : ''}"></div>
+      <div class="upload-box"><label>시나리오명 (선택, 예: 낙관/기본/보수)</label><input type="text" id="bp-scenario" placeholder="예: 기본" value="${editPlan && editPlan.scenario ? escapeAttr(editPlan.scenario) : ''}"></div>
+      <div class="upload-box"><label>기준연도</label><input type="number" id="bp-base-year" value="${editPlan ? editPlan.baseYear : new Date().getFullYear()}"></div>
+      <div class="upload-box"><label>추정 연차 수</label><input type="number" id="bp-years" value="${years}" min="1" max="10"></div>
     </div>
     <div class="upload-row" style="margin-top:10px">
-      <div class="upload-box"><label>기준연도 매출</label><input type="number" id="bp-base-revenue" placeholder="예: 1000000000"></div>
-      <div class="upload-box"><label>매출 연평균 성장률(%)</label><input type="number" step="0.1" id="bp-revenue-growth" placeholder="예: 15"></div>
-      <div class="upload-box"><label>매출원가율(%)</label><input type="number" step="0.1" id="bp-cogs-ratio" placeholder="예: 60"></div>
+      <div class="upload-box"><label>기준연도 매출</label><input type="number" id="bp-base-revenue" placeholder="예: 1000000000" value="${editPlan ? a.baseRevenue : ''}"></div>
+      <div class="upload-box"><label>매출 연평균 성장률(%)</label><input type="number" step="0.1" id="bp-revenue-growth" placeholder="예: 15" value="${editPlan ? pctInput(a.revenueGrowthRate) : ''}"></div>
+      <div class="upload-box"><label>매출원가율(%)</label><input type="number" step="0.1" id="bp-cogs-ratio" placeholder="예: 60" value="${editPlan ? pctInput(a.cogsRatio) : ''}"></div>
     </div>
     <div class="upload-row" style="margin-top:10px">
-      <div class="upload-box"><label>법인세율(%, 기본 22)</label><input type="number" step="0.1" id="bp-tax-rate" placeholder="22"></div>
-      <div class="upload-box"><label>연간 감가상각(현금흐름 가산용, 선택)</label><input type="number" id="bp-depreciation" placeholder="0"></div>
+      <div class="upload-box"><label>법인세율(%, 기본 22)</label><input type="number" step="0.1" id="bp-tax-rate" placeholder="22" value="${editPlan ? pctInput(a.taxRate) : ''}"></div>
+      <div class="upload-box"><label>연간 감가상각(현금흐름 가산용, 선택)</label><input type="number" id="bp-depreciation" placeholder="0" value="${editPlan ? (a.depreciation||0) : ''}"></div>
     </div>
-    <h3 style="margin-top:14px">판관비 항목</h3>
+    <h3 style="margin-top:14px">판관비 항목 <span style="font-weight:400;font-size:.75rem;color:#666">(체크 해제 시 손익분기점 분석에서 변동비로 취급, 기본은 전부 고정비)</span></h3>
     <div id="bp-sga-rows"></div>
     <button onclick="addSgaItemRow()">+ 판관비 항목 추가</button>
     <div style="margin-top:12px">
-      <button onclick="submitBusinessPlan()">저장</button>
-      <button class="secondary" onclick="document.getElementById('bizPlanFormArea').innerHTML=''">취소</button>
+      <button onclick="submitBusinessPlan()">${editPlan ? '수정 저장' : '저장'}</button>
+      <button class="secondary" onclick="bizPlanEditingId=null;document.getElementById('bizPlanFormArea').innerHTML=''">취소</button>
     </div>
     <div class="status" id="bp-status"></div>
   </div>`;
-  addSgaItemRow();
+  if (editPlan && Array.isArray(a.sgaItems) && a.sgaItems.length) {
+    a.sgaItems.forEach(item => addSgaItemRow(item));
+  } else {
+    addSgaItemRow();
+  }
 }
 
-function addSgaItemRow() {
+// item을 넘기면(수정 모드) 기존 값으로 행을 채운다.
+function addSgaItemRow(item) {
   const idx = bizPlanSgaRowCount++;
   const wrap = document.getElementById('bp-sga-rows');
   const row = document.createElement('div');
   row.className = 'upload-row';
   row.id = 'bp-sga-row-' + idx;
   row.style.marginTop = '6px';
+  const nameVal = item ? escapeAttr(item.name) : '';
+  const amountVal = item && item.baseAmount !== undefined ? item.baseAmount : '';
+  const growthVal = item ? pctInput(item.growthRate) : '';
+  const fixedChecked = (!item || item.fixed !== false) ? 'checked' : '';
   row.innerHTML = `
-    <div class="upload-box" style="min-width:160px"><label>항목명</label><input type="text" class="bp-sga-name" placeholder="예: 인건비"></div>
-    <div class="upload-box" style="min-width:160px"><label>기준연도 금액</label><input type="number" class="bp-sga-amount" placeholder="예: 200000000"></div>
-    <div class="upload-box" style="min-width:160px"><label>연간 증가율(%)</label><input type="number" step="0.1" class="bp-sga-growth" placeholder="예: 10"></div>
+    <div class="upload-box" style="min-width:160px"><label>항목명</label><input type="text" class="bp-sga-name" placeholder="예: 인건비" value="${nameVal}"></div>
+    <div class="upload-box" style="min-width:160px"><label>기준연도 금액</label><input type="number" class="bp-sga-amount" placeholder="예: 200000000" value="${amountVal}"></div>
+    <div class="upload-box" style="min-width:160px"><label>연간 증가율(%)</label><input type="number" step="0.1" class="bp-sga-growth" placeholder="예: 10" value="${growthVal}"></div>
+    <div class="upload-box" style="min-width:70px"><label>고정비</label><input type="checkbox" class="bp-sga-fixed" ${fixedChecked} style="width:18px;height:18px;margin-top:6px"></div>
     <button class="secondary" style="align-self:flex-end" onclick="document.getElementById('bp-sga-row-${idx}').remove()">제거</button>`;
   wrap.appendChild(row);
 }
@@ -328,6 +449,7 @@ function addSgaItemRow() {
 async function submitBusinessPlan() {
   const statusEl = document.getElementById('bp-status');
   const name = document.getElementById('bp-name').value.trim();
+  const scenario = document.getElementById('bp-scenario').value.trim();
   const baseYear = Number(document.getElementById('bp-base-year').value);
   const years = Number(document.getElementById('bp-years').value);
   const baseRevenue = Number(document.getElementById('bp-base-revenue').value);
@@ -340,22 +462,28 @@ async function submitBusinessPlan() {
     name: row.querySelector('.bp-sga-name').value.trim(),
     baseAmount: Number(row.querySelector('.bp-sga-amount').value) || 0,
     growthRate: (Number(row.querySelector('.bp-sga-growth').value) || 0) / 100,
+    fixed: row.querySelector('.bp-sga-fixed').checked,
   }));
   if (!name || !baseYear || !years || !baseRevenue || isNaN(revenueGrowthRate) || isNaN(cogsRatio)) {
     statusEl.textContent = '필수 항목을 모두 입력하세요.';
     statusEl.className = 'status err';
     return;
   }
+  const payload = { name, scenario: scenario || null, baseYear, years, baseRevenue, revenueGrowthRate, cogsRatio, sgaItems, taxRate, depreciation };
   try {
-    const res = await fetch('/api/budget/business-plan', {
-      method: 'POST',
+    const editing = bizPlanEditingId;
+    const url = editing ? ('/api/budget/business-plan/' + editing) : '/api/budget/business-plan';
+    const method = editing ? 'PUT' : 'POST';
+    const res = await fetch(url, {
+      method,
       headers: { 'Content-Type': 'application/json', ..._authHeaders() },
-      body: JSON.stringify({ name, baseYear, years, baseRevenue, revenueGrowthRate, cogsRatio, sgaItems, taxRate, depreciation }),
+      body: JSON.stringify(payload),
     });
     const json = await res.json();
-    if (!res.ok || !json.ok) throw new Error(json.message || '저장 실패');
-    statusEl.textContent = '저장되었습니다.';
+    if (!res.ok || !json.ok) throw new Error(json.error || json.message || '저장 실패');
+    statusEl.textContent = editing ? '수정되었습니다.' : '저장되었습니다.';
     statusEl.className = 'status ok';
+    bizPlanEditingId = null;
     document.getElementById('bizPlanFormArea').innerHTML = '';
     loadBusinessPlans();
   } catch (e) {
@@ -364,10 +492,70 @@ async function submitBusinessPlan() {
   }
 }
 
+function editBusinessPlan(id) {
+  const p = bizPlans.find(x => x.id === id);
+  if (!p) return;
+  openBusinessPlanForm(p);
+  document.getElementById('bizPlanFormArea').scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
 async function deleteBusinessPlan(id) {
   if (!confirm('이 사업계획을 삭제하시겠습니까?')) return;
+  if (bizPlanEditingId === id) {
+    bizPlanEditingId = null;
+    document.getElementById('bizPlanFormArea').innerHTML = '';
+  }
   await fetch('/api/budget/business-plan/' + id, { method: 'DELETE', headers: _authHeaders() });
   loadBusinessPlans();
+}
+
+// 체크한 사업계획 2개 이상을 매출/영업이익/순이익 기준으로 나란히 비교한다. 계획마다
+// 기준연도(baseYear)가 다를 수 있으므로 달력연도가 아니라 "연차(Y1,Y2...)" 기준으로 맞춘다.
+function compareSelectedPlans() {
+  const ids = [...document.querySelectorAll('.compare-check:checked')].map(c => c.dataset.id);
+  const area = document.getElementById('bizPlanCompareArea');
+  if (ids.length < 2) {
+    area.innerHTML = '<p class="desc">비교하려면 사업계획을 2개 이상 체크하세요.</p>';
+    return;
+  }
+  const plans = bizPlans.filter(p => ids.includes(p.id));
+  const maxYears = Math.max(...plans.map(p => p.projection.length));
+  const xLabels = Array.from({ length: maxYears }, (_, i) => 'Y' + (i + 1));
+  const planLabel = p => p.name + (p.scenario ? ` (${p.scenario})` : '');
+
+  const metricRow = (label, key) => {
+    let row = `<tr><td class="lbl">${label}</td>`;
+    plans.forEach(p => {
+      for (let i = 0; i < maxYears; i++) {
+        const r = p.projection[i];
+        row += `<td>${r ? fmt(r[key]) : '-'}</td>`;
+      }
+    });
+    return row + '</tr>';
+  };
+
+  let head = '<tr><th class="lbl">계획</th>';
+  plans.forEach(p => { head += `<th colspan="${maxYears}">${planLabel(p)}</th>`; });
+  head += '</tr><tr><th class="lbl">연차</th>';
+  plans.forEach(() => { xLabels.forEach(l => { head += `<th>${l}</th>`; }); });
+  head += '</tr>';
+
+  let html = `<table>${head}
+    ${metricRow('매출', 'revenue')}
+    ${metricRow('영업이익', 'operatingProfit')}
+    ${metricRow('순이익', 'netIncome')}
+    </table>`;
+
+  const seriesFor = key => plans.map((p, idx) => ({
+    label: planLabel(p),
+    color: CHART_PALETTE[idx % CHART_PALETTE.length],
+    values: Array.from({ length: maxYears }, (_, i) => p.projection[i] ? p.projection[i][key] : null),
+  }));
+
+  html += '<h3 style="margin-top:14px">매출 비교</h3>' + svgLineChart(seriesFor('revenue'), xLabels);
+  html += '<h3 style="margin-top:14px">순이익 비교</h3>' + svgLineChart(seriesFor('netIncome'), xLabels);
+
+  area.innerHTML = html;
 }
 
 loadBusinessPlans();
