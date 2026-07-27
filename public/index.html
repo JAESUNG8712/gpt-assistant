@@ -16129,6 +16129,18 @@ async function _pmsUtilLoad(){
   _pmsUtilLoadedKey=key;
   if(currentPage==="pms-utilization")renderPmsUtilizationPage();
 }
+// 월 투입률(%) = 총 투입 시간 ÷ 월 소정근로시간(209h, 급여명세서 시급 계산과 동일 기준— calcStandardPayslip 참고)
+// 30% 미만은 저활용, 30~100% 미만은 정상, 정확히 100%는 파랑, 100% 초과(서버 캡이 있는 pms_allocations와
+// 달리 이 화면은 일일 업무 투입 기록 합산이라 이론상 초과 가능)는 빨강으로 방어적으로 표시.
+function _pmsUtilPct(mins){return Math.round(mins/(209*60)*1000)/10;}
+function _pmsUtilBadge(mins){
+  const pct=_pmsUtilPct(mins);
+  const label=`${pct}%`;
+  if(pct>100)return badge(`${label} 초과`,"red");
+  if(pct===100)return badge(label,"blue");
+  if(pct>=30)return badge(label,"green");
+  return badge(`${label} 저활용`,"orange");
+}
 function renderPmsUtilizationPage(){
   const c=$("#content");if(!c)return;
   if(!serverConfig.url){c.innerHTML=_erpNoServerHtml("가동률 현황");return;}
@@ -16161,8 +16173,8 @@ function renderPmsUtilizationPage(){
       <select class="fc" style="width:auto" onchange="_pmsUtilYear=+this.value;_pmsUtilLoadedKey=null;renderPmsUtilizationPage()">${[0,-1,-2].map(d=>{const y=new Date().getFullYear()+d;return `<option value="${y}" ${y===_pmsUtilYear?"selected":""}>${y}년</option>`;}).join("")}</select>
       <select class="fc" style="width:auto" onchange="_pmsUtilMonth=+this.value;_pmsUtilLoadedKey=null;renderPmsUtilizationPage()">${Array.from({length:12},(_,i)=>i+1).map(m=>`<option value="${m}" ${m===_pmsUtilMonth?"selected":""}>${m}월</option>`).join("")}</select>
     </div></div>
-  <div class="card-body" style="padding:0"><div class="tbl-wrap"><table><thead><tr><th>직원</th><th>총 투입 시간</th><th>프로젝트별 투입</th></tr></thead><tbody>
-  ${rows.length?rows.map(r=>`<tr><td>${h(r.name)}</td><td style="text-align:right">${Math.floor(r.total/60)}시간 ${r.total%60}분</td><td class="fz11">${r.breakdown||"-"}</td></tr>`).join(""):`<tr><td colspan="3" class="text-gray" style="text-align:center;padding:20px">${_pmsUtilYear}년 ${_pmsUtilMonth}월 등록된 업무 투입 기록이 없습니다.</td></tr>`}
+  <div class="card-body" style="padding:0"><div class="tbl-wrap"><table><thead><tr><th>직원</th><th>총 투입 시간</th><th>가동률</th><th>프로젝트별 투입</th></tr></thead><tbody>
+  ${rows.length?rows.map(r=>`<tr><td>${h(r.name)}</td><td style="text-align:right">${Math.floor(r.total/60)}시간 ${r.total%60}분</td><td style="text-align:center">${_pmsUtilBadge(r.total)}</td><td class="fz11">${r.breakdown||"-"}</td></tr>`).join(""):`<tr><td colspan="4" class="text-gray" style="text-align:center;padding:20px">${_pmsUtilYear}년 ${_pmsUtilMonth}월 등록된 업무 투입 기록이 없습니다.</td></tr>`}
   </tbody></table></div></div></div>`;
 }
 
@@ -21349,6 +21361,12 @@ function renderNotificationCenterPage(){
   if(emp){
     const remain=Math.max(0,calcTotalLeaveGrant(emp)-calcLeaveUsed(u.id));
     if(remain>=0&&remain<=5)items.push({type:"leave",pri:1,icon:"🌴",title:`연차 잔여 ${remain}일 — 사용 권장`,desc:"미사용 연차는 연말에 소멸될 수 있습니다",date:todayStr,action:"leave-mgmt"});
+    // 연차 소멸 임박 자동 알림 — "연차 관리"(leave-mgmt) 화면의 연차 촉진 배너와 동일 조건
+    // (연말까지 남은 개월 수 3개월 이내=10월 이후 & 미사용 연차 5일 이상)을 재사용해 알림센터에도
+    // 노출한다. 기존엔 이 조건을 만족해도 leave-mgmt 페이지에 직접 들어가야만 배너가 보였다.
+    if(remain>=5&&Number(mm)>=10){
+      items.push({type:"leave-expiring",pri:0,icon:"🌴",title:`연차 소멸 임박 — 잔여 ${remain}일`,desc:`연말까지 ${13-Number(mm)}개월 남았습니다. 근로기준법 제61조에 따라 연내 사용을 권장합니다.`,date:todayStr,action:"leave-mgmt"});
+    }
     // 연차 사용촉진제도: 근로기준법상 만료(연말) 6개월 전(7/1~7/10), 2개월 전(11/1~11/10) 통보 기간
     const monthDay=`${mm}-${dd}`;
     if(remain>0&&monthDay>="07-01"&&monthDay<="07-10"){
@@ -21365,6 +21383,16 @@ function renderNotificationCenterPage(){
     if(inFirstWindow||inSecondWindow){
       const targets=employees.filter(e=>e.active&&Math.max(0,calcTotalLeaveGrant(e)-calcLeaveUsed(e.id))>0);
       if(targets.length>0)items.push({type:"leave-promo-admin",pri:0,icon:"📢",title:`연차 사용촉진 ${inFirstWindow?"1차":"2차"} 대상자 ${targets.length}명`,desc:"미사용 연차가 있는 직원에게 사용촉진 통보가 필요합니다",date:todayStr,action:"leave-mgmt"});
+    }
+  }
+  // 연차 소멸 임박자 집계 (admin/director, 10월 이후) — 개인 알림과 동일 조건(잔여 5일 이상)의
+  // 대상자를 모아 관리자가 "연차 관리(전체)"에서 바로 확인할 수 있게 한다. admin은 전사, director는
+  // 소속 부서로 다른 조직 현황 알림들과 동일하게 스코프.
+  if((u.role==="admin"||u.role==="director")&&Number(mm)>=10){
+    const leaveScope=employees.filter(e=>e.active&&(u.role==="admin"||e.dept===u.dept));
+    const expiringTargets=leaveScope.filter(e=>Math.max(0,calcTotalLeaveGrant(e)-calcLeaveUsed(e.id))>=5);
+    if(expiringTargets.length>0){
+      items.push({type:"leave-expiring-admin",pri:1,icon:"🌴",title:`연차 소멸 임박자 ${expiringTargets.length}명`,desc:expiringTargets.slice(0,5).map(e=>e.name).join(", ")+(expiringTargets.length>5?` 외 ${expiringTargets.length-5}명`:""),date:todayStr,action:"hr-leave-mgmt"});
     }
   }
   // 3. Mandatory training missing
