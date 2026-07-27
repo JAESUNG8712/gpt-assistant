@@ -311,6 +311,11 @@ loadAll();
 
 // ── 4. 사업계획 설정(예산담당자/기획팀장 지정, 입력기간 on/off) ──
 let bizPlanSettings = { ownerIds: [], teamLeaderId: null, inputOpen: true };
+// 로그인한 사용자 본인의 dept/team/role — 로그인 토큰(payload)에는 없어서 별도 조회.
+// "사업부장 승인" 버튼처럼 dept 기준으로 화면에서 미리 노출 여부를 판단할 때 필요하다
+// (QA에서 발견: 이 정보 없이 상태만 보고 버튼을 노출해 권한 없는 사용자에게도 승인
+// 버튼이 보이던 문제 — 서버 인가 자체는 항상 정확했음).
+let _myProfile = null;
 
 function _isBudgetOwnerOrLead() {
   if (!_auth || _auth.empId === undefined || _auth.empId === null) return false;
@@ -318,6 +323,21 @@ function _isBudgetOwnerOrLead() {
   const owners = (bizPlanSettings.ownerIds || []).map(String);
   if (owners.includes(empId)) return true;
   return bizPlanSettings.teamLeaderId != null && String(bizPlanSettings.teamLeaderId) === empId;
+}
+
+// 계획 p의 사업부장(director, 같은 dept)인지 — server.js budget.js의 _isDivisionHead()와
+// 동일 기준을 화면에서도 재현한다.
+function _isDivisionHeadOf(p) {
+  return !!(_myProfile && _myProfile.role === 'director' && p.dept && _myProfile.dept === p.dept);
+}
+
+async function loadMyProfile() {
+  try {
+    const res = await fetch('/api/budget/business-plan/my-profile', { headers: _authHeaders() });
+    if (!res.ok) return;
+    const json = await res.json();
+    _myProfile = json.profile;
+  } catch (e) { /* 조회 실패 시 _myProfile은 null로 남고, 버튼은 관리자 전용으로만 보수적으로 노출됨 */ }
 }
 
 async function loadBizPlanSettings() {
@@ -500,10 +520,10 @@ function planActionsHtml(p) {
   if (isAdmin || p.status === 'draft') {
     btns.push(`<button class="edit-btn" onclick="editBusinessPlan('${p.id}')">수정</button>`);
   }
-  if (p.status === 'draft' && p.dept) {
+  if (p.status === 'draft' && p.dept && (isAdmin || _isDivisionHeadOf(p))) {
     btns.push(`<button onclick="approveDivisionPlan('${p.id}')">사업부장 승인</button>`);
   }
-  if (p.status === 'divisionApproved') {
+  if (p.status === 'divisionApproved' && (isAdmin || _isBudgetOwnerOrLead())) {
     btns.push(`<button onclick="finalApprovePlan('${p.id}')">최종승인</button>`);
   }
   if ((p.status === 'divisionApproved' || p.status === 'finalConfirmed') && !p.editRequest) {
@@ -869,8 +889,13 @@ function renderRollup(json) {
   area.innerHTML = html;
 }
 
-loadBizPlanSettings();
-loadBusinessPlans();
+// _myProfile/bizPlanSettings는 사업계획 목록의 버튼 노출 여부(planActionsHtml) 계산에
+// 쓰이므로, 목록을 그리기 전에 먼저 로드가 끝나야 한다(순서가 바뀌면 첫 렌더링에서
+// 권한이 있어도 버튼이 잠깐 안 보였다가 별도 재렌더링 전까지 계속 안 보이는 문제가 생김).
+(async () => {
+  await Promise.all([loadMyProfile(), loadBizPlanSettings()]);
+  loadBusinessPlans();
+})();
 </script>
 </body>
 </html>

@@ -536,6 +536,17 @@ module.exports = function budgetRouterFactory(deps) {
 
   // ── 사업계획(팀별 작성 → 사업부장 승인 → 예산담당자+기획팀장 최종확정) ──────────
 
+  // 로그인한 사용자 본인의 dept/team/role — 토큰(payload)에는 empId/role/companyId만 있고
+  // dept/team이 없어서, budget.html이 "사업부장 승인" 버튼처럼 dept 기준 권한을 화면에서
+  // 미리 판단하려면 이 정보가 필요하다(QA에서 발견: 권한 없는 사용자에게도 승인 버튼이
+  // 노출되던 문제 — 서버 인가 자체는 항상 정확했지만 UI가 사전 판단할 재료가 없었음).
+  router.get('/business-plan/my-profile', async (req, res) => {
+    if (!requireAuth(req, res)) return;
+    const companyId = req.auth.companyId || null;
+    const profile = await getEmployeeProfile(companyId, req.auth.empId);
+    res.json({ ok: true, profile });
+  });
+
   // 목록 조회: 관리자/예산담당자/기획팀장은 전체, 사업부장은 자기 dept, 팀원/팀장은
   // 자기 dept+team 계획만 본다.
   router.get('/business-plan', async (req, res) => {
