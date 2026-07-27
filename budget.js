@@ -84,10 +84,14 @@ function round2(n) {
 
 // 사업계획 시나리오: 기준연도 매출/비용 가정으로 N개년 추정 손익·현금흐름을 계산.
 // POST(신규 생성)와 PUT(가정 변경 후 재계산) 양쪽에서 동일 로직을 재사용한다.
+// 기존 필드(revenue/cogs/.../freeCashFlow)는 그대로 유지하고, 비율 분석용 필드
+// (grossMarginRatio/operatingMarginRatio/netMarginRatio/revenueGrowthYoY)를 추가만
+// 한다 — 기존 응답 구조와 하위호환.
 function computeBusinessPlanProjection(a) {
   const years = a.years;
   const sgaItems = Array.isArray(a.sgaItems) ? a.sgaItems : [];
   const projection = [];
+  let prevRevenue = a.baseRevenue;
 
   for (let y = 1; y <= years; y++) {
     const revenue = round2(a.baseRevenue * Math.pow(1 + a.revenueGrowthRate, y));
@@ -101,13 +105,74 @@ function computeBusinessPlanProjection(a) {
     const netIncome = round2(operatingProfit * (1 - a.taxRate));
     const freeCashFlow = round2(netIncome + (a.depreciation || 0));
 
+    // 비율 분석(소수, 예: 0.15 = 15%). 매출이 0이거나 전년 매출이 0이면 나눗셈이
+    // 무의미하므로 null로 표시(프론트에서 '-'로 렌더링).
+    const grossMarginRatio = revenue > 0 ? round2(grossProfit / revenue) : null;
+    const operatingMarginRatio = revenue > 0 ? round2(operatingProfit / revenue) : null;
+    const netMarginRatio = revenue > 0 ? round2(netIncome / revenue) : null;
+    const revenueGrowthYoY = prevRevenue > 0 ? round2((revenue - prevRevenue) / prevRevenue) : null;
+    prevRevenue = revenue;
+
     projection.push({
       year: a.baseYear + y,
-      revenue, cogs, grossProfit, sga, operatingProfit, netIncome, freeCashFlow
+      revenue, cogs, grossProfit, sga, operatingProfit, netIncome, freeCashFlow,
+      grossMarginRatio, operatingMarginRatio, netMarginRatio, revenueGrowthYoY
     });
   }
 
   return projection;
+}
+
+// 손익분기점(BEP) 분석: 판관비 항목 중 fixed!==false인 항목(기본값 true 취급 — 즉 항목별
+// 지정이 없으면 요청서 명세대로 "판관비 전체를 고정비로 가정")의 기준연도 금액 합을
+// 고정비로 삼는다. fixed:false로 지정한 항목은 매출 대비 비율로 환산해 매출원가율에
+// 더한 "변동비율"로 취급한다(기본 케이스는 BEP매출 = 고정비/(1-매출원가율)과 동일).
+// 기준연도(baseYear) 시점 스냅샷으로만 계산한다(요청서 명세 — 연도별이 아님).
+function computeBreakEven(a) {
+  const baseRevenue = a.baseRevenue;
+  const sgaItems = Array.isArray(a.sgaItems) ? a.sgaItems : [];
+  const fixedCost = round2(sgaItems.reduce(
+    (sum, item) => sum + (item.fixed === false ? 0 : (item.baseAmount || 0)), 0
+  ));
+  const variableSga = round2(sgaItems.reduce(
+    (sum, item) => sum + (item.fixed === false ? (item.baseAmount || 0) : 0), 0
+  ));
+  const variableSgaRatio = baseRevenue > 0 ? variableSga / baseRevenue : 0;
+  const variableCostRatio = round2(a.cogsRatio + variableSgaRatio);
+
+  const result = {
+    baseYear: a.baseYear,
+    fixedCost,
+    variableCostRatio,
+    currentRevenue: baseRevenue,
+    bepRevenue: null,
+    safetyMarginRatio: null
+  };
+
+  if (variableCostRatio >= 1) {
+    result.note = '변동비율(매출원가율 등)이 100% 이상이라 손익분기 매출액을 계산할 수 없습니다.';
+    return result;
+  }
+
+  result.bepRevenue = round2(fixedCost / (1 - variableCostRatio));
+  result.safetyMarginRatio = baseRevenue > 0 ? round2((baseRevenue - result.bepRevenue) / baseRevenue) : null;
+  return result;
+}
+
+// 예산 실적 대비 비교(선택 기능): 실제 업로드된(섹션 1~3) 판관 카테고리 금액 합계와
+// 사업계획의 기준연도 판관비 가정 합계를 단순 비교해 괴리를 안내한다. 저장하지 않고
+// 조회 시점마다 재계산(업로드 데이터가 계획 저장 이후에도 바뀔 수 있으므로).
+function computeBudgetComparison(data, plan) {
+  const actualSga = round2((data.items || [])
+    .filter(i => i.category === '판관')
+    .reduce((sum, i) => sum + i.amount, 0));
+  if (actualSga <= 0) return null;
+  const sgaItems = Array.isArray(plan.assumptions && plan.assumptions.sgaItems) ? plan.assumptions.sgaItems : [];
+  const assumptionSga = round2(sgaItems.reduce((sum, item) => sum + (item.baseAmount || 0), 0));
+  if (assumptionSga <= 0) return null;
+  const diff = round2(actualSga - assumptionSga);
+  const diffRatio = round2(diff / assumptionSga);
+  return { actualSga, assumptionSga, diff, diffRatio };
 }
 
 // body에서 사업계획 가정(assumptions)을 검증·정규화한다. existing이 주어지면(PUT) 그 값을
@@ -125,6 +190,9 @@ function _normalizeBusinessPlanInput(body, existing) {
   const taxRate = body.taxRate !== undefined ? Number(body.taxRate) : (base.taxRate !== undefined ? base.taxRate : 0.22);
   const depreciation = body.depreciation !== undefined ? Number(body.depreciation) : (base.depreciation !== undefined ? base.depreciation : 0);
   const sgaItemsRaw = body.sgaItems !== undefined ? body.sgaItems : base.sgaItems;
+  // 시나리오명(낙관/기본/보수 등): 완전히 선택 필드 — 기존에 저장된 계획에는 없을 수
+  // 있으므로 undefined/null/빈 문자열 전부 허용하고 별도 검증하지 않는다.
+  const scenario = body.scenario !== undefined ? (body.scenario || null) : (base.scenario !== undefined ? base.scenario : null);
 
   if (!name || typeof name !== 'string') errors.push('name');
   if (!Number.isFinite(baseYear)) errors.push('baseYear');
@@ -143,14 +211,17 @@ function _normalizeBusinessPlanInput(body, existing) {
       sgaItems = sgaItemsRaw.map(item => ({
         name: (item && item.name) || '',
         baseAmount: Number(item && item.baseAmount) || 0,
-        growthRate: Number(item && item.growthRate) || 0
+        growthRate: Number(item && item.growthRate) || 0,
+        // 손익분기점(BEP) 분석용: 이 항목을 고정비로 볼지 여부. 지정하지 않으면(undefined)
+        // true로 취급 — "판관비 전체를 고정비로 가정"하는 요청서 기본 동작과 일치.
+        fixed: !(item && item.fixed === false)
       }));
     }
   }
 
   if (errors.length) return { errors };
   return {
-    assumptions: { name, baseYear, years, baseRevenue, revenueGrowthRate, cogsRatio, sgaItems, taxRate, depreciation }
+    assumptions: { name, baseYear, years, baseRevenue, revenueGrowthRate, cogsRatio, sgaItems, taxRate, depreciation, scenario }
   };
 }
 
@@ -341,7 +412,10 @@ router.delete('/data', (req, res) => {
 router.get('/business-plan', (req, res) => {
   if (!requireAdmin(req, res)) return;
   const data = readBudget(req.auth.companyId || null);
-  res.json({ ok: true, plans: data.businessPlans });
+  // budgetComparison은 저장된 값이 아니라 조회 시점 실제 업로드 데이터 기준으로 매번
+  // 재계산(계획 저장 이후에도 실적 업로드가 바뀔 수 있으므로) — 응답에만 얹고 저장하지 않음.
+  const plans = data.businessPlans.map(p => ({ ...p, budgetComparison: computeBudgetComparison(data, p) }));
+  res.json({ ok: true, plans });
 });
 
 // 신규 생성
@@ -361,6 +435,8 @@ router.post('/business-plan', (req, res) => {
     id: `plan_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
     name: assumptions.name,
     baseYear: assumptions.baseYear,
+    years: assumptions.years,
+    scenario: assumptions.scenario,
     assumptions: {
       baseRevenue: assumptions.baseRevenue,
       revenueGrowthRate: assumptions.revenueGrowthRate,
@@ -370,6 +446,7 @@ router.post('/business-plan', (req, res) => {
       depreciation: assumptions.depreciation
     },
     projection: computeBusinessPlanProjection(assumptions),
+    breakEven: computeBreakEven(assumptions),
     createdBy: req.auth.empId !== undefined ? req.auth.empId : null,
     createdAt: now,
     updatedAt: now
@@ -377,7 +454,7 @@ router.post('/business-plan', (req, res) => {
 
   data.businessPlans.push(plan);
   writeBudget(companyId, data);
-  res.json({ ok: true, plan });
+  res.json({ ok: true, plan: { ...plan, budgetComparison: computeBudgetComparison(data, plan) } });
 });
 
 // 단건 조회
@@ -386,7 +463,7 @@ router.get('/business-plan/:id', (req, res) => {
   const data = readBudget(req.auth.companyId || null);
   const plan = data.businessPlans.find(p => p.id === req.params.id);
   if (!plan) return res.status(404).json({ error: '사업계획을 찾을 수 없습니다.' });
-  res.json({ ok: true, plan });
+  res.json({ ok: true, plan: { ...plan, budgetComparison: computeBudgetComparison(data, plan) } });
 });
 
 // 가정 갱신 + 재계산
@@ -398,9 +475,16 @@ router.put('/business-plan/:id', (req, res) => {
   if (!plan) return res.status(404).json({ error: '사업계획을 찾을 수 없습니다.' });
 
   const body = req.body || {};
-  // 저장된 plan에는 스펙상 "years"가 별도 필드로 남아있지 않으므로(assumptions에도 없음
-  // — projection 생성에만 쓰이는 값), 기존 projection 길이로 되짚어 기본값을 구성한다.
-  const existing = { name: plan.name, baseYear: plan.baseYear, years: plan.projection.length, ...plan.assumptions };
+  // 저장된 plan에는(이번 신설 이전 버전) "years"가 별도 필드로 남아있지 않을 수 있으므로
+  // (신설 이후 저장분은 plan.years가 있음) 없으면 기존 projection 길이로 되짚어 기본값을
+  // 구성한다. scenario도 이번에 신설된 필드라 과거 저장분에는 undefined일 수 있다.
+  const existing = {
+    name: plan.name,
+    baseYear: plan.baseYear,
+    years: plan.years !== undefined ? plan.years : plan.projection.length,
+    scenario: plan.scenario !== undefined ? plan.scenario : null,
+    ...plan.assumptions
+  };
   const { assumptions, errors } = _normalizeBusinessPlanInput(body, existing);
   if (errors) {
     return res.status(400).json({ error: `필수 값이 누락되었거나 형식이 올바르지 않습니다: ${errors.join(', ')}` });
@@ -408,6 +492,8 @@ router.put('/business-plan/:id', (req, res) => {
 
   plan.name = assumptions.name;
   plan.baseYear = assumptions.baseYear;
+  plan.years = assumptions.years;
+  plan.scenario = assumptions.scenario;
   plan.assumptions = {
     baseRevenue: assumptions.baseRevenue,
     revenueGrowthRate: assumptions.revenueGrowthRate,
@@ -417,10 +503,11 @@ router.put('/business-plan/:id', (req, res) => {
     depreciation: assumptions.depreciation
   };
   plan.projection = computeBusinessPlanProjection(assumptions);
+  plan.breakEven = computeBreakEven(assumptions);
   plan.updatedAt = new Date().toISOString();
 
   writeBudget(companyId, data);
-  res.json({ ok: true, plan });
+  res.json({ ok: true, plan: { ...plan, budgetComparison: computeBudgetComparison(data, plan) } });
 });
 
 // 삭제
