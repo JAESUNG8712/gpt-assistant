@@ -487,6 +487,36 @@ CREATE TABLE IF NOT EXISTS rcps_fair_value_valuations (
 CREATE INDEX IF NOT EXISTS idx_rcps_valuations_issuance ON rcps_fair_value_valuations (issuance_id);
 CREATE INDEX IF NOT EXISTS idx_rcps_valuations_company_id ON rcps_fair_value_valuations (company_id);
 
+-- ── Accounting: 고정자산 관리 (취득·감가상각·처분) ────────────────────────────
+-- RCPS와 동일한 이유로 신규 기능(2026-07-27 착수, 기존 배포된 적 없음)이라 레거시 NULL
+-- 데이터가 존재할 수 없다 — company_id를 처음부터 NOT NULL로 선언한다.
+CREATE TABLE IF NOT EXISTS fixed_assets (
+  id         TEXT        PRIMARY KEY,
+  company_id UUID        NOT NULL REFERENCES companies(id),
+  data       JSONB       NOT NULL,
+  is_deleted BOOLEAN     NOT NULL DEFAULT FALSE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_fixed_assets_company_id ON fixed_assets (company_id);
+
+-- 감가상각 스케줄: 자산 등록(또는 상각조건 변경) 시 내용연수만큼 연도별 회차를 일괄 생성하며,
+-- 각 행은 이후 "상각전표 발행" 액션(연도 단위)으로 개별 확정(전표 연결)된다. RCPS의
+-- rcps_amortization_schedule과 동일한 패턴 — (asset_id, year) 조합으로 조회·잠금하므로
+-- 별도 seq PK 없이 UNIQUE(asset_id, year)로 중복 발행을 방지한다.
+CREATE TABLE IF NOT EXISTS fixed_asset_depreciation_schedule (
+  id         TEXT        PRIMARY KEY,
+  asset_id   TEXT        NOT NULL REFERENCES fixed_assets(id),
+  company_id UUID        NOT NULL REFERENCES companies(id),
+  year       INTEGER     NOT NULL,
+  data       JSONB       NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (asset_id, year)
+);
+CREATE INDEX IF NOT EXISTS idx_fixed_asset_depr_asset ON fixed_asset_depreciation_schedule (asset_id, year);
+CREATE INDEX IF NOT EXISTS idx_fixed_asset_depr_company_id ON fixed_asset_depreciation_schedule (company_id);
+
 -- ── ERP: 품목 마스터 ────────────────────────────────────────────────────────
 -- id 클라이언트 override 가능 — accounts와 동일한 (company_id, id) 복합 PK 패턴.
 CREATE TABLE IF NOT EXISTS erp_items (

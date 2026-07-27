@@ -83,6 +83,8 @@ let _fileAccounting = { accounts: [], vouchers: [], taxInvoices: [], partners: [
 // 클라이언트 신뢰형 블롭과 분리해 서버가 번호 발급·상태 전환·재고 반영을 직접 관리한다.
 let _fileErp = { items: [], locations: [], quotations: [], purchaseOrders: [], purchaseRequests: [], stockLedger: [], quoteSeq: {}, poSeq: {}, salesTargets: [] };
 let _fileAcctRcps = { issuances: [], schedule: [], valuations: [] };
+// 고정자산 모듈 전용 저장소 (취득·감가상각 스케줄) — RCPS와 동일한 클라이언트-비신뢰 패턴.
+let _fileAcctFixedAssets = { assets: [], schedule: [] };
 let _filePms = { projects: [], allocations: [], worklogs: [] };
 let _fileRecruit = { jobs: [], candidates: [], interviews: [] };
 
@@ -541,6 +543,16 @@ async function initDB() {
         console.log(`[Storage] Loaded RCPS: ${_fileAcctRcps.issuances.length} issuances, ${_fileAcctRcps.schedule.length} schedule rows, ${_fileAcctRcps.valuations.length} valuations`);
       } catch (e) {
         console.warn("[Storage] Could not read RCPS file:", e.message);
+      }
+    }
+    // Load fixed-assets module data from separate file
+    const faFile = JSON_FILE.replace(/\.json$/, "-fixedassets.json");
+    if (fs.existsSync(faFile)) {
+      try {
+        _fileAcctFixedAssets = { ..._fileAcctFixedAssets, ...JSON.parse(fs.readFileSync(faFile, "utf8")) };
+        console.log(`[Storage] Loaded fixed assets: ${_fileAcctFixedAssets.assets.length} assets, ${_fileAcctFixedAssets.schedule.length} schedule rows`);
+      } catch (e) {
+        console.warn("[Storage] Could not read fixed-assets file:", e.message);
       }
     }
     // Load sales/inventory (ERP) module data from separate file
@@ -2421,6 +2433,10 @@ function _saveFileAcctRcps() {
   const rcpsFile = JSON_FILE.replace(/\.json$/, "-rcps.json");
   fs.writeFileSync(rcpsFile, JSON.stringify(_fileAcctRcps, null, 2), "utf8");
 }
+function _saveFileAcctFixedAssets() {
+  const faFile = JSON_FILE.replace(/\.json$/, "-fixedassets.json");
+  fs.writeFileSync(faFile, JSON.stringify(_fileAcctFixedAssets, null, 2), "utf8");
+}
 function _nextAcctSeq(kind, year) {
   if (!_fileAccounting[kind]) _fileAccounting[kind] = {};
   const next = (_fileAccounting[kind][year] || 0) + 1;
@@ -3409,6 +3425,405 @@ app.post("/api/accounting/rcps/valuations", async (req, res) => {
     }
     res.json({ ok: true, valuation, voucher });
   } catch (e) { res.status(e.statusCode || 500).json({ ok: false, message: e.message }); }
+});
+
+// ── 부가세 신고자료 (기존 tax_invoices 집계, 신규 테이블 없음) ───────────────────
+// 국세청 홈택스 신고서 양식이 아니라 사내 참고용 집계다. 발행(issued) 상태의 세금계산서만
+// 대상으로 하며(취소분 제외), direction별(매출/매입) 합계·거래처별·월별 브레이크다운을 계산한다.
+app.get("/api/accounting/vat-report", async (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  try {
+    const { from, to } = req.query || {};
+    if (!from || !to) return res.status(400).json({ ok: false, message: "from, to(YYYY-MM-DD)는 필수입니다." });
+    let list;
+    if (USE_JSON_FILE) {
+      list = _fileAccounting.taxInvoices.filter(t => t.status === "issued" && t.issueDate >= from && t.issueDate <= to);
+    } else {
+      const companyId = req.auth.companyId || null;
+      const { rows } = await pool.query(
+        "SELECT data FROM tax_invoices WHERE status = 'issued' AND issue_date >= $1 AND issue_date <= $2 AND (company_id = $3 OR company_id IS NULL) ORDER BY issue_date",
+        [from, to, companyId]
+      );
+      list = rows.map(r => r.data);
+    }
+    const sales = list.filter(t => t.direction !== "purchase");
+    const purchase = list.filter(t => t.direction === "purchase");
+    const sum = (arr, key) => _round2(arr.reduce((s, t) => s + (Number(t[key]) || 0), 0));
+
+    function _breakdown(arr) {
+      const byPartner = {}, byMonth = {};
+      for (const t of arr) {
+        const pk = t.partnerName || "(미상)";
+        if (!byPartner[pk]) byPartner[pk] = { partnerName: pk, supplyTotal: 0, taxTotal: 0, count: 0 };
+        byPartner[pk].supplyTotal = _round2(byPartner[pk].supplyTotal + (Number(t.supplyTotal) || 0));
+        byPartner[pk].taxTotal = _round2(byPartner[pk].taxTotal + (Number(t.taxTotal) || 0));
+        byPartner[pk].count += 1;
+        const mk = String(t.issueDate || "").slice(0, 7);
+        if (!byMonth[mk]) byMonth[mk] = { month: mk, supplyTotal: 0, taxTotal: 0, count: 0 };
+        byMonth[mk].supplyTotal = _round2(byMonth[mk].supplyTotal + (Number(t.supplyTotal) || 0));
+        byMonth[mk].taxTotal = _round2(byMonth[mk].taxTotal + (Number(t.taxTotal) || 0));
+        byMonth[mk].count += 1;
+      }
+      return {
+        byPartner: Object.values(byPartner).sort((a, b) => b.supplyTotal - a.supplyTotal),
+        byMonth: Object.values(byMonth).sort((a, b) => a.month.localeCompare(b.month)),
+      };
+    }
+
+    const salesSupply = sum(sales, "supplyTotal"), salesTax = sum(sales, "taxTotal");
+    const purchaseSupply = sum(purchase, "supplyTotal"), purchaseTax = sum(purchase, "taxTotal");
+    res.json({
+      ok: true, from, to,
+      sales: { supplyTotal: salesSupply, taxTotal: salesTax, count: sales.length, ..._breakdown(sales) },
+      purchase: { supplyTotal: purchaseSupply, taxTotal: purchaseTax, count: purchase.length, ..._breakdown(purchase) },
+      vatPayable: _round2(salesTax - purchaseTax), // 매출세액(예수금) - 매입세액(대급금). 양수면 납부, 음수면 환급.
+    });
+  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+});
+
+// ── 고정자산 관리 (취득·감가상각·처분) ────────────────────────────────────────
+// RCPS 모듈과 동일한 이유로 신규 기능(레거시 NULL 데이터 없음) — company_id NOT NULL.
+// 감가상각 스케줄은 RCPS 상각표와 동일하게 등록 시점에 내용연수만큼 일괄 생성해 영속화하고,
+// 이후 "상각전표 발행" 액션(연도 단위)으로 개별 확정한다. 동시발행 방지는 RCPS
+// (rcps/schedule/:scheduleId/post)와 완전히 동일한 패턴(JSON모드: in-flight Set,
+// Postgres모드: SELECT ... FOR UPDATE)을 재사용한다.
+function _buildDepreciationSchedule(assetId, asset) {
+  const cost = Number(asset.acquisitionCost) || 0;
+  const salvage = Math.max(0, Math.min(Number(asset.salvageValue) || 0, cost));
+  const life = Math.max(1, Math.round(Number(asset.usefulLifeYears) || 1));
+  const startYear = new Date(asset.acquisitionDate).getFullYear();
+  const method = asset.depreciationMethod === "declining" ? "declining" : "straight";
+  // 정률법 상각률: 잔존가액이 있으면 표준 공식(1-(잔존/취득)^(1/내용연수)), 잔존가액이 0이면
+  // 그 공식이 성립하지 않아(첫 회차에 100% 상각) "간단한 고정 상각률" 요구사항에 맞춰
+  // 실무에서 흔히 쓰는 정액법의 2배(double-declining) 상각률로 대체한다.
+  const rate = method === "declining"
+    ? (salvage > 0 && cost > 0 ? 1 - Math.pow(salvage / cost, 1 / life) : Math.min(1, 2 / life))
+    : 0;
+  const schedule = [];
+  let beginning = cost;
+  for (let seq = 1; seq <= life; seq++) {
+    const year = startYear + seq - 1;
+    let expense = method === "straight" ? _round2((cost - salvage) / life) : _round2(beginning * rate);
+    let ending = _round2(beginning - expense);
+    if (seq === life) {
+      // 마지막 회차는 반올림 누적오차를 보정해 기말장부가액이 정확히 잔존가액과 일치하게 한다
+      // (RCPS 상각표 마지막 회차 보정과 동일한 취지).
+      expense = _round2(beginning - salvage);
+      ending = salvage;
+    }
+    schedule.push({
+      id: `fasch_${assetId}_${year}`, assetId, year, seq,
+      beginningValue: beginning, depreciationExpense: expense, endingValue: ending,
+      status: "pending", voucherId: null,
+    });
+    beginning = ending;
+  }
+  return schedule;
+}
+
+app.post("/api/accounting/fixed-assets", async (req, res) => {
+  try {
+    if (!requireAdmin(req, res)) return;
+    const companyId = req.auth.companyId || null;
+    const { name, assetNumber, category, acquisitionDate, acquisitionCost, usefulLifeYears, salvageValue, depreciationMethod, locationId, user } = req.body || {};
+    if (!name || !acquisitionDate || !(Number(acquisitionCost) > 0) || !(Number(usefulLifeYears) > 0)) {
+      return res.status(400).json({ ok: false, message: "자산명, 취득일, 취득원가(0보다 큼), 내용연수(0보다 큼)는 필수입니다." });
+    }
+    const salvage = Number(salvageValue) || 0;
+    if (salvage < 0 || salvage > Number(acquisitionCost)) {
+      return res.status(400).json({ ok: false, message: "잔존가액은 0 이상 취득원가 이하이어야 합니다." });
+    }
+    const method = depreciationMethod === "declining" ? "declining" : "straight";
+    const assetId = `fa_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const asset = {
+      id: assetId, name, assetNumber: assetNumber || "", category: category || "",
+      acquisitionDate, acquisitionCost: Number(acquisitionCost), usefulLifeYears: Math.round(Number(usefulLifeYears)),
+      salvageValue: salvage, depreciationMethod: method, locationId: locationId || null,
+      status: "in_use", disposalDate: null, isDeleted: false,
+      createdBy: user || "unknown", createdAt: new Date().toISOString(),
+    };
+    const schedule = _buildDepreciationSchedule(assetId, asset);
+    if (USE_JSON_FILE) {
+      _fileAcctFixedAssets.assets.push(asset);
+      _fileAcctFixedAssets.schedule.push(...schedule);
+      _saveFileAcctFixedAssets();
+      return res.json({ ok: true, asset, schedule });
+    }
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query("INSERT INTO fixed_assets (id, company_id, data) VALUES ($1,$2,$3)", [assetId, companyId, asset]);
+      for (const s of schedule) {
+        await client.query(
+          "INSERT INTO fixed_asset_depreciation_schedule (id, asset_id, company_id, year, data) VALUES ($1,$2,$3,$4,$5)",
+          [s.id, assetId, companyId, s.year, s]
+        );
+      }
+      await client.query("COMMIT");
+    } catch (e) { await client.query("ROLLBACK"); throw e; } finally { client.release(); }
+    res.json({ ok: true, asset, schedule });
+  } catch (e) { res.status(e.statusCode || 500).json({ ok: false, message: e.message }); }
+});
+
+app.get("/api/accounting/fixed-assets", async (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  try {
+    if (USE_JSON_FILE) {
+      return res.json({ ok: true, assets: _fileAcctFixedAssets.assets.filter(a => !a.isDeleted).sort((a, b) => b.acquisitionDate.localeCompare(a.acquisitionDate)) });
+    }
+    const companyId = req.auth.companyId || null;
+    const { rows } = await pool.query(
+      "SELECT id, data FROM fixed_assets WHERE is_deleted = FALSE AND company_id = $1 ORDER BY data->>'acquisitionDate' DESC",
+      [companyId]
+    );
+    res.json({ ok: true, assets: rows.map(r => ({ id: r.id, ...r.data })) });
+  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+});
+
+app.get("/api/accounting/fixed-assets/:id", async (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  try {
+    const id = req.params.id;
+    if (USE_JSON_FILE) {
+      const asset = _fileAcctFixedAssets.assets.find(a => a.id === id && !a.isDeleted);
+      if (!asset) return res.status(404).json({ ok: false, message: "고정자산을 찾을 수 없습니다." });
+      const schedule = _fileAcctFixedAssets.schedule.filter(s => s.assetId === id).sort((a, b) => a.year - b.year);
+      return res.json({ ok: true, asset, schedule });
+    }
+    const companyId = req.auth.companyId || null;
+    const { rows } = await pool.query("SELECT data FROM fixed_assets WHERE id = $1 AND company_id = $2 AND is_deleted = FALSE", [id, companyId]);
+    if (!rows.length) return res.status(404).json({ ok: false, message: "고정자산을 찾을 수 없습니다." });
+    const asset = { id, ...rows[0].data };
+    const { rows: schedRows } = await pool.query("SELECT data FROM fixed_asset_depreciation_schedule WHERE asset_id = $1 AND company_id = $2 ORDER BY year", [id, companyId]);
+    res.json({ ok: true, asset, schedule: schedRows.map(r => r.data) });
+  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+});
+
+app.get("/api/accounting/fixed-assets/:id/depreciation-schedule", async (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  try {
+    const id = req.params.id;
+    if (USE_JSON_FILE) {
+      return res.json({ ok: true, schedule: _fileAcctFixedAssets.schedule.filter(s => s.assetId === id).sort((a, b) => a.year - b.year) });
+    }
+    const companyId = req.auth.companyId || null;
+    const { rows } = await pool.query("SELECT data FROM fixed_asset_depreciation_schedule WHERE asset_id = $1 AND company_id = $2 ORDER BY year", [id, companyId]);
+    res.json({ ok: true, schedule: rows.map(r => r.data) });
+  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+});
+
+app.post("/api/accounting/fixed-assets/:id", async (req, res) => {
+  try {
+    if (!requireAdmin(req, res)) return;
+    const id = req.params.id;
+    const companyId = req.auth.companyId || null;
+    const body = req.body || {};
+    let asset, schedule;
+    if (USE_JSON_FILE) {
+      asset = _fileAcctFixedAssets.assets.find(a => a.id === id && !a.isDeleted);
+      if (!asset) return res.status(404).json({ ok: false, message: "고정자산을 찾을 수 없습니다." });
+      schedule = _fileAcctFixedAssets.schedule.filter(s => s.assetId === id);
+    } else {
+      const { rows } = await pool.query("SELECT data FROM fixed_assets WHERE id = $1 AND company_id = $2 AND is_deleted = FALSE", [id, companyId]);
+      if (!rows.length) return res.status(404).json({ ok: false, message: "고정자산을 찾을 수 없습니다." });
+      asset = rows[0].data;
+      const { rows: schedRows } = await pool.query("SELECT data FROM fixed_asset_depreciation_schedule WHERE asset_id = $1 AND company_id = $2", [id, companyId]);
+      schedule = schedRows.map(r => r.data);
+    }
+    const hasPosted = schedule.some(s => s.status === "posted");
+    const DEPR_FIELDS = ["acquisitionDate", "acquisitionCost", "usefulLifeYears", "salvageValue", "depreciationMethod"];
+    const changingDepr = DEPR_FIELDS.some(f => body[f] !== undefined && String(body[f]) !== String(asset[f]));
+    if (changingDepr && hasPosted) {
+      return res.status(400).json({ ok: false, message: "이미 상각전표가 발행된 자산은 취득원가·내용연수·잔존가액·상각방법·취득일을 변경할 수 없습니다." });
+    }
+    const updated = {
+      ...asset,
+      name: body.name !== undefined ? body.name : asset.name,
+      assetNumber: body.assetNumber !== undefined ? body.assetNumber : asset.assetNumber,
+      category: body.category !== undefined ? body.category : asset.category,
+      locationId: body.locationId !== undefined ? body.locationId : asset.locationId,
+      acquisitionDate: body.acquisitionDate !== undefined ? body.acquisitionDate : asset.acquisitionDate,
+      acquisitionCost: body.acquisitionCost !== undefined ? Number(body.acquisitionCost) : asset.acquisitionCost,
+      usefulLifeYears: body.usefulLifeYears !== undefined ? Math.round(Number(body.usefulLifeYears)) : asset.usefulLifeYears,
+      salvageValue: body.salvageValue !== undefined ? Number(body.salvageValue) : asset.salvageValue,
+      depreciationMethod: body.depreciationMethod !== undefined ? (body.depreciationMethod === "declining" ? "declining" : "straight") : asset.depreciationMethod,
+      updatedBy: body.user || "unknown", updatedAt: new Date().toISOString(),
+    };
+    let newSchedule = schedule;
+    if (changingDepr) newSchedule = _buildDepreciationSchedule(id, updated);
+    if (USE_JSON_FILE) {
+      const idx = _fileAcctFixedAssets.assets.findIndex(a => a.id === id);
+      _fileAcctFixedAssets.assets[idx] = updated;
+      if (changingDepr) _fileAcctFixedAssets.schedule = _fileAcctFixedAssets.schedule.filter(s => s.assetId !== id).concat(newSchedule);
+      _saveFileAcctFixedAssets();
+      return res.json({ ok: true, asset: updated, schedule: newSchedule });
+    }
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query("UPDATE fixed_assets SET data = $3, updated_at = NOW() WHERE id = $1 AND company_id = $2", [id, companyId, updated]);
+      if (changingDepr) {
+        await client.query("DELETE FROM fixed_asset_depreciation_schedule WHERE asset_id = $1 AND company_id = $2", [id, companyId]);
+        for (const s of newSchedule) {
+          await client.query(
+            "INSERT INTO fixed_asset_depreciation_schedule (id, asset_id, company_id, year, data) VALUES ($1,$2,$3,$4,$5)",
+            [s.id, id, companyId, s.year, s]
+          );
+        }
+      }
+      await client.query("COMMIT");
+    } catch (e) { await client.query("ROLLBACK"); throw e; } finally { client.release(); }
+    res.json({ ok: true, asset: updated, schedule: newSchedule });
+  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+});
+
+app.post("/api/accounting/fixed-assets/:id/dispose", async (req, res) => {
+  try {
+    if (!requireAdmin(req, res)) return;
+    const id = req.params.id;
+    const companyId = req.auth.companyId || null;
+    const { disposalDate, user } = req.body || {};
+    if (!disposalDate) return res.status(400).json({ ok: false, message: "처분일은 필수입니다." });
+    let asset;
+    if (USE_JSON_FILE) {
+      asset = _fileAcctFixedAssets.assets.find(a => a.id === id && !a.isDeleted);
+    } else {
+      const { rows } = await pool.query("SELECT data FROM fixed_assets WHERE id = $1 AND company_id = $2 AND is_deleted = FALSE", [id, companyId]);
+      asset = rows[0]?.data;
+    }
+    if (!asset) return res.status(404).json({ ok: false, message: "고정자산을 찾을 수 없습니다." });
+    if (asset.status === "disposed") return res.status(400).json({ ok: false, message: "이미 처분된 자산입니다." });
+    if (new Date(disposalDate) < new Date(asset.acquisitionDate)) return res.status(400).json({ ok: false, message: "처분일은 취득일 이후여야 합니다." });
+    const updated = { ...asset, status: "disposed", disposalDate, disposedBy: user || "unknown", disposedAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+    if (USE_JSON_FILE) {
+      const idx = _fileAcctFixedAssets.assets.findIndex(a => a.id === id);
+      _fileAcctFixedAssets.assets[idx] = updated;
+      _saveFileAcctFixedAssets();
+      return res.json({ ok: true, asset: updated });
+    }
+    await pool.query("UPDATE fixed_assets SET data = $3, updated_at = NOW() WHERE id = $1 AND company_id = $2", [id, companyId, updated]);
+    res.json({ ok: true, asset: updated });
+  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+});
+
+app.post("/api/accounting/fixed-assets/:id/delete", async (req, res) => {
+  try {
+    if (!requireAdmin(req, res)) return;
+    const id = req.params.id;
+    const companyId = req.auth.companyId || null;
+    if (USE_JSON_FILE) {
+      const asset = _fileAcctFixedAssets.assets.find(a => a.id === id && !a.isDeleted);
+      if (!asset) return res.status(404).json({ ok: false, message: "고정자산을 찾을 수 없습니다." });
+      const hasPosted = _fileAcctFixedAssets.schedule.some(s => s.assetId === id && s.status === "posted");
+      if (hasPosted) return res.status(400).json({ ok: false, message: "이미 상각전표가 발행된 자산은 삭제할 수 없습니다." });
+      asset.isDeleted = true;
+      _saveFileAcctFixedAssets();
+      return res.json({ ok: true });
+    }
+    const { rows } = await pool.query("SELECT 1 FROM fixed_assets WHERE id = $1 AND company_id = $2 AND is_deleted = FALSE", [id, companyId]);
+    if (!rows.length) return res.status(404).json({ ok: false, message: "고정자산을 찾을 수 없습니다." });
+    const { rows: postedRows } = await pool.query(
+      "SELECT 1 FROM fixed_asset_depreciation_schedule WHERE asset_id = $1 AND company_id = $2 AND data->>'status' = 'posted' LIMIT 1", [id, companyId]
+    );
+    if (postedRows.length) return res.status(400).json({ ok: false, message: "이미 상각전표가 발행된 자산은 삭제할 수 없습니다." });
+    await pool.query("UPDATE fixed_assets SET is_deleted = TRUE WHERE id = $1 AND company_id = $2", [id, companyId]);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+});
+
+// scheduleId(RCPS)와 동일한 이유로, assetId+year 단위 in-flight 가드가 필요하다.
+const _faSchedulePostInFlight = new Set();
+
+app.post("/api/accounting/fixed-assets/:id/depreciation-schedule/:year/post", async (req, res) => {
+  const assetId = req.params.id;
+  const year = parseInt(req.params.year);
+  const lockKey = `${assetId}:${year}`;
+  let lockedJsonMode = false;
+  try {
+    if (!requireAdmin(req, res)) return;
+    const companyId = req.auth.companyId || null;
+    const { user, depreciationExpenseAccountId, accumulatedDepreciationAccountId } = req.body || {};
+    if (!depreciationExpenseAccountId || !accumulatedDepreciationAccountId) {
+      return res.status(400).json({ ok: false, message: "감가상각비, 감가상각누계액 계정과목은 모두 필수입니다." });
+    }
+    let scheduleRow, asset;
+    let pgClient = null;
+    if (USE_JSON_FILE) {
+      // 동시 요청 중 정확히 한 요청만 이 assetId+year를 처리하도록 동기적으로 선점한다(RCPS와 동일 패턴).
+      if (_faSchedulePostInFlight.has(lockKey)) {
+        return res.status(409).json({ ok: false, message: "이 연도는 다른 요청이 이미 처리 중입니다. 잠시 후 다시 시도해주세요." });
+      }
+      _faSchedulePostInFlight.add(lockKey);
+      lockedJsonMode = true;
+      scheduleRow = _fileAcctFixedAssets.schedule.find(s => s.assetId === assetId && s.year === year);
+      if (!scheduleRow) return res.status(404).json({ ok: false, message: "해당 연도의 상각 스케줄을 찾을 수 없습니다." });
+      if (scheduleRow.status === "posted") return res.status(400).json({ ok: false, message: "이미 전표가 발행된 연도입니다." });
+      asset = _fileAcctFixedAssets.assets.find(a => a.id === assetId);
+    } else {
+      // Postgres 모드: SELECT ... FOR UPDATE로 이 (asset_id, year) 행을 잠가, 같은 조합을 노리는
+      // 동시 요청은 이 트랜잭션이 COMMIT/ROLLBACK될 때까지 뒤 요청의 SELECT에서 대기하게 만든다
+      // (RCPS rcps/schedule/:scheduleId/post가 이미 쓰던 것과 동일한 패턴).
+      pgClient = await pool.connect();
+      await pgClient.query("BEGIN");
+      const { rows } = await pgClient.query(
+        "SELECT data FROM fixed_asset_depreciation_schedule WHERE asset_id = $1 AND year = $2 AND company_id = $3 FOR UPDATE",
+        [assetId, year, companyId]
+      );
+      if (!rows.length) {
+        await pgClient.query("ROLLBACK"); pgClient.release();
+        return res.status(404).json({ ok: false, message: "해당 연도의 상각 스케줄을 찾을 수 없습니다." });
+      }
+      scheduleRow = rows[0].data;
+      if (scheduleRow.status === "posted") {
+        await pgClient.query("ROLLBACK"); pgClient.release();
+        return res.status(400).json({ ok: false, message: "이미 전표가 발행된 연도입니다." });
+      }
+      const { rows: assetRows } = await pgClient.query("SELECT data FROM fixed_assets WHERE id = $1 AND company_id = $2", [assetId, companyId]);
+      asset = assetRows[0]?.data;
+    }
+    if (!asset) {
+      if (pgClient) { await pgClient.query("ROLLBACK"); pgClient.release(); }
+      return res.status(404).json({ ok: false, message: "고정자산을 찾을 수 없습니다." });
+    }
+    if (asset.status === "disposed" && asset.disposalDate && year > new Date(asset.disposalDate).getFullYear()) {
+      if (pgClient) { await pgClient.query("ROLLBACK"); pgClient.release(); }
+      return res.status(400).json({ ok: false, message: "처분일 이후 연도의 감가상각비는 발행할 수 없습니다." });
+    }
+
+    try {
+      const voucher = await _issuePostedVoucher(companyId, {
+        date: `${year}-12-31`,
+        description: `감가상각비 (${asset.name} ${year}년)`,
+        lines: [
+          { accountId: depreciationExpenseAccountId, debit: scheduleRow.depreciationExpense, credit: 0 },
+          { accountId: accumulatedDepreciationAccountId, debit: 0, credit: scheduleRow.depreciationExpense },
+        ],
+        user,
+      }, pgClient);
+
+      const updatedSchedule = { ...scheduleRow, status: "posted", voucherId: voucher.id };
+      if (USE_JSON_FILE) {
+        const idx = _fileAcctFixedAssets.schedule.findIndex(s => s.assetId === assetId && s.year === year);
+        _fileAcctFixedAssets.schedule[idx] = updatedSchedule;
+        _saveFileAcctFixedAssets();
+      } else {
+        await pgClient.query(
+          "UPDATE fixed_asset_depreciation_schedule SET data = $4, updated_at = NOW() WHERE asset_id = $1 AND year = $2 AND company_id = $3",
+          [assetId, year, companyId, updatedSchedule]
+        );
+        await pgClient.query("COMMIT");
+      }
+      res.json({ ok: true, schedule: updatedSchedule, voucher });
+    } catch (e) {
+      if (pgClient) await pgClient.query("ROLLBACK");
+      throw e;
+    } finally {
+      if (pgClient) pgClient.release();
+    }
+  } catch (e) { res.status(e.statusCode || 500).json({ ok: false, message: e.message }); }
+  finally {
+    if (lockedJsonMode) _faSchedulePostInFlight.delete(lockKey);
+  }
 });
 
 // ── 영업/재고 모듈 (품목 / 위치 / 견적서 / 발주서 / 재고 입출고) ──────────────────

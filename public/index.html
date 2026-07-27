@@ -1067,22 +1067,29 @@ let kpiSelUserId=0,hrChgEmpId="",approvalTab="list",settingsTab="main";
 let _evalOpsTab="main";
 let _welfareSettingsTab="health";
 // 회계 모듈: 서버가 직접 관리하는 데이터(클라이언트 신뢰 블롭과 분리, getFullState/applyState 미포함)
-let acctAccounts=[],acctVouchers=[],acctTaxInvoices=[],acctPartners=[],acctPayments=[],acctRcpsIssuances=[],_acctLoaded=false;
+let acctAccounts=[],acctVouchers=[],acctTaxInvoices=[],acctPartners=[],acctPayments=[],acctRcpsIssuances=[],acctFixedAssets=[],_acctLoaded=false;
 // 원가명세서 조회 기간 상태(회계 리포트 페이지의 _acctRptYear 등과 동일한 페이지 로컬 상태 패턴)
 let _costStmtFrom=new Date(new Date().getFullYear(),0,1).toISOString().slice(0,10),_costStmtTo=new Date().toISOString().slice(0,10);
+// 부가세 신고자료 조회 기간 상태 — 데이터는 캐시된 클라이언트 배열이 아니라 기간별 서버 집계라
+// _vatReportData에 별도로 보관(원가명세서와 달리 매 조회마다 서버 재계산이 필요).
+let _vatFrom=new Date(new Date().getFullYear(),0,1).toISOString().slice(0,10),_vatTo=new Date().toISOString().slice(0,10),_vatReportData=null;
+// 고정자산 상세(감가상각 스케줄) — 목록은 acctFixedAssets로 아래 loadAccountingFromServer에서
+// 일괄 로드되지만, 상세는 RCPS 발행 상세와 동일하게 진입 시 지연 로드한다.
+let _faDetail=null,_faDetailId=null;
 // RCPS 발행 상세(상각표·공정가치평가 이력) — 목록은 acctRcpsIssuances로 위 loadAccountingFromServer에서
 // 일괄 로드되지만, 상세는 데이터가 커질 수 있어 상세 화면 진입 시에만 지연 로드한다.
 let _rcpsDetail=null,_rcpsDetailId=null;
 async function loadAccountingFromServer(){
   if(!serverConfig.url){_acctLoaded=true;return;}
   try{
-    const [ra,rv,rt,rp,rpay,rrcps]=await Promise.all([
+    const [ra,rv,rt,rp,rpay,rrcps,rfa]=await Promise.all([
       serverRequest("GET","/api/accounting/accounts"),
       serverRequest("GET","/api/accounting/vouchers"),
       serverRequest("GET","/api/accounting/tax-invoices"),
       serverRequest("GET","/api/accounting/partners"),
       serverRequest("GET","/api/accounting/payments"),
       serverRequest("GET","/api/accounting/rcps/issuances"),
+      serverRequest("GET","/api/accounting/fixed-assets"),
     ]);
     if(ra?.ok)acctAccounts=ra.accounts;
     if(rv?.ok)acctVouchers=rv.vouchers;
@@ -1090,6 +1097,7 @@ async function loadAccountingFromServer(){
     if(rp?.ok)acctPartners=rp.partners;
     if(rpay?.ok)acctPayments=rpay.payments;
     if(rrcps?.ok)acctRcpsIssuances=rrcps.issuances;
+    if(rfa?.ok)acctFixedAssets=rfa.assets;
   }catch(e){/* 오프라인/서버 미연결 시 회계 페이지에서 안내 표시 */}
   _acctLoaded=true;
   if(currentPage&&currentPage.startsWith("acct-"))renderPage();
@@ -5355,6 +5363,8 @@ function renderSidebar(){
       {id:"acct-rcps",label:"RCPS 관리",icon:"💠",desc:"상환전환우선주 발행·상각·공정가치평가",roles:["admin"]},
       {id:"acct-vouchers",label:"전표 관리",icon:"🧾",desc:"전표 작성·확정·취소",roles:["admin"]},
       {id:"acct-tax-invoices",label:"세금계산서",icon:"📄",desc:"세금계산서 발행(사내용)",roles:["admin"]},
+      {id:"acct-vat-report",label:"부가세 신고자료",icon:"🧮",desc:"기간별 매출·매입세액 집계, 납부(환급)세액 계산",roles:["admin"]},
+      {id:"acct-fixed-assets",label:"고정자산 관리",icon:"🏗",desc:"고정자산 취득·감가상각·처분 관리",roles:["admin"]},
       {id:"acct-reports",label:"회계 리포트",icon:"📈",desc:"시산표·월별 손익·거래처별 집계",roles:["admin"]},
       {id:"expense-admin",label:"경비 정산 관리",icon:"🧾",desc:"경비 청구 승인·반려·지급 처리",roles:["admin"]},
       {id:"acct-receivables",label:"채권/채무 관리",icon:"💳",desc:"수금·지급 등록, 거래처별 미수·미지급 잔액",roles:["admin"]},
@@ -5409,7 +5419,7 @@ function renderSidebar(){
   _menuGroupsCache=menuGroups;
   const groupOrder=SIDEBAR_DEFAULT_ORDER.filter(g=>menuGroups[g]);
   const menus=groupOrder.flatMap(g=>menuGroups[g]);
-  const titles={dashboard:"대시보드","my-profile":"내 프로필","hr-register":"신규 직원 등록","hr-list":"직원 목록","hr-changes":"발령·변동 이력",kpi:"KPI 목표 등록","kpi-results":"KPI 결과 입력","my-kpi":"나의 KPI","grade-view":"KPI 등급 현황","comp-grade-view":"역량평가 등급","comp-eval":"다면평가 진행","first-eval":"1차 평가","second-eval":"2차 평가","kpi-amend":"수정 요청 승인","eval-progress":"평가 진행 상황",settings:"운영 설정",history:"수정 이력","change-pw":"비밀번호 변경","data-mgmt":"데이터 관리","core-talent":"핵심인재 관리","talent-dev":"육성 계획·실적","promotion-mgmt":"승진 심사 관리","low-performer":"저성과 인력 관리","approval-draft":"기안하기","approval-outbox":"상신함","approval-inbox":"결재함","approval-receive":"수신함","approval-cc-inbox":"참조함","approval-completed":"완료함","attendance":"근태 현황","att-calendar":"캘린더","leave-mgmt":"연차 관리","payslip":"급여 명세서","approval-templates":"결재 양식 관리","integrations":"연동 설정","orgchart":"조직도","certificate":"증명서 발급","hr-stats":"인사 통계","board":"게시판","room-booking":"회의실 예약","welfare-points":"복지포인트","mandatory-training":"법정의무교육","hr-welfare-points":"복지포인트 현황(전체)","hr-mandatory-training":"법정의무교육 현황(전체)","hr-attendance":"근태 현황(전체)","hr-leave-mgmt":"연차 관리(전체)","welfare-status":"복지 현황","long-service-award":"장기근속 포상","award-history":"(최)우수사원 선정 이력","salary-info":"급여 기준 정보","welfare-settings":"복지 제도 설정","notification-center":"알림","acct-partners":"거래처 관리","acct-accounts":"계정과목","acct-vouchers":"전표 관리","acct-tax-invoices":"세금계산서","acct-cost-statement":"원가명세서","acct-rcps":"RCPS 관리","acct-rcps-detail":"RCPS 발행 상세","acct-reports":"회계 리포트","expense-claims":"경비 청구","expense-admin":"경비 정산 관리","acct-receivables":"채권/채무 관리","overtime-req":"초과근무 신청","exec-dashboard":"경영 대시보드","onboarding":"온보딩/오프보딩","approval-delegation":"결재 위임","sales-quotations":"견적서 관리","sales-dashboard":"영업 실적 대시보드","sales-purchase-orders":"발주서 관리","inv-items":"품목 관리","inv-locations":"위치 관리","inv-stock":"재고 현황","inv-purchase-requests":"구매요청","pms-projects":"프로젝트 관리","pms-allocation":"내 투입률 입력","pms-my-projects":"내가 투입된 프로젝트","pms-utilization":"가동률 현황","pms-worklog":"일일 업무 투입","recruit-jobs":"채용공고 관리","recruit-candidates":"지원자 관리","recruit-eval":"면접 일정/평가 입력","recruit-eval-detail":"면접 평가 상세","recruit-dashboard":"채용 현황 대시보드","eval-ops":"평가 운영","settings-org":"조직 관리","settings-ranks":"직급 체계","attend-settings":"근태 설정","payroll-settings":"급여 관리","payroll-mgmt":"급여 종합 관리","company-info":"회사 기본 정보","room-settings":"회의실 관리","deploy-perm":"권한 관리"};
+  const titles={dashboard:"대시보드","my-profile":"내 프로필","hr-register":"신규 직원 등록","hr-list":"직원 목록","hr-changes":"발령·변동 이력",kpi:"KPI 목표 등록","kpi-results":"KPI 결과 입력","my-kpi":"나의 KPI","grade-view":"KPI 등급 현황","comp-grade-view":"역량평가 등급","comp-eval":"다면평가 진행","first-eval":"1차 평가","second-eval":"2차 평가","kpi-amend":"수정 요청 승인","eval-progress":"평가 진행 상황",settings:"운영 설정",history:"수정 이력","change-pw":"비밀번호 변경","data-mgmt":"데이터 관리","core-talent":"핵심인재 관리","talent-dev":"육성 계획·실적","promotion-mgmt":"승진 심사 관리","low-performer":"저성과 인력 관리","approval-draft":"기안하기","approval-outbox":"상신함","approval-inbox":"결재함","approval-receive":"수신함","approval-cc-inbox":"참조함","approval-completed":"완료함","attendance":"근태 현황","att-calendar":"캘린더","leave-mgmt":"연차 관리","payslip":"급여 명세서","approval-templates":"결재 양식 관리","integrations":"연동 설정","orgchart":"조직도","certificate":"증명서 발급","hr-stats":"인사 통계","board":"게시판","room-booking":"회의실 예약","welfare-points":"복지포인트","mandatory-training":"법정의무교육","hr-welfare-points":"복지포인트 현황(전체)","hr-mandatory-training":"법정의무교육 현황(전체)","hr-attendance":"근태 현황(전체)","hr-leave-mgmt":"연차 관리(전체)","welfare-status":"복지 현황","long-service-award":"장기근속 포상","award-history":"(최)우수사원 선정 이력","salary-info":"급여 기준 정보","welfare-settings":"복지 제도 설정","notification-center":"알림","acct-partners":"거래처 관리","acct-accounts":"계정과목","acct-vouchers":"전표 관리","acct-tax-invoices":"세금계산서","acct-vat-report":"부가세 신고자료","acct-fixed-assets":"고정자산 관리","acct-fixed-assets-detail":"고정자산 상세","acct-cost-statement":"원가명세서","acct-rcps":"RCPS 관리","acct-rcps-detail":"RCPS 발행 상세","acct-reports":"회계 리포트","expense-claims":"경비 청구","expense-admin":"경비 정산 관리","acct-receivables":"채권/채무 관리","overtime-req":"초과근무 신청","exec-dashboard":"경영 대시보드","onboarding":"온보딩/오프보딩","approval-delegation":"결재 위임","sales-quotations":"견적서 관리","sales-dashboard":"영업 실적 대시보드","sales-purchase-orders":"발주서 관리","inv-items":"품목 관리","inv-locations":"위치 관리","inv-stock":"재고 현황","inv-purchase-requests":"구매요청","pms-projects":"프로젝트 관리","pms-allocation":"내 투입률 입력","pms-my-projects":"내가 투입된 프로젝트","pms-utilization":"가동률 현황","pms-worklog":"일일 업무 투입","recruit-jobs":"채용공고 관리","recruit-candidates":"지원자 관리","recruit-eval":"면접 일정/평가 입력","recruit-eval-detail":"면접 평가 상세","recruit-dashboard":"채용 현황 대시보드","eval-ops":"평가 운영","settings-org":"조직 관리","settings-ranks":"직급 체계","attend-settings":"근태 설정","payroll-settings":"급여 관리","payroll-mgmt":"급여 종합 관리","company-info":"회사 기본 정보","room-settings":"회의실 관리","deploy-perm":"권한 관리"};
   const ptEl=$("#page-title");if(ptEl)ptEl.textContent=titles[currentPage]||"";
   const sb=$("#sidebar");if(!sb)return;
   // Filter by role + per-user custom permission overrides (admin-managed)
@@ -5499,7 +5509,7 @@ const PAGE_ROLES={
   "eval-ops":["admin"],"settings-org":["admin"],"settings-ranks":["admin"],"attend-settings":["admin"],
   "payroll-settings":["admin"],"company-info":["admin"],"room-settings":["admin"],"deploy-perm":["admin"],
   "pms-utilization":["admin","director","leader"],"sales-dashboard":["admin"],
-  "acct-partners":["admin"],"acct-accounts":["admin"],"acct-vouchers":["admin"],"acct-tax-invoices":["admin"],"acct-cost-statement":["admin"],"acct-rcps":["admin"],"acct-rcps-detail":["admin"],"acct-reports":["admin"],"expense-admin":["admin"],"acct-receivables":["admin"],"exec-dashboard":["admin"],"onboarding":["admin"],
+  "acct-partners":["admin"],"acct-accounts":["admin"],"acct-vouchers":["admin"],"acct-tax-invoices":["admin"],"acct-vat-report":["admin"],"acct-fixed-assets":["admin"],"acct-fixed-assets-detail":["admin"],"acct-cost-statement":["admin"],"acct-rcps":["admin"],"acct-rcps-detail":["admin"],"acct-reports":["admin"],"expense-admin":["admin"],"acct-receivables":["admin"],"exec-dashboard":["admin"],"onboarding":["admin"],
   "sales-quotations":["admin"],"sales-purchase-orders":["admin"],
   "inv-items":["admin"],"inv-locations":["admin"],"inv-stock":["admin"],"inv-stock-log":["admin"],
   "welfare-settings":["admin"],
@@ -5632,7 +5642,7 @@ function renderCategoryLanding(catKey){
 function renderPage(){
   if(currentPage&&currentPage.startsWith("cat:")){renderCategoryLanding(currentPage.slice(4));renderCatNav();const attendBar=document.getElementById("attend-bar");if(attendBar)attendBar.innerHTML=(currentUser&&currentPage==="dashboard")?_renderTeamTodayWidget(currentUser):"";return;}
   if(currentPage&&currentPage.startsWith("board-")){renderBoardPage();renderCatNav();const attendBar=document.getElementById("attend-bar");if(attendBar)attendBar.innerHTML=(currentUser&&currentPage==="dashboard")?_renderTeamTodayWidget(currentUser):"";return;}
-  const pages={dashboard:renderDashboard,"my-profile":renderMyProfile,"hr-register":renderHRRegister,"hr-list":renderHRList,"hr-changes":renderHRChanges,kpi:()=>renderKPI(false),"kpi-results":()=>renderKPI(true),"my-kpi":renderMyKPI,"grade-view":renderGradeView,"comp-grade-view":renderCompGradeView,"comp-settings-shortcut":()=>gotoPage("eval-ops"),"comp-eval":renderCompEval,"data-mgmt":renderDataManagementPage,"core-talent":renderCoreTalentPage,"talent-dev":renderTalentDevPage,"promotion-mgmt":renderPromotionPageStandalone,"low-performer":renderLowPerformer,"activity-log":()=>{loadActivityFromServer();},"first-eval":()=>{approvalTab="eval";approvalSearch={name:"",dept:""};renderApprovals();},"second-eval":()=>{approvalTab="eval";approvalSearch={name:"",dept:""};renderApprovals();},"kpi-amend":()=>{approvalTab="requests";approvalSearch={name:"",dept:""};renderApprovals();},"eval-progress":renderEvalProgressPage,settings:renderSettings,"eval-ops":renderEvalOpsPage,"settings-org":renderSettingsOrgPage,"settings-ranks":renderSettingsRanksPage,"attend-settings":renderAttendSettings,"payroll-settings":renderPayrollSettings,"company-info":renderCompanyInfo,"room-settings":renderRoomSettings,"deploy-perm":renderDeployPermPage,history:renderHistory,"change-pw":renderChangePW,"approval-draft":renderApprovalDraftPage,"approval-outbox":renderApprovalOutbox,"approval-inbox":renderApprovalInbox,"approval-receive":renderApprovalReceive,"approval-cc-inbox":renderApprovalCcInbox,"approval-completed":renderApprovalCompleted,"attendance":renderAttendancePage,"att-calendar":renderAttendanceCalendarPage,"leave-mgmt":renderLeaveManagementPage,"payslip":renderPayslipPage,"approval-templates":renderApprovalTemplateAdmin,"integrations":renderIntegrationsPage,"orgchart":renderOrgChartPage,"certificate":renderCertPage,"hr-stats":renderHRStatsPage,"board":renderBoardPage,"room-booking":renderRoomBookingPage,"welfare-points":renderWelfarePointsPage,"mandatory-training":renderMandatoryTrainingPage,"welfare-status":renderWelfareStatusPage,"long-service-award":renderLongServiceAwardPage,"award-history":renderAwardHistoryPage,"hr-welfare-points":renderHrWelfarePointsPage,"hr-mandatory-training":renderHrMandatoryTrainingPage,"hr-attendance":renderHrAttendancePage,"hr-leave-mgmt":renderHrLeaveManagementPage,"payroll-mgmt":renderPayrollMgmtPage,"salary-info":renderSalaryInfoPage,"welfare-settings":renderWelfareSettingsPage,"notification-center":renderNotificationCenterPage,"acct-partners":renderAcctPartnersPage,"acct-accounts":renderAcctAccountsPage,"acct-vouchers":renderAcctVouchersPage,"acct-tax-invoices":renderAcctTaxInvoicesPage,"acct-cost-statement":renderAcctCostStatementPage,"acct-rcps":renderAcctRcpsPage,"acct-rcps-detail":()=>{loadRcpsDetailFromServer();},"acct-reports":renderAcctReportsPage,"expense-claims":renderExpenseClaimsPage,"expense-admin":renderExpenseAdminPage,"acct-receivables":renderAcctReceivablesPage,"overtime-req":renderOvertimeReqPage,"exec-dashboard":renderExecDashboardPage,"onboarding":renderOnboardingPage,"approval-delegation":renderApprovalDelegationPage,"sales-quotations":renderSalesQuotationsPage,"sales-dashboard":renderSalesDashboardPage,"sales-purchase-orders":renderSalesPurchaseOrdersPage,"inv-items":renderInvItemsPage,"inv-locations":renderInvLocationsPage,"inv-stock":renderInvStockPage,"inv-stock-log":renderInvStockLogPage,"inv-purchase-requests":renderPurchaseRequestsPage,"pms-projects":renderPmsProjectsPage,"pms-allocation":renderPmsAllocationPage,"pms-my-projects":renderPmsMyProjectsPage,"pms-utilization":renderPmsUtilizationPage,"pms-worklog":renderPmsWorklogPage,"recruit-jobs":renderRecruitJobsPage,"recruit-candidates":renderRecruitCandidatesPage,"recruit-eval":renderRecruitEvalPage,"recruit-eval-detail":renderRecruitEvalDetailPage,"recruit-dashboard":renderRecruitDashboardPage};
+  const pages={dashboard:renderDashboard,"my-profile":renderMyProfile,"hr-register":renderHRRegister,"hr-list":renderHRList,"hr-changes":renderHRChanges,kpi:()=>renderKPI(false),"kpi-results":()=>renderKPI(true),"my-kpi":renderMyKPI,"grade-view":renderGradeView,"comp-grade-view":renderCompGradeView,"comp-settings-shortcut":()=>gotoPage("eval-ops"),"comp-eval":renderCompEval,"data-mgmt":renderDataManagementPage,"core-talent":renderCoreTalentPage,"talent-dev":renderTalentDevPage,"promotion-mgmt":renderPromotionPageStandalone,"low-performer":renderLowPerformer,"activity-log":()=>{loadActivityFromServer();},"first-eval":()=>{approvalTab="eval";approvalSearch={name:"",dept:""};renderApprovals();},"second-eval":()=>{approvalTab="eval";approvalSearch={name:"",dept:""};renderApprovals();},"kpi-amend":()=>{approvalTab="requests";approvalSearch={name:"",dept:""};renderApprovals();},"eval-progress":renderEvalProgressPage,settings:renderSettings,"eval-ops":renderEvalOpsPage,"settings-org":renderSettingsOrgPage,"settings-ranks":renderSettingsRanksPage,"attend-settings":renderAttendSettings,"payroll-settings":renderPayrollSettings,"company-info":renderCompanyInfo,"room-settings":renderRoomSettings,"deploy-perm":renderDeployPermPage,history:renderHistory,"change-pw":renderChangePW,"approval-draft":renderApprovalDraftPage,"approval-outbox":renderApprovalOutbox,"approval-inbox":renderApprovalInbox,"approval-receive":renderApprovalReceive,"approval-cc-inbox":renderApprovalCcInbox,"approval-completed":renderApprovalCompleted,"attendance":renderAttendancePage,"att-calendar":renderAttendanceCalendarPage,"leave-mgmt":renderLeaveManagementPage,"payslip":renderPayslipPage,"approval-templates":renderApprovalTemplateAdmin,"integrations":renderIntegrationsPage,"orgchart":renderOrgChartPage,"certificate":renderCertPage,"hr-stats":renderHRStatsPage,"board":renderBoardPage,"room-booking":renderRoomBookingPage,"welfare-points":renderWelfarePointsPage,"mandatory-training":renderMandatoryTrainingPage,"welfare-status":renderWelfareStatusPage,"long-service-award":renderLongServiceAwardPage,"award-history":renderAwardHistoryPage,"hr-welfare-points":renderHrWelfarePointsPage,"hr-mandatory-training":renderHrMandatoryTrainingPage,"hr-attendance":renderHrAttendancePage,"hr-leave-mgmt":renderHrLeaveManagementPage,"payroll-mgmt":renderPayrollMgmtPage,"salary-info":renderSalaryInfoPage,"welfare-settings":renderWelfareSettingsPage,"notification-center":renderNotificationCenterPage,"acct-partners":renderAcctPartnersPage,"acct-accounts":renderAcctAccountsPage,"acct-vouchers":renderAcctVouchersPage,"acct-tax-invoices":renderAcctTaxInvoicesPage,"acct-vat-report":()=>{loadVatReportFromServer();},"acct-fixed-assets":renderAcctFixedAssetsPage,"acct-fixed-assets-detail":()=>{loadFixedAssetDetailFromServer();},"acct-cost-statement":renderAcctCostStatementPage,"acct-rcps":renderAcctRcpsPage,"acct-rcps-detail":()=>{loadRcpsDetailFromServer();},"acct-reports":renderAcctReportsPage,"expense-claims":renderExpenseClaimsPage,"expense-admin":renderExpenseAdminPage,"acct-receivables":renderAcctReceivablesPage,"overtime-req":renderOvertimeReqPage,"exec-dashboard":renderExecDashboardPage,"onboarding":renderOnboardingPage,"approval-delegation":renderApprovalDelegationPage,"sales-quotations":renderSalesQuotationsPage,"sales-dashboard":renderSalesDashboardPage,"sales-purchase-orders":renderSalesPurchaseOrdersPage,"inv-items":renderInvItemsPage,"inv-locations":renderInvLocationsPage,"inv-stock":renderInvStockPage,"inv-stock-log":renderInvStockLogPage,"inv-purchase-requests":renderPurchaseRequestsPage,"pms-projects":renderPmsProjectsPage,"pms-allocation":renderPmsAllocationPage,"pms-my-projects":renderPmsMyProjectsPage,"pms-utilization":renderPmsUtilizationPage,"pms-worklog":renderPmsWorklogPage,"recruit-jobs":renderRecruitJobsPage,"recruit-candidates":renderRecruitCandidatesPage,"recruit-eval":renderRecruitEvalPage,"recruit-eval-detail":renderRecruitEvalDetailPage,"recruit-dashboard":renderRecruitDashboardPage};
   const fn=pages[currentPage];const c=$("#content");
   if(c&&fn){
     c.innerHTML="";
@@ -14506,6 +14516,220 @@ function renderAcctCostStatementPage(){
       ${r.byAccount.map(a=>`<tr><td>${h(a.code)}</td><td>${h(a.name)}</td><td>${_costTagLabel(a.costCategory,a.costSubType)}</td><td style="text-align:right">${a.amount.toLocaleString()}</td></tr>`).join("")}
     </tbody></table></div>`:`<div class="p-empty">해당 기간에 원가구분이 태깅된 계정의 확정 전표가 없습니다.</div>`}
   </div></div>`;
+}
+
+// ==================== 부가세 신고자료 ====================
+// 원가명세서와 달리 캐시된 클라이언트 배열(acctTaxInvoices)로 계산하지 않고, 기간이 바뀔 때마다
+// 서버 집계(/api/accounting/vat-report)를 새로 조회한다 — RCPS 발행 상세와 동일한 지연 로드 패턴.
+async function loadVatReportFromServer(){
+  const c=$("#content");if(!c)return;
+  if(!serverConfig.url){c.innerHTML=_acctNoServerHtml("부가세 신고자료");return;}
+  c.innerHTML=`<div class="p-empty">불러오는 중...</div>`;
+  const r=await serverRequest("GET",`/api/accounting/vat-report?from=${encodeURIComponent(_vatFrom)}&to=${encodeURIComponent(_vatTo)}`);
+  if(!r?.ok){c.innerHTML=`<div class="p-empty">${h(r?.message||"부가세 신고자료를 불러오지 못했습니다.")}</div>`;return;}
+  _vatReportData=r;
+  renderAcctVatReportPage();
+}
+function renderAcctVatReportPage(){
+  const c=$("#content");if(!c)return;
+  if(!serverConfig.url){c.innerHTML=_acctNoServerHtml("부가세 신고자료");return;}
+  if(!_vatReportData){loadVatReportFromServer();return;}
+  const d=_vatReportData;
+  const months=[...new Set([...d.sales.byMonth.map(m=>m.month),...d.purchase.byMonth.map(m=>m.month)])].sort();
+  const monthRows=months.map(m=>{
+    const s=d.sales.byMonth.find(x=>x.month===m)||{supplyTotal:0,taxTotal:0};
+    const p=d.purchase.byMonth.find(x=>x.month===m)||{supplyTotal:0,taxTotal:0};
+    return `<tr><td>${h(m)}</td><td style="text-align:right">${s.supplyTotal.toLocaleString()}</td><td style="text-align:right">${s.taxTotal.toLocaleString()}</td><td style="text-align:right">${p.supplyTotal.toLocaleString()}</td><td style="text-align:right">${p.taxTotal.toLocaleString()}</td><td style="text-align:right">${(s.taxTotal-p.taxTotal).toLocaleString()}</td></tr>`;
+  }).join("");
+  const partnerRows=(dir,list)=>list.map(p=>`<tr><td>${dir}</td><td>${h(p.partnerName)}</td><td style="text-align:right">${p.count}</td><td style="text-align:right">${p.supplyTotal.toLocaleString()}</td><td style="text-align:right">${p.taxTotal.toLocaleString()}</td></tr>`).join("");
+  c.innerHTML=`<div class="card"><div class="card-head"><h3>🧮 부가세 신고자료</h3>
+    <div class="flex gap2 items-c">
+      <input class="fc" type="date" style="width:auto" value="${h(_vatFrom)}" onchange="_vatFrom=this.value;loadVatReportFromServer()">
+      <span class="fz12 text-gray">~</span>
+      <input class="fc" type="date" style="width:auto" value="${h(_vatTo)}" onchange="_vatTo=this.value;loadVatReportFromServer()">
+      <button class="btn btn-secondary btn-sm" onclick="_dlVatReportCSV()">📥 엑셀 다운로드</button>
+    </div></div>
+  <div class="card-body">
+    <div class="fz11 text-gray mb3">발행(취소되지 않은) 세금계산서를 선택 기간 기준으로 집계한 사내 참고 자료입니다. 국세청 홈택스 신고서 양식과는 별개입니다.</div>
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:16px">
+      <div class="stat-tile"><div class="stat-label">매출세액(예수금)</div><div class="stat-value">${d.sales.taxTotal.toLocaleString()}</div></div>
+      <div class="stat-tile"><div class="stat-label">매입세액(대급금)</div><div class="stat-value">${d.purchase.taxTotal.toLocaleString()}</div></div>
+      <div class="stat-tile"><div class="stat-label">${d.vatPayable>=0?"납부세액":"환급세액"}</div><div class="stat-value" style="color:${d.vatPayable>=0?'#ef4444':'#16a34a'}">${Math.abs(d.vatPayable).toLocaleString()}</div></div>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:16px;margin-bottom:16px">
+      <div><div class="fz12 text-gray mb1">매출 (${d.sales.count}건)</div><div class="fz13">공급가액 ${d.sales.supplyTotal.toLocaleString()} / 세액 ${d.sales.taxTotal.toLocaleString()}</div></div>
+      <div><div class="fz12 text-gray mb1">매입 (${d.purchase.count}건)</div><div class="fz13">공급가액 ${d.purchase.supplyTotal.toLocaleString()} / 세액 ${d.purchase.taxTotal.toLocaleString()}</div></div>
+    </div>
+    <h4 class="mb2">📅 월별 집계</h4>
+    <div class="tbl-wrap mb4"><table><thead><tr><th>월</th><th>매출 공급가액</th><th>매출세액</th><th>매입 공급가액</th><th>매입세액</th><th>차액</th></tr></thead><tbody>
+    ${monthRows||`<tr><td colspan="6" class="text-gray" style="text-align:center;padding:16px">해당 기간에 발행된 세금계산서가 없습니다.</td></tr>`}
+    </tbody></table></div>
+    <h4 class="mb2">🏢 거래처별 집계</h4>
+    <div class="tbl-wrap"><table><thead><tr><th>구분</th><th>거래처</th><th>건수</th><th>공급가액</th><th>세액</th></tr></thead><tbody>
+    ${(partnerRows("매출",d.sales.byPartner)+partnerRows("매입",d.purchase.byPartner))||`<tr><td colspan="5" class="text-gray" style="text-align:center;padding:16px">해당 기간에 발행된 세금계산서가 없습니다.</td></tr>`}
+    </tbody></table></div>
+  </div></div>`;
+}
+function _dlVatReportCSV(){
+  const d=_vatReportData;if(!d)return;
+  const rows=[
+    ["요약","매출",d.sales.supplyTotal,d.sales.taxTotal,d.sales.count],
+    ["요약","매입",d.purchase.supplyTotal,d.purchase.taxTotal,d.purchase.count],
+    ["요약",d.vatPayable>=0?"납부세액":"환급세액",Math.abs(d.vatPayable),"",""],
+    ...d.sales.byPartner.map(p=>["거래처별-매출",p.partnerName,p.supplyTotal,p.taxTotal,p.count]),
+    ...d.purchase.byPartner.map(p=>["거래처별-매입",p.partnerName,p.supplyTotal,p.taxTotal,p.count]),
+  ];
+  dlCSV(`부가세신고자료_${_vatFrom}_${_vatTo}.csv`,["구분","항목","공급가액","세액","건수"],rows);
+}
+
+// ==================== 고정자산 관리 (취득·감가상각·처분) ====================
+function renderAcctFixedAssetsPage(){
+  const c=$("#content");if(!c)return;
+  if(!serverConfig.url){c.innerHTML=_acctNoServerHtml("고정자산 관리");return;}
+  const rows=acctFixedAssets||[];
+  c.innerHTML=`<div class="card"><div class="card-head"><h3>🏗 고정자산 관리</h3><div><button class="btn btn-secondary btn-sm" onclick="_dlFixedAssetsCSV()">📥 엑셀 다운로드</button> <button class="btn btn-primary btn-sm" onclick="openFixedAssetModal()">+ 신규 자산 등록</button></div></div>
+  <div class="card-body">
+  <div class="fz11 text-gray mb3">자산 등록 시 감가상각 스케줄이 자동 계산됩니다. 연도별 상각전표 발행과 처분 처리는 자산 상세 화면에서 진행합니다.</div>
+  <div class="tbl-wrap"><table><thead><tr><th>자산명</th><th>자산번호</th><th>분류</th><th>취득일</th><th>취득원가</th><th>상각방법</th><th>내용연수</th><th>상태</th><th></th></tr></thead><tbody>
+  ${rows.length?rows.map(a=>`<tr><td><a href="#" onclick="openFixedAssetDetail('${a.id}');return false" style="color:#3b82f6;font-weight:600">${h(a.name)}</a></td><td>${h(a.assetNumber||"-")}</td><td>${h(a.category||"-")}</td><td>${h(a.acquisitionDate)}</td><td style="text-align:right">${(a.acquisitionCost||0).toLocaleString()}</td><td>${a.depreciationMethod==="declining"?"정률법":"정액법"}</td><td>${a.usefulLifeYears}년</td><td>${a.status==="disposed"?badge("처분","gray"):badge("사용중","green")}</td><td><button class="btn btn-secondary btn-sm" onclick="openFixedAssetDetail('${a.id}')">상세</button></td></tr>`).join(""):`<tr><td colspan="9" class="text-gray" style="text-align:center;padding:20px">등록된 고정자산이 없습니다.</td></tr>`}
+  </tbody></table></div></div></div>`;
+}
+function _dlFixedAssetsCSV(){
+  dlCSV(`고정자산_${new Date().toISOString().slice(0,10)}.csv`,["자산명","자산번호","분류","취득일","취득원가","잔존가액","상각방법","내용연수","상태","처분일"],
+    (acctFixedAssets||[]).map(a=>[a.name,a.assetNumber||"",a.category||"",a.acquisitionDate,a.acquisitionCost,a.salvageValue||0,a.depreciationMethod==="declining"?"정률법":"정액법",a.usefulLifeYears,a.status==="disposed"?"처분":"사용중",a.disposalDate||""]));
+}
+function openFixedAssetModal(){
+  if(!_erpLoaded)loadErpFromServer();
+  openModal(`<div class="modal-box"><div class="modal-head"><h3>🏗 신규 고정자산 등록</h3></div><div class="modal-body">
+    <div class="fg"><label class="fl">자산명 <span class="req">*</span></label><input class="fc" id="fa-name"></div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+      <div class="fg"><label class="fl">자산번호</label><input class="fc" id="fa-assetno" placeholder="품목 관리의 자산번호와 연계 가능"></div>
+      <div class="fg"><label class="fl">분류</label><input class="fc" id="fa-category" placeholder="예: 비품, 차량운반구"></div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+      <div class="fg"><label class="fl">취득일 <span class="req">*</span></label><input class="fc" type="date" id="fa-acq-date" value="${new Date().toISOString().slice(0,10)}"></div>
+      <div class="fg"><label class="fl">위치</label><select class="fc" id="fa-location"><option value="">선택 안함</option>${(erpLocations||[]).map(l=>`<option value="${l.id}">${h(l.name)}</option>`).join("")}</select></div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+      <div class="fg"><label class="fl">취득원가 <span class="req">*</span></label><input class="fc" type="number" id="fa-cost" placeholder="예: 10000000"></div>
+      <div class="fg"><label class="fl">잔존가액</label><input class="fc" type="number" id="fa-salvage" placeholder="비우면 0"></div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+      <div class="fg"><label class="fl">내용연수(년) <span class="req">*</span></label><input class="fc" type="number" id="fa-life" placeholder="예: 5"></div>
+      <div class="fg"><label class="fl">상각방법</label><select class="fc" id="fa-method"><option value="straight">정액법</option><option value="declining">정률법</option></select></div>
+    </div>
+  </div><div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal()">취소</button><button class="btn btn-primary" onclick="saveFixedAsset()">등록</button></div></div>`);
+}
+async function saveFixedAsset(){
+  const name=$("#fa-name")?.value.trim(),acquisitionDate=$("#fa-acq-date")?.value;
+  const acquisitionCost=Number($("#fa-cost")?.value),usefulLifeYears=Number($("#fa-life")?.value);
+  if(!name||!acquisitionDate||!acquisitionCost||!usefulLifeYears){showToast("필수 항목을 모두 입력하세요.","error");return;}
+  const body={name,assetNumber:$("#fa-assetno")?.value.trim(),category:$("#fa-category")?.value.trim(),
+    acquisitionDate,acquisitionCost,usefulLifeYears,salvageValue:Number($("#fa-salvage")?.value)||0,
+    depreciationMethod:$("#fa-method")?.value||"straight",locationId:$("#fa-location")?.value||null,user:currentUser.name};
+  const r=await serverRequest("POST","/api/accounting/fixed-assets",body);
+  if(!r?.ok){showToast(r?.message||"등록에 실패했습니다.","error");return;}
+  acctFixedAssets.push(r.asset);
+  closeModal();showToast("고정자산이 등록되었습니다.","success");renderAcctFixedAssetsPage();
+}
+async function loadFixedAssetDetailFromServer(){
+  const c=$("#content");if(!c)return;
+  if(!serverConfig.url){c.innerHTML=_acctNoServerHtml("고정자산 상세");return;}
+  const id=_faDetailId;
+  if(!id){gotoPage("acct-fixed-assets");return;}
+  c.innerHTML=`<div class="p-empty">불러오는 중...</div>`;
+  const r=await serverRequest("GET",`/api/accounting/fixed-assets/${id}`);
+  if(!r?.ok){c.innerHTML=`<div class="p-empty">자산 정보를 불러오지 못했습니다.</div>`;return;}
+  _faDetail=r;
+  renderFixedAssetDetailPage();
+}
+function openFixedAssetDetail(id){_faDetailId=id;_faDetail=null;gotoPage("acct-fixed-assets-detail");}
+function renderFixedAssetDetailPage(){
+  const c=$("#content");if(!c)return;
+  const d=_faDetail;if(!d){loadFixedAssetDetailFromServer();return;}
+  const a=d.asset;
+  const schedRows=(d.schedule||[]).map(s=>`<tr><td>${s.year}년</td><td style="text-align:right">${(s.beginningValue||0).toLocaleString()}</td><td style="text-align:right">${(s.depreciationExpense||0).toLocaleString()}</td><td style="text-align:right">${(s.endingValue||0).toLocaleString()}</td><td>${badge(s.status==="posted"?"전표발행":"대기",s.status==="posted"?"green":"gray")}</td><td>${s.status==="pending"?`<button class="btn btn-primary btn-sm" onclick="openFaSchedulePostModal(${s.year})">상각전표 발행</button>`:"-"}</td></tr>`).join("");
+  c.innerHTML=`<div class="card"><div class="card-head"><h3>🏗 ${h(a.name)} ${a.status==="disposed"?badge("처분됨","gray"):""}</h3><button class="btn btn-secondary btn-sm" onclick="gotoPage('acct-fixed-assets')">← 목록으로</button></div>
+  <div class="card-body">
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:16px">
+      <div class="stat-tile"><div class="stat-label">취득원가</div><div class="stat-value">${(a.acquisitionCost||0).toLocaleString()}</div></div>
+      <div class="stat-tile"><div class="stat-label">잔존가액</div><div class="stat-value">${(a.salvageValue||0).toLocaleString()}</div></div>
+      <div class="stat-tile"><div class="stat-label">내용연수</div><div class="stat-value" style="font-size:16px">${a.usefulLifeYears}년(${a.depreciationMethod==="declining"?"정률법":"정액법"})</div></div>
+      <div class="stat-tile"><div class="stat-label">취득일</div><div class="stat-value" style="font-size:16px">${h(a.acquisitionDate)}</div></div>
+    </div>
+    <div class="flex gap2 mb3">
+      <button class="btn btn-secondary btn-sm" onclick="openFixedAssetEditModal()">정보 수정</button>
+      ${a.status!=="disposed"?`<button class="btn btn-danger btn-sm" onclick="disposeFixedAsset()">처분 처리</button>`:`<div class="fz12 text-gray">처분일: ${h(a.disposalDate)}</div>`}
+    </div>
+    <h4 class="mb2">📅 감가상각 스케줄</h4>
+    <div class="tbl-wrap"><table><thead><tr><th>연도</th><th>기초장부가액</th><th>감가상각비</th><th>기말장부가액</th><th>상태</th><th></th></tr></thead><tbody>${schedRows||`<tr><td colspan="6" class="text-gray" style="text-align:center;padding:16px">상각 스케줄이 없습니다.</td></tr>`}</tbody></table></div>
+  </div></div>`;
+}
+function openFaSchedulePostModal(year){
+  openModal(`<div class="modal-box"><div class="modal-head"><h3>${year}년 감가상각비 전표 발행</h3></div><div class="modal-body">
+    <div class="fz11 text-gray mb2">해당 연도의 감가상각비를 전표로 즉시 확정 발행합니다. 계정과목을 지정하세요.</div>
+    <div class="fg"><label class="fl">감가상각비 계정 <span class="req">*</span></label><select class="fc" id="fa-post-expense-acc"><option value="">선택</option>${_acctSelectOptions()}</select></div>
+    <div class="fg"><label class="fl">감가상각누계액 계정 <span class="req">*</span></label><select class="fc" id="fa-post-accum-acc"><option value="">선택</option>${_acctSelectOptions()}</select></div>
+  </div><div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal()">취소</button><button class="btn btn-primary" onclick="confirmFaSchedulePost(${year})">전표 발행</button></div></div>`);
+}
+async function confirmFaSchedulePost(year){
+  const depreciationExpenseAccountId=$("#fa-post-expense-acc")?.value,accumulatedDepreciationAccountId=$("#fa-post-accum-acc")?.value;
+  if(!depreciationExpenseAccountId||!accumulatedDepreciationAccountId){showToast("계정과목을 모두 선택하세요.","error");return;}
+  const id=_faDetail?.asset?.id;if(!id)return;
+  const r=await serverRequest("POST",`/api/accounting/fixed-assets/${id}/depreciation-schedule/${year}/post`,{depreciationExpenseAccountId,accumulatedDepreciationAccountId,user:currentUser.name});
+  if(!r?.ok){showToast(r?.message||"전표 발행에 실패했습니다.","error");return;}
+  closeModal();showToast("상각전표가 발행되었습니다.","success");
+  await loadAccountingFromServer();loadFixedAssetDetailFromServer();
+}
+function openFixedAssetEditModal(){
+  const a=_faDetail?.asset;if(!a)return;
+  const hasPosted=(_faDetail?.schedule||[]).some(s=>s.status==="posted");
+  if(!_erpLoaded)loadErpFromServer();
+  openModal(`<div class="modal-box"><div class="modal-head"><h3>자산 정보 수정</h3></div><div class="modal-body">
+    <div class="fg"><label class="fl">자산명</label><input class="fc" id="fa-e-name" value="${h(a.name)}"></div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+      <div class="fg"><label class="fl">자산번호</label><input class="fc" id="fa-e-assetno" value="${h(a.assetNumber||"")}"></div>
+      <div class="fg"><label class="fl">분류</label><input class="fc" id="fa-e-category" value="${h(a.category||"")}"></div>
+    </div>
+    <div class="fg"><label class="fl">위치</label><select class="fc" id="fa-e-location"><option value="">선택 안함</option>${(erpLocations||[]).map(l=>`<option value="${l.id}" ${a.locationId===l.id?"selected":""}>${h(l.name)}</option>`).join("")}</select></div>
+    ${hasPosted?`<div class="fz11 text-gray mb2">이미 상각전표가 발행된 자산이라 취득원가·내용연수·잔존가액·상각방법·취득일은 변경할 수 없습니다.</div>`:`
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+      <div class="fg"><label class="fl">취득일</label><input class="fc" type="date" id="fa-e-acqdate" value="${h(a.acquisitionDate)}"></div>
+      <div class="fg"><label class="fl">취득원가</label><input class="fc" type="number" id="fa-e-cost" value="${a.acquisitionCost}"></div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+      <div class="fg"><label class="fl">잔존가액</label><input class="fc" type="number" id="fa-e-salvage" value="${a.salvageValue||0}"></div>
+      <div class="fg"><label class="fl">내용연수(년)</label><input class="fc" type="number" id="fa-e-life" value="${a.usefulLifeYears}"></div>
+    </div>
+    <div class="fg"><label class="fl">상각방법</label><select class="fc" id="fa-e-method"><option value="straight" ${a.depreciationMethod!=="declining"?"selected":""}>정액법</option><option value="declining" ${a.depreciationMethod==="declining"?"selected":""}>정률법</option></select></div>
+    `}
+  </div><div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal()">취소</button><button class="btn btn-primary" onclick="saveFixedAssetEdit(${hasPosted})">저장</button></div></div>`);
+}
+async function saveFixedAssetEdit(hasPosted){
+  const id=_faDetail?.asset?.id;if(!id)return;
+  const body={name:$("#fa-e-name")?.value.trim(),assetNumber:$("#fa-e-assetno")?.value.trim(),category:$("#fa-e-category")?.value.trim(),locationId:$("#fa-e-location")?.value||null,user:currentUser.name};
+  if(!hasPosted){
+    body.acquisitionDate=$("#fa-e-acqdate")?.value;
+    body.acquisitionCost=Number($("#fa-e-cost")?.value);
+    body.salvageValue=Number($("#fa-e-salvage")?.value)||0;
+    body.usefulLifeYears=Number($("#fa-e-life")?.value);
+    body.depreciationMethod=$("#fa-e-method")?.value||"straight";
+  }
+  const r=await serverRequest("POST",`/api/accounting/fixed-assets/${id}`,body);
+  if(!r?.ok){showToast(r?.message||"수정에 실패했습니다.","error");return;}
+  closeModal();showToast("저장되었습니다.","success");
+  const idx=acctFixedAssets.findIndex(x=>x.id===id);if(idx>=0)acctFixedAssets[idx]=r.asset;
+  loadFixedAssetDetailFromServer();
+}
+async function disposeFixedAsset(){
+  const id=_faDetail?.asset?.id;if(!id)return;
+  const disposalDate=prompt("처분일을 입력하세요 (YYYY-MM-DD)",new Date().toISOString().slice(0,10));
+  if(!disposalDate)return;
+  const r=await serverRequest("POST",`/api/accounting/fixed-assets/${id}/dispose`,{disposalDate,user:currentUser.name});
+  if(!r?.ok){showToast(r?.message||"처분 처리에 실패했습니다.","error");return;}
+  showToast("처분 처리되었습니다.","info");
+  const idx=acctFixedAssets.findIndex(x=>x.id===id);if(idx>=0)acctFixedAssets[idx]=r.asset;
+  loadFixedAssetDetailFromServer();
 }
 
 // ==================== RCPS(상환전환우선주) 발행·상각·공정가치평가 ====================
