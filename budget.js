@@ -611,9 +611,16 @@ module.exports = function budgetRouterFactory(deps) {
   router.post('/business-plan', async (req, res) => {
     if (!requireAuth(req, res)) return;
     const companyId = req.auth.companyId || null;
-    const data = readBudget(companyId);
     const isAdmin = req.auth.role === 'admin';
+    // getEmployeeProfile()은 budget-data.json과 무관한 별도 조회(employees 조회)이므로,
+    // readBudget()보다 먼저(await 이전에) 끝내둔다 — readBudget→(await 동안 다른 요청이
+    // 끼어들어 파일을 변경)→writeBudget 순서가 되면 그 사이 다른 요청의 변경사항을
+    // 통째로 덮어쓰는 lost-update가 된다(이 코드베이스에서 반복적으로 발견된 클래스의
+    // 버그). await가 필요한 조회를 전부 끝낸 뒤에야 readBudget→(동기 처리)→writeBudget을
+    // 한 번에 수행해, 그 구간에는 await 지점이 전혀 없도록 한다(Node 단일 스레드에서
+    // await 없는 동기 블록은 다른 요청이 끼어들 수 없어 원자적).
     const profile = await getEmployeeProfile(companyId, req.auth.empId);
+    const data = readBudget(companyId);
 
     let dept, team;
     if (isAdmin) {
@@ -694,12 +701,14 @@ module.exports = function budgetRouterFactory(deps) {
   router.put('/business-plan/:id', async (req, res) => {
     if (!requireAuth(req, res)) return;
     const companyId = req.auth.companyId || null;
+    const isAdmin = req.auth.role === 'admin';
+    // readBudget()보다 먼저 await를 전부 끝내는 이유는 POST /business-plan 주석 참고
+    // (lost-update 방지 — read→await→write 사이에 다른 요청이 끼어들지 못하게 함).
+    const profile = await getEmployeeProfile(companyId, req.auth.empId);
     const data = readBudget(companyId);
     const plan = data.businessPlans.find(p => p.id === req.params.id);
     if (!plan) return res.status(404).json({ error: '사업계획을 찾을 수 없습니다.' });
 
-    const isAdmin = req.auth.role === 'admin';
-    const profile = await getEmployeeProfile(companyId, req.auth.empId);
     if (!_canEditPlan(isAdmin, profile, plan)) {
       return res.status(403).json({ error: '수정 권한이 없습니다.' });
     }
@@ -754,14 +763,15 @@ module.exports = function budgetRouterFactory(deps) {
   router.post('/business-plan/:id/approve-division', async (req, res) => {
     if (!requireAuth(req, res)) return;
     const companyId = req.auth.companyId || null;
+    const isAdmin = req.auth.role === 'admin';
+    // readBudget()보다 먼저 await를 끝내는 이유는 POST /business-plan 주석 참고(lost-update 방지).
+    const profile = await getEmployeeProfile(companyId, req.auth.empId);
     const data = readBudget(companyId);
     const plan = data.businessPlans.find(p => p.id === req.params.id);
     if (!plan) return res.status(404).json({ error: '사업계획을 찾을 수 없습니다.' });
     if (!plan.dept) return res.status(400).json({ error: '팀 소속 계획이 아니라 승인 절차가 적용되지 않습니다.' });
     if (plan.status !== 'draft') return res.status(400).json({ error: '이미 승인되었거나 draft 상태가 아닙니다.' });
 
-    const isAdmin = req.auth.role === 'admin';
-    const profile = await getEmployeeProfile(companyId, req.auth.empId);
     if (!_isDivisionHead(isAdmin, profile, plan)) {
       return res.status(403).json({ error: '해당 사업부장(또는 관리자)만 승인할 수 있습니다.' });
     }
@@ -816,13 +826,14 @@ module.exports = function budgetRouterFactory(deps) {
   router.post('/business-plan/:id/request-edit', async (req, res) => {
     if (!requireAuth(req, res)) return;
     const companyId = req.auth.companyId || null;
+    const isAdmin = req.auth.role === 'admin';
+    // readBudget()보다 먼저 await를 끝내는 이유는 POST /business-plan 주석 참고(lost-update 방지).
+    const profile = await getEmployeeProfile(companyId, req.auth.empId);
     const data = readBudget(companyId);
     const plan = data.businessPlans.find(p => p.id === req.params.id);
     if (!plan) return res.status(404).json({ error: '사업계획을 찾을 수 없습니다.' });
     if (plan.status === 'draft') return res.status(400).json({ error: '이미 수정 가능한 상태입니다.' });
 
-    const isAdmin = req.auth.role === 'admin';
-    const profile = await getEmployeeProfile(companyId, req.auth.empId);
     if (!_canEditPlan(isAdmin, profile, plan) && !_isDivisionHead(isAdmin, profile, plan)) {
       return res.status(403).json({ error: '수정요청 권한이 없습니다.' });
     }
@@ -873,14 +884,15 @@ module.exports = function budgetRouterFactory(deps) {
   router.delete('/business-plan/:id', async (req, res) => {
     if (!requireAuth(req, res)) return;
     const companyId = req.auth.companyId || null;
+    const isAdmin = req.auth.role === 'admin';
+    // readBudget()보다 먼저 await를 끝내는 이유는 POST /business-plan 주석 참고(lost-update 방지).
+    const profile = isAdmin ? null : await getEmployeeProfile(companyId, req.auth.empId);
     const data = readBudget(companyId);
     const idx = data.businessPlans.findIndex(p => p.id === req.params.id);
     if (idx === -1) return res.status(404).json({ error: '사업계획을 찾을 수 없습니다.' });
     const plan = data.businessPlans[idx];
 
-    const isAdmin = req.auth.role === 'admin';
     if (!isAdmin) {
-      const profile = await getEmployeeProfile(companyId, req.auth.empId);
       if (!_canEditPlan(isAdmin, profile, plan)) return res.status(403).json({ error: '삭제 권한이 없습니다.' });
       if (plan.status !== 'draft') return res.status(403).json({ error: '승인되어 잠긴 계획은 삭제할 수 없습니다.' });
     }
