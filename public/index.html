@@ -15482,8 +15482,24 @@ function _renderBizPlanRollupTab(){
     html+=`<div class="mb4"><h4 class="mb2">${h(dept.dept)} <span class="fz11 text-gray">(계획 ${dept.planCount}건)</span></h4><div class="tbl-wrap">${rollupTable(dept.projection)}</div></div>`;
   });
   html+=`<div class="mb3"><h4 class="mb2">회사 전체 <span class="fz11 text-gray">(계획 ${d.company.planCount}건)</span></h4><div class="tbl-wrap">${rollupTable(d.company.projection)}</div></div>`;
+  html+=`<h3 class="mt4 mb2">📊 부문별 월별 집계표(3단계 자료 연계 — 개인별 급여 → 팀별 그리드 → 부문별 집계)</h3>`;
+  html+=_bpHeadcountByDeptHtml();
   html+=_bpSgaByCostDeptHtml(d.sgaByCostDept);
+  html+=_bpSgaByCategoryHtml(d.sgaByCategory);
   return html;
+}
+// 사업부문별 월별 인원 현황 — 현재 인사 데이터(employees[])의 재직자 수를 부문별로
+// 집계한 스냅샷이다(과거 월별 이력을 저장하는 별도 데이터가 없어 "지금 시점" 기준).
+function _bpHeadcountByDeptHtml(){
+  const active=employees.filter(e=>e.active);
+  const depts=[...new Set(active.map(e=>e.dept).filter(Boolean))].sort();
+  if(!depts.length)return "";
+  const rows=depts.map(d=>`<tr><td class="lbl">${h(d)}</td><td style="text-align:right">${active.filter(e=>e.dept===d).length}</td></tr>`).join("");
+  return `<div class="mb4"><h4 class="mb2">사업부문별 인원 현황(재직자 기준, 현재 시점) <span class="fz11 text-gray">1단계(개인별 인사 데이터) 확인용</span></h4>
+    <div class="tbl-wrap"><table><tr><th class="lbl">부문</th><th>인원수</th></tr>${rows}
+    <tr style="font-weight:700;background:#fdf1f1"><td class="lbl">전체</td><td style="text-align:right">${active.length}</td></tr>
+    </table></div>
+  </div>`;
 }
 // 판관비 항목을 "비용 귀속 부문" 기준으로 재집계한 표 — 위 byDept(계획을 작성한 팀
 // 기준)와 별개로, 실제 비용이 귀속되는 조직 단위 + 전사 합계를 함께 보여준다.
@@ -15499,6 +15515,24 @@ function _bpSgaByCostDeptHtml(s){
       <tr style="font-weight:700;background:#fdf1f1">${rowHtml("전사 합계",s.company)}</tr>
     </table></div>
   </div>`;
+}
+// 3단계 자료 연계의 마지막 단계 — 판관비 항목을 "구분"(급여/복리후생비/교육훈련비/
+// 사회보험/퇴직급여 등, 표준 템플릿의 category 값을 그대로 재사용)별로 나눈 뒤 각각
+// 비용귀속부문 기준으로 집계한 표를 연속으로 보여준다. 2단계(팀별 월별 그리드)에서 항목을
+// 입력하는 순간 이 표에 자동으로 반영되며, 별도 입력이나 매핑 작업이 필요하지 않다.
+function _bpSgaByCategoryHtml(list){
+  if(!Array.isArray(list)||!list.length)return "";
+  const monthHeads=Array.from({length:12},(_,i)=>`<th>${i+1}월</th>`).join("");
+  const rowHtml=(label,r)=>`<tr><td class="lbl">${h(label)}</td>${(r.months||[]).map(v=>`<td style="text-align:right">${_bpFmt(v)}</td>`).join("")}<td style="text-align:right;font-weight:700">${_bpFmt(r.total)}</td></tr>`;
+  return list.map(c=>`
+    <div class="mb4"><h4 class="mb2">${h(c.category)}(기준연도) <span class="fz11 text-gray">조직단위/전사 확인용</span></h4>
+      <div class="tbl-wrap"><table>
+        <tr><th class="lbl">구분</th>${monthHeads}<th>계</th></tr>
+        ${c.byCostDept.map(r=>rowHtml(r.costDept,r)).join("")}
+        <tr style="font-weight:700;background:#fdf1f1">${rowHtml("전사 합계",c.company)}</tr>
+      </table></div>
+    </div>
+  `).join("");
 }
 
 // ── 설정(예산담당자/기획팀장 지정, 입력기간 on/off) ──

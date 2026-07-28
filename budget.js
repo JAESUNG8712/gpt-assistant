@@ -227,6 +227,43 @@ function _sgaRollupByCostDept(plans) {
   return { byCostDept, company: { months: companyMonths.map(round2), total: round2(companyTotal) } };
 }
 
+// 3단계 자료 연계(개인별 급여 → 팀별 월별 그리드 → 부문별 집계표) 중 마지막 단계:
+// 판관비 항목(sgaItems)을 "구분"(category — 급여/복리후생비/교육훈련비/지급수수료/사회보험/
+// 퇴직급여 등, `_BP_DEFAULT_SGA_TEMPLATE`이 이미 각 항목에 붙여두는 표준 분류) 별로 나눈 뒤,
+// 그 안에서 다시 비용귀속부문(costDept) 기준으로 재집계한다. 표준 판관비 항목 템플릿의
+// category 값을 그대로 재사용하므로 별도 입력·매핑 없이 항목을 입력하는 순간 이 집계에
+// 자동으로 반영된다. company는 그 구분의 전사 합계.
+function _sgaRollupByCategory(plans) {
+  const byCategoryMap = {};
+  plans.forEach(p => {
+    const items = (p.assumptions && p.assumptions.sgaItems) || [];
+    items.forEach(item => {
+      const cat = item.category || '(미분류)';
+      const cd = item.costDept || p.dept || '(미지정)';
+      if (!byCategoryMap[cat]) byCategoryMap[cat] = { byCostDeptMap: {}, companyMonths: Array(12).fill(0), companyTotal: 0 };
+      const catBucket = byCategoryMap[cat];
+      if (!catBucket.byCostDeptMap[cd]) catBucket.byCostDeptMap[cd] = { costDept: cd, months: Array(12).fill(0), total: 0 };
+      const bucket = catBucket.byCostDeptMap[cd];
+      if (Array.isArray(item.months)) {
+        item.months.forEach((v, i) => { bucket.months[i] += (v || 0); catBucket.companyMonths[i] += (v || 0); });
+      }
+      bucket.total += item.baseAmount || 0;
+      catBucket.companyTotal += item.baseAmount || 0;
+    });
+  });
+  return Object.keys(byCategoryMap).map(cat => {
+    const catBucket = byCategoryMap[cat];
+    const byCostDept = Object.values(catBucket.byCostDeptMap)
+      .map(r => ({ ...r, months: r.months.map(round2), total: round2(r.total) }))
+      .sort((a, b) => b.total - a.total);
+    return {
+      category: cat,
+      byCostDept,
+      company: { months: catBucket.companyMonths.map(round2), total: round2(catBucket.companyTotal) }
+    };
+  }).sort((a, b) => b.company.total - a.company.total);
+}
+
 // body에서 사업계획 가정(assumptions)을 검증·정규화한다. existing이 주어지면(PUT) 그 값을
 // 기본값으로 깔고 body에 있는 필드만 덮어써 부분 수정(partial update)을 허용한다.
 // planType==='costOnly'(비용전용 팀)면 매출 관련 3필드(baseRevenue/revenueGrowthRate/
@@ -691,8 +728,12 @@ module.exports = function budgetRouterFactory(deps) {
     // 부문" 기준으로 재집계 — 계획을 작성한 팀과 실제 비용 귀속 부문이 다른 경우에도
     // 전사 합계와 부문별 실집계를 함께 확인할 수 있게 한다.
     const sgaByCostDept = _sgaRollupByCostDept(scoped);
+    // sgaByCategory: 3단계 자료 연계(개인별 급여→팀별 그리드→부문별 집계표)의 마지막
+    // 단계 — 판관비 항목을 "구분"(급여/복리후생비/교육훈련비/사회보험 등)별로 나눈 뒤
+    // 그 안에서 다시 비용귀속부문 기준으로 집계.
+    const sgaByCategory = _sgaRollupByCategory(scoped);
 
-    res.json({ ok: true, includeDraft, byDept, company: { planCount: scoped.length, projection: _rollup(scoped) }, sgaByCostDept });
+    res.json({ ok: true, includeDraft, byDept, company: { planCount: scoped.length, projection: _rollup(scoped) }, sgaByCostDept, sgaByCategory });
   });
 
   // 신규 생성: 관리자가 아니면 dept/team은 항상 작성자 본인 소속으로 강제(다른 팀
