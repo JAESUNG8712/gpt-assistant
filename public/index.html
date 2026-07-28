@@ -14889,6 +14889,7 @@ async function confirmRcpsValuation(){
 let bizPlans=[],bizPlanSettings={ownerIds:[],teamLeaderId:null,inputOpen:true},bizPlanMyProfile=null,_bizPlanLoaded=false;
 let _bizPlanTab="list"; // "list" | "rollup" | "settings"
 let _bizPlanEditingId=null,_bizPlanSgaRowCount=0;
+let _bpSgaDefaultDept="",_bpSgaDefaultTeam=""; // 판관비 항목 신규 행의 부문/팀명 기본값(모달 열 때 계획 소속으로 세팅)
 let _bizPlanCompareIds=new Set();
 let _bizPlanRollupData=null,_bizPlanRollupIncludeDraft=false;
 const _BP_CHART_PALETTE=['#0f3460','#e94560','#1a7d36','#8a6500','#6c3fb0','#0e7c86'];
@@ -15005,9 +15006,32 @@ function _renderBizPlanCard(p){
         ${be.note?`<div style="color:#c0392b;margin-top:4px">${h(be.note)}</div>`:""}
       </div>
       ${p.budgetComparison?`<div class="fz12" style="background:#fff8e6;border-radius:6px;padding:6px 10px;margin-top:8px">참고: 실제 업로드된 판관비 실적 합계 ${_bpFmt(p.budgetComparison.actualSga)}원이 이 계획의 기준연도 판관비 가정 ${_bpFmt(p.budgetComparison.assumptionSga)}원과 ${_bpFmtPct(p.budgetComparison.diffRatio)}(${_bpFmt(p.budgetComparison.diff)}원) 차이가 있습니다.</div>`:""}
+      ${_bpSgaDetailTableHtml(p.assumptions&&p.assumptions.sgaItems)}
       <div style="margin-top:10px">${chart}</div>
     </div>
   </div>`;
+}
+// 판관비 항목별 월별 상세(부문/팀명/비용귀속부문/항목/세부내역/구분/1~12월/계/비고) — 계획
+// 작성 폼(#bp-sga-tbody)과 동일한 컬럼 구성을 읽기전용 테이블로 보여준다.
+function _bpSgaDetailTableHtml(items){
+  items=Array.isArray(items)?items:[];
+  if(!items.length)return "";
+  const monthHeads=Array.from({length:12},(_,i)=>`<th>${i+1}월</th>`).join("");
+  const rows=items.map(it=>{
+    const months=Array.isArray(it.months)?it.months:Array(12).fill(null);
+    const monthCells=months.map(v=>`<td style="text-align:right">${v?_bpFmt(v):"-"}</td>`).join("");
+    return `<tr>
+      <td class="lbl">${h(it.dept||"-")}</td><td class="lbl">${h(it.team||"-")}</td><td class="lbl">${h(it.costDept||it.dept||"-")}</td>
+      <td class="lbl">${h(it.name)}</td><td class="lbl">${h(it.detail||"")}</td><td class="lbl">${h(it.category||"")}</td>
+      ${monthCells}
+      <td style="text-align:right;font-weight:700">${_bpFmt(it.baseAmount)}</td>
+      <td class="lbl">${h(it.note||"")}</td>
+    </tr>`;
+  }).join("");
+  return `<div class="mt3"><h4 class="mb2 fz13">판관비 상세(기준연도)</h4><div class="tbl-wrap"><table>
+    <tr><th class="lbl">부문</th><th class="lbl">팀명</th><th class="lbl">비용귀속부문</th><th class="lbl">항목</th><th class="lbl">세부내역(산정근거)</th><th class="lbl">구분</th>${monthHeads}<th>계</th><th class="lbl">비고</th></tr>
+    ${rows}
+  </table></div></div>`;
 }
 function _bpPlanActionsHtml(p){
   const isAdmin=currentUser.role==="admin";
@@ -15056,8 +15080,10 @@ function openBizPlanFormModal(planId){
   const years=editPlan?(editPlan.years!==undefined?editPlan.years:editPlan.projection.length):3;
   const planType=editPlan?(editPlan.planType||"revenue"):"revenue";
   const isAdmin=currentUser.role==="admin";
+  _bpSgaDefaultDept=editPlan?(editPlan.dept||""):(isAdmin?"":(bizPlanMyProfile?(bizPlanMyProfile.dept||""):""));
+  _bpSgaDefaultTeam=editPlan?(editPlan.team||""):(isAdmin?"":(bizPlanMyProfile?(bizPlanMyProfile.team||""):""));
   const rowsHtml=(editPlan&&Array.isArray(a.sgaItems)&&a.sgaItems.length?a.sgaItems:[null]).map(item=>_bpSgaRowHtml(item)).join("");
-  openModal(`<div class="modal-box" style="max-width:640px"><div class="modal-head"><h3>${editPlan?"사업계획 수정":"신규 사업계획 작성"}</h3></div>
+  openModal(`<div class="modal-box" style="max-width:1180px"><div class="modal-head"><h3>${editPlan?"사업계획 수정":"신규 사업계획 작성"}</h3></div>
   <div class="modal-body">
     <div class="fg"><label class="fl">사업계획명 <span class="req">*</span></label><input class="fc" id="bp-name" placeholder="예: 2027-2029 사업계획" value="${editPlan?h(editPlan.name):""}"></div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
@@ -15084,8 +15110,17 @@ function openBizPlanFormModal(planId){
       <div class="fg"><label class="fl">법인세율(%, 기본 22)</label><input class="fc" type="number" step="0.1" id="bp-tax-rate" value="${editPlan?_bpPctInput(a.taxRate):""}"></div>
       <div class="fg"><label class="fl">연간 감가상각(선택)</label><input class="fc" type="number" id="bp-depreciation" value="${editPlan?(a.depreciation||0):""}"></div>
     </div>
-    <div class="fg"><label class="fl">판관비 항목 <span class="fz11 text-gray">(체크 해제 시 손익분기점에서 변동비로 취급)</span></label>
-      <div id="bp-sga-rows">${rowsHtml}</div>
+    <div class="fg"><label class="fl">판관비 항목(월별 상세) <span class="fz11 text-gray">부문/팀명/비용귀속부문은 필요 시 계획 소속과 다르게 지정 가능(예: 다른 팀이 발생시킨 비용을 이 부문 예산으로 귀속). 증가율/고정비는 2년차 이후 추정·손익분기점 분석에 쓰입니다.</span></label>
+      <div style="overflow-x:auto">
+        <table class="bp-sga-table" style="min-width:1500px">
+          <thead><tr>
+            <th class="lbl">부문</th><th class="lbl">팀명</th><th class="lbl">비용귀속부문</th><th class="lbl">항목</th><th class="lbl">세부내역(산정근거)</th><th class="lbl">구분</th>
+            ${Array.from({length:12},(_,i)=>`<th>${i+1}월</th>`).join("")}
+            <th>계</th><th class="lbl">비고</th><th>증가율(%)</th><th>고정비</th><th></th>
+          </tr></thead>
+          <tbody id="bp-sga-tbody">${rowsHtml}</tbody>
+        </table>
+      </div>
       <button class="btn btn-ghost btn-sm mt2" onclick="addBpSgaRow()">+ 판관비 항목 추가</button>
     </div>
   </div>
@@ -15093,23 +15128,48 @@ function openBizPlanFormModal(planId){
   </div>`);
   setTimeout(_bpToggleCostOnly,0);
 }
+// item이 있으면(수정/재편집) 기존 값으로 채우고, 없으면 계획 소속(_bpSgaDefaultDept/Team)을
+// 기본값으로 새 행을 만든다. months가 없는(이번 변경 이전에 저장된 단순 항목) 기존
+// baseAmount는 1월 칸에 그대로 넣어 하위호환(합계가 baseAmount와 일치하도록만 보존).
 function _bpSgaRowHtml(item){
   const idx=_bizPlanSgaRowCount++;
-  const nameVal=item?h(item.name):"";
-  const amountVal=item&&item.baseAmount!==undefined?item.baseAmount:"";
+  const deptVal=item?h(item.dept||""):h(_bpSgaDefaultDept||"");
+  const teamVal=item?h(item.team||""):h(_bpSgaDefaultTeam||"");
+  const costDeptVal=item?h(item.costDept||item.dept||""):h(_bpSgaDefaultDept||"");
+  const nameVal=item?h(item.name||""):"";
+  const detailVal=item?h(item.detail||""):"";
+  const categoryVal=item?h(item.category||""):"";
+  const noteVal=item?h(item.note||""):"";
+  const months=item&&Array.isArray(item.months)?item.months
+    :(item?[item.baseAmount||0,0,0,0,0,0,0,0,0,0,0,0]:Array(12).fill(0));
   const growthVal=item?_bpPctInput(item.growthRate):"";
   const fixedChecked=(!item||item.fixed!==false)?"checked":"";
-  return `<div id="bp-sga-row-${idx}" style="display:grid;grid-template-columns:2fr 2fr 1fr 1fr auto;gap:6px;align-items:end;margin-top:6px">
-    <div><label class="fz11 text-gray">항목명</label><input class="fc bp-sga-name" placeholder="예: 인건비" value="${nameVal}"></div>
-    <div><label class="fz11 text-gray">기준연도 금액</label><input class="fc bp-sga-amount" type="number" value="${amountVal}"></div>
-    <div><label class="fz11 text-gray">증가율(%)</label><input class="fc bp-sga-growth" type="number" step="0.1" value="${growthVal}"></div>
-    <div style="text-align:center"><label class="fz11 text-gray">고정비</label><br><input type="checkbox" class="bp-sga-fixed" ${fixedChecked}></div>
-    <button class="btn btn-ghost btn-sm" onclick="document.getElementById('bp-sga-row-${idx}').remove()">✕</button>
-  </div>`;
+  const total=months.reduce((s,v)=>s+(Number(v)||0),0);
+  const monthCells=months.map((v,i)=>`<td><input type="number" class="fc bp-sga-month" data-m="${i}" style="width:74px" value="${v||""}" oninput="_bpUpdateSgaRowTotal(this)"></td>`).join("");
+  return `<tr id="bp-sga-row-${idx}">
+    <td><input class="fc bp-sga-dept" style="width:88px" value="${deptVal}"></td>
+    <td><input class="fc bp-sga-team" style="width:76px" value="${teamVal}"></td>
+    <td><input class="fc bp-sga-costdept" style="width:100px" value="${costDeptVal}" title="비용 귀속 부문"></td>
+    <td><input class="fc bp-sga-name" style="width:120px" value="${nameVal}" placeholder="예: (판)지급수수료"></td>
+    <td><input class="fc bp-sga-detail" style="width:180px" value="${detailVal}" placeholder="산정근거"></td>
+    <td><input class="fc bp-sga-category" style="width:64px" value="${categoryVal}" placeholder="구분"></td>
+    ${monthCells}
+    <td class="bp-sga-total" style="text-align:right;font-weight:700;white-space:nowrap">${_bpFmt(total)}</td>
+    <td><input class="fc bp-sga-note" style="width:100px" value="${noteVal}"></td>
+    <td><input class="fc bp-sga-growth" type="number" step="0.1" style="width:60px" value="${growthVal}" title="연간 증가율(%) - 2년차 이후 추정에 사용"></td>
+    <td style="text-align:center"><input type="checkbox" class="bp-sga-fixed" ${fixedChecked} title="고정비(손익분기점 분석용)"></td>
+    <td><button class="btn btn-ghost btn-sm" onclick="document.getElementById('bp-sga-row-${idx}').remove()">✕</button></td>
+  </tr>`;
 }
 function addBpSgaRow(item){
-  const wrap=$("#bp-sga-rows");if(!wrap)return;
+  const wrap=$("#bp-sga-tbody");if(!wrap)return;
   wrap.insertAdjacentHTML("beforeend",_bpSgaRowHtml(item));
+}
+function _bpUpdateSgaRowTotal(input){
+  const row=input.closest("tr");if(!row)return;
+  const months=[...row.querySelectorAll(".bp-sga-month")].map(i=>Number(i.value)||0);
+  const total=months.reduce((s,v)=>s+v,0);
+  const cell=row.querySelector(".bp-sga-total");if(cell)cell.textContent=_bpFmt(total);
 }
 function _bpToggleCostOnly(){
   const sel=document.querySelector('input[name="bp-plan-type"]:checked');
@@ -15131,12 +15191,21 @@ async function submitBizPlanForm(){
   const taxRateInput=$("#bp-tax-rate")?.value;
   const taxRate=taxRateInput?Number(taxRateInput)/100:undefined;
   const depreciation=Number($("#bp-depreciation")?.value)||0;
-  const sgaItems=[...document.querySelectorAll("#bp-sga-rows > div")].map(row=>({
-    name:row.querySelector(".bp-sga-name").value.trim(),
-    baseAmount:Number(row.querySelector(".bp-sga-amount").value)||0,
-    growthRate:(Number(row.querySelector(".bp-sga-growth").value)||0)/100,
-    fixed:row.querySelector(".bp-sga-fixed").checked,
-  }));
+  const sgaItems=[...document.querySelectorAll("#bp-sga-tbody > tr")].map(row=>{
+    const months=[...row.querySelectorAll(".bp-sga-month")].map(i=>Number(i.value)||0);
+    return {
+      dept:row.querySelector(".bp-sga-dept").value.trim()||null,
+      team:row.querySelector(".bp-sga-team").value.trim(),
+      costDept:row.querySelector(".bp-sga-costdept").value.trim()||null,
+      name:row.querySelector(".bp-sga-name").value.trim(),
+      detail:row.querySelector(".bp-sga-detail").value.trim(),
+      category:row.querySelector(".bp-sga-category").value.trim(),
+      months,
+      note:row.querySelector(".bp-sga-note").value.trim(),
+      growthRate:(Number(row.querySelector(".bp-sga-growth").value)||0)/100,
+      fixed:row.querySelector(".bp-sga-fixed").checked,
+    };
+  }).filter(it=>it.name||it.months.some(v=>v!==0)); // 빈 행(추가만 하고 값 미입력)은 제외
   if(!name||!baseYear||!years||(!isCostOnly&&(!baseRevenue||isNaN(revenueGrowthRate)||isNaN(cogsRatio)))){
     showToast("필수 항목을 모두 입력하세요.","error");return;
   }
@@ -15236,7 +15305,23 @@ function _renderBizPlanRollupTab(){
     html+=`<div class="mb4"><h4 class="mb2">${h(dept.dept)} <span class="fz11 text-gray">(계획 ${dept.planCount}건)</span></h4><div class="tbl-wrap">${rollupTable(dept.projection)}</div></div>`;
   });
   html+=`<div class="mb3"><h4 class="mb2">회사 전체 <span class="fz11 text-gray">(계획 ${d.company.planCount}건)</span></h4><div class="tbl-wrap">${rollupTable(d.company.projection)}</div></div>`;
+  html+=_bpSgaByCostDeptHtml(d.sgaByCostDept);
   return html;
+}
+// 판관비 항목을 "비용 귀속 부문" 기준으로 재집계한 표 — 위 byDept(계획을 작성한 팀
+// 기준)와 별개로, 실제 비용이 귀속되는 조직 단위 + 전사 합계를 함께 보여준다.
+function _bpSgaByCostDeptHtml(s){
+  if(!s||!Array.isArray(s.byCostDept))return "";
+  const monthHeads=Array.from({length:12},(_,i)=>`<th>${i+1}월</th>`).join("");
+  const rowHtml=(label,r)=>`<tr><td class="lbl">${h(label)}</td>${(r.months||[]).map(v=>`<td style="text-align:right">${_bpFmt(v)}</td>`).join("")}<td style="text-align:right;font-weight:700">${_bpFmt(r.total)}</td></tr>`;
+  if(!s.byCostDept.length)return "";
+  return `<div class="mb3"><h4 class="mb2">비용귀속부문별 판관비(기준연도) <span class="fz11 text-gray">조직단위/전사 확인용</span></h4>
+    <div class="tbl-wrap"><table>
+      <tr><th class="lbl">구분</th>${monthHeads}<th>계</th></tr>
+      ${s.byCostDept.map(r=>rowHtml(r.costDept,r)).join("")}
+      <tr style="font-weight:700;background:#fdf1f1">${rowHtml("전사 합계",s.company)}</tr>
+    </table></div>
+  </div>`;
 }
 
 // ── 설정(예산담당자/기획팀장 지정, 입력기간 on/off) ──

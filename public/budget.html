@@ -64,8 +64,8 @@
     <h2>1. 자료 업로드</h2>
     <p class="desc">
       ① 인원 현황 파일(부서별 월 인원수)을 업로드하면 자동 반영됩니다.<br>
-      ② 판관/용역/경상 상세 파일(부문·팀·항목별 월 금액)을 업로드하면 인원 현황과 자동 연계되어 사업부별 요약에 합산됩니다.<br>
-      같은 부서/월(또는 부서/팀/항목/구분/월) 데이터를 다시 업로드하면 기존 값이 자동으로 최신 값으로 갱신됩니다(중복 누적 없음).
+      ② 판관/용역/경상 상세 파일(부문·팀명·항목별 월 금액, 열: 부문/팀명/비용 귀속 부문/항목/세부내역(산정근거)/구분/1~12월/비고 — "비용 귀속 부문"과 "비고"는 선택 항목이며 비워두면 부문과 동일하게 처리됩니다)을 업로드하면 인원 현황과 자동 연계되어 사업부별 요약에 합산됩니다.<br>
+      같은 부서/팀/항목/구분/월/비용귀속부문 데이터를 다시 업로드하면 기존 값이 자동으로 최신 값으로 갱신됩니다(중복 누적 없음).
     </p>
     <div class="upload-row">
       <div class="upload-box">
@@ -87,10 +87,15 @@
   <div class="card">
     <h2>2. 사업부별 통합 요약</h2>
     <p class="desc">
-      인원 현황(①)과 판관/용역/경상 상세(②)를 부서 기준으로 연계한 합산 결과입니다.
+      인원 현황(①)과 판관/용역/경상 상세(②)를 연계한 합산 결과입니다. "전체 합계"는 항상 전사 기준이며,
+      기준을 바꾸면 조직 단위 구분도 바꿔볼 수 있습니다(부문 = 실제 비용을 쓴 부서, 비용귀속부문 = 손익상 귀속되는 부서).
       <span class="tag only1">①만 존재</span> 인원만 있고 금액 상세가 없는 달, <span class="tag only2">②만 존재</span> 금액 상세만 있고 인원 데이터가 없는 달을 표시합니다.
       금액은 항목별 고유 키로 갱신되므로 재업로드해도 중복 합산되지 않습니다.
     </p>
+    <div class="tabs">
+      <button id="summaryGroupByDept" class="active" onclick="setSummaryGroupBy('dept')">부문 기준</button>
+      <button id="summaryGroupByCostDept" onclick="setSummaryGroupBy('costDept')">비용귀속부문 기준</button>
+    </div>
     <div id="summaryArea" class="scroll">로딩 중...</div>
   </div>
 
@@ -184,8 +189,16 @@ function fmt(n) {
   return Number(n).toLocaleString();
 }
 
+let summaryGroupBy = 'dept'; // 'dept'(부문, 실제 비용을 쓴 부서) | 'costDept'(비용귀속부문, 손익상 귀속 부서)
+function setSummaryGroupBy(mode) {
+  summaryGroupBy = mode;
+  document.getElementById('summaryGroupByDept').classList.toggle('active', mode === 'dept');
+  document.getElementById('summaryGroupByCostDept').classList.toggle('active', mode === 'costDept');
+  loadSummary();
+}
+
 async function loadSummary() {
-  const res = await fetch('/api/budget/summary', { headers: _authHeaders() });
+  const res = await fetch('/api/budget/summary?groupBy=' + summaryGroupBy, { headers: _authHeaders() });
   const area = document.getElementById('summaryArea');
   if (!res.ok) {
     area.innerHTML = '<p class="desc">관리자 로그인이 필요합니다. 메인 화면(index.html)에서 관리자로 로그인한 뒤 이 페이지를 다시 열어주세요.</p>';
@@ -197,18 +210,19 @@ async function loadSummary() {
     return;
   }
 
+  const groupLabel = summaryGroupBy === 'costDept' ? '비용귀속부문' : '부문';
   let html = '';
   const grandTotals = MONTHS.map(()=>({headcount:0, 판관:0, 용역:0, 경상:0, totalAmount:0}));
 
-  summary.forEach(dept => {
-    html += `<div class="dept-block"><h3>${dept.dept}</h3><table>
+  summary.forEach(group => {
+    html += `<div class="dept-block"><h3>[${groupLabel}] ${group.dept}</h3><table>
       <tr><th class="lbl">구분</th>${MONTHS.map(m=>`<th>${m}월</th>`).join('')}</tr>
-      <tr><td class="lbl">인원수</td>${dept.months.map(d=>`<td>${fmt(d.headcount)}</td>`).join('')}</tr>
-      <tr><td class="lbl">판관</td>${dept.months.map(d=>`<td>${fmt(d.판관)}</td>`).join('')}</tr>
-      <tr><td class="lbl">용역</td>${dept.months.map(d=>`<td>${fmt(d.용역)}</td>`).join('')}</tr>
-      <tr><td class="lbl">경상</td>${dept.months.map(d=>`<td>${fmt(d.경상)}</td>`).join('')}</tr>
-      <tr><td class="lbl">합계금액</td>${dept.months.map(d=>`<td>${fmt(d.totalAmount)}</td>`).join('')}</tr>
-      <tr><td class="lbl">데이터 출처</td>${dept.months.map(d=>{
+      ${summaryGroupBy === 'dept' ? `<tr><td class="lbl">인원수</td>${group.months.map(d=>`<td>${fmt(d.headcount)}</td>`).join('')}</tr>` : ''}
+      <tr><td class="lbl">판관</td>${group.months.map(d=>`<td>${fmt(d.판관)}</td>`).join('')}</tr>
+      <tr><td class="lbl">용역</td>${group.months.map(d=>`<td>${fmt(d.용역)}</td>`).join('')}</tr>
+      <tr><td class="lbl">경상</td>${group.months.map(d=>`<td>${fmt(d.경상)}</td>`).join('')}</tr>
+      <tr><td class="lbl">합계금액</td>${group.months.map(d=>`<td>${fmt(d.totalAmount)}</td>`).join('')}</tr>
+      <tr><td class="lbl">데이터 출처</td>${group.months.map(d=>{
         if (d.hasHeadcountData && d.hasDetailData) return '<td>①+②</td>';
         if (d.hasHeadcountData) return '<td><span class="tag only1">①만</span></td>';
         if (d.hasDetailData) return '<td><span class="tag only2">②만</span></td>';
@@ -216,7 +230,7 @@ async function loadSummary() {
       }).join('')}</tr>
     </table></div>`;
 
-    dept.months.forEach((d, idx) => {
+    group.months.forEach((d, idx) => {
       if (d.headcount) grandTotals[idx].headcount += d.headcount;
       grandTotals[idx].판관 += d.판관;
       grandTotals[idx].용역 += d.용역;
@@ -225,9 +239,9 @@ async function loadSummary() {
     });
   });
 
-  html += `<div class="dept-block"><h3>전체 합계 (중복 제외 합산)</h3><table>
+  html += `<div class="dept-block"><h3>전체 합계(전사, 중복 제외 합산)</h3><table>
     <tr><th class="lbl">구분</th>${MONTHS.map(m=>`<th>${m}월</th>`).join('')}</tr>
-    <tr class="grand-total"><td class="lbl">인원수</td>${grandTotals.map(g=>`<td>${fmt(g.headcount)}</td>`).join('')}</tr>
+    ${summaryGroupBy === 'dept' ? `<tr class="grand-total"><td class="lbl">인원수</td>${grandTotals.map(g=>`<td>${fmt(g.headcount)}</td>`).join('')}</tr>` : ''}
     <tr class="grand-total"><td class="lbl">판관</td>${grandTotals.map(g=>`<td>${fmt(g.판관)}</td>`).join('')}</tr>
     <tr class="grand-total"><td class="lbl">용역</td>${grandTotals.map(g=>`<td>${fmt(g.용역)}</td>`).join('')}</tr>
     <tr class="grand-total"><td class="lbl">경상</td>${grandTotals.map(g=>`<td>${fmt(g.경상)}</td>`).join('')}</tr>
@@ -257,9 +271,9 @@ function renderRaw() {
     area.innerHTML = html;
   } else {
     if (!rawData.items.length) { area.innerHTML = '<p class="desc">데이터 없음</p>'; return; }
-    let html = '<table><tr><th class="lbl">부문</th><th class="lbl">팀</th><th class="lbl">매출구분</th><th class="lbl">항목</th><th class="lbl">세부내역</th><th class="lbl">구분</th><th>월</th><th>금액</th></tr>';
+    let html = '<table><tr><th class="lbl">부문</th><th class="lbl">팀명</th><th class="lbl">비용귀속부문</th><th class="lbl">매출구분</th><th class="lbl">항목</th><th class="lbl">세부내역(산정근거)</th><th class="lbl">구분</th><th>월</th><th>금액</th><th class="lbl">비고</th></tr>';
     rawData.items.sort((a,b)=> a.dept.localeCompare(b.dept) || a.month-b.month)
-      .forEach(i => html += `<tr><td class="lbl">${i.dept}</td><td class="lbl">${i.team||''}</td><td class="lbl">${i.revenueType||''}</td><td class="lbl">${i.account||''}</td><td class="lbl">${i.detail||''}</td><td class="lbl">${i.category}</td><td>${i.month}월</td><td>${fmt(i.amount)}</td></tr>`);
+      .forEach(i => html += `<tr><td class="lbl">${i.dept}</td><td class="lbl">${i.team||''}</td><td class="lbl">${i.costDept||i.dept}</td><td class="lbl">${i.revenueType||''}</td><td class="lbl">${i.account||''}</td><td class="lbl">${i.detail||''}</td><td class="lbl">${i.category}</td><td>${i.month}월</td><td>${fmt(i.amount)}</td><td class="lbl">${i.note||''}</td></tr>`);
     html += '</table>';
     area.innerHTML = html;
   }

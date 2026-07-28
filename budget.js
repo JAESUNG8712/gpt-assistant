@@ -193,6 +193,33 @@ function computeBudgetComparison(data, plan) {
   return { actualSga, assumptionSga, diff, diffRatio };
 }
 
+// 판관비 항목(sgaItems)을 비용 귀속 부문(costDept) 기준으로 재집계 — 계획을 작성한
+// 팀(plan.dept)과 실제 비용이 귀속되는 부문이 다를 수 있어(예: 기획팀이 작성한 계획 안에
+// 경영지원부문 귀속 비용이 섞여 있는 경우), plan.dept 기준 롤업(byDept)과는 별개로
+// "이 비용이 실제로 누구 예산인지" 기준의 조직단위 집계를 제공한다. company는 전사 합계.
+function _sgaRollupByCostDept(plans) {
+  const byCostDeptMap = {};
+  const companyMonths = Array(12).fill(0);
+  let companyTotal = 0;
+  plans.forEach(p => {
+    const items = (p.assumptions && p.assumptions.sgaItems) || [];
+    items.forEach(item => {
+      const cd = item.costDept || p.dept || '(미지정)';
+      if (!byCostDeptMap[cd]) byCostDeptMap[cd] = { costDept: cd, months: Array(12).fill(0), total: 0 };
+      const bucket = byCostDeptMap[cd];
+      if (Array.isArray(item.months)) {
+        item.months.forEach((v, i) => { bucket.months[i] += (v || 0); companyMonths[i] += (v || 0); });
+      }
+      bucket.total += item.baseAmount || 0;
+      companyTotal += item.baseAmount || 0;
+    });
+  });
+  const byCostDept = Object.values(byCostDeptMap)
+    .map(r => ({ ...r, months: r.months.map(round2), total: round2(r.total) }))
+    .sort((a, b) => b.total - a.total);
+  return { byCostDept, company: { months: companyMonths.map(round2), total: round2(companyTotal) } };
+}
+
 // body에서 사업계획 가정(assumptions)을 검증·정규화한다. existing이 주어지면(PUT) 그 값을
 // 기본값으로 깔고 body에 있는 필드만 덮어써 부분 수정(partial update)을 허용한다.
 // planType==='costOnly'(비용전용 팀)면 매출 관련 3필드(baseRevenue/revenueGrowthRate/
@@ -239,14 +266,34 @@ function _normalizeBusinessPlanInput(body, existing) {
     if (!Array.isArray(sgaItemsRaw)) {
       errors.push('sgaItems');
     } else {
-      sgaItems = sgaItemsRaw.map(item => ({
-        name: (item && item.name) || '',
-        baseAmount: Number(item && item.baseAmount) || 0,
-        growthRate: Number(item && item.growthRate) || 0,
-        // 손익분기점(BEP) 분석용: 이 항목을 고정비로 볼지 여부. 지정하지 않으면(undefined)
-        // true로 취급 — "판관비 전체를 고정비로 가정"하는 요청서 기본 동작과 일치.
-        fixed: !(item && item.fixed === false)
-      }));
+      sgaItems = sgaItemsRaw.map(item => {
+        // 항목별 월별 상세(부문/팀명/비용귀속부문/세부내역/구분/1~12월/비고) — 실적 업로드
+        // 포맷(부문/팀/비용귀속부문/항목/세부내역/구분/월별금액)과 동일한 형태로 계획도
+        // 항목 단위 월별 금액을 입력받는다. months가 있으면 그 12개월 합계를 그 해
+        // 기준연도 금액(baseAmount)으로 쓰고, 이후 연도는 기존과 동일하게 growthRate로
+        // 추정한다. months가 없으면(과거에 저장된 단순 항목) 기존처럼 baseAmount를
+        // 그대로 사용 — 하위호환.
+        const monthsRaw = item && Array.isArray(item.months) ? item.months : null;
+        const months = monthsRaw && monthsRaw.length === 12 ? monthsRaw.map(v => Number(v) || 0) : null;
+        const baseAmount = months
+          ? round2(months.reduce((s, v) => s + v, 0))
+          : (Number(item && item.baseAmount) || 0);
+        return {
+          dept: (item && item.dept) || null,
+          team: (item && item.team) || '',
+          costDept: (item && item.costDept) || null,
+          name: (item && item.name) || '',
+          detail: (item && item.detail) || '',
+          category: (item && item.category) || '',
+          months,
+          note: (item && item.note) || '',
+          baseAmount,
+          growthRate: Number(item && item.growthRate) || 0,
+          // 손익분기점(BEP) 분석용: 이 항목을 고정비로 볼지 여부. 지정하지 않으면(undefined)
+          // true로 취급 — "판관비 전체를 고정비로 가정"하는 요청서 기본 동작과 일치.
+          fixed: !(item && item.fixed === false)
+        };
+      });
     }
   }
 
@@ -386,24 +433,31 @@ router.post('/upload/detail', upload.single('file'), (req, res) => {
     const category = row['구분'];
     if (!dept || dept === '계' || !category || !CATEGORIES.includes(category)) return;
 
-    const team = row['팀'] || '';
+    const team = row['팀'] || row['팀명'] || '';
     const revenueType = row['매출구분'] || '';
     const account = row['항목'] || '';
     const detail = row['세부내역(산정근거)'] || row['세부내역'] || '';
+    // 비용 귀속 부문: 실제 비용을 쓰는 팀(부문/팀)과 그 비용이 손익상 귀속되는 부문이
+    // 다를 수 있어(예: 기획팀이 발생시킨 비용이 경영지원부문 예산으로 잡히는 경우) 별도
+    // 컬럼으로 받는다. 비어있으면 부문(dept)과 동일하게 취급(기존 업로드 파일과의 하위호환).
+    const costDept = row['비용 귀속 부문'] || row['비용귀속부문'] || dept;
+    const note = row['비고'] || '';
 
     MONTHS.forEach(m => {
       const amount = toNumber(row[`${m}월`]);
       if (amount === null) return;
       const existing = data.items.find(i =>
         i.dept === dept && i.team === team && i.account === account &&
-        i.category === category && i.month === m
+        i.category === category && i.month === m && (i.costDept || i.dept) === costDept
       );
       if (existing) {
         existing.amount = amount;
         existing.revenueType = revenueType;
         existing.detail = detail;
+        existing.costDept = costDept;
+        existing.note = note;
       } else {
-        data.items.push({ dept, team, revenueType, account, detail, category, month: m, amount });
+        data.items.push({ dept, team, revenueType, account, detail, category, costDept, note, month: m, amount });
       }
       upserted++;
     });
@@ -434,26 +488,33 @@ router.get('/uploads', (req, res) => {
 });
 
 // 사업부별/월별 통합 요약 (인원 + 판관/용역/경상 합산, 중복 제외)
+// ?groupBy=costDept 를 주면 실제 비용이 쓰인 부문(dept)이 아니라 손익상 귀속되는
+// 부문(costDept)을 기준으로 재집계한다(전사 합계는 프론트가 이 배열을 그대로 합산해
+// 보여주므로 groupBy와 무관하게 항상 동일 — "전사"와 "조직단위" 양쪽을 같은 응답으로
+// 커버). 인원 현황(headcount)은 비용귀속부문 개념이 없어 groupBy=costDept일 때는 항상 null.
 router.get('/summary', (req, res) => {
   if (!requireAdmin(req, res)) return;
   const data = readBudget(req.auth.companyId || null);
-  const depts = [...new Set([
-    ...data.headcount.map(h => h.dept),
-    ...data.items.map(i => i.dept)
-  ])];
+  const groupBy = req.query.groupBy === 'costDept' ? 'costDept' : 'dept';
+  const keyOf = item => (groupBy === 'costDept' ? (item.costDept || item.dept) : item.dept);
 
-  const summary = depts.map(dept => {
+  const groups = [...new Set([
+    ...(groupBy === 'dept' ? data.headcount.map(h => h.dept) : []),
+    ...data.items.map(keyOf)
+  ])].filter(Boolean);
+
+  const summary = groups.map(groupKey => {
     const months = MONTHS.map(m => {
-      const headcountEntry = data.headcount.find(h => h.dept === dept && h.month === m);
-      const deptItems = data.items.filter(i => i.dept === dept && i.month === m);
+      const headcountEntry = groupBy === 'dept' ? data.headcount.find(h => h.dept === groupKey && h.month === m) : null;
+      const groupItems = data.items.filter(i => keyOf(i) === groupKey && i.month === m);
 
       const byCategory = {};
       CATEGORIES.forEach(c => { byCategory[c] = 0; });
-      deptItems.forEach(i => { byCategory[i.category] += i.amount; });
+      groupItems.forEach(i => { byCategory[i.category] += i.amount; });
 
-      // 항목 단위로 이미 고유 키(부서+팀+항목+구분+월)로 upsert 되어 있으므로
+      // 항목 단위로 이미 고유 키(부서+팀+항목+구분+월+비용귀속부문)로 upsert 되어 있으므로
       // 단순 합산해도 중복이 발생하지 않음
-      const totalAmount = deptItems.reduce((sum, i) => sum + i.amount, 0);
+      const totalAmount = groupItems.reduce((sum, i) => sum + i.amount, 0);
 
       return {
         month: m,
@@ -461,14 +522,14 @@ router.get('/summary', (req, res) => {
         ...byCategory,
         totalAmount,
         hasHeadcountData: !!headcountEntry,
-        hasDetailData: deptItems.length > 0
+        hasDetailData: groupItems.length > 0
       };
     });
 
-    return { dept, months };
+    return { dept: groupKey, months };
   });
 
-  res.json({ summary });
+  res.json({ summary, groupBy });
 });
 
 // 데이터 초기화 (본인 회사 데이터만 — 다른 회사 데이터는 건드리지 않음)
@@ -612,7 +673,12 @@ module.exports = function budgetRouterFactory(deps) {
       };
     });
 
-    res.json({ ok: true, includeDraft, byDept, company: { planCount: scoped.length, projection: _rollup(scoped) } });
+    // sgaByCostDept: 위 byDept/company(P&L 롤업)와 별개로, 판관비 항목만 "비용 귀속
+    // 부문" 기준으로 재집계 — 계획을 작성한 팀과 실제 비용 귀속 부문이 다른 경우에도
+    // 전사 합계와 부문별 실집계를 함께 확인할 수 있게 한다.
+    const sgaByCostDept = _sgaRollupByCostDept(scoped);
+
+    res.json({ ok: true, includeDraft, byDept, company: { planCount: scoped.length, projection: _rollup(scoped) }, sgaByCostDept });
   });
 
   // 신규 생성: 관리자가 아니면 dept/team은 항상 작성자 본인 소속으로 강제(다른 팀
