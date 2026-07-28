@@ -14925,6 +14925,18 @@ function _bpIsOwnerOrLead(){
 function _bpIsDivisionHeadOf(p){
   return !!(bizPlanMyProfile&&bizPlanMyProfile.role==="director"&&p.dept&&bizPlanMyProfile.dept===p.dept);
 }
+// 서버 budget.js의 _canEditPlan()과 동일한 기준(관리자, 또는 같은 dept+team 소속, 또는 그
+// dept의 사업부장)을 클라이언트에서도 미리 판단 — 예산담당자/기획팀장처럼 전체 조회 권한은
+// 있지만 특정 팀 계획의 수정 권한은 없는 사용자에게 눌러도 항상 403이 되는 "수정/삭제/
+// 수정요청" 버튼이 노출되던 버그 수정(승인 버튼은 이미 _bpIsDivisionHeadOf/_bpIsOwnerOrLead로
+// 이 방식이 적용돼 있었는데 이 세 버튼만 빠져 있었음).
+function _bpCanEditClient(p){
+  if(!currentUser)return false;
+  if(currentUser.role==="admin")return true;
+  if(!p.dept)return false;
+  if(bizPlanMyProfile&&bizPlanMyProfile.dept===p.dept&&(bizPlanMyProfile.team||"")===(p.team||""))return true;
+  return _bpIsDivisionHeadOf(p);
+}
 function _bpStatusBadge(status){
   if(status==="draft")return badge("작성중","gray");
   if(status==="divisionApproved")return badge("사업부장 승인됨(잠김)","blue");
@@ -15065,16 +15077,17 @@ function _bpSgaDetailTableHtml(items){
 }
 function _bpPlanActionsHtml(p){
   const isAdmin=currentUser.role==="admin";
+  const canEdit=_bpCanEditClient(p);
   const btns=[];
-  if(isAdmin||p.status==="draft")btns.push(`<button class="btn btn-secondary btn-sm" onclick="openBizPlanForm('${p.id}')">수정</button>`);
+  if(isAdmin||(p.status==="draft"&&canEdit))btns.push(`<button class="btn btn-secondary btn-sm" onclick="openBizPlanForm('${p.id}')">수정</button>`);
   if(p.status==="draft"&&p.dept&&(isAdmin||_bpIsDivisionHeadOf(p)))btns.push(`<button class="btn btn-primary btn-sm" onclick="approveBizPlanDivision('${p.id}')">사업부장 승인</button>`);
   if(p.status==="divisionApproved"&&(isAdmin||_bpIsOwnerOrLead()))btns.push(`<button class="btn btn-primary btn-sm" onclick="finalApproveBizPlan('${p.id}')">최종승인</button>`);
-  if((p.status==="divisionApproved"||p.status==="finalConfirmed")&&!p.editRequest)btns.push(`<button class="btn btn-secondary btn-sm" onclick="requestEditBizPlan('${p.id}')">수정요청</button>`);
+  if((p.status==="divisionApproved"||p.status==="finalConfirmed")&&!p.editRequest&&(isAdmin||canEdit))btns.push(`<button class="btn btn-secondary btn-sm" onclick="requestEditBizPlan('${p.id}')">수정요청</button>`);
   if(p.editRequest&&isAdmin){
     btns.push(`<button class="btn btn-primary btn-sm" onclick="approveBizPlanEditRequest('${p.id}')">수정요청 승인</button>`);
     btns.push(`<button class="btn btn-secondary btn-sm" onclick="rejectBizPlanEditRequest('${p.id}')">수정요청 반려</button>`);
   }
-  if(isAdmin||p.status==="draft")btns.push(`<button class="btn btn-danger btn-sm" onclick="deleteBizPlan('${p.id}')">삭제</button>`);
+  if(isAdmin||(p.status==="draft"&&canEdit))btns.push(`<button class="btn btn-danger btn-sm" onclick="deleteBizPlan('${p.id}')">삭제</button>`);
   return btns.join("");
 }
 async function _bpAction(id,suffix,body){
@@ -16473,9 +16486,11 @@ function _renderSalesDashTab(){
     return years.map(y=>{
       const list=byYear[y];
       const rows=list.map(t=>{
-        const orderActual=erpQuotations.filter(q=>q.status==="accepted"||q.status==="shipped").filter(q=>new Date(q.date).getFullYear()===Number(y)&&(t.month?new Date(q.date).getMonth()+1===Number(t.month):true)&&(t.employeeId?q.createdBy===t.employeeName:true)).reduce((s,q)=>s+_quoteSupply(q),0);
-        const revenueActual=erpQuotations.filter(q=>q.status==="shipped").filter(q=>new Date(q.date).getFullYear()===Number(y)&&(t.month?new Date(q.date).getMonth()+1===Number(t.month):true)&&(t.employeeId?q.createdBy===t.employeeName:true)).reduce((s,q)=>s+_quoteSupply(q),0);
-        const actual=orderActual+revenueActual;
+        // status는 견적서당 하나만 유지되며(수주확정→출고 시 "accepted"에서 "shipped"로
+        // 전환) accepted∥shipped 필터가 이미 수주(미출고)+매출(출고완료)을 중복 없이 합산한
+        // 값이다. 과거에는 여기에 shipped만 다시 걸러 더해(actual=orderActual+revenueActual)
+        // 출고완료 건의 금액이 두 번 집계되어 달성률이 실제보다 부풀려지는 버그가 있었다.
+        const actual=erpQuotations.filter(q=>q.status==="accepted"||q.status==="shipped").filter(q=>new Date(q.date).getFullYear()===Number(y)&&(t.month?new Date(q.date).getMonth()+1===Number(t.month):true)&&(t.employeeId?q.createdBy===t.employeeName:true)).reduce((s,q)=>s+_quoteSupply(q),0);
         const rate=t.targetAmount?Math.round((actual/t.targetAmount)*100):0;
         return `<tr><td>${t.month?h(t.month)+"월":"연간"}</td><td>${h(t.employeeName||"전체")}</td><td style="text-align:right">${t.targetAmount.toLocaleString()}</td><td style="text-align:right">${actual.toLocaleString()}</td><td style="text-align:right">${rate}%</td><td>${h(t.memo||"")}</td><td><button class="btn btn-danger btn-sm" onclick="deleteSalesTarget('${t.id}')">삭제</button></td></tr>`;
       }).join("");

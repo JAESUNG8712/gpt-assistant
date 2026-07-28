@@ -180,9 +180,16 @@ function computeBreakEven(a) {
 // 예산 실적 대비 비교(선택 기능): 실제 업로드된(섹션 1~3) 판관 카테고리 금액 합계와
 // 사업계획의 기준연도 판관비 가정 합계를 단순 비교해 괴리를 안내한다. 저장하지 않고
 // 조회 시점마다 재계산(업로드 데이터가 계획 저장 이후에도 바뀔 수 있으므로).
+// plan.dept가 있으면(팀별 계획 워크플로우 도입 이후) 그 팀/부서의 실적만 걸러서 비교한다 —
+// 이 필터가 없으면 전사 실적 전체를 팀 하나의 계획과 비교하게 되어(회사 전체 판관비 실적이
+// 우연히 계획보다 훨씬 크므로) 실제로는 예산을 절감한 팀도 "실적이 계획을 크게 초과"로
+// 잘못 표시되는 문제가 있었다. plan.team이 있으면 그 팀 실적만, team이 비어있으면(사업부장
+// 단위 계획) 그 부문 전체(여러 팀 합산) 실적을 비교 대상으로 삼는다. dept가 없는(레거시
+// 전사 스크래치) 계획은 기존과 동일하게 전사 실적 전체와 비교한다.
 function computeBudgetComparison(data, plan) {
   const actualSga = round2((data.items || [])
     .filter(i => i.category === '판관')
+    .filter(i => !plan.dept || (i.dept === plan.dept && (!plan.team || (i.team || '') === plan.team)))
     .reduce((sum, i) => sum + i.amount, 0));
   if (actualSga <= 0) return null;
   const sgaItems = Array.isArray(plan.assumptions && plan.assumptions.sgaItems) ? plan.assumptions.sgaItems : [];
