@@ -2491,6 +2491,32 @@ app.get("/api/accounting/accounts", async (req, res) => {
   } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
 });
 
+// 비용계정 선택용 최소 조회 — 사업계획(전 역할 공개) 작성 화면의 "비용계정" 검색선택
+// 필드가 실제 회계 계정과목을 참조해야 하는데, 전체 계정과목 조회(위 GET .../accounts)는
+// 회계 모듈 전체가 admin 전용이라 그대로 재사용하면 일반 직원은 사업계획을 작성할 수
+// 없게 된다. 비용(type==="expense") 계정의 코드/이름만 반환해 회계 모듈의 다른 민감
+// 정보(원가구분·변경이력 등)는 노출하지 않는다.
+app.get("/api/accounting/accounts/expense-lite", async (req, res) => {
+  if (!requireAuth(req, res)) return;
+  try {
+    let accounts;
+    if (USE_JSON_FILE) {
+      accounts = _fileAccounting.accounts;
+    } else {
+      const companyId = req.auth.companyId || null;
+      const { rows } = await pool.query(
+        "SELECT id, data FROM accounts WHERE is_deleted = FALSE AND (company_id = $1 OR company_id IS NULL) ORDER BY id",
+        [companyId]
+      );
+      accounts = rows.map(r => ({ id: r.id, ...r.data }));
+    }
+    const lite = accounts
+      .filter(a => a.type === "expense" && a.active !== false)
+      .map(a => ({ id: a.id, code: a.code, name: a.name }));
+    res.json({ ok: true, accounts: lite });
+  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+});
+
 app.post("/api/accounting/accounts", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;

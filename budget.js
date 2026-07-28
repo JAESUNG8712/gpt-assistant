@@ -285,6 +285,13 @@ function _normalizeBusinessPlanInput(body, existing) {
           name: (item && item.name) || '',
           detail: (item && item.detail) || '',
           category: (item && item.category) || '',
+          // accountType(계정과목): 판관/용역/경상 — budget.js CATEGORIES와 동일한 값 체계를
+          // 계획 항목에도 두어, 향후 실적(업로드된 판관/용역/경상 상세)과 더 정밀하게 비교할
+          // 수 있게 한다. expenseAccount(비용계정): 실제 회계 계정과목(코드+이름)을 자유
+          // 텍스트로 저장 — 전표 발행에 쓰이는 것이 아니라 계획서 표시/참고용이라 존재 여부를
+          // 엄격히 검증하지 않는다(회사 계정과목 목록에 없는 값이어도 그대로 허용).
+          accountType: (item && item.accountType) || '',
+          expenseAccount: (item && item.expenseAccount) || '',
           months,
           note: (item && item.note) || '',
           baseAmount,

@@ -5227,7 +5227,8 @@ const BIG_CATEGORIES=[
   {key:"my",label:"내 정보·근태",icon:"👤",groups:["profile-sep","attend-sep","welfare-sep","pay-sep"]},
   {key:"eval",label:"평가",icon:"🏆",groups:["kpi-sep","comp-sep"]},
   {key:"hr",label:"인사",icon:"🗂",groups:["hr-sep","recruit-sep","promo-sep","talent-sep","lowperf-sep"]},
-  {key:"acct",label:"회계",icon:"💵",groups:["acct-sep","bizplan-sep"]},
+  {key:"acct",label:"회계",icon:"💵",groups:["acct-sep"]},
+  {key:"bizplan",label:"사업계획",icon:"🧮",groups:["bizplan-sep"]},
   {key:"sales",label:"영업관리",icon:"📈",groups:["sales-sep"]},
   {key:"inventory",label:"재고관리",icon:"📦",groups:["inv-sep"]},
   {key:"pms",label:"PMS",icon:"📊",groups:["pms-sep"]},
@@ -14887,11 +14888,12 @@ async function confirmRcpsValuation(){
 // 이 화면은 budget.html의 "4~6. 사업계획/설정/롤업" 섹션을 메인 SPA 안으로 재구현한 것이고,
 // 인원현황/판관상세 업로드·통합요약(budget.html 1~3번)은 그대로 별도 페이지에 남는다.
 let bizPlans=[],bizPlanSettings={ownerIds:[],teamLeaderId:null,inputOpen:true},bizPlanMyProfile=null,_bizPlanLoaded=false;
-let _bizPlanTab="list"; // "list" | "rollup" | "settings"
+let _bizPlanTab="list"; // "list" | "form" | "rollup" | "settings"
 let _bizPlanEditingId=null,_bizPlanSgaRowCount=0;
-let _bpSgaDefaultDept="",_bpSgaDefaultTeam=""; // 판관비 항목 신규 행의 부문/팀명 기본값(모달 열 때 계획 소속으로 세팅)
+let _bpSgaDefaultDept="",_bpSgaDefaultTeam=""; // 판관비 항목 신규 행의 부문/팀명 기본값(폼 열 때 계획 소속으로 세팅)
 let _bizPlanCompareIds=new Set();
 let _bizPlanRollupData=null,_bizPlanRollupIncludeDraft=false;
+let _bpExpenseAccounts=[],_bpExpenseAccountsLoaded=false; // 비용계정 검색선택용(회계 계정과목 중 비용 계정만, 최소 필드)
 const _BP_CHART_PALETTE=['#0f3460','#e94560','#1a7d36','#8a6500','#6c3fb0','#0e7c86'];
 // 판관비(인건비 등) 표준 세부 항목 템플릿 — [구분, 항목]. 신규 사업계획 작성 시 기본으로
 // 깔아두고(금액은 0으로 시작, 필요한 항목만 채우면 됨), 필요하면 그리드에서 자유롭게
@@ -14951,6 +14953,16 @@ function renderBizPlanPage(){
   const c=$("#content");if(!c)return;
   if(!serverConfig.url){c.innerHTML=_acctNoServerHtml("사업계획");return;}
   if(!_bizPlanLoaded){loadBizPlanFromServer();return;}
+  if(_bizPlanTab==="form"){
+    // 작성/수정 폼은 팝업(모달)이 아니라 목록과 같은 방식으로 메인 화면(#content)에
+    // 그대로 렌더링한다 — 탭 바 없이 "← 목록으로" 버튼만 두어 팝업 대신 페이지 전환으로
+    // 이동한다는 느낌을 준다.
+    c.innerHTML=`<div class="card"><div class="card-head"><h3>🧮 ${_bizPlanEditingId?"사업계획 수정":"신규 사업계획 작성"}</h3>
+      <button class="btn btn-secondary btn-sm" onclick="_bizPlanCancelForm()">← 목록으로</button>
+    </div><div class="card-body">${_renderBizPlanFormBody()}</div></div>`;
+    _bpToggleCostOnly();
+    return;
+  }
   const isAdmin=currentUser.role==="admin";
   const canSeeSettings=isAdmin||_bpIsOwnerOrLead();
   const tabBtn=(key,label)=>`<button class="btn btn-sm ${_bizPlanTab===key?"btn-primary":"btn-secondary"}" onclick="_bizPlanSwitchTab('${key}')">${label}</button>`;
@@ -14963,6 +14975,7 @@ function renderBizPlanPage(){
   if(_bizPlanTab==="rollup"&&!_bizPlanRollupData)loadBizPlanRollup();
 }
 function _bizPlanSwitchTab(tab){_bizPlanTab=tab;renderBizPlanPage();}
+function _bizPlanCancelForm(){_bizPlanTab="list";_bizPlanEditingId=null;renderBizPlanPage();}
 
 // ── 목록 탭 ──
 function _renderBizPlanListTab(){
@@ -14972,7 +14985,7 @@ function _renderBizPlanListTab(){
     기준연도 매출과 성장률·매출원가율·판관비 항목별 가정을 입력하면 다년도 추정 손익·잉여현금흐름과 비율분석(매출총이익률/영업이익률/순이익률/전년대비 성장률)·손익분기점(BEP) 분석을 자동 계산합니다.
     팀별 계획은 작성(draft) → 사업부장 승인(잠금) → 예산담당자+기획팀장 최종승인 순으로 진행되며, 잠긴 뒤에는 "수정요청" → 관리자 승인을 거쳐야 다시 수정할 수 있습니다.
   </div>`;
-  html+=`<div class="mb3"><button class="btn btn-primary btn-sm" ${canCreate?"":"disabled"} onclick="openBizPlanFormModal()">+ 신규 사업계획 작성</button>
+  html+=`<div class="mb3"><button class="btn btn-primary btn-sm" ${canCreate?"":"disabled"} onclick="openBizPlanForm()">+ 신규 사업계획 작성</button>
   ${!canCreate?`<span class="fz12 text-gray" style="margin-left:8px">현재 사업계획 입력기간이 아닙니다. 예산담당자·기획팀장에게 문의하세요.</span>`:""}
   </div>`;
   if(!bizPlans.length){html+=`<div class="p-empty">작성된 사업계획이 없습니다.</div>`;return html;}
@@ -15039,20 +15052,21 @@ function _bpSgaDetailTableHtml(items){
     return `<tr>
       <td class="lbl">${h(it.dept||"-")}</td><td class="lbl">${h(it.team||"-")}</td><td class="lbl">${h(it.costDept||it.dept||"-")}</td>
       <td class="lbl">${h(it.name)}</td><td class="lbl">${h(it.detail||"")}</td><td class="lbl">${h(it.category||"")}</td>
+      <td class="lbl">${h(it.accountType||"-")}</td><td class="lbl">${h(it.expenseAccount||"-")}</td>
       ${monthCells}
       <td style="text-align:right;font-weight:700">${_bpFmt(it.baseAmount)}</td>
       <td class="lbl">${h(it.note||"")}</td>
     </tr>`;
   }).join("");
   return `<div class="mt3"><h4 class="mb2 fz13">판관비 상세(기준연도)</h4><div class="tbl-wrap"><table>
-    <tr><th class="lbl">부문</th><th class="lbl">팀명</th><th class="lbl">비용귀속부문</th><th class="lbl">항목</th><th class="lbl">세부내역(산정근거)</th><th class="lbl">구분</th>${monthHeads}<th>계</th><th class="lbl">비고</th></tr>
+    <tr><th class="lbl">부문</th><th class="lbl">팀명</th><th class="lbl">비용귀속부문</th><th class="lbl">항목</th><th class="lbl">세부내역(산정근거)</th><th class="lbl">구분</th><th class="lbl">계정과목</th><th class="lbl">비용계정</th>${monthHeads}<th>계</th><th class="lbl">비고</th></tr>
     ${rows}
   </table></div></div>`;
 }
 function _bpPlanActionsHtml(p){
   const isAdmin=currentUser.role==="admin";
   const btns=[];
-  if(isAdmin||p.status==="draft")btns.push(`<button class="btn btn-secondary btn-sm" onclick="openBizPlanFormModal('${p.id}')">수정</button>`);
+  if(isAdmin||p.status==="draft")btns.push(`<button class="btn btn-secondary btn-sm" onclick="openBizPlanForm('${p.id}')">수정</button>`);
   if(p.status==="draft"&&p.dept&&(isAdmin||_bpIsDivisionHeadOf(p)))btns.push(`<button class="btn btn-primary btn-sm" onclick="approveBizPlanDivision('${p.id}')">사업부장 승인</button>`);
   if(p.status==="divisionApproved"&&(isAdmin||_bpIsOwnerOrLead()))btns.push(`<button class="btn btn-primary btn-sm" onclick="finalApproveBizPlan('${p.id}')">최종승인</button>`);
   if((p.status==="divisionApproved"||p.status==="finalConfirmed")&&!p.editRequest)btns.push(`<button class="btn btn-secondary btn-sm" onclick="requestEditBizPlan('${p.id}')">수정요청</button>`);
@@ -15088,10 +15102,40 @@ async function deleteBizPlan(id){
 }
 
 // ── 작성/수정 폼 ──
-function openBizPlanFormModal(planId){
+// 팝업(모달)이 아니라 목록과 동일하게 메인 화면(#content)에 그대로 렌더링한다
+// (_bizPlanTab="form"으로 전환 → renderBizPlanPage()가 _renderBizPlanFormBody()를 그림).
+async function openBizPlanForm(planId){
   const editPlan=planId?bizPlans.find(p=>p.id===planId):null;
   _bizPlanEditingId=editPlan?editPlan.id:null;
   _bizPlanSgaRowCount=0;
+  await _bpLoadExpenseAccounts();
+  _bizPlanTab="form";
+  renderBizPlanPage();
+}
+// 비용계정 검색선택용 최소 목록(코드/이름만) — 회계 모듈 전체 로드(관리자 전용)와 별개로,
+// 전 역할이 쓰는 사업계획에서도 실제 회계 계정과목을 참조할 수 있도록 서버의 별도
+// 최소 조회 API(/api/accounting/accounts/expense-lite, 인증만 있으면 누구나 조회 가능)를 쓴다.
+async function _bpLoadExpenseAccounts(){
+  if(_bpExpenseAccountsLoaded||!serverConfig.url)return;
+  try{
+    const r=await serverRequest("GET","/api/accounting/accounts/expense-lite");
+    if(r?.ok)_bpExpenseAccounts=r.accounts;
+  }catch(e){/* 오프라인/서버 미연결 시 빈 목록으로 — 비용계정은 자유 입력으로 대체 가능 */}
+  _bpExpenseAccountsLoaded=true;
+}
+// 부문/팀 검색선택용 datalist — 조직 관리(orgDB)에 등록된 실제 부문/팀 값을 후보로 제공.
+// <input list="..."> 방식이라 목록에 없는 값도 직접 입력 가능(완전히 새로운 부문/팀 대응).
+function _bpOrgDeptTeamDatalistsHtml(){
+  const depts=Array.isArray(orgDB.depts)?orgDB.depts:[];
+  const teams=[...new Set(Object.values(orgDB.teams||{}).flat())];
+  return `<datalist id="bp-dept-list">${depts.map(d=>`<option value="${h(d)}">`).join("")}</datalist>
+    <datalist id="bp-team-list">${teams.map(t=>`<option value="${h(t)}">`).join("")}</datalist>`;
+}
+function _bpExpenseAccountDatalistHtml(){
+  return `<datalist id="bp-expense-account-list">${_bpExpenseAccounts.map(a=>`<option value="${h((a.code?a.code+" ":"")+a.name)}">`).join("")}</datalist>`;
+}
+function _renderBizPlanFormBody(){
+  const editPlan=_bizPlanEditingId?bizPlans.find(p=>p.id===_bizPlanEditingId):null;
   const a=editPlan?(editPlan.assumptions||{}):{};
   const years=editPlan?(editPlan.years!==undefined?editPlan.years:editPlan.projection.length):3;
   const planType=editPlan?(editPlan.planType||"revenue"):"revenue";
@@ -15102,11 +15146,11 @@ function openBizPlanFormModal(planId){
   // 시작 — 해당 없는 항목은 그대로 두거나 삭제하면 됨). 수정 화면은 저장된 항목을 그대로 보여준다.
   const defaultItems=_BP_DEFAULT_SGA_TEMPLATE.map(([category,name])=>({
     dept:_bpSgaDefaultDept,team:_bpSgaDefaultTeam,costDept:_bpSgaDefaultDept,
-    name,category,detail:"",months:Array(12).fill(0),note:"",growthRate:0,fixed:true
+    name,category,accountType:"판관",expenseAccount:"",detail:"",months:Array(12).fill(0),note:"",growthRate:0,fixed:true
   }));
   const rowsHtml=(editPlan?(Array.isArray(a.sgaItems)&&a.sgaItems.length?a.sgaItems:[null]):defaultItems).map(item=>_bpSgaRowHtml(item)).join("");
-  openModal(`<div class="modal-box" style="max-width:1180px"><div class="modal-head"><h3>${editPlan?"사업계획 수정":"신규 사업계획 작성"}</h3></div>
-  <div class="modal-body">
+  return `
+    ${_bpOrgDeptTeamDatalistsHtml()}${_bpExpenseAccountDatalistHtml()}
     <div class="fg"><label class="fl">사업계획명 <span class="req">*</span></label><input class="fc" id="bp-name" placeholder="예: 2027-2029 사업계획" value="${editPlan?h(editPlan.name):""}"></div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
       <div class="fg"><label class="fl">시나리오명(선택)</label><input class="fc" id="bp-scenario" placeholder="예: 기본" value="${editPlan&&editPlan.scenario?h(editPlan.scenario):""}"></div>
@@ -15118,8 +15162,8 @@ function openBizPlanFormModal(planId){
       <label class="fz13"><input type="radio" name="bp-plan-type" value="costOnly" ${planType==="costOnly"?"checked":""} onchange="_bpToggleCostOnly()"> 비용전용</label>
     </div>
     ${!editPlan?`<div class="fg">${isAdmin?`
-      <label class="fl">사업부(dept, 선택 — 비우면 회사 전체 계획)</label><input class="fc" id="bp-dept" placeholder="예: 영업본부" style="margin-bottom:6px">
-      <label class="fl">팀(team, 선택)</label><input class="fc" id="bp-team" placeholder="예: 영업1팀">
+      <label class="fl">사업부(dept, 선택 — 비우면 회사 전체 계획)</label><input class="fc" id="bp-dept" list="bp-dept-list" autocomplete="off" placeholder="입력 또는 검색 — 예: 영업본부" style="margin-bottom:6px"><div class="fz11 text-gray mb2">목록에 없으면 새 부문명을 그대로 입력할 수 있습니다.</div>
+      <label class="fl">팀(team, 선택)</label><input class="fc" id="bp-team" list="bp-team-list" autocomplete="off" placeholder="입력 또는 검색 — 예: 영업1팀">
     `:`<div class="fz12 text-gray">소속: 내 소속(자동 지정 — ${h(bizPlanMyProfile?bizPlanMyProfile.dept:"")}${bizPlanMyProfile&&bizPlanMyProfile.team?" / "+h(bizPlanMyProfile.team):""})</div>`}</div>`:""}
     <div id="bp-revenue-fields">
       <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px">
@@ -15132,11 +15176,12 @@ function openBizPlanFormModal(planId){
       <div class="fg"><label class="fl">법인세율(%, 기본 22)</label><input class="fc" type="number" step="0.1" id="bp-tax-rate" value="${editPlan?_bpPctInput(a.taxRate):""}"></div>
       <div class="fg"><label class="fl">연간 감가상각(선택)</label><input class="fc" type="number" id="bp-depreciation" value="${editPlan?(a.depreciation||0):""}"></div>
     </div>
-    <div class="fg"><label class="fl">판관비 항목(월별 상세) <span class="fz11 text-gray">부문/팀명/비용귀속부문은 필요 시 계획 소속과 다르게 지정 가능(예: 다른 팀이 발생시킨 비용을 이 부문 예산으로 귀속). 증가율/고정비는 2년차 이후 추정·손익분기점 분석에 쓰입니다.</span></label>
+    <div class="fg"><label class="fl">판관비 항목(월별 상세) <span class="fz11 text-gray">부문/팀명/비용귀속부문은 검색해서 고르거나 새 값을 직접 입력할 수 있습니다(필요 시 계획 소속과 다르게 지정 가능). 계정과목(판관/용역/경상)·비용계정(회계 계정과목)은 선택사항입니다. "적용월"에서 월을 고르고 "적용 금액"을 입력하면 해당 월(또는 전체 12개월)에 자동 반영되며, 이후 각 월 칸을 직접 수정할 수도 있습니다. 증가율/고정비는 2년차 이후 추정·손익분기점 분석에 쓰입니다.</span></label>
       <div style="overflow-x:auto">
-        <table class="bp-sga-table" style="min-width:1500px">
+        <table class="bp-sga-table" style="min-width:2100px">
           <thead><tr>
             <th class="lbl">부문</th><th class="lbl">팀명</th><th class="lbl">비용귀속부문</th><th class="lbl">항목</th><th class="lbl">세부내역(산정근거)</th><th class="lbl">구분</th>
+            <th class="lbl">계정과목</th><th class="lbl">비용계정</th><th>적용월</th><th>적용 금액</th>
             ${Array.from({length:12},(_,i)=>`<th>${i+1}월</th>`).join("")}
             <th>계</th><th class="lbl">비고</th><th>증가율(%)</th><th>고정비</th><th></th>
           </tr></thead>
@@ -15146,10 +15191,11 @@ function openBizPlanFormModal(planId){
       <button class="btn btn-ghost btn-sm mt2" onclick="addBpSgaRow()">+ 판관비 항목 추가</button>
       <button class="btn btn-ghost btn-sm mt2" onclick="addBpLaborCostRow()" title="현재 인사 정보에 등록된 재직자 연봉 합계를 기준으로 월 인건비 행을 자동 생성합니다.">+ 기본 인건비 자동입력(연봉 기준)</button>
     </div>
-  </div>
-  <div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal()">취소</button><button class="btn btn-primary" onclick="submitBizPlanForm()">${editPlan?"수정 저장":"저장"}</button></div>
-  </div>`);
-  setTimeout(_bpToggleCostOnly,0);
+    <div class="mt3" style="display:flex;gap:8px">
+      <button class="btn btn-primary" onclick="submitBizPlanForm()">${editPlan?"수정 저장":"저장"}</button>
+      <button class="btn btn-secondary" onclick="_bizPlanCancelForm()">취소</button>
+    </div>
+  `;
 }
 // item이 있으면(수정/재편집) 기존 값으로 채우고, 없으면 계획 소속(_bpSgaDefaultDept/Team)을
 // 기본값으로 새 행을 만든다. months가 없는(이번 변경 이전에 저장된 단순 항목) 기존
@@ -15162,6 +15208,8 @@ function _bpSgaRowHtml(item){
   const nameVal=item?h(item.name||""):"";
   const detailVal=item?h(item.detail||""):"";
   const categoryVal=item?h(item.category||""):"";
+  const accountTypeVal=item?(item.accountType||""):"판관";
+  const expenseAccountVal=item?h(item.expenseAccount||""):"";
   const noteVal=item?h(item.note||""):"";
   const months=item&&Array.isArray(item.months)?item.months
     :(item?[item.baseAmount||0,0,0,0,0,0,0,0,0,0,0,0]:Array(12).fill(0));
@@ -15169,13 +15217,20 @@ function _bpSgaRowHtml(item){
   const fixedChecked=(!item||item.fixed!==false)?"checked":"";
   const total=months.reduce((s,v)=>s+(Number(v)||0),0);
   const monthCells=months.map((v,i)=>`<td><input type="number" class="fc bp-sga-month" data-m="${i}" style="width:74px" value="${v||""}" oninput="_bpUpdateSgaRowTotal(this)"></td>`).join("");
+  const accountTypeOpts=["","판관","용역","경상"].map(c=>`<option value="${c}" ${accountTypeVal===c?"selected":""}>${c||"-"}</option>`).join("");
   return `<tr id="bp-sga-row-${idx}">
-    <td><input class="fc bp-sga-dept" style="width:88px" value="${deptVal}"></td>
-    <td><input class="fc bp-sga-team" style="width:76px" value="${teamVal}"></td>
-    <td><input class="fc bp-sga-costdept" style="width:100px" value="${costDeptVal}" title="비용 귀속 부문"></td>
+    <td><input class="fc bp-sga-dept" list="bp-dept-list" autocomplete="off" style="width:88px" value="${deptVal}"></td>
+    <td><input class="fc bp-sga-team" list="bp-team-list" autocomplete="off" style="width:76px" value="${teamVal}"></td>
+    <td><input class="fc bp-sga-costdept" list="bp-dept-list" autocomplete="off" style="width:100px" value="${costDeptVal}" title="비용 귀속 부문"></td>
     <td><input class="fc bp-sga-name" style="width:120px" value="${nameVal}" placeholder="예: (판)지급수수료"></td>
     <td><input class="fc bp-sga-detail" style="width:180px" value="${detailVal}" placeholder="산정근거"></td>
     <td><input class="fc bp-sga-category" style="width:64px" value="${categoryVal}" placeholder="구분"></td>
+    <td><select class="fc bp-sga-accttype" style="width:64px">${accountTypeOpts}</select></td>
+    <td><input class="fc bp-sga-expenseaccount" list="bp-expense-account-list" autocomplete="off" style="width:140px" value="${expenseAccountVal}" placeholder="계정 검색"></td>
+    <td><select class="bp-sga-applymonth" style="width:56px" onchange="_bpApplyMonthFill(this)">
+      <option value="all">전체</option>${Array.from({length:12},(_,i)=>`<option value="${i+1}">${i+1}월</option>`).join("")}
+    </select></td>
+    <td><input type="number" class="bp-sga-applyamount" style="width:90px" placeholder="금액" oninput="_bpApplyMonthFill(this)"></td>
     ${monthCells}
     <td class="bp-sga-total" style="text-align:right;font-weight:700;white-space:nowrap">${_bpFmt(total)}</td>
     <td><input class="fc bp-sga-note" style="width:100px" value="${noteVal}"></td>
@@ -15183,6 +15238,20 @@ function _bpSgaRowHtml(item){
     <td style="text-align:center"><input type="checkbox" class="bp-sga-fixed" ${fixedChecked} title="고정비(손익분기점 분석용)"></td>
     <td><button class="btn btn-ghost btn-sm" onclick="document.getElementById('bp-sga-row-${idx}').remove()">✕</button></td>
   </tr>`;
+}
+// 적용월+적용 금액 입력 시 해당 월(또는 "전체"=1~12월 매달 반복)의 월별 금액 칸에 자동
+// 반영한다. 반영 후에도 각 월 칸은 그대로 직접 수정 가능(이 두 입력은 저장되지 않는
+// 빠른입력 보조 필드일 뿐, 실제 저장 값은 항상 12개 월별 칸의 현재 값).
+function _bpApplyMonthFill(el){
+  const row=el.closest("tr");if(!row)return;
+  const monthSel=row.querySelector(".bp-sga-applymonth");
+  const amountInput=row.querySelector(".bp-sga-applyamount");
+  const amount=Number(amountInput.value);
+  if(!amountInput.value||isNaN(amount))return; // 금액 미입력 시 아무 것도 하지 않음(실수로 0 채우기 방지)
+  const monthInputs=row.querySelectorAll(".bp-sga-month");
+  if(monthSel.value==="all")monthInputs.forEach(i=>{i.value=amount;});
+  else{const idx=Number(monthSel.value)-1;if(monthInputs[idx])monthInputs[idx].value=amount;}
+  _bpUpdateSgaRowTotal(monthInputs[0]);
 }
 function addBpSgaRow(item){
   const wrap=$("#bp-sga-tbody");if(!wrap)return;
@@ -15221,7 +15290,7 @@ function addBpLaborCostRow(){
   }else{
     addBpSgaRow({
       dept,team,costDept:dept,
-      name:"고정급",category:"급여",detail,
+      name:"고정급",category:"급여",accountType:"판관",expenseAccount:"",detail,
       months:Array(12).fill(monthlyTotal),
       note,growthRate:0,fixed:true
     });
@@ -15263,6 +15332,8 @@ async function submitBizPlanForm(){
       name:row.querySelector(".bp-sga-name").value.trim(),
       detail:row.querySelector(".bp-sga-detail").value.trim(),
       category:row.querySelector(".bp-sga-category").value.trim(),
+      accountType:row.querySelector(".bp-sga-accttype").value.trim(),
+      expenseAccount:row.querySelector(".bp-sga-expenseaccount").value.trim(),
       months,
       note:row.querySelector(".bp-sga-note").value.trim(),
       growthRate:(Number(row.querySelector(".bp-sga-growth").value)||0)/100,
@@ -15284,7 +15355,8 @@ async function submitBizPlanForm(){
   const method=editing?"PUT":"POST";
   const r=await serverRequest(method,url,payload);
   if(!r?.ok){showToast(r?.error||r?.message||"저장에 실패했습니다.","error");return;}
-  closeModal();showToast(editing?"수정되었습니다.":"저장되었습니다.","success");
+  _bizPlanTab="list";_bizPlanEditingId=null;
+  showToast(editing?"수정되었습니다.":"저장되었습니다.","success");
   await loadBizPlanFromServer();
 }
 
