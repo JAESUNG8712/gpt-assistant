@@ -5372,13 +5372,9 @@ function renderSidebar(){
     ],
     "bizplan-sep":[
       {id:"bizplan-sep",type:"sep",label:"사업계획",roles:["admin","director","leader","member"]},
-      // 사업계획(budget.html)은 SPA 라우팅에 편입된 화면이 아니라 완전히 별도의 정적
-      // 페이지다(회계/PMS 등과 달리 gotoPage()로 그릴 콘텐츠가 없음) — 클릭 시 실제
-      // 페이지 이동을 하도록 id를 gotoPage()에서 가로채는 예약값으로 지정했다(아래
-      // gotoPage() 맨 앞의 분기 참고). 메뉴 자체는 전 역할에 공개하고, 실제로 보이는
-      // 계획 내용은 budget.js 서버 쪽에서 소속 조직 기준으로 걸러진다(전체 공개는 예산
-      // 담당자·기획팀장·관리자만).
-      {id:"biz-plan-external",label:"사업계획",icon:"🧮",desc:"팀별 사업계획 작성·승인·확정, 사업부/회사 롤업",roles:["admin","director","leader","member"]},
+      // 메뉴 자체는 전 역할에 공개하고, 실제로 보이는 계획 내용은 budget.js 서버 쪽에서
+      // 소속 조직 기준으로 걸러진다(전체 공개는 예산담당자·기획팀장·관리자만).
+      {id:"biz-plan",label:"사업계획",icon:"🧮",desc:"팀별 사업계획 작성·승인·확정, 사업부/회사 롤업",roles:["admin","director","leader","member"]},
     ],
     "sales-sep":[
       {id:"sales-sep",type:"sep",label:"영업관리",roles:["admin"]},
@@ -5429,7 +5425,7 @@ function renderSidebar(){
   _menuGroupsCache=menuGroups;
   const groupOrder=SIDEBAR_DEFAULT_ORDER.filter(g=>menuGroups[g]);
   const menus=groupOrder.flatMap(g=>menuGroups[g]);
-  const titles={dashboard:"대시보드","my-profile":"내 프로필","hr-register":"신규 직원 등록","hr-list":"직원 목록","hr-changes":"발령·변동 이력",kpi:"KPI 목표 등록","kpi-results":"KPI 결과 입력","my-kpi":"나의 KPI","grade-view":"KPI 등급 현황","comp-grade-view":"역량평가 등급","comp-eval":"다면평가 진행","first-eval":"1차 평가","second-eval":"2차 평가","kpi-amend":"수정 요청 승인","eval-progress":"평가 진행 상황",settings:"운영 설정",history:"수정 이력","change-pw":"비밀번호 변경","data-mgmt":"데이터 관리","core-talent":"핵심인재 관리","talent-dev":"육성 계획·실적","promotion-mgmt":"승진 심사 관리","low-performer":"저성과 인력 관리","approval-draft":"기안하기","approval-outbox":"상신함","approval-inbox":"결재함","approval-receive":"수신함","approval-cc-inbox":"참조함","approval-completed":"완료함","attendance":"근태 현황","att-calendar":"캘린더","leave-mgmt":"연차 관리","payslip":"급여 명세서","approval-templates":"결재 양식 관리","integrations":"연동 설정","orgchart":"조직도","certificate":"증명서 발급","hr-stats":"인사 통계","board":"게시판","room-booking":"회의실 예약","welfare-points":"복지포인트","mandatory-training":"법정의무교육","hr-welfare-points":"복지포인트 현황(전체)","hr-mandatory-training":"법정의무교육 현황(전체)","hr-attendance":"근태 현황(전체)","hr-leave-mgmt":"연차 관리(전체)","welfare-status":"복지 현황","long-service-award":"장기근속 포상","award-history":"(최)우수사원 선정 이력","salary-info":"급여 기준 정보","welfare-settings":"복지 제도 설정","notification-center":"알림","acct-partners":"거래처 관리","acct-accounts":"계정과목","acct-vouchers":"전표 관리","acct-tax-invoices":"세금계산서","acct-vat-report":"부가세 신고자료","acct-fixed-assets":"고정자산 관리","acct-fixed-assets-detail":"고정자산 상세","acct-cost-statement":"원가명세서","acct-rcps":"RCPS 관리","acct-rcps-detail":"RCPS 발행 상세","acct-reports":"회계 리포트","expense-claims":"경비 청구","expense-admin":"경비 정산 관리","acct-receivables":"채권/채무 관리","overtime-req":"초과근무 신청","exec-dashboard":"경영 대시보드","onboarding":"온보딩/오프보딩","approval-delegation":"결재 위임","sales-quotations":"견적서 관리","sales-dashboard":"영업 실적 대시보드","sales-purchase-orders":"발주서 관리","inv-items":"품목 관리","inv-locations":"위치 관리","inv-stock":"재고 현황","inv-purchase-requests":"구매요청","pms-projects":"프로젝트 관리","pms-allocation":"내 투입률 입력","pms-my-projects":"내가 투입된 프로젝트","pms-utilization":"가동률 현황","pms-worklog":"일일 업무 투입","recruit-jobs":"채용공고 관리","recruit-candidates":"지원자 관리","recruit-eval":"면접 일정/평가 입력","recruit-eval-detail":"면접 평가 상세","recruit-dashboard":"채용 현황 대시보드","eval-ops":"평가 운영","settings-org":"조직 관리","settings-ranks":"직급 체계","attend-settings":"근태 설정","payroll-settings":"급여 관리","payroll-mgmt":"급여 종합 관리","company-info":"회사 기본 정보","room-settings":"회의실 관리","deploy-perm":"권한 관리"};
+  const titles={dashboard:"대시보드","my-profile":"내 프로필","hr-register":"신규 직원 등록","hr-list":"직원 목록","hr-changes":"발령·변동 이력",kpi:"KPI 목표 등록","kpi-results":"KPI 결과 입력","my-kpi":"나의 KPI","grade-view":"KPI 등급 현황","comp-grade-view":"역량평가 등급","comp-eval":"다면평가 진행","first-eval":"1차 평가","second-eval":"2차 평가","kpi-amend":"수정 요청 승인","eval-progress":"평가 진행 상황",settings:"운영 설정",history:"수정 이력","change-pw":"비밀번호 변경","data-mgmt":"데이터 관리","core-talent":"핵심인재 관리","talent-dev":"육성 계획·실적","promotion-mgmt":"승진 심사 관리","low-performer":"저성과 인력 관리","approval-draft":"기안하기","approval-outbox":"상신함","approval-inbox":"결재함","approval-receive":"수신함","approval-cc-inbox":"참조함","approval-completed":"완료함","attendance":"근태 현황","att-calendar":"캘린더","leave-mgmt":"연차 관리","payslip":"급여 명세서","approval-templates":"결재 양식 관리","integrations":"연동 설정","orgchart":"조직도","certificate":"증명서 발급","hr-stats":"인사 통계","board":"게시판","room-booking":"회의실 예약","welfare-points":"복지포인트","mandatory-training":"법정의무교육","hr-welfare-points":"복지포인트 현황(전체)","hr-mandatory-training":"법정의무교육 현황(전체)","hr-attendance":"근태 현황(전체)","hr-leave-mgmt":"연차 관리(전체)","welfare-status":"복지 현황","long-service-award":"장기근속 포상","award-history":"(최)우수사원 선정 이력","salary-info":"급여 기준 정보","welfare-settings":"복지 제도 설정","notification-center":"알림","acct-partners":"거래처 관리","acct-accounts":"계정과목","acct-vouchers":"전표 관리","acct-tax-invoices":"세금계산서","acct-vat-report":"부가세 신고자료","acct-fixed-assets":"고정자산 관리","acct-fixed-assets-detail":"고정자산 상세","acct-cost-statement":"원가명세서","acct-rcps":"RCPS 관리","acct-rcps-detail":"RCPS 발행 상세","acct-reports":"회계 리포트","expense-claims":"경비 청구","expense-admin":"경비 정산 관리","acct-receivables":"채권/채무 관리","biz-plan":"사업계획","overtime-req":"초과근무 신청","exec-dashboard":"경영 대시보드","onboarding":"온보딩/오프보딩","approval-delegation":"결재 위임","sales-quotations":"견적서 관리","sales-dashboard":"영업 실적 대시보드","sales-purchase-orders":"발주서 관리","inv-items":"품목 관리","inv-locations":"위치 관리","inv-stock":"재고 현황","inv-purchase-requests":"구매요청","pms-projects":"프로젝트 관리","pms-allocation":"내 투입률 입력","pms-my-projects":"내가 투입된 프로젝트","pms-utilization":"가동률 현황","pms-worklog":"일일 업무 투입","recruit-jobs":"채용공고 관리","recruit-candidates":"지원자 관리","recruit-eval":"면접 일정/평가 입력","recruit-eval-detail":"면접 평가 상세","recruit-dashboard":"채용 현황 대시보드","eval-ops":"평가 운영","settings-org":"조직 관리","settings-ranks":"직급 체계","attend-settings":"근태 설정","payroll-settings":"급여 관리","payroll-mgmt":"급여 종합 관리","company-info":"회사 기본 정보","room-settings":"회의실 관리","deploy-perm":"권한 관리"};
   const ptEl=$("#page-title");if(ptEl)ptEl.textContent=titles[currentPage]||"";
   const sb=$("#sidebar");if(!sb)return;
   // Filter by role + per-user custom permission overrides (admin-managed)
@@ -5519,7 +5515,7 @@ const PAGE_ROLES={
   "eval-ops":["admin"],"settings-org":["admin"],"settings-ranks":["admin"],"attend-settings":["admin"],
   "payroll-settings":["admin"],"company-info":["admin"],"room-settings":["admin"],"deploy-perm":["admin"],
   "pms-utilization":["admin","director","leader"],"sales-dashboard":["admin"],
-  "acct-partners":["admin"],"acct-accounts":["admin"],"acct-vouchers":["admin"],"acct-tax-invoices":["admin"],"acct-vat-report":["admin"],"acct-fixed-assets":["admin"],"acct-fixed-assets-detail":["admin"],"acct-cost-statement":["admin"],"acct-rcps":["admin"],"acct-rcps-detail":["admin"],"acct-reports":["admin"],"expense-admin":["admin"],"acct-receivables":["admin"],"exec-dashboard":["admin"],"onboarding":["admin"],
+  "acct-partners":["admin"],"acct-accounts":["admin"],"acct-vouchers":["admin"],"acct-tax-invoices":["admin"],"acct-vat-report":["admin"],"acct-fixed-assets":["admin"],"acct-fixed-assets-detail":["admin"],"acct-cost-statement":["admin"],"acct-rcps":["admin"],"acct-rcps-detail":["admin"],"acct-reports":["admin"],"expense-admin":["admin"],"acct-receivables":["admin"],"biz-plan":["admin","director","leader","member"],"exec-dashboard":["admin"],"onboarding":["admin"],
   "sales-quotations":["admin"],"sales-purchase-orders":["admin"],
   "inv-items":["admin"],"inv-locations":["admin"],"inv-stock":["admin"],"inv-stock-log":["admin"],
   "welfare-settings":["admin"],
@@ -5559,10 +5555,6 @@ async function _confirmMyPagePw(){
   finally{if(btn)btn.disabled=false;}
 }
 function gotoPage(p){
-  // 사업계획(budget.html)은 SPA 밖의 별도 정적 페이지라 gotoPage()의 일반 라우팅(currentPage
-  // 갱신→renderPage())으로 그릴 콘텐츠가 없다 — 예약된 id를 만나면 실제 페이지 이동만
-  // 하고 그 외 라우팅 로직(권한 체크, currentPage 갱신 등)은 전혀 타지 않는다.
-  if(p==="biz-plan-external"){window.location.href="/budget.html";return;}
   // 메뉴 이동은 항상 현재 화면 전체를 교체하므로, 열려있는 모달(예: 본인확인 비밀번호
   // 확인창)이 있으면 먼저 닫는다 - 그렇지 않으면 새 페이지 컨텐츠 위에 이전 모달이 계속
   // 남아 화면을 가리는 문제가 있었다(모바일 QA에서 발견: 근태 탭 진입 시 뜨는 본인확인
@@ -5656,7 +5648,7 @@ function renderCategoryLanding(catKey){
 function renderPage(){
   if(currentPage&&currentPage.startsWith("cat:")){renderCategoryLanding(currentPage.slice(4));renderCatNav();const attendBar=document.getElementById("attend-bar");if(attendBar)attendBar.innerHTML=(currentUser&&currentPage==="dashboard")?_renderTeamTodayWidget(currentUser):"";return;}
   if(currentPage&&currentPage.startsWith("board-")){renderBoardPage();renderCatNav();const attendBar=document.getElementById("attend-bar");if(attendBar)attendBar.innerHTML=(currentUser&&currentPage==="dashboard")?_renderTeamTodayWidget(currentUser):"";return;}
-  const pages={dashboard:renderDashboard,"my-profile":renderMyProfile,"hr-register":renderHRRegister,"hr-list":renderHRList,"hr-changes":renderHRChanges,kpi:()=>renderKPI(false),"kpi-results":()=>renderKPI(true),"my-kpi":renderMyKPI,"grade-view":renderGradeView,"comp-grade-view":renderCompGradeView,"comp-settings-shortcut":()=>gotoPage("eval-ops"),"comp-eval":renderCompEval,"data-mgmt":renderDataManagementPage,"core-talent":renderCoreTalentPage,"talent-dev":renderTalentDevPage,"promotion-mgmt":renderPromotionPageStandalone,"low-performer":renderLowPerformer,"activity-log":()=>{loadActivityFromServer();},"first-eval":()=>{approvalTab="eval";approvalSearch={name:"",dept:""};renderApprovals();},"second-eval":()=>{approvalTab="eval";approvalSearch={name:"",dept:""};renderApprovals();},"kpi-amend":()=>{approvalTab="requests";approvalSearch={name:"",dept:""};renderApprovals();},"eval-progress":renderEvalProgressPage,settings:renderSettings,"eval-ops":renderEvalOpsPage,"settings-org":renderSettingsOrgPage,"settings-ranks":renderSettingsRanksPage,"attend-settings":renderAttendSettings,"payroll-settings":renderPayrollSettings,"company-info":renderCompanyInfo,"room-settings":renderRoomSettings,"deploy-perm":renderDeployPermPage,history:renderHistory,"change-pw":renderChangePW,"approval-draft":renderApprovalDraftPage,"approval-outbox":renderApprovalOutbox,"approval-inbox":renderApprovalInbox,"approval-receive":renderApprovalReceive,"approval-cc-inbox":renderApprovalCcInbox,"approval-completed":renderApprovalCompleted,"attendance":renderAttendancePage,"att-calendar":renderAttendanceCalendarPage,"leave-mgmt":renderLeaveManagementPage,"payslip":renderPayslipPage,"approval-templates":renderApprovalTemplateAdmin,"integrations":renderIntegrationsPage,"orgchart":renderOrgChartPage,"certificate":renderCertPage,"hr-stats":renderHRStatsPage,"board":renderBoardPage,"room-booking":renderRoomBookingPage,"welfare-points":renderWelfarePointsPage,"mandatory-training":renderMandatoryTrainingPage,"welfare-status":renderWelfareStatusPage,"long-service-award":renderLongServiceAwardPage,"award-history":renderAwardHistoryPage,"hr-welfare-points":renderHrWelfarePointsPage,"hr-mandatory-training":renderHrMandatoryTrainingPage,"hr-attendance":renderHrAttendancePage,"hr-leave-mgmt":renderHrLeaveManagementPage,"payroll-mgmt":renderPayrollMgmtPage,"salary-info":renderSalaryInfoPage,"welfare-settings":renderWelfareSettingsPage,"notification-center":renderNotificationCenterPage,"acct-partners":renderAcctPartnersPage,"acct-accounts":renderAcctAccountsPage,"acct-vouchers":renderAcctVouchersPage,"acct-tax-invoices":renderAcctTaxInvoicesPage,"acct-vat-report":()=>{loadVatReportFromServer();},"acct-fixed-assets":renderAcctFixedAssetsPage,"acct-fixed-assets-detail":()=>{loadFixedAssetDetailFromServer();},"acct-cost-statement":renderAcctCostStatementPage,"acct-rcps":renderAcctRcpsPage,"acct-rcps-detail":()=>{loadRcpsDetailFromServer();},"acct-reports":renderAcctReportsPage,"expense-claims":renderExpenseClaimsPage,"expense-admin":renderExpenseAdminPage,"acct-receivables":renderAcctReceivablesPage,"overtime-req":renderOvertimeReqPage,"exec-dashboard":renderExecDashboardPage,"onboarding":renderOnboardingPage,"approval-delegation":renderApprovalDelegationPage,"sales-quotations":renderSalesQuotationsPage,"sales-dashboard":renderSalesDashboardPage,"sales-purchase-orders":renderSalesPurchaseOrdersPage,"inv-items":renderInvItemsPage,"inv-locations":renderInvLocationsPage,"inv-stock":renderInvStockPage,"inv-stock-log":renderInvStockLogPage,"inv-purchase-requests":renderPurchaseRequestsPage,"pms-projects":renderPmsProjectsPage,"pms-allocation":renderPmsAllocationPage,"pms-my-projects":renderPmsMyProjectsPage,"pms-utilization":renderPmsUtilizationPage,"pms-worklog":renderPmsWorklogPage,"recruit-jobs":renderRecruitJobsPage,"recruit-candidates":renderRecruitCandidatesPage,"recruit-eval":renderRecruitEvalPage,"recruit-eval-detail":renderRecruitEvalDetailPage,"recruit-dashboard":renderRecruitDashboardPage};
+  const pages={dashboard:renderDashboard,"my-profile":renderMyProfile,"hr-register":renderHRRegister,"hr-list":renderHRList,"hr-changes":renderHRChanges,kpi:()=>renderKPI(false),"kpi-results":()=>renderKPI(true),"my-kpi":renderMyKPI,"grade-view":renderGradeView,"comp-grade-view":renderCompGradeView,"comp-settings-shortcut":()=>gotoPage("eval-ops"),"comp-eval":renderCompEval,"data-mgmt":renderDataManagementPage,"core-talent":renderCoreTalentPage,"talent-dev":renderTalentDevPage,"promotion-mgmt":renderPromotionPageStandalone,"low-performer":renderLowPerformer,"activity-log":()=>{loadActivityFromServer();},"first-eval":()=>{approvalTab="eval";approvalSearch={name:"",dept:""};renderApprovals();},"second-eval":()=>{approvalTab="eval";approvalSearch={name:"",dept:""};renderApprovals();},"kpi-amend":()=>{approvalTab="requests";approvalSearch={name:"",dept:""};renderApprovals();},"eval-progress":renderEvalProgressPage,settings:renderSettings,"eval-ops":renderEvalOpsPage,"settings-org":renderSettingsOrgPage,"settings-ranks":renderSettingsRanksPage,"attend-settings":renderAttendSettings,"payroll-settings":renderPayrollSettings,"company-info":renderCompanyInfo,"room-settings":renderRoomSettings,"deploy-perm":renderDeployPermPage,history:renderHistory,"change-pw":renderChangePW,"approval-draft":renderApprovalDraftPage,"approval-outbox":renderApprovalOutbox,"approval-inbox":renderApprovalInbox,"approval-receive":renderApprovalReceive,"approval-cc-inbox":renderApprovalCcInbox,"approval-completed":renderApprovalCompleted,"attendance":renderAttendancePage,"att-calendar":renderAttendanceCalendarPage,"leave-mgmt":renderLeaveManagementPage,"payslip":renderPayslipPage,"approval-templates":renderApprovalTemplateAdmin,"integrations":renderIntegrationsPage,"orgchart":renderOrgChartPage,"certificate":renderCertPage,"hr-stats":renderHRStatsPage,"board":renderBoardPage,"room-booking":renderRoomBookingPage,"welfare-points":renderWelfarePointsPage,"mandatory-training":renderMandatoryTrainingPage,"welfare-status":renderWelfareStatusPage,"long-service-award":renderLongServiceAwardPage,"award-history":renderAwardHistoryPage,"hr-welfare-points":renderHrWelfarePointsPage,"hr-mandatory-training":renderHrMandatoryTrainingPage,"hr-attendance":renderHrAttendancePage,"hr-leave-mgmt":renderHrLeaveManagementPage,"payroll-mgmt":renderPayrollMgmtPage,"salary-info":renderSalaryInfoPage,"welfare-settings":renderWelfareSettingsPage,"notification-center":renderNotificationCenterPage,"acct-partners":renderAcctPartnersPage,"acct-accounts":renderAcctAccountsPage,"acct-vouchers":renderAcctVouchersPage,"acct-tax-invoices":renderAcctTaxInvoicesPage,"acct-vat-report":()=>{loadVatReportFromServer();},"acct-fixed-assets":renderAcctFixedAssetsPage,"acct-fixed-assets-detail":()=>{loadFixedAssetDetailFromServer();},"acct-cost-statement":renderAcctCostStatementPage,"acct-rcps":renderAcctRcpsPage,"acct-rcps-detail":()=>{loadRcpsDetailFromServer();},"acct-reports":renderAcctReportsPage,"expense-claims":renderExpenseClaimsPage,"expense-admin":renderExpenseAdminPage,"acct-receivables":renderAcctReceivablesPage,"biz-plan":()=>{loadBizPlanFromServer();},"overtime-req":renderOvertimeReqPage,"exec-dashboard":renderExecDashboardPage,"onboarding":renderOnboardingPage,"approval-delegation":renderApprovalDelegationPage,"sales-quotations":renderSalesQuotationsPage,"sales-dashboard":renderSalesDashboardPage,"sales-purchase-orders":renderSalesPurchaseOrdersPage,"inv-items":renderInvItemsPage,"inv-locations":renderInvLocationsPage,"inv-stock":renderInvStockPage,"inv-stock-log":renderInvStockLogPage,"inv-purchase-requests":renderPurchaseRequestsPage,"pms-projects":renderPmsProjectsPage,"pms-allocation":renderPmsAllocationPage,"pms-my-projects":renderPmsMyProjectsPage,"pms-utilization":renderPmsUtilizationPage,"pms-worklog":renderPmsWorklogPage,"recruit-jobs":renderRecruitJobsPage,"recruit-candidates":renderRecruitCandidatesPage,"recruit-eval":renderRecruitEvalPage,"recruit-eval-detail":renderRecruitEvalDetailPage,"recruit-dashboard":renderRecruitDashboardPage};
   const fn=pages[currentPage];const c=$("#content");
   if(c&&fn){
     c.innerHTML="";
@@ -14888,6 +14880,392 @@ async function confirmRcpsValuation(){
   if(!r?.ok){showToast(r?.message||"평가 등록에 실패했습니다.","error");return;}
   closeModal();showToast("공정가치평가가 등록되었습니다.","success");
   await loadAccountingFromServer();loadRcpsDetailFromServer();
+}
+
+// ==================== 사업계획(팀별 작성 → 사업부장 승인 → 예산담당자+기획팀장 최종확정) ====================
+// budget.js(별도 정적 페이지 budget.html이 쓰던 것과 동일한 백엔드)를 그대로 재사용한다.
+// 이 화면은 budget.html의 "4~6. 사업계획/설정/롤업" 섹션을 메인 SPA 안으로 재구현한 것이고,
+// 인원현황/판관상세 업로드·통합요약(budget.html 1~3번)은 그대로 별도 페이지에 남는다.
+let bizPlans=[],bizPlanSettings={ownerIds:[],teamLeaderId:null,inputOpen:true},bizPlanMyProfile=null,_bizPlanLoaded=false;
+let _bizPlanTab="list"; // "list" | "rollup" | "settings"
+let _bizPlanEditingId=null,_bizPlanSgaRowCount=0;
+let _bizPlanCompareIds=new Set();
+let _bizPlanRollupData=null,_bizPlanRollupIncludeDraft=false;
+const _BP_CHART_PALETTE=['#0f3460','#e94560','#1a7d36','#8a6500','#6c3fb0','#0e7c86'];
+
+function _bpFmt(n){return (n===null||n===undefined||isNaN(n))?"-":Number(n).toLocaleString();}
+function _bpFmtPct(n){return (n===null||n===undefined||isNaN(n))?"-":(n*100).toFixed(1)+"%";}
+function _bpPctInput(n){return (n===null||n===undefined||isNaN(n))?"":Math.round(n*10000)/100;}
+function _bpIsOwnerOrLead(){
+  if(!currentUser)return false;
+  const empId=String(currentUser.id);
+  const owners=(bizPlanSettings.ownerIds||[]).map(String);
+  if(owners.includes(empId))return true;
+  return bizPlanSettings.teamLeaderId!=null&&String(bizPlanSettings.teamLeaderId)===empId;
+}
+function _bpIsDivisionHeadOf(p){
+  return !!(bizPlanMyProfile&&bizPlanMyProfile.role==="director"&&p.dept&&bizPlanMyProfile.dept===p.dept);
+}
+function _bpStatusBadge(status){
+  if(status==="draft")return badge("작성중","gray");
+  if(status==="divisionApproved")return badge("사업부장 승인됨(잠김)","blue");
+  if(status==="finalConfirmed")return badge("최종확정","green");
+  return badge(status||"-","gray");
+}
+
+async function loadBizPlanFromServer(){
+  const c=$("#content");if(c)c.innerHTML=`<div class="p-empty">불러오는 중...</div>`;
+  if(!serverConfig.url){if(c)c.innerHTML=_acctNoServerHtml("사업계획");return;}
+  try{
+    const [rp,rs,rm]=await Promise.all([
+      serverRequest("GET","/api/budget/business-plan"),
+      serverRequest("GET","/api/budget/business-plan/settings"),
+      serverRequest("GET","/api/budget/business-plan/my-profile"),
+    ]);
+    if(rp?.ok)bizPlans=rp.plans;
+    if(rs?.ok)bizPlanSettings=rs.settings;
+    if(rm?.ok)bizPlanMyProfile=rm.profile;
+  }catch(e){/* 오프라인/서버 미연결 시 그대로 빈 상태로 렌더 */}
+  _bizPlanLoaded=true;
+  if(currentPage==="biz-plan")renderBizPlanPage();
+}
+
+function renderBizPlanPage(){
+  const c=$("#content");if(!c)return;
+  if(!serverConfig.url){c.innerHTML=_acctNoServerHtml("사업계획");return;}
+  if(!_bizPlanLoaded){loadBizPlanFromServer();return;}
+  const isAdmin=currentUser.role==="admin";
+  const canSeeSettings=isAdmin||_bpIsOwnerOrLead();
+  const tabBtn=(key,label)=>`<button class="btn btn-sm ${_bizPlanTab===key?"btn-primary":"btn-secondary"}" onclick="_bizPlanSwitchTab('${key}')">${label}</button>`;
+  const tabs=`<div style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap">${tabBtn("list","사업계획")}${tabBtn("rollup","사업부/회사 롤업")}${canSeeSettings?tabBtn("settings","설정"):""}</div>`;
+  let body;
+  if(_bizPlanTab==="rollup")body=_renderBizPlanRollupTab();
+  else if(_bizPlanTab==="settings"&&canSeeSettings)body=_renderBizPlanSettingsTab();
+  else body=_renderBizPlanListTab();
+  c.innerHTML=`<div class="card"><div class="card-head"><h3>🧮 사업계획</h3></div><div class="card-body">${tabs}${body}</div></div>`;
+  if(_bizPlanTab==="rollup"&&!_bizPlanRollupData)loadBizPlanRollup();
+}
+function _bizPlanSwitchTab(tab){_bizPlanTab=tab;renderBizPlanPage();}
+
+// ── 목록 탭 ──
+function _renderBizPlanListTab(){
+  const isAdmin=currentUser.role==="admin";
+  const canCreate=isAdmin||bizPlanSettings.inputOpen;
+  let html=`<div class="fz12 text-gray mb2">
+    기준연도 매출과 성장률·매출원가율·판관비 항목별 가정을 입력하면 다년도 추정 손익·잉여현금흐름과 비율분석(매출총이익률/영업이익률/순이익률/전년대비 성장률)·손익분기점(BEP) 분석을 자동 계산합니다.
+    팀별 계획은 작성(draft) → 사업부장 승인(잠금) → 예산담당자+기획팀장 최종승인 순으로 진행되며, 잠긴 뒤에는 "수정요청" → 관리자 승인을 거쳐야 다시 수정할 수 있습니다.
+  </div>`;
+  html+=`<div class="mb3"><button class="btn btn-primary btn-sm" ${canCreate?"":"disabled"} onclick="openBizPlanFormModal()">+ 신규 사업계획 작성</button>
+  ${!canCreate?`<span class="fz12 text-gray" style="margin-left:8px">현재 사업계획 입력기간이 아닙니다. 예산담당자·기획팀장에게 문의하세요.</span>`:""}
+  </div>`;
+  if(!bizPlans.length){html+=`<div class="p-empty">작성된 사업계획이 없습니다.</div>`;return html;}
+  html+=`<div class="mb4"><h4 class="mb2">시나리오 비교</h4><div class="fz12 text-gray mb2">비교하고 싶은 사업계획을 2개 이상 체크한 뒤 버튼을 누르세요.</div>
+    <button class="btn btn-secondary btn-sm" onclick="_renderBizPlanCompare()">선택한 계획 비교</button>
+    <div id="bp-compare-area" style="margin-top:10px"></div></div>`;
+  html+=bizPlans.map(p=>_renderBizPlanCard(p)).join("");
+  return html;
+}
+function _renderBizPlanCard(p){
+  const be=p.breakEven||{};
+  const chart=_bpSvgLineChart([
+    {label:"매출",color:_BP_CHART_PALETTE[0],values:p.projection.map(r=>r.revenue)},
+    {label:"영업이익",color:_BP_CHART_PALETTE[1],values:p.projection.map(r=>r.operatingProfit)},
+    {label:"순이익",color:_BP_CHART_PALETTE[2],values:p.projection.map(r=>r.netIncome)},
+  ],p.projection.map(r=>r.year+"년"));
+  return `<div class="card mb3" style="border:1px solid #e3e5eb">
+    <div class="card-head" style="flex-wrap:wrap;gap:6px">
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+        <input type="checkbox" ${_bizPlanCompareIds.has(p.id)?"checked":""} onchange="_bizPlanToggleCompare('${p.id}',this.checked)" title="비교에 포함">
+        <h3 style="margin:0">${h(p.name)}</h3>
+        ${p.scenario?`<span class="fz11" style="background:#eef1f7;padding:1px 8px;border-radius:10px">${h(p.scenario)}</span>`:""}
+        ${_bpStatusBadge(p.status)}
+        ${p.planType==="costOnly"?badge("비용예산","red"):""}
+        ${p.dept?`<span class="fz11 text-gray">${h(p.dept)}${p.team?" / "+h(p.team):""}</span>`:""}
+      </div>
+      <div style="display:flex;gap:4px;flex-wrap:wrap">${_bpPlanActionsHtml(p)}</div>
+    </div>
+    <div class="card-body">
+      ${p.editRequest?`<div class="fz12" style="background:#fff8e6;border-radius:6px;padding:6px 10px;margin-bottom:8px;color:#8a6500">수정요청 대기중: ${h(p.editRequest.reason)}${p.editRequest.requestedByName?` (요청자: ${h(p.editRequest.requestedByName)})`:""}</div>`:""}
+      <div class="tbl-wrap"><table><tr><th class="lbl">연도</th>${p.projection.map(r=>`<th>${r.year}</th>`).join("")}</tr>
+      <tr><td class="lbl">매출</td>${p.projection.map(r=>`<td style="text-align:right">${_bpFmt(r.revenue)}</td>`).join("")}</tr>
+      <tr><td class="lbl">매출원가</td>${p.projection.map(r=>`<td style="text-align:right">${_bpFmt(r.cogs)}</td>`).join("")}</tr>
+      <tr><td class="lbl">매출총이익</td>${p.projection.map(r=>`<td style="text-align:right">${_bpFmt(r.grossProfit)}</td>`).join("")}</tr>
+      <tr style="color:#1a4d8f"><td class="lbl">매출총이익률</td>${p.projection.map(r=>`<td style="text-align:right">${_bpFmtPct(r.grossMarginRatio)}</td>`).join("")}</tr>
+      <tr><td class="lbl">판관비</td>${p.projection.map(r=>`<td style="text-align:right">${_bpFmt(r.sga)}</td>`).join("")}</tr>
+      <tr><td class="lbl">영업이익</td>${p.projection.map(r=>`<td style="text-align:right">${_bpFmt(r.operatingProfit)}</td>`).join("")}</tr>
+      <tr style="color:#1a4d8f"><td class="lbl">영업이익률</td>${p.projection.map(r=>`<td style="text-align:right">${_bpFmtPct(r.operatingMarginRatio)}</td>`).join("")}</tr>
+      <tr style="font-weight:700;background:#fdf1f1"><td class="lbl">순이익</td>${p.projection.map(r=>`<td style="text-align:right">${_bpFmt(r.netIncome)}</td>`).join("")}</tr>
+      <tr style="color:#1a4d8f"><td class="lbl">순이익률</td>${p.projection.map(r=>`<td style="text-align:right">${_bpFmtPct(r.netMarginRatio)}</td>`).join("")}</tr>
+      <tr style="color:#1a4d8f"><td class="lbl">전년대비 매출성장률</td>${p.projection.map(r=>`<td style="text-align:right">${_bpFmtPct(r.revenueGrowthYoY)}</td>`).join("")}</tr>
+      <tr><td class="lbl">잉여현금흐름</td>${p.projection.map(r=>`<td style="text-align:right">${_bpFmt(r.freeCashFlow)}</td>`).join("")}</tr>
+      </table></div>
+      <div class="fz12" style="background:#f4f7fc;border-radius:8px;padding:8px 12px;margin-top:10px">
+        <b>손익분기점(BEP) 분석 — 기준연도 ${be.baseYear!==undefined?be.baseYear:p.baseYear}</b><br>
+        고정비 ${_bpFmt(be.fixedCost)} · 변동비율 ${_bpFmtPct(be.variableCostRatio)} · 손익분기 매출액 ${_bpFmt(be.bepRevenue)} · 기준연도 매출 ${_bpFmt(be.currentRevenue)} · 안전마진율 ${_bpFmtPct(be.safetyMarginRatio)}
+        ${be.note?`<div style="color:#c0392b;margin-top:4px">${h(be.note)}</div>`:""}
+      </div>
+      ${p.budgetComparison?`<div class="fz12" style="background:#fff8e6;border-radius:6px;padding:6px 10px;margin-top:8px">참고: 실제 업로드된 판관비 실적 합계 ${_bpFmt(p.budgetComparison.actualSga)}원이 이 계획의 기준연도 판관비 가정 ${_bpFmt(p.budgetComparison.assumptionSga)}원과 ${_bpFmtPct(p.budgetComparison.diffRatio)}(${_bpFmt(p.budgetComparison.diff)}원) 차이가 있습니다.</div>`:""}
+      <div style="margin-top:10px">${chart}</div>
+    </div>
+  </div>`;
+}
+function _bpPlanActionsHtml(p){
+  const isAdmin=currentUser.role==="admin";
+  const btns=[];
+  if(isAdmin||p.status==="draft")btns.push(`<button class="btn btn-secondary btn-sm" onclick="openBizPlanFormModal('${p.id}')">수정</button>`);
+  if(p.status==="draft"&&p.dept&&(isAdmin||_bpIsDivisionHeadOf(p)))btns.push(`<button class="btn btn-primary btn-sm" onclick="approveBizPlanDivision('${p.id}')">사업부장 승인</button>`);
+  if(p.status==="divisionApproved"&&(isAdmin||_bpIsOwnerOrLead()))btns.push(`<button class="btn btn-primary btn-sm" onclick="finalApproveBizPlan('${p.id}')">최종승인</button>`);
+  if((p.status==="divisionApproved"||p.status==="finalConfirmed")&&!p.editRequest)btns.push(`<button class="btn btn-secondary btn-sm" onclick="requestEditBizPlan('${p.id}')">수정요청</button>`);
+  if(p.editRequest&&isAdmin){
+    btns.push(`<button class="btn btn-primary btn-sm" onclick="approveBizPlanEditRequest('${p.id}')">수정요청 승인</button>`);
+    btns.push(`<button class="btn btn-secondary btn-sm" onclick="rejectBizPlanEditRequest('${p.id}')">수정요청 반려</button>`);
+  }
+  if(isAdmin||p.status==="draft")btns.push(`<button class="btn btn-danger btn-sm" onclick="deleteBizPlan('${p.id}')">삭제</button>`);
+  return btns.join("");
+}
+async function _bpAction(id,suffix,body){
+  const r=await serverRequest("POST",`/api/budget/business-plan/${id}${suffix}`,body||{});
+  if(!r?.ok){showToast(r?.error||r?.message||"처리에 실패했습니다.","error");return;}
+  showToast("처리되었습니다.","success");
+  await loadBizPlanFromServer();
+}
+function approveBizPlanDivision(id){if(confirm("이 사업계획을 사업부장 승인(잠금)하시겠습니까?"))_bpAction(id,"/approve-division");}
+function finalApproveBizPlan(id){if(confirm("이 사업계획을 최종승인하시겠습니까?"))_bpAction(id,"/final-approve");}
+function requestEditBizPlan(id){
+  const reason=prompt("수정요청 사유를 입력하세요:");
+  if(reason===null)return;
+  if(!reason.trim()){showToast("사유를 입력하세요.","error");return;}
+  _bpAction(id,"/request-edit",{reason:reason.trim()});
+}
+function approveBizPlanEditRequest(id){if(confirm("수정요청을 승인해 다시 작성중(draft) 상태로 되돌리시겠습니까? 기존 승인 이력은 초기화됩니다."))_bpAction(id,"/edit-request/approve");}
+function rejectBizPlanEditRequest(id){if(confirm("수정요청을 반려하시겠습니까?"))_bpAction(id,"/edit-request/reject");}
+async function deleteBizPlan(id){
+  if(!confirm("이 사업계획을 삭제하시겠습니까?"))return;
+  const r=await serverRequest("DELETE",`/api/budget/business-plan/${id}`);
+  if(!r?.ok){showToast(r?.error||r?.message||"삭제에 실패했습니다.","error");return;}
+  showToast("삭제되었습니다.","success");
+  await loadBizPlanFromServer();
+}
+
+// ── 작성/수정 폼 ──
+function openBizPlanFormModal(planId){
+  const editPlan=planId?bizPlans.find(p=>p.id===planId):null;
+  _bizPlanEditingId=editPlan?editPlan.id:null;
+  _bizPlanSgaRowCount=0;
+  const a=editPlan?(editPlan.assumptions||{}):{};
+  const years=editPlan?(editPlan.years!==undefined?editPlan.years:editPlan.projection.length):3;
+  const planType=editPlan?(editPlan.planType||"revenue"):"revenue";
+  const isAdmin=currentUser.role==="admin";
+  const rowsHtml=(editPlan&&Array.isArray(a.sgaItems)&&a.sgaItems.length?a.sgaItems:[null]).map(item=>_bpSgaRowHtml(item)).join("");
+  openModal(`<div class="modal-box" style="max-width:640px"><div class="modal-head"><h3>${editPlan?"사업계획 수정":"신규 사업계획 작성"}</h3></div>
+  <div class="modal-body">
+    <div class="fg"><label class="fl">사업계획명 <span class="req">*</span></label><input class="fc" id="bp-name" placeholder="예: 2027-2029 사업계획" value="${editPlan?h(editPlan.name):""}"></div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+      <div class="fg"><label class="fl">시나리오명(선택)</label><input class="fc" id="bp-scenario" placeholder="예: 기본" value="${editPlan&&editPlan.scenario?h(editPlan.scenario):""}"></div>
+      <div class="fg"><label class="fl">기준연도</label><input class="fc" type="number" id="bp-base-year" value="${editPlan?editPlan.baseYear:new Date().getFullYear()}"></div>
+    </div>
+    <div class="fg"><label class="fl">추정 연차 수</label><input class="fc" type="number" id="bp-years" value="${years}" min="1" max="10"></div>
+    <div class="fg"><label class="fl">계획 유형</label><br>
+      <label class="fz13" style="margin-right:14px"><input type="radio" name="bp-plan-type" value="revenue" ${planType!=="costOnly"?"checked":""} onchange="_bpToggleCostOnly()"> 매출계획</label>
+      <label class="fz13"><input type="radio" name="bp-plan-type" value="costOnly" ${planType==="costOnly"?"checked":""} onchange="_bpToggleCostOnly()"> 비용전용</label>
+    </div>
+    ${!editPlan?`<div class="fg">${isAdmin?`
+      <label class="fl">사업부(dept, 선택 — 비우면 회사 전체 계획)</label><input class="fc" id="bp-dept" placeholder="예: 영업본부" style="margin-bottom:6px">
+      <label class="fl">팀(team, 선택)</label><input class="fc" id="bp-team" placeholder="예: 영업1팀">
+    `:`<div class="fz12 text-gray">소속: 내 소속(자동 지정 — ${h(bizPlanMyProfile?bizPlanMyProfile.dept:"")}${bizPlanMyProfile&&bizPlanMyProfile.team?" / "+h(bizPlanMyProfile.team):""})</div>`}</div>`:""}
+    <div id="bp-revenue-fields">
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px">
+        <div class="fg"><label class="fl">기준연도 매출</label><input class="fc" type="number" id="bp-base-revenue" value="${editPlan?a.baseRevenue:""}"></div>
+        <div class="fg"><label class="fl">매출 성장률(%)</label><input class="fc" type="number" step="0.1" id="bp-revenue-growth" value="${editPlan?_bpPctInput(a.revenueGrowthRate):""}"></div>
+        <div class="fg"><label class="fl">매출원가율(%)</label><input class="fc" type="number" step="0.1" id="bp-cogs-ratio" value="${editPlan?_bpPctInput(a.cogsRatio):""}"></div>
+      </div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+      <div class="fg"><label class="fl">법인세율(%, 기본 22)</label><input class="fc" type="number" step="0.1" id="bp-tax-rate" value="${editPlan?_bpPctInput(a.taxRate):""}"></div>
+      <div class="fg"><label class="fl">연간 감가상각(선택)</label><input class="fc" type="number" id="bp-depreciation" value="${editPlan?(a.depreciation||0):""}"></div>
+    </div>
+    <div class="fg"><label class="fl">판관비 항목 <span class="fz11 text-gray">(체크 해제 시 손익분기점에서 변동비로 취급)</span></label>
+      <div id="bp-sga-rows">${rowsHtml}</div>
+      <button class="btn btn-ghost btn-sm mt2" onclick="addBpSgaRow()">+ 판관비 항목 추가</button>
+    </div>
+  </div>
+  <div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal()">취소</button><button class="btn btn-primary" onclick="submitBizPlanForm()">${editPlan?"수정 저장":"저장"}</button></div>
+  </div>`);
+  setTimeout(_bpToggleCostOnly,0);
+}
+function _bpSgaRowHtml(item){
+  const idx=_bizPlanSgaRowCount++;
+  const nameVal=item?h(item.name):"";
+  const amountVal=item&&item.baseAmount!==undefined?item.baseAmount:"";
+  const growthVal=item?_bpPctInput(item.growthRate):"";
+  const fixedChecked=(!item||item.fixed!==false)?"checked":"";
+  return `<div id="bp-sga-row-${idx}" style="display:grid;grid-template-columns:2fr 2fr 1fr 1fr auto;gap:6px;align-items:end;margin-top:6px">
+    <div><label class="fz11 text-gray">항목명</label><input class="fc bp-sga-name" placeholder="예: 인건비" value="${nameVal}"></div>
+    <div><label class="fz11 text-gray">기준연도 금액</label><input class="fc bp-sga-amount" type="number" value="${amountVal}"></div>
+    <div><label class="fz11 text-gray">증가율(%)</label><input class="fc bp-sga-growth" type="number" step="0.1" value="${growthVal}"></div>
+    <div style="text-align:center"><label class="fz11 text-gray">고정비</label><br><input type="checkbox" class="bp-sga-fixed" ${fixedChecked}></div>
+    <button class="btn btn-ghost btn-sm" onclick="document.getElementById('bp-sga-row-${idx}').remove()">✕</button>
+  </div>`;
+}
+function addBpSgaRow(item){
+  const wrap=$("#bp-sga-rows");if(!wrap)return;
+  wrap.insertAdjacentHTML("beforeend",_bpSgaRowHtml(item));
+}
+function _bpToggleCostOnly(){
+  const sel=document.querySelector('input[name="bp-plan-type"]:checked');
+  const isCostOnly=!!(sel&&sel.value==="costOnly");
+  const el=$("#bp-revenue-fields");
+  if(el)el.style.display=isCostOnly?"none":"block";
+}
+async function submitBizPlanForm(){
+  const name=$("#bp-name")?.value.trim();
+  const scenario=$("#bp-scenario")?.value.trim();
+  const baseYear=Number($("#bp-base-year")?.value);
+  const years=Number($("#bp-years")?.value);
+  const planTypeSel=document.querySelector('input[name="bp-plan-type"]:checked');
+  const planType=planTypeSel?planTypeSel.value:"revenue";
+  const isCostOnly=planType==="costOnly";
+  const baseRevenue=isCostOnly?0:Number($("#bp-base-revenue")?.value);
+  const revenueGrowthRate=isCostOnly?0:(Number($("#bp-revenue-growth")?.value)||0)/100;
+  const cogsRatio=isCostOnly?0:(Number($("#bp-cogs-ratio")?.value)||0)/100;
+  const taxRateInput=$("#bp-tax-rate")?.value;
+  const taxRate=taxRateInput?Number(taxRateInput)/100:undefined;
+  const depreciation=Number($("#bp-depreciation")?.value)||0;
+  const sgaItems=[...document.querySelectorAll("#bp-sga-rows > div")].map(row=>({
+    name:row.querySelector(".bp-sga-name").value.trim(),
+    baseAmount:Number(row.querySelector(".bp-sga-amount").value)||0,
+    growthRate:(Number(row.querySelector(".bp-sga-growth").value)||0)/100,
+    fixed:row.querySelector(".bp-sga-fixed").checked,
+  }));
+  if(!name||!baseYear||!years||(!isCostOnly&&(!baseRevenue||isNaN(revenueGrowthRate)||isNaN(cogsRatio)))){
+    showToast("필수 항목을 모두 입력하세요.","error");return;
+  }
+  const editing=_bizPlanEditingId;
+  const payload={name,scenario:scenario||null,baseYear,years,planType,baseRevenue,revenueGrowthRate,cogsRatio,sgaItems,taxRate,depreciation};
+  if(!editing&&currentUser.role==="admin"){
+    const deptVal=$("#bp-dept")?.value.trim();
+    const teamVal=$("#bp-team")?.value.trim();
+    if(deptVal)payload.dept=deptVal;
+    if(teamVal)payload.team=teamVal;
+  }
+  const url=editing?`/api/budget/business-plan/${editing}`:"/api/budget/business-plan";
+  const method=editing?"PUT":"POST";
+  const r=await serverRequest(method,url,payload);
+  if(!r?.ok){showToast(r?.error||r?.message||"저장에 실패했습니다.","error");return;}
+  closeModal();showToast(editing?"수정되었습니다.":"저장되었습니다.","success");
+  await loadBizPlanFromServer();
+}
+
+// ── 시나리오 비교(SVG 차트, 외부 라이브러리 미사용) ──
+function _bizPlanToggleCompare(id,checked){
+  if(checked)_bizPlanCompareIds.add(id);else _bizPlanCompareIds.delete(id);
+}
+function _renderBizPlanCompare(){
+  const area=$("#bp-compare-area");if(!area)return;
+  const ids=[..._bizPlanCompareIds];
+  if(ids.length<2){area.innerHTML=`<div class="fz12 text-gray">비교하려면 사업계획을 2개 이상 체크하세요.</div>`;return;}
+  const plans=bizPlans.filter(p=>ids.includes(p.id));
+  const maxYears=Math.max(...plans.map(p=>p.projection.length));
+  const xLabels=Array.from({length:maxYears},(_,i)=>"Y"+(i+1));
+  const planLabel=p=>p.name+(p.scenario?` (${p.scenario})`:"");
+  const metricRow=(label,key)=>{
+    let row=`<tr><td class="lbl">${label}</td>`;
+    plans.forEach(p=>{for(let i=0;i<maxYears;i++){const r=p.projection[i];row+=`<td style="text-align:right">${r?_bpFmt(r[key]):"-"}</td>`;}});
+    return row+"</tr>";
+  };
+  let head=`<tr><th class="lbl">계획</th>`;
+  plans.forEach(p=>{head+=`<th colspan="${maxYears}">${h(planLabel(p))}</th>`;});
+  head+=`</tr><tr><th class="lbl">연차</th>`;
+  plans.forEach(()=>{xLabels.forEach(l=>{head+=`<th>${l}</th>`;});});
+  head+="</tr>";
+  let html=`<div class="tbl-wrap"><table>${head}${metricRow("매출","revenue")}${metricRow("영업이익","operatingProfit")}${metricRow("순이익","netIncome")}</table></div>`;
+  const seriesFor=key=>plans.map((p,idx)=>({label:planLabel(p),color:_BP_CHART_PALETTE[idx%_BP_CHART_PALETTE.length],values:Array.from({length:maxYears},(_,i)=>p.projection[i]?p.projection[i][key]:null)}));
+  html+=`<h4 class="mb2 mt3">매출 비교</h4>${_bpSvgLineChart(seriesFor("revenue"),xLabels)}`;
+  html+=`<h4 class="mb2 mt3">순이익 비교</h4>${_bpSvgLineChart(seriesFor("netIncome"),xLabels)}`;
+  area.innerHTML=html;
+}
+function _bpSvgLineChart(series,xLabels){
+  const width=520,height=170,pad=34;
+  const allVals=series.flatMap(s=>s.values.filter(v=>v!==null&&v!==undefined));
+  if(!allVals.length)return `<div class="fz12 text-gray">표시할 데이터가 없습니다.</div>`;
+  const maxV=Math.max(0,...allVals),minV=Math.min(0,...allVals);
+  const range=(maxV-minV)||Math.abs(maxV)||1;
+  const n=xLabels.length;
+  const xStep=n>1?(width-pad*2)/(n-1):0;
+  const xScale=i=>pad+i*xStep;
+  const yScale=v=>height-pad-((v-minV)/range)*(height-pad*2);
+  let svg=`<svg viewBox="0 0 ${width} ${height}" style="width:100%;max-width:${width}px;height:auto;background:#fbfcfe;border-radius:6px">`;
+  if(minV<0&&maxV>0){const zy=yScale(0).toFixed(1);svg+=`<line x1="${pad}" y1="${zy}" x2="${width-pad}" y2="${zy}" stroke="#ccc" stroke-dasharray="4,3"/>`;}
+  series.forEach(s=>{
+    const pts=s.values.map((v,i)=>(v===null||v===undefined)?null:`${xScale(i).toFixed(1)},${yScale(v).toFixed(1)}`).filter(Boolean).join(" ");
+    if(pts)svg+=`<polyline points="${pts}" fill="none" stroke="${s.color}" stroke-width="2"/>`;
+    s.values.forEach((v,i)=>{if(v===null||v===undefined)return;svg+=`<circle cx="${xScale(i).toFixed(1)}" cy="${yScale(v).toFixed(1)}" r="2.6" fill="${s.color}"/>`;});
+  });
+  xLabels.forEach((lbl,i)=>{svg+=`<text x="${xScale(i).toFixed(1)}" y="${height-8}" font-size="9" text-anchor="middle" fill="#666">${lbl}</text>`;});
+  svg+="</svg>";
+  const legend=`<div class="fz11" style="margin-top:4px">`+series.map(s=>`<span style="color:${s.color};margin-right:12px">● ${h(s.label)}</span>`).join("")+`</div>`;
+  return `<div>${svg}${legend}</div>`;
+}
+
+// ── 사업부/회사 롤업 ──
+async function loadBizPlanRollup(){
+  const r=await serverRequest("GET",`/api/budget/business-plan/rollup?includeDraft=${_bizPlanRollupIncludeDraft}`);
+  if(!r?.ok)_bizPlanRollupData={error:r?.error||r?.message||"조회 실패"};
+  else _bizPlanRollupData=r;
+  if(_bizPlanTab==="rollup")renderBizPlanPage();
+}
+function _renderBizPlanRollupTab(){
+  if(!_bizPlanRollupData)return `<div class="p-empty">불러오는 중...</div>`;
+  if(_bizPlanRollupData.error)return `<div class="fz12" style="color:#c0392b">${h(_bizPlanRollupData.error)}</div>`;
+  const d=_bizPlanRollupData;
+  let html=`<label class="fz12" style="display:inline-block;margin-bottom:10px"><input type="checkbox" ${_bizPlanRollupIncludeDraft?"checked":""} onchange="_bizPlanRollupIncludeDraft=this.checked;loadBizPlanRollup()"> 작성중(draft) 계획도 포함</label>`;
+  const rollupTable=rows=>{
+    if(!rows.length)return `<div class="fz12 text-gray">데이터 없음</div>`;
+    let t=`<table><tr><th class="lbl">연도</th>${rows.map(r=>`<th>${r.year}</th>`).join("")}</tr>`;
+    t+=`<tr><td class="lbl">매출</td>${rows.map(r=>`<td style="text-align:right">${_bpFmt(r.revenue)}</td>`).join("")}</tr>`;
+    t+=`<tr><td class="lbl">매출원가</td>${rows.map(r=>`<td style="text-align:right">${_bpFmt(r.cogs)}</td>`).join("")}</tr>`;
+    t+=`<tr><td class="lbl">매출총이익</td>${rows.map(r=>`<td style="text-align:right">${_bpFmt(r.grossProfit)}</td>`).join("")}</tr>`;
+    t+=`<tr><td class="lbl">판관비</td>${rows.map(r=>`<td style="text-align:right">${_bpFmt(r.sga)}</td>`).join("")}</tr>`;
+    t+=`<tr><td class="lbl">영업이익</td>${rows.map(r=>`<td style="text-align:right">${_bpFmt(r.operatingProfit)}</td>`).join("")}</tr>`;
+    t+=`<tr style="font-weight:700"><td class="lbl">순이익</td>${rows.map(r=>`<td style="text-align:right">${_bpFmt(r.netIncome)}</td>`).join("")}</tr>`;
+    t+=`<tr><td class="lbl">잉여현금흐름</td>${rows.map(r=>`<td style="text-align:right">${_bpFmt(r.freeCashFlow)}</td>`).join("")}</tr>`;
+    t+="</table>";
+    return t;
+  };
+  (d.byDept||[]).forEach(dept=>{
+    html+=`<div class="mb4"><h4 class="mb2">${h(dept.dept)} <span class="fz11 text-gray">(계획 ${dept.planCount}건)</span></h4><div class="tbl-wrap">${rollupTable(dept.projection)}</div></div>`;
+  });
+  html+=`<div class="mb3"><h4 class="mb2">회사 전체 <span class="fz11 text-gray">(계획 ${d.company.planCount}건)</span></h4><div class="tbl-wrap">${rollupTable(d.company.projection)}</div></div>`;
+  return html;
+}
+
+// ── 설정(예산담당자/기획팀장 지정, 입력기간 on/off) ──
+function _renderBizPlanSettingsTab(){
+  const isAdmin=currentUser.role==="admin";
+  let html=`<p class="fz13">현재 입력기간: <b>${bizPlanSettings.inputOpen?"열림 (팀별 신규 작성 가능)":"닫힘 (팀별 신규 작성 불가)"}</b></p>`;
+  html+=`<p class="fz12 text-gray">예산담당자(사번): ${(bizPlanSettings.ownerIds||[]).join(", ")||"(미지정)"}</p>`;
+  html+=`<p class="fz12 text-gray">기획팀장(사번): ${bizPlanSettings.teamLeaderId!=null?bizPlanSettings.teamLeaderId:"(미지정)"}</p>`;
+  html+=`<div class="mt2">
+    <button class="btn btn-secondary btn-sm" onclick="toggleBizPlanInputWindow()">${bizPlanSettings.inputOpen?"입력기간 닫기":"입력기간 열기"}</button>
+    ${isAdmin?`<button class="btn btn-secondary btn-sm" onclick="editBizPlanRoster()">예산담당자/기획팀장 지정</button>`:""}
+  </div>`;
+  return html;
+}
+async function toggleBizPlanInputWindow(){
+  const r=await serverRequest("POST","/api/budget/business-plan/settings/input-window",{inputOpen:!bizPlanSettings.inputOpen});
+  if(!r?.ok){showToast(r?.error||r?.message||"변경 실패","error");return;}
+  bizPlanSettings=r.settings;showToast("변경되었습니다.","success");renderBizPlanPage();
+}
+async function editBizPlanRoster(){
+  const ownerInput=prompt("예산담당자 사번을 쉼표로 구분해 입력하세요(빈 값=미지정):",(bizPlanSettings.ownerIds||[]).join(","));
+  if(ownerInput===null)return;
+  const leadInput=prompt("기획팀장 사번을 입력하세요(빈 값=미지정):",bizPlanSettings.teamLeaderId!=null?String(bizPlanSettings.teamLeaderId):"");
+  if(leadInput===null)return;
+  const ownerIds=ownerInput.split(",").map(s=>s.trim()).filter(Boolean);
+  const teamLeaderId=leadInput.trim()||null;
+  const r=await serverRequest("POST","/api/budget/business-plan/settings/roster",{ownerIds,teamLeaderId});
+  if(!r?.ok){showToast(r?.error||r?.message||"지정 실패","error");return;}
+  bizPlanSettings=r.settings;showToast("지정되었습니다.","success");renderBizPlanPage();
 }
 
 // ==================== 결재 위임 (대결자 지정) ====================
