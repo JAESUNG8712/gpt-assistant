@@ -14893,6 +14893,22 @@ let _bpSgaDefaultDept="",_bpSgaDefaultTeam=""; // 판관비 항목 신규 행의
 let _bizPlanCompareIds=new Set();
 let _bizPlanRollupData=null,_bizPlanRollupIncludeDraft=false;
 const _BP_CHART_PALETTE=['#0f3460','#e94560','#1a7d36','#8a6500','#6c3fb0','#0e7c86'];
+// 판관비(인건비 등) 표준 세부 항목 템플릿 — [구분, 항목]. 신규 사업계획 작성 시 기본으로
+// 깔아두고(금액은 0으로 시작, 필요한 항목만 채우면 됨), 필요하면 그리드에서 자유롭게
+// 추가/삭제할 수 있다. 회사가 실제 쓰는 판관비 계정과목 체계를 그대로 반영.
+const _BP_DEFAULT_SGA_TEMPLATE=[
+  ["급여","고정급"],["급여","변동급"],["급여","인센티브(사이닝)"],["급여","인센티브(핵심인재)"],
+  ["급여","RSU"],["급여","임금인상"],["급여","성과급"],["급여","기타수당"],
+  ["복리후생비","경조금"],["복리후생비","출산/돌 선물"],["복리후생비","사내인재추천"],["복리후생비","미사용 휴가수당"],
+  ["복리후생비","복지카드(기본)"],["복리후생비","복지카드(직무,장애)"],["복리후생비","학위취득축하금"],["복리후생비","장기근속포상"],
+  ["복리후생비","건강검진"],["복리후생비","아난티"],
+  ["교육훈련비","핵심인재학자금"],["교육훈련비","차세대리더교육"],["교육훈련비","사외교육"],["교육훈련비","휴넷"],
+  ["복리후생비","기타 복리후생비"],
+  ["지급수수료","지급수수료"],["지급임차료","지급임차료"],["건물관리비","건물관리비"],["보험료","보험료"],
+  ["소모품비","소모품비"],["도서인쇄비","도서인쇄비"],["통신비","통신비"],["협회비","협회비"],["세금과공과","세금과공과"],
+  ["퇴직급여","퇴직금"],
+  ["사회보험","국민연금"],["사회보험","건강보험"],["사회보험","장기요양"],["사회보험","고용보험"],["사회보험","주민세"],
+];
 
 function _bpFmt(n){return (n===null||n===undefined||isNaN(n))?"-":Number(n).toLocaleString();}
 function _bpFmtPct(n){return (n===null||n===undefined||isNaN(n))?"-":(n*100).toFixed(1)+"%";}
@@ -15082,7 +15098,13 @@ function openBizPlanFormModal(planId){
   const isAdmin=currentUser.role==="admin";
   _bpSgaDefaultDept=editPlan?(editPlan.dept||""):(isAdmin?"":(bizPlanMyProfile?(bizPlanMyProfile.dept||""):""));
   _bpSgaDefaultTeam=editPlan?(editPlan.team||""):(isAdmin?"":(bizPlanMyProfile?(bizPlanMyProfile.team||""):""));
-  const rowsHtml=(editPlan&&Array.isArray(a.sgaItems)&&a.sgaItems.length?a.sgaItems:[null]).map(item=>_bpSgaRowHtml(item)).join("");
+  // 신규 작성(수정이 아닐 때)은 표준 판관비 항목 템플릿을 기본으로 깔아둔다(금액 0으로
+  // 시작 — 해당 없는 항목은 그대로 두거나 삭제하면 됨). 수정 화면은 저장된 항목을 그대로 보여준다.
+  const defaultItems=_BP_DEFAULT_SGA_TEMPLATE.map(([category,name])=>({
+    dept:_bpSgaDefaultDept,team:_bpSgaDefaultTeam,costDept:_bpSgaDefaultDept,
+    name,category,detail:"",months:Array(12).fill(0),note:"",growthRate:0,fixed:true
+  }));
+  const rowsHtml=(editPlan?(Array.isArray(a.sgaItems)&&a.sgaItems.length?a.sgaItems:[null]):defaultItems).map(item=>_bpSgaRowHtml(item)).join("");
   openModal(`<div class="modal-box" style="max-width:1180px"><div class="modal-head"><h3>${editPlan?"사업계획 수정":"신규 사업계획 작성"}</h3></div>
   <div class="modal-body">
     <div class="fg"><label class="fl">사업계획명 <span class="req">*</span></label><input class="fc" id="bp-name" placeholder="예: 2027-2029 사업계획" value="${editPlan?h(editPlan.name):""}"></div>
@@ -15166,28 +15188,44 @@ function addBpSgaRow(item){
   const wrap=$("#bp-sga-tbody");if(!wrap)return;
   wrap.insertAdjacentHTML("beforeend",_bpSgaRowHtml(item));
 }
-// 현재 인사 정보(employees[].salary, 연봉)에 등록된 재직자 급여 합계를 그대로 월 인건비로
-// 채워주는 행을 추가한다 — 사용자가 직접 금액을 입력하지 않아도 "지금 입력된 개인별
-// 연봉"이 기준연도 인건비로 그대로 반영되도록 하는 것이 목적. 팀(team)이 지정된 계획은
-// 그 부문+팀 소속만, 사업부 단위(team 미지정) 계획은 그 부문 소속 전체를 합산한다.
+// 현재 인사 정보(employees[].salary, 연봉)에 등록된 재직자 급여 합계를 그대로 "급여/고정급"
+// 행(표준 템플릿에 기본 포함됨)에 채워넣는다 — 사용자가 직접 금액을 입력하지 않아도 "지금
+// 입력된 개인별 연봉"이 기준연도 고정급으로 그대로 반영되도록 하는 것이 목적. 팀(team)이
+// 지정된 계획은 그 부문+팀 소속만 합산하고, 팀이 없는(사업부장 단위) 계획은 부문 전체가
+// 아니라 작성자 본인 급여만 반영한다(각 팀이 이미 자기 팀 계획에서 팀원 인건비를 반영하므로,
+// 사업부장 계획까지 부문 전체를 합산하면 롤업에서 같은 인건비가 두 번 잡히는 중복 계산이 됨).
 // 매달 동일 금액(연봉/12)을 채우며, 저장 전까지는 자유롭게 값을 수정할 수 있다.
 function addBpLaborCostRow(){
   const deptField=$("#bp-dept"),teamField=$("#bp-team");
   const dept=(deptField?deptField.value.trim():"")||_bpSgaDefaultDept||"";
   const team=deptField?(teamField?teamField.value.trim():""):(_bpSgaDefaultTeam||"");
   if(!dept){showToast("부문을 먼저 지정하세요(관리자는 위 사업부 입력란, 팀원은 소속이 자동 지정됩니다).","error");return;}
-  const matched=employees.filter(e=>e.active&&e.dept===dept&&(team===""||(e.team||"")===team));
+  const matched=team===""
+    ? employees.filter(e=>e.active&&e.id===currentUser.id)
+    : employees.filter(e=>e.active&&e.dept===dept&&(e.team||"")===team);
   if(!matched.length){showToast("해당 부문/팀 소속의 재직 중인 직원이 없어 인건비를 계산할 수 없습니다.","error");return;}
   const monthlyTotal=matched.reduce((s,e)=>s+Math.round((e.salary||0)/12),0);
-  addBpSgaRow({
-    dept,team,costDept:dept,
-    name:"기본 인건비",
-    detail:`재직자 ${matched.length}명 연봉 합계 기준 자동입력(${new Date().toISOString().slice(0,10)})`,
-    category:"인건비",
-    months:Array(12).fill(monthlyTotal),
-    note:"연봉 데이터 기준 자동입력 - 인원 변동 시 재계산 필요",
-    growthRate:0, fixed:true
-  });
+  const detail=`재직자 ${matched.length}명 연봉 합계 기준 자동입력(${new Date().toISOString().slice(0,10)})`;
+  const note="연봉 데이터 기준 자동입력 - 인원 변동 시 재계산 필요";
+  const rows=[...document.querySelectorAll("#bp-sga-tbody tr")];
+  const targetRow=rows.find(r=>r.querySelector(".bp-sga-name").value.trim()==="고정급");
+  if(targetRow){
+    targetRow.querySelector(".bp-sga-dept").value=dept;
+    targetRow.querySelector(".bp-sga-team").value=team;
+    targetRow.querySelector(".bp-sga-costdept").value=dept;
+    targetRow.querySelector(".bp-sga-detail").value=detail;
+    targetRow.querySelector(".bp-sga-note").value=note;
+    const monthInputs=targetRow.querySelectorAll(".bp-sga-month");
+    monthInputs.forEach(i=>{i.value=monthlyTotal;});
+    _bpUpdateSgaRowTotal(monthInputs[0]);
+  }else{
+    addBpSgaRow({
+      dept,team,costDept:dept,
+      name:"고정급",category:"급여",detail,
+      months:Array(12).fill(monthlyTotal),
+      note,growthRate:0,fixed:true
+    });
+  }
   showToast(`재직자 ${matched.length}명 연봉 기준 월 ${monthlyTotal.toLocaleString()}원이 입력되었습니다.`,"success");
 }
 function _bpUpdateSgaRowTotal(input){
@@ -15230,7 +15268,7 @@ async function submitBizPlanForm(){
       growthRate:(Number(row.querySelector(".bp-sga-growth").value)||0)/100,
       fixed:row.querySelector(".bp-sga-fixed").checked,
     };
-  }).filter(it=>it.name||it.months.some(v=>v!==0)); // 빈 행(추가만 하고 값 미입력)은 제외
+  }).filter(it=>it.months.some(v=>v!==0)); // 월별 금액이 전부 0인 행(기본 템플릿 중 미사용 항목 포함)은 제외
   if(!name||!baseYear||!years||(!isCostOnly&&(!baseRevenue||isNaN(revenueGrowthRate)||isNaN(cogsRatio)))){
     showToast("필수 항목을 모두 입력하세요.","error");return;
   }
