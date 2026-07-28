@@ -15122,6 +15122,7 @@ function openBizPlanFormModal(planId){
         </table>
       </div>
       <button class="btn btn-ghost btn-sm mt2" onclick="addBpSgaRow()">+ 판관비 항목 추가</button>
+      <button class="btn btn-ghost btn-sm mt2" onclick="addBpLaborCostRow()" title="현재 인사 정보에 등록된 재직자 연봉 합계를 기준으로 월 인건비 행을 자동 생성합니다.">+ 기본 인건비 자동입력(연봉 기준)</button>
     </div>
   </div>
   <div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal()">취소</button><button class="btn btn-primary" onclick="submitBizPlanForm()">${editPlan?"수정 저장":"저장"}</button></div>
@@ -15164,6 +15165,30 @@ function _bpSgaRowHtml(item){
 function addBpSgaRow(item){
   const wrap=$("#bp-sga-tbody");if(!wrap)return;
   wrap.insertAdjacentHTML("beforeend",_bpSgaRowHtml(item));
+}
+// 현재 인사 정보(employees[].salary, 연봉)에 등록된 재직자 급여 합계를 그대로 월 인건비로
+// 채워주는 행을 추가한다 — 사용자가 직접 금액을 입력하지 않아도 "지금 입력된 개인별
+// 연봉"이 기준연도 인건비로 그대로 반영되도록 하는 것이 목적. 팀(team)이 지정된 계획은
+// 그 부문+팀 소속만, 사업부 단위(team 미지정) 계획은 그 부문 소속 전체를 합산한다.
+// 매달 동일 금액(연봉/12)을 채우며, 저장 전까지는 자유롭게 값을 수정할 수 있다.
+function addBpLaborCostRow(){
+  const deptField=$("#bp-dept"),teamField=$("#bp-team");
+  const dept=(deptField?deptField.value.trim():"")||_bpSgaDefaultDept||"";
+  const team=deptField?(teamField?teamField.value.trim():""):(_bpSgaDefaultTeam||"");
+  if(!dept){showToast("부문을 먼저 지정하세요(관리자는 위 사업부 입력란, 팀원은 소속이 자동 지정됩니다).","error");return;}
+  const matched=employees.filter(e=>e.active&&e.dept===dept&&(team===""||(e.team||"")===team));
+  if(!matched.length){showToast("해당 부문/팀 소속의 재직 중인 직원이 없어 인건비를 계산할 수 없습니다.","error");return;}
+  const monthlyTotal=matched.reduce((s,e)=>s+Math.round((e.salary||0)/12),0);
+  addBpSgaRow({
+    dept,team,costDept:dept,
+    name:"기본 인건비",
+    detail:`재직자 ${matched.length}명 연봉 합계 기준 자동입력(${new Date().toISOString().slice(0,10)})`,
+    category:"인건비",
+    months:Array(12).fill(monthlyTotal),
+    note:"연봉 데이터 기준 자동입력 - 인원 변동 시 재계산 필요",
+    growthRate:0, fixed:true
+  });
+  showToast(`재직자 ${matched.length}명 연봉 기준 월 ${monthlyTotal.toLocaleString()}원이 입력되었습니다.`,"success");
 }
 function _bpUpdateSgaRowTotal(input){
   const row=input.closest("tr");if(!row)return;
