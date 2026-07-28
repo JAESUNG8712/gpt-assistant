@@ -5219,7 +5219,7 @@ const SIDEBAR_GROUP_META={
   "set-sys-sep":{label:"시스템 관리",roles:["admin"]},
   "set-pw-sep":{label:"개인 설정",roles:["admin","director","leader","member"]},
 };
-const SIDEBAR_DEFAULT_ORDER=["dashboard","profile-sep","approval-sep","comm-sep","attend-sep","welfare-sep","pay-sep","hr-sep","recruit-sep","kpi-sep","comp-sep","promo-sep","talent-sep","lowperf-sep","acct-sep","sales-sep","inv-sep","pms-sep","set-op-sep","set-sys-sep","set-pw-sep"];
+const SIDEBAR_DEFAULT_ORDER=["dashboard","profile-sep","approval-sep","comm-sep","attend-sep","welfare-sep","pay-sep","hr-sep","recruit-sep","kpi-sep","comp-sep","promo-sep","talent-sep","lowperf-sep","acct-sep","bizplan-sep","sales-sep","inv-sep","pms-sep","set-op-sep","set-sys-sep","set-pw-sep"];
 // 대분류 카테고리: 사이드바/상단 카테고리 내비게이션에서 사용 (중분류 그룹 묶음)
 const BIG_CATEGORIES=[
   {key:"approval",label:"전자결재",icon:"📑",groups:["approval-sep"]},
@@ -5227,7 +5227,7 @@ const BIG_CATEGORIES=[
   {key:"my",label:"내 정보·근태",icon:"👤",groups:["profile-sep","attend-sep","welfare-sep","pay-sep"]},
   {key:"eval",label:"평가",icon:"🏆",groups:["kpi-sep","comp-sep"]},
   {key:"hr",label:"인사",icon:"🗂",groups:["hr-sep","recruit-sep","promo-sep","talent-sep","lowperf-sep"]},
-  {key:"acct",label:"회계",icon:"💵",groups:["acct-sep"]},
+  {key:"acct",label:"회계",icon:"💵",groups:["acct-sep","bizplan-sep"]},
   {key:"sales",label:"영업관리",icon:"📈",groups:["sales-sep"]},
   {key:"inventory",label:"재고관리",icon:"📦",groups:["inv-sep"]},
   {key:"pms",label:"PMS",icon:"📊",groups:["pms-sep"]},
@@ -5369,6 +5369,16 @@ function renderSidebar(){
       {id:"expense-admin",label:"경비 정산 관리",icon:"🧾",desc:"경비 청구 승인·반려·지급 처리",roles:["admin"]},
       {id:"acct-receivables",label:"채권/채무 관리",icon:"💳",desc:"수금·지급 등록, 거래처별 미수·미지급 잔액",roles:["admin"]},
       {id:"exec-dashboard",label:"경영 대시보드",icon:"📊",desc:"매출·손익·인건비·인원·재고 통합 현황",roles:["admin"]},
+    ],
+    "bizplan-sep":[
+      {id:"bizplan-sep",type:"sep",label:"사업계획",roles:["admin","director","leader","member"]},
+      // 사업계획(budget.html)은 SPA 라우팅에 편입된 화면이 아니라 완전히 별도의 정적
+      // 페이지다(회계/PMS 등과 달리 gotoPage()로 그릴 콘텐츠가 없음) — 클릭 시 실제
+      // 페이지 이동을 하도록 id를 gotoPage()에서 가로채는 예약값으로 지정했다(아래
+      // gotoPage() 맨 앞의 분기 참고). 메뉴 자체는 전 역할에 공개하고, 실제로 보이는
+      // 계획 내용은 budget.js 서버 쪽에서 소속 조직 기준으로 걸러진다(전체 공개는 예산
+      // 담당자·기획팀장·관리자만).
+      {id:"biz-plan-external",label:"사업계획",icon:"🧮",desc:"팀별 사업계획 작성·승인·확정, 사업부/회사 롤업",roles:["admin","director","leader","member"]},
     ],
     "sales-sep":[
       {id:"sales-sep",type:"sep",label:"영업관리",roles:["admin"]},
@@ -5549,6 +5559,10 @@ async function _confirmMyPagePw(){
   finally{if(btn)btn.disabled=false;}
 }
 function gotoPage(p){
+  // 사업계획(budget.html)은 SPA 밖의 별도 정적 페이지라 gotoPage()의 일반 라우팅(currentPage
+  // 갱신→renderPage())으로 그릴 콘텐츠가 없다 — 예약된 id를 만나면 실제 페이지 이동만
+  // 하고 그 외 라우팅 로직(권한 체크, currentPage 갱신 등)은 전혀 타지 않는다.
+  if(p==="biz-plan-external"){window.location.href="/budget.html";return;}
   // 메뉴 이동은 항상 현재 화면 전체를 교체하므로, 열려있는 모달(예: 본인확인 비밀번호
   // 확인창)이 있으면 먼저 닫는다 - 그렇지 않으면 새 페이지 컨텐츠 위에 이전 모달이 계속
   // 남아 화면을 가리는 문제가 있었다(모바일 QA에서 발견: 근태 탭 진입 시 뜨는 본인확인
