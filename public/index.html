@@ -15667,7 +15667,7 @@ async function editBizPlanRoster(){
 // 관리자 전용 — 직원별·연도별로 표준 판관비 항목(RSU·인센티브·복지카드 등, 고정급/변동급
 // 제외) 각각의 연간 금액을 입력해두면, 사업계획 판관비 그리드의 "개인별 급여상세
 // 자동입력" 버튼(addBpEmpDetailRows)이 팀 단위로 합산해 채워 넣는다.
-let _eppSelectedEmpId=null,_eppYear=new Date().getFullYear(),_eppPlans=[];
+let _eppSelectedEmpId=null,_eppYear=new Date().getFullYear(),_eppPlans=[],_eppEmpSearchQuery="";
 let _eppSettings={severance:{dcRate:8.33,dbMonthsPerYear:1},socialInsurance:{pension:4.5,health:3.545,longTermCare:12.95,employment:0.9,localTax:10}};
 async function renderEmpPayPlanPage(){
   const c=$("#content");if(!c)return;
@@ -15686,7 +15686,13 @@ function _renderEmpPayPlanBody(){
   const selectedEmp=activeEmps.find(e=>String(e.id)===String(_eppSelectedEmpId));
   const existingPlan=selectedEmp?_eppPlans.find(p=>String(p.empId)===String(selectedEmp.id)):null;
 
-  const empOptions=activeEmps.map(e=>`<option value="${e.id}" ${String(e.id)===String(_eppSelectedEmpId)?"selected":""}>${h(e.name)} (${h(e.dept||"")}${e.team?" / "+h(e.team):""})</option>`).join("");
+  const q=(_eppEmpSearchQuery||"").trim().toLowerCase();
+  const filteredEmps=q?activeEmps.filter(e=>{
+    const hireYear=(e.hire||"").slice(0,4);
+    return [e.name,e.rank,e.position,e.dept,e.team,hireYear].some(v=>(v||"").toString().toLowerCase().includes(q));
+  }):activeEmps;
+  const empLabel=e=>`${h(e.name)} (${h(e.dept||"")}${e.team?" / "+h(e.team):""}${e.rank?" · "+h(e.rank):""}${e.position?" · "+h(e.position):""}${e.hire?" · "+h(e.hire.slice(0,4))+"입사":""})`;
+  const empOptions=filteredEmps.map(e=>`<option value="${e.id}" ${String(e.id)===String(_eppSelectedEmpId)?"selected":""}>${empLabel(e)}</option>`).join("");
   const enteredRows=_eppPlans.map(p=>{
     const emp=activeEmps.find(e=>String(e.id)===String(p.empId));
     const total=(p.items||[]).reduce((s,i)=>s+(i.amount||0),0);
@@ -15702,8 +15708,9 @@ function _renderEmpPayPlanBody(){
 
   c.innerHTML=`<div class="card"><div class="card-head"><h3>👤 개인별 급여 상세(계획)</h3></div><div class="card-body">
     <div class="fz12 text-gray mb3">직원별로 연간 판관비 항목(RSU·인센티브·복지카드 등) 금액을 입력해두면, 사업계획 판관비 그리드의 "+ 개인별 급여상세 자동입력" 버튼으로 팀 단위 합산이 자동 반영됩니다. 고정급/변동급은 연봉을 기준으로 별도 자동계산되므로 여기서는 입력하지 않습니다.</div>
-    <div style="display:grid;grid-template-columns:1fr 120px;gap:10px;margin-bottom:14px">
-      <div class="fg"><label class="fl">직원</label><select class="fc" id="epp-emp-select" onchange="_eppSelectedEmpId=this.value;_renderEmpPayPlanBody()"><option value="">선택하세요</option>${empOptions}</select></div>
+    <div style="display:grid;grid-template-columns:1fr 1fr 120px;gap:10px;margin-bottom:14px">
+      <div class="fg"><label class="fl">직원 검색(이름/직급/직책/입사년도/부문/팀)</label><input class="fc" type="text" id="epp-emp-search" placeholder="예: 홍길동, 과장, 팀장, 2021" value="${h(_eppEmpSearchQuery)}" oninput="_eppFilterEmpOptions()"></div>
+      <div class="fg"><label class="fl">직원${q?` (검색결과 ${filteredEmps.length}/${activeEmps.length}명)`:""}</label><select class="fc" id="epp-emp-select" onchange="_eppSelectedEmpId=this.value;_renderEmpPayPlanBody()"><option value="">선택하세요</option>${empOptions}</select></div>
       <div class="fg"><label class="fl">연도</label><input class="fc" type="number" id="epp-year" value="${_eppYear}" onchange="_eppYear=Number(this.value)||new Date().getFullYear();renderEmpPayPlanPage()"></div>
     </div>
 
@@ -15741,7 +15748,8 @@ function _renderEmpPayPlanBody(){
     </div></div>
 
     ${selectedEmp?`
-      <h4 class="mb2">${h(selectedEmp.name)} <span class="fz11 text-gray">${h(selectedEmp.dept||"")}${selectedEmp.team?" / "+h(selectedEmp.team):""}</span></h4>
+      <h4 class="mb2">${h(selectedEmp.name)} <span class="fz11 text-gray">${h(selectedEmp.dept||"")}${selectedEmp.team?" / "+h(selectedEmp.team):""}${selectedEmp.rank?" · "+h(selectedEmp.rank):""}${selectedEmp.position?" · "+h(selectedEmp.position):""}</span></h4>
+      ${_eppLaborCostRefHtml(selectedEmp)}
       <div style="display:grid;grid-template-columns:1fr 1fr 1fr auto;gap:8px;align-items:end;margin-bottom:10px">
         <div class="fg"><label class="fl">퇴직급여 유형</label><select class="fc" id="epp-severance-type">
           <option value="DC" ${(existingPlan?.severanceType||"DC")==="DC"?"selected":""}>DC(확정기여형)</option>
@@ -15757,6 +15765,36 @@ function _renderEmpPayPlanBody(){
     <h4 class="mt4 mb2">${_eppYear}년 입력 현황</h4>
     ${_eppPlans.length?`<div class="tbl-wrap"><table><tr><th class="lbl">이름</th><th class="lbl">부문</th><th class="lbl">팀</th><th>항목수</th><th>연간합계</th><th></th></tr>${enteredRows}</table></div>`:`<div class="p-empty">입력된 직원이 없습니다.</div>`}
   </div></div>`;
+}
+// 직원 검색 — 입력 중 포커스가 끊기지 않도록 전체 재렌더 대신 select의 옵션만 갱신한다.
+function _eppFilterEmpOptions(){
+  _eppEmpSearchQuery=$("#epp-emp-search")?.value||"";
+  const activeEmps=employees.filter(e=>e.active).sort((a,b)=>(a.dept||"").localeCompare(b.dept||"")||(a.name||"").localeCompare(b.name||""));
+  const q=_eppEmpSearchQuery.trim().toLowerCase();
+  const filteredEmps=q?activeEmps.filter(e=>{
+    const hireYear=(e.hire||"").slice(0,4);
+    return [e.name,e.rank,e.position,e.dept,e.team,hireYear].some(v=>(v||"").toString().toLowerCase().includes(q));
+  }):activeEmps;
+  const empLabel=e=>`${h(e.name)} (${h(e.dept||"")}${e.team?" / "+h(e.team):""}${e.rank?" · "+h(e.rank):""}${e.position?" · "+h(e.position):""}${e.hire?" · "+h(e.hire.slice(0,4))+"입사":""})`;
+  const sel=$("#epp-emp-select");if(!sel)return;
+  sel.innerHTML=`<option value="">선택하세요</option>`+filteredEmps.map(e=>`<option value="${e.id}" ${String(e.id)===String(_eppSelectedEmpId)?"selected":""}>${empLabel(e)}</option>`).join("");
+  const labelEl=sel.previousElementSibling;
+  if(labelEl&&labelEl.tagName==="LABEL")labelEl.textContent=q?`직원 (검색결과 ${filteredEmps.length}/${activeEmps.length}명)`:"직원";
+}
+// 사업계획 그리드의 고정급/변동급 자동입력(addBpLaborCostRow)과 동일한 산식(팀장은 연 600만원을
+// 변동급, 나머지는 고정급 / 팀장이 아니면 연봉 전액 고정급)을 이 직원 1인 기준으로 계산해
+// 읽기전용으로 보여준다 — 개인별 급여 상세는 이 값을 저장하지 않지만(연봉 기준 자동계산 대상이라
+// 사업계획 작성 화면에서 별도로 채워짐), 여기서 미리 확인할 수 있게 한다.
+function _eppLaborCostRefHtml(emp){
+  const salary=emp.salary||0;
+  const isLeader=emp.position==="팀장";
+  const variableAnnual=isLeader?_BP_LEADER_VARIABLE_ANNUAL:0;
+  const fixedAnnual=isLeader?Math.max(0,salary-_BP_LEADER_VARIABLE_ANNUAL):salary;
+  const fixedMonthly=Math.round(fixedAnnual/12),variableMonthly=Math.round(variableAnnual/12);
+  return `<div class="fz12 text-gray mb2" style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:6px;padding:8px 10px">
+    📎 연봉(${_bpFmt(salary)}원) 기준 자동계산 참고값(이 화면에는 저장되지 않고, 사업계획 작성 화면의 "+ 고정급/변동급 자동입력"에서 팀 단위로 반영됩니다) —
+    월 고정급 <b>${_bpFmt(fixedMonthly)}원</b>${isLeader?` · 월 변동급 <b>${_bpFmt(variableMonthly)}원</b>(팀장 연 600만원)`:" (팀장이 아니므로 변동급 없음)"}
+  </div>`;
 }
 async function submitEmpPayPlan(){
   const empId=_eppSelectedEmpId;
