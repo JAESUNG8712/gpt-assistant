@@ -16013,12 +16013,18 @@ function _eppParseAndUpload(file){
     if(!rows.length){showToast("업로드할 데이터가 없습니다.","error");if(statusEl)statusEl.textContent="";return;}
     const templateCatByName={};
     _BP_DEFAULT_SGA_TEMPLATE.forEach(([cat,name])=>{if(name!=="고정급"&&name!=="변동급")templateCatByName[name]=cat;});
-    let success=0,skipped=0;
+    let success=0,skipped=0,skippedNoMatch=0,skippedNoItems=0,skippedSaveError=0;
+    const skipDetails=[];
     for(const row of rows){
       const empNo=String(row["사번"]||row["empNo"]||"").trim();
       const empName=String(row["이름"]||row["name"]||"").trim();
-      const emp=employees.find(e=>(empNo&&String(e.empNo)===empNo)||(!empNo&&empName&&e.name===empName));
-      if(!emp){skipped++;continue;}
+      // 사번을 우선 매칭하되, 사번이 있어도 일치하는 직원이 없으면(파일의 사번 체계가
+      // 이 시스템에 등록된 사번과 다른 경우 등) 이름으로도 다시 시도한다 — 예전엔 사번이
+      // 있으면 이름 매칭을 아예 시도하지 않아, 사번 형식만 다르고 이름은 일치하는 경우도
+      // 전부 "매칭 실패"로 건너뛰어지는 문제가 있었다.
+      let emp=empNo?employees.find(e=>String(e.empNo)===empNo):null;
+      if(!emp&&empName)emp=employees.find(e=>e.name===empName);
+      if(!emp){skipped++;skippedNoMatch++;skipDetails.push(`${empName||empNo||"(이름/사번 없음)"}: 직원 매칭 실패(사번 "${empNo||"-"}", 이름 "${empName||"-"}")`);continue;}
       const year=Number(row["연도"]||row["year"])||_eppYear;
       const items=[];
       Object.keys(row).forEach(key=>{
@@ -16027,16 +16033,17 @@ function _eppParseAndUpload(file){
           if(amount!==0)items.push({category:templateCatByName[key],name:key,amount});
         }
       });
-      if(!items.length){skipped++;continue;}
+      if(!items.length){skipped++;skippedNoItems++;skipDetails.push(`${emp.name}: 인식 가능한 항목 없음(열 제목이 표준 항목명과 다른지 확인)`);continue;}
       // 연금종류(DC/DB) — 값이 정확히 "DC" 또는 "DB"일 때만 인식(그 외 값, 예: "중간정산"
       // 등의 비고성 텍스트는 무시하고 기존 저장값을 유지).
       const pensionRaw=String(row["연금종류"]||row["연금\n종류"]||row["severanceType"]||"").trim().toUpperCase();
       const body={empId:emp.id,empName:emp.name,year,items};
       if(pensionRaw==="DC"||pensionRaw==="DB")body.severanceType=pensionRaw;
       const r=await serverRequest("POST","/api/budget/emp-pay-plan",body);
-      if(r?.ok)success++;else skipped++;
+      if(r?.ok)success++;else{skipped++;skippedSaveError++;skipDetails.push(`${emp.name}: 저장 실패(${r?.error||r?.message||"알 수 없는 오류"})`);}
     }
-    showToast(`업로드 완료: ${success}명 반영, ${skipped}건 건너뜀(직원 매칭 실패 또는 인식 가능한 항목 없음).`,success>0?"success":"error");
+    if(skipped)console.warn("개인별 급여상세 업로드 - 건너뛴 상세:",skipDetails);
+    showToast(`업로드 완료: ${success}명 반영, ${skipped}건 건너뜀(매칭실패 ${skippedNoMatch}·항목없음 ${skippedNoItems}·저장오류 ${skippedSaveError}). 상세는 브라우저 콘솔(F12) 참고.`,success>0?"success":"error");
     const uploadInput=$("#epp-upload-file");if(uploadInput)uploadInput.value="";
     if(statusEl)statusEl.textContent="";
     await renderEmpPayPlanPage();
