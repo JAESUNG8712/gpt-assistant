@@ -2491,6 +2491,46 @@ app.get("/api/accounting/accounts", async (req, res) => {
   } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
 });
 
+// 기본 계정과목 일괄등록 — DEFAULT_ACCOUNTS(급여/복리후생비/여비교통비 등 일반적으로
+// 쓰는 계정)는 신규 회사 가입 시 자동 시딩되지만, 그 이전부터 있던 회사는 이 목록이
+// 확장돼도 소급 적용되지 않는다. code가 아직 없는 항목만 추가해 기존 계정과목을
+// 덮어쓰지 않는다(이미 같은 code로 직접 만들어 쓰고 있는 회사는 그대로 유지).
+app.post("/api/accounting/accounts/seed-defaults", async (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  try {
+    const now = new Date().toISOString();
+    const user = (req.body && req.body.user) || req.auth.loginId || "unknown";
+    if (USE_JSON_FILE) {
+      const existingCodes = new Set(_fileAccounting.accounts.map(a => a.code));
+      const toAdd = DEFAULT_ACCOUNTS.filter(a => !existingCodes.has(a.code));
+      toAdd.forEach(a => {
+        _fileAccounting.accounts.push({
+          id: `acc_seed_${a.code}_${Date.now()}`, ...a, active: true,
+          history: [{ action: "create", user, at: now }],
+        });
+      });
+      if (toAdd.length) _saveFileAccounting();
+      return res.json({ ok: true, added: toAdd.length, accounts: toAdd });
+    }
+    const companyId = req.auth.companyId || null;
+    const { rows } = await pool.query(
+      "SELECT data->>'code' AS code FROM accounts WHERE is_deleted = FALSE AND (company_id = $1 OR company_id IS NULL)",
+      [companyId]
+    );
+    const existingCodes = new Set(rows.map(r => r.code));
+    const toAdd = DEFAULT_ACCOUNTS.filter(a => !existingCodes.has(a.code));
+    for (const a of toAdd) {
+      const accId = `acc_seed_${a.code}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+      const acc = { id: accId, ...a, active: true, history: [{ action: "create", user, at: now }] };
+      await pool.query(
+        "INSERT INTO accounts (id, company_id, data) VALUES ($1,$2,$3) ON CONFLICT (company_id, id) DO NOTHING",
+        [accId, companyId, acc]
+      );
+    }
+    res.json({ ok: true, added: toAdd.length, accounts: toAdd });
+  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+});
+
 // 비용계정 선택용 최소 조회 — 사업계획(전 역할 공개) 작성 화면의 "비용계정" 검색선택
 // 필드가 실제 회계 계정과목을 참조해야 하는데, 전체 계정과목 조회(위 GET .../accounts)는
 // 회계 모듈 전체가 admin 전용이라 그대로 재사용하면 일반 직원은 사업계획을 작성할 수

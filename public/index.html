@@ -13995,13 +13995,20 @@ function _acctNoServerHtml(title){
 }
 function _acctAccName(id){const a=acctAccounts.find(a=>a.id===id);return a?`${a.code} ${a.name}`:id;}
 
+async function seedDefaultAccounts(){
+  const r=await serverRequest("POST","/api/accounting/accounts/seed-defaults",{});
+  if(!r?.ok){showToast(r?.error||r?.message||"처리에 실패했습니다.","error");return;}
+  showToast(r.added>0?`${r.added}개 계정과목이 추가되었습니다.`:"이미 모든 기본 계정과목이 등록되어 있습니다.","success");
+  await loadAccountingFromServer();
+  renderAcctAccountsPage();
+}
 function renderAcctAccountsPage(){
   const c=$("#content");if(!c)return;
   if(!serverConfig.url){c.innerHTML=_acctNoServerHtml("계정과목 관리");return;}
   const TYPE_LABEL={asset:"자산",liability:"부채",equity:"자본",revenue:"수익",expense:"비용"};
   const q=(window._acctAccSearch||"").trim();
   const rows=q?acctAccounts.filter(a=>[a.code,a.name,TYPE_LABEL[a.type],a.category].some(v=>(v||"").includes(q))):acctAccounts;
-  c.innerHTML=`<div class="card"><div class="card-head"><h3>📒 계정과목 관리</h3><div><button class="btn btn-secondary btn-sm" onclick="_dlAcctAccountsCSV()">📥 엑셀 다운로드</button> <button class="btn btn-primary btn-sm" onclick="openAcctAccountModal()">+ 계정과목 추가</button></div></div>
+  c.innerHTML=`<div class="card"><div class="card-head"><h3>📒 계정과목 관리</h3><div><button class="btn btn-secondary btn-sm" onclick="seedDefaultAccounts()" title="급여·복리후생비·여비교통비 등 일반적으로 쓰는 계정과목 중 아직 없는 것만 추가합니다.">🌱 기본 계정과목 일괄등록</button> <button class="btn btn-secondary btn-sm" onclick="_dlAcctAccountsCSV()">📥 엑셀 다운로드</button> <button class="btn btn-primary btn-sm" onclick="openAcctAccountModal()">+ 계정과목 추가</button></div></div>
   <div class="card-body">
   <div class="fg" style="max-width:320px"><input class="fc" value="${h(q)}" placeholder="코드·계정명·구분·세부분류 검색" oninput="window._acctAccSearch=this.value;renderAcctAccountsPage()"></div>
   <div class="tbl-wrap"><table><thead><tr><th>코드</th><th>계정명</th><th>구분</th><th>세부분류</th><th>원가구분</th><th>사용여부</th><th>관리</th></tr></thead><tbody>
@@ -14893,7 +14900,7 @@ let _bizPlanTab="list"; // "list" | "form" | "rollup" | "settings"
 let _bizPlanEditingId=null,_bizPlanSgaRowCount=0;
 let _bpSgaDefaultDept="",_bpSgaDefaultTeam=""; // 판관비 항목 신규 행의 부문/팀명 기본값(폼 열 때 계획 소속으로 세팅)
 let _bizPlanCompareIds=new Set();
-let _bizPlanRollupData=null,_bizPlanRollupIncludeDraft=false;
+let _bizPlanRollupData=null,_bizPlanRollupIncludeDraft=false,_bizPlanRollupDeptFilter="";
 let _bpExpenseAccounts=[],_bpExpenseAccountsLoaded=false; // 비용계정 검색선택용(회계 계정과목 중 비용 계정만, 최소 필드)
 const _BP_CHART_PALETTE=['#0f3460','#e94560','#1a7d36','#8a6500','#6c3fb0','#0e7c86'];
 // 판관비(인건비 등) 표준 세부 항목 템플릿 — [구분, 항목]. 신규 사업계획 작성 시 기본으로
@@ -14974,6 +14981,10 @@ function renderBizPlanPage(){
       <button class="btn btn-secondary btn-sm" onclick="_bizPlanCancelForm()">← 목록으로</button>
     </div><div class="card-body">${_renderBizPlanFormBody()}</div></div>`;
     _bpToggleCostOnly();
+    // 신규 작성(수정이 아닐 때)이고 소속(dept)이 이미 정해져 있으면(팀원/사업부장 —
+    // 관리자는 사업부를 직접 입력해야 해서 이 시점엔 아직 비어있음) 버튼 클릭 없이
+    // 개인별 급여 상세를 자동으로 반영해본다. 데이터가 없으면 조용히 지나간다(silent).
+    if(!_bizPlanEditingId&&_bpSgaDefaultDept)addBpEmpDetailRows(true);
     return;
   }
   const isAdmin=currentUser.role==="admin";
@@ -15345,22 +15356,25 @@ function addBpLaborCostRow(){
 // 별도 화면에서 입력) 화면에 입력된 값을 팀 단위로 합산해 판관비 그리드에 채운다.
 // 고정급/변동급은 연봉 기준으로 addBpLaborCostRow()가 이미 전담하므로 여기서는 제외해
 // 이중 반영을 막는다. 매칭 대상 인원(부문+팀, 팀 없으면 본인만)은 addBpLaborCostRow()와
-// 동일한 기준을 쓴다.
-async function addBpEmpDetailRows(){
+// 동일한 기준을 쓴다. silent=true면(신규 계획 작성 화면 진입 시 자동 실행되는 경로)
+// 데이터가 없거나 매칭 인원이 없어도 에러 토스트 없이 조용히 넘어간다 — 사용자가 아무
+// 조작도 안 했는데 뜬금없는 에러가 뜨는 것을 막기 위함(버튼을 직접 눌렀을 때는 안내가
+// 필요하므로 그 경로는 그대로 에러 토스트를 띄운다).
+async function addBpEmpDetailRows(silent){
   const deptField=$("#bp-dept"),teamField=$("#bp-team");
   const dept=(deptField?deptField.value.trim():"")||_bpSgaDefaultDept||"";
   const team=deptField?(teamField?teamField.value.trim():""):(_bpSgaDefaultTeam||"");
-  if(!dept){showToast("부문을 먼저 지정하세요(관리자는 위 사업부 입력란, 팀원은 소속이 자동 지정됩니다).","error");return;}
+  if(!dept){if(!silent)showToast("부문을 먼저 지정하세요(관리자는 위 사업부 입력란, 팀원은 소속이 자동 지정됩니다).","error");return;}
   const year=Number($("#bp-base-year")?.value)||new Date().getFullYear();
   const matched=team===""
     ? employees.filter(e=>e.active&&e.id===currentUser.id)
     : employees.filter(e=>e.active&&e.dept===dept&&(e.team||"")===team);
-  if(!matched.length){showToast("해당 부문/팀 소속의 재직 중인 직원이 없어 반영할 수 없습니다.","error");return;}
+  if(!matched.length){if(!silent)showToast("해당 부문/팀 소속의 재직 중인 직원이 없어 반영할 수 없습니다.","error");return;}
 
   const ids=matched.map(e=>e.id).join(",");
   const r=await serverRequest("GET",`/api/budget/emp-pay-plan/by-ids?year=${year}&ids=${encodeURIComponent(ids)}`);
   const plans=r?.ok?r.plans:[];
-  if(!plans.length){showToast(`${year}년 기준으로 입력된 개인별 급여 상세가 없습니다. "개인별 급여 상세" 화면에서 먼저 입력하세요.`,"error");return;}
+  if(!plans.length){if(!silent)showToast(`${year}년 기준으로 입력된 개인별 급여 상세가 없습니다. "개인별 급여 상세" 화면에서 먼저 입력하세요.`,"error");return;}
 
   const sums={};
   plans.forEach(p=>{
@@ -15371,7 +15385,7 @@ async function addBpEmpDetailRows(){
     });
   });
   const names=Object.keys(sums);
-  if(!names.length){showToast("합산할 항목이 없습니다(고정급/변동급 제외 항목만 반영됩니다).","error");return;}
+  if(!names.length){if(!silent)showToast("합산할 항목이 없습니다(고정급/변동급 제외 항목만 반영됩니다).","error");return;}
 
   const detail=`개인별 급여상세 자동입력(${year}년 기준, ${new Date().toISOString().slice(0,10)})`;
   const note="개인별 급여 상세 데이터 기준 자동입력 - 인원 변동 시 재계산 필요";
@@ -15524,7 +15538,23 @@ function _renderBizPlanRollupTab(){
   if(!_bizPlanRollupData)return `<div class="p-empty">불러오는 중...</div>`;
   if(_bizPlanRollupData.error)return `<div class="fz12" style="color:#c0392b">${h(_bizPlanRollupData.error)}</div>`;
   const d=_bizPlanRollupData;
-  let html=`<label class="fz12" style="display:inline-block;margin-bottom:10px"><input type="checkbox" ${_bizPlanRollupIncludeDraft?"checked":""} onchange="_bizPlanRollupIncludeDraft=this.checked;loadBizPlanRollup()"> 작성중(draft) 계획도 포함</label>`;
+  // 사업부별 확인 화면: byDept(계획 소유 부서)와 sgaByCostDept/sgaByCategory(비용귀속부문)에
+  // 등장하는 모든 부문명을 모아 선택지로 제공 — 하나를 고르면 아래 모든 표가 그 부문
+  // 기준으로만 좁혀진다(전사 합계 행은 항상 유지해 전체 대비 비중을 함께 볼 수 있게 함).
+  const deptOptions=[...new Set([
+    ...(d.byDept||[]).map(x=>x.dept),
+    ...((d.sgaByCostDept&&d.sgaByCostDept.byCostDept)||[]).map(x=>x.costDept),
+  ])].sort();
+  const filterDept=_bizPlanRollupDeptFilter;
+  let html=`<div style="display:flex;gap:16px;align-items:center;flex-wrap:wrap;margin-bottom:10px">
+    <label class="fz12"><input type="checkbox" ${_bizPlanRollupIncludeDraft?"checked":""} onchange="_bizPlanRollupIncludeDraft=this.checked;loadBizPlanRollup()"> 작성중(draft) 계획도 포함</label>
+    <label class="fz12">사업부별 확인:
+      <select class="fc" style="display:inline-block;width:auto" onchange="_bizPlanRollupDeptFilter=this.value;renderBizPlanPage()">
+        <option value="">전체 사업부</option>
+        ${deptOptions.map(dp=>`<option value="${h(dp)}" ${filterDept===dp?"selected":""}>${h(dp)}</option>`).join("")}
+      </select>
+    </label>
+  </div>`;
   const rollupTable=rows=>{
     if(!rows.length)return `<div class="fz12 text-gray">데이터 없음</div>`;
     let t=`<table><tr><th class="lbl">연도</th>${rows.map(r=>`<th>${r.year}</th>`).join("")}</tr>`;
@@ -15538,21 +15568,22 @@ function _renderBizPlanRollupTab(){
     t+="</table>";
     return t;
   };
-  (d.byDept||[]).forEach(dept=>{
+  (d.byDept||[]).filter(dept=>!filterDept||dept.dept===filterDept).forEach(dept=>{
     html+=`<div class="mb4"><h4 class="mb2">${h(dept.dept)} <span class="fz11 text-gray">(계획 ${dept.planCount}건)</span></h4><div class="tbl-wrap">${rollupTable(dept.projection)}</div></div>`;
   });
   html+=`<div class="mb3"><h4 class="mb2">회사 전체 <span class="fz11 text-gray">(계획 ${d.company.planCount}건)</span></h4><div class="tbl-wrap">${rollupTable(d.company.projection)}</div></div>`;
   html+=`<h3 class="mt4 mb2">📊 부문별 월별 집계표(3단계 자료 연계 — 개인별 급여 → 팀별 그리드 → 부문별 집계)</h3>`;
-  html+=_bpHeadcountByDeptHtml();
-  html+=_bpSgaByCostDeptHtml(d.sgaByCostDept);
-  html+=_bpSgaByCategoryHtml(d.sgaByCategory);
+  html+=_bpHeadcountByDeptHtml(filterDept);
+  html+=_bpSgaByCostDeptHtml(d.sgaByCostDept,filterDept);
+  html+=_bpSgaByCategoryHtml(d.sgaByCategory,filterDept);
   return html;
 }
 // 사업부문별 월별 인원 현황 — 현재 인사 데이터(employees[])의 재직자 수를 부문별로
 // 집계한 스냅샷이다(과거 월별 이력을 저장하는 별도 데이터가 없어 "지금 시점" 기준).
-function _bpHeadcountByDeptHtml(){
+// filterDept가 지정되면 그 부문 한 줄만 남기고(전사 "전체" 행은 항상 유지) 보여준다.
+function _bpHeadcountByDeptHtml(filterDept){
   const active=employees.filter(e=>e.active);
-  const depts=[...new Set(active.map(e=>e.dept).filter(Boolean))].sort();
+  const depts=[...new Set(active.map(e=>e.dept).filter(Boolean))].sort().filter(d=>!filterDept||d===filterDept);
   if(!depts.length)return "";
   const rows=depts.map(d=>`<tr><td class="lbl">${h(d)}</td><td style="text-align:right">${active.filter(e=>e.dept===d).length}</td></tr>`).join("");
   return `<div class="mb4"><h4 class="mb2">사업부문별 인원 현황(재직자 기준, 현재 시점) <span class="fz11 text-gray">1단계(개인별 인사 데이터) 확인용</span></h4>
@@ -15563,15 +15594,17 @@ function _bpHeadcountByDeptHtml(){
 }
 // 판관비 항목을 "비용 귀속 부문" 기준으로 재집계한 표 — 위 byDept(계획을 작성한 팀
 // 기준)와 별개로, 실제 비용이 귀속되는 조직 단위 + 전사 합계를 함께 보여준다.
-function _bpSgaByCostDeptHtml(s){
+// filterDept가 지정되면 그 부문 한 줄만(전사 합계 행은 항상 유지).
+function _bpSgaByCostDeptHtml(s,filterDept){
   if(!s||!Array.isArray(s.byCostDept))return "";
   const monthHeads=Array.from({length:12},(_,i)=>`<th>${i+1}월</th>`).join("");
   const rowHtml=(label,r)=>`<tr><td class="lbl">${h(label)}</td>${(r.months||[]).map(v=>`<td style="text-align:right">${_bpFmt(v)}</td>`).join("")}<td style="text-align:right;font-weight:700">${_bpFmt(r.total)}</td></tr>`;
-  if(!s.byCostDept.length)return "";
+  const filtered=filterDept?s.byCostDept.filter(r=>r.costDept===filterDept):s.byCostDept;
+  if(!filtered.length)return "";
   return `<div class="mb3"><h4 class="mb2">비용귀속부문별 판관비(기준연도) <span class="fz11 text-gray">조직단위/전사 확인용</span></h4>
     <div class="tbl-wrap"><table>
       <tr><th class="lbl">구분</th>${monthHeads}<th>계</th></tr>
-      ${s.byCostDept.map(r=>rowHtml(r.costDept,r)).join("")}
+      ${filtered.map(r=>rowHtml(r.costDept,r)).join("")}
       <tr style="font-weight:700;background:#fdf1f1">${rowHtml("전사 합계",s.company)}</tr>
     </table></div>
   </div>`;
@@ -15580,19 +15613,25 @@ function _bpSgaByCostDeptHtml(s){
 // 사회보험/퇴직급여 등, 표준 템플릿의 category 값을 그대로 재사용)별로 나눈 뒤 각각
 // 비용귀속부문 기준으로 집계한 표를 연속으로 보여준다. 2단계(팀별 월별 그리드)에서 항목을
 // 입력하는 순간 이 표에 자동으로 반영되며, 별도 입력이나 매핑 작업이 필요하지 않다.
-function _bpSgaByCategoryHtml(list){
+// filterDept가 지정되면 각 구분 표를 그 부문 한 줄로 좁힌다(값이 없는(0) 구분 표는
+// 생략해 선택한 부문과 무관한 항목이 빈 표로 계속 나열되지 않게 함).
+function _bpSgaByCategoryHtml(list,filterDept){
   if(!Array.isArray(list)||!list.length)return "";
   const monthHeads=Array.from({length:12},(_,i)=>`<th>${i+1}월</th>`).join("");
   const rowHtml=(label,r)=>`<tr><td class="lbl">${h(label)}</td>${(r.months||[]).map(v=>`<td style="text-align:right">${_bpFmt(v)}</td>`).join("")}<td style="text-align:right;font-weight:700">${_bpFmt(r.total)}</td></tr>`;
-  return list.map(c=>`
+  return list.map(c=>{
+    const filtered=filterDept?c.byCostDept.filter(r=>r.costDept===filterDept):c.byCostDept;
+    if(filterDept&&!filtered.length)return "";
+    return `
     <div class="mb4"><h4 class="mb2">${h(c.category)}(기준연도) <span class="fz11 text-gray">조직단위/전사 확인용</span></h4>
       <div class="tbl-wrap"><table>
         <tr><th class="lbl">구분</th>${monthHeads}<th>계</th></tr>
-        ${c.byCostDept.map(r=>rowHtml(r.costDept,r)).join("")}
+        ${filtered.map(r=>rowHtml(r.costDept,r)).join("")}
         <tr style="font-weight:700;background:#fdf1f1">${rowHtml("전사 합계",c.company)}</tr>
       </table></div>
     </div>
-  `).join("");
+  `;
+  }).join("");
 }
 
 // ── 설정(예산담당자/기획팀장 지정, 입력기간 on/off) ──
@@ -15629,11 +15668,16 @@ async function editBizPlanRoster(){
 // 제외) 각각의 연간 금액을 입력해두면, 사업계획 판관비 그리드의 "개인별 급여상세
 // 자동입력" 버튼(addBpEmpDetailRows)이 팀 단위로 합산해 채워 넣는다.
 let _eppSelectedEmpId=null,_eppYear=new Date().getFullYear(),_eppPlans=[];
+let _eppSettings={severance:{dcRate:8.33,dbMonthsPerYear:1},socialInsurance:{pension:4.5,health:3.545,longTermCare:12.95,employment:0.9,localTax:10}};
 async function renderEmpPayPlanPage(){
   const c=$("#content");if(!c)return;
   if(!serverConfig.url){c.innerHTML=_acctNoServerHtml("개인별 급여 상세");return;}
-  const r=await serverRequest("GET",`/api/budget/emp-pay-plan?year=${_eppYear}`);
+  const [r,rs]=await Promise.all([
+    serverRequest("GET",`/api/budget/emp-pay-plan?year=${_eppYear}`),
+    serverRequest("GET","/api/budget/emp-pay-plan/settings"),
+  ]);
   _eppPlans=r?.ok?r.plans:[];
+  if(rs?.ok)_eppSettings=rs.settings;
   if(currentPage==="emp-pay-plan")_renderEmpPayPlanBody();
 }
 function _renderEmpPayPlanBody(){
@@ -15654,14 +15698,59 @@ function _renderEmpPayPlanBody(){
     return `<tr><td class="lbl">${h(category)}</td><td class="lbl">${h(name)}</td><td><input type="number" class="fc epp-amount" data-name="${h(name)}" data-category="${h(category)}" style="width:160px" value="${existingItem?existingItem.amount:""}"></td></tr>`;
   }).join("");
 
+  const bulkItemOptions=_BP_DEFAULT_SGA_TEMPLATE.filter(([cat,name])=>name!=="고정급"&&name!=="변동급").map(([cat,name])=>`<option value="${h(name)}" data-category="${h(cat)}">${h(cat)} - ${h(name)}</option>`).join("");
+
   c.innerHTML=`<div class="card"><div class="card-head"><h3>👤 개인별 급여 상세(계획)</h3></div><div class="card-body">
     <div class="fz12 text-gray mb3">직원별로 연간 판관비 항목(RSU·인센티브·복지카드 등) 금액을 입력해두면, 사업계획 판관비 그리드의 "+ 개인별 급여상세 자동입력" 버튼으로 팀 단위 합산이 자동 반영됩니다. 고정급/변동급은 연봉을 기준으로 별도 자동계산되므로 여기서는 입력하지 않습니다.</div>
     <div style="display:grid;grid-template-columns:1fr 120px;gap:10px;margin-bottom:14px">
       <div class="fg"><label class="fl">직원</label><select class="fc" id="epp-emp-select" onchange="_eppSelectedEmpId=this.value;_renderEmpPayPlanBody()"><option value="">선택하세요</option>${empOptions}</select></div>
       <div class="fg"><label class="fl">연도</label><input class="fc" type="number" id="epp-year" value="${_eppYear}" onchange="_eppYear=Number(this.value)||new Date().getFullYear();renderEmpPayPlanPage()"></div>
     </div>
+
+    <div class="card mb3" style="background:#f8fafc"><div class="card-body">
+      <h4 class="mb2">📥 엑셀 일괄 업로드</h4>
+      <div class="fz11 text-gray mb2">열 구성: "사번"(또는 "이름") + "연도"(생략 시 위에서 선택한 연도 적용) + 항목명을 그대로 열 제목으로 사용(예: "RSU", "복지카드(기본)", "사외교육" 등). 같은 직원·연도로 다시 업로드하면 그 행의 항목으로 전체 교체됩니다.</div>
+      <input type="file" id="epp-upload-file" accept=".xlsx,.xls,.csv">
+      <button class="btn btn-secondary btn-sm" onclick="uploadEmpPayPlanExcel()">업로드</button>
+      <span id="epp-upload-status" class="fz12 text-gray" style="margin-left:8px"></span>
+    </div></div>
+
+    <div class="card mb3" style="background:#f8fafc"><div class="card-body">
+      <h4 class="mb2">📋 전 직원 일괄 반영</h4>
+      <div class="fz11 text-gray mb2">복지카드·사외교육처럼 재직자 전원(또는 선택한 인원)에게 동일 금액이 적용되는 항목을 한 번에 반영합니다. 반영 후에도 위에서 직원을 선택해 개별 금액을 수정할 수 있습니다.</div>
+      <div style="display:grid;grid-template-columns:2fr 1fr auto;gap:8px;align-items:end">
+        <div class="fg"><label class="fl">항목</label><select class="fc" id="epp-bulk-item">${bulkItemOptions}</select></div>
+        <div class="fg"><label class="fl">금액(연간, 1인당)</label><input class="fc" type="number" id="epp-bulk-amount" placeholder="예: 600000"></div>
+        <button class="btn btn-primary btn-sm" onclick="bulkApplyEmpPayPlanItem()">전 재직자에게 일괄 반영</button>
+      </div>
+    </div></div>
+
+    <div class="card mb3" style="background:#fff8e6"><div class="card-body">
+      <h4 class="mb2">⚙️ 퇴직급여·4대보험 자동계산 요율 설정</h4>
+      <div class="fz11" style="color:#8a6500;margin-bottom:8px">아래는 참고용 예시 기본값입니다. 반드시 해당 연도 고시 요율(국민연금·건강보험·장기요양·고용보험)과 회사 내규(퇴직급여 적립방식)를 확인한 뒤 조정하세요.</div>
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px 14px">
+        <div class="fg"><label class="fl">DC형 연간 적립률(%)</label><input class="fc" type="number" step="0.01" id="epp-set-dcrate" value="${_eppSettings.severance.dcRate}"></div>
+        <div class="fg"><label class="fl">DB형 근속 1년당 개월수</label><input class="fc" type="number" step="0.1" id="epp-set-dbmonths" value="${_eppSettings.severance.dbMonthsPerYear}"></div>
+        <div class="fg"><label class="fl">국민연금(%, 회사부담)</label><input class="fc" type="number" step="0.001" id="epp-set-pension" value="${_eppSettings.socialInsurance.pension}"></div>
+        <div class="fg"><label class="fl">건강보험(%, 회사부담)</label><input class="fc" type="number" step="0.001" id="epp-set-health" value="${_eppSettings.socialInsurance.health}"></div>
+        <div class="fg"><label class="fl">장기요양(건강보험료 대비 %)</label><input class="fc" type="number" step="0.01" id="epp-set-ltc" value="${_eppSettings.socialInsurance.longTermCare}"></div>
+        <div class="fg"><label class="fl">고용보험(%, 회사부담)</label><input class="fc" type="number" step="0.01" id="epp-set-employment" value="${_eppSettings.socialInsurance.employment}"></div>
+        <div class="fg"><label class="fl">주민세(급여 대비 간이 %)</label><input class="fc" type="number" step="0.01" id="epp-set-localtax" value="${_eppSettings.socialInsurance.localTax}"></div>
+      </div>
+      <button class="btn btn-secondary btn-sm mt2" onclick="saveEmpPayPlanSettings()">요율 저장</button>
+    </div></div>
+
     ${selectedEmp?`
       <h4 class="mb2">${h(selectedEmp.name)} <span class="fz11 text-gray">${h(selectedEmp.dept||"")}${selectedEmp.team?" / "+h(selectedEmp.team):""}</span></h4>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr auto;gap:8px;align-items:end;margin-bottom:10px">
+        <div class="fg"><label class="fl">퇴직급여 유형</label><select class="fc" id="epp-severance-type">
+          <option value="DC" ${(existingPlan?.severanceType||"DC")==="DC"?"selected":""}>DC(확정기여형)</option>
+          <option value="DB" ${existingPlan?.severanceType==="DB"?"selected":""}>DB(확정급여형)</option>
+        </select></div>
+        <div class="fg"><label class="fl">개인별 배수</label><input class="fc" type="number" step="0.1" id="epp-severance-multiplier" value="${existingPlan&&existingPlan.severanceMultiplier!==undefined?existingPlan.severanceMultiplier:1}"></div>
+        <div class="fg"><label class="fl">전기말 기준 퇴직급여충당액</label><input class="fc" type="number" id="epp-severance-baseline" value="${existingPlan?existingPlan.severanceBaseline||0:0}"></div>
+        <button class="btn btn-secondary btn-sm" onclick="autoCalcEmpPayPlan()" title="위 요율 설정과 이 직원의 연봉·입사일 기준으로 퇴직금 증가분 및 4대보험/주민세를 계산해 아래 표에 채웁니다. 채운 뒤에도 직접 수정 가능합니다.">🧮 퇴직급여·4대보험 자동계산</button>
+      </div>
       <div class="tbl-wrap"><table><tr><th class="lbl">구분</th><th class="lbl">항목</th><th>연간 금액</th></tr>${rowsHtml}</table></div>
       <button class="btn btn-primary mt3" onclick="submitEmpPayPlan()">저장</button>
     `:`<div class="p-empty">직원을 선택하세요.</div>`}
@@ -15674,11 +15763,172 @@ async function submitEmpPayPlan(){
   if(!empId){showToast("직원을 선택하세요.","error");return;}
   const emp=employees.find(e=>String(e.id)===String(empId));
   const items=[...document.querySelectorAll(".epp-amount")].map(i=>({category:i.dataset.category,name:i.dataset.name,amount:Number(i.value)||0})).filter(i=>i.amount!==0);
-  const r=await serverRequest("POST","/api/budget/emp-pay-plan",{empId,empName:emp?emp.name:"",year:_eppYear,items});
+  const severanceType=$("#epp-severance-type")?.value||"DC";
+  const severanceMultiplier=Number($("#epp-severance-multiplier")?.value)||1;
+  const severanceBaseline=Number($("#epp-severance-baseline")?.value)||0;
+  const r=await serverRequest("POST","/api/budget/emp-pay-plan",{empId,empName:emp?emp.name:"",year:_eppYear,items,severanceType,severanceMultiplier,severanceBaseline});
   if(!r?.ok){showToast(r?.error||r?.message||"저장에 실패했습니다.","error");return;}
   _eppPlans=r.plans;
   showToast("저장되었습니다.","success");
   _renderEmpPayPlanBody();
+}
+// 요율 설정 저장(관리자) — DC/DB 계산률과 4대보험 요율. 회사마다·연도마다 실제 고시요율이
+// 달라 하드코딩하지 않고 화면에서 직접 입력·저장하도록 함(화면에도 검증 안내 문구 표시).
+async function saveEmpPayPlanSettings(){
+  const severance={
+    dcRate:Number($("#epp-set-dcrate")?.value)||0,
+    dbMonthsPerYear:Number($("#epp-set-dbmonths")?.value)||0,
+  };
+  const socialInsurance={
+    pension:Number($("#epp-set-pension")?.value)||0,
+    health:Number($("#epp-set-health")?.value)||0,
+    longTermCare:Number($("#epp-set-ltc")?.value)||0,
+    employment:Number($("#epp-set-employment")?.value)||0,
+    localTax:Number($("#epp-set-localtax")?.value)||0,
+  };
+  const r=await serverRequest("POST","/api/budget/emp-pay-plan/settings",{severance,socialInsurance});
+  if(!r?.ok){showToast(r?.error||r?.message||"저장에 실패했습니다.","error");return;}
+  _eppSettings=r.settings;
+  showToast("요율이 저장되었습니다.","success");
+  _renderEmpPayPlanBody();
+}
+// 퇴직급여 증가분(DC: 연봉×적립률×배수, DB: (연봉/12×근속연수×연간개월수×배수)-전기말충당액)
+// 및 4대보험(국민연금/건강보험/장기요양/고용보험)·주민세를 현재 요율 설정으로 계산해
+// 표에 채운다. 저장 전까지는 일반 입력칸이라 계산 후에도 직접 수정 가능하고, "저장" 버튼을
+// 눌러야 실제로 반영된다.
+function autoCalcEmpPayPlan(){
+  const selectedEmp=employees.find(e=>String(e.id)===String(_eppSelectedEmpId));
+  if(!selectedEmp){showToast("직원을 선택하세요.","error");return;}
+  const salary=selectedEmp.salary||0;
+  const type=$("#epp-severance-type")?.value||"DC";
+  const multiplier=Number($("#epp-severance-multiplier")?.value)||1;
+  const baseline=Number($("#epp-severance-baseline")?.value)||0;
+  const s=_eppSettings.severance,si=_eppSettings.socialInsurance;
+  let severanceIncrease=0;
+  if(type==="DB"){
+    if(!selectedEmp.hire){
+      showToast("입사일 정보가 없어 DB형 근속연수를 계산할 수 없습니다. 퇴직금은 직접 입력해주세요.","error");
+    }else{
+      const hireDate=new Date(selectedEmp.hire);
+      const yearEnd=new Date(_eppYear,11,31);
+      const years=Math.max(0,(yearEnd-hireDate)/(1000*60*60*24*365));
+      const expected=Math.round((salary/12)*years*(s.dbMonthsPerYear||0)*multiplier);
+      severanceIncrease=expected-baseline;
+    }
+  }else{
+    severanceIncrease=Math.round(salary*((s.dcRate||0)/100)*multiplier);
+  }
+  const pension=Math.round(salary*((si.pension||0)/100));
+  const health=Math.round(salary*((si.health||0)/100));
+  const ltc=Math.round(health*((si.longTermCare||0)/100));
+  const employment=Math.round(salary*((si.employment||0)/100));
+  const localTax=Math.round(salary*((si.localTax||0)/100));
+  const setVal=(name,val)=>{
+    const input=[...document.querySelectorAll(".epp-amount")].find(i=>i.dataset.name===name);
+    if(input)input.value=val;
+  };
+  setVal("퇴직금",severanceIncrease);
+  setVal("국민연금",pension);
+  setVal("건강보험",health);
+  setVal("장기요양",ltc);
+  setVal("고용보험",employment);
+  setVal("주민세",localTax);
+  showToast("계산되었습니다. 저장 전 값을 확인·수정할 수 있습니다.","success");
+}
+// 엑셀 업로드 — SheetJS(XLSX)를 이 앱의 다른 업로드 기능(handleXlsxUpload)과 동일한
+// 방식으로 필요 시 CDN에서 동적 로드한 뒤 파싱한다. 열 구성: "사번"(우선) 또는 "이름"으로
+// 직원을 매칭하고, "연도" 열이 없으면 화면에서 선택한 연도를 그대로 적용, 나머지 열은
+// 표준 항목명(_BP_DEFAULT_SGA_TEMPLATE)과 일치하는 것만 금액으로 인식한다. 같은 직원·
+// 연도 행이 여러 번 나오면 마지막 값으로, 기존 저장값은 해당 직원·연도 전체가 이 파일의
+// 내용으로 교체된다(POST /emp-pay-plan이 원래 그런 방식 — 부분 병합이 아님).
+function uploadEmpPayPlanExcel(){
+  const input=$("#epp-upload-file");
+  const statusEl=$("#epp-upload-status");
+  if(!input||!input.files.length){showToast("파일을 선택하세요.","error");return;}
+  if(statusEl){statusEl.textContent="업로드 중...";}
+  const file=input.files[0];
+  if(typeof XLSX==="undefined"){
+    const s=document.createElement("script");
+    s.src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js";
+    s.onload=()=>_eppParseAndUpload(file);
+    s.onerror=()=>showToast("Excel 파서 로드 실패. .csv 파일을 사용해주세요.","error");
+    document.head.appendChild(s);
+  }else{
+    _eppParseAndUpload(file);
+  }
+}
+function _eppParseAndUpload(file){
+  const reader=new FileReader();
+  reader.onload=async(ev)=>{
+    const statusEl=$("#epp-upload-status");
+    let rows;
+    try{
+      const isCsv=/\.csv$/i.test(file.name||"");
+      const wb=isCsv?XLSX.read(ev.target.result,{type:"binary"}):XLSX.read(ev.target.result,{type:"array"});
+      rows=XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]],{defval:""});
+    }catch(e){
+      showToast("파일을 읽을 수 없습니다. (xlsx/csv만 지원)","error");
+      if(statusEl)statusEl.textContent="";
+      return;
+    }
+    if(!rows.length){showToast("업로드할 데이터가 없습니다.","error");if(statusEl)statusEl.textContent="";return;}
+    const templateCatByName={};
+    _BP_DEFAULT_SGA_TEMPLATE.forEach(([cat,name])=>{if(name!=="고정급"&&name!=="변동급")templateCatByName[name]=cat;});
+    let success=0,skipped=0;
+    for(const row of rows){
+      const empNo=String(row["사번"]||row["empNo"]||"").trim();
+      const empName=String(row["이름"]||row["name"]||"").trim();
+      const emp=employees.find(e=>(empNo&&String(e.empNo)===empNo)||(!empNo&&empName&&e.name===empName));
+      if(!emp){skipped++;continue;}
+      const year=Number(row["연도"]||row["year"])||_eppYear;
+      const items=[];
+      Object.keys(row).forEach(key=>{
+        if(templateCatByName[key]!==undefined){
+          const amount=Number(String(row[key]).replace(/,/g,""))||0;
+          if(amount!==0)items.push({category:templateCatByName[key],name:key,amount});
+        }
+      });
+      if(!items.length){skipped++;continue;}
+      const r=await serverRequest("POST","/api/budget/emp-pay-plan",{empId:emp.id,empName:emp.name,year,items});
+      if(r?.ok)success++;else skipped++;
+    }
+    showToast(`업로드 완료: ${success}명 반영, ${skipped}건 건너뜀(직원 매칭 실패 또는 인식 가능한 항목 없음).`,success>0?"success":"error");
+    const uploadInput=$("#epp-upload-file");if(uploadInput)uploadInput.value="";
+    if(statusEl)statusEl.textContent="";
+    await renderEmpPayPlanPage();
+  };
+  const isCsv=/\.csv$/i.test(file.name||"");
+  if(isCsv)reader.readAsBinaryString(file);else reader.readAsArrayBuffer(file);
+}
+// 전 직원 일괄 반영 — 재직자 전원에게 동일 금액을 그 항목에 반영한다. 이미 다른 항목이
+// 입력돼 있는 직원도 해당 항목만 갱신되고 나머지 항목은 그대로 유지된다(기존 items에
+// 병합). 반영 후에는 화면에서 직원을 선택해 개별적으로 수정할 수 있다.
+async function bulkApplyEmpPayPlanItem(){
+  const sel=$("#epp-bulk-item");
+  const amountInput=$("#epp-bulk-amount");
+  if(!sel||!amountInput)return;
+  const name=sel.value;
+  const category=sel.selectedOptions[0]?.dataset.category||"";
+  const amount=Number(amountInput.value);
+  if(!amountInput.value||isNaN(amount)){showToast("금액을 입력하세요.","error");return;}
+  const activeEmps=employees.filter(e=>e.active);
+  if(!activeEmps.length){showToast("재직 중인 직원이 없습니다.","error");return;}
+  if(!confirm(`재직자 ${activeEmps.length}명 전원에게 "${name}" ${amount.toLocaleString()}원을 일괄 반영하시겠습니까? 이미 값이 있으면 덮어씁니다.`))return;
+
+  const r0=await serverRequest("GET",`/api/budget/emp-pay-plan?year=${_eppYear}`);
+  const existingPlans=r0?.ok?r0.plans:[];
+  let success=0;
+  for(const emp of activeEmps){
+    const existing=existingPlans.find(p=>String(p.empId)===String(emp.id));
+    const items=existing?[...(existing.items||[])]:[];
+    const idx=items.findIndex(i=>i.name===name);
+    if(idx>=0)items[idx]={category,name,amount};else items.push({category,name,amount});
+    const r=await serverRequest("POST","/api/budget/emp-pay-plan",{empId:emp.id,empName:emp.name,year:_eppYear,items});
+    if(r?.ok)success++;
+  }
+  showToast(`재직자 ${success}명에게 "${name}" 항목이 일괄 반영되었습니다.`,"success");
+  amountInput.value="";
+  await renderEmpPayPlanPage();
 }
 
 // ==================== 결재 위임 (대결자 지정) ====================

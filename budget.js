@@ -33,6 +33,14 @@ function _emptyCompanyBudget() {
     // 아니라 계획 수립용 가정 데이터 — 실적은 별도로 budget.html의 판관/용역/경상 상세
     // 업로드를 통해 관리한다(요청서에 따라 계획/실적을 서로 다른 메뉴로 분리).
     empPayPlans: [],
+    // 개인별 급여 상세 화면의 자동계산(퇴직급여 증가분, 4대보험+주민세)에 쓰이는 요율
+    // 설정 — 회사마다, 그리고 매년 실제 요율이 달라지므로 하드코딩하지 않고 관리자가
+    // 직접 입력/수정하도록 한다(기본값은 참고용 예시일 뿐 최신 고시 요율로 반드시
+    // 확인 후 조정해야 함 — 화면에도 동일한 안내를 표시).
+    empPayPlanSettings: {
+      severance: { dcRate: 8.33, dbMonthsPerYear: 1 }, // dcRate: DC형 연간 적립률(%, 기본값=1/12), dbMonthsPerYear: DB형 근속 1년당 인정 개월수
+      socialInsurance: { pension: 4.5, health: 3.545, longTermCare: 12.95, employment: 0.9, localTax: 10 }, // %, longTermCare는 건강보험료 대비 %, 나머지는 급여 대비 %(간이) — 전부 회사부담분 기준
+    },
   };
 }
 
@@ -74,6 +82,15 @@ function readBudget(companyId) {
     if (data.budgetPlanSettings.inputOpen === undefined) data.budgetPlanSettings.inputOpen = true;
   }
   if (!Array.isArray(data.empPayPlans)) data.empPayPlans = [];
+  if (!data.empPayPlanSettings || typeof data.empPayPlanSettings !== 'object') {
+    data.empPayPlanSettings = {
+      severance: { dcRate: 8.33, dbMonthsPerYear: 1 },
+      socialInsurance: { pension: 4.5, health: 3.545, longTermCare: 12.95, employment: 0.9, localTax: 10 },
+    };
+  } else {
+    if (!data.empPayPlanSettings.severance) data.empPayPlanSettings.severance = { dcRate: 8.33, dbMonthsPerYear: 1 };
+    if (!data.empPayPlanSettings.socialInsurance) data.empPayPlanSettings.socialInsurance = { pension: 4.5, health: 3.545, longTermCare: 12.95, employment: 0.9, localTax: 10 };
+  }
   return data;
 }
 
@@ -634,6 +651,11 @@ router.post('/emp-pay-plan', (req, res) => {
     name: (it && it.name) || '',
     amount: Number(it && it.amount) || 0,
   })).filter(it => it.name && it.amount !== 0);
+  // 퇴직급여 증가분 자동계산에 쓰이는 개인별 파라미터 — items와 별개로 저장(계산에
+  // 필요한 "가정값"일 뿐 그 자체가 판관비 라인 항목은 아님).
+  const severanceType = body.severanceType === 'DB' ? 'DB' : (body.severanceType === 'DC' ? 'DC' : null);
+  const severanceMultiplier = body.severanceMultiplier !== undefined ? (Number(body.severanceMultiplier) || 1) : undefined;
+  const severanceBaseline = body.severanceBaseline !== undefined ? (Number(body.severanceBaseline) || 0) : undefined;
 
   const data = readBudget(companyId);
   const existing = data.empPayPlans.find(p => String(p.empId) === String(empId) && p.year === year);
@@ -641,16 +663,52 @@ router.post('/emp-pay-plan', (req, res) => {
   if (existing) {
     existing.empName = body.empName || existing.empName;
     existing.items = items;
+    if (severanceType !== null || body.severanceType !== undefined) existing.severanceType = severanceType;
+    if (severanceMultiplier !== undefined) existing.severanceMultiplier = severanceMultiplier;
+    if (severanceBaseline !== undefined) existing.severanceBaseline = severanceBaseline;
     existing.updatedAt = now;
   } else {
     data.empPayPlans.push({
       id: `epp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
       empId, empName: body.empName || '', year, items,
+      severanceType, severanceMultiplier: severanceMultiplier !== undefined ? severanceMultiplier : 1, severanceBaseline: severanceBaseline || 0,
       createdAt: now, updatedAt: now,
     });
   }
   writeBudget(companyId, data);
   res.json({ ok: true, plans: data.empPayPlans.filter(p => p.year === year) });
+});
+
+// 개인별 급여 상세 자동계산(퇴직급여 증가분, 4대보험+주민세)에 쓰이는 요율 설정 —
+// admin 전용(설정 조회 자체가 emp-pay-plan 화면 전용 정보이므로 조회 화면과 동일한
+// 인가 수준을 맞춘다).
+router.get('/emp-pay-plan/settings', (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  const data = readBudget(req.auth.companyId || null);
+  res.json({ ok: true, settings: data.empPayPlanSettings });
+});
+router.post('/emp-pay-plan/settings', (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  const companyId = req.auth.companyId || null;
+  const data = readBudget(companyId);
+  const body = req.body || {};
+  if (body.severance) {
+    data.empPayPlanSettings.severance = {
+      dcRate: Number(body.severance.dcRate) || 0,
+      dbMonthsPerYear: Number(body.severance.dbMonthsPerYear) || 0,
+    };
+  }
+  if (body.socialInsurance) {
+    data.empPayPlanSettings.socialInsurance = {
+      pension: Number(body.socialInsurance.pension) || 0,
+      health: Number(body.socialInsurance.health) || 0,
+      longTermCare: Number(body.socialInsurance.longTermCare) || 0,
+      employment: Number(body.socialInsurance.employment) || 0,
+      localTax: Number(body.socialInsurance.localTax) || 0,
+    };
+  }
+  writeBudget(companyId, data);
+  res.json({ ok: true, settings: data.empPayPlanSettings });
 });
 
 // 사업계획 그리드의 자동입력 버튼(전 역할 공개)이 쓰는 조회 — 관리자 전용 목록 조회와
