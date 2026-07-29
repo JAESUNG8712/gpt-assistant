@@ -37,6 +37,10 @@ function _emptyCompanyBudget() {
     // 설정 — 회사마다, 그리고 매년 실제 요율이 달라지므로 하드코딩하지 않고 관리자가
     // 직접 입력/수정하도록 한다(기본값은 참고용 예시일 뿐 최신 고시 요율로 반드시
     // 확인 후 조정해야 함 — 화면에도 동일한 안내를 표시).
+    // 월별 인원 계획(예측용) — budget.html의 기존 headcount(실적/현황 업로드)와는 별개로,
+    // "사업계획" 롤업 화면에서 부문별 계획 인원을 확인하기 위한 데이터. 계정과목(판관/용역/
+    // 경상)별로 나뉠 수도, 부문 전체 합계 한 줄일 수도 있다(category가 빈 값이면 미분류).
+    headcountPlans: [],
     empPayPlanSettings: {
       severance: { dcRate: 8.33, dbMonthsPerYear: 1 }, // dcRate: DC형 연간 적립률(%, 기본값=1/12), dbMonthsPerYear: DB형 근속 1년당 인정 개월수
       socialInsurance: { pension: 4.5, health: 3.545, longTermCare: 12.95, employment: 0.9, localTax: 10 }, // %, longTermCare는 건강보험료 대비 %, 나머지는 급여 대비 %(간이) — 전부 회사부담분 기준
@@ -82,6 +86,7 @@ function readBudget(companyId) {
     if (data.budgetPlanSettings.inputOpen === undefined) data.budgetPlanSettings.inputOpen = true;
   }
   if (!Array.isArray(data.empPayPlans)) data.empPayPlans = [];
+  if (!Array.isArray(data.headcountPlans)) data.headcountPlans = [];
   if (!data.empPayPlanSettings || typeof data.empPayPlanSettings !== 'object') {
     data.empPayPlanSettings = {
       severance: { dcRate: 8.33, dbMonthsPerYear: 1 },
@@ -286,6 +291,23 @@ function _sgaRollupByCategory(plans) {
       company: { months: catBucket.companyMonths.map(round2), total: round2(catBucket.companyTotal) }
     };
   }).sort((a, b) => b.company.total - a.company.total);
+}
+
+// 표준 판관비 "구분"(category) 목록 — public/index.html의 _BP_DEFAULT_SGA_TEMPLATE 카테고리와
+// 동일한 문자열을 이 파일에도 별도로 유지한다(두 파일 간 코드 공유가 없는 이 코드베이스의
+// 기존 관례 — emp-pay-plan 쪽 38항목 템플릿도 마찬가지로 클라이언트에만 있고 서버는 이름
+// 문자열만으로 취급). "예산" 엑셀 업로드처럼 항목명이 "구분" 그 자체로 뭉뚱그려 들어오는
+// 경우(개인별 급여 상세처럼 세부 항목명이 아니라 부서 단위 개산 총액)를 표준 구분에
+// 매핑하기 위한 용도.
+const _SGA_CANONICAL_CATEGORIES = ['급여', '복리후생비', '교육훈련비', '지급수수료', '지급임차료', '건물관리비', '보험료', '소모품비', '도서인쇄비', '통신비', '협회비', '세금과공과', '퇴직급여', '사회보험'];
+const _SGA_CATEGORY_ALIASES = { '세금과공과금': '세금과공과', '임차료': '지급임차료' };
+function _guessSgaCategory(rawName) {
+  const name = String(rawName || '').trim();
+  if (!name) return '';
+  if (_SGA_CANONICAL_CATEGORIES.includes(name)) return name;
+  if (_SGA_CATEGORY_ALIASES[name]) return _SGA_CATEGORY_ALIASES[name];
+  const found = _SGA_CANONICAL_CATEGORIES.find(c => name.includes(c) || c.includes(name));
+  return found || name;
 }
 
 // body에서 사업계획 가정(assumptions)을 검증·정규화한다. existing이 주어지면(PUT) 그 값을
@@ -618,9 +640,19 @@ router.delete('/data', (req, res) => {
   if (!requireAdmin(req, res)) return;
   const companyId = req.auth.companyId || null;
   const existing = readBudget(companyId);
-  // businessPlans/budgetPlanSettings와 마찬가지로 empPayPlans(개인별 급여 상세 계획)도
-  // 파일 "업로드" 데이터가 아니라 화면에서 직접 입력하는 별개 데이터라 함께 보존한다.
-  writeBudget(companyId, { ..._emptyCompanyBudget(), businessPlans: existing.businessPlans, budgetPlanSettings: existing.budgetPlanSettings, empPayPlans: existing.empPayPlans });
+  // businessPlans/budgetPlanSettings와 마찬가지로 empPayPlans(개인별 급여 상세 계획)·
+  // empPayPlanSettings(그 화면의 자동계산 요율 설정, 기존에 누락돼 있던 것을 함께 수정)·
+  // headcountPlans(월별 인원 계획, 엑셀 업로드지만 사업계획 롤업에 쓰이는 계획 데이터라
+  // budget.html의 "실적 업로드" 초기화 범위 밖)도 파일 "업로드"(실적/현황) 데이터가
+  // 아니라 화면/사업계획 쪽에서 관리하는 별개 데이터라 함께 보존한다.
+  writeBudget(companyId, {
+    ..._emptyCompanyBudget(),
+    businessPlans: existing.businessPlans,
+    budgetPlanSettings: existing.budgetPlanSettings,
+    empPayPlans: existing.empPayPlans,
+    empPayPlanSettings: existing.empPayPlanSettings,
+    headcountPlans: existing.headcountPlans,
+  });
   res.json({ message: '예산 데이터가 초기화되었습니다.' });
 });
 
@@ -874,6 +906,163 @@ module.exports = function budgetRouterFactory(deps) {
     const sgaByCategory = _sgaRollupByCategory(scoped);
 
     res.json({ ok: true, includeDraft, byDept, company: { planCount: scoped.length, projection: _rollup(scoped) }, sgaByCostDept, sgaByCategory });
+  });
+
+  // 예산(비인건비 판관/용역/경상) 엑셀 일괄 업로드 — 관리자 전용. 열 구성: "팀명"(필수,
+  // 사업계획을 이미 작성한 팀 이름과 정확히 일치해야 매칭됨) + "비용 귀속"(선택, 비우면
+  // 팀명의 부문과 동일하게 취급) + "항목"(예: "(판)지급수수료" — 앞의 (판)/(용)/(경) 접두는
+  // 제거하고 저장) + "세부내역" + "구분"(판관/용역/경상, 필수) + "1월"~"12월". 각 행을
+  // 팀명 기준으로 묶어 그 팀의 baseYear=year인 사업계획을 찾아 sgaItems에 upsert한다(이름이
+  // 같은 기존 행이 있으면 갱신, 없으면 새 행 추가) — 개인별 급여상세 자동입력과 동일한
+  // "이름 기준 upsert" 방식이라, 같은 이름의 행을 개인급여상세 자동입력이 이미 채워뒀다면
+  // 그 행이 이 업로드로 덮어써질 수 있음(이 코드베이스 전반에서 이미 통용되는 "한 이름당
+  // 한 행" 관례를 그대로 따름 — 필요하면 업로드 후 그리드에서 직접 조정). 해당 연도·팀명의
+  // 계획이 없거나(먼저 그 팀이 사업계획을 작성해야 함) 여러 건이라 특정할 수 없으면 그
+  // 팀은 건너뛰고 이유를 응답에 담는다. 반영 즉시 그 팀의 손익 추정치가 재계산되고,
+  // 사업부/회사 롤업(3단계 집계)에도 자동으로 연계된다.
+  router.post('/business-plan/sga-upload', upload.single('file'), (req, res) => {
+    if (!requireAdmin(req, res)) return;
+    if (!req.file) return res.status(400).json({ error: '파일이 필요합니다.' });
+    let rows;
+    try {
+      rows = parseSheet(req.file.buffer, req.file.originalname);
+    } catch (e) {
+      return res.status(400).json({ error: '파일을 읽을 수 없습니다. (xlsx/csv만 지원)' });
+    }
+    const companyId = req.auth.companyId || null;
+    const year = Number(req.query.year) || new Date().getFullYear();
+    const data = readBudget(companyId);
+    const note = `예산(비인건비) 업로드 반영(${new Date().toISOString().slice(0, 10)})`;
+
+    const byTeam = {};
+    rows.forEach(row => {
+      const team = String(row['팀명'] || row['팀'] || '').trim();
+      const accountType = row['구분'];
+      if (!team || !accountType || !CATEGORIES.includes(accountType)) return;
+      const rawName = String(row['항목'] || '').trim();
+      const name = rawName.replace(/^\((판|용|경)\)/, '').trim();
+      if (!name) return;
+      const detail = row['세부내역(산정근거)'] || row['세부내역'] || '';
+      const costDept = String(row['비용 귀속'] || row['비용귀속'] || row['비용 귀속 부문'] || row['비용귀속부문'] || '').trim();
+      const months = MONTHS.map(m => toNumber(row[`${m}월`]) || 0);
+      (byTeam[team] = byTeam[team] || []).push({ name, detail, accountType, costDept, months });
+    });
+
+    const updated = [], skipped = [];
+    Object.entries(byTeam).forEach(([team, items]) => {
+      const matches = data.businessPlans.filter(p => p.baseYear === year && (p.team || '') === team);
+      if (matches.length === 0) {
+        skipped.push({ team, reason: `${year}년 기준 팀명 "${team}"과 일치하는 사업계획을 찾을 수 없습니다. 해당 팀이 먼저 사업계획을 작성해야 합니다.` });
+        return;
+      }
+      if (matches.length > 1) {
+        skipped.push({ team, reason: `${year}년 기준 팀명 "${team}"에 해당하는 사업계획이 ${matches.length}건이라 자동으로 특정할 수 없습니다.` });
+        return;
+      }
+      const plan = matches[0];
+      const dept = plan.dept;
+      if (!Array.isArray(plan.assumptions.sgaItems)) plan.assumptions.sgaItems = [];
+      const sgaItems = plan.assumptions.sgaItems;
+      items.forEach(it => {
+        // 같은 항목명(예: "지급수수료")이 세부내역(거래처·용도 등)만 다른 채 한 팀 안에
+        // 여러 줄로 실존하는 경우가 실제 데이터에서 흔함(회계 계정 하나에 여러 벤더/용도가
+        // 물려있는 구조) — name만으로 매칭하면 같은 이름의 서로 다른 지출 줄이 이 업로드
+        // 한 번 안에서도 서로를 덮어써 소실된다. 게다가 "급여"/"복리후생비"처럼 세부내역이
+        // 아예 비어있는 굵직한 버킷은 판관/용역/경상 각각 별도 줄로 존재할 수 있어(원본의
+        // "(판)급여"/"(용)급여"/"(경)급여"가 접두 제거 후 전부 "급여"로 동일해짐) accountType도
+        // 매칭 키에 포함해야 한다. name+detail+accountType 조합이 같을 때만 갱신(재업로드 시
+        // upsert), 하나라도 다르면 별개의 새 줄로 추가된다.
+        const existing = sgaItems.find(e => e.name === it.name && (e.detail || '') === (it.detail || '') && e.accountType === it.accountType && (e.team || '') === team);
+        const baseAmount = round2(it.months.reduce((s, v) => s + v, 0));
+        const category = _guessSgaCategory(it.name);
+        if (existing) {
+          existing.dept = dept; existing.team = team; existing.costDept = it.costDept || dept;
+          existing.detail = it.detail; existing.accountType = it.accountType;
+          existing.months = it.months; existing.baseAmount = baseAmount; existing.note = note;
+          if (!existing.category) existing.category = category;
+        } else {
+          sgaItems.push({
+            dept, team, costDept: it.costDept || dept, name: it.name, detail: it.detail,
+            category, accountType: it.accountType, expenseAccount: '', months: it.months,
+            note, baseAmount, growthRate: 0, fixed: true
+          });
+        }
+      });
+      const a = { baseYear: plan.baseYear, years: plan.years !== undefined ? plan.years : plan.projection.length, ...plan.assumptions };
+      plan.projection = computeBusinessPlanProjection(a);
+      plan.breakEven = computeBreakEven(a);
+      plan.updatedAt = new Date().toISOString();
+      plan.updatedBy = req.auth.empId;
+      updated.push({ team, planId: plan.id, dept, itemCount: items.length, planStatus: plan.status });
+    });
+
+    data.uploads.push({ type: 'sga', filename: req.file.originalname, uploadedAt: new Date().toISOString(), rows: rows.length });
+    writeBudget(companyId, data);
+    res.json({ ok: true, updated, skipped });
+  });
+
+  // 월별 인원 계획(예측용) 엑셀 업로드 — 관리자 전용. 열 구성: "구분"(부문, 필수) +
+  // "계정과목"(선택, 판관/용역/경상 중 하나면 인식, 그 외/빈값은 미분류) + "1월"~"12월".
+  // budget.html의 기존 headcount(실적/현황 업로드)와는 완전히 별개 데이터 — 그쪽은
+  // "지금까지의 실적"이고 이것은 "사업계획" 롤업에서 참고하는 예측치라, 서로 다른 화면·
+  // 다른 초기화 범위로 관리한다.
+  router.post('/business-plan/headcount-plan/upload', upload.single('file'), (req, res) => {
+    if (!requireAdmin(req, res)) return;
+    if (!req.file) return res.status(400).json({ error: '파일이 필요합니다.' });
+    let rows;
+    try {
+      rows = parseSheet(req.file.buffer, req.file.originalname);
+    } catch (e) {
+      return res.status(400).json({ error: '파일을 읽을 수 없습니다. (xlsx/csv만 지원)' });
+    }
+    const companyId = req.auth.companyId || null;
+    const year = Number(req.query.year) || new Date().getFullYear();
+    const data = readBudget(companyId);
+    let upserted = 0;
+    rows.forEach(row => {
+      const dept = String(row['구분'] || row['부문'] || '').trim();
+      if (!dept || dept === '계') return;
+      const catRaw = String(row['계정과목'] || row['구분2'] || '').trim();
+      const category = CATEGORIES.includes(catRaw) ? catRaw : '';
+      const months = MONTHS.map(m => toNumber(row[`${m}월`]));
+      if (months.every(v => v === null)) return;
+      const monthsArr = months.map(v => v === null ? 0 : v);
+      const existing = data.headcountPlans.find(h => h.year === year && h.dept === dept && (h.category || '') === category);
+      if (existing) {
+        existing.months = monthsArr;
+        existing.updatedAt = new Date().toISOString();
+      } else {
+        data.headcountPlans.push({
+          id: `hcp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+          year, dept, category, months: monthsArr, updatedAt: new Date().toISOString()
+        });
+      }
+      upserted++;
+    });
+    data.uploads.push({ type: 'headcountPlan', filename: req.file.originalname, uploadedAt: new Date().toISOString(), rows: rows.length });
+    writeBudget(companyId, data);
+    res.json({ ok: true, upserted });
+  });
+
+  // 월별 인원 계획 조회 — 롤업과 동일한 접근범위(관리자/예산담당자/기획팀장은 전체,
+  // 사업부장은 자기 dept만).
+  router.get('/business-plan/headcount-plan', async (req, res) => {
+    if (!requireAuth(req, res)) return;
+    const companyId = req.auth.companyId || null;
+    const data = readBudget(companyId);
+    const isAdmin = req.auth.role === 'admin';
+    const isFullAccess = isAdmin
+      || _isBudgetOwner(isAdmin, data.budgetPlanSettings, req.auth.empId)
+      || _isPlanningLead(isAdmin, data.budgetPlanSettings, req.auth.empId);
+    const profile = await getEmployeeProfile(companyId, req.auth.empId);
+    const isDirector = profile && profile.role === 'director';
+    if (!isFullAccess && !isDirector) {
+      return res.status(403).json({ error: '접근 권한이 없습니다.' });
+    }
+    const year = Number(req.query.year) || new Date().getFullYear();
+    let plans = data.headcountPlans.filter(h => h.year === year);
+    if (!isFullAccess) plans = plans.filter(h => h.dept === profile.dept);
+    res.json({ ok: true, plans });
   });
 
   // 신규 생성: 관리자가 아니면 dept/team은 항상 작성자 본인 소속으로 강제(다른 팀

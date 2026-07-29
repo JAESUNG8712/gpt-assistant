@@ -15528,10 +15528,15 @@ function _bpSvgLineChart(series,xLabels){
 }
 
 // ── 사업부/회사 롤업 ──
+let _bizPlanHeadcountPlanData=null;
 async function loadBizPlanRollup(){
-  const r=await serverRequest("GET",`/api/budget/business-plan/rollup?includeDraft=${_bizPlanRollupIncludeDraft}`);
+  const [r,rh]=await Promise.all([
+    serverRequest("GET",`/api/budget/business-plan/rollup?includeDraft=${_bizPlanRollupIncludeDraft}`),
+    serverRequest("GET",`/api/budget/business-plan/headcount-plan?year=${_bpBulkUploadYear}`),
+  ]);
   if(!r?.ok)_bizPlanRollupData={error:r?.error||r?.message||"조회 실패"};
   else _bizPlanRollupData=r;
+  _bizPlanHeadcountPlanData=rh?.ok?rh.plans:[];
   if(_bizPlanTab==="rollup")renderBizPlanPage();
 }
 function _renderBizPlanRollupTab(){
@@ -15574,9 +15579,29 @@ function _renderBizPlanRollupTab(){
   html+=`<div class="mb3"><h4 class="mb2">회사 전체 <span class="fz11 text-gray">(계획 ${d.company.planCount}건)</span></h4><div class="tbl-wrap">${rollupTable(d.company.projection)}</div></div>`;
   html+=`<h3 class="mt4 mb2">📊 부문별 월별 집계표(3단계 자료 연계 — 개인별 급여 → 팀별 그리드 → 부문별 집계)</h3>`;
   html+=_bpHeadcountByDeptHtml(filterDept);
+  html+=_bpHeadcountPlanHtml(filterDept);
   html+=_bpSgaByCostDeptHtml(d.sgaByCostDept,filterDept);
   html+=_bpSgaByCategoryHtml(d.sgaByCategory,filterDept);
   return html;
+}
+// 월별 인원 "계획"(예측) — 위 _bpHeadcountByDeptHtml(현재 재직자 스냅샷)와는 별개로,
+// 관리자가 업로드한 headcountPlans(연도별 부문×계정과목 월별 인원 계획)를 보여준다.
+// 계정과목(판관/용역/경상)이 있는 행은 그대로, 없는(미분류) 행은 부문명만으로 표시.
+// filterDept가 지정되면 그 부문만(전사 합계 행은 항상 유지).
+function _bpHeadcountPlanHtml(filterDept){
+  const plans=_bizPlanHeadcountPlanData;
+  if(!Array.isArray(plans)||!plans.length)return "";
+  const filtered=filterDept?plans.filter(p=>p.dept===filterDept):plans;
+  if(!filtered.length)return "";
+  const monthHeads=Array.from({length:12},(_,i)=>`<th>${i+1}월</th>`).join("");
+  const avg=months=>months.length?Math.round(months.reduce((s,v)=>s+(v||0),0)/months.length):0;
+  const rows=filtered.map(p=>`<tr><td class="lbl">${h(p.dept)}${p.category?` <span class="fz11 text-gray">(${h(p.category)})</span>`:""}</td>${(p.months||[]).map(v=>`<td style="text-align:right">${_bpFmt(v)}</td>`).join("")}<td style="text-align:right;font-weight:700">${_bpFmt(avg(p.months||[]))}</td></tr>`).join("");
+  const companyMonths=Array.from({length:12},(_,i)=>filtered.reduce((s,p)=>s+((p.months||[])[i]||0),0));
+  return `<div class="mb4"><h4 class="mb2">계획 인원 현황(${_bpBulkUploadYear}년) <span class="fz11 text-gray">업로드된 예측 데이터 — 위 재직자 스냅샷과 별개</span></h4>
+    <div class="tbl-wrap"><table><tr><th class="lbl">부문</th>${monthHeads}<th>평균</th></tr>${rows}
+    <tr style="font-weight:700;background:#fdf1f1"><td class="lbl">전체</td>${companyMonths.map(v=>`<td style="text-align:right">${_bpFmt(v)}</td>`).join("")}<td style="text-align:right">${_bpFmt(avg(companyMonths))}</td></tr>
+    </table></div>
+  </div>`;
 }
 // 사업부문별 월별 인원 현황 — 현재 인사 데이터(employees[])의 재직자 수를 부문별로
 // 집계한 스냅샷이다(과거 월별 이력을 저장하는 별도 데이터가 없어 "지금 시점" 기준).
@@ -15644,7 +15669,68 @@ function _renderBizPlanSettingsTab(){
     <button class="btn btn-secondary btn-sm" onclick="toggleBizPlanInputWindow()">${bizPlanSettings.inputOpen?"입력기간 닫기":"입력기간 열기"}</button>
     ${isAdmin?`<button class="btn btn-secondary btn-sm" onclick="editBizPlanRoster()">예산담당자/기획팀장 지정</button>`:""}
   </div>`;
+  if(isAdmin){
+    html+=`<div class="fg mt4" style="max-width:160px"><label class="fl">업로드 대상 연도</label><input class="fc" type="number" id="bp-bulk-year" value="${_bpBulkUploadYear}" onchange="_bpBulkUploadYear=Number(this.value)||new Date().getFullYear()"></div>
+    <div class="card mb3 mt2" style="background:#f8fafc"><div class="card-body">
+      <h4 class="mb2">📥 예산(비인건비 판관/용역/경상) 일괄 업로드</h4>
+      <div class="fz11 text-gray mb2">열 구성: "팀명"(필수, 그 연도에 이미 작성된 사업계획의 팀 이름과 정확히 일치해야 반영됨) + "비용 귀속"(선택) + "항목" + "세부내역" + "구분"(판관/용역/경상) + "1월"~"12월". 팀명 기준으로 해당 팀의 사업계획 판관비 그리드에 항목 단위로 upsert됩니다 — 반영 즉시 사업부/회사 롤업에도 자동 연계됩니다.</div>
+      <input type="file" id="bp-sga-upload-file" accept=".xlsx,.xls,.csv">
+      <button class="btn btn-secondary btn-sm" onclick="uploadBizPlanSgaExcel()">업로드</button>
+      <span id="bp-sga-upload-status" class="fz12 text-gray" style="margin-left:8px"></span>
+    </div></div>
+    <div class="card mb3" style="background:#f8fafc"><div class="card-body">
+      <h4 class="mb2">📥 월별 인원 계획 일괄 업로드</h4>
+      <div class="fz11 text-gray mb2">열 구성: "구분"(부문, 필수) + "계정과목"(선택, 판관/용역/경상 중 하나면 인식) + "1월"~"12월". 업로드하면 롤업 탭의 "계획 인원 현황"에 반영됩니다(현재 재직자 스냅샷과는 별개의 예측 데이터입니다).</div>
+      <input type="file" id="bp-headcount-upload-file" accept=".xlsx,.xls,.csv">
+      <button class="btn btn-secondary btn-sm" onclick="uploadHeadcountPlanExcel()">업로드</button>
+      <span id="bp-headcount-upload-status" class="fz12 text-gray" style="margin-left:8px"></span>
+    </div></div>`;
+  }
   return html;
+}
+let _bpBulkUploadYear=new Date().getFullYear();
+// 예산(비인건비)/인원계획 업로드는 multer(multipart/form-data)를 쓰는 서버 라우트라
+// JSON 기반 serverRequest()를 쓸 수 없어(budget.html의 기존 uploadFile()과 동일하게)
+// FormData+raw fetch로 직접 호출한다. 인증은 index.html이 이미 들고 있는 _authToken을
+// 그대로 Authorization 헤더에 싣는다.
+async function _bpUploadFormFile(inputId,statusId,url){
+  const input=$("#"+inputId),statusEl=$("#"+statusId);
+  if(!input||!input.files.length){showToast("파일을 선택하세요.","error");return null;}
+  if(statusEl)statusEl.textContent="업로드 중...";
+  const fd=new FormData();
+  fd.append("file",input.files[0]);
+  try{
+    const res=await fetch(serverConfig.url.replace(/\/+$/,"")+url,{
+      method:"POST",
+      headers:_authToken?{"Authorization":"Bearer "+_authToken}:{},
+      body:fd
+    });
+    const json=await res.json();
+    if(!res.ok||json.ok===false){showToast(json.error||json.message||"업로드에 실패했습니다.","error");if(statusEl)statusEl.textContent="";return null;}
+    input.value="";
+    if(statusEl)statusEl.textContent="";
+    return json;
+  }catch(e){
+    showToast("업로드 중 오류가 발생했습니다: "+e.message,"error");
+    if(statusEl)statusEl.textContent="";
+    return null;
+  }
+}
+async function uploadBizPlanSgaExcel(){
+  const json=await _bpUploadFormFile("bp-sga-upload-file","bp-sga-upload-status",`/api/budget/business-plan/sga-upload?year=${_bpBulkUploadYear}`);
+  if(!json)return;
+  const updated=json.updated||[],skipped=json.skipped||[];
+  let msg=`${updated.length}개 팀 반영 완료`;
+  if(skipped.length)msg+=`, ${skipped.length}개 팀 건너뜀(${skipped.map(s=>s.team).join(", ")})`;
+  showToast(msg,updated.length>0?"success":"error");
+  if(skipped.length)console.warn("예산 업로드 건너뜀 사유:",skipped);
+  loadBizPlanFromServer();
+}
+async function uploadHeadcountPlanExcel(){
+  const json=await _bpUploadFormFile("bp-headcount-upload-file","bp-headcount-upload-status",`/api/budget/business-plan/headcount-plan/upload?year=${_bpBulkUploadYear}`);
+  if(!json)return;
+  showToast(`인원계획 ${json.upserted}건 반영되었습니다.`,"success");
+  if(_bizPlanTab==="rollup")loadBizPlanRollup();
 }
 async function toggleBizPlanInputWindow(){
   const r=await serverRequest("POST","/api/budget/business-plan/settings/input-window",{inputOpen:!bizPlanSettings.inputOpen});
