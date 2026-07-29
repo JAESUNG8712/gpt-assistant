@@ -5376,6 +5376,7 @@ function renderSidebar(){
       // 메뉴 자체는 전 역할에 공개하고, 실제로 보이는 계획 내용은 budget.js 서버 쪽에서
       // 소속 조직 기준으로 걸러진다(전체 공개는 예산담당자·기획팀장·관리자만).
       {id:"biz-plan",label:"사업계획",icon:"🧮",desc:"팀별 사업계획 작성·승인·확정, 사업부/회사 롤업",roles:["admin","director","leader","member"]},
+      {id:"emp-pay-plan",label:"개인별 급여 상세",icon:"👤",desc:"직원별 급여 세부 항목(RSU·인센티브·복지카드 등) 입력 — 사업계획 그리드 자동입력에 사용",roles:["admin"]},
     ],
     "sales-sep":[
       {id:"sales-sep",type:"sep",label:"영업관리",roles:["admin"]},
@@ -5516,7 +5517,7 @@ const PAGE_ROLES={
   "eval-ops":["admin"],"settings-org":["admin"],"settings-ranks":["admin"],"attend-settings":["admin"],
   "payroll-settings":["admin"],"company-info":["admin"],"room-settings":["admin"],"deploy-perm":["admin"],
   "pms-utilization":["admin","director","leader"],"sales-dashboard":["admin"],
-  "acct-partners":["admin"],"acct-accounts":["admin"],"acct-vouchers":["admin"],"acct-tax-invoices":["admin"],"acct-vat-report":["admin"],"acct-fixed-assets":["admin"],"acct-fixed-assets-detail":["admin"],"acct-cost-statement":["admin"],"acct-rcps":["admin"],"acct-rcps-detail":["admin"],"acct-reports":["admin"],"expense-admin":["admin"],"acct-receivables":["admin"],"biz-plan":["admin","director","leader","member"],"exec-dashboard":["admin"],"onboarding":["admin"],
+  "acct-partners":["admin"],"acct-accounts":["admin"],"acct-vouchers":["admin"],"acct-tax-invoices":["admin"],"acct-vat-report":["admin"],"acct-fixed-assets":["admin"],"acct-fixed-assets-detail":["admin"],"acct-cost-statement":["admin"],"acct-rcps":["admin"],"acct-rcps-detail":["admin"],"acct-reports":["admin"],"expense-admin":["admin"],"acct-receivables":["admin"],"biz-plan":["admin","director","leader","member"],"emp-pay-plan":["admin"],"exec-dashboard":["admin"],"onboarding":["admin"],
   "sales-quotations":["admin"],"sales-purchase-orders":["admin"],
   "inv-items":["admin"],"inv-locations":["admin"],"inv-stock":["admin"],"inv-stock-log":["admin"],
   "welfare-settings":["admin"],
@@ -5649,7 +5650,7 @@ function renderCategoryLanding(catKey){
 function renderPage(){
   if(currentPage&&currentPage.startsWith("cat:")){renderCategoryLanding(currentPage.slice(4));renderCatNav();const attendBar=document.getElementById("attend-bar");if(attendBar)attendBar.innerHTML=(currentUser&&currentPage==="dashboard")?_renderTeamTodayWidget(currentUser):"";return;}
   if(currentPage&&currentPage.startsWith("board-")){renderBoardPage();renderCatNav();const attendBar=document.getElementById("attend-bar");if(attendBar)attendBar.innerHTML=(currentUser&&currentPage==="dashboard")?_renderTeamTodayWidget(currentUser):"";return;}
-  const pages={dashboard:renderDashboard,"my-profile":renderMyProfile,"hr-register":renderHRRegister,"hr-list":renderHRList,"hr-changes":renderHRChanges,kpi:()=>renderKPI(false),"kpi-results":()=>renderKPI(true),"my-kpi":renderMyKPI,"grade-view":renderGradeView,"comp-grade-view":renderCompGradeView,"comp-settings-shortcut":()=>gotoPage("eval-ops"),"comp-eval":renderCompEval,"data-mgmt":renderDataManagementPage,"core-talent":renderCoreTalentPage,"talent-dev":renderTalentDevPage,"promotion-mgmt":renderPromotionPageStandalone,"low-performer":renderLowPerformer,"activity-log":()=>{loadActivityFromServer();},"first-eval":()=>{approvalTab="eval";approvalSearch={name:"",dept:""};renderApprovals();},"second-eval":()=>{approvalTab="eval";approvalSearch={name:"",dept:""};renderApprovals();},"kpi-amend":()=>{approvalTab="requests";approvalSearch={name:"",dept:""};renderApprovals();},"eval-progress":renderEvalProgressPage,settings:renderSettings,"eval-ops":renderEvalOpsPage,"settings-org":renderSettingsOrgPage,"settings-ranks":renderSettingsRanksPage,"attend-settings":renderAttendSettings,"payroll-settings":renderPayrollSettings,"company-info":renderCompanyInfo,"room-settings":renderRoomSettings,"deploy-perm":renderDeployPermPage,history:renderHistory,"change-pw":renderChangePW,"approval-draft":renderApprovalDraftPage,"approval-outbox":renderApprovalOutbox,"approval-inbox":renderApprovalInbox,"approval-receive":renderApprovalReceive,"approval-cc-inbox":renderApprovalCcInbox,"approval-completed":renderApprovalCompleted,"attendance":renderAttendancePage,"att-calendar":renderAttendanceCalendarPage,"leave-mgmt":renderLeaveManagementPage,"payslip":renderPayslipPage,"approval-templates":renderApprovalTemplateAdmin,"integrations":renderIntegrationsPage,"orgchart":renderOrgChartPage,"certificate":renderCertPage,"hr-stats":renderHRStatsPage,"board":renderBoardPage,"room-booking":renderRoomBookingPage,"welfare-points":renderWelfarePointsPage,"mandatory-training":renderMandatoryTrainingPage,"welfare-status":renderWelfareStatusPage,"long-service-award":renderLongServiceAwardPage,"award-history":renderAwardHistoryPage,"hr-welfare-points":renderHrWelfarePointsPage,"hr-mandatory-training":renderHrMandatoryTrainingPage,"hr-attendance":renderHrAttendancePage,"hr-leave-mgmt":renderHrLeaveManagementPage,"payroll-mgmt":renderPayrollMgmtPage,"salary-info":renderSalaryInfoPage,"welfare-settings":renderWelfareSettingsPage,"notification-center":renderNotificationCenterPage,"acct-partners":renderAcctPartnersPage,"acct-accounts":renderAcctAccountsPage,"acct-vouchers":renderAcctVouchersPage,"acct-tax-invoices":renderAcctTaxInvoicesPage,"acct-vat-report":()=>{loadVatReportFromServer();},"acct-fixed-assets":renderAcctFixedAssetsPage,"acct-fixed-assets-detail":()=>{loadFixedAssetDetailFromServer();},"acct-cost-statement":renderAcctCostStatementPage,"acct-rcps":renderAcctRcpsPage,"acct-rcps-detail":()=>{loadRcpsDetailFromServer();},"acct-reports":renderAcctReportsPage,"expense-claims":renderExpenseClaimsPage,"expense-admin":renderExpenseAdminPage,"acct-receivables":renderAcctReceivablesPage,"biz-plan":()=>{loadBizPlanFromServer();},"overtime-req":renderOvertimeReqPage,"exec-dashboard":renderExecDashboardPage,"onboarding":renderOnboardingPage,"approval-delegation":renderApprovalDelegationPage,"sales-quotations":renderSalesQuotationsPage,"sales-dashboard":renderSalesDashboardPage,"sales-purchase-orders":renderSalesPurchaseOrdersPage,"inv-items":renderInvItemsPage,"inv-locations":renderInvLocationsPage,"inv-stock":renderInvStockPage,"inv-stock-log":renderInvStockLogPage,"inv-purchase-requests":renderPurchaseRequestsPage,"pms-projects":renderPmsProjectsPage,"pms-allocation":renderPmsAllocationPage,"pms-my-projects":renderPmsMyProjectsPage,"pms-utilization":renderPmsUtilizationPage,"pms-worklog":renderPmsWorklogPage,"recruit-jobs":renderRecruitJobsPage,"recruit-candidates":renderRecruitCandidatesPage,"recruit-eval":renderRecruitEvalPage,"recruit-eval-detail":renderRecruitEvalDetailPage,"recruit-dashboard":renderRecruitDashboardPage};
+  const pages={dashboard:renderDashboard,"my-profile":renderMyProfile,"hr-register":renderHRRegister,"hr-list":renderHRList,"hr-changes":renderHRChanges,kpi:()=>renderKPI(false),"kpi-results":()=>renderKPI(true),"my-kpi":renderMyKPI,"grade-view":renderGradeView,"comp-grade-view":renderCompGradeView,"comp-settings-shortcut":()=>gotoPage("eval-ops"),"comp-eval":renderCompEval,"data-mgmt":renderDataManagementPage,"core-talent":renderCoreTalentPage,"talent-dev":renderTalentDevPage,"promotion-mgmt":renderPromotionPageStandalone,"low-performer":renderLowPerformer,"activity-log":()=>{loadActivityFromServer();},"first-eval":()=>{approvalTab="eval";approvalSearch={name:"",dept:""};renderApprovals();},"second-eval":()=>{approvalTab="eval";approvalSearch={name:"",dept:""};renderApprovals();},"kpi-amend":()=>{approvalTab="requests";approvalSearch={name:"",dept:""};renderApprovals();},"eval-progress":renderEvalProgressPage,settings:renderSettings,"eval-ops":renderEvalOpsPage,"settings-org":renderSettingsOrgPage,"settings-ranks":renderSettingsRanksPage,"attend-settings":renderAttendSettings,"payroll-settings":renderPayrollSettings,"company-info":renderCompanyInfo,"room-settings":renderRoomSettings,"deploy-perm":renderDeployPermPage,history:renderHistory,"change-pw":renderChangePW,"approval-draft":renderApprovalDraftPage,"approval-outbox":renderApprovalOutbox,"approval-inbox":renderApprovalInbox,"approval-receive":renderApprovalReceive,"approval-cc-inbox":renderApprovalCcInbox,"approval-completed":renderApprovalCompleted,"attendance":renderAttendancePage,"att-calendar":renderAttendanceCalendarPage,"leave-mgmt":renderLeaveManagementPage,"payslip":renderPayslipPage,"approval-templates":renderApprovalTemplateAdmin,"integrations":renderIntegrationsPage,"orgchart":renderOrgChartPage,"certificate":renderCertPage,"hr-stats":renderHRStatsPage,"board":renderBoardPage,"room-booking":renderRoomBookingPage,"welfare-points":renderWelfarePointsPage,"mandatory-training":renderMandatoryTrainingPage,"welfare-status":renderWelfareStatusPage,"long-service-award":renderLongServiceAwardPage,"award-history":renderAwardHistoryPage,"hr-welfare-points":renderHrWelfarePointsPage,"hr-mandatory-training":renderHrMandatoryTrainingPage,"hr-attendance":renderHrAttendancePage,"hr-leave-mgmt":renderHrLeaveManagementPage,"payroll-mgmt":renderPayrollMgmtPage,"salary-info":renderSalaryInfoPage,"welfare-settings":renderWelfareSettingsPage,"notification-center":renderNotificationCenterPage,"acct-partners":renderAcctPartnersPage,"acct-accounts":renderAcctAccountsPage,"acct-vouchers":renderAcctVouchersPage,"acct-tax-invoices":renderAcctTaxInvoicesPage,"acct-vat-report":()=>{loadVatReportFromServer();},"acct-fixed-assets":renderAcctFixedAssetsPage,"acct-fixed-assets-detail":()=>{loadFixedAssetDetailFromServer();},"acct-cost-statement":renderAcctCostStatementPage,"acct-rcps":renderAcctRcpsPage,"acct-rcps-detail":()=>{loadRcpsDetailFromServer();},"acct-reports":renderAcctReportsPage,"expense-claims":renderExpenseClaimsPage,"expense-admin":renderExpenseAdminPage,"acct-receivables":renderAcctReceivablesPage,"biz-plan":()=>{loadBizPlanFromServer();},"emp-pay-plan":()=>{renderEmpPayPlanPage();},"overtime-req":renderOvertimeReqPage,"exec-dashboard":renderExecDashboardPage,"onboarding":renderOnboardingPage,"approval-delegation":renderApprovalDelegationPage,"sales-quotations":renderSalesQuotationsPage,"sales-dashboard":renderSalesDashboardPage,"sales-purchase-orders":renderSalesPurchaseOrdersPage,"inv-items":renderInvItemsPage,"inv-locations":renderInvLocationsPage,"inv-stock":renderInvStockPage,"inv-stock-log":renderInvStockLogPage,"inv-purchase-requests":renderPurchaseRequestsPage,"pms-projects":renderPmsProjectsPage,"pms-allocation":renderPmsAllocationPage,"pms-my-projects":renderPmsMyProjectsPage,"pms-utilization":renderPmsUtilizationPage,"pms-worklog":renderPmsWorklogPage,"recruit-jobs":renderRecruitJobsPage,"recruit-candidates":renderRecruitCandidatesPage,"recruit-eval":renderRecruitEvalPage,"recruit-eval-detail":renderRecruitEvalDetailPage,"recruit-dashboard":renderRecruitDashboardPage};
   const fn=pages[currentPage];const c=$("#content");
   if(c&&fn){
     c.innerHTML="";
@@ -15203,6 +15204,7 @@ function _renderBizPlanFormBody(){
       </div>
       <button class="btn btn-ghost btn-sm mt2" onclick="addBpSgaRow()">+ 판관비 항목 추가</button>
       <button class="btn btn-ghost btn-sm mt2" onclick="addBpLaborCostRow()" title="현재 인사 정보에 등록된 재직자 연봉 합계를 기준으로 월 인건비 행을 자동 생성합니다.">+ 기본 인건비 자동입력(연봉 기준)</button>
+      <button class="btn btn-ghost btn-sm mt2" onclick="addBpEmpDetailRows()" title="관리자가 '개인별 급여 상세' 화면에 입력해둔 RSU·인센티브·복지카드 등 항목을 팀 단위로 합산해 자동 반영합니다.">+ 개인별 급여상세 자동입력</button>
     </div>
     <div class="mt3" style="display:flex;gap:8px">
       <button class="btn btn-primary" onclick="submitBizPlanForm()">${editPlan?"수정 저장":"저장"}</button>
@@ -15338,6 +15340,64 @@ function addBpLaborCostRow(){
     ? `재직자 ${matched.length}명(팀장 ${leaderCount}명 포함) 연봉 기준 월 고정급 ${fixedMonthly.toLocaleString()}원 · 변동급 ${variableMonthly.toLocaleString()}원이 입력되었습니다.`
     : `재직자 ${matched.length}명 연봉 기준 월 고정급 ${fixedMonthly.toLocaleString()}원이 입력되었습니다.`;
   showToast(msg,"success");
+}
+// 3단계 자료 연계의 1→2단계: "개인별 급여 상세"(RSU·인센티브·복지카드 등, 관리자가
+// 별도 화면에서 입력) 화면에 입력된 값을 팀 단위로 합산해 판관비 그리드에 채운다.
+// 고정급/변동급은 연봉 기준으로 addBpLaborCostRow()가 이미 전담하므로 여기서는 제외해
+// 이중 반영을 막는다. 매칭 대상 인원(부문+팀, 팀 없으면 본인만)은 addBpLaborCostRow()와
+// 동일한 기준을 쓴다.
+async function addBpEmpDetailRows(){
+  const deptField=$("#bp-dept"),teamField=$("#bp-team");
+  const dept=(deptField?deptField.value.trim():"")||_bpSgaDefaultDept||"";
+  const team=deptField?(teamField?teamField.value.trim():""):(_bpSgaDefaultTeam||"");
+  if(!dept){showToast("부문을 먼저 지정하세요(관리자는 위 사업부 입력란, 팀원은 소속이 자동 지정됩니다).","error");return;}
+  const year=Number($("#bp-base-year")?.value)||new Date().getFullYear();
+  const matched=team===""
+    ? employees.filter(e=>e.active&&e.id===currentUser.id)
+    : employees.filter(e=>e.active&&e.dept===dept&&(e.team||"")===team);
+  if(!matched.length){showToast("해당 부문/팀 소속의 재직 중인 직원이 없어 반영할 수 없습니다.","error");return;}
+
+  const ids=matched.map(e=>e.id).join(",");
+  const r=await serverRequest("GET",`/api/budget/emp-pay-plan/by-ids?year=${year}&ids=${encodeURIComponent(ids)}`);
+  const plans=r?.ok?r.plans:[];
+  if(!plans.length){showToast(`${year}년 기준으로 입력된 개인별 급여 상세가 없습니다. "개인별 급여 상세" 화면에서 먼저 입력하세요.`,"error");return;}
+
+  const sums={};
+  plans.forEach(p=>{
+    (p.items||[]).forEach(it=>{
+      if(it.name==="고정급"||it.name==="변동급")return; // 연봉 기반 자동입력과 중복 방지
+      if(!sums[it.name])sums[it.name]={category:it.category,annualTotal:0};
+      sums[it.name].annualTotal+=it.amount||0;
+    });
+  });
+  const names=Object.keys(sums);
+  if(!names.length){showToast("합산할 항목이 없습니다(고정급/변동급 제외 항목만 반영됩니다).","error");return;}
+
+  const detail=`개인별 급여상세 자동입력(${year}년 기준, ${new Date().toISOString().slice(0,10)})`;
+  const note="개인별 급여 상세 데이터 기준 자동입력 - 인원 변동 시 재계산 필요";
+  const rows=[...document.querySelectorAll("#bp-sga-tbody tr")];
+  names.forEach(name=>{
+    const monthly=Math.round(sums[name].annualTotal/12);
+    const targetRow=rows.find(r=>r.querySelector(".bp-sga-name").value.trim()===name);
+    if(targetRow){
+      targetRow.querySelector(".bp-sga-dept").value=dept;
+      targetRow.querySelector(".bp-sga-team").value=team;
+      targetRow.querySelector(".bp-sga-costdept").value=dept;
+      targetRow.querySelector(".bp-sga-detail").value=detail;
+      targetRow.querySelector(".bp-sga-note").value=note;
+      const monthInputs=targetRow.querySelectorAll(".bp-sga-month");
+      monthInputs.forEach(i=>{i.value=monthly;});
+      _bpUpdateSgaRowTotal(monthInputs[0]);
+    }else{
+      addBpSgaRow({
+        dept,team,costDept:dept,
+        name,category:sums[name].category,accountType:"판관",expenseAccount:"",detail,
+        months:Array(12).fill(monthly),
+        note,growthRate:0,fixed:true
+      });
+    }
+  });
+  showToast(`개인별 급여 상세 ${plans.length}명분(${names.length}개 항목)이 반영되었습니다.`,"success");
 }
 function _bpUpdateSgaRowTotal(input){
   const row=input.closest("tr");if(!row)return;
@@ -15562,6 +15622,63 @@ async function editBizPlanRoster(){
   const r=await serverRequest("POST","/api/budget/business-plan/settings/roster",{ownerIds,teamLeaderId});
   if(!r?.ok){showToast(r?.error||r?.message||"지정 실패","error");return;}
   bizPlanSettings=r.settings;showToast("지정되었습니다.","success");renderBizPlanPage();
+}
+
+// ==================== 개인별 급여 상세(계획용, 3단계 자료 연계의 1단계) ====================
+// 관리자 전용 — 직원별·연도별로 표준 판관비 항목(RSU·인센티브·복지카드 등, 고정급/변동급
+// 제외) 각각의 연간 금액을 입력해두면, 사업계획 판관비 그리드의 "개인별 급여상세
+// 자동입력" 버튼(addBpEmpDetailRows)이 팀 단위로 합산해 채워 넣는다.
+let _eppSelectedEmpId=null,_eppYear=new Date().getFullYear(),_eppPlans=[];
+async function renderEmpPayPlanPage(){
+  const c=$("#content");if(!c)return;
+  if(!serverConfig.url){c.innerHTML=_acctNoServerHtml("개인별 급여 상세");return;}
+  const r=await serverRequest("GET",`/api/budget/emp-pay-plan?year=${_eppYear}`);
+  _eppPlans=r?.ok?r.plans:[];
+  if(currentPage==="emp-pay-plan")_renderEmpPayPlanBody();
+}
+function _renderEmpPayPlanBody(){
+  const c=$("#content");if(!c)return;
+  const activeEmps=employees.filter(e=>e.active).sort((a,b)=>(a.dept||"").localeCompare(b.dept||"")||(a.name||"").localeCompare(b.name||""));
+  const selectedEmp=activeEmps.find(e=>String(e.id)===String(_eppSelectedEmpId));
+  const existingPlan=selectedEmp?_eppPlans.find(p=>String(p.empId)===String(selectedEmp.id)):null;
+
+  const empOptions=activeEmps.map(e=>`<option value="${e.id}" ${String(e.id)===String(_eppSelectedEmpId)?"selected":""}>${h(e.name)} (${h(e.dept||"")}${e.team?" / "+h(e.team):""})</option>`).join("");
+  const enteredRows=_eppPlans.map(p=>{
+    const emp=activeEmps.find(e=>String(e.id)===String(p.empId));
+    const total=(p.items||[]).reduce((s,i)=>s+(i.amount||0),0);
+    return `<tr><td class="lbl">${h(p.empName||(emp?emp.name:"(#"+p.empId+")"))}</td><td class="lbl">${h(emp?emp.dept||"-":"-")}</td><td class="lbl">${h(emp?emp.team||"-":"-")}</td><td style="text-align:right">${(p.items||[]).length}</td><td style="text-align:right">${_bpFmt(total)}</td><td><button class="btn btn-secondary btn-sm" onclick="_eppSelectedEmpId='${p.empId}';_renderEmpPayPlanBody()">편집</button></td></tr>`;
+  }).join("");
+
+  const rowsHtml=_BP_DEFAULT_SGA_TEMPLATE.filter(([cat,name])=>name!=="고정급"&&name!=="변동급").map(([category,name])=>{
+    const existingItem=existingPlan?(existingPlan.items||[]).find(i=>i.name===name):null;
+    return `<tr><td class="lbl">${h(category)}</td><td class="lbl">${h(name)}</td><td><input type="number" class="fc epp-amount" data-name="${h(name)}" data-category="${h(category)}" style="width:160px" value="${existingItem?existingItem.amount:""}"></td></tr>`;
+  }).join("");
+
+  c.innerHTML=`<div class="card"><div class="card-head"><h3>👤 개인별 급여 상세(계획)</h3></div><div class="card-body">
+    <div class="fz12 text-gray mb3">직원별로 연간 판관비 항목(RSU·인센티브·복지카드 등) 금액을 입력해두면, 사업계획 판관비 그리드의 "+ 개인별 급여상세 자동입력" 버튼으로 팀 단위 합산이 자동 반영됩니다. 고정급/변동급은 연봉을 기준으로 별도 자동계산되므로 여기서는 입력하지 않습니다.</div>
+    <div style="display:grid;grid-template-columns:1fr 120px;gap:10px;margin-bottom:14px">
+      <div class="fg"><label class="fl">직원</label><select class="fc" id="epp-emp-select" onchange="_eppSelectedEmpId=this.value;_renderEmpPayPlanBody()"><option value="">선택하세요</option>${empOptions}</select></div>
+      <div class="fg"><label class="fl">연도</label><input class="fc" type="number" id="epp-year" value="${_eppYear}" onchange="_eppYear=Number(this.value)||new Date().getFullYear();renderEmpPayPlanPage()"></div>
+    </div>
+    ${selectedEmp?`
+      <h4 class="mb2">${h(selectedEmp.name)} <span class="fz11 text-gray">${h(selectedEmp.dept||"")}${selectedEmp.team?" / "+h(selectedEmp.team):""}</span></h4>
+      <div class="tbl-wrap"><table><tr><th class="lbl">구분</th><th class="lbl">항목</th><th>연간 금액</th></tr>${rowsHtml}</table></div>
+      <button class="btn btn-primary mt3" onclick="submitEmpPayPlan()">저장</button>
+    `:`<div class="p-empty">직원을 선택하세요.</div>`}
+    <h4 class="mt4 mb2">${_eppYear}년 입력 현황</h4>
+    ${_eppPlans.length?`<div class="tbl-wrap"><table><tr><th class="lbl">이름</th><th class="lbl">부문</th><th class="lbl">팀</th><th>항목수</th><th>연간합계</th><th></th></tr>${enteredRows}</table></div>`:`<div class="p-empty">입력된 직원이 없습니다.</div>`}
+  </div></div>`;
+}
+async function submitEmpPayPlan(){
+  const empId=_eppSelectedEmpId;
+  if(!empId){showToast("직원을 선택하세요.","error");return;}
+  const emp=employees.find(e=>String(e.id)===String(empId));
+  const items=[...document.querySelectorAll(".epp-amount")].map(i=>({category:i.dataset.category,name:i.dataset.name,amount:Number(i.value)||0})).filter(i=>i.amount!==0);
+  const r=await serverRequest("POST","/api/budget/emp-pay-plan",{empId,empName:emp?emp.name:"",year:_eppYear,items});
+  if(!r?.ok){showToast(r?.error||r?.message||"저장에 실패했습니다.","error");return;}
+  _eppPlans=r.plans;
+  showToast("저장되었습니다.","success");
+  _renderEmpPayPlanBody();
 }
 
 // ==================== 결재 위임 (대결자 지정) ====================

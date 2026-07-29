@@ -27,6 +27,12 @@ function _emptyCompanyBudget() {
     // 사업계획 작성/수정 가능 여부를 제어하는 전사 단일 스위치로, 예산담당자·기획팀장·
     // 관리자 모두 켜고 끌 수 있다(사용자 요청).
     budgetPlanSettings: { ownerIds: [], teamLeaderId: null, inputOpen: true },
+    // 개인별 급여 상세(계획용, 3단계 자료 연계의 1단계): 직원별·연도별로 판관비 표준
+    // 항목(급여 세부/복리후생비/RSU 등) 각각의 연간 금액을 입력해두면, 사업계획 판관비
+    // 그리드에서 팀 단위로 자동 합산해 채워 넣는 데 쓰인다. 실적(이미 지급된 급여)이
+    // 아니라 계획 수립용 가정 데이터 — 실적은 별도로 budget.html의 판관/용역/경상 상세
+    // 업로드를 통해 관리한다(요청서에 따라 계획/실적을 서로 다른 메뉴로 분리).
+    empPayPlans: [],
   };
 }
 
@@ -67,6 +73,7 @@ function readBudget(companyId) {
     if (data.budgetPlanSettings.teamLeaderId === undefined) data.budgetPlanSettings.teamLeaderId = null;
     if (data.budgetPlanSettings.inputOpen === undefined) data.budgetPlanSettings.inputOpen = true;
   }
+  if (!Array.isArray(data.empPayPlans)) data.empPayPlans = [];
   return data;
 }
 
@@ -594,8 +601,83 @@ router.delete('/data', (req, res) => {
   if (!requireAdmin(req, res)) return;
   const companyId = req.auth.companyId || null;
   const existing = readBudget(companyId);
-  writeBudget(companyId, { ..._emptyCompanyBudget(), businessPlans: existing.businessPlans, budgetPlanSettings: existing.budgetPlanSettings });
+  // businessPlans/budgetPlanSettings와 마찬가지로 empPayPlans(개인별 급여 상세 계획)도
+  // 파일 "업로드" 데이터가 아니라 화면에서 직접 입력하는 별개 데이터라 함께 보존한다.
+  writeBudget(companyId, { ..._emptyCompanyBudget(), businessPlans: existing.businessPlans, budgetPlanSettings: existing.budgetPlanSettings, empPayPlans: existing.empPayPlans });
   res.json({ message: '예산 데이터가 초기화되었습니다.' });
+});
+
+// ── 개인별 급여 상세(계획용, 3단계 자료 연계의 1단계) ──────────────────────────
+// 직원별·연도별로 표준 판관비 항목(급여 세부/복리후생비/RSU 등) 각각의 연간 금액을
+// 입력해두는 화면의 백엔드. 민감한 개인별 급여 정보라 조회·입력 모두 관리자 전용.
+router.get('/emp-pay-plan', (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  const companyId = req.auth.companyId || null;
+  const data = readBudget(companyId);
+  const year = req.query.year ? Number(req.query.year) : null;
+  const plans = year ? data.empPayPlans.filter(p => p.year === year) : data.empPayPlans;
+  res.json({ ok: true, plans });
+});
+
+router.post('/emp-pay-plan', (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  const companyId = req.auth.companyId || null;
+  const body = req.body || {};
+  const empId = body.empId;
+  const year = Number(body.year);
+  if (empId === undefined || empId === null || !Number.isFinite(year)) {
+    return res.status(400).json({ error: 'empId와 year는 필수입니다.' });
+  }
+  if (!Array.isArray(body.items)) return res.status(400).json({ error: 'items는 배열이어야 합니다.' });
+  const items = body.items.map(it => ({
+    category: (it && it.category) || '',
+    name: (it && it.name) || '',
+    amount: Number(it && it.amount) || 0,
+  })).filter(it => it.name && it.amount !== 0);
+
+  const data = readBudget(companyId);
+  const existing = data.empPayPlans.find(p => String(p.empId) === String(empId) && p.year === year);
+  const now = new Date().toISOString();
+  if (existing) {
+    existing.empName = body.empName || existing.empName;
+    existing.items = items;
+    existing.updatedAt = now;
+  } else {
+    data.empPayPlans.push({
+      id: `epp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      empId, empName: body.empName || '', year, items,
+      createdAt: now, updatedAt: now,
+    });
+  }
+  writeBudget(companyId, data);
+  res.json({ ok: true, plans: data.empPayPlans.filter(p => p.year === year) });
+});
+
+// 사업계획 그리드의 자동입력 버튼(전 역할 공개)이 쓰는 조회 — 관리자 전용 목록 조회와
+// 달리 요청자가 명시적으로 지정한 empId들의 항목만 반환한다. 클라이언트는 이미 전체
+// employees[] 배열(연봉 포함, 이 앱에서 기존부터 전 역할에 공개되어 온 정보)을 들고 있어
+// "이 팀 소속 직원 id 목록"을 스스로 판단할 수 있으므로, 그 id들에 한해서만 상세 항목을
+// 내려준다(회사 전체 개인별 급여 상세를 한 번에 열람하는 것은 여전히 관리자 전용).
+router.get('/emp-pay-plan/by-ids', (req, res) => {
+  if (!requireAuth(req, res)) return;
+  const companyId = req.auth.companyId || null;
+  const year = req.query.year ? Number(req.query.year) : null;
+  const ids = String(req.query.ids || '').split(',').map(s => s.trim()).filter(Boolean);
+  if (!year || !ids.length) return res.json({ ok: true, plans: [] });
+  const data = readBudget(companyId);
+  const plans = data.empPayPlans.filter(p => p.year === year && ids.includes(String(p.empId)));
+  res.json({ ok: true, plans });
+});
+
+router.delete('/emp-pay-plan/:id', (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  const companyId = req.auth.companyId || null;
+  const data = readBudget(companyId);
+  const idx = data.empPayPlans.findIndex(p => p.id === req.params.id);
+  if (idx === -1) return res.status(404).json({ error: '데이터를 찾을 수 없습니다.' });
+  data.empPayPlans.splice(idx, 1);
+  writeBudget(companyId, data);
+  res.json({ ok: true });
 });
 
 module.exports = function budgetRouterFactory(deps) {
