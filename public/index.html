@@ -15559,6 +15559,9 @@ function _renderBizPlanRollupTab(){
         ${deptOptions.map(dp=>`<option value="${h(dp)}" ${filterDept===dp?"selected":""}>${h(dp)}</option>`).join("")}
       </select>
     </label>
+    <label class="fz12">계획 인원 현황 조회연도:
+      <input class="fc" type="number" style="display:inline-block;width:90px" value="${_bpBulkUploadYear}" onchange="_bpBulkUploadYear=Number(this.value)||new Date().getFullYear();loadBizPlanRollup()">
+    </label>
   </div>`;
   const rollupTable=rows=>{
     if(!rows.length)return `<div class="fz12 text-gray">데이터 없음</div>`;
@@ -16023,7 +16026,14 @@ function _eppParseAndUpload(file){
       // 있으면 이름 매칭을 아예 시도하지 않아, 사번 형식만 다르고 이름은 일치하는 경우도
       // 전부 "매칭 실패"로 건너뛰어지는 문제가 있었다.
       let emp=empNo?employees.find(e=>String(e.empNo)===empNo):null;
-      if(!emp&&empName)emp=employees.find(e=>e.name===empName);
+      if(!emp&&empName){
+        // 이름 폴백은 동명이인이 있으면 잘못된 사람에게 데이터가 들어갈 위험이 있어(예:
+        // "김철수"가 재직자 중 2명), 정확히 1명만 일치할 때만 채택하고 여러 명이면 사람이
+        // 직접 확인하도록 매칭실패로 처리한다.
+        const nameMatches=employees.filter(e=>e.active&&e.name===empName);
+        if(nameMatches.length===1)emp=nameMatches[0];
+        else if(nameMatches.length>1){skipped++;skippedNoMatch++;skipDetails.push(`${empName}: 동명이인 ${nameMatches.length}명이라 이름만으로 특정 불가(사번을 입력해주세요)`);continue;}
+      }
       if(!emp){skipped++;skippedNoMatch++;skipDetails.push(`${empName||empNo||"(이름/사번 없음)"}: 직원 매칭 실패(사번 "${empNo||"-"}", 이름 "${empName||"-"}")`);continue;}
       const year=Number(row["연도"]||row["year"])||_eppYear;
       const items=[];

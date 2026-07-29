@@ -950,7 +950,10 @@ module.exports = function budgetRouterFactory(deps) {
 
     const updated = [], skipped = [];
     Object.entries(byTeam).forEach(([team, items]) => {
-      const matches = data.businessPlans.filter(p => p.baseYear === year && (p.team || '') === team);
+      // 관리자가 body/폼에서 만든 계획은 dept/team을 트리밍 없이 그대로 저장하므로(팀명
+      // 앞뒤 공백이 실수로 섞여 있어도), 업로드 쪽(항상 trim()된 팀명)과 비교할 때는
+      // 저장된 team 값도 trim()해서 비교해 사소한 공백 차이로 매칭이 실패하지 않게 한다.
+      const matches = data.businessPlans.filter(p => p.baseYear === year && (p.team || '').trim() === team);
       if (matches.length === 0) {
         skipped.push({ team, reason: `${year}년 기준 팀명 "${team}"과 일치하는 사업계획을 찾을 수 없습니다. 해당 팀이 먼저 사업계획을 작성해야 합니다.` });
         return;
@@ -961,6 +964,10 @@ module.exports = function budgetRouterFactory(deps) {
       }
       const plan = matches[0];
       const dept = plan.dept;
+      // 아주 오래된/손상된 계획은 assumptions 자체가 없을 수 있어(정상 생성 경로는 항상
+      // 채우지만 방어적으로) 접근 전에 보정 — 없으면 500으로 요청 전체가 죽는 대신
+      // 빈 객체로 시작해 이 팀의 항목만 정상적으로 채워지도록 한다.
+      if (!plan.assumptions) plan.assumptions = {};
       if (!Array.isArray(plan.assumptions.sgaItems)) plan.assumptions.sgaItems = [];
       const sgaItems = plan.assumptions.sgaItems;
       items.forEach(it => {
