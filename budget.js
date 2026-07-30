@@ -105,11 +105,38 @@ function writeBudget(companyId, data) {
   _writeAllBudget(all);
 }
 
-function parseSheet(buffer, filename) {
+// requiredHeaderGroups를 지정하면(예: [['팀명','팀'],['항목']]) 단순히 "첫 시트의 1행"만
+// 헤더로 보는 대신, 워크북의 모든 시트·앞부분 행(최대 20행)을 훑어 그룹마다 하나 이상의
+// 헤더 텍스트를 포함하는 행을 찾아 그 행을 헤더로 삼아 파싱한다 — 실제 회사 원본 엑셀처럼
+// 여러 시트가 한 파일에 섞여 있고(예: "RAW자료"/"예산"/"조직별") 실제 데이터 시트의 헤더가
+// 제목행 등으로 인해 1행이 아닌 경우(예: 2행)에도 올바른 시트·행을 자동으로 찾아낸다.
+// 못 찾으면 빈 배열을 반환하되 어떤 시트들을 확인했는지 `_triedSheets`에 남겨 진단에 쓴다.
+// requiredHeaderGroups를 생략하면(레거시 호출부) 기존과 동일하게 첫 시트·1행을 그대로 쓴다.
+function parseSheet(buffer, filename, requiredHeaderGroups) {
   const isCsv = /\.csv$/i.test(filename || '');
   const workbook = isCsv
     ? xlsx.read(buffer.toString('utf8'), { type: 'string' })
     : xlsx.read(buffer, { type: 'buffer' });
+  if (Array.isArray(requiredHeaderGroups) && requiredHeaderGroups.length) {
+    for (const sheetName of workbook.SheetNames) {
+      const sheet = workbook.Sheets[sheetName];
+      const raw = xlsx.utils.sheet_to_json(sheet, { header: 1, defval: '', raw: true });
+      for (let r = 0; r < Math.min(raw.length, 20); r++) {
+        const rowVals = (raw[r] || []).map(v => String(v).trim());
+        if (requiredHeaderGroups.every(group => group.some(h => rowVals.includes(h)))) {
+          const rows = xlsx.utils.sheet_to_json(sheet, { range: r, defval: null, raw: true });
+          rows._sheetName = sheetName;
+          rows._headerRow = r;
+          return rows;
+        }
+      }
+    }
+    const empty = [];
+    empty._sheetName = null;
+    empty._headerRow = -1;
+    empty._triedSheets = workbook.SheetNames;
+    return empty;
+  }
   const sheet = workbook.Sheets[workbook.SheetNames[0]];
   return xlsx.utils.sheet_to_json(sheet, { defval: null, raw: true });
 }
@@ -952,14 +979,17 @@ module.exports = function budgetRouterFactory(deps) {
     if (!req.file) return res.status(400).json({ error: '파일이 필요합니다.' });
     let rows;
     try {
-      rows = parseSheet(req.file.buffer, req.file.originalname);
+      rows = parseSheet(req.file.buffer, req.file.originalname, [['팀명', '팀'], ['항목']]);
     } catch (e) {
       return res.status(400).json({ error: '파일을 읽을 수 없습니다. (xlsx/csv만 지원)' });
+    }
+    if (rows._headerRow === -1) {
+      return res.status(400).json({ error: `업로드한 파일에서 "팀명"·"항목" 컬럼을 찾지 못했습니다(확인한 시트: ${rows._triedSheets.join(', ')}). 여러 시트가 섞인 원본 파일이라면 "예산" 데이터가 있는 시트에 팀명/항목 등 헤더가 올바르게 있는지 확인해주세요.` });
     }
     const companyId = req.auth.companyId || null;
     const year = Number(req.query.year) || new Date().getFullYear();
     const data = readBudget(companyId);
-    const note = `예산(비인건비) 업로드 반영(${new Date().toISOString().slice(0, 10)})`;
+    const note = `예산(비인건비) 업로드 반영(${new Date().toISOString().slice(0, 10)}, 시트: ${rows._sheetName})`;
 
     const byTeam = {};
     rows.forEach(row => {
@@ -997,6 +1027,7 @@ module.exports = function budgetRouterFactory(deps) {
       if (!plan.assumptions) plan.assumptions = {};
       if (!Array.isArray(plan.assumptions.sgaItems)) plan.assumptions.sgaItems = [];
       const sgaItems = plan.assumptions.sgaItems;
+      const itemDetail = [];
       items.forEach(it => {
         // 같은 항목명(예: "지급수수료")이 세부내역(거래처·용도 등)만 다른 채 한 팀 안에
         // 여러 줄로 실존하는 경우가 실제 데이터에서 흔함(회계 계정 하나에 여러 벤더/용도가
@@ -1023,13 +1054,14 @@ module.exports = function budgetRouterFactory(deps) {
             note, baseAmount, growthRate: 0, fixed: true
           });
         }
+        itemDetail.push({ name: it.name, detail: it.detail, accountType: it.accountType, baseAmount });
       });
       const a = { baseYear: plan.baseYear, years: plan.years !== undefined ? plan.years : plan.projection.length, ...plan.assumptions };
       plan.projection = computeBusinessPlanProjection(a);
       plan.breakEven = computeBreakEven(a);
       plan.updatedAt = new Date().toISOString();
       plan.updatedBy = req.auth.empId;
-      updated.push({ team, planId: plan.id, dept, itemCount: items.length, planStatus: plan.status });
+      updated.push({ team, planId: plan.id, dept, itemCount: items.length, planStatus: plan.status, items: itemDetail });
     });
 
     data.uploads.push({ type: 'sga', filename: req.file.originalname, uploadedAt: new Date().toISOString(), rows: rows.length });
@@ -1047,9 +1079,12 @@ module.exports = function budgetRouterFactory(deps) {
     if (!req.file) return res.status(400).json({ error: '파일이 필요합니다.' });
     let rows;
     try {
-      rows = parseSheet(req.file.buffer, req.file.originalname);
+      rows = parseSheet(req.file.buffer, req.file.originalname, [['구분', '부문'], ['1월']]);
     } catch (e) {
       return res.status(400).json({ error: '파일을 읽을 수 없습니다. (xlsx/csv만 지원)' });
+    }
+    if (rows._headerRow === -1) {
+      return res.status(400).json({ error: `업로드한 파일에서 "구분"(또는 "부문")·"1월" 컬럼을 찾지 못했습니다(확인한 시트: ${rows._triedSheets.join(', ')}). 여러 시트가 섞인 원본 파일이라면 인원계획 데이터가 있는 시트에 헤더가 올바르게 있는지 확인해주세요.` });
     }
     const companyId = req.auth.companyId || null;
     const year = Number(req.query.year) || new Date().getFullYear();

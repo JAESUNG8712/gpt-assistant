@@ -15550,13 +15550,17 @@ function _renderBizPlanRollupTab(){
   if(!_bizPlanRollupData)return `<div class="p-empty">불러오는 중...</div>`;
   if(_bizPlanRollupData.error)return `<div class="fz12" style="color:#c0392b">${h(_bizPlanRollupData.error)}</div>`;
   const d=_bizPlanRollupData;
-  // 사업부별 확인 화면: byDept(계획 소유 부서)와 sgaByCostDept/sgaByCategory(비용귀속부문)에
-  // 등장하는 모든 부문명을 모아 선택지로 제공 — 하나를 고르면 아래 모든 표가 그 부문
-  // 기준으로만 좁혀진다(전사 합계 행은 항상 유지해 전체 대비 비중을 함께 볼 수 있게 함).
+  // 사업부별 확인 화면: byDept(계획 소유 부서)·sgaByCostDept(비용귀속부문)뿐 아니라, 사업계획
+  // 자체가 아직 없어도(계획 0건이어도) 이미 존재하는 인원 데이터(재직자 스냅샷·업로드된
+  // 인원계획)의 부문명도 선택지에 포함한다 — 사업계획이 하나도 없을 때 드롭다운에 "전체
+  // 사업부"만 남아 부문별로 좁혀 볼 방법이 없던 문제를 막기 위함(판관비 관련 표는 데이터
+  // 자체가 없으면 그 부문을 선택해도 여전히 "데이터 없음"이지만, 인원 관련 표는 정상 확인 가능).
   const deptOptions=[...new Set([
     ...(d.byDept||[]).map(x=>x.dept),
     ...((d.sgaByCostDept&&d.sgaByCostDept.byCostDept)||[]).map(x=>x.costDept),
-  ])].sort();
+    ...employees.filter(e=>e.active).map(e=>e.dept),
+    ...(_bizPlanHeadcountPlanData||[]).map(x=>x.dept),
+  ].filter(Boolean))].sort();
   const filterDept=_bizPlanRollupDeptFilter;
   let html=`<div style="display:flex;gap:16px;align-items:center;flex-wrap:wrap;margin-bottom:10px">
     <label class="fz12"><input type="checkbox" ${_bizPlanRollupIncludeDraft?"checked":""} onchange="_bizPlanRollupIncludeDraft=this.checked;loadBizPlanRollup()"> 작성중(draft) 계획도 포함</label>
@@ -15694,21 +15698,23 @@ function _renderBizPlanSettingsTab(){
     html+=`<div class="fg mt4" style="max-width:160px"><label class="fl">업로드 대상 연도</label><input class="fc" type="number" id="bp-bulk-year" value="${_bpBulkUploadYear}" onchange="_bpBulkUploadYear=Number(this.value)||new Date().getFullYear()"></div>
     <div class="card mb3 mt2" style="background:#f8fafc"><div class="card-body">
       <h4 class="mb2">📥 예산(비인건비 판관/용역/경상) 일괄 업로드</h4>
-      <div class="fz11 text-gray mb2">열 구성: "팀명"(필수, 그 연도에 이미 작성된 사업계획의 팀 이름과 정확히 일치해야 반영됨) + "비용 귀속"(선택) + "항목" + "세부내역" + "구분"(판관/용역/경상) + "1월"~"12월". 팀명 기준으로 해당 팀의 사업계획 판관비 그리드에 항목 단위로 upsert됩니다 — 반영 즉시 사업부/회사 롤업에도 자동 연계됩니다.</div>
+      <div class="fz11 text-gray mb2">열 구성: "팀명"(필수, 그 연도에 이미 작성된 사업계획의 팀 이름과 정확히 일치해야 반영됨) + "비용 귀속"(선택) + "항목" + "세부내역" + "구분"(판관/용역/경상) + "1월"~"12월". 팀명 기준으로 해당 팀의 사업계획 판관비 그리드에 항목 단위로 upsert됩니다 — 반영 즉시 사업부/회사 롤업에도 자동 연계됩니다. 파일에 여러 시트가 섞여 있어도 "팀명"·"항목" 컬럼이 있는 시트를 자동으로 찾습니다(헤더가 1행이 아니어도 인식).</div>
       <input type="file" id="bp-sga-upload-file" accept=".xlsx,.xls,.csv" style="display:none" onchange="_showSelectedFileName('bp-sga-upload-file','bp-sga-upload-filename')">
       <button class="btn btn-secondary btn-sm" onclick="document.getElementById('bp-sga-upload-file').click()">📁 파일 선택</button>
       <span id="bp-sga-upload-filename" class="fz12 text-gray" style="margin-left:8px">선택된 파일 없음</span>
       <button class="btn btn-primary btn-sm" style="margin-left:8px" onclick="uploadBizPlanSgaExcel()">업로드</button>
       <span id="bp-sga-upload-status" class="fz12 text-gray" style="margin-left:8px"></span>
+      ${_bpLastSgaUploadResultHtml()}
     </div></div>
     <div class="card mb3" style="background:#f8fafc"><div class="card-body">
       <h4 class="mb2">📥 월별 인원 계획 일괄 업로드</h4>
-      <div class="fz11 text-gray mb2">열 구성: "구분"(부문, 필수) + "계정과목"(선택, 판관/용역/경상 중 하나면 인식) + "1월"~"12월". 업로드하면 롤업 탭의 "계획 인원 현황"에 반영됩니다(현재 재직자 스냅샷과는 별개의 예측 데이터입니다).</div>
+      <div class="fz11 text-gray mb2">열 구성: "구분"(부문, 필수) + "계정과목"(선택, 판관/용역/경상 중 하나면 인식) + "1월"~"12월". 업로드하면 롤업 탭의 "계획 인원 현황"에 반영됩니다(현재 재직자 스냅샷과는 별개의 예측 데이터입니다). 파일에 여러 시트가 섞여 있어도 "구분"·"1월" 컬럼이 있는 시트를 자동으로 찾습니다.</div>
       <input type="file" id="bp-headcount-upload-file" accept=".xlsx,.xls,.csv" style="display:none" onchange="_showSelectedFileName('bp-headcount-upload-file','bp-headcount-upload-filename')">
       <button class="btn btn-secondary btn-sm" onclick="document.getElementById('bp-headcount-upload-file').click()">📁 파일 선택</button>
       <span id="bp-headcount-upload-filename" class="fz12 text-gray" style="margin-left:8px">선택된 파일 없음</span>
       <button class="btn btn-primary btn-sm" style="margin-left:8px" onclick="uploadHeadcountPlanExcel()">업로드</button>
       <span id="bp-headcount-upload-status" class="fz12 text-gray" style="margin-left:8px"></span>
+      ${_bpLastHeadcountUploadResultHtml()}
     </div></div>`;
   }
   return html;
@@ -15750,6 +15756,10 @@ async function _bpUploadFormFile(inputId,statusId,url){
     return null;
   }
 }
+// 업로드 직후 "각 항목별로 얼마가 반영됐는지 확인할 수 없다"는 문제를 해결하기 위해,
+// 토스트 한 줄로 끝내지 않고 팀/항목 단위 상세 결과를 설정 탭에 계속 남겨 보여준다
+// (다시 렌더링될 때까지, 또는 새 업로드를 하기 전까지 유지).
+let _bpLastSgaUploadResult=null,_bpLastHeadcountUploadResult=null;
 async function uploadBizPlanSgaExcel(){
   const json=await _bpUploadFormFile("bp-sga-upload-file","bp-sga-upload-status",`/api/budget/business-plan/sga-upload?year=${_bpBulkUploadYear}`);
   if(!json)return;
@@ -15758,13 +15768,41 @@ async function uploadBizPlanSgaExcel(){
   if(skipped.length)msg+=`, ${skipped.length}개 팀 건너뜀(${skipped.map(s=>s.team).join(", ")})`;
   showToast(msg,updated.length>0?"success":"error");
   if(skipped.length)console.warn("예산 업로드 건너뜀 사유:",skipped);
-  loadBizPlanFromServer();
+  _bpLastSgaUploadResult={at:new Date().toISOString(),updated,skipped};
+  await loadBizPlanFromServer();
+  renderBizPlanPage();
 }
 async function uploadHeadcountPlanExcel(){
   const json=await _bpUploadFormFile("bp-headcount-upload-file","bp-headcount-upload-status",`/api/budget/business-plan/headcount-plan/upload?year=${_bpBulkUploadYear}`);
   if(!json)return;
   showToast(`인원계획 ${json.upserted}건 반영되었습니다.`,"success");
+  _bpLastHeadcountUploadResult={at:new Date().toISOString(),upserted:json.upserted};
   if(_bizPlanTab==="rollup")loadBizPlanRollup();
+  renderBizPlanPage();
+}
+// 방금 업로드한 예산의 팀별·항목별 반영 결과(금액 포함)를 그대로 보여주는 표 —
+// "각 항목별로 얼마가 업로드됐는지 확인할 수 없다"는 문제 해결용.
+function _bpLastSgaUploadResultHtml(){
+  const r=_bpLastSgaUploadResult;if(!r)return "";
+  let html=`<div class="mt2 fz12"><b>방금 업로드 결과</b> <span class="text-gray">(${new Date(r.at).toLocaleString()})</span>`;
+  (r.updated||[]).forEach(u=>{
+    html+=`<div class="mt1" style="padding:6px;background:#fff;border:1px solid #e5e7eb;border-radius:6px">
+      <b>${h(u.team)}</b> <span class="text-gray">(${h(u.dept||"")}, ${u.itemCount}건 반영)</span>
+      <table style="width:100%;margin-top:4px"><tr><th class="lbl">항목</th><th class="lbl">세부내역</th><th class="lbl">계정과목</th><th>연간 금액</th></tr>
+      ${(u.items||[]).map(it=>`<tr><td>${h(it.name)}</td><td>${h(it.detail||"-")}</td><td>${h(it.accountType||"-")}</td><td style="text-align:right">${_bpFmt(it.baseAmount)}</td></tr>`).join("")}
+      </table></div>`;
+  });
+  (r.skipped||[]).forEach(s=>{
+    html+=`<div class="mt1" style="padding:6px;background:#fef2f2;border:1px solid #fecaca;border-radius:6px;color:#b91c1c">
+      <b>${h(s.team)}</b> 건너뜀 — ${h(s.reason)}</div>`;
+  });
+  if(!(r.updated||[]).length&&!(r.skipped||[]).length)html+=`<div class="mt1 text-gray">파일에서 유효한 팀명이 하나도 인식되지 않았습니다.</div>`;
+  html+="</div>";
+  return html;
+}
+function _bpLastHeadcountUploadResultHtml(){
+  const r=_bpLastHeadcountUploadResult;if(!r)return "";
+  return `<div class="mt2 fz12"><b>방금 업로드 결과</b> <span class="text-gray">(${new Date(r.at).toLocaleString()})</span> — ${r.upserted}건 반영됨. 상세 내용은 아래 "사업부/회사 롤업" 탭의 "계획 인원 현황"에서 확인하세요.</div>`;
 }
 async function toggleBizPlanInputWindow(){
   const r=await serverRequest("POST","/api/budget/business-plan/settings/input-window",{inputOpen:!bizPlanSettings.inputOpen});
