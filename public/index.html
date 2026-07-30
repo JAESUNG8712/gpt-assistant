@@ -14898,6 +14898,11 @@ async function confirmRcpsValuation(){
 let bizPlans=[],bizPlanSettings={ownerIds:[],teamLeaderId:null,inputOpen:true},bizPlanMyProfile=null,_bizPlanLoaded=false;
 let _bizPlanTab="list"; // "list" | "form" | "rollup" | "settings"
 let _bizPlanEditingId=null,_bizPlanSgaRowCount=0;
+// 계획 유형("매출계획"/"비용전용")은 더 이상 작성 폼 안의 라디오 선택이 아니라, 목록 탭의
+// 서로 다른 "+ 매출 사업계획 작성"/"+ 비용 사업계획 작성" 버튼으로 진입할 때 미리 정해진다
+// (openBizPlanForm의 forcedType 인자). 수정 화면은 기존 계획의 planType을 그대로 쓰고
+// 변경할 수 없다(유형 전환 기능은 요청 범위 밖).
+let _bizPlanFormType="revenue";
 let _bpSgaDefaultDept="",_bpSgaDefaultTeam=""; // 판관비 항목 신규 행의 부문/팀명 기본값(폼 열 때 계획 소속으로 세팅)
 let _bizPlanCompareIds=new Set();
 let _bizPlanRollupData=null,_bizPlanRollupIncludeDraft=false,_bizPlanRollupDeptFilter="";
@@ -14977,10 +14982,10 @@ function renderBizPlanPage(){
     // 작성/수정 폼은 팝업(모달)이 아니라 목록과 같은 방식으로 메인 화면(#content)에
     // 그대로 렌더링한다 — 탭 바 없이 "← 목록으로" 버튼만 두어 팝업 대신 페이지 전환으로
     // 이동한다는 느낌을 준다.
-    c.innerHTML=`<div class="card"><div class="card-head"><h3>🧮 ${_bizPlanEditingId?"사업계획 수정":"신규 사업계획 작성"}</h3>
+    const formTitle=_bizPlanEditingId?"사업계획 수정":(_bizPlanFormType==="costOnly"?"신규 비용 사업계획 작성":"신규 매출 사업계획 작성");
+    c.innerHTML=`<div class="card"><div class="card-head"><h3>🧮 ${formTitle}</h3>
       <button class="btn btn-secondary btn-sm" onclick="_bizPlanCancelForm()">← 목록으로</button>
     </div><div class="card-body">${_renderBizPlanFormBody()}</div></div>`;
-    _bpToggleCostOnly();
     // 신규 작성(수정이 아닐 때)이고 소속(dept)이 이미 정해져 있으면(팀원/사업부장 —
     // 관리자는 사업부를 직접 입력해야 해서 이 시점엔 아직 비어있음) 버튼 클릭 없이
     // 개인별 급여 상세를 자동으로 반영해본다. 데이터가 없으면 조용히 지나간다(silent).
@@ -15009,8 +15014,10 @@ function _renderBizPlanListTab(){
     기준연도 매출과 성장률·매출원가율·판관비 항목별 가정을 입력하면 다년도 추정 손익·잉여현금흐름과 비율분석(매출총이익률/영업이익률/순이익률/전년대비 성장률)·손익분기점(BEP) 분석을 자동 계산합니다.
     팀별 계획은 작성(draft) → 사업부장 승인(잠금) → 예산담당자+기획팀장 최종승인 순으로 진행되며, 잠긴 뒤에는 "수정요청" → 관리자 승인을 거쳐야 다시 수정할 수 있습니다.
   </div>`;
-  html+=`<div class="mb3"><button class="btn btn-primary btn-sm" ${canCreate?"":"disabled"} onclick="openBizPlanForm()">+ 신규 사업계획 작성</button>
-  ${!canCreate?`<span class="fz12 text-gray" style="margin-left:8px">현재 사업계획 입력기간이 아닙니다. 예산담당자·기획팀장에게 문의하세요.</span>`:""}
+  html+=`<div class="mb3">
+    <button class="btn btn-primary btn-sm" ${canCreate?"":"disabled"} onclick="openBizPlanForm(null,'revenue')">+ 매출 사업계획 작성</button>
+    <button class="btn btn-primary btn-sm" ${canCreate?"":"disabled"} onclick="openBizPlanForm(null,'costOnly')">+ 비용 사업계획 작성</button>
+    ${!canCreate?`<span class="fz12 text-gray" style="margin-left:8px">현재 사업계획 입력기간이 아닙니다. 예산담당자·기획팀장에게 문의하세요.</span>`:""}
   </div>`;
   if(!bizPlans.length){html+=`<div class="p-empty">작성된 사업계획이 없습니다.</div>`;return html;}
   html+=`<div class="mb4"><h4 class="mb2">시나리오 비교</h4><div class="fz12 text-gray mb2">비교하고 싶은 사업계획을 2개 이상 체크한 뒤 버튼을 누르세요.</div>
@@ -15129,9 +15136,10 @@ async function deleteBizPlan(id){
 // ── 작성/수정 폼 ──
 // 팝업(모달)이 아니라 목록과 동일하게 메인 화면(#content)에 그대로 렌더링한다
 // (_bizPlanTab="form"으로 전환 → renderBizPlanPage()가 _renderBizPlanFormBody()를 그림).
-async function openBizPlanForm(planId){
+async function openBizPlanForm(planId,forcedType){
   const editPlan=planId?bizPlans.find(p=>p.id===planId):null;
   _bizPlanEditingId=editPlan?editPlan.id:null;
+  _bizPlanFormType=editPlan?(editPlan.planType||"revenue"):(forcedType||"revenue");
   _bizPlanSgaRowCount=0;
   await _bpLoadExpenseAccounts();
   _bizPlanTab="form";
@@ -15163,7 +15171,8 @@ function _renderBizPlanFormBody(){
   const editPlan=_bizPlanEditingId?bizPlans.find(p=>p.id===_bizPlanEditingId):null;
   const a=editPlan?(editPlan.assumptions||{}):{};
   const years=editPlan?(editPlan.years!==undefined?editPlan.years:editPlan.projection.length):3;
-  const planType=editPlan?(editPlan.planType||"revenue"):"revenue";
+  const planType=editPlan?(editPlan.planType||"revenue"):_bizPlanFormType;
+  const isCostOnly=planType==="costOnly";
   const isAdmin=currentUser.role==="admin";
   _bpSgaDefaultDept=editPlan?(editPlan.dept||""):(isAdmin?"":(bizPlanMyProfile?(bizPlanMyProfile.dept||""):""));
   _bpSgaDefaultTeam=editPlan?(editPlan.team||""):(isAdmin?"":(bizPlanMyProfile?(bizPlanMyProfile.team||""):""));
@@ -15183,20 +15192,20 @@ function _renderBizPlanFormBody(){
     </div>
     <div class="fg"><label class="fl">추정 연차 수</label><input class="fc" type="number" id="bp-years" value="${years}" min="1" max="10"></div>
     <div class="fg"><label class="fl">계획 유형</label><br>
-      <label class="fz13" style="margin-right:14px"><input type="radio" name="bp-plan-type" value="revenue" ${planType!=="costOnly"?"checked":""} onchange="_bpToggleCostOnly()"> 매출계획</label>
-      <label class="fz13"><input type="radio" name="bp-plan-type" value="costOnly" ${planType==="costOnly"?"checked":""} onchange="_bpToggleCostOnly()"> 비용전용</label>
+      ${badge(isCostOnly?"비용전용":"매출계획",isCostOnly?"red":"blue")}
+      <span class="fz11 text-gray" style="margin-left:8px">계획 유형은 목록 화면의 "매출 사업계획 작성"/"비용 사업계획 작성" 버튼으로 처음 만들 때 정해지며, 이후에는 바꿀 수 없습니다.</span>
     </div>
     ${!editPlan?`<div class="fg">${isAdmin?`
       <label class="fl">사업부(dept, 선택 — 비우면 회사 전체 계획)</label><input class="fc" id="bp-dept" list="bp-dept-list" autocomplete="off" placeholder="입력 또는 검색 — 예: 영업본부" style="margin-bottom:6px"><div class="fz11 text-gray mb2">목록에 없으면 새 부문명을 그대로 입력할 수 있습니다.</div>
       <label class="fl">팀(team, 선택)</label><input class="fc" id="bp-team" list="bp-team-list" autocomplete="off" placeholder="입력 또는 검색 — 예: 영업1팀">
     `:`<div class="fz12 text-gray">소속: 내 소속(자동 지정 — ${h(bizPlanMyProfile?bizPlanMyProfile.dept:"")}${bizPlanMyProfile&&bizPlanMyProfile.team?" / "+h(bizPlanMyProfile.team):""})</div>`}</div>`:""}
-    <div id="bp-revenue-fields">
+    ${!isCostOnly?`<div id="bp-revenue-fields">
       <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px">
         <div class="fg"><label class="fl">기준연도 매출</label><input class="fc" type="number" id="bp-base-revenue" value="${editPlan?a.baseRevenue:""}"></div>
         <div class="fg"><label class="fl">매출 성장률(%)</label><input class="fc" type="number" step="0.1" id="bp-revenue-growth" value="${editPlan?_bpPctInput(a.revenueGrowthRate):""}"></div>
         <div class="fg"><label class="fl">매출원가율(%)</label><input class="fc" type="number" step="0.1" id="bp-cogs-ratio" value="${editPlan?_bpPctInput(a.cogsRatio):""}"></div>
       </div>
-    </div>
+    </div>`:""}
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
       <div class="fg"><label class="fl">법인세율(%, 기본 22)</label><input class="fc" type="number" step="0.1" id="bp-tax-rate" value="${editPlan?_bpPctInput(a.taxRate):""}"></div>
       <div class="fg"><label class="fl">연간 감가상각(선택)</label><input class="fc" type="number" id="bp-depreciation" value="${editPlan?(a.depreciation||0):""}"></div>
@@ -15419,19 +15428,12 @@ function _bpUpdateSgaRowTotal(input){
   const total=months.reduce((s,v)=>s+v,0);
   const cell=row.querySelector(".bp-sga-total");if(cell)cell.textContent=_bpFmt(total);
 }
-function _bpToggleCostOnly(){
-  const sel=document.querySelector('input[name="bp-plan-type"]:checked');
-  const isCostOnly=!!(sel&&sel.value==="costOnly");
-  const el=$("#bp-revenue-fields");
-  if(el)el.style.display=isCostOnly?"none":"block";
-}
 async function submitBizPlanForm(){
   const name=$("#bp-name")?.value.trim();
   const scenario=$("#bp-scenario")?.value.trim();
   const baseYear=Number($("#bp-base-year")?.value);
   const years=Number($("#bp-years")?.value);
-  const planTypeSel=document.querySelector('input[name="bp-plan-type"]:checked');
-  const planType=planTypeSel?planTypeSel.value:"revenue";
+  const planType=_bizPlanFormType;
   const isCostOnly=planType==="costOnly";
   const baseRevenue=isCostOnly?0:Number($("#bp-base-revenue")?.value);
   const revenueGrowthRate=isCostOnly?0:(Number($("#bp-revenue-growth")?.value)||0)/100;
