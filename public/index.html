@@ -14995,10 +14995,11 @@ function renderBizPlanPage(){
   const isAdmin=currentUser.role==="admin";
   const canSeeSettings=isAdmin||_bpIsOwnerOrLead();
   const tabBtn=(key,label)=>`<button class="btn btn-sm ${_bizPlanTab===key?"btn-primary":"btn-secondary"}" onclick="_bizPlanSwitchTab('${key}')">${label}</button>`;
-  const tabs=`<div style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap">${tabBtn("list","사업계획")}${tabBtn("rollup","사업부/회사 롤업")}${canSeeSettings?tabBtn("settings","설정"):""}</div>`;
+  const tabs=`<div style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap">${tabBtn("list","사업계획")}${tabBtn("rollup","사업부/회사 롤업")}${canSeeSettings?tabBtn("settings","설정"):""}${isAdmin?tabBtn("budgetAdmin","예산 항목 관리"):""}</div>`;
   let body;
   if(_bizPlanTab==="rollup")body=_renderBizPlanRollupTab();
   else if(_bizPlanTab==="settings"&&canSeeSettings)body=_renderBizPlanSettingsTab();
+  else if(_bizPlanTab==="budgetAdmin"&&isAdmin)body=_renderBizPlanBudgetAdminTab();
   else body=_renderBizPlanListTab();
   c.innerHTML=`<div class="card"><div class="card-head"><h3>🧮 사업계획</h3></div><div class="card-body">${tabs}${body}</div></div>`;
   if(_bizPlanTab==="rollup"&&!_bizPlanRollupData)loadBizPlanRollup();
@@ -15008,7 +15009,15 @@ function renderBizPlanPage(){
 // 예산/인원계획 엑셀을 업로드해도 이 캐시가 갱신되지 않아, 이미 한 번 롤업 탭을 본 적이
 // 있으면 그 뒤로는 탭을 다시 눌러도 새로고침 전까지 예전(종종 비어있는) 데이터가 계속
 // 보이는 버그가 있었다 — 롤업 탭으로 전환할 때마다 항상 다시 불러오도록 수정.
-function _bizPlanSwitchTab(tab){_bizPlanTab=tab;renderBizPlanPage();if(tab==="rollup")loadBizPlanRollup();}
+function _bizPlanSwitchTab(tab){
+  _bizPlanTab=tab;
+  renderBizPlanPage();
+  if(tab==="rollup")loadBizPlanRollup();
+  if(tab==="budgetAdmin"){
+    loadBizPlanFromServer();
+    _bpLoadExpenseAccounts().then(()=>{if(_bizPlanTab==="budgetAdmin")renderBizPlanPage();});
+  }
+}
 function _bizPlanCancelForm(){_bizPlanTab="list";_bizPlanEditingId=null;renderBizPlanPage();}
 
 // ── 목록 탭 ──
@@ -15098,6 +15107,88 @@ function _bpSgaDetailTableHtml(items){
     <tr><th class="lbl">부문</th><th class="lbl">팀명</th><th class="lbl">비용귀속부문</th><th class="lbl">항목</th><th class="lbl">세부내역(산정근거)</th><th class="lbl">구분</th><th class="lbl">계정과목</th><th class="lbl">비용계정</th>${monthHeads}<th>계</th><th class="lbl">비고</th></tr>
     ${rows}
   </table></div></div>`;
+}
+
+// ── 예산 항목 관리(관리자 전용) — 팀별 계획을 하나씩 열지 않고도 전체 팀의 판관비 항목을
+// 한 화면에서 조회·수정할 수 있는 통합 편집 그리드. "각 항목별로 얼마가 업로드/입력됐는지
+// 확인할 수 없다"·"예산을 수정할 수 있는 화면이 있으면 좋겠다"는 요청으로 신설. 승인 워크
+// 플로우(사업부장 승인→잠금→수정요청→재오픈)는 그대로 존중 — draft 상태인 계획만 이 화면에서
+// 직접 수정 가능하고, 잠긴 계획은 읽기전용으로만 보여준다(기존 "수정요청" 절차를 우회하지
+// 않음). 저장은 기존 PUT /business-plan/:id를 팀별로 그대로 재사용(서버 쪽 권한·검증 로직도
+// 그대로 적용됨 — 이 화면 전용의 별도 백엔드 로직 없음).
+let _bpAdminYear=new Date().getFullYear();
+function _renderBizPlanBudgetAdminTab(){
+  let html=`<div class="fz12 text-gray mb2">전체 팀의 사업계획 판관비 항목을 한 화면에서 조회·수정할 수 있는 관리자 전용 화면입니다. 작성중(draft)인 계획만 여기서 직접 수정할 수 있고, 승인되어 잠긴 계획은 해당 팀이 "수정요청"을 보내 관리자 승인을 받아야 다시 수정할 수 있습니다.</div>`;
+  html+=`<div class="mb3"><label class="fz12">연도: <input class="fc" type="number" style="display:inline-block;width:90px" value="${_bpAdminYear}" onchange="_bpAdminYear=Number(this.value)||new Date().getFullYear();renderBizPlanPage()"></label></div>`;
+  const plans=bizPlans.filter(p=>p.baseYear===_bpAdminYear&&p.dept); // 팀 소속 계획만(레거시 전사 스크래치 계획은 롤업과 동일하게 제외)
+  if(!plans.length){html+=`<div class="p-empty">${_bpAdminYear}년 팀별 사업계획이 없습니다.</div>`;return html;}
+  html+=_bpOrgDeptTeamDatalistsHtml()+_bpExpenseAccountDatalistHtml();
+  html+=plans.map(p=>_renderBizPlanAdminGridCard(p)).join("");
+  return html;
+}
+function _renderBizPlanAdminGridCard(p){
+  const editable=p.status==="draft";
+  const items=(p.assumptions&&p.assumptions.sgaItems)||[];
+  const tbodyId=`bpadmin-sga-tbody-${p.id}`;
+  const rowsHtml=editable?(items.length?items.map(it=>_bpSgaRowHtml(it)).join(""):_bpSgaRowHtml(null)):"";
+  return `<div class="card mb3" style="border:1px solid #e3e5eb"><div class="card-head" style="flex-wrap:wrap;gap:6px">
+    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+      <h4 style="margin:0">${h(p.dept||"")}${p.team?" / "+h(p.team):""}</h4>
+      ${_bpStatusBadge(p.status)}
+      <span class="fz11 text-gray">${h(p.name)}</span>
+    </div>
+    ${editable?`<button class="btn btn-primary btn-sm" onclick="saveBizPlanAdminGrid('${p.id}')">저장</button>`:""}
+  </div><div class="card-body">
+    ${editable?`
+      <div style="overflow-x:auto"><table class="bp-sga-table" style="min-width:2100px">
+        <thead><tr>
+          <th class="lbl">부문</th><th class="lbl">팀명</th><th class="lbl">비용귀속부문</th><th class="lbl">항목</th><th class="lbl">세부내역(산정근거)</th><th class="lbl">구분</th>
+          <th class="lbl">계정과목</th><th class="lbl">비용계정</th><th>적용월</th><th>적용 금액</th>
+          ${Array.from({length:12},(_,i)=>`<th>${i+1}월</th>`).join("")}
+          <th>계</th><th class="lbl">비고</th><th>증가율(%)</th><th>고정비</th><th></th>
+        </tr></thead>
+        <tbody id="${tbodyId}">${rowsHtml}</tbody>
+      </table></div>
+      <button class="btn btn-ghost btn-sm mt2" onclick="addBpSgaRow(null,'${tbodyId}')">+ 판관비 항목 추가</button>
+    `:`
+      <div class="fz12" style="color:#8a6500">승인되어 잠긴 계획입니다(직접 수정 불가). 목록 화면에서 해당 팀이 "수정요청"을 보내 관리자 승인을 받으면 다시 draft로 전환되어 이 화면에서도 수정할 수 있습니다.</div>
+      ${_bpSgaDetailTableHtml(items)}
+    `}
+  </div></div>`;
+}
+async function saveBizPlanAdminGrid(planId){
+  const plan=bizPlans.find(p=>p.id===planId);if(!plan)return;
+  const tbodyId=`bpadmin-sga-tbody-${planId}`;
+  const sgaItems=[...document.querySelectorAll(`#${tbodyId} > tr`)].map(row=>{
+    const months=[...row.querySelectorAll(".bp-sga-month")].map(i=>Number(i.value)||0);
+    return {
+      dept:row.querySelector(".bp-sga-dept").value.trim()||null,
+      team:row.querySelector(".bp-sga-team").value.trim(),
+      costDept:row.querySelector(".bp-sga-costdept").value.trim()||null,
+      name:row.querySelector(".bp-sga-name").value.trim(),
+      detail:row.querySelector(".bp-sga-detail").value.trim(),
+      category:row.querySelector(".bp-sga-category").value.trim(),
+      accountType:row.querySelector(".bp-sga-accttype").value.trim(),
+      expenseAccount:row.querySelector(".bp-sga-expenseaccount").value.trim(),
+      months,
+      note:row.querySelector(".bp-sga-note").value.trim(),
+      growthRate:(Number(row.querySelector(".bp-sga-growth").value)||0)/100,
+      fixed:row.querySelector(".bp-sga-fixed").checked,
+    };
+  }).filter(it=>it.name||it.months.some(v=>v!==0));
+  const a=plan.assumptions||{};
+  const payload={
+    name:plan.name,scenario:plan.scenario||null,baseYear:plan.baseYear,
+    years:plan.years!==undefined?plan.years:plan.projection.length,
+    planType:plan.planType||"revenue",
+    baseRevenue:a.baseRevenue,revenueGrowthRate:a.revenueGrowthRate,cogsRatio:a.cogsRatio,
+    sgaItems,taxRate:a.taxRate,depreciation:a.depreciation
+  };
+  const r=await serverRequest("PUT",`/api/budget/business-plan/${planId}`,payload);
+  if(!r?.ok){showToast(r?.error||r?.message||"저장에 실패했습니다.","error");return;}
+  showToast(`${plan.team||plan.dept||plan.name} 저장되었습니다.`,"success");
+  await loadBizPlanFromServer();
+  if(_bizPlanTab==="budgetAdmin")renderBizPlanPage();
 }
 function _bpPlanActionsHtml(p){
   const isAdmin=currentUser.role==="admin";
@@ -15293,8 +15384,8 @@ function _bpApplyMonthFill(el){
   else{const idx=Number(monthSel.value)-1;if(monthInputs[idx])monthInputs[idx].value=amount;}
   _bpUpdateSgaRowTotal(monthInputs[0]);
 }
-function addBpSgaRow(item){
-  const wrap=$("#bp-sga-tbody");if(!wrap)return;
+function addBpSgaRow(item,tbodyId){
+  const wrap=$("#"+(tbodyId||"bp-sga-tbody"));if(!wrap)return;
   wrap.insertAdjacentHTML("beforeend",_bpSgaRowHtml(item));
 }
 // 현재 인사 정보(employees[].salary, 연봉)에 등록된 재직자 급여 합계를 그대로 "급여/고정급"
