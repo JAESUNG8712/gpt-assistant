@@ -15116,15 +15116,36 @@ function _bpSgaDetailTableHtml(items){
 // 직접 수정 가능하고, 잠긴 계획은 읽기전용으로만 보여준다(기존 "수정요청" 절차를 우회하지
 // 않음). 저장은 기존 PUT /business-plan/:id를 팀별로 그대로 재사용(서버 쪽 권한·검증 로직도
 // 그대로 적용됨 — 이 화면 전용의 별도 백엔드 로직 없음).
-let _bpAdminYear=new Date().getFullYear();
 function _renderBizPlanBudgetAdminTab(){
-  let html=`<div class="fz12 text-gray mb2">전체 팀의 사업계획 판관비 항목을 한 화면에서 조회·수정할 수 있는 관리자 전용 화면입니다. 작성중(draft)인 계획만 여기서 직접 수정할 수 있고, 승인되어 잠긴 계획은 해당 팀이 "수정요청"을 보내 관리자 승인을 받아야 다시 수정할 수 있습니다.</div>`;
-  html+=`<div class="mb3"><label class="fz12">연도: <input class="fc" type="number" style="display:inline-block;width:90px" value="${_bpAdminYear}" onchange="_bpAdminYear=Number(this.value)||new Date().getFullYear();renderBizPlanPage()"></label></div>`;
-  const plans=bizPlans.filter(p=>p.baseYear===_bpAdminYear&&p.dept); // 팀 소속 계획만(레거시 전사 스크래치 계획은 롤업과 동일하게 제외)
-  if(!plans.length){html+=`<div class="p-empty">${_bpAdminYear}년 팀별 사업계획이 없습니다.</div>`;return html;}
+  let html=`<div class="fz12 text-gray mb2">전체 조직(부문/사업부/센터/팀)의 사업계획 판관비 항목을 한 화면에서 조회·수정할 수 있는 관리자 전용 화면입니다. 작성중(draft)인 계획만 여기서 직접 수정할 수 있고, 승인되어 잠긴 계획은 해당 조직이 "수정요청"을 보내 관리자 승인을 받아야 다시 수정할 수 있습니다. 개인(직원) 단위 항목은 <a href="#" onclick="gotoPage('emp-pay-plan');return false">개인별 급여 상세</a> 화면에서 입력·수정합니다.</div>`;
+  html+=`<div class="mb3"><label class="fz12">연도: <input class="fc" type="number" style="display:inline-block;width:90px" value="${_bpBulkUploadYear}" onchange="_bpBulkUploadYear=Number(this.value)||new Date().getFullYear();renderBizPlanPage()"></label></div>`;
   html+=_bpOrgDeptTeamDatalistsHtml()+_bpExpenseAccountDatalistHtml();
+  html+=`<div class="card mb3" style="background:#f8fafc"><div class="card-body">
+    <h4 class="mb2">+ 새 조직 예산 추가</h4>
+    <div class="fz11 text-gray mb2">아직 사업계획이 없는 부문/사업부/센터/팀도 파일 업로드 없이 여기서 바로 빈 예산을 만들고 항목을 입력할 수 있습니다.</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr 2fr auto;gap:8px;align-items:end">
+      <div class="fg"><label class="fl">부문/사업부/센터 <span class="req">*</span></label><input class="fc" id="bpadmin-new-dept" list="bp-dept-list" autocomplete="off" placeholder="예: 경영지원본부"></div>
+      <div class="fg"><label class="fl">팀(선택)</label><input class="fc" id="bpadmin-new-team" list="bp-team-list" autocomplete="off" placeholder="예: 인사팀"></div>
+      <div class="fg"><label class="fl">계획명(선택)</label><input class="fc" id="bpadmin-new-name" placeholder="비우면 자동 생성"></div>
+      <button class="btn btn-primary btn-sm" onclick="addBizPlanAdminOrg()">추가</button>
+    </div>
+  </div></div>`;
+  const plans=bizPlans.filter(p=>p.baseYear===_bpBulkUploadYear&&p.dept); // 팀 소속 계획만(레거시 전사 스크래치 계획은 롤업과 동일하게 제외)
+  if(!plans.length){html+=`<div class="p-empty">${_bpBulkUploadYear}년 조직별 사업계획이 없습니다. 위에서 새로 추가해보세요.</div>`;return html;}
   html+=plans.map(p=>_renderBizPlanAdminGridCard(p)).join("");
   return html;
+}
+async function addBizPlanAdminOrg(){
+  const dept=$("#bpadmin-new-dept")?.value.trim();
+  const team=$("#bpadmin-new-team")?.value.trim()||"";
+  let name=$("#bpadmin-new-name")?.value.trim();
+  if(!dept){showToast("부문/사업부/센터를 입력하세요.","error");return;}
+  if(!name)name=`${team||dept} ${_bpBulkUploadYear}년 예산`;
+  const r=await serverRequest("POST","/api/budget/business-plan",{name,baseYear:_bpBulkUploadYear,years:1,planType:"costOnly",dept,team});
+  if(!r?.ok){showToast(r?.error||r?.message||"생성에 실패했습니다.","error");return;}
+  showToast("새 조직 예산이 추가되었습니다. 아래에서 항목을 입력하고 저장하세요.","success");
+  await loadBizPlanFromServer();
+  if(_bizPlanTab==="budgetAdmin")renderBizPlanPage();
 }
 function _renderBizPlanAdminGridCard(p){
   const editable=p.status==="draft";
@@ -15789,7 +15810,7 @@ function _renderBizPlanSettingsTab(){
     html+=`<div class="fg mt4" style="max-width:160px"><label class="fl">업로드 대상 연도</label><input class="fc" type="number" id="bp-bulk-year" value="${_bpBulkUploadYear}" onchange="_bpBulkUploadYear=Number(this.value)||new Date().getFullYear()"></div>
     <div class="card mb3 mt2" style="background:#f8fafc"><div class="card-body">
       <h4 class="mb2">📥 예산(비인건비 판관/용역/경상) 일괄 업로드</h4>
-      <div class="fz11 text-gray mb2">열 구성: "팀명"(필수, 그 연도에 이미 작성된 사업계획의 팀 이름과 정확히 일치해야 반영됨) + "비용 귀속"(선택) + "항목" + "세부내역" + "구분"(판관/용역/경상) + "1월"~"12월". 팀명 기준으로 해당 팀의 사업계획 판관비 그리드에 항목 단위로 upsert됩니다 — 반영 즉시 사업부/회사 롤업에도 자동 연계됩니다. 파일에 여러 시트가 섞여 있어도 "팀명"·"항목" 컬럼이 있는 시트를 자동으로 찾습니다(헤더가 1행이 아니어도 인식).</div>
+      <div class="fz11 text-gray mb2">열 구성: "팀명"(필수) + "비용 귀속"(선택, 부문/사업부/센터 등 실제 비용이 귀속되는 조직) + "항목" + "세부내역" + "구분"(판관/용역/경상) + "1월"~"12월". "팀명"과 일치하는 사업계획이 이미 있으면 그 판관비 그리드에 항목 단위로 upsert되고, 없으면 새 draft 계획을 자동으로 만들어 반영합니다(부문은 "비용 귀속" 값 기준 추정) — 반영 즉시 사업부/회사 롤업에도 자동 연계됩니다. 파일에 여러 시트가 섞여 있어도 "팀명"·"항목" 컬럼이 있는 시트를 자동으로 찾습니다(헤더가 1행이 아니어도 인식).</div>
       <input type="file" id="bp-sga-upload-file" accept=".xlsx,.xls,.csv" style="display:none" onchange="_showSelectedFileName('bp-sga-upload-file','bp-sga-upload-filename')">
       <button class="btn btn-secondary btn-sm" onclick="document.getElementById('bp-sga-upload-file').click()">📁 파일 선택</button>
       <span id="bp-sga-upload-filename" class="fz12 text-gray" style="margin-left:8px">선택된 파일 없음</span>
@@ -15879,6 +15900,7 @@ function _bpLastSgaUploadResultHtml(){
   (r.updated||[]).forEach(u=>{
     html+=`<div class="mt1" style="padding:6px;background:#fff;border:1px solid #e5e7eb;border-radius:6px">
       <b>${h(u.team)}</b> <span class="text-gray">(${h(u.dept||"")}, ${u.itemCount}건 반영)</span>
+      ${u.autoCreated?`<span class="fz11" style="background:#eaf5ea;color:#1b7a3d;padding:1px 8px;border-radius:10px;margin-left:6px">신규 계획 자동 생성</span>`:""}
       <table style="width:100%;margin-top:4px"><tr><th class="lbl">항목</th><th class="lbl">세부내역</th><th class="lbl">계정과목</th><th>연간 금액</th></tr>
       ${(u.items||[]).map(it=>`<tr><td>${h(it.name)}</td><td>${h(it.detail||"-")}</td><td>${h(it.accountType||"-")}</td><td style="text-align:right">${_bpFmt(it.baseAmount)}</td></tr>`).join("")}
       </table></div>`;

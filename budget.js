@@ -1011,15 +1011,41 @@ module.exports = function budgetRouterFactory(deps) {
       // 앞뒤 공백이 실수로 섞여 있어도), 업로드 쪽(항상 trim()된 팀명)과 비교할 때는
       // 저장된 team 값도 trim()해서 비교해 사소한 공백 차이로 매칭이 실패하지 않게 한다.
       const matches = data.businessPlans.filter(p => p.baseYear === year && (p.team || '').trim() === team);
+      let plan, autoCreated = false;
       if (matches.length === 0) {
-        skipped.push({ team, reason: `${year}년 기준 팀명 "${team}"과 일치하는 사업계획을 찾을 수 없습니다. 해당 팀이 먼저 사업계획을 작성해야 합니다.` });
-        return;
-      }
-      if (matches.length > 1) {
+        // 대량 부서별 예산을 사람이 미리 하나하나 "사업계획 작성"해두지 않아도 업로드로
+        // 바로 시작할 수 있도록, 일치하는 계획이 없으면 이 업로드로 새 draft 계획을
+        // 자동 생성한다(사용자 확정 요구사항). dept(부문/사업부/센터)는 업로드된 항목들의
+        // "비용 귀속"(costDept) 값 중 가장 많이 등장하는 값을 쓰고, 비어있으면 팀명 자체를
+        // dept로 대신 쓴다 — dept가 없으면 승인 워크플로우·부문별 롤업 집계 대상에서
+        // 아예 빠지므로(레거시 전사 스크래치 계획 취급) 반드시 채워야 한다. 자동 생성된
+        // 계획도 draft 상태로 시작해 사업부장 승인 등 기존 워크플로우를 그대로 따르며,
+        // 업로드만으로 자동 확정되지 않는다.
+        const costDeptCounts = {};
+        items.forEach(it => { const cd = (it.costDept || '').trim(); if (cd) costDeptCounts[cd] = (costDeptCounts[cd] || 0) + 1; });
+        const inferredDept = Object.keys(costDeptCounts).sort((a, b) => costDeptCounts[b] - costDeptCounts[a])[0] || team;
+        const { assumptions: newA } = _normalizeBusinessPlanInput({ name: `${team} ${year}년 예산업로드`, baseYear: year, years: 1, planType: 'costOnly' }, null);
+        const now = new Date().toISOString();
+        plan = {
+          id: `plan_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+          name: newA.name, baseYear: newA.baseYear, years: newA.years, scenario: newA.scenario, planType: newA.planType,
+          dept: inferredDept, team,
+          status: 'draft', divisionApproval: null,
+          finalApproval: { ownerBy: null, ownerAt: null, leadBy: null, leadAt: null },
+          editRequest: null,
+          assumptions: { baseRevenue: newA.baseRevenue, revenueGrowthRate: newA.revenueGrowthRate, cogsRatio: newA.cogsRatio, sgaItems: [], taxRate: newA.taxRate, depreciation: newA.depreciation },
+          projection: [], breakEven: {},
+          createdBy: req.auth.empId !== undefined ? req.auth.empId : null,
+          createdAt: now, updatedAt: now
+        };
+        data.businessPlans.push(plan);
+        autoCreated = true;
+      } else if (matches.length > 1) {
         skipped.push({ team, reason: `${year}년 기준 팀명 "${team}"에 해당하는 사업계획이 ${matches.length}건이라 자동으로 특정할 수 없습니다.` });
         return;
+      } else {
+        plan = matches[0];
       }
-      const plan = matches[0];
       const dept = plan.dept;
       // 아주 오래된/손상된 계획은 assumptions 자체가 없을 수 있어(정상 생성 경로는 항상
       // 채우지만 방어적으로) 접근 전에 보정 — 없으면 500으로 요청 전체가 죽는 대신
@@ -1061,7 +1087,7 @@ module.exports = function budgetRouterFactory(deps) {
       plan.breakEven = computeBreakEven(a);
       plan.updatedAt = new Date().toISOString();
       plan.updatedBy = req.auth.empId;
-      updated.push({ team, planId: plan.id, dept, itemCount: items.length, planStatus: plan.status, items: itemDetail });
+      updated.push({ team, planId: plan.id, dept, itemCount: items.length, planStatus: plan.status, items: itemDetail, autoCreated });
     });
 
     data.uploads.push({ type: 'sga', filename: req.file.originalname, uploadedAt: new Date().toISOString(), rows: rows.length });
