@@ -6693,11 +6693,18 @@ function resetHRForm(){hrCareers=[];hrCustom={};renderHRRegister();}
 function openRetireModal(id){
   const e=getEmp(id);if(!e||!e.active)return;
   const today=new Date().toISOString().slice(0,10);
+  // 이미 데이터에 retireDate/retireReason이 남아있는 경우(예: 실제로는 퇴직했지만
+  // 직원 목록에서 정식 퇴직 처리를 한 적이 없어 active만 재직중으로 남은 인원)
+  // 오늘 날짜로 덮어쓰지 않고 기존 값을 그대로 기본값으로 보여줘 관리자가 실제
+  // 퇴직일을 다시 조사할 필요 없이 그대로 확인만 하고 반영할 수 있게 한다.
+  const prefillDate=e.retireDate||today;
+  const prefillReason=e.retireReason||"";
   showModal(`<div class="modal modal-sm"><div class="modal-head"><h2>${h(e.name)} 퇴직 처리</h2><button class="modal-close" onclick="closeModal()">×</button></div>
   <div class="modal-body">
     <div style="background:#fef2f2;padding:10px 14px;border-radius:8px;font-size:11px;color:#991b1b;border:1px solid #fecaca;margin-bottom:14px">⚠ 퇴직 처리 후에는 해당 직원이 로그인할 수 없습니다.</div>
-    <div class="fg"><label class="fl">퇴직일 <span class="req">*</span></label><input class="fc" id="rt-date" type="date" value="${today}"></div>
-    <div class="fg"><label class="fl">퇴직 사유 <span class="req">*</span></label><select class="fc" id="rt-reason"><option value="">선택</option>${["자진 퇴사","권고 사직","계약 만료","정년 퇴직","기타"].map(r=>`<option>${r}</option>`).join("")}</select></div>
+    ${e.retireDate?`<div style="background:#fffbeb;padding:8px 12px;border-radius:8px;font-size:11px;color:#92400e;border:1px solid #fde68a;margin-bottom:14px">이미 등록되어 있던 퇴직일(${h(e.retireDate)})을 기본값으로 채워두었습니다. 실제 퇴직 정보가 맞는지 확인 후 처리하세요.</div>`:""}
+    <div class="fg"><label class="fl">퇴직일 <span class="req">*</span></label><input class="fc" id="rt-date" type="date" value="${prefillDate}"></div>
+    <div class="fg"><label class="fl">퇴직 사유 <span class="req">*</span></label><select class="fc" id="rt-reason"><option value="">선택</option>${["자진 퇴사","권고 사직","계약 만료","정년 퇴직","기타"].map(r=>`<option${prefillReason===r?" selected":""}>${r}</option>`).join("")}</select></div>
     <div class="fg"><label class="fl">비고</label><textarea class="fc" id="rt-note" rows="2"></textarea></div>
   </div>
   <div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal()">취소</button><button class="btn btn-danger" onclick="submitRetire(${id})">퇴직 처리</button></div></div>`);
@@ -6715,6 +6722,7 @@ function submitRetire(id){
   // trigger a save afterward.
   autoSaveToServerIfEnabled();
   closeModal();showToast("퇴직 처리가 완료되었습니다.","info");renderHRListTbl();
+  if(currentPage==="biz-plan")renderBizPlanPage();
 }
 // 퇴직자에 대한 미결 참조를 정리 — 퇴직 이후에도 결재 위임이 계속 대결자로 치환되거나,
 // 승인 시 급여에 반영될 수 있는 초과근무/경비 건이 그대로 남는 것을 방지
@@ -7403,7 +7411,9 @@ function openHRChangeModal(){
   const today=new Date().toISOString().slice(0,10);
   showModal(`<div class="modal modal-md"><div class="modal-head"><h2>인사 변동 등록 — ${h(emp.name)}</h2><button class="modal-close" onclick="closeModal()">×</button></div>
   <div class="modal-body">
-    <div class="fg"><label class="fl">변동 유형 <span class="req">*</span></label><select class="fc" id="hc-type" onchange="updateHCFields()">${Object.entries(HR_TYPES).map(([k,v])=>`<option value="${k}">${v}</option>`).join("")}</select></div>
+    <div class="fg"><label class="fl">변동 유형 <span class="req">*</span></label><select class="fc" id="hc-type" onchange="updateHCFields()">${Object.entries(HR_TYPES).filter(([k])=>k!=="retirement").map(([k,v])=>`<option value="${k}">${v}</option>`).join("")}</select>
+      <div class="fz11 text-gray mt1">※ 재직/퇴직 여부 변경은 직원 목록의 "퇴직 처리" 버튼을 이용하세요. 이 화면은 인사 변동 이력만 기록합니다.</div>
+    </div>
     <div class="fg"><label class="fl">변동 일자 <span class="req">*</span></label><input class="fc" id="hc-date" type="date" value="${today}"></div>
     <div class="fg"><label class="fl">변동 내용 <span class="req">*</span></label><input class="fc" id="hc-desc" placeholder="상세 내용을 입력하세요"></div>
     <div id="hc-specific-fields"></div>
@@ -7442,7 +7452,14 @@ function submitHRChange(){
   else if(type==="rank_change"||type==="promotion"){after=$("#hc-after-rank")?.value||"";if(!after){showToast("직급을 선택하세요.","error");return;}updates={rank:after};}
   else if(type==="position"){const pSel=$("#hc-after-pos")?.value;after=pSel==="__new__"?($("#hc-after-pos-new")?.value.trim()||""):pSel;updates={position:after};if(after&&after!=="없음"&&!orgDB.positions.includes(after))orgDB.positions.push(after);}
   else if(type==="leave"){after=`${$("#hc-leave-start")?.value||""}~${$("#hc-leave-end")?.value||""} (${$("#hc-leave-reason")?.value||""})`;}
-  else if(type==="retirement"){after=`${$("#hc-retire-date")?.value||""} (${$("#hc-retire-reason")?.value||""})`;updates={active:false};}
+  else if(type==="retirement"){after=`${$("#hc-retire-date")?.value||""} (${$("#hc-retire-reason")?.value||""})`;}
+  // "퇴직" 유형은 더 이상 이 화면(인사 변동 등록)의 선택지에 없지만(위 드롭다운에서
+  // 제외됨), 혹시 프로그래밍적으로 남아있는 경로로 도달하더라도 active를 직접 바꾸지
+  // 않도록 방어적으로 유지한다 — 이 폼은 retireDate를 함께 갱신하지 않아, active만
+  // 바뀌고 retireDate는 그대로인 상태(직원 목록의 "퇴직 처리"와 서로 다른 정보를 남기는
+  // 원인)를 만들 수 있었다. 재직/퇴직 전환은 항상 직원 목록의 "퇴직 처리" 버튼
+  // (openRetireModal/submitRetire, active와 retireDate를 항상 함께 갱신함)을 통해서만
+  // 이뤄지도록 한다.
   else if(type==="award"||type==="core_talent"){after=`${$("#hc-period-start")?.value||""}~${$("#hc-period-end")?.value||""}`;}
   else{after=$("#hc-after-text")?.value.trim()||"";}
   const today=new Date().toISOString().slice(0,10);
@@ -7474,7 +7491,13 @@ function _applyDueHRChanges(){
     let upd={},touched=false;
     const hist=e.hrHistory.map(hh=>{
       if(hh.applied===false&&hh.pendingUpdates&&hh.date<=today){
-        upd={...upd,...hh.pendingUpdates};touched=true;changed=true;
+        let pu=hh.pendingUpdates;
+        // active를 false로 바꾸는 예정 변동인데 retireDate가 함께 지정돼 있지 않으면
+        // (예: 이번 수정 이전에 "인사 변동 등록"의 퇴직 유형으로 미리 등록해둔 예정
+        // 항목) 이 변동의 발령일을 retireDate로 함께 채워, active만 바뀌고 retireDate는
+        // 비어있는 정합성 문제가 생기지 않도록 방어한다.
+        if(pu.active===false&&!pu.retireDate&&!e.retireDate)pu={...pu,retireDate:hh.date};
+        upd={...upd,...pu};touched=true;changed=true;
         return{...hh,applied:true};
       }
       return hh;
@@ -16021,14 +16044,43 @@ function _bpRetireesInYearHtml(year,filterDept){
     return rd.getFullYear()===year;
   }).sort((a,b)=>(a.retireDate||"").localeCompare(b.retireDate||""));
   if(!list.length)return "";
+  const isAdmin=currentUser?.role==="admin";
+  const mismatchCount=list.filter(e=>e.active).length;
   const rows=list.map(e=>`<tr>
     <td class="lbl">${h(e.name)}</td><td class="lbl">${h(e.dept||"-")}</td><td class="lbl">${h(e.team||"-")}</td>
     <td class="lbl">${h(e.retireDate)}</td><td class="lbl">${h(e.retireReason||"-")}</td>
     <td class="lbl">${e.active?`<span style="color:#c0392b;font-weight:700">재직중(active=true)인데 퇴직일이 남아있음 — 데이터 확인 필요</span>`:"퇴직"}</td>
+    <td class="lbl">${e.active&&isAdmin?`<button class="btn btn-danger btn-sm" onclick="openRetireModal(${e.id})">퇴직 처리</button>`:""}</td>
   </tr>`).join("");
   return `<div class="mb4"><h4 class="mb2 fz13">${year}년 퇴직일 등록자 목록(위 인원현황 감소분의 근거) <span class="fz11 text-gray">총 ${list.length}명 — 각 월의 인원 감소는 이 목록에 있는 사람들의 퇴직월 다음 달부터 반영됩니다</span></h4>
-    <div class="tbl-wrap"><table><tr><th class="lbl">이름</th><th class="lbl">부문</th><th class="lbl">팀</th><th class="lbl">퇴직일</th><th class="lbl">퇴직사유</th><th class="lbl">상태</th></tr>${rows}</table></div>
+    ${mismatchCount&&isAdmin?`<div style="background:#fef2f2;padding:10px 14px;border-radius:8px;font-size:11px;color:#991b1b;border:1px solid #fecaca;margin-bottom:8px">
+      실제로는 퇴직했지만 직원 목록에서 정식 퇴직 처리(재직→퇴직 전환)를 하지 않아 재직중으로 남아있는 인원이 ${mismatchCount}명 있습니다. 아래에서 1명씩 확인 후 "퇴직 처리"하거나, 이미 등록된 퇴직일/사유를 그대로 신뢰할 수 있다면 한 번에 반영하세요.
+      <button class="btn btn-danger btn-sm mt1" onclick="_bpBulkFixRetireeMismatches(${year},${filterDept?`'${filterDept.replace(/'/g,"\\'")}'`:"null"})">⚠ ${mismatchCount}명 일괄 퇴직 처리(기존 퇴직일 기준)</button>
+    </div>`:""}
+    <div class="tbl-wrap"><table><tr><th class="lbl">이름</th><th class="lbl">부문</th><th class="lbl">팀</th><th class="lbl">퇴직일</th><th class="lbl">퇴직사유</th><th class="lbl">상태</th>${isAdmin?`<th class="lbl">조치</th>`:""}</tr>${rows}</table></div>
   </div>`;
+}
+// _bpRetireesInYearHtml에서 발견된, "실제로는 퇴직했지만 직원 목록에서 정식 퇴직 처리를
+// 하지 않아 active=true로 남은" 인원 전원을, 이미 등록된 retireDate/retireReason을 그대로
+// 사용해 한 번에 정식 퇴직 처리한다(submitRetire와 동일한 효과 — active/retireDate가 항상
+// 함께 바뀌도록 유지하는 것이 이 앱의 원칙이므로, 이미 있는 retireDate를 신뢰하고 active만
+// 뒤늦게 맞춰준다). 퇴직 사유가 비어 있으면 "기타"로 채운다.
+function _bpBulkFixRetireeMismatches(year,filterDept){
+  const targets=employees.filter(e=>e.active&&e.retireDate&&(!filterDept||e.dept===filterDept)&&new Date(e.retireDate).getFullYear()===year);
+  if(!targets.length){showToast("반영할 대상이 없습니다.","info");return;}
+  if(!confirm(`${targets.length}명을 이미 등록된 퇴직일 기준으로 정식 퇴직 처리하시겠습니까?\n(퇴직 사유가 없으면 "기타"로 설정됩니다. 처리 후 해당 직원은 로그인할 수 없습니다.)`))return;
+  const now=new Date().toISOString();
+  const targetIds=new Set(targets.map(e=>e.id));
+  employees=employees.map(e=>{
+    if(!targetIds.has(e.id))return e;
+    const reason=e.retireReason||"기타";
+    const newH={id:genId(),type:"retirement",date:e.retireDate,desc:"퇴직 처리(일괄 정합성 반영) - "+reason,before:"재직",after:"퇴직 ("+e.retireDate+")",note:"인원 계획 진단표에서 일괄 반영"};
+    return {...e,active:false,retireReason:reason,hrHistory:[...(e.hrHistory||[]),newH],updatedAt:now};
+  });
+  targets.forEach(e=>_cleanupRetiredEmpReferences(e.id,e.retireDate));
+  autoSaveToServerIfEnabled();
+  showToast(`${targets.length}명의 퇴직 처리가 반영되었습니다.`,"success");
+  renderBizPlanPage();
 }
 // 판관비 항목을 "비용 귀속 부문" 기준으로 재집계한 표 — 위 byDept(계획을 작성한 팀
 // 기준)와 별개로, 실제 비용이 귀속되는 조직 단위 + 전사 합계를 함께 보여준다.
@@ -16395,6 +16447,7 @@ function uploadEmpPayPlanExcel(){
     _eppParseAndUpload(file);
   }
 }
+let _eppUploadTally=null,_eppPendingNewEmps=null;
 function _eppParseAndUpload(file){
   const reader=new FileReader();
   reader.onload=async(ev)=>{
@@ -16412,8 +16465,9 @@ function _eppParseAndUpload(file){
     if(!rows.length){showToast("업로드할 데이터가 없습니다.","error");if(statusEl)statusEl.textContent="";return;}
     const templateCatByName={};
     _BP_DEFAULT_SGA_TEMPLATE.forEach(([cat,name])=>{if(name!=="고정급"&&name!=="변동급")templateCatByName[name]=cat;});
-    let success=0,skipped=0,skippedNoMatch=0,skippedNoItems=0,skippedSaveError=0;
-    const skipDetails=[];
+    _eppUploadTally={success:0,skippedNoMatch:0,skippedAmbiguous:0,skippedNoItems:0,skippedSaveError:0,details:[],statusEl};
+    const toUpload=[]; // 기존 직원과 매칭된 행 — 바로 업로드
+    const newCandidates=[]; // 직원 목록에 없는 행 — 신규 등록 여부를 확인받을 대상
     for(const row of rows){
       const empNo=String(row["사번"]||row["empNo"]||"").trim();
       const empName=String(row["이름"]||row["name"]||"").trim();
@@ -16422,15 +16476,17 @@ function _eppParseAndUpload(file){
       // 있으면 이름 매칭을 아예 시도하지 않아, 사번 형식만 다르고 이름은 일치하는 경우도
       // 전부 "매칭 실패"로 건너뛰어지는 문제가 있었다.
       let emp=empNo?employees.find(e=>String(e.empNo)===empNo):null;
+      let ambiguous=false;
       if(!emp&&empName){
         // 이름 폴백은 동명이인이 있으면 잘못된 사람에게 데이터가 들어갈 위험이 있어(예:
         // "김철수"가 재직자 중 2명), 정확히 1명만 일치할 때만 채택하고 여러 명이면 사람이
-        // 직접 확인하도록 매칭실패로 처리한다.
+        // 직접 확인하도록 매칭실패로 처리한다(신규 등록 후보로도 넣지 않음 — 이미 존재할
+        // 가능성이 높은 사람이라 함부로 새 레코드를 만들면 중복 인원이 생긴다).
         const nameMatches=employees.filter(e=>e.active&&e.name===empName);
         if(nameMatches.length===1)emp=nameMatches[0];
-        else if(nameMatches.length>1){skipped++;skippedNoMatch++;skipDetails.push(`${empName}: 동명이인 ${nameMatches.length}명이라 이름만으로 특정 불가(사번을 입력해주세요)`);continue;}
+        else if(nameMatches.length>1)ambiguous=true;
       }
-      if(!emp){skipped++;skippedNoMatch++;skipDetails.push(`${empName||empNo||"(이름/사번 없음)"}: 직원 매칭 실패(사번 "${empNo||"-"}", 이름 "${empName||"-"}")`);continue;}
+      if(ambiguous){_eppUploadTally.skippedAmbiguous++;_eppUploadTally.details.push(`${empName}: 동명이인이라 이름만으로 특정 불가(사번을 입력해주세요)`);continue;}
       const year=Number(row["연도"]||row["year"])||_eppYear;
       const items=[];
       Object.keys(row).forEach(key=>{
@@ -16439,23 +16495,133 @@ function _eppParseAndUpload(file){
           if(amount!==0)items.push({category:templateCatByName[key],name:key,amount});
         }
       });
-      if(!items.length){skipped++;skippedNoItems++;skipDetails.push(`${emp.name}: 인식 가능한 항목 없음(열 제목이 표준 항목명과 다른지 확인)`);continue;}
       // 연금종류(DC/DB) — 값이 정확히 "DC" 또는 "DB"일 때만 인식(그 외 값, 예: "중간정산"
       // 등의 비고성 텍스트는 무시하고 기존 저장값을 유지).
       const pensionRaw=String(row["연금종류"]||row["연금\n종류"]||row["severanceType"]||"").trim().toUpperCase();
-      const body={empId:emp.id,empName:emp.name,year,items};
-      if(pensionRaw==="DC"||pensionRaw==="DB")body.severanceType=pensionRaw;
-      const r=await serverRequest("POST","/api/budget/emp-pay-plan",body);
-      if(r?.ok)success++;else{skipped++;skippedSaveError++;skipDetails.push(`${emp.name}: 저장 실패(${r?.error||r?.message||"알 수 없는 오류"})`);}
+      const severanceType=(pensionRaw==="DC"||pensionRaw==="DB")?pensionRaw:undefined;
+      if(!emp){
+        if(!empNo&&!empName){_eppUploadTally.skippedNoMatch++;_eppUploadTally.details.push(`(이름/사번 없음): 직원 매칭 실패`);continue;}
+        if(!items.length){_eppUploadTally.skippedNoMatch++;_eppUploadTally.details.push(`${empName||empNo}: 직원 매칭 실패 + 인식 가능한 항목도 없음`);continue;}
+        newCandidates.push({empNo,empName,year,items,severanceType});
+        continue;
+      }
+      if(!items.length){_eppUploadTally.skippedNoItems++;_eppUploadTally.details.push(`${emp.name}: 인식 가능한 항목 없음(열 제목이 표준 항목명과 다른지 확인)`);continue;}
+      toUpload.push({emp,year,items,severanceType});
     }
-    if(skipped)console.warn("개인별 급여상세 업로드 - 건너뛴 상세:",skipDetails);
-    showToast(`업로드 완료: ${success}명 반영, ${skipped}건 건너뜀(매칭실패 ${skippedNoMatch}·항목없음 ${skippedNoItems}·저장오류 ${skippedSaveError}). 상세는 브라우저 콘솔(F12) 참고.`,success>0?"success":"error");
-    const uploadInput=$("#epp-upload-file");if(uploadInput)uploadInput.value="";
-    if(statusEl)statusEl.textContent="";
-    await renderEmpPayPlanPage();
+    await _eppUploadRows(toUpload);
+    if(newCandidates.length){
+      _eppShowNewEmpModal(newCandidates);
+    }else{
+      await _eppFinalizeUpload();
+    }
   };
   const isCsv=/\.csv$/i.test(file.name||"");
   if(isCsv)reader.readAsBinaryString(file);else reader.readAsArrayBuffer(file);
+}
+async function _eppUploadRows(list){
+  for(const {emp,year,items,severanceType} of list){
+    const body={empId:emp.id,empName:emp.name,year,items};
+    if(severanceType)body.severanceType=severanceType;
+    const r=await serverRequest("POST","/api/budget/emp-pay-plan",body);
+    if(r?.ok)_eppUploadTally.success++;
+    else{_eppUploadTally.skippedSaveError++;_eppUploadTally.details.push(`${emp.name}: 저장 실패(${r?.error||r?.message||"알 수 없는 오류"})`);}
+  }
+}
+async function _eppFinalizeUpload(){
+  const t=_eppUploadTally;
+  const skipped=t.skippedNoMatch+t.skippedAmbiguous+t.skippedNoItems+t.skippedSaveError;
+  if(skipped)console.warn("개인별 급여상세 업로드 - 건너뛴 상세:",t.details);
+  showToast(`업로드 완료: ${t.success}명 반영, ${skipped}건 건너뜀(매칭실패 ${t.skippedNoMatch}·동명이인 ${t.skippedAmbiguous}·항목없음 ${t.skippedNoItems}·저장오류 ${t.skippedSaveError}). 상세는 브라우저 콘솔(F12) 참고.`,t.success>0?"success":"error");
+  const uploadInput=$("#epp-upload-file");if(uploadInput)uploadInput.value="";
+  if(t.statusEl)t.statusEl.textContent="";
+  _eppUploadTally=null;_eppPendingNewEmps=null;
+  await renderEmpPayPlanPage();
+}
+// 업로드 파일에는 있지만 직원 목록에는 없는 인원을 발견했을 때, 조용히 건너뛰는 대신
+// 신규 직원으로 등록할지 확인받는다 — 승인하면 직원 목록에 추가되고(사업계획 인원현황은
+// 재직자 hire/active 기준으로 자동 계산되므로 별도 반영 작업 없이 곧바로 포함됨),
+// 급여상세도 함께 업로드된다.
+function _eppShowNewEmpModal(candidates){
+  _eppPendingNewEmps=candidates;
+  const deptOpts=orgDB.depts.map(d=>`<option value="${h(d)}">`).join("");
+  const teamOpts=[...new Set(Object.values(orgDB.teams||{}).flat())].map(t=>`<option value="${h(t)}">`).join("");
+  const today=new Date().toISOString().slice(0,10);
+  const rowsHtml=candidates.map((c,i)=>`<tr>
+    <td class="lbl">${h(c.empName||"-")}</td>
+    <td><input class="fc fz12" id="epp-new-empno-${i}" value="${h(c.empNo||"")}" placeholder="사번(필수)" style="width:100px"></td>
+    <td><input class="fc fz12" list="epp-new-dept-list" id="epp-new-dept-${i}" placeholder="부서(필수)" style="width:120px"></td>
+    <td><input class="fc fz12" list="epp-new-team-list" id="epp-new-team-${i}" placeholder="팀" style="width:100px"></td>
+    <td><input class="fc fz12" type="date" id="epp-new-hire-${i}" value="${today}" style="width:135px"></td>
+    <td style="text-align:center"><input type="checkbox" id="epp-new-chk-${i}" checked></td>
+  </tr>`).join("");
+  openModal(`<div class="modal-box" style="max-width:820px">
+    <div class="modal-head"><h3>⚠️ 직원 목록에 없는 인원 ${candidates.length}명 발견</h3></div>
+    <div class="modal-body">
+      <div class="fz12 text-gray mb2">아래 인원은 업로드 파일에는 있지만 직원 목록에서 찾을 수 없습니다. 신규 직원으로 등록할 인원을 선택하고 사번·부서·입사일을 입력한 뒤 "등록하고 계속"을 누르면 직원 목록에 추가되고 급여상세도 함께 반영됩니다. 등록하지 않으면 해당 인원의 급여상세는 이번 업로드에서 건너뜁니다.</div>
+      <datalist id="epp-new-dept-list">${deptOpts}</datalist>
+      <datalist id="epp-new-team-list">${teamOpts}</datalist>
+      <div class="tbl-wrap" style="max-height:340px;overflow-y:auto"><table class="tbl" style="font-size:12px">
+        <thead><tr><th>이름</th><th>사번</th><th>부서</th><th>팀</th><th>입사일</th><th>등록</th></tr></thead>
+        <tbody>${rowsHtml}</tbody>
+      </table></div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn btn-secondary" onclick="_eppSkipNewEmpsAndFinish()">이 인원들은 건너뛰고 종료</button>
+      <button class="btn btn-primary" onclick="_eppConfirmCreateNewEmps()">등록하고 계속</button>
+    </div>
+  </div>`);
+}
+async function _eppSkipNewEmpsAndFinish(){
+  closeModal();
+  const cands=_eppPendingNewEmps||[];
+  _eppUploadTally.skippedNoMatch+=cands.length;
+  cands.forEach(c=>_eppUploadTally.details.push(`${c.empName||c.empNo}: 직원 목록에 없어 건너뜀(신규 등록 안 함)`));
+  await _eppFinalizeUpload();
+}
+async function _eppConfirmCreateNewEmps(){
+  const candidates=_eppPendingNewEmps||[];
+  const toCreate=[];
+  candidates.forEach((c,i)=>{
+    const checked=$(`#epp-new-chk-${i}`)?.checked;
+    if(!checked){_eppUploadTally.skippedNoMatch++;_eppUploadTally.details.push(`${c.empName||c.empNo}: 신규 등록 체크 해제로 건너뜀`);return;}
+    const empNo=$(`#epp-new-empno-${i}`)?.value.trim()||"";
+    const dept=$(`#epp-new-dept-${i}`)?.value.trim()||"";
+    const team=$(`#epp-new-team-${i}`)?.value.trim()||"";
+    const hire=$(`#epp-new-hire-${i}`)?.value||"";
+    if(!empNo||!dept||!hire){
+      _eppUploadTally.skippedNoMatch++;
+      _eppUploadTally.details.push(`${c.empName||c.empNo||"(이름없음)"}: 사번/부서/입사일 중 누락된 값이 있어 등록하지 못하고 건너뜀`);
+      return;
+    }
+    if(employees.some(e=>e.empNo===empNo)){
+      _eppUploadTally.skippedNoMatch++;
+      _eppUploadTally.details.push(`${c.empName||empNo}: 사번(${empNo})이 이미 사용 중이라 등록하지 못하고 건너뜀`);
+      return;
+    }
+    toCreate.push({c,empNo,dept,team,hire});
+  });
+  closeModal();
+  const created=[];
+  for(const item of toCreate){
+    let newId;
+    try{
+      const r=await serverRequest("POST","/api/employees/next-id",null,8000);
+      newId=r?.ok?r.id:genId();
+    }catch(e){newId=genId();}
+    const career=0,edu="대학교 졸업";
+    const rankCalc=calcAutoRank(career,edu);
+    const newEmp={id:newId,loginId:item.empNo,pw:item.empNo,name:item.c.empName||item.empNo,empNo:item.empNo,role:"member",dept:item.dept,team:item.team,birth:"",gender:"남",nationality:"내국인",hire:item.hire,jobGroup:"관리직",rank:rankCalc.rank,rankYear:Math.max(1,Math.round(rankCalc.rankYear)),salary:0,edu,eduSchool:"",totalCareer:career,position:"",email:"",phone:"",address:"",active:true,retireDate:"",retireReason:"",customFields:{},careers:[],hrHistory:[],gradeResults:{},updatedAt:new Date().toISOString()};
+    employees.push(newEmp);
+    if(item.dept&&!orgDB.depts.includes(item.dept)){orgDB.depts.push(item.dept);orgDB.teams[item.dept]=orgDB.teams[item.dept]||[];}
+    if(item.dept&&item.team&&!getTeams(item.dept).includes(item.team)){if(!orgDB.teams[item.dept])orgDB.teams[item.dept]=[];orgDB.teams[item.dept].push(item.team);}
+    created.push({emp:newEmp,year:item.c.year,items:item.c.items,severanceType:item.c.severanceType});
+  }
+  if(created.length){
+    autoSaveToServerIfEnabled();
+    await _eppUploadRows(created);
+    showToast(`${created.length}명을 신규 직원으로 등록했습니다.`,"success");
+  }
+  await _eppFinalizeUpload();
 }
 // 전 직원 일괄 반영 — 재직자 전원에게 동일 금액을 그 항목에 반영한다. 이미 다른 항목이
 // 입력돼 있는 직원도 해당 항목만 갱신되고 나머지 항목은 그대로 유지된다(기존 items에
