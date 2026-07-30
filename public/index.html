@@ -15587,6 +15587,10 @@ function _renderBizPlanRollupTab(){
   html+=_bpHeadcountPlanHtml(filterDept);
   html+=_bpSgaByCostDeptHtml(d.sgaByCostDept,filterDept);
   html+=_bpSgaByCategoryHtml(d.sgaByCategory,filterDept);
+  const acctTypeHtml=_bpSgaByAccountTypeHtml(d.sgaByAccountType,filterDept);
+  if(acctTypeHtml)html+=`<h3 class="mt4 mb2">📁 계정과목(판관/용역/경상)별 집계</h3>`+acctTypeHtml;
+  const expAcctHtml=_bpSgaByExpenseAccountHtml(d.sgaByExpenseAccount,filterDept);
+  if(expAcctHtml)html+=`<h3 class="mt4 mb2">🧾 비용계정(회계 계정과목)별 집계</h3>`+expAcctHtml;
   return html;
 }
 // 월별 인원 "계획"(예측) — 위 _bpHeadcountByDeptHtml(현재 재직자 스냅샷)와는 별개로,
@@ -15645,7 +15649,9 @@ function _bpSgaByCostDeptHtml(s,filterDept){
 // 입력하는 순간 이 표에 자동으로 반영되며, 별도 입력이나 매핑 작업이 필요하지 않다.
 // filterDept가 지정되면 각 구분 표를 그 부문 한 줄로 좁힌다(값이 없는(0) 구분 표는
 // 생략해 선택한 부문과 무관한 항목이 빈 표로 계속 나열되지 않게 함).
-function _bpSgaByCategoryHtml(list,filterDept){
+// keyField로 표 제목에 쓸 값(구분/계정과목/비용계정)을 지정 — _bpSgaByCategoryHtml/
+// _bpSgaByAccountTypeHtml/_bpSgaByExpenseAccountHtml이 공유하는 공용 렌더러.
+function _bpSgaGroupedHtml(list,filterDept,keyField){
   if(!Array.isArray(list)||!list.length)return "";
   const monthHeads=Array.from({length:12},(_,i)=>`<th>${i+1}월</th>`).join("");
   const rowHtml=(label,r)=>`<tr><td class="lbl">${h(label)}</td>${(r.months||[]).map(v=>`<td style="text-align:right">${_bpFmt(v)}</td>`).join("")}<td style="text-align:right;font-weight:700">${_bpFmt(r.total)}</td></tr>`;
@@ -15653,7 +15659,7 @@ function _bpSgaByCategoryHtml(list,filterDept){
     const filtered=filterDept?c.byCostDept.filter(r=>r.costDept===filterDept):c.byCostDept;
     if(filterDept&&!filtered.length)return "";
     return `
-    <div class="mb4"><h4 class="mb2">${h(c.category)}(기준연도) <span class="fz11 text-gray">조직단위/전사 확인용</span></h4>
+    <div class="mb4"><h4 class="mb2">${h(c[keyField])}(기준연도) <span class="fz11 text-gray">조직단위/전사 확인용</span></h4>
       <div class="tbl-wrap"><table>
         <tr><th class="lbl">구분</th>${monthHeads}<th>계</th></tr>
         ${filtered.map(r=>rowHtml(r.costDept,r)).join("")}
@@ -15663,6 +15669,11 @@ function _bpSgaByCategoryHtml(list,filterDept){
   `;
   }).join("");
 }
+function _bpSgaByCategoryHtml(list,filterDept){return _bpSgaGroupedHtml(list,filterDept,"category");}
+// 계정과목(판관/용역/경상)별 집계 — 항목 그리드의 "계정과목" 셀렉트 값을 그대로 재사용.
+function _bpSgaByAccountTypeHtml(list,filterDept){return _bpSgaGroupedHtml(list,filterDept,"accountType");}
+// 비용계정(실제 회계 계정과목, 예: "514 통신비")별 집계 — 항목 그리드의 "비용계정" 검색선택 값을 재사용.
+function _bpSgaByExpenseAccountHtml(list,filterDept){return _bpSgaGroupedHtml(list,filterDept,"expenseAccount");}
 
 // ── 설정(예산담당자/기획팀장 지정, 입력기간 on/off) ──
 function _renderBizPlanSettingsTab(){

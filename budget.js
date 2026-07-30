@@ -256,6 +256,40 @@ function _sgaRollupByCostDept(plans) {
   return { byCostDept, company: { months: companyMonths.map(round2), total: round2(companyTotal) } };
 }
 
+// 판관비 항목(sgaItems)을 임의의 필드(구분/계정과목/비용계정 등, getKey로 지정) 기준으로
+// 나눈 뒤, 그 안에서 다시 비용귀속부문(costDept) 기준으로 재집계하는 공용 로직.
+// _sgaRollupByCategory/_sgaRollupByAccountType/_sgaRollupByExpenseAccount가 공유한다.
+function _sgaRollupByField(plans, getKey, defaultLabel) {
+  const byKeyMap = {};
+  plans.forEach(p => {
+    const items = (p.assumptions && p.assumptions.sgaItems) || [];
+    items.forEach(item => {
+      const key = getKey(item) || defaultLabel;
+      const cd = item.costDept || p.dept || '(미지정)';
+      if (!byKeyMap[key]) byKeyMap[key] = { byCostDeptMap: {}, companyMonths: Array(12).fill(0), companyTotal: 0 };
+      const keyBucket = byKeyMap[key];
+      if (!keyBucket.byCostDeptMap[cd]) keyBucket.byCostDeptMap[cd] = { costDept: cd, months: Array(12).fill(0), total: 0 };
+      const bucket = keyBucket.byCostDeptMap[cd];
+      if (Array.isArray(item.months)) {
+        item.months.forEach((v, i) => { bucket.months[i] += (v || 0); keyBucket.companyMonths[i] += (v || 0); });
+      }
+      bucket.total += item.baseAmount || 0;
+      keyBucket.companyTotal += item.baseAmount || 0;
+    });
+  });
+  return Object.keys(byKeyMap).map(key => {
+    const keyBucket = byKeyMap[key];
+    const byCostDept = Object.values(keyBucket.byCostDeptMap)
+      .map(r => ({ ...r, months: r.months.map(round2), total: round2(r.total) }))
+      .sort((a, b) => b.total - a.total);
+    return {
+      key,
+      byCostDept,
+      company: { months: keyBucket.companyMonths.map(round2), total: round2(keyBucket.companyTotal) }
+    };
+  }).sort((a, b) => b.company.total - a.company.total);
+}
+
 // 3단계 자료 연계(개인별 급여 → 팀별 월별 그리드 → 부문별 집계표) 중 마지막 단계:
 // 판관비 항목(sgaItems)을 "구분"(category — 급여/복리후생비/교육훈련비/지급수수료/사회보험/
 // 퇴직급여 등, `_BP_DEFAULT_SGA_TEMPLATE`이 이미 각 항목에 붙여두는 표준 분류) 별로 나눈 뒤,
@@ -263,34 +297,23 @@ function _sgaRollupByCostDept(plans) {
 // category 값을 그대로 재사용하므로 별도 입력·매핑 없이 항목을 입력하는 순간 이 집계에
 // 자동으로 반영된다. company는 그 구분의 전사 합계.
 function _sgaRollupByCategory(plans) {
-  const byCategoryMap = {};
-  plans.forEach(p => {
-    const items = (p.assumptions && p.assumptions.sgaItems) || [];
-    items.forEach(item => {
-      const cat = item.category || '(미분류)';
-      const cd = item.costDept || p.dept || '(미지정)';
-      if (!byCategoryMap[cat]) byCategoryMap[cat] = { byCostDeptMap: {}, companyMonths: Array(12).fill(0), companyTotal: 0 };
-      const catBucket = byCategoryMap[cat];
-      if (!catBucket.byCostDeptMap[cd]) catBucket.byCostDeptMap[cd] = { costDept: cd, months: Array(12).fill(0), total: 0 };
-      const bucket = catBucket.byCostDeptMap[cd];
-      if (Array.isArray(item.months)) {
-        item.months.forEach((v, i) => { bucket.months[i] += (v || 0); catBucket.companyMonths[i] += (v || 0); });
-      }
-      bucket.total += item.baseAmount || 0;
-      catBucket.companyTotal += item.baseAmount || 0;
-    });
-  });
-  return Object.keys(byCategoryMap).map(cat => {
-    const catBucket = byCategoryMap[cat];
-    const byCostDept = Object.values(catBucket.byCostDeptMap)
-      .map(r => ({ ...r, months: r.months.map(round2), total: round2(r.total) }))
-      .sort((a, b) => b.total - a.total);
-    return {
-      category: cat,
-      byCostDept,
-      company: { months: catBucket.companyMonths.map(round2), total: round2(catBucket.companyTotal) }
-    };
-  }).sort((a, b) => b.company.total - a.company.total);
+  return _sgaRollupByField(plans, item => item.category, '(미분류)')
+    .map(r => ({ category: r.key, byCostDept: r.byCostDept, company: r.company }));
+}
+
+// 판관비 항목을 "계정과목"(accountType — 판관/용역/경상, budget.js CATEGORIES와 동일한
+// 값 체계) 기준으로 나눈 뒤 비용귀속부문별 재집계. 항목 입력 시 선택한 계정과목이 그대로
+// 반영되며 별도 매핑이 필요 없다.
+function _sgaRollupByAccountType(plans) {
+  return _sgaRollupByField(plans, item => item.accountType, '(미지정)')
+    .map(r => ({ accountType: r.key, byCostDept: r.byCostDept, company: r.company }));
+}
+
+// 판관비 항목을 "비용계정"(expenseAccount — 실제 회계 계정과목 검색선택 필드) 기준으로
+// 나눈 뒤 비용귀속부문별 재집계. 비용계정을 지정하지 않은 항목은 '(미지정)'으로 묶인다.
+function _sgaRollupByExpenseAccount(plans) {
+  return _sgaRollupByField(plans, item => item.expenseAccount, '(미지정)')
+    .map(r => ({ expenseAccount: r.key, byCostDept: r.byCostDept, company: r.company }));
 }
 
 // 표준 판관비 "구분"(category) 목록 — public/index.html의 _BP_DEFAULT_SGA_TEMPLATE 카테고리와
@@ -904,8 +927,12 @@ module.exports = function budgetRouterFactory(deps) {
     // 단계 — 판관비 항목을 "구분"(급여/복리후생비/교육훈련비/사회보험 등)별로 나눈 뒤
     // 그 안에서 다시 비용귀속부문 기준으로 집계.
     const sgaByCategory = _sgaRollupByCategory(scoped);
+    // sgaByAccountType/sgaByExpenseAccount: sgaByCategory와 동일한 구조로, "구분" 대신
+    // 각각 계정과목(판관/용역/경상)·비용계정(실제 회계 계정과목) 기준으로 재집계한 것.
+    const sgaByAccountType = _sgaRollupByAccountType(scoped);
+    const sgaByExpenseAccount = _sgaRollupByExpenseAccount(scoped);
 
-    res.json({ ok: true, includeDraft, byDept, company: { planCount: scoped.length, projection: _rollup(scoped) }, sgaByCostDept, sgaByCategory });
+    res.json({ ok: true, includeDraft, byDept, company: { planCount: scoped.length, projection: _rollup(scoped) }, sgaByCostDept, sgaByCategory, sgaByAccountType, sgaByExpenseAccount });
   });
 
   // 예산(비인건비 판관/용역/경상) 엑셀 일괄 업로드 — 관리자 전용. 열 구성: "팀명"(필수,
