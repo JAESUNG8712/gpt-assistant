@@ -6723,6 +6723,7 @@ function submitRetire(id){
   autoSaveToServerIfEnabled();
   closeModal();showToast("퇴직 처리가 완료되었습니다.","info");renderHRListTbl();
   if(currentPage==="biz-plan")renderBizPlanPage();
+  else if(currentPage==="hr-stats")renderHRStatsPage();
 }
 // 퇴직자에 대한 미결 참조를 정리 — 퇴직 이후에도 결재 위임이 계속 대결자로 치환되거나,
 // 승인 시 급여에 반영될 수 있는 초과근무/경비 건이 그대로 남는 것을 방지
@@ -15825,7 +15826,7 @@ function _renderBizPlanHeadcountTab(){
 
   html+=`<div class="card mb3" style="background:#f8fafc"><div class="card-body">
     <h4 class="mb2">📈 연도별 증감 비교</h4>
-    <div class="fz11 text-gray mb2">비교할 연도를 쉼표로 구분해 2개 이상 입력하세요(예: 2025,2026,2027 — 전년 대비도 이렇게 입력). 업로드된 "계획 인원 현황"을 기준으로 부문별 월평균 인원과 연도 간 증감을 함께 보여줍니다.</div>
+    <div class="fz11 text-gray mb2">비교할 연도를 쉼표로 구분해 2개 이상 입력하세요(예: 2025,2026,2027 — 전년 대비도 이렇게 입력). 재직자 기준(실제 인사 데이터)은 업로드 없이 항상 바로 비교되고, 계획 인원 현황(업로드된 예측치) 비교는 별도로 함께 보여줍니다. 두 표 모두 부문별 + 전체 합계를 함께 표시합니다.</div>
     <div style="display:flex;gap:8px;align-items:end">
       <div class="fg" style="max-width:260px"><label class="fl">비교 연도(쉼표로 구분)</label><input class="fc" id="bp-hc-compare-years" value="${h(_bpHcCompareYears)}" placeholder="예: 2025,2026,2027"></div>
       <button class="btn btn-secondary btn-sm" onclick="compareBizPlanHeadcountYears()">비교</button>
@@ -15852,7 +15853,26 @@ async function compareBizPlanHeadcountYears(){
 function _bpHcCompareHtml(){
   const c=_bpHcCompareData;if(!c)return "";
   const {years,byYear}=c;
-  const depts=[...new Set(years.flatMap(y=>byYear[y].map(p=>p.dept)))].filter(Boolean).sort();
+  const diffCell=v=>`<td style="text-align:right;color:${v>0?'#1b7a3d':v<0?'#c0392b':'inherit'}">${v>0?'+':''}${_bpFmt(v)}</td>`;
+  const rowCells=(label,vals)=>{
+    const diffs=vals.slice(1).map((v,i)=>v-vals[i]);
+    return `<td class="lbl">${h(label)}</td>${vals.map(v=>`<td style="text-align:right">${_bpFmt(v)}</td>`).join("")}${diffs.map(diffCell).join("")}`;
+  };
+  const theadHtml=`<tr><th class="lbl">부문</th>${years.map(y=>`<th>${y}년(월평균)</th>`).join("")}${years.slice(1).map((y,i)=>`<th>${years[i]}→${y} 증감</th>`).join("")}</tr>`;
+
+  // 재직자 기준(실제 인사 데이터) — 업로드 없이도 항상 계산 가능하므로 그 연도에 인원계획을
+  // 업로드하지 않았어도 언제나 비교를 볼 수 있다.
+  const actualByYear={};
+  years.forEach(y=>{actualByYear[y]=_bpMonthlyHeadcountByDept(y);});
+  const actualDepts=[...new Set(years.flatMap(y=>actualByYear[y].depts))].sort();
+  const avgOf=arr=>arr&&arr.length?Math.round(arr.reduce((s,v)=>s+v,0)/12):0;
+  let actualHtml=`<div class="tbl-wrap mt2"><table>${theadHtml}`;
+  actualDepts.forEach(d=>{actualHtml+=`<tr>${rowCells(d,years.map(y=>avgOf(actualByYear[y].byDept[d])))}</tr>`;});
+  actualHtml+=`<tr style="font-weight:700;background:#fdf1f1">${rowCells("전체",years.map(y=>avgOf(actualByYear[y].byDept.__ALL__)))}</tr>`;
+  actualHtml+="</table></div>";
+
+  // 업로드된 "계획 인원 현황"(예측치) 기준 — 업로드된 연도만 데이터가 있다.
+  const planDepts=[...new Set(years.flatMap(y=>byYear[y].map(p=>p.dept)))].filter(Boolean).sort();
   const monthlyAvg=(plans,dept)=>{
     const rec=dept?plans.filter(p=>p.dept===dept):plans;
     if(!rec.length)return 0;
@@ -15860,17 +15880,14 @@ function _bpHcCompareHtml(){
     rec.forEach(p=>(p.months||[]).forEach((v,i)=>{sums[i]+=(v||0);}));
     return Math.round(sums.reduce((s,v)=>s+v,0)/12);
   };
-  const diffCell=v=>`<td style="text-align:right;color:${v>0?'#1b7a3d':v<0?'#c0392b':'inherit'}">${v>0?'+':''}${_bpFmt(v)}</td>`;
-  const rowCells=(label,vals)=>{
-    const diffs=vals.slice(1).map((v,i)=>v-vals[i]);
-    return `<td class="lbl">${h(label)}</td>${vals.map(v=>`<td style="text-align:right">${_bpFmt(v)}</td>`).join("")}${diffs.map(diffCell).join("")}`;
-  };
-  let html=`<div class="tbl-wrap mt2"><table><tr><th class="lbl">부문</th>${years.map(y=>`<th>${y}년(월평균)</th>`).join("")}${years.slice(1).map((y,i)=>`<th>${years[i]}→${y} 증감</th>`).join("")}</tr>`;
-  if(!depts.length)html+=`<tr><td colspan="${1+years.length*2-1}" class="fz12 text-gray">선택한 연도에 업로드된 인원계획이 없습니다.</td></tr>`;
-  depts.forEach(d=>{html+=`<tr>${rowCells(d,years.map(y=>monthlyAvg(byYear[y],d)))}</tr>`;});
-  html+=`<tr style="font-weight:700;background:#fdf1f1">${rowCells("전체",years.map(y=>monthlyAvg(byYear[y],null)))}</tr>`;
-  html+="</table></div>";
-  return html;
+  let planHtml=`<div class="tbl-wrap mt2"><table>${theadHtml}`;
+  if(!planDepts.length)planHtml+=`<tr><td colspan="${1+years.length*2-1}" class="fz12 text-gray">선택한 연도에 업로드된 인원계획이 없습니다.</td></tr>`;
+  planDepts.forEach(d=>{planHtml+=`<tr>${rowCells(d,years.map(y=>monthlyAvg(byYear[y],d)))}</tr>`;});
+  planHtml+=`<tr style="font-weight:700;background:#fdf1f1">${rowCells("전체",years.map(y=>monthlyAvg(byYear[y],null)))}</tr>`;
+  planHtml+="</table></div>";
+
+  return `<h5 class="fz12 mt2" style="font-weight:700">🟢 재직자 기준(실제 인원현황) 연도별 증감 — 전체 + 부문별</h5>${actualHtml}
+    <h5 class="fz12 mt3" style="font-weight:700">📥 업로드된 계획 인원 현황 기준 연도별 증감</h5>${planHtml}`;
 }
 
 // ── 예산 현황 — 예산 항목 관리에 입력된 판관비 항목을 조직별/전사/개인별로 취합해 보여준다.
@@ -16027,60 +16044,23 @@ function _bpHeadcountByDeptHtml(filterDept){
     <div class="tbl-wrap"><table><tr><th class="lbl">부문</th>${monthHeads}</tr>${rows}
     <tr style="font-weight:700;background:#fdf1f1">${rowHtml("전체",byDept.__ALL__)}</tr>
     </table></div>
-  </div>${_bpRetireesInYearHtml(year,filterDept)}`;
+  </div>${_bpRetireeSummaryLinkHtml(year,filterDept)}`;
 }
-// 위 월별 인원현황 표에서 "왜 이 달에 인원이 줄었는지"를 바로 확인할 수 있도록, 그 연도에
-// retireDate가 찍힌 재직자/퇴직자 전원을 월별로 나열한다 — 실제 퇴직 인원과 표에 반영된
-// 인원 감소분이 서로 다르게 느껴질 때(예: "퇴직자는 1명뿐인데 인원이 여러 달에 걸쳐
-// 줄어든다") 이 목록으로 정확히 몇 명의 retireDate가 그 연도에 잡혀 있는지 바로 대조할 수
-// 있다(재입사 시 retireDate를 지우지 않은 채 active만 다시 true로 바꾼 경우처럼, 데이터
-// 정합성 문제로 실제 재직 중인 사람이 여기 섞여 나올 수도 있음 — 그 경우 active===true인
-// 사람도 함께 표시해 바로 눈에 띄게 한다).
-function _bpRetireesInYearHtml(year,filterDept){
-  const list=employees.filter(e=>{
-    if(!e.retireDate)return false;
-    if(filterDept&&e.dept!==filterDept)return false;
-    const rd=new Date(e.retireDate);
-    return rd.getFullYear()===year;
-  }).sort((a,b)=>(a.retireDate||"").localeCompare(b.retireDate||""));
+// 위 월별 인원현황 표의 감소분 근거(그 연도에 retireDate가 찍힌 인원)를 요약만 보여주고,
+// 상세 목록·입사자 현황·정합성 오류(active=true인데 retireDate가 남은 경우) 처리는 인사
+// 통계 페이지(_hrHireRetireListsHtml, _hrRetireesInYear/_hrHiresInYear 공용 데이터 함수 사용)
+// 로 안내한다 — 예전에는 이 상세 목록+수정 버튼 전체가 사업계획 화면에도 그대로 중복
+// 구현돼 있었는데, 같은 데이터를 다루는 화면이 인사관리 쪽에도 새로 생기면서 두 화면이
+// 서로 다른 코드로 각자 계산하다 어긋날 위험이 있어(정확히 이번에 겪은 정합성 문제와
+// 같은 클래스) 하나로 통합했다.
+function _bpRetireeSummaryLinkHtml(year,filterDept){
+  const list=_hrRetireesInYear(year,filterDept);
   if(!list.length)return "";
-  const isAdmin=currentUser?.role==="admin";
   const mismatchCount=list.filter(e=>e.active).length;
-  const rows=list.map(e=>`<tr>
-    <td class="lbl">${h(e.name)}</td><td class="lbl">${h(e.dept||"-")}</td><td class="lbl">${h(e.team||"-")}</td>
-    <td class="lbl">${h(e.retireDate)}</td><td class="lbl">${h(e.retireReason||"-")}</td>
-    <td class="lbl">${e.active?`<span style="color:#c0392b;font-weight:700">재직중(active=true)인데 퇴직일이 남아있음 — 데이터 확인 필요</span>`:"퇴직"}</td>
-    <td class="lbl">${e.active&&isAdmin?`<button class="btn btn-danger btn-sm" onclick="openRetireModal(${e.id})">퇴직 처리</button>`:""}</td>
-  </tr>`).join("");
-  return `<div class="mb4"><h4 class="mb2 fz13">${year}년 퇴직일 등록자 목록(위 인원현황 감소분의 근거) <span class="fz11 text-gray">총 ${list.length}명 — 각 월의 인원 감소는 이 목록에 있는 사람들의 퇴직월 다음 달부터 반영됩니다</span></h4>
-    ${mismatchCount&&isAdmin?`<div style="background:#fef2f2;padding:10px 14px;border-radius:8px;font-size:11px;color:#991b1b;border:1px solid #fecaca;margin-bottom:8px">
-      실제로는 퇴직했지만 직원 목록에서 정식 퇴직 처리(재직→퇴직 전환)를 하지 않아 재직중으로 남아있는 인원이 ${mismatchCount}명 있습니다. 아래에서 1명씩 확인 후 "퇴직 처리"하거나, 이미 등록된 퇴직일/사유를 그대로 신뢰할 수 있다면 한 번에 반영하세요.
-      <button class="btn btn-danger btn-sm mt1" onclick="_bpBulkFixRetireeMismatches(${year},${filterDept?`'${filterDept.replace(/'/g,"\\'")}'`:"null"})">⚠ ${mismatchCount}명 일괄 퇴직 처리(기존 퇴직일 기준)</button>
-    </div>`:""}
-    <div class="tbl-wrap"><table><tr><th class="lbl">이름</th><th class="lbl">부문</th><th class="lbl">팀</th><th class="lbl">퇴직일</th><th class="lbl">퇴직사유</th><th class="lbl">상태</th>${isAdmin?`<th class="lbl">조치</th>`:""}</tr>${rows}</table></div>
+  return `<div class="mb4" style="background:#f8fafc;padding:10px 14px;border-radius:8px;font-size:12px">
+    ${year}년 퇴직일 등록자 총 ${list.length}명 — 각 월의 인원 감소는 이 인원들의 퇴직월 다음 달부터 반영됩니다.${mismatchCount?` <span style="color:#c0392b;font-weight:700">그중 ${mismatchCount}명은 직원 목록에서 정식 퇴직 처리가 안 돼 재직중으로 집계되는 정합성 오류입니다.</span>`:""}
+    <button class="btn btn-secondary btn-sm mt1" onclick="_hrStatsYear=${year};_hrStatsFilterDept=${filterDept?`'${filterDept.replace(/'/g,"\\'")}'`:"''"};gotoPage('hr-stats')">📋 상세 목록·입사자 현황·처리는 인사 통계에서 확인 →</button>
   </div>`;
-}
-// _bpRetireesInYearHtml에서 발견된, "실제로는 퇴직했지만 직원 목록에서 정식 퇴직 처리를
-// 하지 않아 active=true로 남은" 인원 전원을, 이미 등록된 retireDate/retireReason을 그대로
-// 사용해 한 번에 정식 퇴직 처리한다(submitRetire와 동일한 효과 — active/retireDate가 항상
-// 함께 바뀌도록 유지하는 것이 이 앱의 원칙이므로, 이미 있는 retireDate를 신뢰하고 active만
-// 뒤늦게 맞춰준다). 퇴직 사유가 비어 있으면 "기타"로 채운다.
-function _bpBulkFixRetireeMismatches(year,filterDept){
-  const targets=employees.filter(e=>e.active&&e.retireDate&&(!filterDept||e.dept===filterDept)&&new Date(e.retireDate).getFullYear()===year);
-  if(!targets.length){showToast("반영할 대상이 없습니다.","info");return;}
-  if(!confirm(`${targets.length}명을 이미 등록된 퇴직일 기준으로 정식 퇴직 처리하시겠습니까?\n(퇴직 사유가 없으면 "기타"로 설정됩니다. 처리 후 해당 직원은 로그인할 수 없습니다.)`))return;
-  const now=new Date().toISOString();
-  const targetIds=new Set(targets.map(e=>e.id));
-  employees=employees.map(e=>{
-    if(!targetIds.has(e.id))return e;
-    const reason=e.retireReason||"기타";
-    const newH={id:genId(),type:"retirement",date:e.retireDate,desc:"퇴직 처리(일괄 정합성 반영) - "+reason,before:"재직",after:"퇴직 ("+e.retireDate+")",note:"인원 계획 진단표에서 일괄 반영"};
-    return {...e,active:false,retireReason:reason,hrHistory:[...(e.hrHistory||[]),newH],updatedAt:now};
-  });
-  targets.forEach(e=>_cleanupRetiredEmpReferences(e.id,e.retireDate));
-  autoSaveToServerIfEnabled();
-  showToast(`${targets.length}명의 퇴직 처리가 반영되었습니다.`,"success");
-  renderBizPlanPage();
 }
 // 판관비 항목을 "비용 귀속 부문" 기준으로 재집계한 표 — 위 byDept(계획을 작성한 팀
 // 기준)와 별개로, 실제 비용이 귀속되는 조직 단위 + 전사 합계를 함께 보여준다.
@@ -20955,7 +20935,7 @@ function printCertificate(type,forEmpId){
         <tr><td style="padding:8px 12px;background:#f8fafc;font-weight:700;border:1px solid #e2e8f0">부 서</td><td style="padding:8px 12px;border:1px solid #e2e8f0">${h(emp.dept||"")} ${h(emp.team||"")}</td></tr>
         <tr><td style="padding:8px 12px;background:#f8fafc;font-weight:700;border:1px solid #e2e8f0">직 위</td><td style="padding:8px 12px;border:1px solid #e2e8f0">${h(emp.position||ROLES[emp.role]||"")}</td></tr>
         <tr><td style="padding:8px 12px;background:#f8fafc;font-weight:700;border:1px solid #e2e8f0">입사일</td><td style="padding:8px 12px;border:1px solid #e2e8f0">${fmt(emp.hire)}</td></tr>
-        ${type==="career"&&emp.retire?`<tr><td style="padding:8px 12px;background:#f8fafc;font-weight:700;border:1px solid #e2e8f0">퇴직일</td><td style="padding:8px 12px;border:1px solid #e2e8f0">${fmt(emp.retire)}</td></tr>`:""}
+        ${type==="career"&&emp.retireDate?`<tr><td style="padding:8px 12px;background:#f8fafc;font-weight:700;border:1px solid #e2e8f0">퇴직일</td><td style="padding:8px 12px;border:1px solid #e2e8f0">${fmt(emp.retireDate)}</td></tr>`:""}
         ${extraRow}
       </table>
       <p style="padding:14px;background:#f8fafc;border-radius:4px;line-height:2;text-align:center;font-size:14px;border:1px solid #e2e8f0">${bodyText[type]||bodyText.employment}</p>
@@ -20980,10 +20960,11 @@ function _printCertContent(){
 }
 
 // ==================== HR STATISTICS (인사 통계) ====================
+let _hrStatsYear=new Date().getFullYear(),_hrStatsFilterDept="";
 function renderHRStatsPage(){
   const c=$("#content");
   const now=new Date();
-  const yr=now.getFullYear();
+  const yr=_hrStatsYear;
   const active=employees.filter(e=>e.active&&e.role!=="admin");
   const all=employees.filter(e=>e.role!=="admin");
   // Dept breakdown
@@ -21004,7 +20985,7 @@ function renderHRStatsPage(){
   const lt1=tenures.filter(t=>t<1).length,lt3=tenures.filter(t=>t>=1&&t<3).length,lt5=tenures.filter(t=>t>=3&&t<5).length,gt5=tenures.filter(t=>t>=5).length;
   // Joined/left this year
   const joined=all.filter(e=>e.hire&&e.hire.startsWith(yr)).length;
-  const left=all.filter(e=>!e.active&&e.retire&&e.retire.startsWith(yr)).length;
+  const left=all.filter(e=>!e.active&&e.retireDate&&e.retireDate.startsWith(yr)).length;
   const turnover=active.length>0?(left/(active.length+left)*100).toFixed(1):0;
   // Age/rank distribution
   const ranks=[...new Set(active.map(e=>e.rank).filter(Boolean))].sort();
@@ -21024,12 +21005,15 @@ function renderHRStatsPage(){
     const m=deptEmps.filter(e=>e.gender==="남").length,f=deptEmps.filter(e=>e.gender==="여").length;
     return`<tr><td><strong>${h(d)}</strong></td><td style="text-align:center">${m}명</td><td style="text-align:center">${f}명</td></tr>`;
   }).join("");
-  c.innerHTML=`<div class="flex" style="justify-content:flex-end;margin-bottom:10px;gap:6px">
-    <button class="btn btn-ghost btn-sm" onclick="aiAnalyzeHRStats()">🤖 AI 분석</button>
-    <button class="btn btn-secondary btn-sm" onclick="dlHRStats()">📥 인사 통계 자료 다운로드</button>
+  c.innerHTML=`<div class="flex items-c" style="justify-content:space-between;margin-bottom:10px;gap:6px;flex-wrap:wrap">
+    <label class="fz12">기준 연도 <input class="fc" type="number" style="width:90px" value="${yr}" onchange="_hrStatsYear=Number(this.value)||new Date().getFullYear();renderHRStatsPage()"></label>
+    <div class="flex gap2">
+      <button class="btn btn-ghost btn-sm" onclick="aiAnalyzeHRStats()">🤖 AI 분석</button>
+      <button class="btn btn-secondary btn-sm" onclick="dlHRStats()">📥 인사 통계 자료 다운로드</button>
+    </div>
   </div>
   <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px;margin-bottom:16px">
-    ${[{n:"재직 인원",v:active.length+"명",i:"👥",c:"#eff6ff"},{n:"올해 입사",v:joined+"명",i:"🟢",c:"#f0fdf4"},{n:"올해 퇴사",v:left+"명",i:"🔴",c:"#fef2f2"},{n:"이직률",v:turnover+"%",i:"📉",c:"#fefce8"},{n:"평균 근속",v:avgTenure+"년",i:"⏳",c:"#faf5ff"}].map(s=>`<div style="background:${s.c};border-radius:10px;padding:16px;text-align:center"><div style="font-size:22px">${s.i}</div><div class="fz11 text-gray mt1">${s.n}</div><div style="font-size:20px;font-weight:800;margin-top:4px">${s.v}</div></div>`).join("")}
+    ${[{n:"재직 인원(현재)",v:active.length+"명",i:"👥",c:"#eff6ff"},{n:`${yr}년 입사`,v:joined+"명",i:"🟢",c:"#f0fdf4"},{n:`${yr}년 퇴사`,v:left+"명",i:"🔴",c:"#fef2f2"},{n:"이직률",v:turnover+"%",i:"📉",c:"#fefce8"},{n:"평균 근속",v:avgTenure+"년",i:"⏳",c:"#faf5ff"}].map(s=>`<div style="background:${s.c};border-radius:10px;padding:16px;text-align:center"><div style="font-size:22px">${s.i}</div><div class="fz11 text-gray mt1">${s.n}</div><div style="font-size:20px;font-weight:800;margin-top:4px">${s.v}</div></div>`).join("")}
   </div>
   <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
     <div class="card"><div class="card-head"><h3>부서별 인원</h3></div><div class="card-body" style="padding:0"><div class="tbl-wrap"><table><thead><tr><th>부서</th><th>인원</th><th>비중</th></tr></thead><tbody>${deptRows||`<tr><td colspan="3" style="text-align:center;padding:20px;color:#94a3b8">데이터 없음</td></tr>`}</tbody></table></div></div></div>
@@ -21050,13 +21034,89 @@ function renderHRStatsPage(){
       </div>
     </div></div>
     <div class="card"><div class="card-head"><h3>부서별 남녀 인원</h3></div><div class="card-body" style="padding:0"><div class="tbl-wrap"><table><thead><tr><th>부서</th><th>남</th><th>여</th></tr></thead><tbody>${genderDeptRows||`<tr><td colspan="3" style="text-align:center;padding:20px;color:#94a3b8">데이터 없음</td></tr>`}</tbody></table></div></div></div>
-  </div>`;
+  </div>
+  ${_hrHireRetireListsHtml()}`;
+}
+// 해당 연도(hire/retireDate 기준)에 입사·퇴사한 인원 목록 — 사업계획의 인원현황 진단표와
+// 이 페이지가 동일한 데이터 함수를 공유해, 두 화면이 서로 다른 기준으로 계산돼 어긋나는
+// 일이 없도록 한다.
+function _hrHiresInYear(year,filterDept){
+  return employees.filter(e=>{
+    if(!e.hire)return false;
+    if(filterDept&&e.dept!==filterDept)return false;
+    return new Date(e.hire).getFullYear()===year;
+  }).sort((a,b)=>(a.hire||"").localeCompare(b.hire||""));
+}
+function _hrRetireesInYear(year,filterDept){
+  return employees.filter(e=>{
+    if(!e.retireDate)return false;
+    if(filterDept&&e.dept!==filterDept)return false;
+    return new Date(e.retireDate).getFullYear()===year;
+  }).sort((a,b)=>(a.retireDate||"").localeCompare(b.retireDate||""));
+}
+function _hrHireRetireListsHtml(){
+  const year=_hrStatsYear;
+  const filterDept=_hrStatsFilterDept;
+  const hires=_hrHiresInYear(year,filterDept);
+  const retirees=_hrRetireesInYear(year,filterDept);
+  const isAdmin=currentUser?.role==="admin";
+  const mismatchCount=retirees.filter(e=>e.active).length;
+  const hireRows=hires.map(e=>`<tr><td class="lbl">${h(e.name)}</td><td class="lbl">${h(e.dept||"-")}</td><td class="lbl">${h(e.team||"-")}</td><td class="lbl">${h(e.hire)}</td><td class="lbl">${h(e.rank||"-")}</td></tr>`).join("");
+  const retireRows=retirees.map(e=>`<tr>
+    <td class="lbl">${h(e.name)}</td><td class="lbl">${h(e.dept||"-")}</td><td class="lbl">${h(e.team||"-")}</td>
+    <td class="lbl">${h(e.retireDate)}</td><td class="lbl">${h(e.retireReason||"-")}</td>
+    <td class="lbl">${e.active?`<span style="color:#c0392b;font-weight:700">재직중(active=true)인데 퇴직일이 남아있음</span>`:"퇴직"}</td>
+    ${isAdmin?`<td class="lbl">${e.active?`<button class="btn btn-danger btn-sm" onclick="openRetireModal(${e.id})">퇴직 처리</button>`:""}</td>`:""}
+  </tr>`).join("");
+  return `<div class="card mt3"><div class="card-head"><h3>📋 연도별 입/퇴사자 목록(인력 변동 현황)</h3></div><div class="card-body">
+    <div class="flex gap2 items-c mb3" style="flex-wrap:wrap">
+      <label class="fz12">부문 <input class="fc" list="hr-stats-dept-list" style="width:160px" value="${h(filterDept)}" onchange="_hrStatsFilterDept=this.value.trim();renderHRStatsPage()" placeholder="전체"></label>
+      <datalist id="hr-stats-dept-list">${orgDB.depts.map(d=>`<option value="${h(d)}">`).join("")}</datalist>
+      <span class="fz11 text-gray">기준 연도는 위 상단의 "기준 연도"와 동일하게 적용됩니다.</span>
+    </div>
+    ${mismatchCount&&isAdmin?`<div style="background:#fef2f2;padding:10px 14px;border-radius:8px;font-size:11px;color:#991b1b;border:1px solid #fecaca;margin-bottom:12px">
+      실제로는 퇴직했지만 직원 목록에서 정식 퇴직 처리(재직→퇴직 전환)를 하지 않아 재직중으로 남아있는 인원이 ${mismatchCount}명 있습니다(사업계획의 인원현황과 직원 목록의 퇴직 필터가 서로 다르게 집계되는 원인이 됩니다). 아래에서 1명씩 확인 후 "퇴직 처리"하거나, 이미 등록된 퇴직일/사유를 그대로 신뢰할 수 있다면 한 번에 반영하세요.
+      <button class="btn btn-danger btn-sm mt1" onclick="_hrBulkFixRetireeMismatches(${year},${filterDept?`'${filterDept.replace(/'/g,"\\'")}'`:"null"})">⚠ ${mismatchCount}명 일괄 퇴직 처리(기존 퇴직일 기준)</button>
+    </div>`:""}
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+      <div>
+        <h4 class="fz13 mb2">🟢 ${year}년 입사자 (${hires.length}명)</h4>
+        <div class="tbl-wrap" style="max-height:320px;overflow-y:auto"><table><tr><th class="lbl">이름</th><th class="lbl">부문</th><th class="lbl">팀</th><th class="lbl">입사일</th><th class="lbl">직급</th></tr>${hireRows||`<tr><td colspan="5" style="text-align:center;padding:16px;color:#94a3b8">해당 연도 입사자 없음</td></tr>`}</table></div>
+      </div>
+      <div>
+        <h4 class="fz13 mb2">🔴 ${year}년 퇴사자 (${retirees.length}명)</h4>
+        <div class="tbl-wrap" style="max-height:320px;overflow-y:auto"><table><tr><th class="lbl">이름</th><th class="lbl">부문</th><th class="lbl">팀</th><th class="lbl">퇴직일</th><th class="lbl">퇴직사유</th><th class="lbl">상태</th>${isAdmin?`<th class="lbl">조치</th>`:""}</tr>${retireRows||`<tr><td colspan="${isAdmin?7:6}" style="text-align:center;padding:16px;color:#94a3b8">해당 연도 퇴사자 없음</td></tr>`}</table></div>
+      </div>
+    </div>
+  </div></div>`;
+}
+// _hrHireRetireListsHtml에서 발견된, "실제로는 퇴직했지만 직원 목록에서 정식 퇴직 처리를
+// 하지 않아 active=true로 남은" 인원 전원을, 이미 등록된 retireDate/retireReason을 그대로
+// 사용해 한 번에 정식 퇴직 처리한다(submitRetire와 동일한 효과 — active/retireDate가 항상
+// 함께 바뀌도록 유지하는 것이 이 앱의 원칙이므로, 이미 있는 retireDate를 신뢰하고 active만
+// 뒤늦게 맞춰준다). 퇴직 사유가 비어 있으면 "기타"로 채운다.
+function _hrBulkFixRetireeMismatches(year,filterDept){
+  const targets=employees.filter(e=>e.active&&e.retireDate&&(!filterDept||e.dept===filterDept)&&new Date(e.retireDate).getFullYear()===year);
+  if(!targets.length){showToast("반영할 대상이 없습니다.","info");return;}
+  if(!confirm(`${targets.length}명을 이미 등록된 퇴직일 기준으로 정식 퇴직 처리하시겠습니까?\n(퇴직 사유가 없으면 "기타"로 설정됩니다. 처리 후 해당 직원은 로그인할 수 없습니다.)`))return;
+  const now=new Date().toISOString();
+  const targetIds=new Set(targets.map(e=>e.id));
+  employees=employees.map(e=>{
+    if(!targetIds.has(e.id))return e;
+    const reason=e.retireReason||"기타";
+    const newH={id:genId(),type:"retirement",date:e.retireDate,desc:"퇴직 처리(일괄 정합성 반영) - "+reason,before:"재직",after:"퇴직 ("+e.retireDate+")",note:"인사 통계 인력 변동 현황에서 일괄 반영"};
+    return {...e,active:false,retireReason:reason,hrHistory:[...(e.hrHistory||[]),newH],updatedAt:now};
+  });
+  targets.forEach(e=>_cleanupRetiredEmpReferences(e.id,e.retireDate));
+  autoSaveToServerIfEnabled();
+  showToast(`${targets.length}명의 퇴직 처리가 반영되었습니다.`,"success");
+  renderHRStatsPage();
 }
 function aiAnalyzeHRStats(){
-  const now=new Date();const yr=now.getFullYear();
+  const now=new Date();const yr=_hrStatsYear;
   const active=employees.filter(e=>e.active&&e.role!=="admin");
   const all=employees.filter(e=>e.role!=="admin");
-  const left=all.filter(e=>!e.active&&e.retire&&e.retire.startsWith(yr)).length;
+  const left=all.filter(e=>!e.active&&e.retireDate&&e.retireDate.startsWith(yr)).length;
   const joined=all.filter(e=>e.hire&&e.hire.startsWith(yr)).length;
   const turnover=active.length>0?Number((left/(active.length+left)*100).toFixed(1)):0;
   const tenures=active.filter(e=>e.hire).map(e=>Math.floor((now-new Date(e.hire))/(365.25*24*3600*1000)));
@@ -21070,13 +21130,13 @@ function aiAnalyzeHRStats(){
   openAiOrgAnalysisModal("stats",{기준연도:yr,재직인원:active.length,올해입사:joined,올해퇴사:left,이직률:turnover+"%",평균근속:avgTenure+"년",부서별인원:deptCounts,직급별인원:rankCounts,근속연수분포:tenureDist,남녀인원:{남:maleCnt,여:femaleCnt}});
 }
 function dlHRStats(){
-  const now=new Date();const yr=now.getFullYear();
+  const now=new Date();const yr=_hrStatsYear;
   const active=employees.filter(e=>e.active&&e.role!=="admin");
   const all=employees.filter(e=>e.role!=="admin");
   const rows=[["구분","항목","수치"]];
   rows.push(["요약","재직 인원",active.length+"명"]);
   rows.push(["요약","올해 입사",all.filter(e=>e.hire&&e.hire.startsWith(yr)).length+"명"]);
-  const left=all.filter(e=>!e.active&&e.retire&&e.retire.startsWith(yr)).length;
+  const left=all.filter(e=>!e.active&&e.retireDate&&e.retireDate.startsWith(yr)).length;
   rows.push(["요약","올해 퇴사",left+"명"]);
   rows.push(["요약","이직률",(active.length>0?(left/(active.length+left)*100).toFixed(1):0)+"%"]);
   const tenures=active.filter(e=>e.hire).map(e=>Math.floor((now-new Date(e.hire))/(365.25*24*3600*1000)));
