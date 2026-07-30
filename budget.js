@@ -969,7 +969,7 @@ module.exports = function budgetRouterFactory(deps) {
       const rawName = String(row['항목'] || '').trim();
       const name = rawName.replace(/^\((판|용|경)\)/, '').trim();
       if (!name) return;
-      const detail = row['세부내역(산정근거)'] || row['세부내역'] || '';
+      const detail = String(row['세부내역(산정근거)'] || row['세부내역'] || '').trim();
       const costDept = String(row['비용 귀속'] || row['비용귀속'] || row['비용 귀속 부문'] || row['비용귀속부문'] || '').trim();
       const months = MONTHS.map(m => toNumber(row[`${m}월`]) || 0);
       (byTeam[team] = byTeam[team] || []).push({ name, detail, accountType, costDept, months });
@@ -1005,8 +1005,10 @@ module.exports = function budgetRouterFactory(deps) {
         // 아예 비어있는 굵직한 버킷은 판관/용역/경상 각각 별도 줄로 존재할 수 있어(원본의
         // "(판)급여"/"(용)급여"/"(경)급여"가 접두 제거 후 전부 "급여"로 동일해짐) accountType도
         // 매칭 키에 포함해야 한다. name+detail+accountType 조합이 같을 때만 갱신(재업로드 시
-        // upsert), 하나라도 다르면 별개의 새 줄로 추가된다.
-        const existing = sgaItems.find(e => e.name === it.name && (e.detail || '') === (it.detail || '') && e.accountType === it.accountType && (e.team || '') === team);
+        // upsert), 하나라도 다르면 별개의 새 줄로 추가된다. detail은 앞뒤 공백만 다른 값을
+        // 서로 다른 항목으로 오인해 재업로드마다 중복 줄이 쌓이는 일이 실제로 있었어(엑셀
+        // 재편집·복사붙여넣기로 공백이 섞이기 쉬움) — 저장된 값도 trim해서 비교한다.
+        const existing = sgaItems.find(e => e.name === it.name && (e.detail || '').trim() === it.detail && e.accountType === it.accountType && (e.team || '') === team);
         const baseAmount = round2(it.months.reduce((s, v) => s + v, 0));
         const category = _guessSgaCategory(it.name);
         if (existing) {
