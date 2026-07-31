@@ -28,7 +28,7 @@ def is_available() -> bool:
     return bool(os.getenv("ANTHROPIC_API_KEY"))
 
 
-MODEL = "claude-opus-4-8"
+MODEL = "claude-opus-5"
 
 _SYSTEM_PROMPT = """당신은 대한민국 최고 수준의 주식 투자 분석 전문가입니다.
 CFA(공인재무분석사), 증권사 리서치센터장 15년 경력의 관점으로 분석합니다.
@@ -99,6 +99,8 @@ RSI(14): {technical.get('RSI_14', 50):.1f}
             ],
             messages=[{"role": "user", "content": user_prompt}],
         )
+        if response.stop_reason == "refusal":
+            return _fallback_opinion(analysis_data)
         return _extract_text(response)
     except Exception as e:
         print(f"⚠️  Claude API 오류 ({stock_name}): {e}")

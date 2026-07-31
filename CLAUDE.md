@@ -109,7 +109,7 @@ SQLite DB가 컨테이너 임시 파일시스템에 생성되어 학습된 RAG �
 - `ANTHROPIC_API_KEY` — Claude API (https://console.anthropic.com) — 미설정 시 규칙 기반 분석으로 fallback
 
 ### Claude API 통합
-- 모델: `claude-opus-4-8` (적응형 사고 `thinking: adaptive`)
+- 모델: `claude-opus-5` (thinking 파라미터 생략 시 기본값이 적응형 사고로 자동 적용됨)
 - 적용 위치: `ai/stock_analysis/utils/claude_client.py`
   - `analyze_stock_opinion()` — 종목별 AI 투자의견 (StockAnalyzer)
   - `generate_executive_summary()` — 시황 종합 요약 (ReportWriter)
