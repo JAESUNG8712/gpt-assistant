@@ -27,6 +27,19 @@ class FinancialDataValidator:
         results = {}
 
         for corp_name, data in self.financial.items():
+            # 수집 자체가 실패한 종목(financial_collector가 {"error": ...}만 반환)은
+            # 모든 필드가 비어있어 이상값 검사가 통과된 것처럼 보이는 문제가 있었음 —
+            # 검증 대상에서 제외하고 "데이터없음"으로 명시
+            if "error" in data:
+                results[corp_name] = {
+                    "상태": "데이터없음",
+                    "경고": [f"🚨 데이터 수집 실패: {data['error']}"],
+                    "주의": [],
+                    "검증항목수": 0,
+                    "이상항목수": 0,
+                }
+                continue
+
             issues = []
             flags = []
 

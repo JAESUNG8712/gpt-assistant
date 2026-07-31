@@ -411,6 +411,9 @@ async def chat_stream(
             if not is_last:
                 next_p = chain[i + 1]
                 if status == 401:
+                    # API 키가 잘못된 경우 재시작 전까지 재발급될 리 없으므로
+                    # 429와 동일하게 쿨다운시켜 매 요청마다 불필요한 재시도를 막는다
+                    _set_cooldown(provider, seconds=3600)
                     print(f"[{provider}] API 키 오류 → {next_p}로 전환")
                 elif status == 429:
                     _set_cooldown(provider, seconds=3600)  # 1시간 쿨다운
@@ -420,7 +423,7 @@ async def chat_stream(
                 await asyncio.sleep(1)
                 continue
             else:
-                if status == 429:
+                if status in (401, 429):
                     _set_cooldown(provider, seconds=3600)
                 yield f"\n⚠️ 일시적인 오류가 발생했습니다 (코드 {status}). 잠시 후 다시 시도해 주세요."
                 return

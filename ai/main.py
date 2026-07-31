@@ -1,4 +1,5 @@
 import asyncio
+import functools
 import os
 import re
 import glob as _glob
@@ -105,6 +106,22 @@ if not os.getenv("DB_PATH"):
         "현재 DB는 앱 디렉토리 내부에 저장되어 재배포 시 초기화됩니다. "
         "영속 볼륨을 마운트하고 DB_PATH=<마운트경로>/memory.db 를 설정하세요."
     )
+
+# ── 민감한 엔드포인트용 선택적 인증 ────────────────────
+# (전체 대화이력 백업 다운로드, 대화이력 삭제, API 키를 소비하는 디버그 엔드포인트 등)
+# ADMIN_TOKEN을 설정하지 않으면 기존과 동일하게 인증 없이 열려 있음(하위호환 유지) —
+# 배포 환경에서는 환경변수로 설정해 보호할 것을 권장한다.
+ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "")
+if not ADMIN_TOKEN:
+    print(
+        "⚠️  ADMIN_TOKEN 환경변수가 설정되지 않았습니다. "
+        "/backup/download, /debug/law, DELETE /history 등 민감한 엔드포인트가 "
+        "누구나 접근 가능하게 열려 있습니다. 외부에 노출된 배포라면 ADMIN_TOKEN 설정을 권장합니다."
+    )
+
+def _require_admin(request: Request):
+    if ADMIN_TOKEN and request.headers.get("X-Admin-Token") != ADMIN_TOKEN:
+        raise HTTPException(401, "인증 필요 (X-Admin-Token 헤더)")
 
 app = FastAPI(title="나만의 AI 어시스턴트")
 @app.middleware("http")
@@ -506,7 +523,10 @@ async def chat(req: ChatRequest):
     )
     search_ctx = ""
     if req.use_search or auto_web_search:
-        results = srch.search_and_learn(search_msg, persona_id=persona_id)
+        # search_and_learn()은 DDGS 블로킹 호출이므로 executor에서 실행해 이벤트 루프를 막지 않는다
+        results = await asyncio.get_event_loop().run_in_executor(
+            None, functools.partial(srch.search_and_learn, search_msg, persona_id=persona_id)
+        )
         search_ctx = srch.format_search_context(results)
 
     # ── 주식 페르소나: 파이프라인 / 스크리닝 트리거 여부 판단 ────────
@@ -731,8 +751,10 @@ async def chat(req: ChatRequest):
                     _chat_targets = _extract_stock_targets(user_msg)
 
                     # ① DuckDuckGo 일반 검색 (기존)
+                    # persona_id를 명시하지 않으면 search_and_learn() 기본값(hr)으로 저장되어
+                    # stock 페르소나 검색 결과가 HR KB에 섞이는 문제가 있었음 (2026-06-22 수정 사항의 재발)
                     _ddg_task = asyncio.get_event_loop().run_in_executor(
-                        None, srch.search_and_learn, search_msg
+                        None, functools.partial(srch.search_and_learn, search_msg, persona_id=persona_id)
                     )
 
                     # ② 종목별 뉴스 수집 (병렬)
@@ -907,20 +929,25 @@ def history(limit: int = 30, persona: str = None):
     return {"history": mem.get_history(limit, persona=persona)}
 
 @app.delete("/history")
-def clear_history(persona: str = None):
+def clear_history(request: Request, persona: str = None):
+    _require_admin(request)
     mem.clear_history(persona=persona)
     return {"ok": True}
 
 @app.delete("/history/stock/reset")
-def reset_stock_history():
+def reset_stock_history(request: Request):
     """stock 페르소나 대화 이력 + 자동학습 KB 완전 초기화 (오염 제거용)"""
+    _require_admin(request)
     import sqlite3
     mem.clear_history(persona="stock")
     try:
         con = sqlite3.connect(mem.DB_PATH)
         try:
+            # 실제 저장 시 쓰이는 source 값(자동학습/웹검색:URL)과 일치시킴 —
+            # 이전 'auto_learn'/'learned' 리터럴은 실제로 저장된 적 없어 삭제가 항상 no-op이었음
             con.execute(
-                "DELETE FROM learned_knowledge WHERE persona='stock' AND source IN ('auto_learn','learned')"
+                "DELETE FROM learned_knowledge WHERE persona='stock'"
+                " AND (source='자동학습' OR source LIKE '웹검색:%')"
             )
             con.commit()
         finally:
@@ -931,6 +958,17 @@ def reset_stock_history():
 
 
 # ── 파일 텍스트 추출 유틸 ──────────────────────────────
+
+MAX_UPLOAD_BYTES = 20 * 1024 * 1024  # 20MB — 업로드 파일 크기 제한(메모리 고갈 방지)
+
+
+async def _read_upload_limited(file: UploadFile, max_bytes: int = MAX_UPLOAD_BYTES) -> bytes:
+    """전체를 무제한으로 메모리에 읽어들이지 않도록 크기 제한을 두고 업로드 파일을 읽는다"""
+    content = await file.read(max_bytes + 1)
+    if len(content) > max_bytes:
+        raise HTTPException(413, f"파일이 너무 큽니다 (최대 {max_bytes // (1024*1024)}MB)")
+    return content
+
 
 def _extract_text(content: bytes, filename: str) -> str:
     """PDF / DOCX / TXT에서 텍스트 추출"""
@@ -972,7 +1010,7 @@ def _extract_text(content: bytes, filename: str) -> str:
 
 @app.post("/learn/document")
 async def learn_document(file: UploadFile = File(...), persona: str = DEFAULT_PERSONA):
-    content = await file.read()
+    content = await _read_upload_limited(file)
     text = _extract_text(content, file.filename)
     mem.store_document(text, file.filename, persona_id=persona)
     return {"ok": True, "filename": file.filename, "chars": len(text)}
@@ -987,7 +1025,7 @@ async def analyze_resume(
     analysis_type: str = "full",
 ):
     """이력서/자소서 파일을 업로드하면 LLM이 분석 결과를 스트리밍으로 반환"""
-    content = await file.read()
+    content = await _read_upload_limited(file)
     resume_text = _extract_text(content, file.filename)
 
     if not resume_text.strip():
@@ -1146,7 +1184,8 @@ def knowledge_stats():
 # ── 백업 ──────────────────────────────────────────────
 
 @app.get("/backup/download")
-def backup_download():
+def backup_download(request: Request):
+    _require_admin(request)
     zip_bytes, filename = bkp.backup_download()
     return Response(
         content=zip_bytes,
@@ -1263,8 +1302,9 @@ def model_info():
     return llm.current_model_info()
 
 @app.get("/debug/law")
-async def debug_law(q: str = "근로기준법 제7조"):
+async def debug_law(request: Request, q: str = "근로기준법 제7조"):
     """law.go.kr API 원본 응답 확인용 (개발 디버그)"""
+    _require_admin(request)
     import httpx, traceback
     api_key = os.getenv("LAW_API_KEY", "")
     if not api_key:

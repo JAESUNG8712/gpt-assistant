@@ -3,7 +3,6 @@
 """
 
 import asyncio
-import json
 import os
 import traceback
 from datetime import datetime
@@ -155,13 +154,15 @@ class StockAnalysisPipeline:
         return writer.run()
 
     def _error_report(self, error: str, tb: str) -> str:
+        # 전체 traceback은 self.error_log에 이미 기록되어 있으므로(내부 디버깅용),
+        # 사용자에게 서빙되는 보고서 텍스트에는 내부 경로·스택 정보를 노출하지 않는다
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         return f"""{'='*60}
 ⚠️ 분석 오류 보고서 | {now}
 {'='*60}
 오류: {error}
 
-{tb}
+자세한 내용은 서버 로그를 확인해 주세요.
 {'='*60}"""
 
     def print_team_config(self):

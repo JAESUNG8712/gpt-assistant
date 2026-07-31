@@ -73,9 +73,14 @@ async def run_analysis(
     if _analysis_running:
         raise HTTPException(status_code=429, detail="분석이 이미 실행 중입니다. 잠시 후 시도하세요.")
 
+    # 플래그를 여기서(백그라운드 태스크가 아니라 요청 처리 중) 즉시 세팅해야 함.
+    # background_tasks.add_task로 예약된 함수는 응답이 반환된 뒤에 실행되므로,
+    # _run() 내부에서 세팅하면 두 요청이 거의 동시에 도착했을 때 둘 다 위 검사를
+    # 통과해버려 파이프라인이 중복 실행될 수 있었음.
+    _analysis_running = True
+
     async def _run():
         global _analysis_running, _last_report, _last_run
-        _analysis_running = True
         try:
             report = await run_once(request.target_stocks)
             _last_report = report

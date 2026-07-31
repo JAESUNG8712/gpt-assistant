@@ -9,7 +9,7 @@ from typing import List, Dict
 
 from ..utils.dart_client import (
     CORP_CODES, STOCK_CODE_MAP,
-    fetch_financial_statements, fetch_company_info,
+    fetch_financial_statements,
     fetch_dividend_info, search_disclosures,
 )
 from ..utils.krx_client import (

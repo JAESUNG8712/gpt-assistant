@@ -79,6 +79,9 @@ class EconomicCollector:
             "수집시각": datetime.now().isoformat(),
         }
         self.results["시장심리"] = self.get_market_sentiment()
+        # aggregator.py/claude_client.py가 최상위 "종합판단" 키를 읽는데
+        # get_macro_signal()이 호출되지 않아 늘 "정보없음"/"중립" 기본값으로 빠지던 문제 수정
+        self.results["종합판단"] = self.get_macro_signal()["종합판단"]
 
         print("📊 [경제수집] 완료")
         return self.results

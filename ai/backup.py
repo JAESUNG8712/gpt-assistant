@@ -124,6 +124,7 @@ async def gdrive_exchange_code(code: str) -> bool:
     Path(TOKEN_PATH).parent.mkdir(parents=True, exist_ok=True)
     with open(TOKEN_PATH, "wb") as f:
         pickle.dump(token, f)
+    os.chmod(TOKEN_PATH, 0o600)  # OAuth 토큰 파일 — 소유자만 읽기/쓰기 가능하도록 제한
     return True
 
 
