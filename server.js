@@ -6121,13 +6121,6 @@ async function _recruitAllInterviews(companyId) {
   );
   return rows.map(r => r.data);
 }
-async function _recruitInterviewById(interviewId, companyId) {
-  if (USE_JSON_FILE) return _fileRecruit.interviews.find(i => i.id === interviewId) || null;
-  const { rows } = await pool.query(
-    "SELECT data FROM recruit_interviews WHERE id = $1 AND is_deleted = FALSE AND (company_id = $2 OR company_id IS NULL)", [interviewId, companyId || null]
-  );
-  return rows[0] ? rows[0].data : null;
-}
 app.get("/api/recruit/interviews", async (req, res) => {
   if (!requireAuth(req, res)) return;
   try {

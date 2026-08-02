@@ -9837,23 +9837,6 @@ function doBulkPromotion(){
 }
 
 
-function doRegisterLegalEdu(empId){
-  const date=document.getElementById("edu-date")?.value||new Date().toISOString().slice(0,10);
-  const name=document.getElementById("edu-name")?.value.trim()||"법정의무교육";
-  const note=document.getElementById("edu-note")?.value.trim()||"";
-  employees=employees.map(e=>{
-    if(e.id!==empId) return e;
-    const hist=Array.isArray(e.hrHistory)?[...e.hrHistory]:[];
-    hist.push({id:genId(),type:"edu_legal",date,desc:name,before:"",after:"이수완료",note});
-    const cf={...(e.customFields||{}),[promotionSettings.legalEduField]:true};
-    return{...e,hrHistory:hist,customFields:cf,updatedAt:new Date().toISOString()};
-  });
-  closeModal();
-  showToast("법정의무교육 이수가 등록되었습니다.","success");
-  autoSaveToServerIfEnabled();
-  renderPromotionPage();
-}
-
 function openLegalEduBulkModal(){
   // Show all employees who haven't completed legal edu
   const notDone=employees.filter(e=>e.active&&e.role!=="admin"&&!checkLegalEdu(e).ok);
@@ -9967,45 +9950,6 @@ function tryAutoGradeAfterSecond(dept, year){
     showToast(`${dept} ${pool==="member"?"팀원":"팀장"} KPI 등급이 자동 배부되었습니다.`,"success");
   });
 }
-
-// Manual grade override with ratio check
-
-function saveKpiGradeOverride(empId, year){
-  const newGrade=document.getElementById("grade-override-sel")?.value;
-  const reason=document.getElementById("grade-override-reason")?.value.trim();
-  if(!newGrade){showToast("등급을 선택하세요.","error");return;}
-  if(!reason){showToast("수정 사유를 입력하세요.","error");return;}
-  
-  const emp=getEmp(empId);if(!emp)return;
-  const oldGrade=(emp.gradeResults||{})[String(year)]?.grade||"-";
-  
-  // Ratio check
-  const dept=emp.dept;const pool=emp.role;
-  const gs=getGradeSettings(dept);
-  const ratio=gs[pool]?.find(r=>r.grade===newGrade);
-  if(ratio){
-    const deptPoolEmps=employees.filter(e=>e.active&&e.dept===dept&&e.role===pool&&e.id!==empId);
-    const currCount=deptPoolEmps.filter(e=>(e.gradeResults||{})[String(year)]?.grade===newGrade).length;
-    const maxCount=Math.max(0,Math.round(ratio.pct/100*(deptPoolEmps.length+1)));
-    if(currCount>=maxCount){showToast(`${newGrade}등급 배정 가능 인원(${maxCount}명)을 초과합니다.`,"error");return;}
-  }
-  
-  employees=employees.map(e=>{
-    if(e.id!==empId)return e;
-    const gr={...(e.gradeResults||{})};
-    gr[String(year)]={...(gr[String(year)]||{}),grade:newGrade,manualOverride:true,
-      overrideBy:currentUser.name,overrideReason:reason,overrideAt:new Date().toISOString()};
-    return{...e,gradeResults:gr};
-  });
-  gradeAdjustHistory.push({id:genId(),type:"kpi",empId,year,dept:emp.dept,
-    oldGrade,newGrade,reason,adjustedBy:currentUser.id,adjustedByName:currentUser.name,
-    adjustedAt:new Date().toISOString()});
-  closeModal();
-  showToast(`${emp.name}님의 ${year}년 KPI 등급이 ${newGrade}로 수정되었습니다.`,"success");
-  autoSaveToServerIfEnabled();
-  renderGradeView();
-}
-
 
 // ==================== TALENT DEV PLAN PAGE ====================
 
@@ -15507,14 +15451,42 @@ function addBpSgaRow(item,tbodyId){
 // 적용된다 — 팀장은 연봉 중 600만원을 변동급으로, 나머지 전액을 고정급으로 반영하고,
 // 팀장이 아니면 연봉 전액을 고정급으로 반영한다(둘 다 사용자 확정 요구사항).
 const _BP_LEADER_VARIABLE_ANNUAL=6000000;
-function addBpLaborCostRow(){
+// 사업계획 작성 폼의 부문/팀 입력값을 읽어 그 소속 재직자 목록을 함께 반환하는 공용 헬퍼
+// (addBpLaborCostRow/addBpEmpDetailRows가 동일한 기준으로 중복 구현하던 것을 통합).
+function _bpResolveDeptTeamMatched(){
   const deptField=$("#bp-dept"),teamField=$("#bp-team");
   const dept=(deptField?deptField.value.trim():"")||_bpSgaDefaultDept||"";
   const team=deptField?(teamField?teamField.value.trim():""):(_bpSgaDefaultTeam||"");
-  if(!dept){showToast("부문을 먼저 지정하세요(관리자는 위 사업부 입력란, 팀원은 소속이 자동 지정됩니다).","error");return;}
-  const matched=team===""
+  const matched=!dept?[]:(team===""
     ? employees.filter(e=>e.active&&e.id===currentUser.id)
-    : employees.filter(e=>e.active&&e.dept===dept&&(e.team||"")===team);
+    : employees.filter(e=>e.active&&e.dept===dept&&(e.team||"")===team));
+  return {dept,team,matched};
+}
+// 판관비 그리드에서 항목명이 이미 있는 행은 값만 채우고, 없으면 새 행을 추가하는 공용 헬퍼
+// (addBpLaborCostRow/addBpEmpDetailRows가 동일한 로직을 중복 구현하던 것을 통합).
+function _bpFillOrAddSgaRow({rows,name,category,dept,team,detail,note,monthly}){
+  const targetRow=rows.find(r=>r.querySelector(".bp-sga-name").value.trim()===name);
+  if(targetRow){
+    targetRow.querySelector(".bp-sga-dept").value=dept;
+    targetRow.querySelector(".bp-sga-team").value=team;
+    targetRow.querySelector(".bp-sga-costdept").value=dept;
+    targetRow.querySelector(".bp-sga-detail").value=detail;
+    targetRow.querySelector(".bp-sga-note").value=note;
+    const monthInputs=targetRow.querySelectorAll(".bp-sga-month");
+    monthInputs.forEach(i=>{i.value=monthly;});
+    _bpUpdateSgaRowTotal(monthInputs[0]);
+  }else{
+    addBpSgaRow({
+      dept,team,costDept:dept,
+      name,category,accountType:"판관",expenseAccount:"",detail,
+      months:Array(12).fill(monthly),
+      note,growthRate:0,fixed:true
+    });
+  }
+}
+function addBpLaborCostRow(){
+  const {dept,team,matched}=_bpResolveDeptTeamMatched();
+  if(!dept){showToast("부문을 먼저 지정하세요(관리자는 위 사업부 입력란, 팀원은 소속이 자동 지정됩니다).","error");return;}
   if(!matched.length){showToast("해당 부문/팀 소속의 재직 중인 직원이 없어 인건비를 계산할 수 없습니다.","error");return;}
 
   let fixedAnnual=0,variableAnnual=0,leaderCount=0;
@@ -15534,31 +15506,11 @@ function addBpLaborCostRow(){
   const detail=`재직자 ${matched.length}명 연봉 합계 기준 자동입력(${new Date().toISOString().slice(0,10)})`;
   const note="연봉 데이터 기준 자동입력 - 인원 변동 시 재계산 필요";
   const rows=[...document.querySelectorAll("#bp-sga-tbody tr")];
-  const fillOrAddRow=(rowName,monthlyAmount)=>{
-    const targetRow=rows.find(r=>r.querySelector(".bp-sga-name").value.trim()===rowName);
-    if(targetRow){
-      targetRow.querySelector(".bp-sga-dept").value=dept;
-      targetRow.querySelector(".bp-sga-team").value=team;
-      targetRow.querySelector(".bp-sga-costdept").value=dept;
-      targetRow.querySelector(".bp-sga-detail").value=detail;
-      targetRow.querySelector(".bp-sga-note").value=note;
-      const monthInputs=targetRow.querySelectorAll(".bp-sga-month");
-      monthInputs.forEach(i=>{i.value=monthlyAmount;});
-      _bpUpdateSgaRowTotal(monthInputs[0]);
-    }else{
-      addBpSgaRow({
-        dept,team,costDept:dept,
-        name:rowName,category:"급여",accountType:"판관",expenseAccount:"",detail,
-        months:Array(12).fill(monthlyAmount),
-        note,growthRate:0,fixed:true
-      });
-    }
-  };
 
-  fillOrAddRow("고정급",fixedMonthly);
+  _bpFillOrAddSgaRow({rows,name:"고정급",category:"급여",dept,team,detail,note,monthly:fixedMonthly});
   // 변동급은 팀장이 1명 이상 있을 때만 채운다 — 팀장이 없으면 기존 값(0 또는 사용자가
   // 직접 입력해둔 값)을 그대로 두어 "변동급은 수동 입력"이라는 원래 방침을 유지한다.
-  if(leaderCount>0)fillOrAddRow("변동급",variableMonthly);
+  if(leaderCount>0)_bpFillOrAddSgaRow({rows,name:"변동급",category:"급여",dept,team,detail,note,monthly:variableMonthly});
 
   const msg=leaderCount>0
     ? `재직자 ${matched.length}명(팀장 ${leaderCount}명 포함) 연봉 기준 월 고정급 ${fixedMonthly.toLocaleString()}원 · 변동급 ${variableMonthly.toLocaleString()}원이 입력되었습니다.`
@@ -15574,14 +15526,9 @@ function addBpLaborCostRow(){
 // 조작도 안 했는데 뜬금없는 에러가 뜨는 것을 막기 위함(버튼을 직접 눌렀을 때는 안내가
 // 필요하므로 그 경로는 그대로 에러 토스트를 띄운다).
 async function addBpEmpDetailRows(silent){
-  const deptField=$("#bp-dept"),teamField=$("#bp-team");
-  const dept=(deptField?deptField.value.trim():"")||_bpSgaDefaultDept||"";
-  const team=deptField?(teamField?teamField.value.trim():""):(_bpSgaDefaultTeam||"");
+  const {dept,team,matched}=_bpResolveDeptTeamMatched();
   if(!dept){if(!silent)showToast("부문을 먼저 지정하세요(관리자는 위 사업부 입력란, 팀원은 소속이 자동 지정됩니다).","error");return;}
   const year=Number($("#bp-base-year")?.value)||new Date().getFullYear();
-  const matched=team===""
-    ? employees.filter(e=>e.active&&e.id===currentUser.id)
-    : employees.filter(e=>e.active&&e.dept===dept&&(e.team||"")===team);
   if(!matched.length){if(!silent)showToast("해당 부문/팀 소속의 재직 중인 직원이 없어 반영할 수 없습니다.","error");return;}
 
   const ids=matched.map(e=>e.id).join(",");
@@ -15605,24 +15552,7 @@ async function addBpEmpDetailRows(silent){
   const rows=[...document.querySelectorAll("#bp-sga-tbody tr")];
   names.forEach(name=>{
     const monthly=Math.round(sums[name].annualTotal/12);
-    const targetRow=rows.find(r=>r.querySelector(".bp-sga-name").value.trim()===name);
-    if(targetRow){
-      targetRow.querySelector(".bp-sga-dept").value=dept;
-      targetRow.querySelector(".bp-sga-team").value=team;
-      targetRow.querySelector(".bp-sga-costdept").value=dept;
-      targetRow.querySelector(".bp-sga-detail").value=detail;
-      targetRow.querySelector(".bp-sga-note").value=note;
-      const monthInputs=targetRow.querySelectorAll(".bp-sga-month");
-      monthInputs.forEach(i=>{i.value=monthly;});
-      _bpUpdateSgaRowTotal(monthInputs[0]);
-    }else{
-      addBpSgaRow({
-        dept,team,costDept:dept,
-        name,category:sums[name].category,accountType:"판관",expenseAccount:"",detail,
-        months:Array(12).fill(monthly),
-        note,growthRate:0,fixed:true
-      });
-    }
+    _bpFillOrAddSgaRow({rows,name,category:sums[name].category,dept,team,detail,note,monthly});
   });
   showToast(`개인별 급여 상세 ${plans.length}명분(${names.length}개 항목)이 반영되었습니다.`,"success");
 }
