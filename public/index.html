@@ -3239,49 +3239,6 @@ function saveEduReg(empId){
   renderHRList();
 }
 
-// ─── Bulk Education Registration ─────────────────────────────
-let _bulkEduTargets = []; // selected emp IDs for bulk edu
-
-
-function filterBulkEduList(dept){
-  document.querySelectorAll(".bulk-edu-row").forEach(row=>{
-    row.style.display=(!dept||row.dataset.dept===dept)?"":"none";
-  });
-}
-
-function executeBulkEdu(){
-  const type=document.getElementById("bulk-edu-type")?.value;
-  const complDate=document.getElementById("bulk-edu-start")?.value;
-  const name=document.getElementById("bulk-edu-name")?.value.trim();
-  const institution=document.getElementById("bulk-edu-institution")?.value.trim()||"";
-  const note=document.getElementById("bulk-edu-note")?.value.trim()||"";
-  const endDate=document.getElementById("bulk-edu-enddate")?.value||"";
-  if(!type||!complDate||!name){showToast("교육 유형, 이수 완료일, 교육명은 필수입니다.","error");return;}
-  const checked=[...document.querySelectorAll(".bulk-edu-chk:checked")].map(c=>Number(c.value));
-  if(!checked.length){showToast("직원을 선택하세요.","error");return;}
-  checked.forEach(empId=>{
-    const histEntry={
-      id:genId(),type,date:complDate,
-      desc:name,institution,
-      startDate:complDate,endDate:endDate||complDate,
-      before:"",after:"이수완료",note,
-    };
-    employees=employees.map(e=>{
-      if(e.id!==empId) return e;
-      const hist=Array.isArray(e.hrHistory)?[...e.hrHistory]:[];
-      hist.push(histEntry);
-      if(type==="edu_legal") return{...e,hrHistory:hist,customFields:{...(e.customFields||{}),[promotionSettings.legalEduField]:true},updatedAt:new Date().toISOString()};
-      return{...e,hrHistory:hist,updatedAt:new Date().toISOString()};
-    });
-  });
-  closeModal();
-  showToast(`${checked.length}명 교육 일괄 등록 완료.`,"success");
-  logAction("edu_bulk","교육 일괄 등록","bulk",`${HR_TYPES[type]||type}: ${name} (${checked.length}명)`);
-  autoSaveToServerIfEnabled();
-  renderHRList();
-}
-
-
 // ==================== CORE TALENT (핵심인재) ====================
 let coreTalentSettings = {
   evalYear: 2026,
