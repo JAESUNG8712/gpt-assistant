@@ -4624,7 +4624,7 @@ function connectSSE(){
             if(prevSettings!==currSettings){
               showToast(`관리자가 설정을 변경했습니다${ev.savedBy?` (${ev.savedBy})`:""}`, "info");
             }
-            renderPageSafe();
+            renderPage();
             renderSidebar();
             serverConfig.statusMsg=`동기화 완료 ${new Date().toLocaleTimeString("ko-KR")} (${ev.savedBy})`;
             updateServerStatusUI();
@@ -15264,7 +15264,16 @@ async function _bpAction(id,suffix,body){
   await loadBizPlanFromServer();
 }
 function approveBizPlanDivision(id){if(confirm("이 사업계획을 사업부장 승인(잠금)하시겠습니까?"))_bpAction(id,"/approve-division");}
-function finalApproveBizPlan(id){if(confirm("이 사업계획을 최종승인하시겠습니까?"))_bpAction(id,"/final-approve");}
+function finalApproveBizPlan(id){
+  const p=bizPlans.find(x=>String(x.id)===String(id));
+  // 아직 처리되지 않은 수정요청이 남아있는 계획을 그대로 최종확정하면, 요청된 수정이
+  // 반영되지 않은 내용이 그대로 확정된다 — 이를 인지하지 못한 채 실수로 확정하는 것을
+  // 막기 위해 경고를 한 번 더 보여준다.
+  if(p&&p.editRequest){
+    if(!confirm(`이 계획에는 아직 처리되지 않은 수정요청이 있습니다(사유: ${p.editRequest.reason||"-"}).\n수정요청을 반영하지 않은 현재 내용 그대로 최종승인하시겠습니까?`))return;
+  }else if(!confirm("이 사업계획을 최종승인하시겠습니까?"))return;
+  _bpAction(id,"/final-approve");
+}
 function requestEditBizPlan(id){
   const reason=prompt("수정요청 사유를 입력하세요:");
   if(reason===null)return;
@@ -15344,8 +15353,8 @@ function _renderBizPlanFormBody(){
       <span class="fz11 text-gray" style="margin-left:8px">계획 유형은 목록 화면의 "매출 사업계획 작성"/"비용 사업계획 작성" 버튼으로 처음 만들 때 정해지며, 이후에는 바꿀 수 없습니다.</span>
     </div>
     ${!editPlan?`<div class="fg">${isAdmin?`
-      <label class="fl">사업부(dept, 선택 — 비우면 회사 전체 계획)</label><input class="fc" id="bp-dept" list="bp-dept-list" autocomplete="off" placeholder="입력 또는 검색 — 예: 영업본부" style="margin-bottom:6px"><div class="fz11 text-gray mb2">목록에 없으면 새 부문명을 그대로 입력할 수 있습니다.</div>
-      <label class="fl">팀(team, 선택)</label><input class="fc" id="bp-team" list="bp-team-list" autocomplete="off" placeholder="입력 또는 검색 — 예: 영업1팀">
+      <label class="fl">사업부(dept, 선택 — 비우면 회사 전체 계획)</label><input class="fc" id="bp-dept" list="bp-dept-list" autocomplete="off" placeholder="입력 또는 검색 — 예: 영업본부" style="margin-bottom:6px" onchange="_bpSyncSgaRowsDeptTeam()"><div class="fz11 text-gray mb2">목록에 없으면 새 부문명을 그대로 입력할 수 있습니다. 아래 판관비 항목 중 아직 부문을 직접 입력하지 않은 행에 자동으로 채워집니다.</div>
+      <label class="fl">팀(team, 선택)</label><input class="fc" id="bp-team" list="bp-team-list" autocomplete="off" placeholder="입력 또는 검색 — 예: 영업1팀" onchange="_bpSyncSgaRowsDeptTeam()">
     `:`<div class="fz12 text-gray">소속: 내 소속(자동 지정 — ${h(bizPlanMyProfile?bizPlanMyProfile.dept:"")}${bizPlanMyProfile&&bizPlanMyProfile.team?" / "+h(bizPlanMyProfile.team):""})</div>`}</div>`:""}
     ${!isCostOnly?`<div id="bp-revenue-fields">
       <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px">
@@ -15379,6 +15388,27 @@ function _renderBizPlanFormBody(){
       <button class="btn btn-secondary" onclick="_bizPlanCancelForm()">취소</button>
     </div>
   `;
+}
+// 관리자가 작성 폼 상단의 사업부/팀 입력을 채우거나 바꿀 때, 아직 공백인 판관비 그리드
+// 행의 부문/팀명/비용귀속부문 칸을 자동으로 채워준다(각 칸을 독립적으로 판단 — 예: 부문을
+// 먼저 채운 뒤 팀을 나중에 입력해도 팀 칸이 정상적으로 채워짐). 이미 값이 채워진 칸(다른
+// 팀 비용을 이 계획으로 일부러 귀속시키려 직접 입력한 경우 등)은 그대로 두고 덮어쓰지
+// 않는다. 신규 작성 화면은 관리자의 경우 초기값이 항상 공백이라(팀원은 소속이 자동
+// 지정되지만 관리자는 사업부를 직접 입력해야 함), 이 동기화가 없으면 상단에 입력한
+// 사업부가 이미 렌더링된 38개 표준 항목 행에는 전혀 반영되지 않는 문제가 있었다.
+function _bpSyncSgaRowsDeptTeam(){
+  const dept=$("#bp-dept")?.value.trim()||"";
+  const team=$("#bp-team")?.value.trim()||"";
+  _bpSgaDefaultDept=dept;_bpSgaDefaultTeam=team; // 이후 "+ 판관비 항목 추가"로 만드는 새 행에도 적용
+  document.querySelectorAll("#bp-sga-tbody tr").forEach(row=>{
+    const deptInput=row.querySelector(".bp-sga-dept");
+    const teamInput=row.querySelector(".bp-sga-team");
+    const costDeptInput=row.querySelector(".bp-sga-costdept");
+    if(!deptInput)return;
+    if(!deptInput.value.trim())deptInput.value=dept;
+    if(teamInput&&!teamInput.value.trim())teamInput.value=team;
+    if(costDeptInput&&!costDeptInput.value.trim())costDeptInput.value=dept;
+  });
 }
 // item이 있으면(수정/재편집) 기존 값으로 채우고, 없으면 계획 소속(_bpSgaDefaultDept/Team)을
 // 기본값으로 새 행을 만든다. months가 없는(이번 변경 이전에 저장된 단순 항목) 기존
@@ -15801,6 +15831,12 @@ function _renderBizPlanBudgetOverviewTab(){
       <input class="fc" list="bp-dept-list" autocomplete="off" style="display:inline-block;width:auto" value="${h(filterDept)}" placeholder="부문/사업부/센터 검색" onchange="_bizPlanRollupDeptFilter=this.value.trim();renderBizPlanPage()">
     </label>
   </div>`;
+  // 사업부장 승인을 아직 안 받은 draft 계획만 있는 경우(신규 팀·신규 회사의 가장 흔한
+  // 초기 상태) 기본값(작성중 미포함)에서는 아무 데이터도 안 보여, "데이터가 안 들어갔다"고
+  // 오인하기 쉽다는 지적이 있어 이유를 바로 안내한다.
+  if(!_bizPlanRollupIncludeDraft&&d.company.planCount===0){
+    html+=`<div class="fz12" style="background:#fffbeb;color:#92400e;border:1px solid #fde68a;border-radius:8px;padding:10px 14px;margin-bottom:14px">아직 사업부장 승인을 받은 계획이 없어 표시할 데이터가 없습니다. 작성중(draft) 상태의 계획도 확인하려면 위 "작성중(draft) 계획도 포함" 체크박스를 켜보세요.</div>`;
+  }
   const rollupTable=rows=>{
     if(!rows.length)return `<div class="fz12 text-gray">데이터 없음</div>`;
     let t=`<table><tr><th class="lbl">연도</th>${rows.map(r=>`<th>${r.year}</th>`).join("")}</tr>`;
