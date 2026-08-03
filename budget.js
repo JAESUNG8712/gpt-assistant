@@ -3,15 +3,18 @@ const fs = require('fs');
 const path = require('path');
 const multer = require('multer');
 const xlsx = require('xlsx');
+const pool = require('./db');
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
-// server.js의 DATA_FILE(hr-data.json)과 동일한 패턴 — 환경변수 미설정 시에만 앱 소스
-// 디렉토리(__dirname) 기본 경로로 폴백한다. 이 폴백 경로는 Render 등에서 재배포 시
-// 매번 새로 빌드되는 컨테이너 파일시스템에 위치해 영속되지 않는데, render.yaml은
-// DATA_FILE(hr-data.json)만 영속 디스크(/var/data)로 지정하고 BUDGET_DATA_FILE은
-// 지정하지 않고 있어 실제로 코드 배포(재빌드)때마다 사업계획·예산 데이터 전체가
-// 초기화되고 있었다(사용자 실사용 보고로 발견) — render.yaml에 BUDGET_DATA_FILE을
-// 같은 영속 디스크 경로로 추가해 해결.
+// 메인 데이터(employees/kpi_entries)가 Postgres 모드(DATABASE_URL 설정)면 budget.js도
+// 같은 기준으로 Postgres에 저장한다(budget_store 테이블, schema.sql 참고) — 이전에는
+// DB 모드에서도 로컬 JSON 파일(budget-data.json)만 썼는데, Render 등 PaaS의 컨테이너
+// 파일시스템은 재배포마다 초기화되고 영속 디스크(Persistent Disk)는 유료 플랜에서만
+// 쓸 수 있어(2026-08-03 실사용자 확인 — 무료/스타터 플랜은 디스크 자체를 못 씀) 이
+// 파일이 재배포마다 항상 사라지는 근본적인 한계가 있었다. DATABASE_URL이 없는
+// 배포(자체호스팅/오프라인 단일회사 모드)는 기존과 동일하게 로컬 JSON 파일을 그대로 쓴다.
+const USE_DB = !!process.env.DATABASE_URL;
+// 파일 모드 폴백 경로 — server.js의 DATA_FILE(hr-data.json)과 동일한 패턴.
 const BUDGET_FILE = process.env.BUDGET_DATA_FILE || path.join(__dirname, 'budget-data.json');
 const MONTHS = Array.from({ length: 12 }, (_, i) => i + 1);
 const CATEGORIES = ['판관', '용역', '경상'];
@@ -55,7 +58,7 @@ function _emptyCompanyBudget() {
   };
 }
 
-function _readAllBudget() {
+function _readAllBudgetFile() {
   if (!fs.existsSync(BUDGET_FILE)) return {};
   let raw;
   try {
@@ -71,7 +74,7 @@ function _readAllBudget() {
   return raw;
 }
 
-function _writeAllBudget(all) {
+function _writeAllBudgetFile(all) {
   // BUDGET_FILE의 상위 디렉토리가 없으면(디스크 마운트 지연·미설정 등) writeFileSync가
   // ENOENT를 던진다 — 2026-08-03 실제 운영 장애 원인(mkdir 없이 바로 write를 시도해
   // 디렉토리 부재 시 그대로 크래시). 매 쓰기 전에 디렉토리를 보장해 이 경로의 크래시를
@@ -85,9 +88,35 @@ function _budgetKey(companyId) {
   return companyId || '_legacy';
 }
 
-function readBudget(companyId) {
-  const all = _readAllBudget();
-  const data = all[_budgetKey(companyId)] || _emptyCompanyBudget();
+// DB 모드에서 이 회사(key)의 행이 아직 없으면, 과거에 파일 모드로 저장된 데이터가
+// 남아있는지(디스크가 없어져도 이번 컨테이너에 우연히 남아있거나, DATABASE_URL을
+// 이번에 처음 설정한 경우 등) 1회성으로 확인해 있으면 그대로 옮겨온다 — 없으면 그냥
+// 빈 데이터로 시작(파일이 아예 없거나 손상돼도 예외를 던지지 않고 조용히 무시).
+async function _migrateFileToDbIfPresent(key) {
+  let fileData;
+  try {
+    fileData = _readAllBudgetFile()[key];
+  } catch (e) {
+    return null;
+  }
+  if (!fileData) return null;
+  await pool.query(
+    'INSERT INTO budget_store (company_id, data) VALUES ($1,$2) ON CONFLICT (company_id) DO NOTHING',
+    [key, JSON.stringify(fileData)]
+  );
+  return fileData;
+}
+
+async function readBudget(companyId) {
+  const key = _budgetKey(companyId);
+  let data;
+  if (USE_DB) {
+    const { rows } = await pool.query('SELECT data FROM budget_store WHERE company_id=$1', [key]);
+    data = rows.length ? rows[0].data : await _migrateFileToDbIfPresent(key);
+  } else {
+    data = _readAllBudgetFile()[key];
+  }
+  if (!data) data = _emptyCompanyBudget();
   // businessPlans/budgetPlanSettings는 이번(또는 이전)에 신설된 필드라, 그 이전에 이미
   // 저장된 회사 데이터를 읽으면 undefined일 수 있다 — 백필.
   if (!Array.isArray(data.businessPlans)) data.businessPlans = [];
@@ -112,10 +141,19 @@ function readBudget(companyId) {
   return data;
 }
 
-function writeBudget(companyId, data) {
-  const all = _readAllBudget();
-  all[_budgetKey(companyId)] = data;
-  _writeAllBudget(all);
+async function writeBudget(companyId, data) {
+  const key = _budgetKey(companyId);
+  if (USE_DB) {
+    await pool.query(
+      `INSERT INTO budget_store (company_id, data, updated_at) VALUES ($1,$2,NOW())
+       ON CONFLICT (company_id) DO UPDATE SET data = EXCLUDED.data, updated_at = NOW()`,
+      [key, JSON.stringify(data)]
+    );
+  } else {
+    const all = _readAllBudgetFile();
+    all[key] = data;
+    _writeAllBudgetFile(all);
+  }
 }
 
 // requiredHeaderGroups를 지정하면(예: [['팀명','팀'],['항목']]) 단순히 "첫 시트의 1행"만
@@ -544,7 +582,7 @@ function _canViewPlan(isAdmin, profile, settings, empId, plan) {
 const router = express.Router();
 
 // 부서별/월별 인원수 업로드 (첫번째 파일)
-router.post('/upload/headcount', upload.single('file'), (req, res) => {
+router.post('/upload/headcount', upload.single('file'), async (req, res) => {
   if (!requireAdmin(req, res)) return;
   if (!req.file) return res.status(400).json({ error: '파일이 필요합니다.' });
 
@@ -556,7 +594,7 @@ router.post('/upload/headcount', upload.single('file'), (req, res) => {
   }
 
   const companyId = req.auth.companyId || null;
-  const data = readBudget(companyId);
+  const data = await readBudget(companyId);
   let upserted = 0;
 
   rows.forEach(row => {
@@ -583,12 +621,12 @@ router.post('/upload/headcount', upload.single('file'), (req, res) => {
     rows: rows.length
   });
 
-  writeBudget(companyId, data);
+  await writeBudget(companyId, data);
   res.json({ message: '인원 현황이 반영되었습니다.', upserted, depts: [...new Set(rows.map(r => r['구분']).filter(Boolean))] });
 });
 
 // 사업부/팀별 예산 상세(판관/용역/경상) 업로드 (두번째 파일)
-router.post('/upload/detail', upload.single('file'), (req, res) => {
+router.post('/upload/detail', upload.single('file'), async (req, res) => {
   if (!requireAdmin(req, res)) return;
   if (!req.file) return res.status(400).json({ error: '파일이 필요합니다.' });
 
@@ -600,7 +638,7 @@ router.post('/upload/detail', upload.single('file'), (req, res) => {
   }
 
   const companyId = req.auth.companyId || null;
-  const data = readBudget(companyId);
+  const data = await readBudget(companyId);
   let upserted = 0;
 
   rows.forEach(row => {
@@ -645,20 +683,20 @@ router.post('/upload/detail', upload.single('file'), (req, res) => {
     rows: rows.length
   });
 
-  writeBudget(companyId, data);
+  await writeBudget(companyId, data);
   res.json({ message: '예산 상세(판관/용역/경상) 내역이 반영되었습니다.', upserted, depts: [...new Set(rows.map(r => r['부문']).filter(Boolean))] });
 });
 
 // 원본 데이터 조회
-router.get('/data', (req, res) => {
+router.get('/data', async (req, res) => {
   if (!requireAdmin(req, res)) return;
-  res.json(readBudget(req.auth.companyId || null));
+  res.json(await readBudget(req.auth.companyId || null));
 });
 
 // 업로드 이력
-router.get('/uploads', (req, res) => {
+router.get('/uploads', async (req, res) => {
   if (!requireAdmin(req, res)) return;
-  const data = readBudget(req.auth.companyId || null);
+  const data = await readBudget(req.auth.companyId || null);
   res.json({ uploads: data.uploads });
 });
 
@@ -667,9 +705,9 @@ router.get('/uploads', (req, res) => {
 // 부문(costDept)을 기준으로 재집계한다(전사 합계는 프론트가 이 배열을 그대로 합산해
 // 보여주므로 groupBy와 무관하게 항상 동일 — "전사"와 "조직단위" 양쪽을 같은 응답으로
 // 커버). 인원 현황(headcount)은 비용귀속부문 개념이 없어 groupBy=costDept일 때는 항상 null.
-router.get('/summary', (req, res) => {
+router.get('/summary', async (req, res) => {
   if (!requireAdmin(req, res)) return;
-  const data = readBudget(req.auth.companyId || null);
+  const data = await readBudget(req.auth.companyId || null);
   const groupBy = req.query.groupBy === 'costDept' ? 'costDept' : 'dept';
   const keyOf = item => (groupBy === 'costDept' ? (item.costDept || item.dept) : item.dept);
 
@@ -714,16 +752,16 @@ router.get('/summary', (req, res) => {
 // 삭제 버튼(DELETE /business-plan/:id)도 따로 있으므로, 여기서 같이 지우면 사용자가
 // 예상치 못하게 사업계획 시나리오를 통째로 잃게 된다. businessPlans/budgetPlanSettings는
 // 보존한다.
-router.delete('/data', (req, res) => {
+router.delete('/data', async (req, res) => {
   if (!requireAdmin(req, res)) return;
   const companyId = req.auth.companyId || null;
-  const existing = readBudget(companyId);
+  const existing = await readBudget(companyId);
   // businessPlans/budgetPlanSettings와 마찬가지로 empPayPlans(개인별 급여 상세 계획)·
   // empPayPlanSettings(그 화면의 자동계산 요율 설정, 기존에 누락돼 있던 것을 함께 수정)·
   // headcountPlans(월별 인원 계획, 엑셀 업로드지만 사업계획 롤업에 쓰이는 계획 데이터라
   // budget.html의 "실적 업로드" 초기화 범위 밖)도 파일 "업로드"(실적/현황) 데이터가
   // 아니라 화면/사업계획 쪽에서 관리하는 별개 데이터라 함께 보존한다.
-  writeBudget(companyId, {
+  await writeBudget(companyId, {
     ..._emptyCompanyBudget(),
     businessPlans: existing.businessPlans,
     budgetPlanSettings: existing.budgetPlanSettings,
@@ -737,16 +775,16 @@ router.delete('/data', (req, res) => {
 // ── 개인별 급여 상세(계획용, 3단계 자료 연계의 1단계) ──────────────────────────
 // 직원별·연도별로 표준 판관비 항목(급여 세부/복리후생비/RSU 등) 각각의 연간 금액을
 // 입력해두는 화면의 백엔드. 민감한 개인별 급여 정보라 조회·입력 모두 관리자 전용.
-router.get('/emp-pay-plan', (req, res) => {
+router.get('/emp-pay-plan', async (req, res) => {
   if (!requireAdmin(req, res)) return;
   const companyId = req.auth.companyId || null;
-  const data = readBudget(companyId);
+  const data = await readBudget(companyId);
   const year = req.query.year ? Number(req.query.year) : null;
   const plans = year ? data.empPayPlans.filter(p => p.year === year) : data.empPayPlans;
   res.json({ ok: true, plans });
 });
 
-router.post('/emp-pay-plan', (req, res) => {
+router.post('/emp-pay-plan', async (req, res) => {
   if (!requireAdmin(req, res)) return;
   const companyId = req.auth.companyId || null;
   const body = req.body || {};
@@ -767,7 +805,7 @@ router.post('/emp-pay-plan', (req, res) => {
   const severanceMultiplier = body.severanceMultiplier !== undefined ? (Number(body.severanceMultiplier) || 1) : undefined;
   const severanceBaseline = body.severanceBaseline !== undefined ? (Number(body.severanceBaseline) || 0) : undefined;
 
-  const data = readBudget(companyId);
+  const data = await readBudget(companyId);
   const existing = data.empPayPlans.find(p => String(p.empId) === String(empId) && p.year === year);
   const now = new Date().toISOString();
   if (existing) {
@@ -785,22 +823,22 @@ router.post('/emp-pay-plan', (req, res) => {
       createdAt: now, updatedAt: now,
     });
   }
-  writeBudget(companyId, data);
+  await writeBudget(companyId, data);
   res.json({ ok: true, plans: data.empPayPlans.filter(p => p.year === year) });
 });
 
 // 개인별 급여 상세 자동계산(퇴직급여 증가분, 4대보험+주민세)에 쓰이는 요율 설정 —
 // admin 전용(설정 조회 자체가 emp-pay-plan 화면 전용 정보이므로 조회 화면과 동일한
 // 인가 수준을 맞춘다).
-router.get('/emp-pay-plan/settings', (req, res) => {
+router.get('/emp-pay-plan/settings', async (req, res) => {
   if (!requireAdmin(req, res)) return;
-  const data = readBudget(req.auth.companyId || null);
+  const data = await readBudget(req.auth.companyId || null);
   res.json({ ok: true, settings: data.empPayPlanSettings });
 });
-router.post('/emp-pay-plan/settings', (req, res) => {
+router.post('/emp-pay-plan/settings', async (req, res) => {
   if (!requireAdmin(req, res)) return;
   const companyId = req.auth.companyId || null;
-  const data = readBudget(companyId);
+  const data = await readBudget(companyId);
   const body = req.body || {};
   if (body.severance) {
     data.empPayPlanSettings.severance = {
@@ -817,7 +855,7 @@ router.post('/emp-pay-plan/settings', (req, res) => {
       localTax: Number(body.socialInsurance.localTax) || 0,
     };
   }
-  writeBudget(companyId, data);
+  await writeBudget(companyId, data);
   res.json({ ok: true, settings: data.empPayPlanSettings });
 });
 
@@ -826,25 +864,25 @@ router.post('/emp-pay-plan/settings', (req, res) => {
 // employees[] 배열(연봉 포함, 이 앱에서 기존부터 전 역할에 공개되어 온 정보)을 들고 있어
 // "이 팀 소속 직원 id 목록"을 스스로 판단할 수 있으므로, 그 id들에 한해서만 상세 항목을
 // 내려준다(회사 전체 개인별 급여 상세를 한 번에 열람하는 것은 여전히 관리자 전용).
-router.get('/emp-pay-plan/by-ids', (req, res) => {
+router.get('/emp-pay-plan/by-ids', async (req, res) => {
   if (!requireAuth(req, res)) return;
   const companyId = req.auth.companyId || null;
   const year = req.query.year ? Number(req.query.year) : null;
   const ids = String(req.query.ids || '').split(',').map(s => s.trim()).filter(Boolean);
   if (!year || !ids.length) return res.json({ ok: true, plans: [] });
-  const data = readBudget(companyId);
+  const data = await readBudget(companyId);
   const plans = data.empPayPlans.filter(p => p.year === year && ids.includes(String(p.empId)));
   res.json({ ok: true, plans });
 });
 
-router.delete('/emp-pay-plan/:id', (req, res) => {
+router.delete('/emp-pay-plan/:id', async (req, res) => {
   if (!requireAdmin(req, res)) return;
   const companyId = req.auth.companyId || null;
-  const data = readBudget(companyId);
+  const data = await readBudget(companyId);
   const idx = data.empPayPlans.findIndex(p => p.id === req.params.id);
   if (idx === -1) return res.status(404).json({ error: '데이터를 찾을 수 없습니다.' });
   data.empPayPlans.splice(idx, 1);
-  writeBudget(companyId, data);
+  await writeBudget(companyId, data);
   res.json({ ok: true });
 });
 
@@ -859,16 +897,16 @@ module.exports = function budgetRouterFactory(deps) {
   // 민감정보가 아니다(오히려 몰라야 문의를 못 함).
   router.get('/business-plan/settings', async (req, res) => {
     if (!requireAuth(req, res)) return;
-    const data = readBudget(req.auth.companyId || null);
+    const data = await readBudget(req.auth.companyId || null);
     res.json({ ok: true, settings: data.budgetPlanSettings });
   });
 
   // 예산담당자/기획팀장 지정 자체는 관리자만(민감한 권한 부여이므로 다른 지정 패턴
   // — 저성과자 관리 뷰어 등 — 과 동일하게 admin 전용).
-  router.post('/business-plan/settings/roster', (req, res) => {
+  router.post('/business-plan/settings/roster', async (req, res) => {
     if (!requireAdmin(req, res)) return;
     const companyId = req.auth.companyId || null;
-    const data = readBudget(companyId);
+    const data = await readBudget(companyId);
     const body = req.body || {};
     if (body.ownerIds !== undefined) {
       if (!Array.isArray(body.ownerIds)) return res.status(400).json({ error: 'ownerIds는 배열이어야 합니다.' });
@@ -877,22 +915,22 @@ module.exports = function budgetRouterFactory(deps) {
     if (body.teamLeaderId !== undefined) {
       data.budgetPlanSettings.teamLeaderId = body.teamLeaderId === null ? null : String(body.teamLeaderId);
     }
-    writeBudget(companyId, data);
+    await writeBudget(companyId, data);
     res.json({ ok: true, settings: data.budgetPlanSettings });
   });
 
   // 입력기간 on/off: 예산담당자·기획팀장·관리자만(사용자 요청 그대로).
-  router.post('/business-plan/settings/input-window', (req, res) => {
+  router.post('/business-plan/settings/input-window', async (req, res) => {
     if (!requireAuth(req, res)) return;
     const companyId = req.auth.companyId || null;
-    const data = readBudget(companyId);
+    const data = await readBudget(companyId);
     const isAdmin = req.auth.role === 'admin';
     if (!_isBudgetOwner(isAdmin, data.budgetPlanSettings, req.auth.empId) && !_isPlanningLead(isAdmin, data.budgetPlanSettings, req.auth.empId)) {
       return res.status(403).json({ error: '예산담당자, 기획팀장, 관리자만 입력기간을 설정할 수 있습니다.' });
     }
     const open = !!(req.body && req.body.inputOpen);
     data.budgetPlanSettings.inputOpen = open;
-    writeBudget(companyId, data);
+    await writeBudget(companyId, data);
     res.json({ ok: true, settings: data.budgetPlanSettings });
   });
 
@@ -914,7 +952,7 @@ module.exports = function budgetRouterFactory(deps) {
   router.get('/business-plan', async (req, res) => {
     if (!requireAuth(req, res)) return;
     const companyId = req.auth.companyId || null;
-    const data = readBudget(companyId);
+    const data = await readBudget(companyId);
     const isAdmin = req.auth.role === 'admin';
     const profile = await getEmployeeProfile(companyId, req.auth.empId);
     const visible = data.businessPlans.filter(p => _canViewPlan(isAdmin, profile, data.budgetPlanSettings, req.auth.empId, p));
@@ -932,7 +970,7 @@ module.exports = function budgetRouterFactory(deps) {
   router.get('/business-plan/rollup', async (req, res) => {
     if (!requireAuth(req, res)) return;
     const companyId = req.auth.companyId || null;
-    const data = readBudget(companyId);
+    const data = await readBudget(companyId);
     const isAdmin = req.auth.role === 'admin';
     const isFullAccess = isAdmin
       || _isBudgetOwner(isAdmin, data.budgetPlanSettings, req.auth.empId)
@@ -1098,7 +1136,7 @@ module.exports = function budgetRouterFactory(deps) {
   // 엑셀 업로드 → 미리보기(저장하지 않음). 팀별로 파싱된 항목과, 이미 존재하는 계획이
   // 있다면 그 상태(draft/잠김)까지 함께 반환해 클라이언트가 팀별로 편집 가능한 그리드를
   // 미리 보여줄 수 있게 한다. 실제 반영은 /sga-upload/commit에서 이뤄진다.
-  router.post('/business-plan/sga-upload/parse', upload.single('file'), (req, res) => {
+  router.post('/business-plan/sga-upload/parse', upload.single('file'), async (req, res) => {
     if (!requireAdmin(req, res)) return;
     if (!req.file) return res.status(400).json({ error: '파일이 필요합니다.' });
     let rows;
@@ -1112,7 +1150,7 @@ module.exports = function budgetRouterFactory(deps) {
     }
     const companyId = req.auth.companyId || null;
     const year = Number(req.query.year) || new Date().getFullYear();
-    const data = readBudget(companyId);
+    const data = await readBudget(companyId);
     const byTeam = _parseSgaUploadRows(rows);
     const teams = Object.entries(byTeam).map(([team, items]) => {
       const matches = data.businessPlans.filter(p => p.baseYear === year && (p.team || '').trim() === team);
@@ -1130,13 +1168,13 @@ module.exports = function budgetRouterFactory(deps) {
   // 미리보기에서 사람이 조정한 팀별 항목을 실제로 저장(생성 또는 upsert). 파일이 아니라
   // 이미 파싱·편집된 JSON을 받는다 — 팀 단위로 하나씩 저장할 수도, 여러 팀을 한 번에
   // 저장할 수도 있다.
-  router.post('/business-plan/sga-upload/commit', (req, res) => {
+  router.post('/business-plan/sga-upload/commit', async (req, res) => {
     if (!requireAdmin(req, res)) return;
     const companyId = req.auth.companyId || null;
     const year = Number(req.body.year) || new Date().getFullYear();
     const teams = Array.isArray(req.body.teams) ? req.body.teams : [];
     if (!teams.length) return res.status(400).json({ error: '저장할 팀 데이터가 없습니다.' });
-    const data = readBudget(companyId);
+    const data = await readBudget(companyId);
     const updated = [], skipped = [];
     teams.forEach(t => {
       const team = String(t && t.team || '').trim();
@@ -1147,7 +1185,7 @@ module.exports = function budgetRouterFactory(deps) {
       else updated.push(result.updated);
     });
     data.uploads.push({ type: 'sga', filename: 'manual-review', uploadedAt: new Date().toISOString(), rows: teams.reduce((s, t) => s + (Array.isArray(t.items) ? t.items.length : 0), 0) });
-    writeBudget(companyId, data);
+    await writeBudget(companyId, data);
     res.json({ ok: true, updated, skipped });
   });
 
@@ -1156,7 +1194,7 @@ module.exports = function budgetRouterFactory(deps) {
   // budget.html의 기존 headcount(실적/현황 업로드)와는 완전히 별개 데이터 — 그쪽은
   // "지금까지의 실적"이고 이것은 "사업계획" 롤업에서 참고하는 예측치라, 서로 다른 화면·
   // 다른 초기화 범위로 관리한다.
-  router.post('/business-plan/headcount-plan/upload', upload.single('file'), (req, res) => {
+  router.post('/business-plan/headcount-plan/upload', upload.single('file'), async (req, res) => {
     if (!requireAdmin(req, res)) return;
     if (!req.file) return res.status(400).json({ error: '파일이 필요합니다.' });
     let rows;
@@ -1170,7 +1208,7 @@ module.exports = function budgetRouterFactory(deps) {
     }
     const companyId = req.auth.companyId || null;
     const year = Number(req.query.year) || new Date().getFullYear();
-    const data = readBudget(companyId);
+    const data = await readBudget(companyId);
     // 실사용 원본 파일의 "조직별" 시트는 부문별 "인원 현황" 블록 하나만 있는 게 아니라,
     // 같은 부문·계정과목 조합이 급여/인센티브/복리후생비/교육훈련비/사회보험/퇴직급여
     // 등 비용 집계 블록으로 여러 번 더 반복되는 구조였다(실측 발견) — 이 블록들은 맨 앞의
@@ -1210,7 +1248,7 @@ module.exports = function budgetRouterFactory(deps) {
       upserted++;
     });
     data.uploads.push({ type: 'headcountPlan', filename: req.file.originalname, uploadedAt: new Date().toISOString(), rows: rows.length });
-    writeBudget(companyId, data);
+    await writeBudget(companyId, data);
     res.json({ ok: true, upserted });
   });
 
@@ -1219,7 +1257,7 @@ module.exports = function budgetRouterFactory(deps) {
   router.get('/business-plan/headcount-plan', async (req, res) => {
     if (!requireAuth(req, res)) return;
     const companyId = req.auth.companyId || null;
-    const data = readBudget(companyId);
+    const data = await readBudget(companyId);
     const isAdmin = req.auth.role === 'admin';
     const isFullAccess = isAdmin
       || _isBudgetOwner(isAdmin, data.budgetPlanSettings, req.auth.empId)
@@ -1251,7 +1289,7 @@ module.exports = function budgetRouterFactory(deps) {
     // 한 번에 수행해, 그 구간에는 await 지점이 전혀 없도록 한다(Node 단일 스레드에서
     // await 없는 동기 블록은 다른 요청이 끼어들 수 없어 원자적).
     const profile = await getEmployeeProfile(companyId, req.auth.empId);
-    const data = readBudget(companyId);
+    const data = await readBudget(companyId);
 
     let dept, team;
     if (isAdmin) {
@@ -1306,7 +1344,7 @@ module.exports = function budgetRouterFactory(deps) {
     };
 
     data.businessPlans.push(plan);
-    writeBudget(companyId, data);
+    await writeBudget(companyId, data);
     res.json({ ok: true, plan: { ...plan, budgetComparison: computeBudgetComparison(data, plan) } });
   });
 
@@ -1314,7 +1352,7 @@ module.exports = function budgetRouterFactory(deps) {
   router.get('/business-plan/:id', async (req, res) => {
     if (!requireAuth(req, res)) return;
     const companyId = req.auth.companyId || null;
-    const data = readBudget(companyId);
+    const data = await readBudget(companyId);
     const plan = data.businessPlans.find(p => p.id === req.params.id);
     if (!plan) return res.status(404).json({ error: '사업계획을 찾을 수 없습니다.' });
     const isAdmin = req.auth.role === 'admin';
@@ -1336,7 +1374,7 @@ module.exports = function budgetRouterFactory(deps) {
     // readBudget()보다 먼저 await를 전부 끝내는 이유는 POST /business-plan 주석 참고
     // (lost-update 방지 — read→await→write 사이에 다른 요청이 끼어들지 못하게 함).
     const profile = await getEmployeeProfile(companyId, req.auth.empId);
-    const data = readBudget(companyId);
+    const data = await readBudget(companyId);
     const plan = data.businessPlans.find(p => p.id === req.params.id);
     if (!plan) return res.status(404).json({ error: '사업계획을 찾을 수 없습니다.' });
 
@@ -1386,7 +1424,7 @@ module.exports = function budgetRouterFactory(deps) {
     plan.updatedAt = new Date().toISOString();
     plan.updatedBy = req.auth.empId;
 
-    writeBudget(companyId, data);
+    await writeBudget(companyId, data);
     res.json({ ok: true, plan: { ...plan, budgetComparison: computeBudgetComparison(data, plan) } });
   });
 
@@ -1397,7 +1435,7 @@ module.exports = function budgetRouterFactory(deps) {
     const isAdmin = req.auth.role === 'admin';
     // readBudget()보다 먼저 await를 끝내는 이유는 POST /business-plan 주석 참고(lost-update 방지).
     const profile = await getEmployeeProfile(companyId, req.auth.empId);
-    const data = readBudget(companyId);
+    const data = await readBudget(companyId);
     const plan = data.businessPlans.find(p => p.id === req.params.id);
     if (!plan) return res.status(404).json({ error: '사업계획을 찾을 수 없습니다.' });
     if (!plan.dept) return res.status(400).json({ error: '팀 소속 계획이 아니라 승인 절차가 적용되지 않습니다.' });
@@ -1410,7 +1448,7 @@ module.exports = function budgetRouterFactory(deps) {
     plan.status = 'divisionApproved';
     plan.divisionApproval = { by: req.auth.empId, byName: profile ? profile.name : (isAdmin ? '관리자' : undefined), at: new Date().toISOString() };
     plan.updatedAt = new Date().toISOString();
-    writeBudget(companyId, data);
+    await writeBudget(companyId, data);
     res.json({ ok: true, plan: { ...plan, budgetComparison: computeBudgetComparison(data, plan) } });
   });
 
@@ -1419,7 +1457,7 @@ module.exports = function budgetRouterFactory(deps) {
   router.post('/business-plan/:id/final-approve', async (req, res) => {
     if (!requireAuth(req, res)) return;
     const companyId = req.auth.companyId || null;
-    const data = readBudget(companyId);
+    const data = await readBudget(companyId);
     const plan = data.businessPlans.find(p => p.id === req.params.id);
     if (!plan) return res.status(404).json({ error: '사업계획을 찾을 수 없습니다.' });
     if (plan.status !== 'divisionApproved') {
@@ -1448,7 +1486,7 @@ module.exports = function budgetRouterFactory(deps) {
       plan.status = 'finalConfirmed';
     }
     plan.updatedAt = new Date().toISOString();
-    writeBudget(companyId, data);
+    await writeBudget(companyId, data);
     res.json({ ok: true, plan: { ...plan, budgetComparison: computeBudgetComparison(data, plan) } });
   });
 
@@ -1460,7 +1498,7 @@ module.exports = function budgetRouterFactory(deps) {
     const isAdmin = req.auth.role === 'admin';
     // readBudget()보다 먼저 await를 끝내는 이유는 POST /business-plan 주석 참고(lost-update 방지).
     const profile = await getEmployeeProfile(companyId, req.auth.empId);
-    const data = readBudget(companyId);
+    const data = await readBudget(companyId);
     const plan = data.businessPlans.find(p => p.id === req.params.id);
     if (!plan) return res.status(404).json({ error: '사업계획을 찾을 수 없습니다.' });
     if (plan.status === 'draft') return res.status(400).json({ error: '이미 수정 가능한 상태입니다.' });
@@ -1472,7 +1510,7 @@ module.exports = function budgetRouterFactory(deps) {
     if (!reason) return res.status(400).json({ error: '수정요청 사유를 입력하세요.' });
 
     plan.editRequest = { requestedBy: req.auth.empId, requestedByName: profile ? profile.name : undefined, reason, requestedAt: new Date().toISOString() };
-    writeBudget(companyId, data);
+    await writeBudget(companyId, data);
     res.json({ ok: true, plan: { ...plan, budgetComparison: computeBudgetComparison(data, plan) } });
   });
 
@@ -1481,7 +1519,7 @@ module.exports = function budgetRouterFactory(deps) {
   router.post('/business-plan/:id/edit-request/approve', async (req, res) => {
     if (!requireAdmin(req, res)) return;
     const companyId = req.auth.companyId || null;
-    const data = readBudget(companyId);
+    const data = await readBudget(companyId);
     const plan = data.businessPlans.find(p => p.id === req.params.id);
     if (!plan) return res.status(404).json({ error: '사업계획을 찾을 수 없습니다.' });
     if (!plan.editRequest) return res.status(400).json({ error: '대기 중인 수정요청이 없습니다.' });
@@ -1491,22 +1529,22 @@ module.exports = function budgetRouterFactory(deps) {
     plan.finalApproval = { ownerBy: null, ownerAt: null, leadBy: null, leadAt: null };
     plan.editRequest = null;
     plan.updatedAt = new Date().toISOString();
-    writeBudget(companyId, data);
+    await writeBudget(companyId, data);
     res.json({ ok: true, plan: { ...plan, budgetComparison: computeBudgetComparison(data, plan) } });
   });
 
   // 수정요청 반려(관리자 전용) — 계획은 잠긴 채로 유지, 요청만 제거.
-  router.post('/business-plan/:id/edit-request/reject', (req, res) => {
+  router.post('/business-plan/:id/edit-request/reject', async (req, res) => {
     if (!requireAdmin(req, res)) return;
     const companyId = req.auth.companyId || null;
-    const data = readBudget(companyId);
+    const data = await readBudget(companyId);
     const plan = data.businessPlans.find(p => p.id === req.params.id);
     if (!plan) return res.status(404).json({ error: '사업계획을 찾을 수 없습니다.' });
     if (!plan.editRequest) return res.status(400).json({ error: '대기 중인 수정요청이 없습니다.' });
 
     plan.editRequest = null;
     plan.updatedAt = new Date().toISOString();
-    writeBudget(companyId, data);
+    await writeBudget(companyId, data);
     res.json({ ok: true, plan: { ...plan, budgetComparison: computeBudgetComparison(data, plan) } });
   });
 
@@ -1518,7 +1556,7 @@ module.exports = function budgetRouterFactory(deps) {
     const isAdmin = req.auth.role === 'admin';
     // readBudget()보다 먼저 await를 끝내는 이유는 POST /business-plan 주석 참고(lost-update 방지).
     const profile = isAdmin ? null : await getEmployeeProfile(companyId, req.auth.empId);
-    const data = readBudget(companyId);
+    const data = await readBudget(companyId);
     const idx = data.businessPlans.findIndex(p => p.id === req.params.id);
     if (idx === -1) return res.status(404).json({ error: '사업계획을 찾을 수 없습니다.' });
     const plan = data.businessPlans[idx];
@@ -1529,7 +1567,7 @@ module.exports = function budgetRouterFactory(deps) {
     }
 
     data.businessPlans.splice(idx, 1);
-    writeBudget(companyId, data);
+    await writeBudget(companyId, data);
     res.json({ ok: true });
   });
 

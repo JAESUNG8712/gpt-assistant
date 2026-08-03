@@ -1148,3 +1148,24 @@ DO $$ BEGIN
     ALTER TABLE annual_snapshots ADD CONSTRAINT annual_snapshots_company_eval_year_uniq UNIQUE (company_id, eval_year);
   END IF;
 END $$;
+
+-- ── budget.js(사업계획/예산) 저장소 ──────────────────────────────────────────────
+-- budget.js는 여태 회사 구분 없이 로컬 JSON 파일(budget-data.json) 하나에 전체를
+-- 저장해왔다. Render 등 PaaS의 컨테이너 파일시스템은 재배포마다 초기화되고, 영속
+-- 디스크(Persistent Disk)는 유료 플랜에서만 쓸 수 있어(2026-08-03 실사용자 확인)
+-- 무료/스타터 플랜에서는 이 파일이 재배포마다 항상 사라진다 — 메인 데이터를 이미
+-- Postgres로 쓰고 있다면 budget.js도 여기로 옮기는 것이 디스크 없이 영속성을
+-- 확보하는 유일한 방법이다. company_id는 UUID FK가 아니라 TEXT로 둔다 —
+-- 회사 개념이 없는 배포(companyId가 null인 요청)는 budget.js 내부적으로 항상
+-- '_legacy'라는 문자열 키를 쓰기 때문에(다른 테이블처럼 NULL을 그대로 저장하지
+-- 않음), UUID 컬럼으로는 이 sentinel 값을 담을 수 없다. 회사별로 통째로 하나의
+-- JSONB blob(파일 모드의 { headcount, items, uploads, businessPlans, ... } 구조를
+-- 그대로 유지)을 두는 것은 다른 모듈들의 정규화된 스키마와는 다른 절충이지만,
+-- budget.js 자체가 애초에 "파일 하나 read-modify-write" 구조로 설계돼 있어 이
+-- 인터페이스를 그대로 유지해야 라우트 핸들러 로직(도메인 계산 로직)을 재작성하지
+-- 않고 저장 계층만 교체할 수 있다.
+CREATE TABLE IF NOT EXISTS budget_store (
+  company_id TEXT        PRIMARY KEY,
+  data       JSONB       NOT NULL DEFAULT '{}'::jsonb,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
