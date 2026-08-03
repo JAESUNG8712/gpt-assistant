@@ -1103,6 +1103,45 @@ module.exports = function budgetRouterFactory(deps) {
     res.json({ ok: true, includeDraft, byDept, company: { planCount: scoped.length, projection: _rollup(scoped) }, sgaByCostDept, sgaByCategory, sgaByAccountType, sgaByExpenseAccount });
   });
 
+  // 항목별 실적 참고(신규 자동화, 작성 단계 실시간 안내): 사업계획 작성/수정 폼에서 판관비
+  // 항목을 입력하는 동안, 같은 부문/팀의 budget.html 업로드 실적(data.items, category==="판관")을
+  // 항목명 기준으로 집계해 참고 금액으로 보여준다. 기존 computeBudgetComparison()이 계획
+  // "전체" 판관비 합계 대 실적 합계만 비교하던 것(조회 시점의 읽기전용 카드에만 노출)의
+  // 항목 단위 세분화 버전 — 이미 응답으로 노출되던 총액 비교를 항목 단위로 더 잘게 쪼갠
+  // 것일 뿐이라 별도의 새로운 정보 노출은 아니다. 접근 권한은 _canViewPlan()과 동일한
+  // 기준(관리자/예산담당자/기획팀장 전체, 그 부문 사업부장, 그 부문+팀 소속 본인)을
+  // dept/team 문자열 기준으로 재현 — 계획이 아직 생성되기 전(신규 작성 중)에도 쓸 수
+  // 있어야 하므로 plan id가 아니라 dept/team 쿼리 파라미터를 받는다.
+  function _actualsByItemForDeptTeam(data, dept, team) {
+    const filtered = (data.items || []).filter(i =>
+      i.category === '판관' && i.dept === dept && (!team || (i.team || '') === team)
+    );
+    const map = {};
+    filtered.forEach(i => {
+      const key = i.account || '(미상)';
+      if (!map[key]) map[key] = { name: key, total: 0 };
+      map[key].total += i.amount || 0;
+    });
+    return Object.values(map).map(r => ({ ...r, total: round2(r.total) })).sort((a, b) => b.total - a.total);
+  }
+  router.get('/business-plan/actuals-by-item', async (req, res) => {
+    if (!requireAuth(req, res)) return;
+    const companyId = req.auth.companyId || null;
+    const dept = (req.query.dept || '').trim();
+    const team = (req.query.team || '').trim();
+    if (!dept) return res.json({ ok: true, items: [] });
+    const isAdmin = req.auth.role === 'admin';
+    const data = await readBudget(companyId);
+    const profile = await getEmployeeProfile(companyId, req.auth.empId);
+    const allowed = isAdmin
+      || _isBudgetOwner(isAdmin, data.budgetPlanSettings, req.auth.empId)
+      || _isPlanningLead(isAdmin, data.budgetPlanSettings, req.auth.empId)
+      || (profile && profile.dept === dept && (!team || (profile.team || '') === team))
+      || (profile && profile.role === 'director' && profile.dept === dept);
+    if (!allowed) return res.status(403).json({ error: '조회 권한이 없습니다.' });
+    res.json({ ok: true, items: _actualsByItemForDeptTeam(data, dept, team) });
+  });
+
   // 예산(비인건비 판관/용역/경상) 엑셀 일괄 업로드 — 관리자 전용. 열 구성: "팀명"(필수,
   // 사업계획을 이미 작성한 팀 이름과 정확히 일치해야 매칭됨) + "비용 귀속"(선택, 비우면
   // 팀명의 부문과 동일하게 취급) + "항목"(예: "(판)지급수수료" — 앞의 (판)/(용)/(경) 접두는

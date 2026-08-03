@@ -14925,9 +14925,14 @@ function _bpStatusBadge(status){
   return badge(status||"-","gray");
 }
 
+// onBizPlanPage 가드: 이 함수는 "사업계획" 화면 진입 시뿐 아니라 알림센터가
+// _bizPlanEnsureLoaded()로 백그라운드에서 미리 불러올 때도 호출된다(승인 대기 알림
+// 신설, 아래 참고) — 그때는 현재 화면(#content)이 사업계획 화면이 아니므로 "불러오는
+// 중..." 문구로 화면을 덮어써서는 안 된다.
 async function loadBizPlanFromServer(){
-  const c=$("#content");if(c)c.innerHTML=`<div class="p-empty">불러오는 중...</div>`;
-  if(!serverConfig.url){if(c)c.innerHTML=_acctNoServerHtml("사업계획");return;}
+  const onBizPlanPage=currentPage==="biz-plan";
+  const c=$("#content");if(c&&onBizPlanPage)c.innerHTML=`<div class="p-empty">불러오는 중...</div>`;
+  if(!serverConfig.url){if(c&&onBizPlanPage)c.innerHTML=_acctNoServerHtml("사업계획");_bizPlanLoaded=true;return;}
   try{
     const [rp,rs,rm]=await Promise.all([
       serverRequest("GET","/api/budget/business-plan"),
@@ -14940,7 +14945,15 @@ async function loadBizPlanFromServer(){
   }catch(e){/* 오프라인/서버 미연결 시 그대로 빈 상태로 렌더 */}
   _bizPlanLoaded=true;
   if(currentPage==="biz-plan")renderBizPlanPage();
+  // 신규 자동화 ③ 승인 워크플로우 알림: 알림센터가 미리 불러와둔 데이터가 도착하면
+  // (recruit 모듈의 _recruitEnsureLoaded 패턴과 동일하게) 이미 알림센터를 보고 있었다면
+  // 그 자리에서 바로 갱신 — 사용자가 새로고침하지 않아도 최종승인/수정요청 알림이 뜬다.
+  else if(currentPage==="notification-center")renderPage();
 }
+// recruit 모듈의 _recruitEnsureLoaded()와 동일한 패턴 — 알림센터가 사업계획 데이터를
+// 아직 한 번도 안 불러왔으면 백그라운드에서 불러온다(화면 전환 없음, 완료되면 위에서
+// 알림센터가 열려있는 경우에 한해 다시 그림).
+function _bizPlanEnsureLoaded(){if(!_bizPlanLoaded)loadBizPlanFromServer();}
 
 function renderBizPlanPage(){
   const c=$("#content");if(!c)return;
@@ -15201,6 +15214,12 @@ function _renderBizPlanMgrSearchResultHtml(){
       <button class="btn btn-ghost btn-sm mt2" onclick="addBpSgaRow(null,'${tbodyId}')">+ 판관비 항목 추가</button>
       <button class="btn btn-ghost btn-sm mt2" onclick="addBpLaborCostRow('${tbodyId}')" title="현재 인사 정보에 등록된 재직자 연봉 합계를 기준으로 월 인건비 행을 자동 생성합니다.">+ 기본 인건비 자동입력(연봉 기준)</button>
       <button class="btn btn-ghost btn-sm mt2" onclick="addBpEmpDetailRows(false,'${tbodyId}')" title="관리자가 '개인별 급여 상세' 화면에 입력해둔 RSU·인센티브·복지카드 등 항목을 팀 단위로 합산해 자동 반영합니다.">+ 개인별 급여상세 자동입력</button>
+      <span style="display:inline-flex;align-items:center;gap:4px;margin-left:4px">
+        <button class="btn btn-ghost btn-sm" onclick="loadBpPrevYearPlan('${tbodyId}')" title="같은 부문/팀의 가장 최근 이전 연도 사업계획에서 판관비 항목을 그대로 불러옵니다.">+ 전년도 계획 불러오기</button>
+        <span class="fz11 text-gray">증가율</span><input class="fc" type="number" id="bp-prevyear-growth-${tbodyId}" step="0.1" value="0" style="width:56px"><span class="fz11 text-gray">%</span>
+      </span>
+      <button class="btn btn-ghost btn-sm mt2" onclick="loadBpActualsPreview('${tbodyId}')" title="같은 부문/팀의 budget.html 업로드 실적(판관비)을 항목별로 참고 조회합니다.">📊 실적 참고 보기</button>
+      <div id="bp-actuals-preview-${tbodyId}" class="mt2"></div>
     `:`
       <div class="fz12" style="color:#8a6500">승인되어 잠긴 계획입니다(직접 수정 불가). "사업계획" 목록 화면에서 "수정요청"을 보내 관리자 승인을 받으면 다시 draft로 전환되어 이 화면에서도 수정할 수 있습니다.</div>
       ${_bpSgaDetailTableHtml(items)}
@@ -15460,6 +15479,12 @@ function _renderBizPlanFormBody(){
       <button class="btn btn-ghost btn-sm mt2" onclick="addBpSgaRow()">+ 판관비 항목 추가</button>
       <button class="btn btn-ghost btn-sm mt2" onclick="addBpLaborCostRow()" title="현재 인사 정보에 등록된 재직자 연봉 합계를 기준으로 월 인건비 행을 자동 생성합니다.">+ 기본 인건비 자동입력(연봉 기준)</button>
       <button class="btn btn-ghost btn-sm mt2" onclick="addBpEmpDetailRows()" title="관리자가 '개인별 급여 상세' 화면에 입력해둔 RSU·인센티브·복지카드 등 항목을 팀 단위로 합산해 자동 반영합니다.">+ 개인별 급여상세 자동입력</button>
+      <span style="display:inline-flex;align-items:center;gap:4px;margin-left:4px">
+        <button class="btn btn-ghost btn-sm" onclick="loadBpPrevYearPlan('bp-sga-tbody')" title="같은 부문/팀의 가장 최근 이전 연도 사업계획에서 판관비 항목을 그대로 불러옵니다.">+ 전년도 계획 불러오기</button>
+        <span class="fz11 text-gray">증가율</span><input class="fc" type="number" id="bp-prevyear-growth-bp-sga-tbody" step="0.1" value="0" style="width:56px"><span class="fz11 text-gray">%</span>
+      </span>
+      <button class="btn btn-ghost btn-sm mt2" onclick="loadBpActualsPreview('bp-sga-tbody')" title="같은 부문/팀의 budget.html 업로드 실적(판관비)을 항목별로 참고 조회합니다.">📊 실적 참고 보기</button>
+      <div id="bp-actuals-preview-bp-sga-tbody" class="mt2"></div>
     </div>
     <div class="mt3" style="display:flex;gap:8px">
       <button class="btn btn-primary" onclick="submitBizPlanForm()">${editPlan?"수정 저장":"저장"}</button>
@@ -15676,6 +15701,89 @@ async function addBpEmpDetailRows(silent,tbodyId){
     _bpFillOrAddSgaRow({rows,name,category:sums[name].category,dept,team,detail,note,monthly,tbodyId});
   });
   showToast(`${dept?"":"(전사) "}개인별 급여 상세 ${plans.length}명분(${names.length}개 항목)이 반영되었습니다.`,"success");
+}
+// 신규 자동화 ① 전년도 계획 불러오기: 같은 부문/팀의 가장 최근 이전 연도 사업계획(bizPlans는
+// 이미 서버가 role별로 걸러 로드해둔 배열이라 별도 조회 불요)에서 판관비 항목을 그대로
+// 가져와 그리드를 채운다 — 매년 38개 항목을 처음부터 다시 입력하지 않아도 되게 하는 것이
+// 목적. 이름이 같은 기존 행이 있으면(표준 템플릿 등) 그 행을 채우고, 없으면 새 행을
+// 추가한다(addBpLaborCostRow/addBpEmpDetailRows와 다르게 월별 분포를 그대로 보존해야 해서
+// 공용 헬퍼 _bpFillOrAddSgaRow를 재사용하지 않고 직접 구현). 증가율(%)을 입력하면 전년도
+// 월별 금액에 그 비율을 곱해 반영(기본 0%=그대로 복사). tbodyId — addBpLaborCostRow와
+// 동일한 이유로 매개변수화(작성폼·예산 항목 관리 조회 화면 양쪽에서 재사용).
+function loadBpPrevYearPlan(tbodyId){
+  tbodyId=tbodyId||"bp-sga-tbody";
+  const {dept,team}=_bpResolveDeptTeamMatched();
+  if(!dept){showToast("부문을 먼저 입력하세요.","error");return;}
+  const targetYear=Number($("#bp-base-year")?.value)||_bpBulkUploadYear||new Date().getFullYear();
+  const growthPct=Number($("#bp-prevyear-growth-"+tbodyId)?.value)||0;
+  const candidates=bizPlans.filter(p=>p.dept===dept&&(p.team||"")===team&&p.baseYear<targetYear&&Array.isArray(p.assumptions?.sgaItems)&&p.assumptions.sgaItems.length);
+  if(!candidates.length){showToast(`${dept}${team?" / "+team:""}의 판관비 항목이 있는 이전 연도(${targetYear}년 이전) 사업계획을 찾지 못했습니다.`,"error");return;}
+  candidates.sort((a,b)=>b.baseYear-a.baseYear);
+  const src=candidates[0];
+  const factor=1+growthPct/100;
+  const rows=[...document.querySelectorAll(`#${tbodyId} tr`)];
+  const note=`${src.baseYear}년 계획 불러오기${growthPct?`(+${growthPct}%)`:""}`;
+  let filled=0,added=0;
+  src.assumptions.sgaItems.forEach(item=>{
+    const months=(Array.isArray(item.months)&&item.months.length===12)
+      ?item.months.map(v=>Math.round((v||0)*factor))
+      :Array(12).fill(Math.round((item.baseAmount||0)/12*factor));
+    const targetRow=rows.find(r=>r.querySelector(".bp-sga-name")?.value.trim()===item.name);
+    if(targetRow){
+      targetRow.querySelector(".bp-sga-dept").value=dept;
+      targetRow.querySelector(".bp-sga-team").value=team;
+      const costDeptInput=targetRow.querySelector(".bp-sga-costdept");if(costDeptInput)costDeptInput.value=item.costDept||dept;
+      const catInput=targetRow.querySelector(".bp-sga-category");if(catInput&&!catInput.value.trim())catInput.value=item.category||"";
+      const acctSel=targetRow.querySelector(".bp-sga-accttype");if(acctSel&&item.accountType)acctSel.value=item.accountType;
+      const expInput=targetRow.querySelector(".bp-sga-expenseaccount");if(expInput&&!expInput.value.trim())expInput.value=item.expenseAccount||"";
+      const detailInput=targetRow.querySelector(".bp-sga-detail");if(detailInput)detailInput.value=item.detail||"";
+      targetRow.querySelector(".bp-sga-note").value=note;
+      const monthInputs=targetRow.querySelectorAll(".bp-sga-month");
+      monthInputs.forEach((inp,i)=>{inp.value=months[i];});
+      _bpUpdateSgaRowTotal(monthInputs[0]);
+      filled++;
+    }else{
+      addBpSgaRow({
+        dept,team,costDept:item.costDept||dept,name:item.name,category:item.category||"",
+        accountType:item.accountType||"판관",expenseAccount:item.expenseAccount||"",detail:item.detail||"",
+        months,note,growthRate:item.growthRate||0,fixed:item.fixed!==false
+      },tbodyId);
+      added++;
+    }
+  });
+  showToast(`${src.baseYear}년 계획에서 ${src.assumptions.sgaItems.length}개 항목을 불러왔습니다(기존 ${filled}건 갱신, 신규 ${added}건 추가)${growthPct?`, 증가율 ${growthPct}% 적용`:""}.`,"success");
+}
+// 신규 자동화 ② 항목별 실적 참고: 같은 부문/팀의 budget.html 업로드 실적(판관비)을 항목명
+// 기준으로 서버에서 집계해 가져와, 지금 그리드에 입력된 값과 나란히 보여준다(실적 데이터
+// 자체를 자동으로 덮어쓰지 않음 — 참고만 하고 계획 금액은 여전히 사람이 직접 입력/수정).
+// 기존 computeBudgetComparison()이 계획 "총액" 대 실적 총액만 비교해 목록 카드에서만
+// 보여주던 것을, 작성 단계에서 항목별로 미리 확인할 수 있게 확장한 것.
+async function loadBpActualsPreview(tbodyId){
+  tbodyId=tbodyId||"bp-sga-tbody";
+  const {dept,team}=_bpResolveDeptTeamMatched();
+  if(!dept){showToast("부문을 먼저 입력하세요.","error");return;}
+  const r=await serverRequest("GET",`/api/budget/business-plan/actuals-by-item?dept=${encodeURIComponent(dept)}&team=${encodeURIComponent(team)}`);
+  if(!r?.ok){showToast(r?.error||"실적 데이터를 불러오지 못했습니다.","error");return;}
+  const actuals=r.items||[];
+  const area=$("#bp-actuals-preview-"+tbodyId);
+  if(!actuals.length){
+    if(area)area.innerHTML=`<div class="fz12 text-gray">${h(dept)}${team?" / "+h(team):""}의 업로드된 판관비 실적(budget.html)이 없습니다.</div>`;
+    return;
+  }
+  const rows=[...document.querySelectorAll(`#${tbodyId} tr`)];
+  const planByName={};
+  rows.forEach(row=>{
+    const name=row.querySelector(".bp-sga-name")?.value.trim();
+    if(!name)return;
+    const total=[...row.querySelectorAll(".bp-sga-month")].reduce((s,i)=>s+(Number(i.value)||0),0);
+    planByName[name]=(planByName[name]||0)+total;
+  });
+  const html=`<div class="tbl-wrap"><table><tr><th class="lbl">항목</th><th style="text-align:right">실적(참고)</th><th style="text-align:right">현재 입력값</th><th style="text-align:right">차이</th></tr>
+    ${actuals.map(a=>{const plan=planByName[a.name]||0;const diff=plan-a.total;
+      return `<tr><td class="lbl">${h(a.name)}</td><td style="text-align:right">${_bpFmt(a.total)}</td><td style="text-align:right">${_bpFmt(plan)}</td><td style="text-align:right;color:${diff<0?"#dc2626":diff>0?"#16a34a":"inherit"}">${diff>0?"+":""}${_bpFmt(diff)}</td></tr>`;
+    }).join("")}
+  </table></div><div class="fz11 text-gray mt2">실적은 budget.html에 업로드된 판관비 상세 기준이며, 계획 항목명과 정확히 일치하는 항목만 비교됩니다. 참고용일 뿐 자동 반영되지 않습니다.</div>`;
+  if(area)area.innerHTML=html;
 }
 function _bpUpdateSgaRowTotal(input){
   const row=input.closest("tr");if(!row)return;
@@ -23507,6 +23615,29 @@ function renderNotificationCenterPage(){
   if(u.role==="admin"){
     const lowStock=_erpLowStockItems();
     if(lowStock.length>0)items.push({type:"low-stock",pri:0,icon:"📉",title:`안전재고 부족 ${lowStock.length}건`,desc:lowStock.slice(0,3).map(s=>`${_erpItemName(s.itemId)}(${_erpLocationName(s.locationId)}) ${s.qty}/${s.safetyStock}`).join(" · "),date:todayStr,action:"inv-stock"});
+  }
+  // 10. 신규 자동화 ③ 사업계획 승인 워크플로우 알림 — recruit 모듈과 동일한 지연로드
+  // 패턴(_bizPlanEnsureLoaded)으로 사업계획 데이터를 확보해, "다음 승인 대상자"에게
+  // 자동으로 안내한다. draft(작성중)는 "제출" 개념이 없어(누구나 언제든 사업부장 승인을
+  // 누를 수 있는 구조) 아직 준비되지 않은 초안까지 알림에 걸리면 소음이 되므로 제외하고,
+  // 상태가 명확히 "그 사람의 조치를 기다린다"고 판단할 수 있는 두 경우만 알림: ① 사업부장
+  // 승인까지 끝나 잠긴(divisionApproved) 계획 중 예산담당자/기획팀장 본인의 승인이 아직
+  // 없는 것(최종승인 대기), ② 관리자에게는 대기 중인 수정요청(editRequest).
+  if(typeof _bizPlanEnsureLoaded==="function")_bizPlanEnsureLoaded();
+  if(typeof bizPlans!=="undefined"&&bizPlans.length){
+    if(typeof _bpIsOwnerOrLead==="function"&&_bpIsOwnerOrLead()){
+      const myId=String(u.id);
+      const isOwner=(bizPlanSettings.ownerIds||[]).map(String).includes(myId);
+      const isLead=bizPlanSettings.teamLeaderId!=null&&String(bizPlanSettings.teamLeaderId)===myId;
+      const pendingFinal=bizPlans.filter(p=>p.status==="divisionApproved"&&(
+        (isOwner&&!p.finalApproval?.ownerBy)||(isLead&&!p.finalApproval?.leadBy)
+      ));
+      if(pendingFinal.length>0)items.push({type:"bizplan-final",pri:0,icon:"🧮",title:`사업계획 최종승인 대기 ${pendingFinal.length}건`,desc:pendingFinal.slice(0,3).map(p=>p.name).join(", ")+(pendingFinal.length>3?` 외 ${pendingFinal.length-3}건`:""),date:pendingFinal[0].updatedAt||todayStr,action:"biz-plan"});
+    }
+    if(u.role==="admin"){
+      const pendingEditReq=bizPlans.filter(p=>p.editRequest);
+      if(pendingEditReq.length>0)items.push({type:"bizplan-editreq",pri:0,icon:"✏️",title:`사업계획 수정요청 대기 ${pendingEditReq.length}건`,desc:pendingEditReq.slice(0,3).map(p=>p.name).join(", ")+(pendingEditReq.length>3?` 외 ${pendingEditReq.length-3}건`:""),date:pendingEditReq[0].editRequest.requestedAt||todayStr,action:"biz-plan"});
+    }
   }
 
   items.sort((a,b)=>a.pri-b.pri||(b.date||"").localeCompare(a.date||""));
