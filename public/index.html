@@ -16044,12 +16044,16 @@ function _bpSgaByExpenseAccountHtml(list,filterDept){return _bpSgaGroupedHtml(li
 // ── 설정(예산담당자/기획팀장 지정, 입력기간 on/off) ──
 function _renderBizPlanSettingsTab(){
   const isAdmin=currentUser.role==="admin";
+  const ownerNames=(bizPlanSettings.ownerIds||[]).map(id=>getEmp(id)?.name||`(#${id}, 탈퇴/삭제된 직원)`);
+  const leadEmp=bizPlanSettings.teamLeaderId!=null?getEmp(bizPlanSettings.teamLeaderId):null;
+  const leadName=bizPlanSettings.teamLeaderId!=null?(leadEmp?.name||`(#${bizPlanSettings.teamLeaderId}, 탈퇴/삭제된 직원)`):null;
   let html=`<p class="fz13">현재 입력기간: <b>${bizPlanSettings.inputOpen?"열림 (팀별 신규 작성 가능)":"닫힘 (팀별 신규 작성 불가)"}</b></p>`;
-  html+=`<p class="fz12 text-gray">예산담당자(사번): ${(bizPlanSettings.ownerIds||[]).join(", ")||"(미지정)"}</p>`;
-  html+=`<p class="fz12 text-gray">기획팀장(사번): ${bizPlanSettings.teamLeaderId!=null?bizPlanSettings.teamLeaderId:"(미지정)"}</p>`;
+  html+=`<p class="fz12 text-gray">예산담당자: ${ownerNames.length?ownerNames.join(", "):"(미지정)"}</p>`;
+  html+=`<p class="fz12 text-gray">기획팀장: ${leadName||"(미지정)"}</p>`;
   html+=`<div class="mt2">
     <button class="btn btn-secondary btn-sm" onclick="toggleBizPlanInputWindow()">${bizPlanSettings.inputOpen?"입력기간 닫기":"입력기간 열기"}</button>
-    ${isAdmin?`<button class="btn btn-secondary btn-sm" onclick="editBizPlanRoster()">예산담당자/기획팀장 지정</button>`:""}
+    ${isAdmin?`<button class="btn btn-secondary btn-sm" onclick="editBizPlanOwners()">예산담당자 지정</button>
+    <button class="btn btn-secondary btn-sm" onclick="editBizPlanTeamLead()">기획팀장 지정</button>`:""}
   </div>
   <div class="fz11 text-gray mt3">예산(비인건비) 일괄 업로드는 "예산 항목 관리" 탭으로, 월별 인원 계획 일괄 업로드는 "인원 계획" 탭으로 이동했습니다.</div>`;
   return html;
@@ -16111,16 +16115,37 @@ async function toggleBizPlanInputWindow(){
   if(!r?.ok){showToast(r?.error||r?.message||"변경 실패","error");return;}
   bizPlanSettings=r.settings;showToast("변경되었습니다.","success");renderBizPlanPage();
 }
-async function editBizPlanRoster(){
-  const ownerInput=prompt("예산담당자 사번을 쉼표로 구분해 입력하세요(빈 값=미지정):",(bizPlanSettings.ownerIds||[]).join(","));
-  if(ownerInput===null)return;
-  const leadInput=prompt("기획팀장 사번을 입력하세요(빈 값=미지정):",bizPlanSettings.teamLeaderId!=null?String(bizPlanSettings.teamLeaderId):"");
-  if(leadInput===null)return;
-  const ownerIds=ownerInput.split(",").map(s=>s.trim()).filter(Boolean);
-  const teamLeaderId=leadInput.trim()||null;
-  const r=await serverRequest("POST","/api/budget/business-plan/settings/roster",{ownerIds,teamLeaderId});
-  if(!r?.ok){showToast(r?.error||r?.message||"지정 실패","error");return;}
-  bizPlanSettings=r.settings;showToast("지정되었습니다.","success");renderBizPlanPage();
+// 예산담당자/기획팀장 지정 — 예전에는 사번을 직접 타이핑받는 prompt() 2회였는데, 서버
+// (budget.js의 _isBudgetOwner/_isPlanningLead)는 이 값을 employee.id(내부 숫자 id)와
+// 비교하는데도 안내 문구는 "사번"(empNo, 별도 필드)을 입력하라고 돼 있어 실제 사번을
+// 그대로 입력하면 절대 매칭되지 않는 조용한 불일치가 있었다(이 프로젝트에서 여러 번
+// 발견된 것과 동일한 클래스의 문제). 결재 수신자 선택 등 앱 전반이 이미 쓰는 검색
+// 선택 UI(openOrgPicker)로 교체해 오타·사번 혼동 없이 항상 올바른 employee.id가
+// 저장되도록 한다.
+function editBizPlanOwners(){
+  openOrgPicker({
+    multi:true,
+    selected:(bizPlanSettings.ownerIds||[]).map(String),
+    title:"예산담당자 지정(다중 선택 가능)",
+    onConfirm:async(ownerIds)=>{
+      const r=await serverRequest("POST","/api/budget/business-plan/settings/roster",{ownerIds:ownerIds.map(String)});
+      if(!r?.ok){showToast(r?.error||r?.message||"지정 실패","error");return;}
+      bizPlanSettings=r.settings;showToast("예산담당자가 지정되었습니다.","success");renderBizPlanPage();
+    }
+  });
+}
+function editBizPlanTeamLead(){
+  openOrgPicker({
+    multi:false,
+    selected:bizPlanSettings.teamLeaderId!=null?[String(bizPlanSettings.teamLeaderId)]:[],
+    title:"기획팀장 지정(1명)",
+    onConfirm:async(sel)=>{
+      const teamLeaderId=sel.length?String(sel[0]):null;
+      const r=await serverRequest("POST","/api/budget/business-plan/settings/roster",{teamLeaderId});
+      if(!r?.ok){showToast(r?.error||r?.message||"지정 실패","error");return;}
+      bizPlanSettings=r.settings;showToast("기획팀장이 지정되었습니다.","success");renderBizPlanPage();
+    }
+  });
 }
 
 // ==================== 개인별 급여 상세(계획용, 3단계 자료 연계의 1단계) ====================
