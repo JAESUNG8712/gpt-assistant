@@ -188,6 +188,18 @@ th{padding:8px 10px;text-align:center;font-size:13px;font-weight:700;color:#6474
 td{padding:9px 10px;font-size:14px;color:#374151;border-bottom:1px solid #f1f5f9;vertical-align:middle;white-space:nowrap;text-align:center}
 tr:hover td{background:#fafafa}
 tr:last-child td{border-bottom:none}
+/* 사업계획 판관비 그리드(bp-sga-table)는 28개 컬럼(부문~삭제버튼)이라 가로스크롤이 필수인데,
+   스크롤 중에도 "어느 항목 행인지"(4번째 컬럼: 항목)와 "합계가 얼마인지"(23번째 컬럼: 계)는
+   계속 보이도록 두 컬럼을 좌/우로 각각 고정한다. */
+.bp-sga-table th:nth-child(4),.bp-sga-table th:nth-child(23){position:sticky;z-index:3;background:#f8fafc}
+.bp-sga-table td:nth-child(4),.bp-sga-table td:nth-child(23){position:sticky;z-index:2;background:#fff}
+.bp-sga-table th:nth-child(4),.bp-sga-table td:nth-child(4){left:0;box-shadow:2px 0 4px -2px rgba(0,0,0,.2)}
+.bp-sga-table th:nth-child(23),.bp-sga-table td:nth-child(23){right:0;box-shadow:-2px 0 4px -2px rgba(0,0,0,.2)}
+/* 읽기전용 판관비 상세표(적용월/적용금액 열이 없어 컬럼 수가 달라 "계"가 21번째) */
+.bp-sga-table-ro th:nth-child(4),.bp-sga-table-ro th:nth-child(21){position:sticky;z-index:3;background:#f8fafc}
+.bp-sga-table-ro td:nth-child(4),.bp-sga-table-ro td:nth-child(21){position:sticky;z-index:2;background:#fff}
+.bp-sga-table-ro th:nth-child(4),.bp-sga-table-ro td:nth-child(4){left:0;box-shadow:2px 0 4px -2px rgba(0,0,0,.2)}
+.bp-sga-table-ro th:nth-child(21),.bp-sga-table-ro td:nth-child(21){right:0;box-shadow:-2px 0 4px -2px rgba(0,0,0,.2)}
 /* Modal */
 .modal-ov{position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:flex-start;justify-content:center;z-index:1000;padding:20px;overflow-y:auto}
 .modal,.modal-box{background:#fff;border-radius:16px;width:100%;box-shadow:0 20px 60px rgba(0,0,0,.2);margin:20px auto}
@@ -15029,7 +15041,7 @@ function _bpSgaDetailTableHtml(items){
       <td class="lbl">${h(it.note||"")}</td>
     </tr>`;
   }).join("");
-  return `<div class="mt3"><h4 class="mb2 fz13">판관비 상세(기준연도)</h4><div class="tbl-wrap"><table>
+  return `<div class="mt3"><h4 class="mb2 fz13">판관비 상세(기준연도)</h4><div class="tbl-wrap"><table class="bp-sga-table-ro">
     <tr><th class="lbl">부문</th><th class="lbl">팀명</th><th class="lbl">비용귀속부문</th><th class="lbl">항목</th><th class="lbl">세부내역(산정근거)</th><th class="lbl">구분</th><th class="lbl">계정과목</th><th class="lbl">비용계정</th>${monthHeads}<th>계</th><th class="lbl">비고</th></tr>
     ${rows}
   </table></div></div>`;
@@ -15370,12 +15382,7 @@ function _renderBizPlanFormBody(){
     <div class="fg"><label class="fl">판관비 항목(월별 상세) <span class="fz11 text-gray">부문/팀명/비용귀속부문은 검색해서 고르거나 새 값을 직접 입력할 수 있습니다(필요 시 계획 소속과 다르게 지정 가능). 계정과목(판관/용역/경상)·비용계정(회계 계정과목)은 선택사항입니다. "적용월"에서 월을 고르고 "적용 금액"을 입력하면 해당 월(또는 전체 12개월)에 자동 반영되며, 이후 각 월 칸을 직접 수정할 수도 있습니다. 증가율/고정비는 2년차 이후 추정·손익분기점 분석에 쓰입니다.</span></label>
       <div style="overflow-x:auto">
         <table class="bp-sga-table" style="min-width:2100px">
-          <thead><tr>
-            <th class="lbl">부문</th><th class="lbl">팀명</th><th class="lbl">비용귀속부문</th><th class="lbl">항목</th><th class="lbl">세부내역(산정근거)</th><th class="lbl">구분</th>
-            <th class="lbl">계정과목</th><th class="lbl">비용계정</th><th>적용월</th><th>적용 금액</th>
-            ${Array.from({length:12},(_,i)=>`<th>${i+1}월</th>`).join("")}
-            <th>계</th><th class="lbl">비고</th><th>증가율(%)</th><th>고정비</th><th></th>
-          </tr></thead>
+          <thead>${_bpSgaTableHeadHtml()}</thead>
           <tbody id="bp-sga-tbody">${rowsHtml}</tbody>
         </table>
       </div>
