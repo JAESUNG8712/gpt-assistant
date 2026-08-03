@@ -15972,7 +15972,11 @@ function _renderBizPlanOverviewIndividualHtml(){
   }
   if(_bpOvIndividualData.error)return html+`<div class="fz12" style="color:#c0392b">${h(_bpOvIndividualData.error)}</div>`;
   const enriched=_bpOvIndividualData.plans.map(p=>{
-    const emp=employees.find(e=>e.id===p.empId);
+    // p.empId는 서버에 저장된 그대로(문자열, <select>.value에서 유래)라 employees[].id(숫자)와
+    // 타입이 달라 strict equality(===)로는 항상 매칭에 실패했다(실측 발견 — 부문/팀이 항상
+    // "-"로만 표시됨) — 이 코드베이스의 다른 emp-pay-plan/payslip 비교부는 전부 String()으로
+    // 감싸는데 이 함수만 빠져 있었다.
+    const emp=employees.find(e=>String(e.id)===String(p.empId));
     return {...p,dept:emp?emp.dept:"",team:emp?emp.team:""};
   });
   const query=_bpOvSearchQuery.trim();
