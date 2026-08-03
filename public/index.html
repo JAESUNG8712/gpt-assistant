@@ -15097,7 +15097,7 @@ function _renderBizPlanBudgetAdminTab(){
   html+=_bpOrgDeptTeamDatalistsHtml()+_bpExpenseAccountDatalistHtml();
 
   html+=`<div class="card mb3" style="background:#f8fafc"><div class="card-body">
-    <h4 class="mb2">🔍 조직 조회</h4>
+    <h4 class="mb2">🔍 부문/사업부/센터 조회</h4>
     <div class="fz11 text-gray mb2">부문/사업부/센터(팀은 선택)를 조회하면, 기존 예산이 있으면 편집 그리드로 바로 열리고 없으면 새로 입력할 수 있는 빈 그리드가 나타납니다. 저장하면 이 조회 결과는 초기화되고, 다시 수정하려면 재조회하세요.</div>
     <div style="display:grid;grid-template-columns:1fr 1fr auto;gap:8px;align-items:end">
       <div class="fg"><label class="fl">부문/사업부/센터 <span class="req">*</span></label><input class="fc" id="bpmgr-search-dept" list="bp-dept-list" autocomplete="off" placeholder="예: 경영지원본부"></div>
@@ -15225,7 +15225,7 @@ function _renderBizPlanMgrUploadTeamCardHtml(t,idx){
     <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
       <h4 style="margin:0">${h(t.team)}</h4>
       ${t.existingStatus?_bpStatusBadge(t.existingStatus):badge("신규","blue")}
-      ${t.ambiguous?`<span class="fz11" style="color:#c0392b">팀명이 여러 계획과 일치해 자동 특정 불가 — "조직 조회"에서 직접 반영해주세요</span>`:""}
+      ${t.ambiguous?`<span class="fz11" style="color:#c0392b">팀명이 여러 계획과 일치해 자동 특정 불가 — "부문/사업부/센터 조회"에서 직접 반영해주세요</span>`:""}
     </div>
     ${editable&&!t.ambiguous?`<div style="display:flex;gap:6px">
       <button class="btn btn-primary btn-sm" onclick="saveBizPlanMgrUploadTeam(${idx})">저장</button>
@@ -15365,7 +15365,7 @@ function _renderBizPlanFormBody(){
       <span class="fz11 text-gray" style="margin-left:8px">계획 유형은 목록 화면의 "매출 사업계획 작성"/"비용 사업계획 작성" 버튼으로 처음 만들 때 정해지며, 이후에는 바꿀 수 없습니다.</span>
     </div>
     ${!editPlan?`<div class="fg">${isAdmin?`
-      <label class="fl">사업부(dept, 선택 — 비우면 회사 전체 계획)</label><input class="fc" id="bp-dept" list="bp-dept-list" autocomplete="off" placeholder="입력 또는 검색 — 예: 영업본부" style="margin-bottom:6px" onchange="_bpSyncSgaRowsDeptTeam()"><div class="fz11 text-gray mb2">목록에 없으면 새 부문명을 그대로 입력할 수 있습니다. 아래 판관비 항목 중 아직 부문을 직접 입력하지 않은 행에 자동으로 채워집니다.</div>
+      <label class="fl">부문/사업부/센터(선택 — 비우면 회사 전체 계획)</label><input class="fc" id="bp-dept" list="bp-dept-list" autocomplete="off" placeholder="입력 또는 검색 — 예: 영업본부" style="margin-bottom:6px" onchange="_bpSyncSgaRowsDeptTeam()"><div class="fz11 text-gray mb2">목록에 없으면 새 부문명을 그대로 입력할 수 있습니다. 아래 판관비 항목 중 아직 부문을 직접 입력하지 않은 행에 자동으로 채워집니다.</div>
       <label class="fl">팀(team, 선택)</label><input class="fc" id="bp-team" list="bp-team-list" autocomplete="off" placeholder="입력 또는 검색 — 예: 영업1팀" onchange="_bpSyncSgaRowsDeptTeam()">
     `:`<div class="fz12 text-gray">소속: 내 소속(자동 지정 — ${h(bizPlanMyProfile?bizPlanMyProfile.dept:"")}${bizPlanMyProfile&&bizPlanMyProfile.team?" / "+h(bizPlanMyProfile.team):""})</div>`}</div>`:""}
     ${!isCostOnly?`<div id="bp-revenue-fields">
@@ -15834,7 +15834,7 @@ function _renderBizPlanBudgetOverviewTab(){
   html+=_bpOrgDeptTeamDatalistsHtml();
   html+=`<div style="display:flex;gap:16px;align-items:center;flex-wrap:wrap;margin-bottom:10px">
     <label class="fz12"><input type="checkbox" ${_bizPlanRollupIncludeDraft?"checked":""} onchange="_bizPlanRollupIncludeDraft=this.checked;loadBizPlanRollup()"> 작성중(draft) 계획도 포함</label>
-    <label class="fz12">조직 검색(비우면 전사):
+    <label class="fz12">부문/사업부/센터 검색(비우면 전사):
       <input class="fc" list="bp-dept-list" autocomplete="off" style="display:inline-block;width:auto" value="${h(filterDept)}" placeholder="부문/사업부/센터 검색" onchange="_bizPlanRollupDeptFilter=this.value.trim();renderBizPlanPage()">
     </label>
   </div>`;
