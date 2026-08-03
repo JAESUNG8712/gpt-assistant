@@ -1445,7 +1445,23 @@ async function serverRequest(method, endpoint, body=null, timeout=8000){
     // 토큰이 만료·무효화된 상태(재시작으로 세션 초기화 등) — 다음 요청부터는
     // 무효 토큰을 계속 보내지 않도록 즉시 비운다. 재로그인은 사용자가 다시 시도할 때 처리됨.
     if(res.status === 401) _setAuthToken(null);
-    return await res.json();
+    try {
+      return await res.json();
+    } catch(parseErr) {
+      // 배포 중 502/504 등으로 프록시가 JSON이 아닌 HTML 에러 페이지를 반환하면
+      // res.json() 파싱이 실패해 예외를 던졌는데, 이 함수를 호출하는 168곳 중
+      // 대다수가 try/catch 없이 `if(!r?.ok){showToast(...)}` 관례만 쓰고 있어
+      // 그 경우 화면엔 정말 아무 반응도 없이 콘솔에만 에러가 남는 문제가 있었다
+      // (실사용자가 재배포 중 502로 "저장 버튼을 눌러도 반응이 없다"를 겪어 발견 —
+      // unhandledrejection 전역 리스너로 잡아보려 했지만 이 앱 전반의 onclick="..."
+      // 속성 기반 핸들러에서 발생한 promise rejection은 Chromium에서 표준
+      // unhandledrejection 이벤트로 안정적으로 올라오지 않는다는 것을 직접 재현해
+      // 확인했다 — 호출부의 반환값을 신뢰할 수 있게 만드는 이 방식이 유일하게
+      // 확실히 동작함). fetch() 자체가 실패하는 경우(네트워크 끊김 등, 바깥 catch)와
+      // 달리 이미 응답은 정상적으로 받았으므로 예외를 다시 던지지 않고, 기존 호출부의
+      // `if(!r?.ok){showToast(r.message)}` 관례가 그대로 동작하도록 반환한다.
+      return { ok:false, message: `서버 응답을 처리할 수 없습니다(HTTP ${res.status}). 배포 중이거나 서버에 일시적 문제가 있을 수 있습니다. 잠시 후 다시 시도해주세요.` };
+    }
   } catch(e) {
     clearTimeout(tid);
     throw e;
@@ -1504,6 +1520,21 @@ window.addEventListener("beforeunload", (e)=>{
   e.preventDefault();
   e.returnValue = "저장되지 않은 변경사항이 있습니다. 잠시 후 자동 저장됩니다 — 지금 나가면 변경사항이 유실될 수 있습니다.";
   return e.returnValue;
+});
+// serverRequest()는 네트워크 자체가 끊기거나(fetch 실패), 배포 중 502 등으로 서버가
+// JSON이 아닌 응답(에러 페이지 HTML 등)을 줄 때 res.json() 파싱이 실패해 예외를 던진다.
+// 이 함수를 호출하는 곳 대부분(수백 곳 중 일부만 자체 try/catch를 씀)은 이 예외를 잡지
+// 않아, 그런 경우 화면엔 정말 아무 반응도 없이 콘솔에만 에러가 남는 문제가 있었다(실사용자가
+// 재배포 중 502로 "저장 버튼을 눌러도 반응이 없다"를 겪어 발견). 호출부 수백 곳을 전부
+// 고치는 대신, 처리되지 않은 promise rejection을 전역에서 잡아 최소한의 안내 토스트를
+// 보여주는 안전망을 추가한다 — 이미 자체 try/catch로 처리하는 기존 호출부는 그 안에서
+// 예외가 잡혀 "unhandled"가 되지 않으므로 여기로 오지 않아 기존 동작에 영향 없다.
+let _lastUnhandledToastAt = 0;
+window.addEventListener("unhandledrejection", (e)=>{
+  const now = Date.now();
+  if(now - _lastUnhandledToastAt < 3000) return; // 더블클릭 등으로 짧은 시간에 중복 발생 시 토스트 도배 방지
+  _lastUnhandledToastAt = now;
+  showToast("요청 처리 중 오류가 발생했습니다(서버 연결 문제일 수 있습니다). 잠시 후 다시 시도해주세요.","error");
 });
 
 async function saveToServer(silent=false){
