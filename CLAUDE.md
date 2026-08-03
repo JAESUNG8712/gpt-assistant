@@ -1,10 +1,16 @@
 # GPT Assistant 프로젝트
 
 ## 계정 정보
-- 이메일: myangle87@naver.com
 - 계정명: jaesung8712
 - GitHub 레포: jaesung8712/gpt-assistant
-- 개발 브랜치: claude/account-pinned-agents-v6W7p
+- 개발 브랜치: 고정값 아님 — "프로젝트 기록" 최신 항목 또는 GitHub의 최근 커밋/열린 PR 기준으로 확인할 것
+
+### 병행 사용 중인 Claude 계정 (한도 초과 시 서로 이어받기용)
+아래 두 계정을 번갈아 사용하며, 한 계정이 사용량 한도에 도달하면 다른 계정이 이어받는다. 절차는 "계정 한도 초과 시 세션 핸드오프" 섹션 참고.
+- 계정 A: myangle87@naver.com
+- 계정 B: myangle112@gmail.com
+
+두 계정 모두 이 GitHub 저장소(`jaesung8712/gpt-assistant`)에 연결되어 있어야 서로 이어받기가 가능하다. 새 계정으로 처음 세션을 열 때는 저장소 선택 화면에 이 레포가 보이는지 확인하고, 안 보이면 해당 계정에서 저장소 연결(소스 추가)을 한 번 거쳐야 한다(최초 1회만 필요).
 
 ---
 
@@ -165,3 +171,4 @@ SQLite DB가 컨테이너 임시 파일시스템에 생성되어 학습된 RAG �
 - 2026-06-24: 주식 분석 채팅 응답 상세화 + 긴 자료 다운로드 분리 + 전 페르소나 참고자료 링크 추가. (1) `_summarize_stock_report()`(main.py)가 종목 미지정 "현황" 질문에 기존 Executive Summary/TOP 추천 종목/저평가 종목 3개 섹션만 보여주던 것을, 시장 환경 분석·증권사 애널리스트 리포트 컨센서스 2개 섹션을 추가해 5개 섹션으로 확장 — report_writer.py 자체는 14개 섹션을 이미 생성하고 있었으나 채팅 요약 레이어가 그중 일부만 노출해 "모호하다"는 문제가 발생했던 것이 원인. (2) `_summarize_long_text()` 신설 — 답변 본문이 3500자를 넘으면 앞부분만 채팅에 표시하고 전체는 `stock_analysis/reports/answers/`에 파일로 저장 후 다운로드 링크(`/answer/download/{filename}` 신규 엔드포인트, `answer_` 접두사·`..` 차단)로 안내. `run_broker_report`(단독 증권사 리포트 조회)·`run_lowprice_screen`(저평가 저가주 스크리닝) 두 원문 그대로 출력하던 경로에 적용. (3) `_format_reference_links()` 신설 — `[{title,url}]` 목록을 마크다운 링크 푸터로 변환(http만 허용, 중복 제거, 최대 5개). 경로 B(LLM 보강) 양쪽 분기에 `reference_items` 수집을 연결: stock_mode는 증권사 리포트 "링크" 필드 + DDG 자동검색 결과, 비주식 페르소나는 law_search 결과 + 일반 웹검색 결과. 프론트엔드(`index.html`의 `renderMd()`)가 이미 마크다운 링크와 `/stock/download/` `/answer/download/` 다운로드 버튼 스타일을 지원하고 있어 프론트엔드 변경은 불필요했음. 적용 범위 제한: KB-직접답변(경로 A)·기업 KB 무응답(경로 C)에는 참고자료가 없어 미적용, 뉴스 기사(`news_collector.py`의 "출처" 필드는 출처명/URL이 혼재해 신뢰 불가)는 참고링크에서 제외
 - 2026-08-03: 계정 한도 초과 대응 방식 결정 — Claude Code CLI/웹은 사용량 한도 초과 시 다른 구독 계정으로 자동 전환하는 공식 기능이 없고, 스크립트로 여러 구독 계정을 자동 순회시키는 것은 Anthropic 서비스 약관상 회색지대로 확인됨. 대신 "세션 핸드오프" 절차 채택 — 작업 산출물은 git 저장소에, 대화 맥락은 이 "프로젝트 기록" 섹션에 남기는 반자동 방식으로, 한도 도달 시 사람이 직접 다른 계정으로 로그인해 이어서 작업. 상세 절차는 "계정 한도 초과 시 세션 핸드오프" 섹션 참고
 - 2026-06-24: 증권사 리포트·뉴스 수집기가 실데이터를 못 가져오던 근본 원인 다수 발견·수정(이 환경의 외부망 차단이 풀린 뒤 실제 네이버 금융 응답으로 검증). `securities_report.py`의 `fetch_naver_research()`가 `searchType=priceTo&code={ticker}` 파라미터를 쓰고 있었는데 이는 종목과 무관한 전체 "목표주가 변경" 리스트를 반환하는 잘못된 조회였음(올바른 파라미터는 `searchType=itemCode&itemCode={ticker}`) — 이 때문에 `_parse_naver_research()`의 정규식(`/research/company_read.naver?nid=` 절대경로 기대)도 실제 마크업(`company_read.naver?nid=` 상대경로)과 맞지 않아 항상 0건이 파싱됐음. 목표주가·투자의견은 목록 페이지에 컬럼 자체가 없고 개별 리포트 본문(`목표가 480,000 | 투자의견 Buy` 형태)에만 있다는 것도 확인 — `_enrich_with_target_opinion()` 신설로 상위 5건의 본문을 추가 조회해 채움, `_extract_report_meta()`로 본문에서 목표가·투자의견 파싱, 영문 등급(Buy/Hold/Sell)을 한글 버킷으로 정규화하는 `_normalize_opinion()` 추가(기존 `_build_consensus()`가 한글 키워드만 매칭해 영문 등급은 의견분포에서 누락되던 문제도 같이 해결). 또한 `search_reports_ddg()`가 `async def`이면서 내부적으로 완전히 동기 블로킹인 DDGS 호출을 실행하고 있어, `get_all_reports()`의 `asyncio.gather()`로 `fetch_naver_research()`와 함께 묶이면 이벤트 루프를 점유해 네이버 쪽 요청이 거의 항상 타임아웃되던 동시성 버그를 발견·수정(`run_in_executor`로 별도 스레드 실행, `news_collector.py`가 이미 쓰던 패턴과 통일) — 이게 "정확한 내용이 거의 안 들어간다"는 원래 사용자 불만의 진짜 근본 원인이었음(이전 수정은 빈 placeholder를 걸러내는 대증 처방이었을 뿐, 데이터가 애초에 안 들어오는 원인은 그대로였음). `news_collector.py`의 `_fetch_naver_finance_news()`도 같은 종류의 파싱 버그 수정(제목이 `title=` 속성이 아니라 `<a>` 태그 내부 텍스트로 들어있었음, 날짜 정규식이 공백·시간 포함 형식과 안 맞았음). 두 파일의 HTML 클린업 헬퍼(`_clean`/`_clean_html`)에 `html.unescape()` 추가해 `&hellip;` 등 엔티티 미디코딩 문제도 해결. 부가적으로 `aiohttp.ClientSession()` 호출들에 `trust_env=True`를 추가(이 개발 샌드박스의 로컬 프록시를 타려면 필요했던 설정, 배포 환경에는 영향 없음). 전체 파이프라인 실측 결과: 삼성전자 기준 증권사 리포트 5건(평균 목표주가 522,000원, 의견분포 매수 5건)·뉴스 8건이 정상 수집·표시됨을 확인
+- 2026-08-03: 병행 사용 계정 2개(myangle87@naver.com, myangle112@gmail.com)를 "계정 정보" 섹션에 명시 — 작업 산출물은 git 저장소에 있으므로 두 계정 모두 이 저장소에 연결되어 있으면 어느 쪽이 한도에 도달해도 다른 쪽이 이어받을 수 있음. 단, 새 계정이 처음 이 저장소로 세션을 열 때 저장소 연결(소스 추가) 여부는 최초 1회 그 계정에서 직접 확인이 필요함(Claude 세션 밖에서 처리해야 하는 부분이라 다른 세션이 대신 설정할 수 없음). 아울러 "개발 브랜치" 필드가 실제 진행 브랜치와 자주 어긋나는 문제가 반복 확인되어, 고정 브랜치명 대신 "프로젝트 기록 최신 항목 확인"으로 안내 문구 변경
