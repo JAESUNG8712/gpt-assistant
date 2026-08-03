@@ -72,6 +72,12 @@ function _readAllBudget() {
 }
 
 function _writeAllBudget(all) {
+  // BUDGET_FILE의 상위 디렉토리가 없으면(디스크 마운트 지연·미설정 등) writeFileSync가
+  // ENOENT를 던진다 — 2026-08-03 실제 운영 장애 원인(mkdir 없이 바로 write를 시도해
+  // 디렉토리 부재 시 그대로 크래시). 매 쓰기 전에 디렉토리를 보장해 이 경로의 크래시를
+  // 원천 차단한다(디스크가 정말 마운트되지 않은 경우엔 컨테이너 임시 파일시스템에라도
+  // 디렉토리를 만들어 저장을 계속 진행 — 전체 서비스 중단보다는 나은 폴백).
+  try { fs.mkdirSync(path.dirname(BUDGET_FILE), { recursive: true }); } catch (e) {}
   fs.writeFileSync(BUDGET_FILE, JSON.stringify(all, null, 2));
 }
 

@@ -10,6 +10,23 @@ const crypto  = require("crypto");
 const pool    = require("./db");
 const budgetRouterFactory = require("./budget");
 
+// Express 4는 async 라우트 핸들러 내부의 동기 throw/reject를 자동으로 잡아주지 않는다
+// (Express 5와 다른 점) — try/catch 없이 작성된 async 핸들러 하나가 예외를 던지면
+// unhandled promise rejection이 되고, Node 15+ 기본 동작상 프로세스 전체가 종료된다.
+// 2026-08-03 실제 운영 장애: budget.js의 사업계획 저장 라우트가 디스크 미마운트로 인한
+// 파일쓰기 ENOENT를 그대로 던져 인스턴스 전체가 크래시(Exited with status 1)됐음 — 라우트
+// 하나의 개별 오류가 전 직원의 HR/ERP 서비스 전체를 다운시키는 사고로 이어진 것. 근본
+// 원인(해당 파일쓰기 경로)은 별도로 수정했지만, 앞으로 유사한 미처리 예외가 어디서든
+// 발생해도 서버 프로세스 자체는 계속 살아있도록 안전망을 추가한다(로그만 남기고 종료하지
+// 않음 — 해당 요청은 클라이언트에 응답 없이 타임아웃되거나 500으로 끝날 수 있으나, 다른
+// 모든 사용자의 세션·요청에는 영향이 없다).
+process.on("unhandledRejection", (reason) => {
+  console.error("⚠️  [unhandledRejection] 처리되지 않은 프로미스 거부(요청 하나가 실패했을 뿐 서버는 계속 실행됩니다):", reason);
+});
+process.on("uncaughtException", (err) => {
+  console.error("⚠️  [uncaughtException] 처리되지 않은 예외(요청 하나가 실패했을 뿐 서버는 계속 실행됩니다):", err);
+});
+
 const app  = express();
 const PORT = process.env.PORT || 3000;
 // Render 등 PaaS는 리버스 프록시를 거쳐 요청을 전달하며 X-Forwarded-For 헤더를 붙인다.
