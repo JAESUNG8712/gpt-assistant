@@ -5,7 +5,14 @@ const multer = require('multer');
 const xlsx = require('xlsx');
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
-const BUDGET_FILE = path.join(__dirname, 'budget-data.json');
+// server.js의 DATA_FILE(hr-data.json)과 동일한 패턴 — 환경변수 미설정 시에만 앱 소스
+// 디렉토리(__dirname) 기본 경로로 폴백한다. 이 폴백 경로는 Render 등에서 재배포 시
+// 매번 새로 빌드되는 컨테이너 파일시스템에 위치해 영속되지 않는데, render.yaml은
+// DATA_FILE(hr-data.json)만 영속 디스크(/var/data)로 지정하고 BUDGET_DATA_FILE은
+// 지정하지 않고 있어 실제로 코드 배포(재빌드)때마다 사업계획·예산 데이터 전체가
+// 초기화되고 있었다(사용자 실사용 보고로 발견) — render.yaml에 BUDGET_DATA_FILE을
+// 같은 영속 디스크 경로로 추가해 해결.
+const BUDGET_FILE = process.env.BUDGET_DATA_FILE || path.join(__dirname, 'budget-data.json');
 const MONTHS = Array.from({ length: 12 }, (_, i) => i + 1);
 const CATEGORIES = ['판관', '용역', '경상'];
 
@@ -112,7 +119,12 @@ function writeBudget(companyId, data) {
 // 제목행 등으로 인해 1행이 아닌 경우(예: 2행)에도 올바른 시트·행을 자동으로 찾아낸다.
 // 못 찾으면 빈 배열을 반환하되 어떤 시트들을 확인했는지 `_triedSheets`에 남겨 진단에 쓴다.
 // requiredHeaderGroups를 생략하면(레거시 호출부) 기존과 동일하게 첫 시트·1행을 그대로 쓴다.
-function parseSheet(buffer, filename, requiredHeaderGroups) {
+// excludedHeaders — 실제 회사 원본 파일에서 "예산"(비인건비) 시트가 "구분"·"1월" 컬럼을
+// 모두 갖고 있어("판관/용역/경상" 분류용 "구분" 컬럼이 우연히 이름이 같음), 워크북 순서상
+// "예산" 시트가 "조직별"(인원계획) 시트보다 먼저 나오면 인원계획 업로드가 엉뚱하게 예산
+// 시트를 파싱하는 사고가 실제로 재현됨(사용자 첨부 원본 파일로 확인) — 이 목록에 있는
+// 헤더가 하나라도 있는 행은 후보에서 제외해 "예산" 시트를 걸러낸다.
+function parseSheet(buffer, filename, requiredHeaderGroups, excludedHeaders) {
   const isCsv = /\.csv$/i.test(filename || '');
   const workbook = isCsv
     ? xlsx.read(buffer.toString('utf8'), { type: 'string' })
@@ -120,13 +132,23 @@ function parseSheet(buffer, filename, requiredHeaderGroups) {
   if (Array.isArray(requiredHeaderGroups) && requiredHeaderGroups.length) {
     for (const sheetName of workbook.SheetNames) {
       const sheet = workbook.Sheets[sheetName];
+      // header:1 모드는 기본적으로 시트의 !ref 범위를 대상으로 하고, 반환 배열의 인덱스는
+      // 그 범위의 시작행 기준 "상대" 위치다. 맨 위 몇 행이 완전히 비어 있는 시트는 !ref가
+      // 0행이 아닌 곳부터 시작하는데(예: 사용자 원본 파일의 "조직별" 시트는 !ref가 "A2:V91"
+      // — 실제 첫 행이 엑셀 2행), 그 상대 인덱스를 그대로 아래 range 옵션(절대 행 번호를
+      // 기대함)에 넘기면 엉뚱한 행(제목행 등)을 헤더로 잘못 잡는 오차가 생긴다(실제 파일로
+      // 재현·발견 — 이 어긋남 때문에 "조직별" 업로드가 바로 위의 "예산" 시트 헤더 행을
+      // 잘못 읽어들이고 있었음). !ref의 시작행을 더해 절대 행 번호로 보정한다.
+      const refStartRow = sheet['!ref'] ? xlsx.utils.decode_range(sheet['!ref']).s.r : 0;
       const raw = xlsx.utils.sheet_to_json(sheet, { header: 1, defval: '', raw: true });
-      for (let r = 0; r < Math.min(raw.length, 20); r++) {
-        const rowVals = (raw[r] || []).map(v => String(v).trim());
+      for (let i = 0; i < Math.min(raw.length, 20); i++) {
+        const rowVals = (raw[i] || []).map(v => String(v).trim());
+        if (Array.isArray(excludedHeaders) && excludedHeaders.some(h => rowVals.includes(h))) continue;
         if (requiredHeaderGroups.every(group => group.some(h => rowVals.includes(h)))) {
-          const rows = xlsx.utils.sheet_to_json(sheet, { range: r, defval: null, raw: true });
+          const absoluteRow = refStartRow + i;
+          const rows = xlsx.utils.sheet_to_json(sheet, { range: absoluteRow, defval: null, raw: true });
           rows._sheetName = sheetName;
-          rows._headerRow = r;
+          rows._headerRow = absoluteRow;
           return rows;
         }
       }
@@ -1133,7 +1155,7 @@ module.exports = function budgetRouterFactory(deps) {
     if (!req.file) return res.status(400).json({ error: '파일이 필요합니다.' });
     let rows;
     try {
-      rows = parseSheet(req.file.buffer, req.file.originalname, [['구분', '부문'], ['1월']]);
+      rows = parseSheet(req.file.buffer, req.file.originalname, [['구분', '부문'], ['1월']], ['팀명', '항목']);
     } catch (e) {
       return res.status(400).json({ error: '파일을 읽을 수 없습니다. (xlsx/csv만 지원)' });
     }
@@ -1143,11 +1165,28 @@ module.exports = function budgetRouterFactory(deps) {
     const companyId = req.auth.companyId || null;
     const year = Number(req.query.year) || new Date().getFullYear();
     const data = readBudget(companyId);
+    // 실사용 원본 파일의 "조직별" 시트는 부문별 "인원 현황" 블록 하나만 있는 게 아니라,
+    // 같은 부문·계정과목 조합이 급여/인센티브/복리후생비/교육훈련비/사회보험/퇴직급여
+    // 등 비용 집계 블록으로 여러 번 더 반복되는 구조였다(실측 발견) — 이 블록들은 맨 앞의
+    // 이름 없는 컬럼에 그 블록의 이름표(예: "급여")가 채워져 있는 것으로만 구분 가능한데,
+    // 그 구분 없이 그대로 업서트하면 나중 블록이 앞선 인원수를 계속 덮어써 최종적으로는
+    // 마지막 블록(대개 "퇴직급여")의 금액이 인원수인 것처럼 저장되는 심각한 데이터 오염이
+    // 있었다. 이 비용 집계 블록들은 시스템이 3단계 롤업(sgaByCategory)에서 RAW자료+예산
+    // 데이터로 이미 동일한 값을 자동 산출하므로 별도 저장이 불필요(이전 세션에 이미 확정된
+    // 방침) — "구분/부문/계정과목/n월/평균" 외의 컬럼에 값이 있는 행(=비용 블록의 이름표
+    // 행)은 인원 현황이 아니므로 건너뛴다.
+    const KNOWN_HEADCOUNT_COLUMNS = new Set(['구분', '구분_1', '부문', '계정과목', '평균', ...MONTHS.map(m => `${m}월`)]);
     let upserted = 0;
     rows.forEach(row => {
       const dept = String(row['구분'] || row['부문'] || '').trim();
       if (!dept || dept === '계') return;
-      const catRaw = String(row['계정과목'] || row['구분2'] || '').trim();
+      const hasUnexpectedLabel = Object.keys(row).some(k => !KNOWN_HEADCOUNT_COLUMNS.has(k) && row[k] !== null && String(row[k]).trim() !== '');
+      if (hasUnexpectedLabel) return;
+      // SheetJS는 동일한 헤더 텍스트("구분")가 한 시트에 두 번 나오면 두 번째 것을
+      // "구분_1"로 자동 개명한다(실사용 원본 파일의 "조직별" 시트가 정확히 이 구조 —
+      // 부문용 "구분"과 계정과목용 "구분" 두 컬럼이 똑같이 "구분"이라는 이름을 씀).
+      // "구분2"는 그 실제 명명 규칙과 맞지 않아 이 값을 절대 찾지 못하던 기존 버그였다.
+      const catRaw = String(row['계정과목'] || row['구분_1'] || '').trim();
       const category = CATEGORIES.includes(catRaw) ? catRaw : '';
       const months = MONTHS.map(m => toNumber(row[`${m}월`]));
       if (months.every(v => v === null)) return;

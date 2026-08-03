@@ -6520,6 +6520,15 @@ initDB()
         console.log(`[저장 파일] ${JSON_FILE}`);
         console.log("[안내] 서버를 종료해도 데이터는 파일에 보존됩니다.\n");
       }
+      // budget.js(사업계획/예산)는 Postgres/SaaS 모드에서도 여전히 파일 기반(budget-data.json)이라,
+      // 이 경로가 영속 디스크를 안 가리키면 코드 재배포(컨테이너 재빌드)마다 사업계획 데이터
+      // 전체가 초기화된다 — 사용자가 실제로 겪은 사고(작성 중이던 사업계획이 배포 후 사라짐)의
+      // 원인. render.yaml처럼 DATA_FILE을 영속 디스크 경로로 지정해두고도 BUDGET_DATA_FILE을
+      // 빠뜨리기 쉬워 기동 로그에 항상 경고를 남긴다.
+      if (!process.env.BUDGET_DATA_FILE) {
+        console.log("⚠️  [경고] BUDGET_DATA_FILE 환경변수가 설정되지 않았습니다 — 사업계획/예산 데이터(budget-data.json)가 영속 디스크가 아닌 앱 소스 경로에 저장되어, 코드 재배포(재빌드)마다 초기화됩니다.");
+        console.log("    render.yaml의 envVars에 BUDGET_DATA_FILE=<DATA_FILE과 동일한 영속 디스크 경로>/budget-data.json 을 추가하세요.\n");
+      }
     });
     server.on("error", (err) => {
       if (err.code === "EADDRINUSE") {
