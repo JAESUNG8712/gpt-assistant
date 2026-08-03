@@ -17,10 +17,14 @@ services:
       # 미설정 시 위 DATA_FILE 경로의 JSON 파일 모드로 동작한다.
       - key: BUDGET_DATA_FILE
         value: /var/data/budget-data.json
-        # budget.js(사업계획/예산)는 DATABASE_URL 설정 여부와 무관하게 항상 이 파일을
-        # 쓴다(전용 DB 테이블이 없음) — DATA_FILE과 같은 영속 디스크(/var/data)를
-        # 가리키도록 반드시 설정해야, 코드 재배포(컨테이너 재빌드)로 작성 중이던
-        # 사업계획이 사라지는 사고가 재발하지 않는다.
+        # budget.js(사업계획/예산)는 DATABASE_URL이 설정돼 있으면 이 값을 무시하고
+        # PostgreSQL(budget_store 테이블, schema.sql 참고)에 저장한다 — 2026-08-03
+        # 실사용자 확인 결과 Persistent Disk(위 disk 블록)가 유료 플랜 전용이라
+        # /var/data 자체가 마운트 안 되는 배포가 있었고, 그 경우 이 값이 가리키는
+        # 경로가 존재하지 않아 재배포마다 사업계획 데이터가 사라졌기 때문이다.
+        # 이 값은 DATABASE_URL을 쓰지 않는 자체호스팅/오프라인 단일회사 JSON 파일
+        # 모드에서만 실제로 쓰이며, 그 모드에서는 DATA_FILE과 마찬가지로 영속 디스크
+        # 경로를 가리켜야 재배포 시 초기화되지 않는다.
       - key: SESSION_SECRET
         generateValue: true
         # 로그인 세션 토큰 서명용 고정 시크릿. 미설정 시 서버가 재시작될 때마다 임의
