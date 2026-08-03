@@ -119,13 +119,13 @@
   }
   #hint.show { opacity: 1; }
 
-  #overlay {
+  .overlay {
     position: absolute; inset: 0;
     background: rgba(6,9,18,0.88);
     display: flex; align-items: center; justify-content: center;
     z-index: 30;
   }
-  #overlay.hidden { display: none; }
+  .overlay.hidden { display: none; }
   .overlay-box {
     background: #16213e;
     border: 1px solid #2c3a5c;
@@ -136,10 +136,12 @@
   }
   .overlay-box h2 { font-size: 1.3rem; margin-bottom: 10px; }
   .overlay-box p { font-size: 0.85rem; color: #b7c0d8; margin-bottom: 18px; line-height: 1.6; }
+  .overlay-box .btn-row { display: flex; gap: 10px; justify-content: center; }
   .overlay-box button {
     background: #e94560; color: #fff; border: none; border-radius: 10px;
     padding: 10px 22px; font-size: 0.85rem; font-weight: 700; cursor: pointer;
   }
+  .overlay-box button.secondary { background: #384258; }
 
   /* Tower info sheet */
   .sheet {
@@ -164,6 +166,21 @@
   .btn-merge { background: #7c5cff; }
   .btn-sell { background: #e94560; }
   .sheet-actions button:disabled { background: #384258; color: #7c8399; cursor: default; }
+
+  /* Item inventory sheet */
+  .item-row { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid #232d45; }
+  .item-row:last-child { border-bottom: none; }
+  .item-row .icon { font-size: 1.4rem; width: 26px; text-align: center; flex: 0 0 auto; }
+  .item-row .info { flex: 1; min-width: 0; }
+  .item-row .info .name { font-size: 0.82rem; font-weight: 700; }
+  .item-row .info .desc { font-size: 0.68rem; color: #9aa4c0; margin-top: 2px; }
+  .item-row .count { font-size: 0.75rem; color: #f6c343; font-weight: 700; flex: 0 0 auto; }
+  .item-row .use-btn {
+    border: none; border-radius: 8px; padding: 7px 12px; font-size: 0.72rem;
+    font-weight: 700; background: #2ecc71; color: #fff; cursor: pointer; flex: 0 0 auto;
+  }
+  .item-row .use-btn:disabled { background: #384258; color: #7c8399; cursor: default; }
+  .item-empty { font-size: 0.78rem; color: #7c8399; text-align: center; padding: 14px 0; }
 
   /* Build tray */
   .td-build-tray {
@@ -213,12 +230,26 @@
     <button id="speedBtn">1배속</button>
     <button id="startWaveBtn" class="primary">▶ 웨이브 시작</button>
   </div>
+  <div class="td-toolbar">
+    <button id="itemsBtn">🎒 아이템</button>
+    <button id="saveBtn">💾 저장</button>
+  </div>
 
   <div class="td-canvas-wrap">
     <canvas id="gameCanvas"></canvas>
     <div id="toast"></div>
     <div id="hint"></div>
-    <div id="overlay" class="hidden">
+    <div id="startOverlay" class="overlay hidden">
+      <div class="overlay-box">
+        <h2>저장된 게임 발견</h2>
+        <p id="startOverlaySub"></p>
+        <div class="btn-row">
+          <button id="resumeBtn">이어하기</button>
+          <button id="newGameBtn" class="secondary">새로 시작</button>
+        </div>
+      </div>
+    </div>
+    <div id="overlay" class="overlay hidden">
       <div class="overlay-box">
         <h2 id="overlayTitle">게임 오버</h2>
         <p id="overlaySub"></p>
@@ -238,6 +269,14 @@
       <button class="btn-merge" id="btnMerge">합성</button>
       <button class="btn-sell" id="btnSell">판매</button>
     </div>
+  </div>
+
+  <div class="sheet hidden" id="itemPanel">
+    <div class="sheet-head">
+      <div class="name">🎒 보유 아이템</div>
+      <button class="close" id="itemPanelClose">✕</button>
+    </div>
+    <div id="itemList"></div>
   </div>
 
   <div class="td-build-tray" id="buildTray"></div>
@@ -268,14 +307,25 @@
   const TIER_LABEL = ['I', 'II', 'III', 'IV'];
 
   const ENEMY_DEFS = {
-    normal: { name: '일반', hp: 38, speed: 1.25, reward: 8, color: '#e94560', radius: 0.30 },
-    fast:   { name: '빠름', hp: 20, speed: 2.15, reward: 6, color: '#f6c343', radius: 0.25 },
-    tank:   { name: '탱크', hp: 155, speed: 0.75, reward: 22, color: '#5a5a8a', radius: 0.38 },
-    boss:   { name: '보스', hp: 950, speed: 0.6, reward: 180, color: '#8a0f2c', radius: 0.52 }
+    normal:         { name: '일반',   hp: 38,   speed: 1.25, reward: 8,   color: '#e94560', radius: 0.30, leak: 1, armor: 0 },
+    fast:           { name: '빠름',   hp: 20,   speed: 2.15, reward: 6,   color: '#f6c343', radius: 0.25, leak: 1, armor: 0 },
+    tank:           { name: '탱크',   hp: 155,  speed: 0.75, reward: 22,  color: '#5a5a8a', radius: 0.38, leak: 1, armor: 0.15 },
+    boss_titan:     { name: '타이탄', hp: 950,  speed: 0.55, reward: 180, color: '#8a0f2c', radius: 0.55, leak: 3, armor: 0,    boss: true },
+    boss_berserker: { name: '광전사', hp: 520,  speed: 1.35, reward: 150, color: '#ff5e3a', radius: 0.50, leak: 2, armor: 0,    boss: true },
+    boss_overlord:  { name: '군주',   hp: 1400, speed: 0.50, reward: 260, color: '#5e17eb', radius: 0.58, leak: 4, armor: 0.35, boss: true }
   };
+
+  const ITEM_DEFS = {
+    gold_pouch:  { name: '골드 주머니', icon: '💰', desc: '즉시 골드 +80 획득' },
+    heal_potion: { name: '회복 물약',   icon: '💊', desc: '라이프 +5 회복' },
+    meteor:      { name: '메테오',      icon: '☄️', desc: '현재 모든 적에게 40 피해' },
+    freeze:      { name: '냉각 폭탄',   icon: '🧊', desc: '모든 적을 3초간 크게 둔화' }
+  };
+  const ITEM_ORDER = ['gold_pouch', 'heal_potion', 'meteor', 'freeze'];
 
   const START_GOLD = 150, START_LIVES = 20;
   const NEXT_WAVE_COUNTDOWN = 6;
+  const SAVE_KEY = 'td_save_v1';
 
   /* ---------------------------------------------------------------- */
   /* Path setup                                                        */
@@ -345,6 +395,11 @@
   let spawnTimer = 0;
   let countdown = 3;
   let mode = { type: 'idle' };
+  let inventory = defaultInventory();
+
+  function defaultInventory() {
+    return { gold_pouch: 0, heal_potion: 0, meteor: 0, freeze: 0 };
+  }
 
   /* ---------------------------------------------------------------- */
   /* Canvas / layout                                                   */
@@ -415,6 +470,11 @@
   /* ---------------------------------------------------------------- */
   /* Wave generation                                                    */
   /* ---------------------------------------------------------------- */
+  function chooseBossType(n) {
+    if (n % 15 === 0) return 'boss_overlord';
+    return (n / 5) % 2 === 1 ? 'boss_titan' : 'boss_berserker';
+  }
+
   function buildWaveQueue(n) {
     const count = Math.min(6 + n, 26);
     const q = [];
@@ -425,7 +485,7 @@
       else if (n >= 2 && roll < 0.5) type = 'fast';
       q.push(type);
     }
-    if (n % 5 === 0) q.push('boss');
+    if (n % 5 === 0) q.push(chooseBossType(n));
     return q;
   }
 
@@ -439,7 +499,7 @@
       baseSpeed: def.speed, reward: Math.round(def.reward * rewardMult),
       dist: 0, c: WAYPOINTS[0].c, r: WAYPOINTS[0].r,
       alive: true, slowUntil: 0, slowFactor: 1,
-      leakDamage: type === 'boss' ? 3 : 1
+      leakDamage: def.leak, armor: def.armor || 0
     });
   }
 
@@ -555,6 +615,8 @@
       if (wave > bestWave) { bestWave = wave; localStorage.setItem('td_best_wave', String(bestWave)); }
       showToast(`웨이브 ${wave} 클리어! +${bonus} 골드`);
       countdown = NEXT_WAVE_COUNTDOWN;
+      maybeDropItem(wave % 5 === 0);
+      saveGame();
     }
 
     updateHUD();
@@ -562,16 +624,25 @@
 
   function applyDamage(enemy, dmg) {
     if (!enemy.alive) return;
-    enemy.hp -= dmg;
+    enemy.hp -= dmg * (1 - (enemy.armor || 0));
     if (enemy.hp <= 0) {
       enemy.alive = false;
       gold += enemy.reward;
     }
   }
 
+  function maybeDropItem(isBossWave) {
+    if (Math.random() >= (isBossWave ? 1 : 0.35)) return;
+    const key = ITEM_ORDER[Math.floor(Math.random() * ITEM_ORDER.length)];
+    inventory[key] = (inventory[key] || 0) + 1;
+    showToast(`🎁 아이템 획득: ${ITEM_DEFS[key].icon} ${ITEM_DEFS[key].name}`);
+    renderInventory();
+  }
+
   function endGame() {
     gameOver = true;
     if (wave > bestWave) { bestWave = wave; localStorage.setItem('td_best_wave', String(bestWave)); }
+    clearSave();
     document.getElementById('overlayTitle').textContent = '게임 오버';
     document.getElementById('overlaySub').textContent = `웨이브 ${wave}까지 방어했습니다. (최고 기록: ${bestWave})`;
     document.getElementById('overlay').classList.remove('hidden');
@@ -678,6 +749,24 @@
       const rad = def.radius * cellSize;
       const slowed = performance.now() < e.slowUntil;
 
+      if (def.boss) {
+        ctx.beginPath();
+        ctx.arc(cx, cy, rad + 4, 0, Math.PI * 2);
+        ctx.strokeStyle = '#f6c343';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+        ctx.font = `${Math.floor(rad * 0.9)}px sans-serif`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('👑', cx, cy - rad - 10);
+      }
+      if (e.armor > 0) {
+        ctx.font = `${Math.floor(rad * 0.8)}px sans-serif`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('🛡️', cx + rad * 0.7, cy - rad * 0.7);
+      }
+
       ctx.beginPath();
       ctx.arc(cx, cy, rad, 0, Math.PI * 2);
       ctx.fillStyle = slowed ? '#8fd9ff' : def.color;
@@ -713,6 +802,7 @@
     document.getElementById('waveVal').textContent = wave;
     document.getElementById('bestVal').textContent = bestWave;
     renderBuildTray();
+    renderInventory();
     if (mode.type === 'select') {
       const t = towers.find(x => x.id === mode.towerId);
       if (t) refreshPanel(t); else closePanel();
@@ -740,6 +830,7 @@
           showHint('설치할 타일을 선택하세요');
         }
         closePanel();
+        closeItemPanel();
         renderBuildTray();
       });
       trayEl.appendChild(card);
@@ -751,6 +842,7 @@
   /* ---------------------------------------------------------------- */
   const panelEl = document.getElementById('towerPanel');
   function openPanel(t) {
+    closeItemPanel();
     const wasHidden = panelEl.classList.contains('hidden');
     panelEl.classList.remove('hidden');
     refreshPanel(t);
@@ -811,6 +903,7 @@
     if (gold < cost) { showToast('골드가 부족합니다'); return; }
     gold -= cost; t.level += 1; t.totalSpent += cost;
     updateHUD();
+    saveGame();
   });
 
   document.getElementById('btnMerge').addEventListener('pointerdown', () => {
@@ -830,7 +923,142 @@
     mode = { type: 'idle' };
     closePanel();
     updateHUD();
+    saveGame();
   });
+
+  /* ---------------------------------------------------------------- */
+  /* Item inventory panel                                              */
+  /* ---------------------------------------------------------------- */
+  const itemPanelEl = document.getElementById('itemPanel');
+  const itemListEl = document.getElementById('itemList');
+
+  function openItemPanel() {
+    mode = { type: 'idle' };
+    showHint('');
+    closePanel();
+    const wasHidden = itemPanelEl.classList.contains('hidden');
+    itemPanelEl.classList.remove('hidden');
+    renderInventory();
+    if (wasHidden) resizeCanvas();
+  }
+  function closeItemPanel() {
+    const wasVisible = !itemPanelEl.classList.contains('hidden');
+    itemPanelEl.classList.add('hidden');
+    if (wasVisible) resizeCanvas();
+  }
+
+  function renderInventory() {
+    const total = ITEM_ORDER.reduce((sum, k) => sum + (inventory[k] || 0), 0);
+    document.getElementById('itemsBtn').textContent = '🎒 아이템' + (total > 0 ? ` (${total})` : '');
+
+    if (itemPanelEl.classList.contains('hidden')) return;
+    if (total === 0) {
+      itemListEl.innerHTML = '<div class="item-empty">보유한 아이템이 없습니다. 웨이브를 클리어하면 획득할 수 있어요.</div>';
+      return;
+    }
+    itemListEl.innerHTML = ITEM_ORDER.map(key => {
+      const def = ITEM_DEFS[key];
+      const count = inventory[key] || 0;
+      return `<div class="item-row">
+        <div class="icon">${def.icon}</div>
+        <div class="info"><div class="name">${def.name}</div><div class="desc">${def.desc}</div></div>
+        <div class="count">x${count}</div>
+        <button class="use-btn" data-item="${key}" ${count === 0 ? 'disabled' : ''}>사용</button>
+      </div>`;
+    }).join('');
+    itemListEl.querySelectorAll('.use-btn').forEach(btn => {
+      btn.addEventListener('pointerdown', () => useItem(btn.dataset.item));
+    });
+  }
+
+  function useItem(key) {
+    if (!inventory[key]) return;
+    inventory[key] -= 1;
+    if (key === 'gold_pouch') {
+      gold += 80;
+      showToast('💰 골드 +80 획득!');
+    } else if (key === 'heal_potion') {
+      const before = lives;
+      lives = Math.min(START_LIVES, lives + 5);
+      showToast(`💊 라이프 +${lives - before} 회복!`);
+    } else if (key === 'meteor') {
+      let hit = 0;
+      for (const e of enemies) { if (e.alive) { applyDamage(e, 40); hit++; } }
+      enemies = enemies.filter(e => e.alive);
+      showToast(`☄️ 적 ${hit}마리에게 메테오 피해!`);
+    } else if (key === 'freeze') {
+      const now = performance.now();
+      for (const e of enemies) { if (e.alive) { e.slowUntil = now + 3000; e.slowFactor = 0.3; } }
+      showToast('🧊 모든 적 둔화!');
+    }
+    updateHUD();
+    saveGame();
+  }
+
+  document.getElementById('itemsBtn').addEventListener('click', () => {
+    if (itemPanelEl.classList.contains('hidden')) openItemPanel();
+    else closeItemPanel();
+  });
+  document.getElementById('itemPanelClose').addEventListener('pointerdown', closeItemPanel);
+  document.getElementById('saveBtn').addEventListener('click', () => {
+    saveGame();
+    showToast('게임이 저장되었습니다');
+  });
+
+  /* ---------------------------------------------------------------- */
+  /* Save / Load                                                        */
+  /* ---------------------------------------------------------------- */
+  function serializeState() {
+    return {
+      v: 1, gold, lives, wave, bestWave, towers, enemies, projectiles, nextId,
+      waveActive, spawnQueue, spawnTimer, countdown, inventory, savedAt: Date.now()
+    };
+  }
+
+  function saveGame() {
+    if (gameOver) return;
+    try { localStorage.setItem(SAVE_KEY, JSON.stringify(serializeState())); } catch (e) { /* storage unavailable */ }
+  }
+
+  function loadSavedState() {
+    try {
+      const raw = localStorage.getItem(SAVE_KEY);
+      if (!raw) return null;
+      const data = JSON.parse(raw);
+      if (!data || data.v !== 1) return null;
+      return data;
+    } catch (e) { return null; }
+  }
+
+  function clearSave() {
+    try { localStorage.removeItem(SAVE_KEY); } catch (e) { /* storage unavailable */ }
+  }
+
+  function applyState(data) {
+    gold = data.gold;
+    lives = data.lives;
+    wave = data.wave;
+    bestWave = Math.max(bestWave, data.bestWave || 0);
+    towers = data.towers || [];
+    // slow timers are performance.now()-relative and meaningless across page loads
+    enemies = (data.enemies || []).map(e => Object.assign({}, e, { slowUntil: 0, slowFactor: 1 }));
+    projectiles = data.projectiles || [];
+    nextId = data.nextId || 1;
+    waveActive = !!data.waveActive;
+    spawnQueue = data.spawnQueue || [];
+    spawnTimer = data.spawnTimer || 0;
+    countdown = data.countdown != null ? data.countdown : 3;
+    inventory = Object.assign(defaultInventory(), data.inventory || {});
+    mode = { type: 'idle' };
+    gameOver = false; paused = false; gameSpeed = 1;
+    document.getElementById('pauseBtn').textContent = '⏸ 일시정지';
+    document.getElementById('speedBtn').textContent = '1배속';
+    document.getElementById('overlay').classList.add('hidden');
+    closePanel();
+    closeItemPanel();
+    showHint('');
+    updateHUD();
+  }
 
   /* ---------------------------------------------------------------- */
   /* Input                                                              */
@@ -865,6 +1093,7 @@
         showHint('');
         openPanel(towerHere);
         updateHUD();
+        saveGame();
         return;
       }
       showToast('같은 종류·등급 타워끼리만 합성할 수 있습니다');
@@ -888,6 +1117,7 @@
       gold -= def.cost;
       towers.push({ id: nextId++, col, row, type: mode.towerType, tier: 1, level: 1, totalSpent: def.cost, cooldown: 0 });
       updateHUD();
+      saveGame();
       return;
     }
 
@@ -903,6 +1133,7 @@
   document.getElementById('pauseBtn').addEventListener('click', () => {
     paused = !paused;
     document.getElementById('pauseBtn').textContent = paused ? '▶ 재개' : '⏸ 일시정지';
+    if (paused) saveGame();
   });
   document.getElementById('speedBtn').addEventListener('click', () => {
     gameSpeed = gameSpeed === 1 ? 2 : 1;
@@ -913,20 +1144,32 @@
     countdown = 0;
   });
   document.getElementById('restartBtn').addEventListener('click', () => resetGame());
+  document.getElementById('resumeBtn').addEventListener('click', () => {
+    const data = loadSavedState();
+    document.getElementById('startOverlay').classList.add('hidden');
+    if (data) applyState(data); else resetGame();
+  });
+  document.getElementById('newGameBtn').addEventListener('click', () => {
+    document.getElementById('startOverlay').classList.add('hidden');
+    resetGame();
+  });
 
   /* ---------------------------------------------------------------- */
   /* Reset / Init                                                       */
   /* ---------------------------------------------------------------- */
   function resetGame() {
+    clearSave();
     gold = START_GOLD; lives = START_LIVES; wave = 0;
     towers = []; enemies = []; projectiles = [];
     paused = false; gameSpeed = 1; gameOver = false;
     waveActive = false; spawnQueue = []; spawnTimer = 0; countdown = 3;
     mode = { type: 'idle' };
+    inventory = defaultInventory();
     document.getElementById('pauseBtn').textContent = '⏸ 일시정지';
     document.getElementById('speedBtn').textContent = '1배속';
     document.getElementById('overlay').classList.add('hidden');
     closePanel();
+    closeItemPanel();
     showHint('');
     updateHUD();
   }
@@ -941,8 +1184,25 @@
     render();
   }
 
+  // autosave safety net: periodic tick + when the tab loses focus/visibility
+  setInterval(() => { if (!paused && !gameOver) saveGame(); }, 5000);
+  document.addEventListener('visibilitychange', () => { if (document.hidden) saveGame(); });
+  window.addEventListener('pagehide', saveGame);
+  window.addEventListener('beforeunload', saveGame);
+
   resizeCanvas();
-  resetGame();
+
+  const existingSave = loadSavedState();
+  if (existingSave) {
+    updateHUD();
+    document.getElementById('startOverlaySub').textContent =
+      `웨이브 ${existingSave.wave} · 골드 ${existingSave.gold} · 라이프 ${Math.max(0, existingSave.lives)} 상태로 저장되어 있습니다.`;
+    document.getElementById('startOverlay').classList.remove('hidden');
+    paused = true;
+  } else {
+    resetGame();
+  }
+
   requestAnimationFrame(loop);
 })();
 </script>
