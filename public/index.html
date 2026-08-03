@@ -16174,41 +16174,6 @@ function _renderEmpPayPlanBody(){
       <div class="fg"><label class="fl">연도</label><input class="fc" type="number" id="epp-year" value="${_eppYear}" onchange="_eppYear=Number(this.value)||new Date().getFullYear();renderEmpPayPlanPage()"></div>
     </div>
 
-    <div class="card mb3" style="background:#f8fafc"><div class="card-body">
-      <h4 class="mb2">📥 엑셀 일괄 업로드</h4>
-      <div class="fz11 text-gray mb2">열 구성: "사번"(또는 "이름") + "연도"(생략 시 위에서 선택한 연도 적용) + "연금종류"(선택, "DC" 또는 "DB"만 인식) + 항목명을 그대로 열 제목으로 사용(예: "RSU", "복지카드(기본)", "사외교육" 등). 같은 직원·연도로 다시 업로드하면 그 행의 항목으로 전체 교체됩니다.</div>
-      <input type="file" id="epp-upload-file" accept=".xlsx,.xls,.csv" style="display:none" onchange="_showSelectedFileName('epp-upload-file','epp-upload-filename')">
-      <button class="btn btn-secondary btn-sm" onclick="document.getElementById('epp-upload-file').click()">📁 파일 선택</button>
-      <span id="epp-upload-filename" class="fz12 text-gray" style="margin-left:8px">선택된 파일 없음</span>
-      <button class="btn btn-primary btn-sm" style="margin-left:8px" onclick="uploadEmpPayPlanExcel()">업로드</button>
-      <span id="epp-upload-status" class="fz12 text-gray" style="margin-left:8px"></span>
-    </div></div>
-
-    <div class="card mb3" style="background:#f8fafc"><div class="card-body">
-      <h4 class="mb2">📋 전 직원 일괄 반영</h4>
-      <div class="fz11 text-gray mb2">복지카드·사외교육처럼 재직자 전원(또는 선택한 인원)에게 동일 금액이 적용되는 항목을 한 번에 반영합니다. 반영 후에도 위에서 직원을 선택해 개별 금액을 수정할 수 있습니다.</div>
-      <div style="display:grid;grid-template-columns:2fr 1fr auto;gap:8px;align-items:end">
-        <div class="fg"><label class="fl">항목</label><select class="fc" id="epp-bulk-item">${bulkItemOptions}</select></div>
-        <div class="fg"><label class="fl">금액(연간, 1인당)</label><input class="fc" type="number" id="epp-bulk-amount" placeholder="예: 600000"></div>
-        <button class="btn btn-primary btn-sm" onclick="bulkApplyEmpPayPlanItem()">전 재직자에게 일괄 반영</button>
-      </div>
-    </div></div>
-
-    <div class="card mb3" style="background:#fff8e6"><div class="card-body">
-      <h4 class="mb2">⚙️ 퇴직급여·4대보험 자동계산 요율 설정</h4>
-      <div class="fz11" style="color:#8a6500;margin-bottom:8px">아래는 참고용 예시 기본값입니다. 반드시 해당 연도 고시 요율(국민연금·건강보험·장기요양·고용보험)과 회사 내규(퇴직급여 적립방식)를 확인한 뒤 조정하세요.</div>
-      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px 14px">
-        <div class="fg"><label class="fl">DC형 연간 적립률(%)</label><input class="fc" type="number" step="0.01" id="epp-set-dcrate" value="${_eppSettings.severance.dcRate}"></div>
-        <div class="fg"><label class="fl">DB형 근속 1년당 개월수</label><input class="fc" type="number" step="0.1" id="epp-set-dbmonths" value="${_eppSettings.severance.dbMonthsPerYear}"></div>
-        <div class="fg"><label class="fl">국민연금(%, 회사부담)</label><input class="fc" type="number" step="0.001" id="epp-set-pension" value="${_eppSettings.socialInsurance.pension}"></div>
-        <div class="fg"><label class="fl">건강보험(%, 회사부담)</label><input class="fc" type="number" step="0.001" id="epp-set-health" value="${_eppSettings.socialInsurance.health}"></div>
-        <div class="fg"><label class="fl">장기요양(건강보험료 대비 %)</label><input class="fc" type="number" step="0.01" id="epp-set-ltc" value="${_eppSettings.socialInsurance.longTermCare}"></div>
-        <div class="fg"><label class="fl">고용보험(%, 회사부담)</label><input class="fc" type="number" step="0.01" id="epp-set-employment" value="${_eppSettings.socialInsurance.employment}"></div>
-        <div class="fg"><label class="fl">주민세(급여 대비 간이 %)</label><input class="fc" type="number" step="0.01" id="epp-set-localtax" value="${_eppSettings.socialInsurance.localTax}"></div>
-      </div>
-      <button class="btn btn-secondary btn-sm mt2" onclick="saveEmpPayPlanSettings()">요율 저장</button>
-    </div></div>
-
     ${selectedEmp?`
       <h4 class="mb2">${h(selectedEmp.name)} <span class="fz11 text-gray">${h(selectedEmp.dept||"")}${selectedEmp.team?" / "+h(selectedEmp.team):""}${selectedEmp.rank?" · "+h(selectedEmp.rank):""}${selectedEmp.position?" · "+h(selectedEmp.position):""}</span></h4>
       ${_eppLaborCostRefHtml(selectedEmp)}
@@ -16224,6 +16189,47 @@ function _renderEmpPayPlanBody(){
       <div class="tbl-wrap"><table><tr><th class="lbl">구분</th><th class="lbl">항목</th><th>연간 금액</th></tr>${rowsHtml}</table></div>
       <button class="btn btn-primary mt3" onclick="submitEmpPayPlan()">저장</button>
     `:`<div class="p-empty">직원을 선택하세요.</div>`}
+
+    <div class="mt4 mb3" style="border-top:1px solid #eef2f7;padding-top:12px">
+      <div class="fw6 fz13" style="cursor:pointer;color:#4f46e5" onclick="const b=this.nextElementSibling;const open=b.style.display!=='none';b.style.display=open?'none':'block';this.textContent=(open?'▶':'▼')+' 🛠 일괄 도구 (엑셀 업로드 · 전 직원 일괄 반영 · 자동계산 요율 설정)'">▶ 🛠 일괄 도구 (엑셀 업로드 · 전 직원 일괄 반영 · 자동계산 요율 설정)</div>
+      <div style="display:none">
+        <div class="card mb3 mt2" style="background:#f8fafc"><div class="card-body">
+          <h4 class="mb2">📥 엑셀 일괄 업로드</h4>
+          <div class="fz11 text-gray mb2">열 구성: "사번"(또는 "이름") + "연도"(생략 시 위에서 선택한 연도 적용) + "연금종류"(선택, "DC" 또는 "DB"만 인식) + 항목명을 그대로 열 제목으로 사용(예: "RSU", "복지카드(기본)", "사외교육" 등). 같은 직원·연도로 다시 업로드하면 그 행의 항목으로 전체 교체됩니다.</div>
+          <input type="file" id="epp-upload-file" accept=".xlsx,.xls,.csv" style="display:none" onchange="_showSelectedFileName('epp-upload-file','epp-upload-filename')">
+          <button class="btn btn-secondary btn-sm" onclick="document.getElementById('epp-upload-file').click()">📁 파일 선택</button>
+          <span id="epp-upload-filename" class="fz12 text-gray" style="margin-left:8px">선택된 파일 없음</span>
+          <button class="btn btn-primary btn-sm" style="margin-left:8px" onclick="uploadEmpPayPlanExcel()">업로드</button>
+          <span id="epp-upload-status" class="fz12 text-gray" style="margin-left:8px"></span>
+        </div></div>
+
+        <div class="card mb3" style="background:#f8fafc"><div class="card-body">
+          <h4 class="mb2">📋 전 직원 일괄 반영</h4>
+          <div class="fz11 text-gray mb2">복지카드·사외교육처럼 재직자 전원(또는 선택한 인원)에게 동일 금액이 적용되는 항목을 한 번에 반영합니다. 반영 후에도 위에서 직원을 선택해 개별 금액을 수정할 수 있습니다.</div>
+          <div style="display:grid;grid-template-columns:2fr 1fr auto;gap:8px;align-items:end">
+            <div class="fg"><label class="fl">항목</label><select class="fc" id="epp-bulk-item">${bulkItemOptions}</select></div>
+            <div class="fg"><label class="fl">금액(연간, 1인당)</label><input class="fc" type="number" id="epp-bulk-amount" placeholder="예: 600000"></div>
+            <button class="btn btn-primary btn-sm" onclick="bulkApplyEmpPayPlanItem()">전 재직자에게 일괄 반영</button>
+          </div>
+        </div></div>
+
+        <div class="card mb3" style="background:#fff8e6"><div class="card-body">
+          <h4 class="mb2">⚙️ 퇴직급여·4대보험 자동계산 요율 설정</h4>
+          <div class="fz11" style="color:#8a6500;margin-bottom:8px">아래는 참고용 예시 기본값입니다. 반드시 해당 연도 고시 요율(국민연금·건강보험·장기요양·고용보험)과 회사 내규(퇴직급여 적립방식)를 확인한 뒤 조정하세요.</div>
+          <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px 14px">
+            <div class="fg"><label class="fl">DC형 연간 적립률(%)</label><input class="fc" type="number" step="0.01" id="epp-set-dcrate" value="${_eppSettings.severance.dcRate}"></div>
+            <div class="fg"><label class="fl">DB형 근속 1년당 개월수</label><input class="fc" type="number" step="0.1" id="epp-set-dbmonths" value="${_eppSettings.severance.dbMonthsPerYear}"></div>
+            <div class="fg"><label class="fl">국민연금(%, 회사부담)</label><input class="fc" type="number" step="0.001" id="epp-set-pension" value="${_eppSettings.socialInsurance.pension}"></div>
+            <div class="fg"><label class="fl">건강보험(%, 회사부담)</label><input class="fc" type="number" step="0.001" id="epp-set-health" value="${_eppSettings.socialInsurance.health}"></div>
+            <div class="fg"><label class="fl">장기요양(건강보험료 대비 %)</label><input class="fc" type="number" step="0.01" id="epp-set-ltc" value="${_eppSettings.socialInsurance.longTermCare}"></div>
+            <div class="fg"><label class="fl">고용보험(%, 회사부담)</label><input class="fc" type="number" step="0.01" id="epp-set-employment" value="${_eppSettings.socialInsurance.employment}"></div>
+            <div class="fg"><label class="fl">주민세(급여 대비 간이 %)</label><input class="fc" type="number" step="0.01" id="epp-set-localtax" value="${_eppSettings.socialInsurance.localTax}"></div>
+          </div>
+          <button class="btn btn-secondary btn-sm mt2" onclick="saveEmpPayPlanSettings()">요율 저장</button>
+        </div></div>
+      </div>
+    </div>
+
     <h4 class="mt4 mb2">${_eppYear}년 입력 현황</h4>
     ${_eppPlans.length?`<div class="tbl-wrap"><table><tr><th class="lbl">이름</th><th class="lbl">부문</th><th class="lbl">팀</th><th>항목수</th><th>연간합계</th><th></th></tr>${enteredRows}</table></div>`:`<div class="p-empty">입력된 직원이 없습니다.</div>`}
   </div></div>`;
