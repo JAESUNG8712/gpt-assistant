@@ -15096,6 +15096,17 @@ function _renderBizPlanBudgetAdminTab(){
   html+=`<div class="mb3"><label class="fz12">연도: <input class="fc" type="number" style="display:inline-block;width:90px" value="${_bpBulkUploadYear}" onchange="_bpBulkUploadYear=Number(this.value)||new Date().getFullYear();_bpMgrSearchResult=null;_bpMgrUploadPreview=null;renderBizPlanPage()"></label></div>`;
   html+=_bpOrgDeptTeamDatalistsHtml()+_bpExpenseAccountDatalistHtml();
 
+  html+=`<div class="card mb3" style="background:#eef2ff;border:1px solid #c7d2fe"><div class="card-body">
+    <h4 class="mb2">📦 통합 업로드(파일 하나로 한 번에 반영)</h4>
+    <div class="fz11 text-gray mb2">개인별 급여상세("사번"·"이름" 컬럼이 있는 시트)·예산(비인건비, "팀명"·"항목" 컬럼)·월별 인원계획("구분"·"1월" 컬럼)이 시트별로 나뉘어 있는 파일 하나를 업로드하면, 인식되는 시트를 전부 찾아 순서대로 한 번에 반영합니다(개인별 급여상세에 직원 목록에 없는 인원이 있으면 등록 확인 창이 먼저 뜨고, 확인 후 나머지가 자동으로 이어집니다). 팀별로 하나씩 "저장"을 누르지 않아도 되며, 파일에 필요한 시트 중 일부만 있어도 있는 것만 반영됩니다.</div>
+    <input type="file" id="bp-combined-upload-file" accept=".xlsx,.xls,.csv" style="display:none" onchange="_showSelectedFileName('bp-combined-upload-file','bp-combined-upload-filename')">
+    <button class="btn btn-secondary btn-sm" onclick="document.getElementById('bp-combined-upload-file').click()">📁 파일 선택</button>
+    <span id="bp-combined-upload-filename" class="fz12 text-gray" style="margin-left:8px">선택된 파일 없음</span>
+    <button class="btn btn-primary btn-sm" style="margin-left:8px" onclick="uploadBizPlanCombinedExcel()">통합 업로드</button>
+    <span id="bp-combined-upload-status" class="fz12 text-gray" style="margin-left:8px"></span>
+    ${_bpLastCombinedUploadResultHtml()}
+  </div></div>`;
+
   html+=`<div class="card mb3" style="background:#f8fafc"><div class="card-body">
     <h4 class="mb2">🔍 부문/사업부/센터 조회</h4>
     <div class="fz11 text-gray mb2">부문/사업부/센터(팀은 선택)를 조회하면, 기존 예산이 있으면 편집 그리드로 바로 열리고 없으면 새로 입력할 수 있는 빈 그리드가 나타납니다. 저장하면 이 조회 결과는 초기화되고, 다시 수정하려면 재조회하세요.</div>
@@ -15157,6 +15168,8 @@ function _renderBizPlanMgrSearchResultHtml(){
         <tbody id="${tbodyId}">${rowsHtml}</tbody>
       </table></div>
       <button class="btn btn-ghost btn-sm mt2" onclick="addBpSgaRow(null,'${tbodyId}')">+ 판관비 항목 추가</button>
+      <button class="btn btn-ghost btn-sm mt2" onclick="addBpLaborCostRow('${tbodyId}')" title="현재 인사 정보에 등록된 재직자 연봉 합계를 기준으로 월 인건비 행을 자동 생성합니다.">+ 기본 인건비 자동입력(연봉 기준)</button>
+      <button class="btn btn-ghost btn-sm mt2" onclick="addBpEmpDetailRows(false,'${tbodyId}')" title="관리자가 '개인별 급여 상세' 화면에 입력해둔 RSU·인센티브·복지카드 등 항목을 팀 단위로 합산해 자동 반영합니다.">+ 개인별 급여상세 자동입력</button>
     `:`
       <div class="fz12" style="color:#8a6500">승인되어 잠긴 계획입니다(직접 수정 불가). "사업계획" 목록 화면에서 "수정요청"을 보내 관리자 승인을 받으면 다시 draft로 전환되어 이 화면에서도 수정할 수 있습니다.</div>
       ${_bpSgaDetailTableHtml(items)}
@@ -15207,9 +15220,36 @@ async function uploadBizPlanSgaExcelPreview(){
 }
 function _renderBizPlanMgrUploadPreviewHtml(){
   const p=_bpMgrUploadPreview;if(!p)return "";
-  let html=`<div class="mt2 fz12 text-gray">시트: ${h(p.sheetName)} — 아래에서 팀별로 확인·조정한 뒤 "저장"을 눌러야 실제로 반영됩니다.</div>`;
+  const saveableCount=p.teams.filter(t=>!t.ambiguous&&(!t.existingStatus||t.existingStatus==="draft")).length;
+  let html=`<div class="mt2 fz12 text-gray">시트: ${h(p.sheetName)} — 아래에서 팀별로 확인·조정한 뒤, 팀마다 "저장"을 누르거나 "전체 저장"으로 한 번에 반영할 수 있습니다.</div>`;
+  if(saveableCount>1)html+=`<button class="btn btn-primary btn-sm mt2 mb2" onclick="saveAllBizPlanMgrUploadTeams()">📦 전체 저장(${saveableCount}개 팀 한번에)</button>`;
   html+=p.teams.map((t,idx)=>_renderBizPlanMgrUploadTeamCardHtml(t,idx)).join("");
   return html;
+}
+// 팀별로 하나씩 "저장"을 눌러야 했던 것을, 미리보기에 남아있는 모든 팀(잠긴 계획·
+// 팀명 특정 불가 제외)을 한 번에 서버로 보내 반영한다. 백엔드(/sga-upload/commit)는
+// teams 배열을 이미 지원하고 있어(saveBizPlanMgrUploadTeam도 이 API를 팀 1개짜리
+// 배열로 호출하던 것뿐) 클라이언트만 여러 팀을 한 번에 모아 보내면 된다.
+async function saveAllBizPlanMgrUploadTeams(){
+  const p=_bpMgrUploadPreview;if(!p||!p.teams.length)return;
+  const targets=[]; // {idx,team}
+  p.teams.forEach((t,idx)=>{ if(!t.ambiguous&&(!t.existingStatus||t.existingStatus==="draft"))targets.push({idx,team:t.team}); });
+  if(!targets.length){showToast("저장할 수 있는 팀이 없습니다(전부 잠겼거나 팀명 특정 불가).","error");return;}
+  const teams=targets.map(({idx,team})=>({team,items:_bpCollectSgaRowsFromTbody(`bpmgr-upload-tbody-${idx}`)}));
+  const r=await serverRequest("POST","/api/budget/business-plan/sga-upload/commit",{year:_bpBulkUploadYear,teams});
+  if(!r?.ok){showToast(r?.error||r?.message||"저장에 실패했습니다.","error");return;}
+  const updated=r.updated||[],skipped=r.skipped||[];
+  const skippedTeams=new Set(skipped.map(s=>s.team));
+  // 성공적으로 반영된 팀만 미리보기에서 제거 — 저장 도중 상태가 바뀌어 skip된 팀(드묾)은
+  // 사유를 확인할 수 있도록 그대로 남겨둔다.
+  _bpMgrUploadPreview.teams=_bpMgrUploadPreview.teams.filter(t=>skippedTeams.has(t.team)||t.ambiguous||(t.existingStatus&&t.existingStatus!=="draft"));
+  if(!_bpMgrUploadPreview.teams.length)_bpMgrUploadPreview=null;
+  const msg=skipped.length
+    ? `${updated.length}개 팀 저장 완료, ${skipped.length}개 팀은 건너뜀(${skipped.map(s=>s.team+": "+s.reason).join(" / ")})`
+    : `${updated.length}개 팀 전체 저장되었습니다.`;
+  showToast(msg,skipped.length&&!updated.length?"error":"success");
+  await loadBizPlanFromServer();
+  renderBizPlanPage();
 }
 function _renderBizPlanMgrUploadTeamCardHtml(t,idx){
   const editable=!t.existingStatus||t.existingStatus==="draft";
@@ -15501,7 +15541,8 @@ function _bpResolveDeptTeamMatched(){
 }
 // 판관비 그리드에서 항목명이 이미 있는 행은 값만 채우고, 없으면 새 행을 추가하는 공용 헬퍼
 // (addBpLaborCostRow/addBpEmpDetailRows가 동일한 로직을 중복 구현하던 것을 통합).
-function _bpFillOrAddSgaRow({rows,name,category,dept,team,detail,note,monthly}){
+// tbodyId — 대상 그리드(생략 시 기존과 동일하게 작성폼의 "bp-sga-tbody").
+function _bpFillOrAddSgaRow({rows,name,category,dept,team,detail,note,monthly,tbodyId}){
   const targetRow=rows.find(r=>r.querySelector(".bp-sga-name").value.trim()===name);
   if(targetRow){
     targetRow.querySelector(".bp-sga-dept").value=dept;
@@ -15518,10 +15559,16 @@ function _bpFillOrAddSgaRow({rows,name,category,dept,team,detail,note,monthly}){
       name,category,accountType:"판관",expenseAccount:"",detail,
       months:Array(12).fill(monthly),
       note,growthRate:0,fixed:true
-    });
+    },tbodyId);
   }
 }
-function addBpLaborCostRow(){
+// tbodyId — 이 버튼이 반영할 대상 그리드. "사업계획" 탭의 작성/수정 폼("bp-sga-tbody")뿐
+// 아니라 "예산 항목 관리" 탭의 조직 조회 편집 그리드("bpmgr-search-tbody")에서도 쓸 수
+// 있도록 매개변수화했다(기존엔 #bp-sga-tbody가 하드코딩돼 있어 예산 항목 관리 화면에는
+// 이 버튼 자체가 없었고, 있었더라도 존재하지 않는 tbody를 찾아 조용히 아무 동작도 하지
+// 않았을 것 — 실제 사용자 보고로 발견).
+function addBpLaborCostRow(tbodyId){
+  tbodyId=tbodyId||"bp-sga-tbody";
   const {dept,team,matched}=_bpResolveDeptTeamMatched();
   if(!dept){showToast("부문을 먼저 지정하세요(관리자는 위 사업부 입력란, 팀원은 소속이 자동 지정됩니다).","error");return;}
   if(!matched.length){showToast("해당 부문/팀 소속의 재직 중인 직원이 없어 인건비를 계산할 수 없습니다.","error");return;}
@@ -15542,12 +15589,12 @@ function addBpLaborCostRow(){
 
   const detail=`재직자 ${matched.length}명 연봉 합계 기준 자동입력(${new Date().toISOString().slice(0,10)})`;
   const note="연봉 데이터 기준 자동입력 - 인원 변동 시 재계산 필요";
-  const rows=[...document.querySelectorAll("#bp-sga-tbody tr")];
+  const rows=[...document.querySelectorAll(`#${tbodyId} tr`)];
 
-  _bpFillOrAddSgaRow({rows,name:"고정급",category:"급여",dept,team,detail,note,monthly:fixedMonthly});
+  _bpFillOrAddSgaRow({rows,name:"고정급",category:"급여",dept,team,detail,note,monthly:fixedMonthly,tbodyId});
   // 변동급은 팀장이 1명 이상 있을 때만 채운다 — 팀장이 없으면 기존 값(0 또는 사용자가
   // 직접 입력해둔 값)을 그대로 두어 "변동급은 수동 입력"이라는 원래 방침을 유지한다.
-  if(leaderCount>0)_bpFillOrAddSgaRow({rows,name:"변동급",category:"급여",dept,team,detail,note,monthly:variableMonthly});
+  if(leaderCount>0)_bpFillOrAddSgaRow({rows,name:"변동급",category:"급여",dept,team,detail,note,monthly:variableMonthly,tbodyId});
 
   const msg=leaderCount>0
     ? `재직자 ${matched.length}명(팀장 ${leaderCount}명 포함) 연봉 기준 월 고정급 ${fixedMonthly.toLocaleString()}원 · 변동급 ${variableMonthly.toLocaleString()}원이 입력되었습니다.`
@@ -15561,11 +15608,13 @@ function addBpLaborCostRow(){
 // 동일한 기준을 쓴다. silent=true면(신규 계획 작성 화면 진입 시 자동 실행되는 경로)
 // 데이터가 없거나 매칭 인원이 없어도 에러 토스트 없이 조용히 넘어간다 — 사용자가 아무
 // 조작도 안 했는데 뜬금없는 에러가 뜨는 것을 막기 위함(버튼을 직접 눌렀을 때는 안내가
-// 필요하므로 그 경로는 그대로 에러 토스트를 띄운다).
-async function addBpEmpDetailRows(silent){
+// 필요하므로 그 경로는 그대로 에러 토스트를 띄운다). tbodyId는 addBpLaborCostRow와 동일한
+// 이유로 매개변수화(기본값 "bp-sga-tbody").
+async function addBpEmpDetailRows(silent,tbodyId){
+  tbodyId=tbodyId||"bp-sga-tbody";
   const {dept,team,matched}=_bpResolveDeptTeamMatched();
   if(!dept){if(!silent)showToast("부문을 먼저 지정하세요(관리자는 위 사업부 입력란, 팀원은 소속이 자동 지정됩니다).","error");return;}
-  const year=Number($("#bp-base-year")?.value)||new Date().getFullYear();
+  const year=Number($("#bp-base-year")?.value)||_bpBulkUploadYear||new Date().getFullYear();
   if(!matched.length){if(!silent)showToast("해당 부문/팀 소속의 재직 중인 직원이 없어 반영할 수 없습니다.","error");return;}
 
   const ids=matched.map(e=>e.id).join(",");
@@ -15586,10 +15635,10 @@ async function addBpEmpDetailRows(silent){
 
   const detail=`개인별 급여상세 자동입력(${year}년 기준, ${new Date().toISOString().slice(0,10)})`;
   const note="개인별 급여 상세 데이터 기준 자동입력 - 인원 변동 시 재계산 필요";
-  const rows=[...document.querySelectorAll("#bp-sga-tbody tr")];
+  const rows=[...document.querySelectorAll(`#${tbodyId} tr`)];
   names.forEach(name=>{
     const monthly=Math.round(sums[name].annualTotal/12);
-    _bpFillOrAddSgaRow({rows,name,category:sums[name].category,dept,team,detail,note,monthly});
+    _bpFillOrAddSgaRow({rows,name,category:sums[name].category,dept,team,detail,note,monthly,tbodyId});
   });
   showToast(`개인별 급여 상세 ${plans.length}명분(${names.length}개 항목)이 반영되었습니다.`,"success");
 }
@@ -16110,6 +16159,128 @@ function _bpLastHeadcountUploadResultHtml(){
   const r=_bpLastHeadcountUploadResult;if(!r)return "";
   return `<div class="mt2 fz12"><b>방금 업로드 결과</b> <span class="text-gray">(${new Date(r.at).toLocaleString()})</span> — ${r.upserted}건 반영됨. 상세 내용은 아래 "계획 인원 현황"에서 확인하세요.</div>`;
 }
+// ── 통합 업로드(개인별 급여상세+예산+인원계획 시트가 한 파일에 섞여 있어도 한 번에) ──
+// 팀별로 하나씩 "저장"을 누르거나, 화면을 옮겨다니며 같은 파일을 3번 올려야 했던 것을
+// 사용자가 지적해 신설. 개인별 급여상세는 클라이언트에서 직접 시트를 찾아 파싱해야
+// 하므로(신규 미등록 인원 확인 모달이 필요할 수 있어) 순서상 먼저 처리하고, 예산·
+// 인원계획은 서버가 이미 다중시트 헤더탐색을 지원하므로(parseSheet) 같은 파일 그대로
+// 두 엔드포인트에 전달한다 — 필요한 시트가 없으면(400) "건너뜀"으로 처리하고 계속
+// 진행한다(파일에 일부 시트만 있어도 있는 것만 반영되게 하기 위함).
+let _bpLastCombinedUploadResult=null;
+function _bpLastCombinedUploadResultHtml(){
+  const r=_bpLastCombinedUploadResult;if(!r)return "";
+  return `<div class="mt2 fz12" style="background:#fff;border-radius:6px;padding:8px 10px"><b>방금 통합 업로드 결과</b> <span class="text-gray">(${new Date(r.at).toLocaleString()})</span><br>${r.messages.map(m=>h(m)).join("<br>")}</div>`;
+}
+function uploadBizPlanCombinedExcel(){
+  const input=$("#bp-combined-upload-file");
+  const statusEl=$("#bp-combined-upload-status");
+  if(!input||!input.files.length){showToast("파일을 선택하세요.","error");return;}
+  const file=input.files[0];
+  if(statusEl)statusEl.textContent="처리 중...";
+  if(typeof XLSX==="undefined"){
+    const s=document.createElement("script");
+    s.src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js";
+    s.onload=()=>_bpCombinedStep1(file);
+    // 예산·인원계획 두 단계는 서버가 파일을 직접 받아 자체적으로 시트를 찾으므로 이
+    // CDN 파서가 필요 없다 — CDN 로드 실패(네트워크 차단 등)로 전체를 중단하는 대신
+    // 개인별 급여상세 단계만 건너뛰고 나머지 두 단계는 계속 진행한다.
+    s.onerror=()=>{
+      _bpCombinedTally={messages:["개인별 급여상세: Excel 파서 로드 실패로 건너뜀(.csv 파일이거나 네트워크 문제일 수 있습니다)"]};
+      _bpCombinedStep2(file);
+    };
+    document.head.appendChild(s);
+  }else{
+    _bpCombinedStep1(file);
+  }
+}
+let _bpCombinedTally=null;
+// 1단계: 개인별 급여상세(RAW자료류 시트) — 발견되면 처리 후 이어서 2단계로 진행,
+// 못 찾으면 건너뛰고 바로 2단계로.
+function _bpCombinedStep1(file){
+  _bpCombinedTally={messages:[]};
+  const reader=new FileReader();
+  reader.onload=async(ev)=>{
+    let found=null;
+    try{
+      const isCsv=/\.csv$/i.test(file.name||"");
+      const wb=isCsv?XLSX.read(ev.target.result,{type:"binary"}):XLSX.read(ev.target.result,{type:"array"});
+      found=_eppFindSheetRows(wb);
+    }catch(e){/* 파싱 실패는 무시하고 예산/인원계획 단계로 계속 진행 */}
+    if(found){
+      _eppYear=_bpBulkUploadYear; // 통합 업로드는 이 탭에서 선택한 연도를 그대로 적용
+      _eppUploadContinuation=()=>_bpCombinedStep2(file);
+      await _eppProcessRows(found.rows);
+    }else{
+      _bpCombinedTally.messages.push("개인별 급여상세: 인식 가능한 시트 없음(건너뜀)");
+      await _bpCombinedStep2(file);
+    }
+  };
+  const isCsv=/\.csv$/i.test(file.name||"");
+  if(isCsv)reader.readAsBinaryString(file);else reader.readAsArrayBuffer(file);
+}
+// 2단계: 예산(비인건비) — 파싱 후 확인 없이 바로 전체 커밋(같은 파일 재업로드 시
+// 기존 항목을 정확히 갱신하는 매칭 로직은 sga-upload/commit이 이미 보장).
+async function _bpCombinedStep2(file){
+  const fd=new FormData();fd.append("file",file);
+  try{
+    const res=await fetch(serverConfig.url.replace(/\/+$/,"")+`/api/budget/business-plan/sga-upload/parse?year=${_bpBulkUploadYear}`,{
+      method:"POST",headers:_authToken?{"Authorization":"Bearer "+_authToken}:{},body:fd
+    });
+    const json=await res.json();
+    if(res.ok&&json.ok!==false&&Array.isArray(json.teams)&&json.teams.length){
+      const ambiguousTeams=json.teams.filter(t=>t.ambiguous).map(t=>t.team);
+      const teams=json.teams.filter(t=>!t.ambiguous).map(t=>({team:t.team,items:t.items}));
+      if(teams.length){
+        const r=await serverRequest("POST","/api/budget/business-plan/sga-upload/commit",{year:_bpBulkUploadYear,teams});
+        if(r?.ok){
+          const upd=r.updated||[],skip=r.skipped||[];
+          _bpCombinedTally.messages.push(`예산: ${upd.length}개 팀 반영${skip.length?`, ${skip.length}개 팀 건너뜀(${skip.map(s=>s.team+": "+s.reason).join(", ")})`:""}`);
+        }else{
+          _bpCombinedTally.messages.push(`예산: 저장 실패(${r?.error||r?.message||"알 수 없는 오류"})`);
+        }
+      }
+      if(ambiguousTeams.length)_bpCombinedTally.messages.push(`예산: 팀명 특정 불가로 건너뜀 - ${ambiguousTeams.join(", ")}("부문/사업부/센터 조회"에서 직접 반영 필요)`);
+    }else if(res.status===400){
+      _bpCombinedTally.messages.push("예산: 인식 가능한 시트 없음(건너뜀)");
+    }else{
+      _bpCombinedTally.messages.push(`예산: 처리 실패(${json.error||json.message||"알 수 없는 오류"})`);
+    }
+  }catch(e){
+    _bpCombinedTally.messages.push("예산: 업로드 중 오류가 발생했습니다: "+e.message);
+  }
+  await _bpCombinedStep3(file);
+}
+// 3단계: 월별 인원계획.
+async function _bpCombinedStep3(file){
+  const fd=new FormData();fd.append("file",file);
+  try{
+    const res=await fetch(serverConfig.url.replace(/\/+$/,"")+`/api/budget/business-plan/headcount-plan/upload?year=${_bpBulkUploadYear}`,{
+      method:"POST",headers:_authToken?{"Authorization":"Bearer "+_authToken}:{},body:fd
+    });
+    const json=await res.json();
+    if(res.ok&&json.ok!==false){
+      _bpCombinedTally.messages.push(`인원계획: ${json.upserted}건 반영`);
+      _bpLastHeadcountUploadResult={at:new Date().toISOString(),upserted:json.upserted};
+    }else if(res.status===400){
+      _bpCombinedTally.messages.push("인원계획: 인식 가능한 시트 없음(건너뜀)");
+    }else{
+      _bpCombinedTally.messages.push(`인원계획: 처리 실패(${json.error||json.message||"알 수 없는 오류"})`);
+    }
+  }catch(e){
+    _bpCombinedTally.messages.push("인원계획: 업로드 중 오류가 발생했습니다: "+e.message);
+  }
+  await _bpCombinedFinish();
+}
+async function _bpCombinedFinish(){
+  const t=_bpCombinedTally;_bpCombinedTally=null;
+  const input=$("#bp-combined-upload-file");if(input)input.value="";
+  const statusEl=$("#bp-combined-upload-status");if(statusEl)statusEl.textContent="";
+  _bpLastCombinedUploadResult={at:new Date().toISOString(),messages:t.messages};
+  showToast("통합 업로드 완료: "+t.messages.join(" · "),"success");
+  await loadBizPlanFromServer();
+  await loadBizPlanRollup();
+  renderBizPlanPage();
+}
 async function toggleBizPlanInputWindow(){
   const r=await serverRequest("POST","/api/budget/business-plan/settings/input-window",{inputOpen:!bizPlanSettings.inputOpen});
   if(!r?.ok){showToast(r?.error||r?.message||"변경 실패","error");return;}
@@ -16389,75 +16560,103 @@ function uploadEmpPayPlanExcel(){
   }
 }
 let _eppUploadTally=null,_eppPendingNewEmps=null;
+// 워크북 안에서 "사번"·"이름" 컬럼을 함께 가진 시트를 찾는다(첫 시트를 무조건 쓰던
+// 이전 방식은, 사용자가 실제로 쓰는 원본 파일처럼 여러 시트가 섞여 있고 개인별 급여
+// 상세용 시트가 첫 번째가 아닌 경우 엉뚱한 시트를 읽는 문제가 있었다 — budget.js
+// 서버측 parseSheet()의 다중시트 헤더탐색과 동일한 접근을 클라이언트에도 적용).
+function _eppFindSheetRows(wb){
+  for(const sheetName of wb.SheetNames){
+    const ws=wb.Sheets[sheetName];
+    const grid=XLSX.utils.sheet_to_json(ws,{header:1,defval:"",range:0});
+    for(let i=0;i<Math.min(20,grid.length);i++){
+      const rowVals=(grid[i]||[]).map(v=>String(v).trim());
+      const hasEmpNo=rowVals.some(v=>v==="사번"||v==="empNo");
+      const hasName=rowVals.some(v=>v==="이름"||v==="name");
+      if(hasEmpNo&&hasName){
+        const rows=XLSX.utils.sheet_to_json(ws,{defval:"",range:i});
+        if(rows.length)return {rows,sheetName};
+      }
+    }
+  }
+  return null;
+}
 function _eppParseAndUpload(file){
   const reader=new FileReader();
   reader.onload=async(ev)=>{
     const statusEl=$("#epp-upload-status");
-    let rows;
+    let found;
     try{
       const isCsv=/\.csv$/i.test(file.name||"");
       const wb=isCsv?XLSX.read(ev.target.result,{type:"binary"}):XLSX.read(ev.target.result,{type:"array"});
-      rows=XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]],{defval:""});
+      found=_eppFindSheetRows(wb);
     }catch(e){
       showToast("파일을 읽을 수 없습니다. (xlsx/csv만 지원)","error");
       if(statusEl)statusEl.textContent="";
       return;
     }
-    if(!rows.length){showToast("업로드할 데이터가 없습니다.","error");if(statusEl)statusEl.textContent="";return;}
-    const templateCatByName={};
-    _BP_DEFAULT_SGA_TEMPLATE.forEach(([cat,name])=>{if(name!=="고정급"&&name!=="변동급")templateCatByName[name]=cat;});
-    _eppUploadTally={success:0,skippedNoMatch:0,skippedAmbiguous:0,skippedNoItems:0,skippedSaveError:0,details:[],statusEl};
-    const toUpload=[]; // 기존 직원과 매칭된 행 — 바로 업로드
-    const newCandidates=[]; // 직원 목록에 없는 행 — 신규 등록 여부를 확인받을 대상
-    for(const row of rows){
-      const empNo=String(row["사번"]||row["empNo"]||"").trim();
-      const empName=String(row["이름"]||row["name"]||"").trim();
-      // 사번을 우선 매칭하되, 사번이 있어도 일치하는 직원이 없으면(파일의 사번 체계가
-      // 이 시스템에 등록된 사번과 다른 경우 등) 이름으로도 다시 시도한다 — 예전엔 사번이
-      // 있으면 이름 매칭을 아예 시도하지 않아, 사번 형식만 다르고 이름은 일치하는 경우도
-      // 전부 "매칭 실패"로 건너뛰어지는 문제가 있었다.
-      let emp=empNo?employees.find(e=>String(e.empNo)===empNo):null;
-      let ambiguous=false;
-      if(!emp&&empName){
-        // 이름 폴백은 동명이인이 있으면 잘못된 사람에게 데이터가 들어갈 위험이 있어(예:
-        // "김철수"가 재직자 중 2명), 정확히 1명만 일치할 때만 채택하고 여러 명이면 사람이
-        // 직접 확인하도록 매칭실패로 처리한다(신규 등록 후보로도 넣지 않음 — 이미 존재할
-        // 가능성이 높은 사람이라 함부로 새 레코드를 만들면 중복 인원이 생긴다).
-        const nameMatches=employees.filter(e=>e.active&&e.name===empName);
-        if(nameMatches.length===1)emp=nameMatches[0];
-        else if(nameMatches.length>1)ambiguous=true;
-      }
-      if(ambiguous){_eppUploadTally.skippedAmbiguous++;_eppUploadTally.details.push(`${empName}: 동명이인이라 이름만으로 특정 불가(사번을 입력해주세요)`);continue;}
-      const year=Number(row["연도"]||row["year"])||_eppYear;
-      const items=[];
-      Object.keys(row).forEach(key=>{
-        if(templateCatByName[key]!==undefined){
-          const amount=Number(String(row[key]).replace(/,/g,""))||0;
-          if(amount!==0)items.push({category:templateCatByName[key],name:key,amount});
-        }
-      });
-      // 연금종류(DC/DB) — 값이 정확히 "DC" 또는 "DB"일 때만 인식(그 외 값, 예: "중간정산"
-      // 등의 비고성 텍스트는 무시하고 기존 저장값을 유지).
-      const pensionRaw=String(row["연금종류"]||row["연금\n종류"]||row["severanceType"]||"").trim().toUpperCase();
-      const severanceType=(pensionRaw==="DC"||pensionRaw==="DB")?pensionRaw:undefined;
-      if(!emp){
-        if(!empNo&&!empName){_eppUploadTally.skippedNoMatch++;_eppUploadTally.details.push(`(이름/사번 없음): 직원 매칭 실패`);continue;}
-        if(!items.length){_eppUploadTally.skippedNoMatch++;_eppUploadTally.details.push(`${empName||empNo}: 직원 매칭 실패 + 인식 가능한 항목도 없음`);continue;}
-        newCandidates.push({empNo,empName,year,items,severanceType});
-        continue;
-      }
-      if(!items.length){_eppUploadTally.skippedNoItems++;_eppUploadTally.details.push(`${emp.name}: 인식 가능한 항목 없음(열 제목이 표준 항목명과 다른지 확인)`);continue;}
-      toUpload.push({emp,year,items,severanceType});
-    }
-    await _eppUploadRows(toUpload);
-    if(newCandidates.length){
-      _eppShowNewEmpModal(newCandidates);
-    }else{
-      await _eppFinalizeUpload();
-    }
+    if(!found){showToast('업로드할 데이터를 찾지 못했습니다("사번"·"이름" 컬럼이 모두 있는 시트가 필요합니다).',"error");if(statusEl)statusEl.textContent="";return;}
+    await _eppProcessRows(found.rows);
   };
   const isCsv=/\.csv$/i.test(file.name||"");
   if(isCsv)reader.readAsBinaryString(file);else reader.readAsArrayBuffer(file);
+}
+// 행 파싱→직원 매칭→업로드 본체. _eppParseAndUpload(단일 파일 업로드)와
+// uploadBizPlanCombinedExcel(통합 업로드, "예산 항목 관리" 탭에서 한 파일로 개인별
+// 급여상세+예산+인원계획을 한 번에 반영하는 기능)가 공유한다.
+async function _eppProcessRows(rows){
+  if(!rows.length){showToast("업로드할 데이터가 없습니다.","error");return;}
+  const statusEl=$("#epp-upload-status");
+  const templateCatByName={};
+  _BP_DEFAULT_SGA_TEMPLATE.forEach(([cat,name])=>{if(name!=="고정급"&&name!=="변동급")templateCatByName[name]=cat;});
+  _eppUploadTally={success:0,skippedNoMatch:0,skippedAmbiguous:0,skippedNoItems:0,skippedSaveError:0,details:[],statusEl};
+  const toUpload=[]; // 기존 직원과 매칭된 행 — 바로 업로드
+  const newCandidates=[]; // 직원 목록에 없는 행 — 신규 등록 여부를 확인받을 대상
+  for(const row of rows){
+    const empNo=String(row["사번"]||row["empNo"]||"").trim();
+    const empName=String(row["이름"]||row["name"]||"").trim();
+    // 사번을 우선 매칭하되, 사번이 있어도 일치하는 직원이 없으면(파일의 사번 체계가
+    // 이 시스템에 등록된 사번과 다른 경우 등) 이름으로도 다시 시도한다 — 예전엔 사번이
+    // 있으면 이름 매칭을 아예 시도하지 않아, 사번 형식만 다르고 이름은 일치하는 경우도
+    // 전부 "매칭 실패"로 건너뛰어지는 문제가 있었다.
+    let emp=empNo?employees.find(e=>String(e.empNo)===empNo):null;
+    let ambiguous=false;
+    if(!emp&&empName){
+      // 이름 폴백은 동명이인이 있으면 잘못된 사람에게 데이터가 들어갈 위험이 있어(예:
+      // "김철수"가 재직자 중 2명), 정확히 1명만 일치할 때만 채택하고 여러 명이면 사람이
+      // 직접 확인하도록 매칭실패로 처리한다(신규 등록 후보로도 넣지 않음 — 이미 존재할
+      // 가능성이 높은 사람이라 함부로 새 레코드를 만들면 중복 인원이 생긴다).
+      const nameMatches=employees.filter(e=>e.active&&e.name===empName);
+      if(nameMatches.length===1)emp=nameMatches[0];
+      else if(nameMatches.length>1)ambiguous=true;
+    }
+    if(ambiguous){_eppUploadTally.skippedAmbiguous++;_eppUploadTally.details.push(`${empName}: 동명이인이라 이름만으로 특정 불가(사번을 입력해주세요)`);continue;}
+    const year=Number(row["연도"]||row["year"])||_eppYear;
+    const items=[];
+    Object.keys(row).forEach(key=>{
+      if(templateCatByName[key]!==undefined){
+        const amount=Number(String(row[key]).replace(/,/g,""))||0;
+        if(amount!==0)items.push({category:templateCatByName[key],name:key,amount});
+      }
+    });
+    // 연금종류(DC/DB) — 값이 정확히 "DC" 또는 "DB"일 때만 인식(그 외 값, 예: "중간정산"
+    // 등의 비고성 텍스트는 무시하고 기존 저장값을 유지).
+    const pensionRaw=String(row["연금종류"]||row["연금\n종류"]||row["severanceType"]||"").trim().toUpperCase();
+    const severanceType=(pensionRaw==="DC"||pensionRaw==="DB")?pensionRaw:undefined;
+    if(!emp){
+      if(!empNo&&!empName){_eppUploadTally.skippedNoMatch++;_eppUploadTally.details.push(`(이름/사번 없음): 직원 매칭 실패`);continue;}
+      if(!items.length){_eppUploadTally.skippedNoMatch++;_eppUploadTally.details.push(`${empName||empNo}: 직원 매칭 실패 + 인식 가능한 항목도 없음`);continue;}
+      newCandidates.push({empNo,empName,year,items,severanceType});
+      continue;
+    }
+    if(!items.length){_eppUploadTally.skippedNoItems++;_eppUploadTally.details.push(`${emp.name}: 인식 가능한 항목 없음(열 제목이 표준 항목명과 다른지 확인)`);continue;}
+    toUpload.push({emp,year,items,severanceType});
+  }
+  await _eppUploadRows(toUpload);
+  if(newCandidates.length){
+    _eppShowNewEmpModal(newCandidates);
+  }else{
+    await _eppFinalizeUpload();
+  }
 }
 async function _eppUploadRows(list){
   for(const {emp,year,items,severanceType} of list){
@@ -16468,15 +16667,26 @@ async function _eppUploadRows(list){
     else{_eppUploadTally.skippedSaveError++;_eppUploadTally.details.push(`${emp.name}: 저장 실패(${r?.error||r?.message||"알 수 없는 오류"})`);}
   }
 }
+// _eppUploadContinuation — 통합 업로드(uploadBizPlanCombinedExcel)가 "개인별 급여상세"
+// 처리가 끝난 뒤(직원 목록에 없는 인원이 있으면 모달 확인까지 마친 뒤) 이어서 예산·
+// 인원계획 업로드를 계속하기 위해 쓰는 1회성 콜백. 일반적인 "개인별 급여 상세" 화면
+// 단독 업로드에서는 항상 null.
+let _eppUploadContinuation=null;
 async function _eppFinalizeUpload(){
   const t=_eppUploadTally;
   const skipped=t.skippedNoMatch+t.skippedAmbiguous+t.skippedNoItems+t.skippedSaveError;
   if(skipped)console.warn("개인별 급여상세 업로드 - 건너뛴 상세:",t.details);
-  showToast(`업로드 완료: ${t.success}명 반영, ${skipped}건 건너뜀(매칭실패 ${t.skippedNoMatch}·동명이인 ${t.skippedAmbiguous}·항목없음 ${t.skippedNoItems}·저장오류 ${t.skippedSaveError}). 상세는 브라우저 콘솔(F12) 참고.`,t.success>0?"success":"error");
+  showToast(`개인별 급여상세: ${t.success}명 반영, ${skipped}건 건너뜀(매칭실패 ${t.skippedNoMatch}·동명이인 ${t.skippedAmbiguous}·항목없음 ${t.skippedNoItems}·저장오류 ${t.skippedSaveError}). 상세는 브라우저 콘솔(F12) 참고.`,t.success>0?"success":"error");
   const uploadInput=$("#epp-upload-file");if(uploadInput)uploadInput.value="";
   if(t.statusEl)t.statusEl.textContent="";
   _eppUploadTally=null;_eppPendingNewEmps=null;
-  await renderEmpPayPlanPage();
+  // "개인별 급여 상세" 화면 단독 업로드일 때만 그 화면을 다시 그린다 — 통합 업로드가
+  // 다른 탭(예산 항목 관리)에서 이 로직을 호출했을 때 화면이 엉뚱하게 전환되는 것을 방지.
+  if(currentPage==="emp-pay-plan")await renderEmpPayPlanPage();
+  if(_eppUploadContinuation){
+    const cont=_eppUploadContinuation;_eppUploadContinuation=null;
+    await cont();
+  }
 }
 // 업로드 파일에는 있지만 직원 목록에는 없는 인원을 발견했을 때, 조용히 건너뛰는 대신
 // 신규 직원으로 등록할지 확인받는다 — 승인하면 직원 목록에 추가되고(사업계획 인원현황은
