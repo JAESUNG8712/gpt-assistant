@@ -1,0 +1,950 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<title>타워 디펜스</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+  html, body {
+    height: 100%;
+    overflow: hidden;
+    overscroll-behavior: none;
+    background: #0c1220;
+    color: #eef1f8;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    touch-action: manipulation;
+  }
+  #app {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    height: 100dvh;
+    padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+  }
+
+  /* Header */
+  .td-header {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 10px 12px;
+    background: linear-gradient(135deg, #1a1a2e 0%, #16213e 60%, #0f3460 100%);
+    box-shadow: 0 2px 10px rgba(0,0,0,0.35);
+    z-index: 5;
+  }
+  .td-back {
+    color: #cfd6ea; text-decoration: none; font-size: 1.1rem; padding: 4px 6px; flex: 0 0 auto;
+  }
+  .td-title { font-size: 0.95rem; font-weight: 700; flex: 0 0 auto; white-space: nowrap; }
+  .td-stats { display: flex; gap: 10px; font-size: 0.78rem; flex-wrap: wrap; justify-content: flex-end; }
+  .td-stats span { background: rgba(255,255,255,0.08); padding: 3px 8px; border-radius: 12px; white-space: nowrap; }
+  .td-stats b { font-weight: 700; }
+
+  /* Toolbar */
+  .td-toolbar {
+    flex: 0 0 auto;
+    display: flex;
+    gap: 8px;
+    padding: 8px 10px;
+    background: #131a2b;
+    border-bottom: 1px solid #232d45;
+  }
+  .td-toolbar button {
+    flex: 1;
+    border: none;
+    border-radius: 10px;
+    padding: 9px 6px;
+    font-size: 0.78rem;
+    font-weight: 700;
+    background: #1f2a44;
+    color: #eef1f8;
+    cursor: pointer;
+  }
+  .td-toolbar button.primary { background: #e94560; }
+  .td-toolbar button:active { filter: brightness(1.2); }
+
+  /* Canvas area */
+  .td-canvas-wrap {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    position: relative;
+    background: #0c1220;
+    overflow: hidden;
+  }
+  #gameCanvas { touch-action: none; display: block; border-radius: 6px; }
+
+  #toast {
+    position: absolute;
+    top: 10px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: rgba(15,20,35,0.92);
+    color: #fff;
+    padding: 8px 16px;
+    border-radius: 20px;
+    font-size: 0.8rem;
+    font-weight: 600;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.25s;
+    white-space: nowrap;
+    max-width: 90%;
+    text-overflow: ellipsis;
+    overflow: hidden;
+    z-index: 20;
+  }
+  #toast.show { opacity: 1; }
+
+  #hint {
+    position: absolute;
+    bottom: 10px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: rgba(233,69,96,0.92);
+    color: #fff;
+    padding: 6px 14px;
+    border-radius: 16px;
+    font-size: 0.75rem;
+    font-weight: 700;
+    opacity: 0;
+    transition: opacity 0.2s;
+    pointer-events: none;
+    z-index: 20;
+  }
+  #hint.show { opacity: 1; }
+
+  #overlay {
+    position: absolute; inset: 0;
+    background: rgba(6,9,18,0.88);
+    display: flex; align-items: center; justify-content: center;
+    z-index: 30;
+  }
+  #overlay.hidden { display: none; }
+  .overlay-box {
+    background: #16213e;
+    border: 1px solid #2c3a5c;
+    border-radius: 16px;
+    padding: 28px 30px;
+    text-align: center;
+    max-width: 320px;
+  }
+  .overlay-box h2 { font-size: 1.3rem; margin-bottom: 10px; }
+  .overlay-box p { font-size: 0.85rem; color: #b7c0d8; margin-bottom: 18px; line-height: 1.6; }
+  .overlay-box button {
+    background: #e94560; color: #fff; border: none; border-radius: 10px;
+    padding: 10px 22px; font-size: 0.85rem; font-weight: 700; cursor: pointer;
+  }
+
+  /* Tower info sheet */
+  .sheet {
+    flex: 0 0 auto;
+    background: #131a2b;
+    border-top: 1px solid #2c3a5c;
+    padding: 10px 12px calc(10px + env(safe-area-inset-bottom));
+    z-index: 10;
+  }
+  .sheet.hidden { display: none; }
+  .sheet-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+  .sheet-head .name { font-size: 0.95rem; font-weight: 700; }
+  .sheet-head .close { background: none; border: none; color: #9aa4c0; font-size: 1.1rem; cursor: pointer; padding: 2px 8px; }
+  .sheet-stats { display: flex; gap: 14px; font-size: 0.72rem; color: #b7c0d8; margin-bottom: 10px; flex-wrap: wrap; }
+  .sheet-stats b { color: #eef1f8; }
+  .sheet-actions { display: flex; gap: 8px; }
+  .sheet-actions button {
+    flex: 1; border: none; border-radius: 10px; padding: 10px 4px;
+    font-size: 0.75rem; font-weight: 700; cursor: pointer; color: #fff;
+  }
+  .btn-upgrade { background: #2ecc71; }
+  .btn-merge { background: #7c5cff; }
+  .btn-sell { background: #e94560; }
+  .sheet-actions button:disabled { background: #384258; color: #7c8399; cursor: default; }
+
+  /* Build tray */
+  .td-build-tray {
+    flex: 0 0 auto;
+    display: flex;
+    gap: 8px;
+    padding: 8px 10px calc(8px + env(safe-area-inset-bottom));
+    background: #131a2b;
+    border-top: 1px solid #232d45;
+    overflow-x: auto;
+    touch-action: pan-x;
+    -webkit-overflow-scrolling: touch;
+  }
+  .tower-card {
+    flex: 0 0 auto;
+    width: 78px;
+    background: #1f2a44;
+    border: 2px solid transparent;
+    border-radius: 12px;
+    padding: 8px 6px;
+    text-align: center;
+    cursor: pointer;
+    user-select: none;
+  }
+  .tower-card.selected { border-color: #f6c343; background: #2a3556; }
+  .tower-card .icon { font-size: 1.5rem; }
+  .tower-card .name { font-size: 0.68rem; font-weight: 700; margin-top: 2px; }
+  .tower-card .cost { font-size: 0.68rem; color: #f6c343; margin-top: 2px; }
+  .tower-card.disabled { opacity: 0.45; }
+</style>
+</head>
+<body>
+<div id="app">
+  <header class="td-header">
+    <a class="td-back" href="/index.html">←</a>
+    <div class="td-title">🏰 타워 디펜스</div>
+    <div class="td-stats">
+      <span>💰 <b id="goldVal">0</b></span>
+      <span>❤️ <b id="livesVal">0</b></span>
+      <span>🌊 <b id="waveVal">1</b></span>
+      <span>🏆 <b id="bestVal">0</b></span>
+    </div>
+  </header>
+
+  <div class="td-toolbar">
+    <button id="pauseBtn">⏸ 일시정지</button>
+    <button id="speedBtn">1배속</button>
+    <button id="startWaveBtn" class="primary">▶ 웨이브 시작</button>
+  </div>
+
+  <div class="td-canvas-wrap">
+    <canvas id="gameCanvas"></canvas>
+    <div id="toast"></div>
+    <div id="hint"></div>
+    <div id="overlay" class="hidden">
+      <div class="overlay-box">
+        <h2 id="overlayTitle">게임 오버</h2>
+        <p id="overlaySub"></p>
+        <button id="restartBtn">다시 시작</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="sheet hidden" id="towerPanel">
+    <div class="sheet-head">
+      <div class="name" id="panelName">타워</div>
+      <button class="close" id="panelClose">✕</button>
+    </div>
+    <div class="sheet-stats" id="panelStats"></div>
+    <div class="sheet-actions">
+      <button class="btn-upgrade" id="btnUpgrade">강화</button>
+      <button class="btn-merge" id="btnMerge">합성</button>
+      <button class="btn-sell" id="btnSell">판매</button>
+    </div>
+  </div>
+
+  <div class="td-build-tray" id="buildTray"></div>
+</div>
+
+<script>
+(function () {
+  'use strict';
+
+  /* ---------------------------------------------------------------- */
+  /* Constants                                                         */
+  /* ---------------------------------------------------------------- */
+  const COLS = 8, ROWS = 13;
+  const MAX_TIER = 4, MAX_LEVEL = 3;
+  const WAYPOINTS = [
+    { c: 1, r: -1 }, { c: 1, r: 2 }, { c: 6, r: 2 }, { c: 6, r: 5 },
+    { c: 1, r: 5 }, { c: 1, r: 8 }, { c: 6, r: 8 }, { c: 6, r: 11 },
+    { c: 3, r: 11 }, { c: 3, r: 13 }
+  ];
+
+  const TOWER_DEFS = {
+    archer: { name: '궁수', icon: '🏹', cost: 50, damage: 9, range: 2.6, fireRate: 2.2, splashRadius: 0, color: '#3fa7ff' },
+    mage:   { name: '마법사', icon: '🧙', cost: 85, damage: 16, range: 2.1, fireRate: 1.0, splashRadius: 1.1, color: '#b073ff' },
+    frost:  { name: '냉기술사', icon: '❄️', cost: 65, damage: 4, range: 2.2, fireRate: 1.3, splashRadius: 0, slowFactor: 0.5, slowDuration: 1.6, color: '#4fd8e0' },
+    cannon: { name: '캐논', icon: '💣', cost: 110, damage: 34, range: 1.9, fireRate: 0.65, splashRadius: 1.3, color: '#ff9f43' }
+  };
+  const TOWER_ORDER = ['archer', 'mage', 'frost', 'cannon'];
+  const TIER_LABEL = ['I', 'II', 'III', 'IV'];
+
+  const ENEMY_DEFS = {
+    normal: { name: '일반', hp: 38, speed: 1.25, reward: 8, color: '#e94560', radius: 0.30 },
+    fast:   { name: '빠름', hp: 20, speed: 2.15, reward: 6, color: '#f6c343', radius: 0.25 },
+    tank:   { name: '탱크', hp: 155, speed: 0.75, reward: 22, color: '#5a5a8a', radius: 0.38 },
+    boss:   { name: '보스', hp: 950, speed: 0.6, reward: 180, color: '#8a0f2c', radius: 0.52 }
+  };
+
+  const START_GOLD = 150, START_LIVES = 20;
+  const NEXT_WAVE_COUNTDOWN = 6;
+
+  /* ---------------------------------------------------------------- */
+  /* Path setup                                                        */
+  /* ---------------------------------------------------------------- */
+  const segments = [];
+  const pathTiles = new Set();
+  let totalPathLength = 0;
+  (function buildPath() {
+    for (let i = 0; i < WAYPOINTS.length - 1; i++) {
+      const a = WAYPOINTS[i], b = WAYPOINTS[i + 1];
+      const len = Math.abs(a.c - b.c) + Math.abs(a.r - b.r);
+      segments.push({ c1: a.c, r1: a.r, c2: b.c, r2: b.r, length: len });
+      totalPathLength += len;
+
+      if (a.c === b.c) {
+        const lo = Math.min(a.r, b.r), hi = Math.max(a.r, b.r);
+        for (let r = lo; r <= hi; r++) {
+          if (r >= 0 && r < ROWS && a.c >= 0 && a.c < COLS) pathTiles.add(a.c + ',' + r);
+        }
+      } else {
+        const lo = Math.min(a.c, b.c), hi = Math.max(a.c, b.c);
+        for (let c = lo; c <= hi; c++) {
+          if (c >= 0 && c < COLS && a.r >= 0 && a.r < ROWS) pathTiles.add(c + ',' + a.r);
+        }
+      }
+    }
+  })();
+
+  function pointAtDistance(dist) {
+    if (dist <= 0) return { c: WAYPOINTS[0].c, r: WAYPOINTS[0].r };
+    let remaining = dist;
+    for (const seg of segments) {
+      if (remaining <= seg.length) {
+        const t = seg.length === 0 ? 0 : remaining / seg.length;
+        return { c: seg.c1 + (seg.c2 - seg.c1) * t, r: seg.r1 + (seg.r2 - seg.r1) * t };
+      }
+      remaining -= seg.length;
+    }
+    const last = WAYPOINTS[WAYPOINTS.length - 1];
+    return { c: last.c, r: last.r };
+  }
+
+  const buildable = new Set();
+  for (let c = 0; c < COLS; c++) {
+    for (let r = 0; r < ROWS; r++) {
+      const key = c + ',' + r;
+      if (!pathTiles.has(key)) buildable.add(key);
+    }
+  }
+
+  /* ---------------------------------------------------------------- */
+  /* Game state                                                        */
+  /* ---------------------------------------------------------------- */
+  let gold = START_GOLD;
+  let lives = START_LIVES;
+  let wave = 0;
+  let bestWave = parseInt(localStorage.getItem('td_best_wave') || '0', 10);
+  let towers = [];
+  let enemies = [];
+  let projectiles = [];
+  let nextId = 1;
+  let paused = false;
+  let gameSpeed = 1;
+  let gameOver = false;
+  let waveActive = false;
+  let spawnQueue = [];
+  let spawnTimer = 0;
+  let countdown = 3;
+  let mode = { type: 'idle' };
+
+  /* ---------------------------------------------------------------- */
+  /* Canvas / layout                                                   */
+  /* ---------------------------------------------------------------- */
+  const canvas = document.getElementById('gameCanvas');
+  const ctx = canvas.getContext('2d');
+  const wrap = document.querySelector('.td-canvas-wrap');
+  let cellSize = 32;
+
+  function resizeCanvas() {
+    const maxW = wrap.clientWidth - 8;
+    const maxH = wrap.clientHeight - 8;
+    cellSize = Math.max(16, Math.floor(Math.min(maxW / COLS, maxH / ROWS)));
+    const dpr = window.devicePixelRatio || 1;
+    const cssW = cellSize * COLS, cssH = cellSize * ROWS;
+    canvas.style.width = cssW + 'px';
+    canvas.style.height = cssH + 'px';
+    canvas.width = Math.round(cssW * dpr);
+    canvas.height = Math.round(cssH * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+  window.addEventListener('resize', resizeCanvas);
+  window.addEventListener('orientationchange', () => setTimeout(resizeCanvas, 200));
+
+  /* ---------------------------------------------------------------- */
+  /* Helpers                                                            */
+  /* ---------------------------------------------------------------- */
+  function gridDist(a, b) {
+    const ac = a.c !== undefined ? a.c : a.col + 0.5;
+    const ar = a.r !== undefined ? a.r : a.row + 0.5;
+    const bc = b.c !== undefined ? b.c : b.col + 0.5;
+    const br = b.r !== undefined ? b.r : b.row + 0.5;
+    return Math.hypot(ac - bc, ar - br);
+  }
+
+  function getStats(t) {
+    const def = TOWER_DEFS[t.type];
+    const tierMult = Math.pow(1.9, t.tier - 1);
+    const levelMult = 1 + (t.level - 1) * 0.2;
+    const rangeMult = Math.pow(1.08, t.tier - 1);
+    const rateMult = Math.pow(1.05, t.tier - 1);
+    return {
+      damage: def.damage * tierMult * levelMult,
+      range: def.range * rangeMult,
+      fireRate: def.fireRate * rateMult,
+      splashRadius: (def.splashRadius || 0) * rangeMult,
+      slowFactor: def.slowFactor,
+      slowDuration: def.slowDuration ? def.slowDuration * (1 + (t.tier - 1) * 0.1) : 0,
+      color: def.color, icon: def.icon, name: def.name
+    };
+  }
+
+  let toastTimer = null;
+  function showToast(msg) {
+    const el = document.getElementById('toast');
+    el.textContent = msg;
+    el.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => el.classList.remove('show'), 1600);
+  }
+  function showHint(msg) {
+    const el = document.getElementById('hint');
+    if (!msg) { el.classList.remove('show'); return; }
+    el.textContent = msg;
+    el.classList.add('show');
+  }
+
+  /* ---------------------------------------------------------------- */
+  /* Wave generation                                                    */
+  /* ---------------------------------------------------------------- */
+  function buildWaveQueue(n) {
+    const count = Math.min(6 + n, 26);
+    const q = [];
+    for (let i = 0; i < count; i++) {
+      let type = 'normal';
+      const roll = Math.random();
+      if (n >= 4 && roll < 0.22) type = 'tank';
+      else if (n >= 2 && roll < 0.5) type = 'fast';
+      q.push(type);
+    }
+    if (n % 5 === 0) q.push('boss');
+    return q;
+  }
+
+  function spawnEnemy(type) {
+    const def = ENEMY_DEFS[type];
+    const hpMult = 1 + (wave - 1) * 0.16;
+    const rewardMult = 1 + (wave - 1) * 0.08;
+    enemies.push({
+      id: nextId++, type,
+      hp: def.hp * hpMult, maxHp: def.hp * hpMult,
+      baseSpeed: def.speed, reward: Math.round(def.reward * rewardMult),
+      dist: 0, c: WAYPOINTS[0].c, r: WAYPOINTS[0].r,
+      alive: true, slowUntil: 0, slowFactor: 1,
+      leakDamage: type === 'boss' ? 3 : 1
+    });
+  }
+
+  function startWave(n) {
+    wave = n;
+    spawnQueue = buildWaveQueue(n);
+    spawnTimer = 0;
+    waveActive = true;
+    updateHUD();
+    document.getElementById('startWaveBtn').textContent = '⚔ 진행 중';
+  }
+
+  function waveClearBonus(n) { return 15 + n * 3; }
+
+  /* ---------------------------------------------------------------- */
+  /* Update loop                                                        */
+  /* ---------------------------------------------------------------- */
+  let lastTime = performance.now();
+
+  function update(dt) {
+    if (!waveActive) {
+      countdown -= dt;
+      document.getElementById('startWaveBtn').textContent =
+        `▶ 웨이브 ${wave + 1} 시작 (${Math.max(0, Math.ceil(countdown))})`;
+      if (countdown <= 0) startWave(wave + 1);
+      return;
+    }
+
+    // spawning
+    if (spawnQueue.length > 0) {
+      spawnTimer -= dt;
+      if (spawnTimer <= 0) {
+        spawnEnemy(spawnQueue.shift());
+        spawnTimer = Math.max(0.28, 0.62 - wave * 0.01);
+      }
+    }
+
+    // enemies
+    const now = performance.now();
+    for (const e of enemies) {
+      if (!e.alive) continue;
+      const speed = e.baseSpeed * (now < e.slowUntil ? e.slowFactor : 1);
+      e.dist += speed * dt;
+      const p = pointAtDistance(e.dist);
+      e.c = p.c; e.r = p.r;
+      if (e.dist >= totalPathLength) {
+        e.alive = false;
+        lives -= e.leakDamage;
+      }
+    }
+
+    // towers
+    for (const t of towers) {
+      t.cooldown -= dt;
+      if (t.cooldown > 0) continue;
+      const stats = getStats(t);
+      let best = null, bestDist = -1;
+      for (const e of enemies) {
+        if (!e.alive) continue;
+        if (gridDist({ c: t.col + 0.5, r: t.row + 0.5 }, e) <= stats.range && e.dist > bestDist) {
+          best = e; bestDist = e.dist;
+        }
+      }
+      if (best) {
+        projectiles.push({
+          id: nextId++, c: t.col + 0.5, r: t.row + 0.5, targetId: best.id,
+          speed: 10, damage: stats.damage, splashRadius: stats.splashRadius,
+          slowFactor: stats.slowFactor, slowDuration: stats.slowDuration,
+          color: stats.color
+        });
+        t.cooldown = 1 / stats.fireRate;
+      }
+    }
+
+    // projectiles
+    for (const p of projectiles) {
+      if (p.dead) continue;
+      const target = enemies.find(e => e.id === p.targetId && e.alive);
+      if (!target) { p.dead = true; continue; }
+      const dx = target.c - p.c, dy = target.r - p.r;
+      const dist = Math.hypot(dx, dy);
+      const step = p.speed * dt;
+      if (dist <= step + 0.08) {
+        applyDamage(target, p.damage);
+        if (p.slowFactor) { target.slowUntil = now + p.slowDuration * 1000; target.slowFactor = p.slowFactor; }
+        if (p.splashRadius > 0) {
+          for (const e of enemies) {
+            if (e.alive && e.id !== target.id && gridDist(e, target) <= p.splashRadius) {
+              applyDamage(e, p.damage * 0.55);
+            }
+          }
+        }
+        p.dead = true;
+      } else {
+        p.c += dx / dist * step;
+        p.r += dy / dist * step;
+      }
+    }
+
+    enemies = enemies.filter(e => e.alive);
+    projectiles = projectiles.filter(p => !p.dead);
+
+    if (lives <= 0 && !gameOver) {
+      updateHUD();
+      endGame();
+      return;
+    }
+
+    if (waveActive && spawnQueue.length === 0 && enemies.length === 0) {
+      waveActive = false;
+      const bonus = waveClearBonus(wave);
+      gold += bonus;
+      if (wave > bestWave) { bestWave = wave; localStorage.setItem('td_best_wave', String(bestWave)); }
+      showToast(`웨이브 ${wave} 클리어! +${bonus} 골드`);
+      countdown = NEXT_WAVE_COUNTDOWN;
+    }
+
+    updateHUD();
+  }
+
+  function applyDamage(enemy, dmg) {
+    if (!enemy.alive) return;
+    enemy.hp -= dmg;
+    if (enemy.hp <= 0) {
+      enemy.alive = false;
+      gold += enemy.reward;
+    }
+  }
+
+  function endGame() {
+    gameOver = true;
+    if (wave > bestWave) { bestWave = wave; localStorage.setItem('td_best_wave', String(bestWave)); }
+    document.getElementById('overlayTitle').textContent = '게임 오버';
+    document.getElementById('overlaySub').textContent = `웨이브 ${wave}까지 방어했습니다. (최고 기록: ${bestWave})`;
+    document.getElementById('overlay').classList.remove('hidden');
+  }
+
+  /* ---------------------------------------------------------------- */
+  /* Rendering                                                          */
+  /* ---------------------------------------------------------------- */
+  function toPx(c, r) { return { x: c * cellSize, y: r * cellSize }; }
+
+  function render() {
+    const w = cellSize * COLS, h = cellSize * ROWS;
+    ctx.clearRect(0, 0, w, h);
+
+    // tiles
+    for (let c = 0; c < COLS; c++) {
+      for (let r = 0; r < ROWS; r++) {
+        const key = c + ',' + r;
+        const isPath = pathTiles.has(key);
+        ctx.fillStyle = isPath ? '#3a2f22' : ((c + r) % 2 === 0 ? '#182338' : '#141d30');
+        ctx.fillRect(c * cellSize, r * cellSize, cellSize, cellSize);
+      }
+    }
+    ctx.strokeStyle = 'rgba(255,255,255,0.03)';
+    for (let c = 0; c <= COLS; c++) {
+      ctx.beginPath(); ctx.moveTo(c * cellSize, 0); ctx.lineTo(c * cellSize, h); ctx.stroke();
+    }
+    for (let r = 0; r <= ROWS; r++) {
+      ctx.beginPath(); ctx.moveTo(0, r * cellSize); ctx.lineTo(w, r * cellSize); ctx.stroke();
+    }
+
+    // build-mode / merge-mode highlights
+    if (mode.type === 'build') {
+      ctx.fillStyle = 'rgba(46,204,113,0.12)';
+      buildable.forEach(key => {
+        const [c, r] = key.split(',').map(Number);
+        if (!towers.some(t => t.col === c && t.row === r)) {
+          ctx.fillRect(c * cellSize, r * cellSize, cellSize, cellSize);
+        }
+      });
+    }
+
+    // range circle for selected/merge tower
+    let focusTower = null;
+    if (mode.type === 'select') focusTower = towers.find(t => t.id === mode.towerId);
+    if (mode.type === 'merge') focusTower = towers.find(t => t.id === mode.sourceId);
+    if (focusTower) {
+      const stats = getStats(focusTower);
+      const cx = (focusTower.col + 0.5) * cellSize, cy = (focusTower.row + 0.5) * cellSize;
+      ctx.beginPath();
+      ctx.arc(cx, cy, stats.range * cellSize, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(246,195,67,0.10)';
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(246,195,67,0.6)';
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+    }
+
+    // towers
+    for (const t of towers) {
+      const stats = getStats(t);
+      const cx = (t.col + 0.5) * cellSize, cy = (t.row + 0.5) * cellSize;
+      const radius = cellSize * (0.28 + t.tier * 0.035);
+
+      if ((mode.type === 'select' && mode.towerId === t.id) || (mode.type === 'merge' && mode.sourceId === t.id)) {
+        ctx.beginPath();
+        ctx.arc(cx, cy, radius + 5, 0, Math.PI * 2);
+        ctx.strokeStyle = '#f6c343';
+        ctx.lineWidth = 2;
+        ctx.setLineDash([4, 3]);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+
+      ctx.beginPath();
+      ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+      ctx.fillStyle = stats.color;
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(255,255,255,0.5)';
+      ctx.lineWidth = 1 + t.tier * 0.4;
+      ctx.stroke();
+
+      ctx.font = `${Math.floor(radius * 1.15)}px sans-serif`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(stats.icon, cx, cy);
+
+      ctx.font = `bold ${Math.max(9, Math.floor(cellSize * 0.24))}px sans-serif`;
+      ctx.fillStyle = '#fff';
+      ctx.fillText(TIER_LABEL[t.tier - 1], cx, cy - radius - 6);
+
+      for (let i = 0; i < t.level; i++) {
+        ctx.beginPath();
+        ctx.arc(cx - 6 + i * 6, cy + radius + 6, 2, 0, Math.PI * 2);
+        ctx.fillStyle = '#2ecc71';
+        ctx.fill();
+      }
+    }
+
+    // enemies
+    for (const e of enemies) {
+      const def = ENEMY_DEFS[e.type];
+      const cx = e.c * cellSize, cy = e.r * cellSize;
+      const rad = def.radius * cellSize;
+      const slowed = performance.now() < e.slowUntil;
+
+      ctx.beginPath();
+      ctx.arc(cx, cy, rad, 0, Math.PI * 2);
+      ctx.fillStyle = slowed ? '#8fd9ff' : def.color;
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(0,0,0,0.35)';
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+
+      const barW = rad * 2.2, barH = 3.5;
+      const hpRatio = Math.max(0, e.hp / e.maxHp);
+      ctx.fillStyle = 'rgba(0,0,0,0.5)';
+      ctx.fillRect(cx - barW / 2, cy - rad - 9, barW, barH);
+      ctx.fillStyle = hpRatio > 0.5 ? '#2ecc71' : (hpRatio > 0.2 ? '#f6c343' : '#e94560');
+      ctx.fillRect(cx - barW / 2, cy - rad - 9, barW * hpRatio, barH);
+    }
+
+    // projectiles
+    for (const p of projectiles) {
+      const cx = p.c * cellSize, cy = p.r * cellSize;
+      ctx.beginPath();
+      ctx.arc(cx, cy, Math.max(2.5, cellSize * 0.07), 0, Math.PI * 2);
+      ctx.fillStyle = p.color;
+      ctx.fill();
+    }
+  }
+
+  /* ---------------------------------------------------------------- */
+  /* HUD                                                                */
+  /* ---------------------------------------------------------------- */
+  function updateHUD() {
+    document.getElementById('goldVal').textContent = gold;
+    document.getElementById('livesVal').textContent = Math.max(0, lives);
+    document.getElementById('waveVal').textContent = wave;
+    document.getElementById('bestVal').textContent = bestWave;
+    renderBuildTray();
+    if (mode.type === 'select') {
+      const t = towers.find(x => x.id === mode.towerId);
+      if (t) refreshPanel(t); else closePanel();
+    }
+  }
+
+  /* ---------------------------------------------------------------- */
+  /* Build tray                                                         */
+  /* ---------------------------------------------------------------- */
+  const trayEl = document.getElementById('buildTray');
+  function renderBuildTray() {
+    trayEl.innerHTML = '';
+    TOWER_ORDER.forEach(type => {
+      const def = TOWER_DEFS[type];
+      const card = document.createElement('div');
+      card.className = 'tower-card' + (mode.type === 'build' && mode.towerType === type ? ' selected' : '') + (gold < def.cost ? ' disabled' : '');
+      card.innerHTML = `<div class="icon">${def.icon}</div><div class="name">${def.name}</div><div class="cost">💰${def.cost}</div>`;
+      card.addEventListener('pointerdown', ev => {
+        ev.stopPropagation();
+        if (mode.type === 'build' && mode.towerType === type) {
+          mode = { type: 'idle' };
+          showHint('');
+        } else {
+          mode = { type: 'build', towerType: type };
+          showHint('설치할 타일을 선택하세요');
+        }
+        closePanel();
+        renderBuildTray();
+      });
+      trayEl.appendChild(card);
+    });
+  }
+
+  /* ---------------------------------------------------------------- */
+  /* Tower info panel                                                   */
+  /* ---------------------------------------------------------------- */
+  const panelEl = document.getElementById('towerPanel');
+  function openPanel(t) {
+    const wasHidden = panelEl.classList.contains('hidden');
+    panelEl.classList.remove('hidden');
+    refreshPanel(t);
+    if (wasHidden) resizeCanvas();
+  }
+  function closePanel() {
+    const wasVisible = !panelEl.classList.contains('hidden');
+    panelEl.classList.add('hidden');
+    if (wasVisible) resizeCanvas();
+  }
+  function refreshPanel(t) {
+    const stats = getStats(t);
+    document.getElementById('panelName').textContent =
+      `${stats.icon} ${stats.name} · 티어 ${TIER_LABEL[t.tier - 1]} · Lv.${t.level}`;
+    const parts = [
+      `공격력 <b>${stats.damage.toFixed(1)}</b>`,
+      `사거리 <b>${stats.range.toFixed(1)}</b>`,
+      `공속 <b>${stats.fireRate.toFixed(2)}/초</b>`
+    ];
+    if (stats.splashRadius > 0) parts.push(`범위 <b>${stats.splashRadius.toFixed(1)}</b>`);
+    if (stats.slowFactor) parts.push(`둔화 <b>${Math.round((1 - stats.slowFactor) * 100)}%</b>`);
+    document.getElementById('panelStats').innerHTML = parts.map(p => `<span>${p}</span>`).join('');
+
+    const def = TOWER_DEFS[t.type];
+    const upgradeCost = Math.round(def.cost * 0.6 * t.level);
+    const upgradeBtn = document.getElementById('btnUpgrade');
+    if (t.level >= MAX_LEVEL) {
+      upgradeBtn.textContent = '강화 완료';
+      upgradeBtn.disabled = true;
+    } else {
+      upgradeBtn.textContent = `강화 (💰${upgradeCost})`;
+      upgradeBtn.disabled = gold < upgradeCost;
+    }
+
+    const mergeBtn = document.getElementById('btnMerge');
+    if (t.tier >= MAX_TIER) {
+      mergeBtn.textContent = '최고 등급';
+      mergeBtn.disabled = true;
+    } else {
+      mergeBtn.textContent = '합성';
+      mergeBtn.disabled = false;
+    }
+
+    document.getElementById('btnSell').textContent = `판매 (+${Math.floor(t.totalSpent * 0.6)})`;
+  }
+
+  document.getElementById('panelClose').addEventListener('pointerdown', () => {
+    mode = { type: 'idle' };
+    closePanel();
+  });
+
+  document.getElementById('btnUpgrade').addEventListener('pointerdown', () => {
+    if (mode.type !== 'select') return;
+    const t = towers.find(x => x.id === mode.towerId);
+    if (!t || t.level >= MAX_LEVEL) return;
+    const def = TOWER_DEFS[t.type];
+    const cost = Math.round(def.cost * 0.6 * t.level);
+    if (gold < cost) { showToast('골드가 부족합니다'); return; }
+    gold -= cost; t.level += 1; t.totalSpent += cost;
+    updateHUD();
+  });
+
+  document.getElementById('btnMerge').addEventListener('pointerdown', () => {
+    if (mode.type !== 'select') return;
+    const t = towers.find(x => x.id === mode.towerId);
+    if (!t || t.tier >= MAX_TIER) return;
+    mode = { type: 'merge', sourceId: t.id };
+    showHint('합성할 같은 종류·등급의 타워를 선택하세요');
+  });
+
+  document.getElementById('btnSell').addEventListener('pointerdown', () => {
+    if (mode.type !== 'select') return;
+    const t = towers.find(x => x.id === mode.towerId);
+    if (!t) return;
+    gold += Math.floor(t.totalSpent * 0.6);
+    towers = towers.filter(x => x.id !== t.id);
+    mode = { type: 'idle' };
+    closePanel();
+    updateHUD();
+  });
+
+  /* ---------------------------------------------------------------- */
+  /* Input                                                              */
+  /* ---------------------------------------------------------------- */
+  canvas.addEventListener('pointerdown', ev => {
+    if (gameOver) return;
+    const rect = canvas.getBoundingClientRect();
+    const x = ev.clientX - rect.left, y = ev.clientY - rect.top;
+    const col = Math.floor(x / cellSize), row = Math.floor(y / cellSize);
+    if (col < 0 || row < 0 || col >= COLS || row >= ROWS) return;
+    handleTap(col, row);
+  });
+
+  function handleTap(col, row) {
+    const towerHere = towers.find(t => t.col === col && t.row === row);
+    const key = col + ',' + row;
+
+    if (mode.type === 'merge') {
+      const source = towers.find(t => t.id === mode.sourceId);
+      if (!source) { mode = { type: 'idle' }; showHint(''); return; }
+      if (towerHere && towerHere.id === source.id) {
+        mode = { type: 'idle' }; showHint(''); showToast('합성 취소'); closePanel();
+        return;
+      }
+      if (towerHere && towerHere.type === source.type && towerHere.tier === source.tier && source.tier < MAX_TIER) {
+        towerHere.tier += 1;
+        towerHere.level = 1;
+        towerHere.totalSpent += source.totalSpent;
+        towers = towers.filter(t => t.id !== source.id);
+        showToast(`${TOWER_DEFS[source.type].name} 티어 ${TIER_LABEL[towerHere.tier - 1]}로 합성!`);
+        mode = { type: 'select', towerId: towerHere.id };
+        showHint('');
+        openPanel(towerHere);
+        updateHUD();
+        return;
+      }
+      showToast('같은 종류·등급 타워끼리만 합성할 수 있습니다');
+      return;
+    }
+
+    // tapping an existing tower always opens its info panel, even while a
+    // build type is selected (that just cancels the pending placement)
+    if (towerHere) {
+      mode = { type: 'select', towerId: towerHere.id };
+      showHint('');
+      openPanel(towerHere);
+      renderBuildTray();
+      return;
+    }
+
+    if (mode.type === 'build') {
+      if (!buildable.has(key)) { showToast('경로에는 설치할 수 없습니다'); return; }
+      const def = TOWER_DEFS[mode.towerType];
+      if (gold < def.cost) { showToast('골드가 부족합니다'); return; }
+      gold -= def.cost;
+      towers.push({ id: nextId++, col, row, type: mode.towerType, tier: 1, level: 1, totalSpent: def.cost, cooldown: 0 });
+      updateHUD();
+      return;
+    }
+
+    // idle, empty tile
+    mode = { type: 'idle' };
+    showHint('');
+    closePanel();
+  }
+
+  /* ---------------------------------------------------------------- */
+  /* Toolbar buttons                                                    */
+  /* ---------------------------------------------------------------- */
+  document.getElementById('pauseBtn').addEventListener('click', () => {
+    paused = !paused;
+    document.getElementById('pauseBtn').textContent = paused ? '▶ 재개' : '⏸ 일시정지';
+  });
+  document.getElementById('speedBtn').addEventListener('click', () => {
+    gameSpeed = gameSpeed === 1 ? 2 : 1;
+    document.getElementById('speedBtn').textContent = gameSpeed + '배속';
+  });
+  document.getElementById('startWaveBtn').addEventListener('click', () => {
+    if (waveActive) return;
+    countdown = 0;
+  });
+  document.getElementById('restartBtn').addEventListener('click', () => resetGame());
+
+  /* ---------------------------------------------------------------- */
+  /* Reset / Init                                                       */
+  /* ---------------------------------------------------------------- */
+  function resetGame() {
+    gold = START_GOLD; lives = START_LIVES; wave = 0;
+    towers = []; enemies = []; projectiles = [];
+    paused = false; gameSpeed = 1; gameOver = false;
+    waveActive = false; spawnQueue = []; spawnTimer = 0; countdown = 3;
+    mode = { type: 'idle' };
+    document.getElementById('pauseBtn').textContent = '⏸ 일시정지';
+    document.getElementById('speedBtn').textContent = '1배속';
+    document.getElementById('overlay').classList.add('hidden');
+    closePanel();
+    showHint('');
+    updateHUD();
+  }
+
+  function loop(now) {
+    requestAnimationFrame(loop);
+    let dt = Math.min((now - lastTime) / 1000, 0.05);
+    lastTime = now;
+    if (!paused && !gameOver) {
+      update(dt * gameSpeed);
+    }
+    render();
+  }
+
+  resizeCanvas();
+  resetGame();
+  requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>
