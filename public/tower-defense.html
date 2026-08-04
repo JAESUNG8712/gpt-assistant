@@ -4,6 +4,14 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
 <title>타워 디펜스</title>
+<link rel="manifest" href="/td-manifest.json">
+<link rel="icon" href="/icons/td-icon-192.png">
+<link rel="apple-touch-icon" href="/icons/td-icon-180.png">
+<meta name="theme-color" content="#0f3460">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="타워 디펜스">
+<meta name="mobile-web-app-capable" content="yes">
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
   html, body {
@@ -1189,6 +1197,15 @@
   document.addEventListener('visibilitychange', () => { if (document.hidden) saveGame(); });
   window.addEventListener('pagehide', saveGame);
   window.addEventListener('beforeunload', saveGame);
+
+  // caches this page for offline play once it's been loaded online at least
+  // once (e.g. after adding to the iPad home screen); no-ops over file:// or
+  // any context without service worker support
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('/td-sw.js', { scope: '/tower-defense.html' }).catch(() => {});
+    });
+  }
 
   resizeCanvas();
 

@@ -1,0 +1,17 @@
+{
+  "name": "타워 디펜스",
+  "short_name": "타워디펜스",
+  "description": "모바일/아이패드용 오프라인 타워 디펜스 게임",
+  "start_url": "/tower-defense.html",
+  "scope": "/tower-defense.html",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0c1220",
+  "theme_color": "#0f3460",
+  "icons": [
+    { "src": "/icons/td-icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/td-icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/td-icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "maskable" },
+    { "src": "/icons/td-icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
