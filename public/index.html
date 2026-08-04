@@ -15104,6 +15104,48 @@ function _bpSgaDetailTableHtml(items){
 // 의미가 없다는 피드백으로 화면에서 완전히 제거 — 자동으로만 생성되고 노출되지 않는다.
 let _bpMgrSearchResult=null; // {dept,team,plan(기존 계획 또는 null)} — 조회 결과, 저장하면 null로 초기화
 let _bpMgrUploadPreview=null; // {sheetName, teams:[{team,items,existingPlanId,existingStatus,ambiguous}]}
+// 중복 데이터 진단(읽기전용) — 매칭 키가 여러 차례 바뀐 이력(name→+detail→+accountType→
+// +team→+costDept) 때문에 옛 스키마로 저장된 항목이 오늘 코드의 upsert로는 다시 매칭되지
+//못해 옆에 새 항목이 하나 더 생기고 옛 항목은 영구히 고아로 남는 것 아니냐는 실사용자
+// 우려에 대응해 신설(GET /business-plan/diagnose-duplicates/all, budget.js 참고). 절대
+// 자동으로 고치거나 지우지 않고, 발견한 항목을 그대로 보여줘 관리자가 직접 확인·정리하게
+// 한다 — 실제 재무 데이터라 잘못 지우면 되돌릴 수 없기 때문.
+let _bpDupDiagResult=null;
+async function runBizPlanDupDiagnosis(){
+  const btn=document.getElementById("bp-dupdiag-btn");if(btn){btn.disabled=true;btn.textContent="진단 중…";}
+  const r=await serverRequest("GET",`/api/budget/business-plan/diagnose-duplicates/all?year=${_bpBulkUploadYear}`);
+  if(btn){btn.disabled=false;btn.textContent="🔎 중복 데이터 진단 실행";}
+  if(!r?.ok){showToast(r?.error||"진단 실패","error");return;}
+  _bpDupDiagResult=r;
+  renderBizPlanPage();
+}
+function _bpDupDiagResultHtml(){
+  const r=_bpDupDiagResult;if(!r)return"";
+  if(!r.flaggedPlanCount)return `<div class="fz12" style="color:#16a34a;margin-top:8px">✅ ${r.scannedPlanCount}개 계획(${_bpBulkUploadYear}년)을 확인했고, 의심되는 중복 데이터를 찾지 못했습니다.</div>`;
+  const rowHtml=item=>`<span class="fz11 text-gray">계정과목:${h(item.accountType===undefined?"(없음)":item.accountType||"-")} · 비용귀속:${h(item.costDept===undefined?"(없음)":item.costDept||"-")} · team:${h(item.team===undefined?"(없음)":item.team||"-")} · 세부내역:${h(item.detail||"-")} · 연금액:${(item.baseAmount||0).toLocaleString()}원</span>`;
+  let html=`<div class="card mt2" style="background:#fff7ed;border:1px solid #fdba74"><div class="card-body">
+    <div class="fz13" style="font-weight:600;color:#c2410c">⚠️ ${r.scannedPlanCount}개 계획 중 ${r.flaggedPlanCount}개에서 의심되는 항목을 발견했습니다(완전동일키 중복 ${r.totalExactDuplicates}건, 과거형식 중복 의심 ${r.totalLikelyHistoricalDuplicates}건). 아래 내용을 직접 확인 후 필요하면 해당 계획을 열어 수동으로 정리해주세요 — 자동으로 삭제·수정되지 않습니다.</div>`;
+  r.results.forEach(p=>{
+    html+=`<div class="mt2" style="border-top:1px dashed #fdba74;padding-top:8px">
+      <div class="fz12" style="font-weight:600">${h(p.dept)}${p.team?" / "+h(p.team):""} <span class="fz11 text-gray">(${p.baseYear}년)</span> ${_bpStatusBadge(p.status)}</div>`;
+    p.diagnosis.exactDuplicates.forEach(g=>{
+      html+=`<div class="fz11 mt1" style="color:#dc2626">🔴 완전 동일 키 중복(정상적으로는 생길 수 없는 조합 — 명백한 버그 증거): "${h(g.items[0].name)}" ${g.indexes.length}건</div>`;
+      g.items.forEach(item=>html+=`<div class="ml3">${rowHtml(item)}</div>`);
+    });
+    p.diagnosis.likelyHistoricalDuplicates.forEach(d=>{
+      html+=`<div class="fz11 mt1" style="color:#c2410c">🟠 과거 스키마 형식 중복 의심: "${h(d.name)}"</div>
+        <div class="ml3 fz11">과거형태 항목(${h((d.staleItem.reasons||[]).join(", "))}): ${rowHtml(d.staleItem.item)}</div>`;
+      d.modernItems.forEach(m=>html+=`<div class="ml3 fz11">현재형태 항목: ${rowHtml(m.item)}</div>`);
+    });
+    if(p.diagnosis.staleSchemaFields.length&&!p.diagnosis.likelyHistoricalDuplicates.length){
+      html+=`<div class="fz11 mt1 text-gray">ℹ️ 아직 중복은 아니지만 과거 스키마 흔적이 남은 항목 ${p.diagnosis.staleSchemaFields.length}건(다음에 같은 이름으로 재업로드되면 중복이 생길 수 있어 미리 표시):</div>`;
+      p.diagnosis.staleSchemaFields.forEach(s=>html+=`<div class="ml3 fz11">"${h(s.item.name)}" — ${rowHtml(s.item)}</div>`);
+    }
+    html+=`</div>`;
+  });
+  html+=`</div></div>`;
+  return html;
+}
 // 판관비 그리드 <thead>는 조회결과/업로드미리보기/기존 작성폼 3곳에서 동일하게 재사용.
 function _bpSgaTableHeadHtml(){
   return `<tr>
@@ -15137,8 +15179,15 @@ function _bpCollectSgaRowsFromTbody(tbodyId){
 }
 function _renderBizPlanBudgetAdminTab(){
   let html=`<div class="fz12 text-gray mb2">부문/사업부/센터/팀 단위 사업계획 판관비 항목을 조회·수정하거나, 엑셀로 일괄 업로드할 수 있는 관리자 전용 화면입니다. 작성중(draft)인 계획만 직접 수정할 수 있고, 승인되어 잠긴 계획은 해당 조직이 "수정요청"을 보내 관리자 승인을 받아야 다시 수정할 수 있습니다. 개인(직원) 단위 항목은 <a href="#" onclick="gotoPage('emp-pay-plan');return false">개인별 급여 상세</a> 화면에서 입력·수정합니다. 지난 연도의 예산도 연도만 바꿔 그대로 조회·조정할 수 있습니다.</div>`;
-  html+=`<div class="mb3"><label class="fz12">연도: <input class="fc" type="number" style="display:inline-block;width:90px" value="${_bpBulkUploadYear}" onchange="_bpBulkUploadYear=Number(this.value)||new Date().getFullYear();_bpMgrSearchResult=null;_bpMgrUploadPreview=null;renderBizPlanPage()"></label></div>`;
+  html+=`<div class="mb3"><label class="fz12">연도: <input class="fc" type="number" style="display:inline-block;width:90px" value="${_bpBulkUploadYear}" onchange="_bpBulkUploadYear=Number(this.value)||new Date().getFullYear();_bpMgrSearchResult=null;_bpMgrUploadPreview=null;_bpDupDiagResult=null;renderBizPlanPage()"></label></div>`;
   html+=_bpOrgDeptTeamDatalistsHtml()+_bpExpenseAccountDatalistHtml();
+
+  html+=`<div class="card mb3" style="background:#f8fafc"><div class="card-body">
+    <h4 class="mb2">🔎 중복 데이터 진단</h4>
+    <div class="fz11 text-gray mb2">그동안 여러 차례 개선되며 판관비 항목을 식별하는 기준(항목명·세부내역·계정과목·팀·비용귀속부문)이 바뀌어 왔습니다 — 예전 기준으로 저장된 항목이 최신 업로드와 매칭되지 못해 같은 예산 라인이 중복으로 남아있는지 확인합니다. 위에서 선택한 연도(${_bpBulkUploadYear}년)의 전체 계획을 검사하며, 아무것도 자동으로 고치거나 지우지 않습니다 — 발견된 항목은 직접 검토 후 필요하면 해당 계획을 열어 수동으로 정리해주세요.</div>
+    <button id="bp-dupdiag-btn" class="btn btn-secondary btn-sm" onclick="runBizPlanDupDiagnosis()">🔎 중복 데이터 진단 실행</button>
+    ${_bpDupDiagResultHtml()}
+  </div></div>`;
 
   html+=`<div class="card mb3" style="background:#eef2ff;border:1px solid #c7d2fe"><div class="card-body">
     <h4 class="mb2">📦 통합 업로드(파일 하나로 한 번에 반영)</h4>

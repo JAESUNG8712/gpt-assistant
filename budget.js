@@ -1230,11 +1230,35 @@ module.exports = function budgetRouterFactory(deps) {
     items.forEach(it => { const cd = (it.costDept || '').trim(); if (cd && !_isSelfReferentialCostDept(cd, team)) costDeptCounts[cd] = (costDeptCounts[cd] || 0) + 1; });
     return Object.keys(costDeptCounts).sort((a, b) => costDeptCounts[b] - costDeptCounts[a])[0] || null;
   }
-  async function _commitSgaTeamItems(data, companyId, year, team, items, req) {
+  // teamDeptCache: {team: dept|null} — 반드시 호출부가 updateBudget()의 잠금(트랜잭션)에
+  // 진입하기 *전에* getTeamDept()로 미리 채워 넣어야 한다. 예전에는 이 함수가 필요할 때마다
+  // (신규 계획 생성 시·자가치유 시) 그 자리에서 직접 `await getTeamDept(companyId, team)`을
+  // 호출했는데, getTeamDept()→server.js의 loadData()는 내부적으로 employees/kpi_entries/
+  // app_collections/app_singletons를 Promise.all로 동시 조회하는 별도의 4개 pool.query()
+  // 호출이다 — 즉 이 함수가 이미 updateBudget()의 SELECT...FOR UPDATE로 budget_store 행을
+  // 잠근 채(pg 커넥션 풀에서 커넥션 1개를 이미 점유한 상태) "그 안에서" 추가로 커넥션을
+  // 4개 더 요청하는 구조였다. 여러 신규 팀(사업계획이 아직 없는 팀)을 동시에 여러 명이
+  // 업로드하는 등, 이 코드경로를 동시에 타는 요청 수가 커넥션 풀 크기(db.js의 `max:20`)에
+  // 근접·초과하면, 이미 트랜잭션을 열고 커넥션을 점유한 요청들이 각자 loadData()의 추가
+  // 커넥션을 서로 기다리며 자기 자신들끼리 커넥션 풀을 고갈시키는 자기교착(self-deadlock)이
+  // 실제로 재현됨(로컬 PostgreSQL, 신규 회사 8곳×동시 신규팀 10건=80개 동시 요청으로 실측 —
+  // pg-pool이 `connectionTimeoutMillis`(5초) 뒤 "timeout exceeded when trying to connect"로
+  // 에러를 던지고, 이 라우트들(sga-upload/commit 등)은 updateBudget() 호출에 try/catch가
+  // 없어 그 에러가 처리되지 않은 프로미스 거부로 전역 안전망에만 잡혀 로그로 남을 뿐 그
+  // 요청에 대한 HTTP 응답을 영영 보내지 않아 — 브라우저는 응답을 무한정 기다리며 멈춘 것처럼
+  // 보임). budget_store 자체의 데이터는 항상 정상적으로 롤백돼 손상되지 않았지만(트랜잭션
+  // 전체가 실패하므로 부분 반영·중복 생성은 없었음), 요청이 응답 없이 멈추는 것은 실사용에서
+  // 명백한 장애다. 해결책은 이 함수가 잠금 "안에서" 다시 조회하지 않는 것 — 호출부(현재는
+  // sga-upload/commit·cost-block-upload 두 곳)가 관련된 모든 team의 dept를 updateBudget()
+  // 호출 *전에* 한 번에 조회해 이 캐시에 담아 넘긴다. 캐시에 없는 team이 들어오면(호출부가
+  // 누락했거나 테스트 등) 안전하게 null로 취급해 기존 폴백(_inferPlanDeptFromItems/팀명
+  // 그대로)으로 자연스럽게 이어진다 — 이 함수 자체는 다시 getTeamDept()를 호출하지 않는다.
+  async function _commitSgaTeamItems(data, companyId, year, team, items, req, teamDeptCache) {
+    const cache = teamDeptCache || {};
     const matches = data.businessPlans.filter(p => p.baseYear === year && (p.team || '').trim() === team);
     let plan, autoCreated = false;
     if (matches.length === 0) {
-      const resolvedTeamDept = await getTeamDept(companyId, team);
+      const resolvedTeamDept = Object.prototype.hasOwnProperty.call(cache, team) ? cache[team] : null;
       const inferredDept = resolvedTeamDept || _inferPlanDeptFromItems(items, team) || team;
       const { assumptions: newA } = _normalizeBusinessPlanInput({ name: `${team} ${year}년 예산업로드`, baseYear: year, years: 1, planType: 'costOnly' }, null);
       const now = new Date().toISOString();
@@ -1262,7 +1286,7 @@ module.exports = function budgetRouterFactory(deps) {
       // 자가치유: 예전에(이 로직 추가 이전) dept가 팀 자기 자신의 이름으로 잘못 저장된
       // 계획이면, 재업로드 시점에 실제 소속 조직으로 바로잡는다.
       if (_isSelfReferentialCostDept(plan.dept, team)) {
-        const resolvedTeamDept = await getTeamDept(companyId, team);
+        const resolvedTeamDept = Object.prototype.hasOwnProperty.call(cache, team) ? cache[team] : null;
         const fixedDept = resolvedTeamDept || _inferPlanDeptFromItems(items, team);
         if (fixedDept && fixedDept !== plan.dept) plan.dept = fixedDept;
       }
@@ -1319,6 +1343,98 @@ module.exports = function budgetRouterFactory(deps) {
     return { name: it.name, detail: it.detail, accountType: it.accountType, costDept: resolvedCostDept, baseAmount };
   }
 
+  // ── 진단 도구: 이력에 걸쳐 여러 번 바뀐 sgaItems 매칭 키(name → +detail → +accountType →
+  // +team → +costDept 순으로 항목 추가) 때문에, 오래전(더 느슨한 키 시절)에 저장된 항목이
+  // 오늘 코드의 더 엄격한 키로는 "기존 항목"으로 인식되지 못해 재업로드 시 그 옆에 새
+  // 항목이 하나 더 생기고, 옛 항목은 그 후로 다시는 매칭되지 않아 영구히 고아로 남을 수
+  // 있다는 우려(실사용자 문의)를 검증하기 위해 실제로 재현 테스트한 결과: `name`만 있고
+  // `accountType`/`team`/`costDept`/`detail` 자체가 아예 없던 최초 스키마(2026-07-27
+  // 최초 도입분) 항목, 또는 `accountType`/`expenseAccount`만 없던 중간 스키마(2026-07-28
+  // 오전분) 항목은 정확히 이 방식으로 실제 중복을 만든다는 것을 확인했다(격리 테스트로
+  // 재현). 반면 자기참조 costDept 미치유·세부내역 공백차이는 이미 healing 로직(위
+  // _migrateSelfReferentialCostDept, trim 비교)이 매 업로드마다 자동으로 바로잡아 중복이
+  // 생기지 않음도 함께 확인했다. 이 함수는 그 "여전히 위험할 수 있는 두 옛 스키마"를
+  // 화면에서 사람이 직접 확인할 수 있게 하는 읽기전용 진단이다 — 절대 자동으로
+  // 삭제·수정하지 않는다(실제 재무 데이터라 잘못 지우면 되돌릴 수 없음).
+  //
+  // 판정 기준(과잉 오탐 방지가 최우선 — 서로 다른 부문이 각자 별도로 갖는 "급여" 항목
+  // 등 정상적으로 별개인 라인은 어떤 경우에도 플래그하면 안 된다):
+  //  1) exactDuplicates: name + detail(trim) + accountType + team + costDept가 5개 필드
+  //     전부 완전히 같은 항목이 2개 이상 — _upsertSgaItem()의 매칭 키 정의상 정상적인
+  //     업로드/자동생성 경로로는 절대 발생할 수 없는 조합이다. 이게 하나라도 있다면 그
+  //     자체로 명백한 버그(매칭 로직 결함이든, 수기 JSON 편집이든)의 증거다.
+  //  2) staleSchemaFields: 오늘 코드의 upsert가 항상 채우는 필드(accountType/team/
+  //     costDept)가 하나라도 undefined(값이 아예 없음 — 사용자가 UI에서 "미지정"을 선택해
+  //     빈 문자열로 저장한 것과는 다름)이거나, team이 있는데 이 계획 자신의 team과 다른
+  //     항목 — 오늘 코드의 어떤 저장 경로도 이런 모양을 만들지 않으므로, 과거의 더 이른
+  //     스키마 시절에 저장된 채 그 후로 한 번도 오늘 코드의 upsert를 거치지 않은 "화석"
+  //     항목일 가능성이 높다는 신호다(아직 중복이 없어도, 다음에 같은 이름으로 재업로드가
+  //     들어오면 새 항목이 하나 더 생길 잠재 위험이 있다는 뜻이라 미리 보여준다).
+  //  3) likelyHistoricalDuplicates: 2)에서 걸린 화석 항목과 이름(name)이 같으면서 동시에
+  //     오늘 형식(accountType/team/costDept 전부 존재, team이 이 계획과 일치)을 갖춘
+  //     "정상" 항목이 같은 계획 안에 함께 있는 경우 — 화석 항목이 실제로 중복(같은
+  //     예산 라인이 두 번 잡혀 합계가 부풀려짐)을 이미 만들어냈을 가능성이 가장 높은
+  //     조합이라 별도로 강조해 짝지어 보여준다. name만 기준으로 짝짓기 때문에, 우연히
+  //     이름이 같지만 실제로는 서로 다른 별개 지출(예: 다른 costDept의 정당한 별도 항목)
+  //     끼리도 여기 함께 나열될 수 있다 — 그래서 각 항목의 costDept/detail/금액을 전부
+  //     함께 보여줘 사람이 실제로 같은 것인지 최종 판단하게 한다(자동 판정하지 않음).
+  function _diagnosePlanDuplicates(plan) {
+    const items = (plan.assumptions && Array.isArray(plan.assumptions.sgaItems)) ? plan.assumptions.sgaItems : [];
+    const planTeam = (plan.team || '').trim();
+    const withIndex = items.map((it, index) => ({ it, index }));
+
+    // 1) 완전 동일 키 중복 — 정상 경로로는 나올 수 없는 조합.
+    const exactKeyGroups = {};
+    withIndex.forEach(({ it, index }) => {
+      const key = JSON.stringify([it.name, (it.detail || '').trim(), it.accountType, it.team, it.costDept]);
+      (exactKeyGroups[key] = exactKeyGroups[key] || []).push(index);
+    });
+    const exactDuplicates = Object.values(exactKeyGroups)
+      .filter(idxs => idxs.length > 1)
+      .map(idxs => ({ indexes: idxs, items: idxs.map(i => items[i]) }));
+
+    // 2) 화석(오래된 스키마) 항목 — 오늘 upsert가 항상 채우는 필드가 비어있거나(정확히
+    //    undefined), team이 있는데 이 계획 자신의 team과 다른 경우.
+    const staleSchemaFields = withIndex
+      .filter(({ it }) => {
+        const missingKeyField = it.accountType === undefined || it.team === undefined || it.costDept === undefined;
+        const teamMismatch = it.team !== undefined && (it.team || '').trim() !== planTeam;
+        return missingKeyField || teamMismatch;
+      })
+      .map(({ it, index }) => ({
+        index, item: it,
+        reasons: [
+          it.accountType === undefined ? 'accountType 필드 없음(최초 스키마 흔적일 수 있음)' : null,
+          it.team === undefined ? 'team 필드 없음(팀 개념 도입 이전 스키마 흔적일 수 있음)' : null,
+          it.costDept === undefined ? 'costDept 필드 없음(비용귀속부문 도입 이전 스키마 흔적일 수 있음)' : null,
+          (it.team !== undefined && (it.team || '').trim() !== planTeam) ? `team 값("${it.team}")이 이 계획의 team("${planTeam}")과 다름` : null,
+        ].filter(Boolean),
+      }));
+
+    // 3) 화석 항목과 이름이 같은 "정상 형식" 항목이 함께 있는 경우 — 실제 중복 가능성이
+    //    가장 높은 조합이라 짝지어 강조.
+    const modernByName = {};
+    withIndex.forEach(({ it, index }) => {
+      const isModern = it.accountType !== undefined && it.team !== undefined && it.costDept !== undefined && (it.team || '').trim() === planTeam;
+      if (isModern) (modernByName[it.name] = modernByName[it.name] || []).push(index);
+    });
+    const likelyHistoricalDuplicates = staleSchemaFields
+      .filter(s => modernByName[s.item.name] && modernByName[s.item.name].length)
+      .map(s => ({
+        name: s.item.name,
+        staleItem: { index: s.index, item: s.item, reasons: s.reasons },
+        modernItems: modernByName[s.item.name].map(i => ({ index: i, item: items[i] })),
+      }));
+
+    return {
+      itemCount: items.length,
+      exactDuplicates,
+      staleSchemaFields,
+      likelyHistoricalDuplicates,
+      clean: exactDuplicates.length === 0 && likelyHistoricalDuplicates.length === 0,
+    };
+  }
+
   // "조직별" 인원계획 시트에 섞여 있는 급여/성과급 등 비용 집계 블록(부문별로 여러 줄
   // 반복되는 구조, headcount-plan/upload는 인원현황이 아니라서 이 블록들을 의도적으로
   // 건너뛴다 — 위 KNOWN_HEADCOUNT_COLUMNS 참고)을 사업계획 판관비 항목으로 반영하기
@@ -1372,6 +1488,15 @@ module.exports = function budgetRouterFactory(deps) {
       return res.status(400).json({ error: '조직별 비용 블록(계정과목이 판관/용역/경상 중 하나이고 항목명이 있는 행)을 찾지 못했습니다.' });
     }
     const companyId = req.auth.companyId || null;
+    // updateBudget()의 잠금(트랜잭션) 진입 전에 이 계획의 team이 무엇인지 먼저(잠금 없는
+    // 조회로) 확인해 getTeamDept()를 미리 끝내둔다 — _commitSgaTeamItems()의 teamDeptCache
+    // 주석과 동일한 이유(잠금 안에서 getTeamDept를 호출하면 loadData()의 추가 pool 커넥션
+    // 요청이 이미 점유된 트랜잭션 커넥션과 맞물려 커넥션 풀 자기교착을 일으킬 수 있었음).
+    // 조회 시점과 잠금 진입 사이에 team이 바뀌는 것은 극히 드문 경합이고, 설령 발생해도
+    // 이번 요청에서는 자가치유가 그냥 한 번 건너뛰어질 뿐 데이터 손상으로 이어지지 않는다.
+    const preData = await readBudget(companyId);
+    const prePlan = preData.businessPlans.find(p => p.id === req.params.id);
+    const preResolvedTeamDept = prePlan ? await getTeamDept(companyId, prePlan.team) : null;
     try {
       let plan, applied, resultData;
       await updateBudget(companyId, async (data) => {
@@ -1383,7 +1508,7 @@ module.exports = function budgetRouterFactory(deps) {
         // 자가치유: dept가 팀 자기 자신의 이름으로 잘못 저장된 계획이면 재직자 기준 실제
         // 소속으로 바로잡는다(sga-upload/commit의 동일 로직과 동일한 이유).
         if (_isSelfReferentialCostDept(plan.dept, plan.team)) {
-          const resolvedTeamDept = await getTeamDept(companyId, plan.team);
+          const resolvedTeamDept = plan.team === (prePlan && prePlan.team) ? preResolvedTeamDept : null;
           if (resolvedTeamDept && resolvedTeamDept !== plan.dept) plan.dept = resolvedTeamDept;
         }
         if (!plan.assumptions) plan.assumptions = {};
@@ -1447,20 +1572,32 @@ module.exports = function budgetRouterFactory(deps) {
     const year = Number(req.body.year) || new Date().getFullYear();
     const teams = Array.isArray(req.body.teams) ? req.body.teams : [];
     if (!teams.length) return res.status(400).json({ error: '저장할 팀 데이터가 없습니다.' });
-    const { updated, skipped } = await updateBudget(companyId, async (data) => {
-      const updated = [], skipped = [];
-      for (const t of teams) {
-        const team = String(t && t.team || '').trim();
-        const items = Array.isArray(t && t.items) ? t.items : [];
-        if (!team) continue;
-        const result = await _commitSgaTeamItems(data, companyId, year, team, items, req);
-        if (result.skip) skipped.push({ team, reason: result.reason });
-        else updated.push(result.updated);
-      }
-      data.uploads.push({ type: 'sga', filename: 'manual-review', uploadedAt: new Date().toISOString(), rows: teams.reduce((s, t) => s + (Array.isArray(t.items) ? t.items.length : 0), 0) });
-      return { updated, skipped };
-    });
-    res.json({ ok: true, updated, skipped });
+    // updateBudget()의 잠금(트랜잭션) 진입 전에 관련된 모든 team의 실제 소속 부문을 미리
+    // 조회해 캐시에 담는다 — _commitSgaTeamItems()의 teamDeptCache 주석 참고(잠금 안에서
+    // 다시 조회하면 커넥션 풀 자기교착으로 요청이 응답 없이 멈출 수 있었음, 실측 발견).
+    const uniqueTeams = [...new Set(teams.map(t => String(t && t.team || '').trim()).filter(Boolean))];
+    const teamDeptCache = {};
+    await Promise.all(uniqueTeams.map(async team => { teamDeptCache[team] = await getTeamDept(companyId, team); }));
+    try {
+      const { updated, skipped } = await updateBudget(companyId, async (data) => {
+        const updated = [], skipped = [];
+        for (const t of teams) {
+          const team = String(t && t.team || '').trim();
+          const items = Array.isArray(t && t.items) ? t.items : [];
+          if (!team) continue;
+          const result = await _commitSgaTeamItems(data, companyId, year, team, items, req, teamDeptCache);
+          if (result.skip) skipped.push({ team, reason: result.reason });
+          else updated.push(result.updated);
+        }
+        data.uploads.push({ type: 'sga', filename: 'manual-review', uploadedAt: new Date().toISOString(), rows: teams.reduce((s, t) => s + (Array.isArray(t.items) ? t.items.length : 0), 0) });
+        return { updated, skipped };
+      });
+      res.json({ ok: true, updated, skipped });
+    } catch (e) {
+      if (e instanceof _BudgetRouteError) return res.status(e.status).json({ error: e.message });
+      console.error('[budget] sga-upload/commit failed:', e.message);
+      res.status(500).json({ error: '저장 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.' });
+    }
   });
 
   // 월별 인원 계획(예측용) 엑셀 업로드 — 관리자 전용. 열 구성: "구분"(부문, 필수) +
@@ -1637,6 +1774,44 @@ module.exports = function budgetRouterFactory(deps) {
       return res.status(403).json({ error: '조회 권한이 없습니다.' });
     }
     res.json({ ok: true, plan: { ...plan, budgetComparison: computeBudgetComparison(data, plan) } });
+  });
+
+  // 진단 도구(읽기전용, 관리자 전용) — 사업계획 매칭 키 이력 변화(name → +detail →
+  // +accountType → +team → +costDept)로 인해 옛 스키마 항목이 오늘 코드의 upsert로는
+  // 다시 매칭되지 못해 중복이 생겼는지 사람이 직접 확인할 수 있게 한다. 위
+  // _diagnosePlanDuplicates() 주석에 판정 기준 전체가 설명돼 있다 — 절대 아무것도
+  // 자동으로 고치거나 지우지 않는다(실제 재무 데이터라 잘못 지우면 되돌릴 수 없으므로,
+  // 발견한 항목을 그대로 보여주고 최종 판단·정리는 관리자가 직접 하도록 한다).
+  router.get('/business-plan/:id/diagnose-duplicates', async (req, res) => {
+    if (!requireAdmin(req, res)) return;
+    const companyId = req.auth.companyId || null;
+    const data = await readBudget(companyId);
+    const plan = data.businessPlans.find(p => p.id === req.params.id);
+    if (!plan) return res.status(404).json({ error: '사업계획을 찾을 수 없습니다.' });
+    res.json({ ok: true, planId: plan.id, planName: plan.name, team: plan.team, dept: plan.dept, baseYear: plan.baseYear, diagnosis: _diagnosePlanDuplicates(plan) });
+  });
+
+  // 위 단건 진단을 전체 사업계획에 대해 한 번에 돌려주는 요약 버전 — 회사 전체를 팀별로
+  // 하나하나 열어보지 않아도 어느 계획에 의심스러운 항목이 있는지 한눈에 파악할 수 있게
+  // 한다(연도 필터는 선택, 생략하면 전 연도 전체 계획을 스캔).
+  router.get('/business-plan/diagnose-duplicates/all', async (req, res) => {
+    if (!requireAdmin(req, res)) return;
+    const companyId = req.auth.companyId || null;
+    const data = await readBudget(companyId);
+    const year = req.query.year ? Number(req.query.year) : null;
+    const plans = year ? data.businessPlans.filter(p => p.baseYear === year) : data.businessPlans;
+    const results = plans.map(p => {
+      const diagnosis = _diagnosePlanDuplicates(p);
+      return { planId: p.id, planName: p.name, team: p.team, dept: p.dept, baseYear: p.baseYear, status: p.status, diagnosis };
+    }).filter(r => !r.diagnosis.clean);
+    res.json({
+      ok: true,
+      scannedPlanCount: plans.length,
+      flaggedPlanCount: results.length,
+      totalExactDuplicates: results.reduce((s, r) => s + r.diagnosis.exactDuplicates.length, 0),
+      totalLikelyHistoricalDuplicates: results.reduce((s, r) => s + r.diagnosis.likelyHistoricalDuplicates.length, 0),
+      results,
+    });
   });
 
   // 가정 갱신 + 재계산 — status가 'draft'일 때만(그리고 팀 소속 또는 관리자만) 가능.
