@@ -1,0 +1,41 @@
+name: GitHub Pages 배포
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'public/**'
+      - '.github/workflows/deploy-pages.yml'
+  workflow_dispatch:
+    # 수동 실행 가능 (GitHub Actions 탭 → Run workflow)
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: 코드 체크아웃
+        uses: actions/checkout@v4
+
+      - name: GitHub Pages 설정
+        uses: actions/configure-pages@v5
+
+      - name: public/ 폴더 업로드
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: public
+
+      - name: Pages 배포
+        id: deployment
+        uses: actions/deploy-pages@v4
