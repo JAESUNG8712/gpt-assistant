@@ -15160,6 +15160,7 @@ function _renderBizPlanBudgetAdminTab(){
       <button class="btn btn-primary btn-sm" onclick="searchBizPlanAdminOrg()">조회</button>
     </div>
   </div></div>`;
+  html+=_bpLastCostBlockUploadResultHtml();
   if(_bpMgrSearchResult)html+=_renderBizPlanMgrSearchResultHtml();
 
   html+=`<div class="card mb3" style="background:#f8fafc"><div class="card-body">
@@ -15220,6 +15221,15 @@ function _renderBizPlanMgrSearchResultHtml(){
       </span>
       <button class="btn btn-ghost btn-sm mt2" onclick="loadBpActualsPreview('${tbodyId}')" title="같은 부문/팀의 budget.html 업로드 실적(판관비)을 항목별로 참고 조회합니다.">📊 실적 참고 보기</button>
       <div id="bp-actuals-preview-${tbodyId}" class="mt2"></div>
+      ${r.plan?`
+      <div class="mt2 fz12" style="border-top:1px dashed #ddd;padding-top:8px">
+        <div class="text-gray">📁 조직별 비용 블록 업로드 — "인원 계획" 업로드와 같은 "조직별" 시트(구분/구분_1/1~12월 형식)의 급여·성과급 등 비용 블록을 이 계획(${h(r.team||r.dept)})에 부문별로 나눠 반영합니다(항목명=블록 이름표, 비용귀속부문=시트의 부문). 편집·등록은 이 화면에서 그대로 하되, 이후 롤업에서는 각 항목이 실제 부문으로 귀속됩니다.</div>
+        <input type="file" id="bp-costblock-file-${tbodyId}" accept=".xlsx,.xls,.csv" style="display:none" onchange="_showSelectedFileName('bp-costblock-file-${tbodyId}','bp-costblock-filename-${tbodyId}')">
+        <button class="btn btn-ghost btn-sm mt1" onclick="document.getElementById('bp-costblock-file-${tbodyId}').click()">📁 파일 선택</button>
+        <span id="bp-costblock-filename-${tbodyId}" class="fz11 text-gray"></span>
+        <button class="btn btn-secondary btn-sm mt1" onclick="uploadBpCostBlockFile('${r.plan.id}','${tbodyId}')">업로드·반영</button>
+        <span id="bp-costblock-status-${tbodyId}" class="fz11 text-gray"></span>
+      </div>`:""}
     `:`
       <div class="fz12" style="color:#8a6500">승인되어 잠긴 계획입니다(직접 수정 불가). "사업계획" 목록 화면에서 "수정요청"을 보내 관리자 승인을 받으면 다시 draft로 전환되어 이 화면에서도 수정할 수 있습니다.</div>
       ${_bpSgaDetailTableHtml(items)}
@@ -15265,8 +15275,25 @@ async function uploadBizPlanSgaExcelPreview(){
     if(!res.ok||json.ok===false){showToast(json.error||json.message||"업로드에 실패했습니다.","error");if(statusEl)statusEl.textContent="";return;}
   }catch(e){showToast("업로드 중 오류가 발생했습니다: "+e.message,"error");if(statusEl)statusEl.textContent="";return;}
   input.value="";if(statusEl)statusEl.textContent="";
+  // 비용계정 자동 추정: 예산 엑셀에는 "비용계정"(회계 계정과목) 컬럼이 아예 없어 업로드된
+  // 항목은 항상 빈 값으로 들어온다 — 이미 로드된 회사 비용계정 목록에서 항목명과 이름이
+  // 겹치는 계정을 찾아 미리 채워준다(사용자 요청). 확신할 수 있는 매칭만 채우고, 애매하면
+  // 빈 값으로 남겨 사람이 직접 검색선택하게 한다.
+  await _bpLoadExpenseAccounts();
+  (json.teams||[]).forEach(t=>(t.items||[]).forEach(it=>{
+    if(!it.expenseAccount)it.expenseAccount=_bpGuessExpenseAccount(it.name);
+  }));
   _bpMgrUploadPreview={sheetName:json.sheetName,teams:json.teams};
   renderBizPlanPage();
+}
+// _guessSgaCategory()(budget.js, 서버측 "구분" 추정)와 동일한 발상의 클라이언트측 버전 —
+// 이미 로드된 회사 비용계정 목록(_bpExpenseAccounts) 중 항목명과 서로 포함 관계인 계정을
+// 찾아 "코드 이름" 형식(datalist 옵션과 동일한 표기)으로 반환한다. 못 찾으면 빈 문자열.
+function _bpGuessExpenseAccount(itemName){
+  const name=String(itemName||"").trim();
+  if(!name||!_bpExpenseAccounts.length)return "";
+  const found=_bpExpenseAccounts.find(a=>a.name&&(name.includes(a.name)||a.name.includes(name)));
+  return found?((found.code?found.code+" ":"")+found.name):"";
 }
 function _renderBizPlanMgrUploadPreviewHtml(){
   const p=_bpMgrUploadPreview;if(!p)return "";
@@ -15532,6 +15559,12 @@ function _bpSgaRowHtml(item){
   const growthVal=item?_bpPctInput(item.growthRate):"";
   const fixedChecked=(!item||item.fixed!==false)?"checked":"";
   const total=months.reduce((s,v)=>s+(Number(v)||0),0);
+  // 12개월 금액이 이미 전부 동일하면(0 제외) "적용 금액" 빠른입력 칸에도 그 값을 미리
+  // 채워둔다 — 원래 이 칸은 항상 빈칸으로 시작해, 이미 균일한 금액으로 저장/업로드된
+  // 행을 열어도 매번 다시 타이핑해야 했다(사용자 요청). 이 칸은 저장되지 않는 보조
+  // 입력일 뿐이라(_bpApplyMonthFill 참고) 값을 채워도 실제 저장값(월별 칸)에는 영향 없음.
+  const monthsAllEqual=months.length===12&&months.every(v=>Number(v||0)===Number(months[0]||0));
+  const applyAmountVal=(monthsAllEqual&&Number(months[0]||0)!==0)?Number(months[0]):"";
   const monthCells=months.map((v,i)=>`<td><input type="number" class="fc bp-sga-month" data-m="${i}" style="width:74px" value="${v||""}" oninput="_bpUpdateSgaRowTotal(this)"></td>`).join("");
   const accountTypeOpts=["","판관","용역","경상"].map(c=>`<option value="${c}" ${accountTypeVal===c?"selected":""}>${c||"-"}</option>`).join("");
   return `<tr id="bp-sga-row-${idx}">
@@ -15546,7 +15579,7 @@ function _bpSgaRowHtml(item){
     <td><select class="bp-sga-applymonth" style="width:56px" onchange="_bpApplyMonthFill(this)">
       <option value="all">전체</option>${Array.from({length:12},(_,i)=>`<option value="${i+1}">${i+1}월</option>`).join("")}
     </select></td>
-    <td><input type="number" class="bp-sga-applyamount" style="width:90px" placeholder="금액" oninput="_bpApplyMonthFill(this)"></td>
+    <td><input type="number" class="bp-sga-applyamount" style="width:90px" placeholder="금액" value="${applyAmountVal}" oninput="_bpApplyMonthFill(this)"></td>
     ${monthCells}
     <td class="bp-sga-total" style="text-align:right;font-weight:700;white-space:nowrap">${_bpFmt(total)}</td>
     <td><input class="fc bp-sga-note" style="width:100px" value="${noteVal}"></td>
@@ -16301,6 +16334,29 @@ async function uploadHeadcountPlanExcel(){
   _bpLastHeadcountUploadResult={at:new Date().toISOString(),upserted:json.upserted};
   loadBizPlanRollup();
   renderBizPlanPage();
+}
+// "조직별" 인원계획 시트의 급여/성과급 등 비용 블록을 부문별로 나눠 특정 계획에 직접
+// 반영(POST /business-plan/:id/cost-block-upload). 성공하면 다른 저장 액션과 동일하게
+// _bpMgrSearchResult를 초기화(사용자 확정 관례: "저장하면 조회 결과 초기화")하므로,
+// 결과 요약은 검색 폼 옆에 별도로 남겨 보여준다(_bpLastCostBlockUploadResultHtml).
+let _bpLastCostBlockUploadResult=null;
+async function uploadBpCostBlockFile(planId,tbodyId){
+  const r=_bpMgrSearchResult;
+  const json=await _bpUploadFormFile(`bp-costblock-file-${tbodyId}`,`bp-costblock-status-${tbodyId}`,`/api/budget/business-plan/${planId}/cost-block-upload`);
+  if(!json)return;
+  const applied=json.applied||[];
+  const byDept={};
+  applied.forEach(a=>{byDept[a.costDept]=(byDept[a.costDept]||0)+1;});
+  const deptSummary=Object.entries(byDept).map(([d,n])=>`${h(d)} ${n}건`).join(", ")||"없음";
+  _bpLastCostBlockUploadResult={at:new Date().toISOString(),dept:r?r.dept:"",team:r?r.team:"",applied,deptSummary};
+  showToast(`${applied.length}개 항목이 부문별로 반영되었습니다(${deptSummary}).`,"success");
+  _bpMgrSearchResult=null; // 저장과 동일하게 초기화 — 재조회해서 최신 상태를 확인
+  await loadBizPlanFromServer();
+  renderBizPlanPage();
+}
+function _bpLastCostBlockUploadResultHtml(){
+  const r=_bpLastCostBlockUploadResult;if(!r)return "";
+  return `<div class="mt2 fz12"><b>방금 조직별 비용 블록 업로드 결과</b> <span class="text-gray">(${new Date(r.at).toLocaleString()}, ${h(r.dept)}${r.team?" / "+h(r.team):""})</span> — ${r.applied.length}개 항목이 부문별로 반영됨: ${r.deptSummary}.</div>`;
 }
 function _bpLastHeadcountUploadResultHtml(){
   const r=_bpLastHeadcountUploadResult;if(!r)return "";

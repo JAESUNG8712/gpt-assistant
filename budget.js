@@ -1215,30 +1215,7 @@ module.exports = function budgetRouterFactory(deps) {
     if (!Array.isArray(plan.assumptions.sgaItems)) plan.assumptions.sgaItems = [];
     const sgaItems = plan.assumptions.sgaItems;
     const note = `예산(비인건비) 반영(${new Date().toISOString().slice(0, 10)})`;
-    const itemDetail = [];
-    items.forEach(it => {
-      // 같은 항목명(예: "지급수수료")이 세부내역(거래처·용도 등)만 다른 채 한 팀 안에
-      // 여러 줄로 실존하는 경우가 실제 데이터에서 흔함 — name만으로 매칭하면 서로 다른
-      // 지출 줄이 서로를 덮어써 소실된다. accountType(판관/용역/경상)도 매칭 키에
-      // 포함해야 한다("(판)급여"/"(용)급여"/"(경)급여"가 접두 제거 후 전부 "급여"로
-      // 동일해지는 케이스). detail은 trim해서 비교(공백 차이로 인한 중복 생성 방지).
-      const existing = sgaItems.find(e => e.name === it.name && (e.detail || '').trim() === (it.detail || '').trim() && e.accountType === it.accountType && (e.team || '') === team);
-      const baseAmount = round2((it.months || []).reduce((s, v) => s + (v || 0), 0));
-      const category = _guessSgaCategory(it.name);
-      if (existing) {
-        existing.dept = dept; existing.team = team; existing.costDept = it.costDept || dept;
-        existing.detail = it.detail; existing.accountType = it.accountType; existing.expenseAccount = it.expenseAccount || existing.expenseAccount || '';
-        existing.months = it.months; existing.baseAmount = baseAmount; existing.note = note;
-        if (!existing.category) existing.category = category;
-      } else {
-        sgaItems.push({
-          dept, team, costDept: it.costDept || dept, name: it.name, detail: it.detail,
-          category: it.category || category, accountType: it.accountType, expenseAccount: it.expenseAccount || '', months: it.months,
-          note, baseAmount, growthRate: 0, fixed: true
-        });
-      }
-      itemDetail.push({ name: it.name, detail: it.detail, accountType: it.accountType, baseAmount });
-    });
+    const itemDetail = items.map(it => _upsertSgaItem(sgaItems, dept, team, it, note));
     const a = { baseYear: plan.baseYear, years: plan.years !== undefined ? plan.years : plan.projection.length, ...plan.assumptions };
     plan.projection = computeBusinessPlanProjection(a);
     plan.breakEven = computeBreakEven(a);
@@ -1246,6 +1223,119 @@ module.exports = function budgetRouterFactory(deps) {
     plan.updatedBy = req.auth.empId;
     return { skip: false, updated: { team, planId: plan.id, dept, itemCount: items.length, planStatus: plan.status, items: itemDetail, autoCreated } };
   }
+
+  // _commitSgaTeamItems()(팀명 기준 예산 업로드)와 조직별 비용 블록 업로드(아래
+  // /cost-block-upload) 양쪽이 공유하는 "항목 하나를 sgaItems 배열에 upsert"하는 공용
+  // 로직. 같은 항목명(예: "지급수수료")이 세부내역(거래처·용도 등)만 다른 채, 또는
+  // 비용귀속부문만 다른 채(조직별 비용 블록 — 같은 "급여"가 부문마다 별도 줄로 존재) 한
+  // 팀 안에 여러 줄로 실존하는 경우가 흔해 name만으로 매칭하면 서로 다른 지출 줄이 서로를
+  // 덮어써 소실된다. accountType·costDept도 매칭 키에 포함한다 — costDept는 저장된 값이
+  // 항상 "명시값 또는 팀 dept로 보정된 값"이므로, 비교 시에도 반드시 동일하게 보정한 값끼리
+  // 비교해야 한다(그렇지 않으면 재업로드 시 매번 새 중복 항목이 생기는 버그가 됨 — 실측
+  // 발견 후 수정). detail은 trim해서 비교(공백 차이로 인한 중복 생성 방지).
+  function _upsertSgaItem(sgaItems, dept, team, it, note) {
+    const resolvedCostDept = it.costDept || dept;
+    const existing = sgaItems.find(e =>
+      e.name === it.name && (e.detail || '').trim() === (it.detail || '').trim() &&
+      e.accountType === it.accountType && (e.team || '') === team &&
+      (e.costDept || dept) === resolvedCostDept
+    );
+    const baseAmount = round2((it.months || []).reduce((s, v) => s + (v || 0), 0));
+    const category = _guessSgaCategory(it.name);
+    if (existing) {
+      existing.dept = dept; existing.team = team; existing.costDept = resolvedCostDept;
+      existing.detail = it.detail; existing.accountType = it.accountType; existing.expenseAccount = it.expenseAccount || existing.expenseAccount || '';
+      existing.months = it.months; existing.baseAmount = baseAmount; existing.note = note;
+      if (!existing.category) existing.category = category;
+    } else {
+      sgaItems.push({
+        dept, team, costDept: resolvedCostDept, name: it.name, detail: it.detail,
+        category: it.category || category, accountType: it.accountType, expenseAccount: it.expenseAccount || '', months: it.months,
+        note, baseAmount, growthRate: 0, fixed: true
+      });
+    }
+    return { name: it.name, detail: it.detail, accountType: it.accountType, costDept: resolvedCostDept, baseAmount };
+  }
+
+  // "조직별" 인원계획 시트에 섞여 있는 급여/성과급 등 비용 집계 블록(부문별로 여러 줄
+  // 반복되는 구조, headcount-plan/upload는 인원현황이 아니라서 이 블록들을 의도적으로
+  // 건너뛴다 — 위 KNOWN_HEADCOUNT_COLUMNS 참고)을 사업계획 판관비 항목으로 반영하기
+  // 위한 파서. headcount-plan/upload와 동일한 헤더 인식(구분/부문 + 구분_1 + 월)을
+  // 쓰지만, 이번엔 그 "이름표"(예: "급여"/"성과급" — 헤더 없는 컬럼에 반복해서 채워진
+  // 값)를 항목명으로, 첫 번째 "구분"(부문)을 비용귀속부문(costDept)으로 사용한다 —
+  // 한 팀(예: 인사팀)이 작성·관리하는 계획 안에 부문별로 항목이 나뉘어 들어가되, 3단계
+  // 롤업(비용귀속부문별 집계)에서는 각자의 실제 부문으로 정확히 귀속되게 하는 것이 목적
+  // (사용자 요청: "인사팀 계획 안에서 부문별로 분리되나 최종 취합 시 해당 조직에 귀속").
+  function _parseSgaCostBlockRows(rows) {
+    const KNOWN_COST_BLOCK_COLUMNS = new Set(['구분', '구분_1', '부문', '계정과목', '평균', ...MONTHS.map(m => `${m}월`)]);
+    const items = [];
+    rows.forEach(row => {
+      const dept = String(row['구분'] || row['부문'] || '').trim();
+      if (!dept || dept === '계') return;
+      // SheetJS는 헤더가 빈 문자열인 컬럼(이 파일의 "이름표" 컬럼이 정확히 이 경우)의 키를
+      // 그대로 ""(빈 문자열)로 준다 — labelKey 자체가 유효하게 ""일 수 있으므로 falsy 체크
+      // (!labelKey)로 "못 찾음"을 판별하면 안 되고 undefined 여부로만 판별해야 한다(실측
+      // 발견 — falsy 체크였을 때 이 컬럼이 있는 모든 행이 "이름표 없음"으로 잘못 걸러졌음).
+      const labelKey = Object.keys(row).find(k => !KNOWN_COST_BLOCK_COLUMNS.has(k) && row[k] !== null && String(row[k]).trim() !== '');
+      if (labelKey === undefined) return; // 이름표(항목명) 없는 행 — 순수 인원현황 블록 등, 이 파서의 대상이 아님
+      const name = String(row[labelKey]).trim();
+      const catRaw = String(row['계정과목'] || row['구분_1'] || '').trim();
+      const accountType = CATEGORIES.includes(catRaw) ? catRaw : '';
+      if (!accountType) return;
+      const months = MONTHS.map(m => toNumber(row[`${m}월`]) || 0);
+      if (months.every(v => !v)) return;
+      items.push({ name, detail: '', accountType, costDept: dept, months });
+    });
+    return items;
+  }
+
+  // 위 파서로 추출한 조직별 비용 블록 항목을, 이미 열려있는(부문/사업부/센터 조회로 특정된)
+  // 계획 하나에 직접 반영한다 — 팀명 컬럼이 파일에 없어(부문 컬럼뿐) _commitSgaTeamItems의
+  // "팀명으로 계획을 찾는" 방식이 애초에 적용될 수 없으므로, plan id를 URL로 직접 받는
+  // 별도 라우트로 둔다. 관리자 전용, draft 상태일 때만(다른 쓰기 라우트와 동일 기준).
+  router.post('/business-plan/:id/cost-block-upload', upload.single('file'), async (req, res) => {
+    if (!requireAdmin(req, res)) return;
+    if (!req.file) return res.status(400).json({ error: '파일이 필요합니다.' });
+    let rows;
+    try {
+      rows = parseSheet(req.file.buffer, req.file.originalname, [['구분', '부문'], ['1월']], ['팀명', '항목']);
+    } catch (e) {
+      return res.status(400).json({ error: '파일을 읽을 수 없습니다. (xlsx/csv만 지원)' });
+    }
+    if (rows._headerRow === -1) {
+      return res.status(400).json({ error: `업로드한 파일에서 "구분"(또는 "부문")·"1월" 컬럼을 찾지 못했습니다(확인한 시트: ${rows._triedSheets.join(', ')}). "조직별" 인원계획 시트와 같은 형식이어야 합니다.` });
+    }
+    const parsedItems = _parseSgaCostBlockRows(rows);
+    if (!parsedItems.length) {
+      return res.status(400).json({ error: '조직별 비용 블록(계정과목이 판관/용역/경상 중 하나이고 항목명이 있는 행)을 찾지 못했습니다.' });
+    }
+    const companyId = req.auth.companyId || null;
+    try {
+      let plan, applied, resultData;
+      await updateBudget(companyId, async (data) => {
+        plan = data.businessPlans.find(p => p.id === req.params.id);
+        if (!plan) throw new _BudgetRouteError(404, '사업계획을 찾을 수 없습니다.');
+        if (plan.status !== 'draft') {
+          throw new _BudgetRouteError(403, '승인되어 잠긴 계획입니다. 수정요청을 보내 관리자 승인을 받은 뒤 반영할 수 있습니다.');
+        }
+        if (!plan.assumptions) plan.assumptions = {};
+        if (!Array.isArray(plan.assumptions.sgaItems)) plan.assumptions.sgaItems = [];
+        const sgaItems = plan.assumptions.sgaItems;
+        const note = `조직별 비용 블록 반영(${new Date().toISOString().slice(0, 10)})`;
+        applied = parsedItems.map(it => _upsertSgaItem(sgaItems, plan.dept, plan.team, it, note));
+        const a = { baseYear: plan.baseYear, years: plan.years !== undefined ? plan.years : plan.projection.length, ...plan.assumptions };
+        plan.projection = computeBusinessPlanProjection(a);
+        plan.breakEven = computeBreakEven(a);
+        plan.updatedAt = new Date().toISOString();
+        plan.updatedBy = req.auth.empId;
+        resultData = data;
+      });
+      res.json({ ok: true, applied, sheetName: rows._sheetName, plan: { ...plan, budgetComparison: computeBudgetComparison(resultData, plan) } });
+    } catch (e) {
+      if (e instanceof _BudgetRouteError) return res.status(e.status).json({ error: e.message });
+      throw e;
+    }
+  });
 
   // 엑셀 업로드 → 미리보기(저장하지 않음). 팀별로 파싱된 항목과, 이미 존재하는 계획이
   // 있다면 그 상태(draft/잠김)까지 함께 반환해 클라이언트가 팀별로 편집 가능한 그리드를
