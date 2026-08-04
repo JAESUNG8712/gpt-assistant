@@ -1243,7 +1243,25 @@ async function getEmployeeProfileForBudget(companyId, empId) {
   if (!emp) return null;
   return { dept: emp.dept || "", team: emp.team || "", role: emp.role, name: emp.name };
 }
-app.use("/api/budget", budgetRouterFactory({ getEmployeeProfile: getEmployeeProfileForBudget }));
+// 팀명 → 그 팀이 실제로 소속된 부문/사업부/센터를 재직자 dept 필드로 역산한다. 예산
+// 업로드 엑셀의 "비용 귀속" 컬럼에 팀이 스스로의 이름을 적어두는 관행이 있어(예:
+// "인사팀"이 자기 이름을 비용귀속으로 표기), 그걸 그대로 별도 조직 버킷으로 쓰면
+// "인사팀"이 그 팀의 실제 상위 조직("경영지원본부")과 나란한 별개 항목으로 잡혀 사업부
+// 롤업이 쪼개지는 문제가 있었다(사용자 보고: "인사팀이 별도로 있어서 중복 합산되는 것
+// 같다"). 재직자 중 그 팀 소속(가능하면 재직중인 사람 우선)의 dept 최빈값을 그 팀의
+// 실제 소속으로 본다.
+async function getTeamDeptForBudget(companyId, team) {
+  if (!team) return null;
+  const data = await loadData(companyId);
+  const emps = (data.employees || []).filter(e => (e.team || "") === team);
+  if (!emps.length) return null;
+  const active = emps.filter(e => e.active);
+  const pool = active.length ? active : emps;
+  const counts = {};
+  pool.forEach(e => { if (e.dept) counts[e.dept] = (counts[e.dept] || 0) + 1; });
+  return Object.keys(counts).sort((a, b) => counts[b] - counts[a])[0] || null;
+}
+app.use("/api/budget", budgetRouterFactory({ getEmployeeProfile: getEmployeeProfileForBudget, getTeamDept: getTeamDeptForBudget }));
 
 // /login 브루트포스 방어: IP당 15분에 20회로 제한(정상 사용자가 실수로 몇 번 틀리는
 // 정도는 통과시키되, 자동화된 무차별 대입 시도는 차단).

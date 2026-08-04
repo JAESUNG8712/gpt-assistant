@@ -958,6 +958,13 @@ router.delete('/emp-pay-plan/:id', async (req, res) => {
 module.exports = function budgetRouterFactory(deps) {
   deps = deps || {};
   const getEmployeeProfile = deps.getEmployeeProfile || (async () => null);
+  // 팀명 → 그 팀이 소속된 부문/사업부/센터를 재직자 dept 필드로 역산 조회. 예산(비인건비)
+  // 엑셀의 "비용 귀속" 컬럼에 팀이 스스로의 이름을 적는(자기 자신을 비용귀속으로 표기)
+  // 관행이 있어, 그걸 그대로 쓰면 그 팀 이름이 "경영지원본부" 같은 실제 상위 조직과
+  // 나란한 별도의 비용귀속부문 버킷으로 잡혀 사업부 단위 롤업이 쪼개지는 문제가 있었다
+  // (실사용자 보고: "인사팀이 별도로 있어서 중복 합산되는 것 같다"). 미주입 시(테스트 등)
+  // null만 반환 — 아래 로직은 이 경우 팀명을 그대로 쓰는 기존 동작으로 자연 폴백한다.
+  const getTeamDept = deps.getTeamDept || (async () => null);
 
   // ── 사업계획 워크플로우 설정(예산담당자/기획팀장 지정, 입력기간 on/off) ──────────
 
@@ -1179,13 +1186,27 @@ module.exports = function budgetRouterFactory(deps) {
   // 기존 계획은 여기서 직접 덮어쓰지 않고 skip 사유를 반환한다(수정요청 절차를 우회하지
   // 않기 위함 — 예전 즉시저장 업로드는 이 검사가 없어 잠긴 계획도 조용히 덮어쓸 수
   // 있었던 결함이 있었는데, 미리보기·검색편집 화면 신설을 계기로 함께 바로잡음).
-  function _commitSgaTeamItems(data, companyId, year, team, items, req) {
+  // 이 로직 도입 이전에 costDept가 팀 자기 자신의 이름으로 저장된 기존 항목을, plan.dept가
+  // 바로잡힌 시점에 함께 바로잡는다(그러지 않으면 재업로드 시 _upsertSgaItem의 매칭 키가
+  // 안 맞아 옛 "인사팀" 버킷 항목은 그대로 남고 새 "경영지원본부" 항목이 중복 생성됨).
+  function _migrateSelfReferentialCostDept(sgaItems, team, dept) {
+    if (!dept || dept === team) return;
+    (sgaItems || []).forEach(it => { if (it.costDept === team) it.costDept = dept; });
+  }
+  // 항목들의 costDept 값 중 팀 자기 자신의 이름을 제외한 나머지(실제로 다른 조직명이
+  // 명시된 값)만으로 최빈값을 구한다 — getTeamDept()로 재직자 기준 실제 소속을 못 찾았을
+  // 때의 폴백. 자기참조("인사팀"→"인사팀")는 애초에 유의미한 조직 정보가 아니므로 제외.
+  function _inferPlanDeptFromItems(items, team) {
+    const costDeptCounts = {};
+    items.forEach(it => { const cd = (it.costDept || '').trim(); if (cd && cd !== team) costDeptCounts[cd] = (costDeptCounts[cd] || 0) + 1; });
+    return Object.keys(costDeptCounts).sort((a, b) => costDeptCounts[b] - costDeptCounts[a])[0] || null;
+  }
+  async function _commitSgaTeamItems(data, companyId, year, team, items, req) {
     const matches = data.businessPlans.filter(p => p.baseYear === year && (p.team || '').trim() === team);
     let plan, autoCreated = false;
     if (matches.length === 0) {
-      const costDeptCounts = {};
-      items.forEach(it => { const cd = (it.costDept || '').trim(); if (cd) costDeptCounts[cd] = (costDeptCounts[cd] || 0) + 1; });
-      const inferredDept = Object.keys(costDeptCounts).sort((a, b) => costDeptCounts[b] - costDeptCounts[a])[0] || team;
+      const resolvedTeamDept = await getTeamDept(companyId, team);
+      const inferredDept = resolvedTeamDept || _inferPlanDeptFromItems(items, team) || team;
       const { assumptions: newA } = _normalizeBusinessPlanInput({ name: `${team} ${year}년 예산업로드`, baseYear: year, years: 1, planType: 'costOnly' }, null);
       const now = new Date().toISOString();
       plan = {
@@ -1209,11 +1230,19 @@ module.exports = function budgetRouterFactory(deps) {
       if (plan.status !== 'draft') {
         return { skip: true, reason: `승인되어 잠긴 계획입니다. 수정요청을 보내 관리자 승인을 받은 뒤 반영할 수 있습니다.` };
       }
+      // 자가치유: 예전에(이 로직 추가 이전) dept가 팀 자기 자신의 이름으로 잘못 저장된
+      // 계획이면, 재업로드 시점에 실제 소속 조직으로 바로잡는다.
+      if (plan.dept === team) {
+        const resolvedTeamDept = await getTeamDept(companyId, team);
+        const fixedDept = resolvedTeamDept || _inferPlanDeptFromItems(items, team);
+        if (fixedDept && fixedDept !== plan.dept) plan.dept = fixedDept;
+      }
     }
     const dept = plan.dept;
     if (!plan.assumptions) plan.assumptions = {};
     if (!Array.isArray(plan.assumptions.sgaItems)) plan.assumptions.sgaItems = [];
     const sgaItems = plan.assumptions.sgaItems;
+    _migrateSelfReferentialCostDept(sgaItems, team, dept);
     const note = `예산(비인건비) 반영(${new Date().toISOString().slice(0, 10)})`;
     const itemDetail = items.map(it => _upsertSgaItem(sgaItems, dept, team, it, note));
     const a = { baseYear: plan.baseYear, years: plan.years !== undefined ? plan.years : plan.projection.length, ...plan.assumptions };
@@ -1233,8 +1262,12 @@ module.exports = function budgetRouterFactory(deps) {
   // 항상 "명시값 또는 팀 dept로 보정된 값"이므로, 비교 시에도 반드시 동일하게 보정한 값끼리
   // 비교해야 한다(그렇지 않으면 재업로드 시 매번 새 중복 항목이 생기는 버그가 됨 — 실측
   // 발견 후 수정). detail은 trim해서 비교(공백 차이로 인한 중복 생성 방지).
+  // costDept가 비어있거나 팀 자기 자신의 이름과 같으면(엑셀의 "비용 귀속" 컬럼에 팀이
+  // 스스로를 적는 관행) plan.dept(재직자 기준으로 해석된 실제 소속 조직)로 귀속시킨다 —
+  // 그러지 않으면 "인사팀" 같은 팀 이름이 "경영지원본부" 같은 실제 상위 조직과 나란히
+  // 별도의 비용귀속부문 버킷으로 잡혀 사업부 롤업이 쪼개지는 문제가 있었다(사용자 보고).
   function _upsertSgaItem(sgaItems, dept, team, it, note) {
-    const resolvedCostDept = it.costDept || dept;
+    const resolvedCostDept = (it.costDept && it.costDept !== team) ? it.costDept : dept;
     const existing = sgaItems.find(e =>
       e.name === it.name && (e.detail || '').trim() === (it.detail || '').trim() &&
       e.accountType === it.accountType && (e.team || '') === team &&
@@ -1318,9 +1351,16 @@ module.exports = function budgetRouterFactory(deps) {
         if (plan.status !== 'draft') {
           throw new _BudgetRouteError(403, '승인되어 잠긴 계획입니다. 수정요청을 보내 관리자 승인을 받은 뒤 반영할 수 있습니다.');
         }
+        // 자가치유: dept가 팀 자기 자신의 이름으로 잘못 저장된 계획이면 재직자 기준 실제
+        // 소속으로 바로잡는다(sga-upload/commit의 동일 로직과 동일한 이유).
+        if (plan.dept === plan.team) {
+          const resolvedTeamDept = await getTeamDept(companyId, plan.team);
+          if (resolvedTeamDept && resolvedTeamDept !== plan.dept) plan.dept = resolvedTeamDept;
+        }
         if (!plan.assumptions) plan.assumptions = {};
         if (!Array.isArray(plan.assumptions.sgaItems)) plan.assumptions.sgaItems = [];
         const sgaItems = plan.assumptions.sgaItems;
+        _migrateSelfReferentialCostDept(sgaItems, plan.team, plan.dept);
         const note = `조직별 비용 블록 반영(${new Date().toISOString().slice(0, 10)})`;
         applied = parsedItems.map(it => _upsertSgaItem(sgaItems, plan.dept, plan.team, it, note));
         const a = { baseYear: plan.baseYear, years: plan.years !== undefined ? plan.years : plan.projection.length, ...plan.assumptions };
@@ -1380,14 +1420,14 @@ module.exports = function budgetRouterFactory(deps) {
     if (!teams.length) return res.status(400).json({ error: '저장할 팀 데이터가 없습니다.' });
     const { updated, skipped } = await updateBudget(companyId, async (data) => {
       const updated = [], skipped = [];
-      teams.forEach(t => {
+      for (const t of teams) {
         const team = String(t && t.team || '').trim();
         const items = Array.isArray(t && t.items) ? t.items : [];
-        if (!team) return;
-        const result = _commitSgaTeamItems(data, companyId, year, team, items, req);
+        if (!team) continue;
+        const result = await _commitSgaTeamItems(data, companyId, year, team, items, req);
         if (result.skip) skipped.push({ team, reason: result.reason });
         else updated.push(result.updated);
-      });
+      }
       data.uploads.push({ type: 'sga', filename: 'manual-review', uploadedAt: new Date().toISOString(), rows: teams.reduce((s, t) => s + (Array.isArray(t.items) ? t.items.length : 0), 0) });
       return { updated, skipped };
     });
