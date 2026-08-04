@@ -1253,7 +1253,12 @@ async function getEmployeeProfileForBudget(companyId, empId) {
 async function getTeamDeptForBudget(companyId, team) {
   if (!team) return null;
   const data = await loadData(companyId);
-  const emps = (data.employees || []).filter(e => (e.team || "") === team);
+  // 예산 엑셀의 "팀명" 컬럼 표기와 실제 재직자 테이블의 team 필드 표기가 "팀" 접미사
+  // 유무만 다른 경우가 실사용 파일에서 확인됨(예: 엑셀엔 "인사", 재직자 team엔 "인사팀"
+  // 또는 그 반대) — 정확히 일치하는 재직자가 없으면 "팀" 접미사만 정규화해 한 번 더 시도.
+  const norm = s => String(s || "").trim().replace(/팀$/, "");
+  let emps = (data.employees || []).filter(e => (e.team || "") === team);
+  if (!emps.length) emps = (data.employees || []).filter(e => norm(e.team) === norm(team));
   if (!emps.length) return null;
   const active = emps.filter(e => e.active);
   const pool = active.length ? active : emps;

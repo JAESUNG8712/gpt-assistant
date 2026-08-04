@@ -1186,19 +1186,33 @@ module.exports = function budgetRouterFactory(deps) {
   // 기존 계획은 여기서 직접 덮어쓰지 않고 skip 사유를 반환한다(수정요청 절차를 우회하지
   // 않기 위함 — 예전 즉시저장 업로드는 이 검사가 없어 잠긴 계획도 조용히 덮어쓸 수
   // 있었던 결함이 있었는데, 미리보기·검색편집 화면 신설을 계기로 함께 바로잡음).
-  // 이 로직 도입 이전에 costDept가 팀 자기 자신의 이름으로 저장된 기존 항목을, plan.dept가
-  // 바로잡힌 시점에 함께 바로잡는다(그러지 않으면 재업로드 시 _upsertSgaItem의 매칭 키가
-  // 안 맞아 옛 "인사팀" 버킷 항목은 그대로 남고 새 "경영지원본부" 항목이 중복 생성됨).
-  function _migrateSelfReferentialCostDept(sgaItems, team, dept) {
-    if (!dept || dept === team) return;
-    (sgaItems || []).forEach(it => { if (it.costDept === team) it.costDept = dept; });
+  // "비용 귀속" 컬럼은 팀명 컬럼과 완전히 같은 문자열로 자기참조하지 않는 경우가 실제로
+  // 흔하다 — 실사용자 원본 파일에서 "팀명"은 "인사"인데 "비용 귀속"은 "인사팀"(끝에 "팀"만
+  // 붙임)이었음. 끝에 붙는 "팀" 접미사 유무만 정규화해 비교한다("팀"만 벗기는 이유: "R&BD
+  // 센터"/"엔지니어링솔루션사업부"처럼 실제로 다른 조직을 가리키는 값에서 "센터"/"사업부"
+  // 등 다른 접미사까지 벗기면 서로 다른 조직명이 우연히 같아져 오탐할 위험이 있어, 이
+  // 자기참조 패턴에서 실제로 관찰된 "팀" 접미사 하나만 좁게 취급한다).
+  function _normalizeTeamNameForSelfRef(s) {
+    return String(s || '').trim().replace(/팀$/, '');
   }
-  // 항목들의 costDept 값 중 팀 자기 자신의 이름을 제외한 나머지(실제로 다른 조직명이
-  // 명시된 값)만으로 최빈값을 구한다 — getTeamDept()로 재직자 기준 실제 소속을 못 찾았을
-  // 때의 폴백. 자기참조("인사팀"→"인사팀")는 애초에 유의미한 조직 정보가 아니므로 제외.
+  function _isSelfReferentialCostDept(costDept, team) {
+    if (!costDept || !team) return false;
+    return _normalizeTeamNameForSelfRef(costDept) === _normalizeTeamNameForSelfRef(team);
+  }
+  // 이 로직 도입 이전에 costDept가 팀 자기 자신의 이름(또는 그 변형)으로 저장된 기존
+  // 항목을, plan.dept가 바로잡힌 시점에 함께 바로잡는다(그러지 않으면 재업로드 시
+  // _upsertSgaItem의 매칭 키가 안 맞아 옛 "인사팀" 버킷 항목은 그대로 남고 새 "경영지원
+  // 부문" 항목이 중복 생성됨).
+  function _migrateSelfReferentialCostDept(sgaItems, team, dept) {
+    if (!dept || _isSelfReferentialCostDept(dept, team)) return;
+    (sgaItems || []).forEach(it => { if (_isSelfReferentialCostDept(it.costDept, team)) it.costDept = dept; });
+  }
+  // 항목들의 costDept 값 중 팀 자기 자신을 가리키는 값(변형 포함)을 제외한 나머지(실제로
+  // 다른 조직명이 명시된 값)만으로 최빈값을 구한다 — getTeamDept()로 재직자 기준 실제
+  // 소속을 못 찾았을 때의 폴백. 자기참조는 애초에 유의미한 조직 정보가 아니므로 제외.
   function _inferPlanDeptFromItems(items, team) {
     const costDeptCounts = {};
-    items.forEach(it => { const cd = (it.costDept || '').trim(); if (cd && cd !== team) costDeptCounts[cd] = (costDeptCounts[cd] || 0) + 1; });
+    items.forEach(it => { const cd = (it.costDept || '').trim(); if (cd && !_isSelfReferentialCostDept(cd, team)) costDeptCounts[cd] = (costDeptCounts[cd] || 0) + 1; });
     return Object.keys(costDeptCounts).sort((a, b) => costDeptCounts[b] - costDeptCounts[a])[0] || null;
   }
   async function _commitSgaTeamItems(data, companyId, year, team, items, req) {
@@ -1232,7 +1246,7 @@ module.exports = function budgetRouterFactory(deps) {
       }
       // 자가치유: 예전에(이 로직 추가 이전) dept가 팀 자기 자신의 이름으로 잘못 저장된
       // 계획이면, 재업로드 시점에 실제 소속 조직으로 바로잡는다.
-      if (plan.dept === team) {
+      if (_isSelfReferentialCostDept(plan.dept, team)) {
         const resolvedTeamDept = await getTeamDept(companyId, team);
         const fixedDept = resolvedTeamDept || _inferPlanDeptFromItems(items, team);
         if (fixedDept && fixedDept !== plan.dept) plan.dept = fixedDept;
@@ -1267,7 +1281,7 @@ module.exports = function budgetRouterFactory(deps) {
   // 그러지 않으면 "인사팀" 같은 팀 이름이 "경영지원본부" 같은 실제 상위 조직과 나란히
   // 별도의 비용귀속부문 버킷으로 잡혀 사업부 롤업이 쪼개지는 문제가 있었다(사용자 보고).
   function _upsertSgaItem(sgaItems, dept, team, it, note) {
-    const resolvedCostDept = (it.costDept && it.costDept !== team) ? it.costDept : dept;
+    const resolvedCostDept = (it.costDept && !_isSelfReferentialCostDept(it.costDept, team)) ? it.costDept : dept;
     const existing = sgaItems.find(e =>
       e.name === it.name && (e.detail || '').trim() === (it.detail || '').trim() &&
       e.accountType === it.accountType && (e.team || '') === team &&
@@ -1353,7 +1367,7 @@ module.exports = function budgetRouterFactory(deps) {
         }
         // 자가치유: dept가 팀 자기 자신의 이름으로 잘못 저장된 계획이면 재직자 기준 실제
         // 소속으로 바로잡는다(sga-upload/commit의 동일 로직과 동일한 이유).
-        if (plan.dept === plan.team) {
+        if (_isSelfReferentialCostDept(plan.dept, plan.team)) {
           const resolvedTeamDept = await getTeamDept(companyId, plan.team);
           if (resolvedTeamDept && resolvedTeamDept !== plan.dept) plan.dept = resolvedTeamDept;
         }
