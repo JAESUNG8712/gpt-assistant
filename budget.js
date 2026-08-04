@@ -1094,20 +1094,35 @@ module.exports = function budgetRouterFactory(deps) {
       };
     });
 
+    // sgaByCostDept/sgaByCategory/sgaByAccountType/sgaByExpenseAccount는 전부 화면에
+    // "(기준연도)"로 표시되는, 한 해 예산을 보기 위한 표다 — 그런데 baseAmount는 각 항목이
+    // 속한 계획의 baseYear 한 해 치 금액인데도 이 네 집계는 scoped(연도 필터 없음, 여러
+    // 연도의 계획이 함께 존재할 수 있음)를 그대로 넘겨받아 연도 구분 없이 전부 더하고
+    // 있었다 — 회사가 2027년·2028년 계획을 동시에 갖고 있으면(당연히 있을 수 있는 정상
+    // 상황, 미리 다음 해 계획을 세워두는 것) "기준연도" 표라면서 실제로는 두 해 예산을
+    // 합산해 "전사 합계"가 정확히 2배로 부풀어 보이는 문제였다(사용자 보고: "계속 중복으로
+    // 올려서 중첩된 것 아니냐" — 실측 결과 항목 자체의 중복이 아니라 이 집계 함수들이
+    // 연도를 안 가리는 것이 원인이었음, 회사 전체 P&L(company.projection)은 연도별로
+    // 이미 올바르게 나뉘어 있어 이 문제가 없었음). ?year=를 받으면 이 네 집계만 그 연도의
+    // 계획으로 한정 — byDept/company.projection은 기존처럼 연도별 추이를 그대로 보여줘야
+    // 하므로(의도된 기능) 그쪽은 건드리지 않는다. year 파라미터를 생략하면(레거시 호출부)
+    // 기존과 동일하게 전체 연도 합산 동작 유지.
+    const sgaYear = req.query.year ? Number(req.query.year) : null;
+    const sgaScoped = sgaYear ? scoped.filter(p => p.baseYear === sgaYear) : scoped;
     // sgaByCostDept: 위 byDept/company(P&L 롤업)와 별개로, 판관비 항목만 "비용 귀속
     // 부문" 기준으로 재집계 — 계획을 작성한 팀과 실제 비용 귀속 부문이 다른 경우에도
     // 전사 합계와 부문별 실집계를 함께 확인할 수 있게 한다.
-    const sgaByCostDept = _sgaRollupByCostDept(scoped);
+    const sgaByCostDept = _sgaRollupByCostDept(sgaScoped);
     // sgaByCategory: 3단계 자료 연계(개인별 급여→팀별 그리드→부문별 집계표)의 마지막
     // 단계 — 판관비 항목을 "구분"(급여/복리후생비/교육훈련비/사회보험 등)별로 나눈 뒤
     // 그 안에서 다시 비용귀속부문 기준으로 집계.
-    const sgaByCategory = _sgaRollupByCategory(scoped);
+    const sgaByCategory = _sgaRollupByCategory(sgaScoped);
     // sgaByAccountType/sgaByExpenseAccount: sgaByCategory와 동일한 구조로, "구분" 대신
     // 각각 계정과목(판관/용역/경상)·비용계정(실제 회계 계정과목) 기준으로 재집계한 것.
-    const sgaByAccountType = _sgaRollupByAccountType(scoped);
-    const sgaByExpenseAccount = _sgaRollupByExpenseAccount(scoped);
+    const sgaByAccountType = _sgaRollupByAccountType(sgaScoped);
+    const sgaByExpenseAccount = _sgaRollupByExpenseAccount(sgaScoped);
 
-    res.json({ ok: true, includeDraft, byDept, company: { planCount: scoped.length, projection: _rollup(scoped) }, sgaByCostDept, sgaByCategory, sgaByAccountType, sgaByExpenseAccount });
+    res.json({ ok: true, includeDraft, sgaYear, byDept, company: { planCount: scoped.length, projection: _rollup(scoped) }, sgaByCostDept, sgaByCategory, sgaByAccountType, sgaByExpenseAccount });
   });
 
   // 항목별 실적 참고(신규 자동화, 작성 단계 실시간 안내): 사업계획 작성/수정 폼에서 판관비

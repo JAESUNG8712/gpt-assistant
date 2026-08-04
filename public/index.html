@@ -15928,8 +15928,12 @@ function _bpSvgLineChart(series,xLabels){
 // ── 사업부/회사 롤업 ──
 let _bizPlanHeadcountPlanData=null;
 async function loadBizPlanRollup(){
+  // "구분/비용귀속부문/계정과목/비용계정별" 표는 "(기준연도)" 단일 연도 기준 표라, 반드시
+  // year를 넘겨야 한다 — 넘기지 않으면 서버가 연도 구분 없이 모든 계획연도를 합산해
+  // 여러 해의 계획이 동시에 존재할 때 전사 합계가 실제보다 부풀어 보이는 문제가 있었음
+  // (예: 2027년+2028년 계획이 함께 있으면 두 해 합계가 "기준연도" 표에 그대로 더해짐).
   const [r,rh]=await Promise.all([
-    serverRequest("GET",`/api/budget/business-plan/rollup?includeDraft=${_bizPlanRollupIncludeDraft}`),
+    serverRequest("GET",`/api/budget/business-plan/rollup?includeDraft=${_bizPlanRollupIncludeDraft}&year=${_bpBulkUploadYear}`),
     serverRequest("GET",`/api/budget/business-plan/headcount-plan?year=${_bpBulkUploadYear}`),
   ]);
   if(!r?.ok)_bizPlanRollupData={error:r?.error||r?.message||"조회 실패"};
@@ -16086,11 +16090,11 @@ function _renderBizPlanBudgetOverviewTab(){
     html+=`<div class="mb4"><h4 class="mb2">${h(dept.dept)} <span class="fz11 text-gray">(계획 ${dept.planCount}건)</span></h4><div class="tbl-wrap">${rollupTable(dept.projection)}</div></div>`;
   });
   html+=`<div class="mb3"><h4 class="mb2">회사 전체 <span class="fz11 text-gray">(계획 ${d.company.planCount}건)</span></h4><div class="tbl-wrap">${rollupTable(d.company.projection)}</div></div>`;
-  html+=_bpSgaByCostDeptHtml(d.sgaByCostDept,filterDept);
-  html+=_bpSgaByCategoryHtml(d.sgaByCategory,filterDept);
-  const acctTypeHtml=_bpSgaByAccountTypeHtml(d.sgaByAccountType,filterDept);
+  html+=_bpSgaByCostDeptHtml(d.sgaByCostDept,filterDept,d.sgaYear);
+  html+=_bpSgaByCategoryHtml(d.sgaByCategory,filterDept,d.sgaYear);
+  const acctTypeHtml=_bpSgaByAccountTypeHtml(d.sgaByAccountType,filterDept,d.sgaYear);
   if(acctTypeHtml)html+=`<h3 class="mt4 mb2">📁 계정과목(판관/용역/경상)별 집계</h3>`+acctTypeHtml;
-  const expAcctHtml=_bpSgaByExpenseAccountHtml(d.sgaByExpenseAccount,filterDept);
+  const expAcctHtml=_bpSgaByExpenseAccountHtml(d.sgaByExpenseAccount,filterDept,d.sgaYear);
   if(expAcctHtml)html+=`<h3 class="mt4 mb2">🧾 비용계정(회계 계정과목)별 집계</h3>`+expAcctHtml;
   return html;
 }
@@ -16224,13 +16228,13 @@ function _bpRetireeSummaryLinkHtml(year,filterDept){
 // 판관비 항목을 "비용 귀속 부문" 기준으로 재집계한 표 — 위 byDept(계획을 작성한 팀
 // 기준)와 별개로, 실제 비용이 귀속되는 조직 단위 + 전사 합계를 함께 보여준다.
 // filterDept가 지정되면 그 부문 한 줄만(전사 합계 행은 항상 유지).
-function _bpSgaByCostDeptHtml(s,filterDept){
+function _bpSgaByCostDeptHtml(s,filterDept,sgaYear){
   if(!s||!Array.isArray(s.byCostDept))return "";
   const monthHeads=Array.from({length:12},(_,i)=>`<th>${i+1}월</th>`).join("");
   const rowHtml=(label,r)=>`<tr><td class="lbl">${h(label)}</td>${(r.months||[]).map(v=>`<td style="text-align:right">${_bpFmt(v)}</td>`).join("")}<td style="text-align:right;font-weight:700">${_bpFmt(r.total)}</td></tr>`;
   const filtered=filterDept?s.byCostDept.filter(r=>r.costDept===filterDept):s.byCostDept;
   if(!filtered.length)return "";
-  return `<div class="mb3"><h4 class="mb2">비용귀속부문별 판관비(기준연도) <span class="fz11 text-gray">조직단위/전사 확인용</span></h4>
+  return `<div class="mb3"><h4 class="mb2">비용귀속부문별 판관비(${sgaYear?sgaYear+"년 기준":"기준연도"}) <span class="fz11 text-gray">조직단위/전사 확인용</span></h4>
     <div class="tbl-wrap"><table>
       <tr><th class="lbl">구분</th>${monthHeads}<th>계</th></tr>
       ${filtered.map(r=>rowHtml(r.costDept,r)).join("")}
@@ -16246,7 +16250,7 @@ function _bpSgaByCostDeptHtml(s,filterDept){
 // 생략해 선택한 부문과 무관한 항목이 빈 표로 계속 나열되지 않게 함).
 // keyField로 표 제목에 쓸 값(구분/계정과목/비용계정)을 지정 — _bpSgaByCategoryHtml/
 // _bpSgaByAccountTypeHtml/_bpSgaByExpenseAccountHtml이 공유하는 공용 렌더러.
-function _bpSgaGroupedHtml(list,filterDept,keyField){
+function _bpSgaGroupedHtml(list,filterDept,keyField,sgaYear){
   if(!Array.isArray(list)||!list.length)return "";
   const monthHeads=Array.from({length:12},(_,i)=>`<th>${i+1}월</th>`).join("");
   const rowHtml=(label,r)=>`<tr><td class="lbl">${h(label)}</td>${(r.months||[]).map(v=>`<td style="text-align:right">${_bpFmt(v)}</td>`).join("")}<td style="text-align:right;font-weight:700">${_bpFmt(r.total)}</td></tr>`;
@@ -16254,7 +16258,7 @@ function _bpSgaGroupedHtml(list,filterDept,keyField){
     const filtered=filterDept?c.byCostDept.filter(r=>r.costDept===filterDept):c.byCostDept;
     if(filterDept&&!filtered.length)return "";
     return `
-    <div class="mb4"><h4 class="mb2">${h(c[keyField])}(기준연도) <span class="fz11 text-gray">조직단위/전사 확인용</span></h4>
+    <div class="mb4"><h4 class="mb2">${h(c[keyField])}(${sgaYear?sgaYear+"년 기준":"기준연도"}) <span class="fz11 text-gray">조직단위/전사 확인용</span></h4>
       <div class="tbl-wrap"><table>
         <tr><th class="lbl">구분</th>${monthHeads}<th>계</th></tr>
         ${filtered.map(r=>rowHtml(r.costDept,r)).join("")}
@@ -16264,11 +16268,11 @@ function _bpSgaGroupedHtml(list,filterDept,keyField){
   `;
   }).join("");
 }
-function _bpSgaByCategoryHtml(list,filterDept){return _bpSgaGroupedHtml(list,filterDept,"category");}
+function _bpSgaByCategoryHtml(list,filterDept,sgaYear){return _bpSgaGroupedHtml(list,filterDept,"category",sgaYear);}
 // 계정과목(판관/용역/경상)별 집계 — 항목 그리드의 "계정과목" 셀렉트 값을 그대로 재사용.
-function _bpSgaByAccountTypeHtml(list,filterDept){return _bpSgaGroupedHtml(list,filterDept,"accountType");}
+function _bpSgaByAccountTypeHtml(list,filterDept,sgaYear){return _bpSgaGroupedHtml(list,filterDept,"accountType",sgaYear);}
 // 비용계정(실제 회계 계정과목, 예: "514 통신비")별 집계 — 항목 그리드의 "비용계정" 검색선택 값을 재사용.
-function _bpSgaByExpenseAccountHtml(list,filterDept){return _bpSgaGroupedHtml(list,filterDept,"expenseAccount");}
+function _bpSgaByExpenseAccountHtml(list,filterDept,sgaYear){return _bpSgaGroupedHtml(list,filterDept,"expenseAccount",sgaYear);}
 
 // ── 설정(예산담당자/기획팀장 지정, 입력기간 on/off) ──
 function _renderBizPlanSettingsTab(){
