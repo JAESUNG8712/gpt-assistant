@@ -2,7 +2,9 @@ name: GitHub Pages 배포
 
 on:
   push:
-    branches: [main]
+    # main은 별도 앱(Vercel 등)과 연계되어 있어 건드리지 않음 — 이 게임은
+    # 전용 개발 브랜치에서 바로 Pages로 배포한다
+    branches: [claude/mobile-tower-defense-game-qfew2j]
     paths:
       - 'public/**'
       - '.github/workflows/deploy-pages.yml'
