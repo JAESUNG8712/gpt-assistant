@@ -677,9 +677,10 @@ function _actorName(profile, isAdmin) {
 // 쉼표 3자리 구분 — Node의 toLocaleString()은 ICU 빌드 여부에 따라 동작이 달라질 수 있어
 // (이 코드베이스가 서버 사이드에서 toLocaleString을 쓰지 않는 이유이기도 함) 사용하지 않고
 // 직접 구현. 이력 상세 문구(예: "판관비 합계 1,000,000원 → 1,200,000원")에만 쓰이는
-// 표시용 포맷팅이라 정밀도 요구가 없다.
+// 표시용 포맷팅이라 정밀도 요구가 없다. 원단위 절상(올림) — public/index.html의 _bpFmt와
+// 동일한 표시 규칙(사용자 요청).
 function _fmtNum(n) {
-  return Math.round(n || 0).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  return Math.ceil(n || 0).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',');
 }
 
 const router = express.Router();
@@ -1341,13 +1342,15 @@ module.exports = function budgetRouterFactory(deps) {
     _migrateSelfReferentialCostDept(sgaItems, team, dept);
     const note = `예산(비인건비) 반영(${new Date().toISOString().slice(0, 10)})`;
     const itemDetail = items.map(it => _upsertSgaItem(sgaItems, dept, team, it, note));
+    const pruned = _pruneRedundantBudgetSummaryItems(sgaItems);
     const a = { baseYear: plan.baseYear, years: plan.years !== undefined ? plan.years : plan.projection.length, ...plan.assumptions };
     plan.projection = computeBusinessPlanProjection(a);
     plan.breakEven = computeBreakEven(a);
     plan.updatedAt = new Date().toISOString();
     plan.updatedBy = req.auth.empId;
-    _pushPlanHistory(plan, '예산(비인건비) 엑셀 업로드 반영', userName, `${items.length}건 항목 반영`);
-    return { skip: false, updated: { team, planId: plan.id, dept, itemCount: items.length, planStatus: plan.status, items: itemDetail, autoCreated } };
+    _pushPlanHistory(plan, '예산(비인건비) 엑셀 업로드 반영', userName,
+      `${items.length}건 항목 반영` + (pruned.length ? ` · 조직별 비용 블록과 중복된 ${pruned.length}건 자동 제거(${pruned.map(p => p.detail || p.name).join(', ')})` : ''));
+    return { skip: false, updated: { team, planId: plan.id, dept, itemCount: items.length, planStatus: plan.status, items: itemDetail, autoCreated, prunedDuplicates: pruned.length } };
   }
 
   // _commitSgaTeamItems()(팀명 기준 예산 업로드)와 조직별 비용 블록 업로드(아래
@@ -1385,6 +1388,46 @@ module.exports = function budgetRouterFactory(deps) {
       });
     }
     return { name: it.name, detail: it.detail, accountType: it.accountType, costDept: resolvedCostDept, baseAmount };
+  }
+
+  // 실사용자 원본 파일 구조상, "예산" 시트(비인건비)에는 팀이 스스로 보고하는 항목 외에
+  // 급여/인센티브/복리후생비/교육훈련비/사회보험/퇴직급여처럼 "조직별" 시트가 이미 부문별로
+  // 쪼개서 제공하는 것과 **똑같은 총액**을 계정과목(판관/용역/경상) 기준으로만 재구성해
+  // 중복으로 담고 있는 행이 실제로 존재함(사용자가 실제 배포 화면에서 발견·보고 — 예:
+  // "사회보험(주민세 포함)" 항목이 인사팀의 경영지원부문 몫으로도 한 번, 조직별 시트의
+  // 7개 사업부 몫으로도 한 번 더 잡혀 두 배로 집계됨. 손계산으로 두 합계가 소수점까지
+  // 정확히 일치함을 확인해 우연이 아니라 같은 데이터의 이중 기재임을 확정). 이 항목들은
+  // "예산" 시트의 세부내역(또는 세부내역이 없으면 항목명) 텍스트가 "조직별" 시트의 비용
+  // 블록 이름표(예: "사회보험(주민세 포함)", "교육훈련비(휴넷,사외)", "퇴직급여", "급여")와
+  // 정확히 일치한다는 공통점이 있어, 이를 근거로 자동 식별해 제거한다 — RSU 지급·인센티브
+  // 등 세부내역이 비용 블록 이름표와 다른 항목(조직별 시트에 대응 항목이 없는 진짜 추가
+  // 비용)은 정확히 일치하지 않으므로 그대로 남는다.
+  //
+  // note 접두어로만 판별해(_commitSgaTeamItems/cost-block-upload가 붙이는 고정 문자열)
+  // 사용자가 그리드에서 직접 입력·수정한 항목은 절대 건드리지 않는다 — 자동 삭제는
+  // "예산 엑셀 업로드로 자동 생성된" 항목에 한해서만, 그것도 지금 이 plan 안에 "조직별
+  // 비용 블록 업로드로 자동 생성된" 대응 항목이 실제로 존재할 때만 적용된다. 업로드
+  // 순서(예산 먼저／조직별 먼저)와 무관하게 항상 일관되게 정리되도록 두 라우트(
+  // _commitSgaTeamItems·cost-block-upload) 양쪽 upsert 직후에 동일하게 호출한다.
+  function _isBudgetUploadNote(note) { return typeof note === 'string' && note.startsWith('예산(비인건비) 반영'); }
+  function _isCostBlockNote(note) { return typeof note === 'string' && note.startsWith('조직별 비용 블록 반영'); }
+  function _pruneRedundantBudgetSummaryItems(sgaItems) {
+    if (!Array.isArray(sgaItems) || !sgaItems.length) return [];
+    const costBlockNames = new Set(
+      sgaItems.filter(it => _isCostBlockNote(it.note)).map(it => (it.name || '').trim()).filter(Boolean)
+    );
+    if (!costBlockNames.size) return [];
+    const removed = [];
+    for (let i = sgaItems.length - 1; i >= 0; i--) {
+      const it = sgaItems[i];
+      if (!_isBudgetUploadNote(it.note)) continue;
+      const key = (it.detail || it.name || '').trim();
+      if (key && costBlockNames.has(key)) {
+        removed.push(it);
+        sgaItems.splice(i, 1);
+      }
+    }
+    return removed;
   }
 
   // ── 진단 도구: 이력에 걸쳐 여러 번 바뀐 sgaItems 매칭 키(name → +detail → +accountType →
@@ -1543,7 +1586,7 @@ module.exports = function budgetRouterFactory(deps) {
     const preResolvedTeamDept = prePlan ? await getTeamDept(companyId, prePlan.team) : null;
     const profile = await getEmployeeProfile(companyId, req.auth.empId);
     try {
-      let plan, applied, resultData;
+      let plan, applied, resultData, prunedResult = [];
       await updateBudget(companyId, async (data) => {
         plan = data.businessPlans.find(p => p.id === req.params.id);
         if (!plan) throw new _BudgetRouteError(404, '사업계획을 찾을 수 없습니다.');
@@ -1562,15 +1605,18 @@ module.exports = function budgetRouterFactory(deps) {
         _migrateSelfReferentialCostDept(sgaItems, plan.team, plan.dept);
         const note = `조직별 비용 블록 반영(${new Date().toISOString().slice(0, 10)})`;
         applied = parsedItems.map(it => _upsertSgaItem(sgaItems, plan.dept, plan.team, it, note));
+        const pruned = _pruneRedundantBudgetSummaryItems(sgaItems);
         const a = { baseYear: plan.baseYear, years: plan.years !== undefined ? plan.years : plan.projection.length, ...plan.assumptions };
         plan.projection = computeBusinessPlanProjection(a);
         plan.breakEven = computeBreakEven(a);
         plan.updatedAt = new Date().toISOString();
         plan.updatedBy = req.auth.empId;
-        _pushPlanHistory(plan, '조직별 비용 블록 업로드 반영', _actorName(profile, true), `${applied.length}건 항목 반영`);
+        _pushPlanHistory(plan, '조직별 비용 블록 업로드 반영', _actorName(profile, true),
+          `${applied.length}건 항목 반영` + (pruned.length ? ` · 예산(비인건비) 시트와 중복된 ${pruned.length}건 자동 제거(${pruned.map(p => p.detail || p.name).join(', ')})` : ''));
+        prunedResult = pruned;
         resultData = data;
       });
-      res.json({ ok: true, applied, sheetName: rows._sheetName, plan: { ...plan, budgetComparison: computeBudgetComparison(resultData, plan) } });
+      res.json({ ok: true, applied, prunedDuplicates: prunedResult.length, sheetName: rows._sheetName, plan: { ...plan, budgetComparison: computeBudgetComparison(resultData, plan) } });
     } catch (e) {
       if (e instanceof _BudgetRouteError) return res.status(e.status).json({ error: e.message });
       throw e;

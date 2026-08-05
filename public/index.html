@@ -14893,7 +14893,13 @@ const _BP_DEFAULT_SGA_TEMPLATE=[
   ["사회보험","국민연금"],["사회보험","건강보험"],["사회보험","장기요양"],["사회보험","고용보험"],["사회보험","주민세"],
 ];
 
-function _bpFmt(n){return (n===null||n===undefined||isNaN(n))?"-":Number(n).toLocaleString();}
+// 원단위 절상(올림) — 예산 수립 단계 금액은 월별 합계를 12로 나누는 등 계산 과정에서
+// 소수점 이하 원 단위가 항상 발생하는데, 화면에는 실제로 쓰이지 않는 소수 원 단위를
+// 보여주지 않고 항상 정수 원으로 올림해 표시한다(사용자 요청: "원단위 절상으로 표현").
+// 반올림(사사오입)이 아니라 항상 위로 올리는 이유는 예산 총액을 실제보다 낮춰 보이게
+// 하지 않기 위함 — 저장된 값(baseAmount/months)은 소수점을 그대로 유지하고 화면
+// 표시에만 적용된다.
+function _bpFmt(n){return (n===null||n===undefined||isNaN(n))?"-":Math.ceil(Number(n)).toLocaleString();}
 function _bpFmtPct(n){return (n===null||n===undefined||isNaN(n))?"-":(n*100).toFixed(1)+"%";}
 function _bpPctInput(n){return (n===null||n===undefined||isNaN(n))?"":Math.round(n*10000)/100;}
 function _bpIsOwnerOrLead(){
@@ -16465,15 +16471,16 @@ async function uploadBpCostBlockFile(planId,tbodyId){
   const byDept={};
   applied.forEach(a=>{byDept[a.costDept]=(byDept[a.costDept]||0)+1;});
   const deptSummary=Object.entries(byDept).map(([d,n])=>`${h(d)} ${n}건`).join(", ")||"없음";
-  _bpLastCostBlockUploadResult={at:new Date().toISOString(),dept:r?r.dept:"",team:r?r.team:"",applied,deptSummary};
-  showToast(`${applied.length}개 항목이 부문별로 반영되었습니다(${deptSummary}).`,"success");
+  const prunedDuplicates=json.prunedDuplicates||0;
+  _bpLastCostBlockUploadResult={at:new Date().toISOString(),dept:r?r.dept:"",team:r?r.team:"",applied,deptSummary,prunedDuplicates};
+  showToast(`${applied.length}개 항목이 부문별로 반영되었습니다(${deptSummary})${prunedDuplicates?`, 예산 시트와 중복된 ${prunedDuplicates}건 자동 제거`:""}.`,"success");
   _bpMgrSearchResult=null; // 저장과 동일하게 초기화 — 재조회해서 최신 상태를 확인
   await loadBizPlanFromServer();
   renderBizPlanPage();
 }
 function _bpLastCostBlockUploadResultHtml(){
   const r=_bpLastCostBlockUploadResult;if(!r)return "";
-  return `<div class="mt2 fz12"><b>방금 조직별 비용 블록 업로드 결과</b> <span class="text-gray">(${new Date(r.at).toLocaleString()}, ${h(r.dept)}${r.team?" / "+h(r.team):""})</span> — ${r.applied.length}개 항목이 부문별로 반영됨: ${r.deptSummary}.</div>`;
+  return `<div class="mt2 fz12"><b>방금 조직별 비용 블록 업로드 결과</b> <span class="text-gray">(${new Date(r.at).toLocaleString()}, ${h(r.dept)}${r.team?" / "+h(r.team):""})</span> — ${r.applied.length}개 항목이 부문별로 반영됨: ${r.deptSummary}.${r.prunedDuplicates?` 예산(비인건비) 시트와 중복된 ${r.prunedDuplicates}건은 자동으로 제거되었습니다.`:""}</div>`;
 }
 function _bpLastHeadcountUploadResultHtml(){
   const r=_bpLastHeadcountUploadResult;if(!r)return "";
@@ -16554,7 +16561,8 @@ async function _bpCombinedStep2(file){
         const r=await serverRequest("POST","/api/budget/business-plan/sga-upload/commit",{year:_bpBulkUploadYear,teams});
         if(r?.ok){
           const upd=r.updated||[],skip=r.skipped||[];
-          _bpCombinedTally.messages.push(`예산: ${upd.length}개 팀 반영${skip.length?`, ${skip.length}개 팀 건너뜀(${skip.map(s=>s.team+": "+s.reason).join(", ")})`:""}`);
+          const prunedTotal=upd.reduce((s,u)=>s+(u.prunedDuplicates||0),0);
+          _bpCombinedTally.messages.push(`예산: ${upd.length}개 팀 반영${skip.length?`, ${skip.length}개 팀 건너뜀(${skip.map(s=>s.team+": "+s.reason).join(", ")})`:""}${prunedTotal?`, 조직별 비용 블록과 중복된 ${prunedTotal}건 자동 제거`:""}`);
           _bpCombinedTally.planIds=upd.map(u=>u.planId);
         }else{
           _bpCombinedTally.messages.push(`예산: 저장 실패(${r?.error||r?.message||"알 수 없는 오류"})`);
@@ -16610,7 +16618,7 @@ async function _bpCombinedStep4(file){
       });
       const json=await res.json();
       if(res.ok&&json.ok!==false){
-        _bpCombinedTally.messages.push(`조직별 비용 블록: ${(json.applied||[]).length}건 부문별 반영`);
+        _bpCombinedTally.messages.push(`조직별 비용 블록: ${(json.applied||[]).length}건 부문별 반영${json.prunedDuplicates?`, 예산 시트와 중복된 ${json.prunedDuplicates}건 자동 제거`:""}`);
       }else if(res.status===400){
         _bpCombinedTally.messages.push("조직별 비용 블록: 인식 가능한 데이터 없음(건너뜀)");
       }else{
