@@ -649,6 +649,39 @@ class _BudgetRouteError extends Error {
   }
 }
 
+// ── 사업계획 변경 이력(감사 추적) ─────────────────────────────────────────────
+// 지금까지 사업계획은 승인/최종확정/수정요청 각각의 필드(divisionApproval/finalApproval/
+// editRequest)에 "가장 최근" 처리자·시각만 남고, 그 이전에 누가 무엇을 바꿨는지는 매
+// 저장마다 덮어써져 사라졌다(예: PUT으로 세 번 수정되면 처음 두 번의 작성자·시각은
+// 완전히 유실). 승인·예산 워크플로우가 있는 기능에서 "왜 이 숫자가 바뀌었는지" 추적이
+// 안 되는 것은 이 코드베이스의 다른 모듈(회계 전표/거래처/견적서 등, server.js의
+// history:[{action,user,at}] 배열 + public/index.html의 _showRecordHistory/
+// _buildHistoryRows 공용 뷰어)이 이미 갖추고 있는 관례라 사업계획에만 없는 것은
+// 명백한 공백이었다. 같은 형태({action,user,at,detail})로 plan.history[]에 append-only
+// 기록해 그 클라이언트 공용 뷰어를 그대로 재사용한다(서버 쪽에 새 조회 API는 불필요 —
+// plan 객체 자체에 이미 포함되어 GET /business-plan·GET /business-plan/:id 응답에
+// 자동으로 실린다). action은 이미 한글로 저장해(_buildHistoryRows가 'create'/'update'
+// 두 키만 한글로 치환하고 나머지는 그대로 통과시키는 구조이므로) 클라이언트 공용
+// 함수를 전혀 수정하지 않고도 그대로 자연스럽게 표시된다.
+const MAX_PLAN_HISTORY = 200; // server.js의 MAX_FILE_HISTORY/MAX_ACTIVITY_LOGS와 동일한 취지의 상한
+function _pushPlanHistory(plan, action, userName, detail) {
+  if (!Array.isArray(plan.history)) plan.history = [];
+  plan.history.push({ action, user: userName || undefined, at: new Date().toISOString(), detail: detail || undefined });
+  if (plan.history.length > MAX_PLAN_HISTORY) plan.history = plan.history.slice(-MAX_PLAN_HISTORY);
+}
+// getEmployeeProfile()로 조회한 profile이 없을 수 있는 경우(예: 관리자 본인의 employees
+// 레코드가 없는 경우 등)를 표시용 이름으로 안전하게 보정.
+function _actorName(profile, isAdmin) {
+  return profile ? profile.name : (isAdmin ? '관리자' : undefined);
+}
+// 쉼표 3자리 구분 — Node의 toLocaleString()은 ICU 빌드 여부에 따라 동작이 달라질 수 있어
+// (이 코드베이스가 서버 사이드에서 toLocaleString을 쓰지 않는 이유이기도 함) 사용하지 않고
+// 직접 구현. 이력 상세 문구(예: "판관비 합계 1,000,000원 → 1,200,000원")에만 쓰이는
+// 표시용 포맷팅이라 정밀도 요구가 없다.
+function _fmtNum(n) {
+  return Math.round(n || 0).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+}
+
 const router = express.Router();
 
 // 부서별/월별 인원수 업로드 (첫번째 파일)
@@ -1259,7 +1292,10 @@ module.exports = function budgetRouterFactory(deps) {
   // 호출 *전에* 한 번에 조회해 이 캐시에 담아 넘긴다. 캐시에 없는 team이 들어오면(호출부가
   // 누락했거나 테스트 등) 안전하게 null로 취급해 기존 폴백(_inferPlanDeptFromItems/팀명
   // 그대로)으로 자연스럽게 이어진다 — 이 함수 자체는 다시 getTeamDept()를 호출하지 않는다.
-  async function _commitSgaTeamItems(data, companyId, year, team, items, req, teamDeptCache) {
+  // userName은 변경 이력(history[]) 기록용 표시 이름 — 호출부가 getEmployeeProfile()로
+  // 미리 조회해 넘긴다(이 함수 자체는 employees 조회 권한이 없어 잠금 밖에서 해야 함은
+  // teamDeptCache와 동일한 이유).
+  async function _commitSgaTeamItems(data, companyId, year, team, items, req, teamDeptCache, userName) {
     const cache = teamDeptCache || {};
     const matches = data.businessPlans.filter(p => p.baseYear === year && (p.team || '').trim() === team);
     let plan, autoCreated = false;
@@ -1278,8 +1314,9 @@ module.exports = function budgetRouterFactory(deps) {
         assumptions: { baseRevenue: newA.baseRevenue, revenueGrowthRate: newA.revenueGrowthRate, cogsRatio: newA.cogsRatio, sgaItems: [], taxRate: newA.taxRate, depreciation: newA.depreciation },
         projection: [], breakEven: {},
         createdBy: req.auth.empId !== undefined ? req.auth.empId : null,
-        createdAt: now, updatedAt: now
+        createdAt: now, updatedAt: now, history: []
       };
+      _pushPlanHistory(plan, '등록(예산 업로드로 자동 생성)', userName);
       data.businessPlans.push(plan);
       autoCreated = true;
     } else if (matches.length > 1) {
@@ -1309,6 +1346,7 @@ module.exports = function budgetRouterFactory(deps) {
     plan.breakEven = computeBreakEven(a);
     plan.updatedAt = new Date().toISOString();
     plan.updatedBy = req.auth.empId;
+    _pushPlanHistory(plan, '예산(비인건비) 엑셀 업로드 반영', userName, `${items.length}건 항목 반영`);
     return { skip: false, updated: { team, planId: plan.id, dept, itemCount: items.length, planStatus: plan.status, items: itemDetail, autoCreated } };
   }
 
@@ -1503,6 +1541,7 @@ module.exports = function budgetRouterFactory(deps) {
     const preData = await readBudget(companyId);
     const prePlan = preData.businessPlans.find(p => p.id === req.params.id);
     const preResolvedTeamDept = prePlan ? await getTeamDept(companyId, prePlan.team) : null;
+    const profile = await getEmployeeProfile(companyId, req.auth.empId);
     try {
       let plan, applied, resultData;
       await updateBudget(companyId, async (data) => {
@@ -1528,6 +1567,7 @@ module.exports = function budgetRouterFactory(deps) {
         plan.breakEven = computeBreakEven(a);
         plan.updatedAt = new Date().toISOString();
         plan.updatedBy = req.auth.empId;
+        _pushPlanHistory(plan, '조직별 비용 블록 업로드 반영', _actorName(profile, true), `${applied.length}건 항목 반영`);
         resultData = data;
       });
       res.json({ ok: true, applied, sheetName: rows._sheetName, plan: { ...plan, budgetComparison: computeBudgetComparison(resultData, plan) } });
@@ -1575,6 +1615,8 @@ module.exports = function budgetRouterFactory(deps) {
   router.post('/business-plan/sga-upload/commit', async (req, res) => {
     if (!requireAdmin(req, res)) return;
     const companyId = req.auth.companyId || null;
+    const profile = await getEmployeeProfile(companyId, req.auth.empId);
+    const userName = _actorName(profile, true);
     const year = Number(req.body.year) || new Date().getFullYear();
     const teams = Array.isArray(req.body.teams) ? req.body.teams : [];
     if (!teams.length) return res.status(400).json({ error: '저장할 팀 데이터가 없습니다.' });
@@ -1591,7 +1633,7 @@ module.exports = function budgetRouterFactory(deps) {
           const team = String(t && t.team || '').trim();
           const items = Array.isArray(t && t.items) ? t.items : [];
           if (!team) continue;
-          const result = await _commitSgaTeamItems(data, companyId, year, team, items, req, teamDeptCache);
+          const result = await _commitSgaTeamItems(data, companyId, year, team, items, req, teamDeptCache, userName);
           if (result.skip) skipped.push({ team, reason: result.reason });
           else updated.push(result.updated);
         }
@@ -1753,8 +1795,10 @@ module.exports = function budgetRouterFactory(deps) {
           createdBy: req.auth.empId !== undefined ? req.auth.empId : null,
           createdByName: profile ? profile.name : undefined,
           createdAt: now,
-          updatedAt: now
+          updatedAt: now,
+          history: []
         };
+        _pushPlanHistory(plan, '등록', _actorName(profile, isAdmin));
 
         data.businessPlans.push(plan);
         resultData = data;
@@ -1863,6 +1907,12 @@ module.exports = function budgetRouterFactory(deps) {
           throw new _BudgetRouteError(400, `필수 값이 누락되었거나 형식이 올바르지 않습니다: ${errors.join(', ')}`);
         }
 
+        // 변경 이력 상세용 — 덮어쓰기 전(before) 판관비 합계를 기록해두고, 아래에서
+        // 실제 필드를 갱신한 뒤 after 합계와 비교한다(plan.updatedAt/updatedBy는 항상
+        // "가장 최근" 값만 남아 이전 수정 내역이 사라지므로, history[]에 매 수정마다
+        // 하나씩 append해 그 유실을 막는다 — 이 라우트 신설의 핵심 동기).
+        const beforeSgaTotal = (existing.sgaItems || []).reduce((s, it) => s + (it.baseAmount || 0), 0);
+
         plan.name = assumptions.name;
         plan.baseYear = assumptions.baseYear;
         plan.years = assumptions.years;
@@ -1880,6 +1930,9 @@ module.exports = function budgetRouterFactory(deps) {
         plan.breakEven = computeBreakEven(assumptions);
         plan.updatedAt = new Date().toISOString();
         plan.updatedBy = req.auth.empId;
+        const afterSgaTotal = assumptions.sgaItems.reduce((s, it) => s + (it.baseAmount || 0), 0);
+        _pushPlanHistory(plan, '수정', _actorName(profile, isAdmin),
+          `판관비 합계 ${_fmtNum(beforeSgaTotal)}원 → ${_fmtNum(afterSgaTotal)}원 (항목 ${assumptions.sgaItems.length}건)`);
         resultData = data;
       });
       res.json({ ok: true, plan: { ...plan, budgetComparison: computeBudgetComparison(resultData, plan) } });
@@ -1910,6 +1963,7 @@ module.exports = function budgetRouterFactory(deps) {
         plan.status = 'divisionApproved';
         plan.divisionApproval = { by: req.auth.empId, byName: profile ? profile.name : (isAdmin ? '관리자' : undefined), at: new Date().toISOString() };
         plan.updatedAt = new Date().toISOString();
+        _pushPlanHistory(plan, '사업부장 승인(잠금)', _actorName(profile, isAdmin));
         resultData = data;
       });
       res.json({ ok: true, plan: { ...plan, budgetComparison: computeBudgetComparison(resultData, plan) } });
@@ -1925,6 +1979,7 @@ module.exports = function budgetRouterFactory(deps) {
     if (!requireAuth(req, res)) return;
     const companyId = req.auth.companyId || null;
     const isAdmin = req.auth.role === 'admin';
+    const profile = await getEmployeeProfile(companyId, req.auth.empId);
 
     try {
       let plan, resultData;
@@ -1948,9 +2003,12 @@ module.exports = function budgetRouterFactory(deps) {
           plan.finalApproval.ownerAt = plan.finalApproval.ownerAt || now;
           plan.finalApproval.leadBy = plan.finalApproval.leadBy || req.auth.empId;
           plan.finalApproval.leadAt = plan.finalApproval.leadAt || now;
+          _pushPlanHistory(plan, '관리자 즉시 최종확정', _actorName(profile, isAdmin));
         } else {
-          if (isOwner) { plan.finalApproval.ownerBy = req.auth.empId; plan.finalApproval.ownerAt = now; }
-          if (isLead) { plan.finalApproval.leadBy = req.auth.empId; plan.finalApproval.leadAt = now; }
+          const labels = [];
+          if (isOwner) { plan.finalApproval.ownerBy = req.auth.empId; plan.finalApproval.ownerAt = now; labels.push('예산담당자 최종승인'); }
+          if (isLead) { plan.finalApproval.leadBy = req.auth.empId; plan.finalApproval.leadAt = now; labels.push('기획팀장 최종승인'); }
+          if (labels.length) _pushPlanHistory(plan, labels.join(' / '), _actorName(profile, isAdmin));
         }
         if (plan.finalApproval.ownerBy != null && plan.finalApproval.leadBy != null) {
           plan.status = 'finalConfirmed';
@@ -1987,6 +2045,7 @@ module.exports = function budgetRouterFactory(deps) {
         if (!reason) throw new _BudgetRouteError(400, '수정요청 사유를 입력하세요.');
 
         plan.editRequest = { requestedBy: req.auth.empId, requestedByName: profile ? profile.name : undefined, reason, requestedAt: new Date().toISOString() };
+        _pushPlanHistory(plan, '수정요청 제출', _actorName(profile, isAdmin), reason);
         resultData = data;
       });
       res.json({ ok: true, plan: { ...plan, budgetComparison: computeBudgetComparison(resultData, plan) } });
@@ -2001,6 +2060,7 @@ module.exports = function budgetRouterFactory(deps) {
   router.post('/business-plan/:id/edit-request/approve', async (req, res) => {
     if (!requireAdmin(req, res)) return;
     const companyId = req.auth.companyId || null;
+    const profile = await getEmployeeProfile(companyId, req.auth.empId);
 
     try {
       let plan, resultData;
@@ -2014,6 +2074,7 @@ module.exports = function budgetRouterFactory(deps) {
         plan.finalApproval = { ownerBy: null, ownerAt: null, leadBy: null, leadAt: null };
         plan.editRequest = null;
         plan.updatedAt = new Date().toISOString();
+        _pushPlanHistory(plan, '수정요청 승인(재오픈, 승인이력 초기화)', _actorName(profile, true));
         resultData = data;
       });
       res.json({ ok: true, plan: { ...plan, budgetComparison: computeBudgetComparison(resultData, plan) } });
@@ -2027,6 +2088,7 @@ module.exports = function budgetRouterFactory(deps) {
   router.post('/business-plan/:id/edit-request/reject', async (req, res) => {
     if (!requireAdmin(req, res)) return;
     const companyId = req.auth.companyId || null;
+    const profile = await getEmployeeProfile(companyId, req.auth.empId);
 
     try {
       let plan, resultData;
@@ -2037,6 +2099,7 @@ module.exports = function budgetRouterFactory(deps) {
 
         plan.editRequest = null;
         plan.updatedAt = new Date().toISOString();
+        _pushPlanHistory(plan, '수정요청 반려', _actorName(profile, true));
         resultData = data;
       });
       res.json({ ok: true, plan: { ...plan, budgetComparison: computeBudgetComparison(resultData, plan) } });
