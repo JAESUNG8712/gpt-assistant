@@ -15203,6 +15203,7 @@ function _renderBizPlanMgrSearchResultHtml(){
       ${r.plan?_bpStatusBadge(r.plan.status):badge("신규","blue")}
     </div>
     <div style="display:flex;gap:6px">
+      ${r.plan?`<button class="btn btn-ghost btn-sm" onclick="_bpShowHistory('${r.plan.id}')">📜 이력</button><button class="btn btn-ghost btn-sm" onclick="_bpExportPlanSgaCsv('${r.plan.id}')">📥 판관비 다운로드</button>`:""}
       ${editable?`<button class="btn btn-primary btn-sm" onclick="saveBizPlanMgrSearchResult()">저장</button>`:""}
       <button class="btn btn-secondary btn-sm" onclick="_bpMgrSearchResult=null;renderBizPlanPage()">닫기</button>
     </div>
@@ -15375,6 +15376,10 @@ function _bpPlanActionsHtml(p){
   const isAdmin=currentUser.role==="admin";
   const canEdit=_bpCanEditClient(p);
   const btns=[];
+  // 이력/다운로드는 조회 권한만 있으면 누구나(수정 권한과 무관) — 이미 이 계획을 보고
+  // 있다는 것 자체가 _canViewPlan()을 통과했다는 뜻이므로 새로운 노출을 만들지 않는다.
+  btns.push(`<button class="btn btn-ghost btn-sm" onclick="_bpShowHistory('${p.id}')">📜 이력</button>`);
+  btns.push(`<button class="btn btn-ghost btn-sm" onclick="_bpExportPlanSgaCsv('${p.id}')">📥 판관비 다운로드</button>`);
   if(isAdmin||(p.status==="draft"&&canEdit))btns.push(`<button class="btn btn-secondary btn-sm" onclick="openBizPlanForm('${p.id}')">수정</button>`);
   if(p.status==="draft"&&p.dept&&(isAdmin||_bpIsDivisionHeadOf(p)))btns.push(`<button class="btn btn-primary btn-sm" onclick="approveBizPlanDivision('${p.id}')">사업부장 승인</button>`);
   if(p.status==="divisionApproved"&&(isAdmin||_bpIsOwnerOrLead()))btns.push(`<button class="btn btn-primary btn-sm" onclick="finalApproveBizPlan('${p.id}')">최종승인</button>`);
@@ -15385,6 +15390,64 @@ function _bpPlanActionsHtml(p){
   }
   if(isAdmin||(p.status==="draft"&&canEdit))btns.push(`<button class="btn btn-danger btn-sm" onclick="deleteBizPlan('${p.id}')">삭제</button>`);
   return btns.join("");
+}
+// 변경 이력(감사 추적) — 회계 모듈(전표/거래처/견적서 등)이 이미 쓰는 공용 뷰어
+// (_showRecordHistory/_buildHistoryRows, record.history[] 기반)를 그대로 재사용한다.
+// 서버(budget.js)가 이제 생성/수정/승인/최종확정/수정요청/엑셀업로드 등 모든 변경 지점에서
+// plan.history[]에 {action,user,at,detail}을 append하고, 이 값이 plan 객체 자체에 실려
+// GET /business-plan(/:id) 응답에 이미 포함되어 있어 별도 API 호출 없이 그대로 보여준다.
+function _bpShowHistory(id){
+  const p=bizPlans.find(x=>String(x.id)===String(id));
+  if(!p){showToast("계획을 찾을 수 없습니다.","error");return;}
+  // _buildHistoryRows()는 accounts/partners 등이 쓰는 "명시적 history[] + create/update만
+  // 기록되는 stages" 조합용이라 detail 필드를 버린다 — 사업계획은 모든 변경 지점(생성/수정/
+  // 승인/최종확정/수정요청/엑셀업로드)을 서버가 이미 detail까지 포함해 명시적으로 기록해두므로
+  // stages 병합이 필요 없고, detail을 액션명에 그대로 덧붙여 보여주는 것이 더 유용하다.
+  const rows=(p.history||[]).map(hh=>({action:hh.detail?`${hh.action} — ${hh.detail}`:hh.action,user:hh.user,at:hh.at}));
+  _showRecordHistory(p.name||"사업계획",rows);
+}
+// 판관비 항목(SG&A 그리드) CSV 다운로드 — 이 코드베이스 전반이 이미 쓰는 client-only
+// dlCSV() 헬퍼를 그대로 재사용(서버 왕복 없이 이미 로드된 데이터를 그대로 내보냄). 컬럼
+// 구성은 화면에 이미 보이는 읽기전용 상세표(_bpSgaDetailTableHtml)와 동일하게 맞춘다.
+function _bpExportPlanSgaCsv(id){
+  const p=bizPlans.find(x=>String(x.id)===String(id));
+  if(!p){showToast("계획을 찾을 수 없습니다.","error");return;}
+  const items=(p.assumptions&&p.assumptions.sgaItems)||[];
+  if(!items.length){showToast("다운로드할 판관비 항목이 없습니다.","error");return;}
+  const monthHeads=Array.from({length:12},(_,i)=>`${i+1}월`);
+  dlCSV(`사업계획_${p.name||p.id}_판관비_${new Date().toISOString().slice(0,10)}.csv`,
+    ["부문","팀명","비용귀속부문","항목","세부내역","구분","계정과목","비용계정",...monthHeads,"계","증가율(%)","고정비","비고"],
+    items.map(it=>{
+      const months=Array.isArray(it.months)?it.months:Array(12).fill(null);
+      return [it.dept||"",it.team||"",it.costDept||it.dept||"",it.name||"",it.detail||"",it.category||"",it.accountType||"",it.expenseAccount||"",
+        ...months.map(v=>v||0),it.baseAmount||0,Math.round((it.growthRate||0)*10000)/100,it.fixed!==false?"Y":"N",it.note||""];
+    }));
+}
+// "예산 현황 > 조직별" 탭에서 현재 화면과 동일한 범위(연도/작성중 포함 여부/부문 검색)로
+// 전 팀의 판관비 항목을 한 파일로 내려받는다. 서버 롤업 API(sgaByCostDept 등)는 이미
+// 집계된 요약값만 반환해 "원본 항목을 그대로 엑셀로 가져가고 싶다"는 요구를 충족하지
+// 못하므로, 이미 로드되어 있는 bizPlans(role별 가시 범위가 서버에서 이미 필터링된 배열)를
+// 그대로 순회해 항목 단위(부문/팀/항목/구분/월별금액 등) 원본 데이터를 내보낸다.
+const _BP_STATUS_LABEL={draft:"작성중",divisionApproved:"사업부장 승인됨",finalConfirmed:"최종확정"};
+function _bpExportRollupCsv(){
+  const year=_bpBulkUploadYear;
+  const filterDept=(_bizPlanRollupDeptFilter||"").trim();
+  const scoped=bizPlans.filter(p=>p.dept&&p.baseYear===year
+    &&(_bizPlanRollupIncludeDraft||p.status==="divisionApproved"||p.status==="finalConfirmed")
+    &&(!filterDept||p.dept===filterDept));
+  const rows=[];
+  scoped.forEach(p=>{
+    ((p.assumptions&&p.assumptions.sgaItems)||[]).forEach(it=>{
+      const months=Array.isArray(it.months)?it.months:Array(12).fill(null);
+      rows.push([p.dept,p.team||"",p.name,_BP_STATUS_LABEL[p.status]||p.status,it.costDept||p.dept,it.name||"",
+        it.detail||"",it.category||"",it.accountType||"",it.expenseAccount||"",...months.map(v=>v||0),it.baseAmount||0,it.note||""]);
+    });
+  });
+  if(!rows.length){showToast("현재 조건에 해당하는 다운로드할 데이터가 없습니다.","error");return;}
+  const monthHeads=Array.from({length:12},(_,i)=>`${i+1}월`);
+  dlCSV(`사업계획_예산현황_${year}년${filterDept?"_"+filterDept:""}_${new Date().toISOString().slice(0,10)}.csv`,
+    ["작성부문","작성팀","계획명","상태","비용귀속부문","항목","세부내역","구분","계정과목","비용계정",...monthHeads,"계","비고"],
+    rows);
 }
 async function _bpAction(id,suffix,body){
   const r=await serverRequest("POST",`/api/budget/business-plan/${id}${suffix}`,body||{});
@@ -16066,6 +16129,7 @@ function _renderBizPlanBudgetOverviewTab(){
     <label class="fz12">부문/사업부/센터 검색(비우면 전사):
       <input class="fc" list="bp-dept-list" autocomplete="off" style="display:inline-block;width:auto" value="${h(filterDept)}" placeholder="부문/사업부/센터 검색" onchange="_bizPlanRollupDeptFilter=this.value.trim();renderBizPlanPage()">
     </label>
+    <button class="btn btn-secondary btn-sm" onclick="_bpExportRollupCsv()" title="현재 화면에 적용된 연도·범위(작성중 포함 여부·부문 검색)로 판관비 항목 전체를 CSV로 내려받습니다.">📥 판관비 항목 전체 다운로드</button>
   </div>`;
   // 사업부장 승인을 아직 안 받은 draft 계획만 있는 경우(신규 팀·신규 회사의 가장 흔한
   // 초기 상태) 기본값(작성중 미포함)에서는 아무 데이터도 안 보여, "데이터가 안 들어갔다"고
