@@ -18,6 +18,12 @@ const USE_DB = !!process.env.DATABASE_URL;
 const BUDGET_FILE = process.env.BUDGET_DATA_FILE || path.join(__dirname, 'budget-data.json');
 const MONTHS = Array.from({ length: 12 }, (_, i) => i + 1);
 const CATEGORIES = ['판관', '용역', '경상'];
+// "조직별" 인원계획 시트의 메타 컬럼(부문/계정과목 구분용 컬럼 — 실제 항목명/값이 아닌
+// 컬럼) 집합 — _parseSgaCostBlockRows()(비용 블록 파서)와 headcount-plan/upload
+// 라우트(인원현황 파서) 양쪽이 "이 컬럼들 외에 값이 있는 컬럼이 있으면 그건 비용 블록의
+// 이름표(급여/성과급 등)"라는 동일한 판별에 동일한 값 목록을 각자 따로 선언해 썼던 것을
+// 하나로 통합(값 자체는 완전히 동일했음).
+const KNOWN_ORG_SHEET_META_COLUMNS = new Set(['구분', '구분_1', '부문', '계정과목', '평균', ...MONTHS.map(m => `${m}월`)]);
 
 // company_id 네임스페이스 (멀티테넌트 4단계): 이 라우터는 Postgres/SaaS 모드에서도
 // budget-data.json 파일 하나를 그대로 쓰고 있어(다른 회계/ERP 모듈과 달리 전용 테이블이
@@ -1321,15 +1327,15 @@ module.exports = function budgetRouterFactory(deps) {
 
   // "조직별" 인원계획 시트에 섞여 있는 급여/성과급 등 비용 집계 블록(부문별로 여러 줄
   // 반복되는 구조, headcount-plan/upload는 인원현황이 아니라서 이 블록들을 의도적으로
-  // 건너뛴다 — 위 KNOWN_HEADCOUNT_COLUMNS 참고)을 사업계획 판관비 항목으로 반영하기
-  // 위한 파서. headcount-plan/upload와 동일한 헤더 인식(구분/부문 + 구분_1 + 월)을
-  // 쓰지만, 이번엔 그 "이름표"(예: "급여"/"성과급" — 헤더 없는 컬럼에 반복해서 채워진
-  // 값)를 항목명으로, 첫 번째 "구분"(부문)을 비용귀속부문(costDept)으로 사용한다 —
-  // 한 팀(예: 인사팀)이 작성·관리하는 계획 안에 부문별로 항목이 나뉘어 들어가되, 3단계
-  // 롤업(비용귀속부문별 집계)에서는 각자의 실제 부문으로 정확히 귀속되게 하는 것이 목적
-  // (사용자 요청: "인사팀 계획 안에서 부문별로 분리되나 최종 취합 시 해당 조직에 귀속").
+  // 건너뛴다 — 아래 headcount-plan/upload 라우트의 동일 판별 참고)을 사업계획 판관비
+  // 항목으로 반영하기 위한 파서. headcount-plan/upload와 동일한 헤더 인식(구분/부문 +
+  // 구분_1 + 월, KNOWN_ORG_SHEET_META_COLUMNS 공유)을 쓰지만, 이번엔 그 "이름표"(예:
+  // "급여"/"성과급" — 헤더 없는 컬럼에 반복해서 채워진 값)를 항목명으로, 첫 번째 "구분"
+  // (부문)을 비용귀속부문(costDept)으로 사용한다 — 한 팀(예: 인사팀)이 작성·관리하는
+  // 계획 안에 부문별로 항목이 나뉘어 들어가되, 3단계 롤업(비용귀속부문별 집계)에서는
+  // 각자의 실제 부문으로 정확히 귀속되게 하는 것이 목적(사용자 요청: "인사팀 계획 안에서
+  // 부문별로 분리되나 최종 취합 시 해당 조직에 귀속").
   function _parseSgaCostBlockRows(rows) {
-    const KNOWN_COST_BLOCK_COLUMNS = new Set(['구분', '구분_1', '부문', '계정과목', '평균', ...MONTHS.map(m => `${m}월`)]);
     const items = [];
     rows.forEach(row => {
       const dept = String(row['구분'] || row['부문'] || '').trim();
@@ -1338,7 +1344,7 @@ module.exports = function budgetRouterFactory(deps) {
       // 그대로 ""(빈 문자열)로 준다 — labelKey 자체가 유효하게 ""일 수 있으므로 falsy 체크
       // (!labelKey)로 "못 찾음"을 판별하면 안 되고 undefined 여부로만 판별해야 한다(실측
       // 발견 — falsy 체크였을 때 이 컬럼이 있는 모든 행이 "이름표 없음"으로 잘못 걸러졌음).
-      const labelKey = Object.keys(row).find(k => !KNOWN_COST_BLOCK_COLUMNS.has(k) && row[k] !== null && String(row[k]).trim() !== '');
+      const labelKey = Object.keys(row).find(k => !KNOWN_ORG_SHEET_META_COLUMNS.has(k) && row[k] !== null && String(row[k]).trim() !== '');
       if (labelKey === undefined) return; // 이름표(항목명) 없는 행 — 순수 인원현황 블록 등, 이 파서의 대상이 아님
       const name = String(row[labelKey]).trim();
       const catRaw = String(row['계정과목'] || row['구분_1'] || '').trim();
@@ -1492,13 +1498,12 @@ module.exports = function budgetRouterFactory(deps) {
     // 데이터로 이미 동일한 값을 자동 산출하므로 별도 저장이 불필요(이전 세션에 이미 확정된
     // 방침) — "구분/부문/계정과목/n월/평균" 외의 컬럼에 값이 있는 행(=비용 블록의 이름표
     // 행)은 인원 현황이 아니므로 건너뛴다.
-    const KNOWN_HEADCOUNT_COLUMNS = new Set(['구분', '구분_1', '부문', '계정과목', '평균', ...MONTHS.map(m => `${m}월`)]);
     let upserted = 0;
     await updateBudget(companyId, async (data) => {
       rows.forEach(row => {
         const dept = String(row['구분'] || row['부문'] || '').trim();
         if (!dept || dept === '계') return;
-        const hasUnexpectedLabel = Object.keys(row).some(k => !KNOWN_HEADCOUNT_COLUMNS.has(k) && row[k] !== null && String(row[k]).trim() !== '');
+        const hasUnexpectedLabel = Object.keys(row).some(k => !KNOWN_ORG_SHEET_META_COLUMNS.has(k) && row[k] !== null && String(row[k]).trim() !== '');
         if (hasUnexpectedLabel) return;
         // SheetJS는 동일한 헤더 텍스트("구분")가 한 시트에 두 번 나오면 두 번째 것을
         // "구분_1"로 자동 개명한다(실사용 원본 파일의 "조직별" 시트가 정확히 이 구조 —
