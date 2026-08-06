@@ -1266,7 +1266,24 @@ async function getTeamDeptForBudget(companyId, team) {
   pool.forEach(e => { if (e.dept) counts[e.dept] = (counts[e.dept] || 0) + 1; });
   return Object.keys(counts).sort((a, b) => counts[b] - counts[a])[0] || null;
 }
-app.use("/api/budget", budgetRouterFactory({ getEmployeeProfile: getEmployeeProfileForBudget, getTeamDept: getTeamDeptForBudget }));
+// 예산 엑셀 업로드(예산 시트·조직별 비용 블록) 처리 중 "비용계정"을 자동으로 채우기
+// 위한 회사 계정과목 목록 조회 — GET /api/accounting/accounts/expense-lite와 동일한
+// 필터(비용 계정만)·동일한 파일/DB 분기를 그대로 재사용한다(회계 모듈 전체를 열어주지
+// 않고 코드/이름만 budget.js에 넘김).
+async function getExpenseAccountsForBudget(companyId) {
+  let accounts;
+  if (USE_JSON_FILE) {
+    accounts = _fileAccounting.accounts;
+  } else {
+    const { rows } = await pool.query(
+      "SELECT id, data FROM accounts WHERE is_deleted = FALSE AND (company_id = $1 OR company_id IS NULL) ORDER BY id",
+      [companyId]
+    );
+    accounts = rows.map(r => ({ id: r.id, ...r.data }));
+  }
+  return accounts.filter(a => a.type === "expense" && a.active !== false).map(a => ({ code: a.code, name: a.name }));
+}
+app.use("/api/budget", budgetRouterFactory({ getEmployeeProfile: getEmployeeProfileForBudget, getTeamDept: getTeamDeptForBudget, getExpenseAccounts: getExpenseAccountsForBudget }));
 
 // /login 브루트포스 방어: IP당 15분에 20회로 제한(정상 사용자가 실수로 몇 번 틀리는
 // 정도는 통과시키되, 자동화된 무차별 대입 시도는 차단).

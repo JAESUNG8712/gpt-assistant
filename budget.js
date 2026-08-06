@@ -283,18 +283,40 @@ function round2(n) {
 function computeBusinessPlanProjection(a) {
   const years = a.years;
   const sgaItems = Array.isArray(a.sgaItems) ? a.sgaItems : [];
+  // 건별 매출 항목(revenueItems)이 있으면 "기준연도 매출 총액 × 성장률" 단일 가정 대신
+  // 건별 예상매출(고객사·수주시점별)을 그대로 합산한 값을 매출로 쓴다 — sgaItems와 동일한
+  // growthRate 복리 방식으로 다음 연도를 추정(하위호환: revenueItems가 없으면 기존과
+  // 완전히 동일하게 baseRevenue*성장률 방식 그대로 유지).
+  const revenueItems = Array.isArray(a.revenueItems) ? a.revenueItems : [];
+  const useItemizedRevenue = revenueItems.length > 0;
   const projection = [];
-  let prevRevenue = a.baseRevenue;
+  let prevRevenue = useItemizedRevenue ? round2(revenueItems.reduce((s, item) => s + (item.baseAmount || 0), 0)) : a.baseRevenue;
 
   for (let y = 1; y <= years; y++) {
-    const revenue = round2(a.baseRevenue * Math.pow(1 + a.revenueGrowthRate, y));
-    const cogs = round2(revenue * a.cogsRatio);
+    const revenue = useItemizedRevenue
+      ? round2(revenueItems.reduce((s, item) => s + (item.baseAmount || 0) * Math.pow(1 + (item.growthRate || 0), y), 0))
+      : round2(a.baseRevenue * Math.pow(1 + a.revenueGrowthRate, y));
+    const cogsFromRatio = round2(revenue * a.cogsRatio);
+    // 판관비 항목(sgaItems)의 계정과목(판관/용역/경상)에 따라 서로 다른 손익 라인으로
+    // 반영한다 — 실사용자의 실제 회사 손익 양식을 확인한 결과, "용역"은 외주·용역인건비
+    // 등 매출원가를 구성하는 항목이라 매출원가에 더해야 하고, "경상"은 판관비와는 별개로
+    // 경상적으로 집행되는 연구개발비(고정 운영비) 라인으로 분리해서 봐야 했다 — 그동안은
+    // 계정과목 구분과 무관하게 전 항목이 그냥 "판관비" 한 줄로 합산되고 있었다(사용자
+    // 보고). "판관"이거나 계정과목이 비어있는(과거 데이터·수동입력) 항목은 기존과 동일하게
+    // 전통적 판관비로 취급 — 하위호환을 위해 기본값을 판관으로 둔다.
+    let serviceCost = 0, sga = 0, rdExpense = 0;
+    sgaItems.forEach(item => {
+      const amt = (item.baseAmount || 0) * Math.pow(1 + (item.growthRate || 0), y);
+      if (item.accountType === '용역') serviceCost += amt;
+      else if (item.accountType === '경상') rdExpense += amt;
+      else sga += amt;
+    });
+    serviceCost = round2(serviceCost);
+    sga = round2(sga);
+    rdExpense = round2(rdExpense);
+    const cogs = round2(cogsFromRatio + serviceCost);
     const grossProfit = round2(revenue - cogs);
-    const sga = round2(sgaItems.reduce(
-      (sum, item) => sum + item.baseAmount * Math.pow(1 + (item.growthRate || 0), y),
-      0
-    ));
-    const operatingProfit = round2(grossProfit - sga);
+    const operatingProfit = round2(grossProfit - sga - rdExpense);
     const netIncome = round2(operatingProfit * (1 - a.taxRate));
     const freeCashFlow = round2(netIncome + (a.depreciation || 0));
 
@@ -308,7 +330,7 @@ function computeBusinessPlanProjection(a) {
 
     projection.push({
       year: a.baseYear + y,
-      revenue, cogs, grossProfit, sga, operatingProfit, netIncome, freeCashFlow,
+      revenue, cogs, cogsFromRatio, serviceCost, grossProfit, sga, rdExpense, operatingProfit, netIncome, freeCashFlow,
       grossMarginRatio, operatingMarginRatio, netMarginRatio, revenueGrowthYoY
     });
   }
@@ -325,7 +347,12 @@ function computeBusinessPlanProjection(a) {
 // null로 나오는데(0으로 나누기 방지 가드가 이미 있음) 이는 의도된 동작 — 비용전용 계획엔
 // 손익분기점 개념 자체가 적용되지 않는다.
 function computeBreakEven(a) {
-  const baseRevenue = a.baseRevenue;
+  // computeBusinessPlanProjection과 동일하게, revenueItems가 있으면 그 합계를 기준연도
+  // 매출로 쓴다(하위호환: 없으면 기존 baseRevenue 그대로).
+  const revenueItemsForBep = Array.isArray(a.revenueItems) ? a.revenueItems : [];
+  const baseRevenue = revenueItemsForBep.length
+    ? round2(revenueItemsForBep.reduce((s, item) => s + (item.baseAmount || 0), 0))
+    : a.baseRevenue;
   const sgaItems = Array.isArray(a.sgaItems) ? a.sgaItems : [];
   const fixedCost = round2(sgaItems.reduce(
     (sum, item) => sum + (item.fixed === false ? 0 : (item.baseAmount || 0)), 0
@@ -355,6 +382,19 @@ function computeBreakEven(a) {
   result.bepRevenue = round2(fixedCost / (1 - variableCostRatio));
   result.safetyMarginRatio = baseRevenue > 0 ? round2((baseRevenue - result.bepRevenue) / baseRevenue) : null;
   return result;
+}
+
+// budgetComparison과 동일한 이유(저장된 값이 아니라 조회 시점에 매번 재계산)로,
+// projection/breakEven도 저장된 스냅샷을 그대로 믿지 않고 plan.assumptions로부터 다시
+// 계산해 응답한다 — computeBusinessPlanProjection()의 계산식 자체가 나중에 바뀌면(예:
+// 계정과목별 P&L 라인 분리를 수정한 이번 건), 이미 저장돼 있던 예전 계획들도 재저장·
+// 재업로드 없이 곧바로 올바른 값으로 보이게 하기 위함(그러지 않으면 사용자가 계획마다
+// 일일이 재저장해야만 수정된 계산식이 반영되는 불편이 생김). 쓰기 라우트가 저장하는
+// plan.projection 스냅샷 자체는 그대로 유지(디버깅·진단 도구 참고용) — 이 함수는 오직
+// 조회 응답에만 신선한 값을 덮어씌운다.
+function _freshPlanCalc(plan) {
+  const a = { baseYear: plan.baseYear, years: plan.years !== undefined ? plan.years : (plan.projection || []).length, ...plan.assumptions };
+  return { projection: computeBusinessPlanProjection(a), breakEven: computeBreakEven(a) };
 }
 
 // 예산 실적 대비 비교(선택 기능): 실제 업로드된(섹션 1~3) 판관 카테고리 금액 합계와
@@ -484,6 +524,18 @@ function _guessSgaCategory(rawName) {
   return found || name;
 }
 
+// 항목명으로 회사 비용계정(코드+이름)을 추정 — public/index.html의 클라이언트측
+// _bpGuessExpenseAccount()와 동일한 "서로 포함 관계" 매칭을 서버에도 이식한 것. 예산
+// 시트·조직별 비용 블록 업로드가 (수동 미리보기 화면을 거치지 않는 통합 업로드 등에서도)
+// 항상 비용계정을 채우도록 서버 쪽에도 동일 로직을 둔다 — 확신할 수 있는 매칭만 채우고
+// 애매하면 빈 값으로 남겨 사람이 "예산 항목 관리"에서 직접 검색선택하게 한다.
+function _guessExpenseAccount(itemName, accounts) {
+  const name = String(itemName || '').trim();
+  if (!name || !Array.isArray(accounts) || !accounts.length) return '';
+  const found = accounts.find(a => a.name && (name.includes(a.name) || a.name.includes(name)));
+  return found ? `${found.code ? found.code + ' ' : ''}${found.name}` : '';
+}
+
 // body에서 사업계획 가정(assumptions)을 검증·정규화한다. existing이 주어지면(PUT) 그 값을
 // 기본값으로 깔고 body에 있는 필드만 덮어써 부분 수정(partial update)을 허용한다.
 // planType==='costOnly'(비용전용 팀)면 매출 관련 3필드(baseRevenue/revenueGrowthRate/
@@ -511,6 +563,7 @@ function _normalizeBusinessPlanInput(body, existing) {
     : (base.taxRate !== undefined ? base.taxRate : (isCostOnly ? 0 : 0.22));
   const depreciation = body.depreciation !== undefined ? Number(body.depreciation) : (base.depreciation !== undefined ? base.depreciation : 0);
   const sgaItemsRaw = body.sgaItems !== undefined ? body.sgaItems : base.sgaItems;
+  const revenueItemsRaw = body.revenueItems !== undefined ? body.revenueItems : base.revenueItems;
   // 시나리오명(낙관/기본/보수 등): 완전히 선택 필드 — 기존에 저장된 계획에는 없을 수
   // 있으므로 undefined/null/빈 문자열 전부 허용하고 별도 검증하지 않는다.
   const scenario = body.scenario !== undefined ? (body.scenario || null) : (base.scenario !== undefined ? base.scenario : null);
@@ -568,9 +621,51 @@ function _normalizeBusinessPlanInput(body, existing) {
     }
   }
 
+  // 매출 사업계획(planType==='revenue')의 매출 항목 — 기존엔 "기준연도 매출 총액 +
+  // 성장률" 단일 가정 하나만 입력받아, 팀별 판관비 그리드와 달리 실제 영업 파이프라인
+  // (고객사·건별 예상매출·수주시점·인식기준)을 담을 방법이 없었다(사용자 보고: "매출
+  // 사업계획이 비용 계획 수립 화면과 동일하게 구성되어 있다"). sgaItems와 동일한 패턴
+  // (항목별 12개월 배열 → baseAmount 자동 계산, growthRate로 다음 연도 추정)을 매출에도
+  // 적용하되, 건별 영업 정보(client/expectedWinDate/recognitionBasis)와 계획 대비 실적을
+  // 비교하기 위한 actualMonths(실적, 별도 라우트로만 갱신 — 아래 /revenue-actuals 참고)를
+  // 추가로 둔다. revenueItems가 있으면 baseRevenue(단일 총액 가정)보다 우선해서 손익
+  // 계산에 쓰인다(computeBusinessPlanProjection/computeBreakEven 참고) — 없으면(과거
+  // 계획·costOnly) 기존처럼 baseRevenue 그대로 사용해 하위호환.
+  let revenueItems = [];
+  if (revenueItemsRaw !== undefined) {
+    if (!Array.isArray(revenueItemsRaw)) {
+      errors.push('revenueItems');
+    } else {
+      revenueItems = revenueItemsRaw.map(item => {
+        const monthsRaw = item && Array.isArray(item.months) ? item.months : null;
+        const months = (monthsRaw && monthsRaw.length === 12 ? monthsRaw : Array(12).fill(0)).map(v => Number(v) || 0);
+        // actualMonths는 이 라우트(계획 작성/수정)로는 절대 덮어쓰지 않는다 — 기존 값을
+        // 그대로 보존하고, 신규 항목이면 0으로 시작. 실적은 오직 /revenue-actuals
+        // 라우트로만 기록되도록 분리(계획 잠금 여부와 무관하게 실적 입력이 가능해야
+        // 하는데, 이 라우트는 draft 상태에서만 허용되는 계획 수정 경로이기 때문).
+        const existingItem = Array.isArray(base.revenueItems) ? base.revenueItems.find(e => e.id === (item && item.id)) : null;
+        const actualMonths = existingItem && Array.isArray(existingItem.actualMonths) && existingItem.actualMonths.length === 12
+          ? existingItem.actualMonths : Array(12).fill(0);
+        const baseAmount = round2(months.reduce((s, v) => s + v, 0));
+        return {
+          id: (item && item.id) || `rev_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+          client: (item && item.client) || '',
+          projectName: (item && item.projectName) || '',
+          expectedAmount: Number(item && item.expectedAmount) || 0,
+          expectedWinDate: (item && item.expectedWinDate) || '',
+          recognitionBasis: (item && item.recognitionBasis) || '',
+          status: (item && item.status) || '',
+          note: (item && item.note) || '',
+          months, actualMonths, baseAmount,
+          growthRate: Number(item && item.growthRate) || 0
+        };
+      });
+    }
+  }
+
   if (errors.length) return { errors };
   return {
-    assumptions: { name, baseYear, years, planType, baseRevenue, revenueGrowthRate, cogsRatio, sgaItems, taxRate, depreciation, scenario }
+    assumptions: { name, baseYear, years, planType, baseRevenue, revenueGrowthRate, cogsRatio, sgaItems, revenueItems, taxRate, depreciation, scenario }
   };
 }
 
@@ -1005,6 +1100,11 @@ module.exports = function budgetRouterFactory(deps) {
   // (실사용자 보고: "인사팀이 별도로 있어서 중복 합산되는 것 같다"). 미주입 시(테스트 등)
   // null만 반환 — 아래 로직은 이 경우 팀명을 그대로 쓰는 기존 동작으로 자연 폴백한다.
   const getTeamDept = deps.getTeamDept || (async () => null);
+  // 회사의 비용 계정과목(코드+이름) 목록 — 예산 시트·조직별 비용 블록 업로드 시 "비용계정"
+  // 필드가 비어있으면 항목명으로 자동 매칭해 채우는 데 쓴다. 미주입 시(테스트 등) 빈
+  // 배열만 반환 — 아래 매칭 로직은 이 경우 아무것도 채우지 않고 조용히 넘어간다(기존
+  // "예산 항목 관리" 화면의 수동 검색선택으로 채울 수 있으므로 실패해도 안전).
+  const getExpenseAccounts = deps.getExpenseAccounts || (async () => []);
 
   // ── 사업계획 워크플로우 설정(예산담당자/기획팀장 지정, 입력기간 on/off) ──────────
 
@@ -1080,7 +1180,7 @@ module.exports = function budgetRouterFactory(deps) {
     const visible = data.businessPlans.filter(p => _canViewPlan(isAdmin, profile, data.budgetPlanSettings, req.auth.empId, p));
     // budgetComparison은 저장된 값이 아니라 조회 시점 실제 업로드 데이터 기준으로 매번
     // 재계산(계획 저장 이후에도 실적 업로드가 바뀔 수 있으므로) — 응답에만 얹고 저장하지 않음.
-    const plans = visible.map(p => ({ ...p, budgetComparison: computeBudgetComparison(data, p) }));
+    const plans = visible.map(p => ({ ...p, ..._freshPlanCalc(p), budgetComparison: computeBudgetComparison(data, p) }));
     res.json({ ok: true, plans });
   });
 
@@ -1106,19 +1206,24 @@ module.exports = function budgetRouterFactory(deps) {
     let scoped = data.businessPlans.filter(p => p.dept);
     if (!isFullAccess) scoped = scoped.filter(p => p.dept === profile.dept);
     if (!includeDraft) scoped = scoped.filter(p => p.status === 'divisionApproved' || p.status === 'finalConfirmed');
+    // P&L 롤업(_rollup/byDept)이 저장된 스냅샷이 아니라 항상 최신 계산식 기준의 projection을
+    // 쓰도록 신선화 — _freshPlanCalc() 주석 참고(계산식이 바뀌면 예전 계획도 재저장 없이
+    // 곧바로 올바르게 집계됨). sgaByCostDept 등은 assumptions.sgaItems를 직접 쓰므로
+    // 이 신선화와 무관하게 이미 항상 최신값이다.
+    scoped = scoped.map(p => ({ ...p, ..._freshPlanCalc(p) }));
 
     function _rollup(plans) {
       const byYear = {};
       plans.forEach(p => (p.projection || []).forEach(r => {
-        if (!byYear[r.year]) byYear[r.year] = { year: r.year, revenue: 0, cogs: 0, grossProfit: 0, sga: 0, operatingProfit: 0, netIncome: 0, freeCashFlow: 0 };
+        if (!byYear[r.year]) byYear[r.year] = { year: r.year, revenue: 0, cogs: 0, cogsFromRatio: 0, serviceCost: 0, grossProfit: 0, sga: 0, rdExpense: 0, operatingProfit: 0, netIncome: 0, freeCashFlow: 0 };
         const acc = byYear[r.year];
-        acc.revenue += r.revenue || 0; acc.cogs += r.cogs || 0; acc.grossProfit += r.grossProfit || 0;
-        acc.sga += r.sga || 0; acc.operatingProfit += r.operatingProfit || 0; acc.netIncome += r.netIncome || 0;
+        acc.revenue += r.revenue || 0; acc.cogs += r.cogs || 0; acc.cogsFromRatio += r.cogsFromRatio || 0; acc.serviceCost += r.serviceCost || 0; acc.grossProfit += r.grossProfit || 0;
+        acc.sga += r.sga || 0; acc.rdExpense += r.rdExpense || 0; acc.operatingProfit += r.operatingProfit || 0; acc.netIncome += r.netIncome || 0;
         acc.freeCashFlow += r.freeCashFlow || 0;
       }));
       return Object.values(byYear).map(r => ({
-        ...r, revenue: round2(r.revenue), cogs: round2(r.cogs), grossProfit: round2(r.grossProfit),
-        sga: round2(r.sga), operatingProfit: round2(r.operatingProfit), netIncome: round2(r.netIncome),
+        ...r, revenue: round2(r.revenue), cogs: round2(r.cogs), cogsFromRatio: round2(r.cogsFromRatio), serviceCost: round2(r.serviceCost), grossProfit: round2(r.grossProfit),
+        sga: round2(r.sga), rdExpense: round2(r.rdExpense), operatingProfit: round2(r.operatingProfit), netIncome: round2(r.netIncome),
         freeCashFlow: round2(r.freeCashFlow)
       })).sort((a, b) => a.year - b.year);
     }
@@ -1296,8 +1401,14 @@ module.exports = function budgetRouterFactory(deps) {
   // userName은 변경 이력(history[]) 기록용 표시 이름 — 호출부가 getEmployeeProfile()로
   // 미리 조회해 넘긴다(이 함수 자체는 employees 조회 권한이 없어 잠금 밖에서 해야 함은
   // teamDeptCache와 동일한 이유).
-  async function _commitSgaTeamItems(data, companyId, year, team, items, req, teamDeptCache, userName) {
+  async function _commitSgaTeamItems(data, companyId, year, team, items, req, teamDeptCache, userName, expenseAccounts) {
     const cache = teamDeptCache || {};
+    // 비용계정이 비어있는 항목은 항목명으로 자동 추정해 채운다(사용자 요청: "비용 계정에
+    // 공백으로 뜨는 부분을 항목에 맞게 매치") — 확신할 수 있는 매칭만 채우고, 못 찾으면
+    // 기존과 동일하게 빈 값으로 남겨 "예산 항목 관리"에서 직접 검색선택하게 한다.
+    if (Array.isArray(expenseAccounts) && expenseAccounts.length) {
+      items.forEach(it => { if (!it.expenseAccount) it.expenseAccount = _guessExpenseAccount(it.name, expenseAccounts); });
+    }
     const matches = data.businessPlans.filter(p => p.baseYear === year && (p.team || '').trim() === team);
     let plan, autoCreated = false;
     if (matches.length === 0) {
@@ -1377,7 +1488,12 @@ module.exports = function budgetRouterFactory(deps) {
     const category = _guessSgaCategory(it.name);
     if (existing) {
       existing.dept = dept; existing.team = team; existing.costDept = resolvedCostDept;
-      existing.detail = it.detail; existing.accountType = it.accountType; existing.expenseAccount = it.expenseAccount || existing.expenseAccount || '';
+      // 비용계정은 반대 우선순위: existing이 이미 값을 갖고 있으면(자동추정이든 사람이
+      // 직접 검색선택으로 고쳤든) 그대로 유지하고, 비어있을 때만 이번 업로드의 값(자동
+      // 추정 포함)으로 채운다 — 그러지 않으면 재업로드 때마다 자동 추정이 사람의 수동
+      // 수정을 조용히 덮어써버리는 문제가 생긴다(다른 필드는 "새로 올라온 값이 항상
+      // 이긴다"가 맞지만, 비용계정만은 "빈 값만 채운다"가 안전함).
+      existing.detail = it.detail; existing.accountType = it.accountType; existing.expenseAccount = existing.expenseAccount || it.expenseAccount || '';
       existing.months = it.months; existing.baseAmount = baseAmount; existing.note = note;
       if (!existing.category) existing.category = category;
     } else {
@@ -1583,8 +1699,17 @@ module.exports = function budgetRouterFactory(deps) {
     // 이번 요청에서는 자가치유가 그냥 한 번 건너뛰어질 뿐 데이터 손상으로 이어지지 않는다.
     const preData = await readBudget(companyId);
     const prePlan = preData.businessPlans.find(p => p.id === req.params.id);
-    const preResolvedTeamDept = prePlan ? await getTeamDept(companyId, prePlan.team) : null;
-    const profile = await getEmployeeProfile(companyId, req.auth.empId);
+    const [preResolvedTeamDept, expenseAccounts, profile] = await Promise.all([
+      prePlan ? getTeamDept(companyId, prePlan.team) : Promise.resolve(null),
+      getExpenseAccounts(companyId),
+      getEmployeeProfile(companyId, req.auth.empId),
+    ]);
+    // "조직별" 시트는 팀명 컬럼이 없듯 비용계정 컬럼도 없어 파싱 단계에서 항상 비어있다 —
+    // 예산 시트 항목과 동일하게 항목명(급여/사회보험 등 블록 이름표) 기준으로 자동 추정해
+    // 채운다(사용자 요청: "조직별 비용도 이에 맞춰서 비용 계정 확인해서 업로드").
+    if (expenseAccounts.length) {
+      parsedItems.forEach(it => { it.expenseAccount = _guessExpenseAccount(it.name, expenseAccounts); });
+    }
     try {
       let plan, applied, resultData, prunedResult = [];
       await updateBudget(companyId, async (data) => {
@@ -1671,7 +1796,10 @@ module.exports = function budgetRouterFactory(deps) {
     // 다시 조회하면 커넥션 풀 자기교착으로 요청이 응답 없이 멈출 수 있었음, 실측 발견).
     const uniqueTeams = [...new Set(teams.map(t => String(t && t.team || '').trim()).filter(Boolean))];
     const teamDeptCache = {};
-    await Promise.all(uniqueTeams.map(async team => { teamDeptCache[team] = await getTeamDept(companyId, team); }));
+    const [expenseAccounts] = await Promise.all([
+      getExpenseAccounts(companyId),
+      Promise.all(uniqueTeams.map(async team => { teamDeptCache[team] = await getTeamDept(companyId, team); })),
+    ]);
     try {
       const { updated, skipped } = await updateBudget(companyId, async (data) => {
         const updated = [], skipped = [];
@@ -1679,7 +1807,7 @@ module.exports = function budgetRouterFactory(deps) {
           const team = String(t && t.team || '').trim();
           const items = Array.isArray(t && t.items) ? t.items : [];
           if (!team) continue;
-          const result = await _commitSgaTeamItems(data, companyId, year, team, items, req, teamDeptCache, userName);
+          const result = await _commitSgaTeamItems(data, companyId, year, team, items, req, teamDeptCache, userName, expenseAccounts);
           if (result.skip) skipped.push({ team, reason: result.reason });
           else updated.push(result.updated);
         }
@@ -1833,6 +1961,7 @@ module.exports = function budgetRouterFactory(deps) {
             revenueGrowthRate: assumptions.revenueGrowthRate,
             cogsRatio: assumptions.cogsRatio,
             sgaItems: assumptions.sgaItems,
+            revenueItems: assumptions.revenueItems,
             taxRate: assumptions.taxRate,
             depreciation: assumptions.depreciation
           },
@@ -1868,7 +1997,7 @@ module.exports = function budgetRouterFactory(deps) {
     if (!_canViewPlan(isAdmin, profile, data.budgetPlanSettings, req.auth.empId, plan)) {
       return res.status(403).json({ error: '조회 권한이 없습니다.' });
     }
-    res.json({ ok: true, plan: { ...plan, budgetComparison: computeBudgetComparison(data, plan) } });
+    res.json({ ok: true, plan: { ...plan, ..._freshPlanCalc(plan), budgetComparison: computeBudgetComparison(data, plan) } });
   });
 
   // 진단 도구(읽기전용, 관리자 전용) — 사업계획 매칭 키 이력 변화(name → +detail →
@@ -1969,6 +2098,7 @@ module.exports = function budgetRouterFactory(deps) {
           revenueGrowthRate: assumptions.revenueGrowthRate,
           cogsRatio: assumptions.cogsRatio,
           sgaItems: assumptions.sgaItems,
+          revenueItems: assumptions.revenueItems,
           taxRate: assumptions.taxRate,
           depreciation: assumptions.depreciation
         };
@@ -1977,8 +2107,10 @@ module.exports = function budgetRouterFactory(deps) {
         plan.updatedAt = new Date().toISOString();
         plan.updatedBy = req.auth.empId;
         const afterSgaTotal = assumptions.sgaItems.reduce((s, it) => s + (it.baseAmount || 0), 0);
+        const revenueTotal = (assumptions.revenueItems || []).reduce((s, it) => s + (it.baseAmount || 0), 0);
         _pushPlanHistory(plan, '수정', _actorName(profile, isAdmin),
-          `판관비 합계 ${_fmtNum(beforeSgaTotal)}원 → ${_fmtNum(afterSgaTotal)}원 (항목 ${assumptions.sgaItems.length}건)`);
+          `판관비 합계 ${_fmtNum(beforeSgaTotal)}원 → ${_fmtNum(afterSgaTotal)}원 (항목 ${assumptions.sgaItems.length}건)`
+          + ((assumptions.revenueItems || []).length ? ` · 매출 항목 ${assumptions.revenueItems.length}건, 합계 ${_fmtNum(revenueTotal)}원` : ''));
         resultData = data;
       });
       res.json({ ok: true, plan: { ...plan, budgetComparison: computeBudgetComparison(resultData, plan) } });
@@ -1986,6 +2118,87 @@ module.exports = function budgetRouterFactory(deps) {
       if (e instanceof _BudgetRouteError) return res.status(e.status).json({ error: e.message });
       throw e;
     }
+  });
+
+  // 매출 항목(revenueItems)의 월별 실적 입력 — 계획(PUT /business-plan/:id)과 의도적으로
+  // 분리된 별도 라우트다. 실적은 "실제로 그 달이 지나간 뒤" 기록하는 것이라 계획이 이미
+  // 사업부장 승인·최종확정으로 잠긴 뒤에도 계속 입력할 수 있어야 하는데, PUT 라우트는
+  // draft 상태만 허용하도록 설계돼 있어(계획 숫자 자체를 함부로 못 바꾸게) 그대로 재사용할
+  // 수 없다. 이 라우트는 잠금 상태와 무관하게 허용하되, 대신 건드릴 수 있는 범위를
+  // "해당 항목의 actualMonths"로만 엄격히 제한해(다른 계획 필드는 body로 무엇을 보내도
+  // 전혀 반영되지 않음) 승인된 계획의 실제 예산 수치가 이 경로로 우회 변경되는 일이
+  // 없도록 한다. 조회 권한과 동일한 소속(팀/부서) 또는 관리자만 입력 가능.
+  router.put('/business-plan/:id/revenue-actuals', async (req, res) => {
+    if (!requireAuth(req, res)) return;
+    const companyId = req.auth.companyId || null;
+    const isAdmin = req.auth.role === 'admin';
+    const profile = await getEmployeeProfile(companyId, req.auth.empId);
+    const items = Array.isArray(req.body && req.body.items) ? req.body.items : [];
+    if (!items.length) return res.status(400).json({ error: '입력할 실적 데이터가 없습니다.' });
+
+    try {
+      let plan, resultData, updatedCount = 0;
+      await updateBudget(companyId, async (data) => {
+        plan = data.businessPlans.find(p => p.id === req.params.id);
+        if (!plan) throw new _BudgetRouteError(404, '사업계획을 찾을 수 없습니다.');
+        if (!_canEditPlan(isAdmin, profile, plan)) {
+          throw new _BudgetRouteError(403, '실적 입력 권한이 없습니다.');
+        }
+        const revenueItems = (plan.assumptions && Array.isArray(plan.assumptions.revenueItems)) ? plan.assumptions.revenueItems : [];
+        items.forEach(reqItem => {
+          const target = revenueItems.find(it => it.id === (reqItem && reqItem.id));
+          if (!target) return;
+          const monthsRaw = reqItem && Array.isArray(reqItem.actualMonths) ? reqItem.actualMonths : null;
+          if (!monthsRaw || monthsRaw.length !== 12) return;
+          target.actualMonths = monthsRaw.map(v => Number(v) || 0);
+          updatedCount++;
+        });
+        if (!updatedCount) throw new _BudgetRouteError(400, '일치하는 매출 항목을 찾지 못했습니다.');
+        plan.updatedAt = new Date().toISOString();
+        const actualTotal = revenueItems.reduce((s, it) => s + (it.actualMonths || []).reduce((s2, v) => s2 + v, 0), 0);
+        _pushPlanHistory(plan, '매출 실적 입력', _actorName(profile, isAdmin), `${updatedCount}개 항목 · 누적 실적 합계 ${_fmtNum(actualTotal)}원`);
+        resultData = data;
+      });
+      res.json({ ok: true, updated: updatedCount, plan: { ...plan, ..._freshPlanCalc(plan), budgetComparison: computeBudgetComparison(resultData, plan) } });
+    } catch (e) {
+      if (e instanceof _BudgetRouteError) return res.status(e.status).json({ error: e.message });
+      throw e;
+    }
+  });
+
+  // 계획(revenueItems) 대 실적(actualMonths) 비교 리포트 — 사용자가 실제로 쓰는 "N월
+  // 누계 계획비 차이" 형태(사업명/계획/실적/Gap)의 근거 데이터를 그대로 제공한다.
+  // ?month=5 처럼 기준월을 주면 1월~그 달까지 누계로, 생략하면 연간 전체로 집계한다.
+  // 조회 권한은 계획 조회와 동일(_canViewPlan) — 실적도 계획만큼 민감한 영업 정보라
+  // 소속 밖에는 보여주지 않는다.
+  router.get('/business-plan/:id/revenue-monitor', async (req, res) => {
+    if (!requireAuth(req, res)) return;
+    const companyId = req.auth.companyId || null;
+    const isAdmin = req.auth.role === 'admin';
+    const data = await readBudget(companyId);
+    const plan = data.businessPlans.find(p => p.id === req.params.id);
+    if (!plan) return res.status(404).json({ error: '사업계획을 찾을 수 없습니다.' });
+    const profile = await getEmployeeProfile(companyId, req.auth.empId);
+    if (!_canViewPlan(isAdmin, profile, data.budgetPlanSettings, req.auth.empId, plan)) {
+      return res.status(403).json({ error: '조회 권한이 없습니다.' });
+    }
+    const monthLimit = req.query.month ? Math.min(12, Math.max(1, Number(req.query.month) || 12)) : 12;
+    const revenueItems = (plan.assumptions && Array.isArray(plan.assumptions.revenueItems)) ? plan.assumptions.revenueItems : [];
+    const sumThrough = arr => round2((arr || []).slice(0, monthLimit).reduce((s, v) => s + (v || 0), 0));
+    const items = revenueItems.map(it => {
+      const planAmt = sumThrough(it.months);
+      const actualAmt = sumThrough(it.actualMonths);
+      return {
+        id: it.id, client: it.client, projectName: it.projectName || it.client,
+        expectedAmount: it.expectedAmount, expectedWinDate: it.expectedWinDate,
+        recognitionBasis: it.recognitionBasis, status: it.status, note: it.note,
+        plan: planAmt, actual: actualAmt, gap: round2(actualAmt - planAmt)
+      };
+    });
+    const totals = items.reduce((acc, it) => ({
+      plan: round2(acc.plan + it.plan), actual: round2(acc.actual + it.actual), gap: round2(acc.gap + it.gap)
+    }), { plan: 0, actual: 0, gap: 0 });
+    res.json({ ok: true, planId: plan.id, planName: plan.name, dept: plan.dept, team: plan.team, monthLimit, items, totals });
   });
 
   // 사업부장 승인 → 잠금(divisionApproved)

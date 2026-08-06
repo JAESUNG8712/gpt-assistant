@@ -14865,7 +14865,7 @@ async function confirmRcpsValuation(){
 // 인원현황/판관상세 업로드·통합요약(budget.html 1~3번)은 그대로 별도 페이지에 남는다.
 let bizPlans=[],bizPlanSettings={ownerIds:[],teamLeaderId:null,inputOpen:true},bizPlanMyProfile=null,_bizPlanLoaded=false;
 let _bizPlanTab="list"; // "list" | "form" | "headcount" | "budgetOverview" | "settings" | "budgetAdmin"
-let _bizPlanEditingId=null,_bizPlanSgaRowCount=0;
+let _bizPlanEditingId=null,_bizPlanSgaRowCount=0,_bizPlanRevenueRowCount=0;
 // 계획 유형("매출계획"/"비용전용")은 더 이상 작성 폼 안의 라디오 선택이 아니라, 목록 탭의
 // 서로 다른 "+ 매출 사업계획 작성"/"+ 비용 사업계획 작성" 버튼으로 진입할 때 미리 정해진다
 // (openBizPlanForm의 forcedType 인자). 수정 화면은 기존 계획의 planType을 그대로 쓰고
@@ -15069,6 +15069,7 @@ function _renderBizPlanCard(p){
       </div>
       ${p.budgetComparison?`<div class="fz12" style="background:#fff8e6;border-radius:6px;padding:6px 10px;margin-top:8px">참고: 실제 업로드된 판관비 실적 합계 ${_bpFmt(p.budgetComparison.actualSga)}원이 이 계획의 기준연도 판관비 가정 ${_bpFmt(p.budgetComparison.assumptionSga)}원과 ${_bpFmtPct(p.budgetComparison.diffRatio)}(${_bpFmt(p.budgetComparison.diff)}원) 차이가 있습니다.</div>`:""}
       ${_bpSgaDetailTableHtml(p.assumptions&&p.assumptions.sgaItems)}
+      ${p.planType!=="costOnly"?_bpRevenueDetailTableHtml(p.assumptions&&p.assumptions.revenueItems):""}
       <div style="margin-top:10px">${chart}</div>
     </div>
   </div>`;
@@ -15095,6 +15096,106 @@ function _bpSgaDetailTableHtml(items){
     <tr><th class="lbl">부문</th><th class="lbl">팀명</th><th class="lbl">비용귀속부문</th><th class="lbl">항목</th><th class="lbl">세부내역(산정근거)</th><th class="lbl">구분</th><th class="lbl">계정과목</th><th class="lbl">비용계정</th>${monthHeads}<th>계</th><th class="lbl">비고</th></tr>
     ${rows}
   </table></div></div>`;
+}
+// 매출 항목별 계획/실적/차이(Gap) 읽기전용 상세표 — 계획 카드에서 매출 사업계획일 때만
+// 노출. 실적(actualMonths)은 이 카드에서 직접 수정하지 않고 "매출 실적 입력" 버튼으로
+// 별도 입력창을 연다(아래 _bpOpenRevenueActualsModal 참고).
+function _bpRevenueDetailTableHtml(items){
+  items=Array.isArray(items)?items:[];
+  if(!items.length)return "";
+  const sum=arr=>(Array.isArray(arr)?arr:[]).reduce((s,v)=>s+(Number(v)||0),0);
+  const rows=items.map(it=>{
+    const plan=sum(it.months),actual=sum(it.actualMonths),gap=actual-plan;
+    return `<tr>
+      <td class="lbl">${h(it.client||"-")}</td><td class="lbl">${h(it.projectName||"-")}</td>
+      <td style="text-align:right">${_bpFmt(it.expectedAmount)}</td>
+      <td class="lbl">${h(it.expectedWinDate||"-")}</td><td class="lbl">${h(it.recognitionBasis||"-")}</td>
+      <td class="lbl">${h(it.status||"-")}</td>
+      <td style="text-align:right;font-weight:700">${_bpFmt(plan)}</td>
+      <td style="text-align:right">${_bpFmt(actual)}</td>
+      <td style="text-align:right;color:${gap<0?"#dc2626":gap>0?"#16a34a":"inherit"}">${gap>0?"+":""}${_bpFmt(gap)}</td>
+      <td class="lbl">${h(it.note||"")}</td>
+    </tr>`;
+  }).join("");
+  return `<div class="mt3"><h4 class="mb2 fz13">매출 항목 상세(계획 대비 실적)</h4><div class="tbl-wrap"><table class="bp-sga-table-ro">
+    <tr><th class="lbl">고객사</th><th class="lbl">사업명</th><th>예상 매출액</th><th class="lbl">예상 수주시점</th><th class="lbl">매출인식기준</th><th class="lbl">구분</th><th>계획(누계)</th><th>실적(누계)</th><th>Gap</th><th class="lbl">비고</th></tr>
+    ${rows}
+  </table></div></div>`;
+}
+// "매출 실적 입력" — 계획이 잠긴 뒤에도(사업부장 승인/최종확정 이후) 실적은 계속 입력할
+// 수 있어야 해서(실제로 그 달이 지나간 뒤 기록하는 것이므로) 계획 수정과 분리된 별도
+// 모달·라우트(PUT /business-plan/:id/revenue-actuals)로 구현.
+function _bpOpenRevenueActualsModal(planId){
+  const p=bizPlans.find(x=>String(x.id)===String(planId));
+  if(!p){showToast("계획을 찾을 수 없습니다.","error");return;}
+  const items=(p.assumptions&&Array.isArray(p.assumptions.revenueItems))?p.assumptions.revenueItems:[];
+  if(!items.length){showToast("입력된 매출 항목이 없습니다. 먼저 계획을 수정해 매출 항목을 추가하세요.","error");return;}
+  const monthHeads=Array.from({length:12},(_,i)=>`<th>${i+1}월</th>`).join("");
+  const rows=items.map((it,idx)=>{
+    const actual=Array.isArray(it.actualMonths)&&it.actualMonths.length===12?it.actualMonths:Array(12).fill(0);
+    const monthCells=actual.map((v,i)=>`<td><input type="number" class="fc bp-revact-month" data-idx="${idx}" data-m="${i}" style="width:74px" value="${v||""}"></td>`).join("");
+    return `<tr><td class="lbl">${h(it.client||"-")}</td><td class="lbl">${h(it.projectName||"-")}</td>${monthCells}</tr>`;
+  }).join("");
+  openModal(`<div class="modal-box" style="max-width:96vw">
+    <div class="modal-head"><h3>💰 매출 실적 입력 — ${h(p.name)}</h3></div>
+    <div class="modal-body">
+      <div class="fz12 text-gray mb2">건별로 실제 인식된 매출(실적)을 월별로 입력합니다. 계획 금액과는 별도로 저장되며, 계획이 잠긴 뒤에도 입력할 수 있습니다.</div>
+      <div style="overflow-x:auto"><table class="bp-sga-table-ro" id="bp-revact-table">
+        <tr><th class="lbl">고객사</th><th class="lbl">사업명</th>${monthHeads}</tr>
+        ${rows}
+      </table></div>
+    </div>
+    <div class="modal-foot"><button class="btn btn-primary" onclick="_bpSubmitRevenueActuals('${p.id}')">저장</button><button class="btn btn-secondary" onclick="closeModal()">취소</button></div>
+  </div>`);
+}
+async function _bpSubmitRevenueActuals(planId){
+  const p=bizPlans.find(x=>String(x.id)===String(planId));
+  if(!p)return;
+  const items=(p.assumptions&&Array.isArray(p.assumptions.revenueItems))?p.assumptions.revenueItems:[];
+  const rows=[...document.querySelectorAll("#bp-revact-table tr")].slice(1); // 헤더 제외
+  const payloadItems=items.map((it,idx)=>{
+    const row=rows[idx];if(!row)return null;
+    const actualMonths=[...row.querySelectorAll(".bp-revact-month")].map(inp=>Number(inp.value)||0);
+    return {id:it.id,actualMonths};
+  }).filter(Boolean);
+  const r=await serverRequest("PUT",`/api/budget/business-plan/${p.id}/revenue-actuals`,{items:payloadItems});
+  if(!r?.ok){showToast(r?.error||"저장에 실패했습니다.","error");return;}
+  showToast("매출 실적이 저장되었습니다.","success");
+  closeModal();
+  await loadBizPlanFromServer();
+}
+// "매출 모니터링" — 사용자가 참고로 제시한 "N월 누계 계획비 차이"(사업명/계획/실적/Gap/비고)
+// 리포트 형태를 그대로 재현. 월 선택 시 1월~해당 월 누계로 다시 조회한다.
+async function _bpOpenRevenueMonitor(planId,month){
+  const p=bizPlans.find(x=>String(x.id)===String(planId));
+  if(!p)return;
+  const m=month||12;
+  const r=await serverRequest("GET",`/api/budget/business-plan/${planId}/revenue-monitor?month=${m}`);
+  if(!r?.ok){showToast(r?.error||"조회에 실패했습니다.","error");return;}
+  const rows=r.items.map(it=>{
+    const gap=it.gap;
+    return `<tr><td class="lbl">${h(it.client||"-")}</td><td class="lbl">${h(it.projectName||"-")}</td>
+      <td style="text-align:right">${_bpFmt(it.plan)}</td><td style="text-align:right">${_bpFmt(it.actual)}</td>
+      <td style="text-align:right;color:${gap<0?"#dc2626":gap>0?"#16a34a":"inherit"}">${gap>0?"+":""}${_bpFmt(gap)}</td>
+      <td class="lbl">${h(it.note||"")}</td></tr>`;
+  }).join("");
+  const monthOpts=Array.from({length:12},(_,i)=>`<option value="${i+1}" ${m===i+1?"selected":""}>${i+1}월 누계</option>`).join("");
+  openModal(`<div class="modal-box" style="max-width:96vw">
+    <div class="modal-head"><h3>📈 매출 모니터링 — ${h(r.planName)}</h3></div>
+    <div class="modal-body">
+      <div class="fg" style="max-width:200px"><label class="fl">기준월(1월~선택월 누계)</label>
+        <select class="fc" onchange="_bpOpenRevenueMonitor('${planId}',Number(this.value))">${monthOpts}</select>
+      </div>
+      <div class="tbl-wrap mt2"><table>
+        <tr><th class="lbl">사업명</th><th class="lbl">고객사</th><th>계획</th><th>실적</th><th>Gap</th><th class="lbl">비고</th></tr>
+        ${rows}
+        <tr style="font-weight:700;background:#f4f7fc"><td class="lbl" colspan="2">합계</td>
+          <td style="text-align:right">${_bpFmt(r.totals.plan)}</td><td style="text-align:right">${_bpFmt(r.totals.actual)}</td>
+          <td style="text-align:right;color:${r.totals.gap<0?"#dc2626":r.totals.gap>0?"#16a34a":"inherit"}">${r.totals.gap>0?"+":""}${_bpFmt(r.totals.gap)}</td><td></td></tr>
+      </table></div>
+    </div>
+    <div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal()">닫기</button></div>
+  </div>`);
 }
 
 // ── 예산 항목 관리(관리자 전용) — 팀별 계획을 하나씩 열지 않고도 전체 팀의 판관비 항목을
@@ -15435,6 +15536,12 @@ function _bpPlanActionsHtml(p){
   // 있다는 것 자체가 _canViewPlan()을 통과했다는 뜻이므로 새로운 노출을 만들지 않는다.
   btns.push(`<button class="btn btn-ghost btn-sm" onclick="_bpShowHistory('${p.id}')">📜 이력</button>`);
   btns.push(`<button class="btn btn-ghost btn-sm" onclick="_bpExportPlanSgaCsv('${p.id}')">📥 판관비 다운로드</button>`);
+  if(p.planType!=="costOnly"&&(isAdmin||canEdit)&&Array.isArray(p.assumptions&&p.assumptions.revenueItems)&&p.assumptions.revenueItems.length){
+    btns.push(`<button class="btn btn-ghost btn-sm" onclick="_bpOpenRevenueActualsModal('${p.id}')">💰 매출 실적 입력</button>`);
+  }
+  if(p.planType!=="costOnly"&&Array.isArray(p.assumptions&&p.assumptions.revenueItems)&&p.assumptions.revenueItems.length){
+    btns.push(`<button class="btn btn-ghost btn-sm" onclick="_bpOpenRevenueMonitor('${p.id}')">📈 매출 모니터링</button>`);
+  }
   if(isAdmin||(p.status==="draft"&&canEdit))btns.push(`<button class="btn btn-secondary btn-sm" onclick="openBizPlanForm('${p.id}')">수정</button>`);
   if(p.status==="draft"&&p.dept&&(isAdmin||_bpIsDivisionHeadOf(p)))btns.push(`<button class="btn btn-primary btn-sm" onclick="approveBizPlanDivision('${p.id}')">사업부장 승인</button>`);
   if(p.status==="divisionApproved"&&(isAdmin||_bpIsOwnerOrLead()))btns.push(`<button class="btn btn-primary btn-sm" onclick="finalApproveBizPlan('${p.id}')">최종승인</button>`);
@@ -15544,7 +15651,7 @@ async function openBizPlanForm(planId,forcedType){
   const editPlan=planId?bizPlans.find(p=>p.id===planId):null;
   _bizPlanEditingId=editPlan?editPlan.id:null;
   _bizPlanFormType=editPlan?(editPlan.planType||"revenue"):(forcedType||"revenue");
-  _bizPlanSgaRowCount=0;
+  _bizPlanSgaRowCount=0;_bizPlanRevenueRowCount=0;
   await _bpLoadExpenseAccounts();
   _bizPlanTab="form";
   renderBizPlanPage();
@@ -15587,6 +15694,7 @@ function _renderBizPlanFormBody(){
     name,category,accountType:"판관",expenseAccount:"",detail:"",months:Array(12).fill(0),note:"",growthRate:0,fixed:true
   }));
   const rowsHtml=(editPlan?(Array.isArray(a.sgaItems)&&a.sgaItems.length?a.sgaItems:[null]):defaultItems).map(item=>_bpSgaRowHtml(item)).join("");
+  const revenueRowsHtml=(editPlan&&Array.isArray(a.revenueItems)?a.revenueItems:[]).map(item=>_bpRevenueRowHtml(item)).join("");
   return `
     ${_bpOrgDeptTeamDatalistsHtml()}${_bpExpenseAccountDatalistHtml()}
     <div class="fg"><label class="fl">사업계획명 <span class="req">*</span></label><input class="fc" id="bp-name" placeholder="예: 2027-2029 사업계획" value="${editPlan?h(editPlan.name):""}"></div>
@@ -15604,10 +15712,25 @@ function _renderBizPlanFormBody(){
       <label class="fl">팀(team, 선택)</label><input class="fc" id="bp-team" list="bp-team-list" autocomplete="off" placeholder="입력 또는 검색 — 예: 영업1팀" onchange="_bpSyncSgaRowsDeptTeam()">
     `:`<div class="fz12 text-gray">소속: 내 소속(자동 지정 — ${h(bizPlanMyProfile?bizPlanMyProfile.dept:"")}${bizPlanMyProfile&&bizPlanMyProfile.team?" / "+h(bizPlanMyProfile.team):""})</div>`}</div>`:""}
     ${!isCostOnly?`<div id="bp-revenue-fields">
+      <div class="fg"><label class="fl">매출 항목(건별 영업 데이터) <span class="fz11 text-gray">고객사·사업명·예상 수주시점·매출인식기준을 건별로 입력하고, 월별 매출(계획)을 그리드에 채웁니다. 여기에 항목이 하나 이상 있으면 아래 "기준연도 매출/성장률" 단일 가정 대신 이 항목들의 합계가 손익 계산에 쓰입니다.</span></label>
+      <div style="overflow-x:auto">
+        <table class="bp-sga-table" style="min-width:1900px">
+          <thead>${_bpRevenueTableHeadHtml()}</thead>
+          <tbody id="bp-rev-tbody">${revenueRowsHtml}</tbody>
+        </table>
+      </div>
+      <button class="btn btn-ghost btn-sm mt2" onclick="addBpRevenueRow()">+ 매출 항목 추가</button>
+      <span style="display:inline-flex;align-items:center;gap:4px;margin-left:4px">
+        <button class="btn btn-ghost btn-sm" onclick="loadBpPrevYearRevenue('bp-rev-tbody')" title="같은 부문/팀의 가장 최근 이전 연도 사업계획에서 매출 항목을 그대로 불러옵니다.">+ 전년도 계획 불러오기</button>
+        <span class="fz11 text-gray">증가율</span><input class="fc" type="number" id="bp-prevyear-growth-bp-rev-tbody" step="0.1" value="0" style="width:56px"><span class="fz11 text-gray">%</span>
+      </span>
+      </div>
+      <div class="fg mt2"><label class="fl">기준연도 매출(참고 — 매출 항목이 없을 때만 사용)</label>
       <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px">
         <div class="fg"><label class="fl">기준연도 매출</label><input class="fc" type="number" id="bp-base-revenue" value="${editPlan?a.baseRevenue:""}"></div>
         <div class="fg"><label class="fl">매출 성장률(%)</label><input class="fc" type="number" step="0.1" id="bp-revenue-growth" value="${editPlan?_bpPctInput(a.revenueGrowthRate):""}"></div>
         <div class="fg"><label class="fl">매출원가율(%)</label><input class="fc" type="number" step="0.1" id="bp-cogs-ratio" value="${editPlan?_bpPctInput(a.cogsRatio):""}"></div>
+      </div>
       </div>
     </div>`:""}
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
@@ -15723,6 +15846,79 @@ function _bpApplyMonthFill(el){
 function addBpSgaRow(item,tbodyId){
   const wrap=$("#"+(tbodyId||"bp-sga-tbody"));if(!wrap)return;
   wrap.insertAdjacentHTML("beforeend",_bpSgaRowHtml(item));
+}
+// ── 매출 항목(건별 영업 데이터) 그리드 ──
+// 사용자 보고: "매출 사업계획이 비용 계획 수립 화면과 동일하게 구성되어 있다" — 기존엔
+// 기준연도 매출 총액+성장률 단일 가정만 입력받아 실제 영업 파이프라인(고객사·건별
+// 예상매출·수주시점·인식기준)을 담을 방법이 없었다. sgaItems 그리드와 동일한 패턴
+// (항목별 12개월 배열 → 계 자동합산, 증가율로 다음 연도 추정)이되 컬럼 구성은 건별
+// 영업 정보에 맞춘다. actualMonths(실적)는 이 그리드에서 편집하지 않는다 — 계획
+// 저장 시 서버가 기존 값을 그대로 보존하며, 실적은 별도의 "매출 실적 입력" 화면
+// (/revenue-actuals 라우트)에서만 기록된다(계획이 잠긴 뒤에도 실적은 입력 가능해야
+// 하기 때문에 draft 전용인 계획 수정 경로와 분리).
+function _bpRevenueRowHtml(item){
+  const idx=_bizPlanRevenueRowCount++;
+  const idVal=item?h(item.id||""):"";
+  const clientVal=item?h(item.client||""):"";
+  const projectVal=item?h(item.projectName||""):"";
+  const expectedAmountVal=item?(item.expectedAmount||""):"";
+  const winDateVal=item?h(item.expectedWinDate||""):"";
+  const basisVal=item?h(item.recognitionBasis||""):"";
+  const statusVal=item?h(item.status||""):"";
+  const noteVal=item?h(item.note||""):"";
+  const months=item&&Array.isArray(item.months)&&item.months.length===12?item.months:Array(12).fill(0);
+  const growthVal=item?_bpPctInput(item.growthRate):"";
+  const total=months.reduce((s,v)=>s+(Number(v)||0),0);
+  const monthsAllEqual=months.length===12&&months.every(v=>Number(v||0)===Number(months[0]||0));
+  const applyAmountVal=(monthsAllEqual&&Number(months[0]||0)!==0)?Number(months[0]):"";
+  const monthCells=months.map((v,i)=>`<td><input type="number" class="fc bp-rev-month" data-m="${i}" style="width:74px" value="${v||""}" oninput="_bpUpdateRevenueRowTotal(this)"></td>`).join("");
+  const statusOpts=["","예정","협상중","수주확정","실주","보류"].map(s=>`<option value="${s}" ${statusVal===s?"selected":""}>${s||"-"}</option>`).join("");
+  return `<tr id="bp-rev-row-${idx}" data-rev-id="${idVal}">
+    <td><input class="fc bp-rev-client" style="width:100px" value="${clientVal}" placeholder="고객사명"></td>
+    <td><input class="fc bp-rev-project" style="width:140px" value="${projectVal}" placeholder="사업명"></td>
+    <td><input type="number" class="fc bp-rev-expected" style="width:110px" value="${expectedAmountVal}" placeholder="예상 매출액"></td>
+    <td><input type="month" class="fc bp-rev-windate" style="width:110px" value="${winDateVal}"></td>
+    <td><input class="fc bp-rev-basis" style="width:120px" value="${basisVal}" placeholder="예: 출하기준"></td>
+    <td><select class="fc bp-rev-status" style="width:80px">${statusOpts}</select></td>
+    <td><select class="bp-rev-applymonth" style="width:56px" onchange="_bpApplyRevMonthFill(this)">
+      <option value="all">전체</option>${Array.from({length:12},(_,i)=>`<option value="${i+1}">${i+1}월</option>`).join("")}
+    </select></td>
+    <td><input type="number" class="bp-rev-applyamount" style="width:90px" placeholder="금액" value="${applyAmountVal}" oninput="_bpApplyRevMonthFill(this)"></td>
+    ${monthCells}
+    <td class="bp-rev-total" style="text-align:right;font-weight:700;white-space:nowrap">${_bpFmt(total)}</td>
+    <td><input class="fc bp-rev-note" style="width:100px" value="${noteVal}"></td>
+    <td><input class="fc bp-rev-growth" type="number" step="0.1" style="width:60px" value="${growthVal}" title="연간 증가율(%) - 2년차 이후 추정에 사용"></td>
+    <td><button class="btn btn-ghost btn-sm" onclick="document.getElementById('bp-rev-row-${idx}').remove()">✕</button></td>
+  </tr>`;
+}
+function _bpRevenueTableHeadHtml(){
+  return `<tr>
+    <th>고객사</th><th>사업명</th><th>예상 매출액</th><th>예상 수주시점</th><th>매출인식기준</th><th>구분</th>
+    <th>적용월</th><th>적용 금액</th>
+    ${Array.from({length:12},(_,i)=>`<th>${i+1}월</th>`).join("")}
+    <th>계</th><th>비고</th><th>증가율(%)</th><th></th>
+  </tr>`;
+}
+function _bpApplyRevMonthFill(el){
+  const row=el.closest("tr");if(!row)return;
+  const monthSel=row.querySelector(".bp-rev-applymonth");
+  const amountInput=row.querySelector(".bp-rev-applyamount");
+  const amount=Number(amountInput.value);
+  if(!amountInput.value||isNaN(amount))return;
+  const monthInputs=row.querySelectorAll(".bp-rev-month");
+  if(monthSel.value==="all")monthInputs.forEach(i=>{i.value=amount;});
+  else{const idx=Number(monthSel.value)-1;if(monthInputs[idx])monthInputs[idx].value=amount;}
+  _bpUpdateRevenueRowTotal(monthInputs[0]);
+}
+function _bpUpdateRevenueRowTotal(input){
+  const row=input.closest("tr");if(!row)return;
+  const months=[...row.querySelectorAll(".bp-rev-month")].map(i=>Number(i.value)||0);
+  const total=months.reduce((s,v)=>s+v,0);
+  const cell=row.querySelector(".bp-rev-total");if(cell)cell.textContent=_bpFmt(total);
+}
+function addBpRevenueRow(item,tbodyId){
+  const wrap=$("#"+(tbodyId||"bp-rev-tbody"));if(!wrap)return;
+  wrap.insertAdjacentHTML("beforeend",_bpRevenueRowHtml(item));
 }
 // 현재 인사 정보(employees[].salary, 연봉)에 등록된 재직자 급여 합계를 그대로 "급여/고정급"
 // 행(표준 템플릿에 기본 포함됨)에 채워넣는다 — 사용자가 직접 금액을 입력하지 않아도 "지금
@@ -15904,6 +16100,31 @@ function loadBpPrevYearPlan(tbodyId){
   });
   showToast(`${src.baseYear}년 계획에서 ${src.assumptions.sgaItems.length}개 항목을 불러왔습니다(기존 ${filled}건 갱신, 신규 ${added}건 추가)${growthPct?`, 증가율 ${growthPct}% 적용`:""}.`,"success");
 }
+// 매출 항목판 "전년도 계획 불러오기" — loadBpPrevYearPlan()의 매출 항목 버전. 매출 항목은
+// 건별(고객사/사업명 조합)이라 이름 하나로 기존 행을 매칭하지 않고 항상 새 행으로
+// 추가한다(전년도의 같은 건이 올해도 이어진다면 그대로 새 행을 만들고 필요시 직접 정리).
+function loadBpPrevYearRevenue(tbodyId){
+  tbodyId=tbodyId||"bp-rev-tbody";
+  const {dept,team}=_bpResolveDeptTeamMatched();
+  if(!dept){showToast("부문을 먼저 입력하세요.","error");return;}
+  const targetYear=Number($("#bp-base-year")?.value)||_bpBulkUploadYear||new Date().getFullYear();
+  const growthPct=Number($("#bp-prevyear-growth-"+tbodyId)?.value)||0;
+  const candidates=bizPlans.filter(p=>p.dept===dept&&(p.team||"")===team&&p.baseYear<targetYear&&Array.isArray(p.assumptions?.revenueItems)&&p.assumptions.revenueItems.length);
+  if(!candidates.length){showToast(`${dept}${team?" / "+team:""}의 매출 항목이 있는 이전 연도(${targetYear}년 이전) 사업계획을 찾지 못했습니다.`,"error");return;}
+  candidates.sort((a,b)=>b.baseYear-a.baseYear);
+  const src=candidates[0];
+  const factor=1+growthPct/100;
+  const note=`${src.baseYear}년 계획 불러오기${growthPct?`(+${growthPct}%)`:""}`;
+  src.assumptions.revenueItems.forEach(item=>{
+    const months=(Array.isArray(item.months)&&item.months.length===12?item.months:Array(12).fill(0)).map(v=>Math.round((v||0)*factor));
+    addBpRevenueRow({
+      client:item.client||"",projectName:item.projectName||"",expectedAmount:item.expectedAmount||0,
+      expectedWinDate:"",recognitionBasis:item.recognitionBasis||"",status:"",
+      months,note,growthRate:item.growthRate||0
+    },tbodyId);
+  });
+  showToast(`${src.baseYear}년 계획에서 매출 항목 ${src.assumptions.revenueItems.length}건을 새 행으로 불러왔습니다${growthPct?`(증가율 ${growthPct}% 적용)`:""}.`,"success");
+}
 // 신규 자동화 ② 항목별 실적 참고: 같은 부문/팀의 budget.html 업로드 실적(판관비)을 항목명
 // 기준으로 서버에서 집계해 가져와, 지금 그리드에 입력된 값과 나란히 보여준다(실적 데이터
 // 자체를 자동으로 덮어쓰지 않음 — 참고만 하고 계획 금액은 여전히 사람이 직접 입력/수정).
@@ -15972,11 +16193,30 @@ async function submitBizPlanForm(){
       fixed:row.querySelector(".bp-sga-fixed").checked,
     };
   }).filter(it=>it.months.some(v=>v!==0)); // 월별 금액이 전부 0인 행(기본 템플릿 중 미사용 항목 포함)은 제외
-  if(!name||!baseYear||!years||(!isCostOnly&&(!baseRevenue||isNaN(revenueGrowthRate)||isNaN(cogsRatio)))){
+  const revenueItems=isCostOnly?[]:[...document.querySelectorAll("#bp-rev-tbody > tr")].map(row=>{
+    const months=[...row.querySelectorAll(".bp-rev-month")].map(i=>Number(i.value)||0);
+    const id=row.dataset.revId||undefined;
+    return {
+      id,
+      client:row.querySelector(".bp-rev-client").value.trim(),
+      projectName:row.querySelector(".bp-rev-project").value.trim(),
+      expectedAmount:Number(row.querySelector(".bp-rev-expected").value)||0,
+      expectedWinDate:row.querySelector(".bp-rev-windate").value.trim(),
+      recognitionBasis:row.querySelector(".bp-rev-basis").value.trim(),
+      status:row.querySelector(".bp-rev-status").value.trim(),
+      months,
+      note:row.querySelector(".bp-rev-note").value.trim(),
+      growthRate:(Number(row.querySelector(".bp-rev-growth").value)||0)/100,
+    };
+  }).filter(it=>it.client||it.projectName||it.months.some(v=>v!==0)); // 고객사/사업명/금액이 전부 비어있는 빈 행은 제외
+  // 매출 항목이 하나 이상 있으면 그 합계가 손익 계산의 매출로 쓰이므로(서버
+  // computeBusinessPlanProjection 참고) 기준연도 매출 단일 가정은 선택사항으로 완화한다.
+  const hasRevenueItems=revenueItems.length>0;
+  if(!name||!baseYear||!years||(!isCostOnly&&!hasRevenueItems&&(!baseRevenue||isNaN(revenueGrowthRate)||isNaN(cogsRatio)))){
     showToast("필수 항목을 모두 입력하세요.","error");return;
   }
   const editing=_bizPlanEditingId;
-  const payload={name,scenario:scenario||null,baseYear,years,planType,baseRevenue,revenueGrowthRate,cogsRatio,sgaItems,taxRate,depreciation};
+  const payload={name,scenario:scenario||null,baseYear,years,planType,baseRevenue:baseRevenue||0,revenueGrowthRate:revenueGrowthRate||0,cogsRatio:cogsRatio||0,sgaItems,revenueItems,taxRate,depreciation};
   if(!editing&&currentUser.role==="admin"){
     const deptVal=$("#bp-dept")?.value.trim();
     const teamVal=$("#bp-team")?.value.trim();
@@ -16192,13 +16432,24 @@ function _renderBizPlanBudgetOverviewTab(){
   if(!_bizPlanRollupIncludeDraft&&d.company.planCount===0){
     html+=`<div class="fz12" style="background:#fffbeb;color:#92400e;border:1px solid #fde68a;border-radius:8px;padding:10px 14px;margin-bottom:14px">아직 사업부장 승인을 받은 계획이 없어 표시할 데이터가 없습니다. 작성중(draft) 상태의 계획도 확인하려면 위 "작성중(draft) 계획도 포함" 체크박스를 켜보세요.</div>`;
   }
+  // 판관비 항목의 계정과목(판관/용역/경상)에 따라 손익 라인이 갈린다 — "용역"은 매출원가를
+  // 구성하는 외주·용역비라 매출원가 안에 이미 합산돼 있고(cogsFromRatio는 매출×매출원가율
+  // 가정분, serviceCost는 용역 계정과목 항목 합산분), "경상"은 판관비와 별개의 경상연구
+  // 개발비 라인으로 분리해서 보여준다(사용자 요청: "판관, 용역, 경상이 영향을 미치는 내용을
+  // 확인하고자"). 매출원가 줄 아래에 그 구성(매출원가율 가정분 vs 용역 항목 합산분)을,
+  // 판관비 옆에 경상연구개발비를 나란히 표시.
   const rollupTable=rows=>{
     if(!rows.length)return `<div class="fz12 text-gray">데이터 없음</div>`;
     let t=`<table><tr><th class="lbl">연도</th>${rows.map(r=>`<th>${r.year}</th>`).join("")}</tr>`;
     t+=`<tr><td class="lbl">매출</td>${rows.map(r=>`<td style="text-align:right">${_bpFmt(r.revenue)}</td>`).join("")}</tr>`;
     t+=`<tr><td class="lbl">매출원가</td>${rows.map(r=>`<td style="text-align:right">${_bpFmt(r.cogs)}</td>`).join("")}</tr>`;
+    if(rows.some(r=>r.cogsFromRatio||r.serviceCost)){
+      t+=`<tr><td class="lbl fz11 text-gray" style="padding-left:16px">└ 매출원가율 가정분</td>${rows.map(r=>`<td class="fz11 text-gray" style="text-align:right">${_bpFmt(r.cogsFromRatio)}</td>`).join("")}</tr>`;
+      t+=`<tr><td class="lbl fz11 text-gray" style="padding-left:16px">└ 용역(계정과목) 항목 합계</td>${rows.map(r=>`<td class="fz11 text-gray" style="text-align:right">${_bpFmt(r.serviceCost)}</td>`).join("")}</tr>`;
+    }
     t+=`<tr><td class="lbl">매출총이익</td>${rows.map(r=>`<td style="text-align:right">${_bpFmt(r.grossProfit)}</td>`).join("")}</tr>`;
-    t+=`<tr><td class="lbl">판관비</td>${rows.map(r=>`<td style="text-align:right">${_bpFmt(r.sga)}</td>`).join("")}</tr>`;
+    t+=`<tr><td class="lbl">판관비(판관 계정과목)</td>${rows.map(r=>`<td style="text-align:right">${_bpFmt(r.sga)}</td>`).join("")}</tr>`;
+    t+=`<tr><td class="lbl">경상연구개발비(경상 계정과목)</td>${rows.map(r=>`<td style="text-align:right">${_bpFmt(r.rdExpense)}</td>`).join("")}</tr>`;
     t+=`<tr><td class="lbl">영업이익</td>${rows.map(r=>`<td style="text-align:right">${_bpFmt(r.operatingProfit)}</td>`).join("")}</tr>`;
     t+=`<tr style="font-weight:700"><td class="lbl">순이익</td>${rows.map(r=>`<td style="text-align:right">${_bpFmt(r.netIncome)}</td>`).join("")}</tr>`;
     t+=`<tr><td class="lbl">잉여현금흐름</td>${rows.map(r=>`<td style="text-align:right">${_bpFmt(r.freeCashFlow)}</td>`).join("")}</tr>`;
