@@ -1268,7 +1268,17 @@ const $=s=>document.querySelector(s);
     try{next=document.querySelectorAll(p.key.sel)[p.key.idx];}catch(_){return "done";}
     if(!next)return "pending";                      // 사라졌는데 새 요소가 아직 없음 — 비동기 렌더 진행 중
     next.focus();
-    try{if(p.start!=null)next.setSelectionRange(p.start,p.end);}catch(_){}
+    if(p.start!=null){
+      try{next.setSelectionRange(p.start,p.end);}catch(_){}
+    }else{
+      // `<input type="number">` 등은 표준상 선택(커서) API를 지원하지 않아 selectionStart가
+      // null이다. 그대로 두면 focus() 직후 커서가 맨 앞(0)에 놓여, 이어서 친 숫자가 앞쪽에
+      // 끼어든다 — 실측: 전표 차변에 "1500000"을 치면 "51"이 됨(1→"1", 5가 앞에 붙어 "51",
+      // 이후 입력은 파싱값 51로 계속 되돌아와 그대로 멈춤). 값을 같은 값으로 한 번
+      // 재대입하면 커서가 끝으로 이동하므로 그걸로 "이어서 타이핑" 동작을 되돌린다
+      // (같은 값 재대입이라 input 이벤트가 새로 발생하지 않아 무한루프 위험 없음).
+      try{const v=next.value;next.value="";next.value=v;}catch(_){}
+    }
     return "done";
   }
   // 다시 그리기가 비동기(서버 조회 후 렌더 — 예: renderInvStockLogPage)인 화면은 위 두
@@ -7968,7 +7978,8 @@ function renderApprovalList(scopeEmps, year, u){
   let filtered=scopeEmps.filter(emp=>{
     const kpis=kpiEntries.filter(k=>k.userId===emp.id&&k.year===year);
     if(!kpis.length) return false;
-    if(approvalSearch.name && !emp.name.includes(approvalSearch.name)) return false;
+    const _aq=approvalSearch.name.trim();
+    if(_aq && !emp.name.includes(_aq)) return false;
     if(approvalSearch.dept && emp.dept!==approvalSearch.dept) return false;
     return true;
   });
@@ -8080,7 +8091,7 @@ function renderApprovalContent(scopeEmps,year,u){
       <div class="filter-bar">
         <div style="position:relative">
           <input class="fc" style="width:180px;padding-left:28px" id="appr-name-input" placeholder="성명 검색" value="${h(approvalSearch.name)}"
-            oninput="approvalSearch.name=this.value.trim();renderApprovals()">
+            oninput="approvalSearch.name=this.value;renderApprovals()">
           <span style="position:absolute;left:9px;top:9px;font-size:12px;color:#94a3b8">🔍</span>
         </div>
         <select class="fc" id="appr-dept-sel" style="width:160px" onchange="approvalSearch.dept=this.value;renderApprovals()">
@@ -8133,13 +8144,13 @@ function renderEvalTab(u,year,evalType){
     const allMembers=employees.filter(e=>e.active&&e.role==="member"&&e.dept===u.dept&&e.team===u.team);
     if(!allMembers.length){el.innerHTML=`<div class="card"><div class="p-empty">평가할 팀원이 없습니다.</div></div>`;return;}
     const members=allMembers.filter(m=>
-      (!approvalSearch.name||m.name.includes(approvalSearch.name))
+      (!approvalSearch.name.trim()||m.name.includes(approvalSearch.name.trim()))
     );
     el.innerHTML=`<div class="card" style="margin-bottom:10px"><div class="card-body" style="padding:10px 14px">
       <div class="filter-bar">
         <div style="position:relative">
           <input class="fc" style="width:180px;padding-left:28px" placeholder="성명 검색" value="${h(approvalSearch.name)}"
-            oninput="approvalSearch.name=this.value.trim();renderApprovals()">
+            oninput="approvalSearch.name=this.value;renderApprovals()">
           <span style="position:absolute;left:9px;top:9px;font-size:12px;color:#94a3b8">🔍</span>
         </div>
         <button class="btn btn-ghost btn-sm" onclick="approvalSearch.name='';renderApprovals()">초기화</button>
@@ -8180,14 +8191,14 @@ function renderEvalTab(u,year,evalType){
       :employees.filter(e=>e.active&&e.dept===u.dept&&(e.role==="member"||e.role==="leader")&&e.id!==u.id);
     if(!allDeptMembers.length){el.innerHTML=`<div class="card"><div class="p-empty">평가할 직원이 없습니다.</div></div>`;return;}
     const deptMembers=allDeptMembers.filter(m=>
-      (!approvalSearch.name||m.name.includes(approvalSearch.name))&&
+      (!approvalSearch.name.trim()||m.name.includes(approvalSearch.name.trim()))&&
       (!approvalSearch.dept||m.dept===approvalSearch.dept)
     ).sort((a,b)=>(a.team||"").localeCompare(b.team||"","ko")||(a.name||"").localeCompare(b.name||"","ko"));
     el.innerHTML=`<div class="card" style="margin-bottom:10px"><div class="card-body" style="padding:10px 14px">
       <div class="filter-bar">
         <div style="position:relative">
           <input class="fc" style="width:180px;padding-left:28px" placeholder="성명 검색" value="${h(approvalSearch.name)}"
-            oninput="approvalSearch.name=this.value.trim();renderApprovals()">
+            oninput="approvalSearch.name=this.value;renderApprovals()">
           <span style="position:absolute;left:9px;top:9px;font-size:12px;color:#94a3b8">🔍</span>
         </div>
         ${u.role==="admin"?`<select class="fc" style="width:160px" onchange="approvalSearch.dept=this.value;renderApprovals()">
