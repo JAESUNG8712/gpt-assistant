@@ -3480,7 +3480,7 @@ function calcCoreTalent(emp, evalYear) {
 // ==================== BULK IMPORT ====================
 
 // ── Download comprehensive template ──────────────────────────────
-function _oldDlComprehensiveTemplate_unused(){
+function _dlComprehensiveTemplateFile(){
   // Sheet 1: 인사정보
   const emp_headers=["시트","로그인ID","초기비밀번호","이름","사번","권한(admin/director/leader/member)",
     "부서","팀","생년월일(YYYY-MM-DD)","성별(남/여)","입사일(YYYY-MM-DD)","직군",
@@ -3510,6 +3510,11 @@ function _oldDlComprehensiveTemplate_unused(){
     ["# 시트6: 인사변동 (시트명=HR)"],
     ["시트","사번","변동유형(transfer/salary/promotion/rank_change/position/leave/return_leave/retirement/award/core_talent)","변동일","변동 전","변동 후","비고"],
     ["HR","EMP-001","promotion","2024-07-01","사원","주임","승진"],
+    [],
+    ["# 시트7: KPI 목표 - 당해년도 KPI 목표 항목 일괄 등록 (시트명=GOAL)"],
+    ["시트","사번","연도","항목명","비중(%)","전년도실적","당해년도목표","전년비","달성전략","평가기준"],
+    ["GOAL","EMP-001","2026","매출액(127억원)","20","101.3억","127억","+26.7억","LS그룹 Captive 매출 강화(40억) / 운영사업 안정화(25억)","달성도 105%이상=S(5.0)/100%이상=A(4.0)/95%이상=B(3.0)/90%이상=C(2.0)/85%이상=D(1.0)"],
+    ["GOAL","EMP-001","2026","내부회계관리(각 부서 지침 준수)","5","-","0건","-","내부회계관리 지침 준수","누락없음=S(5.0)/1건누락=A(4.0)/2건누락=B(3.0)/3건누락=C(2.0)/4건이상=D(1.0)"],
   ];
   dlCSV("통합_데이터_업로드_양식.csv",[],emp_rows);
   showToast("통합 양식이 다운로드되었습니다. Excel에서 열어 각 시트별로 작성 후 업로드하세요.","success");
@@ -3537,7 +3542,7 @@ function _doXlsxParse(file){
   reader.onload=ev=>{
     try{
       const wb=XLSX.read(ev.target.result,{type:"array"});
-      const result={emp:[],career:[],edu:[],grade:[],salary:[],hr:[],errors:[]};
+      const result={emp:[],career:[],edu:[],grade:[],salary:[],hr:[],goal:[],errors:[]};
 
       // Sheet name matching (flexible)
       const getSheet=(keys)=>{
@@ -3620,6 +3625,26 @@ function _doXlsxParse(file){
         });
       });
 
+      const goalRows=getSheet(["KPI목표","7.","goal"]);
+      goalRows.forEach(r=>{
+        if(!r["사번*"]&&!r["사번"]&&!r["empNo"]) return;
+        const yr=Number(r["연도*"]||r["연도"]||r["year"]);
+        if(!yr) return;
+        const item=(r["항목명*"]||r["항목명"]||r["item"]||"").toString().trim();
+        if(!item) return;
+        result.goal.push({
+          empNo:r["사번*"]||r["사번"]||r["empNo"]||"",
+          year:yr,
+          item,
+          weight:Number(r["비중(%)*"]||r["비중(%)"]||r["비중"]||r["weight"])||0,
+          prev:(r["전년도실적"]||r["prev"]||"").toString(),
+          goal:(r["당해년도목표"]||r["goal"]||"").toString(),
+          yoy:(r["전년비"]||r["yoy"]||"").toString(),
+          strategy:(r["달성전략"]||r["strategy"]||"").toString(),
+          evalCriteria:(r["평가기준"]||r["evalCriteria"]||"").toString(),
+        });
+      });
+
       const salaryRows=getSheet(["연봉","5.","salary"]);
       salaryRows.forEach(r=>{
         if(!r["사번*"]&&!r["사번"]&&!r["empNo"]) return;
@@ -3656,20 +3681,11 @@ function _doXlsxParse(file){
 }
 
 // ── Download Excel template button ──────────────────────────────
+// 서버에 실제 /template 라우트가 없어(존재한 적 없음) serverConfig.url 분기는 항상 404로
+// 실패하고 있었다 — CSV 생성 경로만 실제로 동작해, 서버 연결 여부와 무관하게 그쪽을 쓰도록
+// 통일했다(오프라인 모드에서만 동작하던 것을 상시 동작하도록 고침).
 function dlComprehensiveTemplate(){
-  // Point to static pre-built Excel template
-  // In server mode: download from /template
-  // In file mode: show instructions
-  const a=document.createElement("a");
-  if(serverConfig.url){
-    a.href=serverConfig.url.replace(/\/+$/,"")+"/template";
-    a.download="HR_KPI_통합데이터_업로드양식.xlsx";
-    a.click();
-    showToast("Excel 양식을 다운로드합니다.","success");
-  } else {
-    // Fallback: generate CSV guide
-    _oldDlComprehensiveTemplate_unused();
-  }
+  _dlComprehensiveTemplateFile();
 }
 
 // ── Upload handler ─────────────────────────────────────────────
@@ -3708,7 +3724,7 @@ function parseCSVLine(line){
 }
 
 function parseComprehensiveCSV(lines){
-  const result={emp:[],career:[],edu:[],grade:[],salary:[],hr:[],errors:[]};
+  const result={emp:[],career:[],edu:[],grade:[],salary:[],hr:[],goal:[],errors:[]};
   lines.forEach((line,li)=>{
     if(!line.trim()||line.startsWith("#")) return;
     const cols=parseCSVLine(line);
@@ -3742,6 +3758,10 @@ function parseComprehensiveCSV(lines){
         if(cols[1]&&cols[2])
           result.hr.push({empNo:cols[1],type:cols[2],date:cols[3]||"",before:cols[4]||"",after:cols[5]||"",note:cols[6]||""});
         else result.errors.push(`행 ${li+1} (HR): 사번 또는 변동유형 누락`);
+      }else if(sheet==="GOAL"){
+        if(cols[1]&&cols[2]&&cols[3])
+          result.goal.push({empNo:cols[1],year:Number(cols[2]),item:cols[3],weight:Number(cols[4])||0,prev:cols[5]||"",goal:cols[6]||"",yoy:cols[7]||"",strategy:cols[8]||"",evalCriteria:cols[9]||""});
+        else result.errors.push(`행 ${li+1} (GOAL): 사번·연도·항목명 중 누락`);
       }
     }catch(e){result.errors.push(`행 ${li+1}: ${e.message}`);}
   });
@@ -3758,6 +3778,7 @@ function showBulkImportPreview(data){
   const careerCount=t.career.length;
   const salaryCount=t.salary.length;
   const hrCount=t.hr.length;
+  const goalCount=(t.goal||[]).length;
 
   showModal(`<div class="modal modal-md"><div class="modal-head"><h2>📤 통합 데이터 업로드 미리보기</h2><button class="modal-close" onclick="closeModal()">×</button></div>
   <div class="modal-body">
@@ -3767,6 +3788,7 @@ function showBulkImportPreview(data){
         ["👤 신규 직원 등록",empNew.length+"명","#eff6ff","#2563eb"],
         ["🔄 기존 직원 업데이트",empUpdate.length+"명","#f0fdf4","#16a34a"],
         ["📊 평가 결과 (과거 포함)",gradeCount+"건","#faf5ff","#7c3aed"],
+        ["🎯 KPI 목표 항목",goalCount+"건","#ecfeff","#0e7490"],
         ["📚 교육 이력",eduCount+"건","#fff7ed","#c2570c"],
         ["💼 경력 사항",careerCount+"건","#f8fafc","#374151"],
         ["💰 연봉 이력",salaryCount+"건","#fef9c3","#92400e"],
@@ -3785,6 +3807,10 @@ function showBulkImportPreview(data){
     <div style="font-size:11px;color:#374151">
       ${Object.entries(t.grade.reduce((acc,g)=>{acc[g.year]=(acc[g.year]||0)+1;return acc;},{})).map(([y,n])=>`${y}년: ${n}건`).join(" | ")}
     </div>`:""}
+    ${goalCount?`<div class="sec-title mt2">KPI 목표 항목 (사번·연도별 집계)</div>
+    <div style="font-size:11px;color:#374151;max-height:100px;overflow-y:auto">
+      ${Object.entries((t.goal||[]).reduce((acc,g)=>{const k=`${g.empNo} / ${g.year}년`;acc[k]=(acc[k]||0)+1;return acc;},{})).map(([k,n])=>`${k}: ${n}건`).join(" | ")}
+    </div>`:""}
     <div class="warn-note mt3 fz11">⚠ 업로드 전 자동으로 스냅샷이 저장됩니다. 오류 시 복원 가능합니다.</div>
   </div>
   <div class="modal-foot">
@@ -3802,7 +3828,7 @@ function executeBulkImport(){
   const t=window._pendingBulkImport;
   if(!t){showToast("업로드 데이터를 찾을 수 없습니다.","error");return;}
   saveAutoSnapshot("pre_bulk_import");
-  let stats={emp_new:0,emp_upd:0,grade:0,edu:0,career:0,salary:0,hr:0,skip:0};
+  let stats={emp_new:0,emp_upd:0,grade:0,goal:0,edu:0,career:0,salary:0,hr:0,skip:0};
 
   // ── 1. Employee (신규/업데이트) ──
   t.emp.forEach(row=>{
@@ -3867,6 +3893,22 @@ function executeBulkImport(){
       }
     }
     stats.grade++;
+  });
+
+  // ── 2b. KPI 목표 항목 (당해년도 목표 수립) ──
+  // item명이 같은 항목이 이미 있으면(재업로드 등) 중복 추가하지 않고 건너뛴다 — 다른
+  // 섹션들(EDU/CAREER/SALARY/HR)의 dup 체크와 동일한 관례.
+  (t.goal||[]).forEach(row=>{
+    const emp=employees.find(e=>e.empNo===row.empNo);
+    if(!emp||!row.item){stats.skip++;return;}
+    const dup=kpiEntries.some(k=>k.userId===emp.id&&k.year===row.year&&k.item===row.item);
+    if(dup)return;
+    kpiEntries.push({id:genId(),userId:emp.id,year:row.year,item:row.item,weight:row.weight||0,
+      prev:row.prev||"",goal:row.goal||"",yoy:row.yoy||"",strategy:row.strategy||"",evalCriteria:row.evalCriteria||"",
+      actual:"",rate:"",detail:"",selfScore:null,firstScore:null,firstComment:"",secondScore:null,secondComment:"",
+      secondCommentPublic:false,goalSub:0,isDraft:false,firstStatus:"",firstReason:"",finalStatus:"",finalReason:"",
+      finalConfirmed:false,finalScore:null,updatedAt:new Date().toISOString()});
+    stats.goal++;
   });
 
   // ── 3. Education ──
@@ -3955,7 +3997,7 @@ function executeBulkImport(){
   });
 
   closeModal();
-  const msg=`업로드 완료: 신규 ${stats.emp_new}명, 업데이트 ${stats.emp_upd}명, 평가 ${stats.grade}건, 교육 ${stats.edu}건, 경력 ${stats.career}건, 연봉 ${stats.salary}건, 인사변동 ${stats.hr}건 (스킵: ${stats.skip}건)`;
+  const msg=`업로드 완료: 신규 ${stats.emp_new}명, 업데이트 ${stats.emp_upd}명, 평가 ${stats.grade}건, KPI목표 ${stats.goal}건, 교육 ${stats.edu}건, 경력 ${stats.career}건, 연봉 ${stats.salary}건, 인사변동 ${stats.hr}건 (스킵: ${stats.skip}건)`;
   showToast(msg,"success");
   logAction("bulk_import","통합 데이터 업로드","all",msg);
   autoSaveToServerIfEnabled();
@@ -4500,7 +4542,7 @@ function renderDataManagement(){
   <!-- 통합 데이터 업로드 -->
   <div class="card" style="margin-bottom:14px"><div class="card-head">
     <h3>📤 통합 데이터 일괄 업로드</h3>
-    <span class="fz11 text-gray">인사정보·경력·교육·평가결과·연봉을 한 번에 업로드</span>
+    <span class="fz11 text-gray">인사정보·경력·교육·평가결과·연봉·KPI목표를 한 번에 업로드</span>
   </div><div class="card-body">
     <p class="fz12 text-gray mb3">CSV 양식을 다운로드하여 작성한 후 업로드하면 각 데이터가 자동으로 해당 위치에 반영됩니다.<br>
     평가 결과는 평가서 없이 과거 등급만으로도 입력 가능합니다.</p>
@@ -4510,8 +4552,8 @@ function renderDataManagement(){
       <input type="file" id="comprehensive-upload" accept=".xlsx,.csv" style="display:none" onchange="handleComprehensiveUpload(this)">
     </div>
     <div class="info-note mt3 fz11">
-      <strong>📊 Excel 양식 (권장):</strong> 시트별로 작성 — 1.인사정보 · 2.경력사항 · 3.교육이력 · 4.평가결과 · 5.연봉이력 · 6.인사변동<br>
-      <strong>📄 CSV도 지원:</strong> 첫 열에 EMP/CAREER/EDU/GRADE/SALARY/HR 코드로 구분하여 작성
+      <strong>📊 Excel 양식 (권장):</strong> 시트별로 작성 — 1.인사정보 · 2.경력사항 · 3.교육이력 · 4.평가결과 · 5.연봉이력 · 6.인사변동 · 7.KPI목표<br>
+      <strong>📄 CSV도 지원:</strong> 첫 열에 EMP/CAREER/EDU/GRADE/SALARY/HR/GOAL 코드로 구분하여 작성
     </div>
   </div></div>
 
