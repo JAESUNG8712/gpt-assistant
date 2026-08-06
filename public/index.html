@@ -3511,10 +3511,10 @@ function _dlComprehensiveTemplateFile(){
     ["시트","사번","변동유형(transfer/salary/promotion/rank_change/position/leave/return_leave/retirement/award/core_talent)","변동일","변동 전","변동 후","비고"],
     ["HR","EMP-001","promotion","2024-07-01","사원","주임","승진"],
     [],
-    ["# 시트7: KPI 목표 - 당해년도 KPI 목표 항목 일괄 등록 (시트명=GOAL)"],
-    ["시트","사번","연도","항목명","비중(%)","전년도실적","당해년도목표","전년비","달성전략","평가기준"],
-    ["GOAL","EMP-001","2026","매출액(127억원)","20","101.3억","127억","+26.7억","LS그룹 Captive 매출 강화(40억) / 운영사업 안정화(25억)","달성도 105%이상=S(5.0)/100%이상=A(4.0)/95%이상=B(3.0)/90%이상=C(2.0)/85%이상=D(1.0)"],
-    ["GOAL","EMP-001","2026","내부회계관리(각 부서 지침 준수)","5","-","0건","-","내부회계관리 지침 준수","누락없음=S(5.0)/1건누락=A(4.0)/2건누락=B(3.0)/3건누락=C(2.0)/4건이상=D(1.0)"],
+    ["# 시트7: KPI 목표 - 당해년도 KPI 목표 항목 일괄 등록 (시트명=GOAL). 사번을 모르면 이름만 입력해도 됨(동명이인이면 매칭 실패하니 그 경우 사번 필요)"],
+    ["시트","사번(선택)","이름(사번 없으면 필수)","연도","항목명","비중(%)","전년도실적","당해년도목표","전년비","달성전략","평가기준"],
+    ["GOAL","","홍길동","2026","매출액(127억원)","20","101.3억","127억","+26.7억","LS그룹 Captive 매출 강화(40억) / 운영사업 안정화(25억)","달성도 105%이상=S(5.0)/100%이상=A(4.0)/95%이상=B(3.0)/90%이상=C(2.0)/85%이상=D(1.0)"],
+    ["GOAL","","홍길동","2026","내부회계관리(각 부서 지침 준수)","5","-","0건","-","내부회계관리 지침 준수","누락없음=S(5.0)/1건누락=A(4.0)/2건누락=B(3.0)/3건누락=C(2.0)/4건이상=D(1.0)"],
   ];
   dlCSV("통합_데이터_업로드_양식.csv",[],emp_rows);
   showToast("통합 양식이 다운로드되었습니다. Excel에서 열어 각 시트별로 작성 후 업로드하세요.","success");
@@ -3627,13 +3627,15 @@ function _doXlsxParse(file){
 
       const goalRows=getSheet(["KPI목표","7.","goal"]);
       goalRows.forEach(r=>{
-        if(!r["사번*"]&&!r["사번"]&&!r["empNo"]) return;
+        const empNo=(r["사번*"]||r["사번"]||r["empNo"]||"").toString().trim();
+        const name=(r["이름"]||r["name"]||"").toString().trim();
+        if(!empNo&&!name) return;
         const yr=Number(r["연도*"]||r["연도"]||r["year"]);
         if(!yr) return;
         const item=(r["항목명*"]||r["항목명"]||r["item"]||"").toString().trim();
         if(!item) return;
         result.goal.push({
-          empNo:r["사번*"]||r["사번"]||r["empNo"]||"",
+          empNo,name,
           year:yr,
           item,
           weight:Number(r["비중(%)*"]||r["비중(%)"]||r["비중"]||r["weight"])||0,
@@ -3759,9 +3761,9 @@ function parseComprehensiveCSV(lines){
           result.hr.push({empNo:cols[1],type:cols[2],date:cols[3]||"",before:cols[4]||"",after:cols[5]||"",note:cols[6]||""});
         else result.errors.push(`행 ${li+1} (HR): 사번 또는 변동유형 누락`);
       }else if(sheet==="GOAL"){
-        if(cols[1]&&cols[2]&&cols[3])
-          result.goal.push({empNo:cols[1],year:Number(cols[2]),item:cols[3],weight:Number(cols[4])||0,prev:cols[5]||"",goal:cols[6]||"",yoy:cols[7]||"",strategy:cols[8]||"",evalCriteria:cols[9]||""});
-        else result.errors.push(`행 ${li+1} (GOAL): 사번·연도·항목명 중 누락`);
+        if((cols[1]||cols[2])&&cols[3]&&cols[4])
+          result.goal.push({empNo:cols[1]||"",name:cols[2]||"",year:Number(cols[3]),item:cols[4],weight:Number(cols[5])||0,prev:cols[6]||"",goal:cols[7]||"",yoy:cols[8]||"",strategy:cols[9]||"",evalCriteria:cols[10]||""});
+        else result.errors.push(`행 ${li+1} (GOAL): 사번/이름 중 하나, 연도, 항목명이 필요합니다`);
       }
     }catch(e){result.errors.push(`행 ${li+1}: ${e.message}`);}
   });
@@ -3809,7 +3811,7 @@ function showBulkImportPreview(data){
     </div>`:""}
     ${goalCount?`<div class="sec-title mt2">KPI 목표 항목 (사번·연도별 집계)</div>
     <div style="font-size:11px;color:#374151;max-height:100px;overflow-y:auto">
-      ${Object.entries((t.goal||[]).reduce((acc,g)=>{const k=`${g.empNo} / ${g.year}년`;acc[k]=(acc[k]||0)+1;return acc;},{})).map(([k,n])=>`${k}: ${n}건`).join(" | ")}
+      ${Object.entries((t.goal||[]).reduce((acc,g)=>{const k=`${g.empNo||g.name||"?"} / ${g.year}년`;acc[k]=(acc[k]||0)+1;return acc;},{})).map(([k,n])=>`${k}: ${n}건`).join(" | ")}
     </div>`:""}
     <div class="warn-note mt3 fz11">⚠ 업로드 전 자동으로 스냅샷이 저장됩니다. 오류 시 복원 가능합니다.</div>
   </div>
@@ -3898,8 +3900,15 @@ function executeBulkImport(){
   // ── 2b. KPI 목표 항목 (당해년도 목표 수립) ──
   // item명이 같은 항목이 이미 있으면(재업로드 등) 중복 추가하지 않고 건너뛴다 — 다른
   // 섹션들(EDU/CAREER/SALARY/HR)의 dup 체크와 동일한 관례.
+  // 사번을 우선 시도하고, 없거나 매칭 실패하면 이름으로 재시도(동명이인이 정확히 1명일
+  // 때만 채택 — 개인별 급여상세 업로드의 폴백과 동일한 안전장치, 오귀속 방지).
   (t.goal||[]).forEach(row=>{
-    const emp=employees.find(e=>e.empNo===row.empNo);
+    let emp=row.empNo?employees.find(e=>e.empNo===row.empNo):null;
+    if(!emp&&row.name){
+      const matches=employees.filter(e=>e.name===row.name);
+      if(matches.length===1)emp=matches[0];
+      else if(matches.length>1){stats.skip++;return;}
+    }
     if(!emp||!row.item){stats.skip++;return;}
     const dup=kpiEntries.some(k=>k.userId===emp.id&&k.year===row.year&&k.item===row.item);
     if(dup)return;
