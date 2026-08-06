@@ -1206,6 +1206,106 @@ let hrChgFilter={type:'',search:''};
 
 // ==================== UTILS ====================
 const $=s=>document.querySelector(s);
+
+// ── 검색창에 한 글자밖에 입력되지 않는 문제(전역 해결) ──────────────────────────
+// 이 앱의 검색·필터 입력은 대부분 oninput에서 화면 전체를 다시 그린다
+// (renderGradeView() 등이 #content.innerHTML을 통째로 교체). 그러면 지금 타이핑 중이던
+// <input> 자체가 DOM에서 제거되고 새 요소로 다시 만들어져 포커스가 사라지므로, 한 글자를
+// 친 순간 입력이 끊긴다. 게다가 한글은 IME 조합(composition) 중 자모 하나하나마다 input
+// 이벤트가 발생하는데 그 시점에 다시 그리면 조합 상태까지 깨져(실측: "홍"을 치면 첫 자모
+// "ㅎ"만 남고 이후 입력이 전부 유실됨) 사실상 검색 자체가 불가능했다.
+// 같은 구조의 입력이 38곳에 흩어져 있어 각 화면을 부분 렌더링으로 바꾸는 대신 문서 레벨에서
+// 한 번만 처리한다. 두 가지를 함께 해야 실제로 고쳐진다:
+//   (1) IME 조합 중에는 다시 그리지 않는다 — capture 단계에서 input 이벤트의 전파를 막아
+//       target에 붙은 inline oninput이 실행되지 않게 하고, 조합이 끝나면 input을 한 번만
+//       다시 보내 그때 검색이 반영되게 한다.
+//   (2) 다시 그리느라 입력 요소가 사라졌으면 새로 만들어진 같은 요소로 포커스와 커서 위치를
+//       되돌린다. 사용자가 스스로 다른 곳을 클릭한 경우(원래 요소가 아직 살아있음)에는
+//       포커스를 빼앗지 않는다.
+(function(){
+  // id > name > placeholder 순으로 "다시 그려져도 같은 입력칸"임을 알아볼 수 있는 키를 만든다.
+  // 셋 다 없으면(구분할 근거가 부족하면) 엉뚱한 입력칸에 포커스가 가는 것이 더 나쁘므로 포기한다.
+  function _focusKey(el){
+    const esc=v=>String(v).replace(/\\/g,"\\\\").replace(/"/g,'\\"');
+    const tag=el.tagName.toLowerCase();
+    let sel=null;
+    if(el.id)sel=`${tag}[id="${esc(el.id)}"]`;
+    else if(el.getAttribute("name"))sel=`${tag}[name="${esc(el.getAttribute("name"))}"]`;
+    else if(el.getAttribute("placeholder"))sel=`${tag}[placeholder="${esc(el.getAttribute("placeholder"))}"]`;
+    if(!sel)return null;
+    let all;
+    try{all=[...document.querySelectorAll(sel)];}catch(_){return null;}
+    const idx=all.indexOf(el);
+    return idx<0?null:{sel,idx};
+  }
+  // 커서 위치는 다시 그리기 "전"에 읽어야 하므로 capture 단계에서 기록하고, 실제 복원은
+  // inline oninput(target 단계)이 끝난 뒤인 bubble 단계에서 한다. capture 단계에서
+  // queueMicrotask로 미루는 방법은 쓸 수 없다 — 리스너 하나가 끝날 때마다 마이크로태스크
+  // 체크포인트가 돌아 target 단계보다 먼저 실행되어(실측 확인) 아직 다시 그리기 전 상태를
+  // 보고 "할 일 없음"으로 그냥 끝나버린다.
+  let pending=null;
+  document.addEventListener("input",e=>{
+    const el=e.target;
+    if(!el||!el.tagName)return;
+    // (1) 조합 중이면 여기서 끊어 inline oninput(=다시 그리기)이 아예 실행되지 않게 한다.
+    if(e.isComposing){e.stopPropagation();return;}
+    pending=null;
+    if(!("selectionStart" in el))return; // select 등 커서 개념이 없는 요소는 대상 아님
+    const key=_focusKey(el);
+    if(!key)return;
+    let start=null,end=null;
+    try{start=el.selectionStart;end=el.selectionEnd;}catch(_){}
+    pending={el,key,start,end};
+  },true);
+  function _restore(p){
+    if(document.activeElement===p.el)return "idle"; // 아직 그대로 — 다시 그리지 않았거나 비동기 렌더 대기 중
+    if(p.el.isConnected)return "moved";             // 요소는 살아있는데 포커스만 옮겨감(사용자가 클릭) — 건드리지 않음
+    // 요소가 사라져서 포커스가 풀린 경우에만 되돌린다. 그 사이 사용자가 다른 입력칸을
+    // 직접 클릭했다면(활성 요소가 body가 아님) 포커스를 빼앗지 않는다.
+    const ae=document.activeElement;
+    if(ae&&ae!==document.body&&ae!==document.documentElement)return "moved";
+    let next;
+    try{next=document.querySelectorAll(p.key.sel)[p.key.idx];}catch(_){return "done";}
+    if(!next)return "pending";                      // 사라졌는데 새 요소가 아직 없음 — 비동기 렌더 진행 중
+    next.focus();
+    try{if(p.start!=null)next.setSelectionRange(p.start,p.end);}catch(_){}
+    return "done";
+  }
+  // 다시 그리기가 비동기(서버 조회 후 렌더 — 예: renderInvStockLogPage)인 화면은 위 두
+  // 시점(bubble 단계·setTimeout 0) 어느 쪽에도 아직 화면이 안 바뀌어 있어 복원할 수 없다.
+  // 그래서 DOM이 실제로 교체되는 순간을 MutationObserver로 지켜본다 — 동기든 비동기든
+  // 타이밍과 무관하게 동작한다. 복원했거나 사용자가 다른 곳을 잡으면 즉시 감시를 끄고,
+  // 그렇지 않아도 짧은 시간 뒤 자동으로 꺼서 상시 감시가 되지 않게 한다.
+  let observer=null,stopTimer=null;
+  function _disarm(){if(observer)observer.disconnect();clearTimeout(stopTimer);stopTimer=null;pending=null;}
+  function _arm(p){
+    if(!window.MutationObserver||!document.body)return;
+    if(!observer)observer=new MutationObserver(()=>{
+      if(!pending)return;
+      const st=_restore(pending);
+      if(st==="done"||st==="moved")_disarm();
+    });
+    observer.observe(document.body,{childList:true,subtree:true});
+    clearTimeout(stopTimer);
+    stopTimer=setTimeout(_disarm,3000);
+  }
+  document.addEventListener("input",()=>{
+    const p=pending;
+    if(!p){_disarm();return;}
+    // 대부분의 화면은 여기(=동기 다시 그리기 완료 직후)에서 곧바로 복원된다.
+    const st=_restore(p);
+    if(st==="done"||st==="moved"){_disarm();return;}
+    _arm(p); // 아직 안 바뀜 — 비동기 렌더일 수 있으니 DOM 교체 시점을 지켜본다
+  },false);
+  // 조합이 끝나면 그때 한 번만 검색을 반영한다(위에서 조합 중 input을 막았으므로).
+  // 브라우저가 compositionend 뒤에 스스로 input을 한 번 더 보내는 경우도 있는데, 그때는
+  // 같은 값으로 한 번 더 그려질 뿐이라 결과가 달라지지 않는다.
+  document.addEventListener("compositionend",e=>{
+    const el=e.target;
+    if(!el||!el.dispatchEvent)return;
+    setTimeout(()=>{if(el.isConnected)el.dispatchEvent(new Event("input",{bubbles:true}));},0);
+  },true);
+})();
 const h=s=>String(s==null?"":s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
 const badge=(t,c)=>`<span class="badge bg-${c}">${h(t)}</span>`;
 const weightTotal=entries=>entries.reduce((s,e)=>s+Number(e.weight||0),0);
@@ -1216,6 +1316,32 @@ const getEmpName=id=>{const e=getEmp(id);return e?e.name:"-";};
 // 일어나면 employees 배열 항목이 새 객체로 교체되어 currentUser가 옛 부서/팀을 가진 채로 남는다.
 // 부서/팀이 필요한 곳에서는 항상 이 함수로 최신 레코드를 조회한다.
 const _liveUser=()=>getEmp(currentUser?.id)||currentUser;
+// ── 검색·필터 드롭다운의 부서/팀 목록 ────────────────────────────────────────────
+// orgDB.depts를 그대로 쓰면 안 된다: 이 파일에는 오프라인 데모용으로 하드코딩된 최초 구축
+// 부서 목록("경영지원본부","IT사업본부","영업본부","연구개발본부","생산본부")이 항상 들어있고,
+// 서버 데이터를 불러올 때도 기존 목록에 append만 하므로(applyState의 orgDB 병합) 실제 조직에
+// 존재하지 않는 부서가 영영 남는다 — 그 목록으로 필터를 만들면 현재 조직 부서(전략사업부·
+// R&BD센터 등)와 무관한 항목이 나열되고, 골라도 결과가 0건이다(사용자 보고).
+// 근태 현황 화면이 이미 쓰고 있던 "employees에서 직접 뽑기" 방식을 공용 헬퍼로 만든 것.
+// 직원 등록/수정 폼의 부서 선택은 새 부서를 만들 수 있어야 하므로 그대로 orgDB.depts를 쓴다.
+// cur: 현재 선택된 값 — 해당 직원이 하나도 없더라도 선택이 조용히 풀리지 않도록 항상 포함한다.
+function _dataDepts(cur){
+  const s=new Set();
+  (employees||[]).forEach(e=>{if(e&&e.dept)s.add(e.dept);});
+  if(!s.size)(orgDB.depts||[]).forEach(d=>{if(d)s.add(d);}); // 직원 데이터가 아직 없을 때만 폴백
+  if(cur)s.add(cur);
+  return [...s].sort((a,b)=>String(a).localeCompare(String(b),"ko"));
+}
+function _dataTeams(dept,cur){
+  const s=new Set();
+  (employees||[]).forEach(e=>{if(e&&e.team&&(!dept||e.dept===dept))s.add(e.team);});
+  if(!s.size){
+    const src=dept?((orgDB.teams||{})[dept]||[]):Object.values(orgDB.teams||{}).flat();
+    src.forEach(t=>{if(t)s.add(t);});
+  }
+  if(cur)s.add(cur);
+  return [...s].sort((a,b)=>String(a).localeCompare(String(b),"ko"));
+}
 // 조직(부서/팀) 단위로 표시되는 모든 구성원 목록에 공통 적용하는 정렬 규칙:
 // 1) 직책자(팀장/사업부장/부문장 등 orgDB.positions에 정의된 직책)를 맨 위로,
 // 2) 그 외에는 직급(orgDB.ranks 순서, 높은 직급 먼저) 순으로,
@@ -2591,7 +2717,7 @@ function renderCompManageByType(u,year,type){
   <div class="card"><div class="card-body">
     <div class="filter-bar">
       <select class="fc" style="width:160px" onchange="window['_cmDept${type}']=this.value;renderCompManageByType(currentUser,compSelYear,'${type}')">
-        <option value="">전체 부서</option>${orgDB.depts.map(d=>`<option${deptF===d?" selected":""}>${h(d)}</option>`).join("")}
+        <option value="">전체 부서</option>${_dataDepts(deptF).map(d=>`<option${deptF===d?" selected":""}>${h(d)}</option>`).join("")}
       </select>
       <span class="fz12 text-gray">총 ${targets.length}명</span>
       <div style="margin-left:auto;display:flex;gap:6px;flex-wrap:wrap">
@@ -2695,7 +2821,7 @@ function renderCompManage(u,year){
   if(deptF)targets=targets.filter(e=>e.dept===deptF);
   el.innerHTML=`<div class="card"><div class="card-body">
     <div class="filter-bar">
-      <select class="fc" style="width:160px" onchange="window._cmDept=this.value;renderCompManage(currentUser,compSelYear)"><option value="">전체 부서</option>${orgDB.depts.map(d=>`<option${deptF===d?" selected":""}>${h(d)}</option>`).join("")}</select>
+      <select class="fc" style="width:160px" onchange="window._cmDept=this.value;renderCompManage(currentUser,compSelYear)"><option value="">전체 부서</option>${_dataDepts(deptF).map(d=>`<option${deptF===d?" selected":""}>${h(d)}</option>`).join("")}</select>
       <span class="fz12 text-gray">총 ${targets.length}명</span>
       <div style="margin-left:auto;display:flex;gap:6px">
         <button class="btn btn-primary btn-sm" onclick="createAllCompSessions(${year})">전체 세션 일괄 생성</button>
@@ -6913,7 +7039,7 @@ function _canViewPrivateHR(){
   return currentUser.role==="admin"||(settings.hrPrivateViewers||[]).map(String).includes(String(currentUser.id));
 }
 function renderHRList(){
-  const depts=orgDB.depts;const filtered=getFilteredEmps();
+  const depts=_dataDepts(hrListFilter.dept);const filtered=getFilteredEmps();
   const c=$("#content");
   c.innerHTML=`<div class="card"><div class="card-body">
     <div class="filter-bar">
@@ -7959,7 +8085,7 @@ function renderApprovalContent(scopeEmps,year,u){
         </div>
         <select class="fc" id="appr-dept-sel" style="width:160px" onchange="approvalSearch.dept=this.value;renderApprovals()">
           <option value="">전체 부서</option>
-          ${orgDB.depts.map(d=>`<option value="${h(d)}"${approvalSearch.dept===d?" selected":""}>${h(d)}</option>`).join("")}
+          ${_dataDepts(approvalSearch.dept).map(d=>`<option value="${h(d)}"${approvalSearch.dept===d?" selected":""}>${h(d)}</option>`).join("")}
         </select>
         <button class="btn btn-ghost btn-sm" onclick="approvalSearch={name:'',dept:''};renderApprovals()">초기화</button>
         <span class="fz12 text-gray" id="appr-count"></span>
@@ -8066,7 +8192,7 @@ function renderEvalTab(u,year,evalType){
         </div>
         ${u.role==="admin"?`<select class="fc" style="width:160px" onchange="approvalSearch.dept=this.value;renderApprovals()">
           <option value="">전체 부서</option>
-          ${orgDB.depts.map(d=>`<option value="${h(d)}"${approvalSearch.dept===d?" selected":""}>${h(d)}</option>`).join("")}
+          ${_dataDepts(approvalSearch.dept).map(d=>`<option value="${h(d)}"${approvalSearch.dept===d?" selected":""}>${h(d)}</option>`).join("")}
         </select>`:""}
         <button class="btn btn-ghost btn-sm" onclick="approvalSearch={name:'',dept:''};renderApprovals()">초기화</button>
         <span class="fz12 text-gray">${deptMembers.length}/${allDeptMembers.length}명</span>
@@ -8367,7 +8493,7 @@ function renderCompGradeView(){
   cgvPager.page=Math.min(cgvPager.page,Math.max(1,Math.ceil(rows.length/cgvPager.pageSize)));window._cgvPage=cgvPager.page;
   c.innerHTML=`<div class="card"><div class="card-body">
     <div class="filter-bar">
-      <select class="fc" style="width:160px" onchange="window._cgvDept=this.value;renderCompGradeView()"><option value="">전체 부서</option>${orgDB.depts.map(d=>`<option${deptF===d?" selected":""}>${h(d)}</option>`).join("")}</select>
+      <select class="fc" style="width:160px" onchange="window._cgvDept=this.value;renderCompGradeView()"><option value="">전체 부서</option>${_dataDepts(deptF).map(d=>`<option${deptF===d?" selected":""}>${h(d)}</option>`).join("")}</select>
       <select class="fc" style="width:120px" onchange="window._cgvRole=this.value;renderCompGradeView()"><option value="">전체 직위</option><option value="leader"${roleF==="leader"?" selected":""}>팀장</option><option value="member"${roleF==="member"?" selected":""}>팀원</option></select>
       <select class="fc" style="width:120px" onchange="window._cgvGrade=this.value;renderCompGradeView()"><option value="">전체 등급</option>${COMP_GRADE_OPTS.map(g=>`<option value="${g}"${gradeF===g?" selected":""}>${g}등급</option>`).join("")}</select>
       <span class="fz12 text-gray">총 ${rows.length}명</span>
@@ -8666,7 +8792,7 @@ function renderCoreTalentPage(){
         value="${h(_ctFilter.search)}" oninput="_ctFilter.search=this.value;renderCoreTalentPage()">
         <span style="position:absolute;left:8px;top:9px;font-size:11px;color:#94a3b8">🔍</span></div>
       <select class="fc" style="width:150px" onchange="_ctFilter.dept=this.value;renderCoreTalentPage()">
-        <option value="">전체 부서</option>${orgDB.depts.map(d=>`<option${_ctFilter.dept===d?" selected":""}>${h(d)}</option>`).join("")}
+        <option value="">전체 부서</option>${_dataDepts(_ctFilter.dept).map(d=>`<option${_ctFilter.dept===d?" selected":""}>${h(d)}</option>`).join("")}
       </select>
       <select class="fc" style="width:130px" onchange="_ctFilter.status=this.value;renderCoreTalentPage()">
         <option value="all">전체</option>
@@ -9560,7 +9686,7 @@ function renderPromotionPage(){
   <div class="card"><div class="card-body">
     <div class="filter-bar">
       <select class="fc" style="width:140px" onchange="window._promoDept=this.value;renderPromotionPage()">
-        <option value="">전체 부서</option>${orgDB.depts.map(d=>`<option${deptF===d?" selected":""}>${h(d)}</option>`).join("")}
+        <option value="">전체 부서</option>${_dataDepts(deptF).map(d=>`<option${deptF===d?" selected":""}>${h(d)}</option>`).join("")}
       </select>
       <select class="fc" style="width:140px" onchange="window._promoStatus=this.value;renderPromotionPage()">
         <option value="all"${statusF==="all"?" selected":""}>전체 (${results.length})</option>
@@ -10668,7 +10794,7 @@ function renderGradeView(){
     <div class="filter-bar">
       <input class="fc" style="width:160px" placeholder="이름/사번 검색" value="${h(gradeViewFilter.search)}" oninput="gradeViewFilter.search=this.value;renderGradeView()">
       <select class="fc" style="width:120px" onchange="gradeViewFilter.year=Number(this.value);renderGradeView()">${allYrs.map(y=>`<option value="${y}"${yr===y?" selected":""}>${y}년</option>`).join("")}</select>
-      ${u.role==="admin"?`<select class="fc" style="width:160px" onchange="gradeViewFilter.dept=this.value;renderGradeView()"><option value="">전체 부서</option>${orgDB.depts.map(d=>`<option${gradeViewFilter.dept===d?" selected":""}>${h(d)}</option>`).join("")}</select>`:""}
+      ${u.role==="admin"?`<select class="fc" style="width:160px" onchange="gradeViewFilter.dept=this.value;renderGradeView()"><option value="">전체 부서</option>${_dataDepts(gradeViewFilter.dept).map(d=>`<option${gradeViewFilter.dept===d?" selected":""}>${h(d)}</option>`).join("")}</select>`:""}
       <select class="fc" style="width:120px" onchange="gradeViewFilter.role=this.value;renderGradeView()"><option value="">전체</option><option value="leader"${gradeViewFilter.role==="leader"?" selected":""}>팀장</option><option value="member"${gradeViewFilter.role==="member"?" selected":""}>팀원</option></select>
       <select class="fc" style="width:120px" onchange="gradeViewFilter.grade=this.value;renderGradeView()"><option value="">전체 등급</option>${GRADE_OPTS.map(g=>`<option value="${g}"${gradeViewFilter.grade===g?" selected":""}>${g}등급</option>`).join("")}</select>
       <span class="fz12 text-gray">총 ${rows.length}명</span>
@@ -15721,8 +15847,8 @@ async function _bpLoadExpenseAccounts(){
 // 부문/팀 검색선택용 datalist — 조직 관리(orgDB)에 등록된 실제 부문/팀 값을 후보로 제공.
 // <input list="..."> 방식이라 목록에 없는 값도 직접 입력 가능(완전히 새로운 부문/팀 대응).
 function _bpOrgDeptTeamDatalistsHtml(){
-  const depts=Array.isArray(orgDB.depts)?orgDB.depts:[];
-  const teams=[...new Set(Object.values(orgDB.teams||{}).flat())];
+  const depts=_dataDepts();
+  const teams=_dataTeams();
   return `<datalist id="bp-dept-list">${depts.map(d=>`<option value="${h(d)}">`).join("")}</datalist>
     <datalist id="bp-team-list">${teams.map(t=>`<option value="${h(t)}">`).join("")}</datalist>`;
 }
@@ -17359,8 +17485,8 @@ async function _eppFinalizeUpload(){
 // 급여상세도 함께 업로드된다.
 function _eppShowNewEmpModal(candidates){
   _eppPendingNewEmps=candidates;
-  const deptOpts=orgDB.depts.map(d=>`<option value="${h(d)}">`).join("");
-  const teamOpts=[...new Set(Object.values(orgDB.teams||{}).flat())].map(t=>`<option value="${h(t)}">`).join("");
+  const deptOpts=_dataDepts().map(d=>`<option value="${h(d)}">`).join("");
+  const teamOpts=_dataTeams().map(t=>`<option value="${h(t)}">`).join("");
   const today=new Date().toISOString().slice(0,10);
   const rowsHtml=candidates.map((c,i)=>`<tr>
     <td class="lbl">${h(c.empName||"-")}</td>
@@ -21149,10 +21275,14 @@ function renderTeamLeaveSection(){
   if(u.role==="admin")base=employees.filter(e=>e.active&&e.role!=="admin");
   else if(u.role==="director")base=employees.filter(e=>e.active&&e.dept===u.dept&&e.role!=="admin");
   else base=employees.filter(e=>e.active&&e.dept===u.dept&&e.team===u.team&&e.id!==u.id);
+  // 대상자가 아예 없으면(권한상 볼 사람이 없음) 섹션 자체를 숨긴다. 단 이 판단은 반드시
+  // 검색어를 적용하기 "전"에 해야 한다 — 검색 결과가 0건일 때 섹션을 통째로 숨기면 검색창까지
+  // 함께 사라져 사용자가 검색어를 지우거나 고칠 방법이 없어진다(실측: 일치하는 이름이 없는
+  // 검색어를 한 글자 치는 순간 화면이 비어버림).
+  if(!base.length)return"";
   if(_leaveState.scope==="dept"&&_leaveState.dept)base=base.filter(e=>e.dept===_leaveState.dept);
   if(_leaveState.scope==="team"){if(_leaveState.dept)base=base.filter(e=>e.dept===_leaveState.dept);if(_leaveState.team)base=base.filter(e=>e.team===_leaveState.team);}
   if(_leaveState.search){const s=_leaveState.search.toLowerCase();base=base.filter(e=>e.name.toLowerCase().includes(s)||(e.empNo||"").toLowerCase().includes(s));}
-  if(!base.length)return"";
   const depts=[...new Set(employees.filter(e=>e.active).map(e=>e.dept))].filter(Boolean).sort();
   const teams=_leaveState.dept?[...new Set(employees.filter(e=>e.active&&e.dept===_leaveState.dept).map(e=>e.team))].filter(Boolean).sort():[];
   const total=base.length;
@@ -21193,7 +21323,7 @@ function renderTeamLeaveSection(){
         <input class="fc" style="height:30px;padding:2px 8px;font-size:12px;width:140px" placeholder="이름·사번 검색" value="${h(_leaveState.search)}" oninput="_leaveSetSearch(this.value)">
       </div>
       <div class="tbl-wrap" style="max-height:65vh;overflow-y:auto"><table><thead style="position:sticky;top:0;z-index:2;background:#fff"><tr><th>이름</th><th>부서/팀</th><th>부여</th><th>사용</th><th>잔여</th><th>잔여율</th><th>1차계획(7월)</th><th>2차계획(10월)</th>${canAdj?`<th>조정</th>`:""}</tr></thead>
-        <tbody>${rows}</tbody>
+        <tbody>${rows||`<tr><td colspan="9" style="text-align:center;padding:18px;color:#94a3b8;font-size:12px">검색 결과가 없습니다.</td></tr>`}</tbody>
       </table></div>
       <div style="display:flex;justify-content:space-between;align-items:center;margin-top:10px;flex-wrap:wrap;gap:8px">
         <div style="display:flex;gap:6px;align-items:center"><span class="fz12 text-gray">페이지당</span>${pagSz(10)}${pagSz(15)}${pagSz(30)}${pagSz(50)}${pagSz(100)}</div>
@@ -21907,7 +22037,7 @@ function _hrHireRetireListsHtml(){
   return `<div class="card mt3"><div class="card-head"><h3>📋 연도별 입/퇴사자 목록(인력 변동 현황)</h3></div><div class="card-body">
     <div class="flex gap2 items-c mb3" style="flex-wrap:wrap">
       <label class="fz12">부문 <input class="fc" list="hr-stats-dept-list" style="width:160px" value="${h(filterDept)}" onchange="_hrStatsFilterDept=this.value.trim();renderHRStatsPage()" placeholder="전체"></label>
-      <datalist id="hr-stats-dept-list">${orgDB.depts.map(d=>`<option value="${h(d)}">`).join("")}</datalist>
+      <datalist id="hr-stats-dept-list">${_dataDepts(filterDept).map(d=>`<option value="${h(d)}">`).join("")}</datalist>
       <span class="fz11 text-gray">기준 연도는 위 상단의 "기준 연도"와 동일하게 적용됩니다.</span>
     </div>
     ${mismatchCount&&isAdmin?`<div style="background:#fef2f2;padding:10px 14px;border-radius:8px;font-size:11px;color:#991b1b;border:1px solid #fecaca;margin-bottom:12px">
@@ -23791,13 +23921,13 @@ function _calRenderExtraSelector(){
   }else if(_calScope==="team"){
     const canPickDept=currentUser.role==="admin";
     const canPickTeam=currentUser.role!=="member";
-    const deptOpts=orgDB.depts.map(d=>`<option value="${h(d)}" ${_calDept===d?"selected":""}>${h(d)}</option>`).join("");
-    const teamOpts=getTeams(_calDept).map(t=>`<option value="${h(t)}" ${_calTeam===t?"selected":""}>${h(t)}</option>`).join("");
+    const deptOpts=_dataDepts(_calDept).map(d=>`<option value="${h(d)}" ${_calDept===d?"selected":""}>${h(d)}</option>`).join("");
+    const teamOpts=_dataTeams(_calDept,_calTeam).map(t=>`<option value="${h(t)}" ${_calTeam===t?"selected":""}>${h(t)}</option>`).join("");
     wrap.innerHTML=`${canPickDept?`<select class="fc" style="font-size:12px;padding:5px 8px;width:auto;min-height:0" onchange="_calDept=this.value;_calTeam=getTeams(_calDept)[0]||'';_calRenderExtraSelector();_attCalRefresh()">${deptOpts}</select>`:`<span class="fz12 fw6">${h(_calDept)}</span>`}
     ${canPickTeam?`<select class="fc" style="font-size:12px;padding:5px 8px;width:auto;min-height:0" onchange="_calTeam=this.value;_attCalRefresh()">${teamOpts}</select>`:`<span class="fz12 fw6">${h(_calTeam)}</span>`}`;
   }else if(_calScope==="dept"){
     const canPickDept=currentUser.role==="admin";
-    const deptOpts=orgDB.depts.map(d=>`<option value="${h(d)}" ${_calDept===d?"selected":""}>${h(d)}</option>`).join("");
+    const deptOpts=_dataDepts(_calDept).map(d=>`<option value="${h(d)}" ${_calDept===d?"selected":""}>${h(d)}</option>`).join("");
     wrap.innerHTML=canPickDept?`<select class="fc" style="font-size:12px;padding:5px 8px;width:auto;min-height:0" onchange="_calDept=this.value;_attCalRefresh()">${deptOpts}</select>`:`<span class="fz12 fw6">${h(_calDept)}</span>`;
   }else{
     wrap.innerHTML="";
