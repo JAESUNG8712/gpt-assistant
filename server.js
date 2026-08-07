@@ -2820,6 +2820,38 @@ app.post("/api/accounting/vouchers/:id/post", async (req, res) => {
   } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
 });
 
+// 감가상각(고정자산)·유효이자율 상각(RCPS) 전표는 발행 시 해당 회차 스케줄을
+// status:"posted" + voucherId로 표시한다. 그런데 전표 취소(void)는 전표 status만 바꾸고
+// 스케줄은 건드리지 않아, 취소된 전표를 가리키는 스케줄이 영구히 "posted"로 남았다 —
+// 그 회차는 재발행도 안 되고("이미 전표가 발행된 연도입니다"), 자산 삭제·취득조건 수정도
+// "발행된 전표가 있다"는 이유로 막혀, 화면에서 되돌릴 방법이 전혀 없는 상태가 됐다.
+// 전표를 취소하면 그 전표가 만든 스케줄 표시도 함께 되돌린다(취소의 자연스러운 역연산).
+function _unpostScheduleRowsJson(voucherId) {
+  let n = 0;
+  for (const [store, save] of [[_fileAcctFixedAssets, _saveFileAcctFixedAssets], [_fileAcctRcps, _saveFileAcctRcps]]) {
+    if (!store || !Array.isArray(store.schedule)) continue;
+    let touched = false;
+    for (const s of store.schedule) {
+      if (s.voucherId === voucherId) {
+        s.status = "pending"; s.voucherId = null; touched = true; n++;
+      }
+    }
+    if (touched) save();
+  }
+  return n;
+}
+async function _unpostScheduleRowsPg(voucherId, companyId, client) {
+  let n = 0;
+  for (const table of ["fixed_asset_depreciation_schedule", "rcps_amortization_schedule"]) {
+    const r = await client.query(
+      `UPDATE ${table} SET data = data || jsonb_build_object('status','pending','voucherId',NULL), updated_at = NOW()
+       WHERE data->>'voucherId' = $1 AND (company_id = $2 OR company_id IS NULL)`,
+      [voucherId, companyId]
+    );
+    n += r.rowCount || 0;
+  }
+  return n;
+}
 app.post("/api/accounting/vouchers/:id/void", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
@@ -2833,13 +2865,22 @@ app.post("/api/accounting/vouchers/:id/void", async (req, res) => {
       if (v.status !== "posted") return res.status(400).json({ ok: false, message: "확정된 전표만 취소할 수 있습니다." });
       v.status = "void"; v.voidReason = reason; v.voidedBy = req.body.user || "unknown"; v.voidedAt = new Date().toISOString();
       _saveFileAccounting();
-      return res.json({ ok: true, voucher: v });
+      const unposted = _unpostScheduleRowsJson(id);
+      return res.json({ ok: true, voucher: v, unpostedSchedules: unposted });
     }
-    const { rows } = await pool.query("SELECT data FROM vouchers WHERE id = $1 AND status = 'posted' AND (company_id = $2 OR company_id IS NULL)", [id, companyId]);
-    if (!rows.length) return res.status(400).json({ ok: false, message: "확정된 전표만 취소할 수 있습니다." });
-    const v = { ...rows[0].data, status: "void", voidReason: reason, voidedBy: req.body.user || "unknown", voidedAt: new Date().toISOString() };
-    await pool.query("UPDATE vouchers SET status = 'void', data = $2, updated_at = NOW() WHERE id = $1", [id, v]);
-    res.json({ ok: true, voucher: v });
+    // 전표 취소와 스케줄 되돌리기는 한 트랜잭션이어야 한다 — 중간에 실패해 전표만 취소되면
+    // 원래 고치려던 "되돌릴 수 없는 상태"가 그대로 다시 만들어진다.
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      const { rows } = await client.query("SELECT data FROM vouchers WHERE id = $1 AND status = 'posted' AND (company_id = $2 OR company_id IS NULL) FOR UPDATE", [id, companyId]);
+      if (!rows.length) { await client.query("ROLLBACK"); return res.status(400).json({ ok: false, message: "확정된 전표만 취소할 수 있습니다." }); }
+      const v = { ...rows[0].data, status: "void", voidReason: reason, voidedBy: req.body.user || "unknown", voidedAt: new Date().toISOString() };
+      await client.query("UPDATE vouchers SET status = 'void', data = $2, updated_at = NOW() WHERE id = $1", [id, v]);
+      const unposted = await _unpostScheduleRowsPg(id, companyId, client);
+      await client.query("COMMIT");
+      res.json({ ok: true, voucher: v, unpostedSchedules: unposted });
+    } catch (e) { await client.query("ROLLBACK"); throw e; } finally { client.release(); }
   } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
 });
 
@@ -3008,16 +3049,24 @@ app.post("/api/accounting/payments/:id/delete", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
     const id = req.params.id;
+    // 존재하지 않는 id로 삭제해도 200 {ok:true}를 돌려주고 있어(다른 모듈은 전부 404),
+    // 화면은 "삭제되었습니다"를 띄우는데 실제로는 아무것도 지워지지 않은 상태와
+    // 정상 삭제를 구분할 수 없었다. 실제로 지운 건수를 보고 판정한다.
     if (USE_JSON_FILE) {
+      const before = (_fileAccounting.payments || []).length;
       _fileAccounting.payments = (_fileAccounting.payments || []).filter(p => p.id !== id);
+      if (_fileAccounting.payments.length === before) {
+        return res.status(404).json({ ok: false, message: "수금/지급 내역을 찾을 수 없습니다." });
+      }
       _saveFileAccounting();
       return res.json({ ok: true });
     }
     const companyId = req.auth.companyId || null;
-    await pool.query(
+    const delRes = await pool.query(
       "DELETE FROM app_collections WHERE collection = 'acctPayments' AND id = $1 AND (company_id = $2 OR $2 IS NULL)",
       [id, companyId]
     );
+    if (!delRes.rowCount) return res.status(404).json({ ok: false, message: "수금/지급 내역을 찾을 수 없습니다." });
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
 });
@@ -3647,6 +3696,11 @@ app.get("/api/accounting/vat-report", async (req, res) => {
 // 이후 "상각전표 발행" 액션(연도 단위)으로 개별 확정한다. 동시발행 방지는 RCPS
 // (rcps/schedule/:scheduleId/post)와 완전히 동일한 패턴(JSON모드: in-flight Set,
 // Postgres모드: SELECT ... FOR UPDATE)을 재사용한다.
+function _isValidDateStr(v) {
+  if (typeof v !== "string" || !/^\d{4}-\d{2}-\d{2}/.test(v)) return false;
+  const d = new Date(v);
+  return !isNaN(d.getTime());
+}
 function _buildDepreciationSchedule(assetId, asset) {
   const cost = Number(asset.acquisitionCost) || 0;
   const salvage = Math.max(0, Math.min(Number(asset.salvageValue) || 0, cost));
@@ -3688,6 +3742,13 @@ app.post("/api/accounting/fixed-assets", async (req, res) => {
     const { name, assetNumber, category, acquisitionDate, acquisitionCost, usefulLifeYears, salvageValue, depreciationMethod, locationId, user } = req.body || {};
     if (!name || !acquisitionDate || !(Number(acquisitionCost) > 0) || !(Number(usefulLifeYears) > 0)) {
       return res.status(400).json({ ok: false, message: "자산명, 취득일, 취득원가(0보다 큼), 내용연수(0보다 큼)는 필수입니다." });
+    }
+    // 취득일이 "존재하기만 하면" 통과시키고 있어 파싱 불가능한 값도 그대로 들어왔다.
+    // _buildDepreciationSchedule의 new Date(...).getFullYear()가 NaN이 되면 상각 연도가 전부
+    // NaN이 되어 스케줄 id(fasch_<자산>_NaN)가 회차마다 똑같아지고(JSON모드에선 중복 id로
+    // 저장), Postgres모드에선 year 컬럼 INSERT가 깨져 DB 원문 오류가 그대로 500으로 나갔다.
+    if (!_isValidDateStr(acquisitionDate)) {
+      return res.status(400).json({ ok: false, message: "취득일이 올바른 날짜가 아닙니다(YYYY-MM-DD)." });
     }
     const salvage = Number(salvageValue) || 0;
     if (salvage < 0 || salvage > Number(acquisitionCost)) {
@@ -3789,6 +3850,9 @@ app.post("/api/accounting/fixed-assets/:id", async (req, res) => {
       asset = rows[0].data;
       const { rows: schedRows } = await pool.query("SELECT data FROM fixed_asset_depreciation_schedule WHERE asset_id = $1 AND company_id = $2", [id, companyId]);
       schedule = schedRows.map(r => r.data);
+    }
+    if (body.acquisitionDate !== undefined && !_isValidDateStr(body.acquisitionDate)) {
+      return res.status(400).json({ ok: false, message: "취득일이 올바른 날짜가 아닙니다(YYYY-MM-DD)." });
     }
     const hasPosted = schedule.some(s => s.status === "posted");
     const DEPR_FIELDS = ["acquisitionDate", "acquisitionCost", "usefulLifeYears", "salvageValue", "depreciationMethod"];
@@ -4008,6 +4072,45 @@ function _nextErpSeq(kind, year) {
   _fileErp[kind][year] = next;
   return next;
 }
+// 수량·단가에 음수가 들어와도 아무 검증 없이 통과해, 견적서 → 출고(재고 차감) → 세금계산서
+// 발행까지 그대로 흘러갔다. 그 결과 마이너스 공급가액 세금계산서가 만들어지고 부가세
+// 신고자료(/api/accounting/vat-report)의 매출세액 집계가 왜곡되며, 출고 시에는 "음수 출고"가
+// 사실상 입고로 작용해 있지도 않은 재고가 늘어난다. 금액을 되돌리는 것은 반품·수정 전표로
+// 해야 할 일이지 음수 라인으로 할 일이 아니므로, 입력 단계에서 거부한다.
+// 재고 원장은 itemId/locationId를 참조만 하고 존재 검증은 하지 않아, 오타나 연동 실수로
+// 없는 id를 보내면 어떤 품목·창고 화면에도 안 보이는 유령 원장 행이 조용히 쌓였다
+// (재고 합계에는 잡히므로 "품목명이 빈 칸인 수량"으로만 드러난다).
+async function _erpRefsExist(itemId, locationIds, companyId) {
+  const locs = locationIds.filter(Boolean);
+  if (USE_JSON_FILE) {
+    if (itemId && !(_fileErp.items || []).some(i => i.id === itemId)) return "품목을 찾을 수 없습니다.";
+    for (const l of locs) {
+      if (!(_fileErp.locations || []).some(x => x.id === l)) return "위치(창고)를 찾을 수 없습니다.";
+    }
+    return null;
+  }
+  if (itemId) {
+    const { rows } = await pool.query(
+      "SELECT 1 FROM erp_items WHERE id = $1 AND is_deleted = FALSE AND (company_id = $2 OR company_id IS NULL)", [itemId, companyId]
+    );
+    if (!rows.length) return "품목을 찾을 수 없습니다.";
+  }
+  for (const l of locs) {
+    const { rows } = await pool.query(
+      "SELECT 1 FROM erp_locations WHERE id = $1 AND is_deleted = FALSE AND (company_id = $2 OR company_id IS NULL)", [l, companyId]
+    );
+    if (!rows.length) return "위치(창고)를 찾을 수 없습니다.";
+  }
+  return null;
+}
+function _validateItemLines(items) {
+  for (const it of (items || [])) {
+    const q = Number(it.qty), p = Number(it.unitPrice);
+    if (!Number.isFinite(q) || q <= 0) return `수량은 0보다 큰 숫자여야 합니다(${it.name || it.itemId || "품목"}).`;
+    if (!Number.isFinite(p) || p < 0) return `단가는 0 이상의 숫자여야 합니다(${it.name || it.itemId || "품목"}).`;
+  }
+  return null;
+}
 function _buildItemLineTotals(items) {
   const lines = (items || []).map(it => {
     const supplyAmount = _round2((Number(it.qty) || 0) * (Number(it.unitPrice) || 0));
@@ -4162,6 +4265,8 @@ app.post("/api/erp/quotations", async (req, res) => {
     const { date, validUntil, partnerId, partnerName, locationId, items, memo, user: createdBy } = req.body || {};
     if (!date || !partnerName) return res.status(400).json({ ok: false, message: "견적일자와 거래처명은 필수입니다." });
     if (!Array.isArray(items) || !items.length) return res.status(400).json({ ok: false, message: "품목을 1개 이상 입력하세요." });
+    const _lineErr = _validateItemLines(items);
+    if (_lineErr) return res.status(400).json({ ok: false, message: _lineErr });
     const totals = _buildItemLineTotals(items);
     const quote = {
       id: `qt_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
@@ -4411,6 +4516,8 @@ app.post("/api/erp/purchase-orders", async (req, res) => {
     if (!locationId) return res.status(400).json({ ok: false, message: "입고 위치를 선택하세요." });
     if (!Array.isArray(items) || !items.length) return res.status(400).json({ ok: false, message: "품목을 1개 이상 입력하세요." });
     if (items.some(it => !it.itemId)) return res.status(400).json({ ok: false, message: "모든 라인에 품목을 선택하세요." });
+    const _lineErr = _validateItemLines(items);
+    if (_lineErr) return res.status(400).json({ ok: false, message: _lineErr });
     const totals = _buildItemLineTotals(items);
     const po = {
       id: `po_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
@@ -4605,6 +4712,8 @@ app.post("/api/erp/purchase-requests", async (req, res) => {
     if (!date) return res.status(400).json({ ok: false, message: "요청일자는 필수입니다." });
     if (!Array.isArray(items) || !items.length) return res.status(400).json({ ok: false, message: "품목을 1개 이상 입력하세요." });
     if (items.some(it => !it.itemId)) return res.status(400).json({ ok: false, message: "모든 라인에 품목을 선택하세요." });
+    const _lineErr = _validateItemLines(items);
+    if (_lineErr) return res.status(400).json({ ok: false, message: _lineErr });
     const totals = _buildItemLineTotals(items);
     const pr = {
       id: `pr_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
@@ -4793,8 +4902,14 @@ app.post("/api/erp/stock/adjust", async (req, res) => {
     const { itemId, locationId, type, qty, memo, user } = req.body || {};
     if (!itemId || !locationId) return res.status(400).json({ ok: false, message: "품목과 위치를 선택하세요." });
     if (!["in", "out"].includes(type)) return res.status(400).json({ ok: false, message: "입고/출고 구분이 올바르지 않습니다." });
-    const qtyNum = Math.abs(Number(qty) || 0);
-    if (qtyNum <= 0) return res.status(400).json({ ok: false, message: "수량은 0보다 커야 합니다." });
+    // Math.abs()로 감싸고 있어 qty:-5를 보내면 조용히 5로 바뀌어 처리됐다 — 입고/출고 방향은
+    // type이 정하므로 음수 수량은 사용자의 오입력이거나 연동 버그이지 "절대값으로 처리하라"는
+    // 뜻이 아니다. 조용히 고치지 말고 거부한다.
+    const qtyRaw = Number(qty);
+    if (!Number.isFinite(qtyRaw) || qtyRaw <= 0) return res.status(400).json({ ok: false, message: "수량은 0보다 큰 숫자여야 합니다." });
+    const qtyNum = qtyRaw;
+    const refErr = await _erpRefsExist(itemId, [locationId], companyId);
+    if (refErr) return res.status(404).json({ ok: false, message: refErr });
     const entry = {
       id: `sl_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
       itemId, locationId, type, qty: qtyNum, refType: "manual", refId: null, refNo: null,
@@ -4831,6 +4946,21 @@ app.post("/api/erp/stock/count", async (req, res) => {
     const { locationId, lines, user } = req.body || {};
     if (!locationId || !Array.isArray(lines) || !lines.length)
       return res.status(400).json({ ok: false, message: "위치와 실사 항목이 필요합니다." });
+    // 실사 수량은 "창고에서 실제로 센 개수"라 음수가 될 수 없다. 검증이 없어 countedQty:-50이
+    // 그대로 접수되면 그 차이만큼 출고 원장이 생겨 재고가 마이너스로 내려갔다.
+    const negLine = lines.find(l => l && l.itemId && Number.isFinite(Number(l.countedQty)) && Number(l.countedQty) < 0);
+    if (negLine) {
+      return res.status(400).json({ ok: false, message: "실사 수량은 0 이상이어야 합니다." });
+    }
+    {
+      const locErr = await _erpRefsExist(null, [locationId], companyId);
+      if (locErr) return res.status(404).json({ ok: false, message: locErr });
+      for (const l of lines) {
+        if (!l || !l.itemId) continue;
+        const itemErr = await _erpRefsExist(l.itemId, [], companyId);
+        if (itemErr) return res.status(404).json({ ok: false, message: itemErr });
+      }
+    }
     const now = new Date().toISOString();
     const countId = `count_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     if (USE_JSON_FILE) {
@@ -4895,8 +5025,11 @@ app.post("/api/erp/stock/transfer", async (req, res) => {
     const { itemId, fromLocationId, toLocationId, qty, memo, user } = req.body || {};
     if (!itemId || !fromLocationId || !toLocationId) return res.status(400).json({ ok: false, message: "품목과 출발/도착 위치를 선택하세요." });
     if (fromLocationId === toLocationId) return res.status(400).json({ ok: false, message: "출발 위치와 도착 위치가 같을 수 없습니다." });
-    const qtyNum = Math.abs(Number(qty) || 0);
-    if (qtyNum <= 0) return res.status(400).json({ ok: false, message: "수량은 0보다 커야 합니다." });
+    const qtyRawT = Number(qty);
+    if (!Number.isFinite(qtyRawT) || qtyRawT <= 0) return res.status(400).json({ ok: false, message: "수량은 0보다 큰 숫자여야 합니다." });
+    const qtyNum = qtyRawT;
+    const refErrT = await _erpRefsExist(itemId, [fromLocationId, toLocationId], companyId);
+    if (refErrT) return res.status(404).json({ ok: false, message: refErrT });
     const transferId = `tr_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const now = new Date().toISOString();
     const createdBy = user || "unknown";
