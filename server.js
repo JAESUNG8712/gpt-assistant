@@ -252,20 +252,24 @@ function omitPw(emp) {
 //     client의 결재함 화면들이 실제로 쓰는 가시성 규칙(authorId/approvers[].empId/
 //     _refsToVisibleEmpIds(receivers)/_refsToVisibleEmpIds(cc))을 그대로 서버에 재현한다.
 // No-op when `auth` is absent (e.g. bootstrap-exempt paths never reach here with real data).
-function _refToEmpIdsServer(ref, employees) {
+// asOf: 문서 기준일(상신일). 부서/팀 그룹 참조는 조회 시점 소속으로 매번 다시 계산되므로,
+// 그대로 두면 오늘 입사한 사람이 입사 전 그 부서 앞 문서까지 전부 열람할 수 있다.
+// 클라이언트(_refToEmpIds)와 동일한 기준으로 문서 기준일 이후 입사자를 제외한다.
+function _refToEmpIdsServer(ref, employees, asOf) {
   if (typeof ref === "number") return [ref];
   if (typeof ref !== "string") return [];
   if (/^\d+$/.test(ref)) return [Number(ref)];
   if (ref.startsWith("emp:")) return [Number(ref.slice(4))];
-  if (ref.startsWith("dept:")) { const d = ref.slice(5); return employees.filter(e => e.active && e.dept === d).map(e => e.id); }
-  if (ref.startsWith("team:")) { const [d, t] = ref.slice(5).split("::"); return employees.filter(e => e.active && e.dept === d && e.team === t).map(e => e.id); }
+  const joinedBy = e => !asOf || !e.hire || String(e.hire).slice(0, 10) <= String(asOf).slice(0, 10);
+  if (ref.startsWith("dept:")) { const d = ref.slice(5); return employees.filter(e => e.active && e.dept === d && joinedBy(e)).map(e => e.id); }
+  if (ref.startsWith("team:")) { const [d, t] = ref.slice(5).split("::"); return employees.filter(e => e.active && e.dept === d && e.team === t && joinedBy(e)).map(e => e.id); }
   return [];
 }
-function _refsToVisibleEmpIdsServer(refs, employees) {
+function _refsToVisibleEmpIdsServer(refs, employees, asOf) {
   const direct = [], group = [];
   (refs || []).forEach(ref => {
     const isGroup = typeof ref === "string" && (ref.startsWith("dept:") || ref.startsWith("team:"));
-    (isGroup ? group : direct).push(..._refToEmpIdsServer(ref, employees));
+    (isGroup ? group : direct).push(..._refToEmpIdsServer(ref, employees, isGroup ? asOf : undefined));
   });
   const directSet = new Set(direct);
   const visibleGroup = group.filter(id => {
@@ -335,8 +339,9 @@ function filterDataForRole(data, auth) {
       if (!d) return false;
       if (String(d.authorId) === myId) return true;
       if (Array.isArray(d.approvers) && d.approvers.some(a => a && String(a.empId) === myId)) return true;
-      if (_refsToVisibleEmpIdsServer(d.receivers, employees).map(String).includes(myId)) return true;
-      if (_refsToVisibleEmpIdsServer(d.cc, employees).map(String).includes(myId)) return true;
+      const _asOf = d.submittedAt || d.createdAt;
+      if (_refsToVisibleEmpIdsServer(d.receivers, employees, _asOf).map(String).includes(myId)) return true;
+      if (_refsToVisibleEmpIdsServer(d.cc, employees, _asOf).map(String).includes(myId)) return true;
       return false;
     });
   }

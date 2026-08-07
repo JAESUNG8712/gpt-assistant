@@ -992,11 +992,22 @@ router.post('/emp-pay-plan', async (req, res) => {
     return res.status(400).json({ error: 'empId와 year는 필수입니다.' });
   }
   if (!Array.isArray(body.items)) return res.status(400).json({ error: 'items는 배열이어야 합니다.' });
-  const items = body.items.map(it => ({
+  const rawItems = body.items.map(it => ({
     category: (it && it.category) || '',
     name: (it && it.name) || '',
     amount: Number(it && it.amount) || 0,
-  })).filter(it => it.name && it.amount !== 0);
+  })).filter(it => it.name);
+  const items = rawItems.filter(it => it.amount !== 0);
+  // mode:'merge' — 엑셀 업로드처럼 "파일에 있는 항목만" 반영해야 하는 경우.
+  // 기본(mode 없음)은 기존처럼 전체 교체 = 화면 그리드가 36개 항목을 모두 제출하는
+  // 정상 경로이며, 사용자가 어떤 항목을 일부러 비운 것도 그대로 반영돼야 하므로 옳다.
+  // 그런데 엑셀 업로드는 헤더 이름이 표준 항목명과 완전히 일치하는 열만 인식하므로,
+  // 열 제목에 공백 하나만 달라도 그 항목이 인식되지 않는다 — 전체 교체로 처리하면
+  // 36개가 저장된 직원에게 1개 열만 인식된 파일을 올렸을 때 나머지 35개가 조용히
+  // 사라진다(실측 지적). merge에서는 파일에 실제로 등장한 항목명만 갱신하고,
+  // 파일에서 0으로 명시한 항목은 삭제로 간주한다(등장하지 않은 항목은 그대로 보존).
+  const mergeMode = body.mode === 'merge';
+  const presentNames = new Set(rawItems.map(it => it.name));
   // 퇴직급여 증가분 자동계산에 쓰이는 개인별 파라미터 — items와 별개로 저장(계산에
   // 필요한 "가정값"일 뿐 그 자체가 판관비 라인 항목은 아님).
   const severanceType = body.severanceType === 'DB' ? 'DB' : (body.severanceType === 'DC' ? 'DC' : null);
@@ -1009,7 +1020,12 @@ router.post('/emp-pay-plan', async (req, res) => {
     const now = new Date().toISOString();
     if (existing) {
       existing.empName = body.empName || existing.empName;
-      existing.items = items;
+      if (mergeMode) {
+        const kept = (existing.items || []).filter(prev => !presentNames.has(prev.name));
+        existing.items = kept.concat(items);
+      } else {
+        existing.items = items;
+      }
       if (severanceType !== null || body.severanceType !== undefined) existing.severanceType = severanceType;
       if (severanceMultiplier !== undefined) existing.severanceMultiplier = severanceMultiplier;
       if (severanceBaseline !== undefined) existing.severanceBaseline = severanceBaseline;

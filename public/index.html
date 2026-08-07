@@ -12637,7 +12637,7 @@ function _myPendingCount(){
 }
 function _myOutboxBadge(){const n=approvalDocs.filter(d=>d.authorId===currentUser?.id&&d.status==="in_progress").length;return n>0?` <span style="background:#ef4444;color:white;border-radius:9px;font-size:9px;padding:1px 5px;font-weight:700">${n}</span>`:""}
 function _myInboxBadge(){const n=_myPendingCount();return n>0?` <span style="background:#ef4444;color:white;border-radius:9px;font-size:9px;padding:1px 5px;font-weight:700">${n}</span>`:""}
-function _myReceiveBadge(){const uid=currentUser?.id;if(!uid)return"";const n=approvalDocs.filter(d=>_refsToVisibleEmpIds(d.receivers).includes(uid)&&d.status==="in_progress").length;return n>0?` <span style="background:#f59e0b;color:white;border-radius:9px;font-size:9px;padding:1px 5px;font-weight:700">${n}</span>`:""}
+function _myReceiveBadge(){const uid=currentUser?.id;if(!uid)return"";const n=approvalDocs.filter(d=>_refsToVisibleEmpIds(d.receivers,d.submittedAt||d.createdAt).includes(uid)&&d.status==="in_progress").length;return n>0?` <span style="background:#f59e0b;color:white;border-radius:9px;font-size:9px;padding:1px 5px;font-weight:700">${n}</span>`:""}
 function _getDocTitle(tplId,fd){
   if(tplId==="tpl-vacation")return`${fd.leaveType||"휴가"} 신청 (${fd.startDate||""}~${fd.endDate||""})`;
   if(tplId==="tpl-halfday")return`${fd.halfType||"반차"} 신청 (${fd.date||""})`;
@@ -12819,22 +12819,28 @@ function renderApprovalDraftPage(){
 let _customApprovers=[];
 let _orgPicker={multi:true,selected:[],exclude:[],onConfirm:null,search:"",allowGroups:false};
 // 그룹 참조 키: "emp:<id>" | "dept:<부문명>" | "team:<부문명>::<부서명>"
-function _refToEmpIds(ref){
+// asOf: 문서 기준일(상신일). 부서/팀 단위 수신·참조는 저장된 값이 "dept:영업본부" 같은
+// 그룹 참조라 조회 시점의 소속으로 매번 다시 계산된다 — 그래서 오늘 입사한 사람이
+// 입사 전에 오간 그 부서 앞 결재 문서(병가 사유·경조사·자녀 정보 등)까지 전부 열람할 수
+// 있었다. 문서 기준일보다 나중에 입사한 사람은 그룹 참조 대상에서 제외한다(개인을 직접
+// 지정한 참조는 의도적으로 지목한 것이므로 그대로 둔다).
+function _refToEmpIds(ref,asOf){
   if(typeof ref==="number")return[ref];
   if(typeof ref!=="string")return[];
   if(/^\d+$/.test(ref))return[Number(ref)];
   if(ref.startsWith("emp:"))return[Number(ref.slice(4))];
-  if(ref.startsWith("dept:")){const d=ref.slice(5);return employees.filter(e=>e.active&&e.dept===d).map(e=>e.id);}
-  if(ref.startsWith("team:")){const[d,t]=ref.slice(5).split("::");return employees.filter(e=>e.active&&e.dept===d&&e.team===t).map(e=>e.id);}
+  const joinedBy=e=>!asOf||!e.hire||String(e.hire).slice(0,10)<=String(asOf).slice(0,10);
+  if(ref.startsWith("dept:")){const d=ref.slice(5);return employees.filter(e=>e.active&&e.dept===d&&joinedBy(e)).map(e=>e.id);}
+  if(ref.startsWith("team:")){const[d,t]=ref.slice(5).split("::");return employees.filter(e=>e.active&&e.dept===d&&e.team===t&&joinedBy(e)).map(e=>e.id);}
   return[];
 }
 // 부서/팀 단위(그룹) 참조로 노출되는 인원 중, 개인별로 "그룹 노출 제외"가 설정된 사람은 숨김.
 // 단, 해당 인원이 직접(emp:/개인) 참조로도 지정된 경우는 정상 노출.
-function _refsToVisibleEmpIds(refs){
+function _refsToVisibleEmpIds(refs,asOf){
   const direct=[],group=[];
   (refs||[]).forEach(ref=>{
     const isGroup=typeof ref==="string"&&(ref.startsWith("dept:")||ref.startsWith("team:"));
-    (isGroup?group:direct).push(..._refToEmpIds(ref));
+    (isGroup?group:direct).push(..._refToEmpIds(ref,isGroup?asOf:undefined));
   });
   const directSet=new Set(direct);
   const visibleGroup=group.filter(id=>{
@@ -13107,7 +13113,7 @@ function renderApprovalInbox(){
   let toApprove=approvalDocs.filter(d=>d.status==="in_progress"&&d.approvers.some(a=>a.empId===uid&&a.status==="pending")).sort((a,b)=>b.createdAt.localeCompare(a.createdAt));
   toApprove=_apvFilterDocs(toApprove);
   const allApprovals=currentUser.role==="admin"?_apvFilterDocs(approvalDocs.filter(d=>d.status==="in_progress")):[];
-  const receiveCnt=approvalDocs.filter(d=>_refsToVisibleEmpIds(d.receivers).includes(uid)).length;
+  const receiveCnt=approvalDocs.filter(d=>_refsToVisibleEmpIds(d.receivers,d.submittedAt||d.createdAt).includes(uid)).length;
   c.innerHTML=`<div class="card"><div class="card-head"><h3>📥 결재함</h3></div>
   ${_apvFilterBar("renderApprovalInbox()")}
   <div class="card-body">
@@ -13120,7 +13126,7 @@ function renderApprovalInbox(){
 }
 function renderApprovalCcInbox(){
   const c=$("#content");const uid=currentUser.id;
-  let ccDocs=approvalDocs.filter(d=>_refsToVisibleEmpIds(d.cc).includes(uid)&&(d.status==="approved"||d.status==="in_progress")).sort((a,b)=>b.updatedAt.localeCompare(a.updatedAt));
+  let ccDocs=approvalDocs.filter(d=>_refsToVisibleEmpIds(d.cc,d.submittedAt||d.createdAt).includes(uid)&&(d.status==="approved"||d.status==="in_progress")).sort((a,b)=>b.updatedAt.localeCompare(a.updatedAt));
   ccDocs=_apvFilterDocs(ccDocs);
   c.innerHTML=`<div class="card"><div class="card-head"><h3>📋 참조함</h3></div>
   ${_apvFilterBar("renderApprovalCcInbox()")}
@@ -13144,7 +13150,7 @@ function renderApprovalCompleted(){
 }
 function renderApprovalReceive(){
   const c=$("#content");const uid=currentUser.id;
-  let docs=approvalDocs.filter(d=>_refsToVisibleEmpIds(d.receivers).includes(uid)).sort((a,b)=>b.updatedAt.localeCompare(a.updatedAt));
+  let docs=approvalDocs.filter(d=>_refsToVisibleEmpIds(d.receivers,d.submittedAt||d.createdAt).includes(uid)).sort((a,b)=>b.updatedAt.localeCompare(a.updatedAt));
   docs=_apvFilterDocs(docs);
   const SM={in_progress:"진행중",approved:"결재완료",rejected:"반려",cancelled:"취소"};
   const SC={in_progress:"blue",approved:"green",rejected:"red",cancelled:"gray"};
@@ -17612,7 +17618,11 @@ async function _eppProcessRows(rows){
 }
 async function _eppUploadRows(list){
   for(const {emp,year,items,severanceType} of list){
-    const body={empId:emp.id,empName:emp.name,year,items};
+    // 엑셀 업로드는 "파일에 있는 항목만" 반영한다(mode:"merge"). 표준 항목명과 완전히
+    // 일치하는 열만 인식하는 구조라, 열 제목 공백 하나 차이로 인식되지 않은 항목까지
+    // 전체 교체로 지워버리면 기존에 입력해둔 나머지 항목이 통째로 사라진다.
+    // 화면 그리드 저장(submitEmpPayPlan)은 36개 항목을 모두 제출하므로 기존처럼 전체 교체.
+    const body={empId:emp.id,empName:emp.name,year,items,mode:"merge"};
     if(severanceType)body.severanceType=severanceType;
     const r=await serverRequest("POST","/api/budget/emp-pay-plan",body);
     if(r?.ok)_eppUploadTally.success++;
