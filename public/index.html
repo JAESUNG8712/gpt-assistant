@@ -1476,6 +1476,36 @@ let _myPagePwVerified = false;     // 내정보·근태 비밀번호 재인증 �
 let _pendingRender = false;
 let _autoKpiDraftTimer = null;          // lock keys held by this client
 
+// ── 배경 동기화가 입력 중인 화면을 지우지 않도록 하는 지연 렌더 ──────────────────
+// 다른 사용자가 저장하면 SSE(data_updated)와 주기 동기화가 최신 데이터를 받아 renderPage()로
+// 화면을 통째로 다시 그린다. 그런데 그 순간 사용자가 폼에 입력 중이면 입력하던 내용이 전부
+// 사라진다(실측 재현: A가 직원 등록 폼에 "테스트입력중"을 친 상태에서 B가 저장하자 A의
+// 입력칸이 빈 값이 됨 — 경고도 없고 되돌릴 방법도 없음).
+// closeModal()에는 이미 `_pendingRender`를 보고 나중에 다시 그리는 장치가 있었지만, 이
+// 플래그를 true로 만드는 곳이 아무 데도 없어 실제로는 한 번도 동작하지 않는 미완성
+// 코드였다 — 그 원래 의도대로 배선한다.
+function _isEditingNow(){
+  if(document.querySelector(".modal-ov"))return true; // 모달은 대개 입력 폼
+  const ae=document.activeElement;
+  if(!ae)return false;
+  if(ae.isContentEditable)return true;
+  const tag=(ae.tagName||"").toLowerCase();
+  return tag==="input"||tag==="textarea"||tag==="select";
+}
+// 입력 중이면 다시 그리지 않고 미뤄둔다. 데이터 자체는 이미 메모리에 반영돼 있으므로
+// 사용자가 입력을 마치고 포커스를 벗어나거나 모달을 닫는 순간 최신 화면이 그려진다.
+function renderPageDeferIfEditing(){
+  if(_isEditingNow()){_pendingRender=true;return false;}
+  _pendingRender=false;renderPage();return true;
+}
+document.addEventListener("focusout",()=>{
+  if(!_pendingRender)return;
+  // 포커스가 다른 입력칸으로 옮겨가는 중일 수 있어 한 박자 뒤에 확인한다.
+  setTimeout(()=>{
+    if(_pendingRender&&!_isEditingNow()){_pendingRender=false;renderPage();}
+  },150);
+});
+
 // ── 인증 토큰(서버가 /login에서 발급, Authorization: Bearer 헤더로 전달) ──
 // serverConfig.url이 임의의 서버(공유 링크 등)를 가리킬 수 있어 쿠키 기반 세션 대신
 // 명시적으로 첨부하는 Bearer 토큰 방식을 쓴다. 새로고침 후에도 재로그인하지 않도록
@@ -1828,7 +1858,7 @@ function startHeartbeat(){
               if(newData.gradeSettings) Object.assign(gradeSettings,newData.gradeSettings);
               serverConfig.statusMsg=`동기화됨 ${new Date().toLocaleTimeString("ko-KR")} (v${svr})`;
               updateServerStatusUI();
-              renderPage(); // refresh current page
+              renderPageDeferIfEditing(); // refresh current page (입력 중이면 미룸)
               console.log("[Server] Data synced from server.");
             }
           }).catch(()=>{});
@@ -4854,7 +4884,7 @@ function connectSSE(){
             if(prevSettings!==currSettings){
               showToast(`관리자가 설정을 변경했습니다${ev.savedBy?` (${ev.savedBy})`:""}`, "info");
             }
-            renderPage();
+            renderPageDeferIfEditing();
             renderSidebar();
             serverConfig.statusMsg=`동기화 완료 ${new Date().toLocaleTimeString("ko-KR")} (${ev.savedBy})`;
             updateServerStatusUI();
