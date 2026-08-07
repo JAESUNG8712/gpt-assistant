@@ -5409,7 +5409,12 @@ app.post("/api/recruit/jobs/:id/close", async (req, res) => {
     if (!rows.length) return res.status(404).json({ ok: false, message: "채용공고를 찾을 수 없습니다." });
     if (!(await _recruitCanViewJob(rows[0].data, userId, role, companyId))) return res.status(403).json({ ok: false, message: "마감 권한이 없습니다." });
     const job = { ...rows[0].data, status: "closed", updatedAt: new Date().toISOString() };
-    await pool.query("UPDATE recruit_jobs SET data = $2, updated_at = NOW() WHERE id = $1", [id, job]);
+    // recruit_jobs의 PK는 (company_id, id) 복합키라 서로 다른 회사가 같은 id 문자열을
+    // 각자 가질 수 있다(클라이언트가 job 생성 시 id를 직접 지정할 수 있어 실제로 재현됨) —
+    // 이 UPDATE가 company_id 없이 id만으로 걸리면 우연히(또는 의도적으로) 같은 id를 가진
+    // 다른 회사의 채용공고까지 함께 덮어써버린다(실측: 공고 close 한 번으로 다른 회사의
+    // 공고 제목·부서·상태가 이 회사 값으로 전부 뒤바뀜). SELECT와 동일하게 company_id로 스코프.
+    await pool.query("UPDATE recruit_jobs SET data = $3, updated_at = NOW() WHERE id = $1 AND (company_id = $2 OR company_id IS NULL)", [id, companyId, job]);
     res.json({ ok: true, job });
   } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
 });
@@ -6008,7 +6013,12 @@ async function _pgLockedUpdate(table, id, mutate, companyId) {
     );
     if (!rows.length) throw new _RecruitRouteError(404, "레코드를 찾을 수 없습니다.");
     const data = await mutate(rows[0].data);
-    await client.query(`UPDATE ${table} SET data = $2, updated_at = NOW() WHERE id = $1`, [id, data]);
+    // recruit_candidates/recruit_interviews의 id는 (jobs와 달리) 단일컬럼 PK라 서버가
+    // 생성한 값만 쓰이고 클라이언트가 지정할 수 없어 현재는 회사간 id 충돌이 사실상
+    // 불가능하지만, 위 SELECT와 동일하게 company_id로 UPDATE도 스코프해 이 함수가 잠근
+    // 것과 실제로 쓰는 행이 항상 같은 행이도록 방어한다(jobs close 라우트에서 발견된
+    // "SELECT는 스코프됐는데 UPDATE는 안 됨" 클래스의 버그 재발 방지).
+    await client.query(`UPDATE ${table} SET data = $2, updated_at = NOW() WHERE id = $1 AND (company_id = $3 OR company_id IS NULL)`, [id, data, companyId || null]);
     await client.query("COMMIT");
     return data;
   } catch (e) {
@@ -6451,7 +6461,7 @@ app.post("/api/recruit/candidates/:id/delete", async (req, res) => {
     const { rows } = await pool.query("SELECT data FROM recruit_candidates WHERE id = $1 AND is_deleted = FALSE AND (company_id = $2 OR company_id IS NULL)", [id, companyId]);
     if (!rows.length) return res.status(404).json({ ok: false, message: "지원자를 찾을 수 없습니다." });
     if (!(await _recruitCanViewCandidate(rows[0].data, userId, role, companyId))) return res.status(403).json({ ok: false, message: "삭제 권한이 없습니다." });
-    await pool.query("UPDATE recruit_candidates SET is_deleted = TRUE WHERE id = $1", [id]);
+    await pool.query("UPDATE recruit_candidates SET is_deleted = TRUE WHERE id = $1 AND (company_id = $2 OR company_id IS NULL)", [id, companyId]);
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
 });
