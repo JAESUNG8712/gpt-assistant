@@ -1479,10 +1479,28 @@ module.exports = function budgetRouterFactory(deps) {
   // 별도의 비용귀속부문 버킷으로 잡혀 사업부 롤업이 쪼개지는 문제가 있었다(사용자 보고).
   function _upsertSgaItem(sgaItems, dept, team, it, note) {
     const resolvedCostDept = (it.costDept && !_isSelfReferentialCostDept(it.costDept, team)) ? it.costDept : dept;
+    // 출처(예산 시트 / 조직별 비용 블록)가 다른 항목끼리는 절대 같은 항목으로 보지 않는다.
+    // 예전에는 이름·세부내역·계정과목·팀·비용귀속부문만 비교해서, 두 시트가 같은 이름·같은
+    // 부문의 줄을 갖고 있으면(예: "급여"의 비용귀속부문이 마침 plan.dept와 같아지는 흔한
+    // 경우) 서로 덮어쓰면서 note(출처)까지 뒤바뀌었다. 그 결과 예산 시트를 다시 올리면
+    // note가 "예산 반영"으로 뒤집힌 그 항목을 _pruneRedundantBudgetSummaryItems()가
+    // "조직별에 같은 이름이 있으니 중복"으로 판단해 삭제해버려, 조직별로 분리해둔 부문
+    // 금액이 통째로 사라졌다(실측 재현: 예산→조직별→예산 재업로드 순서에서 전략사업부
+    // 급여가 소멸). 출처를 키에 포함하면 두 줄이 각자 유지되고, prune이 의도대로
+    // "조직별 분해가 있으면 예산 시트의 합계 줄만 제거"하도록 안정적으로 동작한다.
+    // 사람이 그리드에서 직접 만든 항목(note 없음/커스텀)은 어느 업로드와도 계속 매칭되게
+    // 남겨둬야 기존처럼 업로드로 갱신할 수 있으므로, "반대편 출처"만 배제한다.
+    const incomingIsCostBlock = _isCostBlockNote(note);
+    const incomingIsBudget = _isBudgetUploadNote(note);
+    const sourceCompatible = e => {
+      if (incomingIsCostBlock) return !_isBudgetUploadNote(e.note);
+      if (incomingIsBudget) return !_isCostBlockNote(e.note);
+      return true;
+    };
     const existing = sgaItems.find(e =>
       e.name === it.name && (e.detail || '').trim() === (it.detail || '').trim() &&
       e.accountType === it.accountType && (e.team || '') === team &&
-      (e.costDept || dept) === resolvedCostDept
+      (e.costDept || dept) === resolvedCostDept && sourceCompatible(e)
     );
     const baseAmount = round2((it.months || []).reduce((s, v) => s + (v || 0), 0));
     const category = _guessSgaCategory(it.name);

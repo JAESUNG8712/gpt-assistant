@@ -1352,6 +1352,20 @@ function _dataTeams(dept,cur){
   if(cur)s.add(cur);
   return [...s].sort((a,b)=>String(a).localeCompare(String(b),"ko"));
 }
+// ── 직원 정보 수정 폼의 select: 저장된 값이 마스터 목록에 없으면 그 값을 옵션으로 살려둔다 ──
+// 이게 없으면 브라우저가 첫 옵션(또는 빈 값)을 반환하고 saveEmpEdit()이 그걸 "사용자가 그렇게
+// 골랐다"고 간주해 그대로 저장한다 — 실측: 마스터 목록에 없는 부서를 가진 직원(엑셀 일괄
+// 업로드로 들어온 직원이 정확히 이 상태, executeBulkImport는 orgDB에 부서를 등록하지 않음)의
+// 연락처만 고쳐 저장했더니 부서·팀이 빈 값이 되고 직군이 영업→관리직, 학력이 학사→고등학교
+// 졸업으로 조용히 바뀌었다. 사용자가 건드리지도 않은 인사 마스터 데이터가 파괴되는 문제.
+// cur를 목록 맨 앞에 넣어 선택 상태로 유지하면, 값이 보존되면서 마스터 목록 선택도 그대로 된다.
+function _selOptsKeepCurrent(list,cur,placeholder){
+  const arr=(Array.isArray(list)?list:[]).filter(v=>v!=null&&v!=="");
+  const c=(cur==null?"":String(cur));
+  if(c&&!arr.includes(c))arr.unshift(c);
+  return (placeholder!==undefined?`<option value="">${h(placeholder)}</option>`:"")
+    +arr.map(v=>`<option${c===v?" selected":""}>${h(v)}</option>`).join("");
+}
 // 조직(부서/팀) 단위로 표시되는 모든 구성원 목록에 공통 적용하는 정렬 규칙:
 // 1) 직책자(팀장/사업부장/부문장 등 orgDB.positions에 정의된 직책)를 맨 위로,
 // 2) 그 외에는 직급(orgDB.ranks 순서, 높은 직급 먼저) 순으로,
@@ -2963,6 +2977,7 @@ function saveEvaluators(targetId,year){
   const existing=compSessions.find(s=>s.targetId===targetId&&s.year===year);
   if(existing){compSessions=compSessions.map(s=>s.id===existing.id?{...s,evaluatorIds:checked,updatedAt:new Date().toISOString()}:s);}
   else{compSessions.push({id:genId(),year,targetId,type:getCompType(getEmp(targetId)),evaluatorIds:checked,status:"open",createdAt:new Date().toISOString(),updatedAt:new Date().toISOString()});}
+  autoSaveToServerIfEnabled();
   closeModal();showToast(`평가자 ${checked.length}명이 저장되었습니다.`,"success");renderCompEval();
 }
 function dlCompFullResult(year){
@@ -3046,6 +3061,7 @@ function handleEvaluatorUpload(input,year){
         else{compSessions.push({id:genId(),year,targetId:target.id,type:getCompType(target),evaluatorIds:evalIds,status:"open",createdAt:new Date().toISOString(),updatedAt:new Date().toISOString()});}
         updated++;
       });
+      if(updated)autoSaveToServerIfEnabled();
       showToast(`${updated}명 평가자 업데이트${failed.length?" (오류 "+failed.length+"건)":""}`,updated>0?"success":"error");
       if(failed.length)console.warn(failed);
       renderCompEval();
@@ -7275,15 +7291,15 @@ function _openEmpEdit(id){
     <div class="fg"><label class="fl">성별</label><select class="fc" id="ee-gender"><option${e.gender==="남"?" selected":""}>남</option><option${e.gender==="여"?" selected":""}>여</option></select></div>
     <div class="fg"><label class="fl">국적</label><select class="fc" id="ee-nationality"><option${(e.nationality||"내국인")==="내국인"?" selected":""}>내국인</option><option${e.nationality==="외국인"?" selected":""}>외국인</option></select></div>
     <div class="fg"><label class="fl">입사일</label><input class="fc" id="ee-hire" type="date" value="${e.hire||""}"></div>
-    <div class="fg"><label class="fl">부서</label><select class="fc" id="ee-dept" onchange="syncEditTeams(this.value,'${h(e.team)}')"><option value="">선택</option>${orgDB.depts.map(d=>`<option${e.dept===d?" selected":""}>${h(d)}</option>`).join("")}</select></div>
-    <div class="fg"><label class="fl">팀</label><select class="fc" id="ee-team">${getTeams(e.dept).map(t=>`<option${e.team===t?" selected":""}>${h(t)}</option>`).join("")}</select></div>
-    <div class="fg"><label class="fl">직책</label><select class="fc" id="ee-position"><option value="">없음</option>${orgDB.positions.filter(p=>p).map(p=>`<option${e.position===p?" selected":""}>${h(p)}</option>`).join("")}</select></div>
-    <div class="fg"><label class="fl">직급</label><select class="fc" id="ee-rank">${orgDB.ranks.map(r=>`<option${e.rank===r?" selected":""}>${h(r)}</option>`).join("")}</select></div>
+    <div class="fg"><label class="fl">부서</label><select class="fc" id="ee-dept" onchange="syncEditTeams(this.value,'${h(e.team)}')">${_selOptsKeepCurrent(orgDB.depts,e.dept,"선택")}</select></div>
+    <div class="fg"><label class="fl">팀</label><select class="fc" id="ee-team">${_selOptsKeepCurrent(getTeams(e.dept),e.team)}</select></div>
+    <div class="fg"><label class="fl">직책</label><select class="fc" id="ee-position">${_selOptsKeepCurrent(orgDB.positions.filter(p=>p),e.position,"없음")}</select></div>
+    <div class="fg"><label class="fl">직급</label><select class="fc" id="ee-rank">${_selOptsKeepCurrent(orgDB.ranks,e.rank)}</select></div>
     <div class="fg"><label class="fl">직급연차</label><input class="fc" id="ee-rankyear" type="number" value="${e.rankYear||1}"></div>
-    <div class="fg"><label class="fl">직군</label><select class="fc" id="ee-jobgroup">${JOB_GROUPS.map(j=>`<option${e.jobGroup===j?" selected":""}>${j}</option>`).join("")}</select></div>
+    <div class="fg"><label class="fl">직군</label><select class="fc" id="ee-jobgroup">${_selOptsKeepCurrent(JOB_GROUPS,e.jobGroup)}</select></div>
     <div class="fg"><label class="fl">연봉</label><input class="fc" id="ee-salary" type="number" value="${e.salary||""}" oninput="updateSalaryPreview('ee-salary')"><div id="ee-salary-fmt" class="fz11 text-gray mt1">${e.salary?fmtSalary(e.salary):""}</div></div>
     <div class="fg"><label class="fl">총 경력 (년)</label><input class="fc" id="ee-career" type="number" value="${e.totalCareer||0}"></div>
-    <div class="fg"><label class="fl">최종학력</label><select class="fc" id="ee-edu">${EDU_LEVELS.map(ev=>`<option${e.edu===ev?" selected":""}>${ev}</option>`).join("")}</select></div>
+    <div class="fg"><label class="fl">최종학력</label><select class="fc" id="ee-edu">${_selOptsKeepCurrent(EDU_LEVELS,e.edu)}</select></div>
     <div class="fg"><label class="fl">이메일</label><input class="fc" id="ee-email" type="email" value="${h(e.email||"")}"></div>
     <div class="fg"><label class="fl">연락처</label><input class="fc" id="ee-phone" value="${h(e.phone||"")}"></div>
   </div>
@@ -7309,7 +7325,7 @@ function _openEmpEdit(id){
   setTimeout(_renderEmpEditCareers,30);
   setTimeout(_renderEmpEditLeaves,30);
 }
-function syncEditTeams(dept,curTeam){const el=$("#ee-team");if(!el)return;const ts=getTeams(dept);el.innerHTML=ts.map(t=>`<option${t===curTeam?" selected":""}>${h(t)}</option>`).join("");}
+function syncEditTeams(dept,curTeam){const el=$("#ee-team");if(!el)return;el.innerHTML=_selOptsKeepCurrent(getTeams(dept),curTeam);}
 function _renderEmpEditCareers(){
   const el=document.getElementById("ee-careers-wrap");if(!el)return;
   const cs=window._eeEditCareers||[];
@@ -7410,6 +7426,7 @@ function doDeleteEmp(id){
   kpiEntries.filter(k=>k.userId===id).forEach(k=>_tombstone("kpiEntries",k.id));
   employees=employees.filter(emp=>emp.id!==id);
   kpiEntries=kpiEntries.filter(k=>k.userId!==id);
+  autoSaveToServerIfEnabled();
   closeModal();showToast(`${e.name}님의 계정이 삭제되었습니다.`,"info");renderHRList();
 }
 function dlHRTemplate(){dlCSV("입사자_일괄등록_양식.csv",["로그인ID","초기비밀번호","이름","사번","권한","부서","팀","생년월일","성별","입사일","직군","직급","직급연차","연봉","최종학력","학교(졸업년도)","총경력년수","직책","이메일","연락처","주소"],[["member01","Member@123","홍길동","EMP-001","member","경영지원본부","인사팀","1993-05-10","남","2024-01-02","관리직","사원","1","42000000","대학교 졸업","서울대학교 (2018)","3","","hong@co.kr","010-0000-0000","서울시 강남구"]]);}
@@ -7942,14 +7959,14 @@ function openKpiReq(id){
     <div class="fg"><label class="fl">수정 요청 사유 <span class="req">*</span></label><textarea class="fc" id="rq-reason" rows="2" placeholder="수정이 필요한 이유를 입력하세요"></textarea></div>
   </div>
   <div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal()">취소</button><button class="btn btn-primary" onclick="submitKpiReq(${id})">요청 제출</button></div></div>`);}
-function submitKpiReq(id){const reason=$("#rq-reason")?.value.trim();if(!reason){showToast("수정 요청 사유를 입력하세요.","error");return;}const k=getKpi(id);changeRequests.push({id:genId(),kpiId:id,reqUserId:currentUser.id,status:"pending",reason,before:{actual:k.actual,rate:k.rate,detail:k.detail,selfScore:k.selfScore},after:{actual:$("#rq-actual")?.value.trim()||k.actual,rate:$("#rq-rate")?.value.trim()||k.rate,detail:$("#rq-detail")?.value.trim()||k.detail,selfScore:Number($("#rq-self")?.value)||k.selfScore},createdAt:ts(),updatedAt:new Date().toISOString()});closeModal();showToast("수정 요청이 제출되었습니다.","success");}
+function submitKpiReq(id){const reason=$("#rq-reason")?.value.trim();if(!reason){showToast("수정 요청 사유를 입력하세요.","error");return;}const k=getKpi(id);changeRequests.push({id:genId(),kpiId:id,reqUserId:currentUser.id,status:"pending",reason,before:{actual:k.actual,rate:k.rate,detail:k.detail,selfScore:k.selfScore},after:{actual:$("#rq-actual")?.value.trim()||k.actual,rate:$("#rq-rate")?.value.trim()||k.rate,detail:$("#rq-detail")?.value.trim()||k.detail,selfScore:Number($("#rq-self")?.value)||k.selfScore},createdAt:ts(),updatedAt:new Date().toISOString()});autoSaveToServerIfEnabled();closeModal();showToast("수정 요청이 제출되었습니다.","success");}
 function submitKpi(id){
   const k=getKpi(id);if(!k)return;
   const allKpis=kpiEntries.filter(ke=>ke.userId===k.userId&&ke.year===k.year);
   const wt=weightTotal(allKpis);
   if(wt!==100){showToast("KPI 비중 합계가 100%가 되어야 제출이 가능합니다. 현재: "+wt+"%","error");return;}
   kpiEntries=kpiEntries.map(ke=>ke.id===id?{...ke,goalSub:1,updatedAt:new Date().toISOString()}:ke);showToast("KPI가 제출되었습니다.","success");logAction("kpi_submitted","KPI 제출","kpi:"+k.userId,`${kpiEntries.filter(ke=>ke.userId===k.userId&&ke.year===k.year&&ke.goalSub).length}건`);autoSaveToServerIfEnabled();renderKPI(false);}
-function deleteKpi(id){_tombstone("kpiEntries",id);kpiEntries=kpiEntries.filter(k=>k.id!==id);showToast("KPI가 삭제되었습니다.","info");renderKPI(false);}
+function deleteKpi(id){_tombstone("kpiEntries",id);kpiEntries=kpiEntries.filter(k=>k.id!==id);autoSaveToServerIfEnabled();showToast("KPI가 삭제되었습니다.","info");renderKPI(false);}
 function dlKpiCSV(userId,year){const emp=getEmp(userId);dlCSV(`KPI_${emp?.name||userId}_${year}.csv`,["KPI항목","비중","전년실적","목표","전년비","전략","평가기준","실적","달성율","세부내용","자체점수","차상위자점수"],kpiEntries.filter(k=>k.userId===userId&&k.year===year).map(k=>[k.item,k.weight+"%",k.prev,k.goal,k.yoy,k.strategy,k.evalCriteria||"",k.actual||"",k.rate||"",k.detail||"",k.selfScore??"",k.ceoScore??""]));}
 
 // ==================== APPROVALS ====================
@@ -11718,13 +11735,25 @@ function _openLpDetail(recId){
     </div></div>
   </div>
   <div class="modal-foot">
-    <button class="btn btn-error btn-sm" onclick="if(confirm('삭제하시겠습니까?')){_tombstone('lowPerfData','${recId}');lowPerfData=lowPerfData.filter(r=>r.id!=='${recId}');autoSaveDebounced();closeModal();renderLowPerformer();}">삭제</button>
+    <button class="btn btn-error btn-sm" onclick="_deleteLpRecord('${recId}')">삭제</button>
     <button class="btn btn-secondary" onclick="closeModal()">닫기</button>
     <button class="btn btn-primary" onclick="_saveLpDetail('${recId}')">저장</button>
   </div></div>`);
 }
+function _deleteLpRecord(recId){
+  if(!confirm("삭제하시겠습니까?"))return;
+  // 화면에서 넘어온 recId는 문자열이지만 저장된 id는 숫자다. tombstone은 반드시 저장된
+  // 실제 id(숫자)로 남겨야 서버의 삭제 반영(deadIds 매칭)이 동작한다.
+  const rec=lowPerfData.find(r=>String(r.id)===String(recId));if(!rec)return;
+  _tombstone("lowPerfData",rec.id);
+  lowPerfData=lowPerfData.filter(r=>String(r.id)!==String(recId));
+  autoSaveToServerIfEnabled();
+  closeModal();
+  showToast("삭제되었습니다.","info");
+  renderLowPerformer();
+}
 function _saveLpDetail(recId){
-  const rec=lowPerfData.find(r=>r.id===recId);if(!rec)return;
+  const rec=lowPerfData.find(r=>String(r.id)===String(recId));if(!rec)return;
   rec.pipStart=$("#pip-start")?.value||"";
   rec.pipEnd=$("#pip-end")?.value||"";
   rec.pipGoal=$("#pip-goal")?.value?.trim()||"";
@@ -11734,7 +11763,7 @@ function _saveLpDetail(recId){
   renderLowPerformer();
 }
 function _setLpStatus(recId,status){
-  const rec=lowPerfData.find(r=>r.id===recId);if(!rec)return;
+  const rec=lowPerfData.find(r=>String(r.id)===String(recId));if(!rec)return;
   rec.status=status;
   _saveLpRecord(rec);
   showToast(`상태가 "${_lpStatusLabel(status)}"으로 변경되었습니다.`,"success");
@@ -11742,7 +11771,7 @@ function _setLpStatus(recId,status){
   renderLowPerformer();
 }
 function _addLpNote(recId){
-  const rec=lowPerfData.find(r=>r.id===recId);if(!rec)return;
+  const rec=lowPerfData.find(r=>String(r.id)===String(recId));if(!rec)return;
   const content=$("#lp-note-input")?.value?.trim();
   if(!content){showToast("내용을 입력하세요.","error");return;}
   if(!rec.notes)rec.notes=[];
@@ -11942,13 +11971,24 @@ function _logOrgChange(type,label,dept,team){
   if(orgChartHistory.length>500)orgChartHistory.shift();
 }
 function addOrgDept(){const v=$("#org-dept-new")?.value.trim();if(!v||orgDB.depts.includes(v))return;orgDB.depts.push(v);orgDB.teams[v]=[];_logOrgChange("dept_add",`부서 추가: ${v}`,v);renderSettingsOrg();broadcastSettingsChange("부서 추가: "+v);}
-function removeOrgDept(d){orgDB.depts=orgDB.depts.filter(x=>x!==d);delete orgDB.teams[d];_logOrgChange("dept_remove",`부서 삭제: ${d}`,d);renderSettingsOrg();broadcastSettingsChange("부서 삭제: "+d);}
+function removeOrgDept(d){
+  const inUse=(employees||[]).filter(e=>e.active&&e.dept===d);
+  if(inUse.length){
+    showToast(`"${d}"에 소속된 재직 직원이 ${inUse.length}명 있어 삭제할 수 없습니다. 먼저 해당 직원의 부서를 변경하세요.`,"error");
+    return;
+  }
+  if(!confirm(`"${d}" 부서를 삭제하시겠습니까?\n하위 팀 목록도 함께 삭제됩니다.`))return;
+  orgDB.depts=orgDB.depts.filter(x=>x!==d);delete orgDB.teams[d];_logOrgChange("dept_remove",`부서 삭제: ${d}`,d);renderSettingsOrg();broadcastSettingsChange("부서 삭제: "+d);}
 function addOrgRank(){const v=$("#org-rank-new")?.value.trim();if(!v||orgDB.ranks.includes(v))return;orgDB.ranks.push(v);renderSettingsOrg();}
 function removeOrgRank(r){orgDB.ranks=orgDB.ranks.filter(x=>x!==r);renderSettingsOrg();}
 function addOrgPos(){const v=$("#org-pos-new")?.value.trim();if(!v||orgDB.positions.includes(v))return;orgDB.positions.push(v);renderSettingsOrg();}
 function removeOrgPos(p){orgDB.positions=orgDB.positions.filter(x=>x!==p);renderSettingsOrg();}
 function addOrgTeam(dept){const safeId=dept.replace(/[\s\/]/g,"_");const v=$(`#org-team-new-${safeId}`)?.value.trim();if(!v)return;if(!orgDB.teams[dept])orgDB.teams[dept]=[];if(!orgDB.teams[dept].includes(v))orgDB.teams[dept].push(v);_logOrgChange("team_add",`팀 추가: ${dept} - ${v}`,dept,v);renderSettingsOrg();broadcastSettingsChange(`팀 추가: ${dept} - ${v}`);}
-function removeOrgTeam(dept,team){if(orgDB.teams[dept])orgDB.teams[dept]=orgDB.teams[dept].filter(t=>t!==team);_logOrgChange("team_remove",`팀 삭제: ${dept} - ${team}`,dept,team);renderSettingsOrg();broadcastSettingsChange(`팀 삭제: ${dept} - ${team}`);}
+function removeOrgTeam(dept,team){
+  const inUseT=(employees||[]).filter(e=>e.active&&e.dept===dept&&e.team===team);
+  if(inUseT.length){showToast(`"${team}"에 소속된 재직 직원이 ${inUseT.length}명 있어 삭제할 수 없습니다.`,"error");return;}
+  if(!confirm(`"${dept} - ${team}" 팀을 삭제하시겠습니까?`))return;
+  if(orgDB.teams[dept])orgDB.teams[dept]=orgDB.teams[dept].filter(t=>t!==team);_logOrgChange("team_remove",`팀 삭제: ${dept} - ${team}`,dept,team);renderSettingsOrg();broadcastSettingsChange(`팀 삭제: ${dept} - ${team}`);}
 // setCompEval replaced by inline handlers in renderSettingsMain
 function setStage(s){settings.stage=s;showToast(s==="goal"?"KPI 등록 단계로 변경되었습니다.":"KPI 결과 입력 단계로 변경되었습니다.","success");renderEvalOpsPage();renderSidebar();broadcastSettingsChange("KPI 운영 단계: "+(s==="goal"?"등록 단계":"결과 입력 단계"));}
 function setEvalYear(y){settings.evalYear=y;showToast(`평가 연도가 ${y}년으로 변경되었습니다.`,"success");renderEvalOpsPage();broadcastSettingsChange(`KPI 평가 연도: ${y}년`);}
