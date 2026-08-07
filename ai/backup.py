@@ -4,13 +4,14 @@ import sqlite3
 import json
 import zipfile
 import io
-import pickle
 from datetime import datetime
 from pathlib import Path
 
 _APP_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH  = os.getenv("DB_PATH", os.path.join(_APP_DIR, "data", "memory.db"))
-TOKEN_PATH   = os.getenv("GDRIVE_TOKEN_PATH", "/tmp/gdrive_token.pkl")
+# DB_PATH와 같은 디렉터리(영속 볼륨 마운트 시 그쪽)에 저장 — /tmp는 재배포·재시작마다 초기화되어
+# Google Drive 연동이 매번 끊기는 문제가 있었음 (DB_PATH가 이미 겪었던 문제와 동일한 유형)
+TOKEN_PATH   = os.getenv("GDRIVE_TOKEN_PATH", os.path.join(os.path.dirname(DB_PATH), "gdrive_token.json"))
 
 # Google Drive OAuth2 설정 (환경변수)
 GDRIVE_CLIENT_ID     = os.getenv("GDRIVE_CLIENT_ID", "")
@@ -122,16 +123,16 @@ async def gdrive_exchange_code(code: str) -> bool:
         token = resp.json()
 
     Path(TOKEN_PATH).parent.mkdir(parents=True, exist_ok=True)
-    with open(TOKEN_PATH, "wb") as f:
-        pickle.dump(token, f)
+    with open(TOKEN_PATH, "w", encoding="utf-8") as f:
+        json.dump(token, f)
     return True
 
 
 def _load_token() -> dict | None:
     if not os.path.exists(TOKEN_PATH):
         return None
-    with open(TOKEN_PATH, "rb") as f:
-        return pickle.load(f)
+    with open(TOKEN_PATH, "r", encoding="utf-8") as f:
+        return json.load(f)
 
 
 async def _refresh_access_token(token: dict) -> str:
@@ -152,8 +153,8 @@ async def _refresh_access_token(token: dict) -> str:
 
     # 갱신된 access_token 저장
     token["access_token"] = new_token["access_token"]
-    with open(TOKEN_PATH, "wb") as f:
-        pickle.dump(token, f)
+    with open(TOKEN_PATH, "w", encoding="utf-8") as f:
+        json.dump(token, f)
     return token["access_token"]
 
 

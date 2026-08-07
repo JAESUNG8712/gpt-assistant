@@ -115,12 +115,15 @@ class DataAggregator:
         if sample_count > 0:
             issues.append(f"DART API 미연결: {sample_count}개 종목 샘플 데이터 사용")
 
+        # krx_client의 mock 주가 fallback은 "pykrx 미설치 — 샘플 데이터" 또는
+        # "데이터 수집 불가 — 샘플 데이터" 두 가지 _note를 쓰므로 둘 다 감지해야 함
+        # (pykrx 문자열만 보면 "데이터 수집 불가" 케이스가 누락되어 실데이터로 오인됨)
         pykrx_missing = any(
-            "pykrx" in str(data.get("주가", {}).get("_note", ""))
+            "샘플 데이터" in str(data.get("주가", {}).get("_note", ""))
             for data in self.financial.values()
         )
         if pykrx_missing:
-            issues.append("KRX 실시간 데이터: pykrx 미설치 — 샘플 데이터 사용")
+            issues.append("KRX 실시간 데이터: 수집 실패 — 샘플 데이터 사용")
 
         return {
             "데이터신뢰도": "낮음 (샘플)" if issues else "높음 (실시간)",

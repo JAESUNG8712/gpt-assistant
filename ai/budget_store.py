@@ -246,11 +246,16 @@ def export_grid_xlsx(rows):
     for r_idx, row in enumerate(rows, start=1):
         for c_idx, val in enumerate(row, start=1):
             cell = sheet.cell(row=r_idx, column=c_idx)
-            if isinstance(val, str) and val.startswith("="):
-                cell.value = val
+            num = to_number(val)
+            if num is not None:
+                cell.value = num
+            # 업로드/입력된 셀 값을 그대로 수식으로 흘려보내면 Excel 수식 인젝션
+            # (예: =HYPERLINK(...)) 이 가능해지므로, 숫자가 아니면서 위험한 선행 문자로
+            # 시작하는 값은 텍스트로 무력화 (음수 "-500" 등은 위에서 이미 숫자로 처리됨)
+            elif isinstance(val, str) and val[:1] in ("=", "+", "-", "@"):
+                cell.value = "'" + val
             else:
-                num = to_number(val)
-                cell.value = num if num is not None else val
+                cell.value = val
     buf = io.BytesIO()
     wb.save(buf)
     buf.seek(0)

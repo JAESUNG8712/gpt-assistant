@@ -79,6 +79,9 @@ class EconomicCollector:
             "수집시각": datetime.now().isoformat(),
         }
         self.results["시장심리"] = self.get_market_sentiment()
+        # get_macro_signal()의 "종합판단"이 여태 results에 병합되지 않아 aggregator.py와
+        # claude_client.py의 액션플랜 프롬프트가 항상 기본값("정보없음"/"중립")만 보고 있었음
+        self.results["종합판단"] = self.get_macro_signal()["종합판단"]
 
         print("📊 [경제수집] 완료")
         return self.results

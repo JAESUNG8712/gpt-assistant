@@ -56,6 +56,12 @@ class FinancialCollector:
                 STOCK_CODE_MAP[found] = corp_name  # 캐시에 등록
                 print(f"💡 [{corp_name}] 네이버에서 ticker 발견: {found}")
 
+        # corp_code(DART)·ticker(KRX) 둘 다 못 찾으면 이후 단계가 전부 0/데이터부족으로
+        # 채워진 "가짜" 정상 리포트를 만들어내므로, 여기서 명시적으로 error 처리해 스킵시킴
+        if not corp_code and not ticker:
+            print(f"⚠️  [{corp_name}] 종목 코드를 찾을 수 없음 — 분석에서 제외")
+            return {"error": f"종목 코드를 찾을 수 없습니다: {corp_name}"}
+
         tasks = {}
         if corp_code:
             tasks["재무제표"] = fetch_financial_statements(corp_code, self.year)

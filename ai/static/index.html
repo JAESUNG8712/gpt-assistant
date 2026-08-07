@@ -1149,7 +1149,8 @@
   }
 
   function escHtml(s) {
-    return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+      .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
   }
 
   // ── 생각 모드 ─────────────────────────────────────
@@ -1253,11 +1254,13 @@
     s = s.replace(/^---+$/gm, '<hr>');
 
     // 마크다운 링크 [text](url) — 다운로드 링크는 버튼으로, 일반 링크는 새 탭으로 이동
-    s = s.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, label, url) => {
+    s = s.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (whole, label, url) => {
       if (url.startsWith('/stock/download/') || url.startsWith('/answer/download/')) {
         const filename = url.split('/').pop();
         return `<a href="${url}" download="${filename}" class="dl-btn">⬇️ ${label}</a>`;
       }
+      // http(s) 링크만 허용 — javascript: 등 위험한 스킴은 텍스트로 표시
+      if (!/^https?:\/\//i.test(url)) return whole;
       // 외부 링크: target="_blank"로 새 탭 열기, title 툴팁으로 URL 미리보기
       return `<a href="${url}" target="_blank" rel="noopener noreferrer" title="${url}">${label}</a>`;
     });

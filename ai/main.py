@@ -887,7 +887,9 @@ async def chat(req: ChatRequest):
             # 같은 질문은 upsert_knowledge가 최신 내용으로 갱신하므로 중복 적재되지 않음
             # stock 페르소나는 실시간 시장 데이터 기반이어야 하므로 자동 학습에서 계속 제외
             # (LLM 일반 지식이 KB에 누적되면 이후 오염 답변 재발 위험)
-            if ai_reply_clean.strip() and not stock_mode:
+            # direct_calc(연차/퇴직금 등)는 date.today() 기준으로 계산되므로 학습 시 캐싱하면
+            # 이후 다른 표현으로 같은 질문이 KB에서 매칭될 때 날짜가 지난 결과가 그대로 서빙됨
+            if ai_reply_clean.strip() and not stock_mode and not direct_calc:
                 mem.auto_learn(user_msg, ai_reply_clean, persona=persona_id)
                 if no_local:
                     yield "\n\n---\n> ✅ 자동 학습 완료 — 다음부터는 로컬 저장 자료로 답변합니다."
@@ -895,7 +897,7 @@ async def chat(req: ChatRequest):
         except Exception as e:
             import traceback
             print(f"[오류] {type(e).__name__}: {e}\n{traceback.format_exc()}")
-            yield f"\n⚠️ 오류: {type(e).__name__}: {e}"
+            yield "\n⚠️ 답변 생성 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요."
 
     return StreamingResponse(generate(), media_type="text/plain; charset=utf-8")
 
@@ -914,17 +916,12 @@ def clear_history(persona: str = None):
 @app.delete("/history/stock/reset")
 def reset_stock_history():
     """stock 페르소나 대화 이력 + 자동학습 KB 완전 초기화 (오염 제거용)"""
-    import sqlite3
     mem.clear_history(persona="stock")
     try:
-        con = sqlite3.connect(mem.DB_PATH)
-        try:
+        with mem._conn() as con:
             con.execute(
                 "DELETE FROM learned_knowledge WHERE persona='stock' AND source IN ('auto_learn','learned')"
             )
-            con.commit()
-        finally:
-            con.close()
     except Exception:
         pass
     return {"ok": True, "message": "stock 페르소나 대화 이력 및 자동학습 데이터 초기화 완료"}
@@ -1103,7 +1100,6 @@ def list_documents():
 @app.get("/knowledge/stats")
 def knowledge_stats():
     """로드된 KB 항목 수, 페르소나별 분포, SQLite 영구 저장 현황"""
-    import sqlite3
     from engine import get_engine
     engine = get_engine()
 
@@ -1112,21 +1108,17 @@ def knowledge_stats():
         p = meta.get("persona", "(공통)")
         persona_counts[p] = persona_counts.get(p, 0) + 1
 
-    db_path = mem.DB_PATH
     db_static = 0
     db_dynamic = 0
-    if os.path.exists(db_path):
+    if os.path.exists(mem.DB_PATH):
         try:
-            conn = sqlite3.connect(db_path)
-            try:
+            with mem._conn() as conn:
                 db_static = conn.execute(
                     "SELECT COUNT(*) FROM learned_knowledge WHERE source='정적KB'"
                 ).fetchone()[0]
                 db_dynamic = conn.execute(
                     "SELECT COUNT(*) FROM learned_knowledge WHERE source!='정적KB'"
                 ).fetchone()[0]
-            finally:
-                conn.close()
         except Exception:
             pass
 
@@ -1264,7 +1256,11 @@ def model_info():
 
 @app.get("/debug/law")
 async def debug_law(q: str = "근로기준법 제7조"):
-    """law.go.kr API 원본 응답 확인용 (개발 디버그)"""
+    """law.go.kr API 원본 응답 확인용 (개발 디버그) — DEBUG_ENDPOINTS=1일 때만 활성화.
+    운영 환경에 그대로 열려 있으면 누구나 유료 LAW_API_KEY 쿼터를 소진시킬 수 있고,
+    예외 발생 시 서버 내부 traceback이 응답에 그대로 노출됨."""
+    if os.getenv("DEBUG_ENDPOINTS", "") != "1":
+        raise HTTPException(status_code=404, detail="Not Found")
     import httpx, traceback
     api_key = os.getenv("LAW_API_KEY", "")
     if not api_key:
@@ -1283,13 +1279,13 @@ async def debug_law(q: str = "근로기준법 제7조"):
                 "raw": r1.json(),
             }
     except Exception as e:
+        print(f"⚠️  /debug/law 오류: {type(e).__name__}: {e}\n{traceback.format_exc()}")
         return {
             "ok": False,
             "query": q,
             "search_name": search_name,
             "error_type": type(e).__name__,
             "error": str(e),
-            "traceback": traceback.format_exc()[-500:],
         }
 
 # ── 예산관리 (budget) API ─────────────────────────

@@ -152,9 +152,15 @@ app.delete('/api/accounts/:accountId/memory/context/:entryId', (req, res) => {
   const account = data.accounts.find(a => a.id === req.params.accountId);
   if (!account) return res.status(404).json({ error: '계정을 찾을 수 없습니다.' });
 
-  const id = parseInt(req.params.entryId);
+  const id = parseInt(req.params.entryId, 10);
+  if (Number.isNaN(id)) return res.status(400).json({ error: '유효하지 않은 entryId입니다.' });
+
   if (!account.memory) account.memory = { projectContext: [], decisions: [] };
+  const before = (account.memory.projectContext || []).length;
   account.memory.projectContext = (account.memory.projectContext || []).filter(e => e.id !== id);
+  if (account.memory.projectContext.length === before) {
+    return res.status(404).json({ error: '해당 항목을 찾을 수 없습니다.' });
+  }
   writeData(data);
   res.json({ message: '항목이 삭제되었습니다.' });
 });
