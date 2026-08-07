@@ -711,10 +711,47 @@ async function loadData(companyId) {
 // already inside `_withSaveLock` (the /save route) must call
 // `_persistDataLocked` directly instead, to avoid deadlocking on the
 // non-reentrant mutex.
-async function persistData(data, changedBy = "system", companyId = null) {
-  return _withSaveLock(() => _persistDataLocked(data, changedBy, companyId));
+// 전자결재 승인 위조 방어.
+// approvalDocs는 전용 REST 라우트가 아니라 범용 blob 동기화(POST /save)를 타는 필드라,
+// "결재는 지정된 결재자 본인만 할 수 있다"는 규칙이 클라이언트 화면에만 있고 서버에는
+// 전혀 없었다. 그래서 인증된 사용자면 누구나 approvalDocs 배열을 손으로 고쳐 보내는 것만으로
+// 남의 문서를(심지어 자기가 올린 문서를) 승인 완료로 만들 수 있었다 — 실측: 상신자 본인과
+// 완전히 무관한 타 부서 사용자 둘 다 200으로 통과해 status가 approved로 바뀜.
+// 병가·경조사·지출처럼 실제 권한이 걸린 문서라 결재 자체가 무의미해지는 문제다.
+//
+// 정책: 어떤 결재자 칸이 approved/rejected로 "바뀌는" 것은 그 칸의 당사자(empId ===
+// 요청자)이거나 관리자일 때만 허용한다. waiting→pending 승격(앞 결재자가 승인하면 다음
+// 차례가 열리는 정상 연쇄)과 그 외 상태는 그대로 둔다. 위조로 판정되면 요청을 통째로
+// 거부하지 않고 해당 칸만 저장된 값으로 되돌린다 — 이 앱은 매 저장마다 클라이언트가 가진
+// 전체 상태를 재전송하는 구조라, 한 칸 때문에 저장 전체를 막으면 무관한 정상 변경까지
+// 함께 날아가기 때문이다.
+function _sanitizeApprovalDoc(incoming, stored, actor) {
+  if (!incoming || !Array.isArray(incoming.approvers)) return incoming;
+  if (actor && actor.role === "admin") return incoming;  // 관리자 결재자 변경 등은 기존대로 허용
+  const actorId = actor && actor.empId != null ? String(actor.empId) : null;
+  const storedApprovers = (stored && Array.isArray(stored.approvers)) ? stored.approvers : [];
+  let reverted = false;
+  const approvers = incoming.approvers.map((a, i) => {
+    if (!a) return a;
+    const prev = storedApprovers[i] && String(storedApprovers[i].empId) === String(a.empId)
+      ? storedApprovers[i]
+      : storedApprovers.find(s => s && String(s.empId) === String(a.empId));
+    const prevStatus = prev ? prev.status : "waiting";
+    if (a.status === prevStatus) return a;
+    if (a.status !== "approved" && a.status !== "rejected") return a;  // 연쇄 승격 등은 허용
+    if (actorId && String(a.empId) === actorId) return a;              // 당사자 본인의 결재
+    reverted = true;
+    return prev ? { ...prev } : { ...a, status: "waiting", decidedAt: null, comment: "" };
+  });
+  if (!reverted) return incoming;
+  // 결재자 칸을 되돌렸으면 그 칸들로부터 파생되는 문서 전체 상태도 저장된 값으로 되돌린다
+  // (상신 취소·삭제요청처럼 결재자와 무관한 status 변경은 reverted가 false라 영향 없음).
+  return { ...incoming, approvers, status: stored ? stored.status : "in_progress" };
 }
-async function _persistDataLocked(data, changedBy = "system", companyId = null) {
+async function persistData(data, changedBy = "system", companyId = null, actor = null) {
+  return _withSaveLock(() => _persistDataLocked(data, changedBy, companyId, actor));
+}
+async function _persistDataLocked(data, changedBy = "system", companyId = null, actor = null) {
   if (USE_JSON_FILE) {
     // Save the full client state to the JSON file
     const existingById = {};
@@ -804,7 +841,22 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null) 
     const changeRequestsFinal     = _mergeProtectedField("changeRequests");
     const attendanceRecordsFinal  = _mergeProtectedField("attendanceRecords");
     const scheduleEventsFinal     = _mergeProtectedField("scheduleEvents");
-    const approvalDocsFinal       = _mergeProtectedField("approvalDocs");
+    // 결재 위조 방어(_sanitizeApprovalDoc 주석 참고): 병합 전에 들어온 문서를 저장본과
+    // 대조해 권한 없는 결재 칸 변경을 되돌린다.
+    const approvalDocsFinal = (() => {
+      const storedList = _fileStore.approvalDocs || [];
+      const storedById = new Map(storedList.map(d => [String(d.id), d]));
+      const incoming = Array.isArray(data.approvalDocs)
+        ? data.approvalDocs.map(d => (d && d.id != null) ? _sanitizeApprovalDoc(d, storedById.get(String(d.id)), actor) : d)
+        : data.approvalDocs;
+      let merged = mergeArrayById(storedList, incoming);
+      const dead = _tomb["approvalDocs"];
+      if (dead && dead.length) {
+        const deadIds = new Set(dead.map(t => t.id));
+        merged = merged.filter(r => !(r && deadIds.has(r.id)));
+      }
+      return merged;
+    })();
     // compGradeResults is a nested singleton ({empId:{year:{...}}}), not an id-keyed array —
     // filterDataForRole() now narrows it to the requester's own key for non-admin, so (like the
     // array fields above) a plain overwrite would wipe out every other employee's grade result.
@@ -1009,10 +1061,15 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null) 
           const oldTs = rows.length ? (rows[0].data.updatedAt || rows[0].data.createdAt || "") : "";
           const newTs = item.updatedAt || item.createdAt || "";
           if (rows.length && newTs < oldTs) continue; // server has a newer copy, keep it
+          // 결재 위조 방어(_sanitizeApprovalDoc 주석 참고). 저장본은 바로 위에서 이미
+          // 조회했으므로 추가 쿼리 없이 그대로 대조한다.
+          const toWrite = field === "approvalDocs"
+            ? _sanitizeApprovalDoc(item, rows.length ? rows[0].data : null, actor)
+            : item;
           await client.query(
             `INSERT INTO app_collections (collection, id, company_id, data, updated_at) VALUES ($1,$2,$3,$4,NOW())
              ON CONFLICT (company_id, collection, id) DO UPDATE SET data = $4, updated_at = NOW()`,
-            [field, String(item.id), companyId, JSON.stringify(item)]
+            [field, String(item.id), companyId, JSON.stringify(toWrite)]
           );
         }
       }
@@ -1965,7 +2022,7 @@ app.post("/save", async (req, res) => {
       // 여기서는 그 토큰으로 실제 어떤 저장이 일어났는지를 기존 변경이력에 얹기만 한다.
       const rawChangedBy = req.query.user || clientData._user || "unknown";
       const changedBy = req.auth?.actingAsMaster ? `master:${req.auth.actingAsMaster} as ${rawChangedBy}` : rawChangedBy;
-      const { duplicateLoginIds } = await _persistDataLocked(finalData, changedBy, companyId);
+      const { duplicateLoginIds } = await _persistDataLocked(finalData, changedBy, companyId, req.auth || null);
       return { finalData, merged, duplicateLoginIds };
     });
 
@@ -2374,7 +2431,9 @@ app.post("/restore", async (req, res) => {
       restoredFields.push(f);
     }
 
-    await persistData(dataToPersist, req.body.user || "restore", companyId);
+    // /restore는 관리자 전용이라 결재 위조 방어(_sanitizeApprovalDoc)를 그대로 통과한다 —
+    // 스냅샷 복원은 과거 시점의 결재 상태를 있는 그대로 되돌리는 것이 목적이다.
+    await persistData(dataToPersist, req.body.user || "restore", companyId, req.auth || null);
 
     // persistData only ever inserts/updates; explicitly delete the extras
     // here when the caller opted into a true point-in-time restore.
