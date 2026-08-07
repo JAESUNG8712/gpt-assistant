@@ -14161,12 +14161,12 @@ function renderApprovalTemplateAdmin(){
   <label style="display:flex;align-items:center;gap:6px;cursor:pointer;margin-bottom:10px"><input type="checkbox" ${_chainStage.includeDirector?"checked":""} onchange="_chainStage.includeDirector=this.checked;renderApprovalTemplateAdmin()"> 사업부장 단계 포함 <span class="fz11 text-gray">(팀원/팀장이 기안 시 사업부장 결재)</span></label>
   <div class="fg" style="margin-top:6px"><label class="fl">전결 규정 <span class="fz11 text-gray">(금액 필드가 있는 양식에서, 금액이 한도 이하면 해당 결재자가 전결 처리되고 이후 상위 결재는 자동 생략됩니다. 0 = 미적용)</span></label>
     <div style="display:flex;gap:10px;flex-wrap:wrap">
-      <div style="display:flex;align-items:center;gap:6px"><span class="fz12">팀장 전결 한도</span><input class="fc" type="number" style="width:130px" value="${_chainStage.leaderApprovalLimit||0}" oninput="_chainStage.leaderApprovalLimit=+this.value||0"> 원</div>
-      <div style="display:flex;align-items:center;gap:6px"><span class="fz12">사업부장 전결 한도</span><input class="fc" type="number" style="width:130px" value="${_chainStage.directorApprovalLimit||0}" oninput="_chainStage.directorApprovalLimit=+this.value||0"> 원</div>
+      <div style="display:flex;align-items:center;gap:6px"><span class="fz12">팀장 전결 한도</span><input class="fc" type="number" style="width:130px" value="${_chainStage.leaderApprovalLimit||0}" oninput="_chainStage.leaderApprovalLimit=+this.value||0" onchange="renderApprovalTemplateAdmin()"> 원</div>
+      <div style="display:flex;align-items:center;gap:6px"><span class="fz12">사업부장 전결 한도</span><input class="fc" type="number" style="width:130px" value="${_chainStage.directorApprovalLimit||0}" oninput="_chainStage.directorApprovalLimit=+this.value||0" onchange="renderApprovalTemplateAdmin()"> 원</div>
     </div>
   </div>
   <div class="fg" style="margin-top:6px"><label class="fl">결재 지연 리마인드 <span class="fz11 text-gray">(결재자 차례가 된 후 이 일수 이상 처리되지 않으면 알림센터·결재함에 지연 표시)</span></label>
-    <div style="display:flex;align-items:center;gap:6px"><input class="fc" type="number" min="1" style="width:100px" value="${_chainStage.reminderDays||2}" oninput="_chainStage.reminderDays=Math.max(1,+this.value||1)"> 일 이상 대기 시 리마인드</div>
+    <div style="display:flex;align-items:center;gap:6px"><input class="fc" type="number" min="1" style="width:100px" value="${_chainStage.reminderDays||2}" oninput="_chainStage.reminderDays=Math.max(1,+this.value||1)" onchange="renderApprovalTemplateAdmin()"> 일 이상 대기 시 리마인드</div>
   </div>
   ${chainDirty?`<div style="display:flex;gap:8px;margin:10px 0"><button class="btn btn-secondary btn-sm" onclick="_chainStage=null;renderApprovalTemplateAdmin()">변경 취소</button><button class="btn btn-primary btn-sm" onclick="_saveChainStage()">💾 변경사항 저장</button></div>`:""}
   <div class="fg"><label class="fl">최종 결재자 <span class="fz11 text-gray">(모든 결재선 마지막에 추가로 포함될 결재자, 예: 대표이사)</span></label>
