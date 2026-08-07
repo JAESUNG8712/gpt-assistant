@@ -12665,6 +12665,65 @@ function rejectApprovalDoc(docId,comment){
   doc.approvers[idx].status="rejected";doc.approvers[idx].decidedAt=new Date().toISOString();doc.approvers[idx].comment=comment||"";
   doc.status="rejected";doc.updatedAt=new Date().toISOString();autoSaveToServerIfEnabled();showToast("반려 처리되었습니다.","info");renderPage();renderSidebar();
 }
+// ── 관리자: 미결재 문서의 결재자 변경 ────────────────────────────────────────────
+// 퇴직자가 "현재 결재자"로 지정된 진행중 문서는 아무도 처리할 수 없어 영구히 정체된다
+// (퇴직 처리는 경비·초과근무는 자동 반려하지만 결재 문서는 건드리지 않음). 시스템
+// 관리자가 미결재 단계의 결재자를 다른 재직자로 바꿀 수 있게 한다. 이미 처리된 단계
+// (승인/반려)는 감사 기록이므로 바꾸지 않고, 대기 중인 단계만 대상으로 한다.
+function openChangeApproverModal(docId){
+  if(currentUser.role!=="admin"){showToast("관리자만 사용할 수 있습니다.","error");return;}
+  const doc=approvalDocs.find(d=>String(d.id)===String(docId));
+  if(!doc){showToast("문서를 찾을 수 없습니다.","error");return;}
+  if(doc.status!=="in_progress"){showToast("진행중인 문서만 결재자를 변경할 수 있습니다.","error");return;}
+  const rows=(doc.approvers||[]).map((a,i)=>{
+    const emp=getEmp(a.empId);
+    const gone=!emp||emp.active===false;
+    const done=a.status==="approved"||a.status==="rejected";
+    const label={pending:"결재 대기",waiting:"대기",approved:"승인",rejected:"반려"}[a.status]||a.status;
+    return `<tr>
+      <td class="lbl">${i+1}차</td>
+      <td>${h(getEmpName(a.empId))}${gone?` <span class="fz11" style="color:#dc2626">(퇴직/미확인)</span>`:""}</td>
+      <td>${h(label)}</td>
+      <td>${done?`<span class="fz11 text-gray">처리 완료 — 변경 불가</span>`
+        :`<button class="btn btn-secondary btn-sm" onclick="pickNewApprover('${doc.id}',${i})">변경</button>`}</td>
+    </tr>`;
+  }).join("");
+  openModal(`<div class="modal-box" style="max-width:560px">
+    <div class="modal-head"><h3>👤 결재자 변경 — ${h(doc.title)}</h3></div>
+    <div class="modal-body">
+      <div class="fz12 text-gray mb2">아직 처리되지 않은 결재 단계만 변경할 수 있습니다. 이미 승인·반려된 단계는 기록으로 남습니다.</div>
+      <div class="tbl-wrap"><table><thead><tr><th>단계</th><th>결재자</th><th>상태</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>
+    </div>
+    <div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal()">닫기</button></div>
+  </div>`);
+}
+function pickNewApprover(docId,idx){
+  const doc=approvalDocs.find(d=>String(d.id)===String(docId));if(!doc)return;
+  const ap=(doc.approvers||[])[idx];if(!ap)return;
+  // 이미 결재선에 있는 사람은 중복 지정하지 않도록 제외
+  const exclude=(doc.approvers||[]).map(a=>a.empId).filter(id=>id!=null);
+  openOrgPicker({
+    multi:false, selected:[], exclude,
+    title:`${idx+1}차 결재자 선택`,
+    onConfirm:ids=>{
+      const newId=Array.isArray(ids)?ids[0]:ids;
+      if(newId==null)return;
+      const emp=getEmp(newId);
+      if(!emp){showToast("직원을 찾을 수 없습니다.","error");return;}
+      if(emp.active===false){showToast("퇴직한 직원은 결재자로 지정할 수 없습니다.","error");return;}
+      const prevName=getEmpName(ap.empId);
+      ap.empId=emp.id; ap.name=emp.name;
+      // 변경 이력을 문서에 남겨 누가 언제 바꿨는지 추적 가능하게 한다.
+      if(!Array.isArray(doc.history))doc.history=[];
+      doc.history.push({action:`결재자 변경(${idx+1}차): ${prevName} → ${emp.name}`,user:currentUser.name,at:new Date().toISOString()});
+      doc.updatedAt=new Date().toISOString();
+      autoSaveToServerIfEnabled();
+      closeModal();
+      showToast(`${idx+1}차 결재자를 ${emp.name}님으로 변경했습니다.`,"success");
+      renderPage();renderSidebar();
+    }
+  });
+}
 function cancelApprovalDoc(docId){
   if(!confirm("이 결재를 취소하시겠습니까?"))return;
   const doc=approvalDocs.find(d=>String(d.id)===String(docId)&&d.authorId===currentUser.id&&d.status==="in_progress");if(!doc)return;
@@ -13054,7 +13113,7 @@ function renderApprovalInbox(){
   <div class="card-body">
   ${toApprove.length>0?`<div style="background:#fef2f2;border:1px solid #fecaca;border-radius:8px;padding:12px;margin-bottom:16px"><div class="fw7 mb2" style="color:#dc2626">🔔 결재 대기 (${toApprove.length}건)</div>
   <div class="tbl-wrap"><table><thead><tr><th>문서 제목</th><th>양식</th><th>상신자</th><th>상신일</th><th>대기</th><th>처리</th></tr></thead><tbody>${toApprove.map(d=>{const tpl=getTpl(d.templateId);const wd=_apvPendingDays(d);const delayed=wd>=_apvReminderThreshold();return`<tr><td><a href="#" onclick="openApprovalDetail('${d.id}');return false" style="color:#3b82f6;font-weight:600">${h(d.title)}</a></td><td>${tpl?.icon||"📄"} ${h(tpl?.name||"-")}</td><td>${h(getEmpName(d.authorId))}</td><td>${d.createdAt.slice(0,10)}</td><td>${delayed?badge(`⏰ ${wd}일째 지연`,"red"):badge(`${wd}일째`,"gray")}</td><td style="display:flex;gap:4px"><button class="btn btn-primary btn-sm" onclick="openApprovalDecision('${d.id}','approve')">✅ 승인</button><button class="btn btn-danger btn-sm" onclick="openApprovalDecision('${d.id}','reject')">❌ 반려</button></td></tr>`;}).join("")}</tbody></table></div></div>`:`<div style="padding:20px;text-align:center;color:#94a3b8;font-size:13px">결재 대기 문서가 없습니다.</div>`}
-  ${currentUser.role==="admin"&&allApprovals.length>0?`<div class="fw6 mb2 mt3">전체 진행중 결재 (관리자)</div><div class="tbl-wrap" style="margin-bottom:16px"><table><thead><tr><th>문서</th><th>상신자</th><th>현재 결재자</th><th>상태</th></tr></thead><tbody>${allApprovals.map(d=>{const cur=d.approvers.find(a=>a.status==="pending");return`<tr><td><a href="#" onclick="openApprovalDetail('${d.id}');return false" style="color:#3b82f6">${h(d.title)}</a></td><td>${h(getEmpName(d.authorId))}</td><td>${cur?h(getEmpName(cur.empId)):"-"}</td><td>${badge("진행중","blue")}</td></tr>`;}).join("")}</tbody></table></div>`:""}
+  ${currentUser.role==="admin"&&allApprovals.length>0?`<div class="fw6 mb2 mt3">전체 진행중 결재 (관리자)</div><div class="tbl-wrap" style="margin-bottom:16px"><table><thead><tr><th>문서</th><th>상신자</th><th>현재 결재자</th><th>상태</th><th>결재자 변경</th></tr></thead><tbody>${allApprovals.map(d=>{const cur=d.approvers.find(a=>a.status==="pending");const curEmp=cur?getEmp(cur.empId):null;const retired=!!(cur&&(!curEmp||curEmp.active===false));return`<tr><td><a href="#" onclick="openApprovalDetail('${d.id}');return false" style="color:#3b82f6">${h(d.title)}</a></td><td>${h(getEmpName(d.authorId))}</td><td>${cur?h(getEmpName(cur.empId)):"-"}${retired?` <span class="fz11" style="color:#dc2626">(퇴직/미확인)</span>`:""}</td><td>${badge("진행중","blue")}</td><td>${cur?`<button class="btn btn-ghost btn-sm" onclick="openChangeApproverModal('${d.id}')">변경</button>`:"-"}</td></tr>`;}).join("")}</tbody></table></div>`:""}
   ${receiveCnt>0?`<div style="background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:10px 14px;margin-top:8px;display:flex;align-items:center;gap:10px"><span style="font-size:18px">📨</span><span style="font-size:13px;color:#92400e">수신 문서 ${receiveCnt}건이 있습니다 — </span><button class="btn btn-secondary btn-sm" onclick="gotoPage('approval-receive')">수신함 열기</button></div>`:""}
 
   </div></div>`;
@@ -15698,7 +15757,13 @@ async function uploadBizPlanSgaExcelPreview(){
   (json.teams||[]).forEach(t=>(t.items||[]).forEach(it=>{
     if(!it.expenseAccount)it.expenseAccount=_bpGuessExpenseAccount(it.name);
   }));
-  _bpMgrUploadPreview={sheetName:json.sheetName,teams:json.teams};
+  _bpMgrUploadPreview={sheetName:json.sheetName,teams:json.teams,dropped:json.dropped||[],droppedCount:json.droppedCount||0};
+  // 인식하지 못한 행이 있으면 반드시 알린다 — 예전엔 조용히 버려져 "업로드했는데 아무 일도
+  // 안 일어난다"로 보였다. 특히 전 행이 걸러진 경우에는 화면이 비어 원인을 알 수 없었다.
+  if(json.droppedCount){
+    const none=!(json.teams||[]).length;
+    showToast(`${json.droppedCount}개 행을 인식하지 못해 제외했습니다.${none?" 반영할 항목이 없습니다 — 아래 제외 사유를 확인하세요.":" 아래 목록에서 사유를 확인하세요."}`,none?"error":"info");
+  }
   renderBizPlanPage();
 }
 // _guessSgaCategory()(budget.js, 서버측 "구분" 추정)와 동일한 발상의 클라이언트측 버전 —
@@ -15714,6 +15779,19 @@ function _renderBizPlanMgrUploadPreviewHtml(){
   const p=_bpMgrUploadPreview;if(!p)return "";
   const saveableCount=p.teams.filter(t=>!t.ambiguous&&(!t.existingStatus||t.existingStatus==="draft")).length;
   let html=`<div class="mt2 fz12 text-gray">시트: ${h(p.sheetName)} — 아래에서 팀별로 확인·조정한 뒤, 팀마다 "저장"을 누르거나 "전체 저장"으로 한 번에 반영할 수 있습니다.</div>`;
+  // 인식하지 못해 제외된 행을 사유와 함께 보여준다(예전엔 조용히 사라져 원인을 알 수 없었음)
+  if(p.droppedCount){
+    const rows=(p.dropped||[]).map(d=>`<tr><td class="lbl">${d.row!==undefined?d.row+"행":"-"}</td><td class="lbl">${h(d.team||"-")}</td><td class="lbl">${h(d.name||"-")}</td><td class="lbl">${h(d.reason)}</td></tr>`).join("");
+    html+=`<div class="mt2" style="background:#fff7ed;border:1px solid #fed7aa;border-radius:8px;padding:10px 14px">
+      <div class="fw6 fz12" style="color:#9a3412">⚠ 인식하지 못해 제외된 행 ${p.droppedCount}건${(p.dropped||[]).length<p.droppedCount?` (아래 ${(p.dropped||[]).length}건만 표시)`:""}</div>
+      <div class="fz11 text-gray mb2">아래 사유를 고쳐 다시 업로드하면 반영됩니다. 제외된 행은 저장되지 않습니다.</div>
+      <div class="tbl-wrap"><table><thead><tr><th>행</th><th>팀명</th><th>항목</th><th>제외 사유</th></tr></thead><tbody>${rows}</tbody></table></div>
+    </div>`;
+  }
+  if(!p.teams.length){
+    html+=`<div class="p-empty mt2">반영할 수 있는 항목이 없습니다.${p.droppedCount?" 위의 제외 사유를 확인해주세요.":" 파일의 팀명·항목·구분(판관/용역/경상) 컬럼을 확인해주세요."}</div>`;
+    return html;
+  }
   if(saveableCount>1)html+=`<button class="btn btn-primary btn-sm mt2 mb2" onclick="saveAllBizPlanMgrUploadTeams()">📦 전체 저장(${saveableCount}개 팀 한번에)</button>`;
   html+=p.teams.map((t,idx)=>_renderBizPlanMgrUploadTeamCardHtml(t,idx)).join("");
   return html;
@@ -16962,8 +17040,10 @@ let _bpLastHeadcountUploadResult=null;
 async function uploadHeadcountPlanExcel(){
   const json=await _bpUploadFormFile("bp-headcount-upload-file","bp-headcount-upload-status",`/api/budget/business-plan/headcount-plan/upload?year=${_bpBulkUploadYear}`);
   if(!json)return;
-  showToast(`인원계획 ${json.upserted}건 반영되었습니다.`,"success");
-  _bpLastHeadcountUploadResult={at:new Date().toISOString(),upserted:json.upserted};
+  // overwritten: 같은 부문+계정과목 행이 파일에 중복으로 있어 뒤엣것이 앞엣것을 덮어쓴 수.
+  // 예전엔 이걸 반영 건수에 합산해 실제 저장(1건)보다 부풀려 표시했다.
+  showToast(`인원계획 ${json.upserted}건 반영되었습니다.`+(json.overwritten?` (파일 내 중복 ${json.overwritten}건은 마지막 값으로 덮어썼습니다)`:""),"success");
+  _bpLastHeadcountUploadResult={at:new Date().toISOString(),upserted:json.upserted,overwritten:json.overwritten||0};
   loadBizPlanRollup();
   renderBizPlanPage();
 }
@@ -16993,7 +17073,7 @@ function _bpLastCostBlockUploadResultHtml(){
 }
 function _bpLastHeadcountUploadResultHtml(){
   const r=_bpLastHeadcountUploadResult;if(!r)return "";
-  return `<div class="mt2 fz12"><b>방금 업로드 결과</b> <span class="text-gray">(${new Date(r.at).toLocaleString()})</span> — ${r.upserted}건 반영됨. 상세 내용은 아래 "계획 인원 현황"에서 확인하세요.</div>`;
+  return `<div class="mt2 fz12"><b>방금 업로드 결과</b> <span class="text-gray">(${new Date(r.at).toLocaleString()})</span> — ${r.upserted}건 반영됨${r.overwritten?` (파일 내 중복 ${r.overwritten}건은 마지막 값으로 덮어씀)`:""}. 상세 내용은 아래 "계획 인원 현황"에서 확인하세요.</div>`;
 }
 // ── 통합 업로드(개인별 급여상세+예산+인원계획 시트가 한 파일에 섞여 있어도 한 번에) ──
 // 팀별로 하나씩 "저장"을 누르거나, 화면을 옮겨다니며 같은 파일을 3번 올려야 했던 것을

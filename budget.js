@@ -1323,15 +1323,33 @@ module.exports = function budgetRouterFactory(deps) {
   // 사업부/회사 롤업(3단계 집계)에도 자동으로 연계된다.
   // 엑셀 → byTeam({팀명: [{name,detail,accountType,costDept,months}]}) 파싱 로직을 별도
   // 함수로 분리 — /parse(미리보기, 저장 없음)와 과거 즉시저장 방식 양쪽에서 재사용하기 위함.
-  function _parseSgaUploadRows(rows) {
+  // 인식하지 못한 행은 예전엔 조용히 버려졌다 — 8행 중 5행이 사유도 개수도 없이 사라지고,
+  // 전 행이 걸러지면 화면에 안내 문구 한 줄만 남아 "업로드했는데 아무 일도 안 일어난다"로
+  // 보였다(실측). 버린 행을 사유와 함께 모아 호출부가 사용자에게 보여줄 수 있게 한다.
+  function _parseSgaUploadRows(rows, dropped) {
     const byTeam = {};
+    const drop = (row, reason) => {
+      if (!Array.isArray(dropped)) return;
+      if (dropped.length >= 50) return; // 너무 많으면 앞부분만 (응답 비대화 방지)
+      dropped.push({
+        row: row.__rowNum__ !== undefined ? row.__rowNum__ + 1 : undefined,
+        team: String(row['팀명'] || row['팀'] || '').trim(),
+        name: String(row['항목'] || '').trim(),
+        category: row['구분'] === undefined ? '' : String(row['구분']).trim(),
+        reason
+      });
+    };
     rows.forEach(row => {
       const team = String(row['팀명'] || row['팀'] || '').trim();
       const accountType = row['구분'];
-      if (!team || !accountType || !CATEGORIES.includes(accountType)) return;
+      if (!team) { drop(row, '팀명이 비어 있음'); return; }
+      if (!accountType || !CATEGORIES.includes(accountType)) {
+        drop(row, `구분이 ${CATEGORIES.join('/')} 중 하나여야 함(현재: "${accountType === undefined ? '' : String(accountType).trim()}")`);
+        return;
+      }
       const rawName = String(row['항목'] || '').trim();
       const name = rawName.replace(/^\((판|용|경)\)/, '').trim();
-      if (!name) return;
+      if (!name) { drop(row, '항목명이 비어 있음'); return; }
       const detail = String(row['세부내역(산정근거)'] || row['세부내역'] || '').trim();
       const costDept = String(row['비용 귀속'] || row['비용귀속'] || row['비용 귀속 부문'] || row['비용귀속부문'] || '').trim();
       const months = MONTHS.map(m => toNumber(row[`${m}월`]) || 0);
@@ -1784,7 +1802,8 @@ module.exports = function budgetRouterFactory(deps) {
     const companyId = req.auth.companyId || null;
     const year = Number(req.query.year) || new Date().getFullYear();
     const data = await readBudget(companyId);
-    const byTeam = _parseSgaUploadRows(rows);
+    const dropped = [];
+    const byTeam = _parseSgaUploadRows(rows, dropped);
     const teams = Object.entries(byTeam).map(([team, items]) => {
       const matches = data.businessPlans.filter(p => p.baseYear === year && (p.team || '').trim() === team);
       const existing = matches.length === 1 ? matches[0] : null;
@@ -1795,7 +1814,7 @@ module.exports = function budgetRouterFactory(deps) {
         ambiguous: matches.length > 1
       };
     });
-    res.json({ ok: true, teams, sheetName: rows._sheetName });
+    res.json({ ok: true, teams, sheetName: rows._sheetName, dropped, droppedCount: dropped.length });
   });
 
   // 미리보기에서 사람이 조정한 팀별 항목을 실제로 저장(생성 또는 upsert). 파일이 아니라
@@ -1870,6 +1889,8 @@ module.exports = function budgetRouterFactory(deps) {
     // 방침) — "구분/부문/계정과목/n월/평균" 외의 컬럼에 값이 있는 행(=비용 블록의 이름표
     // 행)은 인원 현황이 아니므로 건너뛴다.
     let upserted = 0;
+    const seenKeys = new Set(); // 같은 부문+계정과목이 파일에 여러 번 나오는 경우를 구분하기 위함
+    let overwritten = 0;
     await updateBudget(companyId, async (data) => {
       rows.forEach(row => {
         const dept = String(row['구분'] || row['부문'] || '').trim();
@@ -1887,6 +1908,10 @@ module.exports = function budgetRouterFactory(deps) {
         const monthsArr = months.map(v => v === null ? 0 : v);
         const existing = data.headcountPlans.find(h => h.year === year && h.dept === dept && (h.category || '') === category);
         if (existing) {
+          // 같은 연도+부문+계정과목 행이 파일에 여러 번 나오면 뒤엣것이 앞엣것을 덮어쓴다.
+          // 예전엔 그때마다 upserted를 올려 "2건 반영"처럼 보고했지만 실제 저장은 1건이라
+          // 사용자가 오해했다(실측). 실제 저장 건수만 세고, 덮어쓴 행은 따로 알린다.
+          if (seenKeys.has(`${dept}\u0000${category}`)) overwritten++;
           existing.months = monthsArr;
           existing.updatedAt = new Date().toISOString();
         } else {
@@ -1895,11 +1920,11 @@ module.exports = function budgetRouterFactory(deps) {
             year, dept, category, months: monthsArr, updatedAt: new Date().toISOString()
           });
         }
-        upserted++;
+        if (!seenKeys.has(`${dept}\u0000${category}`)) { seenKeys.add(`${dept}\u0000${category}`); upserted++; }
       });
       data.uploads.push({ type: 'headcountPlan', filename: req.file.originalname, uploadedAt: new Date().toISOString(), rows: rows.length });
     });
-    res.json({ ok: true, upserted });
+    res.json({ ok: true, upserted, overwritten });
   });
 
   // 월별 인원 계획 조회 — 롤업과 동일한 접근범위(관리자/예산담당자/기획팀장은 전체,

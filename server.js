@@ -4041,7 +4041,18 @@ app.post("/api/erp/items/:id/delete", async (req, res) => {
       _saveFileErp();
       return res.json({ ok: true });
     }
-    const { rows } = await pool.query("SELECT 1 FROM erp_stock_ledger WHERE item_id = $1 AND (company_id = $2 OR company_id IS NULL) LIMIT 1", [id, companyId]);
+    // JSON 파일 모드는 재고원장 + 견적서 + 발주서 3곳을 검사하는데, Postgres 모드는
+    // 재고원장만 보고 있어 견적서·발주서에서 사용 중인 품목이 그대로 삭제됐다(운영은
+    // Postgres). 삭제되면 그 문서의 품목명 자리에 마스터에서 못 찾은 원본 id(UUID)가
+    // 그대로 노출된다(_erpItemName). 양 모드의 검사 범위를 동일하게 맞춘다.
+    const { rows } = await pool.query(
+      `SELECT 1 WHERE
+         EXISTS (SELECT 1 FROM erp_stock_ledger WHERE item_id = $1 AND (company_id = $2 OR company_id IS NULL))
+      OR EXISTS (SELECT 1 FROM erp_quotations q WHERE (q.company_id = $2 OR q.company_id IS NULL)
+           AND EXISTS (SELECT 1 FROM jsonb_array_elements(COALESCE(q.data->'lines','[]'::jsonb)) ln WHERE ln->>'itemId' = $1))
+      OR EXISTS (SELECT 1 FROM erp_purchase_orders po WHERE (po.company_id = $2 OR po.company_id IS NULL)
+           AND EXISTS (SELECT 1 FROM jsonb_array_elements(COALESCE(po.data->'lines','[]'::jsonb)) ln WHERE ln->>'itemId' = $1))`,
+      [id, companyId]);
     if (rows.length) return res.status(400).json({ ok: false, message: "재고 이력 또는 문서에서 사용 중인 품목은 삭제할 수 없습니다. 비활성화를 이용하세요." });
     await pool.query("UPDATE erp_items SET is_deleted = TRUE WHERE id = $1 AND (company_id = $2 OR company_id IS NULL)", [id, companyId]);
     res.json({ ok: true });
