@@ -2117,6 +2117,7 @@ app.get("/snapshots", async (req, res) => {
   // "history" 페이지는 admin 전용이고, 목록 응답에도 admin이 입력한 notes(대외비 메모 등)가
   // 포함돼 있어 /snapshots/:year와 동일하게 requireAdmin으로 승격한다.
   if (!requireAdmin(req, res)) return;
+  const companyId = req.auth.companyId || null;
   try {
     if (USE_JSON_FILE) {
       const snaps = Object.entries(_fileSnapshots).map(([y, s]) => ({
@@ -2126,7 +2127,8 @@ app.get("/snapshots", async (req, res) => {
       return res.json({ ok: true, snapshots: snaps });
     }
     const { rows } = await pool.query(
-      "SELECT id, eval_year, emp_count, kpi_count, confirmed_by, confirmed_at, notes FROM annual_snapshots ORDER BY eval_year DESC"
+      "SELECT id, eval_year, emp_count, kpi_count, confirmed_by, confirmed_at, notes FROM annual_snapshots WHERE (company_id = $1 OR company_id IS NULL) ORDER BY eval_year DESC",
+      [companyId]
     );
     res.json({ ok: true, snapshots: rows });
   } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
@@ -2155,6 +2157,7 @@ function describeSnapshotFields(snapshotData) {
 app.post("/snapshots", async (req, res) => {
   if (!requireAdmin(req, res)) return;
   const { year = new Date().getFullYear(), confirmedBy = "admin", notes = "" } = req.body || {};
+  const companyId = req.auth.companyId || null;
   try {
     const data = await loadData(req.auth.companyId);
     const yr = parseInt(year);
@@ -2166,12 +2169,17 @@ app.post("/snapshots", async (req, res) => {
       return res.json({ ok: true, year: yr, empCount, kpiCount });
     }
     await pool.query(
-      `INSERT INTO annual_snapshots (eval_year, snapshot_data, emp_count, kpi_count, confirmed_by, notes)
-       VALUES ($1,$2,$3,$4,$5,$6)
-       ON CONFLICT (eval_year) DO UPDATE
+      // annual_snapshots는 company_id NOT NULL + UNIQUE(company_id, eval_year)로 이미
+      // 업그레이드돼 있는데 INSERT는 예전 그대로 company_id를 넣지 않고
+      // `ON CONFLICT (eval_year)`를 쓰고 있어, Postgres(운영) 모드에서 스냅샷/백업 생성이
+      // 100% 500 에러로 실패했다("there is no unique or exclusion constraint matching
+      // the ON CONFLICT", 실측 확인). 컬럼과 충돌 대상을 현재 스키마에 맞춘다.
+      `INSERT INTO annual_snapshots (company_id, eval_year, snapshot_data, emp_count, kpi_count, confirmed_by, notes)
+       VALUES ($7,$1,$2,$3,$4,$5,$6)
+       ON CONFLICT (company_id, eval_year) DO UPDATE
          SET snapshot_data = $2, emp_count = $3, kpi_count = $4,
              confirmed_by = $5, confirmed_at = NOW(), notes = $6`,
-      [yr, JSON.stringify(data), empCount, kpiCount, confirmedBy, notes]
+      [yr, JSON.stringify(data), empCount, kpiCount, confirmedBy, notes, companyId]
     );
     res.json({ ok: true, year: yr, empCount, kpiCount });
   } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
@@ -2194,7 +2202,7 @@ app.get("/snapshots/:year", async (req, res) => {
       return res.json({ ok: true, snapshot: { eval_year: yr, ...s, snapshot_data: stripPwField(s.data), data: stripPwField(s.data), fields: describeSnapshotFields(s.data) } });
     }
     const { rows } = await pool.query(
-      "SELECT * FROM annual_snapshots WHERE eval_year = $1", [yr]
+      "SELECT * FROM annual_snapshots WHERE eval_year = $1 AND (company_id = $2 OR company_id IS NULL)", [yr, req.auth.companyId || null]
     );
     if (!rows.length) return res.status(404).json({ ok: false, message: "스냅샷 없음" });
     res.json({ ok: true, snapshot: { ...rows[0], snapshot_data: stripPwField(rows[0].snapshot_data), fields: describeSnapshotFields(rows[0].snapshot_data) } });
@@ -2207,6 +2215,7 @@ app.get("/snapshots/:year", async (req, res) => {
 app.get("/backups", async (req, res) => {
   // /snapshots의 별칭이며 동일하게 admin이 입력한 label(=notes)이 포함돼 있어 동일 기준 적용.
   if (!requireAdmin(req, res)) return;
+  const companyId = req.auth.companyId || null;
   try {
     if (USE_JSON_FILE) {
       const backups = Object.entries(_fileSnapshots).map(([y, s]) => ({
@@ -2216,7 +2225,8 @@ app.get("/backups", async (req, res) => {
       return res.json({ ok: true, backups });
     }
     const { rows } = await pool.query(
-      "SELECT id, eval_year, emp_count AS \"empCount\", kpi_count AS \"kpiCount\", confirmed_by, confirmed_at AS \"createdAt\", notes FROM annual_snapshots ORDER BY eval_year DESC"
+      "SELECT id, eval_year, emp_count AS \"empCount\", kpi_count AS \"kpiCount\", confirmed_by, confirmed_at AS \"createdAt\", notes FROM annual_snapshots WHERE (company_id = $1 OR company_id IS NULL) ORDER BY eval_year DESC",
+      [companyId]
     );
     const backups = rows.map(r => ({
       name:      `snapshot_${r.eval_year}.json`,
@@ -2235,6 +2245,7 @@ app.post("/backups/create", async (req, res) => {
   if (!requireAdmin(req, res)) return;
   const { label = "수동 스냅샷", type = "manual" } = req.body || {};
   const year = parseInt(req.body.year || new Date().getFullYear());
+  const companyId = req.auth.companyId || null;
   try {
     const data = await loadData(req.auth.companyId);
     if (!data.employees.length && !data.kpiEntries.length)
@@ -2248,23 +2259,33 @@ app.post("/backups/create", async (req, res) => {
       return res.json({ ok: true, name: `snapshot_${year}.json` });
     }
     await pool.query(
-      `INSERT INTO annual_snapshots (eval_year, snapshot_data, emp_count, kpi_count, confirmed_by, notes)
-       VALUES ($1,$2,$3,$4,$5,$6)
-       ON CONFLICT (eval_year) DO UPDATE
+      // annual_snapshots는 company_id NOT NULL + UNIQUE(company_id, eval_year)로 이미
+      // 업그레이드돼 있는데 INSERT는 예전 그대로 company_id를 넣지 않고
+      // `ON CONFLICT (eval_year)`를 쓰고 있어, Postgres(운영) 모드에서 스냅샷/백업 생성이
+      // 100% 500 에러로 실패했다("there is no unique or exclusion constraint matching
+      // the ON CONFLICT", 실측 확인). 컬럼과 충돌 대상을 현재 스키마에 맞춘다.
+      `INSERT INTO annual_snapshots (company_id, eval_year, snapshot_data, emp_count, kpi_count, confirmed_by, notes)
+       VALUES ($7,$1,$2,$3,$4,$5,$6)
+       ON CONFLICT (company_id, eval_year) DO UPDATE
          SET snapshot_data = $2, emp_count = $3, kpi_count = $4,
              confirmed_by = $5, confirmed_at = NOW(), notes = $6`,
-      [year, JSON.stringify(data), empCount, kpiCount, "admin", label]
+      [year, JSON.stringify(data), empCount, kpiCount, "admin", label, companyId]
     );
     res.json({ ok: true, name: `snapshot_${year}.json` });
   } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
 });
 
-async function loadSnapshotData(year) {
+async function loadSnapshotData(year, companyId) {
   if (USE_JSON_FILE) {
     const s = _fileSnapshots[year];
     return s ? s.data : null;
   }
-  const { rows } = await pool.query("SELECT snapshot_data FROM annual_snapshots WHERE eval_year = $1", [year]);
+  // 복원은 현재 데이터를 통째로 덮어쓰는 파괴적 동작이라 회사 범위를 반드시 좁혀야 한다
+  // (좁히지 않으면 다른 회사의 스냅샷으로 복원돼 전 직원 데이터가 남의 것으로 바뀐다).
+  const { rows } = await pool.query(
+    "SELECT snapshot_data FROM annual_snapshots WHERE eval_year = $1 AND (company_id = $2 OR company_id IS NULL)",
+    [year, companyId]
+  );
   return rows.length ? rows[0].snapshot_data : null;
 }
 
@@ -2299,7 +2320,7 @@ app.get("/snapshots/:year/diff", async (req, res) => {
     const fields = (req.query.fields || "").split(",").map(f => f.trim()).filter(Boolean);
     if (!fields.length) return res.status(400).json({ ok: false, message: "fields 쿼리 필요" });
 
-    const snapshotData = await loadSnapshotData(yr);
+    const snapshotData = await loadSnapshotData(yr, req.auth.companyId || null);
     if (!snapshotData) return res.status(404).json({ ok: false, message: "스냅샷 없음" });
     const current = await loadData(req.auth.companyId);
 
@@ -2327,7 +2348,7 @@ app.post("/restore", async (req, res) => {
   const year = parseInt(yearMatch[1]);
   const companyId = req.auth.companyId || null;
   try {
-    const snapshotData = await loadSnapshotData(year);
+    const snapshotData = await loadSnapshotData(year, companyId);
     if (!snapshotData) return res.status(404).json({ ok: false, message: "스냅샷 없음" });
 
     const current = await loadData(companyId);
