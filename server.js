@@ -5153,11 +5153,24 @@ app.post("/api/pms/allocations", async (req, res) => {
     if (!employeeId || !year || !month || !projectId) return res.status(400).json({ ok: false, message: "직원, 연도, 월, 프로젝트는 필수입니다." });
     const percentNum = Number(percent);
     if (isNaN(percentNum) || percentNum <= 0) return res.status(400).json({ ok: false, message: "투입률은 0보다 큰 숫자여야 합니다." });
+    // 화면은 셀렉트로 월을 고르지만 서버는 값을 전혀 보지 않아 month=99 같은 값이 그대로
+    // 저장됐다 — 그런 행은 어떤 월별 집계에도 잡히지 않아 조용히 유실된 것처럼 보인다.
+    const yearNum = Number(year), monthNum = Number(month);
+    if (!Number.isInteger(monthNum) || monthNum < 1 || monthNum > 12) {
+      return res.status(400).json({ ok: false, message: "월은 1~12 사이여야 합니다." });
+    }
+    if (!Number.isInteger(yearNum) || yearNum < 1900 || yearNum > 2200) {
+      return res.status(400).json({ ok: false, message: "연도가 올바르지 않습니다." });
+    }
     if (role !== "admin" && String(employeeId) !== String(userId)) return res.status(403).json({ ok: false, message: "본인 투입률만 등록할 수 있습니다." });
     if (id && role !== "admin") return res.status(403).json({ ok: false, message: "확정된 투입률은 관리자만 변경할 수 있습니다." });
+    // 프로젝트 존재 검증은 원래 non-admin 분기 안에만 있어, admin은 존재하지 않는 projectId로도
+    // 투입률을 만들 수 있었다(화면에서 프로젝트명이 빈 칸으로 보이는 유령 행) — 존재 검증은
+    // 역할과 무관하게 항상 하고, "멤버여야 한다"는 제약만 non-admin에 남긴다.
+    const project = await _pmsProjectById(projectId, companyId);
+    if (!project) return res.status(404).json({ ok: false, message: "프로젝트를 찾을 수 없습니다." });
     if (role !== "admin") {
-      const project = await _pmsProjectById(projectId, companyId);
-      if (!project || !(project.members || []).map(String).includes(String(employeeId))) {
+      if (!(project.members || []).map(String).includes(String(employeeId))) {
         return res.status(403).json({ ok: false, message: "투입 인원으로 등록된 프로젝트만 선택할 수 있습니다." });
       }
     }
@@ -5309,24 +5322,43 @@ app.post("/api/pms/worklogs", async (req, res) => {
 // 아래에서 회사 범위를 빠짐없이 관통시키지 않으면 부서 스코프 검사(_recruitCanViewJob 등)
 // 이전에 다른 회사 데이터 자체가 조회돼버릴 수 있다 — companyId를 모든 helper의 첫/마지막
 // 인자로 일관되게 추가한다.
-async function _recruitAllEmployees(companyId) {
+// cache: _pgLockedUpdate의 트랜잭션 안에서는 절대 새 pool 커넥션을 요청하면 안 된다.
+// 락을 잡은 요청이 이미 풀 클라이언트 1개를 점유한 채로 mutate 콜백 안에서 또 pool.query를
+// 부르면, 같은 행에 요청이 몰릴 때 풀(max 20)이 전부 트랜잭션에 묶이고 그 안의 중첩 쿼리가
+// 남은 커넥션을 영원히 기다려 자기교착에 빠진다(실측: 같은 면접에 동시 평가 40건 → 20건이
+// "timeout exceeded when trying to connect"로 실패, 그동안 채용과 무관한 다른 요청까지 4.8초
+// 지연). 풀은 프로세스 전역 공유라 피해가 이 모듈 밖으로 번진다. 2026-08-05에 budget.js에서
+// 고친 "락 안에서 getTeamDept() 호출" 데드락과 같은 클래스다.
+// 해법도 같다 — 필요한 조회를 락 진입 "전"에 끝내 cache에 담고, 락 안에서는 그 cache만 본다.
+async function _recruitBuildCache(companyId, need = {}) {
+  const cache = { companyId };
+  const tasks = [];
+  if (need.employees) tasks.push(_recruitAllEmployees(companyId).then(v => { cache.employees = v; }));
+  if (need.jobs) tasks.push(_recruitAllJobs(companyId).then(v => { cache.jobs = v; }));
+  if (need.interviews) tasks.push(_recruitAllInterviews(companyId).then(v => { cache.interviews = v; }));
+  if (need.candidates) tasks.push(_recruitAllCandidates(companyId).then(v => { cache.candidates = v; }));
+  await Promise.all(tasks);
+  return cache;
+}
+async function _recruitAllEmployees(companyId, cache) {
+  if (cache && cache.employees) return cache.employees;
   if (USE_JSON_FILE) return _fileStore.employees || [];
   const { rows } = await pool.query(
     "SELECT data FROM employees WHERE is_deleted = FALSE AND (company_id = $1 OR company_id IS NULL)", [companyId || null]
   );
   return rows.map(r => r.data);
 }
-async function _recruitEmpById(empId, companyId) {
-  const emps = await _recruitAllEmployees(companyId);
+async function _recruitEmpById(empId, companyId, cache) {
+  const emps = await _recruitAllEmployees(companyId, cache);
   return emps.find(e => String(e.id) === String(empId)) || null;
 }
 // 채용공고 열람 권한: 관리자, 등록자, 해당 부서 팀장/사업부장, 인사팀장, 관리자가 지정한 담당자
-async function _recruitCanViewJob(job, userId, role, companyId) {
+async function _recruitCanViewJob(job, userId, role, companyId, cache) {
   if (!job) return false;
   if (role === "admin") return true;
   if (String(job.createdBy) === String(userId)) return true;
   if (Array.isArray(job.viewerIds) && job.viewerIds.map(String).includes(String(userId))) return true;
-  const emp = await _recruitEmpById(userId, companyId);
+  const emp = await _recruitEmpById(userId, companyId, cache);
   if (!emp) return false;
   if (emp.role === "director" && emp.dept === job.department) return true;
   if (emp.role === "leader" && emp.dept === job.department && (!job.team || emp.team === job.team)) return true;
@@ -5361,6 +5393,12 @@ app.post("/api/recruit/jobs", async (req, res) => {
     const companyId = req.auth.companyId || null;
     const { id, title, department, team, headcount, stages, status, description, purpose, responsibilities, requiredYears, docFile, viewerIds, user: createdBy, userId: createdById } = req.body || {};
     if (!title) return res.status(400).json({ ok: false, message: "채용공고 제목은 필수입니다." });
+    if (headcount != null && headcount !== "") {
+      const hc = Number(headcount);
+      if (!Number.isInteger(hc) || hc < 0 || hc > 9999) {
+        return res.status(400).json({ ok: false, message: "채용 인원은 0 이상의 정수여야 합니다." });
+      }
+    }
     const jobId = id || `job_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const now = new Date().toISOString();
     const defaultStages = ["서류전형", "1차면접", "2차면접", "최종합격"];
@@ -5440,7 +5478,15 @@ app.post("/api/recruit/jobs/:id/close", async (req, res) => {
   } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
 });
 
-async function _recruitJobById(jobId, companyId) {
+async function _recruitAllJobs(companyId) {
+  if (USE_JSON_FILE) return _fileRecruit.jobs;
+  const { rows } = await pool.query(
+    "SELECT id, data FROM recruit_jobs WHERE is_deleted = FALSE AND (company_id = $1 OR company_id IS NULL)", [companyId || null]
+  );
+  return rows.map(r => ({ id: r.id, ...r.data }));
+}
+async function _recruitJobById(jobId, companyId, cache) {
+  if (cache && cache.jobs) return cache.jobs.find(j => String(j.id) === String(jobId)) || null;
   if (USE_JSON_FILE) return _fileRecruit.jobs.find(j => j.id === jobId) || null;
   const { rows } = await pool.query(
     "SELECT data FROM recruit_jobs WHERE id = $1 AND is_deleted = FALSE AND (company_id = $2 OR company_id IS NULL)", [jobId, companyId || null]
@@ -5510,14 +5556,14 @@ app.get("/api/recruit/candidates/export", async (req, res) => {
 // 리스트 조회(_recruitVisibleCandidates)와 동일한 열람 권한 규칙을 단건 조회에도 적용한다.
 // (과거엔 목록 API만 부서별 열람 제한이 걸려 있었고, id로 직접 조회하는 이 엔드포인트에는
 // 아무 권한 검사가 없어 지원자 ID만 알면 타 부서 지원자 정보까지 그대로 열람 가능했음)
-async function _recruitCanViewCandidate(candidate, userId, role, companyId) {
+async function _recruitCanViewCandidate(candidate, userId, role, companyId, cache) {
   if (!candidate) return false;
   if (!userId || !role || role === "admin") return true;
-  const interviews = await _recruitAllInterviews(companyId);
+  const interviews = await _recruitAllInterviews(companyId, cache);
   const isInterviewer = interviews.some(iv => String(iv.candidateId) === String(candidate.id) && (iv.interviewerIds || []).map(String).includes(String(userId)));
   if (isInterviewer) return true;
-  const job = await _recruitJobById(candidate.jobId, companyId);
-  return job ? await _recruitCanViewJob(job, userId, role, companyId) : false;
+  const job = await _recruitJobById(candidate.jobId, companyId, cache);
+  return job ? await _recruitCanViewJob(job, userId, role, companyId, cache) : false;
 }
 app.get("/api/recruit/candidates/:id", async (req, res) => {
   if (!requireAuth(req, res)) return;
@@ -6117,8 +6163,10 @@ app.post("/api/recruit/candidates/:id", async (req, res) => {
     }
     let candidate;
     try {
+      // 락 진입 전에 권한 판정에 필요한 조회를 전부 끝낸다(_recruitBuildCache 주석 참고).
+      const rc = await _recruitBuildCache(companyId, { employees: true, jobs: true, interviews: true });
       candidate = await _pgLockedUpdate("recruit_candidates", id, async (c) => {
-        if (!(await _recruitCanViewCandidate(c, userId, role, companyId))) throw new _RecruitRouteError(403, "수정 권한이 없습니다.");
+        if (!(await _recruitCanViewCandidate(c, userId, role, companyId, rc))) throw new _RecruitRouteError(403, "수정 권한이 없습니다.");
         return applyEdits(c);
       }, companyId);
     } catch (e) {
@@ -6157,12 +6205,12 @@ app.post("/api/recruit/candidates/:id/status", async (req, res) => {
     const { status, reason } = req.body || {};
     if (!status) return res.status(400).json({ ok: false, message: "변경할 전형 단계는 필수입니다." });
     const RECRUIT_PASS_SCORE = 15;
-    const checkReasonRequired = async (candidate, job) => {
+    const checkReasonRequired = async (candidate, job, cache) => {
       const stages = job.stages || [];
       const curIdx = stages.indexOf(candidate.status);
       const newIdx = stages.indexOf(status);
       if (newIdx <= curIdx) return false;
-      const interviews = await _recruitAllInterviews(companyId);
+      const interviews = await _recruitAllInterviews(companyId, cache);
       const evals = interviews.filter(iv => String(iv.candidateId) === String(candidate.id) && iv.status !== "canceled").flatMap(iv => iv.evaluations || []);
       if (!evals.length) return false;
       const avg = evals.reduce((s, e) => s + (e.totalScore || 0), 0) / evals.length;
@@ -6185,11 +6233,12 @@ app.post("/api/recruit/candidates/:id/status", async (req, res) => {
     }
     let candidate;
     try {
+      const rc = await _recruitBuildCache(companyId, { employees: true, jobs: true, interviews: true });
       candidate = await _pgLockedUpdate("recruit_candidates", id, async (c) => {
-        if (!(await _recruitCanViewCandidate(c, userId, role, companyId))) throw new _RecruitRouteError(403, "수정 권한이 없습니다.");
-        const job = await _recruitJobById(c.jobId, companyId);
+        if (!(await _recruitCanViewCandidate(c, userId, role, companyId, rc))) throw new _RecruitRouteError(403, "수정 권한이 없습니다.");
+        const job = await _recruitJobById(c.jobId, companyId, rc);
         if (!job || !job.stages.includes(status)) throw new _RecruitRouteError(400, "해당 채용공고에 없는 전형 단계입니다.");
-        if (await checkReasonRequired(c, job) && !String(reason || "").trim()) {
+        if (await checkReasonRequired(c, job, rc) && !String(reason || "").trim()) {
           throw new _RecruitRouteError(400, "통과 기준 미만 점수로 다음 단계 진행 시 사유를 입력해야 합니다.");
         }
         c.status = status;
@@ -6207,18 +6256,20 @@ app.post("/api/recruit/candidates/:id/status", async (req, res) => {
 
 // ── 채용 관리: 면접 일정/평가 (1차·2차 구분, 면접관별 비공개 평가) ────────────────
 const RECRUIT_SCORE_CATEGORIES = ["태도", "전문지식", "적극성", "의사소통능력", "조직적합성"];
+const RECRUIT_SCORE_MIN = 1, RECRUIT_SCORE_MAX = 5;
 // 면접 열람 권한: 관리자, 인사팀장, 면접 대상 채용공고를 볼 수 있는 등록자/담당자, 또는 본인이 면접관으로 지정된 경우
-async function _recruitIsInterviewPrivileged(interview, userId, role, companyId) {
+async function _recruitIsInterviewPrivileged(interview, userId, role, companyId, cache) {
   if (role === "admin") return true;
-  const job = await _recruitJobById(interview.jobId, companyId);
-  if (job && await _recruitCanViewJob(job, userId, role, companyId)) return true;
+  const job = await _recruitJobById(interview.jobId, companyId, cache);
+  if (job && await _recruitCanViewJob(job, userId, role, companyId, cache)) return true;
   return false;
 }
 function _recruitFilterInterviewForViewer(interview, userId, privileged) {
   if (privileged) return interview;
   return { ...interview, evaluations: (interview.evaluations || []).filter(e => String(e.interviewerId) === String(userId)) };
 }
-async function _recruitAllInterviews(companyId) {
+async function _recruitAllInterviews(companyId, cache) {
+  if (cache && cache.interviews) return cache.interviews;
   if (USE_JSON_FILE) return _fileRecruit.interviews;
   const { rows } = await pool.query(
     "SELECT data FROM recruit_interviews WHERE is_deleted = FALSE AND (company_id = $1 OR company_id IS NULL) ORDER BY created_at DESC", [companyId || null]
@@ -6253,13 +6304,19 @@ app.post("/api/recruit/interviews", async (req, res) => {
     if (!jobId || !candidateId || !round || !Array.isArray(interviewerIds) || !interviewerIds.length) {
       return res.status(400).json({ ok: false, message: "채용공고, 지원자, 면접 회차, 면접관은 필수입니다." });
     }
+    // round는 전형 단계 인덱스로 쓰이므로(평가 시 stages[round] 비교) 음수/소수가 들어가면
+    // 단계 판정이 어긋난다 — 서버가 값을 전혀 보지 않아 round:-5가 그대로 저장됐다.
+    const roundNum = Number(round);
+    if (!Number.isInteger(roundNum) || roundNum < 1 || roundNum > 20) {
+      return res.status(400).json({ ok: false, message: "면접 회차는 1~20 사이의 정수여야 합니다." });
+    }
     const job = await _recruitJobById(jobId, companyId);
     if (!job) return res.status(404).json({ ok: false, message: "채용공고를 찾을 수 없습니다." });
     const id = `iv_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const now = new Date().toISOString();
     const normInterviewerIds = interviewerIds.map(String);
     const interview = {
-      id, jobId, candidateId, round: Number(round), schedule: schedule || "", location: location || "",
+      id, jobId, candidateId, round: roundNum, schedule: schedule || "", location: location || "",
       status: "scheduled", interviewerIds: normInterviewerIds,
       leadInterviewerId: (leadInterviewerId && normInterviewerIds.includes(String(leadInterviewerId))) ? String(leadInterviewerId) : "",
       finalVerdict: null, evaluations: [], createdAt: now, updatedAt: now,
@@ -6307,8 +6364,9 @@ app.post("/api/recruit/interviews/:id", async (req, res) => {
     }
     let interview;
     try {
+      const rc = await _recruitBuildCache(companyId, { employees: true, jobs: true });
       interview = await _pgLockedUpdate("recruit_interviews", id, async (iv) => {
-        if (!(await _recruitIsInterviewPrivileged(iv, userId, role, companyId))) throw new _RecruitRouteError(403, "수정 권한이 없습니다.");
+        if (!(await _recruitIsInterviewPrivileged(iv, userId, role, companyId, rc))) throw new _RecruitRouteError(403, "수정 권한이 없습니다.");
         return applyEdits(iv);
       }, companyId);
     } catch (e) {
@@ -6343,8 +6401,9 @@ app.post("/api/recruit/interviews/:id/cancel", async (req, res) => {
     }
     let interview;
     try {
+      const rc = await _recruitBuildCache(companyId, { employees: true, jobs: true });
       interview = await _pgLockedUpdate("recruit_interviews", id, async (iv) => {
-        if (!(await _recruitIsInterviewPrivileged(iv, userId, role, companyId))) throw new _RecruitRouteError(403, "취소 권한이 없습니다.");
+        if (!(await _recruitIsInterviewPrivileged(iv, userId, role, companyId, rc))) throw new _RecruitRouteError(403, "취소 권한이 없습니다.");
         return applyCancel(iv);
       }, companyId);
     } catch (e) {
@@ -6365,11 +6424,27 @@ app.post("/api/recruit/interviews/:id/evaluation", async (req, res) => {
     if (!interviewerId || !scores || typeof scores !== "object") {
       return res.status(400).json({ ok: false, message: "면접관, 평가 점수는 필수입니다." });
     }
+    // 화면 폼은 1~5 셀렉트라 정상 경로로는 벗어날 수 없지만, 서버는 값 범위를 전혀 보지 않아
+    // API 직접 호출로 9999/-500 같은 값이 그대로 저장됐다(총점 9511). 이 총점은 다중 심사위원
+    // 편차 경고(_ivScoreSpread, 8점 기준)와 전형 단계 통과 기준(RECRUIT_PASS_SCORE) 판정에
+    // 그대로 쓰이므로, 오염되면 채용 의사결정 자체가 왜곡된다.
+    const _badScore = RECRUIT_SCORE_CATEGORIES.find(k => {
+      if (scores[k] === undefined || scores[k] === null || scores[k] === "") return false;
+      const n = Number(scores[k]);
+      return !Number.isFinite(n) || n < RECRUIT_SCORE_MIN || n > RECRUIT_SCORE_MAX;
+    });
+    if (_badScore) {
+      return res.status(400).json({ ok: false, message: `평가 점수는 ${RECRUIT_SCORE_MIN}~${RECRUIT_SCORE_MAX} 사이여야 합니다(${_badScore}).` });
+    }
+    const _unknownKey = Object.keys(scores).find(k => !RECRUIT_SCORE_CATEGORIES.includes(k));
+    if (_unknownKey) {
+      return res.status(400).json({ ok: false, message: `평가 항목이 올바르지 않습니다: ${_unknownKey}` });
+    }
     // 각 면접관의 평가는 evaluations 배열 안 자기 interviewerId 항목만 upsert하는
     // 구조라, 여러 면접관이 거의 동시에 제출하면(락 없는 SELECT→mutate→UPDATE) 나중에
     // commit된 한 명의 평가만 남고 나머지는 조용히 사라졌다(실측: 10명 동시 제출 시
     // 1명만 생존) — interview row를 _pgLockedUpdate로 잠가 순번대로 처리한다.
-    const applyEvaluation = async (interview) => {
+    const applyEvaluation = async (interview, rc) => {
       if (role !== "admin" && !interview.interviewerIds.map(String).includes(String(interviewerId))) {
         throw new _RecruitRouteError(403, "지정된 면접관만 평가를 입력할 수 있습니다.");
       }
@@ -6378,10 +6453,12 @@ app.post("/api/recruit/interviews/:id/evaluation", async (req, res) => {
       if (role !== "admin" && String(interviewerId) !== String(authUserId)) {
         throw new _RecruitRouteError(403, "본인 명의로만 평가를 입력할 수 있습니다.");
       }
-      const candidate = USE_JSON_FILE
-        ? _fileRecruit.candidates.find(c => c.id === interview.candidateId)
-        : (await pool.query("SELECT data FROM recruit_candidates WHERE id = $1 AND is_deleted = FALSE AND (company_id = $2 OR company_id IS NULL)", [interview.candidateId, companyId])).rows[0]?.data;
-      const job = candidate ? await _recruitJobById(candidate.jobId, companyId) : null;
+      const candidate = rc && rc.candidates
+        ? rc.candidates.find(c => String(c.id) === String(interview.candidateId))
+        : (USE_JSON_FILE
+          ? _fileRecruit.candidates.find(c => c.id === interview.candidateId)
+          : (await pool.query("SELECT data FROM recruit_candidates WHERE id = $1 AND is_deleted = FALSE AND (company_id = $2 OR company_id IS NULL)", [interview.candidateId, companyId])).rows[0]?.data);
+      const job = candidate ? await _recruitJobById(candidate.jobId, companyId, rc) : null;
       if (candidate && job) {
         const stages = (job.stages && job.stages.length) ? job.stages : [];
         const statusIdx = stages.indexOf(candidate.status);
@@ -6411,7 +6488,8 @@ app.post("/api/recruit/interviews/:id/evaluation", async (req, res) => {
     }
     let interview;
     try {
-      interview = await _pgLockedUpdate("recruit_interviews", id, applyEvaluation, companyId);
+      const rc = await _recruitBuildCache(companyId, { jobs: true, candidates: true });
+      interview = await _pgLockedUpdate("recruit_interviews", id, (iv) => applyEvaluation(iv, rc), companyId);
     } catch (e) {
       if (e instanceof _RecruitRouteError) return res.status(e.status).json({ ok: false, message: e.message });
       throw e;
