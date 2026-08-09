@@ -794,12 +794,31 @@ const _WRITE_GATED_FIELDS = {
   leaveUsagePlans:    { roles: ["admin", "director", "leader"], ownField: "empId" },
   certLog:            { roles: ["admin"], ownField: "empId" },                // 본인 증명서 발급 기록은 허용
   boardPosts:         { roles: ["admin"], ownField: "authorId" },             // 본인 명의 게시글만
+  // 결재 위임: 위임하는 쪽(empId)이 본인이어야 한다. 검증이 없으면 남의 결재권을 자기에게
+  // 위임하는 레코드를 만들어 결재 권한을 통째로 탈취할 수 있다.
+  approvalDelegations: { roles: ["admin"], ownField: "empId" },
+  // 다면평가 응답은 평가자 본인 명의로만(타인 명의 제출 = 평가 위조)
+  compResponses:      { roles: ["admin"], ownField: "evaluatorId" },
+  compSessions:       { roles: ["admin"] },                                   // eval-ops
+  changeRequests:     { roles: ["admin", "director", "leader"], ownField: "reqUserId" },
+  talentDevPlans:     { roles: ["admin", "director", "leader"], ownField: "empId" },
+  tieNotifications:   { roles: ["admin"] },
+  // 종합검진 완료 처리 토글(_toggleHcDone)은 welfare-settings(관리자 전용) 화면에만 있다
+  healthCheckupLog:   { roles: ["admin"] },
+  onboardingFlows:    { roles: ["admin"] },
+  orgChartHistory:    { roles: ["admin"] },
+  integrationLogs:    { roles: ["admin"] },
+  roomReservations:   { roles: ["admin"], ownField: "bookedBy" },
+  scheduleEvents:     { roles: ["admin", "director", "leader"], ownField: "authorId" },
+  // 저성과자 관리: 읽기와 같은 기준(관리자 또는 settings.lowPerformerViewers 등록자)
+  lowPerfData:        { roles: ["admin"], viewersSetting: "lowPerformerViewers" },
 };
-function _writeGateAllowed(field, rec, actor) {
+function _writeGateAllowed(field, rec, actor, settings) {
   const rule = _WRITE_GATED_FIELDS[field];
   if (!rule || !actor) return false;
   if (rule.roles.includes(actor.role)) return true;
   if (rule.ownField && String(rec[rule.ownField]) === String(actor.empId)) return true;
+  if (rule.viewersSetting && ((settings || {})[rule.viewersSetting] || []).map(String).includes(String(actor.empId))) return true;
   return false;
 }
 const _APPROVAL_GATED_FIELDS = {
@@ -808,16 +827,16 @@ const _APPROVAL_GATED_FIELDS = {
   overtimeRequests: { decided: ["approved", "rejected"],         can: _otCanApproveServer },
   welfarePoints:    { record: _welfareRecordAllowed },
   ...Object.fromEntries(Object.keys(_WRITE_GATED_FIELDS).map(f =>
-    [f, { record: (rec, actor) => _writeGateAllowed(f, rec, actor) }])),
+    [f, { record: (rec, actor, actorEmp, settings) => _writeGateAllowed(f, rec, actor, settings) }])),
 };
 // 반환값: 저장할 레코드, 또는 null(= 이 레코드는 아예 쓰지 않음 — 권한 없이 새로 만들어진 것)
-function _sanitizeGatedRecord(field, incoming, stored, actor, actorEmp) {
+function _sanitizeGatedRecord(field, incoming, stored, actor, actorEmp, settings) {
   const rule = _APPROVAL_GATED_FIELDS[field];
   if (!rule || !incoming) return incoming;
   if (rule.record) {
     // 바뀌지 않은 레코드는 그대로 통과(매 저장마다 전체 배열이 재전송되므로 대부분이 여기).
     if (stored && JSON.stringify(stored) === JSON.stringify(incoming)) return incoming;
-    if (rule.record(incoming, actor, actorEmp)) return incoming;
+    if (rule.record(incoming, actor, actorEmp, settings)) return incoming;
     return stored ? { ...stored } : null;
   }
   const prevStatus = stored ? stored.status : "pending";
@@ -935,7 +954,7 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
       const storedList = _fileStore[gatedField] || [];
       const storedById = new Map(storedList.map(r => [String(r.id), r]));
       data[gatedField] = data[gatedField]
-        .map(r => (r && r.id != null) ? _sanitizeGatedRecord(gatedField, r, storedById.get(String(r.id)), actor, _actorEmpJson) : r)
+        .map(r => (r && r.id != null) ? _sanitizeGatedRecord(gatedField, r, storedById.get(String(r.id)), actor, _actorEmpJson, _fileStore.settings) : r)
         .filter(r => r !== null);
       if (gatedField === "welfarePoints") {
         data[gatedField] = _dropOverspentWelfare(data[gatedField], storedList, actor);
@@ -1180,6 +1199,19 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
       }
       return _actorEmpPg;
     };
+    // 저성과자 열람·수정 허용자 목록(settings.lowPerformerViewers)도 클라이언트가 보낸
+    // data.settings가 아니라 저장본에서 읽는다.
+    let _settingsPg, _settingsPgLoaded = false;
+    const _getSettingsPg = async () => {
+      if (_settingsPgLoaded) return _settingsPg;
+      _settingsPgLoaded = true;
+      const { rows } = await client.query(
+        "SELECT data FROM app_singletons WHERE key = 'settings' AND (company_id = $1 OR company_id IS NULL)",
+        [companyId || null]
+      );
+      _settingsPg = rows.length ? rows[0].data : {};
+      return _settingsPg;
+    };
     for (const field of GENERIC_LIST_FIELDS) {
       const items = data[field];
       if (Array.isArray(items)) {
@@ -1213,7 +1245,7 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
           if (field === "approvalDocs") {
             toWrite = _sanitizeApprovalDoc(item, storedItem, actor);
           } else if (_APPROVAL_GATED_FIELDS[field]) {
-            toWrite = _sanitizeGatedRecord(field, item, storedItem, actor, await _getActorEmpPg());
+            toWrite = _sanitizeGatedRecord(field, item, storedItem, actor, await _getActorEmpPg(), await _getSettingsPg());
             if (toWrite === null) continue;   // 권한 없이 새로 만들어진 레코드 — 쓰지 않음
           }
           await client.query(
