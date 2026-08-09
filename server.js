@@ -748,6 +748,36 @@ function _sanitizeApprovalDoc(incoming, stored, actor) {
   // (상신 취소·삭제요청처럼 결재자와 무관한 status 변경은 reverted가 false라 영향 없음).
   return { ...incoming, approvers, status: stored ? stored.status : "in_progress" };
 }
+// 경비청구·초과근무·증명서도 approvalDocs와 똑같은 구조적 문제를 갖고 있었다 — 승인 권한
+// 검사가 클라이언트 함수(approveExpenseClaim의 role!=="admin", _otCanApprove,
+// approveCertRequest의 role!=="admin")에만 있고, 실제 저장은 범용 blob 동기화(/save)로
+// 나가기 때문에 서버가 아무것도 검증하지 않았다. 실측: 사원(member)이 자기가 올린
+// 경비청구(금액)·초과근무(수당)·증명서 신청을 전부 스스로 승인 완료로 만들 수 있었다.
+// 각 컬렉션의 "승인 상태로 전이"만 게이팅하고, 신청·수정·취소 등 나머지는 그대로 둔다.
+function _otCanApproveServer(rec, actor, actorEmp) {
+  if (!actor) return false;
+  if (String(rec.empId) === String(actor.empId)) return false;   // 본인 신청은 본인이 승인 불가
+  if (actor.role === "admin") return true;
+  if (!actorEmp) return false;
+  if (actor.role === "director") return rec.dept === actorEmp.dept;
+  if (actor.role === "leader") return rec.dept === actorEmp.dept && rec.team === actorEmp.team;
+  return false;
+}
+const _APPROVAL_GATED_FIELDS = {
+  expenseClaims:    { decided: ["approved", "rejected", "paid"], can: (rec, actor) => !!actor && actor.role === "admin" },
+  certRequests:     { decided: ["approved", "rejected"],         can: (rec, actor) => !!actor && actor.role === "admin" },
+  overtimeRequests: { decided: ["approved", "rejected"],         can: _otCanApproveServer },
+};
+function _sanitizeGatedRecord(field, incoming, stored, actor, actorEmp) {
+  const rule = _APPROVAL_GATED_FIELDS[field];
+  if (!rule || !incoming) return incoming;
+  const prevStatus = stored ? stored.status : "pending";
+  if (incoming.status === prevStatus) return incoming;
+  if (!rule.decided.includes(incoming.status)) return incoming;   // 신청·취소 등은 그대로
+  if (rule.can(incoming, actor, actorEmp)) return incoming;
+  // 권한 없는 승인/반려 — 저장된 레코드로 되돌린다(신규 레코드면 pending으로).
+  return stored ? { ...stored } : { ...incoming, status: "pending" };
+}
 async function persistData(data, changedBy = "system", companyId = null, actor = null) {
   return _withSaveLock(() => _persistDataLocked(data, changedBy, companyId, actor));
 }
@@ -821,6 +851,18 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
     // incoming array, so ids a filtered client never received (and therefore can't send back)
     // are left untouched from _fileStore.
     const _tomb = data.recordTombstones || {};
+    // 승인 게이팅(_sanitizeGatedRecord 주석 참고): 경비청구·초과근무·증명서의 승인/반려
+    // 전이는 저장 직전에 저장본과 대조해 권한 없는 것을 되돌린다. 요청자의 부서/팀은
+    // 클라이언트가 보낸 data.employees(위조 가능)가 아니라 저장본에서 읽는다.
+    const _actorEmpJson = actor && actor.empId != null
+      ? (_fileStore.employees || []).find(e => String(e.id) === String(actor.empId)) || null
+      : null;
+    for (const gatedField of Object.keys(_APPROVAL_GATED_FIELDS)) {
+      if (!Array.isArray(data[gatedField])) continue;
+      const storedById = new Map((_fileStore[gatedField] || []).map(r => [String(r.id), r]));
+      data[gatedField] = data[gatedField].map(r =>
+        (r && r.id != null) ? _sanitizeGatedRecord(gatedField, r, storedById.get(String(r.id)), actor, _actorEmpJson) : r);
+    }
     function _mergeProtectedField(field) {
       let merged = mergeArrayById(_fileStore[field], data[field]);
       const dead = _tomb[field];
@@ -1035,6 +1077,22 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
     // 한다 — 이 완화는 tie-break 조회에만 적용하고, 실제 INSERT/UPDATE는 항상 이 요청의
     // 진짜 companyId로만 기록한다.
     const recordTombstones = data.recordTombstones || {};
+    // 승인 게이팅에 쓸 요청자의 부서/팀. 클라이언트가 보낸 data.employees는 위조 가능하므로
+    // 저장본에서 읽는다. 초과근무 승인처럼 실제로 필요할 때 한 번만 조회하고 재사용한다.
+    let _actorEmpPg, _actorEmpPgLoaded = false;
+    const _getActorEmpPg = async () => {
+      if (_actorEmpPgLoaded) return _actorEmpPg;
+      _actorEmpPgLoaded = true;
+      _actorEmpPg = null;
+      if (actor && actor.empId != null) {
+        const { rows } = await client.query(
+          "SELECT data FROM employees WHERE id = $1 AND is_deleted = FALSE AND (company_id = $2 OR company_id IS NULL)",
+          [actor.empId, companyId || null]
+        );
+        _actorEmpPg = rows.length ? rows[0].data : null;
+      }
+      return _actorEmpPg;
+    };
     for (const field of GENERIC_LIST_FIELDS) {
       const items = data[field];
       if (Array.isArray(items)) {
@@ -1061,11 +1119,15 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
           const oldTs = rows.length ? (rows[0].data.updatedAt || rows[0].data.createdAt || "") : "";
           const newTs = item.updatedAt || item.createdAt || "";
           if (rows.length && newTs < oldTs) continue; // server has a newer copy, keep it
-          // 결재 위조 방어(_sanitizeApprovalDoc 주석 참고). 저장본은 바로 위에서 이미
-          // 조회했으므로 추가 쿼리 없이 그대로 대조한다.
-          const toWrite = field === "approvalDocs"
-            ? _sanitizeApprovalDoc(item, rows.length ? rows[0].data : null, actor)
-            : item;
+          // 결재 위조 방어(_sanitizeApprovalDoc / _sanitizeGatedRecord 주석 참고).
+          // 저장본은 바로 위에서 이미 조회했으므로 추가 쿼리 없이 그대로 대조한다.
+          const storedItem = rows.length ? rows[0].data : null;
+          let toWrite = item;
+          if (field === "approvalDocs") {
+            toWrite = _sanitizeApprovalDoc(item, storedItem, actor);
+          } else if (_APPROVAL_GATED_FIELDS[field]) {
+            toWrite = _sanitizeGatedRecord(field, item, storedItem, actor, await _getActorEmpPg());
+          }
           await client.query(
             `INSERT INTO app_collections (collection, id, company_id, data, updated_at) VALUES ($1,$2,$3,$4,NOW())
              ON CONFLICT (company_id, collection, id) DO UPDATE SET data = $4, updated_at = NOW()`,
