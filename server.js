@@ -775,11 +775,40 @@ function _welfareRecordAllowed(rec, actor) {
   if (rec.type === "use") return String(rec.empId) === String(actor.empId);  // 사용은 본인만
   return false;
 }
+// 관리자 전용 화면에서만 만들어져야 하는 레코드들. 여기도 전부 blob 동기화(/save)를 타는데
+// 서버 검증이 없어, 사원(member)이 자기에게 유리한 레코드를 직접 만들어 넣을 수 있었다
+// (실측: 급여명세서 실수령 9,900만원 자가 생성, 인센티브 1,000만원 자가 지급,
+//  KPI 등급 C→S 자가 조정, 핵심인재 자가 등록, 결재 양식 임의 생성 등 10개 컬렉션 전부 열림).
+// roles: 이 역할이면 누구 레코드든 쓸 수 있음(해당 화면의 PAGE_ROLES와 일치)
+// ownField: 그 필드가 본인 id면 역할과 무관하게 허용(본인 출퇴근 체크·본인 증명서 발급 등)
+const _WRITE_GATED_FIELDS = {
+  payslips:           { roles: ["admin"] },                                   // payroll-mgmt
+  payrollAdjustments: { roles: ["admin"] },                                   // payroll-mgmt
+  gradeAdjustHistory: { roles: ["admin"] },                                   // comp-grade-view
+  coreTalentPool:     { roles: ["admin"] },                                   // core-talent
+  approvalTemplates:  { roles: ["admin"] },                                   // approval-templates
+  mandatoryTraining:  { roles: ["admin", "director", "leader"] },             // hr-mandatory-training
+  // 근태: 결재 완료 시 승인자의 화면이 기안자(타인)의 근태를 쓴다(_setAttRec) — 리더 이상은
+  // 타인 기록도 써야 하고, 사원은 본인 출퇴근 체크만.
+  attendanceRecords:  { roles: ["admin", "director", "leader"], ownField: "empId" },
+  leaveUsagePlans:    { roles: ["admin", "director", "leader"], ownField: "empId" },
+  certLog:            { roles: ["admin"], ownField: "empId" },                // 본인 증명서 발급 기록은 허용
+  boardPosts:         { roles: ["admin"], ownField: "authorId" },             // 본인 명의 게시글만
+};
+function _writeGateAllowed(field, rec, actor) {
+  const rule = _WRITE_GATED_FIELDS[field];
+  if (!rule || !actor) return false;
+  if (rule.roles.includes(actor.role)) return true;
+  if (rule.ownField && String(rec[rule.ownField]) === String(actor.empId)) return true;
+  return false;
+}
 const _APPROVAL_GATED_FIELDS = {
   expenseClaims:    { decided: ["approved", "rejected", "paid"], can: (rec, actor) => !!actor && actor.role === "admin" },
   certRequests:     { decided: ["approved", "rejected"],         can: (rec, actor) => !!actor && actor.role === "admin" },
   overtimeRequests: { decided: ["approved", "rejected"],         can: _otCanApproveServer },
   welfarePoints:    { record: _welfareRecordAllowed },
+  ...Object.fromEntries(Object.keys(_WRITE_GATED_FIELDS).map(f =>
+    [f, { record: (rec, actor) => _writeGateAllowed(f, rec, actor) }])),
 };
 // 반환값: 저장할 레코드, 또는 null(= 이 레코드는 아예 쓰지 않음 — 권한 없이 새로 만들어진 것)
 function _sanitizeGatedRecord(field, incoming, stored, actor, actorEmp) {
