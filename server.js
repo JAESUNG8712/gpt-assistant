@@ -763,20 +763,64 @@ function _otCanApproveServer(rec, actor, actorEmp) {
   if (actor.role === "leader") return rec.dept === actorEmp.dept && rec.team === actorEmp.team;
   return false;
 }
+// welfarePoints는 승인 상태 전이가 아니라 "레코드 생성" 자체가 곧 금전 효과라 별도 규칙이
+// 필요하다. 부여(grant)는 관리자 화면(doGrantWelfare)에서만 만들어지는데 서버 검증이 없어,
+// 사원이 /save로 `type:"grant"` 레코드를 직접 만들어 자기에게 무제한 부여할 수 있었다
+// (실측: member가 자기에게 500만원 자가 부여 성공). 사용(use)은 본인 것만 만들 수 있고,
+// 잔액 초과 여부도 클라이언트에서만 보고 있었다.
+function _welfareRecordAllowed(rec, actor) {
+  if (!actor) return false;
+  if (actor.role === "admin") return true;
+  if (rec.type === "grant") return false;                              // 부여는 관리자만
+  if (rec.type === "use") return String(rec.empId) === String(actor.empId);  // 사용은 본인만
+  return false;
+}
 const _APPROVAL_GATED_FIELDS = {
   expenseClaims:    { decided: ["approved", "rejected", "paid"], can: (rec, actor) => !!actor && actor.role === "admin" },
   certRequests:     { decided: ["approved", "rejected"],         can: (rec, actor) => !!actor && actor.role === "admin" },
   overtimeRequests: { decided: ["approved", "rejected"],         can: _otCanApproveServer },
+  welfarePoints:    { record: _welfareRecordAllowed },
 };
+// 반환값: 저장할 레코드, 또는 null(= 이 레코드는 아예 쓰지 않음 — 권한 없이 새로 만들어진 것)
 function _sanitizeGatedRecord(field, incoming, stored, actor, actorEmp) {
   const rule = _APPROVAL_GATED_FIELDS[field];
   if (!rule || !incoming) return incoming;
+  if (rule.record) {
+    // 바뀌지 않은 레코드는 그대로 통과(매 저장마다 전체 배열이 재전송되므로 대부분이 여기).
+    if (stored && JSON.stringify(stored) === JSON.stringify(incoming)) return incoming;
+    if (rule.record(incoming, actor, actorEmp)) return incoming;
+    return stored ? { ...stored } : null;
+  }
   const prevStatus = stored ? stored.status : "pending";
   if (incoming.status === prevStatus) return incoming;
   if (!rule.decided.includes(incoming.status)) return incoming;   // 신청·취소 등은 그대로
   if (rule.can(incoming, actor, actorEmp)) return incoming;
   // 권한 없는 승인/반려 — 저장된 레코드로 되돌린다(신규 레코드면 pending으로).
   return stored ? { ...stored } : { ...incoming, status: "pending" };
+}
+// 복지포인트 잔액 초과 사용 차단. 클라이언트(doUseWelfare)가 잔액을 계산해 막고 있지만
+// 서버 재검증이 없어, 두 세션에서 거의 동시에 사용하면 둘 다 통과해 잔액이 마이너스로
+// 내려갈 수 있었다. 저장 직전에 그 직원·그 연도의 부여/사용 합계를 다시 계산해 초과분을
+// 걸러낸다(관리자 저장은 정산·조정 목적일 수 있어 그대로 둔다).
+function _dropOverspentWelfare(incomingList, storedList, actor) {
+  if (!Array.isArray(incomingList) || !actor || actor.role === "admin") return incomingList;
+  const storedIds = new Set((storedList || []).map(r => String(r.id)));
+  const newUses = incomingList.filter(r => r && r.type === "use" && !storedIds.has(String(r.id)));
+  if (!newUses.length) return incomingList;
+  const sumOf = (list, empId, year, type) => (list || [])
+    .filter(r => r && String(r.empId) === String(empId) && r.type === type && String(r.year) === String(year))
+    .reduce((s, r) => s + (Number(r.points) || 0), 0);
+  const rejected = new Set();
+  for (const u of newUses) {
+    const grants = sumOf(storedList, u.empId, u.year, "grant");
+    const usedBefore = sumOf(storedList, u.empId, u.year, "use");
+    const usedNewAccepted = newUses
+      .filter(x => x !== u && !rejected.has(String(x.id)) && String(x.empId) === String(u.empId) && String(x.year) === String(u.year))
+      .reduce((s, x) => s + (Number(x.points) || 0), 0);
+    if (usedBefore + usedNewAccepted + (Number(u.points) || 0) > grants) rejected.add(String(u.id));
+  }
+  if (!rejected.size) return incomingList;
+  return incomingList.filter(r => !(r && rejected.has(String(r.id))));
 }
 async function persistData(data, changedBy = "system", companyId = null, actor = null) {
   return _withSaveLock(() => _persistDataLocked(data, changedBy, companyId, actor));
@@ -859,9 +903,14 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
       : null;
     for (const gatedField of Object.keys(_APPROVAL_GATED_FIELDS)) {
       if (!Array.isArray(data[gatedField])) continue;
-      const storedById = new Map((_fileStore[gatedField] || []).map(r => [String(r.id), r]));
-      data[gatedField] = data[gatedField].map(r =>
-        (r && r.id != null) ? _sanitizeGatedRecord(gatedField, r, storedById.get(String(r.id)), actor, _actorEmpJson) : r);
+      const storedList = _fileStore[gatedField] || [];
+      const storedById = new Map(storedList.map(r => [String(r.id), r]));
+      data[gatedField] = data[gatedField]
+        .map(r => (r && r.id != null) ? _sanitizeGatedRecord(gatedField, r, storedById.get(String(r.id)), actor, _actorEmpJson) : r)
+        .filter(r => r !== null);
+      if (gatedField === "welfarePoints") {
+        data[gatedField] = _dropOverspentWelfare(data[gatedField], storedList, actor);
+      }
     }
     function _mergeProtectedField(field) {
       let merged = mergeArrayById(_fileStore[field], data[field]);
@@ -1077,6 +1126,15 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
     // 한다 — 이 완화는 tie-break 조회에만 적용하고, 실제 INSERT/UPDATE는 항상 이 요청의
     // 진짜 companyId로만 기록한다.
     const recordTombstones = data.recordTombstones || {};
+    // 복지포인트 잔액 초과 사용 차단은 그 직원·연도의 전체 원장이 필요해 항목별 SELECT로는
+    // 부족하다 — 신규 use 레코드가 실제로 있을 때만 컬렉션을 한 번 읽어 걸러낸다.
+    if (Array.isArray(data.welfarePoints) && actor && actor.role !== "admin") {
+      const { rows: wpRows } = await client.query(
+        "SELECT data FROM app_collections WHERE collection = 'welfarePoints' AND (company_id = $1 OR company_id IS NULL)",
+        [companyId || null]
+      );
+      data.welfarePoints = _dropOverspentWelfare(data.welfarePoints, wpRows.map(r => r.data), actor);
+    }
     // 승인 게이팅에 쓸 요청자의 부서/팀. 클라이언트가 보낸 data.employees는 위조 가능하므로
     // 저장본에서 읽는다. 초과근무 승인처럼 실제로 필요할 때 한 번만 조회하고 재사용한다.
     let _actorEmpPg, _actorEmpPgLoaded = false;
@@ -1127,6 +1185,7 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
             toWrite = _sanitizeApprovalDoc(item, storedItem, actor);
           } else if (_APPROVAL_GATED_FIELDS[field]) {
             toWrite = _sanitizeGatedRecord(field, item, storedItem, actor, await _getActorEmpPg());
+            if (toWrite === null) continue;   // 권한 없이 새로 만들어진 레코드 — 쓰지 않음
           }
           await client.query(
             `INSERT INTO app_collections (collection, id, company_id, data, updated_at) VALUES ($1,$2,$3,$4,NOW())
