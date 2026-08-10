@@ -682,6 +682,32 @@
 </div>
 
 <script>
+
+  // ── 관리자 토큰 (BACKUP_TOKEN) ────────────────────────────────────────────
+  // 예산 API는 서버에서 ?token=<BACKUP_TOKEN> 을 요구한다(2026-08-10 게이팅 추가).
+  // 값은 index.html과 같은 키를 써서 한 번만 입력하면 양쪽에서 공유된다.
+  const ADMIN_TOKEN_KEY = 'ai_admin_token';
+  function getAdminToken(force) {
+    let t = localStorage.getItem(ADMIN_TOKEN_KEY) || '';
+    if (!t || force) {
+      t = (prompt('관리자 토큰(BACKUP_TOKEN)을 입력하세요.\n서버 환경변수에 설정한 값입니다.', t) || '').trim();
+      if (t) localStorage.setItem(ADMIN_TOKEN_KEY, t);
+    }
+    return t;
+  }
+  function withTok(url) {
+    const t = getAdminToken();
+    if (!t) return url;
+    return url + (url.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(t);
+  }
+  async function tokFetch(url, opts) {
+    let r = await fetch(withTok(url), opts);
+    if (r.status === 401) {
+      const t = getAdminToken(true);
+      if (t) r = await fetch(withTok(url), opts);
+    }
+    return r;
+  }
 // ══════════════════════════════════════════
 // 데이터 모델
 // ══════════════════════════════════════════
@@ -932,7 +958,7 @@ window.onload = () => {
 
 async function load() {
   try {
-    const r = await fetch('/budget/sheets');
+    const r = await tokFetch('/budget/sheets');
     if (r.ok) {
       const d = await r.json();
       sheets = d.sheets && Object.keys(d.sheets).length ? d.sheets : {'Sheet1':[]};
@@ -944,7 +970,7 @@ async function load() {
       conditionalFormats = d.conditionalFormats || {};
       dataValidations = d.dataValidations || {};
     } else {
-      const r2 = await fetch('/budget/grid');
+      const r2 = await tokFetch('/budget/grid');
       if (r2.ok) {
         const d2 = await r2.json();
         const rows = (d2.rows||[]).map(row=>row.map(c=>c==null?'':String(c)));
@@ -3884,9 +3910,9 @@ async function save() {
   setStatus('저장 중...');
   try {
     const [r1, r2] = await Promise.all([
-      fetch('/budget/sheets',{method:'POST',headers:{'Content-Type':'application/json'},
+      tokFetch('/budget/sheets',{method:'POST',headers:{'Content-Type':'application/json'},
         body:JSON.stringify({sheets,active:activeSheet,styles:cellStyles,colWidths,rowHeights,mergedCells,conditionalFormats,dataValidations})}),
-      fetch('/budget/grid',{method:'POST',headers:{'Content-Type':'application/json'},
+      tokFetch('/budget/grid',{method:'POST',headers:{'Content-Type':'application/json'},
         body:JSON.stringify({rows:grid()})})
     ]);
     if(r1.ok) { markClean(); setStatus('✅ 저장됨'); }
@@ -3899,7 +3925,7 @@ async function upload(input) {
   setStatus('업로드 중...');
   const fd=new FormData(); fd.append('file',file);
   try {
-    const r=await fetch('/budget/grid/upload',{method:'POST',body:fd});
+    const r=await tokFetch('/budget/grid/upload',{method:'POST',body:fd});
     const d=await r.json();
     if(r.ok){
       sheets[activeSheet]=d.rows?d.rows.map(row=>row.map(c=>c==null?'':String(c))):[];
@@ -3913,7 +3939,7 @@ async function upload(input) {
 async function download() {
   try {
     await save();
-    const r=await fetch('/budget/grid/download');
+    const r=await tokFetch('/budget/grid/download');
     const blob=await r.blob();
     const url=URL.createObjectURL(blob);
     const a=document.createElement('a');a.href=url;a.download='budget.xlsx';a.click();
@@ -3926,7 +3952,7 @@ async function download() {
 // ══════════════════════════════════════════
 async function loadSnaps() {
   try {
-    const r=await fetch('/budget/grid/snapshots');
+    const r=await tokFetch('/budget/grid/snapshots');
     const d=await r.json();
     const snaps=d.snapshots||[];
     ['cmp-a','cmp-b'].forEach(id=>{
@@ -3960,7 +3986,7 @@ async function saveSnap() {
   const st=document.getElementById('snap-status');st.textContent='저장 중...';
   try {
     await save();
-    const r=await fetch('/budget/grid/snapshot',{method:'POST',headers:{'Content-Type':'application/json'},
+    const r=await tokFetch('/budget/grid/snapshot',{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({label,rows:grid()})});
     if(r.ok){st.textContent='✅ 저장됨';st.style.color='#2e7d32';loadSnaps();}
     else{st.textContent='실패';st.style.color='#c62828';}
@@ -3971,7 +3997,7 @@ async function deleteSnap() {
   const id=document.getElementById('cmp-a').value;
   if(id==='current'){alert('삭제할 스냅샷을 선택하세요');return;}
   if(!confirm('이 스냅샷을 삭제하시겠습니까?')) return;
-  await fetch('/budget/grid/snapshot/'+id,{method:'DELETE'});
+  await tokFetch('/budget/grid/snapshot/'+id,{method:'DELETE'});
   loadSnaps();
 }
 
@@ -3999,7 +4025,7 @@ async function compare() {
     showDiff(diffs); return;
   }
   try {
-    const r=await fetch(`/budget/grid/compare?a=${a}&b=${b}`);
+    const r=await tokFetch(`/budget/grid/compare?a=${a}&b=${b}`);
     const d=await r.json();
     showDiff(d.diffs||[]);
   } catch(e){document.getElementById('diff').textContent='비교 실패';}

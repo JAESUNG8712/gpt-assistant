@@ -882,6 +882,35 @@
 </div>
 
 <script>
+
+  // ── 관리자 토큰 (BACKUP_TOKEN) ────────────────────────────────────────────
+  // 백업·공유링크·예산·이력삭제 API는 서버에서 ?token=<BACKUP_TOKEN> 을 요구한다.
+  // (2026-08-10: 토큰 미설정 시 무조건 통과하던 fail-open을 fail-closed로 바꾸면서,
+  //  이 화면도 토큰을 실어 보내야 정상 동작한다.)
+  // 값은 이 브라우저에만 저장하고 서버로는 요청 파라미터로만 나간다.
+  const ADMIN_TOKEN_KEY = 'ai_admin_token';
+  function getAdminToken(force) {
+    let t = localStorage.getItem(ADMIN_TOKEN_KEY) || '';
+    if (!t || force) {
+      t = (prompt('관리자 토큰(BACKUP_TOKEN)을 입력하세요.\n서버 환경변수에 설정한 값입니다.', t) || '').trim();
+      if (t) localStorage.setItem(ADMIN_TOKEN_KEY, t);
+    }
+    return t;
+  }
+  function withTok(url) {
+    const t = getAdminToken();
+    if (!t) return url;
+    return url + (url.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(t);
+  }
+  // 401이면 토큰이 틀린 것 — 다시 물어본다.
+  async function tokFetch(url, opts) {
+    let r = await fetch(withTok(url), opts);
+    if (r.status === 401) {
+      const t = getAdminToken(true);
+      if (t) r = await fetch(withTok(url), opts);
+    }
+    return r;
+  }
   // ── 상태 ─────────────────────────────────
   let currentPersona = null;
   let personas = [];
@@ -1504,7 +1533,7 @@
     if (!checked.length) { alert('공개할 전문가를 1개 이상 선택하세요.'); return; }
     const name = document.getElementById('share-name-input').value.trim();
     try {
-      const r = await fetch('/admin/share', {
+      const r = await tokFetch('/admin/share', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name, personas: checked }),
@@ -1521,7 +1550,7 @@
   async function loadShareList() {
     const listEl = document.getElementById('share-list');
     try {
-      const r = await fetch('/admin/share');
+      const r = await tokFetch('/admin/share');
       const d = await r.json();
       if (!d.items.length) {
         listEl.innerHTML = '<div style="font-size:0.78rem;color:var(--text-dim)">생성된 공유 링크가 없습니다.</div>';
@@ -1557,7 +1586,7 @@
 
   async function revokeShareLink(token) {
     if (!confirm('이 공유 링크를 삭제하시겠습니까? 삭제하면 해당 링크로 더 이상 접속할 수 없습니다.')) return;
-    await fetch(`/admin/share/${token}`, { method: 'DELETE' });
+    await tokFetch(`/admin/share/${token}`, { method: 'DELETE' });
     await loadShareList();
   }
 
@@ -1875,7 +1904,7 @@
   function backupDownload() {
     showToast('⬇️ 백업 파일 다운로드 중...');
     const a = document.createElement('a');
-    a.href = '/backup/download';
+    a.href = withTok('/backup/download');
     a.download = '';
     document.body.appendChild(a);
     a.click();
@@ -1911,7 +1940,7 @@
 
     if (!status.connected) {
       // 아직 로그인 안 됨 → Google OAuth 창 열기
-      const r = await fetch('/backup/google-auth');
+      const r = await tokFetch('/backup/google-auth');
       const d = await r.json();
       window.open(d.auth_url, '_blank', 'width=500,height=600');
       showToast('🔑 Google 로그인 후 이 버튼을 다시 눌러주세요.');
@@ -1920,7 +1949,7 @@
 
     showToast('📁 Google Drive 업로드 중...');
     try {
-      const r = await fetch('/backup/google-drive', { method: 'POST' });
+      const r = await tokFetch('/backup/google-drive', { method: 'POST' });
       const d = await r.json();
       showToast(`✅ Drive 업로드 완료: ${d.filename}`);
     } catch { showToast('⚠️ Google Drive 백업 실패'); }
@@ -1944,7 +1973,7 @@
   async function clearHistory() {
     if (!currentPersona) return;
     if (!confirm(`[${currentPersona.name}] 대화 기록을 삭제할까요?\n학습된 지식은 유지됩니다.`)) return;
-    await fetch(`/history?persona=${currentPersona.id}`, { method: 'DELETE' });
+    await tokFetch(`/history?persona=${currentPersona.id}`, { method: 'DELETE' });
     clearMessages();
     await loadStats();
   }

@@ -167,16 +167,27 @@ BACKUP_TOKEN = os.getenv("BACKUP_TOKEN", "")
 if not BACKUP_TOKEN:
     print(
         "⚠️  BACKUP_TOKEN 환경변수가 설정되지 않았습니다. "
-        "/backup/download, /backup/google-auth, /backup/google-drive, /debug/law, "
-        "/admin/* (DB 이관·학습데이터 조회/삭제·공유링크 관리) 가 인증 없이 "
-        "공개 접근 가능한 상태입니다(전체 대화·학습 DB 다운로드/변조 포함). "
-        "배포 환경이 외부에 노출된다면 BACKUP_TOKEN을 설정하고 요청 시 "
-        "?token=<값> 을 함께 전달하세요."
+        "/backup/*, /admin/* (DB 이관·학습데이터 조회/삭제·공유링크 관리), "
+        "/budget/* (예산 조회·수정·삭제), /history 삭제 기능이 "
+        "모두 503으로 비활성화됩니다(fail-closed — 설정 누락 시 열리지 않고 닫힙니다). "
+        "이 기능들을 쓰려면 BACKUP_TOKEN을 설정하고 요청 시 ?token=<값> 을 전달하세요. "
+        "채팅·검색 등 일반 기능은 토큰 없이 그대로 동작합니다."
     )
 
 
 def _require_backup_token(token: str = "") -> None:
-    if BACKUP_TOKEN and not hmac.compare_digest(token, BACKUP_TOKEN):
+    # fail-closed: BACKUP_TOKEN이 설정되지 않았으면 "검사 통과"가 아니라 "거부"다.
+    # 이전에는 `if BACKUP_TOKEN and ...` 라서 토큰 미설정 시 조건이 통째로 거짓이 되어
+    # 게이팅된 줄 알았던 /admin/import-db(DB 통째 교체)·/backup/download(전체 DB 유출)까지
+    # 전부 무인증으로 열려 있었다(2026-08-10 실배포에서 BACKUP_TOKEN 미설정 확인).
+    # 보안 검사는 설정 누락 시 열리는 쪽이 아니라 닫히는 쪽으로 실패해야 한다.
+    if not BACKUP_TOKEN:
+        raise HTTPException(
+            503,
+            "서버에 BACKUP_TOKEN이 설정되지 않아 이 기능은 비활성화되어 있습니다. "
+            "환경변수 BACKUP_TOKEN을 설정한 뒤 ?token=<값> 으로 요청하세요.",
+        )
+    if not hmac.compare_digest(token, BACKUP_TOKEN):
         raise HTTPException(401, "유효한 token 파라미터가 필요합니다.")
 
 
@@ -1115,13 +1126,15 @@ def history(limit: int = 30, persona: str = None):
     return {"history": mem.get_history(limit, persona=persona)}
 
 @app.delete("/history")
-def clear_history(persona: str = None):
+def clear_history(persona: str = None, token: str = ""):
+    _require_backup_token(token)
     mem.clear_history(persona=persona)
     return {"ok": True}
 
 @app.delete("/history/stock/reset")
-def reset_stock_history():
+def reset_stock_history(token: str = ""):
     """stock 페르소나 대화 이력 + 자동학습 KB 완전 초기화 (오염 제거용)"""
+    _require_backup_token(token)
     mem.clear_history(persona="stock")
     try:
         # mem._conn() 경유 — Turso/로컬 SQLite 공용. auto_learn()이 실제로 쓰는
@@ -1715,8 +1728,9 @@ async def debug_law(q: str = "근로기준법 제7조", token: str = ""):
 
 # ── 예산관리 (budget) API ─────────────────────────
 @app.post("/budget/upload/headcount")
-async def budget_upload_headcount(file: UploadFile = File(...)):
+async def budget_upload_headcount(file: UploadFile = File(...), token: str = ""):
     """① 부서별 월 인원 현황 업로드 — 동일 부서/월 재업로드 시 자동 갱신"""
+    _require_backup_token(token)
     content = await file.read()
     try:
         rows = budget.parse_rows(content, file.filename)
@@ -1726,8 +1740,9 @@ async def budget_upload_headcount(file: UploadFile = File(...)):
     return {"message": "인원 현황이 반영되었습니다.", "upserted": upserted, "depts": depts}
 
 @app.post("/budget/upload/detail")
-async def budget_upload_detail(file: UploadFile = File(...)):
+async def budget_upload_detail(file: UploadFile = File(...), token: str = ""):
     """② 판관/용역/경상 상세 업로드 — ①의 부서와 자동 연계, 동일 키 재업로드 시 자동 갱신"""
+    _require_backup_token(token)
     content = await file.read()
     try:
         rows = budget.parse_rows(content, file.filename)
@@ -1737,16 +1752,19 @@ async def budget_upload_detail(file: UploadFile = File(...)):
     return {"message": "예산 상세(판관/용역/경상) 내역이 반영되었습니다.", "upserted": upserted, "depts": depts}
 
 @app.get("/budget/data")
-def budget_data():
+def budget_data(token: str = ""):
+    _require_backup_token(token)
     return budget.read_budget()
 
 @app.get("/budget/summary")
-def budget_summary():
+def budget_summary(token: str = ""):
     """부서 기준으로 인원 현황과 판관/용역/경상 상세를 연계한 통합 요약 (중복 없이 합산)"""
+    _require_backup_token(token)
     return {"summary": budget.build_summary()}
 
 @app.delete("/budget/data")
-def budget_reset():
+def budget_reset(token: str = ""):
+    _require_backup_token(token)
     budget.write_budget(budget._empty())
     return {"message": "예산 데이터가 초기화되었습니다."}
 
@@ -1761,18 +1779,21 @@ class SnapshotRequest(BaseModel):
 
 
 @app.get("/budget/grid")
-def budget_grid_get():
+def budget_grid_get(token: str = ""):
+    _require_backup_token(token)
     return {"rows": budget.get_grid()}
 
 
 @app.post("/budget/grid")
-def budget_grid_save(req: GridSaveRequest):
+def budget_grid_save(req: GridSaveRequest, token: str = ""):
+    _require_backup_token(token)
     budget.save_grid(req.rows)
     return {"message": "저장되었습니다."}
 
 
 @app.post("/budget/grid/upload")
-async def budget_grid_upload(file: UploadFile = File(...)):
+async def budget_grid_upload(file: UploadFile = File(...), token: str = ""):
+    _require_backup_token(token)
     content = await file.read()
     try:
         rows = budget.parse_grid(content, file.filename)
@@ -1783,7 +1804,8 @@ async def budget_grid_upload(file: UploadFile = File(...)):
 
 
 @app.get("/budget/grid/download")
-def budget_grid_download():
+def budget_grid_download(token: str = ""):
+    _require_backup_token(token)
     rows = budget.get_grid()
     buf = budget.export_grid_xlsx(rows)
     return StreamingResponse(
@@ -1794,18 +1816,21 @@ def budget_grid_download():
 
 
 @app.get("/budget/grid/snapshots")
-def budget_snapshots_list():
+def budget_snapshots_list(token: str = ""):
+    _require_backup_token(token)
     return {"snapshots": budget.list_snapshots()}
 
 
 @app.post("/budget/grid/snapshot")
-def budget_snapshot_save(req: SnapshotRequest):
+def budget_snapshot_save(req: SnapshotRequest, token: str = ""):
+    _require_backup_token(token)
     snap_id = budget.save_snapshot(req.label, req.rows)
     return {"message": "스냅샷이 저장되었습니다.", "id": snap_id}
 
 
 @app.get("/budget/grid/snapshot/{snap_id}")
-def budget_snapshot_get(snap_id: str):
+def budget_snapshot_get(snap_id: str, token: str = ""):
+    _require_backup_token(token)
     snap = budget.get_snapshot(snap_id)
     if not snap:
         raise HTTPException(status_code=404, detail="스냅샷을 찾을 수 없습니다.")
@@ -1813,7 +1838,8 @@ def budget_snapshot_get(snap_id: str):
 
 
 @app.delete("/budget/grid/snapshot/{snap_id}")
-def budget_snapshot_delete(snap_id: str):
+def budget_snapshot_delete(snap_id: str, token: str = ""):
+    _require_backup_token(token)
     ok = budget.delete_snapshot(snap_id)
     if not ok:
         raise HTTPException(status_code=404, detail="스냅샷을 찾을 수 없습니다.")
@@ -1821,22 +1847,25 @@ def budget_snapshot_delete(snap_id: str):
 
 
 @app.get("/budget/sheets")
-def budget_get_sheets():
+def budget_get_sheets(token: str = ""):
     """멀티시트 전체 데이터 조회"""
+    _require_backup_token(token)
     return budget.get_sheets()
 
 
 @app.post("/budget/sheets")
-async def budget_save_sheets(request: Request):
+async def budget_save_sheets(request: Request, token: str = ""):
     """멀티시트 전체 데이터 저장"""
+    _require_backup_token(token)
     payload = await request.json()
     budget.save_sheets(payload)
     return {"ok": True}
 
 
 @app.get("/budget/grid/compare")
-def budget_grid_compare(a: str = "current", b: str = "current"):
+def budget_grid_compare(a: str = "current", b: str = "current", token: str = ""):
     """a, b는 스냅샷 id 또는 'current'(현재 작업 그리드)"""
+    _require_backup_token(token)
     def _rows_of(key):
         if key == "current":
             return budget.get_grid()

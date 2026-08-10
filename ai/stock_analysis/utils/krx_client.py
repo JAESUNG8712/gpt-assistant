@@ -11,8 +11,18 @@ from typing import Optional
 try:
     from pykrx import stock as krx_stock
     HAS_PYKRX = True
-except ImportError:
+except Exception as _pykrx_err:
+    # pykrx는 import 시점에 KRX 로그인을 시도한다(webio.py 모듈 최상단의
+    # `_session = build_krx_session()` — KRX_ID/KRX_PW 환경변수가 있으면 실행).
+    # KRX가 JSON이 아닌 응답(차단 페이지 등)을 주면 requests.JSONDecodeError가
+    # import 밖으로 튀어나오는데, 여기서 ImportError만 잡고 있어 그 예외가
+    # 앱 전체를 죽였다 — 2026-08-10 실제 배포 실패(uvicorn이 앱을 로드하지 못하고
+    # "Exited with status 1", 서비스 전체 다운).
+    # 외부 사이트 장애로 서비스가 내려가서는 안 되므로 어떤 예외든 잡아
+    # pykrx 없이 동작하도록 내려간다(네이버 금융 스크래핑 → mock 순 fallback).
     HAS_PYKRX = False
+    print(f"[krx] pykrx 초기화 실패 — pykrx 없이 동작합니다: "
+          f"{type(_pykrx_err).__name__}: {_pykrx_err}")
 
 try:
     import requests as _requests

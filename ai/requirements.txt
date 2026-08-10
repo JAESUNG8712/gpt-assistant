@@ -10,3 +10,4 @@ aiohttp
 pykrx
 apscheduler
 anthropic
+openpyxl

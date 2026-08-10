@@ -15,8 +15,10 @@ from typing import Dict, List, Tuple
 try:
     from pykrx import stock as krx_stock
     HAS_PYKRX = True
-except ImportError:
+except Exception as _pykrx_err:
     HAS_PYKRX = False
+    print(f"[krx] pykrx 초기화 실패 — pykrx 없이 동작합니다: "
+          f"{type(_pykrx_err).__name__}: {_pykrx_err}")
 
 try:
     import requests
