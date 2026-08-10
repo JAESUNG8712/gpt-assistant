@@ -768,10 +768,15 @@ function _otCanApproveServer(rec, actor, actorEmp) {
 // 사원이 /save로 `type:"grant"` 레코드를 직접 만들어 자기에게 무제한 부여할 수 있었다
 // (실측: member가 자기에게 500만원 자가 부여 성공). 사용(use)은 본인 것만 만들 수 있고,
 // 잔액 초과 여부도 클라이언트에서만 보고 있었다.
-function _welfareRecordAllowed(rec, actor) {
+function _welfareRecordAllowed(rec, actor, actorEmp, settings) {
   if (!actor) return false;
   if (actor.role === "admin") return true;
-  if (rec.type === "grant") return false;                              // 부여는 관리자만
+  // 복지포인트 담당자로 지정된 직원(settings.welfarePointsViewers)은 관리자가 아니어도
+  // "복지포인트 현황(전체)" 화면(_canViewWelfareAll로 게이팅)에서 부여를 처리한다 —
+  // 읽기 필터가 이미 같은 기준을 쓰므로 쓰기도 동일하게 맞춘다. 이 예외가 없으면
+  // 지정 담당자의 부여가 서버에서 조용히 되돌려진다.
+  if (((settings || {}).welfarePointsViewers || []).map(String).includes(String(actor.empId))) return true;
+  if (rec.type === "grant") return false;                              // 그 외 부여는 관리자만
   if (rec.type === "use") return String(rec.empId) === String(actor.empId);  // 사용은 본인만
   return false;
 }
@@ -801,7 +806,8 @@ const _WRITE_GATED_FIELDS = {
   compResponses:      { roles: ["admin"], ownField: "evaluatorId" },
   compSessions:       { roles: ["admin"] },                                   // eval-ops
   changeRequests:     { roles: ["admin", "director", "leader"], ownField: "reqUserId" },
-  talentDevPlans:     { roles: ["admin", "director", "leader"], ownField: "empId" },
+  // 육성계획: 본인(핵심인재 본인이 자기 IDP 작성) 또는 지정 담당자(settings.talentDevViewers)
+  talentDevPlans:     { roles: ["admin", "director", "leader"], ownField: "empId", viewersSetting: "talentDevViewers" },
   tieNotifications:   { roles: ["admin"] },
   // 종합검진 완료 처리 토글(_toggleHcDone)은 welfare-settings(관리자 전용) 화면에만 있다
   healthCheckupLog:   { roles: ["admin"] },
