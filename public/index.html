@@ -3543,7 +3543,7 @@ function hasEditApproval(planId){
 }
 function canEditPlan(plan){
   if(!plan) return false;
-  if(currentUser.role==="admin") return true;
+  if(_isTalentDevManager()) return true;
   const isOwner=plan.empId===currentUser.id;
   if(!isOwner) return false;
   if(plan.type==="plan") return isTalentPlanOpen()||hasEditApproval(plan.id);
@@ -10240,6 +10240,7 @@ function renderTalentDevPage(){
   const isAdmin=u.role==="admin";
   const isDirector=u.role==="director";
   const isLeader=u.role==="leader";
+  const isTdManager=_isTalentDevManager(); // admin 또는 settings.talentDevViewers 지정 담당자
 
   // Check if this user is a selected talent
   const myPool=coreTalentPool.find(p=>p.empId===u.id&&p.year===yr&&p.status==="selected");
@@ -10262,7 +10263,7 @@ function renderTalentDevPage(){
   const pendingEditReq=(isAdmin||isDirector||isLeader)?talentDevPlans.reduce((s,p)=>s+(p.editRequests||[]).filter(r=>r.status==="pending").length,0):0;
 
   const tabs=[
-    ...(isSelectedTalent||isAdmin?[
+    ...(isSelectedTalent||isTdManager?[
       {id:"plan",label:`육성 계획서 ${planOpen?badge("작성 기간","green"):badge("마감","gray")}`},
       {id:"achieve",label:`육성 실적 ${achOpen?badge("작성 기간","green"):badge("마감","gray")}`},
     ]:[]),
@@ -10289,10 +10290,13 @@ function renderTalentDevPage(){
 
 function renderTdFormList(el, u, yr, type, isOpen){
   const isAdmin=u.role==="admin";
+  // admin 또는 settings.talentDevViewers 지정 담당자 — 서버 쓰기 게이팅과 동일 기준으로
+  // 본인 외 선정자 전원의 IDP를 조회·작성할 수 있다(담당자 지정은 "IDP 작성 대행" 목적).
+  const isManager=_isTalentDevManager();
   const label=type==="plan"?"육성 계획서":"육성 실적";
   // Who to show
   let targetEmps;
-  if(isAdmin){
+  if(isManager){
     targetEmps=coreTalentPool.filter(p=>p.year===yr&&p.status==="selected").map(p=>getEmp(p.empId)).filter(Boolean);
   } else {
     // Only self
@@ -10319,7 +10323,7 @@ function renderTdFormList(el, u, yr, type, isOpen){
       plan.status==="director_approved"?"green":"gray";
     const pe=coreTalentPool.find(p=>p.empId===emp.id&&p.year===yr);
     const track=coreTalentSettings.tracks.find(t=>t.id===pe?.track);
-    const canEdit=!plan?isOpen:(canEditPlan(plan)||isAdmin);
+    const canEdit=!plan?isOpen:(canEditPlan(plan)||isManager);
     return`<div class="card mb2"><div class="card-head">
       <div class="flex items-c gap3">
         <span class="fw7">${h(emp.name)}</span>
@@ -10330,7 +10334,7 @@ function renderTdFormList(el, u, yr, type, isOpen){
       <div class="flex gap2">
         ${canEdit||!plan?`<button class="btn btn-primary btn-sm" onclick="openTdForm(${emp.id},${yr},'${type}')">${plan?"수정":"작성"}</button>`:""}
         ${plan?`<button class="btn btn-ghost btn-sm" onclick="openTdViewModal(${emp.id},${yr},'${type}')">열람</button>`:""}
-        ${plan&&plan.status==="draft"&&(emp.id===u.id||isAdmin)?`<button class="btn btn-success btn-sm" onclick="submitTdPlan(${plan.id})">제출</button>`:""}
+        ${plan&&plan.status==="draft"&&(emp.id===u.id||isManager)?`<button class="btn btn-success btn-sm" onclick="submitTdPlan(${plan.id})">제출</button>`:""}
         ${!canEdit&&plan&&emp.id===u.id?`<button class="btn btn-warning btn-sm" onclick="openEditRequestModal(${plan.id})">수정 요청</button>`:""}
       </div>
     </div></div>`;
@@ -21557,6 +21561,18 @@ function _canViewTalentDev(){
     const selectedDepts=new Set(coreTalentPool.filter(p=>p.year===yr&&p.status==="selected").map(p=>getEmp(p.empId)?.dept).filter(Boolean));
     if(selectedDepts.has(currentUser.dept))return true;
   }
+  return (settings.talentDevViewers||[]).map(String).includes(String(currentUser.id));
+}
+// 서버 쓰기 게이팅(talentDevPlans: roles admin/director/leader + ownField empId +
+// viewersSetting talentDevViewers)은 지정 담당자에게 "본인 것이 아닌" 육성계획도 저장할
+// 권한을 admin과 동등하게 준다 — _canViewTalentDev()는 페이지 접근만 열어주고 실제
+// 대상자 목록/편집 UI는 admin role로만 분기돼 있어, 지정 담당자가 페이지에는 들어가도
+// 아무 것도 할 수 없는(탭 자체가 없는) 상태였다. 콘텐츠 작성 관련 분기에서 admin과
+// 동등하게 취급한다(승인 워크플로우 탭은 기존 역할 기준 그대로 유지 — 담당자 지정은
+// "IDP 작성 대행" 목적이지 결재 권한 이양이 아님).
+function _isTalentDevManager(){
+  if(!currentUser)return false;
+  if(currentUser.role==="admin")return true;
   return (settings.talentDevViewers||[]).map(String).includes(String(currentUser.id));
 }
 function openTalentDevViewerMgmt(){

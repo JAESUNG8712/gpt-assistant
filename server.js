@@ -296,7 +296,24 @@ function filterDataForRole(data, auth) {
     out.lowPerfData = [];
   }
   if (auth.role !== "admin" && Array.isArray(out.coreTalentPool)) {
-    out.coreTalentPool = out.coreTalentPool.filter(p => p && String(p.empId) === myId);
+    // 이 필터가 "본인 레코드만"으로 도입된 뒤(2026-07-20), 클라이언트의
+    // _canViewTalentDev()가 원래 의도한 "director는 자기 사업부에 선정자가 있으면
+    // talent-dev 페이지 접근 가능" 로직이 조용히 무력화돼 있었다 — director가 받는
+    // coreTalentPool이 항상 본인 레코드만(대개 0건)이라 selectedDepts가 절대 채워지지
+    // 않았기 때문. director는 자기 부서 소속 선정자까지, talentDevViewers 지정
+    // 담당자는(쓰기 게이팅과 동일하게) 전체를 볼 수 있게 복원한다.
+    const employees = Array.isArray(out.employees) ? out.employees : [];
+    const isTalentDevViewer = (settings.talentDevViewers || []).map(String).includes(myId);
+    if (!isTalentDevViewer) {
+      const myDept = auth.role === "director" ? employees.find(e => String(e.id) === myId)?.dept : null;
+      out.coreTalentPool = out.coreTalentPool.filter(p => {
+        if (!p) return false;
+        if (String(p.empId) === myId) return true;
+        if (!myDept) return false;
+        const e = employees.find(e => e.id === p.empId);
+        return !!(e && e.dept === myDept);
+      });
+    }
   }
   if (auth.role !== "admin" && Array.isArray(out.compResponses)) {
     out.compResponses = out.compResponses.map(r => {
@@ -789,10 +806,18 @@ function _welfareRecordAllowed(rec, actor, actorEmp, settings) {
 const _WRITE_GATED_FIELDS = {
   payslips:           { roles: ["admin"] },                                   // payroll-mgmt
   payrollAdjustments: { roles: ["admin"] },                                   // payroll-mgmt
-  gradeAdjustHistory: { roles: ["admin"] },                                   // comp-grade-view
+  // KPI 등급 현황(grade-view, admin/director/leader 공개) 화면의 "수정" 버튼은
+  // admin뿐 아니라 director에게도 노출된다(openAdjustGradeModal이 admin||director를
+  // 명시적으로 허용) — director가 자기 사업부 직원의 등급을 조정하면 실제 등급
+  // (employees.gradeResults, 게이팅 대상 아님)은 반영되지만 이 감사이력만 조용히
+  // 되돌려지고 있었다. director는 자기 사업부(dept) 레코드에 한해 허용.
+  gradeAdjustHistory: { roles: ["admin"], directorDeptField: "dept" },        // comp-grade-view / grade-view
   coreTalentPool:     { roles: ["admin"] },                                   // core-talent
   approvalTemplates:  { roles: ["admin"] },                                   // approval-templates
-  mandatoryTraining:  { roles: ["admin", "director", "leader"] },             // hr-mandatory-training
+  // hr-mandatory-training(admin/director/leader)의 일괄 등록 외에, 누구나 접근 가능한 개인
+  // "법정의무교육" 화면(mandatory-training)에 본인 이수 자가등록 버튼("이수 등록")이 있다 —
+  // ownField가 없으면 leader 미만(대부분의 사원)의 자가등록이 서버에서 조용히 되돌려진다.
+  mandatoryTraining:  { roles: ["admin", "director", "leader"], ownField: "empId" },
   // 근태: 결재 완료 시 승인자의 화면이 기안자(타인)의 근태를 쓴다(_setAttRec) — 리더 이상은
   // 타인 기록도 써야 하고, 사원은 본인 출퇴근 체크만.
   attendanceRecords:  { roles: ["admin", "director", "leader"], ownField: "empId" },
@@ -808,7 +833,10 @@ const _WRITE_GATED_FIELDS = {
   changeRequests:     { roles: ["admin", "director", "leader"], ownField: "reqUserId" },
   // 육성계획: 본인(핵심인재 본인이 자기 IDP 작성) 또는 지정 담당자(settings.talentDevViewers)
   talentDevPlans:     { roles: ["admin", "director", "leader"], ownField: "empId", viewersSetting: "talentDevViewers" },
-  tieNotifications:   { roles: ["admin"] },
+  // 동점자 처리(renderApprovals의 "동점자 처리" 탭)는 director에게도 노출되어(자기 사업부
+  // 소속분만, t.dept===u.dept) "처리 완료 표시"(markTieResolved) 버튼을 director가 누를 수
+  // 있다 — admin만 허용하면 director의 처리가 조용히 되돌려져 알림이 영구히 안 사라진다.
+  tieNotifications:   { roles: ["admin"], directorDeptField: "dept" },
   // 종합검진 완료 처리 토글(_toggleHcDone)은 welfare-settings(관리자 전용) 화면에만 있다
   healthCheckupLog:   { roles: ["admin"] },
   onboardingFlows:    { roles: ["admin"] },
@@ -819,12 +847,16 @@ const _WRITE_GATED_FIELDS = {
   // 저성과자 관리: 읽기와 같은 기준(관리자 또는 settings.lowPerformerViewers 등록자)
   lowPerfData:        { roles: ["admin"], viewersSetting: "lowPerformerViewers" },
 };
-function _writeGateAllowed(field, rec, actor, settings) {
+function _writeGateAllowed(field, rec, actor, actorEmp, settings) {
   const rule = _WRITE_GATED_FIELDS[field];
   if (!rule || !actor) return false;
   if (rule.roles.includes(actor.role)) return true;
   if (rule.ownField && String(rec[rule.ownField]) === String(actor.empId)) return true;
   if (rule.viewersSetting && ((settings || {})[rule.viewersSetting] || []).map(String).includes(String(actor.empId))) return true;
+  // director 한정, 그 부서 소속 레코드만 허용(예: KPI 등급조정 이력·동점자 처리 — 클라이언트가
+  // 이미 director를 자기 사업부(dept)로만 스코핑해 버튼을 노출하고 있는 화면들).
+  if (rule.directorDeptField && actor.role === "director" && actorEmp &&
+      rec[rule.directorDeptField] === actorEmp.dept) return true;
   return false;
 }
 const _APPROVAL_GATED_FIELDS = {
@@ -833,7 +865,7 @@ const _APPROVAL_GATED_FIELDS = {
   overtimeRequests: { decided: ["approved", "rejected"],         can: _otCanApproveServer },
   welfarePoints:    { record: _welfareRecordAllowed },
   ...Object.fromEntries(Object.keys(_WRITE_GATED_FIELDS).map(f =>
-    [f, { record: (rec, actor, actorEmp, settings) => _writeGateAllowed(f, rec, actor, settings) }])),
+    [f, { record: (rec, actor, actorEmp, settings) => _writeGateAllowed(f, rec, actor, actorEmp, settings) }])),
 };
 // 반환값: 저장할 레코드, 또는 null(= 이 레코드는 아예 쓰지 않음 — 권한 없이 새로 만들어진 것)
 function _sanitizeGatedRecord(field, incoming, stored, actor, actorEmp, settings) {
