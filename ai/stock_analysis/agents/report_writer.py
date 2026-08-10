@@ -100,6 +100,7 @@ class ReportWriter:
 
         sections = [
             self._header(),
+            self._mock_data_warning(),
             self._executive_summary(),
             self._market_overview(),
             self._top_picks(),
@@ -120,6 +121,45 @@ class ReportWriter:
 
         print("📝 [레포트] 완료")
         return report
+
+    def _mock_data_warning(self) -> str:
+        """실측 수집에 실패해 샘플(mock) 값이 섞였으면 보고서 최상단에 명시한다.
+
+        KRX/외부 API가 실패하면 krx_client가 그럴듯한 숫자를 담은 샘플 데이터를
+        반환하는데(서비스가 멈추지 않게 하려는 의도된 fallback), 보고서에는 그게
+        실측치와 구분 없이 그대로 실려 실제 분석처럼 보였다. 투자 판단에 쓰이는
+        문서라 "이 숫자는 실측이 아니다"를 읽는 사람이 놓칠 수 없게 표시한다.
+        """
+        def _walk(obj):
+            """중첩 dict/list를 훑어 is_mock 플래그가 달린 항목을 찾는다."""
+            found = []
+            if isinstance(obj, dict):
+                if obj.get("is_mock"):
+                    found.append(obj.get("ticker") or obj.get("index") or "일부 항목")
+                for v in obj.values():
+                    found.extend(_walk(v))
+            elif isinstance(obj, list):
+                for v in obj:
+                    found.extend(_walk(v))
+            return found
+
+        tainted = []
+        for src in (self.economic, self.financial, self.analyses):
+            try:
+                tainted.extend(_walk(src))
+            except Exception:
+                pass
+        if not tainted:
+            return ""
+
+        uniq = sorted(set(str(t) for t in tainted))
+        shown = ", ".join(uniq[:10]) + (f" 외 {len(uniq) - 10}건" if len(uniq) > 10 else "")
+        return f"""{'!'*70}
+⚠️  주의 — 이 보고서에는 실측하지 못한 샘플(모의) 데이터가 포함되어 있습니다.
+    외부 데이터 수집(KRX 등)에 실패해 일부 수치가 실제 시장 값이 아닙니다.
+    해당 항목: {shown}
+    ※ 이 보고서를 그대로 투자 판단 근거로 쓰지 마시고, 수집 상태를 먼저 확인하세요.
+{'!'*70}"""
 
     def _header(self) -> str:
         return f"""{'='*70}

@@ -249,13 +249,28 @@ def init_db():
     _seed_static_kb_to_db()
 
 
+# 정적 KB 항목 저장 길이 상한. 이전에는 2,000자로 잘라 저장해 긴 답변의 뒷부분이
+# 통째로 유실됐다(그 상태로 검색·응답에 쓰였으므로 사용자에게는 "지식이 누락된" 것으로
+# 보였다). TF-IDF 인덱싱 비용을 감안해 무제한으로 두지는 않되, 실제 KB 항목 길이를
+# 충분히 덮는 값으로 올린다.
+KB_MAX_CHARS = int(os.getenv("KB_MAX_CHARS", "20000"))
+
+
 def _seed_static_kb_to_db():
     """정적 KB(Python 파일)를 SQLite/Turso learned_knowledge에 영구 저장.
-    content_hash 기반 중복 방지 — 서버 재시작 시 재실행해도 안전.
-    같은 질문(q)의 답변이 소스 코드에서 수정된 경우, 예전 버전(옛 content_hash)의
-    DB 행을 새 버전 삽입 전에 삭제한다 — 그렇지 않으면 소스에서 수정/제거한
-    내용(예: 개인정보, 가상 데이터)이 예전 DB 행에 그대로 남아 계속 서빙되는
-    문제가 있었음(2026-07-15 실제 발견: PII 유출·가상 데이터 재노출 둘 다 이 문제로 발생)."""
+    서버 재시작 시 재실행해도 안전하며, 소스에서 수정된 항목은 예전 DB 행을 지우고
+    새 내용으로 교체한다 — 그렇지 않으면 소스에서 지운 내용(예: 개인정보, 가상 데이터)이
+    예전 DB 행에 그대로 남아 계속 서빙된다(2026-07-15 실제 발견).
+
+    2026-08-10 수정 — 이전 구현의 두 가지 결함:
+      1) 중복/변경 판정을 `md5(content[:500])`으로 했다. 앞 500자가 같으면 서로 다른
+         항목이 같은 해시가 되어 뒤엣것이 조용히 누락됐고, 반대로 **답변을 500자 이후에서
+         수정하면 해시가 그대로라 변경이 감지되지 않아 예전 내용이 계속 서빙**됐다
+         (위 2026-07-15 사고와 정확히 같은 유형이 앞 500자 밖에서 재발할 수 있는 구조).
+      2) `content[:2000]`으로 잘라 저장해 긴 항목의 뒷부분이 유실됐다.
+    이제 **전문(full content)을 그대로 비교**해 판정한다. 별도 해시 인덱스 테이블에
+    의존하지 않고 실제 저장된 내용과 대조하므로, 판정 기준이 바뀌어도 중복이 생기지 않고
+    스스로 정합을 맞춘다(기존 배포에서 넘어올 때도 안전)."""
     import hashlib
     try:
         from knowledge_base import KNOWLEDGE
@@ -263,44 +278,46 @@ def _seed_static_kb_to_db():
         print(f"⚠️ KB 시드 스킵: {e}")
         return
 
+    # 소스 항목을 (persona, q) 키로 정규화. 같은 키가 중복 정의돼 있으면 마지막 것을 쓴다.
+    desired = {}
+    for item in KNOWLEDGE:
+        q = item.get("q", "").strip()
+        a = item.get("a", "").strip()
+        if not q or not a:
+            continue
+        persona = item.get("persona", "") or ""
+        desired[(persona, q.lower())] = f"Q: {q}\nA: {a}"[:KB_MAX_CHARS]
+
     new_count = 0
     stale_count = 0
     with _conn() as c:
-        existing = {row[0] for row in c.execute("SELECT content_hash FROM kb_static_index")}
-        current_by_q = {}
-        rows_kb, rows_idx = [], []
-        for item in KNOWLEDGE:
-            q = item.get("q", "").strip()
-            a = item.get("a", "").strip()
-            if not q or not a:
-                continue
-            content = f"Q: {q}\nA: {a}"
-            h = hashlib.md5(content[:500].encode()).hexdigest()
-            persona = item.get("persona", "")
-            current_by_q[(persona, q.lower())] = h
-            if h in existing:
-                continue
-            now = datetime.now().isoformat()
-            rows_kb.append((content[:2000], persona, "정적KB", now))
-            rows_idx.append((h, persona, "정적KB", now))
-
-        stale_rows = c.execute(
+        stored = {}
+        for row in c.execute(
             "SELECT id, persona, content FROM learned_knowledge WHERE source='정적KB'"
-        ).fetchall()
-        stale_ids = []
-        for row in stale_rows:
+        ).fetchall():
             row = dict(row)
-            content = row["content"]
+            content = row["content"] or ""
             if not (content.startswith("Q: ") and "\nA: " in content):
                 continue
             q_part = content.split("\nA: ", 1)[0][3:].strip().lower()
-            key = (row["persona"] or "", q_part)
-            expected_hash = current_by_q.get(key)
-            if expected_hash is None:
-                continue  # 이 질문은 이번 KNOWLEDGE 목록에 없음 — 건드리지 않음(안전)
-            actual_hash = hashlib.md5(content[:500].encode()).hexdigest()
-            if actual_hash != expected_hash:
-                stale_ids.append(row["id"])
+            stored.setdefault(((row["persona"] or ""), q_part), []).append(
+                (row["id"], content)
+            )
+
+        stale_ids, rows_kb, rows_idx = [], [], []
+        now = datetime.now().isoformat()
+        for key, content in desired.items():
+            persona = key[0]
+            rows = stored.get(key, [])
+            # 내용이 정확히 같은 행이 이미 있으면 그대로 두고, 나머지 중복 행만 정리한다.
+            same = [rid for rid, cnt in rows if cnt == content]
+            diff = [rid for rid, cnt in rows if cnt != content]
+            stale_ids.extend(diff)
+            if same:
+                stale_ids.extend(same[1:])   # 같은 내용이 여러 행이면 하나만 남긴다
+                continue
+            rows_kb.append((content, persona, "정적KB", now))
+            rows_idx.append((hashlib.md5(content.encode()).hexdigest(), persona, "정적KB", now))
 
         if stale_ids:
             placeholders = ",".join("?" * len(stale_ids))
@@ -321,7 +338,7 @@ def _seed_static_kb_to_db():
     if new_count:
         print(f"  💾 정적 KB {new_count}개 → DB 영구 저장 완료")
     if stale_count:
-        print(f"  🧹 정적 KB {stale_count}개 예전 버전(소스 수정 전) 정리 완료")
+        print(f"  🧹 정적 KB {stale_count}개 예전 버전/중복 행 정리 완료")
 
 
 # ── 대화 이력 ─────────────────────────────────────────────

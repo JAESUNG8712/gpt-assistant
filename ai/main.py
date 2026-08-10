@@ -191,6 +191,31 @@ def _require_backup_token(token: str = "") -> None:
         raise HTTPException(401, "유효한 token 파라미터가 필요합니다.")
 
 
+# 업로드 파일 크기 상한. 이전에는 아무 제한 없이 `await file.read()`로 전체를 메모리에
+# 올려, 큰 파일 하나로 프로세스 메모리를 소진시킬 수 있었다(Render Free는 512MB).
+# 엑셀/문서 업로드 실사용 크기를 크게 웃도는 값으로 잡되, 무제한은 막는다.
+MAX_UPLOAD_MB = int(os.getenv("MAX_UPLOAD_MB", "20"))
+MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024
+
+
+async def _read_upload_limited(file) -> bytes:
+    """업로드 본문을 상한까지만 읽는다. 상한을 넘으면 413으로 거부."""
+    chunks, total = [], 0
+    while True:
+        chunk = await file.read(1024 * 1024)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > MAX_UPLOAD_BYTES:
+            raise HTTPException(
+                413,
+                f"업로드 파일이 너무 큽니다(최대 {MAX_UPLOAD_MB}MB). "
+                f"파일을 나누거나 MAX_UPLOAD_MB 환경변수를 조정하세요.",
+            )
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
 app = FastAPI(title="나만의 AI 어시스턴트")
 @app.middleware("http")
 async def no_cache_html(request, call_next):
@@ -1198,7 +1223,7 @@ def _extract_text(content: bytes, filename: str) -> str:
 
 @app.post("/learn/document")
 async def learn_document(file: UploadFile = File(...), persona: str = DEFAULT_PERSONA):
-    content = await file.read()
+    content = await _read_upload_limited(file)
     # PDF 파싱(pdfminer/pdftotext)은 최대 수십 초 걸리는 블로킹 호출이므로 스레드 실행기로 넘긴다.
     text = await asyncio.get_event_loop().run_in_executor(None, _extract_text, content, file.filename)
     mem.store_document(text, file.filename, persona_id=persona)
@@ -1214,7 +1239,7 @@ async def analyze_resume(
     analysis_type: str = "full",
 ):
     """이력서/자소서 파일을 업로드하면 LLM이 분석 결과를 스트리밍으로 반환"""
-    content = await file.read()
+    content = await _read_upload_limited(file)
     resume_text = await asyncio.get_event_loop().run_in_executor(None, _extract_text, content, file.filename)
 
     if not resume_text.strip():
@@ -1731,9 +1756,13 @@ async def debug_law(q: str = "근로기준법 제7조", token: str = ""):
 async def budget_upload_headcount(file: UploadFile = File(...), token: str = ""):
     """① 부서별 월 인원 현황 업로드 — 동일 부서/월 재업로드 시 자동 갱신"""
     _require_backup_token(token)
-    content = await file.read()
+    content = await _read_upload_limited(file)
     try:
         rows = budget.parse_rows(content, file.filename)
+    except budget.TooManyRowsError as e:
+        # 행 수 상한 초과는 "읽을 수 없는 파일"이 아니라 사용자가 조치할 수 있는 상황이라
+        # 원인을 그대로 알려준다(일반 파싱 실패 메시지에 묻히지 않게).
+        raise HTTPException(status_code=413, detail=str(e))
     except Exception:
         raise HTTPException(status_code=400, detail="파일을 읽을 수 없습니다. (xlsx/csv만 지원)")
     upserted, depts = budget.upsert_headcount(rows)
@@ -1743,9 +1772,13 @@ async def budget_upload_headcount(file: UploadFile = File(...), token: str = "")
 async def budget_upload_detail(file: UploadFile = File(...), token: str = ""):
     """② 판관/용역/경상 상세 업로드 — ①의 부서와 자동 연계, 동일 키 재업로드 시 자동 갱신"""
     _require_backup_token(token)
-    content = await file.read()
+    content = await _read_upload_limited(file)
     try:
         rows = budget.parse_rows(content, file.filename)
+    except budget.TooManyRowsError as e:
+        # 행 수 상한 초과는 "읽을 수 없는 파일"이 아니라 사용자가 조치할 수 있는 상황이라
+        # 원인을 그대로 알려준다(일반 파싱 실패 메시지에 묻히지 않게).
+        raise HTTPException(status_code=413, detail=str(e))
     except Exception:
         raise HTTPException(status_code=400, detail="파일을 읽을 수 없습니다. (xlsx/csv만 지원)")
     upserted, depts = budget.upsert_detail(rows)
@@ -1794,9 +1827,13 @@ def budget_grid_save(req: GridSaveRequest, token: str = ""):
 @app.post("/budget/grid/upload")
 async def budget_grid_upload(file: UploadFile = File(...), token: str = ""):
     _require_backup_token(token)
-    content = await file.read()
+    content = await _read_upload_limited(file)
     try:
         rows = budget.parse_grid(content, file.filename)
+    except budget.TooManyRowsError as e:
+        # 행 수 상한 초과는 "읽을 수 없는 파일"이 아니라 사용자가 조치할 수 있는 상황이라
+        # 원인을 그대로 알려준다(일반 파싱 실패 메시지에 묻히지 않게).
+        raise HTTPException(status_code=413, detail=str(e))
     except Exception:
         raise HTTPException(status_code=400, detail="파일을 읽을 수 없습니다. (xlsx/csv만 지원)")
     budget.save_grid(rows)

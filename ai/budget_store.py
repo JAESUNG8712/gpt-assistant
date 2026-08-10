@@ -51,6 +51,24 @@ def to_number(v):
         return None
 
 
+# 파싱 행 수 상한. 엑셀은 시트 하나에 100만 행을 담을 수 있어, 크기 제한(MB)만으로는
+# 압축률이 높은 파일이 메모리에서 수십 배로 부풀 수 있다(zip bomb 유사). 실사용
+# 예산 시트 규모를 크게 웃도는 값으로 잡되 무제한은 막는다.
+MAX_PARSE_ROWS = int(os.getenv("MAX_PARSE_ROWS", "50000"))
+
+
+class TooManyRowsError(Exception):
+    """업로드 시트의 행 수가 상한을 넘었을 때"""
+
+
+def _guard_rows(n):
+    if n > MAX_PARSE_ROWS:
+        raise TooManyRowsError(
+            f"업로드 시트의 행 수가 너무 많습니다(최대 {MAX_PARSE_ROWS:,}행). "
+            f"파일을 나누거나 MAX_PARSE_ROWS 환경변수를 조정하세요."
+        )
+
+
 def parse_rows(content: bytes, filename: str):
     """업로드 파일(xlsx/csv)을 헤더가 있는 dict 행 리스트로 변환"""
     if filename.lower().endswith((".xlsx", ".xls")):
@@ -62,11 +80,16 @@ def parse_rows(content: bytes, filename: str):
         rows = []
         for r in rows_iter:
             rows.append({header[i]: r[i] for i in range(len(header)) if i < len(r)})
+            _guard_rows(len(rows))
         return rows
     else:
         text = content.decode("utf-8-sig")
         reader = csv.DictReader(io.StringIO(text))
-        return [dict(row) for row in reader]
+        rows = []
+        for row in reader:
+            rows.append(dict(row))
+            _guard_rows(len(rows))
+        return rows
 
 
 def upsert_headcount(rows):
@@ -232,11 +255,16 @@ def parse_grid(content: bytes, filename: str):
         rows = []
         for r in sheet.iter_rows(values_only=True):
             rows.append(["" if v is None else str(v) for v in r])
+            _guard_rows(len(rows))
         return rows
     else:
         text = content.decode("utf-8-sig")
         reader = csv.reader(io.StringIO(text))
-        return [list(row) for row in reader]
+        rows = []
+        for row in reader:
+            rows.append(list(row))
+            _guard_rows(len(rows))
+        return rows
 
 
 def export_grid_xlsx(rows):
