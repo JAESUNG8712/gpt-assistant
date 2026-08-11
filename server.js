@@ -2979,9 +2979,15 @@ app.post("/api/accounting/accounts/:id/delete", async (req, res) => {
 });
 
 // ── 전표 (Journal vouchers) ──────────────────────────────────────────────────
-async function _getAccountsList(companyId) {
+// dbClient: 호출부가 이미 FOR UPDATE 잠금을 쥔 트랜잭션 안에서 이 함수를 호출하는 경우
+// (예: RCPS/고정자산 상각전표 발행이 _issuePostedVoucher()에 externalClient를 넘길 때) 그
+// client를 그대로 재사용해야 한다 — 항상 pool.query()로 새 커넥션을 요청하면, 동시 요청이
+// 많아 풀(max 20)이 전부 그 잠금 트랜잭션들로 채워졌을 때 이 추가 조회가 빈 커넥션을 영원히
+// 기다리는 자기교착에 빠진다(채용 모듈 _pgLockedUpdate·budget.js getTeamDept()에서 이미
+// 겪은 것과 동일한 클래스 — 실측: 동시 25건 발행 시 24건이 5초 뒤 커넥션 타임아웃으로 실패).
+async function _getAccountsList(companyId, dbClient) {
   if (USE_JSON_FILE) return _fileAccounting.accounts;
-  const { rows } = await pool.query(
+  const { rows } = await (dbClient || pool).query(
     "SELECT id, data FROM accounts WHERE is_deleted = FALSE AND (company_id = $1 OR company_id IS NULL)", [companyId || null]
   );
   return rows.map(r => ({ id: r.id, ...r.data }));
@@ -3502,7 +3508,7 @@ function _addYearsStr(dateStr, k) {
 // 커넥션 풀 고갈로 데드락에 준하는 상태에 빠질 수 있어, 이 경우 BEGIN/COMMIT/release는
 // 호출부 책임으로 남기고 여기서는 쿼리만 실행한다.
 async function _issuePostedVoucher(companyId, { date, description, partnerId, partner, lines, user }, externalClient) {
-  const accounts = await _getAccountsList(companyId);
+  const accounts = await _getAccountsList(companyId, externalClient);
   const err = _validateVoucherLines(lines, accounts);
   if (err) throw Object.assign(new Error(err), { statusCode: 400 });
   const debitSum = _round2(lines.reduce((s, l) => s + (Number(l.debit) || 0), 0));
