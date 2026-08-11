@@ -746,13 +746,34 @@ function _sanitizeApprovalDoc(incoming, stored, actor) {
   if (!incoming || !Array.isArray(incoming.approvers)) return incoming;
   if (actor && actor.role === "admin") return incoming;  // 관리자 결재자 변경 등은 기존대로 허용
   const actorId = actor && actor.empId != null ? String(actor.empId) : null;
-  const storedApprovers = (stored && Array.isArray(stored.approvers)) ? stored.approvers : [];
+  const storedApprovers = (stored && Array.isArray(stored.approvers)) ? stored.approvers : null;
+
+  // 결재자 "신원"(empId) 자체를 바꾸는 것은 관리자 전용 기능(pickNewApprover, 퇴직자
+  // 결재선 정체 해소용)에서만 일어나야 하는 조작이다. 그런데 아래의 status 전이 검사는
+  // "그 칸의 empId가 요청자 본인과 같으면 통과"라는 규칙만 봐서, 이미 존재하는 문서의
+  // approvers[i].empId를 아직 status가 안 바뀐 상태(pending→pending 등)로 먼저 자신의
+  // empId로 바꿔치기한 뒤, 다음 저장에서 그 칸을 승인 처리하면 "본인 결재"로 오인해
+  // 통과시켜버리는 2단계 우회가 있었다(실측: 문서와 무관한 사원이 대기중인 결재 단계를
+  // 자기 자신으로 바꾸고 스스로 승인 완료). 신원 자체가 바뀌는 것은 status 값과 무관하게
+  // 항상 막아야 하므로, 이미 저장된 문서(stored 존재)라면 approvers 배열의 길이·각 칸의
+  // empId가 저장본과 정확히 같은 순서로 일치하는지부터 먼저 확인한다 — 신규 문서 생성
+  // 시점(stored 없음)은 결재선을 그 자리에서 새로 구성하는 정상 흐름이라 이 검사 대상이
+  // 아니다.
+  if (storedApprovers) {
+    const identityChanged = incoming.approvers.length !== storedApprovers.length ||
+      incoming.approvers.some((a, i) => a && storedApprovers[i] && String(a.empId) !== String(storedApprovers[i].empId));
+    if (identityChanged) {
+      return { ...incoming, approvers: storedApprovers.map(a => ({ ...a })), status: stored.status };
+    }
+  }
+
+  const storedList = storedApprovers || [];
   let reverted = false;
   const approvers = incoming.approvers.map((a, i) => {
     if (!a) return a;
-    const prev = storedApprovers[i] && String(storedApprovers[i].empId) === String(a.empId)
-      ? storedApprovers[i]
-      : storedApprovers.find(s => s && String(s.empId) === String(a.empId));
+    const prev = storedList[i] && String(storedList[i].empId) === String(a.empId)
+      ? storedList[i]
+      : storedList.find(s => s && String(s.empId) === String(a.empId));
     const prevStatus = prev ? prev.status : "waiting";
     if (a.status === prevStatus) return a;
     if (a.status !== "approved" && a.status !== "rejected") return a;  // 연쇄 승격 등은 허용
