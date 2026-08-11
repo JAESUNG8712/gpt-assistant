@@ -3373,6 +3373,16 @@ app.post("/api/accounting/tax-invoices", async (req, res) => {
     const companyId = req.auth.companyId || null;
     const { issueDate, partnerId, partnerName, partnerBizNo, items, user: createdBy } = req.body || {};
     if (!issueDate || !partnerName) return res.status(400).json({ ok: false, message: "발행일과 거래처명은 필수입니다." });
+    // 발행일이 "존재하기만 하면" 통과시키고 있어 파싱 불가능한 값도 그대로 들어왔다(고정자산
+    // 취득일과 동일한 클래스의 버그, _isValidDateStr 주석 참고) — 실측: issueDate:"not-a-date"로
+    // 발행하면 year=NaN이 되어 invoiceNo가 "TI-NaN-000001"로 발급되고, 조회(GET .../tax-invoices?
+    // year=)의 연도 필터(new Date(t.issueDate).getFullYear()===year)가 NaN과는 절대 일치하지
+    // 않아 이 세금계산서가 어떤 연도별 조회·부가세 신고자료(vat-report)에도 잡히지 않는
+    // "존재하지만 영원히 안 보이는" 세금계산서가 됐다. YYYY-MM-DD 형식 검증 + 1900~2100년
+    // 범위(실제 세금계산서 발행일로 있을 수 없는 극단값 차단, 정상 소급/미래 발행은 허용)로 제한.
+    if (!_isValidDateStr(issueDate)) return res.status(400).json({ ok: false, message: "발행일이 올바른 날짜가 아닙니다(YYYY-MM-DD)." });
+    const issueYear = new Date(issueDate).getFullYear();
+    if (issueYear < 1900 || issueYear > 2100) return res.status(400).json({ ok: false, message: "발행일이 유효한 범위를 벗어났습니다(1900~2100년)." });
     if (!Array.isArray(items) || !items.length) return res.status(400).json({ ok: false, message: "품목을 1개 이상 입력하세요." });
     const totals = _buildTaxInvoiceTotals(items);
     const year = new Date(issueDate).getFullYear();
