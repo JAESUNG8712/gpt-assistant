@@ -937,6 +937,83 @@ function _dropOverspentWelfare(incomingList, storedList, actor) {
   if (!rejected.size) return incomingList;
   return incomingList.filter(r => !(r && rejected.has(String(r.id))));
 }
+// 같은 회의실·겹치는 시간대 예약을 서버에서도 거부한다. 클라이언트(_roomConflicts)는
+// 이미 같은 로직으로 이중예약을 막고 있지만, 화면을 거치지 않고 /save를 직접 호출하면
+// 이 검사 자체가 없어 같은 회의실·같은 시간대에 서로 다른 예약이 그대로 저장됐다.
+// 알고리즘은 _roomConflicts와 동일 — allDay/날짜범위/시간대 겹침을 그대로 재현한다.
+function _roomReservationConflicts(rec, storedList, excludeId) {
+  return (storedList || []).some(r => {
+    if (!r) return false;
+    if (excludeId != null && String(r.id) === String(excludeId)) return false;
+    if (r.roomId !== rec.roomId) return false;
+    const rEnd = r.endDate || r.date;
+    const startDate = rec.date, endDate = rec.endDate || rec.date;
+    if (endDate < r.date || startDate > rEnd) return false;
+    if (rec.allDay || r.allDay) return true;
+    if (startDate !== endDate || r.date !== rEnd) return true;
+    return r.startTime < rec.endTime && r.endTime > rec.startTime;
+  });
+}
+const _HHMM_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
+// 화면 폼은 값을 제한하지만(예: <input type=number min=1 max=24>, 시작<종료 검사) 이
+// 범용 blob 동기화(/save) 경로는 위 승인 게이팅(권한) 통과 이후에도 값 자체의 범위·형식은
+// 전혀 검증하지 않아, API를 직접 호출하면 오염된 값이 그대로 저장돼 아래 화면들의 합계·
+// 평균 계산에 그대로 쓰였다(각 분기 주석에 실측 결과 기록). 위반 시 false를 반환해
+// 호출부가 그 레코드를 저장본으로 되돌리거나(신규면 드롭) 하도록 한다 — 승인 게이팅과
+// 동일하게 "이 레코드만 되돌리고 나머지 정상 변경은 그대로 저장"하는 원칙을 따른다.
+function _validateFieldValues(field, rec, storedList) {
+  if (!rec) return true;
+  if (field === "overtimeRequests") {
+    // hours는 승인 후 급여 계산의 초과근무수당(otReqAllowance = hours * 시급 * 배율)에
+    // 그대로 곱해진다 — 실측: API로 hours:9999를 제출하면 검증 없이 그대로 저장됨(승인
+    // 자체는 본인이 아닌 리더 이상만 가능하지만, 승인자가 화면상 값을 못 알아채고 승인하면
+    // 그 즉시 수당이 왜곡된다). 클라이언트(_otCalcHours)도 항상 0<hours<=24(30분 단위)만
+    // 만들어내므로 서버도 동일 범위로 제한한다.
+    const hrs = Number(rec.hours);
+    if (!Number.isFinite(hrs) || hrs <= 0 || hrs > 24) return false;
+  } else if (field === "attendanceRecords") {
+    // checkIn/checkOut은 "HH:mm" 문자열을 그대로 split(":")해 근무시간(분)을 계산하는 데
+    // 쓰인다 — 실측: checkOut을 "99:99"로 보내면 검증 없이 저장되고, 이후 급여/근태 화면의
+    // 근무시간 합산에서 (99*60+99)-(0*60+0)=6039분(≈100시간)으로 잡혀 실제 8시간짜리 근무가
+    // 100시간 근무로 부풀려짐. 00:00~23:59 형식만 허용(빈 값은 "아직 체크 안 함"으로 허용).
+    const timeOk = (t) => t === "" || t == null || _HHMM_RE.test(String(t));
+    if (!timeOk(rec.checkIn) || !timeOk(rec.checkOut)) return false;
+  } else if (field === "compResponses") {
+    // answers는 {문항id: 1~5점}이며 항목평균(itemAvgs)·전체평균 계산에 그대로 쓰인다 —
+    // 실측: 문항 점수를 999로 보내면 검증 없이 저장되고 그 항목 평균이 왜곡된다.
+    const answers = rec.answers;
+    if (answers && typeof answers === "object") {
+      for (const v of Object.values(answers)) {
+        if (v == null) continue;
+        const n = Number(v);
+        if (!Number.isInteger(n) || n < 1 || n > 5) return false;
+      }
+    }
+  } else if (field === "roomReservations") {
+    // 시작<종료·날짜범위·이중예약을 서버에서도 검사(위 _roomReservationConflicts 주석 참고).
+    if (!rec.allDay) {
+      if (!_HHMM_RE.test(String(rec.startTime || "")) || !_HHMM_RE.test(String(rec.endTime || "")) || rec.startTime >= rec.endTime) return false;
+    }
+    const startDate = rec.date, endDate = rec.endDate || rec.date;
+    if (!startDate || endDate < startDate) return false;
+    if (_roomReservationConflicts(rec, storedList, rec.id)) return false;
+  } else if (field === "leaveUsagePlans") {
+    // items[].days는 화면에 "계획 합계"로 표시되고 잔여연차와 비교되는 참고용 계획 수치다
+    // (실제 연차 차감은 approvalDocs의 승인된 연차 신청서에서 계산되어 이 필드가 잔액 자체를
+    // 왜곡하지는 않지만, 날짜범위가 뒤집히거나 일수가 음수/비정상이면 계획 화면 자체가 깨진다).
+    if (Array.isArray(rec.items)) {
+      for (const it of rec.items) {
+        if (!it) continue;
+        if (it.startDate && it.endDate && it.endDate < it.startDate) return false;
+        if (it.days != null) {
+          const d = Number(it.days);
+          if (!Number.isFinite(d) || d <= 0 || d > 366) return false;
+        }
+      }
+    }
+  }
+  return true;
+}
 async function persistData(data, changedBy = "system", companyId = null, actor = null) {
   return _withSaveLock(() => _persistDataLocked(data, changedBy, companyId, actor));
 }
@@ -1038,7 +1115,15 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
       const storedList = _fileStore[gatedField] || [];
       const storedById = new Map(storedList.map(r => [String(r.id), r]));
       data[gatedField] = data[gatedField]
-        .map(r => (r && r.id != null) ? _sanitizeGatedRecord(gatedField, r, storedById.get(String(r.id)), actor, _actorEmpJson, _fileStore.settings) : r)
+        .map(r => {
+          if (!r || r.id == null) return r;
+          const stored = storedById.get(String(r.id));
+          let out = _sanitizeGatedRecord(gatedField, r, stored, actor, _actorEmpJson, _fileStore.settings);
+          // 값 범위·형식 검증(_validateFieldValues 주석 참고) — 권한 검사를 통과한 뒤에도
+          // 값 자체가 오염돼 있으면 저장본으로 되돌린다(신규 레코드면 드롭).
+          if (out && !_validateFieldValues(gatedField, out, storedList)) out = stored ? { ...stored } : null;
+          return out;
+        })
         .filter(r => r !== null);
       if (gatedField === "welfarePoints") {
         data[gatedField] = _dropOverspentWelfare(data[gatedField], storedList, actor);
@@ -1296,6 +1381,19 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
       _settingsPg = rows.length ? rows[0].data : {};
       return _settingsPg;
     };
+    // 이중예약 검사(_roomReservationConflicts)는 그 회의실의 기존 예약 전체가 필요해
+    // 단건 SELECT로는 부족하다 — roomReservations를 실제로 쓸 때만 한 번 조회해 재사용한다.
+    let _roomReservationsPg, _roomReservationsPgLoaded = false;
+    const _getRoomReservationsPg = async () => {
+      if (_roomReservationsPgLoaded) return _roomReservationsPg;
+      _roomReservationsPgLoaded = true;
+      const { rows } = await client.query(
+        "SELECT data FROM app_collections WHERE collection = 'roomReservations' AND (company_id = $1 OR company_id IS NULL)",
+        [companyId || null]
+      );
+      _roomReservationsPg = rows.map(r => r.data);
+      return _roomReservationsPg;
+    };
     for (const field of GENERIC_LIST_FIELDS) {
       const items = data[field];
       if (Array.isArray(items)) {
@@ -1331,6 +1429,11 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
           } else if (_APPROVAL_GATED_FIELDS[field]) {
             toWrite = _sanitizeGatedRecord(field, item, storedItem, actor, await _getActorEmpPg(), await _getSettingsPg());
             if (toWrite === null) continue;   // 권한 없이 새로 만들어진 레코드 — 쓰지 않음
+          }
+          // 값 범위·형식 검증(_validateFieldValues 주석 참고, JSON모드와 동일 규칙).
+          if (toWrite && !_validateFieldValues(field, toWrite, field === "roomReservations" ? await _getRoomReservationsPg() : null)) {
+            toWrite = storedItem;
+            if (toWrite === null) continue;
           }
           await client.query(
             `INSERT INTO app_collections (collection, id, company_id, data, updated_at) VALUES ($1,$2,$3,$4,NOW())
