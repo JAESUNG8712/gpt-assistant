@@ -941,6 +941,23 @@ async function persistData(data, changedBy = "system", companyId = null, actor =
   return _withSaveLock(() => _persistDataLocked(data, changedBy, companyId, actor));
 }
 async function _persistDataLocked(data, changedBy = "system", companyId = null, actor = null) {
+  // kpiEntries.weight(비중,%)는 화면 입력칸엔 별다른 제한이 없고(saveKpiDraft가 Number(...)||20
+  // 폴백만 함) 서버도 전혀 검증하지 않아, API를 직접 호출하면 음수·수천% 같은 값이 그대로
+  // 저장됐다 — 이 값은 다면/역량 등급 산정(assignCompPoolGrades 호출부의 weighted average,
+  // totalWt=sum(weight), wtScore=sum(secondScore*weight/totalWt))에 분모·가중치로 그대로
+  // 쓰여, 한 항목의 weight를 극단값으로 넣으면 그 직원의 최종 등급(승급/성과급에 연결)이
+  // 임의로 조작될 수 있었다(실측 재현 확인). kpiEntries는 employees처럼 자체 테이블을 쓰고
+  // GENERIC_LIST_FIELDS의 승인게이팅 경로를 타지 않으므로, JSON/Postgres 두 분기가 공유하는
+  // 이 지점(둘 다 data.kpiEntries를 그대로 읽는다)에서 0~100 범위로 clamp — 다른 필드는
+  // 건드리지 않고 이 값만 보정해, 문제 있는 weight 하나 때문에 정상적인 나머지 목표 데이터가
+  // 통째로 버려지지 않게 한다.
+  if (Array.isArray(data.kpiEntries)) {
+    for (const kpi of data.kpiEntries) {
+      if (!kpi || kpi.weight == null) continue;
+      const w = Number(kpi.weight);
+      kpi.weight = Number.isFinite(w) ? Math.min(100, Math.max(0, w)) : 0;
+    }
+  }
   if (USE_JSON_FILE) {
     // Save the full client state to the JSON file
     const existingById = {};
