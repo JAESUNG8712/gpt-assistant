@@ -9974,7 +9974,9 @@ function savePromoSettings(){
     const newName=document.getElementById("rank-name-"+ri)?.value.trim();
     if(newName&&newName!==rank){
       // Update all employees with old rank
-      employees=employees.map(e=>e.rank===rank?{...e,rank:newName}:e);
+      // updatedAt을 갱신해야 한다(adjustKpiGrade/_applyChangedPW와 동일한 클래스) — 그러지
+      // 않으면 Postgres 모드에서 이 직급명 일괄변경 대상 직원 전원의 UPDATE가 조용히 스킵된다.
+      employees=employees.map(e=>e.rank===rank?{...e,rank:newName,updatedAt:new Date().toISOString()}:e);
       // Update minYearsByRank key
       if(ps.minYearsByRank[rank]!==undefined){
         ps.minYearsByRank[newName]=ps.minYearsByRank[rank];
@@ -10015,6 +10017,7 @@ function savePromoSettings(){
   });
   closeModal();
   showToast("승진 요건이 저장되었습니다.","success");
+  autoSaveToServerIfEnabled();
   renderPromotionPage();
 }
 
