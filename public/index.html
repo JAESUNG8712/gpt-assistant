@@ -12435,7 +12435,10 @@ async function _confirmEnable2fa(){
   if(!code||!_2faSetupSecret){showToast("인증 코드를 입력하세요.","error");return;}
   const r=await serverRequest("POST","/api/auth/2fa/verify-code",{secret:_2faSetupSecret,otp:code});
   if(!r?.ok){showToast("인증 코드가 올바르지 않습니다.","error");return;}
-  employees=employees.map(e=>e.id===currentUser.id?{...e,twoFactorEnabled:true,twoFactorSecret:_2faSetupSecret}:e);
+  // updatedAt을 갱신해야 한다(adjustKpiGrade/_applyChangedPW와 동일한 클래스) — 그러지
+  // 않으면 Postgres 모드에서 이 저장이 조용히 스킵되어, "활성화되었습니다" 토스트를 봐도
+  // 실제로는 2단계 인증이 꺼진 채로 남는다(보안상 위험 — 사용자가 켜졌다고 오인).
+  employees=employees.map(e=>e.id===currentUser.id?{...e,twoFactorEnabled:true,twoFactorSecret:_2faSetupSecret,updatedAt:new Date().toISOString()}:e);
   currentUser={...currentUser,twoFactorEnabled:true};
   _2faSetupSecret=null;
   autoSaveToServerIfEnabled();
@@ -12452,7 +12455,8 @@ async function _confirmDisable2fa(){
   if(!code||!emp?.twoFactorSecret){showToast("인증 코드를 입력하세요.","error");return;}
   const r=await serverRequest("POST","/api/auth/2fa/verify-code",{secret:emp.twoFactorSecret,otp:code});
   if(!r?.ok){showToast("인증 코드가 올바르지 않습니다.","error");return;}
-  employees=employees.map(e=>e.id===currentUser.id?{...e,twoFactorEnabled:false,twoFactorSecret:""}:e);
+  // updatedAt 갱신 필요(위 _confirmEnable2fa 주석 참고).
+  employees=employees.map(e=>e.id===currentUser.id?{...e,twoFactorEnabled:false,twoFactorSecret:"",updatedAt:new Date().toISOString()}:e);
   currentUser={...currentUser,twoFactorEnabled:false};
   autoSaveToServerIfEnabled();
   closeModal();showToast("2단계 인증이 해제되었습니다.","info");renderChangePW();
