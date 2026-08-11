@@ -10617,6 +10617,13 @@ function submitTdPlan(planId){
   if(!plan){showToast("계획서를 먼저 저장하세요.","error");return;}
   plan.status="submitted";
   plan.submittedAt=ts();
+  // updatedAt을 반드시 갱신해야 한다 — talentDevPlans는 KPI와 동일하게 서버의
+  // mergeArrayById()가 updatedAt(없으면 createdAt) 기준 "동률이면 들어오는 쪽 승리"로
+  // 병합한다. 이걸 빠뜨리면, 이 제출 이후 팀장이 승인해도(마찬가지로 updatedAt을
+  // 갱신하지 않으면) 두 시점의 값이 같아져, 이 화면을 열어둔 채 있던 다른 클라이언트의
+  // 뒤늦은 자동저장(스테일 스냅샷)이 승인을 조용히 되돌릴 수 있다(KPI에서 실제로 겪었던
+  // 것과 동일한 클래스의 lost-update, 재현 확인 후 4개 지점 모두 수정).
+  plan.updatedAt=ts();
   showToast("제출되었습니다. 팀장 승인 대기 중입니다.","success");
   autoSaveToServerIfEnabled();
   renderTalentDevPage();
@@ -10696,6 +10703,10 @@ function doApproveTd(planId, level){
     plan.directorApprovedAt=ts();
     plan.directorApprovedBy=currentUser.name;
   }
+  // KPI와 동일한 클래스의 lost-update 방지(submitTdPlan 주석 참고) — 승인이 updatedAt을
+  // 갱신하지 않으면, 이 화면을 열어둔 채 있던 다른 클라이언트의 뒤늦은 자동저장이 이
+  // 승인을 조용히 되돌릴 수 있다(재현 확인).
+  plan.updatedAt=ts();
   closeModal();
   showToast(`${level==="leader"?"1차":"최종"} 승인이 완료되었습니다.`,"success");
   autoSaveToServerIfEnabled();
@@ -10722,6 +10733,8 @@ function doRejectTd(planId){
   plan.rejectedReason=reason;
   plan.rejectedAt=ts();
   plan.rejectedBy=currentUser.name;
+  // KPI와 동일한 클래스의 lost-update 방지(submitTdPlan 주석 참고).
+  plan.updatedAt=ts();
   closeModal();
   showToast("반려 처리되었습니다.","info");
   autoSaveToServerIfEnabled();
@@ -10782,6 +10795,10 @@ function processEditRequest(planId, reqId, status){
   req.status=status;
   req.processedAt=ts();
   req.processedBy=currentUser.name;
+  // editRequests는 plan에 중첩된 배열이라 서버 병합은 plan 레코드 전체 단위로 이뤄진다 —
+  // plan.updatedAt을 갱신하지 않으면 이 처리 결과도 다른 클라이언트의 스테일 자동저장에
+  // 조용히 되돌려질 수 있다(submitTdPlan 주석 참고).
+  plan.updatedAt=ts();
   showToast(status==="approved"?"수정 요청이 승인되었습니다. 해당 직원이 수정할 수 있습니다.":"수정 요청이 거절되었습니다.","info");
   autoSaveToServerIfEnabled();
   renderTalentDevPage();
