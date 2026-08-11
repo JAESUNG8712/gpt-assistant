@@ -8454,7 +8454,11 @@ function rejectKpi(id,stage){
  // replaced by saveFirstEval
 function approveRequest(rid){const r=changeRequests.find(x=>x.id===rid);if(!r)return;kpiEntries=kpiEntries.map(k=>k.id===r.kpiId?{...k,...(r.after||{}),updatedAt:new Date().toISOString()}:k);changeRequests=changeRequests.map(x=>x.id===rid?{...x,status:"approved",approvedBy:currentUser.id,processedAt:ts(),updatedAt:new Date().toISOString()}:x);showToast("수정 요청을 승인했습니다.","success");renderApprovals();}
 function rejectRequest(rid){changeRequests=changeRequests.map(x=>x.id===rid?{...x,status:"rejected",processedAt:ts(),updatedAt:new Date().toISOString()}:x);showToast("수정 요청을 반려했습니다.","info");renderApprovals();}
-function resolveTie(tieId,empId,grade){const tie=tieNotifications.find(t=>t.id===tieId);if(!tie)return;employees=employees.map(e=>{if(e.id!==empId)return e;const gr={...(e.gradeResults||{})};const existing=gr[tie.year]||{};gr[tie.year]={...existing,grade,resolvedBy:currentUser.id,resolvedAt:ts()};return{...e,gradeResults:gr};});showToast(getEmpName(empId)+" - "+grade+"등급 지정 완료","success");renderApprovals();}
+// employees[].updatedAt을 반드시 갱신해야 한다(adjustKpiGrade 주석 참고) — 그러지 않으면
+// Postgres 모드에서 이 등급 지정이 UPDATE 자체가 스킵되어 조용히 유실된다(실측 확인).
+// autoSaveToServerIfEnabled() 호출도 원래 빠져 있어 3분 주기 자동저장 전까지는 서버에
+// 전혀 반영되지 않았다(그 사이 탭을 닫으면 영구 유실).
+function resolveTie(tieId,empId,grade){const tie=tieNotifications.find(t=>t.id===tieId);if(!tie)return;employees=employees.map(e=>{if(e.id!==empId)return e;const gr={...(e.gradeResults||{})};const existing=gr[tie.year]||{};gr[tie.year]={...existing,grade,resolvedBy:currentUser.id,resolvedAt:ts()};return{...e,gradeResults:gr,updatedAt:new Date().toISOString()};});showToast(getEmpName(empId)+" - "+grade+"등급 지정 완료","success");autoSaveToServerIfEnabled();renderApprovals();}
 function markTieResolved(tieId){tieNotifications=tieNotifications.map(t=>t.id===tieId?{...t,resolved:true,updatedAt:new Date().toISOString()}:t);showToast("동점자 처리가 완료되었습니다.","success");renderApprovals();renderSidebar();}
 
 
@@ -8526,13 +8530,19 @@ function adjustCompGrade(empId,year,newGrade,reason){
   if(!compGradeResults[empId])compGradeResults[empId]={};
   compGradeResults[empId][year]={...(old||{}),grade:newGrade,adjustedBy:currentUser.id,adjustedByName:currentUser.name,adjustReason:reason,adjustedAt:new Date().toISOString()};
   gradeAdjustHistory.push({id:genId(),type:"comp",empId,year,dept:getEmp(empId)?.dept||"",oldGrade,newGrade,reason,adjustedBy:currentUser.id,adjustedByName:currentUser.name,adjustedAt:new Date().toISOString()});
+  autoSaveToServerIfEnabled();
 }
 function adjustKpiGrade(empId,year,newGrade,reason){
   const emp=getEmp(empId);if(!emp)return;
   const oldGrade=(emp.gradeResults||{})[str(year)]?.grade||"-";
-  employees=employees.map(e=>{if(e.id!==empId)return e;const gr={...(e.gradeResults||{})};gr[String(year)]={...(gr[String(year)]||{}),grade:newGrade,adjustedBy:currentUser.id,adjustReason:reason,adjustedAt:new Date().toISOString()};return{...e,gradeResults:gr};});
+  // employees[].updatedAt을 반드시 함께 갱신해야 한다 — 서버(_persistDataLocked)의 employees
+  // upsert는 "newTs > oldTs(엄격 부등호)"일 때만 UPDATE를 실행하므로, updatedAt이 그대로면
+  // Postgres 모드에서는 이 저장이 통째로 조용히 스킵되어 등급 조정이 영구히 반영되지 않는다
+  // (실측 확인: gradeResults 변경이 재조회 시 원상태로 남아있음). resolveTie()도 동일.
+  employees=employees.map(e=>{if(e.id!==empId)return e;const gr={...(e.gradeResults||{})};gr[String(year)]={...(gr[String(year)]||{}),grade:newGrade,adjustedBy:currentUser.id,adjustReason:reason,adjustedAt:new Date().toISOString()};return{...e,gradeResults:gr,updatedAt:new Date().toISOString()};});
   if(currentUser.id===empId){const upd=employees.find(e=>e.id===empId);if(upd)currentUser=upd;}
   gradeAdjustHistory.push({id:genId(),type:"kpi",empId,year,dept:emp.dept||"",oldGrade,newGrade,reason,adjustedBy:currentUser.id,adjustedByName:currentUser.name,adjustedAt:new Date().toISOString()});
+  autoSaveToServerIfEnabled();
 }
 
 function renderCompGradeView(){
