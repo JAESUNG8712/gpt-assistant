@@ -12805,7 +12805,9 @@ function _applyAttendanceApproval(doc){
     const eduEmp=getEmp(doc.authorId);
     if(eduEmp){
       const eduEntry={id:genId(),type:"edu_general",date:fd.endDate||fd.startDate,desc:fd.trainingName||"",institution:fd.location||"",startDate:fd.startDate||"",endDate:fd.endDate||"",before:"",after:"이수완료",note:fd.purpose||"전자결재 승인"};
-      employees=employees.map(e=>String(e.id)===String(doc.authorId)?{...e,hrHistory:[...(e.hrHistory||[]),eduEntry]}:e);
+      // updatedAt 갱신 필요(adjustKpiGrade 주석 참고) — 없으면 Postgres 모드에서 이 교육이력
+      // 자동등록이 조용히 스킵된다.
+      employees=employees.map(e=>String(e.id)===String(doc.authorId)?{...e,hrHistory:[...(e.hrHistory||[]),eduEntry],updatedAt:new Date().toISOString()}:e);
       if(String(currentUser?.id)===String(doc.authorId))currentUser=employees.find(e=>String(e.id)===String(doc.authorId))||currentUser;
     }
   }else if(doc.templateId==="tpl-biztrip"){
