@@ -808,6 +808,14 @@ function _otCanApproveServer(rec, actor, actorEmp) {
 // 잔액 초과 여부도 클라이언트에서만 보고 있었다.
 function _welfareRecordAllowed(rec, actor, actorEmp, settings) {
   if (!actor) return false;
+  // points는 잔액 계산(grants합 - uses합)에 그대로 더해지는 값이라, 부호·범위 검증이 없으면
+  // "use" 레코드에 음수 points를 넣는 것만으로 잔액 초과 사용 방지 로직(_dropOverspentWelfare)을
+  // 완전히 우회해 자기 잔액을 무제한으로 부풀릴 수 있다(실측: 사원이 grant 100,000원 상태에서
+  // points:-500,000짜리 "use" 레코드 하나로 잔액이 600,000원까지 늘어남 — 관리자 전용 grant
+  // 제한을 사실상 무력화). 클라이언트(doGrantWelfare/doUseWelfare)도 항상 amount>0인 정수만
+  // 보내므로, 양의 유한값(1억원 이하)만 허용 — role/actingAsMaster 여부와 무관하게 항상 적용한다.
+  const pts = Number(rec.points);
+  if (!Number.isFinite(pts) || pts <= 0 || pts > 100000000) return false;
   if (actor.role === "admin") return true;
   // 복지포인트 담당자로 지정된 직원(settings.welfarePointsViewers)은 관리자가 아니어도
   // "복지포인트 현황(전체)" 화면(_canViewWelfareAll로 게이팅)에서 부여를 처리한다 —
