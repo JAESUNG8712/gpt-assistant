@@ -12455,10 +12455,18 @@ async function _confirmDisable2fa(){
   closeModal();showToast("2단계 인증이 해제되었습니다.","info");renderChangePW();
 }
 function _applyChangedPW(nw){
-  employees=employees.map(e=>e.id===currentUser.id?{...e,pw:nw}:e);
+  // resetPassword()(관리자 비밀번호 초기화, 2026-07-20 수정)와 정확히 같은 클래스의 버그가
+  // 이 "본인 비밀번호 변경" 경로에는 그대로 남아있었다 — updatedAt을 갱신하지 않으면
+  // Postgres 모드에서 employees upsert가 "newTs > oldTs"일 때만 UPDATE를 실행하므로 이
+  // 저장이 항상 조용히 스킵되고(동시성과 무관, 100% 재현), autoSaveToServerIfEnabled() 호출
+  // 자체도 빠져 있어 JSON 모드에서도 3분 주기 자동저장 전까지 서버에 전혀 반영되지 않았다
+  // — 즉 "비밀번호가 변경되었습니다" 성공 토스트를 봐도 예전 비밀번호가 계속 유효했다.
+  const now=new Date().toISOString();
+  employees=employees.map(e=>e.id===currentUser.id?{...e,pw:nw,updatedAt:now}:e);
   currentUser={...currentUser,pw:nw};
   showToast("비밀번호가 변경되었습니다.","success");
   ["cp-cur","cp-new","cp-cf"].forEach(id=>{const el=$(`#${id}`);if(el)el.value="";});
+  autoSaveToServerIfEnabled();
 }
 function doChangePW(){
   const cur=$("#cp-cur")?.value,nw=$("#cp-new")?.value,cf=$("#cp-cf")?.value;
