@@ -209,11 +209,20 @@ def _mock_financial_data(corp_code: str, year: str) -> dict:
         "_note": "DART_API_KEY 미설정 — 샘플 데이터 (실제 값 아님)",
         "_corp_code": corp_code,
         "_year": year,
+        # report_writer.py의 _mock_data_warning()이 재귀 탐색으로 감지하는 플래그.
+        # krx_client.py의 mock 함수들은 이미 이 플래그를 달고 있었는데 이 함수는
+        # _note 텍스트만 있어 탐지되지 않고 있었다(2026-08-11 보안 점검에서 발견).
+        "is_mock": True,
     }
 
 
 def _mock_dividend_data() -> dict:
-    return {"현금배당수익률": "2.5%", "주당현금배당금": "1,440원", "_note": "샘플 데이터"}
+    return {
+        "현금배당수익률": "2.5%",
+        "주당현금배당금": "1,440원",
+        "_note": "샘플 데이터",
+        "is_mock": True,
+    }
 
 
 def _mock_disclosures(corp_name: str) -> list:
@@ -223,5 +232,6 @@ def _mock_disclosures(corp_name: str) -> list:
             "report_nm": "분기보고서",
             "rcept_dt": datetime.now().strftime("%Y%m%d"),
             "_note": "샘플 데이터",
+            "is_mock": True,
         }
     ]

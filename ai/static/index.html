@@ -1901,15 +1901,27 @@
     }
   }
 
-  function backupDownload() {
+  async function backupDownload() {
     showToast('⬇️ 백업 파일 다운로드 중...');
-    const a = document.createElement('a');
-    a.href = withTok('/backup/download');
-    a.download = '';
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    setTimeout(() => showToast('✅ 다운로드 완료!'), 500);
+    // 다운로드 링크(<a href>)는 커스텀 헤더를 못 붙이므로 토큰을 URL에
+    // 실을 수밖에 없다 — 대신 여기 쓰는 토큰은 관리자 토큰(BACKUP_TOKEN) 그
+    // 자체가 아니라, 이 다운로드 1건에만 쓰이는 1분짜리 1회용 토큰이다.
+    // (관리자 토큰은 이 토큰을 발급받는 POST 요청에만 쓰이고 다운로드
+    //  URL 자체에는 남지 않는다.)
+    try {
+      const r = await tokFetch('/backup/request-link', { method: 'POST' });
+      if (!r.ok) { showToast('❌ 다운로드 링크 발급 실패'); return; }
+      const d = await r.json();
+      const a = document.createElement('a');
+      a.href = '/backup/download?dl=' + encodeURIComponent(d.dl);
+      a.download = '';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => showToast('✅ 다운로드 완료!'), 500);
+    } catch (e) {
+      showToast('❌ 다운로드 실패');
+    }
   }
 
   // ── Google Drive 백업 ────────────────────

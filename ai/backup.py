@@ -18,8 +18,20 @@ GDRIVE_CLIENT_ID     = os.getenv("GDRIVE_CLIENT_ID", "")
 GDRIVE_CLIENT_SECRET = os.getenv("GDRIVE_CLIENT_SECRET", "")
 GDRIVE_REDIRECT_URI  = os.getenv("GDRIVE_REDIRECT_URI", "")  # 배포 URL + /backup/google-callback
 
-# OAuth CSRF 방지용 state — 인증 URL 발급 시 생성해 콜백에서 검증
-_pending_oauth_state: str | None = None
+# OAuth CSRF 방지용 state.
+# 과거에는 프로세스 전역 변수(_pending_oauth_state)에만 있었는데, 멀티 유저·
+# 다중 워커·재시작 환경에서는 이 값이 그 요청을 처리한 프로세스에만 존재해
+# ① 동시에 두 번째 사용자가 플로우를 시작하면 첫 번째 사용자의 state를
+# 덮어써 인증이 깨지고, ② 재배포/재시작되면 진행 중이던 플로우가 전부
+# 무효화되는 문제가 있었다(2026-08-11 보안 점검에서 발견). budget_store.py가
+# 예산 데이터를 저장하는 것과 동일한 패턴(memory.save_setting/get_setting,
+# app_settings 테이블)으로 옮겨 DB에 영속 저장한다. 개인용 어시스턴트 특성상
+# 동시에 여러 OAuth 플로우를 지원할 필요는 없다고 보고, state 하나만
+# (값, 발급시각)으로 저장 — 검증 시 유효기간 내인지 확인한 뒤 곧바로
+# 지워 1회용을 유지한다("생성 시 값을 넣고 콜백에서 비교 후 지운다"는
+# 기존 로직 구조는 그대로, 저장 위치만 프로세스 메모리 → DB로 이동).
+_OAUTH_STATE_SETTING_KEY = "gdrive_oauth_pending_state"
+_OAUTH_STATE_TTL_SECONDS = 600  # 10분
 
 
 # ── 공통: ZIP 생성 ────────────────────────────────────
@@ -109,6 +121,58 @@ def backup_download() -> tuple[bytes, str]:
     return _make_zip()
 
 
+# /backup/download는 <a href>로 여는 브라우저 다운로드 링크라 커스텀 헤더를
+# 붙일 수 없다(SSE 인증에서 이미 겪은 것과 같은 제약, main.py의 /events 참고).
+# 그렇다고 재사용 가능한 영구 BACKUP_TOKEN을 그 URL에 그대로 실으면 서버 접근
+# 로그·브라우저 히스토리에 영구 비밀키가 남는다. 완전히 없앨 수는 없어도
+# 위험은 낮출 수 있다 — 이 링크 전용의 아주 짧은 유효시간(1분)·1회용 토큰을
+# 별도 인증된 요청(POST /backup/request-link, 기존 BACKUP_TOKEN 인증 필요)으로
+# 먼저 받아, 실제 다운로드 URL에는 그 1회용 토큰만 싣는다. 로그·히스토리에
+# 남더라도 이미 만료·소모돼 재사용할 수 없는 값이라 노출 위험이 훨씬 낮다.
+_DOWNLOAD_LINK_SETTING_KEY = "backup_download_link_tokens"
+_DOWNLOAD_LINK_TTL_SECONDS = 60
+
+
+def _parse_iso(value):
+    try:
+        return datetime.fromisoformat(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def issue_download_link_token() -> str:
+    """/backup/download 전용 1회용 단기(1분) 토큰을 발급해 DB(app_settings)에 저장."""
+    import memory as mem
+    now = datetime.now()
+    stored = mem.get_setting(_DOWNLOAD_LINK_SETTING_KEY, {}) or {}
+    tokens = stored.get("tokens", {})
+    # 만료된 토큰은 조회할 때마다 함께 정리해 계속 쌓이지 않게 한다.
+    tokens = {
+        t: issued_at for t, issued_at in tokens.items()
+        if _parse_iso(issued_at) and (now - _parse_iso(issued_at)).total_seconds() <= _DOWNLOAD_LINK_TTL_SECONDS
+    }
+    new_token = secrets.token_urlsafe(24)
+    tokens[new_token] = now.isoformat()
+    mem.save_setting(_DOWNLOAD_LINK_SETTING_KEY, {"tokens": tokens})
+    return new_token
+
+
+def consume_download_link_token(token: str) -> bool:
+    """토큰이 발급됐고 아직 유효기간(1분) 내이면 1회용으로 소모하고 True 반환.
+    검증 결과와 무관하게 해당 토큰은 저장소에서 즉시 제거한다(재사용 방지)."""
+    if not token:
+        return False
+    import memory as mem
+    stored = mem.get_setting(_DOWNLOAD_LINK_SETTING_KEY, {}) or {}
+    tokens = stored.get("tokens", {})
+    issued_at = tokens.pop(token, None)
+    mem.save_setting(_DOWNLOAD_LINK_SETTING_KEY, {"tokens": tokens})
+    if not issued_at:
+        return False
+    ts = _parse_iso(issued_at)
+    return bool(ts) and (datetime.now() - ts).total_seconds() <= _DOWNLOAD_LINK_TTL_SECONDS
+
+
 # ── 2. Google Drive ───────────────────────────────────
 
 def gdrive_configured() -> bool:
@@ -116,10 +180,14 @@ def gdrive_configured() -> bool:
 
 
 def gdrive_auth_url() -> str:
-    """Google OAuth2 인증 URL 생성 (CSRF 방지용 state 포함)"""
-    global _pending_oauth_state
+    """Google OAuth2 인증 URL 생성 (CSRF 방지용 state 포함) — state는 DB(app_settings)에 영속 저장"""
     import urllib.parse
-    _pending_oauth_state = secrets.token_urlsafe(24)
+    import memory as mem
+    state = secrets.token_urlsafe(24)
+    mem.save_setting(
+        _OAUTH_STATE_SETTING_KEY,
+        {"state": state, "issued_at": datetime.now().isoformat()},
+    )
     params = {
         "client_id":     GDRIVE_CLIENT_ID,
         "redirect_uri":  GDRIVE_REDIRECT_URI,
@@ -127,17 +195,32 @@ def gdrive_auth_url() -> str:
         "scope":         "https://www.googleapis.com/auth/drive.file",
         "access_type":   "offline",
         "prompt":        "consent",
-        "state":         _pending_oauth_state,
+        "state":         state,
     }
     return "https://accounts.google.com/o/oauth2/v2/auth?" + urllib.parse.urlencode(params)
 
 
 async def gdrive_exchange_code(code: str, state: str = "") -> bool:
-    """인증 코드 → 토큰 교환 후 저장 (state가 발급 시 값과 다르면 CSRF로 간주해 거부)"""
-    global _pending_oauth_state
-    if not _pending_oauth_state or state != _pending_oauth_state:
-        raise ValueError("state 값이 일치하지 않습니다 (CSRF 의심 — 인증을 다시 시작하세요).")
-    _pending_oauth_state = None  # 1회용
+    """인증 코드 → 토큰 교환 후 저장 (state가 발급 시 값과 다르거나 만료되었으면 CSRF로 간주해 거부)"""
+    import memory as mem
+    pending = mem.get_setting(_OAUTH_STATE_SETTING_KEY, None) or {}
+    pending_state = pending.get("state")
+    issued_at = pending.get("issued_at")
+
+    expired = True
+    if issued_at:
+        try:
+            age = (datetime.now() - datetime.fromisoformat(issued_at)).total_seconds()
+            expired = age > _OAUTH_STATE_TTL_SECONDS
+        except (TypeError, ValueError):
+            expired = True
+
+    # 검증 결과와 무관하게 항상 1회용으로 소모한다(재사용 방지) — 성공이든
+    # 실패든 같은 state로 다시 콜백이 오면 거부되어야 한다.
+    mem.save_setting(_OAUTH_STATE_SETTING_KEY, {})
+
+    if not pending_state or expired or state != pending_state:
+        raise ValueError("state 값이 일치하지 않거나 만료되었습니다 (CSRF 의심 — 인증을 다시 시작하세요).")
 
     import httpx
     async with httpx.AsyncClient() as client:

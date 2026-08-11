@@ -1600,9 +1600,27 @@ def share_info(token: str):
 
 # ── 백업 ──────────────────────────────────────────────
 
-@app.get("/backup/download")
-def backup_download(token: str = ""):
+@app.post("/backup/request-link")
+def backup_request_link(token: str = ""):
+    """/backup/download용 1분짜리 1회용 다운로드 토큰 발급 (기존 BACKUP_TOKEN 인증 필요).
+    <a href> 다운로드 링크에는 이 단기 토큰만 실어, 서버 접근 로그·브라우저
+    히스토리에 재사용 가능한 영구 BACKUP_TOKEN이 남지 않도록 한다."""
     _require_backup_token(token)
+    return {"dl": bkp.issue_download_link_token(), "expires_in": bkp._DOWNLOAD_LINK_TTL_SECONDS}
+
+
+@app.get("/backup/download")
+def backup_download(token: str = "", dl: str = ""):
+    if dl:
+        if not bkp.consume_download_link_token(dl):
+            raise HTTPException(401, "다운로드 링크가 만료되었거나 이미 사용되었습니다. 새로고침 후 다시 시도하세요.")
+    else:
+        # 하위 호환: /backup/request-link를 거치지 않고 기존처럼 장기
+        # BACKUP_TOKEN을 직접 ?token=으로 넘기는 것도 계속 허용한다(스크립트·
+        # curl 등 기존 사용을 깨지 않기 위함). static/index.html의 다운로드
+        # 버튼은 항상 위 request-link 경로로 받은 단기 토큰(dl=)을 쓰도록
+        # 바뀌었으므로, 실사용 경로에서는 더 이상 영구 비밀키가 URL에 실리지 않는다.
+        _require_backup_token(token)
     zip_bytes, filename = bkp.backup_download()
     return Response(
         content=zip_bytes,

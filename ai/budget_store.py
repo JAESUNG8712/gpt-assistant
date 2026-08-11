@@ -267,6 +267,44 @@ def parse_grid(content: bytes, filename: str):
         return rows
 
 
+# static/budget.html의 자체 수식 엔진(FUNCS 객체)이 실제로 구현·지원하는 함수
+# 이름 전체. 이 목록은 화이트리스트로만 쓰인다 — 여기 없는 함수 호출은
+# (문법이 그럴듯해 보여도) 안전하지 않은 것으로 간주해 텍스트로 다운그레이드한다.
+# static/budget.html 3478~3679번째 줄 부근 `const FUNCS = {...}` 객체의 키와
+# 반드시 동기화되어야 함 — 그쪽에 함수를 추가하면 여기도 함께 갱신할 것.
+_SAFE_FORMULA_FUNCS = {
+    "ABS", "AND", "AVERAGE", "AVERAGEIF", "AVERAGEIFS", "CEILING", "CONCAT",
+    "CONCATENATE", "COUNT", "COUNTA", "COUNTIF", "COUNTIFS", "DAY", "FLOOR",
+    "HLOOKUP", "IF", "IFERROR", "IFNA", "IFS", "INDEX", "INT", "ISBLANK",
+    "ISERROR", "ISNUMBER", "LARGE", "LEFT", "LEN", "LOWER", "MATCH", "MAX",
+    "MEDIAN", "MID", "MIN", "MOD", "MONTH", "NOT", "NOW", "OR", "POWER",
+    "RANK", "RIGHT", "ROUND", "ROUNDDOWN", "ROUNDUP", "SMALL", "SQRT",
+    "STDEV", "SUM", "SUMIF", "SUMIFS", "SUMPRODUCT", "TEXT", "TODAY",
+    "TRIM", "TRUNC", "UPPER", "VALUE", "VLOOKUP", "YEAR",
+}
+# 함수 호출처럼 보이는 토큰(식별자 바로 뒤에 여는 괄호)을 찾는 패턴.
+_FORMULA_FUNC_CALL_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?=\s*\()")
+# 파이프(|)는 이 앱의 수식 문법에 전혀 쓰이지 않는 문자이면서, 동시에
+# `=cmd|'/c calc'!A1` 류의 고전적인 Excel DDE/명령실행 인젝션 페이로드의
+# 핵심 구성요소다 — 화이트리스트를 통과하는 함수명이 하나도 없는 수식이라도
+# 이 문자가 섞여 있으면 무조건 안전하지 않은 것으로 취급한다(심층 방어).
+_FORMULA_DANGEROUS_CHAR_RE = re.compile(r"[|]")
+
+
+def _is_safe_export_formula(val: str) -> bool:
+    """이 그리드의 자체 수식 엔진이 실제로 파싱·계산하는 함수만 호출하는
+    수식인지 화이트리스트 기준으로 판정한다(블랙리스트가 아니라 화이트리스트 —
+    미지의/신규 위험 함수를 놓칠 걱정이 없다). HYPERLINK·WEBSERVICE처럼 외부
+    실행·네트워크를 유발하는 실제 Excel 함수는 이 화이트리스트에 없으므로
+    항상 안전하지 않음으로 판정된다."""
+    if _FORMULA_DANGEROUS_CHAR_RE.search(val):
+        return False
+    for m in _FORMULA_FUNC_CALL_RE.finditer(val):
+        if m.group(0).upper() not in _SAFE_FORMULA_FUNCS:
+            return False
+    return True
+
+
 def export_grid_xlsx(rows):
     import openpyxl
     wb = openpyxl.Workbook()
@@ -275,8 +313,18 @@ def export_grid_xlsx(rows):
     for r_idx, row in enumerate(rows, start=1):
         for c_idx, val in enumerate(row, start=1):
             cell = sheet.cell(row=r_idx, column=c_idx)
-            if isinstance(val, str) and val.startswith("="):
+            if isinstance(val, str) and val.startswith("=") and _is_safe_export_formula(val):
                 cell.value = val
+            elif isinstance(val, str) and val.startswith("="):
+                # 이 그리드가 지원하지 않는 함수·위험 문자(| 등)가 섞인 값은
+                # 실제 Excel 수식으로 절대 내보내지 않는다(Formula/CSV Injection
+                # 방지 — 다른 사람이 실제 Microsoft Excel에서 이 파일을 열었을 때
+                # 임의 명령 실행·외부 URL 호출·클릭유도 링크가 생기는 것을 막기
+                # 위함). openpyxl은 "=" 로 시작하는 문자열을 값으로 대입하면
+                # 자동으로 수식 셀(data_type='f')로 인식하므로, 대입 후 명시적으로
+                # data_type을 문자열('s')로 되돌려 원문 그대로를 "글자"로만 저장한다.
+                cell.value = val
+                cell.data_type = "s"
             else:
                 num = to_number(val)
                 cell.value = num if num is not None else val

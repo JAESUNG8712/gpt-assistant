@@ -466,6 +466,22 @@ def format_report(candidates: List[Dict], date: str = "", params: Optional[Dict]
         f"{'='*65}",
         f"💰 저평가 저가주 스크리닝 보고서 | {now}",
         f"{'='*65}",
+    ]
+
+    # pykrx·네이버 fallback이 모두 실패해 _mock_results()로 채워진 결과라면
+    # 실측 시세가 아니라는 것을 사람이 놓칠 수 없게 상단에 명시한다
+    # (report_writer.py의 _mock_data_warning()과 동일한 취지).
+    if any(c.get("is_mock") for c in candidates):
+        lines += [
+            "!" * 65,
+            "⚠️  주의 — 이 스크리닝 결과는 실측 시세가 아닌 샘플(모의) 데이터입니다.",
+            "    KRX/네이버 금융 데이터 수집에 모두 실패해 예시용 값으로 대체되었습니다.",
+            "    투자 판단에 사용하지 마세요.",
+            "!" * 65,
+            "",
+        ]
+
+    lines += [
         f"기준: 주가 < {p['max_price']:,}원 | PBR < {p['max_pbr']} | "
         f"PER {p['min_per']}~{p['max_per']} | 시총 {p['min_marcap']/1e8:,.0f}억+ | "
         f"거래량 {p['min_volume']:,}+",
@@ -510,14 +526,20 @@ def format_report(candidates: List[Dict], date: str = "", params: Optional[Dict]
 
 
 def _mock_results() -> List[Dict]:
-    """pykrx 미설치 시 mock 데이터"""
+    """pykrx·네이버 fallback이 모두 실패했을 때 쓰는 mock 데이터.
+
+    종목명에 "(샘플)" 접두를 붙여 사람이 눈으로 봐도 알아채게 해뒀지만, 다른
+    소스(dart_client.py/krx_client.py)와 동일하게 is_mock 플래그도 명시해
+    format_report()가 프로그램적으로 감지해 경고 배너를 붙일 수 있게 한다
+    (2026-08-11 보안 점검에서 이 플래그 누락 발견).
+    """
     return [
         {"종목코드": "000100", "종목명": "(샘플)저평가A", "시장": "KOSPI",
          "현재가": 3200, "PER": 6.2, "PBR": 0.45, "BPS": 7100,
          "배당수익률": 3.5, "시가총액억": 480, "거래량": 120000,
-         "저평가점수": 78, "괴리율": 54.9},
+         "저평가점수": 78, "괴리율": 54.9, "is_mock": True},
         {"종목코드": "001200", "종목명": "(샘플)저평가B", "시장": "KOSDAQ",
          "현재가": 5800, "PER": 9.1, "PBR": 0.68, "BPS": 8500,
          "배당수익률": 2.1, "시가총액억": 620, "거래량": 80000,
-         "저평가점수": 62, "괴리율": 31.8},
+         "저평가점수": 62, "괴리율": 31.8, "is_mock": True},
     ]
