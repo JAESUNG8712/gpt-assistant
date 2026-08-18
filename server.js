@@ -1105,6 +1105,77 @@ function _validateFieldValues(field, rec, storedList) {
   }
   return true;
 }
+// KPI 승인 위조 방어. kpiEntries는 employees처럼 자체 테이블(JSON모드는 _fileStore.kpiEntries)을
+// 쓰고 위 _APPROVAL_GATED_FIELDS 승인게이팅 경로(GENERIC_LIST_FIELDS 전용, app_collections만
+// 대상)를 타지 않는다 — 그래서 firstStatus(팀장 1차승인)/finalStatus·finalConfirmed(사업부장
+// 최종확정)/firstScore·secondScore(평가 점수) 같은 승인 관련 필드에 서버 검증이 전혀 없었다.
+// 실측(이 세션 QA로 발견): 사원이 자기 KPI 항목을 firstStatus:"approved", finalStatus:"approved",
+// finalConfirmed:true로 직접 /save 호출해 팀장→사업부장 승인 절차 전체를 건너뛰고 스스로
+// 100점 만점으로 확정할 수 있었다. approvalDocs/expenseClaims 등과 동일한 원칙 — 권한 없는
+// 필드만 저장본 값으로 되돌리고(신규 레코드면 미승인 기본값으로), 같은 요청에 실린 무관한
+// 정상 변경(목표 등록/제출, 자체평가 입력 등)은 그대로 저장한다.
+// 권한 기준은 클라이언트 renderApprovalList/renderEvalTab이 실제로 버튼을 노출하는 조건과
+// 동일: 1차승인·1차점수는 그 팀원의 팀장(같은 dept+team)만, 최종확정·2차점수는 그 직원의
+// 사업부장(같은 dept)만 — director는 1차승인을, leader는 최종확정을 할 수 없다.
+function _sanitizeKpiEntry(incoming, stored, actor, actorEmp, empById) {
+  if (!incoming) return incoming;
+  let out = incoming;
+  const cloneOnce = () => { if (out === incoming) out = { ...incoming }; };
+  // 기존 레코드의 소유자(userId)를 바꿔치기하는 것 자체를 항상 차단 — 이미 승인된 레코드를
+  // 자기 것으로 재지정해 승인 상태만 그대로 가로채는 것을 막는다(approvalDocs의 결재자
+  // 신원 변경 차단과 동일한 발상).
+  if (stored && incoming.userId != null && String(incoming.userId) !== String(stored.userId)) {
+    cloneOnce();
+    out.userId = stored.userId;
+  }
+  const ownerId = out.userId ?? stored?.userId;
+  const ownerEmp = ownerId != null ? empById.get(String(ownerId)) : null;
+  const canFirst = actor.role === "leader" && actorEmp && ownerEmp &&
+    ownerEmp.dept === actorEmp.dept && ownerEmp.team === actorEmp.team;
+  const canFinal = actor.role === "director" && actorEmp && ownerEmp &&
+    ownerEmp.dept === actorEmp.dept;
+
+  const storedFirstStatus = stored?.firstStatus || "";
+  if ((incoming.firstStatus || "") !== storedFirstStatus &&
+      (incoming.firstStatus === "approved" || incoming.firstStatus === "rejected") && !canFirst) {
+    cloneOnce();
+    out.firstStatus = storedFirstStatus;
+    out.firstReason = stored?.firstReason || "";
+  }
+  if (!canFirst && (incoming.firstScore !== (stored?.firstScore ?? null) ||
+      (incoming.firstComment || "") !== (stored?.firstComment || ""))) {
+    cloneOnce();
+    out.firstScore = stored?.firstScore ?? null;
+    out.firstComment = stored?.firstComment || "";
+  }
+
+  const storedFinalStatus = stored?.finalStatus || "";
+  if ((incoming.finalStatus || "") !== storedFinalStatus &&
+      (incoming.finalStatus === "approved" || incoming.finalStatus === "rejected") && !canFinal) {
+    cloneOnce();
+    out.finalStatus = storedFinalStatus;
+    out.finalReason = stored?.finalReason || "";
+    out.finalConfirmed = stored?.finalConfirmed || false;
+    out.finalScore = stored?.finalScore ?? null;
+  }
+  if (!canFinal) {
+    if (incoming.secondScore !== (stored?.secondScore ?? null) ||
+        (incoming.secondComment || "") !== (stored?.secondComment || "")) {
+      cloneOnce();
+      out.secondScore = stored?.secondScore ?? null;
+      out.secondComment = stored?.secondComment || "";
+      out.secondCommentPublic = stored?.secondCommentPublic || false;
+    }
+    // finalConfirmed는 연말 일괄확정(admin 전용, 이미 우회됨) 외에는 항상 finalStatus
+    // 승인과 함께 세팅되지만, 독립적으로 flip되는 경로가 생기더라도 방어.
+    if (incoming.finalConfirmed && !(stored?.finalConfirmed)) {
+      cloneOnce();
+      out.finalConfirmed = stored?.finalConfirmed || false;
+      out.finalScore = stored?.finalScore ?? null;
+    }
+  }
+  return out;
+}
 async function persistData(data, changedBy = "system", companyId = null, actor = null) {
   return _withSaveLock(() => _persistDataLocked(data, changedBy, companyId, actor));
 }
@@ -1125,6 +1196,18 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
       const w = Number(kpi.weight);
       kpi.weight = Number.isFinite(w) ? Math.min(100, Math.max(0, w)) : 0;
     }
+  }
+  // KPI 승인 위조 방어(_sanitizeKpiEntry 주석 참고) — admin은 그대로 통과(기존 관례와 동일).
+  // loadData()로 이 저장이 반영되기 "전" 스냅샷(직원 dept/team, 기존 kpiEntries)을 한 번만
+  // 불러와 JSON/Postgres 두 모드에서 공통으로 사용 — 요청자의 부서/팀·기존 승인 상태는
+  // 클라이언트가 보낸 값(위조 가능)이 아니라 이 스냅샷에서 판단한다.
+  if (Array.isArray(data.kpiEntries) && data.kpiEntries.length && actor && actor.role !== "admin") {
+    const _kpiGatePrior = await loadData(companyId);
+    const _kpiEmpById = new Map((_kpiGatePrior.employees || []).map(e => [String(e.id), e]));
+    const _kpiStoredById = new Map((_kpiGatePrior.kpiEntries || []).map(k => [String(k.id), k]));
+    const _kpiActorEmp = actor.empId != null ? _kpiEmpById.get(String(actor.empId)) : null;
+    data.kpiEntries = data.kpiEntries.map(kpi =>
+      _sanitizeKpiEntry(kpi, kpi && kpi.id != null ? _kpiStoredById.get(String(kpi.id)) : null, actor, _kpiActorEmp, _kpiEmpById));
   }
   if (USE_JSON_FILE) {
     // Save the full client state to the JSON file
