@@ -362,6 +362,66 @@ function filterDataForRole(data, auth) {
   if (auth.role !== "admin" && Array.isArray(out.scheduleEvents)) {
     out.scheduleEvents = out.scheduleEvents.filter(s => !s || s.scope !== "personal" || String(s.authorId) === myId);
   }
+  // 아래 필드들은 화면(클라이언트) 단에서는 이미 "본인 것만"/"관리자·director(dept)·leader(dept+team)만"
+  // 으로 좁혀서 보여주고 있었지만(개별 화면 코드로 확인), GET /data 자체에는 이 좁히기가 없어
+  // 로그인만 되어 있으면 브라우저 devtools로 회사 전체 데이터를 그대로 볼 수 있었다 — 이미 이
+  // 함수가 payslips/attendanceRecords 등에 적용해온 것과 동일한 클래스의 누락. 클라이언트가 실제로
+  // 쓰는 스코프 규칙(각 화면의 dept/team 필터)을 그대로 서버에 재현한다.
+  {
+    const employees = Array.isArray(out.employees) ? out.employees : [];
+    const myEmp = employees.find(e => String(e.id) === myId) || null;
+    // director는 같은 dept, leader는 같은 dept+team 소속 레코드까지 허용(각 화면의
+    // "director→dept, leader→dept+team" 스코핑과 동일 — hr-mandatory-training/
+    // hr-leave-mgmt/overtime-req 승인 화면이 실제로 이 기준을 쓴다).
+    function _deptTeamVisible(rec, empField) {
+      if (auth.role === "admin") return true;
+      if (rec && String(rec[empField]) === myId) return true;
+      if (auth.role !== "director" && auth.role !== "leader") return false;
+      if (!myEmp) return false;
+      const owner = employees.find(e => rec && String(e.id) === String(rec[empField]));
+      if (!owner) return false;
+      if (auth.role === "director") return owner.dept === myEmp.dept;
+      return owner.dept === myEmp.dept && owner.team === myEmp.team;
+    }
+    if (Array.isArray(out.expenseClaims)) {
+      // expense-admin 화면·승인(_APPROVAL_GATED_FIELDS.expenseClaims)이 admin 전용이라
+      // director/leader에게 팀 범위를 열어줄 필요가 없다 — 자기 것만.
+      out.expenseClaims = out.expenseClaims.filter(r => auth.role === "admin" || (r && String(r.empId) === myId));
+    }
+    if (Array.isArray(out.overtimeRequests)) {
+      out.overtimeRequests = out.overtimeRequests.filter(r => _deptTeamVisible(r, "empId"));
+    }
+    if (Array.isArray(out.mandatoryTraining)) {
+      out.mandatoryTraining = out.mandatoryTraining.filter(r => _deptTeamVisible(r, "empId"));
+    }
+    if (Array.isArray(out.leaveUsagePlans)) {
+      out.leaveUsagePlans = out.leaveUsagePlans.filter(r => _deptTeamVisible(r, "empId"));
+    }
+    if (Array.isArray(out.healthCheckupLog)) {
+      // welfare-settings(종합검진 완료처리)가 admin 전용이라 자기 것만.
+      out.healthCheckupLog = out.healthCheckupLog.filter(r => auth.role === "admin" || (r && String(r.empId) === myId));
+    }
+    if (Array.isArray(out.certLog)) {
+      // 증명서 발급대장(_renderCertLogSection)이 admin 전용이라 자기 것만.
+      out.certLog = out.certLog.filter(r => auth.role === "admin" || (r && String(r.empId) === myId));
+    }
+    if (auth.role !== "admin" && Array.isArray(out.onboardingFlows)) {
+      // "온보딩/오프보딩"(onboarding) 화면 자체가 PAGE_ROLES상 admin 전용, 본인 열람 UI 없음.
+      out.onboardingFlows = [];
+    }
+    if (auth.role !== "admin" && Array.isArray(out.tieNotifications)) {
+      // director는 자기 사업부(dept) 소속 동점자 처리만(renderApprovals의 기존 필터와 동일).
+      out.tieNotifications = auth.role === "director" && myEmp
+        ? out.tieNotifications.filter(t => t && t.dept === myEmp.dept)
+        : [];
+    }
+    if (Array.isArray(out.orgChartHistory)) {
+      // 조직 변경이력은 admin 또는 settings.orgHistoryViewers에 등록된 인원만(_canViewOrgHistory와 동일).
+      const canView = auth.role === "admin" ||
+        (settings.orgHistoryViewers || []).map(String).includes(myId);
+      if (!canView) out.orgChartHistory = [];
+    }
+  }
   if (auth.role !== "admin" && out.compGradeResults && typeof out.compGradeResults === "object") {
     out.compGradeResults = Object.prototype.hasOwnProperty.call(out.compGradeResults, myId)
       ? { [myId]: out.compGradeResults[myId] } : {};
@@ -1072,7 +1132,20 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
     // updated since the last save (same updatedAt-newer-than-stored check
     // already used below to decide whether to record history); otherwise
     // keep the existing hash untouched.
-    const employees = await Promise.all((data.employees || []).map(async (rawEmp) => {
+    // data.employees(및 kpiEntries)가 아예 없는(undefined) 저장 요청 — 예: settings만
+    // 바꾸는 저장 — 은 기존 목록을 그대로 유지해야 한다. 그런데 아래 employees는 항상
+    // `data.employees || []`를 매핑해 만들어지고, 그 결과가 아래 최종 `_fileStore = {...}`
+    // 조립에서 무조건 덮어쓰기 때문에, employees 필드를 생략한 어떤 인증된 요청(관리자가
+    // 아니어도 됨, /save는 requireAuth만 요구)이든 현재 버전과 일치하기만 하면(스마트머지를
+    // 건너뛰는 정상 경로) 회사 전체 직원 목록이 그 자리에서 빈 배열로 지워졌다(실측 재현:
+    // POST /save body에 employees를 아예 넣지 않고 현재 _version만 맞춰 보내면 로그인 계정
+    // 포함 전 직원이 통째로 삭제됨). Postgres/SaaS 모드(실제 운영 배포)는 upsert-only 구조라
+    // (아래 else 분기, "들어온 id만 갱신하고 없는 건 안 지운다") 이 문제가 없고, 여기 JSON
+    // 파일(자체 호스팅) 모드에만 있던 결함이다. employees 키 자체가 없을 때만(명시적으로
+    // 빈 배열 `[]`을 보낸 경우는 "전원 삭제"라는 의도된 요청일 수 있어 그대로 존중) 기존
+    // 목록을 보존한다.
+    const employeesInputMissing = data.employees === undefined;
+    const employees = employeesInputMissing ? (_fileStore.employees || []) : await Promise.all((data.employees || []).map(async (rawEmp) => {
       const ex = existingById[rawEmp.id];
       const oldTs = ex ? (ex.updatedAt || ex.createdAt || "") : "";
       const newTs = rawEmp.updatedAt || rawEmp.createdAt || "";
@@ -1165,6 +1238,18 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
     const changeRequestsFinal     = _mergeProtectedField("changeRequests");
     const attendanceRecordsFinal  = _mergeProtectedField("attendanceRecords");
     const scheduleEventsFinal     = _mergeProtectedField("scheduleEvents");
+    // 오늘 filterDataForRole()에 새로 추가한 9개 필드도 동일하게 보호 — 필터링된(불완전한)
+    // 로컬 배열이 그대로 재저장돼 다른 직원의 레코드를 지우는 사고를 막는다(위 6개 필드와
+    // 동일한 이유). Postgres 모드는 원래 upsert-only(들어온 id만 갱신)라 이미 안전.
+    const expenseClaimsFinal    = _mergeProtectedField("expenseClaims");
+    const overtimeRequestsFinal = _mergeProtectedField("overtimeRequests");
+    const mandatoryTrainingFinal = _mergeProtectedField("mandatoryTraining");
+    const leaveUsagePlansFinal  = _mergeProtectedField("leaveUsagePlans");
+    const healthCheckupLogFinal = _mergeProtectedField("healthCheckupLog");
+    const certLogFinal          = _mergeProtectedField("certLog");
+    const onboardingFlowsFinal  = _mergeProtectedField("onboardingFlows");
+    const tieNotificationsFinal = _mergeProtectedField("tieNotifications");
+    const orgChartHistoryFinal  = _mergeProtectedField("orgChartHistory");
     // 결재 위조 방어(_sanitizeApprovalDoc 주석 참고): 병합 전에 들어온 문서를 저장본과
     // 대조해 권한 없는 결재 칸 변경을 되돌린다.
     const approvalDocsFinal = (() => {
@@ -1233,6 +1318,11 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
       payrollAdjustments: payrollAdjustmentsFinal, gradeAdjustHistory: gradeAdjustHistoryFinal,
       certRequests: certRequestsFinal, changeRequests: changeRequestsFinal,
       attendanceRecords: attendanceRecordsFinal, scheduleEvents: scheduleEventsFinal,
+      expenseClaims: expenseClaimsFinal, overtimeRequests: overtimeRequestsFinal,
+      mandatoryTraining: mandatoryTrainingFinal, leaveUsagePlans: leaveUsagePlansFinal,
+      healthCheckupLog: healthCheckupLogFinal, certLog: certLogFinal,
+      onboardingFlows: onboardingFlowsFinal, tieNotifications: tieNotificationsFinal,
+      orgChartHistory: orgChartHistoryFinal,
       approvalDocs: approvalDocsFinal, compGradeResults: compGradeResultsFinal,
     };
     const verState = _bumpVersion(companyId);
