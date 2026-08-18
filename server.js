@@ -120,6 +120,11 @@ let _fileAcctRcps = { issuances: [], schedule: [], valuations: [] };
 let _fileAcctFixedAssets = { assets: [], schedule: [] };
 let _filePms = { projects: [], allocations: [], worklogs: [] };
 let _fileRecruit = { jobs: [], candidates: [], interviews: [] };
+// 활동 로그(관리자 전용 "활동 로그" 화면) — 2026-08-18 DB 영속성 감사에서 발견: 이전에는
+// _activityLog가 process 메모리에만 있고 이 위성 파일들처럼 디스크에 저장되지 않아, 재시작
+// (재배포)마다 활동 이력이 전부 사라졌다. 다른 위성 저장소와 동일한 패턴(부팅 시 로드,
+// 변경 시 _atomicWriteFileSync로 원자적 저장)으로 영속화한다.
+let _fileActivityLog = [];
 
 // 기초데이터: 표준 중소기업 계정과목 (최초 가동 시 비어있으면 자동 시딩)
 const DEFAULT_ACCOUNTS = [
@@ -528,7 +533,6 @@ function _bumpVersion(companyId) {
   _versionState.set(key, st);
   return st;
 }
-let _activityLog = [];
 // 잠금 키도 회사별로 완전히 분리한다 — `${_scopeKey(companyId)}:${key}` 형태로 저장하고,
 // 클라이언트에는 항상 접두어를 벗긴 원래 키 형태로만 노출한다(_locksForCompany 참고).
 let _locks       = {};      // { "companyId:lockKey": { clientId, user, acquiredAt, expiresAt } }
@@ -699,6 +703,17 @@ async function initDB() {
         console.log(`[Storage] Loaded recruiting: ${_fileRecruit.jobs.length} jobs, ${_fileRecruit.candidates.length} candidates`);
       } catch (e) {
         console.warn("[Storage] Could not read recruiting file:", e.message);
+      }
+    }
+    // Load activity log from separate file (bounded ring buffer, JSON file mode)
+    const activityFile = JSON_FILE.replace(/\.json$/, "-activity.json");
+    if (fs.existsSync(activityFile)) {
+      try {
+        _fileActivityLog = JSON.parse(fs.readFileSync(activityFile, "utf8"));
+        if (!Array.isArray(_fileActivityLog)) _fileActivityLog = [];
+        console.log(`[Storage] Loaded activity log: ${_fileActivityLog.length} entries`);
+      } catch (e) {
+        console.warn("[Storage] Could not read activity log file:", e.message);
       }
     }
     // 기초데이터 시딩 (최초 가동 시 비어있는 경우에만)
@@ -1754,10 +1769,41 @@ function broadcastSSE(eventName, payload, excludeClientId = null, companyId = un
   }
 }
 
-function addActivityLog(entry) {
-  _activityLog.unshift({ ...entry, id: Date.now() + Math.random(), ts: new Date().toISOString() });
-  if (_activityLog.length > MAX_ACTIVITY_LOGS)
-    _activityLog = _activityLog.slice(0, MAX_ACTIVITY_LOGS);
+// 2026-08-18: 예전에는 이 함수가 순수 동기 함수로 _activityLog(process 메모리 배열, 회사
+// 구분 없는 단일 배열)에만 기록해, ① 서버가 재시작될 때마다(이 프로젝트는 재배포가 매우
+// 잦음) 활동 이력이 전부 조용히 사라졌고, ② 회사 A의 관리자가 회사 B의 활동 로그(자유텍스트
+// target/detail 포함)를 함께 볼 수 있었다 — DB 영속성 감사에서 둘 다 발견. 다른 위성 모듈
+// (회계/ERP/RCPS 등)과 동일한 패턴으로 JSON 파일 모드는 원자적 파일 쓰기, Postgres 모드는
+// activity_log 테이블(company_id로 스코프)에 영속화한다.
+async function addActivityLog(entry, companyId = null) {
+  const record = { ...entry, id: Date.now() + Math.random(), ts: new Date().toISOString() };
+  if (USE_JSON_FILE) {
+    _fileActivityLog.unshift(record);
+    if (_fileActivityLog.length > MAX_ACTIVITY_LOGS)
+      _fileActivityLog = _fileActivityLog.slice(0, MAX_ACTIVITY_LOGS);
+    const activityFile = JSON_FILE.replace(/\.json$/, "-activity.json");
+    try { _atomicWriteFileSync(activityFile, JSON.stringify(_fileActivityLog, null, 2)); }
+    catch (e) { console.warn("[Storage] Could not write activity log file:", e.message); }
+    return;
+  }
+  try {
+    await pool.query(
+      "INSERT INTO activity_log (company_id, data) VALUES ($1, $2)",
+      [companyId, record]
+    );
+    // 이 회사의 최근 MAX_ACTIVITY_LOGS건만 남기고 오래된 행을 정리한다(경합이 있어도
+    // 일시적으로 몇 건 더 남을 뿐, 다음 삽입에서 다시 정리되므로 안전하다).
+    await pool.query(
+      `DELETE FROM activity_log WHERE (company_id = $1 OR ($1 IS NULL AND company_id IS NULL))
+       AND id NOT IN (
+         SELECT id FROM activity_log WHERE (company_id = $1 OR ($1 IS NULL AND company_id IS NULL))
+         ORDER BY created_at DESC LIMIT $2
+       )`,
+      [companyId, MAX_ACTIVITY_LOGS]
+    );
+  } catch (e) {
+    console.warn("[DB] Could not persist activity log:", e.message);
+  }
 }
 
 // ── Middleware ────────────────────────────────────────────────────────────────
@@ -2608,20 +2654,36 @@ app.post("/unlock", (req, res) => {
 });
 
 // POST /log
-app.post("/log", (req, res) => {
+app.post("/log", async (req, res) => {
   if (!requireAuth(req, res)) return;
   if (!req.body) return res.status(400).json({ ok: false });
-  addActivityLog(req.body);
+  await addActivityLog(req.body, req.auth.companyId || null);
   res.json({ ok: true });
 });
 
 // GET /activity
-app.get("/activity", (req, res) => {
+app.get("/activity", async (req, res) => {
   // "activity-log" 페이지는 PAGE_ROLES상 admin 전용인데 requireAuth만 있어 member 토큰으로도
   // 자유텍스트 target/detail이 담긴 활동 로그를 조회할 수 있었다(실측 확인).
   if (!requireAdmin(req, res)) return;
   const limit = parseInt(req.query.limit) || 300;
-  res.json({ ok: true, logs: _activityLog.slice(0, limit) });
+  if (USE_JSON_FILE) {
+    return res.json({ ok: true, logs: _fileActivityLog.slice(0, limit) });
+  }
+  // 이전에는 _activityLog(process 메모리, 회사 구분 없는 단일 배열)를 그대로 반환해,
+  // 회사 A의 관리자가 회사 B의 활동 로그(자유텍스트 target/detail 포함)를 함께 볼 수 있었다
+  // — DB 영속성 감사 도중 함께 발견한 별도의 크로스테넌트 유출. DB에서 이 회사(레거시
+  // company_id NULL 데이터 포함) 것만 조회한다.
+  const companyId = req.auth.companyId || null;
+  try {
+    const { rows } = await pool.query(
+      "SELECT data FROM activity_log WHERE (company_id = $1 OR ($1 IS NULL AND company_id IS NULL)) ORDER BY created_at DESC LIMIT $2",
+      [companyId, limit]
+    );
+    return res.json({ ok: true, logs: rows.map(r => r.data) });
+  } catch (e) {
+    return res.status(500).json({ ok: false, message: e.message });
+  }
 });
 
 // ── Annual snapshots ──────────────────────────────────────────────────────────

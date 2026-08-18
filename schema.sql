@@ -1169,3 +1169,18 @@ CREATE TABLE IF NOT EXISTS budget_store (
   data       JSONB       NOT NULL DEFAULT '{}'::jsonb,
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+-- ── Activity log (관리자 전용 "활동 로그" 화면, POST /log·GET /activity) ────────
+-- 2026-08-18 DB 영속성 감사에서 발견: 이 로그는 지금까지 process 메모리(_activityLog
+-- 배열, MAX_ACTIVITY_LOGS=1000)에만 있고 DB/파일 어디에도 저장되지 않아, 서버가
+-- 재시작(이 프로젝트는 재배포가 매우 잦음)될 때마다 그동안의 활동 이력이 전부
+-- 조용히 사라졌다 — "서버 재시작해도 사라지면 안 되는데 메모리에만 있는 상태"의
+-- 실제 사례. 회사별로 최근 MAX_ACTIVITY_LOGS건만 유지(오래된 행은 삽입 시점에
+-- 함께 정리)하는 bounded ring buffer로 영속화한다.
+CREATE TABLE IF NOT EXISTS activity_log (
+  id         BIGSERIAL   PRIMARY KEY,
+  company_id UUID        REFERENCES companies(id),
+  data       JSONB       NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_activity_log_company_created ON activity_log (company_id, created_at DESC);
