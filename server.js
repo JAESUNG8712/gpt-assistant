@@ -3249,6 +3249,11 @@ app.post("/api/accounting/accounts", async (req, res) => {
     const accId = id || `acc_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     if (USE_JSON_FILE) {
       const idx = _fileAccounting.accounts.findIndex(a => a.id === accId);
+      // 계정코드는 회사 내에서 유일해야 한다 — 그렇지 않으면 같은 코드를 가리키는
+      // 서로 다른 계정이 여러 개 생겨(예: "TEST-100"이 3건) 전표 계정 선택·집계에서
+      // 어느 것을 골랐는지 알 수 없는 혼란이 생긴다(실측 재현으로 발견).
+      const dup = _fileAccounting.accounts.find(a => a.id !== accId && !a.isDeleted && a.code === code);
+      if (dup) return res.status(400).json({ ok: false, message: `이미 사용 중인 계정코드입니다: ${code} (${dup.name})` });
       const prevHist = idx >= 0 ? (_fileAccounting.accounts[idx].history || []) : [];
       const histEntry = { action: idx >= 0 ? "update" : "create", user: user || "unknown", at: new Date().toISOString() };
       const acc = { id: accId, code, name, type, category: category || "", costCategory, costSubType, active, history: [...prevHist, histEntry] };
@@ -3257,6 +3262,11 @@ app.post("/api/accounting/accounts", async (req, res) => {
       return res.json({ ok: true, account: acc });
     }
     const companyId = req.auth.companyId || null;
+    const { rows: dupRows } = await pool.query(
+      "SELECT data FROM accounts WHERE id <> $1 AND is_deleted = FALSE AND (company_id = $2 OR company_id IS NULL) AND data->>'code' = $3 LIMIT 1",
+      [accId, companyId, code]
+    );
+    if (dupRows.length) return res.status(400).json({ ok: false, message: `이미 사용 중인 계정코드입니다: ${code} (${dupRows[0].data.name})` });
     const { rows: prevRows } = await pool.query(
       "SELECT data FROM accounts WHERE id = $1 AND (company_id = $2 OR company_id IS NULL)", [accId, companyId]
     );
