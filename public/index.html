@@ -19162,10 +19162,12 @@ function _pmsWorklogSetView(v){
   else if(v==="team")_pmsWorklogLoadTeam();
   else renderPmsWorklogPage();
 }
+let _pmsWorklogLoadedUpdatedAt=null;
 async function _pmsWorklogLoad(){
   if(!serverConfig.url)return;
   const r=await serverRequest("GET",`/api/pms/worklogs?employeeId=${currentUser.id}&date=${_pmsWorklogDate}`);
   _pmsWorklogBlocks=(r?.ok&&r.worklogs&&r.worklogs[0])?JSON.parse(JSON.stringify(r.worklogs[0].blocks||[])):[];
+  _pmsWorklogLoadedUpdatedAt=(r?.ok&&r.worklogs&&r.worklogs[0])?(r.worklogs[0].updatedAt||null):null;
   _pmsWorklogLoadedDate=_pmsWorklogDate;
   if(currentPage==="pms-worklog")renderPmsWorklogPage();
 }
@@ -19306,9 +19308,19 @@ async function savePmsWorklogBlock(){
   const next=idxRaw!==""?sorted.map((b,i)=>i===+idxRaw?newBlock:b):[...sorted,newBlock];
   const overlap=next.some((b,i)=>next.some((b2,j)=>i!==j&&_wlMin(b.startTime)<_wlMin(b2.endTime)&&_wlMin(b2.startTime)<_wlMin(b.endTime)));
   if(overlap){showToast("기존 업무 시간과 중복됩니다.","error");return;}
-  const r=await serverRequest("POST","/api/pms/worklogs",{employeeId:currentUser.id,date:_pmsWorklogDate,blocks:next,role:currentUser.role,userId:currentUser.id});
-  if(!r?.ok){showToast(r?.message||"저장에 실패했습니다.","error");return;}
+  const r=await serverRequest("POST","/api/pms/worklogs",{employeeId:currentUser.id,date:_pmsWorklogDate,blocks:next,role:currentUser.role,userId:currentUser.id,expectedUpdatedAt:_pmsWorklogLoadedUpdatedAt});
+  if(!r?.ok){
+    // 다른 탭/세션에서 이 날짜의 업무일지를 먼저 저장해 내 화면이 오래된 상태일 때
+    // 서버가 409로 거부한다(_pmsWorklogLoadedUpdatedAt 불일치) — 조용히 덮어써 상대방의
+    // 변경을 지우는 대신 최신 데이터를 다시 불러오도록 안내한다.
+    if(r?.conflict){
+      showToast("다른 곳에서 먼저 저장되어 최신 데이터를 다시 불러옵니다. 방금 입력한 내용을 확인 후 다시 저장해주세요.","error");
+      _pmsWorklogLoadedDate=null;closeModal();renderPmsWorklogPage();return;
+    }
+    showToast(r?.message||"저장에 실패했습니다.","error");return;
+  }
   _pmsWorklogBlocks=r.worklog.blocks;
+  _pmsWorklogLoadedUpdatedAt=r.worklog.updatedAt||null;
   // "내 투입률 입력"/"가동률 현황"이 같은 세션에서 이미 조회된 적이 있으면 캐시된 합계를
   // 그대로 보여주고 있었으므로, 방금 바뀐 업무 기록이 반영되도록 캐시를 무효화한다.
   _pmsAllocLoadedKey=null;_pmsUtilLoadedKey=null;
@@ -19318,9 +19330,16 @@ async function deletePmsWorklogBlock(idx){
   if(!confirm("이 업무 기록을 삭제하시겠습니까?"))return;
   const sorted=[..._pmsWorklogBlocks].sort((a,b)=>_wlMin(a.startTime)-_wlMin(b.startTime));
   const next=sorted.filter((_,i)=>i!==idx);
-  const r=await serverRequest("POST","/api/pms/worklogs",{employeeId:currentUser.id,date:_pmsWorklogDate,blocks:next,role:currentUser.role,userId:currentUser.id});
-  if(!r?.ok){showToast(r?.message||"삭제에 실패했습니다.","error");return;}
+  const r=await serverRequest("POST","/api/pms/worklogs",{employeeId:currentUser.id,date:_pmsWorklogDate,blocks:next,role:currentUser.role,userId:currentUser.id,expectedUpdatedAt:_pmsWorklogLoadedUpdatedAt});
+  if(!r?.ok){
+    if(r?.conflict){
+      showToast("다른 곳에서 먼저 저장되어 최신 데이터를 다시 불러옵니다. 삭제하려던 항목을 확인 후 다시 시도해주세요.","error");
+      _pmsWorklogLoadedDate=null;renderPmsWorklogPage();return;
+    }
+    showToast(r?.message||"삭제에 실패했습니다.","error");return;
+  }
   _pmsWorklogBlocks=r.worklog.blocks;
+  _pmsWorklogLoadedUpdatedAt=r.worklog.updatedAt||null;
   _pmsAllocLoadedKey=null;_pmsUtilLoadedKey=null;
   showToast("삭제되었습니다.","info");renderPmsWorklogPage();
 }

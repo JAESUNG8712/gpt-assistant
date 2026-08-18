@@ -6040,7 +6040,7 @@ app.get("/api/pms/worklogs", async (req, res) => {
 app.post("/api/pms/worklogs", async (req, res) => {
   if (!requireAuth(req, res)) return;
   try {
-    const { employeeId, date, blocks } = req.body || {};
+    const { employeeId, date, blocks, expectedUpdatedAt } = req.body || {};
     const { role, empId: userId } = req.auth;
     const companyId = req.auth.companyId || null;
     if (!employeeId || !date) return res.status(400).json({ ok: false, message: "직원, 날짜는 필수입니다." });
@@ -6057,17 +6057,63 @@ app.post("/api/pms/worklogs", async (req, res) => {
     }
     const id = `wl_${employeeId}_${date}`;
     const record = { id, employeeId: String(employeeId), date, blocks, updatedAt: new Date().toISOString() };
+    // 이 레코드는 하루치 blocks 배열 전체를 매번 통째로 재전송하는 구조라(항목별 id가
+    // 없음), 같은 사용자가 두 탭을 열어두고 서로 다른 블록을 거의 동시에 추가하면
+    // 뒤에 끝난 요청이 앞선 요청이 방금 추가한 블록을 그대로 덮어써 조용히 사라진다
+    // (실측: 09:00 블록 저장 직후 11:00 블록을 동시 저장 → 09:00 블록 소멸). 여러
+    // 사용자가 함께 쓰는 레코드가 아니라 락으로 순서를 정해도(먼저 쓴 요청의 결과를
+    // 나중 요청이 모른 채 자기 스냅샷으로 그대로 이어쓰므로) 근본 해결이 안 된다 —
+    // 클라이언트가 조회 시점의 updatedAt을 함께 보내면, 그 사이 다른 저장이 먼저
+    // 끼어들었는지 서버가 판별해 충돌 시 명시적으로 거부(침묵 유실 대신 사용자가
+    // 새로고침 후 재시도하도록)한다. expectedUpdatedAt을 안 보내는 구버전 클라이언트는
+    // 기존처럼 무조건 덮어쓴다(하위호환).
     if (USE_JSON_FILE) {
       const idx = _filePms.worklogs.findIndex(w => w.id === id);
+      const existing = idx >= 0 ? _filePms.worklogs[idx] : null;
+      if (expectedUpdatedAt !== undefined) {
+        const currentTs = existing ? existing.updatedAt : null;
+        if ((currentTs || null) !== (expectedUpdatedAt || null)) {
+          return res.status(409).json({ ok: false, message: "다른 저장으로 데이터가 변경되었습니다. 새로고침 후 다시 시도해주세요.", conflict: true, worklog: existing });
+        }
+      }
       if (idx >= 0) _filePms.worklogs[idx] = record; else _filePms.worklogs.push(record);
       _saveFilePms();
       return res.json({ ok: true, worklog: record });
     }
-    await pool.query(
-      "INSERT INTO pms_worklogs (id, employee_id, work_date, data, company_id) VALUES ($1,$2,$3,$4,$5) " +
-      "ON CONFLICT (id) DO UPDATE SET data = $4, updated_at = NOW()",
-      [id, Number(employeeId), date, record, companyId]
-    );
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      // "SELECT ... FOR UPDATE"만으로는 부족하다 — 이 레코드가 아직 한 번도 저장된 적이
+      // 없으면(가장 흔한 최초 저장 경합) 잠글 행 자체가 없어 두 트랜잭션 모두 existing=null을
+      // 보고 그대로 통과해버린다(실측: 동시 최초저장 2건이 expectedUpdatedAt(둘 다 null)
+      // 검사를 둘 다 통과해 하나가 침묵 유실). PMS 투입률 캡과 동일한 패턴으로 이 id
+      // 자체에 advisory lock을 걸어 "행이 존재하든 안 하든" 같은 id를 다루는 요청을
+      // 확실히 순번대로 세운다.
+      await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [`wl:${companyId || ""}:${id}`]);
+      const { rows } = await client.query(
+        "SELECT data FROM pms_worklogs WHERE id = $1 AND is_deleted = FALSE AND (company_id = $2 OR company_id IS NULL) FOR UPDATE",
+        [id, companyId]
+      );
+      const existing = rows.length ? rows[0].data : null;
+      if (expectedUpdatedAt !== undefined) {
+        const currentTs = existing ? existing.updatedAt : null;
+        if ((currentTs || null) !== (expectedUpdatedAt || null)) {
+          await client.query("ROLLBACK");
+          return res.status(409).json({ ok: false, message: "다른 저장으로 데이터가 변경되었습니다. 새로고침 후 다시 시도해주세요.", conflict: true, worklog: existing });
+        }
+      }
+      await client.query(
+        "INSERT INTO pms_worklogs (id, employee_id, work_date, data, company_id) VALUES ($1,$2,$3,$4,$5) " +
+        "ON CONFLICT (id) DO UPDATE SET data = $4, updated_at = NOW()",
+        [id, Number(employeeId), date, record, companyId]
+      );
+      await client.query("COMMIT");
+    } catch (e) {
+      await client.query("ROLLBACK");
+      throw e;
+    } finally {
+      client.release();
+    }
     res.json({ ok: true, worklog: record });
   } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
 });
