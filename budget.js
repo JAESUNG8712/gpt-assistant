@@ -87,7 +87,13 @@ function _writeAllBudgetFile(all) {
   // 원천 차단한다(디스크가 정말 마운트되지 않은 경우엔 컨테이너 임시 파일시스템에라도
   // 디렉토리를 만들어 저장을 계속 진행 — 전체 서비스 중단보다는 나은 폴백).
   try { fs.mkdirSync(path.dirname(BUDGET_FILE), { recursive: true }); } catch (e) {}
-  fs.writeFileSync(BUDGET_FILE, JSON.stringify(all, null, 2));
+  // 원자적 쓰기(tmp파일+rename) — 쓰는 도중 프로세스가 강제종료되면 직접 덮어쓰기는
+  // 파일이 잘린 채 남아 다음 부팅 시 JSON.parse가 실패하고(_readAllBudgetFile의
+  // catch로 빈 데이터로 되돌아감) 그 시점까지의 사업계획/예산 데이터가 유실될 수 있다
+  // (server.js의 동일한 문제·수정과 같은 이유, kill -9로 재현 검증).
+  const tmp = `${BUDGET_FILE}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(all, null, 2), "utf8");
+  fs.renameSync(tmp, BUDGET_FILE);
 }
 
 function _budgetKey(companyId) {

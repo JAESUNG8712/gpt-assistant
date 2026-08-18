@@ -91,6 +91,22 @@ function requireAuth(req, res) {
 const USE_JSON_FILE = !process.env.DATABASE_URL;
 const JSON_FILE     = process.env.DATA_FILE || path.join(__dirname, "hr-data.json");
 
+// 메인 데이터(_persistDataLocked)는 이미 tmp파일+rename으로 원자적 쓰기를 하고 있었지만,
+// 스냅샷/변경이력/회계/RCPS/고정자산/ERP/PMS/채용 등 나머지 위성 JSON 파일들(JSON 파일
+// 모드 전용 — 자체호스팅/오프라인 배포에서만 쓰이고 운영 Render 배포는 Postgres를 씀)은
+// fs.writeFileSync로 대상 파일을 직접 덮어쓰고 있어, 쓰는 도중 프로세스가 강제종료(SIGKILL,
+// OOM kill 등)되면 파일이 잘리거나 손상된 채로 남을 위험이 있었다(실측: kill -9로 재현하면
+// 잘린 파일이 남고, 다음 부팅 시 JSON.parse가 던지는 예외를 로딩 코드가 try/catch로 삼켜
+// "파일을 읽을 수 없음" 경고와 함께 그 모듈 데이터가 통째로 빈 상태로 되돌아감 — 그 시점까지
+// 누적된 데이터가 조용히 유실됨). 나머지 위성 파일 쓰기도 전부 이 헬퍼(tmp에 먼저 쓰고
+// rename)로 통일해 같은 보호를 적용한다 — POSIX에서 같은 파일시스템 내 rename은 원자적이라
+// 쓰다 만 tmp 파일이 있어도 원본은 마지막으로 완전히 쓰기 끝난 버전 그대로 남는다.
+function _atomicWriteFileSync(filePath, content) {
+  const tmp = `${filePath}.tmp`;
+  fs.writeFileSync(tmp, content, "utf8");
+  fs.renameSync(tmp, filePath);
+}
+
 // In-memory store for JSON file mode (mirrors the full client state)
 let _fileStore = { employees: [], kpiEntries: [] };
 // 회계 모듈 전용 저장소 (계정과목/전표/세금계산서) — 클라이언트 신뢰형 블롭과 분리해
@@ -2524,7 +2540,7 @@ app.get("/activity", (req, res) => {
 function _saveFileSnapshots() {
   // Persist snapshots alongside the main data file
   const snapFile = JSON_FILE.replace(/\.json$/, "-snapshots.json");
-  fs.writeFileSync(snapFile, JSON.stringify(_fileSnapshots, null, 2), "utf8");
+  _atomicWriteFileSync(snapFile, JSON.stringify(_fileSnapshots, null, 2));
 }
 
 // ── Change history helpers for JSON file mode (audit trail) ──────────────────
@@ -2535,7 +2551,7 @@ function _recordFileHistory(kind, id, action, changedBy, data) {
 }
 function _saveFileHistory() {
   const histFile = JSON_FILE.replace(/\.json$/, "-history.json");
-  fs.writeFileSync(histFile, JSON.stringify(_fileHistory, null, 2), "utf8");
+  _atomicWriteFileSync(histFile, JSON.stringify(_fileHistory, null, 2));
 }
 
 // GET /snapshots — list all annual snapshots
@@ -2949,15 +2965,15 @@ app.get("/history/changes", async (req, res) => {
 
 function _saveFileAccounting() {
   const acctFile = JSON_FILE.replace(/\.json$/, "-accounting.json");
-  fs.writeFileSync(acctFile, JSON.stringify(_fileAccounting, null, 2), "utf8");
+  _atomicWriteFileSync(acctFile, JSON.stringify(_fileAccounting, null, 2));
 }
 function _saveFileAcctRcps() {
   const rcpsFile = JSON_FILE.replace(/\.json$/, "-rcps.json");
-  fs.writeFileSync(rcpsFile, JSON.stringify(_fileAcctRcps, null, 2), "utf8");
+  _atomicWriteFileSync(rcpsFile, JSON.stringify(_fileAcctRcps, null, 2));
 }
 function _saveFileAcctFixedAssets() {
   const faFile = JSON_FILE.replace(/\.json$/, "-fixedassets.json");
-  fs.writeFileSync(faFile, JSON.stringify(_fileAcctFixedAssets, null, 2), "utf8");
+  _atomicWriteFileSync(faFile, JSON.stringify(_fileAcctFixedAssets, null, 2));
 }
 function _nextAcctSeq(kind, year) {
   if (!_fileAccounting[kind]) _fileAccounting[kind] = {};
@@ -4500,15 +4516,15 @@ app.post("/api/accounting/fixed-assets/:id/depreciation-schedule/:year/post", as
 
 function _saveFileErp() {
   const erpFile = JSON_FILE.replace(/\.json$/, "-erp.json");
-  fs.writeFileSync(erpFile, JSON.stringify(_fileErp, null, 2), "utf8");
+  _atomicWriteFileSync(erpFile, JSON.stringify(_fileErp, null, 2));
 }
 function _saveFilePms() {
   const pmsFile = JSON_FILE.replace(/\.json$/, "-pms.json");
-  fs.writeFileSync(pmsFile, JSON.stringify(_filePms, null, 2), "utf8");
+  _atomicWriteFileSync(pmsFile, JSON.stringify(_filePms, null, 2));
 }
 function _saveFileRecruit() {
   const recruitFile = JSON_FILE.replace(/\.json$/, "-recruit.json");
-  fs.writeFileSync(recruitFile, JSON.stringify(_fileRecruit, null, 2), "utf8");
+  _atomicWriteFileSync(recruitFile, JSON.stringify(_fileRecruit, null, 2));
 }
 function _nextErpSeq(kind, year) {
   if (!_fileErp[kind]) _fileErp[kind] = {};
