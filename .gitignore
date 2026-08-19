@@ -24,3 +24,8 @@ __pycache__/
 # 주식 분석 런타임 캐시/리포트 (서버 실행 시 자동 생성)
 ai/stock_analysis/utils/popular_cache.json
 ai/stock_analysis/reports/
+
+# Playwright e2e 실행 산출물 (trace/screenshot/video, 실행할 때마다 생성됨)
+test-results/
+playwright-report/
+blob-report/

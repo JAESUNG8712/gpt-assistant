@@ -74,7 +74,69 @@
 | `GET/POST /api/erp/*` | 영업/재고/구매(품목/견적/발주/재고) | 필요, 대부분 admin |
 | `GET/POST /api/pms/*` | PMS(프로젝트/투입률/업무일지) | 필요 |
 | `GET/POST /api/recruit/*` | 채용(공고/지원자/면접) | 필요, 부서별 열람 제한 있음 |
+| `POST /api/hr/resume-parse` | 신규 직원 등록 이력서 AI 자동입력 | 필요, admin 전용 |
 | `POST /api/reset-all` | 전체 데이터 초기화 | loginId/pw 재검증(토큰 아님) |
+
+### 1.4 이력서 AI 자동입력 — `POST /api/hr/resume-parse`
+
+신규 직원 등록 화면에서 이력서 파일을 업로드하면 서버가 텍스트를 추출(PDF 텍스트레이어/OCR,
+DOCX, 이미지 OCR)한 뒤 AI로 파싱해 폼 필드를 채워준다. 채용 모듈의 `/api/recruit/*` 이력서
+처리(별도 스키마, dataUrl 기반)와는 완전히 분리된 엔드포인트다.
+
+```http
+POST /api/hr/resume-parse
+Authorization: Bearer <token>
+Content-Type: multipart/form-data
+
+file=<PDF|DOCX|PNG|JPG|WEBP, 최대 15MB>
+```
+
+성공 응답(`Cache-Control: no-store`):
+```json
+{
+  "ok": true,
+  "fields": {
+    "name": "", "birth": "YYYY-MM-DD 또는 빈 문자열", "gender": "남|여|빈 문자열",
+    "totalCareer": null, "edu": "고등학교 졸업|전문대 졸업|대학교 졸업|대학원 석사|대학원 박사|빈 문자열",
+    "eduSchool": "", "jobGroup": "관리직|영업직|개발직|연구직|생산직|서비스직|기타|빈 문자열",
+    "careers": [{ "co": "", "start": "YYYY-MM", "end": "YYYY-MM|현재", "pos": "", "desc": "" }],
+    "email": "", "phone": ""
+  },
+  "meta": { "fileType": "pdf|docx|image", "extraction": "text|ocr", "warnings": [] }
+}
+```
+
+오류는 항상 `{ "ok": false, "code": "...", "message": "..." }` 형식이다.
+
+| 상태 | code | 의미 |
+|---:|---|---|
+| 400 | `RESUME_FILE_REQUIRED` / `RESUME_TYPE_UNSUPPORTED` / `RESUME_FILE_INVALID` | 파일 없음 / 지원하지 않는 형식 / 실제 파일 시그니처(매직바이트)가 확장자와 불일치 |
+| 401 / 403 | 기존 인증 오류 | 비로그인 또는 admin이 아님 |
+| 413 | `RESUME_FILE_TOO_LARGE` | `RESUME_MAX_BYTES`(기본 15MB) 초과 |
+| 422 | `RESUME_TEXT_UNREADABLE` | 추출된 텍스트가 20자 미만이거나 문서를 파싱할 수 없음 |
+| 429 | `RESUME_RATE_LIMITED` | 로그인 계정 기준 15분에 10회 초과 |
+| 502 | `RESUME_AI_FAILED` | AI provider(Groq)가 비정상 응답 |
+| 503 | `RESUME_AI_UNAVAILABLE` / `RESUME_OCR_UNAVAILABLE` | `GROQ_API_KEY` 미설정 / 서버에 OCR 도구(poppler-utils, tesseract-ocr) 미설치 |
+| 504 | `RESUME_AI_TIMEOUT` | AI 응답이 `RESUME_AI_TIMEOUT_MS`(기본 30초) 안에 오지 않음 |
+
+응답에는 항상 `fields`/`meta`만 담기며, 원문 이력서 텍스트·업로드 파일·AI provider 엔드포인트·API 키는
+어떤 경로로도 절대 포함되지 않는다.
+
+### 1.5 환경변수 (`server.js`)
+
+| 변수 | 필수 여부 | 기본값 | 설명 |
+|---|---|---|---|
+| `DATABASE_URL` | 아니오 | (미설정) | 설정 시 PostgreSQL 모드(운영), 미설정 시 JSON 파일 모드(자체호스팅/오프라인). |
+| `DATA_FILE` | JSON 파일 모드만 | `hr-data.json` | 메인 데이터 파일 경로. 재배포 시 초기화되지 않으려면 영속 디스크 경로를 가리켜야 함. |
+| `BUDGET_DATA_FILE` | JSON 파일 모드만 | `budget-data.json` | 사업계획/예산/개인별급여상세 데이터 파일 경로(DATABASE_URL 설정 시 무시되고 Postgres `budget_store` 사용). |
+| `SESSION_SECRET` | 강력 권장 | 랜덤 생성 | 로그인 토큰 서명 키. 미설정 시 재시작마다 전 세션이 무효화됨. |
+| `NODE_ENV` | 아니오 | (미설정) | `production`이면 더미 데이터 저장 차단(`ALLOW_DEMO_DATA`로 해제 가능)이 활성화됨. `scripts/seed-demo.js`는 `development`/`test`에서만 실행됨. |
+| `ALLOW_DEMO_DATA` | 아니오 | `false` | `true`면 `NODE_ENV=production`에서도 demo 마커(`source:"demo"`/`empNo:"DEMO-..."`)가 붙은 레코드 저장을 허용(운영에서는 설정하지 않는 것을 권장). |
+| `ALLOW_DEMO_SEED` | `scripts/seed-demo.js` 실행 시 필수 | (미설정) | `true`가 아니면 CLI가 즉시 종료됨(운영 환경 오실행 방지 조건 중 하나). |
+| `RESUME_MAX_BYTES` | 아니오 | `15728640`(15MB) | 이력서 파일 업로드 크기 상한. |
+| `RESUME_MAX_TEXT_CHARS` | 아니오 | `12000` | AI에 보내는 추출 텍스트 길이 상한. |
+| `RESUME_AI_TIMEOUT_MS` | 아니오 | `30000` | 이력서 AI 파싱 타임아웃(밀리초). |
+| `GROQ_API_KEY` | 이력서/채용 AI 파싱 기능에 필요 | (미설정) | 없으면 이력서 자동입력은 503(`RESUME_AI_UNAVAILABLE`), 채용 모듈 AI 파싱은 기능 자체가 비활성화됨(무료 발급: https://console.groq.com). |
 
 ---
 

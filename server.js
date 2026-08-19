@@ -6825,6 +6825,13 @@ const HR_RESUME_FIELDS_SCHEMA_PROMPT = `너는 한국어 이력서 텍스트에�
   "email": "이메일",
   "phone": "전화번호"
 }`;
+// 테스트 전용 오버라이드 — 실제 Groq 엔드포인트를 하드코딩하지 않고 이 상수 하나만
+// 거치게 해, 자동화 테스트가 502(provider 실패)/504(timeout) 응답 매핑을 실제
+// Groq API 키 없이도 로컬 mock 서버로 검증할 수 있게 한다(test/api/file-mode.test.js
+// 참고). 프로덕션에서는 이 환경변수를 설정하지 않으므로 항상 실제 Groq 엔드포인트를
+// 그대로 쓴다 — 채용 모듈(_groqParseResume 등)의 기존 Groq 호출은 이 오버라이드와
+// 무관하게 손대지 않았다(기존 계약 유지).
+const HR_RESUME_GROQ_URL = process.env.HR_RESUME_GROQ_URL_OVERRIDE || "https://api.groq.com/openai/v1/chat/completions";
 // 채용 모듈의 _groqParseResume()과 스키마·용도가 다르므로(신규 직원 등록 폼 필드
 // vs 채용 지원자 카드 필드) 별도 함수로 둔다 — provider 실패(502)/timeout(504)/
 // 키 미설정(503)을 호출부가 구분할 수 있도록 e.code에 원인을 실어 던진다.
@@ -6835,7 +6842,7 @@ async function _hrResumeGroqParse(text) {
   const timer = setTimeout(() => controller.abort(), RESUME_AI_TIMEOUT_MS);
   let resp;
   try {
-    resp = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+    resp = await fetch(HR_RESUME_GROQ_URL, {
       method: "POST",
       signal: controller.signal,
       headers: { "Content-Type": "application/json", Authorization: "Bearer " + apiKey },

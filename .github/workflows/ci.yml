@@ -1,0 +1,64 @@
+name: CI (HR/ERP Node 서비스)
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    # test/api/postgres-mode.test.js가 TEST_DATABASE_URL을 보고 이 서비스 컨테이너
+    # 안에 매 실행마다 새 임시 DB를 만들고 지운다 — 운영 DB와는 완전히 무관하다.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      NODE_ENV: test
+      TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
+    steps:
+      - name: 코드 체크아웃
+        uses: actions/checkout@v4
+
+      - name: Node.js 설정
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: 의존성 설치
+        run: npm ci
+
+      - name: Playwright Chromium 설치
+        run: npx playwright install --with-deps chromium
+
+      - name: 문법 검사(server.js + public/index.html 인라인 스크립트)
+        run: npm run check
+
+      - name: API 테스트 — JSON 파일 모드
+        run: npm test
+
+      - name: API 테스트 — PostgreSQL 모드
+        run: npm run test:postgres
+
+      - name: e2e 테스트(Playwright, Chromium)
+        run: npm run test:e2e
+
+      - name: 실패 시 Playwright 리포트 업로드(trace/screenshot/video)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: playwright-report/
+          retention-days: 7

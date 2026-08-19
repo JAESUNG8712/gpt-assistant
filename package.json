@@ -6,7 +6,13 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
-    "start:offline": "node server.js"
+    "start:offline": "node server.js",
+    "check": "node --check server.js && node scripts/check-client-syntax.js",
+    "test": "node --test --test-concurrency=1 test/api/file-mode.test.js",
+    "test:postgres": "node --test --test-concurrency=1 test/api/postgres-mode.test.js",
+    "test:e2e": "playwright test",
+    "test:ci": "npm run check && npm test && npm run test:e2e",
+    "seed:demo": "node scripts/seed-demo.js"
   },
   "dependencies": {
     "bcryptjs": "^3.0.3",
@@ -27,6 +33,7 @@
   },
   "license": "MIT",
   "devDependencies": {
+    "@playwright/test": "^1.60.0",
     "playwright": "^1.60.0"
   }
 }
