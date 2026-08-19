@@ -4354,15 +4354,40 @@ function _resetSettingStages(){
   // 설정 화면 저장 전 임시 편집본들을 폐기 (페이지 이동·서버 상태 반영 시 stale 편집본 방지)
   try{_opsStage=null;_settingsMainStage=null;_chainStage=null;_gradeStage=null;_calOptStage=null;}catch(e){}
 }
+// applyState()가 SSE(data_updated)·loadFromServer()·저장충돌 병합 등 여러 경로에서 배열
+// 필드를 통째로 교체해왔다 — 이게 동시성 관점에서 조용한 데이터 유실로 이어지는 구체적
+// 경로를 KPI 동시 승인 테스트로 실측 확인했다: 팀장 B가 "1차 승인"을 클릭하면 로컬
+// kpiEntries만 바뀌고 실제 서버 저장은 2초 디바운스 뒤에야 나가는데, 그 2초 사이에 다른
+// 팀장 A의 저장이 먼저 끝나 SSE data_updated가 도착하면 이 함수가 kpiEntries를 서버의
+// (아직 B의 승인이 반영되지 않은) 스냅샷으로 통째로 덮어써 B의 로컬 승인 자체가 사라지고,
+// 이어서 B의 디바운스 저장이 실행돼도 이미 지워진 상태를 그대로 서버에 재전송해버린다
+// (로컬 격리 Postgres 환경에서 10명 동시 승인 시 실측 3~4명만 반영되는 것으로 재현 확인).
+// id별로 로컬 쪽 updatedAt이 더 최신이면(=아직 서버에 반영 안 된 내 변경사항) 로컬을
+// 지키고, 그 외에는 들어오는 서버 스냅샷을 그대로 반영해 다른 사람의 변경도 정상적으로
+// 동기화되게 한다.
+function _mergeByIdPreferNewer(local,incoming){
+  if(!Array.isArray(incoming))return local;
+  if(!Array.isArray(local)||!local.length)return incoming;
+  const localById={};
+  for(const r of local)if(r&&r.id!=null)localById[r.id]=r;
+  return incoming.map(r=>{
+    if(!r||r.id==null)return r;
+    const loc=localById[r.id];
+    if(!loc)return r;
+    const locTs=loc.updatedAt||loc.createdAt||"";
+    const inTs=r.updatedAt||r.createdAt||"";
+    return locTs>inTs?loc:r;
+  });
+}
 function applyState(state,skipUndo=false){
   if(!skipUndo)_lastRestoreUndo=getFullState();
   _resetSettingStages();
   const d=state.data||state;
-  if(d.employees&&Array.isArray(d.employees)){employees=d.employees;_ensureEmpDefaults(employees);}
-  if(d.kpiEntries&&Array.isArray(d.kpiEntries))kpiEntries=d.kpiEntries;
+  if(d.employees&&Array.isArray(d.employees)){employees=_mergeByIdPreferNewer(employees,d.employees);_ensureEmpDefaults(employees);}
+  if(d.kpiEntries&&Array.isArray(d.kpiEntries))kpiEntries=_mergeByIdPreferNewer(kpiEntries,d.kpiEntries);
   if(d.compSessions&&Array.isArray(d.compSessions))compSessions=d.compSessions;
-  if(d.compResponses&&Array.isArray(d.compResponses))compResponses=d.compResponses;
-  if(d.changeRequests&&Array.isArray(d.changeRequests))changeRequests=d.changeRequests;
+  if(d.compResponses&&Array.isArray(d.compResponses))compResponses=_mergeByIdPreferNewer(compResponses,d.compResponses);
+  if(d.changeRequests&&Array.isArray(d.changeRequests))changeRequests=_mergeByIdPreferNewer(changeRequests,d.changeRequests);
   if(d.settings&&typeof d.settings==="object")settings={...settings,...d.settings};
   if(d.settings?.scoreWeights)settings.scoreWeights={...settings.scoreWeights,...d.settings.scoreWeights};
   if(Array.isArray(settings.boardCategories)){
@@ -4379,21 +4404,21 @@ function applyState(state,skipUndo=false){
   if(d.orgChartHistory&&Array.isArray(d.orgChartHistory))orgChartHistory=d.orgChartHistory;
   if(d.gradeSettings&&typeof d.gradeSettings==="object")gradeSettings={...gradeSettings,...d.gradeSettings};
   if(d.promotionSettings&&typeof d.promotionSettings==="object")promotionSettings={...promotionSettings,...d.promotionSettings};
-  if(d.coreTalentPool&&Array.isArray(d.coreTalentPool))coreTalentPool=d.coreTalentPool;
-  if(d.talentDevPlans&&Array.isArray(d.talentDevPlans))talentDevPlans=d.talentDevPlans;
+  if(d.coreTalentPool&&Array.isArray(d.coreTalentPool))coreTalentPool=_mergeByIdPreferNewer(coreTalentPool,d.coreTalentPool);
+  if(d.talentDevPlans&&Array.isArray(d.talentDevPlans))talentDevPlans=_mergeByIdPreferNewer(talentDevPlans,d.talentDevPlans);
   if(d.coreTalentSettings&&typeof d.coreTalentSettings==="object")coreTalentSettings={...coreTalentSettings,...d.coreTalentSettings};
   if(d.compGradeResults&&typeof d.compGradeResults==="object")compGradeResults={...compGradeResults,...d.compGradeResults};
   if(d.gradeAdjustHistory&&Array.isArray(d.gradeAdjustHistory))gradeAdjustHistory=d.gradeAdjustHistory;
   if(d.evaluatorConfig&&typeof d.evaluatorConfig==="object")evaluatorConfig={...evaluatorConfig,...d.evaluatorConfig};
-  if(d.tieNotifications&&Array.isArray(d.tieNotifications))tieNotifications=d.tieNotifications;
-  if(d.lowPerfData&&Array.isArray(d.lowPerfData))lowPerfData=d.lowPerfData;
+  if(d.tieNotifications&&Array.isArray(d.tieNotifications))tieNotifications=_mergeByIdPreferNewer(tieNotifications,d.tieNotifications);
+  if(d.lowPerfData&&Array.isArray(d.lowPerfData))lowPerfData=_mergeByIdPreferNewer(lowPerfData,d.lowPerfData);
   if(d.approvalTemplates&&Array.isArray(d.approvalTemplates))approvalTemplates=d.approvalTemplates;
   if(d.disabledTplIds&&Array.isArray(d.disabledTplIds))disabledTplIds=d.disabledTplIds;
   if(d.approvalChainSettings&&typeof d.approvalChainSettings==="object")approvalChainSettings={...approvalChainSettings,...d.approvalChainSettings};
   if(d.integrationSettings&&typeof d.integrationSettings==="object")integrationSettings={...integrationSettings,...d.integrationSettings,calendar:{...integrationSettings.calendar,...(d.integrationSettings.calendar||{})}};
   if(d.integrationLogs&&Array.isArray(d.integrationLogs))integrationLogs=d.integrationLogs;
   if(d.approvalDocs&&Array.isArray(d.approvalDocs))approvalDocs=d.approvalDocs;
-  if(d.attendanceRecords&&Array.isArray(d.attendanceRecords))attendanceRecords=d.attendanceRecords;
+  if(d.attendanceRecords&&Array.isArray(d.attendanceRecords))attendanceRecords=_mergeByIdPreferNewer(attendanceRecords,d.attendanceRecords);
   if(d.payslips&&Array.isArray(d.payslips))payslips=d.payslips;
   if(d.payrollAdjustments&&Array.isArray(d.payrollAdjustments))payrollAdjustments=d.payrollAdjustments;
   if(d.leaveUsagePlans&&Array.isArray(d.leaveUsagePlans))leaveUsagePlans=d.leaveUsagePlans;
@@ -4417,7 +4442,7 @@ function applyState(state,skipUndo=false){
   if(d.approvalDelegations&&Array.isArray(d.approvalDelegations))approvalDelegations=d.approvalDelegations;
   if(d.mandatoryTraining&&Array.isArray(d.mandatoryTraining))mandatoryTraining=d.mandatoryTraining;
   if(d.healthCheckupLog&&Array.isArray(d.healthCheckupLog))healthCheckupLog=d.healthCheckupLog;
-  if(d.scheduleEvents&&Array.isArray(d.scheduleEvents))scheduleEvents=d.scheduleEvents;
+  if(d.scheduleEvents&&Array.isArray(d.scheduleEvents))scheduleEvents=_mergeByIdPreferNewer(scheduleEvents,d.scheduleEvents);
   if(d._idCounter&&typeof d._idCounter==="number")_id=d._idCounter;
   if(d.recordTombstones&&typeof d.recordTombstones==="object"){
     const cutoff=Date.now()-30*24*60*60*1000;
