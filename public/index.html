@@ -5782,7 +5782,7 @@ async function _confirmMyPagePw(){
   const btn=document.querySelector(".modal-ov .btn-primary");
   if(btn)btn.disabled=true;
   try{
-    const res=await fetch("/login",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({loginId:currentUser.loginId,pw:val})});
+    const res=await fetch("/login",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({companyCode:_cachedCompanyCode||"",loginId:currentUser.loginId,pw:val})});
     const data=await res.json();
     if(data.ok){_myPagePwVerified=true;closeModal();if(window._myPagePwCb){window._myPagePwCb();window._myPagePwCb=null;}}
     else{showToast("비밀번호가 올바르지 않습니다.","error");document.getElementById("my-pw-gate").value="";}
@@ -12488,7 +12488,7 @@ function doChangePW(){
   }
   // pw was stripped from this client (real server-backed account) — verify via server.
   if(!serverConfig.url){showToast("현재 비밀번호가 올바르지 않습니다.","error");return;}
-  serverRequest("POST","/login",{loginId:currentUser.loginId,pw:cur}).then(r=>{
+  serverRequest("POST","/login",{companyCode:_cachedCompanyCode||"",loginId:currentUser.loginId,pw:cur}).then(r=>{
     if(r && r.ok){ if(r.token) _setAuthToken(r.token); _applyChangedPW(nw); }
     else{showToast("현재 비밀번호가 올바르지 않습니다.","error");}
   }).catch(()=>{showToast("현재 비밀번호 확인에 실패했습니다.","error");});
