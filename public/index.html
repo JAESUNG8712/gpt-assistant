@@ -1647,6 +1647,31 @@ async function serverRequest(method, endpoint, body=null, timeout=8000){
     throw e;
   }
 }
+// multipart/form-data 전송 전용 — serverRequest()와 달리 Content-Type을 절대 지정하지
+// 않는다(지정하면 브라우저가 자동으로 넣는 multipart boundary가 깨진다). 실패한 fetch
+// 자체(네트워크 끊김·timeout)는 예외를 그대로 던지므로 호출부가 try/catch로 감싸야 한다
+// (OCR+AI 파싱은 수십 초 걸릴 수 있어 기본 timeout을 serverRequest보다 넉넉히 잡는다).
+async function serverFormRequest(endpoint, formData, timeout=45000){
+  const base = serverConfig.url.replace(/\/+$/, "");
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeout);
+  try {
+    const response = await fetch(base + endpoint, {
+      method: "POST",
+      signal: controller.signal,
+      headers: {
+        "X-Client-ID": encodeURIComponent(currentUser?.name || "unknown"),
+        ...(_authToken ? { Authorization: `Bearer ${_authToken}` } : {})
+      },
+      body: formData
+    });
+    if (response.status === 401) _setAuthToken(null);
+    try { return await response.json(); }
+    catch { return { ok: false, code: "RESUME_SERVER_RESPONSE_INVALID", message: "서버 응답을 처리할 수 없습니다." }; }
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 async function checkServerConnection(){
   if(!serverConfig.url) return false;
@@ -6874,7 +6899,7 @@ function renderHRRegister(){
   c.innerHTML=`<div class="card"><div class="card-head"><h3>📎 AI 이력서 자동 파싱</h3></div><div class="card-body">
     <div class="flex items-c gap3 wrap">
       <label class="file-upload-btn" for="resume-file">📎 이력서 업로드 (PDF/Word/이미지)</label>
-      <input type="file" id="resume-file" accept=".pdf,.docx,image/*" onchange="handleResumeFile(this)">
+      <input type="file" id="resume-file" accept=".pdf,.docx,.png,.jpg,.jpeg,.webp" onchange="handleResumeFile(this)">
       <span class="fz11 text-gray">이력서 업로드 시 정보가 자동 입력됩니다</span>
       <span id="parse-loading" style="display:none;color:#2563eb;font-size:12px">⏳ 분석 중...</span>
     </div>
@@ -7075,86 +7100,67 @@ async function submitHRForm(){
   autoSaveToServerIfEnabled();
   showToast(`${newEmp.name} 님이 등록되었습니다.`,"success");hrCareers=[];hrCustom={};renderHRRegister();
 }
-async function extractDocxText(arrayBuffer){
-  const data=new Uint8Array(arrayBuffer);
-  const dv=new DataView(arrayBuffer);
-  let eocdOffset=-1;
-  for(let i=data.length-22;i>=Math.max(0,data.length-22-65535);i--){
-    if(dv.getUint32(i,true)===0x06054b50){eocdOffset=i;break;}
+// 신규 직원 등록의 이력서 자동입력. 예전엔 브라우저가 직접 api.anthropic.com을
+// 인증 헤더 없이 호출하고 있어(브라우저에는 API 키를 둘 방법이 없음) 이 기능
+// 자체가 애초부터 동작한 적이 없었다 — 서버의 /api/hr/resume-parse(인증된
+// admin 전용, 파일은 서버에서만 처리)로 완전히 대체한다.
+const HR_RESUME_MAX_BYTES=15*1024*1024;
+const HR_RESUME_ACCEPT=/\.(pdf|docx|png|jpe?g|webp)$/i;
+// innerHTML이 아니라 textContent로 조립한다 — 오류 메시지는 서버가 만든 고정
+// 문자열이라 사실상 안전하지만, 향후 문구가 바뀌어도 이 경로만큼은 구조적으로
+// 마크업 삽입(XSS) 여지가 없도록 한다.
+function _showResumeParseNote(kind,message){
+  const result=$("#parse-result");if(!result)return;
+  result.innerHTML="";
+  const div=document.createElement("div");
+  div.className=kind==="error"?"alert alert-error mt2":"alert alert-success mt2";
+  div.textContent=(kind==="error"?"⚠ ":"✅ ")+message;
+  result.appendChild(div);
+}
+function showResumeParseError(message){_showResumeParseNote("error",message);}
+function showResumeParseSuccess(message){_showResumeParseNote("success",message);}
+// 이미 사용자가 직접 입력한 값은 자동입력으로 덮어쓰지 않는다(빈 칸만 채움).
+function applyHrResumeFields(fields){
+  const setIfBlank=(selector,value)=>{
+    const el=$(selector);
+    if(el&&!el.value.trim()&&value!==""&&value!=null)el.value=value;
+  };
+  setIfBlank("#hr-name",fields.name);
+  setIfBlank("#hr-birth",fields.birth);
+  setIfBlank("#hr-gender",fields.gender);
+  setIfBlank("#hr-career",Number.isFinite(Number(fields.totalCareer))?String(fields.totalCareer):"");
+  setIfBlank("#hr-edu",fields.edu);
+  setIfBlank("#hr-eduschool",fields.eduSchool);
+  setIfBlank("#hr-jobgroup",fields.jobGroup);
+  setIfBlank("#hr-email",fields.email);
+  setIfBlank("#hr-phone",fields.phone);
+  if(!hrCareers?.length&&Array.isArray(fields.careers)&&fields.careers.length){
+    hrCareers=fields.careers.map(({co,start,end,pos,desc})=>({co,start,end,pos,desc}));
+    renderCareers();
   }
-  if(eocdOffset<0)throw new Error("올바른 DOCX 파일이 아닙니다.");
-  const cdEntries=dv.getUint16(eocdOffset+10,true);
-  const cdOffset=dv.getUint32(eocdOffset+16,true);
-  let offset=cdOffset,target=null;
-  for(let i=0;i<cdEntries;i++){
-    if(dv.getUint32(offset,true)!==0x02014b50)break;
-    const compMethod=dv.getUint16(offset+10,true);
-    const compSize=dv.getUint32(offset+20,true);
-    const nameLen=dv.getUint16(offset+28,true);
-    const extraLen=dv.getUint16(offset+30,true);
-    const commentLen=dv.getUint16(offset+32,true);
-    const localHeaderOffset=dv.getUint32(offset+42,true);
-    const name=new TextDecoder().decode(data.subarray(offset+46,offset+46+nameLen));
-    if(name==="word/document.xml")target={compMethod,compSize,localHeaderOffset};
-    offset+=46+nameLen+extraLen+commentLen;
-  }
-  if(!target)throw new Error("DOCX 파일에서 본문을 찾을 수 없습니다.");
-  const lh=target.localHeaderOffset;
-  if(dv.getUint32(lh,true)!==0x04034b50)throw new Error("DOCX 파일 형식 오류입니다.");
-  const lhNameLen=dv.getUint16(lh+26,true);
-  const lhExtraLen=dv.getUint16(lh+28,true);
-  const dataStart=lh+30+lhNameLen+lhExtraLen;
-  const compData=data.subarray(dataStart,dataStart+target.compSize);
-  let xmlBytes;
-  if(target.compMethod===0)xmlBytes=compData;
-  else if(target.compMethod===8){
-    const stream=new Blob([compData]).stream().pipeThrough(new DecompressionStream("deflate-raw"));
-    xmlBytes=new Uint8Array(await new Response(stream).arrayBuffer());
-  }else throw new Error("지원하지 않는 DOCX 압축 방식입니다.");
-  const xml=new TextDecoder("utf-8").decode(xmlBytes);
-  const text=[...xml.matchAll(/<w:t[^>]*>([^<]*)<\/w:t>/g)].map(m=>m[1]).join("");
-  if(!text.trim())throw new Error("문서에서 텍스트를 추출할 수 없습니다.");
-  return text;
+  if(fields.totalCareer!=null||fields.edu)applyAutoRank();
 }
 async function handleResumeFile(input){
-  const file=input.files[0];if(!file)return;
+  const file=input.files?.[0];
+  if(!file)return;
   const loading=$("#parse-loading"),result=$("#parse-result");
-  if(loading)loading.style.display="inline";if(result)result.innerHTML="";
+  if(result)result.innerHTML="";
+  if(file.size>HR_RESUME_MAX_BYTES)return showResumeParseError("파일은 15MB 이하만 업로드할 수 있습니다.");
+  if(!HR_RESUME_ACCEPT.test(file.name))return showResumeParseError("PDF, DOCX, PNG, JPG, WEBP 파일만 지원합니다.");
+  if(loading)loading.style.display="inline";
   try{
-    const isDocx=file.name.toLowerCase().endsWith(".docx")||file.type==="application/vnd.openxmlformats-officedocument.wordprocessingml.document";
-    if(file.name.toLowerCase().endsWith(".doc")&&!isDocx)throw new Error("구버전 워드(.doc) 형식은 지원하지 않습니다. .docx 또는 PDF로 변환 후 업로드해주세요.");
-    const content=[];
-    if(isDocx){
-      const text=await extractDocxText(await file.arrayBuffer());
-      content.push({type:"text",text:`이력서 내용:\n${text}`});
-    }else{
-      const b64=await new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(r.result.split(",")[1]);r.onerror=rej;r.readAsDataURL(file);});
-      if(file.type==="application/pdf")content.push({type:"document",source:{type:"base64",media_type:"application/pdf",data:b64}});
-      else if(file.type.startsWith("image/"))content.push({type:"image",source:{type:"base64",media_type:file.type,data:b64}});
-      else throw new Error("PDF, Word(.docx) 또는 이미지만 지원합니다.");
-    }
-    content.push({type:"text",text:`이력서에서 다음 정보를 JSON만 반환하세요 (마크다운 없이):
-{"name":"이름","birth":"YYYY-MM-DD","gender":"남 또는 여","totalCareer":총경력년수(소수 가능),"edu":"교육수준(고등학교 졸업/전문대 졸업/대학교 졸업/대학원 석사/대학원 박사 중 하나)","eduSchool":"학교명 (졸업년도)","jobGroup":"직군(관리직/영업직/개발직/연구직/생산직/서비스직/기타 중 하나)","careers":[{"co":"회사","start":"YYYY-MM","end":"YYYY-MM 또는 현재","pos":"직위"}],"email":"이메일","phone":"연락처"}`});
-    const resp=await fetch("https://api.anthropic.com/v1/messages",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({model:"claude-sonnet-4-20250514",max_tokens:1000,messages:[{role:"user",content}]})});
-    if(!resp.ok)throw new Error(`API 오류 ${resp.status} - API Key 설정 확인 필요`);
-    const data=await resp.json();
-    const txt=(data.content||[]).map(c=>c.text||"").join("").replace(/```json|```/g,"").trim();
-    const p=JSON.parse(txt);
-    if(p.name&&$("#hr-name"))$("#hr-name").value=p.name;
-    if(p.birth&&$("#hr-birth"))$("#hr-birth").value=p.birth;
-    if(p.gender&&$("#hr-gender"))$("#hr-gender").value=p.gender;
-    if(p.totalCareer){if($("#hr-career"))$("#hr-career").value=p.totalCareer;}
-    if(p.edu&&$("#hr-edu"))$("#hr-edu").value=p.edu;
-    if(p.eduSchool&&$("#hr-eduschool"))$("#hr-eduschool").value=p.eduSchool;
-    if(p.jobGroup&&$("#hr-jobgroup"))$("#hr-jobgroup").value=p.jobGroup;
-    if(p.email&&$("#hr-email"))$("#hr-email").value=p.email;
-    if(p.phone&&$("#hr-phone"))$("#hr-phone").value=p.phone;
-    if(p.careers&&p.careers.length){hrCareers=p.careers;renderCareers();}
-    // Auto-calc rank after parse
-    if(p.totalCareer||p.edu)applyAutoRank();
-    if(result)result.innerHTML=`<div class="alert alert-success mt2">✅ 이력서 파싱 완료! 직급이 자동 산정되었습니다. 내용을 확인 후 수정하세요.</div>`;
-  }catch(err){if(result)result.innerHTML=`<div class="alert alert-error mt2">⚠ 파싱 실패: ${h(err.message)}</div>`;}
-  finally{if(loading)loading.style.display="none";input.value="";}
+    const form=new FormData();
+    form.append("file",file,file.name);
+    const response=await serverFormRequest("/api/hr/resume-parse",form);
+    if(!response?.ok)throw new Error(response?.message||"이력서 분석에 실패했습니다.");
+    applyHrResumeFields(response.fields||{});
+    showResumeParseSuccess("이력서 내용을 분석했습니다. 자동 입력된 값을 확인·수정한 뒤 저장하세요.");
+  }catch(err){
+    showResumeParseError(err.message||"이력서 분석에 실패했습니다. 직접 입력할 수 있습니다.");
+  }finally{
+    if(loading)loading.style.display="none";
+    input.value="";
+  }
 }
 
 // ==================== HR LIST ====================

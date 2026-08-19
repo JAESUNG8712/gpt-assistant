@@ -8,6 +8,7 @@ const os      = require("os");
 const bcrypt  = require("bcryptjs");
 const crypto  = require("crypto");
 const pool    = require("./db");
+const multer  = require("multer");
 const budgetRouterFactory = require("./budget");
 
 // Express 4는 async 라우트 핸들러 내부의 동기 throw/reject를 자동으로 잡아주지 않는다
@@ -6724,6 +6725,241 @@ app.post("/api/recruit/parse-resume-llm", async (req, res) => {
     res.json({ ok: true, fields });
   } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
 });
+
+// ── HR 신규 직원 등록: AI 이력서 자동입력(P1) ───────────────────────────────────
+// 기존에는 public/index.html의 handleResumeFile()이 브라우저에서 직접
+// https://api.anthropic.com/v1/messages를 인증 헤더 없이 호출하고 있어(브라우저에는
+// API 키를 둘 방법이 없으므로 이 호출은 항상 인증 실패로 끝난다 — 신규 직원 등록의
+// 이력서 자동입력 기능 자체가 애초부터 동작한 적이 없었다) 이 단일 multipart
+// 엔드포인트로 대체한다. 위 채용(recruit) 모듈이 이미 갖춘 서버측 텍스트 추출
+// (PDF 텍스트레이어+OCR/DOCX/이미지 OCR) 저수준 버퍼 헬퍼(_ocrPdfBuffer/
+// _ocrPdfPages/_ocrImageBuffer, 위에서 정의됨)를 그대로 재사용하되, dataUrl(JSON
+// body) 기반 기존 /api/recruit/extract-*-text·parse-resume-llm 라우트는 채용 흐름의
+// 기존 계약을 그대로 유지하기 위해 전혀 건드리지 않는다(요구사항: "기존 채용 이력서
+// 흐름은 깨지지 않게 유지").
+const RESUME_MAX_BYTES = Number(process.env.RESUME_MAX_BYTES) || 15 * 1024 * 1024;
+const RESUME_MAX_TEXT_CHARS = Number(process.env.RESUME_MAX_TEXT_CHARS) || 12000;
+const RESUME_AI_TIMEOUT_MS = Number(process.env.RESUME_AI_TIMEOUT_MS) || 30000;
+const hrResumeUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: RESUME_MAX_BYTES, files: 1, fields: 0 } });
+
+// 사용자별 호출 한도(과다 AI 호출로 인한 비용/부하 남용 방지) — /login과 달리 IP가
+// 아니라 로그인 계정 기준으로 센다(사무실 공인IP 뒤에서 여러 관리자가 동시에 써도
+// 서로의 한도를 갉아먹지 않도록, 이 프로젝트의 기존 loginLimiter 설계 이유와 동일).
+// 비로그인 요청(토큰이 없거나 무효)만 IP로 폴백하는데, express-rate-limit은 커스텀
+// keyGenerator가 req.ip를 직접 문자열로 쓰면(IPv6 정규화 없이) 같은 /64 대역 안에서
+// 주소를 바꿔가며 한도를 우회할 수 있다고 정적 소스 검사로 경고한다(ERR_ERL_KEY_GEN_IPV6,
+// 실측: 실제로 요청은 막지 않고 매 기동 시 콘솔에 경고만 남기지만, 지적 자체는 타당하므로
+// 라이브러리가 제공하는 rateLimit.ipKeyGenerator()로 정규화한다.
+const resumeParseLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => (req.auth && req.auth.empId != null) ? `emp:${req.auth.empId}` : rateLimit.ipKeyGenerator(req.ip),
+  handler: (req, res) => res.status(429).json({ ok: false, code: "RESUME_RATE_LIMITED", message: "이력서 분석 요청이 너무 많습니다. 잠시 후 다시 시도하세요." }),
+});
+
+// 확장자만이 아니라 실제 파일 시그니처(매직바이트)로 형식을 판정한다 — 확장자를
+// 위장한 파일(예: 실행파일을 .pdf로 이름만 바꾼 경우)을 그대로 통과시키지 않기 위함.
+function _sniffResumeFileType(buffer, filename) {
+  const ext = (filename || "").toLowerCase().match(/\.([a-z0-9]+)$/)?.[1] || "";
+  if (buffer.length >= 5 && buffer.subarray(0, 5).toString("latin1") === "%PDF-") return { kind: "pdf", ok: ext === "pdf" };
+  if (buffer.length >= 8 && buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4e && buffer[3] === 0x47 && buffer[4] === 0x0d && buffer[5] === 0x0a && buffer[6] === 0x1a && buffer[7] === 0x0a) return { kind: "image", mime: "png", ok: ext === "png" };
+  if (buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) return { kind: "image", mime: "jpeg", ok: ext === "jpg" || ext === "jpeg" };
+  if (buffer.length >= 12 && buffer.subarray(0, 4).toString("latin1") === "RIFF" && buffer.subarray(8, 12).toString("latin1") === "WEBP") return { kind: "image", mime: "webp", ok: ext === "webp" };
+  // DOCX(OOXML)는 ZIP 컨테이너 — 로컬 파일 헤더(PK\x03\x04) 또는 빈 아카이브(PK\x05\x06)
+  // 시그니처로 판별한다(내부 word/document.xml 존재 여부까지는 확인하지 않음 — 실제
+  // Word 문서가 아닌 zip을 올리면 뒤이은 mammoth 파싱 단계에서 RESUME_TEXT_UNREADABLE로
+  // 자연스럽게 걸러진다).
+  if (buffer.length >= 4 && buffer[0] === 0x50 && buffer[1] === 0x4b && (buffer[2] === 0x03 || buffer[2] === 0x05) && (buffer[3] === 0x04 || buffer[3] === 0x06)) return { kind: "docx", ok: ext === "docx" };
+  return { kind: null, ok: false };
+}
+
+const HR_RESUME_FIELDS_SCHEMA_PROMPT = `너는 한국어 이력서 텍스트에서 정보를 추출하는 도우미다. 아래 텍스트(문서 추출/OCR 결과라 줄바꿈이 깨지거나 표가 뒤섞여 있을 수 있음)를 읽고, 다음 JSON 스키마로만 응답해라. 마크다운이나 설명 없이 JSON 객체 하나만 출력해라. 모르거나 이력서에 없는 값은 빈 문자열(배열은 빈 배열, 숫자는 null)로 둔다.
+{
+  "name": "이름",
+  "birth": "생년월일 YYYY-MM-DD 형식, 모르면 빈 문자열",
+  "gender": "남 또는 여, 모르면 빈 문자열",
+  "totalCareer": 총 경력년수(소수 가능한 숫자, 모르면 null),
+  "edu": "최종학력 — 반드시 다음 중 하나: 고등학교 졸업/전문대 졸업/대학교 졸업/대학원 석사/대학원 박사. 모르면 빈 문자열",
+  "eduSchool": "최종학력 학교명 (졸업년도가 있으면 괄호로 병기)",
+  "jobGroup": "직군 — 반드시 다음 중 하나: 관리직/영업직/개발직/연구직/생산직/서비스직/기타. 모르면 빈 문자열",
+  "careers": [{"co":"회사명","start":"YYYY-MM","end":"YYYY-MM 또는 현재","pos":"직위","desc":"주요업무 한줄요약"}],
+  "email": "이메일",
+  "phone": "전화번호"
+}`;
+// 채용 모듈의 _groqParseResume()과 스키마·용도가 다르므로(신규 직원 등록 폼 필드
+// vs 채용 지원자 카드 필드) 별도 함수로 둔다 — provider 실패(502)/timeout(504)/
+// 키 미설정(503)을 호출부가 구분할 수 있도록 e.code에 원인을 실어 던진다.
+async function _hrResumeGroqParse(text) {
+  const apiKey = process.env.GROQ_API_KEY;
+  if (!apiKey) { const e = new Error("GROQ_API_KEY 미설정"); e.code = "NOT_CONFIGURED"; throw e; }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), RESUME_AI_TIMEOUT_MS);
+  let resp;
+  try {
+    resp = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      method: "POST",
+      signal: controller.signal,
+      headers: { "Content-Type": "application/json", Authorization: "Bearer " + apiKey },
+      body: JSON.stringify({
+        model: "llama-3.3-70b-versatile",
+        temperature: 0,
+        response_format: { type: "json_object" },
+        messages: [
+          { role: "system", content: HR_RESUME_FIELDS_SCHEMA_PROMPT },
+          { role: "user", content: text.slice(0, RESUME_MAX_TEXT_CHARS) },
+        ],
+      }),
+    });
+  } catch (e) {
+    if (e.name === "AbortError") { const te = new Error("AI 응답 시간 초과"); te.code = "TIMEOUT"; throw te; }
+    const fe = new Error("AI 호출 실패: " + e.message); fe.code = "PROVIDER_FAILED"; throw fe;
+  } finally {
+    clearTimeout(timer);
+  }
+  if (!resp.ok) { const e = new Error("Groq API 오류 " + resp.status); e.code = "PROVIDER_FAILED"; throw e; }
+  const data = await resp.json();
+  const content = data?.choices?.[0]?.message?.content || "{}";
+  try { return JSON.parse(content); }
+  catch (e) { const pe = new Error("AI 응답 파싱 실패"); pe.code = "PROVIDER_FAILED"; throw pe; }
+}
+
+// AI가 스키마를 어겨도(예: edu에 목록에 없는 값, birth에 자유형식 날짜) 그 값을 폼에
+// 그대로 흘려보내면 <select>는 일치하는 옵션이 없어 조용히 빈 값/첫 옵션이 되고,
+// <input type="date">는 잘못된 형식이면 빈 값이 된다 — 여기서 미리 화이트리스트/형식
+// 검증을 거쳐, 스키마를 벗어난 값은 서버 단계에서 빈 문자열로 정규화한다.
+const HR_EDU_VALUES = new Set(["고등학교 졸업", "전문대 졸업", "대학교 졸업", "대학원 석사", "대학원 박사"]);
+const HR_JOBGROUP_VALUES = new Set(["관리직", "영업직", "개발직", "연구직", "생산직", "서비스직", "기타"]);
+function _sanitizeHrResumeFields(raw) {
+  const f = raw && typeof raw === "object" ? raw : {};
+  const str = (v) => (typeof v === "string" ? v.trim() : "");
+  const birth = str(f.birth);
+  const gender = str(f.gender);
+  const edu = str(f.edu);
+  const jobGroup = str(f.jobGroup);
+  const totalCareer = Number(f.totalCareer);
+  const careers = Array.isArray(f.careers) ? f.careers.slice(0, 30).map(c => ({
+    co: str(c && c.co).slice(0, 200), start: str(c && c.start).slice(0, 20), end: str(c && c.end).slice(0, 20),
+    pos: str(c && c.pos).slice(0, 100), desc: str(c && c.desc).slice(0, 500),
+  })).filter(c => c.co || c.start || c.end || c.pos) : [];
+  return {
+    name: str(f.name).slice(0, 100),
+    birth: /^\d{4}-\d{2}-\d{2}$/.test(birth) ? birth : "",
+    gender: gender === "남" || gender === "여" ? gender : "",
+    totalCareer: Number.isFinite(totalCareer) ? totalCareer : null,
+    edu: HR_EDU_VALUES.has(edu) ? edu : "",
+    eduSchool: str(f.eduSchool).slice(0, 200),
+    jobGroup: HR_JOBGROUP_VALUES.has(jobGroup) ? jobGroup : "",
+    careers,
+    email: str(f.email).slice(0, 200),
+    phone: str(f.phone).slice(0, 50),
+  };
+}
+
+// execFile이 실행 파일 자체를 못 찾을 때(poppler-utils/tesseract-ocr 미설치)의 에러
+// 코드는 항상 "ENOENT"다 — 이 경우와 "설치는 돼있지만 이 문서를 못 읽음"을 구분해,
+// 전자는 "환경이 준비되지 않음"(503 RESUME_OCR_UNAVAILABLE), 후자는 "이 파일을 못
+// 읽음"(422 RESUME_TEXT_UNREADABLE)으로 서로 다르게 응답한다.
+function _isOcrToolMissing(e) { return !!(e && e.code === "ENOENT"); }
+
+app.post("/api/hr/resume-parse",
+  // 이력서(개인정보) 관련 응답은 성공·실패를 막론하고 중간 프록시·브라우저 캐시에
+  // 남지 않도록 한다 — 체인의 다른 어느 단계에서 응답이 끝나든(권한 거부·rate limit·
+  // 파일 오류·AI 오류·성공) 항상 적용되도록 가장 먼저 실행한다.
+  (req, res, next) => { res.set("Cache-Control", "no-store"); next(); },
+  resumeParseLimiter,
+  // 권한 검사를 multer(파일 파싱)보다 먼저 실행한다 — 인가되지 않은 요청은 서버가
+  // 대용량 multipart 본문을 메모리에 버퍼링하기 전에 즉시 거부된다(전역 authenticate
+  // 미들웨어가 이미 req.auth를 채워둔 상태이므로 파일을 읽지 않고도 판단 가능).
+  (req, res, next) => { if (!requireAdmin(req, res)) return; next(); },
+  (req, res, next) => {
+    hrResumeUpload.single("file")(req, res, (err) => {
+      if (!err) return next();
+      if (err instanceof multer.MulterError && err.code === "LIMIT_FILE_SIZE") return res.status(413).json({ ok: false, code: "RESUME_FILE_TOO_LARGE", message: `이력서 파일은 ${Math.floor(RESUME_MAX_BYTES / (1024*1024))}MB 이하만 업로드할 수 있습니다.` });
+      return res.status(400).json({ ok: false, code: "RESUME_FILE_INVALID", message: "이력서 파일을 처리할 수 없습니다." });
+    });
+  },
+  async (req, res) => {
+    try {
+      const file = req.file;
+      if (!file) return res.status(400).json({ ok: false, code: "RESUME_FILE_REQUIRED", message: "파일을 선택해주세요." });
+      const sniff = _sniffResumeFileType(file.buffer, file.originalname);
+      if (!sniff.kind) return res.status(400).json({ ok: false, code: "RESUME_TYPE_UNSUPPORTED", message: "PDF, DOCX, PNG, JPG, WEBP 파일만 지원합니다." });
+      if (!sniff.ok) return res.status(400).json({ ok: false, code: "RESUME_FILE_INVALID", message: "파일 내용이 확장자와 일치하지 않습니다." });
+
+      let text = "";
+      let extraction = "text";
+      const warnings = [];
+      if (sniff.kind === "pdf") {
+        const { PDFParse } = require("pdf-parse");
+        try {
+          const parser = new PDFParse({ data: file.buffer });
+          const result = await parser.getText();
+          text = result.text || "";
+        } catch (e) {
+          return res.status(422).json({ ok: false, code: "RESUME_TEXT_UNREADABLE", message: "PDF에서 텍스트를 추출할 수 없습니다." });
+        }
+        if (text.replace(/--\s*\d+\s*of\s*\d+\s*--/g, "").trim().length < 20) {
+          try {
+            text = await _ocrPdfBuffer(file.buffer);
+            extraction = "ocr";
+          } catch (ocrErr) {
+            if (_isOcrToolMissing(ocrErr)) return res.status(503).json({ ok: false, code: "RESUME_OCR_UNAVAILABLE", message: "OCR 기능을 사용할 수 없습니다(서버에 OCR 도구가 설치되지 않았습니다). 관리자에게 문의하세요." });
+            return res.status(422).json({ ok: false, code: "RESUME_TEXT_UNREADABLE", message: "스캔된 PDF에서 텍스트를 추출하지 못했습니다." });
+          }
+        } else {
+          const hasPhone = /01[0-9][-.\s]{0,2}\d{3,4}[-.\s]{0,2}\d{4}/.test(text);
+          const hasEmail = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/.test(text);
+          if (!hasPhone || !hasEmail) {
+            // 연락처 보강용 OCR은 실패해도 이미 확보한 텍스트 레이어 결과가 있으니
+            // 요청 전체를 실패시키지 않고 조용히 건너뛴다(핵심 정보는 이미 있을 수 있음).
+            try {
+              const ocrText = await _ocrPdfPages(file.buffer, 2);
+              if (ocrText && ocrText.trim()) { text += "\n\n" + ocrText; warnings.push("일부 정보는 OCR로 보강했습니다."); }
+            } catch (e) { /* poppler/tesseract 미설치 등 — 텍스트 추출 결과만 사용 */ }
+          }
+        }
+      } else if (sniff.kind === "docx") {
+        try {
+          const mammoth = require("mammoth");
+          const result = await mammoth.extractRawText({ buffer: file.buffer });
+          text = result.value || "";
+        } catch (e) {
+          return res.status(422).json({ ok: false, code: "RESUME_TEXT_UNREADABLE", message: "DOCX에서 텍스트를 추출할 수 없습니다." });
+        }
+      } else if (sniff.kind === "image") {
+        try {
+          text = await _ocrImageBuffer(file.buffer, sniff.mime === "jpeg" ? "jpg" : sniff.mime);
+          extraction = "ocr";
+        } catch (ocrErr) {
+          if (_isOcrToolMissing(ocrErr)) return res.status(503).json({ ok: false, code: "RESUME_OCR_UNAVAILABLE", message: "OCR 기능을 사용할 수 없습니다(서버에 OCR 도구가 설치되지 않았습니다). 관리자에게 문의하세요." });
+          return res.status(422).json({ ok: false, code: "RESUME_TEXT_UNREADABLE", message: "이미지에서 텍스트를 추출할 수 없습니다." });
+        }
+      }
+
+      if (!text || text.trim().length < 20) {
+        return res.status(422).json({ ok: false, code: "RESUME_TEXT_UNREADABLE", message: "문서에서 읽을 수 있는 내용이 너무 적습니다." });
+      }
+
+      let fields;
+      try {
+        const raw = await _hrResumeGroqParse(text);
+        fields = _sanitizeHrResumeFields(raw);
+      } catch (aiErr) {
+        if (aiErr.code === "NOT_CONFIGURED") return res.status(503).json({ ok: false, code: "RESUME_AI_UNAVAILABLE", message: "이력서 자동분석 기능이 설정되지 않았습니다(관리자에게 문의하세요)." });
+        if (aiErr.code === "TIMEOUT") return res.status(504).json({ ok: false, code: "RESUME_AI_TIMEOUT", message: "이력서 분석 시간이 초과됐습니다. 다시 시도해주세요." });
+        return res.status(502).json({ ok: false, code: "RESUME_AI_FAILED", message: "이력서 분석 중 오류가 발생했습니다." });
+      }
+
+      // 원문 파일/텍스트는 응답에 절대 포함하지 않는다(fields만 반환) — 개인정보(이력서
+      // 원문)가 클라이언트 콘솔/네트워크 로그에 불필요하게 남지 않도록.
+      res.json({ ok: true, fields, meta: { fileType: sniff.kind, extraction, warnings } });
+    } catch (e) {
+      res.status(500).json({ ok: false, code: "RESUME_UNKNOWN_ERROR", message: "이력서 처리 중 오류가 발생했습니다." });
+    }
+  }
+);
 
 // 경력표에서 회사명이 빈 항목(대개 인쇄용 이력서 PDF가 회사명을 이미지로만 렌더링해
 // OCR 좌표 매칭으로도 못 찾은 경우, 2026-07-22 실측)에 한해 AI에게 후보를 물어보는
