@@ -36,14 +36,13 @@ async function waitForHttp(url, timeoutMs) {
   throw new Error(`서버가 ${timeoutMs}ms 안에 응답하지 않았습니다: ${url} (${lastErr && lastErr.message})`);
 }
 
-// opts: { env: {...추가 환경변수} }
-// 반환: { baseUrl, stop(), dataDir, dataFile, budgetDataFile }
-async function startServer(opts = {}) {
-  const port = await getFreePort();
-  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "hr-test-"));
+// startServer()와 startServerExpectingBootFailure() 둘 다 쓰는 공통 준비 단계
+// (임시 디렉터리·포트·환경변수 조립) — 중복 없이 한 곳에만 둔다.
+function _prepareChildEnv(opts) {
+  const port = opts.port; // 호출부가 getFreePort()로 미리 뽑아 넘긴다
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), opts.dirPrefix || "hr-test-"));
   const dataFile = path.join(dataDir, "hr-data.json");
   const budgetDataFile = path.join(dataDir, "budget-data.json");
-
   const env = {
     ...process.env,
     PORT: String(port),
@@ -57,16 +56,25 @@ async function startServer(opts = {}) {
   // (Postgres 모드가 필요한 테스트는 DATABASE_URL을 opts.env로 명시적으로 넘겨야 하고,
   // 그 경우도 이 헬퍼가 스스로 만든 임시 테스트 DB를 가리켜야 한다 — test/api/postgres-mode.test.js 참고).
   if (!opts.env || !opts.env.DATABASE_URL) delete env.DATABASE_URL;
+  return { dataDir, dataFile, budgetDataFile, env };
+}
 
+function _spawnServer(env, cwd) {
   const child = spawn(process.execPath, [path.join(__dirname, "..", "..", "server.js")], {
-    cwd: path.join(__dirname, "..", ".."),
-    env,
-    stdio: ["ignore", "pipe", "pipe"],
+    cwd, env, stdio: ["ignore", "pipe", "pipe"],
   });
-
   const logs = { stdout: "", stderr: "" };
   child.stdout.on("data", d => { logs.stdout += d.toString(); });
   child.stderr.on("data", d => { logs.stderr += d.toString(); });
+  return { child, logs };
+}
+
+// opts: { env: {...추가 환경변수} }
+// 반환: { baseUrl, stop(), dataDir, dataFile, budgetDataFile }
+async function startServer(opts = {}) {
+  const port = await getFreePort();
+  const { dataDir, dataFile, budgetDataFile, env } = _prepareChildEnv({ ...opts, port });
+  const { child, logs } = _spawnServer(env, path.join(__dirname, "..", ".."));
 
   let exited = false;
   child.on("exit", () => { exited = true; });
@@ -92,4 +100,32 @@ async function startServer(opts = {}) {
   return { baseUrl, stop, dataDir, dataFile, budgetDataFile, logs, child };
 }
 
-module.exports = { startServer, getFreePort };
+// server.js가 부팅 자체를 거부하도록(예: production + DATA_FILE에 더미 마커) 의도한
+// 시나리오 전용 — startServer()는 실패 시에도 /status를 15초 동안 계속 폴링하다가
+// 타임아웃하므로 "정상적으로 빨리 죽는지"를 확인하는 용도로 쓰기엔 매번 15초씩 낭비된다.
+// 대신 이 헬퍼는 child의 'exit' 이벤트를 직접 기다린다 — 실제 서버는 이 시나리오에서
+// 수백 ms 안에 process.exit(1)하므로(initDB().catch()), 정상적으로 빠르게 끝난다.
+// opts.seedData가 있으면 서버를 띄우기 전에 그 내용을 DATA_FILE에 미리 써 둔다.
+async function startServerExpectingBootFailure(opts = {}) {
+  const port = await getFreePort();
+  const { dataDir, dataFile, budgetDataFile, env } = _prepareChildEnv({ ...opts, port, dirPrefix: "hr-test-bootfail-" });
+  if (opts.seedData) fs.writeFileSync(dataFile, JSON.stringify(opts.seedData));
+  const { child, logs } = _spawnServer(env, path.join(__dirname, "..", ".."));
+
+  const exitCode = await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      reject(new Error(`서버가 fail-fast로 종료될 것으로 기대했으나 ${opts.timeoutMs || 5000}ms 안에 종료되지 않았습니다.\n--- stdout ---\n${logs.stdout}\n--- stderr ---\n${logs.stderr}`));
+    }, opts.timeoutMs || 5000);
+    child.on("exit", (code) => { clearTimeout(timer); resolve(code); });
+  });
+
+  return {
+    exitCode, logs, dataDir, dataFile, budgetDataFile,
+    // 실패 시나리오 검증 후 남은 파일 정리(성공적으로 부팅 실패했다면 파일은 손대지
+    // 않은 채로 남아있어야 하므로, 호출부가 그 내용을 먼저 확인한 뒤 이걸 부른다).
+    cleanup: () => { try { fs.rmSync(dataDir, { recursive: true, force: true }); } catch (e) {} },
+  };
+}
+
+module.exports = { startServer, startServerExpectingBootFailure, getFreePort };

@@ -110,14 +110,21 @@ file=<PDF|DOCX|PNG|JPG|WEBP, 최대 15MB>
 
 | 상태 | code | 의미 |
 |---:|---|---|
-| 400 | `RESUME_FILE_REQUIRED` / `RESUME_TYPE_UNSUPPORTED` / `RESUME_FILE_INVALID` | 파일 없음 / 지원하지 않는 형식 / 실제 파일 시그니처(매직바이트)가 확장자와 불일치 |
+| 400 | `RESUME_FILE_REQUIRED` / `RESUME_TYPE_UNSUPPORTED` / `RESUME_FILE_INVALID` | 파일 없음 / 지원하지 않는 형식 / 실제 파일 시그니처(매직바이트)가 확장자와 불일치, 또는 DOCX가 실제 OOXML 구조([Content_Types].xml + word/document.xml)를 갖추지 않음(일반 zip을 확장자만 바꿔 올린 경우), 또는 이미지 헤더를 읽을 수 없음 |
 | 401 / 403 | 기존 인증 오류 | 비로그인 또는 admin이 아님 |
-| 413 | `RESUME_FILE_TOO_LARGE` | `RESUME_MAX_BYTES`(기본 15MB) 초과 |
+| 413 | `RESUME_FILE_TOO_LARGE` | `RESUME_MAX_BYTES`(기본 15MB) 초과, 또는 DOCX(zip) 압축 해제 시 항목 수가 `RESUME_ZIP_MAX_ENTRIES`(기본 200) 초과 / 선언된 압축해제크기가 `RESUME_ZIP_MAX_UNCOMPRESSED_BYTES`(기본 30MiB) 초과 |
+| 413 | `RESUME_IMAGE_TOO_LARGE` | 이미지 픽셀 수(가로×세로)가 `RESUME_IMAGE_MAX_PIXELS`(기본 40,000,000 = 40MP) 초과 — 디코드 전에 헤더만 읽어 판정 |
 | 422 | `RESUME_TEXT_UNREADABLE` | 추출된 텍스트가 20자 미만이거나 문서를 파싱할 수 없음 |
-| 429 | `RESUME_RATE_LIMITED` | 로그인 계정 기준 15분에 10회 초과 |
+| 429 | `RESUME_RATE_LIMITED` | 로그인 계정 기준 15분에 10회 초과(시간창 기반) |
+| 429 | `RESUME_CONCURRENCY_LIMIT` | 동시 처리 중인 이력서 분석 요청이 `RESUME_MAX_CONCURRENT`(기본 3) 초과(같은 순간에 몰린 요청 수 기반, 위 시간창 제한과 별개) |
 | 502 | `RESUME_AI_FAILED` | AI provider(Groq)가 비정상 응답 |
 | 503 | `RESUME_AI_UNAVAILABLE` / `RESUME_OCR_UNAVAILABLE` | `GROQ_API_KEY` 미설정 / 서버에 OCR 도구(poppler-utils, tesseract-ocr) 미설치 |
 | 504 | `RESUME_AI_TIMEOUT` | AI 응답이 `RESUME_AI_TIMEOUT_MS`(기본 30초) 안에 오지 않음 |
+
+AI가 반환한 값도 그대로 신뢰하지 않는다 — `birth`는 실제 달력에 존재하는 날짜인지 왕복
+검증하고(`2024-99-99`, `2024-02-30` 등은 빈 문자열로 정규화), `totalCareer`는 0~70
+범위를 벗어나면(예: `-1`, `999`) `null`로, `careers[].start`/`end`는 `YYYY-MM` 형식(또는
+`end`는 `"현재"`)이 아니면 빈 문자열로 정규화한다.
 
 응답에는 항상 `fields`/`meta`만 담기며, 원문 이력서 텍스트·업로드 파일·AI provider 엔드포인트·API 키는
 어떤 경로로도 절대 포함되지 않는다.
@@ -133,10 +140,15 @@ file=<PDF|DOCX|PNG|JPG|WEBP, 최대 15MB>
 | `NODE_ENV` | 아니오 | (미설정) | `production`이면 더미 데이터 저장 차단(`ALLOW_DEMO_DATA`로 해제 가능)이 활성화됨. `scripts/seed-demo.js`는 `development`/`test`에서만 실행됨. |
 | `ALLOW_DEMO_DATA` | 아니오 | `false` | `true`면 `NODE_ENV=production`에서도 demo 마커(`source:"demo"`/`empNo:"DEMO-..."`)가 붙은 레코드 저장을 허용(운영에서는 설정하지 않는 것을 권장). |
 | `ALLOW_DEMO_SEED` | `scripts/seed-demo.js` 실행 시 필수 | (미설정) | `true`가 아니면 CLI가 즉시 종료됨(운영 환경 오실행 방지 조건 중 하나). |
-| `RESUME_MAX_BYTES` | 아니오 | `15728640`(15MB) | 이력서 파일 업로드 크기 상한. |
+| `RESUME_MAX_BYTES` | 아니오 | `15728640`(15MB) | 이력서 파일 업로드 크기 상한(원본 바이트 기준). |
 | `RESUME_MAX_TEXT_CHARS` | 아니오 | `12000` | AI에 보내는 추출 텍스트 길이 상한. |
 | `RESUME_AI_TIMEOUT_MS` | 아니오 | `30000` | 이력서 AI 파싱 타임아웃(밀리초). |
+| `RESUME_ZIP_MAX_ENTRIES` | 아니오 | `200` | DOCX(zip) 압축 해제 시 허용하는 최대 항목 수(압축 폭탄 방지). |
+| `RESUME_ZIP_MAX_UNCOMPRESSED_BYTES` | 아니오 | `31457280`(30MiB) | DOCX(zip) 선언된 압축해제크기 상한(실제 해제 전에 zip 메타데이터만으로 판정, 압축 폭탄 방지). |
+| `RESUME_IMAGE_MAX_PIXELS` | 아니오 | `40000000`(40MP) | 이력서 이미지(png/jpg/webp)의 가로×세로 픽셀 수 상한(디코드 전 헤더만으로 판정). |
+| `RESUME_MAX_CONCURRENT` | 아니오 | `3` | 이력서 분석 요청의 동시 처리 개수 상한(시간창 기반 rate limit과 별개). |
 | `GROQ_API_KEY` | 이력서/채용 AI 파싱 기능에 필요 | (미설정) | 없으면 이력서 자동입력은 503(`RESUME_AI_UNAVAILABLE`), 채용 모듈 AI 파싱은 기능 자체가 비활성화됨(무료 발급: https://console.groq.com). |
+| `DEMO_ADMIN_PASSWORD` | `scripts/seed-demo.js` 실행 시 필수 | (미설정) | 생성될 데모 관리자 계정(`demo_admin`)의 로그인 비밀번호(8자 이상). bcrypt 해시로만 저장되고 콘솔에는 로그인 ID만 출력됨. |
 
 ---
 

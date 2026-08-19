@@ -622,6 +622,13 @@ async function initDB() {
       } catch (e) {
         console.warn("[Storage] Could not read data file, starting fresh:", e.message);
       }
+      // POST /save의 rejectDemoDataForProduction() 게이트는 "다음 저장 요청"이 와야만
+      // 작동한다 — DATA_FILE 자체가 이미 더미 데이터로 시작한 채(실수로 seed-demo.js
+      // 산출물을 DATA_FILE로 지정, 개발 스냅샷을 그대로 복사 등) 부팅되면 그 요청이
+      // 영영 안 올 수도 있어 운영 서비스가 더미 데이터를 계속 보여줄 수 있다. 여기서
+      // 한 번 더 검사해, 걸리면 파일을 전혀 쓰지 않은 채(읽기만 했다) 서버 기동 자체를
+      // 중단한다 — initDB()가 reject되면 아래 initDB().catch()가 process.exit(1)한다.
+      rejectDemoDataForProduction(_fileStore);
     } else {
       console.log("[Storage] JSON File mode. New file will be created at:", JSON_FILE);
     }
@@ -2595,12 +2602,23 @@ function httpError(status, code, message) {
 // 애초에 이 게이트 대상이 아니다(그런 환경엔 seed-demo.js를 정상적으로 쓸 수 있어야
 // 하므로). 더미 마커가 없는 평범한 저장(기존 직원 삭제 포함)은 이 게이트와 무관하게
 // 그대로 통과한다 — "새로 demo 마커가 붙은 레코드가 섞여 들어오는 저장"만 막는다.
+// 레거시 패턴: P1-3 이전(lib/demo-data.js로 옮기기 전)의 브라우저 내장
+// generateDummyData()는 empNo를 "DM"+부서/팀 초성 2글자+3자리 숫자로 만들었다
+// (예: 경영지원본부/인사팀 → "DM경인001"). 지금 저장 경로는 항상 "DEMO-"만
+// 남기지만, 그 이전에 만들어진 스냅샷/백업 파일이 복원되거나 그대로 DATA_FILE로
+// 지정되는 경로까지 막으려면 이 옛 패턴도 함께 봐야 한다.
+const LEGACY_DEMO_EMPNO_RE = /^DM[^\d]{1,4}\d{2,4}$/i;
+function _isDemoMarkedEmployee(e) {
+  return !!(e && (e.source === "demo" || /^DEMO-/i.test(String(e.empNo || "")) || LEGACY_DEMO_EMPNO_RE.test(String(e.empNo || ""))));
+}
 function rejectDemoDataForProduction(data) {
   if (process.env.NODE_ENV !== "production" || process.env.ALLOW_DEMO_DATA === "true") return;
-  const demoEmployee = (data?.employees || []).find(e =>
-    e?.source === "demo" || /^DEMO-/i.test(String(e?.empNo || ""))
-  );
-  if (demoEmployee) {
+  const demoEmployee = (data?.employees || []).find(_isDemoMarkedEmployee);
+  // employees 쪽은 전부 정상(예: 실제 직원 위에 KPI만 데모 배치로 잘못 얹힌 경우)이어도
+  // kpiEntries에 source:"demo"가 섞여 있으면 그 자체로 운영에 있어서는 안 되는 데이터다
+  // — employees만 검사하면 이 "KPI만 더미" 케이스를 조용히 통과시켜버린다.
+  const demoKpi = (data?.kpiEntries || []).find(k => k?.source === "demo");
+  if (demoEmployee || demoKpi) {
     throw httpError(403, "DEMO_DATA_FORBIDDEN", "운영 환경에는 더미 데이터를 저장할 수 없습니다.");
   }
 }
@@ -3149,6 +3167,9 @@ app.post("/restore", async (req, res) => {
 
     // /restore는 관리자 전용이라 결재 위조 방어(_sanitizeApprovalDoc)를 그대로 통과한다 —
     // 스냅샷 복원은 과거 시점의 결재 상태를 있는 그대로 되돌리는 것이 목적이다.
+    // 반면 더미 데이터 게이트는 그대로 적용한다 — POST /save와 동일하게, 개발 환경에서
+    // 만든(더미 데이터가 섞인) 스냅샷을 운영 환경에 그대로 복원하는 경로를 막아야 한다.
+    rejectDemoDataForProduction(dataToPersist);
     await persistData(dataToPersist, req.body.user || "restore", companyId, req.auth || null);
 
     // budget_store(사업계획/예산/개인별급여상세)는 위 일반 필드 병합 루프에서 제외했으므로
@@ -3168,7 +3189,14 @@ app.post("/restore", async (req, res) => {
     const finalData = await loadData(companyId);
     broadcastSSE("data_restored", { name, fields: restoredFields, deletedExtras: deleteExtras, version: _getVersion(companyId) }, null, companyId);
     res.json({ ok: true, version: _getVersion(companyId), restoredFields, deletedExtras: deleteExtras, data: filterDataForRole(stripPwField(finalData), req.auth) });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) {
+    // rejectDemoDataForProduction()이 httpError()로 만든 오류는 e.status/e.code를 갖고
+    // 있다(예: 403 DEMO_DATA_FORBIDDEN) — POST /save와 동일하게 그 상태코드로 응답한다.
+    // 이 검사가 없으면 정당한 403 거부가 500(서버 오류)으로 뭉개져, 클라이언트가
+    // "게이트에 걸림"과 "진짜 서버 오류"를 구분할 수 없었다.
+    const status = Number.isInteger(e.status) ? e.status : 500;
+    res.status(status).json({ ok: false, code: e.code, message: e.message });
+  }
 });
 
 // ── History endpoints ─────────────────────────────────────────────────────────
@@ -6777,6 +6805,23 @@ app.post("/api/recruit/parse-resume-llm", async (req, res) => {
 const RESUME_MAX_BYTES = Number(process.env.RESUME_MAX_BYTES) || 15 * 1024 * 1024;
 const RESUME_MAX_TEXT_CHARS = Number(process.env.RESUME_MAX_TEXT_CHARS) || 12000;
 const RESUME_AI_TIMEOUT_MS = Number(process.env.RESUME_AI_TIMEOUT_MS) || 30000;
+// DOCX(zip)는 multer의 fileSize 제한(원본 파일 크기)만으로는 압축 폭탄을 막지
+// 못한다 — 15MB짜리 zip이 안에 수백 개 항목이나 수백 MB로 압축 해제되는 내용을
+// 담을 수 있다. jszip은 loadAsync() 시점에는 각 항목을 실제로 해제(inflate)하지
+// 않고 중앙 디렉터리 메타데이터(선언된 압축해제크기)만 읽으므로, 이 값을 실제
+// 해제 전에 먼저 검사해 거부할 수 있다.
+const RESUME_ZIP_MAX_ENTRIES = Number(process.env.RESUME_ZIP_MAX_ENTRIES) || 200;
+const RESUME_ZIP_MAX_UNCOMPRESSED_BYTES = Number(process.env.RESUME_ZIP_MAX_UNCOMPRESSED_BYTES) || 30 * 1024 * 1024;
+// 이미지도 마찬가지로 파일 바이트 자체는 작아도(png/webp는 고압축률) 디코드하면
+// 거대한 픽셀 배열이 될 수 있어(압축 폭탄과 동일한 부류의 위험) tesseract에
+// 넘기기 전에 헤더만 읽어(전체 디코드 없이) 픽셀 수를 먼저 확인한다.
+const RESUME_IMAGE_MAX_PIXELS = Number(process.env.RESUME_IMAGE_MAX_PIXELS) || 40_000_000; // 40MP
+// 이력서 분석은 OCR/AI 호출이 있어 요청 하나가 몇 초~수십 초씩 서버 리소스(CPU/
+// 프로세스 슬롯)를 붙잡는다 — resumeParseLimiter(시간창 기준 총 호출 수)와 별개로,
+// "지금 동시에 처리 중인 개수"도 제한해야 짧은 시간에 몰린 요청들이 서버를 과부하
+// 상태로 몰아넣는 것을 막을 수 있다.
+const RESUME_MAX_CONCURRENT = Number(process.env.RESUME_MAX_CONCURRENT) || 3;
+let _resumeInFlight = 0;
 const hrResumeUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: RESUME_MAX_BYTES, files: 1, fields: 0 } });
 
 // 사용자별 호출 한도(과다 AI 호출로 인한 비용/부하 남용 방지) — /login과 달리 IP가
@@ -6810,6 +6855,87 @@ function _sniffResumeFileType(buffer, filename) {
   // 자연스럽게 걸러진다).
   if (buffer.length >= 4 && buffer[0] === 0x50 && buffer[1] === 0x4b && (buffer[2] === 0x03 || buffer[2] === 0x05) && (buffer[3] === 0x04 || buffer[3] === 0x06)) return { kind: "docx", ok: ext === "docx" };
   return { kind: null, ok: false };
+}
+
+// 헤더만 읽어 픽셀 크기를 판정한다(전체 디코드 없이) — 40MP 제한(RESUME_IMAGE_MAX_PIXELS)을
+// 실제 디코드/OCR 전에 먼저 적용하기 위함. 셋 다 표준 파일 포맷 스펙을 그대로 따른
+// 순수 JS 구현이라 별도 이미지 라이브러리(sharp 등) 의존성이 필요 없다.
+function _pngDimensions(buf) {
+  if (buf.length < 24 || buf.toString("latin1", 12, 16) !== "IHDR") return null;
+  return { width: buf.readUInt32BE(16), height: buf.readUInt32BE(20) };
+}
+function _jpegDimensions(buf) {
+  if (buf.length < 4 || buf[0] !== 0xff || buf[1] !== 0xd8) return null;
+  let offset = 2;
+  while (offset + 4 <= buf.length) {
+    if (buf[offset] !== 0xff) { offset++; continue; } // 마커 정렬이 어긋났으면 재동기화
+    const marker = buf[offset + 1];
+    // 페이로드가 없는 마커(SOI/RST0-7/TEM 등)는 길이 필드가 없으니 바로 다음으로.
+    if (marker === 0xd8 || marker === 0x01 || (marker >= 0xd0 && marker <= 0xd9)) { offset += 2; continue; }
+    if (offset + 4 > buf.length) return null;
+    const segLen = buf.readUInt16BE(offset + 2);
+    // SOF0~SOF15(DHT/JPG/DAC 제외) 마커에 높이/너비가 들어있다.
+    if (marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc) {
+      if (offset + 9 > buf.length) return null;
+      return { height: buf.readUInt16BE(offset + 5), width: buf.readUInt16BE(offset + 7) };
+    }
+    if (marker === 0xda) return null; // Start-Of-Scan 이후엔 더 이상 헤더 세그먼트가 없음
+    offset += 2 + segLen;
+  }
+  return null;
+}
+function _webpDimensions(buf) {
+  if (buf.length < 30 || buf.toString("latin1", 0, 4) !== "RIFF" || buf.toString("latin1", 8, 12) !== "WEBP") return null;
+  const fourcc = buf.toString("latin1", 12, 16);
+  if (fourcc === "VP8X") { // 확장 포맷: 24비트 리틀엔디언 (캔버스크기-1)
+    return { width: (buf[24] | (buf[25] << 8) | (buf[26] << 16)) + 1, height: (buf[27] | (buf[28] << 8) | (buf[29] << 16)) + 1 };
+  }
+  if (fourcc === "VP8 ") { // 손실(lossy): 14비트 값 2개(리틀엔디언), 상위 2비트는 스케일 플래그
+    return { width: buf.readUInt16LE(26) & 0x3fff, height: buf.readUInt16LE(28) & 0x3fff };
+  }
+  if (fourcc === "VP8L") { // 무손실: signature 0x2f 다음 4바이트에 (너비-1)/(높이-1)이 비트팩됨
+    if (buf.length < 25 || buf[20] !== 0x2f) return null;
+    const b0 = buf[21], b1 = buf[22], b2 = buf[23], b3 = buf[24];
+    return { width: 1 + (((b1 & 0x3f) << 8) | b0), height: 1 + (((b3 & 0x0f) << 10) | (b2 << 2) | ((b1 & 0xc0) >> 6)) };
+  }
+  return null;
+}
+function _getImageDimensions(buffer, mime) {
+  if (mime === "png") return _pngDimensions(buffer);
+  if (mime === "jpeg") return _jpegDimensions(buffer);
+  if (mime === "webp") return _webpDimensions(buffer);
+  return null;
+}
+
+// DOCX(OOXML)가 실제로 OOXML 구조([Content_Types].xml + word/document.xml)를
+// 갖췄는지, 그리고 압축 해제 시 항목 수/총 크기가 정상 범위인지 확인한다 —
+// 일반 zip(예: 안에 아무 텍스트 파일 하나만 넣고 확장자만 .docx로 바꾼 것)이나
+// zip 폭탄이 magic-byte 검사(둘 다 PK 시그니처로 시작하므로)만으로는 걸러지지
+// 않기 때문에 한 단계 더 깊이 검사한다. JSZip.loadAsync()는 중앙 디렉터리
+// 메타데이터만 읽고 각 항목을 실제로 inflate하지 않으므로, 폭탄 판정 자체가
+// 압축 해제로 인한 자원 소모 없이 이뤄진다.
+async function _validateDocxZip(buffer) {
+  const JSZip = require("jszip");
+  let zip;
+  try {
+    zip = await JSZip.loadAsync(buffer);
+  } catch (e) {
+    const err = new Error("잘못된 ZIP/DOCX 구조"); err.code = "NOT_DOCX"; throw err;
+  }
+  const names = Object.keys(zip.files);
+  if (names.length > RESUME_ZIP_MAX_ENTRIES) {
+    const err = new Error("압축 파일 항목이 너무 많습니다"); err.code = "TOO_LARGE"; throw err;
+  }
+  let totalUncompressed = 0;
+  for (const name of names) {
+    totalUncompressed += (zip.files[name]._data && zip.files[name]._data.uncompressedSize) || 0;
+    if (totalUncompressed > RESUME_ZIP_MAX_UNCOMPRESSED_BYTES) {
+      const err = new Error("압축 해제 크기가 너무 큽니다"); err.code = "TOO_LARGE"; throw err;
+    }
+  }
+  if (!names.includes("[Content_Types].xml") || !names.includes("word/document.xml")) {
+    const err = new Error("DOCX 구조가 아닙니다"); err.code = "NOT_DOCX"; throw err;
+  }
 }
 
 const HR_RESUME_FIELDS_SCHEMA_PROMPT = `너는 한국어 이력서 텍스트에서 정보를 추출하는 도우미다. 아래 텍스트(문서 추출/OCR 결과라 줄바꿈이 깨지거나 표가 뒤섞여 있을 수 있음)를 읽고, 다음 JSON 스키마로만 응답해라. 마크다운이나 설명 없이 JSON 객체 하나만 출력해라. 모르거나 이력서에 없는 값은 빈 문자열(배열은 빈 배열, 숫자는 null)로 둔다.
@@ -6875,6 +7001,19 @@ async function _hrResumeGroqParse(text) {
 // 검증을 거쳐, 스키마를 벗어난 값은 서버 단계에서 빈 문자열로 정규화한다.
 const HR_EDU_VALUES = new Set(["고등학교 졸업", "전문대 졸업", "대학교 졸업", "대학원 석사", "대학원 박사"]);
 const HR_JOBGROUP_VALUES = new Set(["관리직", "영업직", "개발직", "연구직", "생산직", "서비스직", "기타"]);
+// AI가 "YYYY-MM-DD" 형식은 맞지만 실존하지 않는 날짜(2024-99-99, 2024-02-30 등)를
+// 만들어낼 수 있어(모델이 형식만 흉내내고 실제 달력을 검증하지 않음) 정규식만으로는
+// 못 거른다 — 자릿수/범위를 먼저 보고, 그다음 Date로 왕복 변환해 실제로 그 날짜가
+// 존재하는지(예: 2월 30일이 3월 2일로 밀리지 않는지) 확인한다.
+function _isValidCalendarDateStr(s) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
+  if (!m) return false;
+  const y = Number(m[1]), mo = Number(m[2]), d = Number(m[3]);
+  if (mo < 1 || mo > 12 || d < 1 || d > 31) return false;
+  const dt = new Date(Date.UTC(y, mo - 1, d));
+  return dt.getUTCFullYear() === y && dt.getUTCMonth() === mo - 1 && dt.getUTCDate() === d;
+}
+const HR_YEARMONTH_RE = /^\d{4}-(0[1-9]|1[0-2])$/;
 function _sanitizeHrResumeFields(raw) {
   const f = raw && typeof raw === "object" ? raw : {};
   const str = (v) => (typeof v === "string" ? v.trim() : "");
@@ -6883,15 +7022,27 @@ function _sanitizeHrResumeFields(raw) {
   const edu = str(f.edu);
   const jobGroup = str(f.jobGroup);
   const totalCareer = Number(f.totalCareer);
-  const careers = Array.isArray(f.careers) ? f.careers.slice(0, 30).map(c => ({
-    co: str(c && c.co).slice(0, 200), start: str(c && c.start).slice(0, 20), end: str(c && c.end).slice(0, 20),
-    pos: str(c && c.pos).slice(0, 100), desc: str(c && c.desc).slice(0, 500),
-  })).filter(c => c.co || c.start || c.end || c.pos) : [];
+  const careers = Array.isArray(f.careers) ? f.careers.slice(0, 30).map(c => {
+    const start = str(c && c.start).slice(0, 20);
+    const end = str(c && c.end).slice(0, 20);
+    return {
+      co: str(c && c.co).slice(0, 200),
+      // 형식이 맞아도(YYYY-MM) "2024-13"처럼 존재하지 않는 달은 정규식 자체가
+      // 이미 01~12 범위로 제한하므로 별도 왕복검증이 필요 없다(연-월은 항상 1일로
+      // 취급해 윤년/말일 이슈가 없음 — 연-월-일 조합인 birth와의 차이).
+      start: HR_YEARMONTH_RE.test(start) ? start : "",
+      end: (end === "현재" || HR_YEARMONTH_RE.test(end)) ? end : "",
+      pos: str(c && c.pos).slice(0, 100), desc: str(c && c.desc).slice(0, 500),
+    };
+  }).filter(c => c.co || c.start || c.end || c.pos) : [];
   return {
     name: str(f.name).slice(0, 100),
-    birth: /^\d{4}-\d{2}-\d{2}$/.test(birth) ? birth : "",
+    birth: _isValidCalendarDateStr(birth) ? birth : "",
     gender: gender === "남" || gender === "여" ? gender : "",
-    totalCareer: Number.isFinite(totalCareer) ? totalCareer : null,
+    // 총 경력년수는 사람의 실제 근로 가능 기간을 벗어날 수 없다 — AI가 이력서를
+    // 잘못 읽어 -1(파싱 오류)이나 999(단위 착각 등) 같은 값을 내놓아도 그대로
+    // 폼에 흘려보내면 눈에 띄지 않는 오염된 값으로 저장될 위험이 있어 범위를 둔다.
+    totalCareer: (Number.isFinite(totalCareer) && totalCareer >= 0 && totalCareer <= 70) ? totalCareer : null,
     edu: HR_EDU_VALUES.has(edu) ? edu : "",
     eduSchool: str(f.eduSchool).slice(0, 200),
     jobGroup: HR_JOBGROUP_VALUES.has(jobGroup) ? jobGroup : "",
@@ -6917,6 +7068,21 @@ app.post("/api/hr/resume-parse",
   // 대용량 multipart 본문을 메모리에 버퍼링하기 전에 즉시 거부된다(전역 authenticate
   // 미들웨어가 이미 req.auth를 채워둔 상태이므로 파일을 읽지 않고도 판단 가능).
   (req, res, next) => { if (!requireAdmin(req, res)) return; next(); },
+  // 동시 처리 개수 제한 — multer가 파일을 버퍼링하기 전에 게이트해, 이미 정원이
+  // 찬 상태에서는 대용량 본문을 굳이 메모리에 올리지 않는다. finish/close 양쪽에
+  // 해제 훅을 걸되 released 플래그로 중복 감소를 막는다(응답이 끝나는 경로가
+  // 여러 갈래라 한쪽만 걸면 카운터가 새거나 두 번 깎일 수 있음).
+  (req, res, next) => {
+    if (_resumeInFlight >= RESUME_MAX_CONCURRENT) {
+      return res.status(429).json({ ok: false, code: "RESUME_CONCURRENCY_LIMIT", message: "이력서 분석 요청이 동시에 너무 많습니다. 잠시 후 다시 시도하세요." });
+    }
+    _resumeInFlight++;
+    let released = false;
+    const release = () => { if (released) return; released = true; _resumeInFlight = Math.max(0, _resumeInFlight - 1); };
+    res.on("finish", release);
+    res.on("close", release);
+    next();
+  },
   (req, res, next) => {
     hrResumeUpload.single("file")(req, res, (err) => {
       if (!err) return next();
@@ -6965,6 +7131,16 @@ app.post("/api/hr/resume-parse",
           }
         }
       } else if (sniff.kind === "docx") {
+        // magic-byte 검사는 "PK로 시작하는 zip"이라는 것만 확인했을 뿐, 실제 워드
+        // 문서 구조인지·압축 해제 시 정상 범위인지는 아직 모른다 — mammoth에 넘기기
+        // 전에 먼저 확인한다(hello.txt 하나만 담긴 zip을 확장자만 .docx로 바꿔 올린
+        // 경우 400, zip 폭탄 성격의 항목수/크기 초과는 413).
+        try {
+          await _validateDocxZip(file.buffer);
+        } catch (zipErr) {
+          if (zipErr.code === "TOO_LARGE") return res.status(413).json({ ok: false, code: "RESUME_FILE_TOO_LARGE", message: "DOCX 파일의 압축 해제 크기가 너무 큽니다." });
+          return res.status(400).json({ ok: false, code: "RESUME_FILE_INVALID", message: "파일 내용이 확장자와 일치하지 않습니다." });
+        }
         try {
           const mammoth = require("mammoth");
           const result = await mammoth.extractRawText({ buffer: file.buffer });
@@ -6973,6 +7149,15 @@ app.post("/api/hr/resume-parse",
           return res.status(422).json({ ok: false, code: "RESUME_TEXT_UNREADABLE", message: "DOCX에서 텍스트를 추출할 수 없습니다." });
         }
       } else if (sniff.kind === "image") {
+        // 디코드(OCR) 전에 헤더만 읽어 픽셀 수를 먼저 확인한다 — 파일 바이트 자체는
+        // 작아도 디코드하면 거대한 픽셀 배열이 되는 이미지(png/webp 압축 폭탄 부류)를
+        // tesseract에 넘기기 전에 걸러낸다. 헤더를 못 읽으면(포맷은 맞는데 구조가
+        // 손상됨) 안전하게 거부한다 — 판정 불가 상태로 큰 이미지를 그냥 통과시키지 않는다.
+        const dims = _getImageDimensions(file.buffer, sniff.mime);
+        if (!dims) return res.status(400).json({ ok: false, code: "RESUME_FILE_INVALID", message: "이미지 파일을 읽을 수 없습니다." });
+        if (dims.width * dims.height > RESUME_IMAGE_MAX_PIXELS) {
+          return res.status(413).json({ ok: false, code: "RESUME_IMAGE_TOO_LARGE", message: `이미지 해상도가 너무 큽니다(최대 ${Math.floor(RESUME_IMAGE_MAX_PIXELS / 1_000_000)}MP).` });
+        }
         try {
           text = await _ocrImageBuffer(file.buffer, sniff.mime === "jpeg" ? "jpg" : sniff.mime);
           extraction = "ocr";
