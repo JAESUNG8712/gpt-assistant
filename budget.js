@@ -1,6 +1,7 @@
 const express = require('express');
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const multer = require('multer');
 const xlsx = require('xlsx');
 const pool = require('./db');
@@ -64,12 +65,45 @@ function _emptyCompanyBudget() {
   };
 }
 
+// 같은 손상된 내용을 프로세스 생애 동안 반복해서 백업 파일로 찍어내지 않기 위한
+// 중복방지 캐시(sha1 해시 집합) — _readAllBudgetFile()은 매 호출(모든 읽기/쓰기 요청)마다
+// 파일을 새로 읽으므로, 백업이 없으면 파일이 고쳐지기 전까지 요청마다 새 백업 파일이
+// 쌓일 수 있다.
+const _budgetCorruptionBackedUp = new Set();
+
 function _readAllBudgetFile() {
   if (!fs.existsSync(BUDGET_FILE)) return {};
+  let rawText;
+  try {
+    rawText = fs.readFileSync(BUDGET_FILE, 'utf8');
+  } catch (e) {
+    console.error('[budget] BUDGET_FILE을 읽을 수 없습니다:', e.message);
+    return {};
+  }
   let raw;
   try {
-    raw = JSON.parse(fs.readFileSync(BUDGET_FILE, 'utf8'));
+    raw = JSON.parse(rawText);
   } catch (e) {
+    // 파일이 손상됐다(쓰는 도중 강제종료로 잘림, 수동 편집 실수 등) — 여기서 그냥
+    // 빈 데이터({})만 반환하면, 호출자(updateBudget 등)가 그 "비어 보이는" 상태에 뭔가를
+    // 저장하는 순간 _writeAllBudgetFile()이 이 상태를 그대로 새 파일에 써버려, 손상되기
+    // 전까지 쌓여있던 모든 회사의 사업계획/예산/개인별 급여상세 데이터가 영구히 사라진다
+    // (P2 — 사용자 보고: "손상되면 빈 데이터로 간주할 수 있어, 이후 저장에서 손상 전
+    // 데이터를 덮어쓸 위험"). 다음 저장이 이 파일을 덮어쓰기 전에, 손상된 원본 바이트를
+    // 타임스탬프가 붙은 별도 파일로 먼저 백업해둔다(수동 복구를 위한 최후의 수단 — 잘린/
+    // 깨진 JSON에서 어디까지가 유효한 데이터인지 프로그램이 안전하게 자동 판단할 방법이
+    // 없어 자동 복구는 시도하지 않는다).
+    const contentHash = crypto.createHash('sha1').update(rawText).digest('hex');
+    if (!_budgetCorruptionBackedUp.has(contentHash)) {
+      _budgetCorruptionBackedUp.add(contentHash);
+      const backupPath = `${BUDGET_FILE}.corrupted-${Date.now()}`;
+      try {
+        fs.writeFileSync(backupPath, rawText, 'utf8');
+        console.error(`[budget] BUDGET_FILE JSON 파싱 실패 — 손상된 원본을 ${backupPath}에 백업하고 빈 데이터로 계속 진행합니다:`, e.message);
+      } catch (backupErr) {
+        console.error('[budget] BUDGET_FILE 손상 감지, 백업 시도도 실패:', backupErr.message, '/ 원래 오류:', e.message);
+      }
+    }
     return {};
   }
   if (!raw || typeof raw !== 'object') return {};
@@ -2463,3 +2497,12 @@ module.exports = function budgetRouterFactory(deps) {
 
   return router;
 };
+
+// server.js의 연도별 스냅샷/복원(POST /snapshots, POST /restore)이 budget_store(사업계획/
+// 예산/개인별급여상세)도 함께 백업·복원할 수 있도록 노출한다 — 기존에는 이 라우터 팩토리
+// 함수 하나만 export돼 있어, /snapshots가 employees/kpiEntries 등 loadData() 소관 필드만
+// 담고 budget_store는 완전히 빠져있었다(사용자 보고: "백업/복원에 예산·사업계획·급여계획
+// 데이터가 빠집니다"). 팩토리 함수 자체의 호출 계약(require("./budget")(deps))은 그대로
+// 유지한 채, 그 함수 객체에 정적 속성으로 추가하는 형태라 기존 마운트 코드에 영향이 없다.
+module.exports.readBudget = readBudget;
+module.exports.updateBudget = updateBudget;

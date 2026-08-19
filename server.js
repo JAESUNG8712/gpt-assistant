@@ -2812,8 +2812,10 @@ app.get("/snapshots", async (req, res) => {
 });
 
 // Every top-level field a full snapshot can contain, in the order they're
-// listed for the "선택 복원" (partial restore) UI.
-const SNAPSHOT_FIELDS = ["employees", "kpiEntries", ...GENERIC_LIST_FIELDS, ...SINGLETON_FIELDS];
+// listed for the "선택 복원" (partial restore) UI. "budget"은 loadData() 소관이 아니라
+// budget.js의 별도 budget_store 저장소를 통째로 담는 특수 필드 — POST /restore에서
+// 일반 필드(ID-keyed 병합 또는 싱글턴 통째 교체)와 다르게 updateBudget()으로 별도 처리된다.
+const SNAPSHOT_FIELDS = ["employees", "kpiEntries", ...GENERIC_LIST_FIELDS, ...SINGLETON_FIELDS, "budget"];
 
 // Summarizes which fields a snapshot actually has data for, with a record
 // count for array fields, so the client can offer a "필요한 부분만 복원" picker.
@@ -2837,6 +2839,12 @@ app.post("/snapshots", async (req, res) => {
   const companyId = req.auth.companyId || null;
   try {
     const data = await loadData(req.auth.companyId);
+    // budget_store(사업계획/예산/개인별급여상세)는 loadData()가 다루는 employees/kpiEntries/
+    // app_collections/app_singletons 계열과 완전히 별도의 테이블·저장소(budget.js 전담)라
+    // 기존 스냅샷에서 통째로 빠져있었다(사용자 보고) — readBudget()으로 함께 읽어 스냅샷
+    // 본문(JSONB/파일 blob)에 "budget" 키로 얹는다. annual_snapshots 스키마 변경 불필요:
+    // snapshot_data 자체가 이미 JSONB라 새 키를 추가로 담는 데 제약이 없다.
+    data.budget = await budgetRouterFactory.readBudget(req.auth.companyId);
     const yr = parseInt(year);
     const empCount = (data.employees || []).length;
     const kpiCount = (data.kpiEntries || []).length;
@@ -2927,6 +2935,8 @@ app.post("/backups/create", async (req, res) => {
     const data = await loadData(req.auth.companyId);
     if (!data.employees.length && !data.kpiEntries.length)
       return res.status(404).json({ ok: false, message: "데이터 없음" });
+    // POST /snapshots와 동일하게 budget_store도 함께 담는다(위 주석 참고).
+    data.budget = await budgetRouterFactory.readBudget(req.auth.companyId);
 
     const empCount = data.employees.length;
     const kpiCount = (data.kpiEntries || []).length;
@@ -3030,10 +3040,14 @@ app.post("/restore", async (req, res) => {
 
     const current = await loadData(companyId);
     const targetFields = fields || describeSnapshotFields(snapshotData).map(f => f.field);
+    const restoreBudget = targetFields.includes("budget") && snapshotData.budget !== undefined;
     const dataToPersist = { ...current };
     const restoredFields = [];
     const extrasByField = {};
     for (const f of targetFields) {
+      if (f === "budget") continue; // budget_store는 loadData()/persistData() 소관이 아니라
+      // 아래에서 updateBudget()으로 별도 처리 — persistData에 그대로 넘기면 알려지지 않은
+      // 필드라 조용히 무시될 뿐이라, 처음부터 일반 필드 병합 루프에서 제외한다.
       if (snapshotData[f] === undefined) continue;
       if (Array.isArray(snapshotData[f]) && ID_KEYED_LIST_FIELDS.includes(f)) {
         // record collection (objects with an `id`) — merge/delete by id
@@ -3051,12 +3065,18 @@ app.post("/restore", async (req, res) => {
       restoredFields.push(f);
     }
 
-    // /restore는 관리자 전용이라 결재 위조 방어(_sanitizeApprovalDoc)를 그대로 통과한다 —
-    // 스냅샷 복원은 과거 시점의 결재 상태를 있는 그대로 되돌리는 것이 목적이다.
-    await persistData(dataToPersist, req.body.user || "restore", companyId, req.auth || null);
-
-    // persistData only ever inserts/updates; explicitly delete the extras
-    // here when the caller opted into a true point-in-time restore.
+    // persistData()가 신규/변경 레코드를 반영해도, deleteExtras가 지우려는 레코드들은
+    // persistData 호출 결과와 무관하게 이미 계산돼 있다(extraIds는 restore 시작 시점의
+    // `current` 스냅샷에서 뽑은 것). 예전에는 이 삭제 루프가 persistData() "다음"에
+    // 별도 트랜잭션으로 실행돼, 중간에 서버가 죽거나 삭제 쪽이 실패하면 "새 레코드는
+    // 반영됐는데 지워졌어야 할 레코드는 남아있는" 어중간한 상태가 될 수 있었다(P2 —
+    // "복원 시 본문 저장과 불필요 레코드 삭제가 별도 트랜잭션"). persistData()보다 먼저
+    // 실행하도록 순서를 바꾸면, 삭제가 실패해 여기서 예외가 나도 persistData()가 아직
+    // 실행되지 않아 아무 변경도 반영되지 않은 상태로 남고(재시도해도 안전, idempotent),
+    // 삭제가 성공한 뒤 persistData()가 실패해도 "이미 지워질 레코드는 지워졌고 새 값은
+    // 아직 반영 전"이라는, 재시도로 동일하게 복구 가능한 상태가 된다 — 두 경우 모두
+    // "부분 복원"이 영구히 고착되지 않는다(완전한 단일 DB 트랜잭션은 아니지만, 실패
+    // 시나리오 전부가 재시도로 수렴하는 순서로 재배치).
     // extraIds는 이미 companyId로 스코프된 `current`(loadData(companyId))에서 계산됐으므로
     // 다른 회사 소유 id가 섞일 수 없지만, company_id 조건도 함께 걸어 방어를 한 겹 더 둔다.
     if (deleteExtras && !USE_JSON_FILE) {
@@ -3087,6 +3107,24 @@ app.post("/restore", async (req, res) => {
           );
         }
       }
+    }
+
+    // /restore는 관리자 전용이라 결재 위조 방어(_sanitizeApprovalDoc)를 그대로 통과한다 —
+    // 스냅샷 복원은 과거 시점의 결재 상태를 있는 그대로 되돌리는 것이 목적이다.
+    await persistData(dataToPersist, req.body.user || "restore", companyId, req.auth || null);
+
+    // budget_store(사업계획/예산/개인별급여상세)는 위 일반 필드 병합 루프에서 제외했으므로
+    // (persistData 소관 밖) 별도로 복원한다 — 다른 singleton 필드와 동일하게 "스냅샷이
+    // 통째로 이긴다"(부분 병합 아님): budget_store 전체를 스냅샷 시점 값으로 교체한다.
+    // updateBudget()이 이미 락(JSON 모드는 동기 원자성, Postgres 모드는 SELECT...FOR UPDATE)을
+    // 쥐고 있어 이 복원 자체가 동시 사업계획 저장과 경합하지 않는다.
+    if (restoreBudget) {
+      await budgetRouterFactory.updateBudget(companyId, async (data) => {
+        Object.keys(data).forEach(k => { delete data[k]; });
+        Object.assign(data, snapshotData.budget);
+        return data;
+      });
+      restoredFields.push("budget");
     }
 
     const finalData = await loadData(companyId);
