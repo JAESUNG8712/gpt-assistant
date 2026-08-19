@@ -8416,7 +8416,7 @@ function saveSecondEval(memberId,year){
 function approveFirst(id){
   const k0=getKpi(id);if(!k0)return;
   if(k0.firstStatus==="approved"){showToast("이미 1차 승인된 항목입니다.","info");return;}
-  kpiEntries=kpiEntries.map(k=>k.id===id?{...k,firstStatus:"approved",updatedAt:new Date().toISOString()}:k);showToast("1차 승인 처리되었습니다.","success");renderApprovals();
+  kpiEntries=kpiEntries.map(k=>k.id===id?{...k,firstStatus:"approved",updatedAt:new Date().toISOString()}:k);showToast("1차 승인 처리되었습니다.","success");autoSaveToServerIfEnabled();renderApprovals();
 }
 function openFinalConfirmModal(id){
   const k=getKpi(id);if(!k)return;const emp=getEmp(k.userId);
@@ -8449,17 +8449,17 @@ function rejectKpi(id,stage){
   const statusField=stage==="first"?"firstStatus":"finalStatus";
   if(k0[statusField]==="rejected"){showToast("이미 반려 처리된 항목입니다.","info");closeModal();return;}
   const r=$("#rej-reason")?.value.trim();if(!r){showToast("반려 사유를 입력하세요.","error");return;}
-  kpiEntries=kpiEntries.map(k=>k.id===id?{...k,[stage==="first"?"firstStatus":"finalStatus"]:"rejected",[stage==="first"?"firstReason":"finalReason"]:r,updatedAt:new Date().toISOString()}:k);closeModal();showToast("반려 처리되었습니다.","info");renderApprovals();
+  kpiEntries=kpiEntries.map(k=>k.id===id?{...k,[stage==="first"?"firstStatus":"finalStatus"]:"rejected",[stage==="first"?"firstReason":"finalReason"]:r,updatedAt:new Date().toISOString()}:k);closeModal();showToast("반려 처리되었습니다.","info");autoSaveToServerIfEnabled();renderApprovals();
 }
  // replaced by saveFirstEval
-function approveRequest(rid){const r=changeRequests.find(x=>x.id===rid);if(!r)return;kpiEntries=kpiEntries.map(k=>k.id===r.kpiId?{...k,...(r.after||{}),updatedAt:new Date().toISOString()}:k);changeRequests=changeRequests.map(x=>x.id===rid?{...x,status:"approved",approvedBy:currentUser.id,processedAt:ts(),updatedAt:new Date().toISOString()}:x);showToast("수정 요청을 승인했습니다.","success");renderApprovals();}
-function rejectRequest(rid){changeRequests=changeRequests.map(x=>x.id===rid?{...x,status:"rejected",processedAt:ts(),updatedAt:new Date().toISOString()}:x);showToast("수정 요청을 반려했습니다.","info");renderApprovals();}
+function approveRequest(rid){const r=changeRequests.find(x=>x.id===rid);if(!r)return;kpiEntries=kpiEntries.map(k=>k.id===r.kpiId?{...k,...(r.after||{}),updatedAt:new Date().toISOString()}:k);changeRequests=changeRequests.map(x=>x.id===rid?{...x,status:"approved",approvedBy:currentUser.id,processedAt:ts(),updatedAt:new Date().toISOString()}:x);showToast("수정 요청을 승인했습니다.","success");autoSaveToServerIfEnabled();renderApprovals();}
+function rejectRequest(rid){changeRequests=changeRequests.map(x=>x.id===rid?{...x,status:"rejected",processedAt:ts(),updatedAt:new Date().toISOString()}:x);showToast("수정 요청을 반려했습니다.","info");autoSaveToServerIfEnabled();renderApprovals();}
 // employees[].updatedAt을 반드시 갱신해야 한다(adjustKpiGrade 주석 참고) — 그러지 않으면
 // Postgres 모드에서 이 등급 지정이 UPDATE 자체가 스킵되어 조용히 유실된다(실측 확인).
 // autoSaveToServerIfEnabled() 호출도 원래 빠져 있어 3분 주기 자동저장 전까지는 서버에
 // 전혀 반영되지 않았다(그 사이 탭을 닫으면 영구 유실).
 function resolveTie(tieId,empId,grade){const tie=tieNotifications.find(t=>t.id===tieId);if(!tie)return;employees=employees.map(e=>{if(e.id!==empId)return e;const gr={...(e.gradeResults||{})};const existing=gr[tie.year]||{};gr[tie.year]={...existing,grade,resolvedBy:currentUser.id,resolvedAt:ts()};return{...e,gradeResults:gr,updatedAt:new Date().toISOString()};});showToast(getEmpName(empId)+" - "+grade+"등급 지정 완료","success");autoSaveToServerIfEnabled();renderApprovals();}
-function markTieResolved(tieId){tieNotifications=tieNotifications.map(t=>t.id===tieId?{...t,resolved:true,updatedAt:new Date().toISOString()}:t);showToast("동점자 처리가 완료되었습니다.","success");renderApprovals();renderSidebar();}
+function markTieResolved(tieId){tieNotifications=tieNotifications.map(t=>t.id===tieId?{...t,resolved:true,updatedAt:new Date().toISOString()}:t);showToast("동점자 처리가 완료되었습니다.","success");autoSaveToServerIfEnabled();renderApprovals();renderSidebar();}
 
 
 
