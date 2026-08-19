@@ -2224,14 +2224,23 @@ function calcEmpFinalScore(empId,year){
   if(!kpis.length)return null;
   return kpis.reduce((t,k)=>{const sc=k.finalScore!=null?k.finalScore:(k.secondScore!=null?k.secondScore:null);return t+(sc!=null?sc*(k.weight/100):0);},0);
 }
-function tryCalcDeptGrades(dept,year){
+function tryCalcDeptGrades(dept,year){ _tryCalcDeptGrades(dept,year,false); }
+// saveFinalConfirm()이 KPI 1건 최종 확정될 때마다 "그 부서 전체가 이제 다 끝났는지"
+// 조용히 확인하기 위해 호출하는 변형 — 기존에는 정의되지 않은 tryCalcDeptGradesSilent()를
+// 호출하고 있어(ReferenceError) 최종 확정 직후 renderApprovals()가 실행되지 못해 화면이
+// 갱신되지 않는 버그가 있었다(저장 자체는 성공하지만 화면은 새로고침 전까지 예전 상태로
+// 남음). "아직 모두 완료되지 않음" 안내 토스트는 매번(관리자가 KPI 1건씩 확정할 때마다)
+// 뜨면 소음이 되므로 억제하고, 실제로 그 부서 전체가 완료돼 등급이 산정될 때의 성공
+// 토스트만 그대로 유지한다.
+function tryCalcDeptGradesSilent(dept,year){ _tryCalcDeptGrades(dept,year,true); }
+function _tryCalcDeptGrades(dept,year,silent){
   const deptEmps=employees.filter(e=>e.active&&e.dept===dept&&(e.role==="member"||e.role==="leader"));
   if(!deptEmps.length)return;
   const allDone=deptEmps.every(emp=>{
     const kpis=kpiEntries.filter(k=>k.userId===emp.id&&k.year===year&&k.goalSub);
     return kpis.length>0&&kpis.every(k=>k.finalStatus==="approved");
   });
-  if(!allDone){showToast("아직 모든 직원의 평가가 완료되지 않았습니다. 전체 완료 후 자동 산정됩니다.","info");return;}
+  if(!allDone){if(!silent)showToast("아직 모든 직원의 평가가 완료되지 않았습니다. 전체 완료 후 자동 산정됩니다.","info");return;}
   const gs=getGradeSettings(dept);
   assignPoolGrades(deptEmps.filter(e=>e.role==="member"),gs.member,dept,year,"member");
   assignPoolGrades(deptEmps.filter(e=>e.role==="leader"),gs.leader,dept,year,"leader");
