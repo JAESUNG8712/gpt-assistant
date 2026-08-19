@@ -2578,6 +2578,33 @@ async function _employeesEmpty() {
 }
 
 // POST /save
+function httpError(status, code, message) {
+  return Object.assign(new Error(message), { status, code });
+}
+
+// P1-3: 운영 더미 데이터 차단. public/index.html의 generateDummyData()/
+// execGenerateDummy()(관리자 화면 버튼으로 가짜 직원·KPI를 즉시 employees/kpiEntries에
+// push하던 기능)는 브라우저 소스에서 완전히 제거했지만, 오래된 캐시된 페이지나
+// DevTools 콘솔에서 과거 코드를 그대로 실행해 demo 마커가 붙은 레코드를 그대로
+// /save로 보내는 경로까지는 UI 제거만으로 막을 수 없다 — 이게 서버 쪽 마지막
+// 방어선이다. 이제 더미 데이터를 만드는 유일한 정상 경로인 scripts/seed-demo.js
+// (lib/demo-data.js)가 생성하는 레코드는 항상 source:"demo" 또는 empNo:"DEMO-..."
+// 표식을 남기므로, 운영(NODE_ENV=production) 환경에서 그 표식이 하나라도 섞여
+// 들어오면 저장 자체를 거부한다. ALLOW_DEMO_DATA=true로 명시적으로 풀지 않는 한
+// 항상 켜져 있다 — NODE_ENV가 production이 아닌 자체호스팅/오프라인/개발 배포는
+// 애초에 이 게이트 대상이 아니다(그런 환경엔 seed-demo.js를 정상적으로 쓸 수 있어야
+// 하므로). 더미 마커가 없는 평범한 저장(기존 직원 삭제 포함)은 이 게이트와 무관하게
+// 그대로 통과한다 — "새로 demo 마커가 붙은 레코드가 섞여 들어오는 저장"만 막는다.
+function rejectDemoDataForProduction(data) {
+  if (process.env.NODE_ENV !== "production" || process.env.ALLOW_DEMO_DATA === "true") return;
+  const demoEmployee = (data?.employees || []).find(e =>
+    e?.source === "demo" || /^DEMO-/i.test(String(e?.empNo || ""))
+  );
+  if (demoEmployee) {
+    throw httpError(403, "DEMO_DATA_FORBIDDEN", "운영 환경에는 더미 데이터를 저장할 수 없습니다.");
+  }
+}
+
 app.post("/save", async (req, res) => {
   // Postgres/SaaS 모드는 항상 인증 필수(부트스트랩 예외 폐기, 위 주석 참고).
   // JSON 파일 모드만 기존 부트스트랩 흐름(직원 0명일 때 1회 무인증 허용)을 그대로 유지한다.
@@ -2627,6 +2654,9 @@ app.post("/save", async (req, res) => {
       // 여기서는 그 토큰으로 실제 어떤 저장이 일어났는지를 기존 변경이력에 얹기만 한다.
       const rawChangedBy = req.query.user || clientData._user || "unknown";
       const changedBy = req.auth?.actingAsMaster ? `master:${req.auth.actingAsMaster} as ${rawChangedBy}` : rawChangedBy;
+      // persist하기 바로 직전에 게이트 — smartMerge()가 이미 끝난 뒤(finalData)라서,
+      // 클라이언트가 직접 보낸 요청과 병합을 거친 요청 양쪽 모두 동일하게 걸린다.
+      rejectDemoDataForProduction(finalData);
       const { duplicateLoginIds } = await _persistDataLocked(finalData, changedBy, companyId, req.auth || null);
       return { finalData, merged, duplicateLoginIds };
     });
@@ -2643,7 +2673,14 @@ app.post("/save", async (req, res) => {
       meta,
       warnings: duplicateLoginIds && duplicateLoginIds.length ? { duplicateLoginIds } : undefined,
     });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) {
+    // rejectDemoDataForProduction() 등 httpError()로 만든 오류는 e.status/e.code를
+    // 갖고 있어 그 상태코드로 응답한다(예: 403 DEMO_DATA_FORBIDDEN) — 그 외의 예외는
+    // 기존과 동일하게 500으로 처리한다(e.code가 없으면 JSON.stringify가 그 필드를
+    // 조용히 생략하므로 기존 호출부의 응답 형태에 영향 없음).
+    const status = Number.isInteger(e.status) ? e.status : 500;
+    res.status(status).json({ ok: false, code: e.code, message: e.message });
+  }
 });
 
 // GET /events — SSE
