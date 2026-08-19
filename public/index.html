@@ -4365,29 +4365,45 @@ function _resetSettingStages(){
 // id별로 로컬 쪽 updatedAt이 더 최신이면(=아직 서버에 반영 안 된 내 변경사항) 로컬을
 // 지키고, 그 외에는 들어오는 서버 스냅샷을 그대로 반영해 다른 사람의 변경도 정상적으로
 // 동기화되게 한다.
-function _mergeByIdPreferNewer(local,incoming){
+//
+// 최초 버전은 incoming 배열만 순회해 local에만 있고 incoming에는 아직 없는 레코드(=
+// 방금 로컬에서 만들었지만 내 디바운스 저장이 아직 나가지 않아 서버에 없는 신규 항목)를
+// 통째로 누락시켰다 — 동시 신규 직원 등록 실측(admin 15명 동시 등록)에서 재현: 전원 "등록
+// 완료" 토스트를 봤지만 DB에는 12명만 반영됨(3명은 등록 직후 다른 관리자의 SSE가 도착해
+// 로컬 배열에서 조용히 사라졌다가, 그 상태 그대로 내 디바운스 저장이 나가버림). fieldName을
+// 받아 recordTombstones에 없는(=내가 방금 삭제한 게 아닌) local-only id를 결과에 이어붙여
+// 신규 레코드가 살아남도록 한다.
+function _mergeByIdPreferNewer(local,incoming,fieldName){
   if(!Array.isArray(incoming))return local;
   if(!Array.isArray(local)||!local.length)return incoming;
   const localById={};
   for(const r of local)if(r&&r.id!=null)localById[r.id]=r;
-  return incoming.map(r=>{
+  const incomingIds=new Set();
+  const merged=incoming.map(r=>{
     if(!r||r.id==null)return r;
+    incomingIds.add(r.id);
     const loc=localById[r.id];
     if(!loc)return r;
     const locTs=loc.updatedAt||loc.createdAt||"";
     const inTs=r.updatedAt||r.createdAt||"";
     return locTs>inTs?loc:r;
   });
+  const deadIds=new Set((fieldName&&recordTombstones[fieldName]||[]).map(t=>t.id));
+  for(const r of local){
+    if(!r||r.id==null||incomingIds.has(r.id)||deadIds.has(r.id))continue;
+    merged.push(r); // local-only record the server hasn't seen yet — keep it
+  }
+  return merged;
 }
 function applyState(state,skipUndo=false){
   if(!skipUndo)_lastRestoreUndo=getFullState();
   _resetSettingStages();
   const d=state.data||state;
-  if(d.employees&&Array.isArray(d.employees)){employees=_mergeByIdPreferNewer(employees,d.employees);_ensureEmpDefaults(employees);}
-  if(d.kpiEntries&&Array.isArray(d.kpiEntries))kpiEntries=_mergeByIdPreferNewer(kpiEntries,d.kpiEntries);
+  if(d.employees&&Array.isArray(d.employees)){employees=_mergeByIdPreferNewer(employees,d.employees,'employees');_ensureEmpDefaults(employees);}
+  if(d.kpiEntries&&Array.isArray(d.kpiEntries))kpiEntries=_mergeByIdPreferNewer(kpiEntries,d.kpiEntries,'kpiEntries');
   if(d.compSessions&&Array.isArray(d.compSessions))compSessions=d.compSessions;
-  if(d.compResponses&&Array.isArray(d.compResponses))compResponses=_mergeByIdPreferNewer(compResponses,d.compResponses);
-  if(d.changeRequests&&Array.isArray(d.changeRequests))changeRequests=_mergeByIdPreferNewer(changeRequests,d.changeRequests);
+  if(d.compResponses&&Array.isArray(d.compResponses))compResponses=_mergeByIdPreferNewer(compResponses,d.compResponses,'compResponses');
+  if(d.changeRequests&&Array.isArray(d.changeRequests))changeRequests=_mergeByIdPreferNewer(changeRequests,d.changeRequests,'changeRequests');
   if(d.settings&&typeof d.settings==="object")settings={...settings,...d.settings};
   if(d.settings?.scoreWeights)settings.scoreWeights={...settings.scoreWeights,...d.settings.scoreWeights};
   if(Array.isArray(settings.boardCategories)){
@@ -4404,21 +4420,21 @@ function applyState(state,skipUndo=false){
   if(d.orgChartHistory&&Array.isArray(d.orgChartHistory))orgChartHistory=d.orgChartHistory;
   if(d.gradeSettings&&typeof d.gradeSettings==="object")gradeSettings={...gradeSettings,...d.gradeSettings};
   if(d.promotionSettings&&typeof d.promotionSettings==="object")promotionSettings={...promotionSettings,...d.promotionSettings};
-  if(d.coreTalentPool&&Array.isArray(d.coreTalentPool))coreTalentPool=_mergeByIdPreferNewer(coreTalentPool,d.coreTalentPool);
-  if(d.talentDevPlans&&Array.isArray(d.talentDevPlans))talentDevPlans=_mergeByIdPreferNewer(talentDevPlans,d.talentDevPlans);
+  if(d.coreTalentPool&&Array.isArray(d.coreTalentPool))coreTalentPool=_mergeByIdPreferNewer(coreTalentPool,d.coreTalentPool,'coreTalentPool');
+  if(d.talentDevPlans&&Array.isArray(d.talentDevPlans))talentDevPlans=_mergeByIdPreferNewer(talentDevPlans,d.talentDevPlans,'talentDevPlans');
   if(d.coreTalentSettings&&typeof d.coreTalentSettings==="object")coreTalentSettings={...coreTalentSettings,...d.coreTalentSettings};
   if(d.compGradeResults&&typeof d.compGradeResults==="object")compGradeResults={...compGradeResults,...d.compGradeResults};
   if(d.gradeAdjustHistory&&Array.isArray(d.gradeAdjustHistory))gradeAdjustHistory=d.gradeAdjustHistory;
   if(d.evaluatorConfig&&typeof d.evaluatorConfig==="object")evaluatorConfig={...evaluatorConfig,...d.evaluatorConfig};
-  if(d.tieNotifications&&Array.isArray(d.tieNotifications))tieNotifications=_mergeByIdPreferNewer(tieNotifications,d.tieNotifications);
-  if(d.lowPerfData&&Array.isArray(d.lowPerfData))lowPerfData=_mergeByIdPreferNewer(lowPerfData,d.lowPerfData);
+  if(d.tieNotifications&&Array.isArray(d.tieNotifications))tieNotifications=_mergeByIdPreferNewer(tieNotifications,d.tieNotifications,'tieNotifications');
+  if(d.lowPerfData&&Array.isArray(d.lowPerfData))lowPerfData=_mergeByIdPreferNewer(lowPerfData,d.lowPerfData,'lowPerfData');
   if(d.approvalTemplates&&Array.isArray(d.approvalTemplates))approvalTemplates=d.approvalTemplates;
   if(d.disabledTplIds&&Array.isArray(d.disabledTplIds))disabledTplIds=d.disabledTplIds;
   if(d.approvalChainSettings&&typeof d.approvalChainSettings==="object")approvalChainSettings={...approvalChainSettings,...d.approvalChainSettings};
   if(d.integrationSettings&&typeof d.integrationSettings==="object")integrationSettings={...integrationSettings,...d.integrationSettings,calendar:{...integrationSettings.calendar,...(d.integrationSettings.calendar||{})}};
   if(d.integrationLogs&&Array.isArray(d.integrationLogs))integrationLogs=d.integrationLogs;
   if(d.approvalDocs&&Array.isArray(d.approvalDocs))approvalDocs=d.approvalDocs;
-  if(d.attendanceRecords&&Array.isArray(d.attendanceRecords))attendanceRecords=_mergeByIdPreferNewer(attendanceRecords,d.attendanceRecords);
+  if(d.attendanceRecords&&Array.isArray(d.attendanceRecords))attendanceRecords=_mergeByIdPreferNewer(attendanceRecords,d.attendanceRecords,'attendanceRecords');
   if(d.payslips&&Array.isArray(d.payslips))payslips=d.payslips;
   if(d.payrollAdjustments&&Array.isArray(d.payrollAdjustments))payrollAdjustments=d.payrollAdjustments;
   if(d.leaveUsagePlans&&Array.isArray(d.leaveUsagePlans))leaveUsagePlans=d.leaveUsagePlans;
@@ -4442,7 +4458,7 @@ function applyState(state,skipUndo=false){
   if(d.approvalDelegations&&Array.isArray(d.approvalDelegations))approvalDelegations=d.approvalDelegations;
   if(d.mandatoryTraining&&Array.isArray(d.mandatoryTraining))mandatoryTraining=d.mandatoryTraining;
   if(d.healthCheckupLog&&Array.isArray(d.healthCheckupLog))healthCheckupLog=d.healthCheckupLog;
-  if(d.scheduleEvents&&Array.isArray(d.scheduleEvents))scheduleEvents=_mergeByIdPreferNewer(scheduleEvents,d.scheduleEvents);
+  if(d.scheduleEvents&&Array.isArray(d.scheduleEvents))scheduleEvents=_mergeByIdPreferNewer(scheduleEvents,d.scheduleEvents,'scheduleEvents');
   if(d._idCounter&&typeof d._idCounter==="number")_id=d._idCounter;
   if(d.recordTombstones&&typeof d.recordTombstones==="object"){
     const cutoff=Date.now()-30*24*60*60*1000;
@@ -7020,6 +7036,23 @@ async function submitHRForm(){
   if(employees.some(e=>e.empNo===v("#hr-empno")||e.loginId===loginId)){showToast("사번 또는 로그인ID가 중복됩니다.","error");return;}
   const career=Number(v("#hr-career"))||0;const edu=$("#hr-edu")?.value||"대학교 졸업";
   const rankCalc=calcAutoRank(career,edu);
+  // 아래 next-id 조회는 서버 왕복이 있는 await라, 그 사이 다른 사용자의 저장이 SSE로
+  // 도착해 renderPageDeferIfEditing()이 이 폼을 다시 그리면(제출 버튼 클릭 직후라 입력칸에
+  // 포커스가 없어 "편집 중" 판정을 피해가므로 지연되지 않는다) 아래에서 v("#hr-name") 등을
+  // await 이후에 다시 읽을 경우 이미 사라진 입력칸에서 빈 값만 읽어와, 위에서는 분명 값이
+  // 있다고 검증됐던 직원이 이름·사번 등이 전부 빈 채로 저장되는 문제가 있었다(동시 등록
+  // 15건 재현 시 15건 전부 이 증상으로 손상됨을 실측 확인). await 이전에 필요한 값을 전부
+  // 미리 캡처해두고, 이후에는 DOM을 다시 읽지 않고 이 캡처본만 사용한다.
+  const fVals={
+    loginId, dept, team,
+    name:v("#hr-name"), empNo:v("#hr-empno"), pw:v("#hr-pw"),
+    role:$("#hr-role")?.value||"member",
+    birth:v("#hr-birth"), gender:$("#hr-gender")?.value||"남", nationality:$("#hr-nationality")?.value||"내국인",
+    hire:v("#hr-hire"), jobGroup:$("#hr-jobgroup")?.value||"관리직",
+    rank:$("#hr-rank")?.value||rankCalc.rank, rankYear:Number(v("#hr-rankyear"))||Math.max(1,Math.round(rankCalc.rankYear)),
+    salary:Number(v("#hr-salary"))||0, eduSchool:v("#hr-eduschool"),
+    position:v("#hr-position"), email:v("#hr-email"), phone:v("#hr-phone"), address:v("#hr-address"),
+  };
   // 예전엔 genId()(서버 스냅샷에서 시작해 이 세션 안에서만 증가하는 로컬 카운터)로
   // id를 발급했는데, 여러 담당자가 거의 동시에 신규 직원을 등록하면 다들 같은
   // 스냅샷에서 출발해 같은 id를 발급받아 한 명만 저장되고 나머지는 조용히 사라지는
@@ -7030,7 +7063,7 @@ async function submitHRForm(){
     const r=await serverRequest("POST","/api/employees/next-id",null,8000);
     newId=r?.ok?r.id:genId();
   }catch(e){ newId=genId(); }
-  const newEmp={id:newId,loginId,pw:v("#hr-pw")||v("#hr-empno"),name:v("#hr-name"),empNo:v("#hr-empno"),role:$("#hr-role")?.value||"member",dept,team,birth:v("#hr-birth"),gender:$("#hr-gender")?.value||"남",nationality:$("#hr-nationality")?.value||"내국인",hire:v("#hr-hire"),jobGroup:$("#hr-jobgroup")?.value||"관리직",rank:$("#hr-rank")?.value||rankCalc.rank,rankYear:Number(v("#hr-rankyear"))||Math.max(1,Math.round(rankCalc.rankYear)),salary:Number(v("#hr-salary"))||0,edu,eduSchool:v("#hr-eduschool"),totalCareer:career,position:v("#hr-position"),email:v("#hr-email"),phone:v("#hr-phone"),address:v("#hr-address"),active:true,customFields:{...hrCustom},careers:[...hrCareers],hrHistory:[],updatedAt:new Date().toISOString()};
+  const newEmp={id:newId,loginId:fVals.loginId,pw:fVals.pw||fVals.empNo,name:fVals.name,empNo:fVals.empNo,role:fVals.role,dept:fVals.dept,team:fVals.team,birth:fVals.birth,gender:fVals.gender,nationality:fVals.nationality,hire:fVals.hire,jobGroup:fVals.jobGroup,rank:fVals.rank,rankYear:fVals.rankYear,salary:fVals.salary,edu,eduSchool:fVals.eduSchool,totalCareer:career,position:fVals.position,email:fVals.email,phone:fVals.phone,address:fVals.address,active:true,customFields:{...hrCustom},careers:[...hrCareers],hrHistory:[],updatedAt:new Date().toISOString()};
   employees.push(newEmp);
   if(dept&&!orgDB.depts.includes(dept)){orgDB.depts.push(dept);orgDB.teams[dept]=[];}
   if(dept&&team&&!getTeams(dept).includes(team)){if(!orgDB.teams[dept])orgDB.teams[dept]=[];orgDB.teams[dept].push(team);}
