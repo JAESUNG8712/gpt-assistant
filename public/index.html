@@ -6879,6 +6879,7 @@ function saveSelfEdit(canEditAll){
 
 // ==================== HR REGISTER ====================
 function renderHRRegister(){
+  resetHrResumeTouched();
   const c=$("#content");
   c.innerHTML=`<div class="card"><div class="card-head"><h3>📎 AI 이력서 자동 파싱</h3></div><div class="card-body">
     <div class="flex items-c gap3 wrap">
@@ -6891,15 +6892,15 @@ function renderHRRegister(){
   </div></div>
   <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
     <div class="card"><div class="card-head"><h3>기본 정보</h3></div><div class="card-body"><div class="g2">
-      <div class="fg"><label class="fl">이름 <span class="req">*</span></label><input class="fc" id="hr-name" placeholder="홍길동"></div>
+      <div class="fg"><label class="fl">이름 <span class="req">*</span></label><input class="fc" id="hr-name" placeholder="홍길동" oninput="markHrResumeTouched('hr-name')"></div>
       <div class="fg"><label class="fl">사번 <span class="req">*</span></label><input class="fc" id="hr-empno" placeholder="EMP-001"></div>
-      <div class="fg"><label class="fl">생년월일</label><input class="fc" id="hr-birth" type="date"></div>
-      <div class="fg"><label class="fl">성별</label><select class="fc" id="hr-gender"><option>남</option><option>여</option></select></div>
+      <div class="fg"><label class="fl">생년월일</label><input class="fc" id="hr-birth" type="date" oninput="markHrResumeTouched('hr-birth')"></div>
+      <div class="fg"><label class="fl">성별</label><select class="fc" id="hr-gender" onchange="markHrResumeTouched('hr-gender')"><option>남</option><option>여</option></select></div>
       <div class="fg"><label class="fl">국적</label><select class="fc" id="hr-nationality"><option>내국인</option><option>외국인</option></select></div>
       <div class="fg"><label class="fl">입사일 <span class="req">*</span></label><input class="fc" id="hr-hire" type="date"></div>
       <div class="fg"><label class="fl">직책</label><select class="fc" id="hr-position"><option value="">없음</option>${orgDB.positions.filter(p=>p).map(p=>`<option>${h(p)}</option>`).join("")}</select></div>
-      <div class="fg"><label class="fl">이메일</label><input class="fc" id="hr-email" type="email"></div>
-      <div class="fg"><label class="fl">연락처</label><input class="fc" id="hr-phone" placeholder="010-0000-0000"></div>
+      <div class="fg"><label class="fl">이메일</label><input class="fc" id="hr-email" type="email" oninput="markHrResumeTouched('hr-email')"></div>
+      <div class="fg"><label class="fl">연락처</label><input class="fc" id="hr-phone" placeholder="010-0000-0000" oninput="markHrResumeTouched('hr-phone')"></div>
       <div class="fg cs2"><label class="fl">주소</label><input class="fc" id="hr-address" placeholder="서울시 강남구"></div>
     </div></div></div>
     <div class="card"><div class="card-head"><h3>소속 및 직급 정보</h3></div><div class="card-body">
@@ -6912,17 +6913,17 @@ function renderHRRegister(){
       </div>
       <div id="hr-team-new-wrap" style="display:none" class="fg"><input class="fc" id="hr-team-new" placeholder="팀 직접 입력"></div>
       <div class="g2">
-        <div class="fg"><label class="fl">직군 <span class="req">*</span></label><select class="fc" id="hr-jobgroup">${JOB_GROUPS.map(j=>`<option>${j}</option>`).join("")}</select></div>
-        <div class="fg"><label class="fl">최종학력 <span class="req">*</span></label><select class="fc" id="hr-edu" onchange="autoRankOnChange()">${EDU_LEVELS.map(e=>`<option>${e}</option>`).join("")}</select></div>
+        <div class="fg"><label class="fl">직군 <span class="req">*</span></label><select class="fc" id="hr-jobgroup" onchange="markHrResumeTouched('hr-jobgroup')">${JOB_GROUPS.map(j=>`<option>${j}</option>`).join("")}</select></div>
+        <div class="fg"><label class="fl">최종학력 <span class="req">*</span></label><select class="fc" id="hr-edu" onchange="markHrResumeTouched('hr-edu');autoRankOnChange()">${EDU_LEVELS.map(e=>`<option>${e}</option>`).join("")}</select></div>
         <div class="fg"><label class="fl">총 경력 (년) <span class="req">*</span></label>
-          <div class="flex gap2"><input class="fc" id="hr-career" type="number" min="0" value="0" oninput="autoRankOnChange()" style="flex:1">
+          <div class="flex gap2"><input class="fc" id="hr-career" type="number" min="0" value="0" oninput="markHrResumeTouched('hr-career');autoRankOnChange()" style="flex:1">
           <button class="btn btn-teal btn-sm" onclick="applyAutoRank()" title="경력/학력 기준으로 직급 자동 산정">⚡ 직급 자동산정</button></div>
         </div>
-        <div class="fg"><label class="fl">학교명 (졸업년도)</label><input class="fc" id="hr-eduschool" placeholder="서울대학교 (2020)"></div>
+        <div class="fg"><label class="fl">학교명 (졸업년도)</label><input class="fc" id="hr-eduschool" placeholder="서울대학교 (2020)" oninput="markHrResumeTouched('hr-eduschool')"></div>
       </div>
       <div id="rank-calc-result"></div>
       <div class="g2 mt3">
-        <div class="fg"><label class="fl">직급 <span class="req">*</span></label><select class="fc" id="hr-rank">${orgDB.ranks.map(r=>`<option>${h(r)}</option>`).join("")}</select></div>
+        <div class="fg"><label class="fl">직급 <span class="req">*</span></label><select class="fc" id="hr-rank" onchange="markHrResumeTouched('hr-rank')">${orgDB.ranks.map(r=>`<option>${h(r)}</option>`).join("")}</select></div>
         <div class="fg"><label class="fl">직급 연차</label><input class="fc" id="hr-rankyear" type="number" min="1" value="1"></div>
         <div class="fg"><label class="fl">연봉 (원)</label><input class="fc" id="hr-salary" type="number" placeholder="50000000" oninput="updateSalaryPreview('hr-salary')"><div id="hr-salary-fmt" class="fz11 text-gray mt1"></div></div>
       </div>
@@ -7103,34 +7104,52 @@ function _showResumeParseNote(kind,message){
 }
 function showResumeParseError(message){_showResumeParseNote("error",message);}
 function showResumeParseSuccess(message){_showResumeParseNote("success",message);}
-// 이미 사용자가 직접 입력한 값은 자동입력으로 덮어쓰지 않는다(빈 칸만 채움).
+// 이력서 자동입력이 "빈 칸인지"가 아니라 "사용자가 실제로 손댔는지"를 기준으로
+// 덮어쓰기를 판단하기 위한 상태. 신규 직원 폼의 성별(남)/경력(0)/학력·직군(첫
+// 옵션)은 전부 "빈 값"이 아니라 기본값이 채워져 있어, 예전 기준(빈 칸만 채움)으로는
+// AI가 값을 뽑아내도 반영되지 않았다 — renderHRRegister() 진입 시 초기화하고,
+// 각 필드의 실제 입력/선택 이벤트에서 표시한다.
+let _hrResumeTouched=new Set();
+function markHrResumeTouched(id){_hrResumeTouched.add(id);}
+function resetHrResumeTouched(){_hrResumeTouched=new Set();}
 function applyHrResumeFields(fields){
-  const setIfBlank=(selector,value)=>{
+  const setIfUntouched=(selector,value)=>{
     const el=$(selector);
-    if(el&&!el.value.trim()&&value!==""&&value!=null)el.value=value;
+    if(!el||_hrResumeTouched.has(el.id)||value==null||value==="")return false;
+    const text=String(value);
+    if(el instanceof HTMLSelectElement&&![...el.options].some(o=>o.value===text))return false;
+    el.value=text;
+    return true;
   };
-  setIfBlank("#hr-name",fields.name);
-  setIfBlank("#hr-birth",fields.birth);
-  setIfBlank("#hr-gender",fields.gender);
-  setIfBlank("#hr-career",Number.isFinite(Number(fields.totalCareer))?String(fields.totalCareer):"");
-  setIfBlank("#hr-edu",fields.edu);
-  setIfBlank("#hr-eduschool",fields.eduSchool);
-  setIfBlank("#hr-jobgroup",fields.jobGroup);
-  setIfBlank("#hr-email",fields.email);
-  setIfBlank("#hr-phone",fields.phone);
+  setIfUntouched("#hr-name",fields.name);
+  setIfUntouched("#hr-birth",fields.birth);
+  setIfUntouched("#hr-gender",fields.gender);
+  const career=Number(fields.totalCareer);
+  const careerApplied=fields.totalCareer!==null&&fields.totalCareer!==""&&Number.isFinite(career)
+    ?setIfUntouched("#hr-career",career)
+    :false;
+  const eduApplied=setIfUntouched("#hr-edu",fields.edu);
+  setIfUntouched("#hr-eduschool",fields.eduSchool);
+  setIfUntouched("#hr-jobgroup",fields.jobGroup);
+  setIfUntouched("#hr-email",fields.email);
+  setIfUntouched("#hr-phone",fields.phone);
   if(!hrCareers?.length&&Array.isArray(fields.careers)&&fields.careers.length){
     hrCareers=fields.careers.map(({co,start,end,pos,desc})=>({co,start,end,pos,desc}));
     renderCareers();
   }
-  if(fields.totalCareer!=null||fields.edu)applyAutoRank();
+  if((careerApplied||eduApplied)&&!_hrResumeTouched.has("hr-rank")&&Number($("#hr-career")?.value)>0)applyAutoRank();
 }
+let _hrResumeUploading=false;
 async function handleResumeFile(input){
   const file=input.files?.[0];
   if(!file)return;
+  if(_hrResumeUploading){input.value="";return;}
   const loading=$("#parse-loading"),result=$("#parse-result");
   if(result)result.innerHTML="";
-  if(file.size>HR_RESUME_MAX_BYTES)return showResumeParseError("파일은 15MB 이하만 업로드할 수 있습니다.");
-  if(!HR_RESUME_ACCEPT.test(file.name))return showResumeParseError("PDF, DOCX, PNG, JPG, WEBP 파일만 지원합니다.");
+  if(file.size>HR_RESUME_MAX_BYTES){input.value="";return showResumeParseError("파일은 15MB 이하만 업로드할 수 있습니다.");}
+  if(!HR_RESUME_ACCEPT.test(file.name)){input.value="";return showResumeParseError("PDF, DOCX, PNG, JPG, WEBP 파일만 지원합니다.");}
+  _hrResumeUploading=true;
+  input.disabled=true;
   if(loading)loading.style.display="inline";
   try{
     const form=new FormData();
@@ -7144,6 +7163,8 @@ async function handleResumeFile(input){
   }finally{
     if(loading)loading.style.display="none";
     input.value="";
+    input.disabled=false;
+    _hrResumeUploading=false;
   }
 }
 
