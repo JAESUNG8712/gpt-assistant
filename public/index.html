@@ -325,12 +325,24 @@ input[type=file]{display:none}
 
 /* ── Tablet (≤900px) ── */
 @media(max-width:900px){
+  /* #main은 데스크톱 기본값(위 15~19행)에 min-width:980px가 박혀있어, 여기서
+     width:100%만 주는 것으로는 그 min-width가 해제되지 않는다 — flex item은
+     width와 별개로 min-width가 우선 적용돼 좁은 화면에서도 980px 아래로 줄어들지
+     않고 #app 전체가 옆으로 밀려나 본문이 잘려 보이는 원인이었다(실측 확인:
+     min-width만 별도로 0으로 되돌려야 실제로 줄어듦). #app의 overflow-x:auto(기본
+     15행)도 이 잘림을 "가로 스크롤 가능"으로만 가려왔을 뿐 원인은 아니었으므로,
+     min-width를 고친 뒤에는 모바일에서 페이지 자체가 옆으로 밀리지 않도록
+     hidden으로 막는다(내부 개별 표는 .tbl-wrap이 각자 auto로 스크롤).
+     #content도 flex item이라 같은 이유로 min-width:0이 필요하다. */
+  #app{overflow-x:hidden}
+  #main{width:100%;min-width:0;flex:1 1 auto}
+  #content{min-width:0}
+  .tbl-wrap{max-width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch}
   #sidebar{position:fixed;top:0;left:-236px;height:100%;z-index:400;
     transition:left .25s ease;box-shadow:4px 0 20px rgba(0,0,0,.3)}
   #sidebar.open{left:0}
   #sidebar-overlay.open{display:block}
   #mobile-menu-btn{display:flex}
-  #main{width:100%}
   #content{padding:12px}
   .stat-grid{grid-template-columns:1fr 1fr;gap:8px}
   .g3{grid-template-columns:1fr 1fr}
@@ -1247,6 +1259,11 @@ const $=s=>document.querySelector(s);
   document.addEventListener("input",e=>{
     const el=e.target;
     if(!el||!el.tagName)return;
+    // data-live-filter가 붙은 입력은 아래 registerLiveFilter() 전용 경로가 전담한다 —
+    // 그 경로는 애초에 input을 다시 그리지 않으므로 이 "다시 그려졌으면 포커스 복원"
+    // 로직 자체가 필요 없고, 두 메커니즘이 같은 input 이벤트를 동시에 처리하면
+    // scheduleLiveFilter()의 디바운스 타이밍과 여기의 커서 추적이 서로 간섭할 수 있다.
+    if(el.dataset&&el.dataset.liveFilter)return;
     // (1) 조합 중이면 여기서 끊어 inline oninput(=다시 그리기)이 아예 실행되지 않게 한다.
     if(e.isComposing){e.stopPropagation();return;}
     pending=null;
@@ -1299,7 +1316,8 @@ const $=s=>document.querySelector(s);
     clearTimeout(stopTimer);
     stopTimer=setTimeout(_disarm,3000);
   }
-  document.addEventListener("input",()=>{
+  document.addEventListener("input",e=>{
+    if(e.target&&e.target.dataset&&e.target.dataset.liveFilter)return;
     const p=pending;
     if(!p){_disarm();return;}
     // 대부분의 화면은 여기(=동기 다시 그리기 완료 직후)에서 곧바로 복원된다.
@@ -1313,9 +1331,50 @@ const $=s=>document.querySelector(s);
   document.addEventListener("compositionend",e=>{
     const el=e.target;
     if(!el||!el.dispatchEvent)return;
+    if(el.dataset&&el.dataset.liveFilter)return; // registerLiveFilter() 전용 compositionend 경로가 따로 처리
     setTimeout(()=>{if(el.isConnected)el.dispatchEvent(new Event("input",{bubbles:true}));},0);
   },true);
 })();
+
+// ── 검색 라이브 필터 공용 helper(P1-2) ──────────────────────────────────────────
+// 위 전역 IME workaround는 "다시 그려져도 포커스를 되돌린다"는 사후 복구 방식이라
+// 모든 화면에 즉시 적용할 수 있었지만, 매 입력마다 화면 전체(또는 큰 영역)를 다시
+// 만드는 근본 구조는 그대로다. 이 helper는 화면을 shell(검색창 등 입력 UI)과
+// results(표/목록)로 미리 나눠둔 화면에서, 입력 자체는 절대 다시 그리지 않고
+// results만 갱신하도록 강제하는 더 안전한 이관 경로다 — data-live-filter="키"를 단
+// 입력에서만 동작하며, 위 전역 리스너들은 이 속성이 있으면 스스로 물러난다.
+// 화면 이관 순서: HR 목록 → 전표/세금계산서/경비 → 품목/재고/견적·발주 →
+// 채용/조직도/게시판. 아직 이관되지 않은 나머지 입력은 기존 전역 workaround가
+// 계속 보호하며, 이 이관이 전부 끝나고 E2E가 통과한 뒤에만 그 workaround를 걷어낸다.
+const _liveFilters=new Map();
+const _liveFilterTimers=new Map();
+const _liveComposing=new WeakSet();
+function registerLiveFilter(key,{set,render,delay=220}){
+  _liveFilters.set(key,{set,render,delay});
+}
+function scheduleLiveFilter(input,key){
+  const filter=_liveFilters.get(key);
+  if(!filter)return;
+  filter.set(input.value);
+  clearTimeout(_liveFilterTimers.get(key));
+  _liveFilterTimers.set(key,setTimeout(()=>filter.render(),filter.delay));
+}
+document.addEventListener("compositionstart",event=>{
+  if(event.target?.dataset?.liveFilter)_liveComposing.add(event.target);
+},true);
+document.addEventListener("compositionend",event=>{
+  const input=event.target;
+  const key=input?.dataset?.liveFilter;
+  if(!key)return;
+  _liveComposing.delete(input);
+  queueMicrotask(()=>scheduleLiveFilter(input,key));
+},true);
+document.addEventListener("input",event=>{
+  const input=event.target;
+  const key=input?.dataset?.liveFilter;
+  if(!key||event.isComposing||_liveComposing.has(input))return;
+  scheduleLiveFilter(input,key);
+},true);
 const h=s=>String(s==null?"":s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
 const badge=(t,c)=>`<span class="badge bg-${c}">${h(t)}</span>`;
 const weightTotal=entries=>entries.reduce((s,e)=>s+Number(e.weight||0),0);
@@ -5244,7 +5303,17 @@ function toggleSidebar(){
   sb.classList.toggle("open");
   ov.classList.toggle("open");
 }
-// Close sidebar when a menu item is clicked on mobile
+// Close sidebar when a menu item is clicked on mobile — 이전엔 이 주석만 있고
+// 실제 구현이 없어(P1-2 발견), 모바일에서 메뉴를 눌러 화면이 바뀐 뒤에도 사이드바
+// 드로어가 열린 채로 남아 본문 위를 계속 가리고 있었다. .open 클래스가 없는(=이미
+// 닫힌) 데스크톱/닫힌 상태에서는 classList.remove()가 아무 효과 없이 조용히
+// 넘어가므로 이 호출을 모든 화면 크기에서 항상 실행해도 안전하다.
+function _closeSidebarOnMobile(){
+  const sb=document.getElementById("sidebar");
+  const ov=document.getElementById("sidebar-overlay");
+  if(sb)sb.classList.remove("open");
+  if(ov)ov.classList.remove("open");
+}
 
 function renderLogin(){
   document.getElementById("app").innerHTML="";
@@ -5870,6 +5939,10 @@ function gotoPage(p){
   // 남아 화면을 가리는 문제가 있었다(모바일 QA에서 발견: 근태 탭 진입 시 뜨는 본인확인
   // 모달을 닫지 않고 다른 메뉴로 이동하면 모달이 사라지지 않고 계속 화면을 덮음).
   if(document.querySelector(".modal-ov"))closeModal();
+  // 모바일에서 사이드바 드로어를 연 채로 메뉴를 누르면(권한이 없어 접근거부로
+  // 끝나는 경우 포함) 항상 드로어를 닫는다 — 아래 여러 return 분기 전부에 적용되도록
+  // 함수 맨 앞에서 한 번만 호출.
+  _closeSidebarOnMobile();
   // board-* 페이지: 해당 카테고리로 이동
   if(p&&p.startsWith("board-")){
     const catId=p.slice(6);
@@ -7167,12 +7240,21 @@ async function handleResumeFile(input){
 function _canViewPrivateHR(){
   return currentUser.role==="admin"||(settings.hrPrivateViewers||[]).map(String).includes(String(currentUser.id));
 }
+// data-live-filter 이관 1호(P1-2) — renderHRList()가 이미 shell(검색·필터바)과
+// renderHRListTbl()(결과 테이블)을 분리해두고 있어, 입력 자체를 다시 그리지 않고
+// 결과만 갱신하는 이 helper로 옮기기에 가장 안전한 화면이었다. 기존 oninput과
+// 동일하게 페이지 번호는 리셋하지 않는다(다른 필터 select들의 onchange와 동일한
+// 기존 동작을 그대로 유지).
+registerLiveFilter("hr-list-search",{
+  set:value=>{hrListFilter.search=value;},
+  render:renderHRListTbl,
+});
 function renderHRList(){
   const depts=_dataDepts(hrListFilter.dept);const filtered=getFilteredEmps();
   const c=$("#content");
   c.innerHTML=`<div class="card"><div class="card-body">
     <div class="filter-bar">
-      <input class="fc" style="width:180px" placeholder="이름/사번/ID 검색" value="${h(hrListFilter.search)}" oninput="hrListFilter.search=this.value;renderHRListTbl()">
+      <input class="fc" style="width:180px" id="hr-list-search" data-live-filter="hr-list-search" placeholder="이름/사번/ID 검색" value="${h(hrListFilter.search)}">
       ${currentUser.role==="admin"?`<select class="fc" style="width:160px" onchange="hrListFilter.dept=this.value;renderHRListTbl()"><option value="">전체 부서</option>${depts.map(d=>`<option${hrListFilter.dept===d?" selected":""}>${h(d)}</option>`).join("")}</select>`:""}
       <select class="fc" style="width:120px" onchange="hrListFilter.role=this.value;renderHRListTbl()"><option value="">전체 권한</option>${Object.entries(ROLES).filter(([k])=>k!=="admin").map(([k,v])=>`<option value="${k}"${hrListFilter.role===k?" selected":""}>${v}</option>`).join("")}</select>
       <select class="fc" style="width:120px" onchange="hrListFilter.status=this.value;renderHRListTbl()"><option value="active"${hrListFilter.status==="active"?" selected":""}>재직 중</option><option value="inactive"${hrListFilter.status==="inactive"?" selected":""}>퇴직</option><option value="">전체</option></select>
