@@ -763,6 +763,27 @@ async function initDB() {
   // `_seedCompanyDefaults()`로 수행한다. (레거시 백필 데이터의 company_id NULL 행은 그대로
   // 유지되며, GET 라우트의 `(company_id = $N OR company_id IS NULL)` 패턴으로 계속 노출된다 —
   // 이 자리에서 새로 만들지 않을 뿐이다.)
+
+  // 위 JSON 파일 모드 분기에는 부팅 시점 더미 데이터 fail-fast(rejectDemoDataForProduction)를
+  // 걸어뒀는데, 이 Postgres 분기에는 걸지 않고 있었다 — 그런데 실제 운영 배포(DATABASE_URL이
+  // 설정된 이 경로)는 정확히 이 분기를 타므로, 그 보호가 진짜 운영 서비스에는 전혀 적용되지
+  // 않는 사각지대였다. 멀티테넌트(회사별 분리) 구조라 employees 전체를 메모리로 끌어오는 대신,
+  // 더미 마커에 해당하는 행이 하나라도 있는지만 DB에 직접 물어본다(LIMIT 1, 인덱스 없이도
+  // 부팅 1회성 쿼리라 비용이 크지 않음). 걸리면 파일 모드와 동일하게 서버 기동 자체를 막는다
+  // (DB 자체는 전혀 건드리지 않는다 — SELECT만 실행).
+  if (process.env.NODE_ENV === "production" && process.env.ALLOW_DEMO_DATA !== "true") {
+    const [empDemo, kpiDemo] = await Promise.all([
+      pool.query(
+        `SELECT 1 FROM employees WHERE is_deleted = FALSE AND (
+           data->>'source' = 'demo' OR data->>'empNo' ~* '^DEMO-' OR data->>'empNo' ~* '^DM[^0-9]{1,4}[0-9]{2,4}$'
+         ) LIMIT 1`
+      ),
+      pool.query(`SELECT 1 FROM kpi_entries WHERE is_deleted = FALSE AND data->>'source' = 'demo' LIMIT 1`),
+    ]);
+    if (empDemo.rowCount > 0 || kpiDemo.rowCount > 0) {
+      throw new Error("운영 환경에는 더미 데이터를 저장할 수 없습니다. (DB에 이미 존재하는 demo 마커 레코드 발견 — 부팅 중단)");
+    }
+  }
 }
 
 // 신규 가입 회사에 기초 계정과목/위치를 시딩한다(과거 "전역 최초 1회" 시딩을 대체 — 위 initDB()
