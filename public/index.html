@@ -1710,7 +1710,7 @@ async function serverRequest(method, endpoint, body=null, timeout=8000){
 // 않는다(지정하면 브라우저가 자동으로 넣는 multipart boundary가 깨진다). 실패한 fetch
 // 자체(네트워크 끊김·timeout)는 예외를 그대로 던지므로 호출부가 try/catch로 감싸야 한다
 // (OCR+AI 파싱은 수십 초 걸릴 수 있어 기본 timeout을 serverRequest보다 넉넉히 잡는다).
-async function serverFormRequest(endpoint, formData, timeout=45000){
+async function serverFormRequest(endpoint, formData, timeout=65000){
   const base = serverConfig.url.replace(/\/+$/, "");
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeout);
@@ -2216,7 +2216,9 @@ async function restoreServerBackup(name, fields, deleteExtras){
 
 // ── Auto-save hooks (call after major data changes) ──
 function autoSaveToServerIfEnabled(){
-  if(serverConfig.enabled && serverConfig.url) autoSaveDebounced();
+  // autoSaveDebounced()는 서버 모드뿐 아니라 demo=1일 때 localStorage 영속도 담당한다.
+  // 이 래퍼에서 서버 조건으로 막으면 성공 toast 뒤 새로고침했을 때 데모 변경이 사라진다.
+  autoSaveDebounced();
 }
 
 // ==================== COMP EVAL ASSIGNMENT ====================
@@ -8020,7 +8022,7 @@ function _openKpiEdit(id){const k=getKpi(id);if(!k)return;
   <div class="modal-foot"><button class="btn btn-ghost btn-sm" onclick="saveKpiDraft(null,null,${id})">💾 임시저장</button><div style="flex:1"></div><button class="btn btn-secondary" onclick="closeModal()">취소</button><button class="btn btn-primary" onclick="saveKpiEdit(${id})">저장</button></div></div>`);
   if(defJob)_aiKpiJobSampleShow("ke-job","ke-job-sample");}
 function saveKpiEdit(id){
-  if(!isKpiStageOpen()&&settings.kpiGoalStart){showToast("KPI 수정 기간이 아닙니다.","error");return;}const item=$("#ke-item")?.value.trim(),wt=Number($("#ke-wt")?.value);if(!item||!wt){showToast("항목과 비중을 입력하세요.","error");return;}kpiEntries=kpiEntries.map(k=>k.id===id?{...k,item,weight:wt,prev:$("#ke-prev")?.value.trim()||"",goal:$("#ke-goal")?.value.trim()||"",yoy:$("#ke-yoy")?.value.trim()||"",strategy:$("#ke-str")?.value.trim()||"",evalCriteria:$("#ke-crit")?.value.trim()||"",updatedAt:new Date().toISOString()}:k);closeModal();showToast("KPI가 수정되었습니다.","success");renderKPI(false);}
+  if(!isKpiStageOpen()&&settings.kpiGoalStart){showToast("KPI 수정 기간이 아닙니다.","error");return;}const item=$("#ke-item")?.value.trim(),wt=Number($("#ke-wt")?.value);if(!item||!wt){showToast("항목과 비중을 입력하세요.","error");return;}kpiEntries=kpiEntries.map(k=>k.id===id?{...k,item,weight:wt,prev:$("#ke-prev")?.value.trim()||"",goal:$("#ke-goal")?.value.trim()||"",yoy:$("#ke-yoy")?.value.trim()||"",strategy:$("#ke-str")?.value.trim()||"",evalCriteria:$("#ke-crit")?.value.trim()||"",updatedAt:new Date().toISOString()}:k);autoSaveToServerIfEnabled();closeModal();showToast("KPI가 수정되었습니다.","success");renderKPI(false);}
 function openKpiResult(id){const k=getKpi(id);if(!k)return;
   if(k.userId!==currentUser.id&&currentUser.role!=="admin"){showToast("자체 평가는 본인만 입력할 수 있습니다.","error");return;}showModal(`<div class="modal modal-md"><div class="modal-head"><h2>KPI 결과 입력</h2><button class="modal-close" onclick="closeModal()">×</button></div>
   <div class="modal-body">
@@ -8031,8 +8033,16 @@ function openKpiResult(id){const k=getKpi(id);if(!k)return;
     <div class="fg"><label class="fl">자체 평가 점수 (0~100점)</label><input class="fc" id="kr-self" type="number" min="0" max="100" step="1" value="${k.selfScore??""}" placeholder="예: 85"></div>
   </div>
   <div class="modal-foot"><button class="btn btn-ghost btn-sm" onclick="saveKpiResultDraft(${id})">💾 임시저장</button><div style="flex:1"></div><button class="btn btn-secondary" onclick="closeModal()">취소</button><button class="btn btn-primary" onclick="saveKpiResult(${id})">저장</button></div></div>`);}
+function _parseKpiScore(raw){
+  const text=String(raw??"").trim();
+  if(text==="")return {ok:true,value:null};
+  const value=Number(text);
+  return Number.isFinite(value)&&Number.isInteger(value)&&value>=0&&value<=100
+    ?{ok:true,value}
+    :{ok:false};
+}
 function saveKpiResult(id){
-  if(!isKpiStageOpen()&&settings.kpiPerfStart){showToast("KPI 결과 입력 기간이 아닙니다.","error");return;}const s=$("#kr-self")?.value;kpiEntries=kpiEntries.map(k=>k.id===id?{...k,actual:$("#kr-actual")?.value.trim()||"",rate:$("#kr-rate")?.value.trim()||"",detail:$("#kr-detail")?.value.trim()||"",selfScore:s?Number(s):null,perfSub:1,isDraft:false,draftSavedAt:null,updatedAt:new Date().toISOString()}:k);stopKpiAutoDraft();closeModal();showToast("결과가 저장되었습니다.","success");autoSaveToServerIfEnabled();renderKPI(true);}
+  if(!isKpiStageOpen()&&settings.kpiPerfStart){showToast("KPI 결과 입력 기간이 아닙니다.","error");return;}const score=_parseKpiScore($("#kr-self")?.value);if(!score.ok){showToast("자체 평가 점수는 0~100의 정수여야 합니다.","error");return;}kpiEntries=kpiEntries.map(k=>k.id===id?{...k,actual:$("#kr-actual")?.value.trim()||"",rate:$("#kr-rate")?.value.trim()||"",detail:$("#kr-detail")?.value.trim()||"",selfScore:score.value,perfSub:1,isDraft:false,draftSavedAt:null,updatedAt:new Date().toISOString()}:k);stopKpiAutoDraft();closeModal();showToast("결과가 저장되었습니다.","success");autoSaveToServerIfEnabled();renderKPI(true);}
 function openKpiReq(id){
   const k=getKpi(id);if(!k)return;
   const ownerRole=getEmp(k.userId)?.role;const approverLabel=ownerRole==="leader"?"사업부장":"팀장";
@@ -8046,7 +8056,7 @@ function openKpiReq(id){
     <div class="fg"><label class="fl">수정 요청 사유 <span class="req">*</span></label><textarea class="fc" id="rq-reason" rows="2" placeholder="수정이 필요한 이유를 입력하세요"></textarea></div>
   </div>
   <div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal()">취소</button><button class="btn btn-primary" onclick="submitKpiReq(${id})">요청 제출</button></div></div>`);}
-function submitKpiReq(id){const reason=$("#rq-reason")?.value.trim();if(!reason){showToast("수정 요청 사유를 입력하세요.","error");return;}const k=getKpi(id);changeRequests.push({id:genId(),kpiId:id,reqUserId:currentUser.id,status:"pending",reason,before:{actual:k.actual,rate:k.rate,detail:k.detail,selfScore:k.selfScore},after:{actual:$("#rq-actual")?.value.trim()||k.actual,rate:$("#rq-rate")?.value.trim()||k.rate,detail:$("#rq-detail")?.value.trim()||k.detail,selfScore:Number($("#rq-self")?.value)||k.selfScore},createdAt:ts(),updatedAt:new Date().toISOString()});autoSaveToServerIfEnabled();closeModal();showToast("수정 요청이 제출되었습니다.","success");}
+function submitKpiReq(id){const reason=$("#rq-reason")?.value.trim();if(!reason){showToast("수정 요청 사유를 입력하세요.","error");return;}const k=getKpi(id),score=_parseKpiScore($("#rq-self")?.value);if(!score.ok){showToast("자체 평가 점수는 0~100의 정수여야 합니다.","error");return;}const now=ts();changeRequests.push({id:genId(),kpiId:id,empId:k.userId,reqUserId:currentUser.id,status:"pending",reason,before:{actual:k.actual,rate:k.rate,detail:k.detail,selfScore:k.selfScore},after:{actual:$("#rq-actual")?.value.trim()||k.actual,rate:$("#rq-rate")?.value.trim()||k.rate,detail:$("#rq-detail")?.value.trim()||k.detail,selfScore:score.value},requestedAt:now,createdAt:now,updatedAt:new Date().toISOString()});autoSaveToServerIfEnabled();closeModal();showToast("수정 요청이 제출되었습니다.","success");}
 function submitKpi(id){
   const k=getKpi(id);if(!k)return;
   const allKpis=kpiEntries.filter(ke=>ke.userId===k.userId&&ke.year===k.year);

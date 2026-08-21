@@ -49,6 +49,7 @@ function _prepareChildEnv(opts) {
     DATA_FILE: dataFile,
     BUDGET_DATA_FILE: budgetDataFile,
     SESSION_SECRET: "test-session-secret-not-for-production",
+    BOOTSTRAP_SECRET: "test-bootstrap-secret",
     NODE_ENV: process.env.NODE_ENV || "test",
     ...(opts.env || {}),
   };
@@ -100,6 +101,26 @@ async function startServer(opts = {}) {
   return { baseUrl, stop, dataDir, dataFile, budgetDataFile, logs, child };
 }
 
+// 파일 모드의 최초 관리자는 더 이상 익명 /save로 만들지 않는다. 테스트도 같은 공개
+// bootstrap 계약을 사용해 운영 보안 경로가 실수로 되돌아가는 회귀를 막는다.
+async function bootstrapAdminAndLogin(server, { loginId, pw, name = "테스트 관리자" }) {
+  const secret = "test-bootstrap-secret";
+  const boot = await fetch(server.baseUrl + "/api/bootstrap/admin", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Bootstrap-Secret": secret },
+    body: JSON.stringify({ loginId, pw, name }),
+  });
+  if (boot.status !== 201) throw new Error(`bootstrap failed: ${boot.status} ${await boot.text()}`);
+  const login = await fetch(server.baseUrl + "/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ loginId, pw }),
+  });
+  const json = await login.json();
+  if (!json.ok || !json.token) throw new Error(`bootstrap login failed: ${JSON.stringify(json)}`);
+  return json;
+}
+
 // server.js가 부팅 자체를 거부하도록(예: production + DATA_FILE에 더미 마커) 의도한
 // 시나리오 전용 — startServer()는 실패 시에도 /status를 15초 동안 계속 폴링하다가
 // 타임아웃하므로 "정상적으로 빨리 죽는지"를 확인하는 용도로 쓰기엔 매번 15초씩 낭비된다.
@@ -128,4 +149,4 @@ async function startServerExpectingBootFailure(opts = {}) {
   };
 }
 
-module.exports = { startServer, startServerExpectingBootFailure, getFreePort };
+module.exports = { startServer, startServerExpectingBootFailure, getFreePort, bootstrapAdminAndLogin };

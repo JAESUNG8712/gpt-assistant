@@ -1117,13 +1117,15 @@ router.post('/emp-pay-plan/settings', async (req, res) => {
   res.json({ ok: true, settings: resultSettings });
 });
 
-// 사업계획 그리드의 자동입력 버튼(전 역할 공개)이 쓰는 조회 — 관리자 전용 목록 조회와
-// 달리 요청자가 명시적으로 지정한 empId들의 항목만 반환한다. 클라이언트는 이미 전체
-// employees[] 배열(연봉 포함, 이 앱에서 기존부터 전 역할에 공개되어 온 정보)을 들고 있어
-// "이 팀 소속 직원 id 목록"을 스스로 판단할 수 있으므로, 그 id들에 한해서만 상세 항목을
-// 내려준다(회사 전체 개인별 급여 상세를 한 번에 열람하는 것은 여전히 관리자 전용).
+// 사업계획 그리드의 개인별 급여 상세 자동입력 조회. empId를 호출자가 직접 지정할 수
+// 있으므로, 팀 범위를 브라우저가 판단하는 방식은 개인정보 접근통제가 될 수 없다.
+// 현재는 관리자만 사용할 수 있게 보수적으로 제한한다. 팀별 기능이 필요하면 개인 식별
+// 값·세부 항목을 반환하지 않는 서버측 집계 endpoint를 별도로 제공해야 한다.
 router.get('/emp-pay-plan/by-ids', async (req, res) => {
-  if (!requireAuth(req, res)) return;
+  // 이 endpoint는 개인별 급여·퇴직 가정의 원문을 반환한다. 요청자가 ids를 직접
+  // 지정할 수 있으므로 역할만 로그인인 상태에서는 타 직원 보수를 조회할 수 있었다.
+  // 팀별 자동입력이 필요하면 개인 식별값을 반환하지 않는 별도 집계 API로 제공한다.
+  if (!requireAdmin(req, res)) return;
   const companyId = req.auth.companyId || null;
   const year = req.query.year ? Number(req.query.year) : null;
   const ids = String(req.query.ids || '').split(',').map(s => s.trim()).filter(Boolean);

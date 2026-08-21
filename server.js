@@ -79,6 +79,25 @@ function authenticate(req, res, next) {
   req.auth = verifyToken(token);
   next();
 }
+// 토큰은 서명·만료만 확인하면 계정을 비활성화하거나 비밀번호/역할을 바꾼 뒤에도 TTL(12시간)
+// 동안 살아남는다. 직원 레코드의 authVersion을 토큰에 넣고 매 요청 저장본과 대조해 즉시
+// 철회한다. master/마스터 가장 토큰은 특정 employee 계정에 묶이지 않으므로 제외한다.
+async function isCurrentEmployeeToken(auth) {
+  if (!auth || auth.masterId || auth.actingAsMaster || auth.empId == null) return !!auth;
+  const state = await loadData(auth.companyId || null);
+  const employee = (state.employees || []).find(e => String(e.id) === String(auth.empId));
+  return !!(employee && employee.active && Number(employee.authVersion || 0) === Number(auth.av || 0));
+}
+async function enforceCurrentEmployeeToken(req, res, next) {
+  if (!req.auth) return next();
+  try {
+    if (!(await isCurrentEmployeeToken(req.auth))) req.auth = null;
+  } catch (e) {
+    // 계정 상태를 확인할 수 없는 DB 장애에서는 기존 토큰을 신뢰하지 않는다.
+    req.auth = null;
+  }
+  next();
+}
 function requireAuth(req, res) {
   if (!req.auth) {
     res.status(401).json({ ok: false, message: "로그인이 필요합니다." });
@@ -220,6 +239,73 @@ async function hashPlaintextPw(pw) {
 function stripPwField(data) {
   if (!data || !Array.isArray(data.employees)) return data;
   return { ...data, employees: data.employees.map(({ pw, twoFactorSecret, ...rest }) => rest) };
+}
+
+// `/save`는 전체 상태를 받는 레거시 호환 API다. 일반 사용자가 이 객체의 employees나
+// singleton 설정을 통째로 바꿔 role/password/전사 정책을 위조하지 못하도록, 해당 영역은
+// 항상 저장본을 기준으로 재구성한다. 본인 프로필에서 실제로 수정하도록 제공한 필드만
+// 좁게 허용한다. 새 직원 생성과 권한/급여/입사정보 변경은 관리자 전용 흐름을 사용한다.
+const SELF_EDITABLE_EMPLOYEE_FIELDS = new Set([
+  "email", "phone", "address", "edu", "eduSchool", "totalCareer", "careers",
+]);
+function _boundedText(value, max) {
+  return typeof value === "string" ? value.trim().slice(0, max) : null;
+}
+function _sanitizeOwnCareers(value) {
+  if (!Array.isArray(value)) return null;
+  return value.slice(0, 30).map(row => ({
+    co: _boundedText(row?.co, 120) || "",
+    start: _boundedText(row?.start, 16) || "",
+    end: _boundedText(row?.end, 16) || "",
+    pos: _boundedText(row?.pos, 120) || "",
+    desc: _boundedText(row?.desc, 1000) || "",
+  }));
+}
+function _mergeOwnProfile(stored, incoming) {
+  const out = { ...stored };
+  for (const key of SELF_EDITABLE_EMPLOYEE_FIELDS) {
+    if (!Object.prototype.hasOwnProperty.call(incoming, key)) continue;
+    if (key === "totalCareer") {
+      const n = Number(incoming[key]);
+      if (Number.isFinite(n) && n >= 0 && n <= 80) out[key] = Math.round(n * 10) / 10;
+    } else if (key === "careers") {
+      const careers = _sanitizeOwnCareers(incoming[key]);
+      if (careers) out[key] = careers;
+    } else {
+      const text = _boundedText(incoming[key], key === "address" ? 300 : 160);
+      if (text !== null) out[key] = text;
+    }
+  }
+  out.updatedAt = new Date().toISOString();
+  return out;
+}
+function _isPrivilegedStateWriter(actor) {
+  return !!actor && (actor.role === "admin" || actor.role === "master" || actor.actingAsMaster);
+}
+function preserveServerOwnedStateForNonAdmin(incoming, stored, actor) {
+  if (_isPrivilegedStateWriter(actor)) return incoming;
+  const out = { ...incoming };
+  const incomingEmployees = new Map((Array.isArray(incoming?.employees) ? incoming.employees : [])
+    .filter(e => e && e.id != null)
+    .map(e => [String(e.id), e]));
+  out.employees = (stored?.employees || []).map(emp => {
+    const candidate = incomingEmployees.get(String(emp.id));
+    return candidate && String(emp.id) === String(actor?.empId)
+      ? _mergeOwnProfile(emp, candidate)
+      : emp;
+  });
+  // Settings, role policy and tombstones are global server-owned state. Letting a
+  // non-admin send a redacted/stale copy would also delete fields it cannot read.
+  for (const key of SINGLETON_FIELDS) {
+    if (Object.prototype.hasOwnProperty.call(stored || {}, key)) out[key] = stored[key];
+    else delete out[key];
+  }
+  return out;
+}
+function employeeDirectoryView(employee) {
+  if (!employee || typeof employee !== "object") return employee;
+  const { id, name, empNo, role, dept, team, rank, position, active, hire } = employee;
+  return { id, name, empNo, role, dept, team, rank, position, active, hire };
 }
 // Single employee record (e.g. an employee_history row's `data` column) — strip its own pw
 // and 2FA secret fields, neither of which the client should ever receive back.
@@ -443,6 +529,14 @@ function filterDataForRole(data, auth) {
       if (_refsToVisibleEmpIdsServer(d.cc, employees, _asOf).map(String).includes(myId)) return true;
       return false;
     });
+  }
+  // 위의 역할별 필터는 employees 원본(부서/팀 참조)을 사용해야 하므로 마지막에 수행한다.
+  // 비관리자에게는 동료를 식별·업무배정할 수 있는 directory 정보만 제공한다. 연봉, 주소,
+  // 생년월일, 연락처, 학력/경력, 개인평가 등은 본인 레코드 외에는 API 응답에 포함하지 않는다.
+  if (auth.role !== "admin" && Array.isArray(out.employees)) {
+    out.employees = out.employees.map(employee =>
+      String(employee?.id) === myId ? employee : employeeDirectoryView(employee)
+    );
   }
   return out;
 }
@@ -1282,6 +1376,15 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
       else if (pw == null || pw === "") pw = ex?.pw;
       else pw = await hashPlaintextPw(pw);
       const emp = { ...rawEmp, pw };
+      // 새 계정은 항상 서버가 정한 0부터 시작한다. 기존 계정은 실제 인증 관련 필드가
+      // 바뀐 경우에만 version을 올려, 기존 Bearer 토큰을 다음 요청에서 바로 무효화한다.
+      if (!ex) emp.authVersion = 0;
+      else {
+        const securityChanged = String(emp.loginId || "") !== String(ex.loginId || "") ||
+          String(emp.role || "") !== String(ex.role || "") || Boolean(emp.active) !== Boolean(ex.active) ||
+          String(emp.pw || "") !== String(ex.pw || "");
+        emp.authVersion = Number(ex.authVersion || 0) + (securityChanged ? 1 : 0);
+      }
       if (!ex) {
         _recordFileHistory("employees", emp.id, "insert", changedBy, emp);
       } else if (changed) {
@@ -1479,7 +1582,7 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
       if (rows.length === 0) {
         let pw = rawEmp.pw;
         if (pw != null && pw !== "") pw = await hashPlaintextPw(pw);
-        const emp = { ...rawEmp, pw };
+        const emp = { ...rawEmp, pw, authVersion: 0 };
         await client.query(
           "INSERT INTO employees (id, data, company_id) VALUES ($1, $2, $3)",
           [emp.id, emp, companyId]
@@ -1503,6 +1606,11 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
           if (pw == null || pw === "") pw = rows[0].data.pw;
           else pw = await hashPlaintextPw(pw);
           const emp = { ...rawEmp, pw };
+          const previous = rows[0].data || {};
+          const securityChanged = String(emp.loginId || "") !== String(previous.loginId || "") ||
+            String(emp.role || "") !== String(previous.role || "") || Boolean(emp.active) !== Boolean(previous.active) ||
+            String(emp.pw || "") !== String(previous.pw || "");
+          emp.authVersion = Number(previous.authVersion || 0) + (securityChanged ? 1 : 0);
           await client.query(
             "UPDATE employees SET data = $2, updated_at = NOW() WHERE id = $1",
             [emp.id, emp]
@@ -1926,6 +2034,7 @@ app.use(cors());
 app.use(helmet({ contentSecurityPolicy: false }));
 app.use(express.json({ limit: "50mb" }));
 app.use(authenticate);
+app.use(enforceCurrentEmployeeToken);
 app.use(express.static(path.join(__dirname, "public")));
 // 사업계획(팀별 작성 → 사업부장 승인 → 예산담당자+기획팀장 최종확정) 워크플로우가
 // 요청자의 dept/team을 알아야 해서, budget.js가 자체적으로 갖지 못하는 employees 조회를
@@ -2141,7 +2250,7 @@ app.post("/login", loginLimiter, async (req, res) => {
         return res.json({ ok: false, requireOtp: true, message: "인증 코드가 올바르지 않습니다." });
     }
     // 서버가 실제로 검증한 계정 정보로만 토큰을 발급한다(클라이언트가 보낸 role은 무시).
-    const token = signToken({ empId: employee.id, loginId: employee.loginId, role: employee.role, companyId });
+    const token = signToken({ empId: employee.id, loginId: employee.loginId, role: employee.role, companyId, av: Number(employee.authVersion || 0) });
     res.locals.loginOk = true;
     res.json({ ok: true, employee, token });
   } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
@@ -2276,7 +2385,7 @@ app.post("/api/companies/register", registerLimiter, async (req, res) => {
 
       // 서버가 방금 생성·검증한 값으로만 토큰을 발급한다(클라이언트가 보낸 role 등은 무시 —
       // 이 세션 전체에 이미 적용된 하드닝 기조와 동일).
-      const token = signToken({ empId: adminEmp.id, loginId: adminEmp.loginId, role: adminEmp.role, companyId: company.id });
+      const token = signToken({ empId: adminEmp.id, loginId: adminEmp.loginId, role: adminEmp.role, companyId: company.id, av: Number(adminEmp.authVersion || 0) });
       console.log(`[Companies] 신규 회사 가입: ${company.name} (slug=${company.slug}, id=${company.id})`);
       res.json({
         ok: true,
@@ -2644,11 +2753,64 @@ function rejectDemoDataForProduction(data) {
   }
 }
 
+// 파일 모드의 최초 관리자 생성은 전체 state를 받는 /save가 아니라, 별도의 1회성
+// bootstrap endpoint만 사용한다. 빈/손상 볼륨에서 외부 첫 요청자가 임의 admin과 전사
+// 설정을 주입할 수 있었던 anonymous /save 예외를 제거한다.
+const bootstrapLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { ok: false, code: "BOOTSTRAP_RATE_LIMITED", message: "초기화 시도가 너무 많습니다." },
+});
+function _validBootstrapSecret(req) {
+  const expected = Buffer.from(process.env.BOOTSTRAP_SECRET || "", "utf8");
+  const actual = Buffer.from(req.get("X-Bootstrap-Secret") || "", "utf8");
+  return expected.length > 0 && actual.length === expected.length && crypto.timingSafeEqual(expected, actual);
+}
+function _validBootstrapAdmin({ loginId, name, pw }) {
+  return /^[A-Za-z0-9._-]{3,64}$/.test(String(loginId || "")) &&
+    String(name || "").trim().length >= 1 && String(name).trim().length <= 100 &&
+    Buffer.byteLength(String(pw || ""), "utf8") >= 12 && Buffer.byteLength(String(pw || ""), "utf8") <= 128;
+}
+app.post("/api/bootstrap/admin", bootstrapLimiter, async (req, res) => {
+  if (!USE_JSON_FILE) return res.status(404).json({ ok: false, code: "BOOTSTRAP_NOT_SUPPORTED" });
+  if (!process.env.BOOTSTRAP_SECRET) {
+    return res.status(503).json({ ok: false, code: "BOOTSTRAP_UNAVAILABLE", message: "BOOTSTRAP_SECRET이 설정되지 않았습니다." });
+  }
+  if (!_validBootstrapSecret(req)) {
+    return res.status(401).json({ ok: false, code: "BOOTSTRAP_UNAUTHORIZED", message: "초기화 권한이 없습니다." });
+  }
+  const { loginId, name, pw } = req.body || {};
+  if (!_validBootstrapAdmin({ loginId, name, pw })) {
+    return res.status(400).json({ ok: false, code: "INVALID_BOOTSTRAP_INPUT", message: "초기 관리자 정보를 확인하세요." });
+  }
+  try {
+    await _withSaveLock(async () => {
+      if (!(await _employeesEmpty())) throw httpError(409, "ALREADY_INITIALIZED", "이미 초기화되었습니다.");
+      const now = new Date().toISOString();
+      const id = `admin_${crypto.randomUUID()}`;
+      const state = await loadData(null);
+      state.employees = [{
+        id, loginId: String(loginId), name: String(name).trim(), empNo: "A001", role: "admin", active: true,
+        pw: await hashPlaintextPw(String(pw)), authVersion: 0,
+        dept: "", team: "", birth: "", gender: "", hire: now.slice(0, 10), retireDate: "", retireReason: "",
+        jobGroup: "", rank: "", rankYear: 0, salary: 0, edu: "", eduSchool: "", totalCareer: 0,
+        position: "", email: "", phone: "", address: "", customFields: {}, careers: [], hrHistory: [], gradeResults: {},
+        createdAt: now, updatedAt: now,
+      }];
+      state.kpiEntries = Array.isArray(state.kpiEntries) ? state.kpiEntries : [];
+      await _persistDataLocked(state, "bootstrap", null, { role: "admin", empId: id });
+    });
+    res.status(201).json({ ok: true });
+  } catch (e) {
+    const status = Number.isInteger(e.status) ? e.status : 500;
+    res.status(status).json({ ok: false, code: e.code, message: status < 500 ? e.message : "초기화하지 못했습니다." });
+  }
+});
+
 app.post("/save", async (req, res) => {
-  // Postgres/SaaS 모드는 항상 인증 필수(부트스트랩 예외 폐기, 위 주석 참고).
-  // JSON 파일 모드만 기존 부트스트랩 흐름(직원 0명일 때 1회 무인증 허용)을 그대로 유지한다.
-  const bootstrapExempt = USE_JSON_FILE && await _employeesEmpty();
-  if (!bootstrapExempt && !requireAuth(req, res)) return;
+  if (!requireAuth(req, res)) return;
   const companyId = req.auth?.companyId || null;
   const body = req.body;
   if (!body || typeof body !== "object")
@@ -2664,6 +2826,8 @@ app.post("/save", async (req, res) => {
     const { finalData, merged, duplicateLoginIds } = await _withSaveLock(async () => {
       let finalData = clientData;
       let merged    = false;
+      let serverData;
+      const getServerData = async () => (serverData ??= await loadData(companyId));
 
       // Re-checked *inside* the lock so a request that arrived while another
       // save was in flight sees the version that request just committed,
@@ -2679,9 +2843,12 @@ app.post("/save", async (req, res) => {
       // version it started editing from, so anything other than an exact match is
       // treated as "possibly stale/incomplete, merge to be safe."
       if (clientData._version !== undefined && clientData._version !== _getVersion(companyId)) {
-        const serverData = await loadData(companyId);
-        finalData = smartMerge(serverData, clientData);
+        finalData = smartMerge(await getServerData(), clientData);
         merged    = true;
+      }
+
+      if (!_isPrivilegedStateWriter(req.auth)) {
+        finalData = preserveServerOwnedStateForNonAdmin(finalData, await getServerData(), req.auth);
       }
 
       // changedBy는 원래부터 클라이언트가 보낸 문자열을 그대로 신뢰하는 필드였다(req.auth
@@ -2691,8 +2858,10 @@ app.post("/save", async (req, res) => {
       // kpi_history에는 실제로 마스터가 대신 쓴 것임을 남겨야 한다(계획 문서: impersonation으로
       // 이뤄진 쓰기 작업도 감사 대상). master_audit_log가 impersonate 발급 자체는 이미 기록하므로,
       // 여기서는 그 토큰으로 실제 어떤 저장이 일어났는지를 기존 변경이력에 얹기만 한다.
-      const rawChangedBy = req.query.user || clientData._user || "unknown";
-      const changedBy = req.auth?.actingAsMaster ? `master:${req.auth.actingAsMaster} as ${rawChangedBy}` : rawChangedBy;
+      const identity = `auth:${req.auth.loginId || req.auth.empId}`;
+      const changedBy = req.auth?.actingAsMaster
+        ? `master:${req.auth.actingAsMaster} as ${identity}`
+        : identity;
       // persist하기 바로 직전에 게이트 — smartMerge()가 이미 끝난 뒤(finalData)라서,
       // 클라이언트가 직접 보낸 요청과 병합을 거친 요청 양쪽 모두 동일하게 걸린다.
       rejectDemoDataForProduction(finalData);
@@ -2723,14 +2892,14 @@ app.post("/save", async (req, res) => {
 });
 
 // GET /events — SSE
-app.get("/events", (req, res) => {
+app.get("/events", async (req, res) => {
   // 브라우저 내장 EventSource는 커스텀 헤더(Authorization)를 붙일 수 없어 다른 라우트처럼
   // requireAuth를 그대로 쓸 수 없다 — 그래서 인증 자체가 아예 없었고, 로그인하지 않은
   // 상태로도 실시간 이벤트(잠금 상태에 포함된 편집자 이름, 접속/이탈 이벤트의 사용자명 등)를
   // 그대로 구독할 수 있었다. SSE에서 흔히 쓰는 방식대로 토큰을 쿼리스트링으로 전달받아
   // authenticate 미들웨어와 동일한 verifyToken()으로 검증한다.
   const auth = req.auth || verifyToken(req.query.token);
-  if (!auth) return res.status(401).json({ ok: false, message: "로그인이 필요합니다." });
+  if (!auth || !(await isCurrentEmployeeToken(auth))) return res.status(401).json({ ok: false, message: "로그인이 필요합니다." });
   const companyId = auth.companyId || null;
   const clientId = req.query.clientId || `client_${Date.now()}`;
   const user     = req.query.user     || "unknown";
@@ -3142,6 +3311,10 @@ app.post("/restore", async (req, res) => {
       restoredFields.push(f);
     }
 
+    // 운영 환경의 더미 스냅샷은 어떤 삭제보다 먼저 거부한다. 이전에는 deleteExtras가
+    // 현재 레코드를 삭제한 다음 여기서 403을 내므로, 거부된 복원만으로 데이터가 사라질 수 있었다.
+    rejectDemoDataForProduction(dataToPersist);
+
     // persistData()가 신규/변경 레코드를 반영해도, deleteExtras가 지우려는 레코드들은
     // persistData 호출 결과와 무관하게 이미 계산돼 있다(extraIds는 restore 시작 시점의
     // `current` 스냅샷에서 뽑은 것). 예전에는 이 삭제 루프가 persistData() "다음"에
@@ -3190,7 +3363,6 @@ app.post("/restore", async (req, res) => {
     // 스냅샷 복원은 과거 시점의 결재 상태를 있는 그대로 되돌리는 것이 목적이다.
     // 반면 더미 데이터 게이트는 그대로 적용한다 — POST /save와 동일하게, 개발 환경에서
     // 만든(더미 데이터가 섞인) 스냅샷을 운영 환경에 그대로 복원하는 경로를 막아야 한다.
-    rejectDemoDataForProduction(dataToPersist);
     await persistData(dataToPersist, req.body.user || "restore", companyId, req.auth || null);
 
     // budget_store(사업계획/예산/개인별급여상세)는 위 일반 필드 병합 루프에서 제외했으므로
@@ -5950,7 +6122,7 @@ app.get("/api/pms/projects", async (req, res) => {
   try {
     if (USE_JSON_FILE) return res.json({ ok: true, projects: _filePms.projects });
     const { rows } = await pool.query(
-      "SELECT id, data FROM pms_projects WHERE is_deleted = FALSE AND (company_id = $1 OR company_id IS NULL) ORDER BY created_at DESC",
+      "SELECT id, data FROM pms_projects WHERE is_deleted = FALSE AND company_id IS NOT DISTINCT FROM $1 ORDER BY created_at DESC",
       [req.auth.companyId || null]
     );
     res.json({ ok: true, projects: rows.map(r => ({ id: r.id, ...r.data })) });
@@ -5980,7 +6152,7 @@ app.post("/api/pms/projects", async (req, res) => {
       _saveFilePms();
       return res.json({ ok: true, project });
     }
-    const { rows } = await pool.query("SELECT data FROM pms_projects WHERE id = $1 AND (company_id = $2 OR company_id IS NULL)", [projectId, companyId]);
+    const { rows } = await pool.query("SELECT data FROM pms_projects WHERE id = $1 AND company_id IS NOT DISTINCT FROM $2 AND is_deleted = FALSE", [projectId, companyId]);
     const existing = rows[0] ? rows[0].data : null;
     const project = {
       id: projectId, name, startDate: startDate || "", endDate: endDate || "",
@@ -6019,7 +6191,7 @@ app.post("/api/pms/projects/:id", async (req, res) => {
       _saveFilePms();
       return res.json({ ok: true, project });
     }
-    const { rows } = await pool.query("SELECT data FROM pms_projects WHERE id = $1 AND (company_id = $2 OR company_id IS NULL)", [id, companyId]);
+    const { rows } = await pool.query("SELECT data FROM pms_projects WHERE id = $1 AND company_id IS NOT DISTINCT FROM $2 AND is_deleted = FALSE", [id, companyId]);
     if (!rows.length) return res.status(404).json({ ok: false, message: "프로젝트를 찾을 수 없습니다." });
     const project = { ...rows[0].data };
     if (name != null) project.name = name;
@@ -6031,7 +6203,9 @@ app.post("/api/pms/projects/:id", async (req, res) => {
     if (memo != null) project.memo = memo;
     if (Array.isArray(members)) project.members = members.map(String);
     project.updatedAt = new Date().toISOString();
-    await pool.query("UPDATE pms_projects SET data = $2, updated_at = NOW() WHERE id = $1", [id, project]);
+    // id는 tenant마다 재사용될 수 있다(pms_projects PK = company_id + id). company_id 없이
+    // 갱신하면 다른 회사의 동일 id 프로젝트까지 함께 덮어쓰는 교차-tenant 데이터 손상이 난다.
+    await pool.query("UPDATE pms_projects SET data = $2, updated_at = NOW() WHERE id = $1 AND company_id IS NOT DISTINCT FROM $3", [id, project, companyId]);
     res.json({ ok: true, project });
   } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
 });
@@ -6049,10 +6223,10 @@ app.post("/api/pms/projects/:id/close", async (req, res) => {
       _saveFilePms();
       return res.json({ ok: true, project });
     }
-    const { rows } = await pool.query("SELECT data FROM pms_projects WHERE id = $1 AND (company_id = $2 OR company_id IS NULL)", [id, companyId]);
+    const { rows } = await pool.query("SELECT data FROM pms_projects WHERE id = $1 AND company_id IS NOT DISTINCT FROM $2 AND is_deleted = FALSE", [id, companyId]);
     if (!rows.length) return res.status(404).json({ ok: false, message: "프로젝트를 찾을 수 없습니다." });
     const project = { ...rows[0].data, status: "closed", updatedAt: new Date().toISOString() };
-    await pool.query("UPDATE pms_projects SET data = $2, updated_at = NOW() WHERE id = $1", [id, project]);
+    await pool.query("UPDATE pms_projects SET data = $2, updated_at = NOW() WHERE id = $1 AND company_id IS NOT DISTINCT FROM $3", [id, project, companyId]);
     res.json({ ok: true, project });
   } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
 });
@@ -6102,7 +6276,7 @@ app.get("/api/pms/allocations", async (req, res) => {
 async function _pmsProjectById(projectId, companyId) {
   if (USE_JSON_FILE) return _filePms.projects.find(p => p.id === projectId) || null;
   const { rows } = await pool.query(
-    "SELECT data FROM pms_projects WHERE id = $1 AND is_deleted = FALSE AND (company_id = $2 OR company_id IS NULL)", [projectId, companyId || null]
+    "SELECT data FROM pms_projects WHERE id = $1 AND is_deleted = FALSE AND company_id IS NOT DISTINCT FROM $2", [projectId, companyId || null]
   );
   return rows[0] ? rows[0].data : null;
 }
@@ -6132,6 +6306,7 @@ app.post("/api/pms/allocations", async (req, res) => {
     // 역할과 무관하게 항상 하고, "멤버여야 한다"는 제약만 non-admin에 남긴다.
     const project = await _pmsProjectById(projectId, companyId);
     if (!project) return res.status(404).json({ ok: false, message: "프로젝트를 찾을 수 없습니다." });
+    if (project.status !== "active") return res.status(409).json({ ok: false, message: "종료된 프로젝트에는 투입률을 등록할 수 없습니다." });
     if (role !== "admin") {
       if (!(project.members || []).map(String).includes(String(employeeId))) {
         return res.status(403).json({ ok: false, message: "투입 인원으로 등록된 프로젝트만 선택할 수 있습니다." });
@@ -6202,7 +6377,14 @@ app.post("/api/pms/allocations/:id/delete", async (req, res) => {
 // 직원별 일일 업무 투입(분단위 타임라인) — 본인 또는 admin만 등록 가능, 하루 24시간/겹침 검증
 function _worklogBlocksValid(blocks) {
   if (!Array.isArray(blocks)) return "blocks 형식이 올바르지 않습니다.";
-  const toMin = (t) => { const p = String(t || "").split(":"); return (Number(p[0]) || 0) * 60 + (Number(p[1]) || 0); };
+  // Number("abc") || 0 이면 "abc:00"가 00:00으로 조용히 바뀌고 25:00도
+  // 통과한다. 업무일지는 집계·중복판정의 근거이므로 시각은 엄격한 HH:mm만 허용한다.
+  const toMin = (t) => {
+    const m = /^(\d{2}):(\d{2})$/.exec(String(t || ""));
+    if (!m) return NaN;
+    const hour = Number(m[1]), minute = Number(m[2]);
+    return hour >= 0 && hour <= 23 && minute >= 0 && minute <= 59 ? hour * 60 + minute : NaN;
+  };
   const sorted = [...blocks].sort((a, b) => toMin(a.startTime) - toMin(b.startTime));
   let total = 0;
   for (let i = 0; i < sorted.length; i++) {
@@ -6252,15 +6434,20 @@ app.post("/api/pms/worklogs", async (req, res) => {
     const { role, empId: userId } = req.auth;
     const companyId = req.auth.companyId || null;
     if (!employeeId || !date) return res.status(400).json({ ok: false, message: "직원, 날짜는 필수입니다." });
+    const dateMatch = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(date));
+    const workDate = dateMatch && new Date(Date.UTC(Number(dateMatch[1]), Number(dateMatch[2]) - 1, Number(dateMatch[3])));
+    if (!workDate || workDate.getUTCFullYear() !== Number(dateMatch[1]) || workDate.getUTCMonth() !== Number(dateMatch[2]) - 1 || workDate.getUTCDate() !== Number(dateMatch[3])) {
+      return res.status(400).json({ ok: false, message: "업무일자는 YYYY-MM-DD 형식의 실제 날짜여야 합니다." });
+    }
     if (role !== "admin" && String(employeeId) !== String(userId)) return res.status(403).json({ ok: false, message: "본인 업무 기록만 등록할 수 있습니다." });
     const err = _worklogBlocksValid(blocks || []);
     if (err) return res.status(400).json({ ok: false, message: err });
-    if (role !== "admin") {
-      for (const b of (blocks || [])) {
-        const project = await _pmsProjectById(b.projectId, companyId);
-        if (!project || !(project.members || []).map(String).includes(String(employeeId))) {
+    for (const b of (blocks || [])) {
+      const project = await _pmsProjectById(b.projectId, companyId);
+      if (!project) return res.status(404).json({ ok: false, message: "프로젝트를 찾을 수 없습니다." });
+      if (project.status !== "active") return res.status(409).json({ ok: false, message: "종료된 프로젝트에는 업무 기록을 등록할 수 없습니다." });
+      if (role !== "admin" && !(project.members || []).map(String).includes(String(employeeId))) {
           return res.status(403).json({ ok: false, message: "투입 인원으로 등록된 프로젝트만 선택할 수 있습니다." });
-        }
       }
     }
     const id = `wl_${employeeId}_${date}`;
@@ -7090,9 +7277,9 @@ app.post("/api/hr/resume-parse",
   // 미들웨어가 이미 req.auth를 채워둔 상태이므로 파일을 읽지 않고도 판단 가능).
   (req, res, next) => { if (!requireAdmin(req, res)) return; next(); },
   // 동시 처리 개수 제한 — multer가 파일을 버퍼링하기 전에 게이트해, 이미 정원이
-  // 찬 상태에서는 대용량 본문을 굳이 메모리에 올리지 않는다. finish/close 양쪽에
-  // 해제 훅을 걸되 released 플래그로 중복 감소를 막는다(응답이 끝나는 경로가
-  // 여러 갈래라 한쪽만 걸면 카운터가 새거나 두 번 깎일 수 있음).
+  // 찬 상태에서는 대용량 본문을 굳이 메모리에 올리지 않는다. 브라우저 연결이 먼저
+  // 끊겨도 OCR/AI 작업은 잠시 계속될 수 있으므로 close에서 바로 슬롯을 반납하면
+  // 재시도로 동시 제한을 우회할 수 있다. 실제 작업 handler의 finally에서 반납한다.
   (req, res, next) => {
     if (_resumeInFlight >= RESUME_MAX_CONCURRENT) {
       return res.status(429).json({ ok: false, code: "RESUME_CONCURRENCY_LIMIT", message: "이력서 분석 요청이 동시에 너무 많습니다. 잠시 후 다시 시도하세요." });
@@ -7101,7 +7288,9 @@ app.post("/api/hr/resume-parse",
     let released = false;
     const release = () => { if (released) return; released = true; _resumeInFlight = Math.max(0, _resumeInFlight - 1); };
     res.on("finish", release);
-    res.on("close", release);
+    req._releaseResumeSlot = release;
+    req._resumeTaskStarted = false;
+    req.on("aborted", () => { if (!req._resumeTaskStarted) release(); });
     next();
   },
   (req, res, next) => {
@@ -7112,6 +7301,7 @@ app.post("/api/hr/resume-parse",
     });
   },
   async (req, res) => {
+    req._resumeTaskStarted = true;
     try {
       const file = req.file;
       if (!file) return res.status(400).json({ ok: false, code: "RESUME_FILE_REQUIRED", message: "파일을 선택해주세요." });
@@ -7207,6 +7397,8 @@ app.post("/api/hr/resume-parse",
       res.json({ ok: true, fields, meta: { fileType: sniff.kind, extraction, warnings } });
     } catch (e) {
       res.status(500).json({ ok: false, code: "RESUME_UNKNOWN_ERROR", message: "이력서 처리 중 오류가 발생했습니다." });
+    } finally {
+      req._releaseResumeSlot?.();
     }
   }
 );
@@ -7512,6 +7704,10 @@ app.post("/api/recruit/candidates", async (req, res) => {
     if (!jobId || !name) return res.status(400).json({ ok: false, message: "채용공고, 지원자명은 필수입니다." });
     const job = await _recruitJobById(jobId, companyId);
     if (!job) return res.status(404).json({ ok: false, message: "채용공고를 찾을 수 없습니다." });
+    if (!(await _recruitCanViewJob(job, req.auth.empId, req.auth.role, companyId))) {
+      return res.status(403).json({ ok: false, message: "해당 채용공고에 지원자를 등록할 권한이 없습니다." });
+    }
+    if (job.status !== "open") return res.status(409).json({ ok: false, message: "마감된 채용공고에는 지원자를 등록할 수 없습니다." });
     const candidateId = `cand_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const now = new Date().toISOString();
     const candidate = {
@@ -7720,6 +7916,16 @@ app.post("/api/recruit/interviews", async (req, res) => {
     }
     const job = await _recruitJobById(jobId, companyId);
     if (!job) return res.status(404).json({ ok: false, message: "채용공고를 찾을 수 없습니다." });
+    if (!(await _recruitCanViewJob(job, req.auth.empId, req.auth.role, companyId))) {
+      return res.status(403).json({ ok: false, message: "해당 채용공고에 면접을 등록할 권한이 없습니다." });
+    }
+    if (job.status !== "open") return res.status(409).json({ ok: false, message: "마감된 채용공고에는 면접을 등록할 수 없습니다." });
+    const candidate = (await _recruitAllCandidates(companyId)).find(c => String(c.id) === String(candidateId));
+    if (!candidate) return res.status(404).json({ ok: false, message: "지원자를 찾을 수 없습니다." });
+    if (String(candidate.jobId) !== String(jobId)) return res.status(400).json({ ok: false, message: "지원자가 선택한 채용공고와 일치하지 않습니다." });
+    if (!Array.isArray(job.stages) || roundNum >= job.stages.length) {
+      return res.status(400).json({ ok: false, message: "채용공고의 전형 단계 범위를 벗어난 면접 회차입니다." });
+    }
     const id = `iv_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const now = new Date().toISOString();
     const normInterviewerIds = interviewerIds.map(String);
