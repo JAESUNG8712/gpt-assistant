@@ -42,7 +42,9 @@ if (!ADMIN_DATABASE_URL) {
     });
 
     let serverA; // 공용 서버 인스턴스(schema.sql은 서버 부팅 시 자동 적용됨)
+    let serverB;
     t.after(async () => { if (serverA) await serverA.stop(); });
+    t.after(async () => { if (serverB) await serverB.stop(); });
     serverA = await startServer({ env: { DATABASE_URL: testDbUrl } });
     const api = (p, opts) => fetch(serverA.baseUrl + p, opts);
 
@@ -127,6 +129,35 @@ if (!ADMIN_DATABASE_URL) {
       });
       const json = await res.json();
       assert.equal(json.ok, false, "회사 B 계정으로 회사 A의 companyCode를 대며 로그인하면 안 됨");
+    });
+
+    await t.test("7b) 서로 다른 서버 인스턴스의 동시 전체 저장도 두 변경을 모두 보존한다", async () => {
+      serverB = await startServer({ env: { DATABASE_URL: testDbUrl } });
+      const apiB = (p, opts) => fetch(serverB.baseUrl + p, opts);
+      const [aStateRes, bStateRes] = await Promise.all([
+        api("/data", { headers: { Authorization: `Bearer ${companyAToken}` } }),
+        apiB("/data", { headers: { Authorization: `Bearer ${companyAToken}` } }),
+      ]);
+      const aState = await aStateRes.json();
+      const bState = await bStateRes.json();
+      assert.equal(aState.version, bState.version, "동시 편집 시작점은 같은 DB 버전이어야 함");
+
+      const [saveA, saveB] = await Promise.all([
+        api("/save", {
+          method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${companyAToken}` },
+          body: JSON.stringify({ _version: aState.version, boardPosts: [{ id: "parallel-a", title: "A 서버 저장", updatedAt: new Date().toISOString() }] }),
+        }),
+        apiB("/save", {
+          method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${companyAToken}` },
+          body: JSON.stringify({ _version: bState.version, boardPosts: [{ id: "parallel-b", title: "B 서버 저장", updatedAt: new Date().toISOString() }] }),
+        }),
+      ]);
+      assert.equal(saveA.status, 200);
+      assert.equal(saveB.status, 200);
+      const finalState = await (await api("/data", { headers: { Authorization: `Bearer ${companyAToken}` } })).json();
+      const ids = new Set((finalState.data.boardPosts || []).map(post => post.id));
+      assert.ok(ids.has("parallel-a"), "A 인스턴스 변경이 유실되면 안 됨");
+      assert.ok(ids.has("parallel-b"), "B 인스턴스 변경이 유실되면 안 됨");
     });
 
     // POST /api/reset-all이 employees/kpi_entries만 지우고 app_collections/app_singletons
