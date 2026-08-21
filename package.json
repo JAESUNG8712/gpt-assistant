@@ -8,7 +8,7 @@
     "dev": "node --watch server.js",
     "start:offline": "node server.js",
     "check": "node --check server.js && node --check budget.js && node scripts/check-client-syntax.js",
-    "test": "node --test --test-concurrency=1 test/api/file-mode.test.js test/api-demo-gate.test.js test/demo-data.test.js",
+    "test": "node --test --test-concurrency=1 test/api/file-mode.test.js test/api-demo-gate.test.js test/api-p0-security.test.js test/demo-data.test.js",
     "test:api": "node --test --test-concurrency=1 test/api-*.test.js",
     "test:postgres": "node --test --test-concurrency=1 test/api/postgres-mode.test.js",
     "test:e2e": "playwright test",

@@ -444,6 +444,34 @@ function filterDataForRole(data, auth) {
       return false;
     });
   }
+  // employees 자체는 지금까지 전혀 좁혀지지 않아, 로그인만 되어 있으면 salary(연봉)·
+  // birth(생년월일)·address(자택주소) 같은 민감 필드를 회사 전체 인원에 대해 그대로
+  // 열람할 수 있었다(2026-08-19 외부 감사 P0-2). email/phone은 사내 전화번호부 성격의
+  // 의도된 공개 필드라 제외, role/loginId는 leader·director의 평가풀/조직관리 로직이
+  // 타인 레코드에서 널리 참조해(코드 확인) 축소하지 않는다 — 이 블록은 반드시 함수
+  // 맨 끝(다른 블록들이 완전한 out.employees를 참조하는 지점 이후)에서 실행돼야 한다.
+  if (auth.role !== "admin" && Array.isArray(out.employees)) {
+    const employees = out.employees;
+    const myEmp = employees.find(e => String(e.id) === myId) || null;
+    const canSeeBroadPersonal = auth.role === "leader" || auth.role === "director";
+    out.employees = employees.map(e => {
+      if (!e) return e;
+      const isSelf = String(e.id) === myId;
+      const sameDept = myEmp && e.dept === myEmp.dept;
+      const sameDeptTeam = sameDept && e.team === myEmp.team;
+      const canSeeSalary = isSelf ||
+        (auth.role === "director" && sameDept) ||
+        (auth.role === "leader" && sameDeptTeam);
+      const canSeeBirth = isSelf || canSeeBroadPersonal;
+      const canSeeAddress = isSelf;
+      if (canSeeSalary && canSeeBirth && canSeeAddress) return e;
+      const copy = { ...e };
+      if (!canSeeSalary) delete copy.salary;
+      if (!canSeeBirth) delete copy.birth;
+      if (!canSeeAddress) delete copy.address;
+      return copy;
+    });
+  }
   return out;
 }
 
@@ -1205,6 +1233,42 @@ function _sanitizeKpiEntry(incoming, stored, actor, actorEmp, empById) {
   }
   return out;
 }
+// employees 쓰기 권한 위조 방어(2026-08-19 외부 감사 P0-1/P0-2 결합 대응). employees도
+// approvalDocs/kpiEntries와 같은 처지다 — 전용 REST 라우트가 아니라 범용 blob 동기화
+// (POST /save)를 타서, "role은 관리자만 바꿀 수 있다"는 규칙이 관리자 전용 UI(직원정보수정
+// 화면)에만 있고 서버에는 전혀 없었다. 실측(2026-08-19 외부 감사 재현): member로 로그인해
+// GET /data로 자기 레코드를 받아 role만 "admin"으로 고쳐 POST /save로 재전송하면 그대로
+// 저장되고, 그 뒤 재로그인한 토큰이 실제로 role:"admin"이었다 — 완전한 권한 상승.
+//
+// 이 함수는 role뿐 아니라 salary/birth/address도 함께 방어한다 — filterDataForRole()에서
+// 같은 감사(P0-2)로 이 세 필드를 non-admin에게 숨기기 시작했는데, 이 앱은 매 저장마다
+// 클라이언트가 가진 employees 전체 배열을 재전송하는 구조라, 그 필드가 "빠진" 로컬 상태를
+// 그대로 재저장하면(흔한 자동저장 패턴) 서버가 그걸 "지우겠다는 요청"으로 오인해 다른
+// 직원의 실제 값을 지워버릴 수 있다(감사가 "P0-1/P0-2는 같은 릴리스에 함께" 넣으라고
+// 지적한 지점). 권한 기준은 openSelfEdit()의 실제 self-service 경로와 일치시킨다 —
+// salary는 어떤 화면에도 non-admin 본인수정 경로가 없어 항상 저장값으로 되돌리고, birth/
+// address는 본인 레코드(isSelf)에 한해 그대로 통과시킨다.
+//
+// actor가 없는 호출(초기 부트스트랩·/restore 등 신뢰된 경로)은 대상이 아니며, 호출부에서
+// `actor && actor.role !== "admin"`일 때만 이 함수를 적용한다(관리자는 그대로 통과 —
+// approvalDocs 결재자 변경과 동일한 관례).
+function _sanitizeEmployeeRecord(rawEmp, stored, actor) {
+  if (!rawEmp) return rawEmp;
+  let out = rawEmp;
+  const cloneOnce = () => { if (out === rawEmp) out = { ...rawEmp }; };
+  const desiredRole = stored ? stored.role : "member";
+  if (out.role !== desiredRole) { cloneOnce(); out.role = desiredRole; }
+  const storedSalary = stored ? stored.salary : undefined;
+  if (out.salary !== storedSalary) { cloneOnce(); out.salary = storedSalary; }
+  const isSelf = actor && actor.empId != null && String(actor.empId) === String(rawEmp.id);
+  if (!isSelf) {
+    const storedBirth = stored ? stored.birth : undefined;
+    const storedAddress = stored ? stored.address : undefined;
+    if (out.birth !== storedBirth) { cloneOnce(); out.birth = storedBirth; }
+    if (out.address !== storedAddress) { cloneOnce(); out.address = storedAddress; }
+  }
+  return out;
+}
 async function persistData(data, changedBy = "system", companyId = null, actor = null) {
   return _withSaveLock(() => _persistDataLocked(data, changedBy, companyId, actor));
 }
@@ -1272,13 +1336,22 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
     // 빈 배열 `[]`을 보낸 경우는 "전원 삭제"라는 의도된 요청일 수 있어 그대로 존중) 기존
     // 목록을 보존한다.
     const employeesInputMissing = data.employees === undefined;
-    const employees = employeesInputMissing ? (_fileStore.employees || []) : await Promise.all((data.employees || []).map(async (rawEmp) => {
+    const _empActorNonAdmin = !!(actor && actor.role !== "admin");
+    const employees = employeesInputMissing ? (_fileStore.employees || []) : await Promise.all((data.employees || []).map(async (rawEmpIn) => {
+      const ex0 = existingById[rawEmpIn.id];
+      const rawEmp = _empActorNonAdmin ? _sanitizeEmployeeRecord(rawEmpIn, ex0, actor) : rawEmpIn;
       const ex = existingById[rawEmp.id];
       const oldTs = ex ? (ex.updatedAt || ex.createdAt || "") : "";
       const newTs = rawEmp.updatedAt || rawEmp.createdAt || "";
       const changed = !ex || newTs > oldTs;
+      // 비밀번호는 관리자 또는 본인만 바꿀 수 있다(doChangePW()가 유일한 정상 self-service
+      // 경로 — 현재 비밀번호로 /login 재인증 후 자기 레코드의 pw만 바꾼다). 그 외에는 무시하고
+      // 기존 해시를 그대로 유지한다(2026-08-19 외부 감사 P0-1 — 남의 레코드에 새 pw를 실어
+      // 보내면 그대로 저장돼 계정을 탈취할 수 있었다).
+      const isSelf = actor && actor.empId != null && String(actor.empId) === String(rawEmp.id);
+      const pwAllowed = !_empActorNonAdmin || isSelf;
       let pw = rawEmp.pw;
-      if (!changed) pw = ex.pw;
+      if (!changed || !pwAllowed) pw = ex ? ex.pw : undefined;
       else if (pw == null || pw === "") pw = ex?.pw;
       else pw = await hashPlaintextPw(pw);
       const emp = { ...rawEmp, pw };
@@ -1470,15 +1543,24 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
     // 등으로) 다른 회사 소유의 id를 보내는 경우에 대비해, 기존 행의 company_id가 요청자의
     // company_id와 다르면 그 레코드는 조용히 건너뛴다(404/403 대신 무시 — 다른 회사 리소스의
     // 존재 자체를 노출하지 않는다는 이 세션의 인가 원칙과 동일).
-    for (const rawEmp of (data.employees || [])) {
-      if (!rawEmp.id) continue;
+    const _empActorNonAdmin = !!(actor && actor.role !== "admin");
+    for (const rawEmpIn of (data.employees || [])) {
+      if (!rawEmpIn.id) continue;
       const { rows } = await client.query(
-        "SELECT data, company_id FROM employees WHERE id = $1", [rawEmp.id]
+        "SELECT data, company_id FROM employees WHERE id = $1", [rawEmpIn.id]
       );
       if (rows.length && companyId && rows[0].company_id && rows[0].company_id !== companyId) continue;
+      const rawEmp = _empActorNonAdmin
+        ? _sanitizeEmployeeRecord(rawEmpIn, rows.length ? rows[0].data : null, actor)
+        : rawEmpIn;
+      // 비밀번호는 관리자 또는 본인만(2026-08-19 외부 감사 P0-1 — JSON 파일 모드와 동일한
+      // 방어를 Postgres/SaaS 모드에도 적용).
+      const isSelf = actor && actor.empId != null && String(actor.empId) === String(rawEmp.id);
+      const pwAllowed = !_empActorNonAdmin || isSelf;
       if (rows.length === 0) {
         let pw = rawEmp.pw;
-        if (pw != null && pw !== "") pw = await hashPlaintextPw(pw);
+        if (!pwAllowed) pw = undefined;
+        else if (pw != null && pw !== "") pw = await hashPlaintextPw(pw);
         const emp = { ...rawEmp, pw };
         await client.query(
           "INSERT INTO employees (id, data, company_id) VALUES ($1, $2, $3)",
@@ -1500,7 +1582,8 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
         // the JSON-file branch above.
         if (newTs > oldTs) {
           let pw = rawEmp.pw;
-          if (pw == null || pw === "") pw = rows[0].data.pw;
+          if (!pwAllowed) pw = rows[0].data.pw;
+          else if (pw == null || pw === "") pw = rows[0].data.pw;
           else pw = await hashPlaintextPw(pw);
           const emp = { ...rawEmp, pw };
           await client.query(
