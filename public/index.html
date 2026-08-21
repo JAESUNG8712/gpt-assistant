@@ -7,6 +7,7 @@
 <style>
 *{box-sizing:border-box;margin:0;padding:0;font-family:inherit}
 html,body{height:100%;font-family:'맑은 고딕','Malgun Gothic',-apple-system,BlinkMacSystemFont,sans-serif;font-size:16px;background:#f1f5f9;color:#1e293b}
+body.has-modal,body.sidebar-open{overflow:hidden}
 input,textarea,select,button{font-family:inherit}
 ::-webkit-scrollbar{width:6px;height:6px}::-webkit-scrollbar-thumb{background:#cbd5e1;border-radius:3px}
 *:hover::-webkit-scrollbar{width:12px;height:12px}
@@ -604,7 +605,7 @@ button,a,[role=button]{touch-action:manipulation}
 </style>
 </head>
 <body>
-<div id="sidebar-overlay" onclick="toggleSidebar()"></div>
+<div id="sidebar-overlay" onclick="closeSidebar()" aria-hidden="true"></div>
 <div id="app"></div>
 <script>
 // ==================== CONSTANTS ====================
@@ -2470,9 +2471,44 @@ function showToast(msg,type="success"){
   document.body.appendChild(t);
   setTimeout(()=>{t.style.opacity="0";t.style.transition="opacity .4s";setTimeout(()=>t.remove(),400);},3000);
 }
-function showModal(html){const ov=document.createElement("div");ov.className="modal-ov";ov.innerHTML=html;ov.addEventListener("click",e=>{if(e.target===ov)closeModal();});document.body.appendChild(ov);}
+// 모든 화면이 공통으로 쓰는 모달 접근성 기반. 기존 화면의 HTML 문자열을 한 번에
+// 다시 쓰지 않아도 role/label/초기 포커스/Tab 순환/Escape/원래 버튼 복귀를 보장한다.
+const _modalState=new WeakMap();let _modalTitleSeq=0;
+const _modalFocusableSelector='a[href]:not([tabindex="-1"]),button:not([disabled]),input:not([disabled]):not([type="hidden"]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])';
+const _modalStack=()=>[...document.querySelectorAll(".modal-ov")];
+const _modalDialog=ov=>ov?.querySelector("[data-modal-dialog],.modal,.modal-box")||null;
+const _modalFocusable=dialog=>dialog?[...dialog.querySelectorAll(_modalFocusableSelector)].filter(el=>!el.hidden&&el.getClientRects().length>0):[];
+function _syncModalBackground(){
+  const active=_modalStack().length>0,app=document.getElementById("app");
+  document.body.classList.toggle("has-modal",active);
+  if(app){app.inert=active;if(active)app.setAttribute("aria-hidden","true");else app.removeAttribute("aria-hidden");}
+}
+function _focusModal(dialog){const target=dialog?.querySelector("[data-modal-initial-focus],[autofocus]")||_modalFocusable(dialog)[0]||dialog;target?.focus({preventScroll:true});}
+function showModal(html){
+  const ov=document.createElement("div");ov.className="modal-ov";ov.innerHTML=html;
+  const dialog=_modalDialog(ov);
+  if(dialog){
+    dialog.setAttribute("role","dialog");dialog.setAttribute("aria-modal","true");dialog.tabIndex=-1;
+    const heading=dialog.querySelector(".modal-head h1,.modal-head h2,.modal-head h3");
+    if(heading){if(!heading.id)heading.id=`modal-title-${++_modalTitleSeq}`;dialog.setAttribute("aria-labelledby",heading.id);}
+    else dialog.setAttribute("aria-label","대화 상자");
+    dialog.querySelectorAll(".modal-close").forEach(button=>{button.type="button";if(!button.getAttribute("aria-label"))button.setAttribute("aria-label","대화 상자 닫기");if(!button.getAttribute("onclick"))button.dataset.modalClose="";});
+  }
+  _modalState.set(ov,{opener:document.activeElement});
+  ov.addEventListener("click",event=>{if(event.target===ov){closeModal();return;}if(event.target.closest("[data-modal-close]")){event.preventDefault();closeModal();}});
+  ov.addEventListener("keydown",event=>{
+    if(_modalStack().at(-1)!==ov)return;
+    if(event.key==="Escape"){event.preventDefault();closeModal();return;}
+    if(event.key!=="Tab"||!dialog)return;
+    const items=_modalFocusable(dialog);if(!items.length){event.preventDefault();dialog.focus();return;}
+    const first=items[0],last=items[items.length-1];
+    if(event.shiftKey&&document.activeElement===first){event.preventDefault();last.focus();}
+    else if(!event.shiftKey&&document.activeElement===last){event.preventDefault();first.focus();}
+  });
+  document.body.appendChild(ov);_syncModalBackground();requestAnimationFrame(()=>_focusModal(dialog));return ov;
+}
 const openModal=showModal; // alias
-function closeTopModal(){const ms=document.querySelectorAll(".modal-ov");if(ms.length)ms[ms.length-1].remove();}
+function closeTopModal(){closeModal();}
 function closeModal(){
   stopKpiAutoDraft();
   setTimeout(()=>{ if(_pendingRender){ _pendingRender=false; renderPage(); } }, 150);
@@ -2486,7 +2522,10 @@ function closeModal(){
   // 프로젝트 등록의 투입인원 추가/삭제)에서는 사용자가 보고 있는 맨 위(최신) 모달이 아니라
   // 그 아래 이미 안 보이는 모달이 지워져, 저장 후에도 화면에 모달이 그대로 남아있는 것처럼
   // 보이는 문제가 있었다. 항상 가장 나중에 열린(맨 위) 모달을 지우도록 통일.
-  const ms=document.querySelectorAll(".modal-ov");if(ms.length)ms[ms.length-1].remove();}
+  const ms=_modalStack(),ov=ms[ms.length-1];if(!ov)return;
+  const opener=_modalState.get(ov)?.opener;ov.remove();_syncModalBackground();
+  requestAnimationFrame(()=>{const parent=_modalStack().at(-1);if(parent)return _focusModal(_modalDialog(parent));if(opener?.isConnected)opener.focus({preventScroll:true});});
+}
 
 
 
@@ -5209,24 +5248,29 @@ function broadcastSettingsChange(label="설정 변경"){
 
 
 // ── Mobile Sidebar Toggle ──────────────────────────────────
-function toggleSidebar(){
+const _isCompactNav=()=>window.matchMedia("(max-width:900px)").matches;
+function setSidebarOpen(open,{restoreFocus=false}={}){
   const sb=document.getElementById("sidebar");
   const ov=document.getElementById("sidebar-overlay");
+  const btn=document.getElementById("mobile-menu-btn");
   if(!sb||!ov)return;
-  sb.classList.toggle("open");
-  ov.classList.toggle("open");
+  const next=!!open&&_isCompactNav();
+  sb.classList.toggle("open",next);ov.classList.toggle("open",next);document.body.classList.toggle("sidebar-open",next);
+  if(btn){btn.setAttribute("aria-expanded",String(next));btn.setAttribute("aria-label",next?"메뉴 닫기":"메뉴 열기");}
+  if(!next&&restoreFocus)btn?.focus({preventScroll:true});
 }
+function toggleSidebar(){setSidebarOpen(!document.getElementById("sidebar")?.classList.contains("open"));}
+function closeSidebar(opts={}){setSidebarOpen(false,opts);}
 // Close sidebar when a menu item is clicked on mobile — 이전엔 이 주석만 있고
 // 실제 구현이 없어(P1-2 발견), 모바일에서 메뉴를 눌러 화면이 바뀐 뒤에도 사이드바
 // 드로어가 열린 채로 남아 본문 위를 계속 가리고 있었다. .open 클래스가 없는(=이미
 // 닫힌) 데스크톱/닫힌 상태에서는 classList.remove()가 아무 효과 없이 조용히
 // 넘어가므로 이 호출을 모든 화면 크기에서 항상 실행해도 안전하다.
 function _closeSidebarOnMobile(){
-  const sb=document.getElementById("sidebar");
-  const ov=document.getElementById("sidebar-overlay");
-  if(sb)sb.classList.remove("open");
-  if(ov)ov.classList.remove("open");
+  closeSidebar({restoreFocus:false});
 }
+document.addEventListener("keydown",event=>{if(event.key==="Escape"&&_isCompactNav()&&document.getElementById("sidebar")?.classList.contains("open")&&!document.querySelector(".modal-ov")){event.preventDefault();closeSidebar({restoreFocus:true});}});
+window.matchMedia("(max-width:900px)").addEventListener("change",event=>{if(!event.matches)closeSidebar({restoreFocus:false});});
 
 function renderLogin(){
   document.getElementById("app").innerHTML="";
@@ -5476,7 +5520,7 @@ function render(){
   const wrap=document.getElementById("login-wrap");if(wrap)wrap.style.display="none";
   const _demoBannerHtml = _demoMode ? `<div id="demo-bar" class="on">🔍 데모 모드 — 데이터는 이 브라우저에만 저장됩니다 (서버 미연결)<button class="demo-reset" onclick="if(confirm('데모 데이터를 초기화하고 기본값으로 되돌릴까요?')){_clearDemoState();location.reload()}">초기화</button></div>` : "";
   const pendingCntInit=approvalDocs.filter(d=>d.status==="in_progress"&&d.approvers.some(a=>a.empId===currentUser?.id&&a.status==="pending")).length;
-  app.innerHTML=`<div id="sidebar"></div><div id="main">${_demoBannerHtml}<div id="topbar"><button id="mobile-menu-btn" onclick="toggleSidebar()" title="메뉴">☰</button><h1 style="font-size:14px;font-weight:700;color:#1e293b;flex-shrink:0" id="page-title"></h1><div style="position:relative;flex:1;min-width:0;max-width:260px" id="search-wrap"><div class="topbar-search"><span style="font-size:13px;color:#94a3b8;flex-shrink:0">🔍</span><input type="search" placeholder="검색..." autocomplete="off" id="global-search-input" oninput="onGlobalSearchInput(this.value)" onblur="setTimeout(closeGlobalSearch,200)" style="min-height:0;font-size:13px;padding:0"></div><div class="search-dropdown" id="search-dropdown" style="display:none"></div></div><div class="flex items-c gap2" style="flex-shrink:0"><span id="topbar-username" class="fz12 text-gray" style="white-space:nowrap">${h(currentUser.name)}</span><button onclick="gotoPage('notification-center')" title="알림" style="background:none;border:none;cursor:pointer;font-size:18px;position:relative;padding:2px 4px">${pendingCntInit>0?`<span style="position:absolute;top:-2px;right:-2px;background:#ef4444;color:white;border-radius:8px;font-size:9px;padding:1px 4px;font-weight:700">${pendingCntInit}</span>`:""}🔔</button><button id="topbar-logout-btn" class="btn btn-secondary btn-sm" onclick="logout()" style="min-height:0">로그아웃</button></div></div><div id="cat-nav"></div><div id="attend-bar"></div><div id="content"></div></div>
+  app.innerHTML=`<div id="sidebar"></div><div id="main">${_demoBannerHtml}<div id="topbar"><button id="mobile-menu-btn" type="button" onclick="toggleSidebar()" title="메뉴" aria-controls="sidebar" aria-expanded="false" aria-label="메뉴 열기">☰</button><h1 style="font-size:14px;font-weight:700;color:#1e293b;flex-shrink:0" id="page-title"></h1><div style="position:relative;flex:1;min-width:0;max-width:260px" id="search-wrap"><div class="topbar-search"><span style="font-size:13px;color:#94a3b8;flex-shrink:0">🔍</span><input type="search" placeholder="검색..." autocomplete="off" id="global-search-input" oninput="onGlobalSearchInput(this.value)" onblur="setTimeout(closeGlobalSearch,200)" style="min-height:0;font-size:13px;padding:0"></div><div class="search-dropdown" id="search-dropdown" style="display:none"></div></div><div class="flex items-c gap2" style="flex-shrink:0"><span id="topbar-username" class="fz12 text-gray" style="white-space:nowrap">${h(currentUser.name)}</span><button onclick="gotoPage('notification-center')" title="알림" style="background:none;border:none;cursor:pointer;font-size:18px;position:relative;padding:2px 4px">${pendingCntInit>0?`<span style="position:absolute;top:-2px;right:-2px;background:#ef4444;color:white;border-radius:8px;font-size:9px;padding:1px 4px;font-weight:700">${pendingCntInit}</span>`:""}🔔</button><button id="topbar-logout-btn" class="btn btn-secondary btn-sm" onclick="logout()" style="min-height:0">로그아웃</button></div></div><div id="cat-nav"></div><div id="attend-bar"></div><div id="content"></div></div>
 <nav id="mobile-tab-nav"><div class="tab-items">
   <button class="tab-item" onclick="gotoPage('dashboard')" id="mtab-dashboard"><span class="ti">🏠</span><span>홈</span></button>
   <button class="tab-item" onclick="gotoPage('attendance')" id="mtab-attendance"><span class="ti">📅</span><span>근태</span></button>
