@@ -45,9 +45,10 @@
    `role`은 더 이상 요청 body/query로 보내도 무시됩니다 — 서버가 토큰에서 검증한 값만 사용합니다.
 
 3. 예외(인증 불필요): `POST /login`, `GET /status`, `GET /events`(SSE), `GET /online`,
-   `POST /api/reset-all`(자체 재검증), `POST /api/auth/2fa/verify-code`.
-   `POST /save`는 **서버에 직원이 0명인 최초 배포 상태에서만** 예외적으로 인증 없이 허용됩니다
-   (최초 관리자 계정 업로드용, 그 외엔 항상 인증 필요).
+   `POST /api/reset-all`(자체 재검증), `POST /api/auth/2fa/verify-code`, JSON 파일 모드의
+   `POST /api/bootstrap/admin`.
+   `POST /save`는 **항상 인증이 필요**합니다. 빈 JSON 파일 모드의 최초 관리자는
+   `BOOTSTRAP_SECRET`과 `X-Bootstrap-Secret` 헤더를 요구하는 전용 부트스트랩 API로만 생성합니다.
 
 ### 1.2 핵심 데이터 모델: "클라이언트 신뢰형 전체 상태 블롭"
 
@@ -72,7 +73,9 @@
 | 메서드/경로 | 설명 | 인증 |
 |---|---|---|
 | `GET /data` | 전체 상태 조회 | 필요 |
-| `POST /save` | 전체 상태 저장 | 필요(부트스트랩 예외) |
+| `POST /save` | 전체 상태 저장 | 필요 |
+| `POST /api/bootstrap/admin` | 빈 JSON 파일 모드 최초 관리자 생성. `{loginId,name,pw}`와 `X-Bootstrap-Secret` 필요, 한 번만 가능 | 불필요(시크릿 필수) |
+| `POST /api/auth/change-password` | 본인 비밀번호 변경. `{currentPassword,newPassword}`; 성공 시 새 Bearer token 반환 | 필요 |
 | `GET /status` | 서버 상태(직원 수, 버전 등) | 불필요 |
 | `POST /lock`, `POST /unlock` | 동시편집 방지용 레코드 잠금 | 필요 |
 | `GET /api/accounting/*` | 회계(계정과목/전표/세금계산서/거래처) | 필요, 대부분 admin |
@@ -154,7 +157,7 @@ AI가 반환한 값도 그대로 신뢰하지 않는다 — `birth`는 실제 �
 | `RESUME_MAX_CONCURRENT` | 아니오 | `3` | 이력서 분석 요청의 동시 처리 개수 상한(시간창 기반 rate limit과 별개). |
 | `GROQ_API_KEY` | 이력서/채용 AI 파싱 기능에 필요 | (미설정) | 없으면 이력서 자동입력은 503(`RESUME_AI_UNAVAILABLE`), 채용 모듈 AI 파싱은 기능 자체가 비활성화됨(무료 발급: https://console.groq.com). |
 | `DEMO_ADMIN_PASSWORD` | `scripts/seed-demo.js` 실행 시 필수 | (미설정) | 생성될 데모 관리자 계정(`demo_admin`)의 로그인 비밀번호(8자 이상). bcrypt 해시로만 저장되고 콘솔에는 로그인 ID만 출력됨. |
-| `BOOTSTRAP_SECRET` | 아니오(JSON 파일 모드에서 opt-in 권장) | (미설정) | JSON 파일 모드에서 직원이 0명일 때 `POST /save`를 무인증으로 1회 허용하는 부트스트랩 예외를 보호. 설정하면 그 요청에 `X-Bootstrap-Secret` 헤더로 같은 값을 실어 보내야만 허용됨(안 맞으면 401 `BOOTSTRAP_SECRET_REQUIRED`) — 서버가 인터넷에 노출된 채로 관리자가 아직 최초 로그인을 하지 않은 짧은 창에 공격자가 먼저 관리자 계정을 선점하는 것을 막는다. 미설정 시 기존과 동일하게 완전히 무인증으로 열려 있음(로컬 자체호스팅 zero-config 경험 유지, PostgreSQL/SaaS 모드에는 이 예외 자체가 없어 무관). |
+| `BOOTSTRAP_SECRET` | JSON 파일 모드 최초 설정 시 필수 | (미설정) | `POST /api/bootstrap/admin`의 one-time 초기화 시크릿. 미설정이면 endpoint가 503으로 fail-closed하며, `POST /save`는 빈 저장소여도 무인증으로 열리지 않는다. 12자 이상 난수로 설정하고 `X-Bootstrap-Secret` 헤더로 한 번만 전달한다. |
 
 ---
 

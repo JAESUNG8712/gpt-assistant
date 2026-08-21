@@ -17,6 +17,20 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const { startServer } = require("./support/start-server");
+const BOOTSTRAP_SECRET = "test-bootstrap-secret";
+const ADMIN_PASSWORD = "adminpw12345";
+
+async function startProductionServer(extraEnv = {}) {
+  return startServer({ env: { NODE_ENV: "production", BOOTSTRAP_SECRET, ...extraEnv } });
+}
+
+async function bootstrap(server, { loginId = "admin", name = "관리자", pw = ADMIN_PASSWORD } = {}) {
+  return fetch(server.baseUrl + "/api/bootstrap/admin", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Bootstrap-Secret": BOOTSTRAP_SECRET },
+    body: JSON.stringify({ loginId, name, pw }),
+  });
+}
 
 async function login(server, loginId, pw) {
   const res = await fetch(server.baseUrl + "/login", {
@@ -42,15 +56,13 @@ async function save(server, token, version, employees) {
 }
 
 test("P0-1/P0-2: employees 쓰기 위조 방어 + 읽기 PII 축소(결합 시나리오 포함)", async (t) => {
-  const server = await startServer({ env: { NODE_ENV: "production" } });
+  const server = await startProductionServer();
   t.after(() => server.stop());
 
-  // 부트스트랩(직원 0명, JSON 파일 모드 예외) — admin 1명 생성.
-  let boot = await save(server, null, 0, [
-    { id: 1, loginId: "admin", pw: "adminpw123", role: "admin", name: "관리자", dept: "경영지원본부", team: "", active: true },
-  ]);
-  assert.equal(boot.status, 200, "부트스트랩 실패");
-  const adminToken = await login(server, "admin", "adminpw123");
+  // 빈 JSON 저장소의 초기 관리자는 무인증 /save가 아닌 전용 one-time endpoint로만 만든다.
+  const boot = await bootstrap(server);
+  assert.equal(boot.status, 201, "부트스트랩 실패");
+  const adminToken = await login(server, "admin", ADMIN_PASSWORD);
   assert.ok(adminToken, "admin 로그인 실패");
 
   // admin이 leader(팀장A, IT본부/개발팀)와 그 팀원(팀원A, salary/birth/address 있음),
@@ -83,7 +95,7 @@ test("P0-1/P0-2: employees 쓰기 위조 방어 + 읽기 PII 축소(결합 시�
     assert.equal(selfRec.role, "member", "role 위조가 반영되면 안 됨");
   });
 
-  await t.test("P0-1: member가 신규 레코드를 role:admin으로 끼워 넣어도 member로 강제된다", async () => {
+  await t.test("P0-1: member가 신규 레코드를 role:admin으로 끼워 넣어도 저장되지 않는다", async () => {
     const mem1Token = await login(server, "mem1", "mempw1234");
     const before = await getData(server, mem1Token);
     const injected = [...before.data.employees, {
@@ -93,9 +105,7 @@ test("P0-1/P0-2: employees 쓰기 위조 방어 + 읽기 PII 축소(결합 시�
     assert.equal(res.status, 200);
     const adminCheck = await getData(server, adminToken);
     const fake = adminCheck.data.employees.find(e => String(e.id) === "999");
-    // member 스코프로 다시 열람하면 새 레코드 자체가 안 보일 수 있으니 admin 시점에서 확인.
-    assert.ok(fake, "신규 레코드 자체는 저장되어야 함(생성 자체를 막는 기능은 아님)");
-    assert.equal(fake.role, "member", "신규 레코드도 role은 항상 member로 강제되어야 함");
+    assert.equal(fake, undefined, "일반 사용자가 임의 직원을 생성할 수 있으면 안 됨");
   });
 
   await t.test("P0-1: 타인 pw를 위조해 재전송해도 원래 비밀번호가 유지된다(계정 탈취 방어)", async () => {
@@ -112,18 +122,20 @@ test("P0-1/P0-2: employees 쓰기 위조 방어 + 읽기 PII 축소(결합 시�
     assert.ok(realLogin, "피해자의 실제 비밀번호는 그대로 유지되어야 함");
   });
 
-  await t.test("P0-1: 본인 비밀번호 변경(self-service)은 정상 동작한다", async () => {
+  await t.test("P0-1: 본인 비밀번호 변경은 전용 인증 API에서만 정상 동작한다", async () => {
     // mem3 전용 — 여기서 비밀번호를 바꾸면 이후 테스트들의 mem2 로그인에 영향을 주지
     // 않도록, 다른 검증에서 재사용하지 않는 별도 계정을 쓴다.
     const mem3Token = await login(server, "mem3", "mempw3456");
-    const before = await getData(server, mem3Token);
-    const selfChange = before.data.employees.map(e =>
-      String(e.id) === "5" ? { ...e, pw: "newselfpw1", updatedAt: new Date().toISOString() } : e
-    );
-    const res = await save(server, mem3Token, before.version, selfChange);
+    const res = await fetch(server.baseUrl + "/api/auth/change-password", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: "Bearer " + mem3Token },
+      body: JSON.stringify({ currentPassword: "mempw3456", newPassword: "newselfpw123" }),
+    });
     assert.equal(res.status, 200);
     const relogin = await login(server, "mem3", "newselfpw1");
-    assert.ok(relogin, "본인 비밀번호 변경은 정상적으로 반영되어야 함");
+    assert.equal(relogin, undefined, "짧거나 다른 비밀번호로 로그인되면 안 됨");
+    const changedLogin = await login(server, "mem3", "newselfpw123");
+    assert.ok(changedLogin, "본인 비밀번호 변경은 정상적으로 반영되어야 함");
   });
 
   await t.test("P0-2: member는 타인의 salary/birth/address를 볼 수 없다(email/phone은 그대로)", async () => {
@@ -177,14 +189,12 @@ test("P0-1/P0-2: employees 쓰기 위조 방어 + 읽기 PII 축소(결합 시�
 });
 
 test("P0-4: budget.js emp-pay-plan/by-ids가 스코프 밖 id를 조용히 거른다(IDOR 방어)", async (t) => {
-  const server = await startServer({ env: { NODE_ENV: "production" } });
+  const server = await startProductionServer();
   t.after(() => server.stop());
 
-  let boot = await save(server, null, 0, [
-    { id: 1, loginId: "admin", pw: "adminpw123", role: "admin", name: "관리자", dept: "경영지원본부", team: "", active: true },
-  ]);
-  assert.equal(boot.status, 200);
-  const adminToken = await login(server, "admin", "adminpw123");
+  const boot = await bootstrap(server);
+  assert.equal(boot.status, 201);
+  const adminToken = await login(server, "admin", ADMIN_PASSWORD);
 
   let d = await getData(server, adminToken);
   let r = await save(server, adminToken, d.version, [
@@ -240,71 +250,55 @@ test("P0-4: budget.js emp-pay-plan/by-ids가 스코프 밖 id를 조용히 거�
   });
 });
 
-test("P0-3: BOOTSTRAP_SECRET을 설정한 배포는 무인증 부트스트랩 선점을 막는다(opt-in)", async (t) => {
-  await t.test("BOOTSTRAP_SECRET 설정 시 헤더 없는 부트스트랩은 401", async (t2) => {
-    const server = await startServer({ env: { NODE_ENV: "production", BOOTSTRAP_SECRET: "supersecret123" } });
+test("P0-3: 전용 부트스트랩은 시크릿·입력 검증·1회성 조건을 모두 강제한다", async (t) => {
+  await t.test("무인증 /save는 빈 저장소여도 401", async (t2) => {
+    const server = await startProductionServer();
     t2.after(() => server.stop());
-    const res = await save(server, null, 0, [
-      { id: 1, loginId: "attacker", pw: "attackerpw", role: "admin", name: "공격자", active: true },
-    ]);
-    assert.equal(res.status, 401);
-    const json = await res.json();
-    assert.equal(json.code, "BOOTSTRAP_SECRET_REQUIRED");
-  });
-
-  await t.test("틀린 헤더값도 401", async (t2) => {
-    const server = await startServer({ env: { NODE_ENV: "production", BOOTSTRAP_SECRET: "supersecret123" } });
-    t2.after(() => server.stop());
-    const res = await fetch(server.baseUrl + "/save", {
-      method: "POST", headers: { "Content-Type": "application/json", "X-Bootstrap-Secret": "wrongsecret" },
-      body: JSON.stringify({ _version: 0, employees: [{ id: 1, loginId: "attacker", pw: "attackerpw", role: "admin", name: "공격자", active: true }] }),
-    });
+    const res = await save(server, null, 0, [{ id: 1, loginId: "attacker", pw: "attackerpw123", role: "admin", name: "공격자", active: true }]);
     assert.equal(res.status, 401);
   });
 
-  await t.test("올바른 헤더값은 정상 부트스트랩", async (t2) => {
-    const server = await startServer({ env: { NODE_ENV: "production", BOOTSTRAP_SECRET: "supersecret123" } });
+  await t.test("시크릿 누락/오류는 401, 올바른 시크릿만 201", async (t2) => {
+    const server = await startProductionServer();
     t2.after(() => server.stop());
-    const res = await fetch(server.baseUrl + "/save", {
-      method: "POST", headers: { "Content-Type": "application/json", "X-Bootstrap-Secret": "supersecret123" },
-      body: JSON.stringify({ _version: 0, employees: [{ id: 1, loginId: "admin", pw: "adminpw123", role: "admin", name: "관리자", active: true }] }),
+    const missing = await fetch(server.baseUrl + "/api/bootstrap/admin", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ loginId: "admin", name: "관리자", pw: ADMIN_PASSWORD }),
     });
-    assert.equal(res.status, 200);
+    assert.equal(missing.status, 401);
+    const wrong = await fetch(server.baseUrl + "/api/bootstrap/admin", {
+      method: "POST", headers: { "Content-Type": "application/json", "X-Bootstrap-Secret": "wrong" },
+      body: JSON.stringify({ loginId: "admin", name: "관리자", pw: ADMIN_PASSWORD }),
+    });
+    assert.equal(wrong.status, 401);
+    const ok = await bootstrap(server);
+    assert.equal(ok.status, 201);
   });
 
-  await t.test("BOOTSTRAP_SECRET 미설정 시(기본값) 기존 무인증 부트스트랩 동작 그대로 유지(하위호환)", async (t2) => {
-    const server = await startServer({ env: { NODE_ENV: "production" } });
-    t2.after(() => server.stop());
-    const res = await save(server, null, 0, [
-      { id: 1, loginId: "admin", pw: "adminpw123", role: "admin", name: "관리자", active: true },
-    ]);
-    assert.equal(res.status, 200, "BOOTSTRAP_SECRET을 설정하지 않은 배포는 기존과 동일하게 동작해야 함");
-  });
-
-  await t.test("이미 직원이 있으면(부트스트랩 이후) 정상 인증 흐름은 시크릿과 무관", async (t2) => {
-    const server = await startServer({ env: { NODE_ENV: "production", BOOTSTRAP_SECRET: "supersecret123" } });
-    t2.after(() => server.stop());
-    let res = await fetch(server.baseUrl + "/save", {
-      method: "POST", headers: { "Content-Type": "application/json", "X-Bootstrap-Secret": "supersecret123" },
-      body: JSON.stringify({ _version: 0, employees: [{ id: 1, loginId: "admin", pw: "adminpw123", role: "admin", name: "관리자", active: true }] }),
+  await t.test("BOOTSTRAP_SECRET이 없으면 fail-closed(503)이며, 성공 뒤 재실행은 409", async (t2) => {
+    const missingSecret = await startServer({ env: { NODE_ENV: "production", BOOTSTRAP_SECRET: "" } });
+    t2.after(() => missingSecret.stop());
+    const unavailable = await fetch(missingSecret.baseUrl + "/api/bootstrap/admin", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ loginId: "admin", name: "관리자", pw: ADMIN_PASSWORD }),
     });
-    assert.equal(res.status, 200);
-    const token = await login(server, "admin", "adminpw123");
-    const d = await getData(server, token);
-    res = await save(server, token, d.version, d.data.employees);
-    assert.equal(res.status, 200, "부트스트랩 이후 정상 인증 저장은 시크릿 헤더 없이도 동작해야 함");
+    assert.equal(unavailable.status, 503);
+
+    const server = await startProductionServer();
+    t2.after(() => server.stop());
+    assert.equal((await bootstrap(server)).status, 201);
+    const again = await bootstrap(server, { loginId: "otheradmin", name: "다른 관리자" });
+    assert.equal(again.status, 409);
   });
 });
 
 test("P0-5: 퇴직/강등/비밀번호 초기화 후 기존 토큰이 즉시 무효화된다(authVersion 세션 철회)", async (t) => {
-  const server = await startServer({ env: { NODE_ENV: "production" } });
+  const server = await startProductionServer();
   t.after(() => server.stop());
 
-  let boot = await save(server, null, 0, [
-    { id: 1, loginId: "admin", pw: "adminpw123", role: "admin", name: "관리자", active: true },
-  ]);
-  assert.equal(boot.status, 200);
-  const adminToken = await login(server, "admin", "adminpw123");
+  const boot = await bootstrap(server);
+  assert.equal(boot.status, 201);
+  const adminToken = await login(server, "admin", ADMIN_PASSWORD);
 
   let d = await getData(server, adminToken);
   let r = await save(server, adminToken, d.version, [
@@ -362,7 +356,7 @@ test("P0-5: 퇴직/강등/비밀번호 초기화 후 기존 토큰이 즉시 무
   });
 
   await t.test("역할/비밀번호/재직여부와 무관한 변경은 기존 토큰을 무효화하지 않는다", async () => {
-    const stableToken = await login(server, "admin", "adminpw123");
+    const stableToken = await login(server, "admin", ADMIN_PASSWORD);
     const before = await getData(server, adminToken);
     r = await save(server, adminToken, before.version, before.data.employees.map(e =>
       String(e.id) === "1" ? { ...e, phone: "010-0000-0000", updatedAt: new Date().toISOString() } : e

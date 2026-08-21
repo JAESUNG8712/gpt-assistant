@@ -5,7 +5,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const http = require("node:http");
-const { startServer } = require("../support/start-server");
+const { startServer, bootstrapAdminAndLogin } = require("../support/start-server");
 
 // ── 이력서 파서 AI 호출을 가로채는 로컬 mock 서버 ───────────────────────────────
 // server.js 프로세스가 이 서버로 요청을 보내도록 HR_RESUME_GROQ_URL_OVERRIDE로
@@ -107,16 +107,28 @@ test("file-mode API smoke suite", async (t) => {
   const api = (p, opts) => fetch(server.baseUrl + p, opts);
 
   let adminToken;
+  let adminId;
 
-  await t.test("1) 빈 저장소에 test admin/member를 bootstrap 저장", async () => {
-    const res = await api("/save", {
+  await t.test("1) 빈 저장소는 익명 /save를 거부하고 one-time bootstrap 후 관리자만 저장", async () => {
+    const anonymous = await api("/save", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ _version: 0, data: { employees: [], kpiEntries: [] } }),
+    });
+    assert.equal(anonymous.status, 401);
+
+    const boot = await bootstrapAdminAndLogin(server, {
+      loginId: "test_admin", pw: "test_admin_pw", name: "테스트관리자",
+    });
+    adminId = boot.employee.id;
+    const res = await api("/save", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${boot.token}` },
       body: JSON.stringify({
         _version: 0,
         data: {
           employees: [
-            { id: 1, loginId: "test_admin", pw: "test_admin_pw", role: "admin", name: "테스트관리자", empNo: "T1", dept: "", team: "", active: true },
+            { id: boot.employee.id, loginId: "test_admin", pw: "test_admin_pw", role: "admin", name: "테스트관리자", empNo: "T1", dept: "", team: "", active: true, salary: 90000000, birth: "1980-01-01", address: "비공개 주소", phone: "010-9999-9999" },
             { id: 2, loginId: "test_member", pw: "test_member_pw", role: "member", name: "테스트팀원", empNo: "T2", dept: "", team: "", active: true },
           ],
           kpiEntries: [],
@@ -179,6 +191,56 @@ test("file-mode API smoke suite", async (t) => {
     assert.equal(res.status, 401);
   });
 
+  await t.test("7b) 일반 사용자는 타 직원 PII·전사 설정을 바꾸거나 자신의 권한/비밀번호를 높일 수 없다", async () => {
+    const adminBefore = await (await api("/data", { headers: { Authorization: `Bearer ${adminToken}` } })).json();
+    const storedBefore = adminBefore.data.employees.find(e => String(e.id) === String(adminId));
+    const memberLogin = await (await api("/login", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ loginId: "test_member", pw: "test_member_pw" }),
+    })).json();
+    assert.equal(memberLogin.ok, true);
+    const memberRead = await api("/data", { headers: { Authorization: `Bearer ${memberLogin.token}` } });
+    assert.equal(memberRead.status, 200);
+    const memberState = await memberRead.json();
+    const other = memberState.data.employees.find(e => String(e.id) === String(adminId));
+    assert.equal(other.salary, undefined);
+    assert.equal(other.birth, undefined);
+    assert.equal(other.address, undefined);
+    // email/phone은 사내 연락처 검색에 필요한 공개 directory 필드다. 급여·생년월일·주소와
+    // 달리 민감정보 축소 대상이 아니며, 서버 저장값 그대로만 노출돼야 한다.
+    assert.equal(other.phone, storedBefore.phone);
+
+    const me = memberState.data.employees.find(e => e.loginId === "test_member");
+    me.role = "admin";
+    me.pw = "member_new_password";
+    me.updatedAt = "2099-01-01T00:00:00.000Z";
+    const attack = await api("/save", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${memberLogin.token}` },
+      body: JSON.stringify({ _version: memberState.version, data: { ...memberState.data, settings: { companyName: "forbidden" } } }),
+    });
+    assert.equal(attack.status, 200);
+
+    const oldLogin = await (await api("/login", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ loginId: "test_member", pw: "test_member_pw" }),
+    })).json();
+    assert.equal(oldLogin.ok, true, "기존 비밀번호는 유지되어야 한다");
+    assert.equal(oldLogin.employee.role, "member");
+    const newLogin = await (await api("/login", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ loginId: "test_member", pw: "member_new_password" }),
+    })).json();
+    assert.equal(newLogin.ok, false, "클라이언트가 보낸 새 비밀번호는 저장되면 안 된다");
+
+    const adminRead = await (await api("/data", { headers: { Authorization: `Bearer ${adminToken}` } })).json();
+    const storedAdmin = adminRead.data.employees.find(e => e.loginId === "test_admin");
+    assert.equal(storedAdmin.salary, storedBefore.salary);
+    assert.equal(storedAdmin.address, storedBefore.address);
+    assert.equal(storedAdmin.phone, storedBefore.phone);
+    assert.notEqual(adminRead.data.settings?.companyName, "forbidden");
+  });
+
   await t.test("8) /save 후 version 증가 및 기존 collection 보존", async () => {
     const before = await (await api("/status")).json();
     const res = await api("/save?user=test_admin", {
@@ -188,7 +250,7 @@ test("file-mode API smoke suite", async (t) => {
         _version: before.version,
         data: {
           employees: [
-            { id: 1, loginId: "test_admin", pw: "test_admin_pw", role: "admin", name: "테스트관리자", empNo: "T1", dept: "", team: "", active: true },
+            { id: adminId, loginId: "test_admin", pw: "test_admin_pw", role: "admin", name: "테스트관리자", empNo: "T1", dept: "", team: "", active: true },
             { id: 2, loginId: "test_member", pw: "test_member_pw", role: "member", name: "테스트팀원", empNo: "T2", dept: "", team: "", active: true },
             { id: 3, loginId: "test_member2", pw: "pw3", role: "member", name: "팀원3", empNo: "T3", dept: "", team: "", active: true },
           ],
@@ -212,9 +274,12 @@ test("file-mode API smoke suite", async (t) => {
     });
     try {
       const papi = (p, opts) => fetch(prodServer.baseUrl + p, opts);
+      const boot = await bootstrapAdminAndLogin(prodServer, {
+        loginId: "prod_admin", pw: "prod_admin_pw", name: "운영테스트관리자",
+      });
       const res = await papi("/save", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${boot.token}` },
         body: JSON.stringify({
           _version: 0,
           data: {
@@ -228,7 +293,7 @@ test("file-mode API smoke suite", async (t) => {
       assert.equal(json.ok, false);
       assert.equal(json.code, "DEMO_DATA_FORBIDDEN");
       const status = await (await papi("/status")).json();
-      assert.equal(status.meta.empCount, 0, "거부된 저장은 실제로 반영되지 않아야 함");
+      assert.equal(status.meta.empCount, 1, "거부된 저장은 bootstrap 관리자 외에 반영되면 안 됨");
     } finally {
       await prodServer.stop();
       await prodMock.close();
@@ -313,6 +378,25 @@ test("file-mode API smoke suite", async (t) => {
     }
     assert.equal(server.child.exitCode, null, "이 시점까지 서버 프로세스가 죽지 않아야 함");
   });
+
+  await t.test("11) 계정 비활성화 뒤 기존 Bearer 토큰은 즉시 철회된다", async () => {
+    const memberLogin = await (await api("/login", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ loginId: "test_member", pw: "test_member_pw" }),
+    })).json();
+    assert.equal(memberLogin.ok, true);
+    const adminState = await (await api("/data", { headers: { Authorization: `Bearer ${adminToken}` } })).json();
+    const member = adminState.data.employees.find(e => e.loginId === "test_member");
+    member.active = false;
+    member.updatedAt = "2099-01-02T00:00:00.000Z";
+    const save = await api("/save", {
+      method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${adminToken}` },
+      body: JSON.stringify({ _version: adminState.version, data: adminState.data }),
+    });
+    assert.equal(save.status, 200);
+    const oldToken = await api("/data", { headers: { Authorization: `Bearer ${memberLogin.token}` } });
+    assert.equal(oldToken.status, 401);
+  });
 });
 
 // GROQ_API_KEY가 있는 상태에서의 provider 성공/실패/timeout 경로는 키 설정 여부
@@ -329,11 +413,10 @@ test("resume parser: provider mock 502/504/성공 경로", async (t) => {
   t.after(async () => { await server.stop(); await groqMock.close(); });
   const api = (p, opts) => fetch(server.baseUrl + p, opts);
 
-  await api("/save", {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ _version: 0, data: { employees: [{ id: 1, loginId: "a", pw: "p", role: "admin", name: "A", empNo: "A1", dept: "", team: "", active: true }], kpiEntries: [] } }),
+  const loginRes = await bootstrapAdminAndLogin(server, {
+    loginId: "resume_admin", pw: "resume_admin_pw", name: "A",
   });
-  const loginRes = await (await api("/login", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ loginId: "a", pw: "p" }) })).json();
+
   const token = loginRes.token;
   const pdf = buildMinimalTextPdf(["Hong Gildong", "Email: hong@example.com", "Phone: 010-1111-2222"]);
   const { body, contentType } = multipartBody(pdf, "resume.pdf", "application/pdf");

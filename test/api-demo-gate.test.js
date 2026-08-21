@@ -6,22 +6,13 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const bcrypt = require("bcryptjs");
-const { startServer, startServerExpectingBootFailure } = require("./support/start-server");
+const { startServer, startServerExpectingBootFailure, bootstrapAdminAndLogin } = require("./support/start-server");
 
 async function seedAdminAndLogin(server, empId = 1) {
-  const pw = await bcrypt.hash("Admin@123", 10);
-  const saveRes = await fetch(server.baseUrl + "/save", {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ data: { employees: [{ id: empId, loginId: "admin", pw, name: "관리자", role: "admin", active: true }] } }),
+  const login = await bootstrapAdminAndLogin(server, {
+    loginId: "admin", pw: "Admin@123456", name: "관리자",
   });
-  assert.equal(saveRes.status, 200, "부트스트랩 admin 저장 실패");
-  const loginRes = await fetch(server.baseUrl + "/login", {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ loginId: "admin", pw: "Admin@123" }),
-  });
-  const { token } = await loginRes.json();
-  assert.ok(token, "로그인 토큰 발급 실패");
-  return token;
+  return login.token;
 }
 
 test("demo data gate: production 서버에서 POST /save가 더미 마커를 거부한다", async (t) => {
