@@ -2061,7 +2061,24 @@ async function getExpenseAccountsForBudget(companyId) {
   }
   return accounts.filter(a => a.type === "expense" && a.active !== false).map(a => ({ code: a.code, name: a.name }));
 }
-app.use("/api/budget", budgetRouterFactory({ getEmployeeProfile: getEmployeeProfileForBudget, getTeamDept: getTeamDeptForBudget, getExpenseAccounts: getExpenseAccountsForBudget }));
+// P0-4 방어(2026-08-19 외부 감사): GET /api/budget/emp-pay-plan/by-ids가 요청자가 보낸
+// ids를 검증 없이 그대로 조회하고 있었다 — 화면(addBpEmpDetailRows())은 항상 자기 팀/부문
+// 소속 id만 골라 보내지만, 그건 클라이언트가 스스로를 제약하는 것일 뿐 서버는 아무 값이나
+// 받아들였다(실측: 회사 전체 employees의 id를 나열해 보내면 전 직원의 개인별 급여상세
+// (RSU·인센티브 등)를 한 번에 열람 가능). 요청자별 dept/team을 함께 내려줘 budget.js가
+// "관리자는 무제한, director는 같은 dept, 그 외(leader/member)는 같은 dept+team, 항상
+// 본인은 허용"으로 걸러내도록 한다.
+async function getEmployeeScopesForBudget(companyId, ids) {
+  const data = await loadData(companyId);
+  const byId = new Map((data.employees || []).map(e => [String(e.id), { dept: e.dept || "", team: e.team || "" }]));
+  const out = {};
+  for (const id of ids) { const e = byId.get(String(id)); if (e) out[String(id)] = e; }
+  return out;
+}
+app.use("/api/budget", budgetRouterFactory({
+  getEmployeeProfile: getEmployeeProfileForBudget, getTeamDept: getTeamDeptForBudget,
+  getExpenseAccounts: getExpenseAccountsForBudget, getEmployeeScopes: getEmployeeScopesForBudget,
+}));
 
 // /login 브루트포스 방어: IP당 15분에 20회로 제한(정상 사용자가 실수로 몇 번 틀리는
 // 정도는 통과시키되, 자동화된 무차별 대입 시도는 차단).

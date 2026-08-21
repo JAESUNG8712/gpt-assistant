@@ -1,5 +1,6 @@
 // 외부 보안 감사(2026-08-19, "fe6ab358 재검토 결과")의 P0 항목 중 P0-1(member→admin
-// 권한상승)/P0-2(GET /data를 통한 전사 PII 노출)에 대한 회귀 테스트.
+// 권한상승)/P0-2(GET /data를 통한 전사 PII 노출)/P0-4(budget.js 개인별 급여상세 IDOR)에
+// 대한 회귀 테스트.
 //
 // 감사가 명시적으로 지적한 것: 두 취약점은 서로 얽혀 있어 "같은 릴리스에 함께" 고쳐야
 // 한다 — PII를 먼저 숨기기만 하고(read-narrowing) employees 쓰기 경로를 그대로 두면,
@@ -171,5 +172,69 @@ test("P0-1/P0-2: employees 쓰기 위조 방어 + 읽기 PII 축소(결합 시�
     assert.equal(mem1AfterRoundtrip.salary, 50000000, "mem2가 필드 없는 로컬 상태를 그대로 재저장해도 mem1의 salary가 지워지면 안 됨");
     assert.equal(mem1AfterRoundtrip.birth, "1990-01-01", "마찬가지로 birth도 지워지면 안 됨");
     assert.equal(mem1AfterRoundtrip.address, "서울시 강남구", "마찬가지로 address도 지워지면 안 됨");
+  });
+});
+
+test("P0-4: budget.js emp-pay-plan/by-ids가 스코프 밖 id를 조용히 거른다(IDOR 방어)", async (t) => {
+  const server = await startServer({ env: { NODE_ENV: "production" } });
+  t.after(() => server.stop());
+
+  let boot = await save(server, null, 0, [
+    { id: 1, loginId: "admin", pw: "adminpw123", role: "admin", name: "관리자", dept: "경영지원본부", team: "", active: true },
+  ]);
+  assert.equal(boot.status, 200);
+  const adminToken = await login(server, "admin", "adminpw123");
+
+  let d = await getData(server, adminToken);
+  let r = await save(server, adminToken, d.version, [
+    ...d.data.employees,
+    { id: 2, loginId: "mem1", pw: "mempw1234", role: "member", name: "팀원A", dept: "IT본부", team: "개발팀", active: true },
+    { id: 3, loginId: "boss", pw: "bosspw123", role: "director", name: "임원A", dept: "경영지원본부", team: "", active: true, salary: 200000000 },
+    { id: 4, loginId: "dir1", pw: "dirpw1234", role: "director", name: "본부장B", dept: "경영지원본부", team: "", active: true },
+    { id: 5, loginId: "lead1", pw: "leadpw123", role: "leader", name: "팀장C", dept: "경영지원본부", team: "인사팀", active: true },
+  ]);
+  assert.equal(r.status, 200, "시드 직원 저장 실패");
+
+  r = await fetch(server.baseUrl + "/api/budget/emp-pay-plan", {
+    method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + adminToken },
+    body: JSON.stringify({ empId: 3, year: 2027, items: [{ category: "급여", name: "RSU 지급", amount: 12000000 }] }),
+  });
+  assert.equal(r.status, 200, "개인별 급여상세 시드 실패");
+
+  await t.test("member는 다른 부서 직원의 급여상세를 by-ids로 열람할 수 없다", async () => {
+    const mem1Token = await login(server, "mem1", "mempw1234");
+    const res = await fetch(server.baseUrl + "/api/budget/emp-pay-plan/by-ids?year=2027&ids=3", {
+      headers: { Authorization: "Bearer " + mem1Token },
+    });
+    const json = await res.json();
+    assert.equal(res.status, 200);
+    assert.deepEqual(json.plans, [], "스코프 밖 id는 조용히 걸러져 빈 배열이어야 함");
+  });
+
+  await t.test("director는 같은 dept(team-less) 인원의 급여상세를 볼 수 있다", async () => {
+    const dir1Token = await login(server, "dir1", "dirpw1234");
+    const res = await fetch(server.baseUrl + "/api/budget/emp-pay-plan/by-ids?year=2027&ids=3", {
+      headers: { Authorization: "Bearer " + dir1Token },
+    });
+    const json = await res.json();
+    assert.equal(json.plans.length, 1, "같은 dept 소속이면 director는 열람 가능해야 함");
+  });
+
+  await t.test("leader는 같은 dept라도 다른 team이면 볼 수 없다(dept+team 스코프)", async () => {
+    const lead1Token = await login(server, "lead1", "leadpw123");
+    const res = await fetch(server.baseUrl + "/api/budget/emp-pay-plan/by-ids?year=2027&ids=3", {
+      headers: { Authorization: "Bearer " + lead1Token },
+    });
+    const json = await res.json();
+    assert.deepEqual(json.plans, [], "team이 다르면 leader는 열람 불가여야 함");
+  });
+
+  await t.test("admin은 스코프 제한 없이 전체를 본다", async () => {
+    const res = await fetch(server.baseUrl + "/api/budget/emp-pay-plan/by-ids?year=2027&ids=3", {
+      headers: { Authorization: "Bearer " + adminToken },
+    });
+    const json = await res.json();
+    assert.equal(json.plans.length, 1);
+    assert.equal(json.plans[0].items[0].amount, 12000000);
   });
 });
