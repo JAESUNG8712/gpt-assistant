@@ -3094,7 +3094,7 @@ app.get("/events", async (req, res) => {
   // 그대로 구독할 수 있었다. SSE에서 흔히 쓰는 방식대로 토큰을 쿼리스트링으로 전달받아
   // authenticate 미들웨어와 동일한 verifyToken()으로 검증한다.
   const auth = req.auth || verifyToken(req.query.token);
-  if (!auth || !(await isCurrentEmployeeToken(auth))) return res.status(401).json({ ok: false, message: "로그인이 필요합니다." });
+  if (!auth || !(await _employeeAuthStillValid(auth))) return res.status(401).json({ ok: false, message: "로그인이 필요합니다." });
   const companyId = auth.companyId || null;
   const clientId = req.query.clientId || `client_${Date.now()}`;
   const user     = req.query.user     || "unknown";
