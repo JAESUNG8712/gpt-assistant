@@ -1,11 +1,20 @@
 # HR+ERP 시스템 (Node/Express) Render.com 배포 설정
 # 영속 디스크(disk)를 반드시 mount해야 재배포·재시작 시 hr-data*.json이 초기화되지 않는다.
+#
+# runtime: docker (2026-08-21) — 이 파일은 예전엔 runtime:node(네이티브 빌드팩)로
+# 선언돼 있었으나, 실제 Render 대시보드의 운영 서비스는 사용자 확인 결과 이미
+# Docker Environment로 떠 있었다(2026-08-19 외부 감사가 지적한 "render.yaml과
+# Dockerfile이 불일치한다"는 항목 조사 중 발견 — 실제 서비스 URL에 "docker"가
+# 들어있는 것도 그 방증이었다). 즉 라이브 서비스 자체는 이미 정상(OCR 도구 포함)
+# 동작 중이며, 이 커밋은 파일을 실제 배포 상태와 일치시켜 향후 이 render.yaml로
+# blueprint 재동기화·신규 환경을 만들 때도 동일하게 Docker 기반(이력서 OCR에 필요한
+# poppler-utils/tesseract-ocr 포함)으로 뜨도록 하는 문서/IaC 드리프트 정리다.
+# runtime:docker에서는 Dockerfile의 CMD가 시작 명령을 대신하므로 buildCommand/
+# startCommand는 쓰지 않는다(둘 다 runtime:node 전용 필드).
 services:
   - type: web
     name: hr-erp-system
-    runtime: node
-    buildCommand: npm install
-    startCommand: node server.js
+    runtime: docker
     disk:
       name: hr-erp-data
       mountPath: /var/data
