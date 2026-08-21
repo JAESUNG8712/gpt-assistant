@@ -18990,10 +18990,10 @@ function renderPmsProjectsPage(){
   const c=$("#content");if(!c)return;
   if(!serverConfig.url){c.innerHTML=_erpNoServerHtml("프로젝트 관리");return;}
   if(!_pmsLoaded){c.innerHTML=`<div class="card"><div class="card-body text-gray" style="text-align:center;padding:30px">불러오는 중...</div></div>`;_pmsEnsureLoaded();return;}
-  const visibleProjects=_pmsCanManage()?pmsProjects:pmsProjects.filter(p=>(p.members||[]).map(String).includes(String(currentUser.id)));
+  const visibleProjects=pmsProjects;
   c.innerHTML=`<div class="card"><div class="card-head"><h3>🗂 프로젝트 관리</h3>${_pmsCanManage()?`<button class="btn btn-primary btn-sm" onclick="openPmsProjectModal()">+ 프로젝트 등록</button>`:""}</div>
   <div class="card-body" style="padding:0"><div class="tbl-wrap"><table><thead><tr><th>프로젝트명</th><th>기간</th><th>PM</th><th>투입 인원</th><th>상태</th><th>메모</th>${_pmsCanManage()?"<th>관리</th>":""}</tr></thead><tbody>
-  ${visibleProjects.length?visibleProjects.map(p=>`<tr><td>${h(p.name)}</td><td>${h(p.startDate||"-")} ~ ${h(p.endDate||"-")}</td><td>${p.pmId?h(getEmpName(p.pmId)):h(p.pm||"-")}</td><td class="fz11">${(p.members||[]).length?(p.members||[]).map(mid=>h(getEmpName(mid))).join(", "):"-"}</td><td>${p.status==="active"?badge("진행중","green"):badge("종료","gray")}</td><td>${h(p.memo||"")}</td>${_pmsCanManage()?`<td><button class="btn btn-secondary btn-sm" onclick="openPmsProjectModal('${p.id}')">수정</button> ${p.status==="active"?`<button class="btn btn-danger btn-sm" onclick="closePmsProject('${p.id}')">종료</button>`:""}</td>`:""}</tr>`).join(""):`<tr><td colspan="${_pmsCanManage()?7:6}" class="text-gray" style="text-align:center;padding:20px">${_pmsCanManage()?"등록된 프로젝트가 없습니다.":"투입 인원으로 등록된 프로젝트가 없습니다."}</td></tr>`}
+  ${visibleProjects.length?visibleProjects.map(p=>`<tr><td>${h(p.name)}</td><td>${h(p.startDate||"-")} ~ ${h(p.endDate||"-")}</td><td>${p.pmId?h(getEmpName(p.pmId)):h(p.pm||"-")}</td><td class="fz11">${(p.members||[]).length?(p.members||[]).map(mid=>h(getEmpName(mid))).join(", "):"-"}</td><td>${p.status==="active"?badge("진행중","green"):badge("종료","gray")}</td><td>${h(p.memo||"")}</td>${_pmsCanManage()?`<td>${p.canManage?`<button class="btn btn-secondary btn-sm" onclick="openPmsProjectModal('${p.id}')">수정</button> ${p.status==="active"?`<button class="btn btn-danger btn-sm" onclick="closePmsProject('${p.id}')">종료</button>`:""}`:"-"}</td>`:""}</tr>`).join(""):`<tr><td colspan="${_pmsCanManage()?7:6}" class="text-gray" style="text-align:center;padding:20px">${_pmsCanManage()?"등록된 프로젝트가 없습니다.":"투입 인원으로 등록된 프로젝트가 없습니다."}</td></tr>`}
   </tbody></table></div></div></div>`;
 }
 let _pmjDraftMembers=[];
@@ -19058,8 +19058,9 @@ async function savePmsProject(id){
   const name=$("#pj-name")?.value.trim();
   if(!name){showToast("프로젝트명을 입력하세요.","error");return;}
   const pmId=$("#pj-pm")?.value;
-  const body={id:id||undefined,name,startDate:$("#pj-start")?.value,endDate:$("#pj-end")?.value,pmId,memo:$("#pj-memo")?.value.trim(),members:_pmjDraftMembers,role:currentUser.role,userId:currentUser.id,user:currentUser.name};
+  const body={name,startDate:$("#pj-start")?.value,endDate:$("#pj-end")?.value,pmId,memo:$("#pj-memo")?.value.trim(),members:_pmjDraftMembers,expectedUpdatedAt:_pmjEditingProject?.updatedAt};
   const r=await serverRequest("POST",id?`/api/pms/projects/${id}`:"/api/pms/projects",body);
+  if(r?.code==="PMS_PROJECT_CONFLICT"){await loadPmsFromServer();closeModal();showToast("다른 사용자의 변경을 감지해 최신 내용을 불러왔습니다. 다시 확인 후 저장하세요.","error");return;}
   if(!r?.ok){showToast(r?.message||"저장에 실패했습니다.","error");return;}
   const idx=pmsProjects.findIndex(p=>p.id===r.project.id);
   if(idx>=0)pmsProjects[idx]=r.project;else pmsProjects.unshift(r.project);
@@ -19067,7 +19068,9 @@ async function savePmsProject(id){
 }
 async function closePmsProject(id){
   if(!confirm("이 프로젝트를 종료 처리하시겠습니까?"))return;
-  const r=await serverRequest("POST",`/api/pms/projects/${id}/close`,{role:currentUser.role,user:currentUser.name});
+  const p=pmsProjects.find(project=>project.id===id);
+  const r=await serverRequest("POST",`/api/pms/projects/${id}/close`,{expectedUpdatedAt:p?.updatedAt});
+  if(r?.code==="PMS_PROJECT_CONFLICT"){await loadPmsFromServer();showToast("다른 사용자의 변경을 감지해 최신 내용을 불러왔습니다.","error");return;}
   if(!r?.ok){showToast(r?.message||"처리에 실패했습니다.","error");return;}
   const idx=pmsProjects.findIndex(p=>p.id===id);if(idx>=0)pmsProjects[idx]=r.project;
   showToast("종료 처리되었습니다.","info");renderPmsProjectsPage();
