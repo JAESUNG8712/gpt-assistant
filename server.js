@@ -753,6 +753,44 @@ function _withSaveLock(fn) {
   return run;
 }
 
+// _withSaveLock은 한 Node 프로세스 안에서만 유효하다. Postgres 모드에서 인스턴스를
+// 둘 이상 띄우면 각 프로세스가 서로의 메모리 큐·버전을 볼 수 없어 같은 회사의 전체
+// 상태 저장이 동시에 진행되고 마지막 요청이 앞선 요청을 덮어쓸 수 있다. 회사별 PG
+// advisory lock과 DB의 app_meta 버전을 이용해, 인스턴스 경계를 넘어 같은 저장 구간을
+// 직렬화한다. 잠금은 이 함수의 전용 커넥션에만 유지하며 실제 저장은 기존 트랜잭션을
+// 그대로 사용하므로 기존 JSON 모드 및 개별 저장 API의 동작에는 영향이 없다.
+async function _refreshVersionFromDb(companyId, client) {
+  if (USE_JSON_FILE) return;
+  const { rows } = await client.query("SELECT value FROM app_meta WHERE key = $1", [`data_version:${_scopeKey(companyId)}`]);
+  const value = rows.length ? Number(rows[0].value) : 0;
+  _setVersion(companyId, Number.isSafeInteger(value) && value >= 0 ? value : 0);
+}
+async function _withDistributedSaveLock(companyId, fn) {
+  if (USE_JSON_FILE) return fn();
+  const client = await pool.connect();
+  let locked = false;
+  try {
+    // 무한 대기 대신 15초 후 재시도를 안내한다. 정상적인 자동저장은 대개 수 초 안에
+    // 끝나므로, 네트워크가 끊긴 오래된 작업이 모든 후속 저장을 막는 일을 피한다.
+    await client.query("SET lock_timeout = '15s'");
+    await client.query("SELECT pg_advisory_lock(hashtext($1))", [`full-state-save:${_scopeKey(companyId)}`]);
+    locked = true;
+    await _refreshVersionFromDb(companyId, client);
+    return await fn();
+  } catch (e) {
+    if (e && e.code === "55P03") {
+      throw httpError(409, "SAVE_LOCK_TIMEOUT", "다른 사용자의 저장이 진행 중입니다. 잠시 후 다시 시도하세요.");
+    }
+    throw e;
+  } finally {
+    if (locked) {
+      try { await client.query("SELECT pg_advisory_unlock(hashtext($1))", [`full-state-save:${_scopeKey(companyId)}`]); } catch {}
+    }
+    try { await client.query("RESET lock_timeout"); } catch {}
+    client.release();
+  }
+}
+
 // ── DB bootstrap ──────────────────────────────────────────────────────────────
 async function initDB() {
   if (USE_JSON_FILE) {
@@ -1401,7 +1439,7 @@ function _nextAuthVersion(ex, emp, pw) {
   return changed ? prev + 1 : prev;
 }
 async function persistData(data, changedBy = "system", companyId = null, actor = null) {
-  return _withSaveLock(() => _persistDataLocked(data, changedBy, companyId, actor));
+  return _withSaveLock(() => _withDistributedSaveLock(companyId, () => _persistDataLocked(data, changedBy, companyId, actor)));
 }
 async function _persistDataLocked(data, changedBy = "system", companyId = null, actor = null) {
   // kpiEntries.weight(비중,%)는 화면 입력칸엔 별다른 제한이 없고(saveKpiDraft가 Number(...)||20
@@ -3018,7 +3056,7 @@ app.post("/save", async (req, res) => {
     : body;
 
   try {
-    const { finalData, merged, duplicateLoginIds } = await _withSaveLock(async () => {
+    const { finalData, merged, duplicateLoginIds } = await _withSaveLock(() => _withDistributedSaveLock(companyId, async () => {
       let finalData = clientData;
       let merged    = false;
       let serverData;
@@ -3062,7 +3100,7 @@ app.post("/save", async (req, res) => {
       rejectDemoDataForProduction(finalData);
       const { duplicateLoginIds } = await _persistDataLocked(finalData, changedBy, companyId, req.auth || null);
       return { finalData, merged, duplicateLoginIds };
-    });
+    }));
 
     const meta = {
       empCount:  (finalData.employees  || []).length,
