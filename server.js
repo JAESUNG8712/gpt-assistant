@@ -73,10 +73,41 @@ function verifyToken(token) {
 }
 // 모든 요청에서 Authorization 헤더를 검증해 req.auth에 실어둔다(없거나 무효면 null).
 // 라우트 자체를 막지는 않고 값만 채워두며, 실제 인가는 requireAuth/requireAdmin/requireRole이 담당한다.
-function authenticate(req, res, next) {
+//
+// P0-5 방어(2026-08-19 외부 감사, _nextAuthVersion 주석 참고): 서명 검증(verifyToken)만으로는
+// "발급 당시엔 유효했다"만 증명할 뿐, 그 사이 서버에서 그 계정이 퇴직 처리(active:false)·
+// 강등(role 하향)·비밀번호 강제 초기화됐는지는 전혀 반영하지 못한다 — 토큰이 자연 만료
+// (기본 12시간)될 때까지 계속 유효했다. empId가 있는 토큰(마스터·impersonation 토큰은
+// empId가 null이라 대상이 아님)에 한해 지금 저장된 employees 레코드의 authVersion·active와
+// 대조해, 하나라도 안 맞으면 그 토큰을 무효(req.auth = null, 미인증과 동일하게 취급)로
+// 처리한다 — 재로그인해야 새 버전의 토큰을 받는다.
+async function _employeeAuthStillValid(auth) {
+  // 이 검사 자체가 어떤 이유로든 실패하면(예상치 못한 예외 포함) 가용성을 우선해 통과시킨다
+  // — authenticate()가 async 미들웨어라 여기서 예외가 새면 Express 4가 자동으로 못 잡아
+  // unhandled rejection이 되고, 그 요청은 응답도 타임아웃도 없이 멈춰버린다(P0-4 수정
+  // 중 실측으로 확인한 것과 동일한 클래스의 사고 — 이 검사는 반드시 실패해도 요청을
+  // 멈추지 않아야 한다).
+  try {
+    if (auth.empId == null) return true; // 마스터/impersonation 토큰 — employees 대상 아님
+    let current;
+    if (USE_JSON_FILE) {
+      current = (_fileStore.employees || []).find(e => String(e.id) === String(auth.empId));
+    } else {
+      const { rows } = await pool.query("SELECT data FROM employees WHERE id = $1 AND is_deleted = FALSE", [auth.empId]);
+      current = rows[0] && rows[0].data;
+    }
+    if (!current) return false; // 레코드 자체가 삭제됨
+    if (current.active === false) return false;
+    return (Number(current.authVersion) || 0) === (Number(auth.authVersion) || 0);
+  } catch {
+    return true;
+  }
+}
+async function authenticate(req, res, next) {
   const header = req.headers.authorization || "";
   const token = header.startsWith("Bearer ") ? header.slice(7) : null;
-  req.auth = verifyToken(token);
+  const auth = verifyToken(token);
+  req.auth = (auth && await _employeeAuthStillValid(auth)) ? auth : null;
   next();
 }
 function requireAuth(req, res) {
@@ -217,9 +248,15 @@ function isHashedPw(pw) {
 async function hashPlaintextPw(pw) {
   return isHashedPw(pw) ? pw : await bcrypt.hash(pw, 10);
 }
+// authVersion(2026-08-19 외부 감사 P0-5 — 아래 _nextAuthVersion/authenticate 참고)은 GET
+// /data 응답(클라이언트가 로컬에 보관·재전송하는 전체 상태)에서는 제외한다 — 서버가 매
+// 저장마다 이 값을 클라이언트 입력과 무관하게 스스로 재계산하므로 노출할 필요가 없다.
+// omitPw()는 노출하지 않는 대상에서 뺀다 — verifyCredentials()가 이 함수의 반환값에서
+// authVersion을 읽어 로그인 토큰에 실어야 하기 때문(아래 /login 참고, 토큰 발급 직후에는
+// 그 값을 다시 벗겨 클라이언트 응답의 employee 필드로 보낸다).
 function stripPwField(data) {
   if (!data || !Array.isArray(data.employees)) return data;
-  return { ...data, employees: data.employees.map(({ pw, twoFactorSecret, ...rest }) => rest) };
+  return { ...data, employees: data.employees.map(({ pw, twoFactorSecret, authVersion, ...rest }) => rest) };
 }
 // Single employee record (e.g. an employee_history row's `data` column) — strip its own pw
 // and 2FA secret fields, neither of which the client should ever receive back.
@@ -1269,6 +1306,22 @@ function _sanitizeEmployeeRecord(rawEmp, stored, actor) {
   }
   return out;
 }
+// 세션/토큰 철회 방어(2026-08-19 외부 감사 P0-5). 로그인 토큰(JWT류, signToken())은 만료
+// 시각까지(SESSION_TTL_SEC, 기본 12시간) 스스로 유효함을 증명하는 완전한 stateless 토큰이라,
+// 서버가 그 사이에 employees 레코드를 바꿔도(퇴직 처리로 active:false, 강등으로 role 하향,
+// 관리자의 비밀번호 강제 초기화 등) 이미 발급된 토큰 자체는 계속 유효했다 — 실측 가능한
+// 문제: 방금 퇴직 처리된 직원이 여전히 들고 있는 토큰으로 자연 만료 전까지 계속 API를
+// 호출할 수 있었다. role/pw/active 중 하나라도 실제로 바뀌면 그 레코드의 authVersion을
+// 1 증가시키고, 로그인 시 발급하는 토큰에 그 시점의 authVersion을 함께 실어(authenticate()
+// 미들웨어 참고) 매 요청마다 "토큰에 찍힌 버전 == 지금 저장된 버전"을 대조 — 다르면 그
+// 토큰은 즉시 무효로 취급된다(재로그인해야 새 버전의 토큰을 받음). 새 레코드(ex 없음)는
+// 비교 대상이 없으므로 0에서 시작.
+function _nextAuthVersion(ex, emp, pw) {
+  if (!ex) return 0;
+  const prev = Number(ex.authVersion) || 0;
+  const changed = pw !== ex.pw || emp.role !== ex.role || !!emp.active !== !!ex.active;
+  return changed ? prev + 1 : prev;
+}
 async function persistData(data, changedBy = "system", companyId = null, actor = null) {
   return _withSaveLock(() => _persistDataLocked(data, changedBy, companyId, actor));
 }
@@ -1355,6 +1408,7 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
       else if (pw == null || pw === "") pw = ex?.pw;
       else pw = await hashPlaintextPw(pw);
       const emp = { ...rawEmp, pw };
+      emp.authVersion = _nextAuthVersion(ex, emp, pw);
       if (!ex) {
         _recordFileHistory("employees", emp.id, "insert", changedBy, emp);
       } else if (changed) {
@@ -1561,7 +1615,7 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
         let pw = rawEmp.pw;
         if (!pwAllowed) pw = undefined;
         else if (pw != null && pw !== "") pw = await hashPlaintextPw(pw);
-        const emp = { ...rawEmp, pw };
+        const emp = { ...rawEmp, pw, authVersion: 0 };
         await client.query(
           "INSERT INTO employees (id, data, company_id) VALUES ($1, $2, $3)",
           [emp.id, emp, companyId]
@@ -1585,7 +1639,7 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
           if (!pwAllowed) pw = rows[0].data.pw;
           else if (pw == null || pw === "") pw = rows[0].data.pw;
           else pw = await hashPlaintextPw(pw);
-          const emp = { ...rawEmp, pw };
+          const emp = { ...rawEmp, pw, authVersion: _nextAuthVersion(rows[0].data, { ...rawEmp, pw }, pw) };
           await client.query(
             "UPDATE employees SET data = $2, updated_at = NOW() WHERE id = $1",
             [emp.id, emp]
@@ -2241,7 +2295,9 @@ app.post("/login", loginLimiter, async (req, res) => {
         return res.json({ ok: false, requireOtp: true, message: "인증 코드가 올바르지 않습니다." });
     }
     // 서버가 실제로 검증한 계정 정보로만 토큰을 발급한다(클라이언트가 보낸 role은 무시).
-    const token = signToken({ empId: employee.id, loginId: employee.loginId, role: employee.role, companyId });
+    // authVersion을 함께 실어 매 요청마다 authenticate()가 "그 사이 role/pw/active가
+    // 바뀌지 않았는지" 대조할 수 있게 한다(P0-5, _nextAuthVersion 주석 참고).
+    const token = signToken({ empId: employee.id, loginId: employee.loginId, role: employee.role, companyId, authVersion: employee.authVersion || 0 });
     res.locals.loginOk = true;
     res.json({ ok: true, employee, token });
   } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
@@ -2360,7 +2416,7 @@ app.post("/api/companies/register", registerLimiter, async (req, res) => {
         dept: "", team: "", birth: "", gender: "", hire: now.slice(0, 10), retireDate: "", retireReason: "",
         jobGroup: "", rank: "", rankYear: 0, salary: 0, edu: "", eduSchool: "", totalCareer: 0,
         active: true, position: "", email: "", phone: "", address: "", customFields: {},
-        careers: [], hrHistory: [], gradeResults: {}, createdAt: now, updatedAt: now,
+        careers: [], hrHistory: [], gradeResults: {}, createdAt: now, updatedAt: now, authVersion: 0,
       };
       await client.query(
         "INSERT INTO employees (id, data, company_id) VALUES ($1,$2,$3)",
@@ -2376,7 +2432,7 @@ app.post("/api/companies/register", registerLimiter, async (req, res) => {
 
       // 서버가 방금 생성·검증한 값으로만 토큰을 발급한다(클라이언트가 보낸 role 등은 무시 —
       // 이 세션 전체에 이미 적용된 하드닝 기조와 동일).
-      const token = signToken({ empId: adminEmp.id, loginId: adminEmp.loginId, role: adminEmp.role, companyId: company.id });
+      const token = signToken({ empId: adminEmp.id, loginId: adminEmp.loginId, role: adminEmp.role, companyId: company.id, authVersion: 0 });
       console.log(`[Companies] 신규 회사 가입: ${company.name} (slug=${company.slug}, id=${company.id})`);
       res.json({
         ok: true,
@@ -2704,6 +2760,33 @@ async function _employeesEmpty() {
   const { rows } = await pool.query("SELECT COUNT(*) FROM employees WHERE is_deleted = FALSE");
   return parseInt(rows[0].count, 10) === 0;
 }
+// P0-3 방어(2026-08-19 외부 감사): JSON 파일 모드의 부트스트랩 예외(직원 0명일 때 POST
+// /save를 무인증으로 1회 허용)는 로컬/사내망 전용 자체호스팅을 전제로 설계됐다 — 최초
+// 배포 직후 곧바로 관리자 계정을 만들어 올릴 수 있어야 하기 때문. 그런데 같은 서버가
+// 인터넷에 노출된 채로 "배포 완료~관리자가 처음 로그인하기 전" 사이의 짧은 창에 공격자가
+// 먼저 이 요청을 보내면, 공격자가 만든 계정이 최초 admin이 되어 서버 전체를 선점당할 수
+// 있다(부트스트랩 자체는 role/employees 어떤 값이든 검증 없이 받아들이므로) — 실측 가능한
+// 취약점.
+//
+// BOOTSTRAP_SECRET 환경변수를 설정한 배포에 한해서만(opt-in) 이 요청에 X-Bootstrap-Secret
+// 헤더로 같은 값을 실어 보내야만 부트스트랩을 허용하도록 강제한다. NODE_ENV=production
+// 여부와 무관하게 오직 "이 값을 설정했는지"만으로 켜지는 이유: (1) 이 취약점은 JSON 파일
+// (자체호스팅) 모드에만 있고, 이 저장소의 실제 운영 배포는 Postgres/SaaS 모드라 애초에
+// 이 코드 경로를 타지 않는다 — 즉 이 서버 자신의 실제 서비스에는 영향이 없는 방어다.
+// (2) demo-data 게이트(rejectDemoDataForProduction)처럼 NODE_ENV=production이면 자동으로
+// 켜지게 만들면, 이미 배포돼 있던 자체호스팅 인스턴스가 이 커밋을 반영해 재배포되는
+// 순간(운영자가 이 신규 요구사항을 미처 모른 채) 최초 관리자 계정을 만들 방법이 갑자기
+// 사라지는 회귀가 된다 — 보안 강화를 원하는 운영자가 능동적으로 이 값을 설정해야만
+// 적용되는 opt-in 방식이 자체호스팅 zero-config 기본 경험을 깨지 않으면서 원하는 사람에게는
+// 실제 보호를 제공한다.
+function _bootstrapSecretMatches(req) {
+  const secret = process.env.BOOTSTRAP_SECRET;
+  const provided = req.headers["x-bootstrap-secret"];
+  if (!secret || typeof provided !== "string") return false;
+  const a = Buffer.from(secret), b = Buffer.from(provided);
+  if (a.length !== b.length) return false;
+  try { return crypto.timingSafeEqual(a, b); } catch { return false; }
+}
 
 // POST /save
 function httpError(status, code, message) {
@@ -2746,8 +2829,17 @@ function rejectDemoDataForProduction(data) {
 
 app.post("/save", async (req, res) => {
   // Postgres/SaaS 모드는 항상 인증 필수(부트스트랩 예외 폐기, 위 주석 참고).
-  // JSON 파일 모드만 기존 부트스트랩 흐름(직원 0명일 때 1회 무인증 허용)을 그대로 유지한다.
-  const bootstrapExempt = USE_JSON_FILE && await _employeesEmpty();
+  // JSON 파일 모드만 기존 부트스트랩 흐름(직원 0명일 때 1회 무인증 허용)을 그대로 유지하되,
+  // BOOTSTRAP_SECRET을 설정한 배포에서는 그 검증을 추가로 요구한다(_bootstrapSecretMatches
+  // 주석 참고 — P0-3, opt-in).
+  const employeesEmpty = USE_JSON_FILE && await _employeesEmpty();
+  if (employeesEmpty && process.env.BOOTSTRAP_SECRET && !_bootstrapSecretMatches(req)) {
+    return res.status(401).json({
+      ok: false, code: "BOOTSTRAP_SECRET_REQUIRED",
+      message: "최초 관리자 계정 생성에는 BOOTSTRAP_SECRET이 필요합니다(X-Bootstrap-Secret 헤더에 환경변수와 같은 값을 실어 보내세요).",
+    });
+  }
+  const bootstrapExempt = employeesEmpty;
   if (!bootstrapExempt && !requireAuth(req, res)) return;
   const companyId = req.auth?.companyId || null;
   const body = req.body;

@@ -1,6 +1,7 @@
 // 외부 보안 감사(2026-08-19, "fe6ab358 재검토 결과")의 P0 항목 중 P0-1(member→admin
-// 권한상승)/P0-2(GET /data를 통한 전사 PII 노출)/P0-4(budget.js 개인별 급여상세 IDOR)에
-// 대한 회귀 테스트.
+// 권한상승)/P0-2(GET /data를 통한 전사 PII 노출)/P0-3(무인증 부트스트랩 선점)/P0-4
+// (budget.js 개인별 급여상세 IDOR)/P0-5(퇴직·강등·비번초기화 후에도 기존 토큰이 자연
+// 만료까지 유효하던 세션 철회 불가 문제)에 대한 회귀 테스트.
 //
 // 감사가 명시적으로 지적한 것: 두 취약점은 서로 얽혀 있어 "같은 릴리스에 함께" 고쳐야
 // 한다 — PII를 먼저 숨기기만 하고(read-narrowing) employees 쓰기 경로를 그대로 두면,
@@ -236,5 +237,139 @@ test("P0-4: budget.js emp-pay-plan/by-ids가 스코프 밖 id를 조용히 거�
     const json = await res.json();
     assert.equal(json.plans.length, 1);
     assert.equal(json.plans[0].items[0].amount, 12000000);
+  });
+});
+
+test("P0-3: BOOTSTRAP_SECRET을 설정한 배포는 무인증 부트스트랩 선점을 막는다(opt-in)", async (t) => {
+  await t.test("BOOTSTRAP_SECRET 설정 시 헤더 없는 부트스트랩은 401", async (t2) => {
+    const server = await startServer({ env: { NODE_ENV: "production", BOOTSTRAP_SECRET: "supersecret123" } });
+    t2.after(() => server.stop());
+    const res = await save(server, null, 0, [
+      { id: 1, loginId: "attacker", pw: "attackerpw", role: "admin", name: "공격자", active: true },
+    ]);
+    assert.equal(res.status, 401);
+    const json = await res.json();
+    assert.equal(json.code, "BOOTSTRAP_SECRET_REQUIRED");
+  });
+
+  await t.test("틀린 헤더값도 401", async (t2) => {
+    const server = await startServer({ env: { NODE_ENV: "production", BOOTSTRAP_SECRET: "supersecret123" } });
+    t2.after(() => server.stop());
+    const res = await fetch(server.baseUrl + "/save", {
+      method: "POST", headers: { "Content-Type": "application/json", "X-Bootstrap-Secret": "wrongsecret" },
+      body: JSON.stringify({ _version: 0, employees: [{ id: 1, loginId: "attacker", pw: "attackerpw", role: "admin", name: "공격자", active: true }] }),
+    });
+    assert.equal(res.status, 401);
+  });
+
+  await t.test("올바른 헤더값은 정상 부트스트랩", async (t2) => {
+    const server = await startServer({ env: { NODE_ENV: "production", BOOTSTRAP_SECRET: "supersecret123" } });
+    t2.after(() => server.stop());
+    const res = await fetch(server.baseUrl + "/save", {
+      method: "POST", headers: { "Content-Type": "application/json", "X-Bootstrap-Secret": "supersecret123" },
+      body: JSON.stringify({ _version: 0, employees: [{ id: 1, loginId: "admin", pw: "adminpw123", role: "admin", name: "관리자", active: true }] }),
+    });
+    assert.equal(res.status, 200);
+  });
+
+  await t.test("BOOTSTRAP_SECRET 미설정 시(기본값) 기존 무인증 부트스트랩 동작 그대로 유지(하위호환)", async (t2) => {
+    const server = await startServer({ env: { NODE_ENV: "production" } });
+    t2.after(() => server.stop());
+    const res = await save(server, null, 0, [
+      { id: 1, loginId: "admin", pw: "adminpw123", role: "admin", name: "관리자", active: true },
+    ]);
+    assert.equal(res.status, 200, "BOOTSTRAP_SECRET을 설정하지 않은 배포는 기존과 동일하게 동작해야 함");
+  });
+
+  await t.test("이미 직원이 있으면(부트스트랩 이후) 정상 인증 흐름은 시크릿과 무관", async (t2) => {
+    const server = await startServer({ env: { NODE_ENV: "production", BOOTSTRAP_SECRET: "supersecret123" } });
+    t2.after(() => server.stop());
+    let res = await fetch(server.baseUrl + "/save", {
+      method: "POST", headers: { "Content-Type": "application/json", "X-Bootstrap-Secret": "supersecret123" },
+      body: JSON.stringify({ _version: 0, employees: [{ id: 1, loginId: "admin", pw: "adminpw123", role: "admin", name: "관리자", active: true }] }),
+    });
+    assert.equal(res.status, 200);
+    const token = await login(server, "admin", "adminpw123");
+    const d = await getData(server, token);
+    res = await save(server, token, d.version, d.data.employees);
+    assert.equal(res.status, 200, "부트스트랩 이후 정상 인증 저장은 시크릿 헤더 없이도 동작해야 함");
+  });
+});
+
+test("P0-5: 퇴직/강등/비밀번호 초기화 후 기존 토큰이 즉시 무효화된다(authVersion 세션 철회)", async (t) => {
+  const server = await startServer({ env: { NODE_ENV: "production" } });
+  t.after(() => server.stop());
+
+  let boot = await save(server, null, 0, [
+    { id: 1, loginId: "admin", pw: "adminpw123", role: "admin", name: "관리자", active: true },
+  ]);
+  assert.equal(boot.status, 200);
+  const adminToken = await login(server, "admin", "adminpw123");
+
+  let d = await getData(server, adminToken);
+  let r = await save(server, adminToken, d.version, [
+    ...d.data.employees,
+    { id: 2, loginId: "victim", pw: "victimpw12", role: "member", name: "피해자", active: true },
+    { id: 3, loginId: "demoted", pw: "demotedpw1", role: "leader", name: "강등대상", active: true },
+    { id: 4, loginId: "pwreset", pw: "oldpw12345", role: "member", name: "비번초기화대상", active: true },
+  ]);
+  assert.equal(r.status, 200, "시드 실패");
+
+  await t.test("퇴직 처리(active:false) 후 기존 토큰은 즉시 401", async () => {
+    const victimToken = await login(server, "victim", "victimpw12");
+    await getData(server, victimToken); // 내부에서 200 단언(퇴직 전에는 정상 동작해야 함)
+
+    const before = await getData(server, adminToken);
+    r = await save(server, adminToken, before.version, before.data.employees.map(e =>
+      String(e.id) === "2" ? { ...e, active: false, updatedAt: new Date().toISOString() } : e
+    ));
+    assert.equal(r.status, 200);
+
+    const res = await fetch(server.baseUrl + "/data", { headers: { Authorization: "Bearer " + victimToken } });
+    assert.equal(res.status, 401, "퇴직 처리 직후 기존 토큰은 자연 만료를 기다리지 않고 즉시 무효화되어야 함");
+  });
+
+  await t.test("강등(role 하향) 후 기존 토큰은 즉시 401, 재로그인은 정상 동작", async () => {
+    const demotedToken = await login(server, "demoted", "demotedpw1");
+    await getData(server, demotedToken); // 내부에서 200 단언
+
+    const before = await getData(server, adminToken);
+    r = await save(server, adminToken, before.version, before.data.employees.map(e =>
+      String(e.id) === "3" ? { ...e, role: "member", updatedAt: new Date().toISOString() } : e
+    ));
+    assert.equal(r.status, 200);
+
+    let res = await fetch(server.baseUrl + "/data", { headers: { Authorization: "Bearer " + demotedToken } });
+    assert.equal(res.status, 401, "강등 직후 기존(leader 권한) 토큰은 즉시 무효화되어야 함");
+
+    const relogin = await login(server, "demoted", "demotedpw1");
+    assert.ok(relogin, "비밀번호가 그대로면 재로그인은 정상 동작해야 함(새 role로 재발급)");
+    await getData(server, relogin); // 내부에서 200 단언
+  });
+
+  await t.test("관리자의 비밀번호 강제 초기화 후 기존 토큰은 즉시 401", async () => {
+    const pwresetToken = await login(server, "pwreset", "oldpw12345");
+    await getData(server, pwresetToken); // 내부에서 200 단언
+
+    const before = await getData(server, adminToken);
+    r = await save(server, adminToken, before.version, before.data.employees.map(e =>
+      String(e.id) === "4" ? { ...e, pw: "newpw67890", updatedAt: new Date().toISOString() } : e
+    ));
+    assert.equal(r.status, 200);
+
+    const res = await fetch(server.baseUrl + "/data", { headers: { Authorization: "Bearer " + pwresetToken } });
+    assert.equal(res.status, 401, "관리자 강제 비번초기화 직후 기존 토큰은 즉시 무효화되어야 함");
+  });
+
+  await t.test("역할/비밀번호/재직여부와 무관한 변경은 기존 토큰을 무효화하지 않는다", async () => {
+    const stableToken = await login(server, "admin", "adminpw123");
+    const before = await getData(server, adminToken);
+    r = await save(server, adminToken, before.version, before.data.employees.map(e =>
+      String(e.id) === "1" ? { ...e, phone: "010-0000-0000", updatedAt: new Date().toISOString() } : e
+    ));
+    assert.equal(r.status, 200);
+
+    const res = await fetch(server.baseUrl + "/data", { headers: { Authorization: "Bearer " + stableToken } });
+    assert.equal(res.status, 200, "role/pw/active와 무관한 변경으로 토큰이 무효화되면 안 됨");
   });
 });
