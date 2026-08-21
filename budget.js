@@ -464,6 +464,40 @@ function computeBudgetComparison(data, plan) {
 // 팀(plan.dept)과 실제 비용이 귀속되는 부문이 다를 수 있어(예: 기획팀이 작성한 계획 안에
 // 경영지원부문 귀속 비용이 섞여 있는 경우), plan.dept 기준 롤업(byDept)과는 별개로
 // "이 비용이 실제로 누구 예산인지" 기준의 조직단위 집계를 제공한다. company는 전사 합계.
+// 매출계획 대비 실적 부문별/전사 롤업 — 지금까지 revenueItems(건별 매출 계획+실적)는
+// GET .../business-plan/:id/revenue-monitor로 계획 1건씩만 열어봐야 확인 가능했고,
+// SG&A(판관비)처럼 여러 계획을 부문·전사 단위로 한 번에 취합해 보는 화면이 없었다(사용자
+// 요청: "매출계획대비 실적 자료 비교"). costOnly 계획(매출 항목 없음)은 대상에서 제외.
+// monthLimit(1~12, 누계 기준월)까지의 월별 계획/실적 합계를 비교한다 — 화면 기본값은
+// 클라이언트가 "당해년도면 오늘이 속한 월"로 정하고(이미 _bpOpenRevenueMonitor에 있는
+// 로직과 동일 원칙), 서버는 그 값을 그대로 받아 계산만 한다.
+function _revenueRollupByDept(plans, monthLimit) {
+  const m = Number.isInteger(monthLimit) && monthLimit >= 1 && monthLimit <= 12 ? monthLimit : 12;
+  const byDeptMap = {};
+  let companyPlan = 0, companyActual = 0;
+  plans.forEach(p => {
+    if (p.planType === 'costOnly') return;
+    const items = (p.assumptions && Array.isArray(p.assumptions.revenueItems)) ? p.assumptions.revenueItems : [];
+    if (!items.length) return;
+    const dept = p.dept || '(미지정)';
+    if (!byDeptMap[dept]) byDeptMap[dept] = { dept, plan: 0, actual: 0 };
+    items.forEach(item => {
+      const months = Array.isArray(item.months) && item.months.length === 12 ? item.months : Array(12).fill(0);
+      const actualMonths = Array.isArray(item.actualMonths) && item.actualMonths.length === 12 ? item.actualMonths : Array(12).fill(0);
+      const planSum = months.slice(0, m).reduce((s, v) => s + (Number(v) || 0), 0);
+      const actualSum = actualMonths.slice(0, m).reduce((s, v) => s + (Number(v) || 0), 0);
+      byDeptMap[dept].plan += planSum;
+      byDeptMap[dept].actual += actualSum;
+      companyPlan += planSum;
+      companyActual += actualSum;
+    });
+  });
+  const byDept = Object.values(byDeptMap)
+    .map(r => ({ ...r, plan: round2(r.plan), actual: round2(r.actual), gap: round2(r.actual - r.plan) }))
+    .sort((a, b) => a.dept.localeCompare(b.dept));
+  return { monthLimit: m, byDept, company: { plan: round2(companyPlan), actual: round2(companyActual), gap: round2(companyActual - companyPlan) } };
+}
+
 function _sgaRollupByCostDept(plans) {
   const byCostDeptMap = {};
   const companyMonths = Array(12).fill(0);
@@ -1345,8 +1379,14 @@ module.exports = function budgetRouterFactory(deps) {
     // 각각 계정과목(판관/용역/경상)·비용계정(실제 회계 계정과목) 기준으로 재집계한 것.
     const sgaByAccountType = _sgaRollupByAccountType(sgaScoped);
     const sgaByExpenseAccount = _sgaRollupByExpenseAccount(sgaScoped);
+    // 매출계획 대비 실적(부문별/전사) — sgaScoped(이미 sgaYear로 한 해 계획만 걸러진
+    // 상태, 없으면 전체)를 그대로 재사용해 위 SG&A 집계들과 동일한 연도 스코프를 갖는다.
+    // ?month=를 생략하면 연간 전체(12) — 클라이언트가 "오늘이 속한 월"을 기본값으로
+    // 계산해 넘기므로(당해년도 계획을 열 때 이미 지나간 월만큼만 비교), 서버는 계산만.
+    const revenueMonthParam = req.query.month ? Number(req.query.month) : null;
+    const revenueRollup = _revenueRollupByDept(sgaScoped, revenueMonthParam);
 
-    res.json({ ok: true, includeDraft, sgaYear, byDept, company: { planCount: scoped.length, projection: _rollup(scoped) }, sgaByCostDept, sgaByCategory, sgaByAccountType, sgaByExpenseAccount });
+    res.json({ ok: true, includeDraft, sgaYear, byDept, company: { planCount: scoped.length, projection: _rollup(scoped) }, sgaByCostDept, sgaByCategory, sgaByAccountType, sgaByExpenseAccount, revenueRollup });
   });
 
   // 항목별 실적 참고(신규 자동화, 작성 단계 실시간 안내): 사업계획 작성/수정 폼에서 판관비

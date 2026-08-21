@@ -15472,6 +15472,13 @@ let _bizPlanFormType="revenue";
 let _bpSgaDefaultDept="",_bpSgaDefaultTeam=""; // 판관비 항목 신규 행의 부문/팀명 기본값(폼 열 때 계획 소속으로 세팅)
 let _bizPlanCompareIds=new Set();
 let _bizPlanRollupData=null,_bizPlanRollupIncludeDraft=false,_bizPlanRollupDeptFilter="";
+// 매출계획 대비 실적(부문별/전사) 롤업의 기준월. null이면 "당해년도는 오늘이 속한 월,
+// 그 외 연도는 12월(연간 전체)"을 매번 계산해서 쓴다(_bpRevenueRollupMonthDefault) —
+// _bpOpenRevenueMonitor()의 개별 계획 모니터링과 동일한 기본값 원칙.
+let _bpRevenueRollupMonth=null;
+function _bpRevenueRollupMonthDefault(){
+  return _bpBulkUploadYear===new Date().getFullYear()?(new Date().getMonth()+1):12;
+}
 let _bpExpenseAccounts=[],_bpExpenseAccountsLoaded=false; // 비용계정 검색선택용(회계 계정과목 중 비용 계정만, 최소 필드)
 const _BP_CHART_PALETTE=['#0f3460','#e94560','#1a7d36','#8a6500','#6c3fb0','#0e7c86'];
 // 판관비(인건비 등) 표준 세부 항목 템플릿 — [구분, 항목]. 신규 사업계획 작성 시 기본으로
@@ -15767,7 +15774,14 @@ async function _bpSubmitRevenueActuals(planId){
 async function _bpOpenRevenueMonitor(planId,month){
   const p=bizPlans.find(x=>String(x.id)===String(planId));
   if(!p)return;
-  const m=month||12;
+  // 기준월 기본값 — 항상 12월(연간 전체)로 고정돼 있으면 아직 지나지 않은 월은 실적이
+  // 0으로 잡혀, 당해년도 계획을 열 때마다 매번 실제보다 훨씬 못 미치는 것처럼(GAP이
+  // 과도하게 음수로) 보이는 문제가 있었다. 계획의 기준연도가 올해면 "오늘까지의 진행
+  // 상황"이 기본으로 보이도록 현재 월을 기본값으로 쓰고, 과거·미래 연도 계획은 기존처럼
+  // 연간 전체(12월)를 기본으로 유지한다(사용자가 셀렉트로 언제든 다른 월을 고를 수 있음).
+  const thisYear=new Date().getFullYear();
+  const defaultMonth=p.baseYear===thisYear?(new Date().getMonth()+1):12;
+  const m=month||defaultMonth;
   const r=await serverRequest("GET",`/api/budget/business-plan/${planId}/revenue-monitor?month=${m}`);
   if(!r?.ok){showToast(r?.error||"조회에 실패했습니다.","error");return;}
   const rows=r.items.map(it=>{
@@ -16907,8 +16921,9 @@ async function loadBizPlanRollup(){
   // year를 넘겨야 한다 — 넘기지 않으면 서버가 연도 구분 없이 모든 계획연도를 합산해
   // 여러 해의 계획이 동시에 존재할 때 전사 합계가 실제보다 부풀어 보이는 문제가 있었음
   // (예: 2027년+2028년 계획이 함께 있으면 두 해 합계가 "기준연도" 표에 그대로 더해짐).
+  const revMonth=_bpRevenueRollupMonth||_bpRevenueRollupMonthDefault();
   const [r,rh]=await Promise.all([
-    serverRequest("GET",`/api/budget/business-plan/rollup?includeDraft=${_bizPlanRollupIncludeDraft}&year=${_bpBulkUploadYear}`),
+    serverRequest("GET",`/api/budget/business-plan/rollup?includeDraft=${_bizPlanRollupIncludeDraft}&year=${_bpBulkUploadYear}&month=${revMonth}`),
     serverRequest("GET",`/api/budget/business-plan/headcount-plan?year=${_bpBulkUploadYear}`),
   ]);
   if(!r?.ok)_bizPlanRollupData={error:r?.error||r?.message||"조회 실패"};
@@ -17041,6 +17056,11 @@ function _renderBizPlanBudgetOverviewTab(){
     <label class="fz12">부문/사업부/센터 검색(비우면 전사):
       <input class="fc" list="bp-dept-list" autocomplete="off" style="display:inline-block;width:auto" value="${h(filterDept)}" placeholder="부문/사업부/센터 검색" onchange="_bizPlanRollupDeptFilter=this.value.trim();renderBizPlanPage()">
     </label>
+    <label class="fz12">매출 비교 기준월:
+      <select class="fc" style="display:inline-block;width:auto" onchange="_bpRevenueRollupMonth=Number(this.value);loadBizPlanRollup()">
+        ${Array.from({length:12},(_,i)=>`<option value="${i+1}" ${(_bpRevenueRollupMonth||_bpRevenueRollupMonthDefault())===i+1?"selected":""}>${i+1}월 누계</option>`).join("")}
+      </select>
+    </label>
     <button class="btn btn-secondary btn-sm" onclick="_bpExportRollupCsv()" title="현재 화면에 적용된 연도·범위(작성중 포함 여부·부문 검색)로 판관비 항목 전체를 CSV로 내려받습니다.">📥 판관비 항목 전체 다운로드</button>
   </div>`;
   // 사업부장 승인을 아직 안 받은 draft 계획만 있는 경우(신규 팀·신규 회사의 가장 흔한
@@ -17077,6 +17097,7 @@ function _renderBizPlanBudgetOverviewTab(){
     html+=`<div class="mb4"><h4 class="mb2">${h(dept.dept)} <span class="fz11 text-gray">(계획 ${dept.planCount}건)</span></h4><div class="tbl-wrap">${rollupTable(dept.projection)}</div></div>`;
   });
   html+=`<div class="mb3"><h4 class="mb2">회사 전체 <span class="fz11 text-gray">(계획 ${d.company.planCount}건)</span></h4><div class="tbl-wrap">${rollupTable(d.company.projection)}</div></div>`;
+  html+=_bpRevenueRollupHtml(d.revenueRollup,filterDept);
   html+=_bpSgaByCostDeptHtml(d.sgaByCostDept,filterDept,d.sgaYear);
   html+=_bpSgaByCategoryHtml(d.sgaByCategory,filterDept,d.sgaYear);
   const acctTypeHtml=_bpSgaByAccountTypeHtml(d.sgaByAccountType,filterDept,d.sgaYear);
@@ -17210,6 +17231,25 @@ function _bpRetireeSummaryLinkHtml(year,filterDept){
   return `<div class="mb4" style="background:#f8fafc;padding:10px 14px;border-radius:8px;font-size:12px">
     ${year}년 퇴직일 등록자 총 ${list.length}명 — 각 월의 인원 감소는 이 인원들의 퇴직월 다음 달부터 반영됩니다.${mismatchCount?` <span style="color:#c0392b;font-weight:700">그중 ${mismatchCount}명은 직원 목록에서 정식 퇴직 처리가 안 돼 재직중으로 집계되는 정합성 오류입니다.</span>`:""}
     <button class="btn btn-secondary btn-sm mt1" onclick="_hrStatsYear=${year};_hrStatsFilterDept=${filterDept?`'${filterDept.replace(/'/g,"\\'")}'`:"''"};gotoPage('hr-stats')">📋 상세 목록·입사자 현황·처리는 인사 통계에서 확인 →</button>
+  </div>`;
+}
+// 매출계획 대비 실적(부문별/전사) — 지금까지는 계획 카드의 "매출 모니터링" 버튼으로
+// 계획 1건씩만 열어봐야 확인 가능했다. 판관비(SG&A) 쪽에 이미 있는 "부문별/전사 취합"
+// 패턴을 매출 계획-실적 비교에도 그대로 적용해, 여러 팀의 매출계획을 한 화면에서
+// 부문별·전사 단위로 비교할 수 있게 한다. filterDept가 지정되면 그 부문 한 줄만
+// (전사 합계 행은 항상 유지) — 위 SG&A 표들과 동일한 필터링 관례.
+function _bpRevenueRollupHtml(rv,filterDept){
+  if(!rv||!Array.isArray(rv.byDept))return "";
+  const filtered=filterDept?rv.byDept.filter(r=>r.dept===filterDept):rv.byDept;
+  if(!filtered.length&&!rv.company.plan&&!rv.company.actual)return "";
+  const gapCell=gap=>`<td style="text-align:right;color:${gap<0?"#dc2626":gap>0?"#16a34a":"inherit"}">${gap>0?"+":""}${_bpFmt(gap)}</td>`;
+  const row=(label,r)=>`<tr><td class="lbl">${h(label)}</td><td style="text-align:right">${_bpFmt(r.plan)}</td><td style="text-align:right">${_bpFmt(r.actual)}</td>${gapCell(r.gap)}</tr>`;
+  return `<div class="mb3"><h4 class="mb2">매출계획 대비 실적(${rv.monthLimit}월 누계) <span class="fz11 text-gray">비용전용(costOnly) 계획 제외</span></h4>
+    <div class="tbl-wrap"><table>
+      <tr><th class="lbl">부문</th><th>계획</th><th>실적</th><th>GAP</th></tr>
+      ${filtered.map(r=>row(r.dept,r)).join("")}
+      <tr style="font-weight:700;background:#fdf1f1">${row("전사 합계",rv.company)}</tr>
+    </table></div>
   </div>`;
 }
 // 판관비 항목을 "비용 귀속 부문" 기준으로 재집계한 표 — 위 byDept(계획을 작성한 팀
