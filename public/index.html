@@ -341,6 +341,12 @@
     if (name === 'memory' && currentAccount) loadMemory();
   }
 
+  function escapeHtml(str) {
+    const div = document.createElement('div');
+    div.textContent = str == null ? '' : String(str);
+    return div.innerHTML;
+  }
+
   function roleBadgeClass(role) {
     const map = {
       planner: 'role-planner',
@@ -432,12 +438,20 @@
   }
 
   async function pinAgent(agentId) {
-    await fetch(`/api/accounts/${currentAccount.id}/pinned-agents/${agentId}`, { method: 'POST' });
+    const res = await fetch(`/api/accounts/${currentAccount.id}/pinned-agents/${agentId}`, { method: 'POST' });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      alert(data.error || '에이전트 고정에 실패했습니다.');
+    }
     await selectAccount(currentAccount.id);
   }
 
   async function unpinAgent(agentId) {
-    await fetch(`/api/accounts/${currentAccount.id}/pinned-agents/${agentId}`, { method: 'DELETE' });
+    const res = await fetch(`/api/accounts/${currentAccount.id}/pinned-agents/${agentId}`, { method: 'DELETE' });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      alert(data.error || '에이전트 고정 해제에 실패했습니다.');
+    }
     await selectAccount(currentAccount.id);
   }
 
@@ -459,7 +473,7 @@
       <div class="memory-item">
         <span class="memory-item-type ${typeClass[e.type] || 'type-note'}">${typeLabel[e.type] || e.type}</span>
         <div style="flex:1">
-          <div class="memory-item-content">${e.content}</div>
+          <div class="memory-item-content">${escapeHtml(e.content)}</div>
           <div class="memory-item-date">${new Date(e.savedAt).toLocaleString('ko-KR')}</div>
         </div>
         <button class="btn-delete-mem" onclick="deleteMemory(${e.id})">✕</button>

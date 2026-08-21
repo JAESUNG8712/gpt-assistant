@@ -1,4 +1,5 @@
 import asyncio
+import functools
 import os
 import re
 import glob as _glob
@@ -732,7 +733,7 @@ async def chat(req: ChatRequest):
 
                     # ① DuckDuckGo 일반 검색 (기존)
                     _ddg_task = asyncio.get_event_loop().run_in_executor(
-                        None, srch.search_and_learn, search_msg
+                        None, functools.partial(srch.search_and_learn, search_msg, persona_id=persona_id)
                     )
 
                     # ② 종목별 뉴스 수집 (병렬)
@@ -1171,9 +1172,11 @@ def backup_google_auth():
 
 
 @app.get("/backup/google-callback")
-async def backup_google_callback(code: str = ""):
+async def backup_google_callback(code: str = "", state: str = ""):
     if not code:
         raise HTTPException(400, "code 파라미터 없음")
+    if not bkp.gdrive_validate_state(state):
+        raise HTTPException(400, "state 검증 실패 — 인증을 다시 시도하세요.")
     await bkp.gdrive_exchange_code(code)
     return HTMLResponse("<h2>✅ Google Drive 연동 완료!</h2><p>이 창을 닫고 앱으로 돌아가세요.</p>")
 
@@ -1261,36 +1264,6 @@ def answer_download(filename: str):
 @app.get("/model-info")
 def model_info():
     return llm.current_model_info()
-
-@app.get("/debug/law")
-async def debug_law(q: str = "근로기준법 제7조"):
-    """law.go.kr API 원본 응답 확인용 (개발 디버그)"""
-    import httpx, traceback
-    api_key = os.getenv("LAW_API_KEY", "")
-    if not api_key:
-        return {"ok": False, "error": "LAW_API_KEY 환경변수 없음"}
-    search_name = law._get_search_name(q)
-    url = "https://www.law.go.kr/DRF/lawSearch.do"
-    params = {"OC": api_key, "target": "law", "type": "JSON", "query": search_name, "display": 5}
-    try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            r1 = await client.get(url, params=params)
-            return {
-                "ok": True,
-                "query": q,
-                "search_name": search_name,
-                "http_status": r1.status_code,
-                "raw": r1.json(),
-            }
-    except Exception as e:
-        return {
-            "ok": False,
-            "query": q,
-            "search_name": search_name,
-            "error_type": type(e).__name__,
-            "error": str(e),
-            "traceback": traceback.format_exc()[-500:],
-        }
 
 # ── 예산관리 (budget) API ─────────────────────────
 @app.post("/budget/upload/headcount")

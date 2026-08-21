@@ -6,7 +6,7 @@
 import re
 import math
 import asyncio
-from collections import Counter, defaultdict
+from collections import Counter, defaultdict, deque
 from typing import AsyncGenerator, List, Tuple, Dict
 
 # 형태소 분석기 (python-mecab-ko) — 설치 안 된 환경에서는 규칙 기반 토크나이저만 사용
@@ -312,10 +312,20 @@ class _Engine:
         self._idf: Dict[str, float] = {}
         self._dirty = True
         self._deleted: set = set()   # 소프트 삭제된 인덱스
+        self._transient_idx: deque = deque()   # add_transient()로 추가된 인덱스(FIFO, cap 초과 시 소프트 삭제)
 
     def add(self, q: str, a: str, meta: dict = None):
         self._qa.append((q, a, meta or {}))
         self._dirty = True
+
+    def add_transient(self, q: str, a: str, meta: dict, cap: int = 150):
+        """요청 시점에 임시로 등록되는 항목(예: 웹검색 컨텍스트)을 추가하되,
+        최근 cap개만 유지 — 계속 쌓여 코퍼스가 무한정 커지는 것을 방지."""
+        self._transient_idx.append(len(self._qa))
+        self.add(q, a, meta)
+        while len(self._transient_idx) > cap:
+            old_i = self._transient_idx.popleft()
+            self._deleted.add(old_i)
 
     def count(self) -> int:
         return len(self._qa) - len(self._deleted)
@@ -749,9 +759,9 @@ async def local_stream(
                 turn_count += 1
         search_q = ' '.join(ctx_parts)
 
-        # 동적으로 추가된 내용은 엔진에 등록
+        # 동적으로 추가된 내용은 엔진에 등록 (최근 항목만 유지 — 무한정 누적 방지)
         if context:
-            engine.add(context[:600], context, {'persona': persona, 'source': 'context'})
+            engine.add_transient(context[:600], context, {'persona': persona, 'source': 'context'})
 
         results = engine.search(search_q, persona=persona)
         response = _compose(query, results, persona)

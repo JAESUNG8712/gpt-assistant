@@ -464,13 +464,6 @@ async def chat_stream_coding(
         yield token
 
 
-async def chat(messages: list, context: str = "") -> str:
-    result = []
-    async for token in chat_stream(messages, context):
-        result.append(token)
-    return "".join(result)
-
-
 def current_model_info() -> dict:
     chain = _provider_chain()
     primary = chain[0]

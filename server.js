@@ -2,6 +2,7 @@ const express = require('express');
 const cors = require('cors');
 const fs = require('fs');
 const path = require('path');
+const budgetRouter = require('./budget');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -10,6 +11,7 @@ const DATA_FILE = path.join(__dirname, 'data.json');
 app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
+app.use('/api/budget', budgetRouter);
 
 function readData() {
   return JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
@@ -152,7 +154,8 @@ app.delete('/api/accounts/:accountId/memory/context/:entryId', (req, res) => {
   const account = data.accounts.find(a => a.id === req.params.accountId);
   if (!account) return res.status(404).json({ error: '계정을 찾을 수 없습니다.' });
 
-  const id = parseInt(req.params.entryId);
+  const id = parseInt(req.params.entryId, 10);
+  if (Number.isNaN(id)) return res.status(400).json({ error: '잘못된 항목 ID입니다.' });
   if (!account.memory) account.memory = { projectContext: [], decisions: [] };
   account.memory.projectContext = (account.memory.projectContext || []).filter(e => e.id !== id);
   writeData(data);

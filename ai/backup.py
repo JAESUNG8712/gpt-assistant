@@ -1,5 +1,6 @@
 """백업 모듈 — 직접 다운로드 + Google Drive"""
 import os
+import secrets
 import sqlite3
 import json
 import zipfile
@@ -90,9 +91,14 @@ def gdrive_configured() -> bool:
     return bool(GDRIVE_CLIENT_ID and GDRIVE_CLIENT_SECRET and GDRIVE_REDIRECT_URI)
 
 
+_pending_state: str | None = None
+
+
 def gdrive_auth_url() -> str:
-    """Google OAuth2 인증 URL 생성"""
+    """Google OAuth2 인증 URL 생성 (CSRF 방지용 state 포함)"""
+    global _pending_state
     import urllib.parse
+    _pending_state = secrets.token_urlsafe(24)
     params = {
         "client_id":     GDRIVE_CLIENT_ID,
         "redirect_uri":  GDRIVE_REDIRECT_URI,
@@ -100,8 +106,17 @@ def gdrive_auth_url() -> str:
         "scope":         "https://www.googleapis.com/auth/drive.file",
         "access_type":   "offline",
         "prompt":        "consent",
+        "state":         _pending_state,
     }
     return "https://accounts.google.com/o/oauth2/v2/auth?" + urllib.parse.urlencode(params)
+
+
+def gdrive_validate_state(state: str) -> bool:
+    """콜백에서 받은 state가 발급한 값과 일치하는지 확인 (1회용, 검증 후 폐기)"""
+    global _pending_state
+    valid = bool(_pending_state) and secrets.compare_digest(_pending_state, state or "")
+    _pending_state = None
+    return valid
 
 
 async def gdrive_exchange_code(code: str) -> bool:
@@ -121,10 +136,16 @@ async def gdrive_exchange_code(code: str) -> bool:
         resp.raise_for_status()
         token = resp.json()
 
-    Path(TOKEN_PATH).parent.mkdir(parents=True, exist_ok=True)
-    with open(TOKEN_PATH, "wb") as f:
-        pickle.dump(token, f)
+    _save_token(token)
     return True
+
+
+def _save_token(token: dict) -> None:
+    """OAuth 토큰을 파일에 저장 (소유자만 읽기/쓰기 가능하도록 권한 제한)"""
+    Path(TOKEN_PATH).parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(TOKEN_PATH, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "wb") as f:
+        pickle.dump(token, f)
 
 
 def _load_token() -> dict | None:
@@ -152,8 +173,7 @@ async def _refresh_access_token(token: dict) -> str:
 
     # 갱신된 access_token 저장
     token["access_token"] = new_token["access_token"]
-    with open(TOKEN_PATH, "wb") as f:
-        pickle.dump(token, f)
+    _save_token(token)
     return token["access_token"]
 
 

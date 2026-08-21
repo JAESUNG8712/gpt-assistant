@@ -261,7 +261,9 @@ class ReportWriter:
   관세영향: {str(trade.get('미국관세정책', {}).get('현황', 'N/A'))}
 
 ■ 이번 주 주요 일정
-  {events_str}"""
+  {events_str}
+
+⚠️ 물가(CPI)·원자재·경제일정 데이터는 실시간 연동이 아닌 정적 샘플입니다. 표기된 기준월/날짜를 확인하고, 최신 수치는 별도로 확인하세요."""
 
     def _top_picks(self) -> str:
         ranked = sorted(
@@ -454,6 +456,8 @@ class ReportWriter:
         for opp in opportunities:
             lines.append(f"  [{opp['섹터']}]  기회: {opp['기회']}  |  위험: {opp['위험']}")
 
+        lines.append("")
+        lines.append("⚠️ 위 섹터·기회/위험 코멘트는 실시간 연동이 아닌 정적 샘플 데이터입니다. 최신 동향은 별도로 확인하세요.")
         return "\n".join(lines)
 
     def _detailed_stock_analysis(self) -> str:

@@ -58,7 +58,10 @@ class StockAnalysisPipeline:
                 financial_data, economic_data, geo_data, industry_data)
 
             self.log("\n── STEP 3: 상세 분석 ──")
-            analyses = self._step3_analyze(
+            # Claude API(동기 SDK) 호출을 포함 — 이벤트 루프를 막지 않도록 executor에서 실행
+            loop = asyncio.get_event_loop()
+            analyses = await loop.run_in_executor(
+                None, self._step3_analyze,
                 financial_data, economic_data, geo_data, industry_data)
 
             self.log("\n── STEP 4: 교차 검증 ──")
@@ -66,7 +69,9 @@ class StockAnalysisPipeline:
                 financial_data, analyses, economic_data, geo_data, industry_data)
 
             self.log("\n── STEP 5: 최종 보고서 작성 ──")
-            report = self._step5_report(
+            # 마찬가지로 Claude API(동기 SDK) 호출 포함 — executor에서 실행
+            report = await loop.run_in_executor(
+                None, self._step5_report,
                 analyses, financial_data, economic_data,
                 geo_data, industry_data, data_val, logic_val, risk_val)
 

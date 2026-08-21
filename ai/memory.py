@@ -290,15 +290,6 @@ def retrieve_best(query: str, n: int = 5, persona_id: str = None) -> dict:
         return empty
 
 
-def store_conversation_memory(user_msg: str, ai_msg: str, persona_id: str = "hr"):
-    text = f"사용자: {user_msg}\nAI: {ai_msg}"
-    store_memory(text, {
-        "source": "대화",
-        "persona": persona_id,
-        "at": datetime.now().isoformat(),
-    })
-
-
 def store_document(text: str, filename: str, persona_id: str = "hr"):
     """업로드 문서를 청크로 나눠 엔진에 학습 — 동일 파일 재업로드 시 기존 청크 교체"""
     src = f"문서:{filename}"
