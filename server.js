@@ -1453,7 +1453,10 @@ function _nextAuthVersion(ex, emp, pw) {
 async function persistData(data, changedBy = "system", companyId = null, actor = null) {
   return _withSaveLock(() => _withDistributedSaveLock(companyId, () => _persistDataLocked(data, changedBy, companyId, actor)));
 }
-async function _persistDataLocked(data, changedBy = "system", companyId = null, actor = null) {
+// `externalClient` is reserved for the snapshot-restore workflow.  That route
+// owns a wider transaction which also covers deleteExtras and budget_store, so
+// this function must join it instead of committing a partial HR restore first.
+async function _persistDataLocked(data, changedBy = "system", companyId = null, actor = null, externalClient = null) {
   // kpiEntries.weight(비중,%)는 화면 입력칸엔 별다른 제한이 없고(saveKpiDraft가 Number(...)||20
   // 폴백만 함) 서버도 전혀 검증하지 않아, API를 직접 호출하면 음수·수천% 같은 값이 그대로
   // 저장됐다 — 이 값은 다면/역량 등급 산정(assignCompPoolGrades 호출부의 weighted average,
@@ -1715,9 +1718,10 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
     await fs.promises.rename(tmp, JSON_FILE);
     return { duplicateLoginIds };
   }
-  const client = await pool.connect();
+  const client = externalClient || await pool.connect();
+  const ownsTransaction = !externalClient;
   try {
-    await client.query("BEGIN");
+    if (ownsTransaction) await client.query("BEGIN");
 
     // ── employees upsert + history ────────────────────────────────────────────
     // id 컬럼 자체는 여전히 전역 유일(설계상 회사마다 새 시퀀스를 쓰지 않음, _getNextEmployeeId
@@ -1992,19 +1996,24 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
     }
 
     // ── bump version (회사별로 분리된 카운터, _bumpVersion 참고) ──────────────────
-    const verState = _bumpVersion(companyId);
+    // When joining /restore's wider transaction, do not update the process
+    // version before COMMIT.  A later budget/delete failure would otherwise
+    // leave memory one version ahead of the rolled-back database.
+    const verState = ownsTransaction
+      ? _bumpVersion(companyId)
+      : { version: _getVersion(companyId) + 1, lastSaved: new Date().toISOString() };
     await client.query(
       "INSERT INTO app_meta (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = $2",
       [`data_version:${_scopeKey(companyId)}`, String(verState.version)]
     );
 
-    await client.query("COMMIT");
-    return { duplicateLoginIds };
+    if (ownsTransaction) await client.query("COMMIT");
+    return { duplicateLoginIds, version: verState.version };
   } catch (e) {
-    await client.query("ROLLBACK");
+    if (ownsTransaction) await client.query("ROLLBACK");
     throw e;
   } finally {
-    client.release();
+    if (ownsTransaction) client.release();
   }
 }
 
@@ -3337,6 +3346,53 @@ function describeSnapshotFields(snapshotData) {
     .map(f => ({ field: f, count: Array.isArray(snapshotData[f]) ? snapshotData[f].length : undefined }));
 }
 
+function buildRestorePlan(snapshotData, current, requestedFields, deleteExtras) {
+  const targetFields = requestedFields || describeSnapshotFields(snapshotData).map(f => f.field);
+  const restoreBudget = targetFields.includes("budget") && snapshotData.budget !== undefined;
+  const dataToPersist = { ...current };
+  const restoredFields = [];
+  const extrasByField = {};
+  for (const f of targetFields) {
+    if (f === "budget" || snapshotData[f] === undefined) continue;
+    if (Array.isArray(snapshotData[f]) && ID_KEYED_LIST_FIELDS.includes(f)) {
+      if (deleteExtras) {
+        extrasByField[f] = extraIdsNotInSnapshot(current[f], snapshotData[f]);
+        dataToPersist[f] = snapshotData[f];
+      } else {
+        dataToPersist[f] = unionPreferSnapshot(current[f], snapshotData[f]);
+      }
+    } else {
+      dataToPersist[f] = snapshotData[f];
+    }
+    restoredFields.push(f);
+  }
+  return { dataToPersist, restoredFields, extrasByField, restoreBudget };
+}
+
+async function deleteRestoreExtras(db, extrasByField, companyId) {
+  for (const [field, extraIds] of Object.entries(extrasByField)) {
+    if (!extraIds.length) continue;
+    if (field === "employees") {
+      await db.query(
+        "INSERT INTO employee_history (employee_id, action, changed_by, data, company_id) SELECT id, 'delete', $2, data, company_id FROM employees WHERE id = ANY($1) AND (company_id = $3 OR $3 IS NULL)",
+        [extraIds, "restore", companyId]
+      );
+      await db.query("DELETE FROM employees WHERE id = ANY($1) AND (company_id = $2 OR $2 IS NULL)", [extraIds, companyId]);
+    } else if (field === "kpiEntries") {
+      await db.query(
+        "INSERT INTO kpi_history (kpi_id, action, changed_by, data, company_id) SELECT id, 'delete', $2, data, company_id FROM kpi_entries WHERE id = ANY($1) AND (company_id = $3 OR $3 IS NULL)",
+        [extraIds, "restore", companyId]
+      );
+      await db.query("DELETE FROM kpi_entries WHERE id = ANY($1) AND (company_id = $2 OR $2 IS NULL)", [extraIds, companyId]);
+    } else {
+      await db.query(
+        "DELETE FROM app_collections WHERE collection = $1 AND id = ANY($2) AND (company_id = $3 OR $3 IS NULL)",
+        [field, extraIds, companyId]
+      );
+    }
+  }
+}
+
 // POST /snapshots — create a full-DB confirmed snapshot, tagged by year
 // annual_snapshots는 company_id 컬럼(NULL 잔여가 없으면 NOT NULL)과 UNIQUE(company_id,
 // eval_year) 복합 제약으로 이미 마이그레이션돼 있다(schema.sql 참고) — 두 회사가 같은
@@ -3548,86 +3604,53 @@ app.post("/restore", async (req, res) => {
     const snapshotData = await loadSnapshotData(year, companyId);
     if (!snapshotData) return res.status(404).json({ ok: false, message: "스냅샷 없음" });
 
-    const current = await loadData(companyId);
-    const targetFields = fields || describeSnapshotFields(snapshotData).map(f => f.field);
-    const restoreBudget = targetFields.includes("budget") && snapshotData.budget !== undefined;
-    const dataToPersist = { ...current };
-    const restoredFields = [];
-    const extrasByField = {};
-    for (const f of targetFields) {
-      if (f === "budget") continue; // budget_store는 loadData()/persistData() 소관이 아니라
-      // 아래에서 updateBudget()으로 별도 처리 — persistData에 그대로 넘기면 알려지지 않은
-      // 필드라 조용히 무시될 뿐이라, 처음부터 일반 필드 병합 루프에서 제외한다.
-      if (snapshotData[f] === undefined) continue;
-      if (Array.isArray(snapshotData[f]) && ID_KEYED_LIST_FIELDS.includes(f)) {
-        // record collection (objects with an `id`) — merge/delete by id
-        if (deleteExtras) {
-          extrasByField[f] = extraIdsNotInSnapshot(current[f], snapshotData[f]);
-          dataToPersist[f] = snapshotData[f];
-        } else {
-          dataToPersist[f] = unionPreferSnapshot(current[f], snapshotData[f]);
+    const restoreActor = `auth:${req.auth.loginId || req.auth.empId || "admin"}`;
+
+    // PostgreSQL은 HR 본문, deleteExtras, budget_store를 반드시 하나의 트랜잭션으로
+    // 처리한다. 이전 구현은 각각 별도 커넥션/COMMIT이어서, 예산 복원에서 실패하면 HR만
+    // 과거 시점으로 돌아가는 부분 복원이 남았다.
+    if (!USE_JSON_FILE) {
+      const result = await _withSaveLock(() => _withDistributedSaveLock(companyId, async () => {
+        const client = await pool.connect();
+        try {
+          await client.query("BEGIN");
+          const current = await loadData(companyId);
+          const plan = buildRestorePlan(snapshotData, current, fields, deleteExtras);
+          rejectDemoDataForProduction(plan.dataToPersist);
+          if (deleteExtras) await deleteRestoreExtras(client, plan.extrasByField, companyId);
+          const persisted = await _persistDataLocked(plan.dataToPersist, restoreActor, companyId, req.auth, client);
+          if (plan.restoreBudget) {
+            await budgetRouterFactory.updateBudget(companyId, async (data) => {
+              Object.keys(data).forEach(k => { delete data[k]; });
+              Object.assign(data, snapshotData.budget);
+              return data;
+            }, client);
+            plan.restoredFields.push("budget");
+          }
+          await client.query("COMMIT");
+          _setVersion(companyId, persisted.version);
+          return { restoredFields: plan.restoredFields, version: persisted.version };
+        } catch (e) {
+          try { await client.query("ROLLBACK"); } catch {}
+          throw e;
+        } finally {
+          client.release();
         }
-      } else {
-        // singleton config blob (object, or a plain scalar array like
-        // disabledTplIds) — no per-record id to merge by, snapshot wins outright
-        dataToPersist[f] = snapshotData[f];
-      }
-      restoredFields.push(f);
+      }));
+      const finalData = await loadData(companyId);
+      broadcastSSE("data_restored", { name, fields: result.restoredFields, deletedExtras, version: result.version }, null, companyId);
+      return res.json({ ok: true, version: result.version, restoredFields: result.restoredFields, deletedExtras, data: filterDataForRole(stripPwField(finalData), req.auth) });
     }
 
-    // 운영 환경의 더미 스냅샷은 어떤 삭제보다 먼저 거부한다. 이전에는 deleteExtras가
-    // 현재 레코드를 삭제한 다음 여기서 403을 내므로, 거부된 복원만으로 데이터가 사라질 수 있었다.
+    const current = await loadData(companyId);
+    const { dataToPersist, restoredFields, extrasByField, restoreBudget } = buildRestorePlan(snapshotData, current, fields, deleteExtras);
+    // 운영 환경의 더미 스냅샷은 어떤 삭제보다 먼저 거부한다.
     rejectDemoDataForProduction(dataToPersist);
 
-    // persistData()가 신규/변경 레코드를 반영해도, deleteExtras가 지우려는 레코드들은
-    // persistData 호출 결과와 무관하게 이미 계산돼 있다(extraIds는 restore 시작 시점의
-    // `current` 스냅샷에서 뽑은 것). 예전에는 이 삭제 루프가 persistData() "다음"에
-    // 별도 트랜잭션으로 실행돼, 중간에 서버가 죽거나 삭제 쪽이 실패하면 "새 레코드는
-    // 반영됐는데 지워졌어야 할 레코드는 남아있는" 어중간한 상태가 될 수 있었다(P2 —
-    // "복원 시 본문 저장과 불필요 레코드 삭제가 별도 트랜잭션"). persistData()보다 먼저
-    // 실행하도록 순서를 바꾸면, 삭제가 실패해 여기서 예외가 나도 persistData()가 아직
-    // 실행되지 않아 아무 변경도 반영되지 않은 상태로 남고(재시도해도 안전, idempotent),
-    // 삭제가 성공한 뒤 persistData()가 실패해도 "이미 지워질 레코드는 지워졌고 새 값은
-    // 아직 반영 전"이라는, 재시도로 동일하게 복구 가능한 상태가 된다 — 두 경우 모두
-    // "부분 복원"이 영구히 고착되지 않는다(완전한 단일 DB 트랜잭션은 아니지만, 실패
-    // 시나리오 전부가 재시도로 수렴하는 순서로 재배치).
-    // extraIds는 이미 companyId로 스코프된 `current`(loadData(companyId))에서 계산됐으므로
-    // 다른 회사 소유 id가 섞일 수 없지만, company_id 조건도 함께 걸어 방어를 한 겹 더 둔다.
-    if (deleteExtras && !USE_JSON_FILE) {
-      for (const [field, extraIds] of Object.entries(extrasByField)) {
-        if (!extraIds.length) continue;
-        if (field === "employees") {
-          await pool.query(
-            "INSERT INTO employee_history (employee_id, action, changed_by, data, company_id) SELECT id, 'delete', $2, data, company_id FROM employees WHERE id = ANY($1) AND (company_id = $3 OR $3 IS NULL)",
-            [extraIds, "restore", companyId]
-          );
-          await pool.query("DELETE FROM employees WHERE id = ANY($1) AND (company_id = $2 OR $2 IS NULL)", [extraIds, companyId]);
-        } else if (field === "kpiEntries") {
-          await pool.query(
-            "INSERT INTO kpi_history (kpi_id, action, changed_by, data, company_id) SELECT id, 'delete', $2, data, company_id FROM kpi_entries WHERE id = ANY($1) AND (company_id = $3 OR $3 IS NULL)",
-            [extraIds, "restore", companyId]
-          );
-          await pool.query("DELETE FROM kpi_entries WHERE id = ANY($1) AND (company_id = $2 OR $2 IS NULL)", [extraIds, companyId]);
-        } else {
-          // 2단계(2026-07-21) 이전에는 여기 company_id 조건이 아예 없어, 회사 A의 스냅샷
-          // 복원이 우연히 같은 collection+id를 가진 회사 B의 살아있는 레코드까지 삭제할 수
-          // 있었다(app_collections가 아직 전역 공유였을 때는 collection+id 자체가 PK였으므로
-          // ANY($2) 매치가 곧 유일한 행을 가리켰지만, id는 클라이언트의 로컬 카운터라 두 회사가
-          // 같은 id를 쓰는 게 흔해 실제로 위험했다). 위 employees/kpiEntries 분기와 동일한
-          // (company_id = $N OR $N IS NULL) 패턴으로 이 회사(+레거시 NULL) 소유 행만 삭제한다.
-          await pool.query(
-            "DELETE FROM app_collections WHERE collection = $1 AND id = ANY($2) AND (company_id = $3 OR $3 IS NULL)",
-            [field, extraIds, companyId]
-          );
-        }
-      }
-    }
-
-    // /restore는 관리자 전용이라 결재 위조 방어(_sanitizeApprovalDoc)를 그대로 통과한다 —
-    // 스냅샷 복원은 과거 시점의 결재 상태를 있는 그대로 되돌리는 것이 목적이다.
-    // 반면 더미 데이터 게이트는 그대로 적용한다 — POST /save와 동일하게, 개발 환경에서
-    // 만든(더미 데이터가 섞인) 스냅샷을 운영 환경에 그대로 복원하는 경로를 막아야 한다.
-    await persistData(dataToPersist, req.body.user || "restore", companyId, req.auth || null);
+    // JSON 파일 모드는 파일 두 개(HR 본문·budget_store)를 하나의 DB 트랜잭션으로 묶을 수
+    // 없으므로, 기존의 원자 파일 교체 경로를 유지한다. 운영 다중 사용자 배포는 위의
+    // PostgreSQL 경로를 사용한다.
+    await persistData(dataToPersist, restoreActor, companyId, req.auth || null);
 
     // budget_store(사업계획/예산/개인별급여상세)는 위 일반 필드 병합 루프에서 제외했으므로
     // (persistData 소관 밖) 별도로 복원한다 — 다른 singleton 필드와 동일하게 "스냅샷이
