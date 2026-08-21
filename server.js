@@ -3267,13 +3267,11 @@ function describeSnapshotFields(snapshotData) {
 }
 
 // POST /snapshots — create a full-DB confirmed snapshot, tagged by year
-// 주의(알려진 한계): annual_snapshots 테이블 자체는 아직 company_id가 없다(계획 문서
-// 6단계 예정 — budget.js와 함께 Postgres 이전 대상). loadData(companyId)가 반환하는
-// employees/kpiEntries/app_collections/app_singletons 유래 필드는 전부(2단계, 2026-07-21
-// 완료) 이 회사로 스코프된 데이터라 스냅샷 *내용물*은 정확히 이 회사 것만 담긴다 — 다만
-// annual_snapshots 자체가 company_id 없이 eval_year 단독 PK(`ON CONFLICT (eval_year)`)라서,
-// 두 회사가 같은 연도에 스냅샷을 만들면 서로의 스냅샷 행을 덮어쓰는 문제는 여전히 남아있다
-// (내용물 유출은 아니고, 스냅샷 자체가 통째로 교체되는 가용성 문제 — 6단계에서 해결 예정).
+// annual_snapshots는 company_id 컬럼(NULL 잔여가 없으면 NOT NULL)과 UNIQUE(company_id,
+// eval_year) 복합 제약으로 이미 마이그레이션돼 있다(schema.sql 참고) — 두 회사가 같은
+// 연도에 각자 스냅샷을 만들어도 서로 충돌·덮어쓰기 없이 공존한다. loadData(companyId)가
+// 반환하는 employees/kpiEntries/app_collections/app_singletons 유래 필드도 전부 이
+// 회사로 스코프된 데이터라 스냅샷 내용물 역시 정확히 이 회사 것만 담긴다.
 app.post("/snapshots", async (req, res) => {
   if (!requireAdmin(req, res)) return;
   const { year = new Date().getFullYear(), confirmedBy = "admin", notes = "" } = req.body || {};
@@ -8525,10 +8523,10 @@ app.get("/api/recruit/dashboard", async (req, res) => {
 // employees/kpi_entries만 지우도록 company_id로 필터한다 — 예전에는 회사 구분이 없어
 // "전체 데이터 삭제"가 정말 DB 전체(모든 회사)를 지웠는데, 멀티테넌트에서 그대로 두면
 // 한 회사의 admin이 자기 비밀번호만으로 다른 모든 회사의 데이터까지 지울 수 있는 셈이라
-// 반드시 회사 범위로 좁혀야 한다. annual_snapshots는 아직 company_id가 없는 전역
-// 테이블이라(알려진 한계, 계획 문서 6단계 예정) 이 회사 범위 삭제에서는 건드리지 않는다
-// (다른 회사의 확정 스냅샷까지 함께 지워지는 걸 막기 위해 — 예전 동작과 달리 이제 reset-all은
-// 스냅샷을 지우지 않는다).
+// 반드시 회사 범위로 좁혀야 한다. annual_snapshots는 company_id 컬럼을 갖고 있지만
+// (schema.sql 참고), "전체 초기화"는 현재 진행중인 업무 데이터를 지우는 기능이지 이미
+// 확정된 연도별 아카이브까지 지우는 기능이 아니므로 의도적으로 건드리지 않는다 — 예전
+// 동작과 달리 이제 reset-all은 스냅샷을 지우지 않는다.
 app.post("/api/reset-all", loginLimiter, async (req, res) => {
   res.locals.loginOk = false;
   try {
