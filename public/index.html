@@ -11432,8 +11432,13 @@ async function doResetAll(){
   closeModal();
   showToast("초기화 중...","info");
   try{
-    const r=await fetch("/api/reset-all",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({loginId:currentUser?.loginId,pw})});
-    const d=await r.json();
+    // serverRequest()가 Authorization 헤더를 자동으로 실어 보낸다 — 예전에는 raw fetch로
+    // 호출해 이 헤더가 빠져있었고, Postgres/SaaS 모드에서는 서버가 companyId를
+    // req.auth.companyId(우선) 또는 body의 companyCode로 판단하는데 둘 다 없어 항상
+    // "관리자 인증이 필요합니다"로 실패하던(기능이 아예 동작하지 않던) 버그였다
+    // (2026-08-19 외부 감사 P1 — 인증 실패 방향이라 데이터 유출은 아니었지만 실사용
+    // 불가 상태였음).
+    const d=await serverRequest("POST","/api/reset-all",{loginId:currentUser?.loginId,pw});
     if(!d.ok)throw new Error(d.message);
     employees=[];kpiEntries=[];changeRequests=[];compGradeResults={};gradeAdjustHistory=[];
     coreTalentPool=[];talentDevPlans=[];lowPerfData=[];tieNotifications=[];

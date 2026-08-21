@@ -11,6 +11,12 @@ services:
       mountPath: /var/data
       sizeGB: 1
     envVars:
+      - key: NODE_ENV
+        value: production
+        # 운영 배포임을 명시한다 — 더미 데이터 저장 차단(rejectDemoDataForProduction)이
+        # NODE_ENV=production일 때만 활성화되는데, Render가 이 값을 자동으로 채워주지
+        # 않아(플랫폼마다 다름) 명시하지 않으면 그 방어가 조용히 비활성 상태로 배포될
+        # 수 있었다(2026-08-19 외부 감사 P1).
       - key: DATA_FILE
         value: /var/data/hr-data.json
       # PostgreSQL을 쓰려면 DATABASE_URL을 설정하면 되며(그 경우 DATA_FILE은 무시됨),

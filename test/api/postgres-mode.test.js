@@ -128,6 +128,67 @@ if (!ADMIN_DATABASE_URL) {
       const json = await res.json();
       assert.equal(json.ok, false, "회사 B 계정으로 회사 A의 companyCode를 대며 로그인하면 안 됨");
     });
+
+    // POST /api/reset-all이 employees/kpi_entries만 지우고 app_collections/app_singletons
+    // (approvalDocs·attendanceRecords·settings·orgDB 등, lib/collections.js의 GENERIC_LIST_
+    // FIELDS/SINGLETON_FIELDS)는 그대로 남겨두고 있었다(2026-08-19 외부 감사 P1) — JSON 파일
+    // 모드는 _fileStore 객체 전체를 교체해 이 필드들이 자연히 함께 비워지는데 Postgres
+    // 모드는 별도 테이블이라 빠져 있었다. 두 회사(A/B)를 만들어 둘 다 boardPosts/settings를
+    // 심고, A만 초기화한 뒤 A는 완전히 비고 B는 전혀 영향받지 않음을 확인한다(멀티테넌트
+    // 격리가 이 파괴적 삭제에도 지켜지는지가 핵심).
+    await t.test("8) POST /api/reset-all — app_collections/app_singletons까지 완전히 비우고, 다른 회사는 그대로 유지", async () => {
+      let res = await api("/data", { headers: { Authorization: `Bearer ${companyAToken}` } });
+      let json = await res.json();
+      const versionA = json.version;
+      const empIdA = json.data.employees[0].id;
+      res = await api("/save", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${companyAToken}` },
+        body: JSON.stringify({ _version: versionA, boardPosts: [{ id: "p1", title: "회사A 게시글", authorId: empIdA }], settings: { welcomeMsg: "회사A 설정" } }),
+      });
+      assert.equal(res.status, 200, "회사 A 시드 실패");
+
+      res = await api("/data", { headers: { Authorization: `Bearer ${companyBToken}` } });
+      json = await res.json();
+      const versionB = json.version;
+      const empIdB = json.data.employees[0].id;
+      res = await api("/save", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${companyBToken}` },
+        body: JSON.stringify({ _version: versionB, boardPosts: [{ id: "p2", title: "회사B 게시글", authorId: empIdB }], settings: { welcomeMsg: "회사B 설정" } }),
+      });
+      assert.equal(res.status, 200, "회사 B 시드 실패");
+
+      res = await api("/api/reset-all", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${companyAToken}` },
+        body: JSON.stringify({ loginId: "admin_a", pw: "TestPassword123" }),
+      });
+      json = await res.json();
+      assert.equal(json.ok, true, "reset-all 실패: " + JSON.stringify(json));
+
+      const dbCheck = new Client({ connectionString: testDbUrl });
+      await dbCheck.connect();
+      try {
+        const companyRow = await dbCheck.query("SELECT id FROM companies WHERE slug = $1", [companyACode]);
+        const companyAId = companyRow.rows[0].id;
+        const empCount = (await dbCheck.query("SELECT COUNT(*) FROM employees WHERE company_id = $1", [companyAId])).rows[0].count;
+        const collCount = (await dbCheck.query("SELECT COUNT(*) FROM app_collections WHERE company_id = $1", [companyAId])).rows[0].count;
+        const singCount = (await dbCheck.query("SELECT COUNT(*) FROM app_singletons WHERE company_id = $1", [companyAId])).rows[0].count;
+        assert.equal(Number(empCount), 0, "회사 A의 employees가 완전히 비어야 함");
+        assert.equal(Number(collCount), 0, "회사 A의 app_collections가 완전히 비어야 함(boardPosts 등)");
+        assert.equal(Number(singCount), 0, "회사 A의 app_singletons이 완전히 비어야 함(settings 등)");
+      } finally {
+        await dbCheck.end();
+      }
+
+      res = await api("/data", { headers: { Authorization: `Bearer ${companyBToken}` } });
+      json = await res.json();
+      assert.equal(json.ok, true);
+      assert.equal(json.data.employees.length, 1, "회사 A 초기화가 회사 B의 employees에 영향을 주면 안 됨");
+      assert.equal(json.data.boardPosts.length, 1, "회사 A 초기화가 회사 B의 boardPosts에 영향을 주면 안 됨");
+      assert.equal(json.data.settings.welcomeMsg, "회사B 설정", "회사 A 초기화가 회사 B의 settings에 영향을 주면 안 됨");
+    });
   });
 
   // rejectDemoDataForProduction()의 부팅 시점(initDB()) 검사는 처음엔 JSON 파일 모드

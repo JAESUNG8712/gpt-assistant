@@ -1117,24 +1117,6 @@ router.post('/emp-pay-plan/settings', async (req, res) => {
   res.json({ ok: true, settings: resultSettings });
 });
 
-// 사업계획 그리드의 개인별 급여 상세 자동입력 조회. empId를 호출자가 직접 지정할 수
-// 있으므로, 팀 범위를 브라우저가 판단하는 방식은 개인정보 접근통제가 될 수 없다.
-// 현재는 관리자만 사용할 수 있게 보수적으로 제한한다. 팀별 기능이 필요하면 개인 식별
-// 값·세부 항목을 반환하지 않는 서버측 집계 endpoint를 별도로 제공해야 한다.
-router.get('/emp-pay-plan/by-ids', async (req, res) => {
-  // 이 endpoint는 개인별 급여·퇴직 가정의 원문을 반환한다. 요청자가 ids를 직접
-  // 지정할 수 있으므로 역할만 로그인인 상태에서는 타 직원 보수를 조회할 수 있었다.
-  // 팀별 자동입력이 필요하면 개인 식별값을 반환하지 않는 별도 집계 API로 제공한다.
-  if (!requireAdmin(req, res)) return;
-  const companyId = req.auth.companyId || null;
-  const year = req.query.year ? Number(req.query.year) : null;
-  const ids = String(req.query.ids || '').split(',').map(s => s.trim()).filter(Boolean);
-  if (!year || !ids.length) return res.json({ ok: true, plans: [] });
-  const data = await readBudget(companyId);
-  const plans = data.empPayPlans.filter(p => p.year === year && ids.includes(String(p.empId)));
-  res.json({ ok: true, plans });
-});
-
 router.delete('/emp-pay-plan/:id', async (req, res) => {
   if (!requireAdmin(req, res)) return;
   const companyId = req.auth.companyId || null;
@@ -1163,6 +1145,45 @@ module.exports = function budgetRouterFactory(deps) {
   // 배열만 반환 — 아래 매칭 로직은 이 경우 아무것도 채우지 않고 조용히 넘어간다(기존
   // "예산 항목 관리" 화면의 수동 검색선택으로 채울 수 있으므로 실패해도 안전).
   const getExpenseAccounts = deps.getExpenseAccounts || (async () => []);
+  // 요청한 id들의 dept/team을 배치로 내려주는 조회 — GET /emp-pay-plan/by-ids의 IDOR
+  // 방어(P0-4, 아래 라우트 주석 참고)에 쓴다. 미주입 시(테스트 등) 빈 객체만 반환 — 이 경우
+  // 아래 스코프 검사가 모든 대상 id를 "조회 불가"로 판단해 안전한 쪽(빈 결과)으로 폴백한다.
+  const getEmployeeScopes = deps.getEmployeeScopes || (async () => ({}));
+
+  // 사업계획 그리드의 자동입력 버튼(전 역할 공개)이 쓰는 조회 — 관리자 전용 목록 조회와
+  // 달리 요청자가 명시적으로 지정한 empId들의 항목만 반환한다.
+  //
+  // P0-4 방어(2026-08-19 외부 감사): 예전엔 "클라이언트는 이미 전체 employees[] 배열을
+  // 들고 있어 이 팀 소속 id 목록을 스스로 판단할 수 있으므로 그 id들만 내려준다"는 설명만
+  // 있고, 그 판단을 실제로 강제하는 서버 코드는 없었다 — 화면(addBpEmpDetailRows())은
+  // 실제로 자기 팀/부문 소속 id만 골라 보내지만, API를 직접 호출해 회사 전체 employees의
+  // id를 나열해 보내면 그대로 전 직원의 개인별 급여상세(RSU·인센티브 등, 급여만큼 민감한
+  // 정보)를 한 번에 열람할 수 있었다. 관리자는 무제한, 그 외에는 요청자 자신의 dept/team을
+  // 기준으로 director는 같은 dept, leader/member는 같은 dept+team, 그리고 항상 본인 id는
+  // 허용 — 스코프 밖 id는 조용히 걸러내고(정상 클라이언트는 애초에 스코프 안의 id만 보내므로
+  // 걸러졌는지 자체를 알 필요가 없다) 남은 id로만 계속 진행한다.
+  router.get('/emp-pay-plan/by-ids', async (req, res) => {
+    if (!requireAuth(req, res)) return;
+    const companyId = req.auth.companyId || null;
+    const year = req.query.year ? Number(req.query.year) : null;
+    let ids = String(req.query.ids || '').split(',').map(s => s.trim()).filter(Boolean);
+    if (!year || !ids.length) return res.json({ ok: true, plans: [] });
+    if (req.auth.role !== 'admin') {
+      const me = await getEmployeeProfile(companyId, req.auth.empId);
+      const scopes = await getEmployeeScopes(companyId, ids);
+      ids = ids.filter(id => {
+        if (String(id) === String(req.auth.empId)) return true;
+        const target = scopes[String(id)];
+        if (!me || !target) return false;
+        if (req.auth.role === 'director') return target.dept === me.dept;
+        return target.dept === me.dept && target.team === me.team;
+      });
+      if (!ids.length) return res.json({ ok: true, plans: [] });
+    }
+    const data = await readBudget(companyId);
+    const plans = data.empPayPlans.filter(p => p.year === year && ids.includes(String(p.empId)));
+    res.json({ ok: true, plans });
+  });
 
   // ── 사업계획 워크플로우 설정(예산담당자/기획팀장 지정, 입력기간 on/off) ──────────
 
@@ -1838,7 +1859,8 @@ module.exports = function budgetRouterFactory(deps) {
       res.json({ ok: true, applied, prunedDuplicates: prunedResult.length, sheetName: rows._sheetName, plan: { ...plan, budgetComparison: computeBudgetComparison(resultData, plan) } });
     } catch (e) {
       if (e instanceof _BudgetRouteError) return res.status(e.status).json({ error: e.message });
-      throw e;
+      console.error('[budget] 예기치 못한 오류:', e);
+      res.status(500).json({ error: '처리 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.' });
     }
   });
 
@@ -2082,7 +2104,8 @@ module.exports = function budgetRouterFactory(deps) {
       res.json({ ok: true, plan: { ...plan, budgetComparison: computeBudgetComparison(resultData, plan) } });
     } catch (e) {
       if (e instanceof _BudgetRouteError) return res.status(e.status).json({ error: e.message });
-      throw e;
+      console.error('[budget] 예기치 못한 오류:', e);
+      res.status(500).json({ error: '처리 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.' });
     }
   });
 
@@ -2217,7 +2240,8 @@ module.exports = function budgetRouterFactory(deps) {
       res.json({ ok: true, plan: { ...plan, budgetComparison: computeBudgetComparison(resultData, plan) } });
     } catch (e) {
       if (e instanceof _BudgetRouteError) return res.status(e.status).json({ error: e.message });
-      throw e;
+      console.error('[budget] 예기치 못한 오류:', e);
+      res.status(500).json({ error: '처리 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.' });
     }
   });
 
@@ -2263,7 +2287,8 @@ module.exports = function budgetRouterFactory(deps) {
       res.json({ ok: true, updated: updatedCount, plan: { ...plan, ..._freshPlanCalc(plan), budgetComparison: computeBudgetComparison(resultData, plan) } });
     } catch (e) {
       if (e instanceof _BudgetRouteError) return res.status(e.status).json({ error: e.message });
-      throw e;
+      console.error('[budget] 예기치 못한 오류:', e);
+      res.status(500).json({ error: '처리 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.' });
     }
   });
 
@@ -2329,7 +2354,8 @@ module.exports = function budgetRouterFactory(deps) {
       res.json({ ok: true, plan: { ...plan, budgetComparison: computeBudgetComparison(resultData, plan) } });
     } catch (e) {
       if (e instanceof _BudgetRouteError) return res.status(e.status).json({ error: e.message });
-      throw e;
+      console.error('[budget] 예기치 못한 오류:', e);
+      res.status(500).json({ error: '처리 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.' });
     }
   });
 
@@ -2379,7 +2405,8 @@ module.exports = function budgetRouterFactory(deps) {
       res.json({ ok: true, plan: { ...plan, budgetComparison: computeBudgetComparison(resultData, plan) } });
     } catch (e) {
       if (e instanceof _BudgetRouteError) return res.status(e.status).json({ error: e.message });
-      throw e;
+      console.error('[budget] 예기치 못한 오류:', e);
+      res.status(500).json({ error: '처리 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.' });
     }
   });
 
@@ -2411,7 +2438,8 @@ module.exports = function budgetRouterFactory(deps) {
       res.json({ ok: true, plan: { ...plan, budgetComparison: computeBudgetComparison(resultData, plan) } });
     } catch (e) {
       if (e instanceof _BudgetRouteError) return res.status(e.status).json({ error: e.message });
-      throw e;
+      console.error('[budget] 예기치 못한 오류:', e);
+      res.status(500).json({ error: '처리 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.' });
     }
   });
 
@@ -2440,7 +2468,8 @@ module.exports = function budgetRouterFactory(deps) {
       res.json({ ok: true, plan: { ...plan, budgetComparison: computeBudgetComparison(resultData, plan) } });
     } catch (e) {
       if (e instanceof _BudgetRouteError) return res.status(e.status).json({ error: e.message });
-      throw e;
+      console.error('[budget] 예기치 못한 오류:', e);
+      res.status(500).json({ error: '처리 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.' });
     }
   });
 
@@ -2465,7 +2494,8 @@ module.exports = function budgetRouterFactory(deps) {
       res.json({ ok: true, plan: { ...plan, budgetComparison: computeBudgetComparison(resultData, plan) } });
     } catch (e) {
       if (e instanceof _BudgetRouteError) return res.status(e.status).json({ error: e.message });
-      throw e;
+      console.error('[budget] 예기치 못한 오류:', e);
+      res.status(500).json({ error: '처리 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.' });
     }
   });
 
@@ -2493,7 +2523,8 @@ module.exports = function budgetRouterFactory(deps) {
       res.json({ ok: true });
     } catch (e) {
       if (e instanceof _BudgetRouteError) return res.status(e.status).json({ error: e.message });
-      throw e;
+      console.error('[budget] 예기치 못한 오류:', e);
+      res.status(500).json({ error: '처리 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.' });
     }
   });
 
