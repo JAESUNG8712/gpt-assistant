@@ -12579,7 +12579,7 @@ function _applyChangedPW(nw){
 }
 function doChangePW(){
   const cur=$("#cp-cur")?.value,nw=$("#cp-new")?.value,cf=$("#cp-cf")?.value;
-  if(nw.length<6){showToast("새 비밀번호는 6자 이상이어야 합니다.","error");return;}
+  if(nw.length<8){showToast("새 비밀번호는 8자 이상이어야 합니다.","error");return;}
   if(nw!==cf){showToast("새 비밀번호가 일치하지 않습니다.","error");return;}
   const emp=getEmp(currentUser.id);
   if(emp&&emp.pw!=null){
@@ -12588,10 +12588,15 @@ function doChangePW(){
     _applyChangedPW(nw);
     return;
   }
-  // pw was stripped from this client (real server-backed account) — verify via server.
+  // Server-backed accounts never receive a password hash. Change it through the dedicated
+  // endpoint instead of mutating the full employees state and autosaving it.
   if(!serverConfig.url){showToast("현재 비밀번호가 올바르지 않습니다.","error");return;}
-  serverRequest("POST","/login",{companyCode:_cachedCompanyCode||"",loginId:currentUser.loginId,pw:cur}).then(r=>{
-    if(r && r.ok){ if(r.token) _setAuthToken(r.token); _applyChangedPW(nw); }
+  serverRequest("POST","/api/auth/change-password",{currentPassword:cur,newPassword:nw}).then(r=>{
+    if(r && r.ok){
+      if(r.token) _setAuthToken(r.token);
+      showToast("비밀번호가 변경되었습니다.","success");
+      ["cp-cur","cp-new","cp-cf"].forEach(id=>{const el=$(`#${id}`);if(el)el.value="";});
+    }
     else{showToast("현재 비밀번호가 올바르지 않습니다.","error");}
   }).catch(()=>{showToast("현재 비밀번호 확인에 실패했습니다.","error");});
 }

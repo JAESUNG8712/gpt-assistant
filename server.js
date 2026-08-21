@@ -563,13 +563,29 @@ function filterDataForRole(data, auth) {
       return false;
     });
   }
-  // 위의 역할별 필터는 employees 원본(부서/팀 참조)을 사용해야 하므로 마지막에 수행한다.
-  // 비관리자에게는 동료를 식별·업무배정할 수 있는 directory 정보만 제공한다. 연봉, 주소,
-  // 생년월일, 연락처, 학력/경력, 개인평가 등은 본인 레코드 외에는 API 응답에 포함하지 않는다.
+  // employees 자체는 이전에 좁혀지지 않아 로그인 사용자라면 누구나 회사 전체의 민감
+  // 개인정보를 받았다. 업무상 필요한 최소 범위만 역할·조직 단위로 남긴다.
   if (auth.role !== "admin" && Array.isArray(out.employees)) {
-    out.employees = out.employees.map(employee =>
-      String(employee?.id) === myId ? employee : employeeDirectoryView(employee)
-    );
+    const employees = out.employees;
+    const myEmp = employees.find(e => String(e?.id) === myId) || null;
+    const canSeeBroadPersonal = auth.role === "leader" || auth.role === "director";
+    out.employees = employees.map(e => {
+      if (!e) return e;
+      const isSelf = String(e.id) === myId;
+      const sameDept = myEmp && e.dept === myEmp.dept;
+      const sameDeptTeam = sameDept && e.team === myEmp.team;
+      const canSeeSalary = isSelf ||
+        (auth.role === "director" && sameDept) ||
+        (auth.role === "leader" && sameDeptTeam);
+      const canSeeBirth = isSelf || canSeeBroadPersonal;
+      const canSeeAddress = isSelf;
+      if (canSeeSalary && canSeeBirth && canSeeAddress) return e;
+      const copy = { ...e };
+      if (!canSeeSalary) delete copy.salary;
+      if (!canSeeBirth) delete copy.birth;
+      if (!canSeeAddress) delete copy.address;
+      return copy;
+    });
   }
   return out;
 }
@@ -2363,6 +2379,47 @@ app.post("/login", loginLimiter, async (req, res) => {
     res.locals.loginOk = true;
     res.json({ ok: true, employee, token });
   } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
+});
+
+// 전체 employees 배열을 받는 레거시 /save에서는 일반 사용자가 role·권한·타인 계정을
+// 바꿀 수 없도록 서버 저장본을 보존한다. 따라서 비밀번호 변경은 이처럼 현재 계정만
+// 서버에서 읽고 검증·갱신하는 전용 경로로 처리한다.
+app.post("/api/auth/change-password", loginLimiter, async (req, res) => {
+  res.locals.loginOk = false;
+  if (!requireAuth(req, res)) return;
+  const { currentPassword, newPassword } = req.body || {};
+  if (typeof currentPassword !== "string" || typeof newPassword !== "string" ||
+      Buffer.byteLength(newPassword, "utf8") < 8 || Buffer.byteLength(newPassword, "utf8") > 128) {
+    return res.status(400).json({ ok: false, code: "INVALID_PASSWORD", message: "새 비밀번호는 8~128자여야 합니다." });
+  }
+  try {
+    const companyId = req.auth.companyId || null;
+    const stored = await loadData(companyId);
+    const current = (stored.employees || []).find(e => String(e.id) === String(req.auth.empId) && e.active);
+    const valid = current && current.pw && (isHashedPw(current.pw)
+      ? await bcrypt.compare(currentPassword, current.pw)
+      : currentPassword === current.pw);
+    if (!valid) return res.status(403).json({ ok: false, code: "CURRENT_PASSWORD_INVALID", message: "현재 비밀번호가 올바르지 않습니다." });
+
+    const now = new Date().toISOString();
+    const nextPasswordHash = await hashPlaintextPw(newPassword);
+    const nextData = {
+      ...stored,
+      employees: stored.employees.map(e => String(e.id) === String(current.id)
+        ? { ...e, pw: nextPasswordHash, updatedAt: now }
+        : e),
+    };
+    await persistData(nextData, `auth:${req.auth.loginId || req.auth.empId}`, companyId, req.auth);
+    const refreshed = (await loadData(companyId)).employees.find(e => String(e.id) === String(current.id));
+    const token = signToken({
+      empId: refreshed.id, loginId: refreshed.loginId, role: refreshed.role,
+      companyId, authVersion: Number(refreshed.authVersion || 0),
+    });
+    res.locals.loginOk = true;
+    res.json({ ok: true, token });
+  } catch (e) {
+    res.status(500).json({ ok: false, code: "PASSWORD_CHANGE_FAILED", message: _safeErrMsg(e) });
+  }
 });
 
 // ── 2단계 인증(TOTP) 설정 ──────────────────────────────────────────────────────

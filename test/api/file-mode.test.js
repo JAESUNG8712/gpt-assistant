@@ -206,7 +206,9 @@ test("file-mode API smoke suite", async (t) => {
     assert.equal(other.salary, undefined);
     assert.equal(other.birth, undefined);
     assert.equal(other.address, undefined);
-    assert.equal(other.phone, undefined);
+    // email/phone은 사내 연락처 검색에 필요한 공개 directory 필드다. 급여·생년월일·주소와
+    // 달리 민감정보 축소 대상이 아니며, 서버 저장값 그대로만 노출돼야 한다.
+    assert.equal(other.phone, storedBefore.phone);
 
     const me = memberState.data.employees.find(e => e.loginId === "test_member");
     me.role = "admin";
