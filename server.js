@@ -6312,15 +6312,87 @@ app.post("/api/erp/sales-targets/:id/delete", async (req, res) => {
 });
 
 // ── PMS: 프로젝트 투입률 관리 (Projects / monthly allocation %) ────────────────
+// PMS 데이터에는 거래처·메모·투입 인원이 포함된다. 화면에서만 숨기면 API 호출로
+// 다른 팀 프로젝트를 읽거나 수정할 수 있으므로, 조회/변경 권한을 서버에서 판정한다.
+function _pmsMemberIds(project) {
+  return new Set([
+    ...(Array.isArray(project?.members) ? project.members : []),
+    project?.pmId,
+    project?.createdById,
+  ].filter(Boolean).map(String));
+}
+
+async function _pmsEmployeeMap(companyId) {
+  const data = await loadData(companyId);
+  return new Map((data.employees || []).map(employee => [String(employee.id), employee]));
+}
+
+function _pmsCanViewProject(project, auth, employeesById) {
+  if (!project || !auth) return false;
+  if (auth.role === "admin") return true;
+  const actorId = String(auth.empId);
+  const members = _pmsMemberIds(project);
+  if (members.has(actorId)) return true;
+
+  const actor = employeesById.get(actorId);
+  if (!actor) return false;
+  const participants = [...members].map(id => employeesById.get(id)).filter(Boolean);
+  if (auth.role === "leader") {
+    return participants.some(employee => employee.dept === actor.dept && employee.team === actor.team);
+  }
+  if (auth.role === "director") {
+    return participants.some(employee => employee.dept === actor.dept);
+  }
+  return false;
+}
+
+function _pmsCanManageProject(project, auth) {
+  if (!project || !auth) return false;
+  if (auth.role === "admin") return true;
+  // 팀장은 자신이 생성했거나 PM으로 지정된 프로젝트만 변경할 수 있다. 단순히
+  // 같은 팀이라는 이유만으로 다른 팀장의 프로젝트를 변경하지 않도록 한다.
+  return auth.role === "leader" && (
+    String(project.pmId || "") === String(auth.empId) ||
+    String(project.createdById || "") === String(auth.empId)
+  );
+}
+
+function _pmsNormalizeMembers(members, pmId, createdById) {
+  return [...new Set([
+    ...(Array.isArray(members) ? members : []),
+    pmId,
+    createdById,
+  ].filter(Boolean).map(String))];
+}
+
+function _pmsConflict(res, project) {
+  return res.status(409).json({
+    ok: false,
+    code: "PMS_PROJECT_CONFLICT",
+    message: "다른 사용자가 먼저 수정했습니다. 최신 내용을 불러온 뒤 다시 시도하세요.",
+    project,
+  });
+}
+
 app.get("/api/pms/projects", async (req, res) => {
   if (!requireAuth(req, res)) return;
   try {
-    if (USE_JSON_FILE) return res.json({ ok: true, projects: _filePms.projects });
-    const { rows } = await pool.query(
-      "SELECT id, data FROM pms_projects WHERE is_deleted = FALSE AND company_id IS NOT DISTINCT FROM $1 ORDER BY created_at DESC",
-      [req.auth.companyId || null]
-    );
-    res.json({ ok: true, projects: rows.map(r => ({ id: r.id, ...r.data })) });
+    const companyId = req.auth.companyId || null;
+    const employeesById = await _pmsEmployeeMap(companyId);
+    let projects;
+    if (USE_JSON_FILE) {
+      projects = _filePms.projects;
+    } else {
+      const { rows } = await pool.query(
+        "SELECT id, data FROM pms_projects WHERE is_deleted = FALSE AND company_id IS NOT DISTINCT FROM $1 ORDER BY created_at DESC",
+        [companyId]
+      );
+      projects = rows.map(r => ({ id: r.id, ...r.data }));
+    }
+    const visible = projects
+      .filter(project => _pmsCanViewProject(project, req.auth, employeesById))
+      .map(project => ({ ...project, canManage: _pmsCanManageProject(project, req.auth) }));
+    res.json({ ok: true, projects: visible });
   } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
@@ -6328,37 +6400,39 @@ app.post("/api/pms/projects", async (req, res) => {
   try {
     if (!requireRole(req, res, ["admin", "leader"])) return;
     const companyId = req.auth.companyId || null;
-    const { id, name, startDate, endDate, partnerId, pmId, status, memo, members, user: createdBy, userId: createdById } = req.body || {};
+    const { id, name, startDate, endDate, partnerId, pmId, memo, members } = req.body || {};
     if (!name) return res.status(400).json({ ok: false, message: "프로젝트명은 필수입니다." });
-    const projectId = id || `proj_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    // 생성 API를 upsert로 두면 id만 아는 사용자가 기존 프로젝트를 덮어쓸 수 있다.
+    if (id) return res.status(400).json({ ok: false, message: "프로젝트 ID는 서버가 생성합니다." });
+    const projectId = `proj_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const now = new Date().toISOString();
+    const createdById = String(req.auth.empId);
+    const employeesById = await _pmsEmployeeMap(companyId);
+    const creator = employeesById.get(createdById);
+    const effectivePmId = String(pmId || createdById);
     if (USE_JSON_FILE) {
-      const existing = _filePms.projects.find(p => p.id === projectId);
       const project = {
         id: projectId, name, startDate: startDate || "", endDate: endDate || "",
-        partnerId: partnerId || null, pmId: String(pmId || (existing ? existing.pmId : createdById) || ""),
-        status: status || "active", memo: memo || "",
-        members: Array.isArray(members) ? members.map(String) : (existing ? existing.members : []),
-        createdBy: existing ? existing.createdBy : (createdBy || "unknown"),
-        createdAt: existing ? existing.createdAt : now, updatedAt: now,
+        partnerId: partnerId || null, pmId: effectivePmId,
+        status: "active", memo: memo || "",
+        members: _pmsNormalizeMembers(members, effectivePmId, createdById),
+        createdById, createdByName: creator?.name || "unknown", createdBy: creator?.name || "unknown",
+        createdAt: now, updatedAt: now,
       };
-      const idx = _filePms.projects.findIndex(p => p.id === projectId);
-      if (idx >= 0) _filePms.projects[idx] = project; else _filePms.projects.push(project);
+      _filePms.projects.push(project);
       _saveFilePms();
       return res.json({ ok: true, project });
     }
-    const { rows } = await pool.query("SELECT data FROM pms_projects WHERE id = $1 AND company_id IS NOT DISTINCT FROM $2 AND is_deleted = FALSE", [projectId, companyId]);
-    const existing = rows[0] ? rows[0].data : null;
     const project = {
       id: projectId, name, startDate: startDate || "", endDate: endDate || "",
-      partnerId: partnerId || null, pmId: String(pmId || (existing ? existing.pmId : createdById) || ""),
-      status: status || "active", memo: memo || "",
-      members: Array.isArray(members) ? members.map(String) : (existing ? existing.members : []),
-      createdBy: existing ? existing.createdBy : (createdBy || "unknown"),
-      createdAt: existing ? existing.createdAt : now, updatedAt: now,
+      partnerId: partnerId || null, pmId: effectivePmId,
+      status: "active", memo: memo || "",
+      members: _pmsNormalizeMembers(members, effectivePmId, createdById),
+      createdById, createdByName: creator?.name || "unknown", createdBy: creator?.name || "unknown",
+      createdAt: now, updatedAt: now,
     };
     await pool.query(
-      "INSERT INTO pms_projects (id, company_id, data) VALUES ($1,$2,$3) ON CONFLICT (company_id, id) DO UPDATE SET data = $3, updated_at = NOW()",
+      "INSERT INTO pms_projects (id, company_id, data) VALUES ($1,$2,$3)",
       [projectId, companyId, project]
     );
     res.json({ ok: true, project });
@@ -6370,10 +6444,12 @@ app.post("/api/pms/projects/:id", async (req, res) => {
     if (!requireRole(req, res, ["admin", "leader"])) return;
     const id = req.params.id;
     const companyId = req.auth.companyId || null;
-    const { name, startDate, endDate, partnerId, pmId, status, memo, members } = req.body || {};
+    const { name, startDate, endDate, partnerId, pmId, status, memo, members, expectedUpdatedAt } = req.body || {};
     if (USE_JSON_FILE) {
       const project = _filePms.projects.find(p => p.id === id);
       if (!project) return res.status(404).json({ ok: false, message: "프로젝트를 찾을 수 없습니다." });
+      if (!_pmsCanManageProject(project, req.auth)) return res.status(403).json({ ok: false, message: "이 프로젝트를 변경할 권한이 없습니다." });
+      if (expectedUpdatedAt && project.updatedAt !== expectedUpdatedAt) return _pmsConflict(res, project);
       if (name != null) project.name = name;
       if (startDate != null) project.startDate = startDate;
       if (endDate != null) project.endDate = endDate;
@@ -6381,7 +6457,7 @@ app.post("/api/pms/projects/:id", async (req, res) => {
       if (pmId != null) project.pmId = String(pmId);
       if (status != null) project.status = status;
       if (memo != null) project.memo = memo;
-      if (Array.isArray(members)) project.members = members.map(String);
+      project.members = _pmsNormalizeMembers(Array.isArray(members) ? members : project.members, project.pmId, project.createdById);
       project.updatedAt = new Date().toISOString();
       _saveFilePms();
       return res.json({ ok: true, project });
@@ -6389,6 +6465,8 @@ app.post("/api/pms/projects/:id", async (req, res) => {
     const { rows } = await pool.query("SELECT data FROM pms_projects WHERE id = $1 AND company_id IS NOT DISTINCT FROM $2 AND is_deleted = FALSE", [id, companyId]);
     if (!rows.length) return res.status(404).json({ ok: false, message: "프로젝트를 찾을 수 없습니다." });
     const project = { ...rows[0].data };
+    if (!_pmsCanManageProject(project, req.auth)) return res.status(403).json({ ok: false, message: "이 프로젝트를 변경할 권한이 없습니다." });
+    if (expectedUpdatedAt && project.updatedAt !== expectedUpdatedAt) return _pmsConflict(res, project);
     if (name != null) project.name = name;
     if (startDate != null) project.startDate = startDate;
     if (endDate != null) project.endDate = endDate;
@@ -6396,11 +6474,18 @@ app.post("/api/pms/projects/:id", async (req, res) => {
     if (pmId != null) project.pmId = String(pmId);
     if (status != null) project.status = status;
     if (memo != null) project.memo = memo;
-    if (Array.isArray(members)) project.members = members.map(String);
+    project.members = _pmsNormalizeMembers(Array.isArray(members) ? members : project.members, project.pmId, project.createdById);
     project.updatedAt = new Date().toISOString();
     // id는 tenant마다 재사용될 수 있다(pms_projects PK = company_id + id). company_id 없이
     // 갱신하면 다른 회사의 동일 id 프로젝트까지 함께 덮어쓰는 교차-tenant 데이터 손상이 난다.
-    await pool.query("UPDATE pms_projects SET data = $2, updated_at = NOW() WHERE id = $1 AND company_id IS NOT DISTINCT FROM $3", [id, project, companyId]);
+    const updateParams = [id, project, companyId];
+    let sql = "UPDATE pms_projects SET data = $2, updated_at = NOW() WHERE id = $1 AND company_id IS NOT DISTINCT FROM $3";
+    if (expectedUpdatedAt) { updateParams.push(expectedUpdatedAt); sql += " AND data->>'updatedAt' = $4"; }
+    const result = await pool.query(sql, updateParams);
+    if (!result.rowCount) {
+      const latest = await _pmsProjectById(id, companyId);
+      return _pmsConflict(res, latest);
+    }
     res.json({ ok: true, project });
   } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
@@ -6410,9 +6495,12 @@ app.post("/api/pms/projects/:id/close", async (req, res) => {
     if (!requireRole(req, res, ["admin", "leader"])) return;
     const id = req.params.id;
     const companyId = req.auth.companyId || null;
+    const { expectedUpdatedAt } = req.body || {};
     if (USE_JSON_FILE) {
       const project = _filePms.projects.find(p => p.id === id);
       if (!project) return res.status(404).json({ ok: false, message: "프로젝트를 찾을 수 없습니다." });
+      if (!_pmsCanManageProject(project, req.auth)) return res.status(403).json({ ok: false, message: "이 프로젝트를 종료할 권한이 없습니다." });
+      if (expectedUpdatedAt && project.updatedAt !== expectedUpdatedAt) return _pmsConflict(res, project);
       project.status = "closed";
       project.updatedAt = new Date().toISOString();
       _saveFilePms();
@@ -6420,8 +6508,18 @@ app.post("/api/pms/projects/:id/close", async (req, res) => {
     }
     const { rows } = await pool.query("SELECT data FROM pms_projects WHERE id = $1 AND company_id IS NOT DISTINCT FROM $2 AND is_deleted = FALSE", [id, companyId]);
     if (!rows.length) return res.status(404).json({ ok: false, message: "프로젝트를 찾을 수 없습니다." });
-    const project = { ...rows[0].data, status: "closed", updatedAt: new Date().toISOString() };
-    await pool.query("UPDATE pms_projects SET data = $2, updated_at = NOW() WHERE id = $1 AND company_id IS NOT DISTINCT FROM $3", [id, project, companyId]);
+    const current = rows[0].data;
+    if (!_pmsCanManageProject(current, req.auth)) return res.status(403).json({ ok: false, message: "이 프로젝트를 종료할 권한이 없습니다." });
+    if (expectedUpdatedAt && current.updatedAt !== expectedUpdatedAt) return _pmsConflict(res, current);
+    const project = { ...current, status: "closed", updatedAt: new Date().toISOString() };
+    const updateParams = [id, project, companyId];
+    let sql = "UPDATE pms_projects SET data = $2, updated_at = NOW() WHERE id = $1 AND company_id IS NOT DISTINCT FROM $3";
+    if (expectedUpdatedAt) { updateParams.push(expectedUpdatedAt); sql += " AND data->>'updatedAt' = $4"; }
+    const result = await pool.query(sql, updateParams);
+    if (!result.rowCount) {
+      const latest = await _pmsProjectById(id, companyId);
+      return _pmsConflict(res, latest);
+    }
     res.json({ ok: true, project });
   } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
