@@ -44,4 +44,26 @@ test.describe("로그인·기본 네비게이션", () => {
 
     expect(pageErrors, `콘솔 페이지 에러 발생: ${pageErrors.join("; ")}`).toHaveLength(0);
   });
+
+  test("모바일 메뉴와 공용 모달을 키보드로 닫을 수 있다", async ({ page }) => {
+    await page.setViewportSize({ width: 375, height: 812 });
+    await page.goto("/");
+    await page.fill("#l-id", "e2e_admin");
+    await page.fill("#l-pw", "E2eTestPw123");
+    await page.click(".login-card button.btn-primary");
+    await expect(page.locator("#main")).toBeVisible({ timeout: 10000 });
+
+    const menu = page.locator("#mobile-menu-btn");
+    await expect(menu).toHaveAttribute("aria-expanded", "false");
+    await menu.click();
+    await expect(menu).toHaveAttribute("aria-expanded", "true");
+    await expect(page.locator("#sidebar")).toHaveClass(/open/);
+    await page.keyboard.press("Escape");
+    await expect(menu).toHaveAttribute("aria-expanded", "false");
+
+    await page.evaluate(() => showModal('<section class="modal modal-sm"><div class="modal-head"><h2>접근성 검사</h2><button class="modal-close" onclick="closeModal()">×</button></div><div class="modal-body"><button type="button">확인</button></div></section>'));
+    await expect(page.locator("[role=dialog][aria-modal=true]")).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(page.locator("[role=dialog]")).toHaveCount(0);
+  });
 });
