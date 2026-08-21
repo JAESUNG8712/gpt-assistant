@@ -5,15 +5,9 @@ node_modules/
 ai/.env
 *.env
 
-hr-data.json
-hr-data.json.tmp
-hr-data-snapshots.json
-hr-data-history.json
-hr-data-accounting.json
-hr-data-erp.json
-hr-data-pms.json
-hr-data-recruit.json
+hr-data*.json*
 hr-snapshots.json
+budget-data*.json*
 *.log
 
 # AI 데이터 (로컬 학습 데이터, 서버에서 관리)

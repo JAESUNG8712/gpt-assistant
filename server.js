@@ -117,6 +117,21 @@ function requireAuth(req, res) {
   }
   return true;
 }
+// 원문 에러메시지 노출 방어(2026-08-19 외부 감사 P1). 이 파일 전반의 `catch (e) {
+// res.status(...).json({ ok:false, message: e.message }) }` 관례는 두 가지를 구분하지
+// 않았다 — httpError()로 의도적으로 만든, 이미 사용자용으로 다듬어진 에러(예: "비밀번호가
+// 8자 이상이어야 합니다")와, DB 드라이버·파일시스템 등에서 올라온 예기치 못한 내부
+// 예외(SQL 문법·파일 경로 등 운영 세부정보가 그대로 섞여 나올 수 있음)를 똑같이
+// e.message 그대로 클라이언트에 보냈다. httpError()가 던지는 에러는 항상 status(및
+// 대부분 code)를 함께 싣는 반면, 예기치 못한 예외는 보통 이 필드가 없다는 점을 이용해
+// 구분한다 — status/statusCode가 있으면(의도적으로 다듬어진 메시지) 그대로 통과시키고,
+// 없으면 운영(NODE_ENV=production)에서만 일반 문구로 대체한다(개발/로컬은 디버깅 편의를
+// 위해 항상 원문 그대로).
+function _safeErrMsg(e) {
+  if (e && (e.status || e.statusCode)) return e.message;
+  if (process.env.NODE_ENV === "production") return "서버 오류가 발생했습니다.";
+  return e && e.message;
+}
 
 // ── Storage mode ──────────────────────────────────────────────────────────────
 // When DATABASE_URL is not set, persist everything to a local JSON file.
@@ -2200,7 +2215,7 @@ app.get("/status", async (req, res) => {
       },
       onlineCount: _onlineCountFor(companyId),
     });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 // GET /data
@@ -2210,7 +2225,7 @@ app.get("/data", async (req, res) => {
     const companyId = req.auth.companyId || null;
     const data = await loadData(companyId);
     res.json({ ok: true, data: filterDataForRole(stripPwField(data), req.auth), version: _getVersion(companyId) });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 // POST /api/employees/next-id — see _getNextEmployeeId() for why this exists.
@@ -2218,7 +2233,7 @@ app.post("/api/employees/next-id", async (req, res) => {
   if (!requireAuth(req, res)) return;
   try {
     res.json({ ok: true, id: await _getNextEmployeeId() });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 // ── 회사(테넌트) 식별 ────────────────────────────────────────────────────────
@@ -2300,7 +2315,7 @@ app.post("/login", loginLimiter, async (req, res) => {
     const token = signToken({ empId: employee.id, loginId: employee.loginId, role: employee.role, companyId, authVersion: employee.authVersion || 0 });
     res.locals.loginOk = true;
     res.json({ ok: true, employee, token });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 // ── 2단계 인증(TOTP) 설정 ──────────────────────────────────────────────────────
@@ -2326,7 +2341,7 @@ app.post("/api/auth/2fa/generate-secret", loginLimiter, async (req, res) => {
     const secret = generateTotpSecret();
     const otpauthUrl = `otpauth://totp/HR-ERP:${encodeURIComponent(loginId)}?secret=${secret}&issuer=HR-ERP`;
     res.json({ ok: true, secret, otpauthUrl });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 // 2) verify-code: 설정 확인 및 로그인 화면에서의 순수 코드 검증(상태 없음)에 공용으로 사용
 app.post("/api/auth/2fa/verify-code", async (req, res) => {
@@ -2334,7 +2349,7 @@ app.post("/api/auth/2fa/verify-code", async (req, res) => {
     const { secret, otp } = req.body || {};
     if (!secret || !otp) return res.status(400).json({ ok: false, message: "secret과 otp가 필요합니다." });
     res.json({ ok: totpVerify(secret, otp) });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 // ── 셀프서브 회사 가입 ──────────────────────────────────────────────────────────
@@ -2454,7 +2469,7 @@ app.post("/api/companies/register", registerLimiter, async (req, res) => {
       client.release();
     }
   } catch (e) {
-    res.status(500).json({ ok: false, message: e.message });
+    res.status(500).json({ ok: false, message: _safeErrMsg(e) });
   }
 });
 
@@ -2527,7 +2542,7 @@ app.post("/admin/fix-company-slug", async (req, res) => {
     );
     if (!result.rows.length) return res.status(404).json({ ok: false, message: "해당 slug의 회사를 찾을 수 없습니다." });
     res.json({ ok: true, company: result.rows[0] });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 // ── TEMPORARY — 테넌트 격리 의심 사례(다른 회사 토큰으로 GET /data 호출 시
@@ -2560,7 +2575,7 @@ app.get("/admin/inspect-collection", async (req, res) => {
       [collection]
     );
     res.json({ ok: true, collection, totalReturned: rows.length, nullCompanyIdCount: Number(nullCompanyCount.rows[0].c) || 0, rows });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 // ── TEMPORARY — 위 inspect-collection으로 확인된 test 회사의 오염 데이터(티라유텍
@@ -2581,7 +2596,7 @@ app.post("/admin/purge-company-collections", async (req, res) => {
     const companyId = companyRes.rows[0].id;
     const del = await pool.query(`DELETE FROM app_collections WHERE company_id = $1`, [companyId]);
     res.json({ ok: true, companySlug, companyId, deletedRows: del.rowCount });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 const masterLoginLimiter = rateLimit({
@@ -2617,7 +2632,7 @@ app.post("/master/login", masterLoginLimiter, async (req, res) => {
     res.locals.masterLoginOk = true;
     const token = signToken({ masterId: admin.id, loginId: admin.login_id, role: "master" });
     res.json({ ok: true, master: { id: admin.id, loginId: admin.login_id, name: admin.name }, token });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 // GET /master/companies — 전 회사 목록 + 가벼운 통계(직원 수/KPI 건수, GET /status가
@@ -2642,7 +2657,7 @@ app.get("/master/companies", async (req, res) => {
         empCount: empMap[c.id] || 0, kpiCount: kpiMap[c.id] || 0,
       })),
     });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 // POST /master/companies/:id/impersonate — "이 회사로 들어가기". 계획 문서 설계 그대로:
@@ -2678,7 +2693,7 @@ app.post("/master/companies/:id/impersonate", async (req, res) => {
       60 * 60
     );
     res.json({ ok: true, company: { id: company.id, slug: company.slug, name: company.name }, token });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 // company_features 조회 헬퍼 — 다른 라우트가 향후 점진적으로 도입할 수 있도록 만들어 둔다.
@@ -2714,7 +2729,7 @@ app.get("/master/companies/:id/features", async (req, res) => {
       ok: true,
       features: rows.map(r => ({ featureKey: r.feature_key, enabled: r.enabled, config: r.config, updatedAt: r.updated_at })),
     });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 // PUT /master/companies/:id/features/:key — {enabled, config?}. upsert + 감사 로그.
@@ -2744,7 +2759,7 @@ app.put("/master/companies/:id/features/:key", async (req, res) => {
     );
     const row = rows[0];
     res.json({ ok: true, feature: { featureKey: row.feature_key, enabled: row.enabled, config: row.config, updatedAt: row.updated_at } });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 // 완전히 새로 배포된 서버는 직원이 0명이라 아무도 /login으로 토큰을 발급받을 수 없다
@@ -2910,7 +2925,7 @@ app.post("/save", async (req, res) => {
     // 기존과 동일하게 500으로 처리한다(e.code가 없으면 JSON.stringify가 그 필드를
     // 조용히 생략하므로 기존 호출부의 응답 형태에 영향 없음).
     const status = Number.isInteger(e.status) ? e.status : 500;
-    res.status(status).json({ ok: false, code: e.code, message: e.message });
+    res.status(status).json({ ok: false, code: e.code, message: _safeErrMsg(e) });
   }
 });
 
@@ -3034,7 +3049,7 @@ app.get("/activity", async (req, res) => {
     );
     return res.json({ ok: true, logs: rows.map(r => r.data) });
   } catch (e) {
-    return res.status(500).json({ ok: false, message: e.message });
+    return res.status(500).json({ ok: false, message: _safeErrMsg(e) });
   }
 });
 
@@ -3077,7 +3092,7 @@ app.get("/snapshots", async (req, res) => {
       [companyId]
     );
     res.json({ ok: true, snapshots: rows });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 // Every top-level field a full snapshot can contain, in the order they're
@@ -3136,7 +3151,7 @@ app.post("/snapshots", async (req, res) => {
       [yr, JSON.stringify(data), empCount, kpiCount, confirmedBy, notes, companyId]
     );
     res.json({ ok: true, year: yr, empCount, kpiCount });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 // GET /snapshots/:year — retrieve a specific year's snapshot, including a
@@ -3160,7 +3175,7 @@ app.get("/snapshots/:year", async (req, res) => {
     );
     if (!rows.length) return res.status(404).json({ ok: false, message: "스냅샷 없음" });
     res.json({ ok: true, snapshot: { ...rows[0], snapshot_data: stripPwField(rows[0].snapshot_data), fields: describeSnapshotFields(rows[0].snapshot_data) } });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 // ── Backups (alias → snapshots, backward compat with existing frontend) ───────
@@ -3191,7 +3206,7 @@ app.get("/backups", async (req, res) => {
       kpiCount:  r.kpiCount,
     }));
     res.json({ ok: true, backups });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 // POST /backups/create — create a full-DB snapshot for the current year
@@ -3228,7 +3243,7 @@ app.post("/backups/create", async (req, res) => {
       [year, JSON.stringify(data), empCount, kpiCount, "admin", label, companyId]
     );
     res.json({ ok: true, name: `snapshot_${year}.json` });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 async function loadSnapshotData(year, companyId) {
@@ -3285,7 +3300,7 @@ app.get("/snapshots/:year/diff", async (req, res) => {
       return { field: f, extraCount: extraIds.length, extraIds };
     });
     res.json({ ok: true, diff });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 // POST /restore — restore from a snapshot year. By default restores every
@@ -3408,7 +3423,7 @@ app.post("/restore", async (req, res) => {
     // 이 검사가 없으면 정당한 403 거부가 500(서버 오류)으로 뭉개져, 클라이언트가
     // "게이트에 걸림"과 "진짜 서버 오류"를 구분할 수 없었다.
     const status = Number.isInteger(e.status) ? e.status : 500;
-    res.status(status).json({ ok: false, code: e.code, message: e.message });
+    res.status(status).json({ ok: false, code: e.code, message: _safeErrMsg(e) });
   }
 });
 
@@ -3438,7 +3453,7 @@ app.get("/history/employee/:id", async (req, res) => {
       [req.params.id, companyId]
     );
     res.json({ ok: true, history: rows.map(r => ({ ...r, data: omitPw(r.data) })) });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 // GET /history/kpi/:id — 위 /history/employee/:id와 동일한 이유로 company_id 스코프.
@@ -3460,7 +3475,7 @@ app.get("/history/kpi/:id", async (req, res) => {
       [req.params.id, companyId]
     );
     res.json({ ok: true, history: rows });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 // GET /history/changes?since=ISO_DATE&table=employees|kpi_entries
@@ -3505,7 +3520,7 @@ app.get("/history/changes", async (req, res) => {
       results.kpiChanges = rows;
     }
     res.json({ ok: true, ...results });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 // ── Accounting module (계정과목 / 전표 / 세금계산서) ──────────────────────────
@@ -3567,7 +3582,7 @@ app.get("/api/accounting/accounts", async (req, res) => {
       [companyId]
     );
     res.json({ ok: true, accounts: rows.map(r => ({ id: r.id, ...r.data })) });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 // 기본 계정과목 일괄등록 — DEFAULT_ACCOUNTS(급여/복리후생비/여비교통비 등 일반적으로
@@ -3607,7 +3622,7 @@ app.post("/api/accounting/accounts/seed-defaults", async (req, res) => {
       );
     }
     res.json({ ok: true, added: toAdd.length, accounts: toAdd });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 // 비용계정 선택용 최소 조회 — 사업계획(전 역할 공개) 작성 화면의 "비용계정" 검색선택
@@ -3633,7 +3648,7 @@ app.get("/api/accounting/accounts/expense-lite", async (req, res) => {
       .filter(a => a.type === "expense" && a.active !== false)
       .map(a => ({ id: a.id, code: a.code, name: a.name }));
     res.json({ ok: true, accounts: lite });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 app.post("/api/accounting/accounts", async (req, res) => {
@@ -3678,7 +3693,7 @@ app.post("/api/accounting/accounts", async (req, res) => {
       [accId, companyId, acc]
     );
     res.json({ ok: true, account: acc });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 app.post("/api/accounting/accounts/:id/delete", async (req, res) => {
@@ -3702,7 +3717,7 @@ app.post("/api/accounting/accounts/:id/delete", async (req, res) => {
       "UPDATE accounts SET is_deleted = TRUE WHERE id = $1 AND (company_id = $2 OR company_id IS NULL)", [id, companyId]
     );
     res.json({ ok: true });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 // ── 전표 (Journal vouchers) ──────────────────────────────────────────────────
@@ -3763,7 +3778,7 @@ app.get("/api/accounting/vouchers", async (req, res) => {
       ? await pool.query("SELECT data FROM vouchers WHERE EXTRACT(YEAR FROM voucher_date) = $1 AND (company_id = $2 OR company_id IS NULL) ORDER BY voucher_date DESC", [year, companyId])
       : await pool.query("SELECT data FROM vouchers WHERE (company_id = $1 OR company_id IS NULL) ORDER BY voucher_date DESC", [companyId]);
     res.json({ ok: true, vouchers: rows.map(r => r.data) });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 app.post("/api/accounting/vouchers", async (req, res) => {
@@ -3792,7 +3807,7 @@ app.post("/api/accounting/vouchers", async (req, res) => {
     await pool.query("INSERT INTO vouchers (id, voucher_no, voucher_date, status, data, company_id) VALUES ($1,$2,$3,'draft',$4,$5)",
       [voucher.id, `DRAFT-${voucher.id}`, date, voucher, companyId]);
     res.json({ ok: true, voucher });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 app.post("/api/accounting/vouchers/:id/post", async (req, res) => {
@@ -3829,7 +3844,7 @@ app.post("/api/accounting/vouchers/:id/post", async (req, res) => {
       await client.query("COMMIT");
       res.json({ ok: true, voucher: v });
     } catch (e) { await client.query("ROLLBACK"); throw e; } finally { client.release(); }
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 // 감가상각(고정자산)·유효이자율 상각(RCPS) 전표는 발행 시 해당 회차 스케줄을
@@ -3893,7 +3908,7 @@ app.post("/api/accounting/vouchers/:id/void", async (req, res) => {
       await client.query("COMMIT");
       res.json({ ok: true, voucher: v, unpostedSchedules: unposted });
     } catch (e) { await client.query("ROLLBACK"); throw e; } finally { client.release(); }
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 app.delete("/api/accounting/vouchers/:id", async (req, res) => {
@@ -3913,7 +3928,7 @@ app.delete("/api/accounting/vouchers/:id", async (req, res) => {
     if (!rows.length) return res.status(400).json({ ok: false, message: "임시 저장 상태의 전표만 삭제할 수 있습니다." });
     await pool.query("DELETE FROM vouchers WHERE id = $1", [id]);
     res.json({ ok: true });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 // ── 세금계산서 (사내 발행용) ──────────────────────────────────────────────────
@@ -3942,7 +3957,7 @@ app.get("/api/accounting/tax-invoices", async (req, res) => {
       ? await pool.query("SELECT data FROM tax_invoices WHERE EXTRACT(YEAR FROM issue_date) = $1 AND (company_id = $2 OR company_id IS NULL) ORDER BY issue_date DESC", [year, companyId])
       : await pool.query("SELECT data FROM tax_invoices WHERE (company_id = $1 OR company_id IS NULL) ORDER BY issue_date DESC", [companyId]);
     res.json({ ok: true, taxInvoices: rows.map(r => r.data) });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 app.post("/api/accounting/tax-invoices", async (req, res) => {
@@ -3992,7 +4007,7 @@ app.post("/api/accounting/tax-invoices", async (req, res) => {
       await client.query("COMMIT");
       res.json({ ok: true, taxInvoice: inv });
     } catch (e) { await client.query("ROLLBACK"); throw e; } finally { client.release(); }
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 app.post("/api/accounting/tax-invoices/:id/void", async (req, res) => {
@@ -4015,7 +4030,7 @@ app.post("/api/accounting/tax-invoices/:id/void", async (req, res) => {
     const inv = { ...rows[0].data, status: "void", voidReason: reason, voidedBy: req.body.user || "unknown", voidedAt: new Date().toISOString() };
     await pool.query("UPDATE tax_invoices SET status = 'void', data = $2, updated_at = NOW() WHERE id = $1", [id, inv]);
     res.json({ ok: true, taxInvoice: inv });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 // ── 수금/지급 (AR/AP payments — 거래처별 미수·미지급 관리) ────────────────────
@@ -4038,7 +4053,7 @@ app.get("/api/accounting/payments", async (req, res) => {
       [companyId]
     );
     res.json({ ok: true, payments: rows.map(r => r.data) });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 app.post("/api/accounting/payments", async (req, res) => {
   try {
@@ -4065,7 +4080,7 @@ app.post("/api/accounting/payments", async (req, res) => {
       [payment.id, companyId, payment]
     );
     res.json({ ok: true, payment });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 app.post("/api/accounting/payments/:id/delete", async (req, res) => {
   try {
@@ -4090,7 +4105,7 @@ app.post("/api/accounting/payments/:id/delete", async (req, res) => {
     );
     if (!delRes.rowCount) return res.status(404).json({ ok: false, message: "수금/지급 내역을 찾을 수 없습니다." });
     res.json({ ok: true });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 // ── 거래처 (Business partners — customer/vendor master data) ─────────────────
@@ -4103,7 +4118,7 @@ app.get("/api/accounting/partners", async (req, res) => {
       "SELECT id, data FROM partners WHERE is_deleted = FALSE AND (company_id = $1 OR company_id IS NULL) ORDER BY id", [companyId]
     );
     res.json({ ok: true, partners: rows.map(r => ({ id: r.id, ...r.data })) });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 app.post("/api/accounting/partners", async (req, res) => {
@@ -4146,7 +4161,7 @@ app.post("/api/accounting/partners", async (req, res) => {
       [partnerId, companyId, partner]
     );
     res.json({ ok: true, partner });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 app.post("/api/accounting/partners/:id/delete", async (req, res) => {
@@ -4166,7 +4181,7 @@ app.post("/api/accounting/partners/:id/delete", async (req, res) => {
     if (vRows.length || tRows.length) return res.status(400).json({ ok: false, message: "전표 또는 세금계산서에서 사용 중인 거래처는 삭제할 수 없습니다. 비활성화를 이용하세요." });
     await pool.query("UPDATE partners SET is_deleted = TRUE WHERE id = $1 AND (company_id = $2 OR company_id IS NULL)", [id, companyId]);
     res.json({ ok: true });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 // ── 원가명세서 (Cost statement) ───────────────────────────────────────────────
@@ -4218,7 +4233,7 @@ app.get("/api/accounting/cost-statement", async (req, res) => {
       }
     }
     res.json({ ok: true, from, to, mfg, sga, byAccount: Array.from(byAccountMap.values()) });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 // ── RCPS(상환전환우선주) 발행·유효이자율법 상각·공정가치평가 ──────────────────────
@@ -4387,7 +4402,7 @@ app.post("/api/accounting/rcps/issuances", async (req, res) => {
       await client.query("COMMIT");
     } catch (e) { await client.query("ROLLBACK"); throw e; } finally { client.release(); }
     res.json({ ok: true, issuance, schedule });
-  } catch (e) { res.status(e.statusCode || 500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(e.statusCode || 500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 app.get("/api/accounting/rcps/issuances", async (req, res) => {
@@ -4402,7 +4417,7 @@ app.get("/api/accounting/rcps/issuances", async (req, res) => {
       [companyId]
     );
     res.json({ ok: true, issuances: rows.map(r => ({ id: r.id, ...r.data })) });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 app.get("/api/accounting/rcps/issuances/:id", async (req, res) => {
@@ -4423,7 +4438,7 @@ app.get("/api/accounting/rcps/issuances/:id", async (req, res) => {
     const { rows: schedRows } = await pool.query("SELECT data FROM rcps_amortization_schedule WHERE issuance_id = $1 AND company_id = $2 ORDER BY seq", [id, companyId]);
     const { rows: valRows } = await pool.query("SELECT data FROM rcps_fair_value_valuations WHERE issuance_id = $1 AND company_id = $2 ORDER BY data->>'valuationDate'", [id, companyId]);
     res.json({ ok: true, issuance, schedule: schedRows.map(r => r.data), valuations: valRows.map(r => r.data) });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 app.get("/api/accounting/rcps/issuances/:id/schedule", async (req, res) => {
@@ -4436,7 +4451,7 @@ app.get("/api/accounting/rcps/issuances/:id/schedule", async (req, res) => {
     const companyId = req.auth.companyId || null;
     const { rows } = await pool.query("SELECT data FROM rcps_amortization_schedule WHERE issuance_id = $1 AND company_id = $2 ORDER BY seq", [id, companyId]);
     res.json({ ok: true, schedule: rows.map(r => r.data) });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 app.get("/api/accounting/rcps/issuances/:id/valuations", async (req, res) => {
@@ -4449,7 +4464,7 @@ app.get("/api/accounting/rcps/issuances/:id/valuations", async (req, res) => {
     const companyId = req.auth.companyId || null;
     const { rows } = await pool.query("SELECT data FROM rcps_fair_value_valuations WHERE issuance_id = $1 AND company_id = $2 ORDER BY data->>'valuationDate'", [id, companyId]);
     res.json({ ok: true, valuations: rows.map(r => r.data) });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 app.post("/api/accounting/rcps/issuances/:id/delete", async (req, res) => {
@@ -4478,7 +4493,7 @@ app.post("/api/accounting/rcps/issuances/:id/delete", async (req, res) => {
     if (postedRows.length || valRows.length) return res.status(400).json({ ok: false, message: "이미 회계처리가 진행된 발행 건은 삭제할 수 없습니다." });
     await pool.query("UPDATE rcps_issuances SET is_deleted = TRUE WHERE id = $1 AND company_id = $2", [id, companyId]);
     res.json({ ok: true });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 // scheduleId 단위로 "동시에 처리 중"인 요청을 직렬화하기 위한 가드. JSON 파일 모드는
@@ -4577,7 +4592,7 @@ app.post("/api/accounting/rcps/schedule/:scheduleId/post", async (req, res) => {
     } finally {
       if (pgClient) pgClient.release();
     }
-  } catch (e) { res.status(e.statusCode || 500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(e.statusCode || 500).json({ ok: false, message: _safeErrMsg(e) }); }
   finally {
     if (lockedJsonMode) _rcpsSchedulePostInFlight.delete(scheduleId);
   }
@@ -4655,7 +4670,7 @@ app.post("/api/accounting/rcps/valuations", async (req, res) => {
       );
     }
     res.json({ ok: true, valuation, voucher });
-  } catch (e) { res.status(e.statusCode || 500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(e.statusCode || 500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 // ── 부가세 신고자료 (기존 tax_invoices 집계, 신규 테이블 없음) ───────────────────
@@ -4709,7 +4724,7 @@ app.get("/api/accounting/vat-report", async (req, res) => {
       purchase: { supplyTotal: purchaseSupply, taxTotal: purchaseTax, count: purchase.length, ..._breakdown(purchase) },
       vatPayable: _round2(salesTax - purchaseTax), // 매출세액(예수금) - 매입세액(대급금). 양수면 납부, 음수면 환급.
     });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 // ── 고정자산 관리 (취득·감가상각·처분) ────────────────────────────────────────
@@ -4805,7 +4820,7 @@ app.post("/api/accounting/fixed-assets", async (req, res) => {
       await client.query("COMMIT");
     } catch (e) { await client.query("ROLLBACK"); throw e; } finally { client.release(); }
     res.json({ ok: true, asset, schedule });
-  } catch (e) { res.status(e.statusCode || 500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(e.statusCode || 500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 app.get("/api/accounting/fixed-assets", async (req, res) => {
@@ -4820,7 +4835,7 @@ app.get("/api/accounting/fixed-assets", async (req, res) => {
       [companyId]
     );
     res.json({ ok: true, assets: rows.map(r => ({ id: r.id, ...r.data })) });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 app.get("/api/accounting/fixed-assets/:id", async (req, res) => {
@@ -4839,7 +4854,7 @@ app.get("/api/accounting/fixed-assets/:id", async (req, res) => {
     const asset = { id, ...rows[0].data };
     const { rows: schedRows } = await pool.query("SELECT data FROM fixed_asset_depreciation_schedule WHERE asset_id = $1 AND company_id = $2 ORDER BY year", [id, companyId]);
     res.json({ ok: true, asset, schedule: schedRows.map(r => r.data) });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 app.get("/api/accounting/fixed-assets/:id/depreciation-schedule", async (req, res) => {
@@ -4852,7 +4867,7 @@ app.get("/api/accounting/fixed-assets/:id/depreciation-schedule", async (req, re
     const companyId = req.auth.companyId || null;
     const { rows } = await pool.query("SELECT data FROM fixed_asset_depreciation_schedule WHERE asset_id = $1 AND company_id = $2 ORDER BY year", [id, companyId]);
     res.json({ ok: true, schedule: rows.map(r => r.data) });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 app.post("/api/accounting/fixed-assets/:id", async (req, res) => {
@@ -4920,7 +4935,7 @@ app.post("/api/accounting/fixed-assets/:id", async (req, res) => {
       await client.query("COMMIT");
     } catch (e) { await client.query("ROLLBACK"); throw e; } finally { client.release(); }
     res.json({ ok: true, asset: updated, schedule: newSchedule });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 app.post("/api/accounting/fixed-assets/:id/dispose", async (req, res) => {
@@ -4949,7 +4964,7 @@ app.post("/api/accounting/fixed-assets/:id/dispose", async (req, res) => {
     }
     await pool.query("UPDATE fixed_assets SET data = $3, updated_at = NOW() WHERE id = $1 AND company_id = $2", [id, companyId, updated]);
     res.json({ ok: true, asset: updated });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 app.post("/api/accounting/fixed-assets/:id/delete", async (req, res) => {
@@ -4974,7 +4989,7 @@ app.post("/api/accounting/fixed-assets/:id/delete", async (req, res) => {
     if (postedRows.length) return res.status(400).json({ ok: false, message: "이미 상각전표가 발행된 자산은 삭제할 수 없습니다." });
     await pool.query("UPDATE fixed_assets SET is_deleted = TRUE WHERE id = $1 AND company_id = $2", [id, companyId]);
     res.json({ ok: true });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 // scheduleId(RCPS)와 동일한 이유로, assetId+year 단위 in-flight 가드가 필요하다.
@@ -5066,7 +5081,7 @@ app.post("/api/accounting/fixed-assets/:id/depreciation-schedule/:year/post", as
     } finally {
       if (pgClient) pgClient.release();
     }
-  } catch (e) { res.status(e.statusCode || 500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(e.statusCode || 500).json({ ok: false, message: _safeErrMsg(e) }); }
   finally {
     if (lockedJsonMode) _faSchedulePostInFlight.delete(lockKey);
   }
@@ -5156,7 +5171,7 @@ app.get("/api/erp/items", async (req, res) => {
       "SELECT id, data FROM erp_items WHERE is_deleted = FALSE AND (company_id = $1 OR company_id IS NULL) ORDER BY id", [companyId]
     );
     res.json({ ok: true, items: rows.map(r => ({ id: r.id, ...r.data })) });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 app.post("/api/erp/items", async (req, res) => {
@@ -5175,7 +5190,7 @@ app.post("/api/erp/items", async (req, res) => {
     }
     await pool.query("INSERT INTO erp_items (id, company_id, data) VALUES ($1,$2,$3) ON CONFLICT (company_id, id) DO UPDATE SET data = $3, updated_at = NOW()", [itemId, companyId, item]);
     res.json({ ok: true, item });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 app.post("/api/erp/items/:id/delete", async (req, res) => {
@@ -5207,7 +5222,7 @@ app.post("/api/erp/items/:id/delete", async (req, res) => {
     if (rows.length) return res.status(400).json({ ok: false, message: "재고 이력 또는 문서에서 사용 중인 품목은 삭제할 수 없습니다. 비활성화를 이용하세요." });
     await pool.query("UPDATE erp_items SET is_deleted = TRUE WHERE id = $1 AND (company_id = $2 OR company_id IS NULL)", [id, companyId]);
     res.json({ ok: true });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 // ── 창고/위치 마스터 ─────────────────────────────────────────────────────────
@@ -5221,7 +5236,7 @@ app.get("/api/erp/locations", async (req, res) => {
       "SELECT id, data FROM erp_locations WHERE is_deleted = FALSE AND (company_id = $1 OR company_id IS NULL) ORDER BY id", [companyId]
     );
     res.json({ ok: true, locations: rows.map(r => ({ id: r.id, ...r.data })) });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 app.post("/api/erp/locations", async (req, res) => {
@@ -5240,7 +5255,7 @@ app.post("/api/erp/locations", async (req, res) => {
     }
     await pool.query("INSERT INTO erp_locations (id, company_id, data) VALUES ($1,$2,$3) ON CONFLICT (company_id, id) DO UPDATE SET data = $3, updated_at = NOW()", [locId, req.auth.companyId || null, loc]);
     res.json({ ok: true, location: loc });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 app.post("/api/erp/locations/:id/delete", async (req, res) => {
@@ -5259,7 +5274,7 @@ app.post("/api/erp/locations/:id/delete", async (req, res) => {
     if (rows.length) return res.status(400).json({ ok: false, message: "재고 이력에서 사용 중인 위치는 삭제할 수 없습니다. 비활성화를 이용하세요." });
     await pool.query("UPDATE erp_locations SET is_deleted = TRUE WHERE id = $1 AND (company_id = $2 OR company_id IS NULL)", [id, companyId]);
     res.json({ ok: true });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 // ── 견적서 (Quotations) ─────────────────────────────────────────────────────
@@ -5277,7 +5292,7 @@ app.get("/api/erp/quotations", async (req, res) => {
       ? await pool.query("SELECT data FROM erp_quotations WHERE EXTRACT(YEAR FROM doc_date) = $1 AND (company_id = $2 OR company_id IS NULL) ORDER BY doc_date DESC", [year, companyId])
       : await pool.query("SELECT data FROM erp_quotations WHERE (company_id = $1 OR company_id IS NULL) ORDER BY doc_date DESC", [companyId]);
     res.json({ ok: true, quotations: rows.map(r => r.data) });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 app.post("/api/erp/quotations", async (req, res) => {
@@ -5304,7 +5319,7 @@ app.post("/api/erp/quotations", async (req, res) => {
     }
     await pool.query("INSERT INTO erp_quotations (id, doc_date, status, data, company_id) VALUES ($1,$2,'draft',$3,$4)", [quote.id, date, quote, companyId]);
     res.json({ ok: true, quotation: quote });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 app.post("/api/erp/quotations/:id/send", async (req, res) => {
@@ -5338,7 +5353,7 @@ app.post("/api/erp/quotations/:id/send", async (req, res) => {
       await client.query("COMMIT");
       res.json({ ok: true, quotation: q });
     } catch (e) { await client.query("ROLLBACK"); throw e; } finally { client.release(); }
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 app.post("/api/erp/quotations/:id/accept", async (req, res) => {
@@ -5359,7 +5374,7 @@ app.post("/api/erp/quotations/:id/accept", async (req, res) => {
     const q = { ...rows[0].data, status: "accepted", acceptedBy: req.body.user || "unknown", acceptedAt: new Date().toISOString() };
     await pool.query("UPDATE erp_quotations SET status = 'accepted', data = $2, updated_at = NOW() WHERE id = $1", [id, q]);
     res.json({ ok: true, quotation: q });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 // erp_stock_ledger는 append-only 원장이라(현재고 = item+location의 모든 행 합) 그
@@ -5465,7 +5480,7 @@ app.post("/api/erp/quotations/:id/ship", async (req, res) => {
       await client.query("COMMIT");
       res.json({ ok: true, quotation: q, taxInvoice: inv });
     } catch (e) { await client.query("ROLLBACK"); throw e; } finally { client.release(); }
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 app.post("/api/erp/quotations/:id/reject", async (req, res) => {
@@ -5488,7 +5503,7 @@ app.post("/api/erp/quotations/:id/reject", async (req, res) => {
     const q = { ...rows[0].data, status: "rejected", rejectReason: reason, rejectedBy: req.body.user || "unknown", rejectedAt: new Date().toISOString() };
     await pool.query("UPDATE erp_quotations SET status = 'rejected', data = $2, updated_at = NOW() WHERE id = $1", [id, q]);
     res.json({ ok: true, quotation: q });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 app.delete("/api/erp/quotations/:id", async (req, res) => {
@@ -5508,7 +5523,7 @@ app.delete("/api/erp/quotations/:id", async (req, res) => {
     if (!rows.length) return res.status(400).json({ ok: false, message: "임시 저장 상태의 견적서만 삭제할 수 있습니다." });
     await pool.query("DELETE FROM erp_quotations WHERE id = $1", [id]);
     res.json({ ok: true });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 // ── 발주서 (Purchase orders) ────────────────────────────────────────────────
@@ -5526,7 +5541,7 @@ app.get("/api/erp/purchase-orders", async (req, res) => {
       ? await pool.query("SELECT data FROM erp_purchase_orders WHERE EXTRACT(YEAR FROM doc_date) = $1 AND (company_id = $2 OR company_id IS NULL) ORDER BY doc_date DESC", [year, companyId])
       : await pool.query("SELECT data FROM erp_purchase_orders WHERE (company_id = $1 OR company_id IS NULL) ORDER BY doc_date DESC", [companyId]);
     res.json({ ok: true, purchaseOrders: rows.map(r => r.data) });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 app.post("/api/erp/purchase-orders", async (req, res) => {
@@ -5555,7 +5570,7 @@ app.post("/api/erp/purchase-orders", async (req, res) => {
     }
     await pool.query("INSERT INTO erp_purchase_orders (id, doc_date, status, data, company_id) VALUES ($1,$2,'draft',$3,$4)", [po.id, date, po, companyId]);
     res.json({ ok: true, purchaseOrder: po });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 app.post("/api/erp/purchase-orders/:id/confirm", async (req, res) => {
@@ -5589,7 +5604,7 @@ app.post("/api/erp/purchase-orders/:id/confirm", async (req, res) => {
       await client.query("COMMIT");
       res.json({ ok: true, purchaseOrder: po });
     } catch (e) { await client.query("ROLLBACK"); throw e; } finally { client.release(); }
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 app.post("/api/erp/purchase-orders/:id/receive", async (req, res) => {
@@ -5662,7 +5677,7 @@ app.post("/api/erp/purchase-orders/:id/receive", async (req, res) => {
       await client.query("COMMIT");
       res.json({ ok: true, purchaseOrder: po, taxInvoice: inv });
     } catch (e) { await client.query("ROLLBACK"); throw e; } finally { client.release(); }
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 app.post("/api/erp/purchase-orders/:id/cancel", async (req, res) => {
@@ -5685,7 +5700,7 @@ app.post("/api/erp/purchase-orders/:id/cancel", async (req, res) => {
     const po = { ...rows[0].data, status: "cancelled", cancelReason: reason, cancelledBy: req.body.user || "unknown", cancelledAt: new Date().toISOString() };
     await pool.query("UPDATE erp_purchase_orders SET status = 'cancelled', data = $2, updated_at = NOW() WHERE id = $1", [id, po]);
     res.json({ ok: true, purchaseOrder: po });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 app.delete("/api/erp/purchase-orders/:id", async (req, res) => {
@@ -5704,7 +5719,7 @@ app.delete("/api/erp/purchase-orders/:id", async (req, res) => {
     if (!rows.length) return res.status(400).json({ ok: false, message: "임시 저장 상태의 발주서만 삭제할 수 있습니다." });
     await pool.query("DELETE FROM erp_purchase_orders WHERE id = $1", [id]);
     res.json({ ok: true });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 // ── 구매요청 (Purchase requests — 구성원이 요청, admin이 승인/반려/발주전환) ─────
@@ -5722,7 +5737,7 @@ app.get("/api/erp/purchase-requests", async (req, res) => {
       ? await pool.query("SELECT data FROM erp_purchase_requests WHERE (company_id = $1 OR company_id IS NULL) ORDER BY created_at DESC", [companyId])
       : await pool.query("SELECT data FROM erp_purchase_requests WHERE data->>'requestedById' = $1 AND (company_id = $2 OR company_id IS NULL) ORDER BY created_at DESC", [String(userId), companyId]);
     res.json({ ok: true, purchaseRequests: rows.map(r => r.data) });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 app.post("/api/erp/purchase-requests", async (req, res) => {
@@ -5755,7 +5770,7 @@ app.post("/api/erp/purchase-requests", async (req, res) => {
     }
     await pool.query("INSERT INTO erp_purchase_requests (id, doc_date, status, data, company_id) VALUES ($1,$2,'pending',$3,$4)", [pr.id, date, pr, companyId]);
     res.json({ ok: true, purchaseRequest: pr });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 app.post("/api/erp/purchase-requests/:id/approve", async (req, res) => {
@@ -5777,7 +5792,7 @@ app.post("/api/erp/purchase-requests/:id/approve", async (req, res) => {
     const pr = { ...rows[0].data, status: "approved", approvedBy: user, approvedAt: new Date().toISOString() };
     await pool.query("UPDATE erp_purchase_requests SET status = 'approved', data = $2, updated_at = NOW() WHERE id = $1", [id, pr]);
     res.json({ ok: true, purchaseRequest: pr });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 app.post("/api/erp/purchase-requests/:id/reject", async (req, res) => {
@@ -5800,7 +5815,7 @@ app.post("/api/erp/purchase-requests/:id/reject", async (req, res) => {
     const pr = { ...rows[0].data, status: "rejected", rejectReason: reason, rejectedBy: req.body.user || "unknown", rejectedAt: new Date().toISOString() };
     await pool.query("UPDATE erp_purchase_requests SET status = 'rejected', data = $2, updated_at = NOW() WHERE id = $1", [id, pr]);
     res.json({ ok: true, purchaseRequest: pr });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 app.post("/api/erp/purchase-requests/:id/convert-to-po", async (req, res) => {
@@ -5849,7 +5864,7 @@ app.post("/api/erp/purchase-requests/:id/convert-to-po", async (req, res) => {
       await client.query("COMMIT");
       res.json({ ok: true, purchaseOrder: po, purchaseRequest: pr });
     } catch (e) { await client.query("ROLLBACK"); throw e; } finally { client.release(); }
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 app.delete("/api/erp/purchase-requests/:id", async (req, res) => {
@@ -5872,7 +5887,7 @@ app.delete("/api/erp/purchase-requests/:id", async (req, res) => {
     if (role !== "admin" && String(rows[0].data.requestedById) !== String(userId)) return res.status(403).json({ ok: false, message: "본인 요청만 삭제할 수 있습니다." });
     await pool.query("DELETE FROM erp_purchase_requests WHERE id = $1", [id]);
     res.json({ ok: true });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 // ── 재고 (Stock — computed from ledger, plus manual adjustment) ──────────────
@@ -5897,7 +5912,7 @@ app.get("/api/erp/stock", async (req, res) => {
       return { itemId, locationId, qty };
     });
     res.json({ ok: true, stock });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 app.get("/api/erp/stock/ledger", async (req, res) => {
@@ -5914,7 +5929,7 @@ app.get("/api/erp/stock/ledger", async (req, res) => {
     if (itemId) ledger = ledger.filter(l => l.itemId === itemId);
     if (locationId) ledger = ledger.filter(l => l.locationId === locationId);
     res.json({ ok: true, ledger: ledger.slice().sort((a, b) => b.createdAt.localeCompare(a.createdAt)) });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 app.post("/api/erp/stock/adjust", async (req, res) => {
@@ -5956,7 +5971,7 @@ app.post("/api/erp/stock/adjust", async (req, res) => {
       await client.query("COMMIT");
       res.json({ ok: true, entry });
     } catch (e) { await client.query("ROLLBACK"); throw e; } finally { client.release(); }
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 // 재고 실사: 여러 품목의 실사 수량을 한 번에 접수해 시스템 재고와의 차이만큼
@@ -6035,7 +6050,7 @@ app.post("/api/erp/stock/count", async (req, res) => {
       await client.query("COMMIT");
       res.json({ ok: true, adjusted: entries.length, entries });
     } catch (e) { await client.query("ROLLBACK"); throw e; } finally { client.release(); }
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 // 창고 간 이동: 출발 위치에서 출고(out)하고 도착 위치에 입고(in)하는 원장 쌍을 생성한다.
@@ -6079,7 +6094,7 @@ app.post("/api/erp/stock/transfer", async (req, res) => {
       await client.query("COMMIT");
       res.json({ ok: true, transferId, outEntry, inEntry });
     } catch (e) { await client.query("ROLLBACK"); throw e; } finally { client.release(); }
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 // ── ERP: 영업 목표 (Sales targets — admin only CRUD, actuals computed client-side) ──
@@ -6091,7 +6106,7 @@ app.get("/api/erp/sales-targets", async (req, res) => {
       "SELECT id, data FROM erp_sales_targets WHERE is_deleted = FALSE AND (company_id = $1 OR company_id IS NULL) ORDER BY id", [req.auth.companyId || null]
     );
     res.json({ ok: true, salesTargets: rows.map(r => ({ id: r.id, ...r.data })) });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 app.post("/api/erp/sales-targets", async (req, res) => {
@@ -6119,7 +6134,7 @@ app.post("/api/erp/sales-targets", async (req, res) => {
       [targetId, req.auth.companyId || null, target]
     );
     res.json({ ok: true, salesTarget: target });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 app.post("/api/erp/sales-targets/:id/delete", async (req, res) => {
@@ -6133,7 +6148,7 @@ app.post("/api/erp/sales-targets/:id/delete", async (req, res) => {
     }
     await pool.query("UPDATE erp_sales_targets SET is_deleted = TRUE WHERE id = $1 AND (company_id = $2 OR company_id IS NULL)", [id, req.auth.companyId || null]);
     res.json({ ok: true });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 // ── PMS: 프로젝트 투입률 관리 (Projects / monthly allocation %) ────────────────
@@ -6146,7 +6161,7 @@ app.get("/api/pms/projects", async (req, res) => {
       [req.auth.companyId || null]
     );
     res.json({ ok: true, projects: rows.map(r => ({ id: r.id, ...r.data })) });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 app.post("/api/pms/projects", async (req, res) => {
@@ -6187,7 +6202,7 @@ app.post("/api/pms/projects", async (req, res) => {
       [projectId, companyId, project]
     );
     res.json({ ok: true, project });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 app.post("/api/pms/projects/:id", async (req, res) => {
@@ -6225,7 +6240,7 @@ app.post("/api/pms/projects/:id", async (req, res) => {
     project.updatedAt = new Date().toISOString();
     await pool.query("UPDATE pms_projects SET data = $2, updated_at = NOW() WHERE id = $1", [id, project]);
     res.json({ ok: true, project });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 app.post("/api/pms/projects/:id/close", async (req, res) => {
@@ -6246,7 +6261,7 @@ app.post("/api/pms/projects/:id/close", async (req, res) => {
     const project = { ...rows[0].data, status: "closed", updatedAt: new Date().toISOString() };
     await pool.query("UPDATE pms_projects SET data = $2, updated_at = NOW() WHERE id = $1", [id, project]);
     res.json({ ok: true, project });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 // 직원별 월간 투입률(%) 배정 — 본인 또는 admin만 등록/삭제 가능, 합계 100% 초과 금지
@@ -6288,7 +6303,7 @@ app.get("/api/pms/allocations", async (req, res) => {
     if (employeeId) { params.push(Number(employeeId)); conditions.push(`employee_id = $${params.length}`); }
     const { rows } = await pool.query(`SELECT data FROM pms_allocations WHERE ${conditions.join(" AND ")} ORDER BY year, month`, params);
     res.json({ ok: true, allocations: rows.map(r => r.data) });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 async function _pmsProjectById(projectId, companyId) {
@@ -6368,7 +6383,7 @@ app.post("/api/pms/allocations", async (req, res) => {
       await client.query("COMMIT");
       res.json({ ok: true, allocation: alloc });
     } catch (e) { await client.query("ROLLBACK"); throw e; } finally { client.release(); }
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 app.post("/api/pms/allocations/:id/delete", async (req, res) => {
@@ -6388,7 +6403,7 @@ app.post("/api/pms/allocations/:id/delete", async (req, res) => {
     if (!rows.length) return res.status(404).json({ ok: false, message: "배정 내역을 찾을 수 없습니다." });
     await pool.query("UPDATE pms_allocations SET is_deleted = TRUE WHERE id = $1 AND (company_id = $2 OR company_id IS NULL)", [id, companyId]);
     res.json({ ok: true });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 // 직원별 일일 업무 투입(분단위 타임라인) — 본인 또는 admin만 등록 가능, 하루 24시간/겹침 검증
@@ -6434,7 +6449,7 @@ app.get("/api/pms/worklogs", async (req, res) => {
     if (month) { params.push(Number(month)); conditions.push(`EXTRACT(MONTH FROM work_date) = $${params.length}`); }
     const { rows } = await pool.query(`SELECT data FROM pms_worklogs WHERE ${conditions.join(" AND ")} ORDER BY work_date`, params);
     res.json({ ok: true, worklogs: rows.map(r => r.data) });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 app.post("/api/pms/worklogs", async (req, res) => {
@@ -6515,7 +6530,7 @@ app.post("/api/pms/worklogs", async (req, res) => {
       client.release();
     }
     res.json({ ok: true, worklog: record });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 // ── 채용 관리: 채용공고 ────────────────────────────────────────────────────────
@@ -6584,7 +6599,7 @@ app.get("/api/recruit/jobs", async (req, res) => {
       jobs = filtered;
     }
     res.json({ ok: true, jobs });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 app.post("/api/recruit/jobs", async (req, res) => {
@@ -6647,7 +6662,7 @@ app.post("/api/recruit/jobs", async (req, res) => {
       [jobId, companyId, job]
     );
     res.json({ ok: true, job });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 app.post("/api/recruit/jobs/:id/close", async (req, res) => {
@@ -6676,7 +6691,7 @@ app.post("/api/recruit/jobs/:id/close", async (req, res) => {
     // 공고 제목·부서·상태가 이 회사 값으로 전부 뒤바뀜). SELECT와 동일하게 company_id로 스코프.
     await pool.query("UPDATE recruit_jobs SET data = $3, updated_at = NOW() WHERE id = $1 AND (company_id = $2 OR company_id IS NULL)", [id, companyId, job]);
     res.json({ ok: true, job });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 async function _recruitAllJobs(companyId) {
@@ -6732,7 +6747,7 @@ app.get("/api/recruit/candidates", async (req, res) => {
       list = list.filter(c => [c.name, c.email, c.phone].some(v => String(v || "").toLowerCase().includes(needle)));
     }
     res.json({ ok: true, candidates: list.map(_recruitStripResume) });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 app.get("/api/recruit/candidates/export", async (req, res) => {
@@ -6751,7 +6766,7 @@ app.get("/api/recruit/candidates/export", async (req, res) => {
       lines.push([await jobTitleOf(c.jobId), c.name, c.phone || "", c.email || "", c.status, (c.appliedAt || "").slice(0, 10), c.finalEducation || "", c.careerHistory || "", c.lastSalary || "", c.desiredSalary || "", c.careerGaps || "", c.activities || "", c.resumeSummary || "", c.memo || ""].map(esc).join(","));
     }
     res.json({ ok: true, csv: "﻿" + lines.join("\n") });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 // 리스트 조회(_recruitVisibleCandidates)와 동일한 열람 권한 규칙을 단건 조회에도 적용한다.
@@ -6783,7 +6798,7 @@ app.get("/api/recruit/candidates/:id", async (req, res) => {
     if (!(await _recruitCanViewCandidate(candidate, userId, role, companyId))) return res.status(403).json({ ok: false, message: "열람 권한이 없습니다." });
     const job = await _recruitJobById(candidate.jobId, companyId);
     res.json({ ok: true, candidate, job });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 function _execFileP(cmd, args) {
@@ -6871,7 +6886,7 @@ app.post("/api/recruit/extract-pdf-text", async (req, res) => {
       }
     }
     res.json({ ok: true, text });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 app.post("/api/recruit/extract-docx-text", async (req, res) => {
   try {
@@ -6883,7 +6898,7 @@ app.post("/api/recruit/extract-docx-text", async (req, res) => {
     const mammoth = require("mammoth");
     const result = await mammoth.extractRawText({ buffer });
     res.json({ ok: true, text: result.value || "" });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 async function _extractHwpBuffer(buffer) {
   const tmpDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "resume-hwp-"));
@@ -6920,7 +6935,7 @@ app.post("/api/recruit/extract-hwp-text", async (req, res) => {
       return res.json({ ok: true, text: "", message: "HWP 파일에서 텍스트를 추출하지 못했습니다(서버에 pyhwp 필요): " + hwpErr.message });
     }
     res.json({ ok: true, text });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 async function _ocrImageBuffer(buffer, ext) {
   const tmpDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "resume-img-"));
@@ -6948,7 +6963,7 @@ app.post("/api/recruit/extract-image-text", async (req, res) => {
       return res.json({ ok: true, text: "", message: "이미지에서 텍스트를 추출하지 못했습니다(서버에 tesseract-ocr 필요): " + ocrErr.message });
     }
     res.json({ ok: true, text });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 const RESUME_FIELDS_SCHEMA_PROMPT = `너는 한국어 이력서 텍스트에서 정보를 추출하는 도우미다. 아래 텍스트(OCR/문서 추출 결과라 줄바꿈이 깨지거나 표가 뒤섞여 있을 수 있음)를 읽고, 다음 JSON 스키마로만 응답해라. 마크다운이나 설명 없이 JSON 객체 하나만 출력해라. 모르거나 이력서에 없는 값은 빈 문자열 ""로 둔다.
@@ -7001,7 +7016,7 @@ app.post("/api/recruit/parse-resume-llm", async (req, res) => {
     }
     if (!fields) return res.json({ ok: false, message: "AI 분석 기능이 설정되지 않았습니다(GROQ_API_KEY 필요)." });
     res.json({ ok: true, fields });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 // ── HR 신규 직원 등록: AI 이력서 자동입력(P1) ───────────────────────────────────
@@ -7464,7 +7479,7 @@ app.post("/api/recruit/suggest-career-companies", async (req, res) => {
     }
     if (suggestions === null) return res.json({ ok: false, message: "AI 분석 기능이 설정되지 않았습니다(GROQ_API_KEY 필요)." });
     res.json({ ok: true, suggestions });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 async function _groqSummarizePeople(kind, people) {
@@ -7510,7 +7525,7 @@ app.post("/api/hr/analyze-summary", async (req, res) => {
     }
     if (!summaries) return res.json({ ok: false, message: "AI 분석 기능이 설정되지 않았습니다(GROQ_API_KEY 필요)." });
     res.json({ ok: true, summaries });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 async function _groqDraftKpiGoal(jobRole, itemName) {
@@ -7587,7 +7602,7 @@ app.post("/api/hr/analyze-org", async (req, res) => {
     }
     if (!analysis) return res.json({ ok: false, message: "AI 분석 기능이 설정되지 않았습니다(GROQ_API_KEY 필요)." });
     res.json({ ok: true, ...analysis });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 app.post("/api/hr/draft-kpi-goal", async (req, res) => {
@@ -7603,7 +7618,7 @@ app.post("/api/hr/draft-kpi-goal", async (req, res) => {
     }
     if (!draft) return res.json({ ok: false, message: "AI 초안 생성 기능이 설정되지 않았습니다(GROQ_API_KEY 필요)." });
     res.json({ ok: true, draft });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 async function _groqDraftEvalComment(stage, memberName, kpis) {
@@ -7647,7 +7662,7 @@ app.post("/api/hr/draft-eval-comment", async (req, res) => {
     }
     if (!comment) return res.json({ ok: false, message: "AI 초안 생성 기능이 설정되지 않았습니다(GROQ_API_KEY 필요)." });
     res.json({ ok: true, comment });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 // The recruit routes below (candidates/:id, candidates/:id/status, interviews/:id,
@@ -7725,7 +7740,7 @@ app.post("/api/recruit/candidates", async (req, res) => {
       [candidateId, jobId, candidate, companyId]
     );
     res.json({ ok: true, candidate: _recruitStripResume(candidate) });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 app.post("/api/recruit/candidates/:id", async (req, res) => {
@@ -7770,11 +7785,11 @@ app.post("/api/recruit/candidates/:id", async (req, res) => {
         return applyEdits(c);
       }, companyId);
     } catch (e) {
-      if (e instanceof _RecruitRouteError) return res.status(e.status).json({ ok: false, message: e.message });
+      if (e instanceof _RecruitRouteError) return res.status(e.status).json({ ok: false, message: _safeErrMsg(e) });
       throw e;
     }
     res.json({ ok: true, candidate: _recruitStripResume(candidate) });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 app.get("/api/recruit/candidates/:id/resume", async (req, res) => {
@@ -7793,7 +7808,7 @@ app.get("/api/recruit/candidates/:id/resume", async (req, res) => {
     if (!candidate || !candidate.resume) return res.status(404).json({ ok: false, message: "이력서를 찾을 수 없습니다." });
     if (!(await _recruitCanViewCandidate(candidate, userId, role, companyId))) return res.status(403).json({ ok: false, message: "열람 권한이 없습니다." });
     res.json({ ok: true, resume: candidate.resume });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 app.post("/api/recruit/candidates/:id/status", async (req, res) => {
@@ -7847,11 +7862,11 @@ app.post("/api/recruit/candidates/:id/status", async (req, res) => {
         return c;
       }, companyId);
     } catch (e) {
-      if (e instanceof _RecruitRouteError) return res.status(e.status).json({ ok: false, message: e.message });
+      if (e instanceof _RecruitRouteError) return res.status(e.status).json({ ok: false, message: _safeErrMsg(e) });
       throw e;
     }
     res.json({ ok: true, candidate });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 // ── 채용 관리: 면접 일정/평가 (1차·2차 구분, 면접관별 비공개 평가) ────────────────
@@ -7893,7 +7908,7 @@ app.get("/api/recruit/interviews", async (req, res) => {
       out.push(_recruitFilterInterviewForViewer(interview, userId, privileged));
     }
     res.json({ ok: true, interviews: out });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 app.post("/api/recruit/interviews", async (req, res) => {
@@ -7931,7 +7946,7 @@ app.post("/api/recruit/interviews", async (req, res) => {
       [id, jobId, candidateId, interview, companyId]
     );
     res.json({ ok: true, interview });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 app.post("/api/recruit/interviews/:id", async (req, res) => {
@@ -7970,11 +7985,11 @@ app.post("/api/recruit/interviews/:id", async (req, res) => {
         return applyEdits(iv);
       }, companyId);
     } catch (e) {
-      if (e instanceof _RecruitRouteError) return res.status(e.status).json({ ok: false, message: e.message });
+      if (e instanceof _RecruitRouteError) return res.status(e.status).json({ ok: false, message: _safeErrMsg(e) });
       throw e;
     }
     res.json({ ok: true, interview });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 app.post("/api/recruit/interviews/:id/cancel", async (req, res) => {
@@ -8007,11 +8022,11 @@ app.post("/api/recruit/interviews/:id/cancel", async (req, res) => {
         return applyCancel(iv);
       }, companyId);
     } catch (e) {
-      if (e instanceof _RecruitRouteError) return res.status(e.status).json({ ok: false, message: e.message });
+      if (e instanceof _RecruitRouteError) return res.status(e.status).json({ ok: false, message: _safeErrMsg(e) });
       throw e;
     }
     res.json({ ok: true, interview });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 app.post("/api/recruit/interviews/:id/evaluation", async (req, res) => {
@@ -8080,7 +8095,7 @@ app.post("/api/recruit/interviews/:id/evaluation", async (req, res) => {
       try {
         await applyEvaluation(interview);
       } catch (e) {
-        if (e instanceof _RecruitRouteError) return res.status(e.status).json({ ok: false, message: e.message });
+        if (e instanceof _RecruitRouteError) return res.status(e.status).json({ ok: false, message: _safeErrMsg(e) });
         throw e;
       }
       _saveFileRecruit();
@@ -8091,11 +8106,11 @@ app.post("/api/recruit/interviews/:id/evaluation", async (req, res) => {
       const rc = await _recruitBuildCache(companyId, { jobs: true, candidates: true });
       interview = await _pgLockedUpdate("recruit_interviews", id, (iv) => applyEvaluation(iv, rc), companyId);
     } catch (e) {
-      if (e instanceof _RecruitRouteError) return res.status(e.status).json({ ok: false, message: e.message });
+      if (e instanceof _RecruitRouteError) return res.status(e.status).json({ ok: false, message: _safeErrMsg(e) });
       throw e;
     }
     res.json({ ok: true, interview });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 const RECRUIT_VERDICTS = ["pass", "hold", "fail"];
@@ -8126,7 +8141,7 @@ app.post("/api/recruit/interviews/:id/verdict", async (req, res) => {
       try {
         applyVerdict(interview);
       } catch (e) {
-        if (e instanceof _RecruitRouteError) return res.status(e.status).json({ ok: false, message: e.message });
+        if (e instanceof _RecruitRouteError) return res.status(e.status).json({ ok: false, message: _safeErrMsg(e) });
         throw e;
       }
       _saveFileRecruit();
@@ -8136,11 +8151,11 @@ app.post("/api/recruit/interviews/:id/verdict", async (req, res) => {
     try {
       interview = await _pgLockedUpdate("recruit_interviews", id, async (iv) => applyVerdict(iv), companyId);
     } catch (e) {
-      if (e instanceof _RecruitRouteError) return res.status(e.status).json({ ok: false, message: e.message });
+      if (e instanceof _RecruitRouteError) return res.status(e.status).json({ ok: false, message: _safeErrMsg(e) });
       throw e;
     }
     res.json({ ok: true, interview });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 app.post("/api/recruit/candidates/:id/delete", async (req, res) => {
@@ -8162,7 +8177,7 @@ app.post("/api/recruit/candidates/:id/delete", async (req, res) => {
     if (!(await _recruitCanViewCandidate(rows[0].data, userId, role, companyId))) return res.status(403).json({ ok: false, message: "삭제 권한이 없습니다." });
     await pool.query("UPDATE recruit_candidates SET is_deleted = TRUE WHERE id = $1 AND (company_id = $2 OR company_id IS NULL)", [id, companyId]);
     res.json({ ok: true });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 app.get("/api/recruit/dashboard", async (req, res) => {
@@ -8206,7 +8221,7 @@ app.get("/api/recruit/dashboard", async (req, res) => {
       return { jobId: job.id, title: job.title, status: job.status, totalCandidates: jobCandidates.length, stages: stageStats };
     });
     res.json({ ok: true, stats });
-  } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 // ── Reset All Data ────────────────────────────────────────────────────────────
@@ -8242,17 +8257,39 @@ app.post("/api/reset-all", loginLimiter, async (req, res) => {
       const histFile = JSON_FILE.replace(/\.json$/, "-history.json");
       await fs.promises.writeFile(histFile, JSON.stringify({ employees: [], kpi: [] }, null, 2), "utf8");
     } else {
-      await pool.query("DELETE FROM kpi_history WHERE company_id = $1", [companyId]);
-      await pool.query("DELETE FROM employee_history WHERE company_id = $1", [companyId]);
-      await pool.query("DELETE FROM kpi_entries WHERE company_id = $1", [companyId]);
-      await pool.query("DELETE FROM employees WHERE company_id = $1", [companyId]);
-      await pool.query("DELETE FROM app_meta WHERE key = $1", [`data_version:${_scopeKey(companyId)}`]);
+      // "전체 초기화"가 employees/kpi_entries(및 이력)만 지우고 app_collections/
+      // app_singletons(approvalDocs·attendanceRecords·settings·orgDB 등 GENERIC_LIST_FIELDS/
+      // SINGLETON_FIELDS 전체, lib/collections.js 참고)는 그대로 남겨두고 있었다
+      // (2026-08-19 외부 감사 P1). JSON 파일 모드는 `_fileStore = {employees:[],
+      // kpiEntries:[]}`로 이 필드들이 전부 같은 객체의 속성이라 자연스럽게 함께 비워지는데,
+      // Postgres 모드는 이 필드들이 별도 테이블에 있어 빠져 있었던 것 — 초기화 직후에도
+      // 이전 결재문서·근태기록 등이 서버에 그대로 남아 있다가 다음 조회 시 되살아나는
+      // 것처럼 보였다. accounting/ERP/PMS/채용/budget_store는 이 버튼의 기존 범위 밖(JSON
+      // 파일 모드도 별도 파일이라 건드리지 않음)이라 그대로 유지한다. 여러 테이블에 걸친
+      // 파괴적 삭제라 중간 실패 시 절반만 지워진 상태로 남지 않도록 트랜잭션으로 묶는다.
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        await client.query("DELETE FROM kpi_history WHERE company_id = $1", [companyId]);
+        await client.query("DELETE FROM employee_history WHERE company_id = $1", [companyId]);
+        await client.query("DELETE FROM kpi_entries WHERE company_id = $1", [companyId]);
+        await client.query("DELETE FROM employees WHERE company_id = $1", [companyId]);
+        await client.query("DELETE FROM app_collections WHERE company_id = $1", [companyId]);
+        await client.query("DELETE FROM app_singletons WHERE company_id = $1", [companyId]);
+        await client.query("DELETE FROM app_meta WHERE key = $1", [`data_version:${_scopeKey(companyId)}`]);
+        await client.query("COMMIT");
+      } catch (e) {
+        await client.query("ROLLBACK");
+        throw e;
+      } finally {
+        client.release();
+      }
       _setVersion(companyId, 0);
     }
     console.log(`[Reset] Company data cleared (companyId=${companyId || "(json-file/global)"})`);
     res.json({ ok: true });
   } catch (e) {
-    res.status(500).json({ ok: false, message: e.message });
+    res.status(500).json({ ok: false, message: _safeErrMsg(e) });
   }
 });
 

@@ -1859,7 +1859,8 @@ module.exports = function budgetRouterFactory(deps) {
       res.json({ ok: true, applied, prunedDuplicates: prunedResult.length, sheetName: rows._sheetName, plan: { ...plan, budgetComparison: computeBudgetComparison(resultData, plan) } });
     } catch (e) {
       if (e instanceof _BudgetRouteError) return res.status(e.status).json({ error: e.message });
-      throw e;
+      console.error('[budget] 예기치 못한 오류:', e);
+      res.status(500).json({ error: '처리 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.' });
     }
   });
 
@@ -2103,7 +2104,8 @@ module.exports = function budgetRouterFactory(deps) {
       res.json({ ok: true, plan: { ...plan, budgetComparison: computeBudgetComparison(resultData, plan) } });
     } catch (e) {
       if (e instanceof _BudgetRouteError) return res.status(e.status).json({ error: e.message });
-      throw e;
+      console.error('[budget] 예기치 못한 오류:', e);
+      res.status(500).json({ error: '처리 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.' });
     }
   });
 
@@ -2238,7 +2240,8 @@ module.exports = function budgetRouterFactory(deps) {
       res.json({ ok: true, plan: { ...plan, budgetComparison: computeBudgetComparison(resultData, plan) } });
     } catch (e) {
       if (e instanceof _BudgetRouteError) return res.status(e.status).json({ error: e.message });
-      throw e;
+      console.error('[budget] 예기치 못한 오류:', e);
+      res.status(500).json({ error: '처리 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.' });
     }
   });
 
@@ -2284,7 +2287,8 @@ module.exports = function budgetRouterFactory(deps) {
       res.json({ ok: true, updated: updatedCount, plan: { ...plan, ..._freshPlanCalc(plan), budgetComparison: computeBudgetComparison(resultData, plan) } });
     } catch (e) {
       if (e instanceof _BudgetRouteError) return res.status(e.status).json({ error: e.message });
-      throw e;
+      console.error('[budget] 예기치 못한 오류:', e);
+      res.status(500).json({ error: '처리 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.' });
     }
   });
 
@@ -2350,7 +2354,8 @@ module.exports = function budgetRouterFactory(deps) {
       res.json({ ok: true, plan: { ...plan, budgetComparison: computeBudgetComparison(resultData, plan) } });
     } catch (e) {
       if (e instanceof _BudgetRouteError) return res.status(e.status).json({ error: e.message });
-      throw e;
+      console.error('[budget] 예기치 못한 오류:', e);
+      res.status(500).json({ error: '처리 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.' });
     }
   });
 
@@ -2400,7 +2405,8 @@ module.exports = function budgetRouterFactory(deps) {
       res.json({ ok: true, plan: { ...plan, budgetComparison: computeBudgetComparison(resultData, plan) } });
     } catch (e) {
       if (e instanceof _BudgetRouteError) return res.status(e.status).json({ error: e.message });
-      throw e;
+      console.error('[budget] 예기치 못한 오류:', e);
+      res.status(500).json({ error: '처리 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.' });
     }
   });
 
@@ -2432,7 +2438,8 @@ module.exports = function budgetRouterFactory(deps) {
       res.json({ ok: true, plan: { ...plan, budgetComparison: computeBudgetComparison(resultData, plan) } });
     } catch (e) {
       if (e instanceof _BudgetRouteError) return res.status(e.status).json({ error: e.message });
-      throw e;
+      console.error('[budget] 예기치 못한 오류:', e);
+      res.status(500).json({ error: '처리 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.' });
     }
   });
 
@@ -2461,7 +2468,8 @@ module.exports = function budgetRouterFactory(deps) {
       res.json({ ok: true, plan: { ...plan, budgetComparison: computeBudgetComparison(resultData, plan) } });
     } catch (e) {
       if (e instanceof _BudgetRouteError) return res.status(e.status).json({ error: e.message });
-      throw e;
+      console.error('[budget] 예기치 못한 오류:', e);
+      res.status(500).json({ error: '처리 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.' });
     }
   });
 
@@ -2486,7 +2494,8 @@ module.exports = function budgetRouterFactory(deps) {
       res.json({ ok: true, plan: { ...plan, budgetComparison: computeBudgetComparison(resultData, plan) } });
     } catch (e) {
       if (e instanceof _BudgetRouteError) return res.status(e.status).json({ error: e.message });
-      throw e;
+      console.error('[budget] 예기치 못한 오류:', e);
+      res.status(500).json({ error: '처리 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.' });
     }
   });
 
@@ -2514,7 +2523,8 @@ module.exports = function budgetRouterFactory(deps) {
       res.json({ ok: true });
     } catch (e) {
       if (e instanceof _BudgetRouteError) return res.status(e.status).json({ error: e.message });
-      throw e;
+      console.error('[budget] 예기치 못한 오류:', e);
+      res.status(500).json({ error: '처리 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.' });
     }
   });
 
