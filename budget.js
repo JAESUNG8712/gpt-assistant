@@ -766,6 +766,23 @@ function requireAdmin(req, res) {
   return true;
 }
 
+// server.js의 requirePage()와 동일한 목적 — "권한 관리" 화면에서 개인별로 끈 메뉴를
+// 이 라우터의 API에서도 강제한다(지금까지는 클라이언트만 검사했음, 2026-08-21 사용자
+// 지적). authenticate()가 req.auth.menuPerms에 이미 실어둔 값을 그대로 쓴다.
+// public/budget.html(별도의 role 기반 관리자 전용 화면 — menuPerms/메뉴 개념 자체가
+// 없음)이 쓰는 라우트(/upload/headcount, /upload/detail, DELETE /data)에는 절대
+// 적용하지 않는다 — 그 화면 사용자에게는 "biz-plan" 메뉴라는 개념이 없어 잘못 적용하면
+// 무관한 화면의 정상 사용을 막는 회귀가 된다.
+function requirePage(req, res, pageId) {
+  if (!requireAuth(req, res)) return false;
+  const perms = req.auth.menuPerms || {};
+  if (perms[pageId] === false) {
+    res.status(403).json({ error: '이 메뉴에 대한 접근 권한이 없습니다.' });
+    return false;
+  }
+  return true;
+}
+
 // dept가 없는(레거시/회사 전체 스크래치) 계획은 팀 소유 개념이 없어 관리자만 다룰 수 있다.
 // dept가 있는 팀별 계획은 같은 dept+team 소속 직원 누구나(요청서: "팀별 계획 작성 권한 —
 // 팀장만? 사업부장도?" 질문에 "모두다 작성/수정은 가능"으로 답변) 수정 가능하고, 그 팀이
@@ -1058,6 +1075,7 @@ router.get('/emp-pay-plan', async (req, res) => {
 
 router.post('/emp-pay-plan', async (req, res) => {
   if (!requireAdmin(req, res)) return;
+  if (!requirePage(req, res, "emp-pay-plan")) return;
   const companyId = req.auth.companyId || null;
   const body = req.body || {};
   const empId = body.empId;
@@ -1127,6 +1145,7 @@ router.get('/emp-pay-plan/settings', async (req, res) => {
 });
 router.post('/emp-pay-plan/settings', async (req, res) => {
   if (!requireAdmin(req, res)) return;
+  if (!requirePage(req, res, "emp-pay-plan")) return;
   const companyId = req.auth.companyId || null;
   const body = req.body || {};
   let resultSettings;
@@ -1153,6 +1172,7 @@ router.post('/emp-pay-plan/settings', async (req, res) => {
 
 router.delete('/emp-pay-plan/:id', async (req, res) => {
   if (!requireAdmin(req, res)) return;
+  if (!requirePage(req, res, "emp-pay-plan")) return;
   const companyId = req.auth.companyId || null;
   const found = await updateBudget(companyId, async (data) => {
     const idx = data.empPayPlans.findIndex(p => p.id === req.params.id);
@@ -1234,6 +1254,7 @@ module.exports = function budgetRouterFactory(deps) {
   // — 저성과자 관리 뷰어 등 — 과 동일하게 admin 전용).
   router.post('/business-plan/settings/roster', async (req, res) => {
     if (!requireAdmin(req, res)) return;
+    if (!requirePage(req, res, "biz-plan")) return;
     const companyId = req.auth.companyId || null;
     const body = req.body || {};
     if (body.ownerIds !== undefined && !Array.isArray(body.ownerIds)) {
@@ -1253,6 +1274,7 @@ module.exports = function budgetRouterFactory(deps) {
   // 입력기간 on/off: 예산담당자·기획팀장·관리자만(사용자 요청 그대로).
   router.post('/business-plan/settings/input-window', async (req, res) => {
     if (!requireAuth(req, res)) return;
+    if (!requirePage(req, res, "biz-plan")) return;
     const companyId = req.auth.companyId || null;
     const isAdmin = req.auth.role === 'admin';
     const open = !!(req.body && req.body.inputOpen);
@@ -1831,6 +1853,7 @@ module.exports = function budgetRouterFactory(deps) {
   // 별도 라우트로 둔다. 관리자 전용, draft 상태일 때만(다른 쓰기 라우트와 동일 기준).
   router.post('/business-plan/:id/cost-block-upload', upload.single('file'), async (req, res) => {
     if (!requireAdmin(req, res)) return;
+    if (!requirePage(req, res, "biz-plan")) return;
     if (!req.file) return res.status(400).json({ error: '파일이 필요합니다.' });
     let rows;
     try {
@@ -1909,6 +1932,7 @@ module.exports = function budgetRouterFactory(deps) {
   // 미리 보여줄 수 있게 한다. 실제 반영은 /sga-upload/commit에서 이뤄진다.
   router.post('/business-plan/sga-upload/parse', upload.single('file'), async (req, res) => {
     if (!requireAdmin(req, res)) return;
+    if (!requirePage(req, res, "biz-plan")) return;
     if (!req.file) return res.status(400).json({ error: '파일이 필요합니다.' });
     let rows;
     try {
@@ -1942,6 +1966,7 @@ module.exports = function budgetRouterFactory(deps) {
   // 저장할 수도 있다.
   router.post('/business-plan/sga-upload/commit', async (req, res) => {
     if (!requireAdmin(req, res)) return;
+    if (!requirePage(req, res, "biz-plan")) return;
     const companyId = req.auth.companyId || null;
     const profile = await getEmployeeProfile(companyId, req.auth.empId);
     const userName = _actorName(profile, true);
@@ -1986,6 +2011,7 @@ module.exports = function budgetRouterFactory(deps) {
   // 다른 초기화 범위로 관리한다.
   router.post('/business-plan/headcount-plan/upload', upload.single('file'), async (req, res) => {
     if (!requireAdmin(req, res)) return;
+    if (!requirePage(req, res, "biz-plan")) return;
     if (!req.file) return res.status(400).json({ error: '파일이 필요합니다.' });
     let rows;
     try {
@@ -2074,6 +2100,7 @@ module.exports = function budgetRouterFactory(deps) {
   // 스크래치 계획, 즉시 finalConfirmed)도 그대로 가능하다.
   router.post('/business-plan', async (req, res) => {
     if (!requireAuth(req, res)) return;
+    if (!requirePage(req, res, "biz-plan")) return;
     const companyId = req.auth.companyId || null;
     const isAdmin = req.auth.role === 'admin';
     // getEmployeeProfile()은 budget_store와 무관한 별도 조회(employees 조회)이므로,
@@ -2208,6 +2235,7 @@ module.exports = function budgetRouterFactory(deps) {
   // — 이 코드베이스 전반의 "관리자는 항상 전권" 관례와 동일).
   router.put('/business-plan/:id', async (req, res) => {
     if (!requireAuth(req, res)) return;
+    if (!requirePage(req, res, "biz-plan")) return;
     const companyId = req.auth.companyId || null;
     const isAdmin = req.auth.role === 'admin';
     const profile = await getEmployeeProfile(companyId, req.auth.empId);
@@ -2295,6 +2323,7 @@ module.exports = function budgetRouterFactory(deps) {
   // 없도록 한다. 조회 권한과 동일한 소속(팀/부서) 또는 관리자만 입력 가능.
   router.put('/business-plan/:id/revenue-actuals', async (req, res) => {
     if (!requireAuth(req, res)) return;
+    if (!requirePage(req, res, "biz-plan")) return;
     const companyId = req.auth.companyId || null;
     const isAdmin = req.auth.role === 'admin';
     const profile = await getEmployeeProfile(companyId, req.auth.empId);
@@ -2370,6 +2399,7 @@ module.exports = function budgetRouterFactory(deps) {
   // 사업부장 승인 → 잠금(divisionApproved)
   router.post('/business-plan/:id/approve-division', async (req, res) => {
     if (!requireAuth(req, res)) return;
+    if (!requirePage(req, res, "biz-plan")) return;
     const companyId = req.auth.companyId || null;
     const isAdmin = req.auth.role === 'admin';
     const profile = await getEmployeeProfile(companyId, req.auth.empId);
@@ -2403,6 +2433,7 @@ module.exports = function budgetRouterFactory(deps) {
   // 관리자가 호출하면 두 승인을 한 번에 채워 즉시 확정한다(관리자 전권 관례).
   router.post('/business-plan/:id/final-approve', async (req, res) => {
     if (!requireAuth(req, res)) return;
+    if (!requirePage(req, res, "biz-plan")) return;
     const companyId = req.auth.companyId || null;
     const isAdmin = req.auth.role === 'admin';
     const profile = await getEmployeeProfile(companyId, req.auth.empId);
@@ -2454,6 +2485,7 @@ module.exports = function budgetRouterFactory(deps) {
   // 사유와 함께 제출. 계획 자체는 계속 잠긴 채로 유지되고, 관리자 승인/반려만 대기.
   router.post('/business-plan/:id/request-edit', async (req, res) => {
     if (!requireAuth(req, res)) return;
+    if (!requirePage(req, res, "biz-plan")) return;
     const companyId = req.auth.companyId || null;
     const isAdmin = req.auth.role === 'admin';
     const profile = await getEmployeeProfile(companyId, req.auth.empId);
@@ -2487,6 +2519,7 @@ module.exports = function budgetRouterFactory(deps) {
   // (수정 후 내용이 달라지므로 사업부장·예산담당자·기획팀장 승인을 처음부터 다시 받아야 함).
   router.post('/business-plan/:id/edit-request/approve', async (req, res) => {
     if (!requireAdmin(req, res)) return;
+    if (!requirePage(req, res, "biz-plan")) return;
     const companyId = req.auth.companyId || null;
     const profile = await getEmployeeProfile(companyId, req.auth.empId);
 
@@ -2516,6 +2549,7 @@ module.exports = function budgetRouterFactory(deps) {
   // 수정요청 반려(관리자 전용) — 계획은 잠긴 채로 유지, 요청만 제거.
   router.post('/business-plan/:id/edit-request/reject', async (req, res) => {
     if (!requireAdmin(req, res)) return;
+    if (!requirePage(req, res, "biz-plan")) return;
     const companyId = req.auth.companyId || null;
     const profile = await getEmployeeProfile(companyId, req.auth.empId);
 
@@ -2543,6 +2577,7 @@ module.exports = function budgetRouterFactory(deps) {
   // 거쳐야 하므로 삭제도 동일 기준 적용).
   router.delete('/business-plan/:id', async (req, res) => {
     if (!requireAuth(req, res)) return;
+    if (!requirePage(req, res, "biz-plan")) return;
     const companyId = req.auth.companyId || null;
     const isAdmin = req.auth.role === 'admin';
     const profile = isAdmin ? null : await getEmployeeProfile(companyId, req.auth.empId);

@@ -81,21 +81,32 @@ function verifyToken(token) {
 // empId가 null이라 대상이 아님)에 한해 지금 저장된 employees 레코드의 authVersion·active와
 // 대조해, 하나라도 안 맞으면 그 토큰을 무효(req.auth = null, 미인증과 동일하게 취급)로
 // 처리한다 — 재로그인해야 새 버전의 토큰을 받는다.
-async function _employeeAuthStillValid(auth) {
+// authenticate()와 _employeeAuthStillValid() 양쪽이 같은 employees 레코드 조회를
+// 중복으로 하지 않도록 분리한 헬퍼. 조회 자체가 실패하면(DB 장애 등) undefined를 반환해
+// "레코드가 확인상 없음(null)"과 "확인 자체를 못함(undefined)"을 구분한다 — 후자는
+// 아래에서 기존과 동일하게 가용성 우선(fail-open)으로 처리된다.
+async function _fetchCurrentEmployeeForAuth(auth) {
+  if (auth.empId == null) return null; // 마스터/impersonation 토큰 — employees 대상 아님
+  try {
+    if (USE_JSON_FILE) {
+      return (_fileStore.employees || []).find(e => String(e.id) === String(auth.empId)) || null;
+    }
+    const { rows } = await pool.query("SELECT data FROM employees WHERE id = $1 AND is_deleted = FALSE", [auth.empId]);
+    return (rows[0] && rows[0].data) || null;
+  } catch {
+    return undefined;
+  }
+}
+async function _employeeAuthStillValid(auth, prefetchedEmployee) {
   // 이 검사 자체가 어떤 이유로든 실패하면(예상치 못한 예외 포함) 가용성을 우선해 통과시킨다
   // — authenticate()가 async 미들웨어라 여기서 예외가 새면 Express 4가 자동으로 못 잡아
   // unhandled rejection이 되고, 그 요청은 응답도 타임아웃도 없이 멈춰버린다(P0-4 수정
   // 중 실측으로 확인한 것과 동일한 클래스의 사고 — 이 검사는 반드시 실패해도 요청을
   // 멈추지 않아야 한다).
   try {
-    if (auth.empId == null) return true; // 마스터/impersonation 토큰 — employees 대상 아님
-    let current;
-    if (USE_JSON_FILE) {
-      current = (_fileStore.employees || []).find(e => String(e.id) === String(auth.empId));
-    } else {
-      const { rows } = await pool.query("SELECT data FROM employees WHERE id = $1 AND is_deleted = FALSE", [auth.empId]);
-      current = rows[0] && rows[0].data;
-    }
+    if (auth.empId == null) return true;
+    const current = prefetchedEmployee !== undefined ? prefetchedEmployee : await _fetchCurrentEmployeeForAuth(auth);
+    if (current === undefined) return true; // 조회 자체가 실패 — fail-open
     if (!current) return false; // 레코드 자체가 삭제됨
     if (current.active === false) return false;
     return (Number(current.authVersion) || 0) === (Number(auth.authVersion) || 0);
@@ -107,7 +118,12 @@ async function authenticate(req, res, next) {
   const header = req.headers.authorization || "";
   const token = header.startsWith("Bearer ") ? header.slice(7) : null;
   const auth = verifyToken(token);
-  req.auth = (auth && await _employeeAuthStillValid(auth)) ? auth : null;
+  if (!auth) { req.auth = null; return next(); }
+  // 세션 철회 검사(_employeeAuthStillValid)와 menuPerms 조회가 같은 employees 레코드를
+  // 쓰므로 한 번만 가져와 공유한다(요청당 추가 조회 없음). menuPerms는 "권한 관리" 화면에서
+  // 개인별로 끈 메뉴 목록 — requirePage()가 REST API 라우트에서 이 값을 그대로 검사한다.
+  const employee = await _fetchCurrentEmployeeForAuth(auth);
+  req.auth = (await _employeeAuthStillValid(auth, employee)) ? { ...auth, menuPerms: (employee && employee.menuPerms) || {} } : null;
   next();
 }
 function requireAuth(req, res) {
@@ -3763,6 +3779,31 @@ function requireRole(req, res, allowed) {
   }
   return true;
 }
+// "권한 관리" 화면(개인별로 특정 메뉴를 role 기본값과 별개로 추가 제한)은 지금까지
+// 클라이언트에서만 검사됐다(사이드바 숨김 + gotoPage() 가드) — 서버는 전혀 확인하지
+// 않아 브라우저 개발자도구로 그 화면이 쓰는 API를 직접 호출하면 그대로 통과됐다
+// (2026-08-21 사용자 지적, 실측 확인 — menuPerms 기능 자체가 원래 그렇게 설계돼 있던
+// 것으로, 이번에 새로 생긴 약점은 아님). 전용 REST API를 가진 화면(회계/PMS/채용/재고/
+// 영업/사업계획 등)에 한해 서버측으로도 강제한다 — role 기반 requireAdmin/requireRole과
+// 나란히 개인 단위 추가 체크로 동작. authenticate()가 이미 req.auth.menuPerms에 실어둔
+// 값을 그대로 쓰므로 이 함수 자체는 추가 조회를 하지 않는다. 클라이언트 gotoPage()와
+// 동일하게 role과 무관하게(admin 포함) menuPerms[pageId]===false면 차단한다 — 클라이언트
+// 쪽 관례를 그대로 반영.
+//
+// 적용 범위: 전용 REST 엔드포인트를 가진 화면들에만 적용했다. KPI/역량평가/직원정보처럼
+// 요청 하나(POST /save)에 여러 화면의 변경사항이 뒤섞여 오는 전체상태 blob 저장 방식
+// 화면들은, 이 요청이 어느 "페이지"에서 왔는지 서버가 구분할 방법이 구조적으로 없어
+// 이번 범위에서 제외했다(어설프게 흉내내면 오히려 다른 화면의 정상 저장까지 함께
+// 막는 새 버그를 만들 위험이 큼 — CLAUDE.md 기록 참고).
+function requirePage(req, res, pageId) {
+  if (!requireAuth(req, res)) return false;
+  const perms = req.auth.menuPerms || {};
+  if (perms[pageId] === false) {
+    res.status(403).json({ ok: false, message: "이 메뉴에 대한 접근 권한이 없습니다." });
+    return false;
+  }
+  return true;
+}
 function _round2(n) { return Math.round((Number(n) || 0) * 100) / 100; }
 
 // ── 계정과목 (Chart of accounts) ────────────────────────────────────────────
@@ -3787,6 +3828,7 @@ app.get("/api/accounting/accounts", async (req, res) => {
 // 덮어쓰지 않는다(이미 같은 code로 직접 만들어 쓰고 있는 회사는 그대로 유지).
 app.post("/api/accounting/accounts/seed-defaults", async (req, res) => {
   if (!requireAdmin(req, res)) return;
+  if (!requirePage(req, res, "acct-accounts")) return;
   try {
     const now = new Date().toISOString();
     const user = (req.body && req.body.user) || req.auth.loginId || "unknown";
@@ -3850,6 +3892,7 @@ app.get("/api/accounting/accounts/expense-lite", async (req, res) => {
 app.post("/api/accounting/accounts", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
+    if (!requirePage(req, res, "acct-accounts")) return;
     const { id, code, name, type, category, costCategory: costCategoryRaw, costSubType: costSubTypeRaw, active = true, user } = req.body || {};
     if (!code || !name || !type)
       return res.status(400).json({ ok: false, message: "계정코드, 계정명, 구분은 필수입니다." });
@@ -3895,6 +3938,7 @@ app.post("/api/accounting/accounts", async (req, res) => {
 app.post("/api/accounting/accounts/:id/delete", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
+    if (!requirePage(req, res, "acct-accounts")) return;
     const id = req.params.id;
     if (USE_JSON_FILE) {
       const used = _fileAccounting.vouchers.some(v => (v.lines || []).some(l => l.accountId === id));
@@ -4009,6 +4053,7 @@ app.post("/api/accounting/vouchers", async (req, res) => {
 app.post("/api/accounting/vouchers/:id/post", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
+    if (!requirePage(req, res, "acct-vouchers")) return;
     const id = req.params.id;
     const companyId = req.auth.companyId || null;
     const year = new Date().getFullYear();
@@ -4078,6 +4123,7 @@ async function _unpostScheduleRowsPg(voucherId, companyId, client) {
 app.post("/api/accounting/vouchers/:id/void", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
+    if (!requirePage(req, res, "acct-vouchers")) return;
     const id = req.params.id;
     const companyId = req.auth.companyId || null;
     const reason = (req.body || {}).reason;
@@ -4110,6 +4156,7 @@ app.post("/api/accounting/vouchers/:id/void", async (req, res) => {
 app.delete("/api/accounting/vouchers/:id", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
+    if (!requirePage(req, res, "acct-vouchers")) return;
     const id = req.params.id;
     const companyId = req.auth.companyId || null;
     if (USE_JSON_FILE) {
@@ -4209,6 +4256,7 @@ app.post("/api/accounting/tax-invoices", async (req, res) => {
 app.post("/api/accounting/tax-invoices/:id/void", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
+    if (!requirePage(req, res, "acct-tax-invoices")) return;
     const id = req.params.id;
     const companyId = req.auth.companyId || null;
     const reason = (req.body || {}).reason;
@@ -4254,6 +4302,7 @@ app.get("/api/accounting/payments", async (req, res) => {
 app.post("/api/accounting/payments", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
+    if (!requirePage(req, res, "acct-receivables")) return;
     const { direction, date, partnerId, partnerName, amount, method, memo, taxInvoiceId, user } = req.body || {};
     if (!["in", "out"].includes(direction)) return res.status(400).json({ ok: false, message: "direction은 in(수금) 또는 out(지급)이어야 합니다." });
     if (!date || !partnerName || !(Number(amount) > 0)) return res.status(400).json({ ok: false, message: "일자, 거래처, 금액(0보다 큼)은 필수입니다." });
@@ -4281,6 +4330,7 @@ app.post("/api/accounting/payments", async (req, res) => {
 app.post("/api/accounting/payments/:id/delete", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
+    if (!requirePage(req, res, "acct-receivables")) return;
     const id = req.params.id;
     // 존재하지 않는 id로 삭제해도 200 {ok:true}를 돌려주고 있어(다른 모듈은 전부 404),
     // 화면은 "삭제되었습니다"를 띄우는데 실제로는 아무것도 지워지지 않은 상태와
@@ -4363,6 +4413,7 @@ app.post("/api/accounting/partners", async (req, res) => {
 app.post("/api/accounting/partners/:id/delete", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
+    if (!requirePage(req, res, "acct-partners")) return;
     const id = req.params.id;
     const companyId = req.auth.companyId || null;
     if (USE_JSON_FILE) {
@@ -4505,6 +4556,7 @@ async function _issuePostedVoucher(companyId, { date, description, partnerId, pa
 app.post("/api/accounting/rcps/issuances", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
+    if (!requirePage(req, res, "acct-rcps")) return;
     const companyId = req.auth.companyId || null;
     const { name, issueDate, faceAmount, sharesIssued, parValue, couponRate, effectiveRate, maturityDate, user } = req.body || {};
     let { redemptionAmount } = req.body || {};
@@ -4666,6 +4718,7 @@ app.get("/api/accounting/rcps/issuances/:id/valuations", async (req, res) => {
 app.post("/api/accounting/rcps/issuances/:id/delete", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
+    if (!requirePage(req, res, "acct-rcps")) return;
     const id = req.params.id;
     if (USE_JSON_FILE) {
       const issuance = _fileAcctRcps.issuances.find(i => i.id === id && !i.isDeleted);
@@ -4703,6 +4756,7 @@ app.post("/api/accounting/rcps/schedule/:scheduleId/post", async (req, res) => {
   let lockedJsonMode = false;
   try {
     if (!requireAdmin(req, res)) return;
+    if (!requirePage(req, res, "acct-rcps")) return;
     const companyId = req.auth.companyId || null;
     const { user, interestExpenseAccountId, cashAccountId, rcpsLiabilityAccountId } = req.body || {};
     if (!interestExpenseAccountId || !cashAccountId || !rcpsLiabilityAccountId) {
@@ -4797,6 +4851,7 @@ app.post("/api/accounting/rcps/schedule/:scheduleId/post", async (req, res) => {
 app.post("/api/accounting/rcps/valuations", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
+    if (!requirePage(req, res, "acct-rcps")) return;
     const companyId = req.auth.companyId || null;
     const { issuanceId, valuationDate, fairValue, method, memo, gainAccountId, lossAccountId, derivativeLiabilityAccountId, user } = req.body || {};
     if (!issuanceId || !valuationDate || fairValue === undefined || fairValue === null || fairValue === "") {
@@ -4971,6 +5026,7 @@ function _buildDepreciationSchedule(assetId, asset) {
 app.post("/api/accounting/fixed-assets", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
+    if (!requirePage(req, res, "acct-fixed-assets")) return;
     const companyId = req.auth.companyId || null;
     const { name, assetNumber, category, acquisitionDate, acquisitionCost, usefulLifeYears, salvageValue, depreciationMethod, locationId, user } = req.body || {};
     if (!name || !acquisitionDate || !(Number(acquisitionCost) > 0) || !(Number(usefulLifeYears) > 0)) {
@@ -5069,6 +5125,7 @@ app.get("/api/accounting/fixed-assets/:id/depreciation-schedule", async (req, re
 app.post("/api/accounting/fixed-assets/:id", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
+    if (!requirePage(req, res, "acct-fixed-assets")) return;
     const id = req.params.id;
     const companyId = req.auth.companyId || null;
     const body = req.body || {};
@@ -5137,6 +5194,7 @@ app.post("/api/accounting/fixed-assets/:id", async (req, res) => {
 app.post("/api/accounting/fixed-assets/:id/dispose", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
+    if (!requirePage(req, res, "acct-fixed-assets")) return;
     const id = req.params.id;
     const companyId = req.auth.companyId || null;
     const { disposalDate, user } = req.body || {};
@@ -5166,6 +5224,7 @@ app.post("/api/accounting/fixed-assets/:id/dispose", async (req, res) => {
 app.post("/api/accounting/fixed-assets/:id/delete", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
+    if (!requirePage(req, res, "acct-fixed-assets")) return;
     const id = req.params.id;
     const companyId = req.auth.companyId || null;
     if (USE_JSON_FILE) {
@@ -5198,6 +5257,7 @@ app.post("/api/accounting/fixed-assets/:id/depreciation-schedule/:year/post", as
   let lockedJsonMode = false;
   try {
     if (!requireAdmin(req, res)) return;
+    if (!requirePage(req, res, "acct-fixed-assets")) return;
     const companyId = req.auth.companyId || null;
     const { user, depreciationExpenseAccountId, accumulatedDepreciationAccountId } = req.body || {};
     if (!depreciationExpenseAccountId || !accumulatedDepreciationAccountId) {
@@ -5373,6 +5433,7 @@ app.get("/api/erp/items", async (req, res) => {
 app.post("/api/erp/items", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
+    if (!requirePage(req, res, "inv-items")) return;
     const companyId = req.auth.companyId || null;
     const { id, code, name, productName, assetNo, unit, category, safetyStock = 0, unitCost = 0, active = true } = req.body || {};
     if (!code || !name) return res.status(400).json({ ok: false, message: "품목코드, 품목명은 필수입니다." });
@@ -5392,6 +5453,7 @@ app.post("/api/erp/items", async (req, res) => {
 app.post("/api/erp/items/:id/delete", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
+    if (!requirePage(req, res, "inv-items")) return;
     const id = req.params.id;
     const companyId = req.auth.companyId || null;
     if (USE_JSON_FILE) {
@@ -5438,6 +5500,7 @@ app.get("/api/erp/locations", async (req, res) => {
 app.post("/api/erp/locations", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
+    if (!requirePage(req, res, "inv-locations")) return;
     const companyId = req.auth.companyId || null;
     const { id, name, address, active = true } = req.body || {};
     if (!name) return res.status(400).json({ ok: false, message: "위치명은 필수입니다." });
@@ -5457,6 +5520,7 @@ app.post("/api/erp/locations", async (req, res) => {
 app.post("/api/erp/locations/:id/delete", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
+    if (!requirePage(req, res, "inv-locations")) return;
     const id = req.params.id;
     const companyId = req.auth.companyId || null;
     if (USE_JSON_FILE) {
@@ -5494,6 +5558,7 @@ app.get("/api/erp/quotations", async (req, res) => {
 app.post("/api/erp/quotations", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
+    if (!requirePage(req, res, "sales-quotations")) return;
     const companyId = req.auth.companyId || null;
     const { date, validUntil, partnerId, partnerName, locationId, items, memo, user: createdBy } = req.body || {};
     if (!date || !partnerName) return res.status(400).json({ ok: false, message: "견적일자와 거래처명은 필수입니다." });
@@ -5521,6 +5586,7 @@ app.post("/api/erp/quotations", async (req, res) => {
 app.post("/api/erp/quotations/:id/send", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
+    if (!requirePage(req, res, "sales-quotations")) return;
     const id = req.params.id;
     const companyId = req.auth.companyId || null;
     const year = new Date().getFullYear();
@@ -5555,6 +5621,7 @@ app.post("/api/erp/quotations/:id/send", async (req, res) => {
 app.post("/api/erp/quotations/:id/accept", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
+    if (!requirePage(req, res, "sales-quotations")) return;
     const id = req.params.id;
     const companyId = req.auth.companyId || null;
     if (USE_JSON_FILE) {
@@ -5594,6 +5661,7 @@ async function _lockStockKeys(client, companyId, pairs) {
 app.post("/api/erp/quotations/:id/ship", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
+    if (!requirePage(req, res, "sales-quotations")) return;
     const id = req.params.id;
     const companyId = req.auth.companyId || null;
     const user = req.body.user || "unknown";
@@ -5682,6 +5750,7 @@ app.post("/api/erp/quotations/:id/ship", async (req, res) => {
 app.post("/api/erp/quotations/:id/reject", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
+    if (!requirePage(req, res, "sales-quotations")) return;
     const id = req.params.id;
     const companyId = req.auth.companyId || null;
     const reason = (req.body || {}).reason;
@@ -5705,6 +5774,7 @@ app.post("/api/erp/quotations/:id/reject", async (req, res) => {
 app.delete("/api/erp/quotations/:id", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
+    if (!requirePage(req, res, "sales-quotations")) return;
     const id = req.params.id;
     const companyId = req.auth.companyId || null;
     if (USE_JSON_FILE) {
@@ -5743,6 +5813,7 @@ app.get("/api/erp/purchase-orders", async (req, res) => {
 app.post("/api/erp/purchase-orders", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
+    if (!requirePage(req, res, "sales-purchase-orders")) return;
     const companyId = req.auth.companyId || null;
     const { date, deliveryDate, partnerId, partnerName, locationId, items, memo, user: createdBy } = req.body || {};
     if (!date || !partnerName) return res.status(400).json({ ok: false, message: "발주일자와 거래처명은 필수입니다." });
@@ -5772,6 +5843,7 @@ app.post("/api/erp/purchase-orders", async (req, res) => {
 app.post("/api/erp/purchase-orders/:id/confirm", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
+    if (!requirePage(req, res, "sales-purchase-orders")) return;
     const id = req.params.id;
     const companyId = req.auth.companyId || null;
     const year = new Date().getFullYear();
@@ -5806,6 +5878,7 @@ app.post("/api/erp/purchase-orders/:id/confirm", async (req, res) => {
 app.post("/api/erp/purchase-orders/:id/receive", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
+    if (!requirePage(req, res, "sales-purchase-orders")) return;
     const id = req.params.id;
     const companyId = req.auth.companyId || null;
     const user = req.body.user || "unknown";
@@ -5879,6 +5952,7 @@ app.post("/api/erp/purchase-orders/:id/receive", async (req, res) => {
 app.post("/api/erp/purchase-orders/:id/cancel", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
+    if (!requirePage(req, res, "sales-purchase-orders")) return;
     const id = req.params.id;
     const companyId = req.auth.companyId || null;
     const reason = (req.body || {}).reason;
@@ -5902,6 +5976,7 @@ app.post("/api/erp/purchase-orders/:id/cancel", async (req, res) => {
 app.delete("/api/erp/purchase-orders/:id", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
+    if (!requirePage(req, res, "sales-purchase-orders")) return;
     const id = req.params.id;
     if (USE_JSON_FILE) {
       const po = _fileErp.purchaseOrders.find(p => p.id === id);
@@ -5938,6 +6013,7 @@ app.get("/api/erp/purchase-requests", async (req, res) => {
 
 app.post("/api/erp/purchase-requests", async (req, res) => {
   if (!requireAuth(req, res)) return;
+  if (!requirePage(req, res, "inv-purchase-requests")) return;
   try {
     const { empId: userId } = req.auth;
     const companyId = req.auth.companyId || null;
@@ -5972,6 +6048,7 @@ app.post("/api/erp/purchase-requests", async (req, res) => {
 app.post("/api/erp/purchase-requests/:id/approve", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
+    if (!requirePage(req, res, "inv-purchase-requests")) return;
     const id = req.params.id;
     const companyId = req.auth.companyId || null;
     const user = req.body.user || "unknown";
@@ -5994,6 +6071,7 @@ app.post("/api/erp/purchase-requests/:id/approve", async (req, res) => {
 app.post("/api/erp/purchase-requests/:id/reject", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
+    if (!requirePage(req, res, "inv-purchase-requests")) return;
     const id = req.params.id;
     const companyId = req.auth.companyId || null;
     const reason = (req.body || {}).reason;
@@ -6017,6 +6095,7 @@ app.post("/api/erp/purchase-requests/:id/reject", async (req, res) => {
 app.post("/api/erp/purchase-requests/:id/convert-to-po", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
+    if (!requirePage(req, res, "inv-purchase-requests")) return;
     const id = req.params.id;
     const companyId = req.auth.companyId || null;
     const { partnerId, partnerName, locationId, user: createdBy } = req.body || {};
@@ -6065,6 +6144,7 @@ app.post("/api/erp/purchase-requests/:id/convert-to-po", async (req, res) => {
 
 app.delete("/api/erp/purchase-requests/:id", async (req, res) => {
   if (!requireAuth(req, res)) return;
+  if (!requirePage(req, res, "inv-purchase-requests")) return;
   try {
     const id = req.params.id;
     const { role, empId: userId } = req.auth;
@@ -6131,6 +6211,7 @@ app.get("/api/erp/stock/ledger", async (req, res) => {
 app.post("/api/erp/stock/adjust", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
+    if (!requirePage(req, res, "inv-stock")) return;
     const companyId = req.auth.companyId || null;
     const { itemId, locationId, type, qty, memo, user } = req.body || {};
     if (!itemId || !locationId) return res.status(400).json({ ok: false, message: "품목과 위치를 선택하세요." });
@@ -6175,6 +6256,7 @@ app.post("/api/erp/stock/adjust", async (req, res) => {
 app.post("/api/erp/stock/count", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
+    if (!requirePage(req, res, "inv-stock")) return;
     const companyId = req.auth.companyId || null;
     const { locationId, lines, user } = req.body || {};
     if (!locationId || !Array.isArray(lines) || !lines.length)
@@ -6254,6 +6336,7 @@ app.post("/api/erp/stock/count", async (req, res) => {
 app.post("/api/erp/stock/transfer", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
+    if (!requirePage(req, res, "inv-stock")) return;
     const companyId = req.auth.companyId || null;
     const { itemId, fromLocationId, toLocationId, qty, memo, user } = req.body || {};
     if (!itemId || !fromLocationId || !toLocationId) return res.status(400).json({ ok: false, message: "품목과 출발/도착 위치를 선택하세요." });
@@ -6308,6 +6391,7 @@ app.get("/api/erp/sales-targets", async (req, res) => {
 app.post("/api/erp/sales-targets", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
+    if (!requirePage(req, res, "sales-dashboard")) return;
     const { id, year, month, employeeId, employeeName, targetAmount, memo } = req.body || {};
     if (!year) return res.status(400).json({ ok: false, message: "연도는 필수입니다." });
     if (targetAmount == null || isNaN(Number(targetAmount))) return res.status(400).json({ ok: false, message: "목표 금액은 필수입니다." });
@@ -6336,6 +6420,7 @@ app.post("/api/erp/sales-targets", async (req, res) => {
 app.post("/api/erp/sales-targets/:id/delete", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
+    if (!requirePage(req, res, "sales-dashboard")) return;
     const id = req.params.id;
     if (USE_JSON_FILE) {
       _fileErp.salesTargets = _fileErp.salesTargets.filter(t => t.id !== id);
@@ -6435,6 +6520,7 @@ app.get("/api/pms/projects", async (req, res) => {
 app.post("/api/pms/projects", async (req, res) => {
   try {
     if (!requireRole(req, res, ["admin", "leader"])) return;
+    if (!requirePage(req, res, "pms-projects")) return;
     const companyId = req.auth.companyId || null;
     const { id, name, startDate, endDate, partnerId, pmId, memo, members } = req.body || {};
     if (!name) return res.status(400).json({ ok: false, message: "프로젝트명은 필수입니다." });
@@ -6478,6 +6564,7 @@ app.post("/api/pms/projects", async (req, res) => {
 app.post("/api/pms/projects/:id", async (req, res) => {
   try {
     if (!requireRole(req, res, ["admin", "leader"])) return;
+    if (!requirePage(req, res, "pms-projects")) return;
     const id = req.params.id;
     const companyId = req.auth.companyId || null;
     const { name, startDate, endDate, partnerId, pmId, status, memo, members, expectedUpdatedAt } = req.body || {};
@@ -6529,6 +6616,7 @@ app.post("/api/pms/projects/:id", async (req, res) => {
 app.post("/api/pms/projects/:id/close", async (req, res) => {
   try {
     if (!requireRole(req, res, ["admin", "leader"])) return;
+    if (!requirePage(req, res, "pms-projects")) return;
     const id = req.params.id;
     const companyId = req.auth.companyId || null;
     const { expectedUpdatedAt } = req.body || {};
@@ -6612,6 +6700,7 @@ async function _pmsProjectById(projectId, companyId) {
 
 app.post("/api/pms/allocations", async (req, res) => {
   if (!requireAuth(req, res)) return;
+  if (!requirePage(req, res, "pms-allocation")) return;
   try {
     const { id, employeeId, year, month, projectId, percent, memo } = req.body || {};
     const { role, empId: userId } = req.auth;
@@ -6685,6 +6774,7 @@ app.post("/api/pms/allocations", async (req, res) => {
 
 app.post("/api/pms/allocations/:id/delete", async (req, res) => {
   if (!requireAuth(req, res)) return;
+  if (!requirePage(req, res, "pms-allocation")) return;
   try {
     const id = req.params.id;
     const companyId = req.auth.companyId || null;
@@ -6758,6 +6848,7 @@ app.get("/api/pms/worklogs", async (req, res) => {
 
 app.post("/api/pms/worklogs", async (req, res) => {
   if (!requireAuth(req, res)) return;
+  if (!requirePage(req, res, "pms-worklog")) return;
   try {
     const { employeeId, date, blocks, expectedUpdatedAt } = req.body || {};
     const { role, empId: userId } = req.auth;
@@ -6914,6 +7005,7 @@ app.get("/api/recruit/jobs", async (req, res) => {
 app.post("/api/recruit/jobs", async (req, res) => {
   try {
     if (!requireRole(req, res, ["admin", "leader", "director"])) return;
+    if (!requirePage(req, res, "recruit-jobs")) return;
     const { role, empId: userId } = req.auth;
     const companyId = req.auth.companyId || null;
     const { id, title, department, team, headcount, stages, status, description, purpose, responsibilities, requiredYears, docFile, viewerIds, user: createdBy, userId: createdById } = req.body || {};
@@ -6977,6 +7069,7 @@ app.post("/api/recruit/jobs", async (req, res) => {
 app.post("/api/recruit/jobs/:id/close", async (req, res) => {
   try {
     if (!requireRole(req, res, ["admin", "leader", "director"])) return;
+    if (!requirePage(req, res, "recruit-jobs")) return;
     const { role, empId: userId } = req.auth;
     const companyId = req.auth.companyId || null;
     const id = req.params.id;
@@ -7163,6 +7256,7 @@ async function _ocrPdfPages(buffer, lastPage) {
 app.post("/api/recruit/extract-pdf-text", async (req, res) => {
   try {
     if (!requireRole(req, res, ["admin", "leader", "director"])) return;
+    if (!requirePage(req, res, "recruit-candidates")) return;
     const { dataUrl } = req.body || {};
     if (!dataUrl || typeof dataUrl !== "string") return res.status(400).json({ ok: false, message: "파일 데이터가 없습니다." });
     const base64 = dataUrl.includes(",") ? dataUrl.slice(dataUrl.indexOf(",") + 1) : dataUrl;
@@ -7200,6 +7294,7 @@ app.post("/api/recruit/extract-pdf-text", async (req, res) => {
 app.post("/api/recruit/extract-docx-text", async (req, res) => {
   try {
     if (!requireRole(req, res, ["admin", "leader", "director"])) return;
+    if (!requirePage(req, res, "recruit-candidates")) return;
     const { dataUrl } = req.body || {};
     if (!dataUrl || typeof dataUrl !== "string") return res.status(400).json({ ok: false, message: "파일 데이터가 없습니다." });
     const base64 = dataUrl.includes(",") ? dataUrl.slice(dataUrl.indexOf(",") + 1) : dataUrl;
@@ -7233,6 +7328,7 @@ async function _extractHwpBuffer(buffer) {
 app.post("/api/recruit/extract-hwp-text", async (req, res) => {
   try {
     if (!requireRole(req, res, ["admin", "leader", "director"])) return;
+    if (!requirePage(req, res, "recruit-candidates")) return;
     const { dataUrl } = req.body || {};
     if (!dataUrl || typeof dataUrl !== "string") return res.status(400).json({ ok: false, message: "파일 데이터가 없습니다." });
     const base64 = dataUrl.includes(",") ? dataUrl.slice(dataUrl.indexOf(",") + 1) : dataUrl;
@@ -7259,6 +7355,7 @@ async function _ocrImageBuffer(buffer, ext) {
 app.post("/api/recruit/extract-image-text", async (req, res) => {
   try {
     if (!requireRole(req, res, ["admin", "leader", "director"])) return;
+    if (!requirePage(req, res, "recruit-candidates")) return;
     const { dataUrl } = req.body || {};
     if (!dataUrl || typeof dataUrl !== "string") return res.status(400).json({ ok: false, message: "파일 데이터가 없습니다." });
     const mimeM = dataUrl.match(/^data:image\/(\w+);base64,/);
@@ -7313,6 +7410,7 @@ async function _groqParseResume(text) {
 app.post("/api/recruit/parse-resume-llm", async (req, res) => {
   try {
     if (!requireRole(req, res, ["admin", "leader", "director"])) return;
+    if (!requirePage(req, res, "recruit-candidates")) return;
     const { text } = req.body || {};
     if (!text || typeof text !== "string" || text.trim().length < 20) {
       return res.json({ ok: false, message: "분석할 텍스트가 부족합니다." });
@@ -7778,6 +7876,7 @@ idx는 반드시 targetIdx 목록에 있는 값이어야 하고, targetIdx 개�
 app.post("/api/recruit/suggest-career-companies", async (req, res) => {
   try {
     if (!requireRole(req, res, ["admin", "leader", "director"])) return;
+    if (!requirePage(req, res, "recruit-candidates")) return;
     const { text, entries } = req.body || {};
     if (!text || typeof text !== "string" || text.trim().length < 20) {
       return res.json({ ok: false, message: "분석할 텍스트가 부족합니다." });
@@ -8028,6 +8127,7 @@ async function _pgLockedUpdate(table, id, mutate, companyId) {
 app.post("/api/recruit/candidates", async (req, res) => {
   try {
     if (!requireRole(req, res, ["admin", "leader", "director"])) return;
+    if (!requirePage(req, res, "recruit-candidates")) return;
     const companyId = req.auth.companyId || null;
     const { jobId, name, email, phone, resume, memo, resumeSummary, strengths, weaknesses, finalEducation, careerHistory, lastSalary, desiredSalary, activities, careerGaps, user: createdBy } = req.body || {};
     if (!jobId || !name) return res.status(400).json({ ok: false, message: "채용공고, 지원자명은 필수입니다." });
@@ -8064,6 +8164,7 @@ app.post("/api/recruit/candidates", async (req, res) => {
 app.post("/api/recruit/candidates/:id", async (req, res) => {
   try {
     if (!requireRole(req, res, ["admin", "leader", "director"])) return;
+    if (!requirePage(req, res, "recruit-candidates")) return;
     const id = req.params.id;
     const { role, empId: userId } = req.auth;
     const companyId = req.auth.companyId || null;
@@ -8132,6 +8233,7 @@ app.get("/api/recruit/candidates/:id/resume", async (req, res) => {
 app.post("/api/recruit/candidates/:id/status", async (req, res) => {
   try {
     if (!requireRole(req, res, ["admin", "leader", "director"])) return;
+    if (!requirePage(req, res, "recruit-candidates")) return;
     const id = req.params.id;
     const { role, empId: userId } = req.auth;
     const companyId = req.auth.companyId || null;
@@ -8232,6 +8334,7 @@ app.get("/api/recruit/interviews", async (req, res) => {
 app.post("/api/recruit/interviews", async (req, res) => {
   try {
     if (!requireRole(req, res, ["admin", "leader", "director"])) return;
+    if (!requirePage(req, res, "recruit-eval")) return;
     const companyId = req.auth.companyId || null;
     const { jobId, candidateId, round, schedule, interviewerIds, location, leadInterviewerId } = req.body || {};
     if (!jobId || !candidateId || !round || !Array.isArray(interviewerIds) || !interviewerIds.length) {
@@ -8280,6 +8383,7 @@ app.post("/api/recruit/interviews", async (req, res) => {
 app.post("/api/recruit/interviews/:id", async (req, res) => {
   try {
     if (!requireRole(req, res, ["admin", "leader", "director"])) return;
+    if (!requirePage(req, res, "recruit-eval")) return;
     const id = req.params.id;
     const { role, empId: userId } = req.auth;
     const companyId = req.auth.companyId || null;
@@ -8323,6 +8427,7 @@ app.post("/api/recruit/interviews/:id", async (req, res) => {
 app.post("/api/recruit/interviews/:id/cancel", async (req, res) => {
   try {
     if (!requireRole(req, res, ["admin", "leader", "director"])) return;
+    if (!requirePage(req, res, "recruit-eval")) return;
     const id = req.params.id;
     const { role, empId: userId } = req.auth;
     const companyId = req.auth.companyId || null;
@@ -8359,6 +8464,7 @@ app.post("/api/recruit/interviews/:id/cancel", async (req, res) => {
 
 app.post("/api/recruit/interviews/:id/evaluation", async (req, res) => {
   if (!requireAuth(req, res)) return;
+  if (!requirePage(req, res, "recruit-eval")) return;
   try {
     const id = req.params.id;
     const companyId = req.auth.companyId || null;
@@ -8444,6 +8550,7 @@ app.post("/api/recruit/interviews/:id/evaluation", async (req, res) => {
 const RECRUIT_VERDICTS = ["pass", "hold", "fail"];
 app.post("/api/recruit/interviews/:id/verdict", async (req, res) => {
   if (!requireAuth(req, res)) return;
+  if (!requirePage(req, res, "recruit-eval")) return;
   try {
     const id = req.params.id;
     const companyId = req.auth.companyId || null;
@@ -8489,6 +8596,7 @@ app.post("/api/recruit/interviews/:id/verdict", async (req, res) => {
 app.post("/api/recruit/candidates/:id/delete", async (req, res) => {
   try {
     if (!requireRole(req, res, ["admin", "leader", "director"])) return;
+    if (!requirePage(req, res, "recruit-candidates")) return;
     const id = req.params.id;
     const { role, empId: userId } = req.auth;
     const companyId = req.auth.companyId || null;
