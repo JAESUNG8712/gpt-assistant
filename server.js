@@ -5769,6 +5769,9 @@ app.post("/api/erp/locations/:id/delete", async (req, res) => {
 // ── 견적서 (Quotations) ─────────────────────────────────────────────────────
 app.get("/api/erp/quotations", async (req, res) => {
   if (!requireAdmin(req, res)) return;
+  // 견적서 전체 조회는 "sales-quotations" 페이지 전용 — 영업 실적 대시보드(sales-dashboard)는
+  // 원본 견적서 레코드 대신 GET .../erp/sales-dashboard(서버 집계)를 쓰도록 이전됐다.
+  if (!requirePage(req, res, "sales-quotations")) return;
   try {
     const year = req.query.year ? parseInt(req.query.year) : null;
     if (USE_JSON_FILE) {
@@ -6024,6 +6027,9 @@ app.delete("/api/erp/quotations/:id", async (req, res) => {
 // ── 발주서 (Purchase orders) ────────────────────────────────────────────────
 app.get("/api/erp/purchase-orders", async (req, res) => {
   if (!requireAdmin(req, res)) return;
+  // 발주서 전체 조회는 "sales-purchase-orders" 페이지 전용 — 구매요청→발주전환
+  // (inv-purchase-requests)은 이 목록을 조회하지 않고 새 발주 id만 자기 캐시에 추가한다.
+  if (!requirePage(req, res, "sales-purchase-orders")) return;
   try {
     const year = req.query.year ? parseInt(req.query.year) : null;
     if (USE_JSON_FILE) {
@@ -6225,6 +6231,7 @@ app.delete("/api/erp/purchase-orders/:id", async (req, res) => {
 // ── 구매요청 (Purchase requests — 구성원이 요청, admin이 승인/반려/발주전환) ─────
 app.get("/api/erp/purchase-requests", async (req, res) => {
   if (!requireAuth(req, res)) return;
+  if (!requirePage(req, res, "inv-purchase-requests")) return;
   try {
     const { role, empId: userId } = req.auth;
     const companyId = req.auth.companyId || null;
@@ -6398,6 +6405,10 @@ app.delete("/api/erp/purchase-requests/:id", async (req, res) => {
 // ── 재고 (Stock — computed from ledger, plus manual adjustment) ──────────────
 app.get("/api/erp/stock", async (req, res) => {
   if (!requireAdmin(req, res)) return;
+  // 재고 현황 전체 조회는 "inv-stock" 페이지 전용 — 견적서 출고/발주서 입고·구매요청 전환
+  // 등 다른 화면의 재고 캐시 새로고침(`if(rs?.ok)`로 방어됨)은 각자의 쓰기 API가 서버에서
+  // 직접 재고를 반영하므로 이 조회가 막혀도 그 화면 자체의 기능은 그대로 동작한다.
+  if (!requirePage(req, res, "inv-stock")) return;
   try {
     let ledger;
     if (USE_JSON_FILE) {
@@ -6422,6 +6433,7 @@ app.get("/api/erp/stock", async (req, res) => {
 
 app.get("/api/erp/stock/ledger", async (req, res) => {
   if (!requireAdmin(req, res)) return;
+  if (!requirePage(req, res, "inv-stock")) return;
   try {
     const { itemId, locationId } = req.query;
     let ledger;
@@ -6608,6 +6620,10 @@ app.post("/api/erp/stock/transfer", async (req, res) => {
 // ── ERP: 영업 목표 (Sales targets — admin only CRUD, actuals computed client-side) ──
 app.get("/api/erp/sales-targets", async (req, res) => {
   if (!requireAdmin(req, res)) return;
+  // 이 원본 목록의 유일한 클라이언트 소비처였던 영업 실적 대시보드의 "목표 대비 실적" 탭은
+  // GET .../erp/sales-dashboard(서버 집계)로 이전됐다 — 이 라우트는 더 이상 클라이언트가
+  // 호출하지 않지만 API 표면으로는 남겨두고 동일 기준으로 게이팅한다.
+  if (!requirePage(req, res, "sales-dashboard")) return;
   try {
     if (USE_JSON_FILE) return res.json({ ok: true, salesTargets: _fileErp.salesTargets });
     const { rows } = await pool.query(
@@ -6658,6 +6674,71 @@ app.post("/api/erp/sales-targets/:id/delete", async (req, res) => {
     }
     await pool.query("UPDATE erp_sales_targets SET is_deleted = TRUE WHERE id = $1 AND (company_id = $2 OR company_id IS NULL)", [id, req.auth.companyId || null]);
     res.json({ ok: true });
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
+});
+
+// 영업 대시보드(목표대비실적/거래처별/파이프라인/담당자별) — 예전엔 클라이언트가 이미
+// 벌크로딩된 erpQuotations/erpSalesTargets 전체를 그대로 재계산했는데, GET .../quotations를
+// menuPerms로 좁히려면(다른 여러 화면이 "견적서를 하나 고른다"는 목적 없이 sales-dashboard만
+// 원본 견적서 레코드를 필요로 하므로) 이 화면이 원본 레코드가 아니라 서버가 집계한 결과만
+// 받도록 먼저 바꿔야 한다(회계 리포트/원가명세서와 동일한 이유·동일한 패턴).
+app.get("/api/erp/sales-dashboard", async (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  if (!requirePage(req, res, "sales-dashboard")) return;
+  try {
+    const companyId = req.auth.companyId || null;
+    let quotations, salesTargets;
+    if (USE_JSON_FILE) {
+      quotations = _fileErp.quotations;
+      salesTargets = _fileErp.salesTargets;
+    } else {
+      const { rows: qRows } = await pool.query("SELECT data FROM erp_quotations WHERE (company_id = $1 OR company_id IS NULL)", [companyId]);
+      quotations = qRows.map(r => r.data);
+      const { rows: tRows } = await pool.query("SELECT id, data FROM erp_sales_targets WHERE is_deleted = FALSE AND (company_id = $1 OR company_id IS NULL)", [companyId]);
+      salesTargets = tRows.map(r => ({ id: r.id, ...r.data }));
+    }
+    const supplyOf = q => Number(q.supplyTotal) || 0;
+
+    const targetsByYear = {};
+    for (const t of salesTargets) {
+      const actual = quotations
+        .filter(q => q.status === "accepted" || q.status === "shipped")
+        .filter(q => new Date(q.date).getFullYear() === Number(t.year)
+          && (t.month ? new Date(q.date).getMonth() + 1 === Number(t.month) : true)
+          && (t.employeeId ? q.createdBy === t.employeeName : true))
+        .reduce((s, q) => s + supplyOf(q), 0);
+      const rate = t.targetAmount ? Math.round((actual / t.targetAmount) * 100) : 0;
+      (targetsByYear[t.year] = targetsByYear[t.year] || []).push({
+        id: t.id, month: t.month, employeeName: t.employeeName || "", targetAmount: t.targetAmount,
+        actual, rate, memo: t.memo || "",
+      });
+    }
+
+    const partnerMap = new Map();
+    for (const q of quotations.filter(q => q.status === "shipped")) {
+      const k = q.partnerName || "(미지정)";
+      partnerMap.set(k, (partnerMap.get(k) || 0) + supplyOf(q));
+    }
+    const partnerRanking = Array.from(partnerMap.entries()).map(([name, amount]) => ({ name, amount })).sort((a, b) => b.amount - a.amount);
+
+    const STAGES = [["draft", "임시"], ["sent", "발송"], ["accepted", "수주확정"], ["shipped", "출고/매출완료"], ["rejected", "실주"]];
+    const pipeline = STAGES.map(([status, label]) => {
+      const list = quotations.filter(q => q.status === status);
+      return { status, label, count: list.length, amount: list.reduce((s, q) => s + supplyOf(q), 0) };
+    });
+
+    const repMap = new Map();
+    for (const q of quotations) {
+      const k = q.createdBy || "unknown";
+      const cur = repMap.get(k) || { name: k, count: 0, order: 0, revenue: 0 };
+      cur.count++;
+      if (q.status === "accepted" || q.status === "shipped") cur.order += supplyOf(q);
+      if (q.status === "shipped") cur.revenue += supplyOf(q);
+      repMap.set(k, cur);
+    }
+    const repRanking = Array.from(repMap.values()).sort((a, b) => b.revenue - a.revenue);
+
+    res.json({ ok: true, targetsByYear, partnerRanking, pipeline, repRanking });
   } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 

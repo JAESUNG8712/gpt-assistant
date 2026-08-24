@@ -1185,24 +1185,24 @@ async function loadAccountingFromServer(){
 // 영업/재고 모듈: 회계 모듈과 동일하게 서버가 직접 관리(클라이언트 신뢰 블롭 미포함)
 let erpItems=[],erpLocations=[],erpQuotations=[],erpPurchaseOrders=[],erpStock=[],_erpLoaded=false;
 let erpPurchaseRequests=[],_prLoaded=false;
-let erpSalesTargets=[];
+// erpSalesTargets(영업 목표 원본 배열)는 더 이상 클라이언트에서 쓰이지 않는다 — 영업 실적
+// 대시보드의 "목표 대비 실적" 탭이 서버 집계 엔드포인트(GET .../erp/sales-dashboard,
+// loadSalesDashData())로 이전됐다.
 async function loadErpFromServer(){
   if(!serverConfig.url){_erpLoaded=true;return;}
   try{
-    const [ri,rl,rq,rp,rs,rst]=await Promise.all([
+    const [ri,rl,rq,rp,rs]=await Promise.all([
       serverRequest("GET","/api/erp/items"),
       serverRequest("GET","/api/erp/locations"),
       serverRequest("GET","/api/erp/quotations"),
       serverRequest("GET","/api/erp/purchase-orders"),
       serverRequest("GET","/api/erp/stock"),
-      serverRequest("GET","/api/erp/sales-targets"),
     ]);
     if(ri?.ok)erpItems=ri.items;
     if(rl?.ok)erpLocations=rl.locations;
     if(rq?.ok)erpQuotations=rq.quotations;
     if(rp?.ok)erpPurchaseOrders=rp.purchaseOrders;
     if(rs?.ok)erpStock=rs.stock;
-    if(rst?.ok)erpSalesTargets=rst.salesTargets;
   }catch(e){/* 오프라인/서버 미연결 시 영업/재고 페이지에서 안내 표시 */}
   _erpLoaded=true;
   if(currentPage&&(currentPage.startsWith("sales-")||currentPage.startsWith("inv-")))renderPage();
@@ -19064,70 +19064,57 @@ async function deleteQuotationDraft(id){
 }
 
 // ── 영업 실적 대시보드 ────────────────────────────────────────────────────────
+// 예전엔 이미 벌크로딩된 erpQuotations/erpSalesTargets 전체를 클라이언트에서 재계산했는데,
+// GET .../quotations를 menuPerms로 좁히려면 이 화면이 원본 견적서 레코드가 아니라 서버가
+// 미리 집계한 결과(GET .../sales-dashboard)만 받도록 먼저 바꿔야 한다(회계 리포트와 동일한
+// 이유·동일한 패턴 — 이 화면 자체가 admin+"sales-dashboard" 전용이라 서버도 동일 게이팅).
 let _salesDashTab="target";
+let _salesDashData=null,_salesDashLoading=false;
+async function loadSalesDashData(){
+  if(!serverConfig.url||_salesDashLoading)return;
+  _salesDashLoading=true;
+  const r=await serverRequest("GET","/api/erp/sales-dashboard");
+  _salesDashLoading=false;
+  if(r?.ok)_salesDashData=r;
+  else if(r)showToast(r.message||"영업 실적 대시보드를 불러오지 못했습니다.","error");
+  renderSalesDashboardPage();
+}
 function renderSalesDashboardPage(){
   const c=$("#content");if(!c)return;
   if(!serverConfig.url){c.innerHTML=_erpNoServerHtml("영업 실적 대시보드");return;}
+  if(!_salesDashData&&!_salesDashLoading){loadSalesDashData();}
   const tabs=[["target","목표 대비 실적"],["partner","거래처별 매출"],["pipeline","파이프라인"],["rep","담당자별 실적"]];
   c.innerHTML=`<div class="card"><div class="card-head"><h3>📈 영업 실적 대시보드</h3>${_salesDashTab==="target"?`<button class="btn btn-primary btn-sm" onclick="openSalesTargetModal()">+ 목표 등록</button>`:""}</div>
   <div class="card-body">
     <div class="tabs" style="margin-bottom:12px">${tabs.map(([k,l])=>`<button class="tab-btn ${_salesDashTab===k?"active":""}" onclick="_salesDashTab='${k}';renderSalesDashboardPage()">${l}</button>`).join("")}</div>
-    <div id="sales-dash-body">${_renderSalesDashTab()}</div>
+    <div id="sales-dash-body">${!_salesDashData?`<div class="p-empty">${_salesDashLoading?"불러오는 중...":"데이터를 불러오지 못했습니다."}</div>`:_renderSalesDashTab()}</div>
   </div></div>`;
 }
-function _quoteSupply(q){return Number(q.supplyTotal)||0;}
 function _renderSalesDashTab(){
-  const now=new Date();const curYear=now.getFullYear();
+  const d=_salesDashData;
   if(_salesDashTab==="target"){
-    const byYear={};
-    erpSalesTargets.forEach(t=>{const y=t.year;if(!byYear[y])byYear[y]=[];byYear[y].push(t);});
-    const years=Object.keys(byYear).sort((a,b)=>b-a);
+    const years=Object.keys(d.targetsByYear).sort((a,b)=>b-a);
     if(!years.length)return `<div class="text-gray" style="text-align:center;padding:20px">등록된 영업 목표가 없습니다.</div>`;
     return years.map(y=>{
-      const list=byYear[y];
-      const rows=list.map(t=>{
-        // status는 견적서당 하나만 유지되며(수주확정→출고 시 "accepted"에서 "shipped"로
-        // 전환) accepted∥shipped 필터가 이미 수주(미출고)+매출(출고완료)을 중복 없이 합산한
-        // 값이다. 과거에는 여기에 shipped만 다시 걸러 더해(actual=orderActual+revenueActual)
-        // 출고완료 건의 금액이 두 번 집계되어 달성률이 실제보다 부풀려지는 버그가 있었다.
-        const actual=erpQuotations.filter(q=>q.status==="accepted"||q.status==="shipped").filter(q=>new Date(q.date).getFullYear()===Number(y)&&(t.month?new Date(q.date).getMonth()+1===Number(t.month):true)&&(t.employeeId?q.createdBy===t.employeeName:true)).reduce((s,q)=>s+_quoteSupply(q),0);
-        const rate=t.targetAmount?Math.round((actual/t.targetAmount)*100):0;
-        return `<tr><td>${t.month?h(t.month)+"월":"연간"}</td><td>${h(t.employeeName||"전체")}</td><td style="text-align:right">${t.targetAmount.toLocaleString()}</td><td style="text-align:right">${actual.toLocaleString()}</td><td style="text-align:right">${rate}%</td><td>${h(t.memo||"")}</td><td><button class="btn btn-danger btn-sm" onclick="deleteSalesTarget('${t.id}')">삭제</button></td></tr>`;
-      }).join("");
+      const rows=d.targetsByYear[y].map(t=>
+        `<tr><td>${t.month?h(t.month)+"월":"연간"}</td><td>${h(t.employeeName||"전체")}</td><td style="text-align:right">${t.targetAmount.toLocaleString()}</td><td style="text-align:right">${t.actual.toLocaleString()}</td><td style="text-align:right">${t.rate}%</td><td>${h(t.memo||"")}</td><td><button class="btn btn-danger btn-sm" onclick="deleteSalesTarget('${t.id}')">삭제</button></td></tr>`
+      ).join("");
       return `<div class="fg"><label class="fl">${y}년</label><div class="tbl-wrap"><table><thead><tr><th>기간</th><th>대상</th><th>목표</th><th>실적</th><th>달성률</th><th>메모</th><th>관리</th></tr></thead><tbody>${rows}</tbody></table></div></div>`;
     }).join("");
   }
   if(_salesDashTab==="partner"){
-    const byPartner={};
-    erpQuotations.filter(q=>q.status==="shipped").forEach(q=>{
-      const k=q.partnerName||"(미지정)";
-      byPartner[k]=(byPartner[k]||0)+_quoteSupply(q);
-    });
-    const rows=Object.entries(byPartner).sort((a,b)=>b[1]-a[1]);
+    const rows=d.partnerRanking;
     if(!rows.length)return `<div class="text-gray" style="text-align:center;padding:20px">매출 데이터가 없습니다.</div>`;
-    return `<div class="tbl-wrap"><table><thead><tr><th>순위</th><th>거래처</th><th>매출액(공급가액)</th></tr></thead><tbody>${rows.map(([name,amt],i)=>`<tr><td>${i+1}</td><td>${h(name)}</td><td style="text-align:right">${amt.toLocaleString()}</td></tr>`).join("")}</tbody></table></div>`;
+    return `<div class="tbl-wrap"><table><thead><tr><th>순위</th><th>거래처</th><th>매출액(공급가액)</th></tr></thead><tbody>${rows.map((r,i)=>`<tr><td>${i+1}</td><td>${h(r.name)}</td><td style="text-align:right">${r.amount.toLocaleString()}</td></tr>`).join("")}</tbody></table></div>`;
   }
   if(_salesDashTab==="pipeline"){
-    const stages=[["draft","임시"],["sent","발송"],["accepted","수주확정"],["shipped","출고/매출완료"],["rejected","실주"]];
-    const rows=stages.map(([k,l])=>{
-      const list=erpQuotations.filter(q=>q.status===k);
-      const amt=list.reduce((s,q)=>s+_quoteSupply(q),0);
-      return `<tr><td>${l}</td><td style="text-align:right">${list.length}</td><td style="text-align:right">${amt.toLocaleString()}</td></tr>`;
-    }).join("");
+    const rows=d.pipeline.map(r=>`<tr><td>${h(r.label)}</td><td style="text-align:right">${r.count}</td><td style="text-align:right">${r.amount.toLocaleString()}</td></tr>`).join("");
     return `<div class="tbl-wrap"><table><thead><tr><th>단계</th><th>건수</th><th>합계(공급가액)</th></tr></thead><tbody>${rows}</tbody></table></div>`;
   }
   if(_salesDashTab==="rep"){
-    const byRep={};
-    erpQuotations.forEach(q=>{
-      const k=q.createdBy||"unknown";
-      if(!byRep[k])byRep[k]={order:0,revenue:0,count:0};
-      byRep[k].count++;
-      if(q.status==="accepted"||q.status==="shipped")byRep[k].order+=_quoteSupply(q);
-      if(q.status==="shipped")byRep[k].revenue+=_quoteSupply(q);
-    });
-    const rows=Object.entries(byRep).sort((a,b)=>b[1].revenue-a[1].revenue);
+    const rows=d.repRanking;
     if(!rows.length)return `<div class="text-gray" style="text-align:center;padding:20px">데이터가 없습니다.</div>`;
-    return `<div class="tbl-wrap"><table><thead><tr><th>담당자</th><th>견적 건수</th><th>수주액</th><th>매출액</th></tr></thead><tbody>${rows.map(([name,v])=>`<tr><td>${h(name)}</td><td style="text-align:right">${v.count}</td><td style="text-align:right">${v.order.toLocaleString()}</td><td style="text-align:right">${v.revenue.toLocaleString()}</td></tr>`).join("")}</tbody></table></div>`;
+    return `<div class="tbl-wrap"><table><thead><tr><th>담당자</th><th>견적 건수</th><th>수주액</th><th>매출액</th></tr></thead><tbody>${rows.map(v=>`<tr><td>${h(v.name)}</td><td style="text-align:right">${v.count}</td><td style="text-align:right">${v.order.toLocaleString()}</td><td style="text-align:right">${v.revenue.toLocaleString()}</td></tr>`).join("")}</tbody></table></div>`;
   }
   return "";
 }
@@ -19151,14 +19138,15 @@ async function saveSalesTarget(){
   const body={year:+year,month:$("#st-month")?.value||null,employeeId:empId||null,employeeName:emp?emp.name:"",targetAmount:+amount,memo:$("#st-memo")?.value.trim(),role:currentUser.role,user:currentUser.name};
   const r=await serverRequest("POST","/api/erp/sales-targets",body);
   if(!r?.ok){showToast(r?.message||"저장에 실패했습니다.","error");return;}
-  erpSalesTargets.push(r.salesTarget);
-  closeModal();showToast("영업 목표가 등록되었습니다.","success");renderSalesDashboardPage();
+  closeModal();showToast("영업 목표가 등록되었습니다.","success");
+  _salesDashData=null;renderSalesDashboardPage();
 }
 async function deleteSalesTarget(id){
   if(!confirm("이 영업 목표를 삭제하시겠습니까?"))return;
   const r=await serverRequest("POST",`/api/erp/sales-targets/${id}/delete`,{role:currentUser.role,user:currentUser.name});
   if(!r?.ok){showToast(r?.message||"삭제에 실패했습니다.","error");return;}
-  erpSalesTargets=erpSalesTargets.filter(t=>t.id!==id);showToast("삭제되었습니다.","info");renderSalesDashboardPage();
+  showToast("삭제되었습니다.","info");
+  _salesDashData=null;renderSalesDashboardPage();
 }
 
 // ── PMS: 프로젝트 관리 ────────────────────────────────────────────────────────
