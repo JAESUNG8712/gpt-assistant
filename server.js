@@ -11,6 +11,36 @@ const pool    = require("./db");
 const multer  = require("multer");
 const budgetRouterFactory = require("./budget");
 
+// ════════════════════════════════════════════════════════════════════════════
+// 목차(파일 안 "// ── 제목 ──" 배너 문자열로 검색) — 이 파일은 인사(HR)/전자결재/
+// 회계/영업(ERP)/PMS/채용까지 아우르는 단일 회사(자체호스팅) 또는 멀티테넌트(SaaS,
+// PostgreSQL) 겸용 백엔드다. USE_JSON_FILE(DATABASE_URL 미설정 시 true)로 저장 방식을
+// 분기하며, 거의 모든 라우트가 JSON 파일/Postgres 두 갈래를 나란히 구현한다.
+//
+//  1. 인증/세션            — 세션 토큰(HMAC), 비밀번호 보안, TOTP 2단계 인증
+//  2. 저장소 계층           — Storage mode, 저장 요청 직렬화, DB bootstrap, Core DB helpers
+//                             (loadData/persistData 등 employees/kpiEntries/blob 저장 전체)
+//  3. 실시간/미들웨어        — SSE helpers, 인증 미들웨어(authenticate/requireAuth 등)
+//  4. Core API             — /status, /data, /login, /save, /events(SSE), 스냅샷/백업/이력
+//  5. 멀티테넌트            — 회사(테넌트) 식별, 셀프서브 회사 가입, 마스터 관리자(임퍼스네이션)
+//  6. 회계 모듈             — 계정과목/전표/세금계산서/수금·지급/거래처/원가명세서/RCPS/
+//                             부가세 신고자료/고정자산 (/api/accounting/*)
+//  7. 영업/재고(ERP) 모듈    — 품목/위치/견적서/발주서/구매요청/재고/영업목표/영업대시보드
+//                             (/api/erp/*)
+//  8. PMS 모듈              — 프로젝트/투입률/일일 업무 투입 (/api/pms/*)
+//  9. 채용 모듈             — 채용공고/지원자/이력서 텍스트추출·AI자동입력/면접 일정·평가
+//                             (/api/recruit/*, /api/hr/resume-parse, /api/hr/*)
+// 10. 사업계획/예산          — budgetRouterFactory(budget.js)를 /api/budget에 마운트
+//                             (이 파일이 아니라 budget.js 참고)
+// 11. 데이터 초기화/기타      — 전체 초기화(reset-all), SPA fallback, 서버 기동
+//
+// 인가(authorization) 3단계 조합이 라우트마다 반복된다 — requireAuth(로그인만 확인) →
+// requireAdmin/requireRole(역할) → requirePage(개인별 메뉴 on/off, menuPerms). 대부분의
+// 쓰기 라우트는 셋을 순서대로 조합하고, 여러 화면이 공유하는 조회(GET) 라우트는 의도적으로
+// requirePage를 생략하는 경우가 많다(예: 전표 작성이 회계>계정과목 페이지 권한 없이도
+// 동작해야 함) — 이런 경우 해당 라우트 바로 위 주석에 "왜 생략했는지"를 남겨둔다.
+// ════════════════════════════════════════════════════════════════════════════
+
 // Express 4는 async 라우트 핸들러 내부의 동기 throw/reject를 자동으로 잡아주지 않는다
 // (Express 5와 다른 점) — try/catch 없이 작성된 async 핸들러 하나가 예외를 던지면
 // unhandled promise rejection이 되고, Node 15+ 기본 동작상 프로세스 전체가 종료된다.
@@ -3336,11 +3366,18 @@ app.post("/unlock", (req, res) => {
 });
 
 // POST /log
+// 클라이언트 조작 이력(누가 언제 무엇을 했는지)을 activity_log에 한 줄 남긴다.
+// 다른 142개 라우트 핸들러와 달리 try/catch가 없어, addActivityLog() 내부의
+// pool.query()가 던지면(DB 순단 등) 이 요청이 응답 없이 멈춰버리는 것을 다른
+// 라우트들과 통일해 방지한다(Express 4는 async 핸들러의 미처리 reject를 자동으로
+// 못 잡아 그대로 두면 hang된다 — 이 프로젝트에서 여러 번 재발한 버그 클래스).
 app.post("/log", async (req, res) => {
   if (!requireAuth(req, res)) return;
   if (!req.body) return res.status(400).json({ ok: false });
-  await addActivityLog(req.body, req.auth.companyId || null);
-  res.json({ ok: true });
+  try {
+    await addActivityLog(req.body, req.auth.companyId || null);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 // GET /activity
@@ -7521,6 +7558,15 @@ app.get("/api/recruit/candidates/:id", async (req, res) => {
   } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
+// ── 채용 관리: 이력서 파일 텍스트 추출 + AI 필드 자동입력(구버전 dataUrl 방식) ────
+// 지원자 등록 화면에서 업로드한 이력서 파일(PDF/DOCX/HWP/이미지)의 형식별 텍스트 추출
+// 4개 라우트(extract-pdf-text/-docx-text/-hwp-text/-image-text)와, 추출된 텍스트를
+// Groq LLM에 보내 이름/연락처/학력/경력 등 구조화된 필드로 뽑아내는 parse-resume-llm
+// 라우트로 구성된다. 아래 "HR 신규 직원 등록: AI 이력서 자동입력(P1)" 섹션은 같은
+// 텍스트 추출 헬퍼(_execFileP/_ocrImageBuffer 등)를 재사용하는 별도의 최신 multipart
+// 엔드포인트(POST /api/hr/resume-parse)로, 직원 등록 화면 전용이다 — 서로 다른 화면
+// (채용 지원자 등록 vs 신규 직원 등록)이 같은 파일-텍스트-추출 로직을 각자의 API
+// 계약(dataUrl JSON vs multipart)으로 감싸 쓰는 구조이니 혼동하지 말 것.
 function _execFileP(cmd, args) {
   const { execFile } = require("child_process");
   return new Promise((resolve, reject) => {
@@ -8148,6 +8194,11 @@ app.post("/api/hr/resume-parse",
   }
 );
 
+// ── AI 보조 기능 모음(Groq LLM 호출, GROQ_API_KEY 미설정 시 각 라우트가 자체적으로
+// null/기본값 폴백) — 이력서 경력 회사명 추정(suggest-career-companies), 조직도
+// AI 요약(analyze-summary/analyze-org), KPI 목표·평가 코멘트 초안 생성(draft-kpi-goal/
+// draft-eval-comment) 5개 라우트. 전부 "AI가 초안만 제시하고 사람이 검토 후 승인해야
+// 실제 데이터가 된다"는 동일한 설계 원칙을 따른다.
 // 경력표에서 회사명이 빈 항목(대개 인쇄용 이력서 PDF가 회사명을 이미지로만 렌더링해
 // OCR 좌표 매칭으로도 못 찾은 경우, 2026-07-22 실측)에 한해 AI에게 후보를 물어보는
 // 용도. 클라이언트는 이 응답을 절대 입력칸에 자동으로 채우지 않고 "AI 추정값 —
