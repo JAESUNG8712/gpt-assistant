@@ -3763,6 +3763,84 @@ function requireRole(req, res, allowed) {
   }
   return true;
 }
+
+// 회계 메뉴는 UI에서만 숨기면 브라우저가 이미 내려받은 목록을 개발자도구/API 호출로
+// 그대로 읽거나 수정할 수 있다. 회계 API는 별도 저장소를 쓰므로 GET /data에 적용되는
+// filterDataForRole()로는 보호되지 않는다. 요청 시점의 저장된 직원 menuPerms를 다시
+// 확인해 토큰 발급 뒤 관리자가 권한을 바꾼 경우도 다음 요청부터 즉시 반영한다.
+//
+// menuPerms에 항목이 아예 없는 기존 회사/직원은 기존 동작(허용)을 유지한다. 명시적으로
+// false인 경우만 차단한다. 마스터 관리자 impersonation 토큰은 특정 직원의 메뉴 설정을
+// 갖지 않으므로 회사 복구/점검 권한과 동일하게 전체 회계 접근을 허용한다.
+const ACCOUNTING_MENU_BY_PATH = [
+  ["/accounts", "acct-accounts"],
+  ["/vouchers", "acct-vouchers"],
+  ["/tax-invoices", "acct-tax-invoices"],
+  ["/payments", "acct-receivables"],
+  ["/partners", "acct-partners"],
+  ["/cost-statement", "acct-cost-statement"],
+  ["/rcps", "acct-rcps"],
+  ["/vat-report", "acct-vat-report"],
+  ["/fixed-assets", "acct-fixed-assets"],
+];
+
+function _accountingMenuForPath(pathname) {
+  // 사업계획은 모든 인증 사용자가 비용 계정의 id/code/name만 참조해야 하므로, 회계
+  // 원장 접근 권한과 분리된 최소 DTO API는 이 정책에서 제외한다.
+  if (pathname === "/accounts/expense-lite") return null;
+  const found = ACCOUNTING_MENU_BY_PATH.find(([prefix]) => pathname === prefix || pathname.startsWith(`${prefix}/`));
+  return found ? found[1] : null;
+}
+
+async function _getStoredEmployeeForMenuPerms(auth) {
+  if (!auth || auth.empId == null) return null;
+  if (USE_JSON_FILE) {
+    return (_fileStore.employees || []).find(e => String(e.id) === String(auth.empId)) || null;
+  }
+  const companyId = auth.companyId || null;
+  const { rows } = await pool.query(
+    "SELECT data FROM employees WHERE id = $1 AND is_deleted = FALSE AND company_id IS NOT DISTINCT FROM $2 LIMIT 1",
+    [auth.empId, companyId]
+  );
+  return rows[0] ? rows[0].data : null;
+}
+
+async function requireAccountingMenu(req, res, menuId) {
+  if (!requireAdmin(req, res)) return false;
+  if (req.auth.empId == null && req.auth.actingAsMaster) return true;
+  try {
+    const employee = await _getStoredEmployeeForMenuPerms(req.auth);
+    if (!employee) {
+      // 인증 미들웨어와 DB 상태가 어긋났을 때는 민감한 회계 데이터를 열어 주지 않는다.
+      res.status(401).json({ ok: false, code: "AUTH_EMPLOYEE_NOT_FOUND", message: "로그인 정보를 다시 확인해주세요." });
+      return false;
+    }
+    const perms = employee.menuPerms && typeof employee.menuPerms === "object" ? employee.menuPerms : {};
+    if (perms[menuId] === false) {
+      res.status(403).json({ ok: false, code: "MENU_ACCESS_DENIED", menuId, message: "이 회계 메뉴에 접근할 권한이 없습니다." });
+      return false;
+    }
+    return true;
+  } catch (e) {
+    // 권한 원본을 읽지 못한 경우에는 fail-closed로 처리한다. 빈 배열(200)을 보내면
+    // '실제 데이터가 없음'과 '권한 없음'을 구별할 수 없어 대시보드가 0으로 오인한다.
+    res.status(503).json({ ok: false, code: "MENU_PERMISSION_CHECK_FAILED", message: "메뉴 권한을 확인할 수 없습니다. 잠시 후 다시 시도해주세요." });
+    return false;
+  }
+}
+
+// menuPerms는 현재 UI의 "조회 가능 메뉴" 정책이다. 급여·경비·ERP 처리 중에는 사용자가
+// 회계 메뉴를 열지 않아도 서버가 전표/세금계산서를 생성하는 기존 업무 흐름이 있으므로,
+// 그 쓰기 경로까지 여기서 일괄 차단하면 정상 업무가 깨질 수 있다. 우선 이슈의 대상인
+// 목록/상세 GET만 차단하고, 쓰기는 업무별 최소 권한 전용 API로 분리한 뒤 다음 단계에서
+// 별도 인가 정책을 적용한다.
+app.use("/api/accounting", async (req, res, next) => {
+  if (req.method !== "GET" && req.method !== "HEAD") return next();
+  const menuId = _accountingMenuForPath(req.path);
+  if (!menuId) return next();
+  if (!await requireAccountingMenu(req, res, menuId)) return;
+  next();
+});
 function _round2(n) { return Math.round((Number(n) || 0) * 100) / 100; }
 
 // ── 계정과목 (Chart of accounts) ────────────────────────────────────────────

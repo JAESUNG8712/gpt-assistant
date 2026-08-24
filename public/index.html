@@ -1107,22 +1107,29 @@ let _rcpsDetail=null,_rcpsDetailId=null;
 async function loadAccountingFromServer(){
   if(!serverConfig.url){_acctLoaded=true;return;}
   try{
-    const [ra,rv,rt,rp,rpay,rrcps,rfa]=await Promise.all([
-      serverRequest("GET","/api/accounting/accounts"),
-      serverRequest("GET","/api/accounting/vouchers"),
-      serverRequest("GET","/api/accounting/tax-invoices"),
-      serverRequest("GET","/api/accounting/partners"),
-      serverRequest("GET","/api/accounting/payments"),
-      serverRequest("GET","/api/accounting/rcps/issuances"),
-      serverRequest("GET","/api/accounting/fixed-assets"),
-    ]);
-    if(ra?.ok)acctAccounts=ra.accounts;
-    if(rv?.ok)acctVouchers=rv.vouchers;
-    if(rt?.ok)acctTaxInvoices=rt.taxInvoices;
-    if(rp?.ok)acctPartners=rp.partners;
-    if(rpay?.ok)acctPayments=rpay.payments;
-    if(rrcps?.ok)acctRcpsIssuances=rrcps.issuances;
-    if(rfa?.ok)acctFixedAssets=rfa.assets;
+    // 서버의 requireAccountingMenu()가 최종 인가를 담당한다. 여기의 사전 판정은
+    // 권한 없는 메뉴의 대용량 목록을 애초에 요청하지 않아 로그인 직후 DB/네트워크 부하와
+    // 브라우저 메모리 노출 범위를 줄이기 위한 보조 장치다.
+    const resources=[
+      {menu:"acct-accounts",endpoint:"/api/accounting/accounts",field:"accounts",set:v=>{acctAccounts=v;},clear:()=>{acctAccounts=[];}},
+      {menu:"acct-vouchers",endpoint:"/api/accounting/vouchers",field:"vouchers",set:v=>{acctVouchers=v;},clear:()=>{acctVouchers=[];}},
+      {menu:"acct-tax-invoices",endpoint:"/api/accounting/tax-invoices",field:"taxInvoices",set:v=>{acctTaxInvoices=v;},clear:()=>{acctTaxInvoices=[];}},
+      {menu:"acct-partners",endpoint:"/api/accounting/partners",field:"partners",set:v=>{acctPartners=v;},clear:()=>{acctPartners=[];}},
+      {menu:"acct-receivables",endpoint:"/api/accounting/payments",field:"payments",set:v=>{acctPayments=v;},clear:()=>{acctPayments=[];}},
+      {menu:"acct-rcps",endpoint:"/api/accounting/rcps/issuances",field:"issuances",set:v=>{acctRcpsIssuances=v;},clear:()=>{acctRcpsIssuances=[];}},
+      {menu:"acct-fixed-assets",endpoint:"/api/accounting/fixed-assets",field:"assets",set:v=>{acctFixedAssets=v;},clear:()=>{acctFixedAssets=[];}},
+    ];
+    const perms=currentUser?.menuPerms||{};
+    const allowed=resources.filter(x=>perms[x.menu]!==false);
+    // 이전 로그인/권한 상태에서 남은 민감 데이터가 있더라도, 이번 사용자에게는 보이지
+    // 않도록 요청을 생략한 리소스부터 즉시 비운다.
+    resources.filter(x=>perms[x.menu]===false).forEach(x=>x.clear());
+    const responses=await Promise.all(allowed.map(async x=>({x,r:await serverRequest("GET",x.endpoint)})));
+    responses.forEach(({x,r})=>{
+      if(r?.ok)x.set(Array.isArray(r[x.field])?r[x.field]:[]);
+      // 권한이 로그인 도중 변경돼 서버가 403을 낸 경우도 기존 메모리 캐시를 즉시 제거한다.
+      else if(r?.code==="MENU_ACCESS_DENIED")x.clear();
+    });
   }catch(e){/* 오프라인/서버 미연결 시 회계 페이지에서 안내 표시 */}
   _acctLoaded=true;
   if(currentPage&&currentPage.startsWith("acct-"))renderPage();
@@ -18131,6 +18138,12 @@ function _execBarChart(rows){
 function renderExecDashboardPage(){
   const c=$("#content");if(!c)return;
   const now=new Date(),year=now.getFullYear(),month=now.getMonth()+1;
+  // 회계 원본 목록을 권한 때문에 받지 못한 상태를 "매출/미수 0원"으로 표시하면 경영
+  // 판단을 왜곡한다. 지표별로 필요한 메뉴 권한을 확인해 값 대신 권한 안내를 표시한다.
+  const menuPerms=currentUser?.menuPerms||{};
+  const canViewPnl=menuPerms["acct-tax-invoices"]!==false;
+  const canViewReceivables=canViewPnl&&menuPerms["acct-receivables"]!==false;
+  const canViewVouchers=menuPerms["acct-vouchers"]!==false;
   // 인원
   const active=employees.filter(e=>e.active);
   const hiresThisYear=employees.filter(e=>(e.hire||"").startsWith(String(year))).length;
@@ -18143,17 +18156,17 @@ function renderExecDashboardPage(){
     laborGross+=slip.gross||0;
   });
   // 손익
-  const pnl=_execMonthlyPnl(12);
+  const pnl=canViewPnl?_execMonthlyPnl(12):[];
   const thisM=pnl[pnl.length-1]||{sales:0,purchase:0,profit:0};
   const ytd=pnl.filter(r=>r.key.startsWith(String(year))).reduce((a,r)=>({sales:a.sales+r.sales,purchase:a.purchase+r.purchase,profit:a.profit+r.profit}),{sales:0,purchase:0,profit:0});
   // 채권
-  const arRows=_arApByPartner().filter(r=>r.ar>0.001).sort((a,b)=>b.ar-a.ar);
+  const arRows=canViewReceivables?_arApByPartner().filter(r=>r.ar>0.001).sort((a,b)=>b.ar-a.ar):[];
   const totalAr=arRows.reduce((s,r)=>s+r.ar,0);
   // 대기 업무
   const pendExp=expenseClaims.filter(x=>x.status==="pending").length;
   const pendOt=overtimeRequests.filter(x=>x.status==="pending").length;
   const pendPr=(typeof erpPurchaseRequests!=="undefined"?erpPurchaseRequests:[]).filter(x=>x.status==="pending").length;
-  const draftVch=acctVouchers.filter(v=>v.status==="draft").length;
+  const draftVch=canViewVouchers?acctVouchers.filter(v=>v.status==="draft").length:null;
   // 재고
   const lowStock=(typeof _erpLowStockItems==="function")?_erpLowStockItems().length:0;
   const stat=(label,val,sub,color)=>`<div style="flex:1;min-width:140px;background:#f8fafc;border-radius:10px;padding:12px 14px"><div class="fz11 text-gray">${label}</div><div style="font-size:20px;font-weight:800;color:${color||"#1e293b"}">${val}</div>${sub?`<div class="fz11 text-gray">${sub}</div>`:""}</div>`;
@@ -18161,18 +18174,18 @@ function renderExecDashboardPage(){
   <div class="card mb3"><div class="card-head"><h3>📊 경영 대시보드</h3><span class="fz12 text-gray">${year}년 ${month}월 기준${serverConfig.url?"":" · 회계/재고 지표는 서버 연결 시 표시"}</span></div>
   <div class="card-body">
     <div class="flex gap2 wrap mb3">
-      ${stat("이번 달 매출(공급가액)",thisM.sales.toLocaleString()+"원",`연 누계 ${ytd.sales.toLocaleString()}원`,"#2563eb")}
-      ${stat("이번 달 매입",thisM.purchase.toLocaleString()+"원",`연 누계 ${ytd.purchase.toLocaleString()}원`,"#d97706")}
-      ${stat("이번 달 손익",thisM.profit.toLocaleString()+"원",`연 누계 ${ytd.profit.toLocaleString()}원`,thisM.profit>=0?"#16a34a":"#dc2626")}
+      ${canViewPnl?stat("이번 달 매출(공급가액)",thisM.sales.toLocaleString()+"원",`연 누계 ${ytd.sales.toLocaleString()}원`,"#2563eb"):stat("이번 달 매출(공급가액)","권한 없음","세금계산서 조회 권한 필요","#64748b")}
+      ${canViewPnl?stat("이번 달 매입",thisM.purchase.toLocaleString()+"원",`연 누계 ${ytd.purchase.toLocaleString()}원`,"#d97706"):stat("이번 달 매입","권한 없음","세금계산서 조회 권한 필요","#64748b")}
+      ${canViewPnl?stat("이번 달 손익",thisM.profit.toLocaleString()+"원",`연 누계 ${ytd.profit.toLocaleString()}원`,thisM.profit>=0?"#16a34a":"#dc2626"):stat("이번 달 손익","권한 없음","세금계산서 조회 권한 필요","#64748b")}
       ${stat("이번 달 인건비(지급총액)",laborGross.toLocaleString()+"원","재직 "+active.length+"명 기준","#7c3aed")}
     </div>
     <div class="fw7 fz13 mb1">최근 12개월 매출/매입 추이</div>
-    ${_execBarChart(pnl)}
+    ${canViewPnl?_execBarChart(pnl):`<div class="p-empty" style="padding:24px">세금계산서 조회 권한이 없어 매출/매입 추이를 표시하지 않습니다.</div>`}
   </div></div>
   <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
-    <div class="card"><div class="card-head"><h3>💳 미수금 상위 거래처</h3><span class="fz12 text-gray">총 미수 ${totalAr.toLocaleString()}원</span></div>
+    <div class="card"><div class="card-head"><h3>💳 미수금 상위 거래처</h3><span class="fz12 text-gray">${canViewReceivables?`총 미수 ${totalAr.toLocaleString()}원`:"채권/채무 조회 권한 필요"}</span></div>
     <div class="card-body" style="padding:0"><div class="tbl-wrap"><table><thead><tr><th>거래처</th><th style="text-align:right">미수금</th></tr></thead><tbody>
-    ${arRows.length?arRows.slice(0,7).map(r=>`<tr><td>${h(r.name)}</td><td style="text-align:right;color:#dc2626;font-weight:700">${r.ar.toLocaleString()}</td></tr>`).join(""):`<tr><td colspan="2" class="text-gray" style="text-align:center;padding:16px">미수 잔액이 없습니다.</td></tr>`}
+    ${canViewReceivables?(arRows.length?arRows.slice(0,7).map(r=>`<tr><td>${h(r.name)}</td><td style="text-align:right;color:#dc2626;font-weight:700">${r.ar.toLocaleString()}</td></tr>`).join(""):`<tr><td colspan="2" class="text-gray" style="text-align:center;padding:16px">미수 잔액이 없습니다.</td></tr>`):`<tr><td colspan="2" class="text-gray" style="text-align:center;padding:16px">권한이 없어 미수금 데이터를 표시하지 않습니다.</td></tr>`}
     </tbody></table></div>
     ${arRows.length?`<div style="padding:8px 14px"><button class="btn btn-secondary btn-sm" onclick="gotoPage('acct-receivables')">채권/채무 관리 →</button></div>`:""}
     </div>
@@ -18186,7 +18199,7 @@ function renderExecDashboardPage(){
         <tr><td>🧾 경비 승인 대기</td><td style="text-align:right">${pendExp?`<a href="javascript:gotoPage('expense-admin')" style="font-weight:700;color:#d97706">${pendExp}건</a>`:"0건"}</td></tr>
         <tr><td>⏰ 초과근무 승인 대기</td><td style="text-align:right">${pendOt?`<a href="javascript:gotoPage('overtime-req')" style="font-weight:700;color:#d97706">${pendOt}건</a>`:"0건"}</td></tr>
         <tr><td>🛒 구매요청 승인 대기</td><td style="text-align:right">${pendPr?`<a href="javascript:gotoPage('inv-purchase-requests')" style="font-weight:700;color:#d97706">${pendPr}건</a>`:"0건"}</td></tr>
-        <tr><td>🧾 미확정(임시) 전표</td><td style="text-align:right">${draftVch?`<a href="javascript:gotoPage('acct-vouchers')" style="font-weight:700;color:#d97706">${draftVch}건</a>`:"0건"}</td></tr>
+        <tr><td>🧾 미확정(임시) 전표</td><td style="text-align:right">${draftVch===null?"권한 없음":(draftVch?`<a href="javascript:gotoPage('acct-vouchers')" style="font-weight:700;color:#d97706">${draftVch}건</a>`:"0건")}</td></tr>
         <tr><td>📉 안전재고 부족 품목</td><td style="text-align:right">${lowStock?`<a href="javascript:gotoPage('inv-stock')" style="font-weight:700;color:#dc2626">${lowStock}건</a>`:"0건"}</td></tr>
       </tbody></table></div>
     </div></div>
