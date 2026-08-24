@@ -3719,8 +3719,8 @@ app.post("/restore", async (req, res) => {
         }
       }));
       const finalData = await loadData(companyId);
-      broadcastSSE("data_restored", { name, fields: result.restoredFields, deletedExtras, version: result.version }, null, companyId);
-      return res.json({ ok: true, version: result.version, restoredFields: result.restoredFields, deletedExtras, data: filterDataForRole(stripPwField(finalData), req.auth) });
+      broadcastSSE("data_restored", { name, fields: result.restoredFields, deletedExtras: deleteExtras, version: result.version }, null, companyId);
+      return res.json({ ok: true, version: result.version, restoredFields: result.restoredFields, deletedExtras: deleteExtras, data: filterDataForRole(stripPwField(finalData), req.auth) });
     }
 
     const current = await loadData(companyId);
