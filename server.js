@@ -7468,6 +7468,10 @@ app.get("/api/recruit/candidates", async (req, res) => {
 
 app.get("/api/recruit/candidates/export", async (req, res) => {
   if (!requireAuth(req, res)) return;
+  // 이 CSV 내보내기는 "지원자 관리"(recruit-candidates) 화면에서만 쓰인다(다른 화면과
+  // 공유되지 않음) — GET /candidates 목록·candidates/:id·interviews처럼 recruit-eval 등
+  // 여러 화면이 정당하게 공유해야 하는 조회와는 다르므로 이 화면 기준으로 게이팅한다.
+  if (!requirePage(req, res, "recruit-candidates")) return;
   try {
     const { jobId } = req.query;
     const { role, empId: userId } = req.auth;
@@ -8932,6 +8936,8 @@ app.post("/api/recruit/candidates/:id/delete", async (req, res) => {
 
 app.get("/api/recruit/dashboard", async (req, res) => {
   if (!requireAuth(req, res)) return;
+  // "채용 현황 대시보드"(recruit-dashboard) 자기 자신만 쓰는 집계 API — 다른 화면과 공유되지 않는다.
+  if (!requirePage(req, res, "recruit-dashboard")) return;
   try {
     const { role, empId: userId } = req.auth;
     const companyId = req.auth.companyId || null;
