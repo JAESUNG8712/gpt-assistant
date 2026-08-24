@@ -3,10 +3,36 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const multer = require('multer');
-const xlsx = require('xlsx');
+const { Worker } = require('worker_threads');
 const pool = require('./db');
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
+
+// ════════════════════════════════════════════════════════════════════════════
+// 목차(파일 안 "// ── 제목 ──" 배너 문자열로 검색) — server.js가 `budgetRouterFactory(deps)`를
+// /api/budget 밑에 마운트해 쓰는 사업계획/예산 전용 라우터. server.js의 employees/
+// getEmployeeProfile 등 일부 조회만 deps로 주입받고, 저장은 이 파일이 독립적으로 관리한다
+// (budget_store 테이블 1개 또는 budget-data.json 1개 파일 — 회사별 JSON blob 통째 저장,
+// server.js의 app_collections처럼 레코드 단위 테이블로 정규화돼 있지 않음).
+//
+//  1. 저장소 계층(1~330줄대)      — _emptyCompanyBudget(기본 데이터 모양)·readBudget/
+//                                  updateBudget(파일 또는 DB, 락 포함 읽기·쓰기)·
+//                                  parseSheetIsolated(엑셀 업로드, 워커 스레드 격리)
+//  2. 계산 헬퍼(330~636줄)        — computeBusinessPlanProjection(연도별 손익 추정)·
+//                                  computeBreakEven(손익분기점)·각종 롤업 집계 함수
+//                                  (_revenueRollupByDept/_sgaRollupBy* 등)
+//  3. 정규화·인가 헬퍼(637~890줄)  — _normalizeBusinessPlanInput(입력 검증)·requireAuth/
+//                                  requireAdmin/requirePage·_canEditPlan/_canViewPlan
+//                                  (사업계획 승인 워크플로우 권한 판정)
+//  4. 라우터 본체(module.exports) — 업로드(headcount/detail)·개인별 급여상세(emp-pay-plan)·
+//                                  사업계획 CRUD+승인 워크플로우(business-plan/*) 전체.
+//                                  각 라우트 그룹은 아래 인라인 "── 제목 ──" 배너로 구분됨.
+//
+// 사업계획 승인 워크플로우 상태 흐름(간단히): draft(작성중) → divisionApproved(사업부장
+// 승인, 잠김) → finalConfirmed(예산담당자+기획팀장 둘 다 승인). 잠긴 뒤 수정이 필요하면
+// request-edit(수정요청) → 관리자 approve(재오픈, 승인이력 초기화) 순환.
+// ════════════════════════════════════════════════════════════════════════════
+
 // 메인 데이터(employees/kpi_entries)가 Postgres 모드(DATABASE_URL 설정)면 budget.js도
 // 같은 기준으로 Postgres에 저장한다(budget_store 테이블, schema.sql 참고) — 이전에는
 // DB 모드에서도 로컬 JSON 파일(budget-data.json)만 썼는데, Render 등 PaaS의 컨테이너
@@ -259,55 +285,63 @@ async function updateBudget(companyId, mutate, externalClient = null) {
   }
 }
 
-// requiredHeaderGroups를 지정하면(예: [['팀명','팀'],['항목']]) 단순히 "첫 시트의 1행"만
-// 헤더로 보는 대신, 워크북의 모든 시트·앞부분 행(최대 20행)을 훑어 그룹마다 하나 이상의
-// 헤더 텍스트를 포함하는 행을 찾아 그 행을 헤더로 삼아 파싱한다 — 실제 회사 원본 엑셀처럼
-// 여러 시트가 한 파일에 섞여 있고(예: "RAW자료"/"예산"/"조직별") 실제 데이터 시트의 헤더가
-// 제목행 등으로 인해 1행이 아닌 경우(예: 2행)에도 올바른 시트·행을 자동으로 찾아낸다.
-// 못 찾으면 빈 배열을 반환하되 어떤 시트들을 확인했는지 `_triedSheets`에 남겨 진단에 쓴다.
-// requiredHeaderGroups를 생략하면(레거시 호출부) 기존과 동일하게 첫 시트·1행을 그대로 쓴다.
-// excludedHeaders — 실제 회사 원본 파일에서 "예산"(비인건비) 시트가 "구분"·"1월" 컬럼을
-// 모두 갖고 있어("판관/용역/경상" 분류용 "구분" 컬럼이 우연히 이름이 같음), 워크북 순서상
-// "예산" 시트가 "조직별"(인원계획) 시트보다 먼저 나오면 인원계획 업로드가 엉뚱하게 예산
-// 시트를 파싱하는 사고가 실제로 재현됨(사용자 첨부 원본 파일로 확인) — 이 목록에 있는
-// 헤더가 하나라도 있는 행은 후보에서 제외해 "예산" 시트를 걸러낸다.
-function parseSheet(buffer, filename, requiredHeaderGroups, excludedHeaders) {
-  const isCsv = /\.csv$/i.test(filename || '');
-  const workbook = isCsv
-    ? xlsx.read(buffer.toString('utf8'), { type: 'string' })
-    : xlsx.read(buffer, { type: 'buffer' });
-  if (Array.isArray(requiredHeaderGroups) && requiredHeaderGroups.length) {
-    for (const sheetName of workbook.SheetNames) {
-      const sheet = workbook.Sheets[sheetName];
-      // header:1 모드는 기본적으로 시트의 !ref 범위를 대상으로 하고, 반환 배열의 인덱스는
-      // 그 범위의 시작행 기준 "상대" 위치다. 맨 위 몇 행이 완전히 비어 있는 시트는 !ref가
-      // 0행이 아닌 곳부터 시작하는데(예: 사용자 원본 파일의 "조직별" 시트는 !ref가 "A2:V91"
-      // — 실제 첫 행이 엑셀 2행), 그 상대 인덱스를 그대로 아래 range 옵션(절대 행 번호를
-      // 기대함)에 넘기면 엉뚱한 행(제목행 등)을 헤더로 잘못 잡는 오차가 생긴다(실제 파일로
-      // 재현·발견 — 이 어긋남 때문에 "조직별" 업로드가 바로 위의 "예산" 시트 헤더 행을
-      // 잘못 읽어들이고 있었음). !ref의 시작행을 더해 절대 행 번호로 보정한다.
-      const refStartRow = sheet['!ref'] ? xlsx.utils.decode_range(sheet['!ref']).s.r : 0;
-      const raw = xlsx.utils.sheet_to_json(sheet, { header: 1, defval: '', raw: true });
-      for (let i = 0; i < Math.min(raw.length, 20); i++) {
-        const rowVals = (raw[i] || []).map(v => String(v).trim());
-        if (Array.isArray(excludedHeaders) && excludedHeaders.some(h => rowVals.includes(h))) continue;
-        if (requiredHeaderGroups.every(group => group.some(h => rowVals.includes(h)))) {
-          const absoluteRow = refStartRow + i;
-          const rows = xlsx.utils.sheet_to_json(sheet, { range: absoluteRow, defval: null, raw: true });
-          rows._sheetName = sheetName;
-          rows._headerRow = absoluteRow;
-          return rows;
+// 실제 파싱 로직(parseSheet)은 lib/parse-sheet.js로 분리돼 있다(2026-08-24) — 워커
+// 스레드(lib/parse-sheet-worker.js)와 이 파일이 동일한 로직을 공유하고, 회귀 테스트
+// (test/api-parse-sheet.test.js)가 워커 없이 그 순수 함수를 직접 검증할 수 있게 하기
+// 위함이다. 아래 parseSheetIsolated()가 그 워커를 실제로 띄우는 얇은 래퍼.
+//
+// ── 엑셀 업로드 파싱(워커 스레드 격리) ────────────────────────────────────────
+// xlsx@0.18.5는 npm audit에 걸린 알려진 취약점이 두 가지 있다 — prototype pollution
+// (GHSA-4r6h-8v6p-xvw6)과 ReDoS(GHSA-5pgg-2g8v-p4x9). 패치판(0.19.3+)은 npm
+// 레지스트리에 게시되지 않고 SheetJS 자사 CDN에서만 배포되는데, 이 개발 환경의 아웃바운드
+// 정책이 그 호스트를 막고 있어 이 세션에서는 설치·검증이 불가능했다(사용자에게 별도 안내 —
+// 네트워크 제약 없는 환경에서 직접 설치·테스트 필요). 패키지 교체 전까지의 완화책으로,
+// 파싱을 메인 이벤트 루프가 아니라 별도 워커 스레드에서 실행하고 타임아웃을 둔다 — 이
+// 서버는 여러 회사가 하나의 Node 프로세스를 공유하는 멀티테넌트 구조라, ReDoS가 실제로
+// 트리거되면(악의적이거나 단순히 손상된 파일) 메인 스레드에서 그대로 실행 시 한 회사의
+// 업로드 하나가 다른 모든 회사의 요청까지 함께 멈춰 세운다 — 워커로 격리하면 그 워커만
+// 타임아웃으로 강제 종료되고 나머지 서비스는 영향받지 않는다. prototype pollution도
+// 워커 스레드는 메인 스레드와 별개의 V8 격리 힙을 쓰므로, 오염이 그 워커 안에서 끝나고
+// 메인 프로세스의 Object.prototype으로는 전파되지 않는다.
+const PARSE_SHEET_TIMEOUT_MS = Number(process.env.PARSE_SHEET_TIMEOUT_MS) || 15000;
+function parseSheetIsolated(buffer, filename, requiredHeaderGroups, excludedHeaders) {
+  return new Promise((resolve, reject) => {
+    const worker = new Worker(path.join(__dirname, 'lib', 'parse-sheet-worker.js'), {
+      workerData: { buffer, filename, requiredHeaderGroups, excludedHeaders },
+    });
+    let settled = false;
+    const finish = (fn) => { if (settled) return; settled = true; clearTimeout(timer); fn(); };
+    const timer = setTimeout(() => {
+      finish(() => {
+        worker.terminate();
+        reject(Object.assign(new Error('파일 처리 시간이 초과되었습니다. 파일 형식을 확인해주세요.'), { code: 'PARSE_TIMEOUT' }));
+      });
+    }, PARSE_SHEET_TIMEOUT_MS);
+    worker.once('message', (msg) => {
+      finish(() => {
+        worker.terminate();
+        if (!msg || !msg.ok) {
+          reject(Object.assign(new Error((msg && msg.message) || '파일을 읽을 수 없습니다.'), { code: 'PARSE_ERROR' }));
+          return;
         }
-      }
-    }
-    const empty = [];
-    empty._sheetName = null;
-    empty._headerRow = -1;
-    empty._triedSheets = workbook.SheetNames;
-    return empty;
-  }
-  const sheet = workbook.Sheets[workbook.SheetNames[0]];
-  return xlsx.utils.sheet_to_json(sheet, { defval: null, raw: true });
+        const rows = msg.rows;
+        if (msg.meta) {
+          rows._sheetName = msg.meta.sheetName;
+          rows._headerRow = msg.meta.headerRow;
+          rows._triedSheets = msg.meta.triedSheets;
+        }
+        resolve(rows);
+      });
+    });
+    worker.once('error', (err) => {
+      finish(() => reject(err));
+    });
+    worker.once('exit', (code) => {
+      finish(() => {
+        if (code !== 0) reject(new Error(`파일 파싱 중 알 수 없는 오류가 발생했습니다(코드 ${code}).`));
+      });
+    });
+  });
 }
 
 function toNumber(v) {
@@ -320,6 +354,7 @@ function round2(n) {
   return Math.round((n + Number.EPSILON) * 100) / 100;
 }
 
+// ── 사업계획 손익 계산(P&L 추정·손익분기점·롤업 집계) ─────────────────────────
 // 사업계획 시나리오: 기준연도 매출/비용 가정으로 N개년 추정 손익·현금흐름을 계산.
 // POST(신규 생성)와 PUT(가정 변경 후 재계산) 양쪽에서 동일 로직을 재사용한다.
 // planType==='costOnly'(비용전용 팀)여도 baseRevenue/cogsRatio가 0으로 정규화되어 그대로
@@ -337,7 +372,17 @@ function computeBusinessPlanProjection(a) {
   const projection = [];
   let prevRevenue = useItemizedRevenue ? round2(revenueItems.reduce((s, item) => s + (item.baseAmount || 0), 0)) : a.baseRevenue;
 
-  for (let y = 1; y <= years; y++) {
+  // y=0이 기준연도(baseYear) 자신이어야 한다 — 원래는 y가 1부터 시작해 첫 행이
+  // "baseYear+1"로 라벨링되면서 성장률도 이미 1회 복리 적용된 값이었다(2026-08-24
+  // 병렬 QA로 실측 발견: 1년짜리 계획(예: 예산 업로드로 자동생성되는 costOnly 계획,
+  // years=1)을 만들면 기준연도(예: 2027) 자체는 P&L 표에 전혀 안 나오고 "2028"년 한
+  // 줄만 나오는데, 그 값조차 성장률이 붙어있어 사용자가 입력한 기준연도 원본 금액과도
+  // 달랐다 — 같은 계획 카드 안에서 바로 아래 BEP 분석 박스는 "기준연도 2027"을 정확히
+  // 표시하고 있어 서로 모순되는 라벨이 한 화면에 함께 떴다). y=0(기준연도, 성장률
+  // 미적용)부터 시작해 이후 y=1,2,...로 실제 성장률이 그 해수만큼 복리 적용되도록
+  // 수정 — "추정 연차 수"(years) 값이 그대로 결과 행 수가 되는 것은 동일(범위만
+  // [baseYear+1..baseYear+years]에서 [baseYear..baseYear+years-1]로 이동).
+  for (let y = 0; y < years; y++) {
     const revenue = useItemizedRevenue
       ? round2(revenueItems.reduce((s, item) => s + (item.baseAmount || 0) * Math.pow(1 + (item.growthRate || 0), y), 0))
       : round2(a.baseRevenue * Math.pow(1 + a.revenueGrowthRate, y));
@@ -374,7 +419,7 @@ function computeBusinessPlanProjection(a) {
     prevRevenue = revenue;
 
     projection.push({
-      year: a.baseYear + y,
+      year: a.baseYear + y,  // y=0 → baseYear 자신(성장률 미적용)
       revenue, cogs, cogsFromRatio, serviceCost, grossProfit, sga, rdExpense, operatingProfit, netIncome, freeCashFlow,
       grossMarginRatio, operatingMarginRatio, netMarginRatio, revenueGrowthYoY
     });
@@ -469,6 +514,40 @@ function computeBudgetComparison(data, plan) {
 // 팀(plan.dept)과 실제 비용이 귀속되는 부문이 다를 수 있어(예: 기획팀이 작성한 계획 안에
 // 경영지원부문 귀속 비용이 섞여 있는 경우), plan.dept 기준 롤업(byDept)과는 별개로
 // "이 비용이 실제로 누구 예산인지" 기준의 조직단위 집계를 제공한다. company는 전사 합계.
+// 매출계획 대비 실적 부문별/전사 롤업 — 지금까지 revenueItems(건별 매출 계획+실적)는
+// GET .../business-plan/:id/revenue-monitor로 계획 1건씩만 열어봐야 확인 가능했고,
+// SG&A(판관비)처럼 여러 계획을 부문·전사 단위로 한 번에 취합해 보는 화면이 없었다(사용자
+// 요청: "매출계획대비 실적 자료 비교"). costOnly 계획(매출 항목 없음)은 대상에서 제외.
+// monthLimit(1~12, 누계 기준월)까지의 월별 계획/실적 합계를 비교한다 — 화면 기본값은
+// 클라이언트가 "당해년도면 오늘이 속한 월"로 정하고(이미 _bpOpenRevenueMonitor에 있는
+// 로직과 동일 원칙), 서버는 그 값을 그대로 받아 계산만 한다.
+function _revenueRollupByDept(plans, monthLimit) {
+  const m = Number.isInteger(monthLimit) && monthLimit >= 1 && monthLimit <= 12 ? monthLimit : 12;
+  const byDeptMap = {};
+  let companyPlan = 0, companyActual = 0;
+  plans.forEach(p => {
+    if (p.planType === 'costOnly') return;
+    const items = (p.assumptions && Array.isArray(p.assumptions.revenueItems)) ? p.assumptions.revenueItems : [];
+    if (!items.length) return;
+    const dept = p.dept || '(미지정)';
+    if (!byDeptMap[dept]) byDeptMap[dept] = { dept, plan: 0, actual: 0 };
+    items.forEach(item => {
+      const months = Array.isArray(item.months) && item.months.length === 12 ? item.months : Array(12).fill(0);
+      const actualMonths = Array.isArray(item.actualMonths) && item.actualMonths.length === 12 ? item.actualMonths : Array(12).fill(0);
+      const planSum = months.slice(0, m).reduce((s, v) => s + (Number(v) || 0), 0);
+      const actualSum = actualMonths.slice(0, m).reduce((s, v) => s + (Number(v) || 0), 0);
+      byDeptMap[dept].plan += planSum;
+      byDeptMap[dept].actual += actualSum;
+      companyPlan += planSum;
+      companyActual += actualSum;
+    });
+  });
+  const byDept = Object.values(byDeptMap)
+    .map(r => ({ ...r, plan: round2(r.plan), actual: round2(r.actual), gap: round2(r.actual - r.plan) }))
+    .sort((a, b) => a.dept.localeCompare(b.dept));
+  return { monthLimit: m, byDept, company: { plan: round2(companyPlan), actual: round2(companyActual), gap: round2(companyActual - companyPlan) } };
+}
+
 function _sgaRollupByCostDept(plans) {
   const byCostDeptMap = {};
   const companyMonths = Array(12).fill(0);
@@ -737,6 +816,23 @@ function requireAdmin(req, res) {
   return true;
 }
 
+// server.js의 requirePage()와 동일한 목적 — "권한 관리" 화면에서 개인별로 끈 메뉴를
+// 이 라우터의 API에서도 강제한다(지금까지는 클라이언트만 검사했음, 2026-08-21 사용자
+// 지적). authenticate()가 req.auth.menuPerms에 이미 실어둔 값을 그대로 쓴다.
+// public/budget.html(별도의 role 기반 관리자 전용 화면 — menuPerms/메뉴 개념 자체가
+// 없음)이 쓰는 라우트(/upload/headcount, /upload/detail, DELETE /data)에는 절대
+// 적용하지 않는다 — 그 화면 사용자에게는 "biz-plan" 메뉴라는 개념이 없어 잘못 적용하면
+// 무관한 화면의 정상 사용을 막는 회귀가 된다.
+function requirePage(req, res, pageId) {
+  if (!requireAuth(req, res)) return false;
+  const perms = req.auth.menuPerms || {};
+  if (perms[pageId] === false) {
+    res.status(403).json({ error: '이 메뉴에 대한 접근 권한이 없습니다.' });
+    return false;
+  }
+  return true;
+}
+
 // dept가 없는(레거시/회사 전체 스크래치) 계획은 팀 소유 개념이 없어 관리자만 다룰 수 있다.
 // dept가 있는 팀별 계획은 같은 dept+team 소속 직원 누구나(요청서: "팀별 계획 작성 권한 —
 // 팀장만? 사업부장도?" 질문에 "모두다 작성/수정은 가능"으로 답변) 수정 가능하고, 그 팀이
@@ -827,119 +923,133 @@ const router = express.Router();
 
 // 부서별/월별 인원수 업로드 (첫번째 파일)
 router.post('/upload/headcount', upload.single('file'), async (req, res) => {
-  if (!requireAdmin(req, res)) return;
-  if (!req.file) return res.status(400).json({ error: '파일이 필요합니다.' });
-
-  let rows;
   try {
-    rows = parseSheet(req.file.buffer, req.file.originalname);
-  } catch (e) {
-    return res.status(400).json({ error: '파일을 읽을 수 없습니다. (xlsx/csv만 지원)' });
-  }
+    if (!requireAdmin(req, res)) return;
+    if (!req.file) return res.status(400).json({ error: '파일이 필요합니다.' });
 
-  const companyId = req.auth.companyId || null;
-  let upserted = 0;
+    let rows;
+    try {
+      rows = await parseSheetIsolated(req.file.buffer, req.file.originalname);
+    } catch (e) {
+      const msg = e && e.code === 'PARSE_TIMEOUT' ? e.message : '파일을 읽을 수 없습니다. (xlsx/csv만 지원)';
+      return res.status(400).json({ error: msg });
+    }
 
-  await updateBudget(companyId, async (data) => {
-    rows.forEach(row => {
-      const dept = row['구분'];
-      if (!dept || dept === '계') return;
+    const companyId = req.auth.companyId || null;
+    let upserted = 0;
 
-      MONTHS.forEach(m => {
-        const value = toNumber(row[`${m}월`]);
-        if (value === null) return;
-        const existing = data.headcount.find(h => h.dept === dept && h.month === m);
-        if (existing) {
-          existing.count = value;
-        } else {
-          data.headcount.push({ dept, month: m, count: value });
-        }
-        upserted++;
+    await updateBudget(companyId, async (data) => {
+      rows.forEach(row => {
+        const dept = row['구분'];
+        if (!dept || dept === '계') return;
+
+        MONTHS.forEach(m => {
+          const value = toNumber(row[`${m}월`]);
+          if (value === null) return;
+          const existing = data.headcount.find(h => h.dept === dept && h.month === m);
+          if (existing) {
+            existing.count = value;
+          } else {
+            data.headcount.push({ dept, month: m, count: value });
+          }
+          upserted++;
+        });
+      });
+
+      data.uploads.push({
+        type: 'headcount',
+        filename: req.file.originalname,
+        uploadedAt: new Date().toISOString(),
+        rows: rows.length
       });
     });
+    res.json({ message: '인원 현황이 반영되었습니다.', upserted, depts: [...new Set(rows.map(r => r['구분']).filter(Boolean))] });
 
-    data.uploads.push({
-      type: 'headcount',
-      filename: req.file.originalname,
-      uploadedAt: new Date().toISOString(),
-      rows: rows.length
-    });
-  });
-  res.json({ message: '인원 현황이 반영되었습니다.', upserted, depts: [...new Set(rows.map(r => r['구분']).filter(Boolean))] });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // 사업부/팀별 예산 상세(판관/용역/경상) 업로드 (두번째 파일)
 router.post('/upload/detail', upload.single('file'), async (req, res) => {
-  if (!requireAdmin(req, res)) return;
-  if (!req.file) return res.status(400).json({ error: '파일이 필요합니다.' });
-
-  let rows;
   try {
-    rows = parseSheet(req.file.buffer, req.file.originalname);
-  } catch (e) {
-    return res.status(400).json({ error: '파일을 읽을 수 없습니다. (xlsx/csv만 지원)' });
-  }
+    if (!requireAdmin(req, res)) return;
+    if (!req.file) return res.status(400).json({ error: '파일이 필요합니다.' });
 
-  const companyId = req.auth.companyId || null;
-  let upserted = 0;
+    let rows;
+    try {
+      rows = await parseSheetIsolated(req.file.buffer, req.file.originalname);
+    } catch (e) {
+      const msg = e && e.code === 'PARSE_TIMEOUT' ? e.message : '파일을 읽을 수 없습니다. (xlsx/csv만 지원)';
+      return res.status(400).json({ error: msg });
+    }
 
-  await updateBudget(companyId, async (data) => {
-    rows.forEach(row => {
-      const dept = row['부문'];
-      const category = row['구분'];
-      if (!dept || dept === '계' || !category || !CATEGORIES.includes(category)) return;
+    const companyId = req.auth.companyId || null;
+    let upserted = 0;
 
-      const team = row['팀'] || row['팀명'] || '';
-      const revenueType = row['매출구분'] || '';
-      const account = row['항목'] || '';
-      const detail = row['세부내역(산정근거)'] || row['세부내역'] || '';
-      // 비용 귀속 부문: 실제 비용을 쓰는 팀(부문/팀)과 그 비용이 손익상 귀속되는 부문이
-      // 다를 수 있어(예: 기획팀이 발생시킨 비용이 경영지원부문 예산으로 잡히는 경우) 별도
-      // 컬럼으로 받는다. 비어있으면 부문(dept)과 동일하게 취급(기존 업로드 파일과의 하위호환).
-      const costDept = row['비용 귀속 부문'] || row['비용귀속부문'] || dept;
-      const note = row['비고'] || '';
+    await updateBudget(companyId, async (data) => {
+      rows.forEach(row => {
+        const dept = row['부문'];
+        const category = row['구분'];
+        if (!dept || dept === '계' || !category || !CATEGORIES.includes(category)) return;
 
-      MONTHS.forEach(m => {
-        const amount = toNumber(row[`${m}월`]);
-        if (amount === null) return;
-        const existing = data.items.find(i =>
-          i.dept === dept && i.team === team && i.account === account &&
-          i.category === category && i.month === m && (i.costDept || i.dept) === costDept
-        );
-        if (existing) {
-          existing.amount = amount;
-          existing.revenueType = revenueType;
-          existing.detail = detail;
-          existing.costDept = costDept;
-          existing.note = note;
-        } else {
-          data.items.push({ dept, team, revenueType, account, detail, category, costDept, note, month: m, amount });
-        }
-        upserted++;
+        const team = row['팀'] || row['팀명'] || '';
+        const revenueType = row['매출구분'] || '';
+        const account = row['항목'] || '';
+        const detail = row['세부내역(산정근거)'] || row['세부내역'] || '';
+        // 비용 귀속 부문: 실제 비용을 쓰는 팀(부문/팀)과 그 비용이 손익상 귀속되는 부문이
+        // 다를 수 있어(예: 기획팀이 발생시킨 비용이 경영지원부문 예산으로 잡히는 경우) 별도
+        // 컬럼으로 받는다. 비어있으면 부문(dept)과 동일하게 취급(기존 업로드 파일과의 하위호환).
+        const costDept = row['비용 귀속 부문'] || row['비용귀속부문'] || dept;
+        const note = row['비고'] || '';
+
+        MONTHS.forEach(m => {
+          const amount = toNumber(row[`${m}월`]);
+          if (amount === null) return;
+          const existing = data.items.find(i =>
+            i.dept === dept && i.team === team && i.account === account &&
+            i.category === category && i.month === m && (i.costDept || i.dept) === costDept
+          );
+          if (existing) {
+            existing.amount = amount;
+            existing.revenueType = revenueType;
+            existing.detail = detail;
+            existing.costDept = costDept;
+            existing.note = note;
+          } else {
+            data.items.push({ dept, team, revenueType, account, detail, category, costDept, note, month: m, amount });
+          }
+          upserted++;
+        });
+      });
+
+      data.uploads.push({
+        type: 'detail',
+        filename: req.file.originalname,
+        uploadedAt: new Date().toISOString(),
+        rows: rows.length
       });
     });
+    res.json({ message: '예산 상세(판관/용역/경상) 내역이 반영되었습니다.', upserted, depts: [...new Set(rows.map(r => r['부문']).filter(Boolean))] });
 
-    data.uploads.push({
-      type: 'detail',
-      filename: req.file.originalname,
-      uploadedAt: new Date().toISOString(),
-      rows: rows.length
-    });
-  });
-  res.json({ message: '예산 상세(판관/용역/경상) 내역이 반영되었습니다.', upserted, depts: [...new Set(rows.map(r => r['부문']).filter(Boolean))] });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // 원본 데이터 조회
 router.get('/data', async (req, res) => {
-  if (!requireAdmin(req, res)) return;
-  res.json(await readBudget(req.auth.companyId || null));
+  try {
+    if (!requireAdmin(req, res)) return;
+    res.json(await readBudget(req.auth.companyId || null));
+
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // 업로드 이력
 router.get('/uploads', async (req, res) => {
-  if (!requireAdmin(req, res)) return;
-  const data = await readBudget(req.auth.companyId || null);
-  res.json({ uploads: data.uploads });
+  try {
+    if (!requireAdmin(req, res)) return;
+    const data = await readBudget(req.auth.companyId || null);
+    res.json({ uploads: data.uploads });
+
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // 사업부별/월별 통합 요약 (인원 + 판관/용역/경상 합산, 중복 제외)
@@ -948,43 +1058,46 @@ router.get('/uploads', async (req, res) => {
 // 보여주므로 groupBy와 무관하게 항상 동일 — "전사"와 "조직단위" 양쪽을 같은 응답으로
 // 커버). 인원 현황(headcount)은 비용귀속부문 개념이 없어 groupBy=costDept일 때는 항상 null.
 router.get('/summary', async (req, res) => {
-  if (!requireAdmin(req, res)) return;
-  const data = await readBudget(req.auth.companyId || null);
-  const groupBy = req.query.groupBy === 'costDept' ? 'costDept' : 'dept';
-  const keyOf = item => (groupBy === 'costDept' ? (item.costDept || item.dept) : item.dept);
+  try {
+    if (!requireAdmin(req, res)) return;
+    const data = await readBudget(req.auth.companyId || null);
+    const groupBy = req.query.groupBy === 'costDept' ? 'costDept' : 'dept';
+    const keyOf = item => (groupBy === 'costDept' ? (item.costDept || item.dept) : item.dept);
 
-  const groups = [...new Set([
-    ...(groupBy === 'dept' ? data.headcount.map(h => h.dept) : []),
-    ...data.items.map(keyOf)
-  ])].filter(Boolean);
+    const groups = [...new Set([
+      ...(groupBy === 'dept' ? data.headcount.map(h => h.dept) : []),
+      ...data.items.map(keyOf)
+    ])].filter(Boolean);
 
-  const summary = groups.map(groupKey => {
-    const months = MONTHS.map(m => {
-      const headcountEntry = groupBy === 'dept' ? data.headcount.find(h => h.dept === groupKey && h.month === m) : null;
-      const groupItems = data.items.filter(i => keyOf(i) === groupKey && i.month === m);
+    const summary = groups.map(groupKey => {
+      const months = MONTHS.map(m => {
+        const headcountEntry = groupBy === 'dept' ? data.headcount.find(h => h.dept === groupKey && h.month === m) : null;
+        const groupItems = data.items.filter(i => keyOf(i) === groupKey && i.month === m);
 
-      const byCategory = {};
-      CATEGORIES.forEach(c => { byCategory[c] = 0; });
-      groupItems.forEach(i => { byCategory[i.category] += i.amount; });
+        const byCategory = {};
+        CATEGORIES.forEach(c => { byCategory[c] = 0; });
+        groupItems.forEach(i => { byCategory[i.category] += i.amount; });
 
-      // 항목 단위로 이미 고유 키(부서+팀+항목+구분+월+비용귀속부문)로 upsert 되어 있으므로
-      // 단순 합산해도 중복이 발생하지 않음
-      const totalAmount = groupItems.reduce((sum, i) => sum + i.amount, 0);
+        // 항목 단위로 이미 고유 키(부서+팀+항목+구분+월+비용귀속부문)로 upsert 되어 있으므로
+        // 단순 합산해도 중복이 발생하지 않음
+        const totalAmount = groupItems.reduce((sum, i) => sum + i.amount, 0);
 
-      return {
-        month: m,
-        headcount: headcountEntry ? headcountEntry.count : null,
-        ...byCategory,
-        totalAmount,
-        hasHeadcountData: !!headcountEntry,
-        hasDetailData: groupItems.length > 0
-      };
+        return {
+          month: m,
+          headcount: headcountEntry ? headcountEntry.count : null,
+          ...byCategory,
+          totalAmount,
+          hasHeadcountData: !!headcountEntry,
+          hasDetailData: groupItems.length > 0
+        };
+      });
+
+      return { dept: groupKey, months };
     });
 
-    return { dept: groupKey, months };
-  });
+    res.json({ summary, groupBy });
 
-  res.json({ summary, groupBy });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // 데이터 초기화 (본인 회사 데이터만 — 다른 회사 데이터는 건드리지 않음)
@@ -995,144 +1108,165 @@ router.get('/summary', async (req, res) => {
 // 예상치 못하게 사업계획 시나리오를 통째로 잃게 된다. businessPlans/budgetPlanSettings는
 // 보존한다.
 router.delete('/data', async (req, res) => {
-  if (!requireAdmin(req, res)) return;
-  const companyId = req.auth.companyId || null;
-  // businessPlans/budgetPlanSettings와 마찬가지로 empPayPlans(개인별 급여 상세 계획)·
-  // empPayPlanSettings(그 화면의 자동계산 요율 설정, 기존에 누락돼 있던 것을 함께 수정)·
-  // headcountPlans(월별 인원 계획, 엑셀 업로드지만 사업계획 롤업에 쓰이는 계획 데이터라
-  // budget.html의 "실적 업로드" 초기화 범위 밖)도 파일 "업로드"(실적/현황) 데이터가
-  // 아니라 화면/사업계획 쪽에서 관리하는 별개 데이터라 함께 보존한다.
-  await updateBudget(companyId, async (data) => {
-    const kept = {
-      businessPlans: data.businessPlans,
-      budgetPlanSettings: data.budgetPlanSettings,
-      empPayPlans: data.empPayPlans,
-      empPayPlanSettings: data.empPayPlanSettings,
-      headcountPlans: data.headcountPlans,
-    };
-    Object.assign(data, _emptyCompanyBudget(), kept);
-  });
-  res.json({ message: '예산 데이터가 초기화되었습니다.' });
+  try {
+    if (!requireAdmin(req, res)) return;
+    const companyId = req.auth.companyId || null;
+    // businessPlans/budgetPlanSettings와 마찬가지로 empPayPlans(개인별 급여 상세 계획)·
+    // empPayPlanSettings(그 화면의 자동계산 요율 설정, 기존에 누락돼 있던 것을 함께 수정)·
+    // headcountPlans(월별 인원 계획, 엑셀 업로드지만 사업계획 롤업에 쓰이는 계획 데이터라
+    // budget.html의 "실적 업로드" 초기화 범위 밖)도 파일 "업로드"(실적/현황) 데이터가
+    // 아니라 화면/사업계획 쪽에서 관리하는 별개 데이터라 함께 보존한다.
+    await updateBudget(companyId, async (data) => {
+      const kept = {
+        businessPlans: data.businessPlans,
+        budgetPlanSettings: data.budgetPlanSettings,
+        empPayPlans: data.empPayPlans,
+        empPayPlanSettings: data.empPayPlanSettings,
+        headcountPlans: data.headcountPlans,
+      };
+      Object.assign(data, _emptyCompanyBudget(), kept);
+    });
+    res.json({ message: '예산 데이터가 초기화되었습니다.' });
+
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // ── 개인별 급여 상세(계획용, 3단계 자료 연계의 1단계) ──────────────────────────
 // 직원별·연도별로 표준 판관비 항목(급여 세부/복리후생비/RSU 등) 각각의 연간 금액을
 // 입력해두는 화면의 백엔드. 민감한 개인별 급여 정보라 조회·입력 모두 관리자 전용.
 router.get('/emp-pay-plan', async (req, res) => {
-  if (!requireAdmin(req, res)) return;
-  const companyId = req.auth.companyId || null;
-  const data = await readBudget(companyId);
-  const year = req.query.year ? Number(req.query.year) : null;
-  const plans = year ? data.empPayPlans.filter(p => p.year === year) : data.empPayPlans;
-  res.json({ ok: true, plans });
+  try {
+    if (!requireAdmin(req, res)) return;
+    const companyId = req.auth.companyId || null;
+    const data = await readBudget(companyId);
+    const year = req.query.year ? Number(req.query.year) : null;
+    const plans = year ? data.empPayPlans.filter(p => p.year === year) : data.empPayPlans;
+    res.json({ ok: true, plans });
+
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 router.post('/emp-pay-plan', async (req, res) => {
-  if (!requireAdmin(req, res)) return;
-  const companyId = req.auth.companyId || null;
-  const body = req.body || {};
-  const empId = body.empId;
-  const year = Number(body.year);
-  if (empId === undefined || empId === null || !Number.isFinite(year)) {
-    return res.status(400).json({ error: 'empId와 year는 필수입니다.' });
-  }
-  if (!Array.isArray(body.items)) return res.status(400).json({ error: 'items는 배열이어야 합니다.' });
-  const rawItems = body.items.map(it => ({
-    category: (it && it.category) || '',
-    name: (it && it.name) || '',
-    amount: Number(it && it.amount) || 0,
-  })).filter(it => it.name);
-  const items = rawItems.filter(it => it.amount !== 0);
-  // mode:'merge' — 엑셀 업로드처럼 "파일에 있는 항목만" 반영해야 하는 경우.
-  // 기본(mode 없음)은 기존처럼 전체 교체 = 화면 그리드가 36개 항목을 모두 제출하는
-  // 정상 경로이며, 사용자가 어떤 항목을 일부러 비운 것도 그대로 반영돼야 하므로 옳다.
-  // 그런데 엑셀 업로드는 헤더 이름이 표준 항목명과 완전히 일치하는 열만 인식하므로,
-  // 열 제목에 공백 하나만 달라도 그 항목이 인식되지 않는다 — 전체 교체로 처리하면
-  // 36개가 저장된 직원에게 1개 열만 인식된 파일을 올렸을 때 나머지 35개가 조용히
-  // 사라진다(실측 지적). merge에서는 파일에 실제로 등장한 항목명만 갱신하고,
-  // 파일에서 0으로 명시한 항목은 삭제로 간주한다(등장하지 않은 항목은 그대로 보존).
-  const mergeMode = body.mode === 'merge';
-  const presentNames = new Set(rawItems.map(it => it.name));
-  // 퇴직급여 증가분 자동계산에 쓰이는 개인별 파라미터 — items와 별개로 저장(계산에
-  // 필요한 "가정값"일 뿐 그 자체가 판관비 라인 항목은 아님).
-  const severanceType = body.severanceType === 'DB' ? 'DB' : (body.severanceType === 'DC' ? 'DC' : null);
-  const severanceMultiplier = body.severanceMultiplier !== undefined ? (Number(body.severanceMultiplier) || 1) : undefined;
-  const severanceBaseline = body.severanceBaseline !== undefined ? (Number(body.severanceBaseline) || 0) : undefined;
-
-  let resultPlans;
-  await updateBudget(companyId, async (data) => {
-    const existing = data.empPayPlans.find(p => String(p.empId) === String(empId) && p.year === year);
-    const now = new Date().toISOString();
-    if (existing) {
-      existing.empName = body.empName || existing.empName;
-      if (mergeMode) {
-        const kept = (existing.items || []).filter(prev => !presentNames.has(prev.name));
-        existing.items = kept.concat(items);
-      } else {
-        existing.items = items;
-      }
-      if (severanceType !== null || body.severanceType !== undefined) existing.severanceType = severanceType;
-      if (severanceMultiplier !== undefined) existing.severanceMultiplier = severanceMultiplier;
-      if (severanceBaseline !== undefined) existing.severanceBaseline = severanceBaseline;
-      existing.updatedAt = now;
-    } else {
-      data.empPayPlans.push({
-        id: `epp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-        empId, empName: body.empName || '', year, items,
-        severanceType, severanceMultiplier: severanceMultiplier !== undefined ? severanceMultiplier : 1, severanceBaseline: severanceBaseline || 0,
-        createdAt: now, updatedAt: now,
-      });
+  try {
+    if (!requireAdmin(req, res)) return;
+    if (!requirePage(req, res, "emp-pay-plan")) return;
+    const companyId = req.auth.companyId || null;
+    const body = req.body || {};
+    const empId = body.empId;
+    const year = Number(body.year);
+    if (empId === undefined || empId === null || !Number.isFinite(year)) {
+      return res.status(400).json({ error: 'empId와 year는 필수입니다.' });
     }
-    resultPlans = data.empPayPlans.filter(p => p.year === year);
-  });
-  res.json({ ok: true, plans: resultPlans });
+    if (!Array.isArray(body.items)) return res.status(400).json({ error: 'items는 배열이어야 합니다.' });
+    const rawItems = body.items.map(it => ({
+      category: (it && it.category) || '',
+      name: (it && it.name) || '',
+      amount: Number(it && it.amount) || 0,
+    })).filter(it => it.name);
+    const items = rawItems.filter(it => it.amount !== 0);
+    // mode:'merge' — 엑셀 업로드처럼 "파일에 있는 항목만" 반영해야 하는 경우.
+    // 기본(mode 없음)은 기존처럼 전체 교체 = 화면 그리드가 36개 항목을 모두 제출하는
+    // 정상 경로이며, 사용자가 어떤 항목을 일부러 비운 것도 그대로 반영돼야 하므로 옳다.
+    // 그런데 엑셀 업로드는 헤더 이름이 표준 항목명과 완전히 일치하는 열만 인식하므로,
+    // 열 제목에 공백 하나만 달라도 그 항목이 인식되지 않는다 — 전체 교체로 처리하면
+    // 36개가 저장된 직원에게 1개 열만 인식된 파일을 올렸을 때 나머지 35개가 조용히
+    // 사라진다(실측 지적). merge에서는 파일에 실제로 등장한 항목명만 갱신하고,
+    // 파일에서 0으로 명시한 항목은 삭제로 간주한다(등장하지 않은 항목은 그대로 보존).
+    const mergeMode = body.mode === 'merge';
+    const presentNames = new Set(rawItems.map(it => it.name));
+    // 퇴직급여 증가분 자동계산에 쓰이는 개인별 파라미터 — items와 별개로 저장(계산에
+    // 필요한 "가정값"일 뿐 그 자체가 판관비 라인 항목은 아님).
+    const severanceType = body.severanceType === 'DB' ? 'DB' : (body.severanceType === 'DC' ? 'DC' : null);
+    const severanceMultiplier = body.severanceMultiplier !== undefined ? (Number(body.severanceMultiplier) || 1) : undefined;
+    const severanceBaseline = body.severanceBaseline !== undefined ? (Number(body.severanceBaseline) || 0) : undefined;
+
+    let resultPlans;
+    await updateBudget(companyId, async (data) => {
+      const existing = data.empPayPlans.find(p => String(p.empId) === String(empId) && p.year === year);
+      const now = new Date().toISOString();
+      if (existing) {
+        existing.empName = body.empName || existing.empName;
+        if (mergeMode) {
+          const kept = (existing.items || []).filter(prev => !presentNames.has(prev.name));
+          existing.items = kept.concat(items);
+        } else {
+          existing.items = items;
+        }
+        if (severanceType !== null || body.severanceType !== undefined) existing.severanceType = severanceType;
+        if (severanceMultiplier !== undefined) existing.severanceMultiplier = severanceMultiplier;
+        if (severanceBaseline !== undefined) existing.severanceBaseline = severanceBaseline;
+        existing.updatedAt = now;
+      } else {
+        data.empPayPlans.push({
+          id: `epp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+          empId, empName: body.empName || '', year, items,
+          severanceType, severanceMultiplier: severanceMultiplier !== undefined ? severanceMultiplier : 1, severanceBaseline: severanceBaseline || 0,
+          createdAt: now, updatedAt: now,
+        });
+      }
+      resultPlans = data.empPayPlans.filter(p => p.year === year);
+    });
+    res.json({ ok: true, plans: resultPlans });
+
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // 개인별 급여 상세 자동계산(퇴직급여 증가분, 4대보험+주민세)에 쓰이는 요율 설정 —
 // admin 전용(설정 조회 자체가 emp-pay-plan 화면 전용 정보이므로 조회 화면과 동일한
 // 인가 수준을 맞춘다).
 router.get('/emp-pay-plan/settings', async (req, res) => {
-  if (!requireAdmin(req, res)) return;
-  const data = await readBudget(req.auth.companyId || null);
-  res.json({ ok: true, settings: data.empPayPlanSettings });
+  try {
+    if (!requireAdmin(req, res)) return;
+    const data = await readBudget(req.auth.companyId || null);
+    res.json({ ok: true, settings: data.empPayPlanSettings });
+
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 router.post('/emp-pay-plan/settings', async (req, res) => {
-  if (!requireAdmin(req, res)) return;
-  const companyId = req.auth.companyId || null;
-  const body = req.body || {};
-  let resultSettings;
-  await updateBudget(companyId, async (data) => {
-    if (body.severance) {
-      data.empPayPlanSettings.severance = {
-        dcRate: Number(body.severance.dcRate) || 0,
-        dbMonthsPerYear: Number(body.severance.dbMonthsPerYear) || 0,
-      };
-    }
-    if (body.socialInsurance) {
-      data.empPayPlanSettings.socialInsurance = {
-        pension: Number(body.socialInsurance.pension) || 0,
-        health: Number(body.socialInsurance.health) || 0,
-        longTermCare: Number(body.socialInsurance.longTermCare) || 0,
-        employment: Number(body.socialInsurance.employment) || 0,
-        localTax: Number(body.socialInsurance.localTax) || 0,
-      };
-    }
-    resultSettings = data.empPayPlanSettings;
-  });
-  res.json({ ok: true, settings: resultSettings });
+  try {
+    if (!requireAdmin(req, res)) return;
+    if (!requirePage(req, res, "emp-pay-plan")) return;
+    const companyId = req.auth.companyId || null;
+    const body = req.body || {};
+    let resultSettings;
+    await updateBudget(companyId, async (data) => {
+      if (body.severance) {
+        data.empPayPlanSettings.severance = {
+          dcRate: Number(body.severance.dcRate) || 0,
+          dbMonthsPerYear: Number(body.severance.dbMonthsPerYear) || 0,
+        };
+      }
+      if (body.socialInsurance) {
+        data.empPayPlanSettings.socialInsurance = {
+          pension: Number(body.socialInsurance.pension) || 0,
+          health: Number(body.socialInsurance.health) || 0,
+          longTermCare: Number(body.socialInsurance.longTermCare) || 0,
+          employment: Number(body.socialInsurance.employment) || 0,
+          localTax: Number(body.socialInsurance.localTax) || 0,
+        };
+      }
+      resultSettings = data.empPayPlanSettings;
+    });
+    res.json({ ok: true, settings: resultSettings });
+
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 router.delete('/emp-pay-plan/:id', async (req, res) => {
-  if (!requireAdmin(req, res)) return;
-  const companyId = req.auth.companyId || null;
-  const found = await updateBudget(companyId, async (data) => {
-    const idx = data.empPayPlans.findIndex(p => p.id === req.params.id);
-    if (idx === -1) return false;
-    data.empPayPlans.splice(idx, 1);
-    return true;
-  });
-  if (!found) return res.status(404).json({ error: '데이터를 찾을 수 없습니다.' });
-  res.json({ ok: true });
+  try {
+    if (!requireAdmin(req, res)) return;
+    if (!requirePage(req, res, "emp-pay-plan")) return;
+    const companyId = req.auth.companyId || null;
+    const found = await updateBudget(companyId, async (data) => {
+      const idx = data.empPayPlans.findIndex(p => p.id === req.params.id);
+      if (idx === -1) return false;
+      data.empPayPlans.splice(idx, 1);
+      return true;
+    });
+    if (!found) return res.status(404).json({ error: '데이터를 찾을 수 없습니다.' });
+    res.json({ ok: true });
+
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 module.exports = function budgetRouterFactory(deps) {
@@ -1168,27 +1302,30 @@ module.exports = function budgetRouterFactory(deps) {
   // 허용 — 스코프 밖 id는 조용히 걸러내고(정상 클라이언트는 애초에 스코프 안의 id만 보내므로
   // 걸러졌는지 자체를 알 필요가 없다) 남은 id로만 계속 진행한다.
   router.get('/emp-pay-plan/by-ids', async (req, res) => {
-    if (!requireAuth(req, res)) return;
-    const companyId = req.auth.companyId || null;
-    const year = req.query.year ? Number(req.query.year) : null;
-    let ids = String(req.query.ids || '').split(',').map(s => s.trim()).filter(Boolean);
-    if (!year || !ids.length) return res.json({ ok: true, plans: [] });
-    if (req.auth.role !== 'admin') {
-      const me = await getEmployeeProfile(companyId, req.auth.empId);
-      const scopes = await getEmployeeScopes(companyId, ids);
-      ids = ids.filter(id => {
-        if (String(id) === String(req.auth.empId)) return true;
-        const target = scopes[String(id)];
-        if (!me || !target) return false;
-        if (req.auth.role === 'director') return target.dept === me.dept;
-        return target.dept === me.dept && target.team === me.team;
-      });
-      if (!ids.length) return res.json({ ok: true, plans: [] });
-    }
-    const data = await readBudget(companyId);
-    const plans = data.empPayPlans.filter(p => p.year === year && ids.includes(String(p.empId)));
-    res.json({ ok: true, plans });
-  });
+  try {
+      if (!requireAuth(req, res)) return;
+      const companyId = req.auth.companyId || null;
+      const year = req.query.year ? Number(req.query.year) : null;
+      let ids = String(req.query.ids || '').split(',').map(s => s.trim()).filter(Boolean);
+      if (!year || !ids.length) return res.json({ ok: true, plans: [] });
+      if (req.auth.role !== 'admin') {
+        const me = await getEmployeeProfile(companyId, req.auth.empId);
+        const scopes = await getEmployeeScopes(companyId, ids);
+        ids = ids.filter(id => {
+          if (String(id) === String(req.auth.empId)) return true;
+          const target = scopes[String(id)];
+          if (!me || !target) return false;
+          if (req.auth.role === 'director') return target.dept === me.dept;
+          return target.dept === me.dept && target.team === me.team;
+        });
+        if (!ids.length) return res.json({ ok: true, plans: [] });
+      }
+      const data = await readBudget(companyId);
+      const plans = data.empPayPlans.filter(p => p.year === year && ids.includes(String(p.empId)));
+      res.json({ ok: true, plans });
+  
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
 
   // ── 사업계획 워크플로우 설정(예산담당자/기획팀장 지정, 입력기간 on/off) ──────────
 
@@ -1196,49 +1333,60 @@ module.exports = function budgetRouterFactory(deps) {
   // 전용으로 가두지 않는다. ownerIds/teamLeaderId 자체(누가 담당자인지)를 아는 것도
   // 민감정보가 아니다(오히려 몰라야 문의를 못 함).
   router.get('/business-plan/settings', async (req, res) => {
-    if (!requireAuth(req, res)) return;
-    const data = await readBudget(req.auth.companyId || null);
-    res.json({ ok: true, settings: data.budgetPlanSettings });
-  });
+  try {
+      if (!requireAuth(req, res)) return;
+      const data = await readBudget(req.auth.companyId || null);
+      res.json({ ok: true, settings: data.budgetPlanSettings });
+  
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
 
   // 예산담당자/기획팀장 지정 자체는 관리자만(민감한 권한 부여이므로 다른 지정 패턴
   // — 저성과자 관리 뷰어 등 — 과 동일하게 admin 전용).
   router.post('/business-plan/settings/roster', async (req, res) => {
-    if (!requireAdmin(req, res)) return;
-    const companyId = req.auth.companyId || null;
-    const body = req.body || {};
-    if (body.ownerIds !== undefined && !Array.isArray(body.ownerIds)) {
-      return res.status(400).json({ error: 'ownerIds는 배열이어야 합니다.' });
-    }
-    let resultSettings;
-    await updateBudget(companyId, async (data) => {
-      if (body.ownerIds !== undefined) data.budgetPlanSettings.ownerIds = body.ownerIds.map(String);
-      if (body.teamLeaderId !== undefined) {
-        data.budgetPlanSettings.teamLeaderId = body.teamLeaderId === null ? null : String(body.teamLeaderId);
+  try {
+      if (!requireAdmin(req, res)) return;
+      if (!requirePage(req, res, "biz-plan")) return;
+      const companyId = req.auth.companyId || null;
+      const body = req.body || {};
+      if (body.ownerIds !== undefined && !Array.isArray(body.ownerIds)) {
+        return res.status(400).json({ error: 'ownerIds는 배열이어야 합니다.' });
       }
-      resultSettings = data.budgetPlanSettings;
-    });
-    res.json({ ok: true, settings: resultSettings });
-  });
+      let resultSettings;
+      await updateBudget(companyId, async (data) => {
+        if (body.ownerIds !== undefined) data.budgetPlanSettings.ownerIds = body.ownerIds.map(String);
+        if (body.teamLeaderId !== undefined) {
+          data.budgetPlanSettings.teamLeaderId = body.teamLeaderId === null ? null : String(body.teamLeaderId);
+        }
+        resultSettings = data.budgetPlanSettings;
+      });
+      res.json({ ok: true, settings: resultSettings });
+  
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
 
   // 입력기간 on/off: 예산담당자·기획팀장·관리자만(사용자 요청 그대로).
   router.post('/business-plan/settings/input-window', async (req, res) => {
-    if (!requireAuth(req, res)) return;
-    const companyId = req.auth.companyId || null;
-    const isAdmin = req.auth.role === 'admin';
-    const open = !!(req.body && req.body.inputOpen);
-    let forbidden = false, resultSettings;
-    await updateBudget(companyId, async (data) => {
-      if (!_isBudgetOwner(isAdmin, data.budgetPlanSettings, req.auth.empId) && !_isPlanningLead(isAdmin, data.budgetPlanSettings, req.auth.empId)) {
-        forbidden = true;
-        return;
-      }
-      data.budgetPlanSettings.inputOpen = open;
-      resultSettings = data.budgetPlanSettings;
-    });
-    if (forbidden) return res.status(403).json({ error: '예산담당자, 기획팀장, 관리자만 입력기간을 설정할 수 있습니다.' });
-    res.json({ ok: true, settings: resultSettings });
-  });
+  try {
+      if (!requireAuth(req, res)) return;
+      if (!requirePage(req, res, "biz-plan")) return;
+      const companyId = req.auth.companyId || null;
+      const isAdmin = req.auth.role === 'admin';
+      const open = !!(req.body && req.body.inputOpen);
+      let forbidden = false, resultSettings;
+      await updateBudget(companyId, async (data) => {
+        if (!_isBudgetOwner(isAdmin, data.budgetPlanSettings, req.auth.empId) && !_isPlanningLead(isAdmin, data.budgetPlanSettings, req.auth.empId)) {
+          forbidden = true;
+          return;
+        }
+        data.budgetPlanSettings.inputOpen = open;
+        resultSettings = data.budgetPlanSettings;
+      });
+      if (forbidden) return res.status(403).json({ error: '예산담당자, 기획팀장, 관리자만 입력기간을 설정할 수 있습니다.' });
+      res.json({ ok: true, settings: resultSettings });
+  
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
 
   // ── 사업계획(팀별 작성 → 사업부장 승인 → 예산담당자+기획팀장 최종확정) ──────────
 
@@ -1247,26 +1395,32 @@ module.exports = function budgetRouterFactory(deps) {
   // 미리 판단하려면 이 정보가 필요하다(QA에서 발견: 권한 없는 사용자에게도 승인 버튼이
   // 노출되던 문제 — 서버 인가 자체는 항상 정확했지만 UI가 사전 판단할 재료가 없었음).
   router.get('/business-plan/my-profile', async (req, res) => {
-    if (!requireAuth(req, res)) return;
-    const companyId = req.auth.companyId || null;
-    const profile = await getEmployeeProfile(companyId, req.auth.empId);
-    res.json({ ok: true, profile });
-  });
+  try {
+      if (!requireAuth(req, res)) return;
+      const companyId = req.auth.companyId || null;
+      const profile = await getEmployeeProfile(companyId, req.auth.empId);
+      res.json({ ok: true, profile });
+  
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
 
   // 목록 조회: 관리자/예산담당자/기획팀장은 전체, 사업부장은 자기 dept, 팀원/팀장은
   // 자기 dept+team 계획만 본다.
   router.get('/business-plan', async (req, res) => {
-    if (!requireAuth(req, res)) return;
-    const companyId = req.auth.companyId || null;
-    const data = await readBudget(companyId);
-    const isAdmin = req.auth.role === 'admin';
-    const profile = await getEmployeeProfile(companyId, req.auth.empId);
-    const visible = data.businessPlans.filter(p => _canViewPlan(isAdmin, profile, data.budgetPlanSettings, req.auth.empId, p));
-    // budgetComparison은 저장된 값이 아니라 조회 시점 실제 업로드 데이터 기준으로 매번
-    // 재계산(계획 저장 이후에도 실적 업로드가 바뀔 수 있으므로) — 응답에만 얹고 저장하지 않음.
-    const plans = visible.map(p => ({ ...p, ..._freshPlanCalc(p), budgetComparison: computeBudgetComparison(data, p) }));
-    res.json({ ok: true, plans });
-  });
+  try {
+      if (!requireAuth(req, res)) return;
+      const companyId = req.auth.companyId || null;
+      const data = await readBudget(companyId);
+      const isAdmin = req.auth.role === 'admin';
+      const profile = await getEmployeeProfile(companyId, req.auth.empId);
+      const visible = data.businessPlans.filter(p => _canViewPlan(isAdmin, profile, data.budgetPlanSettings, req.auth.empId, p));
+      // budgetComparison은 저장된 값이 아니라 조회 시점 실제 업로드 데이터 기준으로 매번
+      // 재계산(계획 저장 이후에도 실적 업로드가 바뀔 수 있으므로) — 응답에만 얹고 저장하지 않음.
+      const plans = visible.map(p => ({ ...p, ..._freshPlanCalc(p), budgetComparison: computeBudgetComparison(data, p) }));
+      res.json({ ok: true, plans });
+  
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
 
   // 회사/사업부 롤업: 팀별 계획(dept가 있는 것만, 레거시 스크래치 계획은 제외)을 연도(절대
   // 연도) 기준으로 합산한다. 기본은 사업부장 승인 이상(divisionApproved/finalConfirmed)만
@@ -1274,85 +1428,94 @@ module.exports = function budgetRouterFactory(deps) {
   // 신뢰할 수 없는 집계가 되기 때문. ?includeDraft=true로 draft까지 포함해 볼 수 있다.
   // 접근: 관리자/예산담당자/기획팀장은 전체, 사업부장은 자기 dept만.
   router.get('/business-plan/rollup', async (req, res) => {
-    if (!requireAuth(req, res)) return;
-    const companyId = req.auth.companyId || null;
-    const data = await readBudget(companyId);
-    const isAdmin = req.auth.role === 'admin';
-    const isFullAccess = isAdmin
-      || _isBudgetOwner(isAdmin, data.budgetPlanSettings, req.auth.empId)
-      || _isPlanningLead(isAdmin, data.budgetPlanSettings, req.auth.empId);
-    const profile = await getEmployeeProfile(companyId, req.auth.empId);
-    const isDirector = profile && profile.role === 'director';
-    if (!isFullAccess && !isDirector) {
-      return res.status(403).json({ error: '접근 권한이 없습니다.' });
-    }
-    const includeDraft = req.query.includeDraft === 'true';
-    let scoped = data.businessPlans.filter(p => p.dept);
-    if (!isFullAccess) scoped = scoped.filter(p => p.dept === profile.dept);
-    if (!includeDraft) scoped = scoped.filter(p => p.status === 'divisionApproved' || p.status === 'finalConfirmed');
-    // P&L 롤업(_rollup/byDept)이 저장된 스냅샷이 아니라 항상 최신 계산식 기준의 projection을
-    // 쓰도록 신선화 — _freshPlanCalc() 주석 참고(계산식이 바뀌면 예전 계획도 재저장 없이
-    // 곧바로 올바르게 집계됨). sgaByCostDept 등은 assumptions.sgaItems를 직접 쓰므로
-    // 이 신선화와 무관하게 이미 항상 최신값이다.
-    scoped = scoped.map(p => ({ ...p, ..._freshPlanCalc(p) }));
+  try {
+      if (!requireAuth(req, res)) return;
+      const companyId = req.auth.companyId || null;
+      const data = await readBudget(companyId);
+      const isAdmin = req.auth.role === 'admin';
+      const isFullAccess = isAdmin
+        || _isBudgetOwner(isAdmin, data.budgetPlanSettings, req.auth.empId)
+        || _isPlanningLead(isAdmin, data.budgetPlanSettings, req.auth.empId);
+      const profile = await getEmployeeProfile(companyId, req.auth.empId);
+      const isDirector = profile && profile.role === 'director';
+      if (!isFullAccess && !isDirector) {
+        return res.status(403).json({ error: '접근 권한이 없습니다.' });
+      }
+      const includeDraft = req.query.includeDraft === 'true';
+      let scoped = data.businessPlans.filter(p => p.dept);
+      if (!isFullAccess) scoped = scoped.filter(p => p.dept === profile.dept);
+      if (!includeDraft) scoped = scoped.filter(p => p.status === 'divisionApproved' || p.status === 'finalConfirmed');
+      // P&L 롤업(_rollup/byDept)이 저장된 스냅샷이 아니라 항상 최신 계산식 기준의 projection을
+      // 쓰도록 신선화 — _freshPlanCalc() 주석 참고(계산식이 바뀌면 예전 계획도 재저장 없이
+      // 곧바로 올바르게 집계됨). sgaByCostDept 등은 assumptions.sgaItems를 직접 쓰므로
+      // 이 신선화와 무관하게 이미 항상 최신값이다.
+      scoped = scoped.map(p => ({ ...p, ..._freshPlanCalc(p) }));
 
-    function _rollup(plans) {
-      const byYear = {};
-      plans.forEach(p => (p.projection || []).forEach(r => {
-        if (!byYear[r.year]) byYear[r.year] = { year: r.year, revenue: 0, cogs: 0, cogsFromRatio: 0, serviceCost: 0, grossProfit: 0, sga: 0, rdExpense: 0, operatingProfit: 0, netIncome: 0, freeCashFlow: 0 };
-        const acc = byYear[r.year];
-        acc.revenue += r.revenue || 0; acc.cogs += r.cogs || 0; acc.cogsFromRatio += r.cogsFromRatio || 0; acc.serviceCost += r.serviceCost || 0; acc.grossProfit += r.grossProfit || 0;
-        acc.sga += r.sga || 0; acc.rdExpense += r.rdExpense || 0; acc.operatingProfit += r.operatingProfit || 0; acc.netIncome += r.netIncome || 0;
-        acc.freeCashFlow += r.freeCashFlow || 0;
-      }));
-      return Object.values(byYear).map(r => ({
-        ...r, revenue: round2(r.revenue), cogs: round2(r.cogs), cogsFromRatio: round2(r.cogsFromRatio), serviceCost: round2(r.serviceCost), grossProfit: round2(r.grossProfit),
-        sga: round2(r.sga), rdExpense: round2(r.rdExpense), operatingProfit: round2(r.operatingProfit), netIncome: round2(r.netIncome),
-        freeCashFlow: round2(r.freeCashFlow)
-      })).sort((a, b) => a.year - b.year);
-    }
+      function _rollup(plans) {
+        const byYear = {};
+        plans.forEach(p => (p.projection || []).forEach(r => {
+          if (!byYear[r.year]) byYear[r.year] = { year: r.year, revenue: 0, cogs: 0, cogsFromRatio: 0, serviceCost: 0, grossProfit: 0, sga: 0, rdExpense: 0, operatingProfit: 0, netIncome: 0, freeCashFlow: 0 };
+          const acc = byYear[r.year];
+          acc.revenue += r.revenue || 0; acc.cogs += r.cogs || 0; acc.cogsFromRatio += r.cogsFromRatio || 0; acc.serviceCost += r.serviceCost || 0; acc.grossProfit += r.grossProfit || 0;
+          acc.sga += r.sga || 0; acc.rdExpense += r.rdExpense || 0; acc.operatingProfit += r.operatingProfit || 0; acc.netIncome += r.netIncome || 0;
+          acc.freeCashFlow += r.freeCashFlow || 0;
+        }));
+        return Object.values(byYear).map(r => ({
+          ...r, revenue: round2(r.revenue), cogs: round2(r.cogs), cogsFromRatio: round2(r.cogsFromRatio), serviceCost: round2(r.serviceCost), grossProfit: round2(r.grossProfit),
+          sga: round2(r.sga), rdExpense: round2(r.rdExpense), operatingProfit: round2(r.operatingProfit), netIncome: round2(r.netIncome),
+          freeCashFlow: round2(r.freeCashFlow)
+        })).sort((a, b) => a.year - b.year);
+      }
 
-    const depts = [...new Set(scoped.map(p => p.dept))];
-    const byDept = depts.map(dept => {
-      const deptPlans = scoped.filter(p => p.dept === dept);
-      return {
-        dept,
-        planCount: deptPlans.length,
-        plans: deptPlans.map(p => ({ id: p.id, name: p.name, team: p.team, status: p.status, planType: p.planType })),
-        projection: _rollup(deptPlans)
-      };
-    });
+      const depts = [...new Set(scoped.map(p => p.dept))];
+      const byDept = depts.map(dept => {
+        const deptPlans = scoped.filter(p => p.dept === dept);
+        return {
+          dept,
+          planCount: deptPlans.length,
+          plans: deptPlans.map(p => ({ id: p.id, name: p.name, team: p.team, status: p.status, planType: p.planType })),
+          projection: _rollup(deptPlans)
+        };
+      });
 
-    // sgaByCostDept/sgaByCategory/sgaByAccountType/sgaByExpenseAccount는 전부 화면에
-    // "(기준연도)"로 표시되는, 한 해 예산을 보기 위한 표다 — 그런데 baseAmount는 각 항목이
-    // 속한 계획의 baseYear 한 해 치 금액인데도 이 네 집계는 scoped(연도 필터 없음, 여러
-    // 연도의 계획이 함께 존재할 수 있음)를 그대로 넘겨받아 연도 구분 없이 전부 더하고
-    // 있었다 — 회사가 2027년·2028년 계획을 동시에 갖고 있으면(당연히 있을 수 있는 정상
-    // 상황, 미리 다음 해 계획을 세워두는 것) "기준연도" 표라면서 실제로는 두 해 예산을
-    // 합산해 "전사 합계"가 정확히 2배로 부풀어 보이는 문제였다(사용자 보고: "계속 중복으로
-    // 올려서 중첩된 것 아니냐" — 실측 결과 항목 자체의 중복이 아니라 이 집계 함수들이
-    // 연도를 안 가리는 것이 원인이었음, 회사 전체 P&L(company.projection)은 연도별로
-    // 이미 올바르게 나뉘어 있어 이 문제가 없었음). ?year=를 받으면 이 네 집계만 그 연도의
-    // 계획으로 한정 — byDept/company.projection은 기존처럼 연도별 추이를 그대로 보여줘야
-    // 하므로(의도된 기능) 그쪽은 건드리지 않는다. year 파라미터를 생략하면(레거시 호출부)
-    // 기존과 동일하게 전체 연도 합산 동작 유지.
-    const sgaYear = req.query.year ? Number(req.query.year) : null;
-    const sgaScoped = sgaYear ? scoped.filter(p => p.baseYear === sgaYear) : scoped;
-    // sgaByCostDept: 위 byDept/company(P&L 롤업)와 별개로, 판관비 항목만 "비용 귀속
-    // 부문" 기준으로 재집계 — 계획을 작성한 팀과 실제 비용 귀속 부문이 다른 경우에도
-    // 전사 합계와 부문별 실집계를 함께 확인할 수 있게 한다.
-    const sgaByCostDept = _sgaRollupByCostDept(sgaScoped);
-    // sgaByCategory: 3단계 자료 연계(개인별 급여→팀별 그리드→부문별 집계표)의 마지막
-    // 단계 — 판관비 항목을 "구분"(급여/복리후생비/교육훈련비/사회보험 등)별로 나눈 뒤
-    // 그 안에서 다시 비용귀속부문 기준으로 집계.
-    const sgaByCategory = _sgaRollupByCategory(sgaScoped);
-    // sgaByAccountType/sgaByExpenseAccount: sgaByCategory와 동일한 구조로, "구분" 대신
-    // 각각 계정과목(판관/용역/경상)·비용계정(실제 회계 계정과목) 기준으로 재집계한 것.
-    const sgaByAccountType = _sgaRollupByAccountType(sgaScoped);
-    const sgaByExpenseAccount = _sgaRollupByExpenseAccount(sgaScoped);
+      // sgaByCostDept/sgaByCategory/sgaByAccountType/sgaByExpenseAccount는 전부 화면에
+      // "(기준연도)"로 표시되는, 한 해 예산을 보기 위한 표다 — 그런데 baseAmount는 각 항목이
+      // 속한 계획의 baseYear 한 해 치 금액인데도 이 네 집계는 scoped(연도 필터 없음, 여러
+      // 연도의 계획이 함께 존재할 수 있음)를 그대로 넘겨받아 연도 구분 없이 전부 더하고
+      // 있었다 — 회사가 2027년·2028년 계획을 동시에 갖고 있으면(당연히 있을 수 있는 정상
+      // 상황, 미리 다음 해 계획을 세워두는 것) "기준연도" 표라면서 실제로는 두 해 예산을
+      // 합산해 "전사 합계"가 정확히 2배로 부풀어 보이는 문제였다(사용자 보고: "계속 중복으로
+      // 올려서 중첩된 것 아니냐" — 실측 결과 항목 자체의 중복이 아니라 이 집계 함수들이
+      // 연도를 안 가리는 것이 원인이었음, 회사 전체 P&L(company.projection)은 연도별로
+      // 이미 올바르게 나뉘어 있어 이 문제가 없었음). ?year=를 받으면 이 네 집계만 그 연도의
+      // 계획으로 한정 — byDept/company.projection은 기존처럼 연도별 추이를 그대로 보여줘야
+      // 하므로(의도된 기능) 그쪽은 건드리지 않는다. year 파라미터를 생략하면(레거시 호출부)
+      // 기존과 동일하게 전체 연도 합산 동작 유지.
+      const sgaYear = req.query.year ? Number(req.query.year) : null;
+      const sgaScoped = sgaYear ? scoped.filter(p => p.baseYear === sgaYear) : scoped;
+      // sgaByCostDept: 위 byDept/company(P&L 롤업)와 별개로, 판관비 항목만 "비용 귀속
+      // 부문" 기준으로 재집계 — 계획을 작성한 팀과 실제 비용 귀속 부문이 다른 경우에도
+      // 전사 합계와 부문별 실집계를 함께 확인할 수 있게 한다.
+      const sgaByCostDept = _sgaRollupByCostDept(sgaScoped);
+      // sgaByCategory: 3단계 자료 연계(개인별 급여→팀별 그리드→부문별 집계표)의 마지막
+      // 단계 — 판관비 항목을 "구분"(급여/복리후생비/교육훈련비/사회보험 등)별로 나눈 뒤
+      // 그 안에서 다시 비용귀속부문 기준으로 집계.
+      const sgaByCategory = _sgaRollupByCategory(sgaScoped);
+      // sgaByAccountType/sgaByExpenseAccount: sgaByCategory와 동일한 구조로, "구분" 대신
+      // 각각 계정과목(판관/용역/경상)·비용계정(실제 회계 계정과목) 기준으로 재집계한 것.
+      const sgaByAccountType = _sgaRollupByAccountType(sgaScoped);
+      const sgaByExpenseAccount = _sgaRollupByExpenseAccount(sgaScoped);
+      // 매출계획 대비 실적(부문별/전사) — sgaScoped(이미 sgaYear로 한 해 계획만 걸러진
+      // 상태, 없으면 전체)를 그대로 재사용해 위 SG&A 집계들과 동일한 연도 스코프를 갖는다.
+      // ?month=를 생략하면 연간 전체(12) — 클라이언트가 "오늘이 속한 월"을 기본값으로
+      // 계산해 넘기므로(당해년도 계획을 열 때 이미 지나간 월만큼만 비교), 서버는 계산만.
+      const revenueMonthParam = req.query.month ? Number(req.query.month) : null;
+      const revenueRollup = _revenueRollupByDept(sgaScoped, revenueMonthParam);
 
-    res.json({ ok: true, includeDraft, sgaYear, byDept, company: { planCount: scoped.length, projection: _rollup(scoped) }, sgaByCostDept, sgaByCategory, sgaByAccountType, sgaByExpenseAccount });
-  });
+      res.json({ ok: true, includeDraft, sgaYear, byDept, company: { planCount: scoped.length, projection: _rollup(scoped) }, sgaByCostDept, sgaByCategory, sgaByAccountType, sgaByExpenseAccount, revenueRollup });
+  
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
 
   // 항목별 실적 참고(신규 자동화, 작성 단계 실시간 안내): 사업계획 작성/수정 폼에서 판관비
   // 항목을 입력하는 동안, 같은 부문/팀의 budget.html 업로드 실적(data.items, category==="판관")을
@@ -1376,22 +1539,25 @@ module.exports = function budgetRouterFactory(deps) {
     return Object.values(map).map(r => ({ ...r, total: round2(r.total) })).sort((a, b) => b.total - a.total);
   }
   router.get('/business-plan/actuals-by-item', async (req, res) => {
-    if (!requireAuth(req, res)) return;
-    const companyId = req.auth.companyId || null;
-    const dept = (req.query.dept || '').trim();
-    const team = (req.query.team || '').trim();
-    if (!dept) return res.json({ ok: true, items: [] });
-    const isAdmin = req.auth.role === 'admin';
-    const data = await readBudget(companyId);
-    const profile = await getEmployeeProfile(companyId, req.auth.empId);
-    const allowed = isAdmin
-      || _isBudgetOwner(isAdmin, data.budgetPlanSettings, req.auth.empId)
-      || _isPlanningLead(isAdmin, data.budgetPlanSettings, req.auth.empId)
-      || (profile && profile.dept === dept && (!team || (profile.team || '') === team))
-      || (profile && profile.role === 'director' && profile.dept === dept);
-    if (!allowed) return res.status(403).json({ error: '조회 권한이 없습니다.' });
-    res.json({ ok: true, items: _actualsByItemForDeptTeam(data, dept, team) });
-  });
+  try {
+      if (!requireAuth(req, res)) return;
+      const companyId = req.auth.companyId || null;
+      const dept = (req.query.dept || '').trim();
+      const team = (req.query.team || '').trim();
+      if (!dept) return res.json({ ok: true, items: [] });
+      const isAdmin = req.auth.role === 'admin';
+      const data = await readBudget(companyId);
+      const profile = await getEmployeeProfile(companyId, req.auth.empId);
+      const allowed = isAdmin
+        || _isBudgetOwner(isAdmin, data.budgetPlanSettings, req.auth.empId)
+        || _isPlanningLead(isAdmin, data.budgetPlanSettings, req.auth.empId)
+        || (profile && profile.dept === dept && (!team || (profile.team || '') === team))
+        || (profile && profile.role === 'director' && profile.dept === dept);
+      if (!allowed) return res.status(403).json({ error: '조회 권한이 없습니다.' });
+      res.json({ ok: true, items: _actualsByItemForDeptTeam(data, dept, team) });
+  
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
 
   // 예산(비인건비 판관/용역/경상) 엑셀 일괄 업로드 — 관리자 전용. 열 구성: "팀명"(필수,
   // 사업계획을 이미 작성한 팀 이름과 정확히 일치해야 매칭됨) + "비용 귀속"(선택, 비우면
@@ -1796,12 +1962,14 @@ module.exports = function budgetRouterFactory(deps) {
   // 별도 라우트로 둔다. 관리자 전용, draft 상태일 때만(다른 쓰기 라우트와 동일 기준).
   router.post('/business-plan/:id/cost-block-upload', upload.single('file'), async (req, res) => {
     if (!requireAdmin(req, res)) return;
+    if (!requirePage(req, res, "biz-plan")) return;
     if (!req.file) return res.status(400).json({ error: '파일이 필요합니다.' });
     let rows;
     try {
-      rows = parseSheet(req.file.buffer, req.file.originalname, [['구분', '부문'], ['1월']], ['팀명', '항목']);
+      rows = await parseSheetIsolated(req.file.buffer, req.file.originalname, [['구분', '부문'], ['1월']], ['팀명', '항목']);
     } catch (e) {
-      return res.status(400).json({ error: '파일을 읽을 수 없습니다. (xlsx/csv만 지원)' });
+      const msg = e && e.code === 'PARSE_TIMEOUT' ? e.message : '파일을 읽을 수 없습니다. (xlsx/csv만 지원)';
+      return res.status(400).json({ error: msg });
     }
     if (rows._headerRow === -1) {
       return res.status(400).json({ error: `업로드한 파일에서 "구분"(또는 "부문")·"1월" 컬럼을 찾지 못했습니다(확인한 시트: ${rows._triedSheets.join(', ')}). "조직별" 인원계획 시트와 같은 형식이어야 합니다.` });
@@ -1873,40 +2041,46 @@ module.exports = function budgetRouterFactory(deps) {
   // 있다면 그 상태(draft/잠김)까지 함께 반환해 클라이언트가 팀별로 편집 가능한 그리드를
   // 미리 보여줄 수 있게 한다. 실제 반영은 /sga-upload/commit에서 이뤄진다.
   router.post('/business-plan/sga-upload/parse', upload.single('file'), async (req, res) => {
-    if (!requireAdmin(req, res)) return;
-    if (!req.file) return res.status(400).json({ error: '파일이 필요합니다.' });
-    let rows;
-    try {
-      rows = parseSheet(req.file.buffer, req.file.originalname, [['팀명', '팀'], ['항목']]);
-    } catch (e) {
-      return res.status(400).json({ error: '파일을 읽을 수 없습니다. (xlsx/csv만 지원)' });
-    }
-    if (rows._headerRow === -1) {
-      return res.status(400).json({ error: `업로드한 파일에서 "팀명"·"항목" 컬럼을 찾지 못했습니다(확인한 시트: ${rows._triedSheets.join(', ')}). 여러 시트가 섞인 원본 파일이라면 "예산" 데이터가 있는 시트에 팀명/항목 등 헤더가 올바르게 있는지 확인해주세요.` });
-    }
-    const companyId = req.auth.companyId || null;
-    const year = Number(req.query.year) || new Date().getFullYear();
-    const data = await readBudget(companyId);
-    const dropped = [];
-    const byTeam = _parseSgaUploadRows(rows, dropped);
-    const teams = Object.entries(byTeam).map(([team, items]) => {
-      const matches = data.businessPlans.filter(p => p.baseYear === year && (p.team || '').trim() === team);
-      const existing = matches.length === 1 ? matches[0] : null;
-      return {
-        team, items,
-        existingPlanId: existing ? existing.id : null,
-        existingStatus: existing ? existing.status : null,
-        ambiguous: matches.length > 1
-      };
-    });
-    res.json({ ok: true, teams, sheetName: rows._sheetName, dropped, droppedCount: dropped.length });
-  });
+  try {
+      if (!requireAdmin(req, res)) return;
+      if (!requirePage(req, res, "biz-plan")) return;
+      if (!req.file) return res.status(400).json({ error: '파일이 필요합니다.' });
+      let rows;
+      try {
+        rows = await parseSheetIsolated(req.file.buffer, req.file.originalname, [['팀명', '팀'], ['항목']]);
+      } catch (e) {
+        const msg = e && e.code === 'PARSE_TIMEOUT' ? e.message : '파일을 읽을 수 없습니다. (xlsx/csv만 지원)';
+        return res.status(400).json({ error: msg });
+      }
+      if (rows._headerRow === -1) {
+        return res.status(400).json({ error: `업로드한 파일에서 "팀명"·"항목" 컬럼을 찾지 못했습니다(확인한 시트: ${rows._triedSheets.join(', ')}). 여러 시트가 섞인 원본 파일이라면 "예산" 데이터가 있는 시트에 팀명/항목 등 헤더가 올바르게 있는지 확인해주세요.` });
+      }
+      const companyId = req.auth.companyId || null;
+      const year = Number(req.query.year) || new Date().getFullYear();
+      const data = await readBudget(companyId);
+      const dropped = [];
+      const byTeam = _parseSgaUploadRows(rows, dropped);
+      const teams = Object.entries(byTeam).map(([team, items]) => {
+        const matches = data.businessPlans.filter(p => p.baseYear === year && (p.team || '').trim() === team);
+        const existing = matches.length === 1 ? matches[0] : null;
+        return {
+          team, items,
+          existingPlanId: existing ? existing.id : null,
+          existingStatus: existing ? existing.status : null,
+          ambiguous: matches.length > 1
+        };
+      });
+      res.json({ ok: true, teams, sheetName: rows._sheetName, dropped, droppedCount: dropped.length });
+  
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
 
   // 미리보기에서 사람이 조정한 팀별 항목을 실제로 저장(생성 또는 upsert). 파일이 아니라
   // 이미 파싱·편집된 JSON을 받는다 — 팀 단위로 하나씩 저장할 수도, 여러 팀을 한 번에
   // 저장할 수도 있다.
   router.post('/business-plan/sga-upload/commit', async (req, res) => {
     if (!requireAdmin(req, res)) return;
+    if (!requirePage(req, res, "biz-plan")) return;
     const companyId = req.auth.companyId || null;
     const profile = await getEmployeeProfile(companyId, req.auth.empId);
     const userName = _actorName(profile, true);
@@ -1950,88 +2124,96 @@ module.exports = function budgetRouterFactory(deps) {
   // "지금까지의 실적"이고 이것은 "사업계획" 롤업에서 참고하는 예측치라, 서로 다른 화면·
   // 다른 초기화 범위로 관리한다.
   router.post('/business-plan/headcount-plan/upload', upload.single('file'), async (req, res) => {
-    if (!requireAdmin(req, res)) return;
-    if (!req.file) return res.status(400).json({ error: '파일이 필요합니다.' });
-    let rows;
-    try {
-      rows = parseSheet(req.file.buffer, req.file.originalname, [['구분', '부문'], ['1월']], ['팀명', '항목']);
-    } catch (e) {
-      return res.status(400).json({ error: '파일을 읽을 수 없습니다. (xlsx/csv만 지원)' });
-    }
-    if (rows._headerRow === -1) {
-      return res.status(400).json({ error: `업로드한 파일에서 "구분"(또는 "부문")·"1월" 컬럼을 찾지 못했습니다(확인한 시트: ${rows._triedSheets.join(', ')}). 여러 시트가 섞인 원본 파일이라면 인원계획 데이터가 있는 시트에 헤더가 올바르게 있는지 확인해주세요.` });
-    }
-    const companyId = req.auth.companyId || null;
-    const year = Number(req.query.year) || new Date().getFullYear();
-    // 실사용 원본 파일의 "조직별" 시트는 부문별 "인원 현황" 블록 하나만 있는 게 아니라,
-    // 같은 부문·계정과목 조합이 급여/인센티브/복리후생비/교육훈련비/사회보험/퇴직급여
-    // 등 비용 집계 블록으로 여러 번 더 반복되는 구조였다(실측 발견) — 이 블록들은 맨 앞의
-    // 이름 없는 컬럼에 그 블록의 이름표(예: "급여")가 채워져 있는 것으로만 구분 가능한데,
-    // 그 구분 없이 그대로 업서트하면 나중 블록이 앞선 인원수를 계속 덮어써 최종적으로는
-    // 마지막 블록(대개 "퇴직급여")의 금액이 인원수인 것처럼 저장되는 심각한 데이터 오염이
-    // 있었다. 이 비용 집계 블록들은 시스템이 3단계 롤업(sgaByCategory)에서 RAW자료+예산
-    // 데이터로 이미 동일한 값을 자동 산출하므로 별도 저장이 불필요(이전 세션에 이미 확정된
-    // 방침) — "구분/부문/계정과목/n월/평균" 외의 컬럼에 값이 있는 행(=비용 블록의 이름표
-    // 행)은 인원 현황이 아니므로 건너뛴다.
-    let upserted = 0;
-    const seenKeys = new Set(); // 같은 부문+계정과목이 파일에 여러 번 나오는 경우를 구분하기 위함
-    let overwritten = 0;
-    await updateBudget(companyId, async (data) => {
-      rows.forEach(row => {
-        const dept = String(row['구분'] || row['부문'] || '').trim();
-        if (!dept || dept === '계') return;
-        const hasUnexpectedLabel = Object.keys(row).some(k => !KNOWN_ORG_SHEET_META_COLUMNS.has(k) && row[k] !== null && String(row[k]).trim() !== '');
-        if (hasUnexpectedLabel) return;
-        // SheetJS는 동일한 헤더 텍스트("구분")가 한 시트에 두 번 나오면 두 번째 것을
-        // "구분_1"로 자동 개명한다(실사용 원본 파일의 "조직별" 시트가 정확히 이 구조 —
-        // 부문용 "구분"과 계정과목용 "구분" 두 컬럼이 똑같이 "구분"이라는 이름을 씀).
-        // "구분2"는 그 실제 명명 규칙과 맞지 않아 이 값을 절대 찾지 못하던 기존 버그였다.
-        const catRaw = String(row['계정과목'] || row['구분_1'] || '').trim();
-        const category = CATEGORIES.includes(catRaw) ? catRaw : '';
-        const months = MONTHS.map(m => toNumber(row[`${m}월`]));
-        if (months.every(v => v === null)) return;
-        const monthsArr = months.map(v => v === null ? 0 : v);
-        const existing = data.headcountPlans.find(h => h.year === year && h.dept === dept && (h.category || '') === category);
-        if (existing) {
-          // 같은 연도+부문+계정과목 행이 파일에 여러 번 나오면 뒤엣것이 앞엣것을 덮어쓴다.
-          // 예전엔 그때마다 upserted를 올려 "2건 반영"처럼 보고했지만 실제 저장은 1건이라
-          // 사용자가 오해했다(실측). 실제 저장 건수만 세고, 덮어쓴 행은 따로 알린다.
-          if (seenKeys.has(`${dept}\u0000${category}`)) overwritten++;
-          existing.months = monthsArr;
-          existing.updatedAt = new Date().toISOString();
-        } else {
-          data.headcountPlans.push({
-            id: `hcp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-            year, dept, category, months: monthsArr, updatedAt: new Date().toISOString()
-          });
-        }
-        if (!seenKeys.has(`${dept}\u0000${category}`)) { seenKeys.add(`${dept}\u0000${category}`); upserted++; }
+  try {
+      if (!requireAdmin(req, res)) return;
+      if (!requirePage(req, res, "biz-plan")) return;
+      if (!req.file) return res.status(400).json({ error: '파일이 필요합니다.' });
+      let rows;
+      try {
+        rows = await parseSheetIsolated(req.file.buffer, req.file.originalname, [['구분', '부문'], ['1월']], ['팀명', '항목']);
+      } catch (e) {
+        const msg = e && e.code === 'PARSE_TIMEOUT' ? e.message : '파일을 읽을 수 없습니다. (xlsx/csv만 지원)';
+        return res.status(400).json({ error: msg });
+      }
+      if (rows._headerRow === -1) {
+        return res.status(400).json({ error: `업로드한 파일에서 "구분"(또는 "부문")·"1월" 컬럼을 찾지 못했습니다(확인한 시트: ${rows._triedSheets.join(', ')}). 여러 시트가 섞인 원본 파일이라면 인원계획 데이터가 있는 시트에 헤더가 올바르게 있는지 확인해주세요.` });
+      }
+      const companyId = req.auth.companyId || null;
+      const year = Number(req.query.year) || new Date().getFullYear();
+      // 실사용 원본 파일의 "조직별" 시트는 부문별 "인원 현황" 블록 하나만 있는 게 아니라,
+      // 같은 부문·계정과목 조합이 급여/인센티브/복리후생비/교육훈련비/사회보험/퇴직급여
+      // 등 비용 집계 블록으로 여러 번 더 반복되는 구조였다(실측 발견) — 이 블록들은 맨 앞의
+      // 이름 없는 컬럼에 그 블록의 이름표(예: "급여")가 채워져 있는 것으로만 구분 가능한데,
+      // 그 구분 없이 그대로 업서트하면 나중 블록이 앞선 인원수를 계속 덮어써 최종적으로는
+      // 마지막 블록(대개 "퇴직급여")의 금액이 인원수인 것처럼 저장되는 심각한 데이터 오염이
+      // 있었다. 이 비용 집계 블록들은 시스템이 3단계 롤업(sgaByCategory)에서 RAW자료+예산
+      // 데이터로 이미 동일한 값을 자동 산출하므로 별도 저장이 불필요(이전 세션에 이미 확정된
+      // 방침) — "구분/부문/계정과목/n월/평균" 외의 컬럼에 값이 있는 행(=비용 블록의 이름표
+      // 행)은 인원 현황이 아니므로 건너뛴다.
+      let upserted = 0;
+      const seenKeys = new Set(); // 같은 부문+계정과목이 파일에 여러 번 나오는 경우를 구분하기 위함
+      let overwritten = 0;
+      await updateBudget(companyId, async (data) => {
+        rows.forEach(row => {
+          const dept = String(row['구분'] || row['부문'] || '').trim();
+          if (!dept || dept === '계') return;
+          const hasUnexpectedLabel = Object.keys(row).some(k => !KNOWN_ORG_SHEET_META_COLUMNS.has(k) && row[k] !== null && String(row[k]).trim() !== '');
+          if (hasUnexpectedLabel) return;
+          // SheetJS는 동일한 헤더 텍스트("구분")가 한 시트에 두 번 나오면 두 번째 것을
+          // "구분_1"로 자동 개명한다(실사용 원본 파일의 "조직별" 시트가 정확히 이 구조 —
+          // 부문용 "구분"과 계정과목용 "구분" 두 컬럼이 똑같이 "구분"이라는 이름을 씀).
+          // "구분2"는 그 실제 명명 규칙과 맞지 않아 이 값을 절대 찾지 못하던 기존 버그였다.
+          const catRaw = String(row['계정과목'] || row['구분_1'] || '').trim();
+          const category = CATEGORIES.includes(catRaw) ? catRaw : '';
+          const months = MONTHS.map(m => toNumber(row[`${m}월`]));
+          if (months.every(v => v === null)) return;
+          const monthsArr = months.map(v => v === null ? 0 : v);
+          const existing = data.headcountPlans.find(h => h.year === year && h.dept === dept && (h.category || '') === category);
+          if (existing) {
+            // 같은 연도+부문+계정과목 행이 파일에 여러 번 나오면 뒤엣것이 앞엣것을 덮어쓴다.
+            // 예전엔 그때마다 upserted를 올려 "2건 반영"처럼 보고했지만 실제 저장은 1건이라
+            // 사용자가 오해했다(실측). 실제 저장 건수만 세고, 덮어쓴 행은 따로 알린다.
+            if (seenKeys.has(`${dept}\u0000${category}`)) overwritten++;
+            existing.months = monthsArr;
+            existing.updatedAt = new Date().toISOString();
+          } else {
+            data.headcountPlans.push({
+              id: `hcp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+              year, dept, category, months: monthsArr, updatedAt: new Date().toISOString()
+            });
+          }
+          if (!seenKeys.has(`${dept}\u0000${category}`)) { seenKeys.add(`${dept}\u0000${category}`); upserted++; }
+        });
+        data.uploads.push({ type: 'headcountPlan', filename: req.file.originalname, uploadedAt: new Date().toISOString(), rows: rows.length });
       });
-      data.uploads.push({ type: 'headcountPlan', filename: req.file.originalname, uploadedAt: new Date().toISOString(), rows: rows.length });
-    });
-    res.json({ ok: true, upserted, overwritten });
-  });
+      res.json({ ok: true, upserted, overwritten });
+  
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
 
   // 월별 인원 계획 조회 — 롤업과 동일한 접근범위(관리자/예산담당자/기획팀장은 전체,
   // 사업부장은 자기 dept만).
   router.get('/business-plan/headcount-plan', async (req, res) => {
-    if (!requireAuth(req, res)) return;
-    const companyId = req.auth.companyId || null;
-    const data = await readBudget(companyId);
-    const isAdmin = req.auth.role === 'admin';
-    const isFullAccess = isAdmin
-      || _isBudgetOwner(isAdmin, data.budgetPlanSettings, req.auth.empId)
-      || _isPlanningLead(isAdmin, data.budgetPlanSettings, req.auth.empId);
-    const profile = await getEmployeeProfile(companyId, req.auth.empId);
-    const isDirector = profile && profile.role === 'director';
-    if (!isFullAccess && !isDirector) {
-      return res.status(403).json({ error: '접근 권한이 없습니다.' });
-    }
-    const year = Number(req.query.year) || new Date().getFullYear();
-    let plans = data.headcountPlans.filter(h => h.year === year);
-    if (!isFullAccess) plans = plans.filter(h => h.dept === profile.dept);
-    res.json({ ok: true, plans });
-  });
+  try {
+      if (!requireAuth(req, res)) return;
+      const companyId = req.auth.companyId || null;
+      const data = await readBudget(companyId);
+      const isAdmin = req.auth.role === 'admin';
+      const isFullAccess = isAdmin
+        || _isBudgetOwner(isAdmin, data.budgetPlanSettings, req.auth.empId)
+        || _isPlanningLead(isAdmin, data.budgetPlanSettings, req.auth.empId);
+      const profile = await getEmployeeProfile(companyId, req.auth.empId);
+      const isDirector = profile && profile.role === 'director';
+      if (!isFullAccess && !isDirector) {
+        return res.status(403).json({ error: '접근 권한이 없습니다.' });
+      }
+      const year = Number(req.query.year) || new Date().getFullYear();
+      let plans = data.headcountPlans.filter(h => h.year === year);
+      if (!isFullAccess) plans = plans.filter(h => h.dept === profile.dept);
+      res.json({ ok: true, plans });
+  
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
 
   // 신규 생성: 관리자가 아니면 dept/team은 항상 작성자 본인 소속으로 강제(다른 팀
   // 명의로 계획을 만드는 스푸핑 방지) — body에 dept/team을 보내도 무시한다. 관리자는
@@ -2039,6 +2221,7 @@ module.exports = function budgetRouterFactory(deps) {
   // 스크래치 계획, 즉시 finalConfirmed)도 그대로 가능하다.
   router.post('/business-plan', async (req, res) => {
     if (!requireAuth(req, res)) return;
+    if (!requirePage(req, res, "biz-plan")) return;
     const companyId = req.auth.companyId || null;
     const isAdmin = req.auth.role === 'admin';
     // getEmployeeProfile()은 budget_store와 무관한 별도 조회(employees 조회)이므로,
@@ -2116,18 +2299,21 @@ module.exports = function budgetRouterFactory(deps) {
 
   // 단건 조회
   router.get('/business-plan/:id', async (req, res) => {
-    if (!requireAuth(req, res)) return;
-    const companyId = req.auth.companyId || null;
-    const data = await readBudget(companyId);
-    const plan = data.businessPlans.find(p => p.id === req.params.id);
-    if (!plan) return res.status(404).json({ error: '사업계획을 찾을 수 없습니다.' });
-    const isAdmin = req.auth.role === 'admin';
-    const profile = await getEmployeeProfile(companyId, req.auth.empId);
-    if (!_canViewPlan(isAdmin, profile, data.budgetPlanSettings, req.auth.empId, plan)) {
-      return res.status(403).json({ error: '조회 권한이 없습니다.' });
-    }
-    res.json({ ok: true, plan: { ...plan, ..._freshPlanCalc(plan), budgetComparison: computeBudgetComparison(data, plan) } });
-  });
+  try {
+      if (!requireAuth(req, res)) return;
+      const companyId = req.auth.companyId || null;
+      const data = await readBudget(companyId);
+      const plan = data.businessPlans.find(p => p.id === req.params.id);
+      if (!plan) return res.status(404).json({ error: '사업계획을 찾을 수 없습니다.' });
+      const isAdmin = req.auth.role === 'admin';
+      const profile = await getEmployeeProfile(companyId, req.auth.empId);
+      if (!_canViewPlan(isAdmin, profile, data.budgetPlanSettings, req.auth.empId, plan)) {
+        return res.status(403).json({ error: '조회 권한이 없습니다.' });
+      }
+      res.json({ ok: true, plan: { ...plan, ..._freshPlanCalc(plan), budgetComparison: computeBudgetComparison(data, plan) } });
+  
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
 
   // 진단 도구(읽기전용, 관리자 전용) — 사업계획 매칭 키 이력 변화(name → +detail →
   // +accountType → +team → +costDept)로 인해 옛 스키마 항목이 오늘 코드의 upsert로는
@@ -2136,36 +2322,42 @@ module.exports = function budgetRouterFactory(deps) {
   // 자동으로 고치거나 지우지 않는다(실제 재무 데이터라 잘못 지우면 되돌릴 수 없으므로,
   // 발견한 항목을 그대로 보여주고 최종 판단·정리는 관리자가 직접 하도록 한다).
   router.get('/business-plan/:id/diagnose-duplicates', async (req, res) => {
-    if (!requireAdmin(req, res)) return;
-    const companyId = req.auth.companyId || null;
-    const data = await readBudget(companyId);
-    const plan = data.businessPlans.find(p => p.id === req.params.id);
-    if (!plan) return res.status(404).json({ error: '사업계획을 찾을 수 없습니다.' });
-    res.json({ ok: true, planId: plan.id, planName: plan.name, team: plan.team, dept: plan.dept, baseYear: plan.baseYear, diagnosis: _diagnosePlanDuplicates(plan) });
-  });
+  try {
+      if (!requireAdmin(req, res)) return;
+      const companyId = req.auth.companyId || null;
+      const data = await readBudget(companyId);
+      const plan = data.businessPlans.find(p => p.id === req.params.id);
+      if (!plan) return res.status(404).json({ error: '사업계획을 찾을 수 없습니다.' });
+      res.json({ ok: true, planId: plan.id, planName: plan.name, team: plan.team, dept: plan.dept, baseYear: plan.baseYear, diagnosis: _diagnosePlanDuplicates(plan) });
+  
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
 
   // 위 단건 진단을 전체 사업계획에 대해 한 번에 돌려주는 요약 버전 — 회사 전체를 팀별로
   // 하나하나 열어보지 않아도 어느 계획에 의심스러운 항목이 있는지 한눈에 파악할 수 있게
   // 한다(연도 필터는 선택, 생략하면 전 연도 전체 계획을 스캔).
   router.get('/business-plan/diagnose-duplicates/all', async (req, res) => {
-    if (!requireAdmin(req, res)) return;
-    const companyId = req.auth.companyId || null;
-    const data = await readBudget(companyId);
-    const year = req.query.year ? Number(req.query.year) : null;
-    const plans = year ? data.businessPlans.filter(p => p.baseYear === year) : data.businessPlans;
-    const results = plans.map(p => {
-      const diagnosis = _diagnosePlanDuplicates(p);
-      return { planId: p.id, planName: p.name, team: p.team, dept: p.dept, baseYear: p.baseYear, status: p.status, diagnosis };
-    }).filter(r => !r.diagnosis.clean);
-    res.json({
-      ok: true,
-      scannedPlanCount: plans.length,
-      flaggedPlanCount: results.length,
-      totalExactDuplicates: results.reduce((s, r) => s + r.diagnosis.exactDuplicates.length, 0),
-      totalLikelyHistoricalDuplicates: results.reduce((s, r) => s + r.diagnosis.likelyHistoricalDuplicates.length, 0),
-      results,
-    });
-  });
+  try {
+      if (!requireAdmin(req, res)) return;
+      const companyId = req.auth.companyId || null;
+      const data = await readBudget(companyId);
+      const year = req.query.year ? Number(req.query.year) : null;
+      const plans = year ? data.businessPlans.filter(p => p.baseYear === year) : data.businessPlans;
+      const results = plans.map(p => {
+        const diagnosis = _diagnosePlanDuplicates(p);
+        return { planId: p.id, planName: p.name, team: p.team, dept: p.dept, baseYear: p.baseYear, status: p.status, diagnosis };
+      }).filter(r => !r.diagnosis.clean);
+      res.json({
+        ok: true,
+        scannedPlanCount: plans.length,
+        flaggedPlanCount: results.length,
+        totalExactDuplicates: results.reduce((s, r) => s + r.diagnosis.exactDuplicates.length, 0),
+        totalLikelyHistoricalDuplicates: results.reduce((s, r) => s + r.diagnosis.likelyHistoricalDuplicates.length, 0),
+        results,
+      });
+  
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
 
   // 가정 갱신 + 재계산 — status가 'draft'일 때만(그리고 팀 소속 또는 관리자만) 가능.
   // 잠긴(divisionApproved/finalConfirmed) 계획은 /request-edit → 관리자 승인을 거쳐야
@@ -2173,6 +2365,7 @@ module.exports = function budgetRouterFactory(deps) {
   // — 이 코드베이스 전반의 "관리자는 항상 전권" 관례와 동일).
   router.put('/business-plan/:id', async (req, res) => {
     if (!requireAuth(req, res)) return;
+    if (!requirePage(req, res, "biz-plan")) return;
     const companyId = req.auth.companyId || null;
     const isAdmin = req.auth.role === 'admin';
     const profile = await getEmployeeProfile(companyId, req.auth.empId);
@@ -2260,6 +2453,7 @@ module.exports = function budgetRouterFactory(deps) {
   // 없도록 한다. 조회 권한과 동일한 소속(팀/부서) 또는 관리자만 입력 가능.
   router.put('/business-plan/:id/revenue-actuals', async (req, res) => {
     if (!requireAuth(req, res)) return;
+    if (!requirePage(req, res, "biz-plan")) return;
     const companyId = req.auth.companyId || null;
     const isAdmin = req.auth.role === 'admin';
     const profile = await getEmployeeProfile(companyId, req.auth.empId);
@@ -2303,38 +2497,42 @@ module.exports = function budgetRouterFactory(deps) {
   // 조회 권한은 계획 조회와 동일(_canViewPlan) — 실적도 계획만큼 민감한 영업 정보라
   // 소속 밖에는 보여주지 않는다.
   router.get('/business-plan/:id/revenue-monitor', async (req, res) => {
-    if (!requireAuth(req, res)) return;
-    const companyId = req.auth.companyId || null;
-    const isAdmin = req.auth.role === 'admin';
-    const data = await readBudget(companyId);
-    const plan = data.businessPlans.find(p => p.id === req.params.id);
-    if (!plan) return res.status(404).json({ error: '사업계획을 찾을 수 없습니다.' });
-    const profile = await getEmployeeProfile(companyId, req.auth.empId);
-    if (!_canViewPlan(isAdmin, profile, data.budgetPlanSettings, req.auth.empId, plan)) {
-      return res.status(403).json({ error: '조회 권한이 없습니다.' });
-    }
-    const monthLimit = req.query.month ? Math.min(12, Math.max(1, Number(req.query.month) || 12)) : 12;
-    const revenueItems = (plan.assumptions && Array.isArray(plan.assumptions.revenueItems)) ? plan.assumptions.revenueItems : [];
-    const sumThrough = arr => round2((arr || []).slice(0, monthLimit).reduce((s, v) => s + (v || 0), 0));
-    const items = revenueItems.map(it => {
-      const planAmt = sumThrough(it.months);
-      const actualAmt = sumThrough(it.actualMonths);
-      return {
-        id: it.id, client: it.client, projectName: it.projectName || it.client,
-        expectedAmount: it.expectedAmount, expectedWinDate: it.expectedWinDate,
-        recognitionBasis: it.recognitionBasis, status: it.status, note: it.note,
-        plan: planAmt, actual: actualAmt, gap: round2(actualAmt - planAmt)
-      };
-    });
-    const totals = items.reduce((acc, it) => ({
-      plan: round2(acc.plan + it.plan), actual: round2(acc.actual + it.actual), gap: round2(acc.gap + it.gap)
-    }), { plan: 0, actual: 0, gap: 0 });
-    res.json({ ok: true, planId: plan.id, planName: plan.name, dept: plan.dept, team: plan.team, monthLimit, items, totals });
-  });
+  try {
+      if (!requireAuth(req, res)) return;
+      const companyId = req.auth.companyId || null;
+      const isAdmin = req.auth.role === 'admin';
+      const data = await readBudget(companyId);
+      const plan = data.businessPlans.find(p => p.id === req.params.id);
+      if (!plan) return res.status(404).json({ error: '사업계획을 찾을 수 없습니다.' });
+      const profile = await getEmployeeProfile(companyId, req.auth.empId);
+      if (!_canViewPlan(isAdmin, profile, data.budgetPlanSettings, req.auth.empId, plan)) {
+        return res.status(403).json({ error: '조회 권한이 없습니다.' });
+      }
+      const monthLimit = req.query.month ? Math.min(12, Math.max(1, Number(req.query.month) || 12)) : 12;
+      const revenueItems = (plan.assumptions && Array.isArray(plan.assumptions.revenueItems)) ? plan.assumptions.revenueItems : [];
+      const sumThrough = arr => round2((arr || []).slice(0, monthLimit).reduce((s, v) => s + (v || 0), 0));
+      const items = revenueItems.map(it => {
+        const planAmt = sumThrough(it.months);
+        const actualAmt = sumThrough(it.actualMonths);
+        return {
+          id: it.id, client: it.client, projectName: it.projectName || it.client,
+          expectedAmount: it.expectedAmount, expectedWinDate: it.expectedWinDate,
+          recognitionBasis: it.recognitionBasis, status: it.status, note: it.note,
+          plan: planAmt, actual: actualAmt, gap: round2(actualAmt - planAmt)
+        };
+      });
+      const totals = items.reduce((acc, it) => ({
+        plan: round2(acc.plan + it.plan), actual: round2(acc.actual + it.actual), gap: round2(acc.gap + it.gap)
+      }), { plan: 0, actual: 0, gap: 0 });
+      res.json({ ok: true, planId: plan.id, planName: plan.name, dept: plan.dept, team: plan.team, monthLimit, items, totals });
+  
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
 
   // 사업부장 승인 → 잠금(divisionApproved)
   router.post('/business-plan/:id/approve-division', async (req, res) => {
     if (!requireAuth(req, res)) return;
+    if (!requirePage(req, res, "biz-plan")) return;
     const companyId = req.auth.companyId || null;
     const isAdmin = req.auth.role === 'admin';
     const profile = await getEmployeeProfile(companyId, req.auth.empId);
@@ -2368,6 +2566,7 @@ module.exports = function budgetRouterFactory(deps) {
   // 관리자가 호출하면 두 승인을 한 번에 채워 즉시 확정한다(관리자 전권 관례).
   router.post('/business-plan/:id/final-approve', async (req, res) => {
     if (!requireAuth(req, res)) return;
+    if (!requirePage(req, res, "biz-plan")) return;
     const companyId = req.auth.companyId || null;
     const isAdmin = req.auth.role === 'admin';
     const profile = await getEmployeeProfile(companyId, req.auth.empId);
@@ -2419,6 +2618,7 @@ module.exports = function budgetRouterFactory(deps) {
   // 사유와 함께 제출. 계획 자체는 계속 잠긴 채로 유지되고, 관리자 승인/반려만 대기.
   router.post('/business-plan/:id/request-edit', async (req, res) => {
     if (!requireAuth(req, res)) return;
+    if (!requirePage(req, res, "biz-plan")) return;
     const companyId = req.auth.companyId || null;
     const isAdmin = req.auth.role === 'admin';
     const profile = await getEmployeeProfile(companyId, req.auth.empId);
@@ -2452,6 +2652,7 @@ module.exports = function budgetRouterFactory(deps) {
   // (수정 후 내용이 달라지므로 사업부장·예산담당자·기획팀장 승인을 처음부터 다시 받아야 함).
   router.post('/business-plan/:id/edit-request/approve', async (req, res) => {
     if (!requireAdmin(req, res)) return;
+    if (!requirePage(req, res, "biz-plan")) return;
     const companyId = req.auth.companyId || null;
     const profile = await getEmployeeProfile(companyId, req.auth.empId);
 
@@ -2481,6 +2682,7 @@ module.exports = function budgetRouterFactory(deps) {
   // 수정요청 반려(관리자 전용) — 계획은 잠긴 채로 유지, 요청만 제거.
   router.post('/business-plan/:id/edit-request/reject', async (req, res) => {
     if (!requireAdmin(req, res)) return;
+    if (!requirePage(req, res, "biz-plan")) return;
     const companyId = req.auth.companyId || null;
     const profile = await getEmployeeProfile(companyId, req.auth.empId);
 
@@ -2508,6 +2710,7 @@ module.exports = function budgetRouterFactory(deps) {
   // 거쳐야 하므로 삭제도 동일 기준 적용).
   router.delete('/business-plan/:id', async (req, res) => {
     if (!requireAuth(req, res)) return;
+    if (!requirePage(req, res, "biz-plan")) return;
     const companyId = req.auth.companyId || null;
     const isAdmin = req.auth.role === 'admin';
     const profile = isAdmin ? null : await getEmployeeProfile(companyId, req.auth.empId);

@@ -12,6 +12,36 @@ const pool    = require("./db");
 const multer  = require("multer");
 const budgetRouterFactory = require("./budget");
 
+// ════════════════════════════════════════════════════════════════════════════
+// 목차(파일 안 "// ── 제목 ──" 배너 문자열로 검색) — 이 파일은 인사(HR)/전자결재/
+// 회계/영업(ERP)/PMS/채용까지 아우르는 단일 회사(자체호스팅) 또는 멀티테넌트(SaaS,
+// PostgreSQL) 겸용 백엔드다. USE_JSON_FILE(DATABASE_URL 미설정 시 true)로 저장 방식을
+// 분기하며, 거의 모든 라우트가 JSON 파일/Postgres 두 갈래를 나란히 구현한다.
+//
+//  1. 인증/세션            — 세션 토큰(HMAC), 비밀번호 보안, TOTP 2단계 인증
+//  2. 저장소 계층           — Storage mode, 저장 요청 직렬화, DB bootstrap, Core DB helpers
+//                             (loadData/persistData 등 employees/kpiEntries/blob 저장 전체)
+//  3. 실시간/미들웨어        — SSE helpers, 인증 미들웨어(authenticate/requireAuth 등)
+//  4. Core API             — /status, /data, /login, /save, /events(SSE), 스냅샷/백업/이력
+//  5. 멀티테넌트            — 회사(테넌트) 식별, 셀프서브 회사 가입, 마스터 관리자(임퍼스네이션)
+//  6. 회계 모듈             — 계정과목/전표/세금계산서/수금·지급/거래처/원가명세서/RCPS/
+//                             부가세 신고자료/고정자산 (/api/accounting/*)
+//  7. 영업/재고(ERP) 모듈    — 품목/위치/견적서/발주서/구매요청/재고/영업목표/영업대시보드
+//                             (/api/erp/*)
+//  8. PMS 모듈              — 프로젝트/투입률/일일 업무 투입 (/api/pms/*)
+//  9. 채용 모듈             — 채용공고/지원자/이력서 텍스트추출·AI자동입력/면접 일정·평가
+//                             (/api/recruit/*, /api/hr/resume-parse, /api/hr/*)
+// 10. 사업계획/예산          — budgetRouterFactory(budget.js)를 /api/budget에 마운트
+//                             (이 파일이 아니라 budget.js 참고)
+// 11. 데이터 초기화/기타      — 전체 초기화(reset-all), SPA fallback, 서버 기동
+//
+// 인가(authorization) 3단계 조합이 라우트마다 반복된다 — requireAuth(로그인만 확인) →
+// requireAdmin/requireRole(역할) → requirePage(개인별 메뉴 on/off, menuPerms). 대부분의
+// 쓰기 라우트는 셋을 순서대로 조합하고, 여러 화면이 공유하는 조회(GET) 라우트는 의도적으로
+// requirePage를 생략하는 경우가 많다(예: 전표 작성이 회계>계정과목 페이지 권한 없이도
+// 동작해야 함) — 이런 경우 해당 라우트 바로 위 주석에 "왜 생략했는지"를 남겨둔다.
+// ════════════════════════════════════════════════════════════════════════════
+
 // Express 4는 async 라우트 핸들러 내부의 동기 throw/reject를 자동으로 잡아주지 않는다
 // (Express 5와 다른 점) — try/catch 없이 작성된 async 핸들러 하나가 예외를 던지면
 // unhandled promise rejection이 되고, Node 15+ 기본 동작상 프로세스 전체가 종료된다.
@@ -82,21 +112,32 @@ function verifyToken(token) {
 // empId가 null이라 대상이 아님)에 한해 지금 저장된 employees 레코드의 authVersion·active와
 // 대조해, 하나라도 안 맞으면 그 토큰을 무효(req.auth = null, 미인증과 동일하게 취급)로
 // 처리한다 — 재로그인해야 새 버전의 토큰을 받는다.
-async function _employeeAuthStillValid(auth) {
+// authenticate()와 _employeeAuthStillValid() 양쪽이 같은 employees 레코드 조회를
+// 중복으로 하지 않도록 분리한 헬퍼. 조회 자체가 실패하면(DB 장애 등) undefined를 반환해
+// "레코드가 확인상 없음(null)"과 "확인 자체를 못함(undefined)"을 구분한다 — 후자는
+// 아래에서 기존과 동일하게 가용성 우선(fail-open)으로 처리된다.
+async function _fetchCurrentEmployeeForAuth(auth) {
+  if (auth.empId == null) return null; // 마스터/impersonation 토큰 — employees 대상 아님
+  try {
+    if (USE_JSON_FILE) {
+      return (_fileStore.employees || []).find(e => String(e.id) === String(auth.empId)) || null;
+    }
+    const { rows } = await pool.query("SELECT data FROM employees WHERE id = $1 AND is_deleted = FALSE", [auth.empId]);
+    return (rows[0] && rows[0].data) || null;
+  } catch {
+    return undefined;
+  }
+}
+async function _employeeAuthStillValid(auth, prefetchedEmployee) {
   // 이 검사 자체가 어떤 이유로든 실패하면(예상치 못한 예외 포함) 가용성을 우선해 통과시킨다
   // — authenticate()가 async 미들웨어라 여기서 예외가 새면 Express 4가 자동으로 못 잡아
   // unhandled rejection이 되고, 그 요청은 응답도 타임아웃도 없이 멈춰버린다(P0-4 수정
   // 중 실측으로 확인한 것과 동일한 클래스의 사고 — 이 검사는 반드시 실패해도 요청을
   // 멈추지 않아야 한다).
   try {
-    if (auth.empId == null) return true; // 마스터/impersonation 토큰 — employees 대상 아님
-    let current;
-    if (USE_JSON_FILE) {
-      current = (_fileStore.employees || []).find(e => String(e.id) === String(auth.empId));
-    } else {
-      const { rows } = await pool.query("SELECT data FROM employees WHERE id = $1 AND is_deleted = FALSE", [auth.empId]);
-      current = rows[0] && rows[0].data;
-    }
+    if (auth.empId == null) return true;
+    const current = prefetchedEmployee !== undefined ? prefetchedEmployee : await _fetchCurrentEmployeeForAuth(auth);
+    if (current === undefined) return true; // 조회 자체가 실패 — fail-open
     if (!current) return false; // 레코드 자체가 삭제됨
     if (current.active === false) return false;
     return (Number(current.authVersion) || 0) === (Number(auth.authVersion) || 0);
@@ -108,7 +149,12 @@ async function authenticate(req, res, next) {
   const header = req.headers.authorization || "";
   const token = header.startsWith("Bearer ") ? header.slice(7) : null;
   const auth = verifyToken(token);
-  req.auth = (auth && await _employeeAuthStillValid(auth)) ? auth : null;
+  if (!auth) { req.auth = null; return next(); }
+  // 세션 철회 검사(_employeeAuthStillValid)와 menuPerms 조회가 같은 employees 레코드를
+  // 쓰므로 한 번만 가져와 공유한다(요청당 추가 조회 없음). menuPerms는 "권한 관리" 화면에서
+  // 개인별로 끈 메뉴 목록 — requirePage()가 REST API 라우트에서 이 값을 그대로 검사한다.
+  const employee = await _fetchCurrentEmployeeForAuth(auth);
+  req.auth = (await _employeeAuthStillValid(auth, employee)) ? { ...auth, menuPerms: (employee && employee.menuPerms) || {} } : null;
   next();
 }
 function requireAuth(req, res) {
@@ -298,8 +344,16 @@ function stripPwField(data) {
 // singleton 설정을 통째로 바꿔 role/password/전사 정책을 위조하지 못하도록, 해당 영역은
 // 항상 저장본을 기준으로 재구성한다. 본인 프로필에서 실제로 수정하도록 제공한 필드만
 // 좁게 허용한다. 새 직원 생성과 권한/급여/입사정보 변경은 관리자 전용 흐름을 사용한다.
+// name/birth는 openSelfEdit()가 admin/director/leader("canEditAll")에게만 노출하는
+// "인사 정보" 섹션 필드다(public/index.html — u.role별 렌더 조건). 여기서 빠져 있으면
+// _mergeOwnProfile()이 조용히 걸러버려, 그 화면에서 이름·생년월일을 고쳐 저장해도 서버에는
+// 전혀 반영되지 않는다(2026-08-24 QA로 실측 발견 — director가 본인 생년월일을 수정해도
+// address만 반영되고 birth는 그대로 남음). role별 제한은 이 화이트리스트가 아니라 UI에만
+// 있고, 이 두 필드는 이미 _sanitizeEmployeeRecord()에서 본인(isSelf) 레코드에 대해 역할과
+// 무관하게 통과시키도록 설계돼 있었으므로(변경 전부터의 기존 의도), 여기서도 역할 구분 없이
+// 통과시키는 것이 일관적이다.
 const SELF_EDITABLE_EMPLOYEE_FIELDS = new Set([
-  "email", "phone", "address", "edu", "eduSchool", "totalCareer", "careers",
+  "email", "phone", "address", "edu", "eduSchool", "totalCareer", "careers", "name", "birth",
 ]);
 function _boundedText(value, max) {
   return typeof value === "string" ? value.trim().slice(0, max) : null;
@@ -343,15 +397,39 @@ function preserveServerOwnedStateForNonAdmin(incoming, stored, actor) {
     .map(e => [String(e.id), e]));
   out.employees = (stored?.employees || []).map(emp => {
     const candidate = incomingEmployees.get(String(emp.id));
-    return candidate && String(emp.id) === String(actor?.empId)
-      ? _mergeOwnProfile(emp, candidate)
-      : emp;
+    if (!candidate) return emp;
+    if (String(emp.id) === String(actor?.empId)) return _mergeOwnProfile(emp, candidate);
+    // 타인 레코드에 대해 정당하게 존재하는 유일한 non-admin 쓰기 경로는 director의 KPI/
+    // 다면평가 최종 등급 조정(adjustKpiGrade()/resolveTie(), gradeResults 필드)이다 — 그
+    // 권한 판정(role===director && 같은 dept)은 _persistDataLocked의 _sanitizeEmployeeRecord가
+    // 이미 하므로(role/salary/birth/address와 동일한 원칙), 여기서는 그 필드"만" 통과시켜
+    // 넘기고 나머지 필드는 전부 저장본을 지킨다. 이 예외가 없으면 director의 정상적인
+    // 등급 조정이 이 함수에 의해 항상 조용히 되돌려진다(실측 확인된 회귀 — 이 함수가
+    // 다른 세션에서 처음 추가됐을 때 이 케이스를 놓쳤었다).
+    if (!("gradeResults" in candidate)) return emp;
+    return { ...emp, gradeResults: candidate.gradeResults, updatedAt: candidate.updatedAt || emp.updatedAt };
   });
-  // Settings, role policy and tombstones are global server-owned state. Letting a
-  // non-admin send a redacted/stale copy would also delete fields it cannot read.
+  // Settings, role policy 등은 전사 공유 상태라 non-admin이 보낸(필터링으로 일부만 보이는)
+  // 사본으로 통째로 덮어쓰면 안 된다 — 항상 저장본을 지킨다.
+  //
+  // recordTombstones/roomReservationTombstones는 예외다. 이 둘은 "정책"이 아니라 각
+  // 클라이언트가 자기 삭제 행위를 알리는 델타(append-only 로그, {필드:[{id,ts}]})라서,
+  // 저장본으로 통째로 되돌리면 이 저장 요청 자체에 실린 삭제가 사라진다 — 실측 확인된
+  // 회귀: member가 deleteKpi()로 자기 KPI 목표를 삭제해도(응답은 ok:true) 서버에는 전혀
+  // 반영되지 않고 재조회하면 그대로 되살아나 있었다(_mergeProtectedField()/Postgres
+  // deadIds 계산이 이 필드를 그대로 신뢰하기 때문). smartMerge()가 이미 쓰는
+  // mergeRecordTombstones()/mergeTombstones()(id별 최신 ts만 유지하는 안전한 합집합)로
+  // 병합해, 다른 세션이 만든 삭제 기록을 지우지 않으면서도 이번 요청의 삭제는 반영되게 한다.
   for (const key of SINGLETON_FIELDS) {
-    if (Object.prototype.hasOwnProperty.call(stored || {}, key)) out[key] = stored[key];
-    else delete out[key];
+    if (key === "recordTombstones") {
+      out.recordTombstones = mergeRecordTombstones(stored?.recordTombstones, incoming.recordTombstones);
+    } else if (key === "roomReservationTombstones") {
+      out.roomReservationTombstones = mergeTombstones(stored?.roomReservationTombstones, incoming.roomReservationTombstones);
+    } else if (Object.prototype.hasOwnProperty.call(stored || {}, key)) {
+      out[key] = stored[key];
+    } else {
+      delete out[key];
+    }
   }
   return out;
 }
@@ -1138,22 +1216,26 @@ function _welfareRecordAllowed(rec, actor, actorEmp, settings) {
 // roles: 이 역할이면 누구 레코드든 쓸 수 있음(해당 화면의 PAGE_ROLES와 일치)
 // ownField: 그 필드가 본인 id면 역할과 무관하게 허용(본인 출퇴근 체크·본인 증명서 발급 등)
 const _WRITE_GATED_FIELDS = {
-  payslips:           { roles: ["admin"] },                                   // payroll-mgmt
-  payrollAdjustments: { roles: ["admin"] },                                   // payroll-mgmt
+  payslips:           { roles: ["admin"], pageIds: "payroll-mgmt" },
+  payrollAdjustments: { roles: ["admin"], pageIds: "payroll-mgmt" },
   // KPI 등급 현황(grade-view, admin/director/leader 공개) 화면의 "수정" 버튼은
   // admin뿐 아니라 director에게도 노출된다(openAdjustGradeModal이 admin||director를
   // 명시적으로 허용) — director가 자기 사업부 직원의 등급을 조정하면 실제 등급
-  // (employees.gradeResults, 게이팅 대상 아님)은 반영되지만 이 감사이력만 조용히
-  // 되돌려지고 있었다. director는 자기 사업부(dept) 레코드에 한해 허용.
-  gradeAdjustHistory: { roles: ["admin"], directorDeptField: "dept" },        // comp-grade-view / grade-view
-  coreTalentPool:     { roles: ["admin"] },                                   // core-talent
-  approvalTemplates:  { roles: ["admin"] },                                   // approval-templates
+  // (employees.gradeResults, 별도로 _sanitizeEmployeeRecord에서 게이팅)은 반영되지만
+  // 이 감사이력만 조용히 되돌려지고 있었다. director는 자기 사업부(dept) 레코드에 한해 허용.
+  gradeAdjustHistory: { roles: ["admin"], directorDeptField: "dept", pageIds: ["grade-view", "comp-grade-view"] },
+  coreTalentPool:     { roles: ["admin"], pageIds: "core-talent" },
+  approvalTemplates:  { roles: ["admin"], pageIds: "approval-templates" },
   // hr-mandatory-training(admin/director/leader)의 일괄 등록 외에, 누구나 접근 가능한 개인
   // "법정의무교육" 화면(mandatory-training)에 본인 이수 자가등록 버튼("이수 등록")이 있다 —
   // ownField가 없으면 leader 미만(대부분의 사원)의 자가등록이 서버에서 조용히 되돌려진다.
-  mandatoryTraining:  { roles: ["admin", "director", "leader"], ownField: "empId" },
+  // pageIds는 admin/director/leader의 "전체 현황" role 경로에만 적용되고, 이 본인 자가등록
+  // (ownField) 경로는 별개 화면(mandatory-training)이라 영향받지 않는다.
+  mandatoryTraining:  { roles: ["admin", "director", "leader"], ownField: "empId", pageIds: "hr-mandatory-training" },
   // 근태: 결재 완료 시 승인자의 화면이 기안자(타인)의 근태를 쓴다(_setAttRec) — 리더 이상은
-  // 타인 기록도 써야 하고, 사원은 본인 출퇴근 체크만.
+  // 타인 기록도 써야 하고, 사원은 본인 출퇴근 체크만. role 경로가 특정 단일 화면이 아니라
+  // 전자결재 승인이라는 공용 경로를 타서 pageIds를 붙이면 무관한 결재 승인까지 막을 수
+  // 있어(과잉차단 위험) 의도적으로 미적용.
   attendanceRecords:  { roles: ["admin", "director", "leader"], ownField: "empId" },
   leaveUsagePlans:    { roles: ["admin", "director", "leader"], ownField: "empId" },
   certLog:            { roles: ["admin"], ownField: "empId" },                // 본인 증명서 발급 기록은 허용
@@ -1163,34 +1245,49 @@ const _WRITE_GATED_FIELDS = {
   approvalDelegations: { roles: ["admin"], ownField: "empId" },
   // 다면평가 응답은 평가자 본인 명의로만(타인 명의 제출 = 평가 위조)
   compResponses:      { roles: ["admin"], ownField: "evaluatorId" },
-  compSessions:       { roles: ["admin"] },                                   // eval-ops
-  changeRequests:     { roles: ["admin", "director", "leader"], ownField: "reqUserId" },
+  compSessions:       { roles: ["admin"], pageIds: "eval-ops" },
+  changeRequests:     { roles: ["admin", "director", "leader"], ownField: "reqUserId", pageIds: "kpi-amend" },
   // 육성계획: 본인(핵심인재 본인이 자기 IDP 작성) 또는 지정 담당자(settings.talentDevViewers)
-  talentDevPlans:     { roles: ["admin", "director", "leader"], ownField: "empId", viewersSetting: "talentDevViewers" },
+  talentDevPlans:     { roles: ["admin", "director", "leader"], ownField: "empId", viewersSetting: "talentDevViewers", pageIds: "talent-dev" },
   // 동점자 처리(renderApprovals의 "동점자 처리" 탭)는 director에게도 노출되어(자기 사업부
   // 소속분만, t.dept===u.dept) "처리 완료 표시"(markTieResolved) 버튼을 director가 누를 수
   // 있다 — admin만 허용하면 director의 처리가 조용히 되돌려져 알림이 영구히 안 사라진다.
+  // 이 탭은 단일 사이드바 페이지가 아니라 결재 승인 화면 안의 탭이라 pageIds 미적용.
   tieNotifications:   { roles: ["admin"], directorDeptField: "dept" },
   // 종합검진 완료 처리 토글(_toggleHcDone)은 welfare-settings(관리자 전용) 화면에만 있다
-  healthCheckupLog:   { roles: ["admin"] },
-  onboardingFlows:    { roles: ["admin"] },
+  healthCheckupLog:   { roles: ["admin"], pageIds: "welfare-settings" },
+  onboardingFlows:    { roles: ["admin"], pageIds: "onboarding" },
   orgChartHistory:    { roles: ["admin"] },
-  integrationLogs:    { roles: ["admin"] },
+  integrationLogs:    { roles: ["admin"], pageIds: "integrations" },
   roomReservations:   { roles: ["admin"], ownField: "bookedBy" },
   scheduleEvents:     { roles: ["admin", "director", "leader"], ownField: "authorId" },
   // 저성과자 관리: 읽기와 같은 기준(관리자 또는 settings.lowPerformerViewers 등록자)
-  lowPerfData:        { roles: ["admin"], viewersSetting: "lowPerformerViewers" },
+  lowPerfData:        { roles: ["admin"], viewersSetting: "lowPerformerViewers", pageIds: "low-performer" },
 };
+// menuPerms(개인별로 끈 메뉴) 확장 — 위 role 기반 승인/게이팅과 별개로, 관리자가 특정 직원의
+// 해당 화면 메뉴 자체를 꺼뒀다면 role상 자격이 있어도(예: admin, 또는 그 부서의 director) 그
+// 컬렉션에 대한 쓰기를 허용하지 않는다. REST API 화면(requirePage, 2026-08-21)과 동일한
+// 발상을 이 범용 blob 동기화(/save) 컬렉션에도 적용한 것 — 지금까지는 role 검사만 있고
+// menuPerms는 전혀 확인하지 않아, 개인적으로 메뉴를 꺼도 API를 직접 호출하면(role만 맞으면)
+// 그대로 통과됐다. 여러 페이지가 같은 필드를 다루면(예: gradeAdjustHistory는 grade-view/
+// comp-grade-view 양쪽에서) 하나라도 켜져 있으면 허용 — 전부 꺼졌을 때만 차단한다.
+function _menuPermsAllow(pageIds, actor) {
+  if (!pageIds) return true;
+  const ids = Array.isArray(pageIds) ? pageIds : [pageIds];
+  const perms = (actor && actor.menuPerms) || {};
+  return ids.some(id => perms[id] !== false);
+}
 function _writeGateAllowed(field, rec, actor, actorEmp, settings) {
   const rule = _WRITE_GATED_FIELDS[field];
   if (!rule || !actor) return false;
-  if (rule.roles.includes(actor.role)) return true;
+  const pageOk = _menuPermsAllow(rule.pageIds, actor);
+  if (rule.roles.includes(actor.role) && pageOk) return true;
   if (rule.ownField && String(rec[rule.ownField]) === String(actor.empId)) return true;
   if (rule.viewersSetting && ((settings || {})[rule.viewersSetting] || []).map(String).includes(String(actor.empId))) return true;
   // director 한정, 그 부서 소속 레코드만 허용(예: KPI 등급조정 이력·동점자 처리 — 클라이언트가
   // 이미 director를 자기 사업부(dept)로만 스코핑해 버튼을 노출하고 있는 화면들).
   if (rule.directorDeptField && actor.role === "director" && actorEmp &&
-      rec[rule.directorDeptField] === actorEmp.dept) return true;
+      rec[rule.directorDeptField] === actorEmp.dept && pageOk) return true;
   return false;
 }
 const _APPROVAL_GATED_FIELDS = {
@@ -1344,10 +1441,21 @@ function _sanitizeKpiEntry(incoming, stored, actor, actorEmp, empById) {
   }
   const ownerId = out.userId ?? stored?.userId;
   const ownerEmp = ownerId != null ? empById.get(String(ownerId)) : null;
+  // menuPerms 확장(2026-08-21) — role만으로는 자격이 있어도(팀장/사업부장), 관리자가 그
+  // 직원의 "1차 평가"/"2차 평가" 메뉴 자체를 개인적으로 꺼뒀다면 그 승인 권한도 서버에서
+  // 함께 차단한다(REST 화면의 requirePage와 동일한 원칙을 이 blob 동기화 필드에 적용).
   const canFirst = actor.role === "leader" && actorEmp && ownerEmp &&
-    ownerEmp.dept === actorEmp.dept && ownerEmp.team === actorEmp.team;
+    ownerEmp.dept === actorEmp.dept && ownerEmp.team === actorEmp.team &&
+    _menuPermsAllow("first-eval", actor);
   const canFinal = actor.role === "director" && actorEmp && ownerEmp &&
-    ownerEmp.dept === actorEmp.dept;
+    ownerEmp.dept === actorEmp.dept && _menuPermsAllow("second-eval", actor);
+  // 목표 등록/자체평가 등 승인과 무관한 일반 편집은 본인(userId===actor.empId) 소유 레코드에
+  // 한해 일어난다("kpi"/"kpi-results" 두 화면이 여기 해당, 어느 쪽이 보이는지는
+  // settings.stage에 따라 갈리므로 둘 다 꺼졌을 때만 차단). admin은 그대로 예외.
+  const isOwner = actor.empId != null && ownerId != null && String(actor.empId) === String(ownerId);
+  if (isOwner && actor.role !== "admin" && !_menuPermsAllow(["kpi", "kpi-results"], actor)) {
+    return stored ? { ...stored } : null;
+  }
 
   const storedFirstStatus = stored?.firstStatus || "";
   if ((incoming.firstStatus || "") !== storedFirstStatus &&
@@ -1409,7 +1517,7 @@ function _sanitizeKpiEntry(incoming, stored, actor, actorEmp, empById) {
 // actor가 없는 호출(초기 부트스트랩·/restore 등 신뢰된 경로)은 대상이 아니며, 호출부에서
 // `actor && actor.role !== "admin"`일 때만 이 함수를 적용한다(관리자는 그대로 통과 —
 // approvalDocs 결재자 변경과 동일한 관례).
-function _sanitizeEmployeeRecord(rawEmp, stored, actor) {
+function _sanitizeEmployeeRecord(rawEmp, stored, actor, actorEmp) {
   if (!rawEmp) return rawEmp;
   let out = rawEmp;
   const cloneOnce = () => { if (out === rawEmp) out = { ...rawEmp }; };
@@ -1424,7 +1532,33 @@ function _sanitizeEmployeeRecord(rawEmp, stored, actor) {
     if (out.birth !== storedBirth) { cloneOnce(); out.birth = storedBirth; }
     if (out.address !== storedAddress) { cloneOnce(); out.address = storedAddress; }
   }
+  // KPI 최종 등급(gradeResults[year].grade 등, adjustKpiGrade()가 씀)은 이전까지 전혀
+  // 게이팅되지 않고 있었다(위 코멘트 "게이팅 대상 아님" 참고 — gradeAdjustHistory 이력만
+  // 보호되고 정작 실제 등급 필드는 무방비였다). admin 또는 그 직원의 사업부장(director,
+  // 같은 dept — kpiEntries.finalStatus의 director 승인 권한과 동일 기준)만 조정할 수
+  // 있어야 한다. "같은 dept"는 반드시 actor 자신의 부서(actorEmp.dept)와 대조해야 한다 —
+  // stored.dept를 rawEmp.dept(변경 안 된 이상 항상 자기 자신과 같음)와만 비교하면 "그
+  // 부서 소속인지"가 아니라 아무 의미 없는 항상-참 검사가 되어(초기 구현에서 이 실수를
+  // 했음) 어느 부서의 director든 전 직원의 등급을 조정할 수 있게 되는 결함이 생긴다.
+  const canAdjustGrade = actor.role === "director" && actorEmp && stored && stored.dept === actorEmp.dept;
+  if (!canAdjustGrade) {
+    const storedGrades = stored ? stored.gradeResults : undefined;
+    if (JSON.stringify(out.gradeResults || {}) !== JSON.stringify(storedGrades || {})) {
+      cloneOnce();
+      out.gradeResults = storedGrades;
+    }
+  }
   return out;
+}
+// 다면평가 최종등급(compGradeResults, {empId:{year:{grade,score,...}}} 형태의 nested
+// 싱글톤)은 comp-grade-view(admin 전용 화면)에서만 계산·조정되는데, 이 필드 자체는
+// gradeResults와 마찬가지로 전혀 게이팅되지 않고 있었다 — GET /data는 이미 non-admin에게
+// 본인 키만 보이도록 좁히고 있지만(filterDataForRole) 쓰기 쪽엔 대응하는 방어가 없어, 사원이
+// 자기 다면평가 최종 등급을 직접 /save로 "S"로 써넣을 수 있었다. salary와 동일한 근거로
+// (정상적인 self-service 경로가 전혀 없음) admin 외에는 통째로 저장값으로 되돌린다.
+function _sanitizeCompGradeResultsForRole(incoming, stored, actor) {
+  if (!actor || actor.role === "admin") return incoming;
+  return stored;
 }
 // 세션/토큰 철회 방어(2026-08-19 외부 감사 P0-5). 로그인 토큰(JWT류, signToken())은 만료
 // 시각까지(SESSION_TTL_SEC, 기본 12시간) 스스로 유효함을 증명하는 완전한 stateless 토큰이라,
@@ -1490,8 +1624,14 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
     const _kpiEmpById = new Map((_kpiGatePrior.employees || []).map(e => [String(e.id), e]));
     const _kpiStoredById = new Map((_kpiGatePrior.kpiEntries || []).map(k => [String(k.id), k]));
     const _kpiActorEmp = actor.empId != null ? _kpiEmpById.get(String(actor.empId)) : null;
-    data.kpiEntries = data.kpiEntries.map(kpi =>
-      _sanitizeKpiEntry(kpi, kpi && kpi.id != null ? _kpiStoredById.get(String(kpi.id)) : null, actor, _kpiActorEmp, _kpiEmpById));
+    // _sanitizeKpiEntry는 권한 없이 새로 만들어진 레코드에 한해 null을 반환할 수 있다
+    // (menuPerms로 kpi/kpi-results 둘 다 꺼진 본인의 신규 목표 등록 차단) — 아래 두 분기
+    // 모두 `kpi.id`에 바로 접근하므로(예: JSON 모드 `for (const kpi of ...)`), null이 섞인
+    // 채로 넘기면 TypeError로 요청이 죽는다(Express 4는 async 핸들러의 동기 throw를 못
+    // 잡아 응답 없이 hang — 이 프로젝트에서 반복된 사고 클래스). 여기서 즉시 걸러낸다.
+    data.kpiEntries = data.kpiEntries
+      .map(kpi => _sanitizeKpiEntry(kpi, kpi && kpi.id != null ? _kpiStoredById.get(String(kpi.id)) : null, actor, _kpiActorEmp, _kpiEmpById))
+      .filter(kpi => kpi !== null);
   }
   if (USE_JSON_FILE) {
     // Save the full client state to the JSON file
@@ -1541,9 +1681,10 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
     // 목록을 보존한다.
     const employeesInputMissing = data.employees === undefined;
     const _empActorNonAdmin = !!(actor && actor.role !== "admin");
+    const _empActorOwnRecord = (actor && actor.empId != null) ? existingById[actor.empId] : null;
     const employees = employeesInputMissing ? (_fileStore.employees || []) : await Promise.all((data.employees || []).map(async (rawEmpIn) => {
       const ex0 = existingById[rawEmpIn.id];
-      const rawEmp = _empActorNonAdmin ? _sanitizeEmployeeRecord(rawEmpIn, ex0, actor) : rawEmpIn;
+      const rawEmp = _empActorNonAdmin ? _sanitizeEmployeeRecord(rawEmpIn, ex0, actor, _empActorOwnRecord) : rawEmpIn;
       const ex = existingById[rawEmp.id];
       const oldTs = ex ? (ex.updatedAt || ex.createdAt || "") : "";
       const newTs = rawEmp.updatedAt || rawEmp.createdAt || "";
@@ -1678,7 +1819,8 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
     // smartMerge() already uses for the version-conflict path — this covers the direct-overwrite
     // path too, which smartMerge never touches).
     const compGradeResultsFinal = data.compGradeResults !== undefined
-      ? mergeNestedObject(_fileStore.compGradeResults, data.compGradeResults)
+      ? mergeNestedObject(_fileStore.compGradeResults,
+          _sanitizeCompGradeResultsForRole(data.compGradeResults, _fileStore.compGradeResults, actor))
       : _fileStore.compGradeResults;
     // compResponses is filtered differently — not whole-record hiding but per-record FIELD
     // stripping (evaluator identity/content removed for records the requester didn't author,
@@ -1751,6 +1893,13 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
     // company_id와 다르면 그 레코드는 조용히 건너뛴다(404/403 대신 무시 — 다른 회사 리소스의
     // 존재 자체를 노출하지 않는다는 이 세션의 인가 원칙과 동일).
     const _empActorNonAdmin = !!(actor && actor.role !== "admin");
+    // director의 gradeResults 조정 권한 판정(_sanitizeEmployeeRecord 주석 참고)에
+    // actor 자신의 dept가 필요하다 — 매 레코드마다 다시 조회하지 않도록 루프 밖에서 한 번만.
+    let _empActorOwnRecord = null;
+    if (_empActorNonAdmin && actor.empId != null) {
+      const { rows: actorRows } = await client.query("SELECT data FROM employees WHERE id = $1", [actor.empId]);
+      _empActorOwnRecord = actorRows.length ? actorRows[0].data : null;
+    }
     for (const rawEmpIn of (data.employees || [])) {
       if (!rawEmpIn.id) continue;
       const { rows } = await client.query(
@@ -1758,7 +1907,7 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
       );
       if (rows.length && companyId && rows[0].company_id && rows[0].company_id !== companyId) continue;
       const rawEmp = _empActorNonAdmin
-        ? _sanitizeEmployeeRecord(rawEmpIn, rows.length ? rows[0].data : null, actor)
+        ? _sanitizeEmployeeRecord(rawEmpIn, rows.length ? rows[0].data : null, actor, _empActorOwnRecord)
         : rawEmpIn;
       // 비밀번호는 관리자 또는 본인만(2026-08-19 외부 감사 P0-1 — JSON 파일 모드와 동일한
       // 방어를 Postgres/SaaS 모드에도 적용).
@@ -2007,7 +2156,8 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
         const { rows } = companyId
           ? await client.query("SELECT data FROM app_singletons WHERE key = $1 AND (company_id = $2 OR company_id IS NULL)", [key, companyId])
           : await client.query("SELECT data FROM app_singletons WHERE key = $1", [key]);
-        valueToStore = mergeNestedObject(rows.length ? rows[0].data : null, data[key]);
+        const storedCgr = rows.length ? rows[0].data : null;
+        valueToStore = mergeNestedObject(storedCgr, _sanitizeCompGradeResultsForRole(data[key], storedCgr, actor));
       }
       const { rows: storedRows } = await client.query(
         `SELECT data, revision FROM app_singletons WHERE key = $1 AND company_id = $2 FOR UPDATE`,
@@ -2675,12 +2825,20 @@ app.post("/api/auth/2fa/generate-secret", loginLimiter, async (req, res) => {
     res.json({ ok: true, secret, otpauthUrl });
   } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
-// 2) verify-code: 설정 확인 및 로그인 화면에서의 순수 코드 검증(상태 없음)에 공용으로 사용
-app.post("/api/auth/2fa/verify-code", async (req, res) => {
+// 2) verify-code: {secret,otp} 순수 검증(상태 없음, 계정 조회 없음) — 클라이언트에서는
+// 2FA 설정 확인(_confirmEnable2fa, secret은 방금 /generate-secret이 발급한 값)과 2FA
+// 해제(_confirmDisable2fa, secret은 이미 로그인된 본인의 emp.twoFactorSecret) 2곳에서만
+// 쓰인다. 실제 로그인 시 OTP 검증은 이 라우트를 거치지 않고 POST /login이 서버에 저장된
+// 진짜 secret으로 직접 검증한다(loginLimiter로 이미 보호됨) — 이 라우트 자신은 브루트포스
+// 로그인 우회 경로가 아니지만(secret을 이미 아는 사람만 의미 있게 호출 가능), 자격증명
+// 성격의 값을 검증하는 엔드포인트는 예외 없이 요청 빈도를 제한하는 것이 안전하다는
+// 원칙(defense in depth)에 따라 다른 인증 라우트와 동일하게 제한을 건다.
+app.post("/api/auth/2fa/verify-code", loginLimiter, async (req, res) => {
   try {
     const { secret, otp } = req.body || {};
     if (!secret || !otp) return res.status(400).json({ ok: false, message: "secret과 otp가 필요합니다." });
-    res.json({ ok: totpVerify(secret, otp) });
+    res.locals.loginOk = totpVerify(secret, otp);
+    res.json({ ok: res.locals.loginOk });
   } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
@@ -2849,6 +3007,110 @@ function requireMaster(req, res) {
 
 // 임시 마이그레이션 진단·삭제 API는 company_id 백필 완료 후 제거했다. 운영 진단은
 // 읽기 전용 CLI(scripts/migrate-add-company-id.js --dry-run)와 DB 감사 절차를 사용한다.
+// 기준 브랜치에 남아 있던 임시 라우트 구현은 병합 이력 보존을 위해 비활성 블록에만
+// 남긴다. 런타임에는 등록되지 않으며 후속 정리 커밋에서 완전히 삭제할 수 있다.
+if (false) {
+// /login과 동일한 이유로 전용 rate limiter가 필요하다(이 라우트도 항상 HTTP 200으로
+// 응답하고 성공/실패는 JSON body의 `ok`로만 구분하므로, express-rate-limit의 기본
+// 성공 판정(statusCode<400)을 그대로 쓰면 브루트포스 방어가 무력화된다 — /login에 있는
+// 것과 동일한 문제, res.locals.masterLoginOk로 실제 결과를 판정 기준에 연결한다).
+// /login과는 별도의 카운터를 쓴다(loginLimiter를 공유하면 같은 IP에서 회사 로그인
+// 실패를 반복한 사용자가 마스터 로그인 시도 자체를 못 하게 되는 등 서로 다른 두
+// 자격증명 체계의 실패가 하나의 카운터에 섞이는 게 부적절하다고 판단).
+// 보안 검토(2026-08-24) 중 발견 — 이 세 라우트가 지금까지 `!==` 평문 문자열 비교로
+// x-migration-secret을 검증하고 있었음(타이밍 공격에 취약: 첫 불일치 문자에서 즉시
+// 반환되는 `!==`의 실행시간 차이로 응답시간을 재보며 비밀값을 한 글자씩 추정할 수 있음).
+// 이 파일의 다른 비밀값 비교 3곳(토큰 서명·BOOTSTRAP_SECRET·2FA)은 전부
+// crypto.timingSafeEqual을 쓰는데 이 세 라우트만 예외였다 — _bootstrapSecretMatches()와
+// 동일한 패턴으로 통일. 또한 시도 횟수 제한이 전혀 없어(비밀값이 설정된 상태라면) 무제한
+// 추측이 가능했던 것도 함께 막는다(로그인류 라우트들과 동일하게 IP당 15분/20회).
+function _migrationSecretMatches(req) {
+  const secret = process.env.MIGRATION_ADMIN_SECRET;
+  const provided = req.headers["x-migration-secret"];
+  if (!secret || typeof provided !== "string") return false;
+  const a = Buffer.from(secret), b = Buffer.from(provided);
+  if (a.length !== b.length) return false;
+  try { return crypto.timingSafeEqual(a, b); } catch { return false; }
+}
+const migrationAdminLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { ok: false, message: "요청이 너무 많습니다. 잠시 후 다시 시도하세요." },
+});
+
+// ── TEMPORARY — 오늘 잦은 회사코드 오타(printrobo 사고 등과 무관, 이번엔 "tirautech"를
+// "thirautech"로 바로잡는 요청)에 대응하기 위한 1회성 유틸리티. 이전 fix-company-name과
+// 동일한 보안 패턴(x-migration-secret 404 게이트). 완료 확인 즉시 제거할 것.
+app.post("/admin/fix-company-slug", migrationAdminLimiter, async (req, res) => {
+  if (!_migrationSecretMatches(req)) return res.status(404).end();
+  const oldSlug = (req.body && req.body.oldSlug || "").trim();
+  const newSlug = (req.body && req.body.newSlug || "").trim();
+  if (!oldSlug || !newSlug) return res.status(400).json({ ok: false, message: "oldSlug, newSlug required" });
+  if (req.body.confirm !== true) return res.status(400).json({ ok: false, message: "confirm:true 가 명시적으로 필요합니다." });
+  try {
+    const dup = await pool.query(`SELECT 1 FROM companies WHERE slug = $1`, [newSlug]);
+    if (dup.rows.length) return res.status(409).json({ ok: false, message: `slug "${newSlug}" 는 이미 사용 중입니다.` });
+    const result = await pool.query(
+      `UPDATE companies SET slug = $1 WHERE slug = $2 RETURNING id, slug, name`,
+      [newSlug, oldSlug]
+    );
+    if (!result.rows.length) return res.status(404).json({ ok: false, message: "해당 slug의 회사를 찾을 수 없습니다." });
+    res.json({ ok: true, company: result.rows[0] });
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
+});
+
+// ── TEMPORARY — 테넌트 격리 의심 사례(다른 회사 토큰으로 GET /data 호출 시
+// payrollAdjustments/boardPosts/roomReservations 등에 다른 회사 실데이터로 보이는 값이
+// 섞여 나온다는 사용자 제보) 진단용 읽기 전용 엔드포인트. app_collections는 오늘 복합 PK
+// (company_id, collection, id)로 전환 완료돼 company_id가 구조적으로 NULL일 수 없으므로,
+// 서버 조회 로직(엄격한 WHERE company_id=$1)이 실제로 다른 회사 행을 잘못 반환하는 건지,
+// 아니면 그 행 자체가 이미 (쓰기 시점에) 특정 회사 소유로 잘못 기록된 것인지(클라이언트가
+// 회사 전환 시 이전 회사의 로컬 캐시를 지우지 않고 재전송했을 가능성)를 실제 데이터로
+// 구분하기 위해 추가. 완료 확인 즉시 제거할 것.
+app.get("/admin/inspect-collection", migrationAdminLimiter, async (req, res) => {
+  if (!_migrationSecretMatches(req)) return res.status(404).end();
+  const collection = req.query.collection;
+  if (!collection) return res.status(400).json({ ok: false, message: "collection required" });
+  try {
+    const { rows } = await pool.query(
+      `SELECT ac.id, ac.company_id, c.slug AS company_slug, c.name AS company_name,
+              ac.created_at, ac.updated_at, ac.data
+       FROM app_collections ac
+       LEFT JOIN companies c ON c.id = ac.company_id
+       WHERE ac.collection = $1
+       ORDER BY ac.updated_at DESC
+       LIMIT 200`,
+      [collection]
+    );
+    const nullCompanyCount = await pool.query(
+      `SELECT COUNT(*)::bigint AS c FROM app_collections WHERE collection = $1 AND company_id IS NULL`,
+      [collection]
+    );
+    res.json({ ok: true, collection, totalReturned: rows.length, nullCompanyIdCount: Number(nullCompanyCount.rows[0].c) || 0, rows });
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
+});
+
+// ── TEMPORARY — 위 inspect-collection으로 확인된 test 회사의 오염 데이터(티라유텍
+// app_collections 전체 21건이 test 가입 순간 클라이언트 로컬캐시 재전송으로 그대로
+// 복제됨) 정리용. company_id 하나로 지정한 회사의 app_collections 행 전체를 지운다
+// (그 회사가 아직 자체 데이터가 없는 순수 테스트/오염 상태일 때만 안전 — 사용 전 반드시
+// inspect-collection으로 내용 확인 후 진행). 완료 확인 즉시 제거할 것.
+app.post("/admin/purge-company-collections", migrationAdminLimiter, async (req, res) => {
+  if (!_migrationSecretMatches(req)) return res.status(404).end();
+  const companySlug = (req.body && req.body.companySlug || "").trim();
+  if (!companySlug) return res.status(400).json({ ok: false, message: "companySlug required" });
+  if (req.body.confirm !== true) return res.status(400).json({ ok: false, message: "confirm:true 가 명시적으로 필요합니다." });
+  try {
+    const companyRes = await pool.query(`SELECT id, name FROM companies WHERE slug = $1`, [companySlug]);
+    if (!companyRes.rows.length) return res.status(404).json({ ok: false, message: "해당 slug의 회사를 찾을 수 없습니다." });
+    const companyId = companyRes.rows[0].id;
+    const del = await pool.query(`DELETE FROM app_collections WHERE company_id = $1`, [companyId]);
+    res.json({ ok: true, companySlug, companyId, deletedRows: del.rowCount });
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
+});
+}
 
 const masterLoginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
@@ -3339,11 +3601,18 @@ app.post("/unlock", (req, res) => {
 });
 
 // POST /log
+// 클라이언트 조작 이력(누가 언제 무엇을 했는지)을 activity_log에 한 줄 남긴다.
+// 다른 142개 라우트 핸들러와 달리 try/catch가 없어, addActivityLog() 내부의
+// pool.query()가 던지면(DB 순단 등) 이 요청이 응답 없이 멈춰버리는 것을 다른
+// 라우트들과 통일해 방지한다(Express 4는 async 핸들러의 미처리 reject를 자동으로
+// 못 잡아 그대로 두면 hang된다 — 이 프로젝트에서 여러 번 재발한 버그 클래스).
 app.post("/log", async (req, res) => {
   if (!requireAuth(req, res)) return;
   if (!req.body) return res.status(400).json({ ok: false });
-  await addActivityLog(req.body, req.auth.companyId || null);
-  res.json({ ok: true });
+  try {
+    await addActivityLog(req.body, req.auth.companyId || null);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 // GET /activity
@@ -3900,7 +4169,6 @@ function requireRole(req, res, allowed) {
   }
   return true;
 }
-
 // 회계 메뉴는 UI에서만 숨기면 브라우저가 이미 내려받은 목록을 개발자도구/API 호출로
 // 그대로 읽거나 수정할 수 있다. 회계 API는 별도 저장소를 쓰므로 GET /data에 적용되는
 // filterDataForRole()로는 보호되지 않는다. 요청 시점의 저장된 직원 menuPerms를 다시
@@ -3924,7 +4192,7 @@ const ACCOUNTING_MENU_BY_PATH = [
 function _accountingMenuForPath(pathname) {
   // 사업계획은 모든 인증 사용자가 비용 계정의 id/code/name만 참조해야 하므로, 회계
   // 원장 접근 권한과 분리된 최소 DTO API는 이 정책에서 제외한다.
-  if (pathname === "/accounts/expense-lite") return null;
+  if (["/accounts/expense-lite", "/accounts/picker", "/partners/picker"].includes(pathname)) return null;
   const found = ACCOUNTING_MENU_BY_PATH.find(([prefix]) => pathname === prefix || pathname.startsWith(`${prefix}/`));
   return found ? found[1] : null;
 }
@@ -3997,6 +4265,31 @@ for (const prefix of Object.keys(MODULE_MENU_BY_PATH)) {
     next();
   });
 }
+// "권한 관리" 화면(개인별로 특정 메뉴를 role 기본값과 별개로 추가 제한)은 지금까지
+// 클라이언트에서만 검사됐다(사이드바 숨김 + gotoPage() 가드) — 서버는 전혀 확인하지
+// 않아 브라우저 개발자도구로 그 화면이 쓰는 API를 직접 호출하면 그대로 통과됐다
+// (2026-08-21 사용자 지적, 실측 확인 — menuPerms 기능 자체가 원래 그렇게 설계돼 있던
+// 것으로, 이번에 새로 생긴 약점은 아님). 전용 REST API를 가진 화면(회계/PMS/채용/재고/
+// 영업/사업계획 등)에 한해 서버측으로도 강제한다 — role 기반 requireAdmin/requireRole과
+// 나란히 개인 단위 추가 체크로 동작. authenticate()가 이미 req.auth.menuPerms에 실어둔
+// 값을 그대로 쓰므로 이 함수 자체는 추가 조회를 하지 않는다. 클라이언트 gotoPage()와
+// 동일하게 role과 무관하게(admin 포함) menuPerms[pageId]===false면 차단한다 — 클라이언트
+// 쪽 관례를 그대로 반영.
+//
+// 적용 범위: 전용 REST 엔드포인트를 가진 화면들에만 적용했다. KPI/역량평가/직원정보처럼
+// 요청 하나(POST /save)에 여러 화면의 변경사항이 뒤섞여 오는 전체상태 blob 저장 방식
+// 화면들은, 이 요청이 어느 "페이지"에서 왔는지 서버가 구분할 방법이 구조적으로 없어
+// 이번 범위에서 제외했다(어설프게 흉내내면 오히려 다른 화면의 정상 저장까지 함께
+// 막는 새 버그를 만들 위험이 큼 — CLAUDE.md 기록 참고).
+function requirePage(req, res, pageId) {
+  if (!requireAuth(req, res)) return false;
+  const perms = req.auth.menuPerms || {};
+  if (perms[pageId] === false) {
+    res.status(403).json({ ok: false, message: "이 메뉴에 대한 접근 권한이 없습니다." });
+    return false;
+  }
+  return true;
+}
 function _round2(n) { return Math.round((Number(n) || 0) * 100) / 100; }
 // ERP 출고/입고는 세금계산서를 서버에서 자동 생성하지만, ERP 권한만 있는 사용자가
 // 거래처 사업자번호·품목·금액까지 받으면 세금계산서 메뉴 차단을 우회하게 된다.
@@ -4010,6 +4303,11 @@ app.get("/api/accounting/accounts", async (req, res) => {
   // 회계 모듈 조회 전체가 PAGE_ROLES상 admin 전용("acct-*")인데 requireAuth만 있어 member
   // 토큰으로도 API 직접호출 시 전표·거래처·세금계산서 등 전체 조회가 가능했다(실측 확인).
   if (!requireAdmin(req, res)) return;
+  // 계정과목 전체 조회(변경이력·원가구분 등 민감정보 포함)는 "acct-accounts" 페이지 전용 —
+  // 전표 작성(acct-vouchers)·급여전표(payroll-mgmt) 등 계정 "선택"만 필요한 다른 화면은
+  // 전부 GET .../accounts/picker(인증만 있으면 조회 가능)로 이전됐으므로 이 게이팅이
+  // 그 화면들에 영향을 주지 않는다.
+  if (!requirePage(req, res, "acct-accounts")) return;
   try {
     if (USE_JSON_FILE) return res.json({ ok: true, accounts: _fileAccounting.accounts });
     const companyId = req.auth.companyId || null;
@@ -4027,6 +4325,7 @@ app.get("/api/accounting/accounts", async (req, res) => {
 // 덮어쓰지 않는다(이미 같은 code로 직접 만들어 쓰고 있는 회사는 그대로 유지).
 app.post("/api/accounting/accounts/seed-defaults", async (req, res) => {
   if (!requireAdmin(req, res)) return;
+  if (!requirePage(req, res, "acct-accounts")) return;
   try {
     const now = new Date().toISOString();
     const user = (req.body && req.body.user) || req.auth.loginId || "unknown";
@@ -4087,9 +4386,48 @@ app.get("/api/accounting/accounts/expense-lite", async (req, res) => {
   } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
+// 계정과목 선택용 최소 조회(전 유형) — 급여 전표 생성(payroll-mgmt)·경비 지급 처리
+// (expense-admin) 등 회계 모듈 밖의 여러 화면이 "계정을 하나 고른다"는 목적만으로
+// 전체 계정과목 조회(GET .../accounts, admin+"acct-accounts" 페이지 전용)에 의존하고
+// 있었다 — 그 화면 이용자가 "계정과목 관리" 메뉴 자체는 개인적으로 꺼져 있어도
+// 전표 작성은 계속 가능해야 하므로, 원가구분·변경이력 등 민감 정보를 뺀 최소
+// 필드만 반환하는 별도 엔드포인트로 분리한다(expense-lite의 전 유형 버전).
+app.get("/api/accounting/accounts/picker", async (req, res) => {
+  if (!requireAuth(req, res)) return;
+  try {
+    const companyId = req.auth.companyId || null;
+    const accounts = await _getAccountsList(companyId);
+    const lite = accounts
+      .filter(a => a.active !== false)
+      .map(a => ({ id: a.id, code: a.code, name: a.name, type: a.type }));
+    res.json({ ok: true, accounts: lite });
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
+});
+
+// 거래처 선택용 최소 조회 — 세금계산서 발행·견적서·발주서·급여/경비 전표 등 여러 화면이
+// "거래처를 하나 고른다"는 목적만으로 전체 거래처 조회(GET .../partners, admin+
+// "acct-partners" 페이지 전용)에 의존하고 있었다. 연락처(담당자명/전화/이메일/주소) 등
+// 개인정보 성격 필드는 빼고, 사업자등록번호(bizNo)는 남긴다 — 세금계산서 수동 발행
+// 모달이 거래처 선택 시 사업자번호를 자동 채우는 기존 동작(POST .../tax-invoices는
+// 클라이언트가 보낸 partnerBizNo를 그대로 신뢰하는 구조라 서버가 대신 채워주지 않음)이
+// 이 목록 데이터에 의존하고, 사업자등록번호 자체는 개인정보라기보다 공개된 사업자 식별
+// 정보라 다른 연락처 필드보다 민감도가 낮다고 판단.
+app.get("/api/accounting/partners/picker", async (req, res) => {
+  if (!requireAuth(req, res)) return;
+  try {
+    const companyId = req.auth.companyId || null;
+    const partners = await _getPartnersList(companyId);
+    const lite = partners
+      .filter(p => p.active !== false)
+      .map(p => ({ id: p.id, name: p.name, bizNo: p.bizNo || "" }));
+    res.json({ ok: true, partners: lite });
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
+});
+
 app.post("/api/accounting/accounts", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
+    if (!requirePage(req, res, "acct-accounts")) return;
     const { id, code, name, type, category, costCategory: costCategoryRaw, costSubType: costSubTypeRaw, active = true, user } = req.body || {};
     if (!code || !name || !type)
       return res.status(400).json({ ok: false, message: "계정코드, 계정명, 구분은 필수입니다." });
@@ -4135,6 +4473,7 @@ app.post("/api/accounting/accounts", async (req, res) => {
 app.post("/api/accounting/accounts/:id/delete", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
+    if (!requirePage(req, res, "acct-accounts")) return;
     const id = req.params.id;
     if (USE_JSON_FILE) {
       const used = _fileAccounting.vouchers.some(v => (v.lines || []).some(l => l.accountId === id));
@@ -4167,6 +4506,13 @@ async function _getAccountsList(companyId, dbClient) {
   if (USE_JSON_FILE) return _fileAccounting.accounts;
   const { rows } = await (dbClient || pool).query(
     "SELECT id, data FROM accounts WHERE is_deleted = FALSE AND (company_id = $1 OR company_id IS NULL)", [companyId || null]
+  );
+  return rows.map(r => ({ id: r.id, ...r.data }));
+}
+async function _getPartnersList(companyId, dbClient) {
+  if (USE_JSON_FILE) return _fileAccounting.partners;
+  const { rows } = await (dbClient || pool).query(
+    "SELECT id, data FROM partners WHERE is_deleted = FALSE AND (company_id = $1 OR company_id IS NULL)", [companyId || null]
   );
   return rows.map(r => ({ id: r.id, ...r.data }));
 }
@@ -4249,6 +4595,7 @@ app.post("/api/accounting/vouchers", async (req, res) => {
 app.post("/api/accounting/vouchers/:id/post", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
+    if (!requirePage(req, res, "acct-vouchers")) return;
     const id = req.params.id;
     const companyId = req.auth.companyId || null;
     const year = new Date().getFullYear();
@@ -4318,6 +4665,7 @@ async function _unpostScheduleRowsPg(voucherId, companyId, client) {
 app.post("/api/accounting/vouchers/:id/void", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
+    if (!requirePage(req, res, "acct-vouchers")) return;
     const id = req.params.id;
     const companyId = req.auth.companyId || null;
     const reason = (req.body || {}).reason;
@@ -4350,6 +4698,7 @@ app.post("/api/accounting/vouchers/:id/void", async (req, res) => {
 app.delete("/api/accounting/vouchers/:id", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
+    if (!requirePage(req, res, "acct-vouchers")) return;
     const id = req.params.id;
     const companyId = req.auth.companyId || null;
     if (USE_JSON_FILE) {
@@ -4449,6 +4798,7 @@ app.post("/api/accounting/tax-invoices", async (req, res) => {
 app.post("/api/accounting/tax-invoices/:id/void", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
+    if (!requirePage(req, res, "acct-tax-invoices")) return;
     const id = req.params.id;
     const companyId = req.auth.companyId || null;
     const reason = (req.body || {}).reason;
@@ -4494,6 +4844,7 @@ app.get("/api/accounting/payments", async (req, res) => {
 app.post("/api/accounting/payments", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
+    if (!requirePage(req, res, "acct-receivables")) return;
     const { direction, date, partnerId, partnerName, amount, method, memo, taxInvoiceId, user } = req.body || {};
     if (!["in", "out"].includes(direction)) return res.status(400).json({ ok: false, message: "direction은 in(수금) 또는 out(지급)이어야 합니다." });
     if (!date || !partnerName || !(Number(amount) > 0)) return res.status(400).json({ ok: false, message: "일자, 거래처, 금액(0보다 큼)은 필수입니다." });
@@ -4521,6 +4872,7 @@ app.post("/api/accounting/payments", async (req, res) => {
 app.post("/api/accounting/payments/:id/delete", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
+    if (!requirePage(req, res, "acct-receivables")) return;
     const id = req.params.id;
     // 존재하지 않는 id로 삭제해도 200 {ok:true}를 돌려주고 있어(다른 모듈은 전부 404),
     // 화면은 "삭제되었습니다"를 띄우는데 실제로는 아무것도 지워지지 않은 상태와
@@ -4547,6 +4899,11 @@ app.post("/api/accounting/payments/:id/delete", async (req, res) => {
 // ── 거래처 (Business partners — customer/vendor master data) ─────────────────
 app.get("/api/accounting/partners", async (req, res) => {
   if (!requireAdmin(req, res)) return;
+  // 거래처 전체 조회(연락처·주소 등 개인정보 포함)는 "acct-partners" 페이지 전용 — 세금계산서
+  // (acct-tax-invoices)·견적서/발주서(sales-quotations/sales-purchase-orders)·구매요청 전환
+  // (inv-purchase-requests)·수금지급(acct-receivables)·전표(acct-vouchers) 등 거래처 "선택"만
+  // 필요한 다른 화면은 전부 GET .../partners/picker(인증만 있으면 조회 가능)로 이전됐다.
+  if (!requirePage(req, res, "acct-partners")) return;
   try {
     if (USE_JSON_FILE) return res.json({ ok: true, partners: _fileAccounting.partners });
     const companyId = req.auth.companyId || null;
@@ -4603,6 +4960,7 @@ app.post("/api/accounting/partners", async (req, res) => {
 app.post("/api/accounting/partners/:id/delete", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
+    if (!requirePage(req, res, "acct-partners")) return;
     const id = req.params.id;
     const companyId = req.auth.companyId || null;
     if (USE_JSON_FILE) {
@@ -4623,8 +4981,78 @@ app.post("/api/accounting/partners/:id/delete", async (req, res) => {
 // ── 원가명세서 (Cost statement) ───────────────────────────────────────────────
 // 계정과목에 태깅된 원가구분(costCategory/costSubType)을 기준으로, 확정(posted)된 전표의
 // 분개 라인 중 원가계정에 해당하는 것만(costCategory가 null이 아닌 계정) 차변 금액으로 집계한다.
+// 회계 리포트(시산표/월별 손익/거래처별 집계) — 예전엔 클라이언트가 이미 벌크로딩해둔
+// acctVouchers/acctAccounts/acctTaxInvoices를 그대로 재계산했는데, 그 벌크로딩(GET
+// .../vouchers 등)을 menuPerms로 좁히려면 이 리포트가 원본 레코드가 아니라 이미 집계된
+// 결과만 받도록 먼저 바꿔야 한다(원가명세서/cost-statement가 이미 같은 패턴).
+app.get("/api/accounting/reports", async (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  if (!requirePage(req, res, "acct-reports")) return;
+  try {
+    const year = parseInt(req.query.year) || new Date().getFullYear();
+    const companyId = req.auth.companyId || null;
+    let vouchers, invoices;
+    if (USE_JSON_FILE) {
+      vouchers = _fileAccounting.vouchers.filter(v => v.status === "posted" && new Date(v.date).getFullYear() === year);
+      invoices = _fileAccounting.taxInvoices.filter(t => t.status === "issued" && new Date(t.issueDate).getFullYear() === year);
+    } else {
+      const { rows: vRows } = await pool.query(
+        "SELECT data FROM vouchers WHERE status = 'posted' AND EXTRACT(YEAR FROM voucher_date) = $1 AND (company_id = $2 OR company_id IS NULL)",
+        [year, companyId]
+      );
+      vouchers = vRows.map(r => r.data);
+      const { rows: tRows } = await pool.query(
+        "SELECT data FROM tax_invoices WHERE status = 'issued' AND EXTRACT(YEAR FROM issue_date) = $1 AND (company_id = $2 OR company_id IS NULL)",
+        [year, companyId]
+      );
+      invoices = tRows.map(r => r.data);
+    }
+    const accounts = await _getAccountsList(companyId);
+    const accById = new Map(accounts.map(a => [a.id, a]));
+    const TYPE_LABEL = { asset: "자산", liability: "부채", equity: "자본", revenue: "수익", expense: "비용" };
+
+    const trialSums = new Map();
+    for (const v of vouchers) {
+      for (const l of (v.lines || [])) {
+        const prev = trialSums.get(l.accountId) || { debit: 0, credit: 0 };
+        prev.debit = _round2(prev.debit + (Number(l.debit) || 0));
+        prev.credit = _round2(prev.credit + (Number(l.credit) || 0));
+        trialSums.set(l.accountId, prev);
+      }
+    }
+    const trial = Array.from(trialSums.entries()).map(([accId, s]) => {
+      const a = accById.get(accId);
+      return { code: a?.code || "?", name: a?.name || accId, type: TYPE_LABEL[a?.type] || a?.type || "-", debit: s.debit, credit: s.credit };
+    }).sort((a, b) => String(a.code).localeCompare(String(b.code)));
+
+    const pnlByMonth = new Map();
+    const partnerMap = new Map();
+    for (const t of invoices) {
+      const m = String(t.issueDate).slice(0, 7);
+      const pm = pnlByMonth.get(m) || { sales: 0, purchase: 0 };
+      const supply = t.supplyTotal || 0;
+      if (t.direction === "purchase") pm.purchase = _round2(pm.purchase + supply);
+      else pm.sales = _round2(pm.sales + supply);
+      pnlByMonth.set(m, pm);
+
+      const key = t.partnerName || "(미지정)";
+      const pp = partnerMap.get(key) || { name: key, sales: 0, purchase: 0, salesCnt: 0, purchaseCnt: 0 };
+      const grand = t.grandTotal || 0;
+      if (t.direction === "purchase") { pp.purchase = _round2(pp.purchase + grand); pp.purchaseCnt++; }
+      else { pp.sales = _round2(pp.sales + grand); pp.salesCnt++; }
+      partnerMap.set(key, pp);
+    }
+    const pnl = Array.from(pnlByMonth.entries()).sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([month, d]) => ({ month, sales: d.sales, purchase: d.purchase, profit: _round2(d.sales - d.purchase) }));
+    const partners = Array.from(partnerMap.values()).sort((a, b) => (b.sales + b.purchase) - (a.sales + a.purchase));
+
+    res.json({ ok: true, year, trial, pnl, partners });
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
+});
+
 app.get("/api/accounting/cost-statement", async (req, res) => {
   if (!requireAdmin(req, res)) return;
+  if (!requirePage(req, res, "acct-cost-statement")) return;
   try {
     const { from, to } = req.query;
     if (!from || !to) return res.status(400).json({ ok: false, message: "from, to 날짜 범위는 필수입니다." });
@@ -4745,6 +5173,7 @@ async function _issuePostedVoucher(companyId, { date, description, partnerId, pa
 app.post("/api/accounting/rcps/issuances", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
+    if (!requirePage(req, res, "acct-rcps")) return;
     const companyId = req.auth.companyId || null;
     const { name, issueDate, faceAmount, sharesIssued, parValue, couponRate, effectiveRate, maturityDate, user } = req.body || {};
     let { redemptionAmount } = req.body || {};
@@ -4906,6 +5335,7 @@ app.get("/api/accounting/rcps/issuances/:id/valuations", async (req, res) => {
 app.post("/api/accounting/rcps/issuances/:id/delete", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
+    if (!requirePage(req, res, "acct-rcps")) return;
     const id = req.params.id;
     if (USE_JSON_FILE) {
       const issuance = _fileAcctRcps.issuances.find(i => i.id === id && !i.isDeleted);
@@ -4943,6 +5373,7 @@ app.post("/api/accounting/rcps/schedule/:scheduleId/post", async (req, res) => {
   let lockedJsonMode = false;
   try {
     if (!requireAdmin(req, res)) return;
+    if (!requirePage(req, res, "acct-rcps")) return;
     const companyId = req.auth.companyId || null;
     const { user, interestExpenseAccountId, cashAccountId, rcpsLiabilityAccountId } = req.body || {};
     if (!interestExpenseAccountId || !cashAccountId || !rcpsLiabilityAccountId) {
@@ -5037,6 +5468,7 @@ app.post("/api/accounting/rcps/schedule/:scheduleId/post", async (req, res) => {
 app.post("/api/accounting/rcps/valuations", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
+    if (!requirePage(req, res, "acct-rcps")) return;
     const companyId = req.auth.companyId || null;
     const { issuanceId, valuationDate, fairValue, method, memo, gainAccountId, lossAccountId, derivativeLiabilityAccountId, user } = req.body || {};
     if (!issuanceId || !valuationDate || fairValue === undefined || fairValue === null || fairValue === "") {
@@ -5234,6 +5666,7 @@ app.use("/api/accounting/fixed-assets/:id", (req, res, next) => {
 app.post("/api/accounting/fixed-assets", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
+    if (!requirePage(req, res, "acct-fixed-assets")) return;
     const companyId = req.auth.companyId || null;
     const { name, assetNumber, category, acquisitionDate, acquisitionCost, usefulLifeYears, salvageValue, depreciationMethod, locationId, user } = req.body || {};
     if (!name || !acquisitionDate || !(Number(acquisitionCost) > 0) || !(Number(usefulLifeYears) > 0)) {
@@ -5332,6 +5765,7 @@ app.get("/api/accounting/fixed-assets/:id/depreciation-schedule", async (req, re
 app.post("/api/accounting/fixed-assets/:id", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
+    if (!requirePage(req, res, "acct-fixed-assets")) return;
     const id = req.params.id;
     const companyId = req.auth.companyId || null;
     const body = req.body || {};
@@ -5415,6 +5849,7 @@ app.post("/api/accounting/fixed-assets/:id", async (req, res) => {
 app.post("/api/accounting/fixed-assets/:id/dispose", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
+    if (!requirePage(req, res, "acct-fixed-assets")) return;
     const id = req.params.id;
     const companyId = req.auth.companyId || null;
     const { disposalDate, user } = req.body || {};
@@ -5444,6 +5879,7 @@ app.post("/api/accounting/fixed-assets/:id/dispose", async (req, res) => {
 app.post("/api/accounting/fixed-assets/:id/delete", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
+    if (!requirePage(req, res, "acct-fixed-assets")) return;
     const id = req.params.id;
     const companyId = req.auth.companyId || null;
     if (USE_JSON_FILE) {
@@ -5476,6 +5912,7 @@ app.post("/api/accounting/fixed-assets/:id/depreciation-schedule/:year/post", as
   let lockedJsonMode = false;
   try {
     if (!requireAdmin(req, res)) return;
+    if (!requirePage(req, res, "acct-fixed-assets")) return;
     const companyId = req.auth.companyId || null;
     const { user, depreciationExpenseAccountId, accumulatedDepreciationAccountId } = req.body || {};
     if (!depreciationExpenseAccountId || !accumulatedDepreciationAccountId) {
@@ -5660,6 +6097,7 @@ app.get("/api/erp/items", async (req, res) => {
 app.post("/api/erp/items", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
+    if (!requirePage(req, res, "inv-items")) return;
     const companyId = req.auth.companyId || null;
     const { id, code, name, productName, assetNo, unit, category, safetyStock = 0, unitCost = 0, active = true } = req.body || {};
     if (!code || !name) return res.status(400).json({ ok: false, message: "품목코드, 품목명은 필수입니다." });
@@ -5679,6 +6117,7 @@ app.post("/api/erp/items", async (req, res) => {
 app.post("/api/erp/items/:id/delete", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
+    if (!requirePage(req, res, "inv-items")) return;
     const id = req.params.id;
     const companyId = req.auth.companyId || null;
     if (USE_JSON_FILE) {
@@ -5725,6 +6164,7 @@ app.get("/api/erp/locations", async (req, res) => {
 app.post("/api/erp/locations", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
+    if (!requirePage(req, res, "inv-locations")) return;
     const companyId = req.auth.companyId || null;
     const { id, name, address, active = true } = req.body || {};
     if (!name) return res.status(400).json({ ok: false, message: "위치명은 필수입니다." });
@@ -5744,6 +6184,7 @@ app.post("/api/erp/locations", async (req, res) => {
 app.post("/api/erp/locations/:id/delete", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
+    if (!requirePage(req, res, "inv-locations")) return;
     const id = req.params.id;
     const companyId = req.auth.companyId || null;
     if (USE_JSON_FILE) {
@@ -5763,6 +6204,9 @@ app.post("/api/erp/locations/:id/delete", async (req, res) => {
 // ── 견적서 (Quotations) ─────────────────────────────────────────────────────
 app.get("/api/erp/quotations", async (req, res) => {
   if (!requireAdmin(req, res)) return;
+  // 견적서 전체 조회는 "sales-quotations" 페이지 전용 — 영업 실적 대시보드(sales-dashboard)는
+  // 원본 견적서 레코드 대신 GET .../erp/sales-dashboard(서버 집계)를 쓰도록 이전됐다.
+  if (!requirePage(req, res, "sales-quotations")) return;
   try {
     const year = req.query.year ? parseInt(req.query.year) : null;
     if (USE_JSON_FILE) {
@@ -5781,6 +6225,7 @@ app.get("/api/erp/quotations", async (req, res) => {
 app.post("/api/erp/quotations", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
+    if (!requirePage(req, res, "sales-quotations")) return;
     const companyId = req.auth.companyId || null;
     const { date, validUntil, partnerId, partnerName, locationId, items, memo, user: createdBy } = req.body || {};
     if (!date || !partnerName) return res.status(400).json({ ok: false, message: "견적일자와 거래처명은 필수입니다." });
@@ -5808,6 +6253,7 @@ app.post("/api/erp/quotations", async (req, res) => {
 app.post("/api/erp/quotations/:id/send", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
+    if (!requirePage(req, res, "sales-quotations")) return;
     const id = req.params.id;
     const companyId = req.auth.companyId || null;
     const year = new Date().getFullYear();
@@ -5842,6 +6288,7 @@ app.post("/api/erp/quotations/:id/send", async (req, res) => {
 app.post("/api/erp/quotations/:id/accept", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
+    if (!requirePage(req, res, "sales-quotations")) return;
     const id = req.params.id;
     const companyId = req.auth.companyId || null;
     if (USE_JSON_FILE) {
@@ -5881,6 +6328,7 @@ async function _lockStockKeys(client, companyId, pairs) {
 app.post("/api/erp/quotations/:id/ship", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
+    if (!requirePage(req, res, "sales-quotations")) return;
     const id = req.params.id;
     const companyId = req.auth.companyId || null;
     const user = req.body.user || "unknown";
@@ -5969,6 +6417,7 @@ app.post("/api/erp/quotations/:id/ship", async (req, res) => {
 app.post("/api/erp/quotations/:id/reject", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
+    if (!requirePage(req, res, "sales-quotations")) return;
     const id = req.params.id;
     const companyId = req.auth.companyId || null;
     const reason = (req.body || {}).reason;
@@ -5992,6 +6441,7 @@ app.post("/api/erp/quotations/:id/reject", async (req, res) => {
 app.delete("/api/erp/quotations/:id", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
+    if (!requirePage(req, res, "sales-quotations")) return;
     const id = req.params.id;
     const companyId = req.auth.companyId || null;
     if (USE_JSON_FILE) {
@@ -6012,6 +6462,9 @@ app.delete("/api/erp/quotations/:id", async (req, res) => {
 // ── 발주서 (Purchase orders) ────────────────────────────────────────────────
 app.get("/api/erp/purchase-orders", async (req, res) => {
   if (!requireAdmin(req, res)) return;
+  // 발주서 전체 조회는 "sales-purchase-orders" 페이지 전용 — 구매요청→발주전환
+  // (inv-purchase-requests)은 이 목록을 조회하지 않고 새 발주 id만 자기 캐시에 추가한다.
+  if (!requirePage(req, res, "sales-purchase-orders")) return;
   try {
     const year = req.query.year ? parseInt(req.query.year) : null;
     if (USE_JSON_FILE) {
@@ -6030,6 +6483,7 @@ app.get("/api/erp/purchase-orders", async (req, res) => {
 app.post("/api/erp/purchase-orders", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
+    if (!requirePage(req, res, "sales-purchase-orders")) return;
     const companyId = req.auth.companyId || null;
     const { date, deliveryDate, partnerId, partnerName, locationId, items, memo, user: createdBy } = req.body || {};
     if (!date || !partnerName) return res.status(400).json({ ok: false, message: "발주일자와 거래처명은 필수입니다." });
@@ -6059,6 +6513,7 @@ app.post("/api/erp/purchase-orders", async (req, res) => {
 app.post("/api/erp/purchase-orders/:id/confirm", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
+    if (!requirePage(req, res, "sales-purchase-orders")) return;
     const id = req.params.id;
     const companyId = req.auth.companyId || null;
     const year = new Date().getFullYear();
@@ -6093,6 +6548,7 @@ app.post("/api/erp/purchase-orders/:id/confirm", async (req, res) => {
 app.post("/api/erp/purchase-orders/:id/receive", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
+    if (!requirePage(req, res, "sales-purchase-orders")) return;
     const id = req.params.id;
     const companyId = req.auth.companyId || null;
     const user = req.body.user || "unknown";
@@ -6166,6 +6622,7 @@ app.post("/api/erp/purchase-orders/:id/receive", async (req, res) => {
 app.post("/api/erp/purchase-orders/:id/cancel", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
+    if (!requirePage(req, res, "sales-purchase-orders")) return;
     const id = req.params.id;
     const companyId = req.auth.companyId || null;
     const reason = (req.body || {}).reason;
@@ -6189,6 +6646,7 @@ app.post("/api/erp/purchase-orders/:id/cancel", async (req, res) => {
 app.delete("/api/erp/purchase-orders/:id", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
+    if (!requirePage(req, res, "sales-purchase-orders")) return;
     const id = req.params.id;
     if (USE_JSON_FILE) {
       const po = _fileErp.purchaseOrders.find(p => p.id === id);
@@ -6208,6 +6666,7 @@ app.delete("/api/erp/purchase-orders/:id", async (req, res) => {
 // ── 구매요청 (Purchase requests — 구성원이 요청, admin이 승인/반려/발주전환) ─────
 app.get("/api/erp/purchase-requests", async (req, res) => {
   if (!requireAuth(req, res)) return;
+  if (!requirePage(req, res, "inv-purchase-requests")) return;
   try {
     const { role, empId: userId } = req.auth;
     const companyId = req.auth.companyId || null;
@@ -6225,6 +6684,7 @@ app.get("/api/erp/purchase-requests", async (req, res) => {
 
 app.post("/api/erp/purchase-requests", async (req, res) => {
   if (!requireAuth(req, res)) return;
+  if (!requirePage(req, res, "inv-purchase-requests")) return;
   try {
     const { empId: userId } = req.auth;
     const companyId = req.auth.companyId || null;
@@ -6259,6 +6719,7 @@ app.post("/api/erp/purchase-requests", async (req, res) => {
 app.post("/api/erp/purchase-requests/:id/approve", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
+    if (!requirePage(req, res, "inv-purchase-requests")) return;
     const id = req.params.id;
     const companyId = req.auth.companyId || null;
     const user = req.body.user || "unknown";
@@ -6281,6 +6742,7 @@ app.post("/api/erp/purchase-requests/:id/approve", async (req, res) => {
 app.post("/api/erp/purchase-requests/:id/reject", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
+    if (!requirePage(req, res, "inv-purchase-requests")) return;
     const id = req.params.id;
     const companyId = req.auth.companyId || null;
     const reason = (req.body || {}).reason;
@@ -6304,6 +6766,7 @@ app.post("/api/erp/purchase-requests/:id/reject", async (req, res) => {
 app.post("/api/erp/purchase-requests/:id/convert-to-po", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
+    if (!requirePage(req, res, "inv-purchase-requests")) return;
     const id = req.params.id;
     const companyId = req.auth.companyId || null;
     const { partnerId, partnerName, locationId, user: createdBy } = req.body || {};
@@ -6352,6 +6815,7 @@ app.post("/api/erp/purchase-requests/:id/convert-to-po", async (req, res) => {
 
 app.delete("/api/erp/purchase-requests/:id", async (req, res) => {
   if (!requireAuth(req, res)) return;
+  if (!requirePage(req, res, "inv-purchase-requests")) return;
   try {
     const id = req.params.id;
     const { role, empId: userId } = req.auth;
@@ -6376,6 +6840,10 @@ app.delete("/api/erp/purchase-requests/:id", async (req, res) => {
 // ── 재고 (Stock — computed from ledger, plus manual adjustment) ──────────────
 app.get("/api/erp/stock", async (req, res) => {
   if (!requireAdmin(req, res)) return;
+  // 재고 현황 전체 조회는 "inv-stock" 페이지 전용 — 견적서 출고/발주서 입고·구매요청 전환
+  // 등 다른 화면의 재고 캐시 새로고침(`if(rs?.ok)`로 방어됨)은 각자의 쓰기 API가 서버에서
+  // 직접 재고를 반영하므로 이 조회가 막혀도 그 화면 자체의 기능은 그대로 동작한다.
+  if (!requirePage(req, res, "inv-stock")) return;
   try {
     let ledger;
     if (USE_JSON_FILE) {
@@ -6400,6 +6868,7 @@ app.get("/api/erp/stock", async (req, res) => {
 
 app.get("/api/erp/stock/ledger", async (req, res) => {
   if (!requireAdmin(req, res)) return;
+  if (!requirePage(req, res, "inv-stock")) return;
   try {
     const { itemId, locationId } = req.query;
     let ledger;
@@ -6418,6 +6887,7 @@ app.get("/api/erp/stock/ledger", async (req, res) => {
 app.post("/api/erp/stock/adjust", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
+    if (!requirePage(req, res, "inv-stock")) return;
     const companyId = req.auth.companyId || null;
     const { itemId, locationId, type, qty, memo, user } = req.body || {};
     if (!itemId || !locationId) return res.status(400).json({ ok: false, message: "품목과 위치를 선택하세요." });
@@ -6462,6 +6932,7 @@ app.post("/api/erp/stock/adjust", async (req, res) => {
 app.post("/api/erp/stock/count", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
+    if (!requirePage(req, res, "inv-stock")) return;
     const companyId = req.auth.companyId || null;
     const { locationId, lines, user } = req.body || {};
     if (!locationId || !Array.isArray(lines) || !lines.length)
@@ -6541,6 +7012,7 @@ app.post("/api/erp/stock/count", async (req, res) => {
 app.post("/api/erp/stock/transfer", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
+    if (!requirePage(req, res, "inv-stock")) return;
     const companyId = req.auth.companyId || null;
     const { itemId, fromLocationId, toLocationId, qty, memo, user } = req.body || {};
     if (!itemId || !fromLocationId || !toLocationId) return res.status(400).json({ ok: false, message: "품목과 출발/도착 위치를 선택하세요." });
@@ -6583,6 +7055,10 @@ app.post("/api/erp/stock/transfer", async (req, res) => {
 // ── ERP: 영업 목표 (Sales targets — admin only CRUD, actuals computed client-side) ──
 app.get("/api/erp/sales-targets", async (req, res) => {
   if (!requireAdmin(req, res)) return;
+  // 이 원본 목록의 유일한 클라이언트 소비처였던 영업 실적 대시보드의 "목표 대비 실적" 탭은
+  // GET .../erp/sales-dashboard(서버 집계)로 이전됐다 — 이 라우트는 더 이상 클라이언트가
+  // 호출하지 않지만 API 표면으로는 남겨두고 동일 기준으로 게이팅한다.
+  if (!requirePage(req, res, "sales-dashboard")) return;
   try {
     if (USE_JSON_FILE) return res.json({ ok: true, salesTargets: _fileErp.salesTargets });
     const { rows } = await pool.query(
@@ -6595,6 +7071,7 @@ app.get("/api/erp/sales-targets", async (req, res) => {
 app.post("/api/erp/sales-targets", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
+    if (!requirePage(req, res, "sales-dashboard")) return;
     const { id, year, month, employeeId, employeeName, targetAmount, memo } = req.body || {};
     if (!year) return res.status(400).json({ ok: false, message: "연도는 필수입니다." });
     if (targetAmount == null || isNaN(Number(targetAmount))) return res.status(400).json({ ok: false, message: "목표 금액은 필수입니다." });
@@ -6623,6 +7100,7 @@ app.post("/api/erp/sales-targets", async (req, res) => {
 app.post("/api/erp/sales-targets/:id/delete", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
+    if (!requirePage(req, res, "sales-dashboard")) return;
     const id = req.params.id;
     if (USE_JSON_FILE) {
       _fileErp.salesTargets = _fileErp.salesTargets.filter(t => t.id !== id);
@@ -6631,6 +7109,71 @@ app.post("/api/erp/sales-targets/:id/delete", async (req, res) => {
     }
     await pool.query("UPDATE erp_sales_targets SET is_deleted = TRUE WHERE id = $1 AND (company_id = $2 OR company_id IS NULL)", [id, req.auth.companyId || null]);
     res.json({ ok: true });
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
+});
+
+// 영업 대시보드(목표대비실적/거래처별/파이프라인/담당자별) — 예전엔 클라이언트가 이미
+// 벌크로딩된 erpQuotations/erpSalesTargets 전체를 그대로 재계산했는데, GET .../quotations를
+// menuPerms로 좁히려면(다른 여러 화면이 "견적서를 하나 고른다"는 목적 없이 sales-dashboard만
+// 원본 견적서 레코드를 필요로 하므로) 이 화면이 원본 레코드가 아니라 서버가 집계한 결과만
+// 받도록 먼저 바꿔야 한다(회계 리포트/원가명세서와 동일한 이유·동일한 패턴).
+app.get("/api/erp/sales-dashboard", async (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  if (!requirePage(req, res, "sales-dashboard")) return;
+  try {
+    const companyId = req.auth.companyId || null;
+    let quotations, salesTargets;
+    if (USE_JSON_FILE) {
+      quotations = _fileErp.quotations;
+      salesTargets = _fileErp.salesTargets;
+    } else {
+      const { rows: qRows } = await pool.query("SELECT data FROM erp_quotations WHERE (company_id = $1 OR company_id IS NULL)", [companyId]);
+      quotations = qRows.map(r => r.data);
+      const { rows: tRows } = await pool.query("SELECT id, data FROM erp_sales_targets WHERE is_deleted = FALSE AND (company_id = $1 OR company_id IS NULL)", [companyId]);
+      salesTargets = tRows.map(r => ({ id: r.id, ...r.data }));
+    }
+    const supplyOf = q => Number(q.supplyTotal) || 0;
+
+    const targetsByYear = {};
+    for (const t of salesTargets) {
+      const actual = quotations
+        .filter(q => q.status === "accepted" || q.status === "shipped")
+        .filter(q => new Date(q.date).getFullYear() === Number(t.year)
+          && (t.month ? new Date(q.date).getMonth() + 1 === Number(t.month) : true)
+          && (t.employeeId ? q.createdBy === t.employeeName : true))
+        .reduce((s, q) => s + supplyOf(q), 0);
+      const rate = t.targetAmount ? Math.round((actual / t.targetAmount) * 100) : 0;
+      (targetsByYear[t.year] = targetsByYear[t.year] || []).push({
+        id: t.id, month: t.month, employeeName: t.employeeName || "", targetAmount: t.targetAmount,
+        actual, rate, memo: t.memo || "",
+      });
+    }
+
+    const partnerMap = new Map();
+    for (const q of quotations.filter(q => q.status === "shipped")) {
+      const k = q.partnerName || "(미지정)";
+      partnerMap.set(k, (partnerMap.get(k) || 0) + supplyOf(q));
+    }
+    const partnerRanking = Array.from(partnerMap.entries()).map(([name, amount]) => ({ name, amount })).sort((a, b) => b.amount - a.amount);
+
+    const STAGES = [["draft", "임시"], ["sent", "발송"], ["accepted", "수주확정"], ["shipped", "출고/매출완료"], ["rejected", "실주"]];
+    const pipeline = STAGES.map(([status, label]) => {
+      const list = quotations.filter(q => q.status === status);
+      return { status, label, count: list.length, amount: list.reduce((s, q) => s + supplyOf(q), 0) };
+    });
+
+    const repMap = new Map();
+    for (const q of quotations) {
+      const k = q.createdBy || "unknown";
+      const cur = repMap.get(k) || { name: k, count: 0, order: 0, revenue: 0 };
+      cur.count++;
+      if (q.status === "accepted" || q.status === "shipped") cur.order += supplyOf(q);
+      if (q.status === "shipped") cur.revenue += supplyOf(q);
+      repMap.set(k, cur);
+    }
+    const repRanking = Array.from(repMap.values()).sort((a, b) => b.revenue - a.revenue);
+
+    res.json({ ok: true, targetsByYear, partnerRanking, pipeline, repRanking });
   } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
@@ -6722,6 +7265,7 @@ app.get("/api/pms/projects", async (req, res) => {
 app.post("/api/pms/projects", async (req, res) => {
   try {
     if (!requireRole(req, res, ["admin", "leader"])) return;
+    if (!requirePage(req, res, "pms-projects")) return;
     const companyId = req.auth.companyId || null;
     const { id, name, startDate, endDate, partnerId, pmId, memo, members } = req.body || {};
     if (!name) return res.status(400).json({ ok: false, message: "프로젝트명은 필수입니다." });
@@ -6765,6 +7309,7 @@ app.post("/api/pms/projects", async (req, res) => {
 app.post("/api/pms/projects/:id", async (req, res) => {
   try {
     if (!requireRole(req, res, ["admin", "leader"])) return;
+    if (!requirePage(req, res, "pms-projects")) return;
     const id = req.params.id;
     const companyId = req.auth.companyId || null;
     const { name, startDate, endDate, partnerId, pmId, status, memo, members, expectedUpdatedAt } = req.body || {};
@@ -6816,6 +7361,7 @@ app.post("/api/pms/projects/:id", async (req, res) => {
 app.post("/api/pms/projects/:id/close", async (req, res) => {
   try {
     if (!requireRole(req, res, ["admin", "leader"])) return;
+    if (!requirePage(req, res, "pms-projects")) return;
     const id = req.params.id;
     const companyId = req.auth.companyId || null;
     const { expectedUpdatedAt } = req.body || {};
@@ -6863,6 +7409,10 @@ async function _allocationMonthTotal(employeeId, year, month, excludeId) {
 
 app.get("/api/pms/allocations", async (req, res) => {
   if (!requireAuth(req, res)) return;
+  // 이 목록의 유일한 클라이언트 소비처였던 "가동률 현황"(pms-utilization)이 일일 업무
+  // 투입 기록(GET .../pms/worklogs) 합산으로 이미 재구현돼(2026-07-27) 더 이상 클라이언트가
+  // 호출하지 않지만, API 표면으로는 남겨두고 원래 용도였던 페이지 기준으로 게이팅한다.
+  if (!requirePage(req, res, "pms-utilization")) return;
   try {
     const { role, empId: userId } = req.auth;
     const companyId = req.auth.companyId || null;
@@ -6899,6 +7449,7 @@ async function _pmsProjectById(projectId, companyId) {
 
 app.post("/api/pms/allocations", async (req, res) => {
   if (!requireAuth(req, res)) return;
+  if (!requirePage(req, res, "pms-allocation")) return;
   try {
     const { id, employeeId, year, month, projectId, percent, memo } = req.body || {};
     const { role, empId: userId } = req.auth;
@@ -6972,6 +7523,7 @@ app.post("/api/pms/allocations", async (req, res) => {
 
 app.post("/api/pms/allocations/:id/delete", async (req, res) => {
   if (!requireAuth(req, res)) return;
+  if (!requirePage(req, res, "pms-allocation")) return;
   try {
     const id = req.params.id;
     const companyId = req.auth.companyId || null;
@@ -7045,6 +7597,7 @@ app.get("/api/pms/worklogs", async (req, res) => {
 
 app.post("/api/pms/worklogs", async (req, res) => {
   if (!requireAuth(req, res)) return;
+  if (!requirePage(req, res, "pms-worklog")) return;
   try {
     const { employeeId, date, blocks, expectedUpdatedAt } = req.body || {};
     const { role, empId: userId } = req.auth;
@@ -7201,6 +7754,7 @@ app.get("/api/recruit/jobs", async (req, res) => {
 app.post("/api/recruit/jobs", async (req, res) => {
   try {
     if (!requireRole(req, res, ["admin", "leader", "director"])) return;
+    if (!requirePage(req, res, "recruit-jobs")) return;
     const { role, empId: userId } = req.auth;
     const companyId = req.auth.companyId || null;
     const { id, title, department, team, headcount, stages, status, description, purpose, responsibilities, requiredYears, docFile, viewerIds, user: createdBy, userId: createdById } = req.body || {};
@@ -7264,6 +7818,7 @@ app.post("/api/recruit/jobs", async (req, res) => {
 app.post("/api/recruit/jobs/:id/close", async (req, res) => {
   try {
     if (!requireRole(req, res, ["admin", "leader", "director"])) return;
+    if (!requirePage(req, res, "recruit-jobs")) return;
     const { role, empId: userId } = req.auth;
     const companyId = req.auth.companyId || null;
     const id = req.params.id;
@@ -7348,6 +7903,10 @@ app.get("/api/recruit/candidates", async (req, res) => {
 
 app.get("/api/recruit/candidates/export", async (req, res) => {
   if (!requireAuth(req, res)) return;
+  // 이 CSV 내보내기는 "지원자 관리"(recruit-candidates) 화면에서만 쓰인다(다른 화면과
+  // 공유되지 않음) — GET /candidates 목록·candidates/:id·interviews처럼 recruit-eval 등
+  // 여러 화면이 정당하게 공유해야 하는 조회와는 다르므로 이 화면 기준으로 게이팅한다.
+  if (!requirePage(req, res, "recruit-candidates")) return;
   try {
     const { jobId } = req.query;
     const { role, empId: userId } = req.auth;
@@ -7397,6 +7956,15 @@ app.get("/api/recruit/candidates/:id", async (req, res) => {
   } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
+// ── 채용 관리: 이력서 파일 텍스트 추출 + AI 필드 자동입력(구버전 dataUrl 방식) ────
+// 지원자 등록 화면에서 업로드한 이력서 파일(PDF/DOCX/HWP/이미지)의 형식별 텍스트 추출
+// 4개 라우트(extract-pdf-text/-docx-text/-hwp-text/-image-text)와, 추출된 텍스트를
+// Groq LLM에 보내 이름/연락처/학력/경력 등 구조화된 필드로 뽑아내는 parse-resume-llm
+// 라우트로 구성된다. 아래 "HR 신규 직원 등록: AI 이력서 자동입력(P1)" 섹션은 같은
+// 텍스트 추출 헬퍼(_execFileP/_ocrImageBuffer 등)를 재사용하는 별도의 최신 multipart
+// 엔드포인트(POST /api/hr/resume-parse)로, 직원 등록 화면 전용이다 — 서로 다른 화면
+// (채용 지원자 등록 vs 신규 직원 등록)이 같은 파일-텍스트-추출 로직을 각자의 API
+// 계약(dataUrl JSON vs multipart)으로 감싸 쓰는 구조이니 혼동하지 말 것.
 function _execFileP(cmd, args) {
   const { execFile } = require("child_process");
   return new Promise((resolve, reject) => {
@@ -7450,6 +8018,7 @@ async function _ocrPdfPages(buffer, lastPage) {
 app.post("/api/recruit/extract-pdf-text", async (req, res) => {
   try {
     if (!requireRole(req, res, ["admin", "leader", "director"])) return;
+    if (!requirePage(req, res, "recruit-candidates")) return;
     const { dataUrl } = req.body || {};
     if (!dataUrl || typeof dataUrl !== "string") return res.status(400).json({ ok: false, message: "파일 데이터가 없습니다." });
     const base64 = dataUrl.includes(",") ? dataUrl.slice(dataUrl.indexOf(",") + 1) : dataUrl;
@@ -7487,6 +8056,7 @@ app.post("/api/recruit/extract-pdf-text", async (req, res) => {
 app.post("/api/recruit/extract-docx-text", async (req, res) => {
   try {
     if (!requireRole(req, res, ["admin", "leader", "director"])) return;
+    if (!requirePage(req, res, "recruit-candidates")) return;
     const { dataUrl } = req.body || {};
     if (!dataUrl || typeof dataUrl !== "string") return res.status(400).json({ ok: false, message: "파일 데이터가 없습니다." });
     const base64 = dataUrl.includes(",") ? dataUrl.slice(dataUrl.indexOf(",") + 1) : dataUrl;
@@ -7520,6 +8090,7 @@ async function _extractHwpBuffer(buffer) {
 app.post("/api/recruit/extract-hwp-text", async (req, res) => {
   try {
     if (!requireRole(req, res, ["admin", "leader", "director"])) return;
+    if (!requirePage(req, res, "recruit-candidates")) return;
     const { dataUrl } = req.body || {};
     if (!dataUrl || typeof dataUrl !== "string") return res.status(400).json({ ok: false, message: "파일 데이터가 없습니다." });
     const base64 = dataUrl.includes(",") ? dataUrl.slice(dataUrl.indexOf(",") + 1) : dataUrl;
@@ -7546,6 +8117,7 @@ async function _ocrImageBuffer(buffer, ext) {
 app.post("/api/recruit/extract-image-text", async (req, res) => {
   try {
     if (!requireRole(req, res, ["admin", "leader", "director"])) return;
+    if (!requirePage(req, res, "recruit-candidates")) return;
     const { dataUrl } = req.body || {};
     if (!dataUrl || typeof dataUrl !== "string") return res.status(400).json({ ok: false, message: "파일 데이터가 없습니다." });
     const mimeM = dataUrl.match(/^data:image\/(\w+);base64,/);
@@ -7600,6 +8172,7 @@ async function _groqParseResume(text) {
 app.post("/api/recruit/parse-resume-llm", async (req, res) => {
   try {
     if (!requireRole(req, res, ["admin", "leader", "director"])) return;
+    if (!requirePage(req, res, "recruit-candidates")) return;
     const { text } = req.body || {};
     if (!text || typeof text !== "string" || text.trim().length < 20) {
       return res.json({ ok: false, message: "분석할 텍스트가 부족합니다." });
@@ -8019,6 +8592,11 @@ app.post("/api/hr/resume-parse",
   }
 );
 
+// ── AI 보조 기능 모음(Groq LLM 호출, GROQ_API_KEY 미설정 시 각 라우트가 자체적으로
+// null/기본값 폴백) — 이력서 경력 회사명 추정(suggest-career-companies), 조직도
+// AI 요약(analyze-summary/analyze-org), KPI 목표·평가 코멘트 초안 생성(draft-kpi-goal/
+// draft-eval-comment) 5개 라우트. 전부 "AI가 초안만 제시하고 사람이 검토 후 승인해야
+// 실제 데이터가 된다"는 동일한 설계 원칙을 따른다.
 // 경력표에서 회사명이 빈 항목(대개 인쇄용 이력서 PDF가 회사명을 이미지로만 렌더링해
 // OCR 좌표 매칭으로도 못 찾은 경우, 2026-07-22 실측)에 한해 AI에게 후보를 물어보는
 // 용도. 클라이언트는 이 응답을 절대 입력칸에 자동으로 채우지 않고 "AI 추정값 —
@@ -8065,6 +8643,7 @@ idx는 반드시 targetIdx 목록에 있는 값이어야 하고, targetIdx 개�
 app.post("/api/recruit/suggest-career-companies", async (req, res) => {
   try {
     if (!requireRole(req, res, ["admin", "leader", "director"])) return;
+    if (!requirePage(req, res, "recruit-candidates")) return;
     const { text, entries } = req.body || {};
     if (!text || typeof text !== "string" || text.trim().length < 20) {
       return res.json({ ok: false, message: "분석할 텍스트가 부족합니다." });
@@ -8315,6 +8894,7 @@ async function _pgLockedUpdate(table, id, mutate, companyId) {
 app.post("/api/recruit/candidates", async (req, res) => {
   try {
     if (!requireRole(req, res, ["admin", "leader", "director"])) return;
+    if (!requirePage(req, res, "recruit-candidates")) return;
     const companyId = req.auth.companyId || null;
     const { jobId, name, email, phone, resume, memo, resumeSummary, strengths, weaknesses, finalEducation, careerHistory, lastSalary, desiredSalary, activities, careerGaps, user: createdBy } = req.body || {};
     if (!jobId || !name) return res.status(400).json({ ok: false, message: "채용공고, 지원자명은 필수입니다." });
@@ -8351,6 +8931,7 @@ app.post("/api/recruit/candidates", async (req, res) => {
 app.post("/api/recruit/candidates/:id", async (req, res) => {
   try {
     if (!requireRole(req, res, ["admin", "leader", "director"])) return;
+    if (!requirePage(req, res, "recruit-candidates")) return;
     const id = req.params.id;
     const { role, empId: userId } = req.auth;
     const companyId = req.auth.companyId || null;
@@ -8419,6 +9000,7 @@ app.get("/api/recruit/candidates/:id/resume", async (req, res) => {
 app.post("/api/recruit/candidates/:id/status", async (req, res) => {
   try {
     if (!requireRole(req, res, ["admin", "leader", "director"])) return;
+    if (!requirePage(req, res, "recruit-candidates")) return;
     const id = req.params.id;
     const { role, empId: userId } = req.auth;
     const companyId = req.auth.companyId || null;
@@ -8519,6 +9101,7 @@ app.get("/api/recruit/interviews", async (req, res) => {
 app.post("/api/recruit/interviews", async (req, res) => {
   try {
     if (!requireRole(req, res, ["admin", "leader", "director"])) return;
+    if (!requirePage(req, res, "recruit-eval")) return;
     const companyId = req.auth.companyId || null;
     const { jobId, candidateId, round, schedule, interviewerIds, location, leadInterviewerId } = req.body || {};
     if (!jobId || !candidateId || !round || !Array.isArray(interviewerIds) || !interviewerIds.length) {
@@ -8567,6 +9150,7 @@ app.post("/api/recruit/interviews", async (req, res) => {
 app.post("/api/recruit/interviews/:id", async (req, res) => {
   try {
     if (!requireRole(req, res, ["admin", "leader", "director"])) return;
+    if (!requirePage(req, res, "recruit-eval")) return;
     const id = req.params.id;
     const { role, empId: userId } = req.auth;
     const companyId = req.auth.companyId || null;
@@ -8610,6 +9194,7 @@ app.post("/api/recruit/interviews/:id", async (req, res) => {
 app.post("/api/recruit/interviews/:id/cancel", async (req, res) => {
   try {
     if (!requireRole(req, res, ["admin", "leader", "director"])) return;
+    if (!requirePage(req, res, "recruit-eval")) return;
     const id = req.params.id;
     const { role, empId: userId } = req.auth;
     const companyId = req.auth.companyId || null;
@@ -8646,6 +9231,7 @@ app.post("/api/recruit/interviews/:id/cancel", async (req, res) => {
 
 app.post("/api/recruit/interviews/:id/evaluation", async (req, res) => {
   if (!requireAuth(req, res)) return;
+  if (!requirePage(req, res, "recruit-eval")) return;
   try {
     const id = req.params.id;
     const companyId = req.auth.companyId || null;
@@ -8731,6 +9317,7 @@ app.post("/api/recruit/interviews/:id/evaluation", async (req, res) => {
 const RECRUIT_VERDICTS = ["pass", "hold", "fail"];
 app.post("/api/recruit/interviews/:id/verdict", async (req, res) => {
   if (!requireAuth(req, res)) return;
+  if (!requirePage(req, res, "recruit-eval")) return;
   try {
     const id = req.params.id;
     const companyId = req.auth.companyId || null;
@@ -8776,6 +9363,7 @@ app.post("/api/recruit/interviews/:id/verdict", async (req, res) => {
 app.post("/api/recruit/candidates/:id/delete", async (req, res) => {
   try {
     if (!requireRole(req, res, ["admin", "leader", "director"])) return;
+    if (!requirePage(req, res, "recruit-candidates")) return;
     const id = req.params.id;
     const { role, empId: userId } = req.auth;
     const companyId = req.auth.companyId || null;
@@ -8797,6 +9385,8 @@ app.post("/api/recruit/candidates/:id/delete", async (req, res) => {
 
 app.get("/api/recruit/dashboard", async (req, res) => {
   if (!requireAuth(req, res)) return;
+  // "채용 현황 대시보드"(recruit-dashboard) 자기 자신만 쓰는 집계 API — 다른 화면과 공유되지 않는다.
+  if (!requirePage(req, res, "recruit-dashboard")) return;
   try {
     const { role, empId: userId } = req.auth;
     const companyId = req.auth.companyId || null;
