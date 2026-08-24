@@ -1560,7 +1560,13 @@ let _serverSaving = false;        // mutex: only one save at a time
 let _serverSavePending = false;   // queued save waiting
 let _serverDebounceTimer = null;  // debounce timer for auto-saves
 let _serverFailCount = 0;         // consecutive fail count
+let _retrySaveRequest = null;     // 네트워크 재시도 동안 동일 payload/Idempotency-Key 유지
 let _serverVersion = -1;
+let _singletonRevisions = {};
+let _singletonBaselines = {};
+const _REVISIONED_SINGLETON_KEYS=["settings","orgDB","gradeSettings","promotionSettings","coreTalentSettings","evaluatorConfig","approvalChainSettings","integrationSettings","disabledTplIds"];
+function _currentSingletonValues(){return{settings,orgDB,gradeSettings,promotionSettings,coreTalentSettings,evaluatorConfig,approvalChainSettings,integrationSettings,disabledTplIds};}
+function _snapshotSingletonBaselines(source){for(const key of _REVISIONED_SINGLETON_KEYS)if(source&&source[key]!==undefined)_singletonBaselines[key]=JSON.stringify(source[key]);}
 let _sseSource = null;             // EventSource (SSE connection)
 let _sseRetryTimer = null;         // reconnect timer handle
 let _sseRetryCount = 0;            // consecutive reconnect attempts
@@ -1686,16 +1692,25 @@ function _clearDemoState(){
 }
 
 // ── Server API helpers ──
-async function serverRequest(method, endpoint, body=null, timeout=8000){
+const _mutationIdempotencyKeys=new Map();
+async function serverRequest(method, endpoint, body=null, timeout=8000, requestOptions={}){
   const base = serverConfig.url.replace(/\/+$/, "");
   const controller = new AbortController();
   const tid = setTimeout(()=>controller.abort(), timeout);
+  const mutation = !["GET","HEAD","OPTIONS"].includes(String(method).toUpperCase());
+  const mutationSignature=mutation?`${String(method).toUpperCase()} ${endpoint} ${JSON.stringify(body)}`:null;
+  let generatedIdempotencyKey=mutation&&_mutationIdempotencyKeys.get(mutationSignature);
+  if(mutation&&!generatedIdempotencyKey){
+    generatedIdempotencyKey=(globalThis.crypto&&typeof globalThis.crypto.randomUUID==="function")?globalThis.crypto.randomUUID():`req-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    _mutationIdempotencyKeys.set(mutationSignature,generatedIdempotencyKey);
+  }
   const opts = {
     method,
     signal: controller.signal,
     headers: {
       "Content-Type": "application/json",
       "X-Client-ID": encodeURIComponent(currentUser?.name||"unknown"),
+      ...(mutation ? { "Idempotency-Key": requestOptions.idempotencyKey || generatedIdempotencyKey } : {}),
       ...(_authToken ? { "Authorization": "Bearer " + _authToken } : {})
     }
   };
@@ -1703,6 +1718,10 @@ async function serverRequest(method, endpoint, body=null, timeout=8000){
   try {
     const res = await fetch(base + endpoint, opts);
     clearTimeout(tid);
+    if(mutation&&res.status<500){
+      // 빠른 이중 클릭은 같은 키를 계속 쓰고, 정상/검증 실패 후에는 짧은 창 뒤 새 작업을 허용한다.
+      setTimeout(()=>{if(_mutationIdempotencyKeys.get(mutationSignature)===generatedIdempotencyKey)_mutationIdempotencyKeys.delete(mutationSignature);},5000);
+    }
     // 토큰이 만료·무효화된 상태(재시작으로 세션 초기화 등) — 다음 요청부터는
     // 무효 토큰을 계속 보내지 않도록 즉시 비운다. 재로그인은 사용자가 다시 시도할 때 처리됨.
     if(res.status === 401) _setAuthToken(null);
@@ -1840,21 +1859,30 @@ async function _doSave(silent=false){
   // Only show "saving" indicator for explicit (non-silent) saves
   if(!silent){serverConfig.status="saving";updateServerStatusUI();}
   try {
-    const state = getFullState();
-    const r = await serverRequest("POST", "/save", state, 15000);
+    if(!_retrySaveRequest){
+      _retrySaveRequest={
+        state:getFullState(),
+        idempotencyKey:(globalThis.crypto&&typeof globalThis.crypto.randomUUID==="function")
+          ?globalThis.crypto.randomUUID():`save-${Date.now()}-${Math.random().toString(36).slice(2)}`
+      };
+    }
+    const r = await serverRequest("POST", "/save", _retrySaveRequest.state, 15000, { idempotencyKey:_retrySaveRequest.idempotencyKey });
     if(r.ok){
+      _snapshotSingletonBaselines(_retrySaveRequest.state.data);
+      _retrySaveRequest=null;
       _serverFailCount = 0;
       serverConfig.status = "connected";
       serverConfig.retryCount = 0;
       serverConfig.lastSaved = new Date().toISOString();
       // Update local version to match server
       if(r.version) _serverVersion = r.version;
+      if(r.singletonRevisions) _singletonRevisions = {...r.singletonRevisions};
       const m = r.meta;
       if(r.conflict && r.mergedData){
         // Server did a smart merge - apply merged state locally
         console.log("[Server] Conflict auto-merged, applying merged state...");
         const merged = r.mergedData?.data || r.mergedData;
-        applyState({data: merged}, true); // apply without undo snapshot
+        applyState({_singletonRevisions:r.singletonRevisions,data: merged}, true); // apply without undo snapshot
         serverConfig.statusMsg = `⚡병합완료 ${new Date().toLocaleTimeString("ko-KR")} · ${m?.empCount||0}명/${m?.kpiCount||0}건`;
         showToast("다른 사용자의 변경사항이 자동으로 병합되었습니다.","info");
         renderSidebar(); renderPage();
@@ -1864,9 +1892,16 @@ async function _doSave(silent=false){
       }
       if(r.warnings?.duplicateLoginIds?.length) _notifyDuplicateLoginIds(r.warnings.duplicateLoginIds);
     } else {
-      throw new Error(r.message||"저장 실패");
+      const err=new Error(r.message||"저장 실패");err.code=r.code;err.details=r.details;throw err;
     }
   } catch(e) {
+    if(e.code==="SINGLETON_REVISION_CONFLICT"){
+      _retrySaveRequest=null;
+      serverConfig.status="connected";
+      serverConfig.statusMsg="설정 충돌 · 최신 데이터 확인 필요";
+      showToast(`다른 사용자가 ${e.details?.key||"설정"}을 먼저 변경했습니다. 서버에서 최신 데이터를 불러온 뒤 다시 적용해주세요.`,"error");
+      return;
+    }
     _serverFailCount++;
     console.warn(`[Server] Save failed (${_serverFailCount}):`, e.message);
     if(_serverFailCount >= 3){
@@ -4265,7 +4300,7 @@ function executeBulkImport(){
 const CURRENT_SCHEMA_VERSION="8.0";
 
 function getFullState(action=""){
-  return{_version:_serverVersion,_action:action,
+  const state={_version:_serverVersion,_action:action,_singletonRevisions:{..._singletonRevisions},
     schemaVersion:CURRENT_SCHEMA_VERSION,
     exportedAt:new Date().toISOString(),
     exportedBy:currentUser?.name||"unknown",
@@ -4315,6 +4350,10 @@ function getFullState(action=""){
       _idCounter:_id
     }
   };
+  const current=_currentSingletonValues();
+  state._changedSingletonKeys=_REVISIONED_SINGLETON_KEYS.filter(key=>JSON.stringify(current[key])!==_singletonBaselines[key]);
+  for(const key of state._changedSingletonKeys)if(!Object.prototype.hasOwnProperty.call(state._singletonRevisions,key))state._singletonRevisions[key]=0;
+  return state;
 }
 
 async function exportBackup(){
@@ -4456,6 +4495,11 @@ function applyState(state,skipUndo=false){
   if(!skipUndo)_lastRestoreUndo=getFullState();
   _resetSettingStages();
   const d=state.data||state;
+  const incomingSingletonRevisions=state._singletonRevisions||d._singletonRevisions;
+  if(incomingSingletonRevisions&&typeof incomingSingletonRevisions==="object"){
+    _singletonRevisions={...incomingSingletonRevisions};
+    _snapshotSingletonBaselines(d);
+  }
   if(d.employees&&Array.isArray(d.employees)){employees=_mergeByIdPreferNewer(employees,d.employees,'employees');_ensureEmpDefaults(employees);}
   if(d.kpiEntries&&Array.isArray(d.kpiEntries))kpiEntries=_mergeByIdPreferNewer(kpiEntries,d.kpiEntries,'kpiEntries');
   if(d.compSessions&&Array.isArray(d.compSessions))compSessions=d.compSessions;

@@ -7,6 +7,7 @@ const path    = require("path");
 const os      = require("os");
 const bcrypt  = require("bcryptjs");
 const crypto  = require("crypto");
+const { isDeepStrictEqual } = require("node:util");
 const pool    = require("./db");
 const multer  = require("multer");
 const budgetRouterFactory = require("./budget");
@@ -606,6 +607,7 @@ function filterDataForRole(data, auth) {
       return copy;
     });
   }
+  if (auth.role !== "admin") out._singletonRevisions = {};
   return out;
 }
 
@@ -981,6 +983,11 @@ async function _seedCompanyDefaults(client, companyId) {
 }
 
 const { ID_KEYED_LIST_FIELDS, GENERIC_LIST_FIELDS, SINGLETON_FIELDS } = require("./lib/collections");
+// 부분 병합 데이터와 내부 카운터/tombstone은 CAS 대상으로 삼으면 정상 동시 저장까지
+// 막으므로, 관리 화면에서 통째로 편집되는 설정 객체만 revision으로 보호한다.
+const REVISIONED_SINGLETON_FIELDS = SINGLETON_FIELDS.filter(key => ![
+  "compGradeResults", "_idCounter", "roomReservationTombstones", "recordTombstones",
+].includes(key));
 
 // ── Core DB helpers ───────────────────────────────────────────────────────────
 // companyId: employees/kpi_entries(1단계, 2026-07-20)에 이어 app_collections/app_singletons
@@ -994,7 +1001,7 @@ async function loadData(companyId) {
   if (USE_JSON_FILE) {
     // Return the full stored state so the client restores everything
     // (employees, kpiEntries, settings, coreTalentPool, lowPerfData, etc.)
-    return { ..._fileStore, _version: _getVersion(companyId) };
+    return { ..._fileStore, _version: _getVersion(companyId), _singletonRevisions: { ...(_fileStore._singletonRevisions || {}) } };
   }
   const empParams = companyId ? [companyId] : [];
   const empFilter = companyId ? "AND company_id = $1" : "";
@@ -1003,19 +1010,23 @@ async function loadData(companyId) {
     pool.query(`SELECT data FROM employees  WHERE is_deleted = FALSE ${empFilter} ORDER BY created_at`, empParams),
     pool.query(`SELECT data FROM kpi_entries WHERE is_deleted = FALSE ${empFilter} ORDER BY created_at`, empParams),
     pool.query(`SELECT collection, data FROM app_collections ${collFilter} ORDER BY created_at`, empParams),
-    pool.query(`SELECT key, data FROM app_singletons ${collFilter}`, empParams),
+    pool.query(`SELECT key, data, revision FROM app_singletons ${collFilter}`, empParams),
   ]);
   const result = {
     employees:  empRes.rows.map(r => r.data),
     kpiEntries: kpiRes.rows.map(r => r.data),
     _version:   _getVersion(companyId),
+    _singletonRevisions: {},
   };
   for (const field of GENERIC_LIST_FIELDS) result[field] = [];
   for (const row of collRes.rows) {
     if (!result[row.collection]) result[row.collection] = [];
     result[row.collection].push(row.data);
   }
-  for (const row of singRes.rows) result[row.key] = row.data;
+  for (const row of singRes.rows) {
+    result[row.key] = row.data;
+    result._singletonRevisions[row.key] = Number(row.revision) || 1;
+  }
   return result;
 }
 // Public entry point — acquires the save lock itself. Callers that are
@@ -1438,6 +1449,21 @@ async function persistData(data, changedBy = "system", companyId = null, actor =
 // owns a wider transaction which also covers deleteExtras and budget_store, so
 // this function must join it instead of committing a partial HR restore first.
 async function _persistDataLocked(data, changedBy = "system", companyId = null, actor = null, externalClient = null) {
+  if (data._enforceSingletonCas) {
+    if (!Array.isArray(data._changedSingletonKeys)) {
+      throw httpError(428, "SINGLETON_REVISION_REQUIRED", "설정 저장 전 최신 revision 정보가 필요합니다.");
+    }
+    const changedKeys = new Set(data._changedSingletonKeys);
+    for (const key of REVISIONED_SINGLETON_FIELDS) {
+      if (!changedKeys.has(key)) {
+        delete data[key]; // 전체 상태 echo가 stale singleton을 덮어쓰지 않게 한다.
+        continue;
+      }
+      if (!Object.prototype.hasOwnProperty.call(data._singletonRevisions || {}, key)) {
+        throw httpError(428, "SINGLETON_REVISION_REQUIRED", `${key} 설정의 최신 revision 정보가 필요합니다.`, { key });
+      }
+    }
+  }
   // kpiEntries.weight(비중,%)는 화면 입력칸엔 별다른 제한이 없고(saveKpiDraft가 Number(...)||20
   // 폴백만 함) 서버도 전혀 검증하지 않아, API를 직접 호출하면 음수·수천% 같은 값이 그대로
   // 저장됐다 — 이 값은 다면/역량 등급 산정(assignCompPoolGrades 호출부의 weighted average,
@@ -1469,6 +1495,19 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
   }
   if (USE_JSON_FILE) {
     // Save the full client state to the JSON file
+    const expectedSingletonRevisions = data._singletonRevisions || {};
+    const nextSingletonRevisions = { ...(_fileStore._singletonRevisions || {}) };
+    for (const key of REVISIONED_SINGLETON_FIELDS) {
+      if (data[key] === undefined || isDeepStrictEqual(data[key], _fileStore[key])) continue;
+      const currentRevision = Number(nextSingletonRevisions[key]) || 0;
+      const expectedRevision = Number(expectedSingletonRevisions[key]) || 0;
+      if (Object.prototype.hasOwnProperty.call(expectedSingletonRevisions, key) && expectedRevision !== currentRevision) {
+        throw httpError(409, "SINGLETON_REVISION_CONFLICT", "다른 사용자가 설정을 먼저 변경했습니다. 최신 데이터를 불러온 뒤 다시 시도하세요.", {
+          key, currentRevision,
+        });
+      }
+      nextSingletonRevisions[key] = currentRevision + 1;
+    }
     const existingById = {};
     for (const e of (_fileStore.employees || [])) existingById[e.id] = e;
     const existingKpiById = {};
@@ -1678,6 +1717,7 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
     // `{...data, employees}` would silently delete every field absent from `data`.
     _fileStore = {
       ..._fileStore, ...data, employees,
+      _singletonRevisions: nextSingletonRevisions,
       kpiEntries: kpiEntriesFinal, payslips: payslipsFinal,
       lowPerfData: lowPerfDataFinal, coreTalentPool: coreTalentPoolFinal,
       welfarePoints: welfarePointsFinal, compResponses: compResponsesFinal,
@@ -1969,9 +2009,25 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
           : await client.query("SELECT data FROM app_singletons WHERE key = $1", [key]);
         valueToStore = mergeNestedObject(rows.length ? rows[0].data : null, data[key]);
       }
+      const { rows: storedRows } = await client.query(
+        `SELECT data, revision FROM app_singletons WHERE key = $1 AND company_id = $2 FOR UPDATE`,
+        [key, companyId]
+      );
+      const stored = storedRows[0];
+      if (stored && isDeepStrictEqual(valueToStore, stored.data)) continue;
+      const currentRevision = stored ? (Number(stored.revision) || 1) : 0;
+      if (REVISIONED_SINGLETON_FIELDS.includes(key)) {
+        const expectedMap = data._singletonRevisions || {};
+        const expectedRevision = Number(expectedMap[key]) || 0;
+        if (Object.prototype.hasOwnProperty.call(expectedMap, key) && expectedRevision !== currentRevision) {
+          throw httpError(409, "SINGLETON_REVISION_CONFLICT", "다른 사용자가 설정을 먼저 변경했습니다. 최신 데이터를 불러온 뒤 다시 시도하세요.", {
+            key, currentRevision,
+          });
+        }
+      }
       await client.query(
-        `INSERT INTO app_singletons (key, company_id, data, updated_at) VALUES ($1,$2,$3,NOW())
-         ON CONFLICT (company_id, key) DO UPDATE SET data = $3, updated_at = NOW()`,
+        `INSERT INTO app_singletons (key, company_id, data, revision, updated_at) VALUES ($1,$2,$3,1,NOW())
+         ON CONFLICT (company_id, key) DO UPDATE SET data = $3, revision = app_singletons.revision + 1, updated_at = NOW()`,
         [key, companyId, JSON.stringify(valueToStore)]
       );
     }
@@ -2174,6 +2230,116 @@ async function addActivityLog(entry, companyId = null) {
 }
 
 // ── Middleware ────────────────────────────────────────────────────────────────
+const IDEMPOTENCY_TTL_MS = 24 * 60 * 60 * 1000;
+const IDEMPOTENCY_FILE = JSON_FILE.replace(/\.json$/, "-idempotency.json");
+let _fileIdempotency = null;
+function _canonicalJson(value) {
+  if (Array.isArray(value)) return `[${value.map(_canonicalJson).join(",")}]`;
+  if (value && typeof value === "object") return `{${Object.keys(value).sort().map(k => `${JSON.stringify(k)}:${_canonicalJson(value[k])}`).join(",")}}`;
+  return JSON.stringify(value);
+}
+function _idempotencyHash(req) {
+  return crypto.createHash("sha256").update(`${req.method}\n${req.path}\n${_canonicalJson(req.body || null)}`).digest("hex");
+}
+function _idempotencyRequired(req) {
+  if (["GET", "HEAD", "OPTIONS"].includes(req.method)) return false;
+  return req.path === "/save" || /^\/api\/(accounting|erp)\//.test(req.path);
+}
+function _loadFileIdempotency() {
+  if (_fileIdempotency) return;
+  _fileIdempotency = {};
+  if (fs.existsSync(IDEMPOTENCY_FILE)) _fileIdempotency = _readExistingJsonFileOrFail(IDEMPOTENCY_FILE, "멱등성 기록");
+}
+function _pruneFileIdempotency() {
+  const now = Date.now();
+  for (const [key, row] of Object.entries(_fileIdempotency || {})) {
+    if (!row || Date.parse(row.expiresAt) <= now) delete _fileIdempotency[key];
+  }
+}
+async function idempotencyMiddleware(req, res, next) {
+  if (!_idempotencyRequired(req)) return next();
+  if (!req.auth) return next(); // 실제 라우트의 인증 응답(401)이 항상 우선한다.
+  const key = String(req.get("Idempotency-Key") || "");
+  // 레거시 전체상태 /save만 전환 호환을 유지한다. 금전·재고 명령은 운영에서 키를 필수화해
+  // API 직접 호출로 중복 방지를 우회할 수 없게 한다(테스트 fixture는 기존 호출 호환).
+  if (!key && (req.path === "/save" || process.env.NODE_ENV === "test")) return next();
+  if (!/^[A-Za-z0-9._:-]{8,128}$/.test(key)) {
+    return res.status(400).json({ ok: false, code: "IDEMPOTENCY_KEY_REQUIRED", message: "유효한 Idempotency-Key가 필요합니다." });
+  }
+  const companyId = req.auth.companyId || null;
+  const actorId = String(req.auth.empId || req.auth.loginId || req.auth.masterId || "unknown");
+  const route = `${req.method} ${req.path}`;
+  const requestHash = _idempotencyHash(req);
+  const scope = `${_scopeKey(companyId)}\u0000${actorId}\u0000${route}\u0000${key}`;
+  let prior = null;
+  try {
+    if (USE_JSON_FILE) {
+      _loadFileIdempotency();
+      _pruneFileIdempotency();
+      prior = _fileIdempotency[scope] || null;
+      if (!prior) {
+        _fileIdempotency[scope] = { requestHash, pending: true, expiresAt: new Date(Date.now() + IDEMPOTENCY_TTL_MS).toISOString() };
+        _atomicWriteFileSync(IDEMPOTENCY_FILE, JSON.stringify(_fileIdempotency, null, 2));
+      }
+    } else {
+      await pool.query("DELETE FROM api_idempotency WHERE expires_at <= NOW()");
+      const inserted = await pool.query(
+        `INSERT INTO api_idempotency (company_id, actor_id, route, idempotency_key, request_hash, expires_at)
+         VALUES ($1,$2,$3,$4,$5,NOW() + INTERVAL '24 hours') ON CONFLICT DO NOTHING RETURNING request_hash`,
+        [companyId, actorId, route, key, requestHash]
+      );
+      if (!inserted.rowCount) {
+        const found = await pool.query(
+          "SELECT request_hash, response_status, response_body FROM api_idempotency WHERE company_id = $1 AND actor_id = $2 AND route = $3 AND idempotency_key = $4",
+          [companyId, actorId, route, key]
+        );
+        prior = found.rows[0] || null;
+      }
+    }
+  } catch (e) {
+    console.error("[Idempotency] claim failed:", e);
+    return res.status(503).json({ ok: false, code: "IDEMPOTENCY_UNAVAILABLE", message: "중복 요청 보호 기능을 사용할 수 없습니다. 잠시 후 다시 시도하세요." });
+  }
+  if (prior) {
+    if (prior.requestHash !== requestHash && prior.request_hash !== requestHash) {
+      return res.status(409).json({ ok: false, code: "IDEMPOTENCY_KEY_REUSED", message: "같은 Idempotency-Key를 다른 요청에 재사용할 수 없습니다." });
+    }
+    const responseStatus = prior.responseStatus || prior.response_status;
+    const responseBody = prior.responseBody || prior.response_body;
+    if (responseStatus && responseBody) {
+      res.set("X-Idempotency-Replayed", "true");
+      return res.status(Number(responseStatus)).json(responseBody);
+    }
+    res.set("Retry-After", "1");
+    return res.status(409).json({ ok: false, code: "IDEMPOTENCY_IN_PROGRESS", message: "동일한 요청이 이미 처리 중입니다." });
+  }
+  const originalJson = res.json.bind(res);
+  let finalizing = false;
+  res.json = body => {
+    if (finalizing) return res;
+    finalizing = true;
+    const status = res.statusCode;
+    const success = status >= 200 && status < 300;
+    const finalize = async () => {
+      if (USE_JSON_FILE) {
+        if (success) _fileIdempotency[scope] = { requestHash, responseStatus: status, responseBody: body, expiresAt: new Date(Date.now() + IDEMPOTENCY_TTL_MS).toISOString() };
+        else delete _fileIdempotency[scope];
+        _atomicWriteFileSync(IDEMPOTENCY_FILE, JSON.stringify(_fileIdempotency, null, 2));
+      } else if (success) {
+        await pool.query("UPDATE api_idempotency SET response_status=$5,response_body=$6 WHERE company_id=$1 AND actor_id=$2 AND route=$3 AND idempotency_key=$4", [companyId, actorId, route, key, status, body]);
+      } else {
+        await pool.query("DELETE FROM api_idempotency WHERE company_id=$1 AND actor_id=$2 AND route=$3 AND idempotency_key=$4", [companyId, actorId, route, key]);
+      }
+    };
+    finalize().then(() => originalJson(body)).catch(e => {
+      console.error("[Idempotency] completion persist failed:", e);
+      res.status(503);
+      originalJson({ ok: false, code: "IDEMPOTENCY_UNAVAILABLE", message: "요청 결과를 안전하게 기록하지 못했습니다. 같은 키로 상태를 확인해주세요." });
+    });
+    return res;
+  };
+  next();
+}
 app.use(cors());
 // CSP는 끈다: 프론트엔드(public/index.html)가 인라인 onclick 핸들러와 인라인 <script>를
 // 전면적으로 사용하는 구조라 기본 CSP를 켜면 앱 전체가 깨진다. 나머지 기본 보안 헤더
@@ -2193,6 +2359,7 @@ app.use((req, res, next) => {
   }
   next();
 });
+app.use(idempotencyMiddleware);
 app.use(express.static(path.join(__dirname, "public")));
 // 사업계획(팀별 작성 → 사업부장 승인 → 예산담당자+기획팀장 최종확정) 워크플로우가
 // 요청자의 dept/team을 알아야 해서, budget.js가 자체적으로 갖지 못하는 employees 조회를
@@ -2888,8 +3055,8 @@ function _bootstrapSecretMatches(req) {
 }
 
 // POST /save
-function httpError(status, code, message) {
-  return Object.assign(new Error(message), { status, code });
+function httpError(status, code, message, details) {
+  return Object.assign(new Error(message), { status, code, details });
 }
 
 // P1-3: 운영 더미 데이터 차단. public/index.html의 generateDummyData()/
@@ -2994,11 +3161,14 @@ app.post("/save", async (req, res) => {
   // getFullState() sends { _version, _action, data: { employees, kpiEntries, ... } }
   // Unwrap nested .data if present so persistData sees a flat structure
   const clientData = body.data
-    ? { ...body.data, _version: body._version, _user: body._user }
+    ? { ...body.data, _version: body._version, _user: body._user, _singletonRevisions: body._singletonRevisions || body.data._singletonRevisions, _changedSingletonKeys: body._changedSingletonKeys }
     : body;
+  // 새 웹 클라이언트는 변경 키 목록을 항상 전송한다. 목록이 없는 레거시 백업/연동은
+  // 기존 동작을 유지해 즉시 단절시키지 않고, 목록이 있는 요청에는 strict CAS를 강제한다.
+  clientData._enforceSingletonCas = Array.isArray(clientData._changedSingletonKeys);
 
   try {
-    const { finalData, merged, duplicateLoginIds } = await _withSaveLock(() => _withDistributedSaveLock(companyId, async () => {
+    const { finalData, merged, duplicateLoginIds, singletonRevisions } = await _withSaveLock(() => _withDistributedSaveLock(companyId, async () => {
       let finalData = clientData;
       let merged    = false;
       let serverData;
@@ -3024,6 +3194,7 @@ app.post("/save", async (req, res) => {
 
       if (!_isPrivilegedStateWriter(req.auth)) {
         finalData = preserveServerOwnedStateForNonAdmin(finalData, await getServerData(), req.auth);
+        finalData._changedSingletonKeys = [];
       }
 
       // changedBy는 원래부터 클라이언트가 보낸 문자열을 그대로 신뢰하는 필드였다(req.auth
@@ -3041,7 +3212,8 @@ app.post("/save", async (req, res) => {
       // 클라이언트가 직접 보낸 요청과 병합을 거친 요청 양쪽 모두 동일하게 걸린다.
       rejectDemoDataForProduction(finalData);
       const { duplicateLoginIds } = await _persistDataLocked(finalData, changedBy, companyId, req.auth || null);
-      return { finalData, merged, duplicateLoginIds };
+      const savedState = await loadData(companyId);
+      return { finalData, merged, duplicateLoginIds, singletonRevisions: savedState._singletonRevisions || {} };
     }));
 
     const meta = {
@@ -3052,6 +3224,7 @@ app.post("/save", async (req, res) => {
     broadcastSSE("data_updated", { version: _getVersion(companyId), meta }, req.query.clientId, companyId);
     res.json({
       ok: true, version: _getVersion(companyId), merged,
+      singletonRevisions,
       mergedData: merged ? filterDataForRole(stripPwField(finalData), req.auth) : undefined,
       meta,
       warnings: duplicateLoginIds && duplicateLoginIds.length ? { duplicateLoginIds } : undefined,
@@ -3062,7 +3235,7 @@ app.post("/save", async (req, res) => {
     // 기존과 동일하게 500으로 처리한다(e.code가 없으면 JSON.stringify가 그 필드를
     // 조용히 생략하므로 기존 호출부의 응답 형태에 영향 없음).
     const status = Number.isInteger(e.status) ? e.status : 500;
-    res.status(status).json({ ok: false, code: e.code, message: _safeErrMsg(e) });
+    res.status(status).json({ ok: false, code: e.code, message: _safeErrMsg(e), details: e.details });
   }
 });
 

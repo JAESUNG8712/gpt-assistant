@@ -1073,10 +1073,12 @@ CREATE TABLE IF NOT EXISTS app_singletons (
   key        TEXT        NOT NULL,
   company_id UUID,
   data       JSONB       NOT NULL,
+  revision   BIGINT      NOT NULL DEFAULT 1,
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   CONSTRAINT app_singletons_pk_company PRIMARY KEY (company_id, key)
 );
 ALTER TABLE app_singletons ADD COLUMN IF NOT EXISTS company_id UUID;
+ALTER TABLE app_singletons ADD COLUMN IF NOT EXISTS revision BIGINT NOT NULL DEFAULT 1;
 CREATE INDEX IF NOT EXISTS idx_app_singletons_company_id ON app_singletons (company_id);
 DO $$
 DECLARE remaining_null INTEGER;
@@ -1184,3 +1186,19 @@ CREATE TABLE IF NOT EXISTS activity_log (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_activity_log_company_created ON activity_log (company_id, created_at DESC);
+
+-- 금전성 명령의 네트워크 재시도/중복 클릭 방지. 동일 사용자·회사·API 경로의
+-- Idempotency-Key는 동일 요청 본문에 대해서만 기존 성공 응답을 재사용한다.
+CREATE TABLE IF NOT EXISTS api_idempotency (
+  company_id      UUID,
+  actor_id        TEXT        NOT NULL,
+  route           TEXT        NOT NULL,
+  idempotency_key TEXT        NOT NULL,
+  request_hash    TEXT        NOT NULL,
+  response_status INTEGER,
+  response_body   JSONB,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  expires_at      TIMESTAMPTZ NOT NULL,
+  PRIMARY KEY (company_id, actor_id, route, idempotency_key)
+);
+CREATE INDEX IF NOT EXISTS idx_api_idempotency_expires_at ON api_idempotency (expires_at);
