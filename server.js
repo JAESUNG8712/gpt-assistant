@@ -294,8 +294,16 @@ function stripPwField(data) {
 // singleton 설정을 통째로 바꿔 role/password/전사 정책을 위조하지 못하도록, 해당 영역은
 // 항상 저장본을 기준으로 재구성한다. 본인 프로필에서 실제로 수정하도록 제공한 필드만
 // 좁게 허용한다. 새 직원 생성과 권한/급여/입사정보 변경은 관리자 전용 흐름을 사용한다.
+// name/birth는 openSelfEdit()가 admin/director/leader("canEditAll")에게만 노출하는
+// "인사 정보" 섹션 필드다(public/index.html — u.role별 렌더 조건). 여기서 빠져 있으면
+// _mergeOwnProfile()이 조용히 걸러버려, 그 화면에서 이름·생년월일을 고쳐 저장해도 서버에는
+// 전혀 반영되지 않는다(2026-08-24 QA로 실측 발견 — director가 본인 생년월일을 수정해도
+// address만 반영되고 birth는 그대로 남음). role별 제한은 이 화이트리스트가 아니라 UI에만
+// 있고, 이 두 필드는 이미 _sanitizeEmployeeRecord()에서 본인(isSelf) 레코드에 대해 역할과
+// 무관하게 통과시키도록 설계돼 있었으므로(변경 전부터의 기존 의도), 여기서도 역할 구분 없이
+// 통과시키는 것이 일관적이다.
 const SELF_EDITABLE_EMPLOYEE_FIELDS = new Set([
-  "email", "phone", "address", "edu", "eduSchool", "totalCareer", "careers",
+  "email", "phone", "address", "edu", "eduSchool", "totalCareer", "careers", "name", "birth",
 ]);
 function _boundedText(value, max) {
   return typeof value === "string" ? value.trim().slice(0, max) : null;
@@ -351,11 +359,27 @@ function preserveServerOwnedStateForNonAdmin(incoming, stored, actor) {
     if (!("gradeResults" in candidate)) return emp;
     return { ...emp, gradeResults: candidate.gradeResults, updatedAt: candidate.updatedAt || emp.updatedAt };
   });
-  // Settings, role policy and tombstones are global server-owned state. Letting a
-  // non-admin send a redacted/stale copy would also delete fields it cannot read.
+  // Settings, role policy 등은 전사 공유 상태라 non-admin이 보낸(필터링으로 일부만 보이는)
+  // 사본으로 통째로 덮어쓰면 안 된다 — 항상 저장본을 지킨다.
+  //
+  // recordTombstones/roomReservationTombstones는 예외다. 이 둘은 "정책"이 아니라 각
+  // 클라이언트가 자기 삭제 행위를 알리는 델타(append-only 로그, {필드:[{id,ts}]})라서,
+  // 저장본으로 통째로 되돌리면 이 저장 요청 자체에 실린 삭제가 사라진다 — 실측 확인된
+  // 회귀: member가 deleteKpi()로 자기 KPI 목표를 삭제해도(응답은 ok:true) 서버에는 전혀
+  // 반영되지 않고 재조회하면 그대로 되살아나 있었다(_mergeProtectedField()/Postgres
+  // deadIds 계산이 이 필드를 그대로 신뢰하기 때문). smartMerge()가 이미 쓰는
+  // mergeRecordTombstones()/mergeTombstones()(id별 최신 ts만 유지하는 안전한 합집합)로
+  // 병합해, 다른 세션이 만든 삭제 기록을 지우지 않으면서도 이번 요청의 삭제는 반영되게 한다.
   for (const key of SINGLETON_FIELDS) {
-    if (Object.prototype.hasOwnProperty.call(stored || {}, key)) out[key] = stored[key];
-    else delete out[key];
+    if (key === "recordTombstones") {
+      out.recordTombstones = mergeRecordTombstones(stored?.recordTombstones, incoming.recordTombstones);
+    } else if (key === "roomReservationTombstones") {
+      out.roomReservationTombstones = mergeTombstones(stored?.roomReservationTombstones, incoming.roomReservationTombstones);
+    } else if (Object.prototype.hasOwnProperty.call(stored || {}, key)) {
+      out[key] = stored[key];
+    } else {
+      delete out[key];
+    }
   }
   return out;
 }
