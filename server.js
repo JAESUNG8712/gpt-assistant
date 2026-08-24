@@ -339,9 +339,17 @@ function preserveServerOwnedStateForNonAdmin(incoming, stored, actor) {
     .map(e => [String(e.id), e]));
   out.employees = (stored?.employees || []).map(emp => {
     const candidate = incomingEmployees.get(String(emp.id));
-    return candidate && String(emp.id) === String(actor?.empId)
-      ? _mergeOwnProfile(emp, candidate)
-      : emp;
+    if (!candidate) return emp;
+    if (String(emp.id) === String(actor?.empId)) return _mergeOwnProfile(emp, candidate);
+    // 타인 레코드에 대해 정당하게 존재하는 유일한 non-admin 쓰기 경로는 director의 KPI/
+    // 다면평가 최종 등급 조정(adjustKpiGrade()/resolveTie(), gradeResults 필드)이다 — 그
+    // 권한 판정(role===director && 같은 dept)은 _persistDataLocked의 _sanitizeEmployeeRecord가
+    // 이미 하므로(role/salary/birth/address와 동일한 원칙), 여기서는 그 필드"만" 통과시켜
+    // 넘기고 나머지 필드는 전부 저장본을 지킨다. 이 예외가 없으면 director의 정상적인
+    // 등급 조정이 이 함수에 의해 항상 조용히 되돌려진다(실측 확인된 회귀 — 이 함수가
+    // 다른 세션에서 처음 추가됐을 때 이 케이스를 놓쳤었다).
+    if (!("gradeResults" in candidate)) return emp;
+    return { ...emp, gradeResults: candidate.gradeResults, updatedAt: candidate.updatedAt || emp.updatedAt };
   });
   // Settings, role policy and tombstones are global server-owned state. Letting a
   // non-admin send a redacted/stale copy would also delete fields it cannot read.
@@ -1150,22 +1158,26 @@ function _welfareRecordAllowed(rec, actor, actorEmp, settings) {
 // roles: 이 역할이면 누구 레코드든 쓸 수 있음(해당 화면의 PAGE_ROLES와 일치)
 // ownField: 그 필드가 본인 id면 역할과 무관하게 허용(본인 출퇴근 체크·본인 증명서 발급 등)
 const _WRITE_GATED_FIELDS = {
-  payslips:           { roles: ["admin"] },                                   // payroll-mgmt
-  payrollAdjustments: { roles: ["admin"] },                                   // payroll-mgmt
+  payslips:           { roles: ["admin"], pageIds: "payroll-mgmt" },
+  payrollAdjustments: { roles: ["admin"], pageIds: "payroll-mgmt" },
   // KPI 등급 현황(grade-view, admin/director/leader 공개) 화면의 "수정" 버튼은
   // admin뿐 아니라 director에게도 노출된다(openAdjustGradeModal이 admin||director를
   // 명시적으로 허용) — director가 자기 사업부 직원의 등급을 조정하면 실제 등급
-  // (employees.gradeResults, 게이팅 대상 아님)은 반영되지만 이 감사이력만 조용히
-  // 되돌려지고 있었다. director는 자기 사업부(dept) 레코드에 한해 허용.
-  gradeAdjustHistory: { roles: ["admin"], directorDeptField: "dept" },        // comp-grade-view / grade-view
-  coreTalentPool:     { roles: ["admin"] },                                   // core-talent
-  approvalTemplates:  { roles: ["admin"] },                                   // approval-templates
+  // (employees.gradeResults, 별도로 _sanitizeEmployeeRecord에서 게이팅)은 반영되지만
+  // 이 감사이력만 조용히 되돌려지고 있었다. director는 자기 사업부(dept) 레코드에 한해 허용.
+  gradeAdjustHistory: { roles: ["admin"], directorDeptField: "dept", pageIds: ["grade-view", "comp-grade-view"] },
+  coreTalentPool:     { roles: ["admin"], pageIds: "core-talent" },
+  approvalTemplates:  { roles: ["admin"], pageIds: "approval-templates" },
   // hr-mandatory-training(admin/director/leader)의 일괄 등록 외에, 누구나 접근 가능한 개인
   // "법정의무교육" 화면(mandatory-training)에 본인 이수 자가등록 버튼("이수 등록")이 있다 —
   // ownField가 없으면 leader 미만(대부분의 사원)의 자가등록이 서버에서 조용히 되돌려진다.
-  mandatoryTraining:  { roles: ["admin", "director", "leader"], ownField: "empId" },
+  // pageIds는 admin/director/leader의 "전체 현황" role 경로에만 적용되고, 이 본인 자가등록
+  // (ownField) 경로는 별개 화면(mandatory-training)이라 영향받지 않는다.
+  mandatoryTraining:  { roles: ["admin", "director", "leader"], ownField: "empId", pageIds: "hr-mandatory-training" },
   // 근태: 결재 완료 시 승인자의 화면이 기안자(타인)의 근태를 쓴다(_setAttRec) — 리더 이상은
-  // 타인 기록도 써야 하고, 사원은 본인 출퇴근 체크만.
+  // 타인 기록도 써야 하고, 사원은 본인 출퇴근 체크만. role 경로가 특정 단일 화면이 아니라
+  // 전자결재 승인이라는 공용 경로를 타서 pageIds를 붙이면 무관한 결재 승인까지 막을 수
+  // 있어(과잉차단 위험) 의도적으로 미적용.
   attendanceRecords:  { roles: ["admin", "director", "leader"], ownField: "empId" },
   leaveUsagePlans:    { roles: ["admin", "director", "leader"], ownField: "empId" },
   certLog:            { roles: ["admin"], ownField: "empId" },                // 본인 증명서 발급 기록은 허용
@@ -1175,34 +1187,49 @@ const _WRITE_GATED_FIELDS = {
   approvalDelegations: { roles: ["admin"], ownField: "empId" },
   // 다면평가 응답은 평가자 본인 명의로만(타인 명의 제출 = 평가 위조)
   compResponses:      { roles: ["admin"], ownField: "evaluatorId" },
-  compSessions:       { roles: ["admin"] },                                   // eval-ops
-  changeRequests:     { roles: ["admin", "director", "leader"], ownField: "reqUserId" },
+  compSessions:       { roles: ["admin"], pageIds: "eval-ops" },
+  changeRequests:     { roles: ["admin", "director", "leader"], ownField: "reqUserId", pageIds: "kpi-amend" },
   // 육성계획: 본인(핵심인재 본인이 자기 IDP 작성) 또는 지정 담당자(settings.talentDevViewers)
-  talentDevPlans:     { roles: ["admin", "director", "leader"], ownField: "empId", viewersSetting: "talentDevViewers" },
+  talentDevPlans:     { roles: ["admin", "director", "leader"], ownField: "empId", viewersSetting: "talentDevViewers", pageIds: "talent-dev" },
   // 동점자 처리(renderApprovals의 "동점자 처리" 탭)는 director에게도 노출되어(자기 사업부
   // 소속분만, t.dept===u.dept) "처리 완료 표시"(markTieResolved) 버튼을 director가 누를 수
   // 있다 — admin만 허용하면 director의 처리가 조용히 되돌려져 알림이 영구히 안 사라진다.
+  // 이 탭은 단일 사이드바 페이지가 아니라 결재 승인 화면 안의 탭이라 pageIds 미적용.
   tieNotifications:   { roles: ["admin"], directorDeptField: "dept" },
   // 종합검진 완료 처리 토글(_toggleHcDone)은 welfare-settings(관리자 전용) 화면에만 있다
-  healthCheckupLog:   { roles: ["admin"] },
-  onboardingFlows:    { roles: ["admin"] },
+  healthCheckupLog:   { roles: ["admin"], pageIds: "welfare-settings" },
+  onboardingFlows:    { roles: ["admin"], pageIds: "onboarding" },
   orgChartHistory:    { roles: ["admin"] },
-  integrationLogs:    { roles: ["admin"] },
+  integrationLogs:    { roles: ["admin"], pageIds: "integrations" },
   roomReservations:   { roles: ["admin"], ownField: "bookedBy" },
   scheduleEvents:     { roles: ["admin", "director", "leader"], ownField: "authorId" },
   // 저성과자 관리: 읽기와 같은 기준(관리자 또는 settings.lowPerformerViewers 등록자)
-  lowPerfData:        { roles: ["admin"], viewersSetting: "lowPerformerViewers" },
+  lowPerfData:        { roles: ["admin"], viewersSetting: "lowPerformerViewers", pageIds: "low-performer" },
 };
+// menuPerms(개인별로 끈 메뉴) 확장 — 위 role 기반 승인/게이팅과 별개로, 관리자가 특정 직원의
+// 해당 화면 메뉴 자체를 꺼뒀다면 role상 자격이 있어도(예: admin, 또는 그 부서의 director) 그
+// 컬렉션에 대한 쓰기를 허용하지 않는다. REST API 화면(requirePage, 2026-08-21)과 동일한
+// 발상을 이 범용 blob 동기화(/save) 컬렉션에도 적용한 것 — 지금까지는 role 검사만 있고
+// menuPerms는 전혀 확인하지 않아, 개인적으로 메뉴를 꺼도 API를 직접 호출하면(role만 맞으면)
+// 그대로 통과됐다. 여러 페이지가 같은 필드를 다루면(예: gradeAdjustHistory는 grade-view/
+// comp-grade-view 양쪽에서) 하나라도 켜져 있으면 허용 — 전부 꺼졌을 때만 차단한다.
+function _menuPermsAllow(pageIds, actor) {
+  if (!pageIds) return true;
+  const ids = Array.isArray(pageIds) ? pageIds : [pageIds];
+  const perms = (actor && actor.menuPerms) || {};
+  return ids.some(id => perms[id] !== false);
+}
 function _writeGateAllowed(field, rec, actor, actorEmp, settings) {
   const rule = _WRITE_GATED_FIELDS[field];
   if (!rule || !actor) return false;
-  if (rule.roles.includes(actor.role)) return true;
+  const pageOk = _menuPermsAllow(rule.pageIds, actor);
+  if (rule.roles.includes(actor.role) && pageOk) return true;
   if (rule.ownField && String(rec[rule.ownField]) === String(actor.empId)) return true;
   if (rule.viewersSetting && ((settings || {})[rule.viewersSetting] || []).map(String).includes(String(actor.empId))) return true;
   // director 한정, 그 부서 소속 레코드만 허용(예: KPI 등급조정 이력·동점자 처리 — 클라이언트가
   // 이미 director를 자기 사업부(dept)로만 스코핑해 버튼을 노출하고 있는 화면들).
   if (rule.directorDeptField && actor.role === "director" && actorEmp &&
-      rec[rule.directorDeptField] === actorEmp.dept) return true;
+      rec[rule.directorDeptField] === actorEmp.dept && pageOk) return true;
   return false;
 }
 const _APPROVAL_GATED_FIELDS = {
@@ -1356,10 +1383,21 @@ function _sanitizeKpiEntry(incoming, stored, actor, actorEmp, empById) {
   }
   const ownerId = out.userId ?? stored?.userId;
   const ownerEmp = ownerId != null ? empById.get(String(ownerId)) : null;
+  // menuPerms 확장(2026-08-21) — role만으로는 자격이 있어도(팀장/사업부장), 관리자가 그
+  // 직원의 "1차 평가"/"2차 평가" 메뉴 자체를 개인적으로 꺼뒀다면 그 승인 권한도 서버에서
+  // 함께 차단한다(REST 화면의 requirePage와 동일한 원칙을 이 blob 동기화 필드에 적용).
   const canFirst = actor.role === "leader" && actorEmp && ownerEmp &&
-    ownerEmp.dept === actorEmp.dept && ownerEmp.team === actorEmp.team;
+    ownerEmp.dept === actorEmp.dept && ownerEmp.team === actorEmp.team &&
+    _menuPermsAllow("first-eval", actor);
   const canFinal = actor.role === "director" && actorEmp && ownerEmp &&
-    ownerEmp.dept === actorEmp.dept;
+    ownerEmp.dept === actorEmp.dept && _menuPermsAllow("second-eval", actor);
+  // 목표 등록/자체평가 등 승인과 무관한 일반 편집은 본인(userId===actor.empId) 소유 레코드에
+  // 한해 일어난다("kpi"/"kpi-results" 두 화면이 여기 해당, 어느 쪽이 보이는지는
+  // settings.stage에 따라 갈리므로 둘 다 꺼졌을 때만 차단). admin은 그대로 예외.
+  const isOwner = actor.empId != null && ownerId != null && String(actor.empId) === String(ownerId);
+  if (isOwner && actor.role !== "admin" && !_menuPermsAllow(["kpi", "kpi-results"], actor)) {
+    return stored ? { ...stored } : null;
+  }
 
   const storedFirstStatus = stored?.firstStatus || "";
   if ((incoming.firstStatus || "") !== storedFirstStatus &&
@@ -1421,7 +1459,7 @@ function _sanitizeKpiEntry(incoming, stored, actor, actorEmp, empById) {
 // actor가 없는 호출(초기 부트스트랩·/restore 등 신뢰된 경로)은 대상이 아니며, 호출부에서
 // `actor && actor.role !== "admin"`일 때만 이 함수를 적용한다(관리자는 그대로 통과 —
 // approvalDocs 결재자 변경과 동일한 관례).
-function _sanitizeEmployeeRecord(rawEmp, stored, actor) {
+function _sanitizeEmployeeRecord(rawEmp, stored, actor, actorEmp) {
   if (!rawEmp) return rawEmp;
   let out = rawEmp;
   const cloneOnce = () => { if (out === rawEmp) out = { ...rawEmp }; };
@@ -1436,7 +1474,33 @@ function _sanitizeEmployeeRecord(rawEmp, stored, actor) {
     if (out.birth !== storedBirth) { cloneOnce(); out.birth = storedBirth; }
     if (out.address !== storedAddress) { cloneOnce(); out.address = storedAddress; }
   }
+  // KPI 최종 등급(gradeResults[year].grade 등, adjustKpiGrade()가 씀)은 이전까지 전혀
+  // 게이팅되지 않고 있었다(위 코멘트 "게이팅 대상 아님" 참고 — gradeAdjustHistory 이력만
+  // 보호되고 정작 실제 등급 필드는 무방비였다). admin 또는 그 직원의 사업부장(director,
+  // 같은 dept — kpiEntries.finalStatus의 director 승인 권한과 동일 기준)만 조정할 수
+  // 있어야 한다. "같은 dept"는 반드시 actor 자신의 부서(actorEmp.dept)와 대조해야 한다 —
+  // stored.dept를 rawEmp.dept(변경 안 된 이상 항상 자기 자신과 같음)와만 비교하면 "그
+  // 부서 소속인지"가 아니라 아무 의미 없는 항상-참 검사가 되어(초기 구현에서 이 실수를
+  // 했음) 어느 부서의 director든 전 직원의 등급을 조정할 수 있게 되는 결함이 생긴다.
+  const canAdjustGrade = actor.role === "director" && actorEmp && stored && stored.dept === actorEmp.dept;
+  if (!canAdjustGrade) {
+    const storedGrades = stored ? stored.gradeResults : undefined;
+    if (JSON.stringify(out.gradeResults || {}) !== JSON.stringify(storedGrades || {})) {
+      cloneOnce();
+      out.gradeResults = storedGrades;
+    }
+  }
   return out;
+}
+// 다면평가 최종등급(compGradeResults, {empId:{year:{grade,score,...}}} 형태의 nested
+// 싱글톤)은 comp-grade-view(admin 전용 화면)에서만 계산·조정되는데, 이 필드 자체는
+// gradeResults와 마찬가지로 전혀 게이팅되지 않고 있었다 — GET /data는 이미 non-admin에게
+// 본인 키만 보이도록 좁히고 있지만(filterDataForRole) 쓰기 쪽엔 대응하는 방어가 없어, 사원이
+// 자기 다면평가 최종 등급을 직접 /save로 "S"로 써넣을 수 있었다. salary와 동일한 근거로
+// (정상적인 self-service 경로가 전혀 없음) admin 외에는 통째로 저장값으로 되돌린다.
+function _sanitizeCompGradeResultsForRole(incoming, stored, actor) {
+  if (!actor || actor.role === "admin") return incoming;
+  return stored;
 }
 // 세션/토큰 철회 방어(2026-08-19 외부 감사 P0-5). 로그인 토큰(JWT류, signToken())은 만료
 // 시각까지(SESSION_TTL_SEC, 기본 12시간) 스스로 유효함을 증명하는 완전한 stateless 토큰이라,
@@ -1484,8 +1548,14 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
     const _kpiEmpById = new Map((_kpiGatePrior.employees || []).map(e => [String(e.id), e]));
     const _kpiStoredById = new Map((_kpiGatePrior.kpiEntries || []).map(k => [String(k.id), k]));
     const _kpiActorEmp = actor.empId != null ? _kpiEmpById.get(String(actor.empId)) : null;
-    data.kpiEntries = data.kpiEntries.map(kpi =>
-      _sanitizeKpiEntry(kpi, kpi && kpi.id != null ? _kpiStoredById.get(String(kpi.id)) : null, actor, _kpiActorEmp, _kpiEmpById));
+    // _sanitizeKpiEntry는 권한 없이 새로 만들어진 레코드에 한해 null을 반환할 수 있다
+    // (menuPerms로 kpi/kpi-results 둘 다 꺼진 본인의 신규 목표 등록 차단) — 아래 두 분기
+    // 모두 `kpi.id`에 바로 접근하므로(예: JSON 모드 `for (const kpi of ...)`), null이 섞인
+    // 채로 넘기면 TypeError로 요청이 죽는다(Express 4는 async 핸들러의 동기 throw를 못
+    // 잡아 응답 없이 hang — 이 프로젝트에서 반복된 사고 클래스). 여기서 즉시 걸러낸다.
+    data.kpiEntries = data.kpiEntries
+      .map(kpi => _sanitizeKpiEntry(kpi, kpi && kpi.id != null ? _kpiStoredById.get(String(kpi.id)) : null, actor, _kpiActorEmp, _kpiEmpById))
+      .filter(kpi => kpi !== null);
   }
   if (USE_JSON_FILE) {
     // Save the full client state to the JSON file
@@ -1522,9 +1592,10 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
     // 목록을 보존한다.
     const employeesInputMissing = data.employees === undefined;
     const _empActorNonAdmin = !!(actor && actor.role !== "admin");
+    const _empActorOwnRecord = (actor && actor.empId != null) ? existingById[actor.empId] : null;
     const employees = employeesInputMissing ? (_fileStore.employees || []) : await Promise.all((data.employees || []).map(async (rawEmpIn) => {
       const ex0 = existingById[rawEmpIn.id];
-      const rawEmp = _empActorNonAdmin ? _sanitizeEmployeeRecord(rawEmpIn, ex0, actor) : rawEmpIn;
+      const rawEmp = _empActorNonAdmin ? _sanitizeEmployeeRecord(rawEmpIn, ex0, actor, _empActorOwnRecord) : rawEmpIn;
       const ex = existingById[rawEmp.id];
       const oldTs = ex ? (ex.updatedAt || ex.createdAt || "") : "";
       const newTs = rawEmp.updatedAt || rawEmp.createdAt || "";
@@ -1659,7 +1730,8 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
     // smartMerge() already uses for the version-conflict path — this covers the direct-overwrite
     // path too, which smartMerge never touches).
     const compGradeResultsFinal = data.compGradeResults !== undefined
-      ? mergeNestedObject(_fileStore.compGradeResults, data.compGradeResults)
+      ? mergeNestedObject(_fileStore.compGradeResults,
+          _sanitizeCompGradeResultsForRole(data.compGradeResults, _fileStore.compGradeResults, actor))
       : _fileStore.compGradeResults;
     // compResponses is filtered differently — not whole-record hiding but per-record FIELD
     // stripping (evaluator identity/content removed for records the requester didn't author,
@@ -1730,6 +1802,13 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
     // company_id와 다르면 그 레코드는 조용히 건너뛴다(404/403 대신 무시 — 다른 회사 리소스의
     // 존재 자체를 노출하지 않는다는 이 세션의 인가 원칙과 동일).
     const _empActorNonAdmin = !!(actor && actor.role !== "admin");
+    // director의 gradeResults 조정 권한 판정(_sanitizeEmployeeRecord 주석 참고)에
+    // actor 자신의 dept가 필요하다 — 매 레코드마다 다시 조회하지 않도록 루프 밖에서 한 번만.
+    let _empActorOwnRecord = null;
+    if (_empActorNonAdmin && actor.empId != null) {
+      const { rows: actorRows } = await client.query("SELECT data FROM employees WHERE id = $1", [actor.empId]);
+      _empActorOwnRecord = actorRows.length ? actorRows[0].data : null;
+    }
     for (const rawEmpIn of (data.employees || [])) {
       if (!rawEmpIn.id) continue;
       const { rows } = await client.query(
@@ -1737,7 +1816,7 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
       );
       if (rows.length && companyId && rows[0].company_id && rows[0].company_id !== companyId) continue;
       const rawEmp = _empActorNonAdmin
-        ? _sanitizeEmployeeRecord(rawEmpIn, rows.length ? rows[0].data : null, actor)
+        ? _sanitizeEmployeeRecord(rawEmpIn, rows.length ? rows[0].data : null, actor, _empActorOwnRecord)
         : rawEmpIn;
       // 비밀번호는 관리자 또는 본인만(2026-08-19 외부 감사 P0-1 — JSON 파일 모드와 동일한
       // 방어를 Postgres/SaaS 모드에도 적용).
@@ -1986,7 +2065,8 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
         const { rows } = companyId
           ? await client.query("SELECT data FROM app_singletons WHERE key = $1 AND (company_id = $2 OR company_id IS NULL)", [key, companyId])
           : await client.query("SELECT data FROM app_singletons WHERE key = $1", [key]);
-        valueToStore = mergeNestedObject(rows.length ? rows[0].data : null, data[key]);
+        const storedCgr = rows.length ? rows[0].data : null;
+        valueToStore = mergeNestedObject(storedCgr, _sanitizeCompGradeResultsForRole(data[key], storedCgr, actor));
       }
       await client.query(
         `INSERT INTO app_singletons (key, company_id, data, updated_at) VALUES ($1,$2,$3,NOW())
