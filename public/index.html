@@ -1093,6 +1093,15 @@ let _evalOpsTab="main";
 let _welfareSettingsTab="health";
 // 회계 모듈: 서버가 직접 관리하는 데이터(클라이언트 신뢰 블롭과 분리, getFullState/applyState 미포함)
 let acctAccounts=[],acctVouchers=[],acctTaxInvoices=[],acctPartners=[],acctPayments=[],acctRcpsIssuances=[],acctFixedAssets=[],_acctLoaded=false;
+let _protectedDataEpoch=0;
+function clearProtectedModuleState(){
+  // 로그아웃·계정 전환·권한 회수 뒤 이전 사용자가 받은 민감 회계/ERP 데이터를 남기지 않는다.
+  // epoch는 늦게 끝난 기존 fetch가 새 세션의 배열을 다시 채우는 것도 막는다.
+  _protectedDataEpoch++;
+  acctAccounts=[];acctVouchers=[];acctTaxInvoices=[];acctPartners=[];acctPayments=[];acctRcpsIssuances=[];acctFixedAssets=[];_acctLoaded=false;
+  _faDetail=null;_faDetailId=null;_rcpsDetail=null;_rcpsDetailId=null;_vatReportData=null;
+  erpItems=[];erpLocations=[];erpQuotations=[];erpPurchaseOrders=[];erpStock=[];erpPurchaseRequests=[];erpSalesTargets=[];_erpLoaded=false;_prLoaded=false;
+}
 // 원가명세서 조회 기간 상태(회계 리포트 페이지의 _acctRptYear 등과 동일한 페이지 로컬 상태 패턴)
 let _costStmtFrom=new Date(new Date().getFullYear(),0,1).toISOString().slice(0,10),_costStmtTo=new Date().toISOString().slice(0,10);
 // 부가세 신고자료 조회 기간 상태 — 데이터는 캐시된 클라이언트 배열이 아니라 기간별 서버 집계라
@@ -1106,6 +1115,7 @@ let _faDetail=null,_faDetailId=null;
 let _rcpsDetail=null,_rcpsDetailId=null;
 async function loadAccountingFromServer(){
   if(!serverConfig.url){_acctLoaded=true;return;}
+  const dataEpoch=_protectedDataEpoch;
   try{
     // 서버의 requireAccountingMenu()가 최종 인가를 담당한다. 여기의 사전 판정은
     // 권한 없는 메뉴의 대용량 목록을 애초에 요청하지 않아 로그인 직후 DB/네트워크 부하와
@@ -1124,13 +1134,17 @@ async function loadAccountingFromServer(){
     // 이전 로그인/권한 상태에서 남은 민감 데이터가 있더라도, 이번 사용자에게는 보이지
     // 않도록 요청을 생략한 리소스부터 즉시 비운다.
     resources.filter(x=>perms[x.menu]===false).forEach(x=>x.clear());
-    const responses=await Promise.all(allowed.map(async x=>({x,r:await serverRequest("GET",x.endpoint)})));
-    responses.forEach(({x,r})=>{
+    const responses=await Promise.allSettled(allowed.map(async x=>({x,r:await serverRequest("GET",x.endpoint)})));
+    if(dataEpoch!==_protectedDataEpoch)return;
+    responses.forEach(result=>{
+      if(result.status!=="fulfilled")return;
+      const {x,r}=result.value;
       if(r?.ok)x.set(Array.isArray(r[x.field])?r[x.field]:[]);
       // 권한이 로그인 도중 변경돼 서버가 403을 낸 경우도 기존 메모리 캐시를 즉시 제거한다.
       else if(r?.code==="MENU_ACCESS_DENIED")x.clear();
     });
   }catch(e){/* 오프라인/서버 미연결 시 회계 페이지에서 안내 표시 */}
+  if(dataEpoch!==_protectedDataEpoch)return;
   _acctLoaded=true;
   if(currentPage&&currentPage.startsWith("acct-"))renderPage();
 }
@@ -4946,7 +4960,8 @@ function connectSSE(){
   if(_sseSource){ _sseSource.close(); _sseSource=null; }
   const base = serverConfig.url.replace(/\/+$/,"");
   const url = `${base}/events?clientId=${encodeURIComponent(_clientId)}&user=${encodeURIComponent(currentUser?.name||"unknown")}&token=${encodeURIComponent(_authToken||"")}`;
-  console.log("[SSE] Connecting to:", url);
+  // URL에는 SSE 인증 토큰이 포함되므로 콘솔에 전문을 남기지 않는다.
+  console.log("[SSE] Connecting");
   try {
     _sseSource = new EventSource(url);
 
@@ -4983,8 +4998,18 @@ function connectSSE(){
               leadershipEvalEnabled:settings.leadershipEvalEnabled,
               evalYear:settings.evalYear
             });
+            const previousMenuPerms={...(currentUser?.menuPerms||{})};
             applyState({data: d}, true); // skipUndo: SSE로 인한 반영은 되돌리기 스냅샷을 안 남김
             if(currentUser){ const u=employees.find(e=>e.id===currentUser.id); if(u) currentUser=u; }
+            const permissionsChanged=Object.keys({...previousMenuPerms,...(currentUser?.menuPerms||{})})
+              .some(k=>previousMenuPerms[k]!==((currentUser?.menuPerms||{})[k]));
+            if(permissionsChanged&&currentUser?.role==="admin"){
+              clearProtectedModuleState();
+              loadAccountingFromServer();loadErpFromServer();
+              if(currentPage&&((currentUser.menuPerms||{})[currentPage]===false)){
+                currentPage="dashboard";showToast("메뉴 권한이 변경되어 홈으로 이동했습니다.","info");
+              }
+            }
             const currSettings = JSON.stringify({
               stage:settings.stage, compEvalEnabled:settings.compEvalEnabled,
               leadershipEvalEnabled:settings.leadershipEvalEnabled,
@@ -5308,6 +5333,7 @@ function renderLogin(){
 }
 function _completeLogin(emp){
   const wrap=document.getElementById("login-wrap");if(wrap)wrap.style.display="none";
+  clearProtectedModuleState();
   currentUser=emp;currentPage="dashboard";myKpiYear=settings.evalYear;
   if(currentUser.role==="admin"){loadAccountingFromServer();loadErpFromServer();}
   _applyDueHRChanges();
@@ -5516,6 +5542,7 @@ async function logout(){
   // 잠금 해제(/unlock)는 인증이 필요하므로 토큰을 지우기 전에 먼저 호출해야 한다
   // (순서가 바뀌면 서버가 401로 거절해 잠금이 실제로는 안 풀린 채 남아있게 됨).
   releaseAllMyLocks();
+  clearProtectedModuleState();
   _setAuthToken(null);
   disconnectSSE();_myPagePwVerified=false;currentUser=null;const app=$("#app");if(app)app.innerHTML="";renderLogin();
 }
@@ -18923,7 +18950,10 @@ async function shipQuotation(id){
   const r=await serverRequest("POST",`/api/erp/quotations/${id}/ship`,{role:currentUser.role,user:currentUser.name});
   if(!r?.ok){showToast(r?.message||"처리에 실패했습니다.","error");return;}
   const idx=erpQuotations.findIndex(q=>q.id===id);if(idx>=0)erpQuotations[idx]=r.quotation;
-  acctTaxInvoices.unshift(r.taxInvoice);
+  if(currentUser?.menuPerms?.["acct-tax-invoices"]!==false){
+    const rt=await serverRequest("GET","/api/accounting/tax-invoices");
+    if(rt?.ok)acctTaxInvoices=rt.taxInvoices;
+  }
   const rs=await serverRequest("GET","/api/erp/stock");if(rs?.ok)erpStock=rs.stock;
   showToast(`출고 및 세금계산서 발행이 완료되었습니다 (${r.taxInvoice.invoiceNo}).`,"success");renderSalesQuotationsPage();
 }
@@ -21137,7 +21167,9 @@ async function receivePO(id){
   if(!r?.ok){showToast(r?.message||"입고 처리에 실패했습니다.","error");return;}
   const idx=erpPurchaseOrders.findIndex(p=>p.id===id);if(idx>=0)erpPurchaseOrders[idx]=r.purchaseOrder;
   const rs=await serverRequest("GET","/api/erp/stock");if(rs?.ok)erpStock=rs.stock;
-  const rt=await serverRequest("GET","/api/accounting/tax-invoices");if(rt?.ok)acctTaxInvoices=rt.taxInvoices;
+  if(currentUser?.menuPerms?.["acct-tax-invoices"]!==false){
+    const rt=await serverRequest("GET","/api/accounting/tax-invoices");if(rt?.ok)acctTaxInvoices=rt.taxInvoices;
+  }
   showToast(`입고 처리되어 재고에 반영되고 매입세금계산서가 발행되었습니다 (${r.taxInvoice?.invoiceNo||""}).`,"success");renderSalesPurchaseOrdersPage();
 }
 async function cancelPO(id){

@@ -590,6 +590,18 @@ function filterDataForRole(data, auth) {
   return out;
 }
 
+// 회계 수금/지급은 PostgreSQL 모드에서 app_collections(acctPayments)에 저장돼 /data의
+// full-state에도 포함된다. 회계 전용 GET만 막아도 이 배열을 그대로 두면 메뉴 권한을
+// /data로 우회할 수 있으므로, full-state 응답에도 같은 최소 차단을 적용한다.
+function filterDataForMenuPermissions(data, menuPerms) {
+  if (!data || !menuPerms || typeof menuPerms !== "object") return data;
+  const out = { ...data };
+  if (menuPerms["acct-receivables"] === false && Array.isArray(out.acctPayments)) {
+    out.acctPayments = [];
+  }
+  return out;
+}
+
 // ── TOTP (RFC 6238) 2단계 인증 — 외부 의존성 없이 자체 구현 ────────────────────
 const TOTP_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
 function base32Encode(buf) {
@@ -2179,6 +2191,18 @@ app.use(cors());
 app.use(helmet({ contentSecurityPolicy: false }));
 app.use(express.json({ limit: "50mb" }));
 app.use(authenticate);
+// 작성자·확정자 이름을 body.user에서 받으면 유효한 관리자 토큰만으로도 "CEO" 등
+// 다른 사람 명의의 감사 이력을 만들 수 있다. 인증된 요청은 모든 기존 라우트가 쓰는
+// body.user를 서버 토큰 주체로 통일한다.
+function _actorLabel(req) {
+  return req?.auth?.loginId || (req?.auth?.empId != null ? `emp:${req.auth.empId}` : "system");
+}
+app.use((req, res, next) => {
+  if (req.auth && req.body && typeof req.body === "object" && !Array.isArray(req.body)) {
+    req.body.user = _actorLabel(req);
+  }
+  next();
+});
 app.use(express.static(path.join(__dirname, "public")));
 // 사업계획(팀별 작성 → 사업부장 승인 → 예산담당자+기획팀장 최종확정) 워크플로우가
 // 요청자의 dept/team을 알아야 해서, budget.js가 자체적으로 갖지 못하는 employees 조회를
@@ -2325,7 +2349,16 @@ app.get("/data", async (req, res) => {
   try {
     const companyId = req.auth.companyId || null;
     const data = await loadData(companyId);
-    res.json({ ok: true, data: filterDataForRole(stripPwField(data), req.auth), version: _getVersion(companyId) });
+    const employee = await _getStoredEmployeeForMenuPerms(req.auth);
+    // master impersonation은 특정 직원의 menuPerms가 없으므로 기존 관리자 범위를 유지한다.
+    if (req.auth.empId != null && !employee) {
+      return res.status(401).json({ ok: false, code: "AUTH_EMPLOYEE_NOT_FOUND", message: "로그인 정보를 다시 확인해주세요." });
+    }
+    res.json({
+      ok: true,
+      data: filterDataForMenuPermissions(filterDataForRole(stripPwField(data), req.auth), employee?.menuPerms),
+      version: _getVersion(companyId),
+    });
   } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
@@ -3842,6 +3875,12 @@ app.use("/api/accounting", async (req, res, next) => {
   next();
 });
 function _round2(n) { return Math.round((Number(n) || 0) * 100) / 100; }
+// ERP 출고/입고는 세금계산서를 서버에서 자동 생성하지만, ERP 권한만 있는 사용자가
+// 거래처 사업자번호·품목·금액까지 받으면 세금계산서 메뉴 차단을 우회하게 된다.
+// 완료 안내에 필요한 식별자만 반환한다.
+function _taxInvoiceReference(invoice) {
+  return invoice ? { id: invoice.id, invoiceNo: invoice.invoiceNo, status: invoice.status } : null;
+}
 
 // ── 계정과목 (Chart of accounts) ────────────────────────────────────────────
 app.get("/api/accounting/accounts", async (req, res) => {
@@ -5710,7 +5749,7 @@ app.post("/api/erp/quotations/:id/ship", async (req, res) => {
       q.status = "shipped"; q.shippedBy = user; q.shippedAt = now; q.taxInvoiceId = inv.id; q.taxInvoiceNo = inv.invoiceNo;
       _saveFileErp();
       _saveFileAccounting();
-      return res.json({ ok: true, quotation: q, taxInvoice: inv });
+      return res.json({ ok: true, quotation: q, taxInvoice: _taxInvoiceReference(inv) });
     }
     const client = await pool.connect();
     try {
@@ -5752,7 +5791,7 @@ app.post("/api/erp/quotations/:id/ship", async (req, res) => {
       const q = { ...q0, status: "shipped", shippedBy: user, shippedAt: now, taxInvoiceId: inv.id, taxInvoiceNo: inv.invoiceNo };
       await client.query("UPDATE erp_quotations SET status = 'shipped', data = $2, updated_at = NOW() WHERE id = $1", [id, q]);
       await client.query("COMMIT");
-      res.json({ ok: true, quotation: q, taxInvoice: inv });
+      res.json({ ok: true, quotation: q, taxInvoice: _taxInvoiceReference(inv) });
     } catch (e) { await client.query("ROLLBACK"); throw e; } finally { client.release(); }
   } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
@@ -5915,7 +5954,7 @@ app.post("/api/erp/purchase-orders/:id/receive", async (req, res) => {
       po.status = "received"; po.receivedBy = user; po.receivedAt = now; po.taxInvoiceId = inv.id; po.taxInvoiceNo = inv.invoiceNo;
       _saveFileErp();
       _saveFileAccounting();
-      return res.json({ ok: true, purchaseOrder: po, taxInvoice: inv });
+      return res.json({ ok: true, purchaseOrder: po, taxInvoice: _taxInvoiceReference(inv) });
     }
     const client = await pool.connect();
     try {
@@ -5949,7 +5988,7 @@ app.post("/api/erp/purchase-orders/:id/receive", async (req, res) => {
       const po = { ...po0, status: "received", receivedBy: user, receivedAt: now, taxInvoiceId: inv.id, taxInvoiceNo: inv.invoiceNo };
       await client.query("UPDATE erp_purchase_orders SET status = 'received', data = $2, updated_at = NOW() WHERE id = $1", [id, po]);
       await client.query("COMMIT");
-      res.json({ ok: true, purchaseOrder: po, taxInvoice: inv });
+      res.json({ ok: true, purchaseOrder: po, taxInvoice: _taxInvoiceReference(inv) });
     } catch (e) { await client.query("ROLLBACK"); throw e; } finally { client.release(); }
   } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
