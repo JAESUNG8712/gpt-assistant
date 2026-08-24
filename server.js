@@ -2635,12 +2635,20 @@ app.post("/api/auth/2fa/generate-secret", loginLimiter, async (req, res) => {
     res.json({ ok: true, secret, otpauthUrl });
   } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
-// 2) verify-code: 설정 확인 및 로그인 화면에서의 순수 코드 검증(상태 없음)에 공용으로 사용
-app.post("/api/auth/2fa/verify-code", async (req, res) => {
+// 2) verify-code: {secret,otp} 순수 검증(상태 없음, 계정 조회 없음) — 클라이언트에서는
+// 2FA 설정 확인(_confirmEnable2fa, secret은 방금 /generate-secret이 발급한 값)과 2FA
+// 해제(_confirmDisable2fa, secret은 이미 로그인된 본인의 emp.twoFactorSecret) 2곳에서만
+// 쓰인다. 실제 로그인 시 OTP 검증은 이 라우트를 거치지 않고 POST /login이 서버에 저장된
+// 진짜 secret으로 직접 검증한다(loginLimiter로 이미 보호됨) — 이 라우트 자신은 브루트포스
+// 로그인 우회 경로가 아니지만(secret을 이미 아는 사람만 의미 있게 호출 가능), 자격증명
+// 성격의 값을 검증하는 엔드포인트는 예외 없이 요청 빈도를 제한하는 것이 안전하다는
+// 원칙(defense in depth)에 따라 다른 인증 라우트와 동일하게 제한을 건다.
+app.post("/api/auth/2fa/verify-code", loginLimiter, async (req, res) => {
   try {
     const { secret, otp } = req.body || {};
     if (!secret || !otp) return res.status(400).json({ ok: false, message: "secret과 otp가 필요합니다." });
-    res.json({ ok: totpVerify(secret, otp) });
+    res.locals.loginOk = totpVerify(secret, otp);
+    res.json({ ok: res.locals.loginOk });
   } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
@@ -2814,13 +2822,34 @@ function requireMaster(req, res) {
 // /login과는 별도의 카운터를 쓴다(loginLimiter를 공유하면 같은 IP에서 회사 로그인
 // 실패를 반복한 사용자가 마스터 로그인 시도 자체를 못 하게 되는 등 서로 다른 두
 // 자격증명 체계의 실패가 하나의 카운터에 섞이는 게 부적절하다고 판단).
+// 보안 검토(2026-08-24) 중 발견 — 이 세 라우트가 지금까지 `!==` 평문 문자열 비교로
+// x-migration-secret을 검증하고 있었음(타이밍 공격에 취약: 첫 불일치 문자에서 즉시
+// 반환되는 `!==`의 실행시간 차이로 응답시간을 재보며 비밀값을 한 글자씩 추정할 수 있음).
+// 이 파일의 다른 비밀값 비교 3곳(토큰 서명·BOOTSTRAP_SECRET·2FA)은 전부
+// crypto.timingSafeEqual을 쓰는데 이 세 라우트만 예외였다 — _bootstrapSecretMatches()와
+// 동일한 패턴으로 통일. 또한 시도 횟수 제한이 전혀 없어(비밀값이 설정된 상태라면) 무제한
+// 추측이 가능했던 것도 함께 막는다(로그인류 라우트들과 동일하게 IP당 15분/20회).
+function _migrationSecretMatches(req) {
+  const secret = process.env.MIGRATION_ADMIN_SECRET;
+  const provided = req.headers["x-migration-secret"];
+  if (!secret || typeof provided !== "string") return false;
+  const a = Buffer.from(secret), b = Buffer.from(provided);
+  if (a.length !== b.length) return false;
+  try { return crypto.timingSafeEqual(a, b); } catch { return false; }
+}
+const migrationAdminLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { ok: false, message: "요청이 너무 많습니다. 잠시 후 다시 시도하세요." },
+});
+
 // ── TEMPORARY — 오늘 잦은 회사코드 오타(printrobo 사고 등과 무관, 이번엔 "tirautech"를
 // "thirautech"로 바로잡는 요청)에 대응하기 위한 1회성 유틸리티. 이전 fix-company-name과
 // 동일한 보안 패턴(x-migration-secret 404 게이트). 완료 확인 즉시 제거할 것.
-app.post("/admin/fix-company-slug", async (req, res) => {
-  if (!process.env.MIGRATION_ADMIN_SECRET || req.headers["x-migration-secret"] !== process.env.MIGRATION_ADMIN_SECRET) {
-    return res.status(404).end();
-  }
+app.post("/admin/fix-company-slug", migrationAdminLimiter, async (req, res) => {
+  if (!_migrationSecretMatches(req)) return res.status(404).end();
   const oldSlug = (req.body && req.body.oldSlug || "").trim();
   const newSlug = (req.body && req.body.newSlug || "").trim();
   if (!oldSlug || !newSlug) return res.status(400).json({ ok: false, message: "oldSlug, newSlug required" });
@@ -2845,10 +2874,8 @@ app.post("/admin/fix-company-slug", async (req, res) => {
 // 아니면 그 행 자체가 이미 (쓰기 시점에) 특정 회사 소유로 잘못 기록된 것인지(클라이언트가
 // 회사 전환 시 이전 회사의 로컬 캐시를 지우지 않고 재전송했을 가능성)를 실제 데이터로
 // 구분하기 위해 추가. 완료 확인 즉시 제거할 것.
-app.get("/admin/inspect-collection", async (req, res) => {
-  if (!process.env.MIGRATION_ADMIN_SECRET || req.headers["x-migration-secret"] !== process.env.MIGRATION_ADMIN_SECRET) {
-    return res.status(404).end();
-  }
+app.get("/admin/inspect-collection", migrationAdminLimiter, async (req, res) => {
+  if (!_migrationSecretMatches(req)) return res.status(404).end();
   const collection = req.query.collection;
   if (!collection) return res.status(400).json({ ok: false, message: "collection required" });
   try {
@@ -2875,10 +2902,8 @@ app.get("/admin/inspect-collection", async (req, res) => {
 // 복제됨) 정리용. company_id 하나로 지정한 회사의 app_collections 행 전체를 지운다
 // (그 회사가 아직 자체 데이터가 없는 순수 테스트/오염 상태일 때만 안전 — 사용 전 반드시
 // inspect-collection으로 내용 확인 후 진행). 완료 확인 즉시 제거할 것.
-app.post("/admin/purge-company-collections", async (req, res) => {
-  if (!process.env.MIGRATION_ADMIN_SECRET || req.headers["x-migration-secret"] !== process.env.MIGRATION_ADMIN_SECRET) {
-    return res.status(404).end();
-  }
+app.post("/admin/purge-company-collections", migrationAdminLimiter, async (req, res) => {
+  if (!_migrationSecretMatches(req)) return res.status(404).end();
   const companySlug = (req.body && req.body.companySlug || "").trim();
   if (!companySlug) return res.status(400).json({ ok: false, message: "companySlug required" });
   if (req.body.confirm !== true) return res.status(400).json({ ok: false, message: "confirm:true 가 명시적으로 필요합니다." });
