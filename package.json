@@ -13,6 +13,7 @@
     "test:postgres": "node --test --test-concurrency=1 test/api/postgres-mode.test.js",
     "test:e2e": "playwright test",
     "test:ci": "npm run check && npm test && npm run test:e2e",
+    "audit:company-scope": "node scripts/migrate-add-company-id.js --dry-run",
     "seed:demo": "node scripts/seed-demo.js"
   },
   "dependencies": {
