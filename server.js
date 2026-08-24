@@ -3147,6 +3147,13 @@ app.post("/save", async (req, res) => {
   }
 });
 
+// EventSource는 Authorization 헤더를 붙일 수 없으므로, 일반 API 토큰 대신 짧은 수명·SSE
+// 전용 ticket만 URL에 허용한다. ticket이 프록시 로그 등에 남아도 다른 API에 재사용할 수 없다.
+app.post("/events/token", (req, res) => {
+  if (!requireAuth(req, res)) return;
+  res.json({ ok: true, token: signToken({ ...req.auth, scope: "sse" }, 5 * 60) });
+});
+
 // GET /events — SSE
 app.get("/events", async (req, res) => {
   // 브라우저 내장 EventSource는 커스텀 헤더(Authorization)를 붙일 수 없어 다른 라우트처럼
@@ -3154,7 +3161,8 @@ app.get("/events", async (req, res) => {
   // 상태로도 실시간 이벤트(잠금 상태에 포함된 편집자 이름, 접속/이탈 이벤트의 사용자명 등)를
   // 그대로 구독할 수 있었다. SSE에서 흔히 쓰는 방식대로 토큰을 쿼리스트링으로 전달받아
   // authenticate 미들웨어와 동일한 verifyToken()으로 검증한다.
-  const auth = req.auth || verifyToken(req.query.token);
+  const ticketAuth = verifyToken(req.query.token);
+  const auth = req.auth || (ticketAuth && ticketAuth.scope === "sse" ? ticketAuth : null);
   if (!auth || !(await _employeeAuthStillValid(auth))) return res.status(401).json({ ok: false, message: "로그인이 필요합니다." });
   const companyId = auth.companyId || null;
   const clientId = req.query.clientId || `client_${Date.now()}`;

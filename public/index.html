@@ -4955,12 +4955,14 @@ setInterval(()=>{
 
 // ==================== REAL-TIME SYNC ====================
 
-function connectSSE(){
+async function connectSSE(){
   if(!serverConfig.url || !currentUser) return;
   if(_sseSource){ _sseSource.close(); _sseSource=null; }
   const base = serverConfig.url.replace(/\/+$/,"");
-  const url = `${base}/events?clientId=${encodeURIComponent(_clientId)}&user=${encodeURIComponent(currentUser?.name||"unknown")}&token=${encodeURIComponent(_authToken||"")}`;
-  // URL에는 SSE 인증 토큰이 포함되므로 콘솔에 전문을 남기지 않는다.
+  const ticket=await serverRequest("POST","/events/token",{});
+  if(!ticket?.ok||!ticket.token){ console.warn("[SSE] Ticket issuance failed"); return; }
+  const url = `${base}/events?clientId=${encodeURIComponent(_clientId)}&user=${encodeURIComponent(currentUser?.name||"unknown")}&token=${encodeURIComponent(ticket.token)}`;
+  // URL에는 SSE 전용 단기 ticket만 포함되므로, 일반 API 토큰은 브라우저 URL/로그에 남지 않는다.
   console.log("[SSE] Connecting");
   try {
     _sseSource = new EventSource(url);
