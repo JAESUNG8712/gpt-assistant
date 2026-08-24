@@ -138,6 +138,12 @@ function _safeErrMsg(e) {
 const USE_JSON_FILE = !process.env.DATABASE_URL;
 const JSON_FILE     = process.env.DATA_FILE || path.join(__dirname, "hr-data.json");
 
+// JSON 파일 저장소는 프로세스 간 잠금이나 reload-merge-write를 제공하지 않는다. 같은
+// DATA_FILE을 두 프로세스가 공유하면 마지막 저장이 다른 프로세스의 변경을 덮어쓰거나
+// 같은 임시 파일을 경합할 수 있다. 따라서 파일 모드는 명시적으로 단일 worker만
+// 지원한다. 수평 확장이 필요하면 PostgreSQL 모드(DATABASE_URL)를 사용해야 한다.
+const JSON_FILE_WORKERS = Number(process.env.WEB_CONCURRENCY || 1);
+
 // 메인 데이터(_persistDataLocked)는 이미 tmp파일+rename으로 원자적 쓰기를 하고 있었지만,
 // 스냅샷/변경이력/회계/RCPS/고정자산/ERP/PMS/채용 등 나머지 위성 JSON 파일들(JSON 파일
 // 모드 전용 — 자체호스팅/오프라인 배포에서만 쓰이고 운영 Render 배포는 Postgres를 씀)은
@@ -152,6 +158,19 @@ function _atomicWriteFileSync(filePath, content) {
   const tmp = `${filePath}.tmp`;
   fs.writeFileSync(tmp, content, "utf8");
   fs.renameSync(tmp, filePath);
+}
+
+// 존재하는 데이터 파일을 "읽지 못하면 빈 저장소로 시작"하는 것은 다음 저장 시 원본을
+// 덮어써 실제 데이터 유실로 이어진다. 파일이 없는 최초 실행만 새 저장소를 허용하고,
+// 이미 존재하는 파일의 읽기/파싱 실패는 반드시 기동 실패로 승격한다.
+function _readExistingJsonFileOrFail(filePath, label) {
+  try {
+    return JSON.parse(fs.readFileSync(filePath, "utf8"));
+  } catch (e) {
+    const err = new Error(`[Storage] ${label} 파일을 읽거나 해석할 수 없어 서버를 시작하지 않습니다: ${filePath}`);
+    err.cause = e;
+    throw err;
+  }
 }
 
 // In-memory store for JSON file mode (mirrors the full client state)
@@ -806,15 +825,13 @@ async function _withDistributedSaveLock(companyId, fn) {
 // ── DB bootstrap ──────────────────────────────────────────────────────────────
 async function initDB() {
   if (USE_JSON_FILE) {
+    if (Number.isFinite(JSON_FILE_WORKERS) && JSON_FILE_WORKERS > 1) {
+      throw new Error("JSON 파일 저장 모드는 WEB_CONCURRENCY=1만 지원합니다. 다중 인스턴스 운영에는 DATABASE_URL(PostgreSQL)을 설정하세요.");
+    }
     if (fs.existsSync(JSON_FILE)) {
-      try {
-        const raw = fs.readFileSync(JSON_FILE, "utf8");
-        _fileStore = JSON.parse(raw);
-        _setVersion(null, _fileStore._version || 0);
-        console.log(`[Storage] JSON File mode. Loaded ${(_fileStore.employees||[]).length} employees, version=${_getVersion(null)}`);
-      } catch (e) {
-        console.warn("[Storage] Could not read data file, starting fresh:", e.message);
-      }
+      _fileStore = _readExistingJsonFileOrFail(JSON_FILE, "메인 데이터");
+      _setVersion(null, _fileStore._version || 0);
+      console.log(`[Storage] JSON File mode. Loaded ${(_fileStore.employees||[]).length} employees, version=${_getVersion(null)}`);
       // POST /save의 rejectDemoDataForProduction() 게이트는 "다음 저장 요청"이 와야만
       // 작동한다 — DATA_FILE 자체가 이미 더미 데이터로 시작한 채(실수로 seed-demo.js
       // 산출물을 DATA_FILE로 지정, 개발 스냅샷을 그대로 복사 등) 부팅되면 그 요청이
@@ -828,94 +845,58 @@ async function initDB() {
     // Load snapshots from separate file
     const snapFile = JSON_FILE.replace(/\.json$/, "-snapshots.json");
     if (fs.existsSync(snapFile)) {
-      try {
-        _fileSnapshots = JSON.parse(fs.readFileSync(snapFile, "utf8"));
-        console.log(`[Storage] Loaded ${Object.keys(_fileSnapshots).length} snapshots`);
-      } catch (e) {
-        console.warn("[Storage] Could not read snapshots file:", e.message);
-      }
+      _fileSnapshots = _readExistingJsonFileOrFail(snapFile, "스냅샷 데이터");
+      console.log(`[Storage] Loaded ${Object.keys(_fileSnapshots).length} snapshots`);
     }
     // Load change history from separate file (audit trail, JSON file mode)
     const histFile = JSON_FILE.replace(/\.json$/, "-history.json");
     if (fs.existsSync(histFile)) {
-      try {
-        _fileHistory = JSON.parse(fs.readFileSync(histFile, "utf8"));
-        console.log(`[Storage] Loaded history: ${(_fileHistory.employees||[]).length} employee entries, ${(_fileHistory.kpi||[]).length} kpi entries`);
-      } catch (e) {
-        console.warn("[Storage] Could not read history file:", e.message);
-      }
+      _fileHistory = _readExistingJsonFileOrFail(histFile, "변경 이력");
+      console.log(`[Storage] Loaded history: ${(_fileHistory.employees||[]).length} employee entries, ${(_fileHistory.kpi||[]).length} kpi entries`);
     }
     // Load accounting module data from separate file
     const acctFile = JSON_FILE.replace(/\.json$/, "-accounting.json");
     if (fs.existsSync(acctFile)) {
-      try {
-        _fileAccounting = { ..._fileAccounting, ...JSON.parse(fs.readFileSync(acctFile, "utf8")) };
-        console.log(`[Storage] Loaded accounting: ${_fileAccounting.accounts.length} accounts, ${_fileAccounting.vouchers.length} vouchers, ${_fileAccounting.taxInvoices.length} tax invoices, ${(_fileAccounting.partners||[]).length} partners`);
-      } catch (e) {
-        console.warn("[Storage] Could not read accounting file:", e.message);
-      }
+      _fileAccounting = { ..._fileAccounting, ..._readExistingJsonFileOrFail(acctFile, "회계 데이터") };
+      console.log(`[Storage] Loaded accounting: ${_fileAccounting.accounts.length} accounts, ${_fileAccounting.vouchers.length} vouchers, ${_fileAccounting.taxInvoices.length} tax invoices, ${(_fileAccounting.partners||[]).length} partners`);
     }
     // Load RCPS(상환전환우선주) module data from separate file
     const rcpsFile = JSON_FILE.replace(/\.json$/, "-rcps.json");
     if (fs.existsSync(rcpsFile)) {
-      try {
-        _fileAcctRcps = { ..._fileAcctRcps, ...JSON.parse(fs.readFileSync(rcpsFile, "utf8")) };
-        console.log(`[Storage] Loaded RCPS: ${_fileAcctRcps.issuances.length} issuances, ${_fileAcctRcps.schedule.length} schedule rows, ${_fileAcctRcps.valuations.length} valuations`);
-      } catch (e) {
-        console.warn("[Storage] Could not read RCPS file:", e.message);
-      }
+      _fileAcctRcps = { ..._fileAcctRcps, ..._readExistingJsonFileOrFail(rcpsFile, "RCPS 데이터") };
+      console.log(`[Storage] Loaded RCPS: ${_fileAcctRcps.issuances.length} issuances, ${_fileAcctRcps.schedule.length} schedule rows, ${_fileAcctRcps.valuations.length} valuations`);
     }
     // Load fixed-assets module data from separate file
     const faFile = JSON_FILE.replace(/\.json$/, "-fixedassets.json");
     if (fs.existsSync(faFile)) {
-      try {
-        _fileAcctFixedAssets = { ..._fileAcctFixedAssets, ...JSON.parse(fs.readFileSync(faFile, "utf8")) };
-        console.log(`[Storage] Loaded fixed assets: ${_fileAcctFixedAssets.assets.length} assets, ${_fileAcctFixedAssets.schedule.length} schedule rows`);
-      } catch (e) {
-        console.warn("[Storage] Could not read fixed-assets file:", e.message);
-      }
+      _fileAcctFixedAssets = { ..._fileAcctFixedAssets, ..._readExistingJsonFileOrFail(faFile, "고정자산 데이터") };
+      console.log(`[Storage] Loaded fixed assets: ${_fileAcctFixedAssets.assets.length} assets, ${_fileAcctFixedAssets.schedule.length} schedule rows`);
     }
     // Load sales/inventory (ERP) module data from separate file
     const erpFile = JSON_FILE.replace(/\.json$/, "-erp.json");
     if (fs.existsSync(erpFile)) {
-      try {
-        _fileErp = { ..._fileErp, ...JSON.parse(fs.readFileSync(erpFile, "utf8")) };
-        if (!_fileErp.salesTargets) _fileErp.salesTargets = [];
-        console.log(`[Storage] Loaded ERP: ${_fileErp.items.length} items, ${_fileErp.locations.length} locations, ${_fileErp.quotations.length} quotations, ${_fileErp.purchaseOrders.length} purchase orders, ${_fileErp.salesTargets.length} sales targets`);
-      } catch (e) {
-        console.warn("[Storage] Could not read ERP file:", e.message);
-      }
+      _fileErp = { ..._fileErp, ..._readExistingJsonFileOrFail(erpFile, "ERP 데이터") };
+      if (!_fileErp.salesTargets) _fileErp.salesTargets = [];
+      console.log(`[Storage] Loaded ERP: ${_fileErp.items.length} items, ${_fileErp.locations.length} locations, ${_fileErp.quotations.length} quotations, ${_fileErp.purchaseOrders.length} purchase orders, ${_fileErp.salesTargets.length} sales targets`);
     }
     // Load PMS module data from separate file
     const pmsFile = JSON_FILE.replace(/\.json$/, "-pms.json");
     if (fs.existsSync(pmsFile)) {
-      try {
-        _filePms = { ..._filePms, ...JSON.parse(fs.readFileSync(pmsFile, "utf8")) };
-        console.log(`[Storage] Loaded PMS: ${_filePms.projects.length} projects, ${_filePms.allocations.length} allocations`);
-      } catch (e) {
-        console.warn("[Storage] Could not read PMS file:", e.message);
-      }
+      _filePms = { ..._filePms, ..._readExistingJsonFileOrFail(pmsFile, "PMS 데이터") };
+      console.log(`[Storage] Loaded PMS: ${_filePms.projects.length} projects, ${_filePms.allocations.length} allocations`);
     }
     // Load recruiting module data from separate file
     const recruitFile = JSON_FILE.replace(/\.json$/, "-recruit.json");
     if (fs.existsSync(recruitFile)) {
-      try {
-        _fileRecruit = { ..._fileRecruit, ...JSON.parse(fs.readFileSync(recruitFile, "utf8")) };
-        console.log(`[Storage] Loaded recruiting: ${_fileRecruit.jobs.length} jobs, ${_fileRecruit.candidates.length} candidates`);
-      } catch (e) {
-        console.warn("[Storage] Could not read recruiting file:", e.message);
-      }
+      _fileRecruit = { ..._fileRecruit, ..._readExistingJsonFileOrFail(recruitFile, "채용 데이터") };
+      console.log(`[Storage] Loaded recruiting: ${_fileRecruit.jobs.length} jobs, ${_fileRecruit.candidates.length} candidates`);
     }
     // Load activity log from separate file (bounded ring buffer, JSON file mode)
     const activityFile = JSON_FILE.replace(/\.json$/, "-activity.json");
     if (fs.existsSync(activityFile)) {
-      try {
-        _fileActivityLog = JSON.parse(fs.readFileSync(activityFile, "utf8"));
-        if (!Array.isArray(_fileActivityLog)) _fileActivityLog = [];
-        console.log(`[Storage] Loaded activity log: ${_fileActivityLog.length} entries`);
-      } catch (e) {
-        console.warn("[Storage] Could not read activity log file:", e.message);
-      }
+      _fileActivityLog = _readExistingJsonFileOrFail(activityFile, "활동 로그");
+      if (!Array.isArray(_fileActivityLog)) _fileActivityLog = [];
+      console.log(`[Storage] Loaded activity log: ${_fileActivityLog.length} entries`);
     }
     // 기초데이터 시딩 (최초 가동 시 비어있는 경우에만)
     if (!_fileAccounting.accounts || _fileAccounting.accounts.length === 0) {
