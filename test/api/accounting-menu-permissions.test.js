@@ -4,7 +4,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const { startServer, bootstrapAdminAndLogin } = require("../support/start-server");
 
-test("accounting menu permissions: server blocks direct bulk reads and preserves expense-lite", async (t) => {
+test("accounting menu permissions: server blocks direct reads and writes and preserves expense-lite", async (t) => {
   const server = await startServer();
   t.after(() => server.stop());
 
@@ -43,8 +43,28 @@ test("accounting menu permissions: server blocks direct bulk reads and preserves
   res = await api("/api/accounting/vouchers");
   assert.equal(res.status, 403, "다른 회계 하위 리소스도 각각 차단돼야 함");
 
-  // 기존 급여/경비 자동 전표 호환을 위해 회계 write를 아직 menuPerms로 일괄 차단하지는
-  // 않는다. 대신 요청 body의 user를 위조해 감사 이력을 바꾸는 것은 반드시 막아야 한다.
+  // UI만 숨기고 POST/DELETE가 통과하면 누구나 API 직접호출로 회계 데이터를 조작할 수 있다.
+  res = await api("/api/accounting/accounts", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ code: "DENIED", name: "우회 시도", type: "expense" }),
+  });
+  assert.equal(res.status, 403, "메뉴가 차단되면 회계 쓰기도 차단돼야 함");
+  json = await res.json();
+  assert.equal(json.code, "MENU_ACCESS_DENIED");
+
+  // 감사자 위조 방어는 허용된 상태에서도 유지돼야 한다. 권한을 다시 켠 뒤 요청 body의
+  // user가 아닌 토큰 주체가 감사 이력에 기록되는지 검증한다.
+  const allowedState = await (await api("/data")).json();
+  const allowedEmployees = allowedState.data.employees.map(e => String(e.id) === String(boot.employee.id)
+    ? { ...e, menuPerms: { "acct-accounts": true, "acct-vouchers": true } }
+    : e
+  );
+  res = await api("/save", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ _version: allowedState.version, data: { ...allowedState.data, employees: allowedEmployees } }),
+  });
+  assert.equal(res.status, 200, "감사 위조 검증용 권한 복구 실패");
+
   const accountBodies = [
     { code: "T901", name: "테스트비용", type: "expense", user: "CEO 위장" },
     { code: "T902", name: "테스트미지급", type: "liability", user: "CEO 위장" },

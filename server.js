@@ -3866,13 +3866,12 @@ async function requireAccountingMenu(req, res, menuId) {
   }
 }
 
-// menuPerms는 현재 UI의 "조회 가능 메뉴" 정책이다. 급여·경비·ERP 처리 중에는 사용자가
-// 회계 메뉴를 열지 않아도 서버가 전표/세금계산서를 생성하는 기존 업무 흐름이 있으므로,
-// 그 쓰기 경로까지 여기서 일괄 차단하면 정상 업무가 깨질 수 있다. 우선 이슈의 대상인
-// 목록/상세 GET만 차단하고, 쓰기는 업무별 최소 권한 전용 API로 분리한 뒤 다음 단계에서
-// 별도 인가 정책을 적용한다.
+// 회계 메뉴 권한은 단순 UI 숨김이 아니라 서버의 모듈 인가다. GET만 막으면 메뉴가 꺼진
+// 관리자가 개발자도구/스크립트로 POST·DELETE를 호출해 전표, 세금계산서, 수금·지급을
+// 생성·확정·삭제할 수 있다. 따라서 모든 HTTP method에 같은 정책을 적용한다. 급여·경비
+// 같은 다른 업무에서 회계 기록이 필요하면 사용자 토큰으로 범용 회계 API를 호출하지 말고,
+// 별도 capability와 검증을 가진 업무 전용 명령 API로 분리해야 한다.
 app.use("/api/accounting", async (req, res, next) => {
-  if (req.method !== "GET" && req.method !== "HEAD") return next();
   const menuId = _accountingMenuForPath(req.path);
   if (!menuId) return next();
   if (!await requireAccountingMenu(req, res, menuId)) return;
