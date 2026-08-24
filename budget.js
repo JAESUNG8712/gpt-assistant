@@ -3,7 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const multer = require('multer');
-const xlsx = require('xlsx');
+const { Worker } = require('worker_threads');
 const pool = require('./db');
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
@@ -254,55 +254,62 @@ async function updateBudget(companyId, mutate) {
   }
 }
 
-// requiredHeaderGroups를 지정하면(예: [['팀명','팀'],['항목']]) 단순히 "첫 시트의 1행"만
-// 헤더로 보는 대신, 워크북의 모든 시트·앞부분 행(최대 20행)을 훑어 그룹마다 하나 이상의
-// 헤더 텍스트를 포함하는 행을 찾아 그 행을 헤더로 삼아 파싱한다 — 실제 회사 원본 엑셀처럼
-// 여러 시트가 한 파일에 섞여 있고(예: "RAW자료"/"예산"/"조직별") 실제 데이터 시트의 헤더가
-// 제목행 등으로 인해 1행이 아닌 경우(예: 2행)에도 올바른 시트·행을 자동으로 찾아낸다.
-// 못 찾으면 빈 배열을 반환하되 어떤 시트들을 확인했는지 `_triedSheets`에 남겨 진단에 쓴다.
-// requiredHeaderGroups를 생략하면(레거시 호출부) 기존과 동일하게 첫 시트·1행을 그대로 쓴다.
-// excludedHeaders — 실제 회사 원본 파일에서 "예산"(비인건비) 시트가 "구분"·"1월" 컬럼을
-// 모두 갖고 있어("판관/용역/경상" 분류용 "구분" 컬럼이 우연히 이름이 같음), 워크북 순서상
-// "예산" 시트가 "조직별"(인원계획) 시트보다 먼저 나오면 인원계획 업로드가 엉뚱하게 예산
-// 시트를 파싱하는 사고가 실제로 재현됨(사용자 첨부 원본 파일로 확인) — 이 목록에 있는
-// 헤더가 하나라도 있는 행은 후보에서 제외해 "예산" 시트를 걸러낸다.
-function parseSheet(buffer, filename, requiredHeaderGroups, excludedHeaders) {
-  const isCsv = /\.csv$/i.test(filename || '');
-  const workbook = isCsv
-    ? xlsx.read(buffer.toString('utf8'), { type: 'string' })
-    : xlsx.read(buffer, { type: 'buffer' });
-  if (Array.isArray(requiredHeaderGroups) && requiredHeaderGroups.length) {
-    for (const sheetName of workbook.SheetNames) {
-      const sheet = workbook.Sheets[sheetName];
-      // header:1 모드는 기본적으로 시트의 !ref 범위를 대상으로 하고, 반환 배열의 인덱스는
-      // 그 범위의 시작행 기준 "상대" 위치다. 맨 위 몇 행이 완전히 비어 있는 시트는 !ref가
-      // 0행이 아닌 곳부터 시작하는데(예: 사용자 원본 파일의 "조직별" 시트는 !ref가 "A2:V91"
-      // — 실제 첫 행이 엑셀 2행), 그 상대 인덱스를 그대로 아래 range 옵션(절대 행 번호를
-      // 기대함)에 넘기면 엉뚱한 행(제목행 등)을 헤더로 잘못 잡는 오차가 생긴다(실제 파일로
-      // 재현·발견 — 이 어긋남 때문에 "조직별" 업로드가 바로 위의 "예산" 시트 헤더 행을
-      // 잘못 읽어들이고 있었음). !ref의 시작행을 더해 절대 행 번호로 보정한다.
-      const refStartRow = sheet['!ref'] ? xlsx.utils.decode_range(sheet['!ref']).s.r : 0;
-      const raw = xlsx.utils.sheet_to_json(sheet, { header: 1, defval: '', raw: true });
-      for (let i = 0; i < Math.min(raw.length, 20); i++) {
-        const rowVals = (raw[i] || []).map(v => String(v).trim());
-        if (Array.isArray(excludedHeaders) && excludedHeaders.some(h => rowVals.includes(h))) continue;
-        if (requiredHeaderGroups.every(group => group.some(h => rowVals.includes(h)))) {
-          const absoluteRow = refStartRow + i;
-          const rows = xlsx.utils.sheet_to_json(sheet, { range: absoluteRow, defval: null, raw: true });
-          rows._sheetName = sheetName;
-          rows._headerRow = absoluteRow;
-          return rows;
+// 실제 파싱 로직(parseSheet)은 lib/parse-sheet.js로 분리돼 있다(2026-08-24) — 워커
+// 스레드(lib/parse-sheet-worker.js)와 이 파일이 동일한 로직을 공유하고, 회귀 테스트
+// (test/api-parse-sheet.test.js)가 워커 없이 그 순수 함수를 직접 검증할 수 있게 하기
+// 위함이다. 아래 parseSheetIsolated()가 그 워커를 실제로 띄우는 얇은 래퍼.
+//
+// xlsx@0.18.5는 npm audit에 걸린 알려진 취약점이 두 가지 있다 — prototype pollution
+// (GHSA-4r6h-8v6p-xvw6)과 ReDoS(GHSA-5pgg-2g8v-p4x9). 패치판(0.19.3+)은 npm
+// 레지스트리에 게시되지 않고 SheetJS 자사 CDN에서만 배포되는데, 이 개발 환경의 아웃바운드
+// 정책이 그 호스트를 막고 있어 이 세션에서는 설치·검증이 불가능했다(사용자에게 별도 안내 —
+// 네트워크 제약 없는 환경에서 직접 설치·테스트 필요). 패키지 교체 전까지의 완화책으로,
+// 파싱을 메인 이벤트 루프가 아니라 별도 워커 스레드에서 실행하고 타임아웃을 둔다 — 이
+// 서버는 여러 회사가 하나의 Node 프로세스를 공유하는 멀티테넌트 구조라, ReDoS가 실제로
+// 트리거되면(악의적이거나 단순히 손상된 파일) 메인 스레드에서 그대로 실행 시 한 회사의
+// 업로드 하나가 다른 모든 회사의 요청까지 함께 멈춰 세운다 — 워커로 격리하면 그 워커만
+// 타임아웃으로 강제 종료되고 나머지 서비스는 영향받지 않는다. prototype pollution도
+// 워커 스레드는 메인 스레드와 별개의 V8 격리 힙을 쓰므로, 오염이 그 워커 안에서 끝나고
+// 메인 프로세스의 Object.prototype으로는 전파되지 않는다.
+const PARSE_SHEET_TIMEOUT_MS = Number(process.env.PARSE_SHEET_TIMEOUT_MS) || 15000;
+function parseSheetIsolated(buffer, filename, requiredHeaderGroups, excludedHeaders) {
+  return new Promise((resolve, reject) => {
+    const worker = new Worker(path.join(__dirname, 'lib', 'parse-sheet-worker.js'), {
+      workerData: { buffer, filename, requiredHeaderGroups, excludedHeaders },
+    });
+    let settled = false;
+    const finish = (fn) => { if (settled) return; settled = true; clearTimeout(timer); fn(); };
+    const timer = setTimeout(() => {
+      finish(() => {
+        worker.terminate();
+        reject(Object.assign(new Error('파일 처리 시간이 초과되었습니다. 파일 형식을 확인해주세요.'), { code: 'PARSE_TIMEOUT' }));
+      });
+    }, PARSE_SHEET_TIMEOUT_MS);
+    worker.once('message', (msg) => {
+      finish(() => {
+        worker.terminate();
+        if (!msg || !msg.ok) {
+          reject(Object.assign(new Error((msg && msg.message) || '파일을 읽을 수 없습니다.'), { code: 'PARSE_ERROR' }));
+          return;
         }
-      }
-    }
-    const empty = [];
-    empty._sheetName = null;
-    empty._headerRow = -1;
-    empty._triedSheets = workbook.SheetNames;
-    return empty;
-  }
-  const sheet = workbook.Sheets[workbook.SheetNames[0]];
-  return xlsx.utils.sheet_to_json(sheet, { defval: null, raw: true });
+        const rows = msg.rows;
+        if (msg.meta) {
+          rows._sheetName = msg.meta.sheetName;
+          rows._headerRow = msg.meta.headerRow;
+          rows._triedSheets = msg.meta.triedSheets;
+        }
+        resolve(rows);
+      });
+    });
+    worker.once('error', (err) => {
+      finish(() => reject(err));
+    });
+    worker.once('exit', (code) => {
+      finish(() => {
+        if (code !== 0) reject(new Error(`파일 파싱 중 알 수 없는 오류가 발생했습니다(코드 ${code}).`));
+      });
+    });
+  });
 }
 
 function toNumber(v) {
@@ -888,9 +895,10 @@ router.post('/upload/headcount', upload.single('file'), async (req, res) => {
 
   let rows;
   try {
-    rows = parseSheet(req.file.buffer, req.file.originalname);
+    rows = await parseSheetIsolated(req.file.buffer, req.file.originalname);
   } catch (e) {
-    return res.status(400).json({ error: '파일을 읽을 수 없습니다. (xlsx/csv만 지원)' });
+    const msg = e && e.code === 'PARSE_TIMEOUT' ? e.message : '파일을 읽을 수 없습니다. (xlsx/csv만 지원)';
+    return res.status(400).json({ error: msg });
   }
 
   const companyId = req.auth.companyId || null;
@@ -931,9 +939,10 @@ router.post('/upload/detail', upload.single('file'), async (req, res) => {
 
   let rows;
   try {
-    rows = parseSheet(req.file.buffer, req.file.originalname);
+    rows = await parseSheetIsolated(req.file.buffer, req.file.originalname);
   } catch (e) {
-    return res.status(400).json({ error: '파일을 읽을 수 없습니다. (xlsx/csv만 지원)' });
+    const msg = e && e.code === 'PARSE_TIMEOUT' ? e.message : '파일을 읽을 수 없습니다. (xlsx/csv만 지원)';
+    return res.status(400).json({ error: msg });
   }
 
   const companyId = req.auth.companyId || null;
@@ -1867,9 +1876,10 @@ module.exports = function budgetRouterFactory(deps) {
     if (!req.file) return res.status(400).json({ error: '파일이 필요합니다.' });
     let rows;
     try {
-      rows = parseSheet(req.file.buffer, req.file.originalname, [['구분', '부문'], ['1월']], ['팀명', '항목']);
+      rows = await parseSheetIsolated(req.file.buffer, req.file.originalname, [['구분', '부문'], ['1월']], ['팀명', '항목']);
     } catch (e) {
-      return res.status(400).json({ error: '파일을 읽을 수 없습니다. (xlsx/csv만 지원)' });
+      const msg = e && e.code === 'PARSE_TIMEOUT' ? e.message : '파일을 읽을 수 없습니다. (xlsx/csv만 지원)';
+      return res.status(400).json({ error: msg });
     }
     if (rows._headerRow === -1) {
       return res.status(400).json({ error: `업로드한 파일에서 "구분"(또는 "부문")·"1월" 컬럼을 찾지 못했습니다(확인한 시트: ${rows._triedSheets.join(', ')}). "조직별" 인원계획 시트와 같은 형식이어야 합니다.` });
@@ -1946,9 +1956,10 @@ module.exports = function budgetRouterFactory(deps) {
     if (!req.file) return res.status(400).json({ error: '파일이 필요합니다.' });
     let rows;
     try {
-      rows = parseSheet(req.file.buffer, req.file.originalname, [['팀명', '팀'], ['항목']]);
+      rows = await parseSheetIsolated(req.file.buffer, req.file.originalname, [['팀명', '팀'], ['항목']]);
     } catch (e) {
-      return res.status(400).json({ error: '파일을 읽을 수 없습니다. (xlsx/csv만 지원)' });
+      const msg = e && e.code === 'PARSE_TIMEOUT' ? e.message : '파일을 읽을 수 없습니다. (xlsx/csv만 지원)';
+      return res.status(400).json({ error: msg });
     }
     if (rows._headerRow === -1) {
       return res.status(400).json({ error: `업로드한 파일에서 "팀명"·"항목" 컬럼을 찾지 못했습니다(확인한 시트: ${rows._triedSheets.join(', ')}). 여러 시트가 섞인 원본 파일이라면 "예산" 데이터가 있는 시트에 팀명/항목 등 헤더가 올바르게 있는지 확인해주세요.` });
@@ -2025,9 +2036,10 @@ module.exports = function budgetRouterFactory(deps) {
     if (!req.file) return res.status(400).json({ error: '파일이 필요합니다.' });
     let rows;
     try {
-      rows = parseSheet(req.file.buffer, req.file.originalname, [['구분', '부문'], ['1월']], ['팀명', '항목']);
+      rows = await parseSheetIsolated(req.file.buffer, req.file.originalname, [['구분', '부문'], ['1월']], ['팀명', '항목']);
     } catch (e) {
-      return res.status(400).json({ error: '파일을 읽을 수 없습니다. (xlsx/csv만 지원)' });
+      const msg = e && e.code === 'PARSE_TIMEOUT' ? e.message : '파일을 읽을 수 없습니다. (xlsx/csv만 지원)';
+      return res.status(400).json({ error: msg });
     }
     if (rows._headerRow === -1) {
       return res.status(400).json({ error: `업로드한 파일에서 "구분"(또는 "부문")·"1월" 컬럼을 찾지 못했습니다(확인한 시트: ${rows._triedSheets.join(', ')}). 여러 시트가 섞인 원본 파일이라면 인원계획 데이터가 있는 시트에 헤더가 올바르게 있는지 확인해주세요.` });
