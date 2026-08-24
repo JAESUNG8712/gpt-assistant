@@ -608,6 +608,73 @@ button,a,[role=button]{touch-action:manipulation}
 <div id="sidebar-overlay" onclick="closeSidebar()" aria-hidden="true"></div>
 <div id="app"></div>
 <script>
+// ============================================================================
+// 목차 — 인사평가·인사·회계·ERP·전자결재 통합 시스템(HR/KPI/ERP SPA) 클라이언트
+// ============================================================================
+// 이 파일 전체가 단일 인라인 <script>(서버가 렌더링 없이 그대로 서빙, 별도 번들러
+// 없음)로 구성된 SPA다. 화면 전환은 gotoPage(id)가 #app 안의 DOM을 직접 다시 그리는
+// 방식(라우터 라이브러리 없음)이고, 서버와의 통신은 대부분 전체 상태(employees·
+// kpiEntries·approvalDocs 등 수십 개 컬렉션)를 한 번에 주고받는 blob 동기화
+// (GET/POST /data, /save)이며, 회계·ERP·PMS·채용·사업계획 등 일부 모듈만 전용 REST
+// API(/api/accounting/*, /api/erp/*, /api/pms/*, /api/recruit/*, /api/budget/*)를
+// 쓴다. 아래는 파일 안에 이미 있는 "// ==== 섹션명 ====" 배너(총 98개, 코드 안에서
+// 실제 검색 가능한 표제)를 기능 단위로 묶어 정리한 목차 — 특정 화면을 찾을 때는
+// 여기서 배너 이름을 확인한 뒤 그 문자열로 파일 내 검색하는 것이 가장 빠르다.
+//
+//  1. 기반/공통 인프라 (611~2278행)
+//     EVAL-ONLY MODULE·CONSTANTS·ORG DB·PROMOTION SETTINGS(정책 규칙 판정)·DATA·
+//     한국 공휴일·STATE(전역 상태)·UTILS(검색 IME 처리·부서/팀 목록·select 값보존 등
+//     전역 유틸)·RANK AUTO-CALC·SERVER SYNC(자동저장/충돌병합)·배경동기화 지연렌더
+//  2. 인증/로그인/실시간 동기화 (4297~5582행, 3181·3422행)
+//     NETWORK ACCESS·DRAFT SAVE·BACKUP & RESTORE·LOGIN·REAL-TIME SYNC(SSE)
+//  3. 메인/대시보드/내 정보 (5583~7027행)
+//     MAIN(부팅/사이드바/라우팅)·EVAL PROGRESS·DASHBOARD·DASHBOARD WIDGET CATALOG·
+//     MY PROFILE
+//  4. 인사(HR) 기본 (7028~8022행)
+//     HR REGISTER(등록, 이력서 AI 자동입력 포함)·HR LIST·HR CHANGES(인사발령)
+//  5. KPI·평가 파이프라인 (8023~8215행, 11101~11231행)
+//     KPI(목표등록/결과입력)·GRADE VIEW·MY KPI — 승인 단계는 아래 6번 참고
+//  6. 결재·승인 워크플로우 (8215~8715행)
+//     APPROVALS(1차/2차 평가 승인, KPI 수정요청 승인 등 — 전자결재 자체는 12750행)
+//  7. 역량/다면평가·인재관리 (854~1060행, 2279~2657행, 2658~3180행, 3566~3760행,
+//     8716~11100행)
+//     COMP EVAL DATA/FORMS·COMP EVAL ASSIGNMENT·COMPETENCY EVALUATION PAGE·
+//     EVALUATOR CONFIG·CORE TALENT·COMP GRADE CALC & VIEW·CORE TALENT PAGE·
+//     PROMOTION MANAGEMENT·AUTO GRADE AFTER 2ND EVAL·TALENT DEV PLAN PAGE
+//  8. 일괄 업로드·백업 (3761~4296행)
+//     BULK IMPORT(통합 데이터 엑셀 업로드)·구 BACKUP & RESTORE 유틸
+//  9. 시스템 설정·권한·이력 (11232~12749행)
+//     SETTINGS·시스템 운영 개별 페이지·계산식 설정·저성과 인력 관리·HISTORY·
+//     DEPLOY & PERMISSIONS(메뉴 권한 관리)·CHANGE PASSWORD
+// 10. 전자결재·근태·급여 (12750~14447행, 21560~21883행, 23792~23807행)
+//     ELECTRONIC APPROVAL SYSTEM·ATTENDANCE·OVERTIME/HOLIDAY REQUEST·
+//     ATTENDANCE TEAM SECTION·PAYSLIP·APPROVAL TEMPLATE ADMIN·결재 위임·
+//     ANNUAL LEAVE MANAGEMENT·연차 사용촉진제도·LEAVE TEAM SECTION·급여 기준 정보
+// 11. 회계 모듈 (15014~15473행)
+//     회계 리포트(시산표·손익)·원가명세서·부가세 신고자료·고정자산 관리·RCPS
+// 12. 사업계획/예산 (15474~18098행)
+//     팀별 작성 → 사업부장 승인 → 예산담당자+기획팀장 최종확정 전체 워크플로우 +
+//     개인별 급여 상세(3단계 자료 연계 1단계, 17609행)
+// 13. 경영지표·부가 워크플로우 (18140~18708행)
+//     온보딩/오프보딩·경영 대시보드·초과근무·채권/채무 관리(AR/AP)·경비 정산
+// 14. 영업(ERP)·재고 (18709~21432행, 21433행)
+//     견적서/발주서·재고 입출고/실사·외부 시스템 연동(메신저/캘린더/ERP)
+// 15. 조직도·증명서·인사통계·근태부가설정 (21884~22932행)
+//     ORG CHART·CERTIFICATE·HR STATISTICS·GPS SETTINGS·근태 설정·급여 관리·
+//     회사 기본 정보·회의실 관리 페이지
+// 16. 게시판·예약·복지·교육 (22933~24325행)
+//     BOARD/NOTICE·MEETING ROOM BOOKING·복지포인트·복지 현황·장기근속 포상·
+//     우수사원 선정 이력·복지 제도 설정·법정의무교육·TRAINING ADMIN SECTION
+// 17. 전사검색·캘린더·알림·부팅 (24326~24875행)
+//     GLOBAL SEARCH·ATTENDANCE CALENDAR·NOTIFICATION CENTER·세션 보안(자동로그아웃)·
+//     START(부팅 진입점)
+//
+// 코딩 관례: 각 화면은 보통 render*Page()(HTML 문자열을 만들어 #content에 꽂음) +
+// 그 화면의 액션 함수들(저장/삭제/승인 등, 전부 onclick="..." 속성으로 바인딩 —
+// addEventListener는 거의 쓰지 않음) 쌍으로 이뤄진다. 서버 조회는 loadXFromServer()
+// 류 함수가 전역 배열에 담아두는 벌크로딩 방식이 대부분이며, 회계/사업계획 일부
+// 화면만 필요한 조회를 개별 API(=picker/report 전용 엔드포인트)로 받는다(2026-08-24
+// "구조적 한계 #2" 리팩터 참고, CLAUDE.md).
 // ==================== EVAL-ONLY MODULE ====================
 // "/eval"(또는 그 하위 경로)로 접속하면 이 같은 index.html을 그대로 서빙하되(서버의
 // SPA catch-all이 이미 모든 미매칭 GET을 index.html로 보냄 — 별도 라우트 불필요),
