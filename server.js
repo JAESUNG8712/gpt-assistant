@@ -5088,6 +5088,24 @@ function _buildDepreciationSchedule(assetId, asset) {
   return schedule;
 }
 
+// JSON 파일 모드는 단일 worker만 허용하지만, 한 요청이 await(전표 생성 등)로 양보한
+// 사이에 같은 자산의 수정·처분·삭제·상각전표 발행 요청이 끼어들 수 있다. 자산 단위로
+// mutation을 직렬화해 "상각표를 재생성한 직후 다른 요청이 이전 회차를 확정"하는 상태를
+// 막는다. PostgreSQL 모드는 DB 행 잠금이 담당하고, 이 가드는 파일 모드에만 적용된다.
+const _faAssetMutationInFlight = new Set();
+app.use("/api/accounting/fixed-assets/:id", (req, res, next) => {
+  if (!USE_JSON_FILE || req.method === "GET" || req.method === "HEAD") return next();
+  const assetId = req.params.id;
+  if (_faAssetMutationInFlight.has(assetId)) {
+    return res.status(409).json({ ok: false, code: "FIXED_ASSET_BUSY", message: "이 고정자산은 다른 변경 요청이 처리 중입니다. 잠시 후 다시 시도해주세요." });
+  }
+  _faAssetMutationInFlight.add(assetId);
+  const release = () => _faAssetMutationInFlight.delete(assetId);
+  res.once("finish", release);
+  res.once("close", release);
+  next();
+});
+
 app.post("/api/accounting/fixed-assets", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
