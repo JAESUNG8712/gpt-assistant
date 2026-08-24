@@ -23,7 +23,7 @@ test("accounting menu permissions: server blocks direct reads and writes and pre
 
   const before = await (await api("/data")).json();
   const employees = before.data.employees.map(e => String(e.id) === String(boot.employee.id)
-    ? { ...e, menuPerms: { "acct-accounts": false, "acct-vouchers": false } }
+    ? { ...e, menuPerms: { "acct-accounts": false, "acct-vouchers": false, "inv-items": false, "pms-projects": false, "recruit-jobs": false } }
     : e
   );
   res = await api("/save", {
@@ -42,6 +42,11 @@ test("accounting menu permissions: server blocks direct reads and writes and pre
 
   res = await api("/api/accounting/vouchers");
   assert.equal(res.status, 403, "다른 회계 하위 리소스도 각각 차단돼야 함");
+
+  for (const path of ["/api/erp/items", "/api/pms/projects", "/api/recruit/jobs"]) {
+    res = await api(path);
+    assert.equal(res.status, 403, `${path}도 메뉴 권한 우회 없이 차단돼야 함`);
+  }
 
   // UI만 숨기고 POST/DELETE가 통과하면 누구나 API 직접호출로 회계 데이터를 조작할 수 있다.
   res = await api("/api/accounting/accounts", {

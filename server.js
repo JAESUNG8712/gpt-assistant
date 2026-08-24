@@ -3842,8 +3842,8 @@ async function _getStoredEmployeeForMenuPerms(auth) {
   return rows[0] ? rows[0].data : null;
 }
 
-async function requireAccountingMenu(req, res, menuId) {
-  if (!requireAdmin(req, res)) return false;
+async function requireStoredMenuPermission(req, res, menuId) {
+  if (!requireAuth(req, res)) return false;
   if (req.auth.empId == null && req.auth.actingAsMaster) return true;
   try {
     const employee = await _getStoredEmployeeForMenuPerms(req.auth);
@@ -3854,7 +3854,7 @@ async function requireAccountingMenu(req, res, menuId) {
     }
     const perms = employee.menuPerms && typeof employee.menuPerms === "object" ? employee.menuPerms : {};
     if (perms[menuId] === false) {
-      res.status(403).json({ ok: false, code: "MENU_ACCESS_DENIED", menuId, message: "이 회계 메뉴에 접근할 권한이 없습니다." });
+      res.status(403).json({ ok: false, code: "MENU_ACCESS_DENIED", menuId, message: "이 메뉴에 접근할 권한이 없습니다." });
       return false;
     }
     return true;
@@ -3877,6 +3877,26 @@ app.use("/api/accounting", async (req, res, next) => {
   if (!await requireAccountingMenu(req, res, menuId)) return;
   next();
 });
+
+const MODULE_MENU_BY_PATH = {
+  "/api/erp": [["/items", "inv-items"], ["/locations", "inv-locations"], ["/quotations", "sales-quotations"], ["/purchase-orders", "sales-purchase-orders"], ["/purchase-requests", "inv-purchase-requests"], ["/stock", "inv-stock"], ["/sales-targets", "sales-dashboard"]],
+  "/api/pms": [["/projects", "pms-projects"], ["/allocations", "pms-allocation"], ["/worklogs", "pms-worklog"]],
+  "/api/recruit": [["/jobs", "recruit-jobs"], ["/candidates", "recruit-candidates"], ["/extract-", "recruit-candidates"], ["/parse-resume-llm", "recruit-candidates"], ["/suggest-career-companies", "recruit-candidates"], ["/interviews", "recruit-eval"], ["/dashboard", "recruit-dashboard"]],
+};
+function _moduleMenuForPath(prefix, pathname) {
+  const found = (MODULE_MENU_BY_PATH[prefix] || []).find(([path]) => pathname === path || pathname.startsWith(`${path}/`));
+  return found ? found[1] : null;
+}
+// 모듈별 기존 역할/업무 스코프 검사는 각 라우트가 계속 담당한다. 여기서는 명시적으로
+// 꺼진 메뉴만 추가로 fail-closed 해 UI 숨김을 API 우회로 무력화하지 못하게 한다.
+for (const prefix of Object.keys(MODULE_MENU_BY_PATH)) {
+  app.use(prefix, async (req, res, next) => {
+    const menuId = _moduleMenuForPath(prefix, req.path);
+    if (!menuId) return next();
+    if (!await requireStoredMenuPermission(req, res, menuId)) return;
+    next();
+  });
+}
 function _round2(n) { return Math.round((Number(n) || 0) * 100) / 100; }
 // ERP 출고/입고는 세금계산서를 서버에서 자동 생성하지만, ERP 권한만 있는 사용자가
 // 거래처 사업자번호·품목·금액까지 받으면 세금계산서 메뉴 차단을 우회하게 된다.
@@ -5086,6 +5106,11 @@ function _buildDepreciationSchedule(assetId, asset) {
     beginning = ending;
   }
   return schedule;
+}
+
+async function requireAccountingMenu(req, res, menuId) {
+  if (!requireAdmin(req, res)) return false;
+  return requireStoredMenuPermission(req, res, menuId);
 }
 
 // JSON 파일 모드는 단일 worker만 허용하지만, 한 요청이 await(전표 생성 등)로 양보한
