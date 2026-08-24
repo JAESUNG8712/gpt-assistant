@@ -6974,6 +6974,10 @@ async function _allocationMonthTotal(employeeId, year, month, excludeId) {
 
 app.get("/api/pms/allocations", async (req, res) => {
   if (!requireAuth(req, res)) return;
+  // 이 목록의 유일한 클라이언트 소비처였던 "가동률 현황"(pms-utilization)이 일일 업무
+  // 투입 기록(GET .../pms/worklogs) 합산으로 이미 재구현돼(2026-07-27) 더 이상 클라이언트가
+  // 호출하지 않지만, API 표면으로는 남겨두고 원래 용도였던 페이지 기준으로 게이팅한다.
+  if (!requirePage(req, res, "pms-utilization")) return;
   try {
     const { role, empId: userId } = req.auth;
     const companyId = req.auth.companyId || null;

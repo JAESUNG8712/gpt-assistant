@@ -1208,16 +1208,15 @@ async function loadErpFromServer(){
   if(currentPage&&(currentPage.startsWith("sales-")||currentPage.startsWith("inv-")))renderPage();
 }
 // PMS(투입률 관리) 모듈: ERP 모듈과 동일한 패턴 — 서버 권위형, 지연 로드
-let pmsProjects=[],pmsAllocations=[],_pmsLoaded=false;
+// pmsAllocations(GET .../pms/allocations 원본 배열)는 클라이언트에서 더 이상 쓰이지
+// 않는다 — "가동률 현황"(pms-utilization)은 일일 업무 투입 기록(GET .../pms/worklogs)
+// 합산으로 이미 재구현돼 있다(2026-07-27, `_pmsUtilLoad()`). 벌크로딩에서 제외한다.
+let pmsProjects=[],_pmsLoaded=false;
 async function loadPmsFromServer(){
   if(!serverConfig.url){_pmsLoaded=true;return;}
   try{
-    const [rp,ra]=await Promise.all([
-      serverRequest("GET","/api/pms/projects"),
-      serverRequest("GET","/api/pms/allocations"),
-    ]);
+    const rp=await serverRequest("GET","/api/pms/projects");
     if(rp?.ok)pmsProjects=rp.projects;
-    if(ra?.ok)pmsAllocations=ra.allocations;
   }catch(e){/* 오프라인/서버 미연결 시 PMS 페이지에서 안내 표시 */}
   _pmsLoaded=true;
   if(currentPage&&currentPage.startsWith("pms-"))renderPage();
