@@ -332,7 +332,17 @@ function computeBusinessPlanProjection(a) {
   const projection = [];
   let prevRevenue = useItemizedRevenue ? round2(revenueItems.reduce((s, item) => s + (item.baseAmount || 0), 0)) : a.baseRevenue;
 
-  for (let y = 1; y <= years; y++) {
+  // y=0이 기준연도(baseYear) 자신이어야 한다 — 원래는 y가 1부터 시작해 첫 행이
+  // "baseYear+1"로 라벨링되면서 성장률도 이미 1회 복리 적용된 값이었다(2026-08-24
+  // 병렬 QA로 실측 발견: 1년짜리 계획(예: 예산 업로드로 자동생성되는 costOnly 계획,
+  // years=1)을 만들면 기준연도(예: 2027) 자체는 P&L 표에 전혀 안 나오고 "2028"년 한
+  // 줄만 나오는데, 그 값조차 성장률이 붙어있어 사용자가 입력한 기준연도 원본 금액과도
+  // 달랐다 — 같은 계획 카드 안에서 바로 아래 BEP 분석 박스는 "기준연도 2027"을 정확히
+  // 표시하고 있어 서로 모순되는 라벨이 한 화면에 함께 떴다). y=0(기준연도, 성장률
+  // 미적용)부터 시작해 이후 y=1,2,...로 실제 성장률이 그 해수만큼 복리 적용되도록
+  // 수정 — "추정 연차 수"(years) 값이 그대로 결과 행 수가 되는 것은 동일(범위만
+  // [baseYear+1..baseYear+years]에서 [baseYear..baseYear+years-1]로 이동).
+  for (let y = 0; y < years; y++) {
     const revenue = useItemizedRevenue
       ? round2(revenueItems.reduce((s, item) => s + (item.baseAmount || 0) * Math.pow(1 + (item.growthRate || 0), y), 0))
       : round2(a.baseRevenue * Math.pow(1 + a.revenueGrowthRate, y));
@@ -369,7 +379,7 @@ function computeBusinessPlanProjection(a) {
     prevRevenue = revenue;
 
     projection.push({
-      year: a.baseYear + y,
+      year: a.baseYear + y,  // y=0 → baseYear 자신(성장률 미적용)
       revenue, cogs, cogsFromRatio, serviceCost, grossProfit, sga, rdExpense, operatingProfit, netIncome, freeCashFlow,
       grossMarginRatio, operatingMarginRatio, netMarginRatio, revenueGrowthYoY
     });
