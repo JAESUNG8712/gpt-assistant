@@ -6603,7 +6603,7 @@ function _dashHrStatsCard(u,sz){
 function _dashCertCard(u,sz){
   const limit=Math.max(1,(sz&&sz.rows)||4);
   const pending=(certRequests||[]).filter(r=>r.status==="pending");
-  const recent=(certRequests||[]).slice().sort((a,b)=>b.requestedAt.localeCompare(a.requestedAt)).slice(0,limit);
+  const recent=(certRequests||[]).slice().sort((a,b)=>(b.requestedAt||"").localeCompare(a.requestedAt||"")).slice(0,limit);
   const tl={employment:"재직증명서",career:"경력증명서",salary:"급여확인서",pension:"국민연금가입확인서"};
   const rows=recent.length?recent.map(r=>`<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid #f1f5f9">
     <span>📜</span><div style="flex:1;min-width:0"><div class="fz12 fw6">${h(tl[r.type]||r.type)}</div><div class="fz11 text-gray">${h(getEmpName(r.empId))} · ${(r.requestedAt||"").slice(0,10)}</div></div>
@@ -22302,9 +22302,9 @@ function renderCertPage(){
     ?`<button class="btn btn-secondary" style="flex-direction:column;gap:8px;padding:22px 12px;height:auto" onclick="printCertificate('${type}')"><span style="font-size:32px">${icon}</span><span style="font-weight:700;font-size:14px">${label}</span><span class="text-gray fz11">${desc}</span></button>`
     :`<button class="btn btn-secondary" style="flex-direction:column;gap:8px;padding:22px 12px;height:auto" onclick="requestCertificate('${type}')"><span style="font-size:32px">${icon}</span><span style="font-weight:700;font-size:14px">${label}</span><span class="text-gray fz11">${desc}</span></button>`;
   // 내 발급 신청 내역 (비관리자)
-  const myReqs=certRequests.filter(r=>String(r.empId)===String(currentUser.id)).sort((a,b)=>b.requestedAt.localeCompare(a.requestedAt));
+  const myReqs=certRequests.filter(r=>String(r.empId)===String(currentUser.id)).sort((a,b)=>(b.requestedAt||"").localeCompare(a.requestedAt||""));
   const myReqRows=myReqs.map(r=>`<tr>
-    <td class="fz11">${r.requestedAt.slice(0,16)}</td>
+    <td class="fz11">${(r.requestedAt||"").slice(0,16)}</td>
     <td>${h(r.certTitle)}</td>
     <td class="fz11 text-gray">${h(r.submitTo||"-")}</td>
     <td class="fz11 text-gray">${h(r.reason)}</td>
@@ -22312,10 +22312,10 @@ function renderCertPage(){
     <td>${r.status==="approved"?`<button class="btn btn-primary btn-sm" onclick="printCertificate('${r.certType}')">📜 발급받기</button>`:""}</td>
   </tr>`).join("");
   // 발급 신청 관리 (관리자)
-  const pendingReqs=certRequests.filter(r=>r.status==="pending").sort((a,b)=>a.requestedAt.localeCompare(b.requestedAt));
-  const processedReqs=certRequests.filter(r=>r.status!=="pending").sort((a,b)=>b.processedAt.localeCompare(a.processedAt)).slice(0,20);
+  const pendingReqs=certRequests.filter(r=>r.status==="pending").sort((a,b)=>(a.requestedAt||"").localeCompare(b.requestedAt||""));
+  const processedReqs=certRequests.filter(r=>r.status!=="pending").sort((a,b)=>(b.processedAt||"").localeCompare(a.processedAt||"")).slice(0,20);
   const adminReqRows=(list,withActions)=>list.map(r=>`<tr>
-    <td class="fz11">${r.requestedAt.slice(0,16)}</td>
+    <td class="fz11">${(r.requestedAt||"").slice(0,16)}</td>
     <td><strong>${h(r.empName)}</strong></td>
     <td>${h(r.certTitle)}</td>
     <td class="fz11 text-gray">${h(r.submitTo||"-")}</td>
@@ -24762,7 +24762,7 @@ function renderNotificationCenterPage(){
   }
   // 8. Certificate issuance requests
   if(u.role==="admin"){
-    const pendingCert=certRequests.filter(r=>r.status==="pending").sort((a,b)=>a.requestedAt.localeCompare(b.requestedAt));
+    const pendingCert=certRequests.filter(r=>r.status==="pending").sort((a,b)=>(a.requestedAt||"").localeCompare(b.requestedAt||""));
     if(pendingCert.length>0)items.push({type:"cert",pri:0,icon:"📜",title:`증명서 발급 신청 대기 ${pendingCert.length}건`,desc:"승인 대기 중인 증명서 발급 신청이 있습니다",date:pendingCert[0].requestedAt,action:"certificate"});
   }
   const myCertReqs=certRequests.filter(r=>String(r.empId)===String(u.id));
