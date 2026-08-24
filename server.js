@@ -5256,6 +5256,21 @@ app.post("/api/accounting/fixed-assets/:id", async (req, res) => {
     const client = await pool.connect();
     try {
       await client.query("BEGIN");
+      // 감가상각 전표 발행도 같은 순서(자산 → 상각표)로 잠근다. 수정 요청이 처음 읽은
+      // 상각표와, 실제 삭제/재생성 직전의 상각표 사이에 새 posted 전표가 생기지 않도록
+      // 반드시 트랜잭션 안에서 다시 확인한다.
+      const { rows: lockedAssetRows } = await client.query(
+        "SELECT 1 FROM fixed_assets WHERE id = $1 AND company_id = $2 AND is_deleted = FALSE FOR UPDATE",
+        [id, companyId]
+      );
+      if (!lockedAssetRows.length) throw httpError(404, "ASSET_NOT_FOUND", "고정자산을 찾을 수 없습니다.");
+      const { rows: lockedScheduleRows } = await client.query(
+        "SELECT data FROM fixed_asset_depreciation_schedule WHERE asset_id = $1 AND company_id = $2 FOR UPDATE",
+        [id, companyId]
+      );
+      if (changingDepr && lockedScheduleRows.some(r => r.data && r.data.status === "posted")) {
+        throw httpError(409, "DEPRECIATION_ALREADY_POSTED", "상각전표가 발행되어 취득원가·내용연수·잔존가액·상각방법·취득일을 변경할 수 없습니다.");
+      }
       await client.query("UPDATE fixed_assets SET data = $3, updated_at = NOW() WHERE id = $1 AND company_id = $2", [id, companyId, updated]);
       if (changingDepr) {
         await client.query("DELETE FROM fixed_asset_depreciation_schedule WHERE asset_id = $1 AND company_id = $2", [id, companyId]);
@@ -5360,6 +5375,17 @@ app.post("/api/accounting/fixed-assets/:id/depreciation-schedule/:year/post", as
       // (RCPS rcps/schedule/:scheduleId/post가 이미 쓰던 것과 동일한 패턴).
       pgClient = await pool.connect();
       await pgClient.query("BEGIN");
+      // 자산 → 상각표 순서로 잠가 수정 API와 lock ordering을 맞춘다. 반대 순서라면
+      // "수정은 자산을, 전표발행은 상각표를 먼저" 잡아 deadlock/부분 실패가 날 수 있다.
+      const { rows: assetRows } = await pgClient.query(
+        "SELECT data FROM fixed_assets WHERE id = $1 AND company_id = $2 AND is_deleted = FALSE FOR UPDATE",
+        [assetId, companyId]
+      );
+      if (!assetRows.length) {
+        await pgClient.query("ROLLBACK"); pgClient.release();
+        return res.status(404).json({ ok: false, message: "고정자산을 찾을 수 없습니다." });
+      }
+      asset = assetRows[0].data;
       const { rows } = await pgClient.query(
         "SELECT data FROM fixed_asset_depreciation_schedule WHERE asset_id = $1 AND year = $2 AND company_id = $3 FOR UPDATE",
         [assetId, year, companyId]
@@ -5373,8 +5399,6 @@ app.post("/api/accounting/fixed-assets/:id/depreciation-schedule/:year/post", as
         await pgClient.query("ROLLBACK"); pgClient.release();
         return res.status(400).json({ ok: false, message: "이미 전표가 발행된 연도입니다." });
       }
-      const { rows: assetRows } = await pgClient.query("SELECT data FROM fixed_assets WHERE id = $1 AND company_id = $2", [assetId, companyId]);
-      asset = assetRows[0]?.data;
     }
     if (!asset) {
       if (pgClient) { await pgClient.query("ROLLBACK"); pgClient.release(); }
