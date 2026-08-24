@@ -3915,6 +3915,11 @@ app.get("/api/accounting/accounts", async (req, res) => {
   // 회계 모듈 조회 전체가 PAGE_ROLES상 admin 전용("acct-*")인데 requireAuth만 있어 member
   // 토큰으로도 API 직접호출 시 전표·거래처·세금계산서 등 전체 조회가 가능했다(실측 확인).
   if (!requireAdmin(req, res)) return;
+  // 계정과목 전체 조회(변경이력·원가구분 등 민감정보 포함)는 "acct-accounts" 페이지 전용 —
+  // 전표 작성(acct-vouchers)·급여전표(payroll-mgmt) 등 계정 "선택"만 필요한 다른 화면은
+  // 전부 GET .../accounts/picker(인증만 있으면 조회 가능)로 이전됐으므로 이 게이팅이
+  // 그 화면들에 영향을 주지 않는다.
+  if (!requirePage(req, res, "acct-accounts")) return;
   try {
     if (USE_JSON_FILE) return res.json({ ok: true, accounts: _fileAccounting.accounts });
     const companyId = req.auth.companyId || null;
@@ -3990,6 +3995,44 @@ app.get("/api/accounting/accounts/expense-lite", async (req, res) => {
       .filter(a => a.type === "expense" && a.active !== false)
       .map(a => ({ id: a.id, code: a.code, name: a.name }));
     res.json({ ok: true, accounts: lite });
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
+});
+
+// 계정과목 선택용 최소 조회(전 유형) — 급여 전표 생성(payroll-mgmt)·경비 지급 처리
+// (expense-admin) 등 회계 모듈 밖의 여러 화면이 "계정을 하나 고른다"는 목적만으로
+// 전체 계정과목 조회(GET .../accounts, admin+"acct-accounts" 페이지 전용)에 의존하고
+// 있었다 — 그 화면 이용자가 "계정과목 관리" 메뉴 자체는 개인적으로 꺼져 있어도
+// 전표 작성은 계속 가능해야 하므로, 원가구분·변경이력 등 민감 정보를 뺀 최소
+// 필드만 반환하는 별도 엔드포인트로 분리한다(expense-lite의 전 유형 버전).
+app.get("/api/accounting/accounts/picker", async (req, res) => {
+  if (!requireAuth(req, res)) return;
+  try {
+    const companyId = req.auth.companyId || null;
+    const accounts = await _getAccountsList(companyId);
+    const lite = accounts
+      .filter(a => a.active !== false)
+      .map(a => ({ id: a.id, code: a.code, name: a.name, type: a.type }));
+    res.json({ ok: true, accounts: lite });
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
+});
+
+// 거래처 선택용 최소 조회 — 세금계산서 발행·견적서·발주서·급여/경비 전표 등 여러 화면이
+// "거래처를 하나 고른다"는 목적만으로 전체 거래처 조회(GET .../partners, admin+
+// "acct-partners" 페이지 전용)에 의존하고 있었다. 연락처(담당자명/전화/이메일/주소) 등
+// 개인정보 성격 필드는 빼고, 사업자등록번호(bizNo)는 남긴다 — 세금계산서 수동 발행
+// 모달이 거래처 선택 시 사업자번호를 자동 채우는 기존 동작(POST .../tax-invoices는
+// 클라이언트가 보낸 partnerBizNo를 그대로 신뢰하는 구조라 서버가 대신 채워주지 않음)이
+// 이 목록 데이터에 의존하고, 사업자등록번호 자체는 개인정보라기보다 공개된 사업자 식별
+// 정보라 다른 연락처 필드보다 민감도가 낮다고 판단.
+app.get("/api/accounting/partners/picker", async (req, res) => {
+  if (!requireAuth(req, res)) return;
+  try {
+    const companyId = req.auth.companyId || null;
+    const partners = await _getPartnersList(companyId);
+    const lite = partners
+      .filter(p => p.active !== false)
+      .map(p => ({ id: p.id, name: p.name, bizNo: p.bizNo || "" }));
+    res.json({ ok: true, partners: lite });
   } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
@@ -4075,6 +4118,13 @@ async function _getAccountsList(companyId, dbClient) {
   if (USE_JSON_FILE) return _fileAccounting.accounts;
   const { rows } = await (dbClient || pool).query(
     "SELECT id, data FROM accounts WHERE is_deleted = FALSE AND (company_id = $1 OR company_id IS NULL)", [companyId || null]
+  );
+  return rows.map(r => ({ id: r.id, ...r.data }));
+}
+async function _getPartnersList(companyId, dbClient) {
+  if (USE_JSON_FILE) return _fileAccounting.partners;
+  const { rows } = await (dbClient || pool).query(
+    "SELECT id, data FROM partners WHERE is_deleted = FALSE AND (company_id = $1 OR company_id IS NULL)", [companyId || null]
   );
   return rows.map(r => ({ id: r.id, ...r.data }));
 }
@@ -4461,6 +4511,11 @@ app.post("/api/accounting/payments/:id/delete", async (req, res) => {
 // ── 거래처 (Business partners — customer/vendor master data) ─────────────────
 app.get("/api/accounting/partners", async (req, res) => {
   if (!requireAdmin(req, res)) return;
+  // 거래처 전체 조회(연락처·주소 등 개인정보 포함)는 "acct-partners" 페이지 전용 — 세금계산서
+  // (acct-tax-invoices)·견적서/발주서(sales-quotations/sales-purchase-orders)·구매요청 전환
+  // (inv-purchase-requests)·수금지급(acct-receivables)·전표(acct-vouchers) 등 거래처 "선택"만
+  // 필요한 다른 화면은 전부 GET .../partners/picker(인증만 있으면 조회 가능)로 이전됐다.
+  if (!requirePage(req, res, "acct-partners")) return;
   try {
     if (USE_JSON_FILE) return res.json({ ok: true, partners: _fileAccounting.partners });
     const companyId = req.auth.companyId || null;
@@ -4538,8 +4593,78 @@ app.post("/api/accounting/partners/:id/delete", async (req, res) => {
 // ── 원가명세서 (Cost statement) ───────────────────────────────────────────────
 // 계정과목에 태깅된 원가구분(costCategory/costSubType)을 기준으로, 확정(posted)된 전표의
 // 분개 라인 중 원가계정에 해당하는 것만(costCategory가 null이 아닌 계정) 차변 금액으로 집계한다.
+// 회계 리포트(시산표/월별 손익/거래처별 집계) — 예전엔 클라이언트가 이미 벌크로딩해둔
+// acctVouchers/acctAccounts/acctTaxInvoices를 그대로 재계산했는데, 그 벌크로딩(GET
+// .../vouchers 등)을 menuPerms로 좁히려면 이 리포트가 원본 레코드가 아니라 이미 집계된
+// 결과만 받도록 먼저 바꿔야 한다(원가명세서/cost-statement가 이미 같은 패턴).
+app.get("/api/accounting/reports", async (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  if (!requirePage(req, res, "acct-reports")) return;
+  try {
+    const year = parseInt(req.query.year) || new Date().getFullYear();
+    const companyId = req.auth.companyId || null;
+    let vouchers, invoices;
+    if (USE_JSON_FILE) {
+      vouchers = _fileAccounting.vouchers.filter(v => v.status === "posted" && new Date(v.date).getFullYear() === year);
+      invoices = _fileAccounting.taxInvoices.filter(t => t.status === "issued" && new Date(t.issueDate).getFullYear() === year);
+    } else {
+      const { rows: vRows } = await pool.query(
+        "SELECT data FROM vouchers WHERE status = 'posted' AND EXTRACT(YEAR FROM voucher_date) = $1 AND (company_id = $2 OR company_id IS NULL)",
+        [year, companyId]
+      );
+      vouchers = vRows.map(r => r.data);
+      const { rows: tRows } = await pool.query(
+        "SELECT data FROM tax_invoices WHERE status = 'issued' AND EXTRACT(YEAR FROM issue_date) = $1 AND (company_id = $2 OR company_id IS NULL)",
+        [year, companyId]
+      );
+      invoices = tRows.map(r => r.data);
+    }
+    const accounts = await _getAccountsList(companyId);
+    const accById = new Map(accounts.map(a => [a.id, a]));
+    const TYPE_LABEL = { asset: "자산", liability: "부채", equity: "자본", revenue: "수익", expense: "비용" };
+
+    const trialSums = new Map();
+    for (const v of vouchers) {
+      for (const l of (v.lines || [])) {
+        const prev = trialSums.get(l.accountId) || { debit: 0, credit: 0 };
+        prev.debit = _round2(prev.debit + (Number(l.debit) || 0));
+        prev.credit = _round2(prev.credit + (Number(l.credit) || 0));
+        trialSums.set(l.accountId, prev);
+      }
+    }
+    const trial = Array.from(trialSums.entries()).map(([accId, s]) => {
+      const a = accById.get(accId);
+      return { code: a?.code || "?", name: a?.name || accId, type: TYPE_LABEL[a?.type] || a?.type || "-", debit: s.debit, credit: s.credit };
+    }).sort((a, b) => String(a.code).localeCompare(String(b.code)));
+
+    const pnlByMonth = new Map();
+    const partnerMap = new Map();
+    for (const t of invoices) {
+      const m = String(t.issueDate).slice(0, 7);
+      const pm = pnlByMonth.get(m) || { sales: 0, purchase: 0 };
+      const supply = t.supplyTotal || 0;
+      if (t.direction === "purchase") pm.purchase = _round2(pm.purchase + supply);
+      else pm.sales = _round2(pm.sales + supply);
+      pnlByMonth.set(m, pm);
+
+      const key = t.partnerName || "(미지정)";
+      const pp = partnerMap.get(key) || { name: key, sales: 0, purchase: 0, salesCnt: 0, purchaseCnt: 0 };
+      const grand = t.grandTotal || 0;
+      if (t.direction === "purchase") { pp.purchase = _round2(pp.purchase + grand); pp.purchaseCnt++; }
+      else { pp.sales = _round2(pp.sales + grand); pp.salesCnt++; }
+      partnerMap.set(key, pp);
+    }
+    const pnl = Array.from(pnlByMonth.entries()).sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([month, d]) => ({ month, sales: d.sales, purchase: d.purchase, profit: _round2(d.sales - d.purchase) }));
+    const partners = Array.from(partnerMap.values()).sort((a, b) => (b.sales + b.purchase) - (a.sales + a.purchase));
+
+    res.json({ ok: true, year, trial, pnl, partners });
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
+});
+
 app.get("/api/accounting/cost-statement", async (req, res) => {
   if (!requireAdmin(req, res)) return;
+  if (!requirePage(req, res, "acct-cost-statement")) return;
   try {
     const { from, to } = req.query;
     if (!from || !to) return res.status(400).json({ ok: false, message: "from, to 날짜 범위는 필수입니다." });

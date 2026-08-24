@@ -64,9 +64,16 @@ test("menuPerms 서버측 강제(requirePage): 개인별로 끈 메뉴는 role�
     assert.equal(r.status, 200);
   });
 
-  await t.test("acct-accounts 제한은 회계 데이터 조회(대량 로드, 페이지 단위가 아님)까지 막지는 않는다 — 읽기는 이번 강화 범위 밖", async () => {
+  await t.test("acct-accounts 제한은 이제 계정과목 전체 조회(GET .../accounts)도 함께 막는다 — 계정 '선택'만 필요한 다른 화면(전표 작성 등)은 그 전에 이미 별도의 인증만 요구하는 picker 엔드포인트로 이전됐기 때문에 이 게이팅으로 영향받지 않는다", async () => {
     const r = await api("/api/accounting/accounts", { headers: { Authorization: `Bearer ${admin1Token}` } });
+    assert.equal(r.status, 403);
+  });
+
+  await t.test("acct-accounts를 꺼도 계정 선택용 picker 조회(인증만 필요)는 계속 정상 동작한다", async () => {
+    const r = await api("/api/accounting/accounts/picker", { headers: { Authorization: `Bearer ${admin1Token}` } });
     assert.equal(r.status, 200);
+    const body = await r.json();
+    assert.equal(body.ok, true);
   });
 
   await t.test("recruit-jobs를 끈 leader는 채용공고 생성 API가 403으로 막힌다", async () => {
