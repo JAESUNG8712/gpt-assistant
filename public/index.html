@@ -2696,7 +2696,10 @@ function showModal(html){
     if(event.shiftKey&&document.activeElement===first){event.preventDefault();last.focus();}
     else if(!event.shiftKey&&document.activeElement===last){event.preventDefault();first.focus();}
   });
-  document.body.appendChild(ov);_syncModalBackground();requestAnimationFrame(()=>_focusModal(dialog));return ov;
+  // DOM에 붙인 다음 프레임까지 포커스를 늦추면, 모달이 보인 직후 사용자가 Escape를
+  // 누르는 짧은 구간에는 키 이벤트가 여전히 배경의 opener로 전달되어 닫히지 않는다.
+  // append 후 즉시 포커스를 옮겨 모달이 보이는 순간부터 키보드 계약을 보장한다.
+  document.body.appendChild(ov);_syncModalBackground();_focusModal(dialog);return ov;
 }
 const openModal=showModal; // alias
 function closeTopModal(){closeModal();}
