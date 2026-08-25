@@ -523,6 +523,29 @@ test("file-mode API smoke suite", async (t) => {
     assert.equal((await reused.json()).code, "IDEMPOTENCY_KEY_REUSED");
   });
 
+  await t.test("12b) JSON 모드의 예산 포함 복원은 HR 파일을 쓰기 전에 안전하게 거부한다", async () => {
+    const before = await (await api("/data", { headers: { Authorization: `Bearer ${adminToken}` } })).json();
+    const snapshot = await api("/snapshots", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${adminToken}` },
+      body: JSON.stringify({ year: 2099, confirmedBy: "QA", notes: "JSON 원자 복원 게이트" }),
+    });
+    assert.equal(snapshot.status, 200);
+
+    const restore = await api("/restore", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${adminToken}` },
+      body: JSON.stringify({ name: "snapshot_2099.json", fields: ["employees", "budget"], deleteExtras: true }),
+    });
+    assert.equal(restore.status, 409);
+    const rejected = await restore.json();
+    assert.equal(rejected.code, "JSON_BUDGET_RESTORE_REQUIRES_POSTGRES");
+
+    const after = await (await api("/data", { headers: { Authorization: `Bearer ${adminToken}` } })).json();
+    assert.equal(after.version, before.version, "거부된 복원이 HR 파일/version을 변경하면 안 됨");
+    assert.deepEqual(after.data.employees, before.data.employees, "거부된 복원이 직원 데이터를 변경하면 안 됨");
+  });
+
   await t.test("13) 오래된 singleton revision 저장은 409로 차단하고 최신 설정을 보존한다", async () => {
     const base = await (await api("/data", { headers: { Authorization: `Bearer ${adminToken}` } })).json();
     const revisions = { ...(base.data._singletonRevisions || {}), settings: base.data._singletonRevisions?.settings || 0 };

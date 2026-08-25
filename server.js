@@ -4208,6 +4208,19 @@ app.post("/restore", async (req, res) => {
     // 운영 환경의 더미 스냅샷은 어떤 삭제보다 먼저 거부한다.
     rejectDemoDataForProduction(dataToPersist);
 
+    // JSON 파일 모드에서 HR 본문과 budget-data.json은 서로 다른 파일이라 하나의
+    // transaction으로 commit할 수 없다. HR 파일 교체 뒤 예산 파일 쓰기가 실패하거나
+    // 프로세스가 종료되면 부분 복원이 영구 노출되므로, 안전한 bundle journal/recovery가
+    // 없는 현재는 두 파일을 함께 복원하는 요청을 어떤 쓰기보다 먼저 거부한다.
+    // HR-only 복원은 기존의 단일 파일 atomic rename 경로를 그대로 지원한다.
+    if (restoreBudget) {
+      return res.status(409).json({
+        ok: false,
+        code: "JSON_BUDGET_RESTORE_REQUIRES_POSTGRES",
+        message: "JSON 파일 모드에서는 HR과 예산을 원자적으로 함께 복원할 수 없습니다. 예산 포함 복원은 PostgreSQL 모드에서 실행하세요.",
+      });
+    }
+
     // JSON 파일 모드는 파일 두 개(HR 본문·budget_store)를 하나의 DB 트랜잭션으로 묶을 수
     // 없으므로, 기존의 원자 파일 교체 경로를 유지한다. 운영 다중 사용자 배포는 위의
     // PostgreSQL 경로를 사용한다.
