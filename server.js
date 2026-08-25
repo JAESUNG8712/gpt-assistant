@@ -2416,6 +2416,12 @@ function _idempotencyHash(req) {
 }
 function _idempotencyRequired(req) {
   if (["GET", "HEAD", "OPTIONS"].includes(req.method)) return false;
+  // PostgreSQL 전표 명령은 업무 변경과 응답 기록을 같은 transaction에 넣는 전용
+  // 실행기를 사용한다. JSON 모드는 기존 파일 멱등성 middleware를 계속 사용한다.
+  if (!USE_JSON_FILE && req.method === "POST" && (
+    req.path === "/api/accounting/vouchers" ||
+    /^\/api\/accounting\/vouchers\/[^/]+\/(post|void)$/.test(req.path)
+  )) return false;
   return req.path === "/save" || /^\/api\/(accounting|erp)\//.test(req.path);
 }
 function _loadFileIdempotency() {
@@ -2512,6 +2518,76 @@ async function idempotencyMiddleware(req, res, next) {
     return res;
   };
   next();
+}
+
+// PostgreSQL 금전 명령용 원자적 멱등성 실행기. claim -> 업무 쓰기 -> 성공 응답 저장을
+// 하나의 client/transaction에서 처리하므로, 업무 COMMIT 직후 프로세스가 종료되는
+// crash-gap이 없다. commit 전 종료면 둘 다 rollback되고, commit 후 재시도면 저장된
+// 응답을 그대로 재생한다.
+async function _runPgIdempotentCommand(req, res, work) {
+  const key = String(req.get("Idempotency-Key") || "");
+  if (!/^[A-Za-z0-9._:-]{8,128}$/.test(key)) {
+    return res.status(400).json({ ok: false, code: "IDEMPOTENCY_KEY_REQUIRED", message: "유효한 Idempotency-Key가 필요합니다." });
+  }
+  const companyId = req.auth?.companyId || null;
+  const actorId = String(req.auth?.empId || req.auth?.loginId || req.auth?.masterId || "unknown");
+  const route = `${req.method} ${req.path}`;
+  const requestHash = _idempotencyHash(req);
+  const client = await pool.connect();
+  let committed = false;
+  try {
+    await client.query("BEGIN");
+    await client.query("DELETE FROM api_idempotency WHERE expires_at <= NOW()");
+    const inserted = await client.query(
+      `INSERT INTO api_idempotency (company_id, actor_id, route, idempotency_key, request_hash, expires_at)
+       VALUES ($1,$2,$3,$4,$5,NOW() + INTERVAL '24 hours') ON CONFLICT DO NOTHING RETURNING request_hash`,
+      [companyId, actorId, route, key, requestHash]
+    );
+    if (!inserted.rowCount) {
+      const found = await client.query(
+        `SELECT request_hash, response_status, response_body FROM api_idempotency
+         WHERE company_id=$1 AND actor_id=$2 AND route=$3 AND idempotency_key=$4 FOR UPDATE`,
+        [companyId, actorId, route, key]
+      );
+      const prior = found.rows[0];
+      if (!prior || prior.request_hash !== requestHash) {
+        await client.query("ROLLBACK");
+        return res.status(409).json({ ok: false, code: "IDEMPOTENCY_KEY_REUSED", message: "같은 Idempotency-Key를 다른 요청에 재사용할 수 없습니다." });
+      }
+      if (!prior.response_status || !prior.response_body) {
+        await client.query("ROLLBACK");
+        res.set("Retry-After", "1");
+        return res.status(409).json({ ok: false, code: "IDEMPOTENCY_IN_PROGRESS", message: "동일한 요청이 이미 처리 중입니다." });
+      }
+      await client.query("COMMIT"); committed = true;
+      res.set("X-Idempotency-Replayed", "true");
+      return res.status(Number(prior.response_status)).json(prior.response_body);
+    }
+
+    const result = await work(client);
+    const status = Number(result?.status) || 200;
+    const body = result?.body ?? { ok: true };
+    if (status < 200 || status >= 300) {
+      await client.query("ROLLBACK");
+      return res.status(status).json(body);
+    }
+    // crash-gap 회귀 테스트 전용 fault injection. 운영에서는 헤더가 있어도 무시한다.
+    if (process.env.NODE_ENV === "test" && req.get("X-Test-Idempotency-Fail-Before-Complete") === "1") {
+      throw new Error("TEST_IDEMPOTENCY_FAIL_BEFORE_COMPLETE");
+    }
+    await client.query(
+      `UPDATE api_idempotency SET response_status=$5,response_body=$6
+       WHERE company_id=$1 AND actor_id=$2 AND route=$3 AND idempotency_key=$4`,
+      [companyId, actorId, route, key, status, body]
+    );
+    await client.query("COMMIT"); committed = true;
+    return res.status(status).json(body);
+  } catch (e) {
+    if (!committed) { try { await client.query("ROLLBACK"); } catch {} }
+    throw e;
+  } finally {
+    client.release();
+  }
 }
 app.use(cors());
 // CSP는 끈다: 프론트엔드(public/index.html)가 인라인 onclick 핸들러와 인라인 <script>를
@@ -2638,6 +2714,11 @@ const loginLimiter = rateLimit({
 app.get("/status", async (req, res) => {
   try {
     const companyId = req.auth?.companyId || null;
+    // 로드밸런서/설치 확인에는 상태 코드와 저장 방식만 필요하다. 인증되지 않은 요청에
+    // 전 회사 직원·KPI 건수, 접속자 수, 저장 시각을 공개하지 않는다.
+    if (!req.auth) {
+      return res.json({ ok: true, storageMode: USE_JSON_FILE ? "file" : "postgresql" });
+    }
     if (USE_JSON_FILE) {
       return res.json({
         ok: true,
@@ -4810,9 +4891,11 @@ app.post("/api/accounting/vouchers", async (req, res) => {
       _saveFileAccounting();
       return res.json({ ok: true, voucher });
     }
-    await pool.query("INSERT INTO vouchers (id, voucher_no, voucher_date, status, data, company_id) VALUES ($1,$2,$3,'draft',$4,$5)",
-      [voucher.id, `DRAFT-${voucher.id}`, date, voucher, companyId]);
-    res.json({ ok: true, voucher });
+    return await _runPgIdempotentCommand(req, res, async client => {
+      await client.query("INSERT INTO vouchers (id, voucher_no, voucher_date, status, data, company_id) VALUES ($1,$2,$3,'draft',$4,$5)",
+        [voucher.id, `DRAFT-${voucher.id}`, date, voucher, companyId]);
+      return { status: 200, body: { ok: true, voucher } };
+    });
   } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
@@ -4835,12 +4918,10 @@ app.post("/api/accounting/vouchers/:id/post", async (req, res) => {
       _saveFileAccounting();
       return res.json({ ok: true, voucher: v });
     }
-    const client = await pool.connect();
-    try {
-      await client.query("BEGIN");
+    return await _runPgIdempotentCommand(req, res, async client => {
       const { rows } = await client.query("SELECT data, status FROM vouchers WHERE id = $1 AND (company_id = $2 OR company_id IS NULL) FOR UPDATE", [id, companyId]);
-      if (!rows.length) { await client.query("ROLLBACK"); return res.status(404).json({ ok: false, message: "전표를 찾을 수 없습니다." }); }
-      if (rows[0].status !== "draft") { await client.query("ROLLBACK"); return res.status(400).json({ ok: false, message: "임시 저장 상태의 전표만 확정할 수 있습니다." }); }
+      if (!rows.length) return { status: 404, body: { ok: false, message: "전표를 찾을 수 없습니다." } };
+      if (rows[0].status !== "draft") return { status: 400, body: { ok: false, message: "임시 저장 상태의 전표만 확정할 수 있습니다." } };
       const { rows: seqRows } = await client.query(
         "INSERT INTO voucher_seq (company_id, year, seq) VALUES ($1,$2,1) ON CONFLICT (company_id, year) DO UPDATE SET seq = voucher_seq.seq + 1 RETURNING seq",
         [companyId, year]
@@ -4848,9 +4929,8 @@ app.post("/api/accounting/vouchers/:id/post", async (req, res) => {
       const voucherNo = `JE-${year}-${String(seqRows[0].seq).padStart(6, "0")}`;
       const v = { ...rows[0].data, voucherNo, status: "posted", postedBy: req.body.user || "unknown", postedAt: new Date().toISOString() };
       await client.query("UPDATE vouchers SET voucher_no = $2, status = 'posted', data = $3, updated_at = NOW() WHERE id = $1", [id, voucherNo, v]);
-      await client.query("COMMIT");
-      res.json({ ok: true, voucher: v });
-    } catch (e) { await client.query("ROLLBACK"); throw e; } finally { client.release(); }
+      return { status: 200, body: { ok: true, voucher: v } };
+    });
   } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
@@ -4905,17 +4985,14 @@ app.post("/api/accounting/vouchers/:id/void", async (req, res) => {
     }
     // 전표 취소와 스케줄 되돌리기는 한 트랜잭션이어야 한다 — 중간에 실패해 전표만 취소되면
     // 원래 고치려던 "되돌릴 수 없는 상태"가 그대로 다시 만들어진다.
-    const client = await pool.connect();
-    try {
-      await client.query("BEGIN");
+    return await _runPgIdempotentCommand(req, res, async client => {
       const { rows } = await client.query("SELECT data FROM vouchers WHERE id = $1 AND status = 'posted' AND (company_id = $2 OR company_id IS NULL) FOR UPDATE", [id, companyId]);
-      if (!rows.length) { await client.query("ROLLBACK"); return res.status(400).json({ ok: false, message: "확정된 전표만 취소할 수 있습니다." }); }
+      if (!rows.length) return { status: 400, body: { ok: false, message: "확정된 전표만 취소할 수 있습니다." } };
       const v = { ...rows[0].data, status: "void", voidReason: reason, voidedBy: req.body.user || "unknown", voidedAt: new Date().toISOString() };
       await client.query("UPDATE vouchers SET status = 'void', data = $2, updated_at = NOW() WHERE id = $1", [id, v]);
       const unposted = await _unpostScheduleRowsPg(id, companyId, client);
-      await client.query("COMMIT");
-      res.json({ ok: true, voucher: v, unpostedSchedules: unposted });
-    } catch (e) { await client.query("ROLLBACK"); throw e; } finally { client.release(); }
+      return { status: 200, body: { ok: true, voucher: v, unpostedSchedules: unposted } };
+    });
   } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 

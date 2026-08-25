@@ -125,6 +125,54 @@ if (!ADMIN_DATABASE_URL) {
       assert.equal((await recovered.json()).ok, true);
     });
 
+    await t.test("4c) 전표 업무 쓰기와 멱등성 완료 기록은 같은 transaction에서 commit", async () => {
+      const commonHeaders = { "Content-Type": "application/json", Authorization: `Bearer ${companyAToken}` };
+      const seeded = await api("/api/accounting/accounts/seed-defaults", {
+        method: "POST", headers: commonHeaders, body: "{}",
+      });
+      assert.equal(seeded.status, 200);
+      const accountRows = await (await api("/api/accounting/accounts/picker", {
+        headers: { Authorization: `Bearer ${companyAToken}` },
+      })).json();
+      assert.ok(accountRows.accounts.length >= 2);
+      const payload = {
+        date: "2026-08-25", description: "멱등성 원자성 테스트",
+        lines: [
+          { accountId: accountRows.accounts[0].id, debit: 1000, credit: 0 },
+          { accountId: accountRows.accounts[1].id, debit: 0, credit: 1000 },
+        ],
+      };
+      const key = "pg-voucher-atomic-test-0001";
+
+      // 업무 INSERT 뒤 멱등성 응답 기록 직전에 오류를 주입한다. 둘이 같은 transaction이면
+      // 첫 요청의 voucher와 claim이 모두 rollback되어 같은 키 재시도가 정상 성공해야 한다.
+      const failed = await api("/api/accounting/vouchers", {
+        method: "POST",
+        headers: { ...commonHeaders, "Idempotency-Key": key, "X-Test-Idempotency-Fail-Before-Complete": "1" },
+        body: JSON.stringify(payload),
+      });
+      assert.equal(failed.status, 500);
+
+      const succeeded = await api("/api/accounting/vouchers", {
+        method: "POST", headers: { ...commonHeaders, "Idempotency-Key": key }, body: JSON.stringify(payload),
+      });
+      assert.equal(succeeded.status, 200);
+      const firstBody = await succeeded.json();
+      const replay = await api("/api/accounting/vouchers", {
+        method: "POST", headers: { ...commonHeaders, "Idempotency-Key": key }, body: JSON.stringify(payload),
+      });
+      assert.equal(replay.status, 200);
+      assert.equal(replay.headers.get("x-idempotency-replayed"), "true");
+      assert.deepEqual(await replay.json(), firstBody);
+
+      const dbCheck = new Client({ connectionString: testDbUrl });
+      await dbCheck.connect();
+      try {
+        const rows = await dbCheck.query("SELECT COUNT(*)::int AS count FROM vouchers WHERE data->>'description' = $1", [payload.description]);
+        assert.equal(rows.rows[0].count, 1, "실패 요청이나 replay가 중복 전표를 만들면 안 됨");
+      } finally { await dbCheck.end(); }
+    });
+
     let companyBToken;
     await t.test("5) 두 번째 회사 가입 — 다른 companyCode 자동 배정", async () => {
       const res = await api("/api/companies/register", {
