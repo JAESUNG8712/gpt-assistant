@@ -146,6 +146,8 @@ test("file-mode API smoke suite", async (t) => {
     const json = await res.json();
     assert.equal(json.ok, true);
     assert.equal(json.storageMode, "file");
+    assert.equal(json.meta, undefined, "무인증 상태 조회에 전사 집계를 노출하면 안 됨");
+    assert.equal(json.onlineCount, undefined, "무인증 상태 조회에 접속자 수를 노출하면 안 됨");
   });
 
   await t.test("3) 잘못된 로그인은 ok:false", async () => {
@@ -267,7 +269,7 @@ test("file-mode API smoke suite", async (t) => {
   });
 
   await t.test("8) /save 후 version 증가 및 기존 collection 보존", async () => {
-    const before = await (await api("/status")).json();
+    const before = await (await api("/status", { headers: { Authorization: `Bearer ${adminToken}` } })).json();
     const res = await api("/save?user=test_admin", {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${adminToken}` },
@@ -317,7 +319,7 @@ test("file-mode API smoke suite", async (t) => {
       const json = await res.json();
       assert.equal(json.ok, false);
       assert.equal(json.code, "DEMO_DATA_FORBIDDEN");
-      const status = await (await papi("/status")).json();
+      const status = await (await papi("/status", { headers: { Authorization: `Bearer ${boot.token}` } })).json();
       assert.equal(status.meta.empCount, 1, "거부된 저장은 bootstrap 관리자 외에 반영되면 안 됨");
     } finally {
       await prodServer.stop();

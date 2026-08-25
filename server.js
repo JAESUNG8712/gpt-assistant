@@ -2714,6 +2714,11 @@ const loginLimiter = rateLimit({
 app.get("/status", async (req, res) => {
   try {
     const companyId = req.auth?.companyId || null;
+    // 로드밸런서/설치 확인에는 상태 코드와 저장 방식만 필요하다. 인증되지 않은 요청에
+    // 전 회사 직원·KPI 건수, 접속자 수, 저장 시각을 공개하지 않는다.
+    if (!req.auth) {
+      return res.json({ ok: true, storageMode: USE_JSON_FILE ? "file" : "postgresql" });
+    }
     if (USE_JSON_FILE) {
       return res.json({
         ok: true,
