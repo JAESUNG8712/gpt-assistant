@@ -8194,6 +8194,41 @@ const legacyResumeExtractionLimiter = rateLimit({
   keyGenerator: (req) => (req.auth && req.auth.empId != null) ? `emp:${req.auth.empId}` : rateLimit.ipKeyGenerator(req.ip),
   handler: (req, res) => res.status(429).json({ ok: false, code: "RESUME_RATE_LIMITED", message: "이력서 추출 요청이 너무 많습니다. 잠시 후 다시 시도하세요." }),
 });
+const AI_API_TIMEOUT_MS = Number(process.env.AI_API_TIMEOUT_MS) || 30000;
+const AI_API_MAX_CONCURRENT = Number(process.env.AI_API_MAX_CONCURRENT) || 4;
+const AI_API_MAX_INPUT_CHARS = Number(process.env.AI_API_MAX_INPUT_CHARS) || 12000;
+let _aiApiInFlight = 0;
+const aiApiLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: Number(process.env.AI_API_RATE_MAX) || 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => {
+    if (req.auth) return `company:${req.auth.companyId || "file"}:emp:${req.auth.empId ?? req.auth.masterId ?? "unknown"}`;
+    return rateLimit.ipKeyGenerator(req.ip);
+  },
+  handler: (req, res) => res.status(429).json({ ok: false, code: "AI_RATE_LIMITED", message: "AI 요청이 너무 많습니다. 잠시 후 다시 시도하세요." }),
+});
+function _boundedAiText(value, max = AI_API_MAX_INPUT_CHARS) {
+  return typeof value === "string" ? value.slice(0, max) : "";
+}
+async function _groqFetch(url, options, timeoutMs = AI_API_TIMEOUT_MS) {
+  if (_aiApiInFlight >= AI_API_MAX_CONCURRENT) {
+    const e = new Error("AI 요청이 동시에 너무 많습니다."); e.code = "AI_CONCURRENCY_LIMIT"; throw e;
+  }
+  _aiApiInFlight++;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } catch (e) {
+    if (e && e.name === "AbortError") { const te = new Error("AI 응답 시간 초과"); te.code = "TIMEOUT"; throw te; }
+    throw e;
+  } finally {
+    clearTimeout(timer);
+    _aiApiInFlight = Math.max(0, _aiApiInFlight - 1);
+  }
+}
 
 function _legacyResumeExtractionGuard(kind) {
   return async (req, res, next) => {
@@ -8433,7 +8468,7 @@ const RESUME_FIELDS_SCHEMA_PROMPT = `너는 한국어 이력서 텍스트에서 
 async function _groqParseResume(text) {
   const apiKey = process.env.GROQ_API_KEY;
   if (!apiKey) return null;
-  const resp = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+  const resp = await _groqFetch("https://api.groq.com/openai/v1/chat/completions", {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: "Bearer " + apiKey },
     body: JSON.stringify({
@@ -8442,7 +8477,7 @@ async function _groqParseResume(text) {
       response_format: { type: "json_object" },
       messages: [
         { role: "system", content: RESUME_FIELDS_SCHEMA_PROMPT },
-        { role: "user", content: text.slice(0, 12000) },
+        { role: "user", content: _boundedAiText(text) },
       ],
     }),
   });
@@ -8451,7 +8486,7 @@ async function _groqParseResume(text) {
   const content = data?.choices?.[0]?.message?.content || "{}";
   return JSON.parse(content);
 }
-app.post("/api/recruit/parse-resume-llm", async (req, res) => {
+app.post("/api/recruit/parse-resume-llm", aiApiLimiter, async (req, res) => {
   try {
     if (!requireRole(req, res, ["admin", "leader", "director"])) return;
     if (!requirePage(req, res, "recruit-candidates")) return;
@@ -8459,6 +8494,7 @@ app.post("/api/recruit/parse-resume-llm", async (req, res) => {
     if (!text || typeof text !== "string" || text.trim().length < 20) {
       return res.json({ ok: false, message: "분석할 텍스트가 부족합니다." });
     }
+    if (text.length > AI_API_MAX_INPUT_CHARS) return res.status(413).json({ ok: false, code: "AI_INPUT_TOO_LARGE", message: "AI 분석 입력이 너무 큽니다." });
     let fields;
     try {
       fields = await _groqParseResume(text);
@@ -8625,13 +8661,10 @@ const HR_RESUME_GROQ_URL = process.env.HR_RESUME_GROQ_URL_OVERRIDE || "https://a
 async function _hrResumeGroqParse(text) {
   const apiKey = process.env.GROQ_API_KEY;
   if (!apiKey) { const e = new Error("GROQ_API_KEY 미설정"); e.code = "NOT_CONFIGURED"; throw e; }
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), RESUME_AI_TIMEOUT_MS);
   let resp;
   try {
-    resp = await fetch(HR_RESUME_GROQ_URL, {
+    resp = await _groqFetch(HR_RESUME_GROQ_URL, {
       method: "POST",
-      signal: controller.signal,
       headers: { "Content-Type": "application/json", Authorization: "Bearer " + apiKey },
       body: JSON.stringify({
         model: "llama-3.3-70b-versatile",
@@ -8642,12 +8675,10 @@ async function _hrResumeGroqParse(text) {
           { role: "user", content: text.slice(0, RESUME_MAX_TEXT_CHARS) },
         ],
       }),
-    });
+    }, RESUME_AI_TIMEOUT_MS);
   } catch (e) {
-    if (e.name === "AbortError") { const te = new Error("AI 응답 시간 초과"); te.code = "TIMEOUT"; throw te; }
+    if (e.code === "TIMEOUT") throw e;
     const fe = new Error("AI 호출 실패: " + e.message); fe.code = "PROVIDER_FAILED"; throw fe;
-  } finally {
-    clearTimeout(timer);
   }
   if (!resp.ok) { const e = new Error("Groq API 오류 " + resp.status); e.code = "PROVIDER_FAILED"; throw e; }
   const data = await resp.json();
@@ -8729,6 +8760,7 @@ app.post("/api/hr/resume-parse",
   // 대용량 multipart 본문을 메모리에 버퍼링하기 전에 즉시 거부된다(전역 authenticate
   // 미들웨어가 이미 req.auth를 채워둔 상태이므로 파일을 읽지 않고도 판단 가능).
   (req, res, next) => { if (!requireAdmin(req, res)) return; next(); },
+  aiApiLimiter,
   // 동시 처리 개수 제한 — multer가 파일을 버퍼링하기 전에 게이트해, 이미 정원이
   // 찬 상태에서는 대용량 본문을 굳이 메모리에 올리지 않는다. 브라우저 연결이 먼저
   // 끊겨도 OCR/AI 작업은 잠시 계속될 수 있으므로 close에서 바로 슬롯을 반납하면
@@ -8885,7 +8917,7 @@ company가 이미 채워진 항목은 정규식/OCR로 이미 확정된 정답�
 {"suggestions": [{"idx": 0, "company": "회사명 또는 빈 문자열"}]}
 idx는 반드시 targetIdx 목록에 있는 값이어야 하고, targetIdx 개수만큼 정확히 응답해라. company가 이미 채워진 항목의 idx로는 응답하지 마라.`;
   const userContent = JSON.stringify({ resumeText: text.slice(0, 12000), entries, targetIdx });
-  const resp = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+  const resp = await _groqFetch("https://api.groq.com/openai/v1/chat/completions", {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: "Bearer " + apiKey },
     body: JSON.stringify({
@@ -8904,7 +8936,7 @@ idx는 반드시 targetIdx 목록에 있는 값이어야 하고, targetIdx 개�
   const parsed = JSON.parse(content);
   return Array.isArray(parsed?.suggestions) ? parsed.suggestions : [];
 }
-app.post("/api/recruit/suggest-career-companies", async (req, res) => {
+app.post("/api/recruit/suggest-career-companies", aiApiLimiter, async (req, res) => {
   try {
     if (!requireRole(req, res, ["admin", "leader", "director"])) return;
     if (!requirePage(req, res, "recruit-candidates")) return;
@@ -8915,6 +8947,7 @@ app.post("/api/recruit/suggest-career-companies", async (req, res) => {
     if (!Array.isArray(entries) || !entries.length) {
       return res.json({ ok: true, suggestions: [] });
     }
+    if (text.length > AI_API_MAX_INPUT_CHARS || entries.length > 100) return res.status(413).json({ ok: false, code: "AI_INPUT_TOO_LARGE", message: "AI 분석 입력이 너무 큽니다." });
     let suggestions;
     try {
       suggestions = await _groqSuggestCareerCompanies(text, entries);
@@ -8937,7 +8970,7 @@ async function _groqSummarizePeople(kind, people) {
     { "empId": "직원ID(입력값 그대로)", "name": "이름", "summary": "이 인원이 왜 이 명단에 해당하는지 평가 데이터 근거를 2~3문장으로 요약. 추측하지 말고 주어진 데이터만 근거로 작성" }
   ]
 }`;
-  const resp = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+  const resp = await _groqFetch("https://api.groq.com/openai/v1/chat/completions", {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: "Bearer " + apiKey },
     body: JSON.stringify({
@@ -8955,12 +8988,13 @@ async function _groqSummarizePeople(kind, people) {
   const content = data?.choices?.[0]?.message?.content || "{}";
   return JSON.parse(content).summaries || [];
 }
-app.post("/api/hr/analyze-summary", async (req, res) => {
+app.post("/api/hr/analyze-summary", aiApiLimiter, async (req, res) => {
   try {
     if (!requireRole(req, res, ["admin", "leader", "director"])) return;
     const { kind, people } = req.body || {};
     if (!["core", "low", "block9"].includes(kind)) return res.status(400).json({ ok: false, message: "kind 값이 올바르지 않습니다." });
     if (!Array.isArray(people) || !people.length) return res.json({ ok: false, message: "분석할 인원 데이터가 없습니다." });
+    if (people.length > 200 || JSON.stringify(people).length > AI_API_MAX_INPUT_CHARS * 2) return res.status(413).json({ ok: false, code: "AI_INPUT_TOO_LARGE", message: "AI 분석 입력이 너무 큽니다." });
     let summaries;
     try {
       summaries = await _groqSummarizePeople(kind, people);
@@ -8983,7 +9017,7 @@ async function _groqDraftKpiGoal(jobRole, itemName) {
   "evalCriteria": "평가 기준 (측정 방법/기준)"
 }`;
   const userMsg = `직무: ${jobRole}${itemName ? `\nKPI 항목명(참고): ${itemName}` : ""}`;
-  const resp = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+  const resp = await _groqFetch("https://api.groq.com/openai/v1/chat/completions", {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: "Bearer " + apiKey },
     body: JSON.stringify({
@@ -9013,7 +9047,7 @@ async function _groqAnalyzeOrgData(kind, data) {
     { "title": "이슈 제목 (간결하게)", "detail": "이슈 내용과 근거 데이터 (2~3문장)", "action": "대응 방안 초안 (2~3문장, 구체적 실행 방안)", "severity": "high|medium|low" }
   ]
 }`;
-  const resp = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+  const resp = await _groqFetch("https://api.groq.com/openai/v1/chat/completions", {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: "Bearer " + apiKey },
     body: JSON.stringify({
@@ -9032,12 +9066,13 @@ async function _groqAnalyzeOrgData(kind, data) {
   const parsed = JSON.parse(content);
   return { overview: parsed.overview || "", issues: Array.isArray(parsed.issues) ? parsed.issues : [] };
 }
-app.post("/api/hr/analyze-org", async (req, res) => {
+app.post("/api/hr/analyze-org", aiApiLimiter, async (req, res) => {
   try {
     if (!requireRole(req, res, ["admin", "leader", "director"])) return;
     const { kind, data } = req.body || {};
     if (!["stats", "promotion"].includes(kind)) return res.status(400).json({ ok: false, message: "kind 값이 올바르지 않습니다." });
     if (!data) return res.json({ ok: false, message: "분석할 데이터가 없습니다." });
+    if (JSON.stringify(data).length > AI_API_MAX_INPUT_CHARS * 2) return res.status(413).json({ ok: false, code: "AI_INPUT_TOO_LARGE", message: "AI 분석 입력이 너무 큽니다." });
     let analysis;
     try {
       analysis = await _groqAnalyzeOrgData(kind, data);
@@ -9049,14 +9084,15 @@ app.post("/api/hr/analyze-org", async (req, res) => {
   } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
-app.post("/api/hr/draft-kpi-goal", async (req, res) => {
+app.post("/api/hr/draft-kpi-goal", aiApiLimiter, async (req, res) => {
   try {
     if (!requireRole(req, res, ["admin", "leader", "director", "member"])) return;
+    if (!_menuPermsAllow(["kpi", "kpi-results"], req.auth)) return res.status(403).json({ ok: false, code: "MENU_ACCESS_DENIED", message: "KPI 메뉴에 접근할 권한이 없습니다." });
     const { jobRole, itemName } = req.body || {};
-    if (!jobRole) return res.status(400).json({ ok: false, message: "jobRole 값이 필요합니다." });
+    if (!jobRole || typeof jobRole !== "string") return res.status(400).json({ ok: false, message: "jobRole 값이 필요합니다." });
     let draft;
     try {
-      draft = await _groqDraftKpiGoal(jobRole, itemName);
+      draft = await _groqDraftKpiGoal(_boundedAiText(jobRole, 500), _boundedAiText(itemName, 500));
     } catch (e) {
       return res.json({ ok: false, message: "AI 초안 생성에 실패했습니다: " + e.message });
     }
@@ -9074,7 +9110,7 @@ async function _groqDraftEvalComment(stage, memberName, kpis) {
   "comment": "종합 평가 의견 (4~6문장, 성과/역량/발전가능성/개선점을 포함)"
 }`;
   const userMsg = `직원: ${memberName}\nKPI 데이터: ${JSON.stringify(kpis).slice(0, 8000)}`;
-  const resp = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+  const resp = await _groqFetch("https://api.groq.com/openai/v1/chat/completions", {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: "Bearer " + apiKey },
     body: JSON.stringify({
@@ -9092,15 +9128,17 @@ async function _groqDraftEvalComment(stage, memberName, kpis) {
   const content = data?.choices?.[0]?.message?.content || "{}";
   return JSON.parse(content).comment || "";
 }
-app.post("/api/hr/draft-eval-comment", async (req, res) => {
+app.post("/api/hr/draft-eval-comment", aiApiLimiter, async (req, res) => {
   try {
     if (!requireRole(req, res, ["admin", "leader", "director"])) return;
     const { stage, memberName, kpis } = req.body || {};
     if (!["first", "second"].includes(stage)) return res.status(400).json({ ok: false, message: "stage 값이 올바르지 않습니다." });
+    if (!requirePage(req, res, stage === "second" ? "second-eval" : "first-eval")) return;
     if (!Array.isArray(kpis) || !kpis.length) return res.json({ ok: false, message: "평가할 KPI 데이터가 없습니다." });
+    if (kpis.length > 100 || JSON.stringify(kpis).length > AI_API_MAX_INPUT_CHARS) return res.status(413).json({ ok: false, code: "AI_INPUT_TOO_LARGE", message: "AI 분석 입력이 너무 큽니다." });
     let comment;
     try {
-      comment = await _groqDraftEvalComment(stage, memberName || "", kpis);
+      comment = await _groqDraftEvalComment(stage, _boundedAiText(memberName, 200), kpis.slice(0, 100));
     } catch (e) {
       return res.json({ ok: false, message: "AI 초안 생성에 실패했습니다: " + e.message });
     }

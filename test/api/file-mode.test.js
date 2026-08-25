@@ -241,6 +241,31 @@ test("file-mode API smoke suite", async (t) => {
     assert.notEqual(adminRead.data.settings?.companyName, "forbidden");
   });
 
+  await t.test("7c) KPI 메뉴가 모두 꺼진 계정은 AI 목표 초안 API를 직접 호출해도 403", async () => {
+    const state = await (await api("/data", { headers: { Authorization: `Bearer ${adminToken}` } })).json();
+    const me = state.data.employees.find(e => String(e.id) === String(adminId));
+    me.menuPerms = { ...(me.menuPerms || {}), kpi: false, "kpi-results": false };
+    const saved = await api("/save", {
+      method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${adminToken}` },
+      body: JSON.stringify({ _version: state.version, data: state.data }),
+    });
+    assert.equal(saved.status, 200);
+    const denied = await api("/api/hr/draft-kpi-goal", {
+      method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${adminToken}` },
+      body: JSON.stringify({ jobRole: "개발자" }),
+    });
+    assert.equal(denied.status, 403);
+    assert.equal((await denied.json()).code, "MENU_ACCESS_DENIED");
+
+    const latest = await (await api("/data", { headers: { Authorization: `Bearer ${adminToken}` } })).json();
+    const latestMe = latest.data.employees.find(e => String(e.id) === String(adminId));
+    latestMe.menuPerms = { ...(latestMe.menuPerms || {}), kpi: true, "kpi-results": true };
+    assert.equal((await api("/save", {
+      method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${adminToken}` },
+      body: JSON.stringify({ _version: latest.version, data: latest.data }),
+    })).status, 200);
+  });
+
   await t.test("8) /save 후 version 증가 및 기존 collection 보존", async () => {
     const before = await (await api("/status")).json();
     const res = await api("/save?user=test_admin", {
@@ -545,6 +570,7 @@ test("resume parser: provider mock 502/504/성공 경로", async (t) => {
     env: {
       HR_RESUME_GROQ_URL_OVERRIDE: groqMock.url,
       RESUME_AI_TIMEOUT_MS: "500",
+      AI_API_RATE_MAX: "3",
       GROQ_API_KEY: "test-fake-key-not-a-real-secret",
     },
   });
@@ -585,5 +611,15 @@ test("resume parser: provider mock 502/504/성공 경로", async (t) => {
     assert.ok(!raw.includes("api.groq.com"), "응답에 provider 엔드포인트가 노출되면 안 됨");
     assert.ok(!raw.includes("test-fake-key-not-a-real-secret"), "응답에 API 키가 노출되면 안 됨");
     assert.ok(!raw.includes("Hong Gildong"), "응답에 원문 이력서 텍스트가 그대로 노출되면 안 됨");
+  });
+
+  await t.test("공통 AI quota는 같은 회사·계정의 서로 다른 AI API에도 합산 적용", async () => {
+    const res = await api("/api/hr/draft-kpi-goal", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ jobRole: "개발자", itemName: "품질 개선" }),
+    });
+    assert.equal(res.status, 429);
+    assert.equal((await res.json()).code, "AI_RATE_LIMITED");
   });
 });
