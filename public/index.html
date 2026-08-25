@@ -21287,10 +21287,14 @@ function renderRecruitEvalDetailPage(){
   </div></div>`;
 }
 async function saveRecruitVerdict(interviewId){
+  const current=recruitInterviews.find(i=>i.id===interviewId);
   const verdict=$("#iv-verdict-sel")?.value;
   const comment=$("#iv-verdict-comment")?.value.trim();
-  const r=await serverRequest("POST",`/api/recruit/interviews/${interviewId}/verdict`,{verdict,comment,userId:currentUser.id,role:currentUser.role});
-  if(!r?.ok){showToast(r?.message||"저장에 실패했습니다.","error");return;}
+  const r=await serverRequest("POST",`/api/recruit/interviews/${interviewId}/verdict`,{verdict,comment,expectedUpdatedAt:current?.updatedAt||null,userId:currentUser.id,role:currentUser.role});
+  if(!r?.ok){
+    if(r?.conflict){await loadRecruitInterviews();renderRecruitEvalDetailPage();}
+    showToast(r?.message||"저장에 실패했습니다.","error");return;
+  }
   const idx=recruitInterviews.findIndex(i=>i.id===interviewId);if(idx>=0)recruitInterviews[idx]=r.interview;
   showToast("최종 판정이 저장되었습니다.","success");
   renderRecruitEvalDetailPage();

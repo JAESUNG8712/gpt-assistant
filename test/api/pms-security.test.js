@@ -96,4 +96,45 @@ test("PMS: 서버 권한 경계, PM 자동 포함, 동시편집 충돌 방어", 
     assert.equal(staleBody.code, "PMS_PROJECT_CONFLICT");
     assert.equal(staleBody.project.updatedAt, updated.updatedAt);
   });
+
+  await t.test("업무일지는 투입 프로젝트만 허용하고 오래된 탭의 덮어쓰기를 409로 차단한다", async () => {
+    const first = await api("/api/pms/worklogs", auth(memberAToken, {
+      employeeId: "member-a",
+      date: "2026-08-25",
+      expectedUpdatedAt: null,
+      blocks: [{ projectId: projectA.id, task: "API 검증", startTime: "09:00", endTime: "10:00" }],
+    }));
+    assert.equal(first.status, 200);
+    const saved = (await first.json()).worklog;
+
+    const update = await api("/api/pms/worklogs", auth(memberAToken, {
+      employeeId: "member-a",
+      date: "2026-08-25",
+      expectedUpdatedAt: saved.updatedAt,
+      blocks: [{ projectId: projectA.id, task: "정상 수정", startTime: "10:00", endTime: "11:00" }],
+    }));
+    assert.equal(update.status, 200);
+
+    const stale = await api("/api/pms/worklogs", auth(memberAToken, {
+      employeeId: "member-a",
+      date: "2026-08-25",
+      expectedUpdatedAt: saved.updatedAt,
+      blocks: [{ projectId: projectA.id, task: "오래된 탭", startTime: "11:00", endTime: "12:00" }],
+    }));
+    assert.equal(stale.status, 409);
+    const staleBody = await stale.json();
+    assert.equal(staleBody.conflict, true);
+    assert.equal(staleBody.worklog.blocks[0].task, "정상 수정");
+
+    const foreignProject = await api("/api/pms/worklogs", auth(memberAToken, {
+      employeeId: "member-a", date: "2026-08-26", expectedUpdatedAt: null,
+      blocks: [{ projectId: projectB.id, task: "권한 우회", startTime: "09:00", endTime: "10:00" }],
+    }));
+    assert.equal(foreignProject.status, 403);
+
+    const invalidDate = await api("/api/pms/worklogs", auth(memberAToken, {
+      employeeId: "member-a", date: "2026-02-30", expectedUpdatedAt: null, blocks: [],
+    }));
+    assert.equal(invalidDate.status, 400);
+  });
 });

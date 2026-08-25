@@ -9414,12 +9414,18 @@ app.post("/api/recruit/interviews/:id/verdict", async (req, res) => {
   try {
     const id = req.params.id;
     const companyId = req.auth.companyId || null;
-    const { verdict, comment } = req.body || {};
+    const { verdict, comment, expectedUpdatedAt } = req.body || {};
     const { role, empId: userId } = req.auth;
     if (!RECRUIT_VERDICTS.includes(verdict)) {
       return res.status(400).json({ ok: false, message: "판정 값이 올바르지 않습니다." });
     }
     const applyVerdict = (interview) => {
+      if (expectedUpdatedAt !== undefined && (interview.updatedAt || null) !== (expectedUpdatedAt || null)) {
+        throw new _RecruitRouteError(409, "다른 사용자가 먼저 면접 정보를 변경했습니다. 최신 내용을 불러온 뒤 다시 시도하세요.");
+      }
+      if (interview.status === "canceled") {
+        throw new _RecruitRouteError(409, "취소된 면접에는 최종 판정을 입력할 수 없습니다.");
+      }
       if (!interview.leadInterviewerId) {
         throw new _RecruitRouteError(400, "심사위원장이 지정되지 않아 최종 판정을 입력할 수 없습니다.");
       }
@@ -9436,7 +9442,7 @@ app.post("/api/recruit/interviews/:id/verdict", async (req, res) => {
       try {
         applyVerdict(interview);
       } catch (e) {
-        if (e instanceof _RecruitRouteError) return res.status(e.status).json({ ok: false, message: _safeErrMsg(e) });
+        if (e instanceof _RecruitRouteError) return res.status(e.status).json({ ok: false, conflict: e.status === 409, interview, message: _safeErrMsg(e) });
         throw e;
       }
       _saveFileRecruit();
@@ -9446,7 +9452,7 @@ app.post("/api/recruit/interviews/:id/verdict", async (req, res) => {
     try {
       interview = await _pgLockedUpdate("recruit_interviews", id, async (iv) => applyVerdict(iv), companyId);
     } catch (e) {
-      if (e instanceof _RecruitRouteError) return res.status(e.status).json({ ok: false, message: _safeErrMsg(e) });
+      if (e instanceof _RecruitRouteError) return res.status(e.status).json({ ok: false, conflict: e.status === 409, message: _safeErrMsg(e) });
       throw e;
     }
     res.json({ ok: true, interview });
