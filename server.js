@@ -1326,7 +1326,10 @@ function _sanitizeGatedRecord(field, incoming, stored, actor, actorEmp, settings
 // 복지포인트 잔액 초과 사용 차단. 클라이언트(doUseWelfare)가 잔액을 계산해 막고 있지만
 // 서버 재검증이 없어, 두 세션에서 거의 동시에 사용하면 둘 다 통과해 잔액이 마이너스로
 // 내려갈 수 있었다. 저장 직전에 그 직원·그 연도의 부여/사용 합계를 다시 계산해 초과분을
-// 걸러낸다(관리자 저장은 정산·조정 목적일 수 있어 그대로 둔다).
+// 걸러낸다(관리자 저장은 정산·조정 목적일 수 있어 그대로 둔다). 이 검사가 원자적인 이유는
+// 호출부가 반드시 _withSaveLock + 회사별 _withDistributedSaveLock 안에 있기 때문이다.
+// 이 잠금 밖에서 호출하면 두 요청이 같은 storedList를 읽어 다시 초과 사용될 수 있으므로,
+// 별도 복지포인트 저장 경로를 추가할 때도 같은 논리 키 잠금을 반드시 공유해야 한다.
 function _dropOverspentWelfare(incomingList, storedList, actor) {
   if (!Array.isArray(incomingList) || !actor || actor.role === "admin") return incomingList;
   const storedIds = new Set((storedList || []).map(r => String(r.id)));
@@ -2718,12 +2721,29 @@ async function _resolveCompanyId(companyCode) {
 async function verifyCredentials(companyId, loginId, pw) {
   if (!loginId || !pw) return null;
   if (!USE_JSON_FILE && !companyId) return null; // Postgres/SaaS 모드는 회사가 반드시 있어야 함
-  const data = await loadData(companyId);
-  const emp = (data.employees || []).find(e => e.loginId === loginId && e.active);
+  // 로그인 한 번에 전사 employees·KPI·설정 전체를 loadData()로 역직렬화하면 회사 데이터가
+  // 커질수록 인증 시간이 선형으로 늘고, 동시에 여러 명이 로그인할 때 불필요한 DB 전송과
+  // Node 힙 사용량도 함께 증가한다. PostgreSQL에서는 회사+loginId 한 행만 조회한다.
+  // JSON 단일회사 모드는 이미 메모리에 올라온 배열을 그대로 사용하므로 기존 경로 유지.
+  let emp;
+  if (USE_JSON_FILE) {
+    emp = (_fileStore.employees || []).find(e => e.loginId === loginId && e.active);
+  } else {
+    const { rows } = await pool.query(
+      "SELECT data FROM employees WHERE company_id = $1 AND is_deleted = FALSE " +
+      "AND data->>'loginId' = $2 AND COALESCE(data->>'active','true') <> 'false' LIMIT 1",
+      [companyId, loginId]
+    );
+    emp = rows[0]?.data || null;
+  }
   if (!emp || !emp.pw) return null;
   const valid = isHashedPw(emp.pw) ? await bcrypt.compare(pw, emp.pw) : emp.pw === pw;
   if (!valid) return null;
-  return omitPw(emp);
+  // 2FA 검증에는 secret이 필요하지만 응답으로는 절대 노출하지 않는다. 비열거 속성으로
+  // 내부 호출부에만 전달하면 JSON.stringify/객체 전개에서도 wire로 새지 않는다.
+  const safe = omitPw(emp);
+  Object.defineProperty(safe, "_twoFactorSecret", { value: emp.twoFactorSecret || "", enumerable: false });
+  return safe;
 }
 
 // POST /login — verifies credentials against server-stored (hashed) passwords
@@ -2757,9 +2777,7 @@ app.post("/login", loginLimiter, async (req, res) => {
     if (!employee) return res.json({ ok: false, message: "아이디 또는 비밀번호가 올바르지 않습니다." });
     if (employee.twoFactorEnabled) {
       if (!otp) { res.locals.loginOk = true; return res.json({ ok: true, requireOtp: true }); }
-      const data = await loadData(companyId);
-      const raw = (data.employees || []).find(e => e.loginId === loginId && e.active);
-      if (!raw || !raw.twoFactorSecret || !totpVerify(raw.twoFactorSecret, otp))
+      if (!employee._twoFactorSecret || !totpVerify(employee._twoFactorSecret, otp))
         return res.json({ ok: false, requireOtp: true, message: "인증 코드가 올바르지 않습니다." });
     }
     // 서버가 실제로 검증한 계정 정보로만 토큰을 발급한다(클라이언트가 보낸 role은 무시).
@@ -8953,6 +8971,11 @@ app.post("/api/hr/draft-eval-comment", async (req, res) => {
 class _RecruitRouteError extends Error {
   constructor(status, message) { super(message); this.status = status; }
 }
+function _recruitAssertFresh(record, expectedUpdatedAt) {
+  if (expectedUpdatedAt !== undefined && (record?.updatedAt || null) !== (expectedUpdatedAt || null)) {
+    throw new _RecruitRouteError(409, "다른 사용자가 먼저 변경했습니다. 최신 내용을 불러온 뒤 다시 시도하세요.");
+  }
+}
 // companyId: recruit_candidates/recruit_interviews는 nullable 단순 company_id 컬럼이라
 // (레거시 NULL 데이터 포함) 다른 회사 소유 id로는 아예 잠글 수 없도록 필터한다 — 회사가
 // 다르면 부서 스코프 검사(mutate 콜백 안의 _recruitCanViewCandidate 등) 이전에 404.
@@ -9025,8 +9048,9 @@ app.post("/api/recruit/candidates/:id", async (req, res) => {
     const id = req.params.id;
     const { role, empId: userId } = req.auth;
     const companyId = req.auth.companyId || null;
-    const { name, email, phone, memo, resumeSummary, strengths, weaknesses, finalEducation, careerHistory, lastSalary, desiredSalary, activities, careerGaps, resume } = req.body || {};
+    const { name, email, phone, memo, resumeSummary, strengths, weaknesses, finalEducation, careerHistory, lastSalary, desiredSalary, activities, careerGaps, resume, expectedUpdatedAt } = req.body || {};
     const applyEdits = (candidate) => {
+      _recruitAssertFresh(candidate, expectedUpdatedAt);
       if (name != null) candidate.name = name;
       if (email != null) candidate.email = email;
       if (phone != null) candidate.phone = phone;
@@ -9048,7 +9072,8 @@ app.post("/api/recruit/candidates/:id", async (req, res) => {
       const candidate = _fileRecruit.candidates.find(c => c.id === id);
       if (!candidate) return res.status(404).json({ ok: false, message: "지원자를 찾을 수 없습니다." });
       if (!(await _recruitCanViewCandidate(candidate, userId, role, companyId))) return res.status(403).json({ ok: false, message: "수정 권한이 없습니다." });
-      applyEdits(candidate);
+      try { applyEdits(candidate); }
+      catch (e) { if (e instanceof _RecruitRouteError) return res.status(e.status).json({ ok: false, conflict: e.status === 409, candidate, message: _safeErrMsg(e) }); throw e; }
       _saveFileRecruit();
       return res.json({ ok: true, candidate: _recruitStripResume(candidate) });
     }
@@ -9061,7 +9086,7 @@ app.post("/api/recruit/candidates/:id", async (req, res) => {
         return applyEdits(c);
       }, companyId);
     } catch (e) {
-      if (e instanceof _RecruitRouteError) return res.status(e.status).json({ ok: false, message: _safeErrMsg(e) });
+      if (e instanceof _RecruitRouteError) return res.status(e.status).json({ ok: false, conflict: e.status === 409, message: _safeErrMsg(e) });
       throw e;
     }
     res.json({ ok: true, candidate: _recruitStripResume(candidate) });
@@ -9094,7 +9119,7 @@ app.post("/api/recruit/candidates/:id/status", async (req, res) => {
     const id = req.params.id;
     const { role, empId: userId } = req.auth;
     const companyId = req.auth.companyId || null;
-    const { status, reason } = req.body || {};
+    const { status, reason, expectedUpdatedAt } = req.body || {};
     if (!status) return res.status(400).json({ ok: false, message: "변경할 전형 단계는 필수입니다." });
     const RECRUIT_PASS_SCORE = 15;
     const checkReasonRequired = async (candidate, job, cache) => {
@@ -9112,6 +9137,8 @@ app.post("/api/recruit/candidates/:id/status", async (req, res) => {
       const candidate = _fileRecruit.candidates.find(c => c.id === id);
       if (!candidate) return res.status(404).json({ ok: false, message: "지원자를 찾을 수 없습니다." });
       if (!(await _recruitCanViewCandidate(candidate, userId, role, companyId))) return res.status(403).json({ ok: false, message: "수정 권한이 없습니다." });
+      try { _recruitAssertFresh(candidate, expectedUpdatedAt); }
+      catch (e) { return res.status(e.status).json({ ok: false, conflict: true, candidate, message: _safeErrMsg(e) }); }
       const job = await _recruitJobById(candidate.jobId, companyId);
       if (!job || !job.stages.includes(status)) return res.status(400).json({ ok: false, message: "해당 채용공고에 없는 전형 단계입니다." });
       if (await checkReasonRequired(candidate, job) && !String(reason || "").trim()) {
@@ -9127,6 +9154,7 @@ app.post("/api/recruit/candidates/:id/status", async (req, res) => {
     try {
       const rc = await _recruitBuildCache(companyId, { employees: true, jobs: true, interviews: true });
       candidate = await _pgLockedUpdate("recruit_candidates", id, async (c) => {
+        _recruitAssertFresh(c, expectedUpdatedAt);
         if (!(await _recruitCanViewCandidate(c, userId, role, companyId, rc))) throw new _RecruitRouteError(403, "수정 권한이 없습니다.");
         const job = await _recruitJobById(c.jobId, companyId, rc);
         if (!job || !job.stages.includes(status)) throw new _RecruitRouteError(400, "해당 채용공고에 없는 전형 단계입니다.");
@@ -9139,7 +9167,7 @@ app.post("/api/recruit/candidates/:id/status", async (req, res) => {
         return c;
       }, companyId);
     } catch (e) {
-      if (e instanceof _RecruitRouteError) return res.status(e.status).json({ ok: false, message: _safeErrMsg(e) });
+      if (e instanceof _RecruitRouteError) return res.status(e.status).json({ ok: false, conflict: e.status === 409, message: _safeErrMsg(e) });
       throw e;
     }
     res.json({ ok: true, candidate });
@@ -9244,8 +9272,9 @@ app.post("/api/recruit/interviews/:id", async (req, res) => {
     const id = req.params.id;
     const { role, empId: userId } = req.auth;
     const companyId = req.auth.companyId || null;
-    const { round, schedule, interviewerIds, location, leadInterviewerId } = req.body || {};
+    const { round, schedule, interviewerIds, location, leadInterviewerId, expectedUpdatedAt } = req.body || {};
     const applyEdits = (interview) => {
+      _recruitAssertFresh(interview, expectedUpdatedAt);
       if (round != null) interview.round = Number(round);
       if (schedule != null) interview.schedule = schedule;
       if (location != null) interview.location = location;
@@ -9262,7 +9291,8 @@ app.post("/api/recruit/interviews/:id", async (req, res) => {
       const interview = _fileRecruit.interviews.find(i => i.id === id);
       if (!interview) return res.status(404).json({ ok: false, message: "면접 일정을 찾을 수 없습니다." });
       if (!(await _recruitIsInterviewPrivileged(interview, userId, role, companyId))) return res.status(403).json({ ok: false, message: "수정 권한이 없습니다." });
-      applyEdits(interview);
+      try { applyEdits(interview); }
+      catch (e) { if (e instanceof _RecruitRouteError) return res.status(e.status).json({ ok: false, conflict: true, interview, message: _safeErrMsg(e) }); throw e; }
       _saveFileRecruit();
       return res.json({ ok: true, interview });
     }
@@ -9274,7 +9304,7 @@ app.post("/api/recruit/interviews/:id", async (req, res) => {
         return applyEdits(iv);
       }, companyId);
     } catch (e) {
-      if (e instanceof _RecruitRouteError) return res.status(e.status).json({ ok: false, message: _safeErrMsg(e) });
+      if (e instanceof _RecruitRouteError) return res.status(e.status).json({ ok: false, conflict: e.status === 409, message: _safeErrMsg(e) });
       throw e;
     }
     res.json({ ok: true, interview });
@@ -9288,8 +9318,9 @@ app.post("/api/recruit/interviews/:id/cancel", async (req, res) => {
     const id = req.params.id;
     const { role, empId: userId } = req.auth;
     const companyId = req.auth.companyId || null;
-    const { reason } = req.body || {};
+    const { reason, expectedUpdatedAt } = req.body || {};
     const applyCancel = (interview) => {
+      _recruitAssertFresh(interview, expectedUpdatedAt);
       interview.status = "canceled";
       interview.cancelReason = reason || "";
       interview.canceledAt = new Date().toISOString();
@@ -9300,7 +9331,8 @@ app.post("/api/recruit/interviews/:id/cancel", async (req, res) => {
       const interview = _fileRecruit.interviews.find(i => i.id === id);
       if (!interview) return res.status(404).json({ ok: false, message: "면접 일정을 찾을 수 없습니다." });
       if (!(await _recruitIsInterviewPrivileged(interview, userId, role, companyId))) return res.status(403).json({ ok: false, message: "취소 권한이 없습니다." });
-      applyCancel(interview);
+      try { applyCancel(interview); }
+      catch (e) { if (e instanceof _RecruitRouteError) return res.status(e.status).json({ ok: false, conflict: true, interview, message: _safeErrMsg(e) }); throw e; }
       _saveFileRecruit();
       return res.json({ ok: true, interview });
     }
@@ -9312,7 +9344,7 @@ app.post("/api/recruit/interviews/:id/cancel", async (req, res) => {
         return applyCancel(iv);
       }, companyId);
     } catch (e) {
-      if (e instanceof _RecruitRouteError) return res.status(e.status).json({ ok: false, message: _safeErrMsg(e) });
+      if (e instanceof _RecruitRouteError) return res.status(e.status).json({ ok: false, conflict: e.status === 409, message: _safeErrMsg(e) });
       throw e;
     }
     res.json({ ok: true, interview });
@@ -9411,12 +9443,18 @@ app.post("/api/recruit/interviews/:id/verdict", async (req, res) => {
   try {
     const id = req.params.id;
     const companyId = req.auth.companyId || null;
-    const { verdict, comment } = req.body || {};
+    const { verdict, comment, expectedUpdatedAt } = req.body || {};
     const { role, empId: userId } = req.auth;
     if (!RECRUIT_VERDICTS.includes(verdict)) {
       return res.status(400).json({ ok: false, message: "판정 값이 올바르지 않습니다." });
     }
     const applyVerdict = (interview) => {
+      if (expectedUpdatedAt !== undefined && (interview.updatedAt || null) !== (expectedUpdatedAt || null)) {
+        throw new _RecruitRouteError(409, "다른 사용자가 먼저 면접 정보를 변경했습니다. 최신 내용을 불러온 뒤 다시 시도하세요.");
+      }
+      if (interview.status === "canceled") {
+        throw new _RecruitRouteError(409, "취소된 면접에는 최종 판정을 입력할 수 없습니다.");
+      }
       if (!interview.leadInterviewerId) {
         throw new _RecruitRouteError(400, "심사위원장이 지정되지 않아 최종 판정을 입력할 수 없습니다.");
       }
@@ -9433,7 +9471,7 @@ app.post("/api/recruit/interviews/:id/verdict", async (req, res) => {
       try {
         applyVerdict(interview);
       } catch (e) {
-        if (e instanceof _RecruitRouteError) return res.status(e.status).json({ ok: false, message: _safeErrMsg(e) });
+        if (e instanceof _RecruitRouteError) return res.status(e.status).json({ ok: false, conflict: e.status === 409, interview, message: _safeErrMsg(e) });
         throw e;
       }
       _saveFileRecruit();
@@ -9443,7 +9481,7 @@ app.post("/api/recruit/interviews/:id/verdict", async (req, res) => {
     try {
       interview = await _pgLockedUpdate("recruit_interviews", id, async (iv) => applyVerdict(iv), companyId);
     } catch (e) {
-      if (e instanceof _RecruitRouteError) return res.status(e.status).json({ ok: false, message: _safeErrMsg(e) });
+      if (e instanceof _RecruitRouteError) return res.status(e.status).json({ ok: false, conflict: e.status === 409, message: _safeErrMsg(e) });
       throw e;
     }
     res.json({ ok: true, interview });

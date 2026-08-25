@@ -20950,10 +20950,11 @@ function openRecruitCandidateEditModal(id){
   _renderCareerTable("rce-career");
 }
 async function saveRecruitCandidateEdit(id){
+  const current=recruitCandidates.find(c=>c.id===id);
   const body={name:$("#rce-name")?.value.trim(),phone:$("#rce-phone")?.value.trim(),email:$("#rce-email")?.value.trim(),
     resumeSummary:$("#rce-summary")?.value.trim(),strengths:$("#rce-strengths")?.value.trim(),weaknesses:$("#rce-weaknesses")?.value.trim(),
     finalEducation:$("#rce-education")?.value.trim(),careerHistory:$("#rce-career")?.value.trim(),lastSalary:$("#rce-salary")?.value.trim(),desiredSalary:$("#rce-desired-salary")?.value.trim(),activities:$("#rce-activities")?.value.trim(),careerGaps:$("#rce-gaps")?.value.trim(),
-    memo:$("#rce-memo")?.value.trim(),role:currentUser.role};
+    memo:$("#rce-memo")?.value.trim(),expectedUpdatedAt:current?.updatedAt||null,role:currentUser.role};
   if(_rceResumeFile)body.resume=_rceResumeFile;
   let r;
   try{
@@ -20962,7 +20963,7 @@ async function saveRecruitCandidateEdit(id){
     showToast("서버 응답이 없어 수정에 실패했습니다. 네트워크 상태를 확인하고 다시 시도해주세요.","error");
     return;
   }
-  if(!r?.ok){showToast(r?.message||"수정에 실패했습니다.","error");return;}
+  if(!r?.ok){if(r?.conflict)await loadRecruitFromServer();showToast(r?.message||"수정에 실패했습니다.","error");return;}
   const idx=recruitCandidates.findIndex(c=>c.id===id);if(idx>=0)recruitCandidates[idx]=r.candidate;
   closeModal();showToast("수정되었습니다.","success");renderRecruitCandidatesPage();
 }
@@ -21008,11 +21009,12 @@ function _rcStatusReasonToggle(id){
   wrap.style.display=_rcStatusReasonNeeded(id)?"":"none";
 }
 async function saveRecruitStatus(id){
+  const current=recruitCandidates.find(c=>c.id===id);
   const status=$("#rc-status")?.value;
   const reason=$("#rc-status-reason")?.value.trim()||"";
   if(_rcStatusReasonNeeded(id)&&!reason){showToast("통과 기준 미만 점수로 다음 단계 진행 시 사유를 입력해야 합니다.","error");return;}
-  const r=await serverRequest("POST",`/api/recruit/candidates/${id}/status`,{status,reason,role:currentUser.role});
-  if(!r?.ok){showToast(r?.message||"변경에 실패했습니다.","error");return;}
+  const r=await serverRequest("POST",`/api/recruit/candidates/${id}/status`,{status,reason,expectedUpdatedAt:current?.updatedAt||null,role:currentUser.role});
+  if(!r?.ok){if(r?.conflict)await loadRecruitFromServer();showToast(r?.message||"변경에 실패했습니다.","error");return;}
   const idx=recruitCandidates.findIndex(c=>c.id===id);if(idx>=0)recruitCandidates[idx]=r.candidate;
   closeModal();showToast("변경되었습니다.","success");renderRecruitCandidatesPage();
 }
@@ -21154,19 +21156,21 @@ function _iveRefreshLeadOptions(preselect){
   if(ids.includes(cur))lead.value=cur;
 }
 async function saveRecruitInterviewEdit(interviewId){
+  const current=recruitInterviews.find(i=>i.id===interviewId);
   const interviewerIds=Array.from($("#ive-interviewers")?.selectedOptions||[]).map(o=>o.value);
   const leadInterviewerId=$("#ive-lead")?.value||"";
-  const body={round:Number($("#ive-round")?.value)||1,schedule:$("#ive-schedule")?.value,location:$("#ive-location")?.value.trim(),interviewerIds,leadInterviewerId,role:currentUser.role};
+  const body={round:Number($("#ive-round")?.value)||1,schedule:$("#ive-schedule")?.value,location:$("#ive-location")?.value.trim(),interviewerIds,leadInterviewerId,expectedUpdatedAt:current?.updatedAt||null,role:currentUser.role};
   const r=await serverRequest("POST",`/api/recruit/interviews/${interviewId}`,body);
-  if(!r?.ok){showToast(r?.message||"수정에 실패했습니다.","error");return;}
+  if(!r?.ok){if(r?.conflict)await loadRecruitFromServer();showToast(r?.message||"수정에 실패했습니다.","error");return;}
   const idx=recruitInterviews.findIndex(i=>i.id===interviewId);if(idx>=0)recruitInterviews[idx]=r.interview;
   closeModal();showToast("면접 일정이 수정되었습니다.","success");renderRecruitEvalPage();
 }
 async function cancelRecruitInterview(interviewId){
+  const current=recruitInterviews.find(i=>i.id===interviewId);
   const reason=prompt("취소 사유를 입력해주세요. (선택)")||"";
   if(!confirm("이 면접 일정을 취소하시겠습니까?"))return;
-  const r=await serverRequest("POST",`/api/recruit/interviews/${interviewId}/cancel`,{reason,role:currentUser.role});
-  if(!r?.ok){showToast(r?.message||"취소에 실패했습니다.","error");return;}
+  const r=await serverRequest("POST",`/api/recruit/interviews/${interviewId}/cancel`,{reason,expectedUpdatedAt:current?.updatedAt||null,role:currentUser.role});
+  if(!r?.ok){if(r?.conflict)await loadRecruitFromServer();showToast(r?.message||"취소에 실패했습니다.","error");return;}
   const idx=recruitInterviews.findIndex(i=>i.id===interviewId);if(idx>=0)recruitInterviews[idx]=r.interview;
   showToast("면접 일정이 취소되었습니다.","info");renderRecruitEvalPage();
 }
@@ -21287,10 +21291,14 @@ function renderRecruitEvalDetailPage(){
   </div></div>`;
 }
 async function saveRecruitVerdict(interviewId){
+  const current=recruitInterviews.find(i=>i.id===interviewId);
   const verdict=$("#iv-verdict-sel")?.value;
   const comment=$("#iv-verdict-comment")?.value.trim();
-  const r=await serverRequest("POST",`/api/recruit/interviews/${interviewId}/verdict`,{verdict,comment,userId:currentUser.id,role:currentUser.role});
-  if(!r?.ok){showToast(r?.message||"저장에 실패했습니다.","error");return;}
+  const r=await serverRequest("POST",`/api/recruit/interviews/${interviewId}/verdict`,{verdict,comment,expectedUpdatedAt:current?.updatedAt||null,userId:currentUser.id,role:currentUser.role});
+  if(!r?.ok){
+    if(r?.conflict){await loadRecruitFromServer();renderRecruitEvalDetailPage();}
+    showToast(r?.message||"저장에 실패했습니다.","error");return;
+  }
   const idx=recruitInterviews.findIndex(i=>i.id===interviewId);if(idx>=0)recruitInterviews[idx]=r.interview;
   showToast("최종 판정이 저장되었습니다.","success");
   renderRecruitEvalDetailPage();

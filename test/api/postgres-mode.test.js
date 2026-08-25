@@ -160,6 +160,42 @@ if (!ADMIN_DATABASE_URL) {
       assert.ok(ids.has("parallel-b"), "B 인스턴스 변경이 유실되면 안 됨");
     });
 
+    await t.test("7b-2) 서로 다른 서버 인스턴스의 동시 복지포인트 사용은 잔액을 초과하지 않는다", async () => {
+      const adminState = await (await api("/data", { headers: { Authorization: `Bearer ${companyAToken}` } })).json();
+      const member = { id: 900001, loginId: "welfare_member", pw: "WelfarePassword123", role: "member", name: "복지동시성회원", empNo: "WF-900001", dept: "테스트", team: "QA", active: true, createdAt: "2097-01-01T00:00:00.000Z", updatedAt: "2097-01-01T00:00:00.000Z" };
+      const grant = { id: "pg-wp-concurrency-grant", empId: member.id, points: 100000, type: "grant", year: 2097, desc: "동시성 검증 부여", date: "2097-01-01", by: adminState.data.employees[0].id };
+      const seed = await api("/save", {
+        method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${companyAToken}` },
+        body: JSON.stringify({ _version: adminState.version, data: { ...adminState.data, employees: [...adminState.data.employees, member], welfarePoints: [...(adminState.data.welfarePoints || []), grant] } }),
+      });
+      assert.equal(seed.status, 200);
+      const login = await (await api("/login", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ companyCode: companyACode, loginId: member.loginId, pw: member.pw }),
+      })).json();
+      assert.equal(login.ok, true);
+      const apiB = (p, opts) => fetch(serverB.baseUrl + p, opts);
+      const [stateA, stateB] = await Promise.all([
+        api("/data", { headers: { Authorization: `Bearer ${login.token}` } }).then(r => r.json()),
+        apiB("/data", { headers: { Authorization: `Bearer ${login.token}` } }).then(r => r.json()),
+      ]);
+      const makePayload = (state, id) => ({ _version: state.version, data: { ...state.data, welfarePoints: [...(state.data.welfarePoints || []), { id, empId: member.id, points: 70000, type: "use", year: 2097, desc: "동시 사용", date: "2097-02-01", by: member.id }] } });
+      const headers = { "Content-Type": "application/json", Authorization: `Bearer ${login.token}` };
+      const [useA, useB] = await Promise.all([
+        api("/save", { method: "POST", headers, body: JSON.stringify(makePayload(stateA, "pg-wp-use-a")) }),
+        apiB("/save", { method: "POST", headers, body: JSON.stringify(makePayload(stateB, "pg-wp-use-b")) }),
+      ]);
+      assert.equal(useA.status, 200);
+      assert.equal(useB.status, 200);
+      const finalState = await (await api("/data", { headers: { Authorization: `Bearer ${companyAToken}` } })).json();
+      const ledger = (finalState.data.welfarePoints || []).filter(r => String(r.empId) === String(member.id) && r.year === 2097);
+      const granted = ledger.filter(r => r.type === "grant").reduce((sum, r) => sum + r.points, 0);
+      const used = ledger.filter(r => r.type === "use").reduce((sum, r) => sum + r.points, 0);
+      assert.equal(granted, 100000);
+      assert.equal(used, 70000, "두 인스턴스의 70,000원 동시 사용 중 한 건만 반영돼야 함");
+      assert.ok(granted - used >= 0);
+    });
+
     await t.test("7c) 스냅샷 복원은 HR 삭제와 budget_store 교체를 함께 커밋한다", async () => {
       const dbCheck = new Client({ connectionString: testDbUrl });
       await dbCheck.connect();
