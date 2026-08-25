@@ -126,11 +126,17 @@ async function bootstrapAdminAndLogin(server, { loginId, pw, name = "테스트 �
 // 타임아웃하므로 "정상적으로 빨리 죽는지"를 확인하는 용도로 쓰기엔 매번 15초씩 낭비된다.
 // 대신 이 헬퍼는 child의 'exit' 이벤트를 직접 기다린다 — 실제 서버는 이 시나리오에서
 // 수백 ms 안에 process.exit(1)하므로(initDB().catch()), 정상적으로 빠르게 끝난다.
-// opts.seedData가 있으면 서버를 띄우기 전에 그 내용을 DATA_FILE에 미리 써 둔다.
+// opts.seedData/seedRaw/seedFiles가 있으면 서버를 띄우기 전에 테스트 전용 임시 저장소에
+// 미리 써 둔다. seedRaw와 seedFiles는 "손상된 기존 파일을 fail-fast로 거부"하는 저장소
+// 안전성 회귀 테스트에만 사용한다.
 async function startServerExpectingBootFailure(opts = {}) {
   const port = await getFreePort();
   const { dataDir, dataFile, budgetDataFile, env } = _prepareChildEnv({ ...opts, port, dirPrefix: "hr-test-bootfail-" });
-  if (opts.seedData) fs.writeFileSync(dataFile, JSON.stringify(opts.seedData));
+  if (opts.seedRaw !== undefined) fs.writeFileSync(dataFile, opts.seedRaw, "utf8");
+  else if (opts.seedData) fs.writeFileSync(dataFile, JSON.stringify(opts.seedData));
+  for (const [fileName, content] of Object.entries(opts.seedFiles || {})) {
+    fs.writeFileSync(path.join(dataDir, fileName), content, "utf8");
+  }
   const { child, logs } = _spawnServer(env, path.join(__dirname, "..", ".."));
 
   const exitCode = await new Promise((resolve, reject) => {

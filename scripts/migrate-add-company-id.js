@@ -42,17 +42,28 @@
 //     node scripts/migrate-add-company-id.js
 //
 //   COMPANY_SLUG 생략 시 COMPANY_NAME에서 자동 생성한다.
+//
+// 운영 권장 순서(읽기 전용 점검 → 명시 확인 뒤 백필):
+//   DATABASE_URL=postgres://... node scripts/migrate-add-company-id.js --dry-run
+//   DATABASE_URL=postgres://... COMPANY_NAME="LS티라유텍" COMPANY_SLUG="ls-tirautech" \
+//     CONFIRM_COMPANY_BACKFILL="LS티라유텍" node scripts/migrate-add-company-id.js
 "use strict";
 const fs = require("fs");
 const path = require("path");
 const { Pool } = require("pg");
+const DRY_RUN = process.argv.includes("--dry-run");
 
 if (!process.env.DATABASE_URL) {
   console.error("DATABASE_URL이 설정되어 있지 않습니다. 예: DATABASE_URL=postgres://... COMPANY_NAME=\"회사명\" node scripts/migrate-add-company-id.js");
   process.exit(1);
 }
-if (!process.env.COMPANY_NAME) {
+if (!DRY_RUN && !process.env.COMPANY_NAME) {
   console.error("COMPANY_NAME이 설정되어 있지 않습니다. 기존 데이터가 소속될 회사 이름을 지정하세요.");
+  process.exit(1);
+}
+if (!DRY_RUN && process.env.CONFIRM_COMPANY_BACKFILL !== process.env.COMPANY_NAME) {
+  console.error("안전 확인 실패: CONFIRM_COMPANY_BACKFILL에 COMPANY_NAME과 정확히 같은 회사명을 설정해야 합니다.");
+  console.error("예: COMPANY_NAME=\"LS티라유텍\" CONFIRM_COMPANY_BACKFILL=\"LS티라유텍\" node scripts/migrate-add-company-id.js");
   process.exit(1);
 }
 
@@ -102,6 +113,31 @@ const COMPOSITE_PK_TABLES = [
 ];
 
 async function main() {
+  if (DRY_RUN) {
+    console.log("company_id 백필 사전 점검(읽기 전용)을 시작합니다. 데이터·스키마는 변경하지 않습니다.");
+    let totalNullRows = 0;
+    for (const table of TABLES) {
+      const { rows } = await pool.query(
+        "SELECT to_regclass($1) AS table_name",
+        [`public.${table}`]
+      );
+      if (!rows[0].table_name) {
+        console.log(`  ${table}: 테이블 없음(현재 배포 스키마에 아직 추가되지 않음)`);
+        continue;
+      }
+      const result = await pool.query(`SELECT COUNT(*)::bigint AS count FROM ${table} WHERE company_id IS NULL`);
+      const count = Number(result.rows[0].count);
+      totalNullRows += count;
+      console.log(`  ${table}: company_id IS NULL ${count}건`);
+    }
+    const companies = await pool.query("SELECT id, slug, name, status FROM companies ORDER BY created_at");
+    console.log(`\n등록 회사 ${companies.rowCount}개:`);
+    for (const company of companies.rows) console.log(`  ${company.id} | ${company.slug} | ${company.name} | ${company.status}`);
+    console.log(`\nNULL 합계: ${totalNullRows}건`);
+    console.log("단일 회사 데이터가 맞고 백업이 완료됐다면, COMPANY_NAME과 CONFIRM_COMPANY_BACKFILL을 같은 값으로 설정해 실제 백필을 실행하세요.");
+    await pool.end();
+    return;
+  }
   console.log(`회사 백필 시작 (DATABASE_URL 대상)`);
   const schema = fs.readFileSync(path.join(__dirname, "..", "schema.sql"), "utf8");
   await pool.query(schema);

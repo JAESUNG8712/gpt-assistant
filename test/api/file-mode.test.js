@@ -397,6 +397,61 @@ test("file-mode API smoke suite", async (t) => {
     const oldToken = await api("/data", { headers: { Authorization: `Bearer ${memberLogin.token}` } });
     assert.equal(oldToken.status, 401);
   });
+
+  await t.test("12) 동일 Idempotency-Key의 /save는 성공 응답을 재사용하고 다른 본문은 거부한다", async () => {
+    const before = await (await api("/data", { headers: { Authorization: `Bearer ${adminToken}` } })).json();
+    const key = "test-idempotency-save-0001";
+    const payload = { _version: before.version, _singletonRevisions: { settings: before.data._singletonRevisions?.settings || 0 }, _changedSingletonKeys: ["settings"], data: { settings: { ...(before.data.settings || {}), idempotencyProbe: "once" } } };
+    const headers = { "Content-Type": "application/json", Authorization: `Bearer ${adminToken}`, "Idempotency-Key": key };
+    const first = await api("/save", { method: "POST", headers, body: JSON.stringify(payload) });
+    assert.equal(first.status, 200);
+    const firstBody = await first.json();
+    const replay = await api("/save", { method: "POST", headers, body: JSON.stringify(payload) });
+    assert.equal(replay.status, 200);
+    assert.equal(replay.headers.get("x-idempotency-replayed"), "true");
+    assert.deepEqual(await replay.json(), firstBody);
+    const reused = await api("/save", { method: "POST", headers, body: JSON.stringify({ ...payload, data: { settings: { idempotencyProbe: "changed" } } }) });
+    assert.equal(reused.status, 409);
+    assert.equal((await reused.json()).code, "IDEMPOTENCY_KEY_REUSED");
+  });
+
+  await t.test("13) 오래된 singleton revision 저장은 409로 차단하고 최신 설정을 보존한다", async () => {
+    const base = await (await api("/data", { headers: { Authorization: `Bearer ${adminToken}` } })).json();
+    const revisions = { ...(base.data._singletonRevisions || {}), settings: base.data._singletonRevisions?.settings || 0 };
+    const headersA = { "Content-Type": "application/json", Authorization: `Bearer ${adminToken}`, "Idempotency-Key": "singleton-revision-writer-a" };
+    const headersB = { "Content-Type": "application/json", Authorization: `Bearer ${adminToken}`, "Idempotency-Key": "singleton-revision-writer-b" };
+    const a = await api("/save", { method: "POST", headers: headersA, body: JSON.stringify({ _version: base.version, _singletonRevisions: revisions, _changedSingletonKeys: ["settings"], data: { settings: { ...(base.data.settings || {}), revisionProbe: "A" } } }) });
+    assert.equal(a.status, 200);
+    const b = await api("/save", { method: "POST", headers: headersB, body: JSON.stringify({ _version: base.version, _singletonRevisions: revisions, _changedSingletonKeys: ["settings"], data: { settings: { ...(base.data.settings || {}), revisionProbe: "B" } } }) });
+    assert.equal(b.status, 409);
+    const conflict = await b.json();
+    assert.equal(conflict.code, "SINGLETON_REVISION_CONFLICT");
+    assert.equal(conflict.details.key, "settings");
+    const latest = await (await api("/data", { headers: { Authorization: `Bearer ${adminToken}` } })).json();
+    assert.equal(latest.data.settings.revisionProbe, "A");
+    assert.ok(latest.data._singletonRevisions.settings > (revisions.settings || 0));
+  });
+
+  await t.test("14) singleton을 수정하지 않은 stale 전체상태 저장은 최신 설정을 덮어쓰지 않는다", async () => {
+    const latest = await (await api("/data", { headers: { Authorization: `Bearer ${adminToken}` } })).json();
+    const staleSettings = { ...(latest.data.settings || {}), revisionProbe: "STALE" };
+    const res = await api("/save", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${adminToken}`, "Idempotency-Key": "unrelated-save-keeps-settings" },
+      body: JSON.stringify({ _version: latest.version, _singletonRevisions: latest.data._singletonRevisions, _changedSingletonKeys: [], data: { settings: staleSettings, boardPosts: [] } }),
+    });
+    assert.equal(res.status, 200);
+    const after = await (await api("/data", { headers: { Authorization: `Bearer ${adminToken}` } })).json();
+    assert.equal(after.data.settings.revisionProbe, "A");
+
+    const missingRevision = await api("/save", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${adminToken}`, "Idempotency-Key": "missing-singleton-revision" },
+      body: JSON.stringify({ _version: after.version, _changedSingletonKeys: ["settings"], data: { settings: { revisionProbe: "BYPASS" } } }),
+    });
+    assert.equal(missingRevision.status, 428);
+    assert.equal((await missingRevision.json()).code, "SINGLETON_REVISION_REQUIRED");
+  });
 });
 
 // GROQ_API_KEY가 있는 상태에서의 provider 성공/실패/timeout 경로는 키 설정 여부
