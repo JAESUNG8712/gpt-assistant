@@ -828,6 +828,21 @@ function requirePage(req, res, pageId) {
   return true;
 }
 
+// server.js의 requireFeature()와 동일한 목적 — 마스터 관리자가 이 회사에서 "사업계획/예산"
+// 모듈 자체를 껐는지 확인한다(개인별 menuPerms보다 상위의, 회사 단위 게이트 — admin도
+// 예외 없이 막힘). authenticate()가 req.auth.companyFeatures에 이미 실어둔 캐시된 맵을
+// 그대로 검사할 뿐이라 추가 DB 조회는 없다. 아래 router.use()로 이 라우터 전체(사업계획
+// CRUD·업로드·개인별 급여상세 포함)에 일괄 적용한다.
+function requireFeature(req, res, featureKey) {
+  if (!requireAuth(req, res)) return false;
+  const map = req.auth.companyFeatures || {};
+  if (map[featureKey] === false) {
+    res.status(403).json({ error: '이 회사에서 비활성화된 기능입니다. 관리자에게 문의하세요.', code: 'FEATURE_DISABLED' });
+    return false;
+  }
+  return true;
+}
+
 // dept가 없는(레거시/회사 전체 스크래치) 계획은 팀 소유 개념이 없어 관리자만 다룰 수 있다.
 // dept가 있는 팀별 계획은 같은 dept+team 소속 직원 누구나(요청서: "팀별 계획 작성 권한 —
 // 팀장만? 사업부장도?" 질문에 "모두다 작성/수정은 가능"으로 답변) 수정 가능하고, 그 팀이
@@ -915,6 +930,12 @@ function _fmtNum(n) {
 }
 
 const router = express.Router();
+// 이 라우터 전체(사업계획 CRUD·승인 워크플로우·엑셀 업로드·개인별 급여상세 포함)에
+// "사업계획/예산" 모듈 게이트를 일괄 적용 — 이후 등록되는 모든 라우트에 적용되므로
+// 개별 라우트마다 따로 넣을 필요가 없다(공용 실적 조회는 budget.html이 쓰는 별개
+// 데이터라 헷갈릴 수 있지만, 그 화면도 결국 이 모듈 자체가 켜져 있어야 의미가 있는
+// 도구라 회사 단위 셧다운의 대상으로 포함하는 것이 맞다고 판단).
+router.use((req, res, next) => { if (!requireFeature(req, res, 'bizplan')) return; next(); });
 
 // 부서별/월별 인원수 업로드 (첫번째 파일)
 router.post('/upload/headcount', upload.single('file'), async (req, res) => {

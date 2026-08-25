@@ -153,7 +153,12 @@ async function authenticate(req, res, next) {
   // 쓰므로 한 번만 가져와 공유한다(요청당 추가 조회 없음). menuPerms는 "권한 관리" 화면에서
   // 개인별로 끈 메뉴 목록 — requirePage()가 REST API 라우트에서 이 값을 그대로 검사한다.
   const employee = await _fetchCurrentEmployeeForAuth(auth);
-  req.auth = (await _employeeAuthStillValid(auth, employee)) ? { ...auth, menuPerms: (employee && employee.menuPerms) || {} } : null;
+  if (!(await _employeeAuthStillValid(auth, employee))) { req.auth = null; return next(); }
+  // companyFeatures — 회사 단위 모듈 on/off(마스터 콘솔에서 설정). 10초 캐시로 조회하므로
+  // 요청마다 추가 DB 왕복이 생기지 않는다(_getCompanyFeatureMap 정의부 주석 참고).
+  // requireFeature()가 이 값을 그대로 동기적으로 검사한다.
+  const companyFeatures = await _getCompanyFeatureMap(auth.companyId || null);
+  req.auth = { ...auth, menuPerms: (employee && employee.menuPerms) || {}, companyFeatures };
   next();
 }
 function requireAuth(req, res) {
@@ -665,7 +670,10 @@ function filterDataForRole(data, auth) {
       return copy;
     });
   }
-  return out;
+  // 회사 단위 모듈 on/off(마스터 콘솔) — 이 함수의 나머지는 전부 "같은 회사 안에서 role별로
+  // 얼마나 보이는지"를 다루는데, 이 한 줄만 "이 회사가 그 모듈 자체를 아예 껐는지"를 본다.
+  // _hideDisabledFeatureFields() 정의부 주석 참고 — admin 포함 예외 없이 적용된다.
+  return _hideDisabledFeatureFields(out, auth.companyFeatures);
 }
 
 // ── TOTP (RFC 6238) 2단계 인증 — 외부 의존성 없이 자체 구현 ────────────────────
@@ -2475,7 +2483,10 @@ app.get("/data", async (req, res) => {
   try {
     const companyId = req.auth.companyId || null;
     const data = await loadData(companyId);
-    res.json({ ok: true, data: filterDataForRole(stripPwField(data), req.auth), version: _getVersion(companyId) });
+    // companyFeatures — 회사가 명시적으로 끈 모듈 키만 담긴 맵(예: {acct:false}). 클라이언트
+    // 사이드바가 이 값으로 해당 대분류/메뉴그룹 자체를 숨긴다(gotoPage() 직접 호출 우회는
+    // 서버가 이미 requireFeature()/blob 필드 게이팅으로 막고 있으니, 이건 UX일 뿐).
+    res.json({ ok: true, data: filterDataForRole(stripPwField(data), req.auth), version: _getVersion(companyId), companyFeatures: req.auth.companyFeatures || {} });
   } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
@@ -2565,7 +2576,9 @@ app.post("/login", loginLimiter, async (req, res) => {
     // 바뀌지 않았는지" 대조할 수 있게 한다(P0-5, _nextAuthVersion 주석 참고).
     const token = signToken({ empId: employee.id, loginId: employee.loginId, role: employee.role, companyId, authVersion: employee.authVersion || 0 });
     res.locals.loginOk = true;
-    res.json({ ok: true, employee, token });
+    // companyFeatures — 로그인 직후(아직 GET /data를 부르기 전) 클라이언트가 사이드바를
+    // 최초로 그릴 때부터 바로 반영할 수 있도록 여기서도 함께 내려준다.
+    res.json({ ok: true, employee, token, companyFeatures: await _getCompanyFeatureMap(companyId) });
   } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
@@ -2761,6 +2774,7 @@ app.post("/api/companies/register", registerLimiter, async (req, res) => {
         companyCode: company.slug,
         employee: omitPw(adminEmp),
         token,
+        companyFeatures: {}, // 방금 만든 회사라 명시적으로 끈 모듈이 있을 수 없다(전부 기본 활성)
       });
     } catch (e) {
       await client.query("ROLLBACK");
@@ -3013,21 +3027,181 @@ app.post("/master/companies/:id/impersonate", async (req, res) => {
   } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
-// company_features 조회 헬퍼 — 다른 라우트가 향후 점진적으로 도입할 수 있도록 만들어 둔다.
-// 행이 없으면(대부분의 내장 모듈이 해당) 기본 true를 반환한다(하위호환 — 계획 문서 명시:
-// "기존 내장 모듈은... 기본값 enabled=true, 기존 동작 그대로 유지"). 의도적으로 이번
-// 세션에는 이 헬퍼를 기존 라우트(채용/회계/PMS 등 100개 이상)에 실제로 배선하지 않는다 —
-// 그건 각 라우트마다 "이 기능이 꺼져 있으면 403" 분기를 새로 넣는 별도의 큰 작업이라
-// 위험도가 다르고, 이번 작업 범위(마스터 계층의 데이터 모델 + API)를 벗어난다. 커밋
-// 메시지에도 동일하게 명시.
+// ── 회사별 기능 모듈 on/off ──────────────────────────────────────────────────
+// 마스터 관리자가 회사별로 특정 모듈(회계·PMS·채용 등)을 끄면, 그 회사의 모든 사용자는
+// (admin 포함) 그 모듈의 조회·쓰기 API에 접근할 수 없어야 한다 — menuPerms(개인별 메뉴
+// 숨김, requirePage())와는 별개의 상위 게이트. 이 목록이 마스터 콘솔(아래 GET
+// /master/feature-catalog)과 클라이언트 사이드바 양쪽이 참조하는 단일 소스다 — 새 모듈을
+// 추가하려면 여기에 항목을 추가하고 해당 라우트/컬렉션에 requireFeature()를 배선하면
+// 된다. "내 정보·근태"(마이페이지)와 "시스템"(관리자 설정)은 모든 회사가 반드시 써야
+// 하는 기본 기능(로그인 후 자기 정보 조회, 권한 관리 등)이라 토글 대상에서 제외했다.
+const COMPANY_FEATURE_CATALOG = [
+  { key: "approval",  label: "전자결재",       desc: "품의서 등 전자결재 문서함 · 결재선 설정 · 결재 위임" },
+  { key: "comm",      label: "커뮤니케이션",   desc: "게시판 · 공지사항 · 회의실 예약" },
+  { key: "kpi",       label: "KPI 평가",       desc: "목표수립 · 자체평가 · 1차/2차 평가 · 등급 확정" },
+  { key: "comp_eval", label: "역량·다면평가",  desc: "역량평가 · 다면평가 · 평가자 지정" },
+  { key: "hr",        label: "인사관리",       desc: "직원 등록/목록 · 인사발령 · 변동이력" },
+  { key: "recruit",   label: "채용",           desc: "채용공고 · 지원자 · 면접 일정/평가" },
+  { key: "promotion", label: "승진관리",       desc: "승진 심사 대상/의결" },
+  { key: "talent",    label: "인재관리",       desc: "핵심인재 Pool · 육성계획 · 저성과자 관리" },
+  { key: "acct",      label: "회계",           desc: "전표 · 계정과목 · 세금계산서 · 고정자산 · RCPS" },
+  { key: "bizplan",   label: "사업계획/예산",  desc: "팀별 사업계획 수립·승인 · 예산 취합" },
+  { key: "sales",     label: "영업관리",       desc: "견적서 · 발주서 · 영업 실적" },
+  { key: "inventory", label: "재고관리",       desc: "품목/창고 · 입출고 · 재고 실사" },
+  { key: "pms",       label: "PMS",            desc: "프로젝트 · 투입률 · 업무일지" },
+];
+const COMPANY_FEATURE_KEYS = new Set(COMPANY_FEATURE_CATALOG.map(f => f.key));
+
+// ── 회사별 모듈 on/off(blob 동기화 컬렉션 대상) ──────────────────────────────
+// 회계·PMS·채용 등(REST 전용 API)은 requireFeature()로 라우트 자체를 막으면 되지만,
+// 전자결재·게시판·KPI·역량평가·인재관리 등은 별도 REST API 없이 employees/kpiEntries와
+// 함께 GET /data·POST /save로 통째 주고받는 blob 컬렉션이다(lib/collections.js의
+// GENERIC_LIST_FIELDS/SINGLETON_FIELDS). "이 컬렉션 하나 때문에 전체 저장 요청을 401/403로
+// 거부"할 수는 없는 구조라(같은 요청에 무관한 다른 필드의 정상 변경이 함께 실려온다),
+// role/menuPerms 게이팅(_writeGateAllowed 등)과 동일한 발상으로 "그 컬렉션만 서버에 이미
+// 저장된 값으로 되돌리기" 방식을 쓴다. "인사관리"(hr) 모듈은 employees 자체(로그인·조직
+// 전반의 기반 데이터라 통째로 막으면 위험)는 대상에서 제외하고, 순수 부가 이력인
+// orgChartHistory만 포함한다. "승진관리"(promotion)는 employees.rank/gradeResults +
+// promotionSettings에서 매 화면 렌더링 시 즉석 계산되는 뷰일 뿐 별도 저장 컬렉션이 없어
+// (마스터가 이 모듈을 꺼도 화면단 숨김(gotoPage 가드)만으로 충분) 여기 목록에는 없다.
+const _BLOB_MODULE_FIELDS = {
+  approval:  ["approvalDocs", "approvalTemplates", "approvalDelegations", "approvalChainSettings"],
+  comm:      ["boardPosts", "roomReservations", "roomReservationTombstones"],
+  kpi:       ["kpiEntries", "changeRequests", "tieNotifications", "gradeAdjustHistory"],
+  comp_eval: ["compSessions", "compResponses", "compGradeResults", "evaluatorConfig"],
+  talent:    ["coreTalentPool", "talentDevPlans", "lowPerfData", "coreTalentSettings"],
+  hr:        ["orgChartHistory"],
+};
+// 저장 직전(POST /save)에 호출 — 비활성 모듈에 속한 필드가 요청 body에 들어있으면 통째로
+// 지운다. `_persistDataLocked`의 모든 관련 분기(JSON 파일 모드의 _mergeProtectedField/
+// mergeArrayById, Postgres 모드의 GENERIC_LIST_FIELDS·SINGLETON_FIELDS·kpi_entries 루프)가
+// 이미 "이 필드가 요청에 없으면 기존 저장값을 그대로 둔다"는 동작을 하고 있어(다른 화면만
+// 바꾸는 부분 저장이 매 순간 의존하는, 이미 충분히 검증된 동작), delete 하나로 "클라이언트가
+// 이 컬렉션에 대해서는 애초에 아무 것도 안 보냈다"는 것과 동일한 효과를 낸다 — _persistDataLocked
+// 내부의 촘촘한 각 필드별 로직을 새로 건드리지 않아 기존 동작과의 간섭을 최소화한다.
+function _revertDisabledFeatureFields(data, companyFeatures) {
+  if (!companyFeatures) return data;
+  let out = data;
+  for (const [featureKey, fields] of Object.entries(_BLOB_MODULE_FIELDS)) {
+    if (companyFeatures[featureKey] !== false) continue;
+    for (const field of fields) {
+      if (out[field] === undefined) continue;
+      if (out === data) out = { ...data };
+      delete out[field];
+    }
+  }
+  return out;
+}
+// GET /data 응답에서 비활성 모듈의 컬렉션을 감춘다(filterDataForRole()과 같은 자리에서
+// 함께 적용 — 3개 호출부(GET /data·POST /save의 merge 응답·POST /restore)가 자동으로
+// 같이 커버된다). 쓰기 방어(위 _revertDisabledFeatureFields)와 달리 여기는 응답 모양을
+// 맞추기 위해 undefined가 아니라 빈 값(배열은 [], 싱글톤은 {})으로 채운다 — 클라이언트
+// 코드가 이 필드들을 항상 배열/객체로 가정하고 .length·Object.keys 등을 바로 쓰기 때문.
+function _hideDisabledFeatureFields(data, companyFeatures) {
+  if (!companyFeatures) return data;
+  const out = { ...data };
+  for (const [featureKey, fields] of Object.entries(_BLOB_MODULE_FIELDS)) {
+    if (companyFeatures[featureKey] !== false) continue;
+    for (const field of fields) {
+      if (out[field] === undefined) continue;
+      out[field] = Array.isArray(out[field]) ? [] : {};
+    }
+  }
+  return out;
+}
+
+// 인증 미들웨어(요청마다 실행)에서 회사 feature map을 매번 새로 쿼리하면 이미 있는
+// 직원 조회(세션 철회 검사) 외에 DB 왕복이 하나 더 늘어난다 — 토글은 관리자가 가끔
+// 누르는 관리 조작이라 최신성보다 지연시간이 중요하므로 짧은 TTL(10초) 인메모리
+// 캐시를 둔다(다중 프로세스로 스케일아웃되면 프로세스별로 최대 10초 어긋날 수 있지만,
+// 이 기능의 성격상 허용 가능한 지연으로 판단). PUT /master/companies/:id/features/:key가
+// 토글 즉시 그 회사 캐시를 지워, 마스터가 방금 토글한 회사는 다음 요청부터 바로
+// 반영된다.
+const _companyFeatureCache = new Map(); // companyId -> {map, expiresAt}
+const COMPANY_FEATURE_CACHE_TTL_MS = 10000;
+async function _getCompanyFeatureMap(companyId) {
+  if (USE_JSON_FILE || !companyId) return {};
+  const cached = _companyFeatureCache.get(companyId);
+  if (cached && cached.expiresAt > Date.now()) return cached.map;
+  try {
+    const { rows } = await pool.query(
+      "SELECT feature_key, enabled FROM company_features WHERE company_id = $1", [companyId]
+    );
+    const map = {};
+    rows.forEach(r => { map[r.feature_key] = r.enabled; });
+    _companyFeatureCache.set(companyId, { map, expiresAt: Date.now() + COMPANY_FEATURE_CACHE_TTL_MS });
+    return map;
+  } catch (e) {
+    // DB 순단 등으로 이 조회 자체가 실패해도 모든 요청이 거치는 인증 미들웨어를 멈추면
+    // 안 된다 — 실패 시에는 "전부 활성화"로 안전하게 열어(fail-open) 서비스 가용성을
+    // 우선한다(짧은 TTL이라 캐시하지 않고, 다음 요청에서 다시 정상 조회를 시도한다).
+    console.error("[company-features] 조회 실패, 이번 요청은 임시로 전체 활성화 처리:", e.message);
+    return {};
+  }
+}
+function _invalidateCompanyFeatureCache(companyId) { _companyFeatureCache.delete(companyId); }
+
+// company_features 행이 없으면(대부분의 회사가 이에 해당) 기본 true — 하위호환 원칙
+// (기존 회사는 전 모듈 켜진 채로 시작, 마스터가 명시적으로 끈 것만 반영). req.auth 밖의
+// 맥락(예: 클라이언트에 내려줄 초기 상태 조립)에서 쓰는 범용 버전.
 async function isFeatureEnabled(companyId, featureKey) {
   if (USE_JSON_FILE || !companyId) return true;
-  const { rows } = await pool.query(
-    "SELECT enabled FROM company_features WHERE company_id = $1 AND feature_key = $2",
-    [companyId, featureKey]
-  );
-  return rows.length ? rows[0].enabled : true;
+  const map = await _getCompanyFeatureMap(companyId);
+  return map[featureKey] !== false;
 }
+// requirePage()(개인별 menuPerms)와 같은 자리에서 함께 쓰는, 회사 단위 상위 게이트.
+// req.auth.companyFeatures는 authenticate() 미들웨어가 이미 채워둔 캐시된 맵이라 이
+// 함수 자체는 추가 DB 조회 없이 동기적으로 판정한다. admin이라도 예외 없이 막는다 —
+// "이 회사가 이 모듈을 아예 쓰지 않기로 했다"는 의미라 회사 내 어떤 역할도 우회할 수
+// 없어야 한다(menuPerms처럼 개인별로 다시 켤 수 있는 성격이 아님).
+function requireFeature(req, res, featureKey) {
+  if (!requireAuth(req, res)) return false;
+  const map = req.auth.companyFeatures || {};
+  if (map[featureKey] === false) {
+    res.status(403).json({ ok: false, message: "이 회사에서 비활성화된 기능입니다. 관리자에게 문의하세요.", code: "FEATURE_DISABLED" });
+    return false;
+  }
+  return true;
+}
+
+// /api/accounting/*·/api/pms/*·/api/recruit/* 전체와 /api/erp/*의 하위 경로별로(사이드바
+// 대분류 기준 영업 vs 재고) requireFeature()를 일괄 적용한다. 개별 라우트마다 따로 넣는
+// 대신 여기 하나로 100개 이상의 라우트를 한 번에 커버해, 새 라우트가 추가돼도 이 목록에
+// 경로 패턴만 이미 맞으면 자동으로 게이팅된다(반대로 빠뜨리는 사고도 방지).
+// app.use(prefix, fn) 대신 전역으로 등록해 req.path를 항상 원래 전체 경로 그대로 보고
+// 판단한다(app.use(prefix,fn)도 라우터 마운트와 동일하게 req.path를 prefix 기준
+// 상대경로로 바꿔버려 아래 문자열 검사가 헷갈리기 쉽다). requireFeature() 자신이 이미
+// 401/403 응답을 보내므로, 여기서는 그 반환값만 보고 다음으로 넘길지 결정한다.
+// /api/erp/items·/api/erp/locations는 의도적으로 제외 — 구매요청(PAGE_ROLES상 전 역할
+// 개방)의 품목·창고 선택 드롭다운이 실제로 쓰는 참조 데이터라, "재고관리" 모듈이 꺼져도
+// 구매요청 자체(inventory 모듈에 속함, 아래 정규식에 포함)를 껐다면 이미 그 상위에서
+// 막히므로 items/locations까지 추가로 막을 실익이 없고, 잘못 막으면 무관한 화면(구매요청)
+// 조회 자체가 깨질 위험만 있다.
+function _erpRestModuleFeatureKey(pathname) {
+  if (/^\/api\/erp\/(quotations|purchase-orders|sales-dashboard|sales-targets)(\/|$)/.test(pathname)) return "sales";
+  if (/^\/api\/erp\/(stock|purchase-requests)(\/|$)/.test(pathname)) return "inventory";
+  return null;
+}
+app.use((req, res, next) => {
+  let featureKey = null;
+  if (req.path.startsWith("/api/accounting/")) featureKey = "acct";
+  else if (req.path.startsWith("/api/pms/")) featureKey = "pms";
+  else if (req.path.startsWith("/api/recruit/")) featureKey = "recruit";
+  else if (req.path.startsWith("/api/erp/")) featureKey = _erpRestModuleFeatureKey(req.path);
+  if (!featureKey) return next();
+  if (!requireFeature(req, res, featureKey)) return;
+  next();
+});
+
+// GET /master/feature-catalog — 회사별로 켜고 끌 수 있는 모듈의 고정 목록(키/이름/설명).
+// 마스터 콘솔이 이 목록으로 체크박스를 그린다 — 예전엔 관리자가 임의 문자열을 직접
+// 타이핑해 "기능 키"를 만들 수 있었는데(오타·중복·이 코드베이스 어디서도 검사하지 않는
+// 유령 키가 쌓일 수 있는 구조였음), 이제는 실제로 라우트에 배선된 키만 고를 수 있다.
+app.get("/master/feature-catalog", async (req, res) => {
+  if (!_requireSaas(req, res)) return;
+  if (!requireMaster(req, res)) return;
+  res.json({ ok: true, catalog: COMPANY_FEATURE_CATALOG });
+});
 
 // GET /master/companies/:id/features — 그 회사의 feature_key별 설정 전체.
 app.get("/master/companies/:id/features", async (req, res) => {
@@ -3060,6 +3234,10 @@ app.put("/master/companies/:id/features/:key", async (req, res) => {
     const { enabled, config } = req.body || {};
     if (typeof enabled !== "boolean")
       return res.status(400).json({ ok: false, message: "enabled(boolean)는 필수입니다." });
+    // 고정 카탈로그에 없는 키는 거부 — 실제로 라우트에 배선된 모듈만 토글 가능하게 해
+    // 아무 코드도 검사하지 않는 유령 feature_key가 쌓이는 것을 막는다(데이터 유효성).
+    if (!COMPANY_FEATURE_KEYS.has(featureKey))
+      return res.status(400).json({ ok: false, message: `알 수 없는 기능 키입니다: ${featureKey}` });
     const { rows: companyRows } = await pool.query("SELECT id FROM companies WHERE id = $1", [companyId]);
     if (!companyRows.length) return res.status(404).json({ ok: false, message: "존재하지 않는 회사입니다." });
 
@@ -3070,6 +3248,7 @@ app.put("/master/companies/:id/features/:key", async (req, res) => {
        RETURNING feature_key, enabled, config, updated_at`,
       [companyId, featureKey, enabled, config || {}]
     );
+    _invalidateCompanyFeatureCache(companyId); // 다음 요청부터 바로 반영되도록 캐시 무효화
     await pool.query(
       "INSERT INTO master_audit_log (master_id, action, company_id, detail) VALUES ($1,'feature_toggle',$2,$3)",
       [req.auth.masterId, companyId, JSON.stringify({ featureKey, enabled, config: config || {} })]
@@ -3273,6 +3452,11 @@ app.post("/save", async (req, res) => {
       // persist하기 바로 직전에 게이트 — smartMerge()가 이미 끝난 뒤(finalData)라서,
       // 클라이언트가 직접 보낸 요청과 병합을 거친 요청 양쪽 모두 동일하게 걸린다.
       rejectDemoDataForProduction(finalData);
+      // 회사가 꺼둔 모듈의 컬렉션은 이 요청에 실려왔어도 저장하지 않는다(admin 포함 예외
+      // 없음 — _revertDisabledFeatureFields 정의부 주석 참고). smartMerge/
+      // preserveServerOwnedStateForNonAdmin 이후, _persistDataLocked 진입 직전에 적용해
+      // 그 함수 내부의 세밀한 필드별 로직과 겹치지 않게 한다.
+      finalData = _revertDisabledFeatureFields(finalData, req.auth?.companyFeatures);
       const { duplicateLoginIds } = await _persistDataLocked(finalData, changedBy, companyId, req.auth || null);
       return { finalData, merged, duplicateLoginIds };
     }));

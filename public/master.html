@@ -129,7 +129,7 @@
   .feature-row {
     display: flex; align-items: center; gap: 10px; padding: 9px 0; border-bottom: 1px solid #22242f;
   }
-  .fkey { flex: 1; font-family: monospace; font-size: .8rem; color: #e6e8ee; word-break: break-all; }
+  .fkey { flex: 1; font-size: .8rem; color: #e6e8ee; }
   .fmeta { font-size: .68rem; color: #6b6f85; white-space: nowrap; }
 
   .switch { position: relative; display: inline-block; width: 38px; height: 21px; flex-shrink: 0; }
@@ -143,12 +143,6 @@
   }
   .switch input:checked + .slider { background: #22c55e; }
   .switch input:checked + .slider::before { transform: translateX(17px); background: #fff; }
-
-  .add-feature-row { display: flex; gap: 8px; margin-top: 16px; }
-  .add-feature-row .txt {
-    flex: 1; padding: 8px 10px; border-radius: 6px; border: 1px solid #33364a;
-    background: #0e0f16; color: #e6e8ee; font-size: .8rem;
-  }
 
   #m-toast {
     position: fixed; bottom: 22px; left: 50%; transform: translateX(-50%) translateY(20px);
@@ -245,6 +239,7 @@ function _setMasterToken(token){
 let _companies = [];
 let _selectedCompany = null;
 let _features = [];
+let _catalog = null; // GET /master/feature-catalog 응답(고정 모듈 목록) — 세션 중 1회만 불러와 캐시
 
 // ── 공통 요청 헬퍼 ──────────────────────────────────────────────
 // 이 worktree에는 아직 서버 쪽 /master/* 라우트가 존재하지 않아(병행 세션이
@@ -407,45 +402,67 @@ function panelHeadHtml(){
   </div>`;
 }
 
+// 예전엔 관리자가 임의 문자열을 직접 타이핑해 "기능 키"를 만들 수 있었다(오타·중복·
+// 실제로 어떤 라우트도 검사하지 않는 유령 키가 쌓일 수 있는 구조) — 이제는 서버가
+// 실제로 requireFeature()로 배선한 고정 목록(GET /master/feature-catalog)만 고를 수
+// 있고, 서버도 그 목록에 없는 키는 PUT에서 400으로 거부한다(데이터 유효성 이중 방어).
+async function loadFeatureCatalog(){
+  if(_catalog) return _catalog;
+  const r = await masterRequest('GET', '/master/feature-catalog');
+  if(r && r.ok && Array.isArray(r.catalog)){ _catalog = r.catalog; return _catalog; }
+  return null;
+}
+
 async function loadFeatures(id){
   const panel = $('#feature-panel');
   panel.innerHTML = panelHeadHtml() + '<div class="loading">불러오는 중...</div>';
-  const r = await masterRequest('GET', `/master/companies/${encodeURIComponent(id)}/features`);
+  const [catalog, r] = await Promise.all([
+    loadFeatureCatalog(),
+    masterRequest('GET', `/master/companies/${encodeURIComponent(id)}/features`)
+  ]);
+  if(!catalog){
+    panel.innerHTML = panelHeadHtml() + `<div class="err-box">모듈 목록을 불러오지 못했습니다.</div>`;
+    return;
+  }
   if(r && r.ok && Array.isArray(r.features)){
     _features = r.features;
     renderFeaturePanel();
   } else {
     _features = [];
     panel.innerHTML = panelHeadHtml() +
-      `<div class="err-box">기능 목록을 불러오지 못했습니다.<br>${h(r?.message || '알 수 없는 오류')}</div>` +
-      addFeatureFormHtml();
+      `<div class="err-box">기능 설정을 불러오지 못했습니다.<br>${h(r?.message || '알 수 없는 오류')}</div>`;
   }
 }
 
-function addFeatureFormHtml(){
-  return `<div class="add-feature-row">
-    <input id="new-feature-key" class="txt" placeholder="새 기능 키 입력 (예: custom_dashboard_acme)" onkeydown="if(event.key==='Enter')addFeatureKey()">
-    <button class="btn-mini" onclick="addFeatureKey()">추가 + 켜기</button>
-  </div>`;
+// 회사에 명시적으로 저장된 값(_features)이 있으면 그걸, 없으면 서버와 동일하게 기본
+// 활성(true)으로 간주 — isFeatureEnabled()의 "행이 없으면 true" 규칙과 정확히 일치시킨다.
+function _featureState(key){
+  const f = _features.find(x => x.featureKey === key);
+  return f ? { enabled: f.enabled, updatedAt: f.updatedAt } : { enabled: true, updatedAt: null };
 }
 
 function renderFeaturePanel(){
   const panel = $('#feature-panel');
+  if(!_catalog){ panel.innerHTML = panelHeadHtml() + `<div class="err-box">모듈 목록을 불러오지 못했습니다.</div>`; return; }
   panel.innerHTML = panelHeadHtml() +
-    `<p class="hint">등록되지 않은 기능 키는 기본적으로 <b>켜짐(enabled)</b>으로 취급됩니다. 아래 목록은 이 회사에 명시적으로 설정값이 저장된 항목만 표시됩니다 — 내장 모듈을 끄거나, 이 회사 전용으로 새로 만든 기능 키를 여기서 켤 수 있습니다.</p>
+    `<p class="hint">회사별로 이 회사가 실제로 쓰는 모듈만 켜둘 수 있습니다. 끄면 그 모듈의 조회·저장이 회사 내 모든 사용자(admin 포함)에게 즉시 막힙니다 — 이미 저장된 데이터는 지워지지 않고, 다시 켜면 그대로 복구됩니다.</p>
     <div id="feature-list">
-      ${!_features.length ? '<div class="empty-box">명시적으로 설정된 기능이 없습니다 (모두 기본 활성화 상태).</div>' :
-        _features.map(f => `
+      ${_catalog.map(f => {
+        const st = _featureState(f.key);
+        return `
         <div class="feature-row">
-          <div class="fkey">${h(f.featureKey)}</div>
+          <div class="fkey">
+            <div style="font-weight:700;color:#e6e8ee">${h(f.label)}</div>
+            <div style="font-size:.68rem;color:#8b8fa3;margin-top:2px">${h(f.desc || '')}</div>
+          </div>
           <label class="switch">
-            <input type="checkbox" ${f.enabled ? 'checked' : ''} onchange="toggleFeature('${h(f.featureKey)}', this.checked)">
+            <input type="checkbox" ${st.enabled ? 'checked' : ''} onchange="toggleFeature('${h(f.key)}', this.checked)">
             <span class="slider"></span>
           </label>
-          <div class="fmeta">${f.updatedAt ? new Date(f.updatedAt).toLocaleString('ko-KR') : ''}</div>
-        </div>`).join('')}
-    </div>` +
-    addFeatureFormHtml();
+          <div class="fmeta">${st.updatedAt ? new Date(st.updatedAt).toLocaleString('ko-KR') : '기본값'}</div>
+        </div>`;
+      }).join('')}
+    </div>`;
 }
 
 async function toggleFeature(key, enabled){
@@ -458,29 +475,11 @@ async function toggleFeature(key, enabled){
     if(f){ f.enabled = enabled; f.updatedAt = new Date().toISOString(); }
     else { _features.push({ featureKey: key, enabled, config: {}, updatedAt: new Date().toISOString() }); }
     renderFeaturePanel();
-    showToast(`'${key}' 기능을 ${enabled ? '켰습니다' : '껐습니다'}.`);
+    const label = (_catalog.find(x => x.key === key) || {}).label || key;
+    showToast(`'${label}' 모듈을 ${enabled ? '켰습니다' : '껐습니다'}.`);
   } else {
     showToast(`변경 실패: ${r?.message || '알 수 없는 오류'}`, true);
     renderFeaturePanel(); // 실패 시 토글 스위치를 마지막으로 확인된 상태로 되돌림
-  }
-}
-
-async function addFeatureKey(){
-  const input = $('#new-feature-key');
-  const key = (input?.value || '').trim();
-  if(!key){ showToast('기능 키를 입력하세요.', true); return; }
-  if(!/^[a-zA-Z0-9_.-]+$/.test(key)){ showToast('기능 키는 영문/숫자/_/-/. 만 사용할 수 있습니다.', true); return; }
-  if(_features.some(f => f.featureKey === key)){ showToast('이미 존재하는 기능 키입니다.', true); return; }
-  if(!_selectedCompany) return;
-  const r = await masterRequest('PUT',
-    `/master/companies/${encodeURIComponent(_selectedCompany.id)}/features/${encodeURIComponent(key)}`,
-    { enabled: true });
-  if(r && r.ok){
-    _features.push({ featureKey: key, enabled: true, config: {}, updatedAt: new Date().toISOString() });
-    renderFeaturePanel();
-    showToast(`'${key}' 기능을 추가하고 켰습니다.`);
-  } else {
-    showToast(`추가 실패: ${r?.message || '알 수 없는 오류'}`, true);
   }
 }
 

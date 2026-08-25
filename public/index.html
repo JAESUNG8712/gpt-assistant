@@ -2001,6 +2001,11 @@ async function loadFromServer(){
       saveAutoSnapshot("pre_import"); // 현재 상태 스냅샷
       _step = "apply";
       applyState(r.data);
+      // 회사 단위 모듈 on/off(마스터 콘솔) — 로그인마다(_completeLogin이 매번 호출) 항상
+      // 이 함수를 거치므로, 별도 /login 응답뿐 아니라 마스터 impersonation 핸드오프처럼
+      // /login을 거치지 않는 경로도 여기서 최신값을 받는다. 아래 renderSidebar()가 즉시
+      // 반영한다.
+      companyFeatures=r.companyFeatures||{};
       // r.version was never applied here before — _serverVersion stayed at its
       // previous value (e.g. the initial -1 right after login), so every save
       // made afterwards incorrectly believed the client was behind the server
@@ -5436,7 +5441,13 @@ function renderLogin(){
 function _completeLogin(emp){
   const wrap=document.getElementById("login-wrap");if(wrap)wrap.style.display="none";
   currentUser=emp;currentPage=EVAL_ONLY_MODE?_evalDefaultPage(emp):"dashboard";myKpiYear=settings.evalYear;
-  if(currentUser.role==="admin"){loadAccountingFromServer();loadErpFromServer();}
+  // 회사가 회계/영업/재고 모듈을 껐으면 애초에 호출하지 않는다 — 어차피 서버가 403으로
+  // 막지만(진짜 방어선), 매번 불필요한 요청+콘솔 에러 소음을 만드는 걸 피한다. ERP는
+  // 영업·재고 두 하위모듈이 한 함수에 같이 담겨 있어, 둘 다 꺼졌을 때만 건너뛴다.
+  if(currentUser.role==="admin"){
+    if(companyFeatures.acct!==false) loadAccountingFromServer();
+    if(companyFeatures.sales!==false||companyFeatures.inventory!==false) loadErpFromServer();
+  }
   _applyDueHRChanges();
   saveAutoSnapshot("auto");
   initAttendanceTracking();
@@ -5531,6 +5542,7 @@ function doLogin(){
       // 하는 순간 데모/잔여 계정들이 실제 신규 회사의 직원 테이블에 그대로 생성되는
       // 사고로 이어진다(실측 확인 — 마스터 콘솔 impersonation 핸드오프 검증 중 발견).
       employees=[r.employee];
+      companyFeatures=r.companyFeatures||{};
       _pendingOtpLogin=null;
       _completeLogin(r.employee);
     } else if(r && r.requireOtp){
@@ -5619,6 +5631,7 @@ async function submitCompanyRegister(){
       // 안 된다(위 doLogin() 주석 참고 — 신규 가입 직후 자동저장 시 데모 계정이 이
       // 새 회사에 실제 직원으로 만들어지는 사고로 이어짐, 실측 확인).
       employees=[r.employee];
+      companyFeatures=r.companyFeatures||{};
       closeModal();
       _completeLogin(r.employee);
       showToast("회사가 생성되었습니다. 환영합니다!","success");
@@ -5706,6 +5719,19 @@ const BIG_CATEGORIES=[
   {key:"pms",label:"PMS",icon:"📊",groups:["pms-sep"]},
   {key:"system",label:"시스템",icon:"⚙",groups:["set-op-sep","set-sys-sep","set-pw-sep"]},
 ];
+// 마스터 콘솔에서 회사별로 켜고 끄는 모듈(server.js의 COMPANY_FEATURE_CATALOG과 키를
+// 반드시 일치시켜야 함) → 이 화면의 사이드바 중분류(menuGroups 키) 매핑. "내 정보·근태"·
+// "시스템"은 서버에도 토글 대상에서 제외돼 있어 여기 없다. 서버가 이미 REST API
+// (requireFeature)와 blob 컬렉션(GET /data·POST /save) 양쪽에서 실제 접근을 막고 있으므로
+// 이 매핑은 어디까지나 UX(꺼진 모듈의 메뉴를 안 보여줌)일 뿐 — 우회해도 서버가 막는다.
+const MODULE_TO_MENU_GROUPS={
+  approval:["approval-sep"], comm:["comm-sep"], kpi:["kpi-sep"], comp_eval:["comp-sep"],
+  hr:["hr-sep"], recruit:["recruit-sep"], promotion:["promo-sep"], talent:["talent-sep","lowperf-sep"],
+  acct:["acct-sep"], bizplan:["bizplan-sep"], sales:["sales-sep"], inventory:["inv-sep"], pms:["pms-sep"],
+};
+// 로그인 응답·GET /data 응답이 내려주는 {featureKey:false, ...} 맵(명시적으로 꺼진 모듈만
+// 들어있음 — 없는 키는 서버와 동일하게 "기본 활성"으로 간주). doLogin()/loadFromServer()가 채움.
+let companyFeatures={};
 let _menuGroupsCache={};
 let _sbDrillCat=null;   // 좌측 사이드바 드릴다운 상태: 선택된 대분류 키 (null이면 대분류 목록 표시)
 let _sbExpandedGroup=null; // 드릴다운 상태에서 펼쳐진 중분류 키
@@ -5896,6 +5922,15 @@ function renderSidebar(){
       {id:"change-pw",label:"비밀번호 변경",icon:"⊙",desc:"내 비밀번호 수정",roles:["admin","director","leader","member"]},
     ],
   };
+  // 회사 단위 모듈 on/off — 꺼진 모듈에 속한 중분류를 통째로 지운다. menuGroups에서 키
+  // 자체를 지우면 아래 groupOrder(menuGroups[g]로 존재 여부 판정)·대분류 목록(각 그룹의
+  // items를 조회)·드릴다운 화면이 전부 자동으로 그 그룹을 건너뛴다(admin도 예외 없음 —
+  // menuPerms처럼 role 필터가 아니라 회사 자체가 그 모듈을 안 쓰기로 한 것이므로).
+  for(const featureKey in MODULE_TO_MENU_GROUPS){
+    if(companyFeatures[featureKey]===false){
+      for(const gk of MODULE_TO_MENU_GROUPS[featureKey]) delete menuGroups[gk];
+    }
+  }
   _menuGroupsCache=menuGroups;
   const groupOrder=SIDEBAR_DEFAULT_ORDER.filter(g=>menuGroups[g]);
   const menus=groupOrder.flatMap(g=>menuGroups[g]);
