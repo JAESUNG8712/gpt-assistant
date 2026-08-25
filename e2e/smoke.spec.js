@@ -5,6 +5,18 @@
 const { test, expect } = require("@playwright/test");
 
 test.describe("로그인·기본 네비게이션", () => {
+  test("로그인 레이블과 공용 알림이 보조기기에 연결된다", async ({ page }) => {
+    await page.goto("/");
+    await expect(page.locator('label[for="l-company"]')).toBeVisible();
+    await expect(page.locator('label[for="l-id"]')).toBeVisible();
+    await expect(page.locator('label[for="l-pw"]')).toBeVisible();
+
+    await page.evaluate(() => showToast("저장 완료", "success"));
+    await expect(page.locator('.toast[role="status"][aria-live="polite"]')).toContainText("저장 완료");
+    await page.evaluate(() => showToast("저장 실패", "error"));
+    await expect(page.locator('.toast[role="alert"][aria-live="assertive"]')).toContainText("저장 실패");
+  });
+
   test("잘못된 비밀번호는 오류를 보여준다", async ({ page }) => {
     await page.goto("/");
     await page.fill("#l-id", "e2e_admin");

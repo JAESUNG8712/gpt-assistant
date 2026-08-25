@@ -131,7 +131,7 @@ input,textarea,select,button{font-family:inherit}
 .cl-section-title{font-size:12.5px;font-weight:800;color:#1e3a5f;letter-spacing:.3px;margin-bottom:10px;padding-left:2px;display:flex;align-items:center;gap:6px}
 .cl-section-title::before{content:"";display:inline-block;width:4px;height:14px;border-radius:2px;background:linear-gradient(180deg,#3b82f6,#1e3a8a)}
 .cl-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:12px}
-.cl-card{display:flex;align-items:center;gap:12px;padding:15px 16px;background:#fff;border:1px solid #e2e8f0;border-radius:14px;cursor:pointer;transition:all .15s}
+.cl-card{display:flex;align-items:center;gap:12px;padding:15px 16px;background:#fff;border:1px solid #e2e8f0;border-radius:14px;cursor:pointer;transition:all .15s;width:100%;font:inherit;color:inherit;text-align:left}
 .cl-card:hover{border-color:#93c5fd;background:#f8fbff;transform:translateY(-2px);box-shadow:0 10px 24px rgba(37,99,235,.12)}
 .cl-icon{width:40px;height:40px;border-radius:11px;background:linear-gradient(135deg,#eaf1ff,#dbe6fb);border:1px solid #dbe6fb;display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0;color:#1e3a8a}
 .cl-body{flex:1;min-width:0}
@@ -2651,8 +2651,16 @@ async function dlCSV(fn,headers,rows){
 }
 function showToast(msg,type="success"){
   const t=document.createElement("div");t.className=`toast toast-${type}`;t.textContent=msg;
+  // 성공/정보는 작업을 방해하지 않는 live status, 오류는 즉시 읽히는 alert로 알린다.
+  t.setAttribute("role",type==="error"?"alert":"status");
+  t.setAttribute("aria-live",type==="error"?"assertive":"polite");
+  t.setAttribute("aria-atomic","true");
   document.body.appendChild(t);
   setTimeout(()=>{t.style.opacity="0";t.style.transition="opacity .4s";setTimeout(()=>t.remove(),400);},3000);
+}
+function _activateClickable(event){
+  if(event.key!=="Enter"&&event.key!==" ")return;
+  event.preventDefault();event.currentTarget.click();
 }
 // 모든 화면이 공통으로 쓰는 모달 접근성 기반. 기존 화면의 HTML 문자열을 한 번에
 // 다시 쓰지 않아도 role/label/초기 포커스/Tab 순환/Escape/원래 버튼 복귀를 보장한다.
@@ -5507,9 +5515,9 @@ function renderLogin(){
         <h2>인사시스템 로그인</h2>
         <p class="lc-sub">HR KPI Integrated Evaluation System</p>`)+`
         <div id="login-err"></div>
-        <div class="fg"><label class="fl">회사 코드</label><input class="fc" id="l-company" value="${h(_cachedCompanyCode||"")}" placeholder="예) mycompany" autocomplete="organization" onkeydown="if(event.key==='Enter')document.getElementById('l-id').focus()"></div>
-        <div class="fg"><label class="fl">아이디 (로그인 ID)</label><input class="fc" id="l-id" placeholder="예) admin, leader01 …" autocomplete="username" onkeydown="if(event.key==='Enter')document.getElementById('l-pw').focus()"></div>
-        <div class="fg"><label class="fl">비밀번호</label><input class="fc" id="l-pw" type="password" placeholder="비밀번호 입력" autocomplete="current-password" onkeydown="if(event.key==='Enter')doLogin()"></div>
+        <div class="fg"><label class="fl" for="l-company">회사 코드</label><input class="fc" id="l-company" value="${h(_cachedCompanyCode||"")}" placeholder="예) mycompany" autocomplete="organization" onkeydown="if(event.key==='Enter')document.getElementById('l-id').focus()"></div>
+        <div class="fg"><label class="fl" for="l-id">아이디 (로그인 ID)</label><input class="fc" id="l-id" placeholder="예) admin, leader01 …" autocomplete="username" onkeydown="if(event.key==='Enter')document.getElementById('l-pw').focus()"></div>
+        <div class="fg"><label class="fl" for="l-pw">비밀번호</label><input class="fc" id="l-pw" type="password" placeholder="비밀번호 입력" autocomplete="current-password" onkeydown="if(event.key==='Enter')doLogin()"></div>
         <button class="btn btn-primary btn-lg" style="width:100%;justify-content:center;margin-bottom:14px" onclick="doLogin()">로그인</button>
         ${serverConfig.url ? `<div class="login-alt-action" style="text-align:center;margin-bottom:14px"><a href="javascript:void(0)" class="fz12" onclick="openCompanyRegisterModal()" style="color:#2563eb;font-weight:600;text-decoration:none">회사가 처음이신가요? 회사 만들기</a></div>` : ""}
         ${_demoMode ? `<div class="login-demo-note"><strong>🔍 데모 모드</strong>서버 없이 브라우저에서 바로 사용합니다.<br>변경 내용은 이 기기에 자동 저장됩니다.</div>` : ""}
@@ -6068,7 +6076,7 @@ function renderSidebar(){
   const compPeriod=settings.compEvalEnabled&&settings.compEvalStart?`역량평가 (${settings.compEvalStart}~${settings.compEvalEnd||"?"})`:null;
   const lsPeriod=settings.leadershipEvalEnabled&&settings.leadershipEvalStart?`리더십평가 (${settings.leadershipEvalStart}~${settings.leadershipEvalEnd||"?"})`:null;
   const pendingCnt=_myPendingCount();
-  const pendingBanner=pendingCnt>0?`<div style="background:#dc2626;border-radius:8px;padding:8px 10px;margin:6px 0;cursor:pointer;display:flex;align-items:center;gap:8px" onclick="gotoPage('approval-inbox')"><span style="font-size:16px">🔔</span><div style="flex:1"><div style="font-size:11px;font-weight:700;color:white">결재 대기 ${pendingCnt}건</div><div style="font-size:10px;color:#fca5a5">클릭하여 처리하기</div></div><span style="color:white;font-size:14px">›</span></div>`:"";
+  const pendingBanner=pendingCnt>0?`<div role="button" tabindex="0" aria-label="결재 대기 ${pendingCnt}건 처리하기" onkeydown="_activateClickable(event)" style="background:#dc2626;border-radius:8px;padding:8px 10px;margin:6px 0;cursor:pointer;display:flex;align-items:center;gap:8px" onclick="gotoPage('approval-inbox')"><span style="font-size:16px">🔔</span><div style="flex:1"><div style="font-size:11px;font-weight:700;color:white">결재 대기 ${pendingCnt}건</div><div style="font-size:10px;color:#fca5a5">선택하여 처리하기</div></div><span style="color:white;font-size:14px">›</span></div>`:"";
   // 평가 전용 모듈: 두 단계 드릴다운(대분류→중분류) 없이 "KPI 평가/역량·리더십 평가/
   // 평가 운영/개인 설정" 섹션으로만 구성된 단일 목록 사이드바를 그린다. 항목 자체는
   // 위에서 이미 role+menuPerms로 걸러진 visible을 그대로 재사용해(별도 필터 로직 없음)
@@ -6257,11 +6265,11 @@ function renderCategoryLanding(catKey){
     if(!leaves.length)return "";
     return `<div class="cl-section">
       <div class="cl-section-title">${h(sep?sep.label:g)}</div>
-      <div class="cl-grid">${leaves.map(m=>`<div class="cl-card" onclick="gotoPage('${m.id}')">
+      <div class="cl-grid">${leaves.map(m=>`<button type="button" class="cl-card" onclick="gotoPage('${m.id}')">
         <div class="cl-icon">${m.icon||"▸"}</div>
         <div class="cl-body"><div class="cl-label">${m.label}</div>${m.desc?`<div class="cl-desc">${h(m.desc)}</div>`:""}</div>
         <div class="cl-arrow">›</div>
-      </div>`).join("")}</div>
+      </button>`).join("")}</div>
     </div>`;
   }).filter(Boolean).join("");
   c.innerHTML=`<div class="cat-landing">
@@ -19858,8 +19866,8 @@ function _recruitJobModalHtml(j){
     <div class="fg"><label class="fl">상세 내용</label><textarea class="fc" id="rj-desc" rows="3">${h(j?.description||"")}</textarea></div>
     <div class="fg"><label class="fl">워드 파일 업로드 (채용공고 상세 문서)</label>
       <input type="file" id="rj-doc" style="display:none" onchange="_rjReadDoc(this)">
-      <div id="rj-doc-drop" style="border:2px dashed #cbd5e1;border-radius:8px;padding:14px;text-align:center;cursor:pointer;background:#f8fafc" onclick="document.getElementById('rj-doc').click()" ondragover="event.preventDefault();this.style.background='#eff6ff';this.style.borderColor='#60a5fa'" ondragleave="this.style.background='#f8fafc';this.style.borderColor='#cbd5e1'" ondrop="_rjDropDoc(event)">
-        <button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();document.getElementById('rj-doc').click()">📎 워드 파일 선택</button>
+      <div id="rj-doc-drop" role="button" tabindex="0" aria-label="워드 파일 선택 또는 끌어놓기" onkeydown="_activateClickable(event)" style="border:2px dashed #cbd5e1;border-radius:8px;padding:14px;text-align:center;cursor:pointer;background:#f8fafc" onclick="document.getElementById('rj-doc').click()" ondragover="event.preventDefault();this.style.background='#eff6ff';this.style.borderColor='#60a5fa'" ondragleave="this.style.background='#f8fafc';this.style.borderColor='#cbd5e1'" ondrop="_rjDropDoc(event)">
+        <span class="btn btn-secondary btn-sm" aria-hidden="true">📎 워드 파일 선택</span>
         <span class="fz12 text-gray">또는 여기로 파일을 드래그 앤 드롭하세요</span>
         <div id="rj-doc-name" class="fz12 text-gray" style="margin-top:4px">${j?.docFile?h(j.docFile.fileName):""}</div>
       </div>
@@ -19975,8 +19983,8 @@ function openRecruitCandidateModal(jobId){
     <div class="fg"><label class="fl">채용공고 <span class="req">*</span></label>${lockJob?`<input class="fc" value="${h(lockJob.title)}" disabled><input type="hidden" id="rc-job" value="${lockJob.id}">`:`<select class="fc" id="rc-job">${recruitJobs.filter(j=>j.status==="open").map(j=>`<option value="${j.id}">${h(j.title)}</option>`).join("")}</select>`}</div>
     <div class="fg"><label class="fl">이력서 파일 업로드</label>
       <input type="file" id="rc-resume" style="display:none" accept=".pdf,.docx,.hwp,.txt" onchange="_rcReadResume(this)">
-      <div id="rc-resume-drop" style="border:2px dashed #cbd5e1;border-radius:8px;padding:14px;text-align:center;cursor:pointer;background:#f8fafc" onclick="document.getElementById('rc-resume').click()" ondragover="event.preventDefault();this.style.background='#eff6ff';this.style.borderColor='#60a5fa'" ondragleave="this.style.background='#f8fafc';this.style.borderColor='#cbd5e1'" ondrop="_rcDropResume(event)">
-        <button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();document.getElementById('rc-resume').click()">📎 이력서 파일 선택</button>
+      <div id="rc-resume-drop" role="button" tabindex="0" aria-label="이력서 파일 선택 또는 끌어놓기" onkeydown="_activateClickable(event)" style="border:2px dashed #cbd5e1;border-radius:8px;padding:14px;text-align:center;cursor:pointer;background:#f8fafc" onclick="document.getElementById('rc-resume').click()" ondragover="event.preventDefault();this.style.background='#eff6ff';this.style.borderColor='#60a5fa'" ondragleave="this.style.background='#f8fafc';this.style.borderColor='#cbd5e1'" ondrop="_rcDropResume(event)">
+        <span class="btn btn-secondary btn-sm" aria-hidden="true">📎 이력서 파일 선택</span>
         <span class="fz12 text-gray">또는 여기로 파일을 드래그 앤 드롭하세요</span>
         <div id="rc-resume-name" class="fz12 text-gray" style="margin-top:4px"></div>
       </div>
