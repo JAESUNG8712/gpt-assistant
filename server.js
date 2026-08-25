@@ -114,8 +114,9 @@ function verifyToken(token) {
 // 처리한다 — 재로그인해야 새 버전의 토큰을 받는다.
 // authenticate()와 _employeeAuthStillValid() 양쪽이 같은 employees 레코드 조회를
 // 중복으로 하지 않도록 분리한 헬퍼. 조회 자체가 실패하면(DB 장애 등) undefined를 반환해
-// "레코드가 확인상 없음(null)"과 "확인 자체를 못함(undefined)"을 구분한다 — 후자는
-// 아래에서 기존과 동일하게 가용성 우선(fail-open)으로 처리된다.
+// "레코드가 확인상 없음(null)"과 "확인 자체를 못함(undefined)"을 구분한다. 후자를
+// 유효한 세션으로 취급하면 철회된 계정/menuPerms를 DB 장애 동안 우회할 수 있으므로,
+// 호출부는 503 AUTH_STATE_UNAVAILABLE로 fail-closed 해야 한다.
 async function _fetchCurrentEmployeeForAuth(auth) {
   if (auth.empId == null) return null; // 마스터/impersonation 토큰 — employees 대상 아님
   try {
@@ -129,21 +130,23 @@ async function _fetchCurrentEmployeeForAuth(auth) {
   }
 }
 async function _employeeAuthStillValid(auth, prefetchedEmployee) {
-  // 이 검사 자체가 어떤 이유로든 실패하면(예상치 못한 예외 포함) 가용성을 우선해 통과시킨다
-  // — authenticate()가 async 미들웨어라 여기서 예외가 새면 Express 4가 자동으로 못 잡아
-  // unhandled rejection이 되고, 그 요청은 응답도 타임아웃도 없이 멈춰버린다(P0-4 수정
-  // 중 실측으로 확인한 것과 동일한 클래스의 사고 — 이 검사는 반드시 실패해도 요청을
-  // 멈추지 않아야 한다).
+  // true/false 외에 undefined는 "인증 원본을 확인할 수 없음"이다. 예외를 요청 밖으로
+  // 흘려 Express 4 요청을 멈추지는 않되, 권한을 허용하는 true로도 바꾸지 않는다.
   try {
     if (auth.empId == null) return true;
     const current = prefetchedEmployee !== undefined ? prefetchedEmployee : await _fetchCurrentEmployeeForAuth(auth);
-    if (current === undefined) return true; // 조회 자체가 실패 — fail-open
+    if (current === undefined) return undefined;
     if (!current) return false; // 레코드 자체가 삭제됨
     if (current.active === false) return false;
     return (Number(current.authVersion) || 0) === (Number(auth.authVersion) || 0);
-  } catch {
-    return true;
-  }
+  } catch { return undefined; }
+}
+function _authStateUnavailable(res) {
+  return res.status(503).json({
+    ok: false,
+    code: "AUTH_STATE_UNAVAILABLE",
+    message: "로그인 상태를 확인할 수 없습니다. 잠시 후 다시 시도해주세요.",
+  });
 }
 async function authenticate(req, res, next) {
   const header = req.headers.authorization || "";
@@ -154,7 +157,9 @@ async function authenticate(req, res, next) {
   // 쓰므로 한 번만 가져와 공유한다(요청당 추가 조회 없음). menuPerms는 "권한 관리" 화면에서
   // 개인별로 끈 메뉴 목록 — requirePage()가 REST API 라우트에서 이 값을 그대로 검사한다.
   const employee = await _fetchCurrentEmployeeForAuth(auth);
-  if (!(await _employeeAuthStillValid(auth, employee))) { req.auth = null; return next(); }
+  const authStillValid = await _employeeAuthStillValid(auth, employee);
+  if (authStillValid === undefined) { req.auth = null; return _authStateUnavailable(res); }
+  if (!authStillValid) { req.auth = null; return next(); }
   // companyFeatures — 회사 단위 모듈 on/off(마스터 콘솔에서 설정). 10초 캐시로 조회하므로
   // 요청마다 추가 DB 왕복이 생기지 않는다(_getCompanyFeatureMap 정의부 주석 참고).
   // requireFeature()가 이 값을 그대로 동기적으로 검사한다.
@@ -1310,6 +1315,13 @@ const _APPROVAL_GATED_FIELDS = {
 function _sanitizeGatedRecord(field, incoming, stored, actor, actorEmp, settings) {
   const rule = _APPROVAL_GATED_FIELDS[field];
   if (!rule || !incoming) return incoming;
+  // talentDevPlans의 status는 전용 transition API만 바꿀 수 있다. 일반 /save는 전체
+  // 배열을 싣기 때문에 여기서 상태 변경을 허용하면 전용 API의 상태/조직/CAS 검사를
+  // 우회할 수 있다. 초회 생성 역시 반드시 draft로 시작한다.
+  if (field === "talentDevPlans" && !actor?._talentTransition) {
+    if (!stored && incoming.status !== "draft") return { ...incoming, status: "draft" };
+    if (stored && incoming.status !== stored.status) return { ...stored };
+  }
   if (rule.record) {
     // 바뀌지 않은 레코드는 그대로 통과(매 저장마다 전체 배열이 재전송되므로 대부분이 여기).
     if (stored && JSON.stringify(stored) === JSON.stringify(incoming)) return incoming;
@@ -3609,6 +3621,94 @@ app.post("/save", async (req, res) => {
   }
 });
 
+// 인재육성 계획의 제출/승인/반려는 전체 상태 저장(/save)에 맡기지 않는다. 전체 상태
+// 저장만 쓰면 오래된 탭이 현재 status를 모른 채 덮어쓸 수 있고, 클라이언트의 역할 분기
+// 또한 우회 가능하다. 이 전용 경로가 잠금 안에서 최신 레코드·조직 범위·허용 상태전이를
+// 다시 검사하고 한 번에 저장한다.
+app.post("/api/talent-dev/plans/:id/transition", async (req, res) => {
+  if (!requireAuth(req, res)) return;
+  if (!requirePage(req, res, "talent-dev")) return;
+  const companyId = req.auth?.companyId || null;
+  const planId = String(req.params.id);
+  const action = String(req.body?.action || "");
+  const expectedUpdatedAt = req.body?.expectedUpdatedAt;
+  const comment = String(req.body?.comment || "").trim().slice(0, 2000);
+  if (!expectedUpdatedAt) {
+    return res.status(428).json({ ok: false, code: "TD_REVISION_REQUIRED", message: "최신 계획서 정보가 필요합니다." });
+  }
+  if (!new Set(["submit", "approve", "reject"]).has(action)) {
+    return res.status(400).json({ ok: false, code: "TD_INVALID_ACTION", message: "지원하지 않는 상태 변경입니다." });
+  }
+  try {
+    const plan = await _withSaveLock(() => _withDistributedSaveLock(companyId, async () => {
+      const state = await loadData(companyId);
+      const plans = Array.isArray(state.talentDevPlans) ? state.talentDevPlans : [];
+      const index = plans.findIndex(p => String(p?.id) === planId);
+      if (index < 0) throw httpError(404, "TD_PLAN_NOT_FOUND", "계획서를 찾을 수 없습니다.");
+      const current = plans[index];
+      if (String(current.updatedAt || "") !== String(expectedUpdatedAt)) {
+        throw httpError(409, "TD_PLAN_CONFLICT", "다른 사용자가 먼저 처리했습니다.", { plan: current });
+      }
+      const actorEmp = (state.employees || []).find(e => String(e?.id) === String(req.auth.empId));
+      const targetEmp = (state.employees || []).find(e => String(e?.id) === String(current.empId));
+      if (!actorEmp || !targetEmp) throw httpError(403, "TD_SCOPE_FORBIDDEN", "처리할 수 없는 대상입니다.");
+      const isAdmin = req.auth.role === "admin";
+      const sameTeam = actorEmp.dept === targetEmp.dept && actorEmp.team === targetEmp.team;
+      const sameDept = actorEmp.dept === targetEmp.dept;
+      // 같은 밀리초 안에 연속 처리돼도 revision이 반드시 전진하도록 보장한다.
+      const now = new Date(Math.max(Date.now(), (Date.parse(current.updatedAt || "") || 0) + 1)).toISOString();
+      const next = { ...current, updatedAt: now };
+
+      if (action === "submit") {
+        if (current.status !== "draft") throw httpError(409, "TD_INVALID_TRANSITION", "초안 상태에서만 제출할 수 있습니다.", { plan: current });
+        if (!isAdmin && String(req.auth.empId) !== String(current.empId)) throw httpError(403, "TD_SCOPE_FORBIDDEN", "본인의 계획서만 제출할 수 있습니다.");
+        next.status = "submitted";
+        next.submittedAt = now;
+      } else if (action === "approve") {
+        if (current.status === "submitted") {
+          if (!isAdmin && !(req.auth.role === "leader" && sameTeam)) throw httpError(403, "TD_SCOPE_FORBIDDEN", "같은 팀의 팀장만 1차 승인할 수 있습니다.");
+          next.status = "leader_approved";
+          next.leaderComment = comment;
+          next.leaderApprovedAt = now;
+          next.leaderApprovedBy = actorEmp.name;
+        } else if (current.status === "leader_approved") {
+          if (!isAdmin && !(req.auth.role === "director" && sameDept)) throw httpError(403, "TD_SCOPE_FORBIDDEN", "같은 사업부의 사업부장만 최종 승인할 수 있습니다.");
+          if (!comment) throw httpError(400, "TD_COMMENT_REQUIRED", "사업부장 Comment를 입력하세요.");
+          next.status = "director_approved";
+          next.directorComment = comment;
+          next.directorApprovedAt = now;
+          next.directorApprovedBy = actorEmp.name;
+        } else {
+          throw httpError(409, "TD_INVALID_TRANSITION", "현재 상태에서는 승인할 수 없습니다.", { plan: current });
+        }
+      } else {
+        const canRejectSubmitted = current.status === "submitted" && (isAdmin || (req.auth.role === "leader" && sameTeam));
+        const canRejectLeader = current.status === "leader_approved" && (isAdmin || (req.auth.role === "director" && sameDept));
+        if (!canRejectSubmitted && !canRejectLeader) {
+          if (!["submitted", "leader_approved"].includes(current.status)) throw httpError(409, "TD_INVALID_TRANSITION", "현재 상태에서는 반려할 수 없습니다.", { plan: current });
+          throw httpError(403, "TD_SCOPE_FORBIDDEN", "이 계획서를 반려할 권한이 없습니다.");
+        }
+        if (!comment) throw httpError(400, "TD_COMMENT_REQUIRED", "반려 사유를 입력하세요.");
+        next.status = "draft";
+        next.rejectedReason = comment;
+        next.rejectedAt = now;
+        next.rejectedBy = actorEmp.name;
+      }
+
+      plans[index] = next;
+      state.talentDevPlans = plans;
+      const changedBy = `auth:${req.auth.loginId || req.auth.empId}`;
+      await _persistDataLocked(state, changedBy, companyId, { ...req.auth, _talentTransition: true });
+      return next;
+    }));
+    broadcastSSE("data_updated", { version: _getVersion(companyId) }, req.query.clientId, companyId);
+    res.json({ ok: true, plan, version: _getVersion(companyId) });
+  } catch (e) {
+    const status = Number.isInteger(e.status) ? e.status : 500;
+    res.status(status).json({ ok: false, code: e.code, message: _safeErrMsg(e), ...(e.details || {}) });
+  }
+});
+
 // EventSource는 Authorization 헤더를 붙일 수 없으므로, 일반 API 토큰 대신 짧은 수명·SSE
 // 전용 ticket만 URL에 허용한다. ticket이 프록시 로그 등에 남아도 다른 API에 재사용할 수 없다.
 app.post("/events/token", (req, res) => {
@@ -3625,7 +3725,10 @@ app.get("/events", async (req, res) => {
   // authenticate 미들웨어와 동일한 verifyToken()으로 검증한다.
   const ticketAuth = verifyToken(req.query.token);
   const auth = req.auth || (ticketAuth && ticketAuth.scope === "sse" ? ticketAuth : null);
-  if (!auth || !(await _employeeAuthStillValid(auth))) return res.status(401).json({ ok: false, message: "로그인이 필요합니다." });
+  if (!auth) return res.status(401).json({ ok: false, message: "로그인이 필요합니다." });
+  const authStillValid = await _employeeAuthStillValid(auth);
+  if (authStillValid === undefined) return _authStateUnavailable(res);
+  if (!authStillValid) return res.status(401).json({ ok: false, message: "로그인이 필요합니다." });
   const companyId = auth.companyId || null;
   const clientId = req.query.clientId || `client_${Date.now()}`;
   const user     = req.query.user     || "unknown";
@@ -4104,6 +4207,19 @@ app.post("/restore", async (req, res) => {
     const { dataToPersist, restoredFields, extrasByField, restoreBudget } = buildRestorePlan(snapshotData, current, fields, deleteExtras);
     // 운영 환경의 더미 스냅샷은 어떤 삭제보다 먼저 거부한다.
     rejectDemoDataForProduction(dataToPersist);
+
+    // JSON 파일 모드에서 HR 본문과 budget-data.json은 서로 다른 파일이라 하나의
+    // transaction으로 commit할 수 없다. HR 파일 교체 뒤 예산 파일 쓰기가 실패하거나
+    // 프로세스가 종료되면 부분 복원이 영구 노출되므로, 안전한 bundle journal/recovery가
+    // 없는 현재는 두 파일을 함께 복원하는 요청을 어떤 쓰기보다 먼저 거부한다.
+    // HR-only 복원은 기존의 단일 파일 atomic rename 경로를 그대로 지원한다.
+    if (restoreBudget) {
+      return res.status(409).json({
+        ok: false,
+        code: "JSON_BUDGET_RESTORE_REQUIRES_POSTGRES",
+        message: "JSON 파일 모드에서는 HR과 예산을 원자적으로 함께 복원할 수 없습니다. 예산 포함 복원은 PostgreSQL 모드에서 실행하세요.",
+      });
+    }
 
     // JSON 파일 모드는 파일 두 개(HR 본문·budget_store)를 하나의 DB 트랜잭션으로 묶을 수
     // 없으므로, 기존의 원자 파일 교체 경로를 유지한다. 운영 다중 사용자 배포는 위의
@@ -8064,6 +8180,116 @@ app.get("/api/recruit/candidates/:id", async (req, res) => {
   } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
+// 이력서 추출 두 경로(채용의 legacy dataUrl, 신규 직원의 multipart)가 같은 자원 예산을
+// 사용하도록 제한값과 limiter를 공통으로 둔다. legacy 경로는 전역 JSON parser를 이미
+// 지난 뒤 실행되지만, 디코딩/OCR 전에 실제 바이트·형식·압축/픽셀·동시 실행을 제한한다.
+const RESUME_MAX_BYTES = Number(process.env.RESUME_MAX_BYTES) || 15 * 1024 * 1024;
+const RESUME_MAX_TEXT_CHARS = Number(process.env.RESUME_MAX_TEXT_CHARS) || 12000;
+const RESUME_AI_TIMEOUT_MS = Number(process.env.RESUME_AI_TIMEOUT_MS) || 30000;
+const RESUME_ZIP_MAX_ENTRIES = Number(process.env.RESUME_ZIP_MAX_ENTRIES) || 200;
+const RESUME_ZIP_MAX_UNCOMPRESSED_BYTES = Number(process.env.RESUME_ZIP_MAX_UNCOMPRESSED_BYTES) || 30 * 1024 * 1024;
+const RESUME_IMAGE_MAX_PIXELS = Number(process.env.RESUME_IMAGE_MAX_PIXELS) || 40_000_000;
+const RESUME_MAX_CONCURRENT = Number(process.env.RESUME_MAX_CONCURRENT) || 3;
+let _resumeInFlight = 0;
+const resumeParseLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => (req.auth && req.auth.empId != null) ? `emp:${req.auth.empId}` : rateLimit.ipKeyGenerator(req.ip),
+  handler: (req, res) => res.status(429).json({ ok: false, code: "RESUME_RATE_LIMITED", message: "이력서 분석 요청이 너무 많습니다. 잠시 후 다시 시도하세요." }),
+});
+const legacyResumeExtractionLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => (req.auth && req.auth.empId != null) ? `emp:${req.auth.empId}` : rateLimit.ipKeyGenerator(req.ip),
+  handler: (req, res) => res.status(429).json({ ok: false, code: "RESUME_RATE_LIMITED", message: "이력서 추출 요청이 너무 많습니다. 잠시 후 다시 시도하세요." }),
+});
+const AI_API_TIMEOUT_MS = Number(process.env.AI_API_TIMEOUT_MS) || 30000;
+const AI_API_MAX_CONCURRENT = Number(process.env.AI_API_MAX_CONCURRENT) || 4;
+const AI_API_MAX_INPUT_CHARS = Number(process.env.AI_API_MAX_INPUT_CHARS) || 12000;
+let _aiApiInFlight = 0;
+const aiApiLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: Number(process.env.AI_API_RATE_MAX) || 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => {
+    if (req.auth) return `company:${req.auth.companyId || "file"}:emp:${req.auth.empId ?? req.auth.masterId ?? "unknown"}`;
+    return rateLimit.ipKeyGenerator(req.ip);
+  },
+  handler: (req, res) => res.status(429).json({ ok: false, code: "AI_RATE_LIMITED", message: "AI 요청이 너무 많습니다. 잠시 후 다시 시도하세요." }),
+});
+function _boundedAiText(value, max = AI_API_MAX_INPUT_CHARS) {
+  return typeof value === "string" ? value.slice(0, max) : "";
+}
+async function _groqFetch(url, options, timeoutMs = AI_API_TIMEOUT_MS) {
+  if (_aiApiInFlight >= AI_API_MAX_CONCURRENT) {
+    const e = new Error("AI 요청이 동시에 너무 많습니다."); e.code = "AI_CONCURRENCY_LIMIT"; throw e;
+  }
+  _aiApiInFlight++;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } catch (e) {
+    if (e && e.name === "AbortError") { const te = new Error("AI 응답 시간 초과"); te.code = "TIMEOUT"; throw te; }
+    throw e;
+  } finally {
+    clearTimeout(timer);
+    _aiApiInFlight = Math.max(0, _aiApiInFlight - 1);
+  }
+}
+
+function _legacyResumeExtractionGuard(kind) {
+  return async (req, res, next) => {
+    const { dataUrl } = req.body || {};
+    if (!dataUrl || typeof dataUrl !== "string") return res.status(400).json({ ok: false, message: "파일 데이터가 없습니다." });
+    const comma = dataUrl.indexOf(",");
+    const base64 = comma >= 0 ? dataUrl.slice(comma + 1) : dataUrl;
+    // base64 문자열 단계에서 먼저 상한을 적용해 거대한 Buffer 할당 자체를 피한다.
+    if (base64.length > Math.ceil(RESUME_MAX_BYTES / 3) * 4 + 4) {
+      return res.status(413).json({ ok: false, code: "RESUME_FILE_TOO_LARGE", message: `이력서 파일은 ${Math.floor(RESUME_MAX_BYTES / (1024 * 1024))}MB 이하만 업로드할 수 있습니다.` });
+    }
+    const buffer = Buffer.from(base64, "base64");
+    if (!buffer.length || buffer.length > RESUME_MAX_BYTES) return res.status(413).json({ ok: false, code: "RESUME_FILE_TOO_LARGE", message: "이력서 파일 크기가 허용 범위를 벗어났습니다." });
+
+    try {
+      if (kind === "pdf") {
+        const sniff = _sniffResumeFileType(buffer, "resume.pdf");
+        if (sniff.kind !== "pdf" || !sniff.ok) throw Object.assign(new Error(), { code: "INVALID_TYPE" });
+      } else if (kind === "docx") {
+        const sniff = _sniffResumeFileType(buffer, "resume.docx");
+        if (sniff.kind !== "docx") throw Object.assign(new Error(), { code: "INVALID_TYPE" });
+        await _validateDocxZip(buffer);
+      } else if (kind === "image") {
+        const mime = dataUrl.match(/^data:image\/(png|jpeg|jpg|webp);base64,/i)?.[1]?.toLowerCase().replace("jpg", "jpeg");
+        if (!mime) throw Object.assign(new Error(), { code: "INVALID_TYPE" });
+        const sniff = _sniffResumeFileType(buffer, `resume.${mime === "jpeg" ? "jpg" : mime}`);
+        const dims = sniff.kind === "image" ? _getImageDimensions(buffer, sniff.mime) : null;
+        if (!dims || dims.width * dims.height > RESUME_IMAGE_MAX_PIXELS) throw Object.assign(new Error(), { code: dims ? "TOO_LARGE" : "INVALID_TYPE" });
+      } else if (kind === "hwp") {
+        const ole = Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]);
+        if (buffer.length < ole.length || !buffer.subarray(0, ole.length).equals(ole)) throw Object.assign(new Error(), { code: "INVALID_TYPE" });
+      }
+    } catch (e) {
+      const tooLarge = e && e.code === "TOO_LARGE";
+      return res.status(tooLarge ? 413 : 400).json({ ok: false, code: tooLarge ? "RESUME_FILE_TOO_LARGE" : "RESUME_FILE_INVALID", message: tooLarge ? "압축 해제 또는 이미지 크기가 너무 큽니다." : "파일 내용과 형식이 일치하지 않습니다." });
+    }
+
+    if (_resumeInFlight >= RESUME_MAX_CONCURRENT) return res.status(429).json({ ok: false, code: "RESUME_CONCURRENCY_LIMIT", message: "이력서 분석 요청이 동시에 너무 많습니다. 잠시 후 다시 시도하세요." });
+    _resumeInFlight++;
+    let released = false;
+    const release = () => { if (!released) { released = true; _resumeInFlight = Math.max(0, _resumeInFlight - 1); } };
+    res.on("finish", release);
+    res.on("close", release);
+    req._legacyResumeBuffer = buffer;
+    next();
+  };
+}
+
 // ── 채용 관리: 이력서 파일 텍스트 추출 + AI 필드 자동입력(구버전 dataUrl 방식) ────
 // 지원자 등록 화면에서 업로드한 이력서 파일(PDF/DOCX/HWP/이미지)의 형식별 텍스트 추출
 // 4개 라우트(extract-pdf-text/-docx-text/-hwp-text/-image-text)와, 추출된 텍스트를
@@ -8123,14 +8349,13 @@ async function _ocrPdfPages(buffer, lastPage) {
     fs.promises.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
   }
 }
-app.post("/api/recruit/extract-pdf-text", async (req, res) => {
+app.post("/api/recruit/extract-pdf-text", legacyResumeExtractionLimiter, _legacyResumeExtractionGuard("pdf"), async (req, res) => {
   try {
     if (!requireRole(req, res, ["admin", "leader", "director"])) return;
     if (!requirePage(req, res, "recruit-candidates")) return;
     const { dataUrl } = req.body || {};
     if (!dataUrl || typeof dataUrl !== "string") return res.status(400).json({ ok: false, message: "파일 데이터가 없습니다." });
-    const base64 = dataUrl.includes(",") ? dataUrl.slice(dataUrl.indexOf(",") + 1) : dataUrl;
-    const buffer = Buffer.from(base64, "base64");
+    const buffer = req._legacyResumeBuffer;
     const { PDFParse } = require("pdf-parse");
     const parser = new PDFParse({ data: buffer });
     const result = await parser.getText();
@@ -8161,14 +8386,13 @@ app.post("/api/recruit/extract-pdf-text", async (req, res) => {
     res.json({ ok: true, text });
   } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
-app.post("/api/recruit/extract-docx-text", async (req, res) => {
+app.post("/api/recruit/extract-docx-text", legacyResumeExtractionLimiter, _legacyResumeExtractionGuard("docx"), async (req, res) => {
   try {
     if (!requireRole(req, res, ["admin", "leader", "director"])) return;
     if (!requirePage(req, res, "recruit-candidates")) return;
     const { dataUrl } = req.body || {};
     if (!dataUrl || typeof dataUrl !== "string") return res.status(400).json({ ok: false, message: "파일 데이터가 없습니다." });
-    const base64 = dataUrl.includes(",") ? dataUrl.slice(dataUrl.indexOf(",") + 1) : dataUrl;
-    const buffer = Buffer.from(base64, "base64");
+    const buffer = req._legacyResumeBuffer;
     const mammoth = require("mammoth");
     const result = await mammoth.extractRawText({ buffer });
     res.json({ ok: true, text: result.value || "" });
@@ -8195,14 +8419,13 @@ async function _extractHwpBuffer(buffer) {
     fs.promises.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
   }
 }
-app.post("/api/recruit/extract-hwp-text", async (req, res) => {
+app.post("/api/recruit/extract-hwp-text", legacyResumeExtractionLimiter, _legacyResumeExtractionGuard("hwp"), async (req, res) => {
   try {
     if (!requireRole(req, res, ["admin", "leader", "director"])) return;
     if (!requirePage(req, res, "recruit-candidates")) return;
     const { dataUrl } = req.body || {};
     if (!dataUrl || typeof dataUrl !== "string") return res.status(400).json({ ok: false, message: "파일 데이터가 없습니다." });
-    const base64 = dataUrl.includes(",") ? dataUrl.slice(dataUrl.indexOf(",") + 1) : dataUrl;
-    const buffer = Buffer.from(base64, "base64");
+    const buffer = req._legacyResumeBuffer;
     let text = "";
     try {
       text = await _extractHwpBuffer(buffer);
@@ -8222,7 +8445,7 @@ async function _ocrImageBuffer(buffer, ext) {
     fs.promises.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
   }
 }
-app.post("/api/recruit/extract-image-text", async (req, res) => {
+app.post("/api/recruit/extract-image-text", legacyResumeExtractionLimiter, _legacyResumeExtractionGuard("image"), async (req, res) => {
   try {
     if (!requireRole(req, res, ["admin", "leader", "director"])) return;
     if (!requirePage(req, res, "recruit-candidates")) return;
@@ -8230,8 +8453,7 @@ app.post("/api/recruit/extract-image-text", async (req, res) => {
     if (!dataUrl || typeof dataUrl !== "string") return res.status(400).json({ ok: false, message: "파일 데이터가 없습니다." });
     const mimeM = dataUrl.match(/^data:image\/(\w+);base64,/);
     const ext = mimeM ? mimeM[1].replace("jpeg", "jpg") : "png";
-    const base64 = dataUrl.includes(",") ? dataUrl.slice(dataUrl.indexOf(",") + 1) : dataUrl;
-    const buffer = Buffer.from(base64, "base64");
+    const buffer = req._legacyResumeBuffer;
     let text = "";
     try {
       text = await _ocrImageBuffer(buffer, ext);
@@ -8259,7 +8481,7 @@ const RESUME_FIELDS_SCHEMA_PROMPT = `너는 한국어 이력서 텍스트에서 
 async function _groqParseResume(text) {
   const apiKey = process.env.GROQ_API_KEY;
   if (!apiKey) return null;
-  const resp = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+  const resp = await _groqFetch("https://api.groq.com/openai/v1/chat/completions", {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: "Bearer " + apiKey },
     body: JSON.stringify({
@@ -8268,7 +8490,7 @@ async function _groqParseResume(text) {
       response_format: { type: "json_object" },
       messages: [
         { role: "system", content: RESUME_FIELDS_SCHEMA_PROMPT },
-        { role: "user", content: text.slice(0, 12000) },
+        { role: "user", content: _boundedAiText(text) },
       ],
     }),
   });
@@ -8277,7 +8499,7 @@ async function _groqParseResume(text) {
   const content = data?.choices?.[0]?.message?.content || "{}";
   return JSON.parse(content);
 }
-app.post("/api/recruit/parse-resume-llm", async (req, res) => {
+app.post("/api/recruit/parse-resume-llm", aiApiLimiter, async (req, res) => {
   try {
     if (!requireRole(req, res, ["admin", "leader", "director"])) return;
     if (!requirePage(req, res, "recruit-candidates")) return;
@@ -8285,6 +8507,7 @@ app.post("/api/recruit/parse-resume-llm", async (req, res) => {
     if (!text || typeof text !== "string" || text.trim().length < 20) {
       return res.json({ ok: false, message: "분석할 텍스트가 부족합니다." });
     }
+    if (text.length > AI_API_MAX_INPUT_CHARS) return res.status(413).json({ ok: false, code: "AI_INPUT_TOO_LARGE", message: "AI 분석 입력이 너무 큽니다." });
     let fields;
     try {
       fields = await _groqParseResume(text);
@@ -8304,29 +8527,20 @@ app.post("/api/recruit/parse-resume-llm", async (req, res) => {
 // 엔드포인트로 대체한다. 위 채용(recruit) 모듈이 이미 갖춘 서버측 텍스트 추출
 // (PDF 텍스트레이어+OCR/DOCX/이미지 OCR) 저수준 버퍼 헬퍼(_ocrPdfBuffer/
 // _ocrPdfPages/_ocrImageBuffer, 위에서 정의됨)를 그대로 재사용하되, dataUrl(JSON
-// body) 기반 기존 /api/recruit/extract-*-text·parse-resume-llm 라우트는 채용 흐름의
-// 기존 계약을 그대로 유지하기 위해 전혀 건드리지 않는다(요구사항: "기존 채용 이력서
-// 흐름은 깨지지 않게 유지").
-const RESUME_MAX_BYTES = Number(process.env.RESUME_MAX_BYTES) || 15 * 1024 * 1024;
-const RESUME_MAX_TEXT_CHARS = Number(process.env.RESUME_MAX_TEXT_CHARS) || 12000;
-const RESUME_AI_TIMEOUT_MS = Number(process.env.RESUME_AI_TIMEOUT_MS) || 30000;
+// body) 기반 기존 /api/recruit/extract-*-text·parse-resume-llm 라우트도 채용 흐름의
+// 기존 응답 계약은 유지하되, 위 공통 제한을 적용한다.
 // DOCX(zip)는 multer의 fileSize 제한(원본 파일 크기)만으로는 압축 폭탄을 막지
 // 못한다 — 15MB짜리 zip이 안에 수백 개 항목이나 수백 MB로 압축 해제되는 내용을
 // 담을 수 있다. jszip은 loadAsync() 시점에는 각 항목을 실제로 해제(inflate)하지
 // 않고 중앙 디렉터리 메타데이터(선언된 압축해제크기)만 읽으므로, 이 값을 실제
 // 해제 전에 먼저 검사해 거부할 수 있다.
-const RESUME_ZIP_MAX_ENTRIES = Number(process.env.RESUME_ZIP_MAX_ENTRIES) || 200;
-const RESUME_ZIP_MAX_UNCOMPRESSED_BYTES = Number(process.env.RESUME_ZIP_MAX_UNCOMPRESSED_BYTES) || 30 * 1024 * 1024;
 // 이미지도 마찬가지로 파일 바이트 자체는 작아도(png/webp는 고압축률) 디코드하면
 // 거대한 픽셀 배열이 될 수 있어(압축 폭탄과 동일한 부류의 위험) tesseract에
 // 넘기기 전에 헤더만 읽어(전체 디코드 없이) 픽셀 수를 먼저 확인한다.
-const RESUME_IMAGE_MAX_PIXELS = Number(process.env.RESUME_IMAGE_MAX_PIXELS) || 40_000_000; // 40MP
 // 이력서 분석은 OCR/AI 호출이 있어 요청 하나가 몇 초~수십 초씩 서버 리소스(CPU/
 // 프로세스 슬롯)를 붙잡는다 — resumeParseLimiter(시간창 기준 총 호출 수)와 별개로,
 // "지금 동시에 처리 중인 개수"도 제한해야 짧은 시간에 몰린 요청들이 서버를 과부하
 // 상태로 몰아넣는 것을 막을 수 있다.
-const RESUME_MAX_CONCURRENT = Number(process.env.RESUME_MAX_CONCURRENT) || 3;
-let _resumeInFlight = 0;
 const hrResumeUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: RESUME_MAX_BYTES, files: 1, fields: 0 } });
 
 // 사용자별 호출 한도(과다 AI 호출로 인한 비용/부하 남용 방지) — /login과 달리 IP가
@@ -8337,15 +8551,6 @@ const hrResumeUpload = multer({ storage: multer.memoryStorage(), limits: { fileS
 // 주소를 바꿔가며 한도를 우회할 수 있다고 정적 소스 검사로 경고한다(ERR_ERL_KEY_GEN_IPV6,
 // 실측: 실제로 요청은 막지 않고 매 기동 시 콘솔에 경고만 남기지만, 지적 자체는 타당하므로
 // 라이브러리가 제공하는 rateLimit.ipKeyGenerator()로 정규화한다.
-const resumeParseLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 10,
-  standardHeaders: true,
-  legacyHeaders: false,
-  keyGenerator: (req) => (req.auth && req.auth.empId != null) ? `emp:${req.auth.empId}` : rateLimit.ipKeyGenerator(req.ip),
-  handler: (req, res) => res.status(429).json({ ok: false, code: "RESUME_RATE_LIMITED", message: "이력서 분석 요청이 너무 많습니다. 잠시 후 다시 시도하세요." }),
-});
-
 // 확장자만이 아니라 실제 파일 시그니처(매직바이트)로 형식을 판정한다 — 확장자를
 // 위장한 파일(예: 실행파일을 .pdf로 이름만 바꾼 경우)을 그대로 통과시키지 않기 위함.
 function _sniffResumeFileType(buffer, filename) {
@@ -8469,13 +8674,10 @@ const HR_RESUME_GROQ_URL = process.env.HR_RESUME_GROQ_URL_OVERRIDE || "https://a
 async function _hrResumeGroqParse(text) {
   const apiKey = process.env.GROQ_API_KEY;
   if (!apiKey) { const e = new Error("GROQ_API_KEY 미설정"); e.code = "NOT_CONFIGURED"; throw e; }
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), RESUME_AI_TIMEOUT_MS);
   let resp;
   try {
-    resp = await fetch(HR_RESUME_GROQ_URL, {
+    resp = await _groqFetch(HR_RESUME_GROQ_URL, {
       method: "POST",
-      signal: controller.signal,
       headers: { "Content-Type": "application/json", Authorization: "Bearer " + apiKey },
       body: JSON.stringify({
         model: "llama-3.3-70b-versatile",
@@ -8486,12 +8688,10 @@ async function _hrResumeGroqParse(text) {
           { role: "user", content: text.slice(0, RESUME_MAX_TEXT_CHARS) },
         ],
       }),
-    });
+    }, RESUME_AI_TIMEOUT_MS);
   } catch (e) {
-    if (e.name === "AbortError") { const te = new Error("AI 응답 시간 초과"); te.code = "TIMEOUT"; throw te; }
+    if (e.code === "TIMEOUT") throw e;
     const fe = new Error("AI 호출 실패: " + e.message); fe.code = "PROVIDER_FAILED"; throw fe;
-  } finally {
-    clearTimeout(timer);
   }
   if (!resp.ok) { const e = new Error("Groq API 오류 " + resp.status); e.code = "PROVIDER_FAILED"; throw e; }
   const data = await resp.json();
@@ -8573,6 +8773,7 @@ app.post("/api/hr/resume-parse",
   // 대용량 multipart 본문을 메모리에 버퍼링하기 전에 즉시 거부된다(전역 authenticate
   // 미들웨어가 이미 req.auth를 채워둔 상태이므로 파일을 읽지 않고도 판단 가능).
   (req, res, next) => { if (!requireAdmin(req, res)) return; next(); },
+  aiApiLimiter,
   // 동시 처리 개수 제한 — multer가 파일을 버퍼링하기 전에 게이트해, 이미 정원이
   // 찬 상태에서는 대용량 본문을 굳이 메모리에 올리지 않는다. 브라우저 연결이 먼저
   // 끊겨도 OCR/AI 작업은 잠시 계속될 수 있으므로 close에서 바로 슬롯을 반납하면
@@ -8729,7 +8930,7 @@ company가 이미 채워진 항목은 정규식/OCR로 이미 확정된 정답�
 {"suggestions": [{"idx": 0, "company": "회사명 또는 빈 문자열"}]}
 idx는 반드시 targetIdx 목록에 있는 값이어야 하고, targetIdx 개수만큼 정확히 응답해라. company가 이미 채워진 항목의 idx로는 응답하지 마라.`;
   const userContent = JSON.stringify({ resumeText: text.slice(0, 12000), entries, targetIdx });
-  const resp = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+  const resp = await _groqFetch("https://api.groq.com/openai/v1/chat/completions", {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: "Bearer " + apiKey },
     body: JSON.stringify({
@@ -8748,7 +8949,7 @@ idx는 반드시 targetIdx 목록에 있는 값이어야 하고, targetIdx 개�
   const parsed = JSON.parse(content);
   return Array.isArray(parsed?.suggestions) ? parsed.suggestions : [];
 }
-app.post("/api/recruit/suggest-career-companies", async (req, res) => {
+app.post("/api/recruit/suggest-career-companies", aiApiLimiter, async (req, res) => {
   try {
     if (!requireRole(req, res, ["admin", "leader", "director"])) return;
     if (!requirePage(req, res, "recruit-candidates")) return;
@@ -8759,6 +8960,7 @@ app.post("/api/recruit/suggest-career-companies", async (req, res) => {
     if (!Array.isArray(entries) || !entries.length) {
       return res.json({ ok: true, suggestions: [] });
     }
+    if (text.length > AI_API_MAX_INPUT_CHARS || entries.length > 100) return res.status(413).json({ ok: false, code: "AI_INPUT_TOO_LARGE", message: "AI 분석 입력이 너무 큽니다." });
     let suggestions;
     try {
       suggestions = await _groqSuggestCareerCompanies(text, entries);
@@ -8781,7 +8983,7 @@ async function _groqSummarizePeople(kind, people) {
     { "empId": "직원ID(입력값 그대로)", "name": "이름", "summary": "이 인원이 왜 이 명단에 해당하는지 평가 데이터 근거를 2~3문장으로 요약. 추측하지 말고 주어진 데이터만 근거로 작성" }
   ]
 }`;
-  const resp = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+  const resp = await _groqFetch("https://api.groq.com/openai/v1/chat/completions", {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: "Bearer " + apiKey },
     body: JSON.stringify({
@@ -8799,12 +9001,13 @@ async function _groqSummarizePeople(kind, people) {
   const content = data?.choices?.[0]?.message?.content || "{}";
   return JSON.parse(content).summaries || [];
 }
-app.post("/api/hr/analyze-summary", async (req, res) => {
+app.post("/api/hr/analyze-summary", aiApiLimiter, async (req, res) => {
   try {
     if (!requireRole(req, res, ["admin", "leader", "director"])) return;
     const { kind, people } = req.body || {};
     if (!["core", "low", "block9"].includes(kind)) return res.status(400).json({ ok: false, message: "kind 값이 올바르지 않습니다." });
     if (!Array.isArray(people) || !people.length) return res.json({ ok: false, message: "분석할 인원 데이터가 없습니다." });
+    if (people.length > 200 || JSON.stringify(people).length > AI_API_MAX_INPUT_CHARS * 2) return res.status(413).json({ ok: false, code: "AI_INPUT_TOO_LARGE", message: "AI 분석 입력이 너무 큽니다." });
     let summaries;
     try {
       summaries = await _groqSummarizePeople(kind, people);
@@ -8827,7 +9030,7 @@ async function _groqDraftKpiGoal(jobRole, itemName) {
   "evalCriteria": "평가 기준 (측정 방법/기준)"
 }`;
   const userMsg = `직무: ${jobRole}${itemName ? `\nKPI 항목명(참고): ${itemName}` : ""}`;
-  const resp = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+  const resp = await _groqFetch("https://api.groq.com/openai/v1/chat/completions", {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: "Bearer " + apiKey },
     body: JSON.stringify({
@@ -8857,7 +9060,7 @@ async function _groqAnalyzeOrgData(kind, data) {
     { "title": "이슈 제목 (간결하게)", "detail": "이슈 내용과 근거 데이터 (2~3문장)", "action": "대응 방안 초안 (2~3문장, 구체적 실행 방안)", "severity": "high|medium|low" }
   ]
 }`;
-  const resp = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+  const resp = await _groqFetch("https://api.groq.com/openai/v1/chat/completions", {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: "Bearer " + apiKey },
     body: JSON.stringify({
@@ -8876,12 +9079,13 @@ async function _groqAnalyzeOrgData(kind, data) {
   const parsed = JSON.parse(content);
   return { overview: parsed.overview || "", issues: Array.isArray(parsed.issues) ? parsed.issues : [] };
 }
-app.post("/api/hr/analyze-org", async (req, res) => {
+app.post("/api/hr/analyze-org", aiApiLimiter, async (req, res) => {
   try {
     if (!requireRole(req, res, ["admin", "leader", "director"])) return;
     const { kind, data } = req.body || {};
     if (!["stats", "promotion"].includes(kind)) return res.status(400).json({ ok: false, message: "kind 값이 올바르지 않습니다." });
     if (!data) return res.json({ ok: false, message: "분석할 데이터가 없습니다." });
+    if (JSON.stringify(data).length > AI_API_MAX_INPUT_CHARS * 2) return res.status(413).json({ ok: false, code: "AI_INPUT_TOO_LARGE", message: "AI 분석 입력이 너무 큽니다." });
     let analysis;
     try {
       analysis = await _groqAnalyzeOrgData(kind, data);
@@ -8893,14 +9097,15 @@ app.post("/api/hr/analyze-org", async (req, res) => {
   } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
-app.post("/api/hr/draft-kpi-goal", async (req, res) => {
+app.post("/api/hr/draft-kpi-goal", aiApiLimiter, async (req, res) => {
   try {
     if (!requireRole(req, res, ["admin", "leader", "director", "member"])) return;
+    if (!_menuPermsAllow(["kpi", "kpi-results"], req.auth)) return res.status(403).json({ ok: false, code: "MENU_ACCESS_DENIED", message: "KPI 메뉴에 접근할 권한이 없습니다." });
     const { jobRole, itemName } = req.body || {};
-    if (!jobRole) return res.status(400).json({ ok: false, message: "jobRole 값이 필요합니다." });
+    if (!jobRole || typeof jobRole !== "string") return res.status(400).json({ ok: false, message: "jobRole 값이 필요합니다." });
     let draft;
     try {
-      draft = await _groqDraftKpiGoal(jobRole, itemName);
+      draft = await _groqDraftKpiGoal(_boundedAiText(jobRole, 500), _boundedAiText(itemName, 500));
     } catch (e) {
       return res.json({ ok: false, message: "AI 초안 생성에 실패했습니다: " + e.message });
     }
@@ -8918,7 +9123,7 @@ async function _groqDraftEvalComment(stage, memberName, kpis) {
   "comment": "종합 평가 의견 (4~6문장, 성과/역량/발전가능성/개선점을 포함)"
 }`;
   const userMsg = `직원: ${memberName}\nKPI 데이터: ${JSON.stringify(kpis).slice(0, 8000)}`;
-  const resp = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+  const resp = await _groqFetch("https://api.groq.com/openai/v1/chat/completions", {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: "Bearer " + apiKey },
     body: JSON.stringify({
@@ -8936,15 +9141,17 @@ async function _groqDraftEvalComment(stage, memberName, kpis) {
   const content = data?.choices?.[0]?.message?.content || "{}";
   return JSON.parse(content).comment || "";
 }
-app.post("/api/hr/draft-eval-comment", async (req, res) => {
+app.post("/api/hr/draft-eval-comment", aiApiLimiter, async (req, res) => {
   try {
     if (!requireRole(req, res, ["admin", "leader", "director"])) return;
     const { stage, memberName, kpis } = req.body || {};
     if (!["first", "second"].includes(stage)) return res.status(400).json({ ok: false, message: "stage 값이 올바르지 않습니다." });
+    if (!requirePage(req, res, stage === "second" ? "second-eval" : "first-eval")) return;
     if (!Array.isArray(kpis) || !kpis.length) return res.json({ ok: false, message: "평가할 KPI 데이터가 없습니다." });
+    if (kpis.length > 100 || JSON.stringify(kpis).length > AI_API_MAX_INPUT_CHARS) return res.status(413).json({ ok: false, code: "AI_INPUT_TOO_LARGE", message: "AI 분석 입력이 너무 큽니다." });
     let comment;
     try {
-      comment = await _groqDraftEvalComment(stage, memberName || "", kpis);
+      comment = await _groqDraftEvalComment(stage, _boundedAiText(memberName, 200), kpis.slice(0, 100));
     } catch (e) {
       return res.json({ ok: false, message: "AI 초안 생성에 실패했습니다: " + e.message });
     }
@@ -9600,24 +9807,28 @@ app.post("/api/reset-all", loginLimiter, async (req, res) => {
       // 것처럼 보였다. accounting/ERP/PMS/채용/budget_store는 이 버튼의 기존 범위 밖(JSON
       // 파일 모드도 별도 파일이라 건드리지 않음)이라 그대로 유지한다. 여러 테이블에 걸친
       // 파괴적 삭제라 중간 실패 시 절반만 지워진 상태로 남지 않도록 트랜잭션으로 묶는다.
-      const client = await pool.connect();
-      try {
-        await client.query("BEGIN");
-        await client.query("DELETE FROM kpi_history WHERE company_id = $1", [companyId]);
-        await client.query("DELETE FROM employee_history WHERE company_id = $1", [companyId]);
-        await client.query("DELETE FROM kpi_entries WHERE company_id = $1", [companyId]);
-        await client.query("DELETE FROM employees WHERE company_id = $1", [companyId]);
-        await client.query("DELETE FROM app_collections WHERE company_id = $1", [companyId]);
-        await client.query("DELETE FROM app_singletons WHERE company_id = $1", [companyId]);
-        await client.query("DELETE FROM app_meta WHERE key = $1", [`data_version:${_scopeKey(companyId)}`]);
-        await client.query("COMMIT");
-      } catch (e) {
-        await client.query("ROLLBACK");
-        throw e;
-      } finally {
-        client.release();
-      }
-      _setVersion(companyId, 0);
+      await _withSaveLock(() => _withDistributedSaveLock(companyId, async () => {
+        const client = await pool.connect();
+        try {
+          await client.query("BEGIN");
+          await client.query("DELETE FROM kpi_history WHERE company_id = $1", [companyId]);
+          await client.query("DELETE FROM employee_history WHERE company_id = $1", [companyId]);
+          await client.query("DELETE FROM kpi_entries WHERE company_id = $1", [companyId]);
+          await client.query("DELETE FROM employees WHERE company_id = $1", [companyId]);
+          await client.query("DELETE FROM app_collections WHERE company_id = $1", [companyId]);
+          await client.query("DELETE FROM app_singletons WHERE company_id = $1", [companyId]);
+          await client.query("DELETE FROM app_meta WHERE key = $1", [`data_version:${_scopeKey(companyId)}`]);
+          await client.query("COMMIT");
+          // DB commit이 성공한 뒤에만 프로세스 캐시를 초기화한다. rollback 뒤 메모리만
+          // 0이 되거나, 동시 /save가 reset 직후 데이터를 되살리는 일을 막는다.
+          _setVersion(companyId, 0);
+        } catch (e) {
+          try { await client.query("ROLLBACK"); } catch {}
+          throw e;
+        } finally {
+          client.release();
+        }
+      }));
     }
     console.log(`[Reset] Company data cleared (companyId=${companyId || "(json-file/global)"})`);
     res.json({ ok: true });

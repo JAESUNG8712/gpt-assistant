@@ -241,6 +241,31 @@ test("file-mode API smoke suite", async (t) => {
     assert.notEqual(adminRead.data.settings?.companyName, "forbidden");
   });
 
+  await t.test("7c) KPI 메뉴가 모두 꺼진 계정은 AI 목표 초안 API를 직접 호출해도 403", async () => {
+    const state = await (await api("/data", { headers: { Authorization: `Bearer ${adminToken}` } })).json();
+    const me = state.data.employees.find(e => String(e.id) === String(adminId));
+    me.menuPerms = { ...(me.menuPerms || {}), kpi: false, "kpi-results": false };
+    const saved = await api("/save", {
+      method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${adminToken}` },
+      body: JSON.stringify({ _version: state.version, data: state.data }),
+    });
+    assert.equal(saved.status, 200);
+    const denied = await api("/api/hr/draft-kpi-goal", {
+      method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${adminToken}` },
+      body: JSON.stringify({ jobRole: "개발자" }),
+    });
+    assert.equal(denied.status, 403);
+    assert.equal((await denied.json()).code, "MENU_ACCESS_DENIED");
+
+    const latest = await (await api("/data", { headers: { Authorization: `Bearer ${adminToken}` } })).json();
+    const latestMe = latest.data.employees.find(e => String(e.id) === String(adminId));
+    latestMe.menuPerms = { ...(latestMe.menuPerms || {}), kpi: true, "kpi-results": true };
+    assert.equal((await api("/save", {
+      method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${adminToken}` },
+      body: JSON.stringify({ _version: latest.version, data: latest.data }),
+    })).status, 200);
+  });
+
   await t.test("8) /save 후 version 증가 및 기존 collection 보존", async () => {
     const before = await (await api("/status")).json();
     const res = await api("/save?user=test_admin", {
@@ -298,6 +323,49 @@ test("file-mode API smoke suite", async (t) => {
       await prodServer.stop();
       await prodMock.close();
     }
+  });
+
+  await t.test("9b) 채용 legacy 이력서 추출도 형식·크기·호출량 제한을 적용하면서 기존 PDF 계약을 유지", async () => {
+    const headers = { "Content-Type": "application/json", Authorization: `Bearer ${adminToken}` };
+    const pdf = buildMinimalTextPdf(["Hong Gildong", "Email: hong@example.com", "Phone: 010-1111-2222"]);
+    const valid = await api("/api/recruit/extract-pdf-text", {
+      method: "POST", headers,
+      body: JSON.stringify({ dataUrl: `data:application/pdf;base64,${pdf.toString("base64")}` }),
+    });
+    assert.equal(valid.status, 200);
+    const validJson = await valid.json();
+    assert.equal(validJson.ok, true);
+    assert.match(validJson.text, /Hong Gildong/);
+
+    const spoof = await api("/api/recruit/extract-pdf-text", {
+      method: "POST", headers,
+      body: JSON.stringify({ dataUrl: `data:application/pdf;base64,${Buffer.from("not a pdf").toString("base64")}` }),
+    });
+    assert.equal(spoof.status, 400);
+    assert.equal((await spoof.json()).code, "RESUME_FILE_INVALID");
+
+    const oversizedBase64 = "A".repeat(Math.ceil((15 * 1024 * 1024) / 3) * 4 + 8);
+    const oversized = await api("/api/recruit/extract-pdf-text", {
+      method: "POST", headers,
+      body: JSON.stringify({ dataUrl: `data:application/pdf;base64,${oversizedBase64}` }),
+    });
+    assert.equal(oversized.status, 413);
+    assert.equal((await oversized.json()).code, "RESUME_FILE_TOO_LARGE");
+
+    // 위 3건을 포함해 같은 계정의 10건까지 처리되고, 11번째부터 실제 추출 전에 차단된다.
+    for (let i = 0; i < 7; i++) {
+      const attempt = await api("/api/recruit/extract-pdf-text", {
+        method: "POST", headers,
+        body: JSON.stringify({ dataUrl: "data:application/pdf;base64,bm90IGEgcGRm" }),
+      });
+      assert.equal(attempt.status, 400);
+    }
+    const limited = await api("/api/recruit/extract-pdf-text", {
+      method: "POST", headers,
+      body: JSON.stringify({ dataUrl: "data:application/pdf;base64,bm90IGEgcGRm" }),
+    });
+    assert.equal(limited.status, 429);
+    assert.equal((await limited.json()).code, "RESUME_RATE_LIMITED");
   });
 
   await t.test("10) resume parser 오류코드 매핑 — 401/403/400×3/413/422/503/502/504", async () => {
@@ -455,6 +523,29 @@ test("file-mode API smoke suite", async (t) => {
     assert.equal((await reused.json()).code, "IDEMPOTENCY_KEY_REUSED");
   });
 
+  await t.test("12b) JSON 모드의 예산 포함 복원은 HR 파일을 쓰기 전에 안전하게 거부한다", async () => {
+    const before = await (await api("/data", { headers: { Authorization: `Bearer ${adminToken}` } })).json();
+    const snapshot = await api("/snapshots", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${adminToken}` },
+      body: JSON.stringify({ year: 2099, confirmedBy: "QA", notes: "JSON 원자 복원 게이트" }),
+    });
+    assert.equal(snapshot.status, 200);
+
+    const restore = await api("/restore", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${adminToken}` },
+      body: JSON.stringify({ name: "snapshot_2099.json", fields: ["employees", "budget"], deleteExtras: true }),
+    });
+    assert.equal(restore.status, 409);
+    const rejected = await restore.json();
+    assert.equal(rejected.code, "JSON_BUDGET_RESTORE_REQUIRES_POSTGRES");
+
+    const after = await (await api("/data", { headers: { Authorization: `Bearer ${adminToken}` } })).json();
+    assert.equal(after.version, before.version, "거부된 복원이 HR 파일/version을 변경하면 안 됨");
+    assert.deepEqual(after.data.employees, before.data.employees, "거부된 복원이 직원 데이터를 변경하면 안 됨");
+  });
+
   await t.test("13) 오래된 singleton revision 저장은 409로 차단하고 최신 설정을 보존한다", async () => {
     const base = await (await api("/data", { headers: { Authorization: `Bearer ${adminToken}` } })).json();
     const revisions = { ...(base.data._singletonRevisions || {}), settings: base.data._singletonRevisions?.settings || 0 };
@@ -502,6 +593,7 @@ test("resume parser: provider mock 502/504/성공 경로", async (t) => {
     env: {
       HR_RESUME_GROQ_URL_OVERRIDE: groqMock.url,
       RESUME_AI_TIMEOUT_MS: "500",
+      AI_API_RATE_MAX: "3",
       GROQ_API_KEY: "test-fake-key-not-a-real-secret",
     },
   });
@@ -542,5 +634,15 @@ test("resume parser: provider mock 502/504/성공 경로", async (t) => {
     assert.ok(!raw.includes("api.groq.com"), "응답에 provider 엔드포인트가 노출되면 안 됨");
     assert.ok(!raw.includes("test-fake-key-not-a-real-secret"), "응답에 API 키가 노출되면 안 됨");
     assert.ok(!raw.includes("Hong Gildong"), "응답에 원문 이력서 텍스트가 그대로 노출되면 안 됨");
+  });
+
+  await t.test("공통 AI quota는 같은 회사·계정의 서로 다른 AI API에도 합산 적용", async () => {
+    const res = await api("/api/hr/draft-kpi-goal", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ jobRole: "개발자", itemName: "품질 개선" }),
+    });
+    assert.equal(res.status, 429);
+    assert.equal((await res.json()).code, "AI_RATE_LIMITED");
   });
 });

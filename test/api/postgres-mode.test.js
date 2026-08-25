@@ -99,6 +99,32 @@ if (!ADMIN_DATABASE_URL) {
       assert.equal(json.data.employees[0].loginId, "admin_a");
     });
 
+    await t.test("4b) 인증 원본 조회 장애 시 서명 토큰을 fail-open하지 않고 503으로 거부", async () => {
+      const faultClient = new Client({ connectionString: testDbUrl });
+      await faultClient.connect();
+      try {
+        // 운영 DB를 건드리지 않는 이 테스트 전용 임시 DB에서만 employees를 잠시 숨겨,
+        // 토큰 서명은 유효하지만 현재 active/authVersion/menuPerms를 조회할 수 없는 상태를
+        // 재현한다. 과거 구현은 이 경우 stale token을 그대로 허용했다.
+        await faultClient.query("ALTER TABLE employees RENAME TO employees_auth_state_test");
+        const res = await api("/data", { headers: { Authorization: `Bearer ${companyAToken}` } });
+        assert.equal(res.status, 503);
+        assert.deepEqual(await res.json(), {
+          ok: false,
+          code: "AUTH_STATE_UNAVAILABLE",
+          message: "로그인 상태를 확인할 수 없습니다. 잠시 후 다시 시도해주세요.",
+        });
+      } finally {
+        await faultClient.query("ALTER TABLE IF EXISTS employees_auth_state_test RENAME TO employees");
+        await faultClient.end();
+      }
+
+      // 장애가 사라지면 같은 토큰과 정상 PostgreSQL 인증 경로는 그대로 동작해야 한다.
+      const recovered = await api("/data", { headers: { Authorization: `Bearer ${companyAToken}` } });
+      assert.equal(recovered.status, 200);
+      assert.equal((await recovered.json()).ok, true);
+    });
+
     let companyBToken;
     await t.test("5) 두 번째 회사 가입 — 다른 companyCode 자동 배정", async () => {
       const res = await api("/api/companies/register", {
@@ -285,12 +311,42 @@ if (!ADMIN_DATABASE_URL) {
       });
       assert.equal(res.status, 200, "회사 B 시드 실패");
 
-      res = await api("/api/reset-all", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${companyAToken}` },
-        body: JSON.stringify({ loginId: "admin_a", pw: "TestPassword123" }),
-      });
-      json = await res.json();
+      // 외부 세션이 회사별 full-state advisory lock을 잠시 잡은 동안 /save를 먼저
+      // 시작하고 reset을 뒤이어 보낸다. 같은 서버의 save mutex 때문에 reset은 save가
+      // 끝날 때까지 대기해야 하며, 최종 상태는 반드시 reset 결과(빈 상태)여야 한다.
+      // reset이 save lock에 참여하지 않으면 두 요청이 서로 인터리빙해 삭제한 데이터가
+      // 다시 나타나거나 data_version 캐시가 DB와 달라질 수 있다.
+      const raceState = await (await api("/data", { headers: { Authorization: `Bearer ${companyAToken}` } })).json();
+      const lockClient = new Client({ connectionString: testDbUrl });
+      await lockClient.connect();
+      const companyRowForLock = await lockClient.query("SELECT id FROM companies WHERE slug = $1", [companyACode]);
+      const companyAIdForLock = companyRowForLock.rows[0].id;
+      const lockKey = `full-state-save:${companyAIdForLock}`;
+      await lockClient.query("SELECT pg_advisory_lock(hashtext($1))", [lockKey]);
+      let savePromise, resetPromise;
+      try {
+        savePromise = api("/save", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${companyAToken}` },
+          body: JSON.stringify({
+            _version: raceState.version,
+            boardPosts: [...(raceState.data.boardPosts || []), { id: "reset-race", title: "초기화와 경합", authorId: empIdA, updatedAt: new Date().toISOString() }],
+          }),
+        });
+        await new Promise(resolve => setTimeout(resolve, 100));
+        resetPromise = api("/api/reset-all", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${companyAToken}` },
+          body: JSON.stringify({ loginId: "admin_a", pw: "TestPassword123" }),
+        });
+        await new Promise(resolve => setTimeout(resolve, 100));
+      } finally {
+        await lockClient.query("SELECT pg_advisory_unlock(hashtext($1))", [lockKey]);
+        await lockClient.end();
+      }
+      const [saveRes, resetRes] = await Promise.all([savePromise, resetPromise]);
+      assert.equal(saveRes.status, 200, "경합 저장 실패");
+      json = await resetRes.json();
       assert.equal(json.ok, true, "reset-all 실패: " + JSON.stringify(json));
 
       const dbCheck = new Client({ connectionString: testDbUrl });
