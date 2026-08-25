@@ -160,6 +160,65 @@ if (!ADMIN_DATABASE_URL) {
       assert.ok(ids.has("parallel-b"), "B 인스턴스 변경이 유실되면 안 됨");
     });
 
+    await t.test("7c) 스냅샷 복원은 HR 삭제와 budget_store 교체를 함께 커밋한다", async () => {
+      const dbCheck = new Client({ connectionString: testDbUrl });
+      await dbCheck.connect();
+      let companyAId;
+      try {
+        const company = await dbCheck.query("SELECT id FROM companies WHERE slug = $1", [companyACode]);
+        companyAId = company.rows[0].id;
+        await dbCheck.query(
+          "INSERT INTO budget_store (company_id, data) VALUES ($1, $2::jsonb) ON CONFLICT (company_id) DO UPDATE SET data = EXCLUDED.data",
+          [companyAId, JSON.stringify({ restoreMarker: "snapshot", headcount: [], budget: [], businessPlans: [] })]
+        );
+      } finally {
+        await dbCheck.end();
+      }
+
+      let res = await api("/snapshots", {
+        method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${companyAToken}` },
+        body: JSON.stringify({ year: 2098, confirmedBy: "QA", notes: "원자 복원 검증" }),
+      });
+      assert.equal(res.status, 200);
+
+      const before = await (await api("/data", { headers: { Authorization: `Bearer ${companyAToken}` } })).json();
+      res = await api("/save", {
+        method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${companyAToken}` },
+        body: JSON.stringify({
+          _version: before.version,
+          boardPosts: [...(before.data.boardPosts || []), { id: "restore-extra", title: "복원 뒤 삭제돼야 함", updatedAt: new Date().toISOString() }],
+        }),
+      });
+      assert.equal(res.status, 200);
+
+      const dbMutate = new Client({ connectionString: testDbUrl });
+      await dbMutate.connect();
+      try {
+        await dbMutate.query("UPDATE budget_store SET data = $2::jsonb WHERE company_id = $1", [companyAId, JSON.stringify({ restoreMarker: "current", headcount: [], budget: [], businessPlans: [] })]);
+      } finally {
+        await dbMutate.end();
+      }
+
+      res = await api("/restore", {
+        method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${companyAToken}` },
+        body: JSON.stringify({ name: "snapshot_2098.json", fields: ["boardPosts", "budget"], deleteExtras: true }),
+      });
+      assert.equal(res.status, 200);
+      const restored = await res.json();
+      assert.equal(restored.ok, true);
+      assert.ok(restored.restoredFields.includes("budget"));
+      assert.ok(!restored.data.boardPosts.some(p => p.id === "restore-extra"), "deleteExtras가 snapshot 이후 게시글을 지워야 함");
+
+      const dbVerify = new Client({ connectionString: testDbUrl });
+      await dbVerify.connect();
+      try {
+        const budget = await dbVerify.query("SELECT data FROM budget_store WHERE company_id = $1", [companyAId]);
+        assert.equal(budget.rows[0].data.restoreMarker, "snapshot", "budget_store도 동일 복원 트랜잭션에 포함돼야 함");
+      } finally {
+        await dbVerify.end();
+      }
+    });
+
     // POST /api/reset-all이 employees/kpi_entries만 지우고 app_collections/app_singletons
     // (approvalDocs·attendanceRecords·settings·orgDB 등, lib/collections.js의 GENERIC_LIST_
     // FIELDS/SINGLETON_FIELDS)는 그대로 남겨두고 있었다(2026-08-19 외부 감사 P1) — JSON 파일

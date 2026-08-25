@@ -7,6 +7,7 @@ const path    = require("path");
 const os      = require("os");
 const bcrypt  = require("bcryptjs");
 const crypto  = require("crypto");
+const { isDeepStrictEqual } = require("node:util");
 const pool    = require("./db");
 const multer  = require("multer");
 const budgetRouterFactory = require("./budget");
@@ -184,6 +185,12 @@ function _safeErrMsg(e) {
 const USE_JSON_FILE = !process.env.DATABASE_URL;
 const JSON_FILE     = process.env.DATA_FILE || path.join(__dirname, "hr-data.json");
 
+// JSON 파일 저장소는 프로세스 간 잠금이나 reload-merge-write를 제공하지 않는다. 같은
+// DATA_FILE을 두 프로세스가 공유하면 마지막 저장이 다른 프로세스의 변경을 덮어쓰거나
+// 같은 임시 파일을 경합할 수 있다. 따라서 파일 모드는 명시적으로 단일 worker만
+// 지원한다. 수평 확장이 필요하면 PostgreSQL 모드(DATABASE_URL)를 사용해야 한다.
+const JSON_FILE_WORKERS = Number(process.env.WEB_CONCURRENCY || 1);
+
 // 메인 데이터(_persistDataLocked)는 이미 tmp파일+rename으로 원자적 쓰기를 하고 있었지만,
 // 스냅샷/변경이력/회계/RCPS/고정자산/ERP/PMS/채용 등 나머지 위성 JSON 파일들(JSON 파일
 // 모드 전용 — 자체호스팅/오프라인 배포에서만 쓰이고 운영 Render 배포는 Postgres를 씀)은
@@ -198,6 +205,19 @@ function _atomicWriteFileSync(filePath, content) {
   const tmp = `${filePath}.tmp`;
   fs.writeFileSync(tmp, content, "utf8");
   fs.renameSync(tmp, filePath);
+}
+
+// 존재하는 데이터 파일을 "읽지 못하면 빈 저장소로 시작"하는 것은 다음 저장 시 원본을
+// 덮어써 실제 데이터 유실로 이어진다. 파일이 없는 최초 실행만 새 저장소를 허용하고,
+// 이미 존재하는 파일의 읽기/파싱 실패는 반드시 기동 실패로 승격한다.
+function _readExistingJsonFileOrFail(filePath, label) {
+  try {
+    return JSON.parse(fs.readFileSync(filePath, "utf8"));
+  } catch (e) {
+    const err = new Error(`[Storage] ${label} 파일을 읽거나 해석할 수 없어 서버를 시작하지 않습니다: ${filePath}`);
+    err.cause = e;
+    throw err;
+  }
 }
 
 // In-memory store for JSON file mode (mirrors the full client state)
@@ -665,6 +685,19 @@ function filterDataForRole(data, auth) {
       return copy;
     });
   }
+  if (auth.role !== "admin") out._singletonRevisions = {};
+  return out;
+}
+
+// 회계 수금/지급은 PostgreSQL 모드에서 app_collections(acctPayments)에 저장돼 /data의
+// full-state에도 포함된다. 회계 전용 GET만 막아도 이 배열을 그대로 두면 메뉴 권한을
+// /data로 우회할 수 있으므로, full-state 응답에도 같은 최소 차단을 적용한다.
+function filterDataForMenuPermissions(data, menuPerms) {
+  if (!data || !menuPerms || typeof menuPerms !== "object") return data;
+  const out = { ...data };
+  if (menuPerms["acct-receivables"] === false && Array.isArray(out.acctPayments)) {
+    out.acctPayments = [];
+  }
   return out;
 }
 
@@ -872,15 +905,13 @@ async function _withDistributedSaveLock(companyId, fn) {
 // ── DB bootstrap ──────────────────────────────────────────────────────────────
 async function initDB() {
   if (USE_JSON_FILE) {
+    if (Number.isFinite(JSON_FILE_WORKERS) && JSON_FILE_WORKERS > 1) {
+      throw new Error("JSON 파일 저장 모드는 WEB_CONCURRENCY=1만 지원합니다. 다중 인스턴스 운영에는 DATABASE_URL(PostgreSQL)을 설정하세요.");
+    }
     if (fs.existsSync(JSON_FILE)) {
-      try {
-        const raw = fs.readFileSync(JSON_FILE, "utf8");
-        _fileStore = JSON.parse(raw);
-        _setVersion(null, _fileStore._version || 0);
-        console.log(`[Storage] JSON File mode. Loaded ${(_fileStore.employees||[]).length} employees, version=${_getVersion(null)}`);
-      } catch (e) {
-        console.warn("[Storage] Could not read data file, starting fresh:", e.message);
-      }
+      _fileStore = _readExistingJsonFileOrFail(JSON_FILE, "메인 데이터");
+      _setVersion(null, _fileStore._version || 0);
+      console.log(`[Storage] JSON File mode. Loaded ${(_fileStore.employees||[]).length} employees, version=${_getVersion(null)}`);
       // POST /save의 rejectDemoDataForProduction() 게이트는 "다음 저장 요청"이 와야만
       // 작동한다 — DATA_FILE 자체가 이미 더미 데이터로 시작한 채(실수로 seed-demo.js
       // 산출물을 DATA_FILE로 지정, 개발 스냅샷을 그대로 복사 등) 부팅되면 그 요청이
@@ -894,94 +925,58 @@ async function initDB() {
     // Load snapshots from separate file
     const snapFile = JSON_FILE.replace(/\.json$/, "-snapshots.json");
     if (fs.existsSync(snapFile)) {
-      try {
-        _fileSnapshots = JSON.parse(fs.readFileSync(snapFile, "utf8"));
-        console.log(`[Storage] Loaded ${Object.keys(_fileSnapshots).length} snapshots`);
-      } catch (e) {
-        console.warn("[Storage] Could not read snapshots file:", e.message);
-      }
+      _fileSnapshots = _readExistingJsonFileOrFail(snapFile, "스냅샷 데이터");
+      console.log(`[Storage] Loaded ${Object.keys(_fileSnapshots).length} snapshots`);
     }
     // Load change history from separate file (audit trail, JSON file mode)
     const histFile = JSON_FILE.replace(/\.json$/, "-history.json");
     if (fs.existsSync(histFile)) {
-      try {
-        _fileHistory = JSON.parse(fs.readFileSync(histFile, "utf8"));
-        console.log(`[Storage] Loaded history: ${(_fileHistory.employees||[]).length} employee entries, ${(_fileHistory.kpi||[]).length} kpi entries`);
-      } catch (e) {
-        console.warn("[Storage] Could not read history file:", e.message);
-      }
+      _fileHistory = _readExistingJsonFileOrFail(histFile, "변경 이력");
+      console.log(`[Storage] Loaded history: ${(_fileHistory.employees||[]).length} employee entries, ${(_fileHistory.kpi||[]).length} kpi entries`);
     }
     // Load accounting module data from separate file
     const acctFile = JSON_FILE.replace(/\.json$/, "-accounting.json");
     if (fs.existsSync(acctFile)) {
-      try {
-        _fileAccounting = { ..._fileAccounting, ...JSON.parse(fs.readFileSync(acctFile, "utf8")) };
-        console.log(`[Storage] Loaded accounting: ${_fileAccounting.accounts.length} accounts, ${_fileAccounting.vouchers.length} vouchers, ${_fileAccounting.taxInvoices.length} tax invoices, ${(_fileAccounting.partners||[]).length} partners`);
-      } catch (e) {
-        console.warn("[Storage] Could not read accounting file:", e.message);
-      }
+      _fileAccounting = { ..._fileAccounting, ..._readExistingJsonFileOrFail(acctFile, "회계 데이터") };
+      console.log(`[Storage] Loaded accounting: ${_fileAccounting.accounts.length} accounts, ${_fileAccounting.vouchers.length} vouchers, ${_fileAccounting.taxInvoices.length} tax invoices, ${(_fileAccounting.partners||[]).length} partners`);
     }
     // Load RCPS(상환전환우선주) module data from separate file
     const rcpsFile = JSON_FILE.replace(/\.json$/, "-rcps.json");
     if (fs.existsSync(rcpsFile)) {
-      try {
-        _fileAcctRcps = { ..._fileAcctRcps, ...JSON.parse(fs.readFileSync(rcpsFile, "utf8")) };
-        console.log(`[Storage] Loaded RCPS: ${_fileAcctRcps.issuances.length} issuances, ${_fileAcctRcps.schedule.length} schedule rows, ${_fileAcctRcps.valuations.length} valuations`);
-      } catch (e) {
-        console.warn("[Storage] Could not read RCPS file:", e.message);
-      }
+      _fileAcctRcps = { ..._fileAcctRcps, ..._readExistingJsonFileOrFail(rcpsFile, "RCPS 데이터") };
+      console.log(`[Storage] Loaded RCPS: ${_fileAcctRcps.issuances.length} issuances, ${_fileAcctRcps.schedule.length} schedule rows, ${_fileAcctRcps.valuations.length} valuations`);
     }
     // Load fixed-assets module data from separate file
     const faFile = JSON_FILE.replace(/\.json$/, "-fixedassets.json");
     if (fs.existsSync(faFile)) {
-      try {
-        _fileAcctFixedAssets = { ..._fileAcctFixedAssets, ...JSON.parse(fs.readFileSync(faFile, "utf8")) };
-        console.log(`[Storage] Loaded fixed assets: ${_fileAcctFixedAssets.assets.length} assets, ${_fileAcctFixedAssets.schedule.length} schedule rows`);
-      } catch (e) {
-        console.warn("[Storage] Could not read fixed-assets file:", e.message);
-      }
+      _fileAcctFixedAssets = { ..._fileAcctFixedAssets, ..._readExistingJsonFileOrFail(faFile, "고정자산 데이터") };
+      console.log(`[Storage] Loaded fixed assets: ${_fileAcctFixedAssets.assets.length} assets, ${_fileAcctFixedAssets.schedule.length} schedule rows`);
     }
     // Load sales/inventory (ERP) module data from separate file
     const erpFile = JSON_FILE.replace(/\.json$/, "-erp.json");
     if (fs.existsSync(erpFile)) {
-      try {
-        _fileErp = { ..._fileErp, ...JSON.parse(fs.readFileSync(erpFile, "utf8")) };
-        if (!_fileErp.salesTargets) _fileErp.salesTargets = [];
-        console.log(`[Storage] Loaded ERP: ${_fileErp.items.length} items, ${_fileErp.locations.length} locations, ${_fileErp.quotations.length} quotations, ${_fileErp.purchaseOrders.length} purchase orders, ${_fileErp.salesTargets.length} sales targets`);
-      } catch (e) {
-        console.warn("[Storage] Could not read ERP file:", e.message);
-      }
+      _fileErp = { ..._fileErp, ..._readExistingJsonFileOrFail(erpFile, "ERP 데이터") };
+      if (!_fileErp.salesTargets) _fileErp.salesTargets = [];
+      console.log(`[Storage] Loaded ERP: ${_fileErp.items.length} items, ${_fileErp.locations.length} locations, ${_fileErp.quotations.length} quotations, ${_fileErp.purchaseOrders.length} purchase orders, ${_fileErp.salesTargets.length} sales targets`);
     }
     // Load PMS module data from separate file
     const pmsFile = JSON_FILE.replace(/\.json$/, "-pms.json");
     if (fs.existsSync(pmsFile)) {
-      try {
-        _filePms = { ..._filePms, ...JSON.parse(fs.readFileSync(pmsFile, "utf8")) };
-        console.log(`[Storage] Loaded PMS: ${_filePms.projects.length} projects, ${_filePms.allocations.length} allocations`);
-      } catch (e) {
-        console.warn("[Storage] Could not read PMS file:", e.message);
-      }
+      _filePms = { ..._filePms, ..._readExistingJsonFileOrFail(pmsFile, "PMS 데이터") };
+      console.log(`[Storage] Loaded PMS: ${_filePms.projects.length} projects, ${_filePms.allocations.length} allocations`);
     }
     // Load recruiting module data from separate file
     const recruitFile = JSON_FILE.replace(/\.json$/, "-recruit.json");
     if (fs.existsSync(recruitFile)) {
-      try {
-        _fileRecruit = { ..._fileRecruit, ...JSON.parse(fs.readFileSync(recruitFile, "utf8")) };
-        console.log(`[Storage] Loaded recruiting: ${_fileRecruit.jobs.length} jobs, ${_fileRecruit.candidates.length} candidates`);
-      } catch (e) {
-        console.warn("[Storage] Could not read recruiting file:", e.message);
-      }
+      _fileRecruit = { ..._fileRecruit, ..._readExistingJsonFileOrFail(recruitFile, "채용 데이터") };
+      console.log(`[Storage] Loaded recruiting: ${_fileRecruit.jobs.length} jobs, ${_fileRecruit.candidates.length} candidates`);
     }
     // Load activity log from separate file (bounded ring buffer, JSON file mode)
     const activityFile = JSON_FILE.replace(/\.json$/, "-activity.json");
     if (fs.existsSync(activityFile)) {
-      try {
-        _fileActivityLog = JSON.parse(fs.readFileSync(activityFile, "utf8"));
-        if (!Array.isArray(_fileActivityLog)) _fileActivityLog = [];
-        console.log(`[Storage] Loaded activity log: ${_fileActivityLog.length} entries`);
-      } catch (e) {
-        console.warn("[Storage] Could not read activity log file:", e.message);
-      }
+      _fileActivityLog = _readExistingJsonFileOrFail(activityFile, "활동 로그");
+      if (!Array.isArray(_fileActivityLog)) _fileActivityLog = [];
+      console.log(`[Storage] Loaded activity log: ${_fileActivityLog.length} entries`);
     }
     // 기초데이터 시딩 (최초 가동 시 비어있는 경우에만)
     if (!_fileAccounting.accounts || _fileAccounting.accounts.length === 0) {
@@ -1066,6 +1061,11 @@ async function _seedCompanyDefaults(client, companyId) {
 }
 
 const { ID_KEYED_LIST_FIELDS, GENERIC_LIST_FIELDS, SINGLETON_FIELDS } = require("./lib/collections");
+// 부분 병합 데이터와 내부 카운터/tombstone은 CAS 대상으로 삼으면 정상 동시 저장까지
+// 막으므로, 관리 화면에서 통째로 편집되는 설정 객체만 revision으로 보호한다.
+const REVISIONED_SINGLETON_FIELDS = SINGLETON_FIELDS.filter(key => ![
+  "compGradeResults", "_idCounter", "roomReservationTombstones", "recordTombstones",
+].includes(key));
 
 // ── Core DB helpers ───────────────────────────────────────────────────────────
 // companyId: employees/kpi_entries(1단계, 2026-07-20)에 이어 app_collections/app_singletons
@@ -1079,7 +1079,7 @@ async function loadData(companyId) {
   if (USE_JSON_FILE) {
     // Return the full stored state so the client restores everything
     // (employees, kpiEntries, settings, coreTalentPool, lowPerfData, etc.)
-    return { ..._fileStore, _version: _getVersion(companyId) };
+    return { ..._fileStore, _version: _getVersion(companyId), _singletonRevisions: { ...(_fileStore._singletonRevisions || {}) } };
   }
   const empParams = companyId ? [companyId] : [];
   const empFilter = companyId ? "AND company_id = $1" : "";
@@ -1088,19 +1088,23 @@ async function loadData(companyId) {
     pool.query(`SELECT data FROM employees  WHERE is_deleted = FALSE ${empFilter} ORDER BY created_at`, empParams),
     pool.query(`SELECT data FROM kpi_entries WHERE is_deleted = FALSE ${empFilter} ORDER BY created_at`, empParams),
     pool.query(`SELECT collection, data FROM app_collections ${collFilter} ORDER BY created_at`, empParams),
-    pool.query(`SELECT key, data FROM app_singletons ${collFilter}`, empParams),
+    pool.query(`SELECT key, data, revision FROM app_singletons ${collFilter}`, empParams),
   ]);
   const result = {
     employees:  empRes.rows.map(r => r.data),
     kpiEntries: kpiRes.rows.map(r => r.data),
     _version:   _getVersion(companyId),
+    _singletonRevisions: {},
   };
   for (const field of GENERIC_LIST_FIELDS) result[field] = [];
   for (const row of collRes.rows) {
     if (!result[row.collection]) result[row.collection] = [];
     result[row.collection].push(row.data);
   }
-  for (const row of singRes.rows) result[row.key] = row.data;
+  for (const row of singRes.rows) {
+    result[row.key] = row.data;
+    result._singletonRevisions[row.key] = Number(row.revision) || 1;
+  }
   return result;
 }
 // Public entry point — acquires the save lock itself. Callers that are
@@ -1575,7 +1579,25 @@ function _nextAuthVersion(ex, emp, pw) {
 async function persistData(data, changedBy = "system", companyId = null, actor = null) {
   return _withSaveLock(() => _withDistributedSaveLock(companyId, () => _persistDataLocked(data, changedBy, companyId, actor)));
 }
-async function _persistDataLocked(data, changedBy = "system", companyId = null, actor = null) {
+// `externalClient` is reserved for the snapshot-restore workflow.  That route
+// owns a wider transaction which also covers deleteExtras and budget_store, so
+// this function must join it instead of committing a partial HR restore first.
+async function _persistDataLocked(data, changedBy = "system", companyId = null, actor = null, externalClient = null) {
+  if (data._enforceSingletonCas) {
+    if (!Array.isArray(data._changedSingletonKeys)) {
+      throw httpError(428, "SINGLETON_REVISION_REQUIRED", "설정 저장 전 최신 revision 정보가 필요합니다.");
+    }
+    const changedKeys = new Set(data._changedSingletonKeys);
+    for (const key of REVISIONED_SINGLETON_FIELDS) {
+      if (!changedKeys.has(key)) {
+        delete data[key]; // 전체 상태 echo가 stale singleton을 덮어쓰지 않게 한다.
+        continue;
+      }
+      if (!Object.prototype.hasOwnProperty.call(data._singletonRevisions || {}, key)) {
+        throw httpError(428, "SINGLETON_REVISION_REQUIRED", `${key} 설정의 최신 revision 정보가 필요합니다.`, { key });
+      }
+    }
+  }
   // kpiEntries.weight(비중,%)는 화면 입력칸엔 별다른 제한이 없고(saveKpiDraft가 Number(...)||20
   // 폴백만 함) 서버도 전혀 검증하지 않아, API를 직접 호출하면 음수·수천% 같은 값이 그대로
   // 저장됐다 — 이 값은 다면/역량 등급 산정(assignCompPoolGrades 호출부의 weighted average,
@@ -1613,6 +1635,19 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
   }
   if (USE_JSON_FILE) {
     // Save the full client state to the JSON file
+    const expectedSingletonRevisions = data._singletonRevisions || {};
+    const nextSingletonRevisions = { ...(_fileStore._singletonRevisions || {}) };
+    for (const key of REVISIONED_SINGLETON_FIELDS) {
+      if (data[key] === undefined || isDeepStrictEqual(data[key], _fileStore[key])) continue;
+      const currentRevision = Number(nextSingletonRevisions[key]) || 0;
+      const expectedRevision = Number(expectedSingletonRevisions[key]) || 0;
+      if (Object.prototype.hasOwnProperty.call(expectedSingletonRevisions, key) && expectedRevision !== currentRevision) {
+        throw httpError(409, "SINGLETON_REVISION_CONFLICT", "다른 사용자가 설정을 먼저 변경했습니다. 최신 데이터를 불러온 뒤 다시 시도하세요.", {
+          key, currentRevision,
+        });
+      }
+      nextSingletonRevisions[key] = currentRevision + 1;
+    }
     const existingById = {};
     for (const e of (_fileStore.employees || [])) existingById[e.id] = e;
     const existingKpiById = {};
@@ -1824,6 +1859,7 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
     // `{...data, employees}` would silently delete every field absent from `data`.
     _fileStore = {
       ..._fileStore, ...data, employees,
+      _singletonRevisions: nextSingletonRevisions,
       kpiEntries: kpiEntriesFinal, payslips: payslipsFinal,
       lowPerfData: lowPerfDataFinal, coreTalentPool: coreTalentPoolFinal,
       welfarePoints: welfarePointsFinal, compResponses: compResponsesFinal,
@@ -1845,9 +1881,10 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
     await fs.promises.rename(tmp, JSON_FILE);
     return { duplicateLoginIds };
   }
-  const client = await pool.connect();
+  const client = externalClient || await pool.connect();
+  const ownsTransaction = !externalClient;
   try {
-    await client.query("BEGIN");
+    if (ownsTransaction) await client.query("BEGIN");
 
     // ── employees upsert + history ────────────────────────────────────────────
     // id 컬럼 자체는 여전히 전역 유일(설계상 회사마다 새 시퀀스를 쓰지 않음, _getNextEmployeeId
@@ -2122,27 +2159,48 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
         const storedCgr = rows.length ? rows[0].data : null;
         valueToStore = mergeNestedObject(storedCgr, _sanitizeCompGradeResultsForRole(data[key], storedCgr, actor));
       }
+      const { rows: storedRows } = await client.query(
+        `SELECT data, revision FROM app_singletons WHERE key = $1 AND company_id = $2 FOR UPDATE`,
+        [key, companyId]
+      );
+      const stored = storedRows[0];
+      if (stored && isDeepStrictEqual(valueToStore, stored.data)) continue;
+      const currentRevision = stored ? (Number(stored.revision) || 1) : 0;
+      if (REVISIONED_SINGLETON_FIELDS.includes(key)) {
+        const expectedMap = data._singletonRevisions || {};
+        const expectedRevision = Number(expectedMap[key]) || 0;
+        if (Object.prototype.hasOwnProperty.call(expectedMap, key) && expectedRevision !== currentRevision) {
+          throw httpError(409, "SINGLETON_REVISION_CONFLICT", "다른 사용자가 설정을 먼저 변경했습니다. 최신 데이터를 불러온 뒤 다시 시도하세요.", {
+            key, currentRevision,
+          });
+        }
+      }
       await client.query(
-        `INSERT INTO app_singletons (key, company_id, data, updated_at) VALUES ($1,$2,$3,NOW())
-         ON CONFLICT (company_id, key) DO UPDATE SET data = $3, updated_at = NOW()`,
+        `INSERT INTO app_singletons (key, company_id, data, revision, updated_at) VALUES ($1,$2,$3,1,NOW())
+         ON CONFLICT (company_id, key) DO UPDATE SET data = $3, revision = app_singletons.revision + 1, updated_at = NOW()`,
         [key, companyId, JSON.stringify(valueToStore)]
       );
     }
 
     // ── bump version (회사별로 분리된 카운터, _bumpVersion 참고) ──────────────────
-    const verState = _bumpVersion(companyId);
+    // When joining /restore's wider transaction, do not update the process
+    // version before COMMIT.  A later budget/delete failure would otherwise
+    // leave memory one version ahead of the rolled-back database.
+    const verState = ownsTransaction
+      ? _bumpVersion(companyId)
+      : { version: _getVersion(companyId) + 1, lastSaved: new Date().toISOString() };
     await client.query(
       "INSERT INTO app_meta (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = $2",
       [`data_version:${_scopeKey(companyId)}`, String(verState.version)]
     );
 
-    await client.query("COMMIT");
-    return { duplicateLoginIds };
+    if (ownsTransaction) await client.query("COMMIT");
+    return { duplicateLoginIds, version: verState.version };
   } catch (e) {
-    await client.query("ROLLBACK");
+    if (ownsTransaction) await client.query("ROLLBACK");
     throw e;
   } finally {
-    client.release();
+    if (ownsTransaction) client.release();
   }
 }
 
@@ -2322,6 +2380,116 @@ async function addActivityLog(entry, companyId = null) {
 }
 
 // ── Middleware ────────────────────────────────────────────────────────────────
+const IDEMPOTENCY_TTL_MS = 24 * 60 * 60 * 1000;
+const IDEMPOTENCY_FILE = JSON_FILE.replace(/\.json$/, "-idempotency.json");
+let _fileIdempotency = null;
+function _canonicalJson(value) {
+  if (Array.isArray(value)) return `[${value.map(_canonicalJson).join(",")}]`;
+  if (value && typeof value === "object") return `{${Object.keys(value).sort().map(k => `${JSON.stringify(k)}:${_canonicalJson(value[k])}`).join(",")}}`;
+  return JSON.stringify(value);
+}
+function _idempotencyHash(req) {
+  return crypto.createHash("sha256").update(`${req.method}\n${req.path}\n${_canonicalJson(req.body || null)}`).digest("hex");
+}
+function _idempotencyRequired(req) {
+  if (["GET", "HEAD", "OPTIONS"].includes(req.method)) return false;
+  return req.path === "/save" || /^\/api\/(accounting|erp)\//.test(req.path);
+}
+function _loadFileIdempotency() {
+  if (_fileIdempotency) return;
+  _fileIdempotency = {};
+  if (fs.existsSync(IDEMPOTENCY_FILE)) _fileIdempotency = _readExistingJsonFileOrFail(IDEMPOTENCY_FILE, "멱등성 기록");
+}
+function _pruneFileIdempotency() {
+  const now = Date.now();
+  for (const [key, row] of Object.entries(_fileIdempotency || {})) {
+    if (!row || Date.parse(row.expiresAt) <= now) delete _fileIdempotency[key];
+  }
+}
+async function idempotencyMiddleware(req, res, next) {
+  if (!_idempotencyRequired(req)) return next();
+  if (!req.auth) return next(); // 실제 라우트의 인증 응답(401)이 항상 우선한다.
+  const key = String(req.get("Idempotency-Key") || "");
+  // 레거시 전체상태 /save만 전환 호환을 유지한다. 금전·재고 명령은 운영에서 키를 필수화해
+  // API 직접 호출로 중복 방지를 우회할 수 없게 한다(테스트 fixture는 기존 호출 호환).
+  if (!key && (req.path === "/save" || process.env.NODE_ENV === "test")) return next();
+  if (!/^[A-Za-z0-9._:-]{8,128}$/.test(key)) {
+    return res.status(400).json({ ok: false, code: "IDEMPOTENCY_KEY_REQUIRED", message: "유효한 Idempotency-Key가 필요합니다." });
+  }
+  const companyId = req.auth.companyId || null;
+  const actorId = String(req.auth.empId || req.auth.loginId || req.auth.masterId || "unknown");
+  const route = `${req.method} ${req.path}`;
+  const requestHash = _idempotencyHash(req);
+  const scope = `${_scopeKey(companyId)}\u0000${actorId}\u0000${route}\u0000${key}`;
+  let prior = null;
+  try {
+    if (USE_JSON_FILE) {
+      _loadFileIdempotency();
+      _pruneFileIdempotency();
+      prior = _fileIdempotency[scope] || null;
+      if (!prior) {
+        _fileIdempotency[scope] = { requestHash, pending: true, expiresAt: new Date(Date.now() + IDEMPOTENCY_TTL_MS).toISOString() };
+        _atomicWriteFileSync(IDEMPOTENCY_FILE, JSON.stringify(_fileIdempotency, null, 2));
+      }
+    } else {
+      await pool.query("DELETE FROM api_idempotency WHERE expires_at <= NOW()");
+      const inserted = await pool.query(
+        `INSERT INTO api_idempotency (company_id, actor_id, route, idempotency_key, request_hash, expires_at)
+         VALUES ($1,$2,$3,$4,$5,NOW() + INTERVAL '24 hours') ON CONFLICT DO NOTHING RETURNING request_hash`,
+        [companyId, actorId, route, key, requestHash]
+      );
+      if (!inserted.rowCount) {
+        const found = await pool.query(
+          "SELECT request_hash, response_status, response_body FROM api_idempotency WHERE company_id = $1 AND actor_id = $2 AND route = $3 AND idempotency_key = $4",
+          [companyId, actorId, route, key]
+        );
+        prior = found.rows[0] || null;
+      }
+    }
+  } catch (e) {
+    console.error("[Idempotency] claim failed:", e);
+    return res.status(503).json({ ok: false, code: "IDEMPOTENCY_UNAVAILABLE", message: "중복 요청 보호 기능을 사용할 수 없습니다. 잠시 후 다시 시도하세요." });
+  }
+  if (prior) {
+    if (prior.requestHash !== requestHash && prior.request_hash !== requestHash) {
+      return res.status(409).json({ ok: false, code: "IDEMPOTENCY_KEY_REUSED", message: "같은 Idempotency-Key를 다른 요청에 재사용할 수 없습니다." });
+    }
+    const responseStatus = prior.responseStatus || prior.response_status;
+    const responseBody = prior.responseBody || prior.response_body;
+    if (responseStatus && responseBody) {
+      res.set("X-Idempotency-Replayed", "true");
+      return res.status(Number(responseStatus)).json(responseBody);
+    }
+    res.set("Retry-After", "1");
+    return res.status(409).json({ ok: false, code: "IDEMPOTENCY_IN_PROGRESS", message: "동일한 요청이 이미 처리 중입니다." });
+  }
+  const originalJson = res.json.bind(res);
+  let finalizing = false;
+  res.json = body => {
+    if (finalizing) return res;
+    finalizing = true;
+    const status = res.statusCode;
+    const success = status >= 200 && status < 300;
+    const finalize = async () => {
+      if (USE_JSON_FILE) {
+        if (success) _fileIdempotency[scope] = { requestHash, responseStatus: status, responseBody: body, expiresAt: new Date(Date.now() + IDEMPOTENCY_TTL_MS).toISOString() };
+        else delete _fileIdempotency[scope];
+        _atomicWriteFileSync(IDEMPOTENCY_FILE, JSON.stringify(_fileIdempotency, null, 2));
+      } else if (success) {
+        await pool.query("UPDATE api_idempotency SET response_status=$5,response_body=$6 WHERE company_id=$1 AND actor_id=$2 AND route=$3 AND idempotency_key=$4", [companyId, actorId, route, key, status, body]);
+      } else {
+        await pool.query("DELETE FROM api_idempotency WHERE company_id=$1 AND actor_id=$2 AND route=$3 AND idempotency_key=$4", [companyId, actorId, route, key]);
+      }
+    };
+    finalize().then(() => originalJson(body)).catch(e => {
+      console.error("[Idempotency] completion persist failed:", e);
+      res.status(503);
+      originalJson({ ok: false, code: "IDEMPOTENCY_UNAVAILABLE", message: "요청 결과를 안전하게 기록하지 못했습니다. 같은 키로 상태를 확인해주세요." });
+    });
+    return res;
+  };
+  next();
+}
 app.use(cors());
 // CSP는 끈다: 프론트엔드(public/index.html)가 인라인 onclick 핸들러와 인라인 <script>를
 // 전면적으로 사용하는 구조라 기본 CSP를 켜면 앱 전체가 깨진다. 나머지 기본 보안 헤더
@@ -2329,6 +2497,19 @@ app.use(cors());
 app.use(helmet({ contentSecurityPolicy: false }));
 app.use(express.json({ limit: "50mb" }));
 app.use(authenticate);
+// 작성자·확정자 이름을 body.user에서 받으면 유효한 관리자 토큰만으로도 "CEO" 등
+// 다른 사람 명의의 감사 이력을 만들 수 있다. 인증된 요청은 모든 기존 라우트가 쓰는
+// body.user를 서버 토큰 주체로 통일한다.
+function _actorLabel(req) {
+  return req?.auth?.loginId || (req?.auth?.empId != null ? `emp:${req.auth.empId}` : "system");
+}
+app.use((req, res, next) => {
+  if (req.auth && req.body && typeof req.body === "object" && !Array.isArray(req.body)) {
+    req.body.user = _actorLabel(req);
+  }
+  next();
+});
+app.use(idempotencyMiddleware);
 app.use(express.static(path.join(__dirname, "public")));
 // 사업계획(팀별 작성 → 사업부장 승인 → 예산담당자+기획팀장 최종확정) 워크플로우가
 // 요청자의 dept/team을 알아야 해서, budget.js가 자체적으로 갖지 못하는 employees 조회를
@@ -2475,7 +2656,16 @@ app.get("/data", async (req, res) => {
   try {
     const companyId = req.auth.companyId || null;
     const data = await loadData(companyId);
-    res.json({ ok: true, data: filterDataForRole(stripPwField(data), req.auth), version: _getVersion(companyId) });
+    const employee = await _getStoredEmployeeForMenuPerms(req.auth);
+    // master impersonation은 특정 직원의 menuPerms가 없으므로 기존 관리자 범위를 유지한다.
+    if (req.auth.empId != null && !employee) {
+      return res.status(401).json({ ok: false, code: "AUTH_EMPLOYEE_NOT_FOUND", message: "로그인 정보를 다시 확인해주세요." });
+    }
+    res.json({
+      ok: true,
+      data: filterDataForMenuPermissions(filterDataForRole(stripPwField(data), req.auth), employee?.menuPerms),
+      version: _getVersion(companyId),
+    });
   } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
@@ -2815,106 +3005,17 @@ function requireMaster(req, res) {
   return true;
 }
 
-// /login과 동일한 이유로 전용 rate limiter가 필요하다(이 라우트도 항상 HTTP 200으로
-// 응답하고 성공/실패는 JSON body의 `ok`로만 구분하므로, express-rate-limit의 기본
-// 성공 판정(statusCode<400)을 그대로 쓰면 브루트포스 방어가 무력화된다 — /login에 있는
-// 것과 동일한 문제, res.locals.masterLoginOk로 실제 결과를 판정 기준에 연결한다).
-// /login과는 별도의 카운터를 쓴다(loginLimiter를 공유하면 같은 IP에서 회사 로그인
-// 실패를 반복한 사용자가 마스터 로그인 시도 자체를 못 하게 되는 등 서로 다른 두
-// 자격증명 체계의 실패가 하나의 카운터에 섞이는 게 부적절하다고 판단).
-// 보안 검토(2026-08-24) 중 발견 — 이 세 라우트가 지금까지 `!==` 평문 문자열 비교로
-// x-migration-secret을 검증하고 있었음(타이밍 공격에 취약: 첫 불일치 문자에서 즉시
-// 반환되는 `!==`의 실행시간 차이로 응답시간을 재보며 비밀값을 한 글자씩 추정할 수 있음).
-// 이 파일의 다른 비밀값 비교 3곳(토큰 서명·BOOTSTRAP_SECRET·2FA)은 전부
-// crypto.timingSafeEqual을 쓰는데 이 세 라우트만 예외였다 — _bootstrapSecretMatches()와
-// 동일한 패턴으로 통일. 또한 시도 횟수 제한이 전혀 없어(비밀값이 설정된 상태라면) 무제한
-// 추측이 가능했던 것도 함께 막는다(로그인류 라우트들과 동일하게 IP당 15분/20회).
-function _migrationSecretMatches(req) {
-  const secret = process.env.MIGRATION_ADMIN_SECRET;
-  const provided = req.headers["x-migration-secret"];
-  if (!secret || typeof provided !== "string") return false;
-  const a = Buffer.from(secret), b = Buffer.from(provided);
-  if (a.length !== b.length) return false;
-  try { return crypto.timingSafeEqual(a, b); } catch { return false; }
+// company_id 백필 때만 사용했던 임시 관리자 API는 작업 완료 후 제거했다. Express의
+// SPA fallback이 존재하지 않는 URL에도 index.html과 HTTP 200을 돌려주지 않도록, 과거
+// URL은 메서드·헤더와 무관하게 명시적으로 404 처리한다. 운영 진단은 읽기 전용 CLI
+// (scripts/migrate-add-company-id.js --dry-run)와 DB 감사 절차를 사용한다.
+for (const retiredAdminPath of [
+  "/admin/fix-company-slug",
+  "/admin/inspect-collection",
+  "/admin/purge-company-collections",
+]) {
+  app.all(retiredAdminPath, (req, res) => res.status(404).end());
 }
-const migrationAdminLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 20,
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: { ok: false, message: "요청이 너무 많습니다. 잠시 후 다시 시도하세요." },
-});
-
-// ── TEMPORARY — 오늘 잦은 회사코드 오타(printrobo 사고 등과 무관, 이번엔 "tirautech"를
-// "thirautech"로 바로잡는 요청)에 대응하기 위한 1회성 유틸리티. 이전 fix-company-name과
-// 동일한 보안 패턴(x-migration-secret 404 게이트). 완료 확인 즉시 제거할 것.
-app.post("/admin/fix-company-slug", migrationAdminLimiter, async (req, res) => {
-  if (!_migrationSecretMatches(req)) return res.status(404).end();
-  const oldSlug = (req.body && req.body.oldSlug || "").trim();
-  const newSlug = (req.body && req.body.newSlug || "").trim();
-  if (!oldSlug || !newSlug) return res.status(400).json({ ok: false, message: "oldSlug, newSlug required" });
-  if (req.body.confirm !== true) return res.status(400).json({ ok: false, message: "confirm:true 가 명시적으로 필요합니다." });
-  try {
-    const dup = await pool.query(`SELECT 1 FROM companies WHERE slug = $1`, [newSlug]);
-    if (dup.rows.length) return res.status(409).json({ ok: false, message: `slug "${newSlug}" 는 이미 사용 중입니다.` });
-    const result = await pool.query(
-      `UPDATE companies SET slug = $1 WHERE slug = $2 RETURNING id, slug, name`,
-      [newSlug, oldSlug]
-    );
-    if (!result.rows.length) return res.status(404).json({ ok: false, message: "해당 slug의 회사를 찾을 수 없습니다." });
-    res.json({ ok: true, company: result.rows[0] });
-  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
-});
-
-// ── TEMPORARY — 테넌트 격리 의심 사례(다른 회사 토큰으로 GET /data 호출 시
-// payrollAdjustments/boardPosts/roomReservations 등에 다른 회사 실데이터로 보이는 값이
-// 섞여 나온다는 사용자 제보) 진단용 읽기 전용 엔드포인트. app_collections는 오늘 복합 PK
-// (company_id, collection, id)로 전환 완료돼 company_id가 구조적으로 NULL일 수 없으므로,
-// 서버 조회 로직(엄격한 WHERE company_id=$1)이 실제로 다른 회사 행을 잘못 반환하는 건지,
-// 아니면 그 행 자체가 이미 (쓰기 시점에) 특정 회사 소유로 잘못 기록된 것인지(클라이언트가
-// 회사 전환 시 이전 회사의 로컬 캐시를 지우지 않고 재전송했을 가능성)를 실제 데이터로
-// 구분하기 위해 추가. 완료 확인 즉시 제거할 것.
-app.get("/admin/inspect-collection", migrationAdminLimiter, async (req, res) => {
-  if (!_migrationSecretMatches(req)) return res.status(404).end();
-  const collection = req.query.collection;
-  if (!collection) return res.status(400).json({ ok: false, message: "collection required" });
-  try {
-    const { rows } = await pool.query(
-      `SELECT ac.id, ac.company_id, c.slug AS company_slug, c.name AS company_name,
-              ac.created_at, ac.updated_at, ac.data
-       FROM app_collections ac
-       LEFT JOIN companies c ON c.id = ac.company_id
-       WHERE ac.collection = $1
-       ORDER BY ac.updated_at DESC
-       LIMIT 200`,
-      [collection]
-    );
-    const nullCompanyCount = await pool.query(
-      `SELECT COUNT(*)::bigint AS c FROM app_collections WHERE collection = $1 AND company_id IS NULL`,
-      [collection]
-    );
-    res.json({ ok: true, collection, totalReturned: rows.length, nullCompanyIdCount: Number(nullCompanyCount.rows[0].c) || 0, rows });
-  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
-});
-
-// ── TEMPORARY — 위 inspect-collection으로 확인된 test 회사의 오염 데이터(티라유텍
-// app_collections 전체 21건이 test 가입 순간 클라이언트 로컬캐시 재전송으로 그대로
-// 복제됨) 정리용. company_id 하나로 지정한 회사의 app_collections 행 전체를 지운다
-// (그 회사가 아직 자체 데이터가 없는 순수 테스트/오염 상태일 때만 안전 — 사용 전 반드시
-// inspect-collection으로 내용 확인 후 진행). 완료 확인 즉시 제거할 것.
-app.post("/admin/purge-company-collections", migrationAdminLimiter, async (req, res) => {
-  if (!_migrationSecretMatches(req)) return res.status(404).end();
-  const companySlug = (req.body && req.body.companySlug || "").trim();
-  if (!companySlug) return res.status(400).json({ ok: false, message: "companySlug required" });
-  if (req.body.confirm !== true) return res.status(400).json({ ok: false, message: "confirm:true 가 명시적으로 필요합니다." });
-  try {
-    const companyRes = await pool.query(`SELECT id, name FROM companies WHERE slug = $1`, [companySlug]);
-    if (!companyRes.rows.length) return res.status(404).json({ ok: false, message: "해당 slug의 회사를 찾을 수 없습니다." });
-    const companyId = companyRes.rows[0].id;
-    const del = await pool.query(`DELETE FROM app_collections WHERE company_id = $1`, [companyId]);
-    res.json({ ok: true, companySlug, companyId, deletedRows: del.rowCount });
-  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
-});
 
 const masterLoginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
@@ -3121,8 +3222,8 @@ function _bootstrapSecretMatches(req) {
 }
 
 // POST /save
-function httpError(status, code, message) {
-  return Object.assign(new Error(message), { status, code });
+function httpError(status, code, message, details) {
+  return Object.assign(new Error(message), { status, code, details });
 }
 
 // P1-3: 운영 더미 데이터 차단. public/index.html의 generateDummyData()/
@@ -3227,11 +3328,14 @@ app.post("/save", async (req, res) => {
   // getFullState() sends { _version, _action, data: { employees, kpiEntries, ... } }
   // Unwrap nested .data if present so persistData sees a flat structure
   const clientData = body.data
-    ? { ...body.data, _version: body._version, _user: body._user }
+    ? { ...body.data, _version: body._version, _user: body._user, _singletonRevisions: body._singletonRevisions || body.data._singletonRevisions, _changedSingletonKeys: body._changedSingletonKeys }
     : body;
+  // 새 웹 클라이언트는 변경 키 목록을 항상 전송한다. 목록이 없는 레거시 백업/연동은
+  // 기존 동작을 유지해 즉시 단절시키지 않고, 목록이 있는 요청에는 strict CAS를 강제한다.
+  clientData._enforceSingletonCas = Array.isArray(clientData._changedSingletonKeys);
 
   try {
-    const { finalData, merged, duplicateLoginIds } = await _withSaveLock(() => _withDistributedSaveLock(companyId, async () => {
+    const { finalData, merged, duplicateLoginIds, singletonRevisions } = await _withSaveLock(() => _withDistributedSaveLock(companyId, async () => {
       let finalData = clientData;
       let merged    = false;
       let serverData;
@@ -3257,6 +3361,7 @@ app.post("/save", async (req, res) => {
 
       if (!_isPrivilegedStateWriter(req.auth)) {
         finalData = preserveServerOwnedStateForNonAdmin(finalData, await getServerData(), req.auth);
+        finalData._changedSingletonKeys = [];
       }
 
       // changedBy는 원래부터 클라이언트가 보낸 문자열을 그대로 신뢰하는 필드였다(req.auth
@@ -3274,7 +3379,8 @@ app.post("/save", async (req, res) => {
       // 클라이언트가 직접 보낸 요청과 병합을 거친 요청 양쪽 모두 동일하게 걸린다.
       rejectDemoDataForProduction(finalData);
       const { duplicateLoginIds } = await _persistDataLocked(finalData, changedBy, companyId, req.auth || null);
-      return { finalData, merged, duplicateLoginIds };
+      const savedState = await loadData(companyId);
+      return { finalData, merged, duplicateLoginIds, singletonRevisions: savedState._singletonRevisions || {} };
     }));
 
     const meta = {
@@ -3285,6 +3391,7 @@ app.post("/save", async (req, res) => {
     broadcastSSE("data_updated", { version: _getVersion(companyId), meta }, req.query.clientId, companyId);
     res.json({
       ok: true, version: _getVersion(companyId), merged,
+      singletonRevisions,
       mergedData: merged ? filterDataForRole(stripPwField(finalData), req.auth) : undefined,
       meta,
       warnings: duplicateLoginIds && duplicateLoginIds.length ? { duplicateLoginIds } : undefined,
@@ -3295,8 +3402,15 @@ app.post("/save", async (req, res) => {
     // 기존과 동일하게 500으로 처리한다(e.code가 없으면 JSON.stringify가 그 필드를
     // 조용히 생략하므로 기존 호출부의 응답 형태에 영향 없음).
     const status = Number.isInteger(e.status) ? e.status : 500;
-    res.status(status).json({ ok: false, code: e.code, message: _safeErrMsg(e) });
+    res.status(status).json({ ok: false, code: e.code, message: _safeErrMsg(e), details: e.details });
   }
+});
+
+// EventSource는 Authorization 헤더를 붙일 수 없으므로, 일반 API 토큰 대신 짧은 수명·SSE
+// 전용 ticket만 URL에 허용한다. ticket이 프록시 로그 등에 남아도 다른 API에 재사용할 수 없다.
+app.post("/events/token", (req, res) => {
+  if (!requireAuth(req, res)) return;
+  res.json({ ok: true, token: signToken({ ...req.auth, scope: "sse" }, 5 * 60) });
 });
 
 // GET /events — SSE
@@ -3306,7 +3420,8 @@ app.get("/events", async (req, res) => {
   // 상태로도 실시간 이벤트(잠금 상태에 포함된 편집자 이름, 접속/이탈 이벤트의 사용자명 등)를
   // 그대로 구독할 수 있었다. SSE에서 흔히 쓰는 방식대로 토큰을 쿼리스트링으로 전달받아
   // authenticate 미들웨어와 동일한 verifyToken()으로 검증한다.
-  const auth = req.auth || verifyToken(req.query.token);
+  const ticketAuth = verifyToken(req.query.token);
+  const auth = req.auth || (ticketAuth && ticketAuth.scope === "sse" ? ticketAuth : null);
   if (!auth || !(await _employeeAuthStillValid(auth))) return res.status(401).json({ ok: false, message: "로그인이 필요합니다." });
   const companyId = auth.companyId || null;
   const clientId = req.query.clientId || `client_${Date.now()}`;
@@ -3484,6 +3599,53 @@ function describeSnapshotFields(snapshotData) {
   return SNAPSHOT_FIELDS
     .filter(f => snapshotData[f] !== undefined)
     .map(f => ({ field: f, count: Array.isArray(snapshotData[f]) ? snapshotData[f].length : undefined }));
+}
+
+function buildRestorePlan(snapshotData, current, requestedFields, deleteExtras) {
+  const targetFields = requestedFields || describeSnapshotFields(snapshotData).map(f => f.field);
+  const restoreBudget = targetFields.includes("budget") && snapshotData.budget !== undefined;
+  const dataToPersist = { ...current };
+  const restoredFields = [];
+  const extrasByField = {};
+  for (const f of targetFields) {
+    if (f === "budget" || snapshotData[f] === undefined) continue;
+    if (Array.isArray(snapshotData[f]) && ID_KEYED_LIST_FIELDS.includes(f)) {
+      if (deleteExtras) {
+        extrasByField[f] = extraIdsNotInSnapshot(current[f], snapshotData[f]);
+        dataToPersist[f] = snapshotData[f];
+      } else {
+        dataToPersist[f] = unionPreferSnapshot(current[f], snapshotData[f]);
+      }
+    } else {
+      dataToPersist[f] = snapshotData[f];
+    }
+    restoredFields.push(f);
+  }
+  return { dataToPersist, restoredFields, extrasByField, restoreBudget };
+}
+
+async function deleteRestoreExtras(db, extrasByField, companyId) {
+  for (const [field, extraIds] of Object.entries(extrasByField)) {
+    if (!extraIds.length) continue;
+    if (field === "employees") {
+      await db.query(
+        "INSERT INTO employee_history (employee_id, action, changed_by, data, company_id) SELECT id, 'delete', $2, data, company_id FROM employees WHERE id = ANY($1) AND (company_id = $3 OR $3 IS NULL)",
+        [extraIds, "restore", companyId]
+      );
+      await db.query("DELETE FROM employees WHERE id = ANY($1) AND (company_id = $2 OR $2 IS NULL)", [extraIds, companyId]);
+    } else if (field === "kpiEntries") {
+      await db.query(
+        "INSERT INTO kpi_history (kpi_id, action, changed_by, data, company_id) SELECT id, 'delete', $2, data, company_id FROM kpi_entries WHERE id = ANY($1) AND (company_id = $3 OR $3 IS NULL)",
+        [extraIds, "restore", companyId]
+      );
+      await db.query("DELETE FROM kpi_entries WHERE id = ANY($1) AND (company_id = $2 OR $2 IS NULL)", [extraIds, companyId]);
+    } else {
+      await db.query(
+        "DELETE FROM app_collections WHERE collection = $1 AND id = ANY($2) AND (company_id = $3 OR $3 IS NULL)",
+        [field, extraIds, companyId]
+      );
+    }
+  }
 }
 
 // POST /snapshots — create a full-DB confirmed snapshot, tagged by year
@@ -3697,86 +3859,53 @@ app.post("/restore", async (req, res) => {
     const snapshotData = await loadSnapshotData(year, companyId);
     if (!snapshotData) return res.status(404).json({ ok: false, message: "스냅샷 없음" });
 
-    const current = await loadData(companyId);
-    const targetFields = fields || describeSnapshotFields(snapshotData).map(f => f.field);
-    const restoreBudget = targetFields.includes("budget") && snapshotData.budget !== undefined;
-    const dataToPersist = { ...current };
-    const restoredFields = [];
-    const extrasByField = {};
-    for (const f of targetFields) {
-      if (f === "budget") continue; // budget_store는 loadData()/persistData() 소관이 아니라
-      // 아래에서 updateBudget()으로 별도 처리 — persistData에 그대로 넘기면 알려지지 않은
-      // 필드라 조용히 무시될 뿐이라, 처음부터 일반 필드 병합 루프에서 제외한다.
-      if (snapshotData[f] === undefined) continue;
-      if (Array.isArray(snapshotData[f]) && ID_KEYED_LIST_FIELDS.includes(f)) {
-        // record collection (objects with an `id`) — merge/delete by id
-        if (deleteExtras) {
-          extrasByField[f] = extraIdsNotInSnapshot(current[f], snapshotData[f]);
-          dataToPersist[f] = snapshotData[f];
-        } else {
-          dataToPersist[f] = unionPreferSnapshot(current[f], snapshotData[f]);
+    const restoreActor = `auth:${req.auth.loginId || req.auth.empId || "admin"}`;
+
+    // PostgreSQL은 HR 본문, deleteExtras, budget_store를 반드시 하나의 트랜잭션으로
+    // 처리한다. 이전 구현은 각각 별도 커넥션/COMMIT이어서, 예산 복원에서 실패하면 HR만
+    // 과거 시점으로 돌아가는 부분 복원이 남았다.
+    if (!USE_JSON_FILE) {
+      const result = await _withSaveLock(() => _withDistributedSaveLock(companyId, async () => {
+        const client = await pool.connect();
+        try {
+          await client.query("BEGIN");
+          const current = await loadData(companyId);
+          const plan = buildRestorePlan(snapshotData, current, fields, deleteExtras);
+          rejectDemoDataForProduction(plan.dataToPersist);
+          if (deleteExtras) await deleteRestoreExtras(client, plan.extrasByField, companyId);
+          const persisted = await _persistDataLocked(plan.dataToPersist, restoreActor, companyId, req.auth, client);
+          if (plan.restoreBudget) {
+            await budgetRouterFactory.updateBudget(companyId, async (data) => {
+              Object.keys(data).forEach(k => { delete data[k]; });
+              Object.assign(data, snapshotData.budget);
+              return data;
+            }, client);
+            plan.restoredFields.push("budget");
+          }
+          await client.query("COMMIT");
+          _setVersion(companyId, persisted.version);
+          return { restoredFields: plan.restoredFields, version: persisted.version };
+        } catch (e) {
+          try { await client.query("ROLLBACK"); } catch {}
+          throw e;
+        } finally {
+          client.release();
         }
-      } else {
-        // singleton config blob (object, or a plain scalar array like
-        // disabledTplIds) — no per-record id to merge by, snapshot wins outright
-        dataToPersist[f] = snapshotData[f];
-      }
-      restoredFields.push(f);
+      }));
+      const finalData = await loadData(companyId);
+      broadcastSSE("data_restored", { name, fields: result.restoredFields, deletedExtras: deleteExtras, version: result.version }, null, companyId);
+      return res.json({ ok: true, version: result.version, restoredFields: result.restoredFields, deletedExtras: deleteExtras, data: filterDataForRole(stripPwField(finalData), req.auth) });
     }
 
-    // 운영 환경의 더미 스냅샷은 어떤 삭제보다 먼저 거부한다. 이전에는 deleteExtras가
-    // 현재 레코드를 삭제한 다음 여기서 403을 내므로, 거부된 복원만으로 데이터가 사라질 수 있었다.
+    const current = await loadData(companyId);
+    const { dataToPersist, restoredFields, extrasByField, restoreBudget } = buildRestorePlan(snapshotData, current, fields, deleteExtras);
+    // 운영 환경의 더미 스냅샷은 어떤 삭제보다 먼저 거부한다.
     rejectDemoDataForProduction(dataToPersist);
 
-    // persistData()가 신규/변경 레코드를 반영해도, deleteExtras가 지우려는 레코드들은
-    // persistData 호출 결과와 무관하게 이미 계산돼 있다(extraIds는 restore 시작 시점의
-    // `current` 스냅샷에서 뽑은 것). 예전에는 이 삭제 루프가 persistData() "다음"에
-    // 별도 트랜잭션으로 실행돼, 중간에 서버가 죽거나 삭제 쪽이 실패하면 "새 레코드는
-    // 반영됐는데 지워졌어야 할 레코드는 남아있는" 어중간한 상태가 될 수 있었다(P2 —
-    // "복원 시 본문 저장과 불필요 레코드 삭제가 별도 트랜잭션"). persistData()보다 먼저
-    // 실행하도록 순서를 바꾸면, 삭제가 실패해 여기서 예외가 나도 persistData()가 아직
-    // 실행되지 않아 아무 변경도 반영되지 않은 상태로 남고(재시도해도 안전, idempotent),
-    // 삭제가 성공한 뒤 persistData()가 실패해도 "이미 지워질 레코드는 지워졌고 새 값은
-    // 아직 반영 전"이라는, 재시도로 동일하게 복구 가능한 상태가 된다 — 두 경우 모두
-    // "부분 복원"이 영구히 고착되지 않는다(완전한 단일 DB 트랜잭션은 아니지만, 실패
-    // 시나리오 전부가 재시도로 수렴하는 순서로 재배치).
-    // extraIds는 이미 companyId로 스코프된 `current`(loadData(companyId))에서 계산됐으므로
-    // 다른 회사 소유 id가 섞일 수 없지만, company_id 조건도 함께 걸어 방어를 한 겹 더 둔다.
-    if (deleteExtras && !USE_JSON_FILE) {
-      for (const [field, extraIds] of Object.entries(extrasByField)) {
-        if (!extraIds.length) continue;
-        if (field === "employees") {
-          await pool.query(
-            "INSERT INTO employee_history (employee_id, action, changed_by, data, company_id) SELECT id, 'delete', $2, data, company_id FROM employees WHERE id = ANY($1) AND (company_id = $3 OR $3 IS NULL)",
-            [extraIds, "restore", companyId]
-          );
-          await pool.query("DELETE FROM employees WHERE id = ANY($1) AND (company_id = $2 OR $2 IS NULL)", [extraIds, companyId]);
-        } else if (field === "kpiEntries") {
-          await pool.query(
-            "INSERT INTO kpi_history (kpi_id, action, changed_by, data, company_id) SELECT id, 'delete', $2, data, company_id FROM kpi_entries WHERE id = ANY($1) AND (company_id = $3 OR $3 IS NULL)",
-            [extraIds, "restore", companyId]
-          );
-          await pool.query("DELETE FROM kpi_entries WHERE id = ANY($1) AND (company_id = $2 OR $2 IS NULL)", [extraIds, companyId]);
-        } else {
-          // 2단계(2026-07-21) 이전에는 여기 company_id 조건이 아예 없어, 회사 A의 스냅샷
-          // 복원이 우연히 같은 collection+id를 가진 회사 B의 살아있는 레코드까지 삭제할 수
-          // 있었다(app_collections가 아직 전역 공유였을 때는 collection+id 자체가 PK였으므로
-          // ANY($2) 매치가 곧 유일한 행을 가리켰지만, id는 클라이언트의 로컬 카운터라 두 회사가
-          // 같은 id를 쓰는 게 흔해 실제로 위험했다). 위 employees/kpiEntries 분기와 동일한
-          // (company_id = $N OR $N IS NULL) 패턴으로 이 회사(+레거시 NULL) 소유 행만 삭제한다.
-          await pool.query(
-            "DELETE FROM app_collections WHERE collection = $1 AND id = ANY($2) AND (company_id = $3 OR $3 IS NULL)",
-            [field, extraIds, companyId]
-          );
-        }
-      }
-    }
-
-    // /restore는 관리자 전용이라 결재 위조 방어(_sanitizeApprovalDoc)를 그대로 통과한다 —
-    // 스냅샷 복원은 과거 시점의 결재 상태를 있는 그대로 되돌리는 것이 목적이다.
-    // 반면 더미 데이터 게이트는 그대로 적용한다 — POST /save와 동일하게, 개발 환경에서
-    // 만든(더미 데이터가 섞인) 스냅샷을 운영 환경에 그대로 복원하는 경로를 막아야 한다.
-    await persistData(dataToPersist, req.body.user || "restore", companyId, req.auth || null);
+    // JSON 파일 모드는 파일 두 개(HR 본문·budget_store)를 하나의 DB 트랜잭션으로 묶을 수
+    // 없으므로, 기존의 원자 파일 교체 경로를 유지한다. 운영 다중 사용자 배포는 위의
+    // PostgreSQL 경로를 사용한다.
+    await persistData(dataToPersist, restoreActor, companyId, req.auth || null);
 
     // budget_store(사업계획/예산/개인별급여상세)는 위 일반 필드 병합 루프에서 제외했으므로
     // (persistData 소관 밖) 별도로 복원한다 — 다른 singleton 필드와 동일하게 "스냅샷이
@@ -3945,6 +4074,102 @@ function requireRole(req, res, allowed) {
   }
   return true;
 }
+// 회계 메뉴는 UI에서만 숨기면 브라우저가 이미 내려받은 목록을 개발자도구/API 호출로
+// 그대로 읽거나 수정할 수 있다. 회계 API는 별도 저장소를 쓰므로 GET /data에 적용되는
+// filterDataForRole()로는 보호되지 않는다. 요청 시점의 저장된 직원 menuPerms를 다시
+// 확인해 토큰 발급 뒤 관리자가 권한을 바꾼 경우도 다음 요청부터 즉시 반영한다.
+//
+// menuPerms에 항목이 아예 없는 기존 회사/직원은 기존 동작(허용)을 유지한다. 명시적으로
+// false인 경우만 차단한다. 마스터 관리자 impersonation 토큰은 특정 직원의 메뉴 설정을
+// 갖지 않으므로 회사 복구/점검 권한과 동일하게 전체 회계 접근을 허용한다.
+const ACCOUNTING_MENU_BY_PATH = [
+  ["/accounts", "acct-accounts"],
+  ["/vouchers", "acct-vouchers"],
+  ["/tax-invoices", "acct-tax-invoices"],
+  ["/payments", "acct-receivables"],
+  ["/partners", "acct-partners"],
+  ["/cost-statement", "acct-cost-statement"],
+  ["/rcps", "acct-rcps"],
+  ["/vat-report", "acct-vat-report"],
+  ["/fixed-assets", "acct-fixed-assets"],
+];
+
+function _accountingMenuForPath(pathname) {
+  // 사업계획은 모든 인증 사용자가 비용 계정의 id/code/name만 참조해야 하므로, 회계
+  // 원장 접근 권한과 분리된 최소 DTO API는 이 정책에서 제외한다.
+  if (["/accounts/expense-lite", "/accounts/picker", "/partners/picker"].includes(pathname)) return null;
+  const found = ACCOUNTING_MENU_BY_PATH.find(([prefix]) => pathname === prefix || pathname.startsWith(`${prefix}/`));
+  return found ? found[1] : null;
+}
+
+async function _getStoredEmployeeForMenuPerms(auth) {
+  if (!auth || auth.empId == null) return null;
+  if (USE_JSON_FILE) {
+    return (_fileStore.employees || []).find(e => String(e.id) === String(auth.empId)) || null;
+  }
+  const companyId = auth.companyId || null;
+  const { rows } = await pool.query(
+    "SELECT data FROM employees WHERE id = $1 AND is_deleted = FALSE AND company_id IS NOT DISTINCT FROM $2 LIMIT 1",
+    [auth.empId, companyId]
+  );
+  return rows[0] ? rows[0].data : null;
+}
+
+async function requireStoredMenuPermission(req, res, menuId) {
+  if (!requireAuth(req, res)) return false;
+  if (req.auth.empId == null && req.auth.actingAsMaster) return true;
+  try {
+    const employee = await _getStoredEmployeeForMenuPerms(req.auth);
+    if (!employee) {
+      // 인증 미들웨어와 DB 상태가 어긋났을 때는 민감한 회계 데이터를 열어 주지 않는다.
+      res.status(401).json({ ok: false, code: "AUTH_EMPLOYEE_NOT_FOUND", message: "로그인 정보를 다시 확인해주세요." });
+      return false;
+    }
+    const perms = employee.menuPerms && typeof employee.menuPerms === "object" ? employee.menuPerms : {};
+    if (perms[menuId] === false) {
+      res.status(403).json({ ok: false, code: "MENU_ACCESS_DENIED", menuId, message: "이 메뉴에 접근할 권한이 없습니다." });
+      return false;
+    }
+    return true;
+  } catch (e) {
+    // 권한 원본을 읽지 못한 경우에는 fail-closed로 처리한다. 빈 배열(200)을 보내면
+    // '실제 데이터가 없음'과 '권한 없음'을 구별할 수 없어 대시보드가 0으로 오인한다.
+    res.status(503).json({ ok: false, code: "MENU_PERMISSION_CHECK_FAILED", message: "메뉴 권한을 확인할 수 없습니다. 잠시 후 다시 시도해주세요." });
+    return false;
+  }
+}
+
+// 회계 메뉴 권한은 단순 UI 숨김이 아니라 서버의 모듈 인가다. GET만 막으면 메뉴가 꺼진
+// 관리자가 개발자도구/스크립트로 POST·DELETE를 호출해 전표, 세금계산서, 수금·지급을
+// 생성·확정·삭제할 수 있다. 따라서 모든 HTTP method에 같은 정책을 적용한다. 급여·경비
+// 같은 다른 업무에서 회계 기록이 필요하면 사용자 토큰으로 범용 회계 API를 호출하지 말고,
+// 별도 capability와 검증을 가진 업무 전용 명령 API로 분리해야 한다.
+app.use("/api/accounting", async (req, res, next) => {
+  const menuId = _accountingMenuForPath(req.path);
+  if (!menuId) return next();
+  if (!await requireAccountingMenu(req, res, menuId)) return;
+  next();
+});
+
+const MODULE_MENU_BY_PATH = {
+  "/api/erp": [["/items", "inv-items"], ["/locations", "inv-locations"], ["/quotations", "sales-quotations"], ["/purchase-orders", "sales-purchase-orders"], ["/purchase-requests", "inv-purchase-requests"], ["/stock", "inv-stock"], ["/sales-targets", "sales-dashboard"]],
+  "/api/pms": [["/projects", "pms-projects"], ["/allocations", "pms-allocation"], ["/worklogs", "pms-worklog"]],
+  "/api/recruit": [["/jobs", "recruit-jobs"], ["/candidates", "recruit-candidates"], ["/extract-", "recruit-candidates"], ["/parse-resume-llm", "recruit-candidates"], ["/suggest-career-companies", "recruit-candidates"], ["/interviews", "recruit-eval"], ["/dashboard", "recruit-dashboard"]],
+};
+function _moduleMenuForPath(prefix, pathname) {
+  const found = (MODULE_MENU_BY_PATH[prefix] || []).find(([path]) => pathname === path || pathname.startsWith(`${path}/`));
+  return found ? found[1] : null;
+}
+// 모듈별 기존 역할/업무 스코프 검사는 각 라우트가 계속 담당한다. 여기서는 명시적으로
+// 꺼진 메뉴만 추가로 fail-closed 해 UI 숨김을 API 우회로 무력화하지 못하게 한다.
+for (const prefix of Object.keys(MODULE_MENU_BY_PATH)) {
+  app.use(prefix, async (req, res, next) => {
+    const menuId = _moduleMenuForPath(prefix, req.path);
+    if (!menuId) return next();
+    if (!await requireStoredMenuPermission(req, res, menuId)) return;
+    next();
+  });
+}
 // "권한 관리" 화면(개인별로 특정 메뉴를 role 기본값과 별개로 추가 제한)은 지금까지
 // 클라이언트에서만 검사됐다(사이드바 숨김 + gotoPage() 가드) — 서버는 전혀 확인하지
 // 않아 브라우저 개발자도구로 그 화면이 쓰는 API를 직접 호출하면 그대로 통과됐다
@@ -3971,6 +4196,12 @@ function requirePage(req, res, pageId) {
   return true;
 }
 function _round2(n) { return Math.round((Number(n) || 0) * 100) / 100; }
+// ERP 출고/입고는 세금계산서를 서버에서 자동 생성하지만, ERP 권한만 있는 사용자가
+// 거래처 사업자번호·품목·금액까지 받으면 세금계산서 메뉴 차단을 우회하게 된다.
+// 완료 안내에 필요한 식별자만 반환한다.
+function _taxInvoiceReference(invoice) {
+  return invoice ? { id: invoice.id, invoiceNo: invoice.invoiceNo, status: invoice.status } : null;
+}
 
 // ── 계정과목 (Chart of accounts) ────────────────────────────────────────────
 app.get("/api/accounting/accounts", async (req, res) => {
@@ -5314,6 +5545,29 @@ function _buildDepreciationSchedule(assetId, asset) {
   return schedule;
 }
 
+async function requireAccountingMenu(req, res, menuId) {
+  if (!requireAdmin(req, res)) return false;
+  return requireStoredMenuPermission(req, res, menuId);
+}
+
+// JSON 파일 모드는 단일 worker만 허용하지만, 한 요청이 await(전표 생성 등)로 양보한
+// 사이에 같은 자산의 수정·처분·삭제·상각전표 발행 요청이 끼어들 수 있다. 자산 단위로
+// mutation을 직렬화해 "상각표를 재생성한 직후 다른 요청이 이전 회차를 확정"하는 상태를
+// 막는다. PostgreSQL 모드는 DB 행 잠금이 담당하고, 이 가드는 파일 모드에만 적용된다.
+const _faAssetMutationInFlight = new Set();
+app.use("/api/accounting/fixed-assets/:id", (req, res, next) => {
+  if (!USE_JSON_FILE || req.method === "GET" || req.method === "HEAD") return next();
+  const assetId = req.params.id;
+  if (_faAssetMutationInFlight.has(assetId)) {
+    return res.status(409).json({ ok: false, code: "FIXED_ASSET_BUSY", message: "이 고정자산은 다른 변경 요청이 처리 중입니다. 잠시 후 다시 시도해주세요." });
+  }
+  _faAssetMutationInFlight.add(assetId);
+  const release = () => _faAssetMutationInFlight.delete(assetId);
+  res.once("finish", release);
+  res.once("close", release);
+  next();
+});
+
 app.post("/api/accounting/fixed-assets", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
@@ -5466,6 +5720,21 @@ app.post("/api/accounting/fixed-assets/:id", async (req, res) => {
     const client = await pool.connect();
     try {
       await client.query("BEGIN");
+      // 감가상각 전표 발행도 같은 순서(자산 → 상각표)로 잠근다. 수정 요청이 처음 읽은
+      // 상각표와, 실제 삭제/재생성 직전의 상각표 사이에 새 posted 전표가 생기지 않도록
+      // 반드시 트랜잭션 안에서 다시 확인한다.
+      const { rows: lockedAssetRows } = await client.query(
+        "SELECT 1 FROM fixed_assets WHERE id = $1 AND company_id = $2 AND is_deleted = FALSE FOR UPDATE",
+        [id, companyId]
+      );
+      if (!lockedAssetRows.length) throw httpError(404, "ASSET_NOT_FOUND", "고정자산을 찾을 수 없습니다.");
+      const { rows: lockedScheduleRows } = await client.query(
+        "SELECT data FROM fixed_asset_depreciation_schedule WHERE asset_id = $1 AND company_id = $2 FOR UPDATE",
+        [id, companyId]
+      );
+      if (changingDepr && lockedScheduleRows.some(r => r.data && r.data.status === "posted")) {
+        throw httpError(409, "DEPRECIATION_ALREADY_POSTED", "상각전표가 발행되어 취득원가·내용연수·잔존가액·상각방법·취득일을 변경할 수 없습니다.");
+      }
       await client.query("UPDATE fixed_assets SET data = $3, updated_at = NOW() WHERE id = $1 AND company_id = $2", [id, companyId, updated]);
       if (changingDepr) {
         await client.query("DELETE FROM fixed_asset_depreciation_schedule WHERE asset_id = $1 AND company_id = $2", [id, companyId]);
@@ -5573,6 +5842,17 @@ app.post("/api/accounting/fixed-assets/:id/depreciation-schedule/:year/post", as
       // (RCPS rcps/schedule/:scheduleId/post가 이미 쓰던 것과 동일한 패턴).
       pgClient = await pool.connect();
       await pgClient.query("BEGIN");
+      // 자산 → 상각표 순서로 잠가 수정 API와 lock ordering을 맞춘다. 반대 순서라면
+      // "수정은 자산을, 전표발행은 상각표를 먼저" 잡아 deadlock/부분 실패가 날 수 있다.
+      const { rows: assetRows } = await pgClient.query(
+        "SELECT data FROM fixed_assets WHERE id = $1 AND company_id = $2 AND is_deleted = FALSE FOR UPDATE",
+        [assetId, companyId]
+      );
+      if (!assetRows.length) {
+        await pgClient.query("ROLLBACK"); pgClient.release();
+        return res.status(404).json({ ok: false, message: "고정자산을 찾을 수 없습니다." });
+      }
+      asset = assetRows[0].data;
       const { rows } = await pgClient.query(
         "SELECT data FROM fixed_asset_depreciation_schedule WHERE asset_id = $1 AND year = $2 AND company_id = $3 FOR UPDATE",
         [assetId, year, companyId]
@@ -5586,8 +5866,6 @@ app.post("/api/accounting/fixed-assets/:id/depreciation-schedule/:year/post", as
         await pgClient.query("ROLLBACK"); pgClient.release();
         return res.status(400).json({ ok: false, message: "이미 전표가 발행된 연도입니다." });
       }
-      const { rows: assetRows } = await pgClient.query("SELECT data FROM fixed_assets WHERE id = $1 AND company_id = $2", [assetId, companyId]);
-      asset = assetRows[0]?.data;
     }
     if (!asset) {
       if (pgClient) { await pgClient.query("ROLLBACK"); pgClient.release(); }
@@ -5994,7 +6272,7 @@ app.post("/api/erp/quotations/:id/ship", async (req, res) => {
       q.status = "shipped"; q.shippedBy = user; q.shippedAt = now; q.taxInvoiceId = inv.id; q.taxInvoiceNo = inv.invoiceNo;
       _saveFileErp();
       _saveFileAccounting();
-      return res.json({ ok: true, quotation: q, taxInvoice: inv });
+      return res.json({ ok: true, quotation: q, taxInvoice: _taxInvoiceReference(inv) });
     }
     const client = await pool.connect();
     try {
@@ -6036,7 +6314,7 @@ app.post("/api/erp/quotations/:id/ship", async (req, res) => {
       const q = { ...q0, status: "shipped", shippedBy: user, shippedAt: now, taxInvoiceId: inv.id, taxInvoiceNo: inv.invoiceNo };
       await client.query("UPDATE erp_quotations SET status = 'shipped', data = $2, updated_at = NOW() WHERE id = $1", [id, q]);
       await client.query("COMMIT");
-      res.json({ ok: true, quotation: q, taxInvoice: inv });
+      res.json({ ok: true, quotation: q, taxInvoice: _taxInvoiceReference(inv) });
     } catch (e) { await client.query("ROLLBACK"); throw e; } finally { client.release(); }
   } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
@@ -6207,7 +6485,7 @@ app.post("/api/erp/purchase-orders/:id/receive", async (req, res) => {
       po.status = "received"; po.receivedBy = user; po.receivedAt = now; po.taxInvoiceId = inv.id; po.taxInvoiceNo = inv.invoiceNo;
       _saveFileErp();
       _saveFileAccounting();
-      return res.json({ ok: true, purchaseOrder: po, taxInvoice: inv });
+      return res.json({ ok: true, purchaseOrder: po, taxInvoice: _taxInvoiceReference(inv) });
     }
     const client = await pool.connect();
     try {
@@ -6241,7 +6519,7 @@ app.post("/api/erp/purchase-orders/:id/receive", async (req, res) => {
       const po = { ...po0, status: "received", receivedBy: user, receivedAt: now, taxInvoiceId: inv.id, taxInvoiceNo: inv.invoiceNo };
       await client.query("UPDATE erp_purchase_orders SET status = 'received', data = $2, updated_at = NOW() WHERE id = $1", [id, po]);
       await client.query("COMMIT");
-      res.json({ ok: true, purchaseOrder: po, taxInvoice: inv });
+      res.json({ ok: true, purchaseOrder: po, taxInvoice: _taxInvoiceReference(inv) });
     } catch (e) { await client.query("ROLLBACK"); throw e; } finally { client.release(); }
   } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });

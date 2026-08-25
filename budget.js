@@ -230,7 +230,11 @@ async function readBudget(companyId) {
 // lost-update 위험이 새로 생겼다(KPI/경비청구 등에서 여러 차례 발견된 것과 정확히
 // 같은 버그 클래스 — CLAUDE.md 2026-07-19/07-20 참고). mutate는 (data) => 반환값
 // 형태의 async 함수여야 하며, updateBudget()은 그 반환값을 그대로 돌려준다.
-async function updateBudget(companyId, mutate) {
+// `externalClient` is used by server.js's snapshot restore.  In that path the
+// HR state, deleted records, and budget_store must commit (or roll back) as one
+// PostgreSQL transaction, so this helper must not create/commit a second one.
+// Normal budget routes keep the existing self-contained transaction behaviour.
+async function updateBudget(companyId, mutate, externalClient = null) {
   const key = _budgetKey(companyId);
   if (!USE_DB) {
     // 파일 모드: 동기 read-mutate-write가 이미 원자적이므로 락 없이 그대로 재사용.
@@ -241,9 +245,10 @@ async function updateBudget(companyId, mutate) {
     _writeAllBudgetFile(all);
     return result;
   }
-  const client = await pool.connect();
+  const client = externalClient || await pool.connect();
+  const ownsTransaction = !externalClient;
   try {
-    await client.query('BEGIN');
+    if (ownsTransaction) await client.query('BEGIN');
     let { rows } = await client.query('SELECT data FROM budget_store WHERE company_id=$1 FOR UPDATE', [key]);
     let data;
     if (rows.length) {
@@ -270,13 +275,13 @@ async function updateBudget(companyId, mutate) {
     data = _fillBudgetDefaults(data);
     const result = await mutate(data);
     await client.query('UPDATE budget_store SET data=$2, updated_at=NOW() WHERE company_id=$1', [key, JSON.stringify(data)]);
-    await client.query('COMMIT');
+    if (ownsTransaction) await client.query('COMMIT');
     return result;
   } catch (e) {
-    await client.query('ROLLBACK');
+    if (ownsTransaction) await client.query('ROLLBACK');
     throw e;
   } finally {
-    client.release();
+    if (ownsTransaction) client.release();
   }
 }
 

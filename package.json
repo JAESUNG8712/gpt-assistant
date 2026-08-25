@@ -8,11 +8,12 @@
     "dev": "node --watch server.js",
     "start:offline": "node server.js",
     "check": "node --check server.js && node --check budget.js && node --check lib/parse-sheet.js && node --check lib/parse-sheet-worker.js && node scripts/check-client-syntax.js",
-    "test": "node --test --test-concurrency=1 test/api/file-mode.test.js test/api-demo-gate.test.js test/api-p0-security.test.js test/api/pms-security.test.js test/api/menu-perms-server-enforcement.test.js test/api-blob-menu-perms.test.js test/api-nonadmin-state-preservation.test.js test/api-budget-projection.test.js test/api-parse-sheet.test.js test/api-budget-upload-isolation.test.js test/api-accounting-picker-reports.test.js test/api-erp-picker-reports.test.js test/api-pms-picker-reports.test.js test/api-recruit-picker-reports.test.js test/demo-data.test.js test/api-security-hardening.test.js",
+    "test": "node --test --test-concurrency=1 test/api/file-mode.test.js test/api/file-storage-safety.test.js test/api/accounting-menu-permissions.test.js test/api/fixed-asset-concurrency.test.js test/api-demo-gate.test.js test/api-p0-security.test.js test/api/pms-security.test.js test/api/menu-perms-server-enforcement.test.js test/api-blob-menu-perms.test.js test/api-nonadmin-state-preservation.test.js test/api-budget-projection.test.js test/api-parse-sheet.test.js test/api-budget-upload-isolation.test.js test/api-accounting-picker-reports.test.js test/api-erp-picker-reports.test.js test/api-pms-picker-reports.test.js test/api-recruit-picker-reports.test.js test/demo-data.test.js test/api-security-hardening.test.js",
     "test:api": "node --test --test-concurrency=1 test/api/*.test.js test/api-*.test.js",
     "test:postgres": "node --test --test-concurrency=1 test/api/postgres-mode.test.js test/api-budget-db-error-handling.test.js test/api-security-hardening.test.js",
     "test:e2e": "playwright test",
     "test:ci": "npm run check && npm test && npm run test:e2e",
+    "audit:company-scope": "node scripts/migrate-add-company-id.js --dry-run",
     "seed:demo": "node scripts/seed-demo.js"
   },
   "dependencies": {
