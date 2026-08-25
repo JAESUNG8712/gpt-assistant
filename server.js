@@ -1326,7 +1326,10 @@ function _sanitizeGatedRecord(field, incoming, stored, actor, actorEmp, settings
 // 복지포인트 잔액 초과 사용 차단. 클라이언트(doUseWelfare)가 잔액을 계산해 막고 있지만
 // 서버 재검증이 없어, 두 세션에서 거의 동시에 사용하면 둘 다 통과해 잔액이 마이너스로
 // 내려갈 수 있었다. 저장 직전에 그 직원·그 연도의 부여/사용 합계를 다시 계산해 초과분을
-// 걸러낸다(관리자 저장은 정산·조정 목적일 수 있어 그대로 둔다).
+// 걸러낸다(관리자 저장은 정산·조정 목적일 수 있어 그대로 둔다). 이 검사가 원자적인 이유는
+// 호출부가 반드시 _withSaveLock + 회사별 _withDistributedSaveLock 안에 있기 때문이다.
+// 이 잠금 밖에서 호출하면 두 요청이 같은 storedList를 읽어 다시 초과 사용될 수 있으므로,
+// 별도 복지포인트 저장 경로를 추가할 때도 같은 논리 키 잠금을 반드시 공유해야 한다.
 function _dropOverspentWelfare(incomingList, storedList, actor) {
   if (!Array.isArray(incomingList) || !actor || actor.role === "admin") return incomingList;
   const storedIds = new Set((storedList || []).map(r => String(r.id)));

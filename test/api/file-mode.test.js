@@ -379,6 +379,46 @@ test("file-mode API smoke suite", async (t) => {
     assert.equal(server.child.exitCode, null, "이 시점까지 서버 프로세스가 죽지 않아야 함");
   });
 
+  await t.test("10b) 동일 직원의 동시 복지포인트 사용은 잔액을 초과하지 않는다", async () => {
+    const adminState = await (await api("/data", { headers: { Authorization: `Bearer ${adminToken}` } })).json();
+    const member = adminState.data.employees.find(e => e.loginId === "test_member");
+    const year = 2097;
+    const grant = { id: "wp-concurrency-grant", empId: member.id, points: 100000, type: "grant", year, desc: "동시성 검증 부여", date: "2097-01-01", by: adminId };
+    const grantSave = await api("/save", {
+      method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${adminToken}` },
+      body: JSON.stringify({ _version: adminState.version, data: { ...adminState.data, welfarePoints: [...(adminState.data.welfarePoints || []), grant] } }),
+    });
+    assert.equal(grantSave.status, 200);
+
+    const memberLogin = await (await api("/login", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ loginId: "test_member", pw: "test_member_pw" }),
+    })).json();
+    assert.equal(memberLogin.ok, true);
+    const [stateA, stateB] = await Promise.all([
+      api("/data", { headers: { Authorization: `Bearer ${memberLogin.token}` } }).then(r => r.json()),
+      api("/data", { headers: { Authorization: `Bearer ${memberLogin.token}` } }).then(r => r.json()),
+    ]);
+    const makePayload = (state, id) => ({
+      _version: state.version,
+      data: { ...state.data, welfarePoints: [...(state.data.welfarePoints || []), { id, empId: member.id, points: 70000, type: "use", year, desc: "동시 사용", date: "2097-02-01", by: member.id }] },
+    });
+    const headers = { "Content-Type": "application/json", Authorization: `Bearer ${memberLogin.token}` };
+    const [useA, useB] = await Promise.all([
+      api("/save", { method: "POST", headers, body: JSON.stringify(makePayload(stateA, "wp-concurrent-use-a")) }),
+      api("/save", { method: "POST", headers, body: JSON.stringify(makePayload(stateB, "wp-concurrent-use-b")) }),
+    ]);
+    assert.equal(useA.status, 200);
+    assert.equal(useB.status, 200);
+    const finalState = await (await api("/data", { headers: { Authorization: `Bearer ${adminToken}` } })).json();
+    const ledger = (finalState.data.welfarePoints || []).filter(r => String(r.empId) === String(member.id) && r.year === year);
+    const granted = ledger.filter(r => r.type === "grant").reduce((sum, r) => sum + r.points, 0);
+    const used = ledger.filter(r => r.type === "use").reduce((sum, r) => sum + r.points, 0);
+    assert.equal(granted, 100000);
+    assert.equal(used, 70000, "70,000원 동시 사용 2건 중 한 건만 반영돼야 함");
+    assert.ok(granted - used >= 0, "복지포인트 잔액은 음수가 되면 안 됨");
+  });
+
   await t.test("11) 계정 비활성화 뒤 기존 Bearer 토큰은 즉시 철회된다", async () => {
     const memberLogin = await (await api("/login", {
       method: "POST", headers: { "Content-Type": "application/json" },
