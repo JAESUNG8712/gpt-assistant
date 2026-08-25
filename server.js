@@ -114,8 +114,9 @@ function verifyToken(token) {
 // 처리한다 — 재로그인해야 새 버전의 토큰을 받는다.
 // authenticate()와 _employeeAuthStillValid() 양쪽이 같은 employees 레코드 조회를
 // 중복으로 하지 않도록 분리한 헬퍼. 조회 자체가 실패하면(DB 장애 등) undefined를 반환해
-// "레코드가 확인상 없음(null)"과 "확인 자체를 못함(undefined)"을 구분한다 — 후자는
-// 아래에서 기존과 동일하게 가용성 우선(fail-open)으로 처리된다.
+// "레코드가 확인상 없음(null)"과 "확인 자체를 못함(undefined)"을 구분한다. 후자를
+// 유효한 세션으로 취급하면 철회된 계정/menuPerms를 DB 장애 동안 우회할 수 있으므로,
+// 호출부는 503 AUTH_STATE_UNAVAILABLE로 fail-closed 해야 한다.
 async function _fetchCurrentEmployeeForAuth(auth) {
   if (auth.empId == null) return null; // 마스터/impersonation 토큰 — employees 대상 아님
   try {
@@ -129,21 +130,23 @@ async function _fetchCurrentEmployeeForAuth(auth) {
   }
 }
 async function _employeeAuthStillValid(auth, prefetchedEmployee) {
-  // 이 검사 자체가 어떤 이유로든 실패하면(예상치 못한 예외 포함) 가용성을 우선해 통과시킨다
-  // — authenticate()가 async 미들웨어라 여기서 예외가 새면 Express 4가 자동으로 못 잡아
-  // unhandled rejection이 되고, 그 요청은 응답도 타임아웃도 없이 멈춰버린다(P0-4 수정
-  // 중 실측으로 확인한 것과 동일한 클래스의 사고 — 이 검사는 반드시 실패해도 요청을
-  // 멈추지 않아야 한다).
+  // true/false 외에 undefined는 "인증 원본을 확인할 수 없음"이다. 예외를 요청 밖으로
+  // 흘려 Express 4 요청을 멈추지는 않되, 권한을 허용하는 true로도 바꾸지 않는다.
   try {
     if (auth.empId == null) return true;
     const current = prefetchedEmployee !== undefined ? prefetchedEmployee : await _fetchCurrentEmployeeForAuth(auth);
-    if (current === undefined) return true; // 조회 자체가 실패 — fail-open
+    if (current === undefined) return undefined;
     if (!current) return false; // 레코드 자체가 삭제됨
     if (current.active === false) return false;
     return (Number(current.authVersion) || 0) === (Number(auth.authVersion) || 0);
-  } catch {
-    return true;
-  }
+  } catch { return undefined; }
+}
+function _authStateUnavailable(res) {
+  return res.status(503).json({
+    ok: false,
+    code: "AUTH_STATE_UNAVAILABLE",
+    message: "로그인 상태를 확인할 수 없습니다. 잠시 후 다시 시도해주세요.",
+  });
 }
 async function authenticate(req, res, next) {
   const header = req.headers.authorization || "";
@@ -154,7 +157,9 @@ async function authenticate(req, res, next) {
   // 쓰므로 한 번만 가져와 공유한다(요청당 추가 조회 없음). menuPerms는 "권한 관리" 화면에서
   // 개인별로 끈 메뉴 목록 — requirePage()가 REST API 라우트에서 이 값을 그대로 검사한다.
   const employee = await _fetchCurrentEmployeeForAuth(auth);
-  if (!(await _employeeAuthStillValid(auth, employee))) { req.auth = null; return next(); }
+  const authStillValid = await _employeeAuthStillValid(auth, employee);
+  if (authStillValid === undefined) { req.auth = null; return _authStateUnavailable(res); }
+  if (!authStillValid) { req.auth = null; return next(); }
   // companyFeatures — 회사 단위 모듈 on/off(마스터 콘솔에서 설정). 10초 캐시로 조회하므로
   // 요청마다 추가 DB 왕복이 생기지 않는다(_getCompanyFeatureMap 정의부 주석 참고).
   // requireFeature()가 이 값을 그대로 동기적으로 검사한다.
@@ -3625,7 +3630,10 @@ app.get("/events", async (req, res) => {
   // authenticate 미들웨어와 동일한 verifyToken()으로 검증한다.
   const ticketAuth = verifyToken(req.query.token);
   const auth = req.auth || (ticketAuth && ticketAuth.scope === "sse" ? ticketAuth : null);
-  if (!auth || !(await _employeeAuthStillValid(auth))) return res.status(401).json({ ok: false, message: "로그인이 필요합니다." });
+  if (!auth) return res.status(401).json({ ok: false, message: "로그인이 필요합니다." });
+  const authStillValid = await _employeeAuthStillValid(auth);
+  if (authStillValid === undefined) return _authStateUnavailable(res);
+  if (!authStillValid) return res.status(401).json({ ok: false, message: "로그인이 필요합니다." });
   const companyId = auth.companyId || null;
   const clientId = req.query.clientId || `client_${Date.now()}`;
   const user     = req.query.user     || "unknown";

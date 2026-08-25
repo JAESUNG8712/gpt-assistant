@@ -99,6 +99,32 @@ if (!ADMIN_DATABASE_URL) {
       assert.equal(json.data.employees[0].loginId, "admin_a");
     });
 
+    await t.test("4b) 인증 원본 조회 장애 시 서명 토큰을 fail-open하지 않고 503으로 거부", async () => {
+      const faultClient = new Client({ connectionString: testDbUrl });
+      await faultClient.connect();
+      try {
+        // 운영 DB를 건드리지 않는 이 테스트 전용 임시 DB에서만 employees를 잠시 숨겨,
+        // 토큰 서명은 유효하지만 현재 active/authVersion/menuPerms를 조회할 수 없는 상태를
+        // 재현한다. 과거 구현은 이 경우 stale token을 그대로 허용했다.
+        await faultClient.query("ALTER TABLE employees RENAME TO employees_auth_state_test");
+        const res = await api("/data", { headers: { Authorization: `Bearer ${companyAToken}` } });
+        assert.equal(res.status, 503);
+        assert.deepEqual(await res.json(), {
+          ok: false,
+          code: "AUTH_STATE_UNAVAILABLE",
+          message: "로그인 상태를 확인할 수 없습니다. 잠시 후 다시 시도해주세요.",
+        });
+      } finally {
+        await faultClient.query("ALTER TABLE IF EXISTS employees_auth_state_test RENAME TO employees");
+        await faultClient.end();
+      }
+
+      // 장애가 사라지면 같은 토큰과 정상 PostgreSQL 인증 경로는 그대로 동작해야 한다.
+      const recovered = await api("/data", { headers: { Authorization: `Bearer ${companyAToken}` } });
+      assert.equal(recovered.status, 200);
+      assert.equal((await recovered.json()).ok, true);
+    });
+
     let companyBToken;
     await t.test("5) 두 번째 회사 가입 — 다른 companyCode 자동 배정", async () => {
       const res = await api("/api/companies/register", {
