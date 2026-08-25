@@ -285,12 +285,42 @@ if (!ADMIN_DATABASE_URL) {
       });
       assert.equal(res.status, 200, "회사 B 시드 실패");
 
-      res = await api("/api/reset-all", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${companyAToken}` },
-        body: JSON.stringify({ loginId: "admin_a", pw: "TestPassword123" }),
-      });
-      json = await res.json();
+      // 외부 세션이 회사별 full-state advisory lock을 잠시 잡은 동안 /save를 먼저
+      // 시작하고 reset을 뒤이어 보낸다. 같은 서버의 save mutex 때문에 reset은 save가
+      // 끝날 때까지 대기해야 하며, 최종 상태는 반드시 reset 결과(빈 상태)여야 한다.
+      // reset이 save lock에 참여하지 않으면 두 요청이 서로 인터리빙해 삭제한 데이터가
+      // 다시 나타나거나 data_version 캐시가 DB와 달라질 수 있다.
+      const raceState = await (await api("/data", { headers: { Authorization: `Bearer ${companyAToken}` } })).json();
+      const lockClient = new Client({ connectionString: testDbUrl });
+      await lockClient.connect();
+      const companyRowForLock = await lockClient.query("SELECT id FROM companies WHERE slug = $1", [companyACode]);
+      const companyAIdForLock = companyRowForLock.rows[0].id;
+      const lockKey = `full-state-save:${companyAIdForLock}`;
+      await lockClient.query("SELECT pg_advisory_lock(hashtext($1))", [lockKey]);
+      let savePromise, resetPromise;
+      try {
+        savePromise = api("/save", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${companyAToken}` },
+          body: JSON.stringify({
+            _version: raceState.version,
+            boardPosts: [...(raceState.data.boardPosts || []), { id: "reset-race", title: "초기화와 경합", authorId: empIdA, updatedAt: new Date().toISOString() }],
+          }),
+        });
+        await new Promise(resolve => setTimeout(resolve, 100));
+        resetPromise = api("/api/reset-all", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${companyAToken}` },
+          body: JSON.stringify({ loginId: "admin_a", pw: "TestPassword123" }),
+        });
+        await new Promise(resolve => setTimeout(resolve, 100));
+      } finally {
+        await lockClient.query("SELECT pg_advisory_unlock(hashtext($1))", [lockKey]);
+        await lockClient.end();
+      }
+      const [saveRes, resetRes] = await Promise.all([savePromise, resetPromise]);
+      assert.equal(saveRes.status, 200, "경합 저장 실패");
+      json = await resetRes.json();
       assert.equal(json.ok, true, "reset-all 실패: " + JSON.stringify(json));
 
       const dbCheck = new Client({ connectionString: testDbUrl });

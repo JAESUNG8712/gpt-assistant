@@ -9600,24 +9600,28 @@ app.post("/api/reset-all", loginLimiter, async (req, res) => {
       // 것처럼 보였다. accounting/ERP/PMS/채용/budget_store는 이 버튼의 기존 범위 밖(JSON
       // 파일 모드도 별도 파일이라 건드리지 않음)이라 그대로 유지한다. 여러 테이블에 걸친
       // 파괴적 삭제라 중간 실패 시 절반만 지워진 상태로 남지 않도록 트랜잭션으로 묶는다.
-      const client = await pool.connect();
-      try {
-        await client.query("BEGIN");
-        await client.query("DELETE FROM kpi_history WHERE company_id = $1", [companyId]);
-        await client.query("DELETE FROM employee_history WHERE company_id = $1", [companyId]);
-        await client.query("DELETE FROM kpi_entries WHERE company_id = $1", [companyId]);
-        await client.query("DELETE FROM employees WHERE company_id = $1", [companyId]);
-        await client.query("DELETE FROM app_collections WHERE company_id = $1", [companyId]);
-        await client.query("DELETE FROM app_singletons WHERE company_id = $1", [companyId]);
-        await client.query("DELETE FROM app_meta WHERE key = $1", [`data_version:${_scopeKey(companyId)}`]);
-        await client.query("COMMIT");
-      } catch (e) {
-        await client.query("ROLLBACK");
-        throw e;
-      } finally {
-        client.release();
-      }
-      _setVersion(companyId, 0);
+      await _withSaveLock(() => _withDistributedSaveLock(companyId, async () => {
+        const client = await pool.connect();
+        try {
+          await client.query("BEGIN");
+          await client.query("DELETE FROM kpi_history WHERE company_id = $1", [companyId]);
+          await client.query("DELETE FROM employee_history WHERE company_id = $1", [companyId]);
+          await client.query("DELETE FROM kpi_entries WHERE company_id = $1", [companyId]);
+          await client.query("DELETE FROM employees WHERE company_id = $1", [companyId]);
+          await client.query("DELETE FROM app_collections WHERE company_id = $1", [companyId]);
+          await client.query("DELETE FROM app_singletons WHERE company_id = $1", [companyId]);
+          await client.query("DELETE FROM app_meta WHERE key = $1", [`data_version:${_scopeKey(companyId)}`]);
+          await client.query("COMMIT");
+          // DB commit이 성공한 뒤에만 프로세스 캐시를 초기화한다. rollback 뒤 메모리만
+          // 0이 되거나, 동시 /save가 reset 직후 데이터를 되살리는 일을 막는다.
+          _setVersion(companyId, 0);
+        } catch (e) {
+          try { await client.query("ROLLBACK"); } catch {}
+          throw e;
+        } finally {
+          client.release();
+        }
+      }));
     }
     console.log(`[Reset] Company data cleared (companyId=${companyId || "(json-file/global)"})`);
     res.json({ ok: true });
