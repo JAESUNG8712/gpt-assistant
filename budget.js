@@ -304,10 +304,15 @@ async function updateBudget(companyId, mutate, externalClient = null) {
 // 워커 스레드는 메인 스레드와 별개의 V8 격리 힙을 쓰므로, 오염이 그 워커 안에서 끝나고
 // 메인 프로세스의 Object.prototype으로는 전파되지 않는다.
 const PARSE_SHEET_TIMEOUT_MS = Number(process.env.PARSE_SHEET_TIMEOUT_MS) || 15000;
+// 업로드 원본은 10MB로 제한돼도 XLSX(zip)가 풀리며 훨씬 큰 객체 그래프가 될 수 있다.
+// 워커별 old-generation 힙을 제한해 손상/악성 파일 하나가 프로세스 전체 메모리를
+// 고갈시키지 않게 한다. 정상적인 10MB 업무 파일을 고려해 기본값은 128MB로 둔다.
+const PARSE_SHEET_MAX_OLD_MB = Math.max(32, Number(process.env.PARSE_SHEET_MAX_OLD_MB) || 128);
 function parseSheetIsolated(buffer, filename, requiredHeaderGroups, excludedHeaders) {
   return new Promise((resolve, reject) => {
     const worker = new Worker(path.join(__dirname, 'lib', 'parse-sheet-worker.js'), {
       workerData: { buffer, filename, requiredHeaderGroups, excludedHeaders },
+      resourceLimits: { maxOldGenerationSizeMb: PARSE_SHEET_MAX_OLD_MB },
     });
     let settled = false;
     const finish = (fn) => { if (settled) return; settled = true; clearTimeout(timer); fn(); };
@@ -334,7 +339,12 @@ function parseSheetIsolated(buffer, filename, requiredHeaderGroups, excludedHead
       });
     });
     worker.once('error', (err) => {
-      finish(() => reject(err));
+      finish(() => reject(Object.assign(
+        new Error(/memory|heap/i.test(String(err && err.message))
+          ? '파일이 너무 복잡하거나 커서 안전하게 처리할 수 없습니다.'
+          : '파일 파싱 중 오류가 발생했습니다.'),
+        { code: /memory|heap/i.test(String(err && err.message)) ? 'PARSE_MEMORY_LIMIT' : 'PARSE_ERROR' }
+      )));
     });
     worker.once('exit', (code) => {
       finish(() => {

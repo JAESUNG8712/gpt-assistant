@@ -23,3 +23,4 @@ ai/stock_analysis/reports/
 test-results/
 playwright-report/
 blob-report/
+.playwright-browsers/

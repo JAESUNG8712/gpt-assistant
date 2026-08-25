@@ -79,6 +79,12 @@ CREATE TABLE IF NOT EXISTS employees (
 -- 차원에서 NOT NULL을 전제로 동작하게 된다(스키마 레벨 NOT NULL 제약은 백필 확인 후 별도로 건다).
 ALTER TABLE employees ADD COLUMN IF NOT EXISTS company_id UUID;
 CREATE INDEX IF NOT EXISTS idx_employees_company_id ON employees (company_id);
+-- 로그인은 회사 안에서 loginId 한 건만 찾는다. JSONB 전체 직원 행을 순차 스캔하지
+-- 않도록 표현식 인덱스를 둔다. 기존 데이터에 중복 loginId가 있을 수 있어 배포 중
+-- 인덱스 생성 실패를 유발하는 UNIQUE는 강제하지 않고, 무결성 감사에서 별도 보고한다.
+CREATE INDEX IF NOT EXISTS idx_employees_company_login_id
+  ON employees (company_id, (data->>'loginId'))
+  WHERE is_deleted = FALSE;
 -- ADD CONSTRAINT는 "IF NOT EXISTS" 구문이 없다. EXCEPTION WHEN duplicate_object로 잡는 방식은
 -- 제약이 실제로는 이미 존재하는데도 그 밑에 깔린 인덱스 쪽에서 duplicate_table로 먼저 걸려
 -- 잡히지 않는 경우가 있어(실측 확인 — 매 부팅마다 idempotent하게 재적용되는 이 스키마 파일의

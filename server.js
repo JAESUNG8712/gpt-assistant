@@ -2721,12 +2721,29 @@ async function _resolveCompanyId(companyCode) {
 async function verifyCredentials(companyId, loginId, pw) {
   if (!loginId || !pw) return null;
   if (!USE_JSON_FILE && !companyId) return null; // Postgres/SaaS 모드는 회사가 반드시 있어야 함
-  const data = await loadData(companyId);
-  const emp = (data.employees || []).find(e => e.loginId === loginId && e.active);
+  // 로그인 한 번에 전사 employees·KPI·설정 전체를 loadData()로 역직렬화하면 회사 데이터가
+  // 커질수록 인증 시간이 선형으로 늘고, 동시에 여러 명이 로그인할 때 불필요한 DB 전송과
+  // Node 힙 사용량도 함께 증가한다. PostgreSQL에서는 회사+loginId 한 행만 조회한다.
+  // JSON 단일회사 모드는 이미 메모리에 올라온 배열을 그대로 사용하므로 기존 경로 유지.
+  let emp;
+  if (USE_JSON_FILE) {
+    emp = (_fileStore.employees || []).find(e => e.loginId === loginId && e.active);
+  } else {
+    const { rows } = await pool.query(
+      "SELECT data FROM employees WHERE company_id = $1 AND is_deleted = FALSE " +
+      "AND data->>'loginId' = $2 AND COALESCE(data->>'active','true') <> 'false' LIMIT 1",
+      [companyId, loginId]
+    );
+    emp = rows[0]?.data || null;
+  }
   if (!emp || !emp.pw) return null;
   const valid = isHashedPw(emp.pw) ? await bcrypt.compare(pw, emp.pw) : emp.pw === pw;
   if (!valid) return null;
-  return omitPw(emp);
+  // 2FA 검증에는 secret이 필요하지만 응답으로는 절대 노출하지 않는다. 비열거 속성으로
+  // 내부 호출부에만 전달하면 JSON.stringify/객체 전개에서도 wire로 새지 않는다.
+  const safe = omitPw(emp);
+  Object.defineProperty(safe, "_twoFactorSecret", { value: emp.twoFactorSecret || "", enumerable: false });
+  return safe;
 }
 
 // POST /login — verifies credentials against server-stored (hashed) passwords
@@ -2760,9 +2777,7 @@ app.post("/login", loginLimiter, async (req, res) => {
     if (!employee) return res.json({ ok: false, message: "아이디 또는 비밀번호가 올바르지 않습니다." });
     if (employee.twoFactorEnabled) {
       if (!otp) { res.locals.loginOk = true; return res.json({ ok: true, requireOtp: true }); }
-      const data = await loadData(companyId);
-      const raw = (data.employees || []).find(e => e.loginId === loginId && e.active);
-      if (!raw || !raw.twoFactorSecret || !totpVerify(raw.twoFactorSecret, otp))
+      if (!employee._twoFactorSecret || !totpVerify(employee._twoFactorSecret, otp))
         return res.json({ ok: false, requireOtp: true, message: "인증 코드가 올바르지 않습니다." });
     }
     // 서버가 실제로 검증한 계정 정보로만 토큰을 발급한다(클라이언트가 보낸 role은 무시).
