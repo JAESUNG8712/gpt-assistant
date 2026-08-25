@@ -300,6 +300,49 @@ test("file-mode API smoke suite", async (t) => {
     }
   });
 
+  await t.test("9b) 채용 legacy 이력서 추출도 형식·크기·호출량 제한을 적용하면서 기존 PDF 계약을 유지", async () => {
+    const headers = { "Content-Type": "application/json", Authorization: `Bearer ${adminToken}` };
+    const pdf = buildMinimalTextPdf(["Hong Gildong", "Email: hong@example.com", "Phone: 010-1111-2222"]);
+    const valid = await api("/api/recruit/extract-pdf-text", {
+      method: "POST", headers,
+      body: JSON.stringify({ dataUrl: `data:application/pdf;base64,${pdf.toString("base64")}` }),
+    });
+    assert.equal(valid.status, 200);
+    const validJson = await valid.json();
+    assert.equal(validJson.ok, true);
+    assert.match(validJson.text, /Hong Gildong/);
+
+    const spoof = await api("/api/recruit/extract-pdf-text", {
+      method: "POST", headers,
+      body: JSON.stringify({ dataUrl: `data:application/pdf;base64,${Buffer.from("not a pdf").toString("base64")}` }),
+    });
+    assert.equal(spoof.status, 400);
+    assert.equal((await spoof.json()).code, "RESUME_FILE_INVALID");
+
+    const oversizedBase64 = "A".repeat(Math.ceil((15 * 1024 * 1024) / 3) * 4 + 8);
+    const oversized = await api("/api/recruit/extract-pdf-text", {
+      method: "POST", headers,
+      body: JSON.stringify({ dataUrl: `data:application/pdf;base64,${oversizedBase64}` }),
+    });
+    assert.equal(oversized.status, 413);
+    assert.equal((await oversized.json()).code, "RESUME_FILE_TOO_LARGE");
+
+    // 위 3건을 포함해 같은 계정의 10건까지 처리되고, 11번째부터 실제 추출 전에 차단된다.
+    for (let i = 0; i < 7; i++) {
+      const attempt = await api("/api/recruit/extract-pdf-text", {
+        method: "POST", headers,
+        body: JSON.stringify({ dataUrl: "data:application/pdf;base64,bm90IGEgcGRm" }),
+      });
+      assert.equal(attempt.status, 400);
+    }
+    const limited = await api("/api/recruit/extract-pdf-text", {
+      method: "POST", headers,
+      body: JSON.stringify({ dataUrl: "data:application/pdf;base64,bm90IGEgcGRm" }),
+    });
+    assert.equal(limited.status, 429);
+    assert.equal((await limited.json()).code, "RESUME_RATE_LIMITED");
+  });
+
   await t.test("10) resume parser 오류코드 매핑 — 401/403/400×3/413/422/503/502/504", async () => {
     const pdf = buildMinimalTextPdf(["Hong Gildong", "Email: hong@example.com", "Phone: 010-1111-2222"]);
     const { body, contentType } = multipartBody(pdf, "resume.pdf", "application/pdf");

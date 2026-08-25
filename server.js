@@ -8167,6 +8167,81 @@ app.get("/api/recruit/candidates/:id", async (req, res) => {
   } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
+// 이력서 추출 두 경로(채용의 legacy dataUrl, 신규 직원의 multipart)가 같은 자원 예산을
+// 사용하도록 제한값과 limiter를 공통으로 둔다. legacy 경로는 전역 JSON parser를 이미
+// 지난 뒤 실행되지만, 디코딩/OCR 전에 실제 바이트·형식·압축/픽셀·동시 실행을 제한한다.
+const RESUME_MAX_BYTES = Number(process.env.RESUME_MAX_BYTES) || 15 * 1024 * 1024;
+const RESUME_MAX_TEXT_CHARS = Number(process.env.RESUME_MAX_TEXT_CHARS) || 12000;
+const RESUME_AI_TIMEOUT_MS = Number(process.env.RESUME_AI_TIMEOUT_MS) || 30000;
+const RESUME_ZIP_MAX_ENTRIES = Number(process.env.RESUME_ZIP_MAX_ENTRIES) || 200;
+const RESUME_ZIP_MAX_UNCOMPRESSED_BYTES = Number(process.env.RESUME_ZIP_MAX_UNCOMPRESSED_BYTES) || 30 * 1024 * 1024;
+const RESUME_IMAGE_MAX_PIXELS = Number(process.env.RESUME_IMAGE_MAX_PIXELS) || 40_000_000;
+const RESUME_MAX_CONCURRENT = Number(process.env.RESUME_MAX_CONCURRENT) || 3;
+let _resumeInFlight = 0;
+const resumeParseLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => (req.auth && req.auth.empId != null) ? `emp:${req.auth.empId}` : rateLimit.ipKeyGenerator(req.ip),
+  handler: (req, res) => res.status(429).json({ ok: false, code: "RESUME_RATE_LIMITED", message: "이력서 분석 요청이 너무 많습니다. 잠시 후 다시 시도하세요." }),
+});
+const legacyResumeExtractionLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => (req.auth && req.auth.empId != null) ? `emp:${req.auth.empId}` : rateLimit.ipKeyGenerator(req.ip),
+  handler: (req, res) => res.status(429).json({ ok: false, code: "RESUME_RATE_LIMITED", message: "이력서 추출 요청이 너무 많습니다. 잠시 후 다시 시도하세요." }),
+});
+
+function _legacyResumeExtractionGuard(kind) {
+  return async (req, res, next) => {
+    const { dataUrl } = req.body || {};
+    if (!dataUrl || typeof dataUrl !== "string") return res.status(400).json({ ok: false, message: "파일 데이터가 없습니다." });
+    const comma = dataUrl.indexOf(",");
+    const base64 = comma >= 0 ? dataUrl.slice(comma + 1) : dataUrl;
+    // base64 문자열 단계에서 먼저 상한을 적용해 거대한 Buffer 할당 자체를 피한다.
+    if (base64.length > Math.ceil(RESUME_MAX_BYTES / 3) * 4 + 4) {
+      return res.status(413).json({ ok: false, code: "RESUME_FILE_TOO_LARGE", message: `이력서 파일은 ${Math.floor(RESUME_MAX_BYTES / (1024 * 1024))}MB 이하만 업로드할 수 있습니다.` });
+    }
+    const buffer = Buffer.from(base64, "base64");
+    if (!buffer.length || buffer.length > RESUME_MAX_BYTES) return res.status(413).json({ ok: false, code: "RESUME_FILE_TOO_LARGE", message: "이력서 파일 크기가 허용 범위를 벗어났습니다." });
+
+    try {
+      if (kind === "pdf") {
+        const sniff = _sniffResumeFileType(buffer, "resume.pdf");
+        if (sniff.kind !== "pdf" || !sniff.ok) throw Object.assign(new Error(), { code: "INVALID_TYPE" });
+      } else if (kind === "docx") {
+        const sniff = _sniffResumeFileType(buffer, "resume.docx");
+        if (sniff.kind !== "docx") throw Object.assign(new Error(), { code: "INVALID_TYPE" });
+        await _validateDocxZip(buffer);
+      } else if (kind === "image") {
+        const mime = dataUrl.match(/^data:image\/(png|jpeg|jpg|webp);base64,/i)?.[1]?.toLowerCase().replace("jpg", "jpeg");
+        if (!mime) throw Object.assign(new Error(), { code: "INVALID_TYPE" });
+        const sniff = _sniffResumeFileType(buffer, `resume.${mime === "jpeg" ? "jpg" : mime}`);
+        const dims = sniff.kind === "image" ? _getImageDimensions(buffer, sniff.mime) : null;
+        if (!dims || dims.width * dims.height > RESUME_IMAGE_MAX_PIXELS) throw Object.assign(new Error(), { code: dims ? "TOO_LARGE" : "INVALID_TYPE" });
+      } else if (kind === "hwp") {
+        const ole = Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]);
+        if (buffer.length < ole.length || !buffer.subarray(0, ole.length).equals(ole)) throw Object.assign(new Error(), { code: "INVALID_TYPE" });
+      }
+    } catch (e) {
+      const tooLarge = e && e.code === "TOO_LARGE";
+      return res.status(tooLarge ? 413 : 400).json({ ok: false, code: tooLarge ? "RESUME_FILE_TOO_LARGE" : "RESUME_FILE_INVALID", message: tooLarge ? "압축 해제 또는 이미지 크기가 너무 큽니다." : "파일 내용과 형식이 일치하지 않습니다." });
+    }
+
+    if (_resumeInFlight >= RESUME_MAX_CONCURRENT) return res.status(429).json({ ok: false, code: "RESUME_CONCURRENCY_LIMIT", message: "이력서 분석 요청이 동시에 너무 많습니다. 잠시 후 다시 시도하세요." });
+    _resumeInFlight++;
+    let released = false;
+    const release = () => { if (!released) { released = true; _resumeInFlight = Math.max(0, _resumeInFlight - 1); } };
+    res.on("finish", release);
+    res.on("close", release);
+    req._legacyResumeBuffer = buffer;
+    next();
+  };
+}
+
 // ── 채용 관리: 이력서 파일 텍스트 추출 + AI 필드 자동입력(구버전 dataUrl 방식) ────
 // 지원자 등록 화면에서 업로드한 이력서 파일(PDF/DOCX/HWP/이미지)의 형식별 텍스트 추출
 // 4개 라우트(extract-pdf-text/-docx-text/-hwp-text/-image-text)와, 추출된 텍스트를
@@ -8226,14 +8301,13 @@ async function _ocrPdfPages(buffer, lastPage) {
     fs.promises.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
   }
 }
-app.post("/api/recruit/extract-pdf-text", async (req, res) => {
+app.post("/api/recruit/extract-pdf-text", legacyResumeExtractionLimiter, _legacyResumeExtractionGuard("pdf"), async (req, res) => {
   try {
     if (!requireRole(req, res, ["admin", "leader", "director"])) return;
     if (!requirePage(req, res, "recruit-candidates")) return;
     const { dataUrl } = req.body || {};
     if (!dataUrl || typeof dataUrl !== "string") return res.status(400).json({ ok: false, message: "파일 데이터가 없습니다." });
-    const base64 = dataUrl.includes(",") ? dataUrl.slice(dataUrl.indexOf(",") + 1) : dataUrl;
-    const buffer = Buffer.from(base64, "base64");
+    const buffer = req._legacyResumeBuffer;
     const { PDFParse } = require("pdf-parse");
     const parser = new PDFParse({ data: buffer });
     const result = await parser.getText();
@@ -8264,14 +8338,13 @@ app.post("/api/recruit/extract-pdf-text", async (req, res) => {
     res.json({ ok: true, text });
   } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
-app.post("/api/recruit/extract-docx-text", async (req, res) => {
+app.post("/api/recruit/extract-docx-text", legacyResumeExtractionLimiter, _legacyResumeExtractionGuard("docx"), async (req, res) => {
   try {
     if (!requireRole(req, res, ["admin", "leader", "director"])) return;
     if (!requirePage(req, res, "recruit-candidates")) return;
     const { dataUrl } = req.body || {};
     if (!dataUrl || typeof dataUrl !== "string") return res.status(400).json({ ok: false, message: "파일 데이터가 없습니다." });
-    const base64 = dataUrl.includes(",") ? dataUrl.slice(dataUrl.indexOf(",") + 1) : dataUrl;
-    const buffer = Buffer.from(base64, "base64");
+    const buffer = req._legacyResumeBuffer;
     const mammoth = require("mammoth");
     const result = await mammoth.extractRawText({ buffer });
     res.json({ ok: true, text: result.value || "" });
@@ -8298,14 +8371,13 @@ async function _extractHwpBuffer(buffer) {
     fs.promises.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
   }
 }
-app.post("/api/recruit/extract-hwp-text", async (req, res) => {
+app.post("/api/recruit/extract-hwp-text", legacyResumeExtractionLimiter, _legacyResumeExtractionGuard("hwp"), async (req, res) => {
   try {
     if (!requireRole(req, res, ["admin", "leader", "director"])) return;
     if (!requirePage(req, res, "recruit-candidates")) return;
     const { dataUrl } = req.body || {};
     if (!dataUrl || typeof dataUrl !== "string") return res.status(400).json({ ok: false, message: "파일 데이터가 없습니다." });
-    const base64 = dataUrl.includes(",") ? dataUrl.slice(dataUrl.indexOf(",") + 1) : dataUrl;
-    const buffer = Buffer.from(base64, "base64");
+    const buffer = req._legacyResumeBuffer;
     let text = "";
     try {
       text = await _extractHwpBuffer(buffer);
@@ -8325,7 +8397,7 @@ async function _ocrImageBuffer(buffer, ext) {
     fs.promises.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
   }
 }
-app.post("/api/recruit/extract-image-text", async (req, res) => {
+app.post("/api/recruit/extract-image-text", legacyResumeExtractionLimiter, _legacyResumeExtractionGuard("image"), async (req, res) => {
   try {
     if (!requireRole(req, res, ["admin", "leader", "director"])) return;
     if (!requirePage(req, res, "recruit-candidates")) return;
@@ -8333,8 +8405,7 @@ app.post("/api/recruit/extract-image-text", async (req, res) => {
     if (!dataUrl || typeof dataUrl !== "string") return res.status(400).json({ ok: false, message: "파일 데이터가 없습니다." });
     const mimeM = dataUrl.match(/^data:image\/(\w+);base64,/);
     const ext = mimeM ? mimeM[1].replace("jpeg", "jpg") : "png";
-    const base64 = dataUrl.includes(",") ? dataUrl.slice(dataUrl.indexOf(",") + 1) : dataUrl;
-    const buffer = Buffer.from(base64, "base64");
+    const buffer = req._legacyResumeBuffer;
     let text = "";
     try {
       text = await _ocrImageBuffer(buffer, ext);
@@ -8407,29 +8478,20 @@ app.post("/api/recruit/parse-resume-llm", async (req, res) => {
 // 엔드포인트로 대체한다. 위 채용(recruit) 모듈이 이미 갖춘 서버측 텍스트 추출
 // (PDF 텍스트레이어+OCR/DOCX/이미지 OCR) 저수준 버퍼 헬퍼(_ocrPdfBuffer/
 // _ocrPdfPages/_ocrImageBuffer, 위에서 정의됨)를 그대로 재사용하되, dataUrl(JSON
-// body) 기반 기존 /api/recruit/extract-*-text·parse-resume-llm 라우트는 채용 흐름의
-// 기존 계약을 그대로 유지하기 위해 전혀 건드리지 않는다(요구사항: "기존 채용 이력서
-// 흐름은 깨지지 않게 유지").
-const RESUME_MAX_BYTES = Number(process.env.RESUME_MAX_BYTES) || 15 * 1024 * 1024;
-const RESUME_MAX_TEXT_CHARS = Number(process.env.RESUME_MAX_TEXT_CHARS) || 12000;
-const RESUME_AI_TIMEOUT_MS = Number(process.env.RESUME_AI_TIMEOUT_MS) || 30000;
+// body) 기반 기존 /api/recruit/extract-*-text·parse-resume-llm 라우트도 채용 흐름의
+// 기존 응답 계약은 유지하되, 위 공통 제한을 적용한다.
 // DOCX(zip)는 multer의 fileSize 제한(원본 파일 크기)만으로는 압축 폭탄을 막지
 // 못한다 — 15MB짜리 zip이 안에 수백 개 항목이나 수백 MB로 압축 해제되는 내용을
 // 담을 수 있다. jszip은 loadAsync() 시점에는 각 항목을 실제로 해제(inflate)하지
 // 않고 중앙 디렉터리 메타데이터(선언된 압축해제크기)만 읽으므로, 이 값을 실제
 // 해제 전에 먼저 검사해 거부할 수 있다.
-const RESUME_ZIP_MAX_ENTRIES = Number(process.env.RESUME_ZIP_MAX_ENTRIES) || 200;
-const RESUME_ZIP_MAX_UNCOMPRESSED_BYTES = Number(process.env.RESUME_ZIP_MAX_UNCOMPRESSED_BYTES) || 30 * 1024 * 1024;
 // 이미지도 마찬가지로 파일 바이트 자체는 작아도(png/webp는 고압축률) 디코드하면
 // 거대한 픽셀 배열이 될 수 있어(압축 폭탄과 동일한 부류의 위험) tesseract에
 // 넘기기 전에 헤더만 읽어(전체 디코드 없이) 픽셀 수를 먼저 확인한다.
-const RESUME_IMAGE_MAX_PIXELS = Number(process.env.RESUME_IMAGE_MAX_PIXELS) || 40_000_000; // 40MP
 // 이력서 분석은 OCR/AI 호출이 있어 요청 하나가 몇 초~수십 초씩 서버 리소스(CPU/
 // 프로세스 슬롯)를 붙잡는다 — resumeParseLimiter(시간창 기준 총 호출 수)와 별개로,
 // "지금 동시에 처리 중인 개수"도 제한해야 짧은 시간에 몰린 요청들이 서버를 과부하
 // 상태로 몰아넣는 것을 막을 수 있다.
-const RESUME_MAX_CONCURRENT = Number(process.env.RESUME_MAX_CONCURRENT) || 3;
-let _resumeInFlight = 0;
 const hrResumeUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: RESUME_MAX_BYTES, files: 1, fields: 0 } });
 
 // 사용자별 호출 한도(과다 AI 호출로 인한 비용/부하 남용 방지) — /login과 달리 IP가
@@ -8440,15 +8502,6 @@ const hrResumeUpload = multer({ storage: multer.memoryStorage(), limits: { fileS
 // 주소를 바꿔가며 한도를 우회할 수 있다고 정적 소스 검사로 경고한다(ERR_ERL_KEY_GEN_IPV6,
 // 실측: 실제로 요청은 막지 않고 매 기동 시 콘솔에 경고만 남기지만, 지적 자체는 타당하므로
 // 라이브러리가 제공하는 rateLimit.ipKeyGenerator()로 정규화한다.
-const resumeParseLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 10,
-  standardHeaders: true,
-  legacyHeaders: false,
-  keyGenerator: (req) => (req.auth && req.auth.empId != null) ? `emp:${req.auth.empId}` : rateLimit.ipKeyGenerator(req.ip),
-  handler: (req, res) => res.status(429).json({ ok: false, code: "RESUME_RATE_LIMITED", message: "이력서 분석 요청이 너무 많습니다. 잠시 후 다시 시도하세요." }),
-});
-
 // 확장자만이 아니라 실제 파일 시그니처(매직바이트)로 형식을 판정한다 — 확장자를
 // 위장한 파일(예: 실행파일을 .pdf로 이름만 바꾼 경우)을 그대로 통과시키지 않기 위함.
 function _sniffResumeFileType(buffer, filename) {
