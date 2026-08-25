@@ -2420,7 +2420,10 @@ function _idempotencyRequired(req) {
   // 실행기를 사용한다. JSON 모드는 기존 파일 멱등성 middleware를 계속 사용한다.
   if (!USE_JSON_FILE && req.method === "POST" && (
     req.path === "/api/accounting/vouchers" ||
-    /^\/api\/accounting\/vouchers\/[^/]+\/(post|void)$/.test(req.path)
+    /^\/api\/accounting\/vouchers\/[^/]+\/(post|void)$/.test(req.path) ||
+    /^\/api\/erp\/stock\/(adjust|count|transfer)$/.test(req.path) ||
+    /^\/api\/accounting\/rcps\/schedule\/[^/]+\/post$/.test(req.path) ||
+    /^\/api\/accounting\/fixed-assets\/[^/]+\/depreciation-schedule\/[^/]+\/post$/.test(req.path)
   )) return false;
   return req.path === "/save" || /^\/api\/(accounting|erp)\//.test(req.path);
 }
@@ -5680,45 +5683,58 @@ app.post("/api/accounting/rcps/schedule/:scheduleId/post", async (req, res) => {
     if (!interestExpenseAccountId || !cashAccountId || !rcpsLiabilityAccountId) {
       return res.status(400).json({ ok: false, message: "이자비용, 현금, RCPS부채 계정과목은 모두 필수입니다." });
     }
-    let scheduleRow, issuance;
-    let pgClient = null;
-    if (USE_JSON_FILE) {
-      // 동시 요청 중 정확히 한 요청만 이 scheduleId를 처리하도록 동기적으로 선점한다.
-      if (_rcpsSchedulePostInFlight.has(scheduleId)) {
-        return res.status(409).json({ ok: false, message: "이 회차는 다른 요청이 이미 처리 중입니다. 잠시 후 다시 시도해주세요." });
-      }
-      _rcpsSchedulePostInFlight.add(scheduleId);
-      lockedJsonMode = true;
-      scheduleRow = _fileAcctRcps.schedule.find(s => s.id === scheduleId);
-      if (!scheduleRow) return res.status(404).json({ ok: false, message: "상각 스케줄을 찾을 수 없습니다." });
-      if (scheduleRow.status === "posted") return res.status(400).json({ ok: false, message: "이미 전표가 발행된 회차입니다." });
-      issuance = _fileAcctRcps.issuances.find(i => i.id === scheduleRow.issuanceId);
-    } else {
-      // Postgres 모드: SELECT ... FOR UPDATE로 이 회차 행을 잠가, 같은 scheduleId를 노리는
-      // 동시 요청은 이 트랜잭션이 COMMIT/ROLLBACK될 때까지 뒤 요청의 SELECT에서 대기하게 만든다
-      // (vouchers/:id/post가 이미 쓰던 것과 동일한 패턴).
-      pgClient = await pool.connect();
-      await pgClient.query("BEGIN");
-      const { rows } = await pgClient.query(
+    if (!USE_JSON_FILE) {
+      return await _runPgIdempotentCommand(req, res, async pgClient => {
+        const { rows } = await pgClient.query(
         "SELECT data FROM rcps_amortization_schedule WHERE id = $1 AND company_id = $2 FOR UPDATE",
         [scheduleId, companyId]
-      );
-      if (!rows.length) {
-        await pgClient.query("ROLLBACK"); pgClient.release();
-        return res.status(404).json({ ok: false, message: "상각 스케줄을 찾을 수 없습니다." });
-      }
-      scheduleRow = rows[0].data;
-      if (scheduleRow.status === "posted") {
-        await pgClient.query("ROLLBACK"); pgClient.release();
-        return res.status(400).json({ ok: false, message: "이미 전표가 발행된 회차입니다." });
-      }
-      const { rows: issRows } = await pgClient.query("SELECT data FROM rcps_issuances WHERE id = $1 AND company_id = $2", [scheduleRow.issuanceId, companyId]);
-      issuance = issRows[0]?.data;
+        );
+        if (!rows.length) return { status: 404, body: { ok: false, message: "상각 스케줄을 찾을 수 없습니다." } };
+        const scheduleRow = rows[0].data;
+        if (scheduleRow.status === "posted") return { status: 400, body: { ok: false, message: "이미 전표가 발행된 회차입니다." } };
+        const { rows: issRows } = await pgClient.query(
+          "SELECT data FROM rcps_issuances WHERE id = $1 AND company_id = $2",
+          [scheduleRow.issuanceId, companyId]
+        );
+        const issuance = issRows[0]?.data;
+        if (!issuance) return { status: 404, body: { ok: false, message: "RCPS 발행 건을 찾을 수 없습니다." } };
+        const { effectiveInterest, statedInterest, amortization } = scheduleRow;
+        const lines = amortization >= 0
+          ? [
+              { accountId: interestExpenseAccountId, debit: effectiveInterest, credit: 0 },
+              { accountId: cashAccountId, debit: 0, credit: statedInterest },
+              { accountId: rcpsLiabilityAccountId, debit: 0, credit: amortization },
+            ]
+          : [
+              { accountId: interestExpenseAccountId, debit: effectiveInterest, credit: 0 },
+              { accountId: cashAccountId, debit: 0, credit: statedInterest },
+              { accountId: rcpsLiabilityAccountId, debit: Math.abs(amortization), credit: 0 },
+            ];
+        const voucher = await _issuePostedVoucher(companyId, {
+          date: scheduleRow.periodDate,
+          description: `RCPS 상각 (${issuance.name} ${scheduleRow.seq}회차)`,
+          lines, user,
+        }, pgClient);
+        const updatedSchedule = { ...scheduleRow, status: "posted", voucherId: voucher.id };
+        await pgClient.query(
+          "UPDATE rcps_amortization_schedule SET data = $3, updated_at = NOW() WHERE id = $1 AND company_id = $2",
+          [scheduleId, companyId, updatedSchedule]
+        );
+        return { body: { ok: true, schedule: updatedSchedule, voucher } };
+      });
     }
-    if (!issuance) {
-      if (pgClient) { await pgClient.query("ROLLBACK"); pgClient.release(); }
-      return res.status(404).json({ ok: false, message: "RCPS 발행 건을 찾을 수 없습니다." });
+
+    // JSON 파일 모드는 프로세스 내 잠금 + 파일 멱등성 기록을 사용한다.
+    if (_rcpsSchedulePostInFlight.has(scheduleId)) {
+      return res.status(409).json({ ok: false, message: "이 회차는 다른 요청이 이미 처리 중입니다. 잠시 후 다시 시도해주세요." });
     }
+    _rcpsSchedulePostInFlight.add(scheduleId);
+    lockedJsonMode = true;
+    const scheduleRow = _fileAcctRcps.schedule.find(s => s.id === scheduleId);
+    if (!scheduleRow) return res.status(404).json({ ok: false, message: "상각 스케줄을 찾을 수 없습니다." });
+    if (scheduleRow.status === "posted") return res.status(400).json({ ok: false, message: "이미 전표가 발행된 회차입니다." });
+    const issuance = _fileAcctRcps.issuances.find(i => i.id === scheduleRow.issuanceId);
+    if (!issuance) return res.status(404).json({ ok: false, message: "RCPS 발행 건을 찾을 수 없습니다." });
 
     try {
       const { effectiveInterest, statedInterest, amortization } = scheduleRow;
@@ -5742,23 +5758,15 @@ app.post("/api/accounting/rcps/schedule/:scheduleId/post", async (req, res) => {
         date: scheduleRow.periodDate,
         description: `RCPS 상각 (${issuance.name} ${scheduleRow.seq}회차)`,
         lines, user,
-      }, pgClient);
+      });
 
       const updatedSchedule = { ...scheduleRow, status: "posted", voucherId: voucher.id };
-      if (USE_JSON_FILE) {
-        const idx = _fileAcctRcps.schedule.findIndex(s => s.id === scheduleId);
-        _fileAcctRcps.schedule[idx] = updatedSchedule;
-        _saveFileAcctRcps();
-      } else {
-        await pgClient.query("UPDATE rcps_amortization_schedule SET data = $3, updated_at = NOW() WHERE id = $1 AND company_id = $2", [scheduleId, companyId, updatedSchedule]);
-        await pgClient.query("COMMIT");
-      }
+      const idx = _fileAcctRcps.schedule.findIndex(s => s.id === scheduleId);
+      _fileAcctRcps.schedule[idx] = updatedSchedule;
+      _saveFileAcctRcps();
       res.json({ ok: true, schedule: updatedSchedule, voucher });
     } catch (e) {
-      if (pgClient) await pgClient.query("ROLLBACK");
       throw e;
-    } finally {
-      if (pgClient) pgClient.release();
     }
   } catch (e) { res.status(e.statusCode || 500).json({ ok: false, message: _safeErrMsg(e) }); }
   finally {
@@ -6219,56 +6227,55 @@ app.post("/api/accounting/fixed-assets/:id/depreciation-schedule/:year/post", as
     if (!depreciationExpenseAccountId || !accumulatedDepreciationAccountId) {
       return res.status(400).json({ ok: false, message: "감가상각비, 감가상각누계액 계정과목은 모두 필수입니다." });
     }
-    let scheduleRow, asset;
-    let pgClient = null;
-    if (USE_JSON_FILE) {
-      // 동시 요청 중 정확히 한 요청만 이 assetId+year를 처리하도록 동기적으로 선점한다(RCPS와 동일 패턴).
-      if (_faSchedulePostInFlight.has(lockKey)) {
-        return res.status(409).json({ ok: false, message: "이 연도는 다른 요청이 이미 처리 중입니다. 잠시 후 다시 시도해주세요." });
-      }
-      _faSchedulePostInFlight.add(lockKey);
-      lockedJsonMode = true;
-      scheduleRow = _fileAcctFixedAssets.schedule.find(s => s.assetId === assetId && s.year === year);
-      if (!scheduleRow) return res.status(404).json({ ok: false, message: "해당 연도의 상각 스케줄을 찾을 수 없습니다." });
-      if (scheduleRow.status === "posted") return res.status(400).json({ ok: false, message: "이미 전표가 발행된 연도입니다." });
-      asset = _fileAcctFixedAssets.assets.find(a => a.id === assetId);
-    } else {
-      // Postgres 모드: SELECT ... FOR UPDATE로 이 (asset_id, year) 행을 잠가, 같은 조합을 노리는
-      // 동시 요청은 이 트랜잭션이 COMMIT/ROLLBACK될 때까지 뒤 요청의 SELECT에서 대기하게 만든다
-      // (RCPS rcps/schedule/:scheduleId/post가 이미 쓰던 것과 동일한 패턴).
-      pgClient = await pool.connect();
-      await pgClient.query("BEGIN");
-      // 자산 → 상각표 순서로 잠가 수정 API와 lock ordering을 맞춘다. 반대 순서라면
-      // "수정은 자산을, 전표발행은 상각표를 먼저" 잡아 deadlock/부분 실패가 날 수 있다.
-      const { rows: assetRows } = await pgClient.query(
+    if (!USE_JSON_FILE) {
+      return await _runPgIdempotentCommand(req, res, async pgClient => {
+        // 자산 → 상각표 순서로 잠가 수정 API와 lock ordering을 맞춘다.
+        const { rows: assetRows } = await pgClient.query(
         "SELECT data FROM fixed_assets WHERE id = $1 AND company_id = $2 AND is_deleted = FALSE FOR UPDATE",
         [assetId, companyId]
-      );
-      if (!assetRows.length) {
-        await pgClient.query("ROLLBACK"); pgClient.release();
-        return res.status(404).json({ ok: false, message: "고정자산을 찾을 수 없습니다." });
-      }
-      asset = assetRows[0].data;
-      const { rows } = await pgClient.query(
-        "SELECT data FROM fixed_asset_depreciation_schedule WHERE asset_id = $1 AND year = $2 AND company_id = $3 FOR UPDATE",
-        [assetId, year, companyId]
-      );
-      if (!rows.length) {
-        await pgClient.query("ROLLBACK"); pgClient.release();
-        return res.status(404).json({ ok: false, message: "해당 연도의 상각 스케줄을 찾을 수 없습니다." });
-      }
-      scheduleRow = rows[0].data;
-      if (scheduleRow.status === "posted") {
-        await pgClient.query("ROLLBACK"); pgClient.release();
-        return res.status(400).json({ ok: false, message: "이미 전표가 발행된 연도입니다." });
-      }
+        );
+        if (!assetRows.length) return { status: 404, body: { ok: false, message: "고정자산을 찾을 수 없습니다." } };
+        const asset = assetRows[0].data;
+        const { rows } = await pgClient.query(
+          "SELECT data FROM fixed_asset_depreciation_schedule WHERE asset_id = $1 AND year = $2 AND company_id = $3 FOR UPDATE",
+          [assetId, year, companyId]
+        );
+        if (!rows.length) return { status: 404, body: { ok: false, message: "해당 연도의 상각 스케줄을 찾을 수 없습니다." } };
+        const scheduleRow = rows[0].data;
+        if (scheduleRow.status === "posted") return { status: 400, body: { ok: false, message: "이미 전표가 발행된 연도입니다." } };
+        if (asset.status === "disposed" && asset.disposalDate && year > new Date(asset.disposalDate).getFullYear()) {
+          return { status: 400, body: { ok: false, message: "처분일 이후 연도의 감가상각비는 발행할 수 없습니다." } };
+        }
+        const voucher = await _issuePostedVoucher(companyId, {
+          date: `${year}-12-31`,
+          description: `감가상각비 (${asset.name} ${year}년)`,
+          lines: [
+            { accountId: depreciationExpenseAccountId, debit: scheduleRow.depreciationExpense, credit: 0 },
+            { accountId: accumulatedDepreciationAccountId, debit: 0, credit: scheduleRow.depreciationExpense },
+          ],
+          user,
+        }, pgClient);
+        const updatedSchedule = { ...scheduleRow, status: "posted", voucherId: voucher.id };
+        await pgClient.query(
+          "UPDATE fixed_asset_depreciation_schedule SET data = $4, updated_at = NOW() WHERE asset_id = $1 AND year = $2 AND company_id = $3",
+          [assetId, year, companyId, updatedSchedule]
+        );
+        return { body: { ok: true, schedule: updatedSchedule, voucher } };
+      });
     }
-    if (!asset) {
-      if (pgClient) { await pgClient.query("ROLLBACK"); pgClient.release(); }
-      return res.status(404).json({ ok: false, message: "고정자산을 찾을 수 없습니다." });
+
+    // JSON 파일 모드는 프로세스 내 잠금 + 파일 멱등성 기록을 사용한다.
+    if (_faSchedulePostInFlight.has(lockKey)) {
+      return res.status(409).json({ ok: false, message: "이 연도는 다른 요청이 이미 처리 중입니다. 잠시 후 다시 시도해주세요." });
     }
+    _faSchedulePostInFlight.add(lockKey);
+    lockedJsonMode = true;
+    const scheduleRow = _fileAcctFixedAssets.schedule.find(s => s.assetId === assetId && s.year === year);
+    if (!scheduleRow) return res.status(404).json({ ok: false, message: "해당 연도의 상각 스케줄을 찾을 수 없습니다." });
+    if (scheduleRow.status === "posted") return res.status(400).json({ ok: false, message: "이미 전표가 발행된 연도입니다." });
+    const asset = _fileAcctFixedAssets.assets.find(a => a.id === assetId);
+    if (!asset) return res.status(404).json({ ok: false, message: "고정자산을 찾을 수 없습니다." });
     if (asset.status === "disposed" && asset.disposalDate && year > new Date(asset.disposalDate).getFullYear()) {
-      if (pgClient) { await pgClient.query("ROLLBACK"); pgClient.release(); }
       return res.status(400).json({ ok: false, message: "처분일 이후 연도의 감가상각비는 발행할 수 없습니다." });
     }
 
@@ -6281,26 +6288,15 @@ app.post("/api/accounting/fixed-assets/:id/depreciation-schedule/:year/post", as
           { accountId: accumulatedDepreciationAccountId, debit: 0, credit: scheduleRow.depreciationExpense },
         ],
         user,
-      }, pgClient);
+      });
 
       const updatedSchedule = { ...scheduleRow, status: "posted", voucherId: voucher.id };
-      if (USE_JSON_FILE) {
-        const idx = _fileAcctFixedAssets.schedule.findIndex(s => s.assetId === assetId && s.year === year);
-        _fileAcctFixedAssets.schedule[idx] = updatedSchedule;
-        _saveFileAcctFixedAssets();
-      } else {
-        await pgClient.query(
-          "UPDATE fixed_asset_depreciation_schedule SET data = $4, updated_at = NOW() WHERE asset_id = $1 AND year = $2 AND company_id = $3",
-          [assetId, year, companyId, updatedSchedule]
-        );
-        await pgClient.query("COMMIT");
-      }
+      const idx = _fileAcctFixedAssets.schedule.findIndex(s => s.assetId === assetId && s.year === year);
+      _fileAcctFixedAssets.schedule[idx] = updatedSchedule;
+      _saveFileAcctFixedAssets();
       res.json({ ok: true, schedule: updatedSchedule, voucher });
     } catch (e) {
-      if (pgClient) await pgClient.query("ROLLBACK");
       throw e;
-    } finally {
-      if (pgClient) pgClient.release();
     }
   } catch (e) { res.status(e.statusCode || 500).json({ ok: false, message: _safeErrMsg(e) }); }
   finally {
@@ -6338,7 +6334,7 @@ function _nextErpSeq(kind, year) {
 // 재고 원장은 itemId/locationId를 참조만 하고 존재 검증은 하지 않아, 오타나 연동 실수로
 // 없는 id를 보내면 어떤 품목·창고 화면에도 안 보이는 유령 원장 행이 조용히 쌓였다
 // (재고 합계에는 잡히므로 "품목명이 빈 칸인 수량"으로만 드러난다).
-async function _erpRefsExist(itemId, locationIds, companyId) {
+async function _erpRefsExist(itemId, locationIds, companyId, externalClient) {
   const locs = locationIds.filter(Boolean);
   if (USE_JSON_FILE) {
     if (itemId && !(_fileErp.items || []).some(i => i.id === itemId)) return "품목을 찾을 수 없습니다.";
@@ -6347,15 +6343,17 @@ async function _erpRefsExist(itemId, locationIds, companyId) {
     }
     return null;
   }
+  const db = externalClient || pool;
+  const lock = externalClient ? " FOR KEY SHARE" : "";
   if (itemId) {
-    const { rows } = await pool.query(
-      "SELECT 1 FROM erp_items WHERE id = $1 AND is_deleted = FALSE AND (company_id = $2 OR company_id IS NULL)", [itemId, companyId]
+    const { rows } = await db.query(
+      `SELECT 1 FROM erp_items WHERE id = $1 AND is_deleted = FALSE AND (company_id = $2 OR company_id IS NULL)${lock}`, [itemId, companyId]
     );
     if (!rows.length) return "품목을 찾을 수 없습니다.";
   }
   for (const l of locs) {
-    const { rows } = await pool.query(
-      "SELECT 1 FROM erp_locations WHERE id = $1 AND is_deleted = FALSE AND (company_id = $2 OR company_id IS NULL)", [l, companyId]
+    const { rows } = await db.query(
+      `SELECT 1 FROM erp_locations WHERE id = $1 AND is_deleted = FALSE AND (company_id = $2 OR company_id IS NULL)${lock}`, [l, companyId]
     );
     if (!rows.length) return "위치(창고)를 찾을 수 없습니다.";
   }
@@ -7199,14 +7197,14 @@ app.post("/api/erp/stock/adjust", async (req, res) => {
     const qtyRaw = Number(qty);
     if (!Number.isFinite(qtyRaw) || qtyRaw <= 0) return res.status(400).json({ ok: false, message: "수량은 0보다 큰 숫자여야 합니다." });
     const qtyNum = qtyRaw;
-    const refErr = await _erpRefsExist(itemId, [locationId], companyId);
-    if (refErr) return res.status(404).json({ ok: false, message: refErr });
     const entry = {
       id: `sl_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
       itemId, locationId, type, qty: qtyNum, refType: "manual", refId: null, refNo: null,
       memo: memo || "", createdBy: user || "unknown", createdAt: new Date().toISOString(),
     };
     if (USE_JSON_FILE) {
+      const refErr = await _erpRefsExist(itemId, [locationId], companyId);
+      if (refErr) return res.status(404).json({ ok: false, message: refErr });
       const current = _fileErp.stockLedger.filter(l => l.itemId === itemId && l.locationId === locationId)
         .reduce((s, l) => s + (l.type === "out" ? -Math.abs(l.qty) : Math.abs(l.qty)), 0);
       if (type === "out" && current < qtyNum) return res.status(400).json({ ok: false, message: `현재 재고(${current})보다 많은 수량을 출고할 수 없습니다.` });
@@ -7214,17 +7212,18 @@ app.post("/api/erp/stock/adjust", async (req, res) => {
       _saveFileErp();
       return res.json({ ok: true, entry });
     }
-    const client = await pool.connect();
-    try {
-      await client.query("BEGIN");
+    return await _runPgIdempotentCommand(req, res, async client => {
+      const refErr = await _erpRefsExist(itemId, [locationId], companyId, client);
+      if (refErr) return { status: 404, body: { ok: false, message: refErr } };
       await _lockStockKeys(client, companyId, [[itemId, locationId]]);
       const { rows } = await client.query("SELECT data FROM erp_stock_ledger WHERE item_id = $1 AND location_id = $2 AND (company_id = $3 OR company_id IS NULL)", [itemId, locationId, companyId]);
       const current = rows.reduce((s, r) => s + (r.data.type === "out" ? -Math.abs(r.data.qty) : Math.abs(r.data.qty)), 0);
-      if (type === "out" && current < qtyNum) { await client.query("ROLLBACK"); return res.status(400).json({ ok: false, message: `현재 재고(${current})보다 많은 수량을 출고할 수 없습니다.` }); }
+      if (type === "out" && current < qtyNum) {
+        return { status: 400, body: { ok: false, message: `현재 재고(${current})보다 많은 수량을 출고할 수 없습니다.` } };
+      }
       await client.query("INSERT INTO erp_stock_ledger (id, item_id, location_id, data, company_id) VALUES ($1,$2,$3,$4,$5)", [entry.id, itemId, locationId, entry, companyId]);
-      await client.query("COMMIT");
-      res.json({ ok: true, entry });
-    } catch (e) { await client.query("ROLLBACK"); throw e; } finally { client.release(); }
+      return { body: { ok: true, entry } };
+    });
   } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
@@ -7244,7 +7243,7 @@ app.post("/api/erp/stock/count", async (req, res) => {
     if (negLine) {
       return res.status(400).json({ ok: false, message: "실사 수량은 0 이상이어야 합니다." });
     }
-    {
+    if (USE_JSON_FILE) {
       const locErr = await _erpRefsExist(null, [locationId], companyId);
       if (locErr) return res.status(404).json({ ok: false, message: locErr });
       for (const l of lines) {
@@ -7277,9 +7276,14 @@ app.post("/api/erp/stock/count", async (req, res) => {
       _saveFileErp();
       return res.json({ ok: true, adjusted: entries.length, entries });
     }
-    const client = await pool.connect();
-    try {
-      await client.query("BEGIN");
+    return await _runPgIdempotentCommand(req, res, async client => {
+      const locErr = await _erpRefsExist(null, [locationId], companyId, client);
+      if (locErr) return { status: 404, body: { ok: false, message: locErr } };
+      for (const l of lines) {
+        if (!l || !l.itemId) continue;
+        const itemErr = await _erpRefsExist(l.itemId, [], companyId, client);
+        if (itemErr) return { status: 404, body: { ok: false, message: itemErr } };
+      }
       await _lockStockKeys(client, companyId, lines.filter(l => l.itemId).map(l => [l.itemId, locationId]));
       const { rows } = await client.query("SELECT data FROM erp_stock_ledger WHERE location_id = $1 AND (company_id = $2 OR company_id IS NULL)", [locationId, companyId]);
       const ledger = rows.map(r => r.data);
@@ -7302,9 +7306,8 @@ app.post("/api/erp/stock/count", async (req, res) => {
       for (const e of entries) {
         await client.query("INSERT INTO erp_stock_ledger (id, item_id, location_id, data, company_id) VALUES ($1,$2,$3,$4,$5)", [e.id, e.itemId, e.locationId, e, companyId]);
       }
-      await client.query("COMMIT");
-      res.json({ ok: true, adjusted: entries.length, entries });
-    } catch (e) { await client.query("ROLLBACK"); throw e; } finally { client.release(); }
+      return { body: { ok: true, adjusted: entries.length, entries } };
+    });
   } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
@@ -7321,12 +7324,12 @@ app.post("/api/erp/stock/transfer", async (req, res) => {
     const qtyRawT = Number(qty);
     if (!Number.isFinite(qtyRawT) || qtyRawT <= 0) return res.status(400).json({ ok: false, message: "수량은 0보다 큰 숫자여야 합니다." });
     const qtyNum = qtyRawT;
-    const refErrT = await _erpRefsExist(itemId, [fromLocationId, toLocationId], companyId);
-    if (refErrT) return res.status(404).json({ ok: false, message: refErrT });
     const transferId = `tr_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const now = new Date().toISOString();
     const createdBy = user || "unknown";
     if (USE_JSON_FILE) {
+      const refErrT = await _erpRefsExist(itemId, [fromLocationId, toLocationId], companyId);
+      if (refErrT) return res.status(404).json({ ok: false, message: refErrT });
       const current = _fileErp.stockLedger.filter(l => l.itemId === itemId && l.locationId === fromLocationId)
         .reduce((s, l) => s + (l.type === "out" ? -Math.abs(l.qty) : Math.abs(l.qty)), 0);
       if (current < qtyNum) return res.status(400).json({ ok: false, message: `출발 위치 재고 부족 (현재 ${current} / 이동 요청 ${qtyNum})` });
@@ -7336,20 +7339,21 @@ app.post("/api/erp/stock/transfer", async (req, res) => {
       _saveFileErp();
       return res.json({ ok: true, transferId, outEntry, inEntry });
     }
-    const client = await pool.connect();
-    try {
-      await client.query("BEGIN");
+    return await _runPgIdempotentCommand(req, res, async client => {
+      const refErrT = await _erpRefsExist(itemId, [fromLocationId, toLocationId], companyId, client);
+      if (refErrT) return { status: 404, body: { ok: false, message: refErrT } };
       await _lockStockKeys(client, companyId, [[itemId, fromLocationId], [itemId, toLocationId]]);
       const { rows: ledgerRows } = await client.query("SELECT data FROM erp_stock_ledger WHERE item_id = $1 AND location_id = $2 AND (company_id = $3 OR company_id IS NULL)", [itemId, fromLocationId, companyId]);
       const current = ledgerRows.reduce((s, r) => s + (r.data.type === "out" ? -Math.abs(r.data.qty) : Math.abs(r.data.qty)), 0);
-      if (current < qtyNum) { await client.query("ROLLBACK"); return res.status(400).json({ ok: false, message: `출발 위치 재고 부족 (현재 ${current} / 이동 요청 ${qtyNum})` }); }
-      const outEntry = { itemId, locationId: fromLocationId, type: "out", qty: qtyNum, refType: "transfer", refId: transferId, refNo: null, memo: memo || "", createdBy, createdAt: now };
-      const inEntry = { itemId, locationId: toLocationId, type: "in", qty: qtyNum, refType: "transfer", refId: transferId, refNo: null, memo: memo || "", createdBy, createdAt: now };
-      await client.query("INSERT INTO erp_stock_ledger (id, item_id, location_id, data, company_id) VALUES ($1,$2,$3,$4,$5)", [`sl_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`, itemId, fromLocationId, outEntry, companyId]);
-      await client.query("INSERT INTO erp_stock_ledger (id, item_id, location_id, data, company_id) VALUES ($1,$2,$3,$4,$5)", [`sl_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`, itemId, toLocationId, inEntry, companyId]);
-      await client.query("COMMIT");
-      res.json({ ok: true, transferId, outEntry, inEntry });
-    } catch (e) { await client.query("ROLLBACK"); throw e; } finally { client.release(); }
+      if (current < qtyNum) {
+        return { status: 400, body: { ok: false, message: `출발 위치 재고 부족 (현재 ${current} / 이동 요청 ${qtyNum})` } };
+      }
+      const outEntry = { id: `sl_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`, itemId, locationId: fromLocationId, type: "out", qty: qtyNum, refType: "transfer", refId: transferId, refNo: null, memo: memo || "", createdBy, createdAt: now };
+      const inEntry = { id: `sl_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`, itemId, locationId: toLocationId, type: "in", qty: qtyNum, refType: "transfer", refId: transferId, refNo: null, memo: memo || "", createdBy, createdAt: now };
+      await client.query("INSERT INTO erp_stock_ledger (id, item_id, location_id, data, company_id) VALUES ($1,$2,$3,$4,$5)", [outEntry.id, itemId, fromLocationId, outEntry, companyId]);
+      await client.query("INSERT INTO erp_stock_ledger (id, item_id, location_id, data, company_id) VALUES ($1,$2,$3,$4,$5)", [inEntry.id, itemId, toLocationId, inEntry, companyId]);
+      return { body: { ok: true, transferId, outEntry, inEntry } };
+    });
   } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 

@@ -173,6 +173,188 @@ if (!ADMIN_DATABASE_URL) {
       } finally { await dbCheck.end(); }
     });
 
+    await t.test("4d) 재고 조정과 멱등성 완료 기록은 같은 transaction에서 commit", async () => {
+      const commonHeaders = { "Content-Type": "application/json", Authorization: `Bearer ${companyAToken}` };
+      const item = await (await api("/api/erp/items", {
+        method: "POST", headers: commonHeaders,
+        body: JSON.stringify({ code: "IDEMP-STOCK", name: "멱등성 재고 품목", unit: "EA" }),
+      })).json();
+      const location = await (await api("/api/erp/locations", {
+        method: "POST", headers: commonHeaders,
+        body: JSON.stringify({ name: "멱등성 테스트 창고" }),
+      })).json();
+      const locationB = await (await api("/api/erp/locations", {
+        method: "POST", headers: commonHeaders,
+        body: JSON.stringify({ name: "멱등성 테스트 창고 B" }),
+      })).json();
+      assert.ok(item.item?.id);
+      assert.ok(location.location?.id);
+      assert.ok(locationB.location?.id);
+
+      const payload = {
+        itemId: item.item.id, locationId: location.location.id,
+        type: "in", qty: 7, memo: "재고 crash-gap 검증",
+      };
+      const key = "pg-stock-atomic-test-0001";
+      const failed = await api("/api/erp/stock/adjust", {
+        method: "POST",
+        headers: { ...commonHeaders, "Idempotency-Key": key, "X-Test-Idempotency-Fail-Before-Complete": "1" },
+        body: JSON.stringify(payload),
+      });
+      assert.equal(failed.status, 500);
+
+      const succeeded = await api("/api/erp/stock/adjust", {
+        method: "POST", headers: { ...commonHeaders, "Idempotency-Key": key }, body: JSON.stringify(payload),
+      });
+      assert.equal(succeeded.status, 200);
+      const firstBody = await succeeded.json();
+      const replay = await api("/api/erp/stock/adjust", {
+        method: "POST", headers: { ...commonHeaders, "Idempotency-Key": key }, body: JSON.stringify(payload),
+      });
+      assert.equal(replay.status, 200);
+      assert.equal(replay.headers.get("x-idempotency-replayed"), "true");
+      assert.deepEqual(await replay.json(), firstBody);
+
+      const transferPayload = {
+        itemId: item.item.id, fromLocationId: location.location.id,
+        toLocationId: locationB.location.id, qty: 3, memo: "이동 crash-gap 검증",
+      };
+      const transferKey = "pg-stock-transfer-atomic-0001";
+      const transferFailed = await api("/api/erp/stock/transfer", {
+        method: "POST",
+        headers: { ...commonHeaders, "Idempotency-Key": transferKey, "X-Test-Idempotency-Fail-Before-Complete": "1" },
+        body: JSON.stringify(transferPayload),
+      });
+      assert.equal(transferFailed.status, 500);
+      const transferSucceeded = await api("/api/erp/stock/transfer", {
+        method: "POST", headers: { ...commonHeaders, "Idempotency-Key": transferKey }, body: JSON.stringify(transferPayload),
+      });
+      assert.equal(transferSucceeded.status, 200);
+      const transferBody = await transferSucceeded.json();
+      const transferReplay = await api("/api/erp/stock/transfer", {
+        method: "POST", headers: { ...commonHeaders, "Idempotency-Key": transferKey }, body: JSON.stringify(transferPayload),
+      });
+      assert.equal(transferReplay.headers.get("x-idempotency-replayed"), "true");
+      assert.deepEqual(await transferReplay.json(), transferBody);
+
+      const countPayload = {
+        locationId: location.location.id,
+        lines: [{ itemId: item.item.id, countedQty: 2 }],
+      };
+      const countKey = "pg-stock-count-atomic-0001";
+      const countFailed = await api("/api/erp/stock/count", {
+        method: "POST",
+        headers: { ...commonHeaders, "Idempotency-Key": countKey, "X-Test-Idempotency-Fail-Before-Complete": "1" },
+        body: JSON.stringify(countPayload),
+      });
+      assert.equal(countFailed.status, 500);
+      const countSucceeded = await api("/api/erp/stock/count", {
+        method: "POST", headers: { ...commonHeaders, "Idempotency-Key": countKey }, body: JSON.stringify(countPayload),
+      });
+      assert.equal(countSucceeded.status, 200);
+      const countBody = await countSucceeded.json();
+      assert.equal(countBody.adjusted, 1);
+      const countReplay = await api("/api/erp/stock/count", {
+        method: "POST", headers: { ...commonHeaders, "Idempotency-Key": countKey }, body: JSON.stringify(countPayload),
+      });
+      assert.equal(countReplay.headers.get("x-idempotency-replayed"), "true");
+      assert.deepEqual(await countReplay.json(), countBody);
+
+      const dbCheck = new Client({ connectionString: testDbUrl });
+      await dbCheck.connect();
+      try {
+        const rows = await dbCheck.query("SELECT COUNT(*)::int AS count FROM erp_stock_ledger WHERE data->>'memo' = $1", [payload.memo]);
+        assert.equal(rows.rows[0].count, 1, "실패 요청이나 replay가 중복 재고 원장을 만들면 안 됨");
+        const transferRows = await dbCheck.query("SELECT COUNT(*)::int AS count FROM erp_stock_ledger WHERE data->>'memo' = $1", [transferPayload.memo]);
+        assert.equal(transferRows.rows[0].count, 2, "창고 이동은 출고·입고 원장 한 쌍만 만들어야 함");
+        const countRows = await dbCheck.query("SELECT COUNT(*)::int AS count FROM erp_stock_ledger WHERE data->>'refType' = 'count' AND data->>'itemId' = $1", [item.item.id]);
+        assert.equal(countRows.rows[0].count, 1, "재고 실사 조정 원장은 한 건만 만들어야 함");
+      } finally { await dbCheck.end(); }
+    });
+
+    await t.test("4e) RCPS·감가상각 전표와 멱등성 완료 기록은 같은 transaction에서 commit", async () => {
+      const commonHeaders = { "Content-Type": "application/json", Authorization: `Bearer ${companyAToken}` };
+      await api("/api/accounting/accounts/seed-defaults", { method: "POST", headers: commonHeaders, body: "{}" });
+      const accountRows = await (await api("/api/accounting/accounts/picker", {
+        headers: { Authorization: `Bearer ${companyAToken}` },
+      })).json();
+      assert.ok(accountRows.accounts.length >= 3);
+      const [accountA, accountB, accountC] = accountRows.accounts;
+
+      const rcpsCreated = await (await api("/api/accounting/rcps/issuances", {
+        method: "POST", headers: commonHeaders,
+        body: JSON.stringify({
+          name: "멱등성 RCPS", issueDate: "2026-01-01", faceAmount: 100000,
+          couponRate: 0.05, effectiveRate: 0.08, maturityDate: "2028-01-01",
+        }),
+      })).json();
+      assert.ok(rcpsCreated.schedule?.[0]?.id);
+      const rcpsPath = `/api/accounting/rcps/schedule/${rcpsCreated.schedule[0].id}/post`;
+      const rcpsPayload = {
+        interestExpenseAccountId: accountA.id,
+        cashAccountId: accountB.id,
+        rcpsLiabilityAccountId: accountC.id,
+      };
+      const rcpsKey = "pg-rcps-atomic-test-0001";
+      const rcpsFailed = await api(rcpsPath, {
+        method: "POST",
+        headers: { ...commonHeaders, "Idempotency-Key": rcpsKey, "X-Test-Idempotency-Fail-Before-Complete": "1" },
+        body: JSON.stringify(rcpsPayload),
+      });
+      assert.equal(rcpsFailed.status, 500);
+      const rcpsSucceeded = await api(rcpsPath, {
+        method: "POST", headers: { ...commonHeaders, "Idempotency-Key": rcpsKey }, body: JSON.stringify(rcpsPayload),
+      });
+      assert.equal(rcpsSucceeded.status, 200);
+      const rcpsBody = await rcpsSucceeded.json();
+      const rcpsReplay = await api(rcpsPath, {
+        method: "POST", headers: { ...commonHeaders, "Idempotency-Key": rcpsKey }, body: JSON.stringify(rcpsPayload),
+      });
+      assert.equal(rcpsReplay.headers.get("x-idempotency-replayed"), "true");
+      assert.deepEqual(await rcpsReplay.json(), rcpsBody);
+
+      const assetCreated = await (await api("/api/accounting/fixed-assets", {
+        method: "POST", headers: commonHeaders,
+        body: JSON.stringify({
+          name: "멱등성 자산", assetNumber: "IDEMP-FA-001", category: "equipment",
+          acquisitionDate: "2026-01-01", acquisitionCost: 3000,
+          usefulLifeYears: 3, salvageValue: 0, depreciationMethod: "straight",
+        }),
+      })).json();
+      assert.ok(assetCreated.asset?.id);
+      const assetPath = `/api/accounting/fixed-assets/${assetCreated.asset.id}/depreciation-schedule/2026/post`;
+      const assetPayload = {
+        depreciationExpenseAccountId: accountA.id,
+        accumulatedDepreciationAccountId: accountB.id,
+      };
+      const assetKey = "pg-fixed-asset-atomic-test-0001";
+      const assetFailed = await api(assetPath, {
+        method: "POST",
+        headers: { ...commonHeaders, "Idempotency-Key": assetKey, "X-Test-Idempotency-Fail-Before-Complete": "1" },
+        body: JSON.stringify(assetPayload),
+      });
+      assert.equal(assetFailed.status, 500);
+      const assetSucceeded = await api(assetPath, {
+        method: "POST", headers: { ...commonHeaders, "Idempotency-Key": assetKey }, body: JSON.stringify(assetPayload),
+      });
+      assert.equal(assetSucceeded.status, 200);
+      const assetBody = await assetSucceeded.json();
+      const assetReplay = await api(assetPath, {
+        method: "POST", headers: { ...commonHeaders, "Idempotency-Key": assetKey }, body: JSON.stringify(assetPayload),
+      });
+      assert.equal(assetReplay.headers.get("x-idempotency-replayed"), "true");
+      assert.deepEqual(await assetReplay.json(), assetBody);
+
+      const dbCheck = new Client({ connectionString: testDbUrl });
+      await dbCheck.connect();
+      try {
+        const rcpsRows = await dbCheck.query("SELECT COUNT(*)::int AS count FROM vouchers WHERE data->>'description' LIKE 'RCPS 상각 (멱등성 RCPS%'");
+        const assetRows = await dbCheck.query("SELECT COUNT(*)::int AS count FROM vouchers WHERE data->>'description' = '감가상각비 (멱등성 자산 2026년)'");
+        assert.equal(rcpsRows.rows[0].count, 1, "RCPS 전표는 정확히 한 건이어야 함");
+        assert.equal(assetRows.rows[0].count, 1, "감가상각 전표는 정확히 한 건이어야 함");
+      } finally { await dbCheck.end(); }
+    });
+
     let companyBToken;
     await t.test("5) 두 번째 회사 가입 — 다른 companyCode 자동 배정", async () => {
       const res = await api("/api/companies/register", {
