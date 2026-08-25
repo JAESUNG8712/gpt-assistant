@@ -64,6 +64,23 @@ test("채용: candidates/export·dashboard 게이팅 + jobs/candidates/interview
   }))).json();
   assert.equal(cand.ok, true);
 
+  await t.test("지원자 상세 수정은 오래된 화면의 덮어쓰기를 409로 차단한다", async () => {
+    const original = cand.candidate;
+    const first = await api(`/api/recruit/candidates/${original.id}`, auth(admin2Token, "POST", {
+      memo: "최신 메모", expectedUpdatedAt: original.updatedAt,
+    }));
+    assert.equal(first.status, 200);
+    cand.candidate = (await first.json()).candidate;
+
+    const stale = await api(`/api/recruit/candidates/${original.id}`, auth(admin2Token, "POST", {
+      memo: "오래된 탭", expectedUpdatedAt: original.updatedAt,
+    }));
+    assert.equal(stale.status, 409);
+    const body = await stale.json();
+    assert.equal(body.conflict, true);
+    assert.equal(body.candidate.memo, "최신 메모");
+  });
+
   await t.test("GET .../recruit/candidates/export — recruit-candidates를 개인적으로 꺼둔 admin1은 403, 대조군 admin2는 200(CSV 반환)", async () => {
     const r1 = await api("/api/recruit/candidates/export", { headers: { Authorization: `Bearer ${restrictedToken}` } });
     assert.equal(r1.status, 403);
@@ -105,6 +122,17 @@ test("채용: candidates/export·dashboard 게이팅 + jobs/candidates/interview
     assert.equal(create.status, 200);
     const interview = (await create.json()).interview;
 
+    const edit = await api(`/api/recruit/interviews/${interview.id}`, auth(admin2Token, "POST", {
+      location: "회의실 A", expectedUpdatedAt: interview.updatedAt,
+    }));
+    assert.equal(edit.status, 200);
+    const editedInterview = (await edit.json()).interview;
+    const staleEdit = await api(`/api/recruit/interviews/${interview.id}`, auth(admin2Token, "POST", {
+      location: "오래된 회의실", expectedUpdatedAt: interview.updatedAt,
+    }));
+    assert.equal(staleEdit.status, 409);
+    assert.equal((await staleEdit.json()).conflict, true);
+
     const invalid = await api(`/api/recruit/interviews/${interview.id}/verdict`, auth(memberToken, "POST", { verdict: "approve" }));
     assert.equal(invalid.status, 400);
 
@@ -112,7 +140,7 @@ test("채용: candidates/export·dashboard 게이팅 + jobs/candidates/interview
     assert.equal(nonLead.status, 403);
 
     const lead = await api(`/api/recruit/interviews/${interview.id}/verdict`, auth(memberToken, "POST", {
-      verdict: "pass", comment: "최종 합격", expectedUpdatedAt: interview.updatedAt,
+      verdict: "pass", comment: "최종 합격", expectedUpdatedAt: editedInterview.updatedAt,
     }));
     assert.equal(lead.status, 200);
     const leadBody = await lead.json();
@@ -121,7 +149,7 @@ test("채용: candidates/export·dashboard 게이팅 + jobs/candidates/interview
     assert.equal(decided.decidedBy, "member1");
 
     const stale = await api(`/api/recruit/interviews/${interview.id}/verdict`, auth(memberToken, "POST", {
-      verdict: "fail", comment: "오래된 탭", expectedUpdatedAt: interview.updatedAt,
+      verdict: "fail", comment: "오래된 탭", expectedUpdatedAt: editedInterview.updatedAt,
     }));
     assert.equal(stale.status, 409);
     const staleBody = await stale.json();

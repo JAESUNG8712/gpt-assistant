@@ -8956,6 +8956,11 @@ app.post("/api/hr/draft-eval-comment", async (req, res) => {
 class _RecruitRouteError extends Error {
   constructor(status, message) { super(message); this.status = status; }
 }
+function _recruitAssertFresh(record, expectedUpdatedAt) {
+  if (expectedUpdatedAt !== undefined && (record?.updatedAt || null) !== (expectedUpdatedAt || null)) {
+    throw new _RecruitRouteError(409, "다른 사용자가 먼저 변경했습니다. 최신 내용을 불러온 뒤 다시 시도하세요.");
+  }
+}
 // companyId: recruit_candidates/recruit_interviews는 nullable 단순 company_id 컬럼이라
 // (레거시 NULL 데이터 포함) 다른 회사 소유 id로는 아예 잠글 수 없도록 필터한다 — 회사가
 // 다르면 부서 스코프 검사(mutate 콜백 안의 _recruitCanViewCandidate 등) 이전에 404.
@@ -9028,8 +9033,9 @@ app.post("/api/recruit/candidates/:id", async (req, res) => {
     const id = req.params.id;
     const { role, empId: userId } = req.auth;
     const companyId = req.auth.companyId || null;
-    const { name, email, phone, memo, resumeSummary, strengths, weaknesses, finalEducation, careerHistory, lastSalary, desiredSalary, activities, careerGaps, resume } = req.body || {};
+    const { name, email, phone, memo, resumeSummary, strengths, weaknesses, finalEducation, careerHistory, lastSalary, desiredSalary, activities, careerGaps, resume, expectedUpdatedAt } = req.body || {};
     const applyEdits = (candidate) => {
+      _recruitAssertFresh(candidate, expectedUpdatedAt);
       if (name != null) candidate.name = name;
       if (email != null) candidate.email = email;
       if (phone != null) candidate.phone = phone;
@@ -9051,7 +9057,8 @@ app.post("/api/recruit/candidates/:id", async (req, res) => {
       const candidate = _fileRecruit.candidates.find(c => c.id === id);
       if (!candidate) return res.status(404).json({ ok: false, message: "지원자를 찾을 수 없습니다." });
       if (!(await _recruitCanViewCandidate(candidate, userId, role, companyId))) return res.status(403).json({ ok: false, message: "수정 권한이 없습니다." });
-      applyEdits(candidate);
+      try { applyEdits(candidate); }
+      catch (e) { if (e instanceof _RecruitRouteError) return res.status(e.status).json({ ok: false, conflict: e.status === 409, candidate, message: _safeErrMsg(e) }); throw e; }
       _saveFileRecruit();
       return res.json({ ok: true, candidate: _recruitStripResume(candidate) });
     }
@@ -9064,7 +9071,7 @@ app.post("/api/recruit/candidates/:id", async (req, res) => {
         return applyEdits(c);
       }, companyId);
     } catch (e) {
-      if (e instanceof _RecruitRouteError) return res.status(e.status).json({ ok: false, message: _safeErrMsg(e) });
+      if (e instanceof _RecruitRouteError) return res.status(e.status).json({ ok: false, conflict: e.status === 409, message: _safeErrMsg(e) });
       throw e;
     }
     res.json({ ok: true, candidate: _recruitStripResume(candidate) });
@@ -9097,7 +9104,7 @@ app.post("/api/recruit/candidates/:id/status", async (req, res) => {
     const id = req.params.id;
     const { role, empId: userId } = req.auth;
     const companyId = req.auth.companyId || null;
-    const { status, reason } = req.body || {};
+    const { status, reason, expectedUpdatedAt } = req.body || {};
     if (!status) return res.status(400).json({ ok: false, message: "변경할 전형 단계는 필수입니다." });
     const RECRUIT_PASS_SCORE = 15;
     const checkReasonRequired = async (candidate, job, cache) => {
@@ -9115,6 +9122,8 @@ app.post("/api/recruit/candidates/:id/status", async (req, res) => {
       const candidate = _fileRecruit.candidates.find(c => c.id === id);
       if (!candidate) return res.status(404).json({ ok: false, message: "지원자를 찾을 수 없습니다." });
       if (!(await _recruitCanViewCandidate(candidate, userId, role, companyId))) return res.status(403).json({ ok: false, message: "수정 권한이 없습니다." });
+      try { _recruitAssertFresh(candidate, expectedUpdatedAt); }
+      catch (e) { return res.status(e.status).json({ ok: false, conflict: true, candidate, message: _safeErrMsg(e) }); }
       const job = await _recruitJobById(candidate.jobId, companyId);
       if (!job || !job.stages.includes(status)) return res.status(400).json({ ok: false, message: "해당 채용공고에 없는 전형 단계입니다." });
       if (await checkReasonRequired(candidate, job) && !String(reason || "").trim()) {
@@ -9130,6 +9139,7 @@ app.post("/api/recruit/candidates/:id/status", async (req, res) => {
     try {
       const rc = await _recruitBuildCache(companyId, { employees: true, jobs: true, interviews: true });
       candidate = await _pgLockedUpdate("recruit_candidates", id, async (c) => {
+        _recruitAssertFresh(c, expectedUpdatedAt);
         if (!(await _recruitCanViewCandidate(c, userId, role, companyId, rc))) throw new _RecruitRouteError(403, "수정 권한이 없습니다.");
         const job = await _recruitJobById(c.jobId, companyId, rc);
         if (!job || !job.stages.includes(status)) throw new _RecruitRouteError(400, "해당 채용공고에 없는 전형 단계입니다.");
@@ -9142,7 +9152,7 @@ app.post("/api/recruit/candidates/:id/status", async (req, res) => {
         return c;
       }, companyId);
     } catch (e) {
-      if (e instanceof _RecruitRouteError) return res.status(e.status).json({ ok: false, message: _safeErrMsg(e) });
+      if (e instanceof _RecruitRouteError) return res.status(e.status).json({ ok: false, conflict: e.status === 409, message: _safeErrMsg(e) });
       throw e;
     }
     res.json({ ok: true, candidate });
@@ -9247,8 +9257,9 @@ app.post("/api/recruit/interviews/:id", async (req, res) => {
     const id = req.params.id;
     const { role, empId: userId } = req.auth;
     const companyId = req.auth.companyId || null;
-    const { round, schedule, interviewerIds, location, leadInterviewerId } = req.body || {};
+    const { round, schedule, interviewerIds, location, leadInterviewerId, expectedUpdatedAt } = req.body || {};
     const applyEdits = (interview) => {
+      _recruitAssertFresh(interview, expectedUpdatedAt);
       if (round != null) interview.round = Number(round);
       if (schedule != null) interview.schedule = schedule;
       if (location != null) interview.location = location;
@@ -9265,7 +9276,8 @@ app.post("/api/recruit/interviews/:id", async (req, res) => {
       const interview = _fileRecruit.interviews.find(i => i.id === id);
       if (!interview) return res.status(404).json({ ok: false, message: "면접 일정을 찾을 수 없습니다." });
       if (!(await _recruitIsInterviewPrivileged(interview, userId, role, companyId))) return res.status(403).json({ ok: false, message: "수정 권한이 없습니다." });
-      applyEdits(interview);
+      try { applyEdits(interview); }
+      catch (e) { if (e instanceof _RecruitRouteError) return res.status(e.status).json({ ok: false, conflict: true, interview, message: _safeErrMsg(e) }); throw e; }
       _saveFileRecruit();
       return res.json({ ok: true, interview });
     }
@@ -9277,7 +9289,7 @@ app.post("/api/recruit/interviews/:id", async (req, res) => {
         return applyEdits(iv);
       }, companyId);
     } catch (e) {
-      if (e instanceof _RecruitRouteError) return res.status(e.status).json({ ok: false, message: _safeErrMsg(e) });
+      if (e instanceof _RecruitRouteError) return res.status(e.status).json({ ok: false, conflict: e.status === 409, message: _safeErrMsg(e) });
       throw e;
     }
     res.json({ ok: true, interview });
@@ -9291,8 +9303,9 @@ app.post("/api/recruit/interviews/:id/cancel", async (req, res) => {
     const id = req.params.id;
     const { role, empId: userId } = req.auth;
     const companyId = req.auth.companyId || null;
-    const { reason } = req.body || {};
+    const { reason, expectedUpdatedAt } = req.body || {};
     const applyCancel = (interview) => {
+      _recruitAssertFresh(interview, expectedUpdatedAt);
       interview.status = "canceled";
       interview.cancelReason = reason || "";
       interview.canceledAt = new Date().toISOString();
@@ -9303,7 +9316,8 @@ app.post("/api/recruit/interviews/:id/cancel", async (req, res) => {
       const interview = _fileRecruit.interviews.find(i => i.id === id);
       if (!interview) return res.status(404).json({ ok: false, message: "면접 일정을 찾을 수 없습니다." });
       if (!(await _recruitIsInterviewPrivileged(interview, userId, role, companyId))) return res.status(403).json({ ok: false, message: "취소 권한이 없습니다." });
-      applyCancel(interview);
+      try { applyCancel(interview); }
+      catch (e) { if (e instanceof _RecruitRouteError) return res.status(e.status).json({ ok: false, conflict: true, interview, message: _safeErrMsg(e) }); throw e; }
       _saveFileRecruit();
       return res.json({ ok: true, interview });
     }
@@ -9315,7 +9329,7 @@ app.post("/api/recruit/interviews/:id/cancel", async (req, res) => {
         return applyCancel(iv);
       }, companyId);
     } catch (e) {
-      if (e instanceof _RecruitRouteError) return res.status(e.status).json({ ok: false, message: _safeErrMsg(e) });
+      if (e instanceof _RecruitRouteError) return res.status(e.status).json({ ok: false, conflict: e.status === 409, message: _safeErrMsg(e) });
       throw e;
     }
     res.json({ ok: true, interview });
