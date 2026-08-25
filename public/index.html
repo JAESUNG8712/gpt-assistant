@@ -11051,20 +11051,27 @@ function saveTdDraft(empId, yr, type, planId, closeAfter=false){
   if(closeAfter){ closeModal(); renderTalentDevPage(); }
 }
 
-function submitTdPlan(planId){
+async function _transitionTdPlan(plan,action,comment=""){
+  const r=await serverRequest("POST",`/api/talent-dev/plans/${encodeURIComponent(plan.id)}/transition`,{
+    action,comment,expectedUpdatedAt:plan.updatedAt
+  });
+  if(!r?.ok){
+    if(r?.code==="TD_PLAN_CONFLICT"||r?.code==="TD_INVALID_TRANSITION"){
+      showToast("다른 사용자가 먼저 처리했습니다. 최신 데이터를 다시 불러옵니다.","error");
+      await loadFromServer();renderTalentDevPage();return null;
+    }
+    showToast(r?.message||"처리하지 못했습니다.","error");return null;
+  }
+  const idx=talentDevPlans.findIndex(p=>String(p.id)===String(r.plan.id));
+  if(idx>=0)talentDevPlans[idx]=r.plan;
+  return r.plan;
+}
+
+async function submitTdPlan(planId){
   const plan=talentDevPlans.find(p=>p.id===planId);
   if(!plan){showToast("계획서를 먼저 저장하세요.","error");return;}
-  plan.status="submitted";
-  plan.submittedAt=ts();
-  // updatedAt을 반드시 갱신해야 한다 — talentDevPlans는 KPI와 동일하게 서버의
-  // mergeArrayById()가 updatedAt(없으면 createdAt) 기준 "동률이면 들어오는 쪽 승리"로
-  // 병합한다. 이걸 빠뜨리면, 이 제출 이후 팀장이 승인해도(마찬가지로 updatedAt을
-  // 갱신하지 않으면) 두 시점의 값이 같아져, 이 화면을 열어둔 채 있던 다른 클라이언트의
-  // 뒤늦은 자동저장(스테일 스냅샷)이 승인을 조용히 되돌릴 수 있다(KPI에서 실제로 겪었던
-  // 것과 동일한 클래스의 lost-update, 재현 확인 후 4개 지점 모두 수정).
-  plan.updatedAt=ts();
+  if(!await _transitionTdPlan(plan,"submit"))return;
   showToast("제출되었습니다. 팀장 승인 대기 중입니다.","success");
-  autoSaveToServerIfEnabled();
   renderTalentDevPage();
 }
 
@@ -11107,7 +11114,7 @@ function renderTdApproveList(el, u, yr){
 function approveTdPlan(planId){
   const plan=talentDevPlans.find(p=>p.id===planId);if(!plan)return;
   const u=currentUser;
-  if(u.role==="leader"||u.role==="admin"&&plan.status==="submitted"){
+  if((u.role==="leader"||u.role==="admin")&&plan.status==="submitted"){
     showModal(`<div class="modal modal-sm"><div class="modal-head"><h2>1차 승인</h2><button class="modal-close" onclick="closeModal()">×</button></div>
     <div class="modal-body">
       <div class="fg"><label class="fl">승인 의견 (선택)</label><textarea class="fc" id="approve-comment" rows="2" placeholder="의견을 입력하세요"></textarea></div>
@@ -11115,7 +11122,7 @@ function approveTdPlan(planId){
     <div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal()">취소</button>
       <button class="btn btn-success" onclick="doApproveTd(${planId},'leader')">1차 승인</button>
     </div></div>`);
-  } else if(u.role==="director"||u.role==="admin"&&plan.status==="leader_approved"){
+  } else if((u.role==="director"||u.role==="admin")&&plan.status==="leader_approved"){
     showModal(`<div class="modal modal-sm"><div class="modal-head"><h2>2차 승인 (사업부장)</h2><button class="modal-close" onclick="closeModal()">×</button></div>
     <div class="modal-body">
       <div class="fg"><label class="fl">사업부장 Comment <span class="req">*</span></label>
@@ -11127,28 +11134,13 @@ function approveTdPlan(planId){
   }
 }
 
-function doApproveTd(planId, level){
+async function doApproveTd(planId, level){
   const comment=document.getElementById("approve-comment")?.value.trim()||"";
   if(level==="director"&&!comment){showToast("사업부장 Comment를 입력하세요.","error");return;}
   const plan=talentDevPlans.find(p=>p.id===planId);if(!plan)return;
-  if(level==="leader"){
-    plan.status="leader_approved";
-    plan.leaderComment=comment;
-    plan.leaderApprovedAt=ts();
-    plan.leaderApprovedBy=currentUser.name;
-  } else {
-    plan.status="director_approved";
-    plan.directorComment=comment;
-    plan.directorApprovedAt=ts();
-    plan.directorApprovedBy=currentUser.name;
-  }
-  // KPI와 동일한 클래스의 lost-update 방지(submitTdPlan 주석 참고) — 승인이 updatedAt을
-  // 갱신하지 않으면, 이 화면을 열어둔 채 있던 다른 클라이언트의 뒤늦은 자동저장이 이
-  // 승인을 조용히 되돌릴 수 있다(재현 확인).
-  plan.updatedAt=ts();
+  if(!await _transitionTdPlan(plan,"approve",comment))return;
   closeModal();
   showToast(`${level==="leader"?"1차":"최종"} 승인이 완료되었습니다.`,"success");
-  autoSaveToServerIfEnabled();
   renderTalentDevPage();
 }
 
@@ -11164,19 +11156,13 @@ function rejectTdPlan(planId){
   </div></div>`);
 }
 
-function doRejectTd(planId){
+async function doRejectTd(planId){
   const reason=document.getElementById("reject-reason")?.value.trim();
   if(!reason){showToast("반려 사유를 입력하세요.","error");return;}
   const plan=talentDevPlans.find(p=>p.id===planId);if(!plan)return;
-  plan.status="draft";
-  plan.rejectedReason=reason;
-  plan.rejectedAt=ts();
-  plan.rejectedBy=currentUser.name;
-  // KPI와 동일한 클래스의 lost-update 방지(submitTdPlan 주석 참고).
-  plan.updatedAt=ts();
+  if(!await _transitionTdPlan(plan,"reject",reason))return;
   closeModal();
   showToast("반려 처리되었습니다.","info");
-  autoSaveToServerIfEnabled();
   renderTalentDevPage();
 }
 

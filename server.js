@@ -1315,6 +1315,13 @@ const _APPROVAL_GATED_FIELDS = {
 function _sanitizeGatedRecord(field, incoming, stored, actor, actorEmp, settings) {
   const rule = _APPROVAL_GATED_FIELDS[field];
   if (!rule || !incoming) return incoming;
+  // talentDevPlans의 status는 전용 transition API만 바꿀 수 있다. 일반 /save는 전체
+  // 배열을 싣기 때문에 여기서 상태 변경을 허용하면 전용 API의 상태/조직/CAS 검사를
+  // 우회할 수 있다. 초회 생성 역시 반드시 draft로 시작한다.
+  if (field === "talentDevPlans" && !actor?._talentTransition) {
+    if (!stored && incoming.status !== "draft") return { ...incoming, status: "draft" };
+    if (stored && incoming.status !== stored.status) return { ...stored };
+  }
   if (rule.record) {
     // 바뀌지 않은 레코드는 그대로 통과(매 저장마다 전체 배열이 재전송되므로 대부분이 여기).
     if (stored && JSON.stringify(stored) === JSON.stringify(incoming)) return incoming;
@@ -3611,6 +3618,94 @@ app.post("/save", async (req, res) => {
     // 조용히 생략하므로 기존 호출부의 응답 형태에 영향 없음).
     const status = Number.isInteger(e.status) ? e.status : 500;
     res.status(status).json({ ok: false, code: e.code, message: _safeErrMsg(e), details: e.details });
+  }
+});
+
+// 인재육성 계획의 제출/승인/반려는 전체 상태 저장(/save)에 맡기지 않는다. 전체 상태
+// 저장만 쓰면 오래된 탭이 현재 status를 모른 채 덮어쓸 수 있고, 클라이언트의 역할 분기
+// 또한 우회 가능하다. 이 전용 경로가 잠금 안에서 최신 레코드·조직 범위·허용 상태전이를
+// 다시 검사하고 한 번에 저장한다.
+app.post("/api/talent-dev/plans/:id/transition", async (req, res) => {
+  if (!requireAuth(req, res)) return;
+  if (!requirePage(req, res, "talent-dev")) return;
+  const companyId = req.auth?.companyId || null;
+  const planId = String(req.params.id);
+  const action = String(req.body?.action || "");
+  const expectedUpdatedAt = req.body?.expectedUpdatedAt;
+  const comment = String(req.body?.comment || "").trim().slice(0, 2000);
+  if (!expectedUpdatedAt) {
+    return res.status(428).json({ ok: false, code: "TD_REVISION_REQUIRED", message: "최신 계획서 정보가 필요합니다." });
+  }
+  if (!new Set(["submit", "approve", "reject"]).has(action)) {
+    return res.status(400).json({ ok: false, code: "TD_INVALID_ACTION", message: "지원하지 않는 상태 변경입니다." });
+  }
+  try {
+    const plan = await _withSaveLock(() => _withDistributedSaveLock(companyId, async () => {
+      const state = await loadData(companyId);
+      const plans = Array.isArray(state.talentDevPlans) ? state.talentDevPlans : [];
+      const index = plans.findIndex(p => String(p?.id) === planId);
+      if (index < 0) throw httpError(404, "TD_PLAN_NOT_FOUND", "계획서를 찾을 수 없습니다.");
+      const current = plans[index];
+      if (String(current.updatedAt || "") !== String(expectedUpdatedAt)) {
+        throw httpError(409, "TD_PLAN_CONFLICT", "다른 사용자가 먼저 처리했습니다.", { plan: current });
+      }
+      const actorEmp = (state.employees || []).find(e => String(e?.id) === String(req.auth.empId));
+      const targetEmp = (state.employees || []).find(e => String(e?.id) === String(current.empId));
+      if (!actorEmp || !targetEmp) throw httpError(403, "TD_SCOPE_FORBIDDEN", "처리할 수 없는 대상입니다.");
+      const isAdmin = req.auth.role === "admin";
+      const sameTeam = actorEmp.dept === targetEmp.dept && actorEmp.team === targetEmp.team;
+      const sameDept = actorEmp.dept === targetEmp.dept;
+      // 같은 밀리초 안에 연속 처리돼도 revision이 반드시 전진하도록 보장한다.
+      const now = new Date(Math.max(Date.now(), (Date.parse(current.updatedAt || "") || 0) + 1)).toISOString();
+      const next = { ...current, updatedAt: now };
+
+      if (action === "submit") {
+        if (current.status !== "draft") throw httpError(409, "TD_INVALID_TRANSITION", "초안 상태에서만 제출할 수 있습니다.", { plan: current });
+        if (!isAdmin && String(req.auth.empId) !== String(current.empId)) throw httpError(403, "TD_SCOPE_FORBIDDEN", "본인의 계획서만 제출할 수 있습니다.");
+        next.status = "submitted";
+        next.submittedAt = now;
+      } else if (action === "approve") {
+        if (current.status === "submitted") {
+          if (!isAdmin && !(req.auth.role === "leader" && sameTeam)) throw httpError(403, "TD_SCOPE_FORBIDDEN", "같은 팀의 팀장만 1차 승인할 수 있습니다.");
+          next.status = "leader_approved";
+          next.leaderComment = comment;
+          next.leaderApprovedAt = now;
+          next.leaderApprovedBy = actorEmp.name;
+        } else if (current.status === "leader_approved") {
+          if (!isAdmin && !(req.auth.role === "director" && sameDept)) throw httpError(403, "TD_SCOPE_FORBIDDEN", "같은 사업부의 사업부장만 최종 승인할 수 있습니다.");
+          if (!comment) throw httpError(400, "TD_COMMENT_REQUIRED", "사업부장 Comment를 입력하세요.");
+          next.status = "director_approved";
+          next.directorComment = comment;
+          next.directorApprovedAt = now;
+          next.directorApprovedBy = actorEmp.name;
+        } else {
+          throw httpError(409, "TD_INVALID_TRANSITION", "현재 상태에서는 승인할 수 없습니다.", { plan: current });
+        }
+      } else {
+        const canRejectSubmitted = current.status === "submitted" && (isAdmin || (req.auth.role === "leader" && sameTeam));
+        const canRejectLeader = current.status === "leader_approved" && (isAdmin || (req.auth.role === "director" && sameDept));
+        if (!canRejectSubmitted && !canRejectLeader) {
+          if (!["submitted", "leader_approved"].includes(current.status)) throw httpError(409, "TD_INVALID_TRANSITION", "현재 상태에서는 반려할 수 없습니다.", { plan: current });
+          throw httpError(403, "TD_SCOPE_FORBIDDEN", "이 계획서를 반려할 권한이 없습니다.");
+        }
+        if (!comment) throw httpError(400, "TD_COMMENT_REQUIRED", "반려 사유를 입력하세요.");
+        next.status = "draft";
+        next.rejectedReason = comment;
+        next.rejectedAt = now;
+        next.rejectedBy = actorEmp.name;
+      }
+
+      plans[index] = next;
+      state.talentDevPlans = plans;
+      const changedBy = `auth:${req.auth.loginId || req.auth.empId}`;
+      await _persistDataLocked(state, changedBy, companyId, { ...req.auth, _talentTransition: true });
+      return next;
+    }));
+    broadcastSSE("data_updated", { version: _getVersion(companyId) }, req.query.clientId, companyId);
+    res.json({ ok: true, plan, version: _getVersion(companyId) });
+  } catch (e) {
+    const status = Number.isInteger(e.status) ? e.status : 500;
+    res.status(status).json({ ok: false, code: e.code, message: _safeErrMsg(e), ...(e.details || {}) });
   }
 });
 
