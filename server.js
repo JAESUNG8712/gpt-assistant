@@ -3005,111 +3005,16 @@ function requireMaster(req, res) {
   return true;
 }
 
-// 임시 마이그레이션 진단·삭제 API는 company_id 백필 완료 후 제거했다. 운영 진단은
-// 읽기 전용 CLI(scripts/migrate-add-company-id.js --dry-run)와 DB 감사 절차를 사용한다.
-// 기준 브랜치에 남아 있던 임시 라우트 구현은 병합 이력 보존을 위해 비활성 블록에만
-// 남긴다. 런타임에는 등록되지 않으며 후속 정리 커밋에서 완전히 삭제할 수 있다.
-if (false) {
-// /login과 동일한 이유로 전용 rate limiter가 필요하다(이 라우트도 항상 HTTP 200으로
-// 응답하고 성공/실패는 JSON body의 `ok`로만 구분하므로, express-rate-limit의 기본
-// 성공 판정(statusCode<400)을 그대로 쓰면 브루트포스 방어가 무력화된다 — /login에 있는
-// 것과 동일한 문제, res.locals.masterLoginOk로 실제 결과를 판정 기준에 연결한다).
-// /login과는 별도의 카운터를 쓴다(loginLimiter를 공유하면 같은 IP에서 회사 로그인
-// 실패를 반복한 사용자가 마스터 로그인 시도 자체를 못 하게 되는 등 서로 다른 두
-// 자격증명 체계의 실패가 하나의 카운터에 섞이는 게 부적절하다고 판단).
-// 보안 검토(2026-08-24) 중 발견 — 이 세 라우트가 지금까지 `!==` 평문 문자열 비교로
-// x-migration-secret을 검증하고 있었음(타이밍 공격에 취약: 첫 불일치 문자에서 즉시
-// 반환되는 `!==`의 실행시간 차이로 응답시간을 재보며 비밀값을 한 글자씩 추정할 수 있음).
-// 이 파일의 다른 비밀값 비교 3곳(토큰 서명·BOOTSTRAP_SECRET·2FA)은 전부
-// crypto.timingSafeEqual을 쓰는데 이 세 라우트만 예외였다 — _bootstrapSecretMatches()와
-// 동일한 패턴으로 통일. 또한 시도 횟수 제한이 전혀 없어(비밀값이 설정된 상태라면) 무제한
-// 추측이 가능했던 것도 함께 막는다(로그인류 라우트들과 동일하게 IP당 15분/20회).
-function _migrationSecretMatches(req) {
-  const secret = process.env.MIGRATION_ADMIN_SECRET;
-  const provided = req.headers["x-migration-secret"];
-  if (!secret || typeof provided !== "string") return false;
-  const a = Buffer.from(secret), b = Buffer.from(provided);
-  if (a.length !== b.length) return false;
-  try { return crypto.timingSafeEqual(a, b); } catch { return false; }
-}
-const migrationAdminLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 20,
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: { ok: false, message: "요청이 너무 많습니다. 잠시 후 다시 시도하세요." },
-});
-
-// ── TEMPORARY — 오늘 잦은 회사코드 오타(printrobo 사고 등과 무관, 이번엔 "tirautech"를
-// "thirautech"로 바로잡는 요청)에 대응하기 위한 1회성 유틸리티. 이전 fix-company-name과
-// 동일한 보안 패턴(x-migration-secret 404 게이트). 완료 확인 즉시 제거할 것.
-app.post("/admin/fix-company-slug", migrationAdminLimiter, async (req, res) => {
-  if (!_migrationSecretMatches(req)) return res.status(404).end();
-  const oldSlug = (req.body && req.body.oldSlug || "").trim();
-  const newSlug = (req.body && req.body.newSlug || "").trim();
-  if (!oldSlug || !newSlug) return res.status(400).json({ ok: false, message: "oldSlug, newSlug required" });
-  if (req.body.confirm !== true) return res.status(400).json({ ok: false, message: "confirm:true 가 명시적으로 필요합니다." });
-  try {
-    const dup = await pool.query(`SELECT 1 FROM companies WHERE slug = $1`, [newSlug]);
-    if (dup.rows.length) return res.status(409).json({ ok: false, message: `slug "${newSlug}" 는 이미 사용 중입니다.` });
-    const result = await pool.query(
-      `UPDATE companies SET slug = $1 WHERE slug = $2 RETURNING id, slug, name`,
-      [newSlug, oldSlug]
-    );
-    if (!result.rows.length) return res.status(404).json({ ok: false, message: "해당 slug의 회사를 찾을 수 없습니다." });
-    res.json({ ok: true, company: result.rows[0] });
-  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
-});
-
-// ── TEMPORARY — 테넌트 격리 의심 사례(다른 회사 토큰으로 GET /data 호출 시
-// payrollAdjustments/boardPosts/roomReservations 등에 다른 회사 실데이터로 보이는 값이
-// 섞여 나온다는 사용자 제보) 진단용 읽기 전용 엔드포인트. app_collections는 오늘 복합 PK
-// (company_id, collection, id)로 전환 완료돼 company_id가 구조적으로 NULL일 수 없으므로,
-// 서버 조회 로직(엄격한 WHERE company_id=$1)이 실제로 다른 회사 행을 잘못 반환하는 건지,
-// 아니면 그 행 자체가 이미 (쓰기 시점에) 특정 회사 소유로 잘못 기록된 것인지(클라이언트가
-// 회사 전환 시 이전 회사의 로컬 캐시를 지우지 않고 재전송했을 가능성)를 실제 데이터로
-// 구분하기 위해 추가. 완료 확인 즉시 제거할 것.
-app.get("/admin/inspect-collection", migrationAdminLimiter, async (req, res) => {
-  if (!_migrationSecretMatches(req)) return res.status(404).end();
-  const collection = req.query.collection;
-  if (!collection) return res.status(400).json({ ok: false, message: "collection required" });
-  try {
-    const { rows } = await pool.query(
-      `SELECT ac.id, ac.company_id, c.slug AS company_slug, c.name AS company_name,
-              ac.created_at, ac.updated_at, ac.data
-       FROM app_collections ac
-       LEFT JOIN companies c ON c.id = ac.company_id
-       WHERE ac.collection = $1
-       ORDER BY ac.updated_at DESC
-       LIMIT 200`,
-      [collection]
-    );
-    const nullCompanyCount = await pool.query(
-      `SELECT COUNT(*)::bigint AS c FROM app_collections WHERE collection = $1 AND company_id IS NULL`,
-      [collection]
-    );
-    res.json({ ok: true, collection, totalReturned: rows.length, nullCompanyIdCount: Number(nullCompanyCount.rows[0].c) || 0, rows });
-  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
-});
-
-// ── TEMPORARY — 위 inspect-collection으로 확인된 test 회사의 오염 데이터(티라유텍
-// app_collections 전체 21건이 test 가입 순간 클라이언트 로컬캐시 재전송으로 그대로
-// 복제됨) 정리용. company_id 하나로 지정한 회사의 app_collections 행 전체를 지운다
-// (그 회사가 아직 자체 데이터가 없는 순수 테스트/오염 상태일 때만 안전 — 사용 전 반드시
-// inspect-collection으로 내용 확인 후 진행). 완료 확인 즉시 제거할 것.
-app.post("/admin/purge-company-collections", migrationAdminLimiter, async (req, res) => {
-  if (!_migrationSecretMatches(req)) return res.status(404).end();
-  const companySlug = (req.body && req.body.companySlug || "").trim();
-  if (!companySlug) return res.status(400).json({ ok: false, message: "companySlug required" });
-  if (req.body.confirm !== true) return res.status(400).json({ ok: false, message: "confirm:true 가 명시적으로 필요합니다." });
-  try {
-    const companyRes = await pool.query(`SELECT id, name FROM companies WHERE slug = $1`, [companySlug]);
-    if (!companyRes.rows.length) return res.status(404).json({ ok: false, message: "해당 slug의 회사를 찾을 수 없습니다." });
-    const companyId = companyRes.rows[0].id;
-    const del = await pool.query(`DELETE FROM app_collections WHERE company_id = $1`, [companyId]);
-    res.json({ ok: true, companySlug, companyId, deletedRows: del.rowCount });
-  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
-});
+// company_id 백필 때만 사용했던 임시 관리자 API는 작업 완료 후 제거했다. Express의
+// SPA fallback이 존재하지 않는 URL에도 index.html과 HTTP 200을 돌려주지 않도록, 과거
+// URL은 메서드·헤더와 무관하게 명시적으로 404 처리한다. 운영 진단은 읽기 전용 CLI
+// (scripts/migrate-add-company-id.js --dry-run)와 DB 감사 절차를 사용한다.
+for (const retiredAdminPath of [
+  "/admin/fix-company-slug",
+  "/admin/inspect-collection",
+  "/admin/purge-company-collections",
+]) {
+  app.all(retiredAdminPath, (req, res) => res.status(404).end());
 }
 
 const masterLoginLimiter = rateLimit({
