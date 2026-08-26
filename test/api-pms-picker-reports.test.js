@@ -46,6 +46,12 @@ test("PMS: GET .../pms/allocations 게이팅 + projects/worklogs는 이미 안�
       : e),
     { id: "admin2", loginId: "admin2", pw: "admin2-test-pw", name: "관리자2", role: "admin", active: true, menuPerms: {} },
     { id: "member1", loginId: "member1", pw: "member1-test-pw", name: "일반직원", role: "member", active: true, dept: "영업본부", team: "영업1팀", menuPerms: {} },
+    // pms-utilization은 허용, pms-allocation(내 투입률 입력)만 개인적으로 꺼둔 admin —
+    // GET .../allocations의 유일한 실제 소비처는 "가동률 현황"(pms-utilization)인데,
+    // MODULE_MENU_BY_PATH의 블랭킷 미들웨어가 메서드 구분 없이 pms-allocation까지 함께
+    // 요구하면 이 사용자가 GET에서 잘못된 403을 받는다(병행 세션이 각자 추가한 두
+    // 게이팅이 서로 몰랐던 충돌, 실측 확인·수정).
+    { id: "admin3", loginId: "admin3", pw: "admin3-test-pw", name: "관리자3", role: "admin", active: true, menuPerms: { "pms-allocation": false } },
   ];
   const seed = await api("/save", auth(adminToken, "POST", { _version: initial.version, data: { ...initial.data, employees } }));
   assert.equal(seed.status, 200);
@@ -53,6 +59,7 @@ test("PMS: GET .../pms/allocations 게이팅 + projects/worklogs는 이미 안�
   const restrictedToken = adminToken; // admin1 — pms-utilization 개인적으로 꺼짐
   const admin2Token = await login(api, "admin2", "admin2-test-pw");
   const memberToken = await login(api, "member1", "member1-test-pw");
+  const admin3Token = await login(api, "admin3", "admin3-test-pw"); // pms-allocation만 꺼짐
 
   const proj = await (await api("/api/pms/projects", auth(admin2Token, "POST", {
     name: "테스트프로젝트", members: [1],
@@ -72,6 +79,15 @@ test("PMS: GET .../pms/allocations 게이팅 + projects/worklogs는 이미 안�
     const body = await r2.json();
     assert.equal(body.ok, true);
     assert.ok(body.allocations.some(a => a.projectId === proj.project.id));
+  });
+
+  await t.test("GET .../pms/allocations — pms-allocation만 꺼둔 admin3은 여전히 200(pms-utilization 기준), POST는 403(pms-allocation 기준)", async () => {
+    const getR = await api("/api/pms/allocations", { headers: { Authorization: `Bearer ${admin3Token}` } });
+    assert.equal(getR.status, 200, "블랭킷 미들웨어가 GET에도 pms-allocation을 요구하면 여기서 잘못 403이 난다");
+    const postR = await api("/api/pms/allocations", auth(admin3Token, "POST", {
+      employeeId: 1, year: 2031, month: 7, projectId: proj.project.id, percent: 10, memo: "차단되어야 함",
+    }));
+    assert.equal(postR.status, 403, "실제 쓰기(내 투입률 등록)는 여전히 pms-allocation으로 막혀야 함");
   });
 
   await t.test("GET .../pms/projects — 이번 증분에서 게이팅하지 않음(전 역할 공개+row 스코핑), member도 조회 가능", async () => {
