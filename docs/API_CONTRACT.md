@@ -11,7 +11,7 @@
 
 ## 1. HR/ERP 시스템 (`server.js`)
 
-- **운영 URL**: `https://hrsystem-uweb.onrender.com`
+- **운영 URL**: `https://hr-system-docker.onrender.com`
 - **저장소 경로**: 루트 (`server.js`, `public/index.html`)
 - **배포 브랜치**: `hr-production`
 
