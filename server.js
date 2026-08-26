@@ -1,7 +1,7 @@
 const express = require("express");
 const cors    = require("cors");
 const helmet  = require("helmet");
-const rateLimit = require("express-rate-limit");
+const { rateLimit } = require("express-rate-limit");
 const fs      = require("fs");
 const path    = require("path");
 const os      = require("os");
@@ -2659,7 +2659,69 @@ app.use(cors());
 // 전면적으로 사용하는 구조라 기본 CSP를 켜면 앱 전체가 깨진다. 나머지 기본 보안 헤더
 // (X-Content-Type-Options, X-Frame-Options, HSTS 등)만 적용한다.
 app.use(helmet({ contentSecurityPolicy: false }));
-app.use(express.json({ limit: "50mb" }));
+
+// 모든 JSON 요청을 무조건 50MB까지 파싱하면, 인증되지 않은 공격자도 작은 수의 동시
+// 요청만으로 V8 heap과 event loop를 오래 점유할 수 있다. 일반 API는 2MB로 낮추고 실제로
+// 전체 상태를 전달하는 /save와 /restore만 별도 상한을 둔다. 환경변수는 바이트 단위이며,
+// 양의 안전한 정수가 아니면 보수적인 기본값으로 돌아간다.
+function _positiveEnvBytes(name, fallback) {
+  const value = Number(process.env[name]);
+  return Number.isSafeInteger(value) && value > 0 ? value : fallback;
+}
+const JSON_BODY_LIMIT_DEFAULT = _positiveEnvBytes("JSON_BODY_LIMIT_DEFAULT_BYTES", 2 * 1024 * 1024);
+const JSON_BODY_LIMIT_SAVE = _positiveEnvBytes("JSON_BODY_LIMIT_SAVE_BYTES", 32 * 1024 * 1024);
+const JSON_BODY_LIMIT_RESTORE = _positiveEnvBytes("JSON_BODY_LIMIT_RESTORE_BYTES", 50 * 1024 * 1024);
+// 구버전 채용 이력서 API는 15MB 바이너리를 data URL(Base64 약 4/3배)로 감싸 JSON으로
+// 전송한다. 일반 2MB 제한을 그대로 적용하면 정상 파일도 파서에 도달하지 못하므로, 해당
+// 네 경로에만 실제 이력서 상한의 Base64 크기 + JSON 여유분을 허용한다.
+const _resumeBinaryLimitForJson = _positiveEnvBytes("RESUME_MAX_BYTES", 15 * 1024 * 1024);
+const JSON_BODY_LIMIT_LEGACY_RESUME = _positiveEnvBytes(
+  "JSON_BODY_LIMIT_LEGACY_RESUME_BYTES",
+  Math.ceil(_resumeBinaryLimitForJson / 3) * 4 + 64 * 1024
+);
+
+function _isLegacyResumeJsonPath(pathname) {
+  return pathname === "/api/recruit/extract-pdf-text"
+    || pathname === "/api/recruit/extract-docx-text"
+    || pathname === "/api/recruit/extract-hwp-text"
+    || pathname === "/api/recruit/extract-image-text";
+}
+
+function _jsonBodyLimitFor(req) {
+  if (req.path === "/restore") return JSON_BODY_LIMIT_RESTORE;
+  if (req.path === "/save") return JSON_BODY_LIMIT_SAVE;
+  if (_isLegacyResumeJsonPath(req.path)) return JSON_BODY_LIMIT_LEGACY_RESUME;
+  return JSON_BODY_LIMIT_DEFAULT;
+}
+function _isJsonContentType(req) {
+  const contentType = String(req.get("content-type") || "").toLowerCase();
+  return contentType.includes("application/json") || /\+json(?:\s*;|\s*$)/.test(contentType);
+}
+function _payloadTooLarge(res, maxBytes) {
+  return res.status(413).json({
+    ok: false,
+    code: "PAYLOAD_TOO_LARGE",
+    message: "요청 데이터가 허용 크기를 초과했습니다.",
+    maxBytes,
+  });
+}
+
+// Content-Length가 명시된 초과 요청은 body를 한 바이트도 읽거나 인증 DB를 조회하기 전에
+// 즉시 거절한다. Content-Length가 없거나 조작된 chunked 요청은 아래 express.json의 실제
+// 누적 바이트 제한이 다시 차단하므로 이 검사는 최적화일 뿐 유일한 방어선이 아니다.
+app.use((req, res, next) => {
+  if (!_isJsonContentType(req)) return next();
+  const declaredLength = Number(req.get("content-length"));
+  const maxBytes = _jsonBodyLimitFor(req);
+  if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
+    return _payloadTooLarge(res, maxBytes);
+  }
+  next();
+});
+
+// 토큰 검증은 헤더만 사용하므로 JSON 파싱보다 먼저 수행할 수 있다. 이후의 쓰기 제한은
+// 익명 요청은 IP, 로그인 요청은 회사+사용자 단위로 계산해 같은 사무실 NAT 뒤의 정상
+// 사용자들이 서로의 한도를 소진하지 않게 한다.
 app.use(authenticate);
 // 작성자·확정자 이름을 body.user에서 받으면 유효한 관리자 토큰만으로도 "CEO" 등
 // 다른 사람 명의의 감사 이력을 만들 수 있다. 인증된 요청은 모든 기존 라우트가 쓰는
@@ -2667,6 +2729,58 @@ app.use(authenticate);
 function _actorLabel(req) {
   return req?.auth?.loginId || (req?.auth?.empId != null ? `emp:${req.auth.empId}` : "system");
 }
+function _positiveEnvCount(name, fallback) {
+  const value = Number(process.env[name]);
+  return Number.isSafeInteger(value) && value > 0 ? value : fallback;
+}
+function _isReadOnlyRequest(req) {
+  return req.method === "GET" || req.method === "HEAD" || req.method === "OPTIONS";
+}
+const anonymousWriteLimiter = rateLimit({
+  windowMs: 5 * 60 * 1000,
+  max: _positiveEnvCount("INGRESS_RATE_LIMIT_ANON_MAX", 120),
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: req => _isReadOnlyRequest(req) || Boolean(req.auth),
+  message: { ok: false, code: "REQUEST_RATE_LIMITED", message: "요청이 너무 많습니다. 잠시 후 다시 시도하세요." },
+});
+const authenticatedWriteLimiter = rateLimit({
+  windowMs: 5 * 60 * 1000,
+  max: _positiveEnvCount("INGRESS_RATE_LIMIT_AUTH_MAX", 600),
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: req => _isReadOnlyRequest(req) || !req.auth,
+  keyGenerator: req => `actor:${req.auth.companyId || "single"}:${req.auth.empId ?? req.auth.masterId ?? req.auth.loginId ?? "unknown"}`,
+  message: { ok: false, code: "REQUEST_RATE_LIMITED", message: "요청이 너무 많습니다. 잠시 후 다시 시도하세요." },
+});
+app.use(anonymousWriteLimiter);
+app.use(authenticatedWriteLimiter);
+
+const parseDefaultJson = express.json({ limit: JSON_BODY_LIMIT_DEFAULT });
+const parseSaveJson = express.json({ limit: JSON_BODY_LIMIT_SAVE });
+const parseRestoreJson = express.json({ limit: JSON_BODY_LIMIT_RESTORE });
+const parseLegacyResumeJson = express.json({ limit: JSON_BODY_LIMIT_LEGACY_RESUME });
+app.use((req, res, next) => {
+  const parser = req.path === "/restore"
+    ? parseRestoreJson
+    : req.path === "/save"
+      ? parseSaveJson
+      : _isLegacyResumeJsonPath(req.path)
+        ? parseLegacyResumeJson
+        : parseDefaultJson;
+  parser(req, res, next);
+});
+// Express의 기본 body-parser 오류 응답은 HTML이며 내부 파서 메시지가 섞일 수 있다.
+// 크기 초과와 잘못된 JSON을 안정적인 JSON 계약으로 정규화한다.
+app.use((err, req, res, next) => {
+  if (err?.type === "entity.too.large" || err?.status === 413) {
+    return _payloadTooLarge(res, _jsonBodyLimitFor(req));
+  }
+  if (err instanceof SyntaxError && err?.status === 400 && Object.prototype.hasOwnProperty.call(err, "body")) {
+    return res.status(400).json({ ok: false, code: "INVALID_JSON", message: "JSON 요청 형식이 올바르지 않습니다." });
+  }
+  return next(err);
+});
 app.use((req, res, next) => {
   if (req.auth && req.body && typeof req.body === "object" && !Array.isArray(req.body)) {
     req.body.user = _actorLabel(req);
