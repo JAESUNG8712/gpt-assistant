@@ -2,6 +2,16 @@
 
 한국 기업의 인사평가 생명주기를 통합 관리하는 웹 애플리케이션입니다.
 
+## 운영 브랜치 정책
+
+- 운영 기준 및 GitHub 기본 브랜치는 `hr-production`입니다.
+- 운영 반영은 작업 브랜치에서 `hr-production`을 대상으로 Pull Request를 만들고,
+  필수 CI가 통과한 뒤 병합합니다.
+- `hr-production`에는 직접 push하거나 강제 push하지 않습니다.
+- 과거 `main` 및 `claude/*` 브랜치는 별도 이력 보존용이며 운영 배포 기준으로 사용하지
+  않습니다. 공통 조상이 없는 브랜치를 강제로 병합하지 마세요.
+- Vercel 프로젝트의 Production Branch도 `hr-production`으로 맞춰야 합니다.
+
 ## 주요 기능
 
 | 모듈 | 기능 |
@@ -77,7 +87,7 @@ open public/index.html
 |--------|-----------|------|
 | GET | `/status` | 서버 상태 및 메타 정보 |
 | GET | `/data` | 전체 데이터 조회 |
-| POST | `/save` | 데이터 저장 (충돌 시 자동 병합) |
+| POST | `/save` | 데이터 저장 (안전한 필드는 병합하고 stale 레코드·설정 충돌은 409로 차단) |
 | GET | `/events` | SSE 실시간 이벤트 스트림 |
 | GET | `/online` | 현재 접속 중인 사용자 목록 |
 | POST | `/lock` | 편집 잠금 획득 |
