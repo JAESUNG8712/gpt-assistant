@@ -123,7 +123,16 @@ async function _fetchCurrentEmployeeForAuth(auth) {
     if (USE_JSON_FILE) {
       return (_fileStore.employees || []).find(e => String(e.id) === String(auth.empId)) || null;
     }
-    const { rows } = await pool.query("SELECT data FROM employees WHERE id = $1 AND is_deleted = FALSE", [auth.empId]);
+    // company_id 필터는 오늘은 결과에 영향이 없다(employees.id가 전사 전역 PK라 회사 간
+    // 사번이 절대 겹치지 않으므로 — 이 프로젝트에서 여러 차례 확인된 사실). 그래도 넣어
+    // 두는 이유는 이 조회가 로그인 세션 전체(menuPerms·authVersion·active 등)의 근거가
+    // 되는 자리라, 같은 목적의 _getStoredEmployeeForMenuPerms()와 필터 기준이 달라지는
+    // 것 자체가 두 인증 경로 사이의 잠재적 드리프트이기 때문이다 — 실제 취약점이 아니라
+    // 방어적 일관성 차원의 정리(병행 세션 감사에서 발견).
+    const { rows } = await pool.query(
+      "SELECT data FROM employees WHERE id = $1 AND is_deleted = FALSE AND company_id IS NOT DISTINCT FROM $2",
+      [auth.empId, auth.companyId || null]
+    );
     return (rows[0] && rows[0].data) || null;
   } catch {
     return undefined;
@@ -2242,10 +2251,29 @@ function _recordConflict(field, id, currentRevision) {
   });
 }
 
+// _BLOB_MODULE_FIELDS(회사별 모듈 on/off 대상 blob 컬렉션 목록)는 이 파일 뒤쪽
+// (COMPANY_FEATURE_CATALOG 근처)에서 정의되지만, 이 헬퍼는 요청 처리 시점에만 호출되므로
+// (모듈 전체 로드가 끝난 뒤) 문제없이 참조할 수 있다 — 클로저 기반 top-level 상수 공유.
+// companyFeatures가 없으면(마스터/레거시 등) 빈 Set을 반환해 아무 필드도 걸러내지 않는다.
+function _disabledBlobFields(companyFeatures) {
+  const out = new Set();
+  if (!companyFeatures) return out;
+  for (const [featureKey, fields] of Object.entries(_BLOB_MODULE_FIELDS)) {
+    if (companyFeatures[featureKey] === false) for (const f of fields) out.add(f);
+  }
+  return out;
+}
+
 // 저장 전에 서버 스냅샷과 클라이언트가 조회했던 _rev를 대조하고, 실제 수정된 레코드에만
 // 다음 revision을 부여한다. 동일 timestamp의 전체상태 echo는 수정으로 오인하지 않는다.
-function _applyRecordCas(serverData, clientData) {
+// companyFeatures로 비활성화된 모듈의 필드는 CAS 검사 자체를 건너뛴다 — 이 필드는 저장
+// 직전에 _revertDisabledFeatureFields()가 통째로 되돌리므로 여기서 충돌을 던지면(예: 모듈이
+// 꺼지기 전에 열려 있던 탭이 stale _rev로 무관한 다른 필드 변경과 함께 autosave하는 경우)
+// 반영됐어야 할 무관한 변경까지 전체 요청이 409로 막히는 회귀가 생긴다(실측 확인).
+function _applyRecordCas(serverData, clientData, companyFeatures) {
+  const disabledFields = _disabledBlobFields(companyFeatures);
   for (const field of ID_KEYED_LIST_FIELDS) {
+    if (disabledFields.has(field)) continue;
     if (!Array.isArray(clientData[field])) continue;
     const storedById = new Map((serverData[field] || []).filter(r => r && r.id != null).map(r => [String(r.id), r]));
     for (const record of clientData[field]) {
@@ -2269,6 +2297,7 @@ function _applyRecordCas(serverData, clientData) {
   // 삭제도 수정과 같은 CAS 대상이다. 삭제 당시 revision과 현재 값이 다르면 최신 수정을
   // 오래된 탭의 삭제로 덮지 않는다. rev가 없는 레거시 tombstone은 기존 동작을 유지한다.
   for (const [field, tombstones] of Object.entries(clientData.recordTombstones || {})) {
+    if (disabledFields.has(field)) continue;
     if (!ID_KEYED_LIST_FIELDS.includes(field) || !Array.isArray(tombstones)) continue;
     const storedById = new Map((serverData[field] || []).filter(r => r && r.id != null).map(r => [String(r.id), r]));
     for (const tombstone of tombstones) {
@@ -3360,13 +3389,10 @@ const _BLOB_MODULE_FIELDS = {
 function _revertDisabledFeatureFields(data, companyFeatures) {
   if (!companyFeatures) return data;
   let out = data;
-  for (const [featureKey, fields] of Object.entries(_BLOB_MODULE_FIELDS)) {
-    if (companyFeatures[featureKey] !== false) continue;
-    for (const field of fields) {
-      if (out[field] === undefined) continue;
-      if (out === data) out = { ...data };
-      delete out[field];
-    }
+  for (const field of _disabledBlobFields(companyFeatures)) {
+    if (out[field] === undefined) continue;
+    if (out === data) out = { ...data };
+    delete out[field];
   }
   return out;
 }
@@ -3378,12 +3404,9 @@ function _revertDisabledFeatureFields(data, companyFeatures) {
 function _hideDisabledFeatureFields(data, companyFeatures) {
   if (!companyFeatures) return data;
   const out = { ...data };
-  for (const [featureKey, fields] of Object.entries(_BLOB_MODULE_FIELDS)) {
-    if (companyFeatures[featureKey] !== false) continue;
-    for (const field of fields) {
-      if (out[field] === undefined) continue;
-      out[field] = Array.isArray(out[field]) ? [] : {};
-    }
+  for (const field of _disabledBlobFields(companyFeatures)) {
+    if (out[field] === undefined) continue;
+    out[field] = Array.isArray(out[field]) ? [] : {};
   }
   return out;
 }
@@ -3701,7 +3724,7 @@ app.post("/save", async (req, res) => {
       // revision과 현재 서버 revision이 다르면 updatedAt이 더 최신이어도 덮어쓰지 않는다.
       // 레거시 백업/연동은 _recordCasVersion을 보내지 않으므로 기존 병합 계약을 유지한다.
       if (Number(clientData._recordCasVersion) === 1) {
-        _applyRecordCas(await getServerData(), clientData);
+        _applyRecordCas(await getServerData(), clientData, req.auth?.companyFeatures);
       }
 
       // Re-checked *inside* the lock so a request that arrived while another
@@ -4624,6 +4647,17 @@ async function requireStoredMenuPermission(req, res, menuId) {
 // 생성·확정·삭제할 수 있다. 따라서 모든 HTTP method에 같은 정책을 적용한다. 급여·경비
 // 같은 다른 업무에서 회계 기록이 필요하면 사용자 토큰으로 범용 회계 API를 호출하지 말고,
 // 별도 capability와 검증을 가진 업무 전용 명령 API로 분리해야 한다.
+//
+// 이 미들웨어가 ACCOUNTING_MENU_BY_PATH에 매칭되는 경로·메서드 전체를 이미 매 요청마다
+// DB에서 새로 읽은 menuPerms로 막으므로(요청이 각 라우트 핸들러에 도달하기도 전에), 그
+// 아래 라우트 본문에 같은 menuId로 requirePage(req,res,"acct-*")를 또 넣는 것은 항상 참인
+// 조건(이미 통과했으므로)을 하나 더 확인하는 죽은 코드다 — 실제로 22곳에 이런 중복이
+// 남아있었는데, 회계 메뉴권한을 도입한 PR과 이 블랭킷 미들웨어를 도입한 PR이 서로 다른
+// 시점에 독립적으로(서로의 변경을 못 본 채) 병합되며 생긴 흔적이었다(둘 다 정확한
+// menuId로 막고 있어 취약점은 아니었음). 정리하며 제거했다 — 새 회계 라우트를 추가할
+// 때는 여기 대신 개별 라우트에 requirePage를 넣지 말고 ACCOUNTING_MENU_BY_PATH에 경로만
+// 추가하면 된다(단, /reports처럼 이 표에 없는 예외 경로는 라우트 자신이 계속 직접
+// requirePage를 호출해야 한다 — _accountingMenuForPath의 excluded 목록 참고).
 app.use("/api/accounting", async (req, res, next) => {
   const menuId = _accountingMenuForPath(req.path);
   if (!menuId) return next();
@@ -4633,18 +4667,28 @@ app.use("/api/accounting", async (req, res, next) => {
 
 const MODULE_MENU_BY_PATH = {
   "/api/erp": [["/items", "inv-items"], ["/locations", "inv-locations"], ["/quotations", "sales-quotations"], ["/purchase-orders", "sales-purchase-orders"], ["/purchase-requests", "inv-purchase-requests"], ["/stock", "inv-stock"], ["/sales-targets", "sales-dashboard"]],
-  "/api/pms": [["/projects", "pms-projects"], ["/allocations", "pms-allocation"], ["/worklogs", "pms-worklog"]],
+  // "/allocations"의 GET은 이 목록의 유일한 클라이언트 소비처인 "가동률 현황" 화면 자신이
+  // 이미 pms-utilization으로 정확히 게이팅한다(아래 GET /api/pms/allocations 라우트 참고).
+  // 여기서 그와 무관한 pms-allocation까지 함께 요구하면, pms-utilization은 켜져 있지만
+  // pms-allocation(내 투입률 입력)만 개인적으로 꺼둔 사용자가 열람 권한이 있는 가동률
+  // 현황에서 잘못된 403을 받는다(서로 다른 병행 세션이 각자 추가하며 생긴 충돌, 실측
+  // 확인). GET만 이 목록에서 제외해 라우트 자신의 체크만 적용되게 하고, 실제로 자기
+  // 투입률을 등록/삭제하는 POST/DELETE는 그대로 pms-allocation으로 막는다.
+  "/api/pms": [["/projects", "pms-projects"], ["/allocations", "pms-allocation", ["POST", "DELETE", "PUT", "PATCH"]], ["/worklogs", "pms-worklog"]],
   "/api/recruit": [["/jobs", "recruit-jobs"], ["/candidates", "recruit-candidates"], ["/extract-", "recruit-candidates"], ["/parse-resume-llm", "recruit-candidates"], ["/suggest-career-companies", "recruit-candidates"], ["/interviews", "recruit-eval"], ["/dashboard", "recruit-dashboard"]],
 };
-function _moduleMenuForPath(prefix, pathname) {
-  const found = (MODULE_MENU_BY_PATH[prefix] || []).find(([path]) => pathname === path || pathname.startsWith(`${path}/`));
+function _moduleMenuForPath(prefix, pathname, method) {
+  const found = (MODULE_MENU_BY_PATH[prefix] || []).find(([path, , methods]) => {
+    if (pathname !== path && !pathname.startsWith(`${path}/`)) return false;
+    return !methods || methods.includes(method);
+  });
   return found ? found[1] : null;
 }
 // 모듈별 기존 역할/업무 스코프 검사는 각 라우트가 계속 담당한다. 여기서는 명시적으로
 // 꺼진 메뉴만 추가로 fail-closed 해 UI 숨김을 API 우회로 무력화하지 못하게 한다.
 for (const prefix of Object.keys(MODULE_MENU_BY_PATH)) {
   app.use(prefix, async (req, res, next) => {
-    const menuId = _moduleMenuForPath(prefix, req.path);
+    const menuId = _moduleMenuForPath(prefix, req.path, req.method);
     if (!menuId) return next();
     if (!await requireStoredMenuPermission(req, res, menuId)) return;
     next();
@@ -4692,7 +4736,6 @@ app.get("/api/accounting/accounts", async (req, res) => {
   // 전표 작성(acct-vouchers)·급여전표(payroll-mgmt) 등 계정 "선택"만 필요한 다른 화면은
   // 전부 GET .../accounts/picker(인증만 있으면 조회 가능)로 이전됐으므로 이 게이팅이
   // 그 화면들에 영향을 주지 않는다.
-  if (!requirePage(req, res, "acct-accounts")) return;
   try {
     if (USE_JSON_FILE) return res.json({ ok: true, accounts: _fileAccounting.accounts });
     const companyId = req.auth.companyId || null;
@@ -4710,7 +4753,6 @@ app.get("/api/accounting/accounts", async (req, res) => {
 // 덮어쓰지 않는다(이미 같은 code로 직접 만들어 쓰고 있는 회사는 그대로 유지).
 app.post("/api/accounting/accounts/seed-defaults", async (req, res) => {
   if (!requireAdmin(req, res)) return;
-  if (!requirePage(req, res, "acct-accounts")) return;
   try {
     const now = new Date().toISOString();
     const user = (req.body && req.body.user) || req.auth.loginId || "unknown";
@@ -4812,7 +4854,6 @@ app.get("/api/accounting/partners/picker", async (req, res) => {
 app.post("/api/accounting/accounts", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
-    if (!requirePage(req, res, "acct-accounts")) return;
     const { id, code, name, type, category, costCategory: costCategoryRaw, costSubType: costSubTypeRaw, active = true, user } = req.body || {};
     if (!code || !name || !type)
       return res.status(400).json({ ok: false, message: "계정코드, 계정명, 구분은 필수입니다." });
@@ -4858,7 +4899,6 @@ app.post("/api/accounting/accounts", async (req, res) => {
 app.post("/api/accounting/accounts/:id/delete", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
-    if (!requirePage(req, res, "acct-accounts")) return;
     const id = req.params.id;
     if (USE_JSON_FILE) {
       const used = _fileAccounting.vouchers.some(v => (v.lines || []).some(l => l.accountId === id));
@@ -4982,7 +5022,6 @@ app.post("/api/accounting/vouchers", async (req, res) => {
 app.post("/api/accounting/vouchers/:id/post", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
-    if (!requirePage(req, res, "acct-vouchers")) return;
     const id = req.params.id;
     const companyId = req.auth.companyId || null;
     const year = new Date().getFullYear();
@@ -5049,7 +5088,6 @@ async function _unpostScheduleRowsPg(voucherId, companyId, client) {
 app.post("/api/accounting/vouchers/:id/void", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
-    if (!requirePage(req, res, "acct-vouchers")) return;
     const id = req.params.id;
     const companyId = req.auth.companyId || null;
     const reason = (req.body || {}).reason;
@@ -5079,7 +5117,6 @@ app.post("/api/accounting/vouchers/:id/void", async (req, res) => {
 app.delete("/api/accounting/vouchers/:id", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
-    if (!requirePage(req, res, "acct-vouchers")) return;
     const id = req.params.id;
     const companyId = req.auth.companyId || null;
     if (USE_JSON_FILE) {
@@ -5179,7 +5216,6 @@ app.post("/api/accounting/tax-invoices", async (req, res) => {
 app.post("/api/accounting/tax-invoices/:id/void", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
-    if (!requirePage(req, res, "acct-tax-invoices")) return;
     const id = req.params.id;
     const companyId = req.auth.companyId || null;
     const reason = (req.body || {}).reason;
@@ -5225,7 +5261,6 @@ app.get("/api/accounting/payments", async (req, res) => {
 app.post("/api/accounting/payments", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
-    if (!requirePage(req, res, "acct-receivables")) return;
     const { direction, date, partnerId, partnerName, amount, method, memo, taxInvoiceId, user } = req.body || {};
     if (!["in", "out"].includes(direction)) return res.status(400).json({ ok: false, message: "direction은 in(수금) 또는 out(지급)이어야 합니다." });
     if (!date || !partnerName || !(Number(amount) > 0)) return res.status(400).json({ ok: false, message: "일자, 거래처, 금액(0보다 큼)은 필수입니다." });
@@ -5253,7 +5288,6 @@ app.post("/api/accounting/payments", async (req, res) => {
 app.post("/api/accounting/payments/:id/delete", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
-    if (!requirePage(req, res, "acct-receivables")) return;
     const id = req.params.id;
     // 존재하지 않는 id로 삭제해도 200 {ok:true}를 돌려주고 있어(다른 모듈은 전부 404),
     // 화면은 "삭제되었습니다"를 띄우는데 실제로는 아무것도 지워지지 않은 상태와
@@ -5284,7 +5318,6 @@ app.get("/api/accounting/partners", async (req, res) => {
   // (acct-tax-invoices)·견적서/발주서(sales-quotations/sales-purchase-orders)·구매요청 전환
   // (inv-purchase-requests)·수금지급(acct-receivables)·전표(acct-vouchers) 등 거래처 "선택"만
   // 필요한 다른 화면은 전부 GET .../partners/picker(인증만 있으면 조회 가능)로 이전됐다.
-  if (!requirePage(req, res, "acct-partners")) return;
   try {
     if (USE_JSON_FILE) return res.json({ ok: true, partners: _fileAccounting.partners });
     const companyId = req.auth.companyId || null;
@@ -5341,7 +5374,6 @@ app.post("/api/accounting/partners", async (req, res) => {
 app.post("/api/accounting/partners/:id/delete", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
-    if (!requirePage(req, res, "acct-partners")) return;
     const id = req.params.id;
     const companyId = req.auth.companyId || null;
     if (USE_JSON_FILE) {
@@ -5433,7 +5465,6 @@ app.get("/api/accounting/reports", async (req, res) => {
 
 app.get("/api/accounting/cost-statement", async (req, res) => {
   if (!requireAdmin(req, res)) return;
-  if (!requirePage(req, res, "acct-cost-statement")) return;
   try {
     const { from, to } = req.query;
     if (!from || !to) return res.status(400).json({ ok: false, message: "from, to 날짜 범위는 필수입니다." });
@@ -5554,7 +5585,6 @@ async function _issuePostedVoucher(companyId, { date, description, partnerId, pa
 app.post("/api/accounting/rcps/issuances", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
-    if (!requirePage(req, res, "acct-rcps")) return;
     const companyId = req.auth.companyId || null;
     const { name, issueDate, faceAmount, sharesIssued, parValue, couponRate, effectiveRate, maturityDate, user } = req.body || {};
     let { redemptionAmount } = req.body || {};
@@ -5716,7 +5746,6 @@ app.get("/api/accounting/rcps/issuances/:id/valuations", async (req, res) => {
 app.post("/api/accounting/rcps/issuances/:id/delete", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
-    if (!requirePage(req, res, "acct-rcps")) return;
     const id = req.params.id;
     if (USE_JSON_FILE) {
       const issuance = _fileAcctRcps.issuances.find(i => i.id === id && !i.isDeleted);
@@ -5754,7 +5783,6 @@ app.post("/api/accounting/rcps/schedule/:scheduleId/post", async (req, res) => {
   let lockedJsonMode = false;
   try {
     if (!requireAdmin(req, res)) return;
-    if (!requirePage(req, res, "acct-rcps")) return;
     const companyId = req.auth.companyId || null;
     const { user, interestExpenseAccountId, cashAccountId, rcpsLiabilityAccountId } = req.body || {};
     if (!interestExpenseAccountId || !cashAccountId || !rcpsLiabilityAccountId) {
@@ -5854,7 +5882,6 @@ app.post("/api/accounting/rcps/schedule/:scheduleId/post", async (req, res) => {
 app.post("/api/accounting/rcps/valuations", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
-    if (!requirePage(req, res, "acct-rcps")) return;
     const companyId = req.auth.companyId || null;
     const { issuanceId, valuationDate, fairValue, method, memo, gainAccountId, lossAccountId, derivativeLiabilityAccountId, user } = req.body || {};
     if (!issuanceId || !valuationDate || fairValue === undefined || fairValue === null || fairValue === "") {
@@ -6052,7 +6079,6 @@ app.use("/api/accounting/fixed-assets/:id", (req, res, next) => {
 app.post("/api/accounting/fixed-assets", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
-    if (!requirePage(req, res, "acct-fixed-assets")) return;
     const companyId = req.auth.companyId || null;
     const { name, assetNumber, category, acquisitionDate, acquisitionCost, usefulLifeYears, salvageValue, depreciationMethod, locationId, user } = req.body || {};
     if (!name || !acquisitionDate || !(Number(acquisitionCost) > 0) || !(Number(usefulLifeYears) > 0)) {
@@ -6151,7 +6177,6 @@ app.get("/api/accounting/fixed-assets/:id/depreciation-schedule", async (req, re
 app.post("/api/accounting/fixed-assets/:id", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
-    if (!requirePage(req, res, "acct-fixed-assets")) return;
     const id = req.params.id;
     const companyId = req.auth.companyId || null;
     const body = req.body || {};
@@ -6235,7 +6260,6 @@ app.post("/api/accounting/fixed-assets/:id", async (req, res) => {
 app.post("/api/accounting/fixed-assets/:id/dispose", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
-    if (!requirePage(req, res, "acct-fixed-assets")) return;
     const id = req.params.id;
     const companyId = req.auth.companyId || null;
     const { disposalDate, user } = req.body || {};
@@ -6265,7 +6289,6 @@ app.post("/api/accounting/fixed-assets/:id/dispose", async (req, res) => {
 app.post("/api/accounting/fixed-assets/:id/delete", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
-    if (!requirePage(req, res, "acct-fixed-assets")) return;
     const id = req.params.id;
     const companyId = req.auth.companyId || null;
     if (USE_JSON_FILE) {
@@ -6298,7 +6321,6 @@ app.post("/api/accounting/fixed-assets/:id/depreciation-schedule/:year/post", as
   let lockedJsonMode = false;
   try {
     if (!requireAdmin(req, res)) return;
-    if (!requirePage(req, res, "acct-fixed-assets")) return;
     const companyId = req.auth.companyId || null;
     const { user, depreciationExpenseAccountId, accumulatedDepreciationAccountId } = req.body || {};
     if (!depreciationExpenseAccountId || !accumulatedDepreciationAccountId) {

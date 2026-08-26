@@ -79,6 +79,14 @@ if (!ADMIN_DATABASE_URL) {
         body: JSON.stringify({ _version: version, data: patch }),
       })).json();
     }
+    // _recordCasVersion은 body 최상위 필드로만 인식된다(POST /save의 clientData 조립부
+    // 참고) — 위 save()는 이를 보내지 않으므로 CAS 관련 테스트는 별도 헬퍼를 쓴다.
+    async function saveCas(version, patch) {
+      return (await api("/save", {
+        method: "POST", headers: { "Content-Type": "application/json", ...hdr },
+        body: JSON.stringify({ _version: version, data: patch, _recordCasVersion: 1 }),
+      })).json();
+    }
 
     // 모듈별로 실제 대표 컬렉션 하나씩 골라 쓰기+조회 왕복 검증. id는 매번 새로 만들어
     // 이전 케이스의 잔여 레코드와 충돌하지 않게 한다.
@@ -128,6 +136,47 @@ if (!ADMIN_DATABASE_URL) {
         assert.equal(restored.data.settings._toggleTestMarker, recordId2, "비활성 모듈과 무관한 settings 저장까지 함께 막힘(과잉차단)");
       });
     }
+
+    await t.test("record-CAS(_recordCasVersion:1)와 모듈 비활성화 상호작용 — 비활성 모듈의 stale _rev가 무관한 저장까지 409로 막지 않는다", async () => {
+      // 병행 세션 감사(2026-08-26)에서 발견: _applyRecordCas()가 _revertDisabledFeatureFields()
+      // 보다 먼저 실행돼, kpi 모듈을 끈 뒤 stale _rev로 kpiEntries를 담아 보내는 저장이
+      // (원래는 모듈 비활성화로 조용히 무시됐어야 할 필드인데도) RECORD_REVISION_CONFLICT
+      // 409를 던져 같은 요청에 실린 무관한 boardPosts 변경까지 함께 막던 문제.
+      const before = await getData();
+      const kpiId = `cas_kpi_${Date.now()}`;
+      const original = { id: kpiId, userId: "1", year: 2026, item: "원본목표" };
+
+      // 1) kpi 활성 상태에서 CAS로 최초 생성 — 서버가 _rev=1을 부여한다.
+      const created = await saveCas(before.version, { kpiEntries: [...(before.data.kpiEntries || []), original] });
+      assert.equal(created.ok, true, `최초 저장 실패: ${JSON.stringify(created)}`);
+      assert.equal(created.recordRevisions.kpiEntries[kpiId], 1, "신규 레코드는 _rev=1이어야 함");
+
+      // 2) kpi 모듈 비활성화
+      await setFeature("kpi", false);
+      const disabled = await getData();
+
+      // 3) stale _rev(0, 실제는 1)로 kpiEntries를 수정 시도 + 전혀 무관한 boardPosts 추가를
+      // 같은 요청에 함께 실어 보낸다. updatedAt을 미래로 찍어야 "수정 시도"로 판정되어
+      // CAS 비교 대상에 오른다(_applyRecordCas의 timestamp 비교 로직 참고).
+      const staleEdit = { ...original, item: "비활성모듈에서시도한수정", updatedAt: new Date(Date.now() + 60000).toISOString(), _rev: 0 };
+      const boardPostId = `cas_board_${Date.now()}`;
+      const mixedSave = await saveCas(disabled.version, {
+        kpiEntries: [staleEdit],
+        boardPosts: [...(disabled.data.boardPosts || []), { id: boardPostId, title: "무관한 정상 변경", authorId: "1" }],
+      });
+      assert.equal(mixedSave.ok, true, "비활성 모듈의 stale CAS가 전체 요청을 409로 막으면 안 됨(수정 전이라면 여기서 실패)");
+
+      // 4) 무관한 boardPosts 변경은 반영되고, kpi 모듈을 다시 켰을 때 원본 kpiEntries는
+      // 그대로(수정 시도는 무시됨) 남아있어야 한다 — 충돌 에러도, 잘못된 반영도 아님.
+      const afterMixed = await getData();
+      assert.ok((afterMixed.data.boardPosts || []).some(p => p.id === boardPostId), "무관한 boardPosts 변경이 함께 유실됨");
+
+      await setFeature("kpi", true);
+      const restored = await getData();
+      const restoredKpi = (restored.data.kpiEntries || []).find(k => k.id === kpiId);
+      assert.ok(restoredKpi, "kpi 모듈을 다시 켰는데 원본 레코드가 사라짐");
+      assert.equal(restoredKpi.item, "원본목표", "비활성 모듈 중 시도한 수정이 반영돼버림(모듈 게이트 실패)");
+    });
 
     await t.test("employees(hr 모듈이 꺼져도 대상 아님) — 로그인·직원목록 조회는 계속 정상 동작", async () => {
       await setFeature("hr", false);
