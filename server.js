@@ -2821,6 +2821,9 @@ app.use(authenticate);
 function _actorLabel(req) {
   return req?.auth?.loginId || (req?.auth?.empId != null ? `emp:${req.auth.empId}` : "system");
 }
+function _authenticatedDisplayName(auth, employee) {
+  return String(employee?.name || auth?.loginId || (auth?.empId != null ? `emp:${auth.empId}` : "master-admin"));
+}
 function _positiveEnvCount(name, fallback) {
   const value = Number(process.env[name]);
   return Number.isSafeInteger(value) && value > 0 ? value : fallback;
@@ -4096,12 +4099,16 @@ app.get("/events", async (req, res) => {
   const ticketAuth = verifyToken(req.query.token);
   const auth = req.auth || (ticketAuth && ticketAuth.scope === "sse" ? ticketAuth : null);
   if (!auth) return res.status(401).json({ ok: false, message: "로그인이 필요합니다." });
-  const authStillValid = await _employeeAuthStillValid(auth);
+  const employee = await _fetchCurrentEmployeeForAuth(auth);
+  const authStillValid = await _employeeAuthStillValid(auth, employee);
   if (authStillValid === undefined) return _authStateUnavailable(res);
   if (!authStillValid) return res.status(401).json({ ok: false, message: "로그인이 필요합니다." });
   const companyId = auth.companyId || null;
   const clientId = req.query.clientId || `client_${Date.now()}`;
-  const user     = req.query.user     || "unknown";
+  // 접속자 표시명은 클라이언트 쿼리스트링이 아니라 인증된 토큰/서버 저장 직원명에서만 만든다.
+  // 그렇지 않으면 로그인한 사용자가 /events?user=대표이사처럼 URL만 바꿔 온라인·잠금 알림에
+  // 다른 사람으로 표시될 수 있다. 권한 우회는 아니지만 협업/감사 UI의 신뢰성을 해친다.
+  const user     = _authenticatedDisplayName(auth, employee);
 
   res.setHeader("Content-Type",  "text/event-stream");
   res.setHeader("Cache-Control", "no-cache");

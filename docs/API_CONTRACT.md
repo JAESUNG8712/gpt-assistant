@@ -44,7 +44,7 @@
    토큰이 없거나 무효하면 대부분의 엔드포인트가 `401 { "ok": false, "message": "로그인이 필요합니다." }`을 반환합니다.
    `role`은 더 이상 요청 body/query로 보내도 무시됩니다 — 서버가 토큰에서 검증한 값만 사용합니다.
 
-3. 예외(인증 불필요): `POST /login`, `GET /status`, `GET /events`(SSE), `GET /online`,
+3. 예외(인증 불필요): `POST /login`, `GET /status`,
    `POST /api/reset-all`(자체 재검증), `POST /api/auth/2fa/verify-code`, JSON 파일 모드의
    `POST /api/bootstrap/admin`.
    `POST /save`는 **항상 인증이 필요**합니다. 빈 JSON 파일 모드의 최초 관리자는
@@ -61,7 +61,8 @@
   요청 형태: `{ "_version": 42, "data": { "employees": [...], "kpiEntries": [...], ... } }`
   (필드를 일부만 보내면 나머지는 서버의 기존 값을 그대로 두는 게 아니라 **병합 로직에 따라 처리**되니,
   가능하면 항상 전체 상태를 유지하며 필요한 부분만 수정해서 보내는 걸 권장합니다.)
-- 실시간 동기화가 필요하면 `GET /events`(Server-Sent Events)를 구독하세요 — 다른 클라이언트가
+- 실시간 동기화가 필요하면 `POST /events/token`으로 5분짜리 SSE 전용 토큰을 발급받은 뒤
+  `GET /events?token=<sse-token>`(Server-Sent Events)를 구독하세요 — 다른 클라이언트가
   저장하면 `data_updated` 이벤트가 오고, 그때 `GET /data`를 다시 호출해 반영하면 됩니다.
 
 새 네이티브 클라이언트를 만든다면, 이 "전체 블롭 GET/POST" 패턴을 그대로 따르거나, 특정 화면에 필요한
