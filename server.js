@@ -2737,14 +2737,20 @@ function _buildAllowedOrigins() {
     process.env.APP_ORIGIN,
     process.env.FRONTEND_ORIGIN,
   ];
-  if (IS_PRODUCTION) {
-    configured.push(
-      "https://gpt-assistant-zeta.vercel.app",
-      "https://gpt-assistant-6diw.vercel.app"
-    );
-  } else {
+  if (!IS_PRODUCTION) {
     configured.push("http://localhost:3000", "http://127.0.0.1:3000");
   }
+  // 운영에서 위 환경변수를 아무것도 설정하지 않았다면 하드코드 fallback을 추가하는 대신
+  // (예전에는 이 저장소의 다른 브랜치(main)에서 서비스하는, 이 HR/ERP와 완전히 무관한
+  // 별도 앱(주식분석 AI 어시스턴트)의 Vercel 프론트엔드 도메인 2개가 여기 하드코딩돼
+  // 있었다 — 같은 GitHub 저장소를 여러 앱이 공유하다 보니 다른 자동화 세션이 이 저장소의
+  // "homepage" 필드만 보고 착각한 것으로 추정. 이 HR/ERP 백엔드가 그 앱에 CORS 신뢰를
+  // 내줄 이유가 전혀 없어 병합하며 제거함) 그냥 빈 채로 둔다. 이 앱의 정상적인 사용
+  // 경로는 같은 오리진에서 정적 파일과 API를 함께 서빙하므로 CORS 자체가 필요 없고
+  // (브라우저가 cross-origin 요청으로 취급하지 않음), Bearer 토큰 기반 인증이라 CORS가
+  // 막아도 curl/모바일 앱 등 브라우저가 아닌 클라이언트는 애초에 영향받지 않는다. 별도
+  // 오리진에서 서빙되는 프론트엔드가 실제로 필요하면 위 5개 환경변수 중 하나로 명시
+  // 설정해야 한다.
   const normalized = new Set();
   const rejected = [];
   for (const value of configured.filter(Boolean)) {
