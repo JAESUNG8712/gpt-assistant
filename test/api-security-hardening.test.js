@@ -75,6 +75,33 @@ test("보안 하드닝: production은 고정 SESSION_SECRET 없이는 부팅하�
   assert.match(result.logs.stderr, /SESSION_SECRET/);
 });
 
+test("보안 하드닝: production은 짧은 SESSION_SECRET으로 부팅하지 않는다", async (t) => {
+  const result = await startServerExpectingBootFailure({
+    env: { NODE_ENV: "production", SESSION_SECRET: "short-secret" },
+  });
+  t.after(() => result.cleanup());
+
+  assert.notEqual(result.exitCode, 0);
+  assert.match(result.logs.stderr, /SESSION_SECRET/);
+  assert.match(result.logs.stderr, /32/);
+});
+
+test("보안 하드닝: production CORS Origin 설정은 와일드카드와 잘못된 URL을 거부한다", async (t) => {
+  for (const value of ["*", "not-a-url", "ftp://hr.example.com"]) {
+    const result = await startServerExpectingBootFailure({
+      env: {
+        NODE_ENV: "production",
+        SESSION_SECRET: "test-production-session-secret-for-origin-guardrails",
+        ALLOWED_ORIGINS: value,
+      },
+    });
+    t.after(() => result.cleanup());
+
+    assert.notEqual(result.exitCode, 0, `${value} 설정은 운영 부팅을 막아야 함`);
+    assert.match(result.logs.stderr, /CORS/);
+  }
+});
+
 test("보안 하드닝: production CORS는 허용 출처만 응답한다", async (t) => {
   const server = await startServer({
     env: {

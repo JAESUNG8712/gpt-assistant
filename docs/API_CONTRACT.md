@@ -13,7 +13,7 @@
 
 - **운영 URL**: `https://hrsystem-uweb.onrender.com`
 - **저장소 경로**: 루트 (`server.js`, `public/index.html`)
-- **배포 브랜치**: `claude/mobile-hr-app-testing-rDc2F`
+- **배포 브랜치**: `hr-production`
 
 ### 1.1 인증
 
@@ -144,8 +144,8 @@ AI가 반환한 값도 그대로 신뢰하지 않는다 — `birth`는 실제 �
 | `DATABASE_URL` | 아니오 | (미설정) | 설정 시 PostgreSQL 모드(운영), 미설정 시 JSON 파일 모드(자체호스팅/오프라인). |
 | `DATA_FILE` | JSON 파일 모드만 | `hr-data.json` | 메인 데이터 파일 경로. 재배포 시 초기화되지 않으려면 영속 디스크 경로를 가리켜야 함. |
 | `BUDGET_DATA_FILE` | JSON 파일 모드만 | `budget-data.json` | 사업계획/예산/개인별급여상세 데이터 파일 경로(DATABASE_URL 설정 시 무시되고 Postgres `budget_store` 사용). |
-| `SESSION_SECRET` | 운영 필수 | 개발/테스트만 랜덤 생성 | 로그인 토큰 서명 키. `NODE_ENV=production`에서 미설정이면 서버가 부팅을 거부한다. |
-| `ALLOWED_ORIGINS` / `CORS_ALLOWED_ORIGINS` | 운영 권장 | 운영 기본 도메인 2개 | 브라우저 API 호출을 허용할 Origin 목록(쉼표 구분). 기본 운영 허용값은 `https://gpt-assistant-zeta.vercel.app`, `https://gpt-assistant-6diw.vercel.app`이며, 사내/custom 도메인을 붙이면 여기에 추가해야 한다. |
+| `SESSION_SECRET` | 운영 필수 | 개발/테스트만 랜덤 생성 | 로그인 토큰 서명 키. `NODE_ENV=production`에서 미설정이거나 32바이트 미만이면 서버가 부팅을 거부한다. |
+| `ALLOWED_ORIGINS` / `CORS_ALLOWED_ORIGINS` | 운영 권장 | 운영 기본 도메인 2개 | 브라우저 API 호출을 허용할 Origin 목록(쉼표 구분). 기본 운영 허용값은 `https://gpt-assistant-zeta.vercel.app`, `https://gpt-assistant-6diw.vercel.app`이며, 사내/custom 도메인을 붙이면 여기에 추가해야 한다. 운영에서는 `https://도메인` 형식만 사용하고 `*` 와일드카드는 허용하지 않는다. |
 | `NODE_ENV` | 아니오 | (미설정) | `production`이면 더미 데이터 저장 차단(`ALLOW_DEMO_DATA`로 해제 가능)이 활성화됨. `scripts/seed-demo.js`는 `development`/`test`에서만 실행됨. |
 | `ALLOW_DEMO_DATA` | 아니오 | `false` | `true`면 `NODE_ENV=production`에서도 demo 마커(`source:"demo"`/`empNo:"DEMO-..."`)가 붙은 레코드 저장을 허용(운영에서는 설정하지 않는 것을 권장). |
 | `ALLOW_DEMO_SEED` | `scripts/seed-demo.js` 실행 시 필수 | (미설정) | `true`가 아니면 CLI가 즉시 종료됨(운영 환경 오실행 방지 조건 중 하나). |
