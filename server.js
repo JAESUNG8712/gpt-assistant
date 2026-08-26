@@ -72,12 +72,17 @@ app.set("trust proxy", 1);
 // /login 성공 시 발급되어 이후 모든 요청의 Authorization: Bearer <token> 헤더로 전달됨.
 // req.body.role을 그대로 신뢰하던 과거 방식(클라이언트가 role만 바꿔 보내면 관리자 권한
 // 우회 가능)을 대체하기 위해 도입 — role은 이제 서버가 로그인 시 검증한 값만 담긴 토큰에서
-// 읽는다. SESSION_SECRET 미설정 시 배포 로그에 경고를 남기고 프로세스 시작마다 임의 시크릿을
-// 생성한다(재시작 시 기존 토큰은 모두 무효화되어 재로그인이 필요해짐 — 운영 배포에서는
-// SESSION_SECRET 환경변수를 반드시 고정값으로 설정할 것).
+// 읽는다. 개발/테스트에서는 임시 시크릿으로 편의 실행을 허용하지만, 운영에서는 키가
+// 바뀌면 전 직원 세션이 예고 없이 무효화되고 다중 인스턴스 간 토큰 검증도 흔들린다.
+// 따라서 production에서는 SESSION_SECRET을 고정값으로 설정하지 않으면 fail-fast 한다.
+const IS_PRODUCTION = process.env.NODE_ENV === "production";
+if (IS_PRODUCTION && !process.env.SESSION_SECRET) {
+  console.error("[치명적 오류] SESSION_SECRET 환경변수가 필요합니다. 운영 배포에서는 고정된 32바이트 이상의 랜덤 문자열을 설정하세요.");
+  process.exit(1);
+}
 const SESSION_SECRET = process.env.SESSION_SECRET || crypto.randomBytes(32).toString("hex");
 if (!process.env.SESSION_SECRET) {
-  console.warn("⚠️  SESSION_SECRET 환경변수가 설정되지 않았습니다 — 임시 시크릿으로 동작하며, 서버 재시작 시 모든 로그인 세션이 무효화됩니다. 운영 배포에서는 반드시 고정값을 설정하세요.");
+  console.warn("⚠️  SESSION_SECRET 환경변수가 설정되지 않았습니다 — 개발/테스트 임시 시크릿으로 동작합니다.");
 }
 const SESSION_TTL_SEC = 12 * 60 * 60; // 12시간
 
@@ -2654,7 +2659,68 @@ async function _runPgIdempotentCommand(req, res, work) {
     client.release();
   }
 }
-app.use(cors());
+
+function _splitEnvList(name) {
+  return String(process.env[name] || "")
+    .split(",")
+    .map(v => v.trim())
+    .filter(Boolean);
+}
+
+function _normalizeOrigin(origin) {
+  try {
+    const parsed = new URL(origin);
+    parsed.pathname = "";
+    parsed.search = "";
+    parsed.hash = "";
+    return parsed.toString().replace(/\/$/, "");
+  } catch {
+    return "";
+  }
+}
+
+function _isLoopbackOrigin(origin) {
+  try {
+    const { protocol, hostname } = new URL(origin);
+    return (protocol === "http:" || protocol === "https:")
+      && (hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1");
+  } catch {
+    return false;
+  }
+}
+
+function _buildAllowedOrigins() {
+  const configured = [
+    ..._splitEnvList("ALLOWED_ORIGINS"),
+    ..._splitEnvList("CORS_ALLOWED_ORIGINS"),
+    process.env.PUBLIC_APP_ORIGIN,
+    process.env.APP_ORIGIN,
+    process.env.FRONTEND_ORIGIN,
+  ];
+  if (IS_PRODUCTION) {
+    configured.push(
+      "https://gpt-assistant-zeta.vercel.app",
+      "https://gpt-assistant-6diw.vercel.app"
+    );
+  } else {
+    configured.push("http://localhost:3000", "http://127.0.0.1:3000");
+  }
+  return new Set(configured.map(_normalizeOrigin).filter(Boolean));
+}
+
+const ALLOWED_CORS_ORIGINS = _buildAllowedOrigins();
+const corsOptions = {
+  origin(origin, callback) {
+    if (!origin) return callback(null, true);
+    if (!IS_PRODUCTION && _isLoopbackOrigin(origin)) return callback(null, true);
+    const normalized = _normalizeOrigin(origin);
+    if (ALLOWED_CORS_ORIGINS.has(normalized)) return callback(null, true);
+    const err = new Error("CORS_ORIGIN_DENIED");
+    err.status = 403;
+    return callback(err);
+  },
+};
+app.use(cors(corsOptions));
 // CSP는 끈다: 프론트엔드(public/index.html)가 인라인 onclick 핸들러와 인라인 <script>를
 // 전면적으로 사용하는 구조라 기본 CSP를 켜면 앱 전체가 깨진다. 나머지 기본 보안 헤더
 // (X-Content-Type-Options, X-Frame-Options, HSTS 등)만 적용한다.
@@ -2773,6 +2839,9 @@ app.use((req, res, next) => {
 // Express의 기본 body-parser 오류 응답은 HTML이며 내부 파서 메시지가 섞일 수 있다.
 // 크기 초과와 잘못된 JSON을 안정적인 JSON 계약으로 정규화한다.
 app.use((err, req, res, next) => {
+  if (err?.message === "CORS_ORIGIN_DENIED") {
+    return res.status(403).json({ ok: false, code: "CORS_ORIGIN_DENIED", message: "허용되지 않은 요청 출처입니다." });
+  }
   if (err?.type === "entity.too.large" || err?.status === 413) {
     return _payloadTooLarge(res, _jsonBodyLimitFor(req));
   }

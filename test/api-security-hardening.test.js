@@ -12,7 +12,7 @@
 //    적용해도 정상 호출은 계속 성공하고 반복된 실패만 카운트됨을 확인한다.
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { startServer } = require("./support/start-server");
+const { startServer, startServerExpectingBootFailure } = require("./support/start-server");
 
 test("보안 하드닝: 2FA verify-code에 rate limiter 적용(JSON 파일 모드에서도 검증 가능)", async (t) => {
   const server = await startServer();
@@ -64,3 +64,62 @@ test("보안 하드닝: 제거된 임시 관리자 API는 SPA fallback으로 우
       }
     }
   });
+
+test("보안 하드닝: production은 고정 SESSION_SECRET 없이는 부팅하지 않는다", async (t) => {
+  const result = await startServerExpectingBootFailure({
+    env: { NODE_ENV: "production", SESSION_SECRET: "" },
+  });
+  t.after(() => result.cleanup());
+
+  assert.notEqual(result.exitCode, 0);
+  assert.match(result.logs.stderr, /SESSION_SECRET/);
+});
+
+test("보안 하드닝: production CORS는 허용 출처만 응답한다", async (t) => {
+  const server = await startServer({
+    env: {
+      NODE_ENV: "production",
+      SESSION_SECRET: "test-production-session-secret-for-cors",
+      ALLOWED_ORIGINS: "https://hr.example.com",
+    },
+  });
+  t.after(() => server.stop());
+
+  const noOrigin = await fetch(server.baseUrl + "/status");
+  assert.equal(noOrigin.status, 200, "서버 간 호출/헬스체크처럼 Origin 없는 요청은 유지해야 함");
+
+  const allowed = await fetch(server.baseUrl + "/status", {
+    headers: { Origin: "https://hr.example.com" },
+  });
+  assert.equal(allowed.status, 200);
+  assert.equal(allowed.headers.get("access-control-allow-origin"), "https://hr.example.com");
+
+  const denied = await fetch(server.baseUrl + "/status", {
+    headers: { Origin: "https://evil.example.com" },
+  });
+  assert.equal(denied.status, 403);
+  assert.equal(denied.headers.get("access-control-allow-origin"), null);
+  assert.equal((await denied.json()).code, "CORS_ORIGIN_DENIED");
+
+  const preflight = await fetch(server.baseUrl + "/login", {
+    method: "OPTIONS",
+    headers: {
+      Origin: "https://hr.example.com",
+      "Access-Control-Request-Method": "POST",
+      "Access-Control-Request-Headers": "content-type",
+    },
+  });
+  assert.equal(preflight.status, 204);
+  assert.equal(preflight.headers.get("access-control-allow-origin"), "https://hr.example.com");
+});
+
+test("보안 하드닝: 개발/테스트 CORS는 로컬 브라우저 테스트 포트를 허용한다", async (t) => {
+  const server = await startServer();
+  t.after(() => server.stop());
+
+  const allowed = await fetch(server.baseUrl + "/status", {
+    headers: { Origin: "http://127.0.0.1:4300" },
+  });
+  assert.equal(allowed.status, 200);
+  assert.equal(allowed.headers.get("access-control-allow-origin"), "http://127.0.0.1:4300");
+});
