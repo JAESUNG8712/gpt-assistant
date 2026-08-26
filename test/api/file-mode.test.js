@@ -585,6 +585,73 @@ test("file-mode API smoke suite", async (t) => {
     assert.equal(missingRevision.status, 428);
     assert.equal((await missingRevision.json()).code, "SINGLETON_REVISION_REQUIRED");
   });
+
+  await t.test("15) 레코드 revision CAS가 오래된 수정·삭제를 409로 차단한다", async () => {
+    const authHeaders = { "Content-Type": "application/json", Authorization: `Bearer ${adminToken}` };
+    const initial = await (await api("/data", { headers: { Authorization: `Bearer ${adminToken}` } })).json();
+    const post = {
+      id: "record-cas-post-1", categoryId: "notice", title: "초기 제목", content: "본문",
+      authorId: initial.data.employees[0].id, createdAt: "2098-01-01T00:00:00.000Z", updatedAt: "2098-01-01T00:00:00.000Z",
+    };
+    const created = await api("/save", {
+      method: "POST", headers: { ...authHeaders, "Idempotency-Key": "record-cas-create-post" },
+      body: JSON.stringify({ _version: initial.version, _recordCasVersion: 1, _changedSingletonKeys: [], data: { boardPosts: [post] } }),
+    });
+    assert.equal(created.status, 200);
+    const createdBody = await created.json();
+    assert.equal(createdBody.recordRevisions.boardPosts[post.id], 1);
+
+    const base = await (await api("/data", { headers: { Authorization: `Bearer ${adminToken}` } })).json();
+    const basePost = base.data.boardPosts.find(p => p.id === post.id);
+    assert.equal(basePost._rev, 1);
+    const writerA = { ...basePost, title: "작성자 A", updatedAt: "2098-01-02T00:00:00.000Z" };
+    const writerB = { ...basePost, title: "작성자 B", updatedAt: "2098-01-03T00:00:00.000Z" };
+
+    const savedA = await api("/save", {
+      method: "POST", headers: { ...authHeaders, "Idempotency-Key": "record-cas-writer-a" },
+      body: JSON.stringify({ _version: base.version, _recordCasVersion: 1, _changedSingletonKeys: [], data: { boardPosts: [writerA] } }),
+    });
+    assert.equal(savedA.status, 200);
+    assert.equal((await savedA.json()).recordRevisions.boardPosts[post.id], 2);
+
+    const rejectedB = await api("/save", {
+      method: "POST", headers: { ...authHeaders, "Idempotency-Key": "record-cas-writer-b" },
+      body: JSON.stringify({ _version: base.version, _recordCasVersion: 1, _changedSingletonKeys: [], data: { boardPosts: [writerB] } }),
+    });
+    assert.equal(rejectedB.status, 409);
+    const conflict = await rejectedB.json();
+    assert.equal(conflict.code, "RECORD_REVISION_CONFLICT");
+    assert.equal(conflict.details.field, "boardPosts");
+    assert.equal(conflict.details.id, post.id);
+    assert.equal(conflict.details.currentRevision, 2);
+    assert.equal(conflict.details.currentRecord, undefined, "충돌 응답으로 원본 레코드를 노출하면 안 됨");
+
+    const afterA = await (await api("/data", { headers: { Authorization: `Bearer ${adminToken}` } })).json();
+    const storedA = afterA.data.boardPosts.find(p => p.id === post.id);
+    assert.equal(storedA.title, "작성자 A");
+    assert.equal(storedA._rev, 2);
+
+    const savedC = await api("/save", {
+      method: "POST", headers: { ...authHeaders, "Idempotency-Key": "record-cas-writer-c" },
+      body: JSON.stringify({
+        _version: afterA.version, _recordCasVersion: 1, _changedSingletonKeys: [],
+        data: { boardPosts: [{ ...storedA, title: "작성자 C", updatedAt: "2098-01-04T00:00:00.000Z" }] },
+      }),
+    });
+    assert.equal(savedC.status, 200);
+
+    const staleDelete = await api("/save", {
+      method: "POST", headers: { ...authHeaders, "Idempotency-Key": "record-cas-stale-delete" },
+      body: JSON.stringify({
+        _version: afterA.version, _recordCasVersion: 1, _changedSingletonKeys: [],
+        data: { boardPosts: [], recordTombstones: { boardPosts: [{ id: post.id, ts: Date.now(), rev: 2 }] } },
+      }),
+    });
+    assert.equal(staleDelete.status, 409);
+    assert.equal((await staleDelete.json()).code, "RECORD_REVISION_CONFLICT");
+    const finalState = await (await api("/data", { headers: { Authorization: `Bearer ${adminToken}` } })).json();
+    assert.equal(finalState.data.boardPosts.find(p => p.id === post.id).title, "작성자 C");
+  });
 });
 
 // GROQ_API_KEY가 있는 상태에서의 provider 성공/실패/timeout 경로는 키 설정 여부
