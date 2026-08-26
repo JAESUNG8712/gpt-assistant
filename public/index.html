@@ -1039,7 +1039,10 @@ let roomReservationTombstones=[]; // 삭제된 예약 id 기록 {id,ts} - 서버
 // 관리대상/결재양식/급여조정/게시글/필수교육/건강검진/일정/경비청구/초과근무/온보딩/전결위임 등)
 // 전반에도 적용하기 위한 범용 버전. {필드명:[{id,ts},...]} 형태 - 삭제 시 _tombstone(field,id)로 기록.
 let recordTombstones={};
-function _tombstone(field,id){(recordTombstones[field]=recordTombstones[field]||[]).push({id,ts:Date.now()});}
+function _tombstone(field,id){
+  const record=(_recordCollections()[field]||[]).find(r=>r&&String(r.id)===String(id));
+  (recordTombstones[field]=recordTombstones[field]||[]).push({id,ts:Date.now(),rev:Number(record?._rev)||0});
+}
 let certLog=[]; // 증명서 발급 이력 (영구 보존)
 let certRequests=[]; // 증명서 발급 신청 {id,empId,empName,certType,certTitle,reason,submitTo,status:"pending"|"approved"|"rejected",requestedAt,processedAt,processedBy,processedByName,rejectReason,issuedAt}
 let welfarePoints=[]; // 복지포인트 [{id,empId,points,type:"grant"|"use",desc,date,by}]
@@ -1050,6 +1053,21 @@ let approvalDelegations=[]; // 결재 위임 [{id,empId,empName,delegateId,deleg
 let mandatoryTraining=[]; // 법정의무교육 이수 [{id,empId,trainingType,year,completedAt,method,note}]
 let healthCheckupLog=[]; // 종합검진 이수 이력 [{id,empId,year,completedAt,note}]
 let scheduleEvents=[]; // 캘린더 일정 [{id,authorId,title,startDate,endDate,scope:"personal"|"team"|"dept"|"company",dept,team,memo,color,createdAt}]
+function _recordCollections(){return{
+  employees,kpiEntries,compSessions,compResponses,changeRequests,orgChartHistory,
+  coreTalentPool,talentDevPlans,gradeAdjustHistory,tieNotifications,lowPerfData,
+  approvalTemplates,integrationLogs,approvalDocs,attendanceRecords,payslips,
+  payrollAdjustments,leaveUsagePlans,boardPosts,roomReservations,certLog,certRequests,
+  welfarePoints,mandatoryTraining,healthCheckupLog,scheduleEvents,expenseClaims,
+  overtimeRequests,onboardingFlows,approvalDelegations
+};}
+function _applyRecordRevisions(revisions){
+  const collections=_recordCollections();
+  for(const [field,byId] of Object.entries(revisions||{})){
+    const list=collections[field];if(!Array.isArray(list)||!byId)continue;
+    for(const record of list)if(record&&record.id!=null&&Object.prototype.hasOwnProperty.call(byId,String(record.id)))record._rev=Number(byId[String(record.id)])||0;
+  }
+}
 let settings={
   // KPI
   stage:"performance", evalYear:2026,
@@ -1923,6 +1941,42 @@ function _notifyDuplicateLoginIds(duplicates){
   const list = fresh.map(d=>`"${d.loginId}"`).join(", ");
   showToast(`중복된 로그인ID가 발견되었습니다: ${list}. 직원 목록에서 확인 후 정리해 주세요.`,"error");
 }
+let _recordConflictDraft=null;
+async function _handleRecordRevisionConflict(details){
+  const field=details?.field,id=details?.id;
+  const list=_recordCollections()[field];
+  if(!field||id==null||!Array.isArray(list)){
+    showToast("다른 사용자가 같은 자료를 먼저 변경했습니다. 최신 데이터를 불러온 뒤 다시 시도해주세요.","error");
+    return;
+  }
+  const index=list.findIndex(r=>r&&String(r.id)===String(id));
+  const tombstones=recordTombstones[field]||[];
+  const deleteIntent=tombstones.some(t=>t&&String(t.id)===String(id));
+  _recordConflictDraft={field,id,record:index>=0?JSON.parse(JSON.stringify(list[index])):null,deleteIntent};
+  if(index>=0)list.splice(index,1); // loadFromServer가 최신 서버 레코드를 확실히 받아들이게 한다.
+  recordTombstones[field]=tombstones.filter(t=>!t||String(t.id)!==String(id));
+  await loadFromServer();
+  showModal(`<section class="modal modal-sm"><div class="modal-head"><h2>동시 수정 충돌</h2><button class="modal-close" onclick="closeModal()">×</button></div><div class="modal-body">
+    <p>다른 사용자가 <b>${h(field)}</b> 자료를 먼저 변경했습니다. 화면에는 서버의 최신 내용을 적용했습니다.</p>
+    <p class="fz12 text-gray">내 변경을 다시 적용하면 최신 내용을 확인한 뒤 새 revision으로 저장합니다.</p>
+    <div class="modal-actions"><button class="btn btn-secondary" onclick="_keepLatestRecordConflict()">서버 최신 내용 유지</button><button class="btn btn-primary" onclick="_restoreRecordConflictDraft()">내 변경 다시 적용</button></div>
+  </div></section>`);
+}
+function _keepLatestRecordConflict(){_recordConflictDraft=null;closeModal();renderPage();}
+function _restoreRecordConflictDraft(){
+  const draft=_recordConflictDraft;if(!draft)return closeModal();
+  const list=_recordCollections()[draft.field];if(!Array.isArray(list))return closeModal();
+  const index=list.findIndex(r=>r&&String(r.id)===String(draft.id));
+  const current=index>=0?list[index]:null;
+  if(draft.deleteIntent){
+    if(current)_tombstone(draft.field,draft.id);
+    if(index>=0)list.splice(index,1);
+  }else if(draft.record){
+    const restored={...draft.record,_rev:Number(current?._rev)||Number(draft.record._rev)||0,updatedAt:new Date().toISOString()};
+    if(index>=0)list.splice(index,1,restored);else list.push(restored);
+  }
+  _recordConflictDraft=null;closeModal();autoSaveToServerIfEnabled();renderPage();
+}
 function autoSaveDebounced(){
   if(_demoMode){
     clearTimeout(_demoSaveTimer);
@@ -1991,6 +2045,7 @@ async function _doSave(silent=false){
     const r = await serverRequest("POST", "/save", _retrySaveRequest.state, 15000, { idempotencyKey:_retrySaveRequest.idempotencyKey });
     if(r.ok){
       _snapshotSingletonBaselines(_retrySaveRequest.state.data);
+      if(r.recordRevisions)_applyRecordRevisions(r.recordRevisions);
       _retrySaveRequest=null;
       _serverFailCount = 0;
       serverConfig.status = "connected";
@@ -2017,6 +2072,13 @@ async function _doSave(silent=false){
       const err=new Error(r.message||"저장 실패");err.code=r.code;err.details=r.details;throw err;
     }
   } catch(e) {
+    if(e.code==="RECORD_REVISION_CONFLICT"){
+      _retrySaveRequest=null;
+      serverConfig.status="connected";
+      serverConfig.statusMsg="자료 충돌 · 사용자 선택 필요";
+      await _handleRecordRevisionConflict(e.details||{});
+      return;
+    }
     if(e.code==="SINGLETON_REVISION_CONFLICT"){
       _retrySaveRequest=null;
       serverConfig.status="connected";
@@ -4438,7 +4500,7 @@ function executeBulkImport(){
 const CURRENT_SCHEMA_VERSION="8.0";
 
 function getFullState(action=""){
-  const state={_version:_serverVersion,_action:action,_singletonRevisions:{..._singletonRevisions},
+  const state={_version:_serverVersion,_action:action,_recordCasVersion:1,_singletonRevisions:{..._singletonRevisions},
     schemaVersion:CURRENT_SCHEMA_VERSION,
     exportedAt:new Date().toISOString(),
     exportedBy:currentUser?.name||"unknown",

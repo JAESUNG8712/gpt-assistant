@@ -78,4 +78,26 @@ test.describe("로그인·기본 네비게이션", () => {
     await page.keyboard.press("Escape");
     await expect(page.locator("[role=dialog]")).toHaveCount(0);
   });
+
+  test("동시 수정 충돌은 최신 데이터를 다시 읽고 사용자 선택 모달을 표시한다", async ({ page }) => {
+    await page.goto("/");
+    await page.fill("#l-id", "e2e_admin");
+    await page.fill("#l-pw", "E2eTestPw123");
+    await page.click(".login-card button.btn-primary");
+    await expect(page.locator("#main")).toBeVisible({ timeout: 10000 });
+
+    await page.evaluate(() => _handleRecordRevisionConflict({
+      field: "boardPosts",
+      id: "e2e-concurrent-record",
+      currentRevision: 2,
+    }));
+
+    const dialog = page.locator('[role="dialog"][aria-modal="true"]');
+    await expect(dialog).toBeVisible();
+    await expect(dialog).toContainText("다른 사용자가");
+    await expect(dialog.getByRole("button", { name: "서버 최신 내용 유지" })).toBeVisible();
+    await expect(dialog.getByRole("button", { name: "내 변경 다시 적용" })).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(page.locator('[role="dialog"]')).toHaveCount(0);
+  });
 });

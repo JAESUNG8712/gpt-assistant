@@ -355,6 +355,46 @@ if (!ADMIN_DATABASE_URL) {
       } finally { await dbCheck.end(); }
     });
 
+    await t.test("4f) PostgreSQL 전체 저장도 레코드 revision CAS로 stale 수정을 차단", async () => {
+      const headers = { "Content-Type": "application/json", Authorization: `Bearer ${companyAToken}` };
+      const initial = await (await api("/data", { headers: { Authorization: `Bearer ${companyAToken}` } })).json();
+      const post = {
+        id: "pg-record-cas-post", categoryId: "notice", title: "초기", content: "본문",
+        authorId: initial.data.employees[0].id,
+        createdAt: "2098-02-01T00:00:00.000Z", updatedAt: "2098-02-01T00:00:00.000Z",
+      };
+      const created = await api("/save", {
+        method: "POST", headers,
+        body: JSON.stringify({ _version: initial.version, _recordCasVersion: 1, _changedSingletonKeys: [], data: { boardPosts: [post] } }),
+      });
+      assert.equal(created.status, 200);
+      const base = await (await api("/data", { headers: { Authorization: `Bearer ${companyAToken}` } })).json();
+      const basePost = base.data.boardPosts.find(p => p.id === post.id);
+      assert.equal(basePost._rev, 1);
+
+      const savedA = await api("/save", {
+        method: "POST", headers,
+        body: JSON.stringify({
+          _version: base.version, _recordCasVersion: 1, _changedSingletonKeys: [],
+          data: { boardPosts: [{ ...basePost, title: "A", updatedAt: "2098-02-02T00:00:00.000Z" }] },
+        }),
+      });
+      assert.equal(savedA.status, 200);
+      const staleB = await api("/save", {
+        method: "POST", headers,
+        body: JSON.stringify({
+          _version: base.version, _recordCasVersion: 1, _changedSingletonKeys: [],
+          data: { boardPosts: [{ ...basePost, title: "B", updatedAt: "2098-02-03T00:00:00.000Z" }] },
+        }),
+      });
+      assert.equal(staleB.status, 409);
+      const conflict = await staleB.json();
+      assert.equal(conflict.code, "RECORD_REVISION_CONFLICT");
+      assert.equal(conflict.details.currentRevision, 2);
+      const finalState = await (await api("/data", { headers: { Authorization: `Bearer ${companyAToken}` } })).json();
+      assert.equal(finalState.data.boardPosts.find(p => p.id === post.id).title, "A");
+    });
+
     let companyBToken;
     await t.test("5) 두 번째 회사 가입 — 다른 companyCode 자동 배정", async () => {
       const res = await api("/api/companies/register", {

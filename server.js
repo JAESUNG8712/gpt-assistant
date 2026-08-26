@@ -2232,6 +2232,68 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
 // record has the newer updatedAt/createdAt. Used so a client saving with a
 // stale local copy of a list (e.g. attendanceRecords) doesn't blow away records
 // another client added/edited in the meantime.
+function _recordTimestamp(record) {
+  return String(record?.updatedAt || record?.createdAt || "");
+}
+
+function _recordConflict(field, id, currentRevision) {
+  throw httpError(409, "RECORD_REVISION_CONFLICT", "다른 사용자가 같은 자료를 먼저 변경했습니다. 최신 자료를 확인한 뒤 다시 시도하세요.", {
+    field, id, currentRevision,
+  });
+}
+
+// 저장 전에 서버 스냅샷과 클라이언트가 조회했던 _rev를 대조하고, 실제 수정된 레코드에만
+// 다음 revision을 부여한다. 동일 timestamp의 전체상태 echo는 수정으로 오인하지 않는다.
+function _applyRecordCas(serverData, clientData) {
+  for (const field of ID_KEYED_LIST_FIELDS) {
+    if (!Array.isArray(clientData[field])) continue;
+    const storedById = new Map((serverData[field] || []).filter(r => r && r.id != null).map(r => [String(r.id), r]));
+    for (const record of clientData[field]) {
+      if (!record || record.id == null) continue;
+      const stored = storedById.get(String(record.id));
+      if (!stored) {
+        record._rev = 1;
+        continue;
+      }
+      const currentRevision = Number(stored._rev) || 0;
+      const incomingRevision = Number(record._rev) || 0;
+      if (_recordTimestamp(record) > _recordTimestamp(stored)) {
+        if (incomingRevision !== currentRevision) _recordConflict(field, record.id, currentRevision);
+        record._rev = currentRevision + 1;
+      } else {
+        record._rev = currentRevision;
+      }
+    }
+  }
+
+  // 삭제도 수정과 같은 CAS 대상이다. 삭제 당시 revision과 현재 값이 다르면 최신 수정을
+  // 오래된 탭의 삭제로 덮지 않는다. rev가 없는 레거시 tombstone은 기존 동작을 유지한다.
+  for (const [field, tombstones] of Object.entries(clientData.recordTombstones || {})) {
+    if (!ID_KEYED_LIST_FIELDS.includes(field) || !Array.isArray(tombstones)) continue;
+    const storedById = new Map((serverData[field] || []).filter(r => r && r.id != null).map(r => [String(r.id), r]));
+    for (const tombstone of tombstones) {
+      if (!tombstone || tombstone.id == null || !Object.prototype.hasOwnProperty.call(tombstone, "rev")) continue;
+      const stored = storedById.get(String(tombstone.id));
+      if (!stored) continue;
+      const currentRevision = Number(stored._rev) || 0;
+      if ((Number(tombstone.rev) || 0) !== currentRevision) {
+        _recordConflict(field, tombstone.id, currentRevision);
+      }
+    }
+  }
+}
+
+function _collectRecordRevisions(data) {
+  const result = {};
+  for (const field of ID_KEYED_LIST_FIELDS) {
+    if (!Array.isArray(data[field])) continue;
+    result[field] = Object.fromEntries(data[field]
+      .filter(record => record && record.id != null)
+      .map(record => [String(record.id), Number(record._rev) || 0]));
+  }
+  return result;
+}
+
 function mergeArrayById(serverArr, clientArr) {
   if (!Array.isArray(clientArr)) return Array.isArray(serverArr) ? serverArr : [];
   if (!Array.isArray(serverArr)) return clientArr;
@@ -3622,18 +3684,25 @@ app.post("/save", async (req, res) => {
   // getFullState() sends { _version, _action, data: { employees, kpiEntries, ... } }
   // Unwrap nested .data if present so persistData sees a flat structure
   const clientData = body.data
-    ? { ...body.data, _version: body._version, _user: body._user, _singletonRevisions: body._singletonRevisions || body.data._singletonRevisions, _changedSingletonKeys: body._changedSingletonKeys }
+    ? { ...body.data, _version: body._version, _user: body._user, _singletonRevisions: body._singletonRevisions || body.data._singletonRevisions, _changedSingletonKeys: body._changedSingletonKeys, _recordCasVersion: body._recordCasVersion }
     : body;
   // 새 웹 클라이언트는 변경 키 목록을 항상 전송한다. 목록이 없는 레거시 백업/연동은
   // 기존 동작을 유지해 즉시 단절시키지 않고, 목록이 있는 요청에는 strict CAS를 강제한다.
   clientData._enforceSingletonCas = Array.isArray(clientData._changedSingletonKeys);
 
   try {
-    const { finalData, merged, duplicateLoginIds, singletonRevisions } = await _withSaveLock(() => _withDistributedSaveLock(companyId, async () => {
+    const { finalData, merged, duplicateLoginIds, singletonRevisions, recordRevisions } = await _withSaveLock(() => _withDistributedSaveLock(companyId, async () => {
       let finalData = clientData;
       let merged    = false;
       let serverData;
       const getServerData = async () => (serverData ??= await loadData(companyId));
+
+      // 새 웹 클라이언트는 레코드마다 서버가 발급한 _rev를 다시 보낸다. 수정 시점의
+      // revision과 현재 서버 revision이 다르면 updatedAt이 더 최신이어도 덮어쓰지 않는다.
+      // 레거시 백업/연동은 _recordCasVersion을 보내지 않으므로 기존 병합 계약을 유지한다.
+      if (Number(clientData._recordCasVersion) === 1) {
+        _applyRecordCas(await getServerData(), clientData);
+      }
 
       // Re-checked *inside* the lock so a request that arrived while another
       // save was in flight sees the version that request just committed,
@@ -3679,7 +3748,14 @@ app.post("/save", async (req, res) => {
       finalData = _revertDisabledFeatureFields(finalData, req.auth?.companyFeatures);
       const { duplicateLoginIds } = await _persistDataLocked(finalData, changedBy, companyId, req.auth || null);
       const savedState = await loadData(companyId);
-      return { finalData, merged, duplicateLoginIds, singletonRevisions: savedState._singletonRevisions || {} };
+      const visibleSavedState = filterDataForRole(stripPwField(savedState), req.auth);
+      return {
+        finalData, merged, duplicateLoginIds,
+        singletonRevisions: savedState._singletonRevisions || {},
+        // 필터링 전 전체 revision map은 숨겨진 레코드 id의 존재를 노출할 수 있으므로
+        // 현재 역할이 GET /data에서 볼 수 있는 레코드에 한해서만 반환한다.
+        recordRevisions: _collectRecordRevisions(visibleSavedState),
+      };
     }));
 
     const meta = {
@@ -3691,6 +3767,7 @@ app.post("/save", async (req, res) => {
     res.json({
       ok: true, version: _getVersion(companyId), merged,
       singletonRevisions,
+      recordRevisions,
       mergedData: merged ? filterDataForRole(stripPwField(finalData), req.auth) : undefined,
       meta,
       warnings: duplicateLoginIds && duplicateLoginIds.length ? { duplicateLoginIds } : undefined,
