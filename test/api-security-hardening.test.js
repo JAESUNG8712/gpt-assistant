@@ -192,3 +192,72 @@ test("보안 하드닝: SSE 온라인 표시명은 query.user가 아니라 인�
   assert.ok(row);
   assert.equal(row.user, "서버검증관리자");
 });
+
+test("보안 하드닝: 동시편집 잠금은 body.userName 위조와 타인 unlock을 허용하지 않는다", async (t) => {
+  const server = await startServer();
+  t.after(() => server.stop());
+
+  const boot = await fetch(server.baseUrl + "/api/bootstrap/admin", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Bootstrap-Secret": "test-bootstrap-secret" },
+    body: JSON.stringify({ loginId: "lock_admin", pw: "lock-admin-password", name: "잠금관리자" }),
+  });
+  assert.equal(boot.status, 201);
+
+  const adminLogin = await (await fetch(server.baseUrl + "/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ loginId: "lock_admin", pw: "lock-admin-password" }),
+  })).json();
+  assert.equal(adminLogin.ok, true);
+
+  const initial = await (await fetch(server.baseUrl + "/data", {
+    headers: { Authorization: `Bearer ${adminLogin.token}` },
+  })).json();
+  const seed = await fetch(server.baseUrl + "/save", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${adminLogin.token}` },
+    body: JSON.stringify({
+      _version: initial.version,
+      data: {
+        ...initial.data,
+        employees: [
+          ...initial.data.employees,
+          { id: "lock-member", loginId: "lock_member", pw: "lock-member-password", role: "member", name: "잠금일반사용자", empNo: "L2", active: true },
+        ],
+      },
+    }),
+  });
+  assert.equal(seed.status, 200);
+
+  const memberLogin = await (await fetch(server.baseUrl + "/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ loginId: "lock_member", pw: "lock-member-password" }),
+  })).json();
+  assert.equal(memberLogin.ok, true);
+
+  const lock = await (await fetch(server.baseUrl + "/lock", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${adminLogin.token}` },
+    body: JSON.stringify({ key: "emp:lock-test", userId: "admin-tab", userName: "대표이사 위조", targetLabel: "직원 수정" }),
+  })).json();
+  assert.equal(lock.ok, true);
+  assert.equal(lock.lock.userId, "admin-tab", "프론트 탭 식별자는 호환을 위해 유지한다");
+  assert.equal(lock.lock.userName, "잠금관리자", "표시명은 인증된 직원명이어야 한다");
+
+  const spoofUnlock = await fetch(server.baseUrl + "/unlock", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${memberLogin.token}` },
+    body: JSON.stringify({ key: "emp:lock-test", userId: "admin-tab", userName: "잠금관리자" }),
+  });
+  assert.equal(spoofUnlock.status, 200);
+
+  const conflict = await (await fetch(server.baseUrl + "/lock", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${memberLogin.token}` },
+    body: JSON.stringify({ key: "emp:lock-test", userId: "member-tab", userName: "잠금일반사용자" }),
+  })).json();
+  assert.equal(conflict.ok, false, "타인이 userId를 맞춰 보내도 기존 잠금은 풀리지 않아야 한다");
+  assert.equal(conflict.lock.userName, "잠금관리자");
+});
