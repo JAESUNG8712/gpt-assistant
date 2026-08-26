@@ -76,9 +76,19 @@ app.set("trust proxy", 1);
 // 바뀌면 전 직원 세션이 예고 없이 무효화되고 다중 인스턴스 간 토큰 검증도 흔들린다.
 // 따라서 production에서는 SESSION_SECRET을 고정값으로 설정하지 않으면 fail-fast 한다.
 const IS_PRODUCTION = process.env.NODE_ENV === "production";
-if (IS_PRODUCTION && !process.env.SESSION_SECRET) {
-  console.error("[치명적 오류] SESSION_SECRET 환경변수가 필요합니다. 운영 배포에서는 고정된 32바이트 이상의 랜덤 문자열을 설정하세요.");
-  process.exit(1);
+const MIN_SESSION_SECRET_BYTES = 32;
+function _utf8ByteLength(value) {
+  return Buffer.byteLength(String(value || ""), "utf8");
+}
+if (IS_PRODUCTION) {
+  if (!process.env.SESSION_SECRET) {
+    console.error("[치명적 오류] SESSION_SECRET 환경변수가 필요합니다. 운영 배포에서는 고정된 32바이트 이상의 랜덤 문자열을 설정하세요.");
+    process.exit(1);
+  }
+  if (_utf8ByteLength(process.env.SESSION_SECRET) < MIN_SESSION_SECRET_BYTES) {
+    console.error(`[치명적 오류] SESSION_SECRET은 최소 ${MIN_SESSION_SECRET_BYTES}바이트 이상이어야 합니다. 운영 배포에서는 충분히 긴 랜덤 문자열을 설정하세요.`);
+    process.exit(1);
+  }
 }
 const SESSION_SECRET = process.env.SESSION_SECRET || crypto.randomBytes(32).toString("hex");
 if (!process.env.SESSION_SECRET) {
@@ -2670,6 +2680,7 @@ function _splitEnvList(name) {
 function _normalizeOrigin(origin) {
   try {
     const parsed = new URL(origin);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return "";
     parsed.pathname = "";
     parsed.search = "";
     parsed.hash = "";
@@ -2705,7 +2716,22 @@ function _buildAllowedOrigins() {
   } else {
     configured.push("http://localhost:3000", "http://127.0.0.1:3000");
   }
-  return new Set(configured.map(_normalizeOrigin).filter(Boolean));
+  const normalized = new Set();
+  const rejected = [];
+  for (const value of configured.filter(Boolean)) {
+    if (String(value).trim() === "*") {
+      rejected.push(value);
+      continue;
+    }
+    const origin = _normalizeOrigin(value);
+    if (origin) normalized.add(origin);
+    else rejected.push(value);
+  }
+  if (IS_PRODUCTION && rejected.length) {
+    console.error(`[치명적 오류] CORS 허용 Origin 설정이 올바르지 않습니다: ${rejected.join(", ")}. https://도메인 형식으로 지정하고 '*'는 사용할 수 없습니다.`);
+    process.exit(1);
+  }
+  return normalized;
 }
 
 const ALLOWED_CORS_ORIGINS = _buildAllowedOrigins();
