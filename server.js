@@ -188,7 +188,13 @@ async function authenticate(req, res, next) {
   // 요청마다 추가 DB 왕복이 생기지 않는다(_getCompanyFeatureMap 정의부 주석 참고).
   // requireFeature()가 이 값을 그대로 동기적으로 검사한다.
   const companyFeatures = await _getCompanyFeatureMap(auth.companyId || null);
-  req.auth = { ...auth, menuPerms: (employee && employee.menuPerms) || {}, companyFeatures };
+  req.auth = {
+    ...auth,
+    menuPerms: (employee && employee.menuPerms) || {},
+    companyFeatures,
+    actorKey: _authenticatedActorKey(auth),
+    displayName: _authenticatedDisplayName(auth, employee),
+  };
   next();
 }
 function requireAuth(req, res) {
@@ -2856,6 +2862,12 @@ app.use(authenticate);
 function _actorLabel(req) {
   return req?.auth?.loginId || (req?.auth?.empId != null ? `emp:${req.auth.empId}` : "system");
 }
+function _authenticatedActorKey(auth) {
+  if (auth?.empId != null) return `emp:${auth.empId}`;
+  if (auth?.masterId != null) return `master:${auth.masterId}`;
+  if (auth?.loginId) return `login:${auth.loginId}`;
+  return "system";
+}
 function _authenticatedDisplayName(auth, employee) {
   return String(employee?.name || auth?.loginId || (auth?.empId != null ? `emp:${auth.empId}` : "master-admin"));
 }
@@ -4177,19 +4189,31 @@ app.get("/online", (req, res) => {
 app.post("/lock", (req, res) => {
   if (!requireAuth(req, res)) return;
   const companyId = req.auth.companyId || null;
-  const { key, userId, userName, targetLabel, ttlMs = 30 * 60 * 1000 } = req.body;
+  const { key, userId, targetLabel, ttlMs = 30 * 60 * 1000 } = req.body;
   if (!key || !userId)
     return res.status(400).json({ ok: false, message: "key, userId 필요" });
   // 잠금 키를 회사별로 완전히 분리한다 — 접두어 없이는 이론상 두 회사가 같은 키(예: "emp:123",
   // employee id는 전역 유일이라 실제로는 충돌하지 않지만 방어적으로) 로 서로의 잠금을
   // 덮어쓰거나 뺏을 수 있었다.
   const fullKey = `${_scopeKey(companyId)}:${key}`;
+  const ownerKey = req.auth.actorKey || _authenticatedActorKey(req.auth);
+  const clientId = String(userId);
 
   const ex = _locks[fullKey];
-  if (ex && ex.userId !== userId && Date.now() < ex.expiresAt)
+  if (ex && (ex.ownerKey !== ownerKey || ex.userId !== clientId) && Date.now() < ex.expiresAt)
     return res.json({ ok: false, lock: ex });
 
-  _locks[fullKey] = { userId, userName, targetLabel, acquiredAt: Date.now(), expiresAt: Date.now() + ttlMs };
+  // userId는 프론트의 탭별 clientId라 기존 UI 호환을 위해 유지하되, 실제 소유권 판단은
+  // 인증된 계정에서 만든 ownerKey로 한다. userName은 body를 신뢰하지 않고 서버가 확인한
+  // 직원명/로그인ID만 사용해 "대표이사" 등 표시명 위조를 막는다.
+  _locks[fullKey] = {
+    userId: clientId,
+    ownerKey,
+    userName: req.auth.displayName || _authenticatedDisplayName(req.auth),
+    targetLabel,
+    acquiredAt: Date.now(),
+    expiresAt: Date.now() + ttlMs,
+  };
   broadcastSSE("locks_update", _locksForCompany(companyId), null, companyId);
   res.json({ ok: true, lock: _locks[fullKey] });
 });
@@ -4210,7 +4234,12 @@ app.post("/unlock", (req, res) => {
   if (force && !isExpired && (!req.auth || req.auth.role !== "admin")) {
     return res.status(403).json({ ok: false, message: "관리자만 잠금을 강제 해제할 수 있습니다." });
   }
-  if (ex && (ex.userId === userId || force)) {
+  const ownerKey = req.auth.actorKey || _authenticatedActorKey(req.auth);
+  const clientId = userId != null ? String(userId) : "";
+  const ownsLock = ex && ex.ownerKey
+    ? ex.ownerKey === ownerKey && ex.userId === clientId
+    : ex && ex.userId === clientId; // 배포 직전 메모리에 남은 구형 lock 호환
+  if (ex && (ownsLock || force)) {
     delete _locks[fullKey];
     broadcastSSE("locks_update", _locksForCompany(companyId), null, companyId);
   }
