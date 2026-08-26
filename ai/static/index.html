@@ -888,6 +888,20 @@
   // (2026-08-10: 토큰 미설정 시 무조건 통과하던 fail-open을 fail-closed로 바꾸면서,
   //  이 화면도 토큰을 실어 보내야 정상 동작한다.)
   // 값은 이 브라우저에만 저장하고 서버로는 요청 파라미터로만 나간다.
+  // 매번 Render에서 값을 확인해 붙여넣지 않도록, ?admin_token=<값>으로 접속하면
+  // 자동으로 저장된다(budget.html과 동일 패턴) — 이 URL을 북마크해두면 브라우저·기기가
+  // 바뀌어도 다시 물어보지 않는다. share= 파라미터(공유 링크 방문자용)와는 별개다.
+  // 저장 후에는 주소창/방문기록에 토큰이 남지 않도록 URL에서 즉시 제거한다(북마크는 그대로 유지됨).
+  (function () {
+    const params = new URLSearchParams(window.location.search);
+    const urlTok = params.get('admin_token');
+    if (urlTok) {
+      localStorage.setItem('ai_admin_token', urlTok.trim());
+      params.delete('admin_token');
+      const rest = params.toString();
+      history.replaceState(null, '', window.location.pathname + (rest ? '?' + rest : ''));
+    }
+  })();
   const ADMIN_TOKEN_KEY = 'ai_admin_token';
   function getAdminToken(force) {
     let t = localStorage.getItem(ADMIN_TOKEN_KEY) || '';

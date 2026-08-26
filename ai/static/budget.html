@@ -686,6 +686,19 @@
   // ── 관리자 토큰 (BACKUP_TOKEN) ────────────────────────────────────────────
   // 예산 API는 서버에서 ?token=<BACKUP_TOKEN> 을 요구한다(2026-08-10 게이팅 추가).
   // 값은 index.html과 같은 키를 써서 한 번만 입력하면 양쪽에서 공유된다.
+  // 매번 Render에서 값을 확인해 붙여넣지 않도록, ?admin_token=<값>으로 접속하면
+  // 자동으로 저장된다 — 이 URL을 북마크해두면 브라우저·기기가 바뀌어도 다시 물어보지 않는다.
+  // 저장 후에는 주소창/방문기록에 토큰이 남지 않도록 URL에서 즉시 제거한다(북마크 자체는 그대로 유지됨).
+  (function () {
+    const params = new URLSearchParams(window.location.search);
+    const urlTok = params.get('admin_token');
+    if (urlTok) {
+      localStorage.setItem('ai_admin_token', urlTok.trim());
+      params.delete('admin_token');
+      const rest = params.toString();
+      history.replaceState(null, '', window.location.pathname + (rest ? '?' + rest : ''));
+    }
+  })();
   const ADMIN_TOKEN_KEY = 'ai_admin_token';
   function getAdminToken(force) {
     let t = localStorage.getItem(ADMIN_TOKEN_KEY) || '';
