@@ -150,3 +150,45 @@ test("보안 하드닝: 개발/테스트 CORS는 로컬 브라우저 테스트 �
   assert.equal(allowed.status, 200);
   assert.equal(allowed.headers.get("access-control-allow-origin"), "http://127.0.0.1:4300");
 });
+
+test("보안 하드닝: SSE 온라인 표시명은 query.user가 아니라 인증된 직원명으로 고정된다", async (t) => {
+  const server = await startServer();
+  t.after(() => server.stop());
+
+  const boot = await fetch(server.baseUrl + "/api/bootstrap/admin", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Bootstrap-Secret": "test-bootstrap-secret" },
+    body: JSON.stringify({ loginId: "sse_admin", pw: "sse-admin-password", name: "서버검증관리자" }),
+  });
+  assert.equal(boot.status, 201);
+
+  const login = await (await fetch(server.baseUrl + "/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ loginId: "sse_admin", pw: "sse-admin-password" }),
+  })).json();
+  assert.equal(login.ok, true);
+
+  const ticket = await (await fetch(server.baseUrl + "/events/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${login.token}` },
+    body: "{}",
+  })).json();
+  assert.equal(ticket.ok, true);
+
+  const controller = new AbortController();
+  const events = await fetch(
+    server.baseUrl + `/events?clientId=spoof-client&user=${encodeURIComponent("대표이사 위조")}&token=${encodeURIComponent(ticket.token)}`,
+    { signal: controller.signal }
+  );
+  t.after(() => controller.abort());
+  assert.equal(events.status, 200);
+
+  const online = await (await fetch(server.baseUrl + "/online", {
+    headers: { Authorization: `Bearer ${login.token}` },
+  })).json();
+  assert.equal(online.ok, true);
+  const row = online.users.find(u => u.clientId === "spoof-client");
+  assert.ok(row);
+  assert.equal(row.user, "서버검증관리자");
+});
