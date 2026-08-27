@@ -1,5 +1,6 @@
 const express = require('express');
 const cors = require('cors');
+const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 
@@ -10,6 +11,33 @@ const DATA_FILE = path.join(__dirname, 'data.json');
 app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
+
+// ── 관리자 토큰 (데이터 변경 엔드포인트 보호) ────────────────────────
+// 에이전트 고정/해제, 프로젝트 메모리 추가·삭제 등 데이터를 바꾸는 요청에
+// 인증이 전혀 없어 누구나 계정 데이터를 마음대로 바꿀 수 있었던 문제를 수정.
+// ai/main.py의 BACKUP_TOKEN과 동일한 방식(쿼리 파라미터 token, 미설정 시
+// fail-closed — 열리는 쪽이 아니라 닫히는 쪽으로 실패)으로 통일.
+const AGENT_ADMIN_TOKEN = process.env.AGENT_ADMIN_TOKEN || '';
+if (!AGENT_ADMIN_TOKEN) {
+  console.warn(
+    '⚠️  AGENT_ADMIN_TOKEN 환경변수가 설정되지 않았습니다. ' +
+    '에이전트 고정/해제, 메모리 추가/삭제 등 데이터 변경 API가 모두 403으로 ' +
+    '비활성화됩니다(fail-closed). 조회(GET) API는 토큰 없이 그대로 동작합니다.'
+  );
+}
+
+function requireToken(req, res, next) {
+  const token = req.query.token || '';
+  const tokenBuf = Buffer.from(String(token));
+  const expectedBuf = Buffer.from(AGENT_ADMIN_TOKEN);
+  const valid = AGENT_ADMIN_TOKEN &&
+    tokenBuf.length === expectedBuf.length &&
+    crypto.timingSafeEqual(tokenBuf, expectedBuf);
+  if (!valid) {
+    return res.status(403).json({ error: '유효한 token 파라미터가 필요합니다.' });
+  }
+  next();
+}
 
 function readData() {
   return JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
@@ -74,7 +102,7 @@ app.get('/api/accounts/by-email/:email/pinned-agents', (req, res) => {
 });
 
 // 에이전트 고정
-app.post('/api/accounts/:accountId/pinned-agents/:agentId', (req, res) => {
+app.post('/api/accounts/:accountId/pinned-agents/:agentId', requireToken, (req, res) => {
   const data = readData();
   const account = data.accounts.find(a => a.id === req.params.accountId);
   const agent = data.agents.find(a => a.id === req.params.agentId);
@@ -89,7 +117,7 @@ app.post('/api/accounts/:accountId/pinned-agents/:agentId', (req, res) => {
 });
 
 // 에이전트 고정 해제
-app.delete('/api/accounts/:accountId/pinned-agents/:agentId', (req, res) => {
+app.delete('/api/accounts/:accountId/pinned-agents/:agentId', requireToken, (req, res) => {
   const data = readData();
   const account = data.accounts.find(a => a.id === req.params.accountId);
   const agent = data.agents.find(a => a.id === req.params.agentId);
@@ -111,7 +139,7 @@ app.get('/api/accounts/:accountId/memory', (req, res) => {
 });
 
 // 프로젝트 맥락 추가 (대화/결정 사항 기억)
-app.post('/api/accounts/:accountId/memory/context', (req, res) => {
+app.post('/api/accounts/:accountId/memory/context', requireToken, (req, res) => {
   const { content, type = 'note' } = req.body;
   if (!content) return res.status(400).json({ error: 'content가 필요합니다.' });
 
@@ -129,7 +157,7 @@ app.post('/api/accounts/:accountId/memory/context', (req, res) => {
 });
 
 // 결정 사항 저장
-app.post('/api/accounts/:accountId/memory/decisions', (req, res) => {
+app.post('/api/accounts/:accountId/memory/decisions', requireToken, (req, res) => {
   const { content } = req.body;
   if (!content) return res.status(400).json({ error: 'content가 필요합니다.' });
 
@@ -147,7 +175,7 @@ app.post('/api/accounts/:accountId/memory/decisions', (req, res) => {
 });
 
 // 메모리 항목 삭제
-app.delete('/api/accounts/:accountId/memory/context/:entryId', (req, res) => {
+app.delete('/api/accounts/:accountId/memory/context/:entryId', requireToken, (req, res) => {
   const data = readData();
   const account = data.accounts.find(a => a.id === req.params.accountId);
   if (!account) return res.status(404).json({ error: '계정을 찾을 수 없습니다.' });
