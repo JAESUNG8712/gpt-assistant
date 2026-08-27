@@ -177,6 +177,44 @@ test("blob 동기화(/save) 컬렉션의 menuPerms/권한 확장 — kpiEntries�
     assert.equal(emp.gradeResults?.["2026"]?.grade, "B");
   });
 
+  // 2026-08-27 감사에서 발견: preserveServerOwnedStateForNonAdmin()이 director의 정당한
+  // gradeResults 조정을 통과시키도록 위 회귀(2026-08-24)를 고칠 때, 그 조정 대상 레코드를
+  // stored(요청 시작 시점 DB 값) 기준으로 `{...stored, gradeResults, updatedAt}`만 다시
+  // 만드는 방식을 썼는데, `_applyRecordCas()`가 조금 앞서 계산해 candidate._rev에 실어둔
+  // CAS revision 값은 옮기지 않아 저장된 _rev가 영원히 옛 값에 머물렀다 — 그러면 이후
+  // 요청이 여전히 그 옛 rev로 CAS를 통과해, 두 director가 같은 팀원의 등급을 거의 동시에
+  // 조정하면 두 번째 저장이 409 없이 첫 번째 저장을 조용히 덮어쓴다(CAS가 막으려던 바로
+  // 그 lost-update가 이 함수를 통과하는 유일한 non-admin 타인쓰기 경로에서만 무력화돼
+  // 있었다). 이 테스트는 CAS를 실제로 켠 상태(_recordCasVersion:1)로 그 경합을 재현한다.
+  await t.test("director의 gradeResults 조정도 CAS(_recordCasVersion:1)로 보호된다 — 두 사업부장이 거의 동시에 조정하면 두 번째가 409로 거부된다", async () => {
+    const base = await getData(api, dir1Token);
+    const memberBBase = base.data.employees.find(e => e.id === "memberB");
+
+    const dir3Save = await api("/save", auth(dir1Token, "POST", {
+      _version: base.version, _recordCasVersion: 1, _changedSingletonKeys: [],
+      data: { employees: [{ ...memberBBase, gradeResults: { 2026: { grade: "A" } }, updatedAt: "2098-02-01T00:00:00.000Z" }] },
+    }));
+    assert.equal(dir3Save.status, 200, `첫 저장 실패: ${JSON.stringify(await dir3Save.json())}`);
+
+    const afterFirst = await empOf("memberB");
+    assert.equal(afterFirst.gradeResults?.["2026"]?.grade, "A");
+    assert.ok(Number(afterFirst._rev) > (Number(memberBBase._rev) || 0), "CAS가 계산한 _rev 증가분이 저장에 반영돼야 한다");
+
+    // dir3(같은 부서 사업부장)이 memberBBase 시점의 stale 스냅샷으로(방금 dir1의 저장을
+    // 전혀 못 본 채) 경합 조정을 시도한다 — 수정 전에는 _rev가 절대 증가하지 않아 이
+    // 저장이 409 없이 그대로 통과해 dir1의 "A" 조정을 조용히 "B"로 덮어썼다.
+    const raceSave = await api("/save", auth(dir3Token, "POST", {
+      _version: base.version, _recordCasVersion: 1, _changedSingletonKeys: [],
+      data: { employees: [{ ...memberBBase, gradeResults: { 2026: { grade: "B" } }, updatedAt: "2098-02-02T00:00:00.000Z" }] },
+    }));
+    const raceBody = await raceSave.json();
+    assert.equal(raceSave.status, 409, `stale CAS로 두 번째 조정이 409 없이 통과됨: ${JSON.stringify(raceBody)}`);
+    assert.equal(raceBody.code, "RECORD_REVISION_CONFLICT");
+
+    const finalEmp = await empOf("memberB");
+    assert.equal(finalEmp.gradeResults?.["2026"]?.grade, "A", "dir1의 정상 저장이 dir3의 stale 저장에 덮어써지면 안 된다");
+  });
+
   await t.test("사원 본인은 다면평가 최종등급(compGradeResults)도 직접 조작할 수 없다", async () => {
     const d = await getData(api, memberAToken);
     const r = await api("/save", auth(memberAToken, "POST", {

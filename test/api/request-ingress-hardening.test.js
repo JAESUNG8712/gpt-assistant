@@ -148,3 +148,41 @@ test("익명 쓰기 요청은 읽기 상태 확인과 별도로 ingress rate lim
   assert.equal(limited.status, 429);
   assert.equal((await limited.json()).code, "REQUEST_RATE_LIMITED");
 });
+
+// 2026-08-27 병행 세션 감사에서 발견: anonymousWriteLimiter가 /login처럼 이미 전용
+// loginLimiter(skipSuccessfulRequests:true)로 보호되는 경로까지 블랭킷으로 카운트해,
+// 같은 IP 뒤에서 여러 명이 정상 로그인만 반복해도 loginLimiter가 실행되기도 전에 여기서
+// 먼저 429가 나던 문제(2026-07-16에 loginLimiter 자체에서 이미 한 번 고쳤던 문제의 재발).
+test("전용 rate limiter가 있는 경로(/login 등)는 blanket anonymousWriteLimiter 카운트에서 제외된다", async t => {
+  const server = await startServer({ env: { INGRESS_RATE_LIMIT_ANON_MAX: "3" } });
+  t.after(() => server.stop());
+
+  // INGRESS_RATE_LIMIT_ANON_MAX=3이므로, 예외가 없다면 4번째 로그인 시도부터 429가 나야
+  // 정상이다 — 틀린 비밀번호를 5번 연속 시도해도(anonymousWriteLimiter만 보면 이미 한도
+  // 초과) 429가 아니라 loginLimiter의 판단(403)만 나와야 한다.
+  for (let i = 0; i < 5; i += 1) {
+    const response = await fetch(server.baseUrl + "/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ loginId: "no-such-user", pw: "wrong-password" }),
+    });
+    assert.notEqual(response.status, 429, `${i + 1}번째 시도에서 anonymousWriteLimiter에 막힘 — 전용 limiter로 넘어가지 못함`);
+  }
+
+  // 예외 목록에 없는 다른 익명 쓰기 경로는 여전히 blanket 한도가 그대로 적용돼야 한다
+  // (이번 수정이 안전망 자체를 무력화한 게 아님을 확인).
+  for (let i = 0; i < 3; i += 1) {
+    const response = await fetch(server.baseUrl + "/not-a-real-write-route", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
+    assert.notEqual(response.status, 429);
+  }
+  const stillLimited = await fetch(server.baseUrl + "/not-a-real-write-route", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: "{}",
+  });
+  assert.equal(stillLimited.status, 429, "예외 목록 밖의 익명 쓰기 경로는 계속 제한돼야 함");
+});

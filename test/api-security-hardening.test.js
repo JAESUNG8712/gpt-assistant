@@ -220,6 +220,60 @@ test("보안 하드닝: SSE 온라인 표시명은 query.user가 아니라 인�
   assert.equal(row.user, "서버검증관리자");
 });
 
+// 2026-08-27 병행 세션 감사에서 발견·수정: POST /events/token이 발급하는 5분짜리
+// scope:"sse" 티켓은 GET /events 전용으로 설계됐는데(그 라우트 주석 참고), authenticate()가
+// scope를 전혀 확인하지 않아 이 티켓을 그대로 Authorization: Bearer 헤더에 실으면 유효
+// 기간(5분) 동안 다른 어떤 API도 완전한 사용자 권한으로 호출할 수 있었다 — 설계 의도
+// ("다른 API에서는 재사용 불가")와 어긋나는 실제 공격면 확대였다(실측 확인).
+test("보안 하드닝: SSE 전용 티켓(scope:sse)은 /events 외의 API를 인증하지 못한다", async (t) => {
+  const server = await startServer();
+  t.after(() => server.stop());
+
+  const boot = await fetch(server.baseUrl + "/api/bootstrap/admin", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Bootstrap-Secret": "test-bootstrap-secret" },
+    body: JSON.stringify({ loginId: "sse_scope_admin", pw: "sse-scope-password", name: "SSE스코프관리자" }),
+  });
+  assert.equal(boot.status, 201);
+
+  const login = await (await fetch(server.baseUrl + "/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ loginId: "sse_scope_admin", pw: "sse-scope-password" }),
+  })).json();
+  assert.equal(login.ok, true);
+
+  const ticket = await (await fetch(server.baseUrl + "/events/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${login.token}` },
+    body: "{}",
+  })).json();
+  assert.equal(ticket.ok, true);
+
+  await t.test("SSE 티켓을 다른 API에 Bearer 헤더로 재사용하면 미인증으로 처리된다", async () => {
+    const abused = await fetch(server.baseUrl + "/data", {
+      headers: { Authorization: `Bearer ${ticket.token}` },
+    });
+    assert.equal(abused.status, 401);
+  });
+
+  await t.test("정상 흐름(쿼리스트링으로 /events 접속)은 계속 정상 동작한다", async () => {
+    const controller = new AbortController();
+    const events = await fetch(server.baseUrl + `/events?token=${encodeURIComponent(ticket.token)}`, {
+      signal: controller.signal,
+    });
+    controller.abort();
+    assert.equal(events.status, 200);
+  });
+
+  await t.test("일반 로그인 토큰은 계속 모든 API를 정상 인증한다(과잉차단 아님)", async () => {
+    const normal = await fetch(server.baseUrl + "/data", {
+      headers: { Authorization: `Bearer ${login.token}` },
+    });
+    assert.equal(normal.status, 200);
+  });
+});
+
 test("보안 하드닝: 동시편집 잠금은 body.userName 위조와 타인 unlock을 허용하지 않는다", async (t) => {
   const server = await startServer();
   t.after(() => server.stop());
