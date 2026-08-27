@@ -61,6 +61,11 @@ process.on("uncaughtException", (err) => {
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
+// 보안상 API 라우트는 경로 대소문자를 정확히 맞춰야 한다. Express 기본값은
+// case-insensitive라 `/API/Accounting/Accounts`가 실제 `/api/accounting/accounts`
+// 핸들러까지 도달할 수 있는데, 그 사이의 회사 모듈 킬스위치/개인 메뉴권한 미들웨어는
+// `req.path.startsWith("/api/...")`처럼 소문자 prefix를 보며 우회되는 문제가 있었다.
+app.set("case sensitive routing", true);
 // Render 등 PaaS는 리버스 프록시를 거쳐 요청을 전달하며 X-Forwarded-For 헤더를 붙인다.
 // trust proxy를 켜지 않으면 express-rate-limit이 실제 클라이언트 IP를 신뢰할 수 없다고
 // 판단해 요청 처리 중 에러를 던지고(ERR_ERL_UNEXPECTED_X_FORWARDED_FOR), 그 여파로
@@ -2793,6 +2798,41 @@ app.use(cors(corsOptions));
 // (X-Content-Type-Options, X-Frame-Options, HSTS 등)만 적용한다.
 app.use(helmet({ contentSecurityPolicy: false }));
 
+const CASE_SENSITIVE_API_PREFIXES = [
+  "/api/accounting/",
+  "/api/auth/",
+  "/api/budget/",
+  "/api/erp/",
+  "/api/hr/",
+  "/api/pms/",
+  "/api/recruit/",
+  "/master/",
+];
+const CASE_SENSITIVE_API_PATHS = new Set([
+  "/data", "/save", "/status", "/login", "/events", "/online", "/lock", "/unlock", "/snapshots", "/restore",
+]);
+
+function _apiPathCaseMismatch(pathname) {
+  if (!pathname || pathname === "/") return false;
+  const lower = String(pathname).toLowerCase();
+  if (CASE_SENSITIVE_API_PREFIXES.some(prefix => lower.startsWith(prefix) && !String(pathname).startsWith(prefix))) {
+    return true;
+  }
+  return CASE_SENSITIVE_API_PATHS.has(lower) && pathname !== lower;
+}
+
+// API-like URL의 대소문자가 틀리면 SPA fallback으로 index.html을 주지 않고 JSON 404를
+// 돌려준다. 이렇게 해야 `/API/...` 같은 요청이 보안 미들웨어를 비껴가거나, 모니터링에서
+// "200 OK라 API가 살아있다"고 오인하지 않는다.
+app.use((req, res, next) => {
+  if (!_apiPathCaseMismatch(req.path)) return next();
+  return res.status(404).json({
+    ok: false,
+    code: "API_PATH_CASE_MISMATCH",
+    message: "API 경로 대소문자가 올바르지 않습니다.",
+  });
+});
+
 // 모든 JSON 요청을 무조건 50MB까지 파싱하면, 인증되지 않은 공격자도 작은 수의 동시
 // 요청만으로 V8 heap과 event loop를 오래 점유할 수 있다. 일반 API는 2MB로 낮추고 실제로
 // 전체 상태를 전달하는 /save와 /restore만 별도 상한을 둔다. 환경변수는 바이트 단위이며,
@@ -3715,10 +3755,11 @@ function _erpRestModuleFeatureKey(pathname) {
 }
 app.use((req, res, next) => {
   let featureKey = null;
-  if (req.path.startsWith("/api/accounting/")) featureKey = "acct";
-  else if (req.path.startsWith("/api/pms/")) featureKey = "pms";
-  else if (req.path.startsWith("/api/recruit/")) featureKey = "recruit";
-  else if (req.path.startsWith("/api/erp/")) featureKey = _erpRestModuleFeatureKey(req.path);
+  const pathname = String(req.path || "").toLowerCase();
+  if (pathname.startsWith("/api/accounting/")) featureKey = "acct";
+  else if (pathname.startsWith("/api/pms/")) featureKey = "pms";
+  else if (pathname.startsWith("/api/recruit/")) featureKey = "recruit";
+  else if (pathname.startsWith("/api/erp/")) featureKey = _erpRestModuleFeatureKey(pathname);
   if (!featureKey) return next();
   if (!requireFeature(req, res, featureKey)) return;
   next();
@@ -4910,7 +4951,7 @@ async function requireStoredMenuPermission(req, res, menuId) {
 // 추가하면 된다(단, /reports처럼 이 표에 없는 예외 경로는 라우트 자신이 계속 직접
 // requirePage를 호출해야 한다 — _accountingMenuForPath의 excluded 목록 참고).
 app.use("/api/accounting", async (req, res, next) => {
-  const menuId = _accountingMenuForPath(req.path);
+  const menuId = _accountingMenuForPath(String(req.path || "").toLowerCase());
   if (!menuId) return next();
   if (!await requireAccountingMenu(req, res, menuId)) return;
   next();
@@ -4939,7 +4980,7 @@ function _moduleMenuForPath(prefix, pathname, method) {
 // 꺼진 메뉴만 추가로 fail-closed 해 UI 숨김을 API 우회로 무력화하지 못하게 한다.
 for (const prefix of Object.keys(MODULE_MENU_BY_PATH)) {
   app.use(prefix, async (req, res, next) => {
-    const menuId = _moduleMenuForPath(prefix, req.path, req.method);
+    const menuId = _moduleMenuForPath(prefix, String(req.path || "").toLowerCase(), req.method);
     if (!menuId) return next();
     if (!await requireStoredMenuPermission(req, res, menuId)) return;
     next();
