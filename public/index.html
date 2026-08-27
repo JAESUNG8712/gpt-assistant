@@ -1787,8 +1787,18 @@ function _setCachedCompanyCode(code){
     if(srvParam){ serverConfig.url=decodeURIComponent(srvParam); serverConfig.enabled=true; window._isSharedDeployLink=true; return; }
     const proto = location.protocol;
     const host = location.hostname;
+    const canonicalHrOrigin = "https://hr-system-docker.onrender.com";
+    // 이 HR/ERP의 공식 운영 주소는 Render다. 같은 저장소에 남은 Vercel 배포 URL로
+    // 사용자가 들어오면 별도 운영 화면처럼 유지하지 않고 공식 운영 주소로 보낸다.
+    if(proto === "https:" && host.endsWith("vercel.app")){
+      const target = new URL(location.href);
+      target.protocol = "https:";
+      target.host = "hr-system-docker.onrender.com";
+      location.replace(target.toString());
+      return;
+    }
     // GitHub Pages / static hosting — skip server mode
-    const isStaticHost = host.endsWith("github.io") || host.endsWith("netlify.app") || host.endsWith("vercel.app") || host === "";
+    const isStaticHost = host.endsWith("github.io") || host.endsWith("netlify.app") || host === "";
     if((proto === "http:" || proto === "https:") && !isStaticHost){
       serverConfig.url = location.origin;
       serverConfig.enabled = true;
