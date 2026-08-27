@@ -14,6 +14,33 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const { startServer, startServerExpectingBootFailure } = require("./support/start-server");
 
+test("보안 하드닝: API 경로 대소문자 변형은 라우트·권한 미들웨어·SPA fallback을 우회하지 못한다", async (t) => {
+  const server = await startServer();
+  t.after(() => server.stop());
+
+  for (const path of [
+    "/STATUS",
+    "/DATA",
+    "/LOGIN",
+    "/EVENTS",
+    "/MASTER/feature-catalog",
+    "/API/Accounting/Accounts",
+    "/Api/Pms/Projects",
+    "/api/ERP/Stock",
+    "/api/Recruit/Jobs",
+  ]) {
+    const response = await fetch(server.baseUrl + path, {
+      method: path === "/LOGIN" ? "POST" : "GET",
+      headers: path === "/LOGIN" ? { "Content-Type": "application/json" } : undefined,
+      body: path === "/LOGIN" ? "{}" : undefined,
+    });
+    assert.equal(response.status, 404, `${path}는 대소문자 불일치로 404여야 함`);
+    assert.match(response.headers.get("content-type") || "", /application\/json/);
+    const body = await response.json();
+    assert.equal(body.code, "API_PATH_CASE_MISMATCH");
+  }
+});
+
 test("보안 하드닝: 2FA verify-code에 rate limiter 적용(JSON 파일 모드에서도 검증 가능)", async (t) => {
   const server = await startServer();
   t.after(() => server.stop());

@@ -57,6 +57,18 @@ test("accounting menu permissions: server blocks direct reads and writes and pre
   json = await res.json();
   assert.equal(json.code, "MENU_ACCESS_DENIED");
 
+  // Express 기본 라우팅은 대소문자 구분이 꺼져 있으면 `/API/Accounting/Accounts`도
+  // `/api/accounting/accounts` 라우트에 매칭한다. 이때 보안 미들웨어가 소문자 prefix만
+  // 보면 회사 모듈 킬스위치와 개인 메뉴권한을 통째로 우회해 쓰기까지 성공할 수 있으므로
+  // API-like 경로의 casing mismatch는 핸들러 도달 전 404(JSON)로 종료해야 한다.
+  res = await api("/API/Accounting/Accounts", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ code: "CASEBYPASS", name: "대소문자 우회 시도", type: "expense" }),
+  });
+  json = await res.json();
+  assert.equal(res.status, 404, "대소문자 변형 API 경로는 라우트/권한 체크 우회 대신 404여야 함");
+  assert.equal(json.code, "API_PATH_CASE_MISMATCH");
+
   // 감사자 위조 방어는 허용된 상태에서도 유지돼야 한다. 권한을 다시 켠 뒤 요청 body의
   // user가 아닌 토큰 주체가 감사 이력에 기록되는지 검증한다.
   const allowedState = await (await api("/data")).json();
