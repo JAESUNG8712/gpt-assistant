@@ -182,6 +182,18 @@ async function authenticate(req, res, next) {
   const token = header.startsWith("Bearer ") ? header.slice(7) : null;
   const auth = verifyToken(token);
   if (!auth) { req.auth = null; return next(); }
+  // POST /events/token이 발급하는 5분짜리 scope:"sse" 티켓은 GET /events 전용이다(그
+  // 라우트 주석의 설계 의도: EventSource가 커스텀 헤더를 못 붙여 쿼리스트링으로 토큰을
+  // 전달해야 하고, URL은 일반 Authorization 헤더보다 프록시/접근 로그에 남을 가능성이
+  // 높아 "다른 API에서는 재사용 불가"를 전제로 함). 그런데 이 함수가 scope을 전혀
+  // 확인하지 않아, 그 5분 동안은 이 티켓을 그대로 Authorization 헤더에 실어 다른 어떤
+  // API도 완전한 사용자 권한으로 호출할 수 있었다(실측 확인) — 설계 의도와 어긋나는
+  // 실제 공격면 확대였다. /events가 아닌 요청에 이 스코프의 토큰이 오면 미인증과
+  // 동일하게 처리한다(각 라우트의 requireAuth가 401을 낼지 결정).
+  if (auth.scope === "sse" && req.path.toLowerCase() !== "/events") {
+    req.auth = null;
+    return next();
+  }
   // 세션 철회 검사(_employeeAuthStillValid)와 menuPerms 조회가 같은 employees 레코드를
   // 쓰므로 한 번만 가져와 공유한다(요청당 추가 조회 없음). menuPerms는 "권한 관리" 화면에서
   // 개인별로 끈 메뉴 목록 — requirePage()가 REST API 라우트에서 이 값을 그대로 검사한다.
@@ -437,13 +449,32 @@ function _isPrivilegedStateWriter(actor) {
 function preserveServerOwnedStateForNonAdmin(incoming, stored, actor) {
   if (_isPrivilegedStateWriter(actor)) return incoming;
   const out = { ...incoming };
+  // _applyRecordCas()는 POST /save 핸들러에서 이 함수보다 먼저 실행되며(clientData._recordCasVersion
+  // === 1일 때), 실제로 수정된 employees 레코드의 _rev를 다음 값으로 올려 candidate._rev에
+  // 실어둔다(server.js:_applyRecordCas). 그런데 아래 두 분기(본인 프로필 수정/director의
+  // gradeResults 조정)는 저장할 레코드를 stored(=이 요청 시작 시점의 DB 값) 기준으로
+  // `{...stored, 허용된 필드만}`로 다시 만들어 candidate를 참조 대신 값만 뽑아 쓰므로,
+  // candidate._rev를 명시적으로 옮기지 않으면 CAS가 방금 계산한 값이 조용히 버려지고 저장된
+  // _rev는 stored._rev(옛 값)에 영원히 머문다 — 그러면 이후 요청들이 여전히 그 옛 rev로
+  // CAS를 통과해, 두 director가 같은 팀원의 등급을 거의 동시에 조정할 때 두 번째 저장이
+  // 409 없이 첫 번째 저장을 조용히 덮어쓴다(2026-08-27 감사에서 실측 재현된 lost-update —
+  // CAS가 막으려던 바로 그 문제가 이 함수를 통과하는 경로에서만 무력화돼 있었다).
+  // CAS 자체가 이번 요청에서 실행되지 않았다면(레거시 클라이언트, _recordCasVersion !== 1)
+  // candidate._rev는 CAS 검증을 전혀 거치지 않은 클라이언트 원본 값이라 신뢰할 수 없으므로
+  // 이 게이트로 좁혀 그 경우엔 절대 채택하지 않는다(employees는 회사별 모듈 on/off 대상이
+  // 아니므로 _disabledBlobFields로 인한 추가 예외를 고려할 필요가 없다).
+  const casApplied = Number(incoming?._recordCasVersion) === 1;
   const incomingEmployees = new Map((Array.isArray(incoming?.employees) ? incoming.employees : [])
     .filter(e => e && e.id != null)
     .map(e => [String(e.id), e]));
   out.employees = (stored?.employees || []).map(emp => {
     const candidate = incomingEmployees.get(String(emp.id));
     if (!candidate) return emp;
-    if (String(emp.id) === String(actor?.empId)) return _mergeOwnProfile(emp, candidate);
+    if (String(emp.id) === String(actor?.empId)) {
+      const merged = _mergeOwnProfile(emp, candidate);
+      if (casApplied && candidate._rev != null) merged._rev = candidate._rev;
+      return merged;
+    }
     // 타인 레코드에 대해 정당하게 존재하는 유일한 non-admin 쓰기 경로는 director의 KPI/
     // 다면평가 최종 등급 조정(adjustKpiGrade()/resolveTie(), gradeResults 필드)이다 — 그
     // 권한 판정(role===director && 같은 dept)은 _persistDataLocked의 _sanitizeEmployeeRecord가
@@ -452,7 +483,9 @@ function preserveServerOwnedStateForNonAdmin(incoming, stored, actor) {
     // 등급 조정이 이 함수에 의해 항상 조용히 되돌려진다(실측 확인된 회귀 — 이 함수가
     // 다른 세션에서 처음 추가됐을 때 이 케이스를 놓쳤었다).
     if (!("gradeResults" in candidate)) return emp;
-    return { ...emp, gradeResults: candidate.gradeResults, updatedAt: candidate.updatedAt || emp.updatedAt };
+    const rebuilt = { ...emp, gradeResults: candidate.gradeResults, updatedAt: candidate.updatedAt || emp.updatedAt };
+    if (casApplied && candidate._rev != null) rebuilt._rev = candidate._rev;
+    return rebuilt;
   });
   // Settings, role policy 등은 전사 공유 상태라 non-admin이 보낸(필터링으로 일부만 보이는)
   // 사본으로 통째로 덮어쓰면 안 된다 — 항상 저장본을 지킨다.
@@ -2533,16 +2566,23 @@ function _idempotencyHash(req) {
 }
 function _idempotencyRequired(req) {
   if (["GET", "HEAD", "OPTIONS"].includes(req.method)) return false;
+  // 발견 당시(Express 기본값 = 대소문자 무관 라우팅)에는 "/API/Accounting/Vouchers"
+  // 같은 대문자 경로가 실제 핸들러까지 도달하면서 이 비교만 실패해 JSON 파일 모드에서
+  // 같은 Idempotency-Key로 회계/재고 쓰기가 중복 처리될 수 있었다. 지금은 전역
+  // `app.set("case sensitive routing", true)` + 이른 단계의 `_apiPathCaseMismatch`
+  // 404 미들웨어가 이 경로 자체를 먼저 막아 도달 불가능하지만, 이 소문자 정규화는
+  // 그 방어선이 앞으로 바뀌더라도 안전하도록 그대로 남겨둔다(다중 방어).
+  const p = req.path.toLowerCase();
   // PostgreSQL 전표 명령은 업무 변경과 응답 기록을 같은 transaction에 넣는 전용
   // 실행기를 사용한다. JSON 모드는 기존 파일 멱등성 middleware를 계속 사용한다.
   if (!USE_JSON_FILE && req.method === "POST" && (
-    req.path === "/api/accounting/vouchers" ||
-    /^\/api\/accounting\/vouchers\/[^/]+\/(post|void)$/.test(req.path) ||
-    /^\/api\/erp\/stock\/(adjust|count|transfer)$/.test(req.path) ||
-    /^\/api\/accounting\/rcps\/schedule\/[^/]+\/post$/.test(req.path) ||
-    /^\/api\/accounting\/fixed-assets\/[^/]+\/depreciation-schedule\/[^/]+\/post$/.test(req.path)
+    p === "/api/accounting/vouchers" ||
+    /^\/api\/accounting\/vouchers\/[^/]+\/(post|void)$/.test(p) ||
+    /^\/api\/erp\/stock\/(adjust|count|transfer)$/.test(p) ||
+    /^\/api\/accounting\/rcps\/schedule\/[^/]+\/post$/.test(p) ||
+    /^\/api\/accounting\/fixed-assets\/[^/]+\/depreciation-schedule\/[^/]+\/post$/.test(p)
   )) return false;
-  return req.path === "/save" || /^\/api\/(accounting|erp)\//.test(req.path);
+  return p === "/save" || /^\/api\/(accounting|erp)\//.test(p);
 }
 function _loadFileIdempotency() {
   if (_fileIdempotency) return;
@@ -2854,16 +2894,22 @@ const JSON_BODY_LIMIT_LEGACY_RESUME = _positiveEnvBytes(
 );
 
 function _isLegacyResumeJsonPath(pathname) {
+  pathname = String(pathname || "").toLowerCase();
   return pathname === "/api/recruit/extract-pdf-text"
     || pathname === "/api/recruit/extract-docx-text"
     || pathname === "/api/recruit/extract-hwp-text"
     || pathname === "/api/recruit/extract-image-text";
 }
 
+// 전역 `case sensitive routing`+`_apiPathCaseMismatch` 404 미들웨어가 "/SAVE"/"/Restore"
+// 같은 대소문자 변형을 이미 앞단에서 막으므로 이 경로가 실제로 도달할 일은 없지만,
+// 혹시 그 방어선을 통과하는 경우에도 최소한 fail-closed(더 작은 2MB 한도로 오판)
+// 방향이 되도록 소문자로 정규화해둔다(다른 게이팅 함수들과 판정 기준 통일).
 function _jsonBodyLimitFor(req) {
-  if (req.path === "/restore") return JSON_BODY_LIMIT_RESTORE;
-  if (req.path === "/save") return JSON_BODY_LIMIT_SAVE;
-  if (_isLegacyResumeJsonPath(req.path)) return JSON_BODY_LIMIT_LEGACY_RESUME;
+  const p = req.path.toLowerCase();
+  if (p === "/restore") return JSON_BODY_LIMIT_RESTORE;
+  if (p === "/save") return JSON_BODY_LIMIT_SAVE;
+  if (_isLegacyResumeJsonPath(p)) return JSON_BODY_LIMIT_LEGACY_RESUME;
   return JSON_BODY_LIMIT_DEFAULT;
 }
 function _isJsonContentType(req) {
@@ -2904,6 +2950,13 @@ function _actorLabel(req) {
 }
 function _authenticatedActorKey(auth) {
   if (auth?.empId != null) return `emp:${auth.empId}`;
+  // impersonation 토큰(POST /master/companies/:id/impersonate)은 empId/loginId를 의도적으로
+  // null로, 실제 마스터 id는 masterId가 아니라 actingAsMaster에 담는다(3600행 참고) — 이걸
+  // 놓치면 어떤 마스터가 어느 회사를 impersonate하든 전부 "system" 하나로 뭉개져, 서로 다른
+  // 마스터가 같은 회사를 동시에 impersonate할 때 lock 소유권(actorKey 기준)이 충돌할 수
+  // 있었다(실측 재현은 아니지만 코드상 명백한 충돌 지점 — 병행 세션 감사에서 발견).
+  // actingAsMaster+companyId로 세분화해 서로 다른 (마스터,회사) 조합이 절대 겹치지 않게 한다.
+  if (auth?.actingAsMaster != null) return `impersonate:${auth.actingAsMaster}:${auth.companyId || "none"}`;
   if (auth?.masterId != null) return `master:${auth.masterId}`;
   if (auth?.loginId) return `login:${auth.loginId}`;
   return "system";
@@ -2918,12 +2971,27 @@ function _positiveEnvCount(name, fallback) {
 function _isReadOnlyRequest(req) {
   return req.method === "GET" || req.method === "HEAD" || req.method === "OPTIONS";
 }
+// 아래 8개 경로는 인증 토큰 없이도 호출되는(비로그인/자체 재검증) 쓰기 요청이면서, 이미
+// 각자의 목적에 맞게 세밀히 튜닝된 전용 rate limiter(loginLimiter — 특히
+// skipSuccessfulRequests:true로 "같은 IP에서 실패한 시도만" 카운트하도록 조정된 것,
+// registerLimiter, masterLoginLimiter, bootstrapLimiter)를 이미 갖고 있다. 이 블랭킷
+// anonymousWriteLimiter를 그 앞단에 무조건 얹으면(성공/실패 구분 없이 IP당 5분에 120회),
+// 같은 사무실 공인 IP 뒤에서 여러 명이 정상적으로 로그인만 해도 loginLimiter가 도달하기도
+// 전에 여기서 먼저 429가 나 — loginLimiter를 skipSuccessfulRequests로 고쳤던 이유였던
+// "동시 로그인 다수 시 정상 사용자까지 차단" 문제가 이 앞단 한도 때문에 그대로 재발한다
+// (2026-07-16 기록, 실측: 30명 동시 로그인 시 20명만 성공하던 것을 고쳤던 바로 그 문제).
+// 이 경로들은 이미 보호돼 있으므로 이 블랭킷 한도에서는 제외하고, 그 외 전용 limiter가
+// 없는 익명 쓰기 요청에 대한 안전망 역할만 하도록 좁힌다.
+const _DEDICATED_LIMITER_PATHS = new Set([
+  "/login", "/api/auth/change-password", "/api/auth/2fa/generate-secret", "/api/auth/2fa/verify-code",
+  "/api/companies/register", "/master/login", "/api/bootstrap/admin", "/api/reset-all",
+]);
 const anonymousWriteLimiter = rateLimit({
   windowMs: 5 * 60 * 1000,
   max: _positiveEnvCount("INGRESS_RATE_LIMIT_ANON_MAX", 120),
   standardHeaders: true,
   legacyHeaders: false,
-  skip: req => _isReadOnlyRequest(req) || Boolean(req.auth),
+  skip: req => _isReadOnlyRequest(req) || Boolean(req.auth) || _DEDICATED_LIMITER_PATHS.has(req.path),
   message: { ok: false, code: "REQUEST_RATE_LIMITED", message: "요청이 너무 많습니다. 잠시 후 다시 시도하세요." },
 });
 const authenticatedWriteLimiter = rateLimit({
@@ -2943,11 +3011,12 @@ const parseSaveJson = express.json({ limit: JSON_BODY_LIMIT_SAVE });
 const parseRestoreJson = express.json({ limit: JSON_BODY_LIMIT_RESTORE });
 const parseLegacyResumeJson = express.json({ limit: JSON_BODY_LIMIT_LEGACY_RESUME });
 app.use((req, res, next) => {
-  const parser = req.path === "/restore"
+  const p = req.path.toLowerCase();
+  const parser = p === "/restore"
     ? parseRestoreJson
-    : req.path === "/save"
+    : p === "/save"
       ? parseSaveJson
-      : _isLegacyResumeJsonPath(req.path)
+      : _isLegacyResumeJsonPath(p)
         ? parseLegacyResumeJson
         : parseDefaultJson;
   parser(req, res, next);
@@ -3749,17 +3818,24 @@ function requireFeature(req, res, featureKey) {
 // 막히므로 items/locations까지 추가로 막을 실익이 없고, 잘못 막으면 무관한 화면(구매요청)
 // 조회 자체가 깨질 위험만 있다.
 function _erpRestModuleFeatureKey(pathname) {
+  pathname = String(pathname || "").toLowerCase();
   if (/^\/api\/erp\/(quotations|purchase-orders|sales-dashboard|sales-targets)(\/|$)/.test(pathname)) return "sales";
   if (/^\/api\/erp\/(stock|purchase-requests)(\/|$)/.test(pathname)) return "inventory";
   return null;
 }
 app.use((req, res, next) => {
+  // 발견 당시(Express 기본값 = 대소문자 무관 라우팅)에는 "/API/Accounting/Accounts"
+  // 같은 요청이 실제 핸들러까지 도달하는데 이 게이팅의 문자열 비교만 실패해, 회사 단위
+  // 모듈 킬스위치가 완전히 우회됐다(실측 확인: 비활성화된 회사에서도 대문자 경로로는
+  // 200 응답 + 실제 쓰기까지 성공). 지금은 위쪽의 전역 `case sensitive routing`+
+  // `_apiPathCaseMismatch` 404 미들웨어가 이 경로를 먼저 막아 도달 불가능하지만, 그
+  // 방어선이 앞으로 바뀌더라도 이 미들웨어 자신이 안전하도록 소문자 정규화를 유지한다.
+  const p = req.path.toLowerCase();
   let featureKey = null;
-  const pathname = String(req.path || "").toLowerCase();
-  if (pathname.startsWith("/api/accounting/")) featureKey = "acct";
-  else if (pathname.startsWith("/api/pms/")) featureKey = "pms";
-  else if (pathname.startsWith("/api/recruit/")) featureKey = "recruit";
-  else if (pathname.startsWith("/api/erp/")) featureKey = _erpRestModuleFeatureKey(pathname);
+  if (p.startsWith("/api/accounting/")) featureKey = "acct";
+  else if (p.startsWith("/api/pms/")) featureKey = "pms";
+  else if (p.startsWith("/api/recruit/")) featureKey = "recruit";
+  else if (p.startsWith("/api/erp/")) featureKey = _erpRestModuleFeatureKey(p);
   if (!featureKey) return next();
   if (!requireFeature(req, res, featureKey)) return;
   next();
@@ -4890,6 +4966,11 @@ const ACCOUNTING_MENU_BY_PATH = [
 ];
 
 function _accountingMenuForPath(pathname) {
+  // 발견 당시(Express 기본값 = 대소문자 무관 라우팅)에는 대문자 경로로 이 게이팅 자체를
+  // 통째로 우회할 수 있었다(실측 확인). 지금은 위쪽의 전역 `case sensitive routing`+
+  // `_apiPathCaseMismatch` 404 미들웨어가 먼저 막지만, 이 함수 자신도 소문자로
+  // 정규화해 그 방어선과 무관하게 항상 안전하도록 한다(다중 방어).
+  pathname = String(pathname || "").toLowerCase();
   // 사업계획은 모든 인증 사용자가 비용 계정의 id/code/name만 참조해야 하므로, 회계
   // 원장 접근 권한과 분리된 최소 DTO API는 이 정책에서 제외한다.
   if (["/accounts/expense-lite", "/accounts/picker", "/partners/picker"].includes(pathname)) return null;
@@ -4970,6 +5051,11 @@ const MODULE_MENU_BY_PATH = {
   "/api/recruit": [["/jobs", "recruit-jobs"], ["/candidates", "recruit-candidates"], ["/extract-", "recruit-candidates"], ["/parse-resume-llm", "recruit-candidates"], ["/suggest-career-companies", "recruit-candidates"], ["/interviews", "recruit-eval"], ["/dashboard", "recruit-dashboard"]],
 };
 function _moduleMenuForPath(prefix, pathname, method) {
+  // _accountingMenuForPath와 동일한 이유(대문자 경로로 게이팅을 우회할 수 있었던 실측
+  // 확인된 문제)로 소문자 정규화 — 지금은 전역 `case sensitive routing`+
+  // `_apiPathCaseMismatch` 이른 단계 404 미들웨어가 먼저 막지만, 이 함수도 그 방어선과
+  // 무관하게 안전하도록 소문자로 정규화한다(다중 방어).
+  pathname = String(pathname || "").toLowerCase();
   const found = (MODULE_MENU_BY_PATH[prefix] || []).find(([path, , methods]) => {
     if (pathname !== path && !pathname.startsWith(`${path}/`)) return false;
     return !methods || methods.includes(method);
