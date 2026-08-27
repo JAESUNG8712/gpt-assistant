@@ -1545,6 +1545,85 @@ def admin_learned_delete(item_id: int, token: str = ""):
     return {"ok": True, "deleted": item_id, "content_preview": content[:120]}
 
 
+@app.post("/admin/refine")
+def admin_refine(apply: bool = False, dup_threshold: float = 0.85,
+                  dislike_boost_max: float = 0.1, token: str = ""):
+    """KB 자기개선(자동 정제) — LLM 호출 없는 순수 기계적 정리 2종을 실행한다.
+    새 내용을 지어내거나 재작성하지 않고 "지우기"만 한다 — 이 프로젝트에서 실제
+    반복됐던 KB 오염 사고가 전부 AI가 스스로 내용을 만들어내는 경로에서 나왔기
+    때문에 자기개선 루프는 의도적으로 이 안전한 범위로 제한한다.
+    (1) 근사 중복 통합: 동일 페르소나 내 동적 학습 데이터(정적KB 제외) 중 TF-IDF
+        유사도가 dup_threshold 이상인 항목들을 하나의 클러스터로 묶어 가장 최신
+        (id가 큰) 항목만 남기고 나머지를 삭제.
+    (2) 반복 비추천 항목 정리: feedback_boost.boost가 dislike_boost_max 이하로
+        떨어진(연속 싫어요로 최소 세 번 이상 하향된) 질문에 해당하는 학습 항목을
+        삭제하고, 그 feedback_boost 행도 함께 삭제 — 그렇지 않으면 같은 질문이
+        나중에 다시(더 나은 내용으로) 학습되어도 옛 하향 가중치 때문에 부당하게
+        계속 억눌리게 됨.
+    apply=false(기본)면 무엇이 삭제될지 미리보기만 반환하고 실제로 지우지 않는다.
+    외부 스케줄러(.github/workflows/kb_refine.yml)가 주기적으로 apply=true로 호출."""
+    _require_backup_token(token)
+    from refine import find_duplicate_clusters, find_disliked_questions
+
+    with mem._conn() as c:
+        rows = [dict(r) for r in c.execute(
+            "SELECT id, persona, source, created_at, content FROM learned_knowledge"
+            " WHERE source != '정적KB'"
+        ).fetchall()]
+        feedback_rows = [dict(r) for r in c.execute(
+            "SELECT persona, q_lower, boost FROM feedback_boost WHERE boost <= ?",
+            (dislike_boost_max,),
+        ).fetchall()]
+
+    clusters = find_duplicate_clusters(rows, threshold=dup_threshold)
+    dup_remove = []
+    for members in clusters:
+        newest = max(members, key=lambda r: r["id"])
+        dup_remove.extend(r for r in members if r["id"] != newest["id"])
+
+    disliked_remove = find_disliked_questions(feedback_rows, rows)
+
+    remove_by_id = {r["id"]: r for r in dup_remove + disliked_remove}
+    remove_ids = sorted(remove_by_id)
+
+    result = {
+        "scanned_rows": len(rows),
+        "duplicate_clusters": len(clusters),
+        "duplicate_rows_to_remove": len(dup_remove),
+        "disliked_rows_to_remove": len(disliked_remove),
+        "total_rows_to_remove": len(remove_ids),
+    }
+
+    if apply and remove_ids:
+        placeholders = ",".join("?" * len(remove_ids))
+        with mem._conn() as c:
+            c.execute(f"DELETE FROM learned_knowledge WHERE id IN ({placeholders})", remove_ids)
+            if feedback_rows:
+                c.executemany(
+                    "DELETE FROM feedback_boost WHERE persona=? AND q_lower=?",
+                    [(d["persona"], d["q_lower"]) for d in feedback_rows],
+                )
+        try:
+            from engine import get_engine, _kb_loaded
+            if _kb_loaded:
+                eng = get_engine()
+                for rid in remove_ids:
+                    r = remove_by_id[rid]
+                    content = r["content"]
+                    if content.startswith("Q: ") and "\nA: " in content:
+                        question = content.split("\nA: ", 1)[0][3:].strip()
+                        eng.delete_by_q(question, r["persona"] or None)
+                    else:
+                        eng.delete_by_source(r["source"], r["persona"] or None)
+        except Exception as e:
+            print(f"⚠️ 엔진 삭제 실패(재시작 시 반영됨): {e}")
+        result["removed"] = len(remove_ids)
+    else:
+        result["preview_remove_ids"] = remove_ids[:30]
+
+    return result
+
+
 # ── 공유 링크 (일부 페르소나만 URL로 외부 공개) ──────────
 
 class ShareCreateRequest(BaseModel):
