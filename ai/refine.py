@@ -30,12 +30,20 @@ def _dedup_text(content: str) -> str:
     return content
 
 
-def _build_vectors(rows: list) -> list:
+def _question_text(content: str) -> str:
+    """질문(Q) 부분만 추출 — Q&A 형식이 아니면 빈 문자열(비교 대상에서 자연히 제외)."""
+    if content.startswith("Q: ") and "\nA: " in content:
+        return content.split("\nA: ", 1)[0][3:]
+    return ""
+
+
+def _build_vectors(rows: list, text_fn=_dedup_text) -> list:
     """rows(각 dict에 'content' 키 필요) → TF-IDF 벡터 리스트, rows와 같은 순서.
     engine.py의 라이브 인덱스와 독립적으로, 이번에 조회한 rows만으로 새로
     IDF를 계산한다 — 라이브 엔진 인스턴스의 내부 상태·타이밍에 의존하지 않기
-    위함(관리자 API가 엔진 로드 전에 호출돼도 안전하게 동작)."""
-    all_f = [_feat(_dedup_text(r["content"])[:600]) for r in rows]
+    위함(관리자 API가 엔진 로드 전에 호출돼도 안전하게 동작).
+    text_fn으로 비교에 쓸 텍스트 추출 방식을 바꿀 수 있다(기본: 답변만 비교)."""
+    all_f = [_feat(text_fn(r["content"])[:600]) for r in rows]
     n = len(rows)
     df: dict = defaultdict(int)
     for fs in all_f:
@@ -100,6 +108,41 @@ def find_duplicate_clusters(rows: list, threshold: float = 0.85) -> list:
                 clusters.append(members)
 
     return clusters
+
+
+def find_conflicting_pairs(rows: list, q_threshold: float = 0.7, a_threshold: float = 0.3) -> list:
+    """질문은 비슷한데 답변이 실질적으로 다른 항목 쌍을 찾아 "검토 후보"로만 반환한다
+    — 자동으로 지우거나 어느 쪽이 맞는지 판단하지 않는다(둘 중 뭐가 맞는지는 사람의
+    판단이 필요한 영역이라, 자기개선 루프의 "지우기만" 원칙 밖에 있음). find_duplicate_clusters와
+    반대 조건: 질문 유사도는 높은데(q_threshold 이상) 답변 유사도는 낮은(a_threshold 미만)
+    쌍을 찾는다. Q&A 형식(자동학습/직접입력/문서)이 아닌 원본 웹검색 스니펫은 애초에
+    질문이 없어 비교 대상에서 제외된다."""
+    qa_rows = [r for r in rows if r["content"].startswith("Q: ") and "\nA: " in r["content"]]
+    pairs = []
+    by_persona: dict = defaultdict(list)
+    for r in qa_rows:
+        by_persona[r.get("persona", "")].append(r)
+
+    for _persona, group in by_persona.items():
+        n = len(group)
+        if n < 2:
+            continue
+        qvecs = _build_vectors(group, text_fn=_question_text)
+        avecs = _build_vectors(group, text_fn=_dedup_text)
+        for i in range(n):
+            for j in range(i + 1, n):
+                q_sim = _cos(qvecs[i], qvecs[j])
+                if q_sim < q_threshold:
+                    continue
+                a_sim = _cos(avecs[i], avecs[j])
+                if a_sim < a_threshold:
+                    pairs.append({
+                        "a": group[i],
+                        "b": group[j],
+                        "question_similarity": round(q_sim, 3),
+                        "answer_similarity": round(a_sim, 3),
+                    })
+    return pairs
 
 
 def find_disliked_questions(feedback_rows: list, learned_rows: list) -> list:

@@ -1560,10 +1560,13 @@ def admin_refine(apply: bool = False, dup_threshold: float = 0.85,
         삭제하고, 그 feedback_boost 행도 함께 삭제 — 그렇지 않으면 같은 질문이
         나중에 다시(더 나은 내용으로) 학습되어도 옛 하향 가중치 때문에 부당하게
         계속 억눌리게 됨.
+    (3) 충돌 후보 보고(삭제 안 함): 질문은 비슷한데 답변이 실질적으로 다른 쌍을
+        찾아 결과에 포함만 한다 — 둘 중 어느 게 맞는지는 사람이 판단할 영역이라
+        apply=true여도 이 항목들은 절대 자동 삭제하지 않는다.
     apply=false(기본)면 무엇이 삭제될지 미리보기만 반환하고 실제로 지우지 않는다.
     외부 스케줄러(.github/workflows/kb_refine.yml)가 주기적으로 apply=true로 호출."""
     _require_backup_token(token)
-    from refine import find_duplicate_clusters, find_disliked_questions
+    from refine import find_duplicate_clusters, find_disliked_questions, find_conflicting_pairs
 
     with mem._conn() as c:
         rows = [dict(r) for r in c.execute(
@@ -1582,6 +1585,7 @@ def admin_refine(apply: bool = False, dup_threshold: float = 0.85,
         dup_remove.extend(r for r in members if r["id"] != newest["id"])
 
     disliked_remove = find_disliked_questions(feedback_rows, rows)
+    conflicts = find_conflicting_pairs(rows)
 
     remove_by_id = {r["id"]: r for r in dup_remove + disliked_remove}
     remove_ids = sorted(remove_by_id)
@@ -1592,6 +1596,17 @@ def admin_refine(apply: bool = False, dup_threshold: float = 0.85,
         "duplicate_rows_to_remove": len(dup_remove),
         "disliked_rows_to_remove": len(disliked_remove),
         "total_rows_to_remove": len(remove_ids),
+        "conflicting_pairs_found": len(conflicts),
+        "conflicting_pairs_preview": [
+            {
+                "persona": c["a"]["persona"],
+                "question_similarity": c["question_similarity"],
+                "answer_similarity": c["answer_similarity"],
+                "a": {"id": c["a"]["id"], "content": c["a"]["content"][:200]},
+                "b": {"id": c["b"]["id"], "content": c["b"]["content"][:200]},
+            }
+            for c in conflicts[:20]
+        ],
     }
 
     if apply and remove_ids:

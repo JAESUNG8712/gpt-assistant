@@ -67,7 +67,15 @@ def get_team_config():
 async def run_analysis(
     background_tasks: BackgroundTasks,
     request: AnalysisRequest = AnalysisRequest(),
+    token: str = "",
 ):
+    # 종목당 Claude 호출 1회 + 시황요약·액션플랜 각 1회로 유료 API 비용이 실제로
+    # 발생하는 무거운 파이프라인인데 인증이 전혀 없어, URL만 알면 누구나 반복
+    # 호출해 비용을 유발할 수 있었음. main.py의 /chat 내부 트리거는 이 HTTP
+    # 엔드포인트가 아니라 run_once()를 직접 호출하므로 이 게이팅과 무관하게 그대로 동작.
+    from main import _require_backup_token
+    _require_backup_token(token)
+
     global _analysis_running, _last_report, _last_run
 
     if _analysis_running:
@@ -98,7 +106,11 @@ async def run_analysis(
 @router.get("/analyze/sync", summary="주식 분석 동기 실행")
 async def run_analysis_sync(
     stocks: Optional[str] = Query(None, description="콤마 구분 종목명 (예: 삼성전자,SK하이닉스)"),
+    token: str = "",
 ):
+    from main import _require_backup_token
+    _require_backup_token(token)
+
     target = [s.strip() for s in stocks.split(",")] if stocks else None
 
     try:
