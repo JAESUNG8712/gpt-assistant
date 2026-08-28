@@ -1,0 +1,34 @@
+name: 주식 정기 분석 보고서
+
+on:
+  schedule:
+    # 한국시간(KST, UTC+9) 기준 평일 오전 7시 = UTC 전날 22시 → 일~목요일(UTC) 22:00
+    - cron: '0 22 * * 0,1,2,3,4'
+    # 한국시간 기준 평일 저녁 10시 = UTC 같은 날 13시 → 월~금요일(UTC) 13:00
+    - cron: '0 13 * * 1-5'
+  workflow_dispatch:
+    # 수동 실행 가능 (GitHub Actions 탭 → Run workflow) — 주말에도 즉시 테스트 가능
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 주식 분석 보고서 생성 요청
+        env:
+          BACKUP_TOKEN: ${{ secrets.BACKUP_TOKEN }}
+        run: |
+          http_code=$(curl -sS -X POST \
+            --retry 2 --retry-delay 10 --max-time 90 \
+            -H "Content-Type: application/json" \
+            -d '{}' \
+            "https://ai-assist-aosk.onrender.com/stock/analyze?token=${BACKUP_TOKEN}" \
+            -o response.json -w '%{http_code}')
+          echo "HTTP ${http_code}"
+          cat response.json
+          echo ""
+          if [ "$http_code" -ge 400 ]; then
+            echo "::error::주식 분석 요청 실패 (HTTP ${http_code})"
+            exit 1
+          fi
+          echo "분석은 서버에서 백그라운드로 30~60초간 진행됩니다 — /stock/report 에서 결과 확인 가능"
