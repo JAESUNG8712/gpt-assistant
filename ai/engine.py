@@ -677,6 +677,20 @@ def _load_knowledge():
     except Exception as e:
         print(f"⚠️ law.go.kr 캐시 로드 실패: {e}")
 
+    # 외교부 해외안전여행 여행경보 캐시 (fetch_travel_alerts.py 또는 GitHub Actions가 생성)
+    try:
+        import json as _json, os as _os
+        cache_path = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "travel_alert_cache.json")
+        if _os.path.exists(cache_path) and _os.path.getsize(cache_path) > 10:
+            with open(cache_path, encoding="utf-8") as f:
+                cached = _json.load(f)
+            for item in cached:
+                _engine.add(item['q'], item['a'],
+                            {'persona': item.get('persona', 'travel'), 'source': 'mofa_travel_alert'})
+            print(f"  🌍 여행경보 캐시: {len(cached)}개국")
+    except Exception as e:
+        print(f"⚠️ 여행경보 캐시 로드 실패: {e}")
+
     # 자동학습·직접입력·문서 업로드 등 동적 학습 데이터 복원 (재시작 후에도 유지)
     # "정적KB" 소스는 Python KB 파일에서 이미 로드되었으므로 건너뜀 (중복 방지)
     # memory._conn() 경유 — Turso/로컬 SQLite 어느 백엔드든 동일하게 동작
