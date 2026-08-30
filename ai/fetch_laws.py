@@ -57,7 +57,12 @@ def _flatten(val):
 
 
 def _get_mst(law: dict) -> str:
-    for key in ("법령MST", "법령MST번호", "MST"):
+    # law.go.kr lawSearch.do 실제 응답 필드명은 "법령일련번호"다(2026-08-24
+    # GitHub Actions 실행 로그에서 실측 확인 — "법령MST"/"법령MST번호"/"MST"라는
+    # 필드는 애초에 존재하지 않아, 이 함수가 이제까지 단 한 번도 MST를 못 찾고
+    # 매 실행마다 0개 조문으로 조용히 끝나던 근본 원인이었음. 법령상세링크의
+    # 쿼리파라미터 MST=<값>이 법령일련번호와 동일함을 대조해 확인함).
+    for key in ("법령일련번호", "법령MST", "법령MST번호", "MST"):
         v = str(law.get(key, "")).strip()
         if v:
             return v
