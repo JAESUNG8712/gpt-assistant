@@ -73,9 +73,13 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 GROQ_MODEL   = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
 
 # Google Gemini (하루 1,500건 무료)
+# 2026-08-28 확인: gemini-2.0-flash / gemini-2.0-flash-lite 두 모델 모두
+# 2026-06-01자로 완전히 서비스 종료(모델 자체가 사라져 API가 항상 실패)됐음을
+# 웹 검색으로 확인 — 이 폴백 체인에서 사실상 죽은 항목이었음. 후속 GA 모델인
+# gemini-3.6-flash / gemini-3.5-flash-lite(둘 다 무료 티어 제공)로 교체.
 GEMINI_API_KEY     = os.getenv("GEMINI_API_KEY", "")
-GEMINI_MODEL       = os.getenv("GEMINI_MODEL", "gemini-2.0-flash-lite")
-GEMINI_CODING_MODEL = os.getenv("GEMINI_CODING_MODEL", "gemini-2.0-flash")
+GEMINI_MODEL       = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
+GEMINI_CODING_MODEL = os.getenv("GEMINI_CODING_MODEL", "gemini-3.6-flash")
 
 SYSTEM_PROMPT = """당신은 사용자만을 위한 전용 AI 어시스턴트입니다.
 - 사용자의 과거 대화, 업로드한 문서, 인터넷 검색 결과를 바탕으로 답변합니다.
@@ -316,7 +320,7 @@ async def _gemini_stream(messages: list, system: str) -> AsyncGenerator[str, Non
 
 # ── Gemini 코딩 전용 스트리밍 ─────────────────────────
 async def _gemini_coding_stream(messages: list, system: str) -> AsyncGenerator[str, None]:
-    """코딩 요청 전용 — 고품질 모델(gemini-2.0-flash) 사용"""
+    """코딩 요청 전용 — 고품질 모델(GEMINI_CODING_MODEL, 기본 gemini-3.6-flash) 사용"""
     for attempt in range(2):
         try:
             async for token in _gemini_once(messages, system, model=GEMINI_CODING_MODEL):
