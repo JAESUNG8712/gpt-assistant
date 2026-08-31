@@ -562,6 +562,7 @@ input[type=file]{display:none}
 /* ── Touch UX ── */
 *{-webkit-tap-highlight-color:transparent}
 button,a,[role=button]{touch-action:manipulation}
+.sr-only{position:absolute!important;width:1px!important;height:1px!important;padding:0!important;margin:-1px!important;overflow:hidden!important;clip:rect(0,0,0,0)!important;white-space:nowrap!important;border:0!important}
 
 /* ── Sidebar scroll on mobile ── */
 @media(max-width:900px){
@@ -5910,15 +5911,15 @@ function render(){
   // 스코프 밖이라 검색창을 빼고, 모바일 하단 탭도 5개 전부(홈/근태/결재/급여/내정보) 이
   // 모듈에 없는 화면이라 통째로 숨긴다 — 사이드바(모바일에서는 드로어)로만 이동한다.
   const searchBoxHtml=EVAL_ONLY_MODE?"":`<div style="position:relative;flex:1;min-width:0;max-width:260px" id="search-wrap"><div class="topbar-search"><span style="font-size:13px;color:#94a3b8;flex-shrink:0">🔍</span><input type="search" placeholder="검색..." autocomplete="off" id="global-search-input" oninput="onGlobalSearchInput(this.value)" onblur="setTimeout(closeGlobalSearch,200)" style="min-height:0;font-size:13px;padding:0"></div><div class="search-dropdown" id="search-dropdown" style="display:none"></div></div>`;
-  app.innerHTML=`<div id="sidebar"></div><div id="main">${_demoBannerHtml}<div id="topbar"><button id="mobile-menu-btn" type="button" onclick="toggleSidebar()" title="메뉴" aria-controls="sidebar" aria-expanded="false" aria-label="메뉴 열기">☰</button><h1 style="font-size:14px;font-weight:700;color:#1e293b;flex-shrink:0" id="page-title"></h1>${searchBoxHtml}<div class="flex items-c gap2" style="flex-shrink:0;margin-left:auto"><span id="topbar-username" class="fz12 text-gray" style="white-space:nowrap">${h(currentUser.name)}</span><button onclick="gotoPage('notification-center')" title="알림" style="background:none;border:none;cursor:pointer;font-size:18px;position:relative;padding:2px 4px">${pendingCntInit>0?`<span style="position:absolute;top:-2px;right:-2px;background:#ef4444;color:white;border-radius:8px;font-size:9px;padding:1px 4px;font-weight:700">${pendingCntInit}</span>`:""}🔔</button><button id="topbar-logout-btn" class="btn btn-secondary btn-sm" onclick="logout()" style="min-height:0">로그아웃</button></div></div><div id="cat-nav"></div><div id="attend-bar"></div><div id="content"></div></div>
+  app.innerHTML=`<div id="sidebar"></div><div id="main">${_demoBannerHtml}<div id="topbar"><button id="mobile-menu-btn" type="button" onclick="toggleSidebar()" title="메뉴" aria-controls="sidebar" aria-expanded="false" aria-label="메뉴 열기">☰</button><h1 style="font-size:14px;font-weight:700;color:#1e293b;flex-shrink:0" id="page-title"></h1>${searchBoxHtml}<div class="flex items-c gap2" style="flex-shrink:0;margin-left:auto"><span id="topbar-username" class="fz12 text-gray" style="white-space:nowrap">${h(currentUser.name)}</span><button type="button" onclick="gotoPage('notification-center')" title="알림" aria-label="알림${pendingCntInit>0?` — 결재 대기 ${pendingCntInit}건`:""}" style="background:none;border:none;cursor:pointer;font-size:18px;position:relative;padding:2px 4px">${pendingCntInit>0?`<span aria-hidden="true" style="position:absolute;top:-2px;right:-2px;background:#ef4444;color:white;border-radius:8px;font-size:9px;padding:1px 4px;font-weight:700">${pendingCntInit}</span><span class="sr-only">결재 대기 ${pendingCntInit}건</span>`:""}<span aria-hidden="true">🔔</span></button><button id="topbar-logout-btn" type="button" class="btn btn-secondary btn-sm" onclick="logout()" style="min-height:0">로그아웃</button></div></div><div id="cat-nav"></div><div id="attend-bar"></div><div id="content"></div></div>
 ${EVAL_ONLY_MODE?"":`<nav id="mobile-tab-nav"><div class="tab-items">
-  <button class="tab-item" onclick="gotoPage('dashboard')" id="mtab-dashboard"><span class="ti">🏠</span><span>홈</span></button>
-  <button class="tab-item" onclick="gotoPage('attendance')" id="mtab-attendance"><span class="ti">📅</span><span>근태</span></button>
-  <button class="tab-item" onclick="gotoPage('approval-inbox')" id="mtab-approval-inbox" style="position:relative"><span class="ti">📥</span><span>결재</span></button>
-  <button class="tab-item" onclick="gotoPage('payslip')" id="mtab-payslip"><span class="ti">💰</span><span>급여</span></button>
-  <button class="tab-item" onclick="gotoPage('my-profile')" id="mtab-my-profile"><span class="ti">👤</span><span>내정보</span></button>
+  <button type="button" class="tab-item" onclick="gotoPage('dashboard')" id="mtab-dashboard" aria-label="홈"><span class="ti" aria-hidden="true">🏠</span><span>홈</span></button>
+  <button type="button" class="tab-item" onclick="gotoPage('attendance')" id="mtab-attendance" aria-label="근태"><span class="ti" aria-hidden="true">📅</span><span>근태</span></button>
+  <button type="button" class="tab-item" onclick="gotoPage('approval-inbox')" id="mtab-approval-inbox" aria-label="결재" style="position:relative"><span class="ti" aria-hidden="true">📥</span><span>결재</span></button>
+  <button type="button" class="tab-item" onclick="gotoPage('payslip')" id="mtab-payslip" aria-label="급여"><span class="ti" aria-hidden="true">💰</span><span>급여</span></button>
+  <button type="button" class="tab-item" onclick="gotoPage('my-profile')" id="mtab-my-profile" aria-label="내정보"><span class="ti" aria-hidden="true">👤</span><span>내정보</span></button>
 </div></nav>`}`;
-  renderSidebar();renderPage();
+  renderSidebar();renderPage();_updateMobileTabNav();
 }
 const SIDEBAR_GROUP_META={
   dashboard:{label:"대시보드",roles:["admin","director","leader","member"]},
@@ -6371,12 +6372,22 @@ function _sbDrillBack(){_sbDrillCat=null;_sbExpandedGroup=null;renderSidebar();}
 function _sbToggleGroup(g){_sbExpandedGroup=(_sbExpandedGroup===g)?null:g;renderSidebar();}
 function _updateMobileTabNav(){
   const tabs=["dashboard","attendance","approval-inbox","payslip","my-profile"];
-  tabs.forEach(id=>{const el=document.getElementById("mtab-"+id);if(el)el.classList.toggle("active",currentPage===id);});
+  const labels={dashboard:"홈",attendance:"근태","approval-inbox":"결재",payslip:"급여","my-profile":"내정보"};
+  tabs.forEach(id=>{
+    const el=document.getElementById("mtab-"+id);if(!el)return;
+    const active=currentPage===id;
+    el.classList.toggle("active",active);
+    if(active)el.setAttribute("aria-current","page");
+    else el.removeAttribute("aria-current");
+    el.setAttribute("aria-label",labels[id]||id);
+  });
   const inboxTab=document.getElementById("mtab-approval-inbox");
   if(inboxTab){
     const cnt=_myPendingCount();
     const existing=inboxTab.querySelector(".mtab-badge");if(existing)existing.remove();
-    if(cnt>0)inboxTab.insertAdjacentHTML("beforeend",`<span class="mtab-badge" style="position:absolute;top:2px;right:4px;background:#ef4444;color:white;font-size:9px;padding:0 4px;border-radius:6px;font-weight:700;line-height:16px">${cnt}</span>`);
+    const existingSr=inboxTab.querySelector(".mtab-badge-sr");if(existingSr)existingSr.remove();
+    inboxTab.setAttribute("aria-label",cnt>0?`결재 — 결재 대기 ${cnt}건`:"결재");
+    if(cnt>0)inboxTab.insertAdjacentHTML("beforeend",`<span class="mtab-badge" aria-hidden="true" style="position:absolute;top:2px;right:4px;background:#ef4444;color:white;font-size:9px;padding:0 4px;border-radius:6px;font-weight:700;line-height:16px">${cnt}</span><span class="sr-only mtab-badge-sr">결재 대기 ${cnt}건</span>`);
   }
 }
 // 상단 대분류 카테고리 내비게이션 — 클릭 시 중분류 선택 화면(renderCategoryLanding)으로 이동
