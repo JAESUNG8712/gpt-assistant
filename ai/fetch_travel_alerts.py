@@ -41,6 +41,21 @@ ALARM_LEVEL_LABELS = {
 }
 
 
+def _normalize_service_key(key: str) -> str:
+    """data.go.kr는 인증키를 "Encoding"(이미 URL 인코딩됨, %2F·%3D 등을 포함)과
+    "Decoding"(원문) 두 종류로 발급하는데, 사용자가 어느 쪽을 넣었는지 코드에서는
+    알 수 없다. Encoding 키를 그대로 받아 _http_get()이 다시 인코딩하면 이중
+    인코딩되어 403 Forbidden이 남(실측 확인). Decoding 키(원문, base64 계열이라
+    '%' 문자를 포함할 수 없음)는 '%'가 없으므로, '%'가 있으면 Encoding 키로 보고
+    한 번 디코딩해 항상 "원문" 상태로 통일한다 — 이후 정확히 한 번만 인코딩됨."""
+    if "%" in key:
+        try:
+            return urllib.parse.unquote(key)
+        except Exception:
+            return key
+    return key
+
+
 def _http_get(url: str, params: dict) -> dict:
     """httpx 또는 urllib로 GET 요청 (의존성 없이 동작) — fetch_laws.py와 동일 패턴"""
     query = "&".join(f"{k}={urllib.parse.quote(str(v), safe='')}" for k, v in params.items())
@@ -73,7 +88,7 @@ def fetch_all_alerts() -> list[dict]:
     특정 국가로 필터링하지 않고 한 번에 조회 — 활성 경보 국가 수가 전체 국가 수보다
     훨씬 적어(보통 수십 개 수준) numOfRows를 넉넉히 잡으면 페이지네이션 없이 충분."""
     data = _http_get(ENDPOINT, {
-        "ServiceKey": API_KEY,
+        "ServiceKey": _normalize_service_key(API_KEY),
         "returnType": "JSON",
         "numOfRows": 500,
         "pageNo": 1,
