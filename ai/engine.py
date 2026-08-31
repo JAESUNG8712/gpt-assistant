@@ -663,33 +663,14 @@ def _load_knowledge():
     except Exception as e:
         print(f"⚠️ 지식베이스 로드 실패: {e}")
 
-    # law.go.kr 원문 캐시 (fetch_laws.py 또는 GitHub Actions가 생성)
-    try:
-        import json as _json, os as _os
-        cache_path = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "law_data_cache.json")
-        if _os.path.exists(cache_path) and _os.path.getsize(cache_path) > 10:
-            with open(cache_path, encoding="utf-8") as f:
-                cached = _json.load(f)
-            for item in cached:
-                _engine.add(item['q'], item['a'],
-                            {'persona': item.get('persona', 'hr'), 'source': 'law.go.kr'})
-            print(f"  📚 law.go.kr 원문 캐시: {len(cached)}개 조문")
-    except Exception as e:
-        print(f"⚠️ law.go.kr 캐시 로드 실패: {e}")
-
-    # 외교부 해외안전여행 여행경보 캐시 (fetch_travel_alerts.py 또는 GitHub Actions가 생성)
-    try:
-        import json as _json, os as _os
-        cache_path = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "travel_alert_cache.json")
-        if _os.path.exists(cache_path) and _os.path.getsize(cache_path) > 10:
-            with open(cache_path, encoding="utf-8") as f:
-                cached = _json.load(f)
-            for item in cached:
-                _engine.add(item['q'], item['a'],
-                            {'persona': item.get('persona', 'travel'), 'source': 'mofa_travel_alert'})
-            print(f"  🌍 여행경보 캐시: {len(cached)}개국")
-    except Exception as e:
-        print(f"⚠️ 여행경보 캐시 로드 실패: {e}")
+    # law.go.kr 원문·외교부 여행경보는 더 이상 git 커밋된 JSON 캐시 파일에서 로드하지
+    # 않는다(2026-08-30 제거) — GitHub Actions가 CI 러너에서 fetch 후 결과를 git에
+    # 커밋하는 방식은, 스케줄 트리거가 항상 저장소 기본 브랜치에서 실행되는데 그
+    # 브랜치가 Render 배포 브랜치와 달라 커밋된 갱신분이 서비스에 절대 반영되지
+    # 않는 구조적 문제가 있었음. 이제 `POST /admin/refresh-law-cache`·
+    # `/admin/refresh-travel-alerts`가 배포된 서버 안에서 직접 API를 호출해
+    # learned_knowledge DB(source='law.go.kr'·'mofa_travel_alert')에 저장하므로,
+    # 아래 "동적 학습 데이터 복원" 블록이 재시작 시 자동으로 함께 복원한다.
 
     # 자동학습·직접입력·문서 업로드 등 동적 학습 데이터 복원 (재시작 후에도 유지)
     # "정적KB" 소스는 Python KB 파일에서 이미 로드되었으므로 건너뜀 (중복 방지)

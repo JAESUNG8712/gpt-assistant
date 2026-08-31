@@ -1639,6 +1639,85 @@ def admin_refine(apply: bool = False, dup_threshold: float = 0.85,
     return result
 
 
+def _replace_source_knowledge(source: str, items: list[dict], default_persona: str) -> int:
+    """learned_knowledge에서 특정 source의 기존 행을 전부 지우고 새 항목으로 교체 +
+    라이브 엔진에도 즉시 반영. law.go.kr·mofa_travel_alert처럼 "매번 전체를 다시
+    가져오는 권위 있는 외부 자료"에 적합한 전체 교체 방식 — upsert_knowledge()와
+    달리 이전 실행에서 사라진 항목(예: 경보가 해제된 국가)도 자동으로 없어진다."""
+    now = _datetime.now().isoformat()
+    rows = [
+        (f"Q: {it['q']}\nA: {it['a']}", it.get("persona", default_persona), source, now)
+        for it in items
+    ]
+    with mem._conn() as c:
+        c.execute("DELETE FROM learned_knowledge WHERE source=?", (source,))
+        c.executemany(
+            "INSERT INTO learned_knowledge (content, persona, source, created_at) VALUES (?,?,?,?)",
+            rows,
+        )
+    try:
+        from engine import get_engine, _kb_loaded
+        if _kb_loaded:
+            eng = get_engine()
+            eng.delete_by_source(source)
+            for it in items:
+                eng.add(it["q"], it["a"], {"persona": it.get("persona", default_persona), "source": source})
+    except Exception as e:
+        print(f"⚠️ 엔진 즉시 반영 실패(재시작 시 반영됨): {e}")
+    return len(items)
+
+
+@app.post("/admin/refresh-law-cache")
+def admin_refresh_law_cache(token: str = ""):
+    """law.go.kr 법령 원문을 배포된 서버가 직접 가져와 DB에 저장 + 라이브 엔진에
+    즉시 반영한다. 예전에는 GitHub Actions가 CI 러너에서 fetch_laws.py를 실행해
+    결과 JSON을 git에 커밋하는 방식이었는데, 스케줄 트리거는 항상 저장소 기본
+    브랜치에서 실행되고 그 브랜치가 Render 배포 브랜치와 달라 커밋된 갱신분이
+    서비스에 절대 반영되지 않는 구조적 문제가 있었음(2026-08-30 발견). 이 방식은
+    git을 거치지 않으므로 그 문제가 원천적으로 없다. 외부 스케줄러(GitHub Actions
+    등)가 이 엔드포인트를 주기적으로 호출하면 된다."""
+    _require_backup_token(token)
+    from fetch_laws import LAWS_TO_FETCH, fetch_one_law, LAW_API_KEY as _law_key
+    if not _law_key:
+        raise HTTPException(400, "LAW_API_KEY 환경변수가 서버에 설정되지 않았습니다.")
+
+    all_results = []
+    errors = []
+    for law_key, search_name in LAWS_TO_FETCH:
+        try:
+            all_results.extend(fetch_one_law(law_key, search_name))
+        except Exception as e:
+            errors.append(f"{law_key}: {type(e).__name__}: {e}")
+
+    if not all_results:
+        raise HTTPException(502, f"법령 데이터를 하나도 가져오지 못했습니다: {errors}")
+
+    saved = _replace_source_knowledge("law.go.kr", all_results, "hr")
+    return {"fetched": saved, "laws_attempted": len(LAWS_TO_FETCH), "errors": errors}
+
+
+@app.post("/admin/refresh-travel-alerts")
+def admin_refresh_travel_alerts(token: str = ""):
+    """외교부 해외안전여행 여행경보를 배포된 서버가 직접 가져와 DB에 저장 + 라이브
+    엔진에 즉시 반영 — admin_refresh_law_cache와 동일한 이유로 git 커밋 대신 이
+    방식을 쓴다."""
+    _require_backup_token(token)
+    from fetch_travel_alerts import fetch_all_alerts, API_KEY as _travel_key
+    if not _travel_key:
+        raise HTTPException(400, "TRAVEL_ALERT_API_KEY 환경변수가 서버에 설정되지 않았습니다.")
+
+    try:
+        results = fetch_all_alerts()
+    except Exception as e:
+        raise HTTPException(502, f"여행경보 데이터 조회 실패: {type(e).__name__}: {e}")
+
+    if not results:
+        raise HTTPException(502, "여행경보 데이터를 하나도 가져오지 못했습니다.")
+
+    saved = _replace_source_knowledge("mofa_travel_alert", results, "travel")
+    return {"fetched": saved}
+
+
 # ── 공유 링크 (일부 페르소나만 URL로 외부 공개) ──────────
 
 class ShareCreateRequest(BaseModel):

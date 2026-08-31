@@ -12,33 +12,18 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: 코드 체크아웃
-        uses: actions/checkout@v4
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Python 3.11 설정
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: 의존성 설치
-        run: pip install httpx
-
-      - name: 법령 데이터 다운로드
+      - name: 법령 데이터 갱신 요청 (배포된 서버가 직접 수집·저장)
         env:
-          LAW_API_KEY: ${{ secrets.LAW_API_KEY }}
-        run: python ai/fetch_laws.py
-
-      - name: 변경사항 확인 및 커밋
+          BACKUP_TOKEN: ${{ secrets.BACKUP_TOKEN }}
         run: |
-          git config --local user.email "github-actions[bot]@users.noreply.github.com"
-          git config --local user.name "github-actions[bot]"
-          git add ai/law_data_cache.json
-          if git diff --staged --quiet; then
-            echo "변경사항 없음 — 커밋 건너뜀"
-          else
-            git commit -m "chore: 법령 데이터 자동 업데이트 $(date +'%Y-%m-%d')"
-            git push
-            echo "✅ 법령 데이터 업데이트 완료"
+          http_code=$(curl -sS -X POST \
+            --retry 2 --retry-delay 10 --max-time 120 \
+            "https://ai-assist-aosk.onrender.com/admin/refresh-law-cache?token=${BACKUP_TOKEN}" \
+            -o response.json -w '%{http_code}')
+          echo "HTTP ${http_code}"
+          cat response.json
+          echo ""
+          if [ "$http_code" -ge 400 ]; then
+            echo "::error::법령 데이터 갱신 요청 실패 (HTTP ${http_code})"
+            exit 1
           fi
