@@ -11,6 +11,7 @@ import hashlib
 import hmac
 import json
 import re
+import secrets
 from datetime import datetime, timedelta
 from urllib.parse import urlsplit, urlunsplit
 
@@ -220,6 +221,8 @@ def init_db(seed_static: bool = True):
             "ALTER TABLE learned_knowledge ADD COLUMN evidence_json TEXT DEFAULT '[]'",
             "ALTER TABLE learned_knowledge ADD COLUMN verified_at TEXT DEFAULT ''",
             "ALTER TABLE learned_knowledge ADD COLUMN valid_until TEXT DEFAULT ''",
+            "ALTER TABLE learned_knowledge ADD COLUMN version INTEGER NOT NULL DEFAULT 1",
+            "ALTER TABLE learned_knowledge ADD COLUMN updated_at TEXT DEFAULT ''",
         ):
             try:
                 c.execute(column_sql)
@@ -289,6 +292,9 @@ def init_db(seed_static: bool = True):
             "ALTER TABLE memory_candidates ADD COLUMN evidence_json TEXT DEFAULT '[]'",
             "ALTER TABLE memory_candidates ADD COLUMN verified_at TEXT DEFAULT ''",
             "ALTER TABLE memory_candidates ADD COLUMN valid_until TEXT DEFAULT ''",
+            "ALTER TABLE memory_candidates ADD COLUMN reviewed_by TEXT DEFAULT ''",
+            "ALTER TABLE memory_candidates ADD COLUMN review_reason TEXT DEFAULT ''",
+            "ALTER TABLE memory_candidates ADD COLUMN review_nonce TEXT DEFAULT ''",
         ):
             try:
                 c.execute(column_sql)
@@ -310,6 +316,8 @@ def init_db(seed_static: bool = True):
             "ALTER TABLE memory_quarantine ADD COLUMN evidence_json TEXT DEFAULT '[]'",
             "ALTER TABLE memory_quarantine ADD COLUMN original_verified_at TEXT DEFAULT ''",
             "ALTER TABLE memory_quarantine ADD COLUMN original_valid_until TEXT DEFAULT ''",
+            "ALTER TABLE memory_quarantine ADD COLUMN original_version INTEGER NOT NULL DEFAULT 1",
+            "ALTER TABLE memory_quarantine ADD COLUMN original_updated_at TEXT DEFAULT ''",
         ):
             try:
                 c.execute(column_sql)
@@ -337,6 +345,23 @@ def init_db(seed_static: bool = True):
             note TEXT DEFAULT '',
             checked_at TEXT NOT NULL
         )""")
+        c.execute("""CREATE TABLE IF NOT EXISTS memory_revisions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            memory_id INTEGER NOT NULL,
+            version INTEGER NOT NULL,
+            content TEXT NOT NULL,
+            persona TEXT DEFAULT '',
+            source TEXT DEFAULT '',
+            created_at TEXT DEFAULT '',
+            evidence_json TEXT DEFAULT '[]',
+            verified_at TEXT DEFAULT '',
+            valid_until TEXT DEFAULT '',
+            action TEXT NOT NULL,
+            reason TEXT DEFAULT '',
+            actor TEXT DEFAULT 'owner',
+            recorded_at TEXT NOT NULL,
+            UNIQUE(memory_id, version)
+        )""")
         c.execute("CREATE INDEX IF NOT EXISTS idx_conversations_scope ON conversations(session_id, persona, id)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_candidates_status ON memory_candidates(status, persona, id)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_learned_persona_source ON learned_knowledge(persona, source, id)")
@@ -344,6 +369,7 @@ def init_db(seed_static: bool = True):
         c.execute("CREATE INDEX IF NOT EXISTS idx_quarantine_active ON memory_quarantine(restored_at, id)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_retrieval_created ON memory_retrieval_events(created_at, persona)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_revalidation_checked ON memory_revalidation_events(checked_at, source, id)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_memory_revisions ON memory_revisions(memory_id, version DESC)")
     if seed_static:
         _seed_static_kb_to_db()
 
@@ -950,9 +976,33 @@ def store_document(text: str, filename: str, persona_id: str = "hr") -> int:
     return len(chunks)
 
 
+class MemoryVersionConflict(ValueError):
+    pass
+
+
+def _record_memory_revision(c, row: dict, action: str, reason: str = "",
+                            actor: str = "owner") -> None:
+    """변경 직전 상태를 버전별 한 번만 보존한다."""
+    safe_reason, _ = privacy_guard.sanitize_for_storage(reason, include_contact=True)
+    c.execute(
+        "INSERT OR IGNORE INTO memory_revisions"
+        " (memory_id,version,content,persona,source,created_at,evidence_json,verified_at,"
+        " valid_until,action,reason,actor,recorded_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (
+            int(row["id"]), max(1, int(row.get("version") or 1)), row.get("content", ""),
+            row.get("persona", ""), row.get("source", ""), row.get("created_at", ""),
+            row.get("evidence_json", "[]"), row.get("verified_at", ""),
+            row.get("valid_until", ""), (action or "update")[:40], safe_reason[:500],
+            (actor or "owner")[:80], datetime.now().isoformat(),
+        ),
+    )
+
+
 def upsert_knowledge(question: str, answer: str, persona: str,
                      source: str = "직접입력", evidence=None,
-                     verified_at: str = "", valid_until: str = None) -> bool:
+                     verified_at: str = "", valid_until: str = None,
+                     actor: str = "owner", reason: str = "지식 수정",
+                     expected_version: int | None = None) -> bool:
     """Q&A를 KB에 저장 — 동일 질문이 있으면 최신 내용으로 업데이트, 없으면 신규 추가.
     Returns True if updated (existing replaced), False if inserted (new entry).
     """
@@ -972,7 +1022,8 @@ def upsert_knowledge(question: str, answer: str, persona: str,
 
     with _conn() as c:
         rows = c.execute(
-            "SELECT id, content FROM learned_knowledge"
+            "SELECT id,content,persona,source,created_at,evidence_json,verified_at,"
+            " valid_until,version,updated_at FROM learned_knowledge"
             " WHERE persona=? AND source NOT IN ('정적KB') ORDER BY id DESC",
             (persona,),
         ).fetchall()
@@ -987,18 +1038,32 @@ def upsert_knowledge(question: str, answer: str, persona: str,
                     break
 
         if existing_id:
+            current = next(dict(row) for row in rows if int(dict(row)["id"]) == existing_id)
+            current_version = max(1, int(current.get("version") or 1))
+            if expected_version is not None and int(expected_version) != current_version:
+                raise MemoryVersionConflict(
+                    f"기억이 이미 변경되었습니다(요청 버전 {expected_version}, 현재 {current_version})."
+                )
+            _record_memory_revision(c, current, "update", reason, actor)
             c.execute(
                 "UPDATE learned_knowledge SET content=?, source=?, created_at=?,"
-                " evidence_json=?, verified_at=?, valid_until=? WHERE id=?",
-                (content, source, now, evidence_json, verified_at, valid_until, existing_id),
+                " evidence_json=?, verified_at=?, valid_until=?, version=?, updated_at=?"
+                " WHERE id=? AND version=?",
+                (content, source, now, evidence_json, verified_at, valid_until,
+                 current_version + 1, now, existing_id, current_version),
             )
+            changed = c.execute(
+                "SELECT version FROM learned_knowledge WHERE id=?", (existing_id,)
+            ).fetchone()
+            if not changed or int(changed["version"]) != current_version + 1:
+                raise MemoryVersionConflict("동시 변경이 감지되어 저장하지 않았습니다.")
             updated = True
         else:
             c.execute(
                 "INSERT INTO learned_knowledge"
-                " (content, persona, source, created_at, evidence_json, verified_at, valid_until)"
-                " VALUES (?,?,?,?,?,?,?)",
-                (content, persona, source, now, evidence_json, verified_at, valid_until),
+                " (content, persona, source, created_at, evidence_json, verified_at, valid_until,"
+                " version,updated_at) VALUES (?,?,?,?,?,?,?,1,?)",
+                (content, persona, source, now, evidence_json, verified_at, valid_until, now),
             )
             updated = False
 
@@ -1240,7 +1305,8 @@ def list_memory_candidates(status: str = "pending", persona: str = "",
     return items
 
 
-def review_memory_candidate(candidate_id: int, approve: bool, force: bool = False) -> dict | None:
+def review_memory_candidate(candidate_id: int, approve: bool, force: bool = False,
+                            reviewer: str = "owner", review_reason: str = "") -> dict | None:
     """후보를 승인해 장기기억으로 승격하거나 거절한다. 반복 호출에도 안전."""
     with _conn() as c:
         row = c.execute(
@@ -1251,7 +1317,41 @@ def review_memory_candidate(candidate_id: int, approve: bool, force: bool = Fals
     item = dict(row)
     if item["status"] != "pending":
         return item
-    if approve:
+    safe_reason, labels = privacy_guard.sanitize_for_storage(
+        review_reason, include_contact=True
+    )
+    safe_reason = safe_reason.strip()[:500]
+    if labels:
+        raise ValueError("검토 사유에 민감정보를 입력할 수 없습니다.")
+    if force and len(safe_reason) < 3:
+        raise ValueError("강제 승인에는 3자 이상의 검토 사유가 필요합니다.")
+
+    if not approve:
+        with _conn() as c:
+            c.execute(
+                "UPDATE memory_candidates SET status='rejected',reviewed_at=?,reviewed_by=?,"
+                " review_reason=? WHERE id=? AND status='pending'",
+                (datetime.now().isoformat(), reviewer[:80], safe_reason, candidate_id),
+            )
+            latest = c.execute("SELECT * FROM memory_candidates WHERE id=?", (candidate_id,)).fetchone()
+        return dict(latest) if latest else None
+
+    nonce = secrets.token_hex(16)
+    with _conn() as c:
+        c.execute(
+            "UPDATE memory_candidates SET status='reviewing',review_nonce=?"
+            " WHERE id=? AND status='pending'", (nonce, candidate_id),
+        )
+        reserved = c.execute(
+            "SELECT * FROM memory_candidates WHERE id=?", (candidate_id,)
+        ).fetchone()
+    if not reserved:
+        return None
+    item = dict(reserved)
+    if item.get("status") != "reviewing" or item.get("review_nonce") != nonce:
+        return item
+
+    try:
         # 승인 후보가 이미 검증된 지식과 같은 질문이면 자동으로 덮어쓰지 않는다.
         # 관리자가 기존 항목을 직접 격리하거나 /learn/text로 명시적으로 수정한 뒤
         # 다시 판단할 수 있도록 후보는 pending 상태로 남긴다.
@@ -1270,6 +1370,11 @@ def review_memory_candidate(candidate_id: int, approve: bool, force: bool = Fals
                 continue
             existing_q = content.split("\nA: ", 1)[0][3:].strip().lower()
             if existing_q == q_lower and source.startswith(protected_prefixes):
+                with _conn() as c:
+                    c.execute(
+                        "UPDATE memory_candidates SET status='pending',review_nonce=''"
+                        " WHERE id=? AND review_nonce=?", (candidate_id, nonce),
+                    )
                 item["status"] = "protected"
                 item["protected_source"] = source
                 return item
@@ -1277,6 +1382,11 @@ def review_memory_candidate(candidate_id: int, approve: bool, force: bool = Fals
             item["question"], item["answer"], item["persona"]
         )
         if contradictions and not force:
+            with _conn() as c:
+                c.execute(
+                    "UPDATE memory_candidates SET status='pending',review_nonce=''"
+                    " WHERE id=? AND review_nonce=?", (candidate_id, nonce),
+                )
             item["status"] = "conflict"
             item["contradictions"] = contradictions
             return item
@@ -1288,15 +1398,23 @@ def review_memory_candidate(candidate_id: int, approve: bool, force: bool = Fals
             }],
             verified_at=item.get("verified_at", "") or datetime.now().isoformat(),
             valid_until=item.get("valid_until", "") or _default_valid_until(item.get("source", "")),
+            actor=reviewer, reason=safe_reason or "기억 후보 승인",
         )
-    new_status = "approved" if approve else "rejected"
+    except Exception:
+        with _conn() as c:
+            c.execute(
+                "UPDATE memory_candidates SET status='pending',review_nonce=''"
+                " WHERE id=? AND review_nonce=?", (candidate_id, nonce),
+            )
+        raise
     with _conn() as c:
         c.execute(
-            "UPDATE memory_candidates SET status=?, reviewed_at=? WHERE id=?",
-            (new_status, datetime.now().isoformat(), candidate_id),
+            "UPDATE memory_candidates SET status='approved',reviewed_at=?,reviewed_by=?,"
+            " review_reason=?,review_nonce='' WHERE id=? AND status='reviewing' AND review_nonce=?",
+            (datetime.now().isoformat(), reviewer[:80], safe_reason, candidate_id, nonce),
         )
-    item["status"] = new_status
-    return item
+        latest = c.execute("SELECT * FROM memory_candidates WHERE id=?", (candidate_id,)).fetchone()
+    return dict(latest) if latest else None
 
 
 def list_memory_revalidation(days: int = 30, persona: str = "",
@@ -1313,7 +1431,7 @@ def list_memory_revalidation(days: int = 30, persona: str = "",
     with _conn() as c:
         rows = c.execute(
             "SELECT id, content, persona, source, created_at, evidence_json,"
-            " verified_at, valid_until FROM learned_knowledge WHERE "
+            " verified_at,valid_until,version,updated_at FROM learned_knowledge WHERE "
             + " AND ".join(where)
             + " ORDER BY valid_until ASC, id DESC LIMIT ? OFFSET ?",
             params,
@@ -1335,16 +1453,24 @@ def list_memory_revalidation(days: int = 30, persona: str = "",
 
 def verify_learned_memory(item_id: int, valid_days: int | None = None,
                           evidence=None, confirmed: bool = False,
-                          verification_note: str = "") -> dict | None:
+                          verification_note: str = "",
+                          expected_version: int | None = None,
+                          actor: str = "owner") -> dict | None:
     """관리자 재검증 시 근거와 검증 시각·새 유효기간을 함께 갱신한다."""
     with _conn() as c:
         row = c.execute(
-            "SELECT id, content, persona, source, evidence_json FROM learned_knowledge WHERE id=?",
+            "SELECT id,content,persona,source,created_at,evidence_json,verified_at,valid_until,"
+            " version,updated_at FROM learned_knowledge WHERE id=?",
             (int(item_id),),
         ).fetchone()
     if not row:
         return None
     item = dict(row)
+    current_version = max(1, int(item.get("version") or 1))
+    if expected_version is None or int(expected_version) != current_version:
+        raise MemoryVersionConflict(
+            f"기억 버전을 새로 확인하세요(요청 {expected_version}, 현재 {current_version})."
+        )
     if item.get("source") in {"law.go.kr", "mofa_travel_alert"}:
         raise ValueError("공공 권위 출처는 개별 기한 연장 대신 원문 자동 재수집을 사용하세요.")
     note, note_labels = privacy_guard.sanitize_for_storage(
@@ -1368,10 +1494,18 @@ def verify_learned_memory(item_id: int, valid_days: int | None = None,
     verified_at = now.isoformat()
     valid_until = (now + timedelta(days=valid_days)).isoformat()
     with _conn() as c:
+        _record_memory_revision(c, item, "revalidate", note, actor)
         c.execute(
-            "UPDATE learned_knowledge SET evidence_json=?, verified_at=?, valid_until=? WHERE id=?",
-            (_evidence_json(normalized), verified_at, valid_until, int(item_id)),
+            "UPDATE learned_knowledge SET evidence_json=?,verified_at=?,valid_until=?,"
+            " version=?,updated_at=? WHERE id=? AND version=?",
+            (_evidence_json(normalized), verified_at, valid_until, current_version + 1,
+             verified_at, int(item_id), current_version),
         )
+        changed = c.execute(
+            "SELECT version FROM learned_knowledge WHERE id=?", (int(item_id),)
+        ).fetchone()
+        if not changed or int(changed["version"]) != current_version + 1:
+            raise MemoryVersionConflict("동시 변경이 감지되어 재검증하지 않았습니다.")
         c.execute(
             "INSERT INTO memory_revalidation_events"
             " (memory_id,source,mode,status,note,checked_at) VALUES (?,?,?,?,?,?)",
@@ -1380,6 +1514,7 @@ def verify_learned_memory(item_id: int, valid_days: int | None = None,
     return {
         "id": int(item_id), "source": item.get("source", ""), "evidence": normalized,
         "verified_at": verified_at, "valid_until": valid_until, "validity_status": "current",
+        "version": current_version + 1,
     }
 
 
@@ -1405,6 +1540,81 @@ def list_memory_revalidation_events(limit: int = 100) -> list[dict]:
     return [dict(row) for row in rows]
 
 
+def get_memory_history(item_id: int) -> dict | None:
+    with _conn() as c:
+        current_row = c.execute(
+            "SELECT id,content,persona,source,created_at,evidence_json,verified_at,valid_until,"
+            " version,updated_at FROM learned_knowledge WHERE id=?", (int(item_id),)
+        ).fetchone()
+        if not current_row:
+            return None
+        revision_rows = c.execute(
+            "SELECT id,memory_id,version,content,persona,source,created_at,evidence_json,"
+            " verified_at,valid_until,action,reason,actor,recorded_at"
+            " FROM memory_revisions WHERE memory_id=? ORDER BY version DESC",
+            (int(item_id),),
+        ).fetchall()
+    current = dict(current_row)
+    current["evidence"] = _normalize_evidence(current.pop("evidence_json", "[]"))
+    revisions = []
+    for row in revision_rows:
+        revision = dict(row)
+        revision["evidence"] = _normalize_evidence(revision.pop("evidence_json", "[]"))
+        revisions.append(revision)
+    return {"current": current, "revisions": revisions}
+
+
+def rollback_memory(item_id: int, target_version: int, expected_version: int,
+                    reason: str, actor: str = "owner") -> dict | None:
+    """이전 스냅샷을 새 버전으로 복원한다. 버전 번호 자체는 되돌리지 않는다."""
+    safe_reason, labels = privacy_guard.sanitize_for_storage(reason, include_contact=True)
+    safe_reason = safe_reason.strip()[:500]
+    if labels or len(safe_reason) < 3:
+        raise ValueError("민감정보 없는 3자 이상의 롤백 사유가 필요합니다.")
+    with _conn() as c:
+        current_row = c.execute(
+            "SELECT id,content,persona,source,created_at,evidence_json,verified_at,valid_until,"
+            " version,updated_at FROM learned_knowledge WHERE id=?", (int(item_id),)
+        ).fetchone()
+        if not current_row:
+            return None
+        current = dict(current_row)
+        current_version = max(1, int(current.get("version") or 1))
+        if int(expected_version) != current_version:
+            raise MemoryVersionConflict(
+                f"기억이 이미 변경되었습니다(요청 {expected_version}, 현재 {current_version})."
+            )
+        target_row = c.execute(
+            "SELECT * FROM memory_revisions WHERE memory_id=? AND version=?",
+            (int(item_id), int(target_version)),
+        ).fetchone()
+        if not target_row:
+            raise ValueError("복원할 이전 버전을 찾을 수 없습니다.")
+        target = dict(target_row)
+        _record_memory_revision(c, current, "rollback", safe_reason, actor)
+        now = datetime.now().isoformat()
+        c.execute(
+            "UPDATE learned_knowledge SET content=?,persona=?,source=?,created_at=?,"
+            " evidence_json=?,verified_at=?,valid_until=?,version=?,updated_at=?"
+            " WHERE id=? AND version=?",
+            (
+                target["content"], target["persona"], target["source"], target["created_at"],
+                target.get("evidence_json", "[]"), target.get("verified_at", ""),
+                target.get("valid_until", ""), current_version + 1, now,
+                int(item_id), current_version,
+            ),
+        )
+        changed = c.execute(
+            "SELECT version FROM learned_knowledge WHERE id=?", (int(item_id),)
+        ).fetchone()
+        if not changed or int(changed["version"]) != current_version + 1:
+            raise MemoryVersionConflict("동시 변경이 감지되어 롤백하지 않았습니다.")
+    return {
+        "id": int(item_id), "restored_from_version": int(target_version),
+        "version": current_version + 1, "updated_at": now,
+    }
+
+
 def quarantine_learned_rows(rows: list, reason: str) -> int:
     """장기기억 행을 복구 가능한 격리소로 옮긴 뒤 원본에서 삭제."""
     if not rows:
@@ -1415,7 +1625,7 @@ def quarantine_learned_rows(rows: list, reason: str) -> int:
     with _conn() as c:
         fresh_rows = [dict(r) for r in c.execute(
             "SELECT id, content, persona, source, created_at, evidence_json,"
-            f" verified_at, valid_until FROM learned_knowledge WHERE id IN ({placeholders})",
+            f" verified_at,valid_until,version,updated_at FROM learned_knowledge WHERE id IN ({placeholders})",
             ids,
         ).fetchall()]
         for r in fresh_rows:
@@ -1424,14 +1634,16 @@ def quarantine_learned_rows(rows: list, reason: str) -> int:
             c.execute(
                 "INSERT INTO memory_quarantine"
                 " (original_id, content, persona, source, original_created_at, reason, quarantined_at,"
-                " evidence_json, original_verified_at, original_valid_until)"
-                " SELECT ?,?,?,?,?,?,?,?,?,? WHERE NOT EXISTS ("
+                " evidence_json,original_verified_at,original_valid_until,original_version,original_updated_at)"
+                " SELECT ?,?,?,?,?,?,?,?,?,?,?,? WHERE NOT EXISTS ("
                 " SELECT 1 FROM memory_quarantine"
                 " WHERE original_id=? AND content=? AND restored_at='')",
                 (
                     r["id"], r["content"], r.get("persona", ""), r.get("source", ""),
                     r.get("created_at", ""), reason, now, r.get("evidence_json", "[]"),
-                    r.get("verified_at", ""), r.get("valid_until", ""), r["id"], r["content"],
+                    r.get("verified_at", ""), r.get("valid_until", ""),
+                    max(1, int(r.get("version") or 1)), r.get("updated_at", ""),
+                    r["id"], r["content"],
                 ),
             )
         c.execute(f"DELETE FROM learned_knowledge WHERE id IN ({placeholders})", ids)
@@ -1458,17 +1670,29 @@ def restore_quarantined_memory(quarantine_id: int) -> dict | None:
         return None
     item = dict(row)
     with _conn() as c:
+        occupied = c.execute(
+            "SELECT id,content FROM learned_knowledge WHERE id=?", (item["original_id"],)
+        ).fetchone()
+        duplicate = c.execute(
+            "SELECT id FROM learned_knowledge WHERE content=? AND persona=? AND source=?",
+            (item["content"], item["persona"], item["source"]),
+        ).fetchone()
+        if occupied and dict(occupied).get("content") != item["content"]:
+            raise MemoryVersionConflict("원래 기억 ID가 다른 항목에 사용 중이어서 복구하지 않았습니다.")
+        if duplicate and int(duplicate["id"]) != int(item["original_id"]):
+            raise MemoryVersionConflict("동일 기억이 다른 ID로 이미 존재해 중복 복구하지 않았습니다.")
         c.execute(
             "INSERT INTO learned_knowledge"
-            " (content, persona, source, created_at, evidence_json, verified_at, valid_until)"
-            " SELECT ?,?,?,?,?,?,? WHERE NOT EXISTS ("
-            " SELECT 1 FROM learned_knowledge WHERE content=? AND persona=? AND source=?)",
+            " (id,content,persona,source,created_at,evidence_json,verified_at,valid_until,version,updated_at)"
+            " SELECT ?,?,?,?,?,?,?,?,?,? WHERE NOT EXISTS ("
+            " SELECT 1 FROM learned_knowledge WHERE id=?)",
             (
-                item["content"], item["persona"], item["source"],
+                item["original_id"], item["content"], item["persona"], item["source"],
                 item["original_created_at"] or datetime.now().isoformat(),
                 item.get("evidence_json", "[]"), item.get("original_verified_at", ""),
                 item.get("original_valid_until", ""),
-                item["content"], item["persona"], item["source"],
+                max(1, int(item.get("original_version") or 1)), item.get("original_updated_at", ""),
+                item["original_id"],
             ),
         )
         c.execute(

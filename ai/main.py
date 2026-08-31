@@ -1587,8 +1587,8 @@ def admin_learned_list(q: str = "", persona: str = "", limit: int = 30, offset: 
     if persona:
         where.append("persona=?")
         params.append(persona)
-    sql = ("SELECT id, persona, source, created_at, content, evidence_json,"
-           " verified_at, valid_until FROM learned_knowledge")
+    sql = ("SELECT id,persona,source,created_at,content,evidence_json,"
+           " verified_at,valid_until,version,updated_at FROM learned_knowledge")
     if where:
         sql += " WHERE " + " AND ".join(where)
     sql += " ORDER BY id ASC LIMIT ? OFFSET ?"
@@ -1608,6 +1608,13 @@ class MemoryVerifyRequest(BaseModel):
     evidence: Optional[list[dict]] = None
     confirm_current: bool = False
     verification_note: str = ""
+    expected_version: int = 0
+
+
+class MemoryRollbackRequest(BaseModel):
+    target_version: int
+    expected_version: int
+    reason: str
 
 
 @app.get("/admin/memory-revalidation")
@@ -1625,7 +1632,10 @@ def admin_learned_verify(item_id: int, req: MemoryVerifyRequest, token: str = ""
         item = mem.verify_learned_memory(
             item_id, req.valid_days, req.evidence,
             confirmed=req.confirm_current, verification_note=req.verification_note,
+            expected_version=req.expected_version, actor="owner",
         )
+    except mem.MemoryVersionConflict as e:
+        raise HTTPException(409, str(e))
     except ValueError as e:
         raise HTTPException(400, str(e))
     if not item:
@@ -1633,6 +1643,33 @@ def admin_learned_verify(item_id: int, req: MemoryVerifyRequest, token: str = ""
     from engine import reload_engine
     reload_engine()
     return {"ok": True, "item": item}
+
+
+@app.get("/admin/learned/{item_id}/history")
+def admin_learned_history(item_id: int, token: str = ""):
+    _require_backup_token(token)
+    history = mem.get_memory_history(item_id)
+    if not history:
+        raise HTTPException(404, f"id={item_id} 항목 없음")
+    return history
+
+
+@app.post("/admin/learned/{item_id}/rollback")
+def admin_learned_rollback(item_id: int, req: MemoryRollbackRequest, token: str = ""):
+    _require_backup_token(token)
+    try:
+        result = mem.rollback_memory(
+            item_id, req.target_version, req.expected_version, req.reason, actor="owner"
+        )
+    except mem.MemoryVersionConflict as e:
+        raise HTTPException(409, str(e))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    if not result:
+        raise HTTPException(404, f"id={item_id} 항목 없음")
+    from engine import reload_engine
+    reload_engine()
+    return {"ok": True, "item": result}
 
 
 @app.get("/admin/memory-revalidation/events")
@@ -1713,9 +1750,17 @@ def admin_memory_candidates(status: str = "pending", persona: str = "",
 
 
 @app.post("/admin/memory-candidates/{candidate_id}/approve")
-def admin_memory_candidate_approve(candidate_id: int, force: bool = False, token: str = ""):
+def admin_memory_candidate_approve(candidate_id: int, force: bool = False,
+                                   reason: str = "", token: str = ""):
     _require_backup_token(token)
-    item = mem.review_memory_candidate(candidate_id, approve=True, force=force)
+    try:
+        item = mem.review_memory_candidate(
+            candidate_id, approve=True, force=force, reviewer="owner", review_reason=reason
+        )
+    except mem.MemoryVersionConflict as e:
+        raise HTTPException(409, str(e))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
     if not item:
         raise HTTPException(404, "기억 후보를 찾을 수 없습니다.")
     if item["status"] == "protected":
@@ -1734,9 +1779,11 @@ def admin_memory_candidate_approve(candidate_id: int, force: bool = False, token
 
 
 @app.post("/admin/memory-candidates/{candidate_id}/reject")
-def admin_memory_candidate_reject(candidate_id: int, token: str = ""):
+def admin_memory_candidate_reject(candidate_id: int, reason: str = "", token: str = ""):
     _require_backup_token(token)
-    item = mem.review_memory_candidate(candidate_id, approve=False)
+    item = mem.review_memory_candidate(
+        candidate_id, approve=False, reviewer="owner", review_reason=reason
+    )
     if not item:
         raise HTTPException(404, "기억 후보를 찾을 수 없습니다.")
     return {"ok": item["status"] == "rejected", "status": item["status"], "id": candidate_id}
@@ -1751,7 +1798,10 @@ def admin_memory_quarantine(limit: int = 100, offset: int = 0, token: str = ""):
 @app.post("/admin/memory-quarantine/{quarantine_id}/restore")
 def admin_memory_quarantine_restore(quarantine_id: int, token: str = ""):
     _require_backup_token(token)
-    item = mem.restore_quarantined_memory(quarantine_id)
+    try:
+        item = mem.restore_quarantined_memory(quarantine_id)
+    except mem.MemoryVersionConflict as e:
+        raise HTTPException(409, str(e))
     if not item:
         raise HTTPException(404, "복구할 격리 기억을 찾을 수 없습니다.")
     from engine import reload_engine

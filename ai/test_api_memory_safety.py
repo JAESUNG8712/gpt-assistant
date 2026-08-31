@@ -96,10 +96,28 @@ def main():
                 "evidence": [{"title": "관리자 검증", "url": "https://example.com/api-verify"}],
                 "confirm_current": True,
                 "verification_note": "관리자가 공식 근거와 대조 완료",
+                "expected_version": due_item["version"],
             },
         )
         assert verify_response.status_code == 200
         assert verify_response.json()["item"]["evidence"][0]["title"] == "관리자 검증"
+        history_response = client.get(
+            f"/admin/learned/{due_item['id']}/history", params={"token": owner_token}
+        )
+        assert history_response.status_code == 200
+        assert history_response.json()["current"]["version"] == 2
+        rollback_response = client.post(
+            f"/admin/learned/{due_item['id']}/rollback",
+            params={"token": owner_token},
+            json={"target_version": 1, "expected_version": 2, "reason": "API 롤백 검증"},
+        )
+        assert rollback_response.status_code == 200
+        stale_rollback = client.post(
+            f"/admin/learned/{due_item['id']}/rollback",
+            params={"token": owner_token},
+            json={"target_version": 1, "expected_version": 2, "reason": "오래된 요청"},
+        )
+        assert stale_rollback.status_code == 409
         assert client.get(
             "/admin/memory-revalidation/events", params={"token": owner_token}
         ).json()["items"][0]["status"] == "verified"
@@ -138,7 +156,7 @@ def main():
         assert conflict_response.json()["detail"]["code"] == "memory_conflict"
         forced_response = client.post(
             f"/admin/memory-candidates/{conflict_id}/approve",
-            params={"token": owner_token, "force": "true"},
+            params={"token": owner_token, "force": "true", "reason": "충돌 근거 검토 완료"},
         )
         assert forced_response.status_code == 200
         assert forced_response.json()["status"] == "approved"

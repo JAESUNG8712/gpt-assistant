@@ -1648,8 +1648,16 @@
   }
 
   async function reviewMemoryCandidate(id, action, force = false) {
-    if (force && !confirm('기존 기억과 충돌할 수 있습니다. 표시된 근거와 내용을 검토했습니까?')) return;
-    const suffix = force ? '?force=true' : '';
+    let reason = '';
+    if (force) {
+      if (!confirm('기존 기억과 충돌할 수 있습니다. 표시된 근거와 내용을 검토했습니까?')) return;
+      reason = prompt('강제 승인 사유를 입력하세요.') || '';
+      if (reason.trim().length < 3) return;
+    }
+    const params = new URLSearchParams();
+    if (force) params.set('force', 'true');
+    if (reason) params.set('reason', reason.trim());
+    const suffix = params.toString() ? `?${params}` : '';
     const r = await tokFetch(`/admin/memory-candidates/${id}/${action}${suffix}`, { method: 'POST' });
     if (!r.ok) {
       showToast('기억 후보 처리 실패: ' + await friendlyErrorMessage(r));
@@ -1688,7 +1696,8 @@
           <div style="display:flex;justify-content:flex-end;margin-top:8px">
             ${authoritative
               ? `<button class="fb-btn good" onclick="revalidateAuthoritative('${escHtml(item.source)}')">공공 원문 다시 수집</button>`
-              : `<button class="fb-btn good" onclick="verifyMemoryManually(${Number(item.id)})">내용 확인 후 연장</button>`}
+              : `<button class="fb-btn" onclick="showMemoryHistory(${Number(item.id)})">변경 이력</button>
+                 <button class="fb-btn good" onclick="verifyMemoryManually(${Number(item.id)}, ${Number(item.version || 1)})">내용 확인 후 연장</button>`}
           </div>
         </div>`;
       }).join('');
@@ -1697,13 +1706,13 @@
     }
   }
 
-  async function verifyMemoryManually(id) {
+  async function verifyMemoryManually(id, expectedVersion) {
     const note = prompt('현재 내용과 근거를 직접 확인한 사유를 입력하세요. (예: 사내 규정 원문 대조 완료)');
     if (!note || note.trim().length < 3) return;
     if (!confirm('현재 내용이 여전히 정확함을 확인했습니까?')) return;
     const r = await tokFetch(`/admin/learned/${id}/verify`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ valid_days: 0, confirm_current: true, verification_note: note.trim() }),
+      body: JSON.stringify({ valid_days: 0, confirm_current: true, verification_note: note.trim(), expected_version: expectedVersion }),
     });
     if (!r.ok) { showToast('재검증 실패: ' + await friendlyErrorMessage(r)); return; }
     showToast('✅ 수동 재검증과 유효기간 연장이 완료됐습니다.');
@@ -1716,6 +1725,36 @@
     if (!r.ok) { showToast('공공 출처 재수집 실패: ' + await friendlyErrorMessage(r)); return; }
     const d = await r.json();
     showToast(`✅ ${source} 원문 ${Number(d.fetched || 0)}건을 재검증했습니다.`);
+    await loadMemoryRevalidation();
+  }
+
+  async function showMemoryHistory(id) {
+    const r = await tokFetch(`/admin/learned/${id}/history`);
+    if (!r.ok) { showToast('이력 조회 실패: ' + await friendlyErrorMessage(r)); return; }
+    const d = await r.json();
+    const revisions = d.revisions || [];
+    if (!revisions.length) { showToast('이전 버전이 아직 없습니다.'); return; }
+    const summary = revisions.map(v =>
+      `v${Number(v.version)} · ${v.action || 'update'} · ${v.recorded_at || ''}\n${(v.content || '').slice(0, 120)}`
+    ).join('\n\n');
+    const target = prompt(`현재 v${Number(d.current.version || 1)}\n\n복원 가능한 이력:\n${summary}\n\n복원할 버전 번호를 입력하세요.`);
+    if (!target) return;
+    const targetVersion = Number(target);
+    if (!Number.isInteger(targetVersion) || !revisions.some(v => Number(v.version) === targetVersion)) {
+      showToast('복원 가능한 버전 번호가 아닙니다.'); return;
+    }
+    const reason = prompt('롤백 사유를 입력하세요.') || '';
+    if (reason.trim().length < 3) return;
+    const rollback = await tokFetch(`/admin/learned/${id}/rollback`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        target_version: targetVersion,
+        expected_version: Number(d.current.version || 1),
+        reason: reason.trim(),
+      }),
+    });
+    if (!rollback.ok) { showToast('롤백 실패: ' + await friendlyErrorMessage(rollback)); return; }
+    showToast(`✅ v${targetVersion} 내용을 새 버전으로 복원했습니다.`);
     await loadMemoryRevalidation();
   }
 

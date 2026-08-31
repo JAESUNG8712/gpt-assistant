@@ -63,11 +63,14 @@ def main():
                 "SELECT session_id FROM conversations LIMIT 1"
             ).fetchone()[0]
         assert "session_id" in conversation_cols
-        assert {"evidence_json", "verified_at", "valid_until"} <= learned_cols
-        assert {"evidence_json", "verified_at", "valid_until"} <= candidate_cols
-        assert {"evidence_json", "original_verified_at", "original_valid_until"} <= quarantine_cols
+        assert {"evidence_json", "verified_at", "valid_until", "version", "updated_at"} <= learned_cols
+        assert {"evidence_json", "verified_at", "valid_until", "reviewed_by",
+                "review_reason", "review_nonce"} <= candidate_cols
+        assert {"evidence_json", "original_verified_at", "original_valid_until",
+                "original_version", "original_updated_at"} <= quarantine_cols
         assert {"memory_candidates", "memory_quarantine", "memory_retrieval_events"} <= tables
         assert "memory_revalidation_events" in tables
+        assert "memory_revisions" in tables
         assert restored_scope == "legacy"
 
     print("migration memory safety tests: PASS")

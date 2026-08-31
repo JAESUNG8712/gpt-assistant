@@ -44,7 +44,9 @@ def main():
             assert c.execute(
                 "SELECT status FROM memory_candidates WHERE id=?", (candidate_id,)
             ).fetchone()[0] == "pending"
-        approved = memory.review_memory_candidate(candidate_id, approve=True, force=True)
+        approved = memory.review_memory_candidate(
+            candidate_id, approve=True, force=True, review_reason="충돌 근거 수동 검토 완료"
+        )
         assert approved["status"] == "approved"
 
         # 직접입력·문서·정적 KB는 강제 플래그로도 자동 덮어쓰지 못한다.
@@ -56,7 +58,9 @@ def main():
             "보호 정책 질문 qzxv는 무엇인가요?", "보호 정책의 자동 생성 대체 답변입니다. " * 4,
             "company", source="생성답변",
         )
-        protected = memory.review_memory_candidate(protected_id, approve=True, force=True)
+        protected = memory.review_memory_candidate(
+            protected_id, approve=True, force=True, review_reason="보호 출처 검증"
+        )
         assert protected["status"] == "protected"
 
         # 만료 기억은 엔진에 존재해도 검색 답변 후보에서 제외된다.
@@ -77,7 +81,7 @@ def main():
         assert len(due) == 1 and due[0]["validity_status"] == "expired"
         memory_id = due[0]["id"]
         try:
-            memory.verify_learned_memory(memory_id, valid_days=60)
+            memory.verify_learned_memory(memory_id, valid_days=60, expected_version=due[0]["version"])
             raise AssertionError("명시적 확인 없는 재검증이 허용됨")
         except ValueError:
             pass
@@ -85,11 +89,25 @@ def main():
             memory_id, valid_days=60,
             evidence=[{"title": "재검증 문서", "url": "https://example.com/reverified"}],
             confirmed=True, verification_note="공식 문서와 현재 내용을 대조 완료",
+            expected_version=due[0]["version"],
         )
         assert datetime.fromisoformat(verified["valid_until"]) > datetime.now() + timedelta(days=59)
         assert memory.list_memory_revalidation(days=30, persona="expiry_test") == []
         events = memory.list_memory_revalidation_events()
         assert events[0]["status"] == "verified" and events[0]["memory_id"] == memory_id
+        history = memory.get_memory_history(memory_id)
+        assert history["current"]["version"] == 2
+        assert history["revisions"][0]["version"] == 1
+        rolled_back = memory.rollback_memory(
+            memory_id, target_version=1, expected_version=2,
+            reason="재검증 전 상태 복구 테스트",
+        )
+        assert rolled_back["version"] == 3
+        try:
+            memory.rollback_memory(memory_id, 1, 2, "오래된 화면 롤백")
+            raise AssertionError("오래된 버전의 롤백이 허용됨")
+        except memory.MemoryVersionConflict:
+            pass
 
         # 격리·복구 과정에서도 출처 근거와 검증 시각·유효기간이 보존된다.
         with memory._conn() as c:
@@ -98,16 +116,20 @@ def main():
             ).fetchone())
         assert memory.quarantine_learned_rows([row], "출처 보존 테스트") == 1
         quarantined = memory.list_quarantined_memories()[0]
-        assert "재검증 문서" in quarantined["evidence_json"]
+        assert quarantined["evidence_json"] == row["evidence_json"]
         memory.restore_quarantined_memory(quarantined["id"])
         with memory._conn() as c:
             restored = dict(c.execute(
-                "SELECT evidence_json, verified_at, valid_until FROM learned_knowledge"
+                "SELECT id,evidence_json,verified_at,valid_until,version,updated_at FROM learned_knowledge"
                 " WHERE content=? AND persona=?", (row["content"], row["persona"])
             ).fetchone())
         assert restored["evidence_json"] == quarantined["evidence_json"]
         assert restored["verified_at"] == quarantined["original_verified_at"]
         assert restored["valid_until"] == quarantined["original_valid_until"]
+        assert restored["version"] == quarantined["original_version"]
+        assert restored["updated_at"] == quarantined["original_updated_at"]
+        assert restored["id"] == memory_id
+        assert len(memory.get_memory_history(memory_id)["revisions"]) >= 2
 
     print("memory provenance tests: PASS")
 

@@ -22,7 +22,7 @@ import os
 _TABLES = {
     "conversations": ["role", "content", "persona", "created_at", "session_id"],
     "learned_knowledge": ["content", "persona", "source", "created_at", "evidence_json",
-                          "verified_at", "valid_until"],
+                          "verified_at", "valid_until", "version", "updated_at"],
     "documents": ["name", "source", "persona", "created_at"],
     "feedback": ["question", "answer", "rating", "persona", "created_at"],
     "app_settings": ["key", "value", "updated_at"],
@@ -30,15 +30,20 @@ _TABLES = {
     "kb_static_index": ["content_hash", "persona", "source", "created_at"],
     "memory_candidates": ["content_hash", "question", "answer", "persona", "session_id",
                           "source", "status", "created_at", "reviewed_at", "seen_count",
-                          "last_seen_at", "evidence_json", "verified_at", "valid_until"],
+                          "last_seen_at", "evidence_json", "verified_at", "valid_until",
+                          "reviewed_by", "review_reason", "review_nonce"],
     "memory_quarantine": ["original_id", "content", "persona", "source",
                           "original_created_at", "reason", "quarantined_at", "restored_at",
-                          "evidence_json", "original_verified_at", "original_valid_until"],
+                          "evidence_json", "original_verified_at", "original_valid_until",
+                          "original_version", "original_updated_at"],
     "memory_retrieval_events": ["query_hash", "persona", "session_kind", "top_source",
                                 "best_score", "result_count", "used_context", "route",
                                 "created_at"],
     "memory_revalidation_events": ["memory_id", "source", "mode", "status", "note",
                                    "checked_at"],
+    "memory_revisions": ["memory_id", "version", "content", "persona", "source",
+                         "created_at", "evidence_json", "verified_at", "valid_until",
+                         "action", "reason", "actor", "recorded_at"],
 }
 
 
