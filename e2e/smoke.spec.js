@@ -5,6 +5,26 @@
 const { test, expect } = require("@playwright/test");
 
 test.describe("로그인·기본 네비게이션", () => {
+  test("hosted 앱은 ?srv와 저장된 서버 URL 대신 same-origin API만 사용한다", async ({ page }) => {
+    await page.goto("/");
+    await page.evaluate(() => localStorage.setItem("hr_kpi_server_url", "https://evil.example"));
+    await page.goto("/?srv=https%3A%2F%2Fevil.example");
+
+    const config = await page.evaluate(() => ({
+      url: serverConfig.url,
+      effective: _effectiveServerUrl(),
+      locked: _isServerUrlLocked(),
+      stored: localStorage.getItem("hr_kpi_server_url"),
+      shared: Boolean(window._isSharedDeployLink),
+    }));
+
+    expect(config.locked).toBe(true);
+    expect(config.url).toBe(new URL(page.url()).origin);
+    expect(config.effective).toBe(new URL(page.url()).origin);
+    expect(config.stored).toBeNull();
+    expect(config.shared).toBe(false);
+  });
+
   test("로그인 레이블과 공용 알림이 보조기기에 연결된다", async ({ page }) => {
     await page.goto("/");
     await expect(page.locator('label[for="l-company"]')).toBeVisible();

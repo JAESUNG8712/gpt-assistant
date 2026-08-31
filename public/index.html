@@ -1693,6 +1693,7 @@ let serverConfig = {
 };
 // Pre-embedded server URL — replaced when admin generates a client app download
 const _PRESET_SRV = "";
+const OFFICIAL_HR_ORIGIN = "https://hr-system-docker.onrender.com";
 let _serverAutoSaveTimer = null;
 let _serverHeartbeatTimer = null;
 let _serverRetryTimer = null;
@@ -1716,6 +1717,32 @@ let _myLocks = new Set();
 let _myPagePwVerified = false;     // 내정보·근태 비밀번호 재인증 여부
 let _pendingRender = false;
 let _autoKpiDraftTimer = null;          // lock keys held by this client
+
+function _isStaticHostingHost(host){
+  return host.endsWith("github.io") || host.endsWith("netlify.app") || host === "";
+}
+function _isHttpHostedApp(){
+  return (location.protocol === "http:" || location.protocol === "https:") && !_isStaticHostingHost(location.hostname);
+}
+function _isServerUrlLocked(){
+  // 운영/Express hosted 앱에서는 API 서버가 페이지와 같은 origin이어야 한다. ?srv= 또는
+  // localStorage의 서버 URL로 로그인 요청·Bearer 토큰이 외부 서버에 전송되는 일을 막는다.
+  return _isHttpHostedApp();
+}
+function _normalizeServerOrigin(candidate){
+  try{
+    const u=new URL(String(candidate||""), location.href);
+    if(u.protocol!=="http:"&&u.protocol!=="https:")return "";
+    if(u.username||u.password)return "";
+    return u.origin;
+  }catch(e){return "";}
+}
+function _effectiveServerUrl(){
+  return _isServerUrlLocked() ? location.origin : (serverConfig.url || "");
+}
+function _serverBase(){
+  return _effectiveServerUrl().replace(/\/+$/, "");
+}
 
 // ── 배경 동기화가 입력 중인 화면을 지우지 않도록 하는 지연 렌더 ──────────────────
 // 다른 사용자가 저장하면 SSE(data_updated)와 주기 동기화가 최신 데이터를 받아 renderPage()로
@@ -1780,31 +1807,41 @@ function _setCachedCompanyCode(code){
 // ── Auto-detect: if served from http server, use same origin ──
 (function detectServerOrigin(){
   try {
-    // Priority 1: Pre-embedded URL (admin generated client app download)
-    if(_PRESET_SRV){ serverConfig.url=_PRESET_SRV; serverConfig.enabled=true; window._isSharedDeployLink=true; return; }
-    // Priority 2: ?srv= URL parameter (admin shared link)
-    const srvParam = new URLSearchParams(location.search).get('srv');
-    if(srvParam){ serverConfig.url=decodeURIComponent(srvParam); serverConfig.enabled=true; window._isSharedDeployLink=true; return; }
     const proto = location.protocol;
     const host = location.hostname;
-    const canonicalHrOrigin = "https://hr-system-docker.onrender.com";
     // 이 HR/ERP의 공식 운영 주소는 Render다. 같은 저장소에 남은 Vercel 배포 URL로
     // 사용자가 들어오면 별도 운영 화면처럼 유지하지 않고 공식 운영 주소로 보낸다.
     if(proto === "https:" && host.endsWith("vercel.app")){
       const target = new URL(location.href);
       target.protocol = "https:";
-      target.host = "hr-system-docker.onrender.com";
+      target.host = new URL(OFFICIAL_HR_ORIGIN).host;
       location.replace(target.toString());
       return;
     }
-    // GitHub Pages / static hosting — skip server mode
-    const isStaticHost = host.endsWith("github.io") || host.endsWith("netlify.app") || host === "";
-    if((proto === "http:" || proto === "https:") && !isStaticHost){
+
+    if(_isServerUrlLocked()){
       serverConfig.url = location.origin;
       serverConfig.enabled = true;
-    } else if(proto !== "http:" && proto !== "https:"){
+      try{ localStorage.removeItem("hr_kpi_server_url"); }catch(e){}
+      return;
+    }
+
+    // 정적 호스팅/다운로드 HTML에서만 사전 삽입 URL 또는 ?srv= 공유 링크를 허용한다.
+    // 운영 hosted 앱에서는 위에서 same-origin으로 고정했기 때문에 이 값들이 무시된다.
+    if(_PRESET_SRV){
+      const preset=_normalizeServerOrigin(_PRESET_SRV);
+      if(preset){ serverConfig.url=preset; serverConfig.enabled=true; window._isSharedDeployLink=true; return; }
+    }
+    const srvParam = new URLSearchParams(location.search).get('srv');
+    if(srvParam){
+      const shared=_normalizeServerOrigin(decodeURIComponent(srvParam));
+      if(shared){ serverConfig.url=shared; serverConfig.enabled=true; window._isSharedDeployLink=true; return; }
+    }
+
+    // file:// 등 로컬 다운로드 HTML — 저장된 서버 URL 사용.
+    if(proto !== "http:" && proto !== "https:"){
       try {
-        const saved = localStorage.getItem("hr_kpi_server_url");
+        const saved = _normalizeServerOrigin(localStorage.getItem("hr_kpi_server_url"));
         if(saved){ serverConfig.url=saved; serverConfig.enabled=true; }
       } catch(e){}
     }
@@ -1844,7 +1881,7 @@ function _clearDemoState(){
 // ── Server API helpers ──
 const _mutationIdempotencyKeys=new Map();
 async function serverRequest(method, endpoint, body=null, timeout=8000, requestOptions={}){
-  const base = serverConfig.url.replace(/\/+$/, "");
+  const base = _serverBase();
   const controller = new AbortController();
   const tid = setTimeout(()=>controller.abort(), timeout);
   const mutation = !["GET","HEAD","OPTIONS"].includes(String(method).toUpperCase());
@@ -1902,7 +1939,7 @@ async function serverRequest(method, endpoint, body=null, timeout=8000, requestO
 // 자체(네트워크 끊김·timeout)는 예외를 그대로 던지므로 호출부가 try/catch로 감싸야 한다
 // (OCR+AI 파싱은 수십 초 걸릴 수 있어 기본 timeout을 serverRequest보다 넉넉히 잡는다).
 async function serverFormRequest(endpoint, formData, timeout=65000){
-  const base = serverConfig.url.replace(/\/+$/, "");
+  const base = _serverBase();
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeout);
   try {
@@ -2272,6 +2309,16 @@ function updateServerStatusUI(){
   });
 }
 function openServerSettingsModal(){
+  if(_isServerUrlLocked()){
+    showModal(`<div class="modal modal-md"><div class="modal-head"><h2>🖥 데이터 서버 연결 설정</h2><button class="modal-close" onclick="closeModal()">×</button></div>
+    <div class="modal-body">
+      <div class="success-note mb3">✅ 현재 운영 앱은 데이터 서버와 같은 주소에서 실행 중입니다.</div>
+      <div class="fg"><label class="fl">운영 서버 주소</label><input class="fc" value="${h(_effectiveServerUrl())}" readonly></div>
+      <div class="info-note mt3 fz12">보안을 위해 운영 도메인에서는 서버 URL을 변경할 수 없습니다. 로그인 정보와 인증 토큰은 항상 현재 운영 서버로만 전송됩니다.</div>
+    </div>
+    <div class="modal-foot"><button class="btn btn-primary" onclick="closeModal()">확인</button></div></div>`);
+    return;
+  }
   showModal(`<div class="modal modal-md"><div class="modal-head"><h2>🖥 데이터 서버 연결 설정</h2><button class="modal-close" onclick="closeModal()">×</button></div>
   <div class="modal-body">
     <div class="info-note mb3">📌 데이터 저장 서버 주소를 입력하면 데이터가 자동으로 서버에 저장됩니다. 서버를 실행하지 않으면 기존 방식(로컬)으로 작동합니다.</div>
@@ -2303,12 +2350,18 @@ function openServerSettingsModal(){
 }
 
 async function testServerConnection(){
+  if(_isServerUrlLocked()){
+    showToast("운영 도메인에서는 현재 서버 주소로 고정됩니다.","info");
+    return;
+  }
   const url = document.getElementById("srv-url")?.value.trim();
   const result = document.getElementById("srv-test-result");
   if(!url){if(result)result.innerHTML=`<div class="warn-note">주소를 입력하세요.</div>`;return;}
+  const normalized=_normalizeServerOrigin(url);
+  if(!normalized){if(result)result.innerHTML=`<div class="alert alert-error">❌ http(s) 서버 URL만 입력할 수 있습니다.</div>`;return;}
   if(result)result.innerHTML=`<div class="info-note">연결 테스트 중...</div>`;
   const prev = serverConfig.url;
-  serverConfig.url = url;
+  serverConfig.url = normalized;
   try {
     const r = await serverRequest("GET", "/status");
     if(r.ok){
@@ -2324,15 +2377,25 @@ async function testServerConnection(){
 }
 
 async function applyServerSettings(){
+  if(_isServerUrlLocked()){
+    serverConfig.url = location.origin;
+    serverConfig.enabled = true;
+    try{ localStorage.removeItem("hr_kpi_server_url"); }catch(e){}
+    closeModal();
+    showToast("운영 도메인에서는 현재 서버 주소로 고정됩니다.","info");
+    return;
+  }
   const url = (document.getElementById("srv-url")?.value||"").trim();
+  const normalized=_normalizeServerOrigin(url);
+  if(url&&!normalized){showToast("http(s) 서버 URL만 입력할 수 있습니다.","error");return;}
   const auto = document.getElementById("srv-auto")?.value==="1";
   const interval = Number(document.getElementById("srv-interval")?.value)||5;
-  serverConfig.url = url;
+  serverConfig.url = normalized;
   serverConfig.autoSave = auto;
   serverConfig.intervalMin = interval;
-  serverConfig.enabled = !!url;
-  try{if(url)localStorage.setItem("hr_kpi_server_url",url);else localStorage.removeItem("hr_kpi_server_url");}catch(e){}
-  if(url){
+  serverConfig.enabled = !!normalized;
+  try{if(normalized)localStorage.setItem("hr_kpi_server_url",normalized);else localStorage.removeItem("hr_kpi_server_url");}catch(e){}
+  if(normalized){
     const ok = await checkServerConnection();
     if(ok){
       startServerAutoSave();
@@ -5215,7 +5278,7 @@ setInterval(()=>{
 async function connectSSE(){
   if(!serverConfig.url || !currentUser) return;
   if(_sseSource){ _sseSource.close(); _sseSource=null; }
-  const base = serverConfig.url.replace(/\/+$/,"");
+  const base = _serverBase();
   const ticket=await serverRequest("POST","/events/token",{});
   if(!ticket?.ok||!ticket.token){ console.warn("[SSE] Ticket issuance failed"); return; }
   const url = `${base}/events?clientId=${encodeURIComponent(_clientId)}&user=${encodeURIComponent(currentUser?.name||"unknown")}&token=${encodeURIComponent(ticket.token)}`;
@@ -6254,8 +6317,7 @@ async function _confirmMyPagePw(){
   const btn=document.querySelector(".modal-ov .btn-primary");
   if(btn)btn.disabled=true;
   try{
-    const res=await fetch("/login",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({companyCode:_cachedCompanyCode||"",loginId:currentUser.loginId,pw:val})});
-    const data=await res.json();
+    const data=await serverRequest("POST","/login",{companyCode:_cachedCompanyCode||"",loginId:currentUser.loginId,pw:val});
     if(data.ok){_myPagePwVerified=true;closeModal();if(window._myPagePwCb){window._myPagePwCb();window._myPagePwCb=null;}}
     else{showToast("비밀번호가 올바르지 않습니다.","error");document.getElementById("my-pw-gate").value="";}
   }catch(e){showToast("확인 중 오류가 발생했습니다.","error");}
@@ -12601,9 +12663,10 @@ function _allMenuItems(){
 function renderSettingsDeploy(){
   const el=$("#settings-content");if(!el)return;
   const srv=serverConfig.url||"";
+  const serverUrlLocked=_isServerUrlLocked();
   const origin=location.origin;
   const basePath=location.pathname.replace(/\/[^/]*$/,"/")||"/";
-  const shareLink=srv?`${origin}${basePath}index.html?srv=${encodeURIComponent(srv)}`:"";
+  const shareLink=srv?(serverUrlLocked?`${origin}${basePath}`:`${origin}${basePath}index.html?srv=${encodeURIComponent(srv)}`):"";
   const activeEmps=employees.filter(e=>e.active&&e.id!==currentUser.id);
   const permSearch=(window._permEmpSearch||"").trim();
   const permEmpsFiltered=permSearch?activeEmps.filter(e=>(e.name||"").includes(permSearch)||(e.position||"").includes(permSearch)||(e.rank||"").includes(permSearch)||(e.dept||"").includes(permSearch)||(e.team||"").includes(permSearch)):activeEmps;
@@ -12616,16 +12679,17 @@ function renderSettingsDeploy(){
   <div class="card mb3">
     <div class="card-head"><h3>🌐 서버 연결 설정</h3></div>
     <div class="card-body">
-      <p class="fz12 text-gray mb3">현재 앱이 연결된 데이터 서버 주소입니다. Railway 등 배포 서버의 URL을 입력하세요.</p>
+      <p class="fz12 text-gray mb3">${serverUrlLocked?"현재 운영 앱은 데이터 서버와 같은 주소에서 실행됩니다. 보안을 위해 서버 URL은 변경할 수 없습니다.":"현재 앱이 연결된 데이터 서버 주소입니다. Railway 등 배포 서버의 URL을 입력하세요."}</p>
       <div class="fg">
         <label class="fl">서버 URL</label>
         <div class="flex gap2">
-          <input class="fc" id="deploy-srv-url" value="${h(srv)}" placeholder="https://your-app.up.railway.app" style="flex:1">
-          <button class="btn btn-primary" onclick="_saveDeploySrv()">저장·연결</button>
+          <input class="fc" id="deploy-srv-url" value="${h(_effectiveServerUrl())}" placeholder="https://your-app.up.railway.app" style="flex:1" ${serverUrlLocked?"readonly":""}>
+          ${serverUrlLocked?`<button class="btn btn-secondary" disabled>운영 고정</button>`:`<button class="btn btn-primary" onclick="_saveDeploySrv()">저장·연결</button>`}
           <button class="btn btn-secondary" onclick="_testDeploySrv()">연결 테스트</button>
         </div>
       </div>
       <div id="deploy-srv-status" class="fz12 mt2"></div>
+      ${serverUrlLocked?`<div class="success-note mt3 fz12">✅ 공식 운영 주소: ${h(OFFICIAL_HR_ORIGIN)}<br>공유 링크의 <code>?srv=</code> 값이나 브라우저에 남은 이전 서버 주소는 운영에서 무시됩니다.</div>`:""}
     </div>
   </div>
 
@@ -12642,13 +12706,18 @@ function renderSettingsDeploy(){
             <button class="btn btn-secondary" onclick="_copyShareLink()">복사</button>
           </div>
         </div>
-        <div class="info-note mt2">💡 이 링크를 카카오톡·메일·QR코드 등으로 팀원에게 전달하세요. 서버 URL이 변경되면 링크도 새로 생성하세요.</div>
+        <div class="info-note mt2">💡 이 링크를 카카오톡·메일·QR코드 등으로 팀원에게 전달하세요.${serverUrlLocked?" 운영에서는 현재 주소 자체가 공식 접속 링크입니다.":" 서버 URL이 변경되면 링크도 새로 생성하세요."}</div>
       `:`<div class="alert alert-warning">서버 URL을 먼저 입력하고 저장하면 배포 링크가 생성됩니다.</div>`}
     </div>
   </div>
 
   <!-- ③ 클라이언트 앱 다운로드 -->
-  <div class="card mb3">
+  ${serverUrlLocked?`<div class="card mb3">
+    <div class="card-head"><h3>📦 클라이언트 앱 다운로드</h3></div>
+    <div class="card-body">
+      <div class="info-note fz12">운영 Render 배포에서는 별도 클라이언트 HTML 파일을 만들 필요가 없습니다. 팀원에게 공식 운영 주소만 공유하세요.</div>
+    </div>
+  </div>`:`<div class="card mb3">
     <div class="card-head"><h3>📦 클라이언트 앱 다운로드</h3></div>
     <div class="card-body">
       <p class="fz12 text-gray mb3">서버 주소가 미리 설정된 HTML 파일을 다운로드합니다.<br>팀원이 이 파일을 열면 서버 입력 없이 바로 연결됩니다. 인트라넷·오프라인 환경에 적합합니다.</p>
@@ -12656,7 +12725,7 @@ function renderSettingsDeploy(){
            :`<button class="btn btn-secondary" disabled>서버 URL을 먼저 설정하세요</button>`}
       <div class="warn-note mt3">⚠️ 다운로드한 파일에는 서버 주소가 포함됩니다. 외부에 유출되지 않도록 주의하세요.</div>
     </div>
-  </div>
+  </div>`}
 
   <!-- ④ 메뉴 권한 관리 -->
   <div class="card">
@@ -12799,20 +12868,37 @@ function _toggleHrPrivateViewer(empId,checked){
 
 // ── Deploy helpers ──
 function _saveDeploySrv(){
+  if(_isServerUrlLocked()){
+    serverConfig.url=location.origin;
+    serverConfig.enabled=true;
+    try{localStorage.removeItem("hr_kpi_server_url");}catch(e){}
+    showToast("운영 도메인에서는 현재 서버 주소로 고정됩니다.","info");
+    renderSettingsDeploy();
+    return;
+  }
   const url=($("#deploy-srv-url")?.value||"").trim();
-  if(url){ serverConfig.url=url; serverConfig.enabled=true; try{localStorage.setItem("hr_kpi_server_url",url);}catch(e){} }
+  const normalized=_normalizeServerOrigin(url);
+  if(url&&!normalized){showToast("http(s) 서버 URL만 입력할 수 있습니다.","error");return;}
+  if(normalized){ serverConfig.url=normalized; serverConfig.enabled=true; try{localStorage.setItem("hr_kpi_server_url",normalized);}catch(e){} }
   else{ serverConfig.url=""; serverConfig.enabled=false; try{localStorage.removeItem("hr_kpi_server_url");}catch(e){} }
   showToast("서버 주소가 저장되었습니다.","success");
   renderSettingsDeploy();
-  if(url){ checkServerConnection().then(ok=>{if(ok){connectSSE();startServerAutoSave();}}); }
+  if(normalized){ checkServerConnection().then(ok=>{if(ok){connectSSE();startServerAutoSave();}}); }
 }
 async function _testDeploySrv(){
+  if(_isServerUrlLocked()){
+    const el=$("#deploy-srv-status");
+    if(el)el.innerHTML=`<span class="text-green">✓ 운영 서버 주소로 고정됨 · ${h(_effectiveServerUrl())}</span>`;
+    return;
+  }
   const url=($("#deploy-srv-url")?.value||"").trim();
   const el=$("#deploy-srv-status");
   if(!url||!el){showToast("URL을 먼저 입력하세요.","error");return;}
+  const normalized=_normalizeServerOrigin(url);
+  if(!normalized){el.innerHTML=`<span class="text-red">✗ http(s) 서버 URL만 입력할 수 있습니다.</span>`;return;}
   el.innerHTML=`<span class="text-gray">연결 테스트 중...</span>`;
   try{
-    const r=await fetch(url.replace(/\/+$/,"")+"/status",{signal:AbortSignal.timeout(5000)});
+    const r=await fetch(normalized.replace(/\/+$/,"")+"/status",{signal:AbortSignal.timeout(5000)});
     const j=await r.json();
     if(j.ok) el.innerHTML=`<span class="text-green">✓ 연결 성공 · 직원 ${j.meta?.empCount||0}명 · 버전 ${j.version||0}</span>`;
     else el.innerHTML=`<span class="text-red">✗ 서버 응답 오류: ${j.message||"알 수 없음"}</span>`;
@@ -12878,6 +12964,12 @@ function _resetMenuPerms(empId){
 
 // ── Generate downloadable client app ──
 async function generateClientApp(srvUrl){
+  if(_isServerUrlLocked()){
+    showToast("운영 배포에서는 별도 클라이언트 앱 생성이 필요하지 않습니다. 공식 운영 주소를 공유하세요.","info");
+    return;
+  }
+  const normalized=_normalizeServerOrigin(srvUrl);
+  if(!normalized){showToast("http(s) 서버 URL만 포함할 수 있습니다.","error");return;}
   showToast("클라이언트 앱을 생성 중...","info");
   try{
     const srcUrl=location.pathname.replace(/\/[^/]*$/,"/")+location.pathname.split("/").pop().split("?")[0]||"index.html";
@@ -12885,7 +12977,7 @@ async function generateClientApp(srvUrl){
     if(!resp.ok) throw new Error("HTML 파일을 가져올 수 없습니다: "+resp.status);
     let html=await resp.text();
     // Embed the server URL by replacing the _PRESET_SRV constant
-    html=html.replace('const _PRESET_SRV = "";',`const _PRESET_SRV = "${srvUrl.replace(/"/g,"\\\"")}";\n// generated by admin`);
+    html=html.replace('const _PRESET_SRV = "";',`const _PRESET_SRV = "${normalized.replace(/"/g,"\\\"")}";\n// generated by admin`);
     // Strip demo mode from the client app
     html=html.replace('const _demoMode = (()=>{\n  try{ return new URLSearchParams(location.search).has(\'demo\'); }\n  catch(e){ return false; }\n})();','const _demoMode = false; // disabled in client app');
     const filename=`hr-client_${new Date().toISOString().slice(0,10)}.html`;
@@ -16315,7 +16407,7 @@ async function uploadBizPlanSgaExcelPreview(){
   const fd=new FormData();fd.append("file",input.files[0]);
   let json;
   try{
-    const res=await fetch(serverConfig.url.replace(/\/+$/,"")+`/api/budget/business-plan/sga-upload/parse?year=${_bpBulkUploadYear}`,{
+    const res=await fetch(_serverBase()+`/api/budget/business-plan/sga-upload/parse?year=${_bpBulkUploadYear}`,{
       method:"POST",headers:_authToken?{"Authorization":"Bearer "+_authToken}:{},body:fd
     });
     json=await res.json();
@@ -17617,7 +17709,7 @@ async function _bpUploadFormFile(inputId,statusId,url){
   const fd=new FormData();
   fd.append("file",input.files[0]);
   try{
-    const res=await fetch(serverConfig.url.replace(/\/+$/,"")+url,{
+    const res=await fetch(_serverBase()+url,{
       method:"POST",
       headers:_authToken?{"Authorization":"Bearer "+_authToken}:{},
       body:fd
@@ -17738,7 +17830,7 @@ function _bpCombinedStep1(file){
 async function _bpCombinedStep2(file){
   const fd=new FormData();fd.append("file",file);
   try{
-    const res=await fetch(serverConfig.url.replace(/\/+$/,"")+`/api/budget/business-plan/sga-upload/parse?year=${_bpBulkUploadYear}`,{
+    const res=await fetch(_serverBase()+`/api/budget/business-plan/sga-upload/parse?year=${_bpBulkUploadYear}`,{
       method:"POST",headers:_authToken?{"Authorization":"Bearer "+_authToken}:{},body:fd
     });
     const json=await res.json();
@@ -17771,7 +17863,7 @@ async function _bpCombinedStep2(file){
 async function _bpCombinedStep3(file){
   const fd=new FormData();fd.append("file",file);
   try{
-    const res=await fetch(serverConfig.url.replace(/\/+$/,"")+`/api/budget/business-plan/headcount-plan/upload?year=${_bpBulkUploadYear}`,{
+    const res=await fetch(_serverBase()+`/api/budget/business-plan/headcount-plan/upload?year=${_bpBulkUploadYear}`,{
       method:"POST",headers:_authToken?{"Authorization":"Bearer "+_authToken}:{},body:fd
     });
     const json=await res.json();
@@ -17801,7 +17893,7 @@ async function _bpCombinedStep4(file){
   if(planIds.length===1){
     const fd=new FormData();fd.append("file",file);
     try{
-      const res=await fetch(serverConfig.url.replace(/\/+$/,"")+`/api/budget/business-plan/${planIds[0]}/cost-block-upload`,{
+      const res=await fetch(_serverBase()+`/api/budget/business-plan/${planIds[0]}/cost-block-upload`,{
         method:"POST",headers:_authToken?{"Authorization":"Bearer "+_authToken}:{},body:fd
       });
       const json=await res.json();
