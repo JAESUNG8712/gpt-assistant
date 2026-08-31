@@ -20,13 +20,17 @@ import os
 # 이관하면, 새 DB에서 init_db()의 _seed_static_kb_to_db()가 기존 정적 KB 항목의
 # 해시를 찾지 못해 전체를 중복 재삽입한다(2026-07-08 실제 발생, 73~수백 건 중복).
 _TABLES = {
-    "conversations": ["role", "content", "persona", "created_at"],
+    "conversations": ["role", "content", "persona", "created_at", "session_id"],
     "learned_knowledge": ["content", "persona", "source", "created_at"],
     "documents": ["name", "source", "persona", "created_at"],
     "feedback": ["question", "answer", "rating", "persona", "created_at"],
     "app_settings": ["key", "value", "updated_at"],
     "feedback_boost": ["persona", "q_lower", "boost", "updated_at"],
     "kb_static_index": ["content_hash", "persona", "source", "created_at"],
+    "memory_candidates": ["content_hash", "question", "answer", "persona", "session_id",
+                          "source", "status", "created_at", "reviewed_at"],
+    "memory_quarantine": ["original_id", "content", "persona", "source",
+                          "original_created_at", "reason", "quarantined_at", "restored_at"],
 }
 
 
@@ -41,6 +45,10 @@ def migrate(src_db_path: str) -> dict:
     if not os.path.exists(src_db_path):
         raise FileNotFoundError(f"소스 DB 파일을 찾을 수 없습니다: {src_db_path}")
 
+    # 빈 목적지 DB에서도 단독 실행할 수 있도록 스키마부터 만든다. 정적 KB는
+    # 이관이 끝난 뒤 시딩해야, 구버전 백업의 정적 행과 먼저 충돌·중복되지 않는다.
+    mem.init_db(seed_static=False)
+
     src = sqlite3.connect(src_db_path)
     src.row_factory = sqlite3.Row
     stats = {}
@@ -54,6 +62,13 @@ def migrate(src_db_path: str) -> dict:
             stats[table] = {"inserted": 0, "skipped": 0, "note": "테이블 없음"}
             continue
 
+        # 구버전 백업에는 session_id나 안전 메모리 테이블의 일부 열이 없을 수 있다.
+        # 실제 존재하는 열만 교집합으로 이관해 이전 백업도 계속 복원 가능하게 한다.
+        source_cols = {r[1] for r in src.execute(f"PRAGMA table_info({table})").fetchall()}
+        cols = [col for col in cols if col in source_cols]
+        if not cols:
+            stats[table] = {"inserted": 0, "skipped": 0, "note": "이관 가능한 열 없음"}
+            continue
         rows = src.execute(f"SELECT {','.join(cols)} FROM {table}").fetchall()
         inserted = skipped = 0
         placeholders = ",".join(["?"] * len(cols))

@@ -6,8 +6,9 @@ KB 자기개선(자동 정제) — 동적 학습 데이터(자동학습·웹검�
 LLM을 전혀 호출하지 않는 순수 기계적 판단만 수행한다 — 내용을 새로 짓거나
 "더 낫게" 재작성하지 않는다. 이 프로젝트에서 실제로 반복 발생했던 문제(가상
 데이터 생성, 주제 불일치 답변 학습 등)가 전부 "AI가 스스로 내용을 만들어내는"
-경로에서 나왔기 때문에, 자기개선 루프는 의도적으로 "지우기"만 하고 "새로
-쓰기"는 하지 않는 안전한 범위로 제한한다.
+경로에서 나왔기 때문에, 자기개선 루프는 의도적으로 "새로 쓰기"는 하지 않는
+안전한 범위로 제한한다. 실제 적용 시에는 삭제 대신 memory_quarantine으로
+이동해 복구 가능하게 한다.
 
 정적 KB(source='정적KB')는 대상에서 제외 — 소스 .py 파일 재시딩(memory.py의
 _seed_static_kb_to_db)으로 별도 관리된다.
@@ -82,32 +83,45 @@ def find_duplicate_clusters(rows: list, threshold: float = 0.85) -> list:
         if n < 2:
             continue
         vecs = _build_vectors(group)
-        parent = list(range(n))
-
-        def find(x):
-            while parent[x] != x:
-                parent[x] = parent[parent[x]]
-                x = parent[x]
-            return x
-
-        def union(a, b):
-            ra, rb = find(a), find(b)
-            if ra != rb:
-                parent[ra] = rb
-
+        # 단일 연결(Union-Find)은 A≈B, B≈C라는 이유만으로 실제로는 다른 A와 C까지
+        # 한 클러스터로 묶는 연쇄 병합 위험이 있다. 후보가 기존 구성원 *모두*와
+        # threshold 이상일 때만 합치는 보수적 완전연결 방식으로 제한한다.
+        assigned = set()
         for i in range(n):
+            if i in assigned:
+                continue
+            member_indexes = [i]
             for j in range(i + 1, n):
-                if _cos(vecs[i], vecs[j]) >= threshold:
-                    union(i, j)
-
-        buckets: dict = defaultdict(list)
-        for i in range(n):
-            buckets[find(i)].append(group[i])
-        for members in buckets.values():
-            if len(members) > 1:
-                clusters.append(members)
+                if j in assigned:
+                    continue
+                if all(_cos(vecs[j], vecs[k]) >= threshold for k in member_indexes):
+                    member_indexes.append(j)
+            if len(member_indexes) > 1:
+                clusters.append([group[k] for k in member_indexes])
+                assigned.update(member_indexes)
 
     return clusters
+
+
+_SOURCE_PRIORITY = {
+    "직접입력": 50,
+    "승인학습": 45,
+    "문서": 40,
+    "자동학습": 20,
+}
+
+
+def choose_duplicate_keeper(members: list) -> dict:
+    """중복 묶음에서 신뢰 가능한 source를 우선하고 동률일 때 최신 행을 보존."""
+    def keep_key(row):
+        source = row.get("source", "") or ""
+        priority = next(
+            (score for prefix, score in _SOURCE_PRIORITY.items() if source.startswith(prefix)),
+            10,
+        )
+        return priority, int(row["id"])
+
+    return max(members, key=keep_key)
 
 
 def find_conflicting_pairs(rows: list, q_threshold: float = 0.7, a_threshold: float = 0.3) -> list:

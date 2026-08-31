@@ -655,6 +655,20 @@ def get_engine() -> _Engine:
     return _engine
 
 
+def reload_engine() -> _Engine:
+    """DB 변경 후 라이브 인덱스를 DB 기준으로 완전히 재구축한다.
+
+    일부 행만 지운 뒤 source 단위 소프트 삭제를 하면 같은 문서의 정상 청크까지
+    검색에서 사라질 수 있으므로, 관리자 정제·복구처럼 드문 작업은 전체 재구축이
+    더 안전하다. 누적된 소프트 삭제 항목과 오래된 IDF도 함께 정리된다.
+    """
+    global _engine, _kb_loaded
+    _engine = _Engine()
+    _kb_loaded = False
+    _FEEDBACK_BOOST.clear()
+    return get_engine()
+
+
 def _load_knowledge():
     try:
         from knowledge_base import KNOWLEDGE
@@ -687,7 +701,7 @@ def _load_knowledge():
 
         # Q&A 형식 항목은 같은 질문이 여러 개면 최신(id 큰 것)만 사용
         # source가 직접입력·자동학습인 경우만 중복 제거; 문서 청크는 모두 포함
-        DEDUP_SOURCES = ("직접입력", "자동학습")
+        DEDUP_SOURCES = ("직접입력", "자동학습", "승인학습")
         qa_latest: dict = {}   # (q_lower, persona) → (content, source)
         chunks = []            # 문서 청크 등 비-QA 항목
 
