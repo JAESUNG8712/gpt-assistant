@@ -2821,18 +2821,38 @@ function _buildAllowedOrigins() {
 }
 
 const ALLOWED_CORS_ORIGINS = _buildAllowedOrigins();
-const corsOptions = {
-  origin(origin, callback) {
-    if (!origin) return callback(null, true);
-    if (!IS_PRODUCTION && _isLoopbackOrigin(origin)) return callback(null, true);
-    const normalized = _normalizeOrigin(origin);
-    if (ALLOWED_CORS_ORIGINS.has(normalized)) return callback(null, true);
-    const err = new Error("CORS_ORIGIN_DENIED");
-    err.status = 403;
-    return callback(err);
-  },
-};
-app.use(cors(corsOptions));
+// 2026-08-30 실사용자 신고로 발견: 위 _buildAllowedOrigins()의 설계 의도("같은
+// 오리진에서 정적 파일+API를 함께 서빙하면 브라우저가 CORS 요청으로 취급하지 않아
+// ALLOWED_ORIGINS 없이도 안전하다")는 실제로 틀렸다 — 최신 브라우저(Chrome/Firefox)는
+// GET이 아닌 요청(POST/PUT/DELETE)에는 완전한 동일 출처 요청에도 `Origin` 헤더를
+// 함께 보낸다(Fetch 표준의 관례). 그 결과 render.yaml이 의도한 대로 배포된(같은
+// Render 서비스가 index.html과 API를 함께 서빙하는) 정상적인 상태에서도, `/login`·
+// `/api/companies/register` 같은 POST 요청은 브라우저가 보낸 `Origin` 헤더가 있는데
+// ALLOWED_ORIGINS를 아무도 설정하지 않아 그 헤더가 허용 목록에 없어 전부 403
+// CORS_ORIGIN_DENIED로 거부되고 있었다(실측: 로그인·회사 만들기 둘 다 "허용되지 않은
+// 요청 출처입니다" 배너만 뜨고 아무 것도 되지 않음) — 즉 CORS 하드코딩 도메인을 제거한
+// 뒤 "진짜 같은 오리진"을 검증하는 로직을 추가하지 않아 생긴 회귀. Origin 헤더가 이
+// 요청이 도착한 호스트 자신과 정확히 일치하면(req.protocol+req.get("host"), 위쪽의
+// `app.set("trust proxy", 1)` 덕에 Render 등 리버스 프록시 뒤에서도 정확한 프로토콜을
+// 본다) 명시적 환경변수 설정 없이도 항상 허용한다 — 이게 진짜 "같은 오리진"의 정의이고,
+// ALLOWED_ORIGINS는 여전히 별도 오리진에서 서빙되는 프론트엔드를 위해 남겨둔다.
+function _corsOptionsDelegate(req, callback) {
+  const requestOrigin = req.headers.origin;
+  const selfOrigin = requestOrigin ? _normalizeOrigin(`${req.protocol}://${req.get("host") || ""}`) : "";
+  callback(null, {
+    origin(origin, cb) {
+      if (!origin) return cb(null, true);
+      if (!IS_PRODUCTION && _isLoopbackOrigin(origin)) return cb(null, true);
+      const normalized = _normalizeOrigin(origin);
+      if (normalized && selfOrigin && normalized === selfOrigin) return cb(null, true);
+      if (ALLOWED_CORS_ORIGINS.has(normalized)) return cb(null, true);
+      const err = new Error("CORS_ORIGIN_DENIED");
+      err.status = 403;
+      return cb(err);
+    },
+  });
+}
+app.use(cors(_corsOptionsDelegate));
 // CSP는 끈다: 프론트엔드(public/index.html)가 인라인 onclick 핸들러와 인라인 <script>를
 // 전면적으로 사용하는 구조라 기본 CSP를 켜면 앱 전체가 깨진다. 나머지 기본 보안 헤더
 // (X-Content-Type-Options, X-Frame-Options, HSTS 등)만 적용한다.

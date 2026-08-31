@@ -2747,7 +2747,7 @@ function _syncModalBackground(){
   if(app){app.inert=active;if(active)app.setAttribute("aria-hidden","true");else app.removeAttribute("aria-hidden");}
 }
 function _focusModal(dialog){const target=dialog?.querySelector("[data-modal-initial-focus],[autofocus]")||_modalFocusable(dialog)[0]||dialog;target?.focus({preventScroll:true});}
-function showModal(html){
+function showModal(html,opts){
   const ov=document.createElement("div");ov.className="modal-ov";ov.innerHTML=html;
   const dialog=_modalDialog(ov);
   if(dialog){
@@ -2757,8 +2757,11 @@ function showModal(html){
     else dialog.setAttribute("aria-label","대화 상자");
     dialog.querySelectorAll(".modal-close").forEach(button=>{button.type="button";if(!button.getAttribute("aria-label"))button.setAttribute("aria-label","대화 상자 닫기");if(!button.getAttribute("onclick"))button.dataset.modalClose="";});
   }
-  _modalState.set(ov,{opener:document.activeElement});
-  ov.addEventListener("click",event=>{if(event.target===ov){closeModal();return;}if(event.target.closest("[data-modal-close]")){event.preventDefault();closeModal();}});
+  // noBackdropClose: 회사 만들기처럼 입력 폼이 있는 모달에서, 배경(어두운 바깥 영역)을
+  // 실수로 클릭하면 작성 중이던 내용이 그대로 사라지는 문제(2026-08 사용자 신고)를 막기
+  // 위한 화면별 옵트아웃 — 지정하지 않으면 기존과 동일하게 배경 클릭으로 닫힌다.
+  _modalState.set(ov,{opener:document.activeElement,noBackdropClose:!!opts?.noBackdropClose});
+  ov.addEventListener("click",event=>{if(event.target===ov){if(_modalState.get(ov)?.noBackdropClose)return;closeModal();return;}if(event.target.closest("[data-modal-close]")){event.preventDefault();closeModal();}});
   ov.addEventListener("keydown",event=>{
     if(_modalStack().at(-1)!==ov)return;
     if(event.key==="Escape"){event.preventDefault();closeModal();return;}
@@ -5767,7 +5770,7 @@ function openCompanyRegisterModal(){
   <div class="modal-foot">
     <button class="btn btn-secondary" onclick="closeModal()">취소</button>
     <button class="btn btn-primary" id="cr-submit-btn" onclick="submitCompanyRegister()">회사 만들기</button>
-  </div></div>`);
+  </div></div>`,{noBackdropClose:true});
   // #login-wrap은 z-index:9999로 항상 최상단에 떠 있는데(로그인 전에는 다른 모달이 뜰 일이
   // 없었던 기존 코드 구조), 일반 .modal-ov는 z-index:1000이라 그 뒤에 가려 클릭이 통과하지
   // 않는다. 로그인 화면 위에서 뜨는 이 모달만 그 위로 올려준다.

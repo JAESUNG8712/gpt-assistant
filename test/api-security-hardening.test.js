@@ -167,6 +167,39 @@ test("보안 하드닝: production CORS는 허용 출처만 응답한다", async
   assert.equal(preflight.headers.get("access-control-allow-origin"), "https://hr.example.com");
 });
 
+// 2026-08-30 실사용자 신고("회사 만들기"/admin 로그인 둘 다 "허용되지 않은 요청
+// 출처입니다"로 실패)로 발견: render.yaml이 의도한 배포(index.html과 API를 같은
+// Render 서비스가 함께 서빙)는 ALLOWED_ORIGINS를 아무것도 설정하지 않는데, 최신
+// 브라우저는 완전히 같은 오리진의 POST 요청에도 Origin 헤더를 함께 보낸다 — 그
+// Origin이 명시적 허용 목록에 없다는 이유만으로 진짜 같은 오리진 요청까지 CORS로
+// 막히고 있었다. 명시 설정 없이도 "요청이 도착한 호스트 자신과 Origin이 일치하면"
+// 항상 허용하도록 고쳤다 — 이 테스트는 그 시나리오를 정확히 재현한다.
+test("보안 하드닝: ALLOWED_ORIGINS 미설정이어도 진짜 같은 오리진의 쓰기 요청은 CORS로 막히지 않는다", async (t) => {
+  const server = await startServer({
+    env: { NODE_ENV: "production", SESSION_SECRET: "test-production-session-secret-for-same-origin-cors" },
+  });
+  t.after(() => server.stop());
+  const sameOriginHeader = `http://${new URL(server.baseUrl).host}`;
+
+  const sameOriginPost = await fetch(server.baseUrl + "/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Origin: sameOriginHeader },
+    body: JSON.stringify({ loginId: "no-such-user", pw: "wrong-password" }),
+  });
+  const sameOriginBody = await sameOriginPost.json();
+  assert.notEqual(sameOriginBody.code, "CORS_ORIGIN_DENIED", "진짜 같은 오리진 요청이 CORS로 거부됨");
+  assert.equal(sameOriginPost.status, 200, "CORS를 통과했다면 로그인 자격 검증(틀린 비밀번호) 단계까지 도달해야 함");
+
+  // 여전히 진짜 다른 오리진(요청이 도착한 호스트와 다름)은 명시적으로 허용하지 않은 이상 거부돼야 한다.
+  const crossOriginPost = await fetch(server.baseUrl + "/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Origin: "https://evil.example.com" },
+    body: JSON.stringify({ loginId: "no-such-user", pw: "wrong-password" }),
+  });
+  assert.equal(crossOriginPost.status, 403);
+  assert.equal((await crossOriginPost.json()).code, "CORS_ORIGIN_DENIED");
+});
+
 test("보안 하드닝: 개발/테스트 CORS는 로컬 브라우저 테스트 포트를 허용한다", async (t) => {
   const server = await startServer();
   t.after(() => server.stop());
