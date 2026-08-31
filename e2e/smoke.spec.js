@@ -56,6 +56,7 @@ test.describe("로그인·기본 네비게이션", () => {
 
     await expect(page.locator("#main")).toBeVisible({ timeout: 10000 });
     await expect(page.locator("#topbar-username")).toContainText("E2E관리자");
+    await expect(page.getByRole("button", { name: /^알림/ })).toBeVisible();
 
     expect(pageErrors, `콘솔 페이지 에러 발생: ${pageErrors.join("; ")}`).toHaveLength(0);
   });
@@ -86,6 +87,7 @@ test.describe("로그인·기본 네비게이션", () => {
     await expect(page.locator("#main")).toBeVisible({ timeout: 10000 });
 
     const menu = page.locator("#mobile-menu-btn");
+    await expect(page.locator("#mtab-dashboard")).toHaveAttribute("aria-current", "page");
     await expect(menu).toHaveAttribute("aria-expanded", "false");
     await menu.click();
     await expect(menu).toHaveAttribute("aria-expanded", "true");
