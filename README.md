@@ -10,7 +10,9 @@
 - `hr-production`에는 직접 push하거나 강제 push하지 않습니다.
 - 과거 `main` 및 `claude/*` 브랜치는 별도 이력 보존용이며 운영 배포 기준으로 사용하지
   않습니다. 공통 조상이 없는 브랜치를 강제로 병합하지 마세요.
-- Vercel 프로젝트의 Production Branch도 `hr-production`으로 맞춰야 합니다.
+- 공식 운영 URL은 Render의 `https://hr-system-docker.onrender.com/`입니다. Vercel 배포는
+  Git 연결을 끊어 운영 기준으로 사용하지 않으며, 남아 있는 Vercel URL 접근은 공식 Render
+  주소로 유도합니다.
 
 ## 주요 기능
 
