@@ -1628,8 +1628,12 @@
           <div style="font-weight:700;font-size:0.85rem;margin-bottom:6px">Q. ${escHtml(item.question)}</div>
           <div style="font-size:0.8rem;white-space:pre-wrap;max-height:180px;overflow:auto">${escHtml((item.answer || '').slice(0, 1200))}</div>
           ${(item.quality_flags || []).length ? `<div style="font-size:0.72rem;color:#d97706;margin-top:7px">⚠️ ${escHtml(item.quality_flags.join(' · '))}</div>` : ''}
+          ${(item.evidence || []).length ? `<div style="font-size:0.72rem;margin-top:7px">근거: ${(item.evidence || []).map(e => e.url ? `<a href="${escHtml(e.url)}" target="_blank" rel="noopener noreferrer">${escHtml(e.title || e.url)}</a>` : escHtml(e.title || e.type)).join(' · ')}</div>` : '<div style="font-size:0.72rem;color:#d97706;margin-top:7px">⚠️ 저장된 근거 없음</div>'}
+          ${item.valid_until ? `<div style="font-size:0.72rem;color:var(--text-dim);margin-top:5px">유효기한 ${escHtml(item.valid_until)}</div>` : ''}
+          ${(item.contradictions || []).length ? `<div style="font-size:0.74rem;color:#dc2626;margin-top:7px">⛔ 기존 기억 충돌 가능성: ${(item.contradictions || []).map(c => escHtml((c.reasons || []).join(', '))).join(' · ')}</div>` : ''}
           <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:10px">
             <button class="fb-btn bad" onclick="reviewMemoryCandidate(${Number(item.id)}, 'reject')">거절</button>
+            ${(item.contradictions || []).length ? `<button class="fb-btn" onclick="reviewMemoryCandidate(${Number(item.id)}, 'approve', true)">검토 후 강제 승인</button>` : ''}
             <button class="fb-btn good" onclick="reviewMemoryCandidate(${Number(item.id)}, 'approve')">승인</button>
           </div>
         </div>`).join('');
@@ -1638,8 +1642,10 @@
     }
   }
 
-  async function reviewMemoryCandidate(id, action) {
-    const r = await tokFetch(`/admin/memory-candidates/${id}/${action}`, { method: 'POST' });
+  async function reviewMemoryCandidate(id, action, force = false) {
+    if (force && !confirm('기존 기억과 충돌할 수 있습니다. 표시된 근거와 내용을 검토했습니까?')) return;
+    const suffix = force ? '?force=true' : '';
+    const r = await tokFetch(`/admin/memory-candidates/${id}/${action}${suffix}`, { method: 'POST' });
     if (!r.ok) {
       showToast('기억 후보 처리 실패: ' + await friendlyErrorMessage(r));
       return;

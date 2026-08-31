@@ -9,8 +9,10 @@ import os
 import contextlib
 import hashlib
 import hmac
+import json
 import re
 from datetime import datetime, timedelta
+from urllib.parse import urlsplit, urlunsplit
 
 import privacy as privacy_guard
 
@@ -214,6 +216,16 @@ def init_db(seed_static: bool = True):
             source TEXT DEFAULT '',
             created_at TEXT NOT NULL
         )""")
+        for column_sql in (
+            "ALTER TABLE learned_knowledge ADD COLUMN evidence_json TEXT DEFAULT '[]'",
+            "ALTER TABLE learned_knowledge ADD COLUMN verified_at TEXT DEFAULT ''",
+            "ALTER TABLE learned_knowledge ADD COLUMN valid_until TEXT DEFAULT ''",
+        ):
+            try:
+                c.execute(column_sql)
+            except Exception as e:
+                if "duplicate column" not in str(e).lower() and "already exists" not in str(e).lower():
+                    raise
         c.execute("""CREATE TABLE IF NOT EXISTS feedback (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             question TEXT NOT NULL,
@@ -274,6 +286,9 @@ def init_db(seed_static: bool = True):
         for column_sql in (
             "ALTER TABLE memory_candidates ADD COLUMN seen_count INTEGER NOT NULL DEFAULT 1",
             "ALTER TABLE memory_candidates ADD COLUMN last_seen_at TEXT DEFAULT ''",
+            "ALTER TABLE memory_candidates ADD COLUMN evidence_json TEXT DEFAULT '[]'",
+            "ALTER TABLE memory_candidates ADD COLUMN verified_at TEXT DEFAULT ''",
+            "ALTER TABLE memory_candidates ADD COLUMN valid_until TEXT DEFAULT ''",
         ):
             try:
                 c.execute(column_sql)
@@ -291,6 +306,16 @@ def init_db(seed_static: bool = True):
             quarantined_at TEXT NOT NULL,
             restored_at TEXT DEFAULT ''
         )""")
+        for column_sql in (
+            "ALTER TABLE memory_quarantine ADD COLUMN evidence_json TEXT DEFAULT '[]'",
+            "ALTER TABLE memory_quarantine ADD COLUMN original_verified_at TEXT DEFAULT ''",
+            "ALTER TABLE memory_quarantine ADD COLUMN original_valid_until TEXT DEFAULT ''",
+        ):
+            try:
+                c.execute(column_sql)
+            except Exception as e:
+                if "duplicate column" not in str(e).lower() and "already exists" not in str(e).lower():
+                    raise
         c.execute("""CREATE TABLE IF NOT EXISTS memory_retrieval_events (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             query_hash TEXT NOT NULL,
@@ -306,10 +331,106 @@ def init_db(seed_static: bool = True):
         c.execute("CREATE INDEX IF NOT EXISTS idx_conversations_scope ON conversations(session_id, persona, id)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_candidates_status ON memory_candidates(status, persona, id)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_learned_persona_source ON learned_knowledge(persona, source, id)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_learned_validity ON learned_knowledge(valid_until, persona, id)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_quarantine_active ON memory_quarantine(restored_at, id)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_retrieval_created ON memory_retrieval_events(created_at, persona)")
     if seed_static:
         _seed_static_kb_to_db()
+
+
+_SOURCE_VALIDITY_DEFAULTS = {
+    "법령실시간": 30,
+    "웹검색보강": 14,
+    "KB보강생성": 180,
+    "생성답변": 90,
+    "승인학습": 180,
+    "law.go.kr": 30,
+    "mofa_travel_alert": 7,
+}
+
+_SOURCE_VALIDITY_ENV = {
+    "법령실시간": "MEMORY_VALIDITY_LAW_DAYS",
+    "law.go.kr": "MEMORY_VALIDITY_LAW_DAYS",
+    "웹검색보강": "MEMORY_VALIDITY_WEB_DAYS",
+    "KB보강생성": "MEMORY_VALIDITY_KB_AUGMENTED_DAYS",
+    "생성답변": "MEMORY_VALIDITY_GENERATED_DAYS",
+    "승인학습": "MEMORY_VALIDITY_APPROVED_DAYS",
+    "mofa_travel_alert": "MEMORY_VALIDITY_TRAVEL_DAYS",
+}
+
+
+def _parse_iso_datetime(value: str):
+    try:
+        return datetime.fromisoformat(value) if value else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _source_validity_days(source: str) -> int | None:
+    """출처별 기본 유효기간. 정적KB·직접입력·문서는 명시 검증 전까지 무기한."""
+    value = source or ""
+    env_key = _SOURCE_VALIDITY_ENV.get(value)
+    if not env_key:
+        suffix = re.sub(r"[^A-Z0-9]+", "_", value.upper()).strip("_")
+        env_key = f"MEMORY_VALIDITY_{suffix}_DAYS" if suffix else ""
+    if env_key and os.getenv(env_key):
+        try:
+            return max(1, min(int(os.getenv(env_key)), 3650))
+        except ValueError:
+            pass
+    for prefix, days in _SOURCE_VALIDITY_DEFAULTS.items():
+        if value.startswith(prefix):
+            return days
+    return None
+
+
+def _default_valid_until(source: str, base: datetime = None) -> str:
+    days = _source_validity_days(source)
+    return ((base or datetime.now()) + timedelta(days=days)).isoformat() if days else ""
+
+
+def _is_expired(valid_until: str, now: datetime = None) -> bool:
+    parsed = _parse_iso_datetime(valid_until)
+    return bool(parsed and parsed < (now or datetime.now()))
+
+
+def _normalize_evidence(evidence=None) -> list[dict]:
+    """근거를 비밀값 없이 작은 JSON 구조로 정규화."""
+    if isinstance(evidence, str):
+        try:
+            evidence = json.loads(evidence)
+        except (TypeError, ValueError):
+            evidence = []
+    if not isinstance(evidence, list):
+        return []
+    items, seen = [], set()
+    for raw in evidence[:20]:
+        if not isinstance(raw, dict):
+            continue
+        title, _ = privacy_guard.sanitize_for_storage(
+            str(raw.get("title") or raw.get("source") or "")[:240], include_contact=True
+        )
+        url = str(raw.get("url") or "").strip()[:1000]
+        if url and not url.lower().startswith(("http://", "https://")):
+            url = ""
+        elif url and privacy_guard.sensitive_labels(url, include_contact=True):
+            # 서명 URL·API 키·이메일 등이 쿼리/프래그먼트에 실리는 경우가 많다.
+            # 클릭 가능한 공개 경로는 유지하되 민감 파라미터는 영구 저장하지 않는다.
+            parsed = urlsplit(url)
+            url = urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))
+        kind = str(raw.get("type") or ("url" if url else "memory"))[:40]
+        key = (title, url, kind)
+        if key in seen or not any(key):
+            continue
+        seen.add(key)
+        items.append({"title": title, "url": url, "type": kind})
+        if len(items) >= 10:
+            break
+    return items
+
+
+def _evidence_json(evidence=None) -> str:
+    return json.dumps(_normalize_evidence(evidence), ensure_ascii=False, separators=(",", ":"))
 
 
 # 정적 KB 항목 저장 길이 상한. 이전에는 2,000자로 잘라 저장해 긴 답변의 뒷부분이
@@ -515,6 +636,12 @@ def store_memory(text: str, metadata: dict = None):
     persona = meta.get("persona", "")
     source = meta.get("source", "")
     content = text[:2000]
+    now = datetime.now()
+    verified_at = str(meta.get("verified_at") or now.isoformat())
+    valid_until = meta.get("valid_until")
+    if valid_until is None:
+        valid_until = _default_valid_until(source, now)
+    evidence_json = _evidence_json(meta.get("evidence", []))
 
     with _conn() as c:
         existing = c.execute(
@@ -523,8 +650,10 @@ def store_memory(text: str, metadata: dict = None):
         ).fetchone()
         if not existing:
             c.execute(
-                "INSERT INTO learned_knowledge (content, persona, source, created_at) VALUES (?,?,?,?)",
-                (content, persona, source, datetime.now().isoformat()),
+                "INSERT INTO learned_knowledge"
+                " (content, persona, source, created_at, evidence_json, verified_at, valid_until)"
+                " VALUES (?,?,?,?,?,?,?)",
+                (content, persona, source, now.isoformat(), evidence_json, verified_at, valid_until),
             )
 
     if existing:
@@ -532,7 +661,11 @@ def store_memory(text: str, metadata: dict = None):
 
     try:
         from engine import teach
-        teach(text, persona=persona, source=source or "learned")
+        teach(text, persona=persona, source=source or "learned", metadata={
+            "evidence_json": evidence_json,
+            "verified_at": verified_at,
+            "valid_until": valid_until,
+        })
     except Exception as e:
         print(f"⚠️ 엔진 학습 실패: {e}")
 
@@ -578,22 +711,29 @@ def retrieve_best(query: str, n: int = 5, persona_id: str = None) -> dict:
         }
     """
     empty = {"context": "", "best_score": 0.0, "top_answer": "", "top_question": "",
-             "top_results": [], "top_source": ""}
+             "top_results": [], "top_source": "", "top_meta": {}, "expired_skipped": 0}
     try:
         from engine import get_engine
         engine = get_engine()
         # 의미 청크가 겹침 문맥을 포함하므로 상위 n개만 즉시 자르면 유사한 인접
         # 청크가 결과를 독점할 수 있다. 후보를 넓게 받은 뒤 중복을 제거한다.
         candidates = engine.search(query, n=max(n * 4, 12), persona=persona_id)
+        expired_skipped = sum(
+            1 for _q, _a, _score, meta in candidates if _is_expired(meta.get("valid_until", ""))
+        )
+        candidates = [
+            result for result in candidates if not _is_expired(result[3].get("valid_until", ""))
+        ]
         results = _diversify_search_results(candidates, max(1, n))
         if not results:
-            return empty
+            return {**empty, "expired_skipped": expired_skipped}
 
         parts = []
         best_score = 0.0
         top_answer = ""
         top_question = ""
         top_source = ""
+        top_meta = {}
         top_results = []
 
         for q, a, score, meta in results:
@@ -605,6 +745,7 @@ def retrieve_best(query: str, n: int = 5, persona_id: str = None) -> dict:
                 top_answer = a
                 top_question = q
                 top_source = meta.get("source", "")
+                top_meta = dict(meta)
 
         CONTEXT_ABS_MIN = 0.15
 
@@ -626,6 +767,8 @@ def retrieve_best(query: str, n: int = 5, persona_id: str = None) -> dict:
             "top_question": top_question,
             "top_results": top_results,
             "top_source": top_source,
+            "top_meta": top_meta,
+            "expired_skipped": expired_skipped,
         }
     except Exception as e:
         print(f"⚠️ 컨텍스트 검색 실패: {e}")
@@ -798,7 +941,8 @@ def store_document(text: str, filename: str, persona_id: str = "hr") -> int:
 
 
 def upsert_knowledge(question: str, answer: str, persona: str,
-                     source: str = "직접입력") -> bool:
+                     source: str = "직접입력", evidence=None,
+                     verified_at: str = "", valid_until: str = None) -> bool:
     """Q&A를 KB에 저장 — 동일 질문이 있으면 최신 내용으로 업데이트, 없으면 신규 추가.
     Returns True if updated (existing replaced), False if inserted (new entry).
     """
@@ -808,7 +952,12 @@ def upsert_knowledge(question: str, answer: str, persona: str,
         print(f"🔒 지식 저장 전 민감정보 마스킹: {', '.join(dict.fromkeys(q_labels + a_labels))}")
     question, answer = safe_question, safe_answer
     content = f"Q: {question}\nA: {answer[:1500]}"
-    now = datetime.now().isoformat()
+    now_dt = datetime.now()
+    now = now_dt.isoformat()
+    verified_at = verified_at or now
+    if valid_until is None:
+        valid_until = _default_valid_until(source, now_dt)
+    evidence_json = _evidence_json(evidence)
     q_lower = question.strip().lower()
 
     with _conn() as c:
@@ -829,14 +978,17 @@ def upsert_knowledge(question: str, answer: str, persona: str,
 
         if existing_id:
             c.execute(
-                "UPDATE learned_knowledge SET content=?, source=?, created_at=? WHERE id=?",
-                (content, source, now, existing_id),
+                "UPDATE learned_knowledge SET content=?, source=?, created_at=?,"
+                " evidence_json=?, verified_at=?, valid_until=? WHERE id=?",
+                (content, source, now, evidence_json, verified_at, valid_until, existing_id),
             )
             updated = True
         else:
             c.execute(
-                "INSERT INTO learned_knowledge (content, persona, source, created_at) VALUES (?,?,?,?)",
-                (content, persona, source, now),
+                "INSERT INTO learned_knowledge"
+                " (content, persona, source, created_at, evidence_json, verified_at, valid_until)"
+                " VALUES (?,?,?,?,?,?,?)",
+                (content, persona, source, now, evidence_json, verified_at, valid_until),
             )
             updated = False
 
@@ -844,7 +996,10 @@ def upsert_knowledge(question: str, answer: str, persona: str,
         from engine import get_engine, _kb_loaded
         if _kb_loaded:
             get_engine().delete_by_q(question, persona)
-            get_engine().add(question, answer[:2000], {"persona": persona, "source": source})
+            get_engine().add(question, answer[:2000], {
+                "persona": persona, "source": source, "evidence_json": evidence_json,
+                "verified_at": verified_at, "valid_until": valid_until,
+            })
     except Exception as e:
         print(f"⚠️ 엔진 학습 실패: {e}")
 
@@ -852,7 +1007,8 @@ def upsert_knowledge(question: str, answer: str, persona: str,
 
 
 def store_memory_candidate(question: str, answer: str, persona: str = "hr",
-                           session_id: str = "legacy", source: str = "자동응답") -> int | None:
+                           session_id: str = "legacy", source: str = "자동응답",
+                           evidence=None, valid_until: str = None) -> int | None:
     """검증 전 답변을 장기기억이 아닌 승인 대기 후보로 저장한다.
 
     같은 질문·답변 조합은 페르소나별로 한 번만 보관한다. 승인된 후보를 다시
@@ -867,17 +1023,26 @@ def store_memory_candidate(question: str, answer: str, persona: str = "hr",
     q = question.strip()[:1000]
     a = answer.strip()[:4000]
     digest = hashlib.sha256(f"{persona}\n{q.lower()}\n{a}".encode("utf-8")).hexdigest()
-    now = datetime.now().isoformat()
+    now_dt = datetime.now()
+    now = now_dt.isoformat()
+    evidence_json = _evidence_json(evidence)
+    if valid_until is None:
+        valid_until = _default_valid_until(source, now_dt)
     with _conn() as c:
         c.execute(
             "INSERT INTO memory_candidates"
             " (content_hash, question, answer, persona, session_id, source, status,"
-            " created_at, seen_count, last_seen_at)"
-            " VALUES (?,?,?,?,?,?,'pending',?,1,?)"
+            " created_at, seen_count, last_seen_at, evidence_json, verified_at, valid_until)"
+            " VALUES (?,?,?,?,?,?,'pending',?,1,?,?,?,?)"
             " ON CONFLICT(content_hash,persona) DO UPDATE SET"
             " seen_count=CASE WHEN status='pending' THEN seen_count+1 ELSE seen_count END,"
-            " last_seen_at=CASE WHEN status='pending' THEN excluded.last_seen_at ELSE last_seen_at END",
-            (digest, q, a, persona, _safe_session_id(session_id), source, now, now),
+            " last_seen_at=CASE WHEN status='pending' THEN excluded.last_seen_at ELSE last_seen_at END,"
+            " evidence_json=CASE WHEN status='pending' AND excluded.evidence_json!='[]'"
+            " THEN excluded.evidence_json ELSE evidence_json END,"
+            " verified_at=CASE WHEN status='pending' THEN excluded.verified_at ELSE verified_at END,"
+            " valid_until=CASE WHEN status='pending' THEN excluded.valid_until ELSE valid_until END",
+            (digest, q, a, persona, _safe_session_id(session_id), source, now, now,
+             evidence_json, now, valid_until),
         )
         row = c.execute(
             "SELECT id, status FROM memory_candidates WHERE content_hash=? AND persona=?",
@@ -887,7 +1052,8 @@ def store_memory_candidate(question: str, answer: str, persona: str = "hr",
 
 
 def auto_learn(question: str, answer: str, persona: str = "hr",
-               session_id: str = "legacy", source: str = "생성답변") -> int | None:
+               session_id: str = "legacy", source: str = "생성답변",
+               evidence=None, valid_until: str = None) -> int | None:
     """자동 학습 후보 생성: 최소 품질 게이트 통과 시 검토 대기열에만 저장."""
     if len(question.strip()) < 8 or len(answer.strip()) < 60:
         return None
@@ -901,7 +1067,8 @@ def auto_learn(question: str, answer: str, persona: str = "hr",
         print(f"ℹ️ 자동학습 스킵(질문-답변 주제 불일치): {question[:50]}")
         return None
     return store_memory_candidate(
-        question, answer, persona, session_id=session_id, source=source
+        question, answer, persona, session_id=session_id, source=source,
+        evidence=evidence, valid_until=valid_until,
     )
 
 
@@ -948,6 +1115,89 @@ def score_memory_candidate(question: str, answer: str, source: str = "",
     return {"quality_score": round(max(0.0, min(score, 1.0)), 2), "quality_flags": flags}
 
 
+_CONTRADICTION_PAIRS = (
+    (("가능", "허용", "할 수 있"), ("불가", "금지", "할 수 없")),
+    (("유급", "지급"), ("무급", "미지급")),
+    (("의무", "필수"), ("선택", "임의")),
+    (("적용", "대상"), ("미적용", "제외", "대상 아님")),
+)
+
+
+def _qa_parts(content: str) -> tuple[str, str]:
+    value = content or ""
+    if value.startswith("Q: ") and "\nA: " in value:
+        question, answer = value.split("\nA: ", 1)
+        return question[3:].strip(), answer.strip()
+    return value[:500], value
+
+
+def _jaccard_text(left: str, right: str) -> float:
+    a, b = _retrieval_terms(left), _retrieval_terms(right)
+    union = a | b
+    return len(a & b) / len(union) if union else 1.0
+
+
+def _contradiction_reasons(old_answer: str, new_answer: str,
+                           exact_question: bool) -> list[str]:
+    reasons = []
+    old_numbers = set(re.findall(r"(?<!\w)\d+(?:[.,]\d+)?\s*(?:%|원|일|개월|년|시간|개)?", old_answer))
+    new_numbers = set(re.findall(r"(?<!\w)\d+(?:[.,]\d+)?\s*(?:%|원|일|개월|년|시간|개)?", new_answer))
+    if old_numbers and new_numbers and old_numbers != new_numbers:
+        reasons.append(
+            "수치가 다름: 기존 " + ", ".join(sorted(old_numbers)[:5])
+            + " / 후보 " + ", ".join(sorted(new_numbers)[:5])
+        )
+    for positive, negative in _CONTRADICTION_PAIRS:
+        old_pos = any(term in old_answer for term in positive)
+        old_neg = any(term in old_answer for term in negative)
+        new_pos = any(term in new_answer for term in positive)
+        new_neg = any(term in new_answer for term in negative)
+        if (old_pos and new_neg) or (old_neg and new_pos):
+            reasons.append(f"반대 의미 가능성: {'/'.join(positive[:2])} ↔ {'/'.join(negative[:2])}")
+    if exact_question and _jaccard_text(old_answer, new_answer) < 0.35:
+        reasons.append("같은 질문의 기존 답변과 내용 차이가 큼")
+    return list(dict.fromkeys(reasons))
+
+
+def find_memory_contradictions(question: str, answer: str, persona: str,
+                               limit: int = 5) -> list[dict]:
+    """현재 유효한 장기기억 중 후보와 명시적으로 충돌할 가능성이 높은 항목."""
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT id, content, source, evidence_json, verified_at, valid_until"
+            " FROM learned_knowledge WHERE persona=? ORDER BY id DESC",
+            (persona,),
+        ).fetchall()
+    q_lower = (question or "").strip().lower()
+    conflicts = []
+    for row in rows:
+        item = dict(row)
+        if _is_expired(item.get("valid_until", "")):
+            continue
+        old_question, old_answer = _qa_parts(item.get("content", ""))
+        exact = old_question.strip().lower() == q_lower
+        q_similarity = _jaccard_text(question, old_question)
+        if not exact and q_similarity < 0.65:
+            continue
+        reasons = _contradiction_reasons(old_answer, answer, exact)
+        if not reasons:
+            continue
+        conflicts.append({
+            "id": item["id"],
+            "source": item.get("source", ""),
+            "question": old_question[:300],
+            "answer_preview": old_answer[:500],
+            "reasons": reasons,
+            "question_similarity": round(q_similarity, 3),
+            "verified_at": item.get("verified_at", ""),
+            "valid_until": item.get("valid_until", ""),
+            "evidence": _normalize_evidence(item.get("evidence_json", "[]")),
+        })
+        if len(conflicts) >= max(1, min(int(limit), 20)):
+            break
+    return conflicts
+
+
 def list_memory_candidates(status: str = "pending", persona: str = "",
                            limit: int = 50, offset: int = 0) -> list:
     where, params = [], []
@@ -958,7 +1208,8 @@ def list_memory_candidates(status: str = "pending", persona: str = "",
         where.append("persona=?")
         params.append(persona)
     sql = ("SELECT id, question, answer, persona, session_id, source, status,"
-           " created_at, reviewed_at, seen_count, last_seen_at FROM memory_candidates")
+           " created_at, reviewed_at, seen_count, last_seen_at, evidence_json,"
+           " verified_at, valid_until FROM memory_candidates")
     if where:
         sql += " WHERE " + " AND ".join(where)
     sql += " ORDER BY id DESC LIMIT ? OFFSET ?"
@@ -966,6 +1217,11 @@ def list_memory_candidates(status: str = "pending", persona: str = "",
     with _conn() as c:
         items = [dict(r) for r in c.execute(sql, params).fetchall()]
     for item in items:
+        item["evidence"] = _normalize_evidence(item.pop("evidence_json", "[]"))
+        item["validity_status"] = "expired" if _is_expired(item.get("valid_until", "")) else "current"
+        item["contradictions"] = find_memory_contradictions(
+            item["question"], item["answer"], item["persona"]
+        ) if item.get("status") == "pending" else []
         item.update(score_memory_candidate(
             item["question"], item["answer"], item.get("source", ""),
             item.get("seen_count", 1),
@@ -974,7 +1230,7 @@ def list_memory_candidates(status: str = "pending", persona: str = "",
     return items
 
 
-def review_memory_candidate(candidate_id: int, approve: bool) -> dict | None:
+def review_memory_candidate(candidate_id: int, approve: bool, force: bool = False) -> dict | None:
     """후보를 승인해 장기기억으로 승격하거나 거절한다. 반복 호출에도 안전."""
     with _conn() as c:
         row = c.execute(
@@ -1007,8 +1263,21 @@ def review_memory_candidate(candidate_id: int, approve: bool) -> dict | None:
                 item["status"] = "protected"
                 item["protected_source"] = source
                 return item
+        contradictions = find_memory_contradictions(
+            item["question"], item["answer"], item["persona"]
+        )
+        if contradictions and not force:
+            item["status"] = "conflict"
+            item["contradictions"] = contradictions
+            return item
         upsert_knowledge(
-            item["question"], item["answer"], item["persona"], source="승인학습"
+            item["question"], item["answer"], item["persona"], source="승인학습",
+            evidence=_normalize_evidence(item.get("evidence_json", "[]")) + [{
+                "title": f"후보 생성 출처: {item.get('source', '')}",
+                "type": "generation_source",
+            }],
+            verified_at=item.get("verified_at", "") or datetime.now().isoformat(),
+            valid_until=item.get("valid_until", "") or _default_valid_until(item.get("source", "")),
         )
     new_status = "approved" if approve else "rejected"
     with _conn() as c:
@@ -1020,6 +1289,65 @@ def review_memory_candidate(candidate_id: int, approve: bool) -> dict | None:
     return item
 
 
+def list_memory_revalidation(days: int = 30, persona: str = "",
+                             limit: int = 100, offset: int = 0) -> list[dict]:
+    """이미 만료됐거나 지정 일수 안에 만료되는 장기기억을 반환한다."""
+    days = max(0, min(int(days), 3650))
+    cutoff = (datetime.now() + timedelta(days=days)).isoformat()
+    where = ["valid_until != ''", "valid_until <= ?"]
+    params = [cutoff]
+    if persona:
+        where.append("persona=?")
+        params.append(persona)
+    params.extend([max(1, min(int(limit), 500)), max(0, int(offset))])
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT id, content, persona, source, created_at, evidence_json,"
+            " verified_at, valid_until FROM learned_knowledge WHERE "
+            + " AND ".join(where)
+            + " ORDER BY valid_until ASC, id DESC LIMIT ? OFFSET ?",
+            params,
+        ).fetchall()
+    items = []
+    for row in rows:
+        item = dict(row)
+        item["evidence"] = _normalize_evidence(item.pop("evidence_json", "[]"))
+        item["validity_status"] = "expired" if _is_expired(item["valid_until"]) else "expiring"
+        item["content_preview"] = item.pop("content", "")[:1000]
+        items.append(item)
+    return items
+
+
+def verify_learned_memory(item_id: int, valid_days: int | None = None,
+                          evidence=None) -> dict | None:
+    """관리자 재검증 시 근거와 검증 시각·새 유효기간을 함께 갱신한다."""
+    with _conn() as c:
+        row = c.execute(
+            "SELECT id, content, persona, source, evidence_json FROM learned_knowledge WHERE id=?",
+            (int(item_id),),
+        ).fetchone()
+    if not row:
+        return None
+    item = dict(row)
+    if valid_days is None or int(valid_days) <= 0:
+        valid_days = _source_validity_days(item.get("source", "")) or 180
+    valid_days = max(1, min(int(valid_days), 3650))
+    now = datetime.now()
+    normalized = (_normalize_evidence(evidence) if evidence is not None
+                  else _normalize_evidence(item.get("evidence_json", "[]")))
+    verified_at = now.isoformat()
+    valid_until = (now + timedelta(days=valid_days)).isoformat()
+    with _conn() as c:
+        c.execute(
+            "UPDATE learned_knowledge SET evidence_json=?, verified_at=?, valid_until=? WHERE id=?",
+            (_evidence_json(normalized), verified_at, valid_until, int(item_id)),
+        )
+    return {
+        "id": int(item_id), "source": item.get("source", ""), "evidence": normalized,
+        "verified_at": verified_at, "valid_until": valid_until, "validity_status": "current",
+    }
+
+
 def quarantine_learned_rows(rows: list, reason: str) -> int:
     """장기기억 행을 복구 가능한 격리소로 옮긴 뒤 원본에서 삭제."""
     if not rows:
@@ -1028,18 +1356,25 @@ def quarantine_learned_rows(rows: list, reason: str) -> int:
     ids = sorted({int(r["id"]) for r in rows})
     placeholders = ",".join("?" * len(ids))
     with _conn() as c:
-        for r in rows:
+        fresh_rows = [dict(r) for r in c.execute(
+            "SELECT id, content, persona, source, created_at, evidence_json,"
+            f" verified_at, valid_until FROM learned_knowledge WHERE id IN ({placeholders})",
+            ids,
+        ).fetchall()]
+        for r in fresh_rows:
             # Turso HTTP 백엔드는 문장별 자동 커밋이므로 중간 네트워크 실패 뒤
             # 재시도해도 같은 활성 격리본이 중복 생성되지 않게 조건부 삽입한다.
             c.execute(
                 "INSERT INTO memory_quarantine"
-                " (original_id, content, persona, source, original_created_at, reason, quarantined_at)"
-                " SELECT ?,?,?,?,?,?,? WHERE NOT EXISTS ("
+                " (original_id, content, persona, source, original_created_at, reason, quarantined_at,"
+                " evidence_json, original_verified_at, original_valid_until)"
+                " SELECT ?,?,?,?,?,?,?,?,?,? WHERE NOT EXISTS ("
                 " SELECT 1 FROM memory_quarantine"
                 " WHERE original_id=? AND content=? AND restored_at='')",
                 (
                     r["id"], r["content"], r.get("persona", ""), r.get("source", ""),
-                    r.get("created_at", ""), reason, now, r["id"], r["content"],
+                    r.get("created_at", ""), reason, now, r.get("evidence_json", "[]"),
+                    r.get("verified_at", ""), r.get("valid_until", ""), r["id"], r["content"],
                 ),
             )
         c.execute(f"DELETE FROM learned_knowledge WHERE id IN ({placeholders})", ids)
@@ -1067,12 +1402,15 @@ def restore_quarantined_memory(quarantine_id: int) -> dict | None:
     item = dict(row)
     with _conn() as c:
         c.execute(
-            "INSERT INTO learned_knowledge (content, persona, source, created_at)"
-            " SELECT ?,?,?,? WHERE NOT EXISTS ("
+            "INSERT INTO learned_knowledge"
+            " (content, persona, source, created_at, evidence_json, verified_at, valid_until)"
+            " SELECT ?,?,?,?,?,?,? WHERE NOT EXISTS ("
             " SELECT 1 FROM learned_knowledge WHERE content=? AND persona=? AND source=?)",
             (
                 item["content"], item["persona"], item["source"],
                 item["original_created_at"] or datetime.now().isoformat(),
+                item.get("evidence_json", "[]"), item.get("original_verified_at", ""),
+                item.get("original_valid_until", ""),
                 item["content"], item["persona"], item["source"],
             ),
         )

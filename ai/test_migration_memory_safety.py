@@ -45,6 +45,15 @@ def main():
             conversation_cols = {
                 row[1] for row in c.execute("PRAGMA table_info(conversations)")
             }
+            learned_cols = {
+                row[1] for row in c.execute("PRAGMA table_info(learned_knowledge)")
+            }
+            candidate_cols = {
+                row[1] for row in c.execute("PRAGMA table_info(memory_candidates)")
+            }
+            quarantine_cols = {
+                row[1] for row in c.execute("PRAGMA table_info(memory_quarantine)")
+            }
             tables = {
                 row[0] for row in c.execute(
                     "SELECT name FROM sqlite_master WHERE type='table'"
@@ -54,6 +63,9 @@ def main():
                 "SELECT session_id FROM conversations LIMIT 1"
             ).fetchone()[0]
         assert "session_id" in conversation_cols
+        assert {"evidence_json", "verified_at", "valid_until"} <= learned_cols
+        assert {"evidence_json", "verified_at", "valid_until"} <= candidate_cols
+        assert {"evidence_json", "original_verified_at", "original_valid_until"} <= quarantine_cols
         assert {"memory_candidates", "memory_quarantine", "memory_retrieval_events"} <= tables
         assert restored_scope == "legacy"
 
