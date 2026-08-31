@@ -23,6 +23,20 @@ import json
 import urllib.request
 import urllib.parse
 
+
+def _configure_console_encoding():
+    """Windows 기본 CP949 콘솔에서도 한글/이모지 로그가 스크립트를 중단하지 않게 한다."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            try:
+                reconfigure(encoding="utf-8", errors="replace")
+            except Exception:
+                pass
+
+
+_configure_console_encoding()
+
 try:
     import httpx
 except ImportError:
