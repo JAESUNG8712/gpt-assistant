@@ -1,9 +1,9 @@
-name: 법령 데이터 자동 업데이트
+name: 여행경보 데이터 자동 업데이트
 
 on:
   schedule:
-    # 매주 월요일 오전 2시 UTC (한국시간 오전 11시)
-    - cron: '0 2 * * 1'
+    # 매주 목요일 오전 3시 UTC (한국시간 낮 12시) — update_laws.yml과 겹치지 않게 요일 분리
+    - cron: '0 3 * * 4'
   workflow_dispatch:
     # 수동 실행 가능 (GitHub Actions 탭 → Run workflow)
 
@@ -11,7 +11,7 @@ permissions:
   contents: write
 
 jobs:
-  update-laws:
+  update-travel-alerts:
     runs-on: ubuntu-latest
 
     steps:
@@ -28,20 +28,20 @@ jobs:
       - name: 의존성 설치
         run: pip install httpx
 
-      - name: 법령 데이터 다운로드
+      - name: 여행경보 데이터 다운로드
         env:
-          LAW_API_KEY: ${{ secrets.LAW_API_KEY }}
-        run: python ai/fetch_laws.py
+          TRAVEL_ALERT_API_KEY: ${{ secrets.TRAVEL_ALERT_API_KEY }}
+        run: python ai/fetch_travel_alerts.py
 
       - name: 변경사항 확인 및 커밋
         run: |
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
-          git add ai/law_data_cache.json
+          git add ai/travel_alert_cache.json
           if git diff --staged --quiet; then
             echo "변경사항 없음 — 커밋 건너뜀"
           else
-            git commit -m "chore: 법령 데이터 자동 업데이트 $(date +'%Y-%m-%d')"
+            git commit -m "chore: 여행경보 데이터 자동 업데이트 $(date +'%Y-%m-%d')"
             git push
-            echo "✅ 법령 데이터 업데이트 완료"
+            echo "✅ 여행경보 데이터 업데이트 완료"
           fi

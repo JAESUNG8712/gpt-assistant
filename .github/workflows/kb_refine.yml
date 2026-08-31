@@ -1,0 +1,42 @@
+name: KB 자기개선(자동 정제)
+
+on:
+  schedule:
+    # 매주 일요일 오전 3시 UTC (한국시간 낮 12시)
+    - cron: '0 3 * * 0'
+  workflow_dispatch:
+    inputs:
+      apply:
+        description: '실제로 삭제까지 실행할지 여부 (false면 미리보기만)'
+        required: false
+        default: 'true'
+
+permissions:
+  contents: read
+
+jobs:
+  refine:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: KB 정제 실행 (근사 중복 통합 + 반복 비추천 항목 정리)
+        env:
+          BACKUP_TOKEN: ${{ secrets.BACKUP_TOKEN }}
+        run: |
+          APPLY="${{ github.event.inputs.apply || 'true' }}"
+          echo "실행 모드: apply=${APPLY}"
+          if [ -z "${BACKUP_TOKEN}" ]; then
+            echo "::warning::BACKUP_TOKEN secret is not set — KB 정제 요청을 건너뜁니다."
+            exit 0
+          fi
+          http_code=$(curl -sS -X POST \
+            --retry 2 --retry-delay 10 --max-time 90 \
+            "https://ai-assist-aosk.onrender.com/admin/refine?apply=${APPLY}&token=${BACKUP_TOKEN}" \
+            -o response.json -w '%{http_code}')
+          echo "HTTP ${http_code}"
+          cat response.json
+          echo ""
+          if [ "$http_code" -ge 400 ]; then
+            echo "::error::KB 정제 요청 실패 (HTTP ${http_code})"
+            exit 1
+          fi
