@@ -35,6 +35,7 @@ def main():
         # 소유자 데이터 API와 일반 채팅은 인증 없이는 열리지 않아야 한다.
         assert client.get("/history").status_code == 401
         assert client.get("/admin/memory-candidates").status_code == 401
+        assert client.get("/admin/memory-revalidation").status_code == 401
         assert client.get("/admin/memory-observability").status_code == 401
         assert client.post("/admin/memory-retention").status_code == 401
         assert client.post(
@@ -70,6 +71,55 @@ def main():
             "/admin/memory-retention",
             params={"token": owner_token, "apply": "true"},
         ).status_code == 400
+
+        # 만료 기억 재검증 API는 인증 후 근거와 새 유효기간을 갱신한다.
+        from datetime import datetime, timedelta
+        main.mem.upsert_knowledge(
+            "API 재검증 질문 qzxv", "API 재검증 대상 답변입니다.", "dev",
+            source="승인학습",
+            valid_until=(datetime.now() - timedelta(days=1)).isoformat(),
+        )
+        due_response = client.get(
+            "/admin/memory-revalidation",
+            params={"token": owner_token, "persona": "dev", "days": 30},
+        )
+        assert due_response.status_code == 200
+        due_item = next(
+            item for item in due_response.json()["items"]
+            if "API 재검증 질문 qzxv" in item["content_preview"]
+        )
+        verify_response = client.post(
+            f"/admin/learned/{due_item['id']}/verify",
+            params={"token": owner_token},
+            json={
+                "valid_days": 45,
+                "evidence": [{"title": "관리자 검증", "url": "https://example.com/api-verify"}],
+            },
+        )
+        assert verify_response.status_code == 200
+        assert verify_response.json()["item"]["evidence"][0]["title"] == "관리자 검증"
+
+        # 모순 후보는 409로 중단되고 force=true인 명시 승인만 승격한다.
+        main.mem.upsert_knowledge(
+            "API 충돌 기간은 며칠인가요?", "API 충돌 기간은 30일입니다.",
+            "company", source="승인학습",
+        )
+        conflict_id = main.mem.store_memory_candidate(
+            "API 충돌 기간은 며칠인가요?", "API 충돌 기간은 새 기준에서 60일입니다.",
+            "company", source="생성답변",
+        )
+        conflict_response = client.post(
+            f"/admin/memory-candidates/{conflict_id}/approve",
+            params={"token": owner_token},
+        )
+        assert conflict_response.status_code == 409
+        assert conflict_response.json()["detail"]["code"] == "memory_conflict"
+        forced_response = client.post(
+            f"/admin/memory-candidates/{conflict_id}/approve",
+            params={"token": owner_token, "force": "true"},
+        )
+        assert forced_response.status_code == 200
+        assert forced_response.json()["status"] == "approved"
 
         # 공유 링크는 허용된 페르소나만 사용할 수 있고 소유자 이력 API 권한은 없다.
         share = main.mem.create_share_link("API QA", ["company"], "")

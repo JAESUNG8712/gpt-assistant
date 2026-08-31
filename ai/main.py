@@ -1207,6 +1207,13 @@ async def chat(req: ChatRequest, request: Request):
                 candidate_id = mem.auto_learn(
                     user_msg, ai_reply_clean, persona=persona_id,
                     session_id=session_scope, source=candidate_source,
+                    evidence=[
+                        {**ref, "type": "external_reference"}
+                        for ref in reference_items
+                    ] + ([{
+                        "title": f"기존 기억: {kb.get('top_source', '')}",
+                        "type": "memory_context",
+                    }] if kb.get("top_source") else []),
                 )
                 if no_local and candidate_id:
                     yield ("\n\n---\n> 📝 기억 후보로 저장했습니다. "
@@ -1580,7 +1587,8 @@ def admin_learned_list(q: str = "", persona: str = "", limit: int = 30, offset: 
     if persona:
         where.append("persona=?")
         params.append(persona)
-    sql = "SELECT id, persona, source, created_at, content FROM learned_knowledge"
+    sql = ("SELECT id, persona, source, created_at, content, evidence_json,"
+           " verified_at, valid_until FROM learned_knowledge")
     if where:
         sql += " WHERE " + " AND ".join(where)
     sql += " ORDER BY id ASC LIMIT ? OFFSET ?"
@@ -1590,7 +1598,33 @@ def admin_learned_list(q: str = "", persona: str = "", limit: int = 30, offset: 
         rows = [dict(r) for r in c.execute(sql, params).fetchall()]
     for r in rows:
         r["content"] = r["content"][:300]
+        r["evidence"] = mem._normalize_evidence(r.pop("evidence_json", "[]"))
+        r["validity_status"] = "expired" if mem._is_expired(r.get("valid_until", "")) else "current"
     return {"count": len(rows), "items": rows}
+
+
+class MemoryVerifyRequest(BaseModel):
+    valid_days: int = 0
+    evidence: Optional[list[dict]] = None
+
+
+@app.get("/admin/memory-revalidation")
+def admin_memory_revalidation(days: int = 30, persona: str = "", limit: int = 100,
+                              offset: int = 0, token: str = ""):
+    _require_backup_token(token)
+    items = mem.list_memory_revalidation(days, persona, limit, offset)
+    return {"count": len(items), "days": max(0, min(int(days), 3650)), "items": items}
+
+
+@app.post("/admin/learned/{item_id}/verify")
+def admin_learned_verify(item_id: int, req: MemoryVerifyRequest, token: str = ""):
+    _require_backup_token(token)
+    item = mem.verify_learned_memory(item_id, req.valid_days, req.evidence)
+    if not item:
+        raise HTTPException(404, f"id={item_id} 항목 없음")
+    from engine import reload_engine
+    reload_engine()
+    return {"ok": True, "item": item}
 
 
 @app.get("/admin/learned/duplicates")
@@ -1665,9 +1699,9 @@ def admin_memory_candidates(status: str = "pending", persona: str = "",
 
 
 @app.post("/admin/memory-candidates/{candidate_id}/approve")
-def admin_memory_candidate_approve(candidate_id: int, token: str = ""):
+def admin_memory_candidate_approve(candidate_id: int, force: bool = False, token: str = ""):
     _require_backup_token(token)
-    item = mem.review_memory_candidate(candidate_id, approve=True)
+    item = mem.review_memory_candidate(candidate_id, approve=True, force=force)
     if not item:
         raise HTTPException(404, "기억 후보를 찾을 수 없습니다.")
     if item["status"] == "protected":
@@ -1676,6 +1710,12 @@ def admin_memory_candidate_approve(candidate_id: int, token: str = ""):
             f"같은 질문의 더 높은 신뢰도 지식({item['protected_source']})이 있어 "
             "자동 승격하지 않았습니다. 기존 항목을 검토한 뒤 다시 처리하세요.",
         )
+    if item["status"] == "conflict":
+        raise HTTPException(409, detail={
+            "code": "memory_conflict",
+            "message": "기존 장기기억과 충돌 가능성이 있습니다. 근거를 검토한 뒤 강제 승인하세요.",
+            "contradictions": item.get("contradictions", []),
+        })
     return {"ok": item["status"] == "approved", "status": item["status"], "id": candidate_id}
 
 
@@ -1804,14 +1844,26 @@ def _replace_source_knowledge(source: str, items: list[dict], default_persona: s
     가져오는 권위 있는 외부 자료"에 적합한 전체 교체 방식 — upsert_knowledge()와
     달리 이전 실행에서 사라진 항목(예: 경보가 해제된 국가)도 자동으로 없어진다."""
     now = _datetime.now().isoformat()
+    valid_until = mem._default_valid_until(source, _datetime.fromisoformat(now))
+    prepared = []
+    for it in items:
+        evidence = mem._normalize_evidence([{
+            "title": it.get("title") or it.get("q", ""),
+            "url": it.get("url") or it.get("링크", ""),
+            "type": "authoritative_source",
+        }])
+        prepared.append((it, mem._evidence_json(evidence)))
     rows = [
-        (f"Q: {it['q']}\nA: {it['a']}", it.get("persona", default_persona), source, now)
-        for it in items
+        (f"Q: {it['q']}\nA: {it['a']}", it.get("persona", default_persona), source,
+         now, evidence_json, now, valid_until)
+        for it, evidence_json in prepared
     ]
     with mem._conn() as c:
         c.execute("DELETE FROM learned_knowledge WHERE source=?", (source,))
         c.executemany(
-            "INSERT INTO learned_knowledge (content, persona, source, created_at) VALUES (?,?,?,?)",
+            "INSERT INTO learned_knowledge"
+            " (content, persona, source, created_at, evidence_json, verified_at, valid_until)"
+            " VALUES (?,?,?,?,?,?,?)",
             rows,
         )
     try:
@@ -1819,8 +1871,12 @@ def _replace_source_knowledge(source: str, items: list[dict], default_persona: s
         if _kb_loaded:
             eng = get_engine()
             eng.delete_by_source(source)
-            for it in items:
-                eng.add(it["q"], it["a"], {"persona": it.get("persona", default_persona), "source": source})
+            for it, evidence_json in prepared:
+                eng.add(it["q"], it["a"], {
+                    "persona": it.get("persona", default_persona), "source": source,
+                    "evidence_json": evidence_json, "verified_at": now,
+                    "valid_until": valid_until,
+                })
     except Exception as e:
         print(f"⚠️ 엔진 즉시 반영 실패(재시작 시 반영됨): {e}")
     return len(items)

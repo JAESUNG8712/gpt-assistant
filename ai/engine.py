@@ -695,34 +695,40 @@ def _load_knowledge():
         from memory import _conn
         with _conn() as c:
             rows = [dict(r) for r in c.execute(
-                "SELECT id, content, persona, source FROM learned_knowledge"
+                "SELECT id, content, persona, source, evidence_json, verified_at, valid_until"
+                " FROM learned_knowledge"
                 " WHERE source != '정적KB' ORDER BY id ASC"
             ).fetchall()]
 
         # Q&A 형식 항목은 같은 질문이 여러 개면 최신(id 큰 것)만 사용
         # source가 직접입력·자동학습인 경우만 중복 제거; 문서 청크는 모두 포함
         DEDUP_SOURCES = ("직접입력", "자동학습", "승인학습")
-        qa_latest: dict = {}   # (q_lower, persona) → (content, source)
+        qa_latest: dict = {}   # (q_lower, persona) → (content, source, metadata)
         chunks = []            # 문서 청크 등 비-QA 항목
 
         for row in rows:
             content, persona, source = row["content"], row["persona"], row["source"]
+            metadata = {
+                "memory_id": row["id"], "evidence_json": row.get("evidence_json", "[]"),
+                "verified_at": row.get("verified_at", ""),
+                "valid_until": row.get("valid_until", ""),
+            }
             is_qa = content.startswith("Q: ") and "\nA: " in content
             if is_qa and source in DEDUP_SOURCES:
                 q_lower = content.split("\nA: ", 1)[0][3:].strip().lower()
-                qa_latest[(q_lower, persona)] = (content, source)  # 최신이 덮어씀
+                qa_latest[(q_lower, persona)] = (content, source, metadata)  # 최신이 덮어씀
             else:
-                chunks.append((content, persona, source))
+                chunks.append((content, persona, source, metadata))
 
         # 중복 제거된 Q&A 항목 로드
-        for (q_lower, persona), (content, source) in qa_latest.items():
+        for (q_lower, persona), (content, source, metadata) in qa_latest.items():
             parts = content.split("\nA: ", 1)
             q = parts[0][3:].strip()
             a = parts[1].strip()
-            _engine.add(q, a, {"persona": persona, "source": source})
+            _engine.add(q, a, {"persona": persona, "source": source, **metadata})
 
         # 문서 청크 등 나머지 항목 로드
-        for content, persona, source in chunks:
+        for content, persona, source, metadata in chunks:
             if content.startswith("Q: ") and "\nA: " in content:
                 parts = content.split("\nA: ", 1)
                 q = parts[0][3:].strip()
@@ -730,7 +736,7 @@ def _load_knowledge():
             else:
                 q = content[:200]
                 a = content
-            _engine.add(q, a, {"persona": persona, "source": source})
+            _engine.add(q, a, {"persona": persona, "source": source, **metadata})
 
         if rows:
             print(f"  💾 동적 학습 데이터 {len(rows)}개 복원 완료")
@@ -748,9 +754,9 @@ def _load_knowledge():
     print(f"✅ 자체 AI 엔진 초기화 완료: {_engine.count()}개 지식 항목 로드")
 
 
-def teach(text: str, persona: str = '', source: str = 'learned'):
+def teach(text: str, persona: str = '', source: str = 'learned', metadata: dict = None):
     """외부에서 학습시킬 내용을 엔진에 추가 (문서 업로드, 대화 학습)"""
-    _engine.add(text[:500], text, {'persona': persona, 'source': source})
+    _engine.add(text[:500], text, {'persona': persona, 'source': source, **(metadata or {})})
 
 
 # ── 4. 페르소나 감지 ──────────────────────────────────

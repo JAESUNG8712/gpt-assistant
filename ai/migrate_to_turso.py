@@ -21,7 +21,8 @@ import os
 # 해시를 찾지 못해 전체를 중복 재삽입한다(2026-07-08 실제 발생, 73~수백 건 중복).
 _TABLES = {
     "conversations": ["role", "content", "persona", "created_at", "session_id"],
-    "learned_knowledge": ["content", "persona", "source", "created_at"],
+    "learned_knowledge": ["content", "persona", "source", "created_at", "evidence_json",
+                          "verified_at", "valid_until"],
     "documents": ["name", "source", "persona", "created_at"],
     "feedback": ["question", "answer", "rating", "persona", "created_at"],
     "app_settings": ["key", "value", "updated_at"],
@@ -29,9 +30,10 @@ _TABLES = {
     "kb_static_index": ["content_hash", "persona", "source", "created_at"],
     "memory_candidates": ["content_hash", "question", "answer", "persona", "session_id",
                           "source", "status", "created_at", "reviewed_at", "seen_count",
-                          "last_seen_at"],
+                          "last_seen_at", "evidence_json", "verified_at", "valid_until"],
     "memory_quarantine": ["original_id", "content", "persona", "source",
-                          "original_created_at", "reason", "quarantined_at", "restored_at"],
+                          "original_created_at", "reason", "quarantined_at", "restored_at",
+                          "evidence_json", "original_verified_at", "original_valid_until"],
     "memory_retrieval_events": ["query_hash", "persona", "session_kind", "top_source",
                                 "best_score", "result_count", "used_context", "route",
                                 "created_at"],
