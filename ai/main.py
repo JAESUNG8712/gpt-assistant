@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import hmac
 import os
 import re
@@ -170,12 +171,13 @@ if not BACKUP_TOKEN:
         "/backup/*, /admin/* (DB 이관·학습데이터 조회/삭제·공유링크 관리), "
         "/budget/* (예산 조회·수정·삭제), /history 삭제 기능이 "
         "모두 503으로 비활성화됩니다(fail-closed — 설정 누락 시 열리지 않고 닫힙니다). "
-        "이 기능들을 쓰려면 BACKUP_TOKEN을 설정하고 요청 시 ?token=<값> 을 전달하세요. "
-        "채팅·검색 등 일반 기능은 토큰 없이 그대로 동작합니다."
+        "소유자 채팅도 비활성화되며, 유효한 공유 링크 채팅만 별도 접근키로 동작합니다. "
+        "BACKUP_TOKEN을 설정한 뒤 소유자 채팅은 X-Admin-Token 헤더, 관리 API는 "
+        "?token=<값>으로 인증하세요."
     )
 
 
-def _require_backup_token(token: str = "") -> None:
+def _require_backup_token(token: str = "", credential_label: str = "token 파라미터") -> None:
     # fail-closed: BACKUP_TOKEN이 설정되지 않았으면 "검사 통과"가 아니라 "거부"다.
     # 이전에는 `if BACKUP_TOKEN and ...` 라서 토큰 미설정 시 조건이 통째로 거짓이 되어
     # 게이팅된 줄 알았던 /admin/import-db(DB 통째 교체)·/backup/download(전체 DB 유출)까지
@@ -188,7 +190,24 @@ def _require_backup_token(token: str = "") -> None:
             "환경변수 BACKUP_TOKEN을 설정한 뒤 ?token=<값> 으로 요청하세요.",
         )
     if not hmac.compare_digest(token, BACKUP_TOKEN):
-        raise HTTPException(401, "유효한 token 파라미터가 필요합니다.")
+        raise HTTPException(401, f"유효한 {credential_label}가 필요합니다.")
+
+
+def _owner_session_scope(session_id: str) -> str:
+    return "owner:" + mem._safe_session_id(session_id)
+
+
+def _share_session_scope(share_token: str, session_id: str) -> str:
+    # 공유 토큰 원문을 대화 DB에 남기지 않고 안정적인 범위 키만 만든다.
+    token_hash = hashlib.sha256(share_token.encode("utf-8")).hexdigest()[:20]
+    return f"share:{token_hash}:" + mem._safe_session_id(session_id)
+
+
+def _require_owner_header(request: Request) -> None:
+    """일반 채팅은 URL에 토큰을 노출하지 않고 헤더로 소유자를 인증."""
+    _require_backup_token(
+        request.headers.get("X-Admin-Token", ""), "X-Admin-Token 헤더"
+    )
 
 
 # 업로드 파일 크기 상한. 이전에는 아무 제한 없이 `await file.read()`로 전체를 메모리에
@@ -255,6 +274,7 @@ class ChatRequest(BaseModel):
     use_search: bool = False
     thinking_mode: str = "off"  # "off" | "prompt" | "deep"
     share_token: str = ""  # 공유 링크로 접속한 방문자의 토큰 (비어있으면 소유자 세션)
+    session_id: str = "legacy"
 
 # ── 주식 분석 파이프라인 트리거 키워드 ──────────────────
 _STOCK_PIPELINE_KEYWORDS = [
@@ -612,7 +632,7 @@ def _summarize_stock_report(report: str, targets: list) -> str:
 
 
 @app.post("/chat")
-async def chat(req: ChatRequest):
+async def chat(req: ChatRequest, request: Request):
     user_msg = req.message.strip()
     if not user_msg:
         raise HTTPException(400, "메시지를 입력하세요.")
@@ -628,6 +648,7 @@ async def chat(req: ChatRequest):
 
     # 공유 링크 접속 시: 허용된 페르소나 목록으로 라우팅 범위를 제한
     allowed_personas = None
+    is_shared_session = bool(req.share_token)
     if req.share_token:
         share = mem.get_share_link(req.share_token)
         if not share or not share["enabled"]:
@@ -637,6 +658,10 @@ async def chat(req: ChatRequest):
         allowed_personas = share["personas"]
         if req.persona != "auto" and req.persona not in allowed_personas:
             raise HTTPException(403, "이 공유 링크에서 사용할 수 없는 전문가입니다.")
+        session_scope = _share_session_scope(req.share_token, req.session_id)
+    else:
+        _require_owner_header(request)
+        session_scope = _owner_session_scope(req.session_id)
 
     # "auto"(통합 검색) 선택 시 질문 내용을 분석해 가장 적합한 전문 페르소나(들)로 자동 라우팅.
     # 여러 도메인에 걸친 질문(예: 인사+주식)이면 build_combined_persona로 종합 답변 생성.
@@ -751,19 +776,25 @@ async def chat(req: ChatRequest):
     search_ctx = ""
     results = []  # 아래 reference_items 참조 시 항상 정의되어 있어야 함
     if req.use_search or auto_web_search:
-        # search_and_learn은 동기 블로킹 DDG 검색 + SQLite 쓰기이므로
-        # 스레드 실행기로 넘겨 이벤트 루프가 멈추지 않게 한다.
+        # 채팅 중 검색 결과 원문은 검증 전 데이터이므로 즉시 장기기억에 쓰지 않는다.
+        # 합성 답변만 기억 후보로 보내고, 검색 자체는 스레드에서 실행한다.
         results = await asyncio.get_event_loop().run_in_executor(
-            None, lambda: srch.search_and_learn(search_msg, persona_id=persona_id)
+            None, lambda: srch.web_search(search_msg)
         )
         search_ctx = srch.format_search_context(results)
 
     # ── 주식 페르소나: 파이프라인 / 스크리닝 트리거 여부 판단 ────────
-    run_stock_pipeline = stock_mode and (
+    # 공유 링크는 대화형 조회만 허용한다. 장시간·고비용 분석/스크리닝/리포트
+    # 생성은 소유자 세션에서만 실행해 공유 URL을 통한 비용 유발을 막는다.
+    run_stock_pipeline = not is_shared_session and stock_mode and (
         _is_stock_pipeline_request(user_msg) or _stock_name_with_request(user_msg)
     )
-    run_lowprice_screen = stock_mode and _is_lowprice_screen_request(user_msg)
-    run_broker_report = stock_mode and _is_broker_report_request(user_msg)
+    run_lowprice_screen = (
+        not is_shared_session and stock_mode and _is_lowprice_screen_request(user_msg)
+    )
+    run_broker_report = (
+        not is_shared_session and stock_mode and _is_broker_report_request(user_msg)
+    )
 
     # ── 신뢰도 판정 ───────────────────────────────────────
     # CALC       : Python 직접 계산 결과 있음 → 계산 결과 직접 서빙
@@ -805,7 +836,7 @@ async def chat(req: ChatRequest):
         stock_report_ctx = _load_latest_stock_report()
 
     # 페르소나별 대화 이력 분리: 다른 페르소나 대화가 현재 페르소나 LLM을 혼동시키는 것을 방지
-    history = mem.get_recent_messages(10, persona=persona_id)
+    history = mem.get_recent_messages(10, persona=persona_id, session_id=session_scope)
     history.append({"role": "user", "content": user_msg})
 
     async def generate():
@@ -972,7 +1003,7 @@ async def chat(req: ChatRequest):
 
                     # ① DuckDuckGo 일반 검색 (기존)
                     _ddg_task = asyncio.get_event_loop().run_in_executor(
-                        None, lambda: srch.search_and_learn(search_msg, persona_id=persona_id)
+                        None, lambda: srch.web_search(search_msg)
                     )
 
                     # ② 종목별 뉴스 수집 (병렬)
@@ -1120,21 +1151,40 @@ async def chat(req: ChatRequest):
             # (생각 과정이 대화 이력·자동학습 KB에 오염되는 것 방지)
             ai_reply_clean = re.sub(r'<think>[\s\S]*?</think>\s*', '', ai_reply).strip()
 
-            mem.save_message("user", user_msg, persona=persona_id)
-            mem.save_message("assistant", ai_reply_clean or ai_reply, persona=persona_id)
+            mem.save_message("user", user_msg, persona=persona_id, session_id=session_scope)
+            mem.save_message(
+                "assistant", ai_reply_clean or ai_reply,
+                persona=persona_id, session_id=session_scope,
+            )
 
-            # ── 자동 학습: 검색·로컬 KB 활용 여부와 무관하게 모든 답변을 영구 RAG에 누적 ──
-            # 같은 질문은 upsert_knowledge가 최신 내용으로 갱신하므로 중복 적재되지 않음
+            # ── 자동 학습 후보: 검증되지 않은 답변은 영구 RAG에 바로 넣지 않음 ──
+            # 최소 품질 게이트를 통과한 답변도 memory_candidates(pending)에만 저장하고,
+            # 소유자가 승인한 경우에만 source='승인학습' 장기기억으로 승격한다.
             # stock 페르소나는 실시간 시장 데이터 기반이어야 하므로 자동 학습에서 계속 제외
             # (LLM 일반 지식이 KB에 누적되면 이후 오염 답변 재발 위험)
             # LOCAL_FALLBACK_MARKER 포함 응답(모든 LLM API 소진 시 원본 자료 그대로 노출한
             # 미합성 폴백)은 정상 답변이 아니므로 auto_learn에서 제외 — 안 그러면 이 저품질
             # 원본 덤프가 KB에 학습되어 이후 정상 답변을 덮어쓰는 재오염 위험이 있음
             from engine import LOCAL_FALLBACK_MARKER
-            if ai_reply_clean.strip() and not stock_mode and LOCAL_FALLBACK_MARKER not in ai_reply_clean:
-                mem.auto_learn(user_msg, ai_reply_clean, persona=persona_id)
-                if no_local:
-                    yield "\n\n---\n> ✅ 자동 학습 완료 — 다음부터는 로컬 저장 자료로 답변합니다."
+            # 이미 KB에서 직접 서빙한 답변과 Python 계산 결과는 새 지식이 아니므로
+            # 후보 대기열에 다시 쌓지 않는다. LLM이 새로 합성한 답변만 검토 대상으로 둔다.
+            is_new_synthesized_answer = not kb_direct and not direct_calc and not company_kb_only
+            if (not is_shared_session and is_new_synthesized_answer
+                    and ai_reply_clean.strip() and not stock_mode
+                    and LOCAL_FALLBACK_MARKER not in ai_reply_clean):
+                candidate_source = (
+                    "법령실시간" if law_ctx else
+                    "웹검색보강" if search_ctx else
+                    "KB보강생성" if rag_ctx else
+                    "생성답변"
+                )
+                candidate_id = mem.auto_learn(
+                    user_msg, ai_reply_clean, persona=persona_id,
+                    session_id=session_scope, source=candidate_source,
+                )
+                if no_local and candidate_id:
+                    yield ("\n\n---\n> 📝 기억 후보로 저장했습니다. "
+                           "검토·승인된 내용만 장기기억에 반영됩니다.")
 
         except Exception as e:
             import traceback
@@ -1147,20 +1197,24 @@ async def chat(req: ChatRequest):
 # ── 대화 이력 ─────────────────────────────────────────
 
 @app.get("/history")
-def history(limit: int = 30, persona: str = None):
-    return {"history": mem.get_history(limit, persona=persona)}
+def history(limit: int = 30, persona: str = None, session_id: str = "legacy",
+            token: str = ""):
+    _require_backup_token(token)
+    return {"history": mem.get_history(
+        limit, persona=persona, session_id=_owner_session_scope(session_id)
+    )}
 
 @app.delete("/history")
-def clear_history(persona: str = None, token: str = ""):
+def clear_history(persona: str = None, session_id: str = "legacy", token: str = ""):
     _require_backup_token(token)
-    mem.clear_history(persona=persona)
+    mem.clear_history(persona=persona, session_id=_owner_session_scope(session_id))
     return {"ok": True}
 
 @app.delete("/history/stock/reset")
-def reset_stock_history(token: str = ""):
+def reset_stock_history(session_id: str = "legacy", token: str = ""):
     """stock 페르소나 대화 이력 + 자동학습 KB 완전 초기화 (오염 제거용)"""
     _require_backup_token(token)
-    mem.clear_history(persona="stock")
+    mem.clear_history(persona="stock", session_id=_owner_session_scope(session_id))
     try:
         # mem._conn() 경유 — Turso/로컬 SQLite 공용. auto_learn()이 실제로 쓰는
         # source 값은 '자동학습'(한글)이며 'auto_learn'/'learned' 문자열은 존재한 적
@@ -1222,12 +1276,19 @@ def _extract_text(content: bytes, filename: str) -> str:
 # ── 문서 학습 ─────────────────────────────────────────
 
 @app.post("/learn/document")
-async def learn_document(file: UploadFile = File(...), persona: str = DEFAULT_PERSONA):
+async def learn_document(file: UploadFile = File(...), persona: str = DEFAULT_PERSONA,
+                         token: str = ""):
+    _require_backup_token(token)
     content = await _read_upload_limited(file)
     # PDF 파싱(pdfminer/pdftotext)은 최대 수십 초 걸리는 블로킹 호출이므로 스레드 실행기로 넘긴다.
     text = await asyncio.get_event_loop().run_in_executor(None, _extract_text, content, file.filename)
-    mem.store_document(text, file.filename, persona_id=persona)
-    return {"ok": True, "filename": file.filename, "chars": len(text)}
+    chunk_count = mem.store_document(text, file.filename, persona_id=persona)
+    if chunk_count == 0:
+        raise HTTPException(400, "문서에서 학습할 텍스트를 추출하지 못했습니다.")
+    return {
+        "ok": True, "filename": file.filename, "chars": len(text),
+        "chunks": chunk_count, "chunking": "semantic-v2",
+    }
 
 
 # ── 이력서 분석 ────────────────────────────────────────
@@ -1237,8 +1298,11 @@ async def analyze_resume(
     file: UploadFile = File(...),
     job_desc: str = "",
     analysis_type: str = "full",
+    session_id: str = "legacy",
+    token: str = "",
 ):
     """이력서/자소서 파일을 업로드하면 LLM이 분석 결과를 스트리밍으로 반환"""
+    _require_backup_token(token)
     content = await _read_upload_limited(file)
     resume_text = await asyncio.get_event_loop().run_in_executor(None, _extract_text, content, file.filename)
 
@@ -1277,8 +1341,14 @@ async def analyze_resume(
             yield token
         ai_reply = "".join(collected)
         clean = re.sub(r"<think>[\s\S]*?</think>\s*", "", ai_reply).strip()
-        mem.save_message("user", f"[이력서 분석: {file.filename}]", persona="resume")
-        mem.save_message("assistant", clean or ai_reply, persona="resume")
+        scope = _owner_session_scope(session_id)
+        mem.save_message(
+            "user", f"[이력서 분석: {file.filename}]",
+            persona="resume", session_id=scope,
+        )
+        mem.save_message(
+            "assistant", clean or ai_reply, persona="resume", session_id=scope,
+        )
 
     return StreamingResponse(stream(), media_type="text/plain; charset=utf-8")
 
@@ -1291,7 +1361,8 @@ class SearchRequest(BaseModel):
     max_results: int = 5
 
 @app.post("/learn/search")
-def learn_search(req: SearchRequest):
+def learn_search(req: SearchRequest, token: str = ""):
+    _require_backup_token(token)
     results = srch.search_and_learn(req.query, req.max_results, persona_id=req.persona)
     return {"ok": True, "query": req.query, "learned": len(results), "results": results}
 
@@ -1304,8 +1375,9 @@ class TextLearnRequest(BaseModel):
     persona: str = DEFAULT_PERSONA
 
 @app.post("/learn/text")
-def learn_text(req: TextLearnRequest):
+def learn_text(req: TextLearnRequest, token: str = ""):
     """질문-답변 쌍을 직접 지식베이스에 추가 — 동일 질문이 있으면 최신으로 업데이트"""
+    _require_backup_token(token)
     q = req.question.strip()
     a = req.answer.strip()
     if not q or not a:
@@ -1324,7 +1396,8 @@ class FeedbackRequest(BaseModel):
     persona: str = DEFAULT_PERSONA
 
 @app.post("/feedback")
-def receive_feedback(req: FeedbackRequest):
+def receive_feedback(req: FeedbackRequest, token: str = ""):
+    _require_backup_token(token)
     if req.rating not in (1, -1):
         raise HTTPException(400, "rating은 1 또는 -1만 허용")
     mem.save_feedback(req.question, req.answer, req.rating, req.persona)
@@ -1335,18 +1408,21 @@ def receive_feedback(req: FeedbackRequest):
     return {"ok": True}
 
 @app.get("/feedback/stats")
-def feedback_stats():
+def feedback_stats(token: str = ""):
+    _require_backup_token(token)
     return mem.get_feedback_stats()
 
 
 # ── 메모리 통계 ───────────────────────────────────────
 
 @app.get("/memory/stats")
-def memory_stats():
-    return mem.memory_stats()
+def memory_stats(session_id: str = "legacy", token: str = ""):
+    _require_backup_token(token)
+    return mem.memory_stats(session_id=_owner_session_scope(session_id))
 
 @app.get("/memory/documents")
-def list_documents():
+def list_documents(token: str = ""):
+    _require_backup_token(token)
     return {"documents": mem.list_documents()}
 
 
@@ -1468,11 +1544,13 @@ def admin_learned_list(q: str = "", persona: str = "", limit: int = 30, offset: 
 @app.get("/admin/learned/duplicates")
 def admin_learned_duplicates(apply: bool = False, token: str = ""):
     """전체 learned_knowledge에서 content 완전 일치 중복 그룹을 찾아 반환.
-    apply=true면 각 그룹에서 가장 오래된(id 최소) 항목만 남기고 나머지를 삭제.
+    동일 페르소나 안에서만 중복으로 판단하고, apply=true면 신뢰 출처 우선·동률 시
+    최신 항목을 남긴 뒤 나머지를 복구 가능한 격리소로 이동한다.
     Turso 이관 시 kb_static_index가 함께 이관되지 않아 정적 KB가 중복 시딩되는
     문제(2026-07-08 발견)의 전 페르소나 전수 정리용."""
     _require_backup_token(token)
     from collections import defaultdict
+    from refine import choose_duplicate_keeper
     with mem._conn() as c:
         rows = [dict(r) for r in c.execute(
             "SELECT id, persona, source, created_at, content FROM learned_knowledge ORDER BY id ASC"
@@ -1480,13 +1558,14 @@ def admin_learned_duplicates(apply: bool = False, token: str = ""):
 
     by_content = defaultdict(list)
     for r in rows:
-        by_content[r["content"]].append(r)
+        by_content[(r.get("persona", ""), r["content"])].append(r)
 
     groups = [items for items in by_content.values() if len(items) > 1]
-    remove_ids = []
+    remove_rows = []
     for items in groups:
-        items_sorted = sorted(items, key=lambda r: r["id"])
-        remove_ids.extend(r["id"] for r in items_sorted[1:])
+        keeper = choose_duplicate_keeper(items)
+        remove_rows.extend(r for r in items if r["id"] != keeper["id"])
+    remove_ids = sorted(r["id"] for r in remove_rows)
 
     result = {
         "total_rows": len(rows),
@@ -1495,78 +1574,112 @@ def admin_learned_duplicates(apply: bool = False, token: str = ""):
     }
 
     if apply and remove_ids:
-        placeholders = ",".join("?" * len(remove_ids))
-        with mem._conn() as c:
-            c.execute(f"DELETE FROM learned_knowledge WHERE id IN ({placeholders})", remove_ids)
-        try:
-            from engine import get_engine, _kb_loaded
-            if _kb_loaded:
-                eng = get_engine()
-                for items in groups:
-                    items_sorted = sorted(items, key=lambda r: r["id"])
-                    for r in items_sorted[1:]:
-                        content = r["content"]
-                        if content.startswith("Q: ") and "\nA: " in content:
-                            question = content.split("\nA: ", 1)[0][3:].strip()
-                            eng.delete_by_q(question, r["persona"] or None)
-        except Exception as e:
-            print(f"⚠️ 엔진 삭제 실패(재시작 시 반영됨): {e}")
-        result["removed"] = len(remove_ids)
+        result["quarantined"] = mem.quarantine_learned_rows(
+            remove_rows, reason="관리자 정리:완전일치 중복"
+        )
+        from engine import reload_engine
+        reload_engine()
     else:
-        result["removed_ids_preview"] = remove_ids[:20]
+        result["quarantine_ids_preview"] = remove_ids[:20]
 
     return result
 
 
 @app.delete("/admin/learned/{item_id}")
 def admin_learned_delete(item_id: int, token: str = ""):
-    """잘못 학습된 항목 삭제 — DB에서 제거하고 검색 엔진에서도 즉시 제외"""
+    """잘못 학습된 항목을 복구 가능한 격리소로 이동하고 엔진을 재구축."""
     _require_backup_token(token)
     with mem._conn() as c:
         row = c.execute(
-            "SELECT id, persona, content FROM learned_knowledge WHERE id=?", (item_id,)
+            "SELECT id, persona, source, created_at, content"
+            " FROM learned_knowledge WHERE id=?", (item_id,)
         ).fetchone()
         if not row:
             raise HTTPException(404, f"id={item_id} 항목 없음")
         row = dict(row)
-        c.execute("DELETE FROM learned_knowledge WHERE id=?", (item_id,))
+    mem.quarantine_learned_rows([row], reason="관리자 수동 격리")
+    from engine import reload_engine
+    reload_engine()
+    return {"ok": True, "quarantined": item_id, "content_preview": row["content"][:120]}
 
-    # 엔진 소프트 삭제 (Q&A 형식이면 질문 기준, 재시작 시 DB 기준으로 완전 반영)
-    content = row["content"]
-    if content.startswith("Q: ") and "\nA: " in content:
-        question = content.split("\nA: ", 1)[0][3:].strip()
-        try:
-            from engine import get_engine, _kb_loaded
-            if _kb_loaded:
-                get_engine().delete_by_q(question, row["persona"] or None)
-        except Exception as e:
-            print(f"⚠️ 엔진 삭제 실패(재시작 시 반영됨): {e}")
 
-    return {"ok": True, "deleted": item_id, "content_preview": content[:120]}
+# ── 승인 기반 기억 후보 ────────────────────────────────
+
+@app.get("/admin/memory-candidates")
+def admin_memory_candidates(status: str = "pending", persona: str = "",
+                            limit: int = 50, offset: int = 0, token: str = ""):
+    _require_backup_token(token)
+    return {"items": mem.list_memory_candidates(status, persona, limit, offset)}
+
+
+@app.post("/admin/memory-candidates/{candidate_id}/approve")
+def admin_memory_candidate_approve(candidate_id: int, token: str = ""):
+    _require_backup_token(token)
+    item = mem.review_memory_candidate(candidate_id, approve=True)
+    if not item:
+        raise HTTPException(404, "기억 후보를 찾을 수 없습니다.")
+    if item["status"] == "protected":
+        raise HTTPException(
+            409,
+            f"같은 질문의 더 높은 신뢰도 지식({item['protected_source']})이 있어 "
+            "자동 승격하지 않았습니다. 기존 항목을 검토한 뒤 다시 처리하세요.",
+        )
+    return {"ok": item["status"] == "approved", "status": item["status"], "id": candidate_id}
+
+
+@app.post("/admin/memory-candidates/{candidate_id}/reject")
+def admin_memory_candidate_reject(candidate_id: int, token: str = ""):
+    _require_backup_token(token)
+    item = mem.review_memory_candidate(candidate_id, approve=False)
+    if not item:
+        raise HTTPException(404, "기억 후보를 찾을 수 없습니다.")
+    return {"ok": item["status"] == "rejected", "status": item["status"], "id": candidate_id}
+
+
+@app.get("/admin/memory-quarantine")
+def admin_memory_quarantine(limit: int = 100, offset: int = 0, token: str = ""):
+    _require_backup_token(token)
+    return {"items": mem.list_quarantined_memories(limit, offset)}
+
+
+@app.post("/admin/memory-quarantine/{quarantine_id}/restore")
+def admin_memory_quarantine_restore(quarantine_id: int, token: str = ""):
+    _require_backup_token(token)
+    item = mem.restore_quarantined_memory(quarantine_id)
+    if not item:
+        raise HTTPException(404, "복구할 격리 기억을 찾을 수 없습니다.")
+    from engine import reload_engine
+    reload_engine()
+    return {"ok": True, "restored": quarantine_id}
 
 
 @app.post("/admin/refine")
 def admin_refine(apply: bool = False, dup_threshold: float = 0.85,
                   dislike_boost_max: float = 0.1, token: str = ""):
-    """KB 자기개선(자동 정제) — LLM 호출 없는 순수 기계적 정리 2종을 실행한다.
+    """KB 자기개선(자동 정제) — LLM 호출 없는 순수 기계적 정리 후보를 찾는다.
     새 내용을 지어내거나 재작성하지 않고 "지우기"만 한다 — 이 프로젝트에서 실제
     반복됐던 KB 오염 사고가 전부 AI가 스스로 내용을 만들어내는 경로에서 나왔기
     때문에 자기개선 루프는 의도적으로 이 안전한 범위로 제한한다.
     (1) 근사 중복 통합: 동일 페르소나 내 동적 학습 데이터(정적KB 제외) 중 TF-IDF
-        유사도가 dup_threshold 이상인 항목들을 하나의 클러스터로 묶어 가장 최신
-        (id가 큰) 항목만 남기고 나머지를 삭제.
+        유사도가 dup_threshold 이상인 항목들을 보수적으로 묶어 출처 신뢰도 우선,
+        동률이면 최신 항목을 남기고 나머지를 복구 가능한 격리소로 이동.
     (2) 반복 비추천 항목 정리: feedback_boost.boost가 dislike_boost_max 이하로
         떨어진(연속 싫어요로 최소 세 번 이상 하향된) 질문에 해당하는 학습 항목을
-        삭제하고, 그 feedback_boost 행도 함께 삭제 — 그렇지 않으면 같은 질문이
+        격리하고, 그 feedback_boost 행도 함께 삭제 — 그렇지 않으면 같은 질문이
         나중에 다시(더 나은 내용으로) 학습되어도 옛 하향 가중치 때문에 부당하게
         계속 억눌리게 됨.
     (3) 충돌 후보 보고(삭제 안 함): 질문은 비슷한데 답변이 실질적으로 다른 쌍을
         찾아 결과에 포함만 한다 — 둘 중 어느 게 맞는지는 사람이 판단할 영역이라
         apply=true여도 이 항목들은 절대 자동 삭제하지 않는다.
-    apply=false(기본)면 무엇이 삭제될지 미리보기만 반환하고 실제로 지우지 않는다.
-    외부 스케줄러(.github/workflows/kb_refine.yml)가 주기적으로 apply=true로 호출."""
+    apply=false(기본)면 무엇이 격리될지 미리보기만 반환한다. 정기 스케줄은 항상
+    미리보기로 실행되며, 관리자가 확인 후 apply=true를 수동 실행해야 실제 격리된다."""
     _require_backup_token(token)
-    from refine import find_duplicate_clusters, find_disliked_questions, find_conflicting_pairs
+    from refine import (
+        choose_duplicate_keeper,
+        find_conflicting_pairs,
+        find_disliked_questions,
+        find_duplicate_clusters,
+    )
 
     with mem._conn() as c:
         rows = [dict(r) for r in c.execute(
@@ -1581,8 +1694,10 @@ def admin_refine(apply: bool = False, dup_threshold: float = 0.85,
     clusters = find_duplicate_clusters(rows, threshold=dup_threshold)
     dup_remove = []
     for members in clusters:
-        newest = max(members, key=lambda r: r["id"])
-        dup_remove.extend(r for r in members if r["id"] != newest["id"])
+        # 검증된 직접입력·승인지식·문서를 자동응답/웹 스니펫보다 우선 보존한다.
+        # 같은 우선순위 안에서만 최신 항목을 남긴다.
+        keeper = choose_duplicate_keeper(members)
+        dup_remove.extend(r for r in members if r["id"] != keeper["id"])
 
     disliked_remove = find_disliked_questions(feedback_rows, rows)
     conflicts = find_conflicting_pairs(rows)
@@ -1610,29 +1725,21 @@ def admin_refine(apply: bool = False, dup_threshold: float = 0.85,
     }
 
     if apply and remove_ids:
-        placeholders = ",".join("?" * len(remove_ids))
-        with mem._conn() as c:
-            c.execute(f"DELETE FROM learned_knowledge WHERE id IN ({placeholders})", remove_ids)
-            if feedback_rows:
+        quarantined = mem.quarantine_learned_rows(
+            [remove_by_id[rid] for rid in remove_ids],
+            reason="자동정제:근사중복/반복비추천",
+        )
+        if feedback_rows:
+            with mem._conn() as c:
                 c.executemany(
                     "DELETE FROM feedback_boost WHERE persona=? AND q_lower=?",
                     [(d["persona"], d["q_lower"]) for d in feedback_rows],
                 )
-        try:
-            from engine import get_engine, _kb_loaded
-            if _kb_loaded:
-                eng = get_engine()
-                for rid in remove_ids:
-                    r = remove_by_id[rid]
-                    content = r["content"]
-                    if content.startswith("Q: ") and "\nA: " in content:
-                        question = content.split("\nA: ", 1)[0][3:].strip()
-                        eng.delete_by_q(question, r["persona"] or None)
-                    else:
-                        eng.delete_by_source(r["source"], r["persona"] or None)
-        except Exception as e:
-            print(f"⚠️ 엔진 삭제 실패(재시작 시 반영됨): {e}")
-        result["removed"] = len(remove_ids)
+        # 부분 source 삭제 대신 DB 전체를 기준으로 재구축해 문서의 정상 청크가
+        # 실행 중 인덱스에서 함께 사라지는 문제를 막는다.
+        from engine import reload_engine
+        reload_engine()
+        result["quarantined"] = quarantined
     else:
         result["preview_remove_ids"] = remove_ids[:30]
 

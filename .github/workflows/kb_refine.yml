@@ -7,20 +7,22 @@ on:
   workflow_dispatch:
     inputs:
       apply:
-        description: '실제로 삭제까지 실행할지 여부 (false면 미리보기만)'
+        description: '실제로 격리까지 실행할지 여부 (false면 미리보기만)'
         required: false
-        default: 'true'
+        default: 'false'
 
 jobs:
   refine:
     runs-on: ubuntu-latest
 
     steps:
-      - name: KB 정제 실행 (근사 중복 통합 + 반복 비추천 항목 정리)
+      - name: KB 정제 미리보기 (근사 중복 + 반복 비추천 후보 보고)
         env:
           BACKUP_TOKEN: ${{ secrets.BACKUP_TOKEN }}
         run: |
-          APPLY="${{ github.event.inputs.apply || 'true' }}"
+          # 정기 실행은 항상 미리보기다. 실제 격리는 관리자가 결과를 확인한 뒤
+          # workflow_dispatch에서 apply=true를 명시한 경우에만 수행한다.
+          APPLY="${{ github.event.inputs.apply || 'false' }}"
           echo "실행 모드: apply=${APPLY}"
           http_code=$(curl -sS -X POST \
             --retry 2 --retry-delay 10 --max-time 90 \

@@ -1,0 +1,155 @@
+"""FastAPI 수준 기억·세션 보안 회귀 테스트 (외부 API 호출 없음)."""
+import os
+import tempfile
+
+
+def main():
+    app_dir = os.path.dirname(os.path.abspath(__file__))
+    os.chdir(app_dir)
+
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        os.environ.pop("TURSO_DATABASE_URL", None)
+        os.environ.pop("TURSO_AUTH_TOKEN", None)
+        os.environ["DB_PATH"] = os.path.join(tmp, "api-memory.db")
+        os.environ["MPLCONFIGDIR"] = os.path.join(tmp, "matplotlib")
+        os.environ["BACKUP_TOKEN"] = "test-owner-token"
+        os.environ.pop("ANTHROPIC_API_KEY", None)
+        os.environ.pop("GROQ_API_KEY", None)
+
+        from fastapi.testclient import TestClient
+        import main
+
+        client = TestClient(main.app)
+        owner_token = "test-owner-token"
+
+        # 소유자 데이터 API와 일반 채팅은 인증 없이는 열리지 않아야 한다.
+        assert client.get("/history").status_code == 401
+        assert client.get("/admin/memory-candidates").status_code == 401
+        assert client.post(
+            "/learn/text",
+            json={"question": "테스트 질문", "answer": "테스트 답변", "persona": "hr"},
+        ).status_code == 401
+        assert client.post(
+            "/chat", json={"message": "인증 없는 질문", "persona": "company"}
+        ).status_code == 401
+
+        # 공유 링크는 허용된 페르소나만 사용할 수 있고 소유자 이력 API 권한은 없다.
+        share = main.mem.create_share_link("API QA", ["company"], "")
+        share_payload = {
+            "message": "공유 세션만의 무작위 질문 qzxv-91827",
+            "persona": "company",
+            "share_token": share["token"],
+            "session_id": "browser-shared",
+        }
+        denied = client.post("/chat", json={**share_payload, "persona": "hr"})
+        assert denied.status_code == 403
+        shared_response = client.post("/chat", json=share_payload)
+        assert shared_response.status_code == 200
+        assert "현재 등록된 규정" in shared_response.text
+        assert client.get("/history", params={"session_id": "browser-shared"}).status_code == 401
+
+        share_scope = main._share_session_scope(share["token"], "browser-shared")
+        shared_history = main.mem.get_history(
+            10, persona="company", session_id=share_scope
+        )
+        assert len(shared_history) == 2
+        assert main.mem.list_memory_candidates("pending") == []
+
+        # 같은 브라우저 표식이어도 소유자와 공유 세션은 별도 범위에 저장된다.
+        owner_payload = {
+            "message": "소유자 세션만의 무작위 질문 qzxv-48210",
+            "persona": "company",
+            "session_id": "browser-shared",
+        }
+        owner_response = client.post(
+            "/chat", json=owner_payload, headers={"X-Admin-Token": owner_token}
+        )
+        assert owner_response.status_code == 200
+        owner_history_response = client.get(
+            "/history",
+            params={"session_id": "browser-shared", "persona": "company", "token": owner_token},
+        )
+        assert owner_history_response.status_code == 200
+        owner_history = owner_history_response.json()["history"]
+        assert len(owner_history) == 2
+        assert all("공유 세션만의" not in row["content"] for row in owner_history)
+        assert main.mem.list_memory_candidates("pending") == []
+
+        # 공유 채팅의 웹검색은 답변 근거로만 쓰고 원문/합성답변을 DB에 학습하지 않는다.
+        search_share = main.mem.create_share_link("검색 QA", ["hr"], "")
+        original_web_search = main.srch.web_search
+        original_intent = main.intent_agent.analyze
+        original_chat_stream = main.llm.chat_stream
+
+        async def no_intent(*_args, **_kwargs):
+            return {"ok": False, "intent": "", "refined_query": "", "keywords": [], "answer_guide": ""}
+
+        async def fake_stream(*_args, **_kwargs):
+            yield "공유 검색 질문에 대한 검증용 합성 답변입니다. 검색 자료는 답변에만 사용합니다."
+
+        main.srch.web_search = lambda *_args, **_kwargs: [{
+            "title": "검증 검색 결과", "body": "공유 검색 테스트용 본문", "url": "https://example.com/test"
+        }]
+        main.intent_agent.analyze = no_intent
+        main.llm.chat_stream = fake_stream
+        try:
+            with main.mem._conn() as c:
+                web_rows_before = c.execute(
+                    "SELECT COUNT(*) FROM learned_knowledge WHERE source LIKE '웹검색:%'"
+                ).fetchone()[0]
+            searched = client.post("/chat", json={
+                "message": "공유 웹검색 무작위 질문 qzxv-59284",
+                "persona": "hr",
+                "share_token": search_share["token"],
+                "session_id": "browser-search",
+            })
+            assert searched.status_code == 200
+            assert "검증용 합성 답변" in searched.text
+            with main.mem._conn() as c:
+                web_rows_after = c.execute(
+                    "SELECT COUNT(*) FROM learned_knowledge WHERE source LIKE '웹검색:%'"
+                ).fetchone()[0]
+            assert web_rows_after == web_rows_before
+            assert main.mem.list_memory_candidates("pending") == []
+        finally:
+            main.srch.web_search = original_web_search
+            main.intent_agent.analyze = original_intent
+            main.llm.chat_stream = original_chat_stream
+
+        # 완전일치 정리도 페르소나를 넘지 않고 신뢰 출처를 남긴 뒤 격리해야 한다.
+        duplicate_content = "Q: 격리 API 테스트 qzxv-731\nA: 동일한 테스트 답변"
+        with main.mem._conn() as c:
+            c.executemany(
+                "INSERT INTO learned_knowledge(content,persona,source,created_at)"
+                " VALUES (?,?,?,?)",
+                [
+                    (duplicate_content, "hr", "직접입력", "2026-08-31T00:00:00"),
+                    (duplicate_content, "hr", "자동학습", "2026-08-31T00:01:00"),
+                    (duplicate_content, "dev", "직접입력", "2026-08-31T00:02:00"),
+                ],
+            )
+        preview = client.get(
+            "/admin/learned/duplicates", params={"token": owner_token}
+        ).json()
+        assert preview["duplicate_rows_to_remove"] == 1
+        applied = client.get(
+            "/admin/learned/duplicates",
+            params={"token": owner_token, "apply": "true"},
+        )
+        assert applied.status_code == 200
+        assert applied.json()["quarantined"] == 1
+        quarantined = client.get(
+            "/admin/memory-quarantine", params={"token": owner_token}
+        ).json()["items"]
+        assert len(quarantined) == 1
+        restored = client.post(
+            f"/admin/memory-quarantine/{quarantined[0]['id']}/restore",
+            params={"token": owner_token},
+        )
+        assert restored.status_code == 200
+
+    print("API memory safety tests: PASS")
+
+
+if __name__ == "__main__":
+    main()

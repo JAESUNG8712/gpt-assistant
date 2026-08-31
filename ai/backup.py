@@ -42,6 +42,8 @@ _TABLES = {
     "learned_knowledge":  "by_category/learned_knowledge.json",  # 정적KB + 자동학습 + 업로드 문서 청크
     "documents":          "by_category/documents.json",       # 업로드 문서 목록
     "feedback":           "by_category/feedback.json",        # 답변 평가(👍/👎)
+    "memory_candidates":  "by_category/memory_candidates.json",  # 승인 대기/처리된 기억 후보
+    "memory_quarantine":  "by_category/memory_quarantine.json",  # 자동정제 격리·복구 데이터
 }
 
 
