@@ -305,6 +305,7 @@ _COMPOUND_MAP = {
     'Python코드': 'Python 코드',
     'Python성능': 'Python 성능',
     'Python로깅': 'Python 로깅',
+    'Docker도커': 'Docker 도커',
     'Python타입': 'Python 타입',
     'GroqAPI': 'Groq API',
     'env환경변수': 'env 환경변수',

@@ -219,7 +219,7 @@ Remote - SSH
 
     {
         "persona": "dev",
-        "q": "Docker 설치 기본 사용법 컨테이너 이미지 docker-compose",
+        "q": "Docker 도커 설치 기본 사용법 컨테이너 이미지 docker-compose",
         "a": """## Docker 설치 및 기본 사용
 
 ### 설치
