@@ -8,6 +8,7 @@ ai/.env
 # AI 데이터 (로컬 학습 데이터, 서버에서 관리)
 ai/data/
 __pycache__/
+.tmp-test-deps/
 
 # 주식 분석 런타임 캐시/리포트 (서버 실행 시 자동 생성)
 ai/stock_analysis/utils/popular_cache.json

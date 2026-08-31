@@ -22,6 +22,7 @@ import backup as bkp
 import law_search as law
 import calculator as calc
 import intent_agent
+import privacy as privacy_guard
 
 # ── 사용자 입력 전처리: 띄어쓰기 복합어 → 붙여쓰기 (질의 조인) ─────
 # engine.py에도 이름이 비슷한 _COMPOUND_MAP이 있어 중복처럼 보이지만 방향이
@@ -830,6 +831,31 @@ async def chat(req: ChatRequest, request: Request):
         kb_direct = False
     no_local    = (best_score < KB_CONTEXT) and not has_law_rt and not direct_calc and not bool(search_ctx)
 
+    if direct_calc:
+        retrieval_route = "direct_calculation"
+    elif run_stock_pipeline or run_lowprice_screen or run_broker_report:
+        retrieval_route = "stock_pipeline"
+    elif kb_direct:
+        retrieval_route = "kb_direct"
+    elif has_law_rt:
+        retrieval_route = "law_augmented"
+    elif search_ctx:
+        retrieval_route = "web_augmented"
+    elif rag_ctx:
+        retrieval_route = "kb_augmented"
+    else:
+        retrieval_route = "llm_only"
+    mem.record_retrieval_event(
+        search_msg,
+        persona=persona_id,
+        session_kind="share" if is_shared_session else "owner",
+        top_source=kb.get("top_source", ""),
+        best_score=best_score,
+        result_count=len(top_results),
+        used_context=bool(rag_ctx),
+        route=retrieval_route,
+    )
+
     # stock 페르소나: 파이프라인 미실행 일반 Q&A → 저장된 보고서를 컨텍스트로 주입
     stock_report_ctx = ""
     if stock_mode and not run_stock_pipeline:
@@ -1382,6 +1408,12 @@ def learn_text(req: TextLearnRequest, token: str = ""):
     a = req.answer.strip()
     if not q or not a:
         raise HTTPException(400, "질문과 답변을 모두 입력하세요.")
+    sensitive = privacy_guard.sensitive_labels(f"{q}\n{a}", include_contact=False)
+    if sensitive:
+        raise HTTPException(
+            400,
+            "장기지식에는 고위험 민감정보를 저장할 수 없습니다: " + ", ".join(sensitive),
+        )
     updated = mem.upsert_knowledge(q, a, req.persona, source="직접입력")
     return {"ok": True, "question": q, "persona": req.persona,
             "action": "updated" if updated else "inserted"}
@@ -1404,7 +1436,10 @@ def receive_feedback(req: FeedbackRequest, token: str = ""):
     # 좋아요 → 동일/유사 질문 검색 가중치 상승, 싫어요 → 가중치 하락(다음엔 새 답변 유도)
     boost = mem.apply_feedback_boost(req.persona, req.question, req.rating)
     from engine import set_feedback_boost
-    set_feedback_boost(req.persona, req.question.strip().lower(), boost)
+    safe_question, _ = privacy_guard.sanitize_for_storage(
+        req.question, include_contact=True
+    )
+    set_feedback_boost(req.persona, safe_question.strip().lower(), boost)
     return {"ok": True}
 
 @app.get("/feedback/stats")
@@ -1424,6 +1459,23 @@ def memory_stats(session_id: str = "legacy", token: str = ""):
 def list_documents(token: str = ""):
     _require_backup_token(token)
     return {"documents": mem.list_documents()}
+
+
+@app.get("/admin/memory-observability")
+def admin_memory_observability(days: int = 7, token: str = ""):
+    """질문 원문을 남기지 않는 RAG 검색 품질 통계."""
+    _require_backup_token(token)
+    return mem.memory_observability(days)
+
+
+@app.post("/admin/memory-retention")
+def admin_memory_retention(apply: bool = False, confirm: str = "", token: str = ""):
+    """기본은 삭제 없는 보존정책 미리보기. 실제 적용은 확인문구가 필수."""
+    _require_backup_token(token)
+    try:
+        return mem.memory_retention_policy(apply=apply, confirm=confirm)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
 
 
 # ── 지식 통계 ─────────────────────────────────────────

@@ -1,6 +1,8 @@
 """FastAPI 수준 기억·세션 보안 회귀 테스트 (외부 API 호출 없음)."""
 import os
+import sys
 import tempfile
+import types
 
 
 def main():
@@ -17,6 +19,14 @@ def main():
         os.environ.pop("GROQ_API_KEY", None)
 
         from fastapi.testclient import TestClient
+        from fastapi import APIRouter
+
+        # 이 테스트는 기억·인증 API만 검증한다. 주식 라우터의 대형 외부 데이터
+        # 의존성(pykrx 등)을 로드하지 않아도 동일한 main 앱 경로를 테스트할 수
+        # 있도록 빈 라우터로 격리한다.
+        stock_api_stub = types.ModuleType("stock_analysis.stock_api")
+        stock_api_stub.router = APIRouter()
+        sys.modules["stock_analysis.stock_api"] = stock_api_stub
         import main
 
         client = TestClient(main.app)
@@ -25,6 +35,8 @@ def main():
         # 소유자 데이터 API와 일반 채팅은 인증 없이는 열리지 않아야 한다.
         assert client.get("/history").status_code == 401
         assert client.get("/admin/memory-candidates").status_code == 401
+        assert client.get("/admin/memory-observability").status_code == 401
+        assert client.post("/admin/memory-retention").status_code == 401
         assert client.post(
             "/learn/text",
             json={"question": "테스트 질문", "answer": "테스트 답변", "persona": "hr"},
@@ -32,6 +44,32 @@ def main():
         assert client.post(
             "/chat", json={"message": "인증 없는 질문", "persona": "company"}
         ).status_code == 401
+
+        # 고위험 비밀값은 관리자가 직접 입력해도 장기지식으로 저장하지 않는다.
+        secret_learn = client.post(
+            "/learn/text",
+            params={"token": owner_token},
+            json={
+                "question": "API 키를 기억해줘",
+                "answer": "키는 sk-abcdefghijklmnop1234 입니다.",
+                "persona": "dev",
+            },
+        )
+        assert secret_learn.status_code == 400
+
+        # 관측 통계와 보존정책은 인증 후 조회 가능하되 실제 정리는 확인문구 필수.
+        assert client.get(
+            "/admin/memory-observability", params={"token": owner_token}
+        ).status_code == 200
+        retention_preview = client.post(
+            "/admin/memory-retention", params={"token": owner_token}
+        )
+        assert retention_preview.status_code == 200
+        assert retention_preview.json()["apply"] is False
+        assert client.post(
+            "/admin/memory-retention",
+            params={"token": owner_token, "apply": "true"},
+        ).status_code == 400
 
         # 공유 링크는 허용된 페르소나만 사용할 수 있고 소유자 이력 API 권한은 없다.
         share = main.mem.create_share_link("API QA", ["company"], "")

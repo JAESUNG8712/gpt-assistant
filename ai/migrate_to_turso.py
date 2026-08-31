@@ -28,9 +28,13 @@ _TABLES = {
     "feedback_boost": ["persona", "q_lower", "boost", "updated_at"],
     "kb_static_index": ["content_hash", "persona", "source", "created_at"],
     "memory_candidates": ["content_hash", "question", "answer", "persona", "session_id",
-                          "source", "status", "created_at", "reviewed_at"],
+                          "source", "status", "created_at", "reviewed_at", "seen_count",
+                          "last_seen_at"],
     "memory_quarantine": ["original_id", "content", "persona", "source",
                           "original_created_at", "reason", "quarantined_at", "restored_at"],
+    "memory_retrieval_events": ["query_hash", "persona", "session_kind", "top_source",
+                                "best_score", "result_count", "used_context", "route",
+                                "created_at"],
 }
 
 

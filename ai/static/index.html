@@ -1622,7 +1622,8 @@
         <div style="border:1px solid var(--border);border-radius:10px;padding:12px;background:var(--surface2)">
           <div style="font-size:0.72rem;color:var(--text-dim);margin-bottom:6px">
             ${escHtml(item.persona)} · 품질 ${Math.round(Number(item.quality_score || 0) * 100)}점
-            · ${escHtml(item.source || '')} · ${escHtml(item.created_at || '')}
+            · 반복 ${Math.max(1, Number(item.seen_count || 1))}회
+            · ${escHtml(item.source || '')} · 최근 ${escHtml(item.last_seen_at || item.created_at || '')}
           </div>
           <div style="font-weight:700;font-size:0.85rem;margin-bottom:6px">Q. ${escHtml(item.question)}</div>
           <div style="font-size:0.8rem;white-space:pre-wrap;max-height:180px;overflow:auto">${escHtml((item.answer || '').slice(0, 1200))}</div>
