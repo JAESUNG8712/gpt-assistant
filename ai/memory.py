@@ -8,8 +8,11 @@ import sqlite3
 import os
 import contextlib
 import hashlib
+import hmac
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
+
+import privacy as privacy_guard
 
 _APP_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -268,6 +271,15 @@ def init_db(seed_static: bool = True):
             reviewed_at TEXT DEFAULT '',
             UNIQUE(content_hash, persona)
         )""")
+        for column_sql in (
+            "ALTER TABLE memory_candidates ADD COLUMN seen_count INTEGER NOT NULL DEFAULT 1",
+            "ALTER TABLE memory_candidates ADD COLUMN last_seen_at TEXT DEFAULT ''",
+        ):
+            try:
+                c.execute(column_sql)
+            except Exception as e:
+                if "duplicate column" not in str(e).lower() and "already exists" not in str(e).lower():
+                    raise
         c.execute("""CREATE TABLE IF NOT EXISTS memory_quarantine (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             original_id INTEGER NOT NULL,
@@ -279,10 +291,23 @@ def init_db(seed_static: bool = True):
             quarantined_at TEXT NOT NULL,
             restored_at TEXT DEFAULT ''
         )""")
+        c.execute("""CREATE TABLE IF NOT EXISTS memory_retrieval_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            query_hash TEXT NOT NULL,
+            persona TEXT DEFAULT '',
+            session_kind TEXT DEFAULT 'owner',
+            top_source TEXT DEFAULT '',
+            best_score REAL NOT NULL DEFAULT 0,
+            result_count INTEGER NOT NULL DEFAULT 0,
+            used_context INTEGER NOT NULL DEFAULT 0,
+            route TEXT DEFAULT '',
+            created_at TEXT NOT NULL
+        )""")
         c.execute("CREATE INDEX IF NOT EXISTS idx_conversations_scope ON conversations(session_id, persona, id)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_candidates_status ON memory_candidates(status, persona, id)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_learned_persona_source ON learned_knowledge(persona, source, id)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_quarantine_active ON memory_quarantine(restored_at, id)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_retrieval_created ON memory_retrieval_events(created_at, persona)")
     if seed_static:
         _seed_static_kb_to_db()
 
@@ -389,10 +414,13 @@ def _safe_session_id(session_id: str) -> str:
 
 
 def save_message(role: str, content: str, persona: str = "hr", session_id: str = "legacy"):
+    safe_content, labels = privacy_guard.sanitize_for_storage(content)
+    if labels:
+        print(f"🔒 대화 저장 전 민감정보 마스킹: {', '.join(labels)}")
     with _conn() as c:
         c.execute(
             "INSERT INTO conversations (role, content, persona, created_at, session_id) VALUES (?,?,?,?,?)",
-            (role, content, persona, datetime.now().isoformat(), _safe_session_id(session_id)),
+            (role, safe_content, persona, datetime.now().isoformat(), _safe_session_id(session_id)),
         )
 
 
@@ -728,7 +756,14 @@ def chunk_document(text: str, filename: str = "", target_chars: int = 850,
 def store_document(text: str, filename: str, persona_id: str = "hr") -> int:
     """문서를 의미 청크로 학습하고, 동일 파일의 이전 버전은 격리한다."""
     src = f"문서:{filename}"
-    chunks = chunk_document(text, filename=filename)
+    chunks = []
+    redacted_labels = set()
+    for chunk in chunk_document(text, filename=filename):
+        safe_chunk, labels = privacy_guard.sanitize_for_storage(chunk)
+        chunks.append(safe_chunk)
+        redacted_labels.update(labels)
+    if redacted_labels:
+        print(f"🔒 문서 저장 전 민감정보 마스킹({filename}): {', '.join(sorted(redacted_labels))}")
     # 파싱 실패/빈 파일이 기존 정상 문서를 지우는 결과가 되지 않도록, 새 청크를
     # 하나도 만들 수 없으면 기존 버전을 그대로 둔 채 호출자에게 0을 반환한다.
     if not chunks:
@@ -767,6 +802,11 @@ def upsert_knowledge(question: str, answer: str, persona: str,
     """Q&A를 KB에 저장 — 동일 질문이 있으면 최신 내용으로 업데이트, 없으면 신규 추가.
     Returns True if updated (existing replaced), False if inserted (new entry).
     """
+    safe_question, q_labels = privacy_guard.sanitize_for_storage(question)
+    safe_answer, a_labels = privacy_guard.sanitize_for_storage(answer)
+    if q_labels or a_labels:
+        print(f"🔒 지식 저장 전 민감정보 마스킹: {', '.join(dict.fromkeys(q_labels + a_labels))}")
+    question, answer = safe_question, safe_answer
     content = f"Q: {question}\nA: {answer[:1500]}"
     now = datetime.now().isoformat()
     q_lower = question.strip().lower()
@@ -818,16 +858,26 @@ def store_memory_candidate(question: str, answer: str, persona: str = "hr",
     같은 질문·답변 조합은 페르소나별로 한 번만 보관한다. 승인된 후보를 다시
     pending으로 되돌리거나, 거절한 동일 답변을 반복 제안하지 않는다.
     """
+    sensitive = privacy_guard.sensitive_labels(
+        f"{question}\n{answer}", include_contact=True
+    )
+    if sensitive:
+        print(f"🔒 기억 후보 생성 스킵(민감정보 포함): {', '.join(sensitive)}")
+        return None
     q = question.strip()[:1000]
     a = answer.strip()[:4000]
     digest = hashlib.sha256(f"{persona}\n{q.lower()}\n{a}".encode("utf-8")).hexdigest()
     now = datetime.now().isoformat()
     with _conn() as c:
         c.execute(
-            "INSERT OR IGNORE INTO memory_candidates"
-            " (content_hash, question, answer, persona, session_id, source, status, created_at)"
-            " VALUES (?,?,?,?,?,?,'pending',?)",
-            (digest, q, a, persona, _safe_session_id(session_id), source, now),
+            "INSERT INTO memory_candidates"
+            " (content_hash, question, answer, persona, session_id, source, status,"
+            " created_at, seen_count, last_seen_at)"
+            " VALUES (?,?,?,?,?,?,'pending',?,1,?)"
+            " ON CONFLICT(content_hash,persona) DO UPDATE SET"
+            " seen_count=CASE WHEN status='pending' THEN seen_count+1 ELSE seen_count END,"
+            " last_seen_at=CASE WHEN status='pending' THEN excluded.last_seen_at ELSE last_seen_at END",
+            (digest, q, a, persona, _safe_session_id(session_id), source, now, now),
         )
         row = c.execute(
             "SELECT id, status FROM memory_candidates WHERE content_hash=? AND persona=?",
@@ -855,7 +905,8 @@ def auto_learn(question: str, answer: str, persona: str = "hr",
     )
 
 
-def score_memory_candidate(question: str, answer: str, source: str = "") -> dict:
+def score_memory_candidate(question: str, answer: str, source: str = "",
+                           seen_count: int = 1) -> dict:
     """승인 판단을 돕는 설명 가능한 휴리스틱 품질 점수(자동 승인은 하지 않음)."""
     score, flags = 0.45, []
     answer_len = len((answer or "").strip())
@@ -889,6 +940,11 @@ def score_memory_candidate(question: str, answer: str, source: str = "") -> dict
         score -= 0.05
         flags.append("시점에 따라 바뀔 수 있음")
 
+    seen_count = max(1, int(seen_count or 1))
+    if seen_count > 1:
+        score += min(0.15, (seen_count - 1) * 0.03)
+        flags.append(f"동일 답변 반복 관찰 {seen_count}회")
+
     return {"quality_score": round(max(0.0, min(score, 1.0)), 2), "quality_flags": flags}
 
 
@@ -902,7 +958,7 @@ def list_memory_candidates(status: str = "pending", persona: str = "",
         where.append("persona=?")
         params.append(persona)
     sql = ("SELECT id, question, answer, persona, session_id, source, status,"
-           " created_at, reviewed_at FROM memory_candidates")
+           " created_at, reviewed_at, seen_count, last_seen_at FROM memory_candidates")
     if where:
         sql += " WHERE " + " AND ".join(where)
     sql += " ORDER BY id DESC LIMIT ? OFFSET ?"
@@ -911,7 +967,8 @@ def list_memory_candidates(status: str = "pending", persona: str = "",
         items = [dict(r) for r in c.execute(sql, params).fetchall()]
     for item in items:
         item.update(score_memory_candidate(
-            item["question"], item["answer"], item.get("source", "")
+            item["question"], item["answer"], item.get("source", ""),
+            item.get("seen_count", 1),
         ))
     items.sort(key=lambda item: (item["quality_score"], item["id"]), reverse=True)
     return items
@@ -1035,16 +1092,19 @@ def list_documents() -> list:
 
 
 def save_feedback(question: str, answer: str, rating: int, persona: str = "hr"):
+    safe_question, _ = privacy_guard.sanitize_for_storage(question, include_contact=True)
+    safe_answer, _ = privacy_guard.sanitize_for_storage(answer, include_contact=True)
     with _conn() as c:
         c.execute(
             "INSERT INTO feedback (question, answer, rating, persona, created_at) VALUES (?,?,?,?,?)",
-            (question[:500], answer[:1000], rating, persona, datetime.now().isoformat())
+            (safe_question[:500], safe_answer[:1000], rating, persona, datetime.now().isoformat())
         )
 
 
 def apply_feedback_boost(persona: str, question: str, rating: int) -> float:
     """피드백을 질문 단위 가중치로 누적 반영."""
-    q_lower = question.strip().lower()
+    safe_question, _ = privacy_guard.sanitize_for_storage(question, include_contact=True)
+    q_lower = safe_question.strip().lower()
     now = datetime.now().isoformat()
     with _conn() as c:
         row = c.execute(
@@ -1083,6 +1143,170 @@ def get_feedback_stats() -> dict:
         return {r['persona']: {'good': r['good'], 'bad': r['bad'], 'total': r['total']} for r in rows}
 
 
+def record_retrieval_event(query: str, persona: str, session_kind: str,
+                           top_source: str, best_score: float,
+                           result_count: int, used_context: bool,
+                           route: str) -> None:
+    """원문 질문 없이 RAG 회수 품질만 기록한다.
+
+    운영 관측 데이터가 또 다른 개인정보 저장소가 되지 않도록 질문은 단방향
+    키 기반 HMAC만 남기고 세션 ID도 owner/share 종류로만 축약한다. 관측 실패는 채팅을
+    중단시키지 않는다.
+    """
+    try:
+        # 단순 SHA-256은 흔한 질문을 사전 대입으로 추측할 수 있다. 운영 비밀값을
+        # 키로 쓴 HMAC으로 같은 질문의 반복 여부만 비교 가능하게 한다.
+        telemetry_key = (
+            os.getenv("MEMORY_TELEMETRY_SALT", "").strip()
+            or os.getenv("BACKUP_TOKEN", "").strip()
+            or "local-development-only"
+        ).encode("utf-8")
+        query_hash = hmac.new(
+            telemetry_key,
+            (query or "").strip().lower().encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
+        kind = "share" if session_kind == "share" else "owner"
+        with _conn() as c:
+            c.execute(
+                "INSERT INTO memory_retrieval_events"
+                " (query_hash, persona, session_kind, top_source, best_score,"
+                " result_count, used_context, route, created_at)"
+                " VALUES (?,?,?,?,?,?,?,?,?)",
+                (
+                    query_hash, (persona or "")[:40], kind, (top_source or "")[:120],
+                    float(best_score or 0), max(0, int(result_count or 0)),
+                    1 if used_context else 0, (route or "")[:40], datetime.now().isoformat(),
+                ),
+            )
+    except Exception as e:
+        print(f"⚠️ 기억 검색 관측 기록 실패(채팅은 계속): {e}")
+
+
+def memory_observability(days: int = 7) -> dict:
+    """최근 RAG 검색의 저신뢰율·컨텍스트 사용률·출처 분포를 집계."""
+    days = max(1, min(int(days), 365))
+    cutoff = (datetime.now() - timedelta(days=days)).isoformat()
+    with _conn() as c:
+        summary = c.execute(
+            "SELECT COUNT(*) AS total,"
+            " SUM(CASE WHEN best_score < 0.15 THEN 1 ELSE 0 END) AS low_confidence,"
+            " SUM(CASE WHEN used_context=1 THEN 1 ELSE 0 END) AS context_used"
+            " FROM memory_retrieval_events WHERE created_at>=?",
+            (cutoff,),
+        ).fetchone()
+        persona_rows = c.execute(
+            "SELECT persona, COUNT(*) AS total, AVG(best_score) AS avg_score"
+            " FROM memory_retrieval_events WHERE created_at>=?"
+            " GROUP BY persona ORDER BY total DESC",
+            (cutoff,),
+        ).fetchall()
+        source_rows = c.execute(
+            "SELECT CASE WHEN top_source='' THEN '(없음)' ELSE top_source END AS source,"
+            " COUNT(*) AS total, AVG(best_score) AS avg_score"
+            " FROM memory_retrieval_events WHERE created_at>=?"
+            " GROUP BY top_source ORDER BY total DESC LIMIT 20",
+            (cutoff,),
+        ).fetchall()
+        route_rows = c.execute(
+            "SELECT route, COUNT(*) AS total FROM memory_retrieval_events"
+            " WHERE created_at>=? GROUP BY route ORDER BY total DESC",
+            (cutoff,),
+        ).fetchall()
+    total = int(summary["total"] or 0) if summary else 0
+    low = int(summary["low_confidence"] or 0) if summary else 0
+    used = int(summary["context_used"] or 0) if summary else 0
+    return {
+        "days": days,
+        "total_retrievals": total,
+        "low_confidence": low,
+        "low_confidence_rate": round(low / total, 4) if total else 0,
+        "context_used": used,
+        "context_usage_rate": round(used / total, 4) if total else 0,
+        "by_persona": [dict(row) for row in persona_rows],
+        "by_source": [dict(row) for row in source_rows],
+        "by_route": [dict(row) for row in route_rows],
+        "privacy": "질문 원문·세션 ID 미저장(질문 HMAC-SHA256 및 owner/share 구분만 저장)",
+    }
+
+
+def memory_retention_policy(apply: bool = False, confirm: str = "") -> dict:
+    """환경변수 기반 보존정책을 미리 보거나 명시 확인 후 적용한다.
+
+    승인된 장기지식과 활성 격리소는 자동 삭제 대상이 아니다. apply 기본값은
+    False이며 실제 적용에는 고정 확인문구가 필요해 실수로 운영 데이터를 지우지
+    않게 한다.
+    """
+    conversation_days = max(1, int(os.getenv("CONVERSATION_RETENTION_DAYS", "90")))
+    pending_days = max(1, int(os.getenv("MEMORY_CANDIDATE_PENDING_DAYS", "45")))
+    candidate_history_days = max(
+        pending_days, int(os.getenv("MEMORY_CANDIDATE_HISTORY_DAYS", "365"))
+    )
+    retrieval_days = max(1, int(os.getenv("MEMORY_RETRIEVAL_RETENTION_DAYS", "30")))
+    now = datetime.now()
+    conversation_cutoff = (now - timedelta(days=conversation_days)).isoformat()
+    pending_cutoff = (now - timedelta(days=pending_days)).isoformat()
+    candidate_cutoff = (now - timedelta(days=candidate_history_days)).isoformat()
+    retrieval_cutoff = (now - timedelta(days=retrieval_days)).isoformat()
+
+    with _conn() as c:
+        counts = {
+            "conversations_to_delete": c.execute(
+                "SELECT COUNT(*) FROM conversations WHERE created_at<?",
+                (conversation_cutoff,),
+            ).fetchone()[0],
+            "pending_candidates_to_expire": c.execute(
+                "SELECT COUNT(*) FROM memory_candidates"
+                " WHERE status='pending' AND COALESCE(NULLIF(last_seen_at,''),created_at)<?",
+                (pending_cutoff,),
+            ).fetchone()[0],
+            "reviewed_candidates_to_delete": c.execute(
+                "SELECT COUNT(*) FROM memory_candidates"
+                " WHERE status IN ('approved','rejected','expired')"
+                " AND COALESCE(NULLIF(reviewed_at,''),created_at)<?",
+                (candidate_cutoff,),
+            ).fetchone()[0],
+            "retrieval_events_to_delete": c.execute(
+                "SELECT COUNT(*) FROM memory_retrieval_events WHERE created_at<?",
+                (retrieval_cutoff,),
+            ).fetchone()[0],
+        }
+
+    result = {
+        "apply": bool(apply),
+        "policy_days": {
+            "conversations": conversation_days,
+            "pending_candidates": pending_days,
+            "candidate_history": candidate_history_days,
+            "retrieval_events": retrieval_days,
+        },
+        "preview": {key: int(value or 0) for key, value in counts.items()},
+        "approved_long_term_knowledge_deleted": 0,
+        "active_quarantine_deleted": 0,
+    }
+    if not apply:
+        return result
+    if confirm != "PURGE_EXPIRED":
+        raise ValueError("실제 적용에는 confirm=PURGE_EXPIRED가 필요합니다.")
+
+    applied_at = now.isoformat()
+    with _conn() as c:
+        c.execute("DELETE FROM conversations WHERE created_at<?", (conversation_cutoff,))
+        c.execute(
+            "UPDATE memory_candidates SET status='expired', reviewed_at=?"
+            " WHERE status='pending' AND COALESCE(NULLIF(last_seen_at,''),created_at)<?",
+            (applied_at, pending_cutoff),
+        )
+        c.execute(
+            "DELETE FROM memory_candidates WHERE status IN ('approved','rejected','expired')"
+            " AND COALESCE(NULLIF(reviewed_at,''),created_at)<?",
+            (candidate_cutoff,),
+        )
+        c.execute("DELETE FROM memory_retrieval_events WHERE created_at<?", (retrieval_cutoff,))
+    result["applied_at"] = applied_at
+    return result
+
+
 def memory_stats(session_id: str = None) -> dict:
     with _conn() as c:
         if session_id:
@@ -1100,6 +1324,9 @@ def memory_stats(session_id: str = None) -> dict:
         quarantine_count = c.execute(
             "SELECT COUNT(*) FROM memory_quarantine WHERE restored_at=''"
         ).fetchone()[0]
+        retrieval_count = c.execute(
+            "SELECT COUNT(*) FROM memory_retrieval_events"
+        ).fetchone()[0]
 
     try:
         from engine import get_engine
@@ -1114,6 +1341,7 @@ def memory_stats(session_id: str = None) -> dict:
         "learned_items":  learned_count,
         "pending_candidates": pending_count,
         "quarantined_items": quarantine_count,
+        "retrieval_events": retrieval_count,
         "engine":         "자체 TF-IDF 엔진 (외부 API 없음)",
         "db_backend":     "Turso (클라우드)" if _USE_TURSO else f"SQLite ({DB_PATH})",
     }

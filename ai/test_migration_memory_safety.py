@@ -54,7 +54,7 @@ def main():
                 "SELECT session_id FROM conversations LIMIT 1"
             ).fetchone()[0]
         assert "session_id" in conversation_cols
-        assert {"memory_candidates", "memory_quarantine"} <= tables
+        assert {"memory_candidates", "memory_quarantine", "memory_retrieval_events"} <= tables
         assert restored_scope == "legacy"
 
     print("migration memory safety tests: PASS")
