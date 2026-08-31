@@ -7,6 +7,9 @@ on:
   workflow_dispatch:
     # 수동 실행 가능 (GitHub Actions 탭 → Run workflow)
 
+permissions:
+  contents: write
+
 jobs:
   update-travel-alerts:
     runs-on: ubuntu-latest

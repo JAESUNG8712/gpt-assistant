@@ -9,6 +9,9 @@ on:
   workflow_dispatch:
     # 수동 실행 가능 (GitHub Actions 탭 → Run workflow) — 주말에도 즉시 테스트 가능
 
+permissions:
+  contents: read
+
 jobs:
   analyze:
     runs-on: ubuntu-latest
@@ -18,6 +21,10 @@ jobs:
         env:
           BACKUP_TOKEN: ${{ secrets.BACKUP_TOKEN }}
         run: |
+          if [ -z "${BACKUP_TOKEN}" ]; then
+            echo "::warning::BACKUP_TOKEN secret is not set — 주식 분석 요청을 건너뜁니다."
+            exit 0
+          fi
           http_code=$(curl -sS -X POST \
             --retry 2 --retry-delay 10 --max-time 90 \
             -H "Content-Type: application/json" \

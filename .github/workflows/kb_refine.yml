@@ -11,6 +11,9 @@ on:
         required: false
         default: 'true'
 
+permissions:
+  contents: read
+
 jobs:
   refine:
     runs-on: ubuntu-latest
@@ -22,6 +25,10 @@ jobs:
         run: |
           APPLY="${{ github.event.inputs.apply || 'true' }}"
           echo "실행 모드: apply=${APPLY}"
+          if [ -z "${BACKUP_TOKEN}" ]; then
+            echo "::warning::BACKUP_TOKEN secret is not set — KB 정제 요청을 건너뜁니다."
+            exit 0
+          fi
           http_code=$(curl -sS -X POST \
             --retry 2 --retry-delay 10 --max-time 90 \
             "https://ai-assist-aosk.onrender.com/admin/refine?apply=${APPLY}&token=${BACKUP_TOKEN}" \
