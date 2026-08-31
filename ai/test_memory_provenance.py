@@ -76,12 +76,20 @@ def main():
         due = memory.list_memory_revalidation(days=30, persona="expiry_test")
         assert len(due) == 1 and due[0]["validity_status"] == "expired"
         memory_id = due[0]["id"]
+        try:
+            memory.verify_learned_memory(memory_id, valid_days=60)
+            raise AssertionError("명시적 확인 없는 재검증이 허용됨")
+        except ValueError:
+            pass
         verified = memory.verify_learned_memory(
             memory_id, valid_days=60,
             evidence=[{"title": "재검증 문서", "url": "https://example.com/reverified"}],
+            confirmed=True, verification_note="공식 문서와 현재 내용을 대조 완료",
         )
         assert datetime.fromisoformat(verified["valid_until"]) > datetime.now() + timedelta(days=59)
         assert memory.list_memory_revalidation(days=30, persona="expiry_test") == []
+        events = memory.list_memory_revalidation_events()
+        assert events[0]["status"] == "verified" and events[0]["memory_id"] == memory_id
 
         # 격리·복구 과정에서도 출처 근거와 검증 시각·유효기간이 보존된다.
         with memory._conn() as c:

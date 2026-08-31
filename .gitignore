@@ -9,6 +9,7 @@ ai/.env
 ai/data/
 __pycache__/
 .tmp-test-deps/
+.tmp-test-deps-v2/
 
 # 주식 분석 런타임 캐시/리포트 (서버 실행 시 자동 생성)
 ai/stock_analysis/utils/popular_cache.json

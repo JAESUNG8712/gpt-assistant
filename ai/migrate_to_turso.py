@@ -37,6 +37,8 @@ _TABLES = {
     "memory_retrieval_events": ["query_hash", "persona", "session_kind", "top_source",
                                 "best_score", "result_count", "used_context", "route",
                                 "created_at"],
+    "memory_revalidation_events": ["memory_id", "source", "mode", "status", "note",
+                                   "checked_at"],
 }
 
 

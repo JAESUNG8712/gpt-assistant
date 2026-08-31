@@ -94,10 +94,32 @@ def main():
             json={
                 "valid_days": 45,
                 "evidence": [{"title": "관리자 검증", "url": "https://example.com/api-verify"}],
+                "confirm_current": True,
+                "verification_note": "관리자가 공식 근거와 대조 완료",
             },
         )
         assert verify_response.status_code == 200
         assert verify_response.json()["item"]["evidence"][0]["title"] == "관리자 검증"
+        assert client.get(
+            "/admin/memory-revalidation/events", params={"token": owner_token}
+        ).json()["items"][0]["status"] == "verified"
+
+        # 자동 재검증은 허용 목록의 공공 출처만 실제 수집기로 위임한다.
+        assert client.post(
+            "/admin/memory-revalidation/authoritative",
+            params={"token": owner_token, "source": "https://internal.invalid"},
+        ).status_code == 400
+        original_law_refresh = main.admin_refresh_law_cache
+        main.admin_refresh_law_cache = lambda token="": {"fetched": 17, "errors": []}
+        try:
+            refreshed = client.post(
+                "/admin/memory-revalidation/authoritative",
+                params={"token": owner_token, "source": "law.go.kr"},
+            )
+            assert refreshed.status_code == 200
+            assert refreshed.json()["fetched"] == 17
+        finally:
+            main.admin_refresh_law_cache = original_law_refresh
 
         # 모순 후보는 409로 중단되고 force=true인 명시 승인만 승격한다.
         main.mem.upsert_knowledge(

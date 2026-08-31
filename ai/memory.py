@@ -328,12 +328,22 @@ def init_db(seed_static: bool = True):
             route TEXT DEFAULT '',
             created_at TEXT NOT NULL
         )""")
+        c.execute("""CREATE TABLE IF NOT EXISTS memory_revalidation_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            memory_id INTEGER NOT NULL DEFAULT 0,
+            source TEXT DEFAULT '',
+            mode TEXT NOT NULL,
+            status TEXT NOT NULL,
+            note TEXT DEFAULT '',
+            checked_at TEXT NOT NULL
+        )""")
         c.execute("CREATE INDEX IF NOT EXISTS idx_conversations_scope ON conversations(session_id, persona, id)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_candidates_status ON memory_candidates(status, persona, id)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_learned_persona_source ON learned_knowledge(persona, source, id)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_learned_validity ON learned_knowledge(valid_until, persona, id)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_quarantine_active ON memory_quarantine(restored_at, id)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_retrieval_created ON memory_retrieval_events(created_at, persona)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_revalidation_checked ON memory_revalidation_events(checked_at, source, id)")
     if seed_static:
         _seed_static_kb_to_db()
 
@@ -1313,13 +1323,19 @@ def list_memory_revalidation(days: int = 30, persona: str = "",
         item = dict(row)
         item["evidence"] = _normalize_evidence(item.pop("evidence_json", "[]"))
         item["validity_status"] = "expired" if _is_expired(item["valid_until"]) else "expiring"
+        item["revalidation_mode"] = (
+            "authoritative_refresh"
+            if item.get("source") in {"law.go.kr", "mofa_travel_alert"}
+            else "manual_confirmation"
+        )
         item["content_preview"] = item.pop("content", "")[:1000]
         items.append(item)
     return items
 
 
 def verify_learned_memory(item_id: int, valid_days: int | None = None,
-                          evidence=None) -> dict | None:
+                          evidence=None, confirmed: bool = False,
+                          verification_note: str = "") -> dict | None:
     """관리자 재검증 시 근거와 검증 시각·새 유효기간을 함께 갱신한다."""
     with _conn() as c:
         row = c.execute(
@@ -1329,12 +1345,26 @@ def verify_learned_memory(item_id: int, valid_days: int | None = None,
     if not row:
         return None
     item = dict(row)
+    if item.get("source") in {"law.go.kr", "mofa_travel_alert"}:
+        raise ValueError("공공 권위 출처는 개별 기한 연장 대신 원문 자동 재수집을 사용하세요.")
+    note, note_labels = privacy_guard.sanitize_for_storage(
+        verification_note, include_contact=True
+    )
+    note = note.strip()[:500]
+    if note_labels:
+        raise ValueError("검토 사유에 민감정보를 입력할 수 없습니다.")
+    if not confirmed or len(note) < 3:
+        raise ValueError("현재 내용과 근거를 확인한 뒤 3자 이상의 검토 사유를 입력하세요.")
     if valid_days is None or int(valid_days) <= 0:
         valid_days = _source_validity_days(item.get("source", "")) or 180
     valid_days = max(1, min(int(valid_days), 3650))
     now = datetime.now()
     normalized = (_normalize_evidence(evidence) if evidence is not None
                   else _normalize_evidence(item.get("evidence_json", "[]")))
+    if not normalized:
+        normalized = [{
+            "title": f"관리자 수동 검증: {note[:180]}", "url": "", "type": "manual_review",
+        }]
     verified_at = now.isoformat()
     valid_until = (now + timedelta(days=valid_days)).isoformat()
     with _conn() as c:
@@ -1342,10 +1372,37 @@ def verify_learned_memory(item_id: int, valid_days: int | None = None,
             "UPDATE learned_knowledge SET evidence_json=?, verified_at=?, valid_until=? WHERE id=?",
             (_evidence_json(normalized), verified_at, valid_until, int(item_id)),
         )
+        c.execute(
+            "INSERT INTO memory_revalidation_events"
+            " (memory_id,source,mode,status,note,checked_at) VALUES (?,?,?,?,?,?)",
+            (int(item_id), item.get("source", ""), "manual", "verified", note, verified_at),
+        )
     return {
         "id": int(item_id), "source": item.get("source", ""), "evidence": normalized,
         "verified_at": verified_at, "valid_until": valid_until, "validity_status": "current",
     }
+
+
+def record_source_revalidation(source: str, status: str, note: str = "") -> None:
+    """공공 출처 전체 재수집의 성공·실패를 원문/비밀값 없이 감사 로그로 남긴다."""
+    safe_note, _ = privacy_guard.sanitize_for_storage(note, include_contact=True)
+    with _conn() as c:
+        c.execute(
+            "INSERT INTO memory_revalidation_events"
+            " (memory_id,source,mode,status,note,checked_at) VALUES (0,?,?,?,?,?)",
+            ((source or "")[:120], "authoritative_refresh", (status or "")[:40],
+             safe_note[:500], datetime.now().isoformat()),
+        )
+
+
+def list_memory_revalidation_events(limit: int = 100) -> list[dict]:
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT id,memory_id,source,mode,status,note,checked_at"
+            " FROM memory_revalidation_events ORDER BY id DESC LIMIT ?",
+            (max(1, min(int(limit), 500)),),
+        ).fetchall()
+    return [dict(row) for row in rows]
 
 
 def quarantine_learned_rows(rows: list, reason: str) -> int:
@@ -1581,11 +1638,13 @@ def memory_retention_policy(apply: bool = False, confirm: str = "") -> dict:
         pending_days, int(os.getenv("MEMORY_CANDIDATE_HISTORY_DAYS", "365"))
     )
     retrieval_days = max(1, int(os.getenv("MEMORY_RETRIEVAL_RETENTION_DAYS", "30")))
+    revalidation_days = max(30, int(os.getenv("MEMORY_REVALIDATION_RETENTION_DAYS", "365")))
     now = datetime.now()
     conversation_cutoff = (now - timedelta(days=conversation_days)).isoformat()
     pending_cutoff = (now - timedelta(days=pending_days)).isoformat()
     candidate_cutoff = (now - timedelta(days=candidate_history_days)).isoformat()
     retrieval_cutoff = (now - timedelta(days=retrieval_days)).isoformat()
+    revalidation_cutoff = (now - timedelta(days=revalidation_days)).isoformat()
 
     with _conn() as c:
         counts = {
@@ -1608,6 +1667,10 @@ def memory_retention_policy(apply: bool = False, confirm: str = "") -> dict:
                 "SELECT COUNT(*) FROM memory_retrieval_events WHERE created_at<?",
                 (retrieval_cutoff,),
             ).fetchone()[0],
+            "revalidation_events_to_delete": c.execute(
+                "SELECT COUNT(*) FROM memory_revalidation_events WHERE checked_at<?",
+                (revalidation_cutoff,),
+            ).fetchone()[0],
         }
 
     result = {
@@ -1617,6 +1680,7 @@ def memory_retention_policy(apply: bool = False, confirm: str = "") -> dict:
             "pending_candidates": pending_days,
             "candidate_history": candidate_history_days,
             "retrieval_events": retrieval_days,
+            "revalidation_events": revalidation_days,
         },
         "preview": {key: int(value or 0) for key, value in counts.items()},
         "approved_long_term_knowledge_deleted": 0,
@@ -1641,6 +1705,7 @@ def memory_retention_policy(apply: bool = False, confirm: str = "") -> dict:
             (candidate_cutoff,),
         )
         c.execute("DELETE FROM memory_retrieval_events WHERE created_at<?", (retrieval_cutoff,))
+        c.execute("DELETE FROM memory_revalidation_events WHERE checked_at<?", (revalidation_cutoff,))
     result["applied_at"] = applied_at
     return result
 

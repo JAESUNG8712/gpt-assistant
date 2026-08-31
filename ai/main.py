@@ -1606,6 +1606,8 @@ def admin_learned_list(q: str = "", persona: str = "", limit: int = 30, offset: 
 class MemoryVerifyRequest(BaseModel):
     valid_days: int = 0
     evidence: Optional[list[dict]] = None
+    confirm_current: bool = False
+    verification_note: str = ""
 
 
 @app.get("/admin/memory-revalidation")
@@ -1619,12 +1621,24 @@ def admin_memory_revalidation(days: int = 30, persona: str = "", limit: int = 10
 @app.post("/admin/learned/{item_id}/verify")
 def admin_learned_verify(item_id: int, req: MemoryVerifyRequest, token: str = ""):
     _require_backup_token(token)
-    item = mem.verify_learned_memory(item_id, req.valid_days, req.evidence)
+    try:
+        item = mem.verify_learned_memory(
+            item_id, req.valid_days, req.evidence,
+            confirmed=req.confirm_current, verification_note=req.verification_note,
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e))
     if not item:
         raise HTTPException(404, f"id={item_id} 항목 없음")
     from engine import reload_engine
     reload_engine()
     return {"ok": True, "item": item}
+
+
+@app.get("/admin/memory-revalidation/events")
+def admin_memory_revalidation_events(limit: int = 100, token: str = ""):
+    _require_backup_token(token)
+    return {"items": mem.list_memory_revalidation_events(limit)}
 
 
 @app.get("/admin/learned/duplicates")
@@ -1942,6 +1956,34 @@ def admin_refresh_travel_alerts(token: str = ""):
 
     saved = _replace_source_knowledge("mofa_travel_alert", results, "travel")
     return {"fetched": saved}
+
+
+@app.post("/admin/memory-revalidation/authoritative")
+def admin_memory_revalidate_authoritative(source: str, token: str = ""):
+    """허용 목록의 공공 원문만 서버 측 수집기로 다시 받아 실제 내용을 교체한다.
+
+    임의 evidence URL을 서버가 방문하지 않아 SSRF를 막고, 기존 수집기의 전체성
+    검사(법령 일부 실패·여행경보 빈 응답 시 기존 자료 보존)를 그대로 재사용한다.
+    """
+    _require_backup_token(token)
+    refreshers = {
+        "law.go.kr": admin_refresh_law_cache,
+        "mofa_travel_alert": admin_refresh_travel_alerts,
+    }
+    refresher = refreshers.get(source)
+    if not refresher:
+        raise HTTPException(400, "자동 재검증이 허용된 공공 출처가 아닙니다.")
+    try:
+        result = refresher(token=token)
+    except HTTPException as e:
+        mem.record_source_revalidation(source, "failed", str(e.detail))
+        raise
+    except Exception as e:
+        mem.record_source_revalidation(source, "failed", f"{type(e).__name__}: {e}")
+        raise HTTPException(502, f"공공 출처 재검증 실패: {type(e).__name__}: {e}")
+    fetched = int(result.get("fetched", 0))
+    mem.record_source_revalidation(source, "verified", f"공공 원문 {fetched}건 재수집 완료")
+    return {"ok": True, "source": source, "mode": "authoritative_refresh", **result}
 
 
 # ── 공유 링크 (일부 페르소나만 URL로 외부 공개) ──────────
