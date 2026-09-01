@@ -1,0 +1,37 @@
+name: AI 기억 검색 품질 평가
+
+on:
+  schedule:
+    # 매주 월요일 오전 2시 UTC (한국시간 오전 11시)
+    - cron: '0 2 * * 1'
+  workflow_dispatch:
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 운영 기억 검색 골든 테스트
+        env:
+          BACKUP_TOKEN: ${{ secrets.BACKUP_TOKEN }}
+        run: |
+          http_code=$(curl -sS -X POST \
+            --retry 2 --retry-delay 10 --max-time 120 \
+            -H 'Content-Type: application/json' \
+            -d '{"min_score":0.15,"required_pass_rate":0.8}' \
+            "https://ai-assist-aosk.onrender.com/admin/memory-quality-evals/run?token=${BACKUP_TOKEN}" \
+            -o response.json -w '%{http_code}')
+          echo "HTTP ${http_code}"
+          cat response.json
+          echo ""
+          if [ "$http_code" -ge 400 ]; then
+            echo "::error::기억 검색 품질 평가 요청 실패 (HTTP ${http_code})"
+            exit 1
+          fi
+          python - <<'PY'
+          import json
+          with open('response.json', encoding='utf-8') as f:
+              result = json.load(f)
+          print(f"pass_rate={result['pass_rate']:.1%} ({result['passed']}/{result['total']})")
+          if result.get('status') != 'passed':
+              raise SystemExit('기억 검색 품질 기준 미달')
+          PY

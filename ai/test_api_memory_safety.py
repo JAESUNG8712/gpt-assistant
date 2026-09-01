@@ -38,6 +38,8 @@ def main():
         assert client.get("/admin/memory-candidates").status_code == 401
         assert client.get("/admin/memory-revalidation").status_code == 401
         assert client.get("/admin/memory-observability").status_code == 401
+        assert client.get("/admin/memory-quality-evals").status_code == 401
+        assert client.post("/admin/memory-quality-evals/run", json={}).status_code == 401
         assert client.post("/admin/memory-retention").status_code == 401
         assert client.post(
             "/learn/text",
@@ -72,6 +74,25 @@ def main():
             "/admin/memory-retention",
             params={"token": owner_token, "apply": "true"},
         ).status_code == 400
+
+        original_quality_run = main.quality_eval.run
+        main.quality_eval.run = lambda *_args, **_kwargs: {
+            "status": "passed", "total": 1, "passed": 1, "pass_rate": 1.0,
+            "required_pass_rate": 0.8, "min_score": 0.15, "cases": [],
+            "evaluated_at": "2026-09-01T00:00:00", "suite": "api-test",
+        }
+        try:
+            quality_response = client.post(
+                "/admin/memory-quality-evals/run",
+                params={"token": owner_token}, json={},
+            )
+        finally:
+            main.quality_eval.run = original_quality_run
+        assert quality_response.status_code == 200
+        assert quality_response.json()["run_id"] > 0
+        assert client.get(
+            "/admin/memory-quality-evals", params={"token": owner_token}
+        ).json()["items"][0]["suite"] == "api-test"
 
         # 만료 기억 재검증 API는 인증 후 근거와 새 유효기간을 갱신한다.
         from datetime import datetime, timedelta

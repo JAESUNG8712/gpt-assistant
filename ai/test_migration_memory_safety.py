@@ -72,6 +72,7 @@ def main():
         assert {"memory_candidates", "memory_quarantine", "memory_retrieval_events"} <= tables
         assert "memory_revalidation_events" in tables
         assert "memory_revisions" in tables
+        assert "memory_quality_eval_runs" in tables
         assert restored_scope == "legacy"
 
     print("migration memory safety tests: PASS")

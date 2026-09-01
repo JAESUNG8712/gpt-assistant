@@ -364,6 +364,18 @@ def init_db(seed_static: bool = True):
             recorded_at TEXT NOT NULL,
             UNIQUE(memory_id, version)
         )""")
+        c.execute("""CREATE TABLE IF NOT EXISTS memory_quality_eval_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            suite TEXT NOT NULL,
+            status TEXT NOT NULL,
+            total INTEGER NOT NULL DEFAULT 0,
+            passed INTEGER NOT NULL DEFAULT 0,
+            pass_rate REAL NOT NULL DEFAULT 0,
+            required_pass_rate REAL NOT NULL DEFAULT 0.8,
+            min_score REAL NOT NULL DEFAULT 0.15,
+            result_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL
+        )""")
         c.execute("CREATE INDEX IF NOT EXISTS idx_conversations_scope ON conversations(session_id, persona, id)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_candidates_status ON memory_candidates(status, persona, id)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_learned_persona_source ON learned_knowledge(persona, source, id)")
@@ -372,6 +384,7 @@ def init_db(seed_static: bool = True):
         c.execute("CREATE INDEX IF NOT EXISTS idx_retrieval_created ON memory_retrieval_events(created_at, persona)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_revalidation_checked ON memory_revalidation_events(checked_at, source, id)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_memory_revisions ON memory_revisions(memory_id, version DESC)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_quality_eval_created ON memory_quality_eval_runs(created_at DESC, id DESC)")
     if seed_static:
         _seed_static_kb_to_db()
 
@@ -1947,6 +1960,69 @@ def memory_observability(days: int = 7) -> dict:
     }
 
 
+def record_memory_quality_eval(result: dict) -> int:
+    """평가 요약과 케이스별 검색 결과를 감사 이력으로 보존한다."""
+    safe_cases = []
+    for raw in (result.get("cases") or [])[:200]:
+        item = dict(raw)
+        item["top_question"], _ = privacy_guard.sanitize_for_storage(
+            str(item.get("top_question") or "")[:300], include_contact=True
+        )
+        item["top_source"], _ = privacy_guard.sanitize_for_storage(
+            str(item.get("top_source") or "")[:120], include_contact=True
+        )
+        safe_cases.append(item)
+    safe_result = {
+        "cases": safe_cases,
+        "evaluated_at": result.get("evaluated_at", ""),
+    }
+    created_at = str(result.get("evaluated_at") or datetime.now().isoformat())
+    suite = str(result.get("suite") or "custom")[:80]
+    with _conn() as c:
+        c.execute(
+            "INSERT INTO memory_quality_eval_runs"
+            " (suite,status,total,passed,pass_rate,required_pass_rate,min_score,result_json,created_at)"
+            " VALUES (?,?,?,?,?,?,?,?,?)",
+            (
+                suite,
+                "passed" if result.get("status") == "passed" else "failed",
+                max(0, int(result.get("total") or 0)),
+                max(0, int(result.get("passed") or 0)),
+                float(result.get("pass_rate") or 0),
+                float(result.get("required_pass_rate") or 0),
+                float(result.get("min_score") or 0),
+                json.dumps(safe_result, ensure_ascii=False),
+                created_at,
+            ),
+        )
+        row = c.execute(
+            "SELECT id FROM memory_quality_eval_runs WHERE suite=? AND created_at=?"
+            " ORDER BY id DESC LIMIT 1",
+            (suite, created_at),
+        ).fetchone()
+        return int(row[0]) if row else 0
+
+
+def list_memory_quality_evals(limit: int = 30) -> list[dict]:
+    limit = max(1, min(int(limit), 200))
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT id,suite,status,total,passed,pass_rate,required_pass_rate,min_score,"
+            " result_json,created_at FROM memory_quality_eval_runs ORDER BY id DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+    items = []
+    for row in rows:
+        item = dict(row)
+        try:
+            details = json.loads(item.pop("result_json", "{}") or "{}")
+        except (TypeError, ValueError):
+            details = {}
+        item["cases"] = details.get("cases") or []
+        items.append(item)
+    return items
+
+
 def memory_retention_policy(apply: bool = False, confirm: str = "") -> dict:
     """환경변수 기반 보존정책을 미리 보거나 명시 확인 후 적용한다.
 
@@ -1961,12 +2037,14 @@ def memory_retention_policy(apply: bool = False, confirm: str = "") -> dict:
     )
     retrieval_days = max(1, int(os.getenv("MEMORY_RETRIEVAL_RETENTION_DAYS", "30")))
     revalidation_days = max(30, int(os.getenv("MEMORY_REVALIDATION_RETENTION_DAYS", "365")))
+    quality_eval_days = max(30, int(os.getenv("MEMORY_QUALITY_EVAL_RETENTION_DAYS", "365")))
     now = datetime.now()
     conversation_cutoff = (now - timedelta(days=conversation_days)).isoformat()
     pending_cutoff = (now - timedelta(days=pending_days)).isoformat()
     candidate_cutoff = (now - timedelta(days=candidate_history_days)).isoformat()
     retrieval_cutoff = (now - timedelta(days=retrieval_days)).isoformat()
     revalidation_cutoff = (now - timedelta(days=revalidation_days)).isoformat()
+    quality_eval_cutoff = (now - timedelta(days=quality_eval_days)).isoformat()
 
     with _conn() as c:
         counts = {
@@ -1993,6 +2071,10 @@ def memory_retention_policy(apply: bool = False, confirm: str = "") -> dict:
                 "SELECT COUNT(*) FROM memory_revalidation_events WHERE checked_at<?",
                 (revalidation_cutoff,),
             ).fetchone()[0],
+            "quality_eval_runs_to_delete": c.execute(
+                "SELECT COUNT(*) FROM memory_quality_eval_runs WHERE created_at<?",
+                (quality_eval_cutoff,),
+            ).fetchone()[0],
         }
 
     result = {
@@ -2003,6 +2085,7 @@ def memory_retention_policy(apply: bool = False, confirm: str = "") -> dict:
             "candidate_history": candidate_history_days,
             "retrieval_events": retrieval_days,
             "revalidation_events": revalidation_days,
+            "quality_eval_runs": quality_eval_days,
         },
         "preview": {key: int(value or 0) for key, value in counts.items()},
         "approved_long_term_knowledge_deleted": 0,
@@ -2028,6 +2111,7 @@ def memory_retention_policy(apply: bool = False, confirm: str = "") -> dict:
         )
         c.execute("DELETE FROM memory_retrieval_events WHERE created_at<?", (retrieval_cutoff,))
         c.execute("DELETE FROM memory_revalidation_events WHERE checked_at<?", (revalidation_cutoff,))
+        c.execute("DELETE FROM memory_quality_eval_runs WHERE created_at<?", (quality_eval_cutoff,))
     result["applied_at"] = applied_at
     return result
 
@@ -2052,6 +2136,9 @@ def memory_stats(session_id: str = None) -> dict:
         retrieval_count = c.execute(
             "SELECT COUNT(*) FROM memory_retrieval_events"
         ).fetchone()[0]
+        quality_eval_count = c.execute(
+            "SELECT COUNT(*) FROM memory_quality_eval_runs"
+        ).fetchone()[0]
 
     try:
         from engine import get_engine
@@ -2067,7 +2154,8 @@ def memory_stats(session_id: str = None) -> dict:
         "pending_candidates": pending_count,
         "quarantined_items": quarantine_count,
         "retrieval_events": retrieval_count,
-        "engine":         "자체 TF-IDF 엔진 (외부 API 없음)",
+        "quality_eval_runs": quality_eval_count,
+        "engine":         "자체 TF-IDF·BM25·문자 n-gram 엔진 (외부 API 없음)",
         "db_backend":     "Turso (클라우드)" if _USE_TURSO else f"SQLite ({DB_PATH})",
     }
 

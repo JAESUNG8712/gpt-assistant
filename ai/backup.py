@@ -45,6 +45,7 @@ _TABLES = {
     "memory_candidates":  "by_category/memory_candidates.json",  # 승인 대기/처리된 기억 후보
     "memory_quarantine":  "by_category/memory_quarantine.json",  # 자동정제 격리·복구 데이터
     "memory_retrieval_events": "by_category/memory_retrieval_events.json",  # 원문 없는 RAG 품질 관측
+    "memory_quality_eval_runs": "by_category/memory_quality_eval_runs.json",  # 골든 테스트 실행 이력
 }
 
 

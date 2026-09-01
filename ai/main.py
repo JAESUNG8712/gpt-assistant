@@ -24,6 +24,7 @@ import calculator as calc
 import intent_agent
 import privacy as privacy_guard
 import semantic_memory
+import quality_eval
 
 # ── 사용자 입력 전처리: 띄어쓰기 복합어 → 붙여쓰기 (질의 조인) ─────
 # engine.py에도 이름이 비슷한 _COMPOUND_MAP이 있어 중복처럼 보이지만 방향이
@@ -1474,6 +1475,30 @@ def admin_memory_observability(days: int = 7, token: str = ""):
     """질문 원문을 남기지 않는 RAG 검색 품질 통계."""
     _require_backup_token(token)
     return mem.memory_observability(days)
+
+
+class MemoryQualityEvalRequest(BaseModel):
+    cases: Optional[list[dict]] = None
+    min_score: float = 0.15
+    required_pass_rate: float = 0.8
+
+
+@app.post("/admin/memory-quality-evals/run")
+def admin_memory_quality_eval_run(req: MemoryQualityEvalRequest, token: str = ""):
+    """현재 운영 지식 엔진을 결정론적 골든 케이스로 평가하고 이력을 남긴다."""
+    _require_backup_token(token)
+    try:
+        result = quality_eval.run(req.cases, req.min_score, req.required_pass_rate)
+    except (TypeError, ValueError) as e:
+        raise HTTPException(400, str(e)) from e
+    result["run_id"] = mem.record_memory_quality_eval(result)
+    return result
+
+
+@app.get("/admin/memory-quality-evals")
+def admin_memory_quality_evals(limit: int = 30, token: str = ""):
+    _require_backup_token(token)
+    return {"items": mem.list_memory_quality_evals(limit)}
 
 
 @app.post("/admin/memory-retention")

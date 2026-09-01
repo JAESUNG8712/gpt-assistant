@@ -45,6 +45,9 @@ _TABLES = {
     "memory_revisions": ["memory_id", "version", "content", "persona", "source",
                          "created_at", "evidence_json", "verified_at", "valid_until",
                          "action", "reason", "actor", "recorded_at"],
+    "memory_quality_eval_runs": ["suite", "status", "total", "passed", "pass_rate",
+                                 "required_pass_rate", "min_score", "result_json",
+                                 "created_at"],
 }
 
 
