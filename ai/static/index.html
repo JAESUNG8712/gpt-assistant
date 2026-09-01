@@ -850,19 +850,47 @@
   </div>
 </div>
 
-<!-- ── 기억 후보 검토 모달 ────────────────────── -->
+<!-- ── 기억 운영 센터 모달 ────────────────────── -->
 <div class="resume-modal-overlay" id="memory-review-overlay" onclick="if(event.target===this) closeMemoryReview()">
-  <div class="resume-modal" style="max-width:680px">
-    <h3>📝 승인 대기 기억</h3>
+  <div class="resume-modal" style="max-width:920px;max-height:92vh;overflow-y:auto">
+    <h3>🧠 기억 운영 센터</h3>
     <p style="font-size:0.78rem;color:var(--text-dim);margin-top:-8px">
-      자동 생성된 답변은 바로 장기기억에 반영되지 않습니다. 내용을 확인한 뒤 승인하거나 거절하세요.
+      기억 승인·검색 범위·재검증·검색 품질을 한 화면에서 확인합니다. 사용자 선호와 세션 맥락은 공유 화면에 노출되지 않습니다.
     </p>
+    <div id="memory-ops-summary" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(135px,1fr));gap:8px;margin-bottom:16px"></div>
+
+    <h3 style="font-size:0.95rem;margin:12px 0 6px">📚 승인된 장기기억</h3>
+    <div style="display:flex;flex-wrap:wrap;gap:7px;margin-bottom:8px">
+      <input id="memory-search" placeholder="내용 검색" onkeydown="if(event.key==='Enter') loadLearnedMemories()" style="flex:1;min-width:180px;padding:7px;border:1px solid var(--border);border-radius:7px;background:var(--surface2);color:var(--text)">
+      <select id="memory-type-filter" onchange="loadLearnedMemories()" style="padding:7px;border:1px solid var(--border);border-radius:7px;background:var(--surface2);color:var(--text)">
+        <option value="">모든 유형</option><option value="fact">사실</option><option value="preference">선호</option><option value="procedure">절차</option><option value="context">맥락</option><option value="document">문서</option>
+      </select>
+      <select id="memory-scope-filter" onchange="loadLearnedMemories()" style="padding:7px;border:1px solid var(--border);border-radius:7px;background:var(--surface2);color:var(--text)">
+        <option value="">모든 범위</option><option value="persona">전문가 공통</option><option value="owner">소유자 전용</option><option value="session">현재 세션</option>
+      </select>
+      <button class="fb-btn" onclick="loadLearnedMemories()">검색</button>
+    </div>
+    <div id="learned-memory-list" style="display:flex;flex-direction:column;gap:8px;max-height:25vh;overflow-y:auto"></div>
+
+    <h3 style="font-size:0.95rem;margin:16px 0 6px">📝 승인 대기 기억</h3>
+    <p style="font-size:0.75rem;color:var(--text-dim);margin:0 0 8px">자동 생성된 답변은 바로 장기기억에 반영되지 않습니다. 유형과 공개 범위를 확인한 뒤 처리하세요.</p>
     <div id="memory-candidate-list" style="display:flex;flex-direction:column;gap:10px;max-height:32vh;overflow-y:auto"></div>
     <h3 style="font-size:0.95rem;margin:16px 0 6px">🔄 재검증 필요 기억</h3>
     <p style="font-size:0.75rem;color:var(--text-dim);margin:0 0 8px">
       공공 출처는 원문을 다시 수집하고, 그 외 기억은 현재 내용과 근거를 직접 확인해야 기한을 연장합니다.
     </p>
     <div id="memory-revalidation-list" style="display:flex;flex-direction:column;gap:10px;max-height:32vh;overflow-y:auto"></div>
+
+    <h3 style="font-size:0.95rem;margin:16px 0 6px">📈 검색 품질 자동 평가</h3>
+    <p style="font-size:0.75rem;color:var(--text-dim);margin:0 0 8px">운영 엔진의 기본 골든 질문 6개를 실행합니다. 질문 원문은 평가 이력에 저장하지 않습니다.</p>
+    <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px">
+      <button class="fb-btn good" id="run-memory-quality-btn" onclick="runMemoryQualityEval()">지금 평가 실행</button>
+      <span id="memory-quality-latest" style="font-size:0.76rem;color:var(--text-dim)"></span>
+    </div>
+    <div id="memory-quality-list" style="display:flex;flex-direction:column;gap:8px;max-height:24vh;overflow-y:auto"></div>
+
+    <h3 style="font-size:0.95rem;margin:16px 0 6px">🔎 최근 7일 검색 관측</h3>
+    <div id="memory-observability" style="font-size:0.78rem;color:var(--text-dim)"></div>
     <div class="resume-modal-btns">
       <button class="btn-cancel" onclick="closeMemoryReview()">닫기</button>
     </div>
@@ -1604,11 +1632,113 @@
   // ── 기억 후보 승인/거절 ───────────────────
   async function openMemoryReview() {
     document.getElementById('memory-review-overlay').classList.add('open');
-    await Promise.all([loadMemoryCandidates(), loadMemoryRevalidation()]);
+    await Promise.all([
+      loadMemoryOpsSummary(), loadLearnedMemories(), loadMemoryCandidates(),
+      loadMemoryRevalidation(), loadMemoryQualityEvals(), loadMemoryObservability(),
+    ]);
   }
 
   function closeMemoryReview() {
     document.getElementById('memory-review-overlay').classList.remove('open');
+  }
+
+  const memoryTypeLabels = {
+    fact: '사실', preference: '선호', procedure: '절차', context: '맥락', document: '문서',
+  };
+  const memoryScopeLabels = { persona: '전문가 공통', owner: '소유자 전용', session: '현재 세션' };
+
+  function memoryKindBadge(item) {
+    const type = item.memory_type || 'fact';
+    const scope = item.memory_scope || 'persona';
+    const color = scope === 'owner' ? '#7c3aed' : scope === 'session' ? '#d97706' : '#2563eb';
+    return `<span style="display:inline-block;border:1px solid ${color};color:${color};border-radius:12px;padding:1px 7px;margin-left:4px;font-size:0.68rem">${escHtml(memoryTypeLabels[type] || type)} · ${escHtml(memoryScopeLabels[scope] || scope)}</span>`;
+  }
+
+  async function loadMemoryOpsSummary() {
+    const wrap = document.getElementById('memory-ops-summary');
+    try {
+      const r = await tokFetch(`/memory/stats?session_id=${encodeURIComponent(sessionId)}`);
+      if (!r.ok) throw new Error(await friendlyErrorMessage(r));
+      const d = await r.json();
+      const types = Object.entries(d.memory_by_type || {}).map(([k, v]) => `${memoryTypeLabels[k] || k} ${v}`).join(' · ') || '없음';
+      const scopes = Object.entries(d.memory_by_scope || {}).map(([k, v]) => `${memoryScopeLabels[k] || k} ${v}`).join(' · ') || '없음';
+      const cards = [
+        ['장기기억', d.learned_items || 0, types], ['승인 대기', d.pending_candidates || 0, '검토 후 반영'],
+        ['격리', d.quarantined_items || 0, '복구 가능'], ['품질 평가', d.quality_eval_runs || 0, scopes],
+      ];
+      wrap.innerHTML = cards.map(([label, value, detail]) => `<div style="border:1px solid var(--border);border-radius:9px;padding:9px;background:var(--surface2)"><div style="font-size:0.7rem;color:var(--text-dim)">${escHtml(label)}</div><div style="font-size:1.15rem;font-weight:800;margin:2px 0">${Number(value)}</div><div style="font-size:0.65rem;color:var(--text-dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${escHtml(detail)}">${escHtml(detail)}</div></div>`).join('');
+    } catch (e) { wrap.textContent = '기억 현황을 불러오지 못했습니다: ' + e.message; }
+  }
+
+  async function loadLearnedMemories() {
+    const list = document.getElementById('learned-memory-list');
+    list.textContent = '불러오는 중...';
+    const params = new URLSearchParams({ limit: '80' });
+    const q = document.getElementById('memory-search').value.trim();
+    const type = document.getElementById('memory-type-filter').value;
+    const scope = document.getElementById('memory-scope-filter').value;
+    if (q) params.set('q', q);
+    if (type) params.set('memory_type', type);
+    if (scope) params.set('memory_scope', scope);
+    try {
+      const r = await tokFetch(`/admin/learned?${params}`);
+      if (!r.ok) throw new Error(await friendlyErrorMessage(r));
+      const items = (await r.json()).items || [];
+      if (!items.length) { list.textContent = '조건에 맞는 장기기억이 없습니다.'; return; }
+      list.innerHTML = items.map(item => `<div style="border:1px solid var(--border);border-radius:9px;padding:10px;background:var(--surface2)">
+        <div style="font-size:0.7rem;color:var(--text-dim)">#${Number(item.id)} · ${escHtml(item.persona || '')} · ${escHtml(item.source || '')} ${memoryKindBadge(item)} · v${Number(item.version || 1)}</div>
+        <div style="font-size:0.78rem;white-space:pre-wrap;max-height:90px;overflow:auto;margin-top:5px">${escHtml(item.content || '')}</div>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-top:6px;font-size:0.68rem;color:${item.validity_status === 'expired' ? '#dc2626' : 'var(--text-dim)'}"><span>${item.valid_until ? `유효기한 ${escHtml(item.valid_until)}` : '유효기한 없음'}</span><button class="fb-btn" onclick="showMemoryHistory(${Number(item.id)})">변경 이력</button></div>
+      </div>`).join('');
+    } catch (e) { list.textContent = '장기기억을 불러오지 못했습니다: ' + e.message; }
+  }
+
+  async function loadMemoryQualityEvals() {
+    const list = document.getElementById('memory-quality-list');
+    const latest = document.getElementById('memory-quality-latest');
+    list.textContent = '불러오는 중...';
+    try {
+      const r = await tokFetch('/admin/memory-quality-evals?limit=10');
+      if (!r.ok) throw new Error(await friendlyErrorMessage(r));
+      const items = (await r.json()).items || [];
+      if (!items.length) { latest.textContent = '아직 실행 이력이 없습니다.'; list.textContent = ''; return; }
+      const first = items[0];
+      latest.textContent = `최근 ${first.passed}/${first.total} 통과 · ${Math.round(Number(first.pass_rate || 0) * 100)}%`;
+      list.innerHTML = items.map(item => {
+        const failed = (item.cases || []).filter(c => !c.passed);
+        return `<div style="border:1px solid var(--border);border-radius:9px;padding:9px;background:var(--surface2)">
+          <div style="font-size:0.75rem;color:${item.status === 'passed' ? '#15803d' : '#dc2626'};font-weight:700">${item.status === 'passed' ? '통과' : '실패'} · ${Number(item.passed)}/${Number(item.total)} (${Math.round(Number(item.pass_rate || 0) * 100)}%)</div>
+          <div style="font-size:0.68rem;color:var(--text-dim);margin-top:3px">${escHtml(item.created_at || '')}${failed.length ? ` · 실패: ${failed.map(c => escHtml(c.name || c.id || 'case')).join(', ')}` : ''}</div>
+        </div>`;
+      }).join('');
+    } catch (e) { list.textContent = '품질 평가 이력을 불러오지 못했습니다: ' + e.message; }
+  }
+
+  async function runMemoryQualityEval() {
+    const btn = document.getElementById('run-memory-quality-btn');
+    btn.disabled = true; btn.textContent = '평가 중...';
+    try {
+      const r = await tokFetch('/admin/memory-quality-evals/run', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}),
+      });
+      if (!r.ok) throw new Error(await friendlyErrorMessage(r));
+      const d = await r.json();
+      showToast(`${d.status === 'passed' ? '✅' : '⚠️'} 기억 검색 품질 ${Number(d.passed)}/${Number(d.total)} 통과`);
+      await Promise.all([loadMemoryQualityEvals(), loadMemoryOpsSummary()]);
+    } catch (e) { showToast('품질 평가 실행 실패: ' + e.message); }
+    finally { btn.disabled = false; btn.textContent = '지금 평가 실행'; }
+  }
+
+  async function loadMemoryObservability() {
+    const wrap = document.getElementById('memory-observability');
+    wrap.textContent = '불러오는 중...';
+    try {
+      const r = await tokFetch('/admin/memory-observability?days=7');
+      if (!r.ok) throw new Error(await friendlyErrorMessage(r));
+      const d = await r.json();
+      const routes = (d.by_route || []).map(v => `${v.route || '기타'} ${v.total}`).join(' · ') || '기록 없음';
+      wrap.innerHTML = `<div style="border:1px solid var(--border);border-radius:9px;padding:10px;background:var(--surface2)">검색 ${Number(d.total_retrievals || 0)}회 · 저신뢰 ${Math.round(Number(d.low_confidence_rate || 0) * 100)}% · 기억 활용 ${Math.round(Number(d.context_usage_rate || 0) * 100)}%<br><span style="font-size:0.68rem">경로: ${escHtml(routes)} · ${escHtml(d.privacy || '')}</span></div>`;
+    } catch (e) { wrap.textContent = '검색 관측 통계를 불러오지 못했습니다: ' + e.message; }
   }
 
   async function loadMemoryCandidates() {
@@ -1631,7 +1761,7 @@
         return `
         <div style="border:1px solid var(--border);border-radius:10px;padding:12px;background:var(--surface2)">
           <div style="font-size:0.72rem;color:var(--text-dim);margin-bottom:6px">
-            ${escHtml(item.persona)} · 품질 ${Math.round(Number(item.quality_score || 0) * 100)}점
+            ${escHtml(item.persona)} ${memoryKindBadge(item)} · 품질 ${Math.round(Number(item.quality_score || 0) * 100)}점
             · 반복 ${Math.max(1, Number(item.seen_count || 1))}회
             · ${escHtml(item.source || '')} · 최근 ${escHtml(item.last_seen_at || item.created_at || '')}
           </div>
@@ -1672,7 +1802,7 @@
       return;
     }
     showToast(action === 'approve' ? '✅ 장기기억으로 승인했습니다.' : '🗑️ 기억 후보를 거절했습니다.');
-    await loadMemoryCandidates();
+    await Promise.all([loadMemoryCandidates(), loadLearnedMemories(), loadMemoryOpsSummary()]);
     await loadStats();
   }
 
@@ -1707,7 +1837,7 @@
           : escHtml(e.title || e.type)).join(' · ');
         return `<div style="border:1px solid var(--border);border-radius:10px;padding:12px;background:var(--surface2)">
           <div style="font-size:0.72rem;color:${item.validity_status === 'expired' ? '#dc2626' : 'var(--text-dim)'}">
-            ${escHtml(item.persona || '')} · ${escHtml(item.source || '')} · ${item.validity_status === 'expired' ? '만료됨' : '만료 임박'} · ${escHtml(item.valid_until || '')}
+            ${escHtml(item.persona || '')} ${memoryKindBadge(item)} · ${escHtml(item.source || '')} · ${item.validity_status === 'expired' ? '만료됨' : '만료 임박'} · ${escHtml(item.valid_until || '')}
           </div>
           <div style="font-size:0.8rem;white-space:pre-wrap;max-height:100px;overflow:auto;margin-top:6px">${escHtml((item.content_preview || '').slice(0, 700))}</div>
           <div style="font-size:0.72rem;margin-top:6px">근거: ${evidence || '없음'}</div>
@@ -1734,7 +1864,7 @@
     });
     if (!r.ok) { showToast('재검증 실패: ' + await friendlyErrorMessage(r)); return; }
     showToast('✅ 수동 재검증과 유효기간 연장이 완료됐습니다.');
-    await loadMemoryRevalidation();
+    await Promise.all([loadMemoryRevalidation(), loadLearnedMemories()]);
   }
 
   async function revalidateAuthoritative(source) {
@@ -1773,7 +1903,7 @@
     });
     if (!rollback.ok) { showToast('롤백 실패: ' + await friendlyErrorMessage(rollback)); return; }
     showToast(`✅ v${targetVersion} 내용을 새 버전으로 복원했습니다.`);
-    await loadMemoryRevalidation();
+    await Promise.all([loadMemoryRevalidation(), loadLearnedMemories()]);
   }
 
   async function createShareLink() {

@@ -32,6 +32,11 @@ def main():
         client = TestClient(main.app)
         assert client.get("/health").json()["retrieval_engine"] == "tfidf-bm25-char3-v1"
         assert client.get("/health").json()["memory_schema"] == "typed-scopes-v1"
+        index_html = client.get("/").text
+        assert "기억 운영 센터" in index_html
+        assert "loadLearnedMemories" in index_html
+        assert "runMemoryQualityEval" in index_html
+        assert "loadMemoryObservability" in index_html
         owner_token = "test-owner-token"
 
         # 소유자 데이터 API와 일반 채팅은 인증 없이는 열리지 않아야 한다.
