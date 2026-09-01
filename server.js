@@ -5249,10 +5249,23 @@ app.get("/api/accounting/partners/picker", async (req, res) => {
   } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
+// 계정과목/거래처 마스터데이터는 admin이 폼 전체를 다시 제출하는 방식(부분 PATCH 아님)이라,
+// 두 admin이 같은 레코드를 거의 동시에 열어 서로 다른 필드를 고치면 나중 저장이 먼저 저장을
+// 통째로 덮어쓴다(2026-09-01 감사에서 발견 — vouchers는 create-only/FOR UPDATE 상태전이라
+// 해당 없음을 확인, accounts/partners만 실제로 이 lost-update 위험이 있었다). PMS 프로젝트
+// 수정(`/api/pms/projects/:id`)이 이미 쓰는 것과 동일한 `expectedUpdatedAt` 옵트인 CAS
+// 패턴을 그대로 따른다 — 안 보내는(구버전) 클라이언트는 기존과 동일하게 동작한다.
+function _acctConflict(res, kind, key, record) {
+  return res.status(409).json({
+    ok: false, code: kind,
+    message: "다른 사용자가 먼저 수정했습니다. 최신 내용을 불러온 뒤 다시 시도하세요.",
+    [key]: record,
+  });
+}
 app.post("/api/accounting/accounts", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
-    const { id, code, name, type, category, costCategory: costCategoryRaw, costSubType: costSubTypeRaw, active = true, user } = req.body || {};
+    const { id, code, name, type, category, costCategory: costCategoryRaw, costSubType: costSubTypeRaw, active = true, user, expectedUpdatedAt } = req.body || {};
     if (!code || !name || !type)
       return res.status(400).json({ ok: false, message: "계정코드, 계정명, 구분은 필수입니다." });
     // 원가구분: "mfg"(제조원가)|"sga"(판관비)|null. costSubType은 costCategory가 "mfg"일 때만
@@ -5267,9 +5280,12 @@ app.post("/api/accounting/accounts", async (req, res) => {
       // 어느 것을 골랐는지 알 수 없는 혼란이 생긴다(실측 재현으로 발견).
       const dup = _fileAccounting.accounts.find(a => a.id !== accId && !a.isDeleted && a.code === code);
       if (dup) return res.status(400).json({ ok: false, message: `이미 사용 중인 계정코드입니다: ${code} (${dup.name})` });
+      if (idx >= 0 && expectedUpdatedAt && _fileAccounting.accounts[idx].updatedAt !== expectedUpdatedAt) {
+        return _acctConflict(res, "ACCT_ACCOUNT_CONFLICT", "account", _fileAccounting.accounts[idx]);
+      }
       const prevHist = idx >= 0 ? (_fileAccounting.accounts[idx].history || []) : [];
       const histEntry = { action: idx >= 0 ? "update" : "create", user: user || "unknown", at: new Date().toISOString() };
-      const acc = { id: accId, code, name, type, category: category || "", costCategory, costSubType, active, history: [...prevHist, histEntry] };
+      const acc = { id: accId, code, name, type, category: category || "", costCategory, costSubType, active, history: [...prevHist, histEntry], updatedAt: histEntry.at };
       if (idx >= 0) _fileAccounting.accounts[idx] = acc; else _fileAccounting.accounts.push(acc);
       _saveFileAccounting();
       return res.json({ ok: true, account: acc });
@@ -5285,11 +5301,25 @@ app.post("/api/accounting/accounts", async (req, res) => {
     );
     const prevHist = prevRows.length ? (prevRows[0].data.history || []) : [];
     const histEntry = { action: prevRows.length ? "update" : "create", user: user || "unknown", at: new Date().toISOString() };
-    const acc = { id: accId, code, name, type, category: category || "", costCategory, costSubType, active, history: [...prevHist, histEntry] };
-    await pool.query(
-      "INSERT INTO accounts (id, company_id, data) VALUES ($1,$2,$3) ON CONFLICT (company_id, id) DO UPDATE SET data = $3, updated_at = NOW()",
-      [accId, companyId, acc]
-    );
+    const acc = { id: accId, code, name, type, category: category || "", costCategory, costSubType, active, history: [...prevHist, histEntry], updatedAt: histEntry.at };
+    if (prevRows.length) {
+      // 위 SELECT는 조기 오류 메시지용일 뿐, 진짜 CAS는 이 UPDATE의 WHERE절이 원자적으로
+      // 담당한다(PMS 프로젝트 수정과 동일한 원칙) — SELECT와 쓰기 사이의 시간차 동안 다른
+      // 요청이 끼어드는 race는 WHERE절 자체가 그 순간의 실제 행 상태를 다시 확인하므로
+      // 안전하다. expectedUpdatedAt을 안 보낸(구버전) 요청은 이 조건절 없이 그대로 통과한다.
+      const updateParams = [accId, acc, companyId];
+      let sql = "UPDATE accounts SET data = $2, updated_at = NOW() WHERE id = $1 AND (company_id = $3 OR company_id IS NULL)";
+      if (expectedUpdatedAt) { updateParams.push(expectedUpdatedAt); sql += " AND data->>'updatedAt' = $4"; }
+      const result = await pool.query(sql, updateParams);
+      if (!result.rowCount) {
+        const { rows: latestRows } = await pool.query(
+          "SELECT data FROM accounts WHERE id = $1 AND (company_id = $2 OR company_id IS NULL)", [accId, companyId]
+        );
+        return _acctConflict(res, "ACCT_ACCOUNT_CONFLICT", "account", latestRows[0]?.data || null);
+      }
+    } else {
+      await pool.query("INSERT INTO accounts (id, company_id, data) VALUES ($1,$2,$3)", [accId, companyId, acc]);
+    }
     res.json({ ok: true, account: acc });
   } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
@@ -5730,12 +5760,15 @@ app.post("/api/accounting/partners", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
     const companyId = req.auth.companyId || null;
-    const { id, name, bizNo, ceoName, type, address, contactName, phone, email, registerReason, attachments, active = true, user } = req.body || {};
+    const { id, name, bizNo, ceoName, type, address, contactName, phone, email, registerReason, attachments, active = true, user, expectedUpdatedAt } = req.body || {};
     if (!name || !type)
       return res.status(400).json({ ok: false, message: "거래처명, 거래유형은 필수입니다." });
     const partnerId = id || `partner_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     if (USE_JSON_FILE) {
       const idx = _fileAccounting.partners.findIndex(p => p.id === partnerId);
+      if (idx >= 0 && expectedUpdatedAt && _fileAccounting.partners[idx].updatedAt !== expectedUpdatedAt) {
+        return _acctConflict(res, "ACCT_PARTNER_CONFLICT", "partner", _fileAccounting.partners[idx]);
+      }
       const prevHist = idx >= 0 ? (_fileAccounting.partners[idx].history || []) : [];
       const histEntry = { action: idx >= 0 ? "update" : "create", user: user || "unknown", at: new Date().toISOString() };
       const partner = {
@@ -5743,7 +5776,7 @@ app.post("/api/accounting/partners", async (req, res) => {
         address: address || "", contactName: contactName || "", phone: phone || "", email: email || "",
         registerReason: registerReason || (idx >= 0 ? _fileAccounting.partners[idx].registerReason : "") || "",
         attachments: attachments || (idx >= 0 ? _fileAccounting.partners[idx].attachments : []) || [],
-        active, history: [...prevHist, histEntry],
+        active, history: [...prevHist, histEntry], updatedAt: histEntry.at,
       };
       if (idx >= 0) _fileAccounting.partners[idx] = partner; else _fileAccounting.partners.push(partner);
       _saveFileAccounting();
@@ -5759,12 +5792,23 @@ app.post("/api/accounting/partners", async (req, res) => {
       address: address || "", contactName: contactName || "", phone: phone || "", email: email || "",
       registerReason: registerReason || (prevRows[0]?.data.registerReason) || "",
       attachments: attachments || (prevRows[0]?.data.attachments) || [],
-      active, history: [...prevHist, histEntry],
+      active, history: [...prevHist, histEntry], updatedAt: histEntry.at,
     };
-    await pool.query(
-      "INSERT INTO partners (id, company_id, data) VALUES ($1,$2,$3) ON CONFLICT (company_id, id) DO UPDATE SET data = $3, updated_at = NOW()",
-      [partnerId, companyId, partner]
-    );
+    if (prevRows.length) {
+      // accounts와 동일 원칙 — 진짜 CAS는 이 UPDATE의 WHERE절이 원자적으로 담당한다.
+      const updateParams = [partnerId, partner, companyId];
+      let sql = "UPDATE partners SET data = $2, updated_at = NOW() WHERE id = $1 AND (company_id = $3 OR company_id IS NULL)";
+      if (expectedUpdatedAt) { updateParams.push(expectedUpdatedAt); sql += " AND data->>'updatedAt' = $4"; }
+      const result = await pool.query(sql, updateParams);
+      if (!result.rowCount) {
+        const { rows: latestRows } = await pool.query(
+          "SELECT data FROM partners WHERE id = $1 AND (company_id = $2 OR company_id IS NULL)", [partnerId, companyId]
+        );
+        return _acctConflict(res, "ACCT_PARTNER_CONFLICT", "partner", latestRows[0]?.data || null);
+      }
+    } else {
+      await pool.query("INSERT INTO partners (id, company_id, data) VALUES ($1,$2,$3)", [partnerId, companyId, partner]);
+    }
     res.json({ ok: true, partner });
   } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
