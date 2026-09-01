@@ -30,6 +30,7 @@ def main():
         import main
 
         client = TestClient(main.app)
+        assert client.get("/health").json()["retrieval_engine"] == "tfidf-bm25-char3-v1"
         owner_token = "test-owner-token"
 
         # 소유자 데이터 API와 일반 채팅은 인증 없이는 열리지 않아야 한다.

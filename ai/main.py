@@ -2447,6 +2447,7 @@ def health():
     result = {
         "status": "ok",
         "db_backend": "Turso (클라우드)" if mem._USE_TURSO else "SQLite (로컬)",
+        "retrieval_engine": "tfidf-bm25-char3-v1",
         "law_api_key_set": bool(os.getenv("LAW_API_KEY")),
         "law_api_blocked": law._is_api_blocked(),
     }
