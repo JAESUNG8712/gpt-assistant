@@ -852,6 +852,12 @@ function inSel(r, c) {
 }
 
 function grid() { return sheets[activeSheet]; }
+function setCell(r, c, v) {
+  const g = grid();
+  while (g.length <= r) g.push([]);
+  while (g[r].length <= c) g[r].push('');
+  g[r][c] = v;
+}
 function styles() { return cellStyles[activeSheet] || (cellStyles[activeSheet] = {}); }
 function sk(r, c) { return `${r}_${c}`; }
 function colLetters(idx) {
