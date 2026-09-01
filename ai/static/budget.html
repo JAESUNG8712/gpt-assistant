@@ -920,12 +920,7 @@ window.onload = () => {
     if (editMode || !selectedCell) return;
     e.preventDefault();
     const text = (e.clipboardData || window.clipboardData).getData('text/plain');
-    // 내부 복사(수식 포함)인지 확인: 클립보드 내용이 복사 시점 스냅샷과 같으면 원본 수식 사용
-    if (clipSrc && clipSrc.rawData && text === clipSrc.tsvSnapshot) {
-      pasteInternal();
-      return;
-    }
-    if (text) pasteAt(selectedCell.r, selectedCell.c, text);
+    applyPastedText(text);
   });
   pt.addEventListener('copy', e => {
     if (editMode || !selectedCell) return;
@@ -1308,7 +1303,7 @@ function render() {
       const dv = (dataValidations[activeSheet]||{})[msk];
       const dvBtn = (dv && dv.type==='list' && !isEd) ? `<span onclick="openCellDropdown(event,${r},${c})" style="position:absolute;right:2px;top:50%;transform:translateY(-50%);font-size:0.6rem;cursor:pointer;color:var(--text-dim)">▼</span>` : '';
       const errTip = isErr ? ` title="${String(disp).startsWith('#REF')?'참조 오류: 삭제되었거나 존재하지 않는 셀/시트를 가리킵니다':String(disp).startsWith('#DIV')?'0으로 나눌 수 없습니다':String(disp).startsWith('#VALUE')?'값 오류: 숫자가 필요한 곳에 텍스트가 있습니다':String(disp).startsWith('#N/A')?'일치하는 값을 찾을 수 없습니다':'수식 오류: 수식을 확인해 주세요'}"` : '';
-      html += `<td class="${cls}"${spanAttrs}${errTip} tabindex="-1" contenteditable="${isEd}" data-r="${r}" data-c="${c}" data-raw="${escAttr(raw)}" style="${cellStyle};position:relative">${dispHtml}${dvBtn}</td>`;
+      html += `<td class="${cls}"${spanAttrs}${errTip} tabindex="-1" contenteditable="${isEd}" data-r="${r}" data-c="${c}" data-raw="${escAttr(raw)}" oncontextmenu="cellCtxMenu(event,${r},${c})" style="${cellStyle};position:relative">${dispHtml}${dvBtn}</td>`;
     }
     html += '</tr>';
   }
@@ -1320,6 +1315,9 @@ function render() {
 
     // 클릭 → 셀 선택 or 수식 참조 입력
     td.addEventListener('mousedown', e => {
+      // 우클릭이 현재 다중 선택 범위 안이면 선택을 건드리지 않고 컨텍스트 메뉴로 넘김
+      // (엑셀/구글시트와 동일 — 범위 밖 우클릭은 아래 로직대로 단일 선택으로 교체됨)
+      if (e.button === 2 && inSel(r, c)) return;
       // 수식 참조 모드: 수식 입력 중 다른 셀 클릭 → 주소 삽입
       checkFormulaRef();
       const sameCell = selectedCell && selectedCell.r===r && selectedCell.c===c;
@@ -2169,18 +2167,7 @@ document.addEventListener('keydown', e => {
       e.preventDefault(); clearClipSrc(); break;
     case 'Delete': case 'Backspace':
       e.preventDefault();
-      if (selMode==='row' && selRows.size>0) { delSelectedRows(); }
-      else if (selMode==='col' && selCols.size>0) { delSelectedCols(); }
-      else if (selEnd) {
-        pushUndo();
-        const r1=Math.min(selectedCell.r,selEnd.r), r2=Math.max(selectedCell.r,selEnd.r);
-        const c1=Math.min(selectedCell.c,selEnd.c), c2=Math.max(selectedCell.c,selEnd.c);
-        const g=grid();
-        for(let r=r1;r<=r2;r++) for(let c=c1;c<=c2;c++) { if(g[r]) g[r][c]=''; }
-        render();
-      } else {
-        clearCell(selectedCell.r, selectedCell.c);
-      }
+      clearSelectedCells();
       break;
     default:
       if (e.key.length===1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
@@ -2384,6 +2371,46 @@ function rowColCtxMenu(e, type, idx) {
   let x = e.clientX, y = e.clientY;
   document.body.appendChild(menu);
   if (x + 175 > window.innerWidth) x = window.innerWidth - 180;
+  if (y + menu.offsetHeight + 10 > window.innerHeight) y = window.innerHeight - menu.offsetHeight - 10;
+  menu.style.left = x + 'px';
+  menu.style.top = y + 'px';
+
+  const close = ev => { if (!menu.contains(ev.target)) { menu.remove(); document.removeEventListener('mousedown', close); } };
+  setTimeout(() => document.addEventListener('mousedown', close), 10);
+}
+
+function cellCtxMenu(e, r, c) {
+  e.preventDefault();
+  const old = document.getElementById('rc-ctx-menu'); if (old) old.remove();
+  if (editMode) commitEdit();
+
+  // 우클릭한 셀이 현재 선택 범위 밖이면 단독 선택으로 교체 (엑셀/구글시트와 동일)
+  // — 범위 안이면 mousedown 단계에서 이미 선택을 보존해뒀으므로 여기선 건드리지 않음
+  if (!inSel(r, c)) { selectCell(r, c); selEnd = null; highlightSel(); }
+
+  const hasRange = !!selEnd;
+  const menu = document.createElement('div');
+  menu.id = 'rc-ctx-menu';
+  menu.style.cssText = `position:fixed;z-index:9999;background:#fff;border:1px solid #cdd3dc;border-radius:8px;
+    box-shadow:0 4px 16px rgba(0,0,0,.15);padding:4px 0;min-width:190px;font-size:0.82rem;`;
+  menu.innerHTML = `
+    <div class="cm-item" onclick="document.getElementById('rc-ctx-menu').remove();doCut()">✂️ 잘라내기 (Ctrl+X)</div>
+    <div class="cm-item" onclick="document.getElementById('rc-ctx-menu').remove();doCopy()">📋 복사 (Ctrl+C)</div>
+    <div class="cm-item" onclick="document.getElementById('rc-ctx-menu').remove();doPaste()">📌 붙여넣기 (Ctrl+V)</div>
+    <div class="cm-sep"></div>
+    <div class="cm-item" onclick="document.getElementById('rc-ctx-menu').remove();clearSelectedCells()">🧹 ${hasRange?'선택 영역 지우기':'내용 지우기'}</div>
+    <div class="cm-sep"></div>
+    <div class="cm-item" onclick="insertRowAt(${r},'above')">위에 행 삽입</div>
+    <div class="cm-item" onclick="insertRowAt(${r},'below')">아래에 행 삽입</div>
+    <div class="cm-item cm-del" onclick="delRowAt(${r})">행 삭제</div>
+    <div class="cm-sep"></div>
+    <div class="cm-item" onclick="insertColAt(${c},'left')">왼쪽에 열 삽입</div>
+    <div class="cm-item" onclick="insertColAt(${c},'right')">오른쪽에 열 삽입</div>
+    <div class="cm-item cm-del" onclick="delColAt(${c})">열 삭제</div>`;
+
+  let x = e.clientX, y = e.clientY;
+  document.body.appendChild(menu);
+  if (x + 195 > window.innerWidth) x = window.innerWidth - 200;
   if (y + menu.offsetHeight + 10 > window.innerHeight) y = window.innerHeight - menu.offsetHeight - 10;
   menu.style.left = x + 'px';
   menu.style.top = y + 'px';
@@ -2972,6 +2999,21 @@ function clearCell(r,c) {
   const td=getCellEl(r,c);
   if(td){td.setAttribute('data-raw','');td.textContent='';}
   markDirty(); updateFormulaBar();
+}
+function clearSelectedCells() {
+  if (!selectedCell) return;
+  if (selMode==='row' && selRows.size>0) { delSelectedRows(); return; }
+  if (selMode==='col' && selCols.size>0) { delSelectedCols(); return; }
+  if (selEnd) {
+    pushUndo();
+    const r1=Math.min(selectedCell.r,selEnd.r), r2=Math.max(selectedCell.r,selEnd.r);
+    const c1=Math.min(selectedCell.c,selEnd.c), c2=Math.max(selectedCell.c,selEnd.c);
+    const g=grid();
+    for(let r=r1;r<=r2;r++) for(let c=c1;c<=c2;c++) { if(g[r]) g[r][c]=''; }
+    markDirty(); render();
+  } else {
+    clearCell(selectedCell.r, selectedCell.c);
+  }
 }
 
 function parseTSV(text) {
@@ -4828,9 +4870,31 @@ function resetFreeze() {
 // ══════════════════════════════════════════
 // 클립보드 래퍼
 // ══════════════════════════════════════════
-function doCopy()  { document.execCommand('copy'); }
-function doCut()   { document.execCommand('cut');  }
-function doPaste() { document.execCommand('paste'); }
+// 툴바/컨텍스트 메뉴 클릭은 paste-trap의 포커스를 빼앗을 수 있어(특히 포커스
+// 불가능한 메뉴 div 클릭 시 activeElement가 body로 떨어짐) execCommand가 엉뚱한
+// 대상에 실행되어 조용히 실패할 수 있음 — 실행 직전 paste-trap에 포커스를 되돌린다.
+function doCopy()  { document.getElementById('paste-trap')?.focus(); document.execCommand('copy'); }
+function doCut()   { document.getElementById('paste-trap')?.focus(); document.execCommand('cut');  }
+// 내부 복사(수식 포함)인지 확인: 클립보드 내용이 복사 시점 스냅샷과 같으면 원본 수식 사용
+function applyPastedText(text) {
+  if (editMode || !selectedCell) return;
+  if (clipSrc && clipSrc.rawData && text === clipSrc.tsvSnapshot) {
+    pasteInternal();
+    return;
+  }
+  if (text) pasteAt(selectedCell.r, selectedCell.c, text);
+}
+function doPaste() {
+  if (!selectedCell) return;
+  // 툴바/메뉴 클릭으로 실행되는 execCommand('paste')는 최신 브라우저 보안 정책상
+  // 대부분 거부됨(false 반환, 아무 반응 없음) — 실제 Ctrl+V(네이티브 이벤트)만 허용되는
+  // 문제가 있어, 사용자 제스처(클릭)로 호출 가능한 비동기 Clipboard API로 대체
+  if (navigator.clipboard && navigator.clipboard.readText) {
+    navigator.clipboard.readText().then(applyPastedText).catch(() => document.execCommand('paste'));
+  } else {
+    document.execCommand('paste');
+  }
+}
 
 // ══════════════════════════════════════════
 // 시트 추가 래퍼
