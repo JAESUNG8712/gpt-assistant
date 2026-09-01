@@ -2967,6 +2967,23 @@ function _submitDialogInput(id){
   if(validation){if(err)err.textContent=validation;el?.focus();return;}
   _resolveDialogRequest(id,value);
 }
+async function resetDemoDataWithConfirm(){
+  const ok=await askConfirmModal({
+    title:"데모 데이터 초기화",
+    message:"데모 데이터를 초기화하고 기본값으로 되돌릴까요?",
+    confirmText:"초기화",
+    danger:true,
+    impacts:[
+      {label:"대상",value:"현재 브라우저의 데모 로컬 데이터"},
+      {label:"서버/운영 DB",value:"변경 없음",tone:"success"},
+      {label:"초기화 후 동작",value:"페이지 새로고침"}
+    ],
+    warnings:["이 작업은 현재 브라우저에 저장된 데모 변경사항만 지웁니다."]
+  });
+  if(!ok)return;
+  _clearDemoState();
+  location.reload();
+}
 
 
 
@@ -5231,9 +5248,27 @@ function mergeImportData(parsed){
   if(d.gradeAdjustHistory&&Array.isArray(d.gradeAdjustHistory)){const existIds=new Set(gradeAdjustHistory.map(r=>r.id));d.gradeAdjustHistory.forEach(r=>{if(r&&r.id&&!existIds.has(r.id))gradeAdjustHistory.push(r);});}
 }
 
-function normalizeEmployeeCredentials(){
+async function normalizeEmployeeCredentials(){
   if(currentUser.role!=="admin"){showToast("관리자만 실행할 수 있습니다.","error");return;}
-  if(!confirm("전 직원의 로그인 아이디를 u+사번으로, 비밀번호를 사번으로 일괄 초기화합니다. 계속하시겠습니까?"))return;
+  const targets=employees.filter(e=>e.loginId!=="admin");
+  const changing=targets.filter(e=>{
+    const wantLoginId="u"+e.empNo;
+    return e.empNo&&(e.loginId!==wantLoginId||e.pw!==String(e.empNo));
+  }).length;
+  const ok=await askConfirmModal({
+    title:"전 직원 로그인 정보 정규화",
+    message:"전 직원의 로그인 아이디를 u+사번으로, 비밀번호를 사번으로 일괄 초기화합니다.",
+    impacts:[
+      {label:"대상 직원",value:`${targets.length}명`},
+      {label:"실제 변경 예정",value:`${changing}명`,tone:changing?"danger":"info"},
+      {label:"관리자 계정",value:"admin 로그인ID 제외",tone:"success"},
+      {label:"초기 비밀번호",value:"각 직원 사번",tone:"warn"}
+    ],
+    warnings:["직원이 기존 비밀번호로 로그인할 수 없게 됩니다.","사번을 아는 사람이 초기 비밀번호를 추측할 수 있으므로 이후 비밀번호 변경 안내가 필요합니다."],
+    confirmText:"일괄 초기화",
+    danger:true
+  });
+  if(!ok)return;
   let changed=0;
   employees=employees.map(e=>{
     if(e.loginId==="admin")return e;
@@ -6013,7 +6048,7 @@ function render(){
   const app=$("#app");if(!app)return;
   if(!currentUser){renderLogin();return;}
   const wrap=document.getElementById("login-wrap");if(wrap)wrap.style.display="none";
-  const _demoBannerHtml = _demoMode ? `<div id="demo-bar" class="on">🔍 데모 모드 — 데이터는 이 브라우저에만 저장됩니다 (서버 미연결)<button class="demo-reset" onclick="if(confirm('데모 데이터를 초기화하고 기본값으로 되돌릴까요?')){_clearDemoState();location.reload()}">초기화</button></div>` : "";
+  const _demoBannerHtml = _demoMode ? `<div id="demo-bar" class="on">🔍 데모 모드 — 데이터는 이 브라우저에만 저장됩니다 (서버 미연결)<button class="demo-reset" onclick="resetDemoDataWithConfirm()">초기화</button></div>` : "";
   const pendingCntInit=approvalDocs.filter(d=>d.status==="in_progress"&&d.approvers.some(a=>a.empId===currentUser?.id&&a.status==="pending")).length;
   // 평가 전용 모듈(/eval)은 전사 통합검색(직원·회계·재고 등 이 모듈 밖 데이터까지 검색)이
   // 스코프 밖이라 검색창을 빼고, 모바일 하단 탭도 5개 전부(홈/근태/결재/급여/내정보) 이
@@ -8087,10 +8122,23 @@ function doResetPw(id){
   autoSaveToServerIfEnabled();
   closeModal();showToast(`${getEmpName(id)}님의 비밀번호가 변경되었습니다.`,"success");
 }
-function resetOneLoginToEmpNo(id){
+async function resetOneLoginToEmpNo(id){
   const e=getEmp(id);if(!e||!e.empNo){showToast("대상 직원을 찾을 수 없습니다.","error");return;}
   if(e.role==="admin"){showToast("관리자 계정은 개별 초기화할 수 없습니다.","error");return;}
-  if(!confirm(`${e.name}님의 로그인ID와 비밀번호를 사번(${e.empNo})으로 초기화하시겠습니까?`))return;
+  const ok=await askConfirmModal({
+    title:"직원 로그인 정보 초기화",
+    message:"선택한 직원의 로그인ID와 비밀번호를 사번으로 초기화합니다.",
+    impacts:[
+      {label:"직원",value:`${e.name} (${e.empNo})`},
+      {label:"현재 로그인ID",value:e.loginId||"-"},
+      {label:"변경 후 로그인ID",value:e.empNo,tone:"warn"},
+      {label:"변경 후 비밀번호",value:"사번과 동일",tone:"danger"}
+    ],
+    warnings:["초기화 후 기존 비밀번호로 로그인할 수 없습니다."],
+    confirmText:"계정 초기화",
+    danger:true
+  });
+  if(!ok)return;
   const now=new Date().toISOString();
   employees=employees.map(x=>x.id===id?{...x,loginId:e.empNo,pw:e.empNo,updatedAt:now}:x);
   autoSaveToServerIfEnabled();
@@ -8138,10 +8186,23 @@ showToast(`${added}명이 등록되었습니다.`+(skipped.length?` (${skipped.l
 if(skipped.length)console.warn("[신규직원 일괄등록] 제외된 행:\n"+skipped.join("\n"));
 autoSaveToServerIfEnabled();renderHRList();}catch(err){showToast("파일 파싱 오류: "+err.message,"error");}};reader.readAsText(file,"UTF-8");input.value="";}
 function dlHRList(){dlCSV(`직원목록_${new Date().toISOString().slice(0,10)}.csv`,["이름","사번","권한","부서","팀","직급","직책","경력","연봉","입사일","상태"],getFilteredEmps().map(e=>[e.name,e.empNo,ROLES[e.role],e.dept,e.team,e.rank,e.position||"-",(e.totalCareer||0)+"년",fmtSalary(e.salary),e.hire,e.active?"재직":"퇴직"]));}
-function resetAllLoginToEmpNo(){
+async function resetAllLoginToEmpNo(){
   const targets=employees.filter(e=>e.empNo&&e.role!=="admin");
   if(!targets.length){showToast("대상 직원이 없습니다.","error");return;}
-  if(!confirm(`전직원(${targets.length}명)의 로그인ID와 초기 비밀번호를 사번으로 초기화하시겠습니까?\n(관리자 계정은 제외됩니다)`))return;
+  const ok=await askConfirmModal({
+    title:"전 직원 계정 일괄 초기화",
+    message:"관리자를 제외한 전 직원의 로그인ID와 초기 비밀번호를 사번으로 초기화합니다.",
+    impacts:[
+      {label:"대상 직원",value:`${targets.length}명`,tone:"danger"},
+      {label:"제외",value:"관리자 계정"},
+      {label:"변경 후 로그인ID",value:"사번",tone:"warn"},
+      {label:"변경 후 비밀번호",value:"사번과 동일",tone:"danger"}
+    ],
+    warnings:["직원이 기존 비밀번호로 로그인할 수 없게 됩니다.","실행 직후 비밀번호 변경 공지를 권장합니다."],
+    confirmText:"전 직원 초기화",
+    danger:true
+  });
+  if(!ok)return;
   const now=new Date().toISOString();
   targets.forEach(e=>{e.loginId=e.empNo;e.pw=e.empNo;e.updatedAt=now;});
   autoSaveToServerIfEnabled();showToast(`${targets.length}명의 계정 정보가 사번으로 초기화되었습니다.`,"success");renderHRListTbl();
@@ -12467,11 +12528,22 @@ function _openLpDetail(recId){
     <button class="btn btn-primary" onclick="_saveLpDetail('${recId}')">저장</button>
   </div></div>`);
 }
-function _deleteLpRecord(recId){
-  if(!confirm("삭제하시겠습니까?"))return;
+async function _deleteLpRecord(recId){
   // 화면에서 넘어온 recId는 문자열이지만 저장된 id는 숫자다. tombstone은 반드시 저장된
   // 실제 id(숫자)로 남겨야 서버의 삭제 반영(deadIds 매칭)이 동작한다.
   const rec=lowPerfData.find(r=>String(r.id)===String(recId));if(!rec)return;
+  const ok=await askConfirmModal({
+    title:"저성과 관리 기록 삭제 확인",
+    message:"저성과 관리 기록을 삭제합니다.",
+    impacts:[
+      {label:"대상자",value:getEmpName(rec.empId)||"-"},
+      {label:"관리 단계",value:rec.stage||"-"},
+      {label:"삭제 후 영향",value:"저성과 관리 이력에서 제거",tone:"danger"}
+    ],
+    confirmText:"기록 삭제",
+    danger:true
+  });
+  if(!ok)return;
   _tombstone("lowPerfData",rec.id);
   lowPerfData=lowPerfData.filter(r=>String(r.id)!==String(recId));
   autoSaveToServerIfEnabled();
@@ -12698,23 +12770,47 @@ function _logOrgChange(type,label,dept,team){
   if(orgChartHistory.length>500)orgChartHistory.shift();
 }
 function addOrgDept(){const v=$("#org-dept-new")?.value.trim();if(!v||orgDB.depts.includes(v))return;orgDB.depts.push(v);orgDB.teams[v]=[];_logOrgChange("dept_add",`부서 추가: ${v}`,v);renderSettingsOrg();broadcastSettingsChange("부서 추가: "+v);}
-function removeOrgDept(d){
+async function removeOrgDept(d){
   const inUse=(employees||[]).filter(e=>e.active&&e.dept===d);
   if(inUse.length){
     showToast(`"${d}"에 소속된 재직 직원이 ${inUse.length}명 있어 삭제할 수 없습니다. 먼저 해당 직원의 부서를 변경하세요.`,"error");
     return;
   }
-  if(!confirm(`"${d}" 부서를 삭제하시겠습니까?\n하위 팀 목록도 함께 삭제됩니다.`))return;
+  const teamCount=(orgDB.teams[d]||[]).length;
+  const ok=await askConfirmModal({
+    title:"부서 삭제 확인",
+    message:"부서를 삭제합니다. 하위 팀 목록도 함께 삭제됩니다.",
+    impacts:[
+      {label:"부서",value:d},
+      {label:"하위 팀",value:`${teamCount}개`,tone:teamCount?"warn":"info"},
+      {label:"재직 직원",value:"0명",tone:"success"},
+      {label:"삭제 후 영향",value:"조직 선택 목록에서 제거",tone:"danger"}
+    ],
+    confirmText:"부서 삭제",
+    danger:true
+  });
+  if(!ok)return;
   orgDB.depts=orgDB.depts.filter(x=>x!==d);delete orgDB.teams[d];_logOrgChange("dept_remove",`부서 삭제: ${d}`,d);renderSettingsOrg();broadcastSettingsChange("부서 삭제: "+d);}
 function addOrgRank(){const v=$("#org-rank-new")?.value.trim();if(!v||orgDB.ranks.includes(v))return;orgDB.ranks.push(v);renderSettingsOrg();}
 function removeOrgRank(r){orgDB.ranks=orgDB.ranks.filter(x=>x!==r);renderSettingsOrg();}
 function addOrgPos(){const v=$("#org-pos-new")?.value.trim();if(!v||orgDB.positions.includes(v))return;orgDB.positions.push(v);renderSettingsOrg();}
 function removeOrgPos(p){orgDB.positions=orgDB.positions.filter(x=>x!==p);renderSettingsOrg();}
 function addOrgTeam(dept){const safeId=dept.replace(/[\s\/]/g,"_");const v=$(`#org-team-new-${safeId}`)?.value.trim();if(!v)return;if(!orgDB.teams[dept])orgDB.teams[dept]=[];if(!orgDB.teams[dept].includes(v))orgDB.teams[dept].push(v);_logOrgChange("team_add",`팀 추가: ${dept} - ${v}`,dept,v);renderSettingsOrg();broadcastSettingsChange(`팀 추가: ${dept} - ${v}`);}
-function removeOrgTeam(dept,team){
+async function removeOrgTeam(dept,team){
   const inUseT=(employees||[]).filter(e=>e.active&&e.dept===dept&&e.team===team);
   if(inUseT.length){showToast(`"${team}"에 소속된 재직 직원이 ${inUseT.length}명 있어 삭제할 수 없습니다.`,"error");return;}
-  if(!confirm(`"${dept} - ${team}" 팀을 삭제하시겠습니까?`))return;
+  const ok=await askConfirmModal({
+    title:"팀 삭제 확인",
+    message:"팀을 삭제합니다.",
+    impacts:[
+      {label:"부서/팀",value:`${dept} / ${team}`},
+      {label:"재직 직원",value:"0명",tone:"success"},
+      {label:"삭제 후 영향",value:"조직 선택 목록에서 제거",tone:"danger"}
+    ],
+    confirmText:"팀 삭제",
+    danger:true
+  });
+  if(!ok)return;
   if(orgDB.teams[dept])orgDB.teams[dept]=orgDB.teams[dept].filter(t=>t!==team);_logOrgChange("team_remove",`팀 삭제: ${dept} - ${team}`,dept,team);renderSettingsOrg();broadcastSettingsChange(`팀 삭제: ${dept} - ${team}`);}
 // setCompEval replaced by inline handlers in renderSettingsMain
 function setStage(s){settings.stage=s;showToast(s==="goal"?"KPI 등록 단계로 변경되었습니다.":"KPI 결과 입력 단계로 변경되었습니다.","success");renderEvalOpsPage();renderSidebar();broadcastSettingsChange("KPI 운영 단계: "+(s==="goal"?"등록 단계":"결과 입력 단계"));}
@@ -18834,7 +18930,20 @@ async function bulkApplyEmpPayPlanItem(){
   if(!amountInput.value||isNaN(amount)){showToast("금액을 입력하세요.","error");return;}
   const activeEmps=employees.filter(e=>e.active);
   if(!activeEmps.length){showToast("재직 중인 직원이 없습니다.","error");return;}
-  if(!confirm(`재직자 ${activeEmps.length}명 전원에게 "${name}" ${amount.toLocaleString()}원을 일괄 반영하시겠습니까? 이미 값이 있으면 덮어씁니다.`))return;
+  const ok=await askConfirmModal({
+    title:"개인별 급여상세 일괄 반영",
+    message:"선택한 항목 금액을 재직자 전원에게 일괄 반영합니다.",
+    impacts:[
+      {label:"대상 직원",value:`${activeEmps.length}명`,tone:"danger"},
+      {label:"항목",value:`${category} - ${name}`},
+      {label:"1인당 금액",value:`${amount.toLocaleString()}원`,tone:"warn"},
+      {label:"기존 값",value:"있으면 덮어쓰기",tone:"danger"}
+    ],
+    warnings:["이미 입력된 동일 항목 금액은 새 금액으로 교체됩니다."],
+    confirmText:"일괄 반영",
+    danger:true
+  });
+  if(!ok)return;
 
   const r0=await serverRequest("GET",`/api/budget/emp-pay-plan?year=${_eppYear}`);
   const existingPlans=r0?.ok?r0.plans:[];
@@ -18887,8 +18996,20 @@ function saveDelegation(){
   approvalDelegations.push({id:genId(),empId:currentUser.id,empName:currentUser.name,delegateId,delegateName:getEmpName(delegateId),startDate:start,endDate:end,reason:$("#deleg-reason")?.value.trim()||"",createdAt:new Date().toISOString()});
   closeModal();autoSaveToServerIfEnabled();showToast("결재 위임이 등록되었습니다.","success");renderApprovalDelegationPage();
 }
-function deleteDelegation(id){
-  if(!confirm("이 위임을 삭제하시겠습니까?"))return;
+async function deleteDelegation(id){
+  const d=approvalDelegations.find(d=>String(d.id)===String(id));
+  const ok=await askConfirmModal({
+    title:"결재 위임 삭제 확인",
+    message:"등록된 결재 위임을 삭제합니다.",
+    impacts:[
+      {label:"대결자",value:d?.delegateName||"-"},
+      {label:"기간",value:d?`${d.startDate} ~ ${d.endDate}`:"-"},
+      {label:"삭제 후 영향",value:"해당 기간 자동 대결 지정 중단",tone:"danger"}
+    ],
+    confirmText:"위임 삭제",
+    danger:true
+  });
+  if(!ok)return;
   _tombstone("approvalDelegations",id);
   approvalDelegations=approvalDelegations.filter(d=>String(d.id)!==String(id));
   autoSaveToServerIfEnabled();showToast("삭제되었습니다.","info");renderApprovalDelegationPage();
@@ -18978,9 +19099,23 @@ function toggleOnboardItem(flowId,idx,checked){
   openOnboardDetailModal(flowId);renderOnboardingPage();
   if(fl.completedAt)showToast(`${fl.empName}님의 ${fl.type==="onboard"?"온보딩":"오프보딩"} 절차가 모두 완료되었습니다! 🎉`,"success");
 }
-function deleteOnboardFlow(id){
+async function deleteOnboardFlow(id){
   if(currentUser.role!=="admin"){showToast("삭제 권한이 없습니다.","error");return;}
-  if(!confirm("이 절차를 삭제하시겠습니까?"))return;
+  const fl=onboardingFlows.find(f=>String(f.id)===String(id));
+  const done=(fl?.items||[]).filter(i=>i.done).length,total=(fl?.items||[]).length;
+  const ok=await askConfirmModal({
+    title:"온보딩/오프보딩 절차 삭제 확인",
+    message:"진행 중이거나 완료된 절차를 삭제합니다.",
+    impacts:[
+      {label:"대상자",value:fl?.empName||"-"},
+      {label:"유형",value:fl?.type==="offboard"?"오프보딩":"온보딩"},
+      {label:"체크 진행",value:`${done}/${total}건`,tone:done?"warn":"info"},
+      {label:"삭제 후 영향",value:"절차 진행 이력 목록에서 제거",tone:"danger"}
+    ],
+    confirmText:"절차 삭제",
+    danger:true
+  });
+  if(!ok)return;
   _tombstone("onboardingFlows",id);
   onboardingFlows=onboardingFlows.filter(f=>String(f.id)!==String(id));
   autoSaveToServerIfEnabled();showToast("삭제되었습니다.","info");renderOnboardingPage();
@@ -19152,10 +19287,21 @@ function saveOvertimeRequest(){
     date,startTime:$("#ot-start").value,endTime:$("#ot-end").value,hours,type:$("#ot-type").value,reason,status:"pending",createdAt:new Date().toISOString(),updatedAt:new Date().toISOString()});
   closeModal();autoSaveToServerIfEnabled();showToast("초과근무 신청이 제출되었습니다.","success");renderOvertimeReqPage();
 }
-function cancelOvertime(id){
+async function cancelOvertime(id){
   const r=overtimeRequests.find(x=>String(x.id)===String(id));
   if(!r||r.status!=="pending")return;
-  if(!confirm("이 신청을 취소하시겠습니까?"))return;
+  const ok=await askConfirmModal({
+    title:"초과근무 신청 취소 확인",
+    message:"승인 대기 중인 초과근무 신청을 취소합니다.",
+    impacts:[
+      {label:"근무일/시간",value:`${r.date||"-"} ${r.startTime||""}~${r.endTime||""} (${r.hours||0}h)`},
+      {label:"신청 사유",value:r.reason||"-"},
+      {label:"취소 후 영향",value:"승인 대기 목록에서 제거",tone:"danger"}
+    ],
+    confirmText:"신청 취소",
+    danger:true
+  });
+  if(!ok)return;
   _tombstone("overtimeRequests",r.id);
   overtimeRequests=overtimeRequests.filter(x=>String(x.id)!==String(id));
   autoSaveToServerIfEnabled();showToast("취소되었습니다.","info");renderOvertimeReqPage();
@@ -19295,7 +19441,20 @@ async function savePayment(direction){
   closeModal();showToast(direction==="in"?"수금이 등록되었습니다.":"지급이 등록되었습니다.","success");renderAcctReceivablesPage();
 }
 async function deletePayment(id){
-  if(!confirm("이 수금/지급 기록을 삭제하시겠습니까?"))return;
+  const p=acctPayments.find(p=>String(p.id)===String(id));
+  const ok=await askConfirmModal({
+    title:"수금/지급 기록 삭제 확인",
+    message:"수금/지급 기록을 삭제합니다. 거래처별 잔액 집계가 달라질 수 있습니다.",
+    impacts:[
+      {label:"구분",value:p?.direction==="in"?"수금":"지급"},
+      {label:"거래처",value:p?.partnerName||"-"},
+      {label:"금액",value:`${(p?.amount||0).toLocaleString()}원`,tone:"warn"},
+      {label:"삭제 후 영향",value:"채권/채무 잔액 재계산",tone:"danger"}
+    ],
+    confirmText:"기록 삭제",
+    danger:true
+  });
+  if(!ok)return;
   const r=await serverRequest("POST",`/api/accounting/payments/${id}/delete`,{role:currentUser.role,user:currentUser.name});
   if(!r?.ok){showToast(r?.message||"삭제에 실패했습니다.","error");return;}
   acctPayments=acctPayments.filter(p=>p.id!==id);showToast("삭제되었습니다.","info");renderAcctReceivablesPage();
@@ -19367,10 +19526,23 @@ function saveExpenseClaim(){
     title,items,total:items.reduce((s,it)=>s+(it.amount||0),0),receipts,status:"pending",createdAt:new Date().toISOString(),updatedAt:new Date().toISOString()});
   closeModal();autoSaveToServerIfEnabled();showToast("경비 청구가 제출되었습니다.","success");renderExpenseClaimsPage();
 }
-function deleteExpenseClaim(id){
+async function deleteExpenseClaim(id){
   const x=expenseClaims.find(x=>String(x.id)===String(id));if(!x)return;
   if(x.status!=="pending"){showToast("승인 대기 상태만 회수할 수 있습니다.","error");return;}
-  if(!confirm("이 경비 청구를 회수(삭제)하시겠습니까?"))return;
+  const ok=await askConfirmModal({
+    title:"경비 청구 회수 확인",
+    message:"승인 대기 중인 경비 청구를 회수하고 삭제합니다.",
+    impacts:[
+      {label:"청구자",value:x.empName||getEmpName(x.empId)},
+      {label:"제목",value:x.title||"-"},
+      {label:"항목 수",value:`${(x.items||[]).length}건`},
+      {label:"합계",value:`${(x.total||0).toLocaleString()}원`,tone:"warn"},
+      {label:"회수 후 영향",value:"승인 대기 목록에서 제거",tone:"danger"}
+    ],
+    confirmText:"경비 청구 회수",
+    danger:true
+  });
+  if(!ok)return;
   _tombstone("expenseClaims",x.id);
   expenseClaims=expenseClaims.filter(c=>String(c.id)!==String(id));
   autoSaveToServerIfEnabled();showToast("회수되었습니다.","info");
@@ -19552,7 +19724,25 @@ async function saveItem(id){
   closeModal();showToast("품목이 저장되었습니다.","success");renderInvItemsPage();
 }
 async function deleteItem(id){
-  if(!confirm("이 품목을 삭제하시겠습니까?"))return;
+  const item=erpItems.find(i=>i.id===id);
+  const stockRows=erpStock.filter(s=>String(s.itemId)===String(id)&&Number(s.qty||0)!==0);
+  const quoteRefs=erpQuotations.reduce((n,q)=>n+(q.items||q.lines||[]).filter(l=>String(l.itemId)===String(id)).length,0);
+  const poRefs=erpPurchaseOrders.reduce((n,p)=>n+(p.items||p.lines||[]).filter(l=>String(l.itemId)===String(id)).length,0);
+  const ok=await askConfirmModal({
+    title:"품목 삭제 확인",
+    message:"품목을 삭제합니다. 재고와 견적/발주 참조 현황을 확인하세요.",
+    impacts:[
+      {label:"품목",value:item?`${item.code} ${item.name}`:id},
+      {label:"현재 재고 위치",value:`${stockRows.length}곳`,tone:stockRows.length?"danger":"info"},
+      {label:"견적 참조",value:`${quoteRefs}건`,tone:quoteRefs?"warn":"info"},
+      {label:"발주 참조",value:`${poRefs}건`,tone:poRefs?"warn":"info"},
+      {label:"삭제 후 영향",value:"품목 선택 목록에서 제거",tone:"danger"}
+    ],
+    warnings:stockRows.length?["재고가 남아있는 품목은 서버에서 삭제가 거부될 수 있습니다. 먼저 재고를 정리하세요."]:[],
+    confirmText:"품목 삭제",
+    danger:true
+  });
+  if(!ok)return;
   const r=await serverRequest("POST",`/api/erp/items/${id}/delete`,{role:currentUser.role,user:currentUser.name});
   if(!r?.ok){showToast(r?.message||"삭제에 실패했습니다.","error");return;}
   erpItems=erpItems.filter(i=>i.id!==id);showToast("삭제되었습니다.","info");renderInvItemsPage();
@@ -19598,7 +19788,25 @@ async function saveLocation(id){
   closeModal();showToast("위치가 저장되었습니다.","success");renderInvLocationsPage();
 }
 async function deleteLocation(id){
-  if(!confirm("이 위치를 삭제하시겠습니까?"))return;
+  const loc=erpLocations.find(l=>l.id===id);
+  const stockRows=erpStock.filter(s=>String(s.locationId)===String(id)&&Number(s.qty||0)!==0);
+  const quoteRefs=erpQuotations.filter(q=>String(q.locationId)===String(id)).length;
+  const poRefs=erpPurchaseOrders.filter(p=>String(p.locationId)===String(id)).length;
+  const ok=await askConfirmModal({
+    title:"창고/위치 삭제 확인",
+    message:"창고/위치를 삭제합니다. 재고와 문서 참조 현황을 확인하세요.",
+    impacts:[
+      {label:"위치",value:loc?.name||id},
+      {label:"현재 재고 품목",value:`${stockRows.length}건`,tone:stockRows.length?"danger":"info"},
+      {label:"견적 출고위치 참조",value:`${quoteRefs}건`,tone:quoteRefs?"warn":"info"},
+      {label:"발주 입고위치 참조",value:`${poRefs}건`,tone:poRefs?"warn":"info"},
+      {label:"삭제 후 영향",value:"입출고 위치 선택 목록에서 제거",tone:"danger"}
+    ],
+    warnings:stockRows.length?["재고가 남아있는 위치는 서버에서 삭제가 거부될 수 있습니다."]:[],
+    confirmText:"위치 삭제",
+    danger:true
+  });
+  if(!ok)return;
   const r=await serverRequest("POST",`/api/erp/locations/${id}/delete`,{role:currentUser.role,user:currentUser.name});
   if(!r?.ok){showToast(r?.message||"삭제에 실패했습니다.","error");return;}
   erpLocations=erpLocations.filter(l=>l.id!==id);showToast("삭제되었습니다.","info");renderInvLocationsPage();
@@ -19821,21 +20029,61 @@ function viewQuotationModal(id){
   </div><div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal()">닫기</button><button class="btn btn-secondary" onclick="window.print()">🖨 출력</button></div></div>`);
 }
 async function sendQuotation(id){
-  if(!confirm("견적서를 발송하시겠습니까? 발송 후에는 품목을 수정할 수 없습니다."))return;
+  const q=erpQuotations.find(q=>q.id===id);
+  const ok=await askConfirmModal({
+    title:"견적서 발송 확인",
+    message:"견적서를 발송 상태로 전환합니다. 발송 후에는 품목을 수정할 수 없습니다.",
+    impacts:[
+      {label:"거래처",value:q?.partnerName||"-"},
+      {label:"품목 수",value:`${(q?.items||q?.lines||[]).length}건`},
+      {label:"합계",value:`${(q?.grandTotal||0).toLocaleString()}원`,tone:"warn"},
+      {label:"발송 후 영향",value:"견적 품목 수정 잠금",tone:"danger"}
+    ],
+    confirmText:"견적서 발송",
+    danger:true
+  });
+  if(!ok)return;
   const r=await serverRequest("POST",`/api/erp/quotations/${id}/send`,{role:currentUser.role,user:currentUser.name});
   if(!r?.ok){showToast(r?.message||"발송에 실패했습니다.","error");return;}
   const idx=erpQuotations.findIndex(q=>q.id===id);if(idx>=0)erpQuotations[idx]=r.quotation;
   showToast(`견적서가 발송되었습니다 (${r.quotation.quoteNo}).`,"success");renderSalesQuotationsPage();
 }
 async function acceptQuotation(id){
-  if(!confirm("수주 확정하시겠습니까?"))return;
+  const q=erpQuotations.find(q=>q.id===id);
+  const ok=await askConfirmModal({
+    title:"수주 확정 확인",
+    message:"견적서를 수주 확정 상태로 전환합니다.",
+    impacts:[
+      {label:"견적번호",value:q?.quoteNo||id},
+      {label:"거래처",value:q?.partnerName||"-"},
+      {label:"합계",value:`${(q?.grandTotal||0).toLocaleString()}원`,tone:"warn"},
+      {label:"확정 후 영향",value:"출고/매출 처리 가능",tone:"success"}
+    ],
+    confirmText:"수주 확정"
+  });
+  if(!ok)return;
   const r=await serverRequest("POST",`/api/erp/quotations/${id}/accept`,{role:currentUser.role,user:currentUser.name});
   if(!r?.ok){showToast(r?.message||"처리에 실패했습니다.","error");return;}
   const idx=erpQuotations.findIndex(q=>q.id===id);if(idx>=0)erpQuotations[idx]=r.quotation;
   showToast("수주가 확정되었습니다.","success");renderSalesQuotationsPage();
 }
 async function shipQuotation(id){
-  if(!confirm("출고 및 세금계산서 발행을 처리하시겠습니까? 재고가 차감되고 매출 세금계산서가 발행됩니다."))return;
+  const q=erpQuotations.find(q=>q.id===id);
+  const ok=await askConfirmModal({
+    title:"출고/매출 처리 확인",
+    message:"출고와 매출 세금계산서 발행을 함께 처리합니다.",
+    impacts:[
+      {label:"견적번호",value:q?.quoteNo||id},
+      {label:"출고 위치",value:_erpLocationName(q?.locationId)||"-"},
+      {label:"품목 수",value:`${(q?.items||q?.lines||[]).length}건`},
+      {label:"매출 합계",value:`${(q?.grandTotal||0).toLocaleString()}원`,tone:"warn"},
+      {label:"처리 후 영향",value:"재고 차감 + 매출 세금계산서 발행",tone:"danger"}
+    ],
+    warnings:["재고 부족 또는 세금계산서 생성 실패 시 서버에서 처리가 거부될 수 있습니다."],
+    confirmText:"출고/매출 처리",
+    danger:true
+  });
+  if(!ok)return;
   const r=await serverRequest("POST",`/api/erp/quotations/${id}/ship`,{role:currentUser.role,user:currentUser.name});
   if(!r?.ok){showToast(r?.message||"처리에 실패했습니다.","error");return;}
   const idx=erpQuotations.findIndex(q=>q.id===id);if(idx>=0)erpQuotations[idx]=r.quotation;
@@ -19872,7 +20120,20 @@ async function rejectQuotation(id){
   showToast("실주 처리되었습니다.","info");renderSalesQuotationsPage();
 }
 async function deleteQuotationDraft(id){
-  if(!confirm("이 임시 견적서를 삭제하시겠습니까?"))return;
+  const q=erpQuotations.find(q=>q.id===id);
+  const ok=await askConfirmModal({
+    title:"임시 견적서 삭제 확인",
+    message:"아직 발송되지 않은 임시 견적서를 삭제합니다.",
+    impacts:[
+      {label:"거래처",value:q?.partnerName||"-"},
+      {label:"품목 수",value:`${(q?.items||q?.lines||[]).length}건`},
+      {label:"합계",value:`${(q?.grandTotal||0).toLocaleString()}원`,tone:"warn"},
+      {label:"삭제 후 영향",value:"견적 목록에서 제거",tone:"danger"}
+    ],
+    confirmText:"임시 견적서 삭제",
+    danger:true
+  });
+  if(!ok)return;
   const r=await serverRequest("DELETE",`/api/erp/quotations/${id}`,{role:currentUser.role,user:currentUser.name});
   if(!r?.ok){showToast(r?.message||"삭제에 실패했습니다.","error");return;}
   erpQuotations=erpQuotations.filter(q=>q.id!==id);showToast("삭제되었습니다.","info");renderSalesQuotationsPage();
@@ -19957,7 +20218,20 @@ async function saveSalesTarget(){
   _salesDashData=null;renderSalesDashboardPage();
 }
 async function deleteSalesTarget(id){
-  if(!confirm("이 영업 목표를 삭제하시겠습니까?"))return;
+  const target=(_salesDashData?.targets||[]).find(t=>String(t.id)===String(id))||{};
+  const ok=await askConfirmModal({
+    title:"영업 목표 삭제 확인",
+    message:"영업 목표를 삭제합니다. 대시보드 목표 대비 실적이 달라질 수 있습니다.",
+    impacts:[
+      {label:"대상",value:target.employeeName||target.dept||"전체/미지정"},
+      {label:"기간",value:[target.year,target.month?`${target.month}월`:null].filter(Boolean).join(" ")||"-"},
+      {label:"목표 금액",value:`${(target.targetAmount||0).toLocaleString()}원`,tone:"warn"},
+      {label:"삭제 후 영향",value:"영업 대시보드 목표 집계 재계산",tone:"danger"}
+    ],
+    confirmText:"영업 목표 삭제",
+    danger:true
+  });
+  if(!ok)return;
   const r=await serverRequest("POST",`/api/erp/sales-targets/${id}/delete`,{role:currentUser.role,user:currentUser.name});
   if(!r?.ok){showToast(r?.message||"삭제에 실패했습니다.","error");return;}
   showToast("삭제되었습니다.","info");
@@ -20435,8 +20709,21 @@ async function savePmsWorklogBlock(){
   closeModal();showToast("저장되었습니다.","success");renderPmsWorklogPage();
 }
 async function deletePmsWorklogBlock(idx){
-  if(!confirm("이 업무 기록을 삭제하시겠습니까?"))return;
   const sorted=[..._pmsWorklogBlocks].sort((a,b)=>_wlMin(a.startTime)-_wlMin(b.startTime));
+  const block=sorted[idx];
+  const ok=await askConfirmModal({
+    title:"업무 투입 기록 삭제 확인",
+    message:"선택한 일일 업무 투입 기록을 삭제합니다.",
+    impacts:[
+      {label:"일자",value:_pmsWorklogDate||"-"},
+      {label:"프로젝트",value:_pmsProjectName(block?.projectId)||"-"},
+      {label:"시간",value:block?`${block.startTime||"-"} ~ ${block.endTime||"-"}`:"-"},
+      {label:"삭제 후 영향",value:"월간 투입률/가동률 재계산",tone:"danger"}
+    ],
+    confirmText:"업무 기록 삭제",
+    danger:true
+  });
+  if(!ok)return;
   const next=sorted.filter((_,i)=>i!==idx);
   const r=await serverRequest("POST","/api/pms/worklogs",{employeeId:currentUser.id,date:_pmsWorklogDate,blocks:next,role:currentUser.role,userId:currentUser.id,expectedUpdatedAt:_pmsWorklogLoadedUpdatedAt});
   if(!r?.ok){
@@ -21504,7 +21791,21 @@ async function saveRecruitCandidate(){
   if(!jobId||!name){showToast("채용공고와 지원자명을 입력하세요.","error");return;}
   const phone=$("#rc-phone")?.value.trim(),email=$("#rc-email")?.value.trim();
   const dups=_rcFindDuplicateCandidates(name,phone,email);
-  if(dups.length&&!confirm(_rcDuplicateWarningMsg(dups)))return;
+  if(dups.length){
+    const ok=await askConfirmModal({
+      title:"중복 지원 이력 확인",
+      message:"동일한 연락처 또는 이메일로 이미 지원한 이력이 있습니다. 계속 등록할지 확인하세요.",
+      impacts:[
+        {label:"지원자명",value:name},
+        {label:"중복 후보",value:`${dups.length}건`,tone:"danger"},
+        ...dups.slice(0,5).map(c=>({label:c.name,value:`${_recruitJobTitle(c.jobId)} · ${(c.appliedAt||"").slice(0,10)} · ${c.status||"-"}`,tone:"warn"}))
+      ],
+      warnings:dups.length>5?[`표시 외 ${dups.length-5}건의 중복 이력이 더 있습니다.`]:[],
+      confirmText:"그래도 등록",
+      danger:true
+    });
+    if(!ok)return;
+  }
   const body={jobId,name,phone,email,memo:$("#rc-memo")?.value.trim(),resumeSummary:$("#rc-summary")?.value.trim(),
     finalEducation:$("#rc-education")?.value.trim(),careerHistory:$("#rc-career")?.value.trim(),lastSalary:$("#rc-salary")?.value.trim(),desiredSalary:$("#rc-desired-salary")?.value.trim(),activities:$("#rc-activities")?.value.trim(),careerGaps:$("#rc-gaps")?.value.trim(),
     resume:_rcResumeFile,role:currentUser.role,user:currentUser.name};
@@ -21676,7 +21977,21 @@ async function saveRecruitStatus(id){
   closeModal();showToast("변경되었습니다.","success");renderRecruitCandidatesPage();
 }
 async function deleteRecruitCandidate(id){
-  if(!confirm("이 지원자를 삭제하시겠습니까?"))return;
+  const c=recruitCandidates.find(c=>String(c.id)===String(id));
+  const interviews=recruitInterviews.filter(i=>String(i.candidateId)===String(id));
+  const ok=await askConfirmModal({
+    title:"지원자 삭제 확인",
+    message:"지원자 정보를 삭제합니다. 연결된 면접 일정과 평가 이력을 확인하세요.",
+    impacts:[
+      {label:"지원자",value:c?.name||id},
+      {label:"채용공고",value:_recruitJobTitle(c?.jobId)},
+      {label:"면접 일정",value:`${interviews.length}건`,tone:interviews.length?"warn":"info"},
+      {label:"삭제 후 영향",value:"지원자 목록에서 제거",tone:"danger"}
+    ],
+    confirmText:"지원자 삭제",
+    danger:true
+  });
+  if(!ok)return;
   const r=await serverRequest("POST",`/api/recruit/candidates/${id}/delete`,{role:currentUser.role});
   if(!r?.ok){showToast(r?.message||"삭제에 실패했습니다.","error");return;}
   recruitCandidates=recruitCandidates.filter(c=>c.id!==id);
@@ -21771,7 +22086,22 @@ async function saveRecruitInterview(){
   if(!interviewerIds.length){showToast("면접관을 1명 이상 선택하세요.","error");return;}
   const round=Number($("#iv-round")?.value)||1;
   const dup=_ivFindDuplicate(candidateId,round);
-  if(dup&&!confirm(`${h(cd.name)}님은 이미 ${round}차 면접 일정이 등록되어 있습니다 (${dup.schedule||"일정 미정"}).\n계속 새로 등록하시겠습니까?`))return;
+  if(dup){
+    const ok=await askConfirmModal({
+      title:"중복 면접 일정 확인",
+      message:`${cd.name}님은 이미 ${round}차 면접 일정이 등록되어 있습니다. 그래도 새 일정을 추가하시겠습니까?`,
+      confirmText:"그래도 등록",
+      confirmClass:"btn-warning",
+      impacts:[
+        {label:"지원자",value:cd.name},
+        {label:"면접 회차",value:`${round}차`},
+        {label:"기존 일정",value:dup.schedule||"일정 미정"},
+        {label:"영향",value:"같은 회차 면접 일정 2건 유지",tone:"warn"}
+      ],
+      warnings:["중복 일정은 면접관 캘린더와 평가 현황에서 혼선을 만들 수 있습니다."]
+    });
+    if(!ok)return;
+  }
   const leadInterviewerId=$("#iv-lead")?.value||"";
   const body={jobId:cd.jobId,candidateId,round,schedule:$("#iv-schedule")?.value,location:$("#iv-location")?.value.trim(),interviewerIds,leadInterviewerId,role:currentUser.role,userId:currentUser.id};
   const r=await serverRequest("POST","/api/recruit/interviews",body);
@@ -22110,14 +22440,42 @@ function viewPOModal(id){
   </div><div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal()">닫기</button><button class="btn btn-secondary" onclick="window.print()">🖨 출력</button></div></div>`);
 }
 async function confirmPO(id){
-  if(!confirm("발주를 확정하시겠습니까? 확정 후에는 품목을 수정할 수 없습니다."))return;
+  const p=erpPurchaseOrders.find(p=>p.id===id);
+  const ok=await askConfirmModal({
+    title:"발주 확정 확인",
+    message:"발주서를 확정합니다. 확정 후에는 품목을 수정할 수 없습니다.",
+    impacts:[
+      {label:"거래처",value:p?.partnerName||"-"},
+      {label:"입고 위치",value:_erpLocationName(p?.locationId)||"-"},
+      {label:"품목 수",value:`${(p?.items||p?.lines||[]).length}건`},
+      {label:"합계",value:`${(p?.grandTotal||0).toLocaleString()}원`,tone:"warn"},
+      {label:"확정 후 영향",value:"품목 수정 잠금",tone:"danger"}
+    ],
+    confirmText:"발주 확정",
+    danger:true
+  });
+  if(!ok)return;
   const r=await serverRequest("POST",`/api/erp/purchase-orders/${id}/confirm`,{role:currentUser.role,user:currentUser.name});
   if(!r?.ok){showToast(r?.message||"발주 확정에 실패했습니다.","error");return;}
   const idx=erpPurchaseOrders.findIndex(p=>p.id===id);if(idx>=0)erpPurchaseOrders[idx]=r.purchaseOrder;
   showToast(`발주가 확정되었습니다 (${r.purchaseOrder.poNo}).`,"success");renderSalesPurchaseOrdersPage();
 }
 async function receivePO(id){
-  if(!confirm("입고 처리하시겠습니까? 처리 시 재고 반영과 매입세금계산서 발행이 함께 진행됩니다."))return;
+  const p=erpPurchaseOrders.find(p=>p.id===id);
+  const ok=await askConfirmModal({
+    title:"입고 처리 확인",
+    message:"입고 처리와 매입 세금계산서 발행을 함께 진행합니다.",
+    impacts:[
+      {label:"발주번호",value:p?.poNo||id},
+      {label:"입고 위치",value:_erpLocationName(p?.locationId)||"-"},
+      {label:"품목 수",value:`${(p?.items||p?.lines||[]).length}건`},
+      {label:"매입 합계",value:`${(p?.grandTotal||0).toLocaleString()}원`,tone:"warn"},
+      {label:"처리 후 영향",value:"재고 증가 + 매입 세금계산서 발행",tone:"danger"}
+    ],
+    confirmText:"입고 처리",
+    danger:true
+  });
+  if(!ok)return;
   const r=await serverRequest("POST",`/api/erp/purchase-orders/${id}/receive`,{role:currentUser.role,user:currentUser.name});
   if(!r?.ok){showToast(r?.message||"입고 처리에 실패했습니다.","error");return;}
   const idx=erpPurchaseOrders.findIndex(p=>p.id===id);if(idx>=0)erpPurchaseOrders[idx]=r.purchaseOrder;
@@ -22153,7 +22511,21 @@ async function cancelPO(id){
   showToast("발주가 취소되었습니다.","info");renderSalesPurchaseOrdersPage();
 }
 async function deletePODraft(id){
-  if(!confirm("이 임시 발주서를 삭제하시겠습니까?"))return;
+  const p=erpPurchaseOrders.find(p=>p.id===id);
+  const ok=await askConfirmModal({
+    title:"임시 발주서 삭제 확인",
+    message:"아직 확정되지 않은 임시 발주서를 삭제합니다.",
+    impacts:[
+      {label:"거래처",value:p?.partnerName||"-"},
+      {label:"입고 위치",value:_erpLocationName(p?.locationId)||"-"},
+      {label:"품목 수",value:`${(p?.items||p?.lines||[]).length}건`},
+      {label:"합계",value:`${(p?.grandTotal||0).toLocaleString()}원`,tone:"warn"},
+      {label:"삭제 후 영향",value:"발주 목록에서 제거",tone:"danger"}
+    ],
+    confirmText:"임시 발주서 삭제",
+    danger:true
+  });
+  if(!ok)return;
   const r=await serverRequest("DELETE",`/api/erp/purchase-orders/${id}`,{role:currentUser.role,user:currentUser.name});
   if(!r?.ok){showToast(r?.message||"삭제에 실패했습니다.","error");return;}
   erpPurchaseOrders=erpPurchaseOrders.filter(p=>p.id!==id);showToast("삭제되었습니다.","info");renderSalesPurchaseOrdersPage();
@@ -22291,7 +22663,21 @@ async function rejectPurchaseRequest(id){
   showToast("반려되었습니다.","info");renderPurchaseRequestsPage();
 }
 async function deletePurchaseRequest(id){
-  if(!confirm("이 구매요청을 삭제하시겠습니까?"))return;
+  const p=erpPurchaseRequests.find(p=>p.id===id);
+  const ok=await askConfirmModal({
+    title:"구매요청 삭제 확인",
+    message:"구매요청을 삭제합니다.",
+    impacts:[
+      {label:"요청 제목",value:p?.title||id},
+      {label:"요청자",value:p?.empName||getEmpName(p?.empId)},
+      {label:"현재 상태",value:p?.status||"-"},
+      {label:"합계",value:`${(p?.grandTotal||0).toLocaleString()}원`,tone:"warn"},
+      {label:"삭제 후 영향",value:"구매요청 목록에서 제거",tone:"danger"}
+    ],
+    confirmText:"구매요청 삭제",
+    danger:true
+  });
+  if(!ok)return;
   const r=await serverRequest("DELETE",`/api/erp/purchase-requests/${id}`,{role:currentUser.role,user:currentUser.name,userId:currentUser.id});
   if(!r?.ok){showToast(r?.message||"삭제에 실패했습니다.","error");return;}
   erpPurchaseRequests=erpPurchaseRequests.filter(p=>p.id!==id);showToast("삭제되었습니다.","info");renderPurchaseRequestsPage();
@@ -22421,8 +22807,21 @@ function toggleWebhookActive(id){
   integrationSettings={...integrationSettings,webhooks:integrationSettings.webhooks.map(w=>String(w.id)===String(id)?{...w,active:!w.active}:w)};
   autoSaveToServerIfEnabled();renderIntegrationsPage();
 }
-function deleteWebhook(id){
-  if(!confirm("이 웹훅 연동을 삭제하시겠습니까?"))return;
+async function deleteWebhook(id){
+  const wh=(integrationSettings.webhooks||[]).find(w=>String(w.id)===String(id));
+  const ok=await askConfirmModal({
+    title:"웹훅 연동 삭제 확인",
+    message:"외부 알림 웹훅 연동을 삭제합니다.",
+    impacts:[
+      {label:"연동명",value:wh?.name||id},
+      {label:"이벤트",value:wh?.event||"전체/미지정"},
+      {label:"현재 상태",value:wh?.active===false?"비활성":"활성",tone:wh?.active===false?"info":"warn"},
+      {label:"삭제 후 영향",value:"해당 외부 알림 발송 중단",tone:"danger"}
+    ],
+    confirmText:"웹훅 삭제",
+    danger:true
+  });
+  if(!ok)return;
   integrationSettings={...integrationSettings,webhooks:integrationSettings.webhooks.filter(w=>String(w.id)!==String(id))};
   autoSaveToServerIfEnabled();showToast("삭제되었습니다.","info");renderIntegrationsPage();
 }
@@ -23514,10 +23913,24 @@ function _hrHireRetireListsHtml(){
 // 사용해 한 번에 정식 퇴직 처리한다(submitRetire와 동일한 효과 — active/retireDate가 항상
 // 함께 바뀌도록 유지하는 것이 이 앱의 원칙이므로, 이미 있는 retireDate를 신뢰하고 active만
 // 뒤늦게 맞춰준다). 퇴직 사유가 비어 있으면 "기타"로 채운다.
-function _hrBulkFixRetireeMismatches(year,filterDept){
+async function _hrBulkFixRetireeMismatches(year,filterDept){
   const targets=employees.filter(e=>e.active&&e.retireDate&&(!filterDept||e.dept===filterDept)&&new Date(e.retireDate).getFullYear()===year);
   if(!targets.length){showToast("반영할 대상이 없습니다.","info");return;}
-  if(!confirm(`${targets.length}명을 이미 등록된 퇴직일 기준으로 정식 퇴직 처리하시겠습니까?\n(퇴직 사유가 없으면 "기타"로 설정됩니다. 처리 후 해당 직원은 로그인할 수 없습니다.)`))return;
+  const ok=await askConfirmModal({
+    title:"퇴직 정합성 일괄 반영 확인",
+    message:"퇴직일은 등록되어 있지만 재직 상태로 남은 직원을 정식 퇴직 처리합니다.",
+    impacts:[
+      {label:"대상 연도",value:`${year}년`},
+      {label:"부서 필터",value:filterDept||"전체"},
+      {label:"대상 직원",value:`${targets.length}명`,tone:"danger"},
+      {label:"퇴직 사유 기본값",value:"비어 있으면 기타"},
+      {label:"처리 후 영향",value:"로그인 차단 + 참조 정리 + 인사통계 재계산",tone:"danger"}
+    ],
+    warnings:["퇴직 처리 후 해당 직원은 로그인할 수 없습니다.","KPI/결재 등 퇴직자 참조 정리 로직이 함께 실행됩니다."],
+    confirmText:"정식 퇴직 처리",
+    danger:true
+  });
+  if(!ok)return;
   const now=new Date().toISOString();
   const targetIds=new Set(targets.map(e=>e.id));
   employees=employees.map(e=>{
@@ -24036,8 +24449,22 @@ function openBoardPostDetail(postId){
   </div></div>`);
   autoSaveToServerIfEnabled();
 }
-function deleteBoardPost(postId){
-  if(!confirm("게시물을 삭제하시겠습니까?"))return;
+async function deleteBoardPost(postId){
+  const post=boardPosts.find(p=>String(p.id)===String(postId));
+  const ok=await askConfirmModal({
+    title:"게시물 삭제 확인",
+    message:"게시물을 삭제하시겠습니까?",
+    confirmText:"삭제",
+    danger:true,
+    impacts:[
+      {label:"제목",value:post?.title||postId},
+      {label:"작성자",value:post?.isAnonymous?"익명":(getEmpName(post?.authorId)||"알 수 없음")},
+      {label:"첨부파일",value:`${(post?.attachments||[]).length}개`},
+      {label:"삭제 방식",value:"삭제 tombstone 기록 후 목록에서 제외",tone:"warn"}
+    ],
+    warnings:["삭제 후에는 일반 화면에서 복구할 수 없습니다."]
+  });
+  if(!ok)return;
   _tombstone("boardPosts",postId);boardPosts=boardPosts.filter(p=>p.id!==postId);autoSaveToServerIfEnabled();closeModal();renderBoardPage();showToast("삭제되었습니다.","info");
 }
 
@@ -24453,10 +24880,25 @@ function saveRoomReservation(date){
   });
   closeModal();autoSaveToServerIfEnabled();showToast(`예약이 완료되었습니다.${toCreate.length>1?` (${toCreate.length}건)`:""}`,"success");renderRoomBookingPage();
 }
-function deleteRoomReservation(rsvId){
+async function deleteRoomReservation(rsvId){
   const rsv=roomReservations.find(r=>r.id===rsvId);if(!rsv)return false;
   if(!(rsv.bookedBy===currentUser.id||currentUser.role==="admin")){showToast("취소 권한이 없습니다.","error");return false;}
-  if(!confirm(rsv.seriesId?"이 날짜의 예약만 취소하시겠습니까? (반복 전체를 취소하려면 '내 예약 내역'에서 🔁 전체취소를 이용하세요)":"예약을 취소하시겠습니까?"))return false;
+  const room=(settings.meetingRooms||[]).find(r=>String(r.id)===String(rsv.roomId));
+  const ok=await askConfirmModal({
+    title:rsv.seriesId?"반복 예약 일부 취소":"회의실 예약 취소",
+    message:rsv.seriesId?"이 날짜의 예약만 취소하시겠습니까?":"예약을 취소하시겠습니까?",
+    confirmText:"예약 취소",
+    danger:true,
+    impacts:[
+      {label:"회의실",value:room?.name||rsv.roomId},
+      {label:"예약명",value:rsv.title||"-"},
+      {label:"기간",value:`${rsv.date}${(rsv.endDate&&rsv.endDate!==rsv.date)?` ~ ${rsv.endDate}`:""}`},
+      {label:"시간",value:rsv.allDay?"종일":`${rsv.startTime||"-"}~${rsv.endTime||"-"}`},
+      {label:"반복 예약",value:rsv.seriesId?"이 날짜 1건만 취소":"아님",tone:rsv.seriesId?"warn":undefined}
+    ],
+    warnings:rsv.seriesId?["반복 전체를 취소하려면 '내 예약 내역'의 🔁 전체취소를 사용하세요."]:["취소 내역은 tombstone으로 기록되어 동기화 충돌을 방지합니다."]
+  });
+  if(!ok)return false;
   roomReservations=roomReservations.filter(r=>r.id!==rsvId);
   roomReservationTombstones.push({id:rsvId,ts:Date.now()});
   autoSaveToServerIfEnabled();showToast("예약이 취소되었습니다.","info");renderRoomBookingPage();
@@ -24482,7 +24924,7 @@ function openRoomEditModal(rsvId){
     </div>
     ${rsv.seriesId?`<div class="fz11 text-gray" style="margin-top:6px">🔁 반복 예약의 일부입니다. 이 수정/취소는 이 날짜에만 적용됩니다.</div>`:""}
   </div><div class="modal-foot">
-    <button class="btn btn-danger" onclick="if(deleteRoomReservation('${rsv.id}'))closeModal()">예약 취소</button>
+    <button class="btn btn-danger" onclick="deleteRoomReservation('${rsv.id}').then(ok=>{if(ok)closeModal()})">예약 취소</button>
     <button class="btn btn-secondary" onclick="closeModal()">닫기</button>
     <button class="btn btn-primary" onclick="saveRoomReservationEdit('${rsv.id}')">저장</button>
   </div></div>`);
@@ -24508,8 +24950,24 @@ function saveRoomReservationEdit(rsvId){
   rsv.roomId=roomId;rsv.title=title;rsv.startTime=start;rsv.endTime=end;rsv.date=startDate;rsv.endDate=endDate;rsv.allDay=allDay;rsv.updatedAt=new Date().toISOString();
   closeModal();autoSaveToServerIfEnabled();showToast("예약이 수정되었습니다.","success");renderRoomBookingPage();
 }
-function deleteRoomReservationSeries(seriesId){
-  if(!confirm("이 반복 예약의 모든 일정을 취소하시겠습니까?"))return;
+async function deleteRoomReservationSeries(seriesId){
+  const targets=roomReservations.filter(r=>r.seriesId===seriesId);
+  const sample=targets[0];
+  const room=(settings.meetingRooms||[]).find(r=>String(r.id)===String(sample?.roomId));
+  const ok=await askConfirmModal({
+    title:"반복 예약 전체 취소",
+    message:"이 반복 예약의 모든 일정을 취소하시겠습니까?",
+    confirmText:"전체 취소",
+    danger:true,
+    impacts:[
+      {label:"회의실",value:room?.name||sample?.roomId||"-"},
+      {label:"예약명",value:sample?.title||"-"},
+      {label:"취소 건수",value:`${targets.length}건`,tone:"danger"},
+      {label:"범위",value:targets.length?`${targets[0].date} ~ ${targets[targets.length-1].date}`:"-"}
+    ],
+    warnings:["반복 예약에 속한 모든 일정이 취소되고 각 예약 ID가 tombstone으로 기록됩니다."]
+  });
+  if(!ok)return;
   const now=Date.now();
   roomReservations.filter(r=>r.seriesId===seriesId).forEach(r=>roomReservationTombstones.push({id:r.id,ts:now}));
   roomReservations=roomReservations.filter(r=>r.seriesId!==seriesId);
@@ -24582,14 +25040,30 @@ function doGrantWelfare(empId){
   welfarePoints.push({id:`wp-${Date.now()}`,empId,points:amount,type:"grant",year:yr,desc,date:new Date().toISOString().slice(0,10),by:currentUser.id});
   closeModal();autoSaveToServerIfEnabled();showToast(`${amount.toLocaleString()}원 부여 완료`,"success");renderWelfarePointsPage();
 }
-function grantAllWelfarePoints(){
+async function grantAllWelfarePoints(){
   const yr=new Date().getFullYear();const amount=settings.welfarePointsPerYear||300000;
-  if(!confirm(`전체 직원에게 ${amount.toLocaleString()}원씩 ${yr}년 복지포인트를 부여하시겠습니까?`))return;
   const active=employees.filter(e=>e.active&&e.role!=="admin");
+  const desc=`${yr}년 복지포인트 부여`;
+  const alreadyCount=active.filter(emp=>welfarePoints.some(p=>String(p.empId)===String(emp.id)&&p.type==="grant"&&p.year===yr&&p.desc===desc)).length;
+  const ok=await askConfirmModal({
+    title:"복지포인트 전원 일괄 부여",
+    message:`${yr}년 복지포인트를 전체 활성 직원에게 일괄 부여하시겠습니까?`,
+    confirmText:"일괄 부여",
+    confirmClass:"btn-success",
+    impacts:[
+      {label:"대상 직원",value:`${active.length}명`},
+      {label:"1인당 금액",value:`${amount.toLocaleString()}원`},
+      {label:"신규 부여 예상",value:`${Math.max(0,active.length-alreadyCount)}건`},
+      {label:"이미 부여되어 건너뜀",value:`${alreadyCount}건`,tone:alreadyCount?"warn":undefined},
+      {label:"총 신규 금액",value:`${(Math.max(0,active.length-alreadyCount)*amount).toLocaleString()}원`,tone:"success"}
+    ],
+    warnings:["동일 연도·동일 설명으로 이미 부여된 직원은 중복 부여하지 않습니다."]
+  });
+  if(!ok)return;
   const today=new Date().toISOString().slice(0,10);
   active.forEach(emp=>{
-    const already=welfarePoints.some(p=>String(p.empId)===String(emp.id)&&p.type==="grant"&&p.year===yr&&p.desc===`${yr}년 복지포인트 부여`);
-    if(!already)welfarePoints.push({id:`wp-${Date.now()}-${emp.id}`,empId:emp.id,points:amount,type:"grant",year:yr,desc:`${yr}년 복지포인트 부여`,date:today,by:currentUser.id});
+    const already=welfarePoints.some(p=>String(p.empId)===String(emp.id)&&p.type==="grant"&&p.year===yr&&p.desc===desc);
+    if(!already)welfarePoints.push({id:`wp-${Date.now()}-${emp.id}`,empId:emp.id,points:amount,type:"grant",year:yr,desc,date:today,by:currentUser.id});
   });
   autoSaveToServerIfEnabled();showToast(`${active.length}명에게 복지포인트를 부여했습니다.`,"success");renderWelfarePointsPage();
 }
@@ -24978,7 +25452,7 @@ function _updateAwardRecentNotice(){
   const yr=parseInt($("#award-year")?.value)||new Date().getFullYear();
   el.innerHTML=emp&&_awardRecentlySelected(emp,yr)?`<div class="fz12" style="color:#dc2626;margin:-4px 0 8px">⚠ 최근 2개년 내 이미 선정된 인원입니다. 재선정이 제한될 수 있습니다.</div>`:"";
 }
-function doRegisterAward(){
+async function doRegisterAward(){
   const empId=$("#award-emp")?.value;
   const year=parseInt($("#award-year")?.value);
   const half=$("#award-half")?.value;
@@ -24988,14 +25462,43 @@ function doRegisterAward(){
   const note=$("#award-note")?.value.trim()||"";
   if(!empId||!date||!year||!reason){showToast("대상자/연도/선정일/선정 사유를 입력하세요.","error");return;}
   const emp=getEmp(empId);if(!emp)return;
-  if(_awardRecentlySelected(emp,year)&&!confirm("최근 2개년 내 이미 선정된 인원입니다. 그래도 등록하시겠습니까?"))return;
+  if(_awardRecentlySelected(emp,year)){
+    const ok=await askConfirmModal({
+      title:"우수사원 재선정 확인",
+      message:"최근 2개년 내 이미 선정된 인원입니다. 그래도 등록하시겠습니까?",
+      confirmText:"그래도 등록",
+      confirmClass:"btn-warning",
+      impacts:[
+        {label:"대상자",value:emp.name},
+        {label:"선정 연도/반기",value:`${year}년 ${half}`},
+        {label:"구분",value:`${tier}사원`},
+        {label:"영향",value:"최근 선정 제한 예외 등록",tone:"warn"}
+      ],
+      warnings:["재선정 사유가 감사·인사 기준에 맞는지 확인하세요."]
+    });
+    if(!ok)return;
+  }
   if(!emp.hrHistory)emp.hrHistory=[];
   emp.hrHistory.push({id:genId(),type:"award",date,year,half,tier,reason,desc:`${tier}사원 선정 (${year}년 ${half})`,before:"-",after:"-",note});
   closeModal();autoSaveToServerIfEnabled();showToast("우수사원 선정이 등록되었습니다.","success");renderWelfareSettingsPage();
 }
-function _removeAward(empId,hhId){
+async function _removeAward(empId,hhId){
   const emp=getEmp(empId);if(!emp)return;
-  if(!confirm("선정 이력을 삭제하시겠습니까?"))return;
+  const rec=(emp.hrHistory||[]).find(hh=>String(hh.id)===String(hhId));
+  const ok=await askConfirmModal({
+    title:"우수사원 선정 이력 삭제",
+    message:"선정 이력을 삭제하시겠습니까?",
+    confirmText:"삭제",
+    danger:true,
+    impacts:[
+      {label:"대상자",value:emp.name},
+      {label:"이력",value:rec?.desc||rec?.reason||hhId},
+      {label:"선정일",value:rec?.date||"-"},
+      {label:"영향",value:"직원 HR 이력에서 제외",tone:"danger"}
+    ],
+    warnings:["삭제된 선정 이력은 일반 화면에서 복구할 수 없습니다."]
+  });
+  if(!ok)return;
   emp.hrHistory=(emp.hrHistory||[]).filter(hh=>String(hh.id)!==String(hhId));
   autoSaveToServerIfEnabled();showToast("삭제되었습니다.","success");renderWelfareSettingsPage();
 }
@@ -25176,8 +25679,22 @@ function saveTrainingType(typeId){
   settings={...settings,mandatoryTrainingTypes:types};
   closeModal();autoSaveToServerIfEnabled();showToast(typeId?"교육 항목이 수정되었습니다.":"교육 항목이 추가되었습니다.","success");renderMandatoryTrainingPage();
 }
-function deleteTrainingType(typeId){
-  if(!confirm("이 교육 항목을 삭제하시겠습니까? 기존 이수 기록은 유지되지만 더 이상 현황에 표시되지 않습니다."))return;
+async function deleteTrainingType(typeId){
+  const tp=(settings.mandatoryTrainingTypes||[]).find(t=>String(t.id)===String(typeId));
+  const linked=mandatoryTraining.filter(t=>String(t.trainingType)===String(typeId)).length;
+  const ok=await askConfirmModal({
+    title:"법정교육 항목 삭제",
+    message:"이 교육 항목을 삭제하시겠습니까?",
+    confirmText:"삭제",
+    danger:true,
+    impacts:[
+      {label:"교육명",value:tp?.name||typeId},
+      {label:"기존 이수 기록",value:`${linked}건 유지`},
+      {label:"현황 표시",value:"삭제 후 대시보드/현황에서 제외",tone:"warn"}
+    ],
+    warnings:["기존 이수 기록 데이터는 보존되지만, 교육 항목 목록에서 빠져 현황 집계 대상이 아니게 됩니다."]
+  });
+  if(!ok)return;
   settings={...settings,mandatoryTrainingTypes:(settings.mandatoryTrainingTypes||[]).filter(t=>String(t.id)!==String(typeId))};
   autoSaveToServerIfEnabled();showToast("삭제되었습니다.","info");renderMandatoryTrainingPage();
 }
@@ -25585,11 +26102,24 @@ function saveScheduleEvent(eventId){
   showToast(eventId?"일정이 수정되었습니다.":"일정이 등록되었습니다.","success");
   _attCalRefresh();
 }
-function deleteScheduleEvent(eventId){
+async function deleteScheduleEvent(eventId){
   const ev=scheduleEvents.find(e=>String(e.id)===String(eventId));
   if(!ev)return;
   if(String(ev.authorId)!==String(currentUser.id)&&currentUser.role!=="admin"){showToast("본인이 등록한 일정만 삭제할 수 있습니다.","error");return;}
-  if(!confirm("이 일정을 삭제하시겠습니까?"))return;
+  const ok=await askConfirmModal({
+    title:"일정 삭제 확인",
+    message:"이 일정을 삭제하시겠습니까?",
+    confirmText:"삭제",
+    danger:true,
+    impacts:[
+      {label:"일정명",value:ev.title||eventId},
+      {label:"범위",value:ev.scope||"personal"},
+      {label:"기간",value:`${ev.startDate||"-"} ~ ${ev.endDate||ev.startDate||"-"}`},
+      {label:"영향",value:"캘린더에서 제거 및 tombstone 기록",tone:"warn"}
+    ],
+    warnings:["전사/부서/팀 일정은 여러 사용자의 캘린더에서 사라질 수 있습니다."]
+  });
+  if(!ok)return;
   _tombstone("scheduleEvents",ev.id);
   scheduleEvents=scheduleEvents.filter(e=>String(e.id)!==String(eventId));
   closeModal();autoSaveToServerIfEnabled();
