@@ -631,7 +631,8 @@ class _Engine:
         return score
 
     def search(self, query: str, n: int = 3, persona: str = None,
-               min_score: float = 0.10) -> List[Tuple[str, str, float, dict]]:
+               min_score: float = 0.10,
+               session_scope: str = "") -> List[Tuple[str, str, float, dict]]:
         if self._dirty:
             self._build()
         if not self._qa:
@@ -654,6 +655,11 @@ class _Engine:
                 continue
             p = meta.get('persona', '')
             if persona and p and p != persona:
+                continue
+            scope = meta.get('memory_scope', 'persona')
+            if scope == 'owner' and not (session_scope or '').startswith('owner:'):
+                continue
+            if scope == 'session' and meta.get('session_id', '') != session_scope:
                 continue
             s = self._cos(qv, self._vecs[i])
             bm25 = self._bm25(query_features, i)
@@ -708,6 +714,11 @@ class _Engine:
                 p = meta.get('persona', '')
                 if persona and p and p != persona:
                     continue
+                scope = meta.get('memory_scope', 'persona')
+                if scope == 'owner' and not (session_scope or '').startswith('owner:'):
+                    continue
+                if scope == 'session' and meta.get('session_id', '') != session_scope:
+                    continue
                 doc_chars = self._char_features[i]
                 denominator = len(query_chars) + len(doc_chars)
                 similarity = (
@@ -760,7 +771,10 @@ def _load_knowledge():
     try:
         from knowledge_base import KNOWLEDGE
         for item in KNOWLEDGE:
-            _engine.add(item['q'], item['a'], {'persona': item.get('persona', '')})
+            _engine.add(item['q'], item['a'], {
+                'persona': item.get('persona', ''),
+                'memory_type': 'fact', 'memory_scope': 'persona',
+            })
     except Exception as e:
         print(f"⚠️ 지식베이스 로드 실패: {e}")
 
@@ -783,7 +797,7 @@ def _load_knowledge():
         with _conn() as c:
             rows = [dict(r) for r in c.execute(
                 "SELECT id,content,persona,source,evidence_json,verified_at,valid_until,"
-                " version,updated_at"
+                " version,updated_at,memory_type,memory_scope,session_id"
                 " FROM learned_knowledge"
                 " WHERE source != '정적KB' ORDER BY id ASC"
             ).fetchall()]
@@ -801,6 +815,9 @@ def _load_knowledge():
                 "verified_at": row.get("verified_at", ""),
                 "valid_until": row.get("valid_until", ""),
                 "version": row.get("version", 1), "updated_at": row.get("updated_at", ""),
+                "memory_type": row.get("memory_type", "fact"),
+                "memory_scope": row.get("memory_scope", "persona"),
+                "session_id": row.get("session_id", ""),
             }
             is_qa = content.startswith("Q: ") and "\nA: " in content
             if is_qa and source in DEDUP_SOURCES:

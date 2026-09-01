@@ -223,6 +223,9 @@ def init_db(seed_static: bool = True):
             "ALTER TABLE learned_knowledge ADD COLUMN valid_until TEXT DEFAULT ''",
             "ALTER TABLE learned_knowledge ADD COLUMN version INTEGER NOT NULL DEFAULT 1",
             "ALTER TABLE learned_knowledge ADD COLUMN updated_at TEXT DEFAULT ''",
+            "ALTER TABLE learned_knowledge ADD COLUMN memory_type TEXT DEFAULT 'fact'",
+            "ALTER TABLE learned_knowledge ADD COLUMN memory_scope TEXT DEFAULT 'persona'",
+            "ALTER TABLE learned_knowledge ADD COLUMN session_id TEXT DEFAULT ''",
         ):
             try:
                 c.execute(column_sql)
@@ -297,6 +300,8 @@ def init_db(seed_static: bool = True):
             "ALTER TABLE memory_candidates ADD COLUMN review_nonce TEXT DEFAULT ''",
             "ALTER TABLE memory_candidates ADD COLUMN semantic_check_json TEXT DEFAULT '{}'",
             "ALTER TABLE memory_candidates ADD COLUMN semantic_checked_at TEXT DEFAULT ''",
+            "ALTER TABLE memory_candidates ADD COLUMN memory_type TEXT DEFAULT 'fact'",
+            "ALTER TABLE memory_candidates ADD COLUMN memory_scope TEXT DEFAULT 'persona'",
         ):
             try:
                 c.execute(column_sql)
@@ -320,6 +325,9 @@ def init_db(seed_static: bool = True):
             "ALTER TABLE memory_quarantine ADD COLUMN original_valid_until TEXT DEFAULT ''",
             "ALTER TABLE memory_quarantine ADD COLUMN original_version INTEGER NOT NULL DEFAULT 1",
             "ALTER TABLE memory_quarantine ADD COLUMN original_updated_at TEXT DEFAULT ''",
+            "ALTER TABLE memory_quarantine ADD COLUMN original_memory_type TEXT DEFAULT 'fact'",
+            "ALTER TABLE memory_quarantine ADD COLUMN original_memory_scope TEXT DEFAULT 'persona'",
+            "ALTER TABLE memory_quarantine ADD COLUMN original_session_id TEXT DEFAULT ''",
         ):
             try:
                 c.execute(column_sql)
@@ -364,6 +372,16 @@ def init_db(seed_static: bool = True):
             recorded_at TEXT NOT NULL,
             UNIQUE(memory_id, version)
         )""")
+        for column_sql in (
+            "ALTER TABLE memory_revisions ADD COLUMN memory_type TEXT DEFAULT 'fact'",
+            "ALTER TABLE memory_revisions ADD COLUMN memory_scope TEXT DEFAULT 'persona'",
+            "ALTER TABLE memory_revisions ADD COLUMN session_id TEXT DEFAULT ''",
+        ):
+            try:
+                c.execute(column_sql)
+            except Exception as e:
+                if "duplicate column" not in str(e).lower() and "already exists" not in str(e).lower():
+                    raise
         c.execute("""CREATE TABLE IF NOT EXISTS memory_quality_eval_runs (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             suite TEXT NOT NULL,
@@ -380,6 +398,7 @@ def init_db(seed_static: bool = True):
         c.execute("CREATE INDEX IF NOT EXISTS idx_candidates_status ON memory_candidates(status, persona, id)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_learned_persona_source ON learned_knowledge(persona, source, id)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_learned_validity ON learned_knowledge(valid_until, persona, id)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_learned_scope ON learned_knowledge(memory_scope,session_id,persona,id)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_quarantine_active ON memory_quarantine(restored_at, id)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_retrieval_created ON memory_retrieval_events(created_at, persona)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_revalidation_checked ON memory_revalidation_events(checked_at, source, id)")
@@ -438,6 +457,64 @@ def _source_validity_days(source: str) -> int | None:
 def _default_valid_until(source: str, base: datetime = None) -> str:
     days = _source_validity_days(source)
     return ((base or datetime.now()) + timedelta(days=days)).isoformat() if days else ""
+
+
+_MEMORY_TYPES = {"fact", "preference", "procedure", "context", "document"}
+_MEMORY_SCOPES = {"persona", "owner", "session"}
+
+
+def classify_memory_kind(question: str, answer: str = "", source: str = "") -> tuple[str, str]:
+    """보수적인 규칙으로 기억 유형과 접근 범위를 분류한다."""
+    question_text = (question or "").lower()
+    if (source or "").startswith("문서:"):
+        return "document", "persona"
+    preference_signals = (
+        "내 선호", "내 취향", "선호해", "좋아해", "싫어해",
+        "짧게 답변", "상세히 답변",
+        "존댓말로", "반말로", "한국어로 답변",
+    )
+    if any(signal in question_text for signal in preference_signals):
+        return "preference", "owner"
+    context_signals = (
+        "이번 대화", "이 대화", "이번 작업", "현재 작업", "이번 프로젝트",
+        "현재 프로젝트", "방금 말한", "앞에서 말한",
+    )
+    if any(signal in question_text for signal in context_signals):
+        return "context", "session"
+    procedure_signals = ("방법", "절차", "단계", "신청", "사용법", "어떻게")
+    if any(signal in question_text for signal in procedure_signals):
+        return "procedure", "persona"
+    return "fact", "persona"
+
+
+def _normalize_memory_kind(memory_type: str = "", memory_scope: str = "",
+                           question: str = "", answer: str = "", source: str = "") -> tuple[str, str]:
+    inferred_type, inferred_scope = classify_memory_kind(question, answer, source)
+    normalized_type = memory_type if memory_type in _MEMORY_TYPES else inferred_type
+    normalized_scope = memory_scope if memory_scope in _MEMORY_SCOPES else inferred_scope
+    if normalized_type == "preference" and not memory_scope:
+        normalized_scope = "owner"
+    if normalized_type == "context" and not memory_scope:
+        normalized_scope = "session"
+    return normalized_type, normalized_scope
+
+
+def _kind_valid_until(memory_type: str, source: str, base: datetime) -> str:
+    if memory_type == "preference":
+        try:
+            days = int(os.getenv("MEMORY_VALIDITY_PREFERENCE_DAYS", "365"))
+        except ValueError:
+            days = 365
+        days = max(1, min(days, 3650))
+        return (base + timedelta(days=days)).isoformat()
+    if memory_type == "context":
+        try:
+            days = int(os.getenv("MEMORY_VALIDITY_CONTEXT_DAYS", "14"))
+        except ValueError:
+            days = 14
+        days = max(1, min(days, 365))
+        return (base + timedelta(days=days)).isoformat()
+    return _default_valid_until(source, base)
 
 
 def _is_expired(valid_until: str, now: datetime = None) -> bool:
@@ -688,10 +765,17 @@ def store_memory(text: str, metadata: dict = None):
     source = meta.get("source", "")
     content = text[:2000]
     now = datetime.now()
+    memory_type, memory_scope = _normalize_memory_kind(
+        str(meta.get("memory_type") or ""), str(meta.get("memory_scope") or ""),
+        text[:500], text, source,
+    )
+    memory_session_id = (
+        _safe_session_id(str(meta.get("session_id") or "")) if memory_scope == "session" else ""
+    )
     verified_at = str(meta.get("verified_at") or now.isoformat())
     valid_until = meta.get("valid_until")
     if valid_until is None:
-        valid_until = _default_valid_until(source, now)
+        valid_until = _kind_valid_until(memory_type, source, now)
     evidence_json = _evidence_json(meta.get("evidence", []))
 
     with _conn() as c:
@@ -702,9 +786,10 @@ def store_memory(text: str, metadata: dict = None):
         if not existing:
             c.execute(
                 "INSERT INTO learned_knowledge"
-                " (content, persona, source, created_at, evidence_json, verified_at, valid_until)"
-                " VALUES (?,?,?,?,?,?,?)",
-                (content, persona, source, now.isoformat(), evidence_json, verified_at, valid_until),
+                " (content, persona, source, created_at, evidence_json, verified_at, valid_until,"
+                " memory_type,memory_scope,session_id) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (content, persona, source, now.isoformat(), evidence_json, verified_at, valid_until,
+                 memory_type, memory_scope, memory_session_id),
             )
 
     if existing:
@@ -716,6 +801,9 @@ def store_memory(text: str, metadata: dict = None):
             "evidence_json": evidence_json,
             "verified_at": verified_at,
             "valid_until": valid_until,
+            "memory_type": memory_type,
+            "memory_scope": memory_scope,
+            "session_id": memory_session_id,
         })
     except Exception as e:
         print(f"⚠️ 엔진 학습 실패: {e}")
@@ -750,7 +838,20 @@ def _diversify_search_results(results: list, limit: int) -> list:
     return selected
 
 
-def retrieve_best(query: str, n: int = 5, persona_id: str = None) -> dict:
+def list_owner_preferences(persona: str = "", limit: int = 5) -> list[dict]:
+    """공유 세션에는 노출하지 않을 승인된 소유자 선호 기억을 반환한다."""
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT id,content,persona,source,valid_until,updated_at FROM learned_knowledge"
+            " WHERE memory_type='preference' AND memory_scope='owner'"
+            " AND (persona=? OR persona='') ORDER BY id DESC LIMIT ?",
+            (persona or "", max(1, min(int(limit), 20))),
+        ).fetchall()
+    return [dict(row) for row in rows if not _is_expired(dict(row).get("valid_until", ""))]
+
+
+def retrieve_best(query: str, n: int = 5, persona_id: str = None,
+                  session_scope: str = "") -> dict:
     """
     TF-IDF 검색 결과를 점수와 함께 반환.
     Returns:
@@ -768,7 +869,9 @@ def retrieve_best(query: str, n: int = 5, persona_id: str = None) -> dict:
         engine = get_engine()
         # 의미 청크가 겹침 문맥을 포함하므로 상위 n개만 즉시 자르면 유사한 인접
         # 청크가 결과를 독점할 수 있다. 후보를 넓게 받은 뒤 중복을 제거한다.
-        candidates = engine.search(query, n=max(n * 4, 12), persona=persona_id)
+        candidates = engine.search(
+            query, n=max(n * 4, 12), persona=persona_id, session_scope=session_scope
+        )
         expired_skipped = sum(
             1 for _q, _a, _score, meta in candidates if _is_expired(meta.get("valid_until", ""))
         )
@@ -1002,13 +1105,16 @@ def _record_memory_revision(c, row: dict, action: str, reason: str = "",
     c.execute(
         "INSERT OR IGNORE INTO memory_revisions"
         " (memory_id,version,content,persona,source,created_at,evidence_json,verified_at,"
-        " valid_until,action,reason,actor,recorded_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        " valid_until,action,reason,actor,recorded_at,memory_type,memory_scope,session_id)"
+        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (
             int(row["id"]), max(1, int(row.get("version") or 1)), row.get("content", ""),
             row.get("persona", ""), row.get("source", ""), row.get("created_at", ""),
             row.get("evidence_json", "[]"), row.get("verified_at", ""),
             row.get("valid_until", ""), (action or "update")[:40], safe_reason[:500],
             (actor or "owner")[:80], datetime.now().isoformat(),
+            row.get("memory_type", "fact"), row.get("memory_scope", "persona"),
+            row.get("session_id", ""),
         ),
     )
 
@@ -1017,7 +1123,9 @@ def upsert_knowledge(question: str, answer: str, persona: str,
                      source: str = "직접입력", evidence=None,
                      verified_at: str = "", valid_until: str = None,
                      actor: str = "owner", reason: str = "지식 수정",
-                     expected_version: int | None = None) -> bool:
+                     expected_version: int | None = None,
+                     memory_type: str = "", memory_scope: str = "",
+                     session_id: str = "") -> bool:
     """Q&A를 KB에 저장 — 동일 질문이 있으면 최신 내용으로 업데이트, 없으면 신규 추가.
     Returns True if updated (existing replaced), False if inserted (new entry).
     """
@@ -1029,16 +1137,21 @@ def upsert_knowledge(question: str, answer: str, persona: str,
     content = f"Q: {question}\nA: {answer[:1500]}"
     now_dt = datetime.now()
     now = now_dt.isoformat()
+    memory_type, memory_scope = _normalize_memory_kind(
+        memory_type, memory_scope, question, answer, source
+    )
+    memory_session_id = _safe_session_id(session_id) if memory_scope == "session" else ""
     verified_at = verified_at or now
     if valid_until is None:
-        valid_until = _default_valid_until(source, now_dt)
+        valid_until = _kind_valid_until(memory_type, source, now_dt)
     evidence_json = _evidence_json(evidence)
     q_lower = question.strip().lower()
 
     with _conn() as c:
         rows = c.execute(
             "SELECT id,content,persona,source,created_at,evidence_json,verified_at,"
-            " valid_until,version,updated_at FROM learned_knowledge"
+            " valid_until,version,updated_at,memory_type,memory_scope,session_id"
+            " FROM learned_knowledge"
             " WHERE persona=? AND source NOT IN ('정적KB') ORDER BY id DESC",
             (persona,),
         ).fetchall()
@@ -1048,7 +1161,12 @@ def upsert_knowledge(question: str, answer: str, persona: str,
             rc = dict(row)["content"]
             if rc.startswith("Q: ") and "\nA: " in rc:
                 eq = rc.split("\nA: ", 1)[0][3:].strip().lower()
-                if eq == q_lower:
+                same_scope = (
+                    (dict(row).get("memory_scope") or "persona") == memory_scope
+                    and (memory_scope != "session"
+                         or (dict(row).get("session_id") or "") == memory_session_id)
+                )
+                if eq == q_lower and same_scope:
                     existing_id = dict(row)["id"]
                     break
 
@@ -1062,10 +1180,12 @@ def upsert_knowledge(question: str, answer: str, persona: str,
             _record_memory_revision(c, current, "update", reason, actor)
             c.execute(
                 "UPDATE learned_knowledge SET content=?, source=?, created_at=?,"
-                " evidence_json=?, verified_at=?, valid_until=?, version=?, updated_at=?"
+                " evidence_json=?, verified_at=?, valid_until=?, version=?, updated_at=?,"
+                " memory_type=?,memory_scope=?,session_id=?"
                 " WHERE id=? AND version=?",
                 (content, source, now, evidence_json, verified_at, valid_until,
-                 current_version + 1, now, existing_id, current_version),
+                 current_version + 1, now, memory_type, memory_scope, memory_session_id,
+                 existing_id, current_version),
             )
             changed = c.execute(
                 "SELECT version FROM learned_knowledge WHERE id=?", (existing_id,)
@@ -1077,8 +1197,10 @@ def upsert_knowledge(question: str, answer: str, persona: str,
             c.execute(
                 "INSERT INTO learned_knowledge"
                 " (content, persona, source, created_at, evidence_json, verified_at, valid_until,"
-                " version,updated_at) VALUES (?,?,?,?,?,?,?,1,?)",
-                (content, persona, source, now, evidence_json, verified_at, valid_until, now),
+                " version,updated_at,memory_type,memory_scope,session_id)"
+                " VALUES (?,?,?,?,?,?,?,1,?,?,?,?)",
+                (content, persona, source, now, evidence_json, verified_at, valid_until, now,
+                 memory_type, memory_scope, memory_session_id),
             )
             updated = False
 
@@ -1089,6 +1211,8 @@ def upsert_knowledge(question: str, answer: str, persona: str,
             get_engine().add(question, answer[:2000], {
                 "persona": persona, "source": source, "evidence_json": evidence_json,
                 "verified_at": verified_at, "valid_until": valid_until,
+                "memory_type": memory_type, "memory_scope": memory_scope,
+                "session_id": memory_session_id,
             })
     except Exception as e:
         print(f"⚠️ 엔진 학습 실패: {e}")
@@ -1098,7 +1222,8 @@ def upsert_knowledge(question: str, answer: str, persona: str,
 
 def store_memory_candidate(question: str, answer: str, persona: str = "hr",
                            session_id: str = "legacy", source: str = "자동응답",
-                           evidence=None, valid_until: str = None) -> int | None:
+                           evidence=None, valid_until: str = None,
+                           memory_type: str = "", memory_scope: str = "") -> int | None:
     """검증 전 답변을 장기기억이 아닌 승인 대기 후보로 저장한다.
 
     같은 질문·답변 조합은 페르소나별로 한 번만 보관한다. 승인된 후보를 다시
@@ -1112,18 +1237,25 @@ def store_memory_candidate(question: str, answer: str, persona: str = "hr",
         return None
     q = question.strip()[:1000]
     a = answer.strip()[:4000]
-    digest = hashlib.sha256(f"{persona}\n{q.lower()}\n{a}".encode("utf-8")).hexdigest()
+    memory_type, memory_scope = _normalize_memory_kind(
+        memory_type, memory_scope, q, a, source
+    )
+    safe_session_id = _safe_session_id(session_id)
+    scope_key = safe_session_id if memory_scope == "session" else memory_scope
+    digest = hashlib.sha256(
+        f"{persona}\n{scope_key}\n{q.lower()}\n{a}".encode("utf-8")
+    ).hexdigest()
     now_dt = datetime.now()
     now = now_dt.isoformat()
     evidence_json = _evidence_json(evidence)
     if valid_until is None:
-        valid_until = _default_valid_until(source, now_dt)
+        valid_until = _kind_valid_until(memory_type, source, now_dt)
     with _conn() as c:
         c.execute(
             "INSERT INTO memory_candidates"
             " (content_hash, question, answer, persona, session_id, source, status,"
-            " created_at, seen_count, last_seen_at, evidence_json, verified_at, valid_until)"
-            " VALUES (?,?,?,?,?,?,'pending',?,1,?,?,?,?)"
+            " created_at, seen_count, last_seen_at, evidence_json, verified_at, valid_until,"
+            " memory_type,memory_scope) VALUES (?,?,?,?,?,?,'pending',?,1,?,?,?,?,?,?)"
             " ON CONFLICT(content_hash,persona) DO UPDATE SET"
             " seen_count=CASE WHEN status='pending' THEN seen_count+1 ELSE seen_count END,"
             " last_seen_at=CASE WHEN status='pending' THEN excluded.last_seen_at ELSE last_seen_at END,"
@@ -1131,8 +1263,8 @@ def store_memory_candidate(question: str, answer: str, persona: str = "hr",
             " THEN excluded.evidence_json ELSE evidence_json END,"
             " verified_at=CASE WHEN status='pending' THEN excluded.verified_at ELSE verified_at END,"
             " valid_until=CASE WHEN status='pending' THEN excluded.valid_until ELSE valid_until END",
-            (digest, q, a, persona, _safe_session_id(session_id), source, now, now,
-             evidence_json, now, valid_until),
+            (digest, q, a, persona, safe_session_id, source, now, now,
+             evidence_json, now, valid_until, memory_type, memory_scope),
         )
         row = c.execute(
             "SELECT id, status FROM memory_candidates WHERE content_hash=? AND persona=?",
@@ -1250,11 +1382,12 @@ def _contradiction_reasons(old_answer: str, new_answer: str,
 
 
 def find_memory_contradictions(question: str, answer: str, persona: str,
-                               limit: int = 5) -> list[dict]:
+                               limit: int = 5, session_scope: str = "") -> list[dict]:
     """현재 유효한 장기기억 중 후보와 명시적으로 충돌할 가능성이 높은 항목."""
     with _conn() as c:
         rows = c.execute(
-            "SELECT id, content, source, evidence_json, verified_at, valid_until"
+            "SELECT id, content, source, evidence_json, verified_at, valid_until,"
+            " memory_scope,session_id"
             " FROM learned_knowledge WHERE persona=? ORDER BY id DESC",
             (persona,),
         ).fetchall()
@@ -1262,6 +1395,11 @@ def find_memory_contradictions(question: str, answer: str, persona: str,
     conflicts = []
     for row in rows:
         item = dict(row)
+        scope = item.get("memory_scope") or "persona"
+        if scope == "owner" and not (session_scope or "").startswith("owner:"):
+            continue
+        if scope == "session" and item.get("session_id", "") != session_scope:
+            continue
         if _is_expired(item.get("valid_until", "")):
             continue
         old_question, old_answer = _qa_parts(item.get("content", ""))
@@ -1292,20 +1430,27 @@ def semantic_contradiction_context(candidate_id: int, limit: int = 8) -> dict | 
     """LLM 2차 검증에 보낼 후보와 관련 기억을 최소 범위로 구성한다."""
     with _conn() as c:
         candidate_row = c.execute(
-            "SELECT id,question,answer,persona,source,status,last_seen_at"
+            "SELECT id,question,answer,persona,source,status,last_seen_at,session_id,"
+            " memory_type,memory_scope"
             " FROM memory_candidates WHERE id=?", (int(candidate_id),)
         ).fetchone()
         if not candidate_row:
             return None
         candidate = dict(candidate_row)
         rows = c.execute(
-            "SELECT id,content,source,verified_at,valid_until FROM learned_knowledge"
-            " WHERE persona=? ORDER BY id DESC", (candidate["persona"],)
+            "SELECT id,content,source,verified_at,valid_until,memory_scope,session_id"
+            " FROM learned_knowledge WHERE persona=? ORDER BY id DESC", (candidate["persona"],)
         ).fetchall()
     related = []
+    candidate_session = candidate.get("session_id", "")
     candidate_numbers = set(re.findall(r"\d+(?:[.,]\d+)?", candidate["answer"] or ""))
     for row in rows:
         item = dict(row)
+        scope = item.get("memory_scope") or "persona"
+        if scope == "owner" and not candidate_session.startswith("owner:"):
+            continue
+        if scope == "session" and item.get("session_id", "") != candidate_session:
+            continue
         if _is_expired(item.get("valid_until", "")):
             continue
         question, answer = _qa_parts(item.get("content", ""))
@@ -1322,7 +1467,11 @@ def semantic_contradiction_context(candidate_id: int, limit: int = 8) -> dict | 
         key=lambda item: (item["question_similarity"], item["number_overlap"], item["memory_id"]),
         reverse=True,
     )
-    return {"candidate": candidate, "related_memories": related[:max(1, min(int(limit), 12))]}
+    candidate_for_llm = {key: value for key, value in candidate.items() if key != "session_id"}
+    return {
+        "candidate": candidate_for_llm,
+        "related_memories": related[:max(1, min(int(limit), 12))],
+    }
 
 
 def save_candidate_semantic_check(candidate_id: int, result: dict) -> dict:
@@ -1374,7 +1523,8 @@ def list_memory_candidates(status: str = "pending", persona: str = "",
         params.append(persona)
     sql = ("SELECT id, question, answer, persona, session_id, source, status,"
            " created_at, reviewed_at, seen_count, last_seen_at, evidence_json,"
-           " verified_at,valid_until,semantic_check_json,semantic_checked_at FROM memory_candidates")
+           " verified_at,valid_until,semantic_check_json,semantic_checked_at,"
+           " memory_type,memory_scope FROM memory_candidates")
     if where:
         sql += " WHERE " + " AND ".join(where)
     sql += " ORDER BY id DESC LIMIT ? OFFSET ?"
@@ -1389,7 +1539,8 @@ def list_memory_candidates(status: str = "pending", persona: str = "",
             item["semantic_check"] = {}
         item["validity_status"] = "expired" if _is_expired(item.get("valid_until", "")) else "current"
         item["contradictions"] = find_memory_contradictions(
-            item["question"], item["answer"], item["persona"]
+            item["question"], item["answer"], item["persona"],
+            session_scope=item.get("session_id", ""),
         ) if item.get("status") == "pending" else []
         item.update(score_memory_candidate(
             item["question"], item["answer"], item.get("source", ""),
@@ -1452,7 +1603,8 @@ def review_memory_candidate(candidate_id: int, approve: bool, force: bool = Fals
         protected_prefixes = ("정적KB", "직접입력", "문서:")
         with _conn() as c:
             existing_rows = c.execute(
-                "SELECT content, source FROM learned_knowledge WHERE persona=?",
+                "SELECT content,source,memory_scope,session_id"
+                " FROM learned_knowledge WHERE persona=?",
                 (item["persona"],),
             ).fetchall()
         q_lower = item["question"].strip().lower()
@@ -1460,6 +1612,11 @@ def review_memory_candidate(candidate_id: int, approve: bool, force: bool = Fals
             existing = dict(existing)
             content = existing["content"] or ""
             source = existing["source"] or ""
+            scope = existing.get("memory_scope") or "persona"
+            if scope == "owner" and not item.get("session_id", "").startswith("owner:"):
+                continue
+            if scope == "session" and existing.get("session_id", "") != item.get("session_id", ""):
+                continue
             if not (content.startswith("Q: ") and "\nA: " in content):
                 continue
             existing_q = content.split("\nA: ", 1)[0][3:].strip().lower()
@@ -1473,7 +1630,8 @@ def review_memory_candidate(candidate_id: int, approve: bool, force: bool = Fals
                 item["protected_source"] = source
                 return item
         contradictions = find_memory_contradictions(
-            item["question"], item["answer"], item["persona"]
+            item["question"], item["answer"], item["persona"],
+            session_scope=item.get("session_id", ""),
         )
         try:
             semantic = json.loads(item.get("semantic_check_json", "{}") or "{}")
@@ -1510,6 +1668,9 @@ def review_memory_candidate(candidate_id: int, approve: bool, force: bool = Fals
             verified_at=item.get("verified_at", "") or datetime.now().isoformat(),
             valid_until=item.get("valid_until", "") or _default_valid_until(item.get("source", "")),
             actor=reviewer, reason=safe_reason or "기억 후보 승인",
+            memory_type=item.get("memory_type", "fact"),
+            memory_scope=item.get("memory_scope", "persona"),
+            session_id=item.get("session_id", ""),
         )
     except Exception:
         with _conn() as c:
@@ -1542,7 +1703,8 @@ def list_memory_revalidation(days: int = 30, persona: str = "",
     with _conn() as c:
         rows = c.execute(
             "SELECT id, content, persona, source, created_at, evidence_json,"
-            " verified_at,valid_until,version,updated_at FROM learned_knowledge WHERE "
+            " verified_at,valid_until,version,updated_at,memory_type,memory_scope,session_id"
+            " FROM learned_knowledge WHERE "
             + " AND ".join(where)
             + " ORDER BY valid_until ASC, id DESC LIMIT ? OFFSET ?",
             params,
@@ -1571,7 +1733,8 @@ def verify_learned_memory(item_id: int, valid_days: int | None = None,
     with _conn() as c:
         row = c.execute(
             "SELECT id,content,persona,source,created_at,evidence_json,verified_at,valid_until,"
-            " version,updated_at FROM learned_knowledge WHERE id=?",
+            " version,updated_at,memory_type,memory_scope,session_id"
+            " FROM learned_knowledge WHERE id=?",
             (int(item_id),),
         ).fetchone()
     if not row:
@@ -1655,13 +1818,15 @@ def get_memory_history(item_id: int) -> dict | None:
     with _conn() as c:
         current_row = c.execute(
             "SELECT id,content,persona,source,created_at,evidence_json,verified_at,valid_until,"
-            " version,updated_at FROM learned_knowledge WHERE id=?", (int(item_id),)
+            " version,updated_at,memory_type,memory_scope,session_id"
+            " FROM learned_knowledge WHERE id=?", (int(item_id),)
         ).fetchone()
         if not current_row:
             return None
         revision_rows = c.execute(
             "SELECT id,memory_id,version,content,persona,source,created_at,evidence_json,"
-            " verified_at,valid_until,action,reason,actor,recorded_at"
+            " verified_at,valid_until,action,reason,actor,recorded_at,"
+            " memory_type,memory_scope,session_id"
             " FROM memory_revisions WHERE memory_id=? ORDER BY version DESC",
             (int(item_id),),
         ).fetchall()
@@ -1685,7 +1850,8 @@ def rollback_memory(item_id: int, target_version: int, expected_version: int,
     with _conn() as c:
         current_row = c.execute(
             "SELECT id,content,persona,source,created_at,evidence_json,verified_at,valid_until,"
-            " version,updated_at FROM learned_knowledge WHERE id=?", (int(item_id),)
+            " version,updated_at,memory_type,memory_scope,session_id"
+            " FROM learned_knowledge WHERE id=?", (int(item_id),)
         ).fetchone()
         if not current_row:
             return None
@@ -1706,12 +1872,15 @@ def rollback_memory(item_id: int, target_version: int, expected_version: int,
         now = datetime.now().isoformat()
         c.execute(
             "UPDATE learned_knowledge SET content=?,persona=?,source=?,created_at=?,"
-            " evidence_json=?,verified_at=?,valid_until=?,version=?,updated_at=?"
+            " evidence_json=?,verified_at=?,valid_until=?,version=?,updated_at=?,"
+            " memory_type=?,memory_scope=?,session_id=?"
             " WHERE id=? AND version=?",
             (
                 target["content"], target["persona"], target["source"], target["created_at"],
                 target.get("evidence_json", "[]"), target.get("verified_at", ""),
                 target.get("valid_until", ""), current_version + 1, now,
+                target.get("memory_type", "fact"), target.get("memory_scope", "persona"),
+                target.get("session_id", ""),
                 int(item_id), current_version,
             ),
         )
@@ -1736,7 +1905,8 @@ def quarantine_learned_rows(rows: list, reason: str) -> int:
     with _conn() as c:
         fresh_rows = [dict(r) for r in c.execute(
             "SELECT id, content, persona, source, created_at, evidence_json,"
-            f" verified_at,valid_until,version,updated_at FROM learned_knowledge WHERE id IN ({placeholders})",
+            f" verified_at,valid_until,version,updated_at,memory_type,memory_scope,session_id"
+            f" FROM learned_knowledge WHERE id IN ({placeholders})",
             ids,
         ).fetchall()]
         for r in fresh_rows:
@@ -1745,8 +1915,9 @@ def quarantine_learned_rows(rows: list, reason: str) -> int:
             c.execute(
                 "INSERT INTO memory_quarantine"
                 " (original_id, content, persona, source, original_created_at, reason, quarantined_at,"
-                " evidence_json,original_verified_at,original_valid_until,original_version,original_updated_at)"
-                " SELECT ?,?,?,?,?,?,?,?,?,?,?,? WHERE NOT EXISTS ("
+                " evidence_json,original_verified_at,original_valid_until,original_version,original_updated_at,"
+                " original_memory_type,original_memory_scope,original_session_id)"
+                " SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?,?,? WHERE NOT EXISTS ("
                 " SELECT 1 FROM memory_quarantine"
                 " WHERE original_id=? AND content=? AND restored_at='')",
                 (
@@ -1754,6 +1925,8 @@ def quarantine_learned_rows(rows: list, reason: str) -> int:
                     r.get("created_at", ""), reason, now, r.get("evidence_json", "[]"),
                     r.get("verified_at", ""), r.get("valid_until", ""),
                     max(1, int(r.get("version") or 1)), r.get("updated_at", ""),
+                    r.get("memory_type", "fact"), r.get("memory_scope", "persona"),
+                    r.get("session_id", ""),
                     r["id"], r["content"],
                 ),
             )
@@ -1794,8 +1967,9 @@ def restore_quarantined_memory(quarantine_id: int) -> dict | None:
             raise MemoryVersionConflict("동일 기억이 다른 ID로 이미 존재해 중복 복구하지 않았습니다.")
         c.execute(
             "INSERT INTO learned_knowledge"
-            " (id,content,persona,source,created_at,evidence_json,verified_at,valid_until,version,updated_at)"
-            " SELECT ?,?,?,?,?,?,?,?,?,? WHERE NOT EXISTS ("
+            " (id,content,persona,source,created_at,evidence_json,verified_at,valid_until,version,updated_at,"
+            " memory_type,memory_scope,session_id)"
+            " SELECT ?,?,?,?,?,?,?,?,?,?,?,?,? WHERE NOT EXISTS ("
             " SELECT 1 FROM learned_knowledge WHERE id=?)",
             (
                 item["original_id"], item["content"], item["persona"], item["source"],
@@ -1803,6 +1977,9 @@ def restore_quarantined_memory(quarantine_id: int) -> dict | None:
                 item.get("evidence_json", "[]"), item.get("original_verified_at", ""),
                 item.get("original_valid_until", ""),
                 max(1, int(item.get("original_version") or 1)), item.get("original_updated_at", ""),
+                item.get("original_memory_type", "fact"),
+                item.get("original_memory_scope", "persona"),
+                item.get("original_session_id", ""),
                 item["original_id"],
             ),
         )
@@ -2139,6 +2316,14 @@ def memory_stats(session_id: str = None) -> dict:
         quality_eval_count = c.execute(
             "SELECT COUNT(*) FROM memory_quality_eval_runs"
         ).fetchone()[0]
+        type_rows = c.execute(
+            "SELECT memory_type,COUNT(*) AS total FROM learned_knowledge"
+            " GROUP BY memory_type ORDER BY total DESC"
+        ).fetchall()
+        scope_rows = c.execute(
+            "SELECT memory_scope,COUNT(*) AS total FROM learned_knowledge"
+            " GROUP BY memory_scope ORDER BY total DESC"
+        ).fetchall()
 
     try:
         from engine import get_engine
@@ -2155,6 +2340,8 @@ def memory_stats(session_id: str = None) -> dict:
         "quarantined_items": quarantine_count,
         "retrieval_events": retrieval_count,
         "quality_eval_runs": quality_eval_count,
+        "memory_by_type": {row["memory_type"] or "fact": row["total"] for row in type_rows},
+        "memory_by_scope": {row["memory_scope"] or "persona": row["total"] for row in scope_rows},
         "engine":         "자체 TF-IDF·BM25·문자 n-gram 엔진 (외부 API 없음)",
         "db_backend":     "Turso (클라우드)" if _USE_TURSO else f"SQLite ({DB_PATH})",
     }

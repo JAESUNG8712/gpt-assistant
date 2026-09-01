@@ -31,6 +31,7 @@ def main():
 
         client = TestClient(main.app)
         assert client.get("/health").json()["retrieval_engine"] == "tfidf-bm25-char3-v1"
+        assert client.get("/health").json()["memory_schema"] == "typed-scopes-v1"
         owner_token = "test-owner-token"
 
         # 소유자 데이터 API와 일반 채팅은 인증 없이는 열리지 않아야 한다.
@@ -60,6 +61,35 @@ def main():
             },
         )
         assert secret_learn.status_code == 400
+        assert client.post(
+            "/learn/text", params={"token": owner_token},
+            json={
+                "question": "유형 오류", "answer": "잘못된 유형입니다.",
+                "persona": "dev", "memory_type": "unknown",
+            },
+        ).status_code == 400
+        assert client.post(
+            "/learn/text", params={"token": owner_token},
+            json={
+                "question": "이번 프로젝트 이름은 API 테스트입니다",
+                "answer": "API 테스트 프로젝트 맥락입니다.", "persona": "dev",
+            },
+        ).status_code == 400
+        preference_learn = client.post(
+            "/learn/text", params={"token": owner_token},
+            json={
+                "question": "나는 핵심부터 짧게 답변받는 것을 선호해요",
+                "answer": "핵심부터 간결하게 답변합니다.", "persona": "dev",
+            },
+        )
+        assert preference_learn.status_code == 200
+        assert preference_learn.json()["memory_type"] == "preference"
+        assert preference_learn.json()["memory_scope"] == "owner"
+        preference_items = client.get(
+            "/admin/learned",
+            params={"token": owner_token, "memory_type": "preference"},
+        ).json()["items"]
+        assert len(preference_items) == 1 and preference_items[0]["memory_scope"] == "owner"
 
         # 관측 통계와 보존정책은 인증 후 조회 가능하되 실제 정리는 확인문구 필수.
         assert client.get(
