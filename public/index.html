@@ -3037,23 +3037,44 @@ function savePastGrade(empId){
   const score=document.getElementById("pg-score")?.value;
   const note=document.getElementById("pg-note")?.value.trim()||"";
   if(!yr||!grade){showToast("연도와 등급을 선택하세요.","error");return;}
+  const now=new Date().toISOString();
   employees=employees.map(e=>{
     if(e.id!==empId)return e;
     const gr={...(e.gradeResults||{})};
     gr[yr]={grade,score:score?Number(score):null,manual:true,note,computedAt:ts()};
-    return{...e,gradeResults:gr};
+    return{...e,gradeResults:gr,updatedAt:now};
   });
   if(empId===currentUser.id){const updated=employees.find(e=>e.id===empId);if(updated)currentUser=updated;}
+  autoSaveToServerIfEnabled();
   showToast(`${yr}년 ${grade}등급이 저장되었습니다.`,"success");
   openPastGradeModal(empId);
 }
-function deletePastGrade(empId,yr){
+async function deletePastGrade(empId,yr){
+  const emp=getEmp(empId);if(!emp)return;
+  const rec=(emp.gradeResults||{})[yr];
+  const ok=await askConfirmModal({
+    title:"과거 평가등급 삭제 확인",
+    message:"등록된 과거 평가등급을 삭제하시겠습니까?",
+    confirmText:"등급 삭제",
+    danger:true,
+    impacts:[
+      {label:"대상자",value:emp.name},
+      {label:"평가 연도",value:`${yr}년`},
+      {label:"현재 등급",value:rec?.grade||"-",tone:"warn"},
+      {label:"삭제 후 영향",value:"등급 이력/리포트 참조에서 제외",tone:"danger"}
+    ],
+    warnings:["삭제 즉시 서버 저장이 요청됩니다."]
+  });
+  if(!ok)return;
+  const now=new Date().toISOString();
   employees=employees.map(e=>{
     if(e.id!==empId)return e;
     const gr={...(e.gradeResults||{})};
     delete gr[yr];
-    return{...e,gradeResults:gr};
+    return{...e,gradeResults:gr,updatedAt:now};
   });
+  if(empId===currentUser.id){const updated=employees.find(e=>e.id===empId);if(updated)currentUser=updated;}
+  autoSaveToServerIfEnabled();
   showToast(`${yr}년 등급이 삭제되었습니다.`,"info");
   openPastGradeModal(empId);
 }
@@ -3753,12 +3774,30 @@ function saveEvalConfig(targetId, year){
     });
     showToast("평가자 기준이 저장되었습니다. 세션 생성 시 반영됩니다.","success");
   }
+  autoSaveToServerIfEnabled();
   closeModal();
   renderCompEval();
 }
 
-function resetEvalConfig(targetId, year){
+async function resetEvalConfig(targetId, year){
+  const target=getEmp(targetId);
+  const cfg=evaluatorConfig[targetId];
+  const ok=await askConfirmModal({
+    title:"평가자 기준 초기화 확인",
+    message:"개별 평가자 기준을 삭제하고 시스템 기본 추천 기준으로 되돌립니다.",
+    confirmText:"기본값 초기화",
+    danger:true,
+    impacts:[
+      {label:"대상자",value:target?.name||targetId},
+      {label:"평가 연도",value:`${year}년`},
+      {label:"현재 설정",value:cfg?(cfg.fixedEvaluatorIds?`고정 평가자 ${cfg.fixedEvaluatorIds.length}명`:"상한 수 조정"):"개별 설정 없음"},
+      {label:"초기화 후 영향",value:"다음 세션 생성부터 기본 추천 기준 적용",tone:"warn"}
+    ],
+    warnings:["이미 생성된 평가 세션은 별도로 재생성하지 않는 한 그대로 유지됩니다."]
+  });
+  if(!ok)return;
   delete evaluatorConfig[targetId];
+  autoSaveToServerIfEnabled();
   showToast("기본값으로 초기화되었습니다.","info");
   closeModal();
   renderCompEval();
@@ -5399,8 +5438,25 @@ function previewSnapshot(snapId){
   <div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal()">닫기</button><button class="btn btn-danger" onclick="closeModal();confirmRestoreSnapshot('${snapId}')">이 스냅샷으로 복원</button></div></div>`);
 }
 
-function deleteSnapshot(snapId){
+async function deleteSnapshot(snapId){
   let snaps=getSnapshots();
+  const snap=snaps.find(s=>s.id===snapId);
+  if(!snap){showToast("스냅샷을 찾을 수 없습니다.","error");return;}
+  const d=snap?.state?.data||snap?.state||{};
+  const ok=await askConfirmModal({
+    title:"스냅샷 삭제 확인",
+    message:"저장된 스냅샷을 삭제하시겠습니까?",
+    confirmText:"스냅샷 삭제",
+    danger:true,
+    impacts:[
+      {label:"스냅샷",value:snap?.label||snapId},
+      {label:"생성 시점",value:snap?.createdAt?new Date(snap.createdAt).toLocaleString("ko-KR"):"-"},
+      {label:"포함 데이터",value:`직원 ${(d.employees||[]).length}명 · KPI ${(d.kpiEntries||[]).length}건`},
+      {label:"삭제 후 영향",value:"로컬 스냅샷 목록에서 제거",tone:"danger"}
+    ],
+    warnings:["운영 DB 데이터는 변경하지 않지만, 이 브라우저의 해당 스냅샷은 복구할 수 없습니다."]
+  });
+  if(!ok)return;
   snaps=snaps.filter(s=>s.id!==snapId);
   localStorage.setItem(SNAPSHOT_KEY,JSON.stringify(snaps));
   showToast("스냅샷이 삭제되었습니다.","info");
@@ -9215,8 +9271,47 @@ function rejectKpi(id,stage){
   kpiEntries=kpiEntries.map(k=>k.id===id?{...k,[stage==="first"?"firstStatus":"finalStatus"]:"rejected",[stage==="first"?"firstReason":"finalReason"]:r,updatedAt:new Date().toISOString()}:k);closeModal();showToast("반려 처리되었습니다.","info");autoSaveToServerIfEnabled();renderApprovals();
 }
  // replaced by saveFirstEval
-function approveRequest(rid){const r=changeRequests.find(x=>x.id===rid);if(!r)return;kpiEntries=kpiEntries.map(k=>k.id===r.kpiId?{...k,...(r.after||{}),updatedAt:new Date().toISOString()}:k);changeRequests=changeRequests.map(x=>x.id===rid?{...x,status:"approved",approvedBy:currentUser.id,processedAt:ts(),updatedAt:new Date().toISOString()}:x);showToast("수정 요청을 승인했습니다.","success");autoSaveToServerIfEnabled();renderApprovals();}
-function rejectRequest(rid){changeRequests=changeRequests.map(x=>x.id===rid?{...x,status:"rejected",processedAt:ts(),updatedAt:new Date().toISOString()}:x);showToast("수정 요청을 반려했습니다.","info");autoSaveToServerIfEnabled();renderApprovals();}
+async function approveRequest(rid){
+  const r=changeRequests.find(x=>x.id===rid);if(!r)return;
+  const k=getKpi(r.kpiId),owner=getEmp(r.empId||k?.userId);
+  const changedFields=Object.keys(r.after||{}).filter(key=>JSON.stringify(r.before?.[key])!==JSON.stringify(r.after?.[key]));
+  const ok=await askConfirmModal({
+    title:"KPI 수정 요청 승인",
+    message:"요청된 변경 내용을 KPI 항목에 반영하시겠습니까?",
+    confirmText:"승인 및 반영",
+    confirmClass:"btn-success",
+    impacts:[
+      {label:"대상자",value:owner?.name||"-"},
+      {label:"KPI 항목",value:k?.item||r.kpiId},
+      {label:"변경 필드",value:changedFields.length?changedFields.join(", "):"변경 없음",tone:changedFields.length?"warn":"info"},
+      {label:"처리 후 상태",value:"수정 요청 승인 + KPI 값 업데이트",tone:"success"}
+    ],
+    warnings:["승인하면 요청자가 제출한 after 값이 현재 KPI 항목에 반영됩니다."]
+  });
+  if(!ok)return;
+  kpiEntries=kpiEntries.map(k=>k.id===r.kpiId?{...k,...(r.after||{}),updatedAt:new Date().toISOString()}:k);
+  changeRequests=changeRequests.map(x=>x.id===rid?{...x,status:"approved",approvedBy:currentUser.id,processedAt:ts(),updatedAt:new Date().toISOString()}:x);
+  showToast("수정 요청을 승인했습니다.","success");autoSaveToServerIfEnabled();renderApprovals();
+}
+async function rejectRequest(rid){
+  const r=changeRequests.find(x=>x.id===rid);if(!r)return;
+  const k=getKpi(r.kpiId),owner=getEmp(r.empId||k?.userId);
+  const ok=await askConfirmModal({
+    title:"KPI 수정 요청 반려",
+    message:"이 수정 요청을 반려하시겠습니까?",
+    confirmText:"반려",
+    danger:true,
+    impacts:[
+      {label:"대상자",value:owner?.name||"-"},
+      {label:"KPI 항목",value:k?.item||r.kpiId},
+      {label:"요청 사유",value:r.reason||"-"},
+      {label:"처리 후 상태",value:"요청 반려, KPI 값 변경 없음",tone:"warn"}
+    ]
+  });
+  if(!ok)return;
+  changeRequests=changeRequests.map(x=>x.id===rid?{...x,status:"rejected",processedAt:ts(),updatedAt:new Date().toISOString()}:x);
+  showToast("수정 요청을 반려했습니다.","info");autoSaveToServerIfEnabled();renderApprovals();
+}
 // employees[].updatedAt을 반드시 갱신해야 한다(adjustKpiGrade 주석 참고) — 그러지 않으면
 // Postgres 모드에서 이 등급 지정이 UPDATE 자체가 스킵되어 조용히 유실된다(실측 확인).
 // autoSaveToServerIfEnabled() 호출도 원래 빠져 있어 3분 주기 자동저장 전까지는 서버에
@@ -23686,9 +23781,23 @@ function submitCertRequest(type){
   showToast("증명서 발급 신청이 접수되었습니다. 관리자 승인 후 발급받을 수 있습니다.","success");
   renderCertPage();renderSidebar();
 }
-function approveCertRequest(reqId){
+async function approveCertRequest(reqId){
   if(currentUser.role!=="admin"){showToast("관리자만 승인할 수 있습니다.","error");return;}
   const r=certRequests.find(x=>x.id===reqId);if(!r||r.status!=="pending")return;
+  const ok=await askConfirmModal({
+    title:"증명서 발급 승인 확인",
+    message:"증명서 발급 신청을 승인하고 발급 로그를 생성합니다.",
+    confirmText:"승인",
+    confirmClass:"btn-success",
+    impacts:[
+      {label:"신청자",value:r.empName||getEmpName(r.empId)},
+      {label:"증명서",value:r.certTitle||r.certType},
+      {label:"제출처",value:r.submitTo||"-"},
+      {label:"승인 후 영향",value:"발급번호 생성 + 발급 로그 기록",tone:"success"}
+    ],
+    warnings:["승인 후 사용자는 해당 증명서를 발급받을 수 있습니다."]
+  });
+  if(!ok)return;
   r.status="approved";r.processedAt=new Date().toISOString();r.processedBy=currentUser.id;r.processedByName=currentUser.name;r.updatedAt=new Date().toISOString();
   certLog.push({id:`clog-${Date.now()}`,docNo:_genCertDocNo(),empId:r.empId,empName:r.empName,certType:r.certTitle,issuedBy:currentUser.name,issuedById:currentUser.id,issuedAt:new Date().toISOString()});
   autoSaveDebounced();
