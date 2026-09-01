@@ -99,6 +99,24 @@ test.describe("로그인·기본 네비게이션", () => {
     await expect(page.locator("[role=dialog][aria-modal=true]")).toBeVisible();
     await page.keyboard.press("Escape");
     await expect(page.locator("[role=dialog]")).toHaveCount(0);
+
+    await page.evaluate(() => {
+      window.__confirmModalResult = "pending";
+      askConfirmModal({
+        title: "위험 작업 확인",
+        message: "삭제 전 영향 범위를 확인합니다.",
+        impacts: [{ label: "삭제 예정", value: "3건", tone: "danger" }],
+        danger: true,
+        confirmText: "삭제 실행",
+      }).then(result => { window.__confirmModalResult = result; });
+    });
+    const confirmDialog = page.locator("[role=dialog][aria-modal=true]");
+    await expect(confirmDialog).toBeVisible();
+    await expect(confirmDialog).toContainText("삭제 예정");
+    await expect(page.locator(":focus")).toHaveText("취소");
+    await page.keyboard.press("Escape");
+    await expect(page.locator("[role=dialog]")).toHaveCount(0);
+    await page.waitForFunction(() => window.__confirmModalResult === false);
   });
 
   test("동시 수정 충돌은 최신 데이터를 다시 읽고 사용자 선택 모달을 표시한다", async ({ page }) => {
