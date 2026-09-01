@@ -1623,7 +1623,12 @@
         list.textContent = '승인 대기 중인 기억이 없습니다.';
         return;
       }
-      list.innerHTML = items.map(item => `
+      list.innerHTML = items.map(item => {
+        const semantic = item.semantic_check || {};
+        const semanticRisk = ['conflict', 'uncertain'].includes(semantic.verdict)
+          && Number(semantic.confidence || 0) >= 0.7;
+        const hasConflict = (item.contradictions || []).length || semanticRisk;
+        return `
         <div style="border:1px solid var(--border);border-radius:10px;padding:12px;background:var(--surface2)">
           <div style="font-size:0.72rem;color:var(--text-dim);margin-bottom:6px">
             ${escHtml(item.persona)} · 품질 ${Math.round(Number(item.quality_score || 0) * 100)}점
@@ -1636,12 +1641,15 @@
           ${(item.evidence || []).length ? `<div style="font-size:0.72rem;margin-top:7px">근거: ${(item.evidence || []).map(e => e.url ? `<a href="${escHtml(e.url)}" target="_blank" rel="noopener noreferrer">${escHtml(e.title || e.url)}</a>` : escHtml(e.title || e.type)).join(' · ')}</div>` : '<div style="font-size:0.72rem;color:#d97706;margin-top:7px">⚠️ 저장된 근거 없음</div>'}
           ${item.valid_until ? `<div style="font-size:0.72rem;color:var(--text-dim);margin-top:5px">유효기한 ${escHtml(item.valid_until)}</div>` : ''}
           ${(item.contradictions || []).length ? `<div style="font-size:0.74rem;color:#dc2626;margin-top:7px">⛔ 기존 기억 충돌 가능성: ${(item.contradictions || []).map(c => escHtml((c.reasons || []).join(', '))).join(' · ')}</div>` : ''}
+          ${semantic.verdict ? `<div style="font-size:0.74rem;color:${semanticRisk ? '#dc2626' : 'var(--text-dim)'};margin-top:7px">🧠 의미 검증: ${escHtml(semantic.verdict)} (${Math.round(Number(semantic.confidence || 0) * 100)}%) · ${escHtml(semantic.summary || '')}</div>` : ''}
           <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:10px">
             <button class="fb-btn bad" onclick="reviewMemoryCandidate(${Number(item.id)}, 'reject')">거절</button>
-            ${(item.contradictions || []).length ? `<button class="fb-btn" onclick="reviewMemoryCandidate(${Number(item.id)}, 'approve', true)">검토 후 강제 승인</button>` : ''}
+            <button class="fb-btn" onclick="semanticCheckCandidate(${Number(item.id)})">AI 의미 검증</button>
+            ${hasConflict ? `<button class="fb-btn" onclick="reviewMemoryCandidate(${Number(item.id)}, 'approve', true)">검토 후 강제 승인</button>` : ''}
             <button class="fb-btn good" onclick="reviewMemoryCandidate(${Number(item.id)}, 'approve')">승인</button>
           </div>
-        </div>`).join('');
+        </div>`;
+      }).join('');
     } catch (e) {
       list.textContent = '기억 후보를 불러오지 못했습니다: ' + e.message;
     }
@@ -1666,6 +1674,16 @@
     showToast(action === 'approve' ? '✅ 장기기억으로 승인했습니다.' : '🗑️ 기억 후보를 거절했습니다.');
     await loadMemoryCandidates();
     await loadStats();
+  }
+
+  async function semanticCheckCandidate(id) {
+    showToast('🧠 기존 기억과 의미 충돌을 검증하고 있습니다...');
+    const r = await tokFetch(`/admin/memory-candidates/${id}/semantic-check`, { method: 'POST' });
+    if (!r.ok) { showToast('의미 검증 실패: ' + await friendlyErrorMessage(r)); return; }
+    const d = await r.json();
+    const result = d.result || {};
+    showToast(`의미 검증: ${result.verdict || 'unavailable'} · ${result.summary || ''}`);
+    await loadMemoryCandidates();
   }
 
   async function loadMemoryRevalidation() {

@@ -65,7 +65,8 @@ def main():
         assert "session_id" in conversation_cols
         assert {"evidence_json", "verified_at", "valid_until", "version", "updated_at"} <= learned_cols
         assert {"evidence_json", "verified_at", "valid_until", "reviewed_by",
-                "review_reason", "review_nonce"} <= candidate_cols
+                "review_reason", "review_nonce", "semantic_check_json",
+                "semantic_checked_at"} <= candidate_cols
         assert {"evidence_json", "original_verified_at", "original_valid_until",
                 "original_version", "original_updated_at"} <= quarantine_cols
         assert {"memory_candidates", "memory_quarantine", "memory_retrieval_events"} <= tables

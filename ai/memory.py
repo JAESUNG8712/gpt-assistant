@@ -295,6 +295,8 @@ def init_db(seed_static: bool = True):
             "ALTER TABLE memory_candidates ADD COLUMN reviewed_by TEXT DEFAULT ''",
             "ALTER TABLE memory_candidates ADD COLUMN review_reason TEXT DEFAULT ''",
             "ALTER TABLE memory_candidates ADD COLUMN review_nonce TEXT DEFAULT ''",
+            "ALTER TABLE memory_candidates ADD COLUMN semantic_check_json TEXT DEFAULT '{}'",
+            "ALTER TABLE memory_candidates ADD COLUMN semantic_checked_at TEXT DEFAULT ''",
         ):
             try:
                 c.execute(column_sql)
@@ -1273,6 +1275,81 @@ def find_memory_contradictions(question: str, answer: str, persona: str,
     return conflicts
 
 
+def semantic_contradiction_context(candidate_id: int, limit: int = 8) -> dict | None:
+    """LLM 2차 검증에 보낼 후보와 관련 기억을 최소 범위로 구성한다."""
+    with _conn() as c:
+        candidate_row = c.execute(
+            "SELECT id,question,answer,persona,source,status,last_seen_at"
+            " FROM memory_candidates WHERE id=?", (int(candidate_id),)
+        ).fetchone()
+        if not candidate_row:
+            return None
+        candidate = dict(candidate_row)
+        rows = c.execute(
+            "SELECT id,content,source,verified_at,valid_until FROM learned_knowledge"
+            " WHERE persona=? ORDER BY id DESC", (candidate["persona"],)
+        ).fetchall()
+    related = []
+    candidate_numbers = set(re.findall(r"\d+(?:[.,]\d+)?", candidate["answer"] or ""))
+    for row in rows:
+        item = dict(row)
+        if _is_expired(item.get("valid_until", "")):
+            continue
+        question, answer = _qa_parts(item.get("content", ""))
+        similarity = _jaccard_text(candidate["question"], question)
+        answer_numbers = set(re.findall(r"\d+(?:[.,]\d+)?", answer))
+        number_overlap = bool(candidate_numbers & answer_numbers)
+        related.append({
+            "memory_id": item["id"], "question": question[:500], "answer": answer[:1200],
+            "source": item.get("source", ""), "verified_at": item.get("verified_at", ""),
+            "valid_until": item.get("valid_until", ""),
+            "question_similarity": round(similarity, 3), "number_overlap": number_overlap,
+        })
+    related.sort(
+        key=lambda item: (item["question_similarity"], item["number_overlap"], item["memory_id"]),
+        reverse=True,
+    )
+    return {"candidate": candidate, "related_memories": related[:max(1, min(int(limit), 12))]}
+
+
+def save_candidate_semantic_check(candidate_id: int, result: dict) -> dict:
+    allowed = {"conflict", "consistent", "uncertain", "unrelated", "unavailable"}
+    verdict = str(result.get("verdict") or "unavailable").lower()
+    if verdict not in allowed:
+        verdict = "unavailable"
+    try:
+        confidence = max(0.0, min(float(result.get("confidence") or 0), 1.0))
+    except (TypeError, ValueError):
+        confidence = 0.0
+    summary, _ = privacy_guard.sanitize_for_storage(
+        str(result.get("summary") or "")[:1000], include_contact=True
+    )
+    conflicts = []
+    for raw in (result.get("conflicts") or [])[:10]:
+        if not isinstance(raw, dict):
+            continue
+        try:
+            memory_id = int(raw.get("memory_id"))
+        except (TypeError, ValueError):
+            continue
+        reason, _ = privacy_guard.sanitize_for_storage(
+            str(raw.get("reason") or "")[:500], include_contact=True
+        )
+        conflicts.append({"memory_id": memory_id, "reason": reason})
+    normalized = {
+        "verdict": verdict, "confidence": round(confidence, 3),
+        "summary": summary, "conflicts": conflicts,
+    }
+    checked_at = datetime.now().isoformat()
+    with _conn() as c:
+        c.execute(
+            "UPDATE memory_candidates SET semantic_check_json=?,semantic_checked_at=?"
+            " WHERE id=? AND status='pending'",
+            (json.dumps(normalized, ensure_ascii=False), checked_at, int(candidate_id)),
+        )
+    return {**normalized, "checked_at": checked_at}
+
+
 def list_memory_candidates(status: str = "pending", persona: str = "",
                            limit: int = 50, offset: int = 0) -> list:
     where, params = [], []
@@ -1284,7 +1361,7 @@ def list_memory_candidates(status: str = "pending", persona: str = "",
         params.append(persona)
     sql = ("SELECT id, question, answer, persona, session_id, source, status,"
            " created_at, reviewed_at, seen_count, last_seen_at, evidence_json,"
-           " verified_at, valid_until FROM memory_candidates")
+           " verified_at,valid_until,semantic_check_json,semantic_checked_at FROM memory_candidates")
     if where:
         sql += " WHERE " + " AND ".join(where)
     sql += " ORDER BY id DESC LIMIT ? OFFSET ?"
@@ -1293,6 +1370,10 @@ def list_memory_candidates(status: str = "pending", persona: str = "",
         items = [dict(r) for r in c.execute(sql, params).fetchall()]
     for item in items:
         item["evidence"] = _normalize_evidence(item.pop("evidence_json", "[]"))
+        try:
+            item["semantic_check"] = json.loads(item.pop("semantic_check_json", "{}") or "{}")
+        except (TypeError, ValueError):
+            item["semantic_check"] = {}
         item["validity_status"] = "expired" if _is_expired(item.get("valid_until", "")) else "current"
         item["contradictions"] = find_memory_contradictions(
             item["question"], item["answer"], item["persona"]
@@ -1381,6 +1462,23 @@ def review_memory_candidate(candidate_id: int, approve: bool, force: bool = Fals
         contradictions = find_memory_contradictions(
             item["question"], item["answer"], item["persona"]
         )
+        try:
+            semantic = json.loads(item.get("semantic_check_json", "{}") or "{}")
+        except (TypeError, ValueError):
+            semantic = {}
+        try:
+            semantic_confidence = float(semantic.get("confidence") or 0)
+        except (TypeError, ValueError):
+            semantic_confidence = 0.0
+        if (semantic.get("verdict") in {"conflict", "uncertain"}
+                and semantic_confidence >= 0.7):
+            contradictions.append({
+                "id": 0, "source": "AI 의미 검증", "question": item["question"][:300],
+                "answer_preview": "", "reasons": [semantic.get("summary") or "의미 충돌 가능성"],
+                "question_similarity": 0, "verified_at": item.get("semantic_checked_at", ""),
+                "valid_until": "", "evidence": [], "semantic": True,
+                "conflicts": semantic.get("conflicts", []),
+            })
         if contradictions and not force:
             with _conn() as c:
                 c.execute(

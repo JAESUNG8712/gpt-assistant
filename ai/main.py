@@ -23,6 +23,7 @@ import law_search as law
 import calculator as calc
 import intent_agent
 import privacy as privacy_guard
+import semantic_memory
 
 # ── 사용자 입력 전처리: 띄어쓰기 복합어 → 붙여쓰기 (질의 조인) ─────
 # engine.py에도 이름이 비슷한 _COMPOUND_MAP이 있어 중복처럼 보이지만 방향이
@@ -1747,6 +1748,19 @@ def admin_memory_candidates(status: str = "pending", persona: str = "",
                             limit: int = 50, offset: int = 0, token: str = ""):
     _require_backup_token(token)
     return {"items": mem.list_memory_candidates(status, persona, limit, offset)}
+
+
+@app.post("/admin/memory-candidates/{candidate_id}/semantic-check")
+async def admin_memory_candidate_semantic_check(candidate_id: int, token: str = ""):
+    _require_backup_token(token)
+    context = mem.semantic_contradiction_context(candidate_id)
+    if not context:
+        raise HTTPException(404, "기억 후보를 찾을 수 없습니다.")
+    if context["candidate"].get("status") != "pending":
+        raise HTTPException(409, "승인 대기 중인 후보만 의미 검증할 수 있습니다.")
+    result = await semantic_memory.verify(context)
+    saved = mem.save_candidate_semantic_check(candidate_id, result)
+    return {"ok": saved["verdict"] != "unavailable", "result": saved}
 
 
 @app.post("/admin/memory-candidates/{candidate_id}/approve")

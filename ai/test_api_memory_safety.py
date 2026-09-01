@@ -161,6 +161,31 @@ def main():
         assert forced_response.status_code == 200
         assert forced_response.json()["status"] == "approved"
 
+        semantic_id = main.mem.store_memory_candidate(
+            "API 의미 검증 휴가 통보 시점은 언제인가요?",
+            "API 의미 검증 답변은 휴가 당일 통보가 가능하다고 안내합니다.",
+            "dev", source="생성답변",
+        )
+        original_semantic_verify = main.semantic_memory.verify
+
+        async def fake_semantic_verify(_context):
+            return {
+                "verdict": "uncertain", "confidence": 0.82,
+                "summary": "적용 시점 조건을 추가 확인해야 합니다.", "conflicts": [],
+            }
+
+        main.semantic_memory.verify = fake_semantic_verify
+        try:
+            semantic_response = client.post(
+                f"/admin/memory-candidates/{semantic_id}/semantic-check",
+                params={"token": owner_token},
+            )
+            assert semantic_response.status_code == 200
+            assert semantic_response.json()["result"]["verdict"] == "uncertain"
+        finally:
+            main.semantic_memory.verify = original_semantic_verify
+        assert main.mem.review_memory_candidate(semantic_id, approve=False)["status"] == "rejected"
+
         # 공유 링크는 허용된 페르소나만 사용할 수 있고 소유자 이력 API 권한은 없다.
         share = main.mem.create_share_link("API QA", ["company"], "")
         share_payload = {
