@@ -2501,20 +2501,42 @@ async function restoreServerBackupPicked(name){
       const diff = d.diff || [];
       const total = diff.reduce((s,x)=>s+x.extraCount,0);
       if(total>0){
-        const detail = diff.filter(x=>x.extraCount>0).map(x=>`· ${SNAPSHOT_FIELD_LABELS[x.field]||x.field}: ${x.extraCount}건`).join("\n");
-        if(!confirm(`스냅샷 이후 추가된 데이터 ${total}건이 삭제됩니다:\n\n${detail}\n\n계속하시겠습니까?`)) return;
+        const ok=await askConfirmModal({
+          title:"완전 복원 추가 데이터 삭제 확인",
+          message:"스냅샷 시점 이후 추가된 데이터가 삭제됩니다. 삭제 범위를 확인한 뒤 계속 진행하세요.",
+          impacts:[
+            {label:"삭제 예정 합계",value:`${total}건`,tone:"danger"},
+            ...diff.filter(x=>x.extraCount>0).map(x=>({label:SNAPSHOT_FIELD_LABELS[x.field]||x.field,value:`${x.extraCount}건`,tone:"warn"}))
+          ],
+          warnings:["삭제된 이후 추가 데이터는 서버 복원 결과에서 사라집니다.","현재 상태는 복원 직전 로컬 스냅샷으로 한 번 보관됩니다."],
+          confirmText:"삭제 포함 복원 계속",
+          danger:true
+        });
+        if(!ok)return;
       }
     } catch(e) {
       showToast("변경분 확인 실패: " + e.message, "error");
       return;
     }
   }
-  restoreServerBackup(name, selected, deleteExtras);
+  await restoreServerBackup(name, selected, deleteExtras);
 }
 
 async function restoreServerBackup(name, fields, deleteExtras){
   const scopeMsg = fields ? `선택한 ${fields.length}개 항목` : "전체 데이터";
-  if(!confirm(`"${name}" 백업에서 ${scopeMsg}를 복원하시겠습니까? 현재 데이터는 로컬 스냅샷으로 보관됩니다.`)) return;
+  const ok=await askConfirmModal({
+    title:"서버 백업 복원 확인",
+    message:`"${name}" 백업에서 ${scopeMsg}를 복원합니다.`,
+    impacts:[
+      {label:"복원 대상",value:scopeMsg},
+      {label:"복원 방식",value:deleteExtras?"완전 복원(추가분 삭제 포함)":"선택 항목 덮어쓰기",tone:deleteExtras?"danger":"warn"},
+      {label:"안전장치",value:"복원 직전 로컬 스냅샷 저장",tone:"success"}
+    ],
+    warnings:["복원 후 화면 데이터가 백업 기준으로 즉시 갱신됩니다."],
+    confirmText:"복원 실행",
+    danger:!!deleteExtras
+  });
+  if(!ok)return;
   try {
     saveAutoSnapshot("pre_import");
     const body = {name, role:currentUser?.role, user:currentUser?.name};
@@ -2824,7 +2846,7 @@ function showModal(html,opts){
   // noBackdropClose: 회사 만들기처럼 입력 폼이 있는 모달에서, 배경(어두운 바깥 영역)을
   // 실수로 클릭하면 작성 중이던 내용이 그대로 사라지는 문제(2026-08 사용자 신고)를 막기
   // 위한 화면별 옵트아웃 — 지정하지 않으면 기존과 동일하게 배경 클릭으로 닫힌다.
-  _modalState.set(ov,{opener:document.activeElement,noBackdropClose:!!opts?.noBackdropClose});
+  _modalState.set(ov,{opener:document.activeElement,noBackdropClose:!!opts?.noBackdropClose,onClose:typeof opts?.onClose==="function"?opts.onClose:null});
   ov.addEventListener("click",event=>{if(event.target===ov){if(_modalState.get(ov)?.noBackdropClose)return;closeModal();return;}if(event.target.closest("[data-modal-close]")){event.preventDefault();closeModal();}});
   ov.addEventListener("keydown",event=>{
     if(_modalStack().at(-1)!==ov)return;
@@ -2856,8 +2878,94 @@ function closeModal(){
   // 그 아래 이미 안 보이는 모달이 지워져, 저장 후에도 화면에 모달이 그대로 남아있는 것처럼
   // 보이는 문제가 있었다. 항상 가장 나중에 열린(맨 위) 모달을 지우도록 통일.
   const ms=_modalStack(),ov=ms[ms.length-1];if(!ov)return;
-  const opener=_modalState.get(ov)?.opener;ov.remove();_syncModalBackground();
+  const state=_modalState.get(ov);
+  const opener=state?.opener;
+  try{state?.onClose?.();}catch(e){console.warn("modal close callback failed",e);}
+  ov.remove();_syncModalBackground();
   requestAnimationFrame(()=>{const parent=_modalStack().at(-1);if(parent)return _focusModal(_modalDialog(parent));if(opener?.isConnected)opener.focus({preventScroll:true});});
+}
+
+// 중요 작업 확인/입력은 브라우저 기본 confirm()/prompt() 대신 공통 모달을 사용한다.
+// 기본 대화상자는 모바일에서 맥락 정보가 부족하고 스크린리더 label/초기 포커스 제어가
+// 불가능해서, 삭제·복원·마감처럼 되돌리기 어려운 작업에서 사용자가 영향 범위를 놓치기 쉽다.
+const _dialogRequests=new Map();let _dialogRequestSeq=0;
+function _dialogLinesHtml(message){
+  return String(message||"").split(/\n+/).filter(Boolean).map(line=>`<p class="fz13" style="margin:0 0 8px">${h(line)}</p>`).join("");
+}
+function _dialogImpactHtml(items){
+  if(!Array.isArray(items)||!items.length)return"";
+  return `<div style="border:1px solid #e2e8f0;border-radius:10px;overflow:hidden;margin-top:10px">
+    ${items.map((it,idx)=>{
+      const tone=it.tone==="danger"?"#dc2626":it.tone==="warn"?"#b45309":it.tone==="success"?"#15803d":"#334155";
+      return `<div style="display:flex;justify-content:space-between;gap:12px;padding:9px 12px;${idx<items.length-1?"border-bottom:1px solid #f1f5f9;":""}font-size:12px">
+        <span class="text-gray">${h(it.label||"영향")}</span><strong style="text-align:right;color:${tone}">${h(it.value==null?"-":it.value)}</strong>
+      </div>`;
+    }).join("")}
+  </div>`;
+}
+function _dialogWarningsHtml(warnings){
+  if(!Array.isArray(warnings)||!warnings.length)return"";
+  return `<div class="warn-note mt3 fz12">${warnings.map(w=>`<div>⚠ ${h(w)}</div>`).join("")}</div>`;
+}
+function askConfirmModal(opts={}){
+  const id=++_dialogRequestSeq;
+  const title=opts.title||"작업 확인";
+  const confirmClass=opts.confirmClass||(opts.danger?"btn-danger":"btn-primary");
+  const req={settled:false,resolve:null};
+  _dialogRequests.set(id,req);
+  return new Promise(resolve=>{
+    req.resolve=resolve;
+    showModal(`<section class="modal modal-sm"><div class="modal-head"><h2>${h(title)}</h2><button class="modal-close" onclick="_resolveDialogRequest(${id},false)">×</button></div>
+      <div class="modal-body">
+        ${_dialogLinesHtml(opts.message)}
+        ${_dialogImpactHtml(opts.impacts)}
+        ${_dialogWarningsHtml(opts.warnings)}
+      </div>
+      <div class="modal-foot"><button type="button" class="btn btn-secondary" data-modal-initial-focus onclick="_resolveDialogRequest(${id},false)">${h(opts.cancelText||"취소")}</button>
+        <button type="button" class="btn ${confirmClass}" onclick="_resolveDialogRequest(${id},true)">${h(opts.confirmText||"확인")}</button></div></section>`,{
+          onClose:()=>{const r=_dialogRequests.get(id);if(r&&!r.settled){r.settled=true;_dialogRequests.delete(id);resolve(false);}}
+        });
+  });
+}
+function askInputModal(opts={}){
+  const id=++_dialogRequestSeq;
+  const req={settled:false,resolve:null,required:opts.required!==false,trim:opts.trim!==false,validate:opts.validate};
+  _dialogRequests.set(id,req);
+  const inputId=`dialog-input-${id}`,errId=`dialog-input-error-${id}`;
+  const defaultValue=opts.defaultValue==null?"":String(opts.defaultValue);
+  const field=opts.multiline
+    ? `<textarea class="fc" id="${inputId}" rows="${opts.rows||4}" maxlength="${opts.maxLength||500}" placeholder="${h(opts.placeholder||"")}" aria-describedby="${errId}" data-modal-initial-focus>${h(defaultValue)}</textarea>`
+    : `<input class="fc" id="${inputId}" value="${h(defaultValue)}" maxlength="${opts.maxLength||500}" placeholder="${h(opts.placeholder||"")}" aria-describedby="${errId}" data-modal-initial-focus>`;
+  return new Promise(resolve=>{
+    req.resolve=resolve;
+    showModal(`<section class="modal modal-sm"><div class="modal-head"><h2>${h(opts.title||"입력")}</h2><button class="modal-close" onclick="_resolveDialogRequest(${id},null)">×</button></div>
+      <form onsubmit="event.preventDefault();_submitDialogInput(${id})">
+        <div class="modal-body">
+          ${_dialogLinesHtml(opts.message)}
+          <div class="fg"><label class="fl" for="${inputId}">${h(opts.label||"내용")}${req.required?` <span class="req">*</span>`:""}</label>${field}<div id="${errId}" class="fz11" style="color:#dc2626;margin-top:4px" role="alert"></div></div>
+          ${_dialogImpactHtml(opts.impacts)}
+          ${_dialogWarningsHtml(opts.warnings)}
+        </div>
+        <div class="modal-foot"><button type="button" class="btn btn-secondary" onclick="_resolveDialogRequest(${id},null)">${h(opts.cancelText||"취소")}</button>
+          <button type="submit" class="btn ${opts.confirmClass||"btn-primary"}">${h(opts.confirmText||"확인")}</button></div>
+      </form></section>`,{
+        noBackdropClose:!!opts.noBackdropClose,
+        onClose:()=>{const r=_dialogRequests.get(id);if(r&&!r.settled){r.settled=true;_dialogRequests.delete(id);resolve(null);}}
+      });
+  });
+}
+function _resolveDialogRequest(id,value){
+  const req=_dialogRequests.get(id);if(!req)return;
+  req.settled=true;_dialogRequests.delete(id);req.resolve(value);closeModal();
+}
+function _submitDialogInput(id){
+  const req=_dialogRequests.get(id);if(!req)return;
+  const el=document.getElementById(`dialog-input-${id}`),err=document.getElementById(`dialog-input-error-${id}`);
+  const raw=el?.value??"",value=req.trim?raw.trim():raw;
+  if(req.required&&!value){if(err)err.textContent="필수 입력 항목입니다.";el?.focus();return;}
+  const validation=typeof req.validate==="function"?req.validate(value):"";
+  if(validation){if(err)err.textContent=validation;el?.focus();return;}
+  _resolveDialogRequest(id,value);
 }
 
 
@@ -13390,21 +13498,58 @@ function pickNewApprover(docId,idx){
     }
   });
 }
-function cancelApprovalDoc(docId){
-  if(!confirm("이 결재를 취소하시겠습니까?"))return;
+async function cancelApprovalDoc(docId){
   const doc=approvalDocs.find(d=>String(d.id)===String(docId)&&d.authorId===currentUser.id&&d.status==="in_progress");if(!doc)return;
+  const ok=await askConfirmModal({
+    title:"결재 상신 취소 확인",
+    message:"진행 중인 결재 상신을 취소합니다.",
+    impacts:[
+      {label:"문서 제목",value:doc.title||docId},
+      {label:"현재 상태",value:"결재 진행중"},
+      {label:"취소 후 영향",value:"결재 진행 중단",tone:"danger"}
+    ],
+    confirmText:"상신 취소",
+    danger:true
+  });
+  if(!ok)return;
   doc.status="cancelled";doc.updatedAt=new Date().toISOString();autoSaveToServerIfEnabled();showToast("결재를 취소했습니다.","info");renderPage();renderSidebar();
 }
-function requestDocDeletion(docId){
+async function requestDocDeletion(docId){
   const doc=approvalDocs.find(d=>String(d.id)===String(docId)&&d.authorId===currentUser.id&&d.status==="approved");if(!doc)return;
   if(doc.deletionRequest&&doc.deletionRequest.status==="pending"){showToast("이미 삭제 요청이 진행중입니다.","info");return;}
-  const reason=prompt("문서 삭제 요청 사유를 입력하세요.");
+  const reason=await askInputModal({
+    title:"문서 삭제 요청 사유",
+    message:"이미 승인된 결재 문서의 삭제/취소 요청을 보냅니다. 관리자 또는 승인자가 검토할 사유를 입력하세요.",
+    label:"삭제 요청 사유",
+    placeholder:"예: 잘못된 첨부, 중복 상신 등",
+    multiline:true,
+    maxLength:500,
+    impacts:[
+      {label:"문서 제목",value:doc.title||docId},
+      {label:"현재 상태",value:"승인 완료"},
+      {label:"요청 후 영향",value:"삭제 승인 대기",tone:"warn"}
+    ],
+    confirmText:"삭제 요청",
+    noBackdropClose:true
+  });
   if(reason===null)return;
   doc.deletionRequest={reason:reason.trim()||"(사유 미입력)",requestedAt:new Date().toISOString(),status:"pending"};
   autoSaveToServerIfEnabled();showToast("문서삭제 요청을 보냈습니다.","success");closeModal();renderPage();
 }
-function decideDocDeletion(docId,approve){
+async function decideDocDeletion(docId,approve){
   const doc=approvalDocs.find(d=>String(d.id)===String(docId));if(!doc||!doc.deletionRequest||doc.deletionRequest.status!=="pending")return;
+  const ok=await askConfirmModal({
+    title:approve?"문서 삭제 요청 승인 확인":"문서 삭제 요청 반려 확인",
+    message:approve?"삭제 요청을 승인하면 승인 완료 문서가 취소 상태로 전환됩니다.":"삭제 요청을 반려하고 승인 완료 상태를 유지합니다.",
+    impacts:[
+      {label:"문서 제목",value:doc.title||docId},
+      {label:"요청 사유",value:doc.deletionRequest.reason||"-"},
+      {label:"처리 후 영향",value:approve?"문서 취소 처리":"승인 문서 유지",tone:approve?"danger":"warn"}
+    ],
+    confirmText:approve?"삭제 요청 승인":"삭제 요청 반려",
+    confirmClass:approve?"btn-danger":"btn-warning"
+  });
+  if(!ok)return;
   doc.deletionRequest.status=approve?"approved":"rejected";
   doc.deletionRequest.decidedBy=currentUser.id;doc.deletionRequest.decidedAt=new Date().toISOString();
   if(approve){doc.status="cancelled";doc.updatedAt=new Date().toISOString();}
@@ -14621,16 +14766,44 @@ function openPayAdjustModal(empId){
 }
 // ── 급여 마감(lock) + 급여→회계 자동전표 ──────────────────────────────────────
 function _payrollLocked(year,month){return (settings.payrollLockedMonths||[]).includes(`${year}-${month}`);}
-function lockPayrollMonth(){
+async function lockPayrollMonth(){
   const s=_payMgmtState;
-  if(!confirm(`${s.year}년 ${s.month}월 급여를 마감하시겠습니까?\n마감 후에는 해당 월의 급여 조정이 잠깁니다.`))return;
+  const t=_payrollMonthTotals();
+  const ok=await askConfirmModal({
+    title:"급여 월 마감 확인",
+    message:`${s.year}년 ${s.month}월 급여를 마감합니다.`,
+    impacts:[
+      {label:"대상 직원",value:`${t.count}명`},
+      {label:"지급 합계",value:fmtSalary(t.gross),tone:"success"},
+      {label:"공제 합계",value:fmtSalary(t.deduct),tone:"warn"},
+      {label:"실지급 합계",value:fmtSalary(t.net)},
+      {label:"마감 후 영향",value:"해당 월 급여 조정 잠금",tone:"danger"}
+    ],
+    warnings:["마감 후 초과근무 승인·급여 조정 등 해당 월 정산 변경 작업이 제한됩니다."],
+    confirmText:"급여 마감",
+    danger:true
+  });
+  if(!ok)return;
   if(!settings.payrollLockedMonths)settings.payrollLockedMonths=[];
   settings.payrollLockedMonths.push(`${s.year}-${s.month}`);
   autoSaveToServerIfEnabled();showToast(`${s.year}년 ${s.month}월 급여가 마감되었습니다.`,"success");_payMgmtRefresh();
 }
-function unlockPayrollMonth(){
+async function unlockPayrollMonth(){
   const s=_payMgmtState;
-  if(!confirm(`${s.year}년 ${s.month}월 급여 마감을 해제하시겠습니까?`))return;
+  const t=_payrollMonthTotals();
+  const ok=await askConfirmModal({
+    title:"급여 마감 해제 확인",
+    message:`${s.year}년 ${s.month}월 급여 마감을 해제합니다.`,
+    impacts:[
+      {label:"대상 직원",value:`${t.count}명`},
+      {label:"현재 실지급 합계",value:fmtSalary(t.net)},
+      {label:"해제 후 영향",value:"해당 월 급여 조정 가능",tone:"warn"}
+    ],
+    warnings:["마감 해제 중에는 같은 월 정산을 다른 관리자가 동시에 수정하지 않도록 안내해 주세요."],
+    confirmText:"마감 해제",
+    confirmClass:"btn-warning"
+  });
+  if(!ok)return;
   settings.payrollLockedMonths=(settings.payrollLockedMonths||[]).filter(k=>k!==`${s.year}-${s.month}`);
   autoSaveToServerIfEnabled();showToast("마감이 해제되었습니다.","info");_payMgmtRefresh();
 }
@@ -14934,8 +15107,21 @@ function saveApprovalTemplate(editId){
   else approvalTemplates.push(tpl);
   closeModal();autoSaveToServerIfEnabled();showToast("양식이 저장되었습니다.","success");renderApprovalTemplateAdmin();
 }
-function deleteApprovalTemplate(id){
-  if(!confirm("이 양식을 삭제하시겠습니까?"))return;
+async function deleteApprovalTemplate(id){
+  const tpl=getTpl(id);
+  const used=approvalDocs.filter(d=>String(d.templateId)===String(id)).length;
+  const ok=await askConfirmModal({
+    title:"결재 양식 삭제 확인",
+    message:"결재 양식을 삭제합니다. 기존 결재 문서는 유지되지만, 새 기안 목록에서는 사라집니다.",
+    impacts:[
+      {label:"양식명",value:tpl?.name||id},
+      {label:"기존 사용 문서",value:`${used}건`,tone:used?"warn":"info"},
+      {label:"삭제 후 영향",value:"신규 기안 불가",tone:"danger"}
+    ],
+    confirmText:"양식 삭제",
+    danger:true
+  });
+  if(!ok)return;
   _tombstone("approvalTemplates",id);approvalTemplates=approvalTemplates.filter(t=>t.id!==id);autoSaveToServerIfEnabled();showToast("삭제되었습니다.","info");renderApprovalTemplateAdmin();
 }
 function duplicateApprovalTemplate(id){
@@ -15028,7 +15214,21 @@ async function saveAcctAccount(id){
   closeModal();showToast("계정과목이 저장되었습니다.","success");renderAcctAccountsPage();
 }
 async function deleteAcctAccount(id){
-  if(!confirm("이 계정과목을 삭제하시겠습니까?"))return;
+  const a=acctAccounts.find(a=>a.id===id);
+  const usedLines=acctVouchers.reduce((n,v)=>n+(v.lines||[]).filter(l=>String(l.accountId)===String(id)).length,0);
+  const ok=await askConfirmModal({
+    title:"계정과목 삭제 확인",
+    message:"계정과목을 삭제합니다. 이미 생성된 전표 라인 참조 여부를 확인하세요.",
+    impacts:[
+      {label:"계정과목",value:a?`${a.code} ${a.name}`:id},
+      {label:"전표 라인 참조",value:`${usedLines}건`,tone:usedLines?"danger":"info"},
+      {label:"삭제 후 영향",value:"신규 전표/리포트 선택 목록에서 제외",tone:"danger"}
+    ],
+    warnings:usedLines?["기존 전표가 이 계정을 참조 중이면 삭제가 서버에서 거부될 수 있습니다."]:[],
+    confirmText:"계정과목 삭제",
+    danger:true
+  });
+  if(!ok)return;
   const r=await serverRequest("POST",`/api/accounting/accounts/${id}/delete`,{role:currentUser.role,user:currentUser.name});
   if(!r?.ok){showToast(r?.message||"삭제에 실패했습니다.","error");return;}
   acctAccounts=acctAccounts.filter(a=>a.id!==id);showToast("삭제되었습니다.","info");renderAcctAccountsPage();
@@ -15166,7 +15366,22 @@ async function _executePartnerBulkUpload(){
   closeModal();showToast(`거래처 일괄 등록 완료: ${ok}건 성공${fail?`, ${fail}건 실패`:""}`,fail?"warning":"success");renderAcctPartnersPage();
 }
 async function deletePartner(id){
-  if(!confirm("이 거래처를 삭제하시겠습니까?"))return;
+  const p=acctPartners.find(p=>p.id===id);
+  const voucherRefs=acctVouchers.filter(v=>String(v.partnerId)===String(id)||String(v.partner)===String(p?.name)).length;
+  const invoiceRefs=acctTaxInvoices.filter(t=>String(t.partnerId)===String(id)||String(t.partnerName)===String(p?.name)).length;
+  const ok=await askConfirmModal({
+    title:"거래처 삭제 확인",
+    message:"거래처를 삭제합니다. 기존 전표·세금계산서 참조 여부를 확인하세요.",
+    impacts:[
+      {label:"거래처",value:p?.name||id},
+      {label:"전표 참조",value:`${voucherRefs}건`,tone:voucherRefs?"warn":"info"},
+      {label:"세금계산서 참조",value:`${invoiceRefs}건`,tone:invoiceRefs?"warn":"info"},
+      {label:"삭제 후 영향",value:"신규 거래 입력 선택 목록에서 제외",tone:"danger"}
+    ],
+    confirmText:"거래처 삭제",
+    danger:true
+  });
+  if(!ok)return;
   const r=await serverRequest("POST",`/api/accounting/partners/${id}/delete`,{role:currentUser.role,user:currentUser.name});
   if(!r?.ok){showToast(r?.message||"삭제에 실패했습니다.","error");return;}
   acctPartners=acctPartners.filter(p=>p.id!==id);showToast("삭제되었습니다.","info");renderAcctPartnersPage();
@@ -15263,21 +15478,66 @@ function viewVoucherModal(id){
   </div><div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal()">닫기</button></div></div>`);
 }
 async function postVoucher(id){
-  if(!confirm("전표를 확정하시겠습니까? 확정 후에는 수정할 수 없습니다."))return;
+  const v=acctVouchers.find(v=>v.id===id);
+  const ok=await askConfirmModal({
+    title:"전표 확정 확인",
+    message:"전표를 확정합니다. 확정 후에는 품목과 분개 내용을 수정할 수 없습니다.",
+    impacts:[
+      {label:"전표",value:v?.voucherNo||"(임시 전표)"},
+      {label:"일자",value:v?.date||"-"},
+      {label:"거래처",value:v?.partner||"-"},
+      {label:"금액",value:`${(v?.amount||0).toLocaleString()}원`},
+      {label:"확정 후 영향",value:"수정 잠금 및 전표번호 확정",tone:"danger"}
+    ],
+    confirmText:"전표 확정",
+    danger:true
+  });
+  if(!ok)return;
   const r=await serverRequest("POST",`/api/accounting/vouchers/${id}/post`,{role:currentUser.role,user:currentUser.name});
   if(!r?.ok){showToast(r?.message||"확정에 실패했습니다.","error");return;}
   const idx=acctVouchers.findIndex(v=>v.id===id);if(idx>=0)acctVouchers[idx]=r.voucher;
   showToast(`전표가 확정되었습니다 (${r.voucher.voucherNo}).`,"success");renderAcctVouchersPage();
 }
 async function voidVoucher(id){
-  const reason=prompt("전표 취소 사유를 입력하세요.");if(!reason)return;
+  const v=acctVouchers.find(v=>v.id===id);
+  const reason=await askInputModal({
+    title:"전표 취소 사유 입력",
+    message:"확정 전표를 취소 처리합니다. 감사 이력에 남길 사유를 입력하세요.",
+    label:"취소 사유",
+    placeholder:"예: 중복 발행, 금액 오류 등",
+    multiline:true,
+    maxLength:300,
+    impacts:[
+      {label:"전표",value:v?.voucherNo||id},
+      {label:"일자",value:v?.date||"-"},
+      {label:"금액",value:`${(v?.amount||0).toLocaleString()}원`,tone:"warn"},
+      {label:"처리 후 상태",value:"취소",tone:"danger"}
+    ],
+    confirmText:"취소 처리",
+    confirmClass:"btn-danger",
+    noBackdropClose:true
+  });
+  if(!reason)return;
   const r=await serverRequest("POST",`/api/accounting/vouchers/${id}/void`,{reason,role:currentUser.role,user:currentUser.name});
   if(!r?.ok){showToast(r?.message||"취소에 실패했습니다.","error");return;}
   const idx=acctVouchers.findIndex(v=>v.id===id);if(idx>=0)acctVouchers[idx]=r.voucher;
   showToast("전표가 취소되었습니다.","info");renderAcctVouchersPage();
 }
 async function deleteVoucherDraft(id){
-  if(!confirm("이 임시 전표를 삭제하시겠습니까?"))return;
+  const v=acctVouchers.find(v=>v.id===id);
+  const ok=await askConfirmModal({
+    title:"임시 전표 삭제 확인",
+    message:"아직 확정되지 않은 임시 전표를 삭제합니다.",
+    impacts:[
+      {label:"일자",value:v?.date||"-"},
+      {label:"거래처",value:v?.partner||"-"},
+      {label:"금액",value:`${(v?.amount||0).toLocaleString()}원`},
+      {label:"삭제 후 영향",value:"목록에서 제거",tone:"danger"}
+    ],
+    confirmText:"임시 전표 삭제",
+    danger:true
+  });
+  if(!ok)return;
   const r=await serverRequest("DELETE",`/api/accounting/vouchers/${id}`,{role:currentUser.role,user:currentUser.name});
   if(!r?.ok){showToast(r?.message||"삭제에 실패했습니다.","error");return;}
   acctVouchers=acctVouchers.filter(v=>v.id!==id);showToast("삭제되었습니다.","info");renderAcctVouchersPage();
@@ -15371,7 +15631,25 @@ function _dlTaxInvoicesCSV(){
     acctTaxInvoices.map(t=>[t.direction==="purchase"?"매입":"매출",t.invoiceNo,t.issueDate,t.partnerName,t.partnerBizNo||"",t.supplyTotal,t.taxTotal,t.grandTotal,t.status==="issued"?"발행":"취소"]));
 }
 async function voidTaxInvoice(id){
-  const reason=prompt("세금계산서 취소 사유를 입력하세요.");if(!reason)return;
+  const t=acctTaxInvoices.find(t=>t.id===id);
+  const reason=await askInputModal({
+    title:"세금계산서 취소 사유 입력",
+    message:"발행된 세금계산서를 취소 처리합니다. 취소 사유를 입력하세요.",
+    label:"취소 사유",
+    placeholder:"예: 거래 취소, 공급가액 오류 등",
+    multiline:true,
+    maxLength:300,
+    impacts:[
+      {label:"승인번호",value:t?.invoiceNo||id},
+      {label:"거래처",value:t?.partnerName||"-"},
+      {label:"합계",value:`${(t?.grandTotal||0).toLocaleString()}원`,tone:"warn"},
+      {label:"처리 후 상태",value:"취소",tone:"danger"}
+    ],
+    confirmText:"취소 처리",
+    confirmClass:"btn-danger",
+    noBackdropClose:true
+  });
+  if(!reason)return;
   const r=await serverRequest("POST",`/api/accounting/tax-invoices/${id}/void`,{reason,role:currentUser.role,user:currentUser.name});
   if(!r?.ok){showToast(r?.message||"취소에 실패했습니다.","error");return;}
   const idx=acctTaxInvoices.findIndex(t=>t.id===id);if(idx>=0)acctTaxInvoices[idx]=r.taxInvoice;
@@ -15702,7 +15980,25 @@ async function saveFixedAssetEdit(hasPosted){
 }
 async function disposeFixedAsset(){
   const id=_faDetail?.asset?.id;if(!id)return;
-  const disposalDate=prompt("처분일을 입력하세요 (YYYY-MM-DD)",new Date().toISOString().slice(0,10));
+  const asset=_faDetail.asset;
+  const disposalDate=await askInputModal({
+    title:"고정자산 처분일 입력",
+    message:"고정자산을 처분 상태로 변경합니다.",
+    label:"처분일",
+    defaultValue:new Date().toISOString().slice(0,10),
+    placeholder:"YYYY-MM-DD",
+    maxLength:10,
+    validate:value=>/^\d{4}-\d{2}-\d{2}$/.test(value)?"":"YYYY-MM-DD 형식으로 입력하세요.",
+    impacts:[
+      {label:"자산명",value:asset?.name||"-"},
+      {label:"자산번호",value:asset?.assetNumber||"-"},
+      {label:"취득가액",value:`${(asset?.acquisitionCost||0).toLocaleString()}원`},
+      {label:"처리 후 상태",value:"처분",tone:"danger"}
+    ],
+    confirmText:"처분 처리",
+    confirmClass:"btn-danger",
+    noBackdropClose:true
+  });
   if(!disposalDate)return;
   const r=await serverRequest("POST",`/api/accounting/fixed-assets/${id}/dispose`,{disposalDate,user:currentUser.name});
   if(!r?.ok){showToast(r?.message||"처분 처리에 실패했습니다.","error");return;}
@@ -16629,27 +16925,112 @@ async function _bpAction(id,suffix,body){
   showToast("처리되었습니다.","success");
   await loadBizPlanFromServer();
 }
-function approveBizPlanDivision(id){if(confirm("이 사업계획을 사업부장 승인(잠금)하시겠습니까?"))_bpAction(id,"/approve-division");}
-function finalApproveBizPlan(id){
+async function approveBizPlanDivision(id){
+  const p=bizPlans.find(x=>String(x.id)===String(id));
+  const ok=await askConfirmModal({
+    title:"사업계획 사업부장 승인 확인",
+    message:"사업계획을 사업부장 승인 상태로 전환합니다.",
+    impacts:[
+      {label:"계획명",value:p?.name||id},
+      {label:"작성 부문/팀",value:[p?.dept,p?.team].filter(Boolean).join(" / ")||"-"},
+      {label:"기간",value:`${p?.startDate||"-"} ~ ${p?.endDate||"-"}`},
+      {label:"승인 후 영향",value:"사업부 승인 잠금",tone:"warn"}
+    ],
+    confirmText:"사업부장 승인",
+    confirmClass:"btn-warning"
+  });
+  if(ok)_bpAction(id,"/approve-division");
+}
+async function finalApproveBizPlan(id){
   const p=bizPlans.find(x=>String(x.id)===String(id));
   // 아직 처리되지 않은 수정요청이 남아있는 계획을 그대로 최종확정하면, 요청된 수정이
   // 반영되지 않은 내용이 그대로 확정된다 — 이를 인지하지 못한 채 실수로 확정하는 것을
   // 막기 위해 경고를 한 번 더 보여준다.
-  if(p&&p.editRequest){
-    if(!confirm(`이 계획에는 아직 처리되지 않은 수정요청이 있습니다(사유: ${p.editRequest.reason||"-"}).\n수정요청을 반영하지 않은 현재 내용 그대로 최종승인하시겠습니까?`))return;
-  }else if(!confirm("이 사업계획을 최종승인하시겠습니까?"))return;
+  const ok=await askConfirmModal({
+    title:"사업계획 최종승인 확인",
+    message:p?.editRequest?"이 계획에는 아직 처리되지 않은 수정요청이 있습니다. 현재 내용 그대로 최종승인할지 확인하세요.":"사업계획을 최종승인합니다.",
+    impacts:[
+      {label:"계획명",value:p?.name||id},
+      {label:"작성 부문/팀",value:[p?.dept,p?.team].filter(Boolean).join(" / ")||"-"},
+      {label:"현재 상태",value:p?.status||"-"},
+      ...(p?.editRequest?[{label:"미처리 수정요청",value:p.editRequest.reason||"-",tone:"danger"}]:[]),
+      {label:"승인 후 영향",value:"최종확정 및 후속 수정 제한",tone:"danger"}
+    ],
+    warnings:p?.editRequest?["수정요청을 반영하지 않은 내용이 확정될 수 있습니다."]:[],
+    confirmText:"최종승인",
+    danger:true
+  });
+  if(!ok)return;
   _bpAction(id,"/final-approve");
 }
-function requestEditBizPlan(id){
-  const reason=prompt("수정요청 사유를 입력하세요:");
+async function requestEditBizPlan(id){
+  const p=bizPlans.find(x=>String(x.id)===String(id));
+  const reason=await askInputModal({
+    title:"사업계획 수정요청",
+    message:"승인된 사업계획을 다시 작성 상태로 되돌리기 위한 수정요청 사유를 입력하세요.",
+    label:"수정요청 사유",
+    placeholder:"예: 매출 계획 변경, 비용 귀속 부문 수정 등",
+    multiline:true,
+    maxLength:500,
+    impacts:[
+      {label:"계획명",value:p?.name||id},
+      {label:"현재 상태",value:p?.status||"-"},
+      {label:"요청 후 영향",value:"승인자 검토 대기",tone:"warn"}
+    ],
+    confirmText:"수정요청",
+    noBackdropClose:true
+  });
   if(reason===null)return;
-  if(!reason.trim()){showToast("사유를 입력하세요.","error");return;}
-  _bpAction(id,"/request-edit",{reason:reason.trim()});
+  _bpAction(id,"/request-edit",{reason});
 }
-function approveBizPlanEditRequest(id){if(confirm("수정요청을 승인해 다시 작성중(draft) 상태로 되돌리시겠습니까? 기존 승인 이력은 초기화됩니다."))_bpAction(id,"/edit-request/approve");}
-function rejectBizPlanEditRequest(id){if(confirm("수정요청을 반려하시겠습니까?"))_bpAction(id,"/edit-request/reject");}
+async function approveBizPlanEditRequest(id){
+  const p=bizPlans.find(x=>String(x.id)===String(id));
+  const ok=await askConfirmModal({
+    title:"사업계획 수정요청 승인",
+    message:"수정요청을 승인해 다시 작성중 상태로 되돌립니다.",
+    impacts:[
+      {label:"계획명",value:p?.name||id},
+      {label:"수정요청 사유",value:p?.editRequest?.reason||"-"},
+      {label:"승인 후 영향",value:"draft 상태 전환 및 기존 승인 이력 초기화",tone:"danger"}
+    ],
+    confirmText:"수정요청 승인",
+    danger:true
+  });
+  if(ok)_bpAction(id,"/edit-request/approve");
+}
+async function rejectBizPlanEditRequest(id){
+  const p=bizPlans.find(x=>String(x.id)===String(id));
+  const ok=await askConfirmModal({
+    title:"사업계획 수정요청 반려",
+    message:"수정요청을 반려하고 현재 승인 상태를 유지합니다.",
+    impacts:[
+      {label:"계획명",value:p?.name||id},
+      {label:"수정요청 사유",value:p?.editRequest?.reason||"-"},
+      {label:"반려 후 영향",value:"현재 사업계획 상태 유지",tone:"warn"}
+    ],
+    confirmText:"수정요청 반려",
+    confirmClass:"btn-warning"
+  });
+  if(ok)_bpAction(id,"/edit-request/reject");
+}
 async function deleteBizPlan(id){
-  if(!confirm("이 사업계획을 삭제하시겠습니까?"))return;
+  const p=bizPlans.find(x=>String(x.id)===String(id));
+  const amount=(p?.items||[]).reduce((s,it)=>s+(Array.isArray(it.monthly)?it.monthly.reduce((a,b)=>a+Number(b||0),0):0),0);
+  const ok=await askConfirmModal({
+    title:"사업계획 삭제 확인",
+    message:"사업계획을 삭제합니다. 삭제 전 영향 범위를 확인하세요.",
+    impacts:[
+      {label:"계획명",value:p?.name||id},
+      {label:"작성 부문/팀",value:[p?.dept,p?.team].filter(Boolean).join(" / ")||"-"},
+      {label:"예산 항목",value:`${(p?.items||[]).length}건`},
+      {label:"예산 합계",value:`${amount.toLocaleString()}원`,tone:"warn"},
+      {label:"삭제 후 영향",value:"목록 및 집계에서 제외",tone:"danger"}
+    ],
+    warnings:["삭제 후 서버 저장이 완료되면 다른 사용자 화면에서도 사라집니다."],
+    confirmText:"사업계획 삭제",
+    danger:true
+  });
+  if(!ok)return;
   const r=await serverRequest("DELETE",`/api/budget/business-plan/${id}`);
   if(!r?.ok){showToast(r?.error||r?.message||"삭제에 실패했습니다.","error");return;}
   showToast("삭제되었습니다.","success");
@@ -18779,10 +19160,26 @@ function approveOvertime(id){
   r.status="approved";r.approvedBy=currentUser.name;r.approvedAt=new Date().toISOString();r.updatedAt=new Date().toISOString();
   autoSaveToServerIfEnabled();showToast(`승인되었습니다. ${y}년 ${m}월 급여에 수당이 반영됩니다.`,"success");renderOvertimeReqPage();
 }
-function rejectOvertime(id){
+async function rejectOvertime(id){
   const r=overtimeRequests.find(x=>String(x.id)===String(id));
   if(!r||r.status!=="pending"||!_otCanApprove(r))return;
-  const reason=prompt("반려 사유를 입력하세요.");if(!reason)return;
+  const reason=await askInputModal({
+    title:"초과근무 반려 사유 입력",
+    message:"초과근무 신청을 반려합니다. 신청자에게 보일 사유를 입력하세요.",
+    label:"반려 사유",
+    placeholder:"예: 사전 승인 대상 아님, 시간 확인 필요 등",
+    multiline:true,
+    maxLength:300,
+    impacts:[
+      {label:"신청자",value:r.empName||getEmpName(r.empId)},
+      {label:"근무일/시간",value:`${r.date||"-"} ${r.startTime||""}~${r.endTime||""} (${r.hours||0}h)`},
+      {label:"처리 후 상태",value:"반려",tone:"danger"}
+    ],
+    confirmText:"반려 처리",
+    confirmClass:"btn-danger",
+    noBackdropClose:true
+  });
+  if(!reason)return;
   r.status="rejected";r.rejectReason=reason;r.approvedBy=currentUser.name;r.approvedAt=new Date().toISOString();r.updatedAt=new Date().toISOString();
   autoSaveToServerIfEnabled();showToast("반려되었습니다.","info");renderOvertimeReqPage();
 }
@@ -19023,10 +19420,27 @@ function approveExpenseClaim(id){
   x.status="approved";x.approvedBy=currentUser.name;x.approvedAt=new Date().toISOString();x.updatedAt=new Date().toISOString();
   autoSaveToServerIfEnabled();showToast("승인되었습니다. 지급 처리를 진행하세요.","success");renderExpenseAdminPage();
 }
-function rejectExpenseClaim(id){
+async function rejectExpenseClaim(id){
   if(currentUser.role!=="admin"){showToast("경비 반려 권한이 없습니다.","error");return;}
   const x=expenseClaims.find(x=>String(x.id)===String(id));if(!x||x.status!=="pending")return;
-  const reason=prompt("반려 사유를 입력하세요.");if(!reason)return;
+  const reason=await askInputModal({
+    title:"경비 청구 반려 사유 입력",
+    message:"경비 청구를 반려합니다. 청구자에게 보일 사유를 입력하세요.",
+    label:"반려 사유",
+    placeholder:"예: 증빙 누락, 비용 항목 확인 필요 등",
+    multiline:true,
+    maxLength:300,
+    impacts:[
+      {label:"청구자",value:x.empName||getEmpName(x.empId)},
+      {label:"제목",value:x.title||"-"},
+      {label:"금액",value:`${(x.total||0).toLocaleString()}원`,tone:"warn"},
+      {label:"처리 후 상태",value:"반려",tone:"danger"}
+    ],
+    confirmText:"반려 처리",
+    confirmClass:"btn-danger",
+    noBackdropClose:true
+  });
+  if(!reason)return;
   x.status="rejected";x.rejectReason=reason;x.approvedBy=currentUser.name;x.approvedAt=new Date().toISOString();x.updatedAt=new Date().toISOString();
   autoSaveToServerIfEnabled();showToast("반려되었습니다.","info");renderExpenseAdminPage();
 }
@@ -19425,7 +19839,25 @@ async function shipQuotation(id){
   showToast(`출고 및 세금계산서 발행이 완료되었습니다 (${r.taxInvoice.invoiceNo}).`,"success");renderSalesQuotationsPage();
 }
 async function rejectQuotation(id){
-  const reason=prompt("실주(반려) 사유를 입력하세요.");if(!reason)return;
+  const q=erpQuotations.find(q=>q.id===id);
+  const reason=await askInputModal({
+    title:"견적 실주 사유 입력",
+    message:"견적서를 실주/반려 상태로 처리합니다.",
+    label:"실주 사유",
+    placeholder:"예: 고객사 보류, 단가 불일치 등",
+    multiline:true,
+    maxLength:300,
+    impacts:[
+      {label:"견적번호",value:q?.quoteNo||id},
+      {label:"거래처",value:q?.partnerName||"-"},
+      {label:"합계",value:`${(q?.grandTotal||0).toLocaleString()}원`,tone:"warn"},
+      {label:"처리 후 상태",value:"실주",tone:"danger"}
+    ],
+    confirmText:"실주 처리",
+    confirmClass:"btn-danger",
+    noBackdropClose:true
+  });
+  if(!reason)return;
   const r=await serverRequest("POST",`/api/erp/quotations/${id}/reject`,{reason,role:currentUser.role,user:currentUser.name});
   if(!r?.ok){showToast(r?.message||"처리에 실패했습니다.","error");return;}
   const idx=erpQuotations.findIndex(q=>q.id===id);if(idx>=0)erpQuotations[idx]=r.quotation;
@@ -19609,8 +20041,24 @@ async function savePmsProject(id){
   closeModal();showToast("저장되었습니다.","success");renderPmsProjectsPage();
 }
 async function closePmsProject(id){
-  if(!confirm("이 프로젝트를 종료 처리하시겠습니까?"))return;
   const p=pmsProjects.find(project=>project.id===id);
+  const allocations=pmsAllocations.filter(a=>String(a.projectId)===String(id)).length;
+  const worklogs=(typeof _pmsAllocWorklogs!=="undefined"?_pmsAllocWorklogs:[]).filter(w=>String(w.projectId)===String(id)).length;
+  const ok=await askConfirmModal({
+    title:"PMS 프로젝트 종료 확인",
+    message:"프로젝트를 종료 상태로 전환합니다.",
+    impacts:[
+      {label:"프로젝트",value:p?.name||id},
+      {label:"PM",value:p?.pmId?getEmpName(p.pmId):(p?.pm||"-")},
+      {label:"투입 인원",value:`${(p?.members||[]).length}명`},
+      {label:"투입률 기록",value:`${allocations}건`,tone:allocations?"warn":"info"},
+      {label:"종료 후 영향",value:"수정/투입 관리 제한",tone:"danger"}
+    ],
+    warnings:worklogs?[`현재 로컬에 이 프로젝트 업무기록 ${worklogs}건이 로드되어 있습니다.`]:[],
+    confirmText:"프로젝트 종료",
+    danger:true
+  });
+  if(!ok)return;
   const r=await serverRequest("POST",`/api/pms/projects/${id}/close`,{expectedUpdatedAt:p?.updatedAt});
   if(r?.code==="PMS_PROJECT_CONFLICT"){await loadPmsFromServer();showToast("다른 사용자의 변경을 감지해 최신 내용을 불러왔습니다.","error");return;}
   if(!r?.ok){showToast(r?.message||"처리에 실패했습니다.","error");return;}
@@ -20119,7 +20567,24 @@ async function saveRecruitJob(id){
   closeModal();showToast("저장되었습니다.","success");renderRecruitJobsPage();
 }
 async function closeRecruitJob(id){
-  if(!confirm("이 채용공고를 마감 처리하시겠습니까?"))return;
+  const job=recruitJobs.find(j=>j.id===id);
+  const candidates=recruitCandidates.filter(c=>String(c.jobId)===String(id));
+  const activeCandidates=candidates.filter(c=>!["불합격","최종합격","입사","마감"].includes(c.status)).length;
+  const ok=await askConfirmModal({
+    title:"채용공고 마감 확인",
+    message:"채용공고를 마감 처리합니다.",
+    impacts:[
+      {label:"채용공고",value:job?.title||id},
+      {label:"모집 인원",value:`${job?.headcount||0}명`},
+      {label:"지원자",value:`${candidates.length}명`},
+      {label:"진행 중 지원자",value:`${activeCandidates}명`,tone:activeCandidates?"warn":"info"},
+      {label:"마감 후 영향",value:"신규 지원/일정 등록 제한",tone:"danger"}
+    ],
+    warnings:activeCandidates?["진행 중 지원자가 있으면 후속 전형 상태를 별도로 정리해야 합니다."]:[],
+    confirmText:"채용공고 마감",
+    danger:true
+  });
+  if(!ok)return;
   const r=await serverRequest("POST",`/api/recruit/jobs/${id}/close`,{role:currentUser.role});
   if(!r?.ok){showToast(r?.message||"처리에 실패했습니다.","error");return;}
   const idx=recruitJobs.findIndex(j=>j.id===id);if(idx>=0)recruitJobs[idx]=r.job;
@@ -21351,8 +21816,26 @@ async function saveRecruitInterviewEdit(interviewId){
 }
 async function cancelRecruitInterview(interviewId){
   const current=recruitInterviews.find(i=>i.id===interviewId);
-  const reason=prompt("취소 사유를 입력해주세요. (선택)")||"";
-  if(!confirm("이 면접 일정을 취소하시겠습니까?"))return;
+  const cd=recruitCandidates.find(c=>String(c.id)===String(current?.candidateId));
+  const reason=await askInputModal({
+    title:"면접 일정 취소 확인",
+    message:"면접 일정을 취소합니다. 필요하면 취소 사유를 남겨 주세요.",
+    label:"취소 사유",
+    required:false,
+    placeholder:"선택 입력",
+    multiline:true,
+    maxLength:300,
+    impacts:[
+      {label:"지원자",value:cd?.name||"-"},
+      {label:"면접 차수",value:current?.round?`${current.round}차`:"-"},
+      {label:"일정",value:current?.schedule||"일정 미정"},
+      {label:"처리 후 상태",value:"취소",tone:"danger"}
+    ],
+    confirmText:"면접 취소",
+    confirmClass:"btn-danger",
+    noBackdropClose:true
+  });
+  if(reason===null)return;
   const r=await serverRequest("POST",`/api/recruit/interviews/${interviewId}/cancel`,{reason,expectedUpdatedAt:current?.updatedAt||null,role:currentUser.role});
   if(!r?.ok){if(r?.conflict)await loadRecruitFromServer();showToast(r?.message||"취소에 실패했습니다.","error");return;}
   const idx=recruitInterviews.findIndex(i=>i.id===interviewId);if(idx>=0)recruitInterviews[idx]=r.interview;
@@ -21637,7 +22120,25 @@ async function receivePO(id){
   showToast(`입고 처리되어 재고에 반영되고 매입세금계산서가 발행되었습니다 (${r.taxInvoice?.invoiceNo||""}).`,"success");renderSalesPurchaseOrdersPage();
 }
 async function cancelPO(id){
-  const reason=prompt("발주 취소 사유를 입력하세요.");if(!reason)return;
+  const p=erpPurchaseOrders.find(p=>p.id===id);
+  const reason=await askInputModal({
+    title:"발주 취소 사유 입력",
+    message:"발주서를 취소 처리합니다. 취소 사유를 입력하세요.",
+    label:"취소 사유",
+    placeholder:"예: 공급사 취소, 발주 조건 변경 등",
+    multiline:true,
+    maxLength:300,
+    impacts:[
+      {label:"발주번호",value:p?.poNo||id},
+      {label:"거래처",value:p?.partnerName||"-"},
+      {label:"합계",value:`${(p?.grandTotal||0).toLocaleString()}원`,tone:"warn"},
+      {label:"처리 후 상태",value:"취소",tone:"danger"}
+    ],
+    confirmText:"발주 취소",
+    confirmClass:"btn-danger",
+    noBackdropClose:true
+  });
+  if(!reason)return;
   const r=await serverRequest("POST",`/api/erp/purchase-orders/${id}/cancel`,{reason,role:currentUser.role,user:currentUser.name});
   if(!r?.ok){showToast(r?.message||"취소에 실패했습니다.","error");return;}
   const idx=erpPurchaseOrders.findIndex(p=>p.id===id);if(idx>=0)erpPurchaseOrders[idx]=r.purchaseOrder;
@@ -21738,14 +22239,44 @@ function viewPurchaseRequestModal(id){
   </div><div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal()">닫기</button></div></div>`);
 }
 async function approvePurchaseRequest(id){
-  if(!confirm("이 구매요청을 승인하시겠습니까?"))return;
+  const p=erpPurchaseRequests.find(p=>p.id===id);
+  const ok=await askConfirmModal({
+    title:"구매요청 승인 확인",
+    message:"구매요청을 승인합니다.",
+    impacts:[
+      {label:"요청 제목",value:p?.title||id},
+      {label:"요청자",value:p?.empName||getEmpName(p?.empId)},
+      {label:"합계",value:`${(p?.grandTotal||0).toLocaleString()}원`,tone:"warn"},
+      {label:"승인 후 영향",value:"발주 전환 가능",tone:"success"}
+    ],
+    confirmText:"구매요청 승인"
+  });
+  if(!ok)return;
   const r=await serverRequest("POST",`/api/erp/purchase-requests/${id}/approve`,{role:currentUser.role,user:currentUser.name});
   if(!r?.ok){showToast(r?.message||"승인에 실패했습니다.","error");return;}
   const idx=erpPurchaseRequests.findIndex(p=>p.id===id);if(idx>=0)erpPurchaseRequests[idx]=r.purchaseRequest;
   showToast("승인되었습니다.","success");renderPurchaseRequestsPage();
 }
 async function rejectPurchaseRequest(id){
-  const reason=prompt("반려 사유를 입력하세요.");if(!reason)return;
+  const p=erpPurchaseRequests.find(p=>p.id===id);
+  const reason=await askInputModal({
+    title:"구매요청 반려 사유 입력",
+    message:"구매요청을 반려합니다. 요청자에게 보일 사유를 입력하세요.",
+    label:"반려 사유",
+    placeholder:"예: 예산 초과, 구매 목적 재확인 필요 등",
+    multiline:true,
+    maxLength:300,
+    impacts:[
+      {label:"요청 제목",value:p?.title||id},
+      {label:"요청자",value:p?.empName||getEmpName(p?.empId)},
+      {label:"합계",value:`${(p?.grandTotal||0).toLocaleString()}원`,tone:"warn"},
+      {label:"처리 후 상태",value:"반려",tone:"danger"}
+    ],
+    confirmText:"반려 처리",
+    confirmClass:"btn-danger",
+    noBackdropClose:true
+  });
+  if(!reason)return;
   const r=await serverRequest("POST",`/api/erp/purchase-requests/${id}/reject`,{reason,role:currentUser.role,user:currentUser.name});
   if(!r?.ok){showToast(r?.message||"반려에 실패했습니다.","error");return;}
   const idx=erpPurchaseRequests.findIndex(p=>p.id===id);if(idx>=0)erpPurchaseRequests[idx]=r.purchaseRequest;
