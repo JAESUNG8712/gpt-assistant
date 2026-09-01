@@ -1299,12 +1299,20 @@ let erpPurchaseRequests=[],_prLoaded=false;
 async function loadErpFromServer(){
   if(!serverConfig.url){_erpLoaded=true;return;}
   try{
+    // items/locations는 member도 구매요청(inv-purchase-requests, 전 역할 개방) 등록에
+    // 필요해 role 무관 조회 가능(server.js 참고) — quotations/purchase-orders/stock은
+    // admin 전용 라우트라, 이전엔 role 구분 없이 항상 5개를 한꺼번에 요청해 비admin이
+    // 이 함수를 타는 유일한 진입점(구매요청 페이지, loadPurchaseRequestsFromServer())에서
+    // 매번 403이 3건씩 찍혔다(2026-09-01 UI 감사에서 발견). admin이 아니면 그 3개는 아예
+    // 요청하지 않는다 — 그 값을 쓰는 화면(sales-*, inv-stock)은 어차피 admin 전용이라
+    // 비워둬도 영향 없다.
+    const isAdmin=currentUser?.role==="admin";
     const [ri,rl,rq,rp,rs]=await Promise.all([
       serverRequest("GET","/api/erp/items"),
       serverRequest("GET","/api/erp/locations"),
-      serverRequest("GET","/api/erp/quotations"),
-      serverRequest("GET","/api/erp/purchase-orders"),
-      serverRequest("GET","/api/erp/stock"),
+      isAdmin?serverRequest("GET","/api/erp/quotations"):Promise.resolve(null),
+      isAdmin?serverRequest("GET","/api/erp/purchase-orders"):Promise.resolve(null),
+      isAdmin?serverRequest("GET","/api/erp/stock"):Promise.resolve(null),
     ]);
     if(ri?.ok)erpItems=ri.items;
     if(rl?.ok)erpLocations=rl.locations;
@@ -6413,6 +6421,13 @@ function renderSidebar(){
       <button style="font-size:9.5px;padding:3px 6px;border-radius:5px;border:1px solid #e2e8f0;background:#fff;color:#64748b;cursor:pointer;flex:1" onclick="loadFromServer()">📥 불러오기</button>`
       :`<button style="font-size:9.5px;padding:3px 6px;border-radius:5px;border:1px solid #e2e8f0;background:#fff;color:#64748b;cursor:pointer;width:100%" onclick="showNetworkGuide()">🌐 네트워크</button>`}
     </div></div>`;
+  // #server-status-indicator/#server-status-text는 위에서 항상 "⚫ 서버 미연결"이라는
+  // 하드코딩된 기본 마크업으로 새로 그려진다 — gotoPage()가 페이지를 옮길 때마다
+  // renderSidebar()를 다시 부르므로, 이 함수가 끝난 뒤 실제 serverConfig.status로 다시
+  // 동기화하지 않으면 실제로는 정상 연결·저장 중이어도 아무 페이지나 이동하는 순간 매번
+  // "서버 미연결"로 되돌아가 보인다(2026-09-01 UI 감사에서 발견 — 이후 저장/SSE 이벤트가
+  // 우연히 한 번 더 updateServerStatusUI()를 부를 때까지 잘못된 상태가 그대로 남아있었음).
+  updateServerStatusUI();
 }
 // 페이지별 접근 가능 권한 (사이드바 메뉴 표시 여부와 무관하게, 직접 이동 시도도 차단)
 const PAGE_ROLES={
@@ -7069,7 +7084,13 @@ function _dashMyKpiCard(u,sz){
     {label:"비중합계",value:wt+"%",bg:"#eff6ff",color:wt===100?"#16a34a":"#dc2626"},
     {label:"1차승인",value:myKpis.filter(k=>k.firstStatus==="approved").length,bg:"#f8fafc",color:"#2563eb"},
   ],sz&&sz.cols,20,3);
-  return`<div class="card dash-card-link" onclick="gotoPage('kpi')"><div class="card-head"><h3>🎯 나의 KPI 현황</h3><span class="fz11 text-gray">${year}년</span></div><div class="card-body">
+  // renderSidebar()의 "KPI 목표 등록"/"KPI 결과 입력" 분기(settings.stage==="goal")와
+  // 동일한 기준으로 이동시켜야 한다 — 무조건 "kpi"(목표 등록)로만 보내면, "결과 입력"
+  // 단계에서는 사이드바 자체가 그 페이지를 아예 제공하지 않아(위 분기 참고) 진입해도
+  // 편집/제출 버튼이 전부 숨겨진 채 "⚠ 현재 결과 입력 단계입니다" 안내만 뜨는 막다른
+  // 화면이 됐다(2026-09-01 UI 감사에서 발견 — 사이드바로는 도달할 수 없고 이 카드로만
+  // 도달 가능한 상태였음).
+  return`<div class="card dash-card-link" onclick="gotoPage(settings.stage==='goal'?'kpi':'kpi-results')"><div class="card-head"><h3>🎯 나의 KPI 현황</h3><span class="fz11 text-gray">${year}년</span></div><div class="card-body">
     ${grid}
   </div></div>`;
 }
@@ -7854,7 +7875,7 @@ function getFilteredEmps(){
     if(hrListFilter.role&&e.role!==hrListFilter.role)return false;
     if(hrListFilter.status==="active"&&!e.active)return false;
     if(hrListFilter.status==="inactive"&&e.active)return false;
-    if(hrListFilter.search){const s=hrListFilter.search.toLowerCase();if(!e.name.toLowerCase().includes(s)&&!e.empNo.toLowerCase().includes(s)&&!(e.loginId||"").toLowerCase().includes(s))return false;}
+    if(hrListFilter.search){const s=hrListFilter.search.toLowerCase();if(!e.name.toLowerCase().includes(s)&&!(e.empNo||"").toLowerCase().includes(s)&&!(e.loginId||"").toLowerCase().includes(s))return false;}
     return true;
   });
   const key=hrListFilter.sortKey;
@@ -15273,8 +15294,12 @@ function _dlAcctAccountsCSV(){
   dlCSV(`계정과목_${new Date().toISOString().slice(0,10)}.csv`,["코드","계정명","구분","세부분류","사용여부"],
     acctAccounts.map(a=>[a.code,a.name,TYPE_LABEL[a.type]||a.type,a.category||"",a.active?"사용":"미사용"]));
 }
+let _acctEditingAccount=null; // 모달을 열 때의 스냅샷 — SSE로 acctAccounts가 백그라운드에서
+// 갱신돼도(모달이 열려있는 동안 다른 사용자가 저장), 저장 시점에 배열에서 다시 찾으면 이미
+// 최신값이라 충돌 자체를 못 알아채므로(PMS 프로젝트 수정과 동일한 이유) 열 때 값을 고정해둔다.
 function openAcctAccountModal(id){
   const a=id?acctAccounts.find(a=>a.id===id):null;
+  _acctEditingAccount=a||null;
   openModal(`<div class="modal-box"><div class="modal-head"><h3>${id?"계정과목 수정":"계정과목 추가"}</h3></div><div class="modal-body">
     <div class="fg"><label class="fl">계정코드 <span class="req">*</span></label><input class="fc" id="acc-code" value="${h(a?.code||"")}"></div>
     <div class="fg"><label class="fl">계정명 <span class="req">*</span></label><input class="fc" id="acc-name" value="${h(a?.name||"")}"></div>
@@ -15302,8 +15327,9 @@ async function saveAcctAccount(id){
   if(!code||!name){showToast("계정코드와 계정명을 입력하세요.","error");return;}
   const costCategory=$("#acc-cost-category")?.value||null;
   const costSubType=costCategory==="mfg"?($("#acc-cost-subtype")?.value||null):null;
-  const body={id:id||undefined,code,name,type:$("#acc-type")?.value,category:$("#acc-category")?.value.trim(),costCategory,costSubType,active:$("#acc-active")?.checked,role:currentUser.role,user:currentUser.name};
+  const body={id:id||undefined,code,name,type:$("#acc-type")?.value,category:$("#acc-category")?.value.trim(),costCategory,costSubType,active:$("#acc-active")?.checked,role:currentUser.role,user:currentUser.name,expectedUpdatedAt:_acctEditingAccount?.updatedAt};
   const r=await serverRequest("POST","/api/accounting/accounts",body);
+  if(r?.code==="ACCT_ACCOUNT_CONFLICT"){await loadAccountingFromServer();closeModal();showToast("다른 사용자의 변경을 감지해 최신 내용을 불러왔습니다. 다시 확인 후 저장하세요.","error");return;}
   if(!r?.ok){showToast(r?.message||"저장에 실패했습니다.","error");return;}
   const idx=acctAccounts.findIndex(a=>a.id===r.account.id);
   if(idx>=0)acctAccounts[idx]=r.account;else acctAccounts.push(r.account);
@@ -15375,8 +15401,10 @@ function _dlPartnersCSV(){
   dlCSV(`거래처_${new Date().toISOString().slice(0,10)}.csv`,["거래처명","사업자번호","대표자","거래유형","담당자","연락처","이메일","주소","사용여부"],
     acctPartners.map(p=>[p.name,p.bizNo||"",p.ceoName||"",PARTNER_TYPE_LABEL[p.type]||p.type,p.contactName||"",p.phone||"",p.email||"",p.address||"",p.active?"사용":"미사용"]));
 }
+let _acctEditingPartner=null; // openAcctAccountModal의 _acctEditingAccount와 동일한 이유의 스냅샷.
 function openPartnerModal(id){
   const p=id?acctPartners.find(p=>p.id===id):null;
+  _acctEditingPartner=p||null;
   openModal(`<div class="modal-box" style="max-width:560px"><div class="modal-head"><h3>${id?"거래처 수정":"거래처 추가"}</h3></div><div class="modal-body">
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
       <div class="fg"><label class="fl">거래처명 <span class="req">*</span></label><input class="fc" id="ptn-name" value="${h(p?.name||"")}"></div>
@@ -15404,8 +15432,9 @@ async function savePartner(id){
   const files=$("#ptn-files")?.files;
   let attachments=existing?.attachments||[];
   if(files&&files.length)attachments=[...attachments,...Array.from(files).map(f=>({name:f.name,size:f.size}))];
-  const body={id:id||undefined,name,bizNo:$("#ptn-bizno")?.value.trim(),ceoName:$("#ptn-ceo")?.value.trim(),type:$("#ptn-type")?.value,contactName:$("#ptn-contact")?.value.trim(),phone:$("#ptn-phone")?.value.trim(),email:$("#ptn-email")?.value.trim(),address:$("#ptn-address")?.value.trim(),registerReason:$("#ptn-reason")?.value.trim(),attachments,active:$("#ptn-active")?.checked,role:currentUser.role,user:currentUser.name};
+  const body={id:id||undefined,name,bizNo:$("#ptn-bizno")?.value.trim(),ceoName:$("#ptn-ceo")?.value.trim(),type:$("#ptn-type")?.value,contactName:$("#ptn-contact")?.value.trim(),phone:$("#ptn-phone")?.value.trim(),email:$("#ptn-email")?.value.trim(),address:$("#ptn-address")?.value.trim(),registerReason:$("#ptn-reason")?.value.trim(),attachments,active:$("#ptn-active")?.checked,role:currentUser.role,user:currentUser.name,expectedUpdatedAt:_acctEditingPartner?.updatedAt};
   const r=await serverRequest("POST","/api/accounting/partners",body);
+  if(r?.code==="ACCT_PARTNER_CONFLICT"){await loadAccountingFromServer();closeModal();showToast("다른 사용자의 변경을 감지해 최신 내용을 불러왔습니다. 다시 확인 후 저장하세요.","error");return;}
   if(!r?.ok){showToast(r?.message||"저장에 실패했습니다.","error");return;}
   const idx=acctPartners.findIndex(p=>p.id===r.partner.id);
   if(idx>=0)acctPartners[idx]=r.partner;else acctPartners.push(r.partner);
