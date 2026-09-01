@@ -1,6 +1,6 @@
 """
 자체 AI 엔진 — 외부 API 완전 불필요
-순수 Python TF-IDF 기반 한국어 지식 검색 + 응답 생성
+순수 Python TF-IDF·BM25·문자 n-gram 하이브리드 한국어 지식 검색 + 응답 생성
 """
 
 import re
@@ -483,6 +483,16 @@ def _feat(text: str) -> List[str]:
     return t + bg
 
 
+def _char_ngrams(text: str, size: int = 3) -> set:
+    """오타·띄어쓰기 차이를 보완하는 로컬 문자 특징(원문은 저장하지 않음)."""
+    normalized = re.sub(r'[^0-9a-z가-힣]+', '', (text or '').lower())
+    if not normalized:
+        return set()
+    if len(normalized) <= size:
+        return {normalized}
+    return {normalized[i:i + size] for i in range(len(normalized) - size + 1)}
+
+
 # ── 2. TF-IDF 검색 엔진 ──────────────────────────────
 
 _FEEDBACK_BOOST: Dict[Tuple[str, str], float] = {}   # (persona, q_lower) -> boost
@@ -502,6 +512,13 @@ class _Engine:
         self._qa: List[Tuple[str, str, dict]] = []   # (질문텍스트, 답변, 메타)
         self._vecs: List[Dict[str, float]] = []
         self._idf: Dict[str, float] = {}
+        self._bm25_idf: Dict[str, float] = {}
+        self._feature_counts: List[Counter] = []
+        self._doc_lengths: List[int] = []
+        self._avg_doc_length = 1.0
+        self._postings: Dict[str, set] = defaultdict(set)
+        self._char_features: List[set] = []
+        self._char_postings: Dict[str, set] = defaultdict(set)
         self._dirty = True
         self._deleted: set = set()   # 소프트 삭제된 인덱스
 
@@ -550,16 +567,33 @@ class _Engine:
             for f in set(fs):
                 df[f] += 1
         self._idf = {f: math.log((N + 1) / (c + 1)) + 1 for f, c in df.items()}
+        self._bm25_idf = {
+            f: math.log(1.0 + (N - c + 0.5) / (c + 0.5)) for f, c in df.items()
+        }
 
         # TF-IDF 벡터
         self._vecs = []
-        for fs in all_f:
+        self._feature_counts = []
+        self._doc_lengths = []
+        self._postings = defaultdict(set)
+        self._char_features = []
+        self._char_postings = defaultdict(set)
+        for i, fs in enumerate(all_f):
             tf = Counter(fs)
             tot = max(len(fs), 1)
+            self._feature_counts.append(tf)
+            self._doc_lengths.append(tot)
             self._vecs.append({
                 f: (cnt / tot) * self._idf.get(f, 1.0)
                 for f, cnt in tf.items()
             })
+            for feature in tf:
+                self._postings[feature].add(i)
+            char_features = _char_ngrams(self._qa[i][0])
+            self._char_features.append(char_features)
+            for feature in char_features:
+                self._char_postings[feature].add(i)
+        self._avg_doc_length = sum(self._doc_lengths) / max(len(self._doc_lengths), 1)
         self._dirty = False
 
     def _qvec(self, text: str) -> Dict[str, float]:
@@ -578,6 +612,24 @@ class _Engine:
         n2 = math.sqrt(sum(x * x for x in v2.values())) or 1e-9
         return dot / (n1 * n2)
 
+    def _bm25(self, query_features: Counter, index: int) -> float:
+        """TF-IDF와 독립적인 빈도 포화형 보조 점수."""
+        counts = self._feature_counts[index]
+        doc_len = self._doc_lengths[index]
+        k1, b = 1.2, 0.75
+        score = 0.0
+        for feature, query_count in query_features.items():
+            frequency = counts.get(feature, 0)
+            if not frequency:
+                continue
+            denominator = frequency + k1 * (
+                1.0 - b + b * doc_len / max(self._avg_doc_length, 1.0)
+            )
+            score += self._bm25_idf.get(feature, 0.0) * (
+                frequency * (k1 + 1.0) / denominator
+            ) * min(query_count, 2)
+        return score
+
     def search(self, query: str, n: int = 3, persona: str = None,
                min_score: float = 0.10) -> List[Tuple[str, str, float, dict]]:
         if self._dirty:
@@ -590,15 +642,24 @@ class _Engine:
         query_law = _detect_law(query)  # 쿼리에서 법률명 감지
 
         qv = self._qvec(query)
+        query_features = Counter(_feat(query))
         query_lower = query.lower()
         results = []
-        for i, (q, a, meta) in enumerate(self._qa):
+        candidate_ids = set()
+        for feature in qv:
+            candidate_ids.update(self._postings.get(feature, ()))
+        for i in sorted(candidate_ids):
+            q, a, meta = self._qa[i]
             if i in self._deleted:
                 continue
             p = meta.get('persona', '')
             if persona and p and p != persona:
                 continue
             s = self._cos(qv, self._vecs[i])
+            bm25 = self._bm25(query_features, i)
+            if bm25 > 0:
+                # 기존 TF-IDF 임계값/순위를 크게 흔들지 않는 제한적 보조 가중치
+                s *= 1.0 + 0.08 * (bm25 / (bm25 + 3.0))
 
             if article_nums:
                 qa_text = q + ' ' + a[:300]
@@ -632,6 +693,31 @@ class _Engine:
 
             if s >= min_score:
                 results.append((q, a, s, meta))
+
+        # 토큰 검색이 완전히 실패한 경우에만 문자 특징으로 오타·띄어쓰기 폴백.
+        # 조항 질의는 유사 문자열 오탐 위험이 커서 기존 엄격 검색만 사용한다.
+        if not results and not article_nums:
+            query_chars = _char_ngrams(query)
+            fuzzy_ids = set()
+            for feature in query_chars:
+                fuzzy_ids.update(self._char_postings.get(feature, ()))
+            for i in sorted(fuzzy_ids):
+                if i in self._deleted:
+                    continue
+                q, a, meta = self._qa[i]
+                p = meta.get('persona', '')
+                if persona and p and p != persona:
+                    continue
+                doc_chars = self._char_features[i]
+                denominator = len(query_chars) + len(doc_chars)
+                similarity = (
+                    2.0 * len(query_chars & doc_chars) / denominator if denominator else 0.0
+                )
+                if similarity < 0.42:
+                    continue
+                score = max(min_score, 0.10) + (similarity - 0.42) * 0.25
+                score *= _feedback_boost_for(p, q)
+                results.append((q, a, score, {**meta, 'retrieval': 'char_fuzzy'}))
 
         results.sort(key=lambda x: x[2], reverse=True)
 
