@@ -957,6 +957,14 @@ window.onload = () => {
     clipSrc.rawData = rawData; clipSrc.tsvSnapshot = tsv.trimEnd();
     setStatus(`✂️ ${r2-r1+1}행 × ${c2-c1+1}열 잘라내기 — 붙여넣을 위치에서 Ctrl+V`);
   });
+  // 한글 등 IME 조합 입력은 keydown.key가 'Process'로 오기 때문에 기존
+  // "타이핑 시작 시 편집모드 진입" 로직(e.key.length===1 검사)을 통과하지 못해
+  // 셀 선택 후 한글을 입력해도 반영되지 않던 버그 수정 — 조합 시작 시점에 미리
+  // 포커스를 편집 가능한 셀로 옮겨둔다.
+  pt.addEventListener('compositionstart', () => {
+    if (editMode || !selectedCell || document.querySelector('.modal-overlay.open')) return;
+    enterEdit(selectedCell.r, selectedCell.c, '');
+  });
   // 전역 mouseup: 수식 드래그 종료
   document.addEventListener('mouseup', () => {
     if (fDragAnchor) {
