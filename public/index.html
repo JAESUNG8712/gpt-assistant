@@ -288,16 +288,17 @@ input[type=file]{display:none}
 .file-upload-btn:hover{background:#dbeafe}
 
 .comp-tab-row{display:flex;gap:4px;margin-bottom:12px;flex-wrap:wrap}
-.comp-q-row{padding:10px 12px;border-bottom:1px solid #f1f5f9;display:grid;grid-template-columns:1fr 120px;gap:12px;align-items:center}
+.comp-q-row{padding:12px;border-bottom:1px solid #f1f5f9;display:grid;grid-template-columns:1fr 250px;gap:12px;align-items:center}
 .comp-q-row:nth-child(even){background:#fafafa}
-.comp-score-btns{display:flex;gap:4px;justify-content:flex-end}
-.comp-score-btn{width:28px;height:28px;border-radius:50%;border:1.5px solid #e2e8f0;background:#fff;font-size:11px;font-weight:700;cursor:pointer;transition:all .15s;display:flex;align-items:center;justify-content:center}
-.comp-score-btn.sel-1{background:#fef2f2;border-color:#dc2626;color:#dc2626}
-.comp-score-btn.sel-2{background:#fff7ed;border-color:#f97316;color:#f97316}
-.comp-score-btn.sel-3{background:#fefce8;border-color:#eab308;color:#a16207}
-.comp-score-btn.sel-4{background:#f0fdf4;border-color:#16a34a;color:#16a34a}
-.comp-score-btn.sel-5{background:#eff6ff;border-color:#2563eb;color:#2563eb}
-.comp-score-btn:hover{transform:scale(1.15)}
+.comp-score-btns{display:flex;gap:7px;justify-content:flex-end}
+.comp-score-btn{width:42px;height:42px;border-radius:50%;border:2px solid #cbd5e1;background:#fff;font-size:16px;font-weight:800;cursor:pointer;transition:all .15s;display:flex;align-items:center;justify-content:center;color:#475569}
+.comp-score-btn.sel-1{background:#fef2f2;border-color:#dc2626;color:#dc2626;box-shadow:0 0 0 3px rgba(220,38,38,.15)}
+.comp-score-btn.sel-2{background:#fff7ed;border-color:#f97316;color:#f97316;box-shadow:0 0 0 3px rgba(249,115,22,.15)}
+.comp-score-btn.sel-3{background:#fefce8;border-color:#eab308;color:#a16207;box-shadow:0 0 0 3px rgba(234,179,8,.15)}
+.comp-score-btn.sel-4{background:#f0fdf4;border-color:#16a34a;color:#16a34a;box-shadow:0 0 0 3px rgba(22,163,74,.15)}
+.comp-score-btn.sel-5{background:#eff6ff;border-color:#2563eb;color:#2563eb;box-shadow:0 0 0 3px rgba(37,99,235,.15)}
+.comp-score-btn:hover{transform:scale(1.15);border-color:#94a3b8}
+.comp-score-scale{display:flex;justify-content:space-between;font-size:10px;color:#94a3b8;margin-top:3px;padding:0 2px}
 .comp-cat-head{padding:10px 12px;background:#f1f5f9;border-bottom:1px solid #e2e8f0;font-size:12px;font-weight:700;color:#374151}
 .cfg-badge{display:inline-flex;align-items:center;padding:1px 7px;border-radius:10px;font-size:10px;font-weight:700;background:#fff7ed;color:#c2570c;border:1px solid #fed7aa;}
 .eval-status-dot{width:10px;height:10px;border-radius:50%;display:inline-block;margin-right:4px}
@@ -411,9 +412,10 @@ input[type=file]{display:none}
   .profile-avatar{width:56px;height:56px;font-size:22px}
   .profile-info-grid{grid-template-columns:1fr 1fr}
 
-  /* Comp evaluation score buttons — 44px touch target */
-  .comp-score-btns{justify-content:flex-start;flex-wrap:wrap}
-  .comp-score-btn{width:44px;height:44px;font-size:14px}
+  /* Comp evaluation score buttons — 좁은 화면에서는 문항과 점수 버튼을 세로로 쌓고 버튼을 더 크게(48px 터치 타겟) */
+  .comp-q-row{grid-template-columns:1fr}
+  .comp-score-btns{justify-content:flex-start;flex-wrap:wrap;margin-top:6px}
+  .comp-score-btn{width:48px;height:48px;font-size:16px}
 
   /* Toast */
   .toast{left:10px;right:10px;top:auto;bottom:14px;max-width:none}
@@ -3169,7 +3171,7 @@ function renderCompEvaluate(u,year){
     if(cat!==lastCat){catHtml+=`<div class="comp-cat-head">${h(cat)}</div>`;lastCat=cat;}
     catHtml+=`<div class="comp-q-row">
       <div class="fz12">${h(item.title?item.title+": ":"")}${h(item.q)}</div>
-      <div class="comp-score-btns">${[1,2,3,4,5].map(n=>`<button class="comp-score-btn" id="csb-${session.id}-${item.id}-${n}" onclick="setCompScore(${session.id},'${item.id}',${n})">${n}</button>`).join("")}</div>
+      <div><div class="comp-score-btns">${[1,2,3,4,5].map(n=>`<button class="comp-score-btn" id="csb-${session.id}-${item.id}-${n}" onclick="setCompScore(${session.id},'${item.id}',${n})">${n}</button>`).join("")}</div><div class="comp-score-scale"><span>매우 낮음</span><span>매우 높음</span></div></div>
     </div>`;
   });
   const navBtns=pending.map(s=>{const t=getEmp(s.targetId);return`<button class="btn ${s.id===session.id?"btn-primary":"btn-secondary"} btn-sm" onclick="compSelSessionId=${s.id};renderCompEval()">${h(t?.name||"?")}</button>`;}).join("");
@@ -3292,20 +3294,18 @@ function openCompDetailModal(sessionId){
 function renderCompManageByType(u,year,type){
   const el=$("#comp-content");if(!el)return;
   const isLs=type==="leadership";
-  const evalYear=isLs?settings.leadershipEvalYear:settings.compEvalYear;
-  const isOpen=isLs?isLeadershipEvalOpen():isCompEvalOpen();
   const isEnabled=isLs?settings.leadershipEvalEnabled:settings.compEvalEnabled;
-  let targets=employees.filter(e=>e.active&&(isLs?e.role==="director":e.role!=="director"&&e.role!=="admin"));
   const deptF=window["_cmDept"+type]||"";
-  if(deptF)targets=targets.filter(e=>e.dept===deptF);
+  const searchQ=window["_cmSearch"+type]||"";
   el.innerHTML=`
   ${!isEnabled?`<div class="warn-note mb3">⚠ ${isLs?"리더십":"역량"} 평가가 현재 <strong>종료</strong> 상태입니다. 관리자는 결과를 확인할 수 있으나 평가 제출은 불가합니다.</div>`:""}
   <div class="card"><div class="card-body">
     <div class="filter-bar">
-      <select class="fc" style="width:160px" onchange="window['_cmDept${type}']=this.value;renderCompManageByType(currentUser,compSelYear,'${type}')">
+      <select class="fc" style="width:160px" onchange="window['_cmDept${type}']=this.value;renderCompManageTbl(${year},'${type}')">
         <option value="">전체 부서</option>${_dataDepts(deptF).map(d=>`<option${deptF===d?" selected":""}>${h(d)}</option>`).join("")}
       </select>
-      <span class="fz12 text-gray">총 ${targets.length}명</span>
+      <input class="fc" id="comp-manage-search" data-live-filter="comp-manage-search" style="width:200px" placeholder="이름·직급·직책 검색" value="${h(searchQ)}">
+      <span class="fz12 text-gray" id="comp-manage-count"></span>
       <div style="margin-left:auto;display:flex;gap:6px;flex-wrap:wrap">
         <button class="btn btn-primary btn-sm" onclick="openPreSessionSetup(${year},'${type}')">평가자 설정 (세션 생성 전)</button>
         <button class="btn btn-warning btn-sm" onclick="openBulkEvalConfigModal(${year},'${type}')">⚙ 일괄 기준 설정</button>
@@ -3313,13 +3313,48 @@ function renderCompManageByType(u,year,type){
         <button class="btn btn-secondary btn-sm" onclick="dlEvaluatorList(${year},'${type}')">📥 평가자 목록 다운로드</button>
         <label class="btn btn-secondary btn-sm" for="eval-ul-${type}">📤 평가자 일괄 업로드</label>
         <input type="file" id="eval-ul-${type}" accept=".csv" style="display:none" onchange="handleEvaluatorUpload(this,${year})">
-        <button class="btn btn-teal btn-sm" onclick="dlCompFullResultByType(${year},'${type}')">📥 결과 다운로드</button>
+        <button class="btn btn-teal btn-sm" onclick="dlCompFullResultByType(${year},'${type}')">📥 결과 다운로드(취합)</button>
+        <button class="btn btn-teal btn-sm" onclick="dlCompIndividualResultsByType(${year},'${type}')" title="평가자 개개인이 입력한 원점수를 피평가자별로 묶어서 다운로드합니다">📥 개인별 결과 다운로드(피평가자별 취합)</button>
       </div>
     </div>
   </div></div>
-  <div class="card"><div class="card-body" style="padding:0"><div class="tbl-wrap"><table>
-    <thead><tr><th>이름</th><th>소속</th><th>평가자 수</th><th>제출</th><th>진행률</th><th>점수</th><th>등급</th><th>관리</th></tr></thead>
-    <tbody>${targets.map(e=>{
+  <div id="comp-manage-tbl"></div>`;
+  registerLiveFilter("comp-manage-search",{set:value=>{window["_cmSearch"+type]=value;},render:()=>renderCompManageTbl(year,type)});
+  renderCompManageTbl(year,type);
+}
+function _compManageSort(key,type,year){
+  const cur=window["_cmSort"+type]||{key:"name",asc:true};
+  window["_cmSort"+type]=cur.key===key?{key,asc:!cur.asc}:{key,asc:true};
+  renderCompManageTbl(year,type);
+}
+function renderCompManageTbl(year,type){
+  const wrap=$("#comp-manage-tbl");if(!wrap)return;
+  const isLs=type==="leadership";
+  const evalYear=isLs?settings.leadershipEvalYear:settings.compEvalYear;
+  let targets=employees.filter(e=>e.active&&(isLs?e.role==="director":e.role!=="director"&&e.role!=="admin"));
+  const deptF=window["_cmDept"+type]||"";
+  if(deptF)targets=targets.filter(e=>e.dept===deptF);
+  const q=(window["_cmSearch"+type]||"").trim().toLowerCase();
+  if(q)targets=targets.filter(e=>[e.name,e.rank,e.position].some(v=>(v||"").toLowerCase().includes(q)));
+  const sort=window["_cmSort"+type]||{key:"name",asc:true};
+  const getVal=e=>{
+    switch(sort.key){
+      case "name":return e.name||"";
+      case "dept":return `${e.dept||""}${e.team||""}`;
+      case "rank":return e.rank||"";
+      case "position":return e.position||"";
+      default:return "";
+    }
+  };
+  targets=[...targets].sort((a,b)=>{
+    const cmp=getVal(a).localeCompare(getVal(b),"ko");
+    return sort.asc?cmp:-cmp;
+  });
+  const countEl=$("#comp-manage-count");if(countEl)countEl.textContent=`총 ${targets.length}명`;
+  const sortTh=(key,label)=>`<th style="cursor:pointer;user-select:none;white-space:nowrap" onclick="_compManageSort('${key}','${type}',${year})" title="클릭하여 정렬">${label}${sort.key===key?(sort.asc?` <span style="color:#3b82f6">▲</span>`:` <span style="color:#3b82f6">▼</span>`):""}</th>`;
+  wrap.innerHTML=`<div class="card"><div class="card-body" style="padding:0"><div class="tbl-wrap"><table>
+    <thead><tr>${sortTh("name","이름")}${sortTh("dept","소속")}${sortTh("rank","직급")}${sortTh("position","직책")}<th>평가자 수</th><th>제출</th><th>진행률</th><th>점수</th><th>등급</th><th>관리</th></tr></thead>
+    <tbody>${targets.length?targets.map(e=>{
       const s=compSessions.find(ss=>ss.targetId===e.id&&ss.year===evalYear);
       const rCnt=s?compResponses.filter(r=>r.sessionId===s.id&&r.submittedAt).length:0;
       const total=s?s.evaluatorIds.length:0;
@@ -3328,6 +3363,8 @@ function renderCompManageByType(u,year,type){
       return`<tr>
         <td><div class="flex items-c gap2"><strong>${h(e.name)}</strong>${s?"":" "+badge("세션없음","gray")}${evaluatorConfig[e.id]?badge(evaluatorConfig[e.id].fixedEvaluatorIds?"직접지정":"수 조정","orange"):""}</div></td>
         <td class="fz11 text-gray">${h(e.dept)}/${h(e.team)}</td>
+        <td>${h(e.rank||"-")}</td>
+        <td>${h(e.position||"-")}</td>
         <td class="tc">${s?total:badge("미설정","yellow")}</td>
         <td class="tc"><span style="color:${rCnt===total&&total>0?"#16a34a":"#374151"}">${s?rCnt+"/"+total:"-"}</span></td>
         <td>${s?`<div style="display:flex;align-items:center;gap:6px"><div style="width:60px;height:6px;background:#e2e8f0;border-radius:3px;overflow:hidden"><div style="height:100%;background:#16a34a;width:${pct}%"></div></div><span class="fz11 text-gray">${pct}%</span></div>`:"-"}</td>
@@ -3341,7 +3378,7 @@ function renderCompManageByType(u,year,type){
           :`<button class="btn btn-primary btn-sm" onclick="createCompSession(${e.id},${evalYear});renderCompEval()">세션 생성</button>`}
         </div></td>
       </tr>`;
-    }).join("")}
+    }).join(""):`<tr><td colspan="10" class="text-gray" style="text-align:center;padding:20px">${q||deptF?"검색 결과가 없습니다.":"대상자가 없습니다."}</td></tr>`}
     </tbody></table></div></div></div>`;
 }
 function createAllCompSessionsByType(year,type){
@@ -3398,6 +3435,47 @@ function dlCompFullResultByType(year,type){
   });
   dlCSV(`${isLs?"리더십":"역량"}평가결과_${year}년.csv`,[],rows);
   showToast("결과 다운로드 완료","success");
+}
+// 관리자용 "개인별 결과 다운로드" — dlCompFullResultByType()가 피평가자당 한 줄(항목별 평균)로
+// 결과를 취합하는 것과 달리, 이 함수는 평가자 개개인이 실제로 입력한 원점수(raw score)를
+// 그대로 한 줄씩 내보내되, 같은 피평가자의 응답끼리 이어서 정렬해 "피평가자별로 취합된"
+// 형태가 되도록 한다 — 개인별 원점수 확인과 피평가자별 취합 조회를 CSV 한 장으로 동시에 지원.
+function dlCompIndividualResultsByType(year,type){
+  const isLs=type==="leadership";
+  const evalYear=isLs?settings.leadershipEvalYear:settings.compEvalYear;
+  const targets=employees.filter(e=>e.active&&(isLs?e.role==="director":e.role!=="director"&&e.role!=="admin"))
+    .sort((a,b)=>(a.name||"").localeCompare(b.name||"","ko"));
+  const items=isLs?LS_FORM_ITEMS:COMP_FORM_ITEMS;
+  const header=["피평가자","피평가자사번","피평가자소속","피평가자직급",
+    "평가자","평가자소속","평가자직급","제출일시",
+    ...items.map(i=>i.title||i.id),"개인평균점수"];
+  if(!isLs)header.push("협업의향");
+  header.push("강점","보완점");
+  const rows=[[`${evalYear}년 ${isLs?"리더십":"역량"} 평가 개인별 결과(피평가자별 취합)`],[""],header];
+  let anyResponse=false;
+  targets.forEach(target=>{
+    const session=compSessions.find(s=>s.targetId===target.id&&s.year===evalYear);
+    if(!session)return;
+    const responses=compResponses.filter(r=>r.sessionId===session.id&&r.submittedAt)
+      .sort((a,b)=>(getEmp(a.evaluatorId)?.name||"").localeCompare(getEmp(b.evaluatorId)?.name||"","ko"));
+    responses.forEach(r=>{
+      anyResponse=true;
+      const evaluator=getEmp(r.evaluatorId);
+      const itemScores=items.map(i=>r.answers?.[i.id]??"");
+      const numericScores=items.map(i=>r.answers?.[i.id]).filter(s=>s!=null&&s>0);
+      const avg=numericScores.length?(numericScores.reduce((a,b)=>a+b,0)/numericScores.length).toFixed(1):"";
+      const row=[target.name,target.empNo||"",`${target.dept||""}${target.team?"/"+target.team:""}`,target.rank||"",
+        evaluator?.name||"(탈퇴/삭제된 직원)",evaluator?`${evaluator.dept||""}${evaluator.team?"/"+evaluator.team:""}`:"",evaluator?.rank||"",
+        r.submittedAt?r.submittedAt.slice(0,16).replace("T"," "):"",
+        ...itemScores,avg];
+      if(!isLs)row.push(r.collab==null?"":(r.collab?"그렇다":"아니다"));
+      row.push(r.strengths||"",r.improvements||"");
+      rows.push(row);
+    });
+  });
+  if(!anyResponse){showToast("제출된 평가 응답이 없습니다.","info");return;}
+  dlCSV(`${isLs?"리더십":"역량"}평가_개인별결과_${evalYear}년.csv`,[],rows);
+  showToast("개인별 결과(피평가자별 취합) 다운로드 완료","success");
 }
 
 function renderCompManage(u,year){
@@ -3467,26 +3545,33 @@ function openEvalProgressModal(sessionId){
   </div>
   <div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal()">닫기</button></div></div>`);
 }
+let _evalEditSort={key:"name",asc:true};
 function openEvaluatorEditModal(targetId,year){
   const session=compSessions.find(s=>s.targetId===targetId&&s.year===year);
   const target=getEmp(targetId);if(!target)return;
   const currentEvalIds=session?[...session.evaluatorIds]:[];
   const suggestedEvalIds=getCompEvaluators(targetId,year).map(e=>e.id);
-  const allCandidates=employees.filter(e=>e.active&&e.id!==targetId&&e.role!=="admin");
+  const allCandidates=employees.filter(e=>e.active&&e.id!==targetId&&e.role!=="admin")
+    .sort((a,b)=>(a.name||"").localeCompare(b.name||"","ko"));
+  _evalEditSort={key:"name",asc:true};
+  const sortTh=(key,label)=>`<th class="th-sort" style="cursor:pointer;user-select:none;white-space:nowrap" onclick="_sortEvalEditRows('${key}')" title="클릭하여 정렬">${label}<span id="eval-sort-arrow-${key}"></span></th>`;
   showModal(`<div class="modal modal-lg"><div class="modal-head"><h2>평가자 관리 — ${h(target.name)}</h2><button class="modal-close" onclick="closeModal()">×</button></div>
   <div class="modal-body">
     <div class="info-note mb3">📌 체크박스로 평가자를 선택/해제하세요. 저장하면 세션의 평가자 목록이 업데이트됩니다.</div>
     <div class="warn-note mb3">⚠ 이미 제출한 평가자를 제외해도 제출된 응답은 삭제되지 않습니다.</div>
-    <div class="tbl-wrap"><table><thead><tr><th><input type="checkbox" id="eval-chk-all" onchange="toggleAllEvaluators(this)"></th><th>이름</th><th>소속</th><th>직위</th><th>추천</th><th>제출여부</th></tr></thead>
+    <div class="fg mb2"><input class="fc" id="eval-edit-search" placeholder="이름·직급·직책 검색" oninput="_filterEvalEditRows(this.value)"><span class="fz11 text-gray" id="eval-edit-count" style="margin-left:8px"></span></div>
+    <div class="tbl-wrap"><table><thead><tr><th><input type="checkbox" id="eval-chk-all" onchange="toggleAllEvaluators(this)" title="검색으로 보이는 행만 선택/해제됩니다"></th>${sortTh("name","이름")}<th>소속</th>${sortTh("rank","직급")}${sortTh("position","직책")}<th>추천</th><th>제출여부</th></tr></thead>
     <tbody id="eval-edit-tbody">${allCandidates.map(e=>{
       const checked=currentEvalIds.includes(e.id);
       const suggested=suggestedEvalIds.includes(e.id);
       const resp=session?compResponses.find(r=>r.sessionId===session.id&&r.evaluatorId===e.id&&r.submittedAt):null;
-      return`<tr style="${checked?"background:#eff6ff":""}">
+      const search=[e.name,e.rank,e.position].filter(Boolean).join(" ").toLowerCase();
+      return`<tr data-search="${h(search)}" data-name="${h((e.name||"").toLowerCase())}" data-rank="${h((e.rank||"").toLowerCase())}" data-position="${h((e.position||"").toLowerCase())}" style="${checked?"background:#eff6ff":""}">
         <td><input type="checkbox" class="eval-chk" value="${e.id}" ${checked?"checked":""}></td>
         <td><strong>${h(e.name)}</strong></td>
         <td class="fz11 text-gray">${h(e.dept)}/${h(e.team)}</td>
-        <td>${roleBadge(e.role)}</td>
+        <td>${h(e.rank||"-")}</td>
+        <td>${h(e.position||"-")}</td>
         <td>${suggested?badge("추천","green"):""}</td>
         <td>${resp?badge("제출완료","teal"):""}</td>
       </tr>`;
@@ -3498,7 +3583,43 @@ function openEvaluatorEditModal(targetId,year){
     <button class="btn btn-primary" onclick="saveEvaluators(${targetId},${year})">저장</button>
   </div></div>`);
 }
-function toggleAllEvaluators(chk){document.querySelectorAll(".eval-chk").forEach(c=>c.checked=chk.checked);}
+function toggleAllEvaluators(chk){
+  // 검색으로 숨겨진(display:none) 행은 건드리지 않고, 현재 화면에 보이는 후보만 일괄 선택/해제한다.
+  document.querySelectorAll(".eval-chk").forEach(c=>{
+    const tr=c.closest("tr");
+    if(tr&&tr.style.display==="none")return;
+    c.checked=chk.checked;
+  });
+}
+// 검색어에 해당하지 않는 행은 숨기되(display:none) DOM 자체는 유지해 체크박스 선택 상태가 사라지지 않게 한다.
+function _filterEvalEditRows(q){
+  const tbody=$("#eval-edit-tbody");if(!tbody)return;
+  const needle=(q||"").trim().toLowerCase();
+  const rows=[...tbody.querySelectorAll("tr[data-search]")];
+  let visible=0;
+  rows.forEach(tr=>{
+    const match=!needle||tr.dataset.search.includes(needle);
+    tr.style.display=match?"":"none";
+    if(match)visible++;
+  });
+  const countEl=$("#eval-edit-count");if(countEl)countEl.textContent=needle?`검색결과 ${visible}/${rows.length}명`:"";
+}
+// 헤더 클릭 시 정렬 방향을 토글하고, 실제 <tr> DOM 노드를 그대로 재배치한다(체크박스 상태 보존).
+function _sortEvalEditRows(key){
+  const tbody=$("#eval-edit-tbody");if(!tbody)return;
+  _evalEditSort.asc=_evalEditSort.key===key?!_evalEditSort.asc:true;
+  _evalEditSort.key=key;
+  const rows=[...tbody.querySelectorAll("tr[data-search]")];
+  rows.sort((a,b)=>{
+    const cmp=(a.dataset[key]||"").localeCompare(b.dataset[key]||"","ko");
+    return _evalEditSort.asc?cmp:-cmp;
+  });
+  rows.forEach(tr=>tbody.appendChild(tr));
+  ["name","rank","position"].forEach(k=>{
+    const el=$("#eval-sort-arrow-"+k);
+    if(el)el.textContent=_evalEditSort.key===k?(_evalEditSort.asc?" ▲":" ▼"):"";
+  });
+}
 function applyRecommendedEvaluators(targetId,year){
   const suggested=getCompEvaluators(targetId,year).map(e=>e.id);
   document.querySelectorAll(".eval-chk").forEach(chk=>{chk.checked=suggested.includes(Number(chk.value));});
@@ -8265,6 +8386,9 @@ autoSaveToServerIfEnabled();renderHRList();}catch(err){showToast("파일 파싱 
 function dlHRList(){dlCSV(`직원목록_${new Date().toISOString().slice(0,10)}.csv`,["이름","사번","권한","부서","팀","직급","직책","경력","연봉","입사일","상태"],getFilteredEmps().map(e=>[e.name,e.empNo,ROLES[e.role],e.dept,e.team,e.rank,e.position||"-",(e.totalCareer||0)+"년",fmtSalary(e.salary),e.hire,e.active?"재직":"퇴직"]));}
 async function resetAllLoginToEmpNo(){
   const targets=employees.filter(e=>e.empNo&&e.role!=="admin");
+  // 사번이 비어있는 직원은 조용히 건너뛰던 것을 — "일부 직원만 ID/PW가 사번과 안 맞는다"는
+  // 혼란의 실제 원인이 될 수 있어 — 사전에 확인창에서, 실행 후에는 결과 토스트에서 명시한다.
+  const missing=employees.filter(e=>!e.empNo&&e.role!=="admin");
   if(!targets.length){showToast("대상 직원이 없습니다.","error");return;}
   const ok=await askConfirmModal({
     title:"전 직원 계정 일괄 초기화",
@@ -8273,16 +8397,23 @@ async function resetAllLoginToEmpNo(){
       {label:"대상 직원",value:`${targets.length}명`,tone:"danger"},
       {label:"제외",value:"관리자 계정"},
       {label:"변경 후 로그인ID",value:"사번",tone:"warn"},
-      {label:"변경 후 비밀번호",value:"사번과 동일",tone:"danger"}
+      {label:"변경 후 비밀번호",value:"사번과 동일",tone:"danger"},
+      ...(missing.length?[{label:"⚠ 사번 미입력으로 제외",value:`${missing.length}명 (${missing.slice(0,5).map(e=>e.name).join(", ")}${missing.length>5?` 외 ${missing.length-5}명`:""})`,tone:"danger"}]:[])
     ],
-    warnings:["직원이 기존 비밀번호로 로그인할 수 없게 됩니다.","실행 직후 비밀번호 변경 공지를 권장합니다."],
+    warnings:[
+      "직원이 기존 비밀번호로 로그인할 수 없게 됩니다.","실행 직후 비밀번호 변경 공지를 권장합니다.",
+      ...(missing.length?["사번이 입력되지 않은 직원은 이번 초기화에서 자동으로 제외됩니다 — 인사관리>직원목록에서 해당 직원의 사번을 먼저 입력한 뒤 다시 실행하거나, 그 직원만 상세 화면에서 개별 초기화하세요."]:[])
+    ],
     confirmText:"전 직원 초기화",
     danger:true
   });
   if(!ok)return;
   const now=new Date().toISOString();
   targets.forEach(e=>{e.loginId=e.empNo;e.pw=e.empNo;e.updatedAt=now;});
-  autoSaveToServerIfEnabled();showToast(`${targets.length}명의 계정 정보가 사번으로 초기화되었습니다.`,"success");renderHRListTbl();
+  autoSaveToServerIfEnabled();
+  showToast(`${targets.length}명의 계정 정보가 사번으로 초기화되었습니다.${missing.length?` (사번 미입력 ${missing.length}명은 제외됨 — 명단은 콘솔 참고)`:""}`,"success");
+  if(missing.length)console.warn("사번 미입력으로 계정 초기화에서 제외된 직원:",missing.map(e=>`${e.name}(id:${e.id})`));
+  renderHRListTbl();
 }
 
 // ── 인사현황 스프레드시트 가져오기 ────────────────────────────────
