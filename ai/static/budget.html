@@ -2723,6 +2723,11 @@ function sortByCol(col) {
   const header = firstIsHeader ? g.slice(0,1) : [];
   const body = (firstIsHeader ? g.slice(1) : g.slice()).sort((a,b) => {
     const va=a[col]??'', vb=b[col]??'';
+    // 빈 셀은 정렬 방향과 무관하게 항상 맨 아래로 (엑셀/구글시트와 동일)
+    const aBlank = va==='', bBlank = vb==='';
+    if (aBlank && bBlank) return 0;
+    if (aBlank) return 1;
+    if (bBlank) return -1;
     const na=Number(String(va).replace(/,/g,'')), nb=Number(String(vb).replace(/,/g,''));
     if(!isNaN(na)&&!isNaN(nb)) return dir==='asc'?na-nb:nb-na;
     return dir==='asc'?String(va).localeCompare(String(vb),'ko'):String(vb).localeCompare(String(va),'ko');
