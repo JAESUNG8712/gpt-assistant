@@ -226,6 +226,11 @@ def init_db(seed_static: bool = True):
             "ALTER TABLE learned_knowledge ADD COLUMN memory_type TEXT DEFAULT 'fact'",
             "ALTER TABLE learned_knowledge ADD COLUMN memory_scope TEXT DEFAULT 'persona'",
             "ALTER TABLE learned_knowledge ADD COLUMN session_id TEXT DEFAULT ''",
+            "ALTER TABLE learned_knowledge ADD COLUMN helpful_count INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE learned_knowledge ADD COLUMN harmful_count INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE learned_knowledge ADD COLUMN retrieved_count INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE learned_knowledge ADD COLUMN utility_boost REAL NOT NULL DEFAULT 1.0",
+            "ALTER TABLE learned_knowledge ADD COLUMN last_used_at TEXT DEFAULT ''",
         ):
             try:
                 c.execute(column_sql)
@@ -328,6 +333,11 @@ def init_db(seed_static: bool = True):
             "ALTER TABLE memory_quarantine ADD COLUMN original_memory_type TEXT DEFAULT 'fact'",
             "ALTER TABLE memory_quarantine ADD COLUMN original_memory_scope TEXT DEFAULT 'persona'",
             "ALTER TABLE memory_quarantine ADD COLUMN original_session_id TEXT DEFAULT ''",
+            "ALTER TABLE memory_quarantine ADD COLUMN original_helpful_count INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE memory_quarantine ADD COLUMN original_harmful_count INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE memory_quarantine ADD COLUMN original_retrieved_count INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE memory_quarantine ADD COLUMN original_utility_boost REAL NOT NULL DEFAULT 1.0",
+            "ALTER TABLE memory_quarantine ADD COLUMN original_last_used_at TEXT DEFAULT ''",
         ):
             try:
                 c.execute(column_sql)
@@ -346,6 +356,17 @@ def init_db(seed_static: bool = True):
             route TEXT DEFAULT '',
             created_at TEXT NOT NULL
         )""")
+        for column_sql in (
+            "ALTER TABLE memory_retrieval_events ADD COLUMN memory_ids_json TEXT DEFAULT '[]'",
+            "ALTER TABLE memory_retrieval_events ADD COLUMN session_hash TEXT DEFAULT ''",
+            "ALTER TABLE memory_retrieval_events ADD COLUMN feedback_rating INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE memory_retrieval_events ADD COLUMN feedback_at TEXT DEFAULT ''",
+        ):
+            try:
+                c.execute(column_sql)
+            except Exception as e:
+                if "duplicate column" not in str(e).lower() and "already exists" not in str(e).lower():
+                    raise
         c.execute("""CREATE TABLE IF NOT EXISTS memory_revalidation_events (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             memory_id INTEGER NOT NULL DEFAULT 0,
@@ -863,7 +884,8 @@ def retrieve_best(query: str, n: int = 5, persona_id: str = None,
         }
     """
     empty = {"context": "", "best_score": 0.0, "top_answer": "", "top_question": "",
-             "top_results": [], "top_source": "", "top_meta": {}, "expired_skipped": 0}
+             "top_results": [], "top_source": "", "top_meta": {},
+             "context_memory_ids": [], "expired_skipped": 0}
     try:
         from engine import get_engine
         engine = get_engine()
@@ -889,6 +911,7 @@ def retrieve_best(query: str, n: int = 5, persona_id: str = None,
         top_source = ""
         top_meta = {}
         top_results = []
+        context_memory_ids = []
 
         for q, a, score, meta in results:
             if meta.get("source") == "대화":
@@ -913,6 +936,12 @@ def retrieve_best(query: str, n: int = 5, persona_id: str = None,
             if i == 0 or score >= best_score * 0.7:
                 limit = 1000 if i == 0 else 500
                 parts.append(a[:limit])
+                try:
+                    memory_id = int(meta.get("memory_id") or 0)
+                except (TypeError, ValueError):
+                    memory_id = 0
+                if memory_id > 0 and memory_id not in context_memory_ids:
+                    context_memory_ids.append(memory_id)
 
         return {
             "context": "\n\n".join(parts),
@@ -922,6 +951,7 @@ def retrieve_best(query: str, n: int = 5, persona_id: str = None,
             "top_results": top_results,
             "top_source": top_source,
             "top_meta": top_meta,
+            "context_memory_ids": context_memory_ids,
             "expired_skipped": expired_skipped,
         }
     except Exception as e:
@@ -1905,7 +1935,8 @@ def quarantine_learned_rows(rows: list, reason: str) -> int:
     with _conn() as c:
         fresh_rows = [dict(r) for r in c.execute(
             "SELECT id, content, persona, source, created_at, evidence_json,"
-            f" verified_at,valid_until,version,updated_at,memory_type,memory_scope,session_id"
+            f" verified_at,valid_until,version,updated_at,memory_type,memory_scope,session_id,"
+            f" helpful_count,harmful_count,retrieved_count,utility_boost,last_used_at"
             f" FROM learned_knowledge WHERE id IN ({placeholders})",
             ids,
         ).fetchall()]
@@ -1916,8 +1947,9 @@ def quarantine_learned_rows(rows: list, reason: str) -> int:
                 "INSERT INTO memory_quarantine"
                 " (original_id, content, persona, source, original_created_at, reason, quarantined_at,"
                 " evidence_json,original_verified_at,original_valid_until,original_version,original_updated_at,"
-                " original_memory_type,original_memory_scope,original_session_id)"
-                " SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?,?,? WHERE NOT EXISTS ("
+                " original_memory_type,original_memory_scope,original_session_id,original_helpful_count,"
+                " original_harmful_count,original_retrieved_count,original_utility_boost,original_last_used_at)"
+                " SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,? WHERE NOT EXISTS ("
                 " SELECT 1 FROM memory_quarantine"
                 " WHERE original_id=? AND content=? AND restored_at='')",
                 (
@@ -1927,6 +1959,10 @@ def quarantine_learned_rows(rows: list, reason: str) -> int:
                     max(1, int(r.get("version") or 1)), r.get("updated_at", ""),
                     r.get("memory_type", "fact"), r.get("memory_scope", "persona"),
                     r.get("session_id", ""),
+                    max(0, int(r.get("helpful_count") or 0)),
+                    max(0, int(r.get("harmful_count") or 0)),
+                    max(0, int(r.get("retrieved_count") or 0)),
+                    float(r.get("utility_boost") or 1.0), r.get("last_used_at", ""),
                     r["id"], r["content"],
                 ),
             )
@@ -1968,8 +2004,8 @@ def restore_quarantined_memory(quarantine_id: int) -> dict | None:
         c.execute(
             "INSERT INTO learned_knowledge"
             " (id,content,persona,source,created_at,evidence_json,verified_at,valid_until,version,updated_at,"
-            " memory_type,memory_scope,session_id)"
-            " SELECT ?,?,?,?,?,?,?,?,?,?,?,?,? WHERE NOT EXISTS ("
+            " memory_type,memory_scope,session_id,helpful_count,harmful_count,retrieved_count,utility_boost,last_used_at)"
+            " SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,? WHERE NOT EXISTS ("
             " SELECT 1 FROM learned_knowledge WHERE id=?)",
             (
                 item["original_id"], item["content"], item["persona"], item["source"],
@@ -1980,6 +2016,11 @@ def restore_quarantined_memory(quarantine_id: int) -> dict | None:
                 item.get("original_memory_type", "fact"),
                 item.get("original_memory_scope", "persona"),
                 item.get("original_session_id", ""),
+                max(0, int(item.get("original_helpful_count") or 0)),
+                max(0, int(item.get("original_harmful_count") or 0)),
+                max(0, int(item.get("original_retrieved_count") or 0)),
+                float(item.get("original_utility_boost") or 1.0),
+                item.get("original_last_used_at", ""),
                 item["original_id"],
             ),
         )
@@ -2050,10 +2091,25 @@ def get_feedback_stats() -> dict:
         return {r['persona']: {'good': r['good'], 'bad': r['bad'], 'total': r['total']} for r in rows}
 
 
+def _telemetry_hash(value: str) -> str:
+    """운영 비밀값 기반 HMAC. 질문·세션 원문 없이 동일성만 비교한다."""
+    telemetry_key = (
+        os.getenv("MEMORY_TELEMETRY_SALT", "").strip()
+        or os.getenv("BACKUP_TOKEN", "").strip()
+        or "local-development-only"
+    ).encode("utf-8")
+    return hmac.new(
+        telemetry_key,
+        (value or "").strip().lower().encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+
 def record_retrieval_event(query: str, persona: str, session_kind: str,
                            top_source: str, best_score: float,
                            result_count: int, used_context: bool,
-                           route: str) -> None:
+                           route: str, memory_ids: list[int] = None,
+                           session_scope: str = "") -> None:
     """원문 질문 없이 RAG 회수 품질만 기록한다.
 
     운영 관측 데이터가 또 다른 개인정보 저장소가 되지 않도록 질문은 단방향
@@ -2063,31 +2119,121 @@ def record_retrieval_event(query: str, persona: str, session_kind: str,
     try:
         # 단순 SHA-256은 흔한 질문을 사전 대입으로 추측할 수 있다. 운영 비밀값을
         # 키로 쓴 HMAC으로 같은 질문의 반복 여부만 비교 가능하게 한다.
-        telemetry_key = (
-            os.getenv("MEMORY_TELEMETRY_SALT", "").strip()
-            or os.getenv("BACKUP_TOKEN", "").strip()
-            or "local-development-only"
-        ).encode("utf-8")
-        query_hash = hmac.new(
-            telemetry_key,
-            (query or "").strip().lower().encode("utf-8"),
-            hashlib.sha256,
-        ).hexdigest()
+        query_hash = _telemetry_hash(query)
         kind = "share" if session_kind == "share" else "owner"
+        safe_ids = []
+        for raw_id in (memory_ids or [])[:8]:
+            try:
+                value = int(raw_id)
+            except (TypeError, ValueError):
+                continue
+            if value > 0 and value not in safe_ids:
+                safe_ids.append(value)
         with _conn() as c:
             c.execute(
                 "INSERT INTO memory_retrieval_events"
                 " (query_hash, persona, session_kind, top_source, best_score,"
-                " result_count, used_context, route, created_at)"
-                " VALUES (?,?,?,?,?,?,?,?,?)",
+                " result_count, used_context, route, created_at,memory_ids_json,session_hash)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     query_hash, (persona or "")[:40], kind, (top_source or "")[:120],
                     float(best_score or 0), max(0, int(result_count or 0)),
                     1 if used_context else 0, (route or "")[:40], datetime.now().isoformat(),
+                    json.dumps(safe_ids), _telemetry_hash(session_scope) if session_scope else "",
                 ),
             )
+            if safe_ids and used_context:
+                c.executemany(
+                    "UPDATE learned_knowledge SET retrieved_count=retrieved_count+1,last_used_at=?"
+                    " WHERE id=?",
+                    [(datetime.now().isoformat(), memory_id) for memory_id in safe_ids],
+                )
     except Exception as e:
         print(f"⚠️ 기억 검색 관측 기록 실패(채팅은 계속): {e}")
+
+
+def attribute_feedback_to_memories(query: str, persona: str, session_scope: str,
+                                   rating: int) -> dict:
+    """최근 검색 이벤트의 실제 사용 기억에 피드백을 귀속한다.
+
+    원문 질문이나 세션 ID는 다시 저장하지 않으며, 24시간 안의 아직 평가되지 않은
+    소유자 검색 이벤트 하나만 갱신한다. 기억 삭제는 하지 않고 0.5~1.5 범위의
+    보수적인 검색 보조 가중치만 계산한다.
+    """
+    if rating not in (1, -1):
+        raise ValueError("rating은 1 또는 -1만 허용")
+    cutoff = (datetime.now() - timedelta(hours=24)).isoformat()
+    now = datetime.now().isoformat()
+    with _conn() as c:
+        query_hash = _telemetry_hash(query)
+        session_hash = _telemetry_hash(session_scope)
+        if persona == "auto":
+            row = c.execute(
+                "SELECT id,persona,memory_ids_json FROM memory_retrieval_events"
+                " WHERE query_hash=? AND session_kind='owner' AND session_hash=?"
+                " AND feedback_rating=0 AND created_at>=? ORDER BY id DESC LIMIT 1",
+                (query_hash, session_hash, cutoff),
+            ).fetchone()
+        else:
+            row = c.execute(
+                "SELECT id,persona,memory_ids_json FROM memory_retrieval_events"
+                " WHERE query_hash=? AND persona=? AND session_kind='owner'"
+                " AND session_hash=? AND feedback_rating=0 AND created_at>=?"
+                " ORDER BY id DESC LIMIT 1",
+                (query_hash, (persona or "")[:40], session_hash, cutoff),
+            ).fetchone()
+        if not row:
+            return {"attributed": False, "memory_ids": [], "boosts": {}, "persona": ""}
+        try:
+            memory_ids = [int(v) for v in json.loads(row["memory_ids_json"] or "[]")]
+        except (TypeError, ValueError, json.JSONDecodeError):
+            memory_ids = []
+        memory_ids = list(dict.fromkeys(v for v in memory_ids if v > 0))[:8]
+        c.execute(
+            "UPDATE memory_retrieval_events SET feedback_rating=?,feedback_at=? WHERE id=?",
+            (rating, now, int(row["id"])),
+        )
+        boosts = {}
+        for memory_id in memory_ids:
+            current = c.execute(
+                "SELECT helpful_count,harmful_count FROM learned_knowledge WHERE id=?",
+                (memory_id,),
+            ).fetchone()
+            if not current:
+                continue
+            helpful = int(current["helpful_count"] or 0) + (1 if rating > 0 else 0)
+            harmful = int(current["harmful_count"] or 0) + (1 if rating < 0 else 0)
+            # 베타(2,2) 사전분포로 한 번의 평가가 순위를 과도하게 흔들지 않게 한다.
+            boost = max(0.5, min(1.5, 2.0 * (helpful + 2) / (helpful + harmful + 4)))
+            c.execute(
+                "UPDATE learned_knowledge SET helpful_count=?,harmful_count=?,"
+                " utility_boost=?,last_used_at=? WHERE id=?",
+                (helpful, harmful, boost, now, memory_id),
+            )
+            boosts[memory_id] = round(boost, 4)
+    return {"attributed": bool(boosts), "memory_ids": list(boosts), "boosts": boosts,
+            "persona": row["persona"] or ""}
+
+
+def get_memory_utility_boosts() -> dict[int, float]:
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT id,utility_boost FROM learned_knowledge WHERE utility_boost != 1.0"
+        ).fetchall()
+    return {int(row["id"]): float(row["utility_boost"] or 1.0) for row in rows}
+
+
+def list_memory_effectiveness(limit: int = 50) -> list[dict]:
+    limit = max(1, min(int(limit), 200))
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT id,persona,source,memory_type,memory_scope,retrieved_count,helpful_count,harmful_count,"
+            " utility_boost,last_used_at,substr(content,1,220) AS content_preview"
+            " FROM learned_knowledge WHERE retrieved_count>0 OR helpful_count>0 OR harmful_count>0"
+            " ORDER BY retrieved_count DESC,(helpful_count+harmful_count) DESC,last_used_at DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+    return [dict(row) for row in rows]
 
 
 def memory_observability(days: int = 7) -> dict:
@@ -2316,6 +2462,9 @@ def memory_stats(session_id: str = None) -> dict:
         quality_eval_count = c.execute(
             "SELECT COUNT(*) FROM memory_quality_eval_runs"
         ).fetchone()[0]
+        attributed_feedback_count = c.execute(
+            "SELECT COUNT(*) FROM memory_retrieval_events WHERE feedback_rating != 0"
+        ).fetchone()[0]
         type_rows = c.execute(
             "SELECT memory_type,COUNT(*) AS total FROM learned_knowledge"
             " GROUP BY memory_type ORDER BY total DESC"
@@ -2340,6 +2489,7 @@ def memory_stats(session_id: str = None) -> dict:
         "quarantined_items": quarantine_count,
         "retrieval_events": retrieval_count,
         "quality_eval_runs": quality_eval_count,
+        "attributed_feedback": attributed_feedback_count,
         "memory_by_type": {row["memory_type"] or "fact": row["total"] for row in type_rows},
         "memory_by_scope": {row["memory_scope"] or "persona": row["total"] for row in scope_rows},
         "engine":         "자체 TF-IDF·BM25·문자 n-gram 엔진 (외부 API 없음)",

@@ -57,6 +57,9 @@ def main():
             revision_cols = {
                 row[1] for row in c.execute("PRAGMA table_info(memory_revisions)")
             }
+            retrieval_cols = {
+                row[1] for row in c.execute("PRAGMA table_info(memory_retrieval_events)")
+            }
             tables = {
                 row[0] for row in c.execute(
                     "SELECT name FROM sqlite_master WHERE type='table'"
@@ -67,14 +70,18 @@ def main():
             ).fetchone()[0]
         assert "session_id" in conversation_cols
         assert {"evidence_json", "verified_at", "valid_until", "version", "updated_at",
-                "memory_type", "memory_scope", "session_id"} <= learned_cols
+                "memory_type", "memory_scope", "session_id", "helpful_count",
+                "harmful_count", "retrieved_count", "utility_boost", "last_used_at"} <= learned_cols
         assert {"evidence_json", "verified_at", "valid_until", "reviewed_by",
                 "review_reason", "review_nonce", "semantic_check_json",
                 "semantic_checked_at", "memory_type", "memory_scope"} <= candidate_cols
         assert {"evidence_json", "original_verified_at", "original_valid_until",
                 "original_version", "original_updated_at", "original_memory_type",
-                "original_memory_scope", "original_session_id"} <= quarantine_cols
+                "original_memory_scope", "original_session_id", "original_helpful_count",
+                "original_harmful_count", "original_retrieved_count",
+                "original_utility_boost", "original_last_used_at"} <= quarantine_cols
         assert {"memory_type", "memory_scope", "session_id"} <= revision_cols
+        assert {"memory_ids_json", "session_hash", "feedback_rating", "feedback_at"} <= retrieval_cols
         assert {"memory_candidates", "memory_quarantine", "memory_retrieval_events"} <= tables
         assert "memory_revalidation_events" in tables
         assert "memory_revisions" in tables

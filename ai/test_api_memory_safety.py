@@ -32,11 +32,13 @@ def main():
         client = TestClient(main.app)
         assert client.get("/health").json()["retrieval_engine"] == "tfidf-bm25-char3-v1"
         assert client.get("/health").json()["memory_schema"] == "typed-scopes-v1"
+        assert client.get("/health").json()["memory_feedback"] == "attributed-utility-v1"
         index_html = client.get("/").text
         assert "기억 운영 센터" in index_html
         assert "loadLearnedMemories" in index_html
         assert "runMemoryQualityEval" in index_html
         assert "loadMemoryObservability" in index_html
+        assert "loadMemoryEffectiveness" in index_html
         owner_token = "test-owner-token"
 
         # 소유자 데이터 API와 일반 채팅은 인증 없이는 열리지 않아야 한다.
@@ -45,6 +47,7 @@ def main():
         assert client.get("/admin/memory-revalidation").status_code == 401
         assert client.get("/admin/memory-observability").status_code == 401
         assert client.get("/admin/memory-quality-evals").status_code == 401
+        assert client.get("/admin/memory-effectiveness").status_code == 401
         assert client.post("/admin/memory-quality-evals/run", json={}).status_code == 401
         assert client.post("/admin/memory-retention").status_code == 401
         assert client.post(
@@ -54,6 +57,34 @@ def main():
         assert client.post(
             "/chat", json={"message": "인증 없는 질문", "persona": "company"}
         ).status_code == 401
+
+        # 피드백은 같은 소유자 세션의 최근 검색에 실제 사용된 기억에만 귀속된다.
+        feedback_question = "API 기여도 귀속 qzxv-811"
+        main.mem.upsert_knowledge(
+            feedback_question, "기여도 귀속 테스트 답변", "hr", source="승인학습"
+        )
+        with main.mem._conn() as c:
+            feedback_memory_id = c.execute(
+                "SELECT id FROM learned_knowledge WHERE content LIKE ? ORDER BY id DESC LIMIT 1",
+                (f"Q: {feedback_question}%",),
+            ).fetchone()[0]
+        feedback_scope = main._owner_session_scope("feedback-browser")
+        main.mem.record_retrieval_event(
+            feedback_question, "hr", "owner", "승인학습", 0.8, 1, True,
+            "kb_direct", [feedback_memory_id], feedback_scope,
+        )
+        feedback_response = client.post(
+            "/feedback", params={"token": owner_token}, json={
+                "question": feedback_question, "answer": "기여도 귀속 테스트 답변",
+                "rating": 1, "persona": "hr", "session_id": "feedback-browser",
+            },
+        )
+        assert feedback_response.status_code == 200
+        assert feedback_response.json()["memory_attribution"]["memory_ids"] == [feedback_memory_id]
+        effectiveness = client.get(
+            "/admin/memory-effectiveness", params={"token": owner_token}
+        ).json()["items"]
+        assert effectiveness[0]["id"] == feedback_memory_id
 
         # 고위험 비밀값은 관리자가 직접 입력해도 장기지식으로 저장하지 않는다.
         secret_learn = client.post(

@@ -891,6 +891,10 @@
 
     <h3 style="font-size:0.95rem;margin:16px 0 6px">🔎 최근 7일 검색 관측</h3>
     <div id="memory-observability" style="font-size:0.78rem;color:var(--text-dim)"></div>
+
+    <h3 style="font-size:0.95rem;margin:16px 0 6px">🎯 기억별 실제 기여도</h3>
+    <p style="font-size:0.75rem;color:var(--text-dim);margin:0 0 8px">답변에 실제 사용된 기억의 검색 횟수와 좋아요·싫어요만 집계합니다. 질문과 세션 원문은 저장하지 않으며 자동 삭제하지 않습니다.</p>
+    <div id="memory-effectiveness-list" style="display:flex;flex-direction:column;gap:8px;max-height:24vh;overflow-y:auto"></div>
     <div class="resume-modal-btns">
       <button class="btn-cancel" onclick="closeMemoryReview()">닫기</button>
     </div>
@@ -1635,6 +1639,7 @@
     await Promise.all([
       loadMemoryOpsSummary(), loadLearnedMemories(), loadMemoryCandidates(),
       loadMemoryRevalidation(), loadMemoryQualityEvals(), loadMemoryObservability(),
+      loadMemoryEffectiveness(),
     ]);
   }
 
@@ -1739,6 +1744,21 @@
       const routes = (d.by_route || []).map(v => `${v.route || '기타'} ${v.total}`).join(' · ') || '기록 없음';
       wrap.innerHTML = `<div style="border:1px solid var(--border);border-radius:9px;padding:10px;background:var(--surface2)">검색 ${Number(d.total_retrievals || 0)}회 · 저신뢰 ${Math.round(Number(d.low_confidence_rate || 0) * 100)}% · 기억 활용 ${Math.round(Number(d.context_usage_rate || 0) * 100)}%<br><span style="font-size:0.68rem">경로: ${escHtml(routes)} · ${escHtml(d.privacy || '')}</span></div>`;
     } catch (e) { wrap.textContent = '검색 관측 통계를 불러오지 못했습니다: ' + e.message; }
+  }
+
+  async function loadMemoryEffectiveness() {
+    const list = document.getElementById('memory-effectiveness-list');
+    list.textContent = '불러오는 중...';
+    try {
+      const r = await tokFetch('/admin/memory-effectiveness?limit=30');
+      if (!r.ok) throw new Error(await friendlyErrorMessage(r));
+      const items = (await r.json()).items || [];
+      if (!items.length) { list.textContent = '아직 피드백과 연결된 기억 사용 기록이 없습니다.'; return; }
+      list.innerHTML = items.map(item => `<div style="border:1px solid var(--border);border-radius:9px;padding:9px;background:var(--surface2)">
+        <div style="font-size:0.7rem;color:var(--text-dim)">#${Number(item.id)} · ${escHtml(item.persona || '')} ${memoryKindBadge(item)} · 검색 ${Number(item.retrieved_count || 0)}회 · 👍 ${Number(item.helpful_count || 0)} · 👎 ${Number(item.harmful_count || 0)} · 순위 보정 ×${Number(item.utility_boost || 1).toFixed(2)}</div>
+        <div style="font-size:0.76rem;white-space:pre-wrap;max-height:70px;overflow:auto;margin-top:5px">${escHtml(item.content_preview || '')}</div>
+      </div>`).join('');
+    } catch (e) { list.textContent = '기억 기여도를 불러오지 못했습니다: ' + e.message; }
   }
 
   async function loadMemoryCandidates() {
@@ -2416,7 +2436,7 @@
       await tokFetch('/feedback', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({ question, answer: answer.substring(0, 1000), rating, persona })
+        body: JSON.stringify({ question, answer: answer.substring(0, 1000), rating, persona, session_id: sessionId })
       });
       showToast(rating === 1 ? '👍 피드백 감사합니다!' : '👎 개선에 반영하겠습니다!');
     } catch {}

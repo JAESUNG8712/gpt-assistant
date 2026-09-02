@@ -866,15 +866,25 @@ async def chat(req: ChatRequest, request: Request):
         retrieval_route = "kb_augmented"
     else:
         retrieval_route = "llm_only"
+    attributed_memory_ids = list(kb.get("context_memory_ids", []))
+    if kb_direct and not attributed_memory_ids:
+        try:
+            direct_memory_id = int((kb.get("top_meta") or {}).get("memory_id") or 0)
+        except (TypeError, ValueError):
+            direct_memory_id = 0
+        if direct_memory_id > 0:
+            attributed_memory_ids.append(direct_memory_id)
     mem.record_retrieval_event(
-        search_msg,
+        user_msg,
         persona=persona_id,
         session_kind="share" if is_shared_session else "owner",
         top_source=kb.get("top_source", ""),
         best_score=best_score,
         result_count=len(top_results),
-        used_context=bool(rag_ctx),
+        used_context=bool(rag_ctx) or kb_direct,
         route=retrieval_route,
+        memory_ids=attributed_memory_ids,
+        session_scope=session_scope,
     )
 
     # stock 페르소나: 파이프라인 미실행 일반 Q&A → 저장된 보고서를 컨텍스트로 주입
@@ -1472,6 +1482,7 @@ class FeedbackRequest(BaseModel):
     answer: str
     rating: int  # 1 = 좋아요, -1 = 별로
     persona: str = DEFAULT_PERSONA
+    session_id: str = "legacy"
 
 @app.post("/feedback")
 def receive_feedback(req: FeedbackRequest, token: str = ""):
@@ -1479,19 +1490,32 @@ def receive_feedback(req: FeedbackRequest, token: str = ""):
     if req.rating not in (1, -1):
         raise HTTPException(400, "rating은 1 또는 -1만 허용")
     mem.save_feedback(req.question, req.answer, req.rating, req.persona)
+    attribution = mem.attribute_feedback_to_memories(
+        req.question, req.persona, _owner_session_scope(req.session_id), req.rating
+    )
+    feedback_persona = attribution.get("persona") or req.persona
     # 좋아요 → 동일/유사 질문 검색 가중치 상승, 싫어요 → 가중치 하락(다음엔 새 답변 유도)
-    boost = mem.apply_feedback_boost(req.persona, req.question, req.rating)
+    boost = mem.apply_feedback_boost(feedback_persona, req.question, req.rating)
     from engine import set_feedback_boost
     safe_question, _ = privacy_guard.sanitize_for_storage(
         req.question, include_contact=True
     )
-    set_feedback_boost(req.persona, safe_question.strip().lower(), boost)
-    return {"ok": True}
+    set_feedback_boost(feedback_persona, safe_question.strip().lower(), boost)
+    from engine import set_memory_utility_boost
+    for memory_id, utility_boost in attribution.get("boosts", {}).items():
+        set_memory_utility_boost(int(memory_id), float(utility_boost))
+    return {"ok": True, "memory_attribution": attribution}
 
 @app.get("/feedback/stats")
 def feedback_stats(token: str = ""):
     _require_backup_token(token)
     return mem.get_feedback_stats()
+
+
+@app.get("/admin/memory-effectiveness")
+def admin_memory_effectiveness(limit: int = 50, token: str = ""):
+    _require_backup_token(token)
+    return {"items": mem.list_memory_effectiveness(limit)}
 
 
 # ── 메모리 통계 ───────────────────────────────────────
@@ -2524,6 +2548,7 @@ def health():
         "db_backend": "Turso (클라우드)" if mem._USE_TURSO else "SQLite (로컬)",
         "retrieval_engine": "tfidf-bm25-char3-v1",
         "memory_schema": "typed-scopes-v1",
+        "memory_feedback": "attributed-utility-v1",
         "law_api_key_set": bool(os.getenv("LAW_API_KEY")),
         "law_api_blocked": law._is_api_blocked(),
     }

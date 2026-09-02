@@ -496,6 +496,7 @@ def _char_ngrams(text: str, size: int = 3) -> set:
 # ── 2. TF-IDF 검색 엔진 ──────────────────────────────
 
 _FEEDBACK_BOOST: Dict[Tuple[str, str], float] = {}   # (persona, q_lower) -> boost
+_MEMORY_UTILITY_BOOST: Dict[int, float] = {}          # learned_knowledge.id -> boost
 
 
 def set_feedback_boost(persona: str, q_lower: str, boost: float):
@@ -505,6 +506,20 @@ def set_feedback_boost(persona: str, q_lower: str, boost: float):
 
 def _feedback_boost_for(persona: str, q: str) -> float:
     return _FEEDBACK_BOOST.get((persona or '', q.strip().lower()), 1.0)
+
+
+def set_memory_utility_boost(memory_id: int, boost: float):
+    """실제 사용 기억에 귀속된 피드백을 서버 재시작 없이 검색에 반영."""
+    if int(memory_id) > 0:
+        _MEMORY_UTILITY_BOOST[int(memory_id)] = max(0.5, min(1.5, float(boost)))
+
+
+def _memory_utility_boost_for(meta: dict) -> float:
+    try:
+        memory_id = int(meta.get('memory_id') or 0)
+    except (TypeError, ValueError):
+        return 1.0
+    return _MEMORY_UTILITY_BOOST.get(memory_id, float(meta.get('utility_boost') or 1.0))
 
 
 class _Engine:
@@ -696,6 +711,7 @@ class _Engine:
 
             # 피드백 가중치: 해당 항목 질문 기준 좋아요/싫어요 누적치를 점수에 반영
             s *= _feedback_boost_for(p, q)
+            s *= _memory_utility_boost_for(meta)
 
             if s >= min_score:
                 results.append((q, a, s, meta))
@@ -728,6 +744,7 @@ class _Engine:
                     continue
                 score = max(min_score, 0.10) + (similarity - 0.42) * 0.25
                 score *= _feedback_boost_for(p, q)
+                score *= _memory_utility_boost_for(meta)
                 results.append((q, a, score, {**meta, 'retrieval': 'char_fuzzy'}))
 
         results.sort(key=lambda x: x[2], reverse=True)
@@ -797,7 +814,7 @@ def _load_knowledge():
         with _conn() as c:
             rows = [dict(r) for r in c.execute(
                 "SELECT id,content,persona,source,evidence_json,verified_at,valid_until,"
-                " version,updated_at,memory_type,memory_scope,session_id"
+                " version,updated_at,memory_type,memory_scope,session_id,utility_boost"
                 " FROM learned_knowledge"
                 " WHERE source != '정적KB' ORDER BY id ASC"
             ).fetchall()]
@@ -818,6 +835,7 @@ def _load_knowledge():
                 "memory_type": row.get("memory_type", "fact"),
                 "memory_scope": row.get("memory_scope", "persona"),
                 "session_id": row.get("session_id", ""),
+                "utility_boost": row.get("utility_boost", 1.0),
             }
             is_qa = content.startswith("Q: ") and "\nA: " in content
             if is_qa and source in DEDUP_SOURCES:
@@ -851,9 +869,11 @@ def _load_knowledge():
 
     # 피드백 가중치 복원 (서버 재시작 후에도 좋아요/싫어요 학습 효과 유지)
     try:
-        from memory import get_feedback_boosts
+        from memory import get_feedback_boosts, get_memory_utility_boosts
         for (persona, q_lower), boost in get_feedback_boosts().items():
             _FEEDBACK_BOOST[(persona or '', q_lower)] = boost
+        _MEMORY_UTILITY_BOOST.clear()
+        _MEMORY_UTILITY_BOOST.update(get_memory_utility_boosts())
     except Exception as e:
         print(f"⚠️ 피드백 가중치 복원 실패: {e}")
 
