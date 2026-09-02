@@ -5418,35 +5418,45 @@ function mergeImportData(parsed){
 
 async function normalizeEmployeeCredentials(){
   if(currentUser.role!=="admin"){showToast("관리자만 실행할 수 있습니다.","error");return;}
-  const targets=employees.filter(e=>e.loginId!=="admin");
-  const changing=targets.filter(e=>{
-    const wantLoginId="u"+e.empNo;
-    return e.empNo&&(e.loginId!==wantLoginId||e.pw!==String(e.empNo));
-  }).length;
+  // 이전에는 로그인ID를 "u"+사번으로 만들었는데, 인사관리>직원목록의 "계정 사번으로
+  // 초기화"(resetAllLoginToEmpNo)는 로그인ID를 사번 그대로만 쓰고 있어 — 같은 회사 안에서
+  // 어느 버튼을 눌렀느냐에 따라 일부 직원은 "u12345", 일부는 "12345"로 형식이 갈라지는
+  // 불일치가 있었다. 두 기능을 동일하게 "로그인ID=사번"으로 통일한다.
+  const targets=employees.filter(e=>e.loginId!=="admin"&&e.empNo);
+  const missing=employees.filter(e=>e.loginId!=="admin"&&!e.empNo);
+  const changing=targets.filter(e=>e.loginId!==e.empNo||e.pw!==String(e.empNo)).length;
   const ok=await askConfirmModal({
     title:"전 직원 로그인 정보 정규화",
-    message:"전 직원의 로그인 아이디를 u+사번으로, 비밀번호를 사번으로 일괄 초기화합니다.",
+    message:"전 직원의 로그인 아이디와 비밀번호를 사번으로 일괄 초기화합니다.",
     impacts:[
       {label:"대상 직원",value:`${targets.length}명`},
       {label:"실제 변경 예정",value:`${changing}명`,tone:changing?"danger":"info"},
       {label:"관리자 계정",value:"admin 로그인ID 제외",tone:"success"},
-      {label:"초기 비밀번호",value:"각 직원 사번",tone:"warn"}
+      {label:"초기 비밀번호",value:"각 직원 사번",tone:"warn"},
+      ...(missing.length?[{label:"⚠ 사번 미입력으로 제외",value:`${missing.length}명 (${missing.slice(0,5).map(e=>e.name).join(", ")}${missing.length>5?` 외 ${missing.length-5}명`:""})`,tone:"danger"}]:[])
     ],
-    warnings:["직원이 기존 비밀번호로 로그인할 수 없게 됩니다.","사번을 아는 사람이 초기 비밀번호를 추측할 수 있으므로 이후 비밀번호 변경 안내가 필요합니다."],
+    warnings:[
+      "직원이 기존 비밀번호로 로그인할 수 없게 됩니다.","사번을 아는 사람이 초기 비밀번호를 추측할 수 있으므로 이후 비밀번호 변경 안내가 필요합니다.",
+      ...(missing.length?["사번이 입력되지 않은 직원은 이번 초기화에서 제외됩니다."]:[])
+    ],
     confirmText:"일괄 초기화",
     danger:true
   });
   if(!ok)return;
+  const now=new Date().toISOString();
   let changed=0;
   employees=employees.map(e=>{
-    if(e.loginId==="admin")return e;
-    const wantLoginId="u"+e.empNo;
-    if(e.loginId===wantLoginId&&e.pw===String(e.empNo))return e;
+    if(e.loginId==="admin"||!e.empNo)return e;
+    if(e.loginId===e.empNo&&e.pw===String(e.empNo))return e;
     changed++;
-    return {...e,loginId:wantLoginId,pw:String(e.empNo)};
+    // updatedAt을 반드시 갱신해야 한다 — 서버(POST /save)는 rawEmp.updatedAt이 기존 저장값보다
+    // 새것일 때만 비밀번호를 재해싱하고, 그렇지 않으면(누락 시 기존 값 그대로라 항상 "변경 없음"
+    // 으로 판정됨) 클라이언트가 보낸 새 비밀번호를 조용히 버리고 기존 해시를 유지한다 —
+    // 이 필드가 없으면 로그인ID만 바뀌고 비밀번호는 안 바뀌어 오히려 ID/PW가 서로 어긋나게 된다.
+    return {...e,loginId:e.empNo,pw:String(e.empNo),updatedAt:now};
   });
   autoSaveToServerIfEnabled();
-  showToast(`${changed}명의 로그인 정보가 정리되었습니다.`,"success");
+  showToast(`${changed}명의 로그인 정보가 정리되었습니다.${missing.length?` (사번 미입력 ${missing.length}명은 제외됨)`:""}`,"success");
   renderDataManagement();
 }
 function renderDataManagement(){
@@ -5506,7 +5516,7 @@ function renderDataManagement(){
     </div></div>
   </div></div>
   <div class="card" style="margin-bottom:14px"><div class="card-head"><h3>🔑 로그인 계정 일괄 정리</h3></div><div class="card-body">
-    <p class="fz12 text-gray mb3">전 직원의 로그인 아이디를 <strong>u+사번</strong> 형식으로, 비밀번호를 <strong>사번</strong>으로 일괄 초기화합니다. (관리자 시스템 계정 "admin" 제외)</p>
+    <p class="fz12 text-gray mb3">전 직원의 로그인 아이디와 비밀번호를 <strong>사번</strong>으로 일괄 초기화합니다. (관리자 시스템 계정 "admin" 제외)</p>
     <button class="btn btn-warning" onclick="normalizeEmployeeCredentials()">🔑 로그인ID/비밀번호 일괄 정리</button>
   </div></div>
   <div class="card"><div class="card-head"><h3>🕐 저장된 스냅샷 목록</h3><span class="fz11 text-gray">최대 ${MAX_SNAPSHOTS}개 유지 (로컬 브라우저 저장)</span></div>
