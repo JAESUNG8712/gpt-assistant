@@ -814,7 +814,7 @@ def _load_knowledge():
         with _conn() as c:
             rows = [dict(r) for r in c.execute(
                 "SELECT id,content,persona,source,evidence_json,verified_at,valid_until,"
-                " version,updated_at,memory_type,memory_scope,session_id,utility_boost"
+                " version,updated_at,memory_type,memory_scope,session_id"
                 " FROM learned_knowledge"
                 " WHERE source != '정적KB' ORDER BY id ASC"
             ).fetchall()]
@@ -835,7 +835,6 @@ def _load_knowledge():
                 "memory_type": row.get("memory_type", "fact"),
                 "memory_scope": row.get("memory_scope", "persona"),
                 "session_id": row.get("session_id", ""),
-                "utility_boost": row.get("utility_boost", 1.0),
             }
             is_qa = content.startswith("Q: ") and "\nA: " in content
             if is_qa and source in DEDUP_SOURCES:

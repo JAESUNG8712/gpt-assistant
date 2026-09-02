@@ -226,11 +226,6 @@ def init_db(seed_static: bool = True):
             "ALTER TABLE learned_knowledge ADD COLUMN memory_type TEXT DEFAULT 'fact'",
             "ALTER TABLE learned_knowledge ADD COLUMN memory_scope TEXT DEFAULT 'persona'",
             "ALTER TABLE learned_knowledge ADD COLUMN session_id TEXT DEFAULT ''",
-            "ALTER TABLE learned_knowledge ADD COLUMN helpful_count INTEGER NOT NULL DEFAULT 0",
-            "ALTER TABLE learned_knowledge ADD COLUMN harmful_count INTEGER NOT NULL DEFAULT 0",
-            "ALTER TABLE learned_knowledge ADD COLUMN retrieved_count INTEGER NOT NULL DEFAULT 0",
-            "ALTER TABLE learned_knowledge ADD COLUMN utility_boost REAL NOT NULL DEFAULT 1.0",
-            "ALTER TABLE learned_knowledge ADD COLUMN last_used_at TEXT DEFAULT ''",
         ):
             try:
                 c.execute(column_sql)
@@ -333,11 +328,6 @@ def init_db(seed_static: bool = True):
             "ALTER TABLE memory_quarantine ADD COLUMN original_memory_type TEXT DEFAULT 'fact'",
             "ALTER TABLE memory_quarantine ADD COLUMN original_memory_scope TEXT DEFAULT 'persona'",
             "ALTER TABLE memory_quarantine ADD COLUMN original_session_id TEXT DEFAULT ''",
-            "ALTER TABLE memory_quarantine ADD COLUMN original_helpful_count INTEGER NOT NULL DEFAULT 0",
-            "ALTER TABLE memory_quarantine ADD COLUMN original_harmful_count INTEGER NOT NULL DEFAULT 0",
-            "ALTER TABLE memory_quarantine ADD COLUMN original_retrieved_count INTEGER NOT NULL DEFAULT 0",
-            "ALTER TABLE memory_quarantine ADD COLUMN original_utility_boost REAL NOT NULL DEFAULT 1.0",
-            "ALTER TABLE memory_quarantine ADD COLUMN original_last_used_at TEXT DEFAULT ''",
         ):
             try:
                 c.execute(column_sql)
@@ -356,17 +346,25 @@ def init_db(seed_static: bool = True):
             route TEXT DEFAULT '',
             created_at TEXT NOT NULL
         )""")
-        for column_sql in (
-            "ALTER TABLE memory_retrieval_events ADD COLUMN memory_ids_json TEXT DEFAULT '[]'",
-            "ALTER TABLE memory_retrieval_events ADD COLUMN session_hash TEXT DEFAULT ''",
-            "ALTER TABLE memory_retrieval_events ADD COLUMN feedback_rating INTEGER NOT NULL DEFAULT 0",
-            "ALTER TABLE memory_retrieval_events ADD COLUMN feedback_at TEXT DEFAULT ''",
-        ):
-            try:
-                c.execute(column_sql)
-            except Exception as e:
-                if "duplicate column" not in str(e).lower() and "already exists" not in str(e).lower():
-                    raise
+        c.execute("""CREATE TABLE IF NOT EXISTS memory_retrieval_attributions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            query_hash TEXT NOT NULL,
+            persona TEXT DEFAULT '',
+            session_kind TEXT DEFAULT 'owner',
+            session_hash TEXT DEFAULT '',
+            memory_ids_json TEXT DEFAULT '[]',
+            feedback_rating INTEGER NOT NULL DEFAULT 0,
+            feedback_at TEXT DEFAULT '',
+            created_at TEXT NOT NULL
+        )""")
+        c.execute("""CREATE TABLE IF NOT EXISTS memory_utility (
+            memory_id INTEGER PRIMARY KEY,
+            retrieved_count INTEGER NOT NULL DEFAULT 0,
+            helpful_count INTEGER NOT NULL DEFAULT 0,
+            harmful_count INTEGER NOT NULL DEFAULT 0,
+            utility_boost REAL NOT NULL DEFAULT 1.0,
+            last_used_at TEXT DEFAULT ''
+        )""")
         c.execute("""CREATE TABLE IF NOT EXISTS memory_revalidation_events (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             memory_id INTEGER NOT NULL DEFAULT 0,
@@ -422,6 +420,7 @@ def init_db(seed_static: bool = True):
         c.execute("CREATE INDEX IF NOT EXISTS idx_learned_scope ON learned_knowledge(memory_scope,session_id,persona,id)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_quarantine_active ON memory_quarantine(restored_at, id)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_retrieval_created ON memory_retrieval_events(created_at, persona)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_attribution_lookup ON memory_retrieval_attributions(query_hash,session_hash,persona,feedback_rating,created_at)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_revalidation_checked ON memory_revalidation_events(checked_at, source, id)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_memory_revisions ON memory_revisions(memory_id, version DESC)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_quality_eval_created ON memory_quality_eval_runs(created_at DESC, id DESC)")
@@ -1935,8 +1934,7 @@ def quarantine_learned_rows(rows: list, reason: str) -> int:
     with _conn() as c:
         fresh_rows = [dict(r) for r in c.execute(
             "SELECT id, content, persona, source, created_at, evidence_json,"
-            f" verified_at,valid_until,version,updated_at,memory_type,memory_scope,session_id,"
-            f" helpful_count,harmful_count,retrieved_count,utility_boost,last_used_at"
+            f" verified_at,valid_until,version,updated_at,memory_type,memory_scope,session_id"
             f" FROM learned_knowledge WHERE id IN ({placeholders})",
             ids,
         ).fetchall()]
@@ -1947,9 +1945,8 @@ def quarantine_learned_rows(rows: list, reason: str) -> int:
                 "INSERT INTO memory_quarantine"
                 " (original_id, content, persona, source, original_created_at, reason, quarantined_at,"
                 " evidence_json,original_verified_at,original_valid_until,original_version,original_updated_at,"
-                " original_memory_type,original_memory_scope,original_session_id,original_helpful_count,"
-                " original_harmful_count,original_retrieved_count,original_utility_boost,original_last_used_at)"
-                " SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,? WHERE NOT EXISTS ("
+                " original_memory_type,original_memory_scope,original_session_id)"
+                " SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?,?,? WHERE NOT EXISTS ("
                 " SELECT 1 FROM memory_quarantine"
                 " WHERE original_id=? AND content=? AND restored_at='')",
                 (
@@ -1959,10 +1956,6 @@ def quarantine_learned_rows(rows: list, reason: str) -> int:
                     max(1, int(r.get("version") or 1)), r.get("updated_at", ""),
                     r.get("memory_type", "fact"), r.get("memory_scope", "persona"),
                     r.get("session_id", ""),
-                    max(0, int(r.get("helpful_count") or 0)),
-                    max(0, int(r.get("harmful_count") or 0)),
-                    max(0, int(r.get("retrieved_count") or 0)),
-                    float(r.get("utility_boost") or 1.0), r.get("last_used_at", ""),
                     r["id"], r["content"],
                 ),
             )
@@ -2004,8 +1997,8 @@ def restore_quarantined_memory(quarantine_id: int) -> dict | None:
         c.execute(
             "INSERT INTO learned_knowledge"
             " (id,content,persona,source,created_at,evidence_json,verified_at,valid_until,version,updated_at,"
-            " memory_type,memory_scope,session_id,helpful_count,harmful_count,retrieved_count,utility_boost,last_used_at)"
-            " SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,? WHERE NOT EXISTS ("
+            " memory_type,memory_scope,session_id)"
+            " SELECT ?,?,?,?,?,?,?,?,?,?,?,?,? WHERE NOT EXISTS ("
             " SELECT 1 FROM learned_knowledge WHERE id=?)",
             (
                 item["original_id"], item["content"], item["persona"], item["source"],
@@ -2016,11 +2009,6 @@ def restore_quarantined_memory(quarantine_id: int) -> dict | None:
                 item.get("original_memory_type", "fact"),
                 item.get("original_memory_scope", "persona"),
                 item.get("original_session_id", ""),
-                max(0, int(item.get("original_helpful_count") or 0)),
-                max(0, int(item.get("original_harmful_count") or 0)),
-                max(0, int(item.get("original_retrieved_count") or 0)),
-                float(item.get("original_utility_boost") or 1.0),
-                item.get("original_last_used_at", ""),
                 item["original_id"],
             ),
         )
@@ -2130,24 +2118,34 @@ def record_retrieval_event(query: str, persona: str, session_kind: str,
             if value > 0 and value not in safe_ids:
                 safe_ids.append(value)
         with _conn() as c:
+            now = datetime.now().isoformat()
             c.execute(
                 "INSERT INTO memory_retrieval_events"
                 " (query_hash, persona, session_kind, top_source, best_score,"
-                " result_count, used_context, route, created_at,memory_ids_json,session_hash)"
-                " VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                " result_count, used_context, route, created_at) VALUES (?,?,?,?,?,?,?,?,?)",
                 (
                     query_hash, (persona or "")[:40], kind, (top_source or "")[:120],
                     float(best_score or 0), max(0, int(result_count or 0)),
-                    1 if used_context else 0, (route or "")[:40], datetime.now().isoformat(),
-                    json.dumps(safe_ids), _telemetry_hash(session_scope) if session_scope else "",
+                    1 if used_context else 0, (route or "")[:40], now,
                 ),
             )
-            if safe_ids and used_context:
-                c.executemany(
-                    "UPDATE learned_knowledge SET retrieved_count=retrieved_count+1,last_used_at=?"
-                    " WHERE id=?",
-                    [(datetime.now().isoformat(), memory_id) for memory_id in safe_ids],
+            if safe_ids:
+                c.execute(
+                    "INSERT INTO memory_retrieval_attributions"
+                    " (query_hash,persona,session_kind,session_hash,memory_ids_json,created_at)"
+                    " VALUES (?,?,?,?,?,?)",
+                    (query_hash, (persona or "")[:40], kind,
+                     _telemetry_hash(session_scope) if session_scope else "",
+                     json.dumps(safe_ids), now),
                 )
+                if used_context:
+                    for memory_id in safe_ids:
+                        c.execute(
+                            "INSERT INTO memory_utility(memory_id,retrieved_count,last_used_at)"
+                            " VALUES (?,1,?) ON CONFLICT(memory_id) DO UPDATE SET"
+                            " retrieved_count=retrieved_count+1,last_used_at=?",
+                            (memory_id, now, now),
+                        )
     except Exception as e:
         print(f"⚠️ 기억 검색 관측 기록 실패(채팅은 계속): {e}")
 
@@ -2169,14 +2167,14 @@ def attribute_feedback_to_memories(query: str, persona: str, session_scope: str,
         session_hash = _telemetry_hash(session_scope)
         if persona == "auto":
             row = c.execute(
-                "SELECT id,persona,memory_ids_json FROM memory_retrieval_events"
+                "SELECT id,persona,memory_ids_json FROM memory_retrieval_attributions"
                 " WHERE query_hash=? AND session_kind='owner' AND session_hash=?"
                 " AND feedback_rating=0 AND created_at>=? ORDER BY id DESC LIMIT 1",
                 (query_hash, session_hash, cutoff),
             ).fetchone()
         else:
             row = c.execute(
-                "SELECT id,persona,memory_ids_json FROM memory_retrieval_events"
+                "SELECT id,persona,memory_ids_json FROM memory_retrieval_attributions"
                 " WHERE query_hash=? AND persona=? AND session_kind='owner'"
                 " AND session_hash=? AND feedback_rating=0 AND created_at>=?"
                 " ORDER BY id DESC LIMIT 1",
@@ -2190,24 +2188,32 @@ def attribute_feedback_to_memories(query: str, persona: str, session_scope: str,
             memory_ids = []
         memory_ids = list(dict.fromkeys(v for v in memory_ids if v > 0))[:8]
         c.execute(
-            "UPDATE memory_retrieval_events SET feedback_rating=?,feedback_at=? WHERE id=?",
+            "UPDATE memory_retrieval_attributions SET feedback_rating=?,feedback_at=? WHERE id=?",
             (rating, now, int(row["id"])),
         )
         boosts = {}
         for memory_id in memory_ids:
+            exists = c.execute(
+                "SELECT 1 FROM learned_knowledge WHERE id=?", (memory_id,)
+            ).fetchone()
+            if not exists:
+                continue
             current = c.execute(
-                "SELECT helpful_count,harmful_count FROM learned_knowledge WHERE id=?",
+                "SELECT helpful_count,harmful_count FROM memory_utility WHERE memory_id=?",
                 (memory_id,),
             ).fetchone()
             if not current:
-                continue
-            helpful = int(current["helpful_count"] or 0) + (1 if rating > 0 else 0)
-            harmful = int(current["harmful_count"] or 0) + (1 if rating < 0 else 0)
+                c.execute("INSERT INTO memory_utility(memory_id) VALUES (?)", (memory_id,))
+                helpful = 1 if rating > 0 else 0
+                harmful = 1 if rating < 0 else 0
+            else:
+                helpful = int(current["helpful_count"] or 0) + (1 if rating > 0 else 0)
+                harmful = int(current["harmful_count"] or 0) + (1 if rating < 0 else 0)
             # 베타(2,2) 사전분포로 한 번의 평가가 순위를 과도하게 흔들지 않게 한다.
             boost = max(0.5, min(1.5, 2.0 * (helpful + 2) / (helpful + harmful + 4)))
             c.execute(
-                "UPDATE learned_knowledge SET helpful_count=?,harmful_count=?,"
-                " utility_boost=?,last_used_at=? WHERE id=?",
+                "UPDATE memory_utility SET helpful_count=?,harmful_count=?,"
+                " utility_boost=?,last_used_at=? WHERE memory_id=?",
                 (helpful, harmful, boost, now, memory_id),
             )
             boosts[memory_id] = round(boost, 4)
@@ -2218,19 +2224,22 @@ def attribute_feedback_to_memories(query: str, persona: str, session_scope: str,
 def get_memory_utility_boosts() -> dict[int, float]:
     with _conn() as c:
         rows = c.execute(
-            "SELECT id,utility_boost FROM learned_knowledge WHERE utility_boost != 1.0"
+            "SELECT memory_id,utility_boost FROM memory_utility WHERE utility_boost != 1.0"
         ).fetchall()
-    return {int(row["id"]): float(row["utility_boost"] or 1.0) for row in rows}
+    return {int(row["memory_id"]): float(row["utility_boost"] or 1.0) for row in rows}
 
 
 def list_memory_effectiveness(limit: int = 50) -> list[dict]:
     limit = max(1, min(int(limit), 200))
     with _conn() as c:
         rows = c.execute(
-            "SELECT id,persona,source,memory_type,memory_scope,retrieved_count,helpful_count,harmful_count,"
-            " utility_boost,last_used_at,substr(content,1,220) AS content_preview"
-            " FROM learned_knowledge WHERE retrieved_count>0 OR helpful_count>0 OR harmful_count>0"
-            " ORDER BY retrieved_count DESC,(helpful_count+harmful_count) DESC,last_used_at DESC LIMIT ?",
+            "SELECT l.id,l.persona,l.source,l.memory_type,l.memory_scope,u.retrieved_count,"
+            " u.helpful_count,u.harmful_count,u.utility_boost,u.last_used_at,"
+            " substr(l.content,1,220) AS content_preview FROM memory_utility u"
+            " JOIN learned_knowledge l ON l.id=u.memory_id"
+            " WHERE u.retrieved_count>0 OR u.helpful_count>0 OR u.harmful_count>0"
+            " ORDER BY u.retrieved_count DESC,(u.helpful_count+u.harmful_count) DESC,"
+            " u.last_used_at DESC LIMIT ?",
             (limit,),
         ).fetchall()
     return [dict(row) for row in rows]
@@ -2390,6 +2399,10 @@ def memory_retention_policy(apply: bool = False, confirm: str = "") -> dict:
                 "SELECT COUNT(*) FROM memory_retrieval_events WHERE created_at<?",
                 (retrieval_cutoff,),
             ).fetchone()[0],
+            "retrieval_attributions_to_delete": c.execute(
+                "SELECT COUNT(*) FROM memory_retrieval_attributions WHERE created_at<?",
+                (retrieval_cutoff,),
+            ).fetchone()[0],
             "revalidation_events_to_delete": c.execute(
                 "SELECT COUNT(*) FROM memory_revalidation_events WHERE checked_at<?",
                 (revalidation_cutoff,),
@@ -2433,6 +2446,7 @@ def memory_retention_policy(apply: bool = False, confirm: str = "") -> dict:
             (candidate_cutoff,),
         )
         c.execute("DELETE FROM memory_retrieval_events WHERE created_at<?", (retrieval_cutoff,))
+        c.execute("DELETE FROM memory_retrieval_attributions WHERE created_at<?", (retrieval_cutoff,))
         c.execute("DELETE FROM memory_revalidation_events WHERE checked_at<?", (revalidation_cutoff,))
         c.execute("DELETE FROM memory_quality_eval_runs WHERE created_at<?", (quality_eval_cutoff,))
     result["applied_at"] = applied_at
@@ -2463,7 +2477,7 @@ def memory_stats(session_id: str = None) -> dict:
             "SELECT COUNT(*) FROM memory_quality_eval_runs"
         ).fetchone()[0]
         attributed_feedback_count = c.execute(
-            "SELECT COUNT(*) FROM memory_retrieval_events WHERE feedback_rating != 0"
+            "SELECT COUNT(*) FROM memory_retrieval_attributions WHERE feedback_rating != 0"
         ).fetchone()[0]
         type_rows = c.execute(
             "SELECT memory_type,COUNT(*) AS total FROM learned_knowledge"

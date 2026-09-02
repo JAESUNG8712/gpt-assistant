@@ -48,11 +48,11 @@ def main():
         with memory._conn() as c:
             item = dict(c.execute(
                 "SELECT retrieved_count,helpful_count,harmful_count,utility_boost,last_used_at"
-                " FROM learned_knowledge WHERE id=?", (memory_id,),
+                " FROM memory_utility WHERE memory_id=?", (memory_id,),
             ).fetchone())
             event = dict(c.execute(
                 "SELECT query_hash,session_hash,memory_ids_json,feedback_rating"
-                " FROM memory_retrieval_events ORDER BY id DESC LIMIT 1"
+                " FROM memory_retrieval_attributions ORDER BY id DESC LIMIT 1"
             ).fetchone())
         assert item["retrieved_count"] == 1 and item["helpful_count"] == 1
         assert item["harmful_count"] == 0 and item["utility_boost"] == 1.2

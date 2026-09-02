@@ -45,6 +45,8 @@ _TABLES = {
     "memory_candidates":  "by_category/memory_candidates.json",  # 승인 대기/처리된 기억 후보
     "memory_quarantine":  "by_category/memory_quarantine.json",  # 자동정제 격리·복구 데이터
     "memory_retrieval_events": "by_category/memory_retrieval_events.json",  # 원문 없는 RAG 품질 관측
+    "memory_retrieval_attributions": "by_category/memory_retrieval_attributions.json",  # HMAC 기반 기억 기여도 연결
+    "memory_utility": "by_category/memory_utility.json",  # 기억별 검색·피드백 효용 통계
     "memory_quality_eval_runs": "by_category/memory_quality_eval_runs.json",  # 골든 테스트 실행 이력
 }
 
