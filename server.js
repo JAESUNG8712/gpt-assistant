@@ -3250,6 +3250,28 @@ function _slugify(str) {
     .replace(/^-+|-+$/g, "")
     .slice(0, 60);
 }
+function _maxCompaniesForSelfService() {
+  // Render Free tier에서는 회사 수 자체가 직접 과금 항목은 아니지만, 셀프서브 가입을
+  // 무제한으로 열어두면 trial 회사마다 기본 계정과목/창고/관리자 행이 쌓여 DB 1GB 한도와
+  // 운영 화면 혼선을 불필요하게 키운다. 운영 기본값은 "실회사 1개 + 샘플 1개"를 전제로
+  // 총 2개까지만 허용한다. 필요하면 MAX_COMPANIES=3 처럼 명시적으로 늘린다.
+  // 테스트/개발은 멀티테넌트 회귀 테스트가 여러 회사를 만들어야 하므로 기본 무제한이다.
+  const raw = process.env.MAX_COMPANIES;
+  if (raw == null || raw === "") return process.env.NODE_ENV === "production" ? 2 : Infinity;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 0) return process.env.NODE_ENV === "production" ? 2 : Infinity;
+  return Math.floor(n);
+}
+async function _enforceCompanyRegistrationCap(client) {
+  const maxCompanies = _maxCompaniesForSelfService();
+  if (!Number.isFinite(maxCompanies)) return { ok: true, maxCompanies, currentCount: null };
+  const { rows } = await client.query("SELECT COUNT(*)::int AS count FROM companies");
+  const currentCount = Number(rows[0]?.count || 0);
+  if (currentCount >= maxCompanies) {
+    return { ok: false, maxCompanies, currentCount };
+  }
+  return { ok: true, maxCompanies, currentCount };
+}
 // slug(회사 코드) → company_id. JSON 파일 모드는 companies 테이블 자체가 없는 단일 회사
 // 배포판이라 항상 null(호출부에서 무시됨).
 async function _resolveCompanyId(companyCode) {
@@ -3468,6 +3490,20 @@ app.post("/api/companies/register", registerLimiter, async (req, res) => {
     const client = await pool.connect();
     try {
       await client.query("BEGIN");
+      // 회사 수 제한도 트랜잭션 advisory lock 안에서 확인한다. 그래야 동시에 두 가입 요청이
+      // 들어와 둘 다 "아직 1개뿐"이라고 판단하고 총 3개 이상으로 늘어나는 레이스를 막을 수 있다.
+      await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", ["company-register-cap"]);
+      const cap = await _enforceCompanyRegistrationCap(client);
+      if (!cap.ok) {
+        await client.query("ROLLBACK");
+        return res.status(409).json({
+          ok: false,
+          code: "COMPANY_LIMIT_REACHED",
+          message: `현재 서버는 최대 ${cap.maxCompanies}개 회사까지만 가입할 수 있습니다. 운영회사 1개와 샘플 1개만 유지하려면 기존 테스트/샘플 회사를 정리한 뒤 다시 시도하세요.`,
+          currentCount: cap.currentCount,
+          maxCompanies: cap.maxCompanies,
+        });
+      }
       // 같은 baseSlug로 거의 동시에 가입 요청이 들어오면 아래 "빈 slug 찾기" 루프가
       // 레이스 컨디션을 겪을 수 있어(둘 다 "company-2"가 비어있다고 보고 동시에 시도) advisory
       // lock으로 같은 baseSlug의 가입 시도를 트랜잭션 안에서 직렬화한다.
@@ -3647,8 +3683,14 @@ app.get("/master/companies", async (req, res) => {
     ]);
     const empMap = Object.fromEntries(empCounts.map(r => [r.company_id, parseInt(r.count, 10)]));
     const kpiMap = Object.fromEntries(kpiCounts.map(r => [r.company_id, parseInt(r.count, 10)]));
+    const maxCompanies = _maxCompaniesForSelfService();
     res.json({
       ok: true,
+      limits: {
+        currentCount: companies.length,
+        // null은 명시적 제한 없음(개발/테스트 환경 또는 MAX_COMPANIES 미제한 설정)을 뜻한다.
+        maxCompanies: Number.isFinite(maxCompanies) ? maxCompanies : null,
+      },
       companies: companies.map(c => ({
         id: c.id, slug: c.slug, name: c.name, status: c.status, createdAt: c.created_at,
         empCount: empMap[c.id] || 0, kpiCount: kpiMap[c.id] || 0,

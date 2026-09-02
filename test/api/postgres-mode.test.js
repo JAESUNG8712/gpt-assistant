@@ -643,6 +643,75 @@ if (!ADMIN_DATABASE_URL) {
     });
   });
 
+  test("postgres-mode: production 회사 가입은 기본적으로 실회사 1개 + 샘플 1개까지만 허용", async (t) => {
+    const dbName = `hrtest_companycap_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`;
+    const testDbUrl = _withDatabaseName(ADMIN_DATABASE_URL, dbName);
+
+    const admin = new Client({ connectionString: ADMIN_DATABASE_URL });
+    await admin.connect();
+    await admin.query(`CREATE DATABASE ${dbName}`);
+
+    t.after(async () => {
+      try {
+        await admin.query(
+          "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = $1 AND pid <> pg_backend_pid()",
+          [dbName]
+        );
+        await admin.query(`DROP DATABASE IF EXISTS ${dbName}`);
+      } finally {
+        await admin.end();
+      }
+    });
+
+    const server = await startServer({
+      env: {
+        NODE_ENV: "production",
+        DATABASE_URL: testDbUrl,
+        MAX_COMPANIES: "2",
+      },
+    });
+    t.after(() => server.stop());
+    const api = (p, opts) => fetch(server.baseUrl + p, opts);
+
+    async function register(companyName, loginId) {
+      const res = await api("/api/companies/register", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          companyName,
+          adminName: `${companyName} 관리자`,
+          loginId,
+          password: "TestPassword123",
+        }),
+      });
+      return { res, json: await res.json() };
+    }
+
+    const first = await register("LS티라유텍", "admin_real");
+    assert.equal(first.res.status, 200);
+    assert.equal(first.json.ok, true);
+
+    const second = await register("LS티라유텍 샘플", "admin_sample");
+    assert.equal(second.res.status, 200);
+    assert.equal(second.json.ok, true);
+
+    const third = await register("불필요한 추가 회사", "admin_extra");
+    assert.equal(third.res.status, 409);
+    assert.equal(third.json.ok, false);
+    assert.equal(third.json.code, "COMPANY_LIMIT_REACHED");
+    assert.equal(third.json.currentCount, 2);
+    assert.equal(third.json.maxCompanies, 2);
+
+    const dbCheck = new Client({ connectionString: testDbUrl });
+    await dbCheck.connect();
+    try {
+      const count = await dbCheck.query("SELECT COUNT(*)::int AS count FROM companies");
+      assert.equal(count.rows[0].count, 2, "제한에 걸린 세 번째 회사는 DB에 생성되면 안 됨");
+    } finally {
+      await dbCheck.end();
+    }
+  });
+
   // rejectDemoDataForProduction()의 부팅 시점(initDB()) 검사는 처음엔 JSON 파일 모드
   // 분기에만 있었고 Postgres 분기에는 없었다 — 그런데 실제 운영 배포는 정확히 이 Postgres
   // 분기를 타므로, 그 보호가 진짜 서비스에는 전혀 적용되지 않는 사각지대였다(발견 즉시
