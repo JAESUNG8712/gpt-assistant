@@ -220,6 +220,7 @@ def get_sheets():
             "mergedCells": data.get("mergedCells", {}),
             "conditionalFormats": data.get("conditionalFormats", {}),
             "dataValidations": data.get("dataValidations", {}),
+            "cellNotes": data.get("cellNotes", {}),
         }
     # 기존 단일 grid → Sheet1으로 마이그레이션
     grid = data.get("grid") or []
@@ -237,6 +238,7 @@ def save_sheets(payload: dict):
     data["mergedCells"] = payload.get("mergedCells", {})
     data["conditionalFormats"] = payload.get("conditionalFormats", {})
     data["dataValidations"] = payload.get("dataValidations", {})
+    data["cellNotes"] = payload.get("cellNotes", {})
     data["sheets_updated_at"] = _now_iso()
     # 하위 호환: 활성 시트를 grid에도 동기
     active = data["active"]

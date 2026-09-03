@@ -151,6 +151,13 @@
   td.cell.bold { font-weight:700; }
   td.cell.align-center { text-align:center; }
   td.cell.align-right { text-align:right; }
+  /* ── 셀 메모 표시(엑셀/구글시트의 빨간 삼각 마커) ── */
+  td.cell.has-note::after {
+    content:''; position:absolute; top:0; right:0;
+    border-width:0 7px 7px 0; border-style:solid;
+    border-color:transparent #e53935 transparent transparent;
+    pointer-events:none;
+  }
 
   /* ── 열/행 리사이즈 핸들 ── */
   .col-resize-handle {
@@ -742,6 +749,7 @@ let dragSrcRow = null, dragSrcCol = null;
 let mergedCells = {};         // {sheetName: {'r_c': {rows,cols}}} 병합 마스터, 'r_c_hidden': true 숨김
 let conditionalFormats = {};  // {sheetName: [{op,val1,val2,cls,range?}]}
 let dataValidations = {};     // {sheetName: {'r_c': {type,list,min,max}}}
+let cellNotes = {};           // {sheetName: {'r_c': '메모 텍스트'}}
 let autoFilterRow = {};       // {sheetName: rowIndex} 필터 헤더 행
 let filterValues = {};        // {sheetName: {col: Set of allowed values}} null=모두허용
 let hiddenRows = {};          // {sheetName: Set of hidden row indices}
@@ -762,6 +770,7 @@ function snapState() {
     mergedCells: JSON.parse(JSON.stringify(mergedCells)),
     conditionalFormats: JSON.parse(JSON.stringify(conditionalFormats)),
     dataValidations: JSON.parse(JSON.stringify(dataValidations)),
+    cellNotes: JSON.parse(JSON.stringify(cellNotes)),
   };
 }
 function pushUndo() {
@@ -774,6 +783,7 @@ function restoreState(st) {
   colWidths = st.colWidths || {}; rowHeights = st.rowHeights || {};
   mergedCells = st.mergedCells || {}; conditionalFormats = st.conditionalFormats || {};
   dataValidations = st.dataValidations || {};
+  cellNotes = st.cellNotes || {};
   // 선택 위치는 유지 (엑셀처럼 실행취소 후에도 커서가 남아있도록), 범위 밖이면 보정
   editMode = false;
   const g = sheets[activeSheet] || [];
@@ -991,6 +1001,7 @@ async function load() {
       mergedCells = d.mergedCells || {};
       conditionalFormats = d.conditionalFormats || {};
       dataValidations = d.dataValidations || {};
+      cellNotes = d.cellNotes || {};
     } else {
       const r2 = await tokFetch('/budget/grid');
       if (r2.ok) {
@@ -1163,7 +1174,7 @@ function renameSheet(oldName, tabEl) {
       pushUndo();
       sheets[nw] = sheets[oldName]; delete sheets[oldName];
       if (cellStyles[oldName]) { cellStyles[nw]=cellStyles[oldName]; delete cellStyles[oldName]; }
-      ['mergedCells','conditionalFormats','dataValidations'].forEach(k=>{
+      ['mergedCells','conditionalFormats','dataValidations','cellNotes'].forEach(k=>{
         const o = window[k]; if (o && o[oldName]) { o[nw]=o[oldName]; delete o[oldName]; }
       });
       if (activeSheet===oldName) activeSheet=nw;
@@ -1302,7 +1313,11 @@ function render() {
       // 데이터 유효성 드롭다운 버튼
       const dv = (dataValidations[activeSheet]||{})[msk];
       const dvBtn = (dv && dv.type==='list' && !isEd) ? `<span onclick="openCellDropdown(event,${r},${c})" style="position:absolute;right:2px;top:50%;transform:translateY(-50%);font-size:0.6rem;cursor:pointer;color:var(--text-dim)">▼</span>` : '';
-      const errTip = isErr ? ` title="${String(disp).startsWith('#REF')?'참조 오류: 삭제되었거나 존재하지 않는 셀/시트를 가리킵니다':String(disp).startsWith('#DIV')?'0으로 나눌 수 없습니다':String(disp).startsWith('#VALUE')?'값 오류: 숫자가 필요한 곳에 텍스트가 있습니다':String(disp).startsWith('#N/A')?'일치하는 값을 찾을 수 없습니다':'수식 오류: 수식을 확인해 주세요'}"` : '';
+      const noteText = (cellNotes[activeSheet]||{})[msk];
+      if (noteText) cls += ' has-note';
+      const errMsg = isErr ? (String(disp).startsWith('#REF')?'참조 오류: 삭제되었거나 존재하지 않는 셀/시트를 가리킵니다':String(disp).startsWith('#DIV')?'0으로 나눌 수 없습니다':String(disp).startsWith('#VALUE')?'값 오류: 숫자가 필요한 곳에 텍스트가 있습니다':String(disp).startsWith('#N/A')?'일치하는 값을 찾을 수 없습니다':'수식 오류: 수식을 확인해 주세요') : '';
+      const tipText = [errMsg, noteText].filter(Boolean).join(' / ');
+      const errTip = tipText ? ` title="${escAttr(tipText)}"` : '';
       html += `<td class="${cls}"${spanAttrs}${errTip} tabindex="-1" contenteditable="${isEd}" data-r="${r}" data-c="${c}" data-raw="${escAttr(raw)}" oncontextmenu="cellCtxMenu(event,${r},${c})" style="${cellStyle};position:relative">${dispHtml}${dvBtn}</td>`;
     }
     html += '</tr>';
@@ -2389,6 +2404,7 @@ function cellCtxMenu(e, r, c) {
   if (!inSel(r, c)) { selectCell(r, c); selEnd = null; highlightSel(); }
 
   const hasRange = !!selEnd;
+  const hasNote = !!(cellNotes[activeSheet]||{})[sk(r,c)];
   const menu = document.createElement('div');
   menu.id = 'rc-ctx-menu';
   menu.style.cssText = `position:fixed;z-index:9999;background:#fff;border:1px solid #cdd3dc;border-radius:8px;
@@ -2399,6 +2415,9 @@ function cellCtxMenu(e, r, c) {
     <div class="cm-item" onclick="document.getElementById('rc-ctx-menu').remove();doPaste()">📌 붙여넣기 (Ctrl+V)</div>
     <div class="cm-sep"></div>
     <div class="cm-item" onclick="document.getElementById('rc-ctx-menu').remove();clearSelectedCells()">🧹 ${hasRange?'선택 영역 지우기':'내용 지우기'}</div>
+    <div class="cm-sep"></div>
+    <div class="cm-item" onclick="document.getElementById('rc-ctx-menu').remove();editCellNote(${r},${c})">📝 ${hasNote?'메모 편집':'메모 추가'}</div>
+    ${hasNote?`<div class="cm-item cm-del" onclick="document.getElementById('rc-ctx-menu').remove();deleteCellNote(${r},${c})">🗑️ 메모 삭제</div>`:''}
     <div class="cm-sep"></div>
     <div class="cm-item" onclick="insertRowAt(${r},'above')">위에 행 삽입</div>
     <div class="cm-item" onclick="insertRowAt(${r},'below')">아래에 행 삽입</div>
@@ -2417,6 +2436,31 @@ function cellCtxMenu(e, r, c) {
 
   const close = ev => { if (!menu.contains(ev.target)) { menu.remove(); document.removeEventListener('mousedown', close); } };
   setTimeout(() => document.addEventListener('mousedown', close), 10);
+}
+
+// ══════════════════════════════════════════
+// 셀 메모 (엑셀/구글시트 comment와 동일 — 셀 값과 별개로 부가 설명을 붙임)
+// ══════════════════════════════════════════
+function editCellNote(r, c) {
+  if (!cellNotes[activeSheet]) cellNotes[activeSheet] = {};
+  const key = sk(r, c);
+  const cur = cellNotes[activeSheet][key] || '';
+  const next = prompt(`${cellAddr(r,c)} 셀 메모:`, cur);
+  if (next === null) return; // 취소
+  pushUndo();
+  const trimmed = next.trim();
+  if (trimmed) cellNotes[activeSheet][key] = trimmed;
+  else delete cellNotes[activeSheet][key];
+  markDirty(); render();
+  setStatus(trimmed ? '✅ 메모 저장됨' : '메모 삭제됨');
+}
+
+function deleteCellNote(r, c) {
+  if (!cellNotes[activeSheet]) return;
+  pushUndo();
+  delete cellNotes[activeSheet][sk(r, c)];
+  markDirty(); render();
+  setStatus('메모 삭제됨');
 }
 
 function delSelectedRows() {
@@ -3090,7 +3134,7 @@ function shiftRowState(sheetName, fromIndex, delta) {
     if (r >= fromIndex) return null; // 삭제 대상 행
     return r;
   };
-  [cellStyles, mergedCells, dataValidations].forEach(o => remapRowKeyedMap(o, sheetName, mapFn));
+  [cellStyles, mergedCells, dataValidations, cellNotes].forEach(o => remapRowKeyedMap(o, sheetName, mapFn));
   if (hiddenRows[sheetName]) {
     const ns = new Set();
     hiddenRows[sheetName].forEach(r => { const nr = mapFn(r); if (nr != null) ns.add(nr); });
@@ -3111,7 +3155,7 @@ function shiftColState(sheetName, fromIndex, delta) {
     if (c >= fromIndex) return null;
     return c;
   };
-  [cellStyles, mergedCells, dataValidations].forEach(o => remapColKeyedMap(o, sheetName, mapFn));
+  [cellStyles, mergedCells, dataValidations, cellNotes].forEach(o => remapColKeyedMap(o, sheetName, mapFn));
   if (filterValues[sheetName]) {
     const nv = {};
     Object.keys(filterValues[sheetName]).forEach(k => {
@@ -3196,7 +3240,7 @@ function moveRowState(sheetName, from, to) {
     if (to < from && r >= to && r < from) return r + 1;
     return r;
   };
-  [cellStyles, mergedCells, dataValidations].forEach(o => remapRowKeyedMap(o, sheetName, mapFn));
+  [cellStyles, mergedCells, dataValidations, cellNotes].forEach(o => remapRowKeyedMap(o, sheetName, mapFn));
   if (hiddenRows[sheetName]) {
     const ns = new Set(); hiddenRows[sheetName].forEach(r => ns.add(mapFn(r))); hiddenRows[sheetName] = ns;
   }
@@ -3210,7 +3254,7 @@ function moveColState(sheetName, from, to) {
     if (to < from && c >= to && c < from) return c + 1;
     return c;
   };
-  [cellStyles, mergedCells, dataValidations].forEach(o => remapColKeyedMap(o, sheetName, mapFn));
+  [cellStyles, mergedCells, dataValidations, cellNotes].forEach(o => remapColKeyedMap(o, sheetName, mapFn));
   if (filterValues[sheetName]) {
     const nv = {}; Object.keys(filterValues[sheetName]).forEach(k => { nv[mapFn(+k)] = filterValues[sheetName][k]; });
     filterValues[sheetName] = nv;
@@ -3985,7 +4029,7 @@ async function save() {
   try {
     const [r1, r2] = await Promise.all([
       tokFetch('/budget/sheets',{method:'POST',headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({sheets,active:activeSheet,styles:cellStyles,colWidths,rowHeights,mergedCells,conditionalFormats,dataValidations})}),
+        body:JSON.stringify({sheets,active:activeSheet,styles:cellStyles,colWidths,rowHeights,mergedCells,conditionalFormats,dataValidations,cellNotes})}),
       tokFetch('/budget/grid',{method:'POST',headers:{'Content-Type':'application/json'},
         body:JSON.stringify({rows:grid()})})
     ]);
