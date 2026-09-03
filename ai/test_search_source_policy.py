@@ -56,6 +56,21 @@ def main():
     matching_validation = search.search_validation(matching_numbers)
     assert len(matching_validation["corroborated_claims"]) == 1
     assert matching_validation["conflicting_claims"] == []
+    supported_answer = search.validate_answer_numeric_claims(
+        "2027년 최저임금", "2027년 최저임금은 시간급 10,700원입니다.", matching_numbers
+    )
+    assert len(supported_answer["supported"]) == 1
+    assert supported_answer["unsupported"] == []
+    assert "답변 수치 대조" in search.format_answer_claim_validation_note(supported_answer)
+
+    unsupported_answer = search.validate_answer_numeric_claims(
+        "2027년 최저임금", "2027년 최저임금은 시간급 10,900원입니다.", matching_numbers
+    )
+    assert len(unsupported_answer["unsupported"]) == 1
+    unsupported_note = search.format_answer_claim_validation_note(unsupported_answer)
+    assert "답변 수치 검증 실패" in unsupported_note
+    assert "10,900원" in unsupported_note and "10,700원" in unsupported_note
+    assert "기억 학습에서도 제외" in unsupported_note
 
     conflicting_numbers = search._prepare_results("2027년 최저임금", [
         _result("2027년 최저임금", "시간급 10,700원", "https://www.minimumwage.go.kr/2027"),
@@ -92,6 +107,10 @@ def main():
         _result("2026년 주가", "주가 99,999원", "https://blog.example.com/price"),
     ], 5)
     assert search.search_validation(trusted_over_blog)["conflicting_claims"] == []
+    blog_value_answer = search.validate_answer_numeric_claims(
+        "2026년 주가", "2026년 주가는 99,999원입니다.", trusted_over_blog
+    )
+    assert len(blog_value_answer["unsupported"]) == 1
 
     different_years = search._prepare_results("연도별 최저임금", [
         _result("2026년 최저임금", "시간급 10,320원", "https://www.minimumwage.go.kr/2026"),

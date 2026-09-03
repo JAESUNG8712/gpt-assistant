@@ -902,6 +902,7 @@ async def chat(req: ChatRequest, request: Request):
     async def generate():
         collected = []
         validation_results = []  # 답변·학습 품질 게이트에서 공통 사용
+        answer_claim_validation = {"supported": [], "unsupported": []}
         try:
             # ── 경로 STOCK: 주식 분석 파이프라인 실행 ────────
             if run_stock_pipeline:
@@ -1216,10 +1217,20 @@ async def chat(req: ChatRequest, request: Request):
                         collected.append(token)
                         yield token
 
+                # 스트리밍된 LLM 답변의 핵심 수치를 검색 스니펫과 한 번 더 대조한다.
+                # 검증 표시는 원래 답변과 분리해 사용자가 생성 오류를 즉시 식별할 수 있게 한다.
+                answer_claim_validation = srch.validate_answer_numeric_claims(
+                    search_msg, "".join(collected), validation_results
+                )
                 validation_note = srch.format_search_validation_note(validation_results)
                 if validation_note:
                     collected.append(validation_note)
                     yield validation_note
+
+                answer_validation_note = srch.format_answer_claim_validation_note(answer_claim_validation)
+                if answer_validation_note:
+                    collected.append(answer_validation_note)
+                    yield answer_validation_note
 
                 ref_footer = _format_reference_links(reference_items)
                 if ref_footer:
@@ -1250,12 +1261,14 @@ async def chat(req: ChatRequest, request: Request):
                 validation_results
                 and srch.search_validation(validation_results)["conflicting_claims"]
             )
+            has_unsupported_answer_claim = bool(answer_claim_validation["unsupported"])
             # 이미 KB에서 직접 서빙한 답변과 Python 계산 결과는 새 지식이 아니므로
             # 후보 대기열에 다시 쌓지 않는다. LLM이 새로 합성한 답변만 검토 대상으로 둔다.
             is_new_synthesized_answer = not kb_direct and not direct_calc and not company_kb_only
             if (not is_shared_session and is_new_synthesized_answer
                     and ai_reply_clean.strip() and not stock_mode
                     and not has_search_conflict
+                    and not has_unsupported_answer_claim
                     and LOCAL_FALLBACK_MARKER not in ai_reply_clean):
                 candidate_source = (
                     "법령실시간" if law_ctx else

@@ -235,6 +235,9 @@ def _extract_numeric_claims(query: str, result: dict) -> list[dict]:
         seen.add(identity)
         claims.append({
             "key": key,
+            "year": year or "current",
+            "label": label,
+            "unit": unit,
             "value": raw_value,
             "display": f"{match.group(1)}{unit}",
             "domain": domain,
@@ -356,6 +359,47 @@ def _numeric_claim_validation(results: list[dict]) -> dict:
     return {"corroborated": corroborated, "conflicts": conflicts}
 
 
+def validate_answer_numeric_claims(query: str, answer: str, results: list[dict]) -> dict:
+    """LLM이 출력한 핵심 수치가 실제 검색 근거에 존재하는지 생성 후 다시 대조한다."""
+    empty = {"supported": [], "unsupported": []}
+    if not answer or not results:
+        return empty
+
+    source_groups = {}
+    for result in results:
+        for claim in result.get("numeric_claims", []):
+            source_groups.setdefault(claim["key"], []).append(claim)
+    if not source_groups:
+        return empty
+
+    answer_claims = _extract_numeric_claims(query, {
+        "title": "",
+        "body": answer,
+        "url": "",
+        "trust_tier": 0,
+    })
+    supported, unsupported, seen = [], [], set()
+    for answer_claim in answer_claims:
+        source_claims = source_groups.get(answer_claim["key"])
+        if not source_claims:
+            # 검색 스니펫에서 같은 의미 항목을 추출하지 못한 숫자는 오탐 방지를 위해 판정하지 않는다.
+            continue
+        trusted_claims = [claim for claim in source_claims if claim.get("trust_tier", 1) >= 2]
+        eligible_claims = trusted_claims or source_claims
+        allowed_values = {claim["value"] for claim in eligible_claims}
+        identity = (answer_claim["key"], answer_claim["value"])
+        if identity in seen:
+            continue
+        seen.add(identity)
+        item = {
+            **answer_claim,
+            "source_values": sorted({claim["display"] for claim in eligible_claims}),
+            "source_domains": sorted({claim["domain"] for claim in eligible_claims}),
+        }
+        (supported if answer_claim["value"] in allowed_values else unsupported).append(item)
+    return {"supported": supported, "unsupported": unsupported}
+
+
 def _format_claim_name(claim: dict) -> str:
     year = claim.get("year", "")
     year_text = "현재" if year == "current" else f"{year}년"
@@ -371,6 +415,17 @@ def _format_conflict_details(conflicts: list[dict], limit: int = 3) -> str:
             domains = ", ".join(value.get("domains", []))
             alternatives.append(f"{value.get('display', value.get('value', ''))} ({domains})")
         details.append(f"{_format_claim_name(conflict)}: " + " / ".join(alternatives))
+    return "; ".join(details)
+
+
+def _format_unsupported_answer_details(claims: list[dict], limit: int = 3) -> str:
+    details = []
+    for claim in claims[:limit]:
+        source_values = ", ".join(claim.get("source_values", [])) or "확인값 없음"
+        details.append(
+            f"{_format_claim_name(claim)} {claim.get('display', '')}"
+            f" (검색 근거: {source_values})"
+        )
     return "; ".join(details)
 
 
@@ -521,3 +576,18 @@ def format_search_validation_note(results: list[dict]) -> str:
               "충돌 근거는 기억 학습에서도 제외합니다."
         )
     return summary
+
+
+def format_answer_claim_validation_note(validation: dict) -> str:
+    """답변 생성 후 수치 대조 결과를 사용자에게 표시한다."""
+    unsupported = validation.get("unsupported", [])
+    supported = validation.get("supported", [])
+    if unsupported:
+        return (
+            "\n> 🚫 **답변 수치 검증 실패**: "
+            + _format_unsupported_answer_details(unsupported)
+            + ". 검색 근거에 없는 값이므로 확정 정보로 사용하지 않으며 기억 학습에서도 제외합니다."
+        )
+    if supported:
+        return f"\n> 🧾 **답변 수치 대조**: 검색 근거와 {len(supported)}건 일치"
+    return ""
