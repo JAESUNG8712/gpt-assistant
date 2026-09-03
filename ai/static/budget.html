@@ -158,6 +158,17 @@
     border-color:transparent #e53935 transparent transparent;
     pointer-events:none;
   }
+  /* ── 찾기 및 바꾸기 ── */
+  #fr-panel { position:fixed; top:70px; right:24px; z-index:9998; background:var(--surface,#fff);
+    border:1px solid var(--border-bright,#cdd3dc); border-radius:8px; box-shadow:0 4px 16px rgba(0,0,0,.18);
+    padding:12px 14px; width:260px; display:none; flex-direction:column; gap:8px; font-size:0.8rem; }
+  #fr-panel.open { display:flex; }
+  #fr-panel input[type=text] { width:100%; padding:5px 7px; border:1px solid var(--border-bright,#cdd3dc);
+    border-radius:5px; font-size:0.8rem; box-sizing:border-box; }
+  #fr-panel label { display:flex; align-items:center; gap:5px; font-size:0.74rem; color:var(--text-dim); cursor:pointer; }
+  #fr-panel .fr-row { display:flex; gap:6px; }
+  #fr-panel .fr-row button { flex:1; }
+  #fr-status { font-size:0.72rem; color:var(--text-dim); }
 
   /* ── 열/행 리사이즈 핸들 ── */
   .col-resize-handle {
@@ -513,6 +524,7 @@
     <div class="ribbon-group">
       <div class="ribbon-btns">
         <button class="rbtn" onclick="removeDuplicates()"><span class="rbtn-icon">🗑</span><span class="rbtn-text">중복 제거</span></button>
+        <button class="rbtn" onclick="openFindReplace()"><span class="rbtn-icon">🔍</span><span class="rbtn-text">찾기 및 바꾸기</span></button>
       </div>
       <span class="ribbon-group-label">데이터 도구</span>
     </div>
@@ -2028,6 +2040,11 @@ document.addEventListener('keydown', e => {
   if (document.querySelector('.modal-overlay.open')) return;
   // 수식 입력줄 포커스 중이면 무시
   if (document.activeElement===document.getElementById('formula-input')) return;
+  // 찾기/바꾸기 패널 입력 중이면 무시 (닫기 Esc만 별도 처리)
+  if (document.getElementById('fr-panel')?.contains(document.activeElement)) {
+    if (e.key === 'Escape') { e.preventDefault(); closeFindReplace(); }
+    return;
+  }
 
   // Ctrl+Z는 편집 중에도 허용 (먼저 처리)
   if ((e.ctrlKey||e.metaKey) && e.key==='z' && editMode) { e.preventDefault(); cancelEdit(); undo(); return; }
@@ -2070,6 +2087,7 @@ document.addEventListener('keydown', e => {
   if ((e.ctrlKey||e.metaKey) && e.key==='z') { e.preventDefault(); undo(); return; }
   if ((e.ctrlKey||e.metaKey) && e.key==='y') { e.preventDefault(); redo(); return; }
   if ((e.ctrlKey||e.metaKey) && e.key==='s') { e.preventDefault(); save(); return; }
+  if ((e.ctrlKey||e.metaKey) && (e.key==='f'||e.key==='h')) { e.preventDefault(); openFindReplace(); return; }
 
   if (!selectedCell) {
     if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Enter','Tab'].includes(e.key)) {
@@ -4668,6 +4686,131 @@ function clearAllFilters() {
   const sh = activeSheet;
   filterValues[sh] = {}; hiddenRows[sh] = new Set();
   render(); setStatus('모든 필터 초기화');
+}
+
+// ══════════════════════════════════════════
+// 찾기 및 바꾸기 (Ctrl+F / Ctrl+H)
+// ══════════════════════════════════════════
+let frMatches = [];   // [{sheet, r, c}]
+let frMatchIdx = -1;
+
+function openFindReplace() {
+  if (editMode) commitEdit();
+  let p = document.getElementById('fr-panel');
+  if (!p) {
+    p = document.createElement('div');
+    p.id = 'fr-panel';
+    p.innerHTML = `
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <b style="font-size:0.86rem">🔍 찾기 및 바꾸기</b>
+        <span onclick="closeFindReplace()" style="cursor:pointer;color:var(--text-dim)">✕</span>
+      </div>
+      <input type="text" id="fr-find" placeholder="찾을 내용">
+      <input type="text" id="fr-replace" placeholder="바꿀 내용">
+      <label><input type="checkbox" id="fr-case"> 대소문자 구분</label>
+      <label><input type="checkbox" id="fr-allsheets"> 모든 시트에서 찾기</label>
+      <div id="fr-status">검색어를 입력하세요</div>
+      <div class="fr-row">
+        <button class="btn" onclick="frGoto(-1)">◀ 이전</button>
+        <button class="btn" onclick="frGoto(1)">다음 ▶</button>
+      </div>
+      <div class="fr-row">
+        <button class="btn" onclick="frReplaceCurrent()">바꾸기</button>
+        <button class="btn btn-primary" onclick="frReplaceAll()">모두 바꾸기</button>
+      </div>`;
+    document.body.appendChild(p);
+    document.getElementById('fr-find').addEventListener('input', frRunSearch);
+    document.getElementById('fr-case').addEventListener('change', frRunSearch);
+    document.getElementById('fr-allsheets').addEventListener('change', frRunSearch);
+    document.getElementById('fr-find').addEventListener('keydown', e => {
+      if (e.key === 'Enter') { e.preventDefault(); frGoto(e.shiftKey ? -1 : 1); }
+      if (e.key === 'Escape') { e.preventDefault(); closeFindReplace(); }
+    });
+  }
+  p.classList.add('open');
+  const fi = document.getElementById('fr-find');
+  fi.focus(); fi.select();
+  frRunSearch();
+}
+
+function closeFindReplace() {
+  const p = document.getElementById('fr-panel');
+  if (p) p.classList.remove('open');
+  frMatches = []; frMatchIdx = -1;
+}
+
+function frRunSearch() {
+  const term = document.getElementById('fr-find')?.value || '';
+  frMatches = []; frMatchIdx = -1;
+  if (!term) { document.getElementById('fr-status').textContent = '검색어를 입력하세요'; return; }
+  const caseSensitive = document.getElementById('fr-case')?.checked;
+  const allSheets = document.getElementById('fr-allsheets')?.checked;
+  const needle = caseSensitive ? term : term.toLowerCase();
+  const sheetNames = allSheets ? Object.keys(sheets) : [activeSheet];
+  sheetNames.forEach(sheetName => {
+    const g = sheets[sheetName] || [];
+    g.forEach((row, r) => row.forEach((val, c) => {
+      const s = String(val ?? '');
+      if (!s) return;
+      const hay = caseSensitive ? s : s.toLowerCase();
+      if (hay.includes(needle)) frMatches.push({ sheet: sheetName, r, c });
+    }));
+  });
+  document.getElementById('fr-status').textContent = frMatches.length
+    ? `${frMatches.length}개 일치`
+    : '일치하는 항목이 없습니다';
+  if (frMatches.length) frGoto(1);
+}
+
+function frGoto(delta) {
+  if (!frMatches.length) return;
+  frMatchIdx = (frMatchIdx + delta + frMatches.length) % frMatches.length;
+  const m = frMatches[frMatchIdx];
+  if (m.sheet !== activeSheet) switchSheet(m.sheet);
+  selectCell(m.r, m.c); selEnd = null; highlightSel();
+  const td = getCellEl(m.r, m.c);
+  if (td) td.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  document.getElementById('fr-status').textContent = `${frMatchIdx + 1}/${frMatches.length}개 일치 — ${cellAddr(m.r, m.c)}`;
+}
+
+function frReplaceCurrent() {
+  if (!frMatches.length || frMatchIdx < 0) { frRunSearch(); return; }
+  const replaceWith = document.getElementById('fr-replace')?.value || '';
+  const term = document.getElementById('fr-find')?.value || '';
+  const caseSensitive = document.getElementById('fr-case')?.checked;
+  const m = frMatches[frMatchIdx];
+  pushUndo();
+  const g = sheets[m.sheet];
+  const cur = String(g[m.r][m.c] ?? '');
+  g[m.r][m.c] = caseSensitive
+    ? cur.split(term).join(replaceWith)
+    : cur.replace(new RegExp(term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi'), replaceWith);
+  markDirty(); render();
+  frRunSearch();
+}
+
+function frReplaceAll() {
+  if (!frMatches.length) { frRunSearch(); if (!frMatches.length) return; }
+  const replaceWith = document.getElementById('fr-replace')?.value || '';
+  const term = document.getElementById('fr-find')?.value || '';
+  const caseSensitive = document.getElementById('fr-case')?.checked;
+  if (!term) return;
+  pushUndo();
+  const re = new RegExp(term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), caseSensitive ? 'g' : 'gi');
+  let count = 0;
+  const bySheet = {};
+  frMatches.forEach(m => { (bySheet[m.sheet] = bySheet[m.sheet] || []).push(m); });
+  Object.keys(bySheet).forEach(sheetName => {
+    const g = sheets[sheetName];
+    bySheet[sheetName].forEach(m => {
+      const cur = String(g[m.r][m.c] ?? '');
+      const next = cur.replace(re, replaceWith);
+      if (next !== cur) { g[m.r][m.c] = next; count++; }
+    });
+  });
+  markDirty(); render();
+  setStatus(`✅ ${count}개 항목 바꿈`);
+  frRunSearch();
 }
 
 // ══════════════════════════════════════════
