@@ -360,6 +360,7 @@
         <button class="rbtn rbtn-h" onclick="doCopy()" title="복사 Ctrl+C">📋 복사</button>
         <button class="rbtn rbtn-h" onclick="doCut()" title="잘라내기 Ctrl+X">✂️ 잘라내기</button>
         <button class="rbtn rbtn-h" onclick="doPaste()" title="붙여넣기 Ctrl+V">📌 붙여넣기</button>
+        <button class="rbtn rbtn-h" id="btn-format-painter" onclick="toggleFormatPainter()" title="서식 복사: 클릭 후 적용할 셀을 선택하세요">🖌️ 서식 복사</button>
       </div>
       <span class="ribbon-group-label">클립보드</span>
     </div>
@@ -2195,9 +2196,28 @@ document.addEventListener('keydown', e => {
     case 'Enter': e.preventDefault();
       if (e.shiftKey) moveSel(-1,0); else enterEdit(selectedCell.r, selectedCell.c); break;
     case 'Tab': e.preventDefault(); moveSel(0, e.shiftKey?-1:1); break;
+    case 'Home': {
+      // Home(Ctrl 없이): 현재 행의 A열로 이동 (엑셀/구글시트와 동일)
+      e.preventDefault();
+      const r = selectedCell.r;
+      if (e.shiftKey) { selEnd = {r, c:0}; highlightSel(); updateFormulaBarRange(); }
+      else selectCell(r, 0);
+      break;
+    }
+    case 'End': {
+      // End(Ctrl 없이): 현재 행에서 값이 있는 마지막 열로 이동
+      e.preventDefault();
+      const r = selectedCell.r;
+      const row = grid()[r] || [];
+      let lastC = 0;
+      for (let c = row.length-1; c >= 0; c--) { if (String(row[c]??'').trim()!=='') { lastC = c; break; } }
+      if (e.shiftKey) { selEnd = {r, c:lastC}; highlightSel(); updateFormulaBarRange(); }
+      else selectCell(r, lastC);
+      break;
+    }
     case 'F2': e.preventDefault(); enterEdit(selectedCell.r, selectedCell.c); break;
     case 'Escape':
-      e.preventDefault(); clearClipSrc(); break;
+      e.preventDefault(); clearClipSrc(); if (paintMode) cancelFormatPaint(); break;
     case 'Delete': case 'Backspace':
       e.preventDefault();
       clearSelectedCells();
@@ -2881,6 +2901,49 @@ function applyBorder(type) {
   }
   document.getElementById('border-sel').value='';
   markDirty(); render();
+}
+
+// ══════════════════════════════════════════
+// 서식 복사(Format Painter) — 엑셀의 페인트브러시 도구와 동일
+// ══════════════════════════════════════════
+let paintMode = false;
+let paintSrcStyle = null;
+
+function toggleFormatPainter() {
+  const btn = document.getElementById('btn-format-painter');
+  if (paintMode) {
+    cancelFormatPaint();
+    return;
+  }
+  if (!selectedCell) { setStatus('서식을 복사할 셀을 먼저 선택하세요', false); return; }
+  const src = styles()[sk(selectedCell.r, selectedCell.c)];
+  paintSrcStyle = src ? JSON.parse(JSON.stringify(src)) : {};
+  paintMode = true;
+  btn?.classList.add('rbtn-active');
+  const sheetEl = document.getElementById('sheet');
+  if (sheetEl) sheetEl.style.cursor = 'copy';
+  setStatus('🖌️ 서식을 적용할 셀(또는 범위)을 클릭하세요 — Esc로 취소');
+}
+
+function cancelFormatPaint() {
+  paintMode = false; paintSrcStyle = null;
+  document.getElementById('btn-format-painter')?.classList.remove('rbtn-active');
+  const sheetEl = document.getElementById('sheet');
+  if (sheetEl) sheetEl.style.cursor = '';
+}
+
+// 클릭/드래그로 선택이 끝난 직후(전역 mouseup) 호출됨
+function applyFormatPaintIfArmed() {
+  if (!paintMode) return;
+  const cells = getSelCells();
+  if (cells.length) {
+    pushUndo();
+    const st = styles();
+    cells.forEach(({r,c}) => { st[sk(r,c)] = JSON.parse(JSON.stringify(paintSrcStyle)); });
+    markDirty(); render();
+    setStatus(`✅ ${cells.length}개 셀에 서식 적용됨`);
+  }
+  cancelFormatPaint();
 }
 
 function toggleWrap() {
@@ -5242,6 +5305,7 @@ document.addEventListener('mouseup', () => {
   const wasHdr = hdrDragSel;
   cellDragSel = false; hdrDragSel = null;
   if (wasHdr) render(); // 드래그 종료 후 헤더 강조 등 전체 반영
+  applyFormatPaintIfArmed();
 });
 
 // ══════════════════════════════════════════
