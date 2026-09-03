@@ -67,6 +67,27 @@ if (!ADMIN_DATABASE_URL) {
       companyAToken = json.token;
     });
 
+    await t.test("1b) 공개 healthz/readyz는 PostgreSQL 준비 상태만 확인하고 전사 집계를 노출하지 않는다", async () => {
+      const health = await (await api("/healthz")).json();
+      assert.equal(health.ok, true);
+      assert.equal(health.status, "live");
+      assert.equal(health.storageMode, "postgresql");
+      assert.equal(typeof health.uptimeSec, "number");
+      assert.equal(health.meta, undefined);
+      assert.equal(health.onlineCount, undefined);
+
+      const readyRes = await api("/readyz");
+      assert.equal(readyRes.status, 200);
+      const ready = await readyRes.json();
+      assert.equal(ready.ok, true);
+      assert.equal(ready.status, "ready");
+      assert.equal(ready.storageMode, "postgresql");
+      assert.deepEqual(ready.checks, { process: "ok", database: "ok" });
+      assert.equal(ready.meta, undefined);
+      assert.equal(ready.onlineCount, undefined);
+      assert.equal(ready.companies, undefined);
+    });
+
     await t.test("2) 반환된 companyCode로 로그인 성공", async () => {
       const res = await api("/login", {
         method: "POST",

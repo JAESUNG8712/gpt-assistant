@@ -3207,6 +3207,55 @@ app.get("/status", async (req, res) => {
   } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
+// GET /healthz — 로드밸런서/외부 모니터용 생존 확인. 저장소를 건드리지 않고 프로세스가
+// HTTP 요청을 받을 수 있는지만 확인한다. 회사 수·직원 수·버전·접속자 같은 운영 내부
+// 정보는 공개하지 않는다.
+app.get("/healthz", (req, res) => {
+  res.json({
+    ok: true,
+    status: "live",
+    storageMode: USE_JSON_FILE ? "file" : "postgresql",
+    uptimeSec: Math.floor(process.uptime()),
+    timestamp: new Date().toISOString(),
+  });
+});
+
+// GET /readyz — 배포 직후/장애 감지용 준비 상태 확인. healthz보다 한 단계 더 깊게
+// PostgreSQL 또는 JSON 파일 저장소에 접근 가능한지만 확인한다. 이 라우트도 무인증으로
+// 호출될 수 있으므로 상세 DB 오류·회사별 집계·파일 경로는 응답에 담지 않는다.
+app.get("/readyz", async (req, res) => {
+  try {
+    if (USE_JSON_FILE) {
+      const dir = path.dirname(JSON_FILE);
+      fs.accessSync(dir, fs.constants.R_OK | fs.constants.W_OK);
+      if (fs.existsSync(JSON_FILE)) fs.accessSync(JSON_FILE, fs.constants.R_OK | fs.constants.W_OK);
+      return res.json({
+        ok: true,
+        status: "ready",
+        storageMode: "file",
+        checks: { process: "ok", storage: "ok" },
+      });
+    }
+    await pool.query("SELECT 1");
+    res.json({
+      ok: true,
+      status: "ready",
+      storageMode: "postgresql",
+      checks: { process: "ok", database: "ok" },
+    });
+  } catch (e) {
+    const detail = process.env.NODE_ENV === "production" ? undefined : _safeErrMsg(e);
+    res.status(503).json({
+      ok: false,
+      status: "not_ready",
+      storageMode: USE_JSON_FILE ? "file" : "postgresql",
+      checks: { process: "ok", storage: "fail" },
+      message: "저장소 준비 상태를 확인할 수 없습니다.",
+      ...(detail ? { detail } : {}),
+    });
+  }
+});
+
 // GET /data
 app.get("/data", async (req, res) => {
   if (!requireAuth(req, res)) return;
