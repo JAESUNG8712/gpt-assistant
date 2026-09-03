@@ -329,6 +329,18 @@
   .cell-dropdown { position:fixed;background:#fff;border:1px solid var(--border-bright);border-radius:4px;box-shadow:0 4px 12px rgba(0,0,0,.15);z-index:2000;font-size:0.78rem;min-width:120px; }
   .cell-dropdown-item { padding:4px 10px;cursor:pointer; }
   .cell-dropdown-item:hover { background:var(--accent-bg); }
+
+  /* ── 인쇄 ── 화면 전용 UI(리본/수식바/시트탭/상태바 등)는 감추고 시트 표만 출력 */
+  @media print {
+    body { height:auto; overflow:visible; }
+    .ribbon, .formula-bar, .sheet-tabs, #status-bar, .snap-area, #fn-autocomplete, #fn-tip,
+    #size-dialog, #paste-trap, #fr-panel, #freeze-dialog, #rc-ctx-menu, #tab-ctx-menu,
+    #filter-dropdown, .cell-dropdown, #cf-panel, .modal-overlay { display:none !important; }
+    .grid-outer { flex:none; overflow:visible; display:block; }
+    .grid-wrap { overflow:visible; }
+    table { table-layout:auto; }
+    td.selected, td.editing { box-shadow:none !important; }
+  }
 </style>
 </head>
 <body>
@@ -554,6 +566,12 @@
         <button class="rbtn" onclick="toggleShowFormulas()" id="btn-show-formula2"><span class="rbtn-icon">fx</span><span class="rbtn-text">수식 표시</span></button>
       </div>
       <span class="ribbon-group-label">표시</span>
+    </div>
+    <div class="ribbon-group">
+      <div class="ribbon-btns">
+        <button class="rbtn" onclick="printSheet()"><span class="rbtn-icon">🖨️</span><span class="rbtn-text">인쇄</span></button>
+      </div>
+      <span class="ribbon-group-label">인쇄</span>
     </div>
   </div>
 </div>
@@ -4893,6 +4911,30 @@ function toggleGridlines() {
   if (tbl) tbl.classList.toggle('no-gridlines', !showGridlines);
   const b = document.getElementById('btn-gridlines');
   if (b) b.classList.toggle('rbtn-active', !showGridlines);
+}
+
+// ══════════════════════════════════════════
+// 인쇄 — 시트 전체(빈 여백 포함 30행×16열)가 아니라 실제 데이터가 있는
+// 범위(사용 영역)만 출력되도록 매번 인쇄 직전에 범위를 다시 계산한다.
+// ══════════════════════════════════════════
+function printSheet() {
+  if (editMode) commitEdit();
+  const g = grid();
+  let mr = 0, mc = 0;
+  for (let r = 0; r < g.length; r++) for (let c = 0; c < (g[r]||[]).length; c++)
+    if (String(g[r][c] ?? '').trim() !== '') { mr = Math.max(mr, r); mc = Math.max(mc, c); }
+  let styleEl = document.getElementById('print-range-style');
+  if (!styleEl) {
+    styleEl = document.createElement('style');
+    styleEl.id = 'print-range-style';
+    document.head.appendChild(styleEl);
+  }
+  // tr/th/td의 1번째 자식은 행번호/전체선택 칸이므로 열 c는 (c+2)번째 자식
+  styleEl.textContent = `@media print {
+    #sheet tr:nth-child(n+${mr+3}) { display:none; }
+    #sheet tr th:nth-child(n+${mc+3}), #sheet tr td:nth-child(n+${mc+3}) { display:none; }
+  }`;
+  window.print();
 }
 
 // ══════════════════════════════════════════
