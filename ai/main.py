@@ -2459,7 +2459,7 @@ async def budget_grid_upload(file: UploadFile = File(...), token: str = ""):
     except Exception:
         raise HTTPException(status_code=400, detail="파일을 읽을 수 없습니다. (xlsx/csv만 지원)")
     budget.save_grid(rows)
-    return {"message": "업로드되었습니다.", "rows": len(rows)}
+    return {"message": "업로드되었습니다.", "rows": rows, "row_count": len(rows)}
 
 
 @app.get("/budget/grid/download")

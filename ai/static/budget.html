@@ -4858,10 +4858,10 @@ function removeDuplicates() {
 // ══════════════════════════════════════════
 // 행/열 삽입 (리본 버튼용)
 // ══════════════════════════════════════════
-function insertRowAbove() { if(selectedCell) insertRowAt(selectedCell.r, 'before'); }
-function insertRowBelow() { if(selectedCell) insertRowAt(selectedCell.r, 'after'); }
-function insertColLeft()  { if(selectedCell) insertColAt(selectedCell.c, 'before'); }
-function insertColRight() { if(selectedCell) insertColAt(selectedCell.c, 'after'); }
+function insertRowAbove() { if(selectedCell) insertRowAt(selectedCell.r, 'above'); }
+function insertRowBelow() { if(selectedCell) insertRowAt(selectedCell.r, 'below'); }
+function insertColLeft()  { if(selectedCell) insertColAt(selectedCell.c, 'left'); }
+function insertColRight() { if(selectedCell) insertColAt(selectedCell.c, 'right'); }
 function delCol()         { if(selectedCell) delColAt(selectedCell.c); }
 
 // ══════════════════════════════════════════
