@@ -150,6 +150,26 @@ test("file-mode API smoke suite", async (t) => {
     assert.equal(json.onlineCount, undefined, "무인증 상태 조회에 접속자 수를 노출하면 안 됨");
   });
 
+  await t.test("2b) 공개 healthz/readyz는 저장소 상태만 확인하고 전사 집계를 노출하지 않는다", async () => {
+    const health = await (await api("/healthz")).json();
+    assert.equal(health.ok, true);
+    assert.equal(health.status, "live");
+    assert.equal(health.storageMode, "file");
+    assert.equal(typeof health.uptimeSec, "number");
+    assert.equal(health.meta, undefined);
+    assert.equal(health.onlineCount, undefined);
+
+    const readyRes = await api("/readyz");
+    assert.equal(readyRes.status, 200);
+    const ready = await readyRes.json();
+    assert.equal(ready.ok, true);
+    assert.equal(ready.status, "ready");
+    assert.equal(ready.storageMode, "file");
+    assert.deepEqual(ready.checks, { process: "ok", storage: "ok" });
+    assert.equal(ready.meta, undefined);
+    assert.equal(ready.onlineCount, undefined);
+  });
+
   await t.test("3) 잘못된 로그인은 ok:false", async () => {
     const res = await api("/login", {
       method: "POST",
