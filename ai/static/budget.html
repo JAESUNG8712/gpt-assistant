@@ -372,6 +372,7 @@
         <button class="rbtn rbtn-h" onclick="doCopy()" title="복사 Ctrl+C">📋 복사</button>
         <button class="rbtn rbtn-h" onclick="doCut()" title="잘라내기 Ctrl+X">✂️ 잘라내기</button>
         <button class="rbtn rbtn-h" onclick="doPaste()" title="붙여넣기 Ctrl+V">📌 붙여넣기</button>
+        <button class="rbtn rbtn-h" onclick="pasteValuesOnly()" title="값만 붙여넣기 Ctrl+Shift+V">🔢 값만</button>
         <button class="rbtn rbtn-h" id="btn-format-painter" onclick="toggleFormatPainter()" title="서식 복사: 클릭 후 적용할 셀을 선택하세요">🖌️ 서식 복사</button>
       </div>
       <span class="ribbon-group-label">클립보드</span>
@@ -2107,6 +2108,7 @@ document.addEventListener('keydown', e => {
   if ((e.ctrlKey||e.metaKey) && e.key==='y') { e.preventDefault(); redo(); return; }
   if ((e.ctrlKey||e.metaKey) && e.key==='s') { e.preventDefault(); save(); return; }
   if ((e.ctrlKey||e.metaKey) && (e.key==='f'||e.key==='h')) { e.preventDefault(); openFindReplace(); return; }
+  if ((e.ctrlKey||e.metaKey) && e.shiftKey && e.key.toLowerCase()==='v') { e.preventDefault(); pasteValuesOnly(); return; }
 
   if (!selectedCell) {
     if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Enter','Tab'].includes(e.key)) {
@@ -2469,6 +2471,7 @@ function cellCtxMenu(e, r, c) {
     <div class="cm-item" onclick="document.getElementById('rc-ctx-menu').remove();doCut()">✂️ 잘라내기 (Ctrl+X)</div>
     <div class="cm-item" onclick="document.getElementById('rc-ctx-menu').remove();doCopy()">📋 복사 (Ctrl+C)</div>
     <div class="cm-item" onclick="document.getElementById('rc-ctx-menu').remove();doPaste()">📌 붙여넣기 (Ctrl+V)</div>
+    <div class="cm-item" onclick="document.getElementById('rc-ctx-menu').remove();pasteValuesOnly()">🔢 값만 붙여넣기 (Ctrl+Shift+V)</div>
     <div class="cm-sep"></div>
     <div class="cm-item" onclick="document.getElementById('rc-ctx-menu').remove();clearSelectedCells()">🧹 ${hasRange?'선택 영역 지우기':'내용 지우기'}</div>
     <div class="cm-sep"></div>
@@ -5190,6 +5193,48 @@ function doPaste() {
     navigator.clipboard.readText().then(applyPastedText).catch(() => document.execCommand('paste'));
   } else {
     document.execCommand('paste');
+  }
+}
+
+// 값만 붙여넣기(선택하여 붙여넣기) — 원본이 수식이어도 계산된 결과값만,
+// 서식은 건드리지 않고 붙여넣는다(엑셀의 "선택하여 붙여넣기 > 값" 메뉴와 동일).
+function applyValuesOnlyFromSnapshot() {
+  if (!selectedCell || !clipSrc || !clipSrc.tsvSnapshot) return;
+  // 복사 시점에 renderCell()로 계산해둔 표시값 스냅샷을 그대로 사용 —
+  // 원본 시트를 다시 찾아가 수식을 재평가할 필요 없이 정확한 값을 얻을 수 있다.
+  const lines = parseTSV(clipSrc.tsvSnapshot);
+  pushUndo();
+  const g = grid();
+  const sr = selectedCell.r, sc = selectedCell.c;
+  const srcRows = lines.length, srcCols = Math.max(1, ...lines.map(l=>l.length));
+  const er = Math.max(selectedCell.r,(selEnd||selectedCell).r);
+  const ec = Math.max(selectedCell.c,(selEnd||selectedCell).c);
+  const selBigger = (er-sr+1) > srcRows || (ec-sc+1) > srcCols;
+  const dr2 = selBigger ? er : sr + srcRows - 1;
+  const dc2 = selBigger ? ec : sc + srcCols - 1;
+  for (let r=sr; r<=dr2; r++) {
+    while(g.length<=r) g.push([]);
+    for (let c=sc; c<=dc2; c++) {
+      while(g[r].length<=c) g[r].push('');
+      const or = (r-sr)%srcRows, oc = (c-sc)%srcCols;
+      g[r][c] = (lines[or] && lines[or][oc] != null) ? lines[or][oc] : '';
+    }
+  }
+  markDirty(); render(); recomputeAll();
+  setStatus('✅ 값만 붙여넣기 완료');
+}
+
+function pasteValuesOnly() {
+  if (!selectedCell) return;
+  if (navigator.clipboard && navigator.clipboard.readText) {
+    navigator.clipboard.readText().then(text => {
+      // 내부 복사본과 일치하면 계산된 값 스냅샷 사용, 그 외(외부 텍스트)는
+      // 애초에 수식이 없으므로 일반 붙여넣기와 동일하게 처리
+      if (clipSrc && clipSrc.tsvSnapshot && text === clipSrc.tsvSnapshot) applyValuesOnlyFromSnapshot();
+      else applyPastedText(text);
+    }).catch(() => { if (clipSrc && clipSrc.tsvSnapshot) applyValuesOnlyFromSnapshot(); });
+  } else if (clipSrc && clipSrc.tsvSnapshot) {
+    applyValuesOnlyFromSnapshot();
   }
 }
 
