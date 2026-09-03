@@ -1046,6 +1046,7 @@ async def chat(req: ChatRequest, request: Request):
             # ── 경로 B: LLM 보강 (중간 신뢰도 or 법령 실시간) ──
             else:
                 reference_items = []  # 답변 끝에 붙일 참고 자료 링크 ([{title, url}])
+                validation_results = []  # 사용자에게 표시할 웹검색 근거 품질 요약 대상
                 if len(matched_persona_ids) > 1:
                     combo_notice = f"🔎 **{persona['name']} 통합 분석**\n\n"
                     collected.append(combo_notice)
@@ -1118,6 +1119,7 @@ async def chat(req: ChatRequest, request: Request):
                     _gather_results = await asyncio.gather(*_gather_tasks, return_exceptions=True)
 
                     auto_search_results = _gather_results[0] if not isinstance(_gather_results[0], Exception) else []
+                    validation_results = auto_search_results
                     auto_search_ctx = srch.format_search_context(auto_search_results)
                     for r in auto_search_results:
                         reference_items.append({
@@ -1168,6 +1170,7 @@ async def chat(req: ChatRequest, request: Request):
                     else:
                         context = ""
                 else:
+                    validation_results = results
                     if law_ctx:
                         reference_items.extend(
                             {
@@ -1212,6 +1215,11 @@ async def chat(req: ChatRequest, request: Request):
                     async for token in llm.chat_stream(history, context, system_prompt=system_with_date, thinking_mode=effective_thinking_mode):
                         collected.append(token)
                         yield token
+
+                validation_note = srch.format_search_validation_note(validation_results)
+                if validation_note:
+                    collected.append(validation_note)
+                    yield validation_note
 
                 ref_footer = _format_reference_links(reference_items)
                 if ref_footer:

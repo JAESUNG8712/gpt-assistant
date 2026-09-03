@@ -29,5 +29,6 @@ jobs:
         env:
           DB_PATH: ${{ runner.temp }}/search-quality.db
         run: |
+          python -m py_compile main.py search.py
           python test_minimum_wage_facts.py
           python test_search_source_policy.py

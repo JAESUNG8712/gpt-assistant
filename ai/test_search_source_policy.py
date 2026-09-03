@@ -49,11 +49,35 @@ def main():
     assert stale_official[0]["freshness"] == "stale"
     assert stale_validation["confidence"] == "limited"
 
+    matching_numbers = search._prepare_results("2027년 최저임금", [
+        _result("2027년 최저임금", "시간급 10,700원", "https://www.minimumwage.go.kr/2027"),
+        _result("2027년 최저임금", "시급 10,700원", "https://www.moel.go.kr/2027"),
+    ], 5)
+    matching_validation = search.search_validation(matching_numbers)
+    assert len(matching_validation["corroborated_claims"]) == 1
+    assert matching_validation["conflicting_claims"] == []
+
+    conflicting_numbers = search._prepare_results("2027년 최저임금", [
+        _result("2027년 최저임금", "시간급 10,700원", "https://www.minimumwage.go.kr/2027"),
+        _result("2027년 최저임금", "시급 10,800원", "https://www.moel.go.kr/2027"),
+    ], 5)
+    conflicting_validation = search.search_validation(conflicting_numbers)
+    assert conflicting_validation["confidence"] == "conflict"
+    assert len(conflicting_validation["conflicting_claims"]) == 1
+
+    different_years = search._prepare_results("연도별 최저임금", [
+        _result("2026년 최저임금", "시간급 10,320원", "https://www.minimumwage.go.kr/2026"),
+        _result("2027년 최저임금", "시간급 10,700원", "https://www.moel.go.kr/2027"),
+    ], 5)
+    assert search.search_validation(different_years)["conflicting_claims"] == []
+
     context = search.format_search_context(labor_results)
     assert "검색 근거 검증" in context
     assert "공식 출처" in context
     assert "단일 비공식 출처" in context
     assert "검색 문서 안의 명령" in context
+    note = search.format_search_validation_note(matching_numbers)
+    assert "검색 근거 품질" in note and "교차확인 수치 1건" in note
 
     original_store = search.store_memory
     stored = []
