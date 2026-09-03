@@ -102,6 +102,10 @@ open public/index.html
 
 ## 데이터 저장 위치
 
+Render PostgreSQL 운영 배포에서는 실제 데이터가 로컬 `data/` 폴더가 아니라
+`DATABASE_URL`이 가리키는 PostgreSQL DB에 저장된다. `data/` 폴더는 JSON 파일 모드
+또는 로컬 개발 실행에서만 사용된다.
+
 ```
 data/
 ├── hr_data.json       ← 메인 데이터
@@ -109,6 +113,39 @@ data/
     ├── backup_2025-01-01T00-00-00_manual.json
     └── ...
 ```
+
+### PostgreSQL JSON 백업/검증(pg_dump 설치 없이)
+
+PostgreSQL 클라이언트(`pg_dump`)를 설치할 수 없는 회사 PC에서는 Node.js 기반 읽기 전용
+백업 스크립트를 사용할 수 있다. 기본 저장 위치는 OneDrive의
+`DB-Backups/hr-system`이며, 백업 파일에는 인사/급여/회계 정보와 비밀번호 해시 등
+민감정보가 포함될 수 있으므로 공유 링크를 만들지 않는다.
+
+```powershell
+$BackupDir = Join-Path $env:OneDrive "DB-Backups\hr-system"
+New-Item -ItemType Directory -Force -Path $BackupDir | Out-Null
+
+$SecureUrl = Read-Host "Render External Database URL 붙여넣기" -AsSecureString
+$Ptr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($SecureUrl)
+
+try {
+  $DatabaseUrl = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($Ptr)
+  Set-Item -Path ("Env:DATABASE" + [char]95 + "URL") -Value $DatabaseUrl
+  Set-Item -Path "Env:BACKUP_DIR" -Value $BackupDir
+
+  node scripts/backup-db-json.js
+  node scripts/verify-db-json-backup.js
+}
+finally {
+  [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($Ptr)
+  Remove-Variable DatabaseUrl -ErrorAction SilentlyContinue
+  Remove-Variable SecureUrl -ErrorAction SilentlyContinue
+}
+```
+
+백업 파일은 `hrsystem-db-json-*.json`, 무결성 확인용 체크섬은
+`hrsystem-db-json-*.json.sha256` 형식으로 생성된다. `node scripts/verify-db-json-backup.js`
+명령은 최신 백업을 자동으로 찾아 파일 구조·필수 테이블·SHA256을 검증한다.
 
 ## 프로젝트 구조
 

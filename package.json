@@ -15,6 +15,7 @@
     "test:ci": "npm run check && npm test && npm run test:e2e",
     "audit:company-scope": "node scripts/migrate-add-company-id.js --dry-run",
     "backup:db": "node scripts/backup-db-json.js",
+    "backup:verify": "node scripts/verify-db-json-backup.js",
     "seed:demo": "node scripts/seed-demo.js"
   },
   "dependencies": {
