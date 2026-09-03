@@ -896,22 +896,38 @@ _MIN_WAGE_KEYWORDS = [
 MIN_WAGE_2024 = 9_860
 MIN_WAGE_2025 = 10_030
 MIN_WAGE_2026 = 10_320
-_MIN_WAGE_TABLE = {2024: MIN_WAGE_2024, 2025: MIN_WAGE_2025, 2026: MIN_WAGE_2026}
+MIN_WAGE_2027 = 10_700
+_MIN_WAGE_TABLE = {
+    2024: MIN_WAGE_2024,
+    2025: MIN_WAGE_2025,
+    2026: MIN_WAGE_2026,
+    2027: MIN_WAGE_2027,
+}
+_MIN_WAGE_DETAILS = {
+    2024: {"daily": 78_880, "monthly": 2_060_740, "increase": "2.5% (240원)"},
+    2025: {"daily": 80_240, "monthly": 2_096_270, "increase": "1.7% (170원)"},
+    2026: {"daily": 82_560, "monthly": 2_156_880, "increase": "2.9% (290원)"},
+    2027: {
+        "daily": 85_600,
+        "monthly": 2_236_300,
+        "increase": "3.7% (380원)",
+        "deliberated_at": "2026년 7월 14일",
+        "notified_at": "2026년 8월 5일",
+    },
+}
+_MIN_WAGE_OFFICIAL_URL = "https://www.minimumwage.go.kr/minWage/policy/decisionMain.do"
 
 
 def _current_min_wage() -> tuple[int, int]:
     """현재 연도 최저임금과 연도 반환"""
-    today = date.today()
-    if today.year >= 2026:
-        return MIN_WAGE_2026, today.year
-    elif today.year >= 2025:
-        return MIN_WAGE_2025, today.year
-    else:
-        return MIN_WAGE_2024, today.year
+    current_year = date.today().year
+    supported_years = [year for year in _MIN_WAGE_TABLE if year <= current_year]
+    year = max(supported_years) if supported_years else min(_MIN_WAGE_TABLE)
+    return _MIN_WAGE_TABLE[year], year
 
 
 def _question_year_min_wage(text: str) -> Optional[tuple[int, int]]:
-    """질문에 명시된 연도의 최저임금 반환. 보유 데이터(2024~2026) 밖이면 None.
+    """질문에 명시된 연도의 최저임금 반환. 보유 데이터(2024~2027) 밖이면 None.
     (예: "2024년 시급 9,900원 위반?" → 2024년 기준으로 판정)"""
     for m in re.finditer(r'(\d{2,4})년', text):
         y = int(m.group(1))
@@ -922,6 +938,53 @@ def _question_year_min_wage(text: str) -> Optional[tuple[int, int]]:
         if 2000 <= y <= 2060:
             return None  # 명시된 연도가 데이터 밖 → 직접 계산 포기 (KB/LLM 경로로)
     return _current_min_wage()
+
+
+def _explicit_question_year(text: str) -> Optional[int]:
+    """'27년'과 '2027년'을 모두 4자리 연도로 정규화한다."""
+    match = re.search(r'(\d{2,4})년', text)
+    if not match:
+        return None
+    year = int(match.group(1))
+    return year + 2000 if year < 100 else year
+
+
+def try_min_wage_info(text: str) -> Optional[str]:
+    """연도별 최저임금을 공식 확정값으로 직접 조회한다."""
+    tl = text.lower()
+    if '최저임금' not in tl and '최저시급' not in tl:
+        return None
+
+    explicit_year = _explicit_question_year(text)
+    wage_info = _question_year_min_wage(text)
+    if wage_info is None:
+        return (
+            f"요청하신 {explicit_year}년 최저임금은 현재 앱의 검증된 공식 데이터에 없습니다. "
+            f"추정하지 않고 [최저임금위원회 연도별 결정현황]({_MIN_WAGE_OFFICIAL_URL})에서 "
+            f"최신 고시를 확인해 주세요."
+        )
+
+    hourly, year = wage_info
+    details = _MIN_WAGE_DETAILS[year]
+    decision_note = ""
+    if year == 2027:
+        decision_note = (
+            f"\n- **심의·의결일**: {details['deliberated_at']}"
+            f"\n- **결정 고시일**: {details['notified_at']}"
+            f"\n\n> 2027년 금액은 이미 결정·고시되었으며, 2027년 1월 1일부터 시행됩니다."
+        )
+
+    return (
+        f"## {year}년 최저임금\n\n"
+        f"| 구분 | 금액 |\n|------|------|\n"
+        f"| 시간급 | **{hourly:,}원** |\n"
+        f"| 일급 (8시간) | {details['daily']:,}원 |\n"
+        f"| 월 환산액 (209시간) | {details['monthly']:,}원 |\n"
+        f"| 전년 대비 인상 | {details['increase']} |\n\n"
+        f"- **적용 기간**: {year}년 1월 1일 ~ {year}년 12월 31일"
+        f"{decision_note}\n\n"
+        f"출처: [최저임금위원회 연도별 최저임금 결정현황]({_MIN_WAGE_OFFICIAL_URL})"
+    )
 
 
 def try_min_wage_check(text: str) -> Optional[str]:
@@ -983,7 +1046,8 @@ def try_min_wage_check(text: str) -> Optional[str]:
         f"| 연도 | 최저시급 | 월환산(209h) |\n|------|---------|-------------|\n"
         f"| 2024년 | 9,860원 | 2,060,740원 |\n"
         f"| 2025년 | 10,030원 | 2,096,270원 |\n"
-        f"| 2026년 | 10,320원 | 2,156,880원 |"
+        f"| 2026년 | 10,320원 | 2,156,880원 |\n"
+        f"| 2027년 | 10,700원 | 2,236,300원 |"
     )
 
 
@@ -1051,7 +1115,7 @@ _CALC_GROUPS = [
     ("급여 실수령액",   [try_salary_calc]),
     ("연장·야간·휴일 수당", [try_overtime_calc]),
     ("주휴수당",        [try_weekly_holiday_calc]),
-    ("최저임금",        [try_min_wage_check]),
+    ("최저임금",        [try_min_wage_check, try_min_wage_info]),
     ("4대보험",         [try_insurance_calc]),
 ]
 

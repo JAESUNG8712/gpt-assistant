@@ -2,6 +2,7 @@ from ddgs import DDGS
 from memory import store_memory
 from datetime import datetime
 from urllib.parse import urlparse
+import re
 
 
 def _domain(url: str) -> str:
@@ -12,16 +13,50 @@ def _domain(url: str) -> str:
         return url[:40]
 
 
+_SEARCH_STOPWORDS = {
+    "알려줘", "알려", "무엇", "뭐야", "얼마", "대한", "관련", "검색",
+    "최신", "정보", "해주세요", "해줘", "인가요", "그리고", "또는",
+}
+
+
+def _query_terms(query: str) -> list[str]:
+    terms = re.findall(r"[가-힣A-Za-z]{2,}|\d{2,4}년?", query.lower())
+    return [term for term in terms if term not in _SEARCH_STOPWORDS]
+
+
+def _result_relevance(query: str, result: dict) -> tuple[int, bool]:
+    """질문과 무관한 검색 스니펫은 참고자료와 학습 대상에서 제외한다."""
+    url = result.get("href") or result.get("url") or ""
+    haystack = f"{result.get('title', '')} {result.get('body', '')} {url}".lower()
+    compact = re.sub(r"\s+", "", haystack)
+    terms = _query_terms(query)
+    matches = sum(1 for term in terms if re.sub(r"\s+", "", term) in compact)
+
+    wage_query = "최저임금" in query or "최저시급" in query
+    if wage_query and not ("최저임금" in compact or "최저시급" in compact):
+        return 0, False
+    if terms and matches == 0:
+        return 0, False
+
+    domain = _domain(url).lower()
+    official_bonus = 4 if domain.endswith(".go.kr") else 0
+    return matches * 2 + official_bonus, True
+
+
 def web_search(query: str, max_results: int = 5) -> list[dict]:
-    results = []
+    ranked = []
     with DDGS() as ddgs:
-        for r in ddgs.text(query, max_results=max_results):
-            results.append({
+        for position, r in enumerate(ddgs.text(query, max_results=max(10, max_results * 3))):
+            score, relevant = _result_relevance(query, r)
+            if not relevant:
+                continue
+            ranked.append((score, -position, {
                 "title": r.get("title", ""),
                 "body":  r.get("body", ""),
                 "url":   r.get("href", ""),
-            })
-    return results
+            }))
+    ranked.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    return [item[2] for item in ranked[:max_results]]
 
 def search_and_learn(query: str, max_results: int = 5, persona_id: str = "hr") -> list[dict]:
     results = web_search(query, max_results)

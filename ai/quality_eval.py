@@ -11,7 +11,13 @@ DEFAULT_CASES = [
     {"name": "FastAPI 스트리밍", "persona": "dev", "query": "FastAPI 스트리밍 응답", "expected_any": ["stream", "스트리밍"]},
     {"name": "여행자보험", "persona": "travel", "query": "해외여행 보험 가입", "expected_any": ["보험"]},
     {"name": "자기소개서", "persona": "resume", "query": "자기소개서 작성 방법", "expected_any": ["자기소개서"]},
-    {"name": "최저임금", "persona": "hr", "query": "최저임금 위반 신고", "expected_any": ["최저임금"]},
+    {
+        "name": "2027년 최저임금",
+        "persona": "hr",
+        "query": "27년 최저임금 알려줘",
+        "expected_any": ["10,700", "10700"],
+        "forbidden_any": ["발표되지 않았", "확인되지 않"],
+    },
 ]
 
 
