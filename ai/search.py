@@ -206,7 +206,8 @@ def _extract_numeric_claims(query: str, result: dict) -> list[dict]:
     claims, seen = [], set()
     value_pattern = re.compile(
         r"(?<![\d.-])(\d{1,3}(?:,\d{3})+|\d+(?:\.\d+)?)\s*"
-        r"(원|%|퍼센트|명|건|일|개월|시간|달러|단계|세)(?![가-힣A-Za-z])"
+        r"(원|%|퍼센트|명|건|일|개월|시간|달러|단계|세)"
+        r"(?=$|[\s.,;:!?)}\]]|은|는|이|가|을|를|의|로|에서|부터|까지|이며|이고|입니다|이다|정도)"
     )
     for match in value_pattern.finditer(text):
         start, end = max(0, match.start() - 45), min(len(text), match.end() + 20)
