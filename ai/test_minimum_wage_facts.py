@@ -66,8 +66,9 @@ def main():
     finally:
         search.DDGS = original_ddgs
 
-    assert len(results) == 2
+    assert len(results) == 1
     assert results[0]["url"].startswith("https://www.minimumwage.go.kr/")
+    assert results[0]["source_label"] == "공식"
     assert all("JobKoreaUSA" not in result["title"] for result in results)
     assert all("Korean phrases" not in result["title"] for result in results)
 

@@ -1,0 +1,33 @@
+name: 웹검색 출처 품질 회귀 테스트
+
+on:
+  push:
+    branches: [claude/account-pinned-agents-v6W7p]
+    paths:
+      - "ai/search.py"
+      - "ai/calculator.py"
+      - "ai/test_minimum_wage_facts.py"
+      - "ai/test_search_source_policy.py"
+      - ".github/workflows/web_search_quality.yml"
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: ai/requirements.txt
+      - name: 최소 테스트 의존성 설치
+        run: python -m pip install ddgs
+      - name: 최저임금·검색 출처 정책 검증
+        working-directory: ai
+        env:
+          DB_PATH: ${{ runner.temp }}/search-quality.db
+        run: |
+          python test_minimum_wage_facts.py
+          python test_search_source_policy.py

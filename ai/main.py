@@ -466,6 +466,9 @@ def _format_reference_links(items: list, max_items: int = 5) -> str:
             except Exception:
                 domain = url[:40]
             title = domain
+        source_label = str(it.get("source_label") or "").strip()
+        if source_label:
+            title = f"{source_label} · {title}"
         links.append(f"- [{title}]({url})")
         if len(links) >= max_items:
             break
@@ -1117,7 +1120,11 @@ async def chat(req: ChatRequest, request: Request):
                     auto_search_results = _gather_results[0] if not isinstance(_gather_results[0], Exception) else []
                     auto_search_ctx = srch.format_search_context(auto_search_results)
                     for r in auto_search_results:
-                        reference_items.append({"title": r.get("title", ""), "url": r.get("url", "")})
+                        reference_items.append({
+                            "title": r.get("title", ""),
+                            "url": r.get("url", ""),
+                            "source_label": r.get("source_label", ""),
+                        })
 
                     idx = 1
                     if _news_task:
@@ -1163,11 +1170,19 @@ async def chat(req: ChatRequest, request: Request):
                 else:
                     if law_ctx:
                         reference_items.extend(
-                            {"title": r.get("title", ""), "url": r.get("url", "")} for r in law_results
+                            {
+                                "title": r.get("title", ""),
+                                "url": r.get("url", ""),
+                                "source_label": "공식 법령",
+                            } for r in law_results
                         )
                     if search_ctx:
                         reference_items.extend(
-                            {"title": r.get("title", ""), "url": r.get("url", "")} for r in results
+                            {
+                                "title": r.get("title", ""),
+                                "url": r.get("url", ""),
+                                "source_label": r.get("source_label", ""),
+                            } for r in results
                         )
                     raw_ctx = "\n\n".join(filter(None, [law_ctx, rag_ctx, search_ctx]))
                     # 질문 관련성 지시: 무관한 컨텍스트를 LLM이 포함하지 않도록 명시
