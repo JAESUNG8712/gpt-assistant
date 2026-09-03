@@ -27,7 +27,7 @@ def main():
         _result("법률 처벌", "현행 법률 처벌", "javascript:alert(1)"),
         _result("법률 처벌", "현행 법률 처벌", "https://law.go.kr@evil.example/fake"),
     ], 5)
-    assert len(unsafe) == 1 and unsafe[0]["source_label"] == "일반"
+    assert unsafe == []
 
     cross_checked = search._prepare_results("주식 공시", [
         _result("시장 공시", "현재 주식 공시 해설", "https://www.kofia.or.kr/a"),
