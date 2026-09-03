@@ -901,6 +901,7 @@ async def chat(req: ChatRequest, request: Request):
 
     async def generate():
         collected = []
+        validation_results = []  # 답변·학습 품질 게이트에서 공통 사용
         try:
             # ── 경로 STOCK: 주식 분석 파이프라인 실행 ────────
             if run_stock_pipeline:
@@ -1046,7 +1047,6 @@ async def chat(req: ChatRequest, request: Request):
             # ── 경로 B: LLM 보강 (중간 신뢰도 or 법령 실시간) ──
             else:
                 reference_items = []  # 답변 끝에 붙일 참고 자료 링크 ([{title, url}])
-                validation_results = []  # 사용자에게 표시할 웹검색 근거 품질 요약 대상
                 if len(matched_persona_ids) > 1:
                     combo_notice = f"🔎 **{persona['name']} 통합 분석**\n\n"
                     collected.append(combo_notice)
@@ -1246,11 +1246,16 @@ async def chat(req: ChatRequest, request: Request):
             # 미합성 폴백)은 정상 답변이 아니므로 auto_learn에서 제외 — 안 그러면 이 저품질
             # 원본 덤프가 KB에 학습되어 이후 정상 답변을 덮어쓰는 재오염 위험이 있음
             from engine import LOCAL_FALLBACK_MARKER
+            has_search_conflict = bool(
+                validation_results
+                and srch.search_validation(validation_results)["conflicting_claims"]
+            )
             # 이미 KB에서 직접 서빙한 답변과 Python 계산 결과는 새 지식이 아니므로
             # 후보 대기열에 다시 쌓지 않는다. LLM이 새로 합성한 답변만 검토 대상으로 둔다.
             is_new_synthesized_answer = not kb_direct and not direct_calc and not company_kb_only
             if (not is_shared_session and is_new_synthesized_answer
                     and ai_reply_clean.strip() and not stock_mode
+                    and not has_search_conflict
                     and LOCAL_FALLBACK_MARKER not in ai_reply_clean):
                 candidate_source = (
                     "법령실시간" if law_ctx else

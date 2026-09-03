@@ -64,6 +64,34 @@ def main():
     conflicting_validation = search.search_validation(conflicting_numbers)
     assert conflicting_validation["confidence"] == "conflict"
     assert len(conflicting_validation["conflicting_claims"]) == 1
+    conflict_note = search.format_search_validation_note(conflicting_numbers)
+    assert "수치 확정 보류" in conflict_note
+    assert "10,700원" in conflict_note and "10,800원" in conflict_note
+    assert "기억 학습에서도 제외" in conflict_note
+    conflict_context = search.format_search_context(conflicting_numbers)
+    assert "하나를 선택하거나 평균내지 말고 '확정 불가'" in conflict_context
+
+    decimal_equivalence = search._prepare_results("2026년 기준금리", [
+        _result("2026년 기준금리", "기준금리 3.7%", "https://www.bok.or.kr/rate"),
+        _result("2026년 기준금리", "금리 3.70%", "https://www.kdi.re.kr/rate"),
+    ], 5)
+    decimal_validation = search.search_validation(decimal_equivalence)
+    assert len(decimal_validation["corroborated_claims"]) == 1
+    assert decimal_validation["conflicting_claims"] == []
+
+    same_institution = search._prepare_results("2026년 기준금리", [
+        _result("2026년 기준금리", "기준금리 3.5%", "https://www.bok.or.kr/rate"),
+        _result("2026년 기준금리", "기준금리 3.7%", "https://ecos.bok.or.kr/rate"),
+    ], 5)
+    same_institution_validation = search.search_validation(same_institution)
+    assert same_institution_validation["domain_count"] == 1
+    assert same_institution_validation["conflicting_claims"] == []
+
+    trusted_over_blog = search._prepare_results("2026년 주가", [
+        _result("2026년 주가", "주가 70,000원", "https://www.kofia.or.kr/price"),
+        _result("2026년 주가", "주가 99,999원", "https://blog.example.com/price"),
+    ], 5)
+    assert search.search_validation(trusted_over_blog)["conflicting_claims"] == []
 
     different_years = search._prepare_results("연도별 최저임금", [
         _result("2026년 최저임금", "시간급 10,320원", "https://www.minimumwage.go.kr/2026"),
@@ -86,6 +114,8 @@ def main():
         original_web_search = search.web_search
         search.web_search = lambda *_args, **_kwargs: single_blog
         search.search_and_learn("현재 주식 공시")
+        search.web_search = lambda *_args, **_kwargs: conflicting_numbers
+        search.search_and_learn("2027년 최저임금")
     finally:
         search.web_search = original_web_search
         search.store_memory = original_store
