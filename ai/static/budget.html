@@ -502,6 +502,12 @@
       </div>
       <span class="ribbon-group-label">유효성</span>
     </div>
+    <div class="ribbon-group">
+      <div class="ribbon-btns">
+        <button class="rbtn" onclick="openChartDialog()"><span class="rbtn-icon">📊</span><span class="rbtn-text">차트 삽입</span></button>
+      </div>
+      <span class="ribbon-group-label">차트</span>
+    </div>
   </div>
 
   <!-- 수식 패널 -->
@@ -782,6 +788,8 @@ let mergedCells = {};         // {sheetName: {'r_c': {rows,cols}}} 병합 마스
 let conditionalFormats = {};  // {sheetName: [{op,val1,val2,cls,range?}]}
 let dataValidations = {};     // {sheetName: {'r_c': {type,list,min,max}}}
 let cellNotes = {};           // {sheetName: {'r_c': '메모 텍스트'}}
+let charts = {};               // {sheetName: [{id,type,title,r1,c1,r2,c2,x,y,w,h}]} — c1=항목열, c1+1=값열
+let chartDragState = null;
 let autoFilterRow = {};       // {sheetName: rowIndex} 필터 헤더 행
 let filterValues = {};        // {sheetName: {col: Set of allowed values}} null=모두허용
 let hiddenRows = {};          // {sheetName: Set of hidden row indices}
@@ -803,6 +811,7 @@ function snapState() {
     conditionalFormats: JSON.parse(JSON.stringify(conditionalFormats)),
     dataValidations: JSON.parse(JSON.stringify(dataValidations)),
     cellNotes: JSON.parse(JSON.stringify(cellNotes)),
+    charts: JSON.parse(JSON.stringify(charts)),
   };
 }
 function pushUndo() {
@@ -816,6 +825,7 @@ function restoreState(st) {
   mergedCells = st.mergedCells || {}; conditionalFormats = st.conditionalFormats || {};
   dataValidations = st.dataValidations || {};
   cellNotes = st.cellNotes || {};
+  charts = st.charts || {};
   // 선택 위치는 유지 (엑셀처럼 실행취소 후에도 커서가 남아있도록), 범위 밖이면 보정
   editMode = false;
   const g = sheets[activeSheet] || [];
@@ -1034,6 +1044,7 @@ async function load() {
       conditionalFormats = d.conditionalFormats || {};
       dataValidations = d.dataValidations || {};
       cellNotes = d.cellNotes || {};
+      charts = d.charts || {};
     } else {
       const r2 = await tokFetch('/budget/grid');
       if (r2.ok) {
@@ -1206,8 +1217,12 @@ function renameSheet(oldName, tabEl) {
       pushUndo();
       sheets[nw] = sheets[oldName]; delete sheets[oldName];
       if (cellStyles[oldName]) { cellStyles[nw]=cellStyles[oldName]; delete cellStyles[oldName]; }
-      ['mergedCells','conditionalFormats','dataValidations','cellNotes'].forEach(k=>{
-        const o = window[k]; if (o && o[oldName]) { o[nw]=o[oldName]; delete o[oldName]; }
+      // 주의: 이 스크립트는 모듈이 아니라서 최상위 let 변수는 window에 노출되지
+      // 않는다 — 예전엔 window[k]로 찾아 항상 undefined였고 병합/조건부서식/
+      // 유효성검사/메모가 시트 이름 변경 시 실제로는 전혀 이전되지 않던 버그가 있었음.
+      // 실제 변수 참조를 직접 배열에 담아 순회하도록 수정.
+      [mergedCells, conditionalFormats, dataValidations, cellNotes, charts].forEach(o=>{
+        if (o && o[oldName]) { o[nw]=o[oldName]; delete o[oldName]; }
       });
       if (activeSheet===oldName) activeSheet=nw;
       // 모든 시트의 수식에서 옛 시트명 참조를 새 이름으로 갱신
@@ -1446,6 +1461,7 @@ function render() {
     if (td) { td.focus(); placeCursorEnd(td); }
   }
   applyClipAnts(); // 복사/잘라내기 점선 테두리 유지
+  renderCharts();
 }
 
 // ══════════════════════════════════════════
@@ -4131,7 +4147,7 @@ async function save() {
   try {
     const [r1, r2] = await Promise.all([
       tokFetch('/budget/sheets',{method:'POST',headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({sheets,active:activeSheet,styles:cellStyles,colWidths,rowHeights,mergedCells,conditionalFormats,dataValidations,cellNotes})}),
+        body:JSON.stringify({sheets,active:activeSheet,styles:cellStyles,colWidths,rowHeights,mergedCells,conditionalFormats,dataValidations,cellNotes,charts})}),
       tokFetch('/budget/grid',{method:'POST',headers:{'Content-Type':'application/json'},
         body:JSON.stringify({rows:grid()})})
     ]);
@@ -5012,6 +5028,172 @@ function clearDataValidation() {
   const cells = getSelCellCoords();
   cells.forEach(({r,c})=>{ if(dataValidations[activeSheet]) delete dataValidations[activeSheet][sk(r,c)]; });
   markDirty(); render(); setStatus('데이터 유효성 검사 해제');
+}
+
+// ══════════════════════════════════════════
+// 차트 — 선택 범위(첫 열=항목, 둘째 열=값)로 막대/원형 차트를
+// 그리드 위에 떠 있는 상자로 삽입한다(엑셀/구글시트의 삽입>차트와 동일)
+// ══════════════════════════════════════════
+const CHART_COLORS = ['#1565c0','#e53935','#2e7d32','#f57f17','#6a1b9a','#00695c'];
+let pendingChartRange = null;
+
+function openChartDialog() {
+  if (!selectedCell || !selEnd) { setStatus('차트로 만들 항목(1열)·값(2열) 범위를 먼저 드래그로 선택하세요', false); return; }
+  const r1=Math.min(selectedCell.r,selEnd.r), r2=Math.max(selectedCell.r,selEnd.r);
+  const c1=Math.min(selectedCell.c,selEnd.c), c2=Math.max(selectedCell.c,selEnd.c);
+  if (c2-c1 < 1) { setStatus('항목(첫 열)과 값(둘째 열), 최소 2개 열을 선택하세요', false); return; }
+  pendingChartRange = {r1,c1,r2,c2};
+  let d = document.getElementById('chart-dialog');
+  if (!d) {
+    d = document.createElement('div');
+    d.id = 'chart-dialog';
+    d.style.cssText = 'position:fixed;top:80px;left:50%;transform:translateX(-50%);background:var(--surface,#fff);border:1px solid var(--border-bright,#ccc);border-radius:8px;padding:16px 20px;z-index:9999;display:flex;flex-direction:column;gap:10px;min-width:240px;box-shadow:0 4px 16px rgba(0,0,0,0.15)';
+    d.innerHTML = `<b style="font-size:0.9rem">📊 차트 삽입</b>
+      <label style="font-size:0.82rem">제목: <input id="chart-title-input" type="text" style="width:100%;padding:3px 6px;border:1px solid var(--border,#ccc);border-radius:4px;box-sizing:border-box"></label>
+      <div style="display:flex;gap:8px">
+        <button class="btn btn-primary" style="flex:1" onclick="insertChart('bar')">📊 막대</button>
+        <button class="btn btn-primary" style="flex:1" onclick="insertChart('pie')">🥧 원형</button>
+      </div>
+      <button class="btn" onclick="document.getElementById('chart-dialog').style.display='none'">닫기</button>`;
+    document.body.appendChild(d);
+  }
+  document.getElementById('chart-title-input').value = '차트';
+  d.style.display = 'flex';
+}
+
+function insertChart(type) {
+  if (!pendingChartRange) return;
+  const {r1,c1,r2,c2} = pendingChartRange;
+  const title = document.getElementById('chart-title-input')?.value.trim() || '차트';
+  pushUndo();
+  if (!charts[activeSheet]) charts[activeSheet] = [];
+  const id = 'chart_' + Date.now() + '_' + Math.floor(Math.random()*1000);
+  // 새 차트를 항상 같은 위치(60,60)에 놓으면 여러 개 삽입 시 서로 완전히
+  // 겹쳐서(맨 위 것만 보이고 나머지는 드래그로 직접 떼어내야만 보임) 실사용에
+  // 불편하므로, 기존 차트 개수만큼 대각선으로 계단식 오프셋을 준다.
+  const n = charts[activeSheet].length;
+  const cascade = (n % 6) * 24;
+  charts[activeSheet].push({id, type, title, r1, c1, r2, c2, x:60+cascade, y:60+cascade, w:300, h:200});
+  document.getElementById('chart-dialog').style.display = 'none';
+  pendingChartRange = null;
+  markDirty(); renderCharts();
+  setStatus('✅ 차트가 삽입되었습니다 — 제목 표시줄을 드래그해 위치 조정 가능');
+}
+
+function deleteChart(id) {
+  pushUndo();
+  if (charts[activeSheet]) charts[activeSheet] = charts[activeSheet].filter(c => c.id !== id);
+  markDirty(); renderCharts();
+}
+
+function startChartDrag(e, id) {
+  e.preventDefault();
+  const ch = (charts[activeSheet]||[]).find(c => c.id === id);
+  const box = document.getElementById(id);
+  if (!ch || !box) return;
+  const startX = e.clientX, startY = e.clientY;
+  const origX = ch.x, origY = ch.y;
+  chartDragState = { id, startX, startY, origX, origY };
+  const onMove = ev => {
+    if (!chartDragState) return;
+    box.style.left = (chartDragState.origX + ev.clientX - chartDragState.startX) + 'px';
+    box.style.top = (chartDragState.origY + ev.clientY - chartDragState.startY) + 'px';
+  };
+  const onUp = ev => {
+    if (chartDragState) {
+      ch.x = chartDragState.origX + ev.clientX - chartDragState.startX;
+      ch.y = chartDragState.origY + ev.clientY - chartDragState.startY;
+      markDirty();
+    }
+    chartDragState = null;
+    document.removeEventListener('mousemove', onMove);
+    document.removeEventListener('mouseup', onUp);
+  };
+  document.addEventListener('mousemove', onMove);
+  document.addEventListener('mouseup', onUp);
+}
+
+function getChartData(ch) {
+  const g = sheets[activeSheet] || [];
+  const rows = [];
+  for (let r = ch.r1; r <= ch.r2; r++) {
+    const label = String(renderCell((g[r]||[])[ch.c1] ?? '')).trim();
+    const rawVal = renderCell((g[r]||[])[ch.c1+1] ?? '');
+    const num = parseFloat(String(rawVal).replace(/,/g,''));
+    if (!label && (isNaN(num) || num === 0)) continue; // 완전히 빈 행은 건너뜀
+    rows.push({label: label || '(빈 항목)', val: isNaN(num) ? 0 : num});
+  }
+  return rows;
+}
+
+function buildChartSVG(ch) {
+  const data = getChartData(ch);
+  if (!data.length) return '<div style="padding:20px;text-align:center;color:var(--text-dim);font-size:0.76rem">표시할 데이터가 없습니다</div>';
+  const W = 280, H = 160;
+  if (ch.type === 'pie') {
+    const total = data.reduce((s,d)=>s+Math.max(0,d.val),0);
+    if (total <= 0) return '<div style="padding:20px;text-align:center;color:var(--text-dim);font-size:0.76rem">합계가 0입니다</div>';
+    const cx = 65, cy = H/2, rad = 55;
+    let angle = -Math.PI/2, paths = '', legend = '';
+    data.forEach((d,i) => {
+      const frac = Math.max(0,d.val) / total;
+      const next = angle + frac * Math.PI * 2;
+      const color = CHART_COLORS[i % CHART_COLORS.length];
+      if (frac > 0) {
+        const x1 = cx + rad*Math.cos(angle), y1 = cy + rad*Math.sin(angle);
+        const x2 = cx + rad*Math.cos(next), y2 = cy + rad*Math.sin(next);
+        const large = (next-angle) > Math.PI ? 1 : 0;
+        paths += `<path d="M${cx},${cy} L${x1.toFixed(1)},${y1.toFixed(1)} A${rad},${rad} 0 ${large} 1 ${x2.toFixed(1)},${y2.toFixed(1)} Z" fill="${color}" stroke="#fff" stroke-width="1"/>`;
+      }
+      legend += `<div style="display:flex;align-items:center;gap:4px;font-size:0.66rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis"><span style="width:8px;height:8px;background:${color};display:inline-block;border-radius:2px;flex-shrink:0"></span>${escHtml(d.label)} (${(frac*100).toFixed(0)}%)</div>`;
+      angle = next;
+    });
+    return `<div style="display:flex;height:100%;gap:6px;align-items:center">
+      <svg viewBox="0 0 130 ${H}" style="width:130px;height:${H}px;flex-shrink:0">${paths}</svg>
+      <div style="flex:1;min-width:0;overflow-y:auto;max-height:${H}px;display:flex;flex-direction:column;gap:2px">${legend}</div>
+    </div>`;
+  }
+  // 막대 차트
+  const maxVal = Math.max(1, ...data.map(d=>Math.max(0,d.val)));
+  const padL = 4, padB = 24, padT = 8, chartW = W - padL*2, chartH = H - padB - padT;
+  const barGap = 6;
+  const barW = Math.max(4, (chartW - barGap*(data.length-1)) / data.length);
+  let bars = '';
+  data.forEach((d,i) => {
+    const h = Math.max(0, d.val) / maxVal * chartH;
+    const x = padL + i*(barW+barGap);
+    const y = padT + (chartH - h);
+    const color = CHART_COLORS[i % CHART_COLORS.length];
+    const shortLabel = d.label.length > 6 ? d.label.slice(0,5)+'…' : d.label;
+    bars += `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${barW.toFixed(1)}" height="${h.toFixed(1)}" fill="${color}"><title>${escAttr(d.label)}: ${d.val.toLocaleString()}</title></rect>`;
+    bars += `<text x="${(x+barW/2).toFixed(1)}" y="${H-6}" font-size="8" text-anchor="middle" fill="#818a94">${escHtml(shortLabel)}</text>`;
+  });
+  return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:100%">${bars}</svg>`;
+}
+
+function renderCharts() {
+  const wrap = document.getElementById('grid-wrap');
+  if (!wrap) return;
+  wrap.querySelectorAll('.chart-box').forEach(el => el.remove());
+  (charts[activeSheet]||[]).forEach(ch => {
+    const box = document.createElement('div');
+    box.className = 'chart-box';
+    box.id = ch.id;
+    box.style.cssText = `position:absolute;left:${ch.x}px;top:${ch.y}px;width:${ch.w}px;height:${ch.h}px;background:var(--surface,#fff);border:1px solid var(--border-bright,#cdd3dc);border-radius:6px;box-shadow:0 2px 10px rgba(0,0,0,.15);z-index:80;display:flex;flex-direction:column;overflow:hidden;`;
+    const header = document.createElement('div');
+    header.style.cssText = 'display:flex;justify-content:space-between;align-items:center;padding:4px 8px;background:var(--surface2,#f3f5f8);cursor:move;font-size:0.76rem;font-weight:600;flex-shrink:0;';
+    header.innerHTML = `<span class="chart-title" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escHtml(ch.title)}</span><span class="chart-del" style="cursor:pointer;color:var(--text-dim);padding:0 2px" title="차트 삭제">✕</span>`;
+    // 제목 영역을 드래그하면 이동, ✕ 버튼은 드래그를 시작하지 않고 삭제만 수행
+    header.querySelector('.chart-title').addEventListener('mousedown', e => startChartDrag(e, ch.id));
+    const delBtn = header.querySelector('.chart-del');
+    delBtn.addEventListener('mousedown', e => e.stopPropagation());
+    delBtn.addEventListener('click', e => { e.stopPropagation(); deleteChart(ch.id); });
+    const body = document.createElement('div');
+    body.style.cssText = 'flex:1;padding:6px;overflow:hidden;min-height:0;';
+    body.innerHTML = buildChartSVG(ch);
+    box.appendChild(header); box.appendChild(body);
+    wrap.appendChild(box);
+  });
 }
 
 function openCellDropdown(e, r, c) {
