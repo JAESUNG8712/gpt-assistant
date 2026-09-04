@@ -4526,7 +4526,12 @@ function toggleAbsRef() {
 // 유틸
 // ══════════════════════════════════════════
 function escHtml(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
-function escAttr(s){return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;');}
+// 대부분의 호출부는 큰따옴표(") 속성 값 안에만 쓰이지만, openCellDropdown()의
+// onclick="...('${escAttr(v)}')" 처럼 속성 안에 다시 작은따옴표(')로 감싼 JS 문자열
+// 리터럴에 삽입되는 경우가 있다 — v(데이터 유효성 검사 목록 등 사용자가 입력한 셀 값)에
+// 작은따옴표가 있으면 그 JS 문자열을 조기 종료시켜 임의 JS를 주입할 수 있었음(저장형 XSS).
+// 작은따옴표도 함께 이스케이프해 두 문맥 모두에서 안전하게 만든다.
+function escAttr(s){return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');}
 function fmt(n){return Math.round(n).toLocaleString('ko-KR');}
 function setStatus(msg,ok=true){
   const el=document.getElementById('status');
