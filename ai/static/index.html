@@ -358,6 +358,17 @@
     .tip-item:hover { border-color: var(--persona-color); }
     .tip-label { font-size: 0.72rem; color: var(--text-dim); margin-bottom: 2px; }
     .tip-query { font-weight: 500; color: var(--persona-color); }
+    .command-bar {
+      display: flex; gap: 6px; overflow-x: auto; margin-bottom: 8px; padding-bottom: 1px;
+      scrollbar-width: none;
+    }
+    .command-bar::-webkit-scrollbar { display: none; }
+    .command-chip {
+      flex: 0 0 auto; border: 1px solid var(--border); background: var(--surface2);
+      color: var(--text-dim); border-radius: 14px; padding: 4px 10px; font-size: 0.72rem;
+      cursor: pointer; transition: all 0.15s;
+    }
+    .command-chip:hover { border-color: var(--persona-color); color: var(--persona-color); }
 
     /* ── AI 생각 블록 ─────────────── */
     .think-block {
@@ -755,6 +766,12 @@
         </button>
         <span style="font-size:0.75rem;color:var(--text-dim);">PDF · DOCX · TXT 지원</span>
       </div>
+      <div class="command-bar" aria-label="간편 명령">
+        <button class="command-chip" onclick="insertCommand('/검색 ')">🌐 검색</button>
+        <button class="command-chip" onclick="insertCommand('/깊게 ')">🧠 깊게</button>
+        <button class="command-chip" onclick="insertCommand('/간단히 ')">✂️ 간단히</button>
+        <button class="command-chip" onclick="quickAsk('/도움말')">❓ 명령어</button>
+      </div>
       <div class="input-top-row">
         <label class="search-toggle">
           <input type="checkbox" id="use-search">
@@ -762,15 +779,22 @@
         </label>
         <div style="display:flex;gap:6px;align-items:center;">
           <button class="think-mode-btn" id="think-mode-btn" onclick="cycleThinkingMode()" title="AI 생각 모드: 꺼짐">🧠 생각 꺼짐</button>
-          <button class="tips-btn" onclick="toggleTips()">💡 검색 팁</button>
+          <button class="tips-btn" onclick="toggleTips()">💡 명령·검색 팁</button>
         </div>
       </div>
       <div class="search-tips" id="search-tips">
+        <div class="tips-title">⚡ 짧게 명령하기</div>
+        <div class="tips-grid" style="margin-bottom:12px">
+          <div class="tip-item" onclick="useTip('/검색 27년 최저임금')"><div class="tip-label">최신 정보</div><div class="tip-query">/검색 질문</div></div>
+          <div class="tip-item" onclick="useTip('/깊게 /인사 퇴직금 조건')"><div class="tip-label">명령 조합</div><div class="tip-query">/깊게 /인사 질문</div></div>
+          <div class="tip-item" onclick="useTip('/간단히 연차촉진제 설명')"><div class="tip-label">짧은 답변</div><div class="tip-query">/간단히 질문</div></div>
+          <div class="tip-item" onclick="useTip('/도움말')"><div class="tip-label">전체 명령</div><div class="tip-query">/도움말</div></div>
+        </div>
         <div class="tips-title">✅ 정확한 답변을 위한 검색 방법</div>
         <div class="tips-grid" id="tips-grid"></div>
       </div>
       <div class="input-row">
-        <textarea id="msg-input" placeholder="예: 희망퇴직 판례, 야간수당 계산, 연차 며칠..." rows="1"
+        <textarea id="msg-input" placeholder="명령하듯 입력하세요: 검색 27년 최저임금 · /도움말" rows="1"
           onkeydown="handleKey(event)" oninput="autoResize(this)"></textarea>
         <button class="send-btn" id="send-btn" onclick="sendMessage()" title="전송 (Enter)">↑</button>
       </div>
@@ -1259,13 +1283,13 @@
     // placeholder 페르소나별 변경
     const input = document.getElementById('msg-input');
     const placeholders = {
-      auto: '무엇이든 물어보세요 — 내용을 분석해 적합한 전문가가 답변합니다...',
-      hr: '예: 희망퇴직 판례, 야간수당 계산, 연차 며칠...',
-      dev: '예: FastAPI 서버 만드는 법, async 사용법...',
-      travel: '예: 제주도 3박4일 코스, 항공권 싸게 사는 법...',
-      company: '예: 연차 신청 방법, 재택근무 규정...',
-      stock: '예: 삼성전자 분석해줘, 오늘 시황, 저평가 종목...',
-      resume: '예: 이력서 첨삭, 면접 준비 방법...',
+      auto: '명령하듯 입력: 검색 27년 최저임금 · /도움말',
+      hr: '예: /검색 27년 최저임금 · /간단히 연차 설명',
+      dev: '예: /깊게 FastAPI 오류 분석 · /간단히 async 설명',
+      travel: '예: /검색 도쿄 입국 조건 · /자세히 제주 일정',
+      company: '예: /회사 연차 신청 방법 · 재택근무 규정',
+      stock: '예: /검색 삼성전자 주가 · /깊게 오늘 시황',
+      resume: '예: /이력서 면접 준비 · /간단히 연봉 협상',
     };
     if (input) input.placeholder = placeholders[id] || '메시지를 입력하세요...';
 
@@ -1513,9 +1537,10 @@
     }
 
     const useSearch = document.getElementById('use-search').checked;
+    const commandSearch = /^(?:\/|!)?(?:검색|웹검색|search)(?:\s|:|：)/i.test(msg);
     input.value = '';
     autoResize(input);
-    appendMsg('user', msg, false, useSearch);
+    appendMsg('user', msg, false, useSearch || commandSearch);
     isLoading = true;
     document.getElementById('send-btn').disabled = true;
 
@@ -1992,6 +2017,15 @@
     document.getElementById('msg-input').value = msg;
     document.getElementById('use-search').checked = search;
     sendMessage();
+  }
+
+  function insertCommand(command) {
+    const input = document.getElementById('msg-input');
+    const current = input.value.trim();
+    input.value = command + current;
+    autoResize(input);
+    input.focus();
+    input.setSelectionRange(input.value.length, input.value.length);
   }
 
   function toggleTips() {

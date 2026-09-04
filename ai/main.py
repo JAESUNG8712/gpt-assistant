@@ -22,6 +22,7 @@ import backup as bkp
 import law_search as law
 import calculator as calc
 import intent_agent
+import command_router
 import privacy as privacy_guard
 import semantic_memory
 import quality_eval
@@ -639,15 +640,23 @@ def _summarize_stock_report(report: str, targets: list) -> str:
 
 @app.post("/chat")
 async def chat(req: ChatRequest, request: Request):
-    user_msg = req.message.strip()
-    if not user_msg:
+    raw_user_msg = req.message.strip()
+    if not raw_user_msg:
         raise HTTPException(400, "메시지를 입력하세요.")
-    if len(user_msg) > _MAX_CHAT_MESSAGE_LEN:
+    if len(raw_user_msg) > _MAX_CHAT_MESSAGE_LEN:
         raise HTTPException(
             400,
-            f"메시지가 너무 깁니다 (최대 {_MAX_CHAT_MESSAGE_LEN}자, 현재 {len(user_msg)}자). "
+            f"메시지가 너무 깁니다 (최대 {_MAX_CHAT_MESSAGE_LEN}자, 현재 {len(raw_user_msg)}자). "
             "긴 문서는 /learn/document 업로드를 이용해 주세요.",
         )
+
+    # `/검색`, `/깊게`, `/인사` 같은 짧은 명령을 기존 채팅 옵션으로 변환한다.
+    # 명령 해석은 서버에서 수행해 웹 UI 외 API 클라이언트에서도 동일하게 동작한다.
+    command = command_router.parse_command(raw_user_msg)
+    user_msg = command["message"]
+    requested_persona = command["persona"] or req.persona
+    effective_use_search = req.use_search or command["use_search"]
+    direct_command_reply = command["direct_response"]
 
     # 복합어 정규화: "희망 퇴직" → "희망퇴직" 등 띄어쓰기 변형 통일
     search_msg = _normalize_query(user_msg)
@@ -662,7 +671,7 @@ async def chat(req: ChatRequest, request: Request):
         if share["expires_at"] and share["expires_at"] < _datetime.now().isoformat():
             raise HTTPException(403, "만료된 공유 링크입니다.")
         allowed_personas = share["personas"]
-        if req.persona != "auto" and req.persona not in allowed_personas:
+        if requested_persona != "auto" and requested_persona not in allowed_personas:
             raise HTTPException(403, "이 공유 링크에서 사용할 수 없는 전문가입니다.")
         session_scope = _share_session_scope(req.share_token, req.session_id)
     else:
@@ -672,7 +681,7 @@ async def chat(req: ChatRequest, request: Request):
     # "auto"(통합 검색) 선택 시 질문 내용을 분석해 가장 적합한 전문 페르소나(들)로 자동 라우팅.
     # 여러 도메인에 걸친 질문(예: 인사+주식)이면 build_combined_persona로 종합 답변 생성.
     # persona_id는 KB/대화이력 저장 등 단일 키가 필요한 곳에 쓰는 대표(1순위) 도메인.
-    persona_id = req.persona
+    persona_id = requested_persona
     matched_persona_ids = [persona_id]
     if persona_id == "auto":
         matched_persona_ids = classify_personas(search_msg)
@@ -691,25 +700,28 @@ async def chat(req: ChatRequest, request: Request):
         따로 구현되어 있던 중복을 통합."""
         p = build_combined_persona(ids)
         feats = p.get("features", {})
+        command_instruction = command.get("answer_instruction", "")
         return p, feats, feats.get("stock_mode", False), (
             p["system_prompt"]
             + f"\n\n오늘 날짜: {today.strftime('%Y년 %m월 %d일')} ({today.year}년)"
+            + (f"\n\n[사용자 지정 답변 방식] {command_instruction}" if command_instruction else "")
         )
 
     persona, persona_features, stock_mode, system_with_date = _build_persona_context(matched_persona_ids)
 
     # 페르소나에 deep_thinking 설정 시 thinking 모드 자동 활성화 (사용자가 off로 두더라도)
-    effective_thinking_mode = req.thinking_mode
-    if persona_features.get("deep_thinking") and req.thinking_mode == "off":
+    effective_thinking_mode = command["thinking_mode"] or req.thinking_mode
+    if (persona_features.get("deep_thinking") and req.thinking_mode == "off"
+            and not command["thinking_mode"]):
         effective_thinking_mode = "prompt"
 
     # ── 0단계: Python 직접 계산 (날짜·금액 기반 HR 계산 질문) ─
     # LLM / KB 상태에 무관하게 정확한 수치를 계산해 반환
     # (연차·퇴직금·실수령액·연장수당·주휴수당·최저임금·4대보험 등)
-    direct_calc = calc.try_any_calc(user_msg)
+    direct_calc = direct_command_reply or calc.try_any_calc(user_msg)
     # 계산 결과에 사내 취업규칙 보충: KB에 관련 규정이 있으면 본문 표시,
     # 없으면 연차 계산에 한해 일반 안내 문구 (그 외 계산은 취업규칙 무관한 경우가 많아 생략)
-    if direct_calc:
+    if direct_calc and not direct_command_reply:
         _rule_section = _company_rule_supplement(search_msg)
         if _rule_section:
             direct_calc += _rule_section
@@ -754,7 +766,7 @@ async def chat(req: ChatRequest, request: Request):
     # 뚜렷하게 더 높을 때만(0.15 이상 & 현재 점수 초과) 전환해 오탐을 최소화.
     # 공유 링크 방문자에게는 링크 생성 시 명시적으로 company를 허용한 경우에만 전환
     _company_routing_allowed = allowed_personas is None or "company" in allowed_personas
-    if req.persona == "auto" and persona_id != "company" and not stock_mode and _company_routing_allowed:
+    if requested_persona == "auto" and persona_id != "company" and not stock_mode and _company_routing_allowed:
         kb_company = mem.retrieve_best(
             search_msg, n=6, persona_id="company", session_scope=session_scope
         )
@@ -793,14 +805,15 @@ async def chat(req: ChatRequest, request: Request):
     # (company는 사내 문서 전용 정책상 제외, stock은 자체 리포트/뉴스 수집 경로를 이미 사용)
     KB_CONTEXT = 0.10   # LLM 호출 시 컨텍스트 포함 기준 / 자동 웹검색 트리거 기준
     auto_web_search = (
-        not req.use_search
+        not effective_use_search
+        and not direct_calc
         and not stock_mode
         and persona_id != "company"
         and best_score < KB_CONTEXT
     )
     search_ctx = ""
     results = []  # 아래 reference_items 참조 시 항상 정의되어 있어야 함
-    if req.use_search or auto_web_search:
+    if effective_use_search or auto_web_search:
         # 채팅 중 검색 결과 원문은 검증 전 데이터이므로 즉시 장기기억에 쓰지 않는다.
         # 합성 답변만 기억 후보로 보내고, 검색 자체는 스레드에서 실행한다.
         results = await asyncio.get_event_loop().run_in_executor(
@@ -856,7 +869,7 @@ async def chat(req: ChatRequest, request: Request):
     no_local    = (best_score < KB_CONTEXT) and not has_law_rt and not direct_calc and not bool(search_ctx)
 
     if direct_calc:
-        retrieval_route = "direct_calculation"
+        retrieval_route = "command_response" if direct_command_reply else "direct_calculation"
     elif run_stock_pipeline or run_lowprice_screen or run_broker_report:
         retrieval_route = "stock_pipeline"
     elif kb_direct:
