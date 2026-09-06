@@ -792,7 +792,9 @@ let charts = {};               // {sheetName: [{id,type,title,r1,c1,r2,c2,x,y,w,
 let chartDragState = null;
 let autoFilterRow = {};       // {sheetName: rowIndex} 필터 헤더 행
 let filterValues = {};        // {sheetName: {col: Set of allowed values}} null=모두허용
-let hiddenRows = {};          // {sheetName: Set of hidden row indices}
+let hiddenRows = {};          // {sheetName: Set of hidden row indices} (자동 필터로 숨겨진 행)
+let manualHiddenRows = {};    // {sheetName: Set of row indices} (사용자가 직접 "행 숨기기"한 행)
+let manualHiddenCols = {};    // {sheetName: Set of col indices} (사용자가 직접 "열 숨기기"한 열)
 let showFormulas = false;
 let showGridlines = true;
 
@@ -812,6 +814,8 @@ function snapState() {
     dataValidations: JSON.parse(JSON.stringify(dataValidations)),
     cellNotes: JSON.parse(JSON.stringify(cellNotes)),
     charts: JSON.parse(JSON.stringify(charts)),
+    manualHiddenRows: Object.fromEntries(Object.entries(manualHiddenRows).map(([k,v])=>[k,[...v]])),
+    manualHiddenCols: Object.fromEntries(Object.entries(manualHiddenCols).map(([k,v])=>[k,[...v]])),
   };
 }
 function pushUndo() {
@@ -826,6 +830,8 @@ function restoreState(st) {
   dataValidations = st.dataValidations || {};
   cellNotes = st.cellNotes || {};
   charts = st.charts || {};
+  manualHiddenRows = Object.fromEntries(Object.entries(st.manualHiddenRows || {}).map(([k,v])=>[k,new Set(v)]));
+  manualHiddenCols = Object.fromEntries(Object.entries(st.manualHiddenCols || {}).map(([k,v])=>[k,new Set(v)]));
   // 선택 위치는 유지 (엑셀처럼 실행취소 후에도 커서가 남아있도록), 범위 밖이면 보정
   editMode = false;
   const g = sheets[activeSheet] || [];
@@ -1045,6 +1051,8 @@ async function load() {
       dataValidations = d.dataValidations || {};
       cellNotes = d.cellNotes || {};
       charts = d.charts || {};
+      manualHiddenRows = Object.fromEntries(Object.entries(d.manualHiddenRows || {}).map(([k,v])=>[k,new Set(v)]));
+      manualHiddenCols = Object.fromEntries(Object.entries(d.manualHiddenCols || {}).map(([k,v])=>[k,new Set(v)]));
     } else {
       const r2 = await tokFetch('/budget/grid');
       if (r2.ok) {
@@ -1221,7 +1229,7 @@ function renameSheet(oldName, tabEl) {
       // 않는다 — 예전엔 window[k]로 찾아 항상 undefined였고 병합/조건부서식/
       // 유효성검사/메모가 시트 이름 변경 시 실제로는 전혀 이전되지 않던 버그가 있었음.
       // 실제 변수 참조를 직접 배열에 담아 순회하도록 수정.
-      [mergedCells, conditionalFormats, dataValidations, cellNotes, charts].forEach(o=>{
+      [mergedCells, conditionalFormats, dataValidations, cellNotes, charts, manualHiddenRows, manualHiddenCols].forEach(o=>{
         if (o && o[oldName]) { o[nw]=o[oldName]; delete o[oldName]; }
       });
       if (activeSheet===oldName) activeSheet=nw;
@@ -1268,13 +1276,15 @@ function render() {
 
   const cfRules = (conditionalFormats[activeSheet] || []);
   const mCells = mergedCells[activeSheet] || {};
-  const hRows = hiddenRows[activeSheet] || new Set();
+  const hRows = new Set([...(hiddenRows[activeSheet] || []), ...(manualHiddenRows[activeSheet] || [])]); // 자동필터+수동 숨김 합산
+  const hCols = manualHiddenCols[activeSheet] || new Set();
   const afRow = autoFilterRow[activeSheet];
   const fVals = filterValues[activeSheet] || {};
 
   // 필터 헤더 행에 자동 필터 화살표 추가
   let html_col_row = `<tr><th class="rh" onclick="selectAll()" title="전체 선택" style="cursor:pointer"></th>`;
   for (let c=0; c<nCols; c++) {
+    if (hCols.has(c)) continue; // 숨겨진 열
     let cls = '';
     if (sortState && sortState.col===c) cls=(sortState.dir==='asc'?' sort-asc':' sort-desc');
     if (selMode==='col' && selCols.has(c)) cls+=' col-selected';
@@ -1292,6 +1302,7 @@ function render() {
     if (r < frozenRows) trStyle = `style="position:sticky;top:${frozenRowTops[r]}px;z-index:2"`;
     html += `<tr ${trStyle}><td class="rh${rhCls}" draggable="true" ondragstart="if(event.shiftKey){event.preventDefault();return;} onRowDragStart(event,${r})" ondragend="clearRowDropIndicator()" ondragover="onRowDragOver(event,${r})" ondrop="onRowDrop(event,${r})" onmousedown="if(formulaRefMode||editMode||crossSheetEdit){event.preventDefault();}else if(event.button===0&&event.shiftKey){beginHdrDragSel('row',${r});}" onmouseover="extendHdrDragSel('row',${r})" onclick="selectRow(${r},event.shiftKey)" oncontextmenu="rowColCtxMenu(event,'row',${r})" title="클릭:행선택 / 드래그:이동 / Shift+드래그:범위선택" style="height:${rowHeights[r]||24}px">${r+1}<span class="row-resize-handle" onmousedown="startRowResize(event,${r})" ondblclick="autoFitRow(event,${r})" title="드래그:높이조정 / 더블클릭:자동맞춤"></span></td>`;
     for (let c=0; c<nCols; c++) {
+      if (hCols.has(c)) continue; // 숨겨진 열
       // 병합 셀 처리
       const msk = sk(r,c);
       if (mCells[msk+'_hidden']) { continue; } // 숨겨진 병합 셀은 생략
@@ -2434,6 +2445,15 @@ function rowColCtxMenu(e, type, idx) {
   const delLabel = selCount > 1
     ? (type==='row' ? `선택한 ${selCount}개 행 삭제` : `선택한 ${selCount}개 열 삭제`)
     : (type==='row' ? '행 삭제' : '열 삭제');
+  const hideLabel = selCount > 1
+    ? (type==='row' ? `선택한 ${selCount}개 행 숨기기` : `선택한 ${selCount}개 열 숨기기`)
+    : (type==='row' ? '행 숨기기' : '열 숨기기');
+  const hasHidden = type==='row'
+    ? (manualHiddenRows[activeSheet] && manualHiddenRows[activeSheet].size > 0)
+    : (manualHiddenCols[activeSheet] && manualHiddenCols[activeSheet].size > 0);
+  const showAllItem = hasHidden
+    ? `<div class="cm-item" onclick="${type==='row'?'showAllHiddenRows()':'showAllHiddenCols()'}">${type==='row'?'숨긴 행 모두 표시':'숨긴 열 모두 표시'}</div>`
+    : '';
 
   const menu = document.createElement('div');
   menu.id = 'rc-ctx-menu';
@@ -2447,12 +2467,18 @@ function rowColCtxMenu(e, type, idx) {
        <div class="cm-item" onclick="promptRowHeight(${idx})">행 높이 조정${sizeLabel}...</div>
        <div class="cm-item" onclick="autoFitRowMenu(${idx})">행 높이 자동 맞춤${sizeLabel}</div>
        <div class="cm-sep"></div>
+       <div class="cm-item" onclick="hideSelectedRows()">${hideLabel}</div>
+       ${showAllItem}
+       <div class="cm-sep"></div>
        <div class="cm-item cm-del" onclick="delSelectedRows()">${delLabel}</div>`
     : `<div class="cm-item" onclick="insertColAt(${idx},'left')">왼쪽에 열 삽입</div>
        <div class="cm-item" onclick="insertColAt(${idx},'right')">오른쪽에 열 삽입</div>
        <div class="cm-sep"></div>
        <div class="cm-item" onclick="promptColWidth(${idx})">열 너비 조정${sizeLabel}...</div>
        <div class="cm-item" onclick="autoFitColMenu(${idx})">열 너비 자동 맞춤${sizeLabel}</div>
+       <div class="cm-sep"></div>
+       <div class="cm-item" onclick="hideSelectedCols()">${hideLabel}</div>
+       ${showAllItem}
        <div class="cm-sep"></div>
        <div class="cm-item cm-del" onclick="delSelectedCols()">${delLabel}</div>`;
 
@@ -2577,6 +2603,44 @@ function delSelectedCols() {
 // 하위 호환 (단일 삭제)
 function delRowAt(r) { selRows = new Set([r]); delSelectedRows(); }
 function delColAt(c) { selCols = new Set([c]); delSelectedCols(); }
+
+// ══════════════════════════════════════════
+// 행/열 숨기기 (엑셀/구글시트 — 삭제와 달리 데이터·서식·수식 참조는 그대로 두고
+// 화면과 인쇄에서만 감춘다. 자동 필터로 숨겨지는 행(hiddenRows)과는 별개 상태라
+// 필터를 해제해도 수동으로 숨긴 행은 그대로 유지된다.)
+// ══════════════════════════════════════════
+function hideSelectedRows() {
+  const old = document.getElementById('rc-ctx-menu'); if (old) old.remove();
+  if (!selRows.size) return;
+  pushUndo();
+  if (!manualHiddenRows[activeSheet]) manualHiddenRows[activeSheet] = new Set();
+  selRows.forEach(r => manualHiddenRows[activeSheet].add(r));
+  clearRowColSel(); selectedCell = null; selEnd = null;
+  render(); markDirty(); setStatus('✅ 행 숨김');
+}
+function hideSelectedCols() {
+  const old = document.getElementById('rc-ctx-menu'); if (old) old.remove();
+  if (!selCols.size) return;
+  pushUndo();
+  if (!manualHiddenCols[activeSheet]) manualHiddenCols[activeSheet] = new Set();
+  selCols.forEach(c => manualHiddenCols[activeSheet].add(c));
+  clearRowColSel(); selectedCell = null; selEnd = null;
+  render(); markDirty(); setStatus('✅ 열 숨김');
+}
+function showAllHiddenRows() {
+  const old = document.getElementById('rc-ctx-menu'); if (old) old.remove();
+  if (!manualHiddenRows[activeSheet] || !manualHiddenRows[activeSheet].size) return;
+  pushUndo();
+  manualHiddenRows[activeSheet] = new Set();
+  render(); markDirty(); setStatus('✅ 숨긴 행 모두 표시됨');
+}
+function showAllHiddenCols() {
+  const old = document.getElementById('rc-ctx-menu'); if (old) old.remove();
+  if (!manualHiddenCols[activeSheet] || !manualHiddenCols[activeSheet].size) return;
+  pushUndo();
+  manualHiddenCols[activeSheet] = new Set();
+  render(); markDirty(); setStatus('✅ 숨긴 열 모두 표시됨');
+}
 
 function insertRowAt(r, pos) {
   const old = document.getElementById('rc-ctx-menu'); if (old) old.remove();
@@ -3277,6 +3341,11 @@ function shiftRowState(sheetName, fromIndex, delta) {
     const nr = mapFn(autoFilterRow[sheetName]);
     if (nr == null) delete autoFilterRow[sheetName]; else autoFilterRow[sheetName] = nr;
   }
+  if (manualHiddenRows[sheetName]) {
+    const ns = new Set();
+    manualHiddenRows[sheetName].forEach(r => { const nr = mapFn(r); if (nr != null) ns.add(nr); });
+    manualHiddenRows[sheetName] = ns;
+  }
   remapChartRange(sheetName, mapFn, 'row');
   shiftFormulaRowRefs(sheetName, fromIndex, delta);
 }
@@ -3296,6 +3365,11 @@ function shiftColState(sheetName, fromIndex, delta) {
       const nc = mapFn(+k); if (nc != null) nv[nc] = filterValues[sheetName][k];
     });
     filterValues[sheetName] = nv;
+  }
+  if (manualHiddenCols[sheetName]) {
+    const ns = new Set();
+    manualHiddenCols[sheetName].forEach(c => { const nc = mapFn(c); if (nc != null) ns.add(nc); });
+    manualHiddenCols[sheetName] = ns;
   }
   remapChartRange(sheetName, mapFn, 'col');
   shiftFormulaColRefs(sheetName, fromIndex, delta);
@@ -3380,6 +3454,9 @@ function moveRowState(sheetName, from, to) {
     const ns = new Set(); hiddenRows[sheetName].forEach(r => ns.add(mapFn(r))); hiddenRows[sheetName] = ns;
   }
   if (autoFilterRow[sheetName] !== undefined) autoFilterRow[sheetName] = mapFn(autoFilterRow[sheetName]);
+  if (manualHiddenRows[sheetName]) {
+    const ns = new Set(); manualHiddenRows[sheetName].forEach(r => ns.add(mapFn(r))); manualHiddenRows[sheetName] = ns;
+  }
   remapChartRange(sheetName, mapFn, 'row');
   remapFormulaRowRefs(sheetName, mapFn);
 }
@@ -3394,6 +3471,9 @@ function moveColState(sheetName, from, to) {
   if (filterValues[sheetName]) {
     const nv = {}; Object.keys(filterValues[sheetName]).forEach(k => { nv[mapFn(+k)] = filterValues[sheetName][k]; });
     filterValues[sheetName] = nv;
+  }
+  if (manualHiddenCols[sheetName]) {
+    const ns = new Set(); manualHiddenCols[sheetName].forEach(c => ns.add(mapFn(c))); manualHiddenCols[sheetName] = ns;
   }
   remapChartRange(sheetName, mapFn, 'col');
   remapFormulaColRefs(sheetName, mapFn);
@@ -4166,7 +4246,9 @@ async function save() {
   try {
     const [r1, r2] = await Promise.all([
       tokFetch('/budget/sheets',{method:'POST',headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({sheets,active:activeSheet,styles:cellStyles,colWidths,rowHeights,mergedCells,conditionalFormats,dataValidations,cellNotes,charts})}),
+        body:JSON.stringify({sheets,active:activeSheet,styles:cellStyles,colWidths,rowHeights,mergedCells,conditionalFormats,dataValidations,cellNotes,charts,
+          manualHiddenRows:Object.fromEntries(Object.entries(manualHiddenRows).map(([k,v])=>[k,[...v]])),
+          manualHiddenCols:Object.fromEntries(Object.entries(manualHiddenCols).map(([k,v])=>[k,[...v]]))})}),
       tokFetch('/budget/grid',{method:'POST',headers:{'Content-Type':'application/json'},
         body:JSON.stringify({rows:grid()})})
     ]);
@@ -4966,16 +5048,23 @@ function printSheet() {
   let mr = 0, mc = 0;
   for (let r = 0; r < g.length; r++) for (let c = 0; c < (g[r]||[]).length; c++)
     if (String(g[r][c] ?? '').trim() !== '') { mr = Math.max(mr, r); mc = Math.max(mc, c); }
+  // 숨긴 행/열은 #sheet DOM에 아예 렌더링되지 않으므로(자리만 차지하는 게 아니라
+  // 완전히 생략됨), nth-child 위치를 계산할 땐 원본 행/열 인덱스가 아니라
+  // 사용범위 안에서 실제로 화면에 그려지는(숨겨지지 않은) 개수를 세어야 한다.
+  const hRows = new Set([...(hiddenRows[activeSheet] || []), ...(manualHiddenRows[activeSheet] || [])]);
+  const hCols = manualHiddenCols[activeSheet] || new Set();
+  let visRows = 0; for (let r=0; r<=mr; r++) if (!hRows.has(r)) visRows++;
+  let visCols = 0; for (let c=0; c<=mc; c++) if (!hCols.has(c)) visCols++;
   let styleEl = document.getElementById('print-range-style');
   if (!styleEl) {
     styleEl = document.createElement('style');
     styleEl.id = 'print-range-style';
     document.head.appendChild(styleEl);
   }
-  // tr/th/td의 1번째 자식은 행번호/전체선택 칸이므로 열 c는 (c+2)번째 자식
+  // tr/th/td의 1번째 자식은 행번호/전체선택 칸이므로 (숨김 제외 후) 화면상 n번째 열은 (n+2)번째 자식
   styleEl.textContent = `@media print {
-    #sheet tr:nth-child(n+${mr+3}) { display:none; }
-    #sheet tr th:nth-child(n+${mc+3}), #sheet tr td:nth-child(n+${mc+3}) { display:none; }
+    #sheet tr:nth-child(n+${visRows+2}) { display:none; }
+    #sheet tr th:nth-child(n+${visCols+2}), #sheet tr td:nth-child(n+${visCols+2}) { display:none; }
   }`;
   window.print();
 }
