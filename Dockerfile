@@ -23,4 +23,10 @@ COPY . .
 
 ENV NODE_ENV=production
 EXPOSE 3000
+# Render는 render.yaml의 healthCheckPath(/readyz)로 자체 배포 승격을 판단해 이
+# HEALTHCHECK를 쓰지 않지만, 이 이미지를 docker-compose/ECS/k8s 등 다른 오케스트레이터로
+# 직접 띄우는 경우를 위한 표준 컨테이너 헬스체크다. curl/wget을 추가로 설치하지 않고
+# 이미 존재하는 Node로 /readyz(저장소 접근 가능 여부까지 확인)를 호출한다.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+  CMD node -e "const p=process.env.PORT||3000;require('http').get('http://127.0.0.1:'+p+'/readyz',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"
 CMD ["node", "server.js"]
