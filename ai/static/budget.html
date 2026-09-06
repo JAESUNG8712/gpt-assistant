@@ -47,9 +47,10 @@
   }
   .cell-ref-box {
     font-size:0.8rem; font-weight:700; color:var(--accent);
-    min-width:52px; text-align:center; border:1px solid var(--border);
-    border-radius:4px; padding:2px 5px; background:var(--surface2);
+    width:76px; box-sizing:border-box; text-align:center; border:1px solid var(--border);
+    border-radius:4px; padding:2px 5px; background:var(--surface2); font-family:inherit;
   }
+  .cell-ref-box:focus { outline:none; border-color:var(--accent); background:#fff; }
   .fx-label { font-size:0.75rem; color:var(--text-dim); font-style:italic; }
   #formula-input {
     flex:1; border:1px solid var(--border); border-radius:4px; padding:2px 8px;
@@ -585,7 +586,8 @@
 
 <!-- 수식 입력줄 -->
 <div class="formula-bar">
-  <span class="cell-ref-box" id="cell-ref">-</span>
+  <input type="text" class="cell-ref-box" id="cell-ref" value="-" title="이름 상자 — 셀 주소를 입력하고 Enter로 이동 (예: B10, A1:C5, Sheet2!A1)"
+    onkeydown="nameBoxKeydown(event)" onfocus="this.select()" onblur="updateFormulaBarRange()">
   <span class="fx-label">fx</span>
   <input type="text" id="formula-input" placeholder="셀 클릭 후 수식 입력 (예: =SUM(A1:A5))"
     onkeydown="fbarKeydown(event)" onblur="fbarBlur()" oninput="onFormulaBarInput()"
@@ -1523,9 +1525,9 @@ function highlightSel() {
 function updateFormulaBarRange() {
   const refEl = document.getElementById('cell-ref');
   const fi = document.getElementById('formula-input');
-  if (!selectedCell) { refEl.textContent='-'; fi.value=''; return; }
+  if (!selectedCell) { refEl.value='-'; fi.value=''; return; }
   if (selEnd && (selEnd.r!==selectedCell.r||selEnd.c!==selectedCell.c)) {
-    refEl.textContent = `${cellAddr(selectedCell.r,selectedCell.c)}:${cellAddr(selEnd.r,selEnd.c)}`;
+    refEl.value = `${cellAddr(selectedCell.r,selectedCell.c)}:${cellAddr(selEnd.r,selEnd.c)}`;
     fi.value = '';
   } else {
     updateFormulaBar();
@@ -1625,10 +1627,72 @@ function autoCloseParens(v) {
 function updateFormulaBar() {
   const refEl = document.getElementById('cell-ref');
   const fi = document.getElementById('formula-input');
-  if (!selectedCell) { refEl.textContent='-'; fi.value=''; return; }
+  if (!selectedCell) { refEl.value='-'; fi.value=''; return; }
   const {r,c} = selectedCell;
-  refEl.textContent = cellAddr(r,c);
+  refEl.value = cellAddr(r,c);
   fi.value = (grid()[r]&&grid()[r][c]!=null) ? grid()[r][c] : '';
+}
+
+// ══════════════════════════════════════════
+// 이름 상자(Name Box) — 셀 주소를 입력하고 Enter로 즉시 이동 (엑셀/구글시트의 "이동" 기능)
+// ══════════════════════════════════════════
+function goToRef(raw) {
+  const text = (raw||'').trim();
+  if (!text) return false;
+  let sheetName = activeSheet, body = text;
+  const sheetMatch = /^(?:'([^']*)'|([A-Za-z_\uAC00-\uD7A3][A-Za-z0-9_\uAC00-\uD7A3]*))!(.+)$/.exec(text);
+  if (sheetMatch) {
+    const nm = sheetMatch[1] || sheetMatch[2];
+    if (!sheets[nm]) return false; // 존재하지 않는 시트 지정
+    sheetName = nm; body = sheetMatch[3];
+  }
+  if (!body) return false;
+  const parts = body.split(':');
+  if (parts.length > 2 || !parts[0]) return false;
+  const p1 = parseRangeCorner(parts[0]);
+  if (!p1 || p1.col == null || p1.row == null) return false; // 행/열 전체 참조(5:5, A:A)는 이동 대상 제외 — 완전한 셀 주소만 허용
+  let p2 = p1;
+  if (parts.length === 2) {
+    if (!parts[1]) return false;
+    p2 = parseRangeCorner(parts[1]);
+    if (!p2 || p2.col == null || p2.row == null) return false;
+  }
+  if (editMode) commitEdit();
+  // 대상 셀/범위가 현재 시트 크기를 벗어나면 다른 그리드 조작(setCell 등)과 동일한 방식으로 안전하게 확장
+  const g = sheets[sheetName];
+  const maxRow = Math.max(p1.row, p2.row), maxCol = Math.max(p1.col, p2.col);
+  while (g.length <= maxRow) g.push([]);
+  const mc = Math.max(MIN_COLS, maxCol+1, ...g.map(row=>row.length));
+  g.forEach(row => { while (row.length < mc) row.push(''); });
+  const switching = sheetName !== activeSheet;
+  switchSheet(sheetName); // 이미 같은 시트면 내부에서 아무 것도 하지 않음(아래에서 직접 재렌더)
+  if (!switching) render();
+  if (p1.row === p2.row && p1.col === p2.col) {
+    selectCell(p1.row, p1.col);
+  } else {
+    selectedCell = { r: p1.row, c: p1.col };
+    selEnd = { r: p2.row, c: p2.col };
+    highlightSel(); updateFormulaBarRange();
+    const td = getCellEl(p1.row, p1.col);
+    if (td) td.scrollIntoView({block:'nearest', inline:'nearest'});
+  }
+  return true;
+}
+
+function nameBoxKeydown(e) {
+  // goToRef()가 성공 시 selectCell() 등으로 포커스를 grid 쪽으로 옮겨버려서,
+  // 이 이벤트가 document 레벨 전역 핸들러까지 버블링되면 activeElement 가드가
+  // (이미 포커스가 옮겨간 뒤라) 무력화되어 같은 Enter가 그리드 이동으로 한 번 더
+  // 처리되는 문제가 있었음 — stopPropagation으로 애초에 버블링을 막아 근본 차단.
+  e.stopPropagation();
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    if (goToRef(e.target.value)) { e.target.blur(); }
+    else setStatus('❌ 이동할 수 없습니다 — 올바른 셀 주소를 입력하세요 (예: B10, A1:C5, Sheet2!A1)', false);
+  } else if (e.key === 'Escape') {
+    e.preventDefault();
+    e.target.blur();
+  }
 }
 
 // ── 크로스시트 배너 ──
@@ -2087,6 +2151,8 @@ document.addEventListener('keydown', e => {
   if (document.querySelector('.modal-overlay.open')) return;
   // 수식 입력줄 포커스 중이면 무시
   if (document.activeElement===document.getElementById('formula-input')) return;
+  // 이름 상자(주소 이동) 입력 중이면 무시 — 자체 onkeydown(nameBoxKeydown)이 Enter/Escape만 처리
+  if (document.activeElement===document.getElementById('cell-ref')) return;
   // 찾기/바꾸기 패널 입력 중이면 무시 (닫기 Esc만 별도 처리)
   if (document.getElementById('fr-panel')?.contains(document.activeElement)) {
     if (e.key === 'Escape') { e.preventDefault(); closeFindReplace(); }
@@ -2135,6 +2201,7 @@ document.addEventListener('keydown', e => {
   if ((e.ctrlKey||e.metaKey) && e.key==='y') { e.preventDefault(); redo(); return; }
   if ((e.ctrlKey||e.metaKey) && e.key==='s') { e.preventDefault(); save(); return; }
   if ((e.ctrlKey||e.metaKey) && (e.key==='f'||e.key==='h')) { e.preventDefault(); openFindReplace(); return; }
+  if ((e.ctrlKey||e.metaKey) && e.key==='g') { e.preventDefault(); const cb=document.getElementById('cell-ref'); if (cb) { cb.focus(); cb.select(); } return; }
   if ((e.ctrlKey||e.metaKey) && e.shiftKey && e.key.toLowerCase()==='v') { e.preventDefault(); pasteValuesOnly(); return; }
 
   if (!selectedCell) {
