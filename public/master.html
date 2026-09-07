@@ -291,10 +291,8 @@ let _features = [];
 let _catalog = null; // GET /master/feature-catalog 응답(고정 모듈 목록) — 세션 중 1회만 불러와 캐시
 
 // ── 공통 요청 헬퍼 ──────────────────────────────────────────────
-// 이 worktree에는 아직 서버 쪽 /master/* 라우트가 존재하지 않아(병행 세션이
-// 별도로 구현 중), 실제로 호출하면 Express 기본 404(HTML 페이지)가 온다.
-// res.json()이 그 HTML을 파싱하려다 던지는 예외를 여기서 흡수해, 화면에는
-// 항상 사람이 읽을 수 있는 오류 메시지만 보이도록 한다(크래시 없음).
+// 네트워크 오류·타임아웃·예상치 못한 비JSON 응답을 한 곳에서 정규화해 화면에는
+// 항상 사람이 읽을 수 있는 오류 메시지만 보이도록 한다.
 async function masterRequest(method, url, body){
   const controller = new AbortController();
   const tid = setTimeout(()=>controller.abort(), 10000);
@@ -311,11 +309,11 @@ async function masterRequest(method, url, body){
     const res = await fetch(url, opts);
     clearTimeout(tid);
     let json = null;
-    try { json = await res.json(); } catch(e) { /* JSON 아님 (예: 미배포 라우트의 HTML 404) */ }
+    try { json = await res.json(); } catch(e) { /* 프록시 오류 페이지 등 비JSON 응답 */ }
     if(!json){
       return {
         ok: false,
-        message: `서버 응답을 해석할 수 없습니다 (HTTP ${res.status}). 이 API가 아직 배포되지 않았을 수 있습니다.`,
+        message: `서버 응답을 해석할 수 없습니다 (HTTP ${res.status}). 잠시 후 다시 시도해주세요.`,
         _httpStatus: res.status
       };
     }

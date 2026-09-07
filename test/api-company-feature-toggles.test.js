@@ -180,5 +180,36 @@ if (!ADMIN_DATABASE_URL) {
       const accounts = (await list.json()).accounts || [];
       assert.equal(accounts.some(a => a.code === "998"), false, "대소문자 우회로 계정이 실제 DB에 생성됨");
     });
+
+    await t.test("company_features 조회 실패는 전 모듈 활성으로 우회되지 않고 503으로 차단된다", async () => {
+      // 토글 직후 캐시가 무효화된 상태에서 테이블 조회 자체를 실패시킨다. 과거 구현은
+      // 이 예외를 빈 맵(=모든 기능 활성)으로 바꿔, 꺼둔 회계 모듈이 200으로 열렸다.
+      await setFeature(compA.company.id, "acct", false);
+      const chaosDb = new Client({ connectionString: testDbUrl });
+      chaosDb.on("error", () => {});
+      await chaosDb.connect();
+      await chaosDb.query("ALTER TABLE company_features RENAME TO company_features_unavailable");
+      try {
+        const gated = await api("/api/accounting/accounts", { headers: hdrA });
+        assert.equal(gated.status, 503);
+        assert.equal((await gated.json()).code, "FEATURE_STATE_UNAVAILABLE");
+
+        const login = await api("/login", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            companyCode: compA.company.slug,
+            loginId: "admin_a",
+            pw: "TestPassword123",
+          }),
+        });
+        assert.equal(login.status, 503);
+        assert.equal((await login.json()).code, "FEATURE_STATE_UNAVAILABLE");
+      } finally {
+        await chaosDb.query("ALTER TABLE company_features_unavailable RENAME TO company_features");
+        await chaosDb.end();
+        await setFeature(compA.company.id, "acct", true);
+      }
+    });
   });
 }
