@@ -224,6 +224,7 @@ def get_sheets():
             "charts": data.get("charts", {}),
             "manualHiddenRows": data.get("manualHiddenRows", {}),
             "manualHiddenCols": data.get("manualHiddenCols", {}),
+            "rowGroups": data.get("rowGroups", {}),
         }
     # 기존 단일 grid → Sheet1으로 마이그레이션
     grid = data.get("grid") or []
@@ -245,6 +246,7 @@ def save_sheets(payload: dict):
     data["charts"] = payload.get("charts", {})
     data["manualHiddenRows"] = payload.get("manualHiddenRows", {})
     data["manualHiddenCols"] = payload.get("manualHiddenCols", {})
+    data["rowGroups"] = payload.get("rowGroups", {})
     data["sheets_updated_at"] = _now_iso()
     # 하위 호환: 활성 시트를 grid에도 동기
     active = data["active"]

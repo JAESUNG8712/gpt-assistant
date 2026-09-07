@@ -183,6 +183,12 @@
     cursor:row-resize; background:transparent; z-index:10;
   }
   .row-resize-handle:hover { background:rgba(21,101,192,0.3); }
+  .grp-toggle {
+    display:inline-block; width:12px; height:12px; line-height:11px; font-size:0.6rem;
+    border:1px solid var(--border,#cdd3dc); border-radius:2px; background:#fff; color:var(--text-dim);
+    text-align:center; margin-right:2px; cursor:pointer; user-select:none;
+  }
+  .grp-toggle:hover { background:var(--surface2); }
   /* sticky가 absolute 자식(리사이즈 핸들)의 기준이 되므로 relative 불필요 */
 
   /* ── 시트 탭 ── */
@@ -551,6 +557,12 @@
     </div>
     <div class="ribbon-group">
       <div class="ribbon-btns">
+        <button class="rbtn" onclick="groupSelectedRows()"><span class="rbtn-icon">▤+</span><span class="rbtn-text">그룹</span></button>
+      </div>
+      <span class="ribbon-group-label">개요</span>
+    </div>
+    <div class="ribbon-group">
+      <div class="ribbon-btns">
         <button class="rbtn" onclick="openPayroll()" style="color:#1b5e20"><span class="rbtn-icon">📋</span><span class="rbtn-text">급여 자동계산</span></button>
         <button class="rbtn" onclick="openTaxCalc()" style="color:#e65100"><span class="rbtn-icon">🧮</span><span class="rbtn-text">세금·보험</span></button>
         <button class="rbtn" onclick="insertTaxTemplate()" style="color:#6a1b9a"><span class="rbtn-icon">📝</span><span class="rbtn-text">세금 자동삽입</span></button>
@@ -797,6 +809,7 @@ let filterValues = {};        // {sheetName: {col: Set of allowed values}} null=
 let hiddenRows = {};          // {sheetName: Set of hidden row indices} (자동 필터로 숨겨진 행)
 let manualHiddenRows = {};    // {sheetName: Set of row indices} (사용자가 직접 "행 숨기기"한 행)
 let manualHiddenCols = {};    // {sheetName: Set of col indices} (사용자가 직접 "열 숨기기"한 열)
+let rowGroups = {};           // {sheetName: [{r1,r2,collapsed}]} — 엑셀 "그룹/개요" 기능(단일 레벨만 지원)
 let showFormulas = false;
 let showGridlines = true;
 
@@ -818,6 +831,7 @@ function snapState() {
     charts: JSON.parse(JSON.stringify(charts)),
     manualHiddenRows: Object.fromEntries(Object.entries(manualHiddenRows).map(([k,v])=>[k,[...v]])),
     manualHiddenCols: Object.fromEntries(Object.entries(manualHiddenCols).map(([k,v])=>[k,[...v]])),
+    rowGroups: JSON.parse(JSON.stringify(rowGroups)),
   };
 }
 function pushUndo() {
@@ -834,6 +848,7 @@ function restoreState(st) {
   charts = st.charts || {};
   manualHiddenRows = Object.fromEntries(Object.entries(st.manualHiddenRows || {}).map(([k,v])=>[k,new Set(v)]));
   manualHiddenCols = Object.fromEntries(Object.entries(st.manualHiddenCols || {}).map(([k,v])=>[k,new Set(v)]));
+  rowGroups = st.rowGroups || {};
   // 선택 위치는 유지 (엑셀처럼 실행취소 후에도 커서가 남아있도록), 범위 밖이면 보정
   editMode = false;
   const g = sheets[activeSheet] || [];
@@ -1055,6 +1070,7 @@ async function load() {
       charts = d.charts || {};
       manualHiddenRows = Object.fromEntries(Object.entries(d.manualHiddenRows || {}).map(([k,v])=>[k,new Set(v)]));
       manualHiddenCols = Object.fromEntries(Object.entries(d.manualHiddenCols || {}).map(([k,v])=>[k,new Set(v)]));
+      rowGroups = d.rowGroups || {};
     } else {
       const r2 = await tokFetch('/budget/grid');
       if (r2.ok) {
@@ -1231,7 +1247,7 @@ function renameSheet(oldName, tabEl) {
       // 않는다 — 예전엔 window[k]로 찾아 항상 undefined였고 병합/조건부서식/
       // 유효성검사/메모가 시트 이름 변경 시 실제로는 전혀 이전되지 않던 버그가 있었음.
       // 실제 변수 참조를 직접 배열에 담아 순회하도록 수정.
-      [mergedCells, conditionalFormats, dataValidations, cellNotes, charts, manualHiddenRows, manualHiddenCols].forEach(o=>{
+      [mergedCells, conditionalFormats, dataValidations, cellNotes, charts, manualHiddenRows, manualHiddenCols, rowGroups].forEach(o=>{
         if (o && o[oldName]) { o[nw]=o[oldName]; delete o[oldName]; }
       });
       if (activeSheet===oldName) activeSheet=nw;
@@ -1280,6 +1296,7 @@ function render() {
   const mCells = mergedCells[activeSheet] || {};
   const hRows = new Set([...(hiddenRows[activeSheet] || []), ...(manualHiddenRows[activeSheet] || [])]); // 자동필터+수동 숨김 합산
   const hCols = manualHiddenCols[activeSheet] || new Set();
+  const rGroups = rowGroups[activeSheet] || [];
   const afRow = autoFilterRow[activeSheet];
   const fVals = filterValues[activeSheet] || {};
 
@@ -1302,7 +1319,11 @@ function render() {
     const rhCls = (selMode==='row' && selRows.has(r)) ? ' row-selected' : '';
     let trStyle = '';
     if (r < frozenRows) trStyle = `style="position:sticky;top:${frozenRowTops[r]}px;z-index:2"`;
-    html += `<tr ${trStyle}><td class="rh${rhCls}" draggable="true" ondragstart="if(event.shiftKey){event.preventDefault();return;} onRowDragStart(event,${r})" ondragend="clearRowDropIndicator()" ondragover="onRowDragOver(event,${r})" ondrop="onRowDrop(event,${r})" onmousedown="if(formulaRefMode||editMode||crossSheetEdit){event.preventDefault();}else if(event.button===0&&event.shiftKey){beginHdrDragSel('row',${r});}" onmouseover="extendHdrDragSel('row',${r})" onclick="selectRow(${r},event.shiftKey)" oncontextmenu="rowColCtxMenu(event,'row',${r})" title="클릭:행선택 / 드래그:이동 / Shift+드래그:범위선택" style="height:${rowHeights[r]||24}px">${r+1}<span class="row-resize-handle" onmousedown="startRowResize(event,${r})" ondblclick="autoFitRow(event,${r})" title="드래그:높이조정 / 더블클릭:자동맞춤"></span></td>`;
+    const grpHere = rGroups.find(g => g.r2 + 1 === r);
+    const grpToggleHtml = grpHere
+      ? `<span class="grp-toggle" onclick="event.stopPropagation();toggleRowGroupAt(${r})" title="그룹 ${grpHere.collapsed?'펼치기':'접기'}">${grpHere.collapsed ? '▸' : '▾'}</span>`
+      : '';
+    html += `<tr ${trStyle}><td class="rh${rhCls}" draggable="true" ondragstart="if(event.shiftKey){event.preventDefault();return;} onRowDragStart(event,${r})" ondragend="clearRowDropIndicator()" ondragover="onRowDragOver(event,${r})" ondrop="onRowDrop(event,${r})" onmousedown="if(formulaRefMode||editMode||crossSheetEdit){event.preventDefault();}else if(event.button===0&&event.shiftKey){beginHdrDragSel('row',${r});}" onmouseover="extendHdrDragSel('row',${r})" onclick="selectRow(${r},event.shiftKey)" oncontextmenu="rowColCtxMenu(event,'row',${r})" title="클릭:행선택 / 드래그:이동 / Shift+드래그:범위선택" style="height:${rowHeights[r]||24}px">${grpToggleHtml}${r+1}<span class="row-resize-handle" onmousedown="startRowResize(event,${r})" ondblclick="autoFitRow(event,${r})" title="드래그:높이조정 / 더블클릭:자동맞춤"></span></td>`;
     for (let c=0; c<nCols; c++) {
       if (hCols.has(c)) continue; // 숨겨진 열
       // 병합 셀 처리
@@ -2521,6 +2542,10 @@ function rowColCtxMenu(e, type, idx) {
   const showAllItem = hasHidden
     ? `<div class="cm-item" onclick="${type==='row'?'showAllHiddenRows()':'showAllHiddenCols()'}">${type==='row'?'숨긴 행 모두 표시':'숨긴 열 모두 표시'}</div>`
     : '';
+  // 행: 그룹(개요) — 선택 범위를 새 그룹으로 묶거나, 우클릭한 행이 속한/뒤따르는 기존 그룹을 해제
+  const grpIdx = type==='row' ? (rowGroups[activeSheet]||[]).findIndex(g => idx>=g.r1 && idx<=g.r2+1) : -1;
+  const groupItem = type==='row' ? `<div class="cm-item" onclick="groupSelectedRows()">${selCount>1?`선택한 ${selCount}개 행 `:''}그룹으로 묶기</div>` : '';
+  const ungroupItem = grpIdx!==-1 ? `<div class="cm-item" onclick="ungroupRowsAt(${grpIdx})">그룹 해제</div>` : '';
 
   const menu = document.createElement('div');
   menu.id = 'rc-ctx-menu';
@@ -2536,6 +2561,9 @@ function rowColCtxMenu(e, type, idx) {
        <div class="cm-sep"></div>
        <div class="cm-item" onclick="hideSelectedRows()">${hideLabel}</div>
        ${showAllItem}
+       <div class="cm-sep"></div>
+       ${groupItem}
+       ${ungroupItem}
        <div class="cm-sep"></div>
        <div class="cm-item cm-del" onclick="delSelectedRows()">${delLabel}</div>`
     : `<div class="cm-item" onclick="insertColAt(${idx},'left')">왼쪽에 열 삽입</div>
@@ -2707,6 +2735,59 @@ function showAllHiddenCols() {
   pushUndo();
   manualHiddenCols[activeSheet] = new Set();
   render(); markDirty(); setStatus('✅ 숨긴 열 모두 표시됨');
+}
+
+// ══════════════════════════════════════════
+// 행 그룹(개요) — 엑셀 "그룹/그룹 해제" 기능. 단일 레벨만 지원(중첩 그룹 없음)하고,
+// 접힌 그룹의 행은 기존 manualHiddenRows를 그대로 재사용해 숨긴다(별도 은닉 상태를
+// 새로 만들지 않음 — "숨긴 행 모두 표시"로도 항상 안전하게 되돌릴 수 있음).
+// ══════════════════════════════════════════
+function groupSelectedRows() {
+  const old = document.getElementById('rc-ctx-menu'); if (old) old.remove();
+  if (!selectedCell) { setStatus('그룹으로 묶을 행을 먼저 선택하세요', false); return; }
+  const end = selEnd || selectedCell;
+  const r1 = Math.min(selectedCell.r, end.r), r2 = Math.max(selectedCell.r, end.r);
+  if (r2 <= r1) { setStatus('2개 이상의 행을 선택해야 그룹으로 묶을 수 있습니다', false); return; }
+  pushUndo();
+  if (!rowGroups[activeSheet]) rowGroups[activeSheet] = [];
+  rowGroups[activeSheet].push({ r1, r2, collapsed: false });
+  markDirty(); render();
+  setStatus(`✅ ${r1+1}~${r2+1}행 그룹 지정됨`);
+}
+
+function toggleRowGroup(idx) {
+  const groups = rowGroups[activeSheet] || [];
+  const g = groups[idx];
+  if (!g) return;
+  pushUndo();
+  g.collapsed = !g.collapsed;
+  if (!manualHiddenRows[activeSheet]) manualHiddenRows[activeSheet] = new Set();
+  for (let r = g.r1; r <= g.r2; r++) {
+    if (g.collapsed) manualHiddenRows[activeSheet].add(r);
+    else manualHiddenRows[activeSheet].delete(r);
+  }
+  markDirty(); render();
+}
+
+// r이 어떤 그룹의 "요약 행"(그룹 바로 다음 행, 접기/펼치기 토글이 표시되는 위치)인지 찾아 토글
+function toggleRowGroupAt(r) {
+  const groups = rowGroups[activeSheet] || [];
+  const idx = groups.findIndex(g => g.r2 + 1 === r);
+  if (idx !== -1) toggleRowGroup(idx);
+}
+
+function ungroupRowsAt(idx) {
+  const old = document.getElementById('rc-ctx-menu'); if (old) old.remove();
+  const groups = rowGroups[activeSheet] || [];
+  const g = groups[idx];
+  if (!g) return;
+  pushUndo();
+  if (g.collapsed && manualHiddenRows[activeSheet]) {
+    for (let r = g.r1; r <= g.r2; r++) manualHiddenRows[activeSheet].delete(r);
+  }
+  groups.splice(idx, 1);
+  markDirty(); render();
+  setStatus('그룹 해제됨');
 }
 
 function insertRowAt(r, pos) {
@@ -3414,7 +3495,22 @@ function shiftRowState(sheetName, fromIndex, delta) {
     manualHiddenRows[sheetName] = ns;
   }
   remapChartRange(sheetName, mapFn, 'row');
+  remapRowGroups(sheetName, mapFn);
   shiftFormulaRowRefs(sheetName, fromIndex, delta);
+}
+
+// 행 그룹(개요) 범위 리매핑 — 차트와 달리 그룹은 "범위" 자체가 의미가 있으므로
+// 시작/끝 좌표를 각각 mapFn으로 매핑해 삽입 시 그룹이 늘어나고 삭제 시 줄어들게 함
+// (차트처럼 폭을 고정하지 않음 — 범위 양 끝이 실제로 유효한 셀 참조를 계속 가리켜야 하기 때문).
+function remapRowGroups(sheetName, mapFn) {
+  if (!rowGroups[sheetName]) return;
+  rowGroups[sheetName] = rowGroups[sheetName].map(g => {
+    let nr1 = mapFn(g.r1), nr2 = mapFn(g.r2);
+    if (nr1 == null) nr1 = mapFn(g.r1 + 1); // 그룹 시작 행이 삭제됐으면 다음 행 기준으로 보정
+    if (nr2 == null) nr2 = mapFn(g.r2 - 1); // 그룹 끝 행이 삭제됐으면 이전 행 기준으로 보정
+    if (nr1 == null || nr2 == null || nr1 > nr2) return null; // 그룹 전체가 삭제 범위에 포함된 경우
+    return { ...g, r1: nr1, r2: nr2 };
+  }).filter(Boolean);
 }
 // 열 삽입/삭제: 위와 동일한 논리를 열 축에 적용
 function shiftColState(sheetName, fromIndex, delta) {
@@ -3525,6 +3621,7 @@ function moveRowState(sheetName, from, to) {
     const ns = new Set(); manualHiddenRows[sheetName].forEach(r => ns.add(mapFn(r))); manualHiddenRows[sheetName] = ns;
   }
   remapChartRange(sheetName, mapFn, 'row');
+  remapRowGroups(sheetName, mapFn);
   remapFormulaRowRefs(sheetName, mapFn);
 }
 function moveColState(sheetName, from, to) {
@@ -4313,7 +4410,7 @@ async function save() {
   try {
     const [r1, r2] = await Promise.all([
       tokFetch('/budget/sheets',{method:'POST',headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({sheets,active:activeSheet,styles:cellStyles,colWidths,rowHeights,mergedCells,conditionalFormats,dataValidations,cellNotes,charts,
+        body:JSON.stringify({sheets,active:activeSheet,styles:cellStyles,colWidths,rowHeights,mergedCells,conditionalFormats,dataValidations,cellNotes,charts,rowGroups,
           manualHiddenRows:Object.fromEntries(Object.entries(manualHiddenRows).map(([k,v])=>[k,[...v]])),
           manualHiddenCols:Object.fromEntries(Object.entries(manualHiddenCols).map(([k,v])=>[k,[...v]]))})}),
       tokFetch('/budget/grid',{method:'POST',headers:{'Content-Type':'application/json'},
