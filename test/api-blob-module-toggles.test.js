@@ -184,5 +184,45 @@ if (!ADMIN_DATABASE_URL) {
       assert.ok(Array.isArray(r.data.employees) && r.data.employees.length > 0, "hr 모듈을 꺼도 employees 자체는 계속 보여야 함(로그인/조직 기반 데이터)");
       await setFeature("hr", true);
     });
+
+    await t.test("promotion 모듈(promotionSettings, singleton) — 끄면 GET에서 빈 값으로 감춰지고 저장이 반영 안 됨, 다시 켜면 원래 값 복구", async () => {
+      // promotionSettings는 배열이 아니라 singleton(REVISIONED_SINGLETON_FIELDS 소속)이라
+      // 위 moduleFieldCases 루프(배열 전용)로는 검증할 수 없어 별도 테스트로 작성한다.
+      // singleton 쓰기는 _singletonRevisions에 서버가 알려준 현재 리비전을 실어 보내야
+      // SINGLETON_REVISION_CONFLICT(409) 없이 저장된다.
+      async function saveSingleton(version, revisions, patch) {
+        return (await api("/save", {
+          method: "POST", headers: { "Content-Type": "application/json", ...hdr },
+          body: JSON.stringify({ _version: version, data: patch, _singletonRevisions: revisions }),
+        })).json();
+      }
+
+      const before = await getData();
+      const originalSettings = { ...(before.data.promotionSettings || {}), minYearsByRank: { 사원: 2 } };
+      const saved = await saveSingleton(before.version, before.data._singletonRevisions, { promotionSettings: originalSettings });
+      assert.equal(saved.ok, true, `정상 저장 실패: ${JSON.stringify(saved)}`);
+
+      const afterSave = await getData();
+      assert.deepEqual(afterSave.data.promotionSettings.minYearsByRank, { 사원: 2 }, "promotionSettings 저장이 조회에 반영되지 않음");
+
+      // 모듈 비활성화 — GET /data에서 빈 객체로 감춰짐
+      await setFeature("promotion", false);
+      const hidden = await getData();
+      assert.deepEqual(hidden.data.promotionSettings, {}, "promotionSettings가 비활성 상태에서 숨겨지지 않음");
+
+      // 비활성 상태에서 변경을 시도해도 반영되지 않아야 하고, 같은 요청에 실린 무관한
+      // settings 변경은 정상 저장돼야 한다(모듈 게이트가 요청 전체를 막지 않는다는 증거).
+      const blockedSave = await saveSingleton(hidden.version, hidden.data._singletonRevisions, {
+        promotionSettings: { minYearsByRank: { 사원: 999 } },
+        settings: { ...(hidden.data.settings || {}), _toggleTestMarker: "promotion_blocked" },
+      });
+      assert.equal(blockedSave.ok, true, "쓰기 자체는 401/403이 아니라 조용히 무시되어야 함(다른 필드는 정상 저장)");
+
+      // 다시 켜서 확인 — 비활성 중 시도했던 값이 아니라 원래 저장돼있던 값이 그대로여야 함.
+      await setFeature("promotion", true);
+      const restored = await getData();
+      assert.deepEqual(restored.data.promotionSettings.minYearsByRank, { 사원: 2 }, "모듈을 다시 켰는데 비활성 중 시도한 값이 반영되거나 원본이 유실됨");
+      assert.equal(restored.data.settings._toggleTestMarker, "promotion_blocked", "비활성 모듈과 무관한 settings 저장까지 함께 막힘(과잉차단)");
+    });
   });
 }
