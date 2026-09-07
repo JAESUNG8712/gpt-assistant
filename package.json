@@ -33,6 +33,9 @@
   "optionalDependencies": {
     "pg": "^8.11.3"
   },
+  "overrides": {
+    "qs": "6.16.0"
+  },
   "engines": {
     "node": ">=18.0.0"
   },
