@@ -91,6 +91,31 @@ test("채용: candidates/export·dashboard 게이팅 + jobs/candidates/interview
     assert.match(body.csv, /홍길동/);
   });
 
+  await t.test("GET .../recruit/candidates/export — CSV/formula injection(CWE-1236) 방지: =/+/-/@로 시작하는 지원자 필드는 작은따옴표로 무력화", async () => {
+    const malicious = await (await api("/api/recruit/candidates", auth(admin2Token, "POST", {
+      jobId: job.job.id,
+      name: "=cmd|'/c calc'!A1",
+      memo: "+SUM(1,1)",
+      careerHistory: "-2+3",
+      resumeSummary: "@SUM(A1:A2)",
+    }))).json();
+    assert.equal(malicious.ok, true);
+
+    const r = await api("/api/recruit/candidates/export", { headers: { Authorization: `Bearer ${admin2Token}` } });
+    assert.equal(r.status, 200);
+    const { csv } = await r.json();
+    // 원본 페이로드 그대로(선행 =/+/-/@)는 CSV에 등장하지 않아야 하고, 각각 작은따옴표가
+    // 앞에 붙은 형태로만 나타나야 한다 — Excel/LibreOffice가 이 셀을 수식으로 해석하지
+    // 않고 순수 텍스트로 취급하게 만드는 표준 완화책.
+    assert.doesNotMatch(csv, /"=cmd/);
+    assert.match(csv, /"'=cmd\|'\/c calc'!A1"/);
+    assert.match(csv, /"'\+SUM\(1,1\)"/);
+    assert.match(csv, /"'-2\+3"/);
+    assert.match(csv, /"'@SUM\(A1:A2\)"/);
+    // 정상 필드(홍길동)는 그대로 영향받지 않는다.
+    assert.match(csv, /홍길동/);
+  });
+
   await t.test("GET .../recruit/dashboard — recruit-dashboard를 개인적으로 꺼둔 admin1은 403, 대조군 admin2는 200", async () => {
     const r1 = await api("/api/recruit/dashboard", { headers: { Authorization: `Bearer ${restrictedToken}` } });
     assert.equal(r1.status, 403);
