@@ -3828,6 +3828,16 @@ const _BLOB_MODULE_FIELDS = {
   comp_eval: ["compSessions", "compResponses", "compGradeResults", "evaluatorConfig"],
   talent:    ["coreTalentPool", "talentDevPlans", "lowPerfData", "coreTalentSettings"],
   hr:        ["orgChartHistory"],
+  // 승진 처리 자체(employees[].rank 변경)는 hr와 동일한 이유로 대상 밖(핵심 인사 데이터라
+  // 통째로 막으면 위험)이지만, 자격요건 설정값(promotionSettings — 직급별 최소연수·등급
+  // 요건·법정교육 필드명 등)은 승진 화면 전용의 독립된 singleton이라 다른 12개 모듈과
+  // 동일한 기준으로 게이팅 대상이어야 했는데 누락돼 있었다(2026-09-07 재검토로 발견) —
+  // "화면단 숨김만으로 충분"이라던 과거 판단은 이 필드가 실제로는 순수 설정값이라는 점을
+  // 놓친 것. `legalEduField`(교육 이수 시 채울 customFields 키 이름)는 필수교육 등록 등
+  // 승진 화면 밖에서도 읽지만, 클라이언트 병합이 항상 partial merge(Object.assign)라
+  // 비활성화로 내려오는 `{}`가 하드코딩된 기본값을 지우지 않아 그 경로는 영향받지 않음
+  // (실측 확인).
+  promotion: ["promotionSettings"],
 };
 // 저장 직전(POST /save)에 호출 — 비활성 모듈에 속한 필드가 요청 body에 들어있으면 통째로
 // 지운다. `_persistDataLocked`의 모든 관련 분기(JSON 파일 모드의 _mergeProtectedField/
@@ -8851,7 +8861,15 @@ app.get("/api/recruit/candidates/export", async (req, res) => {
     let list = await _recruitVisibleCandidates(userId, role, companyId);
     if (jobId) list = list.filter(c => String(c.jobId) === String(jobId));
     const jobTitleOf = async (id) => { const j = await _recruitJobById(id, companyId); return j ? j.title : ""; };
-    const esc = (v) => `"${String(v == null ? "" : v).replace(/"/g, '""')}"`;
+    // CSV/formula injection(CWE-1236) 방지: 지원자가 직접 입력한 이름·경력·메모 등
+    // 자유텍스트가 =,+,-,@ 또는 탭/캐리지리턴으로 시작하면 Excel이 수식으로 해석해
+    // 이 CSV를 여는 관리자 PC에서 실행될 수 있다 — 값 앞에 작은따옴표를 붙여 무력화한다
+    // (OWASP CSV Injection 표준 완화책, public/index.html의 _csvSafeCell과 동일 로직).
+    const esc = (v) => {
+      const s = String(v == null ? "" : v);
+      const safe = /^[=+\-@\t\r]/.test(s) ? "'" + s : s;
+      return `"${safe.replace(/"/g, '""')}"`;
+    };
     const header = ["채용공고", "지원자명", "연락처", "이메일", "전형단계", "지원일", "최종학력", "경력사항", "마지막연봉", "희망연봉", "학력·경력 공백", "교육/대외활동", "이력서 요약", "메모"];
     const lines = [header.map(esc).join(",")];
     for (const c of list) {

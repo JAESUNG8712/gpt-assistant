@@ -44,7 +44,7 @@
    토큰이 없거나 무효하면 대부분의 엔드포인트가 `401 { "ok": false, "message": "로그인이 필요합니다." }`을 반환합니다.
    `role`은 더 이상 요청 body/query로 보내도 무시됩니다 — 서버가 토큰에서 검증한 값만 사용합니다.
 
-3. 예외(인증 불필요): `POST /login`, `GET /status`,
+3. 예외(인증 불필요): `POST /login`, `GET /status`, `GET /healthz`, `GET /readyz`,
    `POST /api/reset-all`(자체 재검증), `POST /api/auth/2fa/verify-code`, JSON 파일 모드의
    `POST /api/bootstrap/admin`.
    `POST /save`는 **항상 인증이 필요**합니다. 빈 JSON 파일 모드의 최초 관리자는
@@ -77,7 +77,9 @@
 | `POST /save` | 전체 상태 저장 | 필요 |
 | `POST /api/bootstrap/admin` | 빈 JSON 파일 모드 최초 관리자 생성. `{loginId,name,pw}`와 `X-Bootstrap-Secret` 필요, 한 번만 가능 | 불필요(시크릿 필수) |
 | `POST /api/auth/change-password` | 본인 비밀번호 변경. `{currentPassword,newPassword}`; 성공 시 새 Bearer token 반환 | 필요 |
-| `GET /status` | 서버 상태(직원 수, 버전 등) | 불필요 |
+| `GET /status` | 서버 상태(직원 수, 버전 등, 인증 시에만 상세 노출) | 불필요 |
+| `GET /healthz` | 생존 확인(프로세스가 요청을 받는지만, 저장소 미조회) — 로드밸런서/외부 모니터용 | 불필요 |
+| `GET /readyz` | 준비 상태 확인(JSON 파일 또는 PostgreSQL 저장소 접근 가능 여부) — 배포 헬스체크용(`render.yaml`의 `healthCheckPath`), 실패 시 503 | 불필요 |
 | `POST /lock`, `POST /unlock` | 동시편집 방지용 레코드 잠금 | 필요 |
 | `GET /api/accounting/*` | 회계(계정과목/전표/세금계산서/거래처) | 필요, 대부분 admin |
 | `GET/POST /api/erp/*` | 영업/재고/구매(품목/견적/발주/재고) | 필요, 대부분 admin |
