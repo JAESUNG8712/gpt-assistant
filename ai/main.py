@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import hmac
+import json
 import os
 import re
 import glob as _glob
@@ -1315,7 +1316,25 @@ async def chat(req: ChatRequest, request: Request):
             print(f"[오류] {type(e).__name__}: {e}\n{traceback.format_exc()}")
             yield f"\n⚠️ 오류: {type(e).__name__}: {e}"
 
-    return StreamingResponse(generate(), media_type="text/plain; charset=utf-8")
+    command_status = {
+        "commands": command_router.applied_command_status(command["applied_commands"]),
+        "search_requested": bool(effective_use_search),
+        "search_used": bool(search_ctx),
+        "thinking_mode": effective_thinking_mode,
+        "resolved_persona": persona_id,
+        "resolved_persona_name": persona.get("name", ""),
+        "resolved_persona_icon": persona.get("icon", ""),
+    }
+    return StreamingResponse(
+        generate(),
+        media_type="text/plain; charset=utf-8",
+        # HTTP 헤더는 latin-1 제약이 있으므로 한글·이모지는 ASCII JSON escape로 전달한다.
+        headers={
+            "X-Command-Status": json.dumps(
+                command_status, ensure_ascii=True, separators=(",", ":")
+            )
+        },
+    )
 
 
 # ── 대화 이력 ─────────────────────────────────────────

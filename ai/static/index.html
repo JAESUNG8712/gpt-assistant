@@ -161,6 +161,21 @@
     }
     .msg-bubble a.dl-btn:hover { opacity: 0.9; transform: translateY(-1px); box-shadow: 0 4px 12px rgba(30,40,60,0.22); }
     .search-on-badge { font-size: 0.68rem; background: #e6f4ea; color: #1e7e34; border: 1px solid #34a853; padding: 2px 8px; border-radius: 10px; margin-left: 6px; }
+    .command-status {
+      display: flex; align-items: center; flex-wrap: wrap; gap: 4px; margin-top: 7px;
+      padding-top: 6px; border-top: 1px solid rgba(127,127,127,0.16);
+    }
+    .command-status-label { color: var(--text-dim); font-size: 0.66rem; margin-right: 2px; }
+    .command-status.pending { opacity: 0.72; }
+    .command-status-badge {
+      display: inline-flex; align-items: center; gap: 3px; padding: 2px 7px;
+      border: 1px solid var(--border); border-radius: 10px; background: var(--surface2);
+      color: var(--text-dim); font-size: 0.67rem; white-space: nowrap;
+    }
+    .command-status:not(.pending) .command-status-badge {
+      border-color: color-mix(in srgb, var(--persona-color) 38%, var(--border));
+      color: var(--persona-color);
+    }
     .gemini-badge {
       font-size: 0.68rem; background: #e8f0fe; color: #1a73e8;
       border: 1px solid #4285f4; padding: 3px 10px; border-radius: 20px;
@@ -1409,6 +1424,105 @@
     return div;
   }
 
+  function commandLookup() {
+    const lookup = new Map();
+    availableCommands().forEach(item => {
+      [item.command, ...item.aliases].forEach(name => lookup.set(name.slice(1).toLowerCase(), item));
+    });
+    return lookup;
+  }
+
+  function previewCommandStatus(text, useSearch) {
+    const lookup = commandLookup();
+    const commands = [];
+    const seen = new Set();
+    let remaining = text.trim();
+    for (let index = 0; index < 4 && remaining; index++) {
+      let match = remaining.match(/^[/!]([^\s:：]+)\s*[:：]?\s*(.*)$/s);
+      if (!match && index === 0) {
+        const bare = remaining.match(/^([^\s:：]+)(?:\s*[:：]\s*|\s+)(.+)$/s);
+        const bareItem = bare ? lookup.get(bare[1].toLowerCase()) : null;
+        if (bareItem && !['persona', 'help'].includes(bareItem.kind)) match = bare;
+      }
+      if (!match) break;
+      const item = lookup.get(match[1].toLowerCase());
+      if (!item) break;
+      if (!seen.has(item.command)) {
+        seen.add(item.command);
+        commands.push(item);
+      }
+      remaining = match[2].trim();
+      if (item.kind === 'help') break;
+    }
+    let previewThinking = thinkingMode;
+    commands.forEach(item => {
+      if (item.kind === 'deep') previewThinking = 'deep';
+      if (item.kind === 'fast') previewThinking = 'off';
+    });
+    return {
+      commands,
+      search_requested: useSearch || commands.some(item => item.kind === 'search'),
+      search_used: null,
+      thinking_mode: previewThinking,
+      resolved_persona: '',
+    };
+  }
+
+  function renderCommandStatus(messageDiv, status, pending = false) {
+    if (!messageDiv || !status) return;
+    const bubble = messageDiv.querySelector('.msg-bubble');
+    bubble.querySelectorAll('.search-on-badge, .command-status').forEach(el => el.remove());
+    const items = (status.commands || []).map(item => ({ ...item }));
+    const kinds = new Set(items.map(item => item.kind));
+    if (!kinds.has('search') && (status.search_requested || status.search_used)) {
+      items.push({
+        command: '', kind: 'search', icon: '🌐',
+        label: status.search_used ? '자동 검색' : '인터넷 검색',
+      });
+    }
+    if (!kinds.has('deep') && !kinds.has('fast') && status.thinking_mode && status.thinking_mode !== 'off') {
+      items.push({ command: '', kind: 'thinking', icon: '🧠', label: status.thinking_mode === 'deep' ? '깊은 분석' : '생각 모드' });
+    }
+    if (!kinds.has('persona') && !pending && currentPersona?.id === 'auto'
+        && status.resolved_persona && status.resolved_persona !== 'auto') {
+      items.push({
+        command: '', kind: 'persona', icon: status.resolved_persona_icon || '🤖',
+        label: status.resolved_persona_name || '처리 전문가',
+      });
+    }
+    if (!items.length) return;
+    const row = document.createElement('div');
+    row.className = `command-status${pending ? ' pending' : ''}`;
+    const label = document.createElement('span');
+    label.className = 'command-status-label';
+    label.textContent = pending ? '요청' : '적용됨';
+    row.appendChild(label);
+    items.forEach(item => {
+      const badge = document.createElement('span');
+      badge.className = 'command-status-badge';
+      const displayLabel = item.kind === 'search' && !pending && status.search_used === false
+        ? '검색 요청됨' : item.label;
+      badge.textContent = `${item.icon || '✓'} ${displayLabel}`;
+      if (item.command) badge.title = `${item.command} 명령`;
+      row.appendChild(badge);
+    });
+    bubble.appendChild(row);
+  }
+
+  function responseCommandStatus(response) {
+    const raw = response.headers.get('X-Command-Status');
+    if (!raw) return null;
+    try { return JSON.parse(raw); } catch (_) { return null; }
+  }
+
+  function applyResolvedPersona(messageDiv, status) {
+    if (!messageDiv || !status?.resolved_persona) return;
+    const resolved = personas.find(item => item.id === status.resolved_persona);
+    const avatar = messageDiv.querySelector('.msg-avatar');
+    avatar.textContent = status.resolved_persona_icon || resolved?.icon || avatar.textContent;
+    avatar.title = `${status.resolved_persona_name || resolved?.name || '전문가'}가 처리`;
+  }
+
   function escHtml(s) {
     // renderMd()가 마크다운 링크를 <a href="${url}" title="${url}">로 그대로 삽입하므로
     // url/텍스트에 " 가 섞이면 속성 밖으로 탈출해 임의 속성(onmouseover= 등) 주입이 가능했음 —
@@ -1573,11 +1687,12 @@
     }
 
     const useSearch = document.getElementById('use-search').checked;
-    const commandSearch = /^(?:\/|!)?(?:검색|웹검색|search)(?:\s|:|：)/i.test(msg);
+    const previewStatus = previewCommandStatus(msg, useSearch);
     input.value = '';
     autoResize(input);
     closeCommandMenu();
-    appendMsg('user', msg, false, useSearch || commandSearch);
+    const userDiv = appendMsg('user', msg);
+    renderCommandStatus(userDiv, previewStatus, true);
     isLoading = true;
     document.getElementById('send-btn').disabled = true;
 
@@ -1602,6 +1717,11 @@
         }),
       });
       if (!resp.ok) throw new Error(await friendlyErrorMessage(resp));
+      const confirmedStatus = responseCommandStatus(resp);
+      if (confirmedStatus) {
+        renderCommandStatus(userDiv, confirmedStatus);
+        applyResolvedPersona(aiDiv, confirmedStatus);
+      }
       const reader = resp.body.getReader();
       const dec = new TextDecoder();
       let lastRenderLen = 0;

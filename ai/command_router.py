@@ -52,6 +52,11 @@ _PERSONA_COMMANDS = {
     for item in COMMAND_DEFINITIONS if item["kind"] == "persona"
     for name in [item["name"], *item.get("aliases", [])]
 }
+_COMMAND_LOOKUP = {
+    name.lower(): item
+    for item in COMMAND_DEFINITIONS
+    for name in [item["name"], *item.get("aliases", [])]
+}
 _SEARCH_COMMANDS = _names("search")
 _DEEP_COMMANDS = _names("deep")
 _FAST_COMMANDS = _names("fast")
@@ -92,12 +97,32 @@ def command_catalog() -> list[dict]:
             "label": item["label"],
             "description": item["description"],
             "category": item["category"],
+            "kind": item["kind"],
             "persona": item.get("value") if item["kind"] == "persona" else "",
             "requires_message": item.get("requires_message", True),
             "featured": item.get("featured", False),
         }
         for item in COMMAND_DEFINITIONS
     ]
+
+
+def applied_command_status(commands: list[str]) -> list[dict]:
+    """해석된 별칭을 화면 표시용 대표 명령으로 정규화한다."""
+    result, seen = [], set()
+    for raw_name in commands:
+        item = _COMMAND_LOOKUP.get(str(raw_name).lower())
+        if not item or item["name"] in seen:
+            continue
+        seen.add(item["name"])
+        result.append({
+            "name": item["name"],
+            "command": f'/{item["name"]}',
+            "icon": item["icon"],
+            "label": item["label"],
+            "kind": item["kind"],
+            "persona": item.get("value") if item["kind"] == "persona" else "",
+        })
+    return result
 
 
 def _command_match(text: str, allow_bare: bool) -> tuple[str, str] | None:

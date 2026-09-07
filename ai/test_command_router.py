@@ -10,6 +10,11 @@ def main():
     all_names = [name.lower() for item in catalog for name in [item["command"], *item["aliases"]]]
     assert len(all_names) == len(set(all_names))
     assert next(item for item in catalog if item["command"] == "/도움말")["requires_message"] is False
+    assert all(item["kind"] for item in catalog)
+
+    normalized = command_router.applied_command_status(["deep", "hr", "심층"])
+    assert [item["command"] for item in normalized] == ["/깊게", "/인사"]
+    assert [item["kind"] for item in normalized] == ["deep", "persona"]
 
     search = command_router.parse_command("검색 27년 최저임금")
     assert search["message"] == "27년 최저임금"

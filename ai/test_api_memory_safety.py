@@ -1,5 +1,6 @@
 """FastAPI 수준 기억·세션 보안 회귀 테스트 (외부 API 호출 없음)."""
 import os
+import json
 import sys
 import tempfile
 import types
@@ -284,9 +285,13 @@ def main():
         }
         denied = client.post("/chat", json={**share_payload, "persona": "hr"})
         assert denied.status_code == 403
+        share_payload["message"] = "/회사 " + share_payload["message"]
         shared_response = client.post("/chat", json=share_payload)
         assert shared_response.status_code == 200
         assert "현재 등록된 규정" in shared_response.text
+        shared_status = json.loads(shared_response.headers["X-Command-Status"])
+        assert [item["command"] for item in shared_status["commands"]] == ["/회사"]
+        assert shared_status["resolved_persona"] == "company"
         assert client.get("/history", params={"session_id": "browser-shared"}).status_code == 401
 
         share_scope = main._share_session_scope(share["token"], "browser-shared")
