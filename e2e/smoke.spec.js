@@ -119,6 +119,59 @@ test.describe("로그인·기본 네비게이션", () => {
     await page.waitForFunction(() => window.__confirmModalResult === false);
   });
 
+  test("예산 전체 초기화는 영향 범위를 표시하고 서버 실패를 성공으로 오인하지 않는다", async ({ page }) => {
+    let deleteRequests = 0;
+    await page.route("**/api/budget/**", async route => {
+      if (route.request().method() === "DELETE") {
+        deleteRequests++;
+        return route.fulfill({ status: 403, contentType: "application/json", body: JSON.stringify({ message: "관리자 권한이 필요합니다." }) });
+      }
+      return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ headcount: [], items: [], summary: [] }) });
+    });
+    await page.goto("/budget.html");
+
+    await page.evaluate(() => {
+      rawData = {
+        headcount: [{ dept: '<img src=x onerror="window.__budgetXss=true">', month: 1, count: 2 }],
+        items: []
+      };
+      renderRaw();
+    });
+    await expect(page.locator("#rawArea")).toContainText('<img src=x onerror="window.__budgetXss=true">');
+    expect(await page.evaluate(() => window.__budgetXss)).toBeUndefined();
+
+    await page.getByRole("button", { name: "전체 데이터 초기화" }).click();
+    const dialog = page.locator("#confirm-dialog");
+    await expect(dialog).toBeVisible();
+    await expect(dialog).toContainText("영향 범위");
+    await expect(page.locator(":focus")).toHaveText("취소");
+    await page.keyboard.press("Escape");
+    await expect(dialog).not.toBeVisible();
+    expect(deleteRequests).toBe(0);
+
+    await page.getByRole("button", { name: "전체 데이터 초기화" }).click();
+    await dialog.getByRole("button", { name: "전체 데이터 삭제" }).click();
+    await expect(page.locator("#status1")).toContainText("관리자 권한이 필요합니다.");
+    expect(deleteRequests).toBe(1);
+  });
+
+  test("마스터 회사 진입은 대상 회사와 감사 범위를 확인한 뒤에만 요청한다", async ({ page }) => {
+    let impersonateRequests = 0;
+    await page.route("**/master/companies/**/impersonate", async route => {
+      impersonateRequests++;
+      return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true, token: "unused" }) });
+    });
+    await page.goto("/master.html");
+    await page.evaluate(() => enterCompany("company-e2e"));
+
+    const dialog = page.locator("#confirm-dialog");
+    await expect(dialog).toBeVisible();
+    await expect(dialog).toContainText("company-e2e 회사 데이터");
+    await expect(dialog).toContainText("감사 로그");
+    await dialog.getByRole("button", { name: "취소" }).click();
+    expect(impersonateRequests).toBe(0);
+  });
+
   test("동시 수정 충돌은 최신 데이터를 다시 읽고 사용자 선택 모달을 표시한다", async ({ page }) => {
     await page.goto("/");
     await page.fill("#l-id", "e2e_admin");
