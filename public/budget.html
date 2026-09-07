@@ -20,6 +20,7 @@
   .upload-box input[type=file] { width: 100%; font-size: .8rem; }
   button { background: #0f3460; color: #fff; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; font-size: .82rem; margin-top: 10px; }
   button:hover { background: #16213e; }
+  button:disabled { opacity: .6; cursor: not-allowed; }
   button.secondary { background: #e94560; }
   .status { font-size: .8rem; margin-top: 8px; min-height: 16px; }
   .status.ok { color: #1a7d36; }
@@ -51,6 +52,16 @@
   .compare-check { margin-right: 6px; vertical-align: middle; }
   .chart-legend span { font-size: .72rem; margin-right: 10px; }
   .chart-box { margin-top: 8px; }
+  .confirm-dialog { width: min(460px, calc(100vw - 32px)); border: 0; border-radius: 12px; padding: 0; box-shadow: 0 18px 60px rgba(0,0,0,.28); }
+  .confirm-dialog::backdrop { background: rgba(15,23,42,.58); }
+  .confirm-dialog__body { padding: 22px; }
+  .confirm-dialog h2 { font-size: 1.05rem; margin-bottom: 10px; }
+  .confirm-dialog p { color: #555; font-size: .85rem; line-height: 1.6; white-space: pre-line; }
+  .confirm-dialog__impact { margin-top: 12px; padding: 10px 12px; border-radius: 7px; background: #fff4e5; color: #8a4b08 !important; font-weight: 600; }
+  .confirm-dialog__actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
+  .confirm-dialog__actions button { margin-top: 0; }
+  .confirm-dialog__cancel { background: #e9ecf3; color: #1a1a2e; }
+  .confirm-dialog__confirm.danger { background: #c62828; }
 </style>
 </head>
 <body>
@@ -81,7 +92,7 @@
         <div class="status" id="status2"></div>
       </div>
     </div>
-    <button class="secondary" onclick="resetData()">전체 데이터 초기화</button>
+    <button class="secondary" id="reset-budget-button" onclick="resetData()">전체 데이터 초기화</button>
   </div>
 
   <div class="card">
@@ -118,8 +129,52 @@
 
 </main>
 
+<dialog id="confirm-dialog" class="confirm-dialog" aria-labelledby="confirm-dialog-title" aria-describedby="confirm-dialog-message">
+  <div class="confirm-dialog__body">
+    <h2 id="confirm-dialog-title">작업 확인</h2>
+    <p id="confirm-dialog-message"></p>
+    <p id="confirm-dialog-impact" class="confirm-dialog__impact"></p>
+    <div class="confirm-dialog__actions">
+      <button type="button" class="confirm-dialog__cancel" id="confirm-dialog-cancel">취소</button>
+      <button type="button" class="confirm-dialog__confirm danger" id="confirm-dialog-confirm">계속</button>
+    </div>
+  </div>
+</dialog>
+
 <script>
 const MONTHS = Array.from({length:12}, (_,i)=>i+1);
+function h(value) {
+  return String(value == null ? '' : value).replace(/[&<>"']/g, char => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+  }[char]));
+}
+
+function showConfirmDialog({ title, message, impact, confirmLabel = '계속' }) {
+  const dialog = document.getElementById('confirm-dialog');
+  if (dialog.open) return Promise.resolve(false);
+  const confirmButton = document.getElementById('confirm-dialog-confirm');
+  const cancelButton = document.getElementById('confirm-dialog-cancel');
+  document.getElementById('confirm-dialog-title').textContent = title;
+  document.getElementById('confirm-dialog-message').textContent = message;
+  document.getElementById('confirm-dialog-impact').textContent = impact;
+  confirmButton.textContent = confirmLabel;
+  return new Promise(resolve => {
+    let settled = false;
+    const finish = value => {
+      if (settled) return;
+      settled = true;
+      dialog.removeEventListener('cancel', onCancel);
+      if (dialog.open) dialog.close();
+      resolve(value);
+    };
+    const onCancel = event => { event.preventDefault(); finish(false); };
+    cancelButton.onclick = () => finish(false);
+    confirmButton.onclick = () => finish(true);
+    dialog.addEventListener('cancel', onCancel);
+    dialog.showModal();
+    cancelButton.focus();
+  });
+}
 
 // index.html(메인 SPA)이 /login에서 발급받아 localStorage에 저장해둔 토큰을 그대로
 // 재사용한다(같은 오리진이라 localStorage 공유됨) - 이 페이지는 서버가 검증한 관리자
@@ -179,9 +234,33 @@ async function uploadFile(inputId, url, statusId) {
 }
 
 async function resetData() {
-  if (!confirm('업로드된 모든 예산 데이터를 초기화할까요?')) return;
-  await fetch('/api/budget/data', { method: 'DELETE', headers: _authHeaders() });
-  loadAll();
+  const headcountCount = Array.isArray(rawData.headcount) ? rawData.headcount.length : 0;
+  const itemCount = Array.isArray(rawData.items) ? rawData.items.length : 0;
+  const approved = await showConfirmDialog({
+    title: '전체 예산 데이터 초기화',
+    message: '업로드된 인원 현황과 판관·용역·경상 상세 데이터를 모두 삭제합니다. 이 작업은 되돌릴 수 없습니다.',
+    impact: `영향 범위: 인원 현황 ${headcountCount.toLocaleString()}건 · 상세 ${itemCount.toLocaleString()}건`,
+    confirmLabel: '전체 데이터 삭제'
+  });
+  if (!approved) return;
+  const button = document.getElementById('reset-budget-button');
+  button.disabled = true;
+  try {
+    const res = await fetch('/api/budget/data', { method: 'DELETE', headers: _authHeaders() });
+    const text = await res.text();
+    let json = {};
+    try { json = text ? JSON.parse(text) : {}; } catch (e) {}
+    if (!res.ok) throw new Error(json.message || json.error || `초기화 실패 (${res.status})`);
+    rawData = { headcount: [], items: [] };
+    document.getElementById('status1').textContent = '전체 예산 데이터가 초기화되었습니다.';
+    document.getElementById('status1').className = 'status ok';
+    await loadAll();
+  } catch (e) {
+    document.getElementById('status1').textContent = '오류: ' + e.message;
+    document.getElementById('status1').className = 'status err';
+  } finally {
+    button.disabled = false;
+  }
 }
 
 function fmt(n) {
@@ -215,7 +294,7 @@ async function loadSummary() {
   const grandTotals = MONTHS.map(()=>({headcount:0, 판관:0, 용역:0, 경상:0, totalAmount:0}));
 
   summary.forEach(group => {
-    html += `<div class="dept-block"><h3>[${groupLabel}] ${group.dept}</h3><table>
+    html += `<div class="dept-block"><h3>[${groupLabel}] ${h(group.dept)}</h3><table>
       <tr><th class="lbl">구분</th>${MONTHS.map(m=>`<th>${m}월</th>`).join('')}</tr>
       ${summaryGroupBy === 'dept' ? `<tr><td class="lbl">인원수</td>${group.months.map(d=>`<td>${fmt(d.headcount)}</td>`).join('')}</tr>` : ''}
       <tr><td class="lbl">판관</td>${group.months.map(d=>`<td>${fmt(d.판관)}</td>`).join('')}</tr>
@@ -266,14 +345,14 @@ function renderRaw() {
     if (!rawData.headcount.length) { area.innerHTML = '<p class="desc">데이터 없음</p>'; return; }
     let html = '<table><tr><th class="lbl">부서</th><th>월</th><th>인원수</th></tr>';
     rawData.headcount.sort((a,b)=> a.dept.localeCompare(b.dept) || a.month-b.month)
-      .forEach(h => html += `<tr><td class="lbl">${h.dept}</td><td>${h.month}월</td><td>${fmt(h.count)}</td></tr>`);
+      .forEach(row => html += `<tr><td class="lbl">${h(row.dept)}</td><td>${fmt(row.month)}월</td><td>${fmt(row.count)}</td></tr>`);
     html += '</table>';
     area.innerHTML = html;
   } else {
     if (!rawData.items.length) { area.innerHTML = '<p class="desc">데이터 없음</p>'; return; }
     let html = '<table><tr><th class="lbl">부문</th><th class="lbl">팀명</th><th class="lbl">비용귀속부문</th><th class="lbl">매출구분</th><th class="lbl">항목</th><th class="lbl">세부내역(산정근거)</th><th class="lbl">구분</th><th>월</th><th>금액</th><th class="lbl">비고</th></tr>';
     rawData.items.sort((a,b)=> a.dept.localeCompare(b.dept) || a.month-b.month)
-      .forEach(i => html += `<tr><td class="lbl">${i.dept}</td><td class="lbl">${i.team||''}</td><td class="lbl">${i.costDept||i.dept}</td><td class="lbl">${i.revenueType||''}</td><td class="lbl">${i.account||''}</td><td class="lbl">${i.detail||''}</td><td class="lbl">${i.category}</td><td>${i.month}월</td><td>${fmt(i.amount)}</td><td class="lbl">${i.note||''}</td></tr>`);
+      .forEach(i => html += `<tr><td class="lbl">${h(i.dept)}</td><td class="lbl">${h(i.team)}</td><td class="lbl">${h(i.costDept||i.dept)}</td><td class="lbl">${h(i.revenueType)}</td><td class="lbl">${h(i.account)}</td><td class="lbl">${h(i.detail)}</td><td class="lbl">${h(i.category)}</td><td>${fmt(i.month)}월</td><td>${fmt(i.amount)}</td><td class="lbl">${h(i.note)}</td></tr>`);
     html += '</table>';
     area.innerHTML = html;
   }
