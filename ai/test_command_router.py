@@ -3,6 +3,14 @@ import command_router
 
 
 def main():
+    catalog = command_router.command_catalog()
+    assert len(catalog) >= 15
+    assert len({item["command"] for item in catalog}) == len(catalog)
+    assert all(item["command"].startswith("/") for item in catalog)
+    all_names = [name.lower() for item in catalog for name in [item["command"], *item["aliases"]]]
+    assert len(all_names) == len(set(all_names))
+    assert next(item for item in catalog if item["command"] == "/도움말")["requires_message"] is False
+
     search = command_router.parse_command("검색 27년 최저임금")
     assert search["message"] == "27년 최저임금"
     assert search["use_search"] is True
@@ -42,6 +50,10 @@ def main():
     ordinary = command_router.parse_command("회사 규정을 알려줘")
     assert ordinary["message"] == "회사 규정을 알려줘"
     assert ordinary["persona"] == ""
+
+    aliases = command_router.parse_command("/deep /hr 연차 조건")
+    assert aliases["thinking_mode"] == "deep"
+    assert aliases["persona"] == "hr"
 
     print("command router tests: PASS")
 

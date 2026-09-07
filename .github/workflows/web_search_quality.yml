@@ -37,3 +37,8 @@ jobs:
           python test_minimum_wage_facts.py
           python test_search_source_policy.py
           python test_command_router.py
+      - name: 채팅 화면 JavaScript 구문 검증
+        working-directory: ai
+        run: >-
+          node -e "const fs=require('fs'),s=fs.readFileSync('static/index.html','utf8'),m=[...s.matchAll(/<script(?:\\s[^>]*)?>([\\s\\S]*?)<\\/script>/gi)];
+          for(const x of m)new Function(x[1]); console.log('inline JS syntax: PASS ('+m.length+' scripts)')"

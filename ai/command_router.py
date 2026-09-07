@@ -2,29 +2,64 @@
 import re
 
 
-_PERSONA_COMMANDS = {
-    "통합": "auto",
-    "자동": "auto",
-    "인사": "hr",
-    "hr": "hr",
-    "개발": "dev",
-    "코드": "dev",
-    "dev": "dev",
-    "여행": "travel",
-    "회사": "company",
-    "사내": "company",
-    "주식": "stock",
-    "이력서": "resume",
-}
+# 파서, 도움말 API, 웹 자동완성이 함께 사용하는 단일 명령 정의.
+# 새 명령을 추가할 때 이 목록만 수정하면 서버와 화면이 동시에 갱신된다.
+COMMAND_DEFINITIONS = [
+    {"name": "검색", "aliases": ["웹검색", "search"], "kind": "search",
+     "icon": "🌐", "label": "인터넷 검색", "description": "최신 자료를 검색해 답변", "category": "답변", "featured": True},
+    {"name": "깊게", "aliases": ["심층", "deep"], "kind": "deep",
+     "icon": "🧠", "label": "깊은 분석", "description": "한 번 더 검토해 정밀하게 답변", "category": "답변", "featured": True},
+    {"name": "빠르게", "aliases": ["빠른", "fast"], "kind": "fast",
+     "icon": "⚡", "label": "빠른 답변", "description": "추가 추론 없이 빠르게 답변", "category": "답변"},
+    {"name": "간단히", "aliases": ["짧게", "핵심만"], "kind": "concise",
+     "icon": "✂️", "label": "간단히", "description": "핵심만 짧게 답변", "category": "형식", "featured": True},
+    {"name": "자세히", "aliases": ["상세히"], "kind": "detail",
+     "icon": "📝", "label": "자세히", "description": "근거와 실행 단계까지 설명", "category": "형식"},
+    {"name": "요약", "aliases": ["요약해"], "kind": "summary",
+     "icon": "📌", "label": "요약", "description": "붙여 넣은 내용을 핵심 위주로 요약", "category": "작업"},
+    {"name": "번역", "aliases": ["번역해"], "kind": "translate",
+     "icon": "🌏", "label": "번역", "description": "한국어와 영어를 자연스럽게 번역", "category": "작업"},
+    {"name": "통합", "aliases": ["자동"], "kind": "persona", "value": "auto",
+     "icon": "🤖", "label": "통합 전문가", "description": "질문에 맞는 전문가를 자동 선택", "category": "전문가"},
+    {"name": "인사", "aliases": ["hr"], "kind": "persona", "value": "hr",
+     "icon": "👥", "label": "인사 전문가", "description": "노무·급여·근로기준 질문", "category": "전문가"},
+    {"name": "개발", "aliases": ["코드", "dev"], "kind": "persona", "value": "dev",
+     "icon": "💻", "label": "개발 전문가", "description": "코드·서버·기술 질문", "category": "전문가"},
+    {"name": "여행", "aliases": [], "kind": "persona", "value": "travel",
+     "icon": "✈️", "label": "여행 전문가", "description": "여행 일정·입국·안전 질문", "category": "전문가"},
+    {"name": "회사", "aliases": ["사내"], "kind": "persona", "value": "company",
+     "icon": "🏢", "label": "회사 규정", "description": "등록된 사내 규정에서 답변", "category": "전문가"},
+    {"name": "주식", "aliases": [], "kind": "persona", "value": "stock",
+     "icon": "📈", "label": "주식 전문가", "description": "종목·시황·공시 분석", "category": "전문가"},
+    {"name": "이력서", "aliases": [], "kind": "persona", "value": "resume",
+     "icon": "📄", "label": "이력서 전문가", "description": "이력서·자소서·면접 질문", "category": "전문가"},
+    {"name": "도움말", "aliases": ["명령어", "help", "?"], "kind": "help",
+     "icon": "❓", "label": "명령어 도움말", "description": "사용 가능한 명령 전체 보기", "category": "도움말",
+     "requires_message": False, "featured": True},
+]
 
-_SEARCH_COMMANDS = {"검색", "웹검색", "search"}
-_DEEP_COMMANDS = {"깊게", "심층", "deep"}
-_FAST_COMMANDS = {"빠르게", "빠른", "fast"}
-_CONCISE_COMMANDS = {"간단히", "짧게", "핵심만"}
-_DETAIL_COMMANDS = {"자세히", "상세히"}
-_SUMMARY_COMMANDS = {"요약", "요약해"}
-_TRANSLATE_COMMANDS = {"번역", "번역해"}
-_HELP_COMMANDS = {"도움말", "명령어", "help", "?"}
+
+def _names(kind: str) -> set[str]:
+    return {
+        name.lower()
+        for item in COMMAND_DEFINITIONS if item["kind"] == kind
+        for name in [item["name"], *item.get("aliases", [])]
+    }
+
+
+_PERSONA_COMMANDS = {
+    name.lower(): item["value"]
+    for item in COMMAND_DEFINITIONS if item["kind"] == "persona"
+    for name in [item["name"], *item.get("aliases", [])]
+}
+_SEARCH_COMMANDS = _names("search")
+_DEEP_COMMANDS = _names("deep")
+_FAST_COMMANDS = _names("fast")
+_CONCISE_COMMANDS = _names("concise")
+_DETAIL_COMMANDS = _names("detail")
+_SUMMARY_COMMANDS = _names("summary")
+_TRANSLATE_COMMANDS = _names("translate")
+_HELP_COMMANDS = _names("help")
 _BARE_COMMANDS = (
     _SEARCH_COMMANDS | _DEEP_COMMANDS | _FAST_COMMANDS
     | _CONCISE_COMMANDS | _DETAIL_COMMANDS | _SUMMARY_COMMANDS | _TRANSLATE_COMMANDS
@@ -44,6 +79,25 @@ COMMAND_HELP = """## 간편 명령어
 
 예: `/검색 /인사 2027년 최저임금 알려줘`
 """
+
+
+def command_catalog() -> list[dict]:
+    """화면 자동완성에 필요한 안전한 공개 명령 메타데이터를 반환한다."""
+    return [
+        {
+            "name": item["name"],
+            "command": f'/{item["name"]}',
+            "aliases": [f"/{alias}" for alias in item.get("aliases", [])],
+            "icon": item["icon"],
+            "label": item["label"],
+            "description": item["description"],
+            "category": item["category"],
+            "persona": item.get("value") if item["kind"] == "persona" else "",
+            "requires_message": item.get("requires_message", True),
+            "featured": item.get("featured", False),
+        }
+        for item in COMMAND_DEFINITIONS
+    ]
 
 
 def _command_match(text: str, allow_bare: bool) -> tuple[str, str] | None:

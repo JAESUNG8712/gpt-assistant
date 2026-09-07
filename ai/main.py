@@ -263,6 +263,12 @@ def list_personas():
     return {"personas": list(PERSONAS.values())}
 
 
+@app.get("/commands")
+def list_commands():
+    """간편 명령 자동완성용 공개 목록. 인증 정보나 내부 프롬프트는 포함하지 않는다."""
+    return {"commands": command_router.command_catalog()}
+
+
 # ── 채팅 ──────────────────────────────────────────────
 
 # 메시지 길이 상한 — 검증 없이 그대로 검색·LLM 파이프라인에 흘려보내면 초대형 메시지

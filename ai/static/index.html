@@ -369,6 +369,33 @@
       cursor: pointer; transition: all 0.15s;
     }
     .command-chip:hover { border-color: var(--persona-color); color: var(--persona-color); }
+    .input-row { position: relative; }
+    .command-menu {
+      display: none; position: absolute; left: 0; right: 55px; bottom: calc(100% + 7px);
+      max-height: min(330px, 42vh); overflow-y: auto; z-index: 80;
+      background: var(--surface); border: 1px solid var(--border-bright); border-radius: 13px;
+      box-shadow: 0 -8px 28px rgba(0,0,0,0.22); padding: 6px;
+    }
+    .command-menu.open { display: block; }
+    .command-menu-title {
+      padding: 5px 9px 7px; color: var(--text-dim); font-size: 0.7rem; font-weight: 600;
+    }
+    .command-option {
+      width: 100%; display: grid; grid-template-columns: 29px minmax(78px, auto) 1fr;
+      align-items: center; gap: 7px; border: 0; border-radius: 9px; padding: 8px 9px;
+      color: var(--text); background: transparent; text-align: left; cursor: pointer;
+      font-family: inherit;
+    }
+    .command-option:hover, .command-option.active { background: var(--persona-glow); }
+    .command-option.active { outline: 1px solid var(--persona-color); }
+    .command-option-icon { font-size: 1rem; text-align: center; }
+    .command-option-name { color: var(--persona-color); font-size: 0.82rem; font-weight: 700; }
+    .command-option-desc { color: var(--text-dim); font-size: 0.75rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    @media (max-width: 520px) {
+      .command-menu { right: 0; max-height: 46vh; }
+      .command-option { grid-template-columns: 26px 82px 1fr; padding: 9px 7px; }
+      .command-option-desc { font-size: 0.7rem; }
+    }
 
     /* ── AI 생각 블록 ─────────────── */
     .think-block {
@@ -766,12 +793,7 @@
         </button>
         <span style="font-size:0.75rem;color:var(--text-dim);">PDF · DOCX · TXT 지원</span>
       </div>
-      <div class="command-bar" aria-label="간편 명령">
-        <button class="command-chip" onclick="insertCommand('/검색 ')">🌐 검색</button>
-        <button class="command-chip" onclick="insertCommand('/깊게 ')">🧠 깊게</button>
-        <button class="command-chip" onclick="insertCommand('/간단히 ')">✂️ 간단히</button>
-        <button class="command-chip" onclick="quickAsk('/도움말')">❓ 명령어</button>
-      </div>
+      <div class="command-bar" id="command-bar" aria-label="간편 명령"></div>
       <div class="input-top-row">
         <label class="search-toggle">
           <input type="checkbox" id="use-search">
@@ -795,7 +817,9 @@
       </div>
       <div class="input-row">
         <textarea id="msg-input" placeholder="명령하듯 입력하세요: 검색 27년 최저임금 · /도움말" rows="1"
-          onkeydown="handleKey(event)" oninput="autoResize(this)"></textarea>
+          onkeydown="handleKey(event)" oninput="handleCommandInput(this)" onblur="scheduleCloseCommandMenu()"
+          aria-autocomplete="list" aria-controls="command-menu" aria-expanded="false"></textarea>
+        <div class="command-menu" id="command-menu" role="listbox" aria-label="간편 명령 자동완성"></div>
         <button class="send-btn" id="send-btn" onclick="sendMessage()" title="전송 (Enter)">↑</button>
       </div>
       <div style="text-align:right;font-size:0.65rem;color:var(--text-dim);margin-top:4px;opacity:0.6">Enter 전송 &nbsp;·&nbsp; Shift+Enter 줄바꿈</div>
@@ -1019,6 +1043,10 @@
   // ── 상태 ─────────────────────────────────
   let currentPersona = null;
   let personas = [];
+  let commandCatalog = [];
+  let commandMatches = [];
+  let commandMenuIndex = 0;
+  let commandTokenStart = -1;
   let isLoading = false;
   let thinkingMode = 'off'; // "off" | "prompt" | "deep"
   let _codeBlockCounter = 0;
@@ -1142,12 +1170,20 @@
       if (!ok) return; // 유효하지 않은 링크 — initSharedView가 안내 메시지 표시 후 중단
     }
 
-    const r = await fetch('/personas');
-    const d = await r.json();
+    const personaResponse = await fetch('/personas');
+    const d = await personaResponse.json();
+    try {
+      const commandResponse = await fetch('/commands');
+      const commandData = commandResponse.ok ? await commandResponse.json() : { commands: [] };
+      commandCatalog = commandData.commands || [];
+    } catch (_) {
+      commandCatalog = [];
+    }
     personas = isSharedView
       ? d.personas.filter(p => p.id === 'auto' || _sharedAllowedIds.includes(p.id))
       : d.personas;
     renderPersonaBar();
+    renderCommandBar();
     selectPersona(personas[0].id);
 
     if (isSharedView) applySharedViewUI();
@@ -1540,6 +1576,7 @@
     const commandSearch = /^(?:\/|!)?(?:검색|웹검색|search)(?:\s|:|：)/i.test(msg);
     input.value = '';
     autoResize(input);
+    closeCommandMenu();
     appendMsg('user', msg, false, useSearch || commandSearch);
     isLoading = true;
     document.getElementById('send-btn').disabled = true;
@@ -2028,6 +2065,105 @@
     input.setSelectionRange(input.value.length, input.value.length);
   }
 
+  function availableCommands() {
+    if (!isSharedView) return commandCatalog;
+    return commandCatalog.filter(item => !item.persona || item.persona === 'auto' || _sharedAllowedIds.includes(item.persona));
+  }
+
+  function renderCommandBar() {
+    const bar = document.getElementById('command-bar');
+    const featured = availableCommands().filter(item => item.featured);
+    bar.innerHTML = featured.map(item => {
+      const action = item.requires_message
+        ? `insertCommand(${JSON.stringify(item.command + ' ')})`
+        : `quickAsk(${JSON.stringify(item.command)})`;
+      return `<button class="command-chip" onclick='${action}'>${escHtml(item.icon)} ${escHtml(item.label)}</button>`;
+    }).join('');
+  }
+
+  function commandQueryAtCaret(input) {
+    const caret = input.selectionStart;
+    if (caret !== input.selectionEnd) return null;
+    const beforeCaret = input.value.slice(0, caret);
+    const token = beforeCaret.match(/(?:^|\s)([/!])([^\s/]*)$/);
+    if (!token) return null;
+    const start = token.index + (token[0].startsWith(' ') ? 1 : 0);
+    const prefix = beforeCaret.slice(0, start);
+    // 자동완성은 질문 본문이 시작되기 전의 선행 명령 영역에서만 연다.
+    if (prefix && !/^(?:[/!][^\s]+\s+)+$/.test(prefix)) return null;
+    const completed = prefix.trim().split(/\s+/).filter(Boolean);
+    const known = new Set(availableCommands().flatMap(item => [item.command, ...item.aliases].map(name => name.toLowerCase())));
+    if (completed.length >= 4 || completed.some(name => !known.has('/' + name.slice(1).toLowerCase()))) return null;
+    return { query: token[2].toLowerCase(), start, caret };
+  }
+
+  function handleCommandInput(input) {
+    autoResize(input);
+    const active = commandQueryAtCaret(input);
+    if (!active) {
+      closeCommandMenu();
+      return;
+    }
+    commandTokenStart = active.start;
+    commandMatches = availableCommands().filter(item => {
+      const searchable = [item.name, item.label, item.description, ...item.aliases].join(' ').toLowerCase();
+      return !active.query || searchable.includes(active.query);
+    });
+    commandMenuIndex = 0;
+    renderCommandMenu();
+  }
+
+  function renderCommandMenu() {
+    const menu = document.getElementById('command-menu');
+    const input = document.getElementById('msg-input');
+    if (!commandMatches.length) {
+      closeCommandMenu();
+      return;
+    }
+    menu.innerHTML = `<div class="command-menu-title">명령을 선택하세요 · ↑↓ 이동 · Enter 선택 · Esc 닫기</div>`
+      + commandMatches.map((item, index) => `
+        <button type="button" id="command-option-${index}" class="command-option${index === commandMenuIndex ? ' active' : ''}"
+          role="option" aria-selected="${index === commandMenuIndex}" onmousedown="event.preventDefault()" onclick="selectCommand(${index})">
+          <span class="command-option-icon">${escHtml(item.icon)}</span>
+          <span class="command-option-name">${escHtml(item.command)}</span>
+          <span class="command-option-desc">${escHtml(item.description)}</span>
+        </button>`).join('');
+    menu.classList.add('open');
+    input.setAttribute('aria-expanded', 'true');
+    input.setAttribute('aria-activedescendant', `command-option-${commandMenuIndex}`);
+    document.getElementById(`command-option-${commandMenuIndex}`)?.scrollIntoView({ block: 'nearest' });
+  }
+
+  function selectCommand(index = commandMenuIndex) {
+    const item = commandMatches[index];
+    const input = document.getElementById('msg-input');
+    if (!item || commandTokenStart < 0) return;
+    const caret = input.selectionStart;
+    const suffix = input.value.slice(caret);
+    input.value = input.value.slice(0, commandTokenStart) + item.command + (item.requires_message ? ' ' : '') + suffix;
+    const nextCaret = commandTokenStart + item.command.length + (item.requires_message ? 1 : 0);
+    input.setSelectionRange(nextCaret, nextCaret);
+    closeCommandMenu();
+    autoResize(input);
+    input.focus();
+  }
+
+  function closeCommandMenu() {
+    const menu = document.getElementById('command-menu');
+    const input = document.getElementById('msg-input');
+    menu.classList.remove('open');
+    menu.innerHTML = '';
+    input.setAttribute('aria-expanded', 'false');
+    input.removeAttribute('aria-activedescendant');
+    commandMatches = [];
+    commandMenuIndex = 0;
+    commandTokenStart = -1;
+  }
+
+  function scheduleCloseCommandMenu() {
+    setTimeout(closeCommandMenu, 120);
+  }
+
   function toggleTips() {
     const tips = document.getElementById('search-tips');
     tips.classList.toggle('open');
@@ -2050,6 +2186,21 @@
   }
 
   function handleKey(e) {
+    if (commandMatches.length) {
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        e.preventDefault();
+        const delta = e.key === 'ArrowDown' ? 1 : -1;
+        commandMenuIndex = (commandMenuIndex + delta + commandMatches.length) % commandMatches.length;
+        renderCommandMenu();
+        return;
+      }
+      if ((e.key === 'Enter' && !e.shiftKey) || e.key === 'Tab') {
+        e.preventDefault(); selectCommand(); return;
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault(); closeCommandMenu(); return;
+      }
+    }
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
   }
 
