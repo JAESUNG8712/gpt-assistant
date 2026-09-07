@@ -1387,6 +1387,9 @@
           <div class="msg-avatar">${m.role === 'user' ? '👤' : (msgPersona ? msgPersona.icon : currentPersona.icon)}</div>
           <div class="msg-bubble">${tag}${m.role === 'user' ? escHtml(m.content) : renderMd(m.content)}</div>`;
         container.appendChild(div);
+        if (m.role === 'user' && m.command_status) {
+          renderCommandStatus(div, m.command_status);
+        }
       });
       container.scrollTop = container.scrollHeight;
     } catch (e) {

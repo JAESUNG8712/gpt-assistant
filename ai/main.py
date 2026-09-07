@@ -1262,7 +1262,10 @@ async def chat(req: ChatRequest, request: Request):
             # (생각 과정이 대화 이력·자동학습 KB에 오염되는 것 방지)
             ai_reply_clean = re.sub(r'<think>[\s\S]*?</think>\s*', '', ai_reply).strip()
 
-            mem.save_message("user", user_msg, persona=persona_id, session_id=session_scope)
+            mem.save_message(
+                "user", user_msg, persona=persona_id, session_id=session_scope,
+                command_status=command_status,
+            )
             mem.save_message(
                 "assistant", ai_reply_clean or ai_reply,
                 persona=persona_id, session_id=session_scope,

@@ -299,6 +299,7 @@ def main():
             10, persona="company", session_id=share_scope
         )
         assert len(shared_history) == 2
+        assert shared_history[0]["command_status"]["commands"][0]["command"] == "/회사"
         assert main.mem.list_memory_candidates("pending") == []
 
         # 같은 브라우저 표식이어도 소유자와 공유 세션은 별도 범위에 저장된다.

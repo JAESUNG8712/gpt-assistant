@@ -271,11 +271,15 @@ def init_db(seed_static: bool = True):
         )""")
         # 기존 운영 DB 무손실 마이그레이션. Turso HTTP 래퍼는 PRAGMA 결과를
         # 반환하지 않으므로 ADD COLUMN을 시도하고 "이미 존재" 오류만 무시한다.
-        try:
-            c.execute("ALTER TABLE conversations ADD COLUMN session_id TEXT DEFAULT 'legacy'")
-        except Exception as e:
-            if "duplicate column" not in str(e).lower() and "already exists" not in str(e).lower():
-                raise
+        for column_sql in (
+            "ALTER TABLE conversations ADD COLUMN session_id TEXT DEFAULT 'legacy'",
+            "ALTER TABLE conversations ADD COLUMN command_status_json TEXT DEFAULT ''",
+        ):
+            try:
+                c.execute(column_sql)
+            except Exception as e:
+                if "duplicate column" not in str(e).lower() and "already exists" not in str(e).lower():
+                    raise
         c.execute("""CREATE TABLE IF NOT EXISTS memory_candidates (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             content_hash TEXT NOT NULL,
@@ -682,14 +686,25 @@ def _safe_session_id(session_id: str) -> str:
     return value or "legacy"
 
 
-def save_message(role: str, content: str, persona: str = "hr", session_id: str = "legacy"):
+def save_message(role: str, content: str, persona: str = "hr", session_id: str = "legacy",
+                 command_status: dict = None):
     safe_content, labels = privacy_guard.sanitize_for_storage(content)
     if labels:
         print(f"🔒 대화 저장 전 민감정보 마스킹: {', '.join(labels)}")
+    status_json = ""
+    if command_status:
+        # 명령 상태는 서버가 생성한 표시용 메타데이터만 저장한다.
+        # 예상치 못한 호출자가 너무 큰 값을 넘겨도 DB 행이 비대해지지 않게 제한한다.
+        encoded_status = json.dumps(command_status, ensure_ascii=False, separators=(",", ":"))
+        if len(encoded_status) <= 8000:
+            status_json = encoded_status
     with _conn() as c:
         c.execute(
-            "INSERT INTO conversations (role, content, persona, created_at, session_id) VALUES (?,?,?,?,?)",
-            (role, safe_content, persona, datetime.now().isoformat(), _safe_session_id(session_id)),
+            "INSERT INTO conversations"
+            " (role, content, persona, created_at, session_id, command_status_json)"
+            " VALUES (?,?,?,?,?,?)",
+            (role, safe_content, persona, datetime.now().isoformat(),
+             _safe_session_id(session_id), status_json),
         )
 
 
@@ -698,29 +713,42 @@ def get_history(limit: int = 20, persona: str = None, session_id: str = None) ->
     with _conn() as c:
         if persona and session_id:
             rows = c.execute(
-                "SELECT role, content, persona, created_at, session_id FROM conversations"
+                "SELECT role, content, persona, created_at, session_id, command_status_json FROM conversations"
                 " WHERE persona=? AND session_id=? ORDER BY id DESC LIMIT ?",
                 (persona, _safe_session_id(session_id), limit),
             ).fetchall()
         elif persona:
             rows = c.execute(
-                "SELECT role, content, persona, created_at, session_id FROM conversations"
+                "SELECT role, content, persona, created_at, session_id, command_status_json FROM conversations"
                 " WHERE persona=? ORDER BY id DESC LIMIT ?",
                 (persona, limit),
             ).fetchall()
         elif session_id:
             rows = c.execute(
-                "SELECT role, content, persona, created_at, session_id FROM conversations"
+                "SELECT role, content, persona, created_at, session_id, command_status_json FROM conversations"
                 " WHERE session_id=? ORDER BY id DESC LIMIT ?",
                 (_safe_session_id(session_id), limit),
             ).fetchall()
         else:
             rows = c.execute(
-                "SELECT role, content, persona, created_at, session_id FROM conversations"
+                "SELECT role, content, persona, created_at, session_id, command_status_json FROM conversations"
                 " ORDER BY id DESC LIMIT ?",
                 (limit,),
             ).fetchall()
-    return [dict(r) for r in reversed(rows)]
+    history = []
+    for row in reversed(rows):
+        item = dict(row)
+        raw_status = item.pop("command_status_json", "") or ""
+        if raw_status:
+            try:
+                parsed = json.loads(raw_status)
+                if isinstance(parsed, dict):
+                    item["command_status"] = parsed
+            except (TypeError, ValueError, json.JSONDecodeError):
+                # 예전/손상 메타데이터는 대화 본문 로드에 영향을 주지 않는다.
+                pass
+        history.append(item)
+    return history
 
 
 def get_recent_messages(limit: int = 10, persona: str = None, session_id: str = None) -> list:

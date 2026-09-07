@@ -28,15 +28,25 @@ def main():
         with sqlite3.connect(db_path) as c:
             columns = {r[1] for r in c.execute("PRAGMA table_info(conversations)")}
         assert "session_id" in columns
+        assert "command_status_json" in columns
 
         # 소유자/공유 세션 간 대화가 섞이지 않아야 한다.
-        memory.save_message("user", "소유자 질문", "hr", "owner:browser-a")
+        status = {
+            "commands": [{"command": "/깊게", "kind": "deep", "icon": "🧠", "label": "깊은 분석"}],
+            "thinking_mode": "deep", "resolved_persona": "hr",
+        }
+        memory.save_message(
+            "user", "소유자 질문", "hr", "owner:browser-a", command_status=status
+        )
         memory.save_message("assistant", "소유자 답변", "hr", "owner:browser-a")
         memory.save_message("user", "공유 질문", "hr", "share:token-x:browser-a")
         owner = memory.get_recent_messages(10, "hr", "owner:browser-a")
         shared = memory.get_recent_messages(10, "hr", "share:token-x:browser-a")
         assert [m["content"] for m in owner] == ["소유자 질문", "소유자 답변"]
         assert [m["content"] for m in shared] == ["공유 질문"]
+        owner_history = memory.get_history(10, "hr", "owner:browser-a")
+        assert owner_history[0]["command_status"] == status
+        assert "command_status" not in owner_history[1]
 
         # 자동응답은 즉시 장기기억이 아니라 승인 대기 후보로만 저장된다.
         question = "연차휴가 신청 절차를 자세히 알려주세요"
