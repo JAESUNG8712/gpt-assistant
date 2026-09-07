@@ -2758,6 +2758,14 @@ function openDownloadModal(empId){
   </div>
   <div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal()">취소</button><button class="btn btn-primary" onclick="executeDownload(${empId})">📥 다운로드</button></div></div>`);
 }
+// CSV/formula injection(CWE-1236) 방지: 셀 값이 =,+,-,@ 또는 탭/캐리지리턴으로
+// 시작하면 Excel/LibreOffice가 수식으로 해석해 열람 시점에 실행할 수 있다(예:
+// 지원자 메모·거래처명·인사 변동 사유 등 자유텍스트 필드에 담긴 값). 그런 값 앞에
+// 작은따옴표를 붙여 텍스트로 강제 처리한다 — 업계 표준 완화책(OWASP CSV Injection).
+function _csvSafeCell(v){
+  const s=String(v==null?"":v);
+  return /^[=+\-@\t\r]/.test(s) ? "'"+s : s;
+}
 function executeDownload(empId){
   const e=getEmp(empId);if(!e)return;
   const bom="\uFEFF";let rows=[];
@@ -2800,14 +2808,14 @@ function executeDownload(empId){
     rows.push(["날짜","변동유형","내용","변동전","변동후","비고"]);
     [...(e.hrHistory||[])].sort((a,b)=>b.date.localeCompare(a.date)).forEach(hh=>{rows.push([hh.date,HR_TYPES[hh.type]||hh.type,hh.desc,hh.before||"-",hh.after||"-",hh.note||"-"]);});
   }
-  const csv=bom+rows.map(r=>r.map(c=>`"${String(c==null?"":c).replace(/"/g,"'")}"`).join(",")).join("\n");
+  const csv=bom+rows.map(r=>r.map(c=>`"${_csvSafeCell(c).replace(/"/g,"'")}"`).join(",")).join("\n");
   const url=URL.createObjectURL(new Blob([csv],{type:"text/csv;charset=utf-8;"}));
   const a=document.createElement("a");a.href=url;a.download=`${e.name}_인사정보_${new Date().toISOString().slice(0,10)}.csv`;a.click();URL.revokeObjectURL(url);
   closeModal();showToast(`${e.name}님의 인사정보가 다운로드되었습니다.`,"success");
 }
 
 async function dlCSV(fn,headers,rows){
-  const bom="\uFEFF",csv=bom+[headers.join(","),...rows.map(r=>r.map(c=>`"${String(c==null?"":c).replace(/"/g,"'")}"`).join(","))].join("\n");
+  const bom="\uFEFF",csv=bom+[headers.join(","),...rows.map(r=>r.map(c=>`"${_csvSafeCell(c).replace(/"/g,"'")}"`).join(","))].join("\n");
   const blob=new Blob([csv],{type:"text/csv;charset=utf-8;"});
   if(navigator.canShare && navigator.canShare({files:[new File([blob],fn,{type:blob.type})]})){
     try{ await navigator.share({files:[new File([blob],fn,{type:blob.type})],title:fn}); return; }
@@ -14745,7 +14753,10 @@ function downloadAttDetailCSV(empId){
   const header="날짜,출근시간,퇴근시간,근무시간(h),상태,비고";
   const rows=recs.map(r=>{
     let hrs="";if(r.checkIn&&r.checkOut){const[ih,im]=r.checkIn.split(":").map(Number);const[oh,om]=r.checkOut.split(":").map(Number);hrs=Math.round(((oh*60+om)-(ih*60+im))/60*10)/10;}
-    return[r.date,r.checkIn||"",r.checkOut||"",hrs,SL[r.status]||r.status,r.note||""].join(",");
+    // r.note는 자유텍스트라 콤마가 섞이면 컬럼이 깨지고, =/+/-/@로 시작하면 Excel이
+    // 수식으로 해석할 수 있어(CSV/formula injection) 다른 CSV 내보내기와 동일하게
+    // 따옴표로 감싸고 _csvSafeCell로 무력화한다.
+    return[r.date,r.checkIn||"",r.checkOut||"",hrs,SL[r.status]||r.status,r.note||""].map(c=>`"${_csvSafeCell(c).replace(/"/g,"'")}"`).join(",");
   });
   const csv=[header,...rows].join("\n");
   const blob=new Blob(["﻿"+csv],{type:"text/csv;charset=utf-8"});

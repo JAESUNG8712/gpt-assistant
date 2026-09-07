@@ -8851,7 +8851,15 @@ app.get("/api/recruit/candidates/export", async (req, res) => {
     let list = await _recruitVisibleCandidates(userId, role, companyId);
     if (jobId) list = list.filter(c => String(c.jobId) === String(jobId));
     const jobTitleOf = async (id) => { const j = await _recruitJobById(id, companyId); return j ? j.title : ""; };
-    const esc = (v) => `"${String(v == null ? "" : v).replace(/"/g, '""')}"`;
+    // CSV/formula injection(CWE-1236) 방지: 지원자가 직접 입력한 이름·경력·메모 등
+    // 자유텍스트가 =,+,-,@ 또는 탭/캐리지리턴으로 시작하면 Excel이 수식으로 해석해
+    // 이 CSV를 여는 관리자 PC에서 실행될 수 있다 — 값 앞에 작은따옴표를 붙여 무력화한다
+    // (OWASP CSV Injection 표준 완화책, public/index.html의 _csvSafeCell과 동일 로직).
+    const esc = (v) => {
+      const s = String(v == null ? "" : v);
+      const safe = /^[=+\-@\t\r]/.test(s) ? "'" + s : s;
+      return `"${safe.replace(/"/g, '""')}"`;
+    };
     const header = ["채용공고", "지원자명", "연락처", "이메일", "전형단계", "지원일", "최종학력", "경력사항", "마지막연봉", "희망연봉", "학력·경력 공백", "교육/대외활동", "이력서 요약", "메모"];
     const lines = [header.map(esc).join(",")];
     for (const c of list) {
