@@ -162,7 +162,7 @@ test.describe("로그인·기본 네비게이션", () => {
       return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true, token: "unused" }) });
     });
     await page.goto("/master.html");
-    await page.evaluate(() => enterCompany("company-e2e"));
+    await page.evaluate(() => { void enterCompany("company-e2e"); });
 
     const dialog = page.locator("#confirm-dialog");
     await expect(dialog).toBeVisible();
