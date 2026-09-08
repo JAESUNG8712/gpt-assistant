@@ -160,7 +160,6 @@
       transition: all .15s; box-shadow: 0 2px 8px rgba(30,40,60,0.18);
     }
     .msg-bubble a.dl-btn:hover { opacity: 0.9; transform: translateY(-1px); box-shadow: 0 4px 12px rgba(30,40,60,0.22); }
-    .search-on-badge { font-size: 0.68rem; background: #e6f4ea; color: #1e7e34; border: 1px solid #34a853; padding: 2px 8px; border-radius: 10px; margin-left: 6px; }
     .command-status {
       display: flex; align-items: center; flex-wrap: wrap; gap: 4px; margin-top: 7px;
       padding-top: 6px; border-top: 1px solid rgba(127,127,127,0.16);
@@ -176,7 +175,9 @@
       border-color: color-mix(in srgb, var(--persona-color) 38%, var(--border));
       color: var(--persona-color);
     }
-    .gemini-badge {
+    .command-status-badge.clickable { cursor: pointer; font-family: inherit; }
+    .command-status-badge.clickable:hover { background: var(--surface3); transform: translateY(-1px); }
+    .coding-badge {
       font-size: 0.68rem; background: #e8f0fe; color: #1a73e8;
       border: 1px solid #4285f4; padding: 3px 10px; border-radius: 20px;
       display: flex; align-items: center; gap: 4px; white-space: nowrap;
@@ -198,13 +199,20 @@
     .menu-btn:hover { color: var(--text-bright); background: var(--surface3); }
     @media (max-width: 680px) { .menu-btn { display: block; } }
 
-    .header-persona { display: flex; align-items: center; gap: 8px; }
+    .header-persona { display: flex; align-items: center; gap: 8px; min-width: 0; }
     .header-persona-icon { font-size: 1.3rem; }
-    .header-persona-name { font-size: 0.96rem; font-weight: 700; color: var(--text-bright); }
+    .header-persona-name {
+      font-size: 0.96rem; font-weight: 700; color: var(--text-bright);
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .header-tools { display: flex; gap: 8px; align-items: center; margin-left: auto; flex-shrink: 0; }
     .model-badge {
       font-size: 0.67rem; background: var(--surface3); border: 1px solid var(--border);
-      padding: 3px 10px; border-radius: 20px; color: var(--text-dim); margin-left: auto;
+      padding: 3px 10px; border-radius: 20px; color: var(--text-dim);
       white-space: nowrap;
+    }
+    @media (max-width: 680px) {
+      .model-badge, .coding-badge { display: none !important; }
     }
 
     /* ── 페르소나 선택 탭 ────────── */
@@ -761,9 +769,9 @@
         <span class="header-persona-icon" id="h-icon">🤖</span>
         <span class="header-persona-name" id="h-name">나만의 AI</span>
       </div>
-      <div style="display:flex;gap:8px;align-items:center;">
+      <div class="header-tools">
         <button class="code-toggle-btn" id="code-toggle-btn" onclick="toggleCodePanel()" title="Python 코드 실행">🐍 Python</button>
-        <span class="gemini-badge" id="gemini-badge" style="display:none">✨ Gemini</span>
+        <span class="coding-badge" id="coding-badge" style="display:none">✨ Gemini 코딩</span>
         <span class="model-badge" id="model-badge">로딩 중...</span>
       </div>
     </header>
@@ -1063,6 +1071,7 @@
   let commandMenuIndex = 0;
   let commandTokenStart = -1;
   let isLoading = false;
+  let modelInfo = null;
   let thinkingMode = 'off'; // "off" | "prompt" | "deep"
   let _codeBlockCounter = 0;
   // 공유 링크(?share=TOKEN)로 접속한 경우 셋팅됨 — 채팅 요청마다 함께 전송,
@@ -1302,12 +1311,7 @@
     renderSearchTips(id);
     document.getElementById('search-tips').classList.remove('open');
 
-    // use_coding 기능 활성화 페르소나: Gemini 배지 표시
-    const geminiBadge = document.getElementById('gemini-badge');
-    if (geminiBadge) {
-      const hasCoding = currentPersona.features && currentPersona.features.use_coding;
-      geminiBadge.style.display = hasCoding ? '' : 'none';
-    }
+    updateModelBadges();
 
     // 이력서 분석 버튼 표시/숨김 (file_analysis feature)
     const resumeRow = document.getElementById('resume-row');
@@ -1410,18 +1414,16 @@
   }
 
   // ── 채팅 ─────────────────────────────────
-  function appendMsg(role, content, isTyping = false, useSearch = false) {
+  function appendMsg(role, content, isTyping = false) {
     const welcome = document.getElementById('welcome');
     if (welcome) welcome.remove();
     const msgs = document.getElementById('messages');
     const div = document.createElement('div');
     div.className = `msg ${role}${isTyping ? ' typing' : ''}`;
-    const searchBadge = (role === 'user' && useSearch)
-      ? '<span class="search-on-badge">🌐 검색 포함</span>' : '';
     const typingDots = `<div class="typing-dots"><span></span><span></span><span></span></div>`;
     div.innerHTML = `
       <div class="msg-avatar">${role === 'user' ? '👤' : currentPersona?.icon || '🤖'}</div>
-      <div class="msg-bubble">${role === 'user' ? escHtml(content) + searchBadge : (isTyping ? typingDots : renderMd(content))}</div>`;
+      <div class="msg-bubble">${role === 'user' ? escHtml(content) : (isTyping ? typingDots : renderMd(content))}</div>`;
     msgs.appendChild(div);
     msgs.scrollTop = msgs.scrollHeight;
     return div;
@@ -1474,7 +1476,7 @@
   function renderCommandStatus(messageDiv, status, pending = false) {
     if (!messageDiv || !status) return;
     const bubble = messageDiv.querySelector('.msg-bubble');
-    bubble.querySelectorAll('.search-on-badge, .command-status').forEach(el => el.remove());
+    bubble.querySelectorAll('.command-status').forEach(el => el.remove());
     const items = (status.commands || []).map(item => ({ ...item }));
     const kinds = new Set(items.map(item => item.kind));
     if (!kinds.has('search') && (status.search_requested || status.search_used)) {
@@ -1501,12 +1503,21 @@
     label.textContent = pending ? '요청' : '적용됨';
     row.appendChild(label);
     items.forEach(item => {
-      const badge = document.createElement('span');
+      const reusable = !pending && !!item.command;
+      const badge = document.createElement(reusable ? 'button' : 'span');
       badge.className = 'command-status-badge';
       const displayLabel = item.kind === 'search' && !pending && status.search_used === false
         ? '검색 요청됨' : item.label;
       badge.textContent = `${item.icon || '✓'} ${displayLabel}`;
-      if (item.command) badge.title = `${item.command} 명령`;
+      if (reusable) {
+        badge.type = 'button';
+        badge.classList.add('clickable');
+        badge.title = `${item.command} 명령 다시 사용`;
+        badge.setAttribute('aria-label', `${item.command} 명령 다시 사용`);
+        badge.addEventListener('click', () => reuseCommand(item.command));
+      } else if (item.command) {
+        badge.title = `${item.command} 명령`;
+      }
       row.appendChild(badge);
     });
     bubble.appendChild(row);
@@ -1516,6 +1527,29 @@
     const raw = response.headers.get('X-Command-Status');
     if (!raw) return null;
     try { return JSON.parse(raw); } catch (_) { return null; }
+  }
+
+  function reuseCommand(command) {
+    const input = document.getElementById('msg-input');
+    if (!input || !command) return;
+    const current = input.value.trimStart();
+    const lookup = commandLookup();
+    const existing = new Set();
+    let remaining = current;
+    for (let index = 0; index < 4 && remaining; index++) {
+      const match = remaining.match(/^[/!]([^\s:：]+)\s*[:：]?\s*(.*)$/s);
+      if (!match) break;
+      const item = lookup.get(match[1].toLowerCase());
+      if (!item) break;
+      existing.add(item.command);
+      remaining = match[2].trimStart();
+    }
+    const alreadyApplied = existing.has(command);
+    input.value = alreadyApplied ? current : `${command} ${current}`;
+    autoResize(input);
+    input.focus();
+    input.setSelectionRange(input.value.length, input.value.length);
+    showToast(`${command} 명령을 입력창에 추가했습니다.`);
   }
 
   function applyResolvedPersona(messageDiv, status) {
@@ -2713,9 +2747,38 @@
   async function loadModelInfo() {
     try {
       const r = await fetch('/model-info');
-      const d = await r.json();
-      document.getElementById('model-badge').textContent = `${d.model} · ${d.provider}`;
+      modelInfo = await r.json();
+      updateModelBadges();
     } catch {}
+  }
+
+  function compactProviderName(provider = '') {
+    if (provider.includes('Claude')) return 'Claude';
+    if (provider.includes('Gemini')) return 'Gemini';
+    if (provider.includes('OpenRouter')) return 'OpenRouter';
+    if (provider.includes('Groq')) return 'Groq';
+    if (provider.includes('Zen')) return 'Zen';
+    if (provider.includes('TF-IDF')) return '로컬 AI';
+    return provider || 'AI';
+  }
+
+  function updateModelBadges() {
+    const modelBadge = document.getElementById('model-badge');
+    const codingBadge = document.getElementById('coding-badge');
+    if (modelBadge && modelInfo) {
+      modelBadge.textContent = `✨ ${compactProviderName(modelInfo.provider)}`;
+      modelBadge.title = `${modelInfo.model} · ${modelInfo.provider}`
+        + (modelInfo.fallback_chain ? `\n폴백: ${modelInfo.fallback_chain}` : '');
+    }
+    if (codingBadge) {
+      const coding = modelInfo?.coding;
+      const showDedicated = currentPersona?.id === 'dev' && coding?.dedicated;
+      codingBadge.style.display = showDedicated ? '' : 'none';
+      if (showDedicated) {
+        codingBadge.textContent = `✨ ${compactProviderName(coding.provider)} 코딩`;
+        codingBadge.title = `${coding.model} · 코딩 전용 모델`;
+      }
+    }
   }
 
   // ── 사이드바 ─────────────────────────────

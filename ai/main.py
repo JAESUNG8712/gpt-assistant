@@ -919,6 +919,18 @@ async def chat(req: ChatRequest, request: Request):
     history = mem.get_recent_messages(10, persona=persona_id, session_id=session_scope)
     history.append({"role": "user", "content": user_msg})
 
+    # 응답 헤더와 대화 이력이 동일한 확정 상태 객체를 공유한다.
+    # 스트리밍 함수보다 먼저 만들어 저장 시점에도 값의 출처가 명확하도록 한다.
+    command_status = {
+        "commands": command_router.applied_command_status(command["applied_commands"]),
+        "search_requested": bool(effective_use_search),
+        "search_used": bool(search_ctx),
+        "thinking_mode": effective_thinking_mode,
+        "resolved_persona": persona_id,
+        "resolved_persona_name": persona.get("name", ""),
+        "resolved_persona_icon": persona.get("icon", ""),
+    }
+
     async def generate():
         collected = []
         validation_results = []  # 답변·학습 품질 게이트에서 공통 사용
@@ -1319,15 +1331,6 @@ async def chat(req: ChatRequest, request: Request):
             print(f"[오류] {type(e).__name__}: {e}\n{traceback.format_exc()}")
             yield f"\n⚠️ 오류: {type(e).__name__}: {e}"
 
-    command_status = {
-        "commands": command_router.applied_command_status(command["applied_commands"]),
-        "search_requested": bool(effective_use_search),
-        "search_used": bool(search_ctx),
-        "thinking_mode": effective_thinking_mode,
-        "resolved_persona": persona_id,
-        "resolved_persona_name": persona.get("name", ""),
-        "resolved_persona_icon": persona.get("icon", ""),
-    }
     return StreamingResponse(
         generate(),
         media_type="text/plain; charset=utf-8",

@@ -40,6 +40,11 @@ def main():
         assert "runMemoryQualityEval" in index_html
         assert "loadMemoryObservability" in index_html
         assert "loadMemoryEffectiveness" in index_html
+        assert "reuseCommand" in index_html
+        assert "search-on-badge" not in index_html
+        assert "gemini-badge" not in index_html
+        model_info = client.get("/model-info").json()
+        assert set(model_info["coding"]) == {"provider", "model", "dedicated"}
         owner_token = "test-owner-token"
 
         # 소유자 데이터 API와 일반 채팅은 인증 없이는 열리지 않아야 한다.

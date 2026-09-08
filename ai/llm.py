@@ -561,4 +561,11 @@ def current_model_info() -> dict:
     if cooling:
         info["cooling_down"] = cooling
 
+    coding_dedicated = bool(GEMINI_API_KEY and "gemini" not in cooling)
+    info["coding"] = {
+        "provider": "Google Gemini" if coding_dedicated else info["provider"],
+        "model": GEMINI_CODING_MODEL if coding_dedicated else info["model"],
+        "dedicated": coding_dedicated,
+    }
+
     return info
