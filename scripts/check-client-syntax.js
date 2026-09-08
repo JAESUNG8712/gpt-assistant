@@ -9,7 +9,7 @@ const fs = require("fs");
 const path = require("path");
 const vm = require("vm");
 
-const TARGET = path.join(__dirname, "..", "public", "index.html");
+const TARGETS = ["index.html", "budget.html", "master.html"].map(name => path.join(__dirname, "..", "public", name));
 
 function extractInlineScripts(html) {
   // src= 속성이 있는 <script>(외부 파일)는 제외 — 이 파일은 그런 태그를 쓰지 않지만
@@ -27,33 +27,37 @@ function extractInlineScripts(html) {
 }
 
 function main() {
-  if (!fs.existsSync(TARGET)) {
-    console.error(`[check-client-syntax] 대상 파일을 찾을 수 없습니다: ${TARGET}`);
-    process.exit(1);
-  }
-  const html = fs.readFileSync(TARGET, "utf8");
-  const scripts = extractInlineScripts(html);
-  if (!scripts.length) {
-    console.error("[check-client-syntax] 인라인 <script> 태그를 찾지 못했습니다 — 파일 구조가 바뀌었는지 확인하세요.");
-    process.exit(1);
-  }
-
   let failed = 0;
-  for (const s of scripts) {
-    try {
-      // filename을 주면 문법 오류 스택에 정확한 위치(대략적인 줄 번호)가 찍힌다.
-      new vm.Script(s.body, { filename: `public/index.html#inline-script-${s.index}` });
-    } catch (e) {
+  let checked = 0;
+  for (const target of TARGETS) {
+    if (!fs.existsSync(target)) {
       failed++;
-      console.error(`[check-client-syntax] 문법 오류 (script #${s.index}): ${e.message}`);
+      console.error(`[check-client-syntax] 대상 파일을 찾을 수 없습니다: ${target}`);
+      continue;
+    }
+    const html = fs.readFileSync(target, "utf8");
+    const scripts = extractInlineScripts(html);
+    if (!scripts.length) {
+      failed++;
+      console.error(`[check-client-syntax] ${path.basename(target)}: 인라인 <script> 태그를 찾지 못했습니다.`);
+      continue;
+    }
+    for (const s of scripts) {
+      checked++;
+      try {
+        new vm.Script(s.body, { filename: `public/${path.basename(target)}#inline-script-${s.index}` });
+      } catch (e) {
+        failed++;
+        console.error(`[check-client-syntax] ${path.basename(target)} 문법 오류 (script #${s.index}): ${e.message}`);
+      }
     }
   }
 
   if (failed) {
-    console.error(`[check-client-syntax] 실패: ${failed}/${scripts.length}개 인라인 스크립트에서 문법 오류.`);
+    console.error(`[check-client-syntax] 실패: ${failed}개 오류.`);
     process.exit(1);
   }
-  console.log(`[check-client-syntax] 통과: 인라인 스크립트 ${scripts.length}개 전부 문법 유효.`);
+  console.log(`[check-client-syntax] 통과: HTML ${TARGETS.length}개, 인라인 스크립트 ${checked}개 전부 문법 유효.`);
 }
 
 main();

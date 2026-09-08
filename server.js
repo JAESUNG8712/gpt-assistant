@@ -177,6 +177,13 @@ function _authStateUnavailable(res) {
     message: "로그인 상태를 확인할 수 없습니다. 잠시 후 다시 시도해주세요.",
   });
 }
+function _featureStateUnavailable(res) {
+  return res.status(503).json({
+    ok: false,
+    code: "FEATURE_STATE_UNAVAILABLE",
+    message: "회사 기능 권한을 확인할 수 없습니다. 잠시 후 다시 시도해주세요.",
+  });
+}
 async function authenticate(req, res, next) {
   const header = req.headers.authorization || "";
   const token = header.startsWith("Bearer ") ? header.slice(7) : null;
@@ -204,7 +211,13 @@ async function authenticate(req, res, next) {
   // companyFeatures — 회사 단위 모듈 on/off(마스터 콘솔에서 설정). 10초 캐시로 조회하므로
   // 요청마다 추가 DB 왕복이 생기지 않는다(_getCompanyFeatureMap 정의부 주석 참고).
   // requireFeature()가 이 값을 그대로 동기적으로 검사한다.
-  const companyFeatures = await _getCompanyFeatureMap(auth.companyId || null);
+  let companyFeatures;
+  try {
+    companyFeatures = await _getCompanyFeatureMap(auth.companyId || null);
+  } catch {
+    req.auth = null;
+    return _featureStateUnavailable(res);
+  }
   req.auth = {
     ...auth,
     menuPerms: (employee && employee.menuPerms) || {},
@@ -3400,12 +3413,18 @@ app.post("/login", loginLimiter, async (req, res) => {
     // 서버가 실제로 검증한 계정 정보로만 토큰을 발급한다(클라이언트가 보낸 role은 무시).
     // authVersion을 함께 실어 매 요청마다 authenticate()가 "그 사이 role/pw/active가
     // 바뀌지 않았는지" 대조할 수 있게 한다(P0-5, _nextAuthVersion 주석 참고).
-    const token = signToken({ empId: employee.id, loginId: employee.loginId, role: employee.role, companyId, authVersion: employee.authVersion || 0 });
+    // 자격증명과 2FA는 이미 성공했으므로 이후 기능 상태 조회가 503이더라도 브루트포스
+    // 실패 횟수에는 포함하지 않는다. 장애 복구 직후 정상 사용자가 429에 갇히는 것을 방지한다.
     res.locals.loginOk = true;
     // companyFeatures — 로그인 직후(아직 GET /data를 부르기 전) 클라이언트가 사이드바를
     // 최초로 그릴 때부터 바로 반영할 수 있도록 여기서도 함께 내려준다.
-    res.json({ ok: true, employee, token, companyFeatures: await _getCompanyFeatureMap(companyId) });
-  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
+    const companyFeatures = await _getCompanyFeatureMap(companyId);
+    const token = signToken({ empId: employee.id, loginId: employee.loginId, role: employee.role, companyId, authVersion: employee.authVersion || 0 });
+    res.json({ ok: true, employee, token, companyFeatures });
+  } catch (e) {
+    if (e?.code === "FEATURE_STATE_UNAVAILABLE") return _featureStateUnavailable(res);
+    res.status(500).json({ ok: false, message: _safeErrMsg(e) });
+  }
 });
 
 // 전체 employees 배열을 받는 레거시 /save에서는 일반 사용자가 role·권한·타인 계정을
@@ -3893,11 +3912,13 @@ async function _getCompanyFeatureMap(companyId) {
     _companyFeatureCache.set(companyId, { map, expiresAt: Date.now() + COMPANY_FEATURE_CACHE_TTL_MS });
     return map;
   } catch (e) {
-    // DB 순단 등으로 이 조회 자체가 실패해도 모든 요청이 거치는 인증 미들웨어를 멈추면
-    // 안 된다 — 실패 시에는 "전부 활성화"로 안전하게 열어(fail-open) 서비스 가용성을
-    // 우선한다(짧은 TTL이라 캐시하지 않고, 다음 요청에서 다시 정상 조회를 시도한다).
-    console.error("[company-features] 조회 실패, 이번 요청은 임시로 전체 활성화 처리:", e.message);
-    return {};
+    // 회사 단위 킬스위치는 권한 경계다. 조회 실패를 빈 맵(=전부 활성)으로 바꾸면 DB
+    // 순단·권한 오류·스키마 드리프트 순간에 명시적으로 끈 모듈이 다시 열리므로 반드시
+    // fail-closed 한다. 호출부는 내부 오류를 노출하지 않는 안정적인 503 계약으로 바꾼다.
+    console.error("[company-features] 조회 실패 — 기능 권한을 fail-closed 처리:", e.message);
+    const err = new Error("Company feature state unavailable");
+    err.code = "FEATURE_STATE_UNAVAILABLE";
+    throw err;
   }
 }
 function _invalidateCompanyFeatureCache(companyId) { _companyFeatureCache.delete(companyId); }
@@ -10614,12 +10635,9 @@ initDB()
         console.log(`[저장 파일] ${JSON_FILE}`);
         console.log("[안내] 서버를 종료해도 데이터는 파일에 보존됩니다.\n");
       }
-      // budget.js(사업계획/예산)는 Postgres/SaaS 모드에서도 여전히 파일 기반(budget-data.json)이라,
-      // 이 경로가 영속 디스크를 안 가리키면 코드 재배포(컨테이너 재빌드)마다 사업계획 데이터
-      // 전체가 초기화된다 — 사용자가 실제로 겪은 사고(작성 중이던 사업계획이 배포 후 사라짐)의
-      // 원인. render.yaml처럼 DATA_FILE을 영속 디스크 경로로 지정해두고도 BUDGET_DATA_FILE을
-      // 빠뜨리기 쉬워 기동 로그에 항상 경고를 남긴다.
-      if (!process.env.BUDGET_DATA_FILE) {
+      // PostgreSQL 모드에서는 budget_store 테이블을 사용해 BUDGET_DATA_FILE이 무시된다.
+      // JSON 파일 모드에서만 별도 예산 파일 경로가 영속 디스크를 가리키는지 경고한다.
+      if (USE_JSON_FILE && !process.env.BUDGET_DATA_FILE) {
         console.log("⚠️  [경고] BUDGET_DATA_FILE 환경변수가 설정되지 않았습니다 — 사업계획/예산 데이터(budget-data.json)가 영속 디스크가 아닌 앱 소스 경로에 저장되어, 코드 재배포(재빌드)마다 초기화됩니다.");
         console.log("    render.yaml의 envVars에 BUDGET_DATA_FILE=<DATA_FILE과 동일한 영속 디스크 경로>/budget-data.json 을 추가하세요.\n");
       }

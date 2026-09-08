@@ -152,6 +152,16 @@
   }
   #m-toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
   #m-toast.err { border-color: #ff2d5580; color: #ff9fb0; }
+  .confirm-dialog { width: min(500px, calc(100vw - 32px)); border: 1px solid #4a1522; border-radius: 12px; padding: 0; background: #14161d; color: #e6e8ee; box-shadow: 0 18px 70px rgba(0,0,0,.7); }
+  .confirm-dialog::backdrop { background: rgba(0,0,0,.72); }
+  .confirm-dialog__body { padding: 22px; }
+  .confirm-dialog h2 { color: #fff; font-size: 1.05rem; margin-bottom: 10px; }
+  .confirm-dialog p { color: #b8bcd0; font-size: .8rem; line-height: 1.6; white-space: pre-line; }
+  .confirm-dialog__impact { margin-top: 12px; padding: 11px 12px; border: 1px solid #ff2d5555; border-radius: 7px; background: #3a0d12; color: #ffb3c1 !important; font-weight: 600; }
+  .confirm-dialog__actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
+  .confirm-dialog__actions button { border: 1px solid #33364a; border-radius: 7px; padding: 8px 14px; cursor: pointer; }
+  .confirm-dialog__cancel { background: #1c1f2b; color: #cfd2e6; }
+  .confirm-dialog__confirm { background: #c81e46; border-color: #ff2d5580 !important; color: #fff; font-weight: 700; }
 </style>
 </head>
 <body>
@@ -212,6 +222,18 @@
 
 <div id="m-toast"></div>
 
+<dialog id="confirm-dialog" class="confirm-dialog" aria-labelledby="confirm-dialog-title" aria-describedby="confirm-dialog-message">
+  <div class="confirm-dialog__body">
+    <h2 id="confirm-dialog-title">작업 확인</h2>
+    <p id="confirm-dialog-message"></p>
+    <p id="confirm-dialog-impact" class="confirm-dialog__impact"></p>
+    <div class="confirm-dialog__actions">
+      <button type="button" class="confirm-dialog__cancel" id="confirm-dialog-cancel">취소</button>
+      <button type="button" class="confirm-dialog__confirm" id="confirm-dialog-confirm">계속</button>
+    </div>
+  </div>
+</dialog>
+
 <script>
 // ══════════════════════════════════════════════════════════════════
 // 마스터 관리자 콘솔 — public/budget.html과 동일한 패턴(SPA 밖 독립 정적
@@ -223,6 +245,33 @@
 function $(sel){ return document.querySelector(sel); }
 function h(s){
   return String(s==null?"":s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+function showConfirmDialog({ title, message, impact, confirmLabel = '계속' }) {
+  const dialog = $('#confirm-dialog');
+  if (dialog.open) return Promise.resolve(false);
+  const confirmButton = $('#confirm-dialog-confirm');
+  const cancelButton = $('#confirm-dialog-cancel');
+  $('#confirm-dialog-title').textContent = title;
+  $('#confirm-dialog-message').textContent = message;
+  $('#confirm-dialog-impact').textContent = impact;
+  confirmButton.textContent = confirmLabel;
+  return new Promise(resolve => {
+    let settled = false;
+    const finish = value => {
+      if (settled) return;
+      settled = true;
+      dialog.removeEventListener('cancel', onCancel);
+      if (dialog.open) dialog.close();
+      resolve(value);
+    };
+    const onCancel = event => { event.preventDefault(); finish(false); };
+    cancelButton.onclick = () => finish(false);
+    confirmButton.onclick = () => finish(true);
+    dialog.addEventListener('cancel', onCancel);
+    dialog.showModal();
+    cancelButton.focus();
+  });
 }
 
 const _LS_MASTER_TOKEN = 'master_auth_token';
@@ -242,10 +291,8 @@ let _features = [];
 let _catalog = null; // GET /master/feature-catalog 응답(고정 모듈 목록) — 세션 중 1회만 불러와 캐시
 
 // ── 공통 요청 헬퍼 ──────────────────────────────────────────────
-// 이 worktree에는 아직 서버 쪽 /master/* 라우트가 존재하지 않아(병행 세션이
-// 별도로 구현 중), 실제로 호출하면 Express 기본 404(HTML 페이지)가 온다.
-// res.json()이 그 HTML을 파싱하려다 던지는 예외를 여기서 흡수해, 화면에는
-// 항상 사람이 읽을 수 있는 오류 메시지만 보이도록 한다(크래시 없음).
+// 네트워크 오류·타임아웃·예상치 못한 비JSON 응답을 한 곳에서 정규화해 화면에는
+// 항상 사람이 읽을 수 있는 오류 메시지만 보이도록 한다.
 async function masterRequest(method, url, body){
   const controller = new AbortController();
   const tid = setTimeout(()=>controller.abort(), 10000);
@@ -262,11 +309,11 @@ async function masterRequest(method, url, body){
     const res = await fetch(url, opts);
     clearTimeout(tid);
     let json = null;
-    try { json = await res.json(); } catch(e) { /* JSON 아님 (예: 미배포 라우트의 HTML 404) */ }
+    try { json = await res.json(); } catch(e) { /* 프록시 오류 페이지 등 비JSON 응답 */ }
     if(!json){
       return {
         ok: false,
-        message: `서버 응답을 해석할 수 없습니다 (HTTP ${res.status}). 이 API가 아직 배포되지 않았을 수 있습니다.`,
+        message: `서버 응답을 해석할 수 없습니다 (HTTP ${res.status}). 잠시 후 다시 시도해주세요.`,
         _httpStatus: res.status
       };
     }
@@ -487,7 +534,13 @@ async function toggleFeature(key, enabled){
 async function enterCompany(id){
   const c = _companies.find(x => String(x.id) === String(id)) || (_selectedCompany && String(_selectedCompany.id) === String(id) ? _selectedCompany : null);
   const name = c ? c.name : id;
-  if(!confirm(`'${name}' 회사 관리자 권한으로 들어갑니다. 계속할까요?\n(이 작업과 이후 모든 조작은 감사 로그에 기록됩니다.)`)) return;
+  const approved = await showConfirmDialog({
+    title: '회사 관리자 세션으로 전환',
+    message: `'${name}' 회사의 관리자 권한으로 들어갑니다.`,
+    impact: `영향 범위: ${name} 회사 데이터 · 전환 이후의 조회와 변경 작업은 모두 감사 로그에 기록됩니다.`,
+    confirmLabel: '관리자 권한으로 진입'
+  });
+  if(!approved) return;
   const r = await masterRequest('POST', `/master/companies/${encodeURIComponent(id)}/impersonate`);
   if(r && r.ok && r.token){
     // 메인 SPA(index.html)가 읽는 것과 정확히 같은 localStorage 키에 토큰을 심어 인계한다.
