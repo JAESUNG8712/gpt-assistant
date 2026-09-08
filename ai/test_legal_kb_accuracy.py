@@ -978,6 +978,16 @@ print(f"⚠️  60~79%: {yellow_count}개 항목")
 print(f"❌ 60% 미만: {red_count}개 항목")
 print(f"대상 임계값(≥{THRESHOLD_OP})에서 측정")
 
+# CI 회귀 게이트: 현재 검증된 기준선을 지키지 못하면 실패 종료한다.
+min_overall_pct = float(os.getenv("LEGAL_KB_MIN_PASS_RATE", "0.98")) * 100
+if overall_pct < min_overall_pct or red_count:
+    print(
+        f"품질 기준 미달: 전체 {overall_pct:.1f}% (기준 {min_overall_pct:.1f}%), "
+        f"60% 미만 항목 {red_count}개",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
+
 
 # ── q-field 수정 제안 ─────────────────────────────────────────────
 print("\n" + "=" * 70)

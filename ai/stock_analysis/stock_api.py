@@ -7,7 +7,7 @@ import asyncio
 from datetime import datetime
 from typing import List, Optional
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
 
@@ -66,6 +66,7 @@ def get_team_config():
 @router.post("/analyze", summary="주식 분석 즉시 실행 (비동기)")
 async def run_analysis(
     background_tasks: BackgroundTasks,
+    http_request: Request,
     request: AnalysisRequest = AnalysisRequest(),
     token: str = "",
 ):
@@ -73,8 +74,8 @@ async def run_analysis(
     # 발생하는 무거운 파이프라인인데 인증이 전혀 없어, URL만 알면 누구나 반복
     # 호출해 비용을 유발할 수 있었음. main.py의 /chat 내부 트리거는 이 HTTP
     # 엔드포인트가 아니라 run_once()를 직접 호출하므로 이 게이팅과 무관하게 그대로 동작.
-    from main import _require_backup_token
-    _require_backup_token(token)
+    from main import _require_admin_request
+    _require_admin_request(http_request, token)
 
     global _analysis_running, _last_report, _last_run
 
@@ -105,11 +106,12 @@ async def run_analysis(
 
 @router.get("/analyze/sync", summary="주식 분석 동기 실행")
 async def run_analysis_sync(
+    request: Request,
     stocks: Optional[str] = Query(None, description="콤마 구분 종목명 (예: 삼성전자,SK하이닉스)"),
     token: str = "",
 ):
-    from main import _require_backup_token
-    _require_backup_token(token)
+    from main import _require_admin_request
+    _require_admin_request(request, token)
 
     target = [s.strip() for s in stocks.split(",")] if stocks else None
 

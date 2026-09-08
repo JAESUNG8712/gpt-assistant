@@ -156,7 +156,7 @@ def main():
         try:
             quality_response = client.post(
                 "/admin/memory-quality-evals/run",
-                params={"token": owner_token}, json={},
+                headers={"X-Admin-Token": owner_token}, json={},
             )
         finally:
             main.quality_eval.run = original_quality_run

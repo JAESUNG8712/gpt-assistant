@@ -215,6 +215,15 @@ def _require_owner_header(request: Request) -> None:
     )
 
 
+def _require_admin_request(request: Request, token: str = "") -> None:
+    """관리 API는 헤더를 우선하고 기존 쿼리 토큰도 호환한다."""
+    header_token = request.headers.get("X-Admin-Token", "")
+    _require_backup_token(
+        header_token or token,
+        "X-Admin-Token 헤더 또는 token 파라미터",
+    )
+
+
 # 업로드 파일 크기 상한. 이전에는 아무 제한 없이 `await file.read()`로 전체를 메모리에
 # 올려, 큰 파일 하나로 프로세스 메모리를 소진시킬 수 있었다(Render Free는 512MB).
 # 엑셀/문서 업로드 실사용 크기를 크게 웃도는 값으로 잡되, 무제한은 막는다.
@@ -1630,9 +1639,11 @@ class MemoryQualityEvalRequest(BaseModel):
 
 
 @app.post("/admin/memory-quality-evals/run")
-def admin_memory_quality_eval_run(req: MemoryQualityEvalRequest, token: str = ""):
+def admin_memory_quality_eval_run(
+    req: MemoryQualityEvalRequest, request: Request, token: str = ""
+):
     """현재 운영 지식 엔진을 결정론적 골든 케이스로 평가하고 이력을 남긴다."""
-    _require_backup_token(token)
+    _require_admin_request(request, token)
     try:
         result = quality_eval.run(req.cases, req.min_score, req.required_pass_rate)
     except (TypeError, ValueError) as e:
@@ -2008,7 +2019,7 @@ def admin_memory_quarantine_restore(quarantine_id: int, token: str = ""):
 
 
 @app.post("/admin/refine")
-def admin_refine(apply: bool = False, dup_threshold: float = 0.85,
+def admin_refine(request: Request, apply: bool = False, dup_threshold: float = 0.85,
                   dislike_boost_max: float = 0.1, token: str = ""):
     """KB 자기개선(자동 정제) — LLM 호출 없는 순수 기계적 정리 후보를 찾는다.
     새 내용을 지어내거나 재작성하지 않고 "지우기"만 한다 — 이 프로젝트에서 실제
@@ -2027,7 +2038,7 @@ def admin_refine(apply: bool = False, dup_threshold: float = 0.85,
         apply=true여도 이 항목들은 절대 자동 삭제하지 않는다.
     apply=false(기본)면 무엇이 격리될지 미리보기만 반환한다. 정기 스케줄은 항상
     미리보기로 실행되며, 관리자가 확인 후 apply=true를 수동 실행해야 실제 격리된다."""
-    _require_backup_token(token)
+    _require_admin_request(request, token)
     from refine import (
         choose_duplicate_keeper,
         find_conflicting_pairs,
@@ -2145,7 +2156,7 @@ def _replace_source_knowledge(source: str, items: list[dict], default_persona: s
 
 
 @app.post("/admin/refresh-law-cache")
-def admin_refresh_law_cache(token: str = ""):
+def admin_refresh_law_cache(request: Request, token: str = ""):
     """law.go.kr 법령 원문을 배포된 서버가 직접 가져와 DB에 저장 + 라이브 엔진에
     즉시 반영한다. 예전에는 GitHub Actions가 CI 러너에서 fetch_laws.py를 실행해
     결과 JSON을 git에 커밋하는 방식이었는데, 스케줄 트리거는 항상 저장소 기본
@@ -2153,7 +2164,7 @@ def admin_refresh_law_cache(token: str = ""):
     서비스에 절대 반영되지 않는 구조적 문제가 있었음(2026-08-30 발견). 이 방식은
     git을 거치지 않으므로 그 문제가 원천적으로 없다. 외부 스케줄러(GitHub Actions
     등)가 이 엔드포인트를 주기적으로 호출하면 된다."""
-    _require_backup_token(token)
+    _require_admin_request(request, token)
     from fetch_laws import LAWS_TO_FETCH, fetch_one_law, LAW_API_KEY as _law_key
     if not _law_key:
         raise HTTPException(400, "LAW_API_KEY 환경변수가 서버에 설정되지 않았습니다.")
@@ -2185,11 +2196,11 @@ def admin_refresh_law_cache(token: str = ""):
 
 
 @app.post("/admin/refresh-travel-alerts")
-def admin_refresh_travel_alerts(token: str = ""):
+def admin_refresh_travel_alerts(request: Request, token: str = ""):
     """외교부 해외안전여행 여행경보를 배포된 서버가 직접 가져와 DB에 저장 + 라이브
     엔진에 즉시 반영 — admin_refresh_law_cache와 동일한 이유로 git 커밋 대신 이
     방식을 쓴다."""
-    _require_backup_token(token)
+    _require_admin_request(request, token)
     from fetch_travel_alerts import fetch_all_alerts, API_KEY as _travel_key
     if not _travel_key:
         raise HTTPException(400, "TRAVEL_ALERT_API_KEY 환경변수가 서버에 설정되지 않았습니다.")

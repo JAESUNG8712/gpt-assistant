@@ -1397,7 +1397,13 @@
       });
       container.scrollTop = container.scrollHeight;
     } catch (e) {
-      clearMessages();
+      const container = document.getElementById('messages');
+      container.innerHTML = `<div class="welcome">
+        <div class="persona-welcome-icon">⚠️</div>
+        <h3>대화 기록을 불러오지 못했습니다</h3>
+        <p>기록이 삭제된 것은 아닙니다. 서버 연결을 확인한 뒤 다시 시도하세요.</p>
+        <button class="btn-analyze" onclick="loadHistory()">다시 불러오기</button>
+      </div>`;
     }
   }
 
@@ -2740,7 +2746,12 @@
       document.getElementById('stat-doc').textContent = d.documents;
       document.getElementById('stat-vec').textContent = d.vector_chunks;
       document.getElementById('stat-pending').textContent = d.pending_candidates;
-    } catch {}
+    } catch {
+      ['stat-conv', 'stat-doc', 'stat-vec', 'stat-pending'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) { el.textContent = '!'; el.title = '통계를 불러오지 못했습니다'; }
+      });
+    }
   }
 
   // ── 모델 정보 ────────────────────────────
@@ -2749,7 +2760,13 @@
       const r = await fetch('/model-info');
       modelInfo = await r.json();
       updateModelBadges();
-    } catch {}
+    } catch {
+      const badge = document.getElementById('model-badge');
+      if (badge) {
+        badge.textContent = '⚠️ 모델 확인 실패';
+        badge.title = '서버 연결 후 페이지를 새로고침하면 다시 확인합니다.';
+      }
+    }
   }
 
   function compactProviderName(provider = '') {
@@ -2804,13 +2821,14 @@
     if (btn.classList.contains('selected')) return;
     btn.parentElement.querySelectorAll('.fb-btn').forEach(b => b.classList.add('selected'));
     try {
-      await tokFetch('/feedback', {
+      const r = await tokFetch('/feedback', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({ question, answer: answer.substring(0, 1000), rating, persona, session_id: sessionId })
       });
+      if (!r.ok) throw new Error(await friendlyErrorMessage(r));
       showToast(rating === 1 ? '👍 피드백 감사합니다!' : '👎 개선에 반영하겠습니다!');
-    } catch {}
+    } catch { showToast('❌ 피드백을 저장하지 못했습니다. 잠시 후 다시 시도하세요.'); }
   }
 
   // ── 초기화 ───────────────────────────────

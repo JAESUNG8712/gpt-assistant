@@ -14,19 +14,25 @@ on:
 jobs:
   refine:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
 
     steps:
       - name: KB 정제 미리보기 (근사 중복 + 반복 비추천 후보 보고)
         env:
           BACKUP_TOKEN: ${{ secrets.BACKUP_TOKEN }}
         run: |
+          set -euo pipefail
+          test -n "${BACKUP_TOKEN}" || { echo "::error::BACKUP_TOKEN secret가 없습니다."; exit 1; }
           # 정기 실행은 항상 미리보기다. 실제 격리는 관리자가 결과를 확인한 뒤
           # workflow_dispatch에서 apply=true를 명시한 경우에만 수행한다.
           APPLY="${{ github.event.inputs.apply || 'false' }}"
           echo "실행 모드: apply=${APPLY}"
+          curl -fsS --retry 5 --retry-all-errors --retry-delay 15 --max-time 180 \
+            "https://ai-assist-aosk.onrender.com/health" -o /dev/null
           http_code=$(curl -sS -X POST \
-            --retry 2 --retry-delay 10 --max-time 90 \
-            "https://ai-assist-aosk.onrender.com/admin/refine?apply=${APPLY}&token=${BACKUP_TOKEN}" \
+            --retry 3 --retry-all-errors --retry-delay 15 --max-time 300 \
+            -H "X-Admin-Token: ${BACKUP_TOKEN}" \
+            "https://ai-assist-aosk.onrender.com/admin/refine?apply=${APPLY}" \
             -o response.json -w '%{http_code}')
           echo "HTTP ${http_code}"
           cat response.json
@@ -35,3 +41,4 @@ jobs:
             echo "::error::KB 정제 요청 실패 (HTTP ${http_code})"
             exit 1
           fi
+          python -m json.tool response.json >/dev/null

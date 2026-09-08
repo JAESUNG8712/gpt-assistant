@@ -10,15 +10,21 @@ on:
 jobs:
   update-travel-alerts:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
 
     steps:
       - name: 여행경보 데이터 갱신 요청 (배포된 서버가 직접 수집·저장)
         env:
           BACKUP_TOKEN: ${{ secrets.BACKUP_TOKEN }}
         run: |
+          set -euo pipefail
+          test -n "${BACKUP_TOKEN}" || { echo "::error::BACKUP_TOKEN secret가 없습니다."; exit 1; }
+          curl -fsS --retry 5 --retry-all-errors --retry-delay 15 --max-time 180 \
+            "https://ai-assist-aosk.onrender.com/health" -o /dev/null
           http_code=$(curl -sS -X POST \
-            --retry 2 --retry-delay 10 --max-time 120 \
-            "https://ai-assist-aosk.onrender.com/admin/refresh-travel-alerts?token=${BACKUP_TOKEN}" \
+            --retry 3 --retry-all-errors --retry-delay 15 --max-time 420 \
+            -H "X-Admin-Token: ${BACKUP_TOKEN}" \
+            "https://ai-assist-aosk.onrender.com/admin/refresh-travel-alerts" \
             -o response.json -w '%{http_code}')
           echo "HTTP ${http_code}"
           cat response.json
@@ -27,3 +33,10 @@ jobs:
             echo "::error::여행경보 데이터 갱신 요청 실패 (HTTP ${http_code})"
             exit 1
           fi
+          python - <<'PY'
+          import json
+          with open('response.json', encoding='utf-8') as f:
+              result = json.load(f)
+          if result.get('fetched', 0) <= 0:
+              raise SystemExit(f"여행경보가 저장되지 않았습니다: {result}")
+          PY

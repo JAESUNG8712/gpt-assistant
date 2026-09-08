@@ -9,16 +9,22 @@ on:
 jobs:
   evaluate:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: 운영 기억 검색 골든 테스트
         env:
           BACKUP_TOKEN: ${{ secrets.BACKUP_TOKEN }}
         run: |
+          set -euo pipefail
+          test -n "${BACKUP_TOKEN}" || { echo "::error::BACKUP_TOKEN secret가 없습니다."; exit 1; }
+          curl -fsS --retry 5 --retry-all-errors --retry-delay 15 --max-time 180 \
+            "https://ai-assist-aosk.onrender.com/health" -o /dev/null
           http_code=$(curl -sS -X POST \
-            --retry 2 --retry-delay 10 --max-time 120 \
+            --retry 3 --retry-all-errors --retry-delay 15 --max-time 300 \
             -H 'Content-Type: application/json' \
+            -H "X-Admin-Token: ${BACKUP_TOKEN}" \
             -d '{"min_score":0.15,"required_pass_rate":0.8}' \
-            "https://ai-assist-aosk.onrender.com/admin/memory-quality-evals/run?token=${BACKUP_TOKEN}" \
+            "https://ai-assist-aosk.onrender.com/admin/memory-quality-evals/run" \
             -o response.json -w '%{http_code}')
           echo "HTTP ${http_code}"
           cat response.json

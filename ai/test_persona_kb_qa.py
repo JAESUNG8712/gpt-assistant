@@ -126,5 +126,22 @@ def main():
         print(f"    기대: {f['expected_q']!r}")
         print(f"    실제: {f['got_q']!r} (score={f['score']})")
 
+    # CI 회귀 게이트: 과거에는 실패 상세를 출력해도 종료코드가 항상 0이었다.
+    overall_rate = (total - len(fails)) / total if total else 0.0
+    persona_rates = {
+        p: (per_persona_total[p] - per_persona_fail.get(p, 0)) / per_persona_total[p]
+        for p in per_persona_total
+    }
+    min_overall = float(os.getenv("PERSONA_KB_MIN_PASS_RATE", "0.97"))
+    min_persona = float(os.getenv("PERSONA_KB_MIN_PERSONA_RATE", "0.95"))
+    below = {p: round(rate, 4) for p, rate in persona_rates.items() if rate < min_persona}
+    if overall_rate < min_overall or below:
+        print(
+            f"\n품질 기준 미달: 전체 {overall_rate:.1%} (기준 {min_overall:.1%}), "
+            f"페르소나 미달={below}",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+
 if __name__ == "__main__":
     main()
