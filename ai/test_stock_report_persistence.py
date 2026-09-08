@@ -73,6 +73,10 @@ def main():
             pipeline_module.StockAnalysisPipeline = original_pipeline
         assert store.latest_report()["content"] == result
 
+        from stock_analysis.utils.time_utils import now_kst
+        expected_kst = datetime.utcnow() + timedelta(hours=9)
+        assert abs((now_kst() - expected_kst).total_seconds()) < 5
+
         for invalid in ("../report.txt", "report_latest.txt", "report_20260908_070.txt"):
             try:
                 store.get_report(invalid)

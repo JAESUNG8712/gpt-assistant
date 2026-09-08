@@ -6,9 +6,9 @@ Gmail SMTP 기반 — 오전 7시 / 저녁 10시 보고서 생성 후 자동 전
 import os
 import smtplib
 import ssl
-from datetime import datetime
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from .time_utils import now_kst
 
 
 def _get_config() -> dict:
@@ -36,7 +36,7 @@ def send_report(report: str, label: str = "") -> bool:
         return False
 
     cfg = _get_config()
-    now = datetime.now()
+    now = now_kst()
     date_str = now.strftime("%Y년 %m월 %d일")
     time_label = label or ("오전 7시" if now.hour < 12 else "저녁 10시")
 

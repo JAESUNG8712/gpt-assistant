@@ -4,10 +4,10 @@
 """
 
 import math
-from datetime import datetime
 from typing import Dict
 
 from ..utils.claude_client import analyze_stock_opinion, is_available as claude_available
+from ..utils.time_utils import now_kst
 
 
 class StockAnalyzer:
@@ -79,7 +79,7 @@ class StockAnalyzer:
             "매크로연계": macro_factor,
             "매매시점": timing,
             "투자의견": opinion,
-            "분석시각": datetime.now().isoformat(),
+            "분석시각": now_kst().isoformat(),
         }
 
     def _calc_intrinsic_value(self, name: str, data: Dict, sector: str) -> Dict:

@@ -3,8 +3,8 @@
 4개 수집 에이전트 데이터를 통합·정규화
 """
 
-from datetime import datetime
 from typing import Dict
+from ..utils.time_utils import now_kst
 
 
 class DataAggregator:
@@ -26,7 +26,7 @@ class DataAggregator:
         print("📋 [취합] 데이터 통합 및 정규화 시작")
 
         aggregated = {
-            "수집시각": datetime.now().isoformat(),
+            "수집시각": now_kst().isoformat(),
             "재무": self._normalize_financial(),
             "경제": self._normalize_economic(),
             "지정학": self._normalize_geo(),

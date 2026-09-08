@@ -5,7 +5,8 @@ https://opendart.fss.or.kr/
 
 import os
 import aiohttp
-from datetime import datetime, timedelta
+from datetime import timedelta
+from .time_utils import now_kst
 
 DART_API_KEY = os.getenv("DART_API_KEY", "")
 DART_BASE_URL = "https://opendart.fss.or.kr/api"
@@ -160,8 +161,8 @@ async def search_disclosures(corp_name: str, days: int = 30) -> list:
     if not DART_API_KEY:
         return _mock_disclosures(corp_name)
 
-    end_date = datetime.now().strftime("%Y%m%d")
-    start_date = (datetime.now() - timedelta(days=days)).strftime("%Y%m%d")
+    end_date = now_kst().strftime("%Y%m%d")
+    start_date = (now_kst() - timedelta(days=days)).strftime("%Y%m%d")
 
     url = f"{DART_BASE_URL}/list.json"
     params = {
@@ -230,7 +231,7 @@ def _mock_disclosures(corp_name: str) -> list:
         {
             "corp_name": corp_name,
             "report_nm": "분기보고서",
-            "rcept_dt": datetime.now().strftime("%Y%m%d"),
+            "rcept_dt": now_kst().strftime("%Y%m%d"),
             "_note": "샘플 데이터",
             "is_mock": True,
         }

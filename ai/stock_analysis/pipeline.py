@@ -9,6 +9,7 @@ from typing import Dict, List, Optional
 
 from .agents.team_config import TEAM_CONFIG, ANALYSIS_PIPELINE, REPORT_SCHEDULE
 from .utils.email_sender import send_report, is_configured as email_configured
+from .utils.time_utils import now_kst
 from .agents.financial_collector import FinancialCollector
 from .agents.economic_collector import EconomicCollector
 from .agents.global_collector import GeopoliticsCollector, IndustryCollector
@@ -38,11 +39,11 @@ class StockAnalysisPipeline:
 
     def log(self, msg: str):
         if self.verbose:
-            ts = datetime.now().strftime("%H:%M:%S")
+            ts = now_kst().strftime("%H:%M:%S")
             print(f"[{ts}] {msg}")
 
     async def run(self) -> str:
-        start = datetime.now()
+        start = now_kst()
         self.log("👔 [총괄] 분석 파이프라인 시작")
         self.log(f"    분석 대상: {len(self.target_stocks)}개 종목")
 
@@ -70,11 +71,11 @@ class StockAnalysisPipeline:
                 analyses, financial_data, economic_data,
                 geo_data, industry_data, data_val, logic_val, risk_val)
 
-            elapsed = (datetime.now() - start).total_seconds()
+            elapsed = (now_kst() - start).total_seconds()
             self.log(f"\n👔 [총괄] 파이프라인 완료 — {elapsed:.1f}초")
 
             self.last_report = report
-            self.last_run = datetime.now()
+            self.last_run = now_kst()
 
             if email_configured():
                 self.log("\n── 이메일 발송 ──")
@@ -85,7 +86,7 @@ class StockAnalysisPipeline:
         except Exception as e:
             tb = traceback.format_exc()
             self.error_log.append({
-                "시각": datetime.now().isoformat(),
+                "시각": now_kst().isoformat(),
                 "오류": str(e),
                 "traceback": tb,
             })
@@ -155,7 +156,7 @@ class StockAnalysisPipeline:
         return writer.run()
 
     def _error_report(self, error: str, tb: str) -> str:
-        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        now = now_kst().strftime("%Y-%m-%d %H:%M:%S")
         return f"""{'='*60}
 ⚠️ 분석 오류 보고서 | {now}
 {'='*60}
@@ -189,7 +190,7 @@ async def run_once(target_stocks: Optional[List[str]] = None) -> str:
     from stock_report_store import save_report
     save_report(
         report,
-        created_at=(pipeline.last_run or datetime.now()).isoformat(),
+        created_at=(pipeline.last_run or now_kst()).isoformat(),
     )
     return report
 

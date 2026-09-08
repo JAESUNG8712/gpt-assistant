@@ -14,6 +14,7 @@ from pydantic import BaseModel
 from .pipeline import StockAnalysisPipeline, run_once
 from .agents.team_config import TEAM_CONFIG, ANALYSIS_PIPELINE, REPORT_SCHEDULE
 from .utils.email_sender import send_report, is_configured as email_configured
+from .utils.time_utils import now_kst
 from .utils.popular_stocks import refresh_popular_stocks, is_cache_fresh
 
 router = APIRouter(prefix="/stock", tags=["주식분석"])
@@ -100,7 +101,7 @@ async def run_analysis(
         try:
             report = await run_once(request.target_stocks)
             _last_report = report
-            _last_run = datetime.now()
+            _last_run = now_kst()
         finally:
             _analysis_running = False
 
@@ -128,7 +129,7 @@ async def run_analysis_sync(
         report = await run_once(target)
         global _last_report, _last_run
         _last_report = report
-        _last_run = datetime.now()
+        _last_run = now_kst()
         return PlainTextResponse(content=report, media_type="text/plain; charset=utf-8")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -307,7 +308,7 @@ def get_popular_stocks():
 
 
 def _next_report_time() -> str:
-    now = datetime.now()
+    now = now_kst()
     if now.hour < 7:
         return "오늘 07:00 (오전 정기 보고서)"
     elif now.hour < 22:
@@ -330,7 +331,7 @@ def start_scheduler(target_stocks=None):
             print(f"\n⏰ {label} 자동 실행")
             report = await pipeline.run()
             _last_report = report
-            _last_run = datetime.now()
+            _last_run = now_kst()
 
         for session_id, config in REPORT_SCHEDULE.items():
             scheduler.add_job(

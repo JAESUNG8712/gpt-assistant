@@ -4,8 +4,8 @@ DART 공시 + KRX 수급 데이터 수집
 """
 
 import asyncio
-from datetime import datetime
 from typing import List, Dict
+from ..utils.time_utils import now_kst
 
 from ..utils.dart_client import (
     CORP_CODES, STOCK_CODE_MAP,
@@ -26,7 +26,7 @@ class FinancialCollector:
 
     def __init__(self, target_stocks: List[str] = None):
         self.target_stocks = target_stocks or list(CORP_CODES.keys())
-        self.year = str(datetime.now().year - 1)
+        self.year = str(now_kst().year - 1)
         self.results: Dict = {}
 
     async def run(self) -> Dict:

@@ -5,8 +5,9 @@ pykrx → 네이버금융 스크래핑 → mock 순으로 fallback
 
 import asyncio
 import re
-from datetime import datetime, timedelta
+from datetime import timedelta
 from typing import Optional
+from .time_utils import now_kst
 
 try:
     from pykrx import stock as krx_stock
@@ -47,11 +48,11 @@ async def _run_sync(fn, *args):
 
 
 def get_today() -> str:
-    return datetime.now().strftime("%Y%m%d")
+    return now_kst().strftime("%Y%m%d")
 
 
 def get_date_before(days: int) -> str:
-    return (datetime.now() - timedelta(days=days)).strftime("%Y%m%d")
+    return (now_kst() - timedelta(days=days)).strftime("%Y%m%d")
 
 
 # ── 네이버 금융: 종목명 → ticker 자동 탐색 ─────────────────
@@ -115,7 +116,7 @@ def _fetch_naver_price(ticker: str) -> dict:
         close = int(now_val)
         return {
             "ticker": ticker,
-            "date": datetime.now().strftime("%Y-%m-%d"),
+            "date": now_kst().strftime("%Y-%m-%d"),
             "close": close,
             "open": close,
             "high": int(high) if high else close,
@@ -155,7 +156,7 @@ def _fetch_naver_valuation(ticker: str) -> dict:
 
         return {
             "ticker": ticker,
-            "date": datetime.now().strftime("%Y-%m-%d"),
+            "date": now_kst().strftime("%Y-%m-%d"),
             "PER": per,
             "PBR": pbr,
             "EPS": eps,
@@ -331,7 +332,7 @@ async def get_short_selling(ticker: str, days: int = 10) -> dict:
 def _mock_price_data(ticker: str) -> dict:
     return {
         "ticker": ticker,
-        "date": datetime.now().strftime("%Y-%m-%d"),
+        "date": now_kst().strftime("%Y-%m-%d"),
         "close": 75_000,
         "open": 74_500,
         "high": 75_800,
@@ -358,7 +359,7 @@ def _mock_investor_data(ticker: str) -> dict:
 def _mock_valuation_data(ticker: str) -> dict:
     return {
         "ticker": ticker,
-        "date": datetime.now().strftime("%Y-%m-%d"),
+        "date": now_kst().strftime("%Y-%m-%d"),
         "PER": 12.5,
         "PBR": 1.2,
         "EPS": 6_000,
@@ -374,7 +375,7 @@ def _mock_index_data(index: str) -> dict:
     values = {"KOSPI": 2_580.0, "KOSDAQ": 750.0, "KOSPI200": 340.0}
     return {
         "index": index,
-        "date": datetime.now().strftime("%Y-%m-%d"),
+        "date": now_kst().strftime("%Y-%m-%d"),
         "close": values.get(index, 2_500.0),
         "change_pct": 0.45,
         "volume": 500_000_000,

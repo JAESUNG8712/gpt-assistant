@@ -19,8 +19,9 @@ pykrx가 클라우드 환경(Railway 등)에서 KRX 직접 API 호출이 차단�
 
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timedelta
+from datetime import timedelta
 from typing import Dict, List, Optional
+from .time_utils import now_kst
 
 try:
     from pykrx import stock as krx_stock
@@ -46,14 +47,14 @@ _NAVER_HEADERS = {
 
 
 def _recent_date() -> str:
-    dt = datetime.now()
+    dt = now_kst()
     if dt.hour < 9:
         dt -= timedelta(days=1)
     for _ in range(7):
         if dt.weekday() < 5:
             return dt.strftime("%Y%m%d")
         dt -= timedelta(days=1)
-    return (datetime.now() - timedelta(days=3)).strftime("%Y%m%d")
+    return (now_kst() - timedelta(days=3)).strftime("%Y%m%d")
 
 
 # 스크리닝 기본값
@@ -461,7 +462,7 @@ def format_report(candidates: List[Dict], date: str = "", params: Optional[Dict]
         return "조건에 맞는 저평가 저가주를 찾지 못했습니다."
 
     p = {**DEFAULT_PARAMS, **(params or {})}
-    now = date or datetime.now().strftime("%Y-%m-%d %H:%M")
+    now = date or now_kst().strftime("%Y-%m-%d %H:%M")
     lines = [
         f"{'='*65}",
         f"💰 저평가 저가주 스크리닝 보고서 | {now}",

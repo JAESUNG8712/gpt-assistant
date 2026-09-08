@@ -5,8 +5,8 @@
 
 import json
 import os
-from datetime import datetime
 from typing import Dict
+from ..utils.time_utils import now_kst
 
 from ..utils.claude_client import (
     generate_executive_summary as claude_executive_summary,
@@ -75,7 +75,7 @@ class ReportWriter:
         self.logic_val = logic_validation
         self.risk_val = risk_validation
 
-        now = datetime.now()
+        now = now_kst()
         self.report_time = now
         if abs(now.hour - 7) <= 1:
             self.time_label = "오전 7시"

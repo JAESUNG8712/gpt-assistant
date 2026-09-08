@@ -3,8 +3,8 @@
 """
 
 import asyncio
-from datetime import datetime
 from typing import Dict
+from ..utils.time_utils import now_kst
 
 
 class GeopoliticsCollector:
@@ -30,7 +30,7 @@ class GeopoliticsCollector:
         for key, val in zip(keys, results):
             self.results[key] = val if not isinstance(val, Exception) else {"error": str(val)}
 
-        self.results["수집시각"] = datetime.now().isoformat()
+        self.results["수집시각"] = now_kst().isoformat()
         self.results["종합리스크지수"] = self._calc_risk_index()
 
         print("🌍 [지정학수집] 완료")
@@ -161,7 +161,7 @@ class IndustryCollector:
         for key, val in zip(keys, results):
             self.results[key] = val if not isinstance(val, Exception) else {"error": str(val)}
 
-        self.results["수집시각"] = datetime.now().isoformat()
+        self.results["수집시각"] = now_kst().isoformat()
         print("🌐 [산업수집] 완료")
         return self.results
 

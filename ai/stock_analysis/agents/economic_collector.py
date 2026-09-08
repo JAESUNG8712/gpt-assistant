@@ -6,8 +6,9 @@
 import asyncio
 import aiohttp
 import os
-from datetime import datetime, timedelta
+from datetime import timedelta
 from typing import Dict, Optional
+from ..utils.time_utils import now_kst
 
 
 BOK_API_KEY = os.getenv("BOK_API_KEY", "")
@@ -21,7 +22,7 @@ async def _fetch_bok_latest(stat_code: str, item_code: str, cycle: str = "M",
     if not BOK_API_KEY:
         return None
 
-    end = datetime.now()
+    end = now_kst()
     if cycle == "D":
         start = end - timedelta(days=lookback_periods)
         fmt = "%Y%m%d"
@@ -80,7 +81,7 @@ class EconomicCollector:
             "지수": indices if not isinstance(indices, Exception) else {"error": str(indices)},
             "원자재": commodities if not isinstance(commodities, Exception) else {"error": str(commodities)},
             "경제캘린더": calendar if not isinstance(calendar, Exception) else {"error": str(calendar)},
-            "수집시각": datetime.now().isoformat(),
+            "수집시각": now_kst().isoformat(),
         }
         self.results["시장심리"] = self.get_market_sentiment()
 

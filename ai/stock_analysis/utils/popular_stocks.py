@@ -11,6 +11,7 @@ import re
 import time
 from datetime import datetime, timedelta
 from typing import Dict, List, Tuple
+from .time_utils import now_kst
 
 try:
     from pykrx import stock as krx_stock
@@ -62,7 +63,7 @@ def _fetch_via_pykrx(top_n: int = 50, market: str = "ALL") -> Dict[str, str]:
         return {}
 
     # 최근 3 영업일 후퇴 시도 (공휴일 대응)
-    base = datetime.now()
+    base = now_kst()
     if base.hour < 9:
         base -= timedelta(days=1)
     dates = []
@@ -194,7 +195,7 @@ def save_cache(stocks: Dict[str, str], source: str = ""):
         with open(CACHE_FILE, "w", encoding="utf-8") as f:
             json.dump({
                 "stocks": stocks,
-                "updated_at": datetime.now().isoformat(),
+                "updated_at": now_kst().isoformat(),
                 "source": source,
             }, f, ensure_ascii=False, indent=2)
     except Exception:
@@ -206,7 +207,7 @@ def is_cache_fresh() -> bool:
     if not updated_at:
         return False
     try:
-        age = datetime.now() - datetime.fromisoformat(updated_at)
+        age = now_kst() - datetime.fromisoformat(updated_at)
         return age.total_seconds() < _CACHE_TTL_HOURS * 3600
     except Exception:
         return False
@@ -238,7 +239,7 @@ def refresh_popular_stocks(top_n: int = 50, force: bool = False) -> Dict:
         "추가종목": added,
         "전체인기종목": list(popular.keys()),
         "총종목수": len(CORP_CODES),
-        "갱신시각": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "갱신시각": now_kst().strftime("%Y-%m-%d %H:%M"),
         "소스": source,
         "캐시": False,
     }
