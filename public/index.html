@@ -8743,7 +8743,7 @@ function printHRLetter(empId,histId){
   .sig-box{text-align:center;min-width:160px;position:relative}.sig-date{color:#475569;font-size:13px;margin-bottom:10px}
   .sig-co{font-weight:800;font-size:16px;margin-bottom:6px}.sig-rep{font-size:14px;color:#475569}
   @media print{body{padding:40px}}</style></head><body>
-  <div class="header"><h1>${title}</h1><div class="sub">${co}</div></div>
+  <div class="header"><h1>${title}</h1><div class="sub">${h(co)}</div></div>
   <div class="emp-box">
     <div class="row"><div class="label">성명</div><div class="val">${h(emp.name)}</div></div>
     <div class="row"><div class="label">소속</div><div class="val">${h(emp.dept)} ${h(emp.team)}</div></div>
