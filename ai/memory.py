@@ -2565,6 +2565,12 @@ def get_setting(key: str, default: dict = None) -> dict:
         return default
 
 
+def delete_setting(key: str) -> None:
+    """앱 전역 설정 하나를 삭제한다."""
+    with _conn() as c:
+        c.execute("DELETE FROM app_settings WHERE key=?", (key,))
+
+
 # ── 공유 링크 (선택된 페르소나만 외부에 공개) ─────────────
 
 def _row_to_share(row: dict) -> dict:

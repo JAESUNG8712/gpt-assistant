@@ -30,6 +30,15 @@ _last_report: Optional[str] = None
 _last_run: Optional[datetime] = None
 
 
+def _persisted_latest() -> Optional[dict]:
+    try:
+        from stock_report_store import latest_report
+        return latest_report()
+    except Exception as e:
+        print(f"⚠️ 주식 보고서 DB 조회 실패: {e}")
+        return None
+
+
 def _get_pipeline() -> StockAnalysisPipeline:
     global _pipeline
     if _pipeline is None:
@@ -117,6 +126,9 @@ async def run_analysis_sync(
 
     try:
         report = await run_once(target)
+        global _last_report, _last_run
+        _last_report = report
+        _last_run = datetime.now()
         return PlainTextResponse(content=report, media_type="text/plain; charset=utf-8")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -124,36 +136,57 @@ async def run_analysis_sync(
 
 @router.get("/report", summary="최근 분석 보고서 조회")
 def get_latest_report():
-    if _last_report is None:
+    stored = _persisted_latest() if _last_report is None else None
+    report = _last_report or (stored and stored["content"])
+    created_at = _last_run.isoformat() if _last_run else (stored and stored["created_at"])
+    if report is None:
         raise HTTPException(
             status_code=404,
             detail="아직 보고서가 없습니다. /stock/analyze를 먼저 실행하세요."
         )
     return {
-        "보고서": _last_report,
-        "생성시각": _last_run.isoformat() if _last_run else None,
+        "보고서": report,
+        "생성시각": created_at,
     }
 
 
 @router.get("/report/text", summary="최근 보고서 텍스트 형식", response_class=PlainTextResponse)
 def get_latest_report_text():
-    if _last_report is None:
+    stored = _persisted_latest() if _last_report is None else None
+    report = _last_report or (stored and stored["content"])
+    if report is None:
         return PlainTextResponse("보고서 없음. /stock/analyze 실행 후 조회하세요.")
-    return PlainTextResponse(content=_last_report, media_type="text/plain; charset=utf-8")
+    return PlainTextResponse(content=report, media_type="text/plain; charset=utf-8")
 
 
 @router.get("/status", summary="분석 상태 확인")
 def get_status():
+    stored = _persisted_latest()
     return {
         "실행중": _analysis_running,
-        "마지막실행": _last_run.isoformat() if _last_run else None,
-        "보고서있음": _last_report is not None,
+        "마지막실행": _last_run.isoformat() if _last_run else (stored and stored["created_at"]),
+        "보고서있음": _last_report is not None or stored is not None,
+        "영구저장됨": stored is not None,
         "다음정기보고서": _next_report_time(),
     }
 
 
 @router.get("/reports/list", summary="저장된 보고서 목록")
 def list_reports():
+    try:
+        from stock_report_store import list_reports as list_persisted_reports
+        stored = list_persisted_reports()
+    except Exception as e:
+        print(f"⚠️ 주식 보고서 DB 목록 조회 실패, 로컬 파일로 폴백: {e}")
+        stored = []
+    if stored:
+        return {
+            "보고서목록": [row["filename"] for row in stored],
+            "보고서상세": stored,
+            "총개수": len(stored),
+            "저장소": "Turso/SQLite",
+        }
+
     import os
     reports_dir = os.path.join(os.path.dirname(__file__), "reports")
     if not os.path.exists(reports_dir):
@@ -172,6 +205,17 @@ def list_reports():
 
 @router.get("/reports/{filename}", summary="특정 보고서 조회", response_class=PlainTextResponse)
 def get_report_by_filename(filename: str):
+    from stock_report_store import get_report
+    try:
+        stored = get_report(filename)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        print(f"⚠️ 주식 보고서 DB 조회 실패, 로컬 파일로 폴백: {e}")
+        stored = None
+    if stored is not None:
+        return PlainTextResponse(content=stored, media_type="text/plain; charset=utf-8")
+
     import os
     if not filename.startswith("report_") or ".." in filename:
         raise HTTPException(status_code=400, detail="잘못된 파일명")
@@ -195,10 +239,12 @@ def send_latest_report_email():
             status_code=503,
             detail="이메일 미설정. EMAIL_SENDER / EMAIL_PASSWORD / EMAIL_RECIPIENTS 환경변수를 설정하세요."
         )
-    if _last_report is None:
+    stored = _persisted_latest() if _last_report is None else None
+    report = _last_report or (stored and stored["content"])
+    if report is None:
         raise HTTPException(status_code=404, detail="보고서 없음. /stock/analyze 먼저 실행하세요.")
 
-    success = send_report(_last_report)
+    success = send_report(report)
     if success:
         return {"상태": "발송완료", "메시지": "이메일 발송 성공"}
     raise HTTPException(status_code=500, detail="이메일 발송 실패.")

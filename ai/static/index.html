@@ -2592,7 +2592,10 @@
         </div>`;
         return;
       }
-      container.innerHTML = files.map((f, i) => {
+      const storageNotice = d['저장소'] === 'Turso/SQLite'
+        ? '<div style="font-size:10px;color:#2e7d32;margin-bottom:7px">☁️ DB 영구 저장 · 재배포 후에도 유지</div>'
+        : '';
+      container.innerHTML = storageNotice + files.map((f, i) => {
         const label = f.replace('report_', '').replace('.txt', '').replace(/_/g, ' ');
         const isLatest = i === 0;
         return `<div style="margin-bottom:5px;padding:6px 8px;background:${isLatest ? 'rgba(198,40,40,0.08)' : 'var(--surface2)'};border:1px solid ${isLatest ? '#c62828' : 'var(--border)'};border-radius:6px">

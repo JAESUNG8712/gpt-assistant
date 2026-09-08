@@ -495,6 +495,15 @@ def _format_reference_links(items: list, max_items: int = 5) -> str:
 
 def _load_latest_stock_report(max_chars: int = 8000) -> str:
     """저장된 가장 최신 보고서를 로드해 컨텍스트로 반환"""
+    try:
+        from stock_report_store import latest_report
+        stored = latest_report()
+        if stored:
+            return stored["content"][:max_chars]
+    except Exception as e:
+        print(f"⚠️ 주식 보고서 DB 조회 실패, 로컬 파일로 폴백: {e}")
+
+    # 배포 전 생성된 로컬 보고서와 개발 환경 호환용 폴백.
     if not os.path.isdir(_STOCK_REPORTS_DIR):
         return ""
     files = sorted(
@@ -512,6 +521,14 @@ def _load_latest_stock_report(max_chars: int = 8000) -> str:
 
 def _list_stock_reports() -> list:
     """저장된 보고서 파일 목록 반환 (최신순)"""
+    try:
+        from stock_report_store import list_reports
+        stored = list_reports()
+        if stored:
+            return [row["filename"] for row in stored]
+    except Exception as e:
+        print(f"⚠️ 주식 보고서 DB 목록 조회 실패, 로컬 파일로 폴백: {e}")
+
     if not os.path.isdir(_STOCK_REPORTS_DIR):
         return []
     files = sorted(
@@ -2407,6 +2424,20 @@ def stock_report_download(filename: str):
     """주식 분석 보고서 파일 다운로드"""
     if not filename.startswith("report_") or ".." in filename:
         raise HTTPException(status_code=400, detail="잘못된 파일명")
+    try:
+        from stock_report_store import get_report
+        content = get_report(filename)
+        if content is not None:
+            return Response(
+                content=content,
+                media_type="text/plain; charset=utf-8",
+                headers={"Content-Disposition": f"attachment; filename*=UTF-8''{filename}"},
+            )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        print(f"⚠️ 주식 보고서 DB 다운로드 실패, 로컬 파일로 폴백: {e}")
+
     filepath = os.path.join(_STOCK_REPORTS_DIR, filename)
     if not os.path.exists(filepath):
         raise HTTPException(status_code=404, detail="파일 없음")

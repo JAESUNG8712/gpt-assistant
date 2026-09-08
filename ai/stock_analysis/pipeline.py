@@ -180,7 +180,18 @@ class StockAnalysisPipeline:
 
 async def run_once(target_stocks: Optional[List[str]] = None) -> str:
     pipeline = StockAnalysisPipeline(target_stocks)
-    return await pipeline.run()
+    report = await pipeline.run()
+    if pipeline.error_log:
+        raise RuntimeError(pipeline.error_log[-1]["오류"])
+
+    # report_writer의 로컬 파일은 개발 편의를 위해 유지하되, 운영 서비스의
+    # 재배포에도 남아야 하는 원본은 Turso/SQLite 공용 저장소에 보존한다.
+    from stock_report_store import save_report
+    save_report(
+        report,
+        created_at=(pipeline.last_run or datetime.now()).isoformat(),
+    )
+    return report
 
 
 async def _manual_run(target_stocks: Optional[List[str]] = None):
