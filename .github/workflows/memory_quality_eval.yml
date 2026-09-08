@@ -1,38 +1,40 @@
-name: KB 자기개선(자동 정제)
+name: AI 기억 검색 품질 평가
 
 on:
   schedule:
-    - cron: '0 3 * * 0'
+    - cron: '0 2 * * 1'
   workflow_dispatch:
-    inputs:
-      apply:
-        description: '실제로 격리까지 실행할지 여부 (false면 미리보기만)'
-        required: false
-        default: 'false'
 
 jobs:
-  refine:
+  evaluate:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - name: KB 정제 미리보기
+      - name: 운영 기억 검색 골든 테스트
         env:
           BACKUP_TOKEN: ${{ secrets.BACKUP_TOKEN }}
         run: |
           set -euo pipefail
           test -n "${BACKUP_TOKEN}" || { echo "::error::BACKUP_TOKEN secret가 없습니다."; exit 1; }
-          APPLY="${{ github.event.inputs.apply || 'false' }}"
-          echo "실행 모드: apply=${APPLY}"
           curl -fsS --retry 5 --retry-all-errors --retry-delay 15 --max-time 180 \
             "https://ai-assist-aosk.onrender.com/health" -o /dev/null
           http_code=$(curl -sS -X POST --retry 3 --retry-all-errors --retry-delay 15 --max-time 300 \
+            -H 'Content-Type: application/json' \
             -H "X-Admin-Token: ${BACKUP_TOKEN}" \
-            "https://ai-assist-aosk.onrender.com/admin/refine?apply=${APPLY}" \
+            -d '{"min_score":0.15,"required_pass_rate":0.8}' \
+            "https://ai-assist-aosk.onrender.com/admin/memory-quality-evals/run" \
             -o response.json -w '%{http_code}')
           echo "HTTP ${http_code}"
           cat response.json
           if [ "$http_code" -ge 400 ]; then
-            echo "::error::KB 정제 요청 실패 (HTTP ${http_code})"
+            echo "::error::기억 검색 품질 평가 요청 실패 (HTTP ${http_code})"
             exit 1
           fi
-          python -m json.tool response.json >/dev/null
+          python - <<'PY'
+          import json
+          with open('response.json', encoding='utf-8') as f:
+              result = json.load(f)
+          print(f"pass_rate={result['pass_rate']:.1%} ({result['passed']}/{result['total']})")
+          if result.get('status') != 'passed':
+              raise SystemExit('기억 검색 품질 기준 미달')
+          PY

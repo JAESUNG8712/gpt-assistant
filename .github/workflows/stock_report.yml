@@ -15,21 +15,31 @@ permissions:
 jobs:
   analyze:
     runs-on: ubuntu-latest
+    timeout-minutes: 25
 
     steps:
       - name: 주식 분석 보고서 생성 요청
         env:
           BACKUP_TOKEN: ${{ secrets.BACKUP_TOKEN }}
         run: |
-          if [ -z "${BACKUP_TOKEN}" ]; then
-            echo "::warning::BACKUP_TOKEN secret is not set — 주식 분석 요청을 건너뜁니다."
-            exit 0
-          fi
+          set -euo pipefail
+          test -n "${BACKUP_TOKEN}" || { echo "::error::BACKUP_TOKEN secret가 없습니다."; exit 1; }
+          curl -fsS --retry 5 --retry-all-errors --retry-delay 15 --max-time 180 \
+            "https://ai-assist-aosk.onrender.com/health" -o /dev/null
+          curl -fsS --max-time 30 \
+            "https://ai-assist-aosk.onrender.com/stock/status" -o before.json
+          before_run=$(python - <<'PY'
+          import json
+          with open('before.json', encoding='utf-8') as f:
+              print(json.load(f).get('마지막실행') or '-')
+          PY
+          )
           http_code=$(curl -sS -X POST \
-            --retry 2 --retry-delay 10 --max-time 90 \
+            --max-time 180 \
             -H "Content-Type: application/json" \
+            -H "X-Admin-Token: ${BACKUP_TOKEN}" \
             -d '{}' \
-            "https://ai-assist-aosk.onrender.com/stock/analyze?token=${BACKUP_TOKEN}" \
+            "https://ai-assist-aosk.onrender.com/stock/analyze" \
             -o response.json -w '%{http_code}')
           echo "HTTP ${http_code}"
           cat response.json
@@ -38,4 +48,28 @@ jobs:
             echo "::error::주식 분석 요청 실패 (HTTP ${http_code})"
             exit 1
           fi
-          echo "분석은 서버에서 백그라운드로 30~60초간 진행됩니다 — /stock/report 에서 결과 확인 가능"
+          python -m json.tool response.json >/dev/null
+          for attempt in $(seq 1 60); do
+            curl -fsS --max-time 30 "https://ai-assist-aosk.onrender.com/stock/status" -o status.json
+            read -r running has_report last_run < <(python - <<'PY'
+          import json
+          with open('status.json', encoding='utf-8') as f:
+              status = json.load(f)
+          print(str(bool(status.get('실행중'))).lower(),
+                str(bool(status.get('보고서있음'))).lower(),
+                status.get('마지막실행') or '-')
+          PY
+            )
+            echo "확인 ${attempt}/60: running=${running}, report=${has_report}, last_run=${last_run}"
+            if [ "${running}" = "false" ]; then
+              if [ "${has_report}" = "true" ] && [ "${last_run}" != "-" ] && [ "${last_run}" != "${before_run}" ]; then
+                echo "주식 분석 보고서 생성 완료: ${last_run}"
+                exit 0
+              fi
+              echo "::error::분석이 종료됐지만 이번 실행의 보고서가 생성되지 않았습니다."
+              exit 1
+            fi
+            sleep 15
+          done
+          echo "::error::주식 분석이 15분 안에 완료되지 않았습니다."
+          exit 1
