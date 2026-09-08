@@ -387,7 +387,8 @@ _COMPOUND_MAP = {
     '홍콩여행': '홍콩 여행',
     '유럽여행': '유럽 여행',
     '여행카드': '여행 카드',
-    '여행앱': '여행 앱',
+    # '앱'은 한 글자라 일반 토큰 필터에서 제외되므로 검색 가능한 동의 표현 사용
+    '여행앱': '여행 애플리케이션',
     '여행중': '여행 중',
 }
 
@@ -660,6 +661,8 @@ class _Engine:
         qv = self._qvec(query)
         query_features = Counter(_feat(query))
         query_lower = query.lower()
+        query_tokens = _tok(query_lower)
+        compact_query = re.sub(r'[^0-9a-z가-힣]+', '', query_lower)
         results = []
         candidate_ids = set()
         for feature in qv:
@@ -703,11 +706,26 @@ class _Engine:
                     s *= 2.5 if article_matched else 0.3
 
             else:
-                q_lower = q.lower()
-                exact_tokens = [t for t in _tok(query_lower) if len(t) >= 3 and t in q_lower]
+                # 후보 질문 자체의 단어가 아니라, 실제 사용자 질문의 단어가 후보
+                # 질문에 얼마나 포함되는지를 계산해야 한다. 과거 코드는 q_lower를
+                # 후보 q로 덮어쓴 뒤 후보를 자기 자신과 비교해 거의 모든 문서에
+                # 무관한 가산점을 줬고, 짧은 붙여쓰기 질의에서 오답 순위가 올랐다.
+                candidate_tokens = set(_tok(q.lower()))
+                exact_tokens = [
+                    token for token in query_tokens
+                    if len(token) >= 2 and token in candidate_tokens
+                ]
                 if exact_tokens:
-                    match_ratio = len(exact_tokens) / max(len(_tok(query_lower)), 1)
+                    match_ratio = len(exact_tokens) / max(len(query_tokens), 1)
                     s = s * (1.0 + 0.5 * match_ratio)
+
+                # 띄어쓰기만 다른 구체 질의는 후보 q에 그대로 들어 있으면 강한
+                # 신호다. 특히 한 글자 핵심어(앱·첫·중)는 일반 토큰 필터에서
+                # 빠지므로, 공백/기호를 제거한 원문 구문 일치로 이를 보완한다.
+                # 4자 미만은 우연 일치가 잦아 적용하지 않는다.
+                compact_candidate = re.sub(r'[^0-9a-z가-힣]+', '', q.lower())
+                if len(compact_query) >= 4 and compact_query in compact_candidate:
+                    s += 0.50
 
             # 피드백 가중치: 해당 항목 질문 기준 좋아요/싫어요 누적치를 점수에 반영
             s *= _feedback_boost_for(p, q)

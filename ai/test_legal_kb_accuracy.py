@@ -247,7 +247,6 @@ def make_queries(entries):
                 ("natural", "제품 불량인데 환불 안 해준다 어떻게 하나요"),
                 ("natural", "한국소비자원에 신고하는 방법"),
                 ("partial", "소비자분쟁조정 신청"),
-                ("partial", "청약철회 소비자 권리"),
                 ("edge", "소비자피해구제 방법"),
             ]
 
@@ -319,7 +318,6 @@ def make_queries(entries):
                 ("natural", "돈 빌려줬는데 안 갚으면 사기인가요"),
                 ("natural", "사기 피해 당했을 때 고소 방법"),
                 ("partial", "형법 347조 사기"),
-                ("partial", "보이스피싱 피해 신고"),
                 ("edge", "사기죄성립 요건"),
             ]
 
@@ -538,6 +536,7 @@ def make_queries(entries):
                 ("natural", "계좌 지급정지 신청 방법"),
                 ("partial", "금융감독원 1332 피해신고"),
                 ("partial", "통신사기피해환급법 신청"),
+                ("partial", "보이스피싱 피해 신고"),
                 ("edge", "보이스피싱피해 대처"),
             ]
 
@@ -598,6 +597,7 @@ def make_queries(entries):
                 ("natural", "청약철회 기간이 얼마나 되나요"),
                 ("partial", "7일 이내 청약철회 권리"),
                 ("partial", "구독서비스 해지 방법"),
+                ("partial", "청약철회 소비자 권리"),
                 ("edge", "온라인쇼핑환불 청약철회"),
             ]
 

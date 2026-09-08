@@ -76,8 +76,33 @@ def gen_variants(item):
         if len(toks) >= 2:
             variants.append(("edge_compound", "".join(toks[:2])))
         if len(toks) >= 4:
-            variants.append(("partial", " ".join(toks[1:4])))
+            # 첫 토큰은 대개 지역·제도·대상 같은 핵심 주제다. 이를 제거한
+            # "지원은 어떻게 받을", "여행 코스 추천"은 여러 항목에 동시에
+            # 맞아 검색 정확도를 측정할 수 없으므로 주제를 보존한다.
+            variants.append(("partial", " ".join(toks[:4])))
     return variants
+
+
+def _variant_key(query):
+    return re.sub(r"[^0-9A-Za-z가-힣]+", "", query).lower()
+
+
+def ambiguous_variants(items):
+    """자동 생성 질문이 둘 이상의 정답 제목에 포함되면 평가에서 분리한다."""
+    owners = {}
+    compact_items = [
+        (_variant_key(item["q"]), item["q"])
+        for item in items
+    ]
+    for item in items:
+        for _label, query in gen_variants(item):
+            normalized = _variant_key(query)
+            matched = {
+                expected for compact_q, expected in compact_items
+                if normalized and normalized in compact_q
+            }
+            owners.setdefault(normalized, set()).update(matched or {item["q"]})
+    return {query for query, expected in owners.items() if len(expected) > 1}
 
 
 def main():
@@ -90,12 +115,17 @@ def main():
     fails = []
     per_persona_total = {}
     per_persona_fail = {}
+    ambiguous_count = 0
 
     for persona, items in PERSONA_SETS.items():
+        ambiguous = ambiguous_variants(items)
         for item in items:
             variants = gen_variants(item)
             for label, vq in variants:
                 if not vq.strip():
+                    continue
+                if _variant_key(vq) in ambiguous:
+                    ambiguous_count += 1
                     continue
                 total += 1
                 per_persona_total[persona] = per_persona_total.get(persona, 0) + 1
@@ -114,6 +144,7 @@ def main():
                     })
 
     print(f"총 쿼리 수: {total}")
+    print(f"모호성 분리: {ambiguous_count}건 (둘 이상의 지식 항목에 동일하게 해당)")
     print(f"실패 수: {len(fails)} ({100*(total-len(fails))/total:.1f}% 통과)\n")
     for p in PERSONA_SETS:
         t = per_persona_total.get(p, 0)
