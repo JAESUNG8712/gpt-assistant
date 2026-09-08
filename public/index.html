@@ -9765,6 +9765,7 @@ function renderCompGradeRatioSettings(){
   const year=settings.compEvalYear||settings.evalYear;
   const gradeColors={S:"#fef9c3",A:"#dcfce7",B:"#dbeafe",C:"#fce7f3",D:"#f1f5f9"};
   function compGradeBlock(gs,pool,dept,label){
+    const safeDept=dept?h(dept).replace(/'/g,"\\'"):dept;
     const ratios=gs[pool];const sum=ratios.reduce((s,r)=>s+r.pct,0);
     const withCounts=calcTargetCount(ratios,pool,"comp",dept,year);
     const totalEmp=withCounts[0]?.total||0;
@@ -9774,16 +9775,16 @@ function renderCompGradeRatioSettings(){
       <div class="tbl-wrap"><table style="font-size:11px"><thead><tr><th>등급</th><th>비율</th><th>목표</th><th>현재</th><th>차이</th><th>삭제</th></tr></thead><tbody>
       ${withCounts.map((r,ri)=>{const tgt=r.targetCount;const act=actualGrades[r.grade]||0;const diff=act-tgt;return`<tr>
         <td><span style="width:22px;height:22px;display:inline-flex;align-items:center;justify-content:center;border-radius:50%;font-size:11px;font-weight:800;background:${gradeColors[r.grade]||"#f1f5f9"}">${r.grade}</span></td>
-        <td><input class="fc" type="number" min="0" max="100" value="${r.pct}" style="width:55px" onchange="${dept?`getCompGradeSettings('${dept}').${pool}[${ri}].pct`:`companyWideRatios.comp.${pool}[${ri}].pct`}=Number(this.value);renderCompGradeRatioSettings();_broadcastGradeChange()">%</td>
+        <td><input class="fc" type="number" min="0" max="100" value="${r.pct}" style="width:55px" onchange="${dept?`getCompGradeSettings('${safeDept}').${pool}[${ri}].pct`:`companyWideRatios.comp.${pool}[${ri}].pct`}=Number(this.value);renderCompGradeRatioSettings();_broadcastGradeChange()">%</td>
         <td class="tc fw7">${tgt}명</td>
         <td class="tc fw7 text-blue">${act}명</td>
         <td class="tc fw7" style="color:${diff>0?"#dc2626":diff<0?"#d97706":"#16a34a"}">${diff>0?"+"+diff:diff||"✓"}</td>
-        <td><button class="btn btn-ghost btn-sm" onclick="${dept?`getCompGradeSettings('${dept}').${pool}.splice(${ri},1)`:`companyWideRatios.comp.${pool}.splice(${ri},1)`};renderCompGradeRatioSettings()">×</button></td>
+        <td><button class="btn btn-ghost btn-sm" onclick="${dept?`getCompGradeSettings('${safeDept}').${pool}.splice(${ri},1)`:`companyWideRatios.comp.${pool}.splice(${ri},1)`};renderCompGradeRatioSettings()">×</button></td>
       </tr>`;}).join("")}
       </tbody></table></div>
       <div class="flex gap2 mt2">
-        <select class="fc" id="cgr-${(dept||"cw")}-${pool}" style="width:60px"><option>S</option><option${pool==="leader"?" selected":""}>A</option><option${pool==="member"?" selected":""}>B</option><option>C</option><option>D</option></select>
-        <button class="btn btn-secondary btn-sm" onclick="(()=>{const sel=document.getElementById('cgr-${(dept||"cw")}-${pool}');if(sel){${dept?`getCompGradeSettings('${dept}')`:'{member:companyWideRatios.comp.member,leader:companyWideRatios.comp.leader}'}.${pool}.push({grade:sel.value,pct:5});renderCompGradeRatioSettings();}})()">+ 추가</button>
+        <select class="fc" id="cgr-${(safeDept||"cw")}-${pool}" style="width:60px"><option>S</option><option${pool==="leader"?" selected":""}>A</option><option${pool==="member"?" selected":""}>B</option><option>C</option><option>D</option></select>
+        <button class="btn btn-secondary btn-sm" onclick="(()=>{const sel=document.getElementById('cgr-${(safeDept||"cw")}-${pool}');if(sel){${dept?`getCompGradeSettings('${safeDept}')`:'{member:companyWideRatios.comp.member,leader:companyWideRatios.comp.leader}'}.${pool}.push({grade:sel.value,pct:5});renderCompGradeRatioSettings();}})()">+ 추가</button>
       </div>
     </div>`;
   }
@@ -10905,7 +10906,7 @@ function openPromoSettingsModal(){
       <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px">
         ${ranks.map(rank=>`<div class="fg">
           <label class="fl">${h(rank)}</label>
-          <input class="fc" type="number" min="0" max="20" id="promo-min-${rank}"
+          <input class="fc" type="number" min="0" max="20" id="promo-min-${h(rank)}"
             value="${ps.minYearsByRank[rank]??""}" placeholder="0=제한없음">
         </div>`).join("")}
       </div>
@@ -10972,7 +10973,7 @@ function openPromoSettingsModal(){
     <div class="card"><div class="card-head"><h3>심사 제외 직급</h3></div><div class="card-body">
       <div style="display:flex;flex-wrap:wrap;gap:8px">
         ${orgDB.ranks.map(r=>`<label style="display:flex;align-items:center;gap:5px;font-size:12px">
-          <input type="checkbox" class="promo-excl" value="${r}" ${ps.excludeRanks.includes(r)?"checked":""}>${r}
+          <input type="checkbox" class="promo-excl" value="${h(r)}" ${ps.excludeRanks.includes(r)?"checked":""}>${h(r)}
         </label>`).join("")}
       </div>
     </div></div>
