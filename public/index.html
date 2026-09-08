@@ -14077,7 +14077,7 @@ function renderOrgPickerTree(){
     </label>`;};
   const groupRowHtml=(label,key,n,color)=>{const sel=_orgPicker.selected.includes(key);
     return`<label style="display:flex;align-items:center;gap:6px;padding:3px 6px;border-radius:5px;cursor:pointer;background:${sel?"#eff6ff":"transparent"}">
-      <input type="checkbox" ${sel?"checked":""} onchange="_opToggle('${key}')">
+      <input type="checkbox" ${sel?"checked":""} onchange="_opToggle('${h(key).replace(/'/g,"\\'")}')">
       <span class="fz10 fw7" style="color:${color}">🗂 ${h(label)} 전체 선택 <span class="text-gray fw4">(${n}명)</span></span>
     </label>`;};
   treeEl.innerHTML=depts.map(dept=>{
@@ -14087,12 +14087,12 @@ function renderOrgPickerTree(){
     const deptAll=employees.filter(e=>e.active&&e.dept===dept);
     const deptKey=`dept::${dept}`;
     const deptCollapsed=!forceExpand&&_orgPicker.collapsed.has(deptKey);
-    return`<div style="margin-bottom:8px"><div class="fz11 fw7" style="color:#1e3a8a;padding:3px 6px;cursor:pointer;display:flex;align-items:center;gap:4px" onclick="_opToggleCollapse('${deptKey}')"><span style="display:inline-block;transition:transform .15s;transform:rotate(${deptCollapsed?"-90":"0"}deg)">▾</span>${h(dept)}</div>
+    return`<div style="margin-bottom:8px"><div class="fz11 fw7" style="color:#1e3a8a;padding:3px 6px;cursor:pointer;display:flex;align-items:center;gap:4px" onclick="_opToggleCollapse('${h(deptKey).replace(/'/g,"\\'")}')"><span style="display:inline-block;transition:transform .15s;transform:rotate(${deptCollapsed?"-90":"0"}deg)">▾</span>${h(dept)}</div>
       ${deptCollapsed?"":`${ag&&!q?groupRowHtml(dept,`dept:${dept}`,deptAll.length,"#1e3a8a"):""}
       ${teams.map(team=>{const teamAll=employees.filter(e=>e.active&&e.dept===dept&&e.team===team);
         const teamKey=`team::${dept}::${team}`;
         const teamCollapsed=!forceExpand&&_orgPicker.collapsed.has(teamKey);
-        return`<div style="margin-left:10px;margin-bottom:3px"><div class="fz10 fw6" style="color:#2563eb;padding:2px 6px;cursor:pointer;display:flex;align-items:center;gap:4px" onclick="_opToggleCollapse('${teamKey}')"><span style="display:inline-block;transition:transform .15s;transform:rotate(${teamCollapsed?"-90":"0"}deg)">▾</span>${h(team)}</div>
+        return`<div style="margin-left:10px;margin-bottom:3px"><div class="fz10 fw6" style="color:#2563eb;padding:2px 6px;cursor:pointer;display:flex;align-items:center;gap:4px" onclick="_opToggleCollapse('${h(teamKey).replace(/'/g,"\\'")}')"><span style="display:inline-block;transition:transform .15s;transform:rotate(${teamCollapsed?"-90":"0"}deg)">▾</span>${h(team)}</div>
         ${teamCollapsed?"":`${ag&&!q?groupRowHtml(team,`team:${dept}::${team}`,teamAll.length,"#2563eb"):""}
         ${deptEmps.filter(e=>e.team===team).map(rowHtml).join("")}`}</div>`;}).join("")}
       ${noTeam.map(rowHtml).join("")}`}
@@ -14100,7 +14100,7 @@ function renderOrgPickerTree(){
   }).join("")||`<div class="text-gray fz12" style="text-align:center;padding:20px">검색 결과가 없습니다.</div>`;
   const chipsEl=$("#op-chips");
   if(chipsEl){
-    if(ag)chipsEl.innerHTML=_orgPicker.selected.map(k=>`<span class="badge bg-blue" style="display:inline-flex;align-items:center;gap:4px">${h(_refLabel(k))} <span style="cursor:pointer" onclick="_opToggle('${k}')">✕</span></span>`).join("");
+    if(ag)chipsEl.innerHTML=_orgPicker.selected.map(k=>`<span class="badge bg-blue" style="display:inline-flex;align-items:center;gap:4px">${h(_refLabel(k))} <span style="cursor:pointer" onclick="_opToggle('${h(k).replace(/'/g,"\\'")}')">✕</span></span>`).join("");
     else chipsEl.innerHTML=_orgPicker.selected.map(id=>{const e=getEmp(id);return e?`<span class="badge bg-blue" style="display:inline-flex;align-items:center;gap:4px">${h(e.name)} <span style="cursor:pointer" onclick="_opToggle('${id}')">✕</span></span>`:"";}).join("");
   }
   const cnt=$("#op-count");if(cnt)cnt.textContent=_orgPicker.selected.length;
