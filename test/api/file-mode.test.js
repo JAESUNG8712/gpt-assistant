@@ -151,7 +151,12 @@ test("file-mode API smoke suite", async (t) => {
   });
 
   await t.test("2b) 공개 healthz/readyz는 저장소 상태만 확인하고 전사 집계를 노출하지 않는다", async () => {
-    const health = await (await api("/healthz")).json();
+    const correlationId = "qa-health-20260909";
+    const healthRes = await api("/healthz", { headers: { "X-Request-ID": correlationId } });
+    assert.equal(healthRes.headers.get("x-request-id"), correlationId);
+    assert.match(healthRes.headers.get("cache-control") || "", /no-store/);
+    assert.match(healthRes.headers.get("permissions-policy") || "", /camera=\(\)/);
+    const health = await healthRes.json();
     assert.equal(health.ok, true);
     assert.equal(health.status, "live");
     assert.equal(health.storageMode, "file");
@@ -161,6 +166,8 @@ test("file-mode API smoke suite", async (t) => {
 
     const readyRes = await api("/readyz");
     assert.equal(readyRes.status, 200);
+    assert.match(readyRes.headers.get("x-request-id") || "", /^[0-9a-f-]{36}$/i);
+    assert.match(readyRes.headers.get("cache-control") || "", /no-store/);
     const ready = await readyRes.json();
     assert.equal(ready.ok, true);
     assert.equal(ready.status, "ready");
@@ -168,6 +175,16 @@ test("file-mode API smoke suite", async (t) => {
     assert.deepEqual(ready.checks, { process: "ok", storage: "ok" });
     assert.equal(ready.meta, undefined);
     assert.equal(ready.onlineCount, undefined);
+
+    const invalidIdRes = await api("/healthz", { headers: { "X-Request-ID": "short" } });
+    assert.notEqual(invalidIdRes.headers.get("x-request-id"), "short");
+    assert.match(invalidIdRes.headers.get("x-request-id") || "", /^[0-9a-f-]{36}$/i);
+
+    const pageRes = await api("/", { headers: { "Accept-Encoding": "gzip" } });
+    assert.equal(pageRes.status, 200);
+    assert.equal(pageRes.headers.get("content-encoding"), "gzip", "대형 정적 HTML은 압축 전송되어야 함");
+    assert.match(pageRes.headers.get("cache-control") || "", /no-store/);
+    await pageRes.arrayBuffer();
   });
 
   await t.test("3) 잘못된 로그인은 ok:false", async () => {

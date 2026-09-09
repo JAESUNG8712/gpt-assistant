@@ -1,6 +1,7 @@
 const express = require("express");
 const cors    = require("cors");
 const helmet  = require("helmet");
+const compression = require("compression");
 const { rateLimit } = require("express-rate-limit");
 const fs      = require("fs");
 const path    = require("path");
@@ -2853,6 +2854,7 @@ function _corsOptionsDelegate(req, callback) {
   const requestOrigin = req.headers.origin;
   const selfOrigin = requestOrigin ? _normalizeOrigin(`${req.protocol}://${req.get("host") || ""}`) : "";
   callback(null, {
+    exposedHeaders: ["X-Request-ID"],
     origin(origin, cb) {
       if (!origin) return cb(null, true);
       if (!IS_PRODUCTION && _isLoopbackOrigin(origin)) return cb(null, true);
@@ -2865,11 +2867,49 @@ function _corsOptionsDelegate(req, callback) {
     },
   });
 }
+
+// 로그·APM이 없는 소규모 배포에서도 사용자가 전달한 오류와 서버 요청을 정확히 연결할
+// 수 있도록 모든 응답에 요청 ID를 붙인다. 외부에서 받은 값은 로그/헤더 인젝션과 무한히
+// 긴 식별자 남용을 막기 위해 제한된 문자와 길이를 만족할 때만 이어받는다.
+const REQUEST_ID_PATTERN = /^[A-Za-z0-9._:-]{8,128}$/;
+app.use((req, res, next) => {
+  const incoming = String(req.get("x-request-id") || "").trim();
+  req.requestId = REQUEST_ID_PATTERN.test(incoming) ? incoming : crypto.randomUUID();
+  res.setHeader("X-Request-ID", req.requestId);
+  next();
+});
 app.use(cors(_corsOptionsDelegate));
 // CSP는 끈다: 프론트엔드(public/index.html)가 인라인 onclick 핸들러와 인라인 <script>를
 // 전면적으로 사용하는 구조라 기본 CSP를 켜면 앱 전체가 깨진다. 나머지 기본 보안 헤더
 // (X-Content-Type-Options, X-Frame-Options, HSTS 등)만 적용한다.
 app.use(helmet({ contentSecurityPolicy: false }));
+
+// HR/회계 응답과 SPA 문서는 브라우저·공용 프록시 캐시에 남기지 않는다. JS/CSS/이미지처럼
+// 배포 버전으로 관리되는 정적 자산은 기존 캐시 동작을 유지해 성능 저하를 피한다.
+// Permissions-Policy는 이 업무 앱이 사용하지 않는 센서·결제 기능을 명시적으로 차단한다.
+app.use((req, res, next) => {
+  const pathname = String(req.path || "/");
+  const lower = pathname.toLowerCase();
+  const dynamicOrSensitive = pathname === "/"
+    || lower.endsWith(".html")
+    || lower.startsWith("/api/")
+    || lower.startsWith("/master/")
+    || !path.extname(pathname);
+  if (dynamicOrSensitive) {
+    res.setHeader("Cache-Control", "no-store, max-age=0");
+    res.setHeader("Pragma", "no-cache");
+  }
+  res.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=(), usb=()");
+  res.setHeader("X-Robots-Tag", "noindex, nofollow, noarchive");
+  next();
+});
+
+// 대형 /data 및 보고서 JSON을 전송할 때 네트워크 사용량을 줄인다. EventSource 스트림은
+// 압축 버퍼가 실시간 이벤트 전달을 지연시킬 수 있으므로 반드시 원문 스트림으로 유지한다.
+app.use(compression({
+  threshold: 1024,
+  filter: (req, res) => req.path.toLowerCase() !== "/events" && compression.filter(req, res),
+}));
 
 const CASE_SENSITIVE_API_PREFIXES = [
   "/api/accounting/",
@@ -3236,6 +3276,7 @@ app.get("/healthz", (req, res) => {
 // GET /readyz — 배포 직후/장애 감지용 준비 상태 확인. healthz보다 한 단계 더 깊게
 // PostgreSQL 또는 JSON 파일 저장소에 접근 가능한지만 확인한다. 이 라우트도 무인증으로
 // 호출될 수 있으므로 상세 DB 오류·회사별 집계·파일 경로는 응답에 담지 않는다.
+const READINESS_DB_TIMEOUT_MS = _positiveEnvCount("READINESS_DB_TIMEOUT_MS", 3000);
 app.get("/readyz", async (req, res) => {
   try {
     if (USE_JSON_FILE) {
@@ -3249,7 +3290,7 @@ app.get("/readyz", async (req, res) => {
         checks: { process: "ok", storage: "ok" },
       });
     }
-    await pool.query("SELECT 1");
+    await pool.query({ text: "SELECT 1", query_timeout: READINESS_DB_TIMEOUT_MS });
     res.json({
       ok: true,
       status: "ready",
