@@ -1033,6 +1033,7 @@ const WEBHOOK_TYPES={slack:"Slack",kakao:"카카오워크",email:"이메일",cus
 let approvalDocs=[]; // 전자결재 문서
 let attendanceRecords=[]; // 근태 기록
 let payslips=[]; // 급여 명세서
+let yearEndSettlements=[]; // 연말정산(간이) 결과
 let payrollAdjustments=[]; // 급여 조정(경조사비/인센티브/추가금액) 항목
 let leaveUsagePlans=[]; // 연차 사용촉진제도 - 개인별 연간 연차 사용계획서 (1차 7월/2차 10월)
 let boardPosts=[]; // 게시판/공지사항
@@ -5115,6 +5116,7 @@ function applyState(state,skipUndo=false){
   if(d.approvalDocs&&Array.isArray(d.approvalDocs))approvalDocs=d.approvalDocs;
   if(d.attendanceRecords&&Array.isArray(d.attendanceRecords))attendanceRecords=_mergeByIdPreferNewer(attendanceRecords,d.attendanceRecords,'attendanceRecords');
   if(d.payslips&&Array.isArray(d.payslips))payslips=d.payslips;
+  if(d.yearEndSettlements&&Array.isArray(d.yearEndSettlements))yearEndSettlements=d.yearEndSettlements;
   if(d.payrollAdjustments&&Array.isArray(d.payrollAdjustments))payrollAdjustments=d.payrollAdjustments;
   if(d.leaveUsagePlans&&Array.isArray(d.leaveUsagePlans))leaveUsagePlans=d.leaveUsagePlans;
   if(d.boardPosts&&Array.isArray(d.boardPosts))boardPosts=d.boardPosts;
@@ -6383,6 +6385,7 @@ function renderSidebar(){
     "pay-sep":[
       {id:"pay-sep",type:"sep",label:"급여",roles:["admin","director","leader","member"]},
       {id:"payslip",label:"급여 명세서",icon:"💰",desc:"월별 급여 내역 조회",roles:["admin","director","leader","member"]},
+      {id:"yearend-settlement",label:"연말정산(간이)",icon:"🧾",desc:"연간 원천징수세액 정산(부양가족 인적공제만 반영한 간이 계산)",roles:["admin","director","leader","member"]},
       {id:"salary-info",label:"급여 기준 정보",icon:"📑",desc:"전월 급여 기준·예상 퇴직금",roles:["admin","director","leader","member"]},
       {id:"expense-claims",label:"경비 청구",icon:"🧾",desc:"법인카드·개인경비 청구/조회",roles:["admin","director","leader","member"]},
     ],
@@ -6520,7 +6523,7 @@ function renderSidebar(){
   _menuGroupsCache=menuGroups;
   const groupOrder=SIDEBAR_DEFAULT_ORDER.filter(g=>menuGroups[g]);
   const menus=groupOrder.flatMap(g=>menuGroups[g]);
-  const titles={dashboard:"대시보드","my-profile":"내 프로필","hr-register":"신규 직원 등록","hr-list":"직원 목록","hr-changes":"발령·변동 이력",kpi:"KPI 목표 등록","kpi-results":"KPI 결과 입력","my-kpi":"나의 KPI","grade-view":"KPI 등급 현황","comp-grade-view":"역량평가 등급","comp-eval":"다면평가 진행","first-eval":"1차 평가","second-eval":"2차 평가","kpi-amend":"수정 요청 승인","eval-progress":"평가 진행 상황",settings:"운영 설정",history:"수정 이력","change-pw":"비밀번호 변경","data-mgmt":"데이터 관리","core-talent":"핵심인재 관리","talent-dev":"육성 계획·실적","promotion-mgmt":"승진 심사 관리","low-performer":"저성과 인력 관리","approval-draft":"기안하기","approval-outbox":"상신함","approval-inbox":"결재함","approval-receive":"수신함","approval-cc-inbox":"참조함","approval-completed":"완료함","attendance":"근태 현황","att-calendar":"캘린더","leave-mgmt":"연차 관리","payslip":"급여 명세서","approval-templates":"결재 양식 관리","integrations":"연동 설정","orgchart":"조직도","certificate":"증명서 발급","hr-stats":"인사 통계","board":"게시판","room-booking":"회의실 예약","welfare-points":"복지포인트","mandatory-training":"법정의무교육","hr-welfare-points":"복지포인트 현황(전체)","hr-mandatory-training":"법정의무교육 현황(전체)","hr-attendance":"근태 현황(전체)","hr-leave-mgmt":"연차 관리(전체)","welfare-status":"복지 현황","long-service-award":"장기근속 포상","award-history":"(최)우수사원 선정 이력","salary-info":"급여 기준 정보","welfare-settings":"복지 제도 설정","notification-center":"알림","acct-partners":"거래처 관리","acct-accounts":"계정과목","acct-vouchers":"전표 관리","acct-tax-invoices":"세금계산서","acct-vat-report":"부가세 신고자료","acct-fixed-assets":"고정자산 관리","acct-fixed-assets-detail":"고정자산 상세","acct-cost-statement":"원가명세서","acct-rcps":"RCPS 관리","acct-rcps-detail":"RCPS 발행 상세","acct-reports":"회계 리포트","expense-claims":"경비 청구","expense-admin":"경비 정산 관리","acct-receivables":"채권/채무 관리","biz-plan":"사업계획","overtime-req":"초과근무 신청","exec-dashboard":"경영 대시보드","onboarding":"온보딩/오프보딩","approval-delegation":"결재 위임","sales-quotations":"견적서 관리","sales-dashboard":"영업 실적 대시보드","sales-purchase-orders":"발주서 관리","inv-items":"품목 관리","inv-locations":"위치 관리","inv-stock":"재고 현황","inv-purchase-requests":"구매요청","pms-projects":"프로젝트 관리","pms-allocation":"내 투입률 입력","pms-my-projects":"내가 투입된 프로젝트","pms-utilization":"가동률 현황","pms-worklog":"일일 업무 투입","recruit-jobs":"채용공고 관리","recruit-candidates":"지원자 관리","recruit-eval":"면접 일정/평가 입력","recruit-eval-detail":"면접 평가 상세","recruit-dashboard":"채용 현황 대시보드","eval-ops":"평가 운영","settings-org":"조직 관리","settings-ranks":"직급 체계","attend-settings":"근태 설정","payroll-settings":"급여 관리","payroll-mgmt":"급여 종합 관리","company-info":"회사 기본 정보","room-settings":"회의실 관리","deploy-perm":"권한 관리"};
+  const titles={dashboard:"대시보드","my-profile":"내 프로필","hr-register":"신규 직원 등록","hr-list":"직원 목록","hr-changes":"발령·변동 이력",kpi:"KPI 목표 등록","kpi-results":"KPI 결과 입력","my-kpi":"나의 KPI","grade-view":"KPI 등급 현황","comp-grade-view":"역량평가 등급","comp-eval":"다면평가 진행","first-eval":"1차 평가","second-eval":"2차 평가","kpi-amend":"수정 요청 승인","eval-progress":"평가 진행 상황",settings:"운영 설정",history:"수정 이력","change-pw":"비밀번호 변경","data-mgmt":"데이터 관리","core-talent":"핵심인재 관리","talent-dev":"육성 계획·실적","promotion-mgmt":"승진 심사 관리","low-performer":"저성과 인력 관리","approval-draft":"기안하기","approval-outbox":"상신함","approval-inbox":"결재함","approval-receive":"수신함","approval-cc-inbox":"참조함","approval-completed":"완료함","attendance":"근태 현황","att-calendar":"캘린더","leave-mgmt":"연차 관리","payslip":"급여 명세서","yearend-settlement":"연말정산(간이)","approval-templates":"결재 양식 관리","integrations":"연동 설정","orgchart":"조직도","certificate":"증명서 발급","hr-stats":"인사 통계","board":"게시판","room-booking":"회의실 예약","welfare-points":"복지포인트","mandatory-training":"법정의무교육","hr-welfare-points":"복지포인트 현황(전체)","hr-mandatory-training":"법정의무교육 현황(전체)","hr-attendance":"근태 현황(전체)","hr-leave-mgmt":"연차 관리(전체)","welfare-status":"복지 현황","long-service-award":"장기근속 포상","award-history":"(최)우수사원 선정 이력","salary-info":"급여 기준 정보","welfare-settings":"복지 제도 설정","notification-center":"알림","acct-partners":"거래처 관리","acct-accounts":"계정과목","acct-vouchers":"전표 관리","acct-tax-invoices":"세금계산서","acct-vat-report":"부가세 신고자료","acct-fixed-assets":"고정자산 관리","acct-fixed-assets-detail":"고정자산 상세","acct-cost-statement":"원가명세서","acct-rcps":"RCPS 관리","acct-rcps-detail":"RCPS 발행 상세","acct-reports":"회계 리포트","expense-claims":"경비 청구","expense-admin":"경비 정산 관리","acct-receivables":"채권/채무 관리","biz-plan":"사업계획","overtime-req":"초과근무 신청","exec-dashboard":"경영 대시보드","onboarding":"온보딩/오프보딩","approval-delegation":"결재 위임","sales-quotations":"견적서 관리","sales-dashboard":"영업 실적 대시보드","sales-purchase-orders":"발주서 관리","inv-items":"품목 관리","inv-locations":"위치 관리","inv-stock":"재고 현황","inv-purchase-requests":"구매요청","pms-projects":"프로젝트 관리","pms-allocation":"내 투입률 입력","pms-my-projects":"내가 투입된 프로젝트","pms-utilization":"가동률 현황","pms-worklog":"일일 업무 투입","recruit-jobs":"채용공고 관리","recruit-candidates":"지원자 관리","recruit-eval":"면접 일정/평가 입력","recruit-eval-detail":"면접 평가 상세","recruit-dashboard":"채용 현황 대시보드","eval-ops":"평가 운영","settings-org":"조직 관리","settings-ranks":"직급 체계","attend-settings":"근태 설정","payroll-settings":"급여 관리","payroll-mgmt":"급여 종합 관리","company-info":"회사 기본 정보","room-settings":"회의실 관리","deploy-perm":"권한 관리"};
   const ptEl=$("#page-title");if(ptEl)ptEl.textContent=titles[currentPage]||"";
   const sb=$("#sidebar");if(!sb)return;
   // Filter by role + per-user custom permission overrides (admin-managed)
@@ -6653,7 +6656,7 @@ function _pageAccessDenied(){
     <div style="font-size:12px;margin-top:6px">이 메뉴는 권한이 있는 사용자만 이용할 수 있습니다.</div>
   </div></div>`;
 }
-const _MY_PAGE_PW_GUARD=new Set(["my-profile","attendance","att-calendar","leave-mgmt","payslip"]);
+const _MY_PAGE_PW_GUARD=new Set(["my-profile","attendance","att-calendar","leave-mgmt","payslip","yearend-settlement"]);
 function _requireMyPagePw(cb){
   if(_myPagePwVerified){cb();return;}
   openModal(`<div class="modal-box" style="max-width:380px"><div class="modal-head"><h3>🔒 본인 확인</h3></div><div class="modal-body">
@@ -6793,7 +6796,7 @@ function renderCategoryLanding(catKey){
 function renderPage(){
   if(currentPage&&currentPage.startsWith("cat:")){renderCategoryLanding(currentPage.slice(4));renderCatNav();const attendBar=document.getElementById("attend-bar");if(attendBar)attendBar.innerHTML=(currentUser&&currentPage==="dashboard")?_renderTeamTodayWidget(currentUser):"";return;}
   if(currentPage&&currentPage.startsWith("board-")){renderBoardPage();renderCatNav();const attendBar=document.getElementById("attend-bar");if(attendBar)attendBar.innerHTML=(currentUser&&currentPage==="dashboard")?_renderTeamTodayWidget(currentUser):"";return;}
-  const pages={dashboard:renderDashboard,"my-profile":renderMyProfile,"hr-register":renderHRRegister,"hr-list":renderHRList,"hr-changes":renderHRChanges,kpi:()=>renderKPI(false),"kpi-results":()=>renderKPI(true),"my-kpi":renderMyKPI,"grade-view":renderGradeView,"comp-grade-view":renderCompGradeView,"comp-settings-shortcut":()=>gotoPage("eval-ops"),"comp-eval":renderCompEval,"data-mgmt":renderDataManagementPage,"core-talent":renderCoreTalentPage,"talent-dev":renderTalentDevPage,"promotion-mgmt":renderPromotionPageStandalone,"low-performer":renderLowPerformer,"activity-log":()=>{loadActivityFromServer();},"first-eval":()=>{approvalTab="eval";approvalSearch={name:"",dept:""};renderApprovals();},"second-eval":()=>{approvalTab="eval";approvalSearch={name:"",dept:""};renderApprovals();},"kpi-amend":()=>{approvalTab="requests";approvalSearch={name:"",dept:""};renderApprovals();},"eval-progress":renderEvalProgressPage,settings:renderSettings,"eval-ops":renderEvalOpsPage,"settings-org":renderSettingsOrgPage,"settings-ranks":renderSettingsRanksPage,"attend-settings":renderAttendSettings,"payroll-settings":renderPayrollSettings,"company-info":renderCompanyInfo,"room-settings":renderRoomSettings,"deploy-perm":renderDeployPermPage,history:renderHistory,"change-pw":renderChangePW,"approval-draft":renderApprovalDraftPage,"approval-outbox":renderApprovalOutbox,"approval-inbox":renderApprovalInbox,"approval-receive":renderApprovalReceive,"approval-cc-inbox":renderApprovalCcInbox,"approval-completed":renderApprovalCompleted,"attendance":renderAttendancePage,"att-calendar":renderAttendanceCalendarPage,"leave-mgmt":renderLeaveManagementPage,"payslip":renderPayslipPage,"approval-templates":renderApprovalTemplateAdmin,"integrations":renderIntegrationsPage,"orgchart":renderOrgChartPage,"certificate":renderCertPage,"hr-stats":renderHRStatsPage,"board":renderBoardPage,"room-booking":renderRoomBookingPage,"welfare-points":renderWelfarePointsPage,"mandatory-training":renderMandatoryTrainingPage,"welfare-status":renderWelfareStatusPage,"long-service-award":renderLongServiceAwardPage,"award-history":renderAwardHistoryPage,"hr-welfare-points":renderHrWelfarePointsPage,"hr-mandatory-training":renderHrMandatoryTrainingPage,"hr-attendance":renderHrAttendancePage,"hr-leave-mgmt":renderHrLeaveManagementPage,"payroll-mgmt":renderPayrollMgmtPage,"salary-info":renderSalaryInfoPage,"welfare-settings":renderWelfareSettingsPage,"notification-center":renderNotificationCenterPage,"acct-partners":renderAcctPartnersPage,"acct-accounts":renderAcctAccountsPage,"acct-vouchers":renderAcctVouchersPage,"acct-tax-invoices":renderAcctTaxInvoicesPage,"acct-vat-report":()=>{loadVatReportFromServer();},"acct-fixed-assets":renderAcctFixedAssetsPage,"acct-fixed-assets-detail":()=>{loadFixedAssetDetailFromServer();},"acct-cost-statement":renderAcctCostStatementPage,"acct-rcps":renderAcctRcpsPage,"acct-rcps-detail":()=>{loadRcpsDetailFromServer();},"acct-reports":renderAcctReportsPage,"expense-claims":renderExpenseClaimsPage,"expense-admin":renderExpenseAdminPage,"acct-receivables":renderAcctReceivablesPage,"biz-plan":()=>{loadBizPlanFromServer();},"emp-pay-plan":()=>{renderEmpPayPlanPage();},"overtime-req":renderOvertimeReqPage,"exec-dashboard":renderExecDashboardPage,"onboarding":renderOnboardingPage,"approval-delegation":renderApprovalDelegationPage,"sales-quotations":renderSalesQuotationsPage,"sales-dashboard":renderSalesDashboardPage,"sales-purchase-orders":renderSalesPurchaseOrdersPage,"inv-items":renderInvItemsPage,"inv-locations":renderInvLocationsPage,"inv-stock":renderInvStockPage,"inv-stock-log":renderInvStockLogPage,"inv-purchase-requests":renderPurchaseRequestsPage,"pms-projects":renderPmsProjectsPage,"pms-allocation":renderPmsAllocationPage,"pms-my-projects":renderPmsMyProjectsPage,"pms-utilization":renderPmsUtilizationPage,"pms-worklog":renderPmsWorklogPage,"recruit-jobs":renderRecruitJobsPage,"recruit-candidates":renderRecruitCandidatesPage,"recruit-eval":renderRecruitEvalPage,"recruit-eval-detail":renderRecruitEvalDetailPage,"recruit-dashboard":renderRecruitDashboardPage};
+  const pages={dashboard:renderDashboard,"my-profile":renderMyProfile,"hr-register":renderHRRegister,"hr-list":renderHRList,"hr-changes":renderHRChanges,kpi:()=>renderKPI(false),"kpi-results":()=>renderKPI(true),"my-kpi":renderMyKPI,"grade-view":renderGradeView,"comp-grade-view":renderCompGradeView,"comp-settings-shortcut":()=>gotoPage("eval-ops"),"comp-eval":renderCompEval,"data-mgmt":renderDataManagementPage,"core-talent":renderCoreTalentPage,"talent-dev":renderTalentDevPage,"promotion-mgmt":renderPromotionPageStandalone,"low-performer":renderLowPerformer,"activity-log":()=>{loadActivityFromServer();},"first-eval":()=>{approvalTab="eval";approvalSearch={name:"",dept:""};renderApprovals();},"second-eval":()=>{approvalTab="eval";approvalSearch={name:"",dept:""};renderApprovals();},"kpi-amend":()=>{approvalTab="requests";approvalSearch={name:"",dept:""};renderApprovals();},"eval-progress":renderEvalProgressPage,settings:renderSettings,"eval-ops":renderEvalOpsPage,"settings-org":renderSettingsOrgPage,"settings-ranks":renderSettingsRanksPage,"attend-settings":renderAttendSettings,"payroll-settings":renderPayrollSettings,"company-info":renderCompanyInfo,"room-settings":renderRoomSettings,"deploy-perm":renderDeployPermPage,history:renderHistory,"change-pw":renderChangePW,"approval-draft":renderApprovalDraftPage,"approval-outbox":renderApprovalOutbox,"approval-inbox":renderApprovalInbox,"approval-receive":renderApprovalReceive,"approval-cc-inbox":renderApprovalCcInbox,"approval-completed":renderApprovalCompleted,"attendance":renderAttendancePage,"att-calendar":renderAttendanceCalendarPage,"leave-mgmt":renderLeaveManagementPage,"payslip":renderPayslipPage,"yearend-settlement":renderYearEndSettlementPage,"approval-templates":renderApprovalTemplateAdmin,"integrations":renderIntegrationsPage,"orgchart":renderOrgChartPage,"certificate":renderCertPage,"hr-stats":renderHRStatsPage,"board":renderBoardPage,"room-booking":renderRoomBookingPage,"welfare-points":renderWelfarePointsPage,"mandatory-training":renderMandatoryTrainingPage,"welfare-status":renderWelfareStatusPage,"long-service-award":renderLongServiceAwardPage,"award-history":renderAwardHistoryPage,"hr-welfare-points":renderHrWelfarePointsPage,"hr-mandatory-training":renderHrMandatoryTrainingPage,"hr-attendance":renderHrAttendancePage,"hr-leave-mgmt":renderHrLeaveManagementPage,"payroll-mgmt":renderPayrollMgmtPage,"salary-info":renderSalaryInfoPage,"welfare-settings":renderWelfareSettingsPage,"notification-center":renderNotificationCenterPage,"acct-partners":renderAcctPartnersPage,"acct-accounts":renderAcctAccountsPage,"acct-vouchers":renderAcctVouchersPage,"acct-tax-invoices":renderAcctTaxInvoicesPage,"acct-vat-report":()=>{loadVatReportFromServer();},"acct-fixed-assets":renderAcctFixedAssetsPage,"acct-fixed-assets-detail":()=>{loadFixedAssetDetailFromServer();},"acct-cost-statement":renderAcctCostStatementPage,"acct-rcps":renderAcctRcpsPage,"acct-rcps-detail":()=>{loadRcpsDetailFromServer();},"acct-reports":renderAcctReportsPage,"expense-claims":renderExpenseClaimsPage,"expense-admin":renderExpenseAdminPage,"acct-receivables":renderAcctReceivablesPage,"biz-plan":()=>{loadBizPlanFromServer();},"emp-pay-plan":()=>{renderEmpPayPlanPage();},"overtime-req":renderOvertimeReqPage,"exec-dashboard":renderExecDashboardPage,"onboarding":renderOnboardingPage,"approval-delegation":renderApprovalDelegationPage,"sales-quotations":renderSalesQuotationsPage,"sales-dashboard":renderSalesDashboardPage,"sales-purchase-orders":renderSalesPurchaseOrdersPage,"inv-items":renderInvItemsPage,"inv-locations":renderInvLocationsPage,"inv-stock":renderInvStockPage,"inv-stock-log":renderInvStockLogPage,"inv-purchase-requests":renderPurchaseRequestsPage,"pms-projects":renderPmsProjectsPage,"pms-allocation":renderPmsAllocationPage,"pms-my-projects":renderPmsMyProjectsPage,"pms-utilization":renderPmsUtilizationPage,"pms-worklog":renderPmsWorklogPage,"recruit-jobs":renderRecruitJobsPage,"recruit-candidates":renderRecruitCandidatesPage,"recruit-eval":renderRecruitEvalPage,"recruit-eval-detail":renderRecruitEvalDetailPage,"recruit-dashboard":renderRecruitDashboardPage};
   const fn=pages[currentPage];const c=$("#content");
   if(c&&fn){
     c.innerHTML="";
@@ -12360,7 +12363,7 @@ async function doResetAll(){
     if(!d.ok)throw new Error(d.message);
     employees=[];kpiEntries=[];changeRequests=[];compGradeResults={};gradeAdjustHistory=[];
     coreTalentPool=[];talentDevPlans=[];lowPerfData=[];tieNotifications=[];
-    approvalDocs=[];attendanceRecords=[];payslips=[];payrollAdjustments=[];leaveUsagePlans=[];boardPosts=[];roomReservations=[];certLog=[];certRequests=[];welfarePoints=[];mandatoryTraining=[];healthCheckupLog=[];
+    approvalDocs=[];attendanceRecords=[];payslips=[];yearEndSettlements=[];payrollAdjustments=[];leaveUsagePlans=[];boardPosts=[];roomReservations=[];certLog=[];certRequests=[];welfarePoints=[];mandatoryTraining=[];healthCheckupLog=[];
     showToast("전체 데이터가 초기화되었습니다.","success");
     renderPage();
   }catch(e){showToast("초기화 실패: "+e.message,"error");}
@@ -15496,6 +15499,215 @@ function duplicateApprovalTemplate(id){
   const src=getTpl(id);if(!src)return;
   const tpl={...JSON.parse(JSON.stringify(src)),id:`tpl-c-${Date.now()}`,name:src.name+" (복사본)",builtin:false,updatedAt:new Date().toISOString()};
   approvalTemplates.push(tpl);autoSaveToServerIfEnabled();showToast("복제되었습니다. 복사본을 수정하여 사용하세요.","success");renderApprovalTemplateAdmin();
+}
+// ── 연말정산(간이) ────────────────────────────────────────────────────────────
+// 정확한 연말정산(보험료·의료비·교육비·신용카드 등 각종 소득/세액공제, 국세청 간이세액표
+// 기준 결정세액)은 국세청 고시 자료와 직원별 증빙 입력이 필요한 매우 큰 기능이라(2026-09-09
+// 세션에서 AskUserQuestion으로 범위 확정), 이 기능은 그 대신 아래 3가지 — 근로소득공제
+// (소득세법 제47조)·인적공제(부양가족 수만 입력받음, 1인당 150만원)·종합소득세 기본세율표
+// (제55조)·근로소득세액공제(제59조, 한도 포함) — 만 반영한 "단순 정산"이다. 이 4가지는 전부
+// 총급여·부양가족 수만으로 결정되는 안정적인 공식이라(사람마다 다른 증빙 서류가 필요 없음)
+// 인적공제만 입력받는 이 범위 안에서도 구조적으로 정확하게 구현할 수 있다. 보험료·의료비·
+// 교육비·신용카드 사용액·자녀세액공제·연금저축공제 등은 전부 제외 — 실제 결정세액보다
+// 크게 계산될 수 있으므로, 화면에 "법적 정확성을 보장하지 않는 참고용 간이 계산"임을
+// 항상 명시한다.
+function _yesIncomeDeduction(gross){ // 근로소득공제(소득세법 제47조)
+  if(gross<=5000000)return Math.round(gross*0.7);
+  if(gross<=15000000)return Math.round(3500000+(gross-5000000)*0.4);
+  if(gross<=45000000)return Math.round(7500000+(gross-15000000)*0.15);
+  if(gross<=100000000)return Math.round(12000000+(gross-45000000)*0.05);
+  return Math.round(14750000+(gross-100000000)*0.02);
+}
+function _yesTaxByBase(base){ // 종합소득세 기본세율(소득세법 제55조, 과세표준 기준 누진공제)
+  if(base<=14000000)return Math.round(base*0.06);
+  if(base<=50000000)return Math.round(base*0.15-1260000);
+  if(base<=88000000)return Math.round(base*0.24-5760000);
+  if(base<=150000000)return Math.round(base*0.35-15440000);
+  if(base<=300000000)return Math.round(base*0.38-19940000);
+  if(base<=500000000)return Math.round(base*0.40-25940000);
+  if(base<=1000000000)return Math.round(base*0.42-35940000);
+  return Math.round(base*0.45-65940000);
+}
+function _yesEarnedIncomeCredit(calcTax,gross){ // 근로소득세액공제(소득세법 제59조, 한도 포함)
+  const credit=calcTax<=1300000?Math.round(calcTax*0.55):Math.round(715000+(calcTax-1300000)*0.3);
+  let limit;
+  if(gross<=33000000)limit=740000;
+  else if(gross<=70000000)limit=Math.max(500000,660000-Math.round((gross-33000000)*0.008));
+  else limit=Math.max(200000,500000-Math.round((gross-70000000)*0.5));
+  return Math.min(credit,limit);
+}
+// 순수 계산 함수 — 그 해 1~12월 급여명세서(저장된 것이 있으면 그대로, 없으면
+// calcStandardPayslip으로 즉석 계산, renderPayslipPage()와 동일한 폴백 패턴)에서 과세소득·
+// 기납부세액을 합산한다. 부양가족 수는 저장 여부와 무관하게 항상 인자로 받아, 화면이 저장 전
+// 미리보기를 계산할 때도(admin이 아직 확정하지 않은 값) 그대로 재사용할 수 있게 한다.
+function _computeYearEndSettlement(emp,year,dependents){
+  const dep=Math.max(0,Math.min(20,parseInt(dependents,10)||0));
+  let grossPay=0,paidTax=0,paidLocalTax=0;
+  for(let m=1;m<=12;m++){
+    let slip=payslips.find(p=>String(p.empId)===String(emp.id)&&p.year===year&&p.month===m);
+    if(!slip)slip=calcStandardPayslip(emp,year,m);
+    grossPay+=slip.taxableIncome||0;paidTax+=slip.tax||0;paidLocalTax+=slip.localTax||0;
+  }
+  const incomeDeduction=_yesIncomeDeduction(grossPay);
+  const earnedIncomeAmount=Math.max(0,grossPay-incomeDeduction);
+  const personalDeduction=(1+dep)*1500000;
+  const taxBase=Math.max(0,earnedIncomeAmount-personalDeduction);
+  const calculatedTax=_yesTaxByBase(taxBase);
+  const taxCredit=_yesEarnedIncomeCredit(calculatedTax,grossPay);
+  const finalTax=Math.max(0,calculatedTax-taxCredit);
+  const finalLocalTax=Math.round(finalTax*0.1);
+  return{dependents:dep,grossPay,incomeDeduction,earnedIncomeAmount,personalDeduction,taxBase,
+    calculatedTax,taxCredit,finalTax,finalLocalTax,paidTax,paidLocalTax,
+    diffTax:paidTax-finalTax,diffLocalTax:paidLocalTax-finalLocalTax};
+}
+function getYearEndSettlement(empId,year){return yearEndSettlements.find(y=>String(y.empId)===String(empId)&&y.year===year);}
+// 화면에 즉시 보여줄 미리보기 — 저장 여부와 무관하게 항상 계산해서 반환한다(payslip 미리보기와
+// 동일한 UX: 아직 admin이 확정 안 해도 예상 금액을 볼 수 있음). 저장된 레코드가 있으면 그
+// dependents·confirmed 상태를 사용하고, 없으면 dependents=0으로 가정한 미리보기.
+function _yesPreview(empId,year){
+  const emp=getEmp(empId);if(!emp)return null;
+  const stored=getYearEndSettlement(empId,year);
+  const calc=_computeYearEndSettlement(emp,year,stored?.dependents||0);
+  return{...calc,confirmed:!!stored?.confirmed,confirmedAt:stored?.confirmedAt||null,calculatedAt:stored?.calculatedAt||null};
+}
+// 저장(admin 전용 — 서버의 _WRITE_GATED_FIELDS.yearEndSettlements가 role을 재검증한다).
+// dependents를 바꿔 재계산하거나, confirmed만 토글할 때도 이 함수를 거친다.
+function saveYearEndSettlement(empId,year,dependents,confirm){
+  const emp=getEmp(empId);if(!emp){showToast("직원 정보를 찾을 수 없습니다.","error");return;}
+  const existing=getYearEndSettlement(empId,year);
+  const dep=dependents!=null?Math.max(0,Math.min(20,parseInt(dependents,10)||0)):(existing?.dependents||0);
+  const calc=_computeYearEndSettlement(emp,year,dep);
+  const now=new Date().toISOString();
+  const rec={id:`yes-${empId}-${year}`,empId,year,...calc,
+    confirmed:confirm!=null?confirm:!!existing?.confirmed,
+    confirmedAt:confirm===true?now:(confirm===false?null:existing?.confirmedAt||null),
+    calculatedAt:now,updatedAt:now};
+  const idx=yearEndSettlements.findIndex(y=>String(y.empId)===String(empId)&&y.year===year);
+  if(idx>=0)yearEndSettlements[idx]=rec;else yearEndSettlements.push(rec);
+  autoSaveToServerIfEnabled();
+  return rec;
+}
+let _yesState={year:new Date().getFullYear()-1,dept:"",team:"",search:""};
+function _yesRefresh(){const el=document.getElementById("yes-admin-wrap");if(el)el.outerHTML=_yesAdminSectionHtml();}
+function renderYearEndSettlementPage(){
+  const c=$("#content");const uid=currentUser.id;const isAdmin=currentUser.role==="admin";
+  const myYear=_yesState.year;const my=_yesPreview(uid,myYear);
+  c.innerHTML=`<div class="card" style="margin-bottom:12px"><div class="card-head"><h3>🧾 연말정산(간이) ${myYear}년 귀속</h3>
+    <div style="display:flex;gap:6px;align-items:center">
+      <select class="fc" style="width:100px" onchange="_yesState.year=+this.value;renderYearEndSettlementPage()">
+        ${Array.from({length:5},(_,i)=>new Date().getFullYear()-4+i).map(y=>`<option value="${y}" ${y===myYear?"selected":""}>${y}년</option>`).join("")}
+      </select>
+      ${my?`<button class="btn btn-secondary btn-sm" onclick="printYearEndSettlement('${uid}',${myYear})">🖨 인쇄/저장</button>`:""}
+    </div>
+  </div><div class="card-body">
+    <div class="fz11" style="color:#8a6500;background:#fffbeb;border-radius:6px;padding:8px 10px;margin-bottom:12px">
+      ⚠ 이 정산은 부양가족 인적공제만 반영한 간이 계산입니다. 보험료·의료비·교육비·신용카드 사용액 등 실제 소득/세액공제는 반영되지 않아 국세청 최종 정산 결과와 다를 수 있습니다. 법적 정확성을 보장하지 않는 참고용입니다.
+    </div>
+    ${my?_yesSummaryHtml(my):`<div class="text-gray fz12" style="text-align:center;padding:20px">${myYear}년 급여 데이터가 없습니다.</div>`}
+  </div></div>
+  ${isAdmin?`<div id="yes-admin-wrap">${_yesAdminSectionHtml()}</div>`:""}`;
+}
+function _yesSummaryHtml(y){
+  const row=(label,val,color)=>`<tr><td style="padding:5px 0;color:#475569">${label}</td><td style="text-align:right${color?`;color:${color};font-weight:700`:""}">${fmtSalary(val)}</td></tr>`;
+  const diff=y.diffTax+y.diffLocalTax;
+  return`<div style="display:grid;grid-template-columns:1fr 1fr;gap:20px">
+    <table style="width:100%;border-collapse:collapse">
+      ${row("총급여(연간 과세소득 합계)",y.grossPay)}
+      ${row("근로소득공제",y.incomeDeduction)}
+      ${row("근로소득금액",y.earnedIncomeAmount)}
+      ${row(`인적공제(본인+부양가족 ${y.dependents}명)`,y.personalDeduction)}
+      ${row("과세표준",y.taxBase)}
+      ${row("산출세액",y.calculatedTax)}
+      ${row("근로소득세액공제",y.taxCredit)}
+    </table>
+    <table style="width:100%;border-collapse:collapse">
+      ${row("결정세액(소득세)",y.finalTax)}
+      ${row("결정세액(지방소득세)",y.finalLocalTax)}
+      ${row("기납부세액(소득세)",y.paidTax)}
+      ${row("기납부세액(지방소득세)",y.paidLocalTax)}
+    </table>
+  </div>
+  <div style="margin-top:14px;padding:14px;background:${diff>=0?"#eff6ff":"#fef2f2"};border-radius:8px;text-align:center">
+    <div style="font-size:11px;color:${diff>=0?"#3b82f6":"#ef4444"};font-weight:600">${diff>=0?"환급 예상액":"추가 납부 예상액"}</div>
+    <div style="font-size:24px;font-weight:800;color:${diff>=0?"#1e40af":"#991b1b"}">${fmtSalary(Math.abs(diff))}</div>
+  </div>
+  <div class="fz11 text-gray" style="margin-top:8px;text-align:right">${y.confirmed?`확정됨(${h(y.confirmedAt?y.confirmedAt.slice(0,10):"")})`:"미확정(간이 미리보기)"}</div>`;
+}
+function _yesAdminSectionHtml(){
+  const s=_yesState;const year=s.year;
+  let active=employees.filter(e=>e.active&&e.role!=="admin");
+  if(s.dept)active=active.filter(e=>e.dept===s.dept);
+  if(s.team)active=active.filter(e=>e.team===s.team);
+  if(s.search){const q=s.search.trim().toLowerCase();active=active.filter(e=>(e.name||"").toLowerCase().includes(q)||(e.dept||"").toLowerCase().includes(q));}
+  active=active.slice().sort((a,b)=>(a.name||"").localeCompare(b.name||""));
+  const depts=[...new Set(employees.filter(e=>e.active&&e.role!=="admin").map(e=>e.dept).filter(Boolean))];
+  const teams=[...new Set(employees.filter(e=>e.active&&e.role!=="admin"&&(!s.dept||e.dept===s.dept)).map(e=>e.team).filter(Boolean))];
+  const rows=active.map(emp=>{
+    const y=_yesPreview(emp.id,year);const diff=y.diffTax+y.diffLocalTax;
+    return`<tr>
+      <td><strong>${h(emp.name)}</strong></td><td>${h(emp.dept)}</td><td>${h(emp.team||"")}</td>
+      <td style="text-align:right">${fmtSalary(y.grossPay)}</td>
+      <td style="text-align:right">${fmtSalary(y.finalTax+y.finalLocalTax)}</td>
+      <td style="text-align:right;font-weight:700;color:${diff>=0?"#1e40af":"#991b1b"}">${diff>=0?"+":"-"}${fmtSalary(Math.abs(diff))}</td>
+      <td style="text-align:center;width:90px"><input class="fc" type="number" min="0" max="20" value="${y.dependents}" style="width:70px;text-align:center" onchange="saveYearEndSettlement('${emp.id}',${year},this.value);_yesRefresh()"></td>
+      <td style="text-align:center">${y.confirmed?'<span class="badge bg-green">확정</span>':'<span class="badge bg-gray">미확정</span>'}</td>
+      <td style="text-align:right;white-space:nowrap">
+        ${y.confirmed
+          ?`<button class="btn btn-secondary btn-sm" onclick="saveYearEndSettlement('${emp.id}',${year},null,false);_yesRefresh()">확정 취소</button>`
+          :`<button class="btn btn-primary btn-sm" onclick="saveYearEndSettlement('${emp.id}',${year},null,true);_yesRefresh()">확정</button>`}
+        <button class="btn btn-secondary btn-sm" onclick="printYearEndSettlement('${emp.id}',${year})">🖨</button>
+      </td></tr>`;
+  }).join("");
+  return`<div class="card" id="yes-admin-wrap"><div class="card-head"><h3>🧾 연말정산 관리(전체) ${year}년 귀속</h3></div>
+  <div class="card-body" style="padding:10px 14px 6px">
+    <div class="filter-bar" style="flex-wrap:wrap;gap:6px">
+      <select class="fc" style="width:140px" onchange="_yesState.dept=this.value;_yesState.team='';_yesRefresh()">
+        <option value="">전체 부서</option>${depts.map(d=>`<option value="${d}" ${s.dept===d?"selected":""}>${h(d)}</option>`).join("")}
+      </select>
+      <select class="fc" style="width:130px" onchange="_yesState.team=this.value;_yesRefresh()">
+        <option value="">전체 팀</option>${teams.map(t=>`<option value="${t}" ${s.team===t?"selected":""}>${h(t)}</option>`).join("")}
+      </select>
+      <input class="fc" style="width:160px" placeholder="이름/부서 검색" value="${h(s.search)}" oninput="_yesState.search=this.value;_yesRefresh()">
+      <span class="fz12 text-gray" style="align-self:center">총 ${active.length}명</span>
+    </div>
+  </div>
+  <div class="card-body" style="padding:0"><div class="tbl-wrap"><table><thead><tr>
+    <th>이름</th><th>부서</th><th>팀</th><th style="text-align:right">총급여</th><th style="text-align:right">결정세액</th>
+    <th style="text-align:right">환급/추가납부</th><th style="text-align:center">부양가족</th><th style="text-align:center">상태</th><th style="text-align:right">관리</th>
+  </tr></thead><tbody>${rows||`<tr><td colspan="9" style="text-align:center;padding:30px;color:#94a3b8">대상자가 없습니다.</td></tr>`}</tbody></table></div></div>
+  </div>`;
+}
+function printYearEndSettlement(empId,year){
+  const emp=getEmp(empId);if(!emp){showToast("직원 정보를 찾을 수 없습니다.","error");return;}
+  const y=_yesPreview(empId,year);if(!y)return;
+  const companyName=settings.companyName||"(주)회사";
+  const today=new Date();const issued=`${today.getFullYear()}년 ${today.getMonth()+1}월 ${today.getDate()}일`;
+  const row=(label,val)=>`<tr><td style="padding:6px 10px;border:1px solid #e2e8f0;background:#f8fafc;font-weight:700">${label}</td><td style="padding:6px 10px;border:1px solid #e2e8f0;text-align:right">${fmtSalary(val)}</td></tr>`;
+  const diff=y.diffTax+y.diffLocalTax;
+  const html=`<div style="font-family:'맑은 고딕','Malgun Gothic',sans-serif;padding:28px;color:#1e293b">
+    <h2 style="text-align:center;font-size:22px;letter-spacing:6px;margin-bottom:6px;border-bottom:3px solid #1e293b;padding-bottom:12px">${year}년 귀속 연말정산(간이) 결과</h2>
+    <p style="text-align:center;color:#64748b;font-size:12px;margin-bottom:20px">${h(companyName)}</p>
+    <table style="width:100%;border-collapse:collapse;margin-bottom:18px;font-size:13px">
+      <tr><td style="padding:6px 10px;border:1px solid #e2e8f0;background:#f8fafc;font-weight:700;width:110px">성 명</td><td style="padding:6px 10px;border:1px solid #e2e8f0">${h(emp.name)}</td>
+      <td style="padding:6px 10px;border:1px solid #e2e8f0;background:#f8fafc;font-weight:700;width:110px">부서/직급</td><td style="padding:6px 10px;border:1px solid #e2e8f0">${h(emp.dept||"")} ${h(emp.position||"")}</td></tr>
+    </table>
+    <table style="width:100%;border-collapse:collapse;font-size:13px">
+      ${row("총급여(연간 과세소득 합계)",y.grossPay)}${row("근로소득공제",y.incomeDeduction)}${row("근로소득금액",y.earnedIncomeAmount)}
+      ${row(`인적공제(본인+부양가족 ${y.dependents}명)`,y.personalDeduction)}${row("과세표준",y.taxBase)}
+      ${row("산출세액",y.calculatedTax)}${row("근로소득세액공제",y.taxCredit)}
+      ${row("결정세액(소득세)",y.finalTax)}${row("결정세액(지방소득세)",y.finalLocalTax)}
+      ${row("기납부세액(소득세)",y.paidTax)}${row("기납부세액(지방소득세)",y.paidLocalTax)}
+    </table>
+    <div style="margin-top:18px;padding:16px;background:${diff>=0?"#eff6ff":"#fef2f2"};border-radius:8px;text-align:center">
+      <div style="font-size:12px;color:${diff>=0?"#3b82f6":"#ef4444"};font-weight:600">${diff>=0?"환급 예상액":"추가 납부 예상액"}</div>
+      <div style="font-size:26px;font-weight:800;color:${diff>=0?"#1e40af":"#991b1b"}">${fmtSalary(Math.abs(diff))}</div>
+    </div>
+    <p style="margin-top:16px;font-size:11px;color:#94a3b8">※ 부양가족 인적공제만 반영한 간이 계산입니다. 보험료·의료비·교육비·신용카드 사용액 등 실제 소득/세액공제는 반영되지 않아 국세청 최종 정산 결과와 다를 수 있습니다.</p>
+    <p style="margin-top:6px;text-align:right;font-size:12px;color:#64748b">발급일: ${issued}${y.confirmed?` · 확정일: ${h(y.confirmedAt?y.confirmedAt.slice(0,10):"")}`:""}</p>
+  </div>`;
+  const pw=window.open("","_blank","width=760,height=920");
+  pw.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>연말정산 결과</title><style>body{margin:0}@media print{@page{margin:10mm}}</style></head><body>${html}</body></html>`);
+  pw.document.close();pw.focus();setTimeout(()=>{pw.print();pw.close();},400);
 }
 // ── 회계 모듈 (계정과목 / 전표 관리 / 세금계산서) ─────────────────────────────
 // 이 모듈은 서버가 직접 번호 발급·차대변 검증·확정 후 불변성을 담당한다(클라이언트
@@ -26297,6 +26509,7 @@ function onGlobalSearchInput(val){
     {k:["참조함","참조","cc","결재참조"],l:"참조함",i:"📋",p:"approval-cc-inbox"},
     {k:["기안","draft","결재작성"],l:"기안하기",i:"✏",p:"approval-draft"},
     {k:["급여","payslip","월급","임금","명세"],l:"급여 명세서",i:"💰",p:"payslip"},
+    {k:["연말정산","세금","환급","소득세","원천징수"],l:"연말정산(간이)",i:"🧾",p:"yearend-settlement"},
     {k:["연차","휴가","leave","연휴"],l:"연차 관리",i:"🌴",p:"leave-mgmt"},
     {k:["직원","인사","목록","hr","사원"],l:"직원 목록",i:"👥",p:"hr-list"},
     {k:["kpi","성과","평가","목표"],l:"나의 KPI",i:"📊",p:"my-kpi"},
