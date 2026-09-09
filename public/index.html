@@ -13792,7 +13792,7 @@ function approveApprovalDoc(docId,comment){
   const idx=doc.approvers.findIndex(a=>a.empId===currentUser.id&&a.status==="pending");if(idx<0)return;
   doc.approvers[idx].status="approved";doc.approvers[idx].decidedAt=new Date().toISOString();doc.approvers[idx].comment=comment||"";
   const next=doc.approvers.find(a=>a.status==="waiting");
-  if(next){next.status="pending";}else{doc.status="approved";_applyAttendanceApproval(doc);if(doc.templateId==="tpl-vendor-reg")_autoRegisterVendorFromApproval(doc);}
+  if(next){next.status="pending";}else{doc.status="approved";_applyAttendanceApproval(doc);if(doc.templateId==="tpl-vendor-reg")_autoRegisterVendorFromApproval(doc);_fireIntegrationWebhooks("approval_complete",`[결재 완료] ${doc.title} — 최종 승인되었습니다.`);}
   doc.updatedAt=new Date().toISOString();autoSaveToServerIfEnabled();showToast("승인 처리되었습니다.","success");renderPage();renderSidebar();
 }
 function rejectApprovalDoc(docId,comment){
@@ -13800,6 +13800,7 @@ function rejectApprovalDoc(docId,comment){
   const idx=doc.approvers.findIndex(a=>a.empId===currentUser.id&&a.status==="pending");if(idx<0)return;
   doc.approvers[idx].status="rejected";doc.approvers[idx].decidedAt=new Date().toISOString();doc.approvers[idx].comment=comment||"";
   doc.status="rejected";doc.updatedAt=new Date().toISOString();autoSaveToServerIfEnabled();showToast("반려 처리되었습니다.","info");renderPage();renderSidebar();
+  _fireIntegrationWebhooks("approval_complete",`[결재 반려] ${doc.title} — 반려되었습니다.`);
 }
 // ── 관리자: 미결재 문서의 결재자 변경 ────────────────────────────────────────────
 // 퇴직자가 "현재 결재자"로 지정된 진행중 문서는 아무도 처리할 수 없어 영구히 정체된다
@@ -14234,6 +14235,8 @@ function _doSubmitApprovalForm(){
   if(tplId==="tpl-flex"){const adm=employees.find(e=>e.active&&e.role==="admin");if(adm&&!ccList.includes(`emp:${adm.id}`))ccList.push(`emp:${adm.id}`);}
   const doc={id:genId(),templateId:tplId,authorId:currentUser.id,title:_getDocTitle(tplId,fd),createdAt:new Date().toISOString(),updatedAt:new Date().toISOString(),status:"in_progress",formData:fd,approvers,receivers,cc:ccList,attachments:p.attachments||[]};
   approvalDocs.push(doc);window._afPendingSubmit=null;window._afAttachments=[];closeTopModal();closeModal();autoSaveToServerIfEnabled();
+  _fireIntegrationWebhooks("approval_request",`[결재 상신] ${doc.title} (기안자: ${currentUser.name||""})`);
+  if(getTpl(tplId)?.category==="attendance")_fireIntegrationWebhooks("leave_request",`[휴가/근태 신청] ${doc.title} (신청자: ${currentUser.name||""})`);
   showToast("결재가 상신되었습니다.","success");gotoPage("approval-outbox");
 }
 let _apvFilter={search:"",dept:"",team:"",author:"",tplId:"",dateFrom:"",dateTo:""};
@@ -23203,6 +23206,25 @@ async function deleteWebhook(id){
 function _logIntegration(webhookName,event,status,message){
   integrationLogs=[{id:genId(),ts:new Date().toISOString(),webhookName,event,status,message},...integrationLogs].slice(0,50);
 }
+// 등록된 웹훅 중 해당 이벤트를 구독(events에 eventId 포함)한 활성 웹훅 전체에 메시지를 보낸다.
+// "연동 설정" 화면은 웹훅 등록 + 이벤트 선택 UI까지 갖춰져 있었지만, 실제 이벤트가 발생할 때
+// 이를 호출하는 코드가 전혀 없어 관리자가 누르는 "테스트 전송" 버튼 외에는 절대 동작하지 않던
+// 기능이었다 — 결재 상신/결재 완료·반려/휴가·근태 신청/공지사항 등록 4곳의 실제 액션 지점에서
+// 호출해 완성한다. testWebhook()과 동일한 전송 방식(no-cors POST, 응답 확인 불가는 동일한 한계)을
+// 재사용해 동작 일관성을 유지.
+function _fireIntegrationWebhooks(eventId,text){
+  const evLabel=INTEGRATION_EVENTS.find(e=>e.id===eventId)?.label||eventId;
+  const whs=(integrationSettings.webhooks||[]).filter(w=>w.active!==false&&(w.events||[]).includes(eventId));
+  whs.forEach(async wh=>{
+    try{
+      await fetch(wh.url,{method:"POST",mode:"no-cors",headers:{"Content-Type":"application/json"},body:JSON.stringify({text})});
+      _logIntegration(wh.name,evLabel,"success","자동 발송");
+    }catch(e){
+      _logIntegration(wh.name,evLabel,"fail",e.message);
+    }
+    autoSaveToServerIfEnabled();
+  });
+}
 async function testWebhook(id){
   const wh=(integrationSettings.webhooks||[]).find(w=>String(w.id)===String(id));if(!wh)return;
   const payload={text:`[HR시스템] "${wh.name}" 연동 테스트 메시지입니다. (${new Date().toLocaleString("ko-KR")})`};
@@ -24840,6 +24862,7 @@ function saveBoardPost(editId){
     if(p){p.title=title;p.content=content;p.categoryId=catId;p.attachments=attachments;p.isAnonymous=isAnonymous;p.updatedAt=new Date().toISOString();}
   }else{
     boardPosts.push({id:`post-${Date.now()}`,categoryId:catId,title,content,attachments,isAnonymous,authorId:currentUser.id,createdAt:new Date().toISOString(),updatedAt:new Date().toISOString(),views:0});
+    if(catId==="notice")_fireIntegrationWebhooks("notice_post",`[공지사항] ${title}`);
   }
   closeModal();autoSaveToServerIfEnabled();showToast("게시물이 저장되었습니다.","success");renderBoardPage();
 }
