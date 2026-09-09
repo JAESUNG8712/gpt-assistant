@@ -164,9 +164,9 @@ finally {
 ## 기술 스택
 
 - **프론트엔드**: 순수 JavaScript (ES6+), HTML5, CSS3 (외부 의존성 없음)
-- **백엔드**: Node.js + Express
+- **백엔드**: Node.js + Express + Helmet + gzip 압축
 - **실시간 동기화**: Server-Sent Events (SSE)
-- **데이터 저장**: JSON 파일 (서버) / localStorage (브라우저)
+- **데이터 저장**: PostgreSQL(운영) 또는 JSON 파일(자체호스팅) / localStorage(브라우저 캐시)
 
 ## 환경 변수
 

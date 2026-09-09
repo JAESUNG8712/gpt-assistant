@@ -297,6 +297,7 @@ test("보안 하드닝: SSE 전용 티켓(scope:sse)은 /events 외의 API를 �
     });
     controller.abort();
     assert.equal(events.status, 200);
+    assert.equal(events.headers.get("content-encoding"), null, "SSE는 지연을 유발하는 압축을 사용하면 안 됨");
   });
 
   await t.test("일반 로그인 토큰은 계속 모든 API를 정상 인증한다(과잉차단 아님)", async () => {

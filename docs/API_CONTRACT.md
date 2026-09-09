@@ -162,7 +162,18 @@ AI가 반환한 값도 그대로 신뢰하지 않는다 — `birth`는 실제 �
 | `GROQ_API_KEY` | 이력서/채용 AI 파싱 기능에 필요 | (미설정) | 없으면 이력서 자동입력은 503(`RESUME_AI_UNAVAILABLE`), 채용 모듈 AI 파싱은 기능 자체가 비활성화됨(무료 발급: https://console.groq.com). |
 | `DEMO_ADMIN_PASSWORD` | `scripts/seed-demo.js` 실행 시 필수 | (미설정) | 생성될 데모 관리자 계정(`demo_admin`)의 로그인 비밀번호(8자 이상). bcrypt 해시로만 저장되고 콘솔에는 로그인 ID만 출력됨. |
 | `PARSE_SHEET_TIMEOUT_MS` | 아니오 | `15000` | (`budget.js`) 예산/사업계획 엑셀 업로드 5개 라우트의 파일 파싱 타임아웃(밀리초). 파싱은 별도 워커 스레드에서 실행되며, 이 시간을 넘기면 그 워커만 강제 종료되고 400 오류를 반환한다 — xlsx@0.18.5의 알려진 ReDoS 취약점(GHSA-5pgg-2g8v-p4x9, 패치판은 npm 레지스트리에 없어 아직 교체하지 못함)이 실제로 트리거돼도 멀티테넌트 서버 전체가 멈추지 않도록 하는 완화책(`lib/parse-sheet-worker.js` 참고). |
+| `READINESS_DB_TIMEOUT_MS` | 아니오 | `3000` | `/readyz`의 PostgreSQL 확인 쿼리 제한시간(밀리초). DB 연결은 열려 있지만 쿼리가 멈춘 상태에서 배포 헬스체크가 무기한 대기하지 않도록 한다. |
 | `BOOTSTRAP_SECRET` | JSON 파일 모드 최초 설정 시 필수 | (미설정) | `POST /api/bootstrap/admin`의 one-time 초기화 시크릿. 미설정이면 endpoint가 503으로 fail-closed하며, `POST /save`는 빈 저장소여도 무인증으로 열리지 않는다. 12자 이상 난수로 설정하고 `X-Bootstrap-Secret` 헤더로 한 번만 전달한다. |
+
+### 1.6 공통 응답 헤더
+
+- 모든 응답은 `X-Request-ID`를 반환한다. 호출자가 8~128자의 안전한 식별자를 같은 헤더로
+  보내면 서버가 이어받고, 없거나 형식이 잘못되면 UUID를 새로 만든다. 장애 문의 시 이 값을
+  함께 기록하면 프록시·서버 로그에서 같은 요청을 찾기 쉽다.
+- API·관리자 경로·HTML 응답에는 `Cache-Control: no-store`가 적용되어 인사·급여·회계 데이터가
+  브라우저나 공용 프록시 캐시에 남지 않는다.
+- 1KB 이상 일반 응답은 클라이언트가 지원할 때 압축된다. `/events` SSE 스트림은 실시간 전달
+  지연을 막기 위해 압축하지 않는다.
 
 ---
 
