@@ -546,6 +546,8 @@ function omitPw(emp) {
 // legitimately needs broad access:
 //   - payslips: only "payroll-mgmt" (admin-only) manages other people's payslips, so
 //     every other role sees just their own.
+//   - yearEndSettlements(연말정산 결과): payslips와 동일한 민감도·동일한 admin-only
+//     관리 화면("yearend-settlement") 패턴이라 동일하게 본인 것만 노출한다.
 //   - kpiEntries: "first-eval"/"second-eval"/"grade-view"/"eval-progress" all exclude
 //     "member" (leader/director/admin need broad access to run evaluations; member does
 //     not), so member is narrowed to their own entries while other roles are untouched.
@@ -616,6 +618,11 @@ function filterDataForRole(data, auth) {
   const myId = String(auth.empId);
   if (auth.role !== "admin" && Array.isArray(out.payslips)) {
     out.payslips = out.payslips.filter(p => p && String(p.empId) === myId);
+  }
+  // yearEndSettlements(연말정산 결과): payslips와 동급 민감도(연간 급여·세액 요약) —
+  // "yearend-settlement" 화면은 admin이 전 직원을 관리하고 그 외 역할은 본인 것만 조회.
+  if (auth.role !== "admin" && Array.isArray(out.yearEndSettlements)) {
+    out.yearEndSettlements = out.yearEndSettlements.filter(s => s && String(s.empId) === myId);
   }
   if (auth.role === "member" && Array.isArray(out.kpiEntries)) {
     out.kpiEntries = out.kpiEntries.filter(k => k && String(k.userId) === myId);
@@ -1312,6 +1319,10 @@ function _welfareRecordAllowed(rec, actor, actorEmp, settings) {
 const _WRITE_GATED_FIELDS = {
   payslips:           { roles: ["admin"], pageIds: "payroll-mgmt" },
   payrollAdjustments: { roles: ["admin"], pageIds: "payroll-mgmt" },
+  // 연말정산 결과: payslips와 동일하게 admin만 계산·확정할 수 있다(본인이 자기 부양가족
+  // 수를 조작해 결정세액을 유리하게 바꾸는 것을 막기 위해 ownField 미부여 — 본인 화면은
+  // 조회 전용).
+  yearEndSettlements: { roles: ["admin"], pageIds: "yearend-settlement" },
   // KPI 등급 현황(grade-view, admin/director/leader 공개) 화면의 "수정" 버튼은
   // admin뿐 아니라 director에게도 노출된다(openAdjustGradeModal이 admin||director를
   // 명시적으로 허용) — director가 자기 사업부 직원의 등급을 조정하면 실제 등급
@@ -1517,6 +1528,15 @@ function _validateFieldValues(field, rec, storedList) {
         }
       }
     }
+  } else if (field === "yearEndSettlements") {
+    // dependents(부양가족 수)는 인적공제 계산(1인당 150만원)에 그대로 곱해져 결정세액을
+    // 좌우한다 — 비정상 값(음수·과도하게 큰 값)이 저장되면 그 직원의 세액 계산 전체가
+    // 왜곡된다. year도 근태·급여 데이터가 존재하는 합리적 범위로 제한.
+    const dep = Number(rec.dependents);
+    if (rec.dependents != null && (!Number.isInteger(dep) || dep < 0 || dep > 20)) return false;
+    const yr = Number(rec.year);
+    if (!Number.isInteger(yr) || yr < 2000 || yr > 2100) return false;
+    if (!rec.empId) return false;
   }
   return true;
 }
@@ -1879,6 +1899,7 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
     }
     const kpiEntriesFinal   = _mergeProtectedField("kpiEntries");
     const payslipsFinal     = _mergeProtectedField("payslips");
+    const yearEndSettlementsFinal = _mergeProtectedField("yearEndSettlements");
     const lowPerfDataFinal  = _mergeProtectedField("lowPerfData");
     const coreTalentPoolFinal = _mergeProtectedField("coreTalentPool");
     const welfarePointsFinal  = _mergeProtectedField("welfarePoints");
@@ -1964,7 +1985,7 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
     _fileStore = {
       ..._fileStore, ...data, employees,
       _singletonRevisions: nextSingletonRevisions,
-      kpiEntries: kpiEntriesFinal, payslips: payslipsFinal,
+      kpiEntries: kpiEntriesFinal, payslips: payslipsFinal, yearEndSettlements: yearEndSettlementsFinal,
       lowPerfData: lowPerfDataFinal, coreTalentPool: coreTalentPoolFinal,
       welfarePoints: welfarePointsFinal, compResponses: compResponsesFinal,
       payrollAdjustments: payrollAdjustmentsFinal, gradeAdjustHistory: gradeAdjustHistoryFinal,
