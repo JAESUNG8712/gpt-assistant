@@ -27,6 +27,7 @@ import command_router
 import privacy as privacy_guard
 import semantic_memory
 import quality_eval
+import search_ambiguity
 
 # ── 사용자 입력 전처리: 띄어쓰기 복합어 → 붙여쓰기 (질의 조인) ─────
 # engine.py에도 이름이 비슷한 _COMPOUND_MAP이 있어 중복처럼 보이지만 방향이
@@ -711,6 +712,21 @@ async def chat(req: ChatRequest, request: Request):
         _require_owner_header(request)
         session_scope = _owner_session_scope(req.session_id)
 
+    # 직전 모호성 안내에 사용자가 `1`, `1번`, `2번째`처럼 답하면 저장된 선택지를
+    # 실제 KB 질문으로 치환한다. auto 모드에서도 직전 선택지의 페르소나를 이어받아
+    # 숫자만 보고 다른 전문가로 재분류되는 일을 막는다.
+    selection_history = mem.get_history(4, session_id=session_scope)
+    selected_clarification = search_ambiguity.resolve_selection(
+        user_msg, selection_history
+    )
+    if (selected_clarification and requested_persona != "auto"
+            and selected_clarification.get("persona") != requested_persona):
+        selected_clarification = {}
+    if selected_clarification:
+        search_msg = _normalize_query(selected_clarification["question"])
+        if requested_persona == "auto" and selected_clarification.get("persona"):
+            requested_persona = selected_clarification["persona"]
+
     # "auto"(통합 검색) 선택 시 질문 내용을 분석해 가장 적합한 전문 페르소나(들)로 자동 라우팅.
     # 여러 도메인에 걸친 질문(예: 인사+주식)이면 build_combined_persona로 종합 답변 생성.
     # persona_id는 KB/대화이력 저장 등 단일 키가 필요한 곳에 쓰는 대표(1순위) 도메인.
@@ -764,7 +780,7 @@ async def chat(req: ChatRequest, request: Request):
     # ── 0.5단계: 의도 분석 에이전트 ──────────────────────
     # 질문 의도를 파악해 검색 최적화 질의를 생성. 실패·타임아웃 시 원본 질의 그대로 사용.
     # 제외: 직접 계산 즉답 경로(지연 불필요), company 페르소나(사내 문서 전용 — 외부 LLM 미사용 정책)
-    if direct_calc or persona_id == "company":
+    if direct_calc or persona_id == "company" or selected_clarification:
         intent_info = {"ok": False, "intent": "", "refined_query": user_msg, "keywords": [], "answer_guide": ""}
     else:
         intent_info = await intent_agent.analyze(user_msg, persona_id)
@@ -813,6 +829,21 @@ async def chat(req: ChatRequest, request: Request):
             top_answer  = kb["top_answer"]
             top_results = kb.get("top_results", [])
 
+    # 짧은 질문에서 서로 다른 KB 후보의 점수가 비슷하면 임의의 1위를 확정하지
+    # 않는다. 회사 규정은 원래 관련 규정 여러 건을 함께 보여주므로 대상에서 제외하고,
+    # 명시적 웹검색·생각 모드는 사용자가 요청한 흐름을 그대로 유지한다.
+    clarification_candidates = []
+    if (not direct_calc and not stock_mode and persona_id != "company"
+            and not effective_use_search and effective_thinking_mode == "off"
+            and len(matched_persona_ids) == 1):
+        clarification_candidates = search_ambiguity.ambiguity_candidates(
+            search_msg, top_results
+        )
+    clarification_msg = (
+        search_ambiguity.format_clarification(clarification_candidates)
+        if clarification_candidates else ""
+    )
+
     # 소유자가 검토·승인한 선호 기억만 답변 스타일 참고자료로 제공한다.
     # 공유 링크에는 소유자 취향이 노출되지 않으며, 기억 내용은 명령이 아닌 데이터로 취급한다.
     if not is_shared_session:
@@ -829,7 +860,8 @@ async def chat(req: ChatRequest, request: Request):
     # ── 2단계: law.go.kr 법령 검색 (법 관련 질문만, 페르소나 허용 시) ──────
     law_ctx = ""
     law_results = []  # 아래 reference_items 참조 시 항상 정의되어 있어야 함
-    if persona_features.get("use_law", True) and law.is_law_question(search_msg):
+    if (not clarification_msg and persona_features.get("use_law", True)
+            and law.is_law_question(search_msg)):
         law_results = await law.search_law(search_msg)
         law_ctx = law.format_law_context(law_results)
 
@@ -840,13 +872,14 @@ async def chat(req: ChatRequest, request: Request):
     auto_web_search = (
         not effective_use_search
         and not direct_calc
+        and not clarification_msg
         and not stock_mode
         and persona_id != "company"
         and best_score < KB_CONTEXT
     )
     search_ctx = ""
     results = []  # 아래 reference_items 참조 시 항상 정의되어 있어야 함
-    if effective_use_search or auto_web_search:
+    if (effective_use_search or auto_web_search) and not clarification_msg:
         # 채팅 중 검색 결과 원문은 검증 전 데이터이므로 즉시 장기기억에 쓰지 않는다.
         # 합성 답변만 기억 후보로 보내고, 검색 자체는 스레드에서 실행한다.
         results = await asyncio.get_event_loop().run_in_executor(
@@ -891,6 +924,7 @@ async def chat(req: ChatRequest, request: Request):
         and not has_law_rt
         and not bool(search_ctx)
         and not direct_calc
+        and not clarification_msg
     )
     # 자동학습 항목 오염 방어: 자동학습/대화 출처 항목은 저장 당시 질문(q)이 사용자 질문과
     # 같아도 답변(a)이 다른 주제일 수 있음(과거 오답이 학습된 경우).
@@ -905,6 +939,8 @@ async def chat(req: ChatRequest, request: Request):
         retrieval_route = "command_response" if direct_command_reply else "direct_calculation"
     elif run_stock_pipeline or run_lowprice_screen or run_broker_report:
         retrieval_route = "stock_pipeline"
+    elif clarification_msg:
+        retrieval_route = "ambiguity_clarification"
     elif kb_direct:
         retrieval_route = "kb_direct"
     elif has_law_rt:
@@ -955,6 +991,16 @@ async def chat(req: ChatRequest, request: Request):
         "resolved_persona": persona_id,
         "resolved_persona_name": persona.get("name", ""),
         "resolved_persona_icon": persona.get("icon", ""),
+        "clarification_required": bool(clarification_msg),
+        "clarification_options": [
+            {
+                "title": item["title"],
+                "question": item["question"],
+                "persona": persona_id,
+            }
+            for item in clarification_candidates
+        ],
+        "clarification_selection": selected_clarification.get("title", ""),
     }
 
     async def generate():
@@ -1073,6 +1119,12 @@ async def chat(req: ChatRequest, request: Request):
             elif direct_calc:
                 # 계산 결과를 바로 스트리밍 (LLM 불필요)
                 async for chunk in _stream_chunks(direct_calc):
+                    collected.append(chunk)
+                    yield chunk
+
+            # ── 경로 CLARIFY: 짧고 모호한 질문 선택 안내 ─────
+            elif clarification_msg:
+                async for chunk in _stream_chunks(clarification_msg):
                     collected.append(chunk)
                     yield chunk
 
@@ -1325,7 +1377,10 @@ async def chat(req: ChatRequest, request: Request):
             has_unsupported_answer_claim = bool(answer_claim_validation["unsupported"])
             # 이미 KB에서 직접 서빙한 답변과 Python 계산 결과는 새 지식이 아니므로
             # 후보 대기열에 다시 쌓지 않는다. LLM이 새로 합성한 답변만 검토 대상으로 둔다.
-            is_new_synthesized_answer = not kb_direct and not direct_calc and not company_kb_only
+            is_new_synthesized_answer = (
+                not kb_direct and not direct_calc and not company_kb_only
+                and not clarification_msg
+            )
             if (not is_shared_session and is_new_synthesized_answer
                     and ai_reply_clean.strip() and not stock_mode
                     and not has_search_conflict

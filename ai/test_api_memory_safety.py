@@ -327,6 +327,49 @@ def main():
         assert all("공유 세션만의" not in row["content"] for row in owner_history)
         assert main.mem.list_memory_candidates("pending") == []
 
+        # 짧고 여러 의미인 질문은 임의 KB 답변 대신 선택지를 반환하고, 그 안내를
+        # 새 지식 후보로 학습하지 않는다. 구체 질의는 기존처럼 즉답한다.
+        original_ambiguity_intent = main.intent_agent.analyze
+
+        async def no_ambiguity_intent(*_args, **_kwargs):
+            return {"ok": False, "intent": "", "refined_query": "", "keywords": [], "answer_guide": ""}
+
+        main.intent_agent.analyze = no_ambiguity_intent
+        try:
+            ambiguous_response = client.post(
+                "/chat",
+                json={"message": "API 테스트", "persona": "dev", "session_id": "ambiguity-qa"},
+                headers={"X-Admin-Token": owner_token},
+            )
+            assert ambiguous_response.status_code == 200
+            assert "여러 가지로 해석" in ambiguous_response.text
+            ambiguous_status = json.loads(ambiguous_response.headers["X-Command-Status"])
+            assert ambiguous_status["clarification_required"] is True
+
+            selected_response = client.post(
+                "/chat",
+                json={"message": "1번", "persona": "dev", "session_id": "ambiguity-qa"},
+                headers={"X-Admin-Token": owner_token},
+            )
+            assert selected_response.status_code == 200
+            assert "FastAPI TestClient" in selected_response.text
+            selected_status = json.loads(selected_response.headers["X-Command-Status"])
+            assert selected_status["clarification_required"] is False
+            assert "FastAPI TestClient" in selected_status["clarification_selection"]
+
+            specific_response = client.post(
+                "/chat",
+                json={"message": "여행앱", "persona": "travel", "session_id": "specific-qa"},
+                headers={"X-Admin-Token": owner_token},
+            )
+            assert specific_response.status_code == 200
+            assert "해외여행 필수 앱" in specific_response.text
+            specific_status = json.loads(specific_response.headers["X-Command-Status"])
+            assert specific_status["clarification_required"] is False
+            assert main.mem.list_memory_candidates("pending") == []
+        finally:
+            main.intent_agent.analyze = original_ambiguity_intent
+
         # 공유 채팅의 웹검색은 답변 근거로만 쓰고 원문/합성답변을 DB에 학습하지 않는다.
         search_share = main.mem.create_share_link("검색 QA", ["hr"], "")
         original_web_search = main.srch.web_search
