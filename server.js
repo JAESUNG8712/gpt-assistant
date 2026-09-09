@@ -10174,6 +10174,46 @@ app.post("/api/recruit/candidates/:id/status", async (req, res) => {
   } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
+// 채용 합격/불합격 통보 — 이 앱에는 이메일(SMTP) 발송 기능이 전혀 없어(server.js
+// 전체에 nodemailer/SMTP 참조 0건, 확인됨) 서버가 지원자에게 직접 메일을 보낼
+// 방법이 없다. 대신 인사발령장(printHRLetter)·증명서(printCertificate)와 동일한
+// "그 자리에서 인쇄 가능한 통보서를 생성 + 발급 이력을 서버에 남긴다" 패턴을
+// 재사용 — 담당자가 통보서를 인쇄해 우편·수기 전달하거나, 내용을 복사해 별도
+// 메일 클라이언트로 보내는 방식. 이력을 남기는 이유: 같은 지원자에게 통보서를
+// 중복 발급했는지, 누가 언제 발급했는지 추적할 수 있어야 하기 때문.
+app.post("/api/recruit/candidates/:id/notice", async (req, res) => {
+  try {
+    if (!requireRole(req, res, ["admin", "leader", "director"])) return;
+    if (!requirePage(req, res, "recruit-candidates")) return;
+    const id = req.params.id;
+    const { role, empId: userId } = req.auth;
+    const companyId = req.auth.companyId || null;
+    const { result, message } = req.body || {};
+    if (!["pass", "fail"].includes(result)) return res.status(400).json({ ok: false, message: "통보 결과는 pass 또는 fail이어야 합니다." });
+    const noticeEntry = { result, message: String(message || "").slice(0, 2000), issuedBy: userId, issuedAt: new Date().toISOString() };
+    if (USE_JSON_FILE) {
+      const candidate = _fileRecruit.candidates.find(c => c.id === id);
+      if (!candidate) return res.status(404).json({ ok: false, message: "지원자를 찾을 수 없습니다." });
+      if (!(await _recruitCanViewCandidate(candidate, userId, role, companyId))) return res.status(403).json({ ok: false, message: "발급 권한이 없습니다." });
+      candidate.noticeHistory = [...(candidate.noticeHistory || []), noticeEntry].slice(-20);
+      _saveFileRecruit();
+      return res.json({ ok: true, candidate });
+    }
+    let candidate;
+    try {
+      candidate = await _pgLockedUpdate("recruit_candidates", id, async (c) => {
+        if (!(await _recruitCanViewCandidate(c, userId, role, companyId))) throw new _RecruitRouteError(403, "발급 권한이 없습니다.");
+        c.noticeHistory = [...(c.noticeHistory || []), noticeEntry].slice(-20);
+        return c;
+      }, companyId);
+    } catch (e) {
+      if (e instanceof _RecruitRouteError) return res.status(e.status).json({ ok: false, message: _safeErrMsg(e) });
+      throw e;
+    }
+    res.json({ ok: true, candidate });
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
+});
+
 // ── 채용 관리: 면접 일정/평가 (1차·2차 구분, 면접관별 비공개 평가) ────────────────
 const RECRUIT_SCORE_CATEGORIES = ["태도", "전문지식", "적극성", "의사소통능력", "조직적합성"];
 const RECRUIT_SCORE_MIN = 1, RECRUIT_SCORE_MAX = 5;
