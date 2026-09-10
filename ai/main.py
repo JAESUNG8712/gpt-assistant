@@ -29,6 +29,7 @@ import semantic_memory
 import quality_eval
 import search_ambiguity
 import personal_memory
+import deliberation
 
 # ── 사용자 입력 전처리: 띄어쓰기 복합어 → 붙여쓰기 (질의 조인) ─────
 # engine.py에도 이름이 비슷한 _COMPOUND_MAP이 있어 중복처럼 보이지만 방향이
@@ -294,7 +295,7 @@ class ChatRequest(BaseModel):
     message: str
     persona: str = DEFAULT_PERSONA
     use_search: bool = False
-    thinking_mode: str = "off"  # "off" | "prompt" | "deep"
+    thinking_mode: str = "auto"  # "auto" | "off" | "prompt" | "deep"
     share_token: str = ""  # 공유 링크로 접속한 방문자의 토큰 (비어있으면 소유자 세션)
     session_id: str = "legacy"
 
@@ -759,11 +760,18 @@ async def chat(req: ChatRequest, request: Request):
 
     persona, persona_features, stock_mode, system_with_date = _build_persona_context(matched_persona_ids)
 
-    # 페르소나에 deep_thinking 설정 시 thinking 모드 자동 활성화 (사용자가 off로 두더라도)
-    effective_thinking_mode = command["thinking_mode"] or req.thinking_mode
-    if (persona_features.get("deep_thinking") and req.thinking_mode == "off"
-            and not command["thinking_mode"]):
-        effective_thinking_mode = "prompt"
+    # 기본은 질문의 복잡도·중요도를 규칙 기반으로 판정한다. 사용자가 `/깊게`나
+    # `/빠르게`로 직접 지정하면 그 선택을 우선하며, 판단 근거는 공개 가능한 짧은
+    # 분류 사유만 상태에 남기고 숨은 사고 과정은 저장·노출하지 않는다.
+    requested_thinking_mode = command["thinking_mode"] or req.thinking_mode
+    thinking_decision = deliberation.choose_mode(
+        user_msg,
+        requested_thinking_mode,
+        persona=persona_id,
+        persona_prefers_thinking=bool(persona_features.get("deep_thinking")),
+        is_shared=is_shared_session,
+    )
+    effective_thinking_mode = thinking_decision["mode"]
 
     # ── 0단계: Python 직접 계산 (날짜·금액 기반 HR 계산 질문) ─
     # LLM / KB 상태에 무관하게 정확한 수치를 계산해 반환
@@ -773,6 +781,9 @@ async def chat(req: ChatRequest, request: Request):
         is_shared=is_shared_session,
     )
     direct_calc = direct_command_reply or personal_memory_reply or calc.try_any_calc(user_msg)
+    if direct_calc:
+        thinking_decision = deliberation.direct_response_decision()
+        effective_thinking_mode = "off"
     # 계산 결과에 사내 취업규칙 보충: KB에 관련 규정이 있으면 본문 표시,
     # 없으면 연차 계산에 한해 일반 안내 문구 (그 외 계산은 취업규칙 무관한 경우가 많아 생략)
     if direct_calc and not direct_command_reply and not personal_memory_reply:
@@ -833,6 +844,14 @@ async def chat(req: ChatRequest, request: Request):
             best_score  = kb["best_score"]
             top_answer  = kb["top_answer"]
             top_results = kb.get("top_results", [])
+
+    # 자동 라우팅이 사내 문서로 뒤늦게 전환된 경우에도 폐쇄형 KB 정책을 적용한다.
+    if persona_id == "company" and effective_thinking_mode != "off":
+        thinking_decision = deliberation.choose_mode(
+            user_msg, requested_thinking_mode, persona="company",
+            is_shared=is_shared_session,
+        )
+        effective_thinking_mode = "off"
 
     # 짧은 질문에서 서로 다른 KB 후보의 점수가 비슷하면 임의의 1위를 확정하지
     # 않는다. 회사 규정은 원래 관련 규정 여러 건을 함께 보여주므로 대상에서 제외하고,
@@ -1016,6 +1035,9 @@ async def chat(req: ChatRequest, request: Request):
         "search_requested": bool(effective_use_search),
         "search_used": bool(search_ctx),
         "thinking_mode": effective_thinking_mode,
+        "thinking_requested": requested_thinking_mode,
+        "thinking_automatic": bool(thinking_decision["automatic"]),
+        "thinking_reason": thinking_decision["reason"],
         "resolved_persona": persona_id,
         "resolved_persona_name": persona.get("name", ""),
         "resolved_persona_icon": persona.get("icon", ""),
@@ -1348,7 +1370,10 @@ async def chat(req: ChatRequest, request: Request):
                         yield "> 📭 로컬 자료 없음 — AI 지식으로 답변 후 자동 학습합니다.\n\n"
 
                 if persona_features.get("use_coding", False):
-                    async for token in llm.chat_stream_coding(history, context, system_prompt=system_with_date):
+                    async for token in llm.chat_stream_coding(
+                        history, context, system_prompt=system_with_date,
+                        thinking_mode=effective_thinking_mode,
+                    ):
                         collected.append(token)
                         yield token
                 else:

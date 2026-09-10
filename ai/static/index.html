@@ -446,6 +446,7 @@
       padding: 3px 10px; font-size: 0.73rem; color: var(--text-dim); cursor: pointer; transition: all 0.15s;
     }
     .think-mode-btn:hover { border-color: var(--persona-color); }
+    .think-mode-btn.auto { border-color: #6d5bd0; color: #6d5bd0; background: rgba(109,91,208,0.07); }
     .think-mode-btn.prompt { border-color: #c8922a; color: #c8922a; }
     .think-mode-btn.deep { border-color: #e67e22; color: #e67e22; background: rgba(230,126,34,0.08); }
 
@@ -823,7 +824,7 @@
           🌐 인터넷 검색 후 답변
         </label>
         <div style="display:flex;gap:6px;align-items:center;">
-          <button class="think-mode-btn" id="think-mode-btn" onclick="cycleThinkingMode()" title="AI 생각 모드: 꺼짐">🧠 생각 꺼짐</button>
+          <button class="think-mode-btn auto" id="think-mode-btn" onclick="cycleThinkingMode()" title="자동 생각: 질문 난이도에 따라 검토 수준 선택">🧠 자동 생각</button>
           <button class="tips-btn" onclick="toggleTips()">💡 명령·검색 팁</button>
         </div>
       </div>
@@ -1072,7 +1073,7 @@
   let commandTokenStart = -1;
   let isLoading = false;
   let modelInfo = null;
-  let thinkingMode = 'off'; // "off" | "prompt" | "deep"
+  let thinkingMode = 'auto'; // "auto" | "off" | "prompt" | "deep"
   let _codeBlockCounter = 0;
   // 공유 링크(?share=TOKEN)로 접속한 경우 셋팅됨 — 채팅 요청마다 함께 전송,
   // true면 예산관리·공유 링크 관리 등 소유자 전용 UI를 숨김
@@ -1492,7 +1493,11 @@
       });
     }
     if (!kinds.has('deep') && !kinds.has('fast') && status.thinking_mode && status.thinking_mode !== 'off') {
-      items.push({ command: '', kind: 'thinking', icon: '🧠', label: status.thinking_mode === 'deep' ? '깊은 분석' : '생각 모드' });
+      const autoPrefix = status.thinking_automatic ? '자동 ' : '';
+      const thinkingLabel = status.thinking_mode === 'auto'
+        ? '자동 생각'
+        : status.thinking_mode === 'deep' ? autoPrefix + '깊은 분석' : autoPrefix + '빠른 검토';
+      items.push({ command: '', kind: 'thinking', icon: '🧠', label: thinkingLabel });
     }
     if (!kinds.has('persona') && !pending && currentPersona?.id === 'auto'
         && status.resolved_persona && status.resolved_persona !== 'auto') {
@@ -1523,6 +1528,8 @@
         badge.addEventListener('click', () => reuseCommand(item.command));
       } else if (item.command) {
         badge.title = `${item.command} 명령`;
+      } else if (item.kind === 'thinking' && status.thinking_reason) {
+        badge.title = `검토 수준 선택: ${status.thinking_reason}`;
       }
       row.appendChild(badge);
     });
@@ -1575,12 +1582,13 @@
   }
 
   // ── 생각 모드 ─────────────────────────────────────
-  const THINK_MODES = ['off', 'prompt', 'deep'];
-  const THINK_LABELS = { off: '🧠 생각 꺼짐', prompt: '🧠 빠른 생각', deep: '🧠 깊은 생각' };
+  const THINK_MODES = ['auto', 'off', 'prompt', 'deep'];
+  const THINK_LABELS = { auto: '🧠 자동 생각', off: '🧠 생각 꺼짐', prompt: '🧠 빠른 생각', deep: '🧠 깊은 생각' };
   const THINK_TITLES = {
+    auto:   '자동 생각: 질문 난이도에 따라 즉답·빠른 검토·깊은 분석을 선택',
     off:    'AI 생각 모드: 꺼짐 (클릭하면 활성화)',
-    prompt: '빠른 생각 모드: 단일 호출로 추론 과정 포함 (클릭하면 깊은 생각으로)',
-    deep:   '깊은 생각 모드: 2단계 분석 후 답변 (클릭하면 꺼짐)',
+    prompt: '빠른 생각 모드: 한 번 검토하고 공개 가능한 요약만 표시 (클릭하면 깊은 생각으로)',
+    deep:   '깊은 생각 모드: 2단계 분석 후 답변 (클릭하면 자동 생각으로)',
   };
 
   function cycleThinkingMode() {
@@ -1609,14 +1617,14 @@
     if (!p.hasThinking) { bubble.textContent = full; return; }
 
     const statusIcon = p.thinkingComplete ? '✅' : '⏳';
-    const statusText = p.thinkingComplete ? '생각 완료 — 클릭하여 펼치기/접기' : '생각 중...';
+    const statusText = p.thinkingComplete ? '검토 완료 — 클릭하여 펼치기/접기' : '검토 중...';
     const blockClass = 'think-block' +
       (p.thinkingComplete ? ' collapsed' : ' streaming');
 
     let html = p.before ? `<div>${renderMd(p.before)}</div>` : '';
     html += `<div class="${blockClass}">` +
       `<div class="think-header" onclick="this.parentElement.classList.toggle('collapsed')">` +
-      `<span>${statusIcon} AI 생각 과정 &nbsp;<small style="font-weight:400">${statusText}</small></span>` +
+      `<span>${statusIcon} AI 검토 요약 &nbsp;<small style="font-weight:400">${statusText}</small></span>` +
       `<span class="think-toggle">▼</span></div>` +
       `<div class="think-content">${renderMd(p.thinking)}</div>` +
       `</div>`;
@@ -1742,6 +1750,7 @@
     const aiDiv = appendMsg('ai', '', true);
     const bubble = aiDiv.querySelector('.msg-bubble');
     let full = '';
+    let effectiveThinkingMode = thinkingMode;
 
     try {
       const resp = await fetch('/chat', {
@@ -1762,6 +1771,7 @@
       if (!resp.ok) throw new Error(await friendlyErrorMessage(resp));
       const confirmedStatus = responseCommandStatus(resp);
       if (confirmedStatus) {
+        effectiveThinkingMode = confirmedStatus.thinking_mode || thinkingMode;
         renderCommandStatus(userDiv, confirmedStatus);
         applyResolvedPersona(aiDiv, confirmedStatus);
       }
@@ -1774,7 +1784,7 @@
         full += dec.decode(value, { stream: true });
         // <think> 블록 자동 감지 (서버에서 deep_thinking 강제 활성화 시)
         const hasThinkBlock = full.includes('<think>');
-        const activeThinking = thinkingMode !== 'off' || hasThinkBlock;
+        const activeThinking = effectiveThinkingMode !== 'off' || hasThinkBlock;
         // 생각 모드: 50자 이상 증가했을 때만 리렌더 (DOM 조작 최소화)
         if (activeThinking) {
           if (full.length - lastRenderLen >= 50) {
@@ -1790,7 +1800,7 @@
 
       // 최종 렌더링 (<think> 블록 있으면 자동으로 thinking 렌더러 사용)
       const hasFinalThinkBlock = full.includes('<think>');
-      if (thinkingMode !== 'off' || hasFinalThinkBlock) {
+      if (effectiveThinkingMode !== 'off' || hasFinalThinkBlock) {
         renderWithThinking(full, bubble);
       } else {
         bubble.innerHTML = renderMd(full);
@@ -1802,7 +1812,7 @@
       }
 
       // 피드백 버튼 (<think> 블록 있으면 answer 부분만 사용)
-      const feedbackText = (thinkingMode !== 'off' || hasFinalThinkBlock)
+      const feedbackText = (effectiveThinkingMode !== 'off' || hasFinalThinkBlock)
         ? (parseThinking(full).answer || full)
         : full;
       const fbRow = document.createElement('div');

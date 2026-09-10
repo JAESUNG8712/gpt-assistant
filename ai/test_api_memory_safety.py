@@ -31,6 +31,7 @@ def main():
         import main
 
         client = TestClient(main.app)
+        assert main.ChatRequest(message="기본값 확인").thinking_mode == "auto"
         assert client.get("/health").json()["retrieval_engine"] == "tfidf-bm25-char3-v1"
         assert client.get("/health").json()["memory_schema"] == "typed-scopes-v1"
         assert client.get("/health").json()["memory_feedback"] == "attributed-utility-v1"
@@ -41,6 +42,7 @@ def main():
         assert "loadMemoryObservability" in index_html
         assert "loadMemoryEffectiveness" in index_html
         assert "reuseCommand" in index_html
+        assert "🧠 자동 생각" in index_html
         assert "search-on-badge" not in index_html
         assert "gemini-badge" not in index_html
         model_info = client.get("/model-info").json()
