@@ -2915,7 +2915,15 @@ function _injectPageWriteGuide(){
 }
 let _formEnhanceQueued=false;
 function _queueFormEnhancement(){if(_formEnhanceQueued)return;_formEnhanceQueued=true;queueMicrotask(()=>{_formEnhanceQueued=false;_enhanceFormScope($("#content"));_injectPageWriteGuide();});}
-new MutationObserver(_queueFormEnhancement).observe(document.getElementById("content"),{childList:true,subtree:true});
+// 로그아웃 화면에는 #content가 아직 없다. 모듈 로드 시 null을 observe하면 브라우저가
+// TypeError를 던지고 이후 로그인 초기화 코드 전체가 멈추므로, render()가 실제 업무
+// 컨테이너를 만든 뒤에만 연결한다. 재로그인으로 노드가 교체되면 기존 관찰도 해제한다.
+const _formEnhanceObserver=new MutationObserver(_queueFormEnhancement);let _observedFormContent=null;
+function _observeContentForms(){
+  const content=$("#content");if(!content)return;
+  if(content!==_observedFormContent){_formEnhanceObserver.disconnect();_observedFormContent=content;_formEnhanceObserver.observe(content,{childList:true,subtree:true});}
+  _queueFormEnhancement();
+}
 // 모든 화면이 공통으로 쓰는 모달 접근성 기반. 기존 화면의 HTML 문자열을 한 번에
 // 다시 쓰지 않아도 role/label/초기 포커스/Tab 순환/Escape/원래 버튼 복귀를 보장한다.
 const _modalState=new WeakMap();let _modalTitleSeq=0;
@@ -6332,7 +6340,7 @@ ${EVAL_ONLY_MODE?"":`<nav id="mobile-tab-nav"><div class="tab-items">
   <button type="button" class="tab-item" onclick="gotoPage('payslip')" id="mtab-payslip" aria-label="급여"><span class="ti" aria-hidden="true">💰</span><span>급여</span></button>
   <button type="button" class="tab-item" onclick="gotoPage('my-profile')" id="mtab-my-profile" aria-label="내정보"><span class="ti" aria-hidden="true">👤</span><span>내정보</span></button>
 </div></nav>`}`;
-  renderSidebar();renderPage();_updateMobileTabNav();
+  _observeContentForms();renderSidebar();renderPage();_updateMobileTabNav();
 }
 const SIDEBAR_GROUP_META={
   dashboard:{label:"대시보드",roles:["admin","director","leader","member"]},
