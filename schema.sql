@@ -320,6 +320,19 @@ CREATE TABLE IF NOT EXISTS vouchers (
 CREATE INDEX IF NOT EXISTS idx_vouchers_date ON vouchers (voucher_date);
 ALTER TABLE vouchers ADD COLUMN IF NOT EXISTS company_id UUID;
 CREATE INDEX IF NOT EXISTS idx_vouchers_company_id ON vouchers (company_id);
+-- 회사별 사용자 정의 전표 템플릿. 기본 템플릿은 클라이언트 코드에 읽기 전용으로
+-- 제공하고 회사가 추가한 템플릿만 저장한다. accountId 대신 계정코드를 보관해 계정
+-- 마스터가 재생성되어도 같은 코드의 현재 계정과목에 다시 연결할 수 있다.
+CREATE TABLE IF NOT EXISTS accounting_templates (
+  company_id UUID        NOT NULL REFERENCES companies(id),
+  id         TEXT        NOT NULL,
+  data       JSONB       NOT NULL,
+  is_deleted BOOLEAN     NOT NULL DEFAULT FALSE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (company_id, id)
+);
+CREATE INDEX IF NOT EXISTS idx_accounting_templates_company_id ON accounting_templates (company_id);
 DO $$ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'vouchers_company_id_fkey') THEN
     ALTER TABLE vouchers ADD CONSTRAINT vouchers_company_id_fkey FOREIGN KEY (company_id) REFERENCES companies(id);

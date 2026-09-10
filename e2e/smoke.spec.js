@@ -78,6 +78,38 @@ test.describe("로그인·기본 네비게이션", () => {
     expect(pageErrors, `콘솔 페이지 에러 발생: ${pageErrors.join("; ")}`).toHaveLength(0);
   });
 
+  test("모든 메뉴 그룹이 대분류에 속하고 회계 입력 예시·템플릿·검증이 동작한다", async ({ page }) => {
+    await page.goto("/");
+    await page.fill("#l-id", "e2e_admin");
+    await page.fill("#l-pw", "E2eTestPw123");
+    await page.click(".login-card button.btn-primary");
+    await expect(page.locator("#main")).toBeVisible({ timeout: 10000 });
+
+    const uncovered = await page.evaluate(() => Object.keys(_menuGroupsCache).filter(group => !_bigCatForGroup(group)));
+    expect(uncovered).toEqual([]);
+
+    await page.evaluate(async () => { await loadAccountingFromServer(); gotoPage("acct-accounts"); });
+    await expect(page.getByRole("heading", { name: /계정과목 관리/ })).toBeVisible();
+    await page.evaluate(() => openAcctAccountModal());
+    const dialog = page.locator('[role="dialog"][aria-modal="true"]');
+    await expect(dialog).toContainText("기본 계정과목");
+    await expect(dialog.locator("#acc-code")).toHaveAttribute("placeholder", /예:/);
+    await expect(dialog.locator("#acc-name")).toHaveAttribute("placeholder", /예:/);
+    await dialog.locator("#acc-code").fill("잘못된 코드");
+    await dialog.locator("#acc-name").fill("테스트 계정");
+    await dialog.getByRole("button", { name: /^저장$/ }).click();
+    await expect(page.locator('.toast[role="alert"]')).toContainText(/계정코드|영문|숫자/);
+    await expect(dialog).toBeVisible();
+    await page.keyboard.press("Escape");
+
+    await page.evaluate(async () => { gotoPage("acct-vouchers"); await openVoucherModal(); });
+    const voucherDialog = page.locator('[role="dialog"][aria-modal="true"]');
+    await expect(voucherDialog).toContainText("작성 방법");
+    await expect(voucherDialog.locator("#vch-desc")).toHaveAttribute("placeholder", /예:/);
+    await voucherDialog.locator("#vch-template").selectOption("builtin-expense-cash");
+    await expect(voucherDialog.locator("#vch-lines select")).toHaveCount(2);
+  });
+
   test("모바일 메뉴와 공용 모달을 키보드로 닫을 수 있다", async ({ page }) => {
     await page.setViewportSize({ width: 375, height: 812 });
     await page.goto("/");
