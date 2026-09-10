@@ -33,6 +33,7 @@ def main():
         client = TestClient(main.app)
         assert main.ChatRequest(message="기본값 확인").thinking_mode == "auto"
         assert client.get("/health").json()["retrieval_engine"] == "tfidf-bm25-char3-v1"
+        assert client.get("/health").json()["deliberation_engine"] == "adaptive-plan-draft-review-v1"
         assert client.get("/health").json()["memory_schema"] == "typed-scopes-v1"
         assert client.get("/health").json()["memory_feedback"] == "attributed-utility-v1"
         index_html = client.get("/").text
@@ -76,6 +77,7 @@ def main():
         assert remembered.status_code == 200 and "기억했습니다" in remembered.text
         remembered_status = json.loads(remembered.headers["X-Command-Status"])
         assert remembered_status["memory_action"] == "save"
+        assert remembered_status["thinking_engine"] == "direct-v1"
         assert remembered_status["commands"][0]["command"] == "/기억"
         listed = client.post(
             "/chat", headers=personal_headers,
