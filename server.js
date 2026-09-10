@@ -5567,6 +5567,15 @@ async function _lookupPartnerBizNo(partnerId, companyId, dbClient) {
   );
   return rows[0]?.data?.bizNo || "";
 }
+// 전표 유형(category) — 기본 카테고리(general/purchase/sales/payroll/expense/adjustment) 중
+// 하나이거나, 사용자가 "기타" 선택 후 직접 입력한 자유 텍스트도 그대로 허용한다(고정된 값만
+// 강제하면 회사마다 다른 전표 관행을 못 담으므로 "기본값 있음 + 커스텀 가능" 원칙을 따른다).
+// 값이 없거나 비정상(문자열이 아님 등)이면 "일반"(general)으로 안전하게 기본값 처리한다.
+function _normalizeVoucherCategory(category) {
+  if (typeof category !== "string") return "general";
+  const trimmed = category.trim();
+  return trimmed ? trimmed.slice(0, 30) : "general";
+}
 function _validateVoucherLines(lines, accounts) {
   if (!Array.isArray(lines) || lines.length < 2) return "전표에는 2개 이상의 분개 라인이 필요합니다.";
   const accById = new Map(accounts.map(a => [a.id, a]));
@@ -5604,7 +5613,7 @@ app.post("/api/accounting/vouchers", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
     const companyId = req.auth.companyId || null;
-    const { date, description, partner, partnerId, lines, user: createdBy } = req.body || {};
+    const { date, description, partner, partnerId, lines, category, user: createdBy } = req.body || {};
     if (!date) return res.status(400).json({ ok: false, message: "전표일자는 필수입니다." });
     const accounts = await _getAccountsList(companyId);
     const err = _validateVoucherLines(lines, accounts);
@@ -5614,6 +5623,7 @@ app.post("/api/accounting/vouchers", async (req, res) => {
       id: `v_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
       voucherNo: null, status: "draft",
       date, description: description || "", partner: partner || "", partnerId: partnerId || null,
+      category: _normalizeVoucherCategory(category),
       lines: lines.map(l => ({ accountId: l.accountId, debit: _round2(l.debit) || 0, credit: _round2(l.credit) || 0, memo: l.memo || "" })),
       amount: debitSum,
       createdBy: createdBy || "unknown", createdAt: new Date().toISOString(),
@@ -5792,6 +5802,11 @@ app.post("/api/accounting/tax-invoices", async (req, res) => {
     const issueYear = new Date(issueDate).getFullYear();
     if (issueYear < 1900 || issueYear > 2100) return res.status(400).json({ ok: false, message: "발행일이 유효한 범위를 벗어났습니다(1900~2100년)." });
     if (!Array.isArray(items) || !items.length) return res.status(400).json({ ok: false, message: "품목을 1개 이상 입력하세요." });
+    // 견적서·발주서·구매요청이 이미 쓰는 것과 동일한 검증(_validateItemLines) — 세금계산서만
+    // 이 검사가 빠져있어 수량 0/음수·단가 음수인 품목도 그대로 통과해 마이너스 공급가액
+    // 세금계산서가 발행될 수 있었다(2026-08-07 감사에서 견적/발주 쪽만 고쳤던 것과 같은 결함).
+    const _itemErr = _validateItemLines(items);
+    if (_itemErr) return res.status(400).json({ ok: false, message: _itemErr });
     const totals = _buildTaxInvoiceTotals(items);
     const year = new Date(issueDate).getFullYear();
     const direction = req.body.direction === "purchase" ? "purchase" : "sales";
@@ -5947,6 +5962,12 @@ app.post("/api/accounting/partners", async (req, res) => {
     const { id, name, bizNo, ceoName, type, address, contactName, phone, email, registerReason, attachments, active = true, user, expectedUpdatedAt } = req.body || {};
     if (!name || !type)
       return res.status(400).json({ ok: false, message: "거래처명, 거래유형은 필수입니다." });
+    // 사업자등록번호·이메일은 입력했을 때만(선택 항목이라 공란은 통과) 형식을 검증한다 —
+    // 화면에서 놓친 오타를 여기서 한 번 더 걸러 "무엇을 어떻게 고쳐야 하는지" 구체적으로 안내한다.
+    if (bizNo && !/^\d{3}-?\d{2}-?\d{5}$/.test(String(bizNo).trim()))
+      return res.status(400).json({ ok: false, message: "사업자등록번호 형식이 올바르지 않습니다. 숫자 10자리(예: 123-45-67890)로 입력해주세요." });
+    if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(email).trim()))
+      return res.status(400).json({ ok: false, message: "이메일 형식이 올바르지 않습니다. (예: name@company.com)" });
     const partnerId = id || `partner_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     if (USE_JSON_FILE) {
       const idx = _fileAccounting.partners.findIndex(p => p.id === partnerId);
@@ -6161,7 +6182,7 @@ function _addYearsStr(dateStr, k) {
 // pool.connect()를 또 호출하면(동시 요청이 많을 때 잠금 대기자들이 커넥션 풀을 다 점유해)
 // 커넥션 풀 고갈로 데드락에 준하는 상태에 빠질 수 있어, 이 경우 BEGIN/COMMIT/release는
 // 호출부 책임으로 남기고 여기서는 쿼리만 실행한다.
-async function _issuePostedVoucher(companyId, { date, description, partnerId, partner, lines, user }, externalClient) {
+async function _issuePostedVoucher(companyId, { date, description, partnerId, partner, lines, user, category }, externalClient) {
   const accounts = await _getAccountsList(companyId, externalClient);
   const err = _validateVoucherLines(lines, accounts);
   if (err) throw Object.assign(new Error(err), { statusCode: 400 });
@@ -6170,6 +6191,7 @@ async function _issuePostedVoucher(companyId, { date, description, partnerId, pa
   const baseVoucher = {
     id: `v_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
     date, description: description || "", partner: partner || "", partnerId: partnerId || null,
+    category: _normalizeVoucherCategory(category),
     lines: lines.map(l => ({ accountId: l.accountId, debit: _round2(l.debit) || 0, credit: _round2(l.credit) || 0, memo: l.memo || "" })),
     amount: debitSum,
     createdBy: user || "unknown", createdAt: new Date().toISOString(),
@@ -6444,7 +6466,7 @@ app.post("/api/accounting/rcps/schedule/:scheduleId/post", async (req, res) => {
         const voucher = await _issuePostedVoucher(companyId, {
           date: scheduleRow.periodDate,
           description: `RCPS 상각 (${issuance.name} ${scheduleRow.seq}회차)`,
-          lines, user,
+          lines, user, category: "adjustment",
         }, pgClient);
         const updatedSchedule = { ...scheduleRow, status: "posted", voucherId: voucher.id };
         await pgClient.query(
@@ -6488,7 +6510,7 @@ app.post("/api/accounting/rcps/schedule/:scheduleId/post", async (req, res) => {
       const voucher = await _issuePostedVoucher(companyId, {
         date: scheduleRow.periodDate,
         description: `RCPS 상각 (${issuance.name} ${scheduleRow.seq}회차)`,
-        lines, user,
+        lines, user, category: "adjustment",
       });
 
       const updatedSchedule = { ...scheduleRow, status: "posted", voucherId: voucher.id };
@@ -6543,7 +6565,7 @@ app.post("/api/accounting/rcps/valuations", async (req, res) => {
           { accountId: lossAccountId, debit: gainLoss, credit: 0 },
           { accountId: derivativeLiabilityAccountId, debit: 0, credit: gainLoss },
         ],
-        user,
+        user, category: "adjustment",
       });
     } else if (gainLoss < 0) {
       // 부채(파생상품) 장부금액 감소 = 평가이익
@@ -6557,7 +6579,7 @@ app.post("/api/accounting/rcps/valuations", async (req, res) => {
           { accountId: derivativeLiabilityAccountId, debit: Math.abs(gainLoss), credit: 0 },
           { accountId: gainAccountId, debit: 0, credit: Math.abs(gainLoss) },
         ],
-        user,
+        user, category: "adjustment",
       });
     }
 
@@ -6978,7 +7000,7 @@ app.post("/api/accounting/fixed-assets/:id/depreciation-schedule/:year/post", as
             { accountId: depreciationExpenseAccountId, debit: scheduleRow.depreciationExpense, credit: 0 },
             { accountId: accumulatedDepreciationAccountId, debit: 0, credit: scheduleRow.depreciationExpense },
           ],
-          user,
+          user, category: "adjustment",
         }, pgClient);
         const updatedSchedule = { ...scheduleRow, status: "posted", voucherId: voucher.id };
         await pgClient.query(
@@ -7012,7 +7034,7 @@ app.post("/api/accounting/fixed-assets/:id/depreciation-schedule/:year/post", as
           { accountId: depreciationExpenseAccountId, debit: scheduleRow.depreciationExpense, credit: 0 },
           { accountId: accumulatedDepreciationAccountId, debit: 0, credit: scheduleRow.depreciationExpense },
         ],
-        user,
+        user, category: "adjustment",
       });
 
       const updatedSchedule = { ...scheduleRow, status: "posted", voucherId: voucher.id };
