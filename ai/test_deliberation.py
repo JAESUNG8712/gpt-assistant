@@ -6,10 +6,11 @@ import deliberation
 
 def main():
     simple = deliberation.choose_mode("안녕", "auto")
-    assert simple["mode"] == "off" and simple["automatic"] is True
+    assert simple["mode"] == "prompt" and simple["automatic"] is True
+    assert "기본 자체 검토" in simple["reason"]
 
     factual = deliberation.choose_mode("2027년 최저임금 얼마야?", "auto")
-    assert factual["mode"] == "off"
+    assert factual["mode"] == "prompt"
 
     comparison = deliberation.choose_mode("두 구현 방식의 장단점을 비교해줘", "auto")
     assert comparison["mode"] == "prompt"
@@ -41,7 +42,13 @@ def main():
     assert company["mode"] == "off" and company["reason"] == "사내 문서 직접 답변"
 
     direct = deliberation.direct_response_decision()
-    assert direct["mode"] == "off" and "직접 처리" in direct["reason"]
+    assert direct["mode"] == "off" and "자체 검증" in direct["reason"]
+
+    ambiguous = deliberation.ambiguity_response_decision()
+    assert ambiguous["mode"] == "off" and "모호성" in ambiguous["reason"]
+
+    specialist_check = deliberation.specialist_response_decision()
+    assert specialist_check["mode"] == "off" and "전문 분석" in specialist_check["reason"]
 
     # 코딩 전용 경로에서도 thinking_mode가 더 이상 유실되지 않는다.
     import llm

@@ -855,10 +855,12 @@ async def chat(req: ChatRequest, request: Request):
 
     # 짧은 질문에서 서로 다른 KB 후보의 점수가 비슷하면 임의의 1위를 확정하지
     # 않는다. 회사 규정은 원래 관련 규정 여러 건을 함께 보여주므로 대상에서 제외하고,
-    # 명시적 웹검색·생각 모드는 사용자가 요청한 흐름을 그대로 유지한다.
+    # 명시적 웹검색·생각 모드는 사용자가 요청한 흐름을 그대로 유지한다. 자동 검토는
+    # 모호성 확인을 먼저 통과해야 하므로 선택지가 필요하면 생성형 답변보다 우선한다.
     clarification_candidates = []
     if (not direct_calc and not stock_mode and persona_id != "company"
-            and not effective_use_search and effective_thinking_mode == "off"
+            and not effective_use_search
+            and (effective_thinking_mode == "off" or requested_thinking_mode == "auto")
             and len(matched_persona_ids) == 1):
         clarification_candidates = search_ambiguity.ambiguity_candidates(
             search_msg, top_results
@@ -867,6 +869,9 @@ async def chat(req: ChatRequest, request: Request):
         search_ambiguity.format_clarification(clarification_candidates)
         if clarification_candidates else ""
     )
+    if clarification_msg:
+        thinking_decision = deliberation.ambiguity_response_decision()
+        effective_thinking_mode = "off"
 
     # 소유자가 검토·승인한 선호 기억만 답변 스타일 참고자료로 제공한다.
     # 공유 링크에는 소유자 취향이 노출되지 않으며, 기억 내용은 명령이 아닌 데이터로 취급한다.
@@ -925,6 +930,9 @@ async def chat(req: ChatRequest, request: Request):
     run_broker_report = (
         not is_shared_session and stock_mode and _is_broker_report_request(user_msg)
     )
+    if run_stock_pipeline or run_lowprice_screen or run_broker_report:
+        thinking_decision = deliberation.specialist_response_decision()
+        effective_thinking_mode = "off"
 
     # ── 신뢰도 판정 ───────────────────────────────────────
     # CALC       : Python 직접 계산 결과 있음 → 계산 결과 직접 서빙
@@ -1038,11 +1046,17 @@ async def chat(req: ChatRequest, request: Request):
         "thinking_requested": requested_thinking_mode,
         "thinking_automatic": bool(thinking_decision["automatic"]),
         "thinking_reason": thinking_decision["reason"],
-        "thinking_engine": {
-            "off": "direct-v1",
-            "prompt": "single-review-v1",
-            "deep": "plan-draft-review-v1",
-        }[effective_thinking_mode],
+        "thinking_engine": (
+            "specialist-analysis-v1" if (
+                run_stock_pipeline or run_lowprice_screen or run_broker_report
+            ) else
+            "deterministic-check-v1" if direct_calc else
+            "ambiguity-check-v1" if clarification_msg else
+            "source-locked-check-v1" if persona_id == "company" else
+            "direct-v1" if effective_thinking_mode == "off" else
+            "single-self-review-v2" if effective_thinking_mode == "prompt" else
+            "plan-draft-review-v1"
+        ),
         "resolved_persona": persona_id,
         "resolved_persona_name": persona.get("name", ""),
         "resolved_persona_icon": persona.get("icon", ""),
@@ -2788,7 +2802,7 @@ def health():
         "status": "ok",
         "db_backend": "Turso (클라우드)" if mem._USE_TURSO else "SQLite (로컬)",
         "retrieval_engine": "tfidf-bm25-char3-v1",
-        "deliberation_engine": "adaptive-plan-draft-review-v1",
+        "deliberation_engine": "always-review-plan-draft-v2",
         "memory_schema": "typed-scopes-v1",
         "memory_feedback": "attributed-utility-v1",
         "law_api_key_set": bool(os.getenv("LAW_API_KEY")),
