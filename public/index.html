@@ -4390,7 +4390,7 @@ function handleXlsxUpload(file){
   // Try to load SheetJS dynamically
   if(typeof XLSX === "undefined"){
     const s=document.createElement("script");
-    s.src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js";
+    s.src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js";
     s.onload=()=>_doXlsxParse(file);
     s.onerror=()=>showToast("Excel 파서 로드 실패. .csv 파일을 사용해주세요.","error");
     document.head.appendChild(s);
@@ -18873,7 +18873,7 @@ function uploadBizPlanCombinedExcel(){
   if(statusEl)statusEl.textContent="처리 중...";
   if(typeof XLSX==="undefined"){
     const s=document.createElement("script");
-    s.src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js";
+    s.src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js";
     s.onload=()=>_bpCombinedStep1(file);
     // 예산·인원계획 두 단계는 서버가 파일을 직접 받아 자체적으로 시트를 찾으므로 이
     // CDN 파서가 필요 없다 — CDN 로드 실패(네트워크 차단 등)로 전체를 중단하는 대신
@@ -19281,7 +19281,7 @@ function uploadEmpPayPlanExcel(){
   const file=input.files[0];
   if(typeof XLSX==="undefined"){
     const s=document.createElement("script");
-    s.src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js";
+    s.src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js";
     s.onload=()=>_eppParseAndUpload(file);
     s.onerror=()=>showToast("Excel 파서 로드 실패. .csv 파일을 사용해주세요.","error");
     document.head.appendChild(s);
