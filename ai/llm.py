@@ -108,12 +108,13 @@ THINKING_PROMPT_ADDITION = """
 넣고 단계별 내적 추론이나 장황한 사고 기록은 쓰지 마세요."""
 
 # 방법3: 2단계 호출 중 1단계 — 분석 전용 시스템 프롬프트
-DEEP_ANALYSIS_PROMPT = """당신은 질문 분석 전문가입니다. 주어진 질문을 아래 형식으로 간결하게 분석하세요 (400자 이내):
+DEEP_ANALYSIS_PROMPT = """당신은 질문 분석 전문가입니다. 주어진 질문을 아래 형식으로 간결하게 분석하세요 (600자 이내):
 
 1. 핵심 요구사항: 사용자가 정확히 원하는 것
 2. 관련 법률/규정/개념 키워드
 3. 주의해야 할 예외나 특수 조건
 4. 최적 답변 구성 방향
+5. 틀리기 쉬운 가정·반례·확인이 필요한 근거
 
 최종 답변은 절대 작성하지 마세요. 분석·계획만 간결하게 작성하세요."""
 
@@ -392,7 +393,8 @@ async def _deep_thinking_chat(
         + thinking[:3000]
         + "\n\n[검증 규칙]\n"
         "초안의 결론을 그대로 믿지 말고 아래 참고 자료와 다시 대조하세요. "
-        "근거가 확인된 사실만 답하고, 충돌하거나 확인되지 않은 내용은 불확실하다고 표시하세요."
+        "근거가 확인된 사실만 답하고, 충돌하거나 확인되지 않은 내용은 불확실하다고 표시하세요. "
+        "최종 답변 전 요구사항 누락, 논리 모순, 수치·날짜 불일치, 실행 불가능한 제안이 없는지 점검하세요."
     )
     if context:
         combined_context += f"\n\n[참고 자료]\n{context}"
@@ -411,7 +413,7 @@ async def chat_stream(
     messages: list,
     context: str = "",
     system_prompt: str = None,
-    thinking_mode: str = "off",  # "off" | "prompt" | "deep"
+    thinking_mode: str = "off",  # main에서 "auto"를 "off" | "prompt" | "deep"으로 확정
 ) -> AsyncGenerator[str, None]:
     system = system_prompt or SYSTEM_PROMPT
     chain = _provider_chain()
@@ -506,12 +508,23 @@ async def chat_stream_coding(
     messages: list,
     context: str = "",
     system_prompt: str = None,
+    thinking_mode: str = "off",
 ) -> AsyncGenerator[str, None]:
     """코딩 특화 스트리밍 — Gemini 우선, 폴백: 일반 체인
     dev 페르소나에서 호출됨. Gemini 없으면 일반 _provider_chain() 사용.
     """
     system = system_prompt or SYSTEM_PROMPT
     sys_with_ctx = system + f"\n\n참고 정보:\n{context}" if context else system
+
+    # 분석·검토가 필요한 개발 질문은 일반 체인의 검증된 thinking 파이프라인을
+    # 사용한다. 이전에는 /깊게 설정이 코딩 전용 경로에서 조용히 무시됐다.
+    if thinking_mode in ("prompt", "deep"):
+        async for token in chat_stream(
+            messages, context=context, system_prompt=system,
+            thinking_mode=thinking_mode,
+        ):
+            yield token
+        return
 
     if GEMINI_API_KEY and not _is_cooling_down("gemini"):
         try:
