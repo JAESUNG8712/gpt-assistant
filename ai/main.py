@@ -799,7 +799,12 @@ async def chat(req: ChatRequest, request: Request):
     if direct_calc or persona_id == "company" or selected_clarification:
         intent_info = {"ok": False, "intent": "", "refined_query": user_msg, "keywords": [], "answer_guide": ""}
     else:
-        intent_info = await intent_agent.analyze(user_msg, persona_id)
+        # 최근 대화 몇 마디를 함께 전달 — "그거", "방금 그거"처럼 대명사·생략으로
+        # 이전 대화를 가리키는 후속 질문을 원문 그대로 검색하면 KB에서 아무 것도 못
+        # 찾는 문제를, 검색 질의 자체를 이전 대화 주제로 구체화해 보완한다(단순 키워드
+        # 유사도 검색으로는 불가능한 부분 — 최종 답변 생성용 history와는 별개 용도).
+        recent_turns = mem.get_recent_messages(4, persona=persona_id, session_id=session_scope)
+        intent_info = await intent_agent.analyze(user_msg, persona_id, history=recent_turns)
     refined_query = ""
     if intent_info.get("ok"):
         refined_query = _normalize_query(intent_info.get("refined_query", "").strip())

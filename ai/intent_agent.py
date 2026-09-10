@@ -6,6 +6,11 @@
   2. KB/법령/웹 검색에 최적화된 정제 질의 생성 (refined_query)
   3. 핵심 키워드 추출 (keywords)
   4. 답변에 꼭 포함해야 할 요소 안내 (answer_guide)
+  5. 최근 대화(history)를 받으면 "그거", "방금 그거", "더 자세히"처럼 대명사·생략으로
+     이전 대화를 가리키는 질문을 이전 대화의 실제 주제로 구체화 — 단순 키워드 유사도
+     검색은 이런 후속 질문을 원문 그대로("그거 더 자세히") 검색해 KB에서 아무 것도
+     찾지 못하므로, 대화가 이어지는 느낌을 주려면 검색 질의 자체를 대화 맥락으로
+     보강해야 함
 
 동작 원칙:
   - LLM 호출 실패·타임아웃 시 원본 질문 그대로 사용 (기존 동작 유지)
@@ -33,7 +38,12 @@ _SYSTEM = """당신은 질문 의도 분석 전문 에이전트입니다.
 - refined_query: 조사·감탄사·잡담을 제거하고 도메인 용어로 바꾼 검색어 (예: "연차 촉진제 기준 알려줘" → "연차유급휴가 사용촉진 제도 요건"). 원 질문의 주제를 벗어나지 않는다. 60자 이내.
 - keywords: 2~6개, 검색 구별력 있는 단어만.
 - answer_guide: 좋은 답변이 갖춰야 할 요소 (예: "법적 근거 조항, 적용 요건, 실무 절차 순으로 설명"). 100자 이내.
-- 질문이 이미 명확하면 refined_query는 원 질문과 거의 같아도 된다. 억지로 바꾸지 않는다."""
+- 질문이 이미 명확하면 refined_query는 원 질문과 거의 같아도 된다. 억지로 바꾸지 않는다.
+- [최근 대화]가 주어지고 질문이 "그거"/"방금 그거"/"그것도"/"더 자세히"처럼 대명사·생략으로
+  직전 대화 내용을 가리키면, refined_query에 그 이전 대화의 실제 주제를 명시적으로 풀어써서
+  구체화한다(예: 직전 대화 주제가 "연차 촉진제"였고 질문이 "그거 더 자세히"면 refined_query는
+  "연차유급휴가 사용촉진 제도 상세"). [최근 대화]가 없거나 질문이 이미 새로운 독립 주제이면
+  대화 내용을 억지로 끌어오지 않는다."""
 
 
 def _parse_json(raw: str) -> dict:
@@ -63,13 +73,36 @@ def _empty(user_msg: str) -> dict:
             "keywords": [], "answer_guide": ""}
 
 
-async def analyze(user_msg: str, persona_id: str = "hr") -> dict:
-    """질문 의도 분석. 실패 시 ok=False + 원본 질문 반환 (호출측 동작 불변)."""
+def _format_history(history: list) -> str:
+    """최근 대화 몇 마디만 짧게 요약 텍스트로 변환 (프롬프트 비대화·개인정보 노출 방지를
+    위해 최근 4개 메시지·메시지당 200자로 제한)."""
+    if not history:
+        return ""
+    lines = []
+    for msg in history[-4:]:
+        role = "사용자" if msg.get("role") == "user" else "어시스턴트"
+        content = str(msg.get("content", "")).strip().replace("\n", " ")[:200]
+        if content:
+            lines.append(f"{role}: {content}")
+    return "\n".join(lines)
+
+
+async def analyze(user_msg: str, persona_id: str = "hr", history: list = None) -> dict:
+    """질문 의도 분석. 실패 시 ok=False + 원본 질문 반환 (호출측 동작 불변).
+
+    history(선택)를 주면 "그거", "방금 그거"처럼 이전 대화를 가리키는 생략·대명사
+    질문을 직전 대화 주제로 구체화해 검색 정확도를 높인다 — 단순 키워드 유사도만으로는
+    후속 질문이 원문 그대로("그거 더 자세히") 검색되어 KB에서 아무 것도 못 찾는 문제를
+    보완하는 부분(최종 답변 생성 시의 대화 이력 활용과는 별개로, 검색 단계에도 필요)."""
     msg = user_msg.strip()
     if not INTENT_ENABLED or len(msg) < 4:
         return _empty(user_msg)
 
-    prompt = f"[도메인: {persona_id}]\n질문: {msg}"
+    history_block = _format_history(history)
+    prompt = (
+        (f"[최근 대화]\n{history_block}\n\n" if history_block else "")
+        + f"[도메인: {persona_id}]\n질문: {msg}"
+    )
     try:
         raw = await asyncio.wait_for(_llm_once(prompt), timeout=_TIMEOUT)
         data = _parse_json(raw)
