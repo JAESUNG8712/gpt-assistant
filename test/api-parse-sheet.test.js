@@ -1,9 +1,8 @@
 // lib/parse-sheet.js의 parseSheet() — 예산/사업계획 엑셀 업로드 라우트 5개(POST /upload/headcount,
 // /upload/detail, /business-plan/:id/cost-block-upload, /business-plan/sga-upload/parse,
-// /business-plan/headcount-plan/upload)가 전부 이 함수 하나를 거쳐간다. 지금 쓰는
-// xlsx@0.18.5는 npm audit에 걸린 취약점(prototype pollution + ReDoS, 패치판은 npm
-// 레지스트리에 없고 SheetJS 자사 CDN에만 있음)이 있어 언젠가 버전을 올려야 하는데,
-// parseSheet()를 실제로 호출해 검증하는 테스트가 지금까지 하나도 없었다 — 버전을 올렸을 때
+// /business-plan/headcount-plan/upload)가 전부 이 함수 하나를 거쳐간다. 서버와 브라우저는
+// 보안 패치된 SheetJS 0.20.3 공식 배포판으로 고정하며, parseSheet()의 실제 동작을 검증해
+// 이후 버전을 올렸을 때
 // 이 함수의 동작(멀티시트 자동탐지, `!ref` 시작행 오프셋 보정, excludedHeaders, 20행 스캔
 // 한도, OR/AND 헤더 매칭 시맨틱)이 조용히 달라져도 자동으로는 전혀 알 수 없는 상태였다.
 // 이 파일은 xlsx 패키지 자체로 워크북을 즉석에서 생성해(고정 바이너리 파일을 커밋하지
@@ -13,8 +12,18 @@
 "use strict";
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
 const xlsx = require("xlsx");
 const { parseSheet } = require("../lib/parse-sheet");
+
+test("SheetJS 보안 패치 버전을 서버와 브라우저 모두 0.20.3으로 고정한다", () => {
+  assert.equal(xlsx.version, "0.20.3");
+  const html = fs.readFileSync(path.join(__dirname, "..", "public", "index.html"), "utf8");
+  const officialBrowserUrl = "https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js";
+  assert.equal(html.split(officialBrowserUrl).length - 1, 3);
+  assert.doesNotMatch(html, /cdnjs\.cloudflare\.com\/ajax\/libs\/xlsx|xlsx\/0\.18\.5/i);
+});
 
 function buildWorkbookBuffer(sheets) {
   const wb = xlsx.utils.book_new();
