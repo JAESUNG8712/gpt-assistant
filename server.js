@@ -295,7 +295,7 @@ function _readExistingJsonFileOrFail(filePath, label) {
 let _fileStore = { employees: [], kpiEntries: [] };
 // 회계 모듈 전용 저장소 (계정과목/전표/세금계산서) — 클라이언트 신뢰형 블롭과 분리해
 // 서버가 직접 번호 발급·차대변 검증·확정 후 불변성을 보장하는 트랜잭션 기반으로 관리한다.
-let _fileAccounting = { accounts: [], vouchers: [], taxInvoices: [], partners: [], payments: [], voucherSeq: {}, taxInvoiceSeq: {} };
+let _fileAccounting = { accounts: [], vouchers: [], voucherTemplates: [], taxInvoices: [], partners: [], payments: [], voucherSeq: {}, taxInvoiceSeq: {} };
 // 영업/재고 모듈 전용 저장소 (품목·위치·견적서·발주서·재고 입출고 이력) — 회계 모듈과 동일하게
 // 클라이언트 신뢰형 블롭과 분리해 서버가 번호 발급·상태 전환·재고 반영을 직접 관리한다.
 let _fileErp = { items: [], locations: [], quotations: [], purchaseOrders: [], purchaseRequests: [], stockLedger: [], quoteSeq: {}, poSeq: {}, salesTargets: [] };
@@ -3489,6 +3489,91 @@ app.post("/login", loginLimiter, async (req, res) => {
   }
 });
 
+function _planEmployeeLoginIdNormalization(employeeRows) {
+  // 퇴직자를 포함한 등록 직원 전체를 대상으로 한다. 퇴직자 ID를 무시하면 나중에
+  // 재입사 처리할 때 이미 정규화된 현직자 ID와 충돌할 수 있고, "전체 직원"이라는
+  // 관리자 화면의 영향 범위와도 어긋난다.
+  const registered = (employeeRows || []).filter(Boolean);
+  const targets = registered.filter(e => /^u/i.test(String(e.loginId || "")) && String(e.empNo || "").trim());
+  const targetIds = new Set(targets.map(e => String(e.id)));
+  const desiredOwners = new Map();
+  const targetDesiredIds = new Set();
+  const conflicts = [];
+  for (const e of registered) {
+    if (!targetIds.has(String(e.id)) && e.loginId) desiredOwners.set(String(e.loginId).toLowerCase(), e);
+  }
+  for (const e of targets) {
+    const desired = String(e.empNo).trim();
+    const key = desired.toLowerCase();
+    const existing = desiredOwners.get(key);
+    if (existing) conflicts.push({ employeeId: e.id, name: e.name || "", from: e.loginId, to: desired, reason: `${existing.name || existing.id} 계정이 이미 사용 중` });
+    else if (targetDesiredIds.has(key)) conflicts.push({ employeeId: e.id, name: e.name || "", from: e.loginId, to: desired, reason: "변경 대상끼리 동일 사번 사용" });
+    else targetDesiredIds.add(key);
+  }
+  return {
+    targets: targets.map(e => ({ employeeId: e.id, name: e.name || "", empNo: e.empNo, from: e.loginId, to: String(e.empNo).trim() })),
+    conflicts,
+  };
+}
+
+app.get("/api/admin/employee-login-ids/normalize-preview", async (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  try {
+    const data = await loadData(req.auth.companyId || null);
+    const plan = _planEmployeeLoginIdNormalization(data.employees || []);
+    res.json({ ok: true, ...plan, canApply: plan.targets.length > 0 && plan.conflicts.length === 0 });
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
+});
+
+app.post("/api/admin/employee-login-ids/normalize", async (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  if (req.body?.confirm !== "REMOVE_U_PREFIX") return res.status(400).json({ ok: false, message: "확인 문구가 올바르지 않습니다." });
+  const companyId = req.auth.companyId || null;
+  const changedBy = `admin:${req.auth.loginId || req.auth.empId}`;
+  try {
+    if (USE_JSON_FILE) {
+      return await _withSaveLock(async () => {
+        const plan = _planEmployeeLoginIdNormalization(_fileStore.employees || []);
+        if (plan.conflicts.length) return res.status(409).json({ ok: false, code: "LOGIN_ID_NORMALIZATION_CONFLICT", message: "중복되는 로그인 ID가 있어 변경하지 않았습니다.", ...plan });
+        if (!plan.targets.length) return res.json({ ok: true, changed: 0, targets: [] });
+        const byId = new Map(plan.targets.map(t => [String(t.employeeId), t]));
+        const now = new Date().toISOString();
+        _fileStore.employees = (_fileStore.employees || []).map(e => {
+          const target = byId.get(String(e.id)); if (!target) return e;
+          const next = { ...e, loginId: target.to, authVersion: (Number(e.authVersion) || 0) + 1, updatedAt: now };
+          _fileHistory.employees.push({ id: e.id, action: "update", changedBy, changedAt: now, data: next });
+          return next;
+        });
+        if (_fileHistory.employees.length > MAX_FILE_HISTORY) _fileHistory.employees.splice(0, _fileHistory.employees.length - MAX_FILE_HISTORY);
+        const st = _bumpVersion(null); _fileStore._version = st.version;
+        _atomicWriteFileSync(JSON_FILE, JSON.stringify(_fileStore, null, 2)); _saveFileHistory();
+        return res.json({ ok: true, changed: plan.targets.length, targets: plan.targets });
+      });
+    }
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      const { rows } = await client.query("SELECT id,data FROM employees WHERE company_id=$1 AND is_deleted=FALSE FOR UPDATE", [companyId]);
+      const plan = _planEmployeeLoginIdNormalization(rows.map(r => ({ ...r.data, id: r.id })));
+      if (plan.conflicts.length) { await client.query("ROLLBACK"); return res.status(409).json({ ok: false, code: "LOGIN_ID_NORMALIZATION_CONFLICT", message: "중복되는 로그인 ID가 있어 변경하지 않았습니다.", ...plan }); }
+      const rowById = new Map(rows.map(r => [String(r.id), r.data]));
+      const now = new Date().toISOString();
+      for (const target of plan.targets) {
+        const previous = rowById.get(String(target.employeeId));
+        const next = { ...previous, loginId: target.to, authVersion: (Number(previous.authVersion) || 0) + 1, updatedAt: now };
+        await client.query("UPDATE employees SET data=$3,updated_at=NOW() WHERE company_id=$1 AND id=$2", [companyId, target.employeeId, next]);
+        await client.query("INSERT INTO employee_history (employee_id,action,changed_by,data,company_id) VALUES ($1,'update',$2,$3,$4)", [target.employeeId, changedBy, next, companyId]);
+      }
+      await client.query("COMMIT");
+      res.json({ ok: true, changed: plan.targets.length, targets: plan.targets });
+    } catch (e) { try { await client.query("ROLLBACK"); } catch {} throw e; }
+    finally { client.release(); }
+  } catch (e) {
+    if (e?.code === "23505") return res.status(409).json({ ok: false, code: "LOGIN_ID_NORMALIZATION_CONFLICT", message: "로그인 ID 중복이 감지되어 전체 변경을 취소했습니다." });
+    res.status(500).json({ ok: false, message: _safeErrMsg(e) });
+  }
+});
+
 // 전체 employees 배열을 받는 레거시 /save에서는 일반 사용자가 role·권한·타인 계정을
 // 바꿀 수 없도록 서버 저장본을 보존한다. 따라서 비밀번호 변경은 이처럼 현재 계정만
 // 서버에서 읽고 검증·갱신하는 전용 경로로 처리한다.
@@ -5159,6 +5244,7 @@ function requireRole(req, res, allowed) {
 // 갖지 않으므로 회사 복구/점검 권한과 동일하게 전체 회계 접근을 허용한다.
 const ACCOUNTING_MENU_BY_PATH = [
   ["/accounts", "acct-accounts"],
+  ["/voucher-templates", "acct-vouchers"],
   ["/vouchers", "acct-vouchers"],
   ["/tax-invoices", "acct-tax-invoices"],
   ["/payments", "acct-receivables"],
@@ -5450,8 +5536,18 @@ app.post("/api/accounting/accounts", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
     const { id, code, name, type, category, costCategory: costCategoryRaw, costSubType: costSubTypeRaw, active = true, user, expectedUpdatedAt } = req.body || {};
-    if (!code || !name || !type)
+    const normalizedCode = String(code || "").trim();
+    const normalizedName = String(name || "").trim();
+    const normalizedCategory = String(category || "").trim();
+    const allowedTypes = new Set(["asset", "liability", "equity", "revenue", "expense"]);
+    if (!normalizedCode || !normalizedName || !type)
       return res.status(400).json({ ok: false, message: "계정코드, 계정명, 구분은 필수입니다." });
+    if (!/^[A-Za-z0-9._-]{1,30}$/.test(normalizedCode))
+      return res.status(400).json({ ok: false, message: "계정코드는 영문·숫자·점·밑줄·하이픈으로 30자 이내여야 합니다." });
+    if (normalizedName.length > 80 || normalizedCategory.length > 80)
+      return res.status(400).json({ ok: false, message: "계정명과 분류는 각각 80자 이내로 입력하세요." });
+    if (!allowedTypes.has(type))
+      return res.status(400).json({ ok: false, message: "지원하지 않는 계정 구분입니다." });
     // 원가구분: "mfg"(제조원가)|"sga"(판관비)|null. costSubType은 costCategory가 "mfg"일 때만
     // 의미가 있으므로 그 외에는 항상 null로 정규화한다(원가명세서 집계 로직이 이 불변조건에 의존).
     const costCategory = ["mfg", "sga"].includes(costCategoryRaw) ? costCategoryRaw : null;
@@ -5462,30 +5558,30 @@ app.post("/api/accounting/accounts", async (req, res) => {
       // 계정코드는 회사 내에서 유일해야 한다 — 그렇지 않으면 같은 코드를 가리키는
       // 서로 다른 계정이 여러 개 생겨(예: "TEST-100"이 3건) 전표 계정 선택·집계에서
       // 어느 것을 골랐는지 알 수 없는 혼란이 생긴다(실측 재현으로 발견).
-      const dup = _fileAccounting.accounts.find(a => a.id !== accId && !a.isDeleted && a.code === code);
-      if (dup) return res.status(400).json({ ok: false, message: `이미 사용 중인 계정코드입니다: ${code} (${dup.name})` });
+      const dup = _fileAccounting.accounts.find(a => a.id !== accId && !a.isDeleted && String(a.code).toLowerCase() === normalizedCode.toLowerCase());
+      if (dup) return res.status(400).json({ ok: false, message: `이미 사용 중인 계정코드입니다: ${normalizedCode} (${dup.name})` });
       if (idx >= 0 && expectedUpdatedAt && _fileAccounting.accounts[idx].updatedAt !== expectedUpdatedAt) {
         return _acctConflict(res, "ACCT_ACCOUNT_CONFLICT", "account", _fileAccounting.accounts[idx]);
       }
       const prevHist = idx >= 0 ? (_fileAccounting.accounts[idx].history || []) : [];
       const histEntry = { action: idx >= 0 ? "update" : "create", user: user || "unknown", at: new Date().toISOString() };
-      const acc = { id: accId, code, name, type, category: category || "", costCategory, costSubType, active, history: [...prevHist, histEntry], updatedAt: histEntry.at };
+      const acc = { id: accId, code: normalizedCode, name: normalizedName, type, category: normalizedCategory, costCategory, costSubType, active: active !== false, history: [...prevHist, histEntry], updatedAt: histEntry.at };
       if (idx >= 0) _fileAccounting.accounts[idx] = acc; else _fileAccounting.accounts.push(acc);
       _saveFileAccounting();
       return res.json({ ok: true, account: acc });
     }
     const companyId = req.auth.companyId || null;
     const { rows: dupRows } = await pool.query(
-      "SELECT data FROM accounts WHERE id <> $1 AND is_deleted = FALSE AND (company_id = $2 OR company_id IS NULL) AND data->>'code' = $3 LIMIT 1",
-      [accId, companyId, code]
+      "SELECT data FROM accounts WHERE id <> $1 AND is_deleted = FALSE AND (company_id = $2 OR company_id IS NULL) AND LOWER(data->>'code') = LOWER($3) LIMIT 1",
+      [accId, companyId, normalizedCode]
     );
-    if (dupRows.length) return res.status(400).json({ ok: false, message: `이미 사용 중인 계정코드입니다: ${code} (${dupRows[0].data.name})` });
+    if (dupRows.length) return res.status(400).json({ ok: false, message: `이미 사용 중인 계정코드입니다: ${normalizedCode} (${dupRows[0].data.name})` });
     const { rows: prevRows } = await pool.query(
       "SELECT data FROM accounts WHERE id = $1 AND (company_id = $2 OR company_id IS NULL)", [accId, companyId]
     );
     const prevHist = prevRows.length ? (prevRows[0].data.history || []) : [];
     const histEntry = { action: prevRows.length ? "update" : "create", user: user || "unknown", at: new Date().toISOString() };
-    const acc = { id: accId, code, name, type, category: category || "", costCategory, costSubType, active, history: [...prevHist, histEntry], updatedAt: histEntry.at };
+    const acc = { id: accId, code: normalizedCode, name: normalizedName, type, category: normalizedCategory, costCategory, costSubType, active: active !== false, history: [...prevHist, histEntry], updatedAt: histEntry.at };
     if (prevRows.length) {
       // 위 SELECT는 조기 오류 메시지용일 뿐, 진짜 CAS는 이 UPDATE의 WHERE절이 원자적으로
       // 담당한다(PMS 프로젝트 수정과 동일한 원칙) — SELECT와 쓰기 사이의 시간차 동안 다른
@@ -5578,12 +5674,18 @@ function _normalizeVoucherCategory(category) {
 }
 function _validateVoucherLines(lines, accounts) {
   if (!Array.isArray(lines) || lines.length < 2) return "전표에는 2개 이상의 분개 라인이 필요합니다.";
+  if (lines.length > 50) return "전표 분개 라인은 최대 50개까지 입력할 수 있습니다.";
   const accById = new Map(accounts.map(a => [a.id, a]));
   for (const l of lines) {
     const acc = accById.get(l.accountId);
     if (!acc) return `존재하지 않는 계정과목입니다: ${l.accountId}`;
     if (acc.active === false) return `미사용 처리된 계정과목은 전표에 사용할 수 없습니다: ${acc.code} ${acc.name}`;
-    if ((Number(l.debit) || 0) > 0 && (Number(l.credit) || 0) > 0) return "한 라인에 차변과 대변을 동시에 입력할 수 없습니다.";
+    const debit = Number(l.debit || 0), credit = Number(l.credit || 0);
+    if (!Number.isFinite(debit) || !Number.isFinite(credit) || debit < 0 || credit < 0) return "차변·대변은 0 이상의 숫자로 입력하세요.";
+    if (debit > 999999999999 || credit > 999999999999) return "한 라인의 금액은 999,999,999,999 이하로 입력하세요.";
+    if (debit > 0 && credit > 0) return "한 라인에 차변과 대변을 동시에 입력할 수 없습니다.";
+    if (debit <= 0 && credit <= 0) return "각 분개 라인에는 차변 또는 대변 금액이 필요합니다.";
+    if (String(l.memo || "").length > 120) return "분개 비고는 120자 이내로 입력하세요.";
   }
   const debitSum = _round2(lines.reduce((s, l) => s + (Number(l.debit) || 0), 0));
   const creditSum = _round2(lines.reduce((s, l) => s + (Number(l.credit) || 0), 0));
@@ -5591,6 +5693,117 @@ function _validateVoucherLines(lines, accounts) {
   if (debitSum <= 0) return "전표 금액은 0보다 커야 합니다.";
   return null;
 }
+
+function _sanitizeVoucherTemplate(body, accounts, previous) {
+  const name = String(body?.name || "").trim();
+  const description = String(body?.description || "").trim();
+  const category = String(body?.category || "기타").trim();
+  const rawLines = Array.isArray(body?.lines) ? body.lines : [];
+  if (name.length < 2 || name.length > 80) return { error: "템플릿명은 2~80자로 입력하세요." };
+  if (description.length > 300 || category.length > 40) return { error: "설명 또는 카테고리가 너무 깁니다." };
+  if (rawLines.length < 2 || rawLines.length > 20) return { error: "분개 템플릿은 2~20개 라인으로 구성하세요." };
+  const activeByCode = new Map(accounts.filter(a => a.active !== false).map(a => [String(a.code), a]));
+  const lines = [];
+  for (const line of rawLines) {
+    const accountCode = String(line?.accountCode || "").trim();
+    const side = line?.side === "credit" ? "credit" : line?.side === "debit" ? "debit" : "";
+    const memo = String(line?.memo || "").trim();
+    if (!activeByCode.has(accountCode)) return { error: `사용 가능한 계정코드가 아닙니다: ${accountCode || "(비어 있음)"}` };
+    if (!side) return { error: "각 템플릿 라인의 차변/대변 구분을 선택하세요." };
+    if (memo.length > 120) return { error: "라인 비고는 120자 이내로 입력하세요." };
+    lines.push({ accountCode, side, memo });
+  }
+  if (!lines.some(l => l.side === "debit") || !lines.some(l => l.side === "credit")) {
+    return { error: "템플릿에는 차변과 대변 라인이 각각 하나 이상 필요합니다." };
+  }
+  const now = new Date().toISOString();
+  return { template: {
+    id: previous?.id || `vt_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+    name, description, category, lines,
+    createdAt: previous?.createdAt || now, createdBy: previous?.createdBy || String(body?.user || "unknown"),
+    updatedAt: now, updatedBy: String(body?.user || "unknown"),
+  } };
+}
+
+app.get("/api/accounting/voucher-templates", async (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  try {
+    if (USE_JSON_FILE) return res.json({ ok: true, templates: _fileAccounting.voucherTemplates || [] });
+    const { rows } = await pool.query(
+      "SELECT data FROM accounting_templates WHERE company_id = $1 AND is_deleted = FALSE ORDER BY data->>'category', data->>'name'",
+      [req.auth.companyId]
+    );
+    res.json({ ok: true, templates: rows.map(r => r.data) });
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
+});
+
+app.post("/api/accounting/voucher-templates", async (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  try {
+    const companyId = req.auth.companyId || null;
+    const id = req.body?.id ? String(req.body.id) : null;
+    const accounts = await _getAccountsList(companyId);
+    if (USE_JSON_FILE) {
+      const previous = id ? (_fileAccounting.voucherTemplates || []).find(t => t.id === id) : null;
+      if (id && !previous) return res.status(404).json({ ok: false, message: "전표 템플릿을 찾을 수 없습니다." });
+      if (previous && req.body?.expectedUpdatedAt && previous.updatedAt !== req.body.expectedUpdatedAt) {
+        return res.status(409).json({ ok: false, code: "VOUCHER_TEMPLATE_CONFLICT", message: "다른 사용자가 템플릿을 먼저 수정했습니다.", template: previous });
+      }
+      const built = _sanitizeVoucherTemplate({ ...req.body, user: req.auth.loginId || req.auth.empId }, accounts, previous);
+      if (built.error) return res.status(400).json({ ok: false, message: built.error });
+      const list = _fileAccounting.voucherTemplates || (_fileAccounting.voucherTemplates = []);
+      const idx = previous ? list.findIndex(t => t.id === previous.id) : -1;
+      if (idx >= 0) list[idx] = built.template; else list.push(built.template);
+      _saveFileAccounting();
+      return res.json({ ok: true, template: built.template });
+    }
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      let previous = null;
+      if (id) {
+        const { rows } = await client.query(
+          "SELECT data FROM accounting_templates WHERE company_id = $1 AND id = $2 AND is_deleted = FALSE FOR UPDATE", [companyId, id]
+        );
+        if (!rows.length) { await client.query("ROLLBACK"); return res.status(404).json({ ok: false, message: "전표 템플릿을 찾을 수 없습니다." }); }
+        previous = rows[0].data;
+        if (req.body?.expectedUpdatedAt && previous.updatedAt !== req.body.expectedUpdatedAt) {
+          await client.query("ROLLBACK");
+          return res.status(409).json({ ok: false, code: "VOUCHER_TEMPLATE_CONFLICT", message: "다른 사용자가 템플릿을 먼저 수정했습니다.", template: previous });
+        }
+      }
+      const built = _sanitizeVoucherTemplate({ ...req.body, user: req.auth.loginId || req.auth.empId }, accounts, previous);
+      if (built.error) { await client.query("ROLLBACK"); return res.status(400).json({ ok: false, message: built.error }); }
+      await client.query(
+        `INSERT INTO accounting_templates (company_id,id,data,is_deleted,updated_at) VALUES ($1,$2,$3,FALSE,NOW())
+         ON CONFLICT (company_id,id) DO UPDATE SET data=$3,is_deleted=FALSE,updated_at=NOW()`,
+        [companyId, built.template.id, built.template]
+      );
+      await client.query("COMMIT");
+      return res.json({ ok: true, template: built.template });
+    } catch (e) { try { await client.query("ROLLBACK"); } catch {} throw e; }
+    finally { client.release(); }
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
+});
+
+app.delete("/api/accounting/voucher-templates/:id", async (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  try {
+    const id = String(req.params.id);
+    if (USE_JSON_FILE) {
+      const before = (_fileAccounting.voucherTemplates || []).length;
+      _fileAccounting.voucherTemplates = (_fileAccounting.voucherTemplates || []).filter(t => t.id !== id);
+      if (_fileAccounting.voucherTemplates.length === before) return res.status(404).json({ ok: false, message: "전표 템플릿을 찾을 수 없습니다." });
+      _saveFileAccounting(); return res.json({ ok: true });
+    }
+    const result = await pool.query(
+      "UPDATE accounting_templates SET is_deleted=TRUE,updated_at=NOW() WHERE company_id=$1 AND id=$2 AND is_deleted=FALSE",
+      [req.auth.companyId, id]
+    );
+    if (!result.rowCount) return res.status(404).json({ ok: false, message: "전표 템플릿을 찾을 수 없습니다." });
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
+});
 
 app.get("/api/accounting/vouchers", async (req, res) => {
   if (!requireAdmin(req, res)) return;
@@ -5613,8 +5826,13 @@ app.post("/api/accounting/vouchers", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
     const companyId = req.auth.companyId || null;
-    const { date, description, partner, partnerId, lines, category, user: createdBy } = req.body || {};
-    if (!date) return res.status(400).json({ ok: false, message: "전표일자는 필수입니다." });
+    const { date, description, partner, partnerId, lines, category } = req.body || {};
+    const createdBy = req.auth.loginId || req.auth.empId || "unknown";
+    if (!_isValidDateStr(date))
+      return res.status(400).json({ ok: false, message: "전표일자를 올바른 날짜 형식으로 입력하세요." });
+    if (!String(description || "").trim()) return res.status(400).json({ ok: false, message: "전표 내용은 필수입니다." });
+    if (String(description).trim().length > 200) return res.status(400).json({ ok: false, message: "전표 내용은 200자 이내로 입력하세요." });
+    if (String(partner || "").trim().length > 120) return res.status(400).json({ ok: false, message: "거래처명은 120자 이내로 입력하세요." });
     const accounts = await _getAccountsList(companyId);
     const err = _validateVoucherLines(lines, accounts);
     if (err) return res.status(400).json({ ok: false, message: err });
@@ -5622,7 +5840,7 @@ app.post("/api/accounting/vouchers", async (req, res) => {
     const voucher = {
       id: `v_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
       voucherNo: null, status: "draft",
-      date, description: description || "", partner: partner || "", partnerId: partnerId || null,
+      date, description: String(description).trim(), partner: String(partner || "").trim(), partnerId: partnerId || null,
       category: _normalizeVoucherCategory(category),
       lines: lines.map(l => ({ accountId: l.accountId, debit: _round2(l.debit) || 0, credit: _round2(l.credit) || 0, memo: l.memo || "" })),
       amount: debitSum,
@@ -6663,9 +6881,10 @@ app.get("/api/accounting/vat-report", async (req, res) => {
 // (rcps/schedule/:scheduleId/post)와 완전히 동일한 패턴(JSON모드: in-flight Set,
 // Postgres모드: SELECT ... FOR UPDATE)을 재사용한다.
 function _isValidDateStr(v) {
-  if (typeof v !== "string" || !/^\d{4}-\d{2}-\d{2}/.test(v)) return false;
-  const d = new Date(v);
-  return !isNaN(d.getTime());
+  if (typeof v !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(v)) return false;
+  const [year, month, day] = v.split("-").map(Number);
+  const d = new Date(Date.UTC(year, month - 1, day));
+  return d.getUTCFullYear() === year && d.getUTCMonth() === month - 1 && d.getUTCDate() === day;
 }
 function _buildDepreciationSchedule(assetId, asset) {
   const cost = Number(asset.acquisitionCost) || 0;
