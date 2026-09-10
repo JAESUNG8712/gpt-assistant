@@ -19,6 +19,13 @@ COMMAND_DEFINITIONS = [
      "icon": "📌", "label": "요약", "description": "붙여 넣은 내용을 핵심 위주로 요약", "category": "작업"},
     {"name": "번역", "aliases": ["번역해"], "kind": "translate",
      "icon": "🌏", "label": "번역", "description": "한국어와 영어를 자연스럽게 번역", "category": "작업"},
+    {"name": "기억", "aliases": ["기억해", "기억해줘"], "kind": "memory_save",
+     "icon": "🧠", "label": "개인 기억 저장", "description": "내 선호나 정보를 안전하게 기억", "category": "기억", "featured": True},
+    {"name": "기억목록", "aliases": ["내기억", "기억보기"], "kind": "memory_list",
+     "icon": "📚", "label": "내 기억 보기", "description": "내가 직접 저장한 기억 목록 확인", "category": "기억",
+     "requires_message": False},
+    {"name": "잊기", "aliases": ["잊어", "잊어줘"], "kind": "memory_forget",
+     "icon": "🧹", "label": "개인 기억 삭제", "description": "지정한 개인 기억을 복구 가능하게 삭제", "category": "기억"},
     {"name": "통합", "aliases": ["자동"], "kind": "persona", "value": "auto",
      "icon": "🤖", "label": "통합 전문가", "description": "질문에 맞는 전문가를 자동 선택", "category": "전문가"},
     {"name": "인사", "aliases": ["hr"], "kind": "persona", "value": "hr",
@@ -64,10 +71,14 @@ _CONCISE_COMMANDS = _names("concise")
 _DETAIL_COMMANDS = _names("detail")
 _SUMMARY_COMMANDS = _names("summary")
 _TRANSLATE_COMMANDS = _names("translate")
+_MEMORY_SAVE_COMMANDS = _names("memory_save")
+_MEMORY_LIST_COMMANDS = _names("memory_list")
+_MEMORY_FORGET_COMMANDS = _names("memory_forget")
 _HELP_COMMANDS = _names("help")
 _BARE_COMMANDS = (
     _SEARCH_COMMANDS | _DEEP_COMMANDS | _FAST_COMMANDS
     | _CONCISE_COMMANDS | _DETAIL_COMMANDS | _SUMMARY_COMMANDS | _TRANSLATE_COMMANDS
+    | _MEMORY_SAVE_COMMANDS | _MEMORY_FORGET_COMMANDS
 )
 
 COMMAND_HELP = """## 간편 명령어
@@ -80,6 +91,9 @@ COMMAND_HELP = """## 간편 명령어
 - `/자세히 부당해고 대응 절차` — 단계와 근거까지 상세 답변
 - `/요약 [내용]` — 붙여 넣은 내용 요약
 - `/번역 [내용]` — 한국어↔영어 번역
+- `/기억 [내용]` — 내 선호나 정보를 개인 기억으로 저장
+- `/기억목록` — 내가 직접 저장한 기억 확인
+- `/잊기 [키워드]` — 일치하는 개인 기억을 복구 가능하게 삭제
 - `/인사`, `/개발`, `/여행`, `/주식`, `/회사`, `/이력서` — 전문가 지정
 
 예: `/검색 /인사 2027년 최저임금 알려줘`
@@ -146,8 +160,19 @@ def parse_command(text: str) -> dict:
         "thinking_mode": "",
         "answer_instruction": "",
         "direct_response": "",
+        "memory_action": "",
+        "memory_content": "",
         "applied_commands": [],
     }
+    # 질문으로 오해할 여지가 거의 없는 자연스러운 기억 조회 표현도 명령으로 처리한다.
+    if re.fullmatch(
+        r"(?:내가\s*)?(?:뭘|무엇을)?\s*기억(?:시켰|했)는?(?:지)?\??|"
+        r"내\s*기억\s*(?:보여줘|알려줘|목록)|기억한\s*(?:것|내용)\s*(?:보여줘|알려줘)",
+        original,
+    ):
+        result["memory_action"] = "list"
+        result["applied_commands"] = ["기억목록"]
+        return result
     remaining = original
     instructions = []
 
@@ -179,6 +204,14 @@ def parse_command(text: str) -> dict:
             instructions.append("사용자가 제공한 내용을 핵심 사실과 실행 항목 중심으로 요약하세요.")
         elif command in _TRANSLATE_COMMANDS:
             instructions.append("입력이 한국어면 자연스러운 영어로, 그 외 언어면 자연스러운 한국어로 번역하세요.")
+        elif command in _MEMORY_SAVE_COMMANDS:
+            result["memory_action"] = "save"
+            result["memory_content"] = rest
+        elif command in _MEMORY_LIST_COMMANDS:
+            result["memory_action"] = "list"
+        elif command in _MEMORY_FORGET_COMMANDS:
+            result["memory_action"] = "forget"
+            result["memory_content"] = rest
         else:
             recognized = False
 
@@ -186,10 +219,15 @@ def parse_command(text: str) -> dict:
             break
         result["applied_commands"].append(command)
         remaining = rest
+        # 기억 변경/조회는 그 뒤 문자열 전체를 데이터로 다루는 독립 명령이다.
+        # 내용 안의 `/검색` 같은 문자열을 후속 실행 명령으로 오해하지 않는다.
+        if result["memory_action"]:
+            break
         if not remaining:
             break
 
-    if result["applied_commands"] and not result["direct_response"] and not remaining:
+    if (result["applied_commands"] and not result["direct_response"] and not remaining
+            and not result["memory_action"]):
         result["direct_response"] = (
             "명령 뒤에 처리할 내용을 입력해 주세요. 예: `/검색 27년 최저임금`\n\n"
             "전체 명령은 `/도움말`에서 확인할 수 있습니다."

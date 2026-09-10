@@ -28,6 +28,7 @@ import privacy as privacy_guard
 import semantic_memory
 import quality_eval
 import search_ambiguity
+import personal_memory
 
 # ── 사용자 입력 전처리: 띄어쓰기 복합어 → 붙여쓰기 (질의 조인) ─────
 # engine.py에도 이름이 비슷한 _COMPOUND_MAP이 있어 중복처럼 보이지만 방향이
@@ -767,10 +768,14 @@ async def chat(req: ChatRequest, request: Request):
     # ── 0단계: Python 직접 계산 (날짜·금액 기반 HR 계산 질문) ─
     # LLM / KB 상태에 무관하게 정확한 수치를 계산해 반환
     # (연차·퇴직금·실수령액·연장수당·주휴수당·최저임금·4대보험 등)
-    direct_calc = direct_command_reply or calc.try_any_calc(user_msg)
+    personal_memory_reply = personal_memory.execute(
+        command.get("memory_action", ""), command.get("memory_content", ""),
+        is_shared=is_shared_session,
+    )
+    direct_calc = direct_command_reply or personal_memory_reply or calc.try_any_calc(user_msg)
     # 계산 결과에 사내 취업규칙 보충: KB에 관련 규정이 있으면 본문 표시,
     # 없으면 연차 계산에 한해 일반 안내 문구 (그 외 계산은 취업규칙 무관한 경우가 많아 생략)
-    if direct_calc and not direct_command_reply:
+    if direct_calc and not direct_command_reply and not personal_memory_reply:
         _rule_section = _company_rule_supplement(search_msg)
         if _rule_section:
             direct_calc += _rule_section
@@ -860,7 +865,8 @@ async def chat(req: ChatRequest, request: Request):
     # ── 2단계: law.go.kr 법령 검색 (법 관련 질문만, 페르소나 허용 시) ──────
     law_ctx = ""
     law_results = []  # 아래 reference_items 참조 시 항상 정의되어 있어야 함
-    if (not clarification_msg and persona_features.get("use_law", True)
+    if (not personal_memory_reply and not clarification_msg
+            and persona_features.get("use_law", True)
             and law.is_law_question(search_msg)):
         law_results = await law.search_law(search_msg)
         law_ctx = law.format_law_context(law_results)
@@ -879,7 +885,8 @@ async def chat(req: ChatRequest, request: Request):
     )
     search_ctx = ""
     results = []  # 아래 reference_items 참조 시 항상 정의되어 있어야 함
-    if (effective_use_search or auto_web_search) and not clarification_msg:
+    if ((effective_use_search or auto_web_search) and not clarification_msg
+            and not personal_memory_reply):
         # 채팅 중 검색 결과 원문은 검증 전 데이터이므로 즉시 장기기억에 쓰지 않는다.
         # 합성 답변만 기억 후보로 보내고, 검색 자체는 스레드에서 실행한다.
         results = await asyncio.get_event_loop().run_in_executor(
@@ -936,7 +943,10 @@ async def chat(req: ChatRequest, request: Request):
     no_local    = (best_score < KB_CONTEXT) and not has_law_rt and not direct_calc and not bool(search_ctx)
 
     if direct_calc:
-        retrieval_route = "command_response" if direct_command_reply else "direct_calculation"
+        retrieval_route = (
+            "personal_memory" if personal_memory_reply else
+            "command_response" if direct_command_reply else "direct_calculation"
+        )
     elif run_stock_pipeline or run_lowprice_screen or run_broker_report:
         retrieval_route = "stock_pipeline"
     elif clarification_msg:
@@ -1001,6 +1011,7 @@ async def chat(req: ChatRequest, request: Request):
             for item in clarification_candidates
         ],
         "clarification_selection": selected_clarification.get("title", ""),
+        "memory_action": command.get("memory_action", ""),
     }
 
     async def generate():

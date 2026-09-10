@@ -4,7 +4,7 @@ import command_router
 
 def main():
     catalog = command_router.command_catalog()
-    assert len(catalog) >= 15
+    assert len(catalog) >= 18
     assert len({item["command"] for item in catalog}) == len(catalog)
     assert all(item["command"].startswith("/") for item in catalog)
     all_names = [name.lower() for item in catalog for name in [item["command"], *item["aliases"]]]
@@ -47,6 +47,22 @@ def main():
 
     missing = command_router.parse_command("/검색")
     assert "명령 뒤에" in missing["direct_response"]
+
+    remember = command_router.parse_command("기억해 답변은 핵심부터 짧게 해줘")
+    assert remember["memory_action"] == "save"
+    assert remember["memory_content"] == "답변은 핵심부터 짧게 해줘"
+
+    memories = command_router.parse_command("내가 뭘 기억시켰지?")
+    assert memories["memory_action"] == "list"
+    assert memories["direct_response"] == ""
+
+    forget = command_router.parse_command("/잊기 핵심부터")
+    assert forget["memory_action"] == "forget"
+    assert forget["memory_content"] == "핵심부터"
+
+    literal_memory = command_router.parse_command("/기억 /검색은 최신 정보에 사용")
+    assert literal_memory["memory_content"] == "/검색은 최신 정보에 사용"
+    assert literal_memory["use_search"] is False
 
     unknown = command_router.parse_command("/알수없음 원문 유지")
     assert unknown["message"] == "/알수없음 원문 유지"

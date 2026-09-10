@@ -64,6 +64,38 @@ def main():
             "/chat", json={"message": "인증 없는 질문", "persona": "company"}
         ).status_code == 401
 
+        # 개인 기억은 채팅 명령만으로 저장·조회·삭제되고 일반 생성 경로로 새지 않는다.
+        personal_headers = {"X-Admin-Token": owner_token}
+        remembered = client.post(
+            "/chat", headers=personal_headers,
+            json={"message": "/기억 내 반려견 이름은 콩이", "persona": "auto",
+                  "session_id": "personal-memory-browser"},
+        )
+        assert remembered.status_code == 200 and "기억했습니다" in remembered.text
+        remembered_status = json.loads(remembered.headers["X-Command-Status"])
+        assert remembered_status["memory_action"] == "save"
+        assert remembered_status["commands"][0]["command"] == "/기억"
+        listed = client.post(
+            "/chat", headers=personal_headers,
+            json={"message": "내가 뭘 기억시켰지?", "persona": "auto",
+                  "session_id": "personal-memory-browser"},
+        )
+        assert listed.status_code == 200 and "반려견 이름은 콩이" in listed.text
+        forgotten = client.post(
+            "/chat", headers=personal_headers,
+            json={"message": "/잊기 반려견", "persona": "auto",
+                  "session_id": "personal-memory-browser"},
+        )
+        assert forgotten.status_code == 200 and "삭제했습니다" in forgotten.text
+        assert main.personal_memory.list_memories() == []
+        # 아래 기존 격리 API 테스트가 독립적으로 정확히 1건을 검증할 수 있도록
+        # 이 시나리오가 만든 테스트 전용 격리 행만 완료 처리한다.
+        with main.mem._conn() as c:
+            c.execute(
+                "UPDATE memory_quarantine SET restored_at='test-cleanup'"
+                " WHERE source='개인기억' AND restored_at=''"
+            )
+
         # 피드백은 같은 소유자 세션의 최근 검색에 실제 사용된 기억에만 귀속된다.
         feedback_question = "API 기여도 귀속 qzxv-811"
         main.mem.upsert_knowledge(
@@ -306,6 +338,12 @@ def main():
         assert len(shared_history) == 2
         assert shared_history[0]["command_status"]["commands"][0]["command"] == "/회사"
         assert main.mem.list_memory_candidates("pending") == []
+        shared_memory = client.post("/chat", json={
+            **share_payload, "message": "/기억 공유 방문자가 저장 시도",
+        })
+        assert shared_memory.status_code == 200
+        assert "공유 대화에서는" in shared_memory.text
+        assert main.personal_memory.list_memories() == []
 
         # 같은 브라우저 표식이어도 소유자와 공유 세션은 별도 범위에 저장된다.
         owner_payload = {
