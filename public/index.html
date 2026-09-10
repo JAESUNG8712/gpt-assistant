@@ -15288,7 +15288,7 @@ async function createPayrollVoucher(){
   const lines=[{accountId:expAcc,debit:t.gross,credit:0,memo:`${s.year}년 ${s.month}월 급여`}];
   if(liabAcc&&t.deduct>0)lines.push({accountId:liabAcc,debit:0,credit:t.deduct,memo:"4대보험·소득세 예수금"});
   lines.push({accountId:assetAcc,debit:0,credit:liabAcc?t.net:t.gross,memo:"급여 실지급"});
-  const body={date,description:`${s.year}년 ${s.month}월 급여 (${t.count}명)`,partner:"",partnerId:null,lines,role:currentUser.role,user:currentUser.name};
+  const body={date,category:"payroll",description:`${s.year}년 ${s.month}월 급여 (${t.count}명)`,partner:"",partnerId:null,lines,role:currentUser.role,user:currentUser.name};
   const r=await serverRequest("POST","/api/accounting/vouchers",body);
   if(!r?.ok){showToast(r?.message||"전표 생성에 실패했습니다.","error");return;}
   acctVouchers.unshift(r.voucher);
@@ -15885,6 +15885,9 @@ function _toggleCostSubTypeField(){
 async function saveAcctAccount(id){
   const code=$("#acc-code")?.value.trim(),name=$("#acc-name")?.value.trim();
   if(!code||!name){showToast("계정코드와 계정명을 입력하세요.","error");return;}
+  // 서버도 동일하게 거부하지만(왕복 없이 즉시 안내) 클라이언트에서 먼저 확인한다.
+  const dup=acctAccounts.find(a=>a.id!==id&&a.code===code);
+  if(dup){showToast(`이미 사용 중인 계정코드입니다: ${code} (${dup.name}) — 다른 코드를 입력해주세요.`,"error");return;}
   const costCategory=$("#acc-cost-category")?.value||null;
   const costSubType=costCategory==="mfg"?($("#acc-cost-subtype")?.value||null):null;
   const body={id:id||undefined,code,name,type:$("#acc-type")?.value,category:$("#acc-category")?.value.trim(),costCategory,costSubType,active:$("#acc-active")?.checked,role:currentUser.role,user:currentUser.name,expectedUpdatedAt:_acctEditingAccount?.updatedAt};
@@ -15977,18 +15980,18 @@ function openPartnerModal(id){
   _acctEditingPartner=p||null;
   openModal(`<div class="modal-box" style="max-width:560px"><div class="modal-head"><h3>${id?"거래처 수정":"거래처 추가"}</h3></div><div class="modal-body">
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
-      <div class="fg"><label class="fl">거래처명 <span class="req">*</span></label><input class="fc" id="ptn-name" value="${h(p?.name||"")}"></div>
-      <div class="fg"><label class="fl">사업자등록번호</label><input class="fc" id="ptn-bizno" value="${h(p?.bizNo||"")}"></div>
-      <div class="fg"><label class="fl">대표자명</label><input class="fc" id="ptn-ceo" value="${h(p?.ceoName||"")}"></div>
+      <div class="fg"><label class="fl">거래처명 <span class="req">*</span></label><input class="fc" id="ptn-name" placeholder="예: (주)예시거래처" value="${h(p?.name||"")}"></div>
+      <div class="fg"><label class="fl">사업자등록번호</label><input class="fc" id="ptn-bizno" placeholder="예: 123-45-67890" value="${h(p?.bizNo||"")}"></div>
+      <div class="fg"><label class="fl">대표자명</label><input class="fc" id="ptn-ceo" placeholder="예: 홍길동" value="${h(p?.ceoName||"")}"></div>
       <div class="fg"><label class="fl">거래유형 <span class="req">*</span></label><select class="fc" id="ptn-type">
         ${[["customer","매출처"],["vendor","매입처"],["both","매출/매입처"]].map(([v,l])=>`<option value="${v}" ${p?.type===v?"selected":""}>${l}</option>`).join("")}
       </select></div>
-      <div class="fg"><label class="fl">담당자명</label><input class="fc" id="ptn-contact" value="${h(p?.contactName||"")}"></div>
-      <div class="fg"><label class="fl">연락처</label><input class="fc" id="ptn-phone" value="${h(p?.phone||"")}"></div>
-      <div class="fg"><label class="fl">이메일</label><input class="fc" id="ptn-email" value="${h(p?.email||"")}"></div>
+      <div class="fg"><label class="fl">담당자명</label><input class="fc" id="ptn-contact" placeholder="예: 김담당" value="${h(p?.contactName||"")}"></div>
+      <div class="fg"><label class="fl">연락처</label><input class="fc" id="ptn-phone" placeholder="예: 02-1234-5678" value="${h(p?.phone||"")}"></div>
+      <div class="fg"><label class="fl">이메일</label><input class="fc" id="ptn-email" placeholder="예: contact@example.com" value="${h(p?.email||"")}"></div>
     </div>
-    <div class="fg"><label class="fl">회사주소</label><input class="fc" id="ptn-address" value="${h(p?.address||"")}"></div>
-    <div class="fg"><label class="fl">등록 사유</label><textarea class="fc" id="ptn-reason" rows="2">${h(p?.registerReason||"")}</textarea></div>
+    <div class="fg"><label class="fl">회사주소</label><input class="fc" id="ptn-address" placeholder="예: 서울시 강남구 테헤란로 1" value="${h(p?.address||"")}"></div>
+    <div class="fg"><label class="fl">등록 사유</label><textarea class="fc" id="ptn-reason" rows="2" placeholder="예: 신규 협력사 등록">${h(p?.registerReason||"")}</textarea></div>
     <div class="fg"><label class="fl">필수 첨부 <span class="fz11 text-gray">(최근 재무제표/신용평가서/사업자등록증/통장사본)</span></label><input class="fc" type="file" id="ptn-files" multiple>
       ${(p?.attachments||[]).length?`<div class="fz11 text-gray mt1">기존 첨부: ${p.attachments.map(a=>h(a.name)).join(", ")}</div>`:""}
     </div>
@@ -15998,11 +16001,16 @@ function openPartnerModal(id){
 async function savePartner(id){
   const name=$("#ptn-name")?.value.trim();
   if(!name){showToast("거래처명을 입력하세요.","error");return;}
+  // 서버도 동일하게 검증하지만, 왕복 없이 즉시 어떤 형식이 맞는지 알려주기 위해 먼저 확인한다.
+  const bizNo=$("#ptn-bizno")?.value.trim();
+  if(bizNo&&!/^\d{3}-?\d{2}-?\d{5}$/.test(bizNo)){showToast("사업자등록번호 형식이 올바르지 않습니다. 숫자 10자리(예: 123-45-67890)로 입력해주세요.","error");return;}
+  const email=$("#ptn-email")?.value.trim();
+  if(email&&!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)){showToast("이메일 형식이 올바르지 않습니다. (예: name@company.com)","error");return;}
   const existing=id?acctPartners.find(p=>p.id===id):null;
   const files=$("#ptn-files")?.files;
   let attachments=existing?.attachments||[];
   if(files&&files.length)attachments=[...attachments,...Array.from(files).map(f=>({name:f.name,size:f.size}))];
-  const body={id:id||undefined,name,bizNo:$("#ptn-bizno")?.value.trim(),ceoName:$("#ptn-ceo")?.value.trim(),type:$("#ptn-type")?.value,contactName:$("#ptn-contact")?.value.trim(),phone:$("#ptn-phone")?.value.trim(),email:$("#ptn-email")?.value.trim(),address:$("#ptn-address")?.value.trim(),registerReason:$("#ptn-reason")?.value.trim(),attachments,active:$("#ptn-active")?.checked,role:currentUser.role,user:currentUser.name,expectedUpdatedAt:_acctEditingPartner?.updatedAt};
+  const body={id:id||undefined,name,bizNo,ceoName:$("#ptn-ceo")?.value.trim(),type:$("#ptn-type")?.value,contactName:$("#ptn-contact")?.value.trim(),phone:$("#ptn-phone")?.value.trim(),email,address:$("#ptn-address")?.value.trim(),registerReason:$("#ptn-reason")?.value.trim(),attachments,active:$("#ptn-active")?.checked,role:currentUser.role,user:currentUser.name,expectedUpdatedAt:_acctEditingPartner?.updatedAt};
   const r=await serverRequest("POST","/api/accounting/partners",body);
   if(r?.code==="ACCT_PARTNER_CONFLICT"){await loadAccountingFromServer();closeModal();showToast("다른 사용자의 변경을 감지해 최신 내용을 불러왔습니다. 다시 확인 후 저장하세요.","error");return;}
   if(!r?.ok){showToast(r?.message||"저장에 실패했습니다.","error");return;}
@@ -16105,20 +16113,24 @@ function renderAcctVouchersPage(){
   <div class="tbl-wrap" id="acct-vouchers-tbl"></div></div></div>`;
   renderAcctVouchersTbl();
 }
+// 전표 유형(category) — 기본 카테고리 + "기타" 직접입력 커스텀을 모두 허용한다(서버는 어떤
+// 문자열이든 그대로 받아들이므로, 기본 라벨에 없는 값은 원문 그대로 보여준다).
+const VOUCHER_CATEGORY_LABELS={general:"일반",purchase:"매입",sales:"매출",payroll:"급여",expense:"경비",adjustment:"결산정리"};
+function _voucherCategoryLabel(cat){return VOUCHER_CATEGORY_LABELS[cat]||cat||"일반";}
 function renderAcctVouchersTbl(){
   const wrap=$("#acct-vouchers-tbl");if(!wrap)return;
   const STATUS_LABEL={draft:badge("임시","gray"),posted:badge("확정","green"),void:badge("취소","red")};
   const f=window._acctVchFilter||{q:"",status:"all"};
   let rows=acctVouchers;
   if(f.status!=="all")rows=rows.filter(v=>v.status===f.status);
-  if(f.q.trim()){const q=f.q.trim();rows=rows.filter(v=>[v.voucherNo,v.date,v.partner,v.description].some(x=>(x||"").includes(q)));}
-  wrap.innerHTML=`<table><thead><tr><th>전표번호</th><th>일자</th><th>거래처</th><th>내용</th><th>금액</th><th>상태</th><th>관리</th></tr></thead><tbody>
-  ${rows.length?rows.map(v=>`<tr><td>${h(v.voucherNo||"(임시)")}</td><td>${h(v.date)}</td><td>${h(v.partner||"-")}</td><td>${h(v.description||"-")}</td><td style="text-align:right">${v.amount.toLocaleString()}</td><td>${STATUS_LABEL[v.status]}</td><td>
+  if(f.q.trim()){const q=f.q.trim();rows=rows.filter(v=>[v.voucherNo,v.date,v.partner,v.description,_voucherCategoryLabel(v.category)].some(x=>(x||"").includes(q)));}
+  wrap.innerHTML=`<table><thead><tr><th>전표번호</th><th>유형</th><th>일자</th><th>거래처</th><th>내용</th><th>금액</th><th>상태</th><th>관리</th></tr></thead><tbody>
+  ${rows.length?rows.map(v=>`<tr><td>${h(v.voucherNo||"(임시)")}</td><td>${badge(h(_voucherCategoryLabel(v.category)),"indigo")}</td><td>${h(v.date)}</td><td>${h(v.partner||"-")}</td><td>${h(v.description||"-")}</td><td style="text-align:right">${v.amount.toLocaleString()}</td><td>${STATUS_LABEL[v.status]}</td><td>
     <button class="btn btn-secondary btn-sm" onclick="viewVoucherModal('${v.id}')">보기</button>
     <button class="btn btn-ghost btn-sm" onclick="_showRecordHistory('${h(v.voucherNo||'전표')}',_buildHistoryRows(${JSON.stringify(v).replace(/'/g,"&#39;")},[['createdBy','createdAt','작성'],['postedBy','postedAt','확정'],['voidedBy','voidedAt','취소']]))">이력</button>
     ${v.status==="draft"?` <button class="btn btn-primary btn-sm" onclick="postVoucher('${v.id}')">확정</button> <button class="btn btn-danger btn-sm" onclick="deleteVoucherDraft('${v.id}')">삭제</button>`:""}
     ${v.status==="posted"?` <button class="btn btn-danger btn-sm" onclick="voidVoucher('${v.id}')">취소</button>`:""}
-  </td></tr>`).join(""):`<tr><td colspan="7" class="text-gray" style="text-align:center;padding:20px">등록된 전표가 없습니다.</td></tr>`}
+  </td></tr>`).join(""):`<tr><td colspan="8" class="text-gray" style="text-align:center;padding:20px">등록된 전표가 없습니다.</td></tr>`}
   </tbody></table>`;
 }
 // 전표에는 사용 중(active) 계정과목만 신규 선택 가능 — 최소 조회 캐시(GET .../accounts/picker)
@@ -16187,10 +16199,15 @@ async function openVoucherModal(){
     <div class="flex gap2 wrap mb3"><select class="fc" id="vch-template" style="flex:1;min-width:220px" onchange="applyVoucherTemplate(this.value)"><option value="">템플릿 선택...</option>${_voucherTemplateOptions()}</select><button class="btn btn-secondary btn-sm" onclick="openVoucherTemplateManager()">템플릿 목록</button></div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
       <div class="fg"><label class="fl">전표일자 <span class="req">*</span></label><input class="fc" type="date" id="vch-date" value="${new Date().toISOString().slice(0,10)}"></div>
-      <div class="fg"><label class="fl">거래처</label>${_acctPartnerPickerSelectHtml("vch-partner-id","$('#vch-partner').value=_acctPartnerPickerName(this.value)")}<input class="fc mt2" id="vch-partner" placeholder="거래처명 직접 입력"></div>
+      <div class="fg"><label class="fl">전표 유형</label><select class="fc" id="vch-category" onchange="$('#vch-category-custom-wrap').style.display=this.value==='custom'?'block':'none'">
+        ${Object.entries(VOUCHER_CATEGORY_LABELS).map(([v,l])=>`<option value="${v}">${l}</option>`).join("")}
+        <option value="custom">기타(직접입력)</option>
+      </select>
+      <div id="vch-category-custom-wrap" class="mt2" style="display:none"><input class="fc" id="vch-category-custom" placeholder="예: 감가상각, 결산정리, 오류수정 등"></div></div>
     </div>
+    <div class="fg"><label class="fl">거래처</label>${_acctPartnerPickerSelectHtml("vch-partner-id","$('#vch-partner').value=_acctPartnerPickerName(this.value)")}<input class="fc mt2" id="vch-partner" placeholder="예: ○○상사 (거래처명 직접 입력)"></div>
     <div class="fg"><label class="fl">내용 <span class="req">*</span></label><input class="fc" id="vch-desc" maxlength="200" placeholder="예: 2026년 9월 사무용품 구입"></div>
-    <div class="fg"><label class="fl">분개 라인</label><div id="vch-lines"></div><button class="btn btn-secondary btn-sm mt2" onclick="_voucherLines.push({accountId:_acctActiveAccounts()[0].id,debit:0,credit:0,memo:''});renderVoucherLines()">+ 라인 추가</button></div>
+    <div class="fg"><label class="fl">분개 라인 <span class="fz11 text-gray">(계정과목별로 차변 또는 대변 중 한쪽에만 금액을 입력하세요. 두 합계가 같아야 저장됩니다.)</span></label><div id="vch-lines"></div><button class="btn btn-secondary btn-sm mt2" onclick="_voucherLines.push({accountId:_acctActiveAccounts()[0].id,debit:0,credit:0,memo:''});renderVoucherLines()">+ 라인 추가</button></div>
     <div class="fz12 text-gray" id="vch-balance"></div>
   </div><div class="modal-foot"><button class="btn btn-ghost" onclick="openSaveVoucherTemplateModal()">현재 분개를 템플릿 저장</button><button class="btn btn-secondary" onclick="closeModal()">취소</button><button class="btn btn-primary" onclick="saveVoucher()">저장 (임시)</button></div></div>`,{noBackdropClose:true});
   setTimeout(renderVoucherLines,30);
@@ -16202,7 +16219,7 @@ function renderVoucherLines(){
     <select class="fc" style="flex:2" onchange="_voucherLines[${i}].accountId=this.value;updateVoucherBalance()">${opts.map(a=>`<option value="${a.id}" ${l.accountId===a.id?"selected":""}>${h(a.code)} ${h(a.name)}</option>`).join("")}</select>
     <input class="fc" type="number" placeholder="차변" style="flex:1" value="${l.debit||""}" oninput="_voucherLines[${i}].debit=+this.value||0;_voucherLines[${i}].credit=0;renderVoucherLines();updateVoucherBalance()">
     <input class="fc" type="number" placeholder="대변" style="flex:1" value="${l.credit||""}" oninput="_voucherLines[${i}].credit=+this.value||0;_voucherLines[${i}].debit=0;renderVoucherLines();updateVoucherBalance()">
-    <input class="fc" placeholder="비고" style="flex:1" value="${h(l.memo||"")}" oninput="_voucherLines[${i}].memo=this.value">
+    <input class="fc" placeholder="예: 세금계산서 수취" style="flex:1" value="${h(l.memo||"")}" oninput="_voucherLines[${i}].memo=this.value">
     <button class="btn btn-danger btn-sm" onclick="_voucherLines.splice(${i},1);renderVoucherLines();updateVoucherBalance()">✕</button>
   </div>`).join("");
   updateVoucherBalance();
@@ -16211,7 +16228,7 @@ function updateVoucherBalance(){
   const el=$("#vch-balance");if(!el)return;
   const d=_voucherLines.reduce((s,l)=>s+(Number(l.debit)||0),0),cr=_voucherLines.reduce((s,l)=>s+(Number(l.credit)||0),0);
   const ok=Math.round(d*100)===Math.round(cr*100);
-  el.innerHTML=`차변 합계: ${d.toLocaleString()} / 대변 합계: ${cr.toLocaleString()} — ${ok?`<span style="color:#16a34a">일치</span>`:`<span style="color:#ef4444">불일치</span>`}`;
+  el.innerHTML=`차변 합계: ${d.toLocaleString()} / 대변 합계: ${cr.toLocaleString()} — ${ok?`<span style="color:#16a34a">일치</span>`:`<span style="color:#ef4444">불일치 — 저장하려면 두 합계를 맞춰주세요</span>`}`;
 }
 async function saveVoucher(){
   const date=$("#vch-date")?.value;
@@ -16219,8 +16236,15 @@ async function saveVoucher(){
   const description=$("#vch-desc")?.value.trim();
   if(!description){showToast("전표 내용을 입력하세요. 예: 2026년 9월 사무용품 구입","error");$("#vch-desc")?.focus();return;}
   const debit=_voucherLines.reduce((s,l)=>s+(Number(l.debit)||0),0),credit=_voucherLines.reduce((s,l)=>s+(Number(l.credit)||0),0);
-  if(_voucherLines.length<2||debit<=0||Math.round(debit*100)!==Math.round(credit*100)){showToast("차변·대변 금액을 입력하고 합계를 일치시켜 주세요.","error");return;}
-  const body={date,description,partner:$("#vch-partner")?.value.trim(),partnerId:$("#vch-partner-id")?.value||null,lines:_voucherLines,role:currentUser.role,user:currentUser.name};
+  if(_voucherLines.length<2){showToast("전표에는 분개 라인이 2개 이상 필요합니다.","error");return;}
+  if(_voucherLines.some(l=>(Number(l.debit)||0)<=0&&(Number(l.credit)||0)<=0)){showToast("각 분개 라인에 차변 또는 대변 금액을 입력해주세요.","error");return;}
+  // 서버에도 동일한 검증이 있지만(왕복 없이 즉시 안내하기 위해 클라이언트에서 먼저 확인) —
+  // "무엇이 왜 잘못됐는지"를 구체적으로 짚어주는 알림이어야 사용자가 바로 고칠 수 있다.
+  if(Math.round(debit*100)!==Math.round(credit*100)){showToast(`차변 합계(${debit.toLocaleString()})와 대변 합계(${credit.toLocaleString()})가 일치하지 않습니다. 분개 라인의 금액을 다시 확인해주세요.`,"error");return;}
+  if(debit<=0){showToast("전표 금액은 0보다 커야 합니다. 차변/대변 금액을 입력해주세요.","error");return;}
+  const catSel=$("#vch-category")?.value||"general";
+  const category=catSel==="custom"?($("#vch-category-custom")?.value.trim()||"기타"):catSel;
+  const body={date,category,description,partner:$("#vch-partner")?.value.trim(),partnerId:$("#vch-partner-id")?.value||null,lines:_voucherLines,role:currentUser.role,user:currentUser.name};
   const r=await serverRequest("POST","/api/accounting/vouchers",body);
   if(!r?.ok){showToast(r?.message||"저장에 실패했습니다.","error");return;}
   acctVouchers.unshift(r.voucher);
@@ -16229,6 +16253,7 @@ async function saveVoucher(){
 function viewVoucherModal(id){
   const v=acctVouchers.find(v=>v.id===id);if(!v)return;
   openModal(`<div class="modal-box" style="max-width:640px"><div class="modal-head"><h3>🧾 ${h(v.voucherNo||"(임시)")}</h3></div><div class="modal-body">
+    <div class="fg"><label class="fl">유형</label><div class="fz13">${h(_voucherCategoryLabel(v.category))}</div></div>
     <div class="fg"><label class="fl">일자</label><div class="fz13">${h(v.date)}</div></div>
     <div class="fg"><label class="fl">거래처</label><div class="fz13">${h(v.partner||"-")}</div></div>
     <div class="fg"><label class="fl">내용</label><div class="fz13">${h(v.description||"-")}</div></div>
@@ -16349,9 +16374,9 @@ async function openTaxInvoiceModal(){
       <div class="fg"><label class="fl">구분 <span class="req">*</span></label><select class="fc" id="ti-direction"><option value="sales">매출</option><option value="purchase">매입</option></select></div>
       <div class="fg"><label class="fl">발행일 <span class="req">*</span></label><input class="fc" type="date" id="ti-date" value="${new Date().toISOString().slice(0,10)}"></div>
     </div>
-    <div class="fg"><label class="fl">거래처 사업자번호</label><input class="fc" id="ti-bizno"></div>
-    <div class="fg"><label class="fl">거래처명 <span class="req">*</span></label>${_acctPartnerPickerSelectHtml("ti-partner-id","const p=_acctPartnersPicker.find(p=>p.id===this.value);$('#ti-partner').value=p?p.name:'';$('#ti-bizno').value=p?p.bizNo||'':''")}<input class="fc mt2" id="ti-partner" placeholder="거래처명 직접 입력"></div>
-    <div class="fg"><label class="fl">품목</label><div id="ti-items"></div><button class="btn btn-secondary btn-sm mt2" onclick="_tiItems.push({name:'',qty:1,unitPrice:0});renderTiItems()">+ 품목 추가</button></div>
+    <div class="fg"><label class="fl">거래처 사업자번호</label><input class="fc" id="ti-bizno" placeholder="예: 123-45-67890"></div>
+    <div class="fg"><label class="fl">거래처명 <span class="req">*</span></label>${_acctPartnerPickerSelectHtml("ti-partner-id","const p=_acctPartnersPicker.find(p=>p.id===this.value);$('#ti-partner').value=p?p.name:'';$('#ti-bizno').value=p?p.bizNo||'':''")}<input class="fc mt2" id="ti-partner" placeholder="예: ○○상사 (거래처명 직접 입력)"></div>
+    <div class="fg"><label class="fl">품목 <span class="fz11 text-gray">(수량은 0보다 커야 하고, 단가는 0 이상이어야 합니다.)</span></label><div id="ti-items"></div><button class="btn btn-secondary btn-sm mt2" onclick="_tiItems.push({name:'',qty:1,unitPrice:0});renderTiItems()">+ 품목 추가</button></div>
     <div class="fz12 text-gray" id="ti-totals"></div>
   </div><div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal()">취소</button><button class="btn btn-primary" onclick="saveTaxInvoice()">발행</button></div></div>`);
   setTimeout(renderTiItems,30);
@@ -16374,7 +16399,14 @@ function updateTiTotals(){
 async function saveTaxInvoice(){
   const issueDate=$("#ti-date")?.value,partnerName=$("#ti-partner")?.value.trim();
   if(!issueDate||!partnerName){showToast("발행일과 거래처명을 입력하세요.","error");return;}
-  const body={issueDate,direction:$("#ti-direction")?.value==="purchase"?"purchase":"sales",partnerId:$("#ti-partner-id")?.value||null,partnerName,partnerBizNo:$("#ti-bizno")?.value.trim(),items:_tiItems,role:currentUser.role,user:currentUser.name};
+  // 서버(_validateItemLines)와 동일한 기준을 클라이언트에서 먼저 확인해 왕복 없이 안내한다.
+  for(const it of _tiItems){
+    if(!(Number(it.qty)>0)){showToast(`수량은 0보다 큰 숫자여야 합니다(${it.name||"품목"}). 값을 확인해주세요.`,"error");return;}
+    if(!(Number(it.unitPrice)>=0)){showToast(`단가는 0 이상의 숫자여야 합니다(${it.name||"품목"}). 값을 확인해주세요.`,"error");return;}
+  }
+  const bizNo=$("#ti-bizno")?.value.trim();
+  if(bizNo&&!/^\d{3}-?\d{2}-?\d{5}$/.test(bizNo)){showToast("거래처 사업자등록번호 형식이 올바르지 않습니다. 숫자 10자리(예: 123-45-67890)로 입력해주세요.","error");return;}
+  const body={issueDate,direction:$("#ti-direction")?.value==="purchase"?"purchase":"sales",partnerId:$("#ti-partner-id")?.value||null,partnerName,partnerBizNo:bizNo,items:_tiItems,role:currentUser.role,user:currentUser.name};
   const r=await serverRequest("POST","/api/accounting/tax-invoices",body);
   if(!r?.ok){showToast(r?.message||"발행에 실패했습니다.","error");return;}
   acctTaxInvoices.unshift(r.taxInvoice);
@@ -16394,8 +16426,8 @@ function viewTaxInvoiceModal(id){
 }
 function _dlVouchersCSV(){
   const SL={draft:"임시",posted:"확정",void:"취소"};
-  dlCSV(`전표_${new Date().toISOString().slice(0,10)}.csv`,["전표번호","일자","거래처","내용","금액","상태"],
-    acctVouchers.map(v=>[v.voucherNo||"(임시)",v.date,v.partner||"",v.description||"",v.amount,SL[v.status]||v.status]));
+  dlCSV(`전표_${new Date().toISOString().slice(0,10)}.csv`,["전표번호","유형","일자","거래처","내용","금액","상태"],
+    acctVouchers.map(v=>[v.voucherNo||"(임시)",_voucherCategoryLabel(v.category),v.date,v.partner||"",v.description||"",v.amount,SL[v.status]||v.status]));
 }
 function _dlTaxInvoicesCSV(){
   dlCSV(`세금계산서_${new Date().toISOString().slice(0,10)}.csv`,["구분","승인번호","발행일","거래처","사업자번호","공급가액","세액","합계","상태"],
@@ -20328,7 +20360,7 @@ async function payExpenseClaim(id){
   if(makeVoucher){
     const debitAcc=$("#expay-debit")?.value,creditAcc=$("#expay-credit")?.value;
     if(debitAcc&&creditAcc){
-      const body={date:payDate,description:`경비정산 - ${x.empName} ${x.title}`,partner:x.empName,partnerId:null,
+      const body={date:payDate,category:"expense",description:`경비정산 - ${x.empName} ${x.title}`,partner:x.empName,partnerId:null,
         lines:[{accountId:debitAcc,debit:x.total,credit:0,memo:x.title},{accountId:creditAcc,debit:0,credit:x.total,memo:`경비지급(${method})`}],
         role:currentUser.role,user:currentUser.name};
       const r=await serverRequest("POST","/api/accounting/vouchers",body);
