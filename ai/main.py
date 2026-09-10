@@ -912,6 +912,9 @@ async def chat(req: ChatRequest, request: Request):
     # KB (≥0.15) : 로컬 KB 직접 서빙 — LLM 호출 없음
     # CLAUDE(<0.15): KB에 없는 질문 → Claude 호출
     KB_DIRECT  = 0.15   # 이 점수 이상이면 KB로 직접 답변 (LLM 불필요)
+    # 이 미만은 애매한 매치로 보고 서빙 전 LLM 적합성 판정을 한 번 더 거친다.
+    # 이 이상은 어휘 유사도만으로도 충분히 확실하다고 보고 판정을 생략해 지연시간을 아낀다.
+    KB_JUDGE_UPPER = 0.35
 
     # company 페르소나: 학습된 규정에서만 답변, 외부 LLM 호출 금지
     # 중간 신뢰도(0.10~0.14)도 KB 직접 서빙 (임계값 낮춤)
@@ -940,6 +943,21 @@ async def chat(req: ChatRequest, request: Request):
             and not mem.topic_overlap(search_msg, top_answer):
         print(f"ℹ️ KB 직접 서빙 강등(자동학습 답변 주제 불일치): {search_msg[:50]}")
         kb_direct = False
+    # 어휘 유사도(TF-IDF/BM25)만으로는 "표현은 비슷하지만 실제로는 다른 사안"인
+    # 근접-오답을 걸러낼 수 없다 — 이는 위 topic_overlap도 마찬가지로 못 잡는
+    # 구조적 한계이며, 정적 KB·직접입력처럼 신뢰하는 출처는 그 검사조차 거치지
+    # 않는다. 점수가 애매한 구간에서만 LLM에게 "이 답이 진짜 이 질문에 맞는가"를
+    # 직접 판단시켜 그 빈틈을 메운다(출처 구분 없이 전체 적용).
+    # company 페르소나는 제외 — 0.10~0.15 구간은 rag_ctx가 비어있는 채로
+    # top_answer만으로 직접 서빙되는 특수 경로라, 여기서 강등하면 회사 KB 근거가
+    # 전혀 없는 LLM 답변(company의 "외부 LLM 호출 금지" 원칙 위반)으로 빠질 수 있다.
+    if kb_direct and not company_kb_only and best_score < KB_JUDGE_UPPER:
+        fit = await intent_agent.judge_answer_fit(
+            search_msg, kb.get("top_question", ""), top_answer, persona_id
+        )
+        if not fit:
+            print(f"ℹ️ KB 직접 서빙 강등(LLM 적합성 판정 불일치): {search_msg[:50]}")
+            kb_direct = False
     no_local    = (best_score < KB_CONTEXT) and not has_law_rt and not direct_calc and not bool(search_ctx)
 
     if direct_calc:
