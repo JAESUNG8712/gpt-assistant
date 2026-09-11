@@ -34,6 +34,7 @@ def main():
         assert main.ChatRequest(message="기본값 확인").thinking_mode == "auto"
         assert client.get("/health").json()["retrieval_engine"] == "tfidf-bm25-char3-v1"
         assert client.get("/health").json()["deliberation_engine"] == "always-review-plan-draft-v2"
+        assert client.get("/health").json()["conversation_engine"] == "contextual-followup-v1"
         assert client.get("/health").json()["memory_schema"] == "typed-scopes-v1"
         assert client.get("/health").json()["memory_feedback"] == "attributed-utility-v1"
         index_html = client.get("/").text

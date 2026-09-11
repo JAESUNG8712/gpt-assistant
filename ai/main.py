@@ -717,7 +717,13 @@ async def chat(req: ChatRequest, request: Request):
     # 직전 모호성 안내에 사용자가 `1`, `1번`, `2번째`처럼 답하면 저장된 선택지를
     # 실제 KB 질문으로 치환한다. auto 모드에서도 직전 선택지의 페르소나를 이어받아
     # 숫자만 보고 다른 전문가로 재분류되는 일을 막는다.
-    selection_history = mem.get_history(4, session_id=session_scope)
+    # 선택지 해석은 가장 최근 사용자 행만 보며, 맥락 복원은 여러 후속 질문을 거슬러
+    # 원래 주제를 찾을 수 있도록 최대 12개 메시지를 안전하게 제한해 읽는다.
+    selection_history = mem.get_history(12, session_id=session_scope)
+    conversation_context = [
+        {"role": item.get("role", ""), "content": item.get("content", "")}
+        for item in selection_history
+    ]
     selected_clarification = search_ambiguity.resolve_selection(
         user_msg, selection_history
     )
@@ -729,13 +735,20 @@ async def chat(req: ChatRequest, request: Request):
         if requested_persona == "auto" and selected_clarification.get("persona"):
             requested_persona = selected_clarification["persona"]
 
+    # "그건 왜?", "그 방식으로 코드 짜줘"처럼 현재 문장만으로 대상이 없는 질문은
+    # 검색과 전문가 분류 전에 직전 사용자 주제를 붙여 독립형 질문으로 복원한다.
+    routing_msg = (
+        search_msg if selected_clarification else
+        intent_agent.resolve_followup_query(search_msg, conversation_context)
+    )
+
     # "auto"(통합 검색) 선택 시 질문 내용을 분석해 가장 적합한 전문 페르소나(들)로 자동 라우팅.
     # 여러 도메인에 걸친 질문(예: 인사+주식)이면 build_combined_persona로 종합 답변 생성.
     # persona_id는 KB/대화이력 저장 등 단일 키가 필요한 곳에 쓰는 대표(1순위) 도메인.
     persona_id = requested_persona
     matched_persona_ids = [persona_id]
     if persona_id == "auto":
-        matched_persona_ids = classify_personas(search_msg)
+        matched_persona_ids = classify_personas(routing_msg)
         if allowed_personas is not None:
             # 공유 링크 허용 범위와 교집합만 채택, 없으면 허용 목록의 첫 번째로 폴백
             restricted = [p for p in matched_persona_ids if p in allowed_personas]
@@ -799,12 +812,10 @@ async def chat(req: ChatRequest, request: Request):
     if direct_calc or persona_id == "company" or selected_clarification:
         intent_info = {"ok": False, "intent": "", "refined_query": user_msg, "keywords": [], "answer_guide": ""}
     else:
-        # 최근 대화 몇 마디를 함께 전달 — "그거", "방금 그거"처럼 대명사·생략으로
-        # 이전 대화를 가리키는 후속 질문을 원문 그대로 검색하면 KB에서 아무 것도 못
-        # 찾는 문제를, 검색 질의 자체를 이전 대화 주제로 구체화해 보완한다(단순 키워드
-        # 유사도 검색으로는 불가능한 부분 — 최종 답변 생성용 history와는 별개 용도).
-        recent_turns = mem.get_recent_messages(4, persona=persona_id, session_id=session_scope)
-        intent_info = await intent_agent.analyze(user_msg, persona_id, history=recent_turns)
+        # 동일 세션의 최근 대화를 이용해 생략된 후속 질문을 검색 전에 독립형 질문으로 복원한다.
+        intent_info = await intent_agent.analyze(
+            search_msg, persona_id, history=conversation_context,
+        )
     refined_query = ""
     if intent_info.get("ok"):
         refined_query = _normalize_query(intent_info.get("refined_query", "").strip())
@@ -819,7 +830,9 @@ async def chat(req: ChatRequest, request: Request):
         kb_refined = mem.retrieve_best(
             refined_query, n=6, persona_id=persona_id, session_scope=session_scope
         )
-        if kb_refined["best_score"] >= kb["best_score"]:
+        # 후속 질문은 원문("그건 왜?") 자체의 우연한 어휘 점수보다 복원된 대상·조건이
+        # 중요하므로 맥락 복원 질의를 우선한다. 독립 질문은 기존 점수 게이트를 유지한다.
+        if intent_info.get("uses_context") or kb_refined["best_score"] >= kb["best_score"]:
             kb = kb_refined
             search_msg = refined_query  # 이후 법령/웹 검색도 정제 질의 사용
     rag_ctx     = kb["context"]
@@ -1062,6 +1075,7 @@ async def chat(req: ChatRequest, request: Request):
             "single-self-review-v2" if effective_thinking_mode == "prompt" else
             "plan-draft-review-v1"
         ),
+        "context_continued": bool(intent_info.get("uses_context")),
         "resolved_persona": persona_id,
         "resolved_persona_name": persona.get("name", ""),
         "resolved_persona_icon": persona.get("icon", ""),
@@ -2808,6 +2822,7 @@ def health():
         "db_backend": "Turso (클라우드)" if mem._USE_TURSO else "SQLite (로컬)",
         "retrieval_engine": "tfidf-bm25-char3-v1",
         "deliberation_engine": "always-review-plan-draft-v2",
+        "conversation_engine": "contextual-followup-v1",
         "memory_schema": "typed-scopes-v1",
         "memory_feedback": "attributed-utility-v1",
         "law_api_key_set": bool(os.getenv("LAW_API_KEY")),

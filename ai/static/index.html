@@ -1492,6 +1492,9 @@
         label: status.search_used ? '자동 검색' : '인터넷 검색',
       });
     }
+    if (status.context_continued) {
+      items.push({ command: '', kind: 'context', icon: '🔗', label: '이전 대화 연결' });
+    }
     const verifiedDirect = status.thinking_mode === 'off' && [
       'deterministic-check-v1', 'ambiguity-check-v1', 'source-locked-check-v1',
       'specialist-analysis-v1'
@@ -1536,6 +1539,8 @@
         badge.title = `${item.command} 명령`;
       } else if (item.kind === 'thinking' && status.thinking_reason) {
         badge.title = `검토 수준 선택: ${status.thinking_reason}`;
+      } else if (item.kind === 'context') {
+        badge.title = '직전 대화의 대상과 조건을 이어받아 이해했습니다.';
       }
       row.appendChild(badge);
     });
