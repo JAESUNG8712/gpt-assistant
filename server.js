@@ -3494,7 +3494,15 @@ function _planEmployeeLoginIdNormalization(employeeRows) {
   // 재입사 처리할 때 이미 정규화된 현직자 ID와 충돌할 수 있고, "전체 직원"이라는
   // 관리자 화면의 영향 범위와도 어긋난다.
   const registered = (employeeRows || []).filter(Boolean);
-  const targets = registered.filter(e => /^u/i.test(String(e.loginId || "")) && String(e.empNo || "").trim());
+  // "u/U로 시작하면 전부 사번으로 교체"가 아니라 "u/U 접두어를 뗀 나머지가 정확히
+  // 사번과 같을 때만"으로 좁힌다 — 안 그러면 ujimin(사번 20260012)처럼 u로 시작할
+  // 뿐 사번과 무관한 로그인ID(로마자 이름, upload-bot 같은 서비스 계정 등)까지
+  // "U 접두어 제거"라는 버튼 설명과 다르게 전혀 다른 값으로 통째로 바뀌어버렸다.
+  const targets = registered.filter(e => {
+    const m = /^u(.+)$/i.exec(String(e.loginId || ""));
+    const empNo = String(e.empNo || "").trim();
+    return !!(m && empNo && m[1] === empNo);
+  });
   const targetIds = new Set(targets.map(e => String(e.id)));
   const desiredOwners = new Map();
   const targetDesiredIds = new Set();
@@ -10458,6 +10466,11 @@ app.post("/api/recruit/candidates/:id/notice", async (req, res) => {
       if (!candidate) return res.status(404).json({ ok: false, message: "지원자를 찾을 수 없습니다." });
       if (!(await _recruitCanViewCandidate(candidate, userId, role, companyId))) return res.status(403).json({ ok: false, message: "발급 권한이 없습니다." });
       candidate.noticeHistory = [...(candidate.noticeHistory || []), noticeEntry].slice(-20);
+      // 다른 모든 지원자 변경 지점(상태변경·수정 등)과 동일하게 updatedAt을 갱신해,
+      // 결과통보 발급도 _recruitAssertFresh() 낙관적 동시성 검사의 대상이 되도록 한다
+      // (그러지 않으면 결과통보가 그 지원자의 열려있는 다른 편집 화면의 "최신 상태"
+      // 판단 밖에 남아, 발급 이력이 향후 리팩터에서 조용히 유실될 위험이 있다).
+      candidate.updatedAt = noticeEntry.issuedAt;
       _saveFileRecruit();
       return res.json({ ok: true, candidate });
     }
@@ -10466,6 +10479,7 @@ app.post("/api/recruit/candidates/:id/notice", async (req, res) => {
       candidate = await _pgLockedUpdate("recruit_candidates", id, async (c) => {
         if (!(await _recruitCanViewCandidate(c, userId, role, companyId))) throw new _RecruitRouteError(403, "발급 권한이 없습니다.");
         c.noticeHistory = [...(c.noticeHistory || []), noticeEntry].slice(-20);
+        c.updatedAt = noticeEntry.issuedAt;
         return c;
       }, companyId);
     } catch (e) {
