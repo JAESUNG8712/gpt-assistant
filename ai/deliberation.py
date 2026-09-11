@@ -20,10 +20,6 @@ _MULTI_PART = re.compile(
     r"(?:그리고|동시에|각각|반면|하지만|또한|첫째|둘째|1\s*[.)]|2\s*[.)]|\bversus\b|\bvs\.?\b)",
     re.IGNORECASE,
 )
-_SIMPLE = re.compile(
-    r"^(?:안녕|고마워|감사|잘\s*지내|도움말|뭐해|누구야)[!.?\s]*$",
-    re.IGNORECASE,
-)
 
 
 def choose_mode(
@@ -52,8 +48,6 @@ def choose_mode(
         return {"mode": mode, "automatic": False, "score": 0, "reason": reason}
 
     value = (text or "").strip()
-    if not value or _SIMPLE.fullmatch(value):
-        return {"mode": "off", "automatic": True, "score": 0, "reason": "간단한 대화"}
 
     score = 0
     reasons: list[str] = []
@@ -82,7 +76,10 @@ def choose_mode(
         score = max(score, 2)
         reasons.append("전문 분석 분야")
 
-    mode = "deep" if score >= 4 else "prompt" if score >= 2 else "off"
+    # 자동 모드에서는 모든 일반 질문이 최소 1회의 자체 검토를 거친다.
+    # 계산·기억 명령·사내 원문처럼 생성형 판단이 불필요한 경로만 main에서
+    # 별도의 결정형 검증 엔진으로 처리한다.
+    mode = "deep" if score >= 4 else "prompt"
     if is_shared and _MODE_RANK[mode] > _MODE_RANK["prompt"]:
         mode = "prompt"
         reasons.append("공유 대화 제한")
@@ -90,10 +87,20 @@ def choose_mode(
         "mode": mode,
         "automatic": True,
         "score": score,
-        "reason": " · ".join(dict.fromkeys(reasons)) or "즉답 가능",
+        "reason": " · ".join(dict.fromkeys(reasons)) or "전 질문 기본 자체 검토",
     }
 
 
 def direct_response_decision() -> dict:
-    """계산·명령처럼 이미 결정적인 응답 경로는 추가 LLM 검토를 생략한다."""
-    return {"mode": "off", "automatic": True, "score": 0, "reason": "직접 처리 가능한 요청"}
+    """계산·명령은 생성형 호출 대신 전용 결정형 엔진으로 결과를 검증한다."""
+    return {"mode": "off", "automatic": True, "score": 0, "reason": "결정형 엔진 자체 검증"}
+
+
+def ambiguity_response_decision() -> dict:
+    """모호한 질문은 임의 답변하지 않고 선택지를 만드는 자체 검증 결과다."""
+    return {"mode": "off", "automatic": True, "score": 0, "reason": "질문 모호성 자체 검증"}
+
+
+def specialist_response_decision() -> dict:
+    """주식 수집·분석 같은 전용 파이프라인은 그 자체가 다단계 판단 엔진이다."""
+    return {"mode": "off", "automatic": True, "score": 0, "reason": "전문 분석 엔진 자체 검증"}

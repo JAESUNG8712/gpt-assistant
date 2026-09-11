@@ -33,6 +33,7 @@ def main():
         client = TestClient(main.app)
         assert main.ChatRequest(message="기본값 확인").thinking_mode == "auto"
         assert client.get("/health").json()["retrieval_engine"] == "tfidf-bm25-char3-v1"
+        assert client.get("/health").json()["deliberation_engine"] == "always-review-plan-draft-v2"
         assert client.get("/health").json()["memory_schema"] == "typed-scopes-v1"
         assert client.get("/health").json()["memory_feedback"] == "attributed-utility-v1"
         index_html = client.get("/").text
@@ -76,6 +77,7 @@ def main():
         assert remembered.status_code == 200 and "기억했습니다" in remembered.text
         remembered_status = json.loads(remembered.headers["X-Command-Status"])
         assert remembered_status["memory_action"] == "save"
+        assert remembered_status["thinking_engine"] == "deterministic-check-v1"
         assert remembered_status["commands"][0]["command"] == "/기억"
         listed = client.post(
             "/chat", headers=personal_headers,
@@ -385,6 +387,7 @@ def main():
             assert "여러 가지로 해석" in ambiguous_response.text
             ambiguous_status = json.loads(ambiguous_response.headers["X-Command-Status"])
             assert ambiguous_status["clarification_required"] is True
+            assert ambiguous_status["thinking_engine"] == "ambiguity-check-v1"
 
             selected_response = client.post(
                 "/chat",
@@ -406,6 +409,8 @@ def main():
             assert "해외여행 필수 앱" in specific_response.text
             specific_status = json.loads(specific_response.headers["X-Command-Status"])
             assert specific_status["clarification_required"] is False
+            assert specific_status["thinking_mode"] == "prompt"
+            assert specific_status["thinking_engine"] == "single-self-review-v2"
             assert main.mem.list_memory_candidates("pending") == []
         finally:
             main.intent_agent.analyze = original_ambiguity_intent

@@ -141,7 +141,8 @@ def _integration_tests():
 
             demoted = client.post(
                 "/chat", headers=headers,
-                json={"message": "적합성판정테스트질문A", "persona": "hr", "session_id": "fit-a"},
+                json={"message": "적합성판정테스트질문A", "persona": "hr",
+                      "thinking_mode": "off", "session_id": "fit-a"},
             )
             assert demoted.status_code == 200
             assert ANSWER not in demoted.text
@@ -160,7 +161,8 @@ def _integration_tests():
 
             served = client.post(
                 "/chat", headers=headers,
-                json={"message": "적합성판정테스트질문B", "persona": "hr", "session_id": "fit-b"},
+                json={"message": "적합성판정테스트질문B", "persona": "hr",
+                      "thinking_mode": "off", "session_id": "fit-b"},
             )
             assert served.status_code == 200
             assert ANSWER in served.text
@@ -190,7 +192,8 @@ def _integration_tests():
 
             confident = client.post(
                 "/chat", headers=headers,
-                json={"message": "적합성판정테스트질문C", "persona": "hr", "session_id": "fit-c"},
+                json={"message": "적합성판정테스트질문C", "persona": "hr",
+                      "thinking_mode": "off", "session_id": "fit-c"},
             )
             assert confident.status_code == 200
             assert ANSWER in confident.text

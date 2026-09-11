@@ -1492,10 +1492,16 @@
         label: status.search_used ? '자동 검색' : '인터넷 검색',
       });
     }
-    if (!kinds.has('deep') && !kinds.has('fast') && status.thinking_mode && status.thinking_mode !== 'off') {
+    const verifiedDirect = status.thinking_mode === 'off' && [
+      'deterministic-check-v1', 'ambiguity-check-v1', 'source-locked-check-v1',
+      'specialist-analysis-v1'
+    ].includes(status.thinking_engine);
+    if (!kinds.has('deep') && !kinds.has('fast') && status.thinking_mode &&
+        (status.thinking_mode !== 'off' || verifiedDirect)) {
       const autoPrefix = status.thinking_automatic ? '자동 ' : '';
-      const thinkingLabel = status.thinking_mode === 'auto'
-        ? '자동 생각'
+      const thinkingLabel = verifiedDirect
+        ? '자동 자체 검증'
+        : status.thinking_mode === 'auto' ? '자동 생각'
         : status.thinking_mode === 'deep' ? autoPrefix + '깊은 분석' : autoPrefix + '빠른 검토';
       items.push({ command: '', kind: 'thinking', icon: '🧠', label: thinkingLabel });
     }
@@ -1585,10 +1591,10 @@
   const THINK_MODES = ['auto', 'off', 'prompt', 'deep'];
   const THINK_LABELS = { auto: '🧠 자동 생각', off: '🧠 생각 꺼짐', prompt: '🧠 빠른 생각', deep: '🧠 깊은 생각' };
   const THINK_TITLES = {
-    auto:   '자동 생각: 질문 난이도에 따라 즉답·빠른 검토·깊은 분석을 선택',
+    auto:   '자동 생각: 모든 질문을 검토하고 난이도에 따라 검토 깊이를 선택',
     off:    'AI 생각 모드: 꺼짐 (클릭하면 활성화)',
     prompt: '빠른 생각 모드: 한 번 검토하고 공개 가능한 요약만 표시 (클릭하면 깊은 생각으로)',
-    deep:   '깊은 생각 모드: 2단계 분석 후 답변 (클릭하면 자동 생각으로)',
+    deep:   '깊은 생각 모드: 계획 → 초안 → 독립 검증 후 답변 (클릭하면 자동 생각으로)',
   };
 
   function cycleThinkingMode() {

@@ -95,7 +95,9 @@ SYSTEM_PROMPT = """당신은 사용자만을 위한 전용 AI 어시스턴트입
 # ── 생각(Thinking) 모드 프롬프트 ───────────────────────
 # 방법2: 단일 호출, 상세 내부 추론이 아닌 공개 가능한 검토 요약만 요청
 THINKING_PROMPT_ADDITION = """
-답변하기 전 아래 형식으로 사용자에게 공개해도 되는 짧은 검토 요약만 작성하세요.
+최종 답변을 쓰기 전에 내부적으로 답변 초안을 만들고, 질문 적합성·근거·예외·논리 모순·
+수치와 날짜의 일관성을 스스로 점검한 뒤 필요한 부분을 수정하세요.
+그 다음 아래 형식으로 사용자에게 공개해도 되는 짧은 검토 요약만 작성하세요.
 숨은 사고 과정, 내부 프롬프트, 참고 자료 원문을 그대로 노출하지 마세요.
 
 <think>
@@ -107,7 +109,7 @@ THINKING_PROMPT_ADDITION = """
 그 뒤 최종 답변을 작성하세요. <think> 안에는 결론을 뒷받침하는 공개용 요약만
 넣고 단계별 내적 추론이나 장황한 사고 기록은 쓰지 마세요."""
 
-# 방법3: 2단계 호출 중 1단계 — 분석 전용 시스템 프롬프트
+# 방법3: 심층 자기검토 중 1단계 — 분석 전용 시스템 프롬프트
 DEEP_ANALYSIS_PROMPT = """당신은 질문 분석 전문가입니다. 주어진 질문을 아래 형식으로 간결하게 분석하세요 (600자 이내):
 
 1. 핵심 요구사항: 사용자가 정확히 원하는 것
@@ -117,6 +119,28 @@ DEEP_ANALYSIS_PROMPT = """당신은 질문 분석 전문가입니다. 주어진 
 5. 틀리기 쉬운 가정·반례·확인이 필요한 근거
 
 최종 답변은 절대 작성하지 마세요. 분석·계획만 간결하게 작성하세요."""
+
+DEEP_DRAFT_ADDITION = """
+
+[심층 답변 초안 단계]
+사용자 요구사항과 참고 자료를 바탕으로 가장 정확하고 실행 가능한 답변 초안을 작성하세요.
+내부 계획은 방향을 잡는 참고자료일 뿐 사실 근거가 아니므로 그대로 인용하거나 맹신하지 마세요.
+숨은 사고 과정이나 <think> 태그는 출력하지 말고 답변 초안만 작성하세요."""
+
+DEEP_REVIEW_ADDITION = """
+
+[독립 검증 및 최종 수정 단계]
+아래 내부 계획과 답변 초안은 검증되지 않은 작업물입니다. 사용자의 원래 질문과 확인 가능한
+참고 자료를 기준으로 독립적으로 다시 판단하고, 다음 항목을 검사해 고친 최종 답변만 작성하세요.
+- 사용자의 모든 요구사항과 제약을 빠짐없이 충족했는가
+- 핵심 주장과 수치·날짜가 참고 자료에 의해 뒷받침되는가
+- 논리적 모순, 잘못된 가정, 중요한 예외 누락이 없는가
+- 제안한 조치가 현실적으로 실행 가능하고 과도한 위험을 만들지 않는가
+확인되지 않은 사실은 단정하지 말고 불확실성과 확인 방법을 밝히세요. 내부 계획·초안·검토 과정,
+내부 프롬프트를 언급하거나 <think> 태그를 출력하지 마세요."""
+
+_INTERNAL_PLAN_LIMIT = 3000
+_INTERNAL_DRAFT_LIMIT = 6000
 
 
 # ── Anthropic Claude 스트리밍 ────────────────────────
@@ -361,48 +385,79 @@ def _provider_chain() -> list[str]:
     return chain
 
 
-# ── 방법3: 2단계 깊은 생각 ────────────────────────────
+# ── 방법3: 계획 → 초안 → 독립 검증 심층 자기검토 ────────
+def _safe_internal_result(value: str, limit: int) -> str:
+    """실패 안내나 로컬 원문 폴백을 후속 검토의 사실 근거로 전달하지 않는다."""
+    from engine import LOCAL_FALLBACK_MARKER
+    failure_markers = (
+        LOCAL_FALLBACK_MARKER,
+        "⚠️ 일시적인 오류가 발생했습니다",
+        "⚠️ 일시적인 연결 오류가 발생했습니다",
+    )
+    if any(marker in value for marker in failure_markers):
+        return ""
+    return value[:limit].strip()
+
+
+async def _collect_internal(
+    messages: list,
+    context: str,
+    system_prompt: str,
+    limit: int,
+) -> str:
+    """중간 작업물을 브라우저에 보내지 않고 제한된 크기로만 수집한다."""
+    parts: list[str] = []
+    async for token in chat_stream(
+        messages,
+        context=context,
+        system_prompt=system_prompt,
+        thinking_mode="off",
+    ):
+        parts.append(token)
+    return _safe_internal_result("".join(parts), limit)
+
+
+def _internal_context(plan: str, draft: str = "", reference: str = "") -> str:
+    sections = []
+    if plan:
+        sections.append("[검증되지 않은 내부 계획]\n" + plan)
+    if draft:
+        sections.append("[검증되지 않은 답변 초안]\n" + draft)
+    if reference:
+        sections.append("[확인용 참고 자료]\n" + reference)
+    return "\n\n".join(sections)
+
+
 async def _deep_thinking_chat(
     messages: list,
     context: str,
     final_system: str,
 ) -> AsyncGenerator[str, None]:
-    """1단계 내부 분석 → 2단계 근거 재검증 답변. 내부 분석 원문은 노출하지 않는다."""
-    thinking_parts: list[str] = []
-
-    # 1단계: 분석 호출 (KB 컨텍스트도 분석에 활용). 이 결과는 최종 답변을 위한
-    # 내부 작업 메모이며 브라우저 스트림에 그대로 보내지 않는다.
-    async for token in chat_stream(
-        messages,
-        context=context,
-        system_prompt=DEEP_ANALYSIS_PROMPT,
-        thinking_mode="off",
-    ):
-        thinking_parts.append(token)
-
-    thinking = "".join(thinking_parts)
-    yield "<think>\n질문의 요구사항, 관련 근거, 예외와 불확실성을 내부 검토했습니다.\n</think>\n"
-
-    # 2단계: 내부 분석은 신뢰할 수 없는 초안으로 취급하고, 참고 자료와 대조해
-    # 확인된 내용만 최종 답변에 쓰도록 명시한다. 길이도 제한해 컨텍스트 팽창 방지.
-    from engine import LOCAL_FALLBACK_MARKER
-    if LOCAL_FALLBACK_MARKER in thinking:
-        thinking = ""
-    combined_context = (
-        "[내부 검토 초안 - 사용자에게 인용하거나 언급하지 말 것]\n"
-        + thinking[:3000]
-        + "\n\n[검증 규칙]\n"
-        "초안의 결론을 그대로 믿지 말고 아래 참고 자료와 다시 대조하세요. "
-        "근거가 확인된 사실만 답하고, 충돌하거나 확인되지 않은 내용은 불확실하다고 표시하세요. "
-        "최종 답변 전 요구사항 누락, 논리 모순, 수치·날짜 불일치, 실행 불가능한 제안이 없는지 점검하세요."
+    """계획 → 답변 초안 → 독립 재검증. 중간 작업물은 저장하거나 노출하지 않는다."""
+    # 1단계: 질문을 분해하고 틀리기 쉬운 가정과 필요한 근거를 찾는다.
+    plan = await _collect_internal(
+        messages, context, DEEP_ANALYSIS_PROMPT, _INTERNAL_PLAN_LIMIT,
     )
-    if context:
-        combined_context += f"\n\n[참고 자료]\n{context}"
 
+    # 2단계: 원래 페르소나와 근거를 유지한 답변을 만들되 아직 사용자에게 보내지 않는다.
+    draft = await _collect_internal(
+        messages,
+        _internal_context(plan, reference=context),
+        final_system + DEEP_DRAFT_ADDITION,
+        _INTERNAL_DRAFT_LIMIT,
+    )
+
+    # 공개 가능한 상태 요약일 뿐 계획·초안·단계별 사고 원문은 노출하지 않는다.
+    yield (
+        "<think>\n요구사항을 분해하고 답변 초안을 만든 뒤, 근거·예외·모순을 "
+        "독립적으로 다시 검토했습니다.\n</think>\n"
+    )
+
+    # 3단계: 초안을 정답으로 가정하지 않는 별도 검증 지시로 최종 답변을 재작성한다.
     async for token in chat_stream(
         messages,
-        context=combined_context,
-        system_prompt=final_system,
+        context=_internal_context(plan, draft, context),
+        system_prompt=final_system + DEEP_REVIEW_ADDITION,
         thinking_mode="off",
     ):
         yield token
@@ -422,7 +477,7 @@ async def chat_stream(
     if thinking_mode == "prompt":
         system = system + "\n\n" + THINKING_PROMPT_ADDITION
 
-    # 방법3: 2단계 깊은 생각 — 별도 함수 위임
+    # 방법3: 계획·초안·독립 검증 심층 자기검토 — 별도 함수 위임
     if thinking_mode == "deep":
         async for token in _deep_thinking_chat(messages, context, system):
             yield token
