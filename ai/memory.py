@@ -790,9 +790,18 @@ _TOPIC_STOP = {
 
 def topic_overlap(user_q: str, target_text: str) -> bool:
     """질문의 핵심 단어(일반어 제외)가 대상 텍스트에 하나라도 등장하는지.
-    False면 질문과 대상이 서로 다른 주제일 가능성이 높음."""
-    import re as _re
-    words = set(_re.findall(r'[가-힣]{2,}', user_q)) - _TOPIC_STOP
+    False면 질문과 대상이 서로 다른 주제일 가능성이 높음.
+
+    단어 추출은 정규식으로 공백 단위 한글 어절을 그대로 뽑는 대신
+    engine._tok()의 조사·어미 정규화를 재사용한다 — 기존 정규식 방식은
+    "퇴직금은"·"계산하나요"처럼 조사·활용형이 붙은 원문 그대로를 비교 대상으로
+    삼아, 대상 텍스트에 흔히 있는 "퇴직금"·"계산" 같은 조사 없는 어근과
+    글자 그대로 일치하지 않으면 명백히 같은 주제인 질문조차 계속
+    "주제 불일치"로 오판정하는 잠재 버그가 있었다(2026-07-08 도입 이후
+    계속 존재 — 실제 KB로 라이브 검증하다가 발견). engine._tok()은 어미를
+    제거한 어근과 원형을 함께 반환해 이 문제를 해결한다."""
+    from engine import _tok
+    words = {w for w in _tok(user_q) if len(w) >= 2} - _TOPIC_STOP
     # 질문이 모두 일반어라 필터 후 빈 경우 → 통과 (판단 불가)
     if not words:
         return True

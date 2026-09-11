@@ -474,18 +474,28 @@ def search_validation(results: list[dict]) -> dict:
 
 
 def web_search(query: str, max_results: int = 5) -> list[dict]:
+    """DuckDuckGo 웹검색. 네트워크 차단·DDG 자체 오류 등으로 검색 자체가 실패해도
+    예외를 그대로 올리지 않고 빈 결과로 처리한다 — 이 함수는 main.py에서
+    run_in_executor로 호출되는데, 여기서 예외가 나면 /chat 요청 전체가 500으로
+    죽어(LLM 유무와 무관) "웹검색이 안 되면 최소한 KB 기반으로라도 답한다"는
+    자체 판단 원칙이 무색해진다. law_search.search_law_ddg()가 이미 쓰던 것과
+    동일한 방어 패턴."""
     candidate_limit = max(10, max_results * 3)
     raw_results = []
-    with DDGS() as ddgs:
-        raw_results.extend(ddgs.text(query, max_results=candidate_limit))
-        topic, policy = _topic_policy(query)
-        initial = _prepare_results(query, raw_results, candidate_limit)
-        if topic != "general" and not any(result.get("trust_tier") == 3 for result in initial):
-            primary_domain = policy["official"][0]
-            try:
-                raw_results.extend(ddgs.text(f"{query} site:{primary_domain}", max_results=max_results))
-            except Exception:
-                pass
+    try:
+        with DDGS() as ddgs:
+            raw_results.extend(ddgs.text(query, max_results=candidate_limit))
+            topic, policy = _topic_policy(query)
+            initial = _prepare_results(query, raw_results, candidate_limit)
+            if topic != "general" and not any(result.get("trust_tier") == 3 for result in initial):
+                primary_domain = policy["official"][0]
+                try:
+                    raw_results.extend(ddgs.text(f"{query} site:{primary_domain}", max_results=max_results))
+                except Exception:
+                    pass
+    except Exception as e:
+        print(f"⚠️ 웹검색 오류(빈 결과로 계속 진행): {e}")
+        return []
     return _prepare_results(query, raw_results, max_results)
 
 def search_and_learn(query: str, max_results: int = 5, persona_id: str = "hr") -> list[dict]:

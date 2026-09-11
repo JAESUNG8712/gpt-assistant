@@ -2,6 +2,7 @@
 import asyncio
 
 import intent_agent
+import llm
 from personas import classify_personas
 
 
@@ -45,8 +46,14 @@ def main():
             '"keywords":["제주도"],"answer_guide":"일정 제안","uses_context":false}'
         )
 
+    original_has_provider = llm.has_llm_provider
     try:
         intent_agent.INTENT_ENABLED = True
+        # 아래 세 시나리오는 "LLM이 있고 이렇게 응답(또는 실패)한다"를 검증하려는
+        # 것이므로, 실행 환경의 실제 키 유무와 무관하게 LLM 경로를 타도록 고정한다
+        # (그렇지 않으면 LLM 자체가 없다고 판단해 이 모킹을 호출하지 않고 곧장
+        # 결정형 폴백으로 반환할 수 있음).
+        llm.has_llm_provider = lambda: True
         intent_agent._llm_once = context_result
         info = asyncio.run(intent_agent.analyze("그 코드를 함수로 바꿔줘", "dev", history))
         assert info["ok"] and info["uses_context"]
@@ -72,6 +79,7 @@ def main():
     finally:
         intent_agent._llm_once = original_llm_once
         intent_agent.INTENT_ENABLED = original_enabled
+        llm.has_llm_provider = original_has_provider
 
     print("conversation context tests: PASS")
 

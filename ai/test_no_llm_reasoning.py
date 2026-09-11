@@ -14,11 +14,26 @@
 - `mem.topic_overlap` 기반 로컬 적합성 판정 휴리스틱은 실제 KB로 검증한 결과
   "전세 계약 갱신 거절"이 "계약"·"갱신" 같은 흔한 단어만 겹친다는 이유로
   기간제 근로자 문서를 fit=True로 오판정 — 단어 겹침만으로는 이 함수가 막으려던
-  근접-오답을 구분할 수 없음이 실측으로 확인되어, LLM이 없으면 곧장 False로
-  강등하고 개선된 다중 후보 추출에 판단을 맡기도록 변경.
+  근접-오답을 구분할 수 없음이 실측으로 확인되어, 한때 LLM이 없으면 곧장
+  False로 전량 강등하도록 단순화했다.
 - 1위 KB 문서가 압도적으로 확실한데도 관련 없는 하위 후보(예: 전혀 다른 여행지
   가이드)의 문장이 섞여 들어와 내용이 희석되던 문제 → 1위 대비 상대 점수 60%
   미만인 후보는 종합 대상에서 제외.
+
+이어서 위 "전량 강등" 단순화 자체도 실측 결과 과했음을 발견해 재조정했다:
+"퇴직금은 어떻게 계산하나요"처럼 명백히 맞는 고빈도 매치까지 전부 강등해
+잘 정리된 KB 원문을 불필요하게 문장 단위로 쪼개는 대가가, "전세" 같은
+드문 근접-오답을 놓치는 대가보다 컸다. 게다가 이 과정에서 `memory.
+topic_overlap()` 자체의 별도 버그도 발견했다 — 공백 단위 정규식으로 어절을
+그대로 추출해 "퇴직금은"·"계산하나요"처럼 조사·활용형이 붙은 원문을
+비교하는 바람에, 대상 텍스트의 "퇴직금"·"계산" 같은 조사 없는 어근과
+글자 그대로 일치하지 않아 명백히 맞는 매치조차 주제 불일치로 오판정하고
+있었다(2026-07-08 도입 이후 계속 존재). `engine._tok()`(어미 제거 후 어근+원형
+함께 보존)로 교체해 이 오판정을 해결 — 이 함수는 main.py의 자동학습/대화
+출처 KB 직접서빙 강등 게이트에도 쓰이므로 LLM 유무와 무관하게 이득이다.
+수정된 topic_overlap을 다시 로컬 적합성 판정에 사용하도록 되돌리되, "전세"류
+근접-오답까지 잡지는 못한다는 한계는 그대로 남겨두고 문서화했다(진짜 의미
+이해가 필요한 영역).
 """
 import asyncio
 import os
@@ -126,26 +141,67 @@ def _test_split_sentences_handles_markdown():
         "## 연차 유급휴가 계산\n\n"
         "**1년 미만 근무자**\n"
         "- 매월 개근 시 1일 발생\n\n"
+        "1. 신청서 제출\n"
+        "2. 팀장 승인\n\n"
         "| 근속연수 | 연차일수 |\n"
         "|--------|--------|\n"
         "| 1년 | 15일 |\n"
         "| 3년 | 16일 |\n"
     )
     units = e._split_sentences(text)
-    plain = [u for u, _ in units]
-    # 표 구분선(|---|---|)은 장식이므로 결과에 없어야 하고, 각 표 행·목록 항목은
-    # 서로 뭉치지 않고 독립된 단위로 분리돼야 한다(예전엔 전체가 문장부호 없는
-    # 하나의 거대한 "문장"으로 합쳐져 결과가 표 전체를 통째로 삼키거나, 반대로
-    # 이미 있던 "- " 표시가 결과에 다시 붙어 "- - " 처럼 중복되는 문제가 있었음).
-    assert not any(set(u.strip('-| :')) == set() for u in plain)  # 장식만 있는 줄 없음
+    # 표(헤더+구분선+데이터행)는 행 단위로 쪼개지지 않고 통째로 한 단위로
+    # 유지돼야 한다 — 행별로 쪼개면 "근속연수" 헤더와 "15일" 값이 서로 다른
+    # 조각으로 떨어져 어느 열이 무엇을 뜻하는지 알 수 없게 된다(예전엔 반대로
+    # 표 전체가 문장부호 없는 하나의 거대한 "문장"으로 뭉치는 문제도 있었음).
+    tables = [u for u in units if u["is_table"]]
+    assert len(tables) == 1
+    assert "근속연수" in tables[0]["text"] and "15일" in tables[0]["text"]
+    assert "|---" not in tables[0]["text"].split("\n")[0]  # 헤더행 자체엔 구분선 없음
+    assert "|--------|" in tables[0]["text"]  # 구분선은 표 블록 안에 그대로 보존
+
+    plain = [u["text"] for u in units if not u["is_table"] and not u["is_heading"]]
     assert "매월 개근 시 1일 발생" in plain
-    assert "1년 | 15일" in plain
-    assert "3년 | 16일" in plain
-    assert not any(u.startswith('- ') for u in plain)  # 앞머리 "- " 중복 없음
-    headings = [u for u, is_h in units if is_h]
+    assert not any(p.startswith('- ') for p in plain)  # 마커는 별도 필드로 분리, 본문에 중복 없음
+
+    headings = [u["text"] for u in units if u["is_heading"]]
     assert "연차 유급휴가 계산" in headings
 
+    # 목록 스타일(글머리표 "-"/번호 "1.")이 marker에 원래 형태로 보존된다.
+    bullet_unit = next(u for u in units if u["text"] == "매월 개근 시 1일 발생")
+    assert bullet_unit["marker"] == "- "
+    step1 = next(u for u in units if u["text"] == "신청서 제출")
+    assert step1["marker"] == "1. "
+    step2 = next(u for u in units if u["text"] == "팀장 승인")
+    assert step2["marker"] == "2. "
+
+    # _render_unit()으로 되돌리면 표는 표 그대로, 목록은 원래 번호·글머리표 그대로 복원된다.
+    assert e._render_unit(tables[0]) == tables[0]["text"]
+    assert e._render_unit(bullet_unit) == "- 매월 개근 시 1일 발생"
+    assert e._render_unit(step1) == "1. 신청서 제출"
+
     print("markdown sentence-splitting tests: PASS")
+
+
+def _test_local_synthesize_preserves_table_structure():
+    import engine as e
+
+    results = [
+        ("연차 발생 기준", (
+            "## 연차 발생 기준\n\n"
+            "| 근속 기간 | 연차 일수 |\n"
+            "|---------|---------|\n"
+            "| 1년 미만 | 월 1일 |\n"
+            "| 1년 이상 | 15일 |\n"
+        ), 0.3, {}),
+    ]
+    out = e._local_synthesize("연차 발생 기준이 궁금해", results)
+    # 표가 행 단위로 흩어지지 않고 마크다운 표 형태 그대로 남아있어야 한다
+    # (파이프 구분자·헤더·구분선·데이터행이 모두 한 블록으로 이어져 있는지 확인).
+    assert "| 근속 기간 | 연차 일수 |" in out
+    assert "|---------|---------|" in out
+    assert "| 1년 이상 | 15일 |" in out
+
+    print("local synthesize table preservation tests: PASS")
 
 
 def _test_compose_with_context_extracts_instead_of_dumping():
@@ -175,7 +231,7 @@ def _test_compose_with_context_extracts_instead_of_dumping():
     print("compose_with_context extraction tests: PASS")
 
 
-def _test_judge_answer_fit_demotes_without_llm():
+def _test_judge_answer_fit_without_llm():
     import asyncio
     import intent_agent
     import llm
@@ -191,23 +247,41 @@ def _test_judge_answer_fit_demotes_without_llm():
     llm.has_llm_provider = lambda: False
     llm.chat_stream = should_not_be_called
     try:
-        # 실측 결과 단어-겹침 휴리스틱(mem.topic_overlap)은 "전세 계약 갱신 거절"이
-        # "계약"·"갱신" 같은 흔한 단어만 겹친다는 이유로 기간제 근로자 문서를
-        # fit=True로 잘못 판정했다 — 이제는 LLM 없이는 시도조차 하지 않고 곧장
-        # False(강등)로 처리해, 강등 후 engine의 다중 후보 추출이 대신 판단하게
-        # 한다(이 함수의 기존 "판정 실패 시 보수적으로 False" 원칙과 동일한 결과).
-        result = asyncio.run(intent_agent.judge_answer_fit(
+        # LLM이 없으면 호출을 시도조차 하지 않고 memory.topic_overlap 기반
+        # 로컬 휴리스틱으로 즉시 판정한다. 처음엔 "LLM 없이는 항상 False(전량
+        # 강등)"로 단순화했으나, 이렇게 하면 "퇴직금은 어떻게 계산하나요"처럼
+        # 명백히 맞는 고빈도 매치까지 전부 강등되어 잘 정리된 KB 원문이
+        # 불필요하게 문장 단위로 쪼개지는 것을 실측으로 확인했다 — 명백히 맞는
+        # 매치는 그대로 fit=True로 두고, 명백히 무관한 매치만 걸러내는 것이
+        # 더 나은 절충안이다.
+        related = asyncio.run(intent_agent.judge_answer_fit(
+            "퇴직금은 어떻게 계산하나요", "퇴직금 계산 방법",
+            "퇴직금 계산 방법: 퇴직금 = 평균임금 × 30일 × (재직일수 ÷ 365)", "hr",
+        ))
+        assert related is True
+
+        unrelated = asyncio.run(intent_agent.judge_answer_fit(
+            "전세 계약 갱신 거절 사유가 뭐야", "퇴직금 계산 방법",
+            "퇴직금은 평균임금 기준으로 계산합니다.", "hr",
+        ))
+        assert unrelated is False
+        assert not calls  # 두 판정 모두 LLM 호출 자체가 없었어야 함
+
+        # 알려진 한계: "계약"·"갱신"처럼 흔한 절차 용어만 겹치는 근접-오답
+        # (대상은 전세/임대차인데 실제로는 기간제 근로자 계약 문서)은 이
+        # 로컬 휴리스틱으로는 구분되지 않는다 — 진짜 의미 이해가 필요한
+        # 영역이라 로컬 휴리스틱의 근본적 한계로 받아들인다(2026-09-11 실측).
+        near_miss = asyncio.run(intent_agent.judge_answer_fit(
             "전세 계약 갱신 거절 사유가 뭐야", "기간제 근로자 무기계약 전환",
             "계약 반복 갱신이 관행이었다면 기대권이 발생합니다. 갱신 거절 통보를 받으면 30일 이내 이의제기할 수 있습니다.",
             "hr",
         ))
-        assert result is False
-        assert not calls  # LLM 호출 자체가 없었어야 함
+        assert near_miss is True  # 한계로 남겨둔 오탐 — engine의 추출 종합이 보완
     finally:
         llm.has_llm_provider = original_has_provider
         llm.chat_stream = original_stream
 
-    print("judge_answer_fit no-llm demotion tests: PASS")
+    print("judge_answer_fit without-llm tests: PASS")
 
 
 def _test_deep_thinking_skips_theater_without_llm():
@@ -274,8 +348,9 @@ def main():
     _test_local_synthesize()
     _test_local_synthesize_ignores_weak_runner_ups()
     _test_split_sentences_handles_markdown()
+    _test_local_synthesize_preserves_table_structure()
     _test_compose_with_context_extracts_instead_of_dumping()
-    _test_judge_answer_fit_demotes_without_llm()
+    _test_judge_answer_fit_without_llm()
     _test_deep_thinking_skips_theater_without_llm()
 
 

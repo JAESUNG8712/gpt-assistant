@@ -83,19 +83,20 @@ def _unit_tests():
             intent_agent.FIT_JUDGE_ENABLED = True
             os.environ.pop("ANSWER_FIT_JUDGE", None)
 
-        # 6) 실제 LLM API가 하나도 없으면 호출을 시도조차 하지 않고 곧장 False(강등)로
-        # 판정한다 — 단어 겹침 기반 로컬 휴리스틱(mem.topic_overlap)은 실제 KB로
-        # 검증한 결과 "전세 계약 갱신 거절"이 "계약"·"갱신"만 겹친다는 이유로
-        # 기간제 근로자 문서를 fit=True로 오판정하는 등 근접-오답을 걸러내지
-        # 못해 신뢰할 수 없었음(2026-09-11 실측). LLM 없이는 시도해도 항상
-        # 실패할 호출이므로 생략하고, 강등된 뒤에는 engine의 다중 후보 추출
-        # 종합(local_synthesize/_compose_with_context)이 더 넓은 후보군에서
-        # 알맞은 내용을 다시 찾아준다.
+        # 6) 실제 LLM API가 하나도 없으면 호출을 시도조차 하지 않고 로컬 휴리스틱
+        # (memory.topic_overlap — 질문 핵심어가 답변에 있는지)으로 즉시 판정한다.
+        # 명백히 관련 있는 매치는 fit=True, 명백히 무관한 매치는 fit=False로
+        # 정확히 갈리는 것을 확인한다(둘 다 "계약"·"갱신"처럼 흔한 절차 용어만
+        # 겹치는 미묘한 근접-오답까지는 이 휴리스틱이 못 잡는다는 한계가 실측으로
+        # 확인되어 있음 — test_no_llm_reasoning.py 참고. 그렇다고 LLM 없이 항상
+        # False로 강등하면 "연차 촉진제 기준이 뭐야"처럼 명백히 맞는 매치까지
+        # 전부 불필요하게 문장 단위로 쪼개는 대가가 더 커서, 명백한 무관함만
+        # 걸러내는 이 절충안을 택했다).
         llm.has_llm_provider = lambda: False
         calls.clear()
         assert asyncio.run(intent_agent.judge_answer_fit(
             "연차 촉진제 기준이 뭐야", "q", "연차 촉진제는 회사가 서면으로 통보하는 절차입니다.", "hr"
-        )) is False
+        )) is True
         assert asyncio.run(intent_agent.judge_answer_fit(
             "전세 계약 갱신 거절 사유", "q", "퇴직금은 평균임금 기준으로 계산합니다.", "hr"
         )) is False

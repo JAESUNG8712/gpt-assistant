@@ -106,6 +106,15 @@ def resolve_followup_query(user_msg: str, conversation: list[dict] | None) -> st
     return msg
 
 
+def _followup_context_result(fallback_query: str) -> dict:
+    return {
+        "ok": True, "intent": "직전 대화와 이어지는 후속 질문",
+        "refined_query": fallback_query, "keywords": [],
+        "answer_guide": "직전 대화의 대상과 조건을 유지해 답변",
+        "uses_context": True,
+    }
+
+
 async def analyze(
     user_msg: str,
     persona_id: str = "hr",
@@ -120,12 +129,21 @@ async def analyze(
     fallback_uses_context = fallback_query != msg
     if not INTENT_ENABLED or (len(msg) < 4 and not fallback_uses_context):
         if fallback_uses_context:
-            return {
-                "ok": True, "intent": "직전 대화와 이어지는 후속 질문",
-                "refined_query": fallback_query, "keywords": [],
-                "answer_guide": "직전 대화의 대상과 조건을 유지해 답변",
-                "uses_context": True,
-            }
+            return _followup_context_result(fallback_query)
+        return _empty(user_msg)
+
+    import llm
+    if not llm.has_llm_provider():
+        # 실제 LLM이 없으면 이 호출은 로컬 엔진 폴백으로 떨어져 (a) JSON이 아닌
+        # 일반 텍스트가 돌아와 매번 파싱 실패로 결국 아래와 동일한 값을 반환하고,
+        # (b) 정작 그 폴백 호출 자체가 이 프롬프트("[도메인: ...]\n[현재 질문]...")를
+        # 무관한 KB 검색어로 써서 자체 판단 엔진(engine._compose 등)을 헛되이
+        # 돌리며 스트리밍 지연(asyncio.sleep)까지 발생시킨다 — 매 질문마다
+        # 반복되는 순수 낭비. 시도 자체를 생략하고, 이미 계산해 둔 결정형
+        # 후속질문 폴백(resolve_followup_query)이 있으면 그 결과를, 없으면
+        # 기존과 동일하게 원본 질문을 그대로 사용한다.
+        if fallback_uses_context:
+            return _followup_context_result(fallback_query)
         return _empty(user_msg)
 
     recent = _conversation_text(conversation)
@@ -139,12 +157,7 @@ async def analyze(
     except Exception as e:
         print(f"ℹ️ 의도 분석 스킵 ({type(e).__name__}: {e})")
         if fallback_uses_context:
-            return {
-                "ok": True, "intent": "직전 대화와 이어지는 후속 질문",
-                "refined_query": fallback_query, "keywords": [],
-                "answer_guide": "직전 대화의 대상과 조건을 유지해 답변",
-                "uses_context": True,
-            }
+            return _followup_context_result(fallback_query)
         return _empty(user_msg)
 
     refined = str(data.get("refined_query") or "").strip()[:120]
@@ -235,22 +248,27 @@ async def judge_answer_fit(user_msg: str, kb_question: str, kb_answer: str, pers
     import llm
     if not llm.has_llm_provider():
         # 실제 LLM API가 하나도 없으면 이 호출은 어차피 실패할 것이 확실하니 시도
-        # 자체를 생략한다. 처음에는 mem.topic_overlap(질문 핵심어가 답변에 하나라도
-        # 있는지)로 대신 판정했으나, 실제 KB로 검증한 결과 이 방식은 "표현은
-        # 비슷해도 대상이 다른" 근접-오답을 걸러내지 못했다(예: "전세 계약 갱신
-        # 거절 사유"가 "계약"·"갱신" 같은 흔한 단어만 겹친다는 이유로 기간제
-        # 근로자 무기계약 전환 문서와 fit=True로 오판정됨 — 이 함수가 원래 막으려던
-        # 바로 그 유형의 오류). 단어 겹침만으로는 이런 근접-오답과 진짜 정답을
-        # 신뢰성 있게 구분할 수 없다는 것이 실측으로 확인됐고, 이를 구분하려면
-        # 결국 진짜 의미 이해(LLM)가 필요하다.
-        # 대신 이 상황에서는 "판정 실패 시 False로 안전하게 강등"이라는 이 함수의
-        # 기존 원칙을 그대로 적용한다 — engine._compose_with_context()/
-        # _local_synthesize()가 최근에 "1위 문서만 맹신"에서 "여러 후보의 문장을
-        # 질문과의 실제 겹침으로 재평가해 그중 진짜 관련된 부분을 뽑는" 방식으로
-        # 개선되어, 강등돼도 더 넓은 후보군(예: 위 사례의 2위 문서인 "임대차3법")
-        # 에서 알맞은 내용을 다시 찾아낼 가능성이 생겼다 — 강등이 더 이상
-        # "같은 오답을 경고문과 함께 다시 보여주는" 헛수고가 아니게 됨.
-        return False
+        # 자체를 생략한다. 두 가지 대안을 실제 KB로 실측 비교했다:
+        # (a) mem.topic_overlap(질문 핵심어가 답변에 하나라도 있는지) — 당초
+        #     이걸 썼을 때 "전세 계약 갱신 거절 사유"가 "계약"·"갱신" 같은 흔한
+        #     단어만 겹친다는 이유로 기간제 근로자 문서에 fit=True로 오판정되는
+        #     근접-오답을 발견해 한때 (b)로 대체했었다.
+        # (b) LLM 없이는 항상 False(전량 강등) — 그런데 이렇게 하면 "전세" 같은
+        #     드문 근접-오답은 잡아도, "퇴직금은 어떻게 계산하나요"처럼 명백히
+        #     맞는 고빈도 매치까지 전부 강등시켜 잘 정리된 KB 원문을 불필요하게
+        #     문장 단위로 쪼개 놓는 대가가 더 크다는 것을 실측으로 확인했다(같은
+        #     조사 문제로 topic_overlap 자체가 "퇴직금은"·"계산하나요"처럼 조사·
+        #     활용형이 붙은 원문 그대로를 비교해 "퇴직금"·"계산" 같은 조사 없는
+        #     어근과 문자 그대로 일치하지 않으면 명백히 맞는 매치조차 오판정하는
+        #     별도 버그가 있었음을 발견 — memory.topic_overlap()을 engine._tok()
+        #     기반으로 수정해 이 오판정 자체를 해결함). 수정된 topic_overlap은
+        #     "전세"류 근접-오답(생소한 핵심어 하나만 다르고 나머지 절차 용어가
+        #     겹치는 경우)까지는 여전히 못 잡지만 — 이건 진짜 의미 이해가 필요한
+        #     영역이라 로컬 휴리스틱의 근본적 한계로 받아들인다 — 명백히 무관한
+        #     경우(원래 이 함수가 막으려던 "출장 vs 직장내괴롭힘" 같은 사례)는
+        #     여전히 정확히 걸러내면서, 흔한 매치를 불필요하게 강등하지는 않는다.
+        import memory as mem
+        return mem.topic_overlap(q, a)
 
     prompt = (
         f"[도메인: {persona_id}]\n"

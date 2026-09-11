@@ -26,6 +26,12 @@ def _unit_tests():
 
     import llm
     original_stream = llm.chat_stream
+    original_has_provider = llm.has_llm_provider
+    # 아래 시나리오들은 모두 "LLM이 있고 이런 응답을 준다"를 검증하려는 것이므로,
+    # 실행 환경의 실제 API 키 유무와 무관하게 LLM 경로를 타도록 고정한다(그렇지
+    # 않으면 LLM이 아예 없다고 판단해 이 모킹을 호출하지 않고 곧장 원본 질문
+    # 그대로/결정형 후속질문 폴백을 반환할 수 있음).
+    llm.has_llm_provider = lambda: True
     llm.chat_stream = fake_no_history
     try:
         result = asyncio.run(intent_agent.analyze("원본 질문입니다", "hr"))
@@ -61,6 +67,7 @@ def _unit_tests():
         assert "메시지5" not in captured["prompt"]  # 뒤 4개(6,7,8,9)만 포함
     finally:
         llm.chat_stream = original_stream
+        llm.has_llm_provider = original_has_provider
 
     print("conversation continuity unit tests: PASS")
 

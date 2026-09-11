@@ -1045,71 +1045,144 @@ _NO_ANSWER = {
 
 _SENTENCE_SPLIT_RE = re.compile(r'(?<=[.!?다요])\s+(?=\S)')
 _TABLE_RULE_RE = re.compile(r'^[-|:\s]+$')
+_TABLE_ROW_RE = re.compile(r'^\s*\|.*\|\s*$')
+_HEADING_RE = re.compile(r'^\s*(#{1,6})\s+(\S.*)$')
+_NUM_MARKER_RE = re.compile(r'^(\d+)[.)]\s+')
+_BULLET_MARKER_RE = re.compile(r'^[-•*]\s+')
 
 
-def _split_sentences(text: str) -> List[Tuple[str, bool]]:
+def _split_sentences(text: str) -> List[dict]:
     """대략적인 한국어 문장 분리 — 완벽한 구문분석기가 아니라 "어느 부분이
     질문과 관련 있는지" 단위를 나누기 위한 실용적 근사치. 이 KB의 답변은
-    표·목록·제목이 섞인 마크다운이 대부분이라, 먼저 줄 단위로 나눠 표의 각
-    행·목록의 각 항목을 독립된 단위로 취급한 뒤(그렇지 않으면 문장부호가 없는
-    표 전체가 하나의 거대한 "문장"으로 뭉쳐 관련 없는 내용까지 통째로 뽑히거나
-    반대로 아무것도 못 뽑는 문제가 생김) 여러 문장이 이어진 줄만 문장부호로
-    한 번 더 쪼갠다. (문장, 원래 마크다운 제목 줄이었는지) 튜플 목록을 반환한다
-    — 제목은 짧고 핵심어 밀도가 높아 관련도 점수가 실제 내용 문장보다 부당하게
-    높게 나오기 쉬우므로, 호출측에서 가중치를 낮출 수 있게 구분해서 넘긴다."""
+    표·번호목록·제목이 섞인 마크다운이 대부분이라, 원본 구조를 보존한 채
+    관련도만 평가하도록 각 줄을 {"text","is_heading","is_table","marker"}
+    딕셔너리로 분해한다.
+    - 표(헤더행+구분선+데이터행)는 행 단위로 쪼개지 않고 통째로 한 단위로
+      유지한다 — 행별로 쪼개면 "근속연수" 헤더와 "15일" 값이 서로 다른
+      조각으로 떨어져 표의 의미(어느 열이 무엇을 뜻하는지)가 사라진다.
+    - 제목(#)·번호목록(1.)·글머리표(-)는 원래 표시 방식을 marker에 보존해
+      최종 출력에서도 같은 형태로 재구성되도록 한다(체크리스트→체크리스트,
+      제목→제목).
+    - 문장부호 없이 줄바꿈만 있는 표는 하나의 거대한 "문장"으로 뭉쳐 관련
+      없는 내용까지 통째로 뽑히는 문제가 있어, 줄 단위로 먼저 나눈 뒤 여러
+      문장이 이어진 줄만 문장부호로 한 번 더 쪼갠다."""
     text = (text or '').strip()
     if not text:
         return []
-    units: List[Tuple[str, bool]] = []
-    for raw_line in text.split('\n'):
-        is_heading = bool(re.match(r'^\s*#{1,6}\s', raw_line))
-        line = raw_line.strip(' -•*#>')
+    lines = text.split('\n')
+    n = len(lines)
+    units: List[dict] = []
+    i = 0
+    while i < n:
+        raw_line = lines[i]
+        stripped = raw_line.strip()
+        if (_TABLE_ROW_RE.match(stripped) and i + 1 < n
+                and _TABLE_RULE_RE.match(lines[i + 1].strip())):
+            block = [raw_line, lines[i + 1]]
+            j = i + 2
+            while j < n and _TABLE_ROW_RE.match(lines[j].strip()):
+                block.append(lines[j])
+                j += 1
+            units.append({"text": "\n".join(block), "is_heading": False,
+                           "is_table": True, "marker": ""})
+            i = j
+            continue
+
+        heading_m = _HEADING_RE.match(raw_line)
+        if heading_m:
+            body = heading_m.group(2).strip()
+            if body:
+                units.append({"text": body, "is_heading": True,
+                               "is_table": False, "marker": heading_m.group(1) + " "})
+            i += 1
+            continue
+
+        marker = ""
+        num_m = _NUM_MARKER_RE.match(stripped)
+        if num_m:
+            marker = num_m.group(0)
+            stripped = stripped[num_m.end():]
+        else:
+            bullet_m = _BULLET_MARKER_RE.match(stripped)
+            if bullet_m:
+                marker = "- "
+                stripped = stripped[bullet_m.end():]
+
+        line = stripped.strip()
         if not line or _TABLE_RULE_RE.match(line):
-            continue  # 표 구분선(|---|---|) 등 장식만 있는 줄은 제외
+            i += 1
+            continue
         line = line.strip('|').strip()
         if not line:
+            i += 1
             continue
-        for piece in _SENTENCE_SPLIT_RE.split(line):
-            piece = piece.strip(' -•*#>|')
-            if piece:
-                units.append((piece, is_heading))
+        pieces = [p.strip(' -•*#>|') for p in _SENTENCE_SPLIT_RE.split(line)]
+        pieces = [p for p in pieces if p]
+        for k, piece in enumerate(pieces):
+            # 번호·글머리표는 그 줄의 첫 문장에만 붙인다 — 한 줄에 문장이
+            # 여러 개면 나머지는 이어지는 설명일 뿐 별도 목록 항목이 아니다.
+            units.append({"text": piece, "is_heading": False,
+                           "is_table": False, "marker": marker if k == 0 else ""})
+        i += 1
     return units
 
 
-def _sentence_relevance(query_tokens: set, sentence: str, is_heading: bool = False) -> float:
-    """문장 토큰과 질문 토큰의 겹침을 문장 길이로 정규화 — 관련 핵심어가
-    조밀하게 들어있는 짧은 문장을 장황한 문장보다 우대한다. 제목 줄은 짧고
+def _sentence_relevance(query_tokens: set, unit: dict) -> float:
+    """단위 텍스트와 질문 토큰의 겹침을 텍스트 길이로 정규화 — 관련 핵심어가
+    조밀하게 들어있는 짧은 단위를 장황한 단위보다 우대한다. 제목은 짧고
     핵심어만으로 이루어져 이 계산상 유리해지기 쉬운데, 정작 실제 정보는
     담고 있지 않으므로 할인 계수를 적용해 비슷한 정도로 관련 있는 실제 내용
-    문장에 밀리도록 한다(제목 외에 뽑을 내용이 전혀 없을 때만 제목이 채택됨)."""
-    s_tokens = set(_tok(sentence))
+    단위에 밀리도록 한다(제목 외에 뽑을 내용이 전혀 없을 때만 제목이 채택됨)."""
+    s_tokens = set(_tok(unit["text"]))
     if not s_tokens:
         return 0.0
     overlap = query_tokens & s_tokens
     if not overlap:
         return 0.0
+    if unit["is_table"]:
+        # 표는 헤더 행 기준으로 점수를 정규화한다 — 데이터 행(숫자·값)까지 포함한
+        # 전체 토큰 수로 나누면 표가 길수록(행이 많을수록) 부당하게 점수가
+        # 낮아져, 정작 표로 보존해야 할 핵심 정보가 경쟁하는 평문 문장들에 밀려
+        # 뽑히지 않는 문제가 있었다. 일치 여부 자체는 표 전체(데이터 포함)를
+        # 기준으로 확인하되, 밀도 계산은 헤더 행의 토큰 수만 분모로 쓴다.
+        header_line = unit["text"].split("\n", 1)[0]
+        header_tokens = set(_tok(header_line))
+        denom = len(header_tokens) or len(s_tokens)
+        return len(overlap) / math.sqrt(denom)
     score = len(overlap) / math.sqrt(len(s_tokens))
-    return score * 0.5 if is_heading else score
+    return score * 0.5 if unit["is_heading"] else score
+
+
+def _render_unit(unit: dict) -> str:
+    """선택된 단위를 원래 형태(표는 표 그대로, 제목은 제목, 번호목록은 번호,
+    글머리표는 글머리표)로 되돌려 마크다운으로 렌더링한다."""
+    if unit["is_table"]:
+        return unit["text"]
+    if unit["is_heading"]:
+        return f"{unit['marker']}{unit['text']}"
+    marker = unit["marker"] or "- "
+    return f"{marker}{unit['text']}"
 
 
 def _pick_relevant_units(query_tokens: set, text: str, max_items: int,
-                          min_len: int = 4) -> List[str]:
-    """텍스트(여러 문서를 이어붙인 것 포함)에서 질문과 실제로 관련된 줄/문장만
+                          min_len: int = 4) -> List[dict]:
+    """텍스트(여러 문서를 이어붙인 것 포함)에서 질문과 실제로 관련된 단위만
     관련도 순으로 골라 원래 등장 순서로 되돌려 반환. 표·목록이 섞인 문서라도
-    관련 없는 행은 자연히 제외되고, 문서 순위와 무관하게 실제로 겹치는 핵심어가
-    많은 부분이 우선된다(예: 1위 문서가 근접-오답이라도 2위 문서에 정확히 맞는
-    문장이 있으면 그쪽이 뽑힘 — 문서 단위 랭킹의 한계를 문장 단위 재평가로 보완)."""
+    관련 없는 부분은 자연히 제외되고, 문서 순위와 무관하게 실제로 겹치는
+    핵심어가 많은 부분이 우선된다(예: 1위 문서가 근접-오답이라도 2위 문서에
+    정확히 맞는 문장이 있으면 그쪽이 뽑힘 — 문서 단위 랭킹의 한계를 단위별
+    재평가로 보완)."""
     if not query_tokens:
         return []
-    scored: List[Tuple[float, str, int]] = []
+    scored: List[Tuple[float, dict, int]] = []
     seen = set()
-    for idx, (unit, is_heading) in enumerate(_split_sentences(text)):
-        if len(unit) < min_len:
+    for idx, unit in enumerate(_split_sentences(text)):
+        if len(unit["text"]) < min_len:
             continue
-        key = re.sub(r'\s+', '', unit)[:80]
+        key = re.sub(r'\s+', '', unit["text"])[:80]
         if key in seen:
             continue
-        rel = _sentence_relevance(query_tokens, unit, is_heading)
+        rel = _sentence_relevance(query_tokens, unit)
         if rel <= 0:
             continue
         scored.append((rel, unit, idx))
@@ -1134,7 +1207,7 @@ def _local_synthesize(query: str, results: List, max_sentences: int = 6) -> str:
         return results[0][1]
 
     best_score = results[0][2] if results else 0.0
-    picked: List[Tuple[float, str, int]] = []  # (관련도, 문장, 출처 순번)
+    picked: List[Tuple[float, dict, int]] = []  # (관련도, 단위, 출처 순번)
     seen = set()
     for idx, cand in enumerate(results[:4]):
         answer, score = cand[1], cand[2]
@@ -1145,16 +1218,16 @@ def _local_synthesize(query: str, results: List, max_sentences: int = 6) -> str:
         # (예: 0.156 vs 0.146, 근접-오답 가능성이 있는 구간)만 함께 비교한다.
         if score < 0.08 or (best_score > 0 and score < best_score * 0.6):
             continue
-        for sent, is_heading in _split_sentences(answer):
-            if len(sent) < 4:
+        for unit in _split_sentences(answer):
+            if len(unit["text"]) < 4:
                 continue
-            key = re.sub(r'\s+', '', sent)[:80]
+            key = re.sub(r'\s+', '', unit["text"])[:80]
             if key in seen:
                 continue
-            rel = _sentence_relevance(query_tokens, sent, is_heading)
+            rel = _sentence_relevance(query_tokens, unit)
             if rel <= 0:
                 continue
-            picked.append((rel, sent, idx))
+            picked.append((rel, unit, idx))
             seen.add(key)
 
     if not picked:
@@ -1170,7 +1243,7 @@ def _local_synthesize(query: str, results: List, max_sentences: int = 6) -> str:
         "직접 비교해 관련 내용만 정리했습니다 — AI가 새로 작성한 문장이 아니라 원문에서 "
         "발췌한 것이니 참고용으로 확인해 주세요)\n\n"
     )
-    return header + "\n".join(f"- {sent}" for _, sent, _ in picked)
+    return header + "\n".join(_render_unit(unit) for _, unit, _ in picked)
 
 
 def _compose(query: str, results: List, persona: str) -> str:
@@ -1236,7 +1309,7 @@ def _compose_with_context(query: str, context: str, persona: str) -> str:
     query_tokens = set(_tok(query))
     picked = _pick_relevant_units(query_tokens, ctx, max_items=8)
     if picked:
-        body = "\n".join(f"- {u}" for u in picked)
+        body = "\n".join(_render_unit(u) for u in picked)
         notice = (
             f"{LOCAL_FALLBACK_MARKER}, 검색된 자료를 자체적으로 비교해 질문과 관련된 "
             "부분만 정리했습니다. AI가 새로 작성한 문장이 아니라 원문에서 발췌한 것이니 "
