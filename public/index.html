@@ -1066,6 +1066,7 @@ function _recordCollections(){return{
   employees,kpiEntries,compSessions,compResponses,changeRequests,orgChartHistory,
   coreTalentPool,talentDevPlans,gradeAdjustHistory,tieNotifications,lowPerfData,
   approvalTemplates,integrationLogs,approvalDocs,attendanceRecords,payslips,
+  yearEndSettlements,
   payrollAdjustments,leaveUsagePlans,boardPosts,roomReservations,certLog,certRequests,
   welfarePoints,mandatoryTraining,healthCheckupLog,scheduleEvents,expenseClaims,
   overtimeRequests,onboardingFlows,approvalDelegations
@@ -2901,6 +2902,18 @@ function _validateEditorScope(scope){
 document.addEventListener("click",event=>{
   const button=event.target.closest("button,.btn");if(!button||button.disabled)return;
   const action=(button.textContent||"").trim();if(!/(저장|등록|신청|제출|발행|생성|확정|추가|변경|업로드)/.test(action))return;
+  // 두 가지는 "이 화면의 필수값을 채우고 최종 제출"하는 버튼이 아니라서 제외한다.
+  // ① "+ 라인 추가"/"+ 품목 추가"처럼 폼 안에 빈 행을 하나 더 만들 뿐인 버튼(이
+  //    앱 전반에서 "+ "로 시작하는 것이 일관된 관례) — 아직 채우지도 않은 다른
+  //    필수 필드 때문에 행 추가 자체가 막혀 실제 입력을 시작할 수 없었다.
+  // ② onclick이 open*Modal(...) 단일 호출뿐인 버튼(예: "현재 분개를 템플릿
+  //    저장"→별도 모달에서 템플릿명을 입력받음) — 이 클릭 자체는 아무것도
+  //    저장하지 않고 추가 입력을 받을 모달을 여는 것뿐이라, 진짜 저장 시점은
+  //    그 다음 모달의 버튼이다. 여기서 막으면 현재 화면과 무관한 값(예: 전표
+  //    내용) 때문에 그 모달 자체를 열 수 없게 된다.
+  if(action.startsWith("+"))return;
+  const onclickAttr=(button.getAttribute("onclick")||"").trim();
+  if(/^open\w*Modal\([^;]*\)$/.test(onclickAttr))return;
   const scope=button.closest("form,.modal-box,.modal,.card");if(!scope)return;
   if(!_validateEditorScope(scope)){event.preventDefault();event.stopImmediatePropagation();}
 },true);
@@ -4995,6 +5008,7 @@ function getFullState(action=""){
       approvalDocs:JSON.parse(JSON.stringify(approvalDocs)),
       attendanceRecords:JSON.parse(JSON.stringify(attendanceRecords)),
       payslips:JSON.parse(JSON.stringify(payslips)),
+      yearEndSettlements:JSON.parse(JSON.stringify(yearEndSettlements)),
       payrollAdjustments:JSON.parse(JSON.stringify(payrollAdjustments)),
       leaveUsagePlans:JSON.parse(JSON.stringify(leaveUsagePlans)),
       boardPosts:JSON.parse(JSON.stringify(boardPosts)),
@@ -14339,10 +14353,10 @@ function _apvFilterBar(onchangeFn){
   return`<div class="card-body" style="padding:8px 14px 6px"><div class="filter-bar" style="flex-wrap:wrap;gap:6px">
     <input class="fc" style="width:160px" placeholder="제목/상신자 검색" value="${h(_apvFilter.search)}" oninput="_apvFilter.search=this.value;${onchangeFn}">
     <select class="fc" style="width:130px" onchange="_apvFilter.dept=this.value;_apvFilter.team='';${onchangeFn}">
-      <option value="">전체 부서</option>${depts.map(d=>`<option value="${d}"${_apvFilter.dept===d?" selected":""}>${h(d)}</option>`).join("")}
+      <option value="">전체 부서</option>${depts.map(d=>`<option value="${h(d)}"${_apvFilter.dept===d?" selected":""}>${h(d)}</option>`).join("")}
     </select>
     <select class="fc" style="width:120px" onchange="_apvFilter.team=this.value;${onchangeFn}">
-      <option value="">전체 팀</option>${teams.map(t=>`<option value="${t}"${_apvFilter.team===t?" selected":""}>${h(t)}</option>`).join("")}
+      <option value="">전체 팀</option>${teams.map(t=>`<option value="${h(t)}"${_apvFilter.team===t?" selected":""}>${h(t)}</option>`).join("")}
     </select>
     <select class="fc" style="width:130px" onchange="_apvFilter.tplId=this.value;${onchangeFn}">
       <option value="">전체 양식</option>${allTpls.map(t=>`<option value="${t.id}"${_apvFilter.tplId===t.id?" selected":""}>${h(t.name)}</option>`).join("")}
@@ -15039,10 +15053,10 @@ function renderAdminPayslipSection(year,month){
   <div class="card-body" style="padding:10px 14px 6px">
     <div class="filter-bar" style="flex-wrap:wrap;gap:6px">
       <select class="fc" style="width:140px" onchange="_adminPayState.dept=this.value;_adminPayState.team='';_adminPayState.pageOffset=0;_adminPayRefresh(${year},${month})">
-        <option value="">전체 부서</option>${depts.map(d=>`<option value="${d}"${s.dept===d?" selected":""}>${h(d)}</option>`).join("")}
+        <option value="">전체 부서</option>${depts.map(d=>`<option value="${h(d)}"${s.dept===d?" selected":""}>${h(d)}</option>`).join("")}
       </select>
       <select class="fc" style="width:130px" onchange="_adminPayState.team=this.value;_adminPayState.pageOffset=0;_adminPayRefresh(${year},${month})">
-        <option value="">전체 팀</option>${teams.map(t=>`<option value="${t}"${s.team===t?" selected":""}>${h(t)}</option>`).join("")}
+        <option value="">전체 팀</option>${teams.map(t=>`<option value="${h(t)}"${s.team===t?" selected":""}>${h(t)}</option>`).join("")}
       </select>
       <input class="fc" style="width:160px" placeholder="이름/부서 검색" value="${h(s.search)}" oninput="_adminPayState.search=this.value;_adminPayState.pageOffset=0;_adminPayRefresh(${year},${month})">
       <select class="fc" style="width:80px" onchange="_adminPayState.pageSize=+this.value;_adminPayState.pageOffset=0;_adminPayRefresh(${year},${month})">
@@ -15143,10 +15157,10 @@ function renderPayrollMgmtPage(returnHtmlOnly){
         ${Array.from({length:12},(_,i)=>i+1).map(mo=>`<option value="${mo}"${mo===month?" selected":""}>${mo}월</option>`).join("")}
       </select>
       <select class="fc" style="width:140px" onchange="_payMgmtState.dept=this.value;_payMgmtState.team='';_payMgmtRefresh()">
-        <option value="">전체 부서</option>${depts.map(d=>`<option value="${d}"${s.dept===d?" selected":""}>${h(d)}</option>`).join("")}
+        <option value="">전체 부서</option>${depts.map(d=>`<option value="${h(d)}"${s.dept===d?" selected":""}>${h(d)}</option>`).join("")}
       </select>
       <select class="fc" style="width:130px" onchange="_payMgmtState.team=this.value;_payMgmtRefresh()">
-        <option value="">전체 팀</option>${teams.map(t=>`<option value="${t}"${s.team===t?" selected":""}>${h(t)}</option>`).join("")}
+        <option value="">전체 팀</option>${teams.map(t=>`<option value="${h(t)}"${s.team===t?" selected":""}>${h(t)}</option>`).join("")}
       </select>
       <input class="fc" style="width:160px" placeholder="이름/사번/부서 검색" value="${h(s.search)}" oninput="_payMgmtState.search=this.value;_payMgmtRefresh()">
       <span class="fz12 text-gray" style="align-self:center">총 ${active.length}명</span>
@@ -15606,20 +15620,40 @@ function _yesTaxByBase(base){ // 종합소득세 기본세율(소득세법 제55
 }
 function _yesEarnedIncomeCredit(calcTax,gross){ // 근로소득세액공제(소득세법 제59조, 한도 포함)
   const credit=calcTax<=1300000?Math.round(calcTax*0.55):Math.round(715000+(calcTax-1300000)*0.3);
+  // 한도 구간이 기존엔 3구간(33백/70백 경계)뿐이었고, 각 구간의 "기준값"이 다음
+  // 구간의 하한값과 뒤섞여 있어(예: 3,300만~7,000만 구간이 74만이 아니라 66만을
+  // 기준으로 차감) 총급여 5,000만원 기준 실제 66만원이어야 할 한도가 52만4천원으로,
+  // 8,000만원 기준 50만원이어야 할 한도가 20만원으로 계산되던 문제가 있었다.
+  // 소득세법 §59 4구간(74만 기준/66만 하한 → 66만 기준/50만 하한 → 50만 기준/
+  // 20만 하한)을 그대로 반영한다.
   let limit;
   if(gross<=33000000)limit=740000;
-  else if(gross<=70000000)limit=Math.max(500000,660000-Math.round((gross-33000000)*0.008));
-  else limit=Math.max(200000,500000-Math.round((gross-70000000)*0.5));
+  else if(gross<=70000000)limit=Math.max(660000,740000-Math.round((gross-33000000)*0.008));
+  else if(gross<=120000000)limit=Math.max(500000,660000-Math.round((gross-70000000)*0.5));
+  else limit=Math.max(200000,500000-Math.round((gross-120000000)*0.5));
   return Math.min(credit,limit);
 }
 // 순수 계산 함수 — 그 해 1~12월 급여명세서(저장된 것이 있으면 그대로, 없으면
 // calcStandardPayslip으로 즉석 계산, renderPayslipPage()와 동일한 폴백 패턴)에서 과세소득·
 // 기납부세액을 합산한다. 부양가족 수는 저장 여부와 무관하게 항상 인자로 받아, 화면이 저장 전
 // 미리보기를 계산할 때도(admin이 아직 확정하지 않은 값) 그대로 재사용할 수 있게 한다.
+// calcStandardPayslip()은 emp.salary/12를 그대로 매달 지급된 것으로 가정해
+// 입사·퇴사 시점을 전혀 모른다 — 연중 입사·퇴사자·연봉이 바뀐 사람도 12개월
+// 전부를 합산하면 실제보다 훨씬 큰 총급여로 계산돼 누진세율 구간이 잘못
+// 올라가고 "추가 납부 예상액"이 부풀려진다. 월말 기준으로 재직 여부를 판정해
+// (연도별 인원현황 계산 `_bpMonthlyHeadcountByDept`와 동일한 "퇴직월 말까지는
+// 재직으로 포함" 원칙) 실제 재직한 달만 합산한다.
+function _yesEmployedInMonth(emp,year,m){
+  const monthStart=new Date(Date.UTC(year,m-1,1)),monthEnd=new Date(Date.UTC(year,m,0));
+  if(emp.hire){const hireD=new Date(emp.hire);if(!isNaN(hireD)&&hireD>monthEnd)return false;}
+  if(emp.retireDate){const retD=new Date(emp.retireDate);if(!isNaN(retD)&&retD<monthStart)return false;}
+  return true;
+}
 function _computeYearEndSettlement(emp,year,dependents){
   const dep=Math.max(0,Math.min(20,parseInt(dependents,10)||0));
   let grossPay=0,paidTax=0,paidLocalTax=0;
   for(let m=1;m<=12;m++){
+    if(!_yesEmployedInMonth(emp,year,m))continue;
     let slip=payslips.find(p=>String(p.empId)===String(emp.id)&&p.year===year&&p.month===m);
     if(!slip)slip=calcStandardPayslip(emp,year,m);
     grossPay+=slip.taxableIncome||0;paidTax+=slip.tax||0;paidLocalTax+=slip.localTax||0;
@@ -15657,7 +15691,12 @@ function saveYearEndSettlement(empId,year,dependents,confirm){
   const rec={id:`yes-${empId}-${year}`,empId,year,...calc,
     confirmed:confirm!=null?confirm:!!existing?.confirmed,
     confirmedAt:confirm===true?now:(confirm===false?null:existing?.confirmedAt||null),
-    calculatedAt:now,updatedAt:now};
+    calculatedAt:now,updatedAt:now,
+    // 새 객체를 매번 만들어 기존 레코드를 완전히 교체하므로, 서버가 1차 저장
+    // 직후 부여한 _rev(_applyRecordRevisions가 채워줌)를 여기서 명시적으로
+    // 옮기지 않으면 2번째 저장부터 _rev가 항상 비어(0) 있는 것으로 서버에
+    // 전송되어 "이미 다른 값으로 갱신됨" CAS 충돌(409)이 매번 발생한다.
+    _rev:existing?._rev};
   const idx=yearEndSettlements.findIndex(y=>String(y.empId)===String(empId)&&y.year===year);
   if(idx>=0)yearEndSettlements[idx]=rec;else yearEndSettlements.push(rec);
   autoSaveToServerIfEnabled();
@@ -15738,10 +15777,10 @@ function _yesAdminSectionHtml(){
   <div class="card-body" style="padding:10px 14px 6px">
     <div class="filter-bar" style="flex-wrap:wrap;gap:6px">
       <select class="fc" style="width:140px" onchange="_yesState.dept=this.value;_yesState.team='';_yesRefresh()">
-        <option value="">전체 부서</option>${depts.map(d=>`<option value="${d}" ${s.dept===d?"selected":""}>${h(d)}</option>`).join("")}
+        <option value="">전체 부서</option>${depts.map(d=>`<option value="${h(d)}" ${s.dept===d?"selected":""}>${h(d)}</option>`).join("")}
       </select>
       <select class="fc" style="width:130px" onchange="_yesState.team=this.value;_yesRefresh()">
-        <option value="">전체 팀</option>${teams.map(t=>`<option value="${t}" ${s.team===t?"selected":""}>${h(t)}</option>`).join("")}
+        <option value="">전체 팀</option>${teams.map(t=>`<option value="${h(t)}" ${s.team===t?"selected":""}>${h(t)}</option>`).join("")}
       </select>
       <input class="fc" style="width:160px" placeholder="이름/부서 검색" value="${h(s.search)}" oninput="_yesState.search=this.value;_yesRefresh()">
       <span class="fz12 text-gray" style="align-self:center">총 ${active.length}명</span>
@@ -15844,7 +15883,7 @@ function renderAcctAccountsTbl(){
   const q=(window._acctAccSearch||"").trim();
   const rows=q?acctAccounts.filter(a=>[a.code,a.name,TYPE_LABEL[a.type],a.category].some(v=>(v||"").includes(q))):acctAccounts;
   wrap.innerHTML=`<table><thead><tr><th>코드</th><th>계정명</th><th>구분</th><th>세부분류</th><th>원가구분</th><th>사용여부</th><th>관리</th></tr></thead><tbody>
-  ${rows.length?rows.map(a=>`<tr><td>${h(a.code)}</td><td>${h(a.name)}</td><td>${TYPE_LABEL[a.type]||a.type}</td><td>${h(a.category||"-")}</td><td>${_costTagLabel(a.costCategory,a.costSubType)}</td><td>${a.active?badge("사용","green"):badge("미사용","gray")}</td><td><button class="btn btn-secondary btn-sm" onclick="openAcctAccountModal('${a.id}')">수정</button> <button class="btn btn-ghost btn-sm" onclick="_showRecordHistory('${h(a.name)}',_buildHistoryRows(${JSON.stringify(a).replace(/'/g,"&#39;")},[]))">이력</button> <button class="btn btn-danger btn-sm" onclick="deleteAcctAccount('${a.id}')">삭제</button></td></tr>`).join(""):`<tr><td colspan="7" class="text-gray" style="text-align:center;padding:20px">${q?"검색 결과가 없습니다.":"등록된 계정과목이 없습니다."}</td></tr>`}
+  ${rows.length?rows.map(a=>`<tr><td>${h(a.code)}</td><td>${h(a.name)}</td><td>${TYPE_LABEL[a.type]||a.type}</td><td>${h(a.category||"-")}</td><td>${_costTagLabel(a.costCategory,a.costSubType)}</td><td>${a.active?badge("사용","green"):badge("미사용","gray")}</td><td><button class="btn btn-secondary btn-sm" onclick="openAcctAccountModal('${a.id}')">수정</button> <button class="btn btn-ghost btn-sm" onclick="_showHistoryFor('account','${a.id}')">이력</button> <button class="btn btn-danger btn-sm" onclick="deleteAcctAccount('${a.id}')">삭제</button></td></tr>`).join(""):`<tr><td colspan="7" class="text-gray" style="text-align:center;padding:20px">${q?"검색 결과가 없습니다.":"등록된 계정과목이 없습니다."}</td></tr>`}
   </tbody></table>`;
 }
 // 원가구분(costCategory/costSubType) 표시 라벨 — 원가명세서·계정과목 목록 공용
@@ -15947,6 +15986,34 @@ function _buildHistoryRows(record,stages){
   });
   return rows.sort((a,b)=>new Date(a.at)-new Date(b.at));
 }
+// 이력 버튼들이 예전엔 onclick="...(${JSON.stringify(record)}...)"처럼 레코드 전체를
+// JSON으로 직렬화해 onclick 속성(큰따옴표)에 그대로 삽입했음 — .replace(/'/g,...)로
+// 홑따옴표만 이스케이프해 큰따옴표 속성 자체는 JSON.stringify가 찍는 첫 " 에서
+// 그대로 끊겨(버튼이 클릭 시 에러를 내며 무동작) 있었고, 동시에 그 뒤가 속성
+// 나열로 재해석되는 stored XSS 경로이기도 했다(예: category/description/memo 등
+// 사용자 자유입력 필드에 onmouseover= 를 심으면 그대로 주입됨). id만 onclick에
+// 넘기고 실제 레코드는 여기서 배열을 조회해 찾는 방식(_bpShowHistory와 동일한
+// 관례)으로 교체 — id는 전부 서버가 발급하는 값이라 속성 탈출 문자를 포함할 수 없다.
+const _HISTORY_STAGES_BY_KIND={
+  account:[],partner:[],
+  voucher:[["createdBy","createdAt","작성"],["postedBy","postedAt","확정"],["voidedBy","voidedAt","취소"]],
+  taxInvoice:[["createdBy","createdAt","발행"],["voidedBy","voidedAt","취소"]],
+  quotation:[["createdBy","createdAt","작성"],["sentBy","sentAt","발송"],["acceptedBy","acceptedAt","수주확정"],["shippedBy","shippedAt","출고/매출"],["rejectedBy","rejectedAt","실주처리"]],
+  purchaseOrder:[["createdBy","createdAt","작성"],["orderedBy","orderedAt","발주확정"],["receivedBy","receivedAt","입고처리"],["cancelledBy","cancelledAt","취소"]],
+};
+function _showHistoryFor(kind,id){
+  const sources={account:()=>acctAccounts,partner:()=>acctPartners,voucher:()=>acctVouchers,
+    taxInvoice:()=>acctTaxInvoices,quotation:()=>erpQuotations,purchaseOrder:()=>erpPurchaseOrders};
+  const list=(sources[kind]||(()=>[]))()||[];
+  const rec=list.find(x=>String(x.id)===String(id));
+  if(!rec){showToast("레코드를 찾을 수 없습니다.","error");return;}
+  const label=kind==="voucher"?(rec.voucherNo||"전표")
+    :kind==="taxInvoice"?(rec.invoiceNo||"")
+    :kind==="quotation"?(rec.quoteNo||"견적서")
+    :kind==="purchaseOrder"?(rec.poNo||"발주서")
+    :(rec.name||"");
+  _showRecordHistory(label,_buildHistoryRows(rec,_HISTORY_STAGES_BY_KIND[kind]||[]));
+}
 registerLiveFilter("acct-partners-search",{
   set:value=>{window._acctPtnFilter={...(window._acctPtnFilter||{q:"",type:"all"}),q:value};},
   render:renderAcctPartnersTbl,
@@ -15975,7 +16042,7 @@ function renderAcctPartnersTbl(){
   if(f.type!=="all")rows=rows.filter(p=>p.type===f.type||p.type==="both");
   if(f.q.trim()){const q=f.q.trim();rows=rows.filter(p=>[p.name,p.bizNo,p.ceoName,p.contactName,p.phone,p.email].some(v=>(v||"").includes(q)));}
   wrap.innerHTML=`<table><thead><tr><th>거래처명</th><th>사업자번호</th><th>대표자</th><th>거래유형</th><th>담당자</th><th>연락처</th><th>사용여부</th><th>관리</th></tr></thead><tbody>
-  ${rows.length?rows.map(p=>`<tr><td>${h(p.name)}</td><td>${h(p.bizNo||"-")}</td><td>${h(p.ceoName||"-")}</td><td>${PARTNER_TYPE_LABEL[p.type]||p.type}</td><td>${h(p.contactName||"-")}</td><td>${h(p.phone||"-")}</td><td>${p.active?badge("사용","green"):badge("미사용","gray")}</td><td><button class="btn btn-secondary btn-sm" onclick="openPartnerModal('${p.id}')">수정</button> <button class="btn btn-ghost btn-sm" onclick="_showRecordHistory('${h(p.name)}',_buildHistoryRows(${JSON.stringify(p).replace(/'/g,"&#39;")},[]))">이력</button> <button class="btn btn-danger btn-sm" onclick="deletePartner('${p.id}')">삭제</button></td></tr>`).join(""):`<tr><td colspan="8" class="text-gray" style="text-align:center;padding:20px">${f.q||f.type!=="all"?"검색 결과가 없습니다.":"등록된 거래처가 없습니다."}</td></tr>`}
+  ${rows.length?rows.map(p=>`<tr><td>${h(p.name)}</td><td>${h(p.bizNo||"-")}</td><td>${h(p.ceoName||"-")}</td><td>${PARTNER_TYPE_LABEL[p.type]||p.type}</td><td>${h(p.contactName||"-")}</td><td>${h(p.phone||"-")}</td><td>${p.active?badge("사용","green"):badge("미사용","gray")}</td><td><button class="btn btn-secondary btn-sm" onclick="openPartnerModal('${p.id}')">수정</button> <button class="btn btn-ghost btn-sm" onclick="_showHistoryFor('partner','${p.id}')">이력</button> <button class="btn btn-danger btn-sm" onclick="deletePartner('${p.id}')">삭제</button></td></tr>`).join(""):`<tr><td colspan="8" class="text-gray" style="text-align:center;padding:20px">${f.q||f.type!=="all"?"검색 결과가 없습니다.":"등록된 거래처가 없습니다."}</td></tr>`}
   </tbody></table>`;
 }
 function _dlPartnersCSV(){
@@ -16135,7 +16202,7 @@ function renderAcctVouchersTbl(){
   wrap.innerHTML=`<table><thead><tr><th>전표번호</th><th>유형</th><th>일자</th><th>거래처</th><th>내용</th><th>금액</th><th>상태</th><th>관리</th></tr></thead><tbody>
   ${rows.length?rows.map(v=>`<tr><td>${h(v.voucherNo||"(임시)")}</td><td>${badge(h(_voucherCategoryLabel(v.category)),"indigo")}</td><td>${h(v.date)}</td><td>${h(v.partner||"-")}</td><td>${h(v.description||"-")}</td><td style="text-align:right">${v.amount.toLocaleString()}</td><td>${STATUS_LABEL[v.status]}</td><td>
     <button class="btn btn-secondary btn-sm" onclick="viewVoucherModal('${v.id}')">보기</button>
-    <button class="btn btn-ghost btn-sm" onclick="_showRecordHistory('${h(v.voucherNo||'전표')}',_buildHistoryRows(${JSON.stringify(v).replace(/'/g,"&#39;")},[['createdBy','createdAt','작성'],['postedBy','postedAt','확정'],['voidedBy','voidedAt','취소']]))">이력</button>
+    <button class="btn btn-ghost btn-sm" onclick="_showHistoryFor('voucher','${v.id}')">이력</button>
     ${v.status==="draft"?` <button class="btn btn-primary btn-sm" onclick="postVoucher('${v.id}')">확정</button> <button class="btn btn-danger btn-sm" onclick="deleteVoucherDraft('${v.id}')">삭제</button>`:""}
     ${v.status==="posted"?` <button class="btn btn-danger btn-sm" onclick="voidVoucher('${v.id}')">취소</button>`:""}
   </td></tr>`).join(""):`<tr><td colspan="8" class="text-gray" style="text-align:center;padding:20px">등록된 전표가 없습니다.</td></tr>`}
@@ -16369,7 +16436,7 @@ function renderAcctTaxInvoicesTbl(){
   wrap.innerHTML=`<table><thead><tr><th>구분</th><th>승인번호</th><th>발행일</th><th>거래처</th><th>공급가액</th><th>세액</th><th>합계</th><th>상태</th><th>관리</th></tr></thead><tbody>
   ${rows.length?rows.map(t=>`<tr><td>${t.direction==="purchase"?badge("매입","orange"):badge("매출","blue")}</td><td>${h(t.invoiceNo)}</td><td>${h(t.issueDate)}</td><td>${h(t.partnerName)}</td><td style="text-align:right">${t.supplyTotal.toLocaleString()}</td><td style="text-align:right">${t.taxTotal.toLocaleString()}</td><td style="text-align:right">${t.grandTotal.toLocaleString()}</td><td>${t.status==="issued"?badge("발행","green"):badge("취소","red")}</td><td>
     <button class="btn btn-secondary btn-sm" onclick="viewTaxInvoiceModal('${t.id}')">보기</button>
-    <button class="btn btn-ghost btn-sm" onclick="_showRecordHistory('${h(t.invoiceNo)}',_buildHistoryRows(${JSON.stringify(t).replace(/'/g,"&#39;")},[['createdBy','createdAt','발행'],['voidedBy','voidedAt','취소']]))">이력</button>
+    <button class="btn btn-ghost btn-sm" onclick="_showHistoryFor('taxInvoice','${t.id}')">이력</button>
     ${t.status==="issued"?` <button class="btn btn-danger btn-sm" onclick="voidTaxInvoice('${t.id}')">취소</button>`:""}
   </td></tr>`).join(""):`<tr><td colspan="9" class="text-gray" style="text-align:center;padding:20px">발행된 세금계산서가 없습니다.</td></tr>`}
   </tbody></table>`;
@@ -20714,7 +20781,7 @@ function renderSalesQuotationsTbl(){
   wrap.innerHTML=`<div class="tbl-wrap"><table><thead><tr><th>견적번호</th><th>견적일</th><th>거래처</th><th>합계</th><th>상태</th><th>관리</th></tr></thead><tbody>
   ${rows.length?rows.map(q=>`<tr><td>${h(q.quoteNo||"(임시)")}</td><td>${h(q.date)}</td><td>${h(q.partnerName)}</td><td style="text-align:right">${q.grandTotal.toLocaleString()}</td><td>${QUOTE_STATUS_LABEL[q.status]}</td><td>
     <button class="btn btn-secondary btn-sm" onclick="viewQuotationModal('${q.id}')">보기</button>
-    <button class="btn btn-ghost btn-sm" onclick="_showRecordHistory('${h(q.quoteNo||'견적서')}',_buildHistoryRows(${JSON.stringify(q).replace(/'/g,"&#39;")},[['createdBy','createdAt','작성'],['sentBy','sentAt','발송'],['acceptedBy','acceptedAt','수주확정'],['shippedBy','shippedAt','출고/매출'],['rejectedBy','rejectedAt','실주처리']]))">이력</button>
+    <button class="btn btn-ghost btn-sm" onclick="_showHistoryFor('quotation','${q.id}')">이력</button>
     ${q.status==="draft"?` <button class="btn btn-primary btn-sm" onclick="sendQuotation('${q.id}')">발송</button> <button class="btn btn-danger btn-sm" onclick="deleteQuotationDraft('${q.id}')">삭제</button>`:""}
     ${q.status==="sent"?` <button class="btn btn-primary btn-sm" onclick="acceptQuotation('${q.id}')">수주확정</button> <button class="btn btn-danger btn-sm" onclick="rejectQuotation('${q.id}')">실주처리</button>`:""}
     ${q.status==="accepted"?` <button class="btn btn-primary btn-sm" onclick="shipQuotation('${q.id}')">출고/매출 처리</button>`:""}
@@ -23211,7 +23278,7 @@ function renderSalesPurchaseOrdersTbl(){
   wrap.innerHTML=`<div class="tbl-wrap"><table><thead><tr><th>발주번호</th><th>발주일</th><th>거래처</th><th>입고위치</th><th>합계</th><th>상태</th><th>관리</th></tr></thead><tbody>
   ${rows.length?rows.map(p=>`<tr><td>${h(p.poNo||"(임시)")}</td><td>${h(p.date)}</td><td>${h(p.partnerName)}</td><td>${h(_erpLocationName(p.locationId))}</td><td style="text-align:right">${p.grandTotal.toLocaleString()}</td><td>${PO_STATUS_LABEL[p.status]}</td><td>
     <button class="btn btn-secondary btn-sm" onclick="viewPOModal('${p.id}')">보기</button>
-    <button class="btn btn-ghost btn-sm" onclick="_showRecordHistory('${h(p.poNo||'발주서')}',_buildHistoryRows(${JSON.stringify(p).replace(/'/g,"&#39;")},[['createdBy','createdAt','작성'],['orderedBy','orderedAt','발주확정'],['receivedBy','receivedAt','입고처리'],['cancelledBy','cancelledAt','취소']]))">이력</button>
+    <button class="btn btn-ghost btn-sm" onclick="_showHistoryFor('purchaseOrder','${p.id}')">이력</button>
     ${p.status==="draft"?` <button class="btn btn-primary btn-sm" onclick="confirmPO('${p.id}')">발주확정</button> <button class="btn btn-danger btn-sm" onclick="deletePODraft('${p.id}')">삭제</button>`:""}
     ${p.status==="ordered"?` <button class="btn btn-primary btn-sm" onclick="receivePO('${p.id}')">입고처리</button> <button class="btn btn-danger btn-sm" onclick="cancelPO('${p.id}')">취소</button>`:""}
   </td></tr>`).join(""):`<tr><td colspan="7" class="text-gray" style="text-align:center;padding:20px">등록된 발주서가 없습니다.</td></tr>`}
