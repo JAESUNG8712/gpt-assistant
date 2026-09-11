@@ -385,6 +385,14 @@ def _provider_chain() -> list[str]:
     return chain
 
 
+def has_llm_provider() -> bool:
+    """실제 LLM API 제공자가 하나라도 지금 쓸 수 있는지("local" 자체 엔진 제외).
+    API 키가 아예 없거나 전부 쿨다운 중이면 LLM 호출 시도 자체가 100% 실패할 것이
+    확실하므로, 호출측(의도분석·답변적합성판정·심층검토)이 그 헛수고 대신 곧장
+    로컬 판단 경로로 갈지 결정하는 데 쓴다."""
+    return any(p != "local" for p in _provider_chain())
+
+
 # ── 방법3: 계획 → 초안 → 독립 검증 심층 자기검토 ────────
 def _safe_internal_result(value: str, limit: int) -> str:
     """실패 안내나 로컬 원문 폴백을 후속 검토의 사실 근거로 전달하지 않는다."""
@@ -479,6 +487,15 @@ async def chat_stream(
 
     # 방법3: 계획·초안·독립 검증 심층 자기검토 — 별도 함수 위임
     if thinking_mode == "deep":
+        if not has_llm_provider():
+            # 실제 LLM이 하나도 없으면 계획→초안→검증 3단계가 전부 같은 자체 엔진
+            # 폴백을 반복 호출할 뿐이라 사고 품질에는 전혀 도움이 안 되고 지연시간만
+            # 3배로 늘어난다(각 단계의 system_prompt는 로컬 엔진이 아예 참고하지
+            # 않음). 이 경우 곧장 로컬 다중 근거 종합 판단(engine._compose)으로
+            # 1회만 호출한다.
+            async for token in _local_stream(messages, context, system):
+                yield token
+            return
         async for token in _deep_thinking_chat(messages, context, system):
             yield token
         return

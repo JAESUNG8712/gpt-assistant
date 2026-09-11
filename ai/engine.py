@@ -1043,6 +1043,76 @@ _NO_ANSWER = {
 
 # ── 6. 응답 생성기 ────────────────────────────────────
 
+_SENTENCE_SPLIT_RE = re.compile(r'(?<=[.!?다요])\s*\n+|(?<=[.!?])\s+')
+
+
+def _split_sentences(text: str) -> List[str]:
+    """대략적인 한국어 문장 분리 — 문장부호/줄바꿈 기준. 완벽한 구문분석기가
+    아니라 "어느 문장이 질문과 관련 있는지" 단위를 나누기 위한 실용적 근사치."""
+    text = (text or '').strip()
+    if not text:
+        return []
+    parts = _SENTENCE_SPLIT_RE.split(text)
+    return [p.strip(' -•*#') for p in parts if p.strip(' -•*#')]
+
+
+def _sentence_relevance(query_tokens: set, sentence: str) -> float:
+    """문장 토큰과 질문 토큰의 겹침을 문장 길이로 정규화 — 관련 핵심어가
+    조밀하게 들어있는 짧은 문장을 장황한 문장보다 우대한다."""
+    s_tokens = set(_tok(sentence))
+    if not s_tokens:
+        return 0.0
+    overlap = query_tokens & s_tokens
+    if not overlap:
+        return 0.0
+    return len(overlap) / math.sqrt(len(s_tokens))
+
+
+def _local_synthesize(query: str, results: List, max_sentences: int = 6) -> str:
+    """LLM 없이(또는 LLM을 아예 쓸 수 없어) 여러 KB 후보를 스스로 비교해 답을
+    구성 — 기존 "1위 답변 + 2위 답변 그대로 이어붙이기" 대신, 질문과 실제로
+    관련된 문장만 여러 후보에서 골라 근거 있는 답을 만든다. 이것이 이 프로젝트가
+    LLM API 키 없이도 갖는 "자체 판단"의 실체이며, 진짜 자연어 이해를 대체하지는
+    못하므로 결과에 그 사실을 투명하게 표시한다."""
+    query_tokens = set(_tok(query))
+    if not query_tokens:
+        # 질문이 전부 일반어라 비교 기준 자체가 없으면 최상위 결과를 그대로 신뢰
+        return results[0][1]
+
+    picked: List[Tuple[float, str, int]] = []  # (관련도, 문장, 출처 순번)
+    seen = set()
+    for idx, cand in enumerate(results[:4]):
+        answer, score = cand[1], cand[2]
+        if score < 0.08:
+            continue
+        for sent in _split_sentences(answer):
+            if len(sent) < 6:
+                continue
+            key = re.sub(r'\s+', '', sent)[:80]
+            if key in seen:
+                continue
+            rel = _sentence_relevance(query_tokens, sent)
+            if rel <= 0:
+                continue
+            picked.append((rel, sent, idx))
+            seen.add(key)
+
+    if not picked:
+        return results[0][1]
+
+    picked.sort(key=lambda t: t[0], reverse=True)
+    picked = picked[:max_sentences]
+    picked.sort(key=lambda t: t[2])  # 원래 문서 순서로 되돌려 읽기 자연스럽게
+
+    sources_used = len({idx for _, _, idx in picked})
+    header = (
+        f"🧭 **자체 판단 결과** (연결 가능한 AI 모델이 없어, 보유 지식 {sources_used}건을 "
+        "직접 비교해 관련 내용만 정리했습니다 — AI가 새로 작성한 문장이 아니라 원문에서 "
+        "발췌한 것이니 참고용으로 확인해 주세요)\n\n"
+    )
+    return header + "\n".join(f"- {sent}" for _, sent, _ in picked)
+
+
 def _compose(query: str, results: List, persona: str) -> str:
     # 특수 패턴: 인사
     if _GREET_PATTERN.search(query.strip()):
@@ -1066,21 +1136,11 @@ def _compose(query: str, results: List, persona: str) -> str:
     if best_score >= 0.40:
         return best_a
 
-    # 중간 신뢰도 (≥ 0.20): 상위 2개 조합
-    if best_score >= 0.20:
-        parts = [best_a]
-        if len(results) > 1 and results[1][2] >= 0.15:
-            second = results[1][1]
-            if second != best_a:
-                parts.append("\n\n---\n**추가 참고 사항:**\n" + second[:600])
-        return '\n'.join(parts)
-
-    # 낮은 신뢰도 (≥ 0.10): 참고 자료 제공
+    # 중간~낮은 신뢰도 (0.10~0.40): 단일 후보를 맹신하지 않고 상위 후보 여러 건을
+    # 직접 비교해 질문과 실제로 관련된 부분만 골라 종합한다("자체 판단"). 비교할
+    # 만한 관련 문장이 하나도 안 걸리면(질문이 전부 일반어 등) 최상위 원문으로 대체.
     if best_score >= 0.10:
-        return (
-            "정확히 일치하지는 않지만, 관련 정보를 안내해 드립니다.\n\n"
-            + best_a[:700]
-        )
+        return _local_synthesize(query, results)
 
     # 매우 낮음
     return _NO_ANSWER.get(persona, _NO_ANSWER[''])

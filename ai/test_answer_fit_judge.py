@@ -25,6 +25,12 @@ def _unit_tests():
 
     import llm
     original_stream = llm.chat_stream
+    original_has_provider = llm.has_llm_provider
+    # 아래 LLM 모킹 시나리오들은 "LLM이 있고 이런 응답을 준다"는 것을 검증하려는
+    # 것이므로, 실제 실행 환경에 API 키가 있는지와 무관하게 항상 LLM 경로를 타도록
+    # has_llm_provider()를 True로 고정한다(그렇지 않으면 로컬 휴리스틱 경로로
+    # 빠져서 이 모킹이 전혀 호출되지 않을 수 있음).
+    llm.has_llm_provider = lambda: True
     llm.chat_stream = fake_true
     try:
         assert asyncio.run(intent_agent.judge_answer_fit(
@@ -76,8 +82,22 @@ def _unit_tests():
         finally:
             intent_agent.FIT_JUDGE_ENABLED = True
             os.environ.pop("ANSWER_FIT_JUDGE", None)
+
+        # 6) 실제 LLM API가 하나도 없으면 호출을 시도조차 하지 않고 로컬 휴리스틱
+        # (질문 핵심어가 답변에 있는지)으로 즉시 판정한다 — 항상 실패할 게 뻔한
+        # 호출로 지연시간만 낭비하지 않기 위함.
+        llm.has_llm_provider = lambda: False
+        calls.clear()
+        assert asyncio.run(intent_agent.judge_answer_fit(
+            "연차 촉진제 기준이 뭐야", "q", "연차 촉진제는 회사가 서면으로 통보하는 절차입니다.", "hr"
+        )) is True
+        assert asyncio.run(intent_agent.judge_answer_fit(
+            "전세 계약 갱신 거절 사유", "q", "퇴직금은 평균임금 기준으로 계산합니다.", "hr"
+        )) is False
+        assert not calls  # LLM 호출 자체가 없었어야 함
     finally:
         llm.chat_stream = original_stream
+        llm.has_llm_provider = original_has_provider
 
     print("answer_fit_judge unit tests: PASS")
 

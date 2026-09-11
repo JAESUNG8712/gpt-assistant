@@ -178,6 +178,21 @@ async def judge_answer_fit(user_msg: str, kb_question: str, kb_answer: str, pers
     a = (kb_answer or "").strip()
     if not q or not a:
         return True
+
+    import llm
+    if not llm.has_llm_provider():
+        # 실제 LLM API가 하나도 없으면 이 호출은 로컬 엔진 폴백을 거쳐 JSON이 아닌
+        # 일반 텍스트가 돌아와 매번 파싱 실패로 False(강등) 처리되는데, 이는 시도
+        # 자체가 무의미한 헛수고일 뿐더러 애매한 KB 매치를 전부 "부적합 → LLM
+        # 재생성" 경로로 보내지만 그 LLM 재생성마저 없어 결국 같은 로컬 폴백이
+        # 한 번 더 도는 이중 낭비로 이어진다. 대신 이미 검증된 로컬 휴리스틱
+        # (mem.topic_overlap — 질문 핵심어가 답변에 실제로 있는지)으로 그 자리에서
+        # 즉시 판단한다. 실패 시 보수적으로 False라는 이 함수의 원래 원칙과 달리
+        # 여기서는 "판정 시도 자체가 불가능"이 아니라 "다른 방법으로 실제 판정을
+        # 했다"는 차이가 있어 True/False를 그대로 신뢰한다.
+        import memory as mem
+        return mem.topic_overlap(q, a)
+
     prompt = (
         f"[도메인: {persona_id}]\n"
         f"[사용자 질문]\n{q}\n\n"
