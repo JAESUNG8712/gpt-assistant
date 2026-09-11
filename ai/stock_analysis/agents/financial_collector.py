@@ -81,6 +81,15 @@ class FinancialCollector:
             for key, val in zip(tasks.keys(), values):
                 results[key] = val if not isinstance(val, Exception) else {"error": str(val)}
 
+        if not corp_code and not ticker:
+            # DART corp_code도 ticker도 못 찾은 종목(오타·상장폐지·미상장 등)은
+            # "뉴스"만 수집되고 나머지 지표는 전부 0/빈값이 되어, aggregator._calc_derived()
+            # 결과와 구분이 안 되는 "정상이지만 데이터가 없는" 종목처럼 취급됐다.
+            # aggregator.py의 corp_count가 이미 "error" not in v로 정상 종목만 세고
+            # 있으므로(재무제표 조회 예외와 동일한 관례), 최상위 error 키를 남겨 이
+            # 종목을 통계·추천 대상에서 제외되게 한다.
+            results["error"] = f"종목명 인식 실패: '{corp_name}'의 DART corp_code·거래소 ticker를 찾지 못했습니다."
+
         results["파생지표"] = self._calc_derived(results)
         return results
 

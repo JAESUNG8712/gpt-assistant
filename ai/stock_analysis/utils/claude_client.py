@@ -27,7 +27,11 @@ def is_available() -> bool:
     return bool(os.getenv("ANTHROPIC_API_KEY"))
 
 
-MODEL = "claude-opus-4-8"
+# llm.py의 다른 모든 제공자 기본값(ANTHROPIC_MODEL/GROQ_MODEL/GEMINI_MODEL 등)은
+# 전부 os.getenv(...) override가 가능한데 이 값만 하드코딩돼 있어, 모델이 나중에
+# deprecated/retired 되면 코드 수정+재배포 없이는 대응할 수 없었다. claude-opus-4-8
+# 자체는 현재(2026-09) Anthropic 기준 Active 상태라 기본값은 그대로 유지한다.
+MODEL = os.getenv("STOCK_ANALYSIS_CLAUDE_MODEL", "claude-opus-4-8")
 
 _SYSTEM_PROMPT = """당신은 대한민국 최고 수준의 주식 투자 분석 전문가입니다.
 CFA(공인재무분석사), 증권사 리서치센터장 15년 경력의 관점으로 분석합니다.
@@ -186,7 +190,10 @@ def generate_action_plan(top_picks: list, risk_val: Dict, economic_data: Dict) -
         f"의견 {p.get('의견', '?')}"
         for p in top_picks[:5]
     )
-    market_signal = economic_data.get("종합판단", "중립")
+    # economic_collector.EconomicCollector.run()은 "종합판단"이라는 키를 만든 적이
+    # 없어(전 코드베이스 grep으로 확인) 이 fallback("중립")이 항상 쓰이고 있었다 —
+    # 실제로 계산되는 필드는 VIX 기반 "시장심리"(과열/안정/경계/공포)이므로 그걸 사용한다.
+    market_signal = economic_data.get("시장심리", "중립")
     avg_risk = risk_val.get("_포트폴리오리스크", {}).get("평균리스크점수", 50)
 
     user_prompt = f"""다음 분석 결과를 기반으로 구체적인 투자 액션 플랜을 작성하세요.

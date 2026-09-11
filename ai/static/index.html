@@ -1699,6 +1699,11 @@
         const filename = url.split('/').pop();
         return `<a href="${url}" download="${filename}" class="dl-btn">⬇️ ${label}</a>`;
       }
+      // 스킴 화이트리스트: escHtml()이 </>&"'는 이스케이프하지만 "javascript:" 같은
+      // 스킴 자체는 그대로 통과시켜, [클릭](javascript:...)이 정상적으로 quote된
+      // href 속성 안에서 클릭 시 실행되는 XSS가 가능했음 — http(s)만 클릭 가능한
+      // 링크로 렌더링하고, 그 외 스킴은 클릭 불가능한 일반 텍스트로 무력화한다.
+      if (!/^https?:\/\//i.test(url)) return `${label} (${url})`;
       // 외부 링크: target="_blank"로 새 탭 열기, title 툴팁으로 URL 미리보기
       return `<a href="${url}" target="_blank" rel="noopener noreferrer" title="${url}">${label}</a>`;
     });

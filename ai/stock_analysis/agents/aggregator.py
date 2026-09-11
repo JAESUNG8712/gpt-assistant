@@ -95,7 +95,9 @@ class DataAggregator:
             if data.get("수급", {}).get("외국인합계", {}).get("방향") == "매수우위"
         ]
 
-        macro_signal = self.economic.get("종합판단", "정보없음")
+        # "종합판단"은 economic_collector가 만든 적 없는 키라 항상 "정보없음"이었다 —
+        # 실제 계산 필드는 EconomicCollector.get_market_sentiment()가 채우는 "시장심리".
+        macro_signal = self.economic.get("시장심리", "정보없음")
 
         return {
             "분석종목수": corp_count,
@@ -115,12 +117,17 @@ class DataAggregator:
         if sample_count > 0:
             issues.append(f"DART API 미연결: {sample_count}개 종목 샘플 데이터 사용")
 
-        pykrx_missing = any(
-            "pykrx" in str(data.get("주가", {}).get("_note", ""))
+        # "pykrx" 문자열만 찾으면 krx_client._mock_price_data()의 실제 _note
+        # ("데이터 수집 불가 — 샘플 데이터")를 놓쳐, pykrx도 네이버 fallback도 전부
+        # 실패해 가격이 완전히 가짜(고정값)인데도 "데이터신뢰도: 높음 (실시간)"으로
+        # 보고되는 문제가 있었다(실측 확인). 위 재무제표 검사와 동일하게 "샘플"이라는
+        # 공통 마커로 판정해 모든 mock fallback 경로를 일관되게 잡는다.
+        krx_missing = any(
+            "샘플" in str(data.get("주가", {}).get("_note", ""))
             for data in self.financial.values()
         )
-        if pykrx_missing:
-            issues.append("KRX 실시간 데이터: pykrx 미설치 — 샘플 데이터 사용")
+        if krx_missing:
+            issues.append("KRX 실시간 데이터: pykrx/네이버 조회 실패 — 샘플 데이터 사용")
 
         return {
             "데이터신뢰도": "낮음 (샘플)" if issues else "높음 (실시간)",

@@ -234,7 +234,11 @@ def get_report_by_filename(filename: str):
 
 
 @router.post("/email/send", summary="최근 보고서 이메일 발송")
-def send_latest_report_email():
+def send_latest_report_email(request: Request, token: str = ""):
+    # 인증이 없어 누구나 서버 SMTP 자격증명·쿼터로 임의 발송을 반복 트리거할 수
+    # 있었음 — 다른 관리 API와 동일한 관례로 게이팅.
+    from main import _require_admin_request
+    _require_admin_request(request, token)
     if not email_configured():
         raise HTTPException(
             status_code=503,
@@ -287,9 +291,18 @@ async def screen_lowprice(
 
 
 @router.post("/popular/refresh", summary="인기 종목 강제 갱신")
-def refresh_popular(top_n: int = 50):
+async def refresh_popular(request: Request, top_n: int = 50, token: str = ""):
     """KRX 거래대금 기준 상위 종목을 새로 수집해서 분석 대상에 자동 등록"""
-    result = refresh_popular_stocks(top_n=top_n, force=True)
+    # 인증이 없어 누구나 반복 호출해 KRX 스캔을 강제로 트리거할 수 있었고(main.py의
+    # /stock/popular/sync와 동일한 문제), 동기 블로킹 함수를 await 없이 그대로 호출해
+    # 스캔이 끝날 때까지 이벤트 루프 전체가 멈춰 다른 모든 사용자의 요청이 지연됐음
+    # (main.py의 /stock/popular/sync는 이미 run_in_executor로 감싸져 있었음).
+    from main import _require_admin_request
+    _require_admin_request(request, token)
+    top_n = max(1, min(top_n, 200))
+    result = await asyncio.get_event_loop().run_in_executor(
+        None, lambda: refresh_popular_stocks(top_n=top_n, force=True)
+    )
     return result
 
 

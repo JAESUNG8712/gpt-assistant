@@ -2532,8 +2532,12 @@ async def backup_google_drive(token: str = ""):
 # ── 주식 보고서 다운로드 ──────────────────────────────
 
 @app.post("/stock/popular/sync")
-async def stock_popular_sync(top_n: int = 50):
+async def stock_popular_sync(request: Request, top_n: int = 50, token: str = ""):
     """KRX 거래대금 상위 종목 강제 갱신 (백그라운드 아님)"""
+    # 인증 없이 누구나 반복 호출해 외부 KRX/Naver 스캔을 강제로 트리거할 수 있었음
+    # (리소스 남용/DoS 표면) — 다른 관리 API와 동일한 관례로 게이팅.
+    _require_admin_request(request, token)
+    top_n = max(1, min(top_n, 200))
     from stock_analysis.utils.popular_stocks import refresh_popular_stocks
     # refresh_popular_stocks는 동기 블로킹 KRX 스캔이므로 스레드 실행기로 넘긴다.
     result = await asyncio.get_event_loop().run_in_executor(

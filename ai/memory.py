@@ -962,15 +962,21 @@ def retrieve_best(query: str, n: int = 5, persona_id: str = None,
 
         CONTEXT_ABS_MIN = 0.15
 
-        for i, (q, a, score, meta) in enumerate(results):
+        # "i==0"으로 "첫 유효 후보"를 판정하면, results[0]의 source가 "대화"라
+        # continue로 건너뛰는 순간 그 뒤 어떤 반복에서도 i==0이 다시 되지 않아
+        # topic_overlap 가드(주제 무관 KB 내용이 컨텍스트에 섞이는 것을 막는 안전장치)가
+        # 조용히 무력화되는 잠재 버그가 있었다 — enumerate의 원시 인덱스 대신 "실제로
+        # 채택을 검토한 순번"을 별도로 센다.
+        eligible_idx = 0
+        for q, a, score, meta in results:
             if meta.get("source") == "대화":
                 continue
             if best_score < CONTEXT_ABS_MIN:
                 break
-            if i == 0 and not topic_overlap(query, top_question):
+            if eligible_idx == 0 and not topic_overlap(query, top_question):
                 break
-            if i == 0 or score >= best_score * 0.7:
-                limit = 1000 if i == 0 else 500
+            if eligible_idx == 0 or score >= best_score * 0.7:
+                limit = 1000 if eligible_idx == 0 else 500
                 parts.append(a[:limit])
                 try:
                     memory_id = int(meta.get("memory_id") or 0)
@@ -978,6 +984,7 @@ def retrieve_best(query: str, n: int = 5, persona_id: str = None,
                     memory_id = 0
                 if memory_id > 0 and memory_id not in context_memory_ids:
                     context_memory_ids.append(memory_id)
+            eligible_idx += 1
 
         return {
             "context": "\n\n".join(parts),
