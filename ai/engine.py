@@ -1043,29 +1043,83 @@ _NO_ANSWER = {
 
 # ── 6. 응답 생성기 ────────────────────────────────────
 
-_SENTENCE_SPLIT_RE = re.compile(r'(?<=[.!?다요])\s*\n+|(?<=[.!?])\s+')
+_SENTENCE_SPLIT_RE = re.compile(r'(?<=[.!?다요])\s+(?=\S)')
+_TABLE_RULE_RE = re.compile(r'^[-|:\s]+$')
 
 
-def _split_sentences(text: str) -> List[str]:
-    """대략적인 한국어 문장 분리 — 문장부호/줄바꿈 기준. 완벽한 구문분석기가
-    아니라 "어느 문장이 질문과 관련 있는지" 단위를 나누기 위한 실용적 근사치."""
+def _split_sentences(text: str) -> List[Tuple[str, bool]]:
+    """대략적인 한국어 문장 분리 — 완벽한 구문분석기가 아니라 "어느 부분이
+    질문과 관련 있는지" 단위를 나누기 위한 실용적 근사치. 이 KB의 답변은
+    표·목록·제목이 섞인 마크다운이 대부분이라, 먼저 줄 단위로 나눠 표의 각
+    행·목록의 각 항목을 독립된 단위로 취급한 뒤(그렇지 않으면 문장부호가 없는
+    표 전체가 하나의 거대한 "문장"으로 뭉쳐 관련 없는 내용까지 통째로 뽑히거나
+    반대로 아무것도 못 뽑는 문제가 생김) 여러 문장이 이어진 줄만 문장부호로
+    한 번 더 쪼갠다. (문장, 원래 마크다운 제목 줄이었는지) 튜플 목록을 반환한다
+    — 제목은 짧고 핵심어 밀도가 높아 관련도 점수가 실제 내용 문장보다 부당하게
+    높게 나오기 쉬우므로, 호출측에서 가중치를 낮출 수 있게 구분해서 넘긴다."""
     text = (text or '').strip()
     if not text:
         return []
-    parts = _SENTENCE_SPLIT_RE.split(text)
-    return [p.strip(' -•*#') for p in parts if p.strip(' -•*#')]
+    units: List[Tuple[str, bool]] = []
+    for raw_line in text.split('\n'):
+        is_heading = bool(re.match(r'^\s*#{1,6}\s', raw_line))
+        line = raw_line.strip(' -•*#>')
+        if not line or _TABLE_RULE_RE.match(line):
+            continue  # 표 구분선(|---|---|) 등 장식만 있는 줄은 제외
+        line = line.strip('|').strip()
+        if not line:
+            continue
+        for piece in _SENTENCE_SPLIT_RE.split(line):
+            piece = piece.strip(' -•*#>|')
+            if piece:
+                units.append((piece, is_heading))
+    return units
 
 
-def _sentence_relevance(query_tokens: set, sentence: str) -> float:
+def _sentence_relevance(query_tokens: set, sentence: str, is_heading: bool = False) -> float:
     """문장 토큰과 질문 토큰의 겹침을 문장 길이로 정규화 — 관련 핵심어가
-    조밀하게 들어있는 짧은 문장을 장황한 문장보다 우대한다."""
+    조밀하게 들어있는 짧은 문장을 장황한 문장보다 우대한다. 제목 줄은 짧고
+    핵심어만으로 이루어져 이 계산상 유리해지기 쉬운데, 정작 실제 정보는
+    담고 있지 않으므로 할인 계수를 적용해 비슷한 정도로 관련 있는 실제 내용
+    문장에 밀리도록 한다(제목 외에 뽑을 내용이 전혀 없을 때만 제목이 채택됨)."""
     s_tokens = set(_tok(sentence))
     if not s_tokens:
         return 0.0
     overlap = query_tokens & s_tokens
     if not overlap:
         return 0.0
-    return len(overlap) / math.sqrt(len(s_tokens))
+    score = len(overlap) / math.sqrt(len(s_tokens))
+    return score * 0.5 if is_heading else score
+
+
+def _pick_relevant_units(query_tokens: set, text: str, max_items: int,
+                          min_len: int = 4) -> List[str]:
+    """텍스트(여러 문서를 이어붙인 것 포함)에서 질문과 실제로 관련된 줄/문장만
+    관련도 순으로 골라 원래 등장 순서로 되돌려 반환. 표·목록이 섞인 문서라도
+    관련 없는 행은 자연히 제외되고, 문서 순위와 무관하게 실제로 겹치는 핵심어가
+    많은 부분이 우선된다(예: 1위 문서가 근접-오답이라도 2위 문서에 정확히 맞는
+    문장이 있으면 그쪽이 뽑힘 — 문서 단위 랭킹의 한계를 문장 단위 재평가로 보완)."""
+    if not query_tokens:
+        return []
+    scored: List[Tuple[float, str, int]] = []
+    seen = set()
+    for idx, (unit, is_heading) in enumerate(_split_sentences(text)):
+        if len(unit) < min_len:
+            continue
+        key = re.sub(r'\s+', '', unit)[:80]
+        if key in seen:
+            continue
+        rel = _sentence_relevance(query_tokens, unit, is_heading)
+        if rel <= 0:
+            continue
+        scored.append((rel, unit, idx))
+        seen.add(key)
+    if not scored:
+        return []
+    scored.sort(key=lambda t: t[0], reverse=True)
+    scored = scored[:max_items]
+    scored.sort(key=lambda t: t[2])  # 원래 순서로 되돌려 읽기 자연스럽게
+    return [u for _, u, _ in scored]
 
 
 def _local_synthesize(query: str, results: List, max_sentences: int = 6) -> str:
@@ -1079,19 +1133,25 @@ def _local_synthesize(query: str, results: List, max_sentences: int = 6) -> str:
         # 질문이 전부 일반어라 비교 기준 자체가 없으면 최상위 결과를 그대로 신뢰
         return results[0][1]
 
+    best_score = results[0][2] if results else 0.0
     picked: List[Tuple[float, str, int]] = []  # (관련도, 문장, 출처 순번)
     seen = set()
     for idx, cand in enumerate(results[:4]):
         answer, score = cand[1], cand[2]
-        if score < 0.08:
+        # 절대 점수 하한(0.08)뿐 아니라 1위 대비 상대 점수(60%)도 만족해야 후보에
+        # 포함한다 — 1위가 압도적으로 확실한 경우(예: "여행앱" 0.39 vs 그 외
+        # 0.14~0.20) 관련 없는 하위 후보의 문장이 섞여 들어와 정작 가장 알맞은
+        # 1위 문서의 내용이 희석되는 것을 방지한다. 1위와 근접한 애매한 경우
+        # (예: 0.156 vs 0.146, 근접-오답 가능성이 있는 구간)만 함께 비교한다.
+        if score < 0.08 or (best_score > 0 and score < best_score * 0.6):
             continue
-        for sent in _split_sentences(answer):
-            if len(sent) < 6:
+        for sent, is_heading in _split_sentences(answer):
+            if len(sent) < 4:
                 continue
             key = re.sub(r'\s+', '', sent)[:80]
             if key in seen:
                 continue
-            rel = _sentence_relevance(query_tokens, sent)
+            rel = _sentence_relevance(query_tokens, sent, is_heading)
             if rel <= 0:
                 continue
             picked.append((rel, sent, idx))
@@ -1159,18 +1219,37 @@ LOCAL_FALLBACK_MARKER = "⚠️ AI 응답 생성 서비스에 일시적으로 �
 
 def _compose_with_context(query: str, context: str, persona: str) -> str:
     """웹 검색 결과나 문서 RAG가 있을 때 직접 활용한 응답 생성 — LLM API를 전혀 쓸 수 없을
-    때의 최후 폴백이라 실제 요약/합성은 못 하고 원본 자료를 그대로 보여줄 수밖에 없음.
-    main.py가 LLM에게만 전달하려던 지시문 블록은 제거하고, 합성되지 않은 원본임을
-    명시한다(합성 안 된 내용이 정상 답변처럼 auto_learn되어 KB가 오염되는 것도 방지 —
+    때의 최후 폴백이라 실제 요약·재작성은 못 하지만, 그렇다고 원본을 통째로 그대로
+    보여주지도 않는다. `context`에는 main.py가 KB 검색 상위 여러 건을 이미 모아둔
+    경우가 많아(예: 1위 문서가 표현은 비슷해도 실제로는 다른 주제인 근접-오답이어도
+    2위 문서에 정확히 맞는 문장이 함께 들어있는 경우), 질문과 실제로 겹치는 문장만
+    문서 순위와 무관하게 다시 골라내면 1위 오답 대신 진짜 관련 내용을 보여줄 수
+    있다 — `_local_synthesize`가 여러 KB 후보에 쓰는 것과 같은 원리를 컨텍스트
+    전체에 적용한 것. main.py가 LLM에게만 전달하려던 지시문 블록은 먼저 제거한다
+    (합성 안 된 내용이 정상 답변처럼 auto_learn되어 KB가 오염되는 것도 방지 —
     main.py는 LOCAL_FALLBACK_MARKER가 포함된 응답을 auto_learn에서 제외한다)."""
     ctx = _INTENT_LINE_RE.sub('', context, count=1)
     ctx = _INSTRUCTION_BLOCK_RE.sub('', ctx, count=1).strip()
-    if len(ctx) > 3000:
-        ctx = ctx[:3000] + "\n\n...(내용 일부 생략)"
-    return (
-        f"{LOCAL_FALLBACK_MARKER}, 검색된 원본 자료를 그대로 보여드립니다. "
-        "아래 내용은 AI가 요약·검증하지 않은 원본이므로 참고용으로만 활용해 주세요.\n\n" + ctx
-    )
+    if not ctx:
+        return _NO_ANSWER.get(persona, _NO_ANSWER[''])
+
+    query_tokens = set(_tok(query))
+    picked = _pick_relevant_units(query_tokens, ctx, max_items=8)
+    if picked:
+        body = "\n".join(f"- {u}" for u in picked)
+        notice = (
+            f"{LOCAL_FALLBACK_MARKER}, 검색된 자료를 자체적으로 비교해 질문과 관련된 "
+            "부분만 정리했습니다. AI가 새로 작성한 문장이 아니라 원문에서 발췌한 것이니 "
+            "참고용으로 확인해 주세요.\n\n"
+        )
+    else:
+        # 질문이 전부 일반어이거나 관련 문장을 하나도 못 골랐을 때만 원문을 그대로 노출
+        body = ctx[:3000] + ("\n\n...(내용 일부 생략)" if len(ctx) > 3000 else "")
+        notice = (
+            f"{LOCAL_FALLBACK_MARKER}, 검색된 원본 자료를 그대로 보여드립니다. "
+            "아래 내용은 AI가 요약·검증하지 않은 원본이므로 참고용으로만 활용해 주세요.\n\n"
+        )
+    return notice + body
 
 
 # ── 8. 스트리밍 인터페이스 ──────────────────────────────
