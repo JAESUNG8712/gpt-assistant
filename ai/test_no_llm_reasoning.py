@@ -119,6 +119,33 @@ def _test_local_synthesize():
     print("local synthesize tests: PASS")
 
 
+def _test_local_synthesize_preserves_intra_document_order():
+    """2026-09-13 실측 발견: 관련도 순 1차 정렬 후 "출처 순번만으로" 최종 정렬을
+    복원하면, 같은 문서에서 여러 문장이 뽑혔을 때 그 문서 안에서의 원래 등장
+    순서가 보존되지 않아 1·2·3·4·5 순서 문단이 1·4·2·3·5처럼 뒤죽박죽 나열되는
+    문제가 있었다. 문서 내 위치(pos)까지 정렬 키에 포함해 고쳤다."""
+    import engine as e
+
+    answer = (
+        "1. 첫째 문단입니다 연차 관련 내용이 있습니다.\n"
+        "2. 둘째 문단은 연차와 무관한 이야기입니다.\n"
+        "3. 셋째 문단에도 연차 이야기가 다시 나옵니다.\n"
+        "4. 넷째 문단은 또 연차와 무관합니다.\n"
+        "5. 다섯째 문단에서 연차를 세번째로 언급합니다."
+    )
+    results = [("q", answer, 0.30, {})]
+    out = e._local_synthesize("연차", results, max_sentences=6)
+    body = out.split("\n\n", 1)[1]
+    lines = [ln for ln in body.split("\n") if ln.strip()]
+    # 모든 문장이 "연차"를 포함해 전부 선택되며, 반드시 원문 등장 순서(1→2→3→4→5)
+    # 그대로 나와야 한다.
+    order = [int(ln.lstrip("- ").split(".")[0]) if ln.lstrip("- ")[0].isdigit() else 1
+             for ln in lines]
+    assert order == sorted(order), f"문서 내 순서가 뒤섞임: {lines}"
+
+    print("local synthesize intra-document order tests: PASS")
+
+
 def _test_local_synthesize_ignores_weak_runner_ups():
     import engine as e
 
@@ -358,6 +385,7 @@ def main():
     _clear_llm_keys()
     _test_has_llm_provider()
     _test_local_synthesize()
+    _test_local_synthesize_preserves_intra_document_order()
     _test_local_synthesize_ignores_weak_runner_ups()
     _test_split_sentences_handles_markdown()
     _test_local_synthesize_preserves_table_structure()

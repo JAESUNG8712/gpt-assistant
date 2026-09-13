@@ -1207,7 +1207,13 @@ def _local_synthesize(query: str, results: List, max_sentences: int = 6) -> str:
         return results[0][1]
 
     best_score = results[0][2] if results else 0.0
-    picked: List[Tuple[float, dict, int]] = []  # (관련도, 단위, 출처 순번)
+    # (관련도, 단위, 출처 순번, 문서 내 위치) — 마지막 두 값이 최종 정렬 키다.
+    # 출처 순번만으로 정렬하면 같은 문서에서 여러 문장이 뽑혔을 때 그 문서 안에서의
+    # 순서가 보존되지 않아(관련도 순 1차 정렬로 이미 뒤섞인 상태) 문장이 뒤죽박죽
+    # 나열되는 문제가 실측으로 확인됨(예: 1·2·3·4·5 순서 문단이 1·4·2·3·5로 출력) —
+    # 문서 내 등장 위치(pos)까지 함께 정렬 키에 포함해 같은 문서 안에서는 항상
+    # 원문 순서 그대로 읽히도록 한다.
+    picked: List[Tuple[float, dict, int, int]] = []
     seen = set()
     for idx, cand in enumerate(results[:4]):
         answer, score = cand[1], cand[2]
@@ -1218,7 +1224,7 @@ def _local_synthesize(query: str, results: List, max_sentences: int = 6) -> str:
         # (예: 0.156 vs 0.146, 근접-오답 가능성이 있는 구간)만 함께 비교한다.
         if score < 0.08 or (best_score > 0 and score < best_score * 0.6):
             continue
-        for unit in _split_sentences(answer):
+        for pos, unit in enumerate(_split_sentences(answer)):
             if len(unit["text"]) < 4:
                 continue
             key = re.sub(r'\s+', '', unit["text"])[:80]
@@ -1227,7 +1233,7 @@ def _local_synthesize(query: str, results: List, max_sentences: int = 6) -> str:
             rel = _sentence_relevance(query_tokens, unit)
             if rel <= 0:
                 continue
-            picked.append((rel, unit, idx))
+            picked.append((rel, unit, idx, pos))
             seen.add(key)
 
     if not picked:
@@ -1235,15 +1241,15 @@ def _local_synthesize(query: str, results: List, max_sentences: int = 6) -> str:
 
     picked.sort(key=lambda t: t[0], reverse=True)
     picked = picked[:max_sentences]
-    picked.sort(key=lambda t: t[2])  # 원래 문서 순서로 되돌려 읽기 자연스럽게
+    picked.sort(key=lambda t: (t[2], t[3]))  # 문서 순번 → 문서 내 위치 순으로 복원
 
-    sources_used = len({idx for _, _, idx in picked})
+    sources_used = len({idx for _, _, idx, _ in picked})
     header = (
         f"🧭 **자체 판단 결과** (연결 가능한 AI 모델이 없어, 보유 지식 {sources_used}건을 "
         "직접 비교해 관련 내용만 정리했습니다 — AI가 새로 작성한 문장이 아니라 원문에서 "
         "발췌한 것이니 참고용으로 확인해 주세요)\n\n"
     )
-    return header + "\n".join(_render_unit(unit) for _, unit, _ in picked)
+    return header + "\n".join(_render_unit(unit) for _, unit, _, _ in picked)
 
 
 def _compose(query: str, results: List, persona: str) -> str:
