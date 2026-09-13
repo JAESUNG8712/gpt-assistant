@@ -1462,6 +1462,7 @@ async def chat(req: ChatRequest, request: Request):
             # 미합성 폴백)은 정상 답변이 아니므로 auto_learn에서 제외 — 안 그러면 이 저품질
             # 원본 덤프가 KB에 학습되어 이후 정상 답변을 덮어쓰는 재오염 위험이 있음
             from engine import LOCAL_FALLBACK_MARKER
+            import local_gen
             has_search_conflict = bool(
                 validation_results
                 and srch.search_validation(validation_results)["conflicting_claims"]
@@ -1477,7 +1478,8 @@ async def chat(req: ChatRequest, request: Request):
                     and ai_reply_clean.strip() and not stock_mode
                     and not has_search_conflict
                     and not has_unsupported_answer_claim
-                    and LOCAL_FALLBACK_MARKER not in ai_reply_clean):
+                    and LOCAL_FALLBACK_MARKER not in ai_reply_clean
+                    and local_gen.MARKER_TAG not in ai_reply_clean):
                 candidate_source = (
                     "법령실시간" if law_ctx else
                     "웹검색보강" if search_ctx else

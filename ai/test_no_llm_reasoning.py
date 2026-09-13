@@ -45,24 +45,24 @@ sys.path.insert(0, AI_DIR)
 
 def _clear_llm_keys():
     for k in ("ANTHROPIC_API_KEY", "OPENCODE_ZEN_API_KEY", "OPENROUTER_API_KEY",
-              "GROQ_API_KEY", "GEMINI_API_KEY"):
+              "GROQ_API_KEY", "GEMINI_API_KEY", "MISTRAL_API_KEY", "COHERE_API_KEY"):
         os.environ.pop(k, None)
+
+
+_ALL_PROVIDER_KEY_ATTRS = (
+    "ANTHROPIC_API_KEY", "OPENCODE_ZEN_API_KEY", "OPENROUTER_API_KEY",
+    "GROQ_API_KEY", "GEMINI_API_KEY", "MISTRAL_API_KEY", "COHERE_API_KEY",
+)
 
 
 def _test_has_llm_provider():
     import llm
 
     original_provider = llm.LLM_PROVIDER
-    saved_keys = {
-        "ANTHROPIC_API_KEY": llm.ANTHROPIC_API_KEY,
-        "OPENCODE_ZEN_API_KEY": llm.OPENCODE_ZEN_API_KEY,
-        "OPENROUTER_API_KEY": llm.OPENROUTER_API_KEY,
-        "GROQ_API_KEY": llm.GROQ_API_KEY,
-        "GEMINI_API_KEY": llm.GEMINI_API_KEY,
-    }
+    saved_keys = {attr: getattr(llm, attr) for attr in _ALL_PROVIDER_KEY_ATTRS}
     try:
-        llm.ANTHROPIC_API_KEY = llm.OPENCODE_ZEN_API_KEY = ""
-        llm.OPENROUTER_API_KEY = llm.GROQ_API_KEY = llm.GEMINI_API_KEY = ""
+        for attr in _ALL_PROVIDER_KEY_ATTRS:
+            setattr(llm, attr, "")
         llm.LLM_PROVIDER = "auto"
         assert llm.has_llm_provider() is False
 
@@ -75,6 +75,18 @@ def _test_has_llm_provider():
 
         llm.LLM_PROVIDER = "claude"  # 명시적 지정은 auto 우회
         assert llm.has_llm_provider() is True
+        llm.LLM_PROVIDER = "auto"
+
+        # 2026-09-13 추가된 6·7순위 안전망(Mistral·Cohere)도 동일하게 인식돼야 함
+        llm.MISTRAL_API_KEY = "test-key"
+        assert llm.has_llm_provider() is True
+        assert llm._provider_chain() == ["mistral", "local"]
+        llm.MISTRAL_API_KEY = ""
+
+        llm.COHERE_API_KEY = "test-key"
+        assert llm.has_llm_provider() is True
+        assert llm._provider_chain() == ["cohere", "local"]
+        llm.COHERE_API_KEY = ""
     finally:
         llm.LLM_PROVIDER = original_provider
         for k, v in saved_keys.items():

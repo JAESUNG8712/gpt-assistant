@@ -1,0 +1,9 @@
+# 로컬 생성형 모델(실험적, 기본 비활성) 활성화 시에만 필요한 선택 의존성.
+# 메인 requirements.txt에는 포함하지 않는다 — llama-cpp-python은 C++ 컴파일이
+# 필요해 빌드 시간·용량이 늘어나므로, 기능을 켤 계획이 없는 배포(현재 Render
+# 무료 티어 기본값)에서는 이 파일을 설치하지 않아도 된다.
+#
+# 활성화하려면: 이 파일을 requirements.txt에 병합하거나 빌드 커맨드에
+# `pip install -r requirements.txt -r requirements-local-gen.txt`로 추가하고,
+# .env.example의 LOCAL_GEN_* 환경변수를 설정한다 (ai/local_gen.py 문서 참고).
+llama-cpp-python

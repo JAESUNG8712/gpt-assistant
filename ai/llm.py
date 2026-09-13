@@ -1,14 +1,20 @@
 """
 LLM 라우터 — 다중 제공자 자동 폴백
-우선순위: Claude → OpenCode Zen → OpenRouter → Groq → Gemini → 자체 TF-IDF 엔진
+우선순위: Claude → OpenCode Zen → OpenRouter → Groq → Gemini → Mistral → Cohere → 자체 TF-IDF 엔진
 429(한도초과) 발생 시 다음 제공자로 자동 전환
 
-무료 API 키 발급:
+무료 API 키 발급 (2026-09 기준, 전부 카드 등록 불필요 확인):
   Claude       : https://console.anthropic.com  (추천, 유료)
   OpenCode Zen : https://opencode.ai/auth  (무료 모델 5종 — deepseek-v4-flash-free 등)
   OpenRouter   : https://openrouter.ai  (무료 모델 한도 없음)
   Groq         : https://console.groq.com  (하루 14,400건)
   Gemini       : https://aistudio.google.com  (하루 1,500건)
+  Mistral AI   : https://console.mistral.ai  (전화번호 인증만 필요, 월 약 10억 토큰)
+  Cohere       : https://dashboard.cohere.com/api-keys  (가입 시 자동 발급, 월 1,000건)
+
+Mistral·Cohere는 2026-09-13 "전부 실패할 확률을 낮춰달라"는 요청에 따라 추가한
+6·7순위 안전망 — 기존 5개 제공자가 전부 동시에 실패/소진되는 드문 경우에만
+쓰이므로 평소 응답 품질·속도에는 영향이 없다.
 """
 import os
 import httpx
@@ -80,6 +86,19 @@ GROQ_MODEL   = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
 GEMINI_API_KEY     = os.getenv("GEMINI_API_KEY", "")
 GEMINI_MODEL       = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
 GEMINI_CODING_MODEL = os.getenv("GEMINI_CODING_MODEL", "gemini-3.6-flash")
+
+# Mistral AI (무료 "Experiment" 플랜 — 카드 불필요, 전화번호 인증만 필요, 월 약 10억 토큰)
+# 2026-09 웹 검색으로 확인. OpenAI 호환 포맷이라 기존 _openai_compat_stream 재사용
+# 키 발급: https://console.mistral.ai (가입 → 전화번호 인증 → API 키 발급)
+MISTRAL_API_KEY = os.getenv("MISTRAL_API_KEY", "")
+MISTRAL_MODEL   = os.getenv("MISTRAL_MODEL", "mistral-small-latest")
+
+# Cohere (무료 Trial 키 — 카드 불필요, 자동 발급, 월 1,000건/분당 20건으로 적지만
+# 5개 제공자가 전부 막혔을 때의 추가 안전망으로 유효. /compatibility/v1이 OpenAI
+# 호환 엔드포인트라 동일하게 _openai_compat_stream 재사용) — 2026-09 웹 검색으로 확인
+# 키 발급: https://dashboard.cohere.com/api-keys
+COHERE_API_KEY = os.getenv("COHERE_API_KEY", "")
+COHERE_MODEL   = os.getenv("COHERE_MODEL", "command-r")
 
 SYSTEM_PROMPT = """당신은 사용자만을 위한 전용 AI 어시스턴트입니다.
 - 사용자의 과거 대화, 업로드한 문서, 인터넷 검색 결과를 바탕으로 답변합니다.
@@ -182,6 +201,16 @@ async def _claude_stream(messages: list, system: str) -> AsyncGenerator[str, Non
 
 # ── 자체 엔진 폴백 ────────────────────────────────────
 async def _local_stream(messages: list, context: str, system: str) -> AsyncGenerator[str, None]:
+    # 로컬 생성형 모델(local_gen)이 설정돼 있으면 먼저 시도 — 기본은 미설정이라
+    # is_configured()에서 즉시 빠져나가 기존 동작(순수 추출)과 완전히 동일하다.
+    # 실패·타임아웃 등 어떤 이유로든 None이 오면 아래 기존 추출 엔진으로 이어간다.
+    import local_gen
+    if local_gen.is_configured():
+        generated = await local_gen.generate(messages, context, system)
+        if generated:
+            yield generated
+            return
+
     from engine import local_stream
     async for token in local_stream(messages, context=context, system_prompt=system):
         yield token
@@ -261,6 +290,26 @@ async def _groq_stream(messages: list, system: str) -> AsyncGenerator[str, None]
         api_key=GROQ_API_KEY,
         base_url="https://api.groq.com/openai/v1/chat/completions",
         model=GROQ_MODEL,
+    ):
+        yield token
+
+
+async def _mistral_stream(messages: list, system: str) -> AsyncGenerator[str, None]:
+    async for token in _openai_compat_stream(
+        messages, system,
+        api_key=MISTRAL_API_KEY,
+        base_url="https://api.mistral.ai/v1/chat/completions",
+        model=MISTRAL_MODEL,
+    ):
+        yield token
+
+
+async def _cohere_stream(messages: list, system: str) -> AsyncGenerator[str, None]:
+    async for token in _openai_compat_stream(
+        messages, system,
+        api_key=COHERE_API_KEY,
+        base_url="https://api.cohere.com/compatibility/v1/chat/completions",
+        model=COHERE_MODEL,
     ):
         yield token
 
@@ -381,6 +430,10 @@ def _provider_chain() -> list[str]:
         chain.append("groq")         # 4순위: 하루 14,400건
     if GEMINI_API_KEY and not _is_cooling_down("gemini"):
         chain.append("gemini")       # 5순위: 하루 1,500건
+    if MISTRAL_API_KEY and not _is_cooling_down("mistral"):
+        chain.append("mistral")      # 6순위: 월 약 10억 토큰(카드 불필요)
+    if COHERE_API_KEY and not _is_cooling_down("cohere"):
+        chain.append("cohere")       # 7순위: 월 1,000건(카드 불필요, 최후 안전망)
     chain.append("local")            # 최후 폴백: 자체 엔진 (항상 포함)
     return chain
 
@@ -534,6 +587,16 @@ async def chat_stream(
                     yield token
                 return
 
+            elif provider == "mistral":
+                async for token in _mistral_stream(messages, sys_with_ctx):
+                    yield token
+                return
+
+            elif provider == "cohere":
+                async for token in _cohere_stream(messages, sys_with_ctx):
+                    yield token
+                return
+
             else:  # local
                 async for token in _local_stream(messages, context, system):
                     yield token
@@ -631,6 +694,8 @@ def current_model_info() -> dict:
         "openrouter": {"provider": "OpenRouter",        "model": OPENROUTER_MODEL, "limit": "200건/일(무료)"},
         "groq":       {"provider": "Groq",              "model": GROQ_MODEL,       "limit": "14,400건/일"},
         "gemini":     {"provider": "Google Gemini",     "model": GEMINI_MODEL,     "limit": "1,500건/일"},
+        "mistral":    {"provider": "Mistral AI",        "model": MISTRAL_MODEL,    "limit": "월 약 10억 토큰"},
+        "cohere":     {"provider": "Cohere",            "model": COHERE_MODEL,     "limit": "1,000건/월"},
         "local":      {"provider": "자체 TF-IDF 엔진",  "model": "키워드 검색",    "limit": "무제한"},
     }
     info = labels.get(primary, labels["local"])
@@ -639,7 +704,7 @@ def current_model_info() -> dict:
 
     # 쿨다운 중인 제공자 표시
     cooling = {}
-    for p in ["claude", "zen", "openrouter", "groq", "gemini"]:
+    for p in ["claude", "zen", "openrouter", "groq", "gemini", "mistral", "cohere"]:
         if _is_cooling_down(p):
             remaining = int(_rate_limit_until[p] - time.time())
             cooling[p] = f"{remaining // 60}분 후 복구"
@@ -652,5 +717,10 @@ def current_model_info() -> dict:
         "model": GEMINI_CODING_MODEL if coding_dedicated else info["model"],
         "dedicated": coding_dedicated,
     }
+
+    # 실험적 로컬 생성 모델(기본 비활성) 설정 여부 — 운영 확인용. 미설정이면
+    # local_gen이 llama_cpp를 임포트조차 하지 않으므로 이 확인 자체는 항상 가볍다.
+    import local_gen
+    info["local_generative"] = {"configured": local_gen.is_configured()}
 
     return info
