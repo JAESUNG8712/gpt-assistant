@@ -2838,7 +2838,7 @@ def health():
         "retrieval_engine": "tfidf-bm25-char3-v1",
         "deliberation_engine": "always-review-plan-draft-v2",
         "conversation_engine": "contextual-followup-v1",
-        "offline_reasoning_engine": "symbolic-plan-critic-v3",
+        "offline_reasoning_engine": "symbolic-plan-critic-v4",
         "local_generative_configured": bool(local_backends),
         "local_generative_backends": local_backends,
         "memory_schema": "typed-scopes-v1",

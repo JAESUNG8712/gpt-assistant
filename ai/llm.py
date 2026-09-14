@@ -748,7 +748,7 @@ def current_model_info() -> dict:
     local_info = (
         {"provider": "내장 로컬 생성 AI(실험적)", "model": "GGUF", "limit": "서버 성능 한도"}
         if local_gen.is_configured()
-        else {"provider": "자체 로컬 추론 엔진", "model": "근거 추론·코딩 v3", "limit": "무제한"}
+        else {"provider": "자체 로컬 추론 엔진", "model": "근거 추론·코딩 v4", "limit": "무제한"}
     )
     labels = {
         "claude":     {"provider": "Anthropic Claude", "model": ANTHROPIC_MODEL,  "limit": "유료 종량제"},

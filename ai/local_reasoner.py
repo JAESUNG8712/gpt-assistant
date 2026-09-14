@@ -9,9 +9,10 @@ from __future__ import annotations
 import html
 import re
 from dataclasses import dataclass
+from datetime import date
 
 
-LOCAL_REASONING_MARKER = "<!-- local-reasoning-v3 -->"
+LOCAL_REASONING_MARKER = "<!-- local-reasoning-v4 -->"
 
 _STOP = {
     "그리고", "그러면", "그것", "그거", "대한", "대해서", "어떻게", "알려줘",
@@ -29,7 +30,10 @@ _INTENT_RE = re.compile(r"^\[의도 분석\][^\n]*\n+", re.MULTILINE)
 
 def _tokens(text: str) -> set[str]:
     words = re.findall(r"[가-힣A-Za-z0-9_+#.-]{2,}", (text or "").lower())
-    return {w for w in words if w not in _STOP}
+    # 비교식에서 흔한 A/B, 1/2 같은 한 글자 대상도 보존한다. 한글 한 글자는
+    # 조사·일반어 오탐이 많아 제외하고 ASCII 식별자만 제한적으로 허용한다.
+    short_identifiers = re.findall(r"(?<![A-Za-z0-9_])[A-Za-z0-9](?![A-Za-z0-9_])", text or "")
+    return {w for w in words if w not in _STOP} | {w.lower() for w in short_identifiers}
 
 
 def _chargrams(text: str, size: int = 2) -> set[str]:
@@ -53,13 +57,40 @@ def resolve_context_query(query: str, context: str) -> str:
 
 
 def _sentences(text: str) -> list[str]:
-    chunks = re.split(r"(?<=[.!?。])\s+|\n{2,}|(?=^#{1,4}\s)|(?=^\[[^\]]+\])", text, flags=re.MULTILINE)
     result = []
-    for chunk in chunks:
-        value = " ".join(chunk.split()).strip(" -")
-        # "해외여행 필수 앱" 같은 짧은 문서 제목도 중요한 근거이므로 보존한다.
-        if 6 <= len(value) <= 1000 and value not in result:
-            result.append(value)
+    # 줄을 먼저 분리해야 번호 목록의 "1."을 문장 끝으로 오인하지 않고 단계
+    # 순서를 보존할 수 있다. 일반 문단 한 줄에 문장이 여럿이면 그때만 추가 분리한다.
+    lines = (text or "").splitlines()
+    index = 0
+    while index < len(lines):
+        raw_line = lines[index]
+        line = raw_line.strip()
+        if not line:
+            index += 1
+            continue
+        # 표는 헤더와 데이터 행의 관계가 의미이므로 행 단위로 흩뜨리지 않는다.
+        if line.startswith("|") and line.endswith("|"):
+            table_lines = []
+            while index < len(lines):
+                table_line = lines[index].strip()
+                if not (table_line.startswith("|") and table_line.endswith("|")):
+                    break
+                table_lines.append(table_line)
+                index += 1
+            table = "\n".join(table_lines)
+            if len(table_lines) >= 2 and table not in result:
+                result.append(table[:1000])
+            continue
+        if re.fullmatch(r"\|?[\s:|-]+\|?", line):
+            index += 1
+            continue
+        chunks = re.split(r"(?<=[!?。])\s+|(?<=[가-힣A-Za-z])\.\s+", line)
+        for chunk in chunks:
+            value = " ".join(chunk.split()).strip(" -")
+            # "해외여행 필수 앱" 같은 짧은 문서 제목도 중요한 근거이므로 보존한다.
+            if 6 <= len(value) <= 1000 and value not in result:
+                result.append(value)
+        index += 1
     return result
 
 
@@ -69,6 +100,8 @@ class Evidence:
     score: float
     numbers: tuple[str, ...] = ()
     negative: bool = False
+    position: int = 0
+    ordinal: int | None = None
 
 
 @dataclass(frozen=True)
@@ -90,10 +123,11 @@ class ReasoningReview:
 
 _INTENT_SIGNALS = {
     "cause": ("때문", "이유", "원인", "목적", "위해", "따라"),
-    "procedure": ("절차", "단계", "신청", "제출", "등록", "방법", "해야"),
+    "procedure": ("절차", "단계", "신청", "작성", "제출", "승인", "확인", "등록", "처리", "방법", "해야"),
     "comparison": ("차이", "반면", "각각", "비교", "보다", "장점", "단점"),
     "eligibility": ("조건", "요건", "대상", "가능", "해당", "제외"),
     "amount": ("금액", "시간당", "월급", "요율", "비율", "계산", "기준"),
+    "latest": ("최신", "현재", "고시", "시행", "적용", "기준"),
     "fact": (),
 }
 
@@ -101,7 +135,9 @@ _INTENT_SIGNALS = {
 def build_reasoning_plan(query: str) -> ReasoningPlan:
     """질문을 의도·명시 조건·판단 신호로 분해한다."""
     q = query or ""
-    if re.search(r"(?:왜|이유|원인|목적)", q):
+    if re.search(r"(?:최신|현재|지금|최근|올해)", q):
+        intent = "latest"
+    elif re.search(r"(?:왜|이유|원인|목적)", q):
         intent = "cause"
     elif re.search(r"(?:비교|차이|vs\.?|장단점|어느\s*쪽)", q, re.IGNORECASE):
         intent = "comparison"
@@ -131,7 +167,22 @@ def _rank_evidence(query: str, context: str, limit: int = 4) -> tuple[ReasoningP
     q_grams = _chargrams(query)
     q_numbers = set(re.findall(r"\d+(?:[.,]\d+)?", query))
     ranked: list[Evidence] = []
-    for index, sentence in enumerate(_sentences(_clean_context(context))):
+    sentences = _sentences(_clean_context(context))
+    all_years = [int(year) for sentence in sentences for year in re.findall(r"(?<!\d)(20\d{2})년?", sentence)]
+    asks_current = bool(re.search(r"(?:현재|지금|올해)", query or ""))
+    applicable_years = [year for year in all_years if year <= date.today().year] if asks_current else all_years
+    latest_year = max(applicable_years) if applicable_years else None
+    requested_years = set(re.findall(r"(?<!\d)(20\d{2})년?", query or ""))
+    for index, sentence in enumerate(sentences):
+        sentence_years = set(re.findall(r"(?<!\d)(20\d{2})년?", sentence))
+        # 특정 연도를 물었는데 다른 연도만 적힌 문장은 답 후보에서 제외한다.
+        # 여러 연도를 함께 물은 비교 질문이면 요청된 연도는 모두 유지한다.
+        if requested_years and sentence_years and requested_years.isdisjoint(sentence_years):
+            continue
+        # "현재/최신" 질문은 문맥에서 확인되는 가장 최근 연도 자료를 우선한다.
+        if plan.intent == "latest" and latest_year and sentence_years \
+                and str(latest_year) not in sentence_years:
+            continue
         s_tokens = _tokens(sentence)
         overlap = len(q_tokens & s_tokens)
         coverage = overlap / max(1, len(q_tokens))
@@ -146,9 +197,11 @@ def _rank_evidence(query: str, context: str, limit: int = 4) -> tuple[ReasoningP
             + constraint_hits * 0.8 + intent_hits * 0.22 + source_bonus - index * 0.002
         )
         if score > 0 or (not q_tokens and index < limit):
+            ordinal_match = re.match(r"\s*(\d{1,3})[.)]\s*", sentence)
             ranked.append(Evidence(
                 sentence, score, sentence_numbers,
                 bool(re.search(r"(?:아니|불가|금지|없(?:다|음)|제외|못\s*한)", sentence)),
+                index, int(ordinal_match.group(1)) if ordinal_match else None,
             ))
     ranked.sort(key=lambda item: item.score, reverse=True)
     return plan, ranked[:limit]
@@ -166,11 +219,17 @@ def review_reasoning(plan: ReasoningPlan, evidence: list[Evidence]) -> Reasoning
         "인상률": r"(?:인상률|요율|비율)[^\d]{0,12}(\d+(?:[.,]\d+)?%)",
     }
     for label, pattern in decisive_patterns.items():
-        values = set()
+        values_by_scope: dict[str, set[str]] = {}
         for item in evidence:
-            values.update(re.findall(pattern, item.text))
-        if len(values) > 1:
-            conflicts.append(f"동일 항목의 {label}이(가) 서로 다름: {', '.join(sorted(values))}")
+            years = re.findall(r"(?<!\d)(20\d{2})년?", item.text)
+            scope = years[0] + "년" if years else "연도 미표기"
+            values_by_scope.setdefault(scope, set()).update(re.findall(pattern, item.text))
+        for scope, values in values_by_scope.items():
+            if len(values) > 1:
+                conflicts.append(
+                    f"동일 항목·적용시점({scope})의 {label}이(가) 서로 다름: "
+                    + ", ".join(sorted(values))
+                )
 
     for left_index, left in enumerate(evidence):
         left_positive = bool(re.search(r"(?:가능|할 수 있|인정|적용|있(?:다|음))", left.text))
@@ -205,7 +264,8 @@ def _public_review(plan: ReasoningPlan, review: ReasoningReview, thinking_mode: 
         return ""
     labels = {
         "cause": "원인·이유", "procedure": "절차·방법", "comparison": "비교",
-        "eligibility": "조건·가능 여부", "amount": "수치·계산", "fact": "사실 확인",
+        "eligibility": "조건·가능 여부", "amount": "수치·계산",
+        "latest": "현재·최신 기준", "fact": "사실 확인",
     }
     checks = [f"{labels[plan.intent]} 질문으로 분류", f"근거 {review.evidence_count}개 비교"]
     if plan.constraints:
@@ -221,7 +281,7 @@ def _public_review(plan: ReasoningPlan, review: ReasoningReview, thinking_mode: 
 
 def _language(query: str) -> str:
     q = query.lower()
-    if "html" in q or "웹페이지" in q or "웹 페이지" in q:
+    if "html" in q or "웹페이지" in q or "웹 페이지" in q or re.search(r"웹\s*앱", q):
         return "html"
     if "javascript" in q or "자바스크립트" in q or "node" in q:
         return "javascript"
@@ -230,6 +290,48 @@ def _language(query: str) -> str:
 
 def _python_template(query: str) -> tuple[str, str]:
     q = query.lower()
+    if ("crud" in q or "게시판 api" in q or "할일 api" in q or "todo api" in q):
+        return "검증과 오류 처리를 포함한 FastAPI CRUD API", '''from uuid import uuid4
+
+from fastapi import FastAPI, HTTPException, status
+from pydantic import BaseModel, Field
+
+app = FastAPI(title="Todo API")
+items: dict[str, dict] = {}
+
+
+class TodoCreate(BaseModel):
+    title: str = Field(min_length=1, max_length=120)
+    done: bool = False
+
+
+@app.post("/todos", status_code=status.HTTP_201_CREATED)
+def create_todo(payload: TodoCreate):
+    item_id = str(uuid4())
+    items[item_id] = {"id": item_id, **payload.model_dump()}
+    return items[item_id]
+
+
+@app.get("/todos")
+def list_todos():
+    return list(items.values())
+
+
+@app.put("/todos/{item_id}")
+def update_todo(item_id: str, payload: TodoCreate):
+    if item_id not in items:
+        raise HTTPException(status_code=404, detail="항목을 찾을 수 없습니다")
+    items[item_id] = {"id": item_id, **payload.model_dump()}
+    return items[item_id]
+
+
+@app.delete("/todos/{item_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_todo(item_id: str):
+    if items.pop(item_id, None) is None:
+        raise HTTPException(status_code=404, detail="항목을 찾을 수 없습니다")
+
+
+# 실행: uvicorn main:app --reload'''
     if "중복" in query:
         return "순서를 유지하며 중복 제거", '''def unique_items(items):
     """입력 순서를 유지하며 중복 값을 제거합니다."""
@@ -328,6 +430,52 @@ console.log(process("test"));'''
 def _html_template(query: str) -> tuple[str, str]:
     title_match = re.search(r"(?:제목|이름)[은는:]?\s*['\"]?([^'\"\n]{2,30})", query)
     title = html.escape(title_match.group(1).strip()) if title_match else "나의 웹페이지"
+    if re.search(r"(?:할\s*일|todo)", query, re.IGNORECASE):
+        code = f'''<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{title}</title>
+  <style>
+    body {{ max-width: 640px; margin: 48px auto; padding: 0 20px; font-family: sans-serif; }}
+    form, li {{ display: flex; gap: 8px; margin: 10px 0; }}
+    input {{ flex: 1; padding: 10px; }} button {{ padding: 10px 14px; }}
+    .done span {{ text-decoration: line-through; opacity: .55; }}
+  </style>
+</head>
+<body>
+  <h1>{title}</h1>
+  <form id="todo-form"><input id="todo-input" maxlength="120" required aria-label="할 일"><button>추가</button></form>
+  <ul id="todo-list"></ul>
+  <script>
+    const storageKey = "personal-todos-v1";
+    let todos = JSON.parse(localStorage.getItem(storageKey) || "[]");
+    const list = document.querySelector("#todo-list");
+    const save = () => localStorage.setItem(storageKey, JSON.stringify(todos));
+    function render() {{
+      list.replaceChildren(...todos.map(todo => {{
+        const li = document.createElement("li");
+        li.className = todo.done ? "done" : "";
+        const check = document.createElement("input");
+        check.type = "checkbox"; check.checked = todo.done;
+        check.addEventListener("change", () => {{ todo.done = check.checked; save(); render(); }});
+        const text = document.createElement("span"); text.textContent = todo.title;
+        const remove = document.createElement("button"); remove.textContent = "삭제";
+        remove.addEventListener("click", () => {{ todos = todos.filter(item => item.id !== todo.id); save(); render(); }});
+        li.append(check, text, remove); return li;
+      }}));
+    }}
+    document.querySelector("#todo-form").addEventListener("submit", event => {{
+      event.preventDefault(); const input = document.querySelector("#todo-input");
+      const title = input.value.trim(); if (!title) return;
+      todos.push({{ id: crypto.randomUUID(), title, done: false }}); input.value = ""; save(); render();
+    }});
+    render();
+  </script>
+</body>
+</html>'''
+        return "브라우저에 저장되는 할 일 웹 앱", code
     code = f'''<!doctype html>
 <html lang="ko">
 <head>
@@ -374,10 +522,48 @@ def code_response(query: str, thinking_mode: str = "off") -> str:
     )
 
 
+def _evidence_for_display(plan: ReasoningPlan, ranked: list[Evidence]) -> list[Evidence]:
+    """절차는 단계 번호/원문 순서를 보존하고 나머지는 관련도 순서를 유지한다."""
+    if plan.intent != "procedure":
+        return ranked
+    return sorted(
+        ranked,
+        key=lambda item: (
+            item.ordinal is None,
+            item.ordinal if item.ordinal is not None else item.position,
+            item.position,
+        ),
+    )
+
+
+def _render_grounded_body(plan: ReasoningPlan, evidence: list[Evidence]) -> str:
+    texts = [item.text for item in evidence]
+    if any(text.lstrip().startswith("|") for text in texts):
+        rendered = []
+        for text in texts:
+            rendered.append(text if text.lstrip().startswith("|") else f"- {text}")
+        return "**판단 근거**\n\n" + "\n\n".join(rendered)
+    if plan.intent == "procedure":
+        steps = [re.sub(r"^\s*\d{1,3}[.)]\s*", "", text) for text in texts]
+        return "**수행 절차**\n" + "\n".join(
+            f"{index}. {text}" for index, text in enumerate(steps, 1)
+        )
+    if plan.intent == "comparison":
+        return "**비교 결과**\n" + "\n".join(f"- {text}" for text in texts)
+    if plan.intent == "cause":
+        return "**원인·근거**\n" + "\n".join(f"- {text}" for text in texts)
+    remaining = "\n".join(f"- {text}" for text in texts[1:])
+    return (
+        f"**판단:** {texts[0]}"
+        + ("\n\n**근거 비교**\n" + remaining if remaining else "")
+    )
+
+
 def grounded_response(query: str, context: str, thinking_mode: str = "off") -> str:
     plan, ranked = _rank_evidence(query, context)
-    evidence = [item.text for item in ranked]
     reasoning_review = review_reasoning(plan, ranked)
+    display_evidence = _evidence_for_display(plan, ranked)
+    evidence = [item.text for item in display_evidence]
     review = _public_review(plan, reasoning_review, thinking_mode)
     if not evidence:
         return (
@@ -400,11 +586,9 @@ def grounded_response(query: str, context: str, thinking_mode: str = "off") -> s
             "\n\n**확인 필요:** 자료에서 질문 조건 "
             + ", ".join(reasoning_review.missing_constraints) + "을(를) 확인하지 못했습니다."
         )
-    remaining = "\n".join(f"- {item}" for item in evidence[1:])
     return (
         LOCAL_REASONING_MARKER + "\n" + review
-        + f"**판단:** {evidence[0]}\n\n"
-        + ("**근거 비교**\n" + remaining + "\n\n" if remaining else "")
+        + _render_grounded_body(plan, display_evidence) + "\n\n"
         + f"**검토 결과:** 신뢰도 {reasoning_review.confidence}."
         + missing_note
         + "\n\n외부 LLM의 추측이 아니라 현재 저장된 자료와 명시 조건을 규칙으로 비교한 결과입니다."
