@@ -21,7 +21,7 @@ def list_memories(limit: int = 20) -> list[dict]:
     """사용자가 채팅으로 직접 저장한 소유자 기억만 반환한다."""
     with mem._conn() as conn:
         rows = conn.execute(
-            "SELECT id,content,memory_type,updated_at FROM learned_knowledge"
+            "SELECT id,content,memory_type,updated_at,valid_until FROM learned_knowledge"
             " WHERE source=? AND memory_scope='owner' ORDER BY id DESC LIMIT ?",
             (SOURCE, max(1, min(int(limit), 50))),
         ).fetchall()
@@ -29,6 +29,55 @@ def list_memories(limit: int = 20) -> list[dict]:
         {**dict(row), "value": _answer_from_content(dict(row)["content"])}
         for row in rows
     ]
+
+
+def _normalized_value(value: str) -> str:
+    return re.sub(r"[^0-9a-z가-힣]+", "", (value or "").lower())
+
+
+def _organize() -> str:
+    """명백한 중복과 동일 선호 슬롯의 구버전만 복구 가능하게 정리한다."""
+    memories = list_memories(limit=50)
+    if not memories:
+        return "정리할 개인 기억이 없습니다. `/기억 [내용]`으로 먼저 알려주세요."
+
+    obsolete: list[dict] = []
+    duplicate_count = 0
+    preference_count = 0
+    seen_values: set[tuple[str, str]] = set()
+    seen_slots: set[str] = set()
+    # 최신순이므로 첫 항목은 유지하고 이후 중복·구버전만 격리한다.
+    for item in memories:
+        value_key = (item.get("memory_type", ""), _normalized_value(item["value"]))
+        if value_key[1] and value_key in seen_values:
+            obsolete.append(item)
+            duplicate_count += 1
+            continue
+        seen_values.add(value_key)
+        if item.get("memory_type") == "preference":
+            slot = _preference_slot(item["value"])
+            if slot and slot in seen_slots:
+                obsolete.append(item)
+                preference_count += 1
+                continue
+            if slot:
+                seen_slots.add(slot)
+
+    if obsolete:
+        mem.quarantine_learned_rows(
+            obsolete, "사용자 채팅 명령: 개인 기억 중복·구버전 정리"
+        )
+        _reload_engine()
+    retained = len(memories) - len(obsolete)
+    return (
+        "🗂️ 개인 기억 정리를 완료했습니다.\n\n"
+        f"- 검사: {len(memories)}개\n"
+        f"- 유지: {retained}개\n"
+        f"- 중복 통합: {duplicate_count}개\n"
+        f"- 최신 선호로 교체: {preference_count}개\n\n"
+        "정리된 항목은 영구 삭제되지 않고 관리자 격리함에서 복구할 수 있습니다. "
+        "서로 다른 사실은 임의로 합치지 않았습니다."
+    )
 
 
 def _reload_engine() -> None:
@@ -142,4 +191,6 @@ def execute(action: str, content: str = "", *, is_shared: bool = False) -> str:
             f"{index}. {item['value']}" for index, item in enumerate(memories, 1)
         )
         return f"📚 현재 직접 저장한 개인 기억 {len(memories)}개입니다.\n\n{lines}"
+    if action == "organize":
+        return _organize()
     return "지원하지 않는 기억 명령입니다."

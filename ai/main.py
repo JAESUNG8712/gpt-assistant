@@ -1097,6 +1097,7 @@ async def chat(req: ChatRequest, request: Request):
         collected = []
         validation_results = []  # 답변·학습 품질 게이트에서 공통 사용
         answer_claim_validation = {"supported": [], "unsupported": []}
+        answer_quality = {"should_block_learning": False, "should_warn": False}
         try:
             # ── 경로 STOCK: 주식 분석 파이프라인 실행 ────────
             if run_stock_pipeline:
@@ -1440,6 +1441,23 @@ async def chat(req: ChatRequest, request: Request):
                     collected.append(ref_footer)
                     yield ref_footer
 
+            # 이미 저장된 답이나 계산 결과가 아닌 생성 답변은 관련성·근거·누락·수치·반복을
+            # 외부 API 없이 점검한다. 낮은 품질은 장기기억 오염을 막고 사용자에게 표시한다.
+            if not direct_calc and not kb_direct and not company_kb_only and not clarification_msg:
+                import response_quality
+                previous_answer = next((
+                    item.get("content", "") for item in reversed(selection_history)
+                    if item.get("role") == "assistant"
+                ), "")
+                answer_quality = response_quality.evaluate(
+                    search_msg, "".join(collected), locals().get("context", ""),
+                    previous_answer,
+                )
+                if answer_quality["should_warn"]:
+                    quality_note = response_quality.format_warning(answer_quality)
+                    collected.append(quality_note)
+                    yield quality_note
+
             ai_reply = "".join(collected)
             # <think>...</think> 태그를 DB/KB 저장 전에 제거
             # (생각 과정이 대화 이력·자동학습 KB에 오염되는 것 방지)
@@ -1480,6 +1498,7 @@ async def chat(req: ChatRequest, request: Request):
                     and ai_reply_clean.strip() and not stock_mode
                     and not has_search_conflict
                     and not has_unsupported_answer_claim
+                    and not answer_quality["should_block_learning"]
                     and LOCAL_FALLBACK_MARKER not in ai_reply_clean
                     and local_gen.MARKER_TAG not in ai_reply_clean
                     and LOCAL_REASONING_MARKER not in ai_reply_clean):
@@ -2838,7 +2857,8 @@ def health():
         "retrieval_engine": "tfidf-bm25-char3-v1",
         "deliberation_engine": "always-review-plan-draft-v2",
         "conversation_engine": "contextual-followup-v1",
-        "offline_reasoning_engine": "symbolic-plan-critic-v5",
+        "offline_reasoning_engine": "symbolic-plan-critic-v6",
+        "response_quality_engine": "deterministic-answer-gate-v1",
         "local_generative_configured": bool(local_backends),
         "local_generative_backends": local_backends,
         "memory_schema": "typed-scopes-v1",

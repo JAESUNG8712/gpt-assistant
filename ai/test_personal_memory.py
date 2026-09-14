@@ -51,6 +51,18 @@ def main():
         assert personal_memory.list_memories() == []
         assert memory.list_quarantined_memories()[0]["source"] == "개인기억"
 
+        memory.upsert_knowledge(
+            "개인 기억 중복 A", "커피보다 차를 좋아함", "", source="개인기억",
+            memory_type="fact", memory_scope="owner", reason="test",
+        )
+        memory.upsert_knowledge(
+            "개인 기억 중복 B", "커피보다 차를 좋아함", "", source="개인기억",
+            memory_type="fact", memory_scope="owner", reason="test",
+        )
+        organized = personal_memory.execute("organize")
+        assert "중복 통합: 1개" in organized
+        assert len(personal_memory.list_memories()) == 1
+
     print("personal memory tests: PASS")
 
 

@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from datetime import date
 
 
-LOCAL_REASONING_MARKER = "<!-- local-reasoning-v5 -->"
+LOCAL_REASONING_MARKER = "<!-- local-reasoning-v6 -->"
 
 _STOP = {
     "그리고", "그러면", "그것", "그거", "대한", "대해서", "어떻게", "알려줘",
@@ -590,7 +590,123 @@ def _html_template(query: str) -> tuple[str, str]:
     return "반응형 단일 HTML 페이지", code
 
 
+def _fastapi_project() -> dict[str, str]:
+    """서버 자원이나 외부 모델 없이 재현 가능한 소형 다중 파일 프로젝트."""
+    return {
+        "requirements.txt": "fastapi>=0.110,<1\nuvicorn>=0.29,<1\npytest>=8,<9\nhttpx>=0.27,<1",
+        "app/__init__.py": "",
+        "app/models.py": '''from pydantic import BaseModel, Field
+
+
+class TodoCreate(BaseModel):
+    title: str = Field(min_length=1, max_length=120)
+
+
+class Todo(TodoCreate):
+    id: int
+    done: bool = False''',
+        "app/main.py": '''from fastapi import FastAPI, HTTPException, status
+
+from .models import Todo, TodoCreate
+
+app = FastAPI(title="Todo API")
+items: dict[int, Todo] = {}
+next_id = 1
+
+
+@app.get("/health")
+def health():
+    return {"ok": True}
+
+
+@app.get("/todos", response_model=list[Todo])
+def list_todos():
+    return list(items.values())
+
+
+@app.post("/todos", response_model=Todo, status_code=status.HTTP_201_CREATED)
+def create_todo(payload: TodoCreate):
+    global next_id
+    item = Todo(id=next_id, title=payload.title.strip())
+    items[next_id] = item
+    next_id += 1
+    return item
+
+
+@app.delete("/todos/{item_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_todo(item_id: int):
+    if items.pop(item_id, None) is None:
+        raise HTTPException(status_code=404, detail="항목을 찾을 수 없습니다")''',
+        "tests/test_api.py": '''from fastapi.testclient import TestClient
+
+from app.main import app, items
+
+client = TestClient(app)
+
+
+def setup_function():
+    items.clear()
+
+
+def test_create_and_list_todo():
+    created = client.post("/todos", json={"title": "검증하기"})
+    assert created.status_code == 201
+    assert created.json()["title"] == "검증하기"
+    assert client.get("/todos").json()[0]["title"] == "검증하기"
+
+
+def test_rejects_empty_title():
+    assert client.post("/todos", json={"title": ""}).status_code == 422
+
+
+def test_missing_delete_is_404():
+    assert client.delete("/todos/999").status_code == 404''',
+    }
+
+
+def _code_security_findings(files: dict[str, str]) -> list[str]:
+    joined = "\n".join(files.values())
+    checks = (
+        (r"\beval\s*\(", "eval 사용"),
+        (r"\bexec\s*\(", "exec 사용"),
+        (r"shell\s*=\s*True", "셸 명령 주입 위험"),
+        (r"(?i)(?:api[_-]?key|password|secret)\s*=\s*['\"][^'\"]+", "하드코딩된 비밀정보"),
+        (r"allow_origins\s*=\s*\[['\"]\*", "전체 허용 CORS"),
+    )
+    return [label for pattern, label in checks if re.search(pattern, joined)]
+
+
+def _project_code_response(query: str, thinking_mode: str) -> str:
+    files = _fastapi_project()
+    rendered = []
+    for path, code in files.items():
+        fence = "python" if path.endswith(".py") else "text"
+        rendered.append(f"### `{path}`\n\n```{fence}\n{code}\n```")
+    findings = _code_security_findings(files)
+    audit = (
+        "발견: " + ", ".join(findings)
+        if findings else
+        "통과: eval/exec, shell=True, 하드코딩 비밀정보, 전체 허용 CORS 없음"
+    )
+    plan = build_reasoning_plan(query)
+    review = _public_review(plan, ReasoningReview("높음", (), (), 1), thinking_mode)
+    return (
+        LOCAL_REASONING_MARKER + "\n" + review
+        + "요청을 **테스트가 포함된 다중 파일 FastAPI 프로젝트**로 구성했습니다.\n\n"
+        + "```text\napp/__init__.py\napp/models.py\napp/main.py\ntests/test_api.py\nrequirements.txt\n```\n\n"
+        + "\n\n".join(rendered)
+        + "\n\n### 실행·검증\n\n"
+          "```bash\npip install -r requirements.txt\npytest -q\nuvicorn app.main:app --reload\n```\n\n"
+        + f"정적·보안 점검: {audit}. 입력 길이 검증과 404 처리를 포함했습니다."
+    )
+
+
 def code_response(query: str, thinking_mode: str = "off") -> str:
+    if (
+        re.search(r"fastapi|api", query, re.IGNORECASE)
+        and (thinking_mode == "deep" or re.search(r"프로젝트|여러\s*파일|테스트\s*포함", query))
+    ):
+        return _project_code_response(query, thinking_mode)
     language = _language(query)
     if language == "html":
         purpose, code = _html_template(query)

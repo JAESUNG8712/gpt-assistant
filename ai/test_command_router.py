@@ -42,6 +42,17 @@ def main():
     assert deep["persona"] == "dev"
     assert deep["message"] == "FastAPI 오류 분석"
 
+    evidence = command_router.parse_command("/근거만 2027년 최저임금")
+    assert "추측하지 말고" in evidence["answer_instruction"]
+    compare = command_router.parse_command("/이전비교 최저임금이 달라졌어?")
+    assert "직전 답변" in compare["answer_instruction"]
+    code_test = command_router.parse_command("/코드테스트 FastAPI 할 일 API")
+    assert code_test["persona"] == "dev" and code_test["thinking_mode"] == "deep"
+    assert "테스트 코드" in code_test["answer_instruction"]
+    correction = command_router.parse_command("/정정 방금 답변 다시 봐줘")
+    assert correction["thinking_mode"] == "deep"
+    assert "정정 전후" in correction["answer_instruction"]
+
     help_command = command_router.parse_command("/도움말")
     assert "간편 명령어" in help_command["direct_response"]
 
@@ -55,6 +66,12 @@ def main():
     memories = command_router.parse_command("내가 뭘 기억시켰지?")
     assert memories["memory_action"] == "list"
     assert memories["direct_response"] == ""
+
+    organize = command_router.parse_command("/기억정리")
+    assert organize["memory_action"] == "organize"
+    assert organize["direct_response"] == ""
+    natural_organize = command_router.parse_command("내 개인 기억을 정리해줘")
+    assert natural_organize["memory_action"] == "organize"
 
     forget = command_router.parse_command("/잊기 핵심부터")
     assert forget["memory_action"] == "forget"

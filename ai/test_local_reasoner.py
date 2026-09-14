@@ -118,6 +118,9 @@ def main_():
     assert '@app.post("/todos"' in crud_code and '@app.delete("/todos/{item_id}"' in crud_code
     todo_app = code_response("할 일 웹 앱 만들어줘")
     assert "localStorage" in todo_app and "crypto.randomUUID" in todo_app
+    project = code_response("FastAPI 할 일 API를 테스트 포함 프로젝트로 만들어줘", "deep")
+    assert "app/main.py" in project and "tests/test_api.py" in project
+    assert "pytest -q" in project and "하드코딩 비밀정보" in project
 
     assert local_answer_fit("2027년 최저임금", "2027년 최저임금", "시간당 10,700원")
     assert not local_answer_fit("2027년 최저임금", "2026년 최저임금", "시간당 10,320원")
