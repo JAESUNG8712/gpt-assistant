@@ -48,15 +48,41 @@ _LAW_DETECT = [
     r'제\s*\d+\s*조',                   # 조항 번호 명시 (근로기준법 제23조 등)
     r'(?<!\d)\d+\s*조(?!\d)',           # 숫자 + 조
     r'근로기준법|퇴직급여법|최저임금법|기간제법|산업안전보건법|고용보험법|남녀고용평등법|노동조합법',  # 법률 이름 직접 언급
-    r'법률?|법령|조항|조문|시행령|시행규칙',   # 법령 문서 명시
+    r'법률|법령|조항|조문|시행령|시행규칙',   # 법령 문서 명시 ("법률?"→"법률"로 수정, 사유는 아래)
     r'위반|처벌|과태료|형사처벌|손해배상',     # 법적 제재 (판례 단독 제외)
 ]
 # ※ "판례" 단독은 법령 검색 트리거에서 제외:
 #   "희망퇴직 판례", "야간수당 판례" 같은 일반 판례 질문은 KB가 직접 서빙
 #   법령 API를 트리거하면 DDG에서 무관한 판례가 혼입되는 문제 방지
 
+# 2026-09-11 발견(당시 미수정 기록), 2026-09-14 수정: 예전 `법률?` 패턴은 "률"만
+# 선택적으로 만들어 사실상 "법" 단독 한 글자와 항상 매칭됐음 — 한국어에서 "법"은
+# ① 법률의 준말("이 법이 있나요")과 ② "방법/~하는 법"의 의존명사(어떤 일을 하는
+# 방식)로 완전히 다른 두 의미를 가지는데, 후자가 매우 흔한 일상 표현("이력서 잘
+# 쓰는 법", "OO 사용법", "OO 계산법", "요리법")이라 법령과 무관한 질문까지 매번
+# law.go.kr/DDG 법령 검색을 유발해 불필요한 지연(실측 24초)이 발생했음. "법"이
+# 명사에 공백 없이 바로 붙는 경우("사용법"/"계산법"/"작성법" 등 개방형 방법-접미사)는
+# 제외하고, "불법/합법/위법/탈법/준법/편법/무법"(닫힌 집합의 법 관련 합성어)만
+# 예외로 인정한다. "법"이 공백/문장 시작 뒤에 독립된 단어로 오는 경우("이 법",
+# "관련 법", "법에 따르면")는 법 질문으로 인정하되, 그 앞이 동사 관형형(~는/은/을/던)
+# 뒤에 오는 "~하는 법" 구성(방법을 뜻하는 의존명사 용법)이면 제외한다.
+_LAW_ADJACENT_COMPOUNDS_RE = re.compile(r'불법|합법|위법|탈법|준법|편법|무법')
+_METHOD_SENSE_ENDING_RE = re.compile(r'[가-힣](?:는|은|을|던|았던|었던)\s+$')
+
+
+def _has_bare_law_reference(text: str) -> bool:
+    if _LAW_ADJACENT_COMPOUNDS_RE.search(text):
+        return True
+    for m in re.finditer(r'(?:^|\s)법(?!률|령)', text):
+        prefix = text[:m.start()] + ' '
+        if _METHOD_SENSE_ENDING_RE.search(prefix):
+            continue  # "~하는/쓰는/만드는 법" — 방법을 뜻하는 의존명사 용법
+        return True
+    return False
+
+
 def is_law_question(text: str) -> bool:
-    return any(re.search(p, text) for p in _LAW_DETECT)
+    return any(re.search(p, text) for p in _LAW_DETECT) or _has_bare_law_reference(text)
 
 
 def _get_search_name(query: str) -> str:
