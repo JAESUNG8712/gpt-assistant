@@ -84,6 +84,15 @@ def evaluate(
     )
     if context_tokens and groundedness < 0.2:
         issues.append("제공된 참고 자료와 답변의 연결이 약함")
+    confidence_match = re.search(
+        r"신뢰\s*수준:\s*(high|medium|limited|low|conflict)", context or "", re.IGNORECASE
+    )
+    evidence_confidence = confidence_match.group(1).lower() if confidence_match else ""
+    confidence_caps = {"high": 1.0, "medium": 0.8, "limited": 0.5, "low": 0.3, "conflict": 0.15}
+    if evidence_confidence:
+        groundedness = min(groundedness, confidence_caps[evidence_confidence])
+    if evidence_confidence in {"low", "conflict"}:
+        issues.append("검색 근거의 신뢰도가 낮거나 서로 충돌함")
     if re.search(r"(?:⚠️\s*)?(?:오류|연결 오류|일시적인 오류)", answer or ""):
         issues.append("오류 응답 포함")
         groundedness = 0.0
@@ -99,8 +108,12 @@ def evaluate(
         "issues": issues,
         "unsupported_claims": unsupported,
         "conversation_consistency": conversation_consistency,
-        "should_block_learning": score < 0.55 or bool(unsupported),
-        "should_warn": score < 0.4,
+        "evidence_confidence": evidence_confidence,
+        "should_block_learning": (
+            score < 0.55 or bool(unsupported)
+            or evidence_confidence in {"limited", "low", "conflict"}
+        ),
+        "should_warn": score < 0.4 or evidence_confidence in {"low", "conflict"},
     }
 
 

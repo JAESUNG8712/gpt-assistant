@@ -917,13 +917,14 @@ async def chat(req: ChatRequest, request: Request):
     # 사용자가 명시 요청한 경우뿐 아니라, 로컬 KB 신뢰도가 낮을 때도 자동으로 보강 검색
     # (company는 사내 문서 전용 정책상 제외, stock은 자체 리포트/뉴스 수집 경로를 이미 사용)
     KB_CONTEXT = 0.10   # LLM 호출 시 컨텍스트 포함 기준 / 자동 웹검색 트리거 기준
+    autonomous_verification_reason = srch.auto_verification_reason(search_msg)
     auto_web_search = (
         not effective_use_search
         and not direct_calc
         and not clarification_msg
         and not stock_mode
         and persona_id != "company"
-        and best_score < KB_CONTEXT
+        and (best_score < KB_CONTEXT or bool(autonomous_verification_reason))
     )
     search_ctx = ""
     results = []  # 아래 reference_items 참조 시 항상 정의되어 있어야 함
@@ -935,6 +936,17 @@ async def chat(req: ChatRequest, request: Request):
             None, lambda: srch.web_search(search_msg)
         )
         search_ctx = srch.format_search_context(results)
+
+    # 검색 결과가 있으면 출처 신뢰도뿐 아니라 질문의 연도·요청 항목 충족률까지
+    # 자체 판단한다. 자동 모드에서 충돌·누락이 발견되면 검토 수준을 강화하되,
+    # 사용자가 `/빠르게` 등으로 직접 지정한 선택은 변경하지 않는다.
+    evidence_validation = srch.search_validation(results) if results else {}
+    if evidence_validation:
+        thinking_decision = deliberation.strengthen_for_evidence(
+            thinking_decision, evidence_validation, requested_thinking_mode,
+            is_shared=is_shared_session,
+        )
+        effective_thinking_mode = thinking_decision["mode"]
 
     # ── 주식 페르소나: 파이프라인 / 스크리닝 트리거 여부 판단 ────────
     # 공유 링크는 대화형 조회만 허용한다. 장시간·고비용 분석/스크리닝/리포트
@@ -1064,6 +1076,12 @@ async def chat(req: ChatRequest, request: Request):
         "commands": command_router.applied_command_status(command["applied_commands"]),
         "search_requested": bool(effective_use_search),
         "search_used": bool(search_ctx),
+        "search_automatic": bool(auto_web_search),
+        "search_automatic_reason": (
+            autonomous_verification_reason
+            if autonomous_verification_reason else
+            "로컬 지식 신뢰도 부족" if auto_web_search else ""
+        ),
         "thinking_mode": effective_thinking_mode,
         "thinking_requested": requested_thinking_mode,
         "thinking_automatic": bool(thinking_decision["automatic"]),
@@ -1095,6 +1113,12 @@ async def chat(req: ChatRequest, request: Request):
         ],
         "clarification_selection": selected_clarification.get("title", ""),
         "memory_action": command.get("memory_action", ""),
+        "evidence_confidence": evidence_validation.get("confidence", ""),
+        "evidence_coverage": evidence_validation.get("evidence_coverage"),
+        "evidence_missing": [
+            *evidence_validation.get("missing_aspects", []),
+            *[f"{year}년" for year in evidence_validation.get("missing_years", [])],
+        ],
     }
 
     async def generate():
@@ -2869,10 +2893,11 @@ def health():
         "status": "ok",
         "db_backend": "Turso (클라우드)" if mem._USE_TURSO else "SQLite (로컬)",
         "retrieval_engine": "tfidf-bm25-char3-v1",
-        "deliberation_engine": "always-review-plan-draft-v2",
+        "deliberation_engine": "evidence-adaptive-review-v3",
         "conversation_engine": "contextual-followup-v1",
-        "offline_reasoning_engine": "symbolic-plan-critic-v7",
-        "response_quality_engine": "deterministic-answer-gate-v2",
+        "offline_reasoning_engine": "symbolic-plan-critic-v9",
+        "evidence_reasoning_engine": "adaptive-query-coverage-consensus-v2",
+        "response_quality_engine": "deterministic-answer-gate-v3",
         "local_generative_configured": bool(local_backends),
         "local_generative_backends": local_backends,
         "memory_schema": "typed-scopes-v1",

@@ -104,3 +104,30 @@ def ambiguity_response_decision() -> dict:
 def specialist_response_decision() -> dict:
     """주식 수집·분석 같은 전용 파이프라인은 그 자체가 다단계 판단 엔진이다."""
     return {"mode": "off", "automatic": True, "score": 0, "reason": "전문 분석 엔진 자체 검증"}
+
+
+def strengthen_for_evidence(
+    decision: dict, validation: dict, requested_mode: str = "auto", *, is_shared: bool = False
+) -> dict:
+    """검색 근거가 충돌·부족하면 자동 모드의 검토 수준만 한 단계 강화한다."""
+    if requested_mode != "auto" or not validation:
+        return decision
+    confidence = validation.get("confidence", "")
+    has_gap = bool(validation.get("missing_aspects") or validation.get("missing_years"))
+    if confidence not in {"conflict", "limited", "low"} and not has_gap:
+        return decision
+    target = "prompt" if is_shared else "deep"
+    current = decision.get("mode", "off")
+    mode = target if _MODE_RANK[target] > _MODE_RANK.get(current, 0) else current
+    reason = decision.get("reason", "")
+    evidence_reason = (
+        "검색 근거 충돌" if confidence == "conflict" else
+        "질문별 근거 부족" if has_gap else "검색 출처 신뢰도 제한"
+    )
+    return {
+        **decision,
+        "mode": mode,
+        "automatic": True,
+        "score": max(int(decision.get("score", 0)), 4 if mode == "deep" else 2),
+        "reason": " · ".join(filter(None, [reason, evidence_reason])),
+    }
