@@ -50,6 +50,17 @@ def main():
     specialist_check = deliberation.specialist_response_decision()
     assert specialist_check["mode"] == "off" and "전문 분석" in specialist_check["reason"]
 
+    strengthened = deliberation.strengthen_for_evidence(
+        factual,
+        {"confidence": "limited", "missing_aspects": ["date"], "missing_years": []},
+    )
+    assert strengthened["mode"] == "deep"
+    assert "근거 부족" in strengthened["reason"]
+    explicit_preserved = deliberation.strengthen_for_evidence(
+        explicit_fast, {"confidence": "conflict"}, "off",
+    )
+    assert explicit_preserved["mode"] == "off"
+
     # 코딩 전용 경로에서도 thinking_mode가 더 이상 유실되지 않는다.
     import llm
     original_chat_stream = llm.chat_stream

@@ -936,6 +936,17 @@ async def chat(req: ChatRequest, request: Request):
         )
         search_ctx = srch.format_search_context(results)
 
+    # 검색 결과가 있으면 출처 신뢰도뿐 아니라 질문의 연도·요청 항목 충족률까지
+    # 자체 판단한다. 자동 모드에서 충돌·누락이 발견되면 검토 수준을 강화하되,
+    # 사용자가 `/빠르게` 등으로 직접 지정한 선택은 변경하지 않는다.
+    evidence_validation = srch.search_validation(results) if results else {}
+    if evidence_validation:
+        thinking_decision = deliberation.strengthen_for_evidence(
+            thinking_decision, evidence_validation, requested_thinking_mode,
+            is_shared=is_shared_session,
+        )
+        effective_thinking_mode = thinking_decision["mode"]
+
     # ── 주식 페르소나: 파이프라인 / 스크리닝 트리거 여부 판단 ────────
     # 공유 링크는 대화형 조회만 허용한다. 장시간·고비용 분석/스크리닝/리포트
     # 생성은 소유자 세션에서만 실행해 공유 URL을 통한 비용 유발을 막는다.
@@ -1095,6 +1106,12 @@ async def chat(req: ChatRequest, request: Request):
         ],
         "clarification_selection": selected_clarification.get("title", ""),
         "memory_action": command.get("memory_action", ""),
+        "evidence_confidence": evidence_validation.get("confidence", ""),
+        "evidence_coverage": evidence_validation.get("evidence_coverage"),
+        "evidence_missing": [
+            *evidence_validation.get("missing_aspects", []),
+            *[f"{year}년" for year in evidence_validation.get("missing_years", [])],
+        ],
     }
 
     async def generate():
@@ -2871,7 +2888,8 @@ def health():
         "retrieval_engine": "tfidf-bm25-char3-v1",
         "deliberation_engine": "always-review-plan-draft-v2",
         "conversation_engine": "contextual-followup-v1",
-        "offline_reasoning_engine": "symbolic-plan-critic-v7",
+        "offline_reasoning_engine": "symbolic-plan-critic-v8",
+        "evidence_reasoning_engine": "query-coverage-consensus-v1",
         "response_quality_engine": "deterministic-answer-gate-v2",
         "local_generative_configured": bool(local_backends),
         "local_generative_backends": local_backends,
