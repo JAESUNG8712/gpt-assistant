@@ -15,6 +15,14 @@ COMMAND_DEFINITIONS = [
      "icon": "✂️", "label": "간단히", "description": "핵심만 짧게 답변", "category": "형식", "featured": True},
     {"name": "자세히", "aliases": ["상세히"], "kind": "detail",
      "icon": "📝", "label": "자세히", "description": "근거와 실행 단계까지 설명", "category": "형식"},
+    {"name": "근거만", "aliases": ["확실한것만", "증거만"], "kind": "evidence_only",
+     "icon": "🛡️", "label": "근거만 답변", "description": "확인된 자료만 사용하고 모르는 부분은 구분", "category": "답변", "featured": True},
+    {"name": "이전비교", "aliases": ["지난답변비교", "비교"], "kind": "compare_previous",
+     "icon": "↔️", "label": "이전 답변 비교", "description": "직전 답변과 달라진 점을 중심으로 검토", "category": "작업"},
+    {"name": "코드테스트", "aliases": ["테스트포함", "프로젝트코드"], "kind": "code_test",
+     "icon": "🧪", "label": "코드와 테스트", "description": "실행 코드·테스트·보안 점검을 함께 작성", "category": "작업", "featured": True},
+    {"name": "정정", "aliases": ["다시검토", "오류수정"], "kind": "correction",
+     "icon": "🔁", "label": "답변 재검토", "description": "이전 답변의 오류와 근거를 재검토해 정정", "category": "작업"},
     {"name": "요약", "aliases": ["요약해"], "kind": "summary",
      "icon": "📌", "label": "요약", "description": "붙여 넣은 내용을 핵심 위주로 요약", "category": "작업"},
     {"name": "번역", "aliases": ["번역해"], "kind": "translate",
@@ -24,6 +32,15 @@ COMMAND_DEFINITIONS = [
     {"name": "기억목록", "aliases": ["내기억", "기억보기"], "kind": "memory_list",
      "icon": "📚", "label": "내 기억 보기", "description": "내가 직접 저장한 기억 목록 확인", "category": "기억",
      "requires_message": False},
+    {"name": "기억정리", "aliases": ["기억통합", "중복기억정리"], "kind": "memory_organize",
+     "icon": "🗂️", "label": "개인 기억 정리", "description": "중복·충돌 기억을 최신 기준으로 복구 가능하게 정리", "category": "기억",
+     "requires_message": False},
+    {"name": "기억상태", "aliases": ["기억진단"], "kind": "memory_status",
+     "icon": "🩺", "label": "개인 기억 상태", "description": "활성·만료·복구 가능 기억 상태 확인", "category": "기억",
+     "requires_message": False},
+    {"name": "기억복구", "aliases": ["기억되살리기", "복구"], "kind": "memory_restore",
+     "icon": "♻️", "label": "개인 기억 복구", "description": "삭제·정리된 개인 기억을 직접 복구", "category": "기억",
+     "requires_message": False, "featured": True},
     {"name": "잊기", "aliases": ["잊어", "잊어줘"], "kind": "memory_forget",
      "icon": "🧹", "label": "개인 기억 삭제", "description": "지정한 개인 기억을 복구 가능하게 삭제", "category": "기억"},
     {"name": "통합", "aliases": ["자동"], "kind": "persona", "value": "auto",
@@ -69,16 +86,25 @@ _DEEP_COMMANDS = _names("deep")
 _FAST_COMMANDS = _names("fast")
 _CONCISE_COMMANDS = _names("concise")
 _DETAIL_COMMANDS = _names("detail")
+_EVIDENCE_COMMANDS = _names("evidence_only")
+_COMPARE_COMMANDS = _names("compare_previous")
+_CODE_TEST_COMMANDS = _names("code_test")
+_CORRECTION_COMMANDS = _names("correction")
 _SUMMARY_COMMANDS = _names("summary")
 _TRANSLATE_COMMANDS = _names("translate")
 _MEMORY_SAVE_COMMANDS = _names("memory_save")
 _MEMORY_LIST_COMMANDS = _names("memory_list")
+_MEMORY_ORGANIZE_COMMANDS = _names("memory_organize")
+_MEMORY_STATUS_COMMANDS = _names("memory_status")
+_MEMORY_RESTORE_COMMANDS = _names("memory_restore")
 _MEMORY_FORGET_COMMANDS = _names("memory_forget")
 _HELP_COMMANDS = _names("help")
 _BARE_COMMANDS = (
     _SEARCH_COMMANDS | _DEEP_COMMANDS | _FAST_COMMANDS
     | _CONCISE_COMMANDS | _DETAIL_COMMANDS | _SUMMARY_COMMANDS | _TRANSLATE_COMMANDS
-    | _MEMORY_SAVE_COMMANDS | _MEMORY_FORGET_COMMANDS
+    | _EVIDENCE_COMMANDS | _COMPARE_COMMANDS | _CODE_TEST_COMMANDS | _CORRECTION_COMMANDS
+    | _MEMORY_SAVE_COMMANDS | _MEMORY_FORGET_COMMANDS | _MEMORY_ORGANIZE_COMMANDS
+    | _MEMORY_STATUS_COMMANDS | _MEMORY_RESTORE_COMMANDS
 )
 
 COMMAND_HELP = """## 간편 명령어
@@ -89,10 +115,17 @@ COMMAND_HELP = """## 간편 명령어
 - `/깊게 퇴직금 중간정산 조건` — 깊은 생각으로 분석
 - `/간단히 연차촉진제 설명` — 핵심만 짧게 답변
 - `/자세히 부당해고 대응 절차` — 단계와 근거까지 상세 답변
+- `/근거만 질문` — 확인된 자료만 사용하고 불확실한 부분 구분
+- `/이전비교 질문` — 직전 답변과 달라진 부분 비교
+- `/코드테스트 요청` — 실행 코드·테스트·보안 점검 함께 작성
+- `/정정 내용` — 직전 답변의 오류를 근거와 함께 재검토
 - `/요약 [내용]` — 붙여 넣은 내용 요약
 - `/번역 [내용]` — 한국어↔영어 번역
 - `/기억 [내용]` — 내 선호나 정보를 개인 기억으로 저장
 - `/기억목록` — 내가 직접 저장한 기억 확인
+- `/기억정리` — 중복·충돌 기억을 최신 기준으로 정리
+- `/기억상태` — 활성·만료·복구 가능한 개인 기억 상태 확인
+- `/기억복구 [번호 또는 키워드]` — 삭제·정리된 개인 기억 복구
 - `/잊기 [키워드]` — 일치하는 개인 기억을 복구 가능하게 삭제
 - `/인사`, `/개발`, `/여행`, `/주식`, `/회사`, `/이력서` — 전문가 지정
 
@@ -162,6 +195,7 @@ def parse_command(text: str) -> dict:
         "direct_response": "",
         "memory_action": "",
         "memory_content": "",
+        "code_project": False,
         "applied_commands": [],
     }
     # 질문으로 오해할 여지가 거의 없는 자연스러운 기억 조회 표현도 명령으로 처리한다.
@@ -173,7 +207,31 @@ def parse_command(text: str) -> dict:
         result["memory_action"] = "list"
         result["applied_commands"] = ["기억목록"]
         return result
+    if re.fullmatch(
+        r"(?:내\s*)?(?:개인\s*)?기억(?:을|을\s*좀)?\s*(?:정리|통합)(?:해줘|해주세요|해)?[.!]?",
+        original,
+    ):
+        result["memory_action"] = "organize"
+        result["applied_commands"] = ["기억정리"]
+        return result
+    if re.fullmatch(r"(?:삭제한\s*)?(?:개인\s*)?기억(?:을)?\s*(?:보여줘|복구목록|되살릴\s*수\s*있어\??)", original):
+        result["memory_action"] = "restore"
+        result["applied_commands"] = ["기억복구"]
+        return result
+    # 명령어를 외우지 않아도 자주 쓰는 지시 문장을 동일한 안전 옵션으로 변환한다.
+    # 문장 첫머리의 명확한 명령형만 대상으로 해 일반 질문을 오인하지 않는다.
     remaining = original
+    natural_prefixes = (
+        (r"^근거(?:가)?\s*(?:확실한|확인된)\s*(?:것|내용)만\s*(?:답해줘|알려줘|말해줘)\s*[:：]?\s+(.+)$", "근거만"),
+        (r"^(?:직전|이전|지난)\s*답변과\s*비교(?:해서)?\s*(?:알려줘|정리해줘)?\s*[:：]?\s+(.+)$", "이전비교"),
+        (r"^테스트(?:까지)?\s*포함해서\s*코드(?:를)?\s*(?:만들어줘|작성해줘|구현해줘)\s*[:：]?\s+(.+)$", "코드테스트"),
+        (r"^인터넷에서\s*(?:찾아서|검색해서)\s*(?:알려줘|답해줘)\s*[:：]?\s+(.+)$", "검색"),
+    )
+    for pattern, command_name in natural_prefixes:
+        matched_natural = re.match(pattern, original, re.DOTALL)
+        if matched_natural:
+            remaining = f"/{command_name} {matched_natural.group(1).strip()}"
+            break
     instructions = []
 
     for index in range(4):
@@ -200,6 +258,18 @@ def parse_command(text: str) -> dict:
             instructions.append("핵심 결론을 먼저 쓰고, 5개 이하의 짧은 항목으로 간결하게 답하세요.")
         elif command in _DETAIL_COMMANDS:
             instructions.append("핵심 결론, 근거, 단계별 실행 방법, 주의사항 순서로 상세히 답하세요.")
+        elif command in _EVIDENCE_COMMANDS:
+            instructions.append("제공된 근거로 확인되는 내용만 답하고, 근거가 없거나 불확실한 내용은 추측하지 말고 '확인 필요'로 구분하세요.")
+        elif command in _COMPARE_COMMANDS:
+            instructions.append("대화의 직전 답변과 현재 질문·근거를 비교하여 유지되는 내용, 달라진 내용, 정정할 내용을 구분하세요.")
+        elif command in _CODE_TEST_COMMANDS:
+            result["persona"] = "dev"
+            result["thinking_mode"] = "deep"
+            result["code_project"] = True
+            instructions.append("실행 가능한 코드를 파일별로 작성하고 테스트 코드, 실행 방법, 정적·보안 점검 결과를 함께 제시하세요.")
+        elif command in _CORRECTION_COMMANDS:
+            result["thinking_mode"] = "deep"
+            instructions.append("직전 답변을 그대로 반복하지 말고 사실·수치·시점·근거를 다시 검증한 뒤 오류가 있으면 정정 전후를 명확히 표시하세요.")
         elif command in _SUMMARY_COMMANDS:
             instructions.append("사용자가 제공한 내용을 핵심 사실과 실행 항목 중심으로 요약하세요.")
         elif command in _TRANSLATE_COMMANDS:
@@ -209,6 +279,13 @@ def parse_command(text: str) -> dict:
             result["memory_content"] = rest
         elif command in _MEMORY_LIST_COMMANDS:
             result["memory_action"] = "list"
+        elif command in _MEMORY_ORGANIZE_COMMANDS:
+            result["memory_action"] = "organize"
+        elif command in _MEMORY_STATUS_COMMANDS:
+            result["memory_action"] = "status"
+        elif command in _MEMORY_RESTORE_COMMANDS:
+            result["memory_action"] = "restore"
+            result["memory_content"] = rest
         elif command in _MEMORY_FORGET_COMMANDS:
             result["memory_action"] = "forget"
             result["memory_content"] = rest

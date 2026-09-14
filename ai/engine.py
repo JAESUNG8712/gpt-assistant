@@ -1285,7 +1285,7 @@ def _compose(query: str, results: List, persona: str) -> str:
     return _NO_ANSWER.get(persona, _NO_ANSWER[''])
 
 
-# ── 7. 웹 검색·문서 컨텍스트 직접 응답 ──────────────────
+# ── 7. API 키 없는 로컬 근거 추론 ───────────────────────
 
 # main.py가 LLM 전용으로 context 앞에 붙이는 지시문 블록 2종 — LLM 없이 이 텍스트를
 # 그대로 노출하면 내부 프롬프트가 사용자에게 유출됨. [의도 분석]은 태그만 괄호이고
@@ -1337,8 +1337,14 @@ async def local_stream(
     messages: List[dict],
     context: str = '',
     system_prompt: str = None,
+    thinking_mode: str = 'off',
 ) -> AsyncGenerator[str, None]:
-    """메인 스트리밍 함수 — llm.py에서 호출 (API 키 없을 때 폴백)"""
+    """메인 스트리밍 함수 — API 키가 없어도 근거 선별·검토·간단 코딩을 수행."""
+
+    from local_reasoner import (
+        code_response, grounded_response, resolve_context_query, select_evidence,
+        should_generate_code,
+    )
 
     engine = get_engine()
 
@@ -1356,10 +1362,16 @@ async def local_stream(
     # 페르소나 감지
     persona = detect_persona(system_prompt)
 
-    # 외부 컨텍스트 (웹 검색 결과, 문서 RAG)가 충분히 있으면 직접 사용
-    # → TF-IDF 기존 지식과 경쟁하지 않고 무조건 우선 적용
-    if context and len(context.strip()) > 100:
-        response = _compose_with_context(query, context, persona)
+    reasoning_query = resolve_context_query(query, context)
+
+    # 검색·문서 근거가 있으면 코딩 질문도 해당 근거를 먼저 사용해 기존 답을 잃지 않는다.
+    if (context and len(context.strip()) > 40
+            and (not should_generate_code(reasoning_query)
+                 or select_evidence(reasoning_query, context))):
+        response = grounded_response(reasoning_query, context, thinking_mode)
+    # 근거가 없을 때 반복 가능한 간단 코딩은 결정적 코드 템플릿으로 처리한다.
+    elif should_generate_code(reasoning_query):
+        response = code_response(reasoning_query, thinking_mode)
     else:
         # 컨텍스트 없을 때: 지식베이스 TF-IDF 검색
         # 최근 4턴(user+ai 각2회)을 검색 쿼리에 포함 → 대화 맥락 유지
@@ -1382,7 +1394,8 @@ async def local_stream(
             engine.add(context[:600], context, {'persona': persona, 'source': 'context'})
 
         results = engine.search(search_q, persona=persona)
-        response = _compose(query, results, persona)
+        base = _compose(query, results, persona)
+        response = grounded_response(query, base, thinking_mode)
 
     # 자연스러운 청크 스트리밍
     buf = ''

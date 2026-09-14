@@ -157,7 +157,7 @@ def _test_llm_local_stream_prefers_local_gen_when_configured():
     import local_gen
     import engine
 
-    async def fake_engine_local_stream(messages, context, system_prompt):
+    async def fake_engine_local_stream(messages, context, system_prompt, thinking_mode="off"):
         yield "[기존 추출 엔진 응답]"
 
     original_engine_local_stream = engine.local_stream

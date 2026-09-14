@@ -60,9 +60,11 @@ def _test_has_llm_provider():
 
     original_provider = llm.LLM_PROVIDER
     saved_keys = {attr: getattr(llm, attr) for attr in _ALL_PROVIDER_KEY_ATTRS}
+    saved_ollama_model = llm.OLLAMA_MODEL
     try:
         for attr in _ALL_PROVIDER_KEY_ATTRS:
             setattr(llm, attr, "")
+        llm.OLLAMA_MODEL = ""
         llm.LLM_PROVIDER = "auto"
         assert llm.has_llm_provider() is False
 
@@ -91,6 +93,7 @@ def _test_has_llm_provider():
         llm.LLM_PROVIDER = original_provider
         for k, v in saved_keys.items():
             setattr(llm, k, v)
+        llm.OLLAMA_MODEL = saved_ollama_model
 
     print("has_llm_provider tests: PASS")
 
@@ -286,8 +289,8 @@ def _test_judge_answer_fit_without_llm():
     llm.has_llm_provider = lambda: False
     llm.chat_stream = should_not_be_called
     try:
-        # LLM이 없으면 호출을 시도조차 하지 않고 memory.topic_overlap 기반
-        # 로컬 휴리스틱으로 즉시 판정한다. 처음엔 "LLM 없이는 항상 False(전량
+        # LLM이 없으면 호출을 시도조차 하지 않고 조사·어미 및 숫자 조건을
+        # 함께 보는 로컬 휴리스틱으로 즉시 판정한다. 처음엔 "LLM 없이는 항상 False(전량
         # 강등)"로 단순화했으나, 이렇게 하면 "퇴직금은 어떻게 계산하나요"처럼
         # 명백히 맞는 고빈도 매치까지 전부 강등되어 잘 정리된 KB 원문이
         # 불필요하게 문장 단위로 쪼개지는 것을 실측으로 확인했다 — 명백히 맞는
@@ -331,7 +334,7 @@ def _test_deep_thinking_skips_theater_without_llm():
     original_deep = llm._deep_thinking_chat
     original_has_provider = llm.has_llm_provider
 
-    async def fake_local(messages, context, system):
+    async def fake_local(messages, context, system, thinking_mode="off"):
         calls["local"] += 1
         yield "로컬 폴백 응답"
 
@@ -381,6 +384,46 @@ def _test_deep_thinking_skips_theater_without_llm():
     print("deep thinking skip-without-llm tests: PASS")
 
 
+def _test_ollama_is_real_local_llm_provider():
+    import llm
+
+    keys = ["ANTHROPIC_API_KEY", "OPENCODE_ZEN_API_KEY", "OPENROUTER_API_KEY", "GROQ_API_KEY", "GEMINI_API_KEY"]
+    saved = {name: getattr(llm, name) for name in keys}
+    old_model = llm.OLLAMA_MODEL
+    old_provider = llm.LLM_PROVIDER
+    old_stream = llm._ollama_stream
+    calls = []
+
+    async def fake_ollama(messages, system):
+        calls.append((messages, system))
+        yield "로컬 생성형 답변"
+
+    try:
+        for name in keys:
+            setattr(llm, name, "")
+        llm.OLLAMA_MODEL = "qwen3:4b"
+        llm.LLM_PROVIDER = "auto"
+        llm._ollama_stream = fake_ollama
+        assert llm.has_llm_provider() is True
+        assert llm.is_offline_mode() is False
+
+        async def run():
+            return "".join([part async for part in llm.chat_stream(
+                [{"role": "user", "content": "새 문장 생성"}], thinking_mode="off",
+            )])
+
+        assert asyncio.run(run()) == "로컬 생성형 답변"
+        assert len(calls) == 1
+    finally:
+        for name, value in saved.items():
+            setattr(llm, name, value)
+        llm.OLLAMA_MODEL = old_model
+        llm.LLM_PROVIDER = old_provider
+        llm._ollama_stream = old_stream
+
+    print("ollama local generative provider tests: PASS")
+
+
 def main():
     _clear_llm_keys()
     _test_has_llm_provider()
@@ -392,6 +435,7 @@ def main():
     _test_compose_with_context_extracts_instead_of_dumping()
     _test_judge_answer_fit_without_llm()
     _test_deep_thinking_skips_theater_without_llm()
+    _test_ollama_is_real_local_llm_provider()
 
 
 if __name__ == "__main__":

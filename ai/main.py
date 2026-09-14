@@ -1052,7 +1052,11 @@ async def chat(req: ChatRequest, request: Request):
 
     # 페르소나별 대화 이력 분리: 다른 페르소나 대화가 현재 페르소나 LLM을 혼동시키는 것을 방지
     history = mem.get_recent_messages(10, persona=persona_id, session_id=session_scope)
-    history.append({"role": "user", "content": user_msg})
+    generation_user_msg = (
+        user_msg + "\n\n[요청 형식: 실행 가능한 다중 파일 프로젝트와 자동 테스트를 함께 작성]"
+        if command.get("code_project") else user_msg
+    )
+    history.append({"role": "user", "content": generation_user_msg})
 
     # 응답 헤더와 대화 이력이 동일한 확정 상태 객체를 공유한다.
     # 스트리밍 함수보다 먼저 만들어 저장 시점에도 값의 출처가 명확하도록 한다.
@@ -1075,6 +1079,7 @@ async def chat(req: ChatRequest, request: Request):
             "single-self-review-v2" if effective_thinking_mode == "prompt" else
             "plan-draft-review-v1"
         ),
+        "offline_reasoning": llm.is_offline_mode(),
         "context_continued": bool(intent_info.get("uses_context")),
         "resolved_persona": persona_id,
         "resolved_persona_name": persona.get("name", ""),
@@ -1096,6 +1101,7 @@ async def chat(req: ChatRequest, request: Request):
         collected = []
         validation_results = []  # 답변·학습 품질 게이트에서 공통 사용
         answer_claim_validation = {"supported": [], "unsupported": []}
+        answer_quality = {"should_block_learning": False, "should_warn": False}
         try:
             # ── 경로 STOCK: 주식 분석 파이프라인 실행 ────────
             if run_stock_pipeline:
@@ -1405,7 +1411,7 @@ async def chat(req: ChatRequest, request: Request):
                         context = _intent_ctx
 
                     if no_local:
-                        yield "> 📭 로컬 자료 없음 — AI 지식으로 답변 후 자동 학습합니다.\n\n"
+                        yield "> 📭 직접 일치하는 자료 없음 — 로컬 지식을 검토해 답변합니다.\n\n"
 
                 if persona_features.get("use_coding", False):
                     async for token in llm.chat_stream_coding(
@@ -1439,6 +1445,25 @@ async def chat(req: ChatRequest, request: Request):
                     collected.append(ref_footer)
                     yield ref_footer
 
+            # 이미 저장된 답이나 계산 결과가 아닌 생성 답변은 관련성·근거·누락·수치·반복을
+            # 외부 API 없이 점검한다. 낮은 품질은 장기기억 오염을 막고 사용자에게 표시한다.
+            if not direct_calc and not kb_direct and not company_kb_only and not clarification_msg:
+                import response_quality
+                previous_answer = next((
+                    item.get("content", "") for item in reversed(selection_history)
+                    if item.get("role") == "assistant"
+                ), "")
+                answer_quality = response_quality.evaluate(
+                    search_msg, "".join(collected), locals().get("context", ""),
+                    previous_answer,
+                )
+                if answer_quality["should_warn"]:
+                    quality_note = response_quality.format_warning(
+                        answer_quality, search_msg, locals().get("context", "")
+                    )
+                    collected.append(quality_note)
+                    yield quality_note
+
             ai_reply = "".join(collected)
             # <think>...</think> 태그를 DB/KB 저장 전에 제거
             # (생각 과정이 대화 이력·자동학습 KB에 오염되는 것 방지)
@@ -1451,6 +1476,14 @@ async def chat(req: ChatRequest, request: Request):
             mem.save_message(
                 "assistant", ai_reply_clean or ai_reply,
                 persona=persona_id, session_id=session_scope,
+                command_status=({
+                    "answer_quality": {
+                        "score": answer_quality.get("score"),
+                        "grade": answer_quality.get("grade", ""),
+                        "issues": answer_quality.get("issues", [])[:5],
+                        "learning_blocked": answer_quality.get("should_block_learning", False),
+                    }
+                } if "score" in answer_quality else None),
             )
 
             # ── 자동 학습 후보: 검증되지 않은 답변은 영구 RAG에 바로 넣지 않음 ──
@@ -1463,6 +1496,7 @@ async def chat(req: ChatRequest, request: Request):
             # 원본 덤프가 KB에 학습되어 이후 정상 답변을 덮어쓰는 재오염 위험이 있음
             from engine import LOCAL_FALLBACK_MARKER
             import local_gen
+            from local_reasoner import LOCAL_REASONING_MARKER
             has_search_conflict = bool(
                 validation_results
                 and srch.search_validation(validation_results)["conflicting_claims"]
@@ -1478,8 +1512,10 @@ async def chat(req: ChatRequest, request: Request):
                     and ai_reply_clean.strip() and not stock_mode
                     and not has_search_conflict
                     and not has_unsupported_answer_claim
+                    and not answer_quality["should_block_learning"]
                     and LOCAL_FALLBACK_MARKER not in ai_reply_clean
-                    and local_gen.MARKER_TAG not in ai_reply_clean):
+                    and local_gen.MARKER_TAG not in ai_reply_clean
+                    and LOCAL_REASONING_MARKER not in ai_reply_clean):
                 candidate_source = (
                     "법령실시간" if law_ctx else
                     "웹검색보강" if search_ctx else
@@ -2823,12 +2859,22 @@ def budget_grid_compare(a: str = "current", b: str = "current", token: str = "")
 @app.get("/health")
 def health():
     import shutil
+    import local_gen
+    local_backends = []
+    if llm.OLLAMA_MODEL:
+        local_backends.append("ollama")
+    if local_gen.is_configured():
+        local_backends.append("gguf")
     result = {
         "status": "ok",
         "db_backend": "Turso (클라우드)" if mem._USE_TURSO else "SQLite (로컬)",
         "retrieval_engine": "tfidf-bm25-char3-v1",
         "deliberation_engine": "always-review-plan-draft-v2",
         "conversation_engine": "contextual-followup-v1",
+        "offline_reasoning_engine": "symbolic-plan-critic-v7",
+        "response_quality_engine": "deterministic-answer-gate-v2",
+        "local_generative_configured": bool(local_backends),
+        "local_generative_backends": local_backends,
         "memory_schema": "typed-scopes-v1",
         "memory_feedback": "attributed-utility-v1",
         "law_api_key_set": bool(os.getenv("LAW_API_KEY")),

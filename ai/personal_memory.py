@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+from datetime import date
 
 import memory as mem
 import privacy as privacy_guard
@@ -21,7 +22,7 @@ def list_memories(limit: int = 20) -> list[dict]:
     """사용자가 채팅으로 직접 저장한 소유자 기억만 반환한다."""
     with mem._conn() as conn:
         rows = conn.execute(
-            "SELECT id,content,memory_type,updated_at FROM learned_knowledge"
+            "SELECT id,content,memory_type,updated_at,valid_until FROM learned_knowledge"
             " WHERE source=? AND memory_scope='owner' ORDER BY id DESC LIMIT ?",
             (SOURCE, max(1, min(int(limit), 50))),
         ).fetchall()
@@ -29,6 +30,129 @@ def list_memories(limit: int = 20) -> list[dict]:
         {**dict(row), "value": _answer_from_content(dict(row)["content"])}
         for row in rows
     ]
+
+
+def _normalized_value(value: str) -> str:
+    return re.sub(r"[^0-9a-z가-힣]+", "", (value or "").lower())
+
+
+def _organize() -> str:
+    """명백한 중복과 동일 선호 슬롯의 구버전만 복구 가능하게 정리한다."""
+    memories = list_memories(limit=50)
+    if not memories:
+        return "정리할 개인 기억이 없습니다. `/기억 [내용]`으로 먼저 알려주세요."
+
+    obsolete: list[dict] = []
+    duplicate_count = 0
+    preference_count = 0
+    seen_values: set[tuple[str, str]] = set()
+    seen_slots: set[str] = set()
+    # 최신순이므로 첫 항목은 유지하고 이후 중복·구버전만 격리한다.
+    for item in memories:
+        value_key = (item.get("memory_type", ""), _normalized_value(item["value"]))
+        if value_key[1] and value_key in seen_values:
+            obsolete.append(item)
+            duplicate_count += 1
+            continue
+        seen_values.add(value_key)
+        if item.get("memory_type") == "preference":
+            slot = _preference_slot(item["value"])
+            if slot and slot in seen_slots:
+                obsolete.append(item)
+                preference_count += 1
+                continue
+            if slot:
+                seen_slots.add(slot)
+
+    if obsolete:
+        mem.quarantine_learned_rows(
+            obsolete, "사용자 채팅 명령: 개인 기억 중복·구버전 정리"
+        )
+        _reload_engine()
+    retained = len(memories) - len(obsolete)
+    return (
+        "🗂️ 개인 기억 정리를 완료했습니다.\n\n"
+        f"- 검사: {len(memories)}개\n"
+        f"- 유지: {retained}개\n"
+        f"- 중복 통합: {duplicate_count}개\n"
+        f"- 최신 선호로 교체: {preference_count}개\n\n"
+        "정리된 항목은 영구 삭제되지 않고 관리자 격리함에서 복구할 수 있습니다. "
+        "서로 다른 사실은 임의로 합치지 않았습니다."
+    )
+
+
+def _recoverable_memories() -> list[dict]:
+    return [
+        item for item in mem.list_quarantined_memories(limit=200)
+        if item.get("source") == SOURCE
+        and item.get("original_memory_scope") == "owner"
+    ]
+
+
+def _status() -> str:
+    memories = list_memories(limit=50)
+    recoverable = _recoverable_memories()
+    today = date.today().isoformat()
+    expired = sum(
+        1 for item in memories
+        if item.get("valid_until") and str(item["valid_until"]) < today
+    )
+    by_type: dict[str, int] = {}
+    for item in memories:
+        kind = item.get("memory_type") or "fact"
+        by_type[kind] = by_type.get(kind, 0) + 1
+    type_label = {"fact": "사실", "preference": "선호", "procedure": "절차", "context": "맥락", "document": "문서"}
+    distribution = ", ".join(
+        f"{type_label.get(kind, kind)} {count}개" for kind, count in sorted(by_type.items())
+    ) or "없음"
+    return (
+        "🩺 개인 기억 상태입니다.\n\n"
+        f"- 활성 기억: {len(memories)}개 ({distribution})\n"
+        f"- 만료 표시: {expired}개\n"
+        f"- 복구 가능: {len(recoverable)}개\n\n"
+        "`/기억정리`로 중복을 정리하고 `/기억복구`로 삭제된 항목을 확인할 수 있습니다."
+    )
+
+
+def _restore(keyword: str) -> str:
+    recoverable = _recoverable_memories()
+    if not recoverable:
+        return "복구할 수 있는 개인 기억이 없습니다."
+    value = " ".join((keyword or "").strip().split())
+    if not value:
+        lines = "\n".join(
+            f"{index}. `#{item['id']}` {_answer_from_content(item['content'])[:160]}"
+            for index, item in enumerate(recoverable[:20], 1)
+        )
+        return (
+            f"♻️ 복구 가능한 개인 기억 {len(recoverable)}개입니다.\n\n{lines}\n\n"
+            "`/기억복구 #번호` 또는 `/기억복구 키워드`로 복구할 수 있습니다."
+        )
+    id_match = re.fullmatch(r"#?(\d+)", value)
+    if id_match:
+        matches = [item for item in recoverable if int(item["id"]) == int(id_match.group(1))]
+    else:
+        lowered = value.lower()
+        matches = [
+            item for item in recoverable
+            if lowered in _answer_from_content(item["content"]).lower()
+        ]
+    if not matches:
+        return f"`{value}`와 일치하는 복구 가능 개인 기억을 찾지 못했습니다. `/기억복구`에서 확인해 주세요."
+    if len(matches) > 1:
+        lines = "\n".join(
+            f"- `#{item['id']}` {_answer_from_content(item['content'])[:160]}"
+            for item in matches[:10]
+        )
+        return "일치하는 기억이 여러 개입니다. 아래 번호로 다시 지정해 주세요.\n\n" + lines
+    try:
+        restored = mem.restore_quarantined_memory(int(matches[0]["id"]))
+    except mem.MemoryVersionConflict as exc:
+        return f"안전하게 복구하지 못했습니다: {exc}"
+    if not restored:
+        return "이미 복구되었거나 더 이상 존재하지 않는 개인 기억입니다."
+    _reload_engine()
+    return f"♻️ 개인 기억을 복구했습니다.\n\n- {_answer_from_content(restored['content'])}"
 
 
 def _reload_engine() -> None:
@@ -142,4 +266,10 @@ def execute(action: str, content: str = "", *, is_shared: bool = False) -> str:
             f"{index}. {item['value']}" for index, item in enumerate(memories, 1)
         )
         return f"📚 현재 직접 저장한 개인 기억 {len(memories)}개입니다.\n\n{lines}"
+    if action == "organize":
+        return _organize()
+    if action == "status":
+        return _status()
+    if action == "restore":
+        return _restore(content)
     return "지원하지 않는 기억 명령입니다."
