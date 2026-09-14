@@ -927,6 +927,8 @@ async def chat(req: ChatRequest, request: Request):
         and (best_score < KB_CONTEXT or bool(autonomous_verification_reason))
     )
     search_ctx = ""
+    memory_conflict_ctx = ""
+    memory_search_validation = {"matched": [], "conflicts": []}
     results = []  # 아래 reference_items 참조 시 항상 정의되어 있어야 함
     if ((effective_use_search or auto_web_search) and not clarification_msg
             and not personal_memory_reply):
@@ -936,6 +938,13 @@ async def chat(req: ChatRequest, request: Request):
             None, lambda: srch.web_search(search_msg)
         )
         search_ctx = srch.format_search_context(results)
+        if results and rag_ctx:
+            memory_search_validation = srch.validate_memory_against_search(
+                search_msg, rag_ctx, results
+            )
+            memory_conflict_ctx = srch.format_memory_search_conflict_note(
+                memory_search_validation
+            )
 
     # 검색 결과가 있으면 출처 신뢰도뿐 아니라 질문의 연도·요청 항목 충족률까지
     # 자체 판단한다. 자동 모드에서 충돌·누락이 발견되면 검토 수준을 강화하되,
@@ -1082,6 +1091,7 @@ async def chat(req: ChatRequest, request: Request):
             if autonomous_verification_reason else
             "로컬 지식 신뢰도 부족" if auto_web_search else ""
         ),
+        "memory_search_conflicts": len(memory_search_validation["conflicts"]),
         "thinking_mode": effective_thinking_mode,
         "thinking_requested": requested_thinking_mode,
         "thinking_automatic": bool(thinking_decision["automatic"]),
@@ -1417,7 +1427,9 @@ async def chat(req: ChatRequest, request: Request):
                                 "source_label": r.get("source_label", ""),
                             } for r in results
                         )
-                    raw_ctx = "\n\n".join(filter(None, [law_ctx, rag_ctx, search_ctx]))
+                    raw_ctx = "\n\n".join(filter(None, [
+                        memory_conflict_ctx, law_ctx, rag_ctx, search_ctx,
+                    ]))
                     # 질문 관련성 지시: 무관한 컨텍스트를 LLM이 포함하지 않도록 명시
                     _intent_ctx = intent_agent.format_intent_context(intent_info)
                     if raw_ctx:
@@ -1458,6 +1470,13 @@ async def chat(req: ChatRequest, request: Request):
                 if validation_note:
                     collected.append(validation_note)
                     yield validation_note
+
+                memory_conflict_warning = srch.format_memory_search_conflict_warning(
+                    memory_search_validation
+                )
+                if memory_conflict_warning:
+                    collected.append(memory_conflict_warning)
+                    yield memory_conflict_warning
 
                 answer_validation_note = srch.format_answer_claim_validation_note(answer_claim_validation)
                 if answer_validation_note:
@@ -1526,6 +1545,7 @@ async def chat(req: ChatRequest, request: Request):
                 and srch.search_validation(validation_results)["conflicting_claims"]
             )
             has_unsupported_answer_claim = bool(answer_claim_validation["unsupported"])
+            has_memory_search_conflict = bool(memory_search_validation["conflicts"])
             # 이미 KB에서 직접 서빙한 답변과 Python 계산 결과는 새 지식이 아니므로
             # 후보 대기열에 다시 쌓지 않는다. LLM이 새로 합성한 답변만 검토 대상으로 둔다.
             is_new_synthesized_answer = (
@@ -1536,6 +1556,7 @@ async def chat(req: ChatRequest, request: Request):
                     and ai_reply_clean.strip() and not stock_mode
                     and not has_search_conflict
                     and not has_unsupported_answer_claim
+                    and not has_memory_search_conflict
                     and not answer_quality["should_block_learning"]
                     and LOCAL_FALLBACK_MARKER not in ai_reply_clean
                     and local_gen.MARKER_TAG not in ai_reply_clean
@@ -2895,9 +2916,9 @@ def health():
         "retrieval_engine": "tfidf-bm25-char3-v1",
         "deliberation_engine": "evidence-adaptive-review-v3",
         "conversation_engine": "contextual-followup-v1",
-        "offline_reasoning_engine": "symbolic-plan-critic-v9",
-        "evidence_reasoning_engine": "adaptive-query-coverage-consensus-v2",
-        "response_quality_engine": "deterministic-answer-gate-v3",
+        "offline_reasoning_engine": "symbolic-plan-critic-v10",
+        "evidence_reasoning_engine": "adaptive-query-coverage-consensus-v3",
+        "response_quality_engine": "claim-grounding-gate-v4",
         "local_generative_configured": bool(local_backends),
         "local_generative_backends": local_backends,
         "memory_schema": "typed-scopes-v1",

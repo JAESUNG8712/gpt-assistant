@@ -27,6 +27,74 @@ def _measured_claims(text: str) -> set[str]:
     }
 
 
+def _claim_sentences(text: str) -> list[str]:
+    """답변 본문에서 검증 가능한 사실 주장만 고른다.
+
+    검색 품질표시·참고 링크·코드·불확실성 고지는 생성 모델의 사실 주장이
+    아니므로 제외한다. 이 구분이 없으면 서버가 붙인 안전 안내 자체를 다시
+    '근거 없는 문장'으로 오판하게 된다.
+    """
+    value = re.sub(r"<think>[\s\S]*?</think>", "", text or "", flags=re.IGNORECASE)
+    value = re.sub(r"<!--[\s\S]*?-->", "", value)
+    lines, in_code = [], False
+    for raw in value.splitlines():
+        line = raw.strip()
+        if line.startswith("```"):
+            in_code = not in_code
+            continue
+        if in_code or not line or line.startswith((">", "---", "#")):
+            continue
+        if re.fullmatch(r"[-*]?\s*\[[^\]]+\]\([^)]*\)", line):
+            continue
+        lines.append(re.sub(r"^\s*(?:[-*]|\d+[.)])\s+", "", line))
+    claims = []
+    for sentence in _sentences("\n".join(lines)):
+        if re.search(r"확인\s*(?:필요|불가)|자료에서\s*확인되지|추정|가능성", sentence):
+            continue
+        assertive = bool(re.search(
+            r"(?:입니다|이다|됩니다|된다|합니다|한다|있습니다|없습니다|"
+            r"적용됩니다|시행됩니다|결정됐|발표됐)(?:[.!?]|$)", sentence,
+        ))
+        if _measured_claims(sentence) or assertive:
+            claims.append(sentence[:400])
+    return claims
+
+
+def _sentence_grounding(question: str, answer: str, context: str) -> tuple[float, list[str]]:
+    claims = _claim_sentences(answer)
+    if not claims or not context:
+        return (1.0 if context else 0.65), []
+    evidence = local_reasoner.select_evidence(question, context, limit=8)
+    if not evidence:
+        return 0.0, claims
+
+    unsupported = []
+    for claim in claims:
+        claim_tokens = local_reasoner._tokens(claim)
+        claim_grams = local_reasoner._chargrams(claim)
+        claim_numbers = _measured_claims(claim)
+        supported = False
+        for source in evidence:
+            source_tokens = local_reasoner._tokens(source)
+            source_grams = local_reasoner._chargrams(source)
+            token_overlap = len(claim_tokens & source_tokens) / max(
+                1, min(len(claim_tokens), 8)
+            )
+            gram_overlap = len(claim_grams & source_grams) / max(
+                1, min(len(claim_grams), len(source_grams))
+            )
+            source_numbers = _measured_claims(source)
+            numeric_match = bool(claim_numbers) and claim_numbers.issubset(source_numbers)
+            topic_match = bool((claim_tokens - claim_numbers) & source_tokens)
+            if token_overlap >= 0.34 or gram_overlap >= 0.48 \
+                    or (numeric_match and topic_match):
+                supported = True
+                break
+        if not supported:
+            unsupported.append(claim)
+    return round(1.0 - len(unsupported) / max(1, len(claims)), 3), unsupported
+
+
 def evaluate(
     question: str, answer: str, context: str = "", previous_answer: str = ""
 ) -> dict:
@@ -78,10 +146,19 @@ def evaluate(
         issues.append("직전 답변과 달라진 수치·시점에 변경 설명이 없음")
 
     context_tokens = local_reasoner._tokens(context)
-    groundedness = (
+    aggregate_groundedness = (
         min(1.0, len(a_tokens & context_tokens) / max(1, min(len(a_tokens), 12)))
         if context_tokens else 0.65
     )
+    sentence_grounding, unsupported_sentences = _sentence_grounding(
+        question, answer, context
+    )
+    groundedness = min(aggregate_groundedness, sentence_grounding) if context_tokens \
+        else aggregate_groundedness
+    if unsupported_sentences:
+        issues.append(
+            f"자료로 뒷받침되지 않은 사실 문장 {len(unsupported_sentences)}개"
+        )
     if context_tokens and groundedness < 0.2:
         issues.append("제공된 참고 자료와 답변의 연결이 약함")
     confidence_match = re.search(
@@ -107,13 +184,18 @@ def evaluate(
         "grade": "good" if score >= 0.7 else "review" if score >= 0.5 else "low",
         "issues": issues,
         "unsupported_claims": unsupported,
+        "unsupported_sentences": unsupported_sentences[:5],
+        "sentence_grounding": sentence_grounding,
         "conversation_consistency": conversation_consistency,
         "evidence_confidence": evidence_confidence,
         "should_block_learning": (
-            score < 0.55 or bool(unsupported)
+            score < 0.55 or bool(unsupported) or bool(unsupported_sentences)
             or evidence_confidence in {"limited", "low", "conflict"}
         ),
-        "should_warn": score < 0.4 or evidence_confidence in {"low", "conflict"},
+        "should_warn": (
+            score < 0.4 or bool(unsupported_sentences)
+            or evidence_confidence in {"low", "conflict"}
+        ),
     }
 
 
@@ -124,6 +206,11 @@ def format_warning(result: dict, question: str = "", context: str = "") -> str:
         "\n\n---\n> 🔎 **자동 품질 검토:** 이 답변은 추가 확인이 필요합니다. "
         f"장기기억 후보에는 반영하지 않았습니다. ({detail})"
     )
+    unsupported_sentences = result.get("unsupported_sentences", [])[:2]
+    if unsupported_sentences:
+        base += "\n> **자료로 확인되지 않은 문장**\n" + "\n".join(
+            f"> - {sentence}" for sentence in unsupported_sentences
+        )
     evidence = local_reasoner.select_evidence(question, context, limit=3) if context else []
     if not evidence:
         return base + "\n> 확인 가능한 자료가 부족하므로 검색 또는 구체적인 조건 추가가 필요합니다."

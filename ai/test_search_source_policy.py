@@ -145,6 +145,26 @@ def main():
     assert supported_answer["unsupported"] == []
     assert "답변 수치 대조" in search.format_answer_claim_validation_note(supported_answer)
 
+    stale_memory = search.validate_memory_against_search(
+        "2027년 최저임금",
+        "기존 기억: 2027년 최저임금은 시간급 10,900원입니다.",
+        matching_numbers,
+    )
+    assert len(stale_memory["conflicts"]) == 1
+    memory_rule = search.format_memory_search_conflict_note(stale_memory)
+    assert "10,900원" in memory_rule and "10,700원" in memory_rule
+    assert "검색에서 확인된 공공·전문기관 값을 우선" in memory_rule
+    memory_warning = search.format_memory_search_conflict_warning(stale_memory)
+    assert "기억 최신성 교정" in memory_warning
+    assert "자동 학습에서 제외" in memory_warning
+    current_memory = search.validate_memory_against_search(
+        "2027년 최저임금",
+        "기존 기억: 2027년 최저임금은 시간급 10,700원입니다.",
+        matching_numbers,
+    )
+    assert current_memory["conflicts"] == []
+    assert search.format_memory_search_conflict_note(current_memory) == ""
+
     unsupported_answer = search.validate_answer_numeric_claims(
         "2027년 최저임금", "2027년 최저임금은 시간급 10,900원입니다.", matching_numbers
     )

@@ -10,7 +10,22 @@ def main():
     )
     assert good["score"] >= 0.55, good
     assert good["unsupported_claims"] == []
+    assert good["unsupported_sentences"] == []
+    assert good["sentence_grounding"] == 1.0
     assert good["should_block_learning"] is False
+
+    mixed = response_quality.evaluate(
+        "2027년 최저임금 금액과 적용 시점을 알려줘",
+        "최저임금은 시간당 10,700원입니다. 서울 인구는 1,500만 명입니다.",
+        context,
+    )
+    assert mixed["sentence_grounding"] == 0.5, mixed
+    assert mixed["unsupported_sentences"] == ["서울 인구는 1,500만 명입니다."]
+    assert mixed["should_block_learning"] is True
+    assert mixed["should_warn"] is True
+    mixed_warning = response_quality.format_warning(mixed, "2027년 최저임금", context)
+    assert "자료로 확인되지 않은 문장" in mixed_warning
+    assert "서울 인구" in mixed_warning
 
     unsupported = response_quality.evaluate(
         "2027년 최저임금 금액을 알려줘",

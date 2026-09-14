@@ -575,6 +575,20 @@ def validate_answer_numeric_claims(query: str, answer: str, results: list[dict])
     return {"supported": supported, "unsupported": unsupported}
 
 
+def validate_memory_against_search(query: str, memory_text: str, results: list[dict]) -> dict:
+    """저장 기억의 구조화 수치를 이번 검색 근거와 대조한다.
+
+    검증 가능한 동일 연도·항목·단위만 비교하므로, 단순히 숫자가 다르다는 이유로
+    무관한 기억을 충돌로 판정하지 않는다. 검색 쪽에 공공·전문기관 자료가 있으면
+    그 값을 우선하는 규칙은 답변 수치 검증과 동일하다.
+    """
+    validation = validate_answer_numeric_claims(query, memory_text, results)
+    return {
+        "matched": validation.get("supported", []),
+        "conflicts": validation.get("unsupported", []),
+    }
+
+
 def _format_claim_name(claim: dict) -> str:
     year = claim.get("year", "")
     year_text = "현재" if year == "current" else f"{year}년"
@@ -602,6 +616,33 @@ def _format_unsupported_answer_details(claims: list[dict], limit: int = 3) -> st
             f" (검색 근거: {source_values})"
         )
     return "; ".join(details)
+
+
+def format_memory_search_conflict_note(validation: dict) -> str:
+    """생성 컨텍스트에 넣을 서버 통제 규칙. 사용자에게 직접 노출하지 않는다."""
+    conflicts = validation.get("conflicts", [])
+    if not conflicts:
+        return ""
+    return (
+        "[내부 기억-최신 검색 충돌]\n"
+        + _format_unsupported_answer_details(conflicts)
+        + "\n규칙: 위 내부 기억의 충돌 값은 답변 근거로 사용하지 마세요. "
+          "이번 검색에서 확인된 공공·전문기관 값을 우선하고, 기존 기억과 달라진 값은 "
+          "최신 검증 근거로 정정되었다고 명시하세요. 충돌한 기억은 새 학습 근거로 사용하지 마세요."
+    )
+
+
+def format_memory_search_conflict_warning(validation: dict) -> str:
+    """사용자가 내부 기억 대신 최신 검색값이 쓰인 이유를 확인할 수 있게 한다."""
+    conflicts = validation.get("conflicts", [])
+    if not conflicts:
+        return ""
+    return (
+        "\n> ♻️ **기억 최신성 교정**: "
+        + _format_unsupported_answer_details(conflicts)
+        + ". 저장된 값과 이번 공공·전문기관 검색 근거가 달라 최신 검증값을 우선했습니다. "
+          "충돌한 기존 기억과 이번 답변은 자동 학습에서 제외합니다."
+    )
 
 
 def search_validation(results: list[dict], query: str = "") -> dict:
