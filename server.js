@@ -9028,7 +9028,7 @@ app.post("/api/recruit/jobs", async (req, res) => {
     if (!requirePage(req, res, "recruit-jobs")) return;
     const { role, empId: userId } = req.auth;
     const companyId = req.auth.companyId || null;
-    const { id, title, department, team, headcount, stages, status, description, purpose, responsibilities, requiredYears, docFile, viewerIds, user: createdBy, userId: createdById } = req.body || {};
+    const { id, title, department, team, headcount, stages, status, description, purpose, responsibilities, requiredYears, keywords, docFile, viewerIds, user: createdBy, userId: createdById } = req.body || {};
     if (!title) return res.status(400).json({ ok: false, message: "채용공고 제목은 필수입니다." });
     if (headcount != null && headcount !== "") {
       const hc = Number(headcount);
@@ -9039,6 +9039,8 @@ app.post("/api/recruit/jobs", async (req, res) => {
     const jobId = id || `job_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const now = new Date().toISOString();
     const defaultStages = ["서류전형", "1차면접", "2차면접", "최종합격"];
+    const normalizedKeywords = keywords == null ? null : [...new Map((Array.isArray(keywords) ? keywords : String(keywords).split(","))
+      .map(v => String(v || "").trim()).filter(Boolean).map(v => [v.toLocaleLowerCase("ko-KR"), v.slice(0, 60)])).values()].slice(0, 30);
     // 이 라우트는 생성/수정을 겸하는데, 이전에는 department/team/headcount/status를 요청에
     // 안 실어보내면(예: 부분 수정 폼) 무조건 기본값으로 덮어써서 기존 값이 조용히 날아갔다
     // (실측: team "영업1팀"→"", headcount 2→1) — requiredYears/docFile/viewerIds/stages와
@@ -9050,7 +9052,10 @@ app.post("/api/recruit/jobs", async (req, res) => {
       headcount: headcount != null && headcount !== "" ? (Number(headcount) || 1) : (existing ? existing.headcount : 1),
       stages: Array.isArray(stages) && stages.length ? stages : (existing ? existing.stages : defaultStages),
       status: status != null ? status : (existing ? existing.status : "open"),
-      description: description || "", purpose: purpose || "", responsibilities: responsibilities || "",
+      description: description != null ? String(description) : (existing ? existing.description || "" : ""),
+      purpose: purpose != null ? String(purpose) : (existing ? existing.purpose || "" : ""),
+      responsibilities: responsibilities != null ? String(responsibilities) : (existing ? existing.responsibilities || "" : ""),
+      keywords: normalizedKeywords !== null ? normalizedKeywords : (existing ? existing.keywords || [] : []),
       requiredYears: requiredYears != null && requiredYears !== "" ? Number(requiredYears) : (existing ? existing.requiredYears : null),
       docFile: docFile && docFile.fileName ? { fileName: docFile.fileName, type: docFile.type || "", data: docFile.data || "" } : (existing ? existing.docFile : null),
       viewerIds: Array.isArray(viewerIds) ? viewerIds.map(String) : (existing ? existing.viewerIds : []),

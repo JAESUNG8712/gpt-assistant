@@ -1143,6 +1143,29 @@ let settings={
     {id:"flex-3",label:"10시 출근 ~ 19시 퇴근",startHour:10,endHour:19},
     {id:"flex-4",label:"11시 출근 ~ 20시 퇴근",startHour:11,endHour:20}
   ],
+  // 휴가 유형: 신청 단위와 연차 차감 여부를 회사 규정에 맞게 구성한다.
+  leaveTypes:[
+    {id:"annual",name:"연차",unit:1,countsAnnual:true,paid:true,enabled:true},
+    {id:"half",name:"반차",unit:0.5,countsAnnual:true,paid:true,enabled:true},
+    {id:"sick",name:"병가",unit:1,countsAnnual:false,paid:true,enabled:true},
+    {id:"family",name:"경조사",unit:1,countsAnnual:false,paid:true,enabled:true},
+    {id:"special",name:"특별휴가",unit:1,countsAnnual:false,paid:true,enabled:true},
+    {id:"public",name:"공가",unit:1,countsAnnual:false,paid:true,enabled:true}
+  ],
+  // 휴일·연장근무 승인 시 선택 가능한 보상 방식과 사용기한.
+  workCompOptions:[
+    {id:"overtime-pay",name:"시간외수당",mode:"pay",expiryMonths:0,enabled:true},
+    {id:"comp-time",name:"보상시간",mode:"time",expiryMonths:3,enabled:true},
+    {id:"sub-leave",name:"대체휴무",mode:"leave",expiryMonths:3,enabled:true}
+  ],
+  // 경조·학자금 기준. 승인 금액은 급여 조정 항목으로 연계할 수 있다.
+  welfarePolicies:[
+    {id:"marriage",group:"condolence",name:"본인 결혼",maxAmount:1000000,minServiceMonths:0,payrollLinked:true,enabled:true},
+    {id:"parent-death",group:"condolence",name:"부모상",maxAmount:1000000,minServiceMonths:0,payrollLinked:true,enabled:true},
+    {id:"kindergarten",group:"tuition",name:"유치원 학자금",maxAmount:500000,minServiceMonths:12,payrollLinked:true,enabled:true},
+    {id:"highschool",group:"tuition",name:"고등학교 학자금",maxAmount:1000000,minServiceMonths:12,payrollLinked:true,enabled:true},
+    {id:"university",group:"tuition",name:"대학교 학자금",maxAmount:3000000,minServiceMonths:12,payrollLinked:true,enabled:true}
+  ],
   // 종합검진 설정: 기준연령 이상은 자동 대상, targetIds는 관리자가 추가 지정한 대상자
   healthCheckup:{ageThreshold:40, year:new Date().getFullYear(), targetIds:[]},
   // 장기근속 포상 기준 [{years,reward}]
@@ -13694,6 +13717,10 @@ const _BTPLS=[
    fields:[{key:"startDate",label:"시작일",type:"date",req:true},{key:"endDate",label:"종료일",type:"date",req:true},{key:"workPlan",label:"업무 계획",type:"textarea",req:true}],approvalType:"hierarchy"},
   {id:"tpl-expense",name:"경비 지출 신청",category:"general",icon:"💳",builtin:true,
    fields:[{key:"expenseDate",label:"지출 일자",type:"date",req:true},{key:"expenseType",label:"지출 구분",type:"select",opts:["교통비","식대","회의비","도서·자료비","기타"],req:true},{key:"amount",label:"금액(원)",type:"number",req:true},{key:"purpose",label:"사용 목적",type:"textarea",req:true},{key:"receiptNote",label:"영수증 첨부",type:"text",req:false}],approvalType:"hierarchy"},
+  {id:"tpl-welfare-condolence",name:"경조금 신청",category:"welfare",icon:"🌷",builtin:true,
+   fields:[{key:"welfarePolicyId",label:"지원 유형",type:"select",opts:[],req:true},{key:"eventDate",label:"경조일",type:"date",req:true},{key:"requestedAmount",label:"신청 금액(원)",type:"number",req:true},{key:"details",label:"신청 사유·대상",type:"textarea",req:true}],approvalType:"hierarchy"},
+  {id:"tpl-welfare-tuition",name:"학자금 신청",category:"welfare",icon:"🎓",builtin:true,
+   fields:[{key:"welfarePolicyId",label:"지원 유형",type:"select",opts:[],req:true},{key:"beneficiaryName",label:"대상자 이름",type:"text",req:true},{key:"semester",label:"학기·교육기간",type:"text",req:true},{key:"requestedAmount",label:"신청 금액(원)",type:"number",req:true},{key:"details",label:"학교·과정 및 비고",type:"textarea",req:true}],approvalType:"hierarchy"},
   {id:"tpl-vendor-reg",name:"거래처 등록",category:"general",icon:"🏢",builtin:true,
    fields:[{key:"vendorName",label:"거래처명",type:"text",req:true},{key:"bizNo",label:"사업자등록번호",type:"text",req:false},{key:"ceoName",label:"대표자명",type:"text",req:true},{key:"contactName",label:"담당자명",type:"text",req:true},{key:"phone",label:"연락처",type:"text",req:true},{key:"email",label:"이메일",type:"text",req:true},{key:"address",label:"회사주소",type:"text",req:true},{key:"reason",label:"등록 사유",type:"textarea",req:true},{key:"attachNote",label:"첨부 파일명 (재무제표/신용평가서/사업자등록증/통장사본)",type:"text",req:false}],approvalType:"vendor_reg"}
 ];
@@ -13865,6 +13892,8 @@ function _getDocTitle(tplId,fd){
   if(tplId==="tpl-overtime")return`연장근로 신청 (${fd.date||""} ${fd.startTime||""}~${fd.endTime||""})`;
   if(tplId==="tpl-remote")return`재택근무 신청 (${fd.startDate||""}~${fd.endDate||""})`;
   if(tplId==="tpl-expense")return`경비 지출 신청 (${fd.expenseDate||""} ${fd.expenseType||""} ${fd.amount||""}원)`;
+  if(tplId==="tpl-welfare-condolence")return`경조금 신청: ${fd.policyName||"복리후생"} (${Number(fd.requestedAmount||0).toLocaleString()}원)`;
+  if(tplId==="tpl-welfare-tuition")return`학자금 신청: ${fd.policyName||"복리후생"} (${Number(fd.requestedAmount||0).toLocaleString()}원)`;
   return fd.docTitle||getTpl(tplId)?.name||"결재 문서";
 }
 function approveApprovalDoc(docId,comment){
@@ -13872,7 +13901,7 @@ function approveApprovalDoc(docId,comment){
   const idx=doc.approvers.findIndex(a=>a.empId===currentUser.id&&a.status==="pending");if(idx<0)return;
   doc.approvers[idx].status="approved";doc.approvers[idx].decidedAt=new Date().toISOString();doc.approvers[idx].comment=comment||"";
   const next=doc.approvers.find(a=>a.status==="waiting");
-  if(next){next.status="pending";}else{doc.status="approved";_applyAttendanceApproval(doc);if(doc.templateId==="tpl-vendor-reg")_autoRegisterVendorFromApproval(doc);_fireIntegrationWebhooks("approval_complete",`[결재 완료] ${doc.title} — 최종 승인되었습니다.`);}
+  if(next){next.status="pending";}else{doc.status="approved";doc.approvedAt=new Date().toISOString();_applyAttendanceApproval(doc);_applyWelfareApproval(doc);if(doc.templateId==="tpl-vendor-reg")_autoRegisterVendorFromApproval(doc);_fireIntegrationWebhooks("approval_complete",`[결재 완료] ${doc.title} — 최종 승인되었습니다.`);}
   doc.updatedAt=new Date().toISOString();autoSaveToServerIfEnabled();showToast("승인 처리되었습니다.","success");renderPage();renderSidebar();
 }
 function rejectApprovalDoc(docId,comment){
@@ -14054,18 +14083,43 @@ function _setAttRec(empId,date,status,note){
   // needs one (also true of the check-in push below).
   else{attendanceRecords.push({id:`att-${empId}-${date}`,empId,date,checkIn:"",checkOut:"",status,note,updatedAt:new Date().toISOString()});}
 }
+function _welfarePolicyForTemplate(tplId,policyId){
+  const group=tplId==="tpl-welfare-condolence"?"condolence":tplId==="tpl-welfare-tuition"?"tuition":"";
+  return(settings.welfarePolicies||[]).find(p=>String(p.id)===String(policyId)&&p.group===group&&p.enabled!==false);
+}
+function _serviceMonths(emp,asOf=new Date()){
+  if(!emp?.hire)return 0;
+  const start=new Date(emp.hire);if(Number.isNaN(start.getTime()))return 0;
+  return Math.max(0,(asOf.getFullYear()-start.getFullYear())*12+(asOf.getMonth()-start.getMonth())-(asOf.getDate()<start.getDate()?1:0));
+}
+function _applyWelfareApproval(doc){
+  if(!["tpl-welfare-condolence","tpl-welfare-tuition"].includes(doc.templateId))return;
+  if(payrollAdjustments.some(a=>String(a.sourceDocId)===String(doc.id)))return;
+  const fd=doc.formData||{};if(fd.payrollLinked===false)return;
+  const approved=new Date(doc.approvedAt||doc.updatedAt||Date.now()),amount=Number(fd.requestedAmount)||0;if(amount<=0)return;
+  payrollAdjustments.push({id:`payadj-welfare-${doc.id}`,empId:doc.authorId,year:approved.getFullYear(),month:approved.getMonth()+1,category:doc.templateId==="tpl-welfare-condolence"?"경조사비":"학자금",amount,note:`${fd.policyName||"복리후생"} · 결재 ${doc.id}`,sourceDocId:doc.id,createdAt:doc.approvedAt||new Date().toISOString(),updatedAt:new Date().toISOString()});
+}
+function _syncApprovedWelfareAdjustments(){
+  if(currentUser?.role!=="admin")return 0;
+  let added=0;
+  approvalDocs.filter(d=>d.status==="approved"&&["tpl-welfare-condolence","tpl-welfare-tuition"].includes(d.templateId)).forEach(doc=>{const before=payrollAdjustments.length;_applyWelfareApproval(doc);if(payrollAdjustments.length>before)added++;});
+  if(added)autoSaveToServerIfEnabled();
+  return added;
+}
 
 // ── Approval Page Renderers ──
 function renderApprovalDraftPage(){
   const c=$("#content");
   const usable=getAllTpls().filter(t=>isTplActive(t.id));
   const att=usable.filter(t=>t.category==="attendance");
-  const gen=usable.filter(t=>t.category!=="attendance");
+  const welfare=usable.filter(t=>t.category==="welfare");
+  const gen=usable.filter(t=>!["attendance","welfare"].includes(t.category));
   c.innerHTML=`<div class="card"><div class="card-head"><h3>✏ 기안하기 — 양식 선택</h3></div><div class="card-body">
     <div class="fw6 mb2" style="color:#475569">📋 근태 신청</div>
     <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px;margin-bottom:20px">
       ${att.map(t=>`<button class="btn btn-secondary" style="flex-direction:column;gap:6px;padding:16px 10px;height:auto" onclick="openApprovalForm('${t.id}')"><span style="font-size:26px">${t.icon||"📄"}</span><span>${h(t.name)}</span></button>`).join("")||`<div class="text-gray fz12">사용 가능한 양식이 없습니다.</div>`}
     </div>
+    ${welfare.length?`<div class="fw6 mb2" style="color:#475569">🎁 복리후생 신청</div><div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px;margin-bottom:20px">${welfare.map(t=>`<button class="btn btn-secondary" style="flex-direction:column;gap:6px;padding:16px 10px;height:auto" onclick="openApprovalForm('${t.id}')"><span style="font-size:26px">${t.icon||"🎁"}</span><span>${h(t.name)}</span></button>`).join("")}</div>`:""}
     <div class="fw6 mb2" style="color:#475569">📄 일반 결재</div>
     <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px">
       ${gen.map(t=>`<button class="btn btn-secondary" style="flex-direction:column;gap:6px;padding:16px 10px;height:auto" onclick="openApprovalForm('${t.id}')"><span style="font-size:26px">${t.icon||"📄"}</span><span>${h(t.name)}</span></button>`).join("")||`<div class="text-gray fz12">사용 가능한 양식이 없습니다.</div>`}
@@ -14193,18 +14247,20 @@ function confirmOrgPicker(){
   closeTopModal();
 }
 function _vacationFormFieldsHtml(){
-  return`<div class="fg"><label class="fl">휴가 종류 <span class="req">*</span></label><select class="fc" id="af-leaveType" onchange="_onVacationTypeChange()"><option value="">선택</option><option>연차</option><option>반차</option><option>병가</option><option>경조사</option><option>특별휴가</option><option>공가</option></select></div>
+  const leaveTypes=(settings.leaveTypes||[]).filter(x=>x.enabled!==false);
+  return`<div class="fg"><label class="fl">휴가 종류 <span class="req">*</span></label><select class="fc" id="af-leaveType" onchange="_onVacationTypeChange()"><option value="">선택</option>${leaveTypes.map(x=>`<option value="${h(x.name)}" data-unit="${Number(x.unit)||1}">${h(x.name)} (${Number(x.unit)||1}일 단위${x.countsAnnual===false?", 연차 미차감":""})</option>`).join("")}</select>${leaveTypes.length?"":`<div class="fz11" style="color:#dc2626;margin-top:3px">관리자가 근태 설정에서 휴가 유형을 먼저 등록해야 합니다.</div>`}</div>
   <div class="fg" id="af-halfType-wrap" style="display:none"><label class="fl">반차 종류 <span class="req">*</span></label><select class="fc" id="af-halfType" onchange="_calcVacationDays()"><option value="">선택</option><option>오전 반차</option><option>오후 반차</option></select></div>
   <div class="fg"><label class="fl">시작일 <span class="req">*</span></label><input class="fc" type="date" id="af-startDate" onchange="_calcVacationDays()"></div>
   <div class="fg"><label class="fl">종료일 <span class="req">*</span></label><input class="fc" type="date" id="af-endDate" onchange="_calcVacationDays()"></div>
   <div class="fg"><label class="fl">신청 일수</label><input class="fc" type="number" id="af-days" readonly style="background:#f1f5f9;font-weight:700;color:#1e293b">
-    <div class="fz11 text-gray" style="margin-top:3px">* 종일(8시간)=1일, 반차(4시간)=0.5일로 자동 계산되며 연속된 기간은 합산됩니다.</div></div>
-  <div class="fg"><label class="fl">사유</label><textarea class="fc" id="af-reason" rows="3"></textarea></div>`;
+    <div class="fz11 text-gray" style="margin-top:3px">* 선택한 휴가의 신청 단위와 연속 기간을 기준으로 자동 계산됩니다.</div></div>
+  <div class="fg"><label class="fl">사유</label><textarea class="fc" id="af-reason" rows="3" placeholder="예: 개인 일정으로 연차를 신청합니다."></textarea></div>`;
 }
+function _selectedLeavePolicy(name){return(settings.leaveTypes||[]).find(x=>x.enabled!==false&&x.name===name);}
 function _onVacationTypeChange(){
   const lt=$("#af-leaveType")?.value;
   const wrap=$("#af-halfType-wrap");
-  if(wrap)wrap.style.display=lt==="반차"?"":"none";
+  if(wrap)wrap.style.display=Number(_selectedLeavePolicy(lt)?.unit)===0.5?"":"none";
   _calcVacationDays();
 }
 function _calcVacationDays(){
@@ -14216,7 +14272,7 @@ function _calcVacationDays(){
   const start=new Date(sd),end=new Date(ed);
   if(isNaN(start)||isNaN(end)||end<start){df.value="";return;}
   const dayCount=Math.round((end-start)/86400000)+1;
-  const perDay=lt==="반차"?0.5:1;
+  const perDay=Number(_selectedLeavePolicy(lt)?.unit)||1;
   df.value=Math.round(dayCount*perDay*10)/10;
 }
 function openApprovalForm(tplId){
@@ -14225,6 +14281,8 @@ function openApprovalForm(tplId){
   const chain=tpl.approvalType==="hierarchy"?getApprovalChain(currentUser.id):tpl.approvalType==="direct_superior"?getDirectSuperiorChain(currentUser.id):tpl.approvalType==="vendor_reg"?getVendorRegChain(currentUser.id):[];
   const fieldsHtml=tplId==="tpl-vacation"?_vacationFormFieldsHtml():tpl.fields.map(f=>`<div class="fg"><label class="fl">${h(f.label)}${f.req?` <span class="req">*</span>`:""}</label>${
     f.key==="flexOptionId"?`<select class="fc" id="af-${f.key}"><option value="">선택</option>${(settings.flexWorkOptions||[]).map(o=>`<option value="${h(o.id)}">${h(o.label)}</option>`).join("")}</select>${(settings.flexWorkOptions||[]).length===0?`<div class="fz11" style="color:#dc2626;margin-top:3px">* 관리자가 유연근무 시간 옵션을 먼저 등록해야 신청할 수 있습니다.</div>`:""}`
+    :f.key==="compType"?`<select class="fc" id="af-${f.key}"><option value="">선택</option>${(settings.workCompOptions||[]).filter(o=>o.enabled!==false).map(o=>`<option value="${h(o.name)}">${h(o.name)}${Number(o.expiryMonths)>0?` (사용기한 ${o.expiryMonths}개월)`:""}</option>`).join("")}</select>`
+    :f.key==="welfarePolicyId"?`<select class="fc" id="af-${f.key}"><option value="">선택</option>${(settings.welfarePolicies||[]).filter(p=>p.enabled!==false&&p.group===(tplId==="tpl-welfare-condolence"?"condolence":"tuition")).map(p=>`<option value="${h(p.id)}">${h(p.name)} · 한도 ${Number(p.maxAmount||0).toLocaleString()}원 · 근속 ${Number(p.minServiceMonths||0)}개월</option>`).join("")}</select>`
     :f.type==="select"?`<select class="fc" id="af-${f.key}"><option value="">선택</option>${(f.opts||[]).map(o=>`<option>${h(o)}</option>`).join("")}</select>`
     :f.type==="textarea"?`<textarea class="fc" id="af-${f.key}" rows="3"></textarea>`
     :`<input class="fc" type="${f.type}" id="af-${f.key}">`
@@ -14288,8 +14346,21 @@ function previewApprovalForm(tplId){
   const tpl=getTpl(tplId);if(!tpl)return;
   const fd={};let valid=true;
   tpl.fields.forEach(f=>{const el=$(`#af-${f.key}`);if(!el)return;fd[f.key]=el.value;if(f.req&&!el.value.trim()){valid=false;el.style.borderColor="#ef4444";}});
-  if(tplId==="tpl-vacation"&&fd.leaveType==="반차"&&!fd.halfType){valid=false;const hEl=$("#af-halfType");if(hEl)hEl.style.borderColor="#ef4444";}
+  if(tplId==="tpl-vacation"&&Number(_selectedLeavePolicy(fd.leaveType)?.unit)===0.5&&!fd.halfType){valid=false;const hEl=$("#af-halfType");if(hEl)hEl.style.borderColor="#ef4444";}
   if(!valid){showToast("필수 항목을 모두 입력하세요.","error");return;}
+  if(tplId==="tpl-vacation"){
+    const policy=_selectedLeavePolicy(fd.leaveType);
+    if(!policy){showToast("현재 사용할 수 없는 휴가 유형입니다. 다시 선택하세요.","error");return;}
+    if(!fd.startDate||!fd.endDate||fd.endDate<fd.startDate||Number(fd.days)<=0){showToast("휴가 기간과 신청 일수를 확인하세요.","error");return;}
+    fd.leaveUnit=Number(policy.unit)||1;fd.countsAnnual=policy.countsAnnual!==false;fd.paid=policy.paid!==false;
+  }
+  if(["tpl-welfare-condolence","tpl-welfare-tuition"].includes(tplId)){
+    const policy=_welfarePolicyForTemplate(tplId,fd.welfarePolicyId),amount=Number(fd.requestedAmount),months=_serviceMonths(currentUser);
+    if(!policy){showToast("현재 사용할 수 없는 복리후생 지원 유형입니다.","error");return;}
+    if(!Number.isFinite(amount)||amount<=0||amount>Number(policy.maxAmount||0)){showToast(`신청 금액은 1원 이상 ${Number(policy.maxAmount||0).toLocaleString()}원 이하로 입력하세요.`,"error");return;}
+    if(months<Number(policy.minServiceMonths||0)){showToast(`이 지원은 근속 ${policy.minServiceMonths}개월 이상부터 신청할 수 있습니다. 현재 ${months}개월입니다.`,"error");return;}
+    Object.assign(fd,{requestedAmount:amount,policyName:policy.name,policyGroup:policy.group,policyMaxAmount:Number(policy.maxAmount)||0,payrollLinked:policy.payrollLinked!==false});
+  }
   let approvers=_customApprovers.filter(a=>a.empId);
   if(approvers.length===0){showToast("결재자가 지정되지 않았습니다. 결재선을 확인하세요.","error");return;}
   const limitedApprovers=_applyApprovalLimits(approvers,fd);
@@ -15165,6 +15236,7 @@ async function confirmPayrollBatch(){
   autoSaveToServerIfEnabled();showToast(`${pending.length}건을 확정했습니다.`,"success");_payMgmtRefresh();
 }
 function renderPayrollMgmtPage(returnHtmlOnly){
+  _syncApprovedWelfareAdjustments();
   const s=_payMgmtState;const year=s.year,month=s.month;
   let active=employees.filter(e=>e.active&&e.role!=="admin");
   if(s.dept) active=active.filter(e=>e.dept===s.dept);
@@ -15551,7 +15623,7 @@ function renderApprovalTemplateAdmin(){
   </div>
   <div class="card-body fz12" style="color:#64748b;padding:6px 16px 4px">${badge("사용","green")} 표시된 양식만 [기안하기]에서 선택할 수 있습니다. 기본 양식은 직접 수정할 수 없으며, [복제]로 수정 가능한 사본을 만들 수 있습니다.</div>
   <div class="card-body" style="padding:0"><div class="tbl-wrap"><table><thead><tr><th>양식명</th><th>카테고리</th><th>항목수</th><th>결재방식</th><th>구분</th><th>사용여부</th><th>관리</th></tr></thead><tbody>
-  ${all.map(t=>{const active=isTplActive(t.id);return`<tr style="cursor:pointer" onclick="viewTemplateModal('${t.id}')" title="클릭하여 미리보기"><td>${t.icon||"📄"} <strong>${h(t.name)}</strong></td><td>${t.category==="attendance"?"근태":"일반"}</td><td>${(t.fields||[]).length}개</td><td>${t.approvalType==="hierarchy"?"계층형":"수동"}</td><td>${t.builtin?badge("기본","gray"):badge("커스텀","blue")}</td><td onclick="event.stopPropagation()"><label style="cursor:pointer;display:inline-flex;align-items:center;gap:5px"><input type="checkbox" ${active?"checked":""} onchange="toggleTplActive('${t.id}')">${active?badge("사용","green"):badge("미사용","gray")}</label></td><td onclick="event.stopPropagation()">${!t.builtin?`<button class="btn btn-secondary btn-sm" onclick="openEditTemplateModal('${t.id}')">수정</button> <button class="btn btn-danger btn-sm" onclick="deleteApprovalTemplate('${t.id}')">삭제</button>`:`<button class="btn btn-secondary btn-sm" onclick="viewTemplateModal('${t.id}')">보기</button> <button class="btn btn-secondary btn-sm" onclick="duplicateApprovalTemplate('${t.id}')" title="복제하여 수정 가능한 사본 만들기">복제</button>`}</td></tr>`;}).join("")}
+  ${all.map(t=>{const active=isTplActive(t.id);return`<tr style="cursor:pointer" onclick="viewTemplateModal('${t.id}')" title="클릭하여 미리보기"><td>${t.icon||"📄"} <strong>${h(t.name)}</strong></td><td>${t.category==="attendance"?"근태":t.category==="welfare"?"복리후생":"일반"}</td><td>${(t.fields||[]).length}개</td><td>${t.approvalType==="hierarchy"?"계층형":"수동"}</td><td>${t.builtin?badge("기본","gray"):badge("커스텀","blue")}</td><td onclick="event.stopPropagation()"><label style="cursor:pointer;display:inline-flex;align-items:center;gap:5px"><input type="checkbox" ${active?"checked":""} onchange="toggleTplActive('${t.id}')">${active?badge("사용","green"):badge("미사용","gray")}</label></td><td onclick="event.stopPropagation()">${!t.builtin?`<button class="btn btn-secondary btn-sm" onclick="openEditTemplateModal('${t.id}')">수정</button> <button class="btn btn-danger btn-sm" onclick="deleteApprovalTemplate('${t.id}')">삭제</button>`:`<button class="btn btn-secondary btn-sm" onclick="viewTemplateModal('${t.id}')">보기</button> <button class="btn btn-secondary btn-sm" onclick="duplicateApprovalTemplate('${t.id}')" title="복제하여 수정 가능한 사본 만들기">복제</button>`}</td></tr>`;}).join("")}
   </tbody></table></div></div></div>`;
 }
 let _tplFields=[];
@@ -15563,7 +15635,7 @@ function openNewTemplateModal(editId){
     <div>
     <div class="fg"><label class="fl">양식명 <span class="req">*</span></label><input class="fc" id="tpl-name" value="${h(tpl?.name||"")}" oninput="renderTplPreview()"></div>
     <div class="fg"><label class="fl">아이콘</label><input class="fc" id="tpl-icon" value="${tpl?.icon||"📄"}" style="width:60px;font-size:18px" oninput="renderTplPreview()"></div>
-    <div class="fg"><label class="fl">카테고리</label><select class="fc" id="tpl-cat"><option value="attendance" ${tpl?.category==="attendance"?"selected":""}>근태</option><option value="general" ${tpl?.category==="general"?"selected":""}>일반</option></select></div>
+    <div class="fg"><label class="fl">카테고리</label><select class="fc" id="tpl-cat"><option value="attendance" ${tpl?.category==="attendance"?"selected":""}>근태</option><option value="welfare" ${tpl?.category==="welfare"?"selected":""}>복리후생</option><option value="general" ${tpl?.category==="general"?"selected":""}>일반</option></select></div>
     <div class="fg"><label class="fl">결재 방식</label><select class="fc" id="tpl-atype"><option value="hierarchy" ${tpl?.approvalType==="hierarchy"?"selected":""}>계층형 (팀원→팀장→사업부장)</option><option value="direct_superior" ${tpl?.approvalType==="direct_superior"?"selected":""}>직속 상급자 (팀원→팀장, 팀장→사업부장)</option><option value="custom" ${tpl?.approvalType==="custom"?"selected":""}>수동 설정</option></select></div>
     <div class="fg"><label class="fl">양식 항목</label><div id="tpl-fields-list"></div><button class="btn btn-secondary btn-sm mt2" onclick="_tplFields.push({key:'f'+Date.now(),label:'',type:'text',req:false});renderTplFieldsList();renderTplPreview()">+ 항목 추가</button></div>
     </div>
@@ -15582,7 +15654,7 @@ function viewTemplateModal(id){
     <span style="flex:2">${h(f.label)}</span><span style="flex:1;color:#64748b">${f.type}</span><span style="color:${f.req?"#ef4444":"#94a3b8"}">${f.req?"필수":"선택"}</span></div>`).join("")||`<div class="text-gray fz12">항목이 없습니다.</div>`;
   openModal(`<div class="modal-box" style="max-width:560px"><div class="modal-head"><h3>${tpl.icon||"📄"} ${h(tpl.name)} — 양식 구성 보기</h3></div><div class="modal-body">
     <div class="fz12" style="color:#64748b;margin-bottom:10px">${tpl.builtin?`${badge("기본 양식","gray")} 기본 양식은 직접 수정할 수 없습니다. 변경하려면 [복제]로 커스텀 사본을 만든 뒤 수정하세요.`:`${badge("커스텀 양식","blue")} 직접 수정하거나 삭제할 수 있습니다.`}</div>
-    <div class="fg"><label class="fl">카테고리</label><div class="fz13">${tpl.category==="attendance"?"근태":"일반"}</div></div>
+    <div class="fg"><label class="fl">카테고리</label><div class="fz13">${tpl.category==="attendance"?"근태":tpl.category==="welfare"?"복리후생":"일반"}</div></div>
     <div class="fg"><label class="fl">결재 방식</label><div class="fz13">${tpl.approvalType==="hierarchy"?"계층형 (팀원→팀장→사업부장)":tpl.approvalType==="direct_superior"?"직속 상급자 (팀원→팀장, 팀장→사업부장)":"수동 설정"}</div></div>
     <div class="fg"><label class="fl">양식 항목 (${(tpl.fields||[]).length}개)</label>${fieldsHtml}</div>
   </div><div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal()">닫기</button>${tpl.builtin?`<button class="btn btn-primary" onclick="closeModal();duplicateApprovalTemplate('${id}')">복제하여 수정</button>`:`<button class="btn btn-primary" onclick="closeModal();openEditTemplateModal('${id}')">수정</button>`}</div></div>`);
@@ -21574,6 +21646,7 @@ function downloadRecruitJobTemplate(){
   <p><b>모집인원:</b> </p>
   <p><b>채용 목적:</b></p><p></p>
   <p><b>수행 업무:</b></p><p></p>
+  <p><b>핵심 키워드:</b> JavaScript, PostgreSQL, 제조ERP</p>
   <p><b>필요 경력연수:</b> 년</p>
   <p><b>전형 단계:</b> 서류전형,1차면접,2차면접,최종합격</p>
   <p><b>상세 내용:</b></p><p></p>
@@ -21592,8 +21665,8 @@ function renderRecruitJobsPage(){
     <button class="btn btn-secondary btn-sm" onclick="downloadRecruitJobTemplate()">📄 등록 양식 다운로드</button>
     ${canManage?`<button class="btn btn-primary btn-sm" onclick="openRecruitJobModal()">+ 채용공고 등록</button>`:""}
   </div></div>
-  <div class="card-body" style="padding:0"><div class="tbl-wrap"><table><thead><tr><th>제목</th><th>부서/팀</th><th>모집인원</th><th>필요경력</th><th>전형단계</th><th>상태</th><th>관리</th></tr></thead><tbody>
-  ${recruitJobs.length?recruitJobs.map(j=>`<tr><td>${h(j.title)}${j.docFile?` <button class="btn btn-secondary btn-sm" onclick="downloadRecruitJobDoc('${j.id}')" title="첨부 문서 다운로드">📎</button>`:""}</td><td>${h(j.department||"-")}${j.team?(" / "+h(j.team)):""}</td><td>${j.headcount}</td><td>${j.requiredYears!=null?j.requiredYears+"년":"-"}</td><td class="fz11">${(j.stages||[]).map(s=>h(s)).join(" → ")}</td><td>${j.status==="open"?badge("진행중","green"):badge("마감","gray")}</td><td>${canManage?`${j.status==="open"?`<button class="btn btn-primary btn-sm" onclick="openRecruitCandidateModal('${j.id}')">+ 지원자 등록</button> `:""}<button class="btn btn-secondary btn-sm" onclick="openRecruitJobModal('${j.id}')">수정</button> ${j.status==="open"?`<button class="btn btn-danger btn-sm" onclick="closeRecruitJob('${j.id}')">마감</button>`:""}`:"-"}</td></tr>`).join(""):`<tr><td colspan="7" class="text-gray" style="text-align:center;padding:20px">등록된 채용공고가 없습니다.</td></tr>`}
+  <div class="card-body" style="padding:0"><div class="tbl-wrap"><table><thead><tr><th>제목</th><th>부서/팀</th><th>모집인원</th><th>필요경력</th><th>핵심 키워드</th><th>전형단계</th><th>상태</th><th>관리</th></tr></thead><tbody>
+  ${recruitJobs.length?recruitJobs.map(j=>`<tr><td>${h(j.title)}${j.docFile?` <button class="btn btn-secondary btn-sm" onclick="downloadRecruitJobDoc('${j.id}')" title="첨부 문서 다운로드">📎</button>`:""}</td><td>${h(j.department||"-")}${j.team?(" / "+h(j.team)):""}</td><td>${j.headcount}</td><td>${j.requiredYears!=null?j.requiredYears+"년":"-"}</td><td class="fz11">${_recruitKeywords(j).map(k=>badge(h(k),"blue")).join(" ")||"-"}</td><td class="fz11">${(j.stages||[]).map(s=>h(s)).join(" → ")}</td><td>${j.status==="open"?badge("진행중","green"):badge("마감","gray")}</td><td>${canManage?`${j.status==="open"?`<button class="btn btn-primary btn-sm" onclick="openRecruitCandidateModal('${j.id}')">+ 지원자 등록</button> `:""}<button class="btn btn-secondary btn-sm" onclick="openRecruitJobModal('${j.id}')">수정</button> ${j.status==="open"?`<button class="btn btn-danger btn-sm" onclick="closeRecruitJob('${j.id}')">마감</button>`:""}`:"-"}</td></tr>`).join(""):`<tr><td colspan="8" class="text-gray" style="text-align:center;padding:20px">등록된 채용공고가 없습니다.</td></tr>`}
   </tbody></table></div></div></div>`;
 }
 let _rjDocFile=null;
@@ -21613,6 +21686,7 @@ function _recruitJobModalHtml(j){
     </div>
     <div class="fg"><label class="fl">채용 목적</label><textarea class="fc" id="rj-purpose" rows="2">${h(j?.purpose||"")}</textarea></div>
     <div class="fg"><label class="fl">수행 업무</label><textarea class="fc" id="rj-resp" rows="2">${h(j?.responsibilities||"")}</textarea></div>
+    <div class="fg"><label class="fl">핵심 역량·직무 키워드 (쉼표로 구분)</label><input class="fc" id="rj-keywords" value="${h(_recruitKeywords(j).join(", "))}" placeholder="예: JavaScript, PostgreSQL, 제조ERP"><div class="fz11 text-gray mt1">지원자 이력서의 학력·경력·대외활동·요약과 비교해 적합도를 표시합니다.</div></div>
     <div class="fg"><label class="fl">필요 경력연수(년)</label><input class="fc" type="number" min="0" id="rj-years" value="${j?.requiredYears??""}"></div>
     <div class="fg"><label class="fl">전형 단계 (쉼표로 구분)</label><input class="fc" id="rj-stages" value="${h(stages.join(","))}"></div>
     <div class="fg"><label class="fl">상세 내용</label><textarea class="fc" id="rj-desc" rows="3">${h(j?.description||"")}</textarea></div>
@@ -21668,11 +21742,12 @@ async function saveRecruitJob(id){
   const title=$("#rj-title")?.value.trim();
   if(!title){showToast("채용공고 제목을 입력하세요.","error");return;}
   const stages=($("#rj-stages")?.value||"").split(",").map(s=>s.trim()).filter(Boolean);
+  const keywords=[...new Map(($("#rj-keywords")?.value||"").split(",").map(s=>s.trim()).filter(Boolean).map(v=>[v.toLocaleLowerCase("ko-KR"),v.slice(0,60)])).values()].slice(0,30);
   const viewerIds=Array.from($("#rj-viewers")?.selectedOptions||[]).map(o=>o.value);
   const body={id:id||undefined,title,department:$("#rj-dept")?.value.trim(),team:$("#rj-team")?.value.trim(),headcount:Number($("#rj-headcount")?.value)||1,stages,
     purpose:$("#rj-purpose")?.value.trim(),responsibilities:$("#rj-resp")?.value.trim(),
     requiredYears:$("#rj-years")?.value?Number($("#rj-years").value):null,
-    description:$("#rj-desc")?.value.trim(),docFile:_rjDocFile,viewerIds,
+    description:$("#rj-desc")?.value.trim(),keywords,docFile:_rjDocFile,viewerIds,
     role:currentUser.role,user:currentUser.name,userId:currentUser.id};
   const r=await serverRequest("POST","/api/recruit/jobs",body);
   if(!r?.ok){showToast(r?.message||"저장에 실패했습니다.","error");return;}
@@ -21707,6 +21782,14 @@ async function closeRecruitJob(id){
 
 // ── 채용 관리: 지원자 관리(이력서/전형단계) ───────────────────────────────────
 let _recruitCandSearch={jobId:"",status:"",q:""};
+function _recruitKeywords(job){return Array.isArray(job?.keywords)?job.keywords.map(x=>String(x).trim()).filter(Boolean):String(job?.keywords||"").split(",").map(x=>x.trim()).filter(Boolean);}
+function _recruitCandidateMatch(cd){
+  const job=recruitJobs.find(j=>String(j.id)===String(cd.jobId)),keywords=_recruitKeywords(job);
+  if(!keywords.length)return{score:null,matched:[],missing:[]};
+  const haystack=[cd.finalEducation,cd.careerHistory,cd.activities,cd.resumeSummary,cd.strengths,cd.memo].map(x=>String(x||"").toLocaleLowerCase("ko-KR")).join(" ");
+  const matched=keywords.filter(k=>haystack.includes(k.toLocaleLowerCase("ko-KR"))),missing=keywords.filter(k=>!matched.includes(k));
+  return{score:Math.round(matched.length/keywords.length*100),matched,missing};
+}
 function _csvDownload(filename,csv){
   const blob=new Blob([csv],{type:"text/csv;charset=utf-8"});
   const a=document.createElement("a");
@@ -21747,8 +21830,8 @@ function renderRecruitCandidatesTbl(){
   if(f.jobId)list=list.filter(cd=>String(cd.jobId)===String(f.jobId));
   if(f.status)list=list.filter(cd=>cd.status===f.status);
   if(f.q){const needle=f.q.toLowerCase();list=list.filter(cd=>[cd.name,cd.email,cd.phone].some(v=>String(v||"").toLowerCase().includes(needle)));}
-  wrap.innerHTML=`<div style="padding:0" class="tbl-wrap"><table><thead><tr><th>이름</th><th>채용공고</th><th>연락처</th><th>이메일</th><th>전형단계</th><th>이력서</th><th>관리</th></tr></thead><tbody>
-  ${list.length?list.map(cd=>`<tr><td>${h(cd.name)}</td><td>${h(_recruitJobTitle(cd.jobId))}</td><td>${h(cd.phone||"-")}</td><td>${h(cd.email||"-")}</td><td>${badge(h(cd.status),"blue")}</td><td>${cd.resume?`<button class="btn btn-secondary btn-sm" onclick="downloadRecruitResume('${cd.id}')">다운로드</button>`:"-"}</td><td>${canManage?`<button class="btn btn-secondary btn-sm" onclick="openRecruitCandidateEditModal('${cd.id}')">수정</button> <button class="btn btn-secondary btn-sm" onclick="openRecruitStatusModal('${cd.id}')">단계변경</button> <button class="btn btn-secondary btn-sm" onclick="openRecruitNoticeModal('${cd.id}')">결과통보</button> <button class="btn btn-danger btn-sm" onclick="deleteRecruitCandidate('${cd.id}')">삭제</button>`:"-"}</td></tr>`).join(""):`<tr><td colspan="7" class="text-gray" style="text-align:center;padding:20px">조건에 맞는 지원자가 없습니다.</td></tr>`}
+  wrap.innerHTML=`<div style="padding:0" class="tbl-wrap"><table><thead><tr><th>이름</th><th>채용공고</th><th>키워드 적합도</th><th>연락처</th><th>이메일</th><th>전형단계</th><th>이력서</th><th>관리</th></tr></thead><tbody>
+  ${list.length?list.map(cd=>{const m=_recruitCandidateMatch(cd);return`<tr><td>${h(cd.name)}</td><td>${h(_recruitJobTitle(cd.jobId))}</td><td>${m.score==null?`<span class="fz11 text-gray">공고 키워드 없음</span>`:`<span class="badge ${m.score>=70?"bg-green":m.score>=40?"bg-yellow":"bg-gray"}" title="일치: ${h(m.matched.join(", ")||"없음")} · 미일치: ${h(m.missing.join(", ")||"없음")}">${m.score}% (${m.matched.length}/${m.matched.length+m.missing.length})</span>`}</td><td>${h(cd.phone||"-")}</td><td>${h(cd.email||"-")}</td><td>${badge(h(cd.status),"blue")}</td><td>${cd.resume?`<button class="btn btn-secondary btn-sm" onclick="downloadRecruitResume('${cd.id}')">다운로드</button>`:"-"}</td><td>${canManage?`<button class="btn btn-secondary btn-sm" onclick="openRecruitCandidateEditModal('${cd.id}')">수정</button> <button class="btn btn-secondary btn-sm" onclick="openRecruitStatusModal('${cd.id}')">단계변경</button> <button class="btn btn-secondary btn-sm" onclick="openRecruitNoticeModal('${cd.id}')">결과통보</button> <button class="btn btn-danger btn-sm" onclick="deleteRecruitCandidate('${cd.id}')">삭제</button>`:"-"}</td></tr>`;}).join(""):`<tr><td colspan="8" class="text-gray" style="text-align:center;padding:20px">조건에 맞는 지원자가 없습니다.</td></tr>`}
   </tbody></table></div>`;
 }
 let _rcResumeFile=null;
@@ -23865,7 +23948,7 @@ function calcLeaveUsed(empId){
   // Count from approved vacation/halfday docs
   let days=0;
   approvalDocs.filter(d=>d.authorId===empId&&d.status==="approved"&&["tpl-vacation","tpl-halfday"].includes(d.templateId)).forEach(d=>{
-    if(d.templateId==="tpl-vacation")days+=Number(d.formData.days)||0;
+    if(d.templateId==="tpl-vacation"&&d.formData?.countsAnnual!==false)days+=Number(d.formData.days)||0;
     else if(d.templateId==="tpl-halfday")days+=0.5;
   });
   return days;
@@ -24971,7 +25054,8 @@ function _opsStageSnapshot(){
     workDays:settings.workDays||[1,2,3,4,5],companyHolidays:settings.companyHolidays||[],
     gpsEnabled:!!settings.gpsEnabled,naverMapClientId:settings.naverMapClientId||"",
     gpsLocations:settings.gpsLocations||[],customPayItems:settings.customPayItems||[],
-    flexWorkOptions:settings.flexWorkOptions||[],meetingRooms:settings.meetingRooms||[],
+    flexWorkOptions:settings.flexWorkOptions||[],leaveTypes:settings.leaveTypes||[],
+    workCompOptions:settings.workCompOptions||[],meetingRooms:settings.meetingRooms||[],
     boardCategories:settings.boardCategories||[],companyName:settings.companyName||"",
     ceoName:settings.ceoName||"",certStamp:settings.certStamp||"",
   };
@@ -24981,6 +25065,7 @@ function _opsStageDirty(){ return !!_opsStage&&JSON.stringify(_opsStage)!==JSON.
 function _cancelOpsStage(){ _opsStage=null;renderGPSSettings(); }
 function _saveOpsStage(){
   if(!_opsStage)return;
+  if(currentPage==="attend-settings"&&!_validateAttendanceSettings())return;
   if(currentPage==="payroll-settings"&&!_validatePayrollSettings())return;
   Object.assign(settings,_opsStage);
   _opsStage=null;
@@ -25033,7 +25118,7 @@ function renderAttendSettings(){
     </div>
   </div></div>
 
-  <div class="card"><div class="card-head"><h3>⏱ 유연근무제 시간 옵션 관리</h3>
+  <div class="card" style="margin-bottom:14px"><div class="card-head"><h3>⏱ 유연근무제 시간 옵션 관리</h3>
     <button class="btn btn-primary btn-sm" onclick="_addFlexWorkOption()">+ 옵션 추가</button>
   </div><div class="card-body" style="padding:0">
     ${_opsStage.flexWorkOptions.length===0?`<div style="padding:20px;text-align:center;color:#94a3b8">등록된 유연근무 시간 옵션이 없습니다.</div>`:`<div class="tbl-wrap"><table><thead><tr><th>표시 이름</th><th>출근 시간</th><th>퇴근 시간</th><th>삭제</th></tr></thead><tbody>
@@ -25044,6 +25129,33 @@ function renderAttendSettings(){
       <td><button class="btn btn-danger btn-sm" onclick="_opsStage.flexWorkOptions.splice(${i},1);renderAttendSettings()">삭제</button></td>
     </tr>`).join("")}
     </tbody></table></div>`}
+  </div></div>
+
+  <div class="card" style="margin-bottom:14px"><div class="card-head"><div><h3>🏖 휴가 유형·신청 단위</h3><div class="fz11 text-gray">회사 휴가 규정에 맞춰 연차 차감 여부와 1일·반일·시간 단위를 설정합니다.</div></div>
+    <button class="btn btn-primary btn-sm" onclick="_addLeaveType()">+ 휴가 유형</button>
+  </div><div class="card-body" style="padding:0">
+    ${(_opsStage.leaveTypes||[]).length===0?`<div style="padding:20px;text-align:center;color:#94a3b8">등록된 휴가 유형이 없습니다.</div>`:`<div class="tbl-wrap"><table><thead><tr><th>휴가명</th><th>1일 신청 단위</th><th>연차 차감</th><th>유급</th><th>사용</th><th>삭제</th></tr></thead><tbody>
+    ${(_opsStage.leaveTypes||[]).map((lt,i)=>`<tr>
+      <td><input class="fc" value="${h(lt.name||"")}" maxlength="30" placeholder="예: 리프레시 휴가" oninput="_opsStage.leaveTypes[${i}].name=this.value"></td>
+      <td><select class="fc" onchange="_opsStage.leaveTypes[${i}].unit=+this.value;renderAttendSettings()"><option value="1" ${Number(lt.unit)===1?"selected":""}>1일</option><option value="0.5" ${Number(lt.unit)===0.5?"selected":""}>반일(0.5일)</option><option value="0.25" ${Number(lt.unit)===0.25?"selected":""}>2시간(0.25일)</option></select></td>
+      <td style="text-align:center"><input type="checkbox" ${lt.countsAnnual!==false?"checked":""} onchange="_opsStage.leaveTypes[${i}].countsAnnual=this.checked"></td>
+      <td style="text-align:center"><input type="checkbox" ${lt.paid!==false?"checked":""} onchange="_opsStage.leaveTypes[${i}].paid=this.checked"></td>
+      <td style="text-align:center"><input type="checkbox" ${lt.enabled!==false?"checked":""} onchange="_opsStage.leaveTypes[${i}].enabled=this.checked"></td>
+      <td><button class="btn btn-danger btn-sm" onclick="_opsStage.leaveTypes.splice(${i},1);renderAttendSettings()">삭제</button></td>
+    </tr>`).join("")}</tbody></table></div>`}
+  </div></div>
+
+  <div class="card"><div class="card-head"><div><h3>🕒 연장·휴일근무 보상 방식</h3><div class="fz11 text-gray">수당·보상시간·대체휴무 중 사용할 방식을 선택하고 사용기한을 관리합니다.</div></div>
+    <button class="btn btn-primary btn-sm" onclick="_addWorkCompOption()">+ 보상 방식</button>
+  </div><div class="card-body" style="padding:0">
+    ${(_opsStage.workCompOptions||[]).length===0?`<div style="padding:20px;text-align:center;color:#94a3b8">등록된 보상 방식이 없습니다.</div>`:`<div class="tbl-wrap"><table><thead><tr><th>표시 이름</th><th>처리 방식</th><th>사용기한(개월)</th><th>사용</th><th>삭제</th></tr></thead><tbody>
+    ${(_opsStage.workCompOptions||[]).map((co,i)=>`<tr>
+      <td><input class="fc" value="${h(co.name||"")}" maxlength="30" placeholder="예: 대체휴무" oninput="_opsStage.workCompOptions[${i}].name=this.value"></td>
+      <td><select class="fc" onchange="_opsStage.workCompOptions[${i}].mode=this.value;renderAttendSettings()"><option value="pay" ${co.mode==="pay"?"selected":""}>급여 수당</option><option value="time" ${co.mode==="time"?"selected":""}>보상시간</option><option value="leave" ${co.mode==="leave"?"selected":""}>대체휴무</option></select></td>
+      <td><input class="fc" type="number" min="0" max="60" value="${Number(co.expiryMonths)||0}" style="width:90px" aria-label="사용기한 개월" placeholder="0은 무기한" oninput="_opsStage.workCompOptions[${i}].expiryMonths=+this.value"></td>
+      <td style="text-align:center"><input type="checkbox" ${co.enabled!==false?"checked":""} onchange="_opsStage.workCompOptions[${i}].enabled=this.checked"></td>
+      <td><button class="btn btn-danger btn-sm" onclick="_opsStage.workCompOptions.splice(${i},1);renderAttendSettings()">삭제</button></td>
+    </tr>`).join("")}</tbody></table></div>`}
   </div></div>`;
   if(settings.gpsLat&&settings.naverMapClientId&&window.naver?.maps)setTimeout(_initAdminNaverMap,100);
 }
@@ -25164,6 +25276,47 @@ function _addFlexWorkOption(){
   _opsStageInit();
   _opsStage.flexWorkOptions.push({id:`flex-${genId()}`,label:"9시 출근 ~ 18시 퇴근",startHour:9,endHour:18});
   renderAttendSettings();
+}
+function _addLeaveType(){
+  _opsStageInit();
+  _opsStage.leaveTypes=_opsStage.leaveTypes||[];
+  _opsStage.leaveTypes.push({id:`leave-${genId()}`,name:"새 휴가",unit:1,countsAnnual:true,paid:true,enabled:true});
+  renderAttendSettings();
+}
+function _addWorkCompOption(){
+  _opsStageInit();
+  _opsStage.workCompOptions=_opsStage.workCompOptions||[];
+  _opsStage.workCompOptions.push({id:`comp-${genId()}`,name:"새 보상 방식",mode:"leave",expiryMonths:3,enabled:true});
+  renderAttendSettings();
+}
+function _validateAttendanceSettings(){
+  if(!_opsStage)return false;
+  if(!Array.isArray(_opsStage.workDays)||!_opsStage.workDays.length){showToast("근무 요일을 1일 이상 선택하세요.","error");return false;}
+  if(Number(_opsStage.workEndHour)<=Number(_opsStage.workStartHour)){showToast("퇴근 시간은 출근 시간보다 늦어야 합니다.","error");return false;}
+  const leaveSeen=new Set();
+  for(const [i,lt] of (_opsStage.leaveTypes||[]).entries()){
+    const name=String(lt.name||"").trim(),unit=Number(lt.unit);
+    if(!name){showToast(`${i+1}번째 휴가명을 입력하세요.`,"error");return false;}
+    const key=name.toLowerCase();if(leaveSeen.has(key)){showToast(`휴가명 '${name}'이 중복되었습니다.`,"error");return false;}leaveSeen.add(key);
+    if(![1,0.5,0.25].includes(unit)){showToast(`${name}: 신청 단위가 올바르지 않습니다.`,"error");return false;}
+    Object.assign(lt,{name,unit});
+  }
+  if(!(_opsStage.leaveTypes||[]).some(x=>x.enabled!==false)){showToast("사용 가능한 휴가 유형을 1개 이상 설정하세요.","error");return false;}
+  const compSeen=new Set();
+  for(const [i,co] of (_opsStage.workCompOptions||[]).entries()){
+    const name=String(co.name||"").trim(),months=Number(co.expiryMonths);
+    if(!name){showToast(`${i+1}번째 보상 방식 이름을 입력하세요.`,"error");return false;}
+    const key=name.toLowerCase();if(compSeen.has(key)){showToast(`보상 방식 '${name}'이 중복되었습니다.`,"error");return false;}compSeen.add(key);
+    if(!["pay","time","leave"].includes(co.mode)){showToast(`${name}: 처리 방식이 올바르지 않습니다.`,"error");return false;}
+    if(!Number.isInteger(months)||months<0||months>60){showToast(`${name}: 사용기한은 0~60개월 정수로 입력하세요.`,"error");return false;}
+    Object.assign(co,{name,expiryMonths:months});
+  }
+  if(!(_opsStage.workCompOptions||[]).some(x=>x.enabled!==false)){showToast("사용 가능한 근무 보상 방식을 1개 이상 설정하세요.","error");return false;}
+  for(const [i,loc] of (_opsStage.gpsLocations||[]).entries()){
+    const lat=Number(loc.lat),lng=Number(loc.lng),radius=Number(loc.radius);
+    if(!String(loc.name||"").trim()||!Number.isFinite(lat)||lat<-90||lat>90||!Number.isFinite(lng)||lng<-180||lng>180||!Number.isFinite(radius)||radius<10||radius>10000){showToast(`${i+1}번째 GPS 위치의 이름·좌표·반경(10~10000m)을 확인하세요.`,"error");return false;}
+  }
+  return true;
 }
 function uploadCertStamp(e){
   const file=e.target.files[0];if(!file)return;
@@ -26119,6 +26272,9 @@ function renderWelfareStatusPage(){
   const isAutoTarget=_hcAutoTarget(u,hc,yr);
   const isHcTarget=isAutoTarget||(hc.targetIds||[]).includes(u.id);
   const hcDone=healthCheckupLog.find(l=>String(l.empId)===String(u.id)&&l.year===yr);
+  const policies=(settings.welfarePolicies||[]).filter(p=>p.enabled!==false);
+  const serviceMonths=_serviceMonths(u);
+  const myWelfareDocs=approvalDocs.filter(d=>String(d.authorId)===String(u.id)&&["tpl-welfare-condolence","tpl-welfare-tuition"].includes(d.templateId)).sort((a,b)=>String(b.createdAt).localeCompare(String(a.createdAt)));
 
   c.innerHTML=`
   <div class="card"><div class="card-head"><h3>🩺 종합검진 대상 여부</h3></div><div class="card-body">
@@ -26127,7 +26283,12 @@ function renderWelfareStatusPage(){
       <div class="fz12 text-gray">${age!==null?`만 ${age}세. `:""}${isAutoTarget?"등록된 자동 대상 기준에 따라 자동으로 대상자로 지정되었습니다.":"관리자에 의해 대상자로 지정되었습니다."}</div>
       ${hcDone?`<div class="fz12 mt2" style="color:#16a34a">✅ ${h(hcDone.completedAt)} 검진 완료${hcDone.note?` · ${h(hcDone.note)}`:""}</div>`:`<div class="fz12 mt2" style="color:#d97706">⚠ 아직 검진 완료 처리되지 않았습니다.</div>`}
     </div>`:`<div style="padding:14px;background:#f8fafc;border-radius:8px;color:#94a3b8">${yr}년 종합검진 대상자가 아닙니다.${age!==null?` (만 ${age}세)`:""}</div>`}
-  </div></div>`;
+  </div></div>
+  <div class="card mt3"><div class="card-head"><h3>🎁 경조·학자금 지원 제도</h3><button class="btn btn-primary btn-sm" onclick="gotoPage('approval-draft')">신청하기</button></div><div class="card-body">
+    <div class="fz11 text-gray mb2">현재 근속 ${serviceMonths}개월 기준입니다. 지원 한도는 신청 시 자동 검증되며, 급여 연동 정책은 최종 승인월 급여 조정에 반영됩니다.</div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:10px">${policies.map(p=>`<div style="border:1px solid ${serviceMonths>=Number(p.minServiceMonths||0)?"#bfdbfe":"#e2e8f0"};border-radius:9px;padding:11px;background:${serviceMonths>=Number(p.minServiceMonths||0)?"#eff6ff":"#f8fafc"}"><div class="fw7 fz13">${p.group==="condolence"?"🌷":"🎓"} ${h(p.name)}</div><div class="fz12 mt1">한도 ${Number(p.maxAmount||0).toLocaleString()}원 · 근속 ${Number(p.minServiceMonths||0)}개월</div><div class="fz11 text-gray mt1">${serviceMonths>=Number(p.minServiceMonths||0)?"신청 가능":"근속요건 미충족"}${p.payrollLinked!==false?" · 급여 연동":""}</div></div>`).join("")||`<div class="fz12 text-gray">등록된 지원 정책이 없습니다.</div>`}</div>
+  </div></div>
+  <div class="card mt3"><div class="card-head"><h3>내 복리후생 신청 내역</h3></div><div class="card-body" style="padding:0">${myWelfareDocs.length?`<div class="tbl-wrap"><table><thead><tr><th>신청일</th><th>지원 유형</th><th>금액</th><th>상태</th></tr></thead><tbody>${myWelfareDocs.map(d=>`<tr><td>${h(String(d.createdAt||"").slice(0,10))}</td><td>${h(d.formData?.policyName||d.title)}</td><td>${Number(d.formData?.requestedAmount||0).toLocaleString()}원</td><td>${badge(d.status==="approved"?"승인":d.status==="rejected"?"반려":"진행중",d.status==="approved"?"green":d.status==="rejected"?"red":"blue")}</td></tr>`).join("")}</tbody></table></div>`:`<div style="padding:20px;text-align:center;color:#94a3b8">신청 내역이 없습니다.</div>`}</div></div>`;
 }
 
 // ==================== 장기근속 포상 (인사 메뉴, 전직원 현황) ====================
@@ -26212,11 +26373,46 @@ function renderWelfareSettingsPage(){
   const yr=new Date().getFullYear();
   if(!settings.healthCheckup)settings.healthCheckup={ageThreshold:40,year:yr,targetIds:[]};
   if(!settings.longServiceAwards)settings.longServiceAwards=[];
-  const tabs=[{id:"health",label:"🩺 종합검진"},{id:"longservice",label:"🏅 장기근속"},{id:"award",label:"🏆 우수사원"}];
+  const tabs=[{id:"health",label:"🩺 종합검진"},{id:"policy",label:"🎁 경조·학자금"},{id:"longservice",label:"🏅 장기근속"},{id:"award",label:"🏆 우수사원"}];
   c.innerHTML=`<div class="tabs">${tabs.map(t=>`<button class="tab-btn${_welfareSettingsTab===t.id?" active":""}" onclick="_welfareSettingsTab='${t.id}';renderWelfareSettingsPage()">${t.label}</button>`).join("")}</div><div id="welfare-settings-content"></div>`;
-  if(_welfareSettingsTab==="longservice")_renderWelfareLongServiceTab();
+  if(_welfareSettingsTab==="policy")_renderWelfarePolicyTab();
+  else if(_welfareSettingsTab==="longservice")_renderWelfareLongServiceTab();
   else if(_welfareSettingsTab==="award")_renderWelfareAwardTab();
   else _renderWelfareHealthTab();
+}
+function _renderWelfarePolicyTab(){
+  const el=$("#welfare-settings-content");if(!el)return;
+  if(!Array.isArray(settings.welfarePolicies))settings.welfarePolicies=[];
+  const groups={condolence:"경조금",tuition:"학자금"};
+  el.innerHTML=`<div class="card"><div class="card-head"><div><h3>🎁 경조·학자금 지원 기준</h3><div class="fz11 text-gray">정책별 지원 한도와 최소 근속기간을 설정합니다. 급여 연동 정책은 결재 완료월의 급여 조정에 1회만 반영됩니다.</div></div><button class="btn btn-primary btn-sm" onclick="_addWelfarePolicy()">+ 정책 추가</button></div><div class="card-body" style="padding:0">
+    ${settings.welfarePolicies.length?`<div class="tbl-wrap"><table><thead><tr><th>구분</th><th>지원명</th><th>한도(원)</th><th>최소 근속(개월)</th><th>급여 연동</th><th>사용</th><th>삭제</th></tr></thead><tbody>${settings.welfarePolicies.map((p,i)=>`<tr>
+      <td><select class="fc" onchange="settings.welfarePolicies[${i}].group=this.value;autoSaveDebounced();renderWelfareSettingsPage()"><option value="condolence" ${p.group==="condolence"?"selected":""}>경조금</option><option value="tuition" ${p.group==="tuition"?"selected":""}>학자금</option></select></td>
+      <td><input class="fc" value="${h(p.name||"")}" maxlength="40" placeholder="예: 본인 결혼" onchange="_updateWelfarePolicy(${i},'name',this.value)"></td>
+      <td><input class="fc" type="number" min="1" max="999999999" value="${Number(p.maxAmount)||0}" placeholder="예: 1000000" onchange="_updateWelfarePolicy(${i},'maxAmount',+this.value)"></td>
+      <td><input class="fc" type="number" min="0" max="600" value="${Number(p.minServiceMonths)||0}" placeholder="예: 12" onchange="_updateWelfarePolicy(${i},'minServiceMonths',+this.value)"></td>
+      <td style="text-align:center"><input type="checkbox" ${p.payrollLinked!==false?"checked":""} onchange="_updateWelfarePolicy(${i},'payrollLinked',this.checked)"></td>
+      <td style="text-align:center"><input type="checkbox" ${p.enabled!==false?"checked":""} onchange="_updateWelfarePolicy(${i},'enabled',this.checked)"></td>
+      <td><button class="btn btn-danger btn-sm" onclick="_deleteWelfarePolicy(${i})">삭제</button></td>
+    </tr>`).join("")}</tbody></table></div>`:`<div style="padding:20px;text-align:center;color:#94a3b8">등록된 정책이 없습니다.</div>`}
+  </div></div>`;
+}
+function _addWelfarePolicy(){
+  if(!Array.isArray(settings.welfarePolicies))settings.welfarePolicies=[];
+  settings.welfarePolicies.push({id:`welfare-${genId()}`,group:"condolence",name:"새 지원 정책",maxAmount:100000,minServiceMonths:0,payrollLinked:true,enabled:true});
+  autoSaveToServerIfEnabled();renderWelfareSettingsPage();
+}
+function _updateWelfarePolicy(index,key,value){
+  const p=settings.welfarePolicies?.[index];if(!p)return;
+  if(key==="name"){value=String(value||"").trim();if(!value){showToast("지원명을 입력하세요.","error");renderWelfareSettingsPage();return;}if(settings.welfarePolicies.some((x,i)=>i!==index&&String(x.name||"").trim().toLowerCase()===value.toLowerCase())){showToast("같은 지원명이 이미 등록되어 있습니다.","error");renderWelfareSettingsPage();return;}}
+  if(key==="maxAmount"&&(!Number.isFinite(value)||value<1||value>999999999)){showToast("지원 한도는 1~999,999,999원으로 입력하세요.","error");renderWelfareSettingsPage();return;}
+  if(key==="minServiceMonths"&&(!Number.isInteger(value)||value<0||value>600)){showToast("최소 근속기간은 0~600개월 정수로 입력하세요.","error");renderWelfareSettingsPage();return;}
+  p[key]=value;p.updatedAt=new Date().toISOString();autoSaveToServerIfEnabled();
+}
+async function _deleteWelfarePolicy(index){
+  const p=settings.welfarePolicies?.[index];if(!p)return;
+  const used=approvalDocs.filter(d=>String(d.formData?.welfarePolicyId)===String(p.id)).length;
+  const ok=await askConfirmModal({title:"복리후생 정책 삭제",danger:true,message:`'${p.name}' 정책을 삭제합니다.`,impacts:[{label:"기존 신청 문서",value:`${used}건 (문서는 유지)`},{label:"신규 신청",value:"즉시 선택 불가",tone:"danger"}],warnings:["기존 신청의 정책 스냅샷과 결재 기록은 삭제되지 않습니다."]});
+  if(!ok)return;settings.welfarePolicies.splice(index,1);autoSaveToServerIfEnabled();renderWelfareSettingsPage();
 }
 function _renderWelfareHealthTab(){
   const el=$("#welfare-settings-content");if(!el)return;

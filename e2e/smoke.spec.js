@@ -143,6 +143,43 @@ test.describe("로그인·기본 네비게이션", () => {
     await expect(page.getByRole("button", { name: /일괄 계산/ })).toBeVisible();
   });
 
+  test("휴가·근무보상·복리후생 정책과 채용 키워드 적합도가 연동된다", async ({ page }) => {
+    const pageErrors = [];
+    page.on("pageerror", e => pageErrors.push(e.message));
+    await page.goto("/");
+    await page.fill("#l-id", "e2e_admin");
+    await page.fill("#l-pw", "E2eTestPw123");
+    await page.click(".login-card button.btn-primary");
+    await expect(page.locator("#main")).toBeVisible({ timeout: 10000 });
+
+    await page.evaluate(() => gotoPage("attend-settings"));
+    await expect(page.getByRole("heading", { name: /휴가 유형·신청 단위/ })).toBeVisible();
+    await expect(page.getByRole("heading", { name: /연장·휴일근무 보상 방식/ })).toBeVisible();
+
+    const rules = await page.evaluate(() => {
+      settings.leaveTypes = [{ id: "quarter", name: "시간연차", unit: 0.25, countsAnnual: true, paid: true, enabled: true }];
+      settings.workCompOptions = [{ id: "sub", name: "대체휴무", mode: "leave", expiryMonths: 3, enabled: true }];
+      settings.welfarePolicies = [{ id: "marriage", group: "condolence", name: "본인 결혼", maxAmount: 1000000, minServiceMonths: 0, payrollLinked: true, enabled: true }];
+      recruitJobs = [{ id: "job-match", title: "ERP 개발자", keywords: ["JavaScript", "PostgreSQL", "제조ERP"] }];
+      const match = _recruitCandidateMatch({ jobId: "job-match", careerHistory: "제조ERP JavaScript 개발", resumeSummary: "업무 경험" });
+      return {
+        leave: _selectedLeavePolicy("시간연차"),
+        comp: settings.workCompOptions[0],
+        welfare: _welfarePolicyForTemplate("tpl-welfare-condolence", "marriage"),
+        match,
+      };
+    });
+    expect(rules.leave.unit).toBe(0.25);
+    expect(rules.comp.expiryMonths).toBe(3);
+    expect(rules.welfare.maxAmount).toBe(1000000);
+    expect(rules.match).toEqual({ score: 67, matched: ["JavaScript", "제조ERP"], missing: ["PostgreSQL"] });
+
+    await page.evaluate(() => { _opsStage = null; gotoPage("welfare-settings"); _welfareSettingsTab = "policy"; renderWelfareSettingsPage(); });
+    await expect(page.getByRole("heading", { name: /경조·학자금 지원 기준/ })).toBeVisible();
+    await expect(page.locator("#welfare-settings-content")).toContainText("본인 결혼");
+    expect(pageErrors, `콘솔 페이지 에러 발생: ${pageErrors.join("; ")}`).toHaveLength(0);
+  });
+
   test("모바일 메뉴와 공용 모달을 키보드로 닫을 수 있다", async ({ page }) => {
     await page.setViewportSize({ width: 375, height: 812 });
     await page.goto("/");
