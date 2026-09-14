@@ -174,9 +174,23 @@ test.describe("로그인·기본 네비게이션", () => {
     expect(rules.welfare.maxAmount).toBe(1000000);
     expect(rules.match).toEqual({ score: 67, matched: ["JavaScript", "제조ERP"], missing: ["PostgreSQL"] });
 
-    await page.evaluate(() => { _opsStage = null; gotoPage("welfare-settings"); _welfareSettingsTab = "policy"; renderWelfareSettingsPage(); });
+    await page.evaluate(() => {
+      _opsStage = null;
+      gotoPage("welfare-settings");
+      _welfareSettingsTab = "policy";
+      settings.welfarePolicies = [{
+        id: "marriage",
+        group: "condolence",
+        name: "본인 결혼",
+        maxAmount: 1000000,
+        minServiceMonths: 0,
+        payrollLinked: true,
+        enabled: true,
+      }];
+      renderWelfareSettingsPage();
+    });
     await expect(page.getByRole("heading", { name: /경조·학자금 지원 기준/ })).toBeVisible();
-    await expect(page.locator("#welfare-settings-content")).toContainText("본인 결혼");
+    await expect(page.locator('#welfare-settings-content input[placeholder="예: 본인 결혼"]').first()).toHaveValue("본인 결혼");
     expect(pageErrors, `콘솔 페이지 에러 발생: ${pageErrors.join("; ")}`).toHaveLength(0);
   });
 
