@@ -1133,7 +1133,8 @@ let settings={
     {id:"bullying","name":"직장 내 괴롭힘 예방","required":true,"freq":"annual"},
     {id:"disabled-employment","name":"장애인 인식개선 교육","required":true,"freq":"annual"}
   ],
-  // 커스텀 급여 항목 [{id,name,type:"pay"|"deduct",amount,enabled}]
+  // 커스텀 급여 항목. calcType=fixed|monthlyRate, targetType=all|dept|team|rank,
+  // startMonth/endMonth=YYYY-MM(공란이면 제한 없음), order=명세서 표시 순서.
   customPayItems:[],
   // 유연근무제 신청 가능 시간대 옵션 [{id,label,startHour,endHour}]
   flexWorkOptions:[
@@ -6570,7 +6571,7 @@ function renderSidebar(){
       {id:"settings-ranks",label:"직급 체계",icon:"🎖",desc:"직급 체계 및 승급 요건",roles:["admin"]},
       {id:"approval-templates",label:"결재 양식 관리",icon:"📋",desc:"기안 양식 추가·수정·삭제",roles:["admin"]},
       {id:"attend-settings",label:"근태 설정",icon:"⏰",desc:"근무시간·GPS·유연근무 설정",roles:["admin"]},
-      {id:"payroll-settings",label:"급여 관리",icon:"💰",desc:"급여 추가 항목 관리",roles:["admin"]},
+      {id:"payroll-settings",label:"급여 관리",icon:"💰",desc:"수당·공제 계산식·적용 대상 관리",roles:["admin"]},
       {id:"company-info",label:"회사 기본 정보",icon:"🏛",desc:"회사명·대표자·직인 설정",roles:["admin"]},
       {id:"room-settings",label:"회의실 관리",icon:"🗓",desc:"회의실·게시판 카테고리",roles:["admin"]},
       {id:"welfare-settings",label:"복지 제도 설정",icon:"🩺",desc:"종합검진·장기근속·우수사원 관리",roles:["admin"]},
@@ -14865,6 +14866,21 @@ function _calcMonthlyWorkHours(empId,year,month){
 }
 const EXECUTIVE_RANKS=["상무","전무","부사장","사장","위원","상근감사"];
 function isExecutiveRank(rank){return EXECUTIVE_RANKS.includes(rank);}
+function _payItemApplies(ci,emp,year,month){
+  if(!ci||ci.enabled===false)return false;
+  const ym=`${year}-${String(month).padStart(2,"0")}`;
+  if(ci.startMonth&&ym<ci.startMonth)return false;
+  if(ci.endMonth&&ym>ci.endMonth)return false;
+  const targetType=ci.targetType||"all",targetValue=String(ci.targetValue||"");
+  if(targetType==="dept")return !!targetValue&&String(emp.dept||"")===targetValue;
+  if(targetType==="team")return !!targetValue&&String(emp.team||"")===targetValue;
+  if(targetType==="rank")return !!targetValue&&String(emp.rank||"")===targetValue;
+  return targetType==="all";
+}
+function _calcPayItemAmount(ci,monthly){
+  const raw=ci.calcType==="monthlyRate"?monthly*(Number(ci.rate)||0)/100:Number(ci.amount)||0;
+  return Math.max(0,Math.round(raw));
+}
 function calcStandardPayslip(emp,year,month){
   const meal=200000;
   const transportIncluded=100000; // 교통비는 별도 구분 없이 기본급에 포함
@@ -14874,9 +14890,12 @@ function calcStandardPayslip(emp,year,month){
   const monthly=Math.round((emp.salary||0)/12)-researchAllow+transportIncluded;
   const posAllow=emp.position==="팀장"?500000:0;
   const isExecutive=isExecutiveRank(emp.rank);
-  // Custom pay items — 항목별 비과세 여부(taxable===false)는 급여 관리 메뉴에서 설정
-  const customPayItemsList=(settings.customPayItems||[]).filter(ci=>ci.type==="pay"&&ci.enabled!==false).map(ci=>({label:ci.name,amount:ci.amount||0,taxable:ci.taxable!==false}));
-  const customDeductItemsList=(settings.customPayItems||[]).filter(ci=>ci.type==="deduct"&&ci.enabled!==false).map(ci=>({label:ci.name,amount:ci.amount||0}));
+  // 회사별 계산식·대상·적용기간을 통과한 항목만 반영한다. 구버전 항목은 고정액/전체
+  // 대상으로 해석해 기존 데이터와 계산 결과를 유지한다.
+  const customItems=(settings.customPayItems||[]).filter(ci=>_payItemApplies(ci,emp,year,month))
+    .slice().sort((a,b)=>(Number(a.order)||999)-(Number(b.order)||999));
+  const customPayItemsList=customItems.filter(ci=>ci.type==="pay").map(ci=>({label:ci.name,amount:_calcPayItemAmount(ci,monthly),taxable:ci.taxable!==false,sourceId:ci.id}));
+  const customDeductItemsList=customItems.filter(ci=>ci.type==="deduct").map(ci=>({label:ci.name,amount:_calcPayItemAmount(ci,monthly),sourceId:ci.id}));
   const customPay=customPayItemsList.reduce((s,ci)=>s+ci.amount,0);
   const customDeduct=customDeductItemsList.reduce((s,ci)=>s+ci.amount,0);
   // 직원별 급여 조정 항목(경조사비/인센티브/추가금액) — 급여 관리 메뉴에서 입력
@@ -15100,6 +15119,51 @@ function confirmPayslip(empId,year,month){
 }
 let _payMgmtState={year:new Date().getFullYear(),month:new Date().getMonth()+1,dept:"",team:"",search:""};
 function _payMgmtRefresh(){const el=document.getElementById("payroll-mgmt-wrap");if(el)el.outerHTML=renderPayrollMgmtPage(true);}
+function _payrollWorkflowSummary(year,month){
+  const targets=employees.filter(e=>e.active&&e.role!=="admin");
+  const ym=`${year}-${String(month).padStart(2,"0")}`;
+  const attendanceIds=new Set(attendanceRecords.filter(r=>String(r.date||"").startsWith(ym)).map(r=>String(r.empId)));
+  const monthSlips=payslips.filter(p=>p.year===year&&p.month===month&&targets.some(e=>String(e.id)===String(p.empId)));
+  return{targets:targets.length,attendance:targets.filter(e=>attendanceIds.has(String(e.id))).length,drafts:monthSlips.length,confirmed:monthSlips.filter(p=>p.confirmed).length,locked:_payrollLocked(year,month)};
+}
+function _payrollWorkflowHtml(year,month){
+  const w=_payrollWorkflowSummary(year,month);
+  const steps=[
+    ["1","대상자 확인",w.targets>0,`${w.targets}명`],
+    ["2","근태 집계 확인",w.targets>0&&w.attendance===w.targets,`${w.attendance}/${w.targets}명`],
+    ["3","급여 계산",w.targets>0&&w.drafts===w.targets,`${w.drafts}/${w.targets}명`],
+    ["4","명세서 확정",w.targets>0&&w.confirmed===w.targets,`${w.confirmed}/${w.targets}명`],
+    ["5","월 마감",w.locked,w.locked?"완료":"대기"],
+  ];
+  return`<div class="card-body" style="padding:12px 14px;border-bottom:1px solid #e2e8f0"><div class="fz12 fw7 mb2">급여 작업 워크플로우</div><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(125px,1fr));gap:8px">${steps.map(([no,label,done,detail])=>`<div style="padding:10px;border-radius:8px;border:1px solid ${done?"#86efac":"#e2e8f0"};background:${done?"#f0fdf4":"#f8fafc"}"><div class="fz11 ${done?"text-green":"text-gray"}">${done?"✓ 완료":`단계 ${no}`}</div><div class="fw7 fz12">${label}</div><div class="fz11 text-gray">${detail}</div></div>`).join("")}</div><div class="fz11 text-gray mt2">근태 미집계 직원이 있어도 계산은 가능하지만, 확정 전에 누락 여부를 반드시 확인하세요.</div></div>`;
+}
+async function generatePayrollBatch(){
+  const {year,month}=_payMgmtState;if(_payrollLocked(year,month)){showToast("마감된 월은 다시 계산할 수 없습니다.","error");return;}
+  const targets=employees.filter(e=>e.active&&e.role!=="admin");
+  if(!targets.length){showToast("급여 계산 대상 직원이 없습니다.","error");return;}
+  const existing=payslips.filter(p=>p.year===year&&p.month===month),confirmed=existing.filter(p=>p.confirmed).length;
+  const ok=await askConfirmModal({title:"급여 일괄 계산",message:`${year}년 ${month}월 대상자 급여를 계산합니다.`,impacts:[{label:"대상 직원",value:`${targets.length}명`},{label:"확정 명세서 보호",value:`${confirmed}건(덮어쓰지 않음)`,tone:"success"}],warnings:["근태·초과근무 승인·급여 조정·수당 계산식이 현재 상태로 반영됩니다."],confirmText:"계산 실행"});
+  if(!ok)return;
+  let changed=0;
+  for(const emp of targets){
+    const idx=payslips.findIndex(p=>String(p.empId)===String(emp.id)&&p.year===year&&p.month===month);
+    if(idx>=0&&payslips[idx].confirmed)continue;
+    const next=calcStandardPayslip(emp,year,month);if(idx>=0)payslips[idx]=next;else payslips.push(next);changed++;
+  }
+  autoSaveToServerIfEnabled();showToast(`${changed}명의 급여 계산 결과를 저장했습니다.`,"success");_payMgmtRefresh();
+}
+async function confirmPayrollBatch(){
+  const {year,month}=_payMgmtState;if(_payrollLocked(year,month)){showToast("이미 마감된 월입니다.","error");return;}
+  const targets=employees.filter(e=>e.active&&e.role!=="admin");
+  if(!targets.length){showToast("확정할 급여 대상 직원이 없습니다.","error");return;}
+  const missing=targets.filter(e=>!payslips.some(p=>String(p.empId)===String(e.id)&&p.year===year&&p.month===month));
+  if(missing.length){showToast(`급여가 계산되지 않은 직원 ${missing.length}명이 있습니다. 먼저 일괄 계산하세요.`,"error");return;}
+  const pending=payslips.filter(p=>p.year===year&&p.month===month&&!p.confirmed&&targets.some(e=>String(e.id)===String(p.empId)));
+  const ok=await askConfirmModal({title:"급여명세서 일괄 확정",message:`${year}년 ${month}월 미확정 명세서를 확정합니다.`,impacts:[{label:"확정 대상",value:`${pending.length}건`},{label:"확정 후 영향",value:"직원 급여명세서 공개",tone:"warn"}],warnings:["확정 전 수당·공제와 근태 집계 결과를 검토하세요."],confirmText:"일괄 확정",danger:true});
+  if(!ok)return;
+  const now=new Date().toISOString();pending.forEach(p=>Object.assign(p,{confirmed:true,confirmedAt:now,updatedAt:now}));
+  autoSaveToServerIfEnabled();showToast(`${pending.length}건을 확정했습니다.`,"success");_payMgmtRefresh();
+}
 function renderPayrollMgmtPage(returnHtmlOnly){
   const s=_payMgmtState;const year=s.year,month=s.month;
   let active=employees.filter(e=>e.active&&e.role!=="admin");
@@ -15129,11 +15193,12 @@ function renderPayrollMgmtPage(returnHtmlOnly){
   const linkedVoucher=(settings.payrollVouchers||{})[voucherKey];
   const html=`<div class="card" id="payroll-mgmt-wrap"><div class="card-head"><h3>💵 급여 종합 관리 ${locked?'<span class="badge bg-red" style="margin-left:6px">🔒 마감됨</span>':''}</h3>
     <div>
+      ${!locked?`<button class="btn btn-secondary btn-sm" onclick="generatePayrollBatch()">🧮 일괄 계산</button> <button class="btn btn-secondary btn-sm" onclick="confirmPayrollBatch()">✅ 일괄 확정</button>`:""}
       ${locked?`<button class="btn btn-secondary btn-sm" onclick="unlockPayrollMonth()">🔓 마감 해제</button>`:`<button class="btn btn-secondary btn-sm" onclick="lockPayrollMonth()">🔒 급여 마감</button>`}
       ${serverConfig.url?` <button class="btn btn-secondary btn-sm" onclick="openPayrollVoucherModal()">🧾 회계 전표 생성${linkedVoucher?" ✓":""}</button>`:""}
       <button class="btn btn-primary btn-sm" onclick="exportPayrollMgmtCSV()">⬇ 엑셀 다운로드</button>
     </div>
-  </div>
+  </div>${_payrollWorkflowHtml(year,month)}
   <div class="card-body" style="padding:10px 14px 6px">
     <div class="filter-bar" style="flex-wrap:wrap;gap:6px">
       <select class="fc" style="width:90px" onchange="_payMgmtState.year=+this.value;_payMgmtRefresh()">
@@ -24887,7 +24952,7 @@ function _renderGPSSettingsLegacy(){
   // 기존 GPS·회의실 통합 탭은 전용 설정 페이지로 이전됨 (중복 편집 경로 제거)
   const links=[
     ["attend-settings","⏰ 근태 설정","근무시간·근무일·휴일, GPS 출퇴근, 유연근무 옵션"],
-    ["payroll-settings","💰 급여 설정","급여 추가 항목(지급/공제/비과세) 관리"],
+    ["payroll-settings","💰 급여 설정","수당·공제 계산식, 적용 대상·기간·순서 관리"],
     ["company-info","🏛 회사 기본 정보","회사명·대표이사·직인 이미지"],
     ["room-settings","🗓 회의실·게시판 설정","회의실 관리, 게시판 카테고리·작성 권한"],
   ];
@@ -24916,6 +24981,7 @@ function _opsStageDirty(){ return !!_opsStage&&JSON.stringify(_opsStage)!==JSON.
 function _cancelOpsStage(){ _opsStage=null;renderGPSSettings(); }
 function _saveOpsStage(){
   if(!_opsStage)return;
+  if(currentPage==="payroll-settings"&&!_validatePayrollSettings())return;
   Object.assign(settings,_opsStage);
   _opsStage=null;
   autoSaveToServerIfEnabled();
@@ -24985,23 +25051,55 @@ function renderAttendSettings(){
 function renderPayrollSettings(){
   const c=$("#content");if(!c)return;
   _opsStageInit();
+  const depts=[...new Set(employees.filter(e=>e.active).map(e=>e.dept).filter(Boolean))].sort();
+  const teams=[...new Set(employees.filter(e=>e.active).map(e=>e.team).filter(Boolean))].sort();
+  const ranks=[...new Set(employees.filter(e=>e.active).map(e=>e.rank).filter(Boolean))].sort();
+  const items=_opsStage.customPayItems.map((raw,i)=>({...raw,_idx:i,calcType:raw.calcType||"fixed",targetType:raw.targetType||"all",order:Number(raw.order)||i+1}));
+  const targetOptions=(ci)=>{
+    const values=ci.targetType==="dept"?depts:ci.targetType==="team"?teams:ci.targetType==="rank"?ranks:[];
+    return ci.targetType==="all"?`<span class="fz11 text-gray">전 직원</span>`:`<select class="fc" style="min-width:110px" onchange="_opsStage.customPayItems[${ci._idx}].targetValue=this.value"><option value="">선택</option>${values.map(v=>`<option value="${h(v)}" ${ci.targetValue===v?"selected":""}>${h(v)}</option>`).join("")}</select>`;
+  };
   c.innerHTML=_opsDirtyBannerHtml()+`
-  <div class="card"><div class="card-head"><h3>💰 급여 추가 항목 관리</h3>
+  <div class="card"><div class="card-head"><h3>💰 수당·공제 계산식 설정</h3>
     <button class="btn btn-primary btn-sm" onclick="_addCustomPayItem()">+ 항목 추가</button>
   </div><div class="card-body" style="padding:8px 14px 0">
-    <div class="fz11 text-gray" style="margin-bottom:6px">※ 기본급·직책수당·연장근로수당 등은 과세 항목이며, 식대·연구수당은 항상 비과세로 처리됩니다. 직책수당은 팀장만, 연구수당은 R&BD센터 소속만 지급되며, 상무 이상(임원)은 연장근로수당이 지급되지 않습니다. 추가 지급 항목은 "비과세" 체크 여부에 따라 소득세·4대보험 산정 시 자동 반영됩니다.</div>
+    <div class="fz11 text-gray" style="margin-bottom:6px">고정액 또는 월 기본급 비율로 계산하고, 적용 부서·팀·직급과 적용 기간을 지정할 수 있습니다. 비과세 지급 항목은 소득세·4대보험 산정 기준에서 제외됩니다.</div>
   </div><div class="card-body" style="padding:0">
-    ${_opsStage.customPayItems.length===0?`<div style="padding:20px;text-align:center;color:#94a3b8">추가 급여 항목이 없습니다. (기본: 기본급, 연장근로수당, 식대, 연구수당, 직책수당)</div>`:`<div class="tbl-wrap"><table><thead><tr><th>항목명</th><th>구분</th><th>금액(원)</th><th>비과세</th><th>적용</th><th>삭제</th></tr></thead><tbody>
-    ${_opsStage.customPayItems.map((ci,i)=>`<tr>
-      <td><input class="fc" value="${h(ci.name)}" style="min-width:100px" oninput="_opsStage.customPayItems[${i}].name=this.value"></td>
-      <td><select class="fc" style="width:80px" onchange="_opsStage.customPayItems[${i}].type=this.value;renderPayrollSettings()"><option value="pay" ${ci.type==="pay"?"selected":""}>지급</option><option value="deduct" ${ci.type==="deduct"?"selected":""}>공제</option></select></td>
-      <td><input class="fc" type="number" value="${ci.amount||0}" style="width:100px" oninput="_opsStage.customPayItems[${i}].amount=+this.value"></td>
+    ${_opsStage.customPayItems.length===0?`<div style="padding:20px;text-align:center;color:#94a3b8">추가 급여 항목이 없습니다. (기본: 기본급, 연장근로수당, 식대, 연구수당, 직책수당)</div>`:`<div class="tbl-wrap"><table><thead><tr><th>항목명</th><th>구분</th><th>계산방법</th><th>값</th><th>대상 기준</th><th>대상</th><th>적용 시작</th><th>적용 종료</th><th>순서</th><th>비과세</th><th>사용</th><th>삭제</th></tr></thead><tbody>
+    ${items.map((ci,i)=>`<tr>
+      <td><input class="fc" value="${h(ci.name)}" maxlength="50" placeholder="예: 자격수당" style="min-width:110px" oninput="_opsStage.customPayItems[${i}].name=this.value"></td>
+      <td><select class="fc" style="width:76px" onchange="_opsStage.customPayItems[${i}].type=this.value;renderPayrollSettings()"><option value="pay" ${ci.type==="pay"?"selected":""}>지급</option><option value="deduct" ${ci.type==="deduct"?"selected":""}>공제</option></select></td>
+      <td><select class="fc" style="min-width:105px" onchange="_opsStage.customPayItems[${i}].calcType=this.value;renderPayrollSettings()"><option value="fixed" ${ci.calcType==="fixed"?"selected":""}>고정액</option><option value="monthlyRate" ${ci.calcType==="monthlyRate"?"selected":""}>월 기본급 비율</option></select></td>
+      <td><input class="fc" type="number" min="0" max="999999999" step="${ci.calcType==="monthlyRate"?"0.01":"1"}" value="${ci.calcType==="monthlyRate"?(ci.rate||0):(ci.amount||0)}" style="width:95px" aria-label="${ci.calcType==="monthlyRate"?"비율(%)":"금액(원)"}" placeholder="${ci.calcType==="monthlyRate"?"예: 10 (%)":"예: 100000"}" oninput="_opsStage.customPayItems[${i}].${ci.calcType==="monthlyRate"?"rate":"amount"}=+this.value"></td>
+      <td><select class="fc" style="min-width:92px" onchange="_opsStage.customPayItems[${i}].targetType=this.value;_opsStage.customPayItems[${i}].targetValue='';renderPayrollSettings()"><option value="all" ${ci.targetType==="all"?"selected":""}>전체</option><option value="dept" ${ci.targetType==="dept"?"selected":""}>부서</option><option value="team" ${ci.targetType==="team"?"selected":""}>팀</option><option value="rank" ${ci.targetType==="rank"?"selected":""}>직급</option></select></td>
+      <td>${targetOptions(ci)}</td>
+      <td><input class="fc" type="month" value="${h(ci.startMonth||"")}" style="width:130px" oninput="_opsStage.customPayItems[${i}].startMonth=this.value"></td>
+      <td><input class="fc" type="month" value="${h(ci.endMonth||"")}" style="width:130px" oninput="_opsStage.customPayItems[${i}].endMonth=this.value"></td>
+      <td><input class="fc" type="number" min="1" max="999" value="${ci.order}" style="width:65px" oninput="_opsStage.customPayItems[${i}].order=+this.value"></td>
       <td style="text-align:center">${ci.type==="pay"?`<input type="checkbox" ${ci.taxable===false?"checked":""} onchange="_opsStage.customPayItems[${i}].taxable=!this.checked" style="width:18px;height:18px;cursor:pointer" title="체크 시 비과세 항목으로 처리(소득세·4대보험 산정 제외)">`:`<span class="fz11 text-gray">-</span>`}</td>
       <td><input type="checkbox" ${ci.enabled!==false?"checked":""} onchange="_opsStage.customPayItems[${i}].enabled=this.checked" style="width:18px;height:18px;cursor:pointer"></td>
       <td><button class="btn btn-danger btn-sm" onclick="_opsStage.customPayItems.splice(${i},1);renderPayrollSettings()">삭제</button></td>
     </tr>`).join("")}
     </tbody></table></div>`}
   </div></div>`;
+}
+function _validatePayrollSettings(){
+  const items=_opsStage?.customPayItems||[],seen=new Set();
+  for(let i=0;i<items.length;i++){
+    const ci=items[i],name=String(ci.name||"").trim(),calcType=ci.calcType||"fixed",targetType=ci.targetType||"all";
+    if(!name){showToast(`${i+1}번째 급여 항목명을 입력하세요.`,"error");return false;}
+    const key=name.toLowerCase();if(seen.has(key)){showToast(`급여 항목명 '${name}'이 중복되었습니다.`,"error");return false;}seen.add(key);
+    if(calcType==="monthlyRate"){
+      const rate=Number(ci.rate);if(!Number.isFinite(rate)||rate<0||rate>100){showToast(`${name}: 월 기본급 비율은 0~100%로 입력하세요.`,"error");return false;}
+    }else{
+      const amount=Number(ci.amount);if(!Number.isFinite(amount)||amount<0||amount>999999999){showToast(`${name}: 고정액은 0~999,999,999원으로 입력하세요.`,"error");return false;}
+    }
+    if(targetType!=="all"&&!String(ci.targetValue||"").trim()){showToast(`${name}: 적용 ${targetType==="dept"?"부서":targetType==="team"?"팀":"직급"}을 선택하세요.`,"error");return false;}
+    if(ci.startMonth&&ci.endMonth&&ci.startMonth>ci.endMonth){showToast(`${name}: 적용 종료월은 시작월보다 빠를 수 없습니다.`,"error");return false;}
+    const order=Number(ci.order);if(!Number.isInteger(order)||order<1||order>999){showToast(`${name}: 표시 순서는 1~999 정수로 입력하세요.`,"error");return false;}
+    Object.assign(ci,{name,calcType,targetType,order});
+  }
+  return true;
 }
 // ==================== 회사 기본 정보 페이지 ====================
 function renderCompanyInfo(){
@@ -25106,7 +25204,7 @@ function _toggleBoardWriteRole(idx,role,checked){
 }
 function _addCustomPayItem(){
   _opsStageInit();
-  _opsStage.customPayItems.push({id:'cpi-'+Date.now(),name:'추가수당',type:'pay',amount:0,enabled:true});
+  _opsStage.customPayItems.push({id:'cpi-'+Date.now(),name:'추가수당',type:'pay',calcType:'fixed',amount:0,rate:0,targetType:'all',targetValue:'',startMonth:'',endMonth:'',order:_opsStage.customPayItems.length+1,taxable:true,enabled:true});
   renderPayrollSettings();
 }
 function _addGpsLocation(){

@@ -110,6 +110,39 @@ test.describe("로그인·기본 네비게이션", () => {
     await expect(voucherDialog.locator("#vch-lines select")).toHaveCount(2);
   });
 
+  test("급여 계산식 대상·기간 조건과 단계형 워크플로우가 동작한다", async ({ page }) => {
+    await page.goto("/");
+    await page.fill("#l-id", "e2e_admin");
+    await page.fill("#l-pw", "E2eTestPw123");
+    await page.click(".login-card button.btn-primary");
+    await expect(page.locator("#main")).toBeVisible({ timeout: 10000 });
+
+    const calculated = await page.evaluate(() => {
+      const before = settings.customPayItems;
+      settings.customPayItems = [
+        { id: "rate", name: "부서수당", type: "pay", calcType: "monthlyRate", rate: 10, targetType: "dept", targetValue: "개발", startMonth: "2026-01", endMonth: "2026-12", order: 2, enabled: true },
+        { id: "other", name: "타부서수당", type: "pay", calcType: "fixed", amount: 999999, targetType: "dept", targetValue: "영업", order: 1, enabled: true },
+      ];
+      const slip = calcStandardPayslip({ id: "formula-e2e", salary: 60000000, dept: "개발", team: "플랫폼", rank: "대리", position: "", active: true }, 2026, 9);
+      settings.customPayItems = before;
+      return { monthly: slip.monthly, matched: slip.payItems.find(i => i.label === "부서수당")?.amount, excluded: slip.payItems.some(i => i.label === "타부서수당") };
+    });
+    expect(calculated.matched).toBe(Math.round(calculated.monthly * 0.1));
+    expect(calculated.excluded).toBe(false);
+
+    await page.evaluate(() => gotoPage("payroll-settings"));
+    await expect(page.getByRole("heading", { name: /수당·공제 계산식 설정/ })).toBeVisible();
+    await page.getByRole("button", { name: "+ 항목 추가" }).click();
+    await expect(page.locator("#content")).toContainText("월 기본급 비율");
+    await expect(page.locator("#content")).toContainText("대상 기준");
+    await expect(page.locator("#content input[type=month]")).toHaveCount(2);
+
+    await page.evaluate(() => { _opsStage = null; gotoPage("payroll-mgmt"); });
+    await expect(page.getByText("급여 작업 워크플로우")).toBeVisible();
+    await expect(page.getByText("대상자 확인")).toBeVisible();
+    await expect(page.getByRole("button", { name: /일괄 계산/ })).toBeVisible();
+  });
+
   test("모바일 메뉴와 공용 모달을 키보드로 닫을 수 있다", async ({ page }) => {
     await page.setViewportSize({ width: 375, height: 812 });
     await page.goto("/");
