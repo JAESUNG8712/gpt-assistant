@@ -1052,7 +1052,11 @@ async def chat(req: ChatRequest, request: Request):
 
     # 페르소나별 대화 이력 분리: 다른 페르소나 대화가 현재 페르소나 LLM을 혼동시키는 것을 방지
     history = mem.get_recent_messages(10, persona=persona_id, session_id=session_scope)
-    history.append({"role": "user", "content": user_msg})
+    generation_user_msg = (
+        user_msg + "\n\n[요청 형식: 실행 가능한 다중 파일 프로젝트와 자동 테스트를 함께 작성]"
+        if command.get("code_project") else user_msg
+    )
+    history.append({"role": "user", "content": generation_user_msg})
 
     # 응답 헤더와 대화 이력이 동일한 확정 상태 객체를 공유한다.
     # 스트리밍 함수보다 먼저 만들어 저장 시점에도 값의 출처가 명확하도록 한다.
@@ -1454,7 +1458,9 @@ async def chat(req: ChatRequest, request: Request):
                     previous_answer,
                 )
                 if answer_quality["should_warn"]:
-                    quality_note = response_quality.format_warning(answer_quality)
+                    quality_note = response_quality.format_warning(
+                        answer_quality, search_msg, locals().get("context", "")
+                    )
                     collected.append(quality_note)
                     yield quality_note
 
@@ -1470,6 +1476,14 @@ async def chat(req: ChatRequest, request: Request):
             mem.save_message(
                 "assistant", ai_reply_clean or ai_reply,
                 persona=persona_id, session_id=session_scope,
+                command_status=({
+                    "answer_quality": {
+                        "score": answer_quality.get("score"),
+                        "grade": answer_quality.get("grade", ""),
+                        "issues": answer_quality.get("issues", [])[:5],
+                        "learning_blocked": answer_quality.get("should_block_learning", False),
+                    }
+                } if "score" in answer_quality else None),
             )
 
             # ── 자동 학습 후보: 검증되지 않은 답변은 영구 RAG에 바로 넣지 않음 ──
@@ -2857,8 +2871,8 @@ def health():
         "retrieval_engine": "tfidf-bm25-char3-v1",
         "deliberation_engine": "always-review-plan-draft-v2",
         "conversation_engine": "contextual-followup-v1",
-        "offline_reasoning_engine": "symbolic-plan-critic-v6",
-        "response_quality_engine": "deterministic-answer-gate-v1",
+        "offline_reasoning_engine": "symbolic-plan-critic-v7",
+        "response_quality_engine": "deterministic-answer-gate-v2",
         "local_generative_configured": bool(local_backends),
         "local_generative_backends": local_backends,
         "memory_schema": "typed-scopes-v1",

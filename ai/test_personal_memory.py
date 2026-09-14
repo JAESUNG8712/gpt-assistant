@@ -63,6 +63,16 @@ def main():
         assert "중복 통합: 1개" in organized
         assert len(personal_memory.list_memories()) == 1
 
+        status = personal_memory.execute("status")
+        assert "활성 기억: 1개" in status
+        assert "복구 가능:" in status
+        recoverable = personal_memory.execute("restore")
+        assert "복구 가능한 개인 기억" in recoverable
+        restored = personal_memory.execute("restore", "자세히")
+        assert "개인 기억을 복구했습니다" in restored
+        assert any("자세히" in item["value"] for item in personal_memory.list_memories())
+        assert "공유 대화" in personal_memory.execute("restore", is_shared=True)
+
     print("personal memory tests: PASS")
 
 

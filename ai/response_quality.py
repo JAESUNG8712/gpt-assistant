@@ -104,10 +104,23 @@ def evaluate(
     }
 
 
-def format_warning(result: dict) -> str:
+def format_warning(result: dict, question: str = "", context: str = "") -> str:
     issues = result.get("issues", [])[:3]
     detail = "; ".join(issues) if issues else "충분한 근거를 확인하지 못함"
-    return (
+    base = (
         "\n\n---\n> 🔎 **자동 품질 검토:** 이 답변은 추가 확인이 필요합니다. "
         f"장기기억 후보에는 반영하지 않았습니다. ({detail})"
+    )
+    evidence = local_reasoner.select_evidence(question, context, limit=3) if context else []
+    if not evidence:
+        return base + "\n> 확인 가능한 자료가 부족하므로 검색 또는 구체적인 조건 추가가 필요합니다."
+    safe_lines = []
+    for item in evidence:
+        compact = " ".join(item.split())
+        safe_lines.append(f"> - {compact[:260]}")
+    return (
+        base
+        + "\n> **현재 자료에서 다시 확인된 내용**\n"
+        + "\n".join(safe_lines)
+        + "\n> 위 근거와 충돌하는 원답변 내용은 사용하지 마세요."
     )

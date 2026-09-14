@@ -31,7 +31,12 @@ def main():
         "퇴직금 계산 방법을 확인하세요.\n퇴직금 계산 방법을 확인하세요.",
     )
     assert any("중복 문장" in issue for issue in repeated["issues"])
-    assert "장기기억 후보에는" in response_quality.format_warning({"issues": ["근거 부족"]})
+    repaired = response_quality.format_warning(
+        {"issues": ["근거 부족"]}, "2027년 최저임금", context,
+    )
+    assert "장기기억 후보에는" in repaired
+    assert "현재 자료에서 다시 확인된 내용" in repaired
+    assert "10,700원" in repaired
     print("response quality tests: PASS")
 
 

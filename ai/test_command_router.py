@@ -48,6 +48,7 @@ def main():
     assert "직전 답변" in compare["answer_instruction"]
     code_test = command_router.parse_command("/코드테스트 FastAPI 할 일 API")
     assert code_test["persona"] == "dev" and code_test["thinking_mode"] == "deep"
+    assert code_test["code_project"] is True
     assert "테스트 코드" in code_test["answer_instruction"]
     correction = command_router.parse_command("/정정 방금 답변 다시 봐줘")
     assert correction["thinking_mode"] == "deep"
@@ -72,6 +73,32 @@ def main():
     assert organize["direct_response"] == ""
     natural_organize = command_router.parse_command("내 개인 기억을 정리해줘")
     assert natural_organize["memory_action"] == "organize"
+    status = command_router.parse_command("/기억상태")
+    assert status["memory_action"] == "status"
+    restore = command_router.parse_command("/기억복구 #12")
+    assert restore["memory_action"] == "restore"
+    assert restore["memory_content"] == "#12"
+    natural_restore = command_router.parse_command("삭제한 기억 보여줘")
+    assert natural_restore["memory_action"] == "restore"
+
+    natural_evidence = command_router.parse_command(
+        "근거가 확인된 것만 알려줘: 2027년 최저임금"
+    )
+    assert natural_evidence["message"] == "2027년 최저임금"
+    assert "추측하지 말고" in natural_evidence["answer_instruction"]
+    natural_compare = command_router.parse_command(
+        "지난 답변과 비교해서 알려줘: 적용일이 달라졌어?"
+    )
+    assert natural_compare["message"] == "적용일이 달라졌어?"
+    assert "직전 답변" in natural_compare["answer_instruction"]
+    natural_code = command_router.parse_command(
+        "테스트까지 포함해서 코드 만들어줘: 파이썬 중복 제거"
+    )
+    assert natural_code["persona"] == "dev" and natural_code["thinking_mode"] == "deep"
+    natural_search = command_router.parse_command(
+        "인터넷에서 검색해서 알려줘: 오늘 발표 자료"
+    )
+    assert natural_search["use_search"] is True
 
     forget = command_router.parse_command("/잊기 핵심부터")
     assert forget["memory_action"] == "forget"

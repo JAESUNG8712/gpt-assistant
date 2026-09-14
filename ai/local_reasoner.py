@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from datetime import date
 
 
-LOCAL_REASONING_MARKER = "<!-- local-reasoning-v6 -->"
+LOCAL_REASONING_MARKER = "<!-- local-reasoning-v7 -->"
 
 _STOP = {
     "그리고", "그러면", "그것", "그거", "대한", "대해서", "어떻게", "알려줘",
@@ -664,6 +664,78 @@ def test_missing_delete_is_404():
     }
 
 
+def _python_test_project(query: str) -> dict[str, str]:
+    if "중복" in query:
+        implementation = '''def process(items):
+    """입력 순서를 유지하면서 중복을 제거합니다."""
+    if items is None:
+        raise ValueError("items는 필수입니다")
+    return list(dict.fromkeys(items))'''
+        tests = '''import pytest
+
+from src.processor import process
+
+
+def test_removes_duplicates_in_order():
+    assert process([3, 1, 3, 2, 1]) == [3, 1, 2]
+
+
+def test_requires_input():
+    with pytest.raises(ValueError):
+        process(None)'''
+    else:
+        implementation = '''def process(value):
+    """검증된 값을 반환하는 프로젝트 기본 처리 함수입니다."""
+    if value is None:
+        raise ValueError("value는 필수입니다")
+    return value'''
+        tests = '''import pytest
+
+from src.processor import process
+
+
+def test_processes_value():
+    assert process("test") == "test"
+
+
+def test_requires_value():
+    with pytest.raises(ValueError):
+        process(None)'''
+    return {
+        "requirements.txt": "pytest>=8,<9",
+        "src/__init__.py": "",
+        "src/processor.py": implementation,
+        "tests/test_processor.py": tests,
+    }
+
+
+def _javascript_test_project() -> dict[str, str]:
+    return {
+        "package.json": '''{
+  "name": "validated-utility",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {"test": "node --test"}
+}''',
+        "src/index.js": '''export function uniqueItems(items) {
+  if (!Array.isArray(items)) throw new TypeError("items must be an array");
+  return [...new Set(items)];
+}''',
+        "test/index.test.js": '''import test from "node:test";
+import assert from "node:assert/strict";
+
+import { uniqueItems } from "../src/index.js";
+
+test("removes duplicates in order", () => {
+  assert.deepEqual(uniqueItems([3, 1, 3, 2]), [3, 1, 2]);
+});
+
+test("rejects invalid input", () => {
+  assert.throws(() => uniqueItems(null), TypeError);
+});''',
+    }
+
+
 def _code_security_findings(files: dict[str, str]) -> list[str]:
     joined = "\n".join(files.values())
     checks = (
@@ -701,13 +773,33 @@ def _project_code_response(query: str, thinking_mode: str) -> str:
     )
 
 
+def _generic_test_project_response(query: str, thinking_mode: str, language: str) -> str:
+    javascript = language == "javascript"
+    files = _javascript_test_project() if javascript else _python_test_project(query)
+    rendered = []
+    for path, code in files.items():
+        fence = "javascript" if path.endswith(".js") else "python" if path.endswith(".py") else "json" if path.endswith(".json") else "text"
+        rendered.append(f"### `{path}`\n\n```{fence}\n{code}\n```")
+    findings = _code_security_findings(files)
+    audit = "발견: " + ", ".join(findings) if findings else "위험 패턴 5종 미검출"
+    run = "npm test" if javascript else "pip install -r requirements.txt\npytest -q"
+    label = "JavaScript" if javascript else "Python"
+    review = _public_review(
+        build_reasoning_plan(query), ReasoningReview("높음", (), (), 1), thinking_mode
+    )
+    return (
+        LOCAL_REASONING_MARKER + "\n" + review
+        + f"요청을 **테스트가 포함된 다중 파일 {label} 프로젝트**로 구성했습니다.\n\n"
+        + "\n\n".join(rendered)
+        + f"\n\n### 실행·검증\n\n```bash\n{run}\n```\n\n정적·보안 점검: {audit}."
+    )
 def code_response(query: str, thinking_mode: str = "off") -> str:
-    if (
-        re.search(r"fastapi|api", query, re.IGNORECASE)
-        and (thinking_mode == "deep" or re.search(r"프로젝트|여러\s*파일|테스트\s*포함", query))
-    ):
-        return _project_code_response(query, thinking_mode)
     language = _language(query)
+    wants_project = bool(re.search(r"프로젝트|여러\s*파일|테스트\S*\s*(?:포함|함께)|자동\s*테스트", query))
+    if wants_project and re.search(r"fastapi|api", query, re.IGNORECASE):
+        return _project_code_response(query, thinking_mode)
+    if wants_project and language in {"python", "javascript"}:
+        return _generic_test_project_response(query, thinking_mode, language)
     if language == "html":
         purpose, code = _html_template(query)
     elif language == "javascript":

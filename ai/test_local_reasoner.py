@@ -121,6 +121,12 @@ def main_():
     project = code_response("FastAPI 할 일 API를 테스트 포함 프로젝트로 만들어줘", "deep")
     assert "app/main.py" in project and "tests/test_api.py" in project
     assert "pytest -q" in project and "하드코딩 비밀정보" in project
+    python_project = code_response("파이썬 중복 제거 코드를 테스트 포함해서 만들어줘", "deep")
+    assert "src/processor.py" in python_project and "tests/test_processor.py" in python_project
+    assert "pytest -q" in python_project and "dict.fromkeys" in python_project
+    javascript_project = code_response("JavaScript 배열 중복 제거 테스트 포함", "deep")
+    assert "package.json" in javascript_project and "test/index.test.js" in javascript_project
+    assert "node --test" in javascript_project and "npm test" in javascript_project
 
     assert local_answer_fit("2027년 최저임금", "2027년 최저임금", "시간당 10,700원")
     assert not local_answer_fit("2027년 최저임금", "2026년 최저임금", "시간당 10,320원")
