@@ -1075,6 +1075,7 @@ async def chat(req: ChatRequest, request: Request):
             "single-self-review-v2" if effective_thinking_mode == "prompt" else
             "plan-draft-review-v1"
         ),
+        "offline_reasoning": llm.is_offline_mode(),
         "context_continued": bool(intent_info.get("uses_context")),
         "resolved_persona": persona_id,
         "resolved_persona_name": persona.get("name", ""),
@@ -1405,7 +1406,7 @@ async def chat(req: ChatRequest, request: Request):
                         context = _intent_ctx
 
                     if no_local:
-                        yield "> 📭 로컬 자료 없음 — AI 지식으로 답변 후 자동 학습합니다.\n\n"
+                        yield "> 📭 직접 일치하는 자료 없음 — 로컬 지식을 검토해 답변합니다.\n\n"
 
                 if persona_features.get("use_coding", False):
                     async for token in llm.chat_stream_coding(
@@ -1463,6 +1464,7 @@ async def chat(req: ChatRequest, request: Request):
             # 원본 덤프가 KB에 학습되어 이후 정상 답변을 덮어쓰는 재오염 위험이 있음
             from engine import LOCAL_FALLBACK_MARKER
             import local_gen
+            from local_reasoner import LOCAL_REASONING_MARKER
             has_search_conflict = bool(
                 validation_results
                 and srch.search_validation(validation_results)["conflicting_claims"]
@@ -1479,7 +1481,8 @@ async def chat(req: ChatRequest, request: Request):
                     and not has_search_conflict
                     and not has_unsupported_answer_claim
                     and LOCAL_FALLBACK_MARKER not in ai_reply_clean
-                    and local_gen.MARKER_TAG not in ai_reply_clean):
+                    and local_gen.MARKER_TAG not in ai_reply_clean
+                    and LOCAL_REASONING_MARKER not in ai_reply_clean):
                 candidate_source = (
                     "법령실시간" if law_ctx else
                     "웹검색보강" if search_ctx else
@@ -2823,12 +2826,21 @@ def budget_grid_compare(a: str = "current", b: str = "current", token: str = "")
 @app.get("/health")
 def health():
     import shutil
+    import local_gen
+    local_backends = []
+    if llm.OLLAMA_MODEL:
+        local_backends.append("ollama")
+    if local_gen.is_configured():
+        local_backends.append("gguf")
     result = {
         "status": "ok",
         "db_backend": "Turso (클라우드)" if mem._USE_TURSO else "SQLite (로컬)",
         "retrieval_engine": "tfidf-bm25-char3-v1",
         "deliberation_engine": "always-review-plan-draft-v2",
         "conversation_engine": "contextual-followup-v1",
+        "offline_reasoning_engine": "symbolic-plan-critic-v3",
+        "local_generative_configured": bool(local_backends),
+        "local_generative_backends": local_backends,
         "memory_schema": "typed-scopes-v1",
         "memory_feedback": "attributed-utility-v1",
         "law_api_key_set": bool(os.getenv("LAW_API_KEY")),

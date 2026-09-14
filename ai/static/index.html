@@ -1495,6 +1495,9 @@
     if (status.context_continued) {
       items.push({ command: '', kind: 'context', icon: '🔗', label: '이전 대화 연결' });
     }
+    if (status.offline_reasoning) {
+      items.push({ command: '', kind: 'offline', icon: '🖥️', label: '로컬 자체 추론' });
+    }
     const verifiedDirect = status.thinking_mode === 'off' && [
       'deterministic-check-v1', 'ambiguity-check-v1', 'source-locked-check-v1',
       'specialist-analysis-v1'
@@ -2804,10 +2807,11 @@
   function compactProviderName(provider = '') {
     if (provider.includes('Claude')) return 'Claude';
     if (provider.includes('Gemini')) return 'Gemini';
+    if (provider.includes('Ollama') || provider.includes('로컬 생성')) return '로컬 생성 AI';
     if (provider.includes('OpenRouter')) return 'OpenRouter';
     if (provider.includes('Groq')) return 'Groq';
     if (provider.includes('Zen')) return 'Zen';
-    if (provider.includes('TF-IDF')) return '로컬 AI';
+    if (provider.includes('TF-IDF') || provider.includes('로컬')) return '로컬 AI';
     return provider || 'AI';
   }
 

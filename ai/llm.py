@@ -1,6 +1,6 @@
 """
 LLM 라우터 — 다중 제공자 자동 폴백
-우선순위: Claude → OpenCode Zen → OpenRouter → Groq → Gemini → Mistral → Cohere → 자체 TF-IDF 엔진
+우선순위: Claude → OpenCode Zen → OpenRouter → Groq → Gemini → Mistral → Cohere → Ollama → 자체 엔진
 429(한도초과) 발생 시 다음 제공자로 자동 전환
 
 무료 API 키 발급 (2026-09 기준, 전부 카드 등록 불필요 확인):
@@ -99,6 +99,11 @@ MISTRAL_MODEL   = os.getenv("MISTRAL_MODEL", "mistral-small-latest")
 # 키 발급: https://dashboard.cohere.com/api-keys
 COHERE_API_KEY = os.getenv("COHERE_API_KEY", "")
 COHERE_MODEL   = os.getenv("COHERE_MODEL", "command-r")
+
+# Ollama — API 키 없이 같은 PC/서버에서 실제 생성형 모델 실행.
+# 모델을 내려받은 뒤 OLLAMA_MODEL을 설정한 경우에만 자동 체인에 포함한다.
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "").strip()
+OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434").rstrip("/")
 
 SYSTEM_PROMPT = """당신은 사용자만을 위한 전용 AI 어시스턴트입니다.
 - 사용자의 과거 대화, 업로드한 문서, 인터넷 검색 결과를 바탕으로 답변합니다.
@@ -200,7 +205,9 @@ async def _claude_stream(messages: list, system: str) -> AsyncGenerator[str, Non
 
 
 # ── 자체 엔진 폴백 ────────────────────────────────────
-async def _local_stream(messages: list, context: str, system: str) -> AsyncGenerator[str, None]:
+async def _local_stream(
+    messages: list, context: str, system: str, thinking_mode: str = "off",
+) -> AsyncGenerator[str, None]:
     # 로컬 생성형 모델(local_gen)이 설정돼 있으면 먼저 시도 — 기본은 미설정이라
     # is_configured()에서 즉시 빠져나가 기존 동작(순수 추출)과 완전히 동일하다.
     # 실패·타임아웃 등 어떤 이유로든 None이 오면 아래 기존 추출 엔진으로 이어간다.
@@ -212,8 +219,41 @@ async def _local_stream(messages: list, context: str, system: str) -> AsyncGener
             return
 
     from engine import local_stream
-    async for token in local_stream(messages, context=context, system_prompt=system):
+    async for token in local_stream(
+        messages, context=context, system_prompt=system, thinking_mode=thinking_mode,
+    ):
         yield token
+
+
+async def _ollama_stream(messages: list, system: str) -> AsyncGenerator[str, None]:
+    """로컬 Ollama /api/chat NDJSON 스트리밍. 별도 API 키가 필요 없다."""
+    if not OLLAMA_MODEL:
+        raise RuntimeError("OLLAMA_MODEL이 설정되지 않았습니다")
+    if not OLLAMA_BASE_URL.startswith(("http://", "https://")):
+        raise RuntimeError("OLLAMA_BASE_URL은 http(s) 주소여야 합니다")
+    payload = {
+        "model": OLLAMA_MODEL,
+        "messages": [{"role": "system", "content": system}] + messages,
+        "stream": True,
+        "options": {"temperature": 0.35, "num_ctx": 8192},
+    }
+    timeout = httpx.Timeout(connect=3.0, read=180.0, write=30.0, pool=5.0)
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        async with client.stream("POST", f"{OLLAMA_BASE_URL}/api/chat", json=payload) as resp:
+            if resp.status_code >= 400:
+                await resp.aread()
+            resp.raise_for_status()
+            async for line in resp.aiter_lines():
+                if not line:
+                    continue
+                data = json.loads(line)
+                if data.get("error"):
+                    raise RuntimeError(str(data["error"])[:300])
+                text = (data.get("message") or {}).get("content", "")
+                if text:
+                    yield text
+                if data.get("done"):
+                    return
 
 
 # ── OpenAI 호환 스트리밍 (OpenRouter / Groq 공용) ────────
@@ -434,6 +474,8 @@ def _provider_chain() -> list[str]:
         chain.append("mistral")      # 6순위: 월 약 10억 토큰(카드 불필요)
     if COHERE_API_KEY and not _is_cooling_down("cohere"):
         chain.append("cohere")       # 7순위: 월 1,000건(카드 불필요, 최후 안전망)
+    if OLLAMA_MODEL and not _is_cooling_down("ollama"):
+        chain.append("ollama")       # 8순위: API 키 없는 로컬 생성형 모델
     chain.append("local")            # 최후 폴백: 자체 엔진 (항상 포함)
     return chain
 
@@ -446,12 +488,19 @@ def has_llm_provider() -> bool:
     return any(p != "local" for p in _provider_chain())
 
 
+def is_offline_mode() -> bool:
+    """외부 LLM 제공자 없이 로컬 추론 엔진만 사용하는지 반환."""
+    return not has_llm_provider()
+
+
 # ── 방법3: 계획 → 초안 → 독립 검증 심층 자기검토 ────────
 def _safe_internal_result(value: str, limit: int) -> str:
     """실패 안내나 로컬 원문 폴백을 후속 검토의 사실 근거로 전달하지 않는다."""
     from engine import LOCAL_FALLBACK_MARKER
+    from local_reasoner import LOCAL_REASONING_MARKER
     failure_markers = (
         LOCAL_FALLBACK_MARKER,
+        LOCAL_REASONING_MARKER,
         "⚠️ 일시적인 오류가 발생했습니다",
         "⚠️ 일시적인 연결 오류가 발생했습니다",
     )
@@ -534,21 +583,19 @@ async def chat_stream(
     system = system_prompt or SYSTEM_PROMPT
     chain = _provider_chain()
 
+    # API 제공자가 하나도 없을 때는 외부 LLM용 다중 호출을 반복하지 않고 로컬 전용
+    # 질문 분해→근거 선별→구성→검토 파이프라인을 한 번 실행한다.
+    if is_offline_mode():
+        async for token in _local_stream(messages, context, system, thinking_mode):
+            yield token
+        return
+
     # 방법2: 프롬프트 기반 추론 — 시스템 프롬프트에 <think> 지시 추가
     if thinking_mode == "prompt":
         system = system + "\n\n" + THINKING_PROMPT_ADDITION
 
     # 방법3: 계획·초안·독립 검증 심층 자기검토 — 별도 함수 위임
     if thinking_mode == "deep":
-        if not has_llm_provider():
-            # 실제 LLM이 하나도 없으면 계획→초안→검증 3단계가 전부 같은 자체 엔진
-            # 폴백을 반복 호출할 뿐이라 사고 품질에는 전혀 도움이 안 되고 지연시간만
-            # 3배로 늘어난다(각 단계의 system_prompt는 로컬 엔진이 아예 참고하지
-            # 않음). 이 경우 곧장 로컬 다중 근거 종합 판단(engine._compose)으로
-            # 1회만 호출한다.
-            async for token in _local_stream(messages, context, system):
-                yield token
-            return
         async for token in _deep_thinking_chat(messages, context, system):
             yield token
         return
@@ -597,8 +644,13 @@ async def chat_stream(
                     yield token
                 return
 
+            elif provider == "ollama":
+                async for token in _ollama_stream(messages, sys_with_ctx):
+                    yield token
+                return
+
             else:  # local
-                async for token in _local_stream(messages, context, system):
+                async for token in _local_stream(messages, context, system, thinking_mode):
                     yield token
                 return
 
@@ -620,6 +672,8 @@ async def chat_stream(
                     print(f"[{provider}] 429 한도초과 → {next_p}로 전환")
                 else:
                     print(f"[{provider}] 오류 {status} → {next_p}로 전환")
+                if provider == "ollama":
+                    _set_cooldown("ollama", seconds=300)
                 await asyncio.sleep(1)
                 continue
             else:
@@ -630,6 +684,8 @@ async def chat_stream(
 
         except Exception as e:
             print(f"[{provider}] 예외 발생: {type(e).__name__}: {e}")
+            if provider == "ollama":
+                _set_cooldown("ollama", seconds=300)
             if not is_last:
                 print(f"[{provider}] → {chain[i + 1]}로 전환")
                 await asyncio.sleep(1)
@@ -688,6 +744,12 @@ async def chat(messages: list, context: str = "") -> str:
 def current_model_info() -> dict:
     chain = _provider_chain()
     primary = chain[0]
+    import local_gen
+    local_info = (
+        {"provider": "내장 로컬 생성 AI(실험적)", "model": "GGUF", "limit": "서버 성능 한도"}
+        if local_gen.is_configured()
+        else {"provider": "자체 로컬 추론 엔진", "model": "근거 추론·코딩 v3", "limit": "무제한"}
+    )
     labels = {
         "claude":     {"provider": "Anthropic Claude", "model": ANTHROPIC_MODEL,  "limit": "유료 종량제"},
         "zen":        {"provider": "OpenCode Zen",      "model": ZEN_MODEL,        "limit": "무료 모델(한시)"},
@@ -696,7 +758,8 @@ def current_model_info() -> dict:
         "gemini":     {"provider": "Google Gemini",     "model": GEMINI_MODEL,     "limit": "1,500건/일"},
         "mistral":    {"provider": "Mistral AI",        "model": MISTRAL_MODEL,    "limit": "월 약 10억 토큰"},
         "cohere":     {"provider": "Cohere",            "model": COHERE_MODEL,     "limit": "1,000건/월"},
-        "local":      {"provider": "자체 TF-IDF 엔진",  "model": "키워드 검색",    "limit": "무제한"},
+        "ollama":     {"provider": "Ollama 로컬 생성형 AI", "model": OLLAMA_MODEL or "미설정", "limit": "PC 성능 한도"},
+        "local":      local_info,
     }
     info = labels.get(primary, labels["local"])
     info["free"] = True
@@ -704,7 +767,7 @@ def current_model_info() -> dict:
 
     # 쿨다운 중인 제공자 표시
     cooling = {}
-    for p in ["claude", "zen", "openrouter", "groq", "gemini", "mistral", "cohere"]:
+    for p in ["claude", "zen", "openrouter", "groq", "gemini", "mistral", "cohere", "ollama"]:
         if _is_cooling_down(p):
             remaining = int(_rate_limit_until[p] - time.time())
             cooling[p] = f"{remaining // 60}분 후 복구"
