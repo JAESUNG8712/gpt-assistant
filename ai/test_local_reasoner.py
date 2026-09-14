@@ -101,6 +101,20 @@ def main_():
         "[검색결과 1 | 공식 | 출처: moel.go.kr]\n내용: 연차 신청서를 제출합니다.",
     )
     assert "출처: moel.go.kr" in sourced_answer
+
+    # 2026-09-14 발견·수정: search.py가 실제로 붙이는 "공공기관"/"전문기관" 라벨은
+    # "공공"/"전문" 뒤에 "기관"이 더 붙어있어, 이전 정규식(`\|\s*공공\s*\|`)이 바로
+    # 뒤에 파이프가 와야만 매칭돼 두 라벨을 전부 놓치고 일반 문서(authority=1)와
+    # 동일하게 취급하고 있었다 — 검증된 기관 출처가 신뢰도 계산에 전혀 반영되지
+    # 않던 버그. 이제 authority=2로 정확히 인식돼야 한다.
+    institute_plan, institute_evidence = _rank_evidence(
+        "기준금리는 얼마",
+        "[검색결과 1 | 공공기관 | 출처: bok.or.kr]\n내용: 기준금리는 3.5%입니다.\n\n"
+        "[검색결과 2 | 전문기관 | 출처: kli.re.kr]\n내용: 기준금리는 3.5%로 유지됩니다.",
+    )
+    assert {item.authority for item in institute_evidence} == {2}
+    institute_review = review_reasoning(institute_plan, institute_evidence)
+    assert institute_review.independent_sources >= 2
     assert resolve_context_query(
         "1번", "[주의: 사용자 질문 'FastAPI TestClient 사용법'과 직접 관련된 내용만 사용하세요.]",
     ) == "FastAPI TestClient 사용법"

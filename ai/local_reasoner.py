@@ -213,7 +213,7 @@ def _evidence_units(context: str) -> list[tuple[str, int, str]]:
                 or re.search(r"\[(?:공식|법령)", value) or "국가법령정보" in value):
             authority = 3
             default_label = "공식 출처"
-        elif re.search(r"\|\s*(?:공공|전문|권위)\s*\|", value) or re.search(r"\[(?:내부|승인)", value):
+        elif re.search(r"\|\s*(?:공공기관|전문기관|권위기관)\s*\|", value) or re.search(r"\[(?:내부|승인)", value):
             authority = 2
             default_label = "검증 출처"
         else:
