@@ -949,11 +949,67 @@ def _explicit_question_year(text: str) -> Optional[int]:
     return year + 2000 if year < 100 else year
 
 
+def _explicit_question_years(text: str) -> list[int]:
+    """복합 비교 질문에 등장한 연도를 중복 없이 모두 반환한다."""
+    years = []
+    for match in re.finditer(r'(?<!\d)(\d{2}|20\d{2})년', text or ''):
+        year = int(match.group(1))
+        year = year + 2000 if year < 100 else year
+        if year not in years:
+            years.append(year)
+    return years
+
+
+def _min_wage_comparison(text: str) -> Optional[str]:
+    """여러 연도 또는 전년 대비 요청을 한 번에 계산·교차검증한다."""
+    years = _explicit_question_years(text)
+    if len(years) == 1 and re.search(r'(?:전년|작년)\s*대비', text):
+        years.insert(0, years[0] - 1)
+    if len(years) < 2:
+        return None
+    unknown = [year for year in years if year not in _MIN_WAGE_TABLE]
+    if unknown:
+        return (
+            "요청한 연도 중 " + ", ".join(f"{year}년" for year in unknown)
+            + "은 현재 앱의 검증된 공식 데이터에 없어 비교값을 추정하지 않았습니다. "
+            + f"[최저임금위원회 연도별 결정현황]({_MIN_WAGE_OFFICIAL_URL})에서 확인해 주세요."
+        )
+    ordered = sorted(years)
+    rows = []
+    for year in ordered:
+        hourly = _MIN_WAGE_TABLE[year]
+        details = _MIN_WAGE_DETAILS[year]
+        rows.append(
+            f"| {year}년 | {hourly:,}원 | {details['daily']:,}원 | {details['monthly']:,}원 |"
+        )
+    base_year, target_year = ordered[0], ordered[-1]
+    base_hourly, target_hourly = _MIN_WAGE_TABLE[base_year], _MIN_WAGE_TABLE[target_year]
+    hourly_diff = target_hourly - base_hourly
+    monthly_diff = _MIN_WAGE_DETAILS[target_year]["monthly"] - _MIN_WAGE_DETAILS[base_year]["monthly"]
+    rate = hourly_diff / base_hourly * 100 if base_hourly else 0
+    return (
+        f"## 최저임금 복합 비교 ({base_year}년 → {target_year}년)\n\n"
+        "질문을 **연도별 금액 확인 → 월 환산 → 차액·인상률 계산 → 공식값 대조**로 나눠 검토했습니다.\n\n"
+        "| 연도 | 시간급 | 일급(8시간) | 월 환산액(209시간) |\n"
+        "|------|--------|-------------|---------------------|\n"
+        + "\n".join(rows)
+        + f"\n\n- **시간급 차이**: {hourly_diff:+,}원"
+        + f"\n- **월 환산액 차이**: {monthly_diff:+,}원"
+        + f"\n- **계산 인상률**: {rate:.1f}%"
+        + f"\n- **{target_year}년 적용 기간**: {target_year}년 1월 1일 ~ 12월 31일"
+        + f"\n\n출처: [최저임금위원회 연도별 최저임금 결정현황]({_MIN_WAGE_OFFICIAL_URL})"
+    )
+
+
 def try_min_wage_info(text: str) -> Optional[str]:
     """연도별 최저임금을 공식 확정값으로 직접 조회한다."""
     tl = text.lower()
     if '최저임금' not in tl and '최저시급' not in tl:
         return None
+
+    comparison = _min_wage_comparison(text)
+    if comparison:
+        return comparison
 
     explicit_year = _explicit_question_year(text)
     wage_info = _question_year_min_wage(text)

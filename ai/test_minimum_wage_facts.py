@@ -50,6 +50,14 @@ def main():
     full_year = calculator.try_any_calc("2027년 최저시급과 월급은 얼마인가요?")
     assert full_year is not None and "85,600원" in full_year
 
+    comparison = calculator.try_any_calc(
+        "2027년 최저임금과 월급을 계산하고 2026년 대비 인상액도 알려줘"
+    )
+    assert comparison is not None and "최저임금 복합 비교" in comparison
+    assert "2026년 → 2027년" in comparison
+    assert "+380원" in comparison and "+79,420원" in comparison and "3.7%" in comparison
+    assert "연도별 금액 확인 → 월 환산 → 차액·인상률 계산" in comparison
+
     violation = calculator.try_any_calc("2027년 시급 10,500원 최저임금 위반인가요?")
     assert violation is not None
     assert "❌ **위반**" in violation and "10,700원" in violation

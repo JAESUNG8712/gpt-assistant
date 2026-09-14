@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from datetime import date
 
 
-LOCAL_REASONING_MARKER = "<!-- local-reasoning-v4 -->"
+LOCAL_REASONING_MARKER = "<!-- local-reasoning-v5 -->"
 
 _STOP = {
     "그리고", "그러면", "그것", "그거", "대한", "대해서", "어떻게", "알려줘",
@@ -102,6 +102,8 @@ class Evidence:
     negative: bool = False
     position: int = 0
     ordinal: int | None = None
+    authority: int = 1
+    source_label: str = "보유 자료"
 
 
 @dataclass(frozen=True)
@@ -111,6 +113,7 @@ class ReasoningPlan:
     constraints: tuple[str, ...]
     preferred_signals: tuple[str, ...]
     question_terms: tuple[str, ...]
+    aspects: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -119,6 +122,10 @@ class ReasoningReview:
     conflicts: tuple[str, ...]
     missing_constraints: tuple[str, ...]
     evidence_count: int
+    missing_aspects: tuple[str, ...] = ()
+    official_count: int = 0
+    independent_sources: int = 0
+    corroborated_claims: int = 0
 
 
 _INTENT_SIGNALS = {
@@ -127,6 +134,7 @@ _INTENT_SIGNALS = {
     "comparison": ("차이", "반면", "각각", "비교", "보다", "장점", "단점"),
     "eligibility": ("조건", "요건", "대상", "가능", "해당", "제외"),
     "amount": ("금액", "시간당", "월급", "요율", "비율", "계산", "기준"),
+    "date": ("시행", "적용", "기한", "기간", "부터", "까지", "일자", "날짜"),
     "latest": ("최신", "현재", "고시", "시행", "적용", "기준"),
     "fact": (),
 }
@@ -141,6 +149,8 @@ def build_reasoning_plan(query: str) -> ReasoningPlan:
         intent = "cause"
     elif re.search(r"(?:비교|차이|vs\.?|장단점|어느\s*쪽)", q, re.IGNORECASE):
         intent = "comparison"
+    elif re.search(r"(?:언제|시행일|적용일|기한|기간)", q):
+        intent = "date"
     elif re.search(r"(?:어떻게|방법|절차|신청|제출)", q):
         intent = "procedure"
     elif re.search(r"(?:조건|요건|대상|가능|자격|해당)", q):
@@ -153,12 +163,70 @@ def build_reasoning_plan(query: str) -> ReasoningPlan:
         r"\d{4}년|\d+(?:[.,]\d+)?(?:원|%|개월|시간|일)|"
         r"(?:이상|이하|초과|미만|이전|이후|부터|까지)", q
     )))
+    aspect_patterns = {
+        "amount": r"(?:얼마|몇\s*%|금액|시급|시간급|월급|요율|인상액|계산)",
+        "date": r"(?:언제|시행일?|적용일?|기한|기간|몇\s*년|몇\s*월|부터|까지)",
+        "comparison": r"(?:비교|차이|대비|vs\.?)",
+        "cause": r"(?:왜|이유|원인|목적)",
+        "procedure": r"(?:어떻게|방법|절차|신청|제출)",
+        "eligibility": r"(?:조건|요건|대상|가능|자격|해당)",
+    }
+    aspects = tuple(name for name, pattern in aspect_patterns.items() if re.search(pattern, q, re.IGNORECASE))
+    if not aspects:
+        aspects = (intent,)
     return ReasoningPlan(
         intent=intent,
         constraints=constraints,
-        preferred_signals=_INTENT_SIGNALS[intent],
+        preferred_signals=tuple(dict.fromkeys(
+            signal for aspect in aspects for signal in _INTENT_SIGNALS.get(aspect, ())
+        )),
         question_terms=tuple(sorted(_tokens(q))),
+        aspects=aspects,
     )
+
+
+def _supports_aspect(aspect: str, text: str) -> bool:
+    """근거 한 단위가 복합 질문의 특정 요구항목을 실제로 다루는지 판정한다."""
+    patterns = {
+        "amount": r"\d+(?:[.,]\d+)?\s*(?:원|%|만원|억원)|(?:금액|시급|시간급|월급|요율|인상액)",
+        "date": r"(?:20\d{2}년|\d{1,2}월\s*\d{1,2}일|시행|적용|기한|기간|부터|까지)",
+        "comparison": r"(?:차이|대비|반면|보다|각각|장점|단점)",
+        "cause": r"(?:때문|이유|원인|목적|위해|따라)",
+        "procedure": r"(?:절차|단계|신청|작성|제출|승인|확인|등록|처리|해야)",
+        "eligibility": r"(?:조건|요건|대상|가능|해당|제외|자격)",
+        "latest": r"(?:20\d{2}년|최신|현재|고시|시행|적용)",
+        "fact": r".",
+    }
+    return bool(re.search(patterns.get(aspect, r"."), text or "", re.IGNORECASE))
+
+
+def _evidence_units(context: str) -> list[tuple[str, int, str]]:
+    """컨텍스트 블록의 출처 등급을 내용 문장에 연결한다."""
+    units: list[tuple[str, int, str]] = []
+    blocks = re.split(r"\n\s*\n", _clean_context(context))
+    for block in blocks:
+        value = block.strip()
+        if not value or value.startswith("[검색 근거 검증]"):
+            continue
+        lower = value.lower()
+        if ("law.go.kr" in lower or re.search(r"\|\s*공식\s*\|", value)
+                or re.search(r"\[(?:공식|법령)", value) or "국가법령정보" in value):
+            authority = 3
+            default_label = "공식 출처"
+        elif re.search(r"\|\s*(?:공공|전문|권위)\s*\|", value) or re.search(r"\[(?:내부|승인)", value):
+            authority = 2
+            default_label = "검증 출처"
+        else:
+            authority = 1
+            default_label = "보유 자료"
+        domain_match = re.search(r"출처:\s*([^|\]\s]+)", value)
+        source_label = domain_match.group(1).rstrip(".,") if domain_match else default_label
+        for sentence in _sentences(value):
+            # URL·제목 표식만 있는 줄은 사실 근거에서 제외한다.
+            if re.match(r"^(?:URL|출처):|^\[검색결과\s+\d+", sentence, re.IGNORECASE):
+                continue
+            units.append((sentence, authority, source_label))
+    return units
 
 
 def _rank_evidence(query: str, context: str, limit: int = 4) -> tuple[ReasoningPlan, list[Evidence]]:
@@ -167,13 +235,13 @@ def _rank_evidence(query: str, context: str, limit: int = 4) -> tuple[ReasoningP
     q_grams = _chargrams(query)
     q_numbers = set(re.findall(r"\d+(?:[.,]\d+)?", query))
     ranked: list[Evidence] = []
-    sentences = _sentences(_clean_context(context))
-    all_years = [int(year) for sentence in sentences for year in re.findall(r"(?<!\d)(20\d{2})년?", sentence)]
+    units = _evidence_units(context)
+    all_years = [int(year) for sentence, _, _ in units for year in re.findall(r"(?<!\d)(20\d{2})년?", sentence)]
     asks_current = bool(re.search(r"(?:현재|지금|올해)", query or ""))
     applicable_years = [year for year in all_years if year <= date.today().year] if asks_current else all_years
     latest_year = max(applicable_years) if applicable_years else None
     requested_years = set(re.findall(r"(?<!\d)(20\d{2})년?", query or ""))
-    for index, sentence in enumerate(sentences):
+    for index, (sentence, authority, source_label) in enumerate(units):
         sentence_years = set(re.findall(r"(?<!\d)(20\d{2})년?", sentence))
         # 특정 연도를 물었는데 다른 연도만 적힌 문장은 답 후보에서 제외한다.
         # 여러 연도를 함께 물은 비교 질문이면 요청된 연도는 모두 유지한다.
@@ -191,7 +259,7 @@ def _rank_evidence(query: str, context: str, limit: int = 4) -> tuple[ReasoningP
         number_overlap = len(q_numbers & set(re.findall(r"\d+(?:[.,]\d+)?", sentence)))
         constraint_hits = sum(1 for item in plan.constraints if item in sentence)
         intent_hits = sum(1 for signal in plan.preferred_signals if signal in sentence)
-        source_bonus = 0.15 if re.search(r"\[(?:공식|법령|최신|내부|출처)", sentence) else 0
+        source_bonus = {3: 0.8, 2: 0.4}.get(authority, 0.0)
         score = (
             overlap * 1.2 + coverage + gram_coverage * 1.4 + number_overlap * 1.5
             + constraint_hits * 0.8 + intent_hits * 0.22 + source_bonus - index * 0.002
@@ -202,6 +270,7 @@ def _rank_evidence(query: str, context: str, limit: int = 4) -> tuple[ReasoningP
                 sentence, score, sentence_numbers,
                 bool(re.search(r"(?:아니|불가|금지|없(?:다|음)|제외|못\s*한)", sentence)),
                 index, int(ordinal_match.group(1)) if ordinal_match else None,
+                authority, source_label,
             ))
     ranked.sort(key=lambda item: item.score, reverse=True)
     return plan, ranked[:limit]
@@ -211,7 +280,15 @@ def review_reasoning(plan: ReasoningPlan, evidence: list[Evidence]) -> Reasoning
     """선택한 근거의 조건 누락과 동일 항목의 상충 수치·긍정/부정을 검사한다."""
     joined = " ".join(item.text for item in evidence)
     missing = tuple(item for item in plan.constraints if item not in joined)
+    missing_aspects = tuple(
+        aspect for aspect in plan.aspects
+        if not (aspect == "comparison" and len(evidence) >= 2)
+        and not any(_supports_aspect(aspect, item.text) for item in evidence)
+    )
     conflicts: list[str] = []
+    official_count = sum(1 for item in evidence if item.authority >= 3)
+    independent_sources = len({item.source_label for item in evidence})
+    claim_sources: dict[tuple[str, str], set[str]] = {}
 
     decisive_patterns = {
         "시간당 금액": r"(?:시간당|시급)[^\d]{0,12}(\d+(?:[.,]\d+)?원)",
@@ -224,6 +301,8 @@ def review_reasoning(plan: ReasoningPlan, evidence: list[Evidence]) -> Reasoning
             years = re.findall(r"(?<!\d)(20\d{2})년?", item.text)
             scope = years[0] + "년" if years else "연도 미표기"
             values_by_scope.setdefault(scope, set()).update(re.findall(pattern, item.text))
+            for value in re.findall(pattern, item.text):
+                claim_sources.setdefault((label, value), set()).add(item.source_label)
         for scope, values in values_by_scope.items():
             if len(values) > 1:
                 conflicts.append(
@@ -242,15 +321,19 @@ def review_reasoning(plan: ReasoningPlan, evidence: list[Evidence]) -> Reasoning
                 conflicts.append("같은 대상의 가능 여부에 관한 긍정·부정 근거가 충돌함")
                 break
 
-    if conflicts or missing:
+    corroborated_claims = sum(1 for sources in claim_sources.values() if len(sources) >= 2)
+    if conflicts or missing or missing_aspects:
         confidence = "낮음"
-    elif len(evidence) >= 2:
+    elif official_count or corroborated_claims:
         confidence = "높음"
     elif evidence:
         confidence = "보통"
     else:
         confidence = "근거 없음"
-    return ReasoningReview(confidence, tuple(conflicts), missing, len(evidence))
+    return ReasoningReview(
+        confidence, tuple(conflicts), missing, len(evidence), missing_aspects,
+        official_count, independent_sources, corroborated_claims,
+    )
 
 
 def select_evidence(query: str, context: str, limit: int = 4) -> list[str]:
@@ -265,14 +348,20 @@ def _public_review(plan: ReasoningPlan, review: ReasoningReview, thinking_mode: 
     labels = {
         "cause": "원인·이유", "procedure": "절차·방법", "comparison": "비교",
         "eligibility": "조건·가능 여부", "amount": "수치·계산",
-        "latest": "현재·최신 기준", "fact": "사실 확인",
+        "date": "시점·기한", "latest": "현재·최신 기준", "fact": "사실 확인",
     }
     checks = [f"{labels[plan.intent]} 질문으로 분류", f"근거 {review.evidence_count}개 비교"]
     if plan.constraints:
         checks.append(f"명시 조건 {len(plan.constraints)}개 확인")
+    if len(plan.aspects) > 1:
+        checks.append(f"요구사항 {len(plan.aspects)}개 분해")
+    if review.official_count:
+        checks.append(f"공식 근거 {review.official_count}개 우선")
+    if review.corroborated_claims:
+        checks.append(f"독립 출처 교차확인 {review.corroborated_claims}건")
     if review.conflicts:
         checks.append(f"충돌 {len(review.conflicts)}건을 발견해 결론 보류")
-    elif review.missing_constraints:
+    elif review.missing_constraints or review.missing_aspects:
         checks.append("확인되지 않은 조건을 표시")
     else:
         checks.append(f"판단 신뢰도 {review.confidence}")
@@ -536,8 +625,35 @@ def _evidence_for_display(plan: ReasoningPlan, ranked: list[Evidence]) -> list[E
     )
 
 
+def _display_evidence(item: Evidence) -> str:
+    if item.source_label in {"보유 자료", "검증 출처", "공식 출처"}:
+        return item.text
+    return f"{item.text}\n  - 출처: {item.source_label}"
+
+
 def _render_grounded_body(plan: ReasoningPlan, evidence: list[Evidence]) -> str:
-    texts = [item.text for item in evidence]
+    texts = [_display_evidence(item) for item in evidence]
+    aspect_labels = {
+        "amount": "금액·계산", "date": "적용 시점", "comparison": "비교",
+        "cause": "원인", "procedure": "절차", "eligibility": "조건",
+        "latest": "최신 기준", "fact": "사실",
+    }
+    if len(plan.aspects) > 1:
+        rows = []
+        for item in evidence:
+            supported = [aspect_labels.get(aspect, aspect) for aspect in plan.aspects
+                         if _supports_aspect(aspect, item.text)
+                         or (aspect == "comparison" and len(evidence) >= 2)]
+            if not supported:
+                continue
+            label = " · ".join(supported)
+            rendered_item = _display_evidence(item)
+            if item.text.lstrip().startswith("|"):
+                rows.append(f"**{label}**\n\n{rendered_item}")
+            else:
+                rows.append(f"- **{label}:** {rendered_item}")
+        if rows:
+            return "**요청별 판단 근거**\n\n" + "\n\n".join(rows)
     if any(text.lstrip().startswith("|") for text in texts):
         rendered = []
         for text in texts:
@@ -581,10 +697,19 @@ def grounded_response(query: str, context: str, thinking_mode: str = "off") -> s
             + "\n\n동일한 적용 시점과 공식 출처인지 확인한 뒤 다시 판단해야 합니다."
         )
     missing_note = ""
+    missing_parts = []
     if reasoning_review.missing_constraints:
+        missing_parts.append(
+            "질문 조건 " + ", ".join(reasoning_review.missing_constraints)
+        )
+    if reasoning_review.missing_aspects:
+        missing_parts.append(
+            "요청 항목 " + ", ".join(reasoning_review.missing_aspects)
+        )
+    if missing_parts:
         missing_note = (
-            "\n\n**확인 필요:** 자료에서 질문 조건 "
-            + ", ".join(reasoning_review.missing_constraints) + "을(를) 확인하지 못했습니다."
+            "\n\n**확인 필요:** 자료에서 " + " 및 ".join(missing_parts)
+            + "을(를) 확인하지 못했습니다."
         )
     return (
         LOCAL_REASONING_MARKER + "\n" + review

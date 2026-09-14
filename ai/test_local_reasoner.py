@@ -35,6 +35,8 @@ def main_():
     assert build_reasoning_plan("왜 이 제도가 필요한가?").intent == "cause"
     assert build_reasoning_plan("신청 절차가 어떻게 돼?").intent == "procedure"
     assert build_reasoning_plan("현재 기준은 뭐야?").intent == "latest"
+    composite_plan = build_reasoning_plan("2027년 최저임금 금액과 적용일을 알려줘")
+    assert composite_plan.aspects == ("amount", "date")
 
     conflict_context = (
         "2027년 최저임금은 시간당 10,700원입니다.\n\n"
@@ -75,6 +77,30 @@ def main_():
         "| 근속 기간 | 연차 일수 |\n|---|---|\n| 1년 | 15일 |\n| 3년 | 16일 |",
     )
     assert "| 근속 기간 | 연차 일수 |" in table_answer and "| 3년 | 16일 |" in table_answer
+    composite_answer = grounded_response(
+        "2027년 최저임금 금액과 적용일을 알려줘",
+        "[공식 고시] 2027년 최저임금은 시간당 10,700원이며 2027년 1월 1일부터 적용됩니다.",
+        "deep",
+    )
+    assert "요구사항 2개 분해" in composite_answer
+    assert "요청별 판단 근거" in composite_answer
+    assert "10,700원" in composite_answer and "1월 1일부터" in composite_answer
+    assert "확인 필요" not in composite_answer
+
+    # 동일한 내용이면 공식 근거가 일반 문서보다 먼저 선택된다.
+    source_plan, source_evidence = _rank_evidence(
+        "연차 신청 절차",
+        "[검색결과 1 | 일반 | 출처: blog.example]\n내용: 연차 신청서를 제출합니다.\n\n"
+        "[검색결과 2 | 공식 | 출처: moel.go.kr]\n내용: 연차 신청서를 제출합니다.",
+    )
+    source_review = review_reasoning(source_plan, source_evidence)
+    assert source_evidence[0].source_label == "moel.go.kr"
+    assert source_review.official_count >= 1
+    sourced_answer = grounded_response(
+        "연차 신청 절차",
+        "[검색결과 1 | 공식 | 출처: moel.go.kr]\n내용: 연차 신청서를 제출합니다.",
+    )
+    assert "출처: moel.go.kr" in sourced_answer
     assert resolve_context_query(
         "1번", "[주의: 사용자 질문 'FastAPI TestClient 사용법'과 직접 관련된 내용만 사용하세요.]",
     ) == "FastAPI TestClient 사용법"
