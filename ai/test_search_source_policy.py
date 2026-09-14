@@ -1,5 +1,7 @@
 """주제별 공식 출처·최신성·교차검증 검색 정책 회귀 테스트."""
 
+from datetime import date
+
 import search
 
 
@@ -8,6 +10,9 @@ def _result(title, body, url):
 
 
 def main():
+    assert search.should_auto_verify(f"{date.today().year + 1}년 최저임금")
+    assert search.should_auto_verify("현재 기준금리")
+    assert not search.should_auto_verify(f"{date.today().year - 2}년 일반 역사 사건")
     requirements = search.analyze_query_requirements(
         "2026년과 2027년 최저임금 금액과 적용일을 비교해줘"
     )
@@ -59,6 +64,41 @@ def main():
     assert "질문 근거 충족률" in partial_context
     assert "질문 분해:" in partial_context
     assert "적용·시행 시점" in partial_context
+    gap_queries = search.build_gap_search_queries(
+        "2027년 최저임금 적용일", partial,
+    )
+    assert any("적용 시행일" in item for item in gap_queries)
+
+    search_calls = []
+    class FakeDDGS:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def text(self, query, max_results=5):
+            search_calls.append(query)
+            if "적용 시행일" in query:
+                return [_result(
+                    "2027년 최저임금 적용일", "2027년 1월 1일부터 적용",
+                    "https://www.moel.go.kr/2027-date",
+                )]
+            return [_result(
+                "2027년 최저임금", "2027년 시간급 10,700원",
+                "https://www.minimumwage.go.kr/2027",
+            )]
+
+    original_ddgs = search.DDGS
+    search.DDGS = FakeDDGS
+    try:
+        autonomously_filled = search.web_search("2027년 최저임금 적용일", 5)
+    finally:
+        search.DDGS = original_ddgs
+    assert len(search_calls) >= 2
+    assert search.search_validation(
+        autonomously_filled, query="2027년 최저임금 적용일"
+    )["missing_aspects"] == []
 
     spoofed = search._prepare_results("현행 법률 처벌", [
         _result("법률 처벌", "현행 법률 처벌 안내", "https://law.go.kr.evil.example/fake"),

@@ -37,6 +37,21 @@ def main():
     assert "장기기억 후보에는" in repaired
     assert "현재 자료에서 다시 확인된 내용" in repaired
     assert "10,700원" in repaired
+
+    limited_context = (
+        "[검색 근거 검증]\n신뢰 수준: limited (질문의 일부 요청 항목에 대한 근거가 부족함)\n"
+        + context
+    )
+    limited = response_quality.evaluate(
+        "2027년 최저임금", "2027년 최저임금은 10,700원입니다.", limited_context,
+    )
+    assert limited["evidence_confidence"] == "limited"
+    assert limited["should_block_learning"] is True
+    conflict = response_quality.evaluate(
+        "2027년 최저임금", "2027년 최저임금은 확인이 필요합니다.",
+        "신뢰 수준: conflict (출처 충돌)",
+    )
+    assert conflict["should_warn"] is True
     print("response quality tests: PASS")
 
 

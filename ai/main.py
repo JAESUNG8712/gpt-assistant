@@ -917,13 +917,14 @@ async def chat(req: ChatRequest, request: Request):
     # 사용자가 명시 요청한 경우뿐 아니라, 로컬 KB 신뢰도가 낮을 때도 자동으로 보강 검색
     # (company는 사내 문서 전용 정책상 제외, stock은 자체 리포트/뉴스 수집 경로를 이미 사용)
     KB_CONTEXT = 0.10   # LLM 호출 시 컨텍스트 포함 기준 / 자동 웹검색 트리거 기준
+    autonomous_verification_reason = srch.auto_verification_reason(search_msg)
     auto_web_search = (
         not effective_use_search
         and not direct_calc
         and not clarification_msg
         and not stock_mode
         and persona_id != "company"
-        and best_score < KB_CONTEXT
+        and (best_score < KB_CONTEXT or bool(autonomous_verification_reason))
     )
     search_ctx = ""
     results = []  # 아래 reference_items 참조 시 항상 정의되어 있어야 함
@@ -1075,6 +1076,12 @@ async def chat(req: ChatRequest, request: Request):
         "commands": command_router.applied_command_status(command["applied_commands"]),
         "search_requested": bool(effective_use_search),
         "search_used": bool(search_ctx),
+        "search_automatic": bool(auto_web_search),
+        "search_automatic_reason": (
+            autonomous_verification_reason
+            if autonomous_verification_reason else
+            "로컬 지식 신뢰도 부족" if auto_web_search else ""
+        ),
         "thinking_mode": effective_thinking_mode,
         "thinking_requested": requested_thinking_mode,
         "thinking_automatic": bool(thinking_decision["automatic"]),
@@ -2886,11 +2893,11 @@ def health():
         "status": "ok",
         "db_backend": "Turso (클라우드)" if mem._USE_TURSO else "SQLite (로컬)",
         "retrieval_engine": "tfidf-bm25-char3-v1",
-        "deliberation_engine": "always-review-plan-draft-v2",
+        "deliberation_engine": "evidence-adaptive-review-v3",
         "conversation_engine": "contextual-followup-v1",
-        "offline_reasoning_engine": "symbolic-plan-critic-v8",
-        "evidence_reasoning_engine": "query-coverage-consensus-v1",
-        "response_quality_engine": "deterministic-answer-gate-v2",
+        "offline_reasoning_engine": "symbolic-plan-critic-v9",
+        "evidence_reasoning_engine": "adaptive-query-coverage-consensus-v2",
+        "response_quality_engine": "deterministic-answer-gate-v3",
         "local_generative_configured": bool(local_backends),
         "local_generative_backends": local_backends,
         "memory_schema": "typed-scopes-v1",

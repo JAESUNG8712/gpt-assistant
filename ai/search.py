@@ -226,6 +226,26 @@ def analyze_query_requirements(query: str) -> dict:
     }
 
 
+def auto_verification_reason(query: str) -> str:
+    """저장 지식만으로 확정하지 말고 웹 검증해야 하는 변동성 신호를 반환한다."""
+    analysis = analyze_query_requirements(query)
+    current_year = date.today().year
+    if any(int(year) >= current_year for year in analysis["years"]):
+        return "현재·미래 연도 사실 검증"
+    if analysis["requires_freshness"]:
+        return "최신성 요청 검증"
+    topic, _ = _topic_policy(query)
+    volatile_aspects = {"amount", "date", "latest", "eligibility"}
+    if topic in {"labor", "law", "tax", "health", "travel", "finance"} \
+            and volatile_aspects.intersection(analysis["aspects"]):
+        return "변동 가능 전문정보 검증"
+    return ""
+
+
+def should_auto_verify(query: str) -> bool:
+    return bool(auto_verification_reason(query))
+
+
 def build_search_queries(query: str, limit: int = 3) -> list[str]:
     """복합·연도 비교 질문을 적은 수의 보조 검색어로 분해한다."""
     analysis = analyze_query_requirements(query)
@@ -248,6 +268,33 @@ def build_search_queries(query: str, limit: int = 3) -> list[str]:
         if compact and compact not in result:
             result.append(compact)
         if len(result) >= max(1, min(int(limit), 3)):
+            break
+    return result
+
+
+def build_gap_search_queries(query: str, results: list[dict], limit: int = 2) -> list[str]:
+    """첫 검색 뒤 실제로 비어 있는 연도·요청 항목만 재검색한다."""
+    validation = search_validation(results, query=query)
+    requirements = analyze_query_requirements(query)
+    subject = " ".join(requirements["anchors"][:5]).strip() or " ".join(_query_terms(query)[:5])
+    aspect_queries = {
+        "amount": "공식 금액 수치", "date": "공식 적용 시행일", "comparison": "연도별 비교",
+        "cause": "공식 원인 배경", "procedure": "공식 절차 방법",
+        "eligibility": "공식 조건 대상", "latest": "공식 최신 현재",
+    }
+    candidates = [
+        f"{year}년 {subject}" for year in validation.get("missing_years", [])
+    ] + [
+        f"{subject} {aspect_queries[aspect]}"
+        for aspect in validation.get("missing_aspects", []) if aspect in aspect_queries
+    ]
+    existing = set(build_search_queries(query))
+    result = []
+    for item in candidates:
+        compact = " ".join(item.split())
+        if compact and compact not in existing and compact not in result:
+            result.append(compact)
+        if len(result) >= max(1, min(int(limit), 2)):
             break
     return result
 
@@ -557,7 +604,7 @@ def _format_unsupported_answer_details(claims: list[dict], limit: int = 3) -> st
     return "; ".join(details)
 
 
-def search_validation(results: list[dict]) -> dict:
+def search_validation(results: list[dict], query: str = "") -> dict:
     domains = {_evidence_domain(_domain(result.get("url", ""))) for result in results if result.get("url")}
     official_domains = {
         _evidence_domain(_domain(result.get("url", "")))
@@ -573,9 +620,12 @@ def search_validation(results: list[dict]) -> dict:
     freshness_required = any(result.get("freshness") in ("fresh", "stale", "unverified") for result in results)
     freshness_verified = any(result.get("freshness") == "fresh" for result in results)
     claim_validation = _numeric_claim_validation(results)
-    requirements = next(
-        (result.get("query_requirements") for result in results if result.get("query_requirements")),
-        {"years": [], "aspects": [], "anchors": []},
+    requirements = (
+        analyze_query_requirements(query) if query else
+        next(
+            (result.get("query_requirements") for result in results if result.get("query_requirements")),
+            {"years": [], "aspects": [], "anchors": []},
+        )
     )
     covered_aspects = {
         aspect for result in results for aspect in result.get("covered_aspects", [])
@@ -645,7 +695,9 @@ def web_search(query: str, max_results: int = 5) -> list[dict]:
     raw_results = []
     try:
         with DDGS() as ddgs:
-            for index, planned_query in enumerate(build_search_queries(query)):
+            planned_queries = build_search_queries(query)
+            executed_queries = set(planned_queries)
+            for index, planned_query in enumerate(planned_queries):
                 try:
                     raw_results.extend(ddgs.text(
                         planned_query,
@@ -655,6 +707,17 @@ def web_search(query: str, max_results: int = 5) -> list[dict]:
                     if index == 0:
                         raise
             topic, policy = _topic_policy(query)
+            initial = _prepare_results(query, raw_results, candidate_limit)
+            # 계획 검색 후에도 질문의 연도·항목이 비어 있으면 부족한 부분만 최대 2회
+            # 추가 탐색한다. 무조건 반복하지 않아 서버 부하와 응답 지연을 제한한다.
+            for gap_query in build_gap_search_queries(query, initial):
+                if gap_query in executed_queries:
+                    continue
+                executed_queries.add(gap_query)
+                try:
+                    raw_results.extend(ddgs.text(gap_query, max_results=max_results))
+                except Exception:
+                    pass
             initial = _prepare_results(query, raw_results, candidate_limit)
             if topic != "general" and not any(result.get("trust_tier") == 3 for result in initial):
                 primary_domain = policy["official"][0]
