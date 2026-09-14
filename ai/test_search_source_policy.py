@@ -242,6 +242,39 @@ def main():
         search.store_memory = original_store
     assert stored == []
 
+    # 2026-09-14 발견·수정: 질의 단어에 붙은 조사가 검색 결과 문장의 조사와 달라
+    # ("최저임금은" 질문 vs "최저임금이" 결과) 리터럴 부분일치가 실패해 명백히
+    # 관련된 공식 출처 결과까지 관련성 0으로 완전히 제외되던 버그. 단일 핵심
+    # 명사 하나만으로 구성된 질문일수록(다른 단어가 하나도 안 겹치면 구제 불가)
+    # 영향이 컸다.
+    particle_score, particle_ok, particle_meta = search._result_relevance(
+        "최저임금은 얼마예요",
+        _result(
+            "2027년 최저임금 결정",
+            "2027년 최저임금이 시간당 10,700원으로 결정되었습니다.",
+            "https://www.minimumwage.go.kr/2027",
+        ),
+    )
+    assert particle_ok is True and particle_score > 0
+    assert particle_meta["matched_anchors"] == ["최저임금은"]
+
+    procedure_score, procedure_ok, _ = search._result_relevance(
+        "육아휴직을 신청하는 방법",
+        _result(
+            "육아휴직 신청 안내",
+            "육아휴직 신청은 회사에 서면으로 제출하면 됩니다.",
+            "https://www.moel.go.kr/parental-leave",
+        ),
+    )
+    assert procedure_ok is True and procedure_score > 0
+
+    # 정말 무관한 내용은 여전히 걸러져야 한다(조사 보정이 과도하게 관대해지지 않았는지 확인).
+    unrelated_score, unrelated_ok, _ = search._result_relevance(
+        "최저임금은 얼마예요",
+        _result("여행지 추천", "제주도 여행 코스를 소개합니다.", "https://blog.example.com/travel"),
+    )
+    assert unrelated_ok is False and unrelated_score == 0
+
     print("search source policy tests: PASS")
 
 

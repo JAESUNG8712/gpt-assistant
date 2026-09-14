@@ -174,6 +174,39 @@ def _query_terms(query: str) -> list[str]:
     return [term for term in terms if term not in _SEARCH_STOPWORDS]
 
 
+# 2026-09-14 실측 발견: 검색 결과 관련성 판정이 사용자 질의에서 뽑은 단어를 조사가
+# 붙은 원문 그대로("최저임금은") 검색 결과 본문과 리터럴 부분일치시키고 있었는데,
+# 같은 단어라도 문장 내 위치에 따라 조사가 달라지는 한국어 특성상("최저임금은
+# 얼마예요" 질문 vs "최저임금이 10,700원으로 결정" 답변) 실제로는 명백히 관련된
+# 공식 출처 결과조차 literal 불일치로 통째로 걸러지는(점수 0, 제외) 문제를 실측으로
+# 확인했다(예: "최저임금은 얼마예요"에 대한 완전히 정확한 .go.kr 결과가 0점 처리됨).
+# engine.py의 전역 토크나이저(_tok)는 이미 이 문제를 해결해 두었지만 "이"/"가"
+# 주격조사가 `_KR_PARTICLES`에 없어(전역 리스트를 여기서 확장하면 "최저가"/"단가"
+# 같은 독립 명사가 오분리될 위험이 있어 손대지 않음) 그대로는 이 사례를 못 고친다.
+# 대신 이 파일(웹검색 관련성 판정)에만 적용되는 국소적 조사 제거 폴백을 추가한다 —
+# 원문 리터럴 일치가 실패했을 때만 보조로 사용되므로, 드물게 어근이 과도하게
+# 잘리는 경우(예: "최저가"→"최저")가 있어도 결과를 더 배제하지 않고 넓히는
+# 방향이라 이미 있던 "완전히 걸러버리는" 실패보다 안전하다.
+_TRAILING_PARTICLE_RE = re.compile(
+    r"(?:에서는|에게는|으로는|로부터|에게서|으로도|로도|에도|에서|에게|으로|"
+    r"이나|이고|이며|이라|이란|이랑|이면|이지|에는|는데|은데|는요|은요|"
+    r"는|은|를|을|의|도|만|로|와|과|이|가|나|고|며|라|에)$"
+)
+
+
+def _content_root(term: str) -> str:
+    stripped = _TRAILING_PARTICLE_RE.sub("", term)
+    return stripped if len(stripped) >= 2 else term
+
+
+def _term_in_text(term: str, compact_text: str) -> bool:
+    normalized = re.sub(r"\s+", "", term)
+    if normalized in compact_text:
+        return True
+    root = _content_root(normalized)
+    return root != normalized and root in compact_text
+
+
 _ASPECT_PATTERNS = {
     "amount": r"얼마|금액|비용|가격|시급|월급|요율|금리|환율|계산",
     "date": r"언제|시점|시행일|적용일|발표일|기간|기한",
@@ -400,7 +433,7 @@ def _result_relevance(query: str, result: dict) -> tuple[int, bool, dict]:
     haystack = f"{result.get('title', '')} {result.get('body', '')} {url}".lower()
     compact = re.sub(r"\s+", "", haystack)
     terms = _query_terms(query)
-    matches = sum(1 for term in terms if re.sub(r"\s+", "", term) in compact)
+    matches = sum(1 for term in terms if _term_in_text(term, compact))
     requirements = analyze_query_requirements(query)
     result_years = set(re.findall(r"(?<!\d)(20\d{2})년?", haystack))
     requested_years = set(requirements["years"])
@@ -409,7 +442,7 @@ def _result_relevance(query: str, result: dict) -> tuple[int, bool, dict]:
         return 0, False, {}
     matched_anchors = [
         term for term in requirements["anchors"]
-        if re.sub(r"\s+", "", term) in compact
+        if _term_in_text(term, compact)
     ]
     if requirements["anchors"] and not matched_anchors:
         return 0, False, {}
