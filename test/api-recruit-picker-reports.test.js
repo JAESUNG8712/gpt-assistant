@@ -56,13 +56,27 @@ test("채용: candidates/export·dashboard 게이팅 + jobs/candidates/interview
   const member2Token = await login(api, "member2", "member2-test-pw");
 
   const job = await (await api("/api/recruit/jobs", auth(admin2Token, "POST", {
-    title: "백엔드 개발자", department: "영업본부",
+    title: "백엔드 개발자", department: "영업본부", purpose: "제조 ERP 고도화", responsibilities: "API 개발", description: "경력직 채용", keywords: ["Node.js", "PostgreSQL", "제조ERP"],
   }))).json();
   assert.equal(job.ok, true);
+  assert.deepEqual(job.job.keywords, ["Node.js", "PostgreSQL", "제조ERP"]);
   const cand = await (await api("/api/recruit/candidates", auth(admin2Token, "POST", {
     jobId: job.job.id, name: "홍길동",
   }))).json();
   assert.equal(cand.ok, true);
+
+  await t.test("채용공고 핵심 키워드는 생성·부분 수정·재조회에서 보존된다", async () => {
+    const partial = await (await api("/api/recruit/jobs", auth(admin2Token, "POST", {
+      id: job.job.id, title: "백엔드 개발자",
+    }))).json();
+    assert.equal(partial.ok, true);
+    assert.deepEqual(partial.job.keywords, ["Node.js", "PostgreSQL", "제조ERP"]);
+    assert.equal(partial.job.purpose, "제조 ERP 고도화");
+    assert.equal(partial.job.responsibilities, "API 개발");
+    assert.equal(partial.job.description, "경력직 채용");
+    const list = await (await api("/api/recruit/jobs", { headers: { Authorization: `Bearer ${admin2Token}` } })).json();
+    assert.deepEqual(list.jobs.find(j => j.id === job.job.id).keywords, ["Node.js", "PostgreSQL", "제조ERP"]);
+  });
 
   await t.test("지원자 상세 수정은 오래된 화면의 덮어쓰기를 409로 차단한다", async () => {
     const original = cand.candidate;
