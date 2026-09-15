@@ -60,20 +60,43 @@ def _claim_sentences(text: str) -> list[str]:
     return claims
 
 
-def _sentence_grounding(question: str, answer: str, context: str) -> tuple[float, list[str]]:
+def _polarity(text: str) -> int:
+    """명시적인 가능·허용(+1) / 불가·금지(-1)만 보수적으로 판정한다."""
+    value = text or ""
+    if re.search(
+        r"불가능|금지|허용되지|인정되지|적용되지|해당하지|"
+        r"할\s*수\s*없|없(?:습니다|다|음)|아니(?:다|며|고|라고)|제외",
+        value,
+    ):
+        return -1
+    if re.search(
+        r"(?<!불)가능|허용(?:됩니다|된다|함)|인정(?:됩니다|된다|함)|"
+        r"적용(?:됩니다|된다|함)|해당(?:됩니다|된다|함)|할\s*수\s*있|"
+        r"있(?:습니다|다|음)",
+        value,
+    ):
+        return 1
+    return 0
+
+
+def _sentence_grounding(
+    question: str, answer: str, context: str
+) -> tuple[float, list[str], list[str]]:
     claims = _claim_sentences(answer)
     if not claims or not context:
-        return (1.0 if context else 0.65), []
+        return (1.0 if context else 0.65), [], []
     evidence = local_reasoner.select_evidence(question, context, limit=8)
     if not evidence:
-        return 0.0, claims
+        return 0.0, claims, []
 
-    unsupported = []
+    unsupported, contradicted = [], []
     for claim in claims:
         claim_tokens = local_reasoner._tokens(claim)
         claim_grams = local_reasoner._chargrams(claim)
         claim_numbers = _measured_claims(claim)
+        claim_polarity = _polarity(claim)
         supported = False
+        opposite_seen = False
         for source in evidence:
             source_tokens = local_reasoner._tokens(source)
             source_grams = local_reasoner._chargrams(source)
@@ -86,13 +109,98 @@ def _sentence_grounding(question: str, answer: str, context: str) -> tuple[float
             source_numbers = _measured_claims(source)
             numeric_match = bool(claim_numbers) and claim_numbers.issubset(source_numbers)
             topic_match = bool((claim_tokens - claim_numbers) & source_tokens)
-            if token_overlap >= 0.34 or gram_overlap >= 0.48 \
-                    or (numeric_match and topic_match):
+            semantic_match = (
+                token_overlap >= 0.34 or gram_overlap >= 0.48
+                or (numeric_match and topic_match)
+            )
+            if not semantic_match:
+                continue
+            source_polarity = _polarity(source)
+            if claim_polarity and source_polarity and claim_polarity != source_polarity:
+                opposite_seen = True
+                continue
+            if semantic_match:
                 supported = True
                 break
         if not supported:
             unsupported.append(claim)
-    return round(1.0 - len(unsupported) / max(1, len(claims)), 3), unsupported
+            if opposite_seen:
+                contradicted.append(claim)
+    return (
+        round(1.0 - len(unsupported) / max(1, len(claims)), 3),
+        unsupported,
+        contradicted,
+    )
+
+
+def repair_contradicted_sentences(
+    question: str, answer: str, context: str, quality: dict
+) -> dict:
+    """근거와 방향이 반대인 문장을 출력 전 제거하고, 빈 답변이면 근거로 복구한다."""
+    contradicted = quality.get("contradicted_sentences", [])
+    if not contradicted or "```" in (answer or ""):
+        return {"answer": answer or "", "removed": [], "recovered": False}
+    repaired = answer or ""
+    removed = []
+    for sentence in contradicted:
+        if sentence in repaired:
+            repaired = repaired.replace(sentence, "")
+            removed.append(sentence)
+    repaired = re.sub(r"(?m)^\s*(?:[-*]|\d+[.)])\s*$", "", repaired)
+    repaired = re.sub(r"\n{3,}", "\n\n", repaired).strip()
+    recovered = False
+    if len(_normalized(repaired)) < 8:
+        recovered = True
+        if re.search(r"신뢰\s*수준:\s*conflict", context or "", re.IGNORECASE):
+            repaired = "확인된 자료끼리 결론이 달라 현재 내용만으로는 확정할 수 없습니다."
+        else:
+            # 질문 일반 유사도만으로 고르면 함께 들어온 과거 KB 문장이 공식 검색
+            # 근거보다 앞설 수 있다. 제거된 문장과 주제가 같고 방향만 반대인 근거를
+            # 우선 골라, 실제로 모순을 발견하게 한 문장으로 복구한다.
+            evidence_pool = local_reasoner.select_evidence(question, context, limit=12)
+            replacements = []
+            for removed_sentence in removed:
+                removed_tokens = local_reasoner._tokens(removed_sentence)
+                removed_grams = local_reasoner._chargrams(removed_sentence)
+                removed_polarity = _polarity(removed_sentence)
+                ranked = []
+                for source in evidence_pool:
+                    source_polarity = _polarity(source)
+                    if not removed_polarity or source_polarity != -removed_polarity:
+                        continue
+                    token_overlap = len(removed_tokens & local_reasoner._tokens(source)) / max(
+                        1, min(len(removed_tokens), 8)
+                    )
+                    source_grams = local_reasoner._chargrams(source)
+                    gram_overlap = len(removed_grams & source_grams) / max(
+                        1, min(len(removed_grams), len(source_grams))
+                    )
+                    if token_overlap >= 0.34 or gram_overlap >= 0.48:
+                        ranked.append((token_overlap + gram_overlap, source))
+                if ranked:
+                    best = max(ranked, key=lambda item: item[0])[1]
+                    if best not in replacements:
+                        replacements.append(best)
+            evidence = replacements or local_reasoner.select_evidence(question, context, limit=3)
+            repaired = (
+                "**확인된 자료 기준**\n"
+                + "\n".join(f"- {' '.join(item.split())[:300]}" for item in evidence)
+                if evidence else
+                "현재 자료에서 확정 가능한 내용을 찾지 못했습니다. 추가 확인이 필요합니다."
+            )
+    return {"answer": repaired, "removed": removed, "recovered": recovered}
+
+
+def format_contradiction_repair_note(repair: dict) -> str:
+    removed = repair.get("removed", [])
+    if not removed:
+        return ""
+    return (
+        "\n\n> 🛡️ **근거 반대 문장 차단**: 참고 자료와 결론 방향이 반대인 문장 "
+        f"{len(removed)}개를 출력 전에 제거했습니다. "
+        + ("확인된 근거만으로 답변을 다시 구성했습니다. " if repair.get("recovered") else "")
+        + "차단이 발생한 답변은 장기기억 후보로 저장하지 않습니다."
+    )
 
 
 def evaluate(
@@ -150,7 +258,7 @@ def evaluate(
         min(1.0, len(a_tokens & context_tokens) / max(1, min(len(a_tokens), 12)))
         if context_tokens else 0.65
     )
-    sentence_grounding, unsupported_sentences = _sentence_grounding(
+    sentence_grounding, unsupported_sentences, contradicted_sentences = _sentence_grounding(
         question, answer, context
     )
     groundedness = min(aggregate_groundedness, sentence_grounding) if context_tokens \
@@ -158,6 +266,10 @@ def evaluate(
     if unsupported_sentences:
         issues.append(
             f"자료로 뒷받침되지 않은 사실 문장 {len(unsupported_sentences)}개"
+        )
+    if contradicted_sentences:
+        issues.append(
+            f"참고 자료와 결론 방향이 반대인 문장 {len(contradicted_sentences)}개"
         )
     if context_tokens and groundedness < 0.2:
         issues.append("제공된 참고 자료와 답변의 연결이 약함")
@@ -185,15 +297,17 @@ def evaluate(
         "issues": issues,
         "unsupported_claims": unsupported,
         "unsupported_sentences": unsupported_sentences[:5],
+        "contradicted_sentences": contradicted_sentences[:5],
         "sentence_grounding": sentence_grounding,
         "conversation_consistency": conversation_consistency,
         "evidence_confidence": evidence_confidence,
         "should_block_learning": (
             score < 0.55 or bool(unsupported) or bool(unsupported_sentences)
+            or bool(contradicted_sentences)
             or evidence_confidence in {"limited", "low", "conflict"}
         ),
         "should_warn": (
-            score < 0.4 or bool(unsupported_sentences)
+            score < 0.4 or bool(unsupported_sentences) or bool(contradicted_sentences)
             or evidence_confidence in {"low", "conflict"}
         ),
     }

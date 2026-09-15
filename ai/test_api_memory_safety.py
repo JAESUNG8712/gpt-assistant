@@ -36,9 +36,9 @@ def main():
         assert client.get("/health").json()["deliberation_engine"] == "evidence-adaptive-review-v3"
         assert client.get("/health").json()["conversation_engine"] == "contextual-followup-v1"
         health = client.get("/health").json()
-        assert health["offline_reasoning_engine"] == "symbolic-plan-critic-v11"
-        assert health["evidence_reasoning_engine"] == "adaptive-query-coverage-consensus-v4"
-        assert health["response_quality_engine"] == "verified-output-repair-v5"
+        assert health["offline_reasoning_engine"] == "symbolic-plan-critic-v12"
+        assert health["evidence_reasoning_engine"] == "adaptive-query-coverage-consensus-v5"
+        assert health["response_quality_engine"] == "claim-contradiction-repair-v6"
         assert isinstance(client.get("/health").json()["local_generative_configured"], bool)
         assert isinstance(client.get("/health").json()["local_generative_backends"], list)
         assert client.get("/health").json()["memory_schema"] == "typed-scopes-v1"
@@ -497,6 +497,39 @@ def main():
             assert "3.7" not in before_audit_note
             assert "출력 전 자동 교정" in corrected.text, corrected.text
             assert "답변 수치 대조" in corrected.text
+        finally:
+            main.srch.web_search = original_web_search
+            main.intent_agent.analyze = original_intent
+            main.llm.chat_stream = original_chat_stream
+
+        # 사실 수치는 없어도 가능/불가능 결론이 공식 근거와 반대면 해당 문장을
+        # 사용자에게 보내기 전에 제거하고 확인된 근거로 복구한다.
+        eligibility_results = main.srch._prepare_results("일본 입국 가능한가요", [{
+            "title": "일본 입국 안내",
+            "body": "대한민국 국민은 일본에 무비자로 입국할 수 있습니다.",
+            "href": "https://www.mofa.go.kr/jp-entry",
+        }], 5)
+
+        async def opposite_eligibility_stream(*_args, **_kwargs):
+            yield "대한민국 국민은 일본에 무비자로 입국할 수 없습니다."
+
+        main.srch.web_search = lambda *_args, **_kwargs: eligibility_results
+        main.intent_agent.analyze = no_intent
+        main.llm.chat_stream = opposite_eligibility_stream
+        try:
+            polarity_repaired = client.post(
+                "/chat",
+                json={
+                    "message": "/검색 일본 입국 가능한가요?",
+                    "persona": "travel", "session_id": "polarity-repair-qa",
+                },
+                headers={"X-Admin-Token": owner_token},
+            )
+            assert polarity_repaired.status_code == 200
+            before_guard_note = polarity_repaired.text.split("근거 반대 문장 차단", 1)[0]
+            assert "입국할 수 없습니다" not in before_guard_note
+            assert "입국할 수 있습니다" in before_guard_note, polarity_repaired.text
+            assert "근거 반대 문장 차단" in polarity_repaired.text
         finally:
             main.srch.web_search = original_web_search
             main.intent_agent.analyze = original_intent

@@ -1136,6 +1136,7 @@ async def chat(req: ChatRequest, request: Request):
         validation_results = []  # 답변·학습 품질 게이트에서 공통 사용
         answer_claim_validation = {"supported": [], "unsupported": []}
         answer_auto_repair = {"answer": "", "repairs": [], "unresolved": []}
+        contradiction_repair = {"answer": "", "removed": [], "recovered": False}
         answer_quality = {"should_block_learning": False, "should_warn": False}
         try:
             # ── 경로 STOCK: 주식 분석 파이프라인 실행 ────────
@@ -1482,6 +1483,17 @@ async def chat(req: ChatRequest, request: Request):
                         generated_answer, answer_claim_validation
                     )
                     final_generated_answer = answer_auto_repair["answer"]
+                    # 수치가 같아도 "가능↔불가능", "적용↔제외"처럼 결론 방향이
+                    # 반대면 더 위험하다. 검색 근거와 명백히 반대인 문장은 출력 전에
+                    # 제거하고, 본문이 비면 확인된 근거 문장만으로 안전하게 복구한다.
+                    import response_quality
+                    pre_output_quality = response_quality.evaluate(
+                        search_msg, final_generated_answer, context
+                    )
+                    contradiction_repair = response_quality.repair_contradicted_sentences(
+                        search_msg, final_generated_answer, context, pre_output_quality
+                    )
+                    final_generated_answer = contradiction_repair["answer"]
                     async for chunk in _stream_chunks(final_generated_answer, chunk_size=200):
                         collected.append(chunk)
                         yield chunk
@@ -1489,6 +1501,13 @@ async def chat(req: ChatRequest, request: Request):
                     answer_claim_validation = srch.validate_answer_numeric_claims(
                         search_msg, final_generated_answer, validation_results
                     )
+
+                contradiction_note = response_quality.format_contradiction_repair_note(
+                    contradiction_repair
+                ) if buffer_for_numeric_validation else ""
+                if contradiction_note:
+                    collected.append(contradiction_note)
+                    yield contradiction_note
 
                 repair_note = srch.format_answer_repair_note(answer_auto_repair)
                 if repair_note:
@@ -1575,6 +1594,7 @@ async def chat(req: ChatRequest, request: Request):
             has_unsupported_answer_claim = bool(answer_claim_validation["unsupported"])
             has_memory_search_conflict = bool(memory_search_validation["conflicts"])
             had_answer_auto_repair = bool(answer_auto_repair["repairs"])
+            had_contradiction_repair = bool(contradiction_repair["removed"])
             # 이미 KB에서 직접 서빙한 답변과 Python 계산 결과는 새 지식이 아니므로
             # 후보 대기열에 다시 쌓지 않는다. LLM이 새로 합성한 답변만 검토 대상으로 둔다.
             is_new_synthesized_answer = (
@@ -1587,6 +1607,7 @@ async def chat(req: ChatRequest, request: Request):
                     and not has_unsupported_answer_claim
                     and not has_memory_search_conflict
                     and not had_answer_auto_repair
+                    and not had_contradiction_repair
                     and not answer_quality["should_block_learning"]
                     and LOCAL_FALLBACK_MARKER not in ai_reply_clean
                     and local_gen.MARKER_TAG not in ai_reply_clean
@@ -2946,9 +2967,9 @@ def health():
         "retrieval_engine": "tfidf-bm25-char3-v1",
         "deliberation_engine": "evidence-adaptive-review-v3",
         "conversation_engine": "contextual-followup-v1",
-        "offline_reasoning_engine": "symbolic-plan-critic-v11",
-        "evidence_reasoning_engine": "adaptive-query-coverage-consensus-v4",
-        "response_quality_engine": "verified-output-repair-v5",
+        "offline_reasoning_engine": "symbolic-plan-critic-v12",
+        "evidence_reasoning_engine": "adaptive-query-coverage-consensus-v5",
+        "response_quality_engine": "claim-contradiction-repair-v6",
         "local_generative_configured": bool(local_backends),
         "local_generative_backends": local_backends,
         "memory_schema": "typed-scopes-v1",

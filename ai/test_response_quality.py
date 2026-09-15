@@ -27,6 +27,28 @@ def main():
     assert "자료로 확인되지 않은 문장" in mixed_warning
     assert "서울 인구" in mixed_warning
 
+    polarity_context = "육아휴직 대상 근로자는 회사에 육아휴직을 신청할 수 있습니다."
+    opposite = response_quality.evaluate(
+        "육아휴직 신청이 가능한가요?",
+        "육아휴직 대상 근로자는 회사에 신청할 수 없습니다.",
+        polarity_context,
+    )
+    assert opposite["contradicted_sentences"] == [
+        "육아휴직 대상 근로자는 회사에 신청할 수 없습니다."
+    ], opposite
+    assert opposite["should_block_learning"] is True
+    repaired_opposite = response_quality.repair_contradicted_sentences(
+        "육아휴직 신청이 가능한가요?",
+        "육아휴직 대상 근로자는 회사에 신청할 수 없습니다.",
+        polarity_context, opposite,
+    )
+    assert "신청할 수 없습니다" not in repaired_opposite["answer"]
+    assert "신청할 수 있습니다" in repaired_opposite["answer"]
+    assert repaired_opposite["recovered"] is True
+    assert "근거 반대 문장 차단" in response_quality.format_contradiction_repair_note(
+        repaired_opposite
+    )
+
     unsupported = response_quality.evaluate(
         "2027년 최저임금 금액을 알려줘",
         "2027년 최저임금은 시간당 12,000원입니다.", context,
