@@ -36,9 +36,9 @@ def main():
         assert client.get("/health").json()["deliberation_engine"] == "evidence-adaptive-review-v3"
         assert client.get("/health").json()["conversation_engine"] == "contextual-followup-v1"
         health = client.get("/health").json()
-        assert health["offline_reasoning_engine"] == "symbolic-plan-critic-v10"
-        assert health["evidence_reasoning_engine"] == "adaptive-query-coverage-consensus-v3"
-        assert health["response_quality_engine"] == "claim-grounding-gate-v4"
+        assert health["offline_reasoning_engine"] == "symbolic-plan-critic-v11"
+        assert health["evidence_reasoning_engine"] == "adaptive-query-coverage-consensus-v4"
+        assert health["response_quality_engine"] == "verified-output-repair-v5"
         assert isinstance(client.get("/health").json()["local_generative_configured"], bool)
         assert isinstance(client.get("/health").json()["local_generative_backends"], list)
         assert client.get("/health").json()["memory_schema"] == "typed-scopes-v1"
@@ -463,6 +463,40 @@ def main():
                 ).fetchone()[0]
             assert web_rows_after == web_rows_before
             assert main.mem.list_memory_candidates("pending") == []
+        finally:
+            main.srch.web_search = original_web_search
+            main.intent_agent.analyze = original_intent
+            main.llm.chat_stream = original_chat_stream
+
+        # 검색 근거와 다른 단일 수치를 생성하더라도 잘못된 초안은 먼저 스트리밍하지
+        # 않고, 공식 단일 검증값으로 교정한 본문을 전송한다.
+        numeric_results = main.srch._prepare_results("2026년 기준금리", [{
+            "title": "2026년 기준금리",
+            "body": "2026년 기준금리는 3.5%입니다.",
+            "href": "https://www.bok.or.kr/2026-rate",
+        }], 5)
+
+        async def wrong_numeric_stream(*_args, **_kwargs):
+            yield "2026년 기준금리는 3.7 %입니다."
+
+        main.srch.web_search = lambda *_args, **_kwargs: numeric_results
+        main.intent_agent.analyze = no_intent
+        main.llm.chat_stream = wrong_numeric_stream
+        try:
+            corrected = client.post(
+                "/chat",
+                json={
+                    "message": "/검색 2026년 기준금리 알려줘",
+                    "persona": "hr", "session_id": "numeric-repair-qa",
+                },
+                headers={"X-Admin-Token": owner_token},
+            )
+            assert corrected.status_code == 200
+            before_audit_note = corrected.text.split("출력 전 자동 교정", 1)[0]
+            assert "3.5%" in before_audit_note
+            assert "3.7" not in before_audit_note
+            assert "출력 전 자동 교정" in corrected.text, corrected.text
+            assert "답변 수치 대조" in corrected.text
         finally:
             main.srch.web_search = original_web_search
             main.intent_agent.analyze = original_intent

@@ -173,6 +173,13 @@ def main():
     assert "답변 수치 검증 실패" in unsupported_note
     assert "10,900원" in unsupported_note and "10,700원" in unsupported_note
     assert "기억 학습에서도 제외" in unsupported_note
+    repaired_answer = search.repair_answer_numeric_claims(
+        "2027년 최저임금은 시간급 10,900 원입니다.", unsupported_answer
+    )
+    assert repaired_answer["answer"] == "2027년 최저임금은 시간급 10,700원입니다."
+    assert repaired_answer["repairs"][0]["from"] == "10,900원"
+    assert "출력 전 자동 교정" in search.format_answer_repair_note(repaired_answer)
+    assert "장기기억 후보로 저장하지 않습니다" in search.format_answer_repair_note(repaired_answer)
 
     conflicting_numbers = search._prepare_results("2027년 최저임금", [
         _result("2027년 최저임금", "시간급 10,700원", "https://www.minimumwage.go.kr/2027"),
@@ -187,6 +194,15 @@ def main():
     assert "기억 학습에서도 제외" in conflict_note
     conflict_context = search.format_search_context(conflicting_numbers)
     assert "하나를 선택하거나 평균내지 말고 '확정 불가'" in conflict_context
+    unresolved_conflict = search.validate_answer_numeric_claims(
+        "2027년 최저임금", "2027년 시간급은 10,900원입니다.", conflicting_numbers
+    )
+    unresolved_repair = search.repair_answer_numeric_claims(
+        "2027년 시간급은 10,900원입니다.", unresolved_conflict
+    )
+    assert unresolved_repair["repairs"] == []
+    assert len(unresolved_repair["unresolved"]) == 1
+    assert "10,900원" in unresolved_repair["answer"]
 
     decimal_equivalence = search._prepare_results("2026년 기준금리", [
         _result("2026년 기준금리", "기준금리 3.7%", "https://www.bok.or.kr/rate"),

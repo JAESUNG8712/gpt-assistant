@@ -1135,6 +1135,7 @@ async def chat(req: ChatRequest, request: Request):
         collected = []
         validation_results = []  # 답변·학습 품질 게이트에서 공통 사용
         answer_claim_validation = {"supported": [], "unsupported": []}
+        answer_auto_repair = {"answer": "", "repairs": [], "unresolved": []}
         answer_quality = {"should_block_learning": False, "should_warn": False}
         try:
             # ── 경로 STOCK: 주식 분석 파이프라인 실행 ────────
@@ -1449,23 +1450,50 @@ async def chat(req: ChatRequest, request: Request):
                     if no_local:
                         yield "> 📭 직접 일치하는 자료 없음 — 로컬 지식을 검토해 답변합니다.\n\n"
 
+                # 검색 수치가 있는 답변은 생성 초안을 잠시 보관했다가 근거와 대조한 후
+                # 처음부터 교정된 본문만 보낸다. 이미 스트리밍한 오답 뒤에 경고만 붙이는
+                # 방식으로는 사용자가 잘못된 값을 먼저 복사할 수 있기 때문이다.
+                generated_parts = []
+                buffer_for_numeric_validation = bool(validation_results)
                 if persona_features.get("use_coding", False):
                     async for token in llm.chat_stream_coding(
                         history, context, system_prompt=system_with_date,
                         thinking_mode=effective_thinking_mode,
                     ):
-                        collected.append(token)
-                        yield token
+                        generated_parts.append(token)
+                        if not buffer_for_numeric_validation:
+                            collected.append(token)
+                            yield token
                 else:
                     async for token in llm.chat_stream(history, context, system_prompt=system_with_date, thinking_mode=effective_thinking_mode):
-                        collected.append(token)
-                        yield token
+                        generated_parts.append(token)
+                        if not buffer_for_numeric_validation:
+                            collected.append(token)
+                            yield token
 
-                # 스트리밍된 LLM 답변의 핵심 수치를 검색 스니펫과 한 번 더 대조한다.
-                # 검증 표시는 원래 답변과 분리해 사용자가 생성 오류를 즉시 식별할 수 있게 한다.
+                generated_answer = "".join(generated_parts)
+                # 생성 초안의 핵심 수치를 검색 스니펫과 대조한다. 공공·전문기관의
+                # 단일 검증값이 있으면 출력 전에 치환하고, 출처가 충돌하면 손대지 않는다.
                 answer_claim_validation = srch.validate_answer_numeric_claims(
-                    search_msg, "".join(collected), validation_results
+                    search_msg, generated_answer, validation_results
                 )
+                if buffer_for_numeric_validation:
+                    answer_auto_repair = srch.repair_answer_numeric_claims(
+                        generated_answer, answer_claim_validation
+                    )
+                    final_generated_answer = answer_auto_repair["answer"]
+                    async for chunk in _stream_chunks(final_generated_answer, chunk_size=200):
+                        collected.append(chunk)
+                        yield chunk
+                    # 후속 품질 판정은 사용자가 실제로 받은 교정본을 기준으로 한다.
+                    answer_claim_validation = srch.validate_answer_numeric_claims(
+                        search_msg, final_generated_answer, validation_results
+                    )
+
+                repair_note = srch.format_answer_repair_note(answer_auto_repair)
+                if repair_note:
+                    collected.append(repair_note)
+                    yield repair_note
                 validation_note = srch.format_search_validation_note(validation_results)
                 if validation_note:
                     collected.append(validation_note)
@@ -1546,6 +1574,7 @@ async def chat(req: ChatRequest, request: Request):
             )
             has_unsupported_answer_claim = bool(answer_claim_validation["unsupported"])
             has_memory_search_conflict = bool(memory_search_validation["conflicts"])
+            had_answer_auto_repair = bool(answer_auto_repair["repairs"])
             # 이미 KB에서 직접 서빙한 답변과 Python 계산 결과는 새 지식이 아니므로
             # 후보 대기열에 다시 쌓지 않는다. LLM이 새로 합성한 답변만 검토 대상으로 둔다.
             is_new_synthesized_answer = (
@@ -1557,6 +1586,7 @@ async def chat(req: ChatRequest, request: Request):
                     and not has_search_conflict
                     and not has_unsupported_answer_claim
                     and not has_memory_search_conflict
+                    and not had_answer_auto_repair
                     and not answer_quality["should_block_learning"]
                     and LOCAL_FALLBACK_MARKER not in ai_reply_clean
                     and local_gen.MARKER_TAG not in ai_reply_clean
@@ -2916,9 +2946,9 @@ def health():
         "retrieval_engine": "tfidf-bm25-char3-v1",
         "deliberation_engine": "evidence-adaptive-review-v3",
         "conversation_engine": "contextual-followup-v1",
-        "offline_reasoning_engine": "symbolic-plan-critic-v10",
-        "evidence_reasoning_engine": "adaptive-query-coverage-consensus-v3",
-        "response_quality_engine": "claim-grounding-gate-v4",
+        "offline_reasoning_engine": "symbolic-plan-critic-v11",
+        "evidence_reasoning_engine": "adaptive-query-coverage-consensus-v4",
+        "response_quality_engine": "verified-output-repair-v5",
         "local_generative_configured": bool(local_backends),
         "local_generative_backends": local_backends,
         "memory_schema": "typed-scopes-v1",

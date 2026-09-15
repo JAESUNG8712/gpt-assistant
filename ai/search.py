@@ -929,3 +929,63 @@ def format_answer_claim_validation_note(validation: dict) -> str:
     if supported:
         return f"\n> 🧾 **답변 수치 대조**: 검색 근거와 {len(supported)}건 일치"
     return ""
+
+
+def repair_answer_numeric_claims(answer: str, validation: dict) -> dict:
+    """검색 근거와 불일치한 생성 수치를, 단일 검증값일 때만 출력 전에 교정한다.
+
+    출처 값이 둘 이상으로 실제 충돌하거나 원문 위치를 안전하게 찾지 못하면 손대지
+    않는다. 즉, 임의 평균·추정이나 광범위한 문자열 치환은 하지 않는다.
+    """
+    repaired = answer or ""
+    repairs, unresolved = [], []
+    for claim in validation.get("unsupported", []):
+        candidates = claim.get("source_values", [])
+        normalized = {}
+        for display in candidates:
+            match = re.fullmatch(r"([\d,.]+)\s*(.+)", display or "")
+            if not match:
+                continue
+            identity = (_normalize_numeric_value(match.group(1)), match.group(2))
+            # 같은 값의 3.7/3.70 표기는 더 짧은 표기를 대표값으로 사용한다.
+            current = normalized.get(identity)
+            if current is None or len(display) < len(current):
+                normalized[identity] = display
+        if len(normalized) != 1:
+            unresolved.append(claim)
+            continue
+        replacement = next(iter(normalized.values()))
+        original = claim.get("display", "")
+        original_match = re.fullmatch(r"([\d,.]+)\s*(.+)", original)
+        if not original_match:
+            unresolved.append(claim)
+            continue
+        pattern = re.compile(
+            re.escape(original_match.group(1)) + r"\s*" + re.escape(original_match.group(2))
+        )
+        repaired_value, count = pattern.subn(replacement, repaired)
+        if not count:
+            unresolved.append(claim)
+            continue
+        repaired = repaired_value
+        repairs.append({
+            "claim": _format_claim_name(claim),
+            "from": original,
+            "to": replacement,
+            "source_domains": claim.get("source_domains", []),
+        })
+    return {"answer": repaired, "repairs": repairs, "unresolved": unresolved}
+
+
+def format_answer_repair_note(repair: dict) -> str:
+    repairs = repair.get("repairs", [])
+    if not repairs:
+        return ""
+    details = "; ".join(
+        f"{item['claim']} {item['from']} → {item['to']}" for item in repairs[:3]
+    )
+    return (
+        "\n\n> 🛠️ **출력 전 자동 교정**: " + details
+        + ". 생성 초안의 불일치 수치를 검색 근거의 단일 검증값으로 교정했습니다. "
+          "교정이 발생한 답변은 장기기억 후보로 저장하지 않습니다."
+    )
