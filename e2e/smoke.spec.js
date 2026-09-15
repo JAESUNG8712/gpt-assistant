@@ -196,6 +196,68 @@ test.describe("로그인·기본 네비게이션", () => {
     await expect(page.getByRole("button", { name: /일괄 계산/ })).toBeVisible();
   });
 
+  test("확정 평가가 성과급과 급여로 중복 없이 연결되고 확정 급여는 보호된다", async ({ page }) => {
+    await page.goto("/");
+    await page.fill("#l-id", "e2e_admin");
+    await page.fill("#l-pw", "E2eTestPw123");
+    await page.click(".login-card button.btn-primary");
+    await expect(page.locator("#main")).toBeVisible({ timeout: 10000 });
+
+    const candidate = await page.evaluate(() => {
+      autoSaveDebounced = () => {};
+      const emp = {
+        id: "performance-e2e", empNo: "E2E-PERF", name: "성과연계검증", role: "member",
+        active: true, salary: 60000000, dept: "개발", team: "플랫폼", rank: "대리",
+        gradeResults: { "2026": { score: 90, grade: "S" } },
+      };
+      employees.push(emp);
+      compGradeResults[emp.id] = { "2026": { score: 80, grade: "A" } };
+      settings.scoreWeights = { kpi: 60, comp: 20, ls: 20 };
+      settings.performanceRewardPolicy = {
+        enabled: true, basis: "annualSalary", requireKpi: true, requireComp: true,
+        maxAmount: 100000000, gradeRates: { S: 20, A: 10, B: 5, C: 0, D: 0 },
+      };
+      _payMgmtState = { year: 2027, month: 3, dept: "", team: "", search: "성과연계검증" };
+      _perfRewardState = { evalYear: 2026 };
+      const row = _performanceRewardCandidate(emp, 2026);
+      gotoPage("payroll-mgmt");
+      return { overall: row.overall, grade: row.grade, rate: row.rate, amount: row.amount };
+    });
+    expect(candidate).toEqual({ overall: 86, grade: "A", rate: 10, amount: 6000000 });
+    await expect(page.getByText("평가 → 성과급 → 급여 연계")).toBeVisible();
+    await expect(page.getByText("지급 대상")).toBeVisible();
+
+    await page.getByRole("button", { name: /2027년 3월 급여에 반영/ }).click();
+    let dialog = page.locator('[role="dialog"][aria-modal="true"]');
+    await expect(dialog).toContainText("6,000,000원");
+    await dialog.getByRole("button", { name: "성과급 반영" }).click();
+    await page.waitForFunction(() => payrollAdjustments.some(a => a.sourceKey === "performance:2026:performance-e2e"));
+
+    await page.evaluate(() => payrollAdjustments.push({
+      id: "legacy-duplicate-performance", empId: "performance-e2e", year: 2027, month: 3,
+      amount: 6000000, source: "performance_reward", sourceKey: "performance:2026:performance-e2e", evalYear: 2026,
+    }));
+    await page.getByRole("button", { name: /2027년 3월 급여에 반영/ }).click();
+    dialog = page.locator('[role="dialog"][aria-modal="true"]');
+    await expect(dialog).toContainText("중복 연계 정리");
+    await expect(dialog).toContainText("1건");
+    await dialog.getByRole("button", { name: "성과급 반영" }).click();
+    const linked = await page.evaluate(() => payrollAdjustments.filter(a => a.sourceKey === "performance:2026:performance-e2e"));
+    expect(linked).toHaveLength(1);
+    expect(linked[0]).toMatchObject({ year: 2027, month: 3, amount: 6000000, source: "performance_reward" });
+
+    const protectedResult = await page.evaluate(async () => {
+      payslips.push({ empId: "performance-e2e", year: 2027, month: 4, confirmed: true });
+      _payMgmtState.month = 4;
+      const before = payrollAdjustments.find(a => a.sourceKey === "performance:2026:performance-e2e").month;
+      await applyPerformanceRewards();
+      const after = payrollAdjustments.find(a => a.sourceKey === "performance:2026:performance-e2e").month;
+      return { before, after, openDialogs: document.querySelectorAll('[role="dialog"]').length };
+    });
+    expect(protectedResult).toEqual({ before: 3, after: 3, openDialogs: 0 });
+    await expect(page.locator('.toast[role="alert"]').last()).toContainText(/확정/);
+  });
+
   test("휴가·근무보상·복리후생 정책과 채용 키워드 적합도가 연동된다", async ({ page }) => {
     const pageErrors = [];
     page.on("pageerror", e => pageErrors.push(e.message));
