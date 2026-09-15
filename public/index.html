@@ -728,6 +728,9 @@ function _currentLeave(e,dateStr){
 
 // ==================== ORG DB ====================
 let orgDB={
+  workplaces:[
+    {id:"wp-hq",code:"HQ",name:"본사",type:"본사",address:"",businessNo:"",payrollCode:"",active:true,isDefault:true}
+  ],
   depts:["경영지원본부","IT사업본부","영업본부","연구개발본부","생산본부"],
   teams:{
     "경영지원본부":["인사팀","재무회계팀","IT팀"],
@@ -756,6 +759,16 @@ let orgDB={
 };
 let orgChartHistory=[]; // 조직도 변경 이력 {id,type,dept,team,label,by,byName,at}
 const getTeams=dept=>orgDB.teams[dept]||[];
+function _workplaces(){return Array.isArray(orgDB.workplaces)?orgDB.workplaces:[];}
+function _activeWorkplaces(){return _workplaces().filter(w=>w&&w.active!==false);}
+function _defaultWorkplaceId(){return _activeWorkplaces().find(w=>w.isDefault)?.id||_activeWorkplaces()[0]?.id||"";}
+function _workplaceName(id){return _workplaces().find(w=>String(w.id)===String(id))?.name||(id?"미등록 사업장":"미지정");}
+function _workplaceOptions(selected="",includeInactive=false){
+  const rows=includeInactive?_workplaces():_activeWorkplaces();
+  const current=_workplaces().find(w=>String(w.id)===String(selected));
+  const list=current&&!rows.some(w=>String(w.id)===String(current.id))?[...rows,current]:rows;
+  return `<option value="">미지정</option>${list.map(w=>`<option value="${h(w.id)}"${String(w.id)===String(selected)?" selected":""}>${h(w.name)}${w.active===false?" (사용중지)":""}${w.isDefault?" · 기본":""}</option>`).join("")}`;
+}
 // Get latest promotion/rank_change date for employee
 function getEmpRankDate(emp){
   if(emp.rankDate) return emp.rankDate; // explicitly stored
@@ -1389,7 +1402,7 @@ async function loadRecruitFromServer(){
 }
 let kpiSearch={name:"",dept:""};
 let approvalSearch={name:"",dept:""};
-let myKpiYear=0,hrListFilter={search:"",dept:"",role:"",status:"active",sortKey:"empNo",sortDir:1,pageSize:15,page:1};
+let myKpiYear=0,hrListFilter={search:"",dept:"",workplaceId:"",role:"",status:"active",sortKey:"empNo",sortDir:1,pageSize:15,page:1};
 let _boardPageFilter={search:"",dept:"",author:"",dateFrom:"",dateTo:"",pageSize:15,page:1};
 let _orgSearchQ="";
 const PAGE_SIZE_OPTS=[15,30,50,100];
@@ -5498,6 +5511,11 @@ function mergeImportData(parsed){
   }
   // orgDB: merge arrays
   if(d.orgDB&&typeof d.orgDB==="object"){
+    if(d.orgDB.workplaces&&Array.isArray(d.orgDB.workplaces)){
+      const byId=new Map(_workplaces().map(w=>[String(w.id),w]));
+      d.orgDB.workplaces.forEach(w=>{if(w&&w.id)byId.set(String(w.id),{...byId.get(String(w.id)),...w});});
+      orgDB.workplaces=[...byId.values()];
+    }
     if(d.orgDB.depts&&Array.isArray(d.orgDB.depts)){
       d.orgDB.depts.forEach(dep=>{if(dep&&!orgDB.depts.includes(dep))orgDB.depts.push(dep);});
     }
@@ -7759,7 +7777,7 @@ function buildTeamMembersSection(u){
 function openMemberProfileModal(id){
   const e=getEmp(id);if(!e)return;
   const rankInfo=calcAutoRank(e.totalCareer||0,e.edu||"대학교 졸업");
-  const fields=[["사번",e.empNo],["부서",e.dept],["팀",e.team],["직급",e.rank],["직급연차",e.rankYear+"년"],["현직급 승진일",getEmpRankDate(e)||"-"],["직책",e.position||"-"],["직군",e.jobGroup||"-"],["국적",e.nationality||"내국인"],["연봉",fmtSalary(e.salary)],["입사일",e.hire||"-"],["최종학력",e.edu||"-"],["학교",e.eduSchool||"-"],["총경력",e.totalCareer+"년"],["이메일",e.email||"-"],["연락처",e.phone||"-"],["주소",e.address||"-"]];
+  const fields=[["사번",e.empNo],["사업장",_workplaceName(e.workplaceId)],["부서",e.dept],["팀",e.team],["직급",e.rank],["직급연차",e.rankYear+"년"],["현직급 승진일",getEmpRankDate(e)||"-"],["직책",e.position||"-"],["직군",e.jobGroup||"-"],["국적",e.nationality||"내국인"],["연봉",fmtSalary(e.salary)],["입사일",e.hire||"-"],["최종학력",e.edu||"-"],["학교",e.eduSchool||"-"],["총경력",e.totalCareer+"년"],["이메일",e.email||"-"],["연락처",e.phone||"-"],["주소",e.address||"-"]];
   const hrHtml=(e.hrHistory||[]).length?`<div class="sec-title mt3">인사 변동 이력</div>${[...e.hrHistory].sort((a,b)=>b.date.localeCompare(a.date)).map(hh2=>`<div style="font-size:12px;padding:5px 0;border-bottom:1px solid #f1f5f9;display:flex;justify-content:space-between;flex-wrap:wrap;gap:4px"><span>${h(hh2.date)} ${badge(HR_TYPES[hh2.type]||hh2.type,"blue")} ${h(hh2.desc)}</span><span class="text-gray">${h(hh2.before||"")}→${h(hh2.after||"")}</span></div>`).join("")}`:"";
   showModal(`<div class="modal modal-lg"><div class="modal-head"><h2>${h(e.name)} 정보</h2><button class="modal-close" onclick="closeModal()">×</button></div>
   <div class="modal-body">
@@ -7859,6 +7877,7 @@ function renderHRRegister(){
       <div class="fg"><label class="fl">성별</label><select class="fc" id="hr-gender" onchange="markHrResumeTouched('hr-gender')"><option>남</option><option>여</option></select></div>
       <div class="fg"><label class="fl">국적</label><select class="fc" id="hr-nationality"><option>내국인</option><option>외국인</option></select></div>
       <div class="fg"><label class="fl">입사일 <span class="req">*</span></label><input class="fc" id="hr-hire" type="date"></div>
+      <div class="fg"><label class="fl">근무 사업장</label><select class="fc" id="hr-workplace">${_workplaceOptions(_defaultWorkplaceId())}</select><div class="fz11 text-gray mt1">급여·원천세 신고 기준이 되는 실제 근무지를 선택하세요.</div></div>
       <div class="fg"><label class="fl">직책</label><select class="fc" id="hr-position"><option value="">없음</option>${orgDB.positions.filter(p=>p).map(p=>`<option>${h(p)}</option>`).join("")}</select></div>
       <div class="fg"><label class="fl">이메일</label><input class="fc" id="hr-email" type="email" oninput="markHrResumeTouched('hr-email')"></div>
       <div class="fg"><label class="fl">연락처</label><input class="fc" id="hr-phone" placeholder="010-0000-0000" oninput="markHrResumeTouched('hr-phone')"></div>
@@ -8022,7 +8041,7 @@ async function submitHRForm(){
     hire:v("#hr-hire"), jobGroup:$("#hr-jobgroup")?.value||"관리직",
     rank:$("#hr-rank")?.value||rankCalc.rank, rankYear:Number(v("#hr-rankyear"))||Math.max(1,Math.round(rankCalc.rankYear)),
     salary:Number(v("#hr-salary"))||0, eduSchool:v("#hr-eduschool"),
-    position:v("#hr-position"), email:v("#hr-email"), phone:v("#hr-phone"), address:v("#hr-address"),
+    workplaceId:$("#hr-workplace")?.value||"", position:v("#hr-position"), email:v("#hr-email"), phone:v("#hr-phone"), address:v("#hr-address"),
   };
   // 예전엔 genId()(서버 스냅샷에서 시작해 이 세션 안에서만 증가하는 로컬 카운터)로
   // id를 발급했는데, 여러 담당자가 거의 동시에 신규 직원을 등록하면 다들 같은
@@ -8034,7 +8053,7 @@ async function submitHRForm(){
     const r=await serverRequest("POST","/api/employees/next-id",null,8000);
     newId=r?.ok?r.id:genId();
   }catch(e){ newId=genId(); }
-  const newEmp={id:newId,loginId:fVals.loginId,pw:fVals.pw||fVals.empNo,name:fVals.name,empNo:fVals.empNo,role:fVals.role,dept:fVals.dept,team:fVals.team,birth:fVals.birth,gender:fVals.gender,nationality:fVals.nationality,hire:fVals.hire,jobGroup:fVals.jobGroup,rank:fVals.rank,rankYear:fVals.rankYear,salary:fVals.salary,edu,eduSchool:fVals.eduSchool,totalCareer:career,position:fVals.position,email:fVals.email,phone:fVals.phone,address:fVals.address,active:true,customFields:{...hrCustom},careers:[...hrCareers],hrHistory:[],updatedAt:new Date().toISOString()};
+  const newEmp={id:newId,loginId:fVals.loginId,pw:fVals.pw||fVals.empNo,name:fVals.name,empNo:fVals.empNo,role:fVals.role,dept:fVals.dept,team:fVals.team,workplaceId:fVals.workplaceId,birth:fVals.birth,gender:fVals.gender,nationality:fVals.nationality,hire:fVals.hire,jobGroup:fVals.jobGroup,rank:fVals.rank,rankYear:fVals.rankYear,salary:fVals.salary,edu,eduSchool:fVals.eduSchool,totalCareer:career,position:fVals.position,email:fVals.email,phone:fVals.phone,address:fVals.address,active:true,customFields:{...hrCustom},careers:[...hrCareers],hrHistory:[],updatedAt:new Date().toISOString()};
   employees.push(newEmp);
   if(dept&&!orgDB.depts.includes(dept)){orgDB.depts.push(dept);orgDB.teams[dept]=[];}
   if(dept&&team&&!getTeams(dept).includes(team)){if(!orgDB.teams[dept])orgDB.teams[dept]=[];orgDB.teams[dept].push(team);}
@@ -8149,6 +8168,7 @@ function renderHRList(){
     <div class="filter-bar">
       <input class="fc" style="width:180px" id="hr-list-search" data-live-filter="hr-list-search" placeholder="이름/사번/ID 검색" value="${h(hrListFilter.search)}">
       ${currentUser.role==="admin"?`<select class="fc" style="width:160px" onchange="hrListFilter.dept=this.value;renderHRListTbl()"><option value="">전체 부서</option>${depts.map(d=>`<option${hrListFilter.dept===d?" selected":""}>${h(d)}</option>`).join("")}</select>`:""}
+      ${currentUser.role==="admin"?`<select class="fc" style="width:150px" onchange="hrListFilter.workplaceId=this.value;hrListFilter.page=1;renderHRListTbl()"><option value="">전체 사업장</option><option value="__none__"${hrListFilter.workplaceId==="__none__"?" selected":""}>미지정</option>${_workplaces().map(w=>`<option value="${h(w.id)}"${String(hrListFilter.workplaceId)===String(w.id)?" selected":""}>${h(w.name)}</option>`).join("")}</select>`:""}
       <select class="fc" style="width:120px" onchange="hrListFilter.role=this.value;renderHRListTbl()"><option value="">전체 권한</option>${Object.entries(ROLES).filter(([k])=>k!=="admin").map(([k,v])=>`<option value="${k}"${hrListFilter.role===k?" selected":""}>${v}</option>`).join("")}</select>
       <select class="fc" style="width:120px" onchange="hrListFilter.status=this.value;renderHRListTbl()"><option value="active"${hrListFilter.status==="active"?" selected":""}>재직 중</option><option value="inactive"${hrListFilter.status==="inactive"?" selected":""}>퇴직</option><option value="">전체</option></select>
       <span class="fz12 text-gray" id="hr-list-count">총 ${filtered.length}명</span>
@@ -8170,6 +8190,8 @@ function getFilteredEmps(){
     if(u.role==="director"&&e.dept!==u.dept)return false;
     if(u.role==="leader"&&(e.dept!==u.dept||e.team!==u.team))return false;
     if(hrListFilter.dept&&e.dept!==hrListFilter.dept)return false;
+    if(hrListFilter.workplaceId==="__none__"&&e.workplaceId)return false;
+    if(hrListFilter.workplaceId&&hrListFilter.workplaceId!=="__none__"&&String(e.workplaceId)!==String(hrListFilter.workplaceId))return false;
     if(hrListFilter.role&&e.role!==hrListFilter.role)return false;
     if(hrListFilter.status==="active"&&!e.active)return false;
     if(hrListFilter.status==="inactive"&&e.active)return false;
@@ -8185,6 +8207,7 @@ function getFilteredEmps(){
         case "empNo":return e.empNo||"";
         case "role":return ROLES[e.role]||e.role||"";
         case "dept":return e.dept||"";
+        case "workplaceId":return _workplaceName(e.workplaceId);
         case "team":return e.team||"";
         case "rank":return e.rank||"";
         case "position":return e.position||"";
@@ -8216,7 +8239,7 @@ function renderHRListTbl(){
   const pagerEl=$("#hr-list-pager");if(pagerEl)pagerEl.innerHTML=_pagerHtml("hrListFilter",hrListFilter,filtered.length,"renderHRListTbl()");
   if(!filtered.length){wrap.innerHTML=`<div class="p-empty">조건에 맞는 직원이 없습니다.</div>`;return;}
   const pageRows=_pagedSlice(hrListFilter,filtered);
-  const cols=[["name","이름"],["empNo","사번"],["dept","부서"],["team","팀"],["rank","직급"],["position","직책"],["hire","입사일"]];
+  const cols=[["name","이름"],["empNo","사번"],["workplaceId","사업장"],["dept","부서"],["team","팀"],["rank","직급"],["position","직책"],["hire","입사일"]];
   const startIdx=(hrListFilter.page-1)*(hrListFilter.pageSize||15);
   const _now=new Date();
   wrap.innerHTML=`<table><thead style="position:sticky;top:0;z-index:5;background:#fff"><tr><th style="width:40px;text-align:center;position:sticky;top:0;background:#fff">#</th>${cols.map(([key,label])=>{
@@ -8230,7 +8253,7 @@ function renderHRListTbl(){
     return`<tr style="cursor:pointer" onclick="openEmpDetail(${e.id})" title="클릭하여 상세보기">
     <td class="text-gray fz11 tc">${startIdx+i+1}</td>
     <td><strong>${h(e.name)}</strong></td><td class="text-gray">${h(e.empNo)}</td>
-    <td>${h(e.dept)}</td><td>${h(e.team)}</td><td>${h(e.rank)}</td>
+    <td>${h(_workplaceName(e.workplaceId))}</td><td>${h(e.dept)}</td><td>${h(e.team)}</td><td>${h(e.rank)}</td>
     <td>${h(e.position||"-")}</td>
     <td class="fz11 text-gray">${h(e.hire||"-")}</td>
     <td class="fz11">${h(e.email||"-")}</td>
@@ -8274,7 +8297,7 @@ function openEmpDetail(id){
   const e=getEmp(id);if(!e)return;
   const canViewPrivate=_canViewPrivateHR();
   const rankInfo=calcAutoRank(e.totalCareer||0,e.edu||"대학교 졸업");
-  const allFields=[["이름",e.name],["사번",e.empNo],["부서",e.dept],["팀",e.team],["직급",e.rank],["직책",e.position||"-"],["이메일",e.email||"-"],["연락처",e.phone||"-"],["상태",e.active?"재직":"퇴직"]];
+  const allFields=[["이름",e.name],["사번",e.empNo],["사업장",_workplaceName(e.workplaceId)],["부서",e.dept],["팀",e.team],["직급",e.rank],["직책",e.position||"-"],["이메일",e.email||"-"],["연락처",e.phone||"-"],["상태",e.active?"재직":"퇴직"]];
   const privateFields=[["생년월일",e.birth||"-"],["성별",e.gender||"-"],["국적",e.nationality||"내국인"],["입사일",e.hire||"-"],["직급연차",e.rankYear+"년"],["현직급 승진일",getEmpRankDate(e)||"-"],["직군",e.jobGroup||"-"],["연봉",fmtSalary(e.salary)],["최종학력",e.edu||"-"],["학교(졸업)",e.eduSchool||"-"],["총경력",e.totalCareer+"년"],["주소",e.address||"-"],["로그인ID",e.loginId],["권한",ROLES[e.role]]];
   if(!e.active)privateFields.push(["퇴직 사유",e.retireReason||"-"]);
   const fields=canViewPrivate?[...allFields,...privateFields]:allFields;
@@ -8339,6 +8362,7 @@ function _openEmpEdit(id){
     <div class="fg"><label class="fl">성별</label><select class="fc" id="ee-gender"><option${e.gender==="남"?" selected":""}>남</option><option${e.gender==="여"?" selected":""}>여</option></select></div>
     <div class="fg"><label class="fl">국적</label><select class="fc" id="ee-nationality"><option${(e.nationality||"내국인")==="내국인"?" selected":""}>내국인</option><option${e.nationality==="외국인"?" selected":""}>외국인</option></select></div>
     <div class="fg"><label class="fl">입사일</label><input class="fc" id="ee-hire" type="date" value="${e.hire||""}"></div>
+    <div class="fg"><label class="fl">근무 사업장</label><select class="fc" id="ee-workplace">${_workplaceOptions(e.workplaceId,true)}</select></div>
     <div class="fg"><label class="fl">부서</label><select class="fc" id="ee-dept" onchange="syncEditTeams(this.value,'${h(e.team)}')">${_selOptsKeepCurrent(orgDB.depts,e.dept,"선택")}</select></div>
     <div class="fg"><label class="fl">팀</label><select class="fc" id="ee-team">${_selOptsKeepCurrent(getTeams(e.dept),e.team)}</select></div>
     <div class="fg"><label class="fl">직책</label><select class="fc" id="ee-position">${_selOptsKeepCurrent(orgDB.positions.filter(p=>p),e.position,"없음")}</select></div>
@@ -8415,7 +8439,7 @@ function saveEmpEdit(id){
   const g=sel=>$(sel)?.value.trim()||"";
   const isActive=g("#ee-active")==="1";
   if(!isActive&&!g("#ee-retiredate")){showToast("퇴직일을 입력하세요.","error");return;}
-  employees=employees.map(e=>e.id===id?{...e,name:g("#ee-name"),empNo:g("#ee-empno"),birth:g("#ee-birth"),gender:g("#ee-gender"),nationality:g("#ee-nationality")||"내국인",hire:g("#ee-hire"),dept:g("#ee-dept"),team:g("#ee-team"),position:g("#ee-position"),rank:g("#ee-rank"),rankYear:Number(g("#ee-rankyear"))||1,jobGroup:g("#ee-jobgroup"),salary:Number(g("#ee-salary"))||0,totalCareer:Number(g("#ee-career"))||0,edu:g("#ee-edu"),eduSchool:g("#ee-eduschool"),email:g("#ee-email"),phone:g("#ee-phone"),address:g("#ee-address"),role:g("#ee-role"),active:isActive,retireDate:isActive?"":g("#ee-retiredate"),retireReason:isActive?"":g("#ee-retirereason"),careers:window._eeEditCareers||e.careers||[],leaves:window._eeEditLeaves||e.leaves||[],updatedAt:new Date().toISOString()}:e);
+  employees=employees.map(e=>e.id===id?{...e,name:g("#ee-name"),empNo:g("#ee-empno"),birth:g("#ee-birth"),gender:g("#ee-gender"),nationality:g("#ee-nationality")||"내국인",hire:g("#ee-hire"),workplaceId:g("#ee-workplace"),dept:g("#ee-dept"),team:g("#ee-team"),position:g("#ee-position"),rank:g("#ee-rank"),rankYear:Number(g("#ee-rankyear"))||1,jobGroup:g("#ee-jobgroup"),salary:Number(g("#ee-salary"))||0,totalCareer:Number(g("#ee-career"))||0,edu:g("#ee-edu"),eduSchool:g("#ee-eduschool"),email:g("#ee-email"),phone:g("#ee-phone"),address:g("#ee-address"),role:g("#ee-role"),active:isActive,retireDate:isActive?"":g("#ee-retiredate"),retireReason:isActive?"":g("#ee-retirereason"),careers:window._eeEditCareers||e.careers||[],leaves:window._eeEditLeaves||e.leaves||[],updatedAt:new Date().toISOString()}:e);
   if(id===currentUser.id){currentUser=employees.find(e=>e.id===id)||currentUser;}closeModal();showToast("직원 정보가 수정되었습니다.","success");autoSaveToServerIfEnabled();renderHRListTbl();
 }
 function openResetPwModal(id){
@@ -8490,21 +8514,24 @@ function doDeleteEmp(id){
   autoSaveToServerIfEnabled();
   closeModal();showToast(`${e.name}님의 계정이 삭제되었습니다.`,"info");renderHRList();
 }
-function dlHRTemplate(){dlCSV("입사자_일괄등록_양식.csv",["로그인ID","초기비밀번호","이름","사번","권한","부서","팀","생년월일","성별","입사일","직군","직급","직급연차","연봉","최종학력","학교(졸업년도)","총경력년수","직책","이메일","연락처","주소"],[["member01","Member@123","홍길동","EMP-001","member","경영지원본부","인사팀","1993-05-10","남","2024-01-02","관리직","사원","1","42000000","대학교 졸업","서울대학교 (2018)","3","","hong@co.kr","010-0000-0000","서울시 강남구"]]);}
+function dlHRTemplate(){dlCSV("입사자_일괄등록_양식.csv",["로그인ID","초기비밀번호","이름","사번","권한","부서","팀","생년월일","성별","입사일","직군","직급","직급연차","연봉","최종학력","학교(졸업년도)","총경력년수","직책","이메일","연락처","주소","사업장코드"],[["member01","Member@123","홍길동","EMP-001","member","경영지원본부","인사팀","1993-05-10","남","2024-01-02","관리직","사원","1","42000000","대학교 졸업","서울대학교 (2018)","3","","hong@co.kr","010-0000-0000","서울시 강남구",_workplaces().find(w=>w.isDefault)?.code||"HQ"]]);}
 function handleBulkUpload(input){const file=input.files[0];if(!file)return;const reader=new FileReader();reader.onload=ev=>{try{const lines=ev.target.result.split(/\r?\n/).filter(l=>l.trim());if(lines.length<2){showToast("데이터가 없습니다.","error");return;}let added=0;const skipped=[];lines.slice(1).forEach((line,li)=>{
   // parseCSVLine()으로 따옴표로 감싼 필드 안의 콤마를 올바르게 처리(주소 등 자유입력값에 콤마가 있어도 뒤 컬럼이 밀리지 않음)
   const cols=parseCSVLine(line);
   if(cols.length<5||!cols[0]){skipped.push(`행 ${li+2}: 컬럼 수 부족 또는 로그인ID 없음`);return;}
   if(!cols[2]||!cols[3]){skipped.push(`행 ${li+2}: 이름 또는 사번 없음`);return;}
   if(employees.some(e=>e.empNo===cols[3]||e.loginId===cols[0])){skipped.push(`행 ${li+2}: 이미 등록된 사번/로그인ID (${cols[3]})`);return;}
-  const career=Number(cols[16])||0;const edu=cols[14]||"대학교 졸업";const rankCalc=calcAutoRank(career,edu);employees.push({id:genId(),loginId:cols[0]||cols[3],pw:cols[1]||cols[3],name:cols[2],empNo:cols[3],role:cols[4]||"member",dept:cols[5]||"",team:cols[6]||"",birth:cols[7]||"",gender:cols[8]||"남",hire:cols[9]||"",jobGroup:cols[10]||"관리직",rank:cols[11]||rankCalc.rank,rankYear:Number(cols[12])||Math.max(1,Math.round(rankCalc.rankYear)),salary:Number(cols[13])||0,edu,eduSchool:cols[15]||"",totalCareer:career,position:cols[17]||"",email:cols[18]||"",phone:cols[19]||"",address:cols[20]||"",active:true,retireDate:"",retireReason:"",customFields:{},careers:[],hrHistory:[],gradeResults:{}});added++;
+  const workplaceCode=String(cols[21]||"").trim().toUpperCase();
+  const workplace=workplaceCode?_workplaces().find(w=>String(w.code).toUpperCase()===workplaceCode):null;
+  if(workplaceCode&&!workplace){skipped.push(`행 ${li+2}: 등록되지 않은 사업장코드 (${workplaceCode})`);return;}
+  const career=Number(cols[16])||0;const edu=cols[14]||"대학교 졸업";const rankCalc=calcAutoRank(career,edu);employees.push({id:genId(),loginId:cols[0]||cols[3],pw:cols[1]||cols[3],name:cols[2],empNo:cols[3],role:cols[4]||"member",dept:cols[5]||"",team:cols[6]||"",workplaceId:workplace?.id||_defaultWorkplaceId(),birth:cols[7]||"",gender:cols[8]||"남",hire:cols[9]||"",jobGroup:cols[10]||"관리직",rank:cols[11]||rankCalc.rank,rankYear:Number(cols[12])||Math.max(1,Math.round(rankCalc.rankYear)),salary:Number(cols[13])||0,edu,eduSchool:cols[15]||"",totalCareer:career,position:cols[17]||"",email:cols[18]||"",phone:cols[19]||"",address:cols[20]||"",active:true,retireDate:"",retireReason:"",customFields:{},careers:[],hrHistory:[],gradeResults:{}});added++;
 });
 // 예전에는 업로드 행 수와 등록된 수가 달라도 사유를 전혀 알려주지 않아 사용자가 직접 계산해서
 // 눈치채야 했음 — 몇 건이 왜 제외됐는지 토스트+콘솔로 명시한다.
 showToast(`${added}명이 등록되었습니다.`+(skipped.length?` (${skipped.length}건 제외됨 — 자세한 사유는 브라우저 콘솔 참고)`:""),"success");
 if(skipped.length)console.warn("[신규직원 일괄등록] 제외된 행:\n"+skipped.join("\n"));
 autoSaveToServerIfEnabled();renderHRList();}catch(err){showToast("파일 파싱 오류: "+err.message,"error");}};reader.readAsText(file,"UTF-8");input.value="";}
-function dlHRList(){dlCSV(`직원목록_${new Date().toISOString().slice(0,10)}.csv`,["이름","사번","권한","부서","팀","직급","직책","경력","연봉","입사일","상태"],getFilteredEmps().map(e=>[e.name,e.empNo,ROLES[e.role],e.dept,e.team,e.rank,e.position||"-",(e.totalCareer||0)+"년",fmtSalary(e.salary),e.hire,e.active?"재직":"퇴직"]));}
+function dlHRList(){dlCSV(`직원목록_${new Date().toISOString().slice(0,10)}.csv`,["이름","사번","권한","사업장","부서","팀","직급","직책","경력","연봉","입사일","상태"],getFilteredEmps().map(e=>[e.name,e.empNo,ROLES[e.role],_workplaceName(e.workplaceId),e.dept,e.team,e.rank,e.position||"-",(e.totalCareer||0)+"년",fmtSalary(e.salary),e.hire,e.active?"재직":"퇴직"]));}
 async function resetAllLoginToEmpNo(){
   const targets=employees.filter(e=>e.empNo&&e.role!=="admin");
   // 사번이 비어있는 직원은 조용히 건너뛰던 것을 — "일부 직원만 ID/PW가 사번과 안 맞는다"는
@@ -12962,9 +12989,17 @@ function _renderOrgStructDiagram(){
 }
 function renderSettingsOrg(){
   const el=$("#settings-content");if(!el)return;
+  const unassigned=employees.filter(e=>e.active&&!e.workplaceId).length;
   el.innerHTML=`
     <div class="card mb3"><div class="card-head"><h3>🗺️ 조직 구조 도식화</h3><span class="fz11 text-gray">부서·팀 추가/삭제 시 자동 반영됩니다</span></div>
     <div class="card-body" id="org-struct-diagram">${_renderOrgStructDiagram()}</div></div>
+    <div class="card mb3"><div class="card-head"><div><h3>📍 사업장·근무지 관리</h3><div class="fz11 text-gray mt1">직원 배치와 급여·원천세 신고 기준으로 사용하는 사업장 마스터입니다.</div></div><button class="btn btn-primary btn-sm" onclick="openWorkplaceModal()">+ 사업장 추가</button></div>
+    <div class="card-body" style="padding:0">
+      ${unassigned?`<div class="warn-note" style="margin:12px;display:flex;align-items:center;gap:10px;flex-wrap:wrap"><span>⚠ 재직 직원 ${unassigned}명의 사업장이 미지정입니다.</span><button class="btn btn-warning btn-sm" onclick="assignDefaultWorkplaceToUnassigned()">기본 사업장으로 일괄 배정</button><span class="fz11">또는 직원 목록에서 사업장으로 필터링해 개별 수정할 수 있습니다.</span></div>`:""}
+      <div class="tbl-wrap"><table><thead><tr><th>기본</th><th>코드</th><th>사업장명</th><th>구분</th><th>사업자등록번호</th><th>급여 사업장 코드</th><th>주소</th><th>재직 인원</th><th>상태</th><th>관리</th></tr></thead><tbody>
+      ${_workplaces().length?_workplaces().map((w,i)=>`<tr><td class="tc">${w.isDefault?badge("기본","blue"):"-"}</td><td>${h(w.code||"-")}</td><td><strong>${h(w.name)}</strong></td><td>${h(w.type||"-")}</td><td>${h(w.businessNo||"-")}</td><td>${h(w.payrollCode||"-")}</td><td class="fz11">${h(w.address||"-")}</td><td class="tc">${employees.filter(e=>e.active&&String(e.workplaceId)===String(w.id)).length}명</td><td>${w.active===false?badge("사용중지","gray"):badge("사용","green")}</td><td><button class="btn btn-secondary btn-sm" onclick="openWorkplaceModal(${i})">수정</button> <button class="btn btn-danger btn-sm" onclick="removeWorkplace(${i})">삭제</button></td></tr>`).join(""):`<tr><td colspan="10" class="p-empty">등록된 사업장이 없습니다.</td></tr>`}
+      </tbody></table></div>
+    </div></div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
     <div class="card"><div class="card-head"><h3>부서(본부) 관리</h3></div><div class="card-body">
       <div class="flex gap2 mb3"><input class="fc" id="org-dept-new" placeholder="부서명 입력" style="flex:1"><button class="btn btn-primary btn-sm" onclick="addOrgDept()">추가</button></div>
@@ -12985,6 +13020,58 @@ function renderSettingsOrg(){
       </div>`).join("")}
     </div></div>
   </div>`;
+}
+function openWorkplaceModal(index=null){
+  const editing=Number.isInteger(index)&&_workplaces()[index];
+  const w=editing?{..._workplaces()[index]}:{id:"",code:"",name:"",type:"지사",address:"",businessNo:"",payrollCode:"",active:true,isDefault:_workplaces().length===0};
+  showModal(`<div class="modal modal-sm"><div class="modal-head"><h2>${editing?"사업장 수정":"사업장 추가"}</h2><button class="modal-close" onclick="closeModal()">×</button></div><div class="modal-body">
+    <div class="info-note mb3">사업자등록번호와 급여 사업장 코드는 실제 신고 기준을 확인한 뒤 입력하세요. 모르는 값은 비워둘 수 있습니다.</div>
+    <div class="g2"><div class="fg"><label class="fl">사업장 코드 <span class="req">*</span></label><input class="fc" id="wp-code" value="${h(w.code)}" placeholder="예: HQ, BUSAN"></div><div class="fg"><label class="fl">사업장명 <span class="req">*</span></label><input class="fc" id="wp-name" value="${h(w.name)}" placeholder="예: 본사"></div></div>
+    <div class="g2"><div class="fg"><label class="fl">구분</label><select class="fc" id="wp-type">${["본사","지사","공장","연구소","기타"].map(x=>`<option${w.type===x?" selected":""}>${x}</option>`).join("")}</select></div><div class="fg"><label class="fl">급여 사업장 코드</label><input class="fc" id="wp-payroll" value="${h(w.payrollCode)}" placeholder="예: PAY-HQ"></div></div>
+    <div class="fg"><label class="fl">사업자등록번호</label><input class="fc" id="wp-bizno" value="${h(w.businessNo)}" inputmode="numeric" placeholder="예: 123-45-67890"><div class="fz11 text-gray mt1">10자리 숫자 형식만 허용합니다.</div></div>
+    <div class="fg"><label class="fl">주소</label><input class="fc" id="wp-address" value="${h(w.address)}" placeholder="예: 경기도 성남시 ○○로 00"></div>
+    <div class="g2"><label class="flex items-c gap2 fz12"><input type="checkbox" id="wp-active"${w.active!==false?" checked":""}> 사용</label><label class="flex items-c gap2 fz12"><input type="checkbox" id="wp-default"${w.isDefault?" checked":""}> 신규 직원 기본 사업장</label></div>
+  </div><div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal()">취소</button><button class="btn btn-primary" onclick="saveWorkplace(${editing?index:"null"})">저장</button></div></div>`);
+}
+function saveWorkplace(index=null){
+  const code=$("#wp-code")?.value.trim().toUpperCase(),name=$("#wp-name")?.value.trim();
+  const businessNo=$("#wp-bizno")?.value.trim()||"";
+  if(!code||!name){showToast("사업장 코드와 이름을 입력하세요.","error");return;}
+  if(!/^[A-Z0-9_-]{2,20}$/.test(code)){showToast("사업장 코드는 영문 대문자·숫자·_·- 조합 2~20자로 입력하세요.","error");return;}
+  if(businessNo&&!/^\d{3}-?\d{2}-?\d{5}$/.test(businessNo)){showToast("사업자등록번호는 숫자 10자리로 입력하세요.","error");return;}
+  if(_workplaces().some((w,i)=>i!==index&&String(w.code).toUpperCase()===code)){showToast("이미 사용 중인 사업장 코드입니다.","error");return;}
+  if(_workplaces().some((w,i)=>i!==index&&String(w.name).trim()===name)){showToast("이미 등록된 사업장명입니다.","error");return;}
+  const active=!!$("#wp-active")?.checked,isDefault=!!$("#wp-default")?.checked;
+  if(isDefault&&!active){showToast("기본 사업장은 사용 상태여야 합니다.","error");return;}
+  const prev=Number.isInteger(index)?_workplaces()[index]:null;
+  const row={id:prev?.id||`wp-${Date.now().toString(36)}-${Math.random().toString(36).slice(2,7)}`,code,name,type:$("#wp-type")?.value||"기타",address:$("#wp-address")?.value.trim()||"",businessNo:businessNo.replace(/\D/g,"").replace(/^(\d{3})(\d{2})(\d{5})$/,"$1-$2-$3"),payrollCode:$("#wp-payroll")?.value.trim()||"",active,isDefault,updatedAt:new Date().toISOString()};
+  if(isDefault)_workplaces().forEach(w=>{w.isDefault=false;});
+  if(Number.isInteger(index))orgDB.workplaces[index]=row;else orgDB.workplaces.push(row);
+  if(!_workplaces().some(w=>w.isDefault)){const first=_activeWorkplaces()[0];if(first)first.isDefault=true;}
+  _logOrgChange(prev?"workplace_update":"workplace_add",`${prev?"사업장 수정":"사업장 추가"}: ${name}`);
+  closeModal();renderSettingsOrg();broadcastSettingsChange(`${prev?"사업장 수정":"사업장 추가"}: ${name}`);showToast("사업장 정보가 저장되었습니다.","success");
+}
+async function removeWorkplace(index){
+  const w=_workplaces()[index];if(!w)return;
+  const assigned=employees.filter(e=>String(e.workplaceId)===String(w.id));
+  if(assigned.length){showToast(`퇴직자를 포함해 ${assigned.length}명이 배정되어 있어 삭제할 수 없습니다. 다른 사업장으로 먼저 변경하세요.`,"error");return;}
+  const ok=await askConfirmModal({title:"사업장 삭제 확인",message:"사업장 마스터에서 영구 삭제합니다.",impacts:[{label:"사업장",value:`${w.name} (${w.code})`},{label:"배정 직원",value:"0명",tone:"success"},{label:"급여 기준",value:"선택 목록에서 제거",tone:"danger"}],confirmText:"사업장 삭제",danger:true});
+  if(!ok)return;
+  orgDB.workplaces.splice(index,1);
+  if(!_workplaces().some(x=>x.isDefault)){const first=_activeWorkplaces()[0];if(first)first.isDefault=true;}
+  _logOrgChange("workplace_remove",`사업장 삭제: ${w.name}`);renderSettingsOrg();broadcastSettingsChange(`사업장 삭제: ${w.name}`);showToast("사업장이 삭제되었습니다.","success");
+}
+async function assignDefaultWorkplaceToUnassigned(){
+  const workplace=_activeWorkplaces().find(w=>w.isDefault)||_activeWorkplaces()[0];
+  const targets=employees.filter(e=>e.active&&!e.workplaceId);
+  if(!workplace){showToast("먼저 사용 가능한 기본 사업장을 등록하세요.","error");return;}
+  if(!targets.length){showToast("미지정 재직 직원이 없습니다.","info");return;}
+  const ok=await askConfirmModal({title:"사업장 일괄 배정",message:"사업장이 미지정된 재직 직원에게 기본 사업장을 배정합니다.",impacts:[{label:"대상",value:`${targets.length}명`,tone:"warn"},{label:"배정 사업장",value:`${workplace.name} (${workplace.code})`},{label:"퇴직자",value:"변경하지 않음",tone:"info"}],warnings:["직원의 기존 부서·팀·급여 정보는 변경되지 않습니다."],confirmText:"일괄 배정"});
+  if(!ok)return;
+  const ids=new Set(targets.map(e=>String(e.id))),now=new Date().toISOString();
+  employees=employees.map(e=>ids.has(String(e.id))?{...e,workplaceId:workplace.id,updatedAt:now}:e);
+  if(currentUser&&ids.has(String(currentUser.id)))currentUser=employees.find(e=>String(e.id)===String(currentUser.id))||currentUser;
+  _logOrgChange("workplace_assign",`${workplace.name} 일괄 배정: ${targets.length}명`);renderSettingsOrg();broadcastSettingsChange(`${workplace.name} 사업장 일괄 배정`);showToast(`${targets.length}명을 ${workplace.name}에 배정했습니다.`,"success");
 }
 function renderSettingsRanks(){
   const el=$("#settings-content");if(!el)return;
@@ -19771,7 +19858,7 @@ async function _eppConfirmCreateNewEmps(){
     }catch(e){newId=genId();}
     const career=0,edu="대학교 졸업";
     const rankCalc=calcAutoRank(career,edu);
-    const newEmp={id:newId,loginId:item.empNo,pw:item.empNo,name:item.c.empName||item.empNo,empNo:item.empNo,role:"member",dept:item.dept,team:item.team,birth:"",gender:"남",nationality:"내국인",hire:item.hire,jobGroup:"관리직",rank:rankCalc.rank,rankYear:Math.max(1,Math.round(rankCalc.rankYear)),salary:0,edu,eduSchool:"",totalCareer:career,position:"",email:"",phone:"",address:"",active:true,retireDate:"",retireReason:"",customFields:{},careers:[],hrHistory:[],gradeResults:{},updatedAt:new Date().toISOString()};
+    const newEmp={id:newId,loginId:item.empNo,pw:item.empNo,name:item.c.empName||item.empNo,empNo:item.empNo,role:"member",dept:item.dept,team:item.team,workplaceId:_defaultWorkplaceId(),birth:"",gender:"남",nationality:"내국인",hire:item.hire,jobGroup:"관리직",rank:rankCalc.rank,rankYear:Math.max(1,Math.round(rankCalc.rankYear)),salary:0,edu,eduSchool:"",totalCareer:career,position:"",email:"",phone:"",address:"",active:true,retireDate:"",retireReason:"",customFields:{},careers:[],hrHistory:[],gradeResults:{},updatedAt:new Date().toISOString()};
     employees.push(newEmp);
     if(item.dept&&!orgDB.depts.includes(item.dept)){orgDB.depts.push(item.dept);orgDB.teams[item.dept]=orgDB.teams[item.dept]||[];}
     if(item.dept&&item.team&&!getTeams(item.dept).includes(item.team)){if(!orgDB.teams[item.dept])orgDB.teams[item.dept]=[];orgDB.teams[item.dept].push(item.team);}

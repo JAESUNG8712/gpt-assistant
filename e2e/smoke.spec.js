@@ -78,6 +78,59 @@ test.describe("로그인·기본 네비게이션", () => {
     expect(pageErrors, `콘솔 페이지 에러 발생: ${pageErrors.join("; ")}`).toHaveLength(0);
   });
 
+  test("사업장 마스터의 검증·등록·직원 필터·삭제 보호가 동작한다", async ({ page }) => {
+    const pageErrors = [];
+    page.on("pageerror", e => pageErrors.push(e.message));
+    await page.goto("/");
+    await page.fill("#l-id", "e2e_admin");
+    await page.fill("#l-pw", "E2eTestPw123");
+    await page.click(".login-card button.btn-primary");
+    await expect(page.locator("#main")).toBeVisible({ timeout: 10000 });
+
+    await page.evaluate(() => gotoPage("settings-org"));
+    await expect(page.getByRole("heading", { name: /사업장·근무지 관리/ })).toBeVisible();
+    await page.getByRole("button", { name: "+ 사업장 추가" }).click();
+    let dialog = page.locator('[role="dialog"][aria-modal="true"]');
+    await dialog.locator("#wp-code").fill("한글 코드");
+    await dialog.locator("#wp-name").fill("QA 사업장");
+    await dialog.getByRole("button", { name: /^저장$/ }).click();
+    await expect(page.locator('.toast[role="alert"]').last()).toContainText(/사업장 코드/);
+    await expect(dialog).toBeVisible();
+
+    await dialog.locator("#wp-code").fill("E2E_SITE");
+    await dialog.locator("#wp-bizno").fill("1234567890");
+    await dialog.getByRole("button", { name: /^저장$/ }).click();
+    await expect(page.locator("#settings-content")).toContainText("QA 사업장");
+    const saved = await page.evaluate(() => orgDB.workplaces.find(w => w.code === "E2E_SITE"));
+    expect(saved.businessNo).toBe("123-45-67890");
+
+    await page.evaluate(() => gotoPage("hr-list"));
+    await expect(page.locator("#hr-list-search")).toBeVisible();
+    await expect(page.locator("#content select option", { hasText: "QA 사업장" })).toHaveCount(1);
+
+    await page.evaluate(() => gotoPage("settings-org"));
+    await page.evaluate(() => {
+      const site = orgDB.workplaces.find(w => w.code === "E2E_SITE");
+      employees[0].workplaceId = site.id;
+      renderSettingsOrg();
+    });
+    let row = page.locator("tr", { hasText: "QA 사업장" });
+    await row.getByRole("button", { name: "삭제" }).click();
+    await expect(page.locator('.toast[role="alert"]').last()).toContainText(/배정되어 있어 삭제할 수 없습니다/);
+
+    await page.evaluate(() => {
+      employees[0].workplaceId = "";
+      renderSettingsOrg();
+    });
+    row = page.locator("tr", { hasText: "QA 사업장" });
+    await row.getByRole("button", { name: "삭제" }).click();
+    dialog = page.locator('[role="dialog"][aria-modal="true"]');
+    await expect(dialog).toContainText("배정 직원");
+    await dialog.getByRole("button", { name: "사업장 삭제" }).click();
+    await expect(page.locator("#settings-content")).not.toContainText("QA 사업장");
+    expect(pageErrors, `콘솔 페이지 에러 발생: ${pageErrors.join("; ")}`).toHaveLength(0);
+  });
+
   test("모든 메뉴 그룹이 대분류에 속하고 회계 입력 예시·템플릿·검증이 동작한다", async ({ page }) => {
     await page.goto("/");
     await page.fill("#l-id", "e2e_admin");
