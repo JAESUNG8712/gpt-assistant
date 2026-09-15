@@ -1138,10 +1138,10 @@ let settings={
   customPayItems:[],
   // 유연근무제 신청 가능 시간대 옵션 [{id,label,startHour,endHour}]
   flexWorkOptions:[
-    {id:"flex-1",label:"8시 출근 ~ 17시 퇴근",startHour:8,endHour:17},
-    {id:"flex-2",label:"9시 출근 ~ 18시 퇴근",startHour:9,endHour:18},
-    {id:"flex-3",label:"10시 출근 ~ 19시 퇴근",startHour:10,endHour:19},
-    {id:"flex-4",label:"11시 출근 ~ 20시 퇴근",startHour:11,endHour:20}
+    {id:"flex-1",label:"8시 출근 ~ 17시 퇴근",startHour:8,endHour:17,breakMinutes:60,workDays:[1,2,3,4,5]},
+    {id:"flex-2",label:"9시 출근 ~ 18시 퇴근",startHour:9,endHour:18,breakMinutes:60,workDays:[1,2,3,4,5]},
+    {id:"flex-3",label:"10시 출근 ~ 19시 퇴근",startHour:10,endHour:19,breakMinutes:60,workDays:[1,2,3,4,5]},
+    {id:"flex-4",label:"11시 출근 ~ 20시 퇴근",startHour:11,endHour:20,breakMinutes:60,workDays:[1,2,3,4,5]}
   ],
   // 휴가 유형: 신청 단위와 연차 차감 여부를 회사 규정에 맞게 구성한다.
   leaveTypes:[
@@ -13881,13 +13881,20 @@ function _myPendingCount(){
 function _myOutboxBadge(){const n=approvalDocs.filter(d=>d.authorId===currentUser?.id&&d.status==="in_progress").length;return n>0?` <span style="background:#ef4444;color:white;border-radius:9px;font-size:9px;padding:1px 5px;font-weight:700">${n}</span>`:""}
 function _myInboxBadge(){const n=_myPendingCount();return n>0?` <span style="background:#ef4444;color:white;border-radius:9px;font-size:9px;padding:1px 5px;font-weight:700">${n}</span>`:""}
 function _myReceiveBadge(){const uid=currentUser?.id;if(!uid)return"";const n=approvalDocs.filter(d=>_refsToVisibleEmpIds(d.receivers,d.submittedAt||d.createdAt).includes(uid)&&d.status==="in_progress").length;return n>0?` <span style="background:#f59e0b;color:white;border-radius:9px;font-size:9px;padding:1px 5px;font-weight:700">${n}</span>`:""}
+const _WORKDAY_LABELS=["일","월","화","수","목","금","토"];
+function _flexOptionSnapshot(option){
+  if(!option)return null;
+  const days=Array.isArray(option.workDays)&&option.workDays.length?option.workDays:(settings.workDays||[1,2,3,4,5]);
+  return{id:String(option.id),label:String(option.label||""),startHour:Number(option.startHour)||9,endHour:Number(option.endHour)||18,breakMinutes:Number.isFinite(Number(option.breakMinutes))?Number(option.breakMinutes):60,workDays:[...new Set(days.map(Number))].filter(d=>d>=0&&d<=6).sort((a,b)=>a-b)};
+}
+function _flexDaysLabel(days){return(days||[]).map(d=>_WORKDAY_LABELS[Number(d)]).filter(Boolean).join("·")||"요일 미설정";}
 function _getDocTitle(tplId,fd){
   if(tplId==="tpl-vacation")return`${fd.leaveType||"휴가"} 신청 (${fd.startDate||""}~${fd.endDate||""})`;
   if(tplId==="tpl-halfday")return`${fd.halfType||"반차"} 신청 (${fd.date||""})`;
   if(tplId==="tpl-early")return`조퇴 신청 (${fd.date||""} ${fd.leaveTime||""})`;
   if(tplId==="tpl-training")return`교육 신청: ${fd.trainingName||""}`;
   if(tplId==="tpl-biztrip")return`출장 신청: ${fd.destination||""} (${fd.startDate||""}~${fd.endDate||""})`;
-  if(tplId==="tpl-flex"){const fo=(settings.flexWorkOptions||[]).find(o=>String(o.id)===String(fd.flexOptionId));return`유연근무 신청 (${fd.startDate||""}~${fd.endDate||""}, ${fo?fo.label:""})`;}
+  if(tplId==="tpl-flex"){const fo=(settings.flexWorkOptions||[]).find(o=>String(o.id)===String(fd.flexOptionId));return`유연근무 신청 (${fd.startDate||""}~${fd.endDate||""}, ${fd.flexLabel||(fo?fo.label:"")})`;}
   if(tplId==="tpl-holiday-work")return`휴일근무 신청 (${fd.workDate||""} ${fd.startTime||""}~${fd.endTime||""})`;
   if(tplId==="tpl-overtime")return`연장근로 신청 (${fd.date||""} ${fd.startTime||""}~${fd.endTime||""})`;
   if(tplId==="tpl-remote")return`재택근무 신청 (${fd.startDate||""}~${fd.endDate||""})`;
@@ -14062,8 +14069,9 @@ function _applyAttendanceApproval(doc){
   }else if(doc.templateId==="tpl-flex"){
     const emp=getEmp(doc.authorId);if(emp){
       const fo=(settings.flexWorkOptions||[]).find(o=>String(o.id)===String(fd.flexOptionId));
+      const snap=fd.flexSnapshot||_flexOptionSnapshot(fo)||{startHour:9,endHour:18,breakMinutes:60,workDays:[1,2,3,4,5],label:fd.flexLabel||"유연근무"};
       if(!emp.flexSchedules)emp.flexSchedules=[];
-      emp.flexSchedules.push({id:`flex-${Date.now()}`,startDate:fd.startDate,endDate:fd.endDate,startHour:fo?fo.startHour:9,endHour:fo?fo.endHour:18,reason:fd.reason,approvedAt:new Date().toISOString(),docId:doc.id});
+      emp.flexSchedules.push({id:`flex-${Date.now()}`,startDate:fd.startDate,endDate:fd.endDate,label:snap.label,startHour:snap.startHour,endHour:snap.endHour,breakMinutes:snap.breakMinutes,workDays:snap.workDays,reason:fd.reason,approvedAt:new Date().toISOString(),docId:doc.id});
     }
   }else if(doc.templateId==="tpl-holiday-work"){
     _setAttRec(doc.authorId,fd.workDate,"normal",`휴일근무 (${fd.startTime}~${fd.endTime}, ${fd.compType})`);
@@ -14280,7 +14288,7 @@ function openApprovalForm(tplId){
   if(!isTplActive(tplId)){showToast("현재 사용 중지된 양식입니다.","error");return;}
   const chain=tpl.approvalType==="hierarchy"?getApprovalChain(currentUser.id):tpl.approvalType==="direct_superior"?getDirectSuperiorChain(currentUser.id):tpl.approvalType==="vendor_reg"?getVendorRegChain(currentUser.id):[];
   const fieldsHtml=tplId==="tpl-vacation"?_vacationFormFieldsHtml():tpl.fields.map(f=>`<div class="fg"><label class="fl">${h(f.label)}${f.req?` <span class="req">*</span>`:""}</label>${
-    f.key==="flexOptionId"?`<select class="fc" id="af-${f.key}"><option value="">선택</option>${(settings.flexWorkOptions||[]).map(o=>`<option value="${h(o.id)}">${h(o.label)}</option>`).join("")}</select>${(settings.flexWorkOptions||[]).length===0?`<div class="fz11" style="color:#dc2626;margin-top:3px">* 관리자가 유연근무 시간 옵션을 먼저 등록해야 신청할 수 있습니다.</div>`:""}`
+    f.key==="flexOptionId"?`<select class="fc" id="af-${f.key}"><option value="">선택</option>${(settings.flexWorkOptions||[]).map(o=>{const s=_flexOptionSnapshot(o);return`<option value="${h(o.id)}">${h(o.label)} · ${_flexDaysLabel(s.workDays)} · 휴게 ${s.breakMinutes}분</option>`}).join("")}</select>${(settings.flexWorkOptions||[]).length===0?`<div class="fz11" style="color:#dc2626;margin-top:3px">* 관리자가 유연근무 시간 옵션을 먼저 등록해야 신청할 수 있습니다.</div>`:""}`
     :f.key==="compType"?`<select class="fc" id="af-${f.key}"><option value="">선택</option>${(settings.workCompOptions||[]).filter(o=>o.enabled!==false).map(o=>`<option value="${h(o.name)}">${h(o.name)}${Number(o.expiryMonths)>0?` (사용기한 ${o.expiryMonths}개월)`:""}</option>`).join("")}</select>`
     :f.key==="welfarePolicyId"?`<select class="fc" id="af-${f.key}"><option value="">선택</option>${(settings.welfarePolicies||[]).filter(p=>p.enabled!==false&&p.group===(tplId==="tpl-welfare-condolence"?"condolence":"tuition")).map(p=>`<option value="${h(p.id)}">${h(p.name)} · 한도 ${Number(p.maxAmount||0).toLocaleString()}원 · 근속 ${Number(p.minServiceMonths||0)}개월</option>`).join("")}</select>`
     :f.type==="select"?`<select class="fc" id="af-${f.key}"><option value="">선택</option>${(f.opts||[]).map(o=>`<option>${h(o)}</option>`).join("")}</select>`
@@ -14353,6 +14361,13 @@ function previewApprovalForm(tplId){
     if(!policy){showToast("현재 사용할 수 없는 휴가 유형입니다. 다시 선택하세요.","error");return;}
     if(!fd.startDate||!fd.endDate||fd.endDate<fd.startDate||Number(fd.days)<=0){showToast("휴가 기간과 신청 일수를 확인하세요.","error");return;}
     fd.leaveUnit=Number(policy.unit)||1;fd.countsAnnual=policy.countsAnnual!==false;fd.paid=policy.paid!==false;
+  }
+  if(tplId==="tpl-flex"){
+    const option=(settings.flexWorkOptions||[]).find(o=>String(o.id)===String(fd.flexOptionId));
+    const snap=_flexOptionSnapshot(option);
+    if(!snap||!snap.label){showToast("현재 사용할 수 없는 유연근무 시간표입니다. 다시 선택하세요.","error");return;}
+    if(!fd.startDate||!fd.endDate||fd.endDate<fd.startDate){showToast("유연근무 적용 기간을 확인하세요.","error");return;}
+    fd.flexLabel=snap.label;fd.flexSnapshot=snap;
   }
   if(["tpl-welfare-condolence","tpl-welfare-tuition"].includes(tplId)){
     const policy=_welfarePolicyForTemplate(tplId,fd.welfarePolicyId),amount=Number(fd.requestedAmount),months=_serviceMonths(currentUser);
@@ -14598,9 +14613,18 @@ function _withGPS(cb){
     else showToast(`회사 위치에서 ${Math.round(dist)}m 거리입니다. (허용 ${r}m 이내)`,`error`);
   },err=>showToast("위치 정보 오류: "+err.message,"error"),{enableHighAccuracy:true,timeout:10000});
 }
+function _approvedFlexSchedules(empId){
+  const emp=getEmp(empId),legacy=Array.isArray(emp?.flexSchedules)?emp.flexSchedules:[];
+  const fromDocs=approvalDocs.filter(d=>d.status==="approved"&&d.templateId==="tpl-flex"&&String(d.authorId)===String(empId)).map(d=>{
+    const fd=d.formData||{},snap=fd.flexSnapshot||_flexOptionSnapshot((settings.flexWorkOptions||[]).find(o=>String(o.id)===String(fd.flexOptionId)))||{};
+    return{id:`approval-${d.id}`,docId:d.id,startDate:fd.startDate,endDate:fd.endDate,label:fd.flexLabel||snap.label||"유연근무",startHour:snap.startHour||9,endHour:snap.endHour||18,breakMinutes:Number(snap.breakMinutes??60),workDays:snap.workDays||settings.workDays,reason:fd.reason||"",approvedAt:d.approvedAt||d.updatedAt};
+  });
+  const docIds=new Set(fromDocs.map(s=>String(s.docId)));
+  return[...fromDocs,...legacy.filter(s=>!s.docId||!docIds.has(String(s.docId)))];
+}
 function _empScheduledEndHour(empId,dateStr){
-  const emp=getEmp(empId);
-  const fs=(emp?.flexSchedules||[]).find(s=>dateStr>=s.startDate&&dateStr<=s.endDate);
+  const day=new Date(`${dateStr}T00:00:00`).getDay();
+  const fs=_approvedFlexSchedules(empId).find(s=>dateStr>=s.startDate&&dateStr<=s.endDate&&(!Array.isArray(s.workDays)||s.workDays.map(Number).includes(day)));
   return fs?(fs.endHour||18):(settings.workEndHour||18);
 }
 function _empApprovedOvertimeEndTime(empId,dateStr){
@@ -14721,12 +14745,11 @@ function renderHrAttendancePage(){
   c.innerHTML=`<div id="att-team-wrap">${renderTeamAttendanceSection()}</div>`;
 }
 function _renderFlexScheduleLog(uid){
-  const emp=getEmp(uid);if(!emp||!emp.flexSchedules||emp.flexSchedules.length===0)return"";
-  const fs=emp.flexSchedules.slice().sort((a,b)=>b.startDate.localeCompare(a.startDate));
+  const fs=_approvedFlexSchedules(uid).sort((a,b)=>b.startDate.localeCompare(a.startDate));if(!fs.length)return"";
   const today=new Date().toISOString().slice(0,10);
   return`<div class="card" style="margin-top:12px"><div class="card-head"><h3>⏱ 유연근무제 내역</h3></div><div class="card-body" style="padding:0">
-    <div class="tbl-wrap"><table><thead><tr><th>기간</th><th>출근</th><th>퇴근</th><th>사유</th><th>상태</th></tr></thead><tbody>
-    ${fs.map(s=>`<tr><td>${s.startDate}~${s.endDate}</td><td>${_fmtHour(s.startHour||9)}</td><td>${_fmtHour(s.endHour||18)}</td><td class="fz12 text-gray">${h(s.reason||"")}</td><td>${today>=s.startDate&&today<=s.endDate?badge("적용중","green"):today>s.endDate?badge("만료","gray"):badge("예정","blue")}</td></tr>`).join("")}
+    <div class="tbl-wrap"><table><thead><tr><th>기간</th><th>시간표</th><th>근무 요일</th><th>휴게</th><th>사유</th><th>상태</th></tr></thead><tbody>
+    ${fs.map(s=>`<tr><td>${s.startDate}~${s.endDate}</td><td>${_fmtHour(s.startHour||9)}~${_fmtHour(s.endHour||18)}</td><td>${_flexDaysLabel(s.workDays||settings.workDays)}</td><td>${Number(s.breakMinutes??60)}분</td><td class="fz12 text-gray">${h(s.reason||"")}</td><td>${today>=s.startDate&&today<=s.endDate?badge("적용중","green"):today>s.endDate?badge("만료","gray"):badge("예정","blue")}</td></tr>`).join("")}
     </tbody></table></div>
   </div></div>`;
 }
@@ -21809,6 +21832,7 @@ function renderRecruitCandidatesPage(){
   const canManage=["admin","leader","director"].includes(currentUser.role);
   const f=_recruitCandSearch;
   c.innerHTML=`<div class="card"><div class="card-head"><h3>🧑‍💼 지원자 관리</h3><div style="display:flex;gap:6px">
+    ${canManage?`<button class="btn btn-secondary btn-sm" onclick="openRecruitCandidateCompare(_recruitCandSearch.jobId)">📊 지원자 비교</button>`:""}
     <button class="btn btn-secondary btn-sm" onclick="exportRecruitCandidates(_recruitCandSearch.jobId||null)">⬇ 지원현황 다운로드</button>
     ${canManage?`<button class="btn btn-primary btn-sm" onclick="openRecruitCandidateModal()">+ 지원자 등록</button>`:""}
   </div></div>
@@ -21833,6 +21857,19 @@ function renderRecruitCandidatesTbl(){
   wrap.innerHTML=`<div style="padding:0" class="tbl-wrap"><table><thead><tr><th>이름</th><th>채용공고</th><th>키워드 적합도</th><th>연락처</th><th>이메일</th><th>전형단계</th><th>이력서</th><th>관리</th></tr></thead><tbody>
   ${list.length?list.map(cd=>{const m=_recruitCandidateMatch(cd);return`<tr><td>${h(cd.name)}</td><td>${h(_recruitJobTitle(cd.jobId))}</td><td>${m.score==null?`<span class="fz11 text-gray">공고 키워드 없음</span>`:`<span class="badge ${m.score>=70?"bg-green":m.score>=40?"bg-yellow":"bg-gray"}" title="일치: ${h(m.matched.join(", ")||"없음")} · 미일치: ${h(m.missing.join(", ")||"없음")}">${m.score}% (${m.matched.length}/${m.matched.length+m.missing.length})</span>`}</td><td>${h(cd.phone||"-")}</td><td>${h(cd.email||"-")}</td><td>${badge(h(cd.status),"blue")}</td><td>${cd.resume?`<button class="btn btn-secondary btn-sm" onclick="downloadRecruitResume('${cd.id}')">다운로드</button>`:"-"}</td><td>${canManage?`<button class="btn btn-secondary btn-sm" onclick="openRecruitCandidateEditModal('${cd.id}')">수정</button> <button class="btn btn-secondary btn-sm" onclick="openRecruitStatusModal('${cd.id}')">단계변경</button> <button class="btn btn-secondary btn-sm" onclick="openRecruitNoticeModal('${cd.id}')">결과통보</button> <button class="btn btn-danger btn-sm" onclick="deleteRecruitCandidate('${cd.id}')">삭제</button>`:"-"}</td></tr>`;}).join(""):`<tr><td colspan="8" class="text-gray" style="text-align:center;padding:20px">조건에 맞는 지원자가 없습니다.</td></tr>`}
   </tbody></table></div>`;
+}
+function _recruitCareerMonths(candidate){return _careerStrToRows(candidate?.careerHistory||"").reduce((sum,row)=>sum+(_rcCareerMonths(row.period)||0),0);}
+function openRecruitCandidateCompare(jobId){
+  if(!["admin","leader","director"].includes(currentUser?.role)){showToast("지원자 비교 권한이 없습니다.","error");return;}
+  if(!jobId){showToast("비교할 채용공고를 먼저 선택하세요.","info");return;}
+  const job=recruitJobs.find(j=>String(j.id)===String(jobId));
+  const candidates=recruitCandidates.filter(c=>String(c.jobId)===String(jobId)).map(candidate=>({...candidate,_match:_recruitCandidateMatch(candidate),_careerMonths:_recruitCareerMonths(candidate)})).sort((a,b)=>(b._match.score??-1)-(a._match.score??-1)||b._careerMonths-a._careerMonths).slice(0,12);
+  if(!candidates.length){showToast("비교할 지원자가 없습니다.","info");return;}
+  const rows=candidates.map((candidate,index)=>{
+    const match=candidate._match,score=match.score??0;
+    return`<tr><td>${index+1}</td><td><strong>${h(candidate.name)}</strong><div class="fz11 text-gray">${h(candidate.status||"-")}</div></td><td style="min-width:150px"><div style="display:flex;align-items:center;gap:6px"><div style="height:8px;flex:1;background:#e2e8f0;border-radius:5px;overflow:hidden"><div style="height:100%;width:${score}%;background:${score>=70?"#16a34a":score>=40?"#f59e0b":"#94a3b8"}"></div></div><strong class="fz12">${match.score==null?"-":score+"%"}</strong></div><div class="fz11 text-gray">${h(match.matched.join(", ")||"일치 키워드 없음")}</div></td><td>${candidate._careerMonths?_rcFormatDuration(candidate._careerMonths):"-"}</td><td class="fz12">${h(candidate.finalEducation||"-")}</td><td class="fz12">${h(candidate.lastSalary||candidate.salary||"-")}</td><td class="fz12">${h(candidate.desiredSalary||"-")}</td><td class="fz11" style="color:#b45309">${h(match.missing.join(", ")||"-")}</td></tr>`;
+  }).join("");
+  openModal(`<div class="modal-box" style="max-width:1000px"><div class="modal-head"><h3>📊 ${h(job?.title||"채용공고")} 지원자 비교</h3></div><div class="modal-body"><div class="info-note fz11 mb3">공고 키워드 포함 여부를 기준으로 정렬한 참고 지표입니다. 최종 채용 판단은 면접 평가와 담당자의 검토를 함께 반영하세요.</div><div class="tbl-wrap"><table><thead><tr><th>순위</th><th>지원자</th><th>키워드 적합도</th><th>총 경력</th><th>최종학력</th><th>최근연봉</th><th>희망연봉</th><th>보완 확인</th></tr></thead><tbody>${rows}</tbody></table></div></div><div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal()">닫기</button></div></div>`);
 }
 let _rcResumeFile=null;
 let _rceResumeFile=null;
@@ -24215,6 +24252,23 @@ function openLeaveDetailModal(empId){
 }
 
 // ==================== ORG CHART (조직도) ====================
+let _orgViewDate="";
+function _orgEmployeeAtDate(emp,dateStr){
+  if(!dateStr)return emp.active&&emp.role!=="admin"?{...emp}:null;
+  if(emp.role==="admin"||(emp.hire&&emp.hire>dateStr)||(emp.retireDate&&emp.retireDate<=dateStr))return null;
+  const snapshot={...emp,active:true};
+  const later=(emp.hrHistory||[]).filter(x=>x&&x.applied!==false&&x.date&&x.date>dateStr).sort((a,b)=>b.date.localeCompare(a.date));
+  later.forEach(change=>{
+    if(change.type==="transfer"&&change.before){
+      const before=String(change.before),split=before.lastIndexOf("/");
+      if(split>=0){snapshot.dept=before.slice(0,split).trim();snapshot.team=before.slice(split+1).trim();}
+    }else if(["promotion","rank_change"].includes(change.type)&&change.before){snapshot.rank=String(change.before).trim();}
+    else if(change.type==="position"&&change.before){snapshot.position=String(change.before).trim()==="없음"?"":String(change.before).trim();}
+  });
+  return snapshot;
+}
+function _orgEmployeesForView(){return employees.map(e=>_orgEmployeeAtDate(e,_orgViewDate)).filter(Boolean);}
+function _setOrgViewDate(value){_orgViewDate=value||"";window._orgCollapsed=null;window._orgSelEmpId=null;renderOrgChartPage();}
 function _orgUnitCounts(){
   // 조직 위계: 회사(대표이사) - 본부/센터/실 - 팀 - 파트
   return{"본부/센터/실":orgDB.depts.length,"팀":Object.values(orgDB.teams).flat().length};
@@ -24425,18 +24479,23 @@ function _applyOrgBulkChanges(){
 }
 function renderOrgChartPage(){
   const c=$("#content");
-  const active=employees.filter(e=>e.active&&e.role!=="admin");
+  const active=_orgEmployeesForView();
   if(active.length===0){c.innerHTML=`<div class="card"><div class="card-body" style="text-align:center;padding:60px;color:#94a3b8">직원 데이터가 없습니다.</div></div>`;return;}
   const co=settings.companyName||"회사";
   const isAdmin=currentUser.role==="admin";
   c.innerHTML=`
   <div class="flex gap2 wrap" style="justify-content:flex-end;margin-bottom:8px">
+    <label class="fz12 text-gray" style="display:flex;align-items:center;gap:6px">기준일
+      <input class="fc" type="date" max="${new Date().toISOString().slice(0,10)}" value="${h(_orgViewDate)}" style="width:145px;height:32px" onchange="_setOrgViewDate(this.value)" aria-label="조직도 기준일">
+    </label>
+    ${_orgViewDate?`<button class="btn btn-secondary btn-sm" onclick="_setOrgViewDate('')">현재 조직 보기</button>`:""}
     ${isAdmin?`<button class="btn btn-secondary btn-sm" onclick="dlOrgChartExport()">📥 조직도 엑셀 다운로드</button>
     <label class="btn btn-secondary btn-sm" for="orgchart-bulk-upload" style="cursor:pointer">📤 일괄 인사발령 업로드</label>
     <input type="file" id="orgchart-bulk-upload" accept=".csv" style="display:none" onchange="handleOrgChartUpload(this)">`:""}
     ${_canViewOrgHistory()?`<button class="btn btn-secondary btn-sm" onclick="openOrgChartHistoryModal()">🕘 조직 변경 이력</button>`:""}
     ${isAdmin?`<button class="btn btn-secondary btn-sm" onclick="openOrgHistoryViewerMgmt()">🔒 이력 열람 권한 관리</button>`:""}
   </div>
+  ${_orgViewDate?`<div class="info-note mb3 fz12">🕘 ${h(_orgViewDate)} 기준 조직입니다. 입·퇴사일과 저장된 전보·승진·직책 발령 이력을 역산해 표시합니다.</div>`:""}
   <div style="background:linear-gradient(135deg,#0f172a,#1e293b);color:white;border-radius:12px;padding:14px 20px;margin-bottom:16px;display:flex;align-items:center;gap:16px">
     <div style="font-size:28px">🏢</div>
     <div>
@@ -24457,7 +24516,7 @@ function renderOrgChartPage(){
 }
 function renderOrgChartBody(){
   const c=$("#org-chart-body");if(!c)return;
-  const active=employees.filter(e=>e.active&&e.role!=="admin");
+  const active=_orgEmployeesForView();
   if(active.length===0)return;
   const q=(_orgSearchQ||"").toLowerCase();
   const filtered=q?active.filter(e=>e.name.toLowerCase().includes(q)||e.dept.toLowerCase().includes(q)||(e.team||"").toLowerCase().includes(q)):active;
@@ -24512,7 +24571,7 @@ function renderOrgChartBody(){
     return"";
   }).join("");
   const selId=window._orgSelEmpId;
-  const selEmp=selId?getEmp(selId):null;
+  const selEmp=selId?active.find(e=>String(e.id)===String(selId)):null;
   const detailHtml=selEmp?`<div class="card" style="border:2px solid #3b82f6">
     <div class="card-head"><h3>👤 ${h(selEmp.name)}</h3><button class="btn btn-ghost btn-sm" onclick="window._orgSelEmpId=null;renderOrgChartBody()">✕</button></div>
     <div class="card-body">
@@ -24553,7 +24612,7 @@ function renderOrgChartBody(){
   const unitCounts=_orgUnitCounts();
   const unitSummary=Object.entries(unitCounts).filter(([,n])=>n>0).map(([k,n])=>`${k} ${n}개`).join(" · ");
   const summaryEl=$("#org-chart-summary");
-  if(summaryEl)summaryEl.textContent=`재직자 ${active.length}명 · ${depts.length}개 부문${unitSummary?" · "+unitSummary:""}`;
+  if(summaryEl)summaryEl.textContent=`${_orgViewDate?_orgViewDate+" 기준":"현재"} 재직자 ${active.length}명 · ${depts.length}개 부문${unitSummary?" · "+unitSummary:""}`;
   c.innerHTML=`
   <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;align-items:start">
     <div style="max-height:70vh;overflow-y:auto;border:1px solid #e2e8f0;border-radius:10px;padding:12px;background:white">
@@ -25118,14 +25177,16 @@ function renderAttendSettings(){
     </div>
   </div></div>
 
-  <div class="card" style="margin-bottom:14px"><div class="card-head"><h3>⏱ 유연근무제 시간 옵션 관리</h3>
+  <div class="card" style="margin-bottom:14px"><div class="card-head"><div><h3>⏱ 직군·교대 대응 근무시간표 관리</h3><div class="fz11 text-gray">시간·휴게시간·적용 요일을 하나의 시간표로 저장하며, 결재 상신 시 규정을 스냅샷으로 고정합니다.</div></div>
     <button class="btn btn-primary btn-sm" onclick="_addFlexWorkOption()">+ 옵션 추가</button>
   </div><div class="card-body" style="padding:0">
-    ${_opsStage.flexWorkOptions.length===0?`<div style="padding:20px;text-align:center;color:#94a3b8">등록된 유연근무 시간 옵션이 없습니다.</div>`:`<div class="tbl-wrap"><table><thead><tr><th>표시 이름</th><th>출근 시간</th><th>퇴근 시간</th><th>삭제</th></tr></thead><tbody>
+    ${_opsStage.flexWorkOptions.length===0?`<div style="padding:20px;text-align:center;color:#94a3b8">등록된 유연근무 시간 옵션이 없습니다.</div>`:`<div class="tbl-wrap"><table><thead><tr><th>표시 이름</th><th>출근</th><th>퇴근</th><th>휴게(분)</th><th>적용 요일</th><th>삭제</th></tr></thead><tbody>
     ${_opsStage.flexWorkOptions.map((fo,i)=>`<tr>
       <td><input class="fc" value="${h(fo.label)}" style="min-width:160px" oninput="_opsStage.flexWorkOptions[${i}].label=this.value"></td>
       <td><select class="fc" style="width:110px" onchange="_opsStage.flexWorkOptions[${i}].startHour=+this.value;renderAttendSettings()">${Array.from({length:17},(_,k)=>6+k*0.5).map(t=>`<option value="${t}" ${(fo.startHour||9)===t?"selected":""}>${_fmtHour(t)}</option>`).join("")}</select></td>
       <td><select class="fc" style="width:110px" onchange="_opsStage.flexWorkOptions[${i}].endHour=+this.value;renderAttendSettings()">${Array.from({length:21},(_,k)=>12+k*0.5).map(t=>`<option value="${t}" ${(fo.endHour||18)===t?"selected":""}>${_fmtHour(t)}</option>`).join("")}</select></td>
+      <td><input class="fc" type="number" min="0" max="240" step="10" value="${Number.isFinite(Number(fo.breakMinutes))?Number(fo.breakMinutes):60}" style="width:80px" oninput="_opsStage.flexWorkOptions[${i}].breakMinutes=+this.value"></td>
+      <td style="min-width:250px">${[0,1,2,3,4,5,6].map(d=>`<label class="fz11" style="display:inline-flex;align-items:center;gap:2px;margin-right:5px"><input type="checkbox" ${(Array.isArray(fo.workDays)?fo.workDays:_opsStage.workDays).map(Number).includes(d)?"checked":""} onchange="_toggleFlexWorkDay(${i},${d},this.checked)">${dayLabels[d]}</label>`).join("")}</td>
       <td><button class="btn btn-danger btn-sm" onclick="_opsStage.flexWorkOptions.splice(${i},1);renderAttendSettings()">삭제</button></td>
     </tr>`).join("")}
     </tbody></table></div>`}
@@ -25274,8 +25335,14 @@ function addMeetingRoom(){
 }
 function _addFlexWorkOption(){
   _opsStageInit();
-  _opsStage.flexWorkOptions.push({id:`flex-${genId()}`,label:"9시 출근 ~ 18시 퇴근",startHour:9,endHour:18});
+  _opsStage.flexWorkOptions.push({id:`flex-${genId()}`,label:"9시 출근 ~ 18시 퇴근",startHour:9,endHour:18,breakMinutes:60,workDays:[...(_opsStage.workDays||[1,2,3,4,5])]});
   renderAttendSettings();
+}
+function _toggleFlexWorkDay(index,day,checked){
+  const option=_opsStage?.flexWorkOptions?.[index];if(!option)return;
+  const days=new Set((Array.isArray(option.workDays)?option.workDays:_opsStage.workDays||[]).map(Number));
+  if(checked)days.add(day);else days.delete(day);
+  option.workDays=[...days].sort((a,b)=>a-b);renderAttendSettings();
 }
 function _addLeaveType(){
   _opsStageInit();
@@ -25293,6 +25360,16 @@ function _validateAttendanceSettings(){
   if(!_opsStage)return false;
   if(!Array.isArray(_opsStage.workDays)||!_opsStage.workDays.length){showToast("근무 요일을 1일 이상 선택하세요.","error");return false;}
   if(Number(_opsStage.workEndHour)<=Number(_opsStage.workStartHour)){showToast("퇴근 시간은 출근 시간보다 늦어야 합니다.","error");return false;}
+  const flexSeen=new Set();
+  for(const [i,raw] of (_opsStage.flexWorkOptions||[]).entries()){
+    const fo=_flexOptionSnapshot(raw),label=String(raw.label||"").trim();
+    if(!label){showToast(`${i+1}번째 근무시간표 이름을 입력하세요.`,"error");return false;}
+    const key=label.toLowerCase();if(flexSeen.has(key)){showToast(`근무시간표 '${label}'이 중복되었습니다.`,"error");return false;}flexSeen.add(key);
+    if(fo.endHour<=fo.startHour){showToast(`${label}: 퇴근 시간은 출근 시간보다 늦어야 합니다.`,"error");return false;}
+    if(!fo.workDays.length){showToast(`${label}: 적용 요일을 1일 이상 선택하세요.`,"error");return false;}
+    if(!Number.isInteger(fo.breakMinutes)||fo.breakMinutes<0||fo.breakMinutes>240){showToast(`${label}: 휴게시간은 0~240분 정수로 입력하세요.`,"error");return false;}
+    Object.assign(raw,fo,{label});
+  }
   const leaveSeen=new Set();
   for(const [i,lt] of (_opsStage.leaveTypes||[]).entries()){
     const name=String(lt.name||"").trim(),unit=Number(lt.unit);

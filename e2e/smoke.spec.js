@@ -161,18 +161,30 @@ test.describe("로그인·기본 네비게이션", () => {
       settings.workCompOptions = [{ id: "sub", name: "대체휴무", mode: "leave", expiryMonths: 3, enabled: true }];
       settings.welfarePolicies = [{ id: "marriage", group: "condolence", name: "본인 결혼", maxAmount: 1000000, minServiceMonths: 0, payrollLinked: true, enabled: true }];
       recruitJobs = [{ id: "job-match", title: "ERP 개발자", keywords: ["JavaScript", "PostgreSQL", "제조ERP"] }];
+      recruitCandidates = [{ id: "candidate-match", jobId: "job-match", name: "지원자 A", status: "서류검토", finalEducation: "컴퓨터공학 학사", careerHistory: "1. 2023.01~2024.12 | 제조사 | 개발자 | 제조ERP JavaScript 개발", lastSalary: "4,000만원", desiredSalary: "4,500만원", resumeSummary: "제조ERP JavaScript 개발" }];
       const match = _recruitCandidateMatch({ jobId: "job-match", careerHistory: "제조ERP JavaScript 개발", resumeSummary: "업무 경험" });
+      const historical = _orgEmployeeAtDate({ id: 99, role: "member", active: true, hire: "2020-01-01", dept: "신사업본부", team: "플랫폼팀", hrHistory: [{ type: "transfer", date: "2025-01-01", applied: true, before: "IT사업본부/서비스개발팀", after: "신사업본부/플랫폼팀" }] }, "2024-12-31");
+      const flex = _flexOptionSnapshot({ id: "shift-a", label: "A조", startHour: 6, endHour: 14, breakMinutes: 30, workDays: [1, 2, 3, 4] });
       return {
         leave: _selectedLeavePolicy("시간연차"),
         comp: settings.workCompOptions[0],
         welfare: _welfarePolicyForTemplate("tpl-welfare-condolence", "marriage"),
         match,
+        historical,
+        flex,
       };
     });
     expect(rules.leave.unit).toBe(0.25);
     expect(rules.comp.expiryMonths).toBe(3);
     expect(rules.welfare.maxAmount).toBe(1000000);
     expect(rules.match).toEqual({ score: 67, matched: ["JavaScript", "제조ERP"], missing: ["PostgreSQL"] });
+    expect(rules.historical).toMatchObject({ dept: "IT사업본부", team: "서비스개발팀" });
+    expect(rules.flex).toMatchObject({ label: "A조", startHour: 6, endHour: 14, breakMinutes: 30, workDays: [1, 2, 3, 4] });
+
+    await page.evaluate(() => openRecruitCandidateCompare("job-match"));
+    await expect(page.getByRole("heading", { name: /ERP 개발자 지원자 비교/ })).toBeVisible();
+    await expect(page.locator(".modal-box")).toContainText("지원자 A");
+    await page.evaluate(() => closeModal());
 
     await page.evaluate(() => {
       _opsStage = null;
