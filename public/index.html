@@ -1111,6 +1111,11 @@ let settings={
   leadershipResultYear:2026,
   // 종합 성과 점수 가중치 (합계=100%)
   scoreWeights:{kpi:60,comp:20,ls:20},
+  // 확정 평가 결과를 급여 성과급으로 연계하는 기준. 지급률은 기준금액 대비 %.
+  performanceRewardPolicy:{
+    enabled:true,basis:"annualSalary",requireKpi:true,requireComp:true,maxAmount:100000000,
+    gradeRates:{S:20,A:12,B:6,C:0,D:0}
+  },
   // 저성과 인력 자동 감지 기준
   lowPerfThreshold:60,    // 이 점수 미만이면 저성과 대상
   lowPerfConsecYears:2,   // 연속 N년 저성과 시 자동 등록
@@ -1189,6 +1194,10 @@ let settings={
     {years:20,reward:"포상금 200만원 + 휴가 5일 + 안식휴가"}
   ],
 };
+function _performanceRewardPolicy(){
+  const raw=settings.performanceRewardPolicy||{};
+  return{enabled:raw.enabled!==false,basis:["annualSalary","monthlySalary"].includes(raw.basis)?raw.basis:"annualSalary",requireKpi:raw.requireKpi!==false,requireComp:raw.requireComp!==false,maxAmount:Number.isFinite(Number(raw.maxAmount))?Number(raw.maxAmount):100000000,gradeRates:{S:20,A:12,B:6,C:0,D:0,...(raw.gradeRates||{})}};
+}
 // ==================== 한국 공휴일 (2025~2027) ====================
 const KR_HOLIDAYS={
   "2025-01-01":"신정","2025-01-28":"설날 연휴","2025-01-29":"설날","2025-01-30":"설날 연휴","2025-03-01":"삼일절","2025-05-05":"어린이날","2025-05-06":"대체공휴일","2025-05-15":"부처님오신날","2025-06-06":"현충일","2025-08-15":"광복절","2025-10-03":"개천절","2025-10-05":"추석 연휴","2025-10-06":"추석","2025-10-07":"추석 연휴","2025-10-08":"대체공휴일","2025-10-09":"한글날","2025-12-25":"크리스마스",
@@ -15082,6 +15091,7 @@ function calcStandardPayslip(emp,year,month){
   // 직원별 급여 조정 항목(경조사비/인센티브/추가금액) — 급여 관리 메뉴에서 입력
   const empAdjustments=payrollAdjustments.filter(a=>String(a.empId)===String(emp.id)&&a.year===year&&a.month===month);
   const adjustPay=empAdjustments.reduce((s,a)=>s+(a.amount||0),0);
+  const adjustmentPayItemsList=empAdjustments.filter(a=>Number(a.amount)!==0).map(a=>({label:a.category||"급여 조정",amount:Number(a.amount)||0,taxable:a.taxable!==false,sourceId:a.id,source:a.source||"manual",note:a.note||""}));
   // 시급 및 연장근무 계산 (월 소정근로시간 209시간 기준, 근로기준법) — 임원(상무 이상)은 연장근로수당 미지급
   const standardMonthlyHours=209;
   const hourlyWage=Math.round(monthly/standardMonthlyHours);
@@ -15105,7 +15115,7 @@ function calcStandardPayslip(emp,year,month){
     ...(researchAllow>0?[{label:"연구수당",amount:researchAllow,taxable:false}]:[]),
     ...(posAllow>0?[{label:"직책수당",amount:posAllow,taxable:true}]:[]),
     ...customPayItemsList.filter(ci=>ci.amount>0),
-    ...(adjustPay>0?[{label:"경조사비/인센티브 등",amount:adjustPay,taxable:true}]:[]),
+    ...adjustmentPayItemsList,
   ];
   const taxableIncome=payItems.filter(it=>it.taxable).reduce((s,it)=>s+it.amount,0);
   const pension=Math.round(taxableIncome*0.045);
@@ -15299,6 +15309,79 @@ function confirmPayslip(empId,year,month){
   autoSaveToServerIfEnabled();showToast("급여 명세서가 확정되었습니다.","success");renderPayslipPage();
 }
 let _payMgmtState={year:new Date().getFullYear(),month:new Date().getMonth()+1,dept:"",team:"",search:""};
+let _perfRewardState={evalYear:settings.evalYear};
+function _performanceRewardSourceKey(evalYear,empId){return`performance:${evalYear}:${empId}`;}
+function _performanceRewardCandidate(emp,evalYear){
+  const policy=_performanceRewardPolicy();
+  const kpiResult=(emp.gradeResults||{})[String(evalYear)]||null;
+  const confirmedKpis=kpiEntries.filter(k=>String(k.userId)===String(emp.id)&&Number(k.year)===Number(evalYear)&&k.finalStatus==="approved"&&k.finalConfirmed);
+  let kpiScore=Number(kpiResult?.score);
+  if(!Number.isFinite(kpiScore)&&confirmedKpis.length){
+    let sum=0,weight=0;confirmedKpis.forEach(k=>{const score=Number(k.finalScore??k.secondScore??k.firstScore);const w=Number(k.weight)||0;if(Number.isFinite(score)&&w>0){sum+=score*w;weight+=w;}});kpiScore=weight?Math.round(sum/weight*10)/10:NaN;
+  }
+  const compResult=compGradeResults[emp.id]?.[String(evalYear)]||compGradeResults[String(emp.id)]?.[String(evalYear)]||null;
+  const compScore=Number(compResult?.score);
+  const kpiReady=Number.isFinite(kpiScore)&&(!!kpiResult||confirmedKpis.length>0),compReady=Number.isFinite(compScore);
+  const missing=[];if(policy.requireKpi&&!kpiReady)missing.push("KPI 최종확정");if(policy.requireComp&&!compReady)missing.push("역량/리더십 결과");
+  let overall=null;
+  if(kpiReady&&compReady){const w=settings.scoreWeights||{kpi:60,comp:20,ls:20};overall=Math.round((kpiScore*(Number(w.kpi)||0)+compScore*((Number(w.comp)||0)+(Number(w.ls)||0)))/100*10)/10;}
+  else if(kpiReady&&!policy.requireComp)overall=kpiScore;
+  else if(compReady&&!policy.requireKpi)overall=compScore;
+  const grade=overall==null?"-":getGrade(overall),rate=grade==="-"?0:Number(policy.gradeRates[grade])||0;
+  const basis=policy.basis==="monthlySalary"?Math.round((Number(emp.salary)||0)/12):(Number(emp.salary)||0);
+  const amount=Math.min(Math.max(0,Number(policy.maxAmount)||0),Math.max(0,Math.round(basis*rate/100)));
+  const sourceKey=_performanceRewardSourceKey(evalYear,emp.id),linkedRows=payrollAdjustments.filter(a=>a.sourceKey===sourceKey),linked=linkedRows.find(a=>a.id===`payadj-performance-${evalYear}-${emp.id}`)||linkedRows[0]||null;
+  return{emp,evalYear,kpiScore:kpiReady?kpiScore:null,kpiGrade:kpiReady?(kpiResult?.grade||getGrade(kpiScore)):"",compScore:compReady?compScore:null,compGrade:compReady?(compResult?.grade||getGrade(compScore)):"",overall,grade,rate,basis,amount,ready:policy.enabled!==false&&!missing.length&&overall!=null&&basis>0,missing:!policy.enabled?["정책 사용 중지"]:basis<=0?[...missing,"연봉 미등록"]:missing,sourceKey,linked,linkedRows,duplicateLinks:Math.max(0,linkedRows.length-1)};
+}
+function _performanceRewardEmployees(){
+  const s=_payMgmtState;let rows=employees.filter(e=>e.active&&e.role!=="admin");
+  if(s.dept)rows=rows.filter(e=>e.dept===s.dept);if(s.team)rows=rows.filter(e=>e.team===s.team);
+  if(s.search){const q=s.search.trim().toLowerCase();rows=rows.filter(e=>(e.name||"").toLowerCase().includes(q)||(e.empNo||"").toLowerCase().includes(q)||(e.dept||"").toLowerCase().includes(q));}
+  return rows.slice().sort((a,b)=>(a.name||"").localeCompare(b.name||"","ko"));
+}
+function _performanceRewardRows(){return _performanceRewardEmployees().map(e=>_performanceRewardCandidate(e,Number(_perfRewardState.evalYear)||settings.evalYear));}
+function _performanceRewardSummaryHtml(){
+  const rows=_performanceRewardRows(),ready=rows.filter(r=>r.ready),payable=ready.filter(r=>r.amount>0),linked=rows.filter(r=>r.linked),total=payable.reduce((s,r)=>s+r.amount,0);
+  return`<div class="card-body" style="padding:12px 14px;border-bottom:1px solid #e2e8f0;background:#faf5ff"><div class="flex items-c gap2 wrap"><div><div class="fw7 fz13">🏆 평가 → 성과급 → 급여 연계</div><div class="fz11 text-gray">확정된 평가 결과만 등급별 보상정책으로 계산하고 동일 평가연도·직원은 중복 생성하지 않습니다.</div></div><select class="fc" style="width:100px;margin-left:auto" onchange="_perfRewardState.evalYear=+this.value;_payMgmtRefresh()">${Array.from({length:5},(_,i)=>settings.evalYear-2+i).map(y=>`<option value="${y}"${Number(_perfRewardState.evalYear)===y?" selected":""}>${y}년 평가</option>`).join("")}</select><button class="btn btn-secondary btn-sm" onclick="openPerformanceRewardPreview()">미리보기</button><button class="btn btn-primary btn-sm" onclick="applyPerformanceRewards()">${yearMonthLabel(_payMgmtState.year,_payMgmtState.month)} 급여에 반영</button><button class="btn btn-secondary btn-sm" onclick="exportEvaluationRewardPayrollCSV()">통합자료 추출</button></div><div class="flex gap3 wrap mt2 fz12"><span>지급 대상 <strong class="text-green">${payable.length}명</strong></span><span>평가 완료·0원 <strong>${ready.length-payable.length}명</strong></span><span>검토 필요 <strong style="color:#dc2626">${rows.length-ready.length}명</strong></span><span>예상 성과급 <strong class="text-blue">${fmtSalary(total)}</strong></span><span>기연계 <strong>${linked.length}명</strong></span></div></div>`;
+}
+function yearMonthLabel(year,month){return`${year}년 ${month}월`;}
+function openPerformanceRewardPreview(){
+  const rows=_performanceRewardRows(),total=rows.filter(r=>r.ready&&r.amount>0).reduce((s,r)=>s+r.amount,0);
+  openModal(`<div class="modal-box" style="max-width:980px"><div class="modal-head"><h3>🏆 ${_perfRewardState.evalYear}년 평가 성과보상 산정 미리보기</h3></div><div class="modal-body" style="padding:0;max-height:68vh;overflow:auto"><div class="info-note" style="margin:12px">종합점수는 운영 설정의 KPI·역량/리더십 가중치를 사용합니다. 지급 전 평가 확정 여부와 기준 연봉을 확인하세요.</div><div class="tbl-wrap"><table><thead><tr><th>직원</th><th>사업장/소속</th><th>KPI</th><th>역량/리더십</th><th>종합</th><th>등급</th><th>지급률</th><th>성과급</th><th>연계 상태</th></tr></thead><tbody>${rows.map(r=>`<tr><td><strong>${h(r.emp.name)}</strong><div class="fz11 text-gray">${h(r.emp.empNo||"")}</div></td><td>${h(_workplaceName(r.emp.workplaceId))}<div class="fz11 text-gray">${h(r.emp.dept||"")} / ${h(r.emp.team||"")}</div></td><td>${r.kpiScore==null?badge("미확정","red"):`${r.kpiScore}점 ${badge(r.kpiGrade,gradeColor(r.kpiGrade))}`}</td><td>${r.compScore==null?badge("미산정","red"):`${r.compScore}점 ${badge(r.compGrade,gradeColor(r.compGrade))}`}</td><td>${r.overall==null?"-":r.overall+"점"}</td><td>${r.grade==="-"?"-":badge(r.grade,gradeColor(r.grade))}</td><td class="tc">${r.rate}%</td><td style="text-align:right;font-weight:700">${r.ready?fmtSalary(r.amount):"-"}</td><td>${r.linked?badge(`${r.linked.year}년 ${r.linked.month}월 반영`,"green"):r.ready?(r.amount>0?badge("반영 대기","yellow"):badge("0원·미지급","gray")):`<span class="fz11" style="color:#dc2626">${h(r.missing.join(", ")||"산정 불가")}</span>`}</td></tr>`).join("")||`<tr><td colspan="9" class="p-empty">대상 직원이 없습니다.</td></tr>`}</tbody><tfoot><tr><td colspan="7" class="fw7">지급 대상 합계</td><td style="text-align:right;font-weight:800;color:#2563eb">${fmtSalary(total)}</td><td></td></tr></tfoot></table></div></div><div class="modal-foot"><button class="btn btn-secondary" onclick="exportEvaluationRewardPayrollCSV()">⬇ 통합자료 추출</button><button class="btn btn-secondary" onclick="closeModal()">닫기</button></div></div>`);
+}
+async function applyPerformanceRewards(){
+  const year=_payMgmtState.year,month=_payMgmtState.month,evalYear=Number(_perfRewardState.evalYear)||settings.evalYear,rows=_performanceRewardRows();
+  if(!_performanceRewardPolicy().enabled){showToast("급여 설정에서 평가 연계 성과보상 정책을 활성화하세요.","error");return;}
+  if(_payrollLocked(year,month)){showToast(`${yearMonthLabel(year,month)} 급여는 마감되어 반영할 수 없습니다.`,"error");return;}
+  const eligible=rows.filter(r=>r.ready&&r.amount>0),affected=rows.filter(r=>r.linked||r.ready);
+  if(!affected.length){showToast("평가 확정·연봉 조건을 충족한 산정 대상이 없습니다.","error");return;}
+  const protectedRows=affected.filter(r=>{const targetConfirmed=payslips.some(p=>String(p.empId)===String(r.emp.id)&&p.year===year&&p.month===month&&p.confirmed);const linkedProtected=(r.linkedRows||[]).some(a=>_payrollLocked(a.year,a.month)||payslips.some(p=>String(p.empId)===String(r.emp.id)&&p.year===a.year&&p.month===a.month&&p.confirmed));return targetConfirmed||linkedProtected;});
+  if(protectedRows.length){showToast(`기존 연계 월이 마감 또는 급여확정된 직원 ${protectedRows.length}명이 있어 변경할 수 없습니다.`,"error");return;}
+  const total=eligible.reduce((s,r)=>s+r.amount,0),existing=rows.filter(r=>r.linked).length,removeCount=affected.filter(r=>r.linked&&(!r.ready||r.amount<=0)).length,duplicateCount=affected.reduce((s,r)=>s+(r.duplicateLinks||0),0);
+  const ok=await askConfirmModal({title:"평가 성과급 급여 반영",message:`${evalYear}년 확정 평가를 ${yearMonthLabel(year,month)} 급여 조정에 반영합니다.`,impacts:[{label:"지급 대상",value:`${eligible.length}명`},{label:"성과급 합계",value:fmtSalary(total),tone:"success"},{label:"기존 연계 갱신",value:`${existing}건`},{label:"0원·부적격 연계 제거",value:`${removeCount}건`,tone:removeCount?"warn":"info"},{label:"중복 연계 정리",value:`${duplicateCount}건`,tone:duplicateCount?"warn":"info"},{label:"중복 방지 기준",value:"평가연도 + 직원",tone:"info"}],warnings:["급여가 이미 계산된 미확정 명세서는 최신 성과급으로 재계산됩니다.","마감되거나 확정된 급여는 보호되어 변경되지 않습니다."],confirmText:"성과급 반영",danger:true});
+  if(!ok)return;
+  const previousLinks=affected.flatMap(r=>(r.linkedRows||[]).map(a=>({emp:r.emp,year:a.year,month:a.month})));
+  const now=new Date().toISOString(),eligibleKeys=new Set(eligible.filter(r=>r.amount>0).map(r=>r.sourceKey));
+  for(let i=payrollAdjustments.length-1;i>=0;i--){const a=payrollAdjustments[i];if(a.source==="performance_reward"&&Number(a.evalYear)===evalYear&&affected.some(r=>r.sourceKey===a.sourceKey)&&!eligibleKeys.has(a.sourceKey)){_tombstone("payrollAdjustments",a.id);payrollAdjustments.splice(i,1);}}
+  for(const r of eligible){
+    if(r.amount<=0)continue;
+    const duplicateRows=payrollAdjustments.filter(a=>a.sourceKey===r.sourceKey),deterministicId=`payadj-performance-${evalYear}-${r.emp.id}`;
+    const existingRow=duplicateRows.find(a=>a.id===deterministicId)||duplicateRows[0];
+    for(const duplicate of duplicateRows){if(duplicate===existingRow)continue;_tombstone("payrollAdjustments",duplicate.id);const duplicateIndex=payrollAdjustments.indexOf(duplicate);if(duplicateIndex>=0)payrollAdjustments.splice(duplicateIndex,1);}
+    const policy=_performanceRewardPolicy(),weights=settings.scoreWeights||{kpi:60,comp:20,ls:20};
+    const next={...(existingRow||{}),id:existingRow?.id||deterministicId,empId:r.emp.id,year,month,category:"성과급",amount:r.amount,note:`${evalYear}년 종합평가 ${r.grade}등급 (${r.rate}%)`,source:"performance_reward",sourceKey:r.sourceKey,evalYear,kpiScore:r.kpiScore,compScore:r.compScore,overallScore:r.overall,rewardGrade:r.grade,rewardRate:r.rate,policyBasis:policy.basis,basisAmount:r.basis,rewardCap:policy.maxAmount,scoreWeights:{kpi:Number(weights.kpi)||0,comp:Number(weights.comp)||0,ls:Number(weights.ls)||0},taxable:true,createdAt:existingRow?.createdAt||now,updatedAt:now};
+    if(existingRow)Object.assign(existingRow,next);else payrollAdjustments.push(next);
+  }
+  for(const old of previousLinks){if(old.year===year&&old.month===month)continue;const idx=payslips.findIndex(p=>String(p.empId)===String(old.emp.id)&&p.year===old.year&&p.month===old.month&&!p.confirmed);if(idx>=0)payslips[idx]=calcStandardPayslip(old.emp,old.year,old.month);}
+  for(const r of affected){const idx=payslips.findIndex(p=>String(p.empId)===String(r.emp.id)&&p.year===year&&p.month===month&&!p.confirmed);if(idx>=0)payslips[idx]=calcStandardPayslip(r.emp,year,month);}
+  logAction("performance_reward_link",`${evalYear}년 평가 → ${yearMonthLabel(year,month)} 성과급 ${eligible.length}명`,"payrollAdjustments",`합계 ${total}, 제거 ${removeCount}, 중복정리 ${duplicateCount}`);autoSaveToServerIfEnabled();showToast(`${eligible.length}명의 성과급 ${fmtSalary(total)}을 반영하고 부적격 ${removeCount}건·중복 ${duplicateCount}건을 정리했습니다.`,"success");_payMgmtRefresh();
+}
+async function exportEvaluationRewardPayrollCSV(){
+  const rows=_performanceRewardRows(),year=_payMgmtState.year,month=_payMgmtState.month;
+  const headers=["평가연도","급여반영연월","이름","사번","사업장","부서","팀","직급","연봉","KPI점수","KPI등급","역량/리더십점수","역량/리더십등급","종합점수","종합등급","현재지급률(%)","현재예상성과급","실제급여반영액","반영당시기준금액","반영당시상한","연계상태","급여확정상태","지급합계","공제합계","실수령액","검토사항"];
+  const data=rows.map(r=>{const a=r.linked,py=a?.year||year,pm=a?.month||month,slip=payslips.find(p=>String(p.empId)===String(r.emp.id)&&p.year===py&&p.month===pm),issues=[...r.missing];if(r.duplicateLinks)issues.push(`중복 연계 ${r.duplicateLinks}건`);return[r.evalYear,`${py}-${String(pm).padStart(2,"0")}`,r.emp.name,r.emp.empNo||"",_workplaceName(r.emp.workplaceId),r.emp.dept||"",r.emp.team||"",r.emp.rank||"",r.emp.salary||0,r.kpiScore??"",r.kpiGrade||"",r.compScore??"",r.compGrade||"",r.overall??"",r.grade,r.rate,r.amount,a?.amount??"",a?.basisAmount??"",a?.rewardCap??"",a?"급여반영":"미반영",slip?(slip.confirmed?"확정":"미확정"):"미생성",slip?.gross??"",slip?.totalDeduct??"",slip?.netPay??"",issues.join(", ")];});
+  await dlCSV(`평가성과보상급여_통합_${_perfRewardState.evalYear}년.csv`,headers,data);
+}
 function _payMgmtRefresh(){const el=document.getElementById("payroll-mgmt-wrap");if(el)el.outerHTML=renderPayrollMgmtPage(true);}
 function _payrollWorkflowSummary(year,month){
   const targets=employees.filter(e=>e.active&&e.role!=="admin");
@@ -15380,7 +15463,7 @@ function renderPayrollMgmtPage(returnHtmlOnly){
       ${serverConfig.url?` <button class="btn btn-secondary btn-sm" onclick="openPayrollVoucherModal()">🧾 회계 전표 생성${linkedVoucher?" ✓":""}</button>`:""}
       <button class="btn btn-primary btn-sm" onclick="exportPayrollMgmtCSV()">⬇ 엑셀 다운로드</button>
     </div>
-  </div>${_payrollWorkflowHtml(year,month)}
+  </div>${_payrollWorkflowHtml(year,month)}${_performanceRewardSummaryHtml()}
   <div class="card-body" style="padding:10px 14px 6px">
     <div class="filter-bar" style="flex-wrap:wrap;gap:6px">
       <select class="fc" style="width:90px" onchange="_payMgmtState.year=+this.value;_payMgmtRefresh()">
@@ -25200,6 +25283,7 @@ function _opsStageSnapshot(){
     workDays:settings.workDays||[1,2,3,4,5],companyHolidays:settings.companyHolidays||[],
     gpsEnabled:!!settings.gpsEnabled,naverMapClientId:settings.naverMapClientId||"",
     gpsLocations:settings.gpsLocations||[],customPayItems:settings.customPayItems||[],
+    performanceRewardPolicy:_performanceRewardPolicy(),
     flexWorkOptions:settings.flexWorkOptions||[],leaveTypes:settings.leaveTypes||[],
     workCompOptions:settings.workCompOptions||[],meetingRooms:settings.meetingRooms||[],
     boardCategories:settings.boardCategories||[],companyName:settings.companyName||"",
@@ -25319,7 +25403,15 @@ function renderPayrollSettings(){
     const values=ci.targetType==="dept"?depts:ci.targetType==="team"?teams:ci.targetType==="rank"?ranks:[];
     return ci.targetType==="all"?`<span class="fz11 text-gray">전 직원</span>`:`<select class="fc" style="min-width:110px" onchange="_opsStage.customPayItems[${ci._idx}].targetValue=this.value"><option value="">선택</option>${values.map(v=>`<option value="${h(v)}" ${ci.targetValue===v?"selected":""}>${h(v)}</option>`).join("")}</select>`;
   };
+  const reward=_opsStage.performanceRewardPolicy;
   c.innerHTML=_opsDirtyBannerHtml()+`
+  <div class="card mb3"><div class="card-head"><div><h3>🏆 평가 연계 성과보상 정책</h3><div class="fz11 text-gray mt1">확정된 KPI·역량평가를 종합해 등급별 성과급을 계산하고 급여 종합 관리에서 반영합니다.</div></div><label class="flex items-c gap2 fz12"><input type="checkbox" ${reward.enabled!==false?"checked":""} onchange="_opsStage.performanceRewardPolicy.enabled=this.checked;renderPayrollSettings()"> 사용</label></div>
+  <div class="card-body">
+    <div class="g2"><div class="fg"><label class="fl">보상 기준금액</label><select class="fc" onchange="_opsStage.performanceRewardPolicy.basis=this.value;renderPayrollSettings()"><option value="annualSalary"${reward.basis==="annualSalary"?" selected":""}>연봉</option><option value="monthlySalary"${reward.basis==="monthlySalary"?" selected":""}>월 기본급(연봉÷12)</option></select></div><div class="fg"><label class="fl">1인 지급 상한</label><input class="fc" type="number" min="0" max="1000000000" step="100000" value="${Number(reward.maxAmount)||0}" placeholder="예: 100000000" oninput="_opsStage.performanceRewardPolicy.maxAmount=+this.value"></div></div>
+    <div class="fg"><label class="fl">평가 완결 조건</label><div class="flex gap3 wrap"><label class="flex items-c gap2 fz12"><input type="checkbox" ${reward.requireKpi!==false?"checked":""} onchange="_opsStage.performanceRewardPolicy.requireKpi=this.checked"> KPI 최종확정 필수</label><label class="flex items-c gap2 fz12"><input type="checkbox" ${reward.requireComp!==false?"checked":""} onchange="_opsStage.performanceRewardPolicy.requireComp=this.checked"> 역량/리더십 결과 필수</label></div></div>
+    <div class="sec-title mt3">종합등급별 지급률</div><div style="display:grid;grid-template-columns:repeat(5,minmax(90px,1fr));gap:8px">${["S","A","B","C","D"].map(g=>`<div class="fg"><label class="fl">${g}등급</label><div class="flex items-c gap2"><input class="fc" type="number" min="0" max="300" step="0.1" value="${Number(reward.gradeRates?.[g])||0}" aria-label="${g}등급 지급률" oninput="_opsStage.performanceRewardPolicy.gradeRates.${g}=+this.value"><span class="fz12">%</span></div></div>`).join("")}</div>
+    <div class="info-note mt2">예: 연봉 5,000만원·A등급·12%이면 성과급 600만원입니다. 실제 반영 전 대상자·점수·등급·금액을 미리 확인하며, 동일 평가연도는 한 번만 급여에 연결됩니다.</div>
+  </div></div>
   <div class="card"><div class="card-head"><h3>💰 수당·공제 계산식 설정</h3>
     <button class="btn btn-primary btn-sm" onclick="_addCustomPayItem()">+ 항목 추가</button>
   </div><div class="card-body" style="padding:8px 14px 0">
@@ -25344,6 +25436,14 @@ function renderPayrollSettings(){
   </div></div>`;
 }
 function _validatePayrollSettings(){
+  const reward=_opsStage?.performanceRewardPolicy;
+  if(!reward||!["annualSalary","monthlySalary"].includes(reward.basis)){showToast("성과보상 기준금액 설정을 확인하세요.","error");return false;}
+  const maxAmount=Number(reward.maxAmount);
+  if(!Number.isFinite(maxAmount)||maxAmount<0||maxAmount>1000000000){showToast("성과급 1인 지급 상한은 0~10억원으로 입력하세요.","error");return false;}
+  if(reward.enabled!==false&&maxAmount<=0){showToast("성과보상 정책 사용 시 1인 지급 상한을 0원보다 크게 입력하세요.","error");return false;}
+  const gradeOrder=["S","A","B","C","D"],rates=[];
+  for(const grade of gradeOrder){const rate=Number(reward.gradeRates?.[grade]);if(!Number.isFinite(rate)||rate<0||rate>300){showToast(`${grade}등급 지급률은 0~300%로 입력하세요.`,"error");return false;}rates.push(rate);}
+  for(let i=1;i<rates.length;i++){if(rates[i]>rates[i-1]){showToast(`${gradeOrder[i]}등급 지급률은 상위 ${gradeOrder[i-1]}등급보다 높을 수 없습니다.`,"error");return false;}}
   const items=_opsStage?.customPayItems||[],seen=new Set();
   for(let i=0;i<items.length;i++){
     const ci=items[i],name=String(ci.name||"").trim(),calcType=ci.calcType||"fixed",targetType=ci.targetType||"all";
