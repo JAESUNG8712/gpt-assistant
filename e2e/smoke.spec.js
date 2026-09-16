@@ -209,33 +209,46 @@ test.describe("로그인·기본 네비게이션", () => {
         id: "performance-e2e", empNo: "E2E-PERF", name: "성과연계검증", role: "member",
         active: true, salary: 60000000, dept: "개발", team: "플랫폼", rank: "대리",
         gradeResults: { "2026": { score: 90, grade: "S" } },
+        hrHistory: [
+          { id: "edu-perf-e2e", type: "edu_general", date: "2026-05-10", desc: "직무 심화 교육" },
+          { id: "award-perf-e2e", type: "award", date: "2026-06-30", year: 2026, half: "상반기", tier: "최우수", desc: "최우수사원 선정" },
+        ],
       };
       employees.push(emp);
       compGradeResults[emp.id] = { "2026": { score: 80, grade: "A" } };
+      settings.mandatoryTrainingTypes = [
+        { id: "privacy", name: "개인정보보호", required: true },
+        { id: "safety", name: "산업안전", required: true },
+      ];
+      mandatoryTraining.push(
+        { id: "mt-perf-1", empId: emp.id, trainingType: "privacy", year: 2026, completedAt: "2026-03-01" },
+        { id: "mt-perf-2", empId: emp.id, trainingType: "safety", year: 2026, completedAt: "2026-03-02" },
+      );
       settings.scoreWeights = { kpi: 60, comp: 20, ls: 20 };
       settings.performanceRewardPolicy = {
-        enabled: true, basis: "annualSalary", requireKpi: true, requireComp: true,
+        enabled: true, basis: "annualSalary", requireKpi: true, requireComp: true, requireMandatoryTraining: true,
         maxAmount: 100000000, gradeRates: { S: 20, A: 10, B: 5, C: 0, D: 0 },
+        awardBonusAmounts: { "우수": 500000, "최우수": 1000000 },
       };
       _payMgmtState = { year: 2027, month: 3, dept: "", team: "", search: "성과연계검증" };
       _perfRewardState = { evalYear: 2026 };
       const row = _performanceRewardCandidate(emp, 2026);
       gotoPage("payroll-mgmt");
-      return { overall: row.overall, grade: row.grade, rate: row.rate, amount: row.amount };
+      return { overall: row.overall, grade: row.grade, rate: row.rate, evaluationReward: row.evaluationReward, awardBonus: row.awardBonus, amount: row.amount, training: [row.education.completed, row.education.required] };
     });
-    expect(candidate).toEqual({ overall: 86, grade: "A", rate: 10, amount: 6000000 });
+    expect(candidate).toEqual({ overall: 86, grade: "A", rate: 10, evaluationReward: 6000000, awardBonus: 1000000, amount: 7000000, training: [2, 2] });
     await expect(page.getByText("평가 → 성과급 → 급여 연계")).toBeVisible();
     await expect(page.getByText("지급 대상")).toBeVisible();
 
     await page.getByRole("button", { name: /2027년 3월 급여에 반영/ }).click();
     let dialog = page.locator('[role="dialog"][aria-modal="true"]');
-    await expect(dialog).toContainText("6,000,000원");
+    await expect(dialog).toContainText("7,000,000원");
     await dialog.getByRole("button", { name: "성과급 반영" }).click();
     await page.waitForFunction(() => payrollAdjustments.some(a => a.sourceKey === "performance:2026:performance-e2e"));
 
     await page.evaluate(() => payrollAdjustments.push({
       id: "legacy-duplicate-performance", empId: "performance-e2e", year: 2027, month: 3,
-      amount: 6000000, source: "performance_reward", sourceKey: "performance:2026:performance-e2e", evalYear: 2026,
+      amount: 7000000, source: "performance_reward", sourceKey: "performance:2026:performance-e2e", evalYear: 2026,
     }));
     await page.getByRole("button", { name: /2027년 3월 급여에 반영/ }).click();
     dialog = page.locator('[role="dialog"][aria-modal="true"]');
@@ -244,7 +257,14 @@ test.describe("로그인·기본 네비게이션", () => {
     await dialog.getByRole("button", { name: "성과급 반영" }).click();
     const linked = await page.evaluate(() => payrollAdjustments.filter(a => a.sourceKey === "performance:2026:performance-e2e"));
     expect(linked).toHaveLength(1);
-    expect(linked[0]).toMatchObject({ year: 2027, month: 3, amount: 6000000, source: "performance_reward" });
+    expect(linked[0]).toMatchObject({ year: 2027, month: 3, amount: 7000000, evaluationReward: 6000000, awardBonus: 1000000, awardCounts: { "우수": 0, "최우수": 1 }, mandatoryTraining: { required: 2, completed: 2, allCompleted: true }, source: "performance_reward" });
+
+    await page.evaluate(() => openEmpDetail("performance-e2e"));
+    dialog = page.locator('[role="dialog"][aria-modal="true"]');
+    await expect(dialog).toContainText("직원 성과·교육·포상·보상 통합 현황");
+    await expect(dialog).toContainText("7,000,000원");
+    await expect(dialog).toContainText("최우수 1회");
+    await page.keyboard.press("Escape");
 
     const protectedResult = await page.evaluate(async () => {
       payslips.push({ empId: "performance-e2e", year: 2027, month: 4, confirmed: true });
@@ -256,6 +276,33 @@ test.describe("로그인·기본 네비게이션", () => {
     });
     expect(protectedResult).toEqual({ before: 3, after: 3, openDialogs: 0 });
     await expect(page.locator('.toast[role="alert"]').last()).toContainText(/확정/);
+  });
+
+  test("직원 상세에서 연봉을 수정해도 연봉 변동 이력이 자동 생성된다", async ({ page }) => {
+    await page.goto("/");
+    await page.fill("#l-id", "e2e_admin");
+    await page.fill("#l-pw", "E2eTestPw123");
+    await page.click(".login-card button.btn-primary");
+    await expect(page.locator("#main")).toBeVisible({ timeout: 10000 });
+
+    await page.evaluate(() => {
+      autoSaveDebounced = () => {};
+      employees.push({
+        id: "salary-history-e2e", loginId: "salary-history-e2e", empNo: "E2E-SAL", name: "연봉이력검증",
+        role: "member", active: true, salary: 50000000, dept: "개발", team: "플랫폼", rank: "대리",
+        rankYear: 1, jobGroup: "개발", nationality: "내국인", customFields: {}, careers: [], leaves: [], hrHistory: [], gradeResults: {},
+      });
+      _openEmpEdit("salary-history-e2e");
+    });
+    const dialog = page.locator('[role="dialog"][aria-modal="true"]');
+    await dialog.locator("#ee-salary").fill("55000000");
+    await dialog.getByRole("button", { name: "저장" }).click();
+
+    const result = await page.evaluate(() => {
+      const emp = getEmp("salary-history-e2e"), rows = emp.hrHistory.filter(x => x.type === "salary");
+      return { salary: emp.salary, count: rows.length, before: rows[0]?.before, after: rows[0]?.after, source: rows[0]?.source };
+    });
+    expect(result).toEqual({ salary: 55000000, count: 1, before: "50,000,000원", after: "55,000,000원", source: "employee_edit" });
   });
 
   test("휴가·근무보상·복리후생 정책과 채용 키워드 적합도가 연동된다", async ({ page }) => {
