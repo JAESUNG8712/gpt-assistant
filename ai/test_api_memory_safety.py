@@ -36,9 +36,9 @@ def main():
         assert client.get("/health").json()["deliberation_engine"] == "evidence-adaptive-review-v3"
         assert client.get("/health").json()["conversation_engine"] == "contextual-followup-v1"
         health = client.get("/health").json()
-        assert health["offline_reasoning_engine"] == "symbolic-plan-critic-v12"
-        assert health["evidence_reasoning_engine"] == "adaptive-query-coverage-consensus-v5"
-        assert health["response_quality_engine"] == "claim-contradiction-repair-v6"
+        assert health["offline_reasoning_engine"] == "symbolic-plan-critic-v13"
+        assert health["evidence_reasoning_engine"] == "adaptive-query-coverage-consensus-v6"
+        assert health["response_quality_engine"] == "condition-aware-repair-v7"
         assert isinstance(client.get("/health").json()["local_generative_configured"], bool)
         assert isinstance(client.get("/health").json()["local_generative_backends"], list)
         assert client.get("/health").json()["memory_schema"] == "typed-scopes-v1"
@@ -530,6 +530,38 @@ def main():
             assert "입국할 수 없습니다" not in before_guard_note
             assert "입국할 수 있습니다" in before_guard_note, polarity_repaired.text
             assert "근거 반대 문장 차단" in polarity_repaired.text
+        finally:
+            main.srch.web_search = original_web_search
+            main.intent_agent.analyze = original_intent
+            main.llm.chat_stream = original_chat_stream
+
+        # 결론 방향은 맞아도 근거의 최소 요건을 빼고 일반화하면 해당 조건을
+        # 공식 근거에서 복원해 본문에 함께 표시한다.
+        condition_results = main.srch._prepare_results("육아휴직 신청 가능한가요", [{
+            "title": "육아휴직 신청 요건",
+            "body": "육아휴직은 근속기간이 6개월 이상인 근로자만 신청할 수 있습니다.",
+            "href": "https://www.moel.go.kr/parental-leave",
+        }], 5)
+
+        async def missing_condition_stream(*_args, **_kwargs):
+            yield "근로자는 육아휴직을 신청할 수 있습니다."
+
+        main.srch.web_search = lambda *_args, **_kwargs: condition_results
+        main.intent_agent.analyze = no_intent
+        main.llm.chat_stream = missing_condition_stream
+        try:
+            condition_repaired = client.post(
+                "/chat",
+                json={
+                    "message": "/검색 육아휴직 신청 가능한가요?",
+                    "persona": "hr", "session_id": "condition-repair-qa",
+                },
+                headers={"X-Admin-Token": owner_token},
+            )
+            assert condition_repaired.status_code == 200
+            assert "6개월 이상인 근로자만" in condition_repaired.text
+            assert "반드시 함께 확인할 적용 조건" in condition_repaired.text
+            assert "누락 조건 자동 보완" in condition_repaired.text
         finally:
             main.srch.web_search = original_web_search
             main.intent_agent.analyze = original_intent

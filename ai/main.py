@@ -1137,6 +1137,7 @@ async def chat(req: ChatRequest, request: Request):
         answer_claim_validation = {"supported": [], "unsupported": []}
         answer_auto_repair = {"answer": "", "repairs": [], "unresolved": []}
         contradiction_repair = {"answer": "", "removed": [], "recovered": False}
+        condition_repair = {"answer": "", "added": []}
         answer_quality = {"should_block_learning": False, "should_warn": False}
         try:
             # ── 경로 STOCK: 주식 분석 파이프라인 실행 ────────
@@ -1494,6 +1495,13 @@ async def chat(req: ChatRequest, request: Request):
                         search_msg, final_generated_answer, context, pre_output_quality
                     )
                     final_generated_answer = contradiction_repair["answer"]
+                    condition_quality = response_quality.evaluate(
+                        search_msg, final_generated_answer, context
+                    )
+                    condition_repair = response_quality.repair_missing_conditions(
+                        final_generated_answer, condition_quality
+                    )
+                    final_generated_answer = condition_repair["answer"]
                     async for chunk in _stream_chunks(final_generated_answer, chunk_size=200):
                         collected.append(chunk)
                         yield chunk
@@ -1508,6 +1516,13 @@ async def chat(req: ChatRequest, request: Request):
                 if contradiction_note:
                     collected.append(contradiction_note)
                     yield contradiction_note
+
+                condition_note = response_quality.format_condition_repair_note(
+                    condition_repair
+                ) if buffer_for_numeric_validation else ""
+                if condition_note:
+                    collected.append(condition_note)
+                    yield condition_note
 
                 repair_note = srch.format_answer_repair_note(answer_auto_repair)
                 if repair_note:
@@ -1595,6 +1610,7 @@ async def chat(req: ChatRequest, request: Request):
             has_memory_search_conflict = bool(memory_search_validation["conflicts"])
             had_answer_auto_repair = bool(answer_auto_repair["repairs"])
             had_contradiction_repair = bool(contradiction_repair["removed"])
+            had_condition_repair = bool(condition_repair["added"])
             # 이미 KB에서 직접 서빙한 답변과 Python 계산 결과는 새 지식이 아니므로
             # 후보 대기열에 다시 쌓지 않는다. LLM이 새로 합성한 답변만 검토 대상으로 둔다.
             is_new_synthesized_answer = (
@@ -1608,6 +1624,7 @@ async def chat(req: ChatRequest, request: Request):
                     and not has_memory_search_conflict
                     and not had_answer_auto_repair
                     and not had_contradiction_repair
+                    and not had_condition_repair
                     and not answer_quality["should_block_learning"]
                     and LOCAL_FALLBACK_MARKER not in ai_reply_clean
                     and local_gen.MARKER_TAG not in ai_reply_clean
@@ -2967,9 +2984,9 @@ def health():
         "retrieval_engine": "tfidf-bm25-char3-v1",
         "deliberation_engine": "evidence-adaptive-review-v3",
         "conversation_engine": "contextual-followup-v1",
-        "offline_reasoning_engine": "symbolic-plan-critic-v12",
-        "evidence_reasoning_engine": "adaptive-query-coverage-consensus-v5",
-        "response_quality_engine": "claim-contradiction-repair-v6",
+        "offline_reasoning_engine": "symbolic-plan-critic-v13",
+        "evidence_reasoning_engine": "adaptive-query-coverage-consensus-v6",
+        "response_quality_engine": "condition-aware-repair-v7",
         "local_generative_configured": bool(local_backends),
         "local_generative_backends": local_backends,
         "memory_schema": "typed-scopes-v1",

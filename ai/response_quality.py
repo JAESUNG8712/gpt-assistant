@@ -21,10 +21,102 @@ def _measured_claims(text: str) -> set[str]:
     return {
         re.sub(r"[\s,]", "", item.lower())
         for item in re.findall(
-            r"\d[\d,]*(?:\.\d+)?\s*(?:원|만원|억|%|퍼센트|년|월|일|시간)",
+            r"\d[\d,]*(?:\.\d+)?\s*(?:만원|개월|퍼센트|시간|원|억|%|년|월|일|세|명|건)",
             text or "", re.IGNORECASE,
         )
     }
+
+
+_CONDITION_PATTERNS = {
+    "only": r"경우에만|에\s*한해|로\s*한정|[가-힣0-9)]만(?=\s|[,.]|$)",
+    "minimum": r"이상",
+    "maximum": r"이하",
+    "over": r"초과",
+    "under": r"미만",
+    "exception": r"제외|예외",
+    "required": r"필요|필수|해야|하여야",
+}
+
+
+def _condition_signature(text: str) -> tuple[set[str], set[str]]:
+    markers = {
+        name for name, pattern in _CONDITION_PATTERNS.items()
+        if re.search(pattern, text or "")
+    }
+    return markers, _measured_claims(text)
+
+
+def _missing_conditions(question: str, answer: str, context: str) -> list[dict]:
+    """답변과 직접 겹치는 근거가 가진 핵심 조건·예외가 빠졌는지 찾는다."""
+    if not answer or not context or "```" in answer:
+        return []
+    answer_markers, answer_values = _condition_signature(answer)
+    answer_tokens = local_reasoner._tokens(answer)
+    answer_grams = local_reasoner._chargrams(answer)
+    missing, seen = [], set()
+    for source in local_reasoner.select_evidence(question, context, limit=12):
+        source_markers, source_values = _condition_signature(source)
+        if not source_markers:
+            continue
+        source_tokens = local_reasoner._tokens(source)
+        source_grams = local_reasoner._chargrams(source)
+        token_overlap = len(answer_tokens & source_tokens) / max(
+            1, min(len(answer_tokens), 10)
+        )
+        gram_overlap = len(answer_grams & source_grams) / max(
+            1, min(len(answer_grams), len(source_grams))
+        )
+        if token_overlap < 0.34 and gram_overlap < 0.48:
+            continue
+        missing_markers = sorted(source_markers - answer_markers)
+        # 조건 문장에 포함된 수치만 함께 보존한다. 금액·날짜가 우연히 같은 문서에
+        # 있다는 이유만으로 모든 숫자를 조건으로 강제하지 않는다.
+        missing_values = sorted(source_values - answer_values) if missing_markers else []
+        if not missing_markers and not missing_values:
+            continue
+        compact = re.sub(r"^(?:내용|제목):\s*", "", " ".join(source.split())).strip()
+        identity = _normalized(compact)
+        if not compact or identity in seen:
+            continue
+        seen.add(identity)
+        missing.append({
+            "evidence": compact[:400],
+            "missing_markers": missing_markers,
+            "missing_values": missing_values,
+        })
+        if len(missing) >= 3:
+            break
+    return missing
+
+
+def repair_missing_conditions(answer: str, quality: dict) -> dict:
+    """빠진 적용 조건을 근거 문장 그대로 별도 구역에 보완한다."""
+    missing = quality.get("missing_conditions", [])
+    if not missing or "```" in (answer or ""):
+        return {"answer": answer or "", "added": []}
+    added = []
+    normalized_answer = _normalized(answer)
+    for item in missing:
+        evidence = item.get("evidence", "").strip()
+        if evidence and _normalized(evidence) not in normalized_answer and evidence not in added:
+            added.append(evidence)
+    if not added:
+        return {"answer": answer or "", "added": []}
+    repaired = (answer or "").rstrip() + "\n\n**반드시 함께 확인할 적용 조건**\n" + "\n".join(
+        f"- {item}" for item in added
+    )
+    return {"answer": repaired, "added": added}
+
+
+def format_condition_repair_note(repair: dict) -> str:
+    added = repair.get("added", [])
+    if not added:
+        return ""
+    return (
+        "\n\n> 📌 **누락 조건 자동 보완**: 결론에 빠져 있던 적용 조건·예외 "
+        f"{len(added)}개를 근거에서 복원했습니다. "
+        "보완이 발생한 답변은 장기기억 후보로 저장하지 않습니다."
+    )
 
 
 def _claim_sentences(text: str) -> list[str]:
@@ -261,6 +353,7 @@ def evaluate(
     sentence_grounding, unsupported_sentences, contradicted_sentences = _sentence_grounding(
         question, answer, context
     )
+    missing_conditions = _missing_conditions(question, answer, context)
     groundedness = min(aggregate_groundedness, sentence_grounding) if context_tokens \
         else aggregate_groundedness
     if unsupported_sentences:
@@ -271,6 +364,8 @@ def evaluate(
         issues.append(
             f"참고 자료와 결론 방향이 반대인 문장 {len(contradicted_sentences)}개"
         )
+    if missing_conditions:
+        issues.append(f"근거의 적용 조건·예외 누락 {len(missing_conditions)}개")
     if context_tokens and groundedness < 0.2:
         issues.append("제공된 참고 자료와 답변의 연결이 약함")
     confidence_match = re.search(
@@ -298,16 +393,19 @@ def evaluate(
         "unsupported_claims": unsupported,
         "unsupported_sentences": unsupported_sentences[:5],
         "contradicted_sentences": contradicted_sentences[:5],
+        "missing_conditions": missing_conditions,
         "sentence_grounding": sentence_grounding,
         "conversation_consistency": conversation_consistency,
         "evidence_confidence": evidence_confidence,
         "should_block_learning": (
             score < 0.55 or bool(unsupported) or bool(unsupported_sentences)
             or bool(contradicted_sentences)
+            or bool(missing_conditions)
             or evidence_confidence in {"limited", "low", "conflict"}
         ),
         "should_warn": (
             score < 0.4 or bool(unsupported_sentences) or bool(contradicted_sentences)
+            or bool(missing_conditions)
             or evidence_confidence in {"low", "conflict"}
         ),
     }

@@ -49,6 +49,30 @@ def main():
         repaired_opposite
     )
 
+    conditional_context = (
+        "육아휴직은 근속기간이 6개월 이상인 근로자만 신청할 수 있습니다."
+    )
+    overgeneralized = response_quality.evaluate(
+        "육아휴직 신청이 가능한가요?",
+        "근로자는 육아휴직을 신청할 수 있습니다.",
+        conditional_context,
+    )
+    assert overgeneralized["missing_conditions"], overgeneralized
+    assert "6개월" in overgeneralized["missing_conditions"][0]["missing_values"]
+    condition_repair = response_quality.repair_missing_conditions(
+        "근로자는 육아휴직을 신청할 수 있습니다.", overgeneralized
+    )
+    assert "6개월 이상인 근로자만" in condition_repair["answer"]
+    assert "누락 조건 자동 보완" in response_quality.format_condition_repair_note(
+        condition_repair
+    )
+    already_scoped = response_quality.evaluate(
+        "육아휴직 신청이 가능한가요?",
+        "근속기간이 6개월 이상인 근로자만 육아휴직을 신청할 수 있습니다.",
+        conditional_context,
+    )
+    assert already_scoped["missing_conditions"] == []
+
     unsupported = response_quality.evaluate(
         "2027년 최저임금 금액을 알려줘",
         "2027년 최저임금은 시간당 12,000원입니다.", context,
