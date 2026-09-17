@@ -230,6 +230,10 @@ test.describe("로그인·기본 네비게이션", () => {
         maxAmount: 100000000, gradeRates: { S: 20, A: 10, B: 5, C: 0, D: 0 },
         awardBonusAmounts: { "우수": 500000, "최우수": 1000000 },
       };
+      // 다른 E2E 시나리오 또는 시드의 급여 마감 상태와 무관하게 이 연계 흐름만 검증한다.
+      settings.payrollLockedMonths = (settings.payrollLockedMonths || []).filter(key => key !== "2027-3" && key !== "2027-4");
+      payrollAdjustments = payrollAdjustments.filter(a => a.sourceKey !== "performance:2026:performance-e2e");
+      payslips = payslips.filter(p => String(p.empId) !== emp.id);
       _payMgmtState = { year: 2027, month: 3, dept: "", team: "", search: "성과연계검증" };
       _perfRewardState = { evalYear: 2026 };
       const row = _performanceRewardCandidate(emp, 2026);
