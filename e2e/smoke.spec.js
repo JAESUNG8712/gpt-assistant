@@ -200,11 +200,27 @@ test.describe("로그인·기본 네비게이션", () => {
     await page.goto("/");
     await page.fill("#l-id", "e2e_admin");
     await page.fill("#l-pw", "E2eTestPw123");
+    // 로그인 직후 _completeLogin()이 트리거하는 두 백그라운드 동기화 경로
+    // — checkServerConnection→GET /status→admin 자동 upsert→loadFromServer(), 그리고
+    // 그 upsert 저장이 브로드캐스트하는 SSE data_updated(같은 클라이언트도 수신) —
+    // 가 둘 다 applyState()로 전체 상태를 서버 진짜 값으로 덮어쓴다(회사 간 데이터
+    // 잔류 방지를 위한 의도된 설계, _completeLogin 주석 참고). 이 테스트가 로그인
+    // 직후 순수 인메모리로 시딩하는 employees/settings/mandatoryTraining 등은
+    // 서버에 저장된 적이 없으므로, 이 두 체인 중 하나라도 시딩 "이후" 도착하면
+    // 조용히 지워져 flaky해진다(실측: 로그인 "후"에 오버라이드하면 8회 중 최대
+    // 5회 재현 — _completeLogin이 클릭 즉시 체인을 시작해 오버라이드보다 먼저
+    // 끝나버릴 수 있음). 로그인 버튼을 누르기 "전"에 오버라이드해야(이 시점에
+    // 이미 두 함수 모두 전역에 정의돼 있음) 체인 자체가 시작부터 무력화되어
+    // 결정론적으로 안전하다(수정 후 8/8 재검증).
+    await page.evaluate(() => {
+      autoSaveDebounced = () => {};
+      loadFromServer = async () => {};
+      connectSSE = async () => {};
+    });
     await page.click(".login-card button.btn-primary");
     await expect(page.locator("#main")).toBeVisible({ timeout: 10000 });
 
     const candidate = await page.evaluate(() => {
-      autoSaveDebounced = () => {};
       const emp = {
         id: "performance-e2e", empNo: "E2E-PERF", name: "성과연계검증", role: "member",
         active: true, salary: 60000000, dept: "개발", team: "플랫폼", rank: "대리",
@@ -286,11 +302,19 @@ test.describe("로그인·기본 네비게이션", () => {
     await page.goto("/");
     await page.fill("#l-id", "e2e_admin");
     await page.fill("#l-pw", "E2eTestPw123");
+    // 로그인 버튼을 누르기 "전"에 오버라이드해야 하는 이유는 위 "확정 평가가
+    // 성과급과..." 테스트의 상세 주석 참고 — _completeLogin()이 클릭 즉시 시작하는
+    // loadFromServer()/SSE data_updated 체인이 로그인 "후" 오버라이드보다 먼저
+    // 끝나버릴 수 있어(flaky), 두 함수가 이미 전역에 정의된 이 시점에 미리 막는다.
+    await page.evaluate(() => {
+      autoSaveDebounced = () => {};
+      loadFromServer = async () => {};
+      connectSSE = async () => {};
+    });
     await page.click(".login-card button.btn-primary");
     await expect(page.locator("#main")).toBeVisible({ timeout: 10000 });
 
     await page.evaluate(() => {
-      autoSaveDebounced = () => {};
       employees.push({
         id: "salary-history-e2e", loginId: "salary-history-e2e", empNo: "E2E-SAL", name: "연봉이력검증",
         role: "member", active: true, salary: 50000000, dept: "개발", team: "플랫폼", rank: "대리",
