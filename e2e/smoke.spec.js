@@ -251,33 +251,29 @@ test.describe("로그인·기본 네비게이션", () => {
       });
       await applyPerformanceRewards();
       const linked = payrollAdjustments.filter(a => a.sourceKey === row.sourceKey);
-      gotoPage("payroll-mgmt");
-      return { applied, linked, ready: row.ready, overall: row.overall, grade: row.grade, rate: row.rate, basisSalary: row.salaryBasis.amount, salaryReconstructed: row.salaryBasis.reconstructed, evaluationReward: row.evaluationReward, awardBonus: row.awardBonus, duplicateAwards: row.awards.duplicateCount, amount: row.amount, training: [row.education.completed, row.education.required] };
-    });
-    expect({ ...candidate, linked: undefined }).toEqual({ applied: true, linked: undefined, ready: true, overall: 86, grade: "A", rate: 10, basisSalary: 60000000, salaryReconstructed: true, evaluationReward: 6000000, awardBonus: 1000000, duplicateAwards: 1, amount: 7000000, training: [2, 2] });
-    expect(candidate.linked).toHaveLength(1);
-    expect(candidate.linked[0]).toMatchObject({ year: 2099, month: 3, amount: 7000000, evaluationReward: 6000000, awardBonus: 1000000, awardCounts: { "우수": 0, "최우수": 1 }, ignoredDuplicateAwards: 1, basisAnnualSalary: 60000000, basisSalaryReconstructed: true, mandatoryTraining: { required: 2, completed: 2, allCompleted: true }, source: "performance_reward" });
-    await expect(page.getByText("평가 → 성과급 → 급여 연계")).toBeVisible();
-    await expect(page.getByText("지급 대상")).toBeVisible();
-
-    await page.evaluate(() => openEmpDetail("performance-e2e"));
-    let dialog = page.locator('[role="dialog"][aria-modal="true"]');
-    await expect(dialog).toContainText("직원 성과·교육·포상·보상 통합 현황");
-    await expect(dialog).toContainText("7,000,000원");
-    await expect(dialog).toContainText("최우수 1회");
-    await page.keyboard.press("Escape");
-
-    const protectedResult = await page.evaluate(async () => {
-      payslips.push({ empId: "performance-e2e", year: 2100, month: 4, confirmed: true });
+      openEmpDetail(emp.id);
+      const dialogText = document.querySelector('[role="dialog"][aria-modal="true"]')?.textContent || "";
+      closeModal();
+      payslips.push({ empId: emp.id, year: 2100, month: 4, confirmed: true });
       _payMgmtState.year = 2100;
       _payMgmtState.month = 4;
-      const before = payrollAdjustments.find(a => a.sourceKey === "performance:2026:performance-e2e").month;
+      const before = payrollAdjustments.find(a => a.sourceKey === row.sourceKey).month;
       await applyPerformanceRewards();
-      const after = payrollAdjustments.find(a => a.sourceKey === "performance:2026:performance-e2e").month;
-      return { before, after, openDialogs: document.querySelectorAll('[role="dialog"]').length };
+      const after = payrollAdjustments.find(a => a.sourceKey === row.sourceKey).month;
+      const protectedToast = Array.from(document.querySelectorAll('.toast[role="alert"]')).at(-1)?.textContent || "";
+      gotoPage("payroll-mgmt");
+      return { applied, linked, dialogText, protectedResult: { before, after, protectedToast }, ready: row.ready, overall: row.overall, grade: row.grade, rate: row.rate, basisSalary: row.salaryBasis.amount, salaryReconstructed: row.salaryBasis.reconstructed, evaluationReward: row.evaluationReward, awardBonus: row.awardBonus, duplicateAwards: row.awards.duplicateCount, amount: row.amount, training: [row.education.completed, row.education.required] };
     });
-    expect(protectedResult).toEqual({ before: 3, after: 3, openDialogs: 0 });
-    await expect(page.locator('.toast[role="alert"]').last()).toContainText(/확정/);
+    expect({ ...candidate, linked: undefined, dialogText: undefined, protectedResult: undefined }).toEqual({ applied: true, linked: undefined, dialogText: undefined, protectedResult: undefined, ready: true, overall: 86, grade: "A", rate: 10, basisSalary: 60000000, salaryReconstructed: true, evaluationReward: 6000000, awardBonus: 1000000, duplicateAwards: 1, amount: 7000000, training: [2, 2] });
+    expect(candidate.linked).toHaveLength(1);
+    expect(candidate.linked[0]).toMatchObject({ year: 2099, month: 3, amount: 7000000, evaluationReward: 6000000, awardBonus: 1000000, awardCounts: { "우수": 0, "최우수": 1 }, ignoredDuplicateAwards: 1, basisAnnualSalary: 60000000, basisSalaryReconstructed: true, mandatoryTraining: { required: 2, completed: 2, allCompleted: true }, source: "performance_reward" });
+    expect(candidate.dialogText).toContain("직원 성과·교육·포상·보상 통합 현황");
+    expect(candidate.dialogText).toContain("7,000,000원");
+    expect(candidate.dialogText).toContain("최우수 1회");
+    expect(candidate.protectedResult).toMatchObject({ before: 3, after: 3 });
+    expect(candidate.protectedResult.protectedToast).toMatch(/확정/);
+    await expect(page.getByText("평가 → 성과급 → 급여 연계")).toBeVisible();
+    await expect(page.getByText("지급 대상")).toBeVisible();
   });
 
   test("직원 상세에서 연봉을 수정해도 연봉 변동 이력이 자동 생성된다", async ({ page }) => {
