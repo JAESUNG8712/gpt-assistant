@@ -204,6 +204,31 @@ def main():
     assert len(unresolved_repair["unresolved"]) == 1
     assert "10,900원" in unresolved_repair["answer"]
 
+    stance_conflict_results = search._prepare_results("일본 입국 가능한가요", [
+        _result(
+            "일본 입국 허용 안내", "대한민국 국민은 일본에 입국할 수 있습니다.",
+            "https://www.mofa.go.kr/jp-entry",
+        ),
+        _result(
+            "일본 입국 제한 안내", "현재 대한민국 국민은 일본에 입국할 수 없습니다.",
+            "https://www.visa.go.kr/jp-entry",
+        ),
+    ], 5)
+    stance_validation = search.search_validation(stance_conflict_results)
+    assert stance_validation["confidence"] == "conflict"
+    assert len(stance_validation["stance_conflicts"]) == 1
+    stance_context = search.format_search_context(stance_conflict_results)
+    assert "가능·불가능 중 어느 한쪽도 선택하지 말고 '확정 불가'" in stance_context
+    stance_note = search.format_search_validation_note(stance_conflict_results)
+    assert "가능 여부 확정 보류" in stance_note
+    assert "mofa.go.kr" in stance_note and "visa.go.kr" in stance_note
+
+    same_domain_stance = search._prepare_results("일본 입국 가능한가요", [
+        _result("입국 허용", "일본에 입국할 수 있습니다.", "https://www.mofa.go.kr/a"),
+        _result("입국 제한", "일본에 입국할 수 없습니다.", "https://overseas.mofa.go.kr/b"),
+    ], 5)
+    assert search.search_validation(same_domain_stance)["stance_conflicts"] == []
+
     decimal_equivalence = search._prepare_results("2026년 기준금리", [
         _result("2026년 기준금리", "기준금리 3.7%", "https://www.bok.or.kr/rate"),
         _result("2026년 기준금리", "금리 3.70%", "https://www.kdi.re.kr/rate"),

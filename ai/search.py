@@ -678,6 +678,61 @@ def format_memory_search_conflict_warning(validation: dict) -> str:
     )
 
 
+def _result_stance(result: dict) -> str:
+    """검색 결과가 명시적으로 가능/허용 또는 불가/금지를 단정할 때만 방향을 읽는다."""
+    text = f"{result.get('title', '')} {result.get('body', '')}"
+    negative = bool(re.search(
+        r"불가능(?:합니다|하다|함)|금지(?:됩니다|된다|함)|허용되지\s*않|"
+        r"적용되지\s*않|해당하지\s*않|할\s*수\s*없(?:습니다|다|음)", text,
+    ))
+    positive = bool(re.search(
+        r"(?<!불)가능(?:합니다|하다|함)|허용(?:됩니다|된다|함)|"
+        r"적용(?:됩니다|된다|함)|해당(?:됩니다|된다|함)|할\s*수\s*있(?:습니다|다|음)", text,
+    ))
+    if positive == negative:
+        return ""
+    return "positive" if positive else "negative"
+
+
+def _stance_validation(results: list[dict]) -> list[dict]:
+    """독립된 신뢰 출처가 같은 질문에 반대 결론을 내리는지 확인한다."""
+    trusted = [result for result in results if result.get("trust_tier", 1) >= 2]
+    eligible = trusted or results
+    by_stance = {"positive": {}, "negative": {}}
+    for result in eligible:
+        stance = _result_stance(result)
+        if not stance or not result.get("url"):
+            continue
+        domain = _domain(result["url"])
+        evidence_domain = _evidence_domain(domain)
+        previous = by_stance[stance].get(evidence_domain)
+        if not previous or result.get("trust_tier", 1) > previous.get("trust_tier", 1):
+            by_stance[stance][evidence_domain] = {
+                "domain": domain,
+                "title": result.get("title", "")[:160],
+                "trust_tier": result.get("trust_tier", 1),
+            }
+    positive_domains = set(by_stance["positive"])
+    negative_domains = set(by_stance["negative"])
+    if not positive_domains or not negative_domains \
+            or len(positive_domains | negative_domains) < 2:
+        return []
+    return [{
+        "kind": "eligibility_stance",
+        "positive": list(by_stance["positive"].values()),
+        "negative": list(by_stance["negative"].values()),
+    }]
+
+
+def _format_stance_conflict_details(conflicts: list[dict]) -> str:
+    if not conflicts:
+        return ""
+    conflict = conflicts[0]
+    positive = ", ".join(item["domain"] for item in conflict.get("positive", []))
+    negative = ", ".join(item["domain"] for item in conflict.get("negative", []))
+    return f"가능·허용({positive}) / 불가·금지({negative})"
+
+
 def search_validation(results: list[dict], query: str = "") -> dict:
     domains = {_evidence_domain(_domain(result.get("url", ""))) for result in results if result.get("url")}
     official_domains = {
@@ -694,6 +749,7 @@ def search_validation(results: list[dict], query: str = "") -> dict:
     freshness_required = any(result.get("freshness") in ("fresh", "stale", "unverified") for result in results)
     freshness_verified = any(result.get("freshness") == "fresh" for result in results)
     claim_validation = _numeric_claim_validation(results)
+    stance_conflicts = _stance_validation(results)
     requirements = (
         analyze_query_requirements(query) if query else
         next(
@@ -726,6 +782,8 @@ def search_validation(results: list[dict], query: str = "") -> dict:
     evidence_coverage = round(covered_count / max(1, required_count), 3)
     if claim_validation["conflicts"]:
         confidence, reason = "conflict", "같은 연도·항목의 수치가 출처별로 다름"
+    elif stance_conflicts:
+        confidence, reason = "conflict", "가능·허용 여부의 결론이 출처별로 다름"
     elif missing_years or missing_aspects:
         confidence, reason = "limited", "질문의 일부 요청 항목에 대한 근거가 부족함"
     elif freshness_required and stale_count == len(results):
@@ -750,6 +808,7 @@ def search_validation(results: list[dict], query: str = "") -> dict:
         "freshness_verified": freshness_verified,
         "corroborated_claims": claim_validation["corroborated"],
         "conflicting_claims": claim_validation["conflicts"],
+        "stance_conflicts": stance_conflicts,
         "required_aspects": requirements.get("aspects", []),
         "covered_aspects": sorted(covered_aspects),
         "missing_aspects": missing_aspects,
@@ -808,6 +867,10 @@ def search_and_learn(query: str, max_results: int = 5, persona_id: str = "hr") -
     results = web_search(query, max_results)
     topic, _ = _topic_policy(query)
     validation = search_validation(results)
+    if validation["stance_conflicts"]:
+        # 어느 결론이 맞는지 확정되지 않은 원문을 장기기억에 개별 사실로 저장하면
+        # 이후 검색 순서에 따라 한쪽만 재사용될 수 있으므로 전부 보류한다.
+        return results
     conflict_keys = {claim["key"] for claim in validation["conflicting_claims"]}
     for r in results:
         if topic != "general" and r.get("trust_tier", 1) < 2:
@@ -847,6 +910,7 @@ def format_search_context(results: list[dict]) -> str:
     claim_note = (
         f" / 교차확인 수치: {len(validation['corroborated_claims'])}개"
         f" / 충돌 수치: {len(validation['conflicting_claims'])}개"
+        f" / 결론 충돌: {len(validation['stance_conflicts'])}개"
     )
     missing_labels = [
         _ASPECT_LABELS.get(aspect, aspect) for aspect in validation["missing_aspects"]
@@ -866,6 +930,9 @@ def format_search_context(results: list[dict]) -> str:
           + (("충돌 상세: " + _format_conflict_details(validation["conflicting_claims"]) + ". "
               "충돌한 수치는 하나를 선택하거나 평균내지 말고 '확정 불가'로 답하세요. ")
              if validation["conflicting_claims"] else "")
+          + (("결론 충돌 상세: " + _format_stance_conflict_details(validation["stance_conflicts"])
+              + ". 가능·불가능 중 어느 한쪽도 선택하지 말고 '확정 불가'로 답하세요. ")
+             if validation["stance_conflicts"] else "")
           + (("근거가 부족한 요청 항목: " + ", ".join(missing_labels)
               + ". 이 항목은 추측하지 말고 '자료에서 확인되지 않음'으로 표시하세요. ")
              if missing_labels else "")
@@ -891,13 +958,15 @@ def format_search_validation_note(results: list[dict]) -> str:
     if not results:
         return ""
     validation = search_validation(results)
-    labels = {"high": "높음", "medium": "보통", "limited": "제한적", "low": "낮음", "conflict": "수치 충돌"}
+    labels = {"high": "높음", "medium": "보통", "limited": "제한적", "low": "낮음", "conflict": "출처 충돌"}
     freshness = ""
     if validation["freshness_required"]:
         freshness = " · 최신성 확인" if validation["freshness_verified"] else " · 최신성 미확인"
     claim_text = ""
     if validation["conflicting_claims"]:
         claim_text = f" · 충돌 수치 {len(validation['conflicting_claims'])}건"
+    elif validation["stance_conflicts"]:
+        claim_text = f" · 결론 충돌 {len(validation['stance_conflicts'])}건"
     elif validation["corroborated_claims"]:
         claim_text = f" · 교차확인 수치 {len(validation['corroborated_claims'])}건"
     summary = (
@@ -911,6 +980,13 @@ def format_search_validation_note(results: list[dict]) -> str:
             "\n> ⚠️ **수치 확정 보류**: "
             + _format_conflict_details(validation["conflicting_claims"])
             + ". 공식 원문에서 최신 값을 다시 확인하기 전에는 한 값을 확정하지 않으며, "
+              "충돌 근거는 기억 학습에서도 제외합니다."
+        )
+    if validation["stance_conflicts"]:
+        summary += (
+            "\n> ⚠️ **가능 여부 확정 보류**: "
+            + _format_stance_conflict_details(validation["stance_conflicts"])
+            + ". 독립 출처의 결론 방향이 달라 어느 한쪽도 확정하지 않으며, "
               "충돌 근거는 기억 학습에서도 제외합니다."
         )
     return summary

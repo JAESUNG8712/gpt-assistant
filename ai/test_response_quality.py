@@ -108,6 +108,19 @@ def main():
         cross_block_context,
     )
     assert cross_block["missing_conditions"] == [], cross_block
+    stance_repair = response_quality.repair_stance_conflict(
+        "현재 일본 입국은 가능합니다.",
+        {"stance_conflicts": [{
+            "positive": [{"domain": "mofa.go.kr"}],
+            "negative": [{"domain": "visa.go.kr"}],
+        }]},
+    )
+    assert "입국은 가능합니다" not in stance_repair["answer"]
+    assert "확정할 수 없습니다" in stance_repair["answer"]
+    assert stance_repair["neutralized"] is True
+    assert "상반된 결론 자동 보류" in response_quality.format_stance_conflict_repair_note(
+        stance_repair
+    )
 
     unsupported = response_quality.evaluate(
         "2027년 최저임금 금액을 알려줘",

@@ -36,9 +36,9 @@ def main():
         assert client.get("/health").json()["deliberation_engine"] == "evidence-adaptive-review-v3"
         assert client.get("/health").json()["conversation_engine"] == "contextual-followup-v1"
         health = client.get("/health").json()
-        assert health["offline_reasoning_engine"] == "symbolic-plan-critic-v13"
-        assert health["evidence_reasoning_engine"] == "adaptive-query-coverage-consensus-v6"
-        assert health["response_quality_engine"] == "condition-aware-repair-v7"
+        assert health["offline_reasoning_engine"] == "symbolic-plan-critic-v14"
+        assert health["evidence_reasoning_engine"] == "adaptive-query-coverage-consensus-v7"
+        assert health["response_quality_engine"] == "multi-source-stance-gate-v8"
         assert isinstance(client.get("/health").json()["local_generative_configured"], bool)
         assert isinstance(client.get("/health").json()["local_generative_backends"], list)
         assert client.get("/health").json()["memory_schema"] == "typed-scopes-v1"
@@ -562,6 +562,47 @@ def main():
             assert "6개월 이상인 근로자만" in condition_repaired.text
             assert "반드시 함께 확인할 적용 조건" in condition_repaired.text
             assert "누락 조건 자동 보완" in condition_repaired.text
+        finally:
+            main.srch.web_search = original_web_search
+            main.intent_agent.analyze = original_intent
+            main.llm.chat_stream = original_chat_stream
+
+        # 서로 다른 신뢰 기관이 가능/불가능을 반대로 단정하면 생성 모델이 한쪽을
+        # 골랐더라도 확정 답변을 제거하고 중립적인 확인 보류로 전환한다.
+        stance_conflict_results = main.srch._prepare_results("일본 입국 가능한가요", [
+            {
+                "title": "일본 입국 허용 안내",
+                "body": "대한민국 국민은 일본에 입국할 수 있습니다.",
+                "href": "https://www.mofa.go.kr/jp-entry-allow",
+            },
+            {
+                "title": "일본 입국 제한 안내",
+                "body": "현재 대한민국 국민은 일본에 입국할 수 없습니다.",
+                "href": "https://www.visa.go.kr/jp-entry-deny",
+            },
+        ], 5)
+
+        async def one_sided_stance_stream(*_args, **_kwargs):
+            yield "대한민국 국민은 현재 일본에 입국할 수 있습니다."
+
+        main.srch.web_search = lambda *_args, **_kwargs: stance_conflict_results
+        main.intent_agent.analyze = no_intent
+        main.llm.chat_stream = one_sided_stance_stream
+        try:
+            stance_repaired = client.post(
+                "/chat",
+                json={
+                    "message": "/검색 일본 입국 가능한가요?",
+                    "persona": "travel", "session_id": "stance-conflict-qa",
+                },
+                headers={"X-Admin-Token": owner_token},
+            )
+            assert stance_repaired.status_code == 200
+            before_stance_note = stance_repaired.text.split("상반된 결론 자동 보류", 1)[0]
+            assert "현재 일본에 입국할 수 있습니다" not in before_stance_note
+            assert "현재 근거만으로는 확정할 수 없습니다" in before_stance_note
+            assert "상반된 결론 자동 보류" in stance_repaired.text
+            assert "가능 여부 확정 보류" in stance_repaired.text
         finally:
             main.srch.web_search = original_web_search
             main.intent_agent.analyze = original_intent

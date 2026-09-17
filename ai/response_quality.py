@@ -153,6 +153,34 @@ def format_condition_repair_note(repair: dict) -> str:
     )
 
 
+def repair_stance_conflict(answer: str, validation: dict) -> dict:
+    """출처끼리 결론 방향이 충돌하면 생성 답변의 단정 문장을 중립화한다."""
+    conflicts = validation.get("stance_conflicts", [])
+    if not conflicts or "```" in (answer or ""):
+        return {"answer": answer or "", "removed": [], "neutralized": False}
+    repaired = answer or ""
+    removed = []
+    for sentence in _claim_sentences(repaired):
+        if _polarity(sentence) and sentence in repaired:
+            repaired = repaired.replace(sentence, "")
+            removed.append(sentence)
+    repaired = re.sub(r"(?m)^\s*(?:[-*]|\d+[.)])\s*$", "", repaired)
+    repaired = re.sub(r"\n{3,}", "\n\n", repaired).strip()
+    neutral = "확인한 독립 출처마다 가능·허용 여부의 결론이 달라 현재 근거만으로는 확정할 수 없습니다."
+    repaired = (repaired + "\n\n" + neutral).strip() if repaired else neutral
+    return {"answer": repaired, "removed": removed, "neutralized": True}
+
+
+def format_stance_conflict_repair_note(repair: dict) -> str:
+    if not repair.get("neutralized"):
+        return ""
+    return (
+        "\n\n> ⚖️ **상반된 결론 자동 보류**: 독립 출처가 가능·허용 여부에 대해 "
+        "반대 결론을 제시하여 어느 한쪽도 확정하지 않았습니다. "
+        "이 답변과 충돌 근거는 장기기억 후보로 저장하지 않습니다."
+    )
+
+
 def _claim_sentences(text: str) -> list[str]:
     """답변 본문에서 검증 가능한 사실 주장만 고른다.
 
