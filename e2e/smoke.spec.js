@@ -207,11 +207,13 @@ test.describe("로그인·기본 네비게이션", () => {
       autoSaveDebounced = () => {};
       const emp = {
         id: "performance-e2e", empNo: "E2E-PERF", name: "성과연계검증", role: "member",
-        active: true, salary: 60000000, dept: "개발", team: "플랫폼", rank: "대리",
+        active: true, salary: 72000000, dept: "개발", team: "플랫폼", rank: "대리",
         gradeResults: { "2026": { score: 90, grade: "S" } },
         hrHistory: [
           { id: "edu-perf-e2e", type: "edu_general", date: "2026-05-10", desc: "직무 심화 교육" },
           { id: "award-perf-e2e", type: "award", date: "2026-06-30", year: 2026, half: "상반기", tier: "최우수", desc: "최우수사원 선정" },
+          { id: "award-perf-e2e-duplicate", type: "award", date: "2026-06-30", year: 2026, half: "상반기", tier: "최우수", desc: "레거시 중복 선정" },
+          { id: "salary-perf-e2e", type: "salary", date: "2027-01-01", before: "60,000,000원", after: "72,000,000원", desc: "연봉 조정" },
         ],
       };
       employees.push(emp);
@@ -238,9 +240,9 @@ test.describe("로그인·기본 네비게이션", () => {
       _perfRewardState = { evalYear: 2026 };
       const row = _performanceRewardCandidate(emp, 2026);
       gotoPage("payroll-mgmt");
-      return { overall: row.overall, grade: row.grade, rate: row.rate, evaluationReward: row.evaluationReward, awardBonus: row.awardBonus, amount: row.amount, training: [row.education.completed, row.education.required] };
+      return { overall: row.overall, grade: row.grade, rate: row.rate, basisSalary: row.salaryBasis.amount, salaryReconstructed: row.salaryBasis.reconstructed, evaluationReward: row.evaluationReward, awardBonus: row.awardBonus, duplicateAwards: row.awards.duplicateCount, amount: row.amount, training: [row.education.completed, row.education.required] };
     });
-    expect(candidate).toEqual({ overall: 86, grade: "A", rate: 10, evaluationReward: 6000000, awardBonus: 1000000, amount: 7000000, training: [2, 2] });
+    expect(candidate).toEqual({ overall: 86, grade: "A", rate: 10, basisSalary: 60000000, salaryReconstructed: true, evaluationReward: 6000000, awardBonus: 1000000, duplicateAwards: 1, amount: 7000000, training: [2, 2] });
     await expect(page.getByText("평가 → 성과급 → 급여 연계")).toBeVisible();
     await expect(page.getByText("지급 대상")).toBeVisible();
 
@@ -261,7 +263,7 @@ test.describe("로그인·기본 네비게이션", () => {
     await dialog.getByRole("button", { name: "성과급 반영" }).click();
     const linked = await page.evaluate(() => payrollAdjustments.filter(a => a.sourceKey === "performance:2026:performance-e2e"));
     expect(linked).toHaveLength(1);
-    expect(linked[0]).toMatchObject({ year: 2027, month: 3, amount: 7000000, evaluationReward: 6000000, awardBonus: 1000000, awardCounts: { "우수": 0, "최우수": 1 }, mandatoryTraining: { required: 2, completed: 2, allCompleted: true }, source: "performance_reward" });
+    expect(linked[0]).toMatchObject({ year: 2027, month: 3, amount: 7000000, evaluationReward: 6000000, awardBonus: 1000000, awardCounts: { "우수": 0, "최우수": 1 }, ignoredDuplicateAwards: 1, basisAnnualSalary: 60000000, basisSalaryReconstructed: true, mandatoryTraining: { required: 2, completed: 2, allCompleted: true }, source: "performance_reward" });
 
     await page.evaluate(() => openEmpDetail("performance-e2e"));
     dialog = page.locator('[role="dialog"][aria-modal="true"]');
