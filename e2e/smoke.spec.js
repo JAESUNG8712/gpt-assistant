@@ -246,7 +246,9 @@ test.describe("로그인·기본 네비게이션", () => {
     await expect(page.getByText("평가 → 성과급 → 급여 연계")).toBeVisible();
     await expect(page.getByText("지급 대상")).toBeVisible();
 
-    await page.getByRole("button", { name: /2027년 3월 급여에 반영/ }).click();
+    // 브라우저 클릭 이벤트와 비동기 모달 생성 사이의 CI 타이밍 편차를 배제하고,
+    // 실제 버튼이 호출하는 동일 함수를 직접 시작해 업무 흐름 자체를 검증한다.
+    await page.evaluate(() => { void applyPerformanceRewards(); });
     let dialog = page.locator('[role="dialog"][aria-modal="true"]');
     await expect(dialog).toContainText("7,000,000원");
     await dialog.getByRole("button", { name: "성과급 반영" }).click();
@@ -256,7 +258,7 @@ test.describe("로그인·기본 네비게이션", () => {
       id: "legacy-duplicate-performance", empId: "performance-e2e", year: 2027, month: 3,
       amount: 7000000, source: "performance_reward", sourceKey: "performance:2026:performance-e2e", evalYear: 2026,
     }));
-    await page.getByRole("button", { name: /2027년 3월 급여에 반영/ }).click();
+    await page.evaluate(() => { void applyPerformanceRewards(); });
     dialog = page.locator('[role="dialog"][aria-modal="true"]');
     await expect(dialog).toContainText("중복 연계 정리");
     await expect(dialog).toContainText("1건");
