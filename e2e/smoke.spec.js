@@ -205,6 +205,7 @@ test.describe("로그인·기본 네비게이션", () => {
 
     const candidate = await page.evaluate(async () => {
       autoSaveDebounced = () => {};
+      autoSaveToServerIfEnabled = () => Promise.resolve();
       const emp = {
         id: "performance-e2e", empNo: "E2E-PERF", name: "성과연계검증", role: "member",
         active: true, salary: 72000000, dept: "개발", team: "플랫폼", rank: "대리",
@@ -244,21 +245,20 @@ test.describe("로그인·기본 네비게이션", () => {
       askConfirmModal = async () => true;
       await applyPerformanceRewards();
       const applied = payrollAdjustments.some(a => a.sourceKey === row.sourceKey);
+      payrollAdjustments.push({
+        id: "legacy-duplicate-performance", empId: emp.id, year: 2099, month: 3,
+        amount: 7000000, source: "performance_reward", sourceKey: row.sourceKey, evalYear: 2026,
+      });
+      await applyPerformanceRewards();
+      const linked = payrollAdjustments.filter(a => a.sourceKey === row.sourceKey);
       gotoPage("payroll-mgmt");
-      return { applied, ready: row.ready, overall: row.overall, grade: row.grade, rate: row.rate, basisSalary: row.salaryBasis.amount, salaryReconstructed: row.salaryBasis.reconstructed, evaluationReward: row.evaluationReward, awardBonus: row.awardBonus, duplicateAwards: row.awards.duplicateCount, amount: row.amount, training: [row.education.completed, row.education.required] };
+      return { applied, linked, ready: row.ready, overall: row.overall, grade: row.grade, rate: row.rate, basisSalary: row.salaryBasis.amount, salaryReconstructed: row.salaryBasis.reconstructed, evaluationReward: row.evaluationReward, awardBonus: row.awardBonus, duplicateAwards: row.awards.duplicateCount, amount: row.amount, training: [row.education.completed, row.education.required] };
     });
-    expect(candidate).toEqual({ applied: true, ready: true, overall: 86, grade: "A", rate: 10, basisSalary: 60000000, salaryReconstructed: true, evaluationReward: 6000000, awardBonus: 1000000, duplicateAwards: 1, amount: 7000000, training: [2, 2] });
+    expect({ ...candidate, linked: undefined }).toEqual({ applied: true, linked: undefined, ready: true, overall: 86, grade: "A", rate: 10, basisSalary: 60000000, salaryReconstructed: true, evaluationReward: 6000000, awardBonus: 1000000, duplicateAwards: 1, amount: 7000000, training: [2, 2] });
+    expect(candidate.linked).toHaveLength(1);
+    expect(candidate.linked[0]).toMatchObject({ year: 2099, month: 3, amount: 7000000, evaluationReward: 6000000, awardBonus: 1000000, awardCounts: { "우수": 0, "최우수": 1 }, ignoredDuplicateAwards: 1, basisAnnualSalary: 60000000, basisSalaryReconstructed: true, mandatoryTraining: { required: 2, completed: 2, allCompleted: true }, source: "performance_reward" });
     await expect(page.getByText("평가 → 성과급 → 급여 연계")).toBeVisible();
     await expect(page.getByText("지급 대상")).toBeVisible();
-
-    await page.evaluate(() => payrollAdjustments.push({
-      id: "legacy-duplicate-performance", empId: "performance-e2e", year: 2099, month: 3,
-      amount: 7000000, source: "performance_reward", sourceKey: "performance:2026:performance-e2e", evalYear: 2026,
-    }));
-    await page.evaluate(async () => { await applyPerformanceRewards(); });
-    const linked = await page.evaluate(() => payrollAdjustments.filter(a => a.sourceKey === "performance:2026:performance-e2e"));
-    expect(linked).toHaveLength(1);
-    expect(linked[0]).toMatchObject({ year: 2099, month: 3, amount: 7000000, evaluationReward: 6000000, awardBonus: 1000000, awardCounts: { "우수": 0, "최우수": 1 }, ignoredDuplicateAwards: 1, basisAnnualSalary: 60000000, basisSalaryReconstructed: true, mandatoryTraining: { required: 2, completed: 2, allCompleted: true }, source: "performance_reward" });
 
     await page.evaluate(() => openEmpDetail("performance-e2e"));
     let dialog = page.locator('[role="dialog"][aria-modal="true"]');
