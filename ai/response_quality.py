@@ -46,27 +46,61 @@ def _condition_signature(text: str) -> tuple[set[str], set[str]]:
     return markers, _measured_claims(text)
 
 
+_CONTINUATION_RE = re.compile(r"^(?:다만|단서|예외적으로|단,)")
+
+
+def _overlaps_answer(answer_tokens, answer_grams, source: str) -> bool:
+    source_tokens = local_reasoner._tokens(source)
+    source_grams = local_reasoner._chargrams(source)
+    token_overlap = len(answer_tokens & source_tokens) / max(1, min(len(answer_tokens), 10))
+    gram_overlap = len(answer_grams & source_grams) / max(
+        1, min(len(answer_grams), len(source_grams))
+    )
+    return token_overlap >= 0.34 or gram_overlap >= 0.48
+
+
 def _missing_conditions(question: str, answer: str, context: str) -> list[dict]:
-    """답변과 직접 겹치는 근거가 가진 핵심 조건·예외가 빠졌는지 찾는다."""
+    """답변과 직접 겹치는 근거가 가진 핵심 조건·예외가 빠졌는지 찾는다.
+
+    "단, ~인 경우" 처럼 예외 조건이 원래 진술과 별도 문장으로 붙는 경우, 그 문장
+    자체는 답변과 어휘가 거의 겹치지 않아(연결어·다른 대상 표현 위주) 기존
+    겹침 검사만으로는 걸러졌다. 같은 근거 블록에서 답변과 직접 겹치는 문장
+    바로 뒤에 "다만/단서/예외적으로"로 시작하는 문장이 붙어 있으면, 그 조건이
+    직전 문장의 진술에 붙는 예외라고 보고 겹침 요건 없이도 함께 검사한다.
+    """
     if not answer or not context or "```" in answer:
         return []
     answer_markers, answer_values = _condition_signature(answer)
     answer_tokens = local_reasoner._tokens(answer)
     answer_grams = local_reasoner._chargrams(answer)
+    ranked = set(local_reasoner.select_evidence(question, context, limit=12))
+    units = local_reasoner._evidence_units(context)
     missing, seen = [], set()
-    for source in local_reasoner.select_evidence(question, context, limit=12):
+    previous_anchor = False
+    previous_label = None
+    for index, (source, _authority, label) in enumerate(units):
+        # 서로 다른 근거 블록(예: 검색결과 1과 2)은 각기 다른 출처 라벨을 가지므로,
+        # 라벨이 바뀌면 직전 문장을 앵커로 보지 않는다 — 그렇지 않으면 앞 블록의
+        # 답변 관련 문장 바로 다음에 등장한, 전혀 무관한 다른 블록의 "다만" 문장을
+        # 같은 진술의 예외로 잘못 붙이게 된다.
+        if label != previous_label:
+            previous_anchor = False
+        direct_overlap = _overlaps_answer(answer_tokens, answer_grams, source)
+        is_attached_exception = (
+            not direct_overlap and previous_anchor
+            and bool(_CONTINUATION_RE.match(source.strip()))
+        )
+        # 다음 반복에서 "이 문장이 답변과 직접 겹치는 앵커였는지"를 판단할 수
+        # 있도록 갱신한다. 후보 대상(select_evidence)에도 있고 실제 겹침도
+        # 있어야 다음 문장의 예외를 붙여도 될 만큼 확실한 앵커로 인정한다.
+        previous_anchor = direct_overlap and source in ranked
+        previous_label = label
+        if source not in ranked and not is_attached_exception:
+            continue
+        if not (direct_overlap or is_attached_exception):
+            continue
         source_markers, source_values = _condition_signature(source)
         if not source_markers:
-            continue
-        source_tokens = local_reasoner._tokens(source)
-        source_grams = local_reasoner._chargrams(source)
-        token_overlap = len(answer_tokens & source_tokens) / max(
-            1, min(len(answer_tokens), 10)
-        )
-        gram_overlap = len(answer_grams & source_grams) / max(
-            1, min(len(answer_grams), len(source_grams))
-        )
-        if token_overlap < 0.34 and gram_overlap < 0.48:
             continue
         missing_markers = sorted(source_markers - answer_markers)
         # 조건 문장에 포함된 수치만 함께 보존한다. 금액·날짜가 우연히 같은 문서에

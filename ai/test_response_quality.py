@@ -73,6 +73,42 @@ def main():
     )
     assert already_scoped["missing_conditions"] == []
 
+    # 실제 검색 근거는 조건이 원래 진술과 같은 문장이 아니라 "다만/단, ~"으로
+    # 이어지는 별도 문장으로 오는 경우가 훨씬 흔하다. 이런 문장은 원 진술과
+    # 어휘가 거의 겹치지 않아 겹침 검사만으로는 놓쳤던 실제 회귀 케이스.
+    attached_exception_context = (
+        "[검색결과 1 | 공식 | 출처: moel.go.kr]\n"
+        "내용: 육아휴직 급여는 통상임금의 80%를 지급합니다. 다만 월 상한액 "
+        "150만원을 초과하는 경우에는 150만원만 지급합니다.\n"
+    )
+    cap_missing = response_quality.evaluate(
+        "육아휴직 급여는 얼마나 받나요",
+        "육아휴직 급여는 통상임금의 80%를 지급합니다.",
+        attached_exception_context,
+    )
+    assert cap_missing["missing_conditions"], cap_missing
+    assert "150만원" in cap_missing["missing_conditions"][0]["missing_values"]
+    cap_repair = response_quality.repair_missing_conditions(
+        "육아휴직 급여는 통상임금의 80%를 지급합니다.", cap_missing
+    )
+    assert "150만원만 지급합니다" in cap_repair["answer"]
+
+    # 같은 근거 블록이 아니라 전혀 다른 출처의 "다만" 문장이 우연히 답변 관련
+    # 문장 바로 뒤에 온 경우까지 예외로 잘못 붙이면 안 된다 (오탐 방지 회귀).
+    cross_block_context = (
+        "[검색결과 1 | 공식 | 출처: moel.go.kr]\n"
+        "내용: 육아휴직 급여는 통상임금의 80%를 지급합니다.\n\n"
+        "[검색결과 2 | 일반 | 출처: blog.example.com]\n"
+        "다만 이 블로그는 육아휴직과 무관한 내용이며 5인 미만 사업장에는 "
+        "적용하지 않습니다.\n"
+    )
+    cross_block = response_quality.evaluate(
+        "육아휴직 급여는 얼마인가요",
+        "육아휴직 급여는 통상임금의 80%를 지급합니다.",
+        cross_block_context,
+    )
+    assert cross_block["missing_conditions"] == [], cross_block
+
     unsupported = response_quality.evaluate(
         "2027년 최저임금 금액을 알려줘",
         "2027년 최저임금은 시간당 12,000원입니다.", context,
