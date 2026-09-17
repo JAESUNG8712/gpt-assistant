@@ -203,7 +203,7 @@ test.describe("로그인·기본 네비게이션", () => {
     await page.click(".login-card button.btn-primary");
     await expect(page.locator("#main")).toBeVisible({ timeout: 10000 });
 
-    const candidate = await page.evaluate(() => {
+    const candidate = await page.evaluate(async () => {
       autoSaveDebounced = () => {};
       const emp = {
         id: "performance-e2e", empNo: "E2E-PERF", name: "성과연계검증", role: "member",
@@ -239,20 +239,17 @@ test.describe("로그인·기본 네비게이션", () => {
       _payMgmtState = { year: 2099, month: 3, dept: "", team: "", search: "성과연계검증" };
       _perfRewardState = { evalYear: 2026 };
       const row = _performanceRewardCandidate(emp, 2026);
-      gotoPage("payroll-mgmt");
-      return { ready: row.ready, overall: row.overall, grade: row.grade, rate: row.rate, basisSalary: row.salaryBasis.amount, salaryReconstructed: row.salaryBasis.reconstructed, evaluationReward: row.evaluationReward, awardBonus: row.awardBonus, duplicateAwards: row.awards.duplicateCount, amount: row.amount, training: [row.education.completed, row.education.required] };
-    });
-    expect(candidate).toEqual({ ready: true, overall: 86, grade: "A", rate: 10, basisSalary: 60000000, salaryReconstructed: true, evaluationReward: 6000000, awardBonus: 1000000, duplicateAwards: 1, amount: 7000000, training: [2, 2] });
-    await expect(page.getByText("평가 → 성과급 → 급여 연계")).toBeVisible();
-    await expect(page.getByText("지급 대상")).toBeVisible();
-
-    // 공통 확인 모달 자체는 별도 시나리오에서 검증한다. 여기서는 확인 응답을 고정해
-    // 성과급 계산·저장·중복 제거 업무 로직을 CI 이벤트 종류와 무관하게 검증한다.
-    await page.evaluate(async () => {
+      // Prepare and apply in one browser task so intermediate rendering cannot
+      // replace the global payroll filter/target state between those operations.
       askConfirmModal = async () => true;
       await applyPerformanceRewards();
+      const applied = payrollAdjustments.some(a => a.sourceKey === row.sourceKey);
+      gotoPage("payroll-mgmt");
+      return { applied, ready: row.ready, overall: row.overall, grade: row.grade, rate: row.rate, basisSalary: row.salaryBasis.amount, salaryReconstructed: row.salaryBasis.reconstructed, evaluationReward: row.evaluationReward, awardBonus: row.awardBonus, duplicateAwards: row.awards.duplicateCount, amount: row.amount, training: [row.education.completed, row.education.required] };
     });
-    await page.waitForFunction(() => payrollAdjustments.some(a => a.sourceKey === "performance:2026:performance-e2e"));
+    expect(candidate).toEqual({ applied: true, ready: true, overall: 86, grade: "A", rate: 10, basisSalary: 60000000, salaryReconstructed: true, evaluationReward: 6000000, awardBonus: 1000000, duplicateAwards: 1, amount: 7000000, training: [2, 2] });
+    await expect(page.getByText("평가 → 성과급 → 급여 연계")).toBeVisible();
+    await expect(page.getByText("지급 대상")).toBeVisible();
 
     await page.evaluate(() => payrollAdjustments.push({
       id: "legacy-duplicate-performance", empId: "performance-e2e", year: 2099, month: 3,
