@@ -233,16 +233,16 @@ test.describe("로그인·기본 네비게이션", () => {
         awardBonusAmounts: { "우수": 500000, "최우수": 1000000 },
       };
       // 다른 E2E 시나리오 또는 시드의 급여 마감 상태와 무관하게 이 연계 흐름만 검증한다.
-      settings.payrollLockedMonths = (settings.payrollLockedMonths || []).filter(key => key !== "2027-3" && key !== "2027-4");
+      settings.payrollLockedMonths = (settings.payrollLockedMonths || []).filter(key => key !== "2099-3" && key !== "2100-4");
       payrollAdjustments = payrollAdjustments.filter(a => a.sourceKey !== "performance:2026:performance-e2e");
       payslips = payslips.filter(p => String(p.empId) !== emp.id);
-      _payMgmtState = { year: 2027, month: 3, dept: "", team: "", search: "성과연계검증" };
+      _payMgmtState = { year: 2099, month: 3, dept: "", team: "", search: "성과연계검증" };
       _perfRewardState = { evalYear: 2026 };
       const row = _performanceRewardCandidate(emp, 2026);
       gotoPage("payroll-mgmt");
-      return { overall: row.overall, grade: row.grade, rate: row.rate, basisSalary: row.salaryBasis.amount, salaryReconstructed: row.salaryBasis.reconstructed, evaluationReward: row.evaluationReward, awardBonus: row.awardBonus, duplicateAwards: row.awards.duplicateCount, amount: row.amount, training: [row.education.completed, row.education.required] };
+      return { ready: row.ready, overall: row.overall, grade: row.grade, rate: row.rate, basisSalary: row.salaryBasis.amount, salaryReconstructed: row.salaryBasis.reconstructed, evaluationReward: row.evaluationReward, awardBonus: row.awardBonus, duplicateAwards: row.awards.duplicateCount, amount: row.amount, training: [row.education.completed, row.education.required] };
     });
-    expect(candidate).toEqual({ overall: 86, grade: "A", rate: 10, basisSalary: 60000000, salaryReconstructed: true, evaluationReward: 6000000, awardBonus: 1000000, duplicateAwards: 1, amount: 7000000, training: [2, 2] });
+    expect(candidate).toEqual({ ready: true, overall: 86, grade: "A", rate: 10, basisSalary: 60000000, salaryReconstructed: true, evaluationReward: 6000000, awardBonus: 1000000, duplicateAwards: 1, amount: 7000000, training: [2, 2] });
     await expect(page.getByText("평가 → 성과급 → 급여 연계")).toBeVisible();
     await expect(page.getByText("지급 대상")).toBeVisible();
 
@@ -255,13 +255,13 @@ test.describe("로그인·기본 네비게이션", () => {
     await page.waitForFunction(() => payrollAdjustments.some(a => a.sourceKey === "performance:2026:performance-e2e"));
 
     await page.evaluate(() => payrollAdjustments.push({
-      id: "legacy-duplicate-performance", empId: "performance-e2e", year: 2027, month: 3,
+      id: "legacy-duplicate-performance", empId: "performance-e2e", year: 2099, month: 3,
       amount: 7000000, source: "performance_reward", sourceKey: "performance:2026:performance-e2e", evalYear: 2026,
     }));
     await page.evaluate(async () => { await applyPerformanceRewards(); });
     const linked = await page.evaluate(() => payrollAdjustments.filter(a => a.sourceKey === "performance:2026:performance-e2e"));
     expect(linked).toHaveLength(1);
-    expect(linked[0]).toMatchObject({ year: 2027, month: 3, amount: 7000000, evaluationReward: 6000000, awardBonus: 1000000, awardCounts: { "우수": 0, "최우수": 1 }, ignoredDuplicateAwards: 1, basisAnnualSalary: 60000000, basisSalaryReconstructed: true, mandatoryTraining: { required: 2, completed: 2, allCompleted: true }, source: "performance_reward" });
+    expect(linked[0]).toMatchObject({ year: 2099, month: 3, amount: 7000000, evaluationReward: 6000000, awardBonus: 1000000, awardCounts: { "우수": 0, "최우수": 1 }, ignoredDuplicateAwards: 1, basisAnnualSalary: 60000000, basisSalaryReconstructed: true, mandatoryTraining: { required: 2, completed: 2, allCompleted: true }, source: "performance_reward" });
 
     await page.evaluate(() => openEmpDetail("performance-e2e"));
     let dialog = page.locator('[role="dialog"][aria-modal="true"]');
@@ -271,7 +271,8 @@ test.describe("로그인·기본 네비게이션", () => {
     await page.keyboard.press("Escape");
 
     const protectedResult = await page.evaluate(async () => {
-      payslips.push({ empId: "performance-e2e", year: 2027, month: 4, confirmed: true });
+      payslips.push({ empId: "performance-e2e", year: 2100, month: 4, confirmed: true });
+      _payMgmtState.year = 2100;
       _payMgmtState.month = 4;
       const before = payrollAdjustments.find(a => a.sourceKey === "performance:2026:performance-e2e").month;
       await applyPerformanceRewards();
