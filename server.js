@@ -1415,6 +1415,15 @@ function _sanitizeGatedRecord(field, incoming, stored, actor, actorEmp, settings
     if (!stored && incoming.status !== "draft") return { ...incoming, status: "draft" };
     if (stored && incoming.status !== stored.status) return { ...stored };
   }
+  // 급여명세서: 이미 확정(confirmed=true)된 레코드는 절대 변경할 수 없다. 확정 취소 UI
+  // 자체가 없어(confirmPayslip은 단방향) 정상 화면은 confirmed 레코드를 다시 건드리지
+  // 않지만(성과급 반영 등도 이미 클라이언트에서 !p.confirmed로 걸러 재계산을 피함),
+  // payslips는 admin 역할이면 통과되는 role 게이팅뿐이라 /save를 직접 호출하면 admin
+  // 권한만으로 이미 확정된(다른 관리자가 만들었을 수도 있는) 급여 숫자를 조용히
+  // 덮어쓸 수 있었다(2026-09-17 성과보상 연동 감사에서 발견 — UI의 "확정 급여 보호"가
+  // 서버에는 없었음). role 위조가 아니라 확정 후 데이터 무결성을 지키는 것이 목적이라
+  // _WRITE_GATED_FIELDS의 role/menuPerms 게이팅과 독립적으로 항상 적용한다.
+  if (field === "payslips" && stored?.confirmed) return { ...stored };
   if (rule.record) {
     // 바뀌지 않은 레코드는 그대로 통과(매 저장마다 전체 배열이 재전송되므로 대부분이 여기).
     if (stored && JSON.stringify(stored) === JSON.stringify(incoming)) return incoming;
