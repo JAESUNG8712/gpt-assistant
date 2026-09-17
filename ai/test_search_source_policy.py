@@ -229,6 +229,15 @@ def main():
     ], 5)
     assert search.search_validation(same_domain_stance)["stance_conflicts"] == []
 
+    # 서로 다른 화제(무비자 입국 가능 여부 vs 액체류 기내 반입 가능 여부)를 다루는
+    # 독립 출처가 각각 긍정·부정 표현을 하나씩만 담고 있다는 이유만으로 같은
+    # 쟁점의 반대 결론으로 오판되면 안 된다(실제 재현된 오탐 방지 회귀).
+    unrelated_topics = search._prepare_results("일본 여행 준비물", [
+        _result("일본 여행 가이드", "일본은 무비자 입국이 가능합니다.", "https://www.mofa.go.kr/japan"),
+        _result("면세 반입 안내", "액체류는 100ml 초과 시 기내 반입이 불가능합니다.", "https://customs.go.kr/liquid"),
+    ], 5)
+    assert search.search_validation(unrelated_topics)["stance_conflicts"] == []
+
     decimal_equivalence = search._prepare_results("2026년 기준금리", [
         _result("2026년 기준금리", "기준금리 3.7%", "https://www.bok.or.kr/rate"),
         _result("2026년 기준금리", "금리 3.70%", "https://www.kdi.re.kr/rate"),

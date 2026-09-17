@@ -678,30 +678,65 @@ def format_memory_search_conflict_warning(validation: dict) -> str:
     )
 
 
-def _result_stance(result: dict) -> str:
-    """검색 결과가 명시적으로 가능/허용 또는 불가/금지를 단정할 때만 방향을 읽는다."""
+_STANCE_NEGATIVE_RE = re.compile(
+    r"불가능(?:합니다|하다|함)|금지(?:됩니다|된다|함)|허용되지\s*않|"
+    r"적용되지\s*않|해당하지\s*않|할\s*수\s*없(?:습니다|다|음)"
+)
+_STANCE_POSITIVE_RE = re.compile(
+    r"(?<!불)가능(?:합니다|하다|함)|허용(?:됩니다|된다|함)|"
+    r"적용(?:됩니다|된다|함)|해당(?:됩니다|된다|함)|할\s*수\s*있(?:습니다|다|음)"
+)
+
+
+def _result_stance(result: dict) -> tuple[str, str]:
+    """검색 결과가 명시적으로 가능/허용 또는 불가/금지를 단정하는 문장과 방향을 함께 반환한다.
+
+    문서 전체가 아니라 실제로 단정한 문장을 함께 남겨야, 서로 다른 화제를
+    다루는 두 문서가 우연히 각각 긍정·부정 표현을 하나씩만 담고 있다는 이유로
+    동일 쟁점의 반대 결론으로 오판되는 것을 막을 수 있다(아래 `_stance_topic_match`).
+    """
     text = f"{result.get('title', '')} {result.get('body', '')}"
-    negative = bool(re.search(
-        r"불가능(?:합니다|하다|함)|금지(?:됩니다|된다|함)|허용되지\s*않|"
-        r"적용되지\s*않|해당하지\s*않|할\s*수\s*없(?:습니다|다|음)", text,
-    ))
-    positive = bool(re.search(
-        r"(?<!불)가능(?:합니다|하다|함)|허용(?:됩니다|된다|함)|"
-        r"적용(?:됩니다|된다|함)|해당(?:됩니다|된다|함)|할\s*수\s*있(?:습니다|다|음)", text,
-    ))
-    if positive == negative:
-        return ""
-    return "positive" if positive else "negative"
+    for sentence in re.split(r"(?<=[.!?])\s+|\n+", text):
+        negative = bool(_STANCE_NEGATIVE_RE.search(sentence))
+        positive = bool(_STANCE_POSITIVE_RE.search(sentence))
+        if positive != negative:
+            return ("positive" if positive else "negative"), sentence.strip()
+    return "", ""
+
+
+def _topical_terms(sentence: str) -> list[str]:
+    """단정 문장에서 가능/불가 등 판정어를 뺀 실질 화제어만 남긴다."""
+    return [
+        term for term in _query_terms(sentence)
+        if not _STANCE_POSITIVE_RE.search(term) and not _STANCE_NEGATIVE_RE.search(term)
+    ]
+
+
+def _stance_topic_match(a_sentence: str, b_sentence: str) -> bool:
+    """두 단정 문장이 같은 화제를 가리키는지, 판정어를 뺀 실질 단어로 확인한다."""
+    a_terms = _topical_terms(a_sentence)
+    if not a_terms:
+        return False
+    b_compact = re.sub(r"\s+", "", b_sentence.lower())
+    matches = sum(1 for term in a_terms if _term_in_text(term, b_compact))
+    return matches >= 1 and matches / len(a_terms) >= 0.5
 
 
 def _stance_validation(results: list[dict]) -> list[dict]:
-    """독립된 신뢰 출처가 같은 질문에 반대 결론을 내리는지 확인한다."""
+    """독립된 신뢰 출처가 같은 화제에 반대 결론을 내리는지 확인한다.
+
+    단정 표현(가능/불가 등)이 있는 문서가 둘 이상이라고 해서 바로 충돌로
+    보지 않는다 — 서로 다른 화제(예: 무비자 입국 가능 여부 vs 액체류 기내
+    반입 가능 여부)를 다루는 문서가 우연히 반대 극성 표현을 하나씩 담고
+    있을 뿐인 경우를 실측으로 확인했다. 실제로 반대 결론을 낸 문장끼리
+    화제어가 겹치는 쌍이 최소 하나 있어야만 충돌로 보고한다.
+    """
     trusted = [result for result in results if result.get("trust_tier", 1) >= 2]
     eligible = trusted or results
     by_stance = {"positive": {}, "negative": {}}
     for result in eligible:
-        stance = _result_stance(result)
-        if not stance or not result.get("url"):
+        stance, sentence = _result_stance(result)
+        if not stance or not sentence or not result.get("url"):
             continue
         domain = _domain(result["url"])
         evidence_domain = _evidence_domain(domain)
@@ -711,16 +746,29 @@ def _stance_validation(results: list[dict]) -> list[dict]:
                 "domain": domain,
                 "title": result.get("title", "")[:160],
                 "trust_tier": result.get("trust_tier", 1),
+                "sentence": sentence,
             }
+    positive_entries = list(by_stance["positive"].values())
+    negative_entries = list(by_stance["negative"].values())
+    # 도메인 중복 판정은 실제 domain이 아니라 서브도메인을 기관 단위로 묶는
+    # evidence_domain(=by_stance의 키) 기준이어야 한다 — 그렇지 않으면
+    # www./overseas. 같은 같은 기관의 서로 다른 서브도메인을 별개 독립
+    # 출처로 잘못 세어 진짜 단일 출처 내 모순까지 충돌로 오판하게 된다.
     positive_domains = set(by_stance["positive"])
     negative_domains = set(by_stance["negative"])
     if not positive_domains or not negative_domains \
             or len(positive_domains | negative_domains) < 2:
         return []
+    has_matching_topic = any(
+        _stance_topic_match(pos["sentence"], neg["sentence"])
+        for pos in positive_entries for neg in negative_entries
+    )
+    if not has_matching_topic:
+        return []
     return [{
         "kind": "eligibility_stance",
-        "positive": list(by_stance["positive"].values()),
-        "negative": list(by_stance["negative"].values()),
+        "positive": [{k: v for k, v in item.items() if k != "sentence"} for item in positive_entries],
+        "negative": [{k: v for k, v in item.items() if k != "sentence"} for item in negative_entries],
     }]
 
 
