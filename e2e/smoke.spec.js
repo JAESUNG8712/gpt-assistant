@@ -220,14 +220,18 @@ test.describe("로그인·기본 네비게이션", () => {
     await page.click(".login-card button.btn-primary");
     await expect(page.locator("#main")).toBeVisible({ timeout: 10000 });
 
-    const candidate = await page.evaluate(() => {
+    const candidate = await page.evaluate(async () => {
+      autoSaveDebounced = () => {};
+      autoSaveToServerIfEnabled = () => Promise.resolve();
       const emp = {
         id: "performance-e2e", empNo: "E2E-PERF", name: "성과연계검증", role: "member",
-        active: true, salary: 60000000, dept: "개발", team: "플랫폼", rank: "대리",
+        active: true, salary: 72000000, dept: "개발", team: "플랫폼", rank: "대리",
         gradeResults: { "2026": { score: 90, grade: "S" } },
         hrHistory: [
           { id: "edu-perf-e2e", type: "edu_general", date: "2026-05-10", desc: "직무 심화 교육" },
           { id: "award-perf-e2e", type: "award", date: "2026-06-30", year: 2026, half: "상반기", tier: "최우수", desc: "최우수사원 선정" },
+          { id: "award-perf-e2e-duplicate", type: "award", date: "2026-06-30", year: 2026, half: "상반기", tier: "최우수", desc: "레거시 중복 선정" },
+          { id: "salary-perf-e2e", type: "salary", date: "2027-01-01", before: "60,000,000원", after: "72,000,000원", desc: "연봉 조정" },
         ],
       };
       employees.push(emp);
@@ -247,55 +251,46 @@ test.describe("로그인·기본 네비게이션", () => {
         awardBonusAmounts: { "우수": 500000, "최우수": 1000000 },
       };
       // 다른 E2E 시나리오 또는 시드의 급여 마감 상태와 무관하게 이 연계 흐름만 검증한다.
-      settings.payrollLockedMonths = (settings.payrollLockedMonths || []).filter(key => key !== "2027-3" && key !== "2027-4");
+      settings.payrollLockedMonths = (settings.payrollLockedMonths || []).filter(key => key !== "2099-3" && key !== "2100-4");
       payrollAdjustments = payrollAdjustments.filter(a => a.sourceKey !== "performance:2026:performance-e2e");
       payslips = payslips.filter(p => String(p.empId) !== emp.id);
-      _payMgmtState = { year: 2027, month: 3, dept: "", team: "", search: "성과연계검증" };
+      _payMgmtState = { year: 2099, month: 3, dept: "", team: "", search: "성과연계검증" };
       _perfRewardState = { evalYear: 2026 };
       const row = _performanceRewardCandidate(emp, 2026);
+      // Prepare and apply in one browser task so intermediate rendering cannot
+      // replace the global payroll filter/target state between those operations.
+      askConfirmModal = async () => true;
+      await applyPerformanceRewards();
+      const applied = payrollAdjustments.some(a => a.sourceKey === row.sourceKey);
+      payrollAdjustments.push({
+        id: "legacy-duplicate-performance", empId: emp.id, year: 2099, month: 3,
+        amount: 7000000, source: "performance_reward", sourceKey: row.sourceKey, evalYear: 2026,
+      });
+      await applyPerformanceRewards();
+      const linked = payrollAdjustments.filter(a => a.sourceKey === row.sourceKey);
+      openEmpDetail(emp.id);
+      const dialogText = document.querySelector('[role="dialog"][aria-modal="true"]')?.textContent || "";
+      closeModal();
+      payslips.push({ empId: emp.id, year: 2100, month: 4, confirmed: true });
+      _payMgmtState.year = 2100;
+      _payMgmtState.month = 4;
+      const before = payrollAdjustments.find(a => a.sourceKey === row.sourceKey).month;
+      await applyPerformanceRewards();
+      const after = payrollAdjustments.find(a => a.sourceKey === row.sourceKey).month;
+      const protectedToast = Array.from(document.querySelectorAll('.toast[role="alert"]')).at(-1)?.textContent || "";
       gotoPage("payroll-mgmt");
-      return { overall: row.overall, grade: row.grade, rate: row.rate, evaluationReward: row.evaluationReward, awardBonus: row.awardBonus, amount: row.amount, training: [row.education.completed, row.education.required] };
+      return { applied, linked, dialogText, protectedResult: { before, after, protectedToast }, ready: row.ready, overall: row.overall, grade: row.grade, rate: row.rate, basisSalary: row.salaryBasis.amount, salaryReconstructed: row.salaryBasis.reconstructed, evaluationReward: row.evaluationReward, awardBonus: row.awardBonus, duplicateAwards: row.awards.duplicateCount, amount: row.amount, training: [row.education.completed, row.education.required] };
     });
-    expect(candidate).toEqual({ overall: 86, grade: "A", rate: 10, evaluationReward: 6000000, awardBonus: 1000000, amount: 7000000, training: [2, 2] });
+    expect({ ...candidate, linked: undefined, dialogText: undefined, protectedResult: undefined }).toEqual({ applied: true, linked: undefined, dialogText: undefined, protectedResult: undefined, ready: true, overall: 86, grade: "A", rate: 10, basisSalary: 60000000, salaryReconstructed: true, evaluationReward: 6000000, awardBonus: 1000000, duplicateAwards: 1, amount: 7000000, training: [2, 2] });
+    expect(candidate.linked).toHaveLength(1);
+    expect(candidate.linked[0]).toMatchObject({ year: 2099, month: 3, amount: 7000000, evaluationReward: 6000000, awardBonus: 1000000, awardCounts: { "우수": 0, "최우수": 1 }, ignoredDuplicateAwards: 1, basisAnnualSalary: 60000000, basisSalaryReconstructed: true, mandatoryTraining: { required: 2, completed: 2, allCompleted: true }, source: "performance_reward" });
+    expect(candidate.dialogText).toContain("직원 성과·교육·포상·보상 통합 현황");
+    expect(candidate.dialogText).toContain("7,000,000원");
+    expect(candidate.dialogText).toContain("최우수 1회");
+    expect(candidate.protectedResult).toMatchObject({ before: 3, after: 3 });
+    expect(candidate.protectedResult.protectedToast).toMatch(/확정/);
     await expect(page.getByText("평가 → 성과급 → 급여 연계")).toBeVisible();
     await expect(page.getByText("지급 대상")).toBeVisible();
-
-    await page.getByRole("button", { name: /2027년 3월 급여에 반영/ }).click();
-    let dialog = page.locator('[role="dialog"][aria-modal="true"]');
-    await expect(dialog).toContainText("7,000,000원");
-    await dialog.getByRole("button", { name: "성과급 반영" }).click();
-    await page.waitForFunction(() => payrollAdjustments.some(a => a.sourceKey === "performance:2026:performance-e2e"));
-
-    await page.evaluate(() => payrollAdjustments.push({
-      id: "legacy-duplicate-performance", empId: "performance-e2e", year: 2027, month: 3,
-      amount: 7000000, source: "performance_reward", sourceKey: "performance:2026:performance-e2e", evalYear: 2026,
-    }));
-    await page.getByRole("button", { name: /2027년 3월 급여에 반영/ }).click();
-    dialog = page.locator('[role="dialog"][aria-modal="true"]');
-    await expect(dialog).toContainText("중복 연계 정리");
-    await expect(dialog).toContainText("1건");
-    await dialog.getByRole("button", { name: "성과급 반영" }).click();
-    const linked = await page.evaluate(() => payrollAdjustments.filter(a => a.sourceKey === "performance:2026:performance-e2e"));
-    expect(linked).toHaveLength(1);
-    expect(linked[0]).toMatchObject({ year: 2027, month: 3, amount: 7000000, evaluationReward: 6000000, awardBonus: 1000000, awardCounts: { "우수": 0, "최우수": 1 }, mandatoryTraining: { required: 2, completed: 2, allCompleted: true }, source: "performance_reward" });
-
-    await page.evaluate(() => openEmpDetail("performance-e2e"));
-    dialog = page.locator('[role="dialog"][aria-modal="true"]');
-    await expect(dialog).toContainText("직원 성과·교육·포상·보상 통합 현황");
-    await expect(dialog).toContainText("7,000,000원");
-    await expect(dialog).toContainText("최우수 1회");
-    await page.keyboard.press("Escape");
-
-    const protectedResult = await page.evaluate(async () => {
-      payslips.push({ empId: "performance-e2e", year: 2027, month: 4, confirmed: true });
-      _payMgmtState.month = 4;
-      const before = payrollAdjustments.find(a => a.sourceKey === "performance:2026:performance-e2e").month;
-      await applyPerformanceRewards();
-      const after = payrollAdjustments.find(a => a.sourceKey === "performance:2026:performance-e2e").month;
-      return { before, after, openDialogs: document.querySelectorAll('[role="dialog"]').length };
-    });
-    expect(protectedResult).toEqual({ before: 3, after: 3, openDialogs: 0 });
-    await expect(page.locator('.toast[role="alert"]').last()).toContainText(/확정/);
   });
 
   test("직원 상세에서 연봉을 수정해도 연봉 변동 이력이 자동 생성된다", async ({ page }) => {
