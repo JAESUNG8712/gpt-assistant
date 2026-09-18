@@ -153,17 +153,56 @@ def format_condition_repair_note(repair: dict) -> str:
     )
 
 
+def _stance_conflict_sentences(conflicts: list[dict]) -> list[str]:
+    sentences = []
+    for conflict in conflicts:
+        for item in conflict.get("positive", []) + conflict.get("negative", []):
+            sentence = item.get("sentence", "")
+            if sentence:
+                sentences.append(sentence)
+    return sentences
+
+
+def _related_to_conflict(sentence: str, conflict_sentences: list[str]) -> bool:
+    """답변 문장이 실제로 보고된 충돌 화제와 같은 것을 가리키는지 확인한다.
+
+    충돌 판정은 특정 쟁점(예: 무비자 입국 가능 여부) 하나에 대한 것인데, 답변에
+    긍정·부정 단정 문장이 여러 개(서로 다른 화제) 있으면 그중 충돌과 무관한
+    문장까지 지워질 위험이 있다(실측 재현: 입국 가능 여부와 액체류 반입 가능
+    여부가 한 답변에 함께 있을 때 후자까지 삭제되던 문제). 충돌로 보고된
+    문장과 실질 화제어가 겹치는 경우에만 삭제 대상으로 인정한다.
+    """
+    tokens = local_reasoner._tokens(sentence)
+    grams = local_reasoner._chargrams(sentence)
+    if not tokens:
+        return False
+    for ref in conflict_sentences:
+        ref_tokens = local_reasoner._tokens(ref)
+        ref_grams = local_reasoner._chargrams(ref)
+        token_overlap = len(tokens & ref_tokens) / max(1, min(len(tokens), 8))
+        gram_overlap = len(grams & ref_grams) / max(1, min(len(grams), len(ref_grams)))
+        if token_overlap >= 0.34 or gram_overlap >= 0.48:
+            return True
+    return False
+
+
 def repair_stance_conflict(answer: str, validation: dict) -> dict:
-    """출처끼리 결론 방향이 충돌하면 생성 답변의 단정 문장을 중립화한다."""
+    """출처끼리 결론 방향이 충돌하면, 그 화제를 다루는 답변 문장만 중립화한다."""
     conflicts = validation.get("stance_conflicts", [])
     if not conflicts or "```" in (answer or ""):
         return {"answer": answer or "", "removed": [], "neutralized": False}
+    conflict_sentences = _stance_conflict_sentences(conflicts)
     repaired = answer or ""
     removed = []
     for sentence in _claim_sentences(repaired):
-        if _polarity(sentence) and sentence in repaired:
+        if (
+            _polarity(sentence) and sentence in repaired
+            and (not conflict_sentences or _related_to_conflict(sentence, conflict_sentences))
+        ):
             repaired = repaired.replace(sentence, "")
             removed.append(sentence)
+    if not removed:
+        return {"answer": answer or "", "removed": [], "neutralized": False}
     repaired = re.sub(r"(?m)^\s*(?:[-*]|\d+[.)])\s*$", "", repaired)
     repaired = re.sub(r"\n{3,}", "\n\n", repaired).strip()
     neutral = "확인한 독립 출처마다 가능·허용 여부의 결론이 달라 현재 근거만으로는 확정할 수 없습니다."

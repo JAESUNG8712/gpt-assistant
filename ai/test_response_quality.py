@@ -2,6 +2,10 @@
 import response_quality
 
 
+def _result(title, body, url):
+    return {"title": title, "body": body, "href": url}
+
+
 def main():
     context = "2027년 최저임금은 시간당 10,700원이며 2027년 1월 1일부터 적용됩니다."
     good = response_quality.evaluate(
@@ -121,6 +125,29 @@ def main():
     assert "상반된 결론 자동 보류" in response_quality.format_stance_conflict_repair_note(
         stance_repair
     )
+
+    # 충돌은 특정 화제(무비자 입국 가능 여부) 하나에 대한 것인데, 답변에 전혀
+    # 다른 화제(액체류 반입 가능 여부)의 단정 문장이 함께 있으면 그 무관한
+    # 문장까지 지워지면 안 된다 (실제 재현된 회귀).
+    import search as _search
+    mixed_topic_results = _search._prepare_results("일본 입국 가능한가요", [
+        _result(
+            "외교부 공지", "현재 일본 무비자 입국이 가능합니다.",
+            "https://www.mofa.go.kr/notice1",
+        ),
+        _result(
+            "비자청 공지", "현재 일본 무비자 입국은 불가능합니다.",
+            "https://www.visa.go.kr/notice2",
+        ),
+    ], 5)
+    mixed_topic_validation = _search.search_validation(mixed_topic_results)
+    mixed_topic_repair = response_quality.repair_stance_conflict(
+        "일본 무비자 입국은 가능합니다. 또한 액체류는 100ml 이하만 반입이 가능합니다.",
+        mixed_topic_validation,
+    )
+    assert "입국은 가능합니다" not in mixed_topic_repair["answer"]
+    assert "액체류는 100ml 이하만 반입이 가능합니다" in mixed_topic_repair["answer"]
+    assert mixed_topic_repair["neutralized"] is True
 
     unsupported = response_quality.evaluate(
         "2027년 최저임금 금액을 알려줘",

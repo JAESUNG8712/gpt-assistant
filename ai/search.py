@@ -765,10 +765,14 @@ def _stance_validation(results: list[dict]) -> list[dict]:
     )
     if not has_matching_topic:
         return []
+    # "sentence"는 화면에 직접 노출하지 않지만(표시는 domain만 사용), 답변
+    # 교정 단계(response_quality.repair_stance_conflict)가 실제로 어떤 화제가
+    # 충돌했는지 알아야 그 화제와 무관한 문장까지 함께 지우지 않을 수 있어
+    # 그대로 유지한다.
     return [{
         "kind": "eligibility_stance",
-        "positive": [{k: v for k, v in item.items() if k != "sentence"} for item in positive_entries],
-        "negative": [{k: v for k, v in item.items() if k != "sentence"} for item in negative_entries],
+        "positive": positive_entries,
+        "negative": negative_entries,
     }]
 
 
