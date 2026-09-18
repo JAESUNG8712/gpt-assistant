@@ -338,6 +338,55 @@
     return div.innerHTML;
   }
 
+  // ── 관리자 토큰(AGENT_ADMIN_TOKEN) 처리 ──────────────────────────────
+  // server.js는 2026-08-11부터 에이전트 고정/해제·메모리 저장/삭제 같은
+  // 데이터 변경 API에 ?token= 쿼리 인증을 요구하도록 바뀌었지만, 이 화면은
+  // 그 토큰을 한 번도 보낸 적이 없어 AGENT_ADMIN_TOKEN이 설정된(의도된 안전한)
+  // 배포에서는 모든 쓰기 버튼이 조용히 403으로 실패하고 있었다.
+  // 로그인 시스템이 없는 개인용 도구라, 토큰을 한 번 물어봐 브라우저에
+  // 저장해두고 이후 쓰기 요청마다 자동으로 붙이는 방식으로 복구한다.
+  function getStoredAdminToken() {
+    try { return localStorage.getItem('agentAdminToken') || ''; }
+    catch (e) { return ''; }
+  }
+  function setStoredAdminToken(token) {
+    try {
+      if (token) localStorage.setItem('agentAdminToken', token);
+      else localStorage.removeItem('agentAdminToken');
+    } catch (e) { /* localStorage 사용 불가 환경은 매번 다시 물어봄 */ }
+  }
+  function ensureAdminToken() {
+    let token = getStoredAdminToken();
+    if (!token) {
+      token = window.prompt('관리자 토큰(AGENT_ADMIN_TOKEN)을 입력하세요.\n(서버 배포 시 설정한 값과 동일해야 합니다)') || '';
+      if (token) setStoredAdminToken(token);
+    }
+    return token;
+  }
+  function withToken(url) {
+    const token = ensureAdminToken();
+    const sep = url.includes('?') ? '&' : '?';
+    return token ? `${url}${sep}token=${encodeURIComponent(token)}` : url;
+  }
+  // 쓰기(POST/DELETE) 요청 전용 fetch — 토큰을 자동으로 붙이고, 403이면
+  // 저장된 토큰을 지운 뒤 한 번 다시 물어 재시도한다. 그래도 실패하면
+  // (또는 다른 오류면) 사용자에게 알림을 띄워 "눌렀는데 조용히 아무 일도
+  // 안 일어나는" 상태를 없앤다.
+  async function adminFetch(url, options, retried) {
+    const res = await fetch(withToken(url), options);
+    if (res.status === 403 && !retried) {
+      setStoredAdminToken('');
+      alert('관리자 토큰이 올바르지 않습니다. 다시 입력해주세요.');
+      return adminFetch(url, options, true);
+    }
+    if (!res.ok) {
+      let msg = `요청이 실패했습니다. (HTTP ${res.status})`;
+      try { const body = await res.json(); if (body && body.error) msg = body.error; } catch (e) {}
+      alert(msg);
+    }
+    return res;
+  }
+
   function showPage(name) {
     document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
     document.querySelectorAll('.nav-tab').forEach(t => t.classList.remove('active'));
@@ -374,18 +423,19 @@
   }
 
   function agentCardHTML(agent, isPinned) {
+    const safeId = escapeHtml(agent.id).replace(/'/g, "\\'");
     return `
       <div class="agent-card ${isPinned ? 'pinned' : ''}">
-        <span class="role-badge ${roleBadgeClass(agent.role)}">${roleLabel(agent.role)}</span>
-        <div class="agent-icon">${agent.icon}</div>
-        <div class="agent-name">${agent.name}</div>
-        <div class="agent-desc">${agent.description}</div>
+        <span class="role-badge ${roleBadgeClass(agent.role)}">${escapeHtml(roleLabel(agent.role))}</span>
+        <div class="agent-icon">${escapeHtml(agent.icon)}</div>
+        <div class="agent-name">${escapeHtml(agent.name)}</div>
+        <div class="agent-desc">${escapeHtml(agent.description)}</div>
         <div class="skills-list">
-          ${(agent.skills || []).map(s => `<span class="skill-tag">${s}</span>`).join('')}
+          ${(agent.skills || []).map(s => `<span class="skill-tag">${escapeHtml(s)}</span>`).join('')}
         </div>
         ${isPinned
-          ? `<button class="btn btn-unpin" onclick="unpinAgent('${agent.id}')">고정 해제</button>`
-          : `<button class="btn btn-pin" onclick="pinAgent('${agent.id}')">📌 고정하기</button>`}
+          ? `<button class="btn btn-unpin" onclick="unpinAgent('${safeId}')">고정 해제</button>`
+          : `<button class="btn btn-pin" onclick="pinAgent('${safeId}')">📌 고정하기</button>`}
       </div>`;
   }
 
@@ -438,13 +488,13 @@
   }
 
   async function pinAgent(agentId) {
-    await fetch(`/api/accounts/${currentAccount.id}/pinned-agents/${agentId}`, { method: 'POST' });
-    await selectAccount(currentAccount.id);
+    const res = await adminFetch(`/api/accounts/${currentAccount.id}/pinned-agents/${agentId}`, { method: 'POST' });
+    if (res.ok) await selectAccount(currentAccount.id);
   }
 
   async function unpinAgent(agentId) {
-    await fetch(`/api/accounts/${currentAccount.id}/pinned-agents/${agentId}`, { method: 'DELETE' });
-    await selectAccount(currentAccount.id);
+    const res = await adminFetch(`/api/accounts/${currentAccount.id}/pinned-agents/${agentId}`, { method: 'DELETE' });
+    if (res.ok) await selectAccount(currentAccount.id);
   }
 
   async function loadMemory() {
@@ -476,17 +526,18 @@
     const content = document.getElementById('memory-input').value.trim();
     const type = document.getElementById('memory-type').value;
     if (!content) return alert('내용을 입력해주세요.');
-    await fetch(`/api/accounts/${currentAccount.id}/memory/context`, {
+    const res = await adminFetch(`/api/accounts/${currentAccount.id}/memory/context`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ content, type })
     });
+    if (!res.ok) return;
     document.getElementById('memory-input').value = '';
     await loadMemory();
   }
 
   async function deleteMemory(entryId) {
-    await fetch(`/api/accounts/${currentAccount.id}/memory/context/${entryId}`, { method: 'DELETE' });
-    await loadMemory();
+    const res = await adminFetch(`/api/accounts/${currentAccount.id}/memory/context/${entryId}`, { method: 'DELETE' });
+    if (res.ok) await loadMemory();
   }
 
   (async () => {
