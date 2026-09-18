@@ -1404,10 +1404,40 @@ const _APPROVAL_GATED_FIELDS = {
   ...Object.fromEntries(Object.keys(_WRITE_GATED_FIELDS).map(f =>
     [f, { record: (rec, actor, actorEmp, settings) => _writeGateAllowed(f, rec, actor, actorEmp, settings) }])),
 };
+// payrollAdjustments 신규 레코드가 이미 승인 완료된 복리후생(경조금/학자금) 결재문서에서
+// 그대로 파생된 것인지 검증한다 — empId/금액/구분/연월이 그 문서의 내용과 정확히 일치해야
+// 하고, doc 자체는 이미 _sanitizeApprovalDoc을 통과한(위조 불가능한) 값이어야 한다. 값 하나라도
+// 다르면 거부(사람이 임의 금액을 끼워넣는 것을 막기 위함) — 정상 화면은 항상 doc 내용
+// 그대로만 파생 레코드를 만들므로 이 검사에 걸릴 일이 없다.
+function _welfareAdjustmentMatchesApprovedDoc(rec, doc) {
+  if (!rec || !doc || doc.status !== "approved") return false;
+  if (!["tpl-welfare-condolence", "tpl-welfare-tuition"].includes(doc.templateId)) return false;
+  if (String(doc.authorId) !== String(rec.empId)) return false;
+  const fd = doc.formData || {};
+  if (fd.payrollLinked === false) return false;
+  const amount = Number(fd.requestedAmount) || 0;
+  if (amount <= 0 || Number(rec.amount) !== amount) return false;
+  const approvedAt = new Date(doc.approvedAt || doc.updatedAt || 0);
+  if (Number.isNaN(approvedAt.getTime())) return false;
+  if (Number(rec.year) !== approvedAt.getFullYear() || Number(rec.month) !== approvedAt.getMonth() + 1) return false;
+  const expectedCategory = doc.templateId === "tpl-welfare-condolence" ? "경조사비" : "학자금";
+  return rec.category === expectedCategory;
+}
 // 반환값: 저장할 레코드, 또는 null(= 이 레코드는 아예 쓰지 않음 — 권한 없이 새로 만들어진 것)
-function _sanitizeGatedRecord(field, incoming, stored, actor, actorEmp, settings) {
+// approvalDocForGate: field==="payrollAdjustments"이고 신규 레코드(!stored)일 때만 쓰이는,
+// 호출부가 미리 조회해둔 그 sourceDocId의(이미 _sanitizeApprovalDoc을 거친) 결재문서.
+function _sanitizeGatedRecord(field, incoming, stored, actor, actorEmp, settings, approvalDocForGate) {
   const rule = _APPROVAL_GATED_FIELDS[field];
   if (!rule || !incoming) return incoming;
+  // payrollAdjustments는 admin 전용 필드지만, 복리후생(경조금/학자금) 신청이 승인 완료되는
+  // 순간 이 레코드를 만드는 것은 그 결재선의 "마지막 결재자"(대개 팀장·사업부장, admin이
+  // 아님)다 — 그래서 이 정당한 파생 레코드가 role 게이팅에 걸려 항상 조용히 드롭되고
+  // 있었다(2026-09-18 발견, PR#71 복리후생 신청 기능 감사). admin이 나중에 "급여 종합
+  // 관리" 화면을 열어야만 _syncApprovedWelfareAdjustments()가 뒤늦게 복구해주는 안전망이
+  // 있었지만, 아무도 그 화면을 제때 열지 않으면 그 달 급여에 영구히 반영되지 않는다.
+  // 값 자체가 승인된 문서 내용과 완전히 일치할 때만(위조 불가) role과 무관하게 허용한다.
+  if (field === "payrollAdjustments" && !stored && approvalDocForGate &&
+      _welfareAdjustmentMatchesApprovedDoc(incoming, approvalDocForGate)) return incoming;
   // talentDevPlans의 status는 전용 transition API만 바꿀 수 있다. 일반 /save는 전체
   // 배열을 싣기 때문에 여기서 상태 변경을 허용하면 전용 API의 상태/조직/CAS 검사를
   // 우회할 수 있다. 초회 생성 역시 반드시 draft로 시작한다.
@@ -1879,6 +1909,28 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
     const _actorEmpJson = actor && actor.empId != null
       ? (_fileStore.employees || []).find(e => String(e.id) === String(actor.empId)) || null
       : null;
+    // payrollAdjustments의 복리후생 파생 레코드 예외(_sanitizeGatedRecord 주석 참고)가
+    // 신뢰할 수 있는 결재문서 상태를 보려면, 이 요청에 함께 실려온 approvalDocs를 (나중에
+    // approvalDocsFinal을 만들 때와) 동일하게 미리 위조방지 처리해둬야 한다 — 그래야 같은
+    // 요청 안에서 "방금 승인됨" 상태로 갓 전이된 문서를 이 시점에도 신뢰해 참조할 수 있다.
+    // approvalDocsFinal 계산 시 이 맵을 그대로 재사용해 _sanitizeApprovalDoc을 중복 실행하지
+    // 않는다. sourceDocId가 이번 요청의 approvalDocs에 없으면(이전 요청에서 이미 승인된
+    // 문서를 뒤늦게 참조하는 경우) 저장된 값으로 폴백한다.
+    const _sanitizedIncomingApprovalDocsById = new Map();
+    if (Array.isArray(data.approvalDocs)) {
+      const storedDocsById = new Map((_fileStore.approvalDocs || []).map(d => [String(d.id), d]));
+      for (const d of data.approvalDocs) {
+        if (d && d.id != null) {
+          _sanitizedIncomingApprovalDocsById.set(String(d.id), _sanitizeApprovalDoc(d, storedDocsById.get(String(d.id)), actor));
+        }
+      }
+    }
+    const _storedApprovalDocsById = new Map((_fileStore.approvalDocs || []).map(d => [String(d.id), d]));
+    const _resolveApprovalDocForGate = (id) => {
+      if (id == null) return null;
+      const key = String(id);
+      return _sanitizedIncomingApprovalDocsById.get(key) || _storedApprovalDocsById.get(key) || null;
+    };
     for (const gatedField of Object.keys(_APPROVAL_GATED_FIELDS)) {
       if (!Array.isArray(data[gatedField])) continue;
       const storedList = _fileStore[gatedField] || [];
@@ -1887,7 +1939,9 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
         .map(r => {
           if (!r || r.id == null) return r;
           const stored = storedById.get(String(r.id));
-          let out = _sanitizeGatedRecord(gatedField, r, stored, actor, _actorEmpJson, _fileStore.settings);
+          const approvalDocForGate = (gatedField === "payrollAdjustments" && !stored)
+            ? _resolveApprovalDocForGate(r.sourceDocId) : null;
+          let out = _sanitizeGatedRecord(gatedField, r, stored, actor, _actorEmpJson, _fileStore.settings, approvalDocForGate);
           // 값 범위·형식 검증(_validateFieldValues 주석 참고) — 권한 검사를 통과한 뒤에도
           // 값 자체가 오염돼 있으면 저장본으로 되돌린다(신규 레코드면 드롭).
           if (out && !_validateFieldValues(gatedField, out, storedList)) out = stored ? { ...stored } : null;
@@ -1935,9 +1989,10 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
     // 대조해 권한 없는 결재 칸 변경을 되돌린다.
     const approvalDocsFinal = (() => {
       const storedList = _fileStore.approvalDocs || [];
-      const storedById = new Map(storedList.map(d => [String(d.id), d]));
+      // 위에서(_sanitizedIncomingApprovalDocsById) 이미 sanitize해둔 값을 그대로 재사용 —
+      // _sanitizeApprovalDoc을 여기서 다시 돌리지 않는다(순수 함수라 결과는 같지만 중복 실행).
       const incoming = Array.isArray(data.approvalDocs)
-        ? data.approvalDocs.map(d => (d && d.id != null) ? _sanitizeApprovalDoc(d, storedById.get(String(d.id)), actor) : d)
+        ? data.approvalDocs.map(d => (d && d.id != null) ? _sanitizedIncomingApprovalDocsById.get(String(d.id)) : d)
         : data.approvalDocs;
       let merged = mergeArrayById(storedList, incoming);
       const dead = _tomb["approvalDocs"];
@@ -2188,6 +2243,32 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
       _settingsPg = rows.length ? rows[0].data : {};
       return _settingsPg;
     };
+    // payrollAdjustments의 복리후생 파생 레코드 예외(_sanitizeGatedRecord 주석 참고)용 —
+    // 특정 sourceDocId의 결재문서를 조회해 _sanitizeApprovalDoc으로 위조여부까지 확인한
+    // "신뢰 가능한" 버전을 돌려준다. 이번 요청의 data.approvalDocs에 그 문서가 함께 실려
+    // 왔으면(정상 흐름 — 승인과 동시에 파생 레코드가 만들어짐) 그 값을 sanitize해서 쓰고,
+    // 없으면(이전 요청에서 이미 승인된 문서를 뒤늦게 참조) DB에 이미 저장된 값을 그대로
+    // 신뢰한다. id별로 한 번만 조회해 재사용한다.
+    const _approvalDocForGateCache = new Map();
+    const _getApprovalDocForGate = async (id) => {
+      if (id == null) return null;
+      const key = String(id);
+      if (_approvalDocForGateCache.has(key)) return _approvalDocForGateCache.get(key);
+      const { rows } = companyId
+        ? await client.query(
+            "SELECT data FROM app_collections WHERE collection = 'approvalDocs' AND id = $1 AND (company_id = $2 OR company_id IS NULL)",
+            [key, companyId]
+          )
+        : await client.query(
+            "SELECT data FROM app_collections WHERE collection = 'approvalDocs' AND id = $1",
+            [key]
+          );
+      const stored = rows.length ? rows[0].data : null;
+      const incomingMatch = Array.isArray(data.approvalDocs) ? data.approvalDocs.find(d => d && String(d.id) === key) : null;
+      const resolved = incomingMatch ? _sanitizeApprovalDoc(incomingMatch, stored, actor) : stored;
+      _approvalDocForGateCache.set(key, resolved);
+      return resolved;
+    };
     // 이중예약 검사(_roomReservationConflicts)는 그 회의실의 기존 예약 전체가 필요해
     // 단건 SELECT로는 부족하다 — roomReservations를 실제로 쓸 때만 한 번 조회해 재사용한다.
     let _roomReservationsPg, _roomReservationsPgLoaded = false;
@@ -2234,7 +2315,9 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
           if (field === "approvalDocs") {
             toWrite = _sanitizeApprovalDoc(item, storedItem, actor);
           } else if (_APPROVAL_GATED_FIELDS[field]) {
-            toWrite = _sanitizeGatedRecord(field, item, storedItem, actor, await _getActorEmpPg(), await _getSettingsPg());
+            const approvalDocForGate = (field === "payrollAdjustments" && !storedItem)
+              ? await _getApprovalDocForGate(item.sourceDocId) : null;
+            toWrite = _sanitizeGatedRecord(field, item, storedItem, actor, await _getActorEmpPg(), await _getSettingsPg(), approvalDocForGate);
             if (toWrite === null) continue;   // 권한 없이 새로 만들어진 레코드 — 쓰지 않음
           }
           // 값 범위·형식 검증(_validateFieldValues 주석 참고, JSON모드와 동일 규칙).
