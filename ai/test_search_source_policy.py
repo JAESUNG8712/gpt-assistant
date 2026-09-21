@@ -201,6 +201,28 @@ def main():
     assert len(stale_numeric_answer["unsupported"]) == 1
     assert stale_numeric_answer["unsupported"][0]["source_values"] == ["3.5%"]
 
+    # 시간상 대체는 같은 화제에서만 일어나야 한다 — 한 배치 안에 fresh 결과가
+    # 있다고 해서 완전히 무관한 화제의 stale 결과까지 같이 지워지면 안 된다
+    # (실제 재현된 오탐: 무비자 입국 재개 안내(fresh) 옆에 있던 엔화 환전
+    # 팁(stale)이 화제와 무관하게 통째로 제외되던 문제).
+    unrelated_topics = [
+        {
+            "url": "https://www.mofa.go.kr/notice1", "trust_tier": 3,
+            "freshness": "fresh", "title": "일본 무비자 입국 재개",
+            "body": "일본은 2026년 9월부터 무비자 입국을 재개했습니다.",
+        },
+        {
+            "url": "https://travelblog.example.com/tips", "trust_tier": 1,
+            "freshness": "stale", "title": "엔화 환전 팁",
+            "body": "엔화는 공항보다 시내 환전소가 유리합니다.",
+        },
+    ]
+    unrelated_effective, unrelated_superseded = search._temporally_preferred_results(
+        unrelated_topics
+    )
+    assert len(unrelated_effective) == 2
+    assert unrelated_superseded == []
+
     matching_numbers = search._prepare_results("2027년 최저임금", [
         _result("2027년 최저임금", "시간급 10,700원", "https://www.minimumwage.go.kr/2027"),
         _result("2027년 최저임금", "시급 10,700원", "https://www.moel.go.kr/2027"),

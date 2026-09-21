@@ -518,22 +518,63 @@ def _prepare_results(query: str, raw_results: list[dict], max_results: int) -> l
     return prepared
 
 
+def _result_topical_match(stale: dict, fresh: dict) -> bool:
+    """두 검색 결과가 같은 화제를 다루는지 확인한다.
+
+    같은 검색 배치 안에 전혀 다른 화제(예: 무비자 입국 재개 안내와 엔화 환전
+    팁)가 함께 오면, 한쪽이 fresh라는 이유만으로 무관한 stale 결과까지 시간상
+    제외되던 것을 실측으로 확인했다(오탐). 두 결과의 화제가 실제로 겹칠 때만
+    같은 사실이 시간에 따라 바뀐 것으로 보고 오래된 쪽을 대체 대상으로 인정한다.
+
+    구조화된 수치 주장(numeric_claims)이 있으면 그 항목(label+unit)이 겹치는지를
+    가장 먼저 본다 — 동일 항목·단위의 수치를 각각 담고 있다는 것 자체가 제목·
+    본문 텍스트보다 더 정확한 같은 화제 신호이며, 본문 텍스트가 비어 있는
+    구조화 입력(numeric_claims만 있는 테스트·요약 데이터)에서도 판정할 수 있다.
+    """
+    stale_claim_keys = {
+        (claim.get("label"), claim.get("unit")) for claim in stale.get("numeric_claims", [])
+    }
+    fresh_claim_keys = {
+        (claim.get("label"), claim.get("unit")) for claim in fresh.get("numeric_claims", [])
+    }
+    if stale_claim_keys & fresh_claim_keys:
+        return True
+    fresh_terms = _query_terms(f"{fresh.get('title', '')} {fresh.get('body', '')}")
+    if not fresh_terms:
+        return False
+    stale_compact = re.sub(
+        r"\s+", "", f"{stale.get('title', '')} {stale.get('body', '')}".lower()
+    )
+    matches = sum(1 for term in fresh_terms if _term_in_text(term, stale_compact))
+    return matches >= 1 and matches / len(fresh_terms) >= 0.34
+
+
 def _temporally_preferred_results(results: list[dict]) -> tuple[list[dict], list[dict]]:
-    """최신성 검증 근거가 있으면 같은 판단에서 오래된 자료를 시간상 대체한다.
+    """최신성 검증 근거가 있으면 같은 화제에서 오래된 자료를 시간상 대체한다.
 
     신뢰 출처가 하나라도 있으면 비공식 최신 글이 오래된 공식 자료를 밀어내지
     못하게 신뢰 출처 집합 안에서만 최신 근거의 존재를 판단한다. 최신 날짜가
-    검증되지 않은 자료는 섣불리 버리지 않고 유지하며, 명시적으로 stale인 자료만
-    결론·수치 충돌 판정과 자동 학습에서 제외한다.
+    검증되지 않은 자료는 섣불리 버리지 않고 유지하며, 명시적으로 stale인 자료
+    중에서도 fresh 결과와 실제로 화제가 겹치는 것만 결론·수치 충돌 판정과
+    자동 학습에서 제외한다(무관한 화제까지 같이 지우지 않도록).
     """
     trusted = [result for result in results if result.get("trust_tier", 1) >= 2]
     reference_pool = trusted or results
-    if not any(result.get("freshness") == "fresh" for result in reference_pool):
+    fresh_results = [result for result in reference_pool if result.get("freshness") == "fresh"]
+    if not fresh_results:
         return list(results), []
-    superseded = [result for result in results if result.get("freshness") == "stale"]
+    stale_candidates = [result for result in results if result.get("freshness") == "stale"]
+    if not stale_candidates:
+        return list(results), []
+    superseded = [
+        result for result in stale_candidates
+        if any(_result_topical_match(result, fresh) for fresh in fresh_results)
+    ]
     if not superseded:
         return list(results), []
-    return [result for result in results if result.get("freshness") != "stale"], superseded
+    superseded_ids = {id(result) for result in superseded}
+    effective = [result for result in results if id(result) not in superseded_ids]
+    return effective, superseded
 
 
 def _numeric_claim_validation(results: list[dict]) -> dict:
