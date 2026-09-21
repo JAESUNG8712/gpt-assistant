@@ -1165,6 +1165,55 @@ def repair_answer_numeric_claims(answer: str, validation: dict) -> dict:
     return {"answer": repaired, "repairs": repairs, "unresolved": unresolved}
 
 
+def repair_conflicting_numeric_claims(
+    query: str, answer: str, evidence_validation: dict
+) -> dict:
+    """출처끼리 충돌하는 수치 항목을 답변이 하나로 단정하면 문장째 보류한다.
+
+    `validate_answer_numeric_claims`는 출처에 실제 존재하는 값이면 supported로 본다.
+    따라서 공식 출처 A/B가 각각 다른 값을 낸 상황에서 모델이 A의 값 하나를
+    선택해도 단순 존재 검사는 통과한다. 충돌 항목의 key(연도·의미·단위)와 같은
+    수치 문장만 제거해, 다른 화제의 숫자까지 지우지 않고 확정 불가로 바꾼다.
+    """
+    conflicts = evidence_validation.get("conflicting_claims", [])
+    if not conflicts or not answer or "```" in answer:
+        return {"answer": answer or "", "removed": [], "neutralized": False}
+    conflict_keys = {item.get("key", "") for item in conflicts}
+    repaired, removed = answer, []
+    sentences = [
+        item.strip() for item in re.split(r"(?:\n+|(?<=[.!?])\s+)", answer)
+        if item.strip()
+    ]
+    for sentence in sentences:
+        claims = _extract_numeric_claims(query, {
+            "title": "", "body": sentence, "url": "", "trust_tier": 0,
+        })
+        if any(claim.get("key") in conflict_keys for claim in claims):
+            repaired = repaired.replace(sentence, "")
+            removed.append(sentence)
+    if not removed:
+        return {"answer": answer, "removed": [], "neutralized": False}
+    repaired = re.sub(r"(?m)^\s*(?:[-*]|\d+[.)])\s*$", "", repaired)
+    repaired = re.sub(r"\n{3,}", "\n\n", repaired).strip()
+    detail = _format_conflict_details(conflicts)
+    neutral = (
+        f"검색 근거의 수치가 서로 다릅니다({detail}). "
+        "현재 근거만으로는 하나의 값을 확정할 수 없습니다."
+    )
+    repaired = (repaired + "\n\n" + neutral).strip() if repaired else neutral
+    return {"answer": repaired, "removed": removed, "neutralized": True}
+
+
+def format_numeric_conflict_repair_note(repair: dict) -> str:
+    if not repair.get("neutralized"):
+        return ""
+    return (
+        "\n\n> ⚖️ **충돌 수치 자동 보류**: 독립 출처가 같은 항목에 서로 다른 "
+        "수치를 제시하여 초안의 단정 문장을 제거했습니다. 이 답변과 충돌 근거는 "
+        "장기기억 후보로 저장하지 않습니다."
+    )
+
+
 def format_answer_repair_note(repair: dict) -> str:
     repairs = repair.get("repairs", [])
     if not repairs:

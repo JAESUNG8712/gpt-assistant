@@ -264,6 +264,17 @@ def main():
     assert "기억 학습에서도 제외" in conflict_note
     conflict_context = search.format_search_context(conflicting_numbers)
     assert "하나를 선택하거나 평균내지 말고 '확정 불가'" in conflict_context
+    conflict_answer_repair = search.repair_conflicting_numeric_claims(
+        "2027년 최저임금",
+        "2027년 최저임금은 시간급 10,700원입니다. 추가 확인이 필요합니다.",
+        conflicting_validation,
+    )
+    assert "최저임금은 시간급 10,700원입니다" not in conflict_answer_repair["answer"]
+    assert "하나의 값을 확정할 수 없습니다" in conflict_answer_repair["answer"]
+    assert conflict_answer_repair["neutralized"] is True
+    assert "충돌 수치 자동 보류" in search.format_numeric_conflict_repair_note(
+        conflict_answer_repair
+    )
     unresolved_conflict = search.validate_answer_numeric_claims(
         "2027년 최저임금", "2027년 시간급은 10,900원입니다.", conflicting_numbers
     )

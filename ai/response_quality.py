@@ -512,6 +512,86 @@ def evaluate(
     }
 
 
+def apply_evidence_guard(
+    question: str, answer: str, context: str, search_results: list[dict]
+) -> dict:
+    """검색 기반 생성 답변의 교정·검증·학습 차단을 한 순서로 실행한다.
+
+    main의 스트리밍 경로마다 개별 교정 순서와 차단 플래그를 따로 유지하면 새
+    규칙을 한쪽에만 연결하기 쉽다. 이 함수가 수치 정정 → 충돌 수치 보류 → 근거
+    반대 문장 제거 → 조건 보완 → 결론 충돌 보류를 단일 파이프라인으로 적용하고,
+    실제 최종 답변에 대한 수치 검증과 학습 가능 여부까지 함께 반환한다.
+    """
+    import search as srch
+
+    evidence_validation = srch.search_validation(search_results)
+    initial_claims = srch.validate_answer_numeric_claims(
+        question, answer, search_results
+    )
+    numeric_repair = srch.repair_answer_numeric_claims(answer, initial_claims)
+    current = numeric_repair["answer"]
+
+    numeric_conflict_repair = srch.repair_conflicting_numeric_claims(
+        question, current, evidence_validation
+    )
+    current = numeric_conflict_repair["answer"]
+
+    quality = evaluate(question, current, context)
+    contradiction_repair = repair_contradicted_sentences(
+        question, current, context, quality
+    )
+    current = contradiction_repair["answer"]
+
+    quality = evaluate(question, current, context)
+    condition_repair = repair_missing_conditions(current, quality)
+    current = condition_repair["answer"]
+
+    stance_repair = repair_stance_conflict(current, evidence_validation)
+    current = stance_repair["answer"]
+    final_claims = srch.validate_answer_numeric_claims(
+        question, current, search_results
+    )
+
+    repairs = {
+        "numeric": numeric_repair,
+        "numeric_conflict": numeric_conflict_repair,
+        "contradiction": contradiction_repair,
+        "condition": condition_repair,
+        "stance": stance_repair,
+    }
+    notes = [
+        srch.format_answer_repair_note(numeric_repair),
+        srch.format_numeric_conflict_repair_note(numeric_conflict_repair),
+        format_contradiction_repair_note(contradiction_repair),
+        format_condition_repair_note(condition_repair),
+        format_stance_conflict_repair_note(stance_repair),
+    ]
+    block_reasons = []
+    if evidence_validation.get("conflicting_claims"):
+        block_reasons.append("numeric_evidence_conflict")
+    if evidence_validation.get("stance_conflicts"):
+        block_reasons.append("stance_evidence_conflict")
+    if final_claims.get("unsupported"):
+        block_reasons.append("unsupported_numeric_claim")
+    if any((
+        numeric_repair.get("repairs"),
+        numeric_conflict_repair.get("neutralized"),
+        contradiction_repair.get("removed"),
+        condition_repair.get("added"),
+        stance_repair.get("neutralized"),
+    )):
+        block_reasons.append("answer_repaired")
+    return {
+        "answer": current,
+        "evidence_validation": evidence_validation,
+        "claim_validation": final_claims,
+        "repairs": repairs,
+        "notes": [note for note in notes if note],
+        "should_block_learning": bool(block_reasons),
+        "block_reasons": block_reasons,
+    }
+
+
 def format_warning(result: dict, question: str = "", context: str = "") -> str:
     issues = result.get("issues", [])[:3]
     detail = "; ".join(issues) if issues else "충분한 근거를 확인하지 못함"

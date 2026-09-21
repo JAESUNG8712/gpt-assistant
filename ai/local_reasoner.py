@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from datetime import date
 
 
-LOCAL_REASONING_MARKER = "<!-- local-reasoning-v15 -->"
+LOCAL_REASONING_MARKER = "<!-- local-reasoning-v16 -->"
 
 _STOP = {
     "그리고", "그러면", "그것", "그거", "대한", "대해서", "어떻게", "알려줘",

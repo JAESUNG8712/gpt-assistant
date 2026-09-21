@@ -149,6 +149,31 @@ def main():
     assert "액체류는 100ml 이하만 반입이 가능합니다" in mixed_topic_repair["answer"]
     assert mixed_topic_repair["neutralized"] is True
 
+    # 분산돼 있던 출력 전 교정을 통합 가드 한 번으로 실행하며, 출처 수치가
+    # 충돌할 때 모델이 그중 하나를 골라도 확정 답변이 사용자에게 나가면 안 된다.
+    numeric_conflict_results = _search._prepare_results("2027년 최저임금", [
+        _result(
+            "2027년 최저임금", "2027년 시간급 10,700원",
+            "https://www.minimumwage.go.kr/2027",
+        ),
+        _result(
+            "2027년 최저임금", "2027년 시간급 10,800원",
+            "https://www.moel.go.kr/2027",
+        ),
+    ], 5)
+    guarded = response_quality.apply_evidence_guard(
+        "2027년 최저임금은 얼마야",
+        "2027년 최저임금은 시간급 10,700원입니다.",
+        _search.format_search_context(numeric_conflict_results),
+        numeric_conflict_results,
+    )
+    assert "최저임금은 시간급 10,700원입니다" not in guarded["answer"]
+    assert "하나의 값을 확정할 수 없습니다" in guarded["answer"]
+    assert guarded["repairs"]["numeric_conflict"]["neutralized"] is True
+    assert guarded["should_block_learning"] is True
+    assert "numeric_evidence_conflict" in guarded["block_reasons"]
+    assert any("충돌 수치 자동 보류" in note for note in guarded["notes"])
+
     unsupported = response_quality.evaluate(
         "2027년 최저임금 금액을 알려줘",
         "2027년 최저임금은 시간당 12,000원입니다.", context,

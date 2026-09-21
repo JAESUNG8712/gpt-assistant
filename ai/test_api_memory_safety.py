@@ -36,9 +36,9 @@ def main():
         assert client.get("/health").json()["deliberation_engine"] == "evidence-adaptive-review-v3"
         assert client.get("/health").json()["conversation_engine"] == "contextual-followup-v1"
         health = client.get("/health").json()
-        assert health["offline_reasoning_engine"] == "symbolic-plan-critic-v15"
-        assert health["evidence_reasoning_engine"] == "adaptive-query-temporal-consensus-v8"
-        assert health["response_quality_engine"] == "temporal-evidence-gate-v9"
+        assert health["offline_reasoning_engine"] == "symbolic-plan-critic-v16"
+        assert health["evidence_reasoning_engine"] == "integrated-evidence-guard-v9"
+        assert health["response_quality_engine"] == "conflict-neutralization-gate-v10"
         assert isinstance(client.get("/health").json()["local_generative_configured"], bool)
         assert isinstance(client.get("/health").json()["local_generative_backends"], list)
         assert client.get("/health").json()["memory_schema"] == "typed-scopes-v1"
@@ -497,6 +497,47 @@ def main():
             assert "3.7" not in before_audit_note
             assert "출력 전 자동 교정" in corrected.text, corrected.text
             assert "답변 수치 대조" in corrected.text
+        finally:
+            main.srch.web_search = original_web_search
+            main.intent_agent.analyze = original_intent
+            main.llm.chat_stream = original_chat_stream
+
+        # 두 공식 출처의 같은 수치 항목이 충돌하면 생성 모델이 그중 하나를
+        # 선택했더라도 통합 답변 가드가 출력 전에 확정 문장을 보류한다.
+        numeric_conflict_results = main.srch._prepare_results("2028년 기준금리", [
+            {
+                "title": "2028년 기준금리 전망",
+                "body": "2028년 기준금리는 3.5%입니다.",
+                "href": "https://www.bok.or.kr/2028-a",
+            },
+            {
+                "title": "2028년 기준금리 안내",
+                "body": "2028년 기준금리는 3.7%입니다.",
+                "href": "https://www.kdi.re.kr/2028-b",
+            },
+        ], 5)
+
+        async def one_sided_numeric_stream(*_args, **_kwargs):
+            yield "2028년 기준금리는 3.5%입니다."
+
+        main.srch.web_search = lambda *_args, **_kwargs: numeric_conflict_results
+        main.intent_agent.analyze = no_intent
+        main.llm.chat_stream = one_sided_numeric_stream
+        try:
+            numeric_held = client.post(
+                "/chat",
+                json={
+                    "message": "/검색 2028년 기준금리 알려줘",
+                    "persona": "hr", "session_id": "numeric-conflict-qa",
+                },
+                headers={"X-Admin-Token": owner_token},
+            )
+            assert numeric_held.status_code == 200
+            before_conflict_note = numeric_held.text.split("충돌 수치 자동 보류", 1)[0]
+            assert "기준금리는 3.5%입니다" not in before_conflict_note
+            assert "하나의 값을 확정할 수 없습니다" in before_conflict_note, numeric_held.text
+            assert "충돌 수치 자동 보류" in numeric_held.text
+            assert "수치 확정 보류" in numeric_held.text
         finally:
             main.srch.web_search = original_web_search
             main.intent_agent.analyze = original_intent

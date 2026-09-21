@@ -1135,10 +1135,10 @@ async def chat(req: ChatRequest, request: Request):
         collected = []
         validation_results = []  # 답변·학습 품질 게이트에서 공통 사용
         answer_claim_validation = {"supported": [], "unsupported": []}
-        answer_auto_repair = {"answer": "", "repairs": [], "unresolved": []}
-        contradiction_repair = {"answer": "", "removed": [], "recovered": False}
-        condition_repair = {"answer": "", "added": []}
-        stance_conflict_repair = {"answer": "", "removed": [], "neutralized": False}
+        answer_guard = {
+            "notes": [], "should_block_learning": False,
+            "evidence_validation": {}, "claim_validation": answer_claim_validation,
+        }
         answer_quality = {"should_block_learning": False, "should_warn": False}
         try:
             # ── 경로 STOCK: 주식 분석 파이프라인 실행 ────────
@@ -1453,94 +1453,42 @@ async def chat(req: ChatRequest, request: Request):
                     if no_local:
                         yield "> 📭 직접 일치하는 자료 없음 — 로컬 지식을 검토해 답변합니다.\n\n"
 
-                # 검색 수치가 있는 답변은 생성 초안을 잠시 보관했다가 근거와 대조한 후
+                # 검색 근거가 있는 답변은 초안을 잠시 보관해 통합 가드를 통과시킨 뒤
                 # 처음부터 교정된 본문만 보낸다. 이미 스트리밍한 오답 뒤에 경고만 붙이는
-                # 방식으로는 사용자가 잘못된 값을 먼저 복사할 수 있기 때문이다.
+                # 방식으로는 사용자가 잘못된 결론·수치를 먼저 복사할 수 있기 때문이다.
                 generated_parts = []
-                buffer_for_numeric_validation = bool(validation_results)
+                buffer_for_evidence_guard = bool(validation_results)
                 if persona_features.get("use_coding", False):
                     async for token in llm.chat_stream_coding(
                         history, context, system_prompt=system_with_date,
                         thinking_mode=effective_thinking_mode,
                     ):
                         generated_parts.append(token)
-                        if not buffer_for_numeric_validation:
+                        if not buffer_for_evidence_guard:
                             collected.append(token)
                             yield token
                 else:
                     async for token in llm.chat_stream(history, context, system_prompt=system_with_date, thinking_mode=effective_thinking_mode):
                         generated_parts.append(token)
-                        if not buffer_for_numeric_validation:
+                        if not buffer_for_evidence_guard:
                             collected.append(token)
                             yield token
 
                 generated_answer = "".join(generated_parts)
-                # 생성 초안의 핵심 수치를 검색 스니펫과 대조한다. 공공·전문기관의
-                # 단일 검증값이 있으면 출력 전에 치환하고, 출처가 충돌하면 손대지 않는다.
-                answer_claim_validation = srch.validate_answer_numeric_claims(
-                    search_msg, generated_answer, validation_results
-                )
-                if buffer_for_numeric_validation:
-                    answer_auto_repair = srch.repair_answer_numeric_claims(
-                        generated_answer, answer_claim_validation
-                    )
-                    final_generated_answer = answer_auto_repair["answer"]
-                    # 수치가 같아도 "가능↔불가능", "적용↔제외"처럼 결론 방향이
-                    # 반대면 더 위험하다. 검색 근거와 명백히 반대인 문장은 출력 전에
-                    # 제거하고, 본문이 비면 확인된 근거 문장만으로 안전하게 복구한다.
+                if buffer_for_evidence_guard:
                     import response_quality
-                    pre_output_quality = response_quality.evaluate(
-                        search_msg, final_generated_answer, context
+                    answer_guard = response_quality.apply_evidence_guard(
+                        search_msg, generated_answer, context, validation_results
                     )
-                    contradiction_repair = response_quality.repair_contradicted_sentences(
-                        search_msg, final_generated_answer, context, pre_output_quality
-                    )
-                    final_generated_answer = contradiction_repair["answer"]
-                    condition_quality = response_quality.evaluate(
-                        search_msg, final_generated_answer, context
-                    )
-                    condition_repair = response_quality.repair_missing_conditions(
-                        final_generated_answer, condition_quality
-                    )
-                    final_generated_answer = condition_repair["answer"]
-                    output_evidence_validation = srch.search_validation(validation_results)
-                    stance_conflict_repair = response_quality.repair_stance_conflict(
-                        final_generated_answer, output_evidence_validation
-                    )
-                    final_generated_answer = stance_conflict_repair["answer"]
+                    final_generated_answer = answer_guard["answer"]
+                    answer_claim_validation = answer_guard["claim_validation"]
                     async for chunk in _stream_chunks(final_generated_answer, chunk_size=200):
                         collected.append(chunk)
                         yield chunk
-                    # 후속 품질 판정은 사용자가 실제로 받은 교정본을 기준으로 한다.
-                    answer_claim_validation = srch.validate_answer_numeric_claims(
-                        search_msg, final_generated_answer, validation_results
-                    )
 
-                contradiction_note = response_quality.format_contradiction_repair_note(
-                    contradiction_repair
-                ) if buffer_for_numeric_validation else ""
-                if contradiction_note:
-                    collected.append(contradiction_note)
-                    yield contradiction_note
-
-                condition_note = response_quality.format_condition_repair_note(
-                    condition_repair
-                ) if buffer_for_numeric_validation else ""
-                if condition_note:
-                    collected.append(condition_note)
-                    yield condition_note
-
-                stance_note = response_quality.format_stance_conflict_repair_note(
-                    stance_conflict_repair
-                ) if buffer_for_numeric_validation else ""
-                if stance_note:
-                    collected.append(stance_note)
-                    yield stance_note
-
-                repair_note = srch.format_answer_repair_note(answer_auto_repair)
-                if repair_note:
-                    collected.append(repair_note)
-                    yield repair_note
+                for guard_note in answer_guard["notes"]:
+                    collected.append(guard_note)
+                    yield guard_note
                 validation_note = srch.format_search_validation_note(validation_results)
                 if validation_note:
                     collected.append(validation_note)
@@ -1615,19 +1563,7 @@ async def chat(req: ChatRequest, request: Request):
             from engine import LOCAL_FALLBACK_MARKER
             import local_gen
             from local_reasoner import LOCAL_REASONING_MARKER
-            final_search_validation = (
-                srch.search_validation(validation_results) if validation_results else {}
-            )
-            has_search_conflict = bool(
-                final_search_validation.get("conflicting_claims")
-                or final_search_validation.get("stance_conflicts")
-            )
-            has_unsupported_answer_claim = bool(answer_claim_validation["unsupported"])
             has_memory_search_conflict = bool(memory_search_validation["conflicts"])
-            had_answer_auto_repair = bool(answer_auto_repair["repairs"])
-            had_contradiction_repair = bool(contradiction_repair["removed"])
-            had_condition_repair = bool(condition_repair["added"])
-            had_stance_conflict_repair = bool(stance_conflict_repair["neutralized"])
             # 이미 KB에서 직접 서빙한 답변과 Python 계산 결과는 새 지식이 아니므로
             # 후보 대기열에 다시 쌓지 않는다. LLM이 새로 합성한 답변만 검토 대상으로 둔다.
             is_new_synthesized_answer = (
@@ -1636,13 +1572,8 @@ async def chat(req: ChatRequest, request: Request):
             )
             if (not is_shared_session and is_new_synthesized_answer
                     and ai_reply_clean.strip() and not stock_mode
-                    and not has_search_conflict
-                    and not has_unsupported_answer_claim
                     and not has_memory_search_conflict
-                    and not had_answer_auto_repair
-                    and not had_contradiction_repair
-                    and not had_condition_repair
-                    and not had_stance_conflict_repair
+                    and not answer_guard["should_block_learning"]
                     and not answer_quality["should_block_learning"]
                     and LOCAL_FALLBACK_MARKER not in ai_reply_clean
                     and local_gen.MARKER_TAG not in ai_reply_clean
@@ -3002,9 +2933,9 @@ def health():
         "retrieval_engine": "tfidf-bm25-char3-v1",
         "deliberation_engine": "evidence-adaptive-review-v3",
         "conversation_engine": "contextual-followup-v1",
-        "offline_reasoning_engine": "symbolic-plan-critic-v15",
-        "evidence_reasoning_engine": "adaptive-query-temporal-consensus-v8",
-        "response_quality_engine": "temporal-evidence-gate-v9",
+        "offline_reasoning_engine": "symbolic-plan-critic-v16",
+        "evidence_reasoning_engine": "integrated-evidence-guard-v9",
+        "response_quality_engine": "conflict-neutralization-gate-v10",
         "local_generative_configured": bool(local_backends),
         "local_generative_backends": local_backends,
         "memory_schema": "typed-scopes-v1",
