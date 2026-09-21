@@ -281,10 +281,25 @@ test.describe("로그인·기본 네비게이션", () => {
       await applyPerformanceRewards();
       const after = payrollAdjustments.find(a => a.sourceKey === row.sourceKey).month;
       const protectedToast = Array.from(document.querySelectorAll('.toast[role="alert"]')).at(-1)?.textContent || "";
+      const safeEmp = {
+        ...emp,
+        id: "performance-e2e-safe", empNo: "E2E-PERF-SAFE", name: "성과연계검증-추가",
+        hrHistory: emp.hrHistory.map((item, index) => ({ ...item, id: `safe-history-${index}` })),
+      };
+      employees.push(safeEmp);
+      compGradeResults[safeEmp.id] = { "2026": { score: 80, grade: "A" } };
+      mandatoryTraining.push(
+        { id: "mt-perf-safe-1", empId: safeEmp.id, trainingType: "privacy", year: 2026, completedAt: "2026-03-01" },
+        { id: "mt-perf-safe-2", empId: safeEmp.id, trainingType: "safety", year: 2026, completedAt: "2026-03-02" },
+      );
+      await applyPerformanceRewards();
+      const safeLinked = payrollAdjustments.find(a => a.sourceKey === "performance:2026:performance-e2e-safe");
+      const protectedAfterPartial = payrollAdjustments.find(a => a.sourceKey === row.sourceKey).month;
+      const partialToast = Array.from(document.querySelectorAll('.toast')).at(-1)?.textContent || "";
       gotoPage("payroll-mgmt");
-      return { applied, linked, dialogText, drift: { needsReview: drift.needsReview, reasons: drift.driftReasons }, protectedResult: { before, after, protectedToast }, ready: row.ready, overall: row.overall, grade: row.grade, rate: row.rate, basisSalary: row.salaryBasis.amount, salaryReconstructed: row.salaryBasis.reconstructed, evaluationReward: row.evaluationReward, awardBonus: row.awardBonus, duplicateAwards: row.awards.duplicateCount, amount: row.amount, training: [row.education.completed, row.education.required] };
+      return { applied, linked, dialogText, drift: { needsReview: drift.needsReview, reasons: drift.driftReasons }, protectedResult: { before, after, protectedToast }, partialResult: { safeYear: safeLinked?.year, safeMonth: safeLinked?.month, protectedAfter: protectedAfterPartial, partialToast }, ready: row.ready, overall: row.overall, grade: row.grade, rate: row.rate, basisSalary: row.salaryBasis.amount, salaryReconstructed: row.salaryBasis.reconstructed, evaluationReward: row.evaluationReward, awardBonus: row.awardBonus, duplicateAwards: row.awards.duplicateCount, amount: row.amount, training: [row.education.completed, row.education.required] };
     });
-    expect({ ...candidate, linked: undefined, dialogText: undefined, drift: undefined, protectedResult: undefined }).toEqual({ applied: true, linked: undefined, dialogText: undefined, drift: undefined, protectedResult: undefined, ready: true, overall: 86, grade: "A", rate: 10, basisSalary: 60000000, salaryReconstructed: true, evaluationReward: 6000000, awardBonus: 1000000, duplicateAwards: 1, amount: 7000000, training: [2, 2] });
+    expect({ ...candidate, linked: undefined, dialogText: undefined, drift: undefined, protectedResult: undefined, partialResult: undefined }).toEqual({ applied: true, linked: undefined, dialogText: undefined, drift: undefined, protectedResult: undefined, partialResult: undefined, ready: true, overall: 86, grade: "A", rate: 10, basisSalary: 60000000, salaryReconstructed: true, evaluationReward: 6000000, awardBonus: 1000000, duplicateAwards: 1, amount: 7000000, training: [2, 2] });
     expect(candidate.linked).toHaveLength(1);
     expect(candidate.linked[0]).toMatchObject({ year: 2099, month: 3, amount: 7000000, evaluationReward: 6000000, awardBonus: 1000000, awardCounts: { "우수": 0, "최우수": 1 }, ignoredDuplicateAwards: 1, basisAnnualSalary: 60000000, basisSalaryReconstructed: true, mandatoryTraining: { required: 2, completed: 2, allCompleted: true }, source: "performance_reward" });
     expect(candidate.dialogText).toContain("직원 성과·교육·포상·보상 통합 현황");
@@ -295,6 +310,8 @@ test.describe("로그인·기본 네비게이션", () => {
     expect(candidate.drift.reasons).toEqual(expect.arrayContaining(["최종 성과급", "종합 점수", "종합 등급", "지급률"]));
     expect(candidate.protectedResult).toMatchObject({ before: 3, after: 3 });
     expect(candidate.protectedResult.protectedToast).toMatch(/확정/);
+    expect(candidate.partialResult).toMatchObject({ safeYear: 2100, safeMonth: 4, protectedAfter: 3 });
+    expect(candidate.partialResult.partialToast).toMatch(/확정·마감 1명은 제외/);
     await expect(page.getByText("평가 → 성과급 → 급여 연계")).toBeVisible();
     await expect(page.getByText("지급 대상")).toBeVisible();
   });
