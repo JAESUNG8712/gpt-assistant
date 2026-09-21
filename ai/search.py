@@ -161,12 +161,17 @@ def _freshness_status(query: str, result: dict, policy: dict) -> tuple[str, str]
         return ("unverified" if needs_freshness else "unknown"), ""
     published_iso = published.isoformat()
     explicit_years = {int(year) for year in re.findall(r"(?<!\d)(20\d{2})년?", query)}
+    # "2026년 현재"처럼 연도와 최신성 표현이 함께 있으면 연도가 맞다는 이유만으로
+    # 수개월 전 자료를 최신으로 통과시키면 안 된다. 최신성 요청이 우선이며, 미래
+    # 날짜는 게시일인지 시행예정일인지 구분할 수 없으므로 검증되지 않은 것으로 둔다.
+    if needs_freshness and policy.get("fresh_days"):
+        age_days = (date.today() - published).days
+        if age_days < -1:
+            return "unverified", published_iso
+        return ("fresh" if age_days <= policy["fresh_days"] else "stale"), published_iso
     if published.year in explicit_years:
         return "matched_year", published_iso
-    if not needs_freshness or not policy.get("fresh_days"):
-        return "dated", published_iso
-    age_days = (date.today() - published).days
-    return ("fresh" if age_days <= policy["fresh_days"] else "stale"), published_iso
+    return "dated", published_iso
 
 
 def _query_terms(query: str) -> list[str]:
@@ -513,7 +518,26 @@ def _prepare_results(query: str, raw_results: list[dict], max_results: int) -> l
     return prepared
 
 
+def _temporally_preferred_results(results: list[dict]) -> tuple[list[dict], list[dict]]:
+    """최신성 검증 근거가 있으면 같은 판단에서 오래된 자료를 시간상 대체한다.
+
+    신뢰 출처가 하나라도 있으면 비공식 최신 글이 오래된 공식 자료를 밀어내지
+    못하게 신뢰 출처 집합 안에서만 최신 근거의 존재를 판단한다. 최신 날짜가
+    검증되지 않은 자료는 섣불리 버리지 않고 유지하며, 명시적으로 stale인 자료만
+    결론·수치 충돌 판정과 자동 학습에서 제외한다.
+    """
+    trusted = [result for result in results if result.get("trust_tier", 1) >= 2]
+    reference_pool = trusted or results
+    if not any(result.get("freshness") == "fresh" for result in reference_pool):
+        return list(results), []
+    superseded = [result for result in results if result.get("freshness") == "stale"]
+    if not superseded:
+        return list(results), []
+    return [result for result in results if result.get("freshness") != "stale"], superseded
+
+
 def _numeric_claim_validation(results: list[dict]) -> dict:
+    results, superseded = _temporally_preferred_results(results)
     grouped = {}
     for result in results:
         for claim in result.get("numeric_claims", []):
@@ -564,7 +588,11 @@ def _numeric_claim_validation(results: list[dict]) -> dict:
                     for value, evidence in sorted(values.items())
                 ],
             })
-    return {"corroborated": corroborated, "conflicts": conflicts}
+    return {
+        "corroborated": corroborated,
+        "conflicts": conflicts,
+        "superseded_results": superseded,
+    }
 
 
 def validate_answer_numeric_claims(query: str, answer: str, results: list[dict]) -> dict:
@@ -572,6 +600,7 @@ def validate_answer_numeric_claims(query: str, answer: str, results: list[dict])
     empty = {"supported": [], "unsupported": []}
     if not answer or not results:
         return empty
+    results, _ = _temporally_preferred_results(results)
 
     source_groups = {}
     for result in results:
@@ -731,6 +760,7 @@ def _stance_validation(results: list[dict]) -> list[dict]:
     있을 뿐인 경우를 실측으로 확인했다. 실제로 반대 결론을 낸 문장끼리
     화제어가 겹치는 쌍이 최소 하나 있어야만 충돌로 보고한다.
     """
+    results, _ = _temporally_preferred_results(results)
     trusted = [result for result in results if result.get("trust_tier", 1) >= 2]
     eligible = trusted or results
     by_stance = {"positive": {}, "negative": {}}
@@ -786,22 +816,28 @@ def _format_stance_conflict_details(conflicts: list[dict]) -> str:
 
 
 def search_validation(results: list[dict], query: str = "") -> dict:
-    domains = {_evidence_domain(_domain(result.get("url", ""))) for result in results if result.get("url")}
+    effective_results, superseded_results = _temporally_preferred_results(results)
+    domains = {
+        _evidence_domain(_domain(result.get("url", "")))
+        for result in effective_results if result.get("url")
+    }
     official_domains = {
         _evidence_domain(_domain(result.get("url", "")))
-        for result in results if result.get("url") and result.get("trust_tier", 1) >= 3
+        for result in effective_results
+        if result.get("url") and result.get("trust_tier", 1) >= 3
     }
     authoritative_domains = {
         _evidence_domain(_domain(result.get("url", "")))
-        for result in results if result.get("url") and result.get("trust_tier", 1) >= 2
+        for result in effective_results
+        if result.get("url") and result.get("trust_tier", 1) >= 2
     }
     official_count = len(official_domains)
     authoritative_count = len(authoritative_domains)
     stale_count = sum(1 for result in results if result.get("freshness") == "stale")
     freshness_required = any(result.get("freshness") in ("fresh", "stale", "unverified") for result in results)
-    freshness_verified = any(result.get("freshness") == "fresh" for result in results)
-    claim_validation = _numeric_claim_validation(results)
-    stance_conflicts = _stance_validation(results)
+    freshness_verified = any(result.get("freshness") == "fresh" for result in effective_results)
+    claim_validation = _numeric_claim_validation(effective_results)
+    stance_conflicts = _stance_validation(effective_results)
     requirements = (
         analyze_query_requirements(query) if query else
         next(
@@ -810,10 +846,10 @@ def search_validation(results: list[dict], query: str = "") -> dict:
         )
     )
     covered_aspects = {
-        aspect for result in results for aspect in result.get("covered_aspects", [])
+        aspect for result in effective_results for aspect in result.get("covered_aspects", [])
     }
     covered_years = {
-        year for result in results for year in result.get("matched_years", [])
+        year for result in effective_results for year in result.get("matched_years", [])
     }
     # 비교 질문은 개별 문서에 '비교'라는 말이 없어도 요청한 연도별 근거가 모두
     # 확보되면 자료 집합 전체에서 충족된 것으로 본다.
@@ -856,6 +892,8 @@ def search_validation(results: list[dict], query: str = "") -> dict:
         "domain_count": len(domains),
         "official_count": official_count,
         "stale_count": stale_count,
+        "superseded_count": len(superseded_results),
+        "superseded_urls": [result.get("url", "") for result in superseded_results],
         "freshness_required": freshness_required,
         "freshness_verified": freshness_verified,
         "corroborated_claims": claim_validation["corroborated"],
@@ -923,8 +961,13 @@ def search_and_learn(query: str, max_results: int = 5, persona_id: str = "hr") -
         # 어느 결론이 맞는지 확정되지 않은 원문을 장기기억에 개별 사실로 저장하면
         # 이후 검색 순서에 따라 한쪽만 재사용될 수 있으므로 전부 보류한다.
         return results
+    superseded_urls = set(validation.get("superseded_urls", []))
     conflict_keys = {claim["key"] for claim in validation["conflicting_claims"]}
     for r in results:
+        if r.get("url") in superseded_urls:
+            # 최신 날짜가 확인된 근거가 있는데도 예전 상태를 다시 장기기억에
+            # 넣으면 이후 검색 순서에 따라 구정보가 살아날 수 있으므로 저장하지 않는다.
+            continue
         if topic != "general" and r.get("trust_tier", 1) < 2:
             continue
         # 같은 사실 후보의 수치가 충돌한 문서는 확정 지식으로 장기기억에 저장하지 않는다.
@@ -946,6 +989,7 @@ def format_search_context(results: list[dict]) -> str:
     if not results:
         return ""
     validation = search_validation(results)
+    superseded_urls = set(validation.get("superseded_urls", []))
     requirements = next(
         (result.get("query_requirements") for result in results if result.get("query_requirements")),
         {"years": [], "aspects": [], "anchors": []},
@@ -963,6 +1007,7 @@ def format_search_context(results: list[dict]) -> str:
         f" / 교차확인 수치: {len(validation['corroborated_claims'])}개"
         f" / 충돌 수치: {len(validation['conflicting_claims'])}개"
         f" / 결론 충돌: {len(validation['stance_conflicts'])}개"
+        f" / 시간상 제외: {validation['superseded_count']}개"
     )
     missing_labels = [
         _ASPECT_LABELS.get(aspect, aspect) for aspect in validation["missing_aspects"]
@@ -979,6 +1024,9 @@ def format_search_context(results: list[dict]) -> str:
         + f" / 질문 근거 충족률: {validation['evidence_coverage']:.0%}"
         + "\n규칙: 공식 출처를 우선하고, 단일 비공식 출처의 수치·주장은 확정 사실로 표현하지 마세요. "
           "출처끼리 내용이 다르면 차이를 밝히고 추가 확인이 필요하다고 안내하세요. "
+          + (("최신 날짜가 검증되어 오래된 근거 "
+              f"{validation['superseded_count']}개는 현재 결론과 학습에 사용하지 마세요. ")
+             if validation["superseded_count"] else "")
           + (("충돌 상세: " + _format_conflict_details(validation["conflicting_claims"]) + ". "
               "충돌한 수치는 하나를 선택하거나 평균내지 말고 '확정 불가'로 답하세요. ")
              if validation["conflicting_claims"] else "")
@@ -993,11 +1041,21 @@ def format_search_context(results: list[dict]) -> str:
     for i, r in enumerate(results, 1):
         url = r.get("url", "")
         domain = _domain(url) if url else "출처 없음"
+        if url in superseded_urls:
+            parts.append(
+                f"[검색결과 {i} | 시간상 제외 | 출처: {domain}"
+                f" | 날짜 근거: {r.get('date_evidence') or '확인 불가'}"
+                f" | 최신성: {r.get('freshness', 'unknown')}]\n"
+                "상태: 더 최신인 검증 근거가 있어 현재 답변 내용과 학습 근거에서 제외됨\n"
+                f"URL: {url}"
+            )
+            continue
         title = r.get("title", "").strip()
         body = r.get("body", "").strip()
         parts.append(
             f"[검색결과 {i} | {r.get('source_label', '일반')} | 출처: {domain}"
-            f" | 날짜 근거: {r.get('date_evidence') or '확인 불가'}]\n"
+            f" | 날짜 근거: {r.get('date_evidence') or '확인 불가'}"
+            f" | 최신성: {r.get('freshness', 'unknown')}]\n"
             f"제목: {title}\n"
             f"내용: {body}\n"
             f"URL: {url}"
@@ -1027,6 +1085,8 @@ def format_search_validation_note(results: list[dict]) -> str:
         f" · 공식 {validation['official_count']}개 · 독립 출처 {validation['domain_count']}개"
         f"{freshness}{claim_text}"
     )
+    if validation["superseded_count"]:
+        summary += f" · 오래된 근거 {validation['superseded_count']}건 제외"
     if validation["conflicting_claims"]:
         summary += (
             "\n> ⚠️ **수치 확정 보류**: "

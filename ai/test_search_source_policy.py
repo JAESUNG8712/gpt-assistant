@@ -1,6 +1,6 @@
 """주제별 공식 출처·최신성·교차검증 검색 정책 회귀 테스트."""
 
-from datetime import date
+from datetime import date, timedelta
 
 import search
 
@@ -130,6 +130,76 @@ def main():
     stale_validation = search.search_validation(stale_official)
     assert stale_official[0]["freshness"] == "stale"
     assert stale_validation["confidence"] == "limited"
+
+    # 연도와 "현재"가 함께 있어도 연도 일치가 최신성 검사를 우회하면 안 된다.
+    two_days_ago = date.today() - timedelta(days=2)
+    explicit_year_status, _ = search._freshness_status(
+        f"{two_days_ago.year}년 현재 기준금리",
+        _result("기준금리", f"{two_days_ago.isoformat()} 기준금리 안내", "https://bok.or.kr/rate"),
+        {"fresh_days": 1},
+    )
+    assert explicit_year_status == "stale"
+    future_day = date.today() + timedelta(days=30)
+    future_status, _ = search._freshness_status(
+        "현재 기준금리",
+        _result("기준금리", f"{future_day.isoformat()} 시행 예정", "https://bok.or.kr/rate"),
+        {"fresh_days": 45},
+    )
+    assert future_status == "unverified"
+
+    # 최신 공식 근거가 있으면 같은 화제의 오래된 반대 결론은 현재 결론을
+    # 충돌로 되돌리지 않고, 판단·자동학습에서 시간상 대체되어야 한다.
+    fresh_day = date.today().isoformat()
+    old_day = (date.today() - timedelta(days=240)).isoformat()
+    temporal_stance = search._prepare_results("현재 일본 입국 가능한가요", [
+        _result(
+            "일본 입국 최신 안내", f"{fresh_day} 대한민국 국민의 일본 입국이 가능합니다.",
+            "https://www.mofa.go.kr/current-entry",
+        ),
+        _result(
+            "일본 입국 과거 제한", f"{old_day} 대한민국 국민의 일본 입국이 불가능합니다.",
+            "https://www.visa.go.kr/old-entry",
+        ),
+    ], 5)
+    temporal_validation = search.search_validation(temporal_stance)
+    assert temporal_validation["stance_conflicts"] == []
+    assert temporal_validation["superseded_count"] == 1
+    assert temporal_validation["confidence"] == "high"
+    temporal_context = search.format_search_context(temporal_stance)
+    assert "오래된 근거 1개는 현재 결론과 학습에 사용하지 마세요" in temporal_context
+    assert "일본 입국이 불가능합니다" not in temporal_context
+    assert "시간상 제외" in temporal_context
+    temporal_note = search.format_search_validation_note(temporal_stance)
+    assert "오래된 근거 1건 제외" in temporal_note
+
+    temporal_numeric_results = [
+        {
+            "url": "https://www.bok.or.kr/current", "trust_tier": 3,
+            "freshness": "fresh", "numeric_claims": [{
+                "key": "current:interest_rate:%", "year": "current",
+                "label": "interest_rate", "unit": "%", "value": "3.5",
+                "display": "3.5%", "domain": "bok.or.kr",
+                "evidence_domain": "bok.or.kr", "trust_tier": 3,
+            }],
+        },
+        {
+            "url": "https://www.kdi.re.kr/old", "trust_tier": 2,
+            "freshness": "stale", "numeric_claims": [{
+                "key": "current:interest_rate:%", "year": "current",
+                "label": "interest_rate", "unit": "%", "value": "4",
+                "display": "4%", "domain": "kdi.re.kr",
+                "evidence_domain": "kdi.re.kr", "trust_tier": 2,
+            }],
+        },
+    ]
+    temporal_numeric = search._numeric_claim_validation(temporal_numeric_results)
+    assert temporal_numeric["conflicts"] == []
+    assert len(temporal_numeric["superseded_results"]) == 1
+    stale_numeric_answer = search.validate_answer_numeric_claims(
+        "현재 기준금리", "현재 기준금리는 4%입니다.", temporal_numeric_results,
+    )
+    assert len(stale_numeric_answer["unsupported"]) == 1
+    assert stale_numeric_answer["unsupported"][0]["source_values"] == ["3.5%"]
 
     matching_numbers = search._prepare_results("2027년 최저임금", [
         _result("2027년 최저임금", "시간급 10,700원", "https://www.minimumwage.go.kr/2027"),
@@ -291,6 +361,17 @@ def main():
         search.web_search = original_web_search
         search.store_memory = original_store
     assert stored == []
+
+    learned_temporal = []
+    search.store_memory = lambda text, metadata: learned_temporal.append((text, metadata))
+    search.web_search = lambda *_args, **_kwargs: temporal_stance
+    try:
+        search.search_and_learn("현재 일본 입국 가능한가요")
+    finally:
+        search.web_search = original_web_search
+        search.store_memory = original_store
+    assert len(learned_temporal) == 1
+    assert "최신 안내" in learned_temporal[0][0]
 
     # 2026-09-14 발견·수정: 질의 단어에 붙은 조사가 검색 결과 문장의 조사와 달라
     # ("최저임금은" 질문 vs "최저임금이" 결과) 리터럴 부분일치가 실패해 명백히
