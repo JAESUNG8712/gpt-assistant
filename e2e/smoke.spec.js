@@ -296,8 +296,11 @@ test.describe("로그인·기본 네비게이션", () => {
       const safeLinked = payrollAdjustments.find(a => a.sourceKey === "performance:2026:performance-e2e-safe");
       const protectedAfterPartial = payrollAdjustments.find(a => a.sourceKey === row.sourceKey).month;
       const partialToast = Array.from(document.querySelectorAll('.toast')).at(-1)?.textContent || "";
+      openPerformanceRewardPreview();
+      const previewText = document.querySelector('[role="dialog"][aria-modal="true"]')?.textContent || "";
+      closeModal();
       gotoPage("payroll-mgmt");
-      return { applied, linked, dialogText, drift: { needsReview: drift.needsReview, reasons: drift.driftReasons }, protectedResult: { before, after, protectedToast }, partialResult: { safeYear: safeLinked?.year, safeMonth: safeLinked?.month, protectedAfter: protectedAfterPartial, partialToast }, ready: row.ready, overall: row.overall, grade: row.grade, rate: row.rate, basisSalary: row.salaryBasis.amount, salaryReconstructed: row.salaryBasis.reconstructed, evaluationReward: row.evaluationReward, awardBonus: row.awardBonus, duplicateAwards: row.awards.duplicateCount, amount: row.amount, training: [row.education.completed, row.education.required] };
+      return { applied, linked, dialogText, drift: { needsReview: drift.needsReview, reasons: drift.driftReasons }, protectedResult: { before, after, protectedToast }, partialResult: { safeYear: safeLinked?.year, safeMonth: safeLinked?.month, protectedAfter: protectedAfterPartial, partialToast, previewText }, ready: row.ready, overall: row.overall, grade: row.grade, rate: row.rate, basisSalary: row.salaryBasis.amount, salaryReconstructed: row.salaryBasis.reconstructed, evaluationReward: row.evaluationReward, awardBonus: row.awardBonus, duplicateAwards: row.awards.duplicateCount, amount: row.amount, training: [row.education.completed, row.education.required] };
     });
     expect({ ...candidate, linked: undefined, dialogText: undefined, drift: undefined, protectedResult: undefined, partialResult: undefined }).toEqual({ applied: true, linked: undefined, dialogText: undefined, drift: undefined, protectedResult: undefined, partialResult: undefined, ready: true, overall: 86, grade: "A", rate: 10, basisSalary: 60000000, salaryReconstructed: true, evaluationReward: 6000000, awardBonus: 1000000, duplicateAwards: 1, amount: 7000000, training: [2, 2] });
     expect(candidate.linked).toHaveLength(1);
@@ -312,8 +315,12 @@ test.describe("로그인·기본 네비게이션", () => {
     expect(candidate.protectedResult.protectedToast).toMatch(/확정/);
     expect(candidate.partialResult).toMatchObject({ safeYear: 2100, safeMonth: 4, protectedAfter: 3 });
     expect(candidate.partialResult.partialToast).toMatch(/확정·마감 1명은 제외/);
+    expect(candidate.partialResult.previewText).toMatch(/확정·마감 보호/);
+    expect(candidate.partialResult.previewText).toMatch(/실제 반영 예정 합계/);
+    expect(candidate.partialResult.previewText).toMatch(/1명 제외/);
     await expect(page.getByText("평가 → 성과급 → 급여 연계")).toBeVisible();
-    await expect(page.getByText("지급 대상")).toBeVisible();
+    await expect(page.getByText("이번 반영 가능")).toBeVisible();
+    await expect(page.getByText("확정·마감 제외")).toBeVisible();
   });
 
   test("직원 상세에서 연봉을 수정해도 연봉 변동 이력이 자동 생성된다", async ({ page }) => {
