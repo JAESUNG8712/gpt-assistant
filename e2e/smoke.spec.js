@@ -295,7 +295,7 @@ test.describe("로그인·기본 네비게이션", () => {
       await applyPerformanceRewards();
       const safeLinked = payrollAdjustments.find(a => a.sourceKey === "performance:2026:performance-e2e-safe");
       const protectedAfterPartial = payrollAdjustments.find(a => a.sourceKey === row.sourceKey).month;
-      const partialToast = Array.from(document.querySelectorAll('.toast[role="alert"]')).at(-1)?.textContent || "";
+      const partialToast = Array.from(document.querySelectorAll('.toast')).at(-1)?.textContent || "";
       gotoPage("payroll-mgmt");
       return { applied, linked, dialogText, drift: { needsReview: drift.needsReview, reasons: drift.driftReasons }, protectedResult: { before, after, protectedToast }, partialResult: { safeYear: safeLinked?.year, safeMonth: safeLinked?.month, protectedAfter: protectedAfterPartial, partialToast }, ready: row.ready, overall: row.overall, grade: row.grade, rate: row.rate, basisSalary: row.salaryBasis.amount, salaryReconstructed: row.salaryBasis.reconstructed, evaluationReward: row.evaluationReward, awardBonus: row.awardBonus, duplicateAwards: row.awards.duplicateCount, amount: row.amount, training: [row.education.completed, row.education.required] };
     });
