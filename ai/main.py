@@ -32,6 +32,7 @@ import personal_memory
 import deliberation
 import chat_evidence
 import stock_chat_sources
+import chat_postprocess
 
 # ── 사용자 입력 전처리: 띄어쓰기 복합어 → 붙여쓰기 (질의 조인) ─────
 # engine.py에도 이름이 비슷한 _COMPOUND_MAP이 있어 중복처럼 보이지만 방향이
@@ -1137,6 +1138,7 @@ async def chat(req: ChatRequest, request: Request):
 
     async def generate():
         collected = []
+        reference_items = []
         prepared_evidence = chat_evidence.PreparedEvidence(
             context="", references=[], bundle=evidence_bundle,
         )
@@ -1296,7 +1298,7 @@ async def chat(req: ChatRequest, request: Request):
 
             # ── 경로 B: LLM 보강 (중간 신뢰도 or 법령 실시간) ──
             else:
-                reference_items = []  # 자동학습 증거와 답변 끝의 참고 자료에 공통 사용
+                # reference_items는 자동학습 증거와 답변 끝의 참고 자료에 공통 사용
                 if len(matched_persona_ids) > 1:
                     combo_notice = f"🔎 **{persona['name']} 통합 분석**\n\n"
                     collected.append(combo_notice)
@@ -1389,93 +1391,55 @@ async def chat(req: ChatRequest, request: Request):
                     collected.append(ref_footer)
                     yield ref_footer
 
-            # 이미 저장된 답이나 계산 결과가 아닌 생성 답변은 관련성·근거·누락·수치·반복을
-            # 외부 API 없이 점검한다. 낮은 품질은 장기기억 오염을 막고 사용자에게 표시한다.
-            if not direct_calc and not kb_direct and not company_kb_only and not clarification_msg:
-                import response_quality
-                previous_answer = next((
-                    item.get("content", "") for item in reversed(selection_history)
-                    if item.get("role") == "assistant"
-                ), "")
-                answer_quality = response_quality.evaluate(
-                    search_msg, "".join(collected), locals().get("context", ""),
-                    previous_answer,
-                )
-                if answer_quality["should_warn"]:
-                    quality_note = response_quality.format_warning(
-                        answer_quality, search_msg, locals().get("context", "")
-                    )
-                    collected.append(quality_note)
-                    yield quality_note
-
-            ai_reply = "".join(collected)
-            # <think>...</think> 태그를 DB/KB 저장 전에 제거
-            # (생각 과정이 대화 이력·자동학습 KB에 오염되는 것 방지)
-            ai_reply_clean = re.sub(r'<think>[\s\S]*?</think>\s*', '', ai_reply).strip()
-
-            mem.save_message(
-                "user", user_msg, persona=persona_id, session_id=session_scope,
-                command_status=command_status,
-            )
-            mem.save_message(
-                "assistant", ai_reply_clean or ai_reply,
-                persona=persona_id, session_id=session_scope,
-                command_status=({
-                    "answer_quality": {
-                        "score": answer_quality.get("score"),
-                        "grade": answer_quality.get("grade", ""),
-                        "issues": answer_quality.get("issues", [])[:5],
-                        "learning_blocked": answer_quality.get("should_block_learning", False),
-                    }
-                } if "score" in answer_quality else None),
-            )
-
-            # ── 자동 학습 후보: 검증되지 않은 답변은 영구 RAG에 바로 넣지 않음 ──
-            # 최소 품질 게이트를 통과한 답변도 memory_candidates(pending)에만 저장하고,
-            # 소유자가 승인한 경우에만 source='승인학습' 장기기억으로 승격한다.
-            # stock 페르소나는 실시간 시장 데이터 기반이어야 하므로 자동 학습에서 계속 제외
-            # (LLM 일반 지식이 KB에 누적되면 이후 오염 답변 재발 위험)
-            # LOCAL_FALLBACK_MARKER 포함 응답(모든 LLM API 소진 시 원본 자료 그대로 노출한
-            # 미합성 폴백)은 정상 답변이 아니므로 auto_learn에서 제외 — 안 그러면 이 저품질
-            # 원본 덤프가 KB에 학습되어 이후 정상 답변을 덮어쓰는 재오염 위험이 있음
-            from engine import LOCAL_FALLBACK_MARKER
-            import local_gen
-            from local_reasoner import LOCAL_REASONING_MARKER
-            has_memory_search_conflict = bool(memory_search_validation["conflicts"])
-            # 이미 KB에서 직접 서빙한 답변과 Python 계산 결과는 새 지식이 아니므로
-            # 후보 대기열에 다시 쌓지 않는다. LLM이 새로 합성한 답변만 검토 대상으로 둔다.
+            # 생성 답변만 관련성·근거·누락·수치·반복을 점검한다. 판정 결과는
+            # 대화 저장 메타데이터와 기억 후보 차단에 동일하게 사용한다.
             is_new_synthesized_answer = (
                 not kb_direct and not direct_calc and not company_kb_only
                 and not clarification_msg
             )
-            if (not is_shared_session and is_new_synthesized_answer
-                    and ai_reply_clean.strip() and not stock_mode
-                    and not has_memory_search_conflict
-                    and not answer_guard["should_block_learning"]
-                    and not answer_quality["should_block_learning"]
-                    and LOCAL_FALLBACK_MARKER not in ai_reply_clean
-                    and local_gen.MARKER_TAG not in ai_reply_clean
-                    and LOCAL_REASONING_MARKER not in ai_reply_clean):
-                candidate_source = (
-                    "법령실시간" if law_ctx else
-                    "웹검색보강" if search_ctx else
-                    "KB보강생성" if rag_ctx else
-                    "생성답변"
-                )
-                candidate_id = mem.auto_learn(
-                    user_msg, ai_reply_clean, persona=persona_id,
-                    session_id=session_scope, source=candidate_source,
-                    evidence=[
-                        {**ref, "type": "external_reference"}
-                        for ref in reference_items
-                    ] + ([{
-                        "title": f"기존 기억: {kb.get('top_source', '')}",
-                        "type": "memory_context",
-                    }] if kb.get("top_source") else []),
-                )
-                if no_local and candidate_id:
-                    yield ("\n\n---\n> 📝 기억 후보로 저장했습니다. "
-                           "검토·승인된 내용만 장기기억에 반영됩니다.")
+            previous_answer = next((
+                item.get("content", "") for item in reversed(selection_history)
+                if item.get("role") == "assistant"
+            ), "")
+            answer_quality, quality_note = chat_postprocess.evaluate_generated_answer(
+                is_new_synthesized_answer,
+                search_msg,
+                "".join(collected),
+                locals().get("context", ""),
+                previous_answer,
+            )
+            if quality_note:
+                collected.append(quality_note)
+                yield quality_note
+
+            ai_reply = "".join(collected)
+            ai_reply_clean = chat_postprocess.clean_reply(ai_reply)
+            learning_decision = chat_postprocess.decide_learning(
+                is_shared_session=is_shared_session,
+                is_new_synthesized_answer=is_new_synthesized_answer,
+                reply=ai_reply_clean,
+                stock_mode=stock_mode,
+                memory_search_validation=memory_search_validation,
+                answer_guard=answer_guard,
+                answer_quality=answer_quality,
+                law_context=law_ctx,
+                search_context=search_ctx,
+                rag_context=rag_ctx,
+                references=reference_items,
+                top_memory_source=kb.get("top_source", ""),
+            )
+            candidate_id = chat_postprocess.persist(
+                user_message=user_msg,
+                assistant_reply=ai_reply_clean,
+                persona_id=persona_id,
+                session_scope=session_scope,
+                command_status=command_status,
+                answer_quality=answer_quality,
+                learning_decision=learning_decision,
+            )
+            if no_local and candidate_id:
+                yield ("\n\n---\n> 📝 기억 후보로 저장했습니다. "
+                       "검토·승인된 내용만 장기기억에 반영됩니다.")
 
         except Exception as e:
             import traceback
@@ -2815,6 +2779,7 @@ def health():
         "evidence_reasoning_engine": "chat-evidence-pipeline-v11",
         "response_quality_engine": "unified-conflict-guard-v12",
         "stock_source_engine": "isolated-parallel-collector-v1",
+        "chat_postprocess_engine": "explainable-learning-gate-v1",
         "local_generative_configured": bool(local_backends),
         "local_generative_backends": local_backends,
         "memory_schema": "typed-scopes-v1",
