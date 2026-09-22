@@ -930,6 +930,7 @@ async def chat(req: ChatRequest, request: Request):
     memory_conflict_ctx = ""
     memory_search_validation = {"matched": [], "conflicts": []}
     results = []  # 아래 reference_items 참조 시 항상 정의되어 있어야 함
+    evidence_bundle = srch.build_search_evidence_bundle([], search_msg)
     if ((effective_use_search or auto_web_search) and not clarification_msg
             and not personal_memory_reply):
         # 채팅 중 검색 결과 원문은 검증 전 데이터이므로 즉시 장기기억에 쓰지 않는다.
@@ -937,7 +938,8 @@ async def chat(req: ChatRequest, request: Request):
         results = await asyncio.get_event_loop().run_in_executor(
             None, lambda: srch.web_search(search_msg)
         )
-        search_ctx = srch.format_search_context(results)
+        evidence_bundle = srch.build_search_evidence_bundle(results, search_msg)
+        search_ctx = evidence_bundle["context"]
         if results and rag_ctx:
             memory_search_validation = srch.validate_memory_against_search(
                 search_msg, rag_ctx, results
@@ -949,7 +951,7 @@ async def chat(req: ChatRequest, request: Request):
     # 검색 결과가 있으면 출처 신뢰도뿐 아니라 질문의 연도·요청 항목 충족률까지
     # 자체 판단한다. 자동 모드에서 충돌·누락이 발견되면 검토 수준을 강화하되,
     # 사용자가 `/빠르게` 등으로 직접 지정한 선택은 변경하지 않는다.
-    evidence_validation = srch.search_validation(results) if results else {}
+    evidence_validation = evidence_bundle["validation"]
     if evidence_validation:
         thinking_decision = deliberation.strengthen_for_evidence(
             thinking_decision, evidence_validation, requested_thinking_mode,
@@ -1134,6 +1136,7 @@ async def chat(req: ChatRequest, request: Request):
     async def generate():
         collected = []
         validation_results = []  # 답변·학습 품질 게이트에서 공통 사용
+        active_evidence_bundle = evidence_bundle
         answer_claim_validation = {"supported": [], "unsupported": []}
         answer_guard = {
             "notes": [], "should_block_learning": False,
@@ -1364,13 +1367,11 @@ async def chat(req: ChatRequest, request: Request):
 
                     auto_search_results = _gather_results[0] if not isinstance(_gather_results[0], Exception) else []
                     validation_results = auto_search_results
-                    auto_search_ctx = srch.format_search_context(auto_search_results)
-                    for r in auto_search_results:
-                        reference_items.append({
-                            "title": r.get("title", ""),
-                            "url": r.get("url", ""),
-                            "source_label": r.get("source_label", ""),
-                        })
+                    active_evidence_bundle = srch.build_search_evidence_bundle(
+                        auto_search_results, search_msg
+                    )
+                    auto_search_ctx = active_evidence_bundle["context"]
+                    reference_items.extend(active_evidence_bundle["references"])
 
                     idx = 1
                     if _news_task:
@@ -1415,6 +1416,7 @@ async def chat(req: ChatRequest, request: Request):
                         context = ""
                 else:
                     validation_results = results
+                    active_evidence_bundle = evidence_bundle
                     if law_ctx:
                         reference_items.extend(
                             {
@@ -1424,13 +1426,7 @@ async def chat(req: ChatRequest, request: Request):
                             } for r in law_results
                         )
                     if search_ctx:
-                        reference_items.extend(
-                            {
-                                "title": r.get("title", ""),
-                                "url": r.get("url", ""),
-                                "source_label": r.get("source_label", ""),
-                            } for r in results
-                        )
+                        reference_items.extend(active_evidence_bundle["references"])
                     raw_ctx = "\n\n".join(filter(None, [
                         memory_conflict_ctx, law_ctx, rag_ctx, search_ctx,
                     ]))
@@ -1478,7 +1474,8 @@ async def chat(req: ChatRequest, request: Request):
                 if buffer_for_evidence_guard:
                     import response_quality
                     answer_guard = response_quality.apply_evidence_guard(
-                        search_msg, generated_answer, context, validation_results
+                        search_msg, generated_answer, context, validation_results,
+                        evidence_validation=active_evidence_bundle["validation"],
                     )
                     final_generated_answer = answer_guard["answer"]
                     answer_claim_validation = answer_guard["claim_validation"]
@@ -1489,7 +1486,7 @@ async def chat(req: ChatRequest, request: Request):
                 for guard_note in answer_guard["notes"]:
                     collected.append(guard_note)
                     yield guard_note
-                validation_note = srch.format_search_validation_note(validation_results)
+                validation_note = active_evidence_bundle["note"]
                 if validation_note:
                     collected.append(validation_note)
                     yield validation_note
@@ -2933,9 +2930,9 @@ def health():
         "retrieval_engine": "tfidf-bm25-char3-v1",
         "deliberation_engine": "evidence-adaptive-review-v3",
         "conversation_engine": "contextual-followup-v1",
-        "offline_reasoning_engine": "symbolic-plan-critic-v16",
-        "evidence_reasoning_engine": "integrated-evidence-guard-v9",
-        "response_quality_engine": "conflict-neutralization-gate-v10",
+        "offline_reasoning_engine": "symbolic-plan-critic-v17",
+        "evidence_reasoning_engine": "search-evidence-bundle-v10",
+        "response_quality_engine": "unified-conflict-guard-v11",
         "local_generative_configured": bool(local_backends),
         "local_generative_backends": local_backends,
         "memory_schema": "typed-scopes-v1",

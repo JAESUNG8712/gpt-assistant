@@ -161,12 +161,23 @@ def main():
             "https://www.moel.go.kr/2027",
         ),
     ], 5)
-    guarded = response_quality.apply_evidence_guard(
-        "2027년 최저임금은 얼마야",
-        "2027년 최저임금은 시간급 10,700원입니다.",
-        _search.format_search_context(numeric_conflict_results),
-        numeric_conflict_results,
+    bundled_validation = _search.search_validation(numeric_conflict_results)
+    original_search_validation = _search.search_validation
+    _search.search_validation = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+        AssertionError("통합 가드가 이미 계산된 검증을 다시 실행함")
     )
+    try:
+        guarded = response_quality.apply_evidence_guard(
+            "2027년 최저임금은 얼마야",
+            "2027년 최저임금은 시간급 10,700원입니다.",
+            _search.format_search_context(
+                numeric_conflict_results, validation=bundled_validation
+            ),
+            numeric_conflict_results,
+            evidence_validation=bundled_validation,
+        )
+    finally:
+        _search.search_validation = original_search_validation
     assert "최저임금은 시간급 10,700원입니다" not in guarded["answer"]
     assert "하나의 값을 확정할 수 없습니다" in guarded["answer"]
     assert guarded["repairs"]["numeric_conflict"]["neutralized"] is True

@@ -513,7 +513,8 @@ def evaluate(
 
 
 def apply_evidence_guard(
-    question: str, answer: str, context: str, search_results: list[dict]
+    question: str, answer: str, context: str, search_results: list[dict],
+    evidence_validation: dict | None = None,
 ) -> dict:
     """검색 기반 생성 답변의 교정·검증·학습 차단을 한 순서로 실행한다.
 
@@ -524,7 +525,8 @@ def apply_evidence_guard(
     """
     import search as srch
 
-    evidence_validation = srch.search_validation(search_results)
+    if evidence_validation is None:
+        evidence_validation = srch.search_validation(search_results)
     initial_claims = srch.validate_answer_numeric_claims(
         question, answer, search_results
     )

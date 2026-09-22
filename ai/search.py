@@ -1025,11 +1025,12 @@ def search_and_learn(query: str, max_results: int = 5, persona_id: str = "hr") -
         })
     return results
 
-def format_search_context(results: list[dict]) -> str:
+def format_search_context(results: list[dict], validation: dict | None = None) -> str:
     """LLM 컨텍스트용: 각 결과에 출처 도메인을 명시해 LLM이 출처를 인용할 수 있게 함"""
     if not results:
         return ""
-    validation = search_validation(results)
+    if validation is None:
+        validation = search_validation(results)
     superseded_urls = set(validation.get("superseded_urls", []))
     requirements = next(
         (result.get("query_requirements") for result in results if result.get("query_requirements")),
@@ -1104,11 +1105,14 @@ def format_search_context(results: list[dict]) -> str:
     return "\n\n".join(parts)
 
 
-def format_search_validation_note(results: list[dict]) -> str:
+def format_search_validation_note(
+    results: list[dict], validation: dict | None = None
+) -> str:
     """사용자가 검색 근거의 품질과 수치 충돌 여부를 직접 확인하는 짧은 표시."""
     if not results:
         return ""
-    validation = search_validation(results)
+    if validation is None:
+        validation = search_validation(results)
     labels = {"high": "높음", "medium": "보통", "limited": "제한적", "low": "낮음", "conflict": "출처 충돌"}
     freshness = ""
     if validation["freshness_required"]:
@@ -1143,6 +1147,40 @@ def format_search_validation_note(results: list[dict]) -> str:
               "충돌 근거는 기억 학습에서도 제외합니다."
         )
     return summary
+
+
+def build_search_evidence_bundle(results: list[dict], query: str = "") -> dict:
+    """검색 근거를 한 번 판정해 생성·표시·출처에 동일한 결과를 전달한다.
+
+    호출부가 검증, 컨텍스트, 품질 표시를 각각 만들면 같은 자료를 반복 구조화하고
+    규칙 변경 시 서로 다른 판정이 섞일 수 있다. 시간상 제외된 자료는 참고 링크에서도
+    제거하여 현재 근거처럼 다시 노출하지 않는다.
+    """
+    if not results:
+        return {
+            "results": [], "validation": {}, "context": "", "note": "",
+            "references": [],
+        }
+    validation = search_validation(results, query=query)
+    excluded = set(validation.get("superseded_urls", []))
+    references = [
+        {
+            "title": result.get("title", ""),
+            "url": result.get("url", ""),
+            "source_label": result.get("source_label", ""),
+            "freshness": result.get("freshness", "unknown"),
+            "date_evidence": result.get("date_evidence", ""),
+        }
+        for result in results
+        if result.get("url") and result.get("url") not in excluded
+    ]
+    return {
+        "results": results,
+        "validation": validation,
+        "context": format_search_context(results, validation=validation),
+        "note": format_search_validation_note(results, validation=validation),
+        "references": references,
+    }
 
 
 def format_answer_claim_validation_note(validation: dict) -> str:

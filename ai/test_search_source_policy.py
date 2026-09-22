@@ -172,6 +172,26 @@ def main():
     temporal_note = search.format_search_validation_note(temporal_stance)
     assert "오래된 근거 1건 제외" in temporal_note
 
+    validation_calls = []
+    original_search_validation = search.search_validation
+    def tracked_search_validation(*args, **kwargs):
+        validation_calls.append((args, kwargs))
+        return original_search_validation(*args, **kwargs)
+    search.search_validation = tracked_search_validation
+    try:
+        temporal_bundle = search.build_search_evidence_bundle(
+            temporal_stance, "현재 일본 입국 가능한가요"
+        )
+    finally:
+        search.search_validation = original_search_validation
+    assert len(validation_calls) == 1
+    assert temporal_bundle["validation"]["superseded_count"] == 1
+    assert temporal_bundle["context"] == temporal_context
+    assert temporal_bundle["note"] == temporal_note
+    assert len(temporal_bundle["references"]) == 1
+    assert temporal_bundle["references"][0]["url"].endswith("current-entry")
+    assert search.build_search_evidence_bundle([], "빈 검색")["validation"] == {}
+
     temporal_numeric_results = [
         {
             "url": "https://www.bok.or.kr/current", "trust_tier": 3,
