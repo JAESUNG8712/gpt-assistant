@@ -31,6 +31,7 @@ import search_ambiguity
 import personal_memory
 import deliberation
 import chat_evidence
+import stock_chat_sources
 
 # ── 사용자 입력 전처리: 띄어쓰기 복합어 → 붙여쓰기 (질의 조인) ─────
 # engine.py에도 이름이 비슷한 _COMPOUND_MAP이 있어 중복처럼 보이지만 방향이
@@ -1306,83 +1307,26 @@ async def chat(req: ChatRequest, request: Request):
 
                     # 언급 종목 추출
                     _chat_targets = _extract_stock_targets(user_msg)
-
-                    # ① DuckDuckGo 일반 검색 (기존)
-                    _ddg_task = asyncio.get_event_loop().run_in_executor(
-                        None, lambda: srch.web_search(search_msg)
+                    stock_sources = await stock_chat_sources.collect(
+                        search_msg, _chat_targets, _ticker_for_name,
                     )
-
-                    # ② 종목별 뉴스 수집 (병렬)
-                    _news_ctx = ""
-                    _news_task = None
-                    if _chat_targets:
-                        async def _collect_news():
-                            from stock_analysis.utils.news_collector import get_stock_news, format_news_context
-                            tasks_n = []
-                            for _n in _chat_targets[:3]:
-                                tasks_n.append(get_stock_news(_n, _ticker_for_name(_n), max_results=6))
-                            results_n = await asyncio.gather(*tasks_n, return_exceptions=True)
-                            parts = []
-                            for res in results_n:
-                                if isinstance(res, Exception):
-                                    continue
-                                ctx = format_news_context(res)
-                                if ctx:
-                                    parts.append(ctx)
-                            return "\n\n".join(parts)
-                        _news_task = asyncio.ensure_future(_collect_news())
-
-                    # ③ 종목별 증권사 리포트 수집 (병렬)
-                    _broker_ctx = ""
-                    _broker_task = None
-                    if _chat_targets:
-                        async def _collect_broker():
-                            from stock_analysis.utils.securities_report import get_all_reports
-                            tasks_b = []
-                            for _n in _chat_targets[:3]:
-                                tasks_b.append(get_all_reports(_ticker_for_name(_n), _n, max_reports=5))
-                            results_b = await asyncio.gather(*tasks_b, return_exceptions=True)
-                            parts = []
-                            for _n, res in zip(_chat_targets[:3], results_b):
-                                if isinstance(res, Exception):
-                                    continue
-                                s = res.get("summary", "")
-                                if s:
-                                    parts.append(s)
-                                for rep in res.get("reports", []):
-                                    reference_items.append({"title": f"{_n} - {rep.get('제목','')}", "url": rep.get("링크", "")})
-                            return "\n\n".join(parts)
-                        _broker_task = asyncio.ensure_future(_collect_broker())
-
-                    # 모든 비동기 작업 완료 대기
-                    _gather_tasks = [_ddg_task]
-                    if _news_task:
-                        _gather_tasks.append(_news_task)
-                    if _broker_task:
-                        _gather_tasks.append(_broker_task)
-
-                    _gather_results = await asyncio.gather(*_gather_tasks, return_exceptions=True)
-
-                    auto_search_results = _gather_results[0] if not isinstance(_gather_results[0], Exception) else []
+                    if stock_sources.errors:
+                        print(
+                            "⚠️ 주식 채팅 일부 자료 수집 실패(정상 자료로 계속): "
+                            + ", ".join(stock_sources.errors)
+                        )
                     active_evidence_bundle = srch.build_search_evidence_bundle(
-                        auto_search_results, search_msg
+                        stock_sources.search_results, search_msg
                     )
-
-                    idx = 1
-                    if _news_task:
-                        _news_ctx = _gather_results[idx] if not isinstance(_gather_results[idx], Exception) else ""
-                        idx += 1
-                    if _broker_task:
-                        _broker_ctx = _gather_results[idx] if not isinstance(_gather_results[idx], Exception) else ""
 
                     prepared_evidence, sources = chat_evidence.prepare_stock(
                         search_msg,
                         intent_agent.format_intent_context(intent_info),
                         stock_report_ctx,
-                        _broker_ctx,
-                        _news_ctx,
+                        stock_sources.broker_context,
+                        stock_sources.news_context,
                         active_evidence_bundle,
-                        reference_items,
+                        stock_sources.broker_references,
                     )
                     reference_items = prepared_evidence.references
                     context = prepared_evidence.context
@@ -2870,6 +2814,7 @@ def health():
         "offline_reasoning_engine": "symbolic-plan-critic-v18",
         "evidence_reasoning_engine": "chat-evidence-pipeline-v11",
         "response_quality_engine": "unified-conflict-guard-v12",
+        "stock_source_engine": "isolated-parallel-collector-v1",
         "local_generative_configured": bool(local_backends),
         "local_generative_backends": local_backends,
         "memory_schema": "typed-scopes-v1",
