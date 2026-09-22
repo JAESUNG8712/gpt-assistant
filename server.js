@@ -1568,6 +1568,22 @@ function _validateFieldValues(field, rec, storedList) {
         }
       }
     }
+  } else if (field === "payrollAdjustments") {
+    // 급여 조정은 최종 지급합계와 과세소득에 그대로 더해진다. 기존에는 역할/menuPerms만
+    // 검사해 admin이 직접 /save를 호출하면 비정상 연월·NaN성 문자열·과도한 금액·빈 구분도
+    // 저장할 수 있었다. 수동·복리후생·성과급 세 생성 경로가 공유하는 최소 스키마를 서버에도
+    // 동일하게 적용해 UI 우회와 손상된 클라이언트 상태를 모두 차단한다.
+    if (String(rec.empId ?? "").trim() === "") return false;
+    const yr = Number(rec.year), mo = Number(rec.month), amount = Number(rec.amount);
+    if (!Number.isInteger(yr) || yr < 2000 || yr > 2100) return false;
+    if (!Number.isInteger(mo) || mo < 1 || mo > 12) return false;
+    if (!Number.isFinite(amount) || amount === 0 || Math.abs(amount) > 1_000_000_000_000) return false;
+    const category = typeof rec.category === "string" ? rec.category.trim() : "";
+    if (!category || category.length > 100) return false;
+    if (rec.note != null && (typeof rec.note !== "string" || rec.note.length > 500)) return false;
+    if (rec.source != null && (typeof rec.source !== "string" || !rec.source.trim() || rec.source.length > 80)) return false;
+    if (rec.sourceKey != null && (typeof rec.sourceKey !== "string" || rec.sourceKey.length > 200)) return false;
+    if (rec.taxable != null && typeof rec.taxable !== "boolean") return false;
   } else if (field === "yearEndSettlements") {
     // dependents(부양가족 수)는 인적공제 계산(1인당 150만원)에 그대로 곱해져 결정세액을
     // 좌우한다 — 비정상 값(음수·과도하게 큰 값)이 저장되면 그 직원의 세액 계산 전체가

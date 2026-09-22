@@ -14229,7 +14229,8 @@ function _applyWelfareApproval(doc){
   if(payrollAdjustments.some(a=>String(a.sourceDocId)===String(doc.id)))return;
   const fd=doc.formData||{};if(fd.payrollLinked===false)return;
   const approved=new Date(doc.approvedAt||doc.updatedAt||Date.now()),amount=Number(fd.requestedAmount)||0;if(amount<=0)return;
-  payrollAdjustments.push({id:`payadj-welfare-${doc.id}`,empId:doc.authorId,year:approved.getFullYear(),month:approved.getMonth()+1,category:doc.templateId==="tpl-welfare-condolence"?"경조사비":"학자금",amount,note:`${fd.policyName||"복리후생"} · 결재 ${doc.id}`,sourceDocId:doc.id,createdAt:doc.approvedAt||new Date().toISOString(),updatedAt:new Date().toISOString()});
+  const built=_buildPayrollAdjustment({id:`payadj-welfare-${doc.id}`,empId:doc.authorId,year:approved.getFullYear(),month:approved.getMonth()+1,category:doc.templateId==="tpl-welfare-condolence"?"경조사비":"학자금",amount,note:`${fd.policyName||"복리후생"} · 결재 ${doc.id}`,source:"welfare_approval",sourceDocId:doc.id,createdAt:doc.approvedAt||new Date().toISOString(),taxable:true});
+  if(built.record)payrollAdjustments.push(built.record);
 }
 function _syncApprovedWelfareAdjustments(){
   if(currentUser?.role!=="admin")return 0;
@@ -15099,6 +15100,17 @@ function _calcPayItemAmount(ci,monthly){
   const raw=ci.calcType==="monthlyRate"?monthly*(Number(ci.rate)||0)/100:Number(ci.amount)||0;
   return Math.max(0,Math.round(raw));
 }
+function _buildPayrollAdjustment(input={},existing=null){
+  const empId=input.empId??existing?.empId,year=Number(input.year??existing?.year),month=Number(input.month??existing?.month),amount=Number(input.amount??existing?.amount),category=String(input.category??existing?.category??"").trim(),note=String(input.note??existing?.note??"").trim();
+  if(String(empId??"").trim()==="")return{record:null,error:"급여 조정 대상 직원이 필요합니다."};
+  if(!Number.isInteger(year)||year<2000||year>2100)return{record:null,error:"급여 조정 연도는 2000~2100년이어야 합니다."};
+  if(!Number.isInteger(month)||month<1||month>12)return{record:null,error:"급여 조정 월은 1~12월이어야 합니다."};
+  if(!Number.isFinite(amount)||amount===0||Math.abs(amount)>1_000_000_000_000)return{record:null,error:"급여 조정 금액은 0원이 아닌 1조원 이하의 숫자여야 합니다."};
+  if(!category||category.length>100)return{record:null,error:"급여 조정 구분은 1~100자로 입력하세요."};
+  if(note.length>500)return{record:null,error:"급여 조정 비고는 500자 이하로 입력하세요."};
+  const now=new Date().toISOString(),source=String(input.source??existing?.source??"manual").trim()||"manual";
+  return{record:{...(existing||{}),...input,id:input.id||existing?.id||`payadj-${Date.now()}-${Math.random().toString(36).slice(2,8)}`,empId,year,month,category,amount:Math.round(amount),note,source,taxable:input.taxable??existing?.taxable??true,createdAt:existing?.createdAt||input.createdAt||now,updatedAt:now},error:""};
+}
 function calcStandardPayslip(emp,year,month){
   const meal=200000;
   const transportIncluded=100000; // 교통비는 별도 구분 없이 기본급에 포함
@@ -15475,7 +15487,9 @@ async function applyPerformanceRewards(){
     const existingRow=duplicateRows.find(a=>a.id===deterministicId)||duplicateRows[0];
     for(const duplicate of duplicateRows){if(duplicate===existingRow)continue;_tombstone("payrollAdjustments",duplicate.id);const duplicateIndex=payrollAdjustments.indexOf(duplicate);if(duplicateIndex>=0)payrollAdjustments.splice(duplicateIndex,1);}
     const policy=_performanceRewardPolicy(),weights=settings.scoreWeights||{kpi:60,comp:20,ls:20};
-    const next={...(existingRow||{}),id:existingRow?.id||deterministicId,empId:r.emp.id,year,month,category:"성과급",amount:r.amount,note:`${evalYear}년 종합평가 ${r.grade}등급 (${r.rate}%) · 포상가산 ${fmtSalary(r.awardBonus)}`,source:"performance_reward",sourceKey:r.sourceKey,evalYear,kpiScore:r.kpiScore,compScore:r.compScore,overallScore:r.overall,rewardGrade:r.grade,rewardRate:r.rate,evaluationReward:r.evaluationReward,awardBonus:r.awardBonus,awardCounts:{...r.awards.counts},ignoredDuplicateAwards:r.awards.duplicateCount,mandatoryTraining:{required:r.education.required,completed:r.education.completed,allCompleted:r.education.allCompleted},policyBasis:policy.basis,basisAmount:r.basis,basisAnnualSalary:r.salaryBasis.amount,basisSalaryCutoff:r.salaryBasis.cutoff,basisSalaryReconstructed:r.salaryBasis.reconstructed,rewardCap:policy.maxAmount,scoreWeights:{kpi:Number(weights.kpi)||0,comp:Number(weights.comp)||0,ls:Number(weights.ls)||0},taxable:true,createdAt:existingRow?.createdAt||now,updatedAt:now};
+    const built=_buildPayrollAdjustment({id:existingRow?.id||deterministicId,empId:r.emp.id,year,month,category:"성과급",amount:r.amount,note:`${evalYear}년 종합평가 ${r.grade}등급 (${r.rate}%) · 포상가산 ${fmtSalary(r.awardBonus)}`,source:"performance_reward",sourceKey:r.sourceKey,evalYear,kpiScore:r.kpiScore,compScore:r.compScore,overallScore:r.overall,rewardGrade:r.grade,rewardRate:r.rate,evaluationReward:r.evaluationReward,awardBonus:r.awardBonus,awardCounts:{...r.awards.counts},ignoredDuplicateAwards:r.awards.duplicateCount,mandatoryTraining:{required:r.education.required,completed:r.education.completed,allCompleted:r.education.allCompleted},policyBasis:policy.basis,basisAmount:r.basis,basisAnnualSalary:r.salaryBasis.amount,basisSalaryCutoff:r.salaryBasis.cutoff,basisSalaryReconstructed:r.salaryBasis.reconstructed,rewardCap:policy.maxAmount,scoreWeights:{kpi:Number(weights.kpi)||0,comp:Number(weights.comp)||0,ls:Number(weights.ls)||0},taxable:true,createdAt:existingRow?.createdAt||now},existingRow);
+    if(!built.record){showToast(built.error||"성과급 조정 데이터를 만들 수 없습니다.","error");return;}
+    const next=built.record;
     if(existingRow)Object.assign(existingRow,next);else payrollAdjustments.push(next);
   }
   for(const old of previousLinks){if(old.year===year&&old.month===month)continue;const idx=payslips.findIndex(p=>String(p.empId)===String(old.emp.id)&&p.year===old.year&&p.month===old.month&&!p.confirmed);if(idx>=0)payslips[idx]=calcStandardPayslip(old.emp,old.year,old.month);}
@@ -15747,8 +15761,9 @@ function addPayAdjustment(empId){
   const category=$("#pay-adj-category").value;
   const amount=+$("#pay-adj-amount").value;
   const note=$("#pay-adj-note").value;
-  if(!amount){showToast("금액을 입력하세요.","error");return;}
-  payrollAdjustments.push({id:`payadj-${Date.now()}-${Math.floor(Math.random()*1000)}`,empId,year:s.year,month:s.month,category,amount,note,createdAt:new Date().toISOString()});
+  const built=_buildPayrollAdjustment({empId,year:s.year,month:s.month,category,amount,note,source:"manual",taxable:true});
+  if(!built.record){showToast(built.error,"error");return;}
+  payrollAdjustments.push(built.record);
   autoSaveToServerIfEnabled();showToast("조정 항목이 추가되었습니다.","success");
   openPayAdjustModal(empId);_payMgmtRefresh();
 }
