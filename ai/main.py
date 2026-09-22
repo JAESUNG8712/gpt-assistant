@@ -30,6 +30,7 @@ import quality_eval
 import search_ambiguity
 import personal_memory
 import deliberation
+import chat_evidence
 
 # ── 사용자 입력 전처리: 띄어쓰기 복합어 → 붙여쓰기 (질의 조인) ─────
 # engine.py에도 이름이 비슷한 _COMPOUND_MAP이 있어 중복처럼 보이지만 방향이
@@ -1135,12 +1136,13 @@ async def chat(req: ChatRequest, request: Request):
 
     async def generate():
         collected = []
-        validation_results = []  # 답변·학습 품질 게이트에서 공통 사용
-        active_evidence_bundle = evidence_bundle
-        answer_claim_validation = {"supported": [], "unsupported": []}
+        prepared_evidence = chat_evidence.PreparedEvidence(
+            context="", references=[], bundle=evidence_bundle,
+        )
         answer_guard = {
+            "answer": "", "claim_validation": {"supported": [], "unsupported": []},
             "notes": [], "should_block_learning": False,
-            "evidence_validation": {}, "claim_validation": answer_claim_validation,
+            "evidence_validation": {},
         }
         answer_quality = {"should_block_learning": False, "should_warn": False}
         try:
@@ -1293,17 +1295,13 @@ async def chat(req: ChatRequest, request: Request):
 
             # ── 경로 B: LLM 보강 (중간 신뢰도 or 법령 실시간) ──
             else:
-                reference_items = []  # 답변 끝에 붙일 참고 자료 링크 ([{title, url}])
+                reference_items = []  # 자동학습 증거와 답변 끝의 참고 자료에 공통 사용
                 if len(matched_persona_ids) > 1:
                     combo_notice = f"🔎 **{persona['name']} 통합 분석**\n\n"
                     collected.append(combo_notice)
                     yield combo_notice
                 if stock_mode:
                     # stock 페르소나: 뉴스 + 증권사 리포트 + 인터넷 검색 병렬 수집
-                    sources = []
-                    if stock_report_ctx:
-                        sources.append("📋 최근 분석 보고서")
-
                     yield "> 🔍 뉴스·기사·증권사 리포트·인터넷 검색 중"
 
                     # 언급 종목 추출
@@ -1366,12 +1364,9 @@ async def chat(req: ChatRequest, request: Request):
                     _gather_results = await asyncio.gather(*_gather_tasks, return_exceptions=True)
 
                     auto_search_results = _gather_results[0] if not isinstance(_gather_results[0], Exception) else []
-                    validation_results = auto_search_results
                     active_evidence_bundle = srch.build_search_evidence_bundle(
                         auto_search_results, search_msg
                     )
-                    auto_search_ctx = active_evidence_bundle["context"]
-                    reference_items.extend(active_evidence_bundle["references"])
 
                     idx = 1
                     if _news_task:
@@ -1380,71 +1375,30 @@ async def chat(req: ChatRequest, request: Request):
                     if _broker_task:
                         _broker_ctx = _gather_results[idx] if not isinstance(_gather_results[idx], Exception) else ""
 
-                    # 소스 레이블 구성
-                    if _broker_ctx:
-                        sources.append("📊 증권사 애널리스트 리포트")
-                    if _news_ctx:
-                        sources.append("📰 최신 뉴스·기사")
-                    if auto_search_ctx:
-                        sources.append("🌐 실시간 인터넷 검색")
-                    sources.append("🧠 AI 주식 전문 지식")
+                    prepared_evidence, sources = chat_evidence.prepare_stock(
+                        search_msg,
+                        intent_agent.format_intent_context(intent_info),
+                        stock_report_ctx,
+                        _broker_ctx,
+                        _news_ctx,
+                        active_evidence_bundle,
+                        reference_items,
+                    )
+                    reference_items = prepared_evidence.references
+                    context = prepared_evidence.context
                     yield f" → {'  |  '.join(sources)}\n\n"
-
-                    # 컨텍스트 조합
-                    ctx_parts = []
-                    if stock_report_ctx:
-                        ctx_parts.append(f"[최근 주식 분석 보고서]\n{stock_report_ctx}")
-                    if _broker_ctx:
-                        ctx_parts.append(f"[증권사 애널리스트 리포트 컨센서스]\n{_broker_ctx}")
-                    if _news_ctx:
-                        ctx_parts.append(f"[최신 뉴스·기사]\n{_news_ctx}")
-                    if auto_search_ctx:
-                        ctx_parts.append(f"[실시간 인터넷 검색 결과]\n{auto_search_ctx}")
-
-                    if ctx_parts:
-                        _intent_ctx = intent_agent.format_intent_context(intent_info)
-                        context = (
-                            (_intent_ctx + "\n\n" if _intent_ctx else "")
-                            + f"[아래 자료를 참고해 사용자 질문 '{search_msg[:60]}'에 답변하세요. "
-                            f"각 자료의 출처 레이블(예: [최신 뉴스], [증권사 리포트])을 답변 내에 명시하여 "
-                            f"사용자가 어느 자료에서 나온 정보인지 알 수 있게 하세요. "
-                            f"자료에 명시된 수치·사실만 사용하고, 자료에 없는 구체적 수치는 추측하지 마세요. "
-                            f"불확실한 내용은 '자료에서 확인되지 않음'으로 명시하세요.]\n\n"
-                            + "\n\n---\n\n".join(ctx_parts)
-                        )
-                    else:
-                        context = ""
                 else:
-                    validation_results = results
-                    active_evidence_bundle = evidence_bundle
-                    if law_ctx:
-                        reference_items.extend(
-                            {
-                                "title": r.get("title", ""),
-                                "url": r.get("url", ""),
-                                "source_label": "공식 법령",
-                            } for r in law_results
-                        )
-                    if search_ctx:
-                        reference_items.extend(active_evidence_bundle["references"])
-                    raw_ctx = "\n\n".join(filter(None, [
-                        memory_conflict_ctx, law_ctx, rag_ctx, search_ctx,
-                    ]))
-                    # 질문 관련성 지시: 무관한 컨텍스트를 LLM이 포함하지 않도록 명시
-                    _intent_ctx = intent_agent.format_intent_context(intent_info)
-                    if raw_ctx:
-                        context = (
-                            (_intent_ctx + "\n\n" if _intent_ctx else "")
-                            + f"[주의: 아래 참고 자료 중 사용자 질문 '{search_msg[:60]}'"
-                            f"와 직접 관련된 내용만 사용하세요. "
-                            f"질문 주제와 다른 내용(다른 법 조항, 다른 HR 주제 등)은 답변에 포함하지 마세요. "
-                            f"자료에 명시된 수치·사실만 인용하고, 자료에 없는 내용은 절대 만들어내지 마세요. "
-                            f"불확실하거나 자료 밖의 내용은 '확인 필요' 또는 '자료에서 확인되지 않음'으로 표시하세요. "
-                            f"법령 원문·웹검색 결과 등 출처를 답변에서 간략히 언급하세요.]\n\n"
-                            + raw_ctx
-                        )
-                    else:
-                        context = _intent_ctx
+                    prepared_evidence = chat_evidence.prepare_standard(
+                        search_msg,
+                        intent_agent.format_intent_context(intent_info),
+                        memory_conflict_ctx,
+                        law_ctx,
+                        rag_ctx,
+                        law_results,
+                        evidence_bundle,
+                    )
+                    reference_items = prepared_evidence.references
+                    context = prepared_evidence.context
 
                     if no_local:
                         yield "> 📭 직접 일치하는 자료 없음 — 로컬 지식을 검토해 답변합니다.\n\n"
@@ -1453,7 +1407,7 @@ async def chat(req: ChatRequest, request: Request):
                 # 처음부터 교정된 본문만 보낸다. 이미 스트리밍한 오답 뒤에 경고만 붙이는
                 # 방식으로는 사용자가 잘못된 결론·수치를 먼저 복사할 수 있기 때문이다.
                 generated_parts = []
-                buffer_for_evidence_guard = bool(validation_results)
+                buffer_for_evidence_guard = bool(prepared_evidence.results)
                 if persona_features.get("use_coding", False):
                     async for token in llm.chat_stream_coding(
                         history, context, system_prompt=system_with_date,
@@ -1472,36 +1426,19 @@ async def chat(req: ChatRequest, request: Request):
 
                 generated_answer = "".join(generated_parts)
                 if buffer_for_evidence_guard:
-                    import response_quality
-                    answer_guard = response_quality.apply_evidence_guard(
-                        search_msg, generated_answer, context, validation_results,
-                        evidence_validation=active_evidence_bundle["validation"],
+                    answer_guard = chat_evidence.guard_generated_answer(
+                        search_msg, generated_answer, prepared_evidence,
                     )
                     final_generated_answer = answer_guard["answer"]
-                    answer_claim_validation = answer_guard["claim_validation"]
                     async for chunk in _stream_chunks(final_generated_answer, chunk_size=200):
                         collected.append(chunk)
                         yield chunk
 
-                for guard_note in answer_guard["notes"]:
-                    collected.append(guard_note)
-                    yield guard_note
-                validation_note = active_evidence_bundle["note"]
-                if validation_note:
-                    collected.append(validation_note)
-                    yield validation_note
-
-                memory_conflict_warning = srch.format_memory_search_conflict_warning(
-                    memory_search_validation
-                )
-                if memory_conflict_warning:
-                    collected.append(memory_conflict_warning)
-                    yield memory_conflict_warning
-
-                answer_validation_note = srch.format_answer_claim_validation_note(answer_claim_validation)
-                if answer_validation_note:
-                    collected.append(answer_validation_note)
-                    yield answer_validation_note
+                for evidence_note in chat_evidence.evidence_notes(
+                    prepared_evidence, answer_guard, memory_search_validation,
+                ):
+                    collected.append(evidence_note)
+                    yield evidence_note
 
                 ref_footer = _format_reference_links(reference_items)
                 if ref_footer:
@@ -2930,9 +2867,9 @@ def health():
         "retrieval_engine": "tfidf-bm25-char3-v1",
         "deliberation_engine": "evidence-adaptive-review-v3",
         "conversation_engine": "contextual-followup-v1",
-        "offline_reasoning_engine": "symbolic-plan-critic-v17",
-        "evidence_reasoning_engine": "search-evidence-bundle-v10",
-        "response_quality_engine": "unified-conflict-guard-v11",
+        "offline_reasoning_engine": "symbolic-plan-critic-v18",
+        "evidence_reasoning_engine": "chat-evidence-pipeline-v11",
+        "response_quality_engine": "unified-conflict-guard-v12",
         "local_generative_configured": bool(local_backends),
         "local_generative_backends": local_backends,
         "memory_schema": "typed-scopes-v1",

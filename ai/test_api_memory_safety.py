@@ -36,9 +36,9 @@ def main():
         assert client.get("/health").json()["deliberation_engine"] == "evidence-adaptive-review-v3"
         assert client.get("/health").json()["conversation_engine"] == "contextual-followup-v1"
         health = client.get("/health").json()
-        assert health["offline_reasoning_engine"] == "symbolic-plan-critic-v17"
-        assert health["evidence_reasoning_engine"] == "search-evidence-bundle-v10"
-        assert health["response_quality_engine"] == "unified-conflict-guard-v11"
+        assert health["offline_reasoning_engine"] == "symbolic-plan-critic-v18"
+        assert health["evidence_reasoning_engine"] == "chat-evidence-pipeline-v11"
+        assert health["response_quality_engine"] == "unified-conflict-guard-v12"
         assert isinstance(client.get("/health").json()["local_generative_configured"], bool)
         assert isinstance(client.get("/health").json()["local_generative_backends"], list)
         assert client.get("/health").json()["memory_schema"] == "typed-scopes-v1"
