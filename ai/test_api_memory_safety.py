@@ -40,7 +40,7 @@ def main():
         assert health["evidence_reasoning_engine"] == "chat-evidence-pipeline-v11"
         assert health["response_quality_engine"] == "unified-conflict-guard-v12"
         assert health["stock_source_engine"] == "isolated-parallel-collector-v1"
-        assert health["chat_postprocess_engine"] == "explainable-learning-gate-v1"
+        assert health["chat_postprocess_engine"] == "answer-body-learning-gate-v2"
         assert isinstance(client.get("/health").json()["local_generative_configured"], bool)
         assert isinstance(client.get("/health").json()["local_generative_backends"], list)
         assert client.get("/health").json()["memory_schema"] == "typed-scopes-v1"

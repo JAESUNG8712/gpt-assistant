@@ -146,6 +146,7 @@ def persist(
     *,
     user_message: str,
     assistant_reply: str,
+    candidate_reply: str,
     persona_id: str,
     session_scope: str,
     command_status: dict,
@@ -166,7 +167,7 @@ def persist(
         return None
     return memory_store.auto_learn(
         user_message,
-        assistant_reply,
+        candidate_reply,
         persona=persona_id,
         session_id=session_scope,
         source=learning_decision.source,

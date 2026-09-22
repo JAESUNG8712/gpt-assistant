@@ -96,7 +96,8 @@ def main():
 
     store = FakeMemory()
     candidate_id = chat_postprocess.persist(
-        user_message="질문", assistant_reply="답변", persona_id="hr",
+        user_message="질문", assistant_reply="답변\n\n---\n참고 자료",
+        candidate_reply="답변", persona_id="hr",
         session_scope="owner:1", command_status={"commands": ["/검색"]},
         answer_quality={
             "score": 0.9, "grade": "high", "issues": list(range(8)),
@@ -115,10 +116,13 @@ def main():
     }
     assert store.candidates[0][2]["source"] == "웹검색보강"
     assert store.candidates[0][2]["evidence"] == allowed.evidence
+    assert store.messages[1][1] == "답변\n\n---\n참고 자료"
+    assert store.candidates[0][1] == "답변"
 
     blocked_store = FakeMemory()
     assert chat_postprocess.persist(
         user_message="질문", assistant_reply="답변", persona_id="hr",
+        candidate_reply="답변",
         session_scope="owner:1", command_status={}, answer_quality={},
         learning_decision=blocked, memory_store=blocked_store,
     ) is None

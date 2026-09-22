@@ -1138,6 +1138,8 @@ async def chat(req: ChatRequest, request: Request):
 
     async def generate():
         collected = []
+        synthesized_answer = ""
+        generated_by_model = False
         reference_items = []
         prepared_evidence = chat_evidence.PreparedEvidence(
             context="", references=[], bundle=evidence_bundle,
@@ -1298,6 +1300,7 @@ async def chat(req: ChatRequest, request: Request):
 
             # ── 경로 B: LLM 보강 (중간 신뢰도 or 법령 실시간) ──
             else:
+                generated_by_model = True
                 # reference_items는 자동학습 증거와 답변 끝의 참고 자료에 공통 사용
                 if len(matched_persona_ids) > 1:
                     combo_notice = f"🔎 **{persona['name']} 통합 분석**\n\n"
@@ -1376,9 +1379,12 @@ async def chat(req: ChatRequest, request: Request):
                         search_msg, generated_answer, prepared_evidence,
                     )
                     final_generated_answer = answer_guard["answer"]
+                    synthesized_answer = final_generated_answer
                     async for chunk in _stream_chunks(final_generated_answer, chunk_size=200):
                         collected.append(chunk)
                         yield chunk
+                else:
+                    synthesized_answer = generated_answer
 
                 for evidence_note in chat_evidence.evidence_notes(
                     prepared_evidence, answer_guard, memory_search_validation,
@@ -1393,10 +1399,7 @@ async def chat(req: ChatRequest, request: Request):
 
             # 생성 답변만 관련성·근거·누락·수치·반복을 점검한다. 판정 결과는
             # 대화 저장 메타데이터와 기억 후보 차단에 동일하게 사용한다.
-            is_new_synthesized_answer = (
-                not kb_direct and not direct_calc and not company_kb_only
-                and not clarification_msg
-            )
+            is_new_synthesized_answer = generated_by_model
             previous_answer = next((
                 item.get("content", "") for item in reversed(selection_history)
                 if item.get("role") == "assistant"
@@ -1404,7 +1407,7 @@ async def chat(req: ChatRequest, request: Request):
             answer_quality, quality_note = chat_postprocess.evaluate_generated_answer(
                 is_new_synthesized_answer,
                 search_msg,
-                "".join(collected),
+                synthesized_answer,
                 locals().get("context", ""),
                 previous_answer,
             )
@@ -1414,10 +1417,11 @@ async def chat(req: ChatRequest, request: Request):
 
             ai_reply = "".join(collected)
             ai_reply_clean = chat_postprocess.clean_reply(ai_reply)
+            learning_reply = chat_postprocess.clean_reply(synthesized_answer)
             learning_decision = chat_postprocess.decide_learning(
                 is_shared_session=is_shared_session,
                 is_new_synthesized_answer=is_new_synthesized_answer,
-                reply=ai_reply_clean,
+                reply=learning_reply,
                 stock_mode=stock_mode,
                 memory_search_validation=memory_search_validation,
                 answer_guard=answer_guard,
@@ -1431,6 +1435,7 @@ async def chat(req: ChatRequest, request: Request):
             candidate_id = chat_postprocess.persist(
                 user_message=user_msg,
                 assistant_reply=ai_reply_clean,
+                candidate_reply=learning_reply,
                 persona_id=persona_id,
                 session_scope=session_scope,
                 command_status=command_status,
@@ -2779,7 +2784,7 @@ def health():
         "evidence_reasoning_engine": "chat-evidence-pipeline-v11",
         "response_quality_engine": "unified-conflict-guard-v12",
         "stock_source_engine": "isolated-parallel-collector-v1",
-        "chat_postprocess_engine": "explainable-learning-gate-v1",
+        "chat_postprocess_engine": "answer-body-learning-gate-v2",
         "local_generative_configured": bool(local_backends),
         "local_generative_backends": local_backends,
         "memory_schema": "typed-scopes-v1",
