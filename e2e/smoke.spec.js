@@ -177,11 +177,16 @@ test.describe("로그인·기본 네비게이션", () => {
         { id: "other", name: "타부서수당", type: "pay", calcType: "fixed", amount: 999999, targetType: "dept", targetValue: "영업", order: 1, enabled: true },
       ];
       const slip = calcStandardPayslip({ id: "formula-e2e", salary: 60000000, dept: "개발", team: "플랫폼", rank: "대리", position: "", active: true }, 2026, 9);
+      const validAdjustment = _buildPayrollAdjustment({ empId: "formula-e2e", year: 2026, month: 9, category: "기타 인센티브", amount: 1234.6, note: "공통 생성기" });
+      const invalidAdjustment = _buildPayrollAdjustment({ empId: "formula-e2e", year: 2026, month: 13, category: "기타 인센티브", amount: 1000 });
       settings.customPayItems = before;
-      return { monthly: slip.monthly, matched: slip.payItems.find(i => i.label === "부서수당")?.amount, excluded: slip.payItems.some(i => i.label === "타부서수당") };
+      return { monthly: slip.monthly, matched: slip.payItems.find(i => i.label === "부서수당")?.amount, excluded: slip.payItems.some(i => i.label === "타부서수당"), adjustment: validAdjustment.record, invalidError: invalidAdjustment.error };
     });
     expect(calculated.matched).toBe(Math.round(calculated.monthly * 0.1));
     expect(calculated.excluded).toBe(false);
+    expect(calculated.adjustment).toMatchObject({ empId: "formula-e2e", year: 2026, month: 9, category: "기타 인센티브", amount: 1235, note: "공통 생성기", source: "manual", taxable: true });
+    expect(calculated.adjustment.id).toMatch(/^payadj-/);
+    expect(calculated.invalidError).toMatch(/월은 1~12월/);
 
     await page.evaluate(() => gotoPage("payroll-settings"));
     await expect(page.getByRole("heading", { name: /수당·공제 계산식 설정/ })).toBeVisible();

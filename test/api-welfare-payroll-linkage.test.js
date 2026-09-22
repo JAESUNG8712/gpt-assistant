@@ -130,6 +130,25 @@ test("복리후생(경조금) 신청이 non-admin 결재로 승인 완료되면 
     d = await getData(api, adminToken);
     assert.ok(d.data.payrollAdjustments.find(a => a.id === "payadj-admin-bonus-1"));
   });
+
+  await t.test("급여 조정 공통 스키마가 비정상 연월·금액·대상·구분을 저장 직전에 차단한다", async () => {
+    const invalidCases = [
+      { id: "payadj-invalid-emp", empId: "", year: 2027, month: 4, category: "인센티브", amount: 1 },
+      { id: "payadj-invalid-year", empId: "welf-mem-1", year: 1999, month: 4, category: "인센티브", amount: 1 },
+      { id: "payadj-invalid-month", empId: "welf-mem-1", year: 2027, month: 13, category: "인센티브", amount: 1 },
+      { id: "payadj-invalid-amount", empId: "welf-mem-1", year: 2027, month: 4, category: "인센티브", amount: "NaN" },
+      { id: "payadj-invalid-huge", empId: "welf-mem-1", year: 2027, month: 4, category: "인센티브", amount: 1000000000001 },
+      { id: "payadj-invalid-category", empId: "welf-mem-1", year: 2027, month: 4, category: " ", amount: 1 },
+      { id: "payadj-invalid-taxable", empId: "welf-mem-1", year: 2027, month: 4, category: "인센티브", amount: 1, taxable: "yes" },
+    ];
+    for (const adjustment of invalidCases) {
+      d = await getData(api, adminToken);
+      const r = await api("/save", auth(adminToken, "POST", { _version: d.version, payrollAdjustments: [adjustment] }));
+      assert.equal(r.status, 200);
+      d = await getData(api, adminToken);
+      assert.equal(d.data.payrollAdjustments.find(a => a.id === adjustment.id), undefined, `${adjustment.id}가 저장되면 안 됨`);
+    }
+  });
 });
 
 const ADMIN_DATABASE_URL = process.env.TEST_DATABASE_URL || process.env.DATABASE_URL;
@@ -204,5 +223,12 @@ if (!ADMIN_DATABASE_URL) {
     assert.ok(saved, "Postgres 모드에서도 승인된 복리후생 신청의 payrollAdjustments가 저장돼야 함");
     assert.equal(saved.amount, 1500000);
     assert.equal(saved.category, "학자금");
+
+    d = await getData(api, adminToken);
+    const invalid = { id: "pg-payadj-invalid", empId: "pg-welf-mem-1", year: 2027, month: 99, category: "인센티브", amount: 1000000 };
+    r = await api("/save", auth(adminToken, "POST", { _version: d.version, payrollAdjustments: [invalid] }));
+    assert.equal(r.status, 200);
+    d = await getData(api, adminToken);
+    assert.equal(d.data.payrollAdjustments.find(a => a.id === invalid.id), undefined, "Postgres 모드도 비정상 급여 조정을 저장하면 안 됨");
   });
 }
