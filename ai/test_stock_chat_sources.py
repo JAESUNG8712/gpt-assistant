@@ -64,8 +64,49 @@ async def _run():
     assert failed_search.errors == ["search:ConnectionError"]
 
 
+def _test_ddg_report_url_key_matches_naver():
+    """DDG로 찾은 증권사 리포트도 naver 리포트와 같은 '링크' 키로 URL을 담아야 한다.
+
+    get_all_reports()가 naver+DDG 결과를 한 리스트로 합친 뒤, 참고 링크 구성
+    (stock_chat_sources._collect_broker 등)은 전부 '링크' 키 하나만 읽는다.
+    DDG 경로가 예전처럼 '출처'를 쓰면 DDG로만 찾은 리포트의 링크가 조용히
+    누락된다(실측 재현했던 회귀).
+    """
+    import ddgs
+    import stock_analysis.utils.securities_report as sr
+
+    class FakeDDGS:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def text(self, query, max_results=5):
+            return [{
+                "title": "삼성전자 목표주가 상향",
+                "body": "목표주가 100,000원 매수 의견",
+                "href": "https://finance.naver.com/ddg-only-report",
+            }]
+
+    # _search_reports_ddg_sync()는 함수 내부에서 `from ddgs import DDGS`로
+    # 지연 임포트하므로, ddgs 모듈의 DDGS 자체를 교체해야 실제 호출 시점에
+    # 가짜 구현을 사용한다(모듈 속성 sr.DDGS를 바꾸는 것으로는 적용되지 않음).
+    original_ddgs = ddgs.DDGS
+    ddgs.DDGS = FakeDDGS
+    try:
+        results = sr._search_reports_ddg_sync("삼성전자")
+    finally:
+        ddgs.DDGS = original_ddgs
+    assert len(results) == 1
+    assert results[0]["링크"] == "https://finance.naver.com/ddg-only-report"
+    assert "출처" not in results[0]
+    print("ddg report url key regression: PASS")
+
+
 def main():
     asyncio.run(_run())
+    _test_ddg_report_url_key_matches_naver()
     print("stock chat source collection tests: PASS")
 
 

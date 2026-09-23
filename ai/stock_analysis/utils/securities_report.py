@@ -162,7 +162,12 @@ def _search_reports_ddg_sync(stock_name: str) -> List[Dict]:
                 results.append({
                     "제목": r.get("title", ""),
                     "요약": r.get("body", "")[:300],
-                    "출처": r.get("href", ""),
+                    # fetch_naver_research()가 만드는 리포트 dict와 URL 필드명을
+                    # 통일한다 — 예전엔 여기만 "출처"를 썼는데, get_all_reports()가
+                    # naver+DDG 결과를 하나의 리스트로 합친 뒤 "링크" 키로만 URL을
+                    # 읽는 소비자(참고 링크 목록, 기억 후보 근거)가 여러 곳 있어
+                    # DDG로 찾은 리포트의 링크만 조용히 누락되고 있었다(실측 확인).
+                    "링크": r.get("href", ""),
                     "날짜": "",
                     "증권사": _extract_firm_from_text(r.get("body", "")),
                     "투자의견": _extract_opinion(r.get("body", "")),
