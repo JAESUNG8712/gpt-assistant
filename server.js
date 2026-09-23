@@ -1409,8 +1409,18 @@ const _APPROVAL_GATED_FIELDS = {
 // 하고, doc 자체는 이미 _sanitizeApprovalDoc을 통과한(위조 불가능한) 값이어야 한다. 값 하나라도
 // 다르면 거부(사람이 임의 금액을 끼워넣는 것을 막기 위함) — 정상 화면은 항상 doc 내용
 // 그대로만 파생 레코드를 만들므로 이 검사에 걸릴 일이 없다.
+//
+// id는 클라이언트가 항상 이 결정론적 값(`payadj-welfare-${doc.id}`)으로만 만든다
+// (_applyWelfareApproval). 이 검사가 없으면 내용(금액/구분/연월)만 doc과 일치시키면
+// 되므로, 서로 다른 id를 가진 신규 레코드를 몇 개든 만들어 같은 승인 건에 대해 급여
+// 조정을 중복 반영시킬 수 있었다(actor가 실제로 그 문서의 결재자였는지도 검증하지
+// 않으므로, doc 내용을 알기만 하면 이 승인과 무관한 다른 직원도 만들 수 있었음 —
+// 2026-09-23 발견). id를 이 하나의 값으로 강제하면 이 예외로 존재할 수 있는 레코드는
+// 항상 최대 1건뿐이라(같은 id로 다시 쓰면 갱신일 뿐 신규 생성이 아니게 됨), 내용이
+// doc과 다른 값으로는 여전히 만들 수 없어 중복·위조 둘 다 막힌다.
 function _welfareAdjustmentMatchesApprovedDoc(rec, doc) {
   if (!rec || !doc || doc.status !== "approved") return false;
+  if (rec.id !== `payadj-welfare-${doc.id}`) return false;
   if (!["tpl-welfare-condolence", "tpl-welfare-tuition"].includes(doc.templateId)) return false;
   if (String(doc.authorId) !== String(rec.empId)) return false;
   const fd = doc.formData || {};
