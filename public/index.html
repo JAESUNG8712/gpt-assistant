@@ -8391,7 +8391,7 @@ function _openEmpEdit(id){
     <div class="fg"><label class="fl">국적</label><select class="fc" id="ee-nationality"><option${(e.nationality||"내국인")==="내국인"?" selected":""}>내국인</option><option${e.nationality==="외국인"?" selected":""}>외국인</option></select></div>
     <div class="fg"><label class="fl">입사일</label><input class="fc" id="ee-hire" type="date" value="${e.hire||""}"></div>
     <div class="fg"><label class="fl">근무 사업장</label><select class="fc" id="ee-workplace">${_workplaceOptions(e.workplaceId,true)}</select></div>
-    <div class="fg"><label class="fl">부서</label><select class="fc" id="ee-dept" onchange="syncEditTeams(this.value,'${h(e.team)}')">${_selOptsKeepCurrent(orgDB.depts,e.dept,"선택")}</select></div>
+    <div class="fg"><label class="fl">부서</label><select class="fc" id="ee-dept" onchange="syncEditTeams(this.value,'${h(e.team).replace(/'/g,"\\'")}')">${_selOptsKeepCurrent(orgDB.depts,e.dept,"선택")}</select></div>
     <div class="fg"><label class="fl">팀</label><select class="fc" id="ee-team">${_selOptsKeepCurrent(getTeams(e.dept),e.team)}</select></div>
     <div class="fg"><label class="fl">직책</label><select class="fc" id="ee-position">${_selOptsKeepCurrent(orgDB.positions.filter(p=>p),e.position,"없음")}</select></div>
     <div class="fg"><label class="fl">직급</label><select class="fc" id="ee-rank">${_selOptsKeepCurrent(orgDB.ranks,e.rank)}</select></div>
@@ -9968,13 +9968,14 @@ function renderCompGradeRatioSettings(){
     const gs=getCompGradeSettings(d);
     const deptEmps=employees.filter(e=>e.active&&e.role!=="admin"&&e.dept===d);
     const mCnt=deptEmps.filter(e=>e.role==="member").length;const lCnt=deptEmps.filter(e=>e.role==="leader").length;
+    const sd=h(d).replace(/'/g,"\\'");
     return`<div class="card"><div class="card-head"><h3>🏢 ${h(d)}</h3><span class="fz11 text-gray">팀원 ${mCnt}명 · 팀장 ${lCnt}명</span></div>
     <div class="card-body"><div class="g2">
       ${compGradeBlock(gs,"member",d,"팀원 등급 비율")}
       ${compGradeBlock(gs,"leader",d,"팀장 등급 비율")}
     </div>
-    <button class="btn btn-teal btn-sm mt3" onclick="tryCalcDeptGrades('${h(d)}',${year})">🔄 ${year}년 KPI 등급 재산정</button>
-    <button class="btn btn-indigo btn-sm mt3" style="margin-left:6px" onclick="assignCompPoolGrades(employees.filter(e=>e.active&&e.dept==='${h(d)}'&&e.role==='member'),getCompGradeSettings('${h(d)}').member,'${h(d)}',${year},'member');assignCompPoolGrades(employees.filter(e=>e.active&&e.dept==='${h(d)}'&&e.role==='leader'),getCompGradeSettings('${h(d)}').leader,'${h(d)}',${year},'leader');showToast('역량 등급 재산정 완료','success');renderCompGradeRatioSettings()">🔄 역량 등급 재산정</button>
+    <button class="btn btn-teal btn-sm mt3" onclick="tryCalcDeptGrades('${sd}',${year})">🔄 ${year}년 KPI 등급 재산정</button>
+    <button class="btn btn-indigo btn-sm mt3" style="margin-left:6px" onclick="assignCompPoolGrades(employees.filter(e=>e.active&&e.dept==='${sd}'&&e.role==='member'),getCompGradeSettings('${sd}').member,'${sd}',${year},'member');assignCompPoolGrades(employees.filter(e=>e.active&&e.dept==='${sd}'&&e.role==='leader'),getCompGradeSettings('${sd}').leader,'${sd}',${year},'leader');showToast('역량 등급 재산정 완료','success');renderCompGradeRatioSettings()">🔄 역량 등급 재산정</button>
     </div></div>`;}).join("")}`;
 }
 function renderCompGradeRatioCompare(){
@@ -11248,7 +11249,7 @@ function confirmPromotion(empId, yr, forceSpecial){
   </div>
   <div class="modal-foot">
     <button class="btn btn-secondary" onclick="closeModal()">취소</button>
-    <button class="btn ${isSpecial?"btn-warning":"btn-success"}" onclick="doPromotion(${empId},'${nextRank}',${isSpecial})">${isSpecial?"⚡ 특별 승진 처리":"🏅 승진 처리"}</button>
+    <button class="btn ${isSpecial?"btn-warning":"btn-success"}" onclick="doPromotion(${empId},'${h(nextRank).replace(/'/g,"\\'")}',${isSpecial})">${isSpecial?"⚡ 특별 승진 처리":"🏅 승진 처리"}</button>
   </div></div>`);
 }
 
@@ -13040,20 +13041,20 @@ function renderSettingsOrg(){
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
     <div class="card"><div class="card-head"><h3>부서(본부) 관리</h3></div><div class="card-body">
       <div class="flex gap2 mb3"><input class="fc" id="org-dept-new" placeholder="부서명 입력" style="flex:1"><button class="btn btn-primary btn-sm" onclick="addOrgDept()">추가</button></div>
-      <div>${orgDB.depts.map(d=>`<div class="org-tag">${h(d)}<button onclick="removeOrgDept('${h(d)}')" title="삭제">×</button></div>`).join("")}</div>
+      <div>${orgDB.depts.map(d=>`<div class="org-tag">${h(d)}<button onclick="removeOrgDept('${h(d).replace(/'/g,"\\'")}')" title="삭제">×</button></div>`).join("")}</div>
     </div></div>
     <div class="card"><div class="card-head"><h3>직급 관리</h3></div><div class="card-body">
       <div class="flex gap2 mb3"><input class="fc" id="org-rank-new" placeholder="직급명 입력" style="flex:1"><button class="btn btn-primary btn-sm" onclick="addOrgRank()">추가</button></div>
-      <div>${orgDB.ranks.map(r=>`<div class="org-tag">${h(r)}<button onclick="removeOrgRank('${h(r)}')" title="삭제">×</button></div>`).join("")}</div>
+      <div>${orgDB.ranks.map(r=>`<div class="org-tag">${h(r)}<button onclick="removeOrgRank('${h(r).replace(/'/g,"\\'")}')" title="삭제">×</button></div>`).join("")}</div>
     </div></div>
     <div class="card"><div class="card-head"><h3>직책 관리</h3></div><div class="card-body">
       <div class="flex gap2 mb3"><input class="fc" id="org-pos-new" placeholder="직책명 입력" style="flex:1"><button class="btn btn-primary btn-sm" onclick="addOrgPos()">추가</button></div>
-      <div>${orgDB.positions.filter(p=>p).map(p=>`<div class="org-tag">${h(p)}<button onclick="removeOrgPos('${h(p)}')" title="삭제">×</button></div>`).join("")}</div>
+      <div>${orgDB.positions.filter(p=>p).map(p=>`<div class="org-tag">${h(p)}<button onclick="removeOrgPos('${h(p).replace(/'/g,"\\'")}')" title="삭제">×</button></div>`).join("")}</div>
     </div></div>
     <div class="card"><div class="card-head"><h3>팀 관리 (부서별)</h3></div><div class="card-body">
-      ${orgDB.depts.map(d=>`<div class="mb3"><div class="fz12 fw6 mb2" style="color:#374151">${h(d)}</div>
-        <div class="flex gap2 mb2"><input class="fc" id="org-team-new-${d.replace(/[\s\/]/g,'_')}" placeholder="팀명 입력" style="flex:1"><button class="btn btn-secondary btn-sm" onclick="addOrgTeam('${h(d)}')">추가</button></div>
-        <div>${(orgDB.teams[d]||[]).map(t=>`<div class="org-tag">${h(t)}<button onclick="removeOrgTeam('${h(d)}','${h(t)}')" title="삭제">×</button></div>`).join("")}</div>
+      ${orgDB.depts.map((d,di)=>`<div class="mb3"><div class="fz12 fw6 mb2" style="color:#374151">${h(d)}</div>
+        <div class="flex gap2 mb2"><input class="fc" id="org-team-new-${di}" placeholder="팀명 입력" style="flex:1"><button class="btn btn-secondary btn-sm" onclick="addOrgTeam('${h(d).replace(/'/g,"\\'")}',${di})">추가</button></div>
+        <div>${(orgDB.teams[d]||[]).map(t=>`<div class="org-tag">${h(t)}<button onclick="removeOrgTeam('${h(d).replace(/'/g,"\\'")}','${h(t).replace(/'/g,"\\'")}')" title="삭제">×</button></div>`).join("")}</div>
       </div>`).join("")}
     </div></div>
   </div>`;
@@ -13170,7 +13171,7 @@ function renderSettingsGrades(){
   const year=settings.evalYear;
   const gc={S:"#fef9c3",A:"#dcfce7",B:"#dbeafe",C:"#fce7f3",D:"#f1f5f9"};
   function gradeRow(r,ri,dep,pool,typ){
-    const dKey=dep?`_gradeStageDept('${dep}').${pool}`:`_gradeStage.cw.${typ}.${pool}`;
+    const dKey=dep?`_gradeStageDept('${h(dep).replace(/'/g,"\\'")}').${pool}`:`_gradeStage.cw.${typ}.${pool}`;
     const membs=employees.filter(e=>e.active&&e.role===pool&&(!dep||e.dept===dep));
     const total=membs.length;
     const tgt=Math.max(0,Math.round(r.pct/100*total));
@@ -13188,7 +13189,7 @@ function renderSettingsGrades(){
     const sum=ratios.reduce((s,r)=>s+r.pct,0);
     const total=employees.filter(e=>e.active&&e.role===pool&&(!dep||e.dept===dep)).length;
     const safeId=(dep||"cw")+"_"+pool;
-    const dKey=dep?`_gradeStageDept('${dep}').${pool}`:`_gradeStage.cw.${typ}.${pool}`;
+    const dKey=dep?`_gradeStageDept('${h(dep).replace(/'/g,"\\'")}').${pool}`:`_gradeStage.cw.${typ}.${pool}`;
     return`<div>
       <div class="sec-title">${label} <span class="fz11 ${sum===100?"text-green":"text-red"}">(합계 ${sum}%)</span> <span class="fz11 text-gray">대상 ${total}명</span></div>
       ${ratios.map((r,ri)=>gradeRow(r,ri,dep,pool,typ)).join("")}
@@ -13227,7 +13228,7 @@ function renderSettingsGrades(){
       ${gradeBlock(gs.leader,d,"leader","팀장 등급 비율","kpi")}
     </div>
     <div class="flex gap2 mt3">
-      <button class="btn btn-teal btn-sm" onclick="tryCalcDeptGrades('${h(d)}',${year})">🔄 ${year}년 KPI 등급 재산정</button>
+      <button class="btn btn-teal btn-sm" onclick="tryCalcDeptGrades('${h(d).replace(/'/g,"\\'")}',${year})">🔄 ${year}년 KPI 등급 재산정</button>
     </div>
     </div></div>`;
   }).join("")}`;
@@ -13288,7 +13289,7 @@ function addOrgRank(){const v=$("#org-rank-new")?.value.trim();if(!v||orgDB.rank
 function removeOrgRank(r){orgDB.ranks=orgDB.ranks.filter(x=>x!==r);renderSettingsOrg();}
 function addOrgPos(){const v=$("#org-pos-new")?.value.trim();if(!v||orgDB.positions.includes(v))return;orgDB.positions.push(v);renderSettingsOrg();}
 function removeOrgPos(p){orgDB.positions=orgDB.positions.filter(x=>x!==p);renderSettingsOrg();}
-function addOrgTeam(dept){const safeId=dept.replace(/[\s\/]/g,"_");const v=$(`#org-team-new-${safeId}`)?.value.trim();if(!v)return;if(!orgDB.teams[dept])orgDB.teams[dept]=[];if(!orgDB.teams[dept].includes(v))orgDB.teams[dept].push(v);_logOrgChange("team_add",`팀 추가: ${dept} - ${v}`,dept,v);renderSettingsOrg();broadcastSettingsChange(`팀 추가: ${dept} - ${v}`);}
+function addOrgTeam(dept,idx){const v=$(`#org-team-new-${idx}`)?.value.trim();if(!v)return;if(!orgDB.teams[dept])orgDB.teams[dept]=[];if(!orgDB.teams[dept].includes(v))orgDB.teams[dept].push(v);_logOrgChange("team_add",`팀 추가: ${dept} - ${v}`,dept,v);renderSettingsOrg();broadcastSettingsChange(`팀 추가: ${dept} - ${v}`);}
 async function removeOrgTeam(dept,team){
   const inUseT=(employees||[]).filter(e=>e.active&&e.dept===dept&&e.team===team);
   if(inUseT.length){showToast(`"${team}"에 소속된 재직 직원이 ${inUseT.length}명 있어 삭제할 수 없습니다.`,"error");return;}
@@ -14551,10 +14552,10 @@ function _apvFilterBar(onchangeFn){
   return`<div class="card-body" style="padding:8px 14px 6px"><div class="filter-bar" style="flex-wrap:wrap;gap:6px">
     <input class="fc" style="width:160px" placeholder="제목/상신자 검색" value="${h(_apvFilter.search)}" oninput="_apvFilter.search=this.value;${onchangeFn}">
     <select class="fc" style="width:130px" onchange="_apvFilter.dept=this.value;_apvFilter.team='';${onchangeFn}">
-      <option value="">전체 부서</option>${depts.map(d=>`<option value="${d}"${_apvFilter.dept===d?" selected":""}>${h(d)}</option>`).join("")}
+      <option value="">전체 부서</option>${depts.map(d=>`<option value="${h(d)}"${_apvFilter.dept===d?" selected":""}>${h(d)}</option>`).join("")}
     </select>
     <select class="fc" style="width:120px" onchange="_apvFilter.team=this.value;${onchangeFn}">
-      <option value="">전체 팀</option>${teams.map(t=>`<option value="${t}"${_apvFilter.team===t?" selected":""}>${h(t)}</option>`).join("")}
+      <option value="">전체 팀</option>${teams.map(t=>`<option value="${h(t)}"${_apvFilter.team===t?" selected":""}>${h(t)}</option>`).join("")}
     </select>
     <select class="fc" style="width:130px" onchange="_apvFilter.tplId=this.value;${onchangeFn}">
       <option value="">전체 양식</option>${allTpls.map(t=>`<option value="${t.id}"${_apvFilter.tplId===t.id?" selected":""}>${h(t.name)}</option>`).join("")}
@@ -15289,10 +15290,10 @@ function renderAdminPayslipSection(year,month){
   <div class="card-body" style="padding:10px 14px 6px">
     <div class="filter-bar" style="flex-wrap:wrap;gap:6px">
       <select class="fc" style="width:140px" onchange="_adminPayState.dept=this.value;_adminPayState.team='';_adminPayState.pageOffset=0;_adminPayRefresh(${year},${month})">
-        <option value="">전체 부서</option>${depts.map(d=>`<option value="${d}"${s.dept===d?" selected":""}>${h(d)}</option>`).join("")}
+        <option value="">전체 부서</option>${depts.map(d=>`<option value="${h(d)}"${s.dept===d?" selected":""}>${h(d)}</option>`).join("")}
       </select>
       <select class="fc" style="width:130px" onchange="_adminPayState.team=this.value;_adminPayState.pageOffset=0;_adminPayRefresh(${year},${month})">
-        <option value="">전체 팀</option>${teams.map(t=>`<option value="${t}"${s.team===t?" selected":""}>${h(t)}</option>`).join("")}
+        <option value="">전체 팀</option>${teams.map(t=>`<option value="${h(t)}"${s.team===t?" selected":""}>${h(t)}</option>`).join("")}
       </select>
       <input class="fc" style="width:160px" placeholder="이름/부서 검색" value="${h(s.search)}" oninput="_adminPayState.search=this.value;_adminPayState.pageOffset=0;_adminPayRefresh(${year},${month})">
       <select class="fc" style="width:80px" onchange="_adminPayState.pageSize=+this.value;_adminPayState.pageOffset=0;_adminPayRefresh(${year},${month})">
@@ -15593,10 +15594,10 @@ function renderPayrollMgmtPage(returnHtmlOnly){
         ${Array.from({length:12},(_,i)=>i+1).map(mo=>`<option value="${mo}"${mo===month?" selected":""}>${mo}월</option>`).join("")}
       </select>
       <select class="fc" style="width:140px" onchange="_payMgmtState.dept=this.value;_payMgmtState.team='';_payMgmtRefresh()">
-        <option value="">전체 부서</option>${depts.map(d=>`<option value="${d}"${s.dept===d?" selected":""}>${h(d)}</option>`).join("")}
+        <option value="">전체 부서</option>${depts.map(d=>`<option value="${h(d)}"${s.dept===d?" selected":""}>${h(d)}</option>`).join("")}
       </select>
       <select class="fc" style="width:130px" onchange="_payMgmtState.team=this.value;_payMgmtRefresh()">
-        <option value="">전체 팀</option>${teams.map(t=>`<option value="${t}"${s.team===t?" selected":""}>${h(t)}</option>`).join("")}
+        <option value="">전체 팀</option>${teams.map(t=>`<option value="${h(t)}"${s.team===t?" selected":""}>${h(t)}</option>`).join("")}
       </select>
       <input class="fc" style="width:160px" placeholder="이름/사번/부서 검색" value="${h(s.search)}" oninput="_payMgmtState.search=this.value;_payMgmtRefresh()">
       <span class="fz12 text-gray" style="align-self:center">총 ${active.length}명</span>
@@ -16189,10 +16190,10 @@ function _yesAdminSectionHtml(){
   <div class="card-body" style="padding:10px 14px 6px">
     <div class="filter-bar" style="flex-wrap:wrap;gap:6px">
       <select class="fc" style="width:140px" onchange="_yesState.dept=this.value;_yesState.team='';_yesRefresh()">
-        <option value="">전체 부서</option>${depts.map(d=>`<option value="${d}" ${s.dept===d?"selected":""}>${h(d)}</option>`).join("")}
+        <option value="">전체 부서</option>${depts.map(d=>`<option value="${h(d)}" ${s.dept===d?"selected":""}>${h(d)}</option>`).join("")}
       </select>
       <select class="fc" style="width:130px" onchange="_yesState.team=this.value;_yesRefresh()">
-        <option value="">전체 팀</option>${teams.map(t=>`<option value="${t}" ${s.team===t?"selected":""}>${h(t)}</option>`).join("")}
+        <option value="">전체 팀</option>${teams.map(t=>`<option value="${h(t)}" ${s.team===t?"selected":""}>${h(t)}</option>`).join("")}
       </select>
       <input class="fc" style="width:160px" placeholder="이름/부서 검색" value="${h(s.search)}" oninput="_yesState.search=this.value;_yesRefresh()">
       <span class="fz12 text-gray" style="align-self:center">총 ${active.length}명</span>
@@ -16295,7 +16296,7 @@ function renderAcctAccountsTbl(){
   const q=(window._acctAccSearch||"").trim();
   const rows=q?acctAccounts.filter(a=>[a.code,a.name,TYPE_LABEL[a.type],a.category].some(v=>(v||"").includes(q))):acctAccounts;
   wrap.innerHTML=`<table><thead><tr><th>코드</th><th>계정명</th><th>구분</th><th>세부분류</th><th>원가구분</th><th>사용여부</th><th>관리</th></tr></thead><tbody>
-  ${rows.length?rows.map(a=>`<tr><td>${h(a.code)}</td><td>${h(a.name)}</td><td>${TYPE_LABEL[a.type]||a.type}</td><td>${h(a.category||"-")}</td><td>${_costTagLabel(a.costCategory,a.costSubType)}</td><td>${a.active?badge("사용","green"):badge("미사용","gray")}</td><td><button class="btn btn-secondary btn-sm" onclick="openAcctAccountModal('${a.id}')">수정</button> <button class="btn btn-ghost btn-sm" onclick="_showRecordHistory('${h(a.name)}',_buildHistoryRows(${JSON.stringify(a).replace(/'/g,"&#39;")},[]))">이력</button> <button class="btn btn-danger btn-sm" onclick="deleteAcctAccount('${a.id}')">삭제</button></td></tr>`).join(""):`<tr><td colspan="7" class="text-gray" style="text-align:center;padding:20px">${q?"검색 결과가 없습니다.":"등록된 계정과목이 없습니다."}</td></tr>`}
+  ${rows.length?rows.map(a=>`<tr><td>${h(a.code)}</td><td>${h(a.name)}</td><td>${TYPE_LABEL[a.type]||a.type}</td><td>${h(a.category||"-")}</td><td>${_costTagLabel(a.costCategory,a.costSubType)}</td><td>${a.active?badge("사용","green"):badge("미사용","gray")}</td><td><button class="btn btn-secondary btn-sm" onclick="openAcctAccountModal('${a.id}')">수정</button> <button class="btn btn-ghost btn-sm" onclick="_showRecordHistory('${h(a.name).replace(/'/g,"\\'")}',_buildHistoryRows(${h(JSON.stringify(a))},[]))">이력</button> <button class="btn btn-danger btn-sm" onclick="deleteAcctAccount('${a.id}')">삭제</button></td></tr>`).join(""):`<tr><td colspan="7" class="text-gray" style="text-align:center;padding:20px">${q?"검색 결과가 없습니다.":"등록된 계정과목이 없습니다."}</td></tr>`}
   </tbody></table>`;
 }
 // 원가구분(costCategory/costSubType) 표시 라벨 — 원가명세서·계정과목 목록 공용
@@ -16426,7 +16427,7 @@ function renderAcctPartnersTbl(){
   if(f.type!=="all")rows=rows.filter(p=>p.type===f.type||p.type==="both");
   if(f.q.trim()){const q=f.q.trim();rows=rows.filter(p=>[p.name,p.bizNo,p.ceoName,p.contactName,p.phone,p.email].some(v=>(v||"").includes(q)));}
   wrap.innerHTML=`<table><thead><tr><th>거래처명</th><th>사업자번호</th><th>대표자</th><th>거래유형</th><th>담당자</th><th>연락처</th><th>사용여부</th><th>관리</th></tr></thead><tbody>
-  ${rows.length?rows.map(p=>`<tr><td>${h(p.name)}</td><td>${h(p.bizNo||"-")}</td><td>${h(p.ceoName||"-")}</td><td>${PARTNER_TYPE_LABEL[p.type]||p.type}</td><td>${h(p.contactName||"-")}</td><td>${h(p.phone||"-")}</td><td>${p.active?badge("사용","green"):badge("미사용","gray")}</td><td><button class="btn btn-secondary btn-sm" onclick="openPartnerModal('${p.id}')">수정</button> <button class="btn btn-ghost btn-sm" onclick="_showRecordHistory('${h(p.name)}',_buildHistoryRows(${JSON.stringify(p).replace(/'/g,"&#39;")},[]))">이력</button> <button class="btn btn-danger btn-sm" onclick="deletePartner('${p.id}')">삭제</button></td></tr>`).join(""):`<tr><td colspan="8" class="text-gray" style="text-align:center;padding:20px">${f.q||f.type!=="all"?"검색 결과가 없습니다.":"등록된 거래처가 없습니다."}</td></tr>`}
+  ${rows.length?rows.map(p=>`<tr><td>${h(p.name)}</td><td>${h(p.bizNo||"-")}</td><td>${h(p.ceoName||"-")}</td><td>${PARTNER_TYPE_LABEL[p.type]||p.type}</td><td>${h(p.contactName||"-")}</td><td>${h(p.phone||"-")}</td><td>${p.active?badge("사용","green"):badge("미사용","gray")}</td><td><button class="btn btn-secondary btn-sm" onclick="openPartnerModal('${p.id}')">수정</button> <button class="btn btn-ghost btn-sm" onclick="_showRecordHistory('${h(p.name).replace(/'/g,"\\'")}',_buildHistoryRows(${h(JSON.stringify(p))},[]))">이력</button> <button class="btn btn-danger btn-sm" onclick="deletePartner('${p.id}')">삭제</button></td></tr>`).join(""):`<tr><td colspan="8" class="text-gray" style="text-align:center;padding:20px">${f.q||f.type!=="all"?"검색 결과가 없습니다.":"등록된 거래처가 없습니다."}</td></tr>`}
   </tbody></table>`;
 }
 function _dlPartnersCSV(){
@@ -16586,7 +16587,7 @@ function renderAcctVouchersTbl(){
   wrap.innerHTML=`<table><thead><tr><th>전표번호</th><th>유형</th><th>일자</th><th>거래처</th><th>내용</th><th>금액</th><th>상태</th><th>관리</th></tr></thead><tbody>
   ${rows.length?rows.map(v=>`<tr><td>${h(v.voucherNo||"(임시)")}</td><td>${badge(h(_voucherCategoryLabel(v.category)),"indigo")}</td><td>${h(v.date)}</td><td>${h(v.partner||"-")}</td><td>${h(v.description||"-")}</td><td style="text-align:right">${v.amount.toLocaleString()}</td><td>${STATUS_LABEL[v.status]}</td><td>
     <button class="btn btn-secondary btn-sm" onclick="viewVoucherModal('${v.id}')">보기</button>
-    <button class="btn btn-ghost btn-sm" onclick="_showRecordHistory('${h(v.voucherNo||'전표')}',_buildHistoryRows(${JSON.stringify(v).replace(/'/g,"&#39;")},[['createdBy','createdAt','작성'],['postedBy','postedAt','확정'],['voidedBy','voidedAt','취소']]))">이력</button>
+    <button class="btn btn-ghost btn-sm" onclick="_showRecordHistory('${h(v.voucherNo||'전표').replace(/'/g,"\\'")}',_buildHistoryRows(${h(JSON.stringify(v))},[['createdBy','createdAt','작성'],['postedBy','postedAt','확정'],['voidedBy','voidedAt','취소']]))">이력</button>
     ${v.status==="draft"?` <button class="btn btn-primary btn-sm" onclick="postVoucher('${v.id}')">확정</button> <button class="btn btn-danger btn-sm" onclick="deleteVoucherDraft('${v.id}')">삭제</button>`:""}
     ${v.status==="posted"?` <button class="btn btn-danger btn-sm" onclick="voidVoucher('${v.id}')">취소</button>`:""}
   </td></tr>`).join(""):`<tr><td colspan="8" class="text-gray" style="text-align:center;padding:20px">등록된 전표가 없습니다.</td></tr>`}
@@ -16820,7 +16821,7 @@ function renderAcctTaxInvoicesTbl(){
   wrap.innerHTML=`<table><thead><tr><th>구분</th><th>승인번호</th><th>발행일</th><th>거래처</th><th>공급가액</th><th>세액</th><th>합계</th><th>상태</th><th>관리</th></tr></thead><tbody>
   ${rows.length?rows.map(t=>`<tr><td>${t.direction==="purchase"?badge("매입","orange"):badge("매출","blue")}</td><td>${h(t.invoiceNo)}</td><td>${h(t.issueDate)}</td><td>${h(t.partnerName)}</td><td style="text-align:right">${t.supplyTotal.toLocaleString()}</td><td style="text-align:right">${t.taxTotal.toLocaleString()}</td><td style="text-align:right">${t.grandTotal.toLocaleString()}</td><td>${t.status==="issued"?badge("발행","green"):badge("취소","red")}</td><td>
     <button class="btn btn-secondary btn-sm" onclick="viewTaxInvoiceModal('${t.id}')">보기</button>
-    <button class="btn btn-ghost btn-sm" onclick="_showRecordHistory('${h(t.invoiceNo)}',_buildHistoryRows(${JSON.stringify(t).replace(/'/g,"&#39;")},[['createdBy','createdAt','발행'],['voidedBy','voidedAt','취소']]))">이력</button>
+    <button class="btn btn-ghost btn-sm" onclick="_showRecordHistory('${h(t.invoiceNo).replace(/'/g,"\\'")}',_buildHistoryRows(${h(JSON.stringify(t))},[['createdBy','createdAt','발행'],['voidedBy','voidedAt','취소']]))">이력</button>
     ${t.status==="issued"?` <button class="btn btn-danger btn-sm" onclick="voidTaxInvoice('${t.id}')">취소</button>`:""}
   </td></tr>`).join(""):`<tr><td colspan="9" class="text-gray" style="text-align:center;padding:20px">발행된 세금계산서가 없습니다.</td></tr>`}
   </tbody></table>`;
@@ -20555,8 +20556,8 @@ function renderAcctReceivablesPage(){
     const rows=_arApByPartner();
     body=rows.length?`<div class="tbl-wrap"><table><thead><tr><th>거래처</th><th>매출 누계</th><th>수금 누계</th><th style="background:#fef2f2">미수금</th><th>매입 누계</th><th>지급 누계</th><th style="background:#fffbeb">미지급금</th><th>관리</th></tr></thead><tbody>
     ${rows.map(r=>`<tr><td>${h(r.name)}</td><td style="text-align:right">${r.sales.toLocaleString()}</td><td style="text-align:right">${r.received.toLocaleString()}</td><td style="text-align:right;font-weight:${r.ar>0?700:400};color:${r.ar>0?"#dc2626":"#64748b"}">${r.ar.toLocaleString()}</td><td style="text-align:right">${r.purchase.toLocaleString()}</td><td style="text-align:right">${r.paidOut.toLocaleString()}</td><td style="text-align:right;font-weight:${r.ap>0?700:400};color:${r.ap>0?"#d97706":"#64748b"}">${r.ap.toLocaleString()}</td><td>
-      ${r.ar>0?`<button class="btn btn-primary btn-sm" onclick="openPaymentModal('in','${h(r.name)}',${r.ar},'${r.partnerId||""}')">수금 등록</button>`:""}
-      ${r.ap>0?` <button class="btn btn-secondary btn-sm" onclick="openPaymentModal('out','${h(r.name)}',${r.ap},'${r.partnerId||""}')">지급 등록</button>`:""}
+      ${r.ar>0?`<button class="btn btn-primary btn-sm" onclick="openPaymentModal('in','${h(r.name).replace(/'/g,"\\'")}',${r.ar},'${r.partnerId||""}')">수금 등록</button>`:""}
+      ${r.ap>0?` <button class="btn btn-secondary btn-sm" onclick="openPaymentModal('out','${h(r.name).replace(/'/g,"\\'")}',${r.ap},'${r.partnerId||""}')">지급 등록</button>`:""}
     </td></tr>`).join("")}
     </tbody></table></div>`:`<div class="p-empty">발행된 세금계산서·수금/지급 기록이 없습니다.</div>`;
   }else if(_arApTab==="payments"){
@@ -21165,7 +21166,7 @@ function renderSalesQuotationsTbl(){
   wrap.innerHTML=`<div class="tbl-wrap"><table><thead><tr><th>견적번호</th><th>견적일</th><th>거래처</th><th>합계</th><th>상태</th><th>관리</th></tr></thead><tbody>
   ${rows.length?rows.map(q=>`<tr><td>${h(q.quoteNo||"(임시)")}</td><td>${h(q.date)}</td><td>${h(q.partnerName)}</td><td style="text-align:right">${q.grandTotal.toLocaleString()}</td><td>${QUOTE_STATUS_LABEL[q.status]}</td><td>
     <button class="btn btn-secondary btn-sm" onclick="viewQuotationModal('${q.id}')">보기</button>
-    <button class="btn btn-ghost btn-sm" onclick="_showRecordHistory('${h(q.quoteNo||'견적서')}',_buildHistoryRows(${JSON.stringify(q).replace(/'/g,"&#39;")},[['createdBy','createdAt','작성'],['sentBy','sentAt','발송'],['acceptedBy','acceptedAt','수주확정'],['shippedBy','shippedAt','출고/매출'],['rejectedBy','rejectedAt','실주처리']]))">이력</button>
+    <button class="btn btn-ghost btn-sm" onclick="_showRecordHistory('${h(q.quoteNo||'견적서').replace(/'/g,"\\'")}',_buildHistoryRows(${h(JSON.stringify(q))},[['createdBy','createdAt','작성'],['sentBy','sentAt','발송'],['acceptedBy','acceptedAt','수주확정'],['shippedBy','shippedAt','출고/매출'],['rejectedBy','rejectedAt','실주처리']]))">이력</button>
     ${q.status==="draft"?` <button class="btn btn-primary btn-sm" onclick="sendQuotation('${q.id}')">발송</button> <button class="btn btn-danger btn-sm" onclick="deleteQuotationDraft('${q.id}')">삭제</button>`:""}
     ${q.status==="sent"?` <button class="btn btn-primary btn-sm" onclick="acceptQuotation('${q.id}')">수주확정</button> <button class="btn btn-danger btn-sm" onclick="rejectQuotation('${q.id}')">실주처리</button>`:""}
     ${q.status==="accepted"?` <button class="btn btn-primary btn-sm" onclick="shipQuotation('${q.id}')">출고/매출 처리</button>`:""}
@@ -23687,7 +23688,7 @@ function renderSalesPurchaseOrdersTbl(){
   wrap.innerHTML=`<div class="tbl-wrap"><table><thead><tr><th>발주번호</th><th>발주일</th><th>거래처</th><th>입고위치</th><th>합계</th><th>상태</th><th>관리</th></tr></thead><tbody>
   ${rows.length?rows.map(p=>`<tr><td>${h(p.poNo||"(임시)")}</td><td>${h(p.date)}</td><td>${h(p.partnerName)}</td><td>${h(_erpLocationName(p.locationId))}</td><td style="text-align:right">${p.grandTotal.toLocaleString()}</td><td>${PO_STATUS_LABEL[p.status]}</td><td>
     <button class="btn btn-secondary btn-sm" onclick="viewPOModal('${p.id}')">보기</button>
-    <button class="btn btn-ghost btn-sm" onclick="_showRecordHistory('${h(p.poNo||'발주서')}',_buildHistoryRows(${JSON.stringify(p).replace(/'/g,"&#39;")},[['createdBy','createdAt','작성'],['orderedBy','orderedAt','발주확정'],['receivedBy','receivedAt','입고처리'],['cancelledBy','cancelledAt','취소']]))">이력</button>
+    <button class="btn btn-ghost btn-sm" onclick="_showRecordHistory('${h(p.poNo||'발주서').replace(/'/g,"\\'")}',_buildHistoryRows(${h(JSON.stringify(p))},[['createdBy','createdAt','작성'],['orderedBy','orderedAt','발주확정'],['receivedBy','receivedAt','입고처리'],['cancelledBy','cancelledAt','취소']]))">이력</button>
     ${p.status==="draft"?` <button class="btn btn-primary btn-sm" onclick="confirmPO('${p.id}')">발주확정</button> <button class="btn btn-danger btn-sm" onclick="deletePODraft('${p.id}')">삭제</button>`:""}
     ${p.status==="ordered"?` <button class="btn btn-primary btn-sm" onclick="receivePO('${p.id}')">입고처리</button> <button class="btn btn-danger btn-sm" onclick="cancelPO('${p.id}')">취소</button>`:""}
   </td></tr>`).join(""):`<tr><td colspan="7" class="text-gray" style="text-align:center;padding:20px">등록된 발주서가 없습니다.</td></tr>`}
