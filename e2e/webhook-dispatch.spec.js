@@ -28,6 +28,16 @@ async function loginAsAdmin(page) {
   await page.goto("/");
   await page.fill("#l-id", "e2e_admin");
   await page.fill("#l-pw", "E2eTestPw123");
+  // 로그인 버튼을 누르기 "전"에 오버라이드해야 하는 이유는 smoke.spec.js의 "확정
+  // 평가가 성과급과..." 테스트 상세 주석 참고 — _completeLogin()이 클릭 직후
+  // 백그라운드로 시작하는 loadFromServer()/SSE data_updated가, 이 테스트가 로그인
+  // 직후 순수 인메모리로 세팅하는 integrationSettings.webhooks를 실제 서버의(웹훅
+  // 미등록) 상태로 되돌려버릴 수 있다 — 그러면 _fireIntegrationWebhooks가 구독
+  // 웹훅을 못 찾아 아무것도 발송하지 않아, 목 서버 수신 대기가 타임아웃된다.
+  await page.evaluate(() => {
+    loadFromServer = async () => {};
+    connectSSE = async () => {};
+  });
   await page.click(".login-card button.btn-primary");
   await expect(page.locator("#main")).toBeVisible({ timeout: 10000 });
 }

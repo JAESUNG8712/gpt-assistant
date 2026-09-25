@@ -481,6 +481,49 @@ test.describe("로그인·기본 네비게이션", () => {
     expect(result).toEqual({ salary: 55000000, count: 1, before: "50,000,000원", after: "55,000,000원", source: "employee_edit" });
   });
 
+  // 연말정산(간이) 화면은 getFullState()/_recordCollections()가 yearEndSettlements
+  // 필드 자체를 빠뜨리고 있어, saveYearEndSettlement()가 화면상 "저장되었습니다"를
+  // 띄워도 실제로는 그 필드가 /save 요청 바디에 단 한 번도 실리지 않아 서버에
+  // 영구히 반영되지 않던 치명적 버그가 있었다(서버측 API 테스트는 페이로드를
+  // 손으로 구성해 이 버그를 못 잡았음 — 반드시 실제 getFullState() 경로를 타는
+  // e2e로 검증해야 한다).
+  test("연말정산 확정 결과가 getFullState() 저장 경로를 통해 실제로 서버에 영속된다", async ({ page }) => {
+    await page.goto("/");
+    await page.fill("#l-id", "e2e_admin");
+    await page.fill("#l-pw", "E2eTestPw123");
+    await page.evaluate(() => {
+      loadFromServer = async () => {};
+      connectSSE = async () => {};
+    });
+    await page.click(".login-card button.btn-primary");
+    await expect(page.locator("#main")).toBeVisible({ timeout: 10000 });
+
+    const year = 2024;
+    const result = await page.evaluate(async (year) => {
+      const empId = currentUser.id;
+      saveYearEndSettlement(empId, year, 2, true); // dependents=2, confirmed=true
+      await _doSave(true); // autoSaveDebounced()의 지연 없이 즉시 실제 서버 저장을 실행
+      const r = await serverRequest("GET", "/data"); // 클라이언트 메모리가 아니라 서버에서 새로 조회
+      const rec = (r.data?.yearEndSettlements || []).find(y => String(y.empId) === String(empId) && y.year === year);
+      return { found: !!rec, dependents: rec?.dependents, confirmed: rec?.confirmed };
+    }, year);
+    expect(result).toEqual({ found: true, dependents: 2, confirmed: true });
+
+    // 재저장(dependents만 변경)해도 CAS(_rev) 충돌 없이 반영돼야 한다 — saveYearEndSettlement()가
+    // 매번 완전히 새 레코드 객체를 만들면서 기존 _rev를 옮기지 않으면, 서버가 부여한 _rev를
+    // 잃어버려 두 번째 저장부터 항상 409(RECORD_REVISION_CONFLICT)가 발생하던 버그가 있었다.
+    const secondSave = await page.evaluate(async (year) => {
+      const empId = currentUser.id;
+      saveYearEndSettlement(empId, year, 5, true); // dependents 2 → 5로 변경
+      await _doSave(false);
+      const r = await serverRequest("GET", "/data");
+      const rec = (r.data?.yearEndSettlements || []).find(y => String(y.empId) === String(empId) && y.year === year);
+      return { statusMsg: serverConfig.statusMsg, dependents: rec?.dependents };
+    }, year);
+    expect(secondSave.statusMsg).not.toContain("충돌");
+    expect(secondSave.dependents).toBe(5);
+  });
+
   test("휴가·근무보상·복리후생 정책과 채용 키워드 적합도가 연동된다", async ({ page }) => {
     const pageErrors = [];
     page.on("pageerror", e => pageErrors.push(e.message));
