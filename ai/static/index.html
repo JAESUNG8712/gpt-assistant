@@ -266,6 +266,18 @@
     .messages::-webkit-scrollbar { width: 4px; }
     .messages::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
 
+    /* ── 맨 아래로 스크롤 버튼 (긴 답변 중 위로 스크롤했을 때만 표시) ── */
+    .scroll-bottom-btn {
+      position: fixed; right: 24px; z-index: 20;
+      width: 38px; height: 38px; border-radius: 50%;
+      background: var(--surface2); border: 1px solid var(--border); color: var(--text);
+      display: none; align-items: center; justify-content: center;
+      font-size: 1.05rem; cursor: pointer; box-shadow: 0 2px 10px rgba(0,0,0,0.2);
+      transition: transform 0.15s, border-color 0.15s, color 0.15s;
+    }
+    .scroll-bottom-btn.show { display: flex; }
+    .scroll-bottom-btn:hover { transform: translateY(-2px); border-color: var(--persona-color); color: var(--persona-color); }
+
     .msg { display: flex; gap: 10px; max-width: 100%; }
     .msg.user { flex-direction: row-reverse; }
     .msg-avatar {
@@ -358,6 +370,7 @@
     .send-btn:hover { opacity: 0.88; transform: scale(1.05); }
     .send-btn:active { transform: scale(0.96); }
     .send-btn:disabled { opacity: 0.35; cursor: not-allowed; transform: none; box-shadow: none; }
+    .send-btn.stop { background: #d32f2f; font-size: 1rem; }
 
     /* ── 검색 팁 ─────────────── */
     .input-top-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
@@ -808,6 +821,7 @@
         <div class="chips" id="welcome-chips"></div>
       </div>
     </div>
+    <button class="scroll-bottom-btn" id="scroll-bottom-btn" onclick="scrollMessagesToBottom()" title="맨 아래로">↓</button>
 
     <div class="input-area">
       <!-- 이력서 분석 버튼 (resume 페르소나에서만 표시) -->
@@ -844,7 +858,7 @@
           onkeydown="handleKey(event)" oninput="handleCommandInput(this)" onblur="scheduleCloseCommandMenu()"
           aria-autocomplete="list" aria-controls="command-menu" aria-expanded="false"></textarea>
         <div class="command-menu" id="command-menu" role="listbox" aria-label="간편 명령 자동완성"></div>
-        <button class="send-btn" id="send-btn" onclick="sendMessage()" title="전송 (Enter)">↑</button>
+        <button class="send-btn" id="send-btn" onclick="handleSendOrStop()" title="전송 (Enter)">↑</button>
       </div>
       <div style="text-align:right;font-size:0.65rem;color:var(--text-dim);margin-top:4px;opacity:0.6">Enter 전송 &nbsp;·&nbsp; Shift+Enter 줄바꿈</div>
     </div>
@@ -1072,6 +1086,7 @@
   let commandMenuIndex = 0;
   let commandTokenStart = -1;
   let isLoading = false;
+  let activeAbortController = null; // 진행 중인 응답 생성을 중단하기 위한 컨트롤러
   let modelInfo = null;
   let thinkingMode = 'auto'; // "auto" | "off" | "prompt" | "deep"
   let _codeBlockCounter = 0;
@@ -1420,6 +1435,58 @@
     </div>`;
   }
 
+  // ── 맨 아래로 스크롤 버튼 ──────────────────
+  // 답변이 스트리밍되는 동안 사용자가 위로 스크롤해 이전 내용을 읽고 있으면
+  // 강제로 아래로 끌고 내려가지 않고, 대신 이 버튼으로 원할 때 내려갈 수 있게 한다.
+  function updateScrollBottomBtn() {
+    const msgs = document.getElementById('messages');
+    const btn = document.getElementById('scroll-bottom-btn');
+    if (!msgs || !btn) return;
+    const distanceFromBottom = msgs.scrollHeight - msgs.scrollTop - msgs.clientHeight;
+    const shouldShow = distanceFromBottom > 120;
+    btn.classList.toggle('show', shouldShow);
+    if (shouldShow) {
+      const inputArea = document.querySelector('.input-area');
+      const gap = inputArea ? inputArea.getBoundingClientRect().height : 90;
+      btn.style.bottom = (gap + 16) + 'px';
+    }
+  }
+  function scrollMessagesToBottom() {
+    const msgs = document.getElementById('messages');
+    if (!msgs) return;
+    msgs.scrollTo({ top: msgs.scrollHeight, behavior: 'smooth' });
+    updateScrollBottomBtn();
+  }
+  document.getElementById('messages').addEventListener('scroll', updateScrollBottomBtn);
+  window.addEventListener('resize', updateScrollBottomBtn);
+
+  // ── 응답 생성 중단 ─────────────────────────
+  // GPT·Claude처럼 답변이 생성되는 동안 전송 버튼이 중단 버튼으로 바뀐다.
+  function setSendButtonState(loading) {
+    const btn = document.getElementById('send-btn');
+    if (!btn) return;
+    if (loading) {
+      btn.textContent = '■';
+      btn.title = '생성 중단 (Esc)';
+      btn.classList.add('stop');
+    } else {
+      btn.textContent = '↑';
+      btn.title = '전송 (Enter)';
+      btn.classList.remove('stop');
+    }
+  }
+  function handleSendOrStop() {
+    if (isLoading) { stopGeneration(); } else { sendMessage(); }
+  }
+  function stopGeneration() {
+    if (activeAbortController) activeAbortController.abort();
+  }
+  // 입력창에 포커스가 없어도(전송 버튼을 마우스로 눌렀거나 다른 곳을 보고 있어도)
+  // Esc로 바로 중단할 수 있도록 전역으로도 연결한다.
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && isLoading) stopGeneration();
+  });
+
   // ── 채팅 ─────────────────────────────────
   function appendMsg(role, content, isTyping = false) {
     const welcome = document.getElementById('welcome');
@@ -1764,7 +1831,9 @@
     const userDiv = appendMsg('user', msg);
     renderCommandStatus(userDiv, previewStatus, true);
     isLoading = true;
-    document.getElementById('send-btn').disabled = true;
+    setSendButtonState(true);
+    const controller = new AbortController();
+    activeAbortController = controller;
 
     const aiDiv = appendMsg('ai', '', true);
     const bubble = aiDiv.querySelector('.msg-bubble');
@@ -1774,6 +1843,7 @@
     try {
       const resp = await fetch('/chat', {
         method: 'POST',
+        signal: controller.signal,
         headers: {
           'Content-Type': 'application/json',
           ...(ownerToken ? { 'X-Admin-Token': ownerToken } : {}),
@@ -1813,7 +1883,13 @@
         } else {
           bubble.textContent = full;
         }
-        document.getElementById('messages').scrollTop = 99999;
+        // 사용자가 이전 내용을 읽으려 위로 스크롤해 둔 상태라면 강제로 끌고
+        // 내려가지 않는다 — 이미 맨 아래 근처에 있을 때만 자동으로 따라간다.
+        const msgsEl = document.getElementById('messages');
+        if (msgsEl.scrollHeight - msgsEl.scrollTop - msgsEl.clientHeight < 100) {
+          msgsEl.scrollTop = msgsEl.scrollHeight;
+        }
+        updateScrollBottomBtn();
       }
       aiDiv.classList.remove('typing');
 
@@ -1862,11 +1938,20 @@
       fbRow.appendChild(copyBtn);
       aiDiv.querySelector('.msg-bubble').appendChild(fbRow);
     } catch (e) {
-      bubble.textContent = '오류: ' + e.message;
       aiDiv.classList.remove('typing');
+      if (e.name === 'AbortError') {
+        // 사용자가 직접 중단 버튼(또는 Esc)을 눌러 중단한 경우 — 오류가 아니라
+        // 그때까지 받은 내용을 그대로 확정해서 보여준다(GPT·Claude와 동일한 동작).
+        bubble.innerHTML = (full ? renderMd(full) : '<span style="color:var(--text-dim)">(응답 없음)</span>')
+          + '<div style="margin-top:8px;font-size:0.72rem;color:var(--text-dim)">⏹️ 생성이 중단되었습니다.</div>';
+      } else {
+        bubble.textContent = '오류: ' + e.message;
+      }
     }
     isLoading = false;
-    document.getElementById('send-btn').disabled = false;
+    activeAbortController = null;
+    setSendButtonState(false);
+    updateScrollBottomBtn();
     await loadStats();
   }
 
