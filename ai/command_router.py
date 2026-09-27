@@ -201,7 +201,8 @@ def parse_command(text: str) -> dict:
     # 질문으로 오해할 여지가 거의 없는 자연스러운 기억 조회 표현도 명령으로 처리한다.
     if re.fullmatch(
         r"(?:내가\s*)?(?:뭘|무엇을)?\s*기억(?:시켰|했)는?(?:지)?\??|"
-        r"내\s*기억\s*(?:보여줘|알려줘|목록)|기억한\s*(?:것|내용)\s*(?:보여줘|알려줘)",
+        r"내\s*기억\s*(?:보여줘|알려줘|목록)|기억한\s*(?:것|내용)\s*(?:보여줘|알려줘)|"
+        r"(?:개인\s*)?기억(?:을)?\s*(?:보여줘|알려줘)",
         original,
     ):
         result["memory_action"] = "list"
@@ -214,7 +215,11 @@ def parse_command(text: str) -> dict:
         result["memory_action"] = "organize"
         result["applied_commands"] = ["기억정리"]
         return result
-    if re.fullmatch(r"(?:삭제한\s*)?(?:개인\s*)?기억(?:을)?\s*(?:보여줘|복구목록|되살릴\s*수\s*있어\??)", original):
+    if re.fullmatch(
+        r"삭제한\s*(?:개인\s*)?기억(?:을)?\s*보여줘|"
+        r"(?:개인\s*)?기억(?:을)?\s*(?:복구목록|되살릴\s*수\s*있어\??)",
+        original,
+    ):
         result["memory_action"] = "restore"
         result["applied_commands"] = ["기억복구"]
         return result

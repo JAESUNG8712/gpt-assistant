@@ -80,6 +80,12 @@ def main():
     assert restore["memory_content"] == "#12"
     natural_restore = command_router.parse_command("삭제한 기억 보여줘")
     assert natural_restore["memory_action"] == "restore"
+    # "삭제한" 없이 그냥 "기억 보여줘"라고 물으면 삭제된(복구용) 목록이 아니라
+    # 현재 저장된 기억 목록으로 연결돼야 한다 — 실측 재현했던 회귀.
+    bare_memory_show = command_router.parse_command("기억 보여줘")
+    assert bare_memory_show["memory_action"] == "list"
+    bare_memory_show2 = command_router.parse_command("개인 기억 보여줘")
+    assert bare_memory_show2["memory_action"] == "list"
 
     natural_evidence = command_router.parse_command(
         "근거가 확인된 것만 알려줘: 2027년 최저임금"
