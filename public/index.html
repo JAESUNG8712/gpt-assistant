@@ -16730,9 +16730,10 @@ function openVoucherTemplateManager(){
 }
 async function deleteVoucherTemplate(id){
   const t=acctVoucherTemplates.find(x=>x.id===id);if(!t)return;
-  const ok=await askConfirmModal({title:"전표 템플릿 삭제",message:"회사 사용자 정의 템플릿을 삭제합니다.",impacts:[{label:"템플릿",value:t.name},{label:"기존 전표",value:"영향 없음",tone:"success"}],confirmText:"삭제",danger:true});if(!ok)return;
-  const r=await serverRequest("DELETE",`/api/accounting/voucher-templates/${encodeURIComponent(id)}`);if(!r?.ok){showToast(r?.message||"삭제에 실패했습니다.","error");return;}
-  acctVoucherTemplates=acctVoucherTemplates.filter(x=>x.id!==id);closeModal();showToast("템플릿이 삭제되었습니다.","success");
+  await runMutationWorkflow({key:`voucher-template:${id}:delete`,method:"DELETE",endpoint:`/api/accounting/voucher-templates/${encodeURIComponent(id)}`,
+    confirm:{title:"전표 템플릿 삭제",message:"회사 사용자 정의 템플릿을 삭제합니다.",impacts:[{label:"템플릿",value:t.name},{label:"기존 전표",value:"영향 없음",tone:"success"}],confirmText:"삭제",danger:true},
+    errorMessage:r=>r?.message||"삭제에 실패했습니다.",successMessage:"템플릿이 삭제되었습니다.",
+    onSuccess:()=>{acctVoucherTemplates=acctVoucherTemplates.filter(x=>x.id!==id);closeModal();}});
 }
 async function openVoucherModal(){
   await loadAcctAccountsPicker();
@@ -16811,24 +16812,16 @@ function viewVoucherModal(id){
 }
 async function postVoucher(id){
   const v=acctVouchers.find(v=>v.id===id);
-  const ok=await askConfirmModal({
-    title:"전표 확정 확인",
-    message:"전표를 확정합니다. 확정 후에는 품목과 분개 내용을 수정할 수 없습니다.",
-    impacts:[
+  await runMutationWorkflow({key:`voucher:${id}:post`,method:"POST",endpoint:`/api/accounting/vouchers/${id}/post`,body:{role:currentUser.role,user:currentUser.name},confirm:{
+    title:"전표 확정 확인",message:"전표를 확정합니다. 확정 후에는 품목과 분개 내용을 수정할 수 없습니다.",impacts:[
       {label:"전표",value:v?.voucherNo||"(임시 전표)"},
       {label:"일자",value:v?.date||"-"},
       {label:"거래처",value:v?.partner||"-"},
       {label:"금액",value:`${(v?.amount||0).toLocaleString()}원`},
       {label:"확정 후 영향",value:"수정 잠금 및 전표번호 확정",tone:"danger"}
-    ],
-    confirmText:"전표 확정",
-    danger:true
-  });
-  if(!ok)return;
-  const r=await serverRequest("POST",`/api/accounting/vouchers/${id}/post`,{role:currentUser.role,user:currentUser.name});
-  if(!r?.ok){showToast(r?.message||"확정에 실패했습니다.","error");return;}
-  const idx=acctVouchers.findIndex(v=>v.id===id);if(idx>=0)acctVouchers[idx]=r.voucher;
-  showToast(`전표가 확정되었습니다 (${r.voucher.voucherNo}).`,"success");renderAcctVouchersPage();
+    ],confirmText:"전표 확정",danger:true},errorMessage:r=>r?.message||"확정에 실패했습니다.",
+    successMessage:r=>`전표가 확정되었습니다 (${r.voucher.voucherNo}).`,
+    onSuccess:r=>{const idx=acctVouchers.findIndex(v=>v.id===id);if(idx>=0)acctVouchers[idx]=r.voucher;renderAcctVouchersPage();}});
 }
 async function voidVoucher(id){
   const v=acctVouchers.find(v=>v.id===id);
@@ -16850,29 +16843,20 @@ async function voidVoucher(id){
     noBackdropClose:true
   });
   if(!reason)return;
-  const r=await serverRequest("POST",`/api/accounting/vouchers/${id}/void`,{reason,role:currentUser.role,user:currentUser.name});
-  if(!r?.ok){showToast(r?.message||"취소에 실패했습니다.","error");return;}
-  const idx=acctVouchers.findIndex(v=>v.id===id);if(idx>=0)acctVouchers[idx]=r.voucher;
-  showToast("전표가 취소되었습니다.","info");renderAcctVouchersPage();
+  await runMutationWorkflow({key:`voucher:${id}:void`,method:"POST",endpoint:`/api/accounting/vouchers/${id}/void`,body:{reason,role:currentUser.role,user:currentUser.name},
+    errorMessage:r=>r?.message||"취소에 실패했습니다.",successMessage:"전표가 취소되었습니다.",successType:"info",
+    onSuccess:r=>{const idx=acctVouchers.findIndex(v=>v.id===id);if(idx>=0)acctVouchers[idx]=r.voucher;renderAcctVouchersPage();}});
 }
 async function deleteVoucherDraft(id){
   const v=acctVouchers.find(v=>v.id===id);
-  const ok=await askConfirmModal({
-    title:"임시 전표 삭제 확인",
-    message:"아직 확정되지 않은 임시 전표를 삭제합니다.",
-    impacts:[
+  await runMutationWorkflow({key:`voucher:${id}:delete`,method:"DELETE",endpoint:`/api/accounting/vouchers/${id}`,body:{role:currentUser.role,user:currentUser.name},confirm:{
+    title:"임시 전표 삭제 확인",message:"아직 확정되지 않은 임시 전표를 삭제합니다.",impacts:[
       {label:"일자",value:v?.date||"-"},
       {label:"거래처",value:v?.partner||"-"},
       {label:"금액",value:`${(v?.amount||0).toLocaleString()}원`},
       {label:"삭제 후 영향",value:"목록에서 제거",tone:"danger"}
-    ],
-    confirmText:"임시 전표 삭제",
-    danger:true
-  });
-  if(!ok)return;
-  const r=await serverRequest("DELETE",`/api/accounting/vouchers/${id}`,{role:currentUser.role,user:currentUser.name});
-  if(!r?.ok){showToast(r?.message||"삭제에 실패했습니다.","error");return;}
-  acctVouchers=acctVouchers.filter(v=>v.id!==id);showToast("삭제되었습니다.","info");renderAcctVouchersPage();
+    ],confirmText:"임시 전표 삭제",danger:true},errorMessage:r=>r?.message||"삭제에 실패했습니다.",successMessage:"삭제되었습니다.",successType:"info",
+    onSuccess:()=>{acctVouchers=acctVouchers.filter(v=>v.id!==id);renderAcctVouchersPage();}});
 }
 
 let _tiItems=[];
@@ -21314,69 +21298,39 @@ function viewQuotationModal(id){
 }
 async function sendQuotation(id){
   const q=erpQuotations.find(q=>q.id===id);
-  const ok=await askConfirmModal({
-    title:"견적서 발송 확인",
-    message:"견적서를 발송 상태로 전환합니다. 발송 후에는 품목을 수정할 수 없습니다.",
-    impacts:[
+  await runMutationWorkflow({key:`quotation:${id}:send`,method:"POST",endpoint:`/api/erp/quotations/${id}/send`,body:{role:currentUser.role,user:currentUser.name},confirm:{
+    title:"견적서 발송 확인",message:"견적서를 발송 상태로 전환합니다. 발송 후에는 품목을 수정할 수 없습니다.",impacts:[
       {label:"거래처",value:q?.partnerName||"-"},
       {label:"품목 수",value:`${(q?.items||q?.lines||[]).length}건`},
       {label:"합계",value:`${(q?.grandTotal||0).toLocaleString()}원`,tone:"warn"},
       {label:"발송 후 영향",value:"견적 품목 수정 잠금",tone:"danger"}
-    ],
-    confirmText:"견적서 발송",
-    danger:true
-  });
-  if(!ok)return;
-  const r=await serverRequest("POST",`/api/erp/quotations/${id}/send`,{role:currentUser.role,user:currentUser.name});
-  if(!r?.ok){showToast(r?.message||"발송에 실패했습니다.","error");return;}
-  const idx=erpQuotations.findIndex(q=>q.id===id);if(idx>=0)erpQuotations[idx]=r.quotation;
-  showToast(`견적서가 발송되었습니다 (${r.quotation.quoteNo}).`,"success");renderSalesQuotationsPage();
+    ],confirmText:"견적서 발송",danger:true},errorMessage:r=>r?.message||"발송에 실패했습니다.",
+    successMessage:r=>`견적서가 발송되었습니다 (${r.quotation.quoteNo}).`,
+    onSuccess:r=>{const idx=erpQuotations.findIndex(q=>q.id===id);if(idx>=0)erpQuotations[idx]=r.quotation;renderSalesQuotationsPage();}});
 }
 async function acceptQuotation(id){
   const q=erpQuotations.find(q=>q.id===id);
-  const ok=await askConfirmModal({
-    title:"수주 확정 확인",
-    message:"견적서를 수주 확정 상태로 전환합니다.",
-    impacts:[
+  await runMutationWorkflow({key:`quotation:${id}:accept`,method:"POST",endpoint:`/api/erp/quotations/${id}/accept`,body:{role:currentUser.role,user:currentUser.name},confirm:{
+    title:"수주 확정 확인",message:"견적서를 수주 확정 상태로 전환합니다.",impacts:[
       {label:"견적번호",value:q?.quoteNo||id},
       {label:"거래처",value:q?.partnerName||"-"},
       {label:"합계",value:`${(q?.grandTotal||0).toLocaleString()}원`,tone:"warn"},
       {label:"확정 후 영향",value:"출고/매출 처리 가능",tone:"success"}
-    ],
-    confirmText:"수주 확정"
-  });
-  if(!ok)return;
-  const r=await serverRequest("POST",`/api/erp/quotations/${id}/accept`,{role:currentUser.role,user:currentUser.name});
-  if(!r?.ok){showToast(r?.message||"처리에 실패했습니다.","error");return;}
-  const idx=erpQuotations.findIndex(q=>q.id===id);if(idx>=0)erpQuotations[idx]=r.quotation;
-  showToast("수주가 확정되었습니다.","success");renderSalesQuotationsPage();
+    ],confirmText:"수주 확정"},errorMessage:r=>r?.message||"처리에 실패했습니다.",successMessage:"수주가 확정되었습니다.",
+    onSuccess:r=>{const idx=erpQuotations.findIndex(q=>q.id===id);if(idx>=0)erpQuotations[idx]=r.quotation;renderSalesQuotationsPage();}});
 }
 async function shipQuotation(id){
   const q=erpQuotations.find(q=>q.id===id);
-  const ok=await askConfirmModal({
-    title:"출고/매출 처리 확인",
-    message:"출고와 매출 세금계산서 발행을 함께 처리합니다.",
-    impacts:[
+  await runMutationWorkflow({key:`quotation:${id}:ship`,method:"POST",endpoint:`/api/erp/quotations/${id}/ship`,body:{role:currentUser.role,user:currentUser.name},confirm:{
+    title:"출고/매출 처리 확인",message:"출고와 매출 세금계산서 발행을 함께 처리합니다.",impacts:[
       {label:"견적번호",value:q?.quoteNo||id},
       {label:"출고 위치",value:_erpLocationName(q?.locationId)||"-"},
       {label:"품목 수",value:`${(q?.items||q?.lines||[]).length}건`},
       {label:"매출 합계",value:`${(q?.grandTotal||0).toLocaleString()}원`,tone:"warn"},
       {label:"처리 후 영향",value:"재고 차감 + 매출 세금계산서 발행",tone:"danger"}
-    ],
-    warnings:["재고 부족 또는 세금계산서 생성 실패 시 서버에서 처리가 거부될 수 있습니다."],
-    confirmText:"출고/매출 처리",
-    danger:true
-  });
-  if(!ok)return;
-  const r=await serverRequest("POST",`/api/erp/quotations/${id}/ship`,{role:currentUser.role,user:currentUser.name});
-  if(!r?.ok){showToast(r?.message||"처리에 실패했습니다.","error");return;}
-  const idx=erpQuotations.findIndex(q=>q.id===id);if(idx>=0)erpQuotations[idx]=r.quotation;
-  if(currentUser?.menuPerms?.["acct-tax-invoices"]!==false){
-    const rt=await serverRequest("GET","/api/accounting/tax-invoices");
-    if(rt?.ok)acctTaxInvoices=rt.taxInvoices;
-  }
-  const rs=await serverRequest("GET","/api/erp/stock");if(rs?.ok)erpStock=rs.stock;
-  showToast(`출고 및 세금계산서 발행이 완료되었습니다 (${r.taxInvoice.invoiceNo}).`,"success");renderSalesQuotationsPage();
+    ],warnings:["재고 부족 또는 세금계산서 생성 실패 시 서버에서 처리가 거부될 수 있습니다."],confirmText:"출고/매출 처리",danger:true},
+    errorMessage:r=>r?.message||"처리에 실패했습니다.",successMessage:r=>`출고 및 세금계산서 발행이 완료되었습니다 (${r.taxInvoice.invoiceNo}).`,
+    onSuccess:async r=>{const idx=erpQuotations.findIndex(q=>q.id===id);if(idx>=0)erpQuotations[idx]=r.quotation;if(currentUser?.menuPerms?.["acct-tax-invoices"]!==false){const rt=await serverRequest("GET","/api/accounting/tax-invoices");if(rt?.ok)acctTaxInvoices=rt.taxInvoices;}const rs=await serverRequest("GET","/api/erp/stock");if(rs?.ok)erpStock=rs.stock;renderSalesQuotationsPage();}});
 }
 async function rejectQuotation(id){
   const q=erpQuotations.find(q=>q.id===id);
@@ -21398,29 +21352,20 @@ async function rejectQuotation(id){
     noBackdropClose:true
   });
   if(!reason)return;
-  const r=await serverRequest("POST",`/api/erp/quotations/${id}/reject`,{reason,role:currentUser.role,user:currentUser.name});
-  if(!r?.ok){showToast(r?.message||"처리에 실패했습니다.","error");return;}
-  const idx=erpQuotations.findIndex(q=>q.id===id);if(idx>=0)erpQuotations[idx]=r.quotation;
-  showToast("실주 처리되었습니다.","info");renderSalesQuotationsPage();
+  await runMutationWorkflow({key:`quotation:${id}:reject`,method:"POST",endpoint:`/api/erp/quotations/${id}/reject`,body:{reason,role:currentUser.role,user:currentUser.name},
+    errorMessage:r=>r?.message||"처리에 실패했습니다.",successMessage:"실주 처리되었습니다.",successType:"info",
+    onSuccess:r=>{const idx=erpQuotations.findIndex(q=>q.id===id);if(idx>=0)erpQuotations[idx]=r.quotation;renderSalesQuotationsPage();}});
 }
 async function deleteQuotationDraft(id){
   const q=erpQuotations.find(q=>q.id===id);
-  const ok=await askConfirmModal({
-    title:"임시 견적서 삭제 확인",
-    message:"아직 발송되지 않은 임시 견적서를 삭제합니다.",
-    impacts:[
+  await runMutationWorkflow({key:`quotation:${id}:delete`,method:"DELETE",endpoint:`/api/erp/quotations/${id}`,body:{role:currentUser.role,user:currentUser.name},confirm:{
+    title:"임시 견적서 삭제 확인",message:"아직 발송되지 않은 임시 견적서를 삭제합니다.",impacts:[
       {label:"거래처",value:q?.partnerName||"-"},
       {label:"품목 수",value:`${(q?.items||q?.lines||[]).length}건`},
       {label:"합계",value:`${(q?.grandTotal||0).toLocaleString()}원`,tone:"warn"},
       {label:"삭제 후 영향",value:"견적 목록에서 제거",tone:"danger"}
-    ],
-    confirmText:"임시 견적서 삭제",
-    danger:true
-  });
-  if(!ok)return;
-  const r=await serverRequest("DELETE",`/api/erp/quotations/${id}`,{role:currentUser.role,user:currentUser.name});
-  if(!r?.ok){showToast(r?.message||"삭제에 실패했습니다.","error");return;}
-  erpQuotations=erpQuotations.filter(q=>q.id!==id);showToast("삭제되었습니다.","info");renderSalesQuotationsPage();
+    ],confirmText:"임시 견적서 삭제",danger:true},errorMessage:r=>r?.message||"삭제에 실패했습니다.",successMessage:"삭제되었습니다.",successType:"info",
+    onSuccess:()=>{erpQuotations=erpQuotations.filter(q=>q.id!==id);renderSalesQuotationsPage();}});
 }
 
 // ── 영업 실적 대시보드 ────────────────────────────────────────────────────────
