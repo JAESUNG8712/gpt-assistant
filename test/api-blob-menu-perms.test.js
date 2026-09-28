@@ -253,6 +253,35 @@ test("blob 동기화(/save) 컬렉션의 menuPerms/권한 확장 — kpiEntries�
     assert.equal((check.data.coreTalentPool || []).some(c => c.id === "ct1"), false);
   });
 
+  await t.test("승계계획은 관리자 전용이며 menuPerms·응답 필터를 서버에서 강제한다", async () => {
+    const d0 = await getData(api, adminToken);
+    const employees2 = [
+      ...d0.data.employees,
+      { id: "successionAdminLimited", loginId: "successionAdminLimited", pw: "succession-admin-pw-1", name: "승계제한관리자", role: "admin", active: true, menuPerms: { "succession-planning": false } },
+    ];
+    await api("/save", auth(adminToken, "POST", { _version: d0.version, employees: employees2 }));
+    const limitedToken = await login(api, "successionAdminLimited", "succession-admin-pw-1");
+    const sample = { id: "sp1", title: "개발본부장 승계", incumbentId: "dir1", criticality: "high", riskOfLoss: "high", impactOfLoss: "high", status: "active", candidates: [{ empId: "leaderA", rank: 1, readiness: "ready_now" }] };
+
+    const limited = await getData(api, limitedToken);
+    let r = await api("/save", auth(limitedToken, "POST", { _version: limited.version, successionPlans: [sample] }));
+    assert.equal(r.status, 200);
+    let check = await getData(api, adminToken);
+    assert.equal((check.data.successionPlans || []).some(x => x.id === "sp1"), false, "메뉴가 꺼진 관리자의 직접 쓰기는 차단돼야 한다");
+
+    r = await api("/save", auth(adminToken, "POST", { _version: check.version, successionPlans: [sample] }));
+    assert.equal(r.status, 200);
+    check = await getData(api, adminToken);
+    assert.equal(check.data.successionPlans?.[0]?.candidates?.[0]?.readiness, "ready_now");
+
+    const memberView = await getData(api, memberBToken);
+    assert.deepEqual(memberView.data.successionPlans, [], "비관리자 응답에는 이탈위험·후보순위가 노출되면 안 된다");
+    r = await api("/save", auth(memberBToken, "POST", { _version: memberView.version, successionPlans: [{ ...sample, title: "위조" }] }));
+    assert.equal(r.status, 200);
+    check = await getData(api, adminToken);
+    assert.equal(check.data.successionPlans?.[0]?.title, "개발본부장 승계", "비관리자 쓰기는 기존 값을 보존해야 한다");
+  });
+
   await t.test("_WRITE_GATED_FIELDS의 pageIds 배열(gradeAdjustHistory) — 하나라도 켜져 있으면 허용, 전부 꺼지면 차단", async () => {
     // dir1은 menuPerms에 grade-view만 false로 설정됨(comp-grade-view는 미설정) — "any allows"라
     // 이 상태에서는 여전히 허용돼야 한다.

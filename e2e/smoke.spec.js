@@ -91,6 +91,30 @@ test.describe("로그인·기본 네비게이션", () => {
     ]);
   });
 
+  test("핵심직무 승계계획은 Ready-now 커버리지와 고위험 공백을 계산한다", async ({ page }) => {
+    await page.goto("/");
+    const pageErrors=[];page.on("pageerror",e=>pageErrors.push(e.message));
+    const metrics=await page.evaluate(() => {
+      currentUser={id:"sp-admin",name:"승계관리자",role:"admin",dept:"인사",menuPerms:{}};
+      employees=[
+        {id:"inc1",name:"현직자1",active:true,role:"director",dept:"개발본부",rank:"상무",position:"본부장"},
+        {id:"cand1",name:"후보1",active:true,role:"leader",dept:"개발본부",team:"플랫폼",rank:"팀장"},
+      ];
+      successionPlans=[
+        {id:"sp1",title:"개발본부장 승계",planType:"position",incumbentId:"inc1",criticality:"high",riskOfLoss:"high",impactOfLoss:"high",status:"active",candidates:[{empId:"cand1",rank:1,readiness:"ready_now",riskOfLoss:"low"}]},
+        {id:"sp2",title:"핵심아키텍트 승계",planType:"job",criticality:"high",riskOfLoss:"high",impactOfLoss:"high",status:"active",candidates:[]},
+      ];
+      render();gotoPage("succession-planning");
+      return _successionMetrics();
+    });
+    expect(metrics).toEqual({active:2,ready:1,empty:1,criticalGap:1});
+    await expect(page.locator("#content").getByRole("heading",{name:"핵심직무 승계계획"})).toBeVisible();
+    await expect(page.locator("#content")).toContainText("Ready-now 커버리지");
+    await expect(page.locator("#content")).toContainText("고위험 승계 공백");
+    await expect(page.locator("#content")).toContainText("긴급 보강");
+    expect(pageErrors).toHaveLength(0);
+  });
+
   test("잘못된 비밀번호는 오류를 보여준다", async ({ page }) => {
     await page.goto("/");
     await page.fill("#l-id", "e2e_admin");

@@ -96,6 +96,7 @@ if (!ADMIN_DATABASE_URL) {
       { feature: "kpi", field: "kpiEntries", sample: (id) => ({ id, userId: "1", year: 2026, item: "목표" }) },
       { feature: "comp_eval", field: "compSessions", sample: (id) => ({ id, year: 2026 }) },
       { feature: "talent", field: "coreTalentPool", sample: (id) => ({ id, empId: "1" }) },
+      { feature: "talent", field: "successionPlans", sample: (id) => ({ id, title: "핵심직무 승계", status: "active", candidates: [] }) },
       { feature: "hr", field: "orgChartHistory", sample: (id) => ({ id, note: "조직개편" }) },
     ];
 
