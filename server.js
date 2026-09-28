@@ -1409,8 +1409,18 @@ const _APPROVAL_GATED_FIELDS = {
 // 하고, doc 자체는 이미 _sanitizeApprovalDoc을 통과한(위조 불가능한) 값이어야 한다. 값 하나라도
 // 다르면 거부(사람이 임의 금액을 끼워넣는 것을 막기 위함) — 정상 화면은 항상 doc 내용
 // 그대로만 파생 레코드를 만들므로 이 검사에 걸릴 일이 없다.
+//
+// id는 클라이언트가 항상 이 결정론적 값(`payadj-welfare-${doc.id}`)으로만 만든다
+// (_applyWelfareApproval). 이 검사가 없으면 내용(금액/구분/연월)만 doc과 일치시키면
+// 되므로, 서로 다른 id를 가진 신규 레코드를 몇 개든 만들어 같은 승인 건에 대해 급여
+// 조정을 중복 반영시킬 수 있었다(actor가 실제로 그 문서의 결재자였는지도 검증하지
+// 않으므로, doc 내용을 알기만 하면 이 승인과 무관한 다른 직원도 만들 수 있었음 —
+// 2026-09-23 발견). id를 이 하나의 값으로 강제하면 이 예외로 존재할 수 있는 레코드는
+// 항상 최대 1건뿐이라(같은 id로 다시 쓰면 갱신일 뿐 신규 생성이 아니게 됨), 내용이
+// doc과 다른 값으로는 여전히 만들 수 없어 중복·위조 둘 다 막힌다.
 function _welfareAdjustmentMatchesApprovedDoc(rec, doc) {
   if (!rec || !doc || doc.status !== "approved") return false;
+  if (rec.id !== `payadj-welfare-${doc.id}`) return false;
   if (!["tpl-welfare-condolence", "tpl-welfare-tuition"].includes(doc.templateId)) return false;
   if (String(doc.authorId) !== String(rec.empId)) return false;
   const fd = doc.formData || {};
@@ -3602,7 +3612,15 @@ function _planEmployeeLoginIdNormalization(employeeRows) {
   // 재입사 처리할 때 이미 정규화된 현직자 ID와 충돌할 수 있고, "전체 직원"이라는
   // 관리자 화면의 영향 범위와도 어긋난다.
   const registered = (employeeRows || []).filter(Boolean);
-  const targets = registered.filter(e => /^u/i.test(String(e.loginId || "")) && String(e.empNo || "").trim());
+  // "u/U로 시작하면 전부 사번으로 교체"가 아니라 "u/U 접두어를 뗀 나머지가 정확히
+  // 사번과 같을 때만"으로 좁힌다 — 안 그러면 ujimin(사번 20260012)처럼 u로 시작할
+  // 뿐 사번과 무관한 로그인ID(로마자 이름, upload-bot 같은 서비스 계정 등)까지
+  // "U 접두어 제거"라는 버튼 설명과 다르게 전혀 다른 값으로 통째로 바뀌어버렸다.
+  const targets = registered.filter(e => {
+    const m = /^u(.+)$/i.exec(String(e.loginId || ""));
+    const empNo = String(e.empNo || "").trim();
+    return !!(m && empNo && m[1] === empNo);
+  });
   const targetIds = new Set(targets.map(e => String(e.id)));
   const desiredOwners = new Map();
   const targetDesiredIds = new Set();
@@ -10571,6 +10589,11 @@ app.post("/api/recruit/candidates/:id/notice", async (req, res) => {
       if (!candidate) return res.status(404).json({ ok: false, message: "지원자를 찾을 수 없습니다." });
       if (!(await _recruitCanViewCandidate(candidate, userId, role, companyId))) return res.status(403).json({ ok: false, message: "발급 권한이 없습니다." });
       candidate.noticeHistory = [...(candidate.noticeHistory || []), noticeEntry].slice(-20);
+      // 다른 모든 지원자 변경 지점(상태변경·수정 등)과 동일하게 updatedAt을 갱신해,
+      // 결과통보 발급도 _recruitAssertFresh() 낙관적 동시성 검사의 대상이 되도록 한다
+      // (그러지 않으면 결과통보가 그 지원자의 열려있는 다른 편집 화면의 "최신 상태"
+      // 판단 밖에 남아, 발급 이력이 향후 리팩터에서 조용히 유실될 위험이 있다).
+      candidate.updatedAt = noticeEntry.issuedAt;
       _saveFileRecruit();
       return res.json({ ok: true, candidate });
     }
@@ -10579,6 +10602,7 @@ app.post("/api/recruit/candidates/:id/notice", async (req, res) => {
       candidate = await _pgLockedUpdate("recruit_candidates", id, async (c) => {
         if (!(await _recruitCanViewCandidate(c, userId, role, companyId))) throw new _RecruitRouteError(403, "발급 권한이 없습니다.");
         c.noticeHistory = [...(c.noticeHistory || []), noticeEntry].slice(-20);
+        c.updatedAt = noticeEntry.issuedAt;
         return c;
       }, companyId);
     } catch (e) {

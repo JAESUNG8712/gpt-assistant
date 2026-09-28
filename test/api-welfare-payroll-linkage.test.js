@@ -71,7 +71,7 @@ test("복리후생(경조금) 신청이 non-admin 결재로 승인 완료되면 
       updatedAt: approvedAt,
     };
     const adjustment = {
-      id: "payadj-welf-doc-1", empId: "welf-mem-1", year: 2027, month: 3, category: "경조사비",
+      id: "payadj-welfare-welf-doc-1", empId: "welf-mem-1", year: 2027, month: 3, category: "경조사비",
       amount: 500000, note: "본인 결혼 · 결재 welf-doc-1", sourceDocId: "welf-doc-1",
       createdAt: approvedAt, updatedAt: approvedAt,
     };
@@ -93,13 +93,43 @@ test("복리후생(경조금) 신청이 non-admin 결재로 승인 완료되면 
   await t.test("금액이 승인 문서와 다른(위조) 신규 레코드는 여전히 드롭된다", async () => {
     d = await getData(api, dirToken);
     const adjustment = {
-      id: "payadj-welf-doc-1-forged", empId: "welf-mem-1", year: 2027, month: 3, category: "경조사비",
+      id: "payadj-welfare-welf-doc-1-forged", empId: "welf-mem-1", year: 2027, month: 3, category: "경조사비",
       amount: 99000000, sourceDocId: "welf-doc-1", createdAt: approvedAt, updatedAt: new Date().toISOString(),
     };
     const r = await api("/save", auth(dirToken, "POST", { _version: d.version, payrollAdjustments: [adjustment] }));
     assert.equal(r.status, 200);
     d = await getData(api, adminToken);
-    assert.equal(d.data.payrollAdjustments.find(a => a.id === "payadj-welf-doc-1-forged"), undefined);
+    assert.equal(d.data.payrollAdjustments.find(a => a.id === "payadj-welfare-welf-doc-1-forged"), undefined);
+  });
+
+  await t.test("내용이 승인 문서와 정확히 일치해도 클라이언트의 결정론적 id가 아니면 드롭된다(같은 승인 건에 대한 중복 생성 방지)", async () => {
+    d = await getData(api, dirToken);
+    // 실제 클라이언트(_applyWelfareApproval)는 이 정확한 id로만 레코드를 만든다. 내용이
+    // doc과 완전히 일치해도 id가 이 canonical 값이 아니면(예: 다른 id로 같은 승인을 한 번
+    // 더 반영하려는 시도) 더 이상 role 게이팅을 우회할 수 없어야 한다 — 그렇지 않으면
+    // 서로 다른 id로 임의 개수의 "정당해 보이는" 레코드를 만들어 같은 복리후생 승인 건을
+    // 급여에 중복 반영시킬 수 있다.
+    const duplicate1 = {
+      id: "payadj-welf-doc-1-dup1", empId: "welf-mem-1", year: 2027, month: 3, category: "경조사비",
+      amount: 500000, sourceDocId: "welf-doc-1", createdAt: approvedAt, updatedAt: new Date().toISOString(),
+    };
+    const duplicate2 = {
+      id: "payadj-welf-doc-1-dup2", empId: "welf-mem-1", year: 2027, month: 3, category: "경조사비",
+      amount: 500000, sourceDocId: "welf-doc-1", createdAt: approvedAt, updatedAt: new Date().toISOString(),
+    };
+    const r = await api("/save", auth(dirToken, "POST", {
+      _version: d.version, payrollAdjustments: [duplicate1, duplicate2],
+    }));
+    assert.equal(r.status, 200);
+    d = await getData(api, adminToken);
+    assert.equal(d.data.payrollAdjustments.find(a => a.id === "payadj-welf-doc-1-dup1"), undefined,
+      "canonical id가 아닌 중복 레코드1은 저장되면 안 됨");
+    assert.equal(d.data.payrollAdjustments.find(a => a.id === "payadj-welf-doc-1-dup2"), undefined,
+      "canonical id가 아닌 중복 레코드2는 저장되면 안 됨");
+    // 이 승인 건에 실제로 연계된 급여 조정은 여전히 최초의 canonical id 레코드 1건뿐이어야 한다.
+    const linked = d.data.payrollAdjustments.filter(a => a.sourceDocId === "welf-doc-1");
+    assert.equal(linked.length, 1, "같은 승인 건에 대한 payrollAdjustments는 항상 1건이어야 한다");
+    assert.equal(linked[0].id, "payadj-welfare-welf-doc-1");
   });
 
   await t.test("근거 문서가 아예 없는(sourceDocId 없음) 신규 레코드는 non-admin이 만들 수 없다(기존 role 게이팅 유지)", async () => {
@@ -113,12 +143,12 @@ test("복리후생(경조금) 신청이 non-admin 결재로 승인 완료되면 
 
   await t.test("이미 저장된 payrollAdjustments 레코드를 non-admin이 수정하는 것은 여전히 되돌려진다(!stored 예외에 해당하지 않음)", async () => {
     d = await getData(api, dirToken);
-    const existing = d.data.payrollAdjustments.find(a => a.id === "payadj-welf-doc-1");
+    const existing = d.data.payrollAdjustments.find(a => a.id === "payadj-welfare-welf-doc-1");
     const tampered = { ...existing, amount: 1, updatedAt: new Date().toISOString() };
     const r = await api("/save", auth(dirToken, "POST", { _version: d.version, payrollAdjustments: [tampered] }));
     assert.equal(r.status, 200);
     d = await getData(api, adminToken);
-    const saved = d.data.payrollAdjustments.find(a => a.id === "payadj-welf-doc-1");
+    const saved = d.data.payrollAdjustments.find(a => a.id === "payadj-welfare-welf-doc-1");
     assert.equal(saved.amount, 500000, "기존 레코드 수정은 admin 전용 게이팅이 그대로 적용돼야 한다");
   });
 
@@ -212,7 +242,7 @@ if (!ADMIN_DATABASE_URL) {
       updatedAt: approvedAt,
     };
     const adjustment = {
-      id: "pg-payadj-welf-doc-1", empId: "pg-welf-mem-1", year: 2027, month: 3, category: "학자금",
+      id: "payadj-welfare-pg-welf-doc-1", empId: "pg-welf-mem-1", year: 2027, month: 3, category: "학자금",
       amount: 1500000, sourceDocId: "pg-welf-doc-1", createdAt: approvedAt, updatedAt: approvedAt,
     };
     r = await api("/save", auth(dirToken, "POST", { _version: d.version, approvalDocs: [approvedDoc], payrollAdjustments: [adjustment] }));

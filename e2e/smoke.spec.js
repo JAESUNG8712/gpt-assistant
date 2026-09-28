@@ -161,6 +161,124 @@ test.describe("로그인·기본 네비게이션", () => {
     expect(pageErrors, `콘솔 페이지 에러 발생: ${pageErrors.join("; ")}`).toHaveLength(0);
   });
 
+  test("작은따옴표가 들어간 부서·팀·직급명을 추가·삭제해도 onclick이 깨지지 않는다", async ({ page }) => {
+    // 부서/팀/직급명은 관리자가 자유 텍스트로 등록하는 값인데, 조직 관리 화면의 추가/삭제
+    // 버튼이 h()(HTML 이스케이프)만 적용하고 onclick 속성 안의 JS 문자열 홑따옴표는
+    // 이스케이프하지 않아, 이름에 '가 있으면 onclick의 JS가 깨져(구문 오류) 버튼 자체가
+    // 동작하지 않거나(추가/삭제 실패), 심한 경우 임의 JS가 삽입될 수 있었다.
+    const pageErrors = [];
+    page.on("pageerror", e => pageErrors.push(e.message));
+    await page.goto("/");
+    await page.fill("#l-id", "e2e_admin");
+    await page.fill("#l-pw", "E2eTestPw123");
+    // 로그인 직후 백그라운드 loadFromServer()/SSE data_updated가 applyState()로 전체
+    // 상태를 되돌려, 방금 화면에서 추가한(아직 서버에 저장 안 된) 부서/팀/직급이 조용히
+    // 사라지는 기존에 문서화된 flaky 패턴을 피하기 위해 로그인 전에 무력화한다(위 성과보상
+    // 테스트와 동일한 이유·동일한 순서).
+    await page.evaluate(() => {
+      autoSaveDebounced = () => {};
+      loadFromServer = async () => {};
+      connectSSE = async () => {};
+    });
+    await page.click(".login-card button.btn-primary");
+    await expect(page.locator("#main")).toBeVisible({ timeout: 10000 });
+
+    await page.evaluate(() => gotoPage("settings-org"));
+    const deptName = `QA'부서`;
+    const teamName = `QA'팀`;
+    const rankName = `QA'직급`;
+
+    await page.fill("#org-dept-new", deptName);
+    await page.click('button[onclick="addOrgDept()"]');
+    await expect(page.locator(".org-tag", { hasText: deptName })).toBeVisible();
+
+    await page.fill("#org-rank-new", rankName);
+    await page.click('button[onclick="addOrgRank()"]');
+    await expect(page.locator(".org-tag", { hasText: rankName })).toBeVisible();
+
+    // 팀 추가 입력란의 id는 부서명이 아니라 배열 인덱스로 만들어지므로(부서명에 CSS
+    // 선택자로 다루기 어려운 문자가 있어도 안전하도록), 방금 추가한 부서가 "팀 관리
+    // (부서별)" 목록의 마지막 항목이라는 점을 이용해 그 입력란을 찾는다.
+    const teamInput = page.locator('input[placeholder="팀명 입력"]').last();
+    await teamInput.fill(teamName);
+    await teamInput.locator("xpath=following-sibling::button[1]").click();
+    await expect(page.locator(".org-tag", { hasText: teamName })).toBeVisible();
+    expect(await page.evaluate(d => (orgDB.teams[d] || []).length, deptName)).toBe(1);
+
+    // 삭제 버튼도 동일한 onclick 이스케이프 경로를 타므로 함께 확인한다. 팀·부서 삭제는
+    // askConfirmModal 확인창을 거치므로(직급·직책 삭제는 즉시 삭제, 확인창 없음) 그 확인
+    // 버튼까지 눌러야 실제로 지워진다.
+    await page.locator(".org-tag", { hasText: teamName }).getByRole("button", { name: "×" }).click();
+    await page.locator('[role="dialog"][aria-modal="true"]').getByRole("button", { name: "팀 삭제" }).click();
+    expect(await page.evaluate(d => (orgDB.teams[d] || []).length, deptName)).toBe(0);
+
+    await page.locator(".org-tag", { hasText: rankName }).getByRole("button", { name: "×" }).click();
+    expect(await page.evaluate(() => orgDB.ranks)).not.toContain(rankName);
+
+    await page.locator(".org-tag", { hasText: deptName }).getByRole("button", { name: "×" }).click();
+    await page.locator('[role="dialog"][aria-modal="true"]').getByRole("button", { name: "부서 삭제" }).click();
+    expect(await page.evaluate(() => orgDB.depts)).not.toContain(deptName);
+
+    expect(pageErrors, `콘솔 페이지 에러 발생: ${pageErrors.join("; ")}`).toHaveLength(0);
+  });
+
+  test("계정과목·거래처명에 특수문자가 있어도 이력 버튼이 정상 동작한다", async ({ page }) => {
+    // _showRecordHistory(...)의 두 번째 인자로 JSON.stringify(record)를 onclick 안에
+    // 그대로(따옴표 이스케이프 없이) 심고 있어, 레코드 자체가 JSON 문법상 필수인 큰따옴표를
+    // 포함하는 순간(즉 이름 값과 무관하게 항상) onclick 속성이 첫 큰따옴표에서 잘려 이력
+    // 버튼이 완전히 동작하지 않았다(클릭해도 모달이 열리지 않고 콘솔에 구문 오류만 남음).
+    const pageErrors = [];
+    page.on("pageerror", e => pageErrors.push(e.message));
+    await page.goto("/");
+    await page.fill("#l-id", "e2e_admin");
+    await page.fill("#l-pw", "E2eTestPw123");
+    // 위 조직 관리 테스트와 동일한 이유로, 로그인 직후 백그라운드 동기화가 이 테스트가
+    // 순수 인메모리로 시딩하는 acctAccounts/acctPartners를 조용히 덮어쓰지 않도록 막는다.
+    await page.evaluate(() => {
+      autoSaveDebounced = () => {};
+      loadFromServer = async () => {};
+      connectSSE = async () => {};
+    });
+    await page.click(".login-card button.btn-primary");
+    await expect(page.locator("#main")).toBeVisible({ timeout: 10000 });
+
+    const accountName = `현금'성 "특이" 계정<b>`;
+    await page.evaluate(name => {
+      acctAccounts = [{
+        id: "e2e-acct-1", code: "9999", name, type: "asset", category: "유동자산",
+        active: true, history: [{ action: "create", user: "e2e_admin", at: new Date().toISOString() }],
+      }];
+      gotoPage("acct-accounts");
+      renderAcctAccountsTbl();
+    }, accountName);
+
+    const row = page.locator("tr", { hasText: "9999" });
+    await row.getByRole("button", { name: "이력" }).click();
+    const dialog = page.locator('[role="dialog"][aria-modal="true"]');
+    await expect(dialog).toBeVisible();
+    await expect(dialog.locator("h3")).toContainText(accountName);
+    await expect(dialog).toContainText("등록");
+    await dialog.getByRole("button", { name: "닫기" }).click();
+
+    const partnerName = `거래처's "테스트"`;
+    await page.evaluate(name => {
+      acctPartners = [{
+        id: "e2e-partner-1", name, type: "customer", active: true,
+        history: [{ action: "create", user: "e2e_admin", at: new Date().toISOString() }],
+      }];
+      gotoPage("acct-partners");
+      renderAcctPartnersTbl();
+    }, partnerName);
+    const partnerRow = page.locator("tr", { hasText: partnerName });
+    await partnerRow.getByRole("button", { name: "이력" }).click();
+    const partnerDialog = page.locator('[role="dialog"][aria-modal="true"]');
+    await expect(partnerDialog).toBeVisible();
+    await expect(partnerDialog.locator("h3")).toContainText(partnerName);
+    await partnerDialog.getByRole("button", { name: "닫기" }).click();
+
+    expect(pageErrors, `콘솔 페이지 에러 발생: ${pageErrors.join("; ")}`).toHaveLength(0);
+  });
+
   test("모든 메뉴 그룹이 대분류에 속하고 회계 입력 예시·템플릿·검증이 동작한다", async ({ page }) => {
     await page.goto("/");
     await page.fill("#l-id", "e2e_admin");
@@ -391,6 +509,49 @@ test.describe("로그인·기본 네비게이션", () => {
       return { salary: emp.salary, count: rows.length, before: rows[0]?.before, after: rows[0]?.after, source: rows[0]?.source };
     });
     expect(result).toEqual({ salary: 55000000, count: 1, before: "50,000,000원", after: "55,000,000원", source: "employee_edit" });
+  });
+
+  // 연말정산(간이) 화면은 getFullState()/_recordCollections()가 yearEndSettlements
+  // 필드 자체를 빠뜨리고 있어, saveYearEndSettlement()가 화면상 "저장되었습니다"를
+  // 띄워도 실제로는 그 필드가 /save 요청 바디에 단 한 번도 실리지 않아 서버에
+  // 영구히 반영되지 않던 치명적 버그가 있었다(서버측 API 테스트는 페이로드를
+  // 손으로 구성해 이 버그를 못 잡았음 — 반드시 실제 getFullState() 경로를 타는
+  // e2e로 검증해야 한다).
+  test("연말정산 확정 결과가 getFullState() 저장 경로를 통해 실제로 서버에 영속된다", async ({ page }) => {
+    await page.goto("/");
+    await page.fill("#l-id", "e2e_admin");
+    await page.fill("#l-pw", "E2eTestPw123");
+    await page.evaluate(() => {
+      loadFromServer = async () => {};
+      connectSSE = async () => {};
+    });
+    await page.click(".login-card button.btn-primary");
+    await expect(page.locator("#main")).toBeVisible({ timeout: 10000 });
+
+    const year = 2024;
+    const result = await page.evaluate(async (year) => {
+      const empId = currentUser.id;
+      saveYearEndSettlement(empId, year, 2, true); // dependents=2, confirmed=true
+      await _doSave(true); // autoSaveDebounced()의 지연 없이 즉시 실제 서버 저장을 실행
+      const r = await serverRequest("GET", "/data"); // 클라이언트 메모리가 아니라 서버에서 새로 조회
+      const rec = (r.data?.yearEndSettlements || []).find(y => String(y.empId) === String(empId) && y.year === year);
+      return { found: !!rec, dependents: rec?.dependents, confirmed: rec?.confirmed };
+    }, year);
+    expect(result).toEqual({ found: true, dependents: 2, confirmed: true });
+
+    // 재저장(dependents만 변경)해도 CAS(_rev) 충돌 없이 반영돼야 한다 — saveYearEndSettlement()가
+    // 매번 완전히 새 레코드 객체를 만들면서 기존 _rev를 옮기지 않으면, 서버가 부여한 _rev를
+    // 잃어버려 두 번째 저장부터 항상 409(RECORD_REVISION_CONFLICT)가 발생하던 버그가 있었다.
+    const secondSave = await page.evaluate(async (year) => {
+      const empId = currentUser.id;
+      saveYearEndSettlement(empId, year, 5, true); // dependents 2 → 5로 변경
+      await _doSave(false);
+      const r = await serverRequest("GET", "/data");
+      const rec = (r.data?.yearEndSettlements || []).find(y => String(y.empId) === String(empId) && y.year === year);
+      return { statusMsg: serverConfig.statusMsg, dependents: rec?.dependents };
+    }, year);
+    expect(secondSave.statusMsg).not.toContain("충돌");
+    expect(secondSave.dependents).toBe(5);
   });
 
   test("휴가·근무보상·복리후생 정책과 채용 키워드 적합도가 연동된다", async ({ page }) => {
