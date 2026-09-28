@@ -653,6 +653,11 @@ function filterDataForRole(data, auth) {
       });
     }
   }
+  // 승계계획에는 핵심직무 현직자의 이탈위험·영향도와 비공개 후보 순위가 포함된다.
+  // 화면이 관리자 전용인 것과 동일하게 서버 응답에서도 비관리자에게는 전량 숨긴다.
+  if (auth.role !== "admin" && Array.isArray(out.successionPlans)) {
+    out.successionPlans = [];
+  }
   if (auth.role !== "admin" && Array.isArray(out.compResponses)) {
     out.compResponses = out.compResponses.map(r => {
       if (!r) return r;
@@ -1331,6 +1336,7 @@ const _WRITE_GATED_FIELDS = {
   // 이 감사이력만 조용히 되돌려지고 있었다. director는 자기 사업부(dept) 레코드에 한해 허용.
   gradeAdjustHistory: { roles: ["admin"], directorDeptField: "dept", pageIds: ["grade-view", "comp-grade-view"] },
   coreTalentPool:     { roles: ["admin"], pageIds: "core-talent" },
+  successionPlans:    { roles: ["admin"], pageIds: "succession-planning" },
   approvalTemplates:  { roles: ["admin"], pageIds: "approval-templates" },
   // hr-mandatory-training(admin/director/leader)의 일괄 등록 외에, 누구나 접근 가능한 개인
   // "법정의무교육" 화면(mandatory-training)에 본인 이수 자가등록 버튼("이수 등록")이 있다 —
@@ -4118,7 +4124,7 @@ const _BLOB_MODULE_FIELDS = {
   comm:      ["boardPosts", "roomReservations", "roomReservationTombstones"],
   kpi:       ["kpiEntries", "changeRequests", "tieNotifications", "gradeAdjustHistory"],
   comp_eval: ["compSessions", "compResponses", "compGradeResults", "evaluatorConfig"],
-  talent:    ["coreTalentPool", "talentDevPlans", "lowPerfData", "coreTalentSettings"],
+  talent:    ["coreTalentPool", "talentDevPlans", "successionPlans", "lowPerfData", "coreTalentSettings"],
   hr:        ["orgChartHistory"],
   // 승진 처리 자체(employees[].rank 변경)는 hr와 동일한 이유로 대상 밖(핵심 인사 데이터라
   // 통째로 막으면 위험)이지만, 자격요건 설정값(promotionSettings — 직급별 최소연수·등급
