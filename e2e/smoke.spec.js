@@ -108,7 +108,7 @@ test.describe("로그인·기본 네비게이션", () => {
       return _successionMetrics();
     });
     expect(metrics).toEqual({active:2,ready:1,empty:1,criticalGap:1});
-    await expect(page.getByRole("heading",{name:"핵심직무 승계계획"})).toBeVisible();
+    await expect(page.locator("#content").getByRole("heading",{name:"핵심직무 승계계획"})).toBeVisible();
     await expect(page.locator("#content")).toContainText("Ready-now 커버리지");
     await expect(page.locator("#content")).toContainText("고위험 승계 공백");
     await expect(page.locator("#content")).toContainText("긴급 보강");
