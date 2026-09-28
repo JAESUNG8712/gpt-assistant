@@ -3148,6 +3148,53 @@ function _submitDialogInput(id){
   if(validation){if(err)err.textContent=validation;el?.focus();return;}
   _resolveDialogRequest(id,value);
 }
+// 확인 → 서버 반영 → 충돌/오류 안내 → 화면 갱신을 하나의 실행기로 묶는다.
+// 각 화면이 같은 로직을 따로 구현하면 빠른 이중 클릭으로 같은 상태전이가 두 번 요청되거나,
+// fetch 예외가 처리되지 않아 아무 안내도 보이지 않는 차이가 생긴다. key 단위로 실행 중인 작업을
+// 차단하고, 서버의 Idempotency-Key 방어와 별개로 브라우저에서도 중복 요청을 예방한다.
+const _mutationWorkflowsInFlight=new Set();
+async function runMutationWorkflow(opts={}){
+  const method=String(opts.method||"POST").toUpperCase(),endpoint=String(opts.endpoint||"");
+  const key=String(opts.key||`${method} ${endpoint}`);
+  if(_mutationWorkflowsInFlight.has(key)){
+    showToast(opts.pendingMessage||"동일한 작업을 처리 중입니다. 잠시만 기다려주세요.","info");
+    return{ok:false,pending:true,code:"CLIENT_MUTATION_IN_PROGRESS"};
+  }
+  _mutationWorkflowsInFlight.add(key);
+  try{
+    if(opts.confirm){
+      const approved=await askConfirmModal(opts.confirm);
+      if(!approved)return{ok:false,cancelled:true,code:"CLIENT_MUTATION_CANCELLED"};
+    }
+    let result;
+    try{result=await serverRequest(method,endpoint,opts.body??null,opts.timeout||8000,opts.requestOptions||{});}
+    catch(error){
+      const message=opts.networkErrorMessage||"서버에 연결할 수 없어 작업을 완료하지 못했습니다. 네트워크 상태를 확인하고 다시 시도해주세요.";
+      showToast(message,"error");
+      return{ok:false,code:error?.name==="AbortError"?"CLIENT_MUTATION_TIMEOUT":"CLIENT_MUTATION_NETWORK_ERROR",message,error};
+    }
+    if(!result?.ok){
+      const conflict=!!result?.conflict||String(result?.code||"").includes("CONFLICT")||result?.status===409;
+      if(conflict&&typeof opts.onConflict==="function"){
+        try{await opts.onConflict(result);}catch(error){console.warn("mutation workflow conflict refresh failed",error);}
+      }
+      const message=(typeof opts.errorMessage==="function"?opts.errorMessage(result):opts.errorMessage)||result?.error||result?.message||"처리에 실패했습니다.";
+      showToast(message,"error");
+      return result||{ok:false,message};
+    }
+    try{if(typeof opts.onSuccess==="function")await opts.onSuccess(result);}
+    catch(error){
+      console.warn("mutation workflow refresh failed",error);
+      showToast(opts.refreshErrorMessage||"작업은 완료되었지만 화면 갱신에 실패했습니다. 새로고침하여 최신 상태를 확인해주세요.","error");
+      return{...result,uiRefreshFailed:true};
+    }
+    const successMessage=typeof opts.successMessage==="function"?opts.successMessage(result):opts.successMessage;
+    if(successMessage)showToast(successMessage,opts.successType||"success");
+    return result;
+  }finally{
+    _mutationWorkflowsInFlight.delete(key);
+  }
+}
 async function resetDemoDataWithConfirm(){
   const ok=await askConfirmModal({
     title:"데모 데이터 초기화",
@@ -18222,10 +18269,11 @@ function _bpExportRollupCsv(){
     rows);
 }
 async function _bpAction(id,suffix,body){
-  const r=await serverRequest("POST",`/api/budget/business-plan/${id}${suffix}`,body||{});
-  if(!r?.ok){showToast(r?.error||r?.message||"처리에 실패했습니다.","error");return;}
-  showToast("처리되었습니다.","success");
-  await loadBizPlanFromServer();
+  return runMutationWorkflow({
+    key:`business-plan:${id}:${suffix}`,method:"POST",endpoint:`/api/budget/business-plan/${id}${suffix}`,body:body||{},
+    errorMessage:r=>r?.error||r?.message||"처리에 실패했습니다.",successMessage:"처리되었습니다.",
+    onSuccess:()=>loadBizPlanFromServer(),onConflict:()=>loadBizPlanFromServer()
+  });
 }
 async function approveBizPlanDivision(id){
   const p=bizPlans.find(x=>String(x.id)===String(id));
@@ -18318,25 +18366,16 @@ async function rejectBizPlanEditRequest(id){
 async function deleteBizPlan(id){
   const p=bizPlans.find(x=>String(x.id)===String(id));
   const amount=(p?.items||[]).reduce((s,it)=>s+(Array.isArray(it.monthly)?it.monthly.reduce((a,b)=>a+Number(b||0),0):0),0);
-  const ok=await askConfirmModal({
-    title:"사업계획 삭제 확인",
-    message:"사업계획을 삭제합니다. 삭제 전 영향 범위를 확인하세요.",
-    impacts:[
-      {label:"계획명",value:p?.name||id},
-      {label:"작성 부문/팀",value:[p?.dept,p?.team].filter(Boolean).join(" / ")||"-"},
-      {label:"예산 항목",value:`${(p?.items||[]).length}건`},
-      {label:"예산 합계",value:`${amount.toLocaleString()}원`,tone:"warn"},
+  await runMutationWorkflow({
+    key:`business-plan:${id}:delete`,method:"DELETE",endpoint:`/api/budget/business-plan/${id}`,
+    confirm:{title:"사업계획 삭제 확인",message:"사업계획을 삭제합니다. 삭제 전 영향 범위를 확인하세요.",impacts:[
+      {label:"계획명",value:p?.name||id},{label:"작성 부문/팀",value:[p?.dept,p?.team].filter(Boolean).join(" / ")||"-"},
+      {label:"예산 항목",value:`${(p?.items||[]).length}건`},{label:"예산 합계",value:`${amount.toLocaleString()}원`,tone:"warn"},
       {label:"삭제 후 영향",value:"목록 및 집계에서 제외",tone:"danger"}
-    ],
-    warnings:["삭제 후 서버 저장이 완료되면 다른 사용자 화면에서도 사라집니다."],
-    confirmText:"사업계획 삭제",
-    danger:true
+    ],warnings:["삭제 후 서버 저장이 완료되면 다른 사용자 화면에서도 사라집니다."],confirmText:"사업계획 삭제",danger:true},
+    errorMessage:r=>r?.error||r?.message||"삭제에 실패했습니다.",successMessage:"삭제되었습니다.",
+    successType:"info",onSuccess:()=>loadBizPlanFromServer(),onConflict:()=>loadBizPlanFromServer()
   });
-  if(!ok)return;
-  const r=await serverRequest("DELETE",`/api/budget/business-plan/${id}`);
-  if(!r?.ok){showToast(r?.error||r?.message||"삭제에 실패했습니다.","error");return;}
-  showToast("삭제되었습니다.","success");
-  await loadBizPlanFromServer();
 }
 
 // ── 작성/수정 폼 ──
@@ -23799,49 +23838,28 @@ function viewPOModal(id){
 }
 async function confirmPO(id){
   const p=erpPurchaseOrders.find(p=>p.id===id);
-  const ok=await askConfirmModal({
-    title:"발주 확정 확인",
-    message:"발주서를 확정합니다. 확정 후에는 품목을 수정할 수 없습니다.",
-    impacts:[
+  await runMutationWorkflow({key:`purchase-order:${id}:confirm`,method:"POST",endpoint:`/api/erp/purchase-orders/${id}/confirm`,body:{role:currentUser.role,user:currentUser.name},confirm:{
+    title:"발주 확정 확인",message:"발주서를 확정합니다. 확정 후에는 품목을 수정할 수 없습니다.",impacts:[
       {label:"거래처",value:p?.partnerName||"-"},
       {label:"입고 위치",value:_erpLocationName(p?.locationId)||"-"},
       {label:"품목 수",value:`${(p?.items||p?.lines||[]).length}건`},
       {label:"합계",value:`${(p?.grandTotal||0).toLocaleString()}원`,tone:"warn"},
       {label:"확정 후 영향",value:"품목 수정 잠금",tone:"danger"}
-    ],
-    confirmText:"발주 확정",
-    danger:true
-  });
-  if(!ok)return;
-  const r=await serverRequest("POST",`/api/erp/purchase-orders/${id}/confirm`,{role:currentUser.role,user:currentUser.name});
-  if(!r?.ok){showToast(r?.message||"발주 확정에 실패했습니다.","error");return;}
-  const idx=erpPurchaseOrders.findIndex(p=>p.id===id);if(idx>=0)erpPurchaseOrders[idx]=r.purchaseOrder;
-  showToast(`발주가 확정되었습니다 (${r.purchaseOrder.poNo}).`,"success");renderSalesPurchaseOrdersPage();
+    ],confirmText:"발주 확정",danger:true},errorMessage:r=>r?.message||"발주 확정에 실패했습니다.",
+    successMessage:r=>`발주가 확정되었습니다 (${r.purchaseOrder.poNo}).`,onSuccess:r=>{const idx=erpPurchaseOrders.findIndex(p=>p.id===id);if(idx>=0)erpPurchaseOrders[idx]=r.purchaseOrder;renderSalesPurchaseOrdersPage();}});
 }
 async function receivePO(id){
   const p=erpPurchaseOrders.find(p=>p.id===id);
-  const ok=await askConfirmModal({
-    title:"입고 처리 확인",
-    message:"입고 처리와 매입 세금계산서 발행을 함께 진행합니다.",
-    impacts:[
+  await runMutationWorkflow({key:`purchase-order:${id}:receive`,method:"POST",endpoint:`/api/erp/purchase-orders/${id}/receive`,body:{role:currentUser.role,user:currentUser.name},confirm:{
+    title:"입고 처리 확인",message:"입고 처리와 매입 세금계산서 발행을 함께 진행합니다.",impacts:[
       {label:"발주번호",value:p?.poNo||id},
       {label:"입고 위치",value:_erpLocationName(p?.locationId)||"-"},
       {label:"품목 수",value:`${(p?.items||p?.lines||[]).length}건`},
       {label:"매입 합계",value:`${(p?.grandTotal||0).toLocaleString()}원`,tone:"warn"},
       {label:"처리 후 영향",value:"재고 증가 + 매입 세금계산서 발행",tone:"danger"}
-    ],
-    confirmText:"입고 처리",
-    danger:true
-  });
-  if(!ok)return;
-  const r=await serverRequest("POST",`/api/erp/purchase-orders/${id}/receive`,{role:currentUser.role,user:currentUser.name});
-  if(!r?.ok){showToast(r?.message||"입고 처리에 실패했습니다.","error");return;}
-  const idx=erpPurchaseOrders.findIndex(p=>p.id===id);if(idx>=0)erpPurchaseOrders[idx]=r.purchaseOrder;
-  const rs=await serverRequest("GET","/api/erp/stock");if(rs?.ok)erpStock=rs.stock;
-  if(currentUser?.menuPerms?.["acct-tax-invoices"]!==false){
-    const rt=await serverRequest("GET","/api/accounting/tax-invoices");if(rt?.ok)acctTaxInvoices=rt.taxInvoices;
-  }
-  showToast(`입고 처리되어 재고에 반영되고 매입세금계산서가 발행되었습니다 (${r.taxInvoice?.invoiceNo||""}).`,"success");renderSalesPurchaseOrdersPage();
+    ],confirmText:"입고 처리",danger:true},errorMessage:r=>r?.message||"입고 처리에 실패했습니다.",
+    successMessage:r=>`입고 처리되어 재고에 반영되고 매입세금계산서가 발행되었습니다 (${r.taxInvoice?.invoiceNo||""}).`,
+    onSuccess:async r=>{const idx=erpPurchaseOrders.findIndex(p=>p.id===id);if(idx>=0)erpPurchaseOrders[idx]=r.purchaseOrder;const rs=await serverRequest("GET","/api/erp/stock");if(rs?.ok)erpStock=rs.stock;if(currentUser?.menuPerms?.["acct-tax-invoices"]!==false){const rt=await serverRequest("GET","/api/accounting/tax-invoices");if(rt?.ok)acctTaxInvoices=rt.taxInvoices;}renderSalesPurchaseOrdersPage();}});
 }
 async function cancelPO(id){
   const p=erpPurchaseOrders.find(p=>p.id===id);
@@ -23863,30 +23881,21 @@ async function cancelPO(id){
     noBackdropClose:true
   });
   if(!reason)return;
-  const r=await serverRequest("POST",`/api/erp/purchase-orders/${id}/cancel`,{reason,role:currentUser.role,user:currentUser.name});
-  if(!r?.ok){showToast(r?.message||"취소에 실패했습니다.","error");return;}
-  const idx=erpPurchaseOrders.findIndex(p=>p.id===id);if(idx>=0)erpPurchaseOrders[idx]=r.purchaseOrder;
-  showToast("발주가 취소되었습니다.","info");renderSalesPurchaseOrdersPage();
+  await runMutationWorkflow({key:`purchase-order:${id}:cancel`,method:"POST",endpoint:`/api/erp/purchase-orders/${id}/cancel`,body:{reason,role:currentUser.role,user:currentUser.name},
+    errorMessage:r=>r?.message||"취소에 실패했습니다.",successMessage:"발주가 취소되었습니다.",successType:"info",
+    onSuccess:r=>{const idx=erpPurchaseOrders.findIndex(p=>p.id===id);if(idx>=0)erpPurchaseOrders[idx]=r.purchaseOrder;renderSalesPurchaseOrdersPage();}});
 }
 async function deletePODraft(id){
   const p=erpPurchaseOrders.find(p=>p.id===id);
-  const ok=await askConfirmModal({
-    title:"임시 발주서 삭제 확인",
-    message:"아직 확정되지 않은 임시 발주서를 삭제합니다.",
-    impacts:[
+  await runMutationWorkflow({key:`purchase-order:${id}:delete`,method:"DELETE",endpoint:`/api/erp/purchase-orders/${id}`,body:{role:currentUser.role,user:currentUser.name},confirm:{
+    title:"임시 발주서 삭제 확인",message:"아직 확정되지 않은 임시 발주서를 삭제합니다.",impacts:[
       {label:"거래처",value:p?.partnerName||"-"},
       {label:"입고 위치",value:_erpLocationName(p?.locationId)||"-"},
       {label:"품목 수",value:`${(p?.items||p?.lines||[]).length}건`},
       {label:"합계",value:`${(p?.grandTotal||0).toLocaleString()}원`,tone:"warn"},
       {label:"삭제 후 영향",value:"발주 목록에서 제거",tone:"danger"}
-    ],
-    confirmText:"임시 발주서 삭제",
-    danger:true
-  });
-  if(!ok)return;
-  const r=await serverRequest("DELETE",`/api/erp/purchase-orders/${id}`,{role:currentUser.role,user:currentUser.name});
-  if(!r?.ok){showToast(r?.message||"삭제에 실패했습니다.","error");return;}
-  erpPurchaseOrders=erpPurchaseOrders.filter(p=>p.id!==id);showToast("삭제되었습니다.","info");renderSalesPurchaseOrdersPage();
+    ],confirmText:"임시 발주서 삭제",danger:true},errorMessage:r=>r?.message||"삭제에 실패했습니다.",successMessage:"삭제되었습니다.",successType:"info",
+    onSuccess:()=>{erpPurchaseOrders=erpPurchaseOrders.filter(p=>p.id!==id);renderSalesPurchaseOrdersPage();}});
 }
 
 // ── 구매요청 (Purchase requests — 모든 역할 작성 가능, admin 승인/반려/발주전환) ──
