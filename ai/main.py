@@ -2789,6 +2789,7 @@ def health():
         "local_generative_backends": local_backends,
         "memory_schema": "typed-scopes-v1",
         "memory_feedback": "attributed-utility-v1",
+        "learning_visibility": "history-badges-v1",
         "law_api_key_set": bool(os.getenv("LAW_API_KEY")),
         "law_api_blocked": law._is_api_blocked(),
     }
