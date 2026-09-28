@@ -177,6 +177,21 @@
     }
     .command-status-badge.clickable { cursor: pointer; font-family: inherit; }
     .command-status-badge.clickable:hover { background: var(--surface3); transform: translateY(-1px); }
+    .learning-status {
+      display: flex; align-items: center; gap: 5px; margin-top: 7px; padding-top: 6px;
+      border-top: 1px solid rgba(127,127,127,0.16); color: var(--text-dim);
+      font-size: 0.67rem;
+    }
+    .learning-status-badge {
+      display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 10px;
+      border: 1px solid var(--border); background: var(--surface2); white-space: nowrap;
+    }
+    .learning-status.eligible .learning-status-badge {
+      color: #2e7d32; border-color: rgba(46,125,50,0.38); background: rgba(46,125,50,0.07);
+    }
+    .learning-status.blocked .learning-status-badge {
+      color: #9a6700; border-color: rgba(154,103,0,0.34); background: rgba(154,103,0,0.07);
+    }
     .coding-badge {
       font-size: 0.68rem; background: #e8f0fe; color: #1a73e8;
       border: 1px solid #4285f4; padding: 3px 10px; border-radius: 20px;
@@ -1409,6 +1424,8 @@
         container.appendChild(div);
         if (m.role === 'user' && m.command_status) {
           renderCommandStatus(div, m.command_status);
+        } else if (m.role !== 'user' && m.command_status) {
+          renderLearningStatus(div, m.command_status);
         }
       });
       container.scrollTop = container.scrollHeight;
@@ -1615,6 +1632,63 @@
       row.appendChild(badge);
     });
     bubble.appendChild(row);
+  }
+
+  const LEARNING_REASON_LABELS = {
+    shared_session: '공유 대화',
+    not_synthesized: '기존 지식·계산 응답',
+    empty_answer: '빈 생성 본문',
+    volatile_stock_answer: '실시간 주식 정보',
+    memory_search_conflict: '기억과 최신 자료 충돌',
+    evidence_guard: '검색 근거 검증 미통과',
+    quality_guard: '답변 품질 기준 미통과',
+    raw_fallback: '원문 폴백 답변',
+    local_generation: '로컬 생성 답변',
+    local_reasoning: '로컬 추론 답변',
+  };
+
+  function renderLearningStatus(messageDiv, status) {
+    if (!messageDiv || !status?.learning_decision) return;
+    const bubble = messageDiv.querySelector('.msg-bubble');
+    if (!bubble) return;
+    bubble.querySelectorAll('.learning-status').forEach(el => el.remove());
+    const decision = status.learning_decision;
+    const reasons = Array.isArray(decision.blocked_reasons) ? decision.blocked_reasons : [];
+    const safetyReasons = reasons.filter(reason => ![
+      'not_synthesized', 'shared_session', 'empty_answer'
+    ].includes(reason));
+    // 기존 KB 직접 답변·계산 결과처럼 정상적으로 학습 대상이 아닌 응답은
+    // 매번 표시하지 않는다. 후보 생성 또는 의미 있는 안전 차단만 보여준다.
+    if (!decision.eligible && safetyReasons.length === 0) return;
+
+    const row = document.createElement('div');
+    row.className = `learning-status ${decision.eligible ? 'eligible' : 'blocked'}`;
+    const badge = document.createElement('span');
+    badge.className = 'learning-status-badge';
+    if (decision.eligible) {
+      badge.textContent = '📝 기억 후보 · 검토 대기';
+      badge.title = `품질·근거 검사를 통과해 ${decision.candidate_source || '생성답변'} 후보로 저장됐습니다. 관리자 승인 후 장기기억에 반영됩니다.`;
+    } else {
+      const labels = safetyReasons.map(reason => LEARNING_REASON_LABELS[reason] || reason);
+      const isVolatile = safetyReasons.includes('volatile_stock_answer');
+      badge.textContent = isVolatile ? '⏱️ 실시간 정보 · 학습 제외' : '🛡️ 안전상 학습 제외';
+      badge.title = `장기기억 오염 방지: ${labels.join(', ')}`;
+    }
+    row.appendChild(badge);
+    const feedbackRow = bubble.querySelector('.feedback-row');
+    if (feedbackRow) bubble.insertBefore(row, feedbackRow);
+    else bubble.appendChild(row);
+  }
+
+  async function renderLatestLearningStatus(messageDiv) {
+    if (isSharedView || !messageDiv) return;
+    try {
+      const r = await tokFetch(`/history?limit=4&session_id=${encodeURIComponent(sessionId)}`);
+      if (!r.ok) return;
+      const history = (await r.json()).history || [];
+      const latest = [...history].reverse().find(item => item.role !== 'user');
+      if (latest?.command_status) renderLearningStatus(messageDiv, latest.command_status);
+    } catch (_) {}
   }
 
   function responseCommandStatus(response) {
@@ -1937,6 +2011,7 @@
       copyBtn.onclick = () => copyQA(_q, _a);
       fbRow.appendChild(copyBtn);
       aiDiv.querySelector('.msg-bubble').appendChild(fbRow);
+      await renderLatestLearningStatus(aiDiv);
     } catch (e) {
       aiDiv.classList.remove('typing');
       if (e.name === 'AbortError') {

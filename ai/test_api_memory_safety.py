@@ -45,6 +45,7 @@ def main():
         assert isinstance(client.get("/health").json()["local_generative_backends"], list)
         assert client.get("/health").json()["memory_schema"] == "typed-scopes-v1"
         assert client.get("/health").json()["memory_feedback"] == "attributed-utility-v1"
+        assert client.get("/health").json()["learning_visibility"] == "history-badges-v1"
         index_html = client.get("/").text
         assert "기억 운영 센터" in index_html
         assert "loadLearnedMemories" in index_html
@@ -53,6 +54,9 @@ def main():
         assert "loadMemoryEffectiveness" in index_html
         assert "reuseCommand" in index_html
         assert "🧠 자동 생각" in index_html
+        assert "renderLearningStatus" in index_html
+        assert "기억 후보 · 검토 대기" in index_html
+        assert "안전상 학습 제외" in index_html
         assert "search-on-badge" not in index_html
         assert "gemini-badge" not in index_html
         model_info = client.get("/model-info").json()
