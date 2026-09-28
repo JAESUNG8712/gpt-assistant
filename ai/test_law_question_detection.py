@@ -71,6 +71,33 @@ def _test_false_positives_method_sense():
     print("is_law_question false-positive(method sense) tests: PASS")
 
 
+def _test_get_mst_extracts_real_field_name():
+    """law_search._get_mst()가 law.go.kr 실제 응답 필드명을 인식하는지 확인.
+
+    2026-08-24 GitHub Actions 실행 로그로 fetch_laws.py 쪽에서 실측 확인된
+    실제 응답 구조(법령상세링크의 MST=218303 쿼리파라미터와 법령일련번호 필드
+    값이 동일)를 그대로 재현한다. law_search.py는 그 수정을 함께 반영하지
+    못해, "법령일련번호"만 있고 "법령MST"/"MST" 등 예전에 찾던 필드가 없는
+    실제 응답에서 계속 빈 문자열을 반환하며 조항 조회를 매번 실패시키고
+    있었다(실측 재현했던 회귀).
+    """
+    import law_search as law
+
+    real_shape = {
+        "법령명한글": "근로기준법",
+        "법령일련번호": "218303",
+        "법령상세링크": "/DRF/lawService.do?OC=test&target=law&MST=218303&type=HTML",
+    }
+    assert law._get_mst(real_shape) == "218303"
+
+    legacy_shape = {"법령명한글": "근로기준법", "MST": "999"}
+    assert law._get_mst(legacy_shape) == "999", "예전 필드명도 계속 인식해야 함"
+
+    assert law._get_mst({"법령명한글": "존재하지 않음"}) == ""
+
+    print("law_search._get_mst() real field name tests: PASS")
+
+
 def _test_main_py_uses_updated_function():
     """main.py의 유일한 호출부가 이 함수를 그대로 쓰는지 확인(회귀 방지용
     최소 통합 확인 — 실제 /chat 호출은 무거운 파이프라인이라 별도 API 통합
@@ -87,6 +114,7 @@ def _test_main_py_uses_updated_function():
 def main_():
     _test_true_positives()
     _test_false_positives_method_sense()
+    _test_get_mst_extracts_real_field_name()
     _test_main_py_uses_updated_function()
 
 

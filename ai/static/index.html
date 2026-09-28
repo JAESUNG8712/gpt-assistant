@@ -1952,6 +1952,13 @@
     activeAbortController = null;
     setSendButtonState(false);
     updateScrollBottomBtn();
+    // GPT·Claude처럼 응답이 끝나면 입력창으로 초점을 되돌려 바로 이어서 입력할 수
+    // 있게 한다 — 전송 버튼을 마우스로 눌렀을 때만 그렇고, 다른 모달·입력창이
+    // 열려 있으면(활성 요소가 입력창/전송 버튼/문서 자체가 아니면) 건드리지 않는다.
+    const active = document.activeElement;
+    if (active === input || active === document.getElementById('send-btn') || active === document.body) {
+      input.focus();
+    }
     await loadStats();
   }
 

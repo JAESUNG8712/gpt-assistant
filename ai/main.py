@@ -907,16 +907,18 @@ async def chat(req: ChatRequest, request: Request):
                 + preference_text
             )
 
-    # ── 2단계: law.go.kr 법령 검색 (법 관련 질문만, 페르소나 허용 시) ──────
-    law_ctx = ""
-    law_results = []  # 아래 reference_items 참조 시 항상 정의되어 있어야 함
-    if (not personal_memory_reply and not clarification_msg
-            and persona_features.get("use_law", True)
-            and law.is_law_question(search_msg)):
-        law_results = await law.search_law(search_msg)
-        law_ctx = law.format_law_context(law_results)
+    # ── 2·3단계: law.go.kr 법령 검색 + 인터넷 검색 (동시 실행) ──────────
+    # 두 검색은 서로의 결과를 전혀 참조하지 않는데도(법령 컨텍스트는 아래
+    # auto_web_search 판정에 관여하지 않고, 검색어도 둘 다 동일한 search_msg다)
+    # 지금까지 순차 실행되어, 둘 다 트리거되는 질문(법령 관련이면서 로컬 KB
+    # 신뢰도가 낮은 질문 등)에서 law.go.kr API 왕복 시간과 웹검색 시간이 그대로
+    # 더해지고 있었다. 트리거 여부만 먼저 결정한 뒤 asyncio로 동시에 시작한다.
+    run_law_search = (
+        not personal_memory_reply and not clarification_msg
+        and persona_features.get("use_law", True)
+        and law.is_law_question(search_msg)
+    )
 
-    # ── 3단계: 인터넷 검색 ───────────────────────────────
     # 사용자가 명시 요청한 경우뿐 아니라, 로컬 KB 신뢰도가 낮을 때도 자동으로 보강 검색
     # (company는 사내 문서 전용 정책상 제외, stock은 자체 리포트/뉴스 수집 경로를 이미 사용)
     KB_CONTEXT = 0.10   # LLM 호출 시 컨텍스트 포함 기준 / 자동 웹검색 트리거 기준
@@ -929,19 +931,28 @@ async def chat(req: ChatRequest, request: Request):
         and persona_id != "company"
         and (best_score < KB_CONTEXT or bool(autonomous_verification_reason))
     )
+    run_web_search = (
+        (effective_use_search or auto_web_search) and not clarification_msg
+        and not personal_memory_reply
+    )
+
+    law_task = asyncio.ensure_future(law.search_law(search_msg)) if run_law_search else None
+    # 채팅 중 검색 결과 원문은 검증 전 데이터이므로 즉시 장기기억에 쓰지 않는다.
+    # 합성 답변만 기억 후보로 보내고, 검색 자체는 스레드에서 실행한다.
+    web_task = (
+        asyncio.get_event_loop().run_in_executor(None, lambda: srch.web_search(search_msg))
+        if run_web_search else None
+    )
+
+    law_results = await law_task if law_task is not None else []
+    law_ctx = law.format_law_context(law_results)
+
     search_ctx = ""
     memory_conflict_ctx = ""
     memory_search_validation = {"matched": [], "conflicts": []}
-    results = []  # 아래 reference_items 참조 시 항상 정의되어 있어야 함
-    evidence_bundle = srch.build_search_evidence_bundle([], search_msg)
-    if ((effective_use_search or auto_web_search) and not clarification_msg
-            and not personal_memory_reply):
-        # 채팅 중 검색 결과 원문은 검증 전 데이터이므로 즉시 장기기억에 쓰지 않는다.
-        # 합성 답변만 기억 후보로 보내고, 검색 자체는 스레드에서 실행한다.
-        results = await asyncio.get_event_loop().run_in_executor(
-            None, lambda: srch.web_search(search_msg)
-        )
-        evidence_bundle = srch.build_search_evidence_bundle(results, search_msg)
+    results = await web_task if web_task is not None else []  # 아래 reference_items 참조 시 항상 정의되어 있어야 함
+    evidence_bundle = srch.build_search_evidence_bundle(results, search_msg)
+    if web_task is not None:
         search_ctx = evidence_bundle["context"]
         if results and rag_ctx:
             memory_search_validation = srch.validate_memory_against_search(

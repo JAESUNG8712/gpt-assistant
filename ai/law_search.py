@@ -105,8 +105,16 @@ def _flatten_list(val) -> list:
 
 
 def _get_mst(law: dict) -> str:
-    """API 버전마다 필드명이 다를 수 있으므로 여러 후보를 시도"""
-    for key in ("법령MST", "법령MST번호", "MST", "mst"):
+    """API 버전마다 필드명이 다를 수 있으므로 여러 후보를 시도.
+
+    law.go.kr lawSearch.do 실제 응답 필드명은 "법령일련번호"다(2026-08-24
+    GitHub Actions 실행 로그에서 fetch_laws.py 쪽에 실측 확인된 것과 동일한
+    API 응답 구조 — "법령MST"/"법령MST번호"/"MST"/"mst"는 존재하지 않는
+    필드였음). 이 함수는 `/chat`의 실시간 법령 조회에 쓰이는데, fetch_laws.py의
+    같은 버그를 그때 함께 고치지 못해 지금까지 조항 번호가 있는 법령 질문은
+    본문을 전혀 가져오지 못한 채 매번 빈 결과로 끝나고 있었다(실측 재현 확인).
+    """
+    for key in ("법령일련번호", "법령MST", "법령MST번호", "MST", "mst"):
         v = str(law.get(key, "")).strip()
         if v:
             return v
