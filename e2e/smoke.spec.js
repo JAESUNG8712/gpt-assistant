@@ -37,6 +37,36 @@ test.describe("로그인·기본 네비게이션", () => {
     await expect(page.locator('.toast[role="alert"][aria-live="assertive"]')).toContainText("저장 실패");
   });
 
+  test("공통 변경 실행기가 이중 요청과 취소·네트워크 오류를 일관되게 처리한다", async ({ page }) => {
+    await page.goto("/");
+    const result = await page.evaluate(async () => {
+      const originalRequest=serverRequest,originalConfirm=askConfirmModal,originalToast=showToast;
+      const toasts=[];let requests=0,successes=0;
+      try{
+        showToast=(message,type)=>toasts.push({message,type});
+        askConfirmModal=async()=>true;
+        serverRequest=async()=>{requests++;await new Promise(resolve=>setTimeout(resolve,25));return{ok:true,id:"done"};};
+        const [first,second]=await Promise.all([
+          runMutationWorkflow({key:"e2e:duplicate",method:"POST",endpoint:"/e2e",confirm:{title:"확인"},successMessage:"완료",onSuccess:()=>{successes++;}}),
+          runMutationWorkflow({key:"e2e:duplicate",method:"POST",endpoint:"/e2e",confirm:{title:"확인"},successMessage:"완료",onSuccess:()=>{successes++;}})
+        ]);
+        askConfirmModal=async()=>false;
+        const cancelled=await runMutationWorkflow({key:"e2e:cancel",method:"DELETE",endpoint:"/e2e",confirm:{title:"취소"}});
+        serverRequest=async()=>{throw new TypeError("offline");};
+        const failed=await runMutationWorkflow({key:"e2e:network",method:"POST",endpoint:"/e2e"});
+        return{first,second,cancelled,failed,requests,successes,toasts};
+      }finally{serverRequest=originalRequest;askConfirmModal=originalConfirm;showToast=originalToast;}
+    });
+    expect(result.first.ok).toBe(true);
+    expect(result.second).toMatchObject({ok:false,pending:true,code:"CLIENT_MUTATION_IN_PROGRESS"});
+    expect(result.cancelled).toMatchObject({ok:false,cancelled:true,code:"CLIENT_MUTATION_CANCELLED"});
+    expect(result.failed.code).toBe("CLIENT_MUTATION_NETWORK_ERROR");
+    expect(result.requests).toBe(1);
+    expect(result.successes).toBe(1);
+    expect(result.toasts.some(t=>t.type==="info"&&/처리 중/.test(t.message))).toBe(true);
+    expect(result.toasts.some(t=>t.type==="error"&&/서버에 연결/.test(t.message))).toBe(true);
+  });
+
   test("잘못된 비밀번호는 오류를 보여준다", async ({ page }) => {
     await page.goto("/");
     await page.fill("#l-id", "e2e_admin");
