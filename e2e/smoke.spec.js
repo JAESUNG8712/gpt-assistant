@@ -67,6 +67,30 @@ test.describe("로그인·기본 네비게이션", () => {
     expect(result.toasts.some(t=>t.type==="error"&&/서버에 연결/.test(t.message))).toBe(true);
   });
 
+  test("전표와 견적 상태전이가 공통 변경 실행기를 사용한다", async ({ page }) => {
+    await page.goto("/");
+    const captured = await page.evaluate(async () => {
+      const originalRunner=runMutationWorkflow,originalUser=currentUser;
+      const originalVouchers=acctVouchers,originalQuotations=erpQuotations;
+      const calls=[];
+      try{
+        currentUser={id:"e2e-admin",name:"E2E 관리자",role:"admin",menuPerms:{}};
+        acctVouchers=[{id:"v-e2e",date:"2026-09-28",partner:"테스트 거래처",amount:100000,status:"draft"}];
+        erpQuotations=[{id:"q-e2e",partnerName:"테스트 고객",grandTotal:220000,lines:[{name:"품목"}],status:"draft"}];
+        runMutationWorkflow=async opts=>{calls.push({key:opts.key,method:opts.method,endpoint:opts.endpoint,title:opts.confirm?.title||""});return{ok:true};};
+        await postVoucher("v-e2e");
+        await sendQuotation("q-e2e");
+        return calls;
+      }finally{
+        runMutationWorkflow=originalRunner;currentUser=originalUser;acctVouchers=originalVouchers;erpQuotations=originalQuotations;
+      }
+    });
+    expect(captured).toEqual([
+      {key:"voucher:v-e2e:post",method:"POST",endpoint:"/api/accounting/vouchers/v-e2e/post",title:"전표 확정 확인"},
+      {key:"quotation:q-e2e:send",method:"POST",endpoint:"/api/erp/quotations/q-e2e/send",title:"견적서 발송 확인"},
+    ]);
+  });
+
   test("잘못된 비밀번호는 오류를 보여준다", async ({ page }) => {
     await page.goto("/");
     await page.fill("#l-id", "e2e_admin");
