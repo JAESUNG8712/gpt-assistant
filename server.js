@@ -658,6 +658,12 @@ function filterDataForRole(data, auth) {
   if (auth.role !== "admin" && Array.isArray(out.successionPlans)) {
     out.successionPlans = [];
   }
+  // 직무별 요구역량과 개인별 검증 수준은 인사 의사결정용 제한정보다. 현재 화면이
+  // 관리자 전용이므로 API 직접 조회에서도 동일하게 비관리자에게 노출하지 않는다.
+  if (auth.role !== "admin") {
+    if (Array.isArray(out.jobSkillProfiles)) out.jobSkillProfiles = [];
+    if (Array.isArray(out.employeeSkillProfiles)) out.employeeSkillProfiles = [];
+  }
   if (auth.role !== "admin" && Array.isArray(out.compResponses)) {
     out.compResponses = out.compResponses.map(r => {
       if (!r) return r;
@@ -1337,6 +1343,8 @@ const _WRITE_GATED_FIELDS = {
   gradeAdjustHistory: { roles: ["admin"], directorDeptField: "dept", pageIds: ["grade-view", "comp-grade-view"] },
   coreTalentPool:     { roles: ["admin"], pageIds: "core-talent" },
   successionPlans:    { roles: ["admin"], pageIds: "succession-planning" },
+  jobSkillProfiles:   { roles: ["admin"], pageIds: "skills-architecture" },
+  employeeSkillProfiles: { roles: ["admin"], pageIds: "skills-architecture" },
   approvalTemplates:  { roles: ["admin"], pageIds: "approval-templates" },
   // hr-mandatory-training(admin/director/leader)의 일괄 등록 외에, 누구나 접근 가능한 개인
   // "법정의무교육" 화면(mandatory-training)에 본인 이수 자가등록 버튼("이수 등록")이 있다 —
@@ -4124,7 +4132,7 @@ const _BLOB_MODULE_FIELDS = {
   comm:      ["boardPosts", "roomReservations", "roomReservationTombstones"],
   kpi:       ["kpiEntries", "changeRequests", "tieNotifications", "gradeAdjustHistory"],
   comp_eval: ["compSessions", "compResponses", "compGradeResults", "evaluatorConfig"],
-  talent:    ["coreTalentPool", "talentDevPlans", "successionPlans", "lowPerfData", "coreTalentSettings"],
+  talent:    ["coreTalentPool", "talentDevPlans", "successionPlans", "jobSkillProfiles", "employeeSkillProfiles", "lowPerfData", "coreTalentSettings"],
   hr:        ["orgChartHistory"],
   // 승진 처리 자체(employees[].rank 변경)는 hr와 동일한 이유로 대상 밖(핵심 인사 데이터라
   // 통째로 막으면 위험)이지만, 자격요건 설정값(promotionSettings — 직급별 최소연수·등급

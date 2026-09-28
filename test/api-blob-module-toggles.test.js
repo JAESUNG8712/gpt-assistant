@@ -97,6 +97,8 @@ if (!ADMIN_DATABASE_URL) {
       { feature: "comp_eval", field: "compSessions", sample: (id) => ({ id, year: 2026 }) },
       { feature: "talent", field: "coreTalentPool", sample: (id) => ({ id, empId: "1" }) },
       { feature: "talent", field: "successionPlans", sample: (id) => ({ id, title: "핵심직무 승계", status: "active", candidates: [] }) },
+      { feature: "talent", field: "jobSkillProfiles", sample: (id) => ({ id, title: "제조 ERP PM", status: "active", skills: [{ name: "제조ERP", level: 4, weight: 2 }] }) },
+      { feature: "talent", field: "employeeSkillProfiles", sample: (id) => ({ id, empId: "1", skills: [{ name: "제조ERP", level: 3 }] }) },
       { feature: "hr", field: "orgChartHistory", sample: (id) => ({ id, note: "조직개편" }) },
     ];
 

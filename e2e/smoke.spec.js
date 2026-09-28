@@ -115,6 +115,26 @@ test.describe("로그인·기본 네비게이션", () => {
     expect(pageErrors).toHaveLength(0);
   });
 
+  test("직무·스킬 아키텍처는 가중 적합도와 핵심스킬 공백을 계산한다", async ({ page }) => {
+    await page.goto("/");
+    const pageErrors=[];page.on("pageerror",e=>pageErrors.push(e.message));
+    const result=await page.evaluate(() => {
+      currentUser={id:"skill-admin",name:"스킬관리자",role:"admin",dept:"인사",menuPerms:{}};
+      employees=[{id:"emp1",name:"후보1",active:true,role:"leader",dept:"DX사업본부",team:"ERP",rank:"팀장",position:"프로젝트매니저"}];
+      jobSkillProfiles=[{id:"job1",title:"제조 ERP PM",dept:"DX사업본부",position:"프로젝트매니저",status:"active",skills:[{name:"제조ERP",level:4,weight:2},{name:"프로젝트 관리",level:3,weight:1}]}];
+      employeeSkillProfiles=[{id:"esp1",empId:"emp1",skills:[{name:"제조ERP",level:3,evidence:"구축 참여"},{name:"프로젝트 관리",level:3,evidence:"PM"}]}];
+      render();gotoPage("skills-architecture");
+      return{metrics:_skillsMetrics(),fit:_jobSkillFit(jobSkillProfiles[0],"emp1")};
+    });
+    expect(result.metrics).toEqual({jobs:1,skills:2,assessed:1,criticalGaps:1});
+    expect(result.fit.score).toBe(83);
+    expect(result.fit.gaps).toEqual([{name:"제조ERP",required:4,actual:3}]);
+    await expect(page.locator("#content").getByRole("heading",{name:"직무·스킬 아키텍처"})).toBeVisible();
+    await expect(page.locator("#content")).toContainText("전사 핵심스킬 공백");
+    await expect(page.locator("#content")).toContainText("후보1 · 83%");
+    expect(pageErrors).toHaveLength(0);
+  });
+
   test("잘못된 비밀번호는 오류를 보여준다", async ({ page }) => {
     await page.goto("/");
     await page.fill("#l-id", "e2e_admin");

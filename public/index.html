@@ -1037,6 +1037,8 @@ let kpiEntries=[];
 let changeRequests=[];
 let lowPerfData=[]; // [{id,empId,year,flaggedDate,flaggedBy,status:"watch"|"pip"|"improved"|"terminated",pipStart,pipEnd,pipGoal,notes:[{date,content,authorId}],manualFlag}]
 let successionPlans=[]; // 핵심직무 승계계획 [{id,title,incumbentId,criticality,riskOfLoss,impactOfLoss,status,candidates:[...]}]
+let jobSkillProfiles=[]; // 직무별 요구 스킬 [{id,title,dept,position,skills:[{name,level,weight}],status}]
+let employeeSkillProfiles=[]; // 직원별 검증 스킬 [{id,empId,skills:[{name,level,evidence}]}]
 let approvalTemplates=[]; // 커스텀 결재 양식
 let disabledTplIds=[]; // 사용 중지된 양식 id 목록 (기본+커스텀 공통)
 let approvalChainSettings={includeLeader:true,includeDirector:true,finalApprovers:[],reminderDays:2}; // 계층형 결재선 설정 (팀장/사업부장 단계 포함 여부, 최종 결재자 추가, 결재 지연 리마인드 기준일)
@@ -1078,7 +1080,7 @@ let healthCheckupLog=[]; // 종합검진 이수 이력 [{id,empId,year,completed
 let scheduleEvents=[]; // 캘린더 일정 [{id,authorId,title,startDate,endDate,scope:"personal"|"team"|"dept"|"company",dept,team,memo,color,createdAt}]
 function _recordCollections(){return{
   employees,kpiEntries,compSessions,compResponses,changeRequests,orgChartHistory,
-  coreTalentPool,talentDevPlans,successionPlans,gradeAdjustHistory,tieNotifications,lowPerfData,
+  coreTalentPool,talentDevPlans,successionPlans,jobSkillProfiles,employeeSkillProfiles,gradeAdjustHistory,tieNotifications,lowPerfData,
   approvalTemplates,integrationLogs,approvalDocs,attendanceRecords,payslips,
   yearEndSettlements,
   payrollAdjustments,leaveUsagePlans,boardPosts,roomReservations,certLog,certRequests,
@@ -2511,6 +2513,7 @@ async function openServerBackupsModal(){
 const SNAPSHOT_FIELD_LABELS = {
   employees:"인사 정보(employees)", kpiEntries:"KPI 평가", changeRequests:"변경요청",
   orgChartHistory:"조직도 이력", coreTalentPool:"핵심인재 풀", talentDevPlans:"인재개발계획", successionPlans:"승계계획",
+  jobSkillProfiles:"직무·스킬 기준", employeeSkillProfiles:"직원 스킬 프로필",
   compGradeResults:"보상등급 결과", gradeAdjustHistory:"등급조정 이력", tieNotifications:"동점자 알림",
   lowPerfData:"저성과자 데이터", approvalTemplates:"전자결재 템플릿", integrationLogs:"연동 로그",
   approvalDocs:"전자결재 문서", attendanceRecords:"근태기록", payslips:"급여명세서", payrollAdjustments:"급여 조정항목",
@@ -5086,7 +5089,7 @@ function executeBulkImport(){
 }
 
 // ==================== BACKUP & RESTORE ====================
-const CURRENT_SCHEMA_VERSION="8.1";
+const CURRENT_SCHEMA_VERSION="8.2";
 
 function getFullState(action=""){
   const state={_version:_serverVersion,_action:action,_recordCasVersion:1,_singletonRevisions:{..._singletonRevisions},
@@ -5107,6 +5110,8 @@ function getFullState(action=""){
       coreTalentPool:JSON.parse(JSON.stringify(coreTalentPool)),
       talentDevPlans:JSON.parse(JSON.stringify(talentDevPlans)),
       successionPlans:JSON.parse(JSON.stringify(successionPlans)),
+      jobSkillProfiles:JSON.parse(JSON.stringify(jobSkillProfiles)),
+      employeeSkillProfiles:JSON.parse(JSON.stringify(employeeSkillProfiles)),
       coreTalentSettings:JSON.parse(JSON.stringify(coreTalentSettings)),
       compGradeResults:JSON.parse(JSON.stringify(compGradeResults)),
       gradeAdjustHistory:JSON.parse(JSON.stringify(gradeAdjustHistory)),
@@ -5315,6 +5320,8 @@ function applyState(state,skipUndo=false){
   if(d.coreTalentPool&&Array.isArray(d.coreTalentPool))coreTalentPool=_mergeByIdPreferNewer(coreTalentPool,d.coreTalentPool,'coreTalentPool');
   if(d.talentDevPlans&&Array.isArray(d.talentDevPlans))talentDevPlans=_mergeByIdPreferNewer(talentDevPlans,d.talentDevPlans,'talentDevPlans');
   if(d.successionPlans&&Array.isArray(d.successionPlans))successionPlans=_mergeByIdPreferNewer(successionPlans,d.successionPlans,'successionPlans');
+  if(d.jobSkillProfiles&&Array.isArray(d.jobSkillProfiles))jobSkillProfiles=_mergeByIdPreferNewer(jobSkillProfiles,d.jobSkillProfiles,'jobSkillProfiles');
+  if(d.employeeSkillProfiles&&Array.isArray(d.employeeSkillProfiles))employeeSkillProfiles=_mergeByIdPreferNewer(employeeSkillProfiles,d.employeeSkillProfiles,'employeeSkillProfiles');
   if(d.coreTalentSettings&&typeof d.coreTalentSettings==="object")coreTalentSettings={...coreTalentSettings,...d.coreTalentSettings};
   if(d.compGradeResults&&typeof d.compGradeResults==="object")compGradeResults={...compGradeResults,...d.compGradeResults};
   if(d.gradeAdjustHistory&&Array.isArray(d.gradeAdjustHistory))gradeAdjustHistory=d.gradeAdjustHistory;
@@ -5376,6 +5383,8 @@ function applyState(state,skipUndo=false){
   kpiEntries=_tombFilter(kpiEntries,"kpiEntries");
   lowPerfData=_tombFilter(lowPerfData,"lowPerfData");
   successionPlans=_tombFilter(successionPlans,"successionPlans");
+  jobSkillProfiles=_tombFilter(jobSkillProfiles,"jobSkillProfiles");
+  employeeSkillProfiles=_tombFilter(employeeSkillProfiles,"employeeSkillProfiles");
   approvalTemplates=_tombFilter(approvalTemplates,"approvalTemplates");
   payrollAdjustments=_tombFilter(payrollAdjustments,"payrollAdjustments");
   boardPosts=_tombFilter(boardPosts,"boardPosts");
@@ -5641,6 +5650,8 @@ function mergeImportData(parsed){
   if(d.coreTalentPool&&Array.isArray(d.coreTalentPool))coreTalentPool=d.coreTalentPool;
   if(d.talentDevPlans&&Array.isArray(d.talentDevPlans))talentDevPlans=d.talentDevPlans;
   if(d.successionPlans&&Array.isArray(d.successionPlans))successionPlans=d.successionPlans;
+  if(d.jobSkillProfiles&&Array.isArray(d.jobSkillProfiles))jobSkillProfiles=d.jobSkillProfiles;
+  if(d.employeeSkillProfiles&&Array.isArray(d.employeeSkillProfiles))employeeSkillProfiles=d.employeeSkillProfiles;
   if(d.coreTalentSettings&&typeof d.coreTalentSettings==="object")Object.assign(coreTalentSettings,d.coreTalentSettings);
   if(d.evaluatorConfig&&typeof d.evaluatorConfig==="object")Object.assign(evaluatorConfig,d.evaluatorConfig);
   if(d.gradeAdjustHistory&&Array.isArray(d.gradeAdjustHistory)){const existIds=new Set(gradeAdjustHistory.map(r=>r.id));d.gradeAdjustHistory.forEach(r=>{if(r&&r.id&&!existIds.has(r.id))gradeAdjustHistory.push(r);});}
@@ -6649,6 +6660,7 @@ function renderSidebar(){
       {id:"talent-sep",type:"sep",label:"핵심인재",roles:talentDevRoles},
       {id:"core-talent",label:"핵심인재 관리",icon:"⭐",desc:"핵심인재 선발·관리",roles:["admin"]},
       {id:"succession-planning",label:"핵심직무 승계계획",icon:"🔁",desc:"후보 준비도·이탈위험·승계 커버리지",roles:["admin"]},
+      {id:"skills-architecture",label:"직무·스킬 아키텍처",icon:"🧩",desc:"직무 요구역량·직원 스킬·격차 분석",roles:["admin"]},
       {id:"talent-dev",label:"육성 계획·실적",icon:"📋",desc:"역량 개발 계획 관리",roles:talentDevRoles},
     ],
     "lowperf-sep":[
@@ -6737,6 +6749,7 @@ function renderSidebar(){
   const menus=groupOrder.flatMap(g=>menuGroups[g]);
   const titles={dashboard:"대시보드","my-profile":"내 프로필","hr-register":"신규 직원 등록","hr-list":"직원 목록","hr-changes":"발령·변동 이력",kpi:"KPI 목표 등록","kpi-results":"KPI 결과 입력","my-kpi":"나의 KPI","grade-view":"KPI 등급 현황","comp-grade-view":"역량평가 등급","comp-eval":"다면평가 진행","first-eval":"1차 평가","second-eval":"2차 평가","kpi-amend":"수정 요청 승인","eval-progress":"평가 진행 상황",settings:"운영 설정",history:"수정 이력","change-pw":"비밀번호 변경","data-mgmt":"데이터 관리","core-talent":"핵심인재 관리","talent-dev":"육성 계획·실적","promotion-mgmt":"승진 심사 관리","low-performer":"저성과 인력 관리","approval-draft":"기안하기","approval-outbox":"상신함","approval-inbox":"결재함","approval-receive":"수신함","approval-cc-inbox":"참조함","approval-completed":"완료함","attendance":"근태 현황","att-calendar":"캘린더","leave-mgmt":"연차 관리","payslip":"급여 명세서","yearend-settlement":"연말정산(간이)","approval-templates":"결재 양식 관리","integrations":"연동 설정","orgchart":"조직도","certificate":"증명서 발급","hr-stats":"인사 통계","board":"게시판","room-booking":"회의실 예약","welfare-points":"복지포인트","mandatory-training":"법정의무교육","hr-welfare-points":"복지포인트 현황(전체)","hr-mandatory-training":"법정의무교육 현황(전체)","hr-attendance":"근태 현황(전체)","hr-leave-mgmt":"연차 관리(전체)","welfare-status":"복지 현황","long-service-award":"장기근속 포상","award-history":"(최)우수사원 선정 이력","salary-info":"급여 기준 정보","welfare-settings":"복지 제도 설정","notification-center":"알림","acct-partners":"거래처 관리","acct-accounts":"계정과목","acct-vouchers":"전표 관리","acct-tax-invoices":"세금계산서","acct-vat-report":"부가세 신고자료","acct-fixed-assets":"고정자산 관리","acct-fixed-assets-detail":"고정자산 상세","acct-cost-statement":"원가명세서","acct-rcps":"RCPS 관리","acct-rcps-detail":"RCPS 발행 상세","acct-reports":"회계 리포트","expense-claims":"경비 청구","expense-admin":"경비 정산 관리","acct-receivables":"채권/채무 관리","biz-plan":"사업계획","overtime-req":"초과근무 신청","exec-dashboard":"경영 대시보드","onboarding":"온보딩/오프보딩","approval-delegation":"결재 위임","sales-quotations":"견적서 관리","sales-dashboard":"영업 실적 대시보드","sales-purchase-orders":"발주서 관리","inv-items":"품목 관리","inv-locations":"위치 관리","inv-stock":"재고 현황","inv-purchase-requests":"구매요청","pms-projects":"프로젝트 관리","pms-allocation":"내 투입률 입력","pms-my-projects":"내가 투입된 프로젝트","pms-utilization":"가동률 현황","pms-worklog":"일일 업무 투입","recruit-jobs":"채용공고 관리","recruit-candidates":"지원자 관리","recruit-eval":"면접 일정/평가 입력","recruit-eval-detail":"면접 평가 상세","recruit-dashboard":"채용 현황 대시보드","eval-ops":"평가 운영","settings-org":"조직 관리","settings-ranks":"직급 체계","attend-settings":"근태 설정","payroll-settings":"급여 관리","payroll-mgmt":"급여 종합 관리","company-info":"회사 기본 정보","room-settings":"회의실 관리","deploy-perm":"권한 관리"};
   titles["succession-planning"]="핵심직무 승계계획";
+  titles["skills-architecture"]="직무·스킬 아키텍처";
   const ptEl=$("#page-title");if(ptEl)ptEl.textContent=titles[currentPage]||"";
   const sb=$("#sidebar");if(!sb)return;
   // Filter by role + per-user custom permission overrides (admin-managed)
@@ -6849,7 +6862,7 @@ const PAGE_ROLES={
   "first-eval":["admin","leader"],"second-eval":["admin","director"],"kpi-amend":["admin","director","leader"],
   "grade-view":["admin","director","leader"],"comp-grade-view":["admin"],"comp-settings-shortcut":["admin"],
   "eval-progress":["admin","director","leader"],
-  "promotion-mgmt":["admin"],"core-talent":["admin"],"succession-planning":["admin"],
+  "promotion-mgmt":["admin"],"core-talent":["admin"],"succession-planning":["admin"],"skills-architecture":["admin"],
   "settings":["admin"],"approval-templates":["admin"],"integrations":["admin"],"data-mgmt":["admin"],
   "history":["admin"],"activity-log":["admin"],
   "eval-ops":["admin"],"settings-org":["admin"],"settings-ranks":["admin"],"attend-settings":["admin"],
@@ -7011,6 +7024,7 @@ function renderPage(){
   if(currentPage&&currentPage.startsWith("board-")){renderBoardPage();renderCatNav();const attendBar=document.getElementById("attend-bar");if(attendBar)attendBar.innerHTML=(currentUser&&currentPage==="dashboard")?_renderTeamTodayWidget(currentUser):"";return;}
   const pages={dashboard:renderDashboard,"my-profile":renderMyProfile,"hr-register":renderHRRegister,"hr-list":renderHRList,"hr-changes":renderHRChanges,kpi:()=>renderKPI(false),"kpi-results":()=>renderKPI(true),"my-kpi":renderMyKPI,"grade-view":renderGradeView,"comp-grade-view":renderCompGradeView,"comp-settings-shortcut":()=>gotoPage("eval-ops"),"comp-eval":renderCompEval,"data-mgmt":renderDataManagementPage,"core-talent":renderCoreTalentPage,"talent-dev":renderTalentDevPage,"promotion-mgmt":renderPromotionPageStandalone,"low-performer":renderLowPerformer,"activity-log":()=>{loadActivityFromServer();},"first-eval":()=>{approvalTab="eval";approvalSearch={name:"",dept:""};renderApprovals();},"second-eval":()=>{approvalTab="eval";approvalSearch={name:"",dept:""};renderApprovals();},"kpi-amend":()=>{approvalTab="requests";approvalSearch={name:"",dept:""};renderApprovals();},"eval-progress":renderEvalProgressPage,settings:renderSettings,"eval-ops":renderEvalOpsPage,"settings-org":renderSettingsOrgPage,"settings-ranks":renderSettingsRanksPage,"attend-settings":renderAttendSettings,"payroll-settings":renderPayrollSettings,"company-info":renderCompanyInfo,"room-settings":renderRoomSettings,"deploy-perm":renderDeployPermPage,history:renderHistory,"change-pw":renderChangePW,"approval-draft":renderApprovalDraftPage,"approval-outbox":renderApprovalOutbox,"approval-inbox":renderApprovalInbox,"approval-receive":renderApprovalReceive,"approval-cc-inbox":renderApprovalCcInbox,"approval-completed":renderApprovalCompleted,"attendance":renderAttendancePage,"att-calendar":renderAttendanceCalendarPage,"leave-mgmt":renderLeaveManagementPage,"payslip":renderPayslipPage,"yearend-settlement":renderYearEndSettlementPage,"approval-templates":renderApprovalTemplateAdmin,"integrations":renderIntegrationsPage,"orgchart":renderOrgChartPage,"certificate":renderCertPage,"hr-stats":renderHRStatsPage,"board":renderBoardPage,"room-booking":renderRoomBookingPage,"welfare-points":renderWelfarePointsPage,"mandatory-training":renderMandatoryTrainingPage,"welfare-status":renderWelfareStatusPage,"long-service-award":renderLongServiceAwardPage,"award-history":renderAwardHistoryPage,"hr-welfare-points":renderHrWelfarePointsPage,"hr-mandatory-training":renderHrMandatoryTrainingPage,"hr-attendance":renderHrAttendancePage,"hr-leave-mgmt":renderHrLeaveManagementPage,"payroll-mgmt":renderPayrollMgmtPage,"salary-info":renderSalaryInfoPage,"welfare-settings":renderWelfareSettingsPage,"notification-center":renderNotificationCenterPage,"acct-partners":renderAcctPartnersPage,"acct-accounts":renderAcctAccountsPage,"acct-vouchers":renderAcctVouchersPage,"acct-tax-invoices":renderAcctTaxInvoicesPage,"acct-vat-report":()=>{loadVatReportFromServer();},"acct-fixed-assets":renderAcctFixedAssetsPage,"acct-fixed-assets-detail":()=>{loadFixedAssetDetailFromServer();},"acct-cost-statement":renderAcctCostStatementPage,"acct-rcps":renderAcctRcpsPage,"acct-rcps-detail":()=>{loadRcpsDetailFromServer();},"acct-reports":renderAcctReportsPage,"expense-claims":renderExpenseClaimsPage,"expense-admin":renderExpenseAdminPage,"acct-receivables":renderAcctReceivablesPage,"biz-plan":()=>{loadBizPlanFromServer();},"emp-pay-plan":()=>{renderEmpPayPlanPage();},"overtime-req":renderOvertimeReqPage,"exec-dashboard":renderExecDashboardPage,"onboarding":renderOnboardingPage,"approval-delegation":renderApprovalDelegationPage,"sales-quotations":renderSalesQuotationsPage,"sales-dashboard":renderSalesDashboardPage,"sales-purchase-orders":renderSalesPurchaseOrdersPage,"inv-items":renderInvItemsPage,"inv-locations":renderInvLocationsPage,"inv-stock":renderInvStockPage,"inv-stock-log":renderInvStockLogPage,"inv-purchase-requests":renderPurchaseRequestsPage,"pms-projects":renderPmsProjectsPage,"pms-allocation":renderPmsAllocationPage,"pms-my-projects":renderPmsMyProjectsPage,"pms-utilization":renderPmsUtilizationPage,"pms-worklog":renderPmsWorklogPage,"recruit-jobs":renderRecruitJobsPage,"recruit-candidates":renderRecruitCandidatesPage,"recruit-eval":renderRecruitEvalPage,"recruit-eval-detail":renderRecruitEvalDetailPage,"recruit-dashboard":renderRecruitDashboardPage};
   pages["succession-planning"]=renderSuccessionPlanningPage;
+  pages["skills-architecture"]=renderSkillsArchitecturePage;
   const fn=pages[currentPage];const c=$("#content");
   if(c&&fn){
     c.innerHTML="";
@@ -11508,6 +11522,69 @@ function tryAutoGradeAfterSecond(dept, year){
   });
 }
 
+// ==================== JOB & SKILLS ARCHITECTURE ====================
+// 직무 요구역량과 직원의 검증된 보유역량을 하나의 명칭 체계로 연결한다. 숫자 수준은
+// 1(기초)~5(전문가), 가중치는 직무 적합도 계산 시 상대적 중요도로 사용한다.
+function _skillKey(v){return String(v||"").trim().toLocaleLowerCase("ko-KR");}
+function _skillRows(text,kind){
+  const rows=[];const seen=new Set();
+  for(const raw of String(text||"").split(/\r?\n/)){
+    if(!raw.trim())continue;
+    const parts=raw.split("|").map(v=>v.trim());const name=parts[0];const key=_skillKey(name);
+    const level=Number(parts[1]);const tail=parts.slice(2).join(" | ").trim();
+    if(!name||!Number.isInteger(level)||level<1||level>5)throw new Error(`스킬 "${name||raw}"의 수준은 1~5 정수여야 합니다.`);
+    if(seen.has(key))throw new Error(`스킬 "${name}"이 중복되었습니다.`);seen.add(key);
+    if(kind==="job"){
+      const weight=tail===""?1:Number(tail);if(!Number.isFinite(weight)||weight<=0||weight>10)throw new Error(`스킬 "${name}"의 가중치는 0 초과 10 이하여야 합니다.`);
+      rows.push({name,level,weight});
+    }else rows.push({name,level,evidence:tail});
+  }
+  if(!rows.length)throw new Error("스킬을 한 개 이상 입력하세요.");return rows;
+}
+function _employeeSkillMap(empId){
+  const p=employeeSkillProfiles.find(x=>String(x.empId)===String(empId));const out=new Map();
+  (p?.skills||[]).forEach(s=>out.set(_skillKey(s.name),Number(s.level)||0));return out;
+}
+function _jobSkillFit(job,empId){
+  const req=job?.skills||[];if(!req.length)return{score:0,gaps:[]};const have=_employeeSkillMap(empId);
+  let got=0,total=0;const gaps=[];
+  req.forEach(s=>{const weight=Number(s.weight)||1;const level=Number(s.level)||1;const actual=have.get(_skillKey(s.name))||0;total+=weight;got+=Math.min(actual/level,1)*weight;if(actual<level)gaps.push({name:s.name,required:level,actual});});
+  return{score:total?Math.round(got/total*100):0,gaps};
+}
+function _jobProfileForEmployee(emp){
+  return jobSkillProfiles.find(j=>j.status!=="inactive"&&j.dept===emp?.dept&&(j.position===emp?.position||j.position===emp?.rank))||null;
+}
+function _skillsMetrics(){
+  const activeJobs=jobSkillProfiles.filter(j=>j.status!=="inactive");const assessed=new Set(employeeSkillProfiles.filter(p=>getEmp(p.empId)?.active).map(p=>String(p.empId)));
+  const skillNames=new Set(activeJobs.flatMap(j=>(j.skills||[]).map(s=>_skillKey(s.name))));const criticalGapKeys=new Set();
+  activeJobs.forEach(j=>{(j.skills||[]).forEach(s=>{if(Number(s.level)>=4&&!employees.some(e=>e.active&&e.role!=="admin"&&(_employeeSkillMap(e.id).get(_skillKey(s.name))||0)>=Number(s.level)))criticalGapKeys.add(_skillKey(s.name));});});
+  return{jobs:activeJobs.length,skills:skillNames.size,assessed:assessed.size,criticalGaps:criticalGapKeys.size};
+}
+function renderSkillsArchitecturePage(){
+  const c=$("#content");if(!c)return;const m=_skillsMetrics();
+  const rows=jobSkillProfiles.slice().sort((a,b)=>String(a.status).localeCompare(String(b.status))||String(a.dept+a.title).localeCompare(String(b.dept+b.title))).map(j=>{
+    const candidates=employees.filter(e=>e.active&&e.role!=="admin").map(e=>({e,..._jobSkillFit(j,e.id)})).filter(x=>employeeSkillProfiles.some(p=>String(p.empId)===String(x.e.id))).sort((a,b)=>b.score-a.score);const top=candidates[0];
+    return`<tr><td><strong>${h(j.title)}</strong><div class="fz11 text-gray">${h(j.dept||"전사")} · ${h(j.position||"직무 공통")}</div></td><td>${(j.skills||[]).map(s=>`${badge(h(s.name),Number(s.level)>=4?"indigo":"blue")} <span class="fz10">L${s.level}</span>`).join(" ")||"-"}</td><td>${top?`${h(top.e.name)} · <strong>${top.score}%</strong><div class="fz10 ${top.gaps.length?'text-danger':'text-green'}">격차 ${top.gaps.length}개</div>`:"<span class='text-gray'>평가 자료 없음</span>"}</td><td>${j.status==="inactive"?badge("미사용","gray"):badge("사용","green")}</td><td class="tr"><button class="btn btn-secondary btn-sm" onclick="openJobSkillProfileModal('${j.id}')">수정</button> <button class="btn btn-ghost btn-sm" onclick="openJobSkillGapModal('${j.id}')">격차 보기</button></td></tr>`;
+  }).join("");
+  const assessedRows=employeeSkillProfiles.filter(p=>getEmp(p.empId)).sort((a,b)=>String(getEmp(a.empId)?.name).localeCompare(String(getEmp(b.empId)?.name))).map(p=>{const e=getEmp(p.empId);const job=_jobProfileForEmployee(e);const fit=job?_jobSkillFit(job,e.id):null;return`<tr><td><strong>${h(e.name)}</strong><div class="fz11 text-gray">${h(e.dept||"")} ${h(e.team||"")} · ${h(e.position||e.rank||"")}</div></td><td>${(p.skills||[]).length}개</td><td>${job?h(job.title):"<span class='text-gray'>매칭 직무 없음</span>"}</td><td>${fit?`${fit.score}% · 격차 ${fit.gaps.length}개`:"-"}</td><td class="tr"><button class="btn btn-secondary btn-sm" onclick="openEmployeeSkillProfileModal('${e.id}')">평가</button> <button class="btn btn-ghost btn-sm" onclick="deleteEmployeeSkillProfile('${p.id}')">삭제</button></td></tr>`;}).join("");
+  c.innerHTML=`<div class="flex items-c justify-b mb3"><div><h2>직무·스킬 아키텍처</h2><div class="fz12 text-gray mt1">직무 요구역량과 직원 보유역량을 같은 기준으로 관리해 채용·육성·승계의 판단 근거로 사용합니다.</div></div><div class="flex gap2"><button class="btn btn-secondary" onclick="exportSkillGapCSV()">⬇ 격차 CSV</button><button class="btn btn-primary" onclick="openJobSkillProfileModal()">+ 직무 프로필</button></div></div>
+  <div class="stats-grid mb3"><div class="stat-card"><div class="ico">💼</div><div class="num">${m.jobs}</div><div class="lbl">활성 직무</div></div><div class="stat-card"><div class="ico">🧩</div><div class="num">${m.skills}</div><div class="lbl">요구 스킬</div></div><div class="stat-card"><div class="ico">👥</div><div class="num">${m.assessed}</div><div class="lbl">평가 완료 직원</div></div><div class="stat-card"><div class="ico">⚠️</div><div class="num">${m.criticalGaps}</div><div class="lbl">전사 핵심스킬 공백</div></div></div>
+  ${m.criticalGaps?`<div class="warn-note mb3"><strong>조치 필요:</strong> 요구수준 4 이상인데 충족 인원이 없는 핵심스킬이 ${m.criticalGaps}개입니다. 채용 키워드와 육성계획에 반영하세요.</div>`:""}
+  <div class="card mb3"><div class="card-head"><h3>직무 스킬 모델</h3></div><div class="card-body" style="padding:0"><div class="tbl-wrap"><table><thead><tr><th>직무</th><th>요구역량</th><th>최고 적합 후보</th><th>상태</th><th class="tr">관리</th></tr></thead><tbody>${rows||`<tr><td colspan="5" class="p-empty">직무 프로필이 없습니다. 핵심직무부터 요구스킬을 등록하세요.</td></tr>`}</tbody></table></div></div></div>
+  <div class="card"><div class="card-head"><h3>직원 스킬 검증</h3><button class="btn btn-secondary btn-sm" onclick="openEmployeeSkillProfileModal()">+ 직원 평가</button></div><div class="card-body" style="padding:0"><div class="tbl-wrap"><table><thead><tr><th>직원</th><th>보유스킬</th><th>현재 직무 모델</th><th>적합도</th><th class="tr">관리</th></tr></thead><tbody>${assessedRows||`<tr><td colspan="5" class="p-empty">검증된 직원 스킬 자료가 없습니다.</td></tr>`}</tbody></table></div></div></div>`;
+}
+function openJobSkillProfileModal(id){
+  const p=jobSkillProfiles.find(x=>String(x.id)===String(id));const skillText=(p?.skills||[]).map(s=>`${s.name} | ${s.level} | ${s.weight}`).join("\n");
+  openModal(`<div class="modal-box" style="max-width:680px"><div class="modal-head"><h3>${p?"직무 프로필 수정":"직무 프로필 등록"}</h3></div><div class="modal-body"><div class="info-note mb3">한 줄에 <strong>스킬명 | 요구수준(1~5) | 가중치(0초과~10)</strong>로 입력합니다. 예: 제조ERP 구축 | 4 | 2</div><div class="g2"><div class="fg"><label class="fl">직무명 <span class="req">*</span></label><input class="fc" id="js-title" value="${h(p?.title||"")}" placeholder="예: 제조 ERP 프로젝트 매니저"></div><div class="fg"><label class="fl">부서</label><input class="fc" id="js-dept" value="${h(p?.dept||"")}" placeholder="예: DX사업본부"></div></div><div class="fg"><label class="fl">직책/직급 매칭값</label><input class="fc" id="js-position" value="${h(p?.position||"")}" placeholder="예: 프로젝트매니저 또는 팀장"><div class="fz11 text-gray mt1">직원 정보의 직책 또는 직급과 정확히 같으면 현재 직무 적합도를 자동 계산합니다.</div></div><div class="fg"><label class="fl">직무 설명</label><textarea class="fc" id="js-desc" rows="2" placeholder="예: 제조 고객의 ERP 구축 프로젝트 범위·원가·일정을 총괄">${h(p?.description||"")}</textarea></div><div class="fg"><label class="fl">요구 스킬 <span class="req">*</span></label><textarea class="fc" id="js-skills" rows="7" placeholder="제조ERP 구축 | 4 | 2\n프로젝트 관리 | 4 | 2\n고객 커뮤니케이션 | 3 | 1">${h(skillText)}</textarea></div><label class="flex items-c gap2 fz12"><input type="checkbox" id="js-active" ${p?.status!=="inactive"?"checked":""}> 사용</label></div><div class="modal-foot">${p?`<button class="btn btn-danger" onclick="deleteJobSkillProfile('${p.id}')">삭제</button>`:""}<button class="btn btn-secondary" onclick="closeModal()">취소</button><button class="btn btn-primary" onclick="saveJobSkillProfile('${p?.id||""}')">저장</button></div></div>`);
+}
+function saveJobSkillProfile(id){try{const title=$("#js-title")?.value.trim();if(!title)throw new Error("직무명을 입력하세요.");const skills=_skillRows($("#js-skills")?.value,"job");if(jobSkillProfiles.some(p=>String(p.id)!==String(id)&&p.status!=="inactive"&&_skillKey(p.title)===_skillKey(title)))throw new Error("같은 이름의 사용 중 직무 프로필이 있습니다.");const prev=jobSkillProfiles.find(p=>String(p.id)===String(id));const now=new Date().toISOString();const rec={...(prev||{}),id:prev?.id||genId(),title,dept:$("#js-dept").value.trim(),position:$("#js-position").value.trim(),description:$("#js-desc").value.trim(),skills,status:$("#js-active").checked?"active":"inactive",createdAt:prev?.createdAt||now,updatedAt:now};if(prev)jobSkillProfiles=jobSkillProfiles.map(p=>String(p.id)===String(id)?rec:p);else jobSkillProfiles.push(rec);closeModal();autoSaveToServerIfEnabled();renderSkillsArchitecturePage();showToast("직무 프로필이 저장되었습니다.","success");}catch(e){showToast(e.message,"error");}}
+async function deleteJobSkillProfile(id){const p=jobSkillProfiles.find(x=>String(x.id)===String(id));if(!p)return;const linked=successionPlans.filter(s=>String(s.jobProfileId)===String(id));const ok=await askConfirmModal({title:"직무 프로필 삭제",message:"직무 요구역량과 매칭 기준을 삭제하시겠습니까?",confirmText:"삭제",danger:true,impact:[{label:"직무",value:p.title},{label:"연결된 승계계획",value:`${linked.length}건`}],warnings:linked.length?["연결된 승계계획의 후보 적합도 계산이 중단됩니다."]:[]});if(!ok)return;_tombstone("jobSkillProfiles",p.id);jobSkillProfiles=jobSkillProfiles.filter(x=>String(x.id)!==String(id));successionPlans.forEach(s=>{if(String(s.jobProfileId)===String(id))s.jobProfileId="";});closeModal();autoSaveToServerIfEnabled();renderSkillsArchitecturePage();}
+function openEmployeeSkillProfileModal(empId){const p=employeeSkillProfiles.find(x=>String(x.empId)===String(empId));const opts=employees.filter(e=>e.active&&e.role!=="admin").sort((a,b)=>String(a.name).localeCompare(String(b.name))).map(e=>`<option value="${e.id}"${String(e.id)===String(empId)?" selected":""}>${h(e.name)} · ${h(e.dept||"")} ${h(e.team||"")}</option>`).join("");const text=(p?.skills||[]).map(s=>`${s.name} | ${s.level} | ${s.evidence||""}`).join("\n");openModal(`<div class="modal-box" style="max-width:650px"><div class="modal-head"><h3>직원 스킬 검증</h3></div><div class="modal-body"><div class="info-note mb3">한 줄에 <strong>스킬명 | 보유수준(1~5) | 검증 근거</strong>로 입력합니다. 예: PostgreSQL | 4 | ERP DB 전환 프로젝트</div><div class="fg"><label class="fl">직원 <span class="req">*</span></label><select class="fc" id="es-emp" ${p?"disabled":""}><option value="">선택하세요</option>${opts}</select></div><div class="fg"><label class="fl">검증된 스킬 <span class="req">*</span></label><textarea class="fc" id="es-skills" rows="8" placeholder="제조ERP 구축 | 4 | A사 구축 PM\n프로젝트 관리 | 3 | PMP 교육 이수">${h(text)}</textarea></div></div><div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal()">취소</button><button class="btn btn-primary" onclick="saveEmployeeSkillProfile('${p?.id||""}')">저장</button></div></div>`);}
+function saveEmployeeSkillProfile(id){try{const empId=$("#es-emp")?.value;if(!empId)throw new Error("직원을 선택하세요.");const skills=_skillRows($("#es-skills")?.value,"employee");const prev=employeeSkillProfiles.find(p=>String(p.id)===String(id));const duplicate=employeeSkillProfiles.find(p=>String(p.id)!==String(id)&&String(p.empId)===String(empId));if(duplicate)throw new Error("이미 등록된 직원입니다. 기존 프로필을 수정하세요.");const now=new Date().toISOString();const rec={...(prev||{}),id:prev?.id||genId(),empId,skills,verifiedBy:currentUser.id,verifiedAt:now,updatedAt:now};if(prev)employeeSkillProfiles=employeeSkillProfiles.map(p=>String(p.id)===String(id)?rec:p);else employeeSkillProfiles.push(rec);closeModal();autoSaveToServerIfEnabled();renderSkillsArchitecturePage();showToast("직원 스킬이 검증·저장되었습니다.","success");}catch(e){showToast(e.message,"error");}}
+async function deleteEmployeeSkillProfile(id){const p=employeeSkillProfiles.find(x=>String(x.id)===String(id));const e=getEmp(p?.empId);if(!p)return;const linked=successionPlans.filter(s=>(s.candidates||[]).some(c=>String(c.empId)===String(p.empId))).length;const ok=await askConfirmModal({title:"직원 스킬 프로필 삭제",message:`${e?.name||"선택한 직원"}님의 검증 스킬을 삭제하시겠습니까?`,confirmText:"삭제",danger:true,impact:[{label:"스킬",value:`${(p.skills||[]).length}개`},{label:"후보로 포함된 승계계획",value:`${linked}건`}],warnings:linked?["승계 후보는 유지되지만 직무 적합도는 평가 자료 없음으로 변경됩니다."]:[]});if(!ok)return;_tombstone("employeeSkillProfiles",p.id);employeeSkillProfiles=employeeSkillProfiles.filter(x=>String(x.id)!==String(id));autoSaveToServerIfEnabled();renderSkillsArchitecturePage();showToast("직원 스킬 프로필이 삭제되었습니다.","success");}
+function openJobSkillGapModal(id){const j=jobSkillProfiles.find(x=>String(x.id)===String(id));if(!j)return;const rows=employees.filter(e=>e.active&&e.role!=="admin"&&employeeSkillProfiles.some(p=>String(p.empId)===String(e.id))).map(e=>({e,..._jobSkillFit(j,e.id)})).sort((a,b)=>b.score-a.score).map(x=>`<tr><td>${h(x.e.name)}<div class="fz11 text-gray">${h(x.e.dept||"")} ${h(x.e.team||"")}</div></td><td><strong>${x.score}%</strong></td><td>${x.gaps.map(g=>`${h(g.name)} L${g.actual}→L${g.required}`).join(", ")||badge("충족","green")}</td></tr>`).join("");openModal(`<div class="modal-box" style="max-width:760px"><div class="modal-head"><h3>${h(j.title)} · 스킬 격차</h3></div><div class="modal-body" style="padding:0"><div class="tbl-wrap"><table><thead><tr><th>직원</th><th>적합도</th><th>부족 스킬</th></tr></thead><tbody>${rows||`<tr><td colspan="3" class="p-empty">직원 스킬 평가 자료가 없습니다.</td></tr>`}</tbody></table></div></div><div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal()">닫기</button></div></div>`);}
+function exportSkillGapCSV(){const rows=[];jobSkillProfiles.forEach(j=>employees.filter(e=>e.active&&e.role!=="admin"&&employeeSkillProfiles.some(p=>String(p.empId)===String(e.id))).forEach(e=>{const fit=_jobSkillFit(j,e.id);rows.push([j.title,j.dept,j.position,e.name,e.empNo,e.dept,e.team,fit.score,fit.gaps.map(g=>`${g.name}:${g.actual}/${g.required}`).join("; ")]);}));dlCSV(`직무_스킬격차_${new Date().toISOString().slice(0,10)}.csv`,["직무","직무부서","매칭직책","직원","사번","직원부서","팀","적합도(%)","부족스킬(보유/요구)"],rows);}
+
 // ==================== SUCCESSION PLANNING ====================
 // Workday/SAP/Oracle 계열의 공통 승계관리 모델을 현재 핵심인재·육성계획 데이터와 연결한다.
 // 후보자의 준비도는 "해당 직무" 기준이므로 직원 프로필의 전역 속성으로 저장하지 않고
@@ -11559,10 +11636,12 @@ function openSuccessionPlanModal(planId){
   const p=successionPlans.find(x=>String(x.id)===String(planId));
   const active=employees.filter(e=>e.active&&e.role!=="admin").sort((a,b)=>String(a.dept+a.name).localeCompare(String(b.dept+b.name)));
   const opts=active.map(e=>`<option value="${e.id}"${String(e.id)===String(p?.incumbentId)?" selected":""}>${h(e.name)} · ${h(e.dept)} ${h(e.team||"")} · ${h(e.position||e.rank||"")}</option>`).join("");
+  const jobOpts=jobSkillProfiles.filter(j=>j.status!=="inactive").map(j=>`<option value="${j.id}"${String(j.id)===String(p?.jobProfileId)?" selected":""}>${h(j.title)} · ${h(j.dept||"전사")}</option>`).join("");
   openModal(`<div class="modal-box" style="max-width:650px"><div class="modal-head"><h3>${p?"승계계획 수정":"승계계획 등록"}</h3></div><div class="modal-body">
     <div class="info-note mb3">예: “영업본부장 승계계획”. 직무 중요도와 현직자의 이탈 가능성·이탈 영향을 각각 평가합니다.</div>
     <div class="fg"><label class="fl">계획명 <span class="req">*</span></label><input class="fc" id="sp-title" value="${h(p?.title||"")}" placeholder="예: 영업본부장 승계계획"></div>
     <div class="g2"><div class="fg"><label class="fl">계획 유형</label><select class="fc" id="sp-type"><option value="position"${p?.planType==="position"?" selected":""}>직책 기준</option><option value="job"${p?.planType==="job"?" selected":""}>직무 기준</option><option value="incumbent"${p?.planType==="incumbent"?" selected":""}>현직자 기준</option></select></div><div class="fg"><label class="fl">현직자</label><select class="fc" id="sp-inc"><option value="">공석/미지정</option>${opts}</select></div></div>
+    <div class="fg"><label class="fl">직무·스킬 모델</label><select class="fc" id="sp-job-profile"><option value="">미연결</option>${jobOpts}</select><div class="fz11 text-gray mt1">연결하면 후보별 직무 적합도와 부족 스킬을 자동 계산합니다.</div></div>
     <div class="g2"><div class="fg"><label class="fl">부서</label><input class="fc" id="sp-dept" value="${h(p?.dept||"")}" placeholder="예: 영업본부"></div><div class="fg"><label class="fl">목표 승계일</label><input class="fc" type="date" id="sp-date" value="${h(p?.targetDate||"")}"></div></div>
     <div class="g3"><div class="fg"><label class="fl">직무 중요도</label><select class="fc" id="sp-criticality">${["high","medium","low"].map(v=>`<option value="${v}"${(p?.criticality||"high")===v?" selected":""}>${SUCCESSION_LEVEL[v]}</option>`).join("")}</select></div><div class="fg"><label class="fl">현직자 이탈위험</label><select class="fc" id="sp-risk">${["high","medium","low"].map(v=>`<option value="${v}"${(p?.riskOfLoss||"medium")===v?" selected":""}>${SUCCESSION_LEVEL[v]}</option>`).join("")}</select></div><div class="fg"><label class="fl">이탈 영향도</label><select class="fc" id="sp-impact">${["high","medium","low"].map(v=>`<option value="${v}"${(p?.impactOfLoss||"high")===v?" selected":""}>${SUCCESSION_LEVEL[v]}</option>`).join("")}</select></div></div>
     <div class="fg"><label class="fl">필수 역량·인수인계 메모</label><textarea class="fc" id="sp-note" rows="3" placeholder="예: 제조 ERP 구축 경험, 주요 고객 인수인계 3개월 필요">${h(p?.notes||"")}</textarea></div>
@@ -11575,7 +11654,7 @@ function saveSuccessionPlan(planId){
   const duplicate=successionPlans.some(p=>String(p.id)!==String(planId)&&p.status!=="inactive"&&title.toLowerCase()===String(p.title).toLowerCase());
   if(duplicate){showToast("같은 이름의 운영 중 승계계획이 있습니다.","error");return;}
   const prev=successionPlans.find(p=>String(p.id)===String(planId));const now=new Date().toISOString();
-  const rec={...(prev||{}),id:prev?.id||genId(),title,planType:$("#sp-type").value,incumbentId,dept:$("#sp-dept").value.trim(),targetDate:$("#sp-date").value,criticality:$("#sp-criticality").value,riskOfLoss:$("#sp-risk").value,impactOfLoss:$("#sp-impact").value,notes:$("#sp-note").value.trim(),status:$("#sp-active").checked?"active":"inactive",candidates:prev?.candidates||[],createdAt:prev?.createdAt||now,createdBy:prev?.createdBy||currentUser.id,updatedAt:now};
+  const rec={...(prev||{}),id:prev?.id||genId(),title,planType:$("#sp-type").value,incumbentId,jobProfileId:$("#sp-job-profile").value,dept:$("#sp-dept").value.trim(),targetDate:$("#sp-date").value,criticality:$("#sp-criticality").value,riskOfLoss:$("#sp-risk").value,impactOfLoss:$("#sp-impact").value,notes:$("#sp-note").value.trim(),status:$("#sp-active").checked?"active":"inactive",candidates:prev?.candidates||[],createdAt:prev?.createdAt||now,createdBy:prev?.createdBy||currentUser.id,updatedAt:now};
   if(prev)successionPlans=successionPlans.map(p=>String(p.id)===String(prev.id)?rec:p);else successionPlans.push(rec);
   closeModal();autoSaveToServerIfEnabled();showToast("승계계획이 저장되었습니다.","success");renderSuccessionPlanningPage();
 }
@@ -11586,11 +11665,13 @@ async function deleteSuccessionPlan(planId){
 }
 function openSuccessionPlanDetail(planId){
   const p=successionPlans.find(x=>String(x.id)===String(planId));if(!p)return;
+  const job=jobSkillProfiles.find(j=>String(j.id)===String(p.jobProfileId));
   const rows=(p.candidates||[]).slice().sort((a,b)=>(Number(a.rank)||999)-(Number(b.rank)||999)).map(sc=>{
     const e=getEmp(sc.empId);const dev=talentDevPlans.find(d=>String(d.empId)===String(sc.empId)&&d.year===coreTalentSettings.evalYear&&d.type==="plan");
-    return`<tr><td>${sc.rank||"-"}</td><td><strong>${h(e?.name||"퇴직/삭제 직원")}</strong><div class="fz11 text-gray">${h(e?.dept||"")} ${h(e?.team||"")} · ${h(e?.rank||"")}</div></td><td>${badge(SUCCESSION_READINESS[sc.readiness]||"-",sc.readiness==="ready_now"?"green":sc.readiness==="years_1_2"?"yellow":"gray")}</td><td>${sc.interim?badge("직무대행 가능","blue"):"-"}</td><td>${badge(SUCCESSION_LEVEL[sc.riskOfLoss]||"보통",sc.riskOfLoss==="high"?"red":"gray")}</td><td>${dev?badge(dev.status==="director_approved"?"최종승인":"육성계획 있음",dev.status==="director_approved"?"green":"blue"):badge("미연결","gray")}</td><td><button class="btn btn-secondary btn-sm" onclick="openSuccessorCandidateModal('${p.id}','${sc.empId}')">수정</button> <button class="btn btn-ghost btn-sm" onclick="removeSuccessorCandidate('${p.id}','${sc.empId}')">제외</button></td></tr>`;
+    const fit=job?_jobSkillFit(job,sc.empId):null;
+    return`<tr><td>${sc.rank||"-"}</td><td><strong>${h(e?.name||"퇴직/삭제 직원")}</strong><div class="fz11 text-gray">${h(e?.dept||"")} ${h(e?.team||"")} · ${h(e?.rank||"")}</div></td><td>${badge(SUCCESSION_READINESS[sc.readiness]||"-",sc.readiness==="ready_now"?"green":sc.readiness==="years_1_2"?"yellow":"gray")}</td><td>${fit?`<strong>${fit.score}%</strong><div class="fz10 ${fit.gaps.length?'text-danger':'text-green'}">격차 ${fit.gaps.length}개</div>`:"<span class='text-gray'>미연결</span>"}</td><td>${sc.interim?badge("직무대행 가능","blue"):"-"}</td><td>${badge(SUCCESSION_LEVEL[sc.riskOfLoss]||"보통",sc.riskOfLoss==="high"?"red":"gray")}</td><td>${dev?badge(dev.status==="director_approved"?"최종승인":"육성계획 있음",dev.status==="director_approved"?"green":"blue"):badge("미연결","gray")}</td><td><button class="btn btn-secondary btn-sm" onclick="openSuccessorCandidateModal('${p.id}','${sc.empId}')">수정</button> <button class="btn btn-ghost btn-sm" onclick="removeSuccessorCandidate('${p.id}','${sc.empId}')">제외</button></td></tr>`;
   }).join("");
-  openModal(`<div class="modal-box" style="max-width:900px"><div class="modal-head"><div><h3>${h(p.title)}</h3><div class="fz11 text-gray mt1">후보 순위와 준비도는 이 핵심직무에만 적용됩니다.</div></div></div><div class="modal-body"><div class="flex justify-b items-c mb2"><div class="fz12 text-gray">즉시 가능 후보가 없으면 커버리지 위험으로 표시됩니다.</div><div class="flex gap2"><button class="btn btn-secondary btn-sm" onclick="importCoreTalentCandidates('${p.id}')">⭐ 핵심인재 불러오기</button><button class="btn btn-primary btn-sm" onclick="openSuccessorCandidateModal('${p.id}')">+ 후보 추가</button></div></div><div class="tbl-wrap"><table><thead><tr><th>순위</th><th>후보자</th><th>준비도</th><th>임시 승계</th><th>이탈위험</th><th>${coreTalentSettings.evalYear} 육성계획</th><th>관리</th></tr></thead><tbody>${rows||`<tr><td colspan="7" class="p-empty">등록된 후보가 없습니다.</td></tr>`}</tbody></table></div></div><div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal();renderSuccessionPlanningPage()">닫기</button></div></div>`);
+  openModal(`<div class="modal-box" style="max-width:980px"><div class="modal-head"><div><h3>${h(p.title)}</h3><div class="fz11 text-gray mt1">후보 순위와 준비도는 이 핵심직무에만 적용됩니다.${job?` · 스킬모델: ${h(job.title)}`:""}</div></div></div><div class="modal-body"><div class="flex justify-b items-c mb2"><div class="fz12 text-gray">즉시 가능 후보가 없으면 커버리지 위험으로 표시됩니다.</div><div class="flex gap2"><button class="btn btn-secondary btn-sm" onclick="importCoreTalentCandidates('${p.id}')">⭐ 핵심인재 불러오기</button><button class="btn btn-primary btn-sm" onclick="openSuccessorCandidateModal('${p.id}')">+ 후보 추가</button></div></div><div class="tbl-wrap"><table><thead><tr><th>순위</th><th>후보자</th><th>준비도</th><th>직무 적합도</th><th>임시 승계</th><th>이탈위험</th><th>${coreTalentSettings.evalYear} 육성계획</th><th>관리</th></tr></thead><tbody>${rows||`<tr><td colspan="8" class="p-empty">등록된 후보가 없습니다.</td></tr>`}</tbody></table></div></div><div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal();renderSuccessionPlanningPage()">닫기</button></div></div>`);
 }
 function openSuccessorCandidateModal(planId,empId){
   const p=successionPlans.find(x=>String(x.id)===String(planId));if(!p)return;const existing=(p.candidates||[]).find(c=>String(c.empId)===String(empId));
@@ -12699,7 +12780,7 @@ async function doResetAll(){
     const d=await serverRequest("POST","/api/reset-all",{loginId:currentUser?.loginId,pw});
     if(!d.ok)throw new Error(d.message);
     employees=[];kpiEntries=[];changeRequests=[];compGradeResults={};gradeAdjustHistory=[];
-    coreTalentPool=[];talentDevPlans=[];successionPlans=[];lowPerfData=[];tieNotifications=[];
+    coreTalentPool=[];talentDevPlans=[];successionPlans=[];jobSkillProfiles=[];employeeSkillProfiles=[];lowPerfData=[];tieNotifications=[];
     approvalDocs=[];attendanceRecords=[];payslips=[];yearEndSettlements=[];payrollAdjustments=[];leaveUsagePlans=[];boardPosts=[];roomReservations=[];certLog=[];certRequests=[];welfarePoints=[];mandatoryTraining=[];healthCheckupLog=[];
     showToast("전체 데이터가 초기화되었습니다.","success");
     renderPage();
