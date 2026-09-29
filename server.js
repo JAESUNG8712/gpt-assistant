@@ -663,6 +663,7 @@ function filterDataForRole(data, auth) {
   if (auth.role !== "admin") {
     if (Array.isArray(out.jobSkillProfiles)) out.jobSkillProfiles = [];
     if (Array.isArray(out.employeeSkillProfiles)) out.employeeSkillProfiles = [];
+    if (Array.isArray(out.workforceScenarios)) out.workforceScenarios = [];
   }
   if (auth.role !== "admin" && Array.isArray(out.compResponses)) {
     out.compResponses = out.compResponses.map(r => {
@@ -1345,6 +1346,7 @@ const _WRITE_GATED_FIELDS = {
   successionPlans:    { roles: ["admin"], pageIds: "succession-planning" },
   jobSkillProfiles:   { roles: ["admin"], pageIds: "skills-architecture" },
   employeeSkillProfiles: { roles: ["admin"], pageIds: "skills-architecture" },
+  workforceScenarios: { roles: ["admin"], pageIds: "workforce-planning" },
   approvalTemplates:  { roles: ["admin"], pageIds: "approval-templates" },
   // hr-mandatory-training(admin/director/leader)의 일괄 등록 외에, 누구나 접근 가능한 개인
   // "법정의무교육" 화면(mandatory-training)에 본인 이수 자가등록 버튼("이수 등록")이 있다 —
@@ -1466,8 +1468,30 @@ function _sanitizeGatedRecord(field, incoming, stored, actor, actorEmp, settings
   // 배열을 싣기 때문에 여기서 상태 변경을 허용하면 전용 API의 상태/조직/CAS 검사를
   // 우회할 수 있다. 초회 생성 역시 반드시 draft로 시작한다.
   if (field === "talentDevPlans" && !actor?._talentTransition) {
-    if (!stored && incoming.status !== "draft") return { ...incoming, status: "draft" };
+    if (!stored && incoming.status !== "draft") incoming = { ...incoming, status: "draft" };
     if (stored && incoming.status !== stored.status) return { ...stored };
+  }
+  // 전략적 인력계획은 운영 원장을 바꾸지 않는 샌드박스지만, 승인 결과 자체는 예산·채용
+  // 의사결정의 근거가 된다. 따라서 신규 레코드는 draft로만 시작하고 승인된 시나리오는
+  // 일반 /save 요청으로 수정하거나 이전 상태로 되돌릴 수 없게 한다. 정상 UI의 단계 전환은
+  // draft -> review -> approved 순서뿐이므로 그 외 점프·역전도 저장 시 서버에서 원복한다.
+  if (field === "workforceScenarios") {
+    const incomingStatus = incoming.status || "draft";
+    if (!stored && incomingStatus !== "draft") incoming = { ...incoming, status: "draft" };
+    if (stored?.status === "approved") return { ...stored };
+    if (stored) {
+      const allowed = stored.status === incomingStatus ||
+        (stored.status === "draft" && incomingStatus === "review") ||
+        (stored.status === "review" && incomingStatus === "approved");
+      if (!allowed) return { ...stored };
+      if (stored.status !== incomingStatus) {
+        const stable = value => {
+          const { status, updatedAt, _rev, ...rest } = value || {};
+          return JSON.stringify(rest);
+        };
+        if (stable(stored) !== stable(incoming)) return { ...stored };
+      }
+    }
   }
   // 급여명세서: 이미 확정(confirmed=true)된 레코드는 절대 변경할 수 없다. 확정 취소 UI
   // 자체가 없어(confirmPayslip은 단방향) 정상 화면은 confirmed 레코드를 다시 건드리지
@@ -1617,6 +1641,30 @@ function _validateFieldValues(field, rec, storedList) {
     const yr = Number(rec.year);
     if (!Number.isInteger(yr) || yr < 2000 || yr > 2100) return false;
     if (!rec.empId) return false;
+  } else if (field === "workforceScenarios") {
+    if (typeof rec.name !== "string" || !rec.name.trim() || rec.name.length > 120) return false;
+    const year = Number(rec.year);
+    if (!Number.isInteger(year) || year < 2020 || year > 2100) return false;
+    if (!["draft", "review", "approved"].includes(rec.status || "draft")) return false;
+    if (!Array.isArray(rec.actions) || rec.actions.length > 500) return false;
+    if (rec.status !== "draft" && rec.actions.length === 0) return false;
+    for (const action of rec.actions) {
+      if (!action || action.id == null || !["hire", "exit", "transfer", "salary"].includes(action.type)) return false;
+      if (typeof action.dept !== "string" || !action.dept.trim() || action.dept.length > 120) return false;
+      const count = Number(action.count), month = Number(action.effectiveMonth);
+      if (!Number.isInteger(count) || count < 1 || count > 10_000) return false;
+      if (!Number.isInteger(month) || month < 1 || month > 12) return false;
+      if (action.type === "hire") {
+        const cost = Number(action.annualCost);
+        if (!Number.isFinite(cost) || cost <= 0 || cost > 1_000_000_000_000) return false;
+      }
+      if (action.type === "transfer" && (typeof action.toDept !== "string" || !action.toDept.trim() || action.toDept === action.dept || action.toDept.length > 120)) return false;
+      if (action.type === "salary") {
+        const rate = Number(action.rate);
+        if (!Number.isFinite(rate) || rate === 0 || rate <= -100 || rate > 100) return false;
+      }
+      if (action.note != null && (typeof action.note !== "string" || action.note.length > 500)) return false;
+    }
   }
   return true;
 }
@@ -1949,6 +1997,19 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
     const _actorEmpJson = actor && actor.empId != null
       ? (_fileStore.employees || []).find(e => String(e.id) === String(actor.empId)) || null
       : null;
+    // 범용 tombstone도 해당 컬렉션의 쓰기 권한을 따라야 한다. 그렇지 않으면 읽기 응답에서
+    // 컬렉션을 숨겨도 비관리자가 id만 추측해 recordTombstones를 보내 관리자 전용 자료를
+    // 삭제할 수 있다. 승인된 인력계획은 관리자라도 삭제 불가(승인 이력 보존).
+    for (const [field, tombstones] of Object.entries(_tomb)) {
+      if (!_WRITE_GATED_FIELDS[field] || !Array.isArray(tombstones)) continue;
+      const storedById = new Map((_fileStore[field] || []).filter(r => r?.id != null).map(r => [String(r.id), r]));
+      _tomb[field] = tombstones.filter(t => {
+        const stored = storedById.get(String(t?.id));
+        if (!stored) return false;
+        if (field === "workforceScenarios" && stored.status === "approved") return false;
+        return _writeGateAllowed(field, stored, actor, _actorEmpJson, _fileStore.settings);
+      });
+    }
     // payrollAdjustments의 복리후생 파생 레코드 예외(_sanitizeGatedRecord 주석 참고)가
     // 신뢰할 수 있는 결재문서 상태를 보려면, 이 요청에 함께 실려온 approvalDocs를 (나중에
     // approvalDocsFinal을 만들 때와) 동일하게 미리 위조방지 처리해둬야 한다 — 그래야 같은
@@ -2376,7 +2437,20 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
       // its own deletions in data.roomReservationTombstones (see mergeTombstones) — fold
       // both sources in so DB mode actually deletes them too, not just JSON-file mode.
       const extraDead = field === "roomReservations" ? (data.roomReservationTombstones || []) : [];
-      const deadIds = [...(recordTombstones[field] || []), ...extraDead].map(t => String(t.id));
+      const allowedDead = [];
+      for (const t of [...(recordTombstones[field] || []), ...extraDead]) {
+        if (!t || t.id == null) continue;
+        if (_WRITE_GATED_FIELDS[field]) {
+          const { rows: deadRows } = companyId
+            ? await client.query("SELECT data FROM app_collections WHERE collection = $1 AND id = $2 AND (company_id = $3 OR company_id IS NULL)", [field, String(t.id), companyId])
+            : await client.query("SELECT data FROM app_collections WHERE collection = $1 AND id = $2", [field, String(t.id)]);
+          const stored = deadRows.length ? deadRows[0].data : null;
+          if (!stored || (field === "workforceScenarios" && stored.status === "approved") ||
+              !_writeGateAllowed(field, stored, actor, await _getActorEmpPg(), await _getSettingsPg())) continue;
+        }
+        allowedDead.push(String(t.id));
+      }
+      const deadIds = allowedDead;
       if (deadIds.length) {
         // (company_id = $3 OR $3 IS NULL): companyId가 있으면 이 회사 소유 행만(레거시 NULL
         // 행은 건드리지 않음 — 삭제는 되돌릴 수 없는 작업이라 employees/kpiEntries의 /restore
@@ -4132,7 +4206,7 @@ const _BLOB_MODULE_FIELDS = {
   comm:      ["boardPosts", "roomReservations", "roomReservationTombstones"],
   kpi:       ["kpiEntries", "changeRequests", "tieNotifications", "gradeAdjustHistory"],
   comp_eval: ["compSessions", "compResponses", "compGradeResults", "evaluatorConfig"],
-  talent:    ["coreTalentPool", "talentDevPlans", "successionPlans", "jobSkillProfiles", "employeeSkillProfiles", "lowPerfData", "coreTalentSettings"],
+  talent:    ["coreTalentPool", "talentDevPlans", "successionPlans", "jobSkillProfiles", "employeeSkillProfiles", "workforceScenarios", "lowPerfData", "coreTalentSettings"],
   hr:        ["orgChartHistory"],
   // 승진 처리 자체(employees[].rank 변경)는 hr와 동일한 이유로 대상 밖(핵심 인사 데이터라
   // 통째로 막으면 위험)이지만, 자격요건 설정값(promotionSettings — 직급별 최소연수·등급

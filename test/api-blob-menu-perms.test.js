@@ -316,6 +316,63 @@ test("blob 동기화(/save) 컬렉션의 menuPerms/권한 확장 — kpiEntries�
     assert.equal(check.data.employeeSkillProfiles?.[0]?.skills?.length, 1);
   });
 
+  await t.test("전략적 인력계획은 관리자 전용이고 승인 순서·동결·삭제 방어를 서버가 강제한다", async () => {
+    let d = await getData(api, adminToken), current;
+    const employees2 = [
+      ...d.data.employees,
+      { id: "wfAdminLimited", loginId: "wfAdminLimited", pw: "wf-admin-pw-1", name: "인력계획제한관리자", role: "admin", active: true, menuPerms: { "workforce-planning": false } },
+    ];
+    await api("/save", auth(adminToken, "POST", { _version: d.version, employees: employees2 }));
+    const limitedToken = await login(api, "wfAdminLimited", "wf-admin-pw-1");
+    const scenario = { id: "wf1", name: "2027 성장안", year: 2027, status: "approved", actions: [{ id: "wfa1", type: "hire", dept: "개발본부", count: 2, annualCost: 60000000, effectiveMonth: 4 }], createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z" };
+
+    let limited = await getData(api, limitedToken);
+    await api("/save", auth(limitedToken, "POST", { _version: limited.version, workforceScenarios: [scenario] }));
+    let check = await getData(api, adminToken);
+    assert.equal((check.data.workforceScenarios || []).length, 0, "메뉴가 꺼진 관리자는 생성할 수 없어야 한다");
+
+    await api("/save", auth(adminToken, "POST", { _version: check.version, workforceScenarios: [scenario] }));
+    check = await getData(api, adminToken);
+    assert.equal(check.data.workforceScenarios?.[0]?.status, "draft", "신규 시나리오는 승인 상태로 직접 생성할 수 없어야 한다");
+
+    current = check.data.workforceScenarios[0];
+    const invalid = { id: "wf-invalid", name: "오염값", year: 2027, status: "draft", actions: [{ id: "bad", type: "hire", dept: "개발본부", count: -3, annualCost: -1, effectiveMonth: 13 }], updatedAt: "2026-01-01T00:00:00.500Z" };
+    await api("/save", auth(adminToken, "POST", { _version: check.version, workforceScenarios: [current, invalid] }));
+    check = await getData(api, adminToken);
+    assert.equal(check.data.workforceScenarios.some(x => x.id === "wf-invalid"), false, "비정상 인원·비용·적용월은 서버에서 거부해야 한다");
+
+    current = check.data.workforceScenarios[0];
+    await api("/save", auth(adminToken, "POST", { _version: check.version, workforceScenarios: [{ ...current, name: "검토 전 동시 위조", status: "review", updatedAt: "2026-01-01T00:00:00.700Z" }] }));
+    check = await getData(api, adminToken);
+    assert.equal(check.data.workforceScenarios[0].status, "draft", "상태 전환 요청에 내용 변경을 끼워 넣을 수 없어야 한다");
+    assert.equal(check.data.workforceScenarios[0].name, "2027 성장안");
+
+    current = check.data.workforceScenarios[0];
+    await api("/save", auth(adminToken, "POST", { _version: check.version, workforceScenarios: [{ ...current, status: "review", updatedAt: "2026-01-01T00:00:01.000Z" }] }));
+    check = await getData(api, adminToken);
+    current = check.data.workforceScenarios[0];
+    assert.equal(current.status, "review");
+    await api("/save", auth(adminToken, "POST", { _version: check.version, workforceScenarios: [{ ...current, status: "approved", updatedAt: "2026-01-01T00:00:02.000Z" }] }));
+    check = await getData(api, adminToken);
+    current = check.data.workforceScenarios[0];
+    assert.equal(current.status, "approved");
+
+    await api("/save", auth(adminToken, "POST", { _version: check.version, workforceScenarios: [{ ...current, name: "승인 후 위조", status: "draft", updatedAt: "2026-01-01T00:00:03.000Z" }] }));
+    check = await getData(api, adminToken);
+    assert.equal(check.data.workforceScenarios[0].name, "2027 성장안");
+    assert.equal(check.data.workforceScenarios[0].status, "approved");
+
+    await api("/save", auth(adminToken, "POST", { _version: check.version, recordTombstones: { ...(check.data.recordTombstones || {}), workforceScenarios: [{ id: "wf1", ts: Date.now(), rev: check.data.workforceScenarios[0]._rev || 0 }] } }));
+    check = await getData(api, adminToken);
+    assert.equal(check.data.workforceScenarios?.[0]?.status, "approved", "승인 시나리오는 tombstone 직접 요청으로도 삭제할 수 없어야 한다");
+
+    const memberView = await getData(api, memberBToken);
+    assert.deepEqual(memberView.data.workforceScenarios, [], "비관리자 응답에는 민감한 인력·인건비 계획이 없어야 한다");
+    await api("/save", auth(memberBToken, "POST", { _version: memberView.version, recordTombstones: { workforceScenarios: [{ id: "wf1", ts: Date.now() }] } }));
+    check = await getData(api, adminToken);
+    assert.equal(check.data.workforceScenarios?.[0]?.id, "wf1", "비관리자는 tombstone으로 관리자 전용 자료를 삭제할 수 없어야 한다");
+  });
+
   await t.test("_WRITE_GATED_FIELDS의 pageIds 배열(gradeAdjustHistory) — 하나라도 켜져 있으면 허용, 전부 꺼지면 차단", async () => {
     // dir1은 menuPerms에 grade-view만 false로 설정됨(comp-grade-view는 미설정) — "any allows"라
     // 이 상태에서는 여전히 허용돼야 한다.
