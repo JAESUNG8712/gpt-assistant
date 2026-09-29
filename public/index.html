@@ -1036,6 +1036,9 @@ let kpiEntries=[];
 
 let changeRequests=[];
 let lowPerfData=[]; // [{id,empId,year,flaggedDate,flaggedBy,status:"watch"|"pip"|"improved"|"terminated",pipStart,pipEnd,pipGoal,notes:[{date,content,authorId}],manualFlag}]
+let successionPlans=[]; // 핵심직무 승계계획 [{id,title,incumbentId,criticality,riskOfLoss,impactOfLoss,status,candidates:[...]}]
+let jobSkillProfiles=[]; // 직무별 요구 스킬 [{id,title,dept,position,skills:[{name,level,weight}],status}]
+let employeeSkillProfiles=[]; // 직원별 검증 스킬 [{id,empId,skills:[{name,level,evidence}]}]
 let approvalTemplates=[]; // 커스텀 결재 양식
 let disabledTplIds=[]; // 사용 중지된 양식 id 목록 (기본+커스텀 공통)
 let approvalChainSettings={includeLeader:true,includeDirector:true,finalApprovers:[],reminderDays:2}; // 계층형 결재선 설정 (팀장/사업부장 단계 포함 여부, 최종 결재자 추가, 결재 지연 리마인드 기준일)
@@ -1077,8 +1080,9 @@ let healthCheckupLog=[]; // 종합검진 이수 이력 [{id,empId,year,completed
 let scheduleEvents=[]; // 캘린더 일정 [{id,authorId,title,startDate,endDate,scope:"personal"|"team"|"dept"|"company",dept,team,memo,color,createdAt}]
 function _recordCollections(){return{
   employees,kpiEntries,compSessions,compResponses,changeRequests,orgChartHistory,
-  coreTalentPool,talentDevPlans,gradeAdjustHistory,tieNotifications,lowPerfData,
+  coreTalentPool,talentDevPlans,successionPlans,jobSkillProfiles,employeeSkillProfiles,gradeAdjustHistory,tieNotifications,lowPerfData,
   approvalTemplates,integrationLogs,approvalDocs,attendanceRecords,payslips,
+  yearEndSettlements,
   payrollAdjustments,leaveUsagePlans,boardPosts,roomReservations,certLog,certRequests,
   welfarePoints,mandatoryTraining,healthCheckupLog,scheduleEvents,expenseClaims,
   overtimeRequests,onboardingFlows,approvalDelegations
@@ -2508,7 +2512,8 @@ async function openServerBackupsModal(){
 
 const SNAPSHOT_FIELD_LABELS = {
   employees:"인사 정보(employees)", kpiEntries:"KPI 평가", changeRequests:"변경요청",
-  orgChartHistory:"조직도 이력", coreTalentPool:"핵심인재 풀", talentDevPlans:"인재개발계획",
+  orgChartHistory:"조직도 이력", coreTalentPool:"핵심인재 풀", talentDevPlans:"인재개발계획", successionPlans:"승계계획",
+  jobSkillProfiles:"직무·스킬 기준", employeeSkillProfiles:"직원 스킬 프로필",
   compGradeResults:"보상등급 결과", gradeAdjustHistory:"등급조정 이력", tieNotifications:"동점자 알림",
   lowPerfData:"저성과자 데이터", approvalTemplates:"전자결재 템플릿", integrationLogs:"연동 로그",
   approvalDocs:"전자결재 문서", attendanceRecords:"근태기록", payslips:"급여명세서", payrollAdjustments:"급여 조정항목",
@@ -2965,6 +2970,18 @@ function _validateEditorScope(scope){
 document.addEventListener("click",event=>{
   const button=event.target.closest("button,.btn");if(!button||button.disabled)return;
   const action=(button.textContent||"").trim();if(!/(저장|등록|신청|제출|발행|생성|확정|추가|변경|업로드)/.test(action))return;
+  // 두 가지는 "이 화면의 필수값을 채우고 최종 제출"하는 버튼이 아니라서 제외한다.
+  // ① "+ 라인 추가"/"+ 품목 추가"처럼 폼 안에 빈 행을 하나 더 만들 뿐인 버튼(이
+  //    앱 전반에서 "+ "로 시작하는 것이 일관된 관례) — 아직 채우지도 않은 다른
+  //    필수 필드 때문에 행 추가 자체가 막혀 실제 입력을 시작할 수 없었다.
+  // ② onclick이 open*Modal(...) 단일 호출뿐인 버튼(예: "현재 분개를 템플릿
+  //    저장"→별도 모달에서 템플릿명을 입력받음) — 이 클릭 자체는 아무것도
+  //    저장하지 않고 추가 입력을 받을 모달을 여는 것뿐이라, 진짜 저장 시점은
+  //    그 다음 모달의 버튼이다. 여기서 막으면 현재 화면과 무관한 값(예: 전표
+  //    내용) 때문에 그 모달 자체를 열 수 없게 된다.
+  if(action.startsWith("+"))return;
+  const onclickAttr=(button.getAttribute("onclick")||"").trim();
+  if(/^open\w*Modal\([^;]*\)$/.test(onclickAttr))return;
   const scope=button.closest("form,.modal-box,.modal,.card");if(!scope)return;
   if(!_validateEditorScope(scope)){event.preventDefault();event.stopImmediatePropagation();}
 },true);
@@ -3134,6 +3151,53 @@ function _submitDialogInput(id){
   const validation=typeof req.validate==="function"?req.validate(value):"";
   if(validation){if(err)err.textContent=validation;el?.focus();return;}
   _resolveDialogRequest(id,value);
+}
+// 확인 → 서버 반영 → 충돌/오류 안내 → 화면 갱신을 하나의 실행기로 묶는다.
+// 각 화면이 같은 로직을 따로 구현하면 빠른 이중 클릭으로 같은 상태전이가 두 번 요청되거나,
+// fetch 예외가 처리되지 않아 아무 안내도 보이지 않는 차이가 생긴다. key 단위로 실행 중인 작업을
+// 차단하고, 서버의 Idempotency-Key 방어와 별개로 브라우저에서도 중복 요청을 예방한다.
+const _mutationWorkflowsInFlight=new Set();
+async function runMutationWorkflow(opts={}){
+  const method=String(opts.method||"POST").toUpperCase(),endpoint=String(opts.endpoint||"");
+  const key=String(opts.key||`${method} ${endpoint}`);
+  if(_mutationWorkflowsInFlight.has(key)){
+    showToast(opts.pendingMessage||"동일한 작업을 처리 중입니다. 잠시만 기다려주세요.","info");
+    return{ok:false,pending:true,code:"CLIENT_MUTATION_IN_PROGRESS"};
+  }
+  _mutationWorkflowsInFlight.add(key);
+  try{
+    if(opts.confirm){
+      const approved=await askConfirmModal(opts.confirm);
+      if(!approved)return{ok:false,cancelled:true,code:"CLIENT_MUTATION_CANCELLED"};
+    }
+    let result;
+    try{result=await serverRequest(method,endpoint,opts.body??null,opts.timeout||8000,opts.requestOptions||{});}
+    catch(error){
+      const message=opts.networkErrorMessage||"서버에 연결할 수 없어 작업을 완료하지 못했습니다. 네트워크 상태를 확인하고 다시 시도해주세요.";
+      showToast(message,"error");
+      return{ok:false,code:error?.name==="AbortError"?"CLIENT_MUTATION_TIMEOUT":"CLIENT_MUTATION_NETWORK_ERROR",message,error};
+    }
+    if(!result?.ok){
+      const conflict=!!result?.conflict||String(result?.code||"").includes("CONFLICT")||result?.status===409;
+      if(conflict&&typeof opts.onConflict==="function"){
+        try{await opts.onConflict(result);}catch(error){console.warn("mutation workflow conflict refresh failed",error);}
+      }
+      const message=(typeof opts.errorMessage==="function"?opts.errorMessage(result):opts.errorMessage)||result?.error||result?.message||"처리에 실패했습니다.";
+      showToast(message,"error");
+      return result||{ok:false,message};
+    }
+    try{if(typeof opts.onSuccess==="function")await opts.onSuccess(result);}
+    catch(error){
+      console.warn("mutation workflow refresh failed",error);
+      showToast(opts.refreshErrorMessage||"작업은 완료되었지만 화면 갱신에 실패했습니다. 새로고침하여 최신 상태를 확인해주세요.","error");
+      return{...result,uiRefreshFailed:true};
+    }
+    const successMessage=typeof opts.successMessage==="function"?opts.successMessage(result):opts.successMessage;
+    if(successMessage)showToast(successMessage,opts.successType||"success");
+    return result;
+  }finally{
+    _mutationWorkflowsInFlight.delete(key);
+  }
 }
 async function resetDemoDataWithConfirm(){
   const ok=await askConfirmModal({
@@ -5025,7 +5089,7 @@ function executeBulkImport(){
 }
 
 // ==================== BACKUP & RESTORE ====================
-const CURRENT_SCHEMA_VERSION="8.0";
+const CURRENT_SCHEMA_VERSION="8.2";
 
 function getFullState(action=""){
   const state={_version:_serverVersion,_action:action,_recordCasVersion:1,_singletonRevisions:{..._singletonRevisions},
@@ -5045,6 +5109,9 @@ function getFullState(action=""){
       promotionSettings:JSON.parse(JSON.stringify(promotionSettings)),
       coreTalentPool:JSON.parse(JSON.stringify(coreTalentPool)),
       talentDevPlans:JSON.parse(JSON.stringify(talentDevPlans)),
+      successionPlans:JSON.parse(JSON.stringify(successionPlans)),
+      jobSkillProfiles:JSON.parse(JSON.stringify(jobSkillProfiles)),
+      employeeSkillProfiles:JSON.parse(JSON.stringify(employeeSkillProfiles)),
       coreTalentSettings:JSON.parse(JSON.stringify(coreTalentSettings)),
       compGradeResults:JSON.parse(JSON.stringify(compGradeResults)),
       gradeAdjustHistory:JSON.parse(JSON.stringify(gradeAdjustHistory)),
@@ -5059,6 +5126,7 @@ function getFullState(action=""){
       approvalDocs:JSON.parse(JSON.stringify(approvalDocs)),
       attendanceRecords:JSON.parse(JSON.stringify(attendanceRecords)),
       payslips:JSON.parse(JSON.stringify(payslips)),
+      yearEndSettlements:JSON.parse(JSON.stringify(yearEndSettlements)),
       payrollAdjustments:JSON.parse(JSON.stringify(payrollAdjustments)),
       leaveUsagePlans:JSON.parse(JSON.stringify(leaveUsagePlans)),
       boardPosts:JSON.parse(JSON.stringify(boardPosts)),
@@ -5251,6 +5319,9 @@ function applyState(state,skipUndo=false){
   if(d.promotionSettings&&typeof d.promotionSettings==="object")promotionSettings={...promotionSettings,...d.promotionSettings};
   if(d.coreTalentPool&&Array.isArray(d.coreTalentPool))coreTalentPool=_mergeByIdPreferNewer(coreTalentPool,d.coreTalentPool,'coreTalentPool');
   if(d.talentDevPlans&&Array.isArray(d.talentDevPlans))talentDevPlans=_mergeByIdPreferNewer(talentDevPlans,d.talentDevPlans,'talentDevPlans');
+  if(d.successionPlans&&Array.isArray(d.successionPlans))successionPlans=_mergeByIdPreferNewer(successionPlans,d.successionPlans,'successionPlans');
+  if(d.jobSkillProfiles&&Array.isArray(d.jobSkillProfiles))jobSkillProfiles=_mergeByIdPreferNewer(jobSkillProfiles,d.jobSkillProfiles,'jobSkillProfiles');
+  if(d.employeeSkillProfiles&&Array.isArray(d.employeeSkillProfiles))employeeSkillProfiles=_mergeByIdPreferNewer(employeeSkillProfiles,d.employeeSkillProfiles,'employeeSkillProfiles');
   if(d.coreTalentSettings&&typeof d.coreTalentSettings==="object")coreTalentSettings={...coreTalentSettings,...d.coreTalentSettings};
   if(d.compGradeResults&&typeof d.compGradeResults==="object")compGradeResults={...compGradeResults,...d.compGradeResults};
   if(d.gradeAdjustHistory&&Array.isArray(d.gradeAdjustHistory))gradeAdjustHistory=d.gradeAdjustHistory;
@@ -5311,6 +5382,9 @@ function applyState(state,skipUndo=false){
   employees=_tombFilter(employees,"employees");
   kpiEntries=_tombFilter(kpiEntries,"kpiEntries");
   lowPerfData=_tombFilter(lowPerfData,"lowPerfData");
+  successionPlans=_tombFilter(successionPlans,"successionPlans");
+  jobSkillProfiles=_tombFilter(jobSkillProfiles,"jobSkillProfiles");
+  employeeSkillProfiles=_tombFilter(employeeSkillProfiles,"employeeSkillProfiles");
   approvalTemplates=_tombFilter(approvalTemplates,"approvalTemplates");
   payrollAdjustments=_tombFilter(payrollAdjustments,"payrollAdjustments");
   boardPosts=_tombFilter(boardPosts,"boardPosts");
@@ -5575,6 +5649,9 @@ function mergeImportData(parsed){
   if(d.promotionSettings&&typeof d.promotionSettings==="object")Object.assign(promotionSettings,d.promotionSettings);
   if(d.coreTalentPool&&Array.isArray(d.coreTalentPool))coreTalentPool=d.coreTalentPool;
   if(d.talentDevPlans&&Array.isArray(d.talentDevPlans))talentDevPlans=d.talentDevPlans;
+  if(d.successionPlans&&Array.isArray(d.successionPlans))successionPlans=d.successionPlans;
+  if(d.jobSkillProfiles&&Array.isArray(d.jobSkillProfiles))jobSkillProfiles=d.jobSkillProfiles;
+  if(d.employeeSkillProfiles&&Array.isArray(d.employeeSkillProfiles))employeeSkillProfiles=d.employeeSkillProfiles;
   if(d.coreTalentSettings&&typeof d.coreTalentSettings==="object")Object.assign(coreTalentSettings,d.coreTalentSettings);
   if(d.evaluatorConfig&&typeof d.evaluatorConfig==="object")Object.assign(evaluatorConfig,d.evaluatorConfig);
   if(d.gradeAdjustHistory&&Array.isArray(d.gradeAdjustHistory)){const existIds=new Set(gradeAdjustHistory.map(r=>r.id));d.gradeAdjustHistory.forEach(r=>{if(r&&r.id&&!existIds.has(r.id))gradeAdjustHistory.push(r);});}
@@ -6582,6 +6659,8 @@ function renderSidebar(){
     "talent-sep":[
       {id:"talent-sep",type:"sep",label:"핵심인재",roles:talentDevRoles},
       {id:"core-talent",label:"핵심인재 관리",icon:"⭐",desc:"핵심인재 선발·관리",roles:["admin"]},
+      {id:"succession-planning",label:"핵심직무 승계계획",icon:"🔁",desc:"후보 준비도·이탈위험·승계 커버리지",roles:["admin"]},
+      {id:"skills-architecture",label:"직무·스킬 아키텍처",icon:"🧩",desc:"직무 요구역량·직원 스킬·격차 분석",roles:["admin"]},
       {id:"talent-dev",label:"육성 계획·실적",icon:"📋",desc:"역량 개발 계획 관리",roles:talentDevRoles},
     ],
     "lowperf-sep":[
@@ -6669,6 +6748,8 @@ function renderSidebar(){
   const groupOrder=SIDEBAR_DEFAULT_ORDER.filter(g=>menuGroups[g]);
   const menus=groupOrder.flatMap(g=>menuGroups[g]);
   const titles={dashboard:"대시보드","my-profile":"내 프로필","hr-register":"신규 직원 등록","hr-list":"직원 목록","hr-changes":"발령·변동 이력",kpi:"KPI 목표 등록","kpi-results":"KPI 결과 입력","my-kpi":"나의 KPI","grade-view":"KPI 등급 현황","comp-grade-view":"역량평가 등급","comp-eval":"다면평가 진행","first-eval":"1차 평가","second-eval":"2차 평가","kpi-amend":"수정 요청 승인","eval-progress":"평가 진행 상황",settings:"운영 설정",history:"수정 이력","change-pw":"비밀번호 변경","data-mgmt":"데이터 관리","core-talent":"핵심인재 관리","talent-dev":"육성 계획·실적","promotion-mgmt":"승진 심사 관리","low-performer":"저성과 인력 관리","approval-draft":"기안하기","approval-outbox":"상신함","approval-inbox":"결재함","approval-receive":"수신함","approval-cc-inbox":"참조함","approval-completed":"완료함","attendance":"근태 현황","att-calendar":"캘린더","leave-mgmt":"연차 관리","payslip":"급여 명세서","yearend-settlement":"연말정산(간이)","approval-templates":"결재 양식 관리","integrations":"연동 설정","orgchart":"조직도","certificate":"증명서 발급","hr-stats":"인사 통계","board":"게시판","room-booking":"회의실 예약","welfare-points":"복지포인트","mandatory-training":"법정의무교육","hr-welfare-points":"복지포인트 현황(전체)","hr-mandatory-training":"법정의무교육 현황(전체)","hr-attendance":"근태 현황(전체)","hr-leave-mgmt":"연차 관리(전체)","welfare-status":"복지 현황","long-service-award":"장기근속 포상","award-history":"(최)우수사원 선정 이력","salary-info":"급여 기준 정보","welfare-settings":"복지 제도 설정","notification-center":"알림","acct-partners":"거래처 관리","acct-accounts":"계정과목","acct-vouchers":"전표 관리","acct-tax-invoices":"세금계산서","acct-vat-report":"부가세 신고자료","acct-fixed-assets":"고정자산 관리","acct-fixed-assets-detail":"고정자산 상세","acct-cost-statement":"원가명세서","acct-rcps":"RCPS 관리","acct-rcps-detail":"RCPS 발행 상세","acct-reports":"회계 리포트","expense-claims":"경비 청구","expense-admin":"경비 정산 관리","acct-receivables":"채권/채무 관리","biz-plan":"사업계획","overtime-req":"초과근무 신청","exec-dashboard":"경영 대시보드","onboarding":"온보딩/오프보딩","approval-delegation":"결재 위임","sales-quotations":"견적서 관리","sales-dashboard":"영업 실적 대시보드","sales-purchase-orders":"발주서 관리","inv-items":"품목 관리","inv-locations":"위치 관리","inv-stock":"재고 현황","inv-purchase-requests":"구매요청","pms-projects":"프로젝트 관리","pms-allocation":"내 투입률 입력","pms-my-projects":"내가 투입된 프로젝트","pms-utilization":"가동률 현황","pms-worklog":"일일 업무 투입","recruit-jobs":"채용공고 관리","recruit-candidates":"지원자 관리","recruit-eval":"면접 일정/평가 입력","recruit-eval-detail":"면접 평가 상세","recruit-dashboard":"채용 현황 대시보드","eval-ops":"평가 운영","settings-org":"조직 관리","settings-ranks":"직급 체계","attend-settings":"근태 설정","payroll-settings":"급여 관리","payroll-mgmt":"급여 종합 관리","company-info":"회사 기본 정보","room-settings":"회의실 관리","deploy-perm":"권한 관리"};
+  titles["succession-planning"]="핵심직무 승계계획";
+  titles["skills-architecture"]="직무·스킬 아키텍처";
   const ptEl=$("#page-title");if(ptEl)ptEl.textContent=titles[currentPage]||"";
   const sb=$("#sidebar");if(!sb)return;
   // Filter by role + per-user custom permission overrides (admin-managed)
@@ -6781,7 +6862,7 @@ const PAGE_ROLES={
   "first-eval":["admin","leader"],"second-eval":["admin","director"],"kpi-amend":["admin","director","leader"],
   "grade-view":["admin","director","leader"],"comp-grade-view":["admin"],"comp-settings-shortcut":["admin"],
   "eval-progress":["admin","director","leader"],
-  "promotion-mgmt":["admin"],"core-talent":["admin"],
+  "promotion-mgmt":["admin"],"core-talent":["admin"],"succession-planning":["admin"],"skills-architecture":["admin"],
   "settings":["admin"],"approval-templates":["admin"],"integrations":["admin"],"data-mgmt":["admin"],
   "history":["admin"],"activity-log":["admin"],
   "eval-ops":["admin"],"settings-org":["admin"],"settings-ranks":["admin"],"attend-settings":["admin"],
@@ -6942,6 +7023,8 @@ function renderPage(){
   if(currentPage&&currentPage.startsWith("cat:")){renderCategoryLanding(currentPage.slice(4));renderCatNav();const attendBar=document.getElementById("attend-bar");if(attendBar)attendBar.innerHTML=(currentUser&&currentPage==="dashboard")?_renderTeamTodayWidget(currentUser):"";return;}
   if(currentPage&&currentPage.startsWith("board-")){renderBoardPage();renderCatNav();const attendBar=document.getElementById("attend-bar");if(attendBar)attendBar.innerHTML=(currentUser&&currentPage==="dashboard")?_renderTeamTodayWidget(currentUser):"";return;}
   const pages={dashboard:renderDashboard,"my-profile":renderMyProfile,"hr-register":renderHRRegister,"hr-list":renderHRList,"hr-changes":renderHRChanges,kpi:()=>renderKPI(false),"kpi-results":()=>renderKPI(true),"my-kpi":renderMyKPI,"grade-view":renderGradeView,"comp-grade-view":renderCompGradeView,"comp-settings-shortcut":()=>gotoPage("eval-ops"),"comp-eval":renderCompEval,"data-mgmt":renderDataManagementPage,"core-talent":renderCoreTalentPage,"talent-dev":renderTalentDevPage,"promotion-mgmt":renderPromotionPageStandalone,"low-performer":renderLowPerformer,"activity-log":()=>{loadActivityFromServer();},"first-eval":()=>{approvalTab="eval";approvalSearch={name:"",dept:""};renderApprovals();},"second-eval":()=>{approvalTab="eval";approvalSearch={name:"",dept:""};renderApprovals();},"kpi-amend":()=>{approvalTab="requests";approvalSearch={name:"",dept:""};renderApprovals();},"eval-progress":renderEvalProgressPage,settings:renderSettings,"eval-ops":renderEvalOpsPage,"settings-org":renderSettingsOrgPage,"settings-ranks":renderSettingsRanksPage,"attend-settings":renderAttendSettings,"payroll-settings":renderPayrollSettings,"company-info":renderCompanyInfo,"room-settings":renderRoomSettings,"deploy-perm":renderDeployPermPage,history:renderHistory,"change-pw":renderChangePW,"approval-draft":renderApprovalDraftPage,"approval-outbox":renderApprovalOutbox,"approval-inbox":renderApprovalInbox,"approval-receive":renderApprovalReceive,"approval-cc-inbox":renderApprovalCcInbox,"approval-completed":renderApprovalCompleted,"attendance":renderAttendancePage,"att-calendar":renderAttendanceCalendarPage,"leave-mgmt":renderLeaveManagementPage,"payslip":renderPayslipPage,"yearend-settlement":renderYearEndSettlementPage,"approval-templates":renderApprovalTemplateAdmin,"integrations":renderIntegrationsPage,"orgchart":renderOrgChartPage,"certificate":renderCertPage,"hr-stats":renderHRStatsPage,"board":renderBoardPage,"room-booking":renderRoomBookingPage,"welfare-points":renderWelfarePointsPage,"mandatory-training":renderMandatoryTrainingPage,"welfare-status":renderWelfareStatusPage,"long-service-award":renderLongServiceAwardPage,"award-history":renderAwardHistoryPage,"hr-welfare-points":renderHrWelfarePointsPage,"hr-mandatory-training":renderHrMandatoryTrainingPage,"hr-attendance":renderHrAttendancePage,"hr-leave-mgmt":renderHrLeaveManagementPage,"payroll-mgmt":renderPayrollMgmtPage,"salary-info":renderSalaryInfoPage,"welfare-settings":renderWelfareSettingsPage,"notification-center":renderNotificationCenterPage,"acct-partners":renderAcctPartnersPage,"acct-accounts":renderAcctAccountsPage,"acct-vouchers":renderAcctVouchersPage,"acct-tax-invoices":renderAcctTaxInvoicesPage,"acct-vat-report":()=>{loadVatReportFromServer();},"acct-fixed-assets":renderAcctFixedAssetsPage,"acct-fixed-assets-detail":()=>{loadFixedAssetDetailFromServer();},"acct-cost-statement":renderAcctCostStatementPage,"acct-rcps":renderAcctRcpsPage,"acct-rcps-detail":()=>{loadRcpsDetailFromServer();},"acct-reports":renderAcctReportsPage,"expense-claims":renderExpenseClaimsPage,"expense-admin":renderExpenseAdminPage,"acct-receivables":renderAcctReceivablesPage,"biz-plan":()=>{loadBizPlanFromServer();},"emp-pay-plan":()=>{renderEmpPayPlanPage();},"overtime-req":renderOvertimeReqPage,"exec-dashboard":renderExecDashboardPage,"onboarding":renderOnboardingPage,"approval-delegation":renderApprovalDelegationPage,"sales-quotations":renderSalesQuotationsPage,"sales-dashboard":renderSalesDashboardPage,"sales-purchase-orders":renderSalesPurchaseOrdersPage,"inv-items":renderInvItemsPage,"inv-locations":renderInvLocationsPage,"inv-stock":renderInvStockPage,"inv-stock-log":renderInvStockLogPage,"inv-purchase-requests":renderPurchaseRequestsPage,"pms-projects":renderPmsProjectsPage,"pms-allocation":renderPmsAllocationPage,"pms-my-projects":renderPmsMyProjectsPage,"pms-utilization":renderPmsUtilizationPage,"pms-worklog":renderPmsWorklogPage,"recruit-jobs":renderRecruitJobsPage,"recruit-candidates":renderRecruitCandidatesPage,"recruit-eval":renderRecruitEvalPage,"recruit-eval-detail":renderRecruitEvalDetailPage,"recruit-dashboard":renderRecruitDashboardPage};
+  pages["succession-planning"]=renderSuccessionPlanningPage;
+  pages["skills-architecture"]=renderSkillsArchitecturePage;
   const fn=pages[currentPage];const c=$("#content");
   if(c&&fn){
     c.innerHTML="";
@@ -11439,6 +11522,176 @@ function tryAutoGradeAfterSecond(dept, year){
   });
 }
 
+// ==================== JOB & SKILLS ARCHITECTURE ====================
+// 직무 요구역량과 직원의 검증된 보유역량을 하나의 명칭 체계로 연결한다. 숫자 수준은
+// 1(기초)~5(전문가), 가중치는 직무 적합도 계산 시 상대적 중요도로 사용한다.
+function _skillKey(v){return String(v||"").trim().toLocaleLowerCase("ko-KR");}
+function _skillRows(text,kind){
+  const rows=[];const seen=new Set();
+  for(const raw of String(text||"").split(/\r?\n/)){
+    if(!raw.trim())continue;
+    const parts=raw.split("|").map(v=>v.trim());const name=parts[0];const key=_skillKey(name);
+    const level=Number(parts[1]);const tail=parts.slice(2).join(" | ").trim();
+    if(!name||!Number.isInteger(level)||level<1||level>5)throw new Error(`스킬 "${name||raw}"의 수준은 1~5 정수여야 합니다.`);
+    if(seen.has(key))throw new Error(`스킬 "${name}"이 중복되었습니다.`);seen.add(key);
+    if(kind==="job"){
+      const weight=tail===""?1:Number(tail);if(!Number.isFinite(weight)||weight<=0||weight>10)throw new Error(`스킬 "${name}"의 가중치는 0 초과 10 이하여야 합니다.`);
+      rows.push({name,level,weight});
+    }else rows.push({name,level,evidence:tail});
+  }
+  if(!rows.length)throw new Error("스킬을 한 개 이상 입력하세요.");return rows;
+}
+function _employeeSkillMap(empId){
+  const p=employeeSkillProfiles.find(x=>String(x.empId)===String(empId));const out=new Map();
+  (p?.skills||[]).forEach(s=>out.set(_skillKey(s.name),Number(s.level)||0));return out;
+}
+function _jobSkillFit(job,empId){
+  const req=job?.skills||[];if(!req.length)return{score:0,gaps:[]};const have=_employeeSkillMap(empId);
+  let got=0,total=0;const gaps=[];
+  req.forEach(s=>{const weight=Number(s.weight)||1;const level=Number(s.level)||1;const actual=have.get(_skillKey(s.name))||0;total+=weight;got+=Math.min(actual/level,1)*weight;if(actual<level)gaps.push({name:s.name,required:level,actual});});
+  return{score:total?Math.round(got/total*100):0,gaps};
+}
+function _jobProfileForEmployee(emp){
+  return jobSkillProfiles.find(j=>j.status!=="inactive"&&j.dept===emp?.dept&&(j.position===emp?.position||j.position===emp?.rank))||null;
+}
+function _skillsMetrics(){
+  const activeJobs=jobSkillProfiles.filter(j=>j.status!=="inactive");const assessed=new Set(employeeSkillProfiles.filter(p=>getEmp(p.empId)?.active).map(p=>String(p.empId)));
+  const skillNames=new Set(activeJobs.flatMap(j=>(j.skills||[]).map(s=>_skillKey(s.name))));const criticalGapKeys=new Set();
+  activeJobs.forEach(j=>{(j.skills||[]).forEach(s=>{if(Number(s.level)>=4&&!employees.some(e=>e.active&&e.role!=="admin"&&(_employeeSkillMap(e.id).get(_skillKey(s.name))||0)>=Number(s.level)))criticalGapKeys.add(_skillKey(s.name));});});
+  return{jobs:activeJobs.length,skills:skillNames.size,assessed:assessed.size,criticalGaps:criticalGapKeys.size};
+}
+function renderSkillsArchitecturePage(){
+  const c=$("#content");if(!c)return;const m=_skillsMetrics();
+  const rows=jobSkillProfiles.slice().sort((a,b)=>String(a.status).localeCompare(String(b.status))||String(a.dept+a.title).localeCompare(String(b.dept+b.title))).map(j=>{
+    const candidates=employees.filter(e=>e.active&&e.role!=="admin").map(e=>({e,..._jobSkillFit(j,e.id)})).filter(x=>employeeSkillProfiles.some(p=>String(p.empId)===String(x.e.id))).sort((a,b)=>b.score-a.score);const top=candidates[0];
+    return`<tr><td><strong>${h(j.title)}</strong><div class="fz11 text-gray">${h(j.dept||"전사")} · ${h(j.position||"직무 공통")}</div></td><td>${(j.skills||[]).map(s=>`${badge(h(s.name),Number(s.level)>=4?"indigo":"blue")} <span class="fz10">L${s.level}</span>`).join(" ")||"-"}</td><td>${top?`${h(top.e.name)} · <strong>${top.score}%</strong><div class="fz10 ${top.gaps.length?'text-danger':'text-green'}">격차 ${top.gaps.length}개</div>`:"<span class='text-gray'>평가 자료 없음</span>"}</td><td>${j.status==="inactive"?badge("미사용","gray"):badge("사용","green")}</td><td class="tr"><button class="btn btn-secondary btn-sm" onclick="openJobSkillProfileModal('${j.id}')">수정</button> <button class="btn btn-ghost btn-sm" onclick="openJobSkillGapModal('${j.id}')">격차 보기</button></td></tr>`;
+  }).join("");
+  const assessedRows=employeeSkillProfiles.filter(p=>getEmp(p.empId)).sort((a,b)=>String(getEmp(a.empId)?.name).localeCompare(String(getEmp(b.empId)?.name))).map(p=>{const e=getEmp(p.empId);const job=_jobProfileForEmployee(e);const fit=job?_jobSkillFit(job,e.id):null;return`<tr><td><strong>${h(e.name)}</strong><div class="fz11 text-gray">${h(e.dept||"")} ${h(e.team||"")} · ${h(e.position||e.rank||"")}</div></td><td>${(p.skills||[]).length}개</td><td>${job?h(job.title):"<span class='text-gray'>매칭 직무 없음</span>"}</td><td>${fit?`${fit.score}% · 격차 ${fit.gaps.length}개`:"-"}</td><td class="tr"><button class="btn btn-secondary btn-sm" onclick="openEmployeeSkillProfileModal('${e.id}')">평가</button> <button class="btn btn-ghost btn-sm" onclick="deleteEmployeeSkillProfile('${p.id}')">삭제</button></td></tr>`;}).join("");
+  c.innerHTML=`<div class="flex items-c justify-b mb3"><div><h2>직무·스킬 아키텍처</h2><div class="fz12 text-gray mt1">직무 요구역량과 직원 보유역량을 같은 기준으로 관리해 채용·육성·승계의 판단 근거로 사용합니다.</div></div><div class="flex gap2"><button class="btn btn-secondary" onclick="exportSkillGapCSV()">⬇ 격차 CSV</button><button class="btn btn-primary" onclick="openJobSkillProfileModal()">+ 직무 프로필</button></div></div>
+  <div class="stats-grid mb3"><div class="stat-card"><div class="ico">💼</div><div class="num">${m.jobs}</div><div class="lbl">활성 직무</div></div><div class="stat-card"><div class="ico">🧩</div><div class="num">${m.skills}</div><div class="lbl">요구 스킬</div></div><div class="stat-card"><div class="ico">👥</div><div class="num">${m.assessed}</div><div class="lbl">평가 완료 직원</div></div><div class="stat-card"><div class="ico">⚠️</div><div class="num">${m.criticalGaps}</div><div class="lbl">전사 핵심스킬 공백</div></div></div>
+  ${m.criticalGaps?`<div class="warn-note mb3"><strong>조치 필요:</strong> 요구수준 4 이상인데 충족 인원이 없는 핵심스킬이 ${m.criticalGaps}개입니다. 채용 키워드와 육성계획에 반영하세요.</div>`:""}
+  <div class="card mb3"><div class="card-head"><h3>직무 스킬 모델</h3></div><div class="card-body" style="padding:0"><div class="tbl-wrap"><table><thead><tr><th>직무</th><th>요구역량</th><th>최고 적합 후보</th><th>상태</th><th class="tr">관리</th></tr></thead><tbody>${rows||`<tr><td colspan="5" class="p-empty">직무 프로필이 없습니다. 핵심직무부터 요구스킬을 등록하세요.</td></tr>`}</tbody></table></div></div></div>
+  <div class="card"><div class="card-head"><h3>직원 스킬 검증</h3><button class="btn btn-secondary btn-sm" onclick="openEmployeeSkillProfileModal()">+ 직원 평가</button></div><div class="card-body" style="padding:0"><div class="tbl-wrap"><table><thead><tr><th>직원</th><th>보유스킬</th><th>현재 직무 모델</th><th>적합도</th><th class="tr">관리</th></tr></thead><tbody>${assessedRows||`<tr><td colspan="5" class="p-empty">검증된 직원 스킬 자료가 없습니다.</td></tr>`}</tbody></table></div></div></div>`;
+}
+function openJobSkillProfileModal(id){
+  const p=jobSkillProfiles.find(x=>String(x.id)===String(id));const skillText=(p?.skills||[]).map(s=>`${s.name} | ${s.level} | ${s.weight}`).join("\n");
+  openModal(`<div class="modal-box" style="max-width:680px"><div class="modal-head"><h3>${p?"직무 프로필 수정":"직무 프로필 등록"}</h3></div><div class="modal-body"><div class="info-note mb3">한 줄에 <strong>스킬명 | 요구수준(1~5) | 가중치(0초과~10)</strong>로 입력합니다. 예: 제조ERP 구축 | 4 | 2</div><div class="g2"><div class="fg"><label class="fl">직무명 <span class="req">*</span></label><input class="fc" id="js-title" value="${h(p?.title||"")}" placeholder="예: 제조 ERP 프로젝트 매니저"></div><div class="fg"><label class="fl">부서</label><input class="fc" id="js-dept" value="${h(p?.dept||"")}" placeholder="예: DX사업본부"></div></div><div class="fg"><label class="fl">직책/직급 매칭값</label><input class="fc" id="js-position" value="${h(p?.position||"")}" placeholder="예: 프로젝트매니저 또는 팀장"><div class="fz11 text-gray mt1">직원 정보의 직책 또는 직급과 정확히 같으면 현재 직무 적합도를 자동 계산합니다.</div></div><div class="fg"><label class="fl">직무 설명</label><textarea class="fc" id="js-desc" rows="2" placeholder="예: 제조 고객의 ERP 구축 프로젝트 범위·원가·일정을 총괄">${h(p?.description||"")}</textarea></div><div class="fg"><label class="fl">요구 스킬 <span class="req">*</span></label><textarea class="fc" id="js-skills" rows="7" placeholder="제조ERP 구축 | 4 | 2\n프로젝트 관리 | 4 | 2\n고객 커뮤니케이션 | 3 | 1">${h(skillText)}</textarea></div><label class="flex items-c gap2 fz12"><input type="checkbox" id="js-active" ${p?.status!=="inactive"?"checked":""}> 사용</label></div><div class="modal-foot">${p?`<button class="btn btn-danger" onclick="deleteJobSkillProfile('${p.id}')">삭제</button>`:""}<button class="btn btn-secondary" onclick="closeModal()">취소</button><button class="btn btn-primary" onclick="saveJobSkillProfile('${p?.id||""}')">저장</button></div></div>`);
+}
+function saveJobSkillProfile(id){try{const title=$("#js-title")?.value.trim();if(!title)throw new Error("직무명을 입력하세요.");const skills=_skillRows($("#js-skills")?.value,"job");if(jobSkillProfiles.some(p=>String(p.id)!==String(id)&&p.status!=="inactive"&&_skillKey(p.title)===_skillKey(title)))throw new Error("같은 이름의 사용 중 직무 프로필이 있습니다.");const prev=jobSkillProfiles.find(p=>String(p.id)===String(id));const now=new Date().toISOString();const rec={...(prev||{}),id:prev?.id||genId(),title,dept:$("#js-dept").value.trim(),position:$("#js-position").value.trim(),description:$("#js-desc").value.trim(),skills,status:$("#js-active").checked?"active":"inactive",createdAt:prev?.createdAt||now,updatedAt:now};if(prev)jobSkillProfiles=jobSkillProfiles.map(p=>String(p.id)===String(id)?rec:p);else jobSkillProfiles.push(rec);closeModal();autoSaveToServerIfEnabled();renderSkillsArchitecturePage();showToast("직무 프로필이 저장되었습니다.","success");}catch(e){showToast(e.message,"error");}}
+async function deleteJobSkillProfile(id){const p=jobSkillProfiles.find(x=>String(x.id)===String(id));if(!p)return;const linked=successionPlans.filter(s=>String(s.jobProfileId)===String(id));const ok=await askConfirmModal({title:"직무 프로필 삭제",message:"직무 요구역량과 매칭 기준을 삭제하시겠습니까?",confirmText:"삭제",danger:true,impact:[{label:"직무",value:p.title},{label:"연결된 승계계획",value:`${linked.length}건`}],warnings:linked.length?["연결된 승계계획의 후보 적합도 계산이 중단됩니다."]:[]});if(!ok)return;_tombstone("jobSkillProfiles",p.id);jobSkillProfiles=jobSkillProfiles.filter(x=>String(x.id)!==String(id));successionPlans.forEach(s=>{if(String(s.jobProfileId)===String(id))s.jobProfileId="";});closeModal();autoSaveToServerIfEnabled();renderSkillsArchitecturePage();}
+function openEmployeeSkillProfileModal(empId){const p=employeeSkillProfiles.find(x=>String(x.empId)===String(empId));const opts=employees.filter(e=>e.active&&e.role!=="admin").sort((a,b)=>String(a.name).localeCompare(String(b.name))).map(e=>`<option value="${e.id}"${String(e.id)===String(empId)?" selected":""}>${h(e.name)} · ${h(e.dept||"")} ${h(e.team||"")}</option>`).join("");const text=(p?.skills||[]).map(s=>`${s.name} | ${s.level} | ${s.evidence||""}`).join("\n");openModal(`<div class="modal-box" style="max-width:650px"><div class="modal-head"><h3>직원 스킬 검증</h3></div><div class="modal-body"><div class="info-note mb3">한 줄에 <strong>스킬명 | 보유수준(1~5) | 검증 근거</strong>로 입력합니다. 예: PostgreSQL | 4 | ERP DB 전환 프로젝트</div><div class="fg"><label class="fl">직원 <span class="req">*</span></label><select class="fc" id="es-emp" ${p?"disabled":""}><option value="">선택하세요</option>${opts}</select></div><div class="fg"><label class="fl">검증된 스킬 <span class="req">*</span></label><textarea class="fc" id="es-skills" rows="8" placeholder="제조ERP 구축 | 4 | A사 구축 PM\n프로젝트 관리 | 3 | PMP 교육 이수">${h(text)}</textarea></div></div><div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal()">취소</button><button class="btn btn-primary" onclick="saveEmployeeSkillProfile('${p?.id||""}')">저장</button></div></div>`);}
+function saveEmployeeSkillProfile(id){try{const empId=$("#es-emp")?.value;if(!empId)throw new Error("직원을 선택하세요.");const skills=_skillRows($("#es-skills")?.value,"employee");const prev=employeeSkillProfiles.find(p=>String(p.id)===String(id));const duplicate=employeeSkillProfiles.find(p=>String(p.id)!==String(id)&&String(p.empId)===String(empId));if(duplicate)throw new Error("이미 등록된 직원입니다. 기존 프로필을 수정하세요.");const now=new Date().toISOString();const rec={...(prev||{}),id:prev?.id||genId(),empId,skills,verifiedBy:currentUser.id,verifiedAt:now,updatedAt:now};if(prev)employeeSkillProfiles=employeeSkillProfiles.map(p=>String(p.id)===String(id)?rec:p);else employeeSkillProfiles.push(rec);closeModal();autoSaveToServerIfEnabled();renderSkillsArchitecturePage();showToast("직원 스킬이 검증·저장되었습니다.","success");}catch(e){showToast(e.message,"error");}}
+async function deleteEmployeeSkillProfile(id){const p=employeeSkillProfiles.find(x=>String(x.id)===String(id));const e=getEmp(p?.empId);if(!p)return;const linked=successionPlans.filter(s=>(s.candidates||[]).some(c=>String(c.empId)===String(p.empId))).length;const ok=await askConfirmModal({title:"직원 스킬 프로필 삭제",message:`${e?.name||"선택한 직원"}님의 검증 스킬을 삭제하시겠습니까?`,confirmText:"삭제",danger:true,impact:[{label:"스킬",value:`${(p.skills||[]).length}개`},{label:"후보로 포함된 승계계획",value:`${linked}건`}],warnings:linked?["승계 후보는 유지되지만 직무 적합도는 평가 자료 없음으로 변경됩니다."]:[]});if(!ok)return;_tombstone("employeeSkillProfiles",p.id);employeeSkillProfiles=employeeSkillProfiles.filter(x=>String(x.id)!==String(id));autoSaveToServerIfEnabled();renderSkillsArchitecturePage();showToast("직원 스킬 프로필이 삭제되었습니다.","success");}
+function openJobSkillGapModal(id){const j=jobSkillProfiles.find(x=>String(x.id)===String(id));if(!j)return;const rows=employees.filter(e=>e.active&&e.role!=="admin"&&employeeSkillProfiles.some(p=>String(p.empId)===String(e.id))).map(e=>({e,..._jobSkillFit(j,e.id)})).sort((a,b)=>b.score-a.score).map(x=>`<tr><td>${h(x.e.name)}<div class="fz11 text-gray">${h(x.e.dept||"")} ${h(x.e.team||"")}</div></td><td><strong>${x.score}%</strong></td><td>${x.gaps.map(g=>`${h(g.name)} L${g.actual}→L${g.required}`).join(", ")||badge("충족","green")}</td></tr>`).join("");openModal(`<div class="modal-box" style="max-width:760px"><div class="modal-head"><h3>${h(j.title)} · 스킬 격차</h3></div><div class="modal-body" style="padding:0"><div class="tbl-wrap"><table><thead><tr><th>직원</th><th>적합도</th><th>부족 스킬</th></tr></thead><tbody>${rows||`<tr><td colspan="3" class="p-empty">직원 스킬 평가 자료가 없습니다.</td></tr>`}</tbody></table></div></div><div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal()">닫기</button></div></div>`);}
+function exportSkillGapCSV(){const rows=[];jobSkillProfiles.forEach(j=>employees.filter(e=>e.active&&e.role!=="admin"&&employeeSkillProfiles.some(p=>String(p.empId)===String(e.id))).forEach(e=>{const fit=_jobSkillFit(j,e.id);rows.push([j.title,j.dept,j.position,e.name,e.empNo,e.dept,e.team,fit.score,fit.gaps.map(g=>`${g.name}:${g.actual}/${g.required}`).join("; ")]);}));dlCSV(`직무_스킬격차_${new Date().toISOString().slice(0,10)}.csv`,["직무","직무부서","매칭직책","직원","사번","직원부서","팀","적합도(%)","부족스킬(보유/요구)"],rows);}
+
+// ==================== SUCCESSION PLANNING ====================
+// Workday/SAP/Oracle 계열의 공통 승계관리 모델을 현재 핵심인재·육성계획 데이터와 연결한다.
+// 후보자의 준비도는 "해당 직무" 기준이므로 직원 프로필의 전역 속성으로 저장하지 않고
+// 각 승계계획 후보 레코드에 저장한다.
+const SUCCESSION_READINESS={ready_now:"즉시 가능",years_1_2:"1~2년",years_3_plus:"3년 이상"};
+const SUCCESSION_LEVEL={high:"높음",medium:"보통",low:"낮음"};
+function _successionMetrics(){
+  const active=successionPlans.filter(p=>p.status!=="inactive");
+  const ready=p=>Array.isArray(p.candidates)&&p.candidates.some(c=>c.readiness==="ready_now"&&getEmp(c.empId)?.active);
+  return{
+    active:active.length,
+    ready:active.filter(ready).length,
+    empty:active.filter(p=>!(p.candidates||[]).some(c=>getEmp(c.empId)?.active)).length,
+    criticalGap:active.filter(p=>p.criticality==="high"&&p.riskOfLoss==="high"&&!ready(p)).length,
+  };
+}
+function renderSuccessionPlanningPage(){
+  const c=$("#content");if(!c)return;
+  const m=_successionMetrics();
+  const coverage=m.active?Math.round(m.ready/m.active*100):0;
+  const rows=successionPlans.slice().sort((a,b)=>String(a.status).localeCompare(String(b.status))||String(a.title).localeCompare(String(b.title))).map(p=>{
+    const incumbent=getEmp(p.incumbentId);
+    const candidates=(p.candidates||[]).filter(x=>getEmp(x.empId)?.active).sort((a,b)=>(Number(a.rank)||999)-(Number(b.rank)||999));
+    const readyNow=candidates.filter(x=>x.readiness==="ready_now");
+    const riskGap=p.status!=="inactive"&&p.criticality==="high"&&p.riskOfLoss==="high"&&!readyNow.length;
+    return`<tr${riskGap?' style="background:#fff7ed"':""}>
+      <td><div class="fw7">${h(p.title)}</div><div class="fz11 text-gray">${h(p.dept||incumbent?.dept||"-")} · ${p.planType==="incumbent"?"현직자":p.planType==="job"?"직무":"직책"} 기준</div></td>
+      <td>${incumbent?`${h(incumbent.name)}<div class="fz11 text-gray">${h(incumbent.rank||"")} ${h(incumbent.position||"")}</div>`:"<span class='text-gray'>공석</span>"}</td>
+      <td>${badge(SUCCESSION_LEVEL[p.criticality]||"보통",p.criticality==="high"?"red":p.criticality==="medium"?"yellow":"gray")}</td>
+      <td>${badge(SUCCESSION_LEVEL[p.riskOfLoss]||"보통",p.riskOfLoss==="high"?"red":p.riskOfLoss==="medium"?"yellow":"green")} / ${badge(SUCCESSION_LEVEL[p.impactOfLoss]||"보통",p.impactOfLoss==="high"?"red":"gray")}</td>
+      <td><strong>${candidates.length}명</strong><div class="fz11 ${readyNow.length?'text-green':'text-danger'}">즉시 가능 ${readyNow.length}명</div></td>
+      <td>${riskGap?badge("긴급 보강","red"):readyNow.length?badge("커버됨","green"):candidates.length?badge("육성 필요","yellow"):badge("후보 없음","gray")}</td>
+      <td>${p.status==="inactive"?badge("종료","gray"):badge("운영 중","blue")}</td>
+      <td class="tr"><button class="btn btn-ghost btn-sm" onclick="openSuccessionPlanDetail('${p.id}')">후보 관리</button> <button class="btn btn-secondary btn-sm" onclick="openSuccessionPlanModal('${p.id}')">수정</button></td>
+    </tr>`;
+  }).join("");
+  c.innerHTML=`
+    <div class="flex items-c justify-b mb3"><div><h2>핵심직무 승계계획</h2><div class="fz12 text-gray mt1">핵심직무의 공백 위험과 후보 준비도를 평가·육성계획 데이터와 함께 관리합니다.</div></div><div class="flex gap2"><button class="btn btn-secondary" onclick="exportSuccessionPlansCSV()">⬇ CSV 추출</button><button class="btn btn-primary" onclick="openSuccessionPlanModal()">+ 승계계획 등록</button></div></div>
+    <div class="stats-grid mb3">
+      <div class="stat-card"><div class="ico">🔁</div><div class="num">${m.active}</div><div class="lbl">운영 중 계획</div></div>
+      <div class="stat-card"><div class="ico">✅</div><div class="num">${coverage}%</div><div class="lbl">Ready-now 커버리지</div></div>
+      <div class="stat-card"><div class="ico">👤</div><div class="num">${m.empty}</div><div class="lbl">후보 없는 직무</div></div>
+      <div class="stat-card"><div class="ico">🚨</div><div class="num">${m.criticalGap}</div><div class="lbl">고위험 승계 공백</div></div>
+    </div>
+    ${m.criticalGap?`<div class="warn-note mb3"><strong>즉시 조치:</strong> 중요도·이탈위험이 모두 높지만 즉시 승계 가능한 후보가 없는 계획이 ${m.criticalGap}건입니다. 후보를 지정하고 육성계획을 연결하세요.</div>`:""}
+    <div class="card"><div class="card-head"><h3>승계계획 현황</h3></div><div class="card-body" style="padding:0"><div class="tbl-wrap"><table><thead><tr><th>핵심직무/계획</th><th>현직자</th><th>직무 중요도</th><th>이탈위험 / 영향도</th><th>후보</th><th>커버리지</th><th>상태</th><th class="tr">관리</th></tr></thead><tbody>${rows||`<tr><td colspan="8" class="p-empty">등록된 승계계획이 없습니다. 핵심직무부터 등록하세요.</td></tr>`}</tbody></table></div></div></div>`;
+}
+function openSuccessionPlanModal(planId){
+  const p=successionPlans.find(x=>String(x.id)===String(planId));
+  const active=employees.filter(e=>e.active&&e.role!=="admin").sort((a,b)=>String(a.dept+a.name).localeCompare(String(b.dept+b.name)));
+  const opts=active.map(e=>`<option value="${e.id}"${String(e.id)===String(p?.incumbentId)?" selected":""}>${h(e.name)} · ${h(e.dept)} ${h(e.team||"")} · ${h(e.position||e.rank||"")}</option>`).join("");
+  const jobOpts=jobSkillProfiles.filter(j=>j.status!=="inactive").map(j=>`<option value="${j.id}"${String(j.id)===String(p?.jobProfileId)?" selected":""}>${h(j.title)} · ${h(j.dept||"전사")}</option>`).join("");
+  openModal(`<div class="modal-box" style="max-width:650px"><div class="modal-head"><h3>${p?"승계계획 수정":"승계계획 등록"}</h3></div><div class="modal-body">
+    <div class="info-note mb3">예: “영업본부장 승계계획”. 직무 중요도와 현직자의 이탈 가능성·이탈 영향을 각각 평가합니다.</div>
+    <div class="fg"><label class="fl">계획명 <span class="req">*</span></label><input class="fc" id="sp-title" value="${h(p?.title||"")}" placeholder="예: 영업본부장 승계계획"></div>
+    <div class="g2"><div class="fg"><label class="fl">계획 유형</label><select class="fc" id="sp-type"><option value="position"${p?.planType==="position"?" selected":""}>직책 기준</option><option value="job"${p?.planType==="job"?" selected":""}>직무 기준</option><option value="incumbent"${p?.planType==="incumbent"?" selected":""}>현직자 기준</option></select></div><div class="fg"><label class="fl">현직자</label><select class="fc" id="sp-inc"><option value="">공석/미지정</option>${opts}</select></div></div>
+    <div class="fg"><label class="fl">직무·스킬 모델</label><select class="fc" id="sp-job-profile"><option value="">미연결</option>${jobOpts}</select><div class="fz11 text-gray mt1">연결하면 후보별 직무 적합도와 부족 스킬을 자동 계산합니다.</div></div>
+    <div class="g2"><div class="fg"><label class="fl">부서</label><input class="fc" id="sp-dept" value="${h(p?.dept||"")}" placeholder="예: 영업본부"></div><div class="fg"><label class="fl">목표 승계일</label><input class="fc" type="date" id="sp-date" value="${h(p?.targetDate||"")}"></div></div>
+    <div class="g3"><div class="fg"><label class="fl">직무 중요도</label><select class="fc" id="sp-criticality">${["high","medium","low"].map(v=>`<option value="${v}"${(p?.criticality||"high")===v?" selected":""}>${SUCCESSION_LEVEL[v]}</option>`).join("")}</select></div><div class="fg"><label class="fl">현직자 이탈위험</label><select class="fc" id="sp-risk">${["high","medium","low"].map(v=>`<option value="${v}"${(p?.riskOfLoss||"medium")===v?" selected":""}>${SUCCESSION_LEVEL[v]}</option>`).join("")}</select></div><div class="fg"><label class="fl">이탈 영향도</label><select class="fc" id="sp-impact">${["high","medium","low"].map(v=>`<option value="${v}"${(p?.impactOfLoss||"high")===v?" selected":""}>${SUCCESSION_LEVEL[v]}</option>`).join("")}</select></div></div>
+    <div class="fg"><label class="fl">필수 역량·인수인계 메모</label><textarea class="fc" id="sp-note" rows="3" placeholder="예: 제조 ERP 구축 경험, 주요 고객 인수인계 3개월 필요">${h(p?.notes||"")}</textarea></div>
+    <label class="flex items-c gap2 fz12"><input type="checkbox" id="sp-active" ${p?.status!=="inactive"?"checked":""}> 운영 중</label>
+  </div><div class="modal-foot">${p?`<button class="btn btn-danger" onclick="deleteSuccessionPlan('${p.id}')">삭제</button>`:""}<button class="btn btn-secondary" onclick="closeModal()">취소</button><button class="btn btn-primary" onclick="saveSuccessionPlan('${p?.id||""}')">저장</button></div></div>`);
+}
+function saveSuccessionPlan(planId){
+  const title=$("#sp-title")?.value.trim();if(!title){showToast("계획명을 입력하세요.","error");return;}
+  const incumbentId=$("#sp-inc")?.value||"";
+  const duplicate=successionPlans.some(p=>String(p.id)!==String(planId)&&p.status!=="inactive"&&title.toLowerCase()===String(p.title).toLowerCase());
+  if(duplicate){showToast("같은 이름의 운영 중 승계계획이 있습니다.","error");return;}
+  const prev=successionPlans.find(p=>String(p.id)===String(planId));const now=new Date().toISOString();
+  const rec={...(prev||{}),id:prev?.id||genId(),title,planType:$("#sp-type").value,incumbentId,jobProfileId:$("#sp-job-profile").value,dept:$("#sp-dept").value.trim(),targetDate:$("#sp-date").value,criticality:$("#sp-criticality").value,riskOfLoss:$("#sp-risk").value,impactOfLoss:$("#sp-impact").value,notes:$("#sp-note").value.trim(),status:$("#sp-active").checked?"active":"inactive",candidates:prev?.candidates||[],createdAt:prev?.createdAt||now,createdBy:prev?.createdBy||currentUser.id,updatedAt:now};
+  if(prev)successionPlans=successionPlans.map(p=>String(p.id)===String(prev.id)?rec:p);else successionPlans.push(rec);
+  closeModal();autoSaveToServerIfEnabled();showToast("승계계획이 저장되었습니다.","success");renderSuccessionPlanningPage();
+}
+async function deleteSuccessionPlan(planId){
+  const p=successionPlans.find(x=>String(x.id)===String(planId));if(!p)return;
+  const ok=await askConfirmModal({title:"승계계획 삭제",message:"승계계획과 후보 준비도 정보를 삭제하시겠습니까?",confirmText:"삭제",danger:true,impact:[{label:"계획",value:p.title},{label:"후보",value:`${(p.candidates||[]).length}명`}],warnings:["후보자의 직원정보와 기존 육성계획은 삭제되지 않습니다."]});if(!ok)return;
+  _tombstone("successionPlans",p.id);successionPlans=successionPlans.filter(x=>String(x.id)!==String(p.id));closeModal();autoSaveToServerIfEnabled();renderSuccessionPlanningPage();showToast("승계계획이 삭제되었습니다.","success");
+}
+function openSuccessionPlanDetail(planId){
+  const p=successionPlans.find(x=>String(x.id)===String(planId));if(!p)return;
+  const job=jobSkillProfiles.find(j=>String(j.id)===String(p.jobProfileId));
+  const rows=(p.candidates||[]).slice().sort((a,b)=>(Number(a.rank)||999)-(Number(b.rank)||999)).map(sc=>{
+    const e=getEmp(sc.empId);const dev=talentDevPlans.find(d=>String(d.empId)===String(sc.empId)&&d.year===coreTalentSettings.evalYear&&d.type==="plan");
+    const fit=job?_jobSkillFit(job,sc.empId):null;
+    return`<tr><td>${sc.rank||"-"}</td><td><strong>${h(e?.name||"퇴직/삭제 직원")}</strong><div class="fz11 text-gray">${h(e?.dept||"")} ${h(e?.team||"")} · ${h(e?.rank||"")}</div></td><td>${badge(SUCCESSION_READINESS[sc.readiness]||"-",sc.readiness==="ready_now"?"green":sc.readiness==="years_1_2"?"yellow":"gray")}</td><td>${fit?`<strong>${fit.score}%</strong><div class="fz10 ${fit.gaps.length?'text-danger':'text-green'}">격차 ${fit.gaps.length}개</div>`:"<span class='text-gray'>미연결</span>"}</td><td>${sc.interim?badge("직무대행 가능","blue"):"-"}</td><td>${badge(SUCCESSION_LEVEL[sc.riskOfLoss]||"보통",sc.riskOfLoss==="high"?"red":"gray")}</td><td>${dev?badge(dev.status==="director_approved"?"최종승인":"육성계획 있음",dev.status==="director_approved"?"green":"blue"):badge("미연결","gray")}</td><td><button class="btn btn-secondary btn-sm" onclick="openSuccessorCandidateModal('${p.id}','${sc.empId}')">수정</button> <button class="btn btn-ghost btn-sm" onclick="removeSuccessorCandidate('${p.id}','${sc.empId}')">제외</button></td></tr>`;
+  }).join("");
+  openModal(`<div class="modal-box" style="max-width:980px"><div class="modal-head"><div><h3>${h(p.title)}</h3><div class="fz11 text-gray mt1">후보 순위와 준비도는 이 핵심직무에만 적용됩니다.${job?` · 스킬모델: ${h(job.title)}`:""}</div></div></div><div class="modal-body"><div class="flex justify-b items-c mb2"><div class="fz12 text-gray">즉시 가능 후보가 없으면 커버리지 위험으로 표시됩니다.</div><div class="flex gap2"><button class="btn btn-secondary btn-sm" onclick="importCoreTalentCandidates('${p.id}')">⭐ 핵심인재 불러오기</button><button class="btn btn-primary btn-sm" onclick="openSuccessorCandidateModal('${p.id}')">+ 후보 추가</button></div></div><div class="tbl-wrap"><table><thead><tr><th>순위</th><th>후보자</th><th>준비도</th><th>직무 적합도</th><th>임시 승계</th><th>이탈위험</th><th>${coreTalentSettings.evalYear} 육성계획</th><th>관리</th></tr></thead><tbody>${rows||`<tr><td colspan="8" class="p-empty">등록된 후보가 없습니다.</td></tr>`}</tbody></table></div></div><div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal();renderSuccessionPlanningPage()">닫기</button></div></div>`);
+}
+function openSuccessorCandidateModal(planId,empId){
+  const p=successionPlans.find(x=>String(x.id)===String(planId));if(!p)return;const existing=(p.candidates||[]).find(c=>String(c.empId)===String(empId));
+  const used=new Set((p.candidates||[]).filter(c=>String(c.empId)!==String(empId)).map(c=>String(c.empId)));const opts=employees.filter(e=>e.active&&e.role!=="admin"&&String(e.id)!==String(p.incumbentId)&&!used.has(String(e.id))).sort((a,b)=>String(a.name).localeCompare(String(b.name))).map(e=>`<option value="${e.id}"${String(e.id)===String(empId)?" selected":""}>${h(e.name)} · ${h(e.dept)} ${h(e.team||"")} · ${h(e.rank||"")}</option>`).join("");
+  openModal(`<div class="modal-box" style="max-width:520px"><div class="modal-head"><h3>승계 후보 ${existing?"수정":"추가"}</h3></div><div class="modal-body"><div class="fg"><label class="fl">후보자 <span class="req">*</span></label><select class="fc" id="sc-emp" ${existing?"disabled":""}><option value="">선택하세요</option>${opts}</select></div><div class="g2"><div class="fg"><label class="fl">후보 순위</label><input class="fc" type="number" min="1" max="99" id="sc-rank" value="${existing?.rank||1}" placeholder="예: 1"></div><div class="fg"><label class="fl">준비도</label><select class="fc" id="sc-ready">${Object.entries(SUCCESSION_READINESS).map(([v,l])=>`<option value="${v}"${(existing?.readiness||"years_1_2")===v?" selected":""}>${l}</option>`).join("")}</select></div></div><div class="fg"><label class="fl">후보 이탈위험</label><select class="fc" id="sc-risk">${["high","medium","low"].map(v=>`<option value="${v}"${(existing?.riskOfLoss||"low")===v?" selected":""}>${SUCCESSION_LEVEL[v]}</option>`).join("")}</select></div><label class="flex items-c gap2 fz12 mb2"><input type="checkbox" id="sc-interim" ${existing?.interim?"checked":""}> 정식 승계 전 직무대행 가능</label><div class="fg"><label class="fl">역량격차·육성 조치</label><textarea class="fc" id="sc-actions" rows="3" placeholder="예: 재무관리 교육 이수, 주요 고객 동행 6개월">${h(existing?.developmentActions||"")}</textarea></div></div><div class="modal-foot"><button class="btn btn-secondary" onclick="openSuccessionPlanDetail('${p.id}')">취소</button><button class="btn btn-primary" onclick="saveSuccessorCandidate('${p.id}','${empId||""}')">저장</button></div></div>`);
+}
+function saveSuccessorCandidate(planId,originalEmpId){
+  const p=successionPlans.find(x=>String(x.id)===String(planId));if(!p)return;const empId=$("#sc-emp")?.value;if(!empId){showToast("후보자를 선택하세요.","error");return;}const rank=Number($("#sc-rank")?.value);if(!Number.isInteger(rank)||rank<1||rank>99){showToast("후보 순위는 1~99의 정수로 입력하세요.","error");return;}if((p.candidates||[]).some(c=>String(c.empId)!==String(originalEmpId)&&Number(c.rank)===rank)){showToast("같은 계획에서 후보 순위는 중복될 수 없습니다.","error");return;}
+  const rec={empId,rank,readiness:$("#sc-ready").value,riskOfLoss:$("#sc-risk").value,interim:$("#sc-interim").checked,developmentActions:$("#sc-actions").value.trim(),updatedAt:new Date().toISOString()};const candidates=(p.candidates||[]).filter(c=>String(c.empId)!==String(originalEmpId));candidates.push(rec);p.candidates=candidates;p.updatedAt=new Date().toISOString();autoSaveToServerIfEnabled();showToast("승계 후보가 저장되었습니다.","success");openSuccessionPlanDetail(p.id);
+}
+async function removeSuccessorCandidate(planId,empId){
+  const p=successionPlans.find(x=>String(x.id)===String(planId));const e=getEmp(empId);if(!p)return;const ok=await askConfirmModal({title:"승계 후보 제외",message:`${e?.name||"선택한 후보"}님을 이 승계계획에서 제외하시겠습니까?`,confirmText:"후보 제외",danger:true});if(!ok)return;p.candidates=(p.candidates||[]).filter(c=>String(c.empId)!==String(empId));p.updatedAt=new Date().toISOString();autoSaveToServerIfEnabled();openSuccessionPlanDetail(p.id);
+}
+function importCoreTalentCandidates(planId){
+  const p=successionPlans.find(x=>String(x.id)===String(planId));if(!p)return;const used=new Set((p.candidates||[]).map(c=>String(c.empId)));const pool=coreTalentPool.filter(x=>x.year===coreTalentSettings.evalYear&&x.status==="selected"&&String(x.empId)!==String(p.incumbentId)&&getEmp(x.empId)?.active&&!used.has(String(x.empId)));if(!pool.length){showToast("추가할 미등록 핵심인재가 없습니다.","info");return;}let rank=Math.max(0,...(p.candidates||[]).map(c=>Number(c.rank)||0));pool.forEach(x=>p.candidates.push({empId:x.empId,rank:++rank,readiness:"years_1_2",riskOfLoss:"low",interim:false,developmentActions:"핵심인재 육성계획과 연계 검토",updatedAt:new Date().toISOString()}));p.updatedAt=new Date().toISOString();autoSaveToServerIfEnabled();showToast(`핵심인재 ${pool.length}명을 후보로 추가했습니다.`,"success");openSuccessionPlanDetail(p.id);
+}
+function exportSuccessionPlansCSV(){
+  const rows=[];successionPlans.forEach(p=>{const incumbent=getEmp(p.incumbentId);const cs=(p.candidates||[]).length?p.candidates:[{}];cs.forEach(sc=>{const e=getEmp(sc.empId);rows.push([p.title,p.planType,p.status,p.dept||incumbent?.dept||"",incumbent?.name||"",SUCCESSION_LEVEL[p.criticality]||"",SUCCESSION_LEVEL[p.riskOfLoss]||"",SUCCESSION_LEVEL[p.impactOfLoss]||"",e?.name||"",sc.rank||"",SUCCESSION_READINESS[sc.readiness]||"",sc.interim?"Y":"N",SUCCESSION_LEVEL[sc.riskOfLoss]||"",sc.developmentActions||"",p.targetDate||""]);});});dlCSV(`핵심직무_승계계획_${new Date().toISOString().slice(0,10)}.csv`,["계획명","유형","상태","부서","현직자","직무중요도","현직자이탈위험","이탈영향도","후보자","순위","준비도","임시승계","후보이탈위험","육성조치","목표승계일"],rows);
+}
+
 // ==================== TALENT DEV PLAN PAGE ====================
 
 let _tdTab = "plan"; // "plan" | "achieve" | "approve" | "edit-request"
@@ -12527,7 +12780,7 @@ async function doResetAll(){
     const d=await serverRequest("POST","/api/reset-all",{loginId:currentUser?.loginId,pw});
     if(!d.ok)throw new Error(d.message);
     employees=[];kpiEntries=[];changeRequests=[];compGradeResults={};gradeAdjustHistory=[];
-    coreTalentPool=[];talentDevPlans=[];lowPerfData=[];tieNotifications=[];
+    coreTalentPool=[];talentDevPlans=[];successionPlans=[];jobSkillProfiles=[];employeeSkillProfiles=[];lowPerfData=[];tieNotifications=[];
     approvalDocs=[];attendanceRecords=[];payslips=[];yearEndSettlements=[];payrollAdjustments=[];leaveUsagePlans=[];boardPosts=[];roomReservations=[];certLog=[];certRequests=[];welfarePoints=[];mandatoryTraining=[];healthCheckupLog=[];
     showToast("전체 데이터가 초기화되었습니다.","success");
     renderPage();
@@ -16058,20 +16311,40 @@ function _yesTaxByBase(base){ // 종합소득세 기본세율(소득세법 제55
 }
 function _yesEarnedIncomeCredit(calcTax,gross){ // 근로소득세액공제(소득세법 제59조, 한도 포함)
   const credit=calcTax<=1300000?Math.round(calcTax*0.55):Math.round(715000+(calcTax-1300000)*0.3);
+  // 한도 구간이 기존엔 3구간(33백/70백 경계)뿐이었고, 각 구간의 "기준값"이 다음
+  // 구간의 하한값과 뒤섞여 있어(예: 3,300만~7,000만 구간이 74만이 아니라 66만을
+  // 기준으로 차감) 총급여 5,000만원 기준 실제 66만원이어야 할 한도가 52만4천원으로,
+  // 8,000만원 기준 50만원이어야 할 한도가 20만원으로 계산되던 문제가 있었다.
+  // 소득세법 §59 4구간(74만 기준/66만 하한 → 66만 기준/50만 하한 → 50만 기준/
+  // 20만 하한)을 그대로 반영한다.
   let limit;
   if(gross<=33000000)limit=740000;
-  else if(gross<=70000000)limit=Math.max(500000,660000-Math.round((gross-33000000)*0.008));
-  else limit=Math.max(200000,500000-Math.round((gross-70000000)*0.5));
+  else if(gross<=70000000)limit=Math.max(660000,740000-Math.round((gross-33000000)*0.008));
+  else if(gross<=120000000)limit=Math.max(500000,660000-Math.round((gross-70000000)*0.5));
+  else limit=Math.max(200000,500000-Math.round((gross-120000000)*0.5));
   return Math.min(credit,limit);
 }
 // 순수 계산 함수 — 그 해 1~12월 급여명세서(저장된 것이 있으면 그대로, 없으면
 // calcStandardPayslip으로 즉석 계산, renderPayslipPage()와 동일한 폴백 패턴)에서 과세소득·
 // 기납부세액을 합산한다. 부양가족 수는 저장 여부와 무관하게 항상 인자로 받아, 화면이 저장 전
 // 미리보기를 계산할 때도(admin이 아직 확정하지 않은 값) 그대로 재사용할 수 있게 한다.
+// calcStandardPayslip()은 emp.salary/12를 그대로 매달 지급된 것으로 가정해
+// 입사·퇴사 시점을 전혀 모른다 — 연중 입사·퇴사자·연봉이 바뀐 사람도 12개월
+// 전부를 합산하면 실제보다 훨씬 큰 총급여로 계산돼 누진세율 구간이 잘못
+// 올라가고 "추가 납부 예상액"이 부풀려진다. 월말 기준으로 재직 여부를 판정해
+// (연도별 인원현황 계산 `_bpMonthlyHeadcountByDept`와 동일한 "퇴직월 말까지는
+// 재직으로 포함" 원칙) 실제 재직한 달만 합산한다.
+function _yesEmployedInMonth(emp,year,m){
+  const monthStart=new Date(Date.UTC(year,m-1,1)),monthEnd=new Date(Date.UTC(year,m,0));
+  if(emp.hire){const hireD=new Date(emp.hire);if(!isNaN(hireD)&&hireD>monthEnd)return false;}
+  if(emp.retireDate){const retD=new Date(emp.retireDate);if(!isNaN(retD)&&retD<monthStart)return false;}
+  return true;
+}
 function _computeYearEndSettlement(emp,year,dependents){
   const dep=Math.max(0,Math.min(20,parseInt(dependents,10)||0));
   let grossPay=0,paidTax=0,paidLocalTax=0;
   for(let m=1;m<=12;m++){
+    if(!_yesEmployedInMonth(emp,year,m))continue;
     let slip=payslips.find(p=>String(p.empId)===String(emp.id)&&p.year===year&&p.month===m);
     if(!slip)slip=calcStandardPayslip(emp,year,m);
     grossPay+=slip.taxableIncome||0;paidTax+=slip.tax||0;paidLocalTax+=slip.localTax||0;
@@ -16109,7 +16382,12 @@ function saveYearEndSettlement(empId,year,dependents,confirm){
   const rec={id:`yes-${empId}-${year}`,empId,year,...calc,
     confirmed:confirm!=null?confirm:!!existing?.confirmed,
     confirmedAt:confirm===true?now:(confirm===false?null:existing?.confirmedAt||null),
-    calculatedAt:now,updatedAt:now};
+    calculatedAt:now,updatedAt:now,
+    // 새 객체를 매번 만들어 기존 레코드를 완전히 교체하므로, 서버가 1차 저장
+    // 직후 부여한 _rev(_applyRecordRevisions가 채워줌)를 여기서 명시적으로
+    // 옮기지 않으면 2번째 저장부터 _rev가 항상 비어(0) 있는 것으로 서버에
+    // 전송되어 "이미 다른 값으로 갱신됨" CAS 충돌(409)이 매번 발생한다.
+    _rev:existing?._rev};
   const idx=yearEndSettlements.findIndex(y=>String(y.empId)===String(empId)&&y.year===year);
   if(idx>=0)yearEndSettlements[idx]=rec;else yearEndSettlements.push(rec);
   autoSaveToServerIfEnabled();
@@ -16644,9 +16922,10 @@ function openVoucherTemplateManager(){
 }
 async function deleteVoucherTemplate(id){
   const t=acctVoucherTemplates.find(x=>x.id===id);if(!t)return;
-  const ok=await askConfirmModal({title:"전표 템플릿 삭제",message:"회사 사용자 정의 템플릿을 삭제합니다.",impacts:[{label:"템플릿",value:t.name},{label:"기존 전표",value:"영향 없음",tone:"success"}],confirmText:"삭제",danger:true});if(!ok)return;
-  const r=await serverRequest("DELETE",`/api/accounting/voucher-templates/${encodeURIComponent(id)}`);if(!r?.ok){showToast(r?.message||"삭제에 실패했습니다.","error");return;}
-  acctVoucherTemplates=acctVoucherTemplates.filter(x=>x.id!==id);closeModal();showToast("템플릿이 삭제되었습니다.","success");
+  await runMutationWorkflow({key:`voucher-template:${id}:delete`,method:"DELETE",endpoint:`/api/accounting/voucher-templates/${encodeURIComponent(id)}`,
+    confirm:{title:"전표 템플릿 삭제",message:"회사 사용자 정의 템플릿을 삭제합니다.",impacts:[{label:"템플릿",value:t.name},{label:"기존 전표",value:"영향 없음",tone:"success"}],confirmText:"삭제",danger:true},
+    errorMessage:r=>r?.message||"삭제에 실패했습니다.",successMessage:"템플릿이 삭제되었습니다.",
+    onSuccess:()=>{acctVoucherTemplates=acctVoucherTemplates.filter(x=>x.id!==id);closeModal();}});
 }
 async function openVoucherModal(){
   await loadAcctAccountsPicker();
@@ -16725,24 +17004,16 @@ function viewVoucherModal(id){
 }
 async function postVoucher(id){
   const v=acctVouchers.find(v=>v.id===id);
-  const ok=await askConfirmModal({
-    title:"전표 확정 확인",
-    message:"전표를 확정합니다. 확정 후에는 품목과 분개 내용을 수정할 수 없습니다.",
-    impacts:[
+  await runMutationWorkflow({key:`voucher:${id}:post`,method:"POST",endpoint:`/api/accounting/vouchers/${id}/post`,body:{role:currentUser.role,user:currentUser.name},confirm:{
+    title:"전표 확정 확인",message:"전표를 확정합니다. 확정 후에는 품목과 분개 내용을 수정할 수 없습니다.",impacts:[
       {label:"전표",value:v?.voucherNo||"(임시 전표)"},
       {label:"일자",value:v?.date||"-"},
       {label:"거래처",value:v?.partner||"-"},
       {label:"금액",value:`${(v?.amount||0).toLocaleString()}원`},
       {label:"확정 후 영향",value:"수정 잠금 및 전표번호 확정",tone:"danger"}
-    ],
-    confirmText:"전표 확정",
-    danger:true
-  });
-  if(!ok)return;
-  const r=await serverRequest("POST",`/api/accounting/vouchers/${id}/post`,{role:currentUser.role,user:currentUser.name});
-  if(!r?.ok){showToast(r?.message||"확정에 실패했습니다.","error");return;}
-  const idx=acctVouchers.findIndex(v=>v.id===id);if(idx>=0)acctVouchers[idx]=r.voucher;
-  showToast(`전표가 확정되었습니다 (${r.voucher.voucherNo}).`,"success");renderAcctVouchersPage();
+    ],confirmText:"전표 확정",danger:true},errorMessage:r=>r?.message||"확정에 실패했습니다.",
+    successMessage:r=>`전표가 확정되었습니다 (${r.voucher.voucherNo}).`,
+    onSuccess:r=>{const idx=acctVouchers.findIndex(v=>v.id===id);if(idx>=0)acctVouchers[idx]=r.voucher;renderAcctVouchersPage();}});
 }
 async function voidVoucher(id){
   const v=acctVouchers.find(v=>v.id===id);
@@ -16764,29 +17035,20 @@ async function voidVoucher(id){
     noBackdropClose:true
   });
   if(!reason)return;
-  const r=await serverRequest("POST",`/api/accounting/vouchers/${id}/void`,{reason,role:currentUser.role,user:currentUser.name});
-  if(!r?.ok){showToast(r?.message||"취소에 실패했습니다.","error");return;}
-  const idx=acctVouchers.findIndex(v=>v.id===id);if(idx>=0)acctVouchers[idx]=r.voucher;
-  showToast("전표가 취소되었습니다.","info");renderAcctVouchersPage();
+  await runMutationWorkflow({key:`voucher:${id}:void`,method:"POST",endpoint:`/api/accounting/vouchers/${id}/void`,body:{reason,role:currentUser.role,user:currentUser.name},
+    errorMessage:r=>r?.message||"취소에 실패했습니다.",successMessage:"전표가 취소되었습니다.",successType:"info",
+    onSuccess:r=>{const idx=acctVouchers.findIndex(v=>v.id===id);if(idx>=0)acctVouchers[idx]=r.voucher;renderAcctVouchersPage();}});
 }
 async function deleteVoucherDraft(id){
   const v=acctVouchers.find(v=>v.id===id);
-  const ok=await askConfirmModal({
-    title:"임시 전표 삭제 확인",
-    message:"아직 확정되지 않은 임시 전표를 삭제합니다.",
-    impacts:[
+  await runMutationWorkflow({key:`voucher:${id}:delete`,method:"DELETE",endpoint:`/api/accounting/vouchers/${id}`,body:{role:currentUser.role,user:currentUser.name},confirm:{
+    title:"임시 전표 삭제 확인",message:"아직 확정되지 않은 임시 전표를 삭제합니다.",impacts:[
       {label:"일자",value:v?.date||"-"},
       {label:"거래처",value:v?.partner||"-"},
       {label:"금액",value:`${(v?.amount||0).toLocaleString()}원`},
       {label:"삭제 후 영향",value:"목록에서 제거",tone:"danger"}
-    ],
-    confirmText:"임시 전표 삭제",
-    danger:true
-  });
-  if(!ok)return;
-  const r=await serverRequest("DELETE",`/api/accounting/vouchers/${id}`,{role:currentUser.role,user:currentUser.name});
-  if(!r?.ok){showToast(r?.message||"삭제에 실패했습니다.","error");return;}
-  acctVouchers=acctVouchers.filter(v=>v.id!==id);showToast("삭제되었습니다.","info");renderAcctVouchersPage();
+    ],confirmText:"임시 전표 삭제",danger:true},errorMessage:r=>r?.message||"삭제에 실패했습니다.",successMessage:"삭제되었습니다.",successType:"info",
+    onSuccess:()=>{acctVouchers=acctVouchers.filter(v=>v.id!==id);renderAcctVouchersPage();}});
 }
 
 let _tiItems=[];
@@ -18183,10 +18445,11 @@ function _bpExportRollupCsv(){
     rows);
 }
 async function _bpAction(id,suffix,body){
-  const r=await serverRequest("POST",`/api/budget/business-plan/${id}${suffix}`,body||{});
-  if(!r?.ok){showToast(r?.error||r?.message||"처리에 실패했습니다.","error");return;}
-  showToast("처리되었습니다.","success");
-  await loadBizPlanFromServer();
+  return runMutationWorkflow({
+    key:`business-plan:${id}:${suffix}`,method:"POST",endpoint:`/api/budget/business-plan/${id}${suffix}`,body:body||{},
+    errorMessage:r=>r?.error||r?.message||"처리에 실패했습니다.",successMessage:"처리되었습니다.",
+    onSuccess:()=>loadBizPlanFromServer(),onConflict:()=>loadBizPlanFromServer()
+  });
 }
 async function approveBizPlanDivision(id){
   const p=bizPlans.find(x=>String(x.id)===String(id));
@@ -18279,25 +18542,16 @@ async function rejectBizPlanEditRequest(id){
 async function deleteBizPlan(id){
   const p=bizPlans.find(x=>String(x.id)===String(id));
   const amount=(p?.items||[]).reduce((s,it)=>s+(Array.isArray(it.monthly)?it.monthly.reduce((a,b)=>a+Number(b||0),0):0),0);
-  const ok=await askConfirmModal({
-    title:"사업계획 삭제 확인",
-    message:"사업계획을 삭제합니다. 삭제 전 영향 범위를 확인하세요.",
-    impacts:[
-      {label:"계획명",value:p?.name||id},
-      {label:"작성 부문/팀",value:[p?.dept,p?.team].filter(Boolean).join(" / ")||"-"},
-      {label:"예산 항목",value:`${(p?.items||[]).length}건`},
-      {label:"예산 합계",value:`${amount.toLocaleString()}원`,tone:"warn"},
+  await runMutationWorkflow({
+    key:`business-plan:${id}:delete`,method:"DELETE",endpoint:`/api/budget/business-plan/${id}`,
+    confirm:{title:"사업계획 삭제 확인",message:"사업계획을 삭제합니다. 삭제 전 영향 범위를 확인하세요.",impacts:[
+      {label:"계획명",value:p?.name||id},{label:"작성 부문/팀",value:[p?.dept,p?.team].filter(Boolean).join(" / ")||"-"},
+      {label:"예산 항목",value:`${(p?.items||[]).length}건`},{label:"예산 합계",value:`${amount.toLocaleString()}원`,tone:"warn"},
       {label:"삭제 후 영향",value:"목록 및 집계에서 제외",tone:"danger"}
-    ],
-    warnings:["삭제 후 서버 저장이 완료되면 다른 사용자 화면에서도 사라집니다."],
-    confirmText:"사업계획 삭제",
-    danger:true
+    ],warnings:["삭제 후 서버 저장이 완료되면 다른 사용자 화면에서도 사라집니다."],confirmText:"사업계획 삭제",danger:true},
+    errorMessage:r=>r?.error||r?.message||"삭제에 실패했습니다.",successMessage:"삭제되었습니다.",
+    successType:"info",onSuccess:()=>loadBizPlanFromServer(),onConflict:()=>loadBizPlanFromServer()
   });
-  if(!ok)return;
-  const r=await serverRequest("DELETE",`/api/budget/business-plan/${id}`);
-  if(!r?.ok){showToast(r?.error||r?.message||"삭제에 실패했습니다.","error");return;}
-  showToast("삭제되었습니다.","success");
-  await loadBizPlanFromServer();
 }
 
 // ── 작성/수정 폼 ──
@@ -21236,69 +21490,39 @@ function viewQuotationModal(id){
 }
 async function sendQuotation(id){
   const q=erpQuotations.find(q=>q.id===id);
-  const ok=await askConfirmModal({
-    title:"견적서 발송 확인",
-    message:"견적서를 발송 상태로 전환합니다. 발송 후에는 품목을 수정할 수 없습니다.",
-    impacts:[
+  await runMutationWorkflow({key:`quotation:${id}:send`,method:"POST",endpoint:`/api/erp/quotations/${id}/send`,body:{role:currentUser.role,user:currentUser.name},confirm:{
+    title:"견적서 발송 확인",message:"견적서를 발송 상태로 전환합니다. 발송 후에는 품목을 수정할 수 없습니다.",impacts:[
       {label:"거래처",value:q?.partnerName||"-"},
       {label:"품목 수",value:`${(q?.items||q?.lines||[]).length}건`},
       {label:"합계",value:`${(q?.grandTotal||0).toLocaleString()}원`,tone:"warn"},
       {label:"발송 후 영향",value:"견적 품목 수정 잠금",tone:"danger"}
-    ],
-    confirmText:"견적서 발송",
-    danger:true
-  });
-  if(!ok)return;
-  const r=await serverRequest("POST",`/api/erp/quotations/${id}/send`,{role:currentUser.role,user:currentUser.name});
-  if(!r?.ok){showToast(r?.message||"발송에 실패했습니다.","error");return;}
-  const idx=erpQuotations.findIndex(q=>q.id===id);if(idx>=0)erpQuotations[idx]=r.quotation;
-  showToast(`견적서가 발송되었습니다 (${r.quotation.quoteNo}).`,"success");renderSalesQuotationsPage();
+    ],confirmText:"견적서 발송",danger:true},errorMessage:r=>r?.message||"발송에 실패했습니다.",
+    successMessage:r=>`견적서가 발송되었습니다 (${r.quotation.quoteNo}).`,
+    onSuccess:r=>{const idx=erpQuotations.findIndex(q=>q.id===id);if(idx>=0)erpQuotations[idx]=r.quotation;renderSalesQuotationsPage();}});
 }
 async function acceptQuotation(id){
   const q=erpQuotations.find(q=>q.id===id);
-  const ok=await askConfirmModal({
-    title:"수주 확정 확인",
-    message:"견적서를 수주 확정 상태로 전환합니다.",
-    impacts:[
+  await runMutationWorkflow({key:`quotation:${id}:accept`,method:"POST",endpoint:`/api/erp/quotations/${id}/accept`,body:{role:currentUser.role,user:currentUser.name},confirm:{
+    title:"수주 확정 확인",message:"견적서를 수주 확정 상태로 전환합니다.",impacts:[
       {label:"견적번호",value:q?.quoteNo||id},
       {label:"거래처",value:q?.partnerName||"-"},
       {label:"합계",value:`${(q?.grandTotal||0).toLocaleString()}원`,tone:"warn"},
       {label:"확정 후 영향",value:"출고/매출 처리 가능",tone:"success"}
-    ],
-    confirmText:"수주 확정"
-  });
-  if(!ok)return;
-  const r=await serverRequest("POST",`/api/erp/quotations/${id}/accept`,{role:currentUser.role,user:currentUser.name});
-  if(!r?.ok){showToast(r?.message||"처리에 실패했습니다.","error");return;}
-  const idx=erpQuotations.findIndex(q=>q.id===id);if(idx>=0)erpQuotations[idx]=r.quotation;
-  showToast("수주가 확정되었습니다.","success");renderSalesQuotationsPage();
+    ],confirmText:"수주 확정"},errorMessage:r=>r?.message||"처리에 실패했습니다.",successMessage:"수주가 확정되었습니다.",
+    onSuccess:r=>{const idx=erpQuotations.findIndex(q=>q.id===id);if(idx>=0)erpQuotations[idx]=r.quotation;renderSalesQuotationsPage();}});
 }
 async function shipQuotation(id){
   const q=erpQuotations.find(q=>q.id===id);
-  const ok=await askConfirmModal({
-    title:"출고/매출 처리 확인",
-    message:"출고와 매출 세금계산서 발행을 함께 처리합니다.",
-    impacts:[
+  await runMutationWorkflow({key:`quotation:${id}:ship`,method:"POST",endpoint:`/api/erp/quotations/${id}/ship`,body:{role:currentUser.role,user:currentUser.name},confirm:{
+    title:"출고/매출 처리 확인",message:"출고와 매출 세금계산서 발행을 함께 처리합니다.",impacts:[
       {label:"견적번호",value:q?.quoteNo||id},
       {label:"출고 위치",value:_erpLocationName(q?.locationId)||"-"},
       {label:"품목 수",value:`${(q?.items||q?.lines||[]).length}건`},
       {label:"매출 합계",value:`${(q?.grandTotal||0).toLocaleString()}원`,tone:"warn"},
       {label:"처리 후 영향",value:"재고 차감 + 매출 세금계산서 발행",tone:"danger"}
-    ],
-    warnings:["재고 부족 또는 세금계산서 생성 실패 시 서버에서 처리가 거부될 수 있습니다."],
-    confirmText:"출고/매출 처리",
-    danger:true
-  });
-  if(!ok)return;
-  const r=await serverRequest("POST",`/api/erp/quotations/${id}/ship`,{role:currentUser.role,user:currentUser.name});
-  if(!r?.ok){showToast(r?.message||"처리에 실패했습니다.","error");return;}
-  const idx=erpQuotations.findIndex(q=>q.id===id);if(idx>=0)erpQuotations[idx]=r.quotation;
-  if(currentUser?.menuPerms?.["acct-tax-invoices"]!==false){
-    const rt=await serverRequest("GET","/api/accounting/tax-invoices");
-    if(rt?.ok)acctTaxInvoices=rt.taxInvoices;
-  }
-  const rs=await serverRequest("GET","/api/erp/stock");if(rs?.ok)erpStock=rs.stock;
-  showToast(`출고 및 세금계산서 발행이 완료되었습니다 (${r.taxInvoice.invoiceNo}).`,"success");renderSalesQuotationsPage();
+    ],warnings:["재고 부족 또는 세금계산서 생성 실패 시 서버에서 처리가 거부될 수 있습니다."],confirmText:"출고/매출 처리",danger:true},
+    errorMessage:r=>r?.message||"처리에 실패했습니다.",successMessage:r=>`출고 및 세금계산서 발행이 완료되었습니다 (${r.taxInvoice.invoiceNo}).`,
+    onSuccess:async r=>{const idx=erpQuotations.findIndex(q=>q.id===id);if(idx>=0)erpQuotations[idx]=r.quotation;if(currentUser?.menuPerms?.["acct-tax-invoices"]!==false){const rt=await serverRequest("GET","/api/accounting/tax-invoices");if(rt?.ok)acctTaxInvoices=rt.taxInvoices;}const rs=await serverRequest("GET","/api/erp/stock");if(rs?.ok)erpStock=rs.stock;renderSalesQuotationsPage();}});
 }
 async function rejectQuotation(id){
   const q=erpQuotations.find(q=>q.id===id);
@@ -21320,29 +21544,20 @@ async function rejectQuotation(id){
     noBackdropClose:true
   });
   if(!reason)return;
-  const r=await serverRequest("POST",`/api/erp/quotations/${id}/reject`,{reason,role:currentUser.role,user:currentUser.name});
-  if(!r?.ok){showToast(r?.message||"처리에 실패했습니다.","error");return;}
-  const idx=erpQuotations.findIndex(q=>q.id===id);if(idx>=0)erpQuotations[idx]=r.quotation;
-  showToast("실주 처리되었습니다.","info");renderSalesQuotationsPage();
+  await runMutationWorkflow({key:`quotation:${id}:reject`,method:"POST",endpoint:`/api/erp/quotations/${id}/reject`,body:{reason,role:currentUser.role,user:currentUser.name},
+    errorMessage:r=>r?.message||"처리에 실패했습니다.",successMessage:"실주 처리되었습니다.",successType:"info",
+    onSuccess:r=>{const idx=erpQuotations.findIndex(q=>q.id===id);if(idx>=0)erpQuotations[idx]=r.quotation;renderSalesQuotationsPage();}});
 }
 async function deleteQuotationDraft(id){
   const q=erpQuotations.find(q=>q.id===id);
-  const ok=await askConfirmModal({
-    title:"임시 견적서 삭제 확인",
-    message:"아직 발송되지 않은 임시 견적서를 삭제합니다.",
-    impacts:[
+  await runMutationWorkflow({key:`quotation:${id}:delete`,method:"DELETE",endpoint:`/api/erp/quotations/${id}`,body:{role:currentUser.role,user:currentUser.name},confirm:{
+    title:"임시 견적서 삭제 확인",message:"아직 발송되지 않은 임시 견적서를 삭제합니다.",impacts:[
       {label:"거래처",value:q?.partnerName||"-"},
       {label:"품목 수",value:`${(q?.items||q?.lines||[]).length}건`},
       {label:"합계",value:`${(q?.grandTotal||0).toLocaleString()}원`,tone:"warn"},
       {label:"삭제 후 영향",value:"견적 목록에서 제거",tone:"danger"}
-    ],
-    confirmText:"임시 견적서 삭제",
-    danger:true
-  });
-  if(!ok)return;
-  const r=await serverRequest("DELETE",`/api/erp/quotations/${id}`,{role:currentUser.role,user:currentUser.name});
-  if(!r?.ok){showToast(r?.message||"삭제에 실패했습니다.","error");return;}
-  erpQuotations=erpQuotations.filter(q=>q.id!==id);showToast("삭제되었습니다.","info");renderSalesQuotationsPage();
+    ],confirmText:"임시 견적서 삭제",danger:true},errorMessage:r=>r?.message||"삭제에 실패했습니다.",successMessage:"삭제되었습니다.",successType:"info",
+    onSuccess:()=>{erpQuotations=erpQuotations.filter(q=>q.id!==id);renderSalesQuotationsPage();}});
 }
 
 // ── 영업 실적 대시보드 ────────────────────────────────────────────────────────
@@ -23760,49 +23975,28 @@ function viewPOModal(id){
 }
 async function confirmPO(id){
   const p=erpPurchaseOrders.find(p=>p.id===id);
-  const ok=await askConfirmModal({
-    title:"발주 확정 확인",
-    message:"발주서를 확정합니다. 확정 후에는 품목을 수정할 수 없습니다.",
-    impacts:[
+  await runMutationWorkflow({key:`purchase-order:${id}:confirm`,method:"POST",endpoint:`/api/erp/purchase-orders/${id}/confirm`,body:{role:currentUser.role,user:currentUser.name},confirm:{
+    title:"발주 확정 확인",message:"발주서를 확정합니다. 확정 후에는 품목을 수정할 수 없습니다.",impacts:[
       {label:"거래처",value:p?.partnerName||"-"},
       {label:"입고 위치",value:_erpLocationName(p?.locationId)||"-"},
       {label:"품목 수",value:`${(p?.items||p?.lines||[]).length}건`},
       {label:"합계",value:`${(p?.grandTotal||0).toLocaleString()}원`,tone:"warn"},
       {label:"확정 후 영향",value:"품목 수정 잠금",tone:"danger"}
-    ],
-    confirmText:"발주 확정",
-    danger:true
-  });
-  if(!ok)return;
-  const r=await serverRequest("POST",`/api/erp/purchase-orders/${id}/confirm`,{role:currentUser.role,user:currentUser.name});
-  if(!r?.ok){showToast(r?.message||"발주 확정에 실패했습니다.","error");return;}
-  const idx=erpPurchaseOrders.findIndex(p=>p.id===id);if(idx>=0)erpPurchaseOrders[idx]=r.purchaseOrder;
-  showToast(`발주가 확정되었습니다 (${r.purchaseOrder.poNo}).`,"success");renderSalesPurchaseOrdersPage();
+    ],confirmText:"발주 확정",danger:true},errorMessage:r=>r?.message||"발주 확정에 실패했습니다.",
+    successMessage:r=>`발주가 확정되었습니다 (${r.purchaseOrder.poNo}).`,onSuccess:r=>{const idx=erpPurchaseOrders.findIndex(p=>p.id===id);if(idx>=0)erpPurchaseOrders[idx]=r.purchaseOrder;renderSalesPurchaseOrdersPage();}});
 }
 async function receivePO(id){
   const p=erpPurchaseOrders.find(p=>p.id===id);
-  const ok=await askConfirmModal({
-    title:"입고 처리 확인",
-    message:"입고 처리와 매입 세금계산서 발행을 함께 진행합니다.",
-    impacts:[
+  await runMutationWorkflow({key:`purchase-order:${id}:receive`,method:"POST",endpoint:`/api/erp/purchase-orders/${id}/receive`,body:{role:currentUser.role,user:currentUser.name},confirm:{
+    title:"입고 처리 확인",message:"입고 처리와 매입 세금계산서 발행을 함께 진행합니다.",impacts:[
       {label:"발주번호",value:p?.poNo||id},
       {label:"입고 위치",value:_erpLocationName(p?.locationId)||"-"},
       {label:"품목 수",value:`${(p?.items||p?.lines||[]).length}건`},
       {label:"매입 합계",value:`${(p?.grandTotal||0).toLocaleString()}원`,tone:"warn"},
       {label:"처리 후 영향",value:"재고 증가 + 매입 세금계산서 발행",tone:"danger"}
-    ],
-    confirmText:"입고 처리",
-    danger:true
-  });
-  if(!ok)return;
-  const r=await serverRequest("POST",`/api/erp/purchase-orders/${id}/receive`,{role:currentUser.role,user:currentUser.name});
-  if(!r?.ok){showToast(r?.message||"입고 처리에 실패했습니다.","error");return;}
-  const idx=erpPurchaseOrders.findIndex(p=>p.id===id);if(idx>=0)erpPurchaseOrders[idx]=r.purchaseOrder;
-  const rs=await serverRequest("GET","/api/erp/stock");if(rs?.ok)erpStock=rs.stock;
-  if(currentUser?.menuPerms?.["acct-tax-invoices"]!==false){
-    const rt=await serverRequest("GET","/api/accounting/tax-invoices");if(rt?.ok)acctTaxInvoices=rt.taxInvoices;
-  }
-  showToast(`입고 처리되어 재고에 반영되고 매입세금계산서가 발행되었습니다 (${r.taxInvoice?.invoiceNo||""}).`,"success");renderSalesPurchaseOrdersPage();
+    ],confirmText:"입고 처리",danger:true},errorMessage:r=>r?.message||"입고 처리에 실패했습니다.",
+    successMessage:r=>`입고 처리되어 재고에 반영되고 매입세금계산서가 발행되었습니다 (${r.taxInvoice?.invoiceNo||""}).`,
+    onSuccess:async r=>{const idx=erpPurchaseOrders.findIndex(p=>p.id===id);if(idx>=0)erpPurchaseOrders[idx]=r.purchaseOrder;const rs=await serverRequest("GET","/api/erp/stock");if(rs?.ok)erpStock=rs.stock;if(currentUser?.menuPerms?.["acct-tax-invoices"]!==false){const rt=await serverRequest("GET","/api/accounting/tax-invoices");if(rt?.ok)acctTaxInvoices=rt.taxInvoices;}renderSalesPurchaseOrdersPage();}});
 }
 async function cancelPO(id){
   const p=erpPurchaseOrders.find(p=>p.id===id);
@@ -23824,30 +24018,21 @@ async function cancelPO(id){
     noBackdropClose:true
   });
   if(!reason)return;
-  const r=await serverRequest("POST",`/api/erp/purchase-orders/${id}/cancel`,{reason,role:currentUser.role,user:currentUser.name});
-  if(!r?.ok){showToast(r?.message||"취소에 실패했습니다.","error");return;}
-  const idx=erpPurchaseOrders.findIndex(p=>p.id===id);if(idx>=0)erpPurchaseOrders[idx]=r.purchaseOrder;
-  showToast("발주가 취소되었습니다.","info");renderSalesPurchaseOrdersPage();
+  await runMutationWorkflow({key:`purchase-order:${id}:cancel`,method:"POST",endpoint:`/api/erp/purchase-orders/${id}/cancel`,body:{reason,role:currentUser.role,user:currentUser.name},
+    errorMessage:r=>r?.message||"취소에 실패했습니다.",successMessage:"발주가 취소되었습니다.",successType:"info",
+    onSuccess:r=>{const idx=erpPurchaseOrders.findIndex(p=>p.id===id);if(idx>=0)erpPurchaseOrders[idx]=r.purchaseOrder;renderSalesPurchaseOrdersPage();}});
 }
 async function deletePODraft(id){
   const p=erpPurchaseOrders.find(p=>p.id===id);
-  const ok=await askConfirmModal({
-    title:"임시 발주서 삭제 확인",
-    message:"아직 확정되지 않은 임시 발주서를 삭제합니다.",
-    impacts:[
+  await runMutationWorkflow({key:`purchase-order:${id}:delete`,method:"DELETE",endpoint:`/api/erp/purchase-orders/${id}`,body:{role:currentUser.role,user:currentUser.name},confirm:{
+    title:"임시 발주서 삭제 확인",message:"아직 확정되지 않은 임시 발주서를 삭제합니다.",impacts:[
       {label:"거래처",value:p?.partnerName||"-"},
       {label:"입고 위치",value:_erpLocationName(p?.locationId)||"-"},
       {label:"품목 수",value:`${(p?.items||p?.lines||[]).length}건`},
       {label:"합계",value:`${(p?.grandTotal||0).toLocaleString()}원`,tone:"warn"},
       {label:"삭제 후 영향",value:"발주 목록에서 제거",tone:"danger"}
-    ],
-    confirmText:"임시 발주서 삭제",
-    danger:true
-  });
-  if(!ok)return;
-  const r=await serverRequest("DELETE",`/api/erp/purchase-orders/${id}`,{role:currentUser.role,user:currentUser.name});
-  if(!r?.ok){showToast(r?.message||"삭제에 실패했습니다.","error");return;}
-  erpPurchaseOrders=erpPurchaseOrders.filter(p=>p.id!==id);showToast("삭제되었습니다.","info");renderSalesPurchaseOrdersPage();
+    ],confirmText:"임시 발주서 삭제",danger:true},errorMessage:r=>r?.message||"삭제에 실패했습니다.",successMessage:"삭제되었습니다.",successType:"info",
+    onSuccess:()=>{erpPurchaseOrders=erpPurchaseOrders.filter(p=>p.id!==id);renderSalesPurchaseOrdersPage();}});
 }
 
 // ── 구매요청 (Purchase requests — 모든 역할 작성 가능, admin 승인/반려/발주전환) ──

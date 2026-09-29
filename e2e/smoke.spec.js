@@ -37,6 +37,104 @@ test.describe("로그인·기본 네비게이션", () => {
     await expect(page.locator('.toast[role="alert"][aria-live="assertive"]')).toContainText("저장 실패");
   });
 
+  test("공통 변경 실행기가 이중 요청과 취소·네트워크 오류를 일관되게 처리한다", async ({ page }) => {
+    await page.goto("/");
+    const result = await page.evaluate(async () => {
+      const originalRequest=serverRequest,originalConfirm=askConfirmModal,originalToast=showToast;
+      const toasts=[];let requests=0,successes=0;
+      try{
+        showToast=(message,type)=>toasts.push({message,type});
+        askConfirmModal=async()=>true;
+        serverRequest=async()=>{requests++;await new Promise(resolve=>setTimeout(resolve,25));return{ok:true,id:"done"};};
+        const [first,second]=await Promise.all([
+          runMutationWorkflow({key:"e2e:duplicate",method:"POST",endpoint:"/e2e",confirm:{title:"확인"},successMessage:"완료",onSuccess:()=>{successes++;}}),
+          runMutationWorkflow({key:"e2e:duplicate",method:"POST",endpoint:"/e2e",confirm:{title:"확인"},successMessage:"완료",onSuccess:()=>{successes++;}})
+        ]);
+        askConfirmModal=async()=>false;
+        const cancelled=await runMutationWorkflow({key:"e2e:cancel",method:"DELETE",endpoint:"/e2e",confirm:{title:"취소"}});
+        serverRequest=async()=>{throw new TypeError("offline");};
+        const failed=await runMutationWorkflow({key:"e2e:network",method:"POST",endpoint:"/e2e"});
+        return{first,second,cancelled,failed,requests,successes,toasts};
+      }finally{serverRequest=originalRequest;askConfirmModal=originalConfirm;showToast=originalToast;}
+    });
+    expect(result.first.ok).toBe(true);
+    expect(result.second).toMatchObject({ok:false,pending:true,code:"CLIENT_MUTATION_IN_PROGRESS"});
+    expect(result.cancelled).toMatchObject({ok:false,cancelled:true,code:"CLIENT_MUTATION_CANCELLED"});
+    expect(result.failed.code).toBe("CLIENT_MUTATION_NETWORK_ERROR");
+    expect(result.requests).toBe(1);
+    expect(result.successes).toBe(1);
+    expect(result.toasts.some(t=>t.type==="info"&&/처리 중/.test(t.message))).toBe(true);
+    expect(result.toasts.some(t=>t.type==="error"&&/서버에 연결/.test(t.message))).toBe(true);
+  });
+
+  test("전표와 견적 상태전이가 공통 변경 실행기를 사용한다", async ({ page }) => {
+    await page.goto("/");
+    const captured = await page.evaluate(async () => {
+      const originalRunner=runMutationWorkflow,originalUser=currentUser;
+      const originalVouchers=acctVouchers,originalQuotations=erpQuotations;
+      const calls=[];
+      try{
+        currentUser={id:"e2e-admin",name:"E2E 관리자",role:"admin",menuPerms:{}};
+        acctVouchers=[{id:"v-e2e",date:"2026-09-28",partner:"테스트 거래처",amount:100000,status:"draft"}];
+        erpQuotations=[{id:"q-e2e",partnerName:"테스트 고객",grandTotal:220000,lines:[{name:"품목"}],status:"draft"}];
+        runMutationWorkflow=async opts=>{calls.push({key:opts.key,method:opts.method,endpoint:opts.endpoint,title:opts.confirm?.title||""});return{ok:true};};
+        await postVoucher("v-e2e");
+        await sendQuotation("q-e2e");
+        return calls;
+      }finally{
+        runMutationWorkflow=originalRunner;currentUser=originalUser;acctVouchers=originalVouchers;erpQuotations=originalQuotations;
+      }
+    });
+    expect(captured).toEqual([
+      {key:"voucher:v-e2e:post",method:"POST",endpoint:"/api/accounting/vouchers/v-e2e/post",title:"전표 확정 확인"},
+      {key:"quotation:q-e2e:send",method:"POST",endpoint:"/api/erp/quotations/q-e2e/send",title:"견적서 발송 확인"},
+    ]);
+  });
+
+  test("핵심직무 승계계획은 Ready-now 커버리지와 고위험 공백을 계산한다", async ({ page }) => {
+    await page.goto("/");
+    const pageErrors=[];page.on("pageerror",e=>pageErrors.push(e.message));
+    const metrics=await page.evaluate(() => {
+      currentUser={id:"sp-admin",name:"승계관리자",role:"admin",dept:"인사",menuPerms:{}};
+      employees=[
+        {id:"inc1",name:"현직자1",active:true,role:"director",dept:"개발본부",rank:"상무",position:"본부장"},
+        {id:"cand1",name:"후보1",active:true,role:"leader",dept:"개발본부",team:"플랫폼",rank:"팀장"},
+      ];
+      successionPlans=[
+        {id:"sp1",title:"개발본부장 승계",planType:"position",incumbentId:"inc1",criticality:"high",riskOfLoss:"high",impactOfLoss:"high",status:"active",candidates:[{empId:"cand1",rank:1,readiness:"ready_now",riskOfLoss:"low"}]},
+        {id:"sp2",title:"핵심아키텍트 승계",planType:"job",criticality:"high",riskOfLoss:"high",impactOfLoss:"high",status:"active",candidates:[]},
+      ];
+      render();gotoPage("succession-planning");
+      return _successionMetrics();
+    });
+    expect(metrics).toEqual({active:2,ready:1,empty:1,criticalGap:1});
+    await expect(page.locator("#content").getByRole("heading",{name:"핵심직무 승계계획"})).toBeVisible();
+    await expect(page.locator("#content")).toContainText("Ready-now 커버리지");
+    await expect(page.locator("#content")).toContainText("고위험 승계 공백");
+    await expect(page.locator("#content")).toContainText("긴급 보강");
+    expect(pageErrors).toHaveLength(0);
+  });
+
+  test("직무·스킬 아키텍처는 가중 적합도와 핵심스킬 공백을 계산한다", async ({ page }) => {
+    await page.goto("/");
+    const pageErrors=[];page.on("pageerror",e=>pageErrors.push(e.message));
+    const result=await page.evaluate(() => {
+      currentUser={id:"skill-admin",name:"스킬관리자",role:"admin",dept:"인사",menuPerms:{}};
+      employees=[{id:"emp1",name:"후보1",active:true,role:"leader",dept:"DX사업본부",team:"ERP",rank:"팀장",position:"프로젝트매니저"}];
+      jobSkillProfiles=[{id:"job1",title:"제조 ERP PM",dept:"DX사업본부",position:"프로젝트매니저",status:"active",skills:[{name:"제조ERP",level:4,weight:2},{name:"프로젝트 관리",level:3,weight:1}]}];
+      employeeSkillProfiles=[{id:"esp1",empId:"emp1",skills:[{name:"제조ERP",level:3,evidence:"구축 참여"},{name:"프로젝트 관리",level:3,evidence:"PM"}]}];
+      render();gotoPage("skills-architecture");
+      return{metrics:_skillsMetrics(),fit:_jobSkillFit(jobSkillProfiles[0],"emp1")};
+    });
+    expect(result.metrics).toEqual({jobs:1,skills:2,assessed:1,criticalGaps:1});
+    expect(result.fit.score).toBe(83);
+    expect(result.fit.gaps).toEqual([{name:"제조ERP",required:4,actual:3}]);
+    await expect(page.locator("#content").getByRole("heading",{name:"직무·스킬 아키텍처"})).toBeVisible();
+    await expect(page.locator("#content")).toContainText("전사 핵심스킬 공백");
+    await expect(page.locator("#content")).toContainText("후보1 · 83%");
+    expect(pageErrors).toHaveLength(0);
+  });
+
   test("잘못된 비밀번호는 오류를 보여준다", async ({ page }) => {
     await page.goto("/");
     await page.fill("#l-id", "e2e_admin");
@@ -479,6 +577,49 @@ test.describe("로그인·기본 네비게이션", () => {
       return { salary: emp.salary, count: rows.length, before: rows[0]?.before, after: rows[0]?.after, source: rows[0]?.source };
     });
     expect(result).toEqual({ salary: 55000000, count: 1, before: "50,000,000원", after: "55,000,000원", source: "employee_edit" });
+  });
+
+  // 연말정산(간이) 화면은 getFullState()/_recordCollections()가 yearEndSettlements
+  // 필드 자체를 빠뜨리고 있어, saveYearEndSettlement()가 화면상 "저장되었습니다"를
+  // 띄워도 실제로는 그 필드가 /save 요청 바디에 단 한 번도 실리지 않아 서버에
+  // 영구히 반영되지 않던 치명적 버그가 있었다(서버측 API 테스트는 페이로드를
+  // 손으로 구성해 이 버그를 못 잡았음 — 반드시 실제 getFullState() 경로를 타는
+  // e2e로 검증해야 한다).
+  test("연말정산 확정 결과가 getFullState() 저장 경로를 통해 실제로 서버에 영속된다", async ({ page }) => {
+    await page.goto("/");
+    await page.fill("#l-id", "e2e_admin");
+    await page.fill("#l-pw", "E2eTestPw123");
+    await page.evaluate(() => {
+      loadFromServer = async () => {};
+      connectSSE = async () => {};
+    });
+    await page.click(".login-card button.btn-primary");
+    await expect(page.locator("#main")).toBeVisible({ timeout: 10000 });
+
+    const year = 2024;
+    const result = await page.evaluate(async (year) => {
+      const empId = currentUser.id;
+      saveYearEndSettlement(empId, year, 2, true); // dependents=2, confirmed=true
+      await _doSave(true); // autoSaveDebounced()의 지연 없이 즉시 실제 서버 저장을 실행
+      const r = await serverRequest("GET", "/data"); // 클라이언트 메모리가 아니라 서버에서 새로 조회
+      const rec = (r.data?.yearEndSettlements || []).find(y => String(y.empId) === String(empId) && y.year === year);
+      return { found: !!rec, dependents: rec?.dependents, confirmed: rec?.confirmed };
+    }, year);
+    expect(result).toEqual({ found: true, dependents: 2, confirmed: true });
+
+    // 재저장(dependents만 변경)해도 CAS(_rev) 충돌 없이 반영돼야 한다 — saveYearEndSettlement()가
+    // 매번 완전히 새 레코드 객체를 만들면서 기존 _rev를 옮기지 않으면, 서버가 부여한 _rev를
+    // 잃어버려 두 번째 저장부터 항상 409(RECORD_REVISION_CONFLICT)가 발생하던 버그가 있었다.
+    const secondSave = await page.evaluate(async (year) => {
+      const empId = currentUser.id;
+      saveYearEndSettlement(empId, year, 5, true); // dependents 2 → 5로 변경
+      await _doSave(false);
+      const r = await serverRequest("GET", "/data");
+      const rec = (r.data?.yearEndSettlements || []).find(y => String(y.empId) === String(empId) && y.year === year);
+      return { statusMsg: serverConfig.statusMsg, dependents: rec?.dependents };
+    }, year);
+    expect(secondSave.statusMsg).not.toContain("충돌");
+    expect(secondSave.dependents).toBe(5);
   });
 
   test("휴가·근무보상·복리후생 정책과 채용 키워드 적합도가 연동된다", async ({ page }) => {

@@ -29,3 +29,29 @@ test("목표 ID가 이미 있으면 모든 변경을 취소한다",async(t)=>{
   res=await api("/api/admin/employee-login-ids/normalize",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({confirm:"REMOVE_U_PREFIX"})});assert.equal(res.status,409);
   const after=await(await api("/data")).json();assert.equal(after.data.employees.find(e=>e.id==="target").loginId,"U2001");
 });
+
+// 과거엔 loginId가 /^u/i에만 매칭되면(u로 시작하기만 하면) 사번과 무관하게 통째로
+// 사번으로 바꿔버렸음 — u로 시작할 뿐 사번과 전혀 무관한 로마자 이름·서비스
+// 계정까지 "U 접두어 제거"라는 버튼 설명과 다르게 완전히 다른 로그인 ID로
+// 뒤바뀌던 버그. u+사번 형태만 정확히 매칭되어야 한다.
+test("u로 시작해도 뒷부분이 사번과 다르면 손대지 않는다",async(t)=>{
+  const server=await startServer();t.after(()=>server.stop());
+  const boot=await bootstrapAdminAndLogin(server,{loginId:"admin",pw:"admin-password",name:"관리자"});
+  const api=(path,options={})=>fetch(server.baseUrl+path,{...options,headers:{Authorization:`Bearer ${boot.token}`,...(options.headers||{})}});
+  const state=await(await api("/data")).json();
+  const additions=[
+    {id:"emp-romanized",name:"우지민",empNo:"20260012",loginId:"ujimin",pw:"jimin-password",role:"member",active:true},
+    {id:"emp-service-acct",name:"업로드봇",empNo:"9999",loginId:"upload-bot",pw:"bot-password",role:"member",active:true},
+    {id:"emp-real-target",name:"실제대상",empNo:"3001",loginId:"u3001",pw:"target-password",role:"member",active:true},
+  ];
+  let res=await api("/save",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({_version:state.version,data:{...state.data,employees:[...state.data.employees,...additions]}})});assert.equal(res.status,200);
+  const preview=await(await api("/api/admin/employee-login-ids/normalize-preview")).json();
+  assert.equal(preview.targets.length,1);
+  assert.equal(preview.targets[0].employeeId,"emp-real-target");
+  res=await api("/api/admin/employee-login-ids/normalize",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({confirm:"REMOVE_U_PREFIX"})});assert.equal(res.status,200);
+  assert.equal((await res.json()).changed,1);
+  const after=await(await api("/data")).json();
+  assert.equal(after.data.employees.find(e=>e.id==="emp-romanized").loginId,"ujimin");
+  assert.equal(after.data.employees.find(e=>e.id==="emp-service-acct").loginId,"upload-bot");
+  assert.equal(after.data.employees.find(e=>e.id==="emp-real-target").loginId,"3001");
+});
