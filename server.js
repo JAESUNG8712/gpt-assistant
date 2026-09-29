@@ -664,6 +664,7 @@ function filterDataForRole(data, auth) {
     if (Array.isArray(out.jobSkillProfiles)) out.jobSkillProfiles = [];
     if (Array.isArray(out.employeeSkillProfiles)) out.employeeSkillProfiles = [];
     if (Array.isArray(out.workforceScenarios)) out.workforceScenarios = [];
+    if (Array.isArray(out.workforcePositions)) out.workforcePositions = [];
   }
   if (auth.role !== "admin" && Array.isArray(out.compResponses)) {
     out.compResponses = out.compResponses.map(r => {
@@ -1347,6 +1348,7 @@ const _WRITE_GATED_FIELDS = {
   jobSkillProfiles:   { roles: ["admin"], pageIds: "skills-architecture" },
   employeeSkillProfiles: { roles: ["admin"], pageIds: "skills-architecture" },
   workforceScenarios: { roles: ["admin"], pageIds: "workforce-planning" },
+  workforcePositions: { roles: ["admin"], pageIds: "position-control" },
   approvalTemplates:  { roles: ["admin"], pageIds: "approval-templates" },
   // hr-mandatory-training(admin/director/leader)의 일괄 등록 외에, 누구나 접근 가능한 개인
   // "법정의무교육" 화면(mandatory-training)에 본인 이수 자가등록 버튼("이수 등록")이 있다 —
@@ -1665,6 +1667,31 @@ function _validateFieldValues(field, rec, storedList) {
       }
       if (action.note != null && (typeof action.note !== "string" || action.note.length > 500)) return false;
     }
+  } else if (field === "workforcePositions") {
+    if (typeof rec.code !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_-]{1,39}$/.test(rec.code)) return false;
+    if (typeof rec.title !== "string" || !rec.title.trim() || rec.title.length > 120) return false;
+    if (typeof rec.dept !== "string" || !rec.dept.trim() || rec.dept.length > 120) return false;
+    if (rec.team != null && (typeof rec.team !== "string" || rec.team.length > 120)) return false;
+    if (!["regular", "shared", "external"].includes(rec.positionType || "regular")) return false;
+    if (!["active", "inactive"].includes(rec.status || "active")) return false;
+    const target = Number(rec.targetHeadcount);
+    if (!Number.isInteger(target) || target < 1 || target > 1000) return false;
+    if (!Array.isArray(rec.incumbentIds) || rec.incumbentIds.length > target) return false;
+    const ids = rec.incumbentIds.map(String);
+    if (new Set(ids).size !== ids.length || ids.some(id => !id || id.length > 120)) return false;
+    // 배정 인원이 남아 있는 포지션을 비활성화하면 채용 정원 계산에서는 빠지지만 직원은
+    // 계속 그 포지션에 묶이는 모순이 생긴다. 먼저 재직자를 다른 포지션으로 이동하도록 강제한다.
+    if (rec.status === "inactive" && ids.length) return false;
+    if (Array.isArray(storedList)) {
+      const others = storedList.filter(p => p && String(p.id) !== String(rec.id) && p.status === "active");
+      if (others.some(p => String(p.code || "").toLocaleLowerCase() === rec.code.toLocaleLowerCase())) return false;
+      if (rec.status === "active") {
+        const occupiedElsewhere = new Set(others.flatMap(p => (p.incumbentIds || []).map(String)));
+        if (ids.some(id => occupiedElsewhere.has(id))) return false;
+      }
+    }
+    if (rec.effectiveDate && !/^\d{4}-\d{2}-\d{2}$/.test(rec.effectiveDate)) return false;
+    if (rec.note != null && (typeof rec.note !== "string" || rec.note.length > 500)) return false;
   }
   return true;
 }
@@ -2049,6 +2076,22 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
           return out;
         })
         .filter(r => r !== null);
+      // JSON 모드는 한 요청에 실린 신규 레코드를 일괄 병합하므로, 저장본만 기준으로
+      // 검증하면 같은 요청 안의 중복 포지션 코드/재직자 이중 배정을 놓칠 수 있다.
+      // 이미 수락한 요청 레코드를 차례로 검증 기준에 더해 이 우회를 막는다.
+      if (gatedField === "workforcePositions") {
+        const accepted = [];
+        data[gatedField] = data[gatedField].filter(rec => {
+          if (!rec || rec.id == null) return false;
+          const basis = [
+            ...storedList.filter(p => p && String(p.id) !== String(rec.id)),
+            ...accepted.filter(p => String(p.id) !== String(rec.id)),
+          ];
+          if (!_validateFieldValues(gatedField, rec, basis)) return false;
+          accepted.push(rec);
+          return true;
+        });
+      }
       if (gatedField === "welfarePoints") {
         data[gatedField] = _dropOverspentWelfare(data[gatedField], storedList, actor);
       }
@@ -2086,6 +2129,13 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
     const onboardingFlowsFinal  = _mergeProtectedField("onboardingFlows");
     const tieNotificationsFinal = _mergeProtectedField("tieNotifications");
     const orgChartHistoryFinal  = _mergeProtectedField("orgChartHistory");
+    // _WRITE_GATED_FIELDS에 새 관리자/역할 제한 컬렉션이 추가될 때마다 위 목록에 사람이
+    // 수동으로 한 줄을 더하지 않으면, 그 필드를 볼 수 없는 사용자의 빈 배열 echo가 JSON
+    // 저장 모드에서 원장을 통째로 덮어쓸 수 있었다(workforcePositions에서 재현). 권한
+    // 컬렉션 전체를 선언부에서 자동 파생해 항상 저장본과 id 병합하도록 한다.
+    const writeGatedFieldFinals = Object.fromEntries(
+      Object.keys(_WRITE_GATED_FIELDS).map(field => [field, _mergeProtectedField(field)])
+    );
     // 결재 위조 방어(_sanitizeApprovalDoc 주석 참고): 병합 전에 들어온 문서를 저장본과
     // 대조해 권한 없는 결재 칸 변경을 되돌린다.
     const approvalDocsFinal = (() => {
@@ -2163,6 +2213,7 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
       onboardingFlows: onboardingFlowsFinal, tieNotifications: tieNotificationsFinal,
       orgChartHistory: orgChartHistoryFinal,
       approvalDocs: approvalDocsFinal, compGradeResults: compGradeResultsFinal,
+      ...writeGatedFieldFinals,
     };
     const verState = _bumpVersion(companyId);
     _fileStore._version = verState.version;
@@ -2422,7 +2473,16 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
             if (toWrite === null) continue;   // 권한 없이 새로 만들어진 레코드 — 쓰지 않음
           }
           // 값 범위·형식 검증(_validateFieldValues 주석 참고, JSON모드와 동일 규칙).
-          if (toWrite && !_validateFieldValues(field, toWrite, field === "roomReservations" ? await _getRoomReservationsPg() : null)) {
+          let validationList = null;
+          if (field === "roomReservations") validationList = await _getRoomReservationsPg();
+          else if (field === "workforcePositions") {
+            const { rows: positionRows } = await client.query(
+              "SELECT data FROM app_collections WHERE collection = 'workforcePositions' AND (company_id = $1 OR company_id IS NULL)",
+              [companyId || null]
+            );
+            validationList = positionRows.map(r => r.data);
+          }
+          if (toWrite && !_validateFieldValues(field, toWrite, validationList)) {
             toWrite = storedItem;
             if (toWrite === null) continue;
           }
@@ -4207,6 +4267,7 @@ const _BLOB_MODULE_FIELDS = {
   kpi:       ["kpiEntries", "changeRequests", "tieNotifications", "gradeAdjustHistory"],
   comp_eval: ["compSessions", "compResponses", "compGradeResults", "evaluatorConfig"],
   talent:    ["coreTalentPool", "talentDevPlans", "successionPlans", "jobSkillProfiles", "employeeSkillProfiles", "workforceScenarios", "lowPerfData", "coreTalentSettings"],
+  recruit:   ["workforcePositions"],
   hr:        ["orgChartHistory"],
   // 승진 처리 자체(employees[].rank 변경)는 hr와 동일한 이유로 대상 밖(핵심 인사 데이터라
   // 통째로 막으면 위험)이지만, 자격요건 설정값(promotionSettings — 직급별 최소연수·등급
@@ -9215,6 +9276,34 @@ async function _recruitCanViewJob(job, userId, role, companyId, cache) {
   if (emp.role === "leader" && String(emp.dept || "").includes("인사")) return true;
   return false;
 }
+async function _workforcePositionById(positionId, companyId) {
+  if (!positionId) return null;
+  if (USE_JSON_FILE) return (_fileStore.workforcePositions || []).find(p => String(p.id) === String(positionId)) || null;
+  const { rows } = await pool.query(
+    "SELECT data FROM app_collections WHERE collection = 'workforcePositions' AND id = $1 AND (company_id = $2 OR company_id IS NULL)",
+    [String(positionId), companyId || null]
+  );
+  return rows.length ? rows[0].data : null;
+}
+async function _validateRecruitPositionLink(job, companyId) {
+  if (!job.positionId) return { ok: true, position: null };
+  const position = await _workforcePositionById(job.positionId, companyId);
+  if (!position || position.status !== "active") return { ok: false, status: 409, message: "사용 가능한 승인 포지션이 아닙니다." };
+  const target = Number(position.targetHeadcount) || 0;
+  // 퇴직·비활성 직원은 현재 재직 정원을 점유하지 않는다. UI와 서버가 같은 기준을 써야
+  // 잔여 정원이 화면과 API에서 서로 다르게 보이지 않는다.
+  const employees = await _recruitAllEmployees(companyId);
+  const activeEmployeeIds = new Set(employees.filter(e => e && e.active !== false).map(e => String(e.id)));
+  const assigned = new Set((position.incumbentIds || []).map(String).filter(id => activeEmployeeIds.has(id))).size;
+  const jobs = await _recruitAllJobs(companyId);
+  const reserved = jobs.filter(j => j.status === "open" && String(j.positionId || "") === String(position.id) && String(j.id) !== String(job.id))
+    .reduce((sum, j) => sum + (Number(j.headcount) || 0), 0);
+  const available = Math.max(0, target - assigned - reserved);
+  if (Number(job.headcount) > available) {
+    return { ok: false, status: 409, message: `잔여 승인 정원(${available}명)을 초과해 채용공고를 만들 수 없습니다.`, available };
+  }
+  return { ok: true, position, available };
+}
 app.get("/api/recruit/jobs", async (req, res) => {
   if (!requireAuth(req, res)) return;
   try {
@@ -9242,12 +9331,13 @@ app.post("/api/recruit/jobs", async (req, res) => {
     if (!requirePage(req, res, "recruit-jobs")) return;
     const { role, empId: userId } = req.auth;
     const companyId = req.auth.companyId || null;
-    const { id, title, department, team, headcount, stages, status, description, purpose, responsibilities, requiredYears, keywords, docFile, viewerIds, user: createdBy, userId: createdById } = req.body || {};
+    await _withSaveLock(() => _withDistributedSaveLock(companyId, async () => {
+    const { id, title, department, team, headcount, positionId, stages, status, description, purpose, responsibilities, requiredYears, keywords, docFile, viewerIds, user: createdBy, userId: createdById } = req.body || {};
     if (!title) return res.status(400).json({ ok: false, message: "채용공고 제목은 필수입니다." });
     if (headcount != null && headcount !== "") {
       const hc = Number(headcount);
-      if (!Number.isInteger(hc) || hc < 0 || hc > 9999) {
-        return res.status(400).json({ ok: false, message: "채용 인원은 0 이상의 정수여야 합니다." });
+      if (!Number.isInteger(hc) || hc < 1 || hc > 9999) {
+        return res.status(400).json({ ok: false, message: "채용 인원은 1 이상의 정수여야 합니다." });
       }
     }
     const jobId = id || `job_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
@@ -9264,6 +9354,7 @@ app.post("/api/recruit/jobs", async (req, res) => {
       department: department != null ? department : (existing ? existing.department : ""),
       team: team != null ? team : (existing ? existing.team : ""),
       headcount: headcount != null && headcount !== "" ? (Number(headcount) || 1) : (existing ? existing.headcount : 1),
+      positionId: positionId != null ? String(positionId) : (existing ? existing.positionId || "" : ""),
       stages: Array.isArray(stages) && stages.length ? stages : (existing ? existing.stages : defaultStages),
       status: status != null ? status : (existing ? existing.status : "open"),
       description: description != null ? String(description) : (existing ? existing.description || "" : ""),
@@ -9286,6 +9377,9 @@ app.post("/api/recruit/jobs", async (req, res) => {
         return res.status(403).json({ ok: false, message: "수정 권한이 없습니다." });
       }
       const job = buildJob(existing);
+      const link = await _validateRecruitPositionLink(job, companyId);
+      if (!link.ok) return res.status(link.status).json({ ok: false, code: "POSITION_CAPACITY_EXCEEDED", message: link.message, available: link.available });
+      if (link.position) { job.department = link.position.dept; job.team = link.position.team || ""; job.positionCode = link.position.code; }
       const idx = _fileRecruit.jobs.findIndex(j => j.id === jobId);
       if (idx >= 0) _fileRecruit.jobs[idx] = job; else _fileRecruit.jobs.push(job);
       _saveFileRecruit();
@@ -9297,11 +9391,15 @@ app.post("/api/recruit/jobs", async (req, res) => {
       return res.status(403).json({ ok: false, message: "수정 권한이 없습니다." });
     }
     const job = buildJob(existing);
+    const link = await _validateRecruitPositionLink(job, companyId);
+    if (!link.ok) return res.status(link.status).json({ ok: false, code: "POSITION_CAPACITY_EXCEEDED", message: link.message, available: link.available });
+    if (link.position) { job.department = link.position.dept; job.team = link.position.team || ""; job.positionCode = link.position.code; }
     await pool.query(
       "INSERT INTO recruit_jobs (id, company_id, data) VALUES ($1,$2,$3) ON CONFLICT (company_id, id) DO UPDATE SET data = $3, updated_at = NOW()",
       [jobId, companyId, job]
     );
     res.json({ ok: true, job });
+    }));
   } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
