@@ -135,6 +135,36 @@ test.describe("로그인·기본 네비게이션", () => {
     expect(pageErrors).toHaveLength(0);
   });
 
+  test("전략적 인력계획은 원장을 바꾸지 않고 인원·인건비 시나리오를 계산한다", async ({ page }) => {
+    await page.goto("/");
+    const pageErrors=[];page.on("pageerror",e=>pageErrors.push(e.message));
+    const result=await page.evaluate(() => {
+      currentUser={id:"wf-admin",name:"인력계획관리자",role:"admin",dept:"인사",menuPerms:{}};
+      employees=[
+        {id:"wf-e1",name:"개발자",active:true,role:"member",dept:"개발",salary:60000000},
+        {id:"wf-e2",name:"영업",active:true,role:"member",dept:"영업",salary:50000000},
+      ];
+      workforceScenarios=[{id:"wf-s1",name:"2027 성장안",year:2027,status:"draft",description:"채용과 자연감소 비교",actions:[
+        {id:"wf-a1",type:"hire",dept:"개발",count:1,annualCost:70000000,effectiveMonth:7},
+        {id:"wf-a2",type:"exit",dept:"영업",count:1,effectiveMonth:1},
+      ]}];
+      jobSkillProfiles=[];employeeSkillProfiles=[];successionPlans=[];
+      const before=JSON.stringify(employees),projection=calculateWorkforceScenario(workforceScenarios[0]);
+      render();gotoPage("workforce-planning");viewWorkforceScenario("wf-s1");
+      return{projection,employeesUnchanged:before===JSON.stringify(employees)};
+    });
+    expect(result.employeesUnchanged).toBe(true);
+    expect(result.projection.baselineHeadcount).toBe(2);
+    expect(result.projection.projectedHeadcount).toBe(2);
+    expect(result.projection.baselineCost).toBe(110000000);
+    expect(result.projection.projectedCost).toBe(95000000);
+    expect(result.projection.alerts).toEqual([]);
+    await expect(page.locator("#content").getByRole("heading",{name:"전략적 인력계획"})).toBeVisible();
+    await expect(page.locator("#content")).toContainText("2027 성장안");
+    await expect(page.locator("#content")).toContainText("기준 → 예상 인원");
+    expect(pageErrors).toHaveLength(0);
+  });
+
   test("잘못된 비밀번호는 오류를 보여준다", async ({ page }) => {
     await page.goto("/");
     await page.fill("#l-id", "e2e_admin");

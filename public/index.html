@@ -1039,6 +1039,7 @@ let lowPerfData=[]; // [{id,empId,year,flaggedDate,flaggedBy,status:"watch"|"pip
 let successionPlans=[]; // 핵심직무 승계계획 [{id,title,incumbentId,criticality,riskOfLoss,impactOfLoss,status,candidates:[...]}]
 let jobSkillProfiles=[]; // 직무별 요구 스킬 [{id,title,dept,position,skills:[{name,level,weight}],status}]
 let employeeSkillProfiles=[]; // 직원별 검증 스킬 [{id,empId,skills:[{name,level,evidence}]}]
+let workforceScenarios=[]; // 전략적 인력계획 샌드박스 [{id,name,year,status,actions:[...]}]
 let approvalTemplates=[]; // 커스텀 결재 양식
 let disabledTplIds=[]; // 사용 중지된 양식 id 목록 (기본+커스텀 공통)
 let approvalChainSettings={includeLeader:true,includeDirector:true,finalApprovers:[],reminderDays:2}; // 계층형 결재선 설정 (팀장/사업부장 단계 포함 여부, 최종 결재자 추가, 결재 지연 리마인드 기준일)
@@ -1080,7 +1081,7 @@ let healthCheckupLog=[]; // 종합검진 이수 이력 [{id,empId,year,completed
 let scheduleEvents=[]; // 캘린더 일정 [{id,authorId,title,startDate,endDate,scope:"personal"|"team"|"dept"|"company",dept,team,memo,color,createdAt}]
 function _recordCollections(){return{
   employees,kpiEntries,compSessions,compResponses,changeRequests,orgChartHistory,
-  coreTalentPool,talentDevPlans,successionPlans,jobSkillProfiles,employeeSkillProfiles,gradeAdjustHistory,tieNotifications,lowPerfData,
+  coreTalentPool,talentDevPlans,successionPlans,jobSkillProfiles,employeeSkillProfiles,workforceScenarios,gradeAdjustHistory,tieNotifications,lowPerfData,
   approvalTemplates,integrationLogs,approvalDocs,attendanceRecords,payslips,
   yearEndSettlements,
   payrollAdjustments,leaveUsagePlans,boardPosts,roomReservations,certLog,certRequests,
@@ -2513,7 +2514,7 @@ async function openServerBackupsModal(){
 const SNAPSHOT_FIELD_LABELS = {
   employees:"인사 정보(employees)", kpiEntries:"KPI 평가", changeRequests:"변경요청",
   orgChartHistory:"조직도 이력", coreTalentPool:"핵심인재 풀", talentDevPlans:"인재개발계획", successionPlans:"승계계획",
-  jobSkillProfiles:"직무·스킬 기준", employeeSkillProfiles:"직원 스킬 프로필",
+  jobSkillProfiles:"직무·스킬 기준", employeeSkillProfiles:"직원 스킬 프로필", workforceScenarios:"전략적 인력계획 시나리오",
   compGradeResults:"보상등급 결과", gradeAdjustHistory:"등급조정 이력", tieNotifications:"동점자 알림",
   lowPerfData:"저성과자 데이터", approvalTemplates:"전자결재 템플릿", integrationLogs:"연동 로그",
   approvalDocs:"전자결재 문서", attendanceRecords:"근태기록", payslips:"급여명세서", payrollAdjustments:"급여 조정항목",
@@ -5089,7 +5090,7 @@ function executeBulkImport(){
 }
 
 // ==================== BACKUP & RESTORE ====================
-const CURRENT_SCHEMA_VERSION="8.2";
+const CURRENT_SCHEMA_VERSION="8.3";
 
 function getFullState(action=""){
   const state={_version:_serverVersion,_action:action,_recordCasVersion:1,_singletonRevisions:{..._singletonRevisions},
@@ -5112,6 +5113,7 @@ function getFullState(action=""){
       successionPlans:JSON.parse(JSON.stringify(successionPlans)),
       jobSkillProfiles:JSON.parse(JSON.stringify(jobSkillProfiles)),
       employeeSkillProfiles:JSON.parse(JSON.stringify(employeeSkillProfiles)),
+      workforceScenarios:JSON.parse(JSON.stringify(workforceScenarios)),
       coreTalentSettings:JSON.parse(JSON.stringify(coreTalentSettings)),
       compGradeResults:JSON.parse(JSON.stringify(compGradeResults)),
       gradeAdjustHistory:JSON.parse(JSON.stringify(gradeAdjustHistory)),
@@ -5322,6 +5324,7 @@ function applyState(state,skipUndo=false){
   if(d.successionPlans&&Array.isArray(d.successionPlans))successionPlans=_mergeByIdPreferNewer(successionPlans,d.successionPlans,'successionPlans');
   if(d.jobSkillProfiles&&Array.isArray(d.jobSkillProfiles))jobSkillProfiles=_mergeByIdPreferNewer(jobSkillProfiles,d.jobSkillProfiles,'jobSkillProfiles');
   if(d.employeeSkillProfiles&&Array.isArray(d.employeeSkillProfiles))employeeSkillProfiles=_mergeByIdPreferNewer(employeeSkillProfiles,d.employeeSkillProfiles,'employeeSkillProfiles');
+  if(d.workforceScenarios&&Array.isArray(d.workforceScenarios))workforceScenarios=_mergeByIdPreferNewer(workforceScenarios,d.workforceScenarios,'workforceScenarios');
   if(d.coreTalentSettings&&typeof d.coreTalentSettings==="object")coreTalentSettings={...coreTalentSettings,...d.coreTalentSettings};
   if(d.compGradeResults&&typeof d.compGradeResults==="object")compGradeResults={...compGradeResults,...d.compGradeResults};
   if(d.gradeAdjustHistory&&Array.isArray(d.gradeAdjustHistory))gradeAdjustHistory=d.gradeAdjustHistory;
@@ -5385,6 +5388,7 @@ function applyState(state,skipUndo=false){
   successionPlans=_tombFilter(successionPlans,"successionPlans");
   jobSkillProfiles=_tombFilter(jobSkillProfiles,"jobSkillProfiles");
   employeeSkillProfiles=_tombFilter(employeeSkillProfiles,"employeeSkillProfiles");
+  workforceScenarios=_tombFilter(workforceScenarios,"workforceScenarios");
   approvalTemplates=_tombFilter(approvalTemplates,"approvalTemplates");
   payrollAdjustments=_tombFilter(payrollAdjustments,"payrollAdjustments");
   boardPosts=_tombFilter(boardPosts,"boardPosts");
@@ -5652,6 +5656,7 @@ function mergeImportData(parsed){
   if(d.successionPlans&&Array.isArray(d.successionPlans))successionPlans=d.successionPlans;
   if(d.jobSkillProfiles&&Array.isArray(d.jobSkillProfiles))jobSkillProfiles=d.jobSkillProfiles;
   if(d.employeeSkillProfiles&&Array.isArray(d.employeeSkillProfiles))employeeSkillProfiles=d.employeeSkillProfiles;
+  if(d.workforceScenarios&&Array.isArray(d.workforceScenarios))workforceScenarios=d.workforceScenarios;
   if(d.coreTalentSettings&&typeof d.coreTalentSettings==="object")Object.assign(coreTalentSettings,d.coreTalentSettings);
   if(d.evaluatorConfig&&typeof d.evaluatorConfig==="object")Object.assign(evaluatorConfig,d.evaluatorConfig);
   if(d.gradeAdjustHistory&&Array.isArray(d.gradeAdjustHistory)){const existIds=new Set(gradeAdjustHistory.map(r=>r.id));d.gradeAdjustHistory.forEach(r=>{if(r&&r.id&&!existIds.has(r.id))gradeAdjustHistory.push(r);});}
@@ -6661,6 +6666,7 @@ function renderSidebar(){
       {id:"core-talent",label:"핵심인재 관리",icon:"⭐",desc:"핵심인재 선발·관리",roles:["admin"]},
       {id:"succession-planning",label:"핵심직무 승계계획",icon:"🔁",desc:"후보 준비도·이탈위험·승계 커버리지",roles:["admin"]},
       {id:"skills-architecture",label:"직무·스킬 아키텍처",icon:"🧩",desc:"직무 요구역량·직원 스킬·격차 분석",roles:["admin"]},
+      {id:"workforce-planning",label:"전략적 인력계획",icon:"🧭",desc:"채용·퇴사·재배치·급여 시나리오 비교",roles:["admin"]},
       {id:"talent-dev",label:"육성 계획·실적",icon:"📋",desc:"역량 개발 계획 관리",roles:talentDevRoles},
     ],
     "lowperf-sep":[
@@ -6750,6 +6756,7 @@ function renderSidebar(){
   const titles={dashboard:"대시보드","my-profile":"내 프로필","hr-register":"신규 직원 등록","hr-list":"직원 목록","hr-changes":"발령·변동 이력",kpi:"KPI 목표 등록","kpi-results":"KPI 결과 입력","my-kpi":"나의 KPI","grade-view":"KPI 등급 현황","comp-grade-view":"역량평가 등급","comp-eval":"다면평가 진행","first-eval":"1차 평가","second-eval":"2차 평가","kpi-amend":"수정 요청 승인","eval-progress":"평가 진행 상황",settings:"운영 설정",history:"수정 이력","change-pw":"비밀번호 변경","data-mgmt":"데이터 관리","core-talent":"핵심인재 관리","talent-dev":"육성 계획·실적","promotion-mgmt":"승진 심사 관리","low-performer":"저성과 인력 관리","approval-draft":"기안하기","approval-outbox":"상신함","approval-inbox":"결재함","approval-receive":"수신함","approval-cc-inbox":"참조함","approval-completed":"완료함","attendance":"근태 현황","att-calendar":"캘린더","leave-mgmt":"연차 관리","payslip":"급여 명세서","yearend-settlement":"연말정산(간이)","approval-templates":"결재 양식 관리","integrations":"연동 설정","orgchart":"조직도","certificate":"증명서 발급","hr-stats":"인사 통계","board":"게시판","room-booking":"회의실 예약","welfare-points":"복지포인트","mandatory-training":"법정의무교육","hr-welfare-points":"복지포인트 현황(전체)","hr-mandatory-training":"법정의무교육 현황(전체)","hr-attendance":"근태 현황(전체)","hr-leave-mgmt":"연차 관리(전체)","welfare-status":"복지 현황","long-service-award":"장기근속 포상","award-history":"(최)우수사원 선정 이력","salary-info":"급여 기준 정보","welfare-settings":"복지 제도 설정","notification-center":"알림","acct-partners":"거래처 관리","acct-accounts":"계정과목","acct-vouchers":"전표 관리","acct-tax-invoices":"세금계산서","acct-vat-report":"부가세 신고자료","acct-fixed-assets":"고정자산 관리","acct-fixed-assets-detail":"고정자산 상세","acct-cost-statement":"원가명세서","acct-rcps":"RCPS 관리","acct-rcps-detail":"RCPS 발행 상세","acct-reports":"회계 리포트","expense-claims":"경비 청구","expense-admin":"경비 정산 관리","acct-receivables":"채권/채무 관리","biz-plan":"사업계획","overtime-req":"초과근무 신청","exec-dashboard":"경영 대시보드","onboarding":"온보딩/오프보딩","approval-delegation":"결재 위임","sales-quotations":"견적서 관리","sales-dashboard":"영업 실적 대시보드","sales-purchase-orders":"발주서 관리","inv-items":"품목 관리","inv-locations":"위치 관리","inv-stock":"재고 현황","inv-purchase-requests":"구매요청","pms-projects":"프로젝트 관리","pms-allocation":"내 투입률 입력","pms-my-projects":"내가 투입된 프로젝트","pms-utilization":"가동률 현황","pms-worklog":"일일 업무 투입","recruit-jobs":"채용공고 관리","recruit-candidates":"지원자 관리","recruit-eval":"면접 일정/평가 입력","recruit-eval-detail":"면접 평가 상세","recruit-dashboard":"채용 현황 대시보드","eval-ops":"평가 운영","settings-org":"조직 관리","settings-ranks":"직급 체계","attend-settings":"근태 설정","payroll-settings":"급여 관리","payroll-mgmt":"급여 종합 관리","company-info":"회사 기본 정보","room-settings":"회의실 관리","deploy-perm":"권한 관리"};
   titles["succession-planning"]="핵심직무 승계계획";
   titles["skills-architecture"]="직무·스킬 아키텍처";
+  titles["workforce-planning"]="전략적 인력계획";
   const ptEl=$("#page-title");if(ptEl)ptEl.textContent=titles[currentPage]||"";
   const sb=$("#sidebar");if(!sb)return;
   // Filter by role + per-user custom permission overrides (admin-managed)
@@ -6862,7 +6869,7 @@ const PAGE_ROLES={
   "first-eval":["admin","leader"],"second-eval":["admin","director"],"kpi-amend":["admin","director","leader"],
   "grade-view":["admin","director","leader"],"comp-grade-view":["admin"],"comp-settings-shortcut":["admin"],
   "eval-progress":["admin","director","leader"],
-  "promotion-mgmt":["admin"],"core-talent":["admin"],"succession-planning":["admin"],"skills-architecture":["admin"],
+  "promotion-mgmt":["admin"],"core-talent":["admin"],"succession-planning":["admin"],"skills-architecture":["admin"],"workforce-planning":["admin"],
   "settings":["admin"],"approval-templates":["admin"],"integrations":["admin"],"data-mgmt":["admin"],
   "history":["admin"],"activity-log":["admin"],
   "eval-ops":["admin"],"settings-org":["admin"],"settings-ranks":["admin"],"attend-settings":["admin"],
@@ -7025,6 +7032,7 @@ function renderPage(){
   const pages={dashboard:renderDashboard,"my-profile":renderMyProfile,"hr-register":renderHRRegister,"hr-list":renderHRList,"hr-changes":renderHRChanges,kpi:()=>renderKPI(false),"kpi-results":()=>renderKPI(true),"my-kpi":renderMyKPI,"grade-view":renderGradeView,"comp-grade-view":renderCompGradeView,"comp-settings-shortcut":()=>gotoPage("eval-ops"),"comp-eval":renderCompEval,"data-mgmt":renderDataManagementPage,"core-talent":renderCoreTalentPage,"talent-dev":renderTalentDevPage,"promotion-mgmt":renderPromotionPageStandalone,"low-performer":renderLowPerformer,"activity-log":()=>{loadActivityFromServer();},"first-eval":()=>{approvalTab="eval";approvalSearch={name:"",dept:""};renderApprovals();},"second-eval":()=>{approvalTab="eval";approvalSearch={name:"",dept:""};renderApprovals();},"kpi-amend":()=>{approvalTab="requests";approvalSearch={name:"",dept:""};renderApprovals();},"eval-progress":renderEvalProgressPage,settings:renderSettings,"eval-ops":renderEvalOpsPage,"settings-org":renderSettingsOrgPage,"settings-ranks":renderSettingsRanksPage,"attend-settings":renderAttendSettings,"payroll-settings":renderPayrollSettings,"company-info":renderCompanyInfo,"room-settings":renderRoomSettings,"deploy-perm":renderDeployPermPage,history:renderHistory,"change-pw":renderChangePW,"approval-draft":renderApprovalDraftPage,"approval-outbox":renderApprovalOutbox,"approval-inbox":renderApprovalInbox,"approval-receive":renderApprovalReceive,"approval-cc-inbox":renderApprovalCcInbox,"approval-completed":renderApprovalCompleted,"attendance":renderAttendancePage,"att-calendar":renderAttendanceCalendarPage,"leave-mgmt":renderLeaveManagementPage,"payslip":renderPayslipPage,"yearend-settlement":renderYearEndSettlementPage,"approval-templates":renderApprovalTemplateAdmin,"integrations":renderIntegrationsPage,"orgchart":renderOrgChartPage,"certificate":renderCertPage,"hr-stats":renderHRStatsPage,"board":renderBoardPage,"room-booking":renderRoomBookingPage,"welfare-points":renderWelfarePointsPage,"mandatory-training":renderMandatoryTrainingPage,"welfare-status":renderWelfareStatusPage,"long-service-award":renderLongServiceAwardPage,"award-history":renderAwardHistoryPage,"hr-welfare-points":renderHrWelfarePointsPage,"hr-mandatory-training":renderHrMandatoryTrainingPage,"hr-attendance":renderHrAttendancePage,"hr-leave-mgmt":renderHrLeaveManagementPage,"payroll-mgmt":renderPayrollMgmtPage,"salary-info":renderSalaryInfoPage,"welfare-settings":renderWelfareSettingsPage,"notification-center":renderNotificationCenterPage,"acct-partners":renderAcctPartnersPage,"acct-accounts":renderAcctAccountsPage,"acct-vouchers":renderAcctVouchersPage,"acct-tax-invoices":renderAcctTaxInvoicesPage,"acct-vat-report":()=>{loadVatReportFromServer();},"acct-fixed-assets":renderAcctFixedAssetsPage,"acct-fixed-assets-detail":()=>{loadFixedAssetDetailFromServer();},"acct-cost-statement":renderAcctCostStatementPage,"acct-rcps":renderAcctRcpsPage,"acct-rcps-detail":()=>{loadRcpsDetailFromServer();},"acct-reports":renderAcctReportsPage,"expense-claims":renderExpenseClaimsPage,"expense-admin":renderExpenseAdminPage,"acct-receivables":renderAcctReceivablesPage,"biz-plan":()=>{loadBizPlanFromServer();},"emp-pay-plan":()=>{renderEmpPayPlanPage();},"overtime-req":renderOvertimeReqPage,"exec-dashboard":renderExecDashboardPage,"onboarding":renderOnboardingPage,"approval-delegation":renderApprovalDelegationPage,"sales-quotations":renderSalesQuotationsPage,"sales-dashboard":renderSalesDashboardPage,"sales-purchase-orders":renderSalesPurchaseOrdersPage,"inv-items":renderInvItemsPage,"inv-locations":renderInvLocationsPage,"inv-stock":renderInvStockPage,"inv-stock-log":renderInvStockLogPage,"inv-purchase-requests":renderPurchaseRequestsPage,"pms-projects":renderPmsProjectsPage,"pms-allocation":renderPmsAllocationPage,"pms-my-projects":renderPmsMyProjectsPage,"pms-utilization":renderPmsUtilizationPage,"pms-worklog":renderPmsWorklogPage,"recruit-jobs":renderRecruitJobsPage,"recruit-candidates":renderRecruitCandidatesPage,"recruit-eval":renderRecruitEvalPage,"recruit-eval-detail":renderRecruitEvalDetailPage,"recruit-dashboard":renderRecruitDashboardPage};
   pages["succession-planning"]=renderSuccessionPlanningPage;
   pages["skills-architecture"]=renderSkillsArchitecturePage;
+  pages["workforce-planning"]=renderWorkforcePlanningPage;
   const fn=pages[currentPage];const c=$("#content");
   if(c&&fn){
     c.innerHTML="";
@@ -11585,6 +11593,78 @@ async function deleteEmployeeSkillProfile(id){const p=employeeSkillProfiles.find
 function openJobSkillGapModal(id){const j=jobSkillProfiles.find(x=>String(x.id)===String(id));if(!j)return;const rows=employees.filter(e=>e.active&&e.role!=="admin"&&employeeSkillProfiles.some(p=>String(p.empId)===String(e.id))).map(e=>({e,..._jobSkillFit(j,e.id)})).sort((a,b)=>b.score-a.score).map(x=>`<tr><td>${h(x.e.name)}<div class="fz11 text-gray">${h(x.e.dept||"")} ${h(x.e.team||"")}</div></td><td><strong>${x.score}%</strong></td><td>${x.gaps.map(g=>`${h(g.name)} L${g.actual}→L${g.required}`).join(", ")||badge("충족","green")}</td></tr>`).join("");openModal(`<div class="modal-box" style="max-width:760px"><div class="modal-head"><h3>${h(j.title)} · 스킬 격차</h3></div><div class="modal-body" style="padding:0"><div class="tbl-wrap"><table><thead><tr><th>직원</th><th>적합도</th><th>부족 스킬</th></tr></thead><tbody>${rows||`<tr><td colspan="3" class="p-empty">직원 스킬 평가 자료가 없습니다.</td></tr>`}</tbody></table></div></div><div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal()">닫기</button></div></div>`);}
 function exportSkillGapCSV(){const rows=[];jobSkillProfiles.forEach(j=>employees.filter(e=>e.active&&e.role!=="admin"&&employeeSkillProfiles.some(p=>String(p.empId)===String(e.id))).forEach(e=>{const fit=_jobSkillFit(j,e.id);rows.push([j.title,j.dept,j.position,e.name,e.empNo,e.dept,e.team,fit.score,fit.gaps.map(g=>`${g.name}:${g.actual}/${g.required}`).join("; ")]);}));dlCSV(`직무_스킬격차_${new Date().toISOString().slice(0,10)}.csv`,["직무","직무부서","매칭직책","직원","사번","직원부서","팀","적합도(%)","부족스킬(보유/요구)"],rows);}
 
+// ==================== STRATEGIC WORKFORCE PLANNING ====================
+// Workday/Oracle/SAP의 전략적 인력계획 공통 패턴을 단순화한 샌드박스다. 시나리오의
+// 채용·퇴사·재배치·급여조정은 projection 계산에만 사용하며 employees 원장은 변경하지 않는다.
+const WF_STATUS={draft:"작성 중",review:"검토 중",approved:"승인"};
+const WF_ACTION={hire:"채용",exit:"퇴사",transfer:"재배치",salary:"급여 조정"};
+let _wfSelectedId="";
+function _wfMoney(v){return `${Math.round(Number(v)||0).toLocaleString("ko-KR")}원`;}
+function _wfBaseline(){
+  const byDept={};
+  employees.filter(e=>e.active).forEach(e=>{const dept=e.dept||"미지정";const d=byDept[dept]||(byDept[dept]={dept,headcount:0,cost:0});d.headcount++;d.cost+=Math.max(0,Number(e.salary)||0);});
+  return byDept;
+}
+function calculateWorkforceScenario(scenario){
+  const base=_wfBaseline(),byDept={};Object.values(base).forEach(d=>byDept[d.dept]={...d,projectedHeadcount:d.headcount,projectedCost:d.cost});
+  let costImpact=0;const alerts=[];const ensure=dept=>byDept[dept]||(byDept[dept]={dept,headcount:0,cost:0,projectedHeadcount:0,projectedCost:0});
+  for(const a of scenario?.actions||[]){
+    const count=Math.max(0,Math.floor(Number(a.count)||0)),month=Math.min(12,Math.max(1,Number(a.effectiveMonth)||1)),factor=(13-month)/12;
+    const from=ensure(a.dept||"미지정"),available=Math.max(0,from.projectedHeadcount),avg=from.projectedHeadcount>0?from.projectedCost/from.projectedHeadcount:0;
+    if(a.type==="hire"){
+      const annual=Math.max(0,Number(a.annualCost)||0);from.projectedHeadcount+=count;from.projectedCost+=annual*count*factor;costImpact+=annual*count*factor;
+      if(!annual)alerts.push(`${a.dept||"미지정"} 채용 ${count}명의 1인 연봉이 없습니다.`);
+    }else if(a.type==="exit"){
+      const applied=Math.min(count,available),delta=avg*applied*factor;from.projectedHeadcount-=applied;from.projectedCost-=delta;costImpact-=delta;
+      if(count>available)alerts.push(`${a.dept||"미지정"} 퇴사 ${count}명은 가용 인원 ${available}명을 초과합니다.`);
+    }else if(a.type==="transfer"){
+      const applied=Math.min(count,available),to=ensure(a.toDept||"미지정"),annual=avg*applied;from.projectedHeadcount-=applied;to.projectedHeadcount+=applied;from.projectedCost-=annual;to.projectedCost+=annual;
+      if(!a.toDept)alerts.push("재배치 대상 부서를 지정하세요.");if(count>available)alerts.push(`${a.dept||"미지정"} 재배치 ${count}명은 가용 인원 ${available}명을 초과합니다.`);
+    }else if(a.type==="salary"){
+      const rate=Number(a.rate)||0,scope=count?Math.min(count,available):available,delta=(avg*scope)*(rate/100)*factor;from.projectedCost+=delta;costImpact+=delta;
+      if(!rate)alerts.push(`${a.dept||"미지정"} 급여 조정률이 0%입니다.`);
+    }
+  }
+  const rows=Object.values(byDept).sort((a,b)=>a.dept.localeCompare(b.dept));
+  const baselineHeadcount=rows.reduce((n,d)=>n+d.headcount,0),projectedHeadcount=rows.reduce((n,d)=>n+d.projectedHeadcount,0);
+  const baselineCost=rows.reduce((n,d)=>n+d.cost,0),projectedCost=rows.reduce((n,d)=>n+d.projectedCost,0);
+  if(!(scenario?.actions||[]).length)alerts.push("비교할 인력 조치가 없습니다.");
+  if(baselineCost&&Math.abs(projectedCost-baselineCost)/baselineCost>=.2)alerts.push("연간 인건비 변동이 기준 대비 20% 이상입니다. 가정을 재확인하세요.");
+  return{rows,baselineHeadcount,projectedHeadcount,baselineCost,projectedCost,costImpact,alerts};
+}
+function _wfStatusBadge(status){return badge(WF_STATUS[status]||WF_STATUS.draft,status==="approved"?"green":status==="review"?"yellow":"gray");}
+function renderWorkforcePlanningPage(){
+  const c=$("#content");if(!c)return;const scenarios=workforceScenarios.slice().sort((a,b)=>(Number(b.year)||0)-(Number(a.year)||0)||String(b.updatedAt||"").localeCompare(String(a.updatedAt||"")));
+  if(_wfSelectedId&&!workforceScenarios.some(s=>String(s.id)===String(_wfSelectedId)))_wfSelectedId="";
+  const selected=workforceScenarios.find(s=>String(s.id)===String(_wfSelectedId));
+  const list=scenarios.map(s=>{const p=calculateWorkforceScenario(s);return`<tr><td><button class="btn btn-ghost btn-sm" onclick="viewWorkforceScenario('${s.id}')"><strong>${h(s.name)}</strong></button><div class="fz11 text-gray">${h(s.description||"설명 없음")}</div></td><td>${s.year||"-"}</td><td>${_wfStatusBadge(s.status)}</td><td>${p.baselineHeadcount}명 → <strong>${p.projectedHeadcount}명</strong></td><td>${_wfMoney(p.projectedCost-p.baselineCost)}</td><td>${(s.actions||[]).length}건</td><td class="tr"><button class="btn btn-secondary btn-sm" onclick="duplicateWorkforceScenario('${s.id}')">복제</button> <button class="btn btn-ghost btn-sm" onclick="viewWorkforceScenario('${s.id}')">상세</button></td></tr>`;}).join("");
+  const p=selected?calculateWorkforceScenario(selected):null;
+  const actionRows=selected?(selected.actions||[]).map(a=>`<tr><td>${h(WF_ACTION[a.type]||a.type)}</td><td>${h(a.dept||"-")}${a.type==="transfer"?` → ${h(a.toDept||"미지정")}`:""}</td><td>${a.type==="salary"?`${Number(a.rate)||0}%`:`${Number(a.count)||0}명`}</td><td>${a.type==="hire"?_wfMoney(a.annualCost):`${a.effectiveMonth||1}월`}</td><td>${h(a.note||"-")}</td><td class="tr">${selected.status!=="approved"?`<button class="btn btn-secondary btn-sm" onclick="openWorkforceActionModal('${selected.id}','${a.id}')">수정</button> <button class="btn btn-ghost btn-sm" onclick="deleteWorkforceAction('${selected.id}','${a.id}')">삭제</button>`:"-"}</td></tr>`).join(""):"";
+  const deptRows=p?p.rows.map(d=>`<tr><td>${h(d.dept)}</td><td>${d.headcount}명</td><td><strong>${d.projectedHeadcount}명</strong></td><td>${_wfMoney(d.cost)}</td><td>${_wfMoney(d.projectedCost)}</td><td>${_wfMoney(d.projectedCost-d.cost)}</td></tr>`).join(""):"";
+  const skillM=_skillsMetrics(),succM=_successionMetrics();
+  c.innerHTML=`<div class="flex items-c justify-b mb3"><div><h2>전략적 인력계획</h2><div class="fz12 text-gray mt1">운영 직원정보를 바꾸지 않고 채용·퇴사·재배치·급여 가정을 비교하는 샌드박스입니다.</div></div><div class="flex gap2"><button class="btn btn-secondary" onclick="exportWorkforceScenariosCSV()">⬇ 비교 CSV</button><button class="btn btn-primary" onclick="openWorkforceScenarioModal()">+ 새 시나리오</button></div></div>
+  <div class="info-note mb3"><strong>벤치마킹 적용:</strong> 현재 인원·연봉을 기준선으로 고정하고, 조치의 적용월을 반영한 연간 인건비와 연말 예상 인원을 비교합니다. 승인된 시나리오는 수정할 수 없으며 직원 원장에 자동 반영되지 않습니다.</div>
+  <div class="stats-grid mb3"><div class="stat-card"><div class="ico">👥</div><div class="num">${Object.values(_wfBaseline()).reduce((n,d)=>n+d.headcount,0)}</div><div class="lbl">현재 재직 인원</div></div><div class="stat-card"><div class="ico">🧩</div><div class="num">${skillM.criticalGaps}</div><div class="lbl">핵심스킬 공백</div></div><div class="stat-card"><div class="ico">🔁</div><div class="num">${succM.criticalGap}</div><div class="lbl">고위험 승계 공백</div></div><div class="stat-card"><div class="ico">🧭</div><div class="num">${scenarios.length}</div><div class="lbl">저장 시나리오</div></div></div>
+  <div class="card mb3"><div class="card-head"><h3>시나리오 비교</h3></div><div class="card-body" style="padding:0"><div class="tbl-wrap"><table><thead><tr><th>시나리오</th><th>연도</th><th>상태</th><th>인원</th><th>연간 비용 증감</th><th>조치</th><th class="tr">관리</th></tr></thead><tbody>${list||`<tr><td colspan="7" class="p-empty">시나리오가 없습니다. 예산안 또는 채용계획별 대안을 만들어 비교하세요.</td></tr>`}</tbody></table></div></div></div>
+  ${selected?`<div class="card"><div class="card-head"><div><h3>${h(selected.name)} · 상세</h3><div class="fz11 text-gray">${selected.year}년 · ${h(selected.description||"")}</div></div><div class="flex gap2">${selected.status==="draft"?`<button class="btn btn-warning btn-sm" onclick="transitionWorkforceScenario('${selected.id}','review')">검토 요청</button>`:""}${selected.status==="review"?`<button class="btn btn-primary btn-sm" onclick="transitionWorkforceScenario('${selected.id}','approved')">승인 확정</button>`:""}${selected.status!=="approved"?`<button class="btn btn-secondary btn-sm" onclick="openWorkforceScenarioModal('${selected.id}')">설정</button><button class="btn btn-primary btn-sm" onclick="openWorkforceActionModal('${selected.id}')">+ 조치</button>`:""}</div></div><div class="card-body">
+    <div class="stats-grid mb3"><div class="stat-card"><div class="num">${p.baselineHeadcount} → ${p.projectedHeadcount}</div><div class="lbl">기준 → 예상 인원</div></div><div class="stat-card"><div class="num">${_wfMoney(p.baselineCost)}</div><div class="lbl">기준 연간 인건비</div></div><div class="stat-card"><div class="num">${_wfMoney(p.projectedCost)}</div><div class="lbl">예상 연간 인건비</div></div><div class="stat-card"><div class="num">${_wfMoney(p.projectedCost-p.baselineCost)}</div><div class="lbl">비용 증감</div></div></div>
+    ${p.alerts.length?`<div class="warn-note mb3"><strong>검증 알림:</strong><ul style="margin:6px 0 0 18px">${p.alerts.map(x=>`<li>${h(x)}</li>`).join("")}</ul></div>`:""}
+    <h4 class="mb2">계획 조치</h4><div class="tbl-wrap mb3"><table><thead><tr><th>유형</th><th>조직</th><th>규모</th><th>기준</th><th>메모</th><th class="tr">관리</th></tr></thead><tbody>${actionRows||`<tr><td colspan="6" class="p-empty">등록된 조치가 없습니다.</td></tr>`}</tbody></table></div>
+    <h4 class="mb2">부서별 영향</h4><div class="tbl-wrap"><table><thead><tr><th>부서</th><th>현재 인원</th><th>예상 인원</th><th>기준 비용</th><th>예상 비용</th><th>증감</th></tr></thead><tbody>${deptRows}</tbody></table></div>
+    <div class="flex justify-b mt3"><button class="btn btn-secondary btn-sm" onclick="_wfSelectedId='';renderWorkforcePlanningPage()">상세 닫기</button>${selected.status!=="approved"?`<button class="btn btn-danger btn-sm" onclick="deleteWorkforceScenario('${selected.id}')">시나리오 삭제</button>`:`<span class="fz11 text-gray">승인 시나리오는 변경·삭제할 수 없습니다.</span>`}</div></div></div>`:""}`;
+}
+function viewWorkforceScenario(id){_wfSelectedId=String(id);renderWorkforcePlanningPage();}
+function openWorkforceScenarioModal(id){const s=workforceScenarios.find(x=>String(x.id)===String(id));if(s?.status==="approved"){showToast("승인된 시나리오는 수정할 수 없습니다.","error");return;}openModal(`<div class="modal-box" style="max-width:620px"><div class="modal-head"><h3>${s?"시나리오 설정":"새 인력계획 시나리오"}</h3></div><div class="modal-body"><div class="info-note mb3">예: 2027 보수안, 2027 성장안처럼 서로 다른 가정을 별도 시나리오로 만드세요. 저장만으로 직원 원장은 바뀌지 않습니다.</div><div class="g2"><div class="fg"><label class="fl">이름 <span class="req">*</span></label><input class="fc" id="wf-name" value="${h(s?.name||"")}" placeholder="예: 2027 성장 시나리오"></div><div class="fg"><label class="fl">계획 연도</label><input class="fc" type="number" min="2020" max="2100" id="wf-year" value="${s?.year||new Date().getFullYear()+1}" placeholder="예: 2027"></div></div><div class="fg"><label class="fl">가정·목적</label><textarea class="fc" id="wf-desc" rows="3" placeholder="예: 신규 제조 ERP 사업 확대와 핵심 개발자 이탈 대응">${h(s?.description||"")}</textarea></div></div><div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal()">취소</button><button class="btn btn-primary" onclick="saveWorkforceScenario('${s?.id||""}')">저장</button></div></div>`);}
+function saveWorkforceScenario(id){const name=$("#wf-name")?.value.trim(),year=Number($("#wf-year")?.value),description=$("#wf-desc")?.value.trim();if(!name){showToast("시나리오 이름을 입력하세요.","error");return;}if(!Number.isInteger(year)||year<2020||year>2100){showToast("계획 연도를 확인하세요.","error");return;}const prev=workforceScenarios.find(x=>String(x.id)===String(id));if(prev?.status==="approved"){showToast("승인된 시나리오는 수정할 수 없습니다.","error");return;}const now=new Date().toISOString(),rec={...(prev||{}),id:prev?.id||genId(),name,year,description,status:prev?.status||"draft",actions:prev?.actions||[],createdAt:prev?.createdAt||now,updatedAt:now};if(prev)workforceScenarios=workforceScenarios.map(x=>String(x.id)===String(id)?rec:x);else workforceScenarios.push(rec);_wfSelectedId=String(rec.id);closeModal();autoSaveToServerIfEnabled();renderWorkforcePlanningPage();showToast("인력계획 시나리오가 저장되었습니다.","success");}
+function openWorkforceActionModal(scenarioId,actionId){const s=workforceScenarios.find(x=>String(x.id)===String(scenarioId));if(!s||s.status==="approved")return;const a=(s.actions||[]).find(x=>String(x.id)===String(actionId));const depts=[...new Set([...Object.keys(_wfBaseline()),...(s.actions||[]).flatMap(x=>[x.dept,x.toDept]).filter(Boolean)])].sort();const opts=depts.map(d=>`<option value="${h(d)}"${d===(a?.dept||"")?" selected":""}>${h(d)}</option>`).join("");const toOpts=depts.map(d=>`<option value="${h(d)}"${d===(a?.toDept||"")?" selected":""}>${h(d)}</option>`).join("");openModal(`<div class="modal-box" style="max-width:680px"><div class="modal-head"><h3>${a?"계획 조치 수정":"계획 조치 추가"}</h3></div><div class="modal-body"><div class="info-note mb3">채용은 1인 연봉, 급여 조정은 조정률을 사용합니다. 퇴사·재배치는 해당 부서 현재 평균연봉을 기준으로 추정합니다.</div><div class="g2"><div class="fg"><label class="fl">조치 유형</label><select class="fc" id="wfa-type" onchange="updateWorkforceActionFields()">${Object.entries(WF_ACTION).map(([v,l])=>`<option value="${v}"${(a?.type||"hire")===v?" selected":""}>${l}</option>`).join("")}</select></div><div class="fg"><label class="fl">적용월</label><input class="fc" id="wfa-month" type="number" min="1" max="12" value="${a?.effectiveMonth||1}" placeholder="예: 7"></div></div><div class="g2"><div class="fg"><label class="fl">기준 부서 <span class="req">*</span></label><select class="fc" id="wfa-dept"><option value="">선택하세요</option>${opts}</select></div><div class="fg" id="wfa-to-wrap"><label class="fl">이동 대상 부서</label><select class="fc" id="wfa-to"><option value="">선택하세요</option>${toOpts}</select></div></div><div class="g2"><div class="fg" id="wfa-count-wrap"><label class="fl">인원</label><input class="fc" id="wfa-count" type="number" min="1" max="9999" value="${a?.count||1}" placeholder="예: 3"></div><div class="fg" id="wfa-cost-wrap"><label class="fl">채용 1인 연봉</label><input class="fc" id="wfa-cost" type="number" min="0" step="100000" value="${a?.annualCost||0}" placeholder="예: 55000000"></div><div class="fg" id="wfa-rate-wrap"><label class="fl">급여 조정률(%)</label><input class="fc" id="wfa-rate" type="number" min="-100" max="100" step="0.1" value="${a?.rate||0}" placeholder="예: 4.5"></div></div><div class="fg"><label class="fl">근거·메모</label><input class="fc" id="wfa-note" value="${h(a?.note||"")}" placeholder="예: ERP 컨설턴트 수주 파이프라인 대응"></div></div><div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal()">취소</button><button class="btn btn-primary" onclick="saveWorkforceAction('${s.id}','${a?.id||""}')">저장</button></div></div>`);updateWorkforceActionFields();}
+function updateWorkforceActionFields(){const type=$("#wfa-type")?.value;const show=(id,on)=>{const e=$(id);if(e)e.style.display=on?"":"none";};show("#wfa-to-wrap",type==="transfer");show("#wfa-cost-wrap",type==="hire");show("#wfa-rate-wrap",type==="salary");show("#wfa-count-wrap",true);}
+function saveWorkforceAction(scenarioId,actionId){const s=workforceScenarios.find(x=>String(x.id)===String(scenarioId));if(!s||s.status==="approved")return;const type=$("#wfa-type").value,dept=$("#wfa-dept").value,toDept=$("#wfa-to").value,count=Number($("#wfa-count").value),effectiveMonth=Number($("#wfa-month").value),annualCost=Number($("#wfa-cost").value),rate=Number($("#wfa-rate").value),note=$("#wfa-note").value.trim();if(!dept){showToast("기준 부서를 선택하세요.","error");return;}if(!Number.isInteger(effectiveMonth)||effectiveMonth<1||effectiveMonth>12){showToast("적용월은 1~12월로 입력하세요.","error");return;}if(!Number.isInteger(count)||count<1){showToast("인원은 1명 이상의 정수로 입력하세요.","error");return;}if(type==="hire"&&annualCost<=0){showToast("채용 1인 연봉을 입력하세요.","error");return;}if(type==="transfer"&&(!toDept||toDept===dept)){showToast("서로 다른 이동 대상 부서를 선택하세요.","error");return;}if(type==="salary"&&(!Number.isFinite(rate)||rate===0||rate < -100 || rate > 100)){showToast("급여 조정률은 -100% 초과 100% 이하의 0이 아닌 값이어야 합니다.","error");return;}const prev=(s.actions||[]).find(x=>String(x.id)===String(actionId)),now=new Date().toISOString(),rec={...(prev||{}),id:prev?.id||genId(),type,dept,toDept:type==="transfer"?toDept:"",count,annualCost:type==="hire"?annualCost:0,rate:type==="salary"?rate:0,effectiveMonth,note,updatedAt:now};s.actions=[...(s.actions||[]).filter(x=>String(x.id)!==String(actionId)),rec];s.updatedAt=now;closeModal();autoSaveToServerIfEnabled();renderWorkforcePlanningPage();showToast("계획 조치가 저장되었습니다.","success");}
+async function deleteWorkforceAction(scenarioId,actionId){const s=workforceScenarios.find(x=>String(x.id)===String(scenarioId)),a=(s?.actions||[]).find(x=>String(x.id)===String(actionId));if(!s||!a||s.status==="approved")return;const ok=await askConfirmModal({title:"계획 조치 삭제",message:"선택한 인력 조치를 시나리오에서 삭제하시겠습니까?",confirmText:"삭제",danger:true,impacts:[{label:"유형",value:WF_ACTION[a.type]||a.type},{label:"조직",value:a.type==="transfer"?`${a.dept} → ${a.toDept}`:a.dept}]});if(!ok)return;s.actions=s.actions.filter(x=>String(x.id)!==String(actionId));s.updatedAt=new Date().toISOString();autoSaveToServerIfEnabled();renderWorkforcePlanningPage();}
+async function transitionWorkforceScenario(id,next){const s=workforceScenarios.find(x=>String(x.id)===String(id));if(!s)return;const p=calculateWorkforceScenario(s);if(next==="review"&&!(s.actions||[]).length){showToast("검토 요청 전에 한 개 이상의 계획 조치를 등록하세요.","error");return;}if(next==="approved"&&p.alerts.length){showToast("검증 알림을 모두 해소한 뒤 승인하세요.","error");return;}const ok=await askConfirmModal({title:next==="approved"?"인력계획 승인 확정":"인력계획 검토 요청",message:next==="approved"?"승인 후에는 이 시나리오를 수정하거나 삭제할 수 없습니다.":"현재 가정을 검토 단계로 전환합니다.",confirmText:next==="approved"?"승인 확정":"검토 요청",impacts:[{label:"예상 인원",value:`${p.baselineHeadcount}명 → ${p.projectedHeadcount}명`},{label:"연간 비용 증감",value:_wfMoney(p.projectedCost-p.baselineCost)},{label:"계획 조치",value:`${(s.actions||[]).length}건`}],warnings:next==="approved"?["승인은 되돌릴 수 없습니다. 비교·보관용이며 직원 원장을 자동 수정하지 않습니다."]:[]});if(!ok)return;s.status=next;s.updatedAt=new Date().toISOString();autoSaveToServerIfEnabled();renderWorkforcePlanningPage();showToast(next==="approved"?"시나리오가 승인·동결되었습니다.":"검토 단계로 전환했습니다.","success");}
+function duplicateWorkforceScenario(id){const s=workforceScenarios.find(x=>String(x.id)===String(id));if(!s)return;const now=new Date().toISOString(),copy={...JSON.parse(JSON.stringify(s)),id:genId(),name:`${s.name} 복사본`,status:"draft",createdAt:now,updatedAt:now,actions:(s.actions||[]).map(a=>({...a,id:genId(),updatedAt:now}))};workforceScenarios.push(copy);_wfSelectedId=String(copy.id);autoSaveToServerIfEnabled();renderWorkforcePlanningPage();showToast("비교용 시나리오를 복제했습니다.","success");}
+async function deleteWorkforceScenario(id){const s=workforceScenarios.find(x=>String(x.id)===String(id));if(!s||s.status==="approved")return;const ok=await askConfirmModal({title:"인력계획 시나리오 삭제",message:"이 시나리오와 포함된 계획 조치를 삭제하시겠습니까?",confirmText:"삭제",danger:true,impacts:[{label:"시나리오",value:s.name},{label:"계획 조치",value:`${(s.actions||[]).length}건`}],warnings:["직원 원장은 변경되지 않습니다."]});if(!ok)return;_tombstone("workforceScenarios",s.id);workforceScenarios=workforceScenarios.filter(x=>String(x.id)!==String(id));_wfSelectedId="";autoSaveToServerIfEnabled();renderWorkforcePlanningPage();}
+function exportWorkforceScenariosCSV(){const rows=[];workforceScenarios.forEach(s=>{const p=calculateWorkforceScenario(s);if(!p.rows.length)rows.push([s.name,s.year,WF_STATUS[s.status]||s.status,"",p.baselineHeadcount,p.projectedHeadcount,p.baselineCost,p.projectedCost,p.projectedCost-p.baselineCost,(s.actions||[]).length,p.alerts.join("; ")]);else p.rows.forEach(d=>rows.push([s.name,s.year,WF_STATUS[s.status]||s.status,d.dept,d.headcount,d.projectedHeadcount,d.cost,d.projectedCost,d.projectedCost-d.cost,(s.actions||[]).length,p.alerts.join("; ")]));});dlCSV(`전략적_인력계획_${new Date().toISOString().slice(0,10)}.csv`,["시나리오","연도","상태","부서","현재인원","예상인원","기준인건비","예상인건비","인건비증감","조치수","검증알림"],rows);}
+
 // ==================== SUCCESSION PLANNING ====================
 // Workday/SAP/Oracle 계열의 공통 승계관리 모델을 현재 핵심인재·육성계획 데이터와 연결한다.
 // 후보자의 준비도는 "해당 직무" 기준이므로 직원 프로필의 전역 속성으로 저장하지 않고
@@ -12780,7 +12860,7 @@ async function doResetAll(){
     const d=await serverRequest("POST","/api/reset-all",{loginId:currentUser?.loginId,pw});
     if(!d.ok)throw new Error(d.message);
     employees=[];kpiEntries=[];changeRequests=[];compGradeResults={};gradeAdjustHistory=[];
-    coreTalentPool=[];talentDevPlans=[];successionPlans=[];jobSkillProfiles=[];employeeSkillProfiles=[];lowPerfData=[];tieNotifications=[];
+    coreTalentPool=[];talentDevPlans=[];successionPlans=[];jobSkillProfiles=[];employeeSkillProfiles=[];workforceScenarios=[];lowPerfData=[];tieNotifications=[];
     approvalDocs=[];attendanceRecords=[];payslips=[];yearEndSettlements=[];payrollAdjustments=[];leaveUsagePlans=[];boardPosts=[];roomReservations=[];certLog=[];certRequests=[];welfarePoints=[];mandatoryTraining=[];healthCheckupLog=[];
     showToast("전체 데이터가 초기화되었습니다.","success");
     renderPage();
