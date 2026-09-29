@@ -7,6 +7,7 @@ API 키 발급: https://open.law.go.kr (무료)
 import asyncio
 import os
 import re
+from datetime import date
 import httpx
 from ddgs import DDGS
 
@@ -96,12 +97,122 @@ def _extract_article_nums(query: str) -> list[str]:
     return re.findall(r'제?\s*(\d+)\s*조', query)
 
 
+def _requested_years(query: str) -> list[str]:
+    """`27년`과 `2027년`을 동일한 시행연도 조건으로 정규화한다."""
+    years = []
+    for raw in re.findall(r"(?<!\d)(20\d{2}|\d{2})년", query or ""):
+        year = int(raw)
+        normalized = str(year + 2000 if year < 100 else year)
+        if normalized not in years:
+            years.append(normalized)
+    return years
+
+
+def _is_scheduled_change_query(query: str) -> bool:
+    """특정 연도의 시행예정 법령·개정내용을 묻는 질문인지 판정한다."""
+    return bool(_requested_years(query)) and bool(re.search(
+        r"시행|적용|변경|개정|바뀌|달라지|신설|삭제|예정",
+        query or "",
+    ))
+
+
 def _flatten_list(val) -> list:
     if val is None:
         return []
     if isinstance(val, dict):
         return [val]
     return val
+
+
+def _flatten_text(val) -> list[str]:
+    """법령 API가 문자열을 여러 겹의 list로 감싸는 응답을 평탄화한다."""
+    if isinstance(val, str):
+        text = " ".join(val.split()).strip()
+        return [text] if text else []
+    if isinstance(val, list):
+        return [text for item in val for text in _flatten_text(item)]
+    if isinstance(val, dict):
+        return [text for item in val.values() for text in _flatten_text(item)]
+    return []
+
+
+def _display_date(value: str) -> str:
+    raw = re.sub(r"\D", "", str(value or ""))
+    if len(raw) != 8:
+        return str(value or "")
+    return f"{raw[:4]}년 {int(raw[4:6])}월 {int(raw[6:])}일"
+
+
+def _scheduled_amendment_body(law_item: dict, law_data: dict) -> str:
+    """시행예정 법령의 메타데이터와 실제 개정문만 짧게 추린다.
+
+    법 전체의 제1조부터 나열하면 질문과 무관한 목차성 답변이 되므로, 현행
+    조문이 아니라 해당 공포본의 ``개정문``과 시행·적용례를 사용한다.
+    """
+    law_root = law_data.get("법령", {}) if isinstance(law_data, dict) else {}
+    basic = law_root.get("기본정보", {}) if isinstance(law_root, dict) else {}
+    amendment = law_root.get("개정문", {}) if isinstance(law_root, dict) else {}
+    lines = _flatten_text(
+        amendment.get("개정문내용", []) if isinstance(amendment, dict) else []
+    )
+    effective = str(
+        law_item.get("시행일자") or (basic.get("시행일자") if isinstance(basic, dict) else "") or ""
+    )
+    promulgated = str(
+        law_item.get("공포일자") or (basic.get("공포일자") if isinstance(basic, dict) else "") or ""
+    )
+    law_name = str(law_item.get("법령명한글") or "법령")
+    amendment_type = str(law_item.get("제개정구분명") or "개정")
+    number = str(law_item.get("공포번호") or "").strip()
+    summary = (
+        f"{law_name}은 {_display_date(effective)} 시행 예정인 {amendment_type} 법령"
+        + (f"(법률 제{number}호)" if number else "")
+        + "입니다."
+    )
+    if promulgated:
+        summary += f" 공포일은 {_display_date(promulgated)}입니다."
+
+    selected = []
+    target_year = effective[:4]
+    # 먼저 질문의 핵심인 시행일·적용례를 확보한다.
+    for line in lines:
+        if target_year and target_year in line and re.search(r"시행|적용", line):
+            selected.append(line)
+    # 그 다음 실제로 어느 조문이 달라지는지 개정 지시문을 보탠다.
+    change_pattern = re.compile(
+        r"^제\d+조(?:의\d+)?(?:제\d+항|제\d+호)?[^\n]{0,220}"
+        r"(?:신설|삭제|개정|다음과 같이|로 한다|으로 한다|중\s*\"|항을|호를)"
+    )
+    for index, line in enumerate(lines):
+        if not change_pattern.search(line):
+            continue
+        combined = line
+        # 법제처 개정문은 "제44조의4를 다음과 같이 신설한다." 다음 줄에
+        # 새 조문의 제목과 실제 의무 내용을 둔다. 지시문만 떼면 무엇이
+        # 바뀌는지 다시 알 수 없으므로 바로 뒤의 해당 조문 본문을 묶는다.
+        if "다음과 같이" in line and index + 1 < len(lines):
+            following = lines[index + 1]
+            article = re.match(r"^(제\d+조(?:의\d+)?)", line)
+            if article and following.startswith(article.group(1) + "("):
+                combined = f"{line} {following}"
+        selected.append(combined)
+    unique = []
+    for line in selected:
+        if line not in unique:
+            unique.append(line[:700])
+        if len(unique) >= 8:
+            break
+    if not unique:
+        unique = [
+            line[:700] for line in lines
+            if re.search(r"개정|신설|삭제|시행|적용", line)
+        ][:5]
+    scoped = [
+        line if (target_year and target_year in line)
+        else f"{target_year}년 시행 개정 내용: {line}"
+        for line in unique
+    ]
+    return "\n".join([summary, *scoped])
 
 
 def _get_mst(law: dict) -> str:
@@ -121,10 +232,99 @@ def _get_mst(law: dict) -> str:
     return ""
 
 
+async def _search_scheduled_law_api(query: str) -> list[dict]:
+    """특정 연도에 시행될 예정 법령의 목록과 실제 개정문을 조회한다."""
+    years = _requested_years(query)
+    # 이미 지난 연도는 현행·연혁 검색이 담당한다. 시행예정 API는 현재 이후만 조회한다.
+    future_years = {year for year in years if int(year) >= date.today().year}
+    if not future_years or not LAW_API_KEY or _is_api_blocked():
+        return []
+    search_name = _get_search_name(query)
+    async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+        try:
+            response = await client.get(
+                f"{_API_BASE}/lawSearch.do",
+                params={
+                    "OC": LAW_API_KEY,
+                    "target": "eflaw",
+                    "type": "JSON",
+                    "query": search_name,
+                    "nw": 2,  # 시행예정 법령만
+                    "display": 20,
+                },
+            )
+            data = response.json()
+            laws = _flatten_list(data.get("LawSearch", {}).get("law"))
+            exact = [
+                item for item in laws
+                if str(item.get("법령명한글", "")).strip() == search_name
+            ]
+            if exact:
+                laws = exact
+            laws = [
+                item for item in laws
+                if str(item.get("시행일자", ""))[:4] in future_years
+                and _get_mst(item)
+            ]
+            laws.sort(key=lambda item: str(item.get("시행일자", "")))
+            laws = laws[:5]
+            if not laws:
+                return []
+
+            async def fetch_detail(item: dict):
+                detail = await client.get(
+                    f"{_API_BASE}/lawService.do",
+                    params={
+                        "OC": LAW_API_KEY,
+                        "target": "eflaw",
+                        "MST": _get_mst(item),
+                        "efYd": item.get("시행일자", ""),
+                        "type": "JSON",
+                    },
+                )
+                return detail.json()
+
+            details = await asyncio.gather(
+                *(fetch_detail(item) for item in laws), return_exceptions=True
+            )
+            results = []
+            for item, detail in zip(laws, details):
+                if isinstance(detail, Exception):
+                    detail = {}
+                body = _scheduled_amendment_body(item, detail)
+                effective = str(item.get("시행일자", ""))
+                law_name = str(item.get("법령명한글") or search_name)
+                results.append({
+                    "title": (
+                        f"{law_name} {_display_date(effective)} 시행 예정"
+                        f" ({item.get('제개정구분명', '개정')})"
+                    ),
+                    "body": body,
+                    "url": f"https://www.law.go.kr/법령/{law_name}",
+                    "source": "law.go.kr 시행예정법령 API",
+                    "effective_date": effective,
+                    "scheduled": True,
+                })
+            return results
+        except httpx.ConnectError:
+            _block_api(seconds=3600)
+            return []
+        except Exception as error:
+            print(f"⚠️ law.go.kr 시행예정법령 API 오류: {type(error).__name__}: {error}")
+            return []
+
+
 async def search_law_api(query: str) -> list[dict]:
     """국가법령정보 오픈API 비동기 검색"""
     if not LAW_API_KEY or _is_api_blocked():
         return []
+
+    # 연도별 시행·변경 질문은 현행 조문 제1조~제5조가 아니라 해당 연도에
+    # 실제 시행될 공포본의 개정문을 먼저 사용한다.
+    if _is_scheduled_change_query(query):
+        scheduled = await _search_scheduled_law_api(query)
+        if scheduled:
+            return scheduled
 
     search_name = _get_search_name(query)
     article_nums = _extract_article_nums(query)

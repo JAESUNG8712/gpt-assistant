@@ -30,6 +30,7 @@ def _safe_result_url(url: str) -> str:
 _SEARCH_STOPWORDS = {
     "알려줘", "알려", "무엇", "뭐야", "얼마", "대한", "관련", "검색",
     "최신", "정보", "해주세요", "해줘", "인가요", "그리고", "또는",
+    "확인해줘", "확인", "있는지", "내용이", "내용", "등의", "하는",
 }
 
 _TOPIC_POLICIES = {
@@ -214,8 +215,8 @@ def _term_in_text(term: str, compact_text: str) -> bool:
 
 _ASPECT_PATTERNS = {
     "amount": r"얼마|금액|비용|가격|시급|월급|요율|금리|환율|계산",
-    "date": r"언제|시점|시행일|적용일|발표일|기간|기한",
-    "comparison": r"비교|차이|대비|변화|증감|전년",
+    "date": r"언제|시점|시행일?|적용일?|발표일|기간|기한|예정",
+    "comparison": r"비교|차이|대비|변화|변경|개정|바뀌|달라지|증감|전년",
     "cause": r"왜|이유|원인|배경",
     "procedure": r"방법|절차|순서|신청|어떻게",
     "eligibility": r"조건|대상|자격|요건|가능",
@@ -227,7 +228,7 @@ _ASPECT_LABELS = {
     "latest": "최신성", "fact": "핵심 사실",
 }
 _ASPECT_TERM_RE = re.compile(
-    r"얼마|금액|비용|가격|시점|시행일|적용일|발표일|비교|차이|대비|변화|"
+    r"얼마|금액|비용|가격|시점|시행|적용|예정|발표일|비교|차이|대비|변화|변경|개정|바뀌|달라지|"
     r"왜|이유|원인|배경|방법|절차|순서|조건|대상|자격|요건|가능|"
     r"최신|현재|오늘|최근|지금|올해|현행"
 )
@@ -287,14 +288,20 @@ def should_auto_verify(query: str) -> bool:
 def build_search_queries(query: str, limit: int = 3) -> list[str]:
     """복합·연도 비교 질문을 적은 수의 보조 검색어로 분해한다."""
     analysis = analyze_query_requirements(query)
-    queries = [" ".join((query or "").split())]
+    normalized_query = re.sub(
+        r"(?<!\d)(\d{2})년",
+        lambda match: f"{2000 + int(match.group(1))}년",
+        " ".join((query or "").split()),
+    )
+    queries = [normalized_query]
     subject = " ".join(analysis["anchors"][:5]).strip()
     if len(analysis["years"]) >= 2 and subject:
         queries.extend(f"{year}년 {subject}" for year in analysis["years"])
     elif len(analysis["aspects"]) >= 2 and subject:
         aspect_queries = {
             "amount": "금액 수치", "date": "적용 시행 시점", "cause": "원인 이유",
-            "procedure": "절차 방법", "eligibility": "조건 대상", "latest": "최신 현재",
+            "comparison": "개정 변경 사항", "procedure": "절차 방법",
+            "eligibility": "조건 대상", "latest": "최신 현재",
         }
         queries.extend(
             f"{subject} {aspect_queries[aspect]}"
@@ -341,7 +348,7 @@ def _covered_aspects(text: str, metadata: dict, requirements: dict) -> list[str]
     patterns = {
         "amount": r"\d[\d,.]*\s*(?:원|만원|억|%|퍼센트|달러)|금액|비용|요율|금리|환율",
         "date": r"시행|적용|발표|고시|결정|기준일|일자|\d{1,2}월\s*\d{1,2}일|부터",
-        "comparison": r"비교|차이|대비|증가|감소|인상|인하|변화",
+        "comparison": r"비교|차이|대비|증가|감소|인상|인하|변화|변경|개정|신설|삭제",
         "cause": r"원인|이유|배경|때문|따라서",
         "procedure": r"절차|방법|신청|제출|단계|순서",
         "eligibility": r"조건|대상|자격|요건|해당|가능",

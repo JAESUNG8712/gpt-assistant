@@ -36,8 +36,9 @@ def main():
         assert client.get("/health").json()["deliberation_engine"] == "evidence-adaptive-review-v3"
         assert client.get("/health").json()["conversation_engine"] == "contextual-followup-v1"
         health = client.get("/health").json()
-        assert health["offline_reasoning_engine"] == "symbolic-plan-critic-v18"
+        assert health["offline_reasoning_engine"] == "symbolic-plan-critic-v19"
         assert health["evidence_reasoning_engine"] == "chat-evidence-pipeline-v11"
+        assert health["law_retrieval_engine"] == "scheduled-amendment-v1"
         assert health["response_quality_engine"] == "unified-conflict-guard-v12"
         assert health["stock_source_engine"] == "isolated-parallel-collector-v1"
         assert health["chat_postprocess_engine"] == "answer-body-learning-gate-v2"

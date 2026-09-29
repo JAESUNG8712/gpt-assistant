@@ -12,11 +12,12 @@ from dataclasses import dataclass
 from datetime import date
 
 
-LOCAL_REASONING_MARKER = "<!-- local-reasoning-v18 -->"
+LOCAL_REASONING_MARKER = "<!-- local-reasoning-v19 -->"
 
 _STOP = {
     "그리고", "그러면", "그것", "그거", "대한", "대해서", "어떻게", "알려줘",
     "설명", "설명해줘", "해주세요", "질문", "내용", "관련", "있는", "없는",
+    "확인해줘", "확인", "있는지", "등의", "하거나",
 }
 _CODE_RE = re.compile(
     r"(?:코드|코딩|함수|스크립트|웹\s*페이지|구현해|짜줘|작성해|"
@@ -131,7 +132,7 @@ class ReasoningReview:
 _INTENT_SIGNALS = {
     "cause": ("때문", "이유", "원인", "목적", "위해", "따라"),
     "procedure": ("절차", "단계", "신청", "작성", "제출", "승인", "확인", "등록", "처리", "방법", "해야"),
-    "comparison": ("차이", "반면", "각각", "비교", "보다", "장점", "단점"),
+    "comparison": ("차이", "반면", "각각", "비교", "변경", "개정", "바뀌", "보다", "장점", "단점"),
     "eligibility": ("조건", "요건", "대상", "가능", "해당", "제외"),
     "amount": ("금액", "시간당", "월급", "요율", "비율", "계산", "기준"),
     "date": ("시행", "적용", "기한", "기간", "부터", "까지", "일자", "날짜"),
@@ -140,16 +141,25 @@ _INTENT_SIGNALS = {
 }
 
 
+def _normalize_short_years(text: str) -> str:
+    """한국어에서 흔한 `27년` 표기를 `2027년`으로 통일한다."""
+    return re.sub(
+        r"(?<!\d)(\d{2})년",
+        lambda match: f"{2000 + int(match.group(1))}년",
+        text or "",
+    )
+
+
 def build_reasoning_plan(query: str) -> ReasoningPlan:
     """질문을 의도·명시 조건·판단 신호로 분해한다."""
-    q = query or ""
+    q = _normalize_short_years(query)
     if re.search(r"(?:최신|현재|지금|최근|올해)", q):
         intent = "latest"
     elif re.search(r"(?:왜|이유|원인|목적)", q):
         intent = "cause"
     elif re.search(r"(?:비교|차이|vs\.?|장단점|어느\s*쪽)", q, re.IGNORECASE):
         intent = "comparison"
-    elif re.search(r"(?:언제|시행일|적용일|기한|기간)", q):
+    elif re.search(r"(?:언제|시행|적용|예정|기한|기간)", q):
         intent = "date"
     elif re.search(r"(?:어떻게|방법|절차|신청|제출)", q):
         intent = "procedure"
@@ -165,8 +175,8 @@ def build_reasoning_plan(query: str) -> ReasoningPlan:
     )))
     aspect_patterns = {
         "amount": r"(?:얼마|몇\s*%|금액|시급|시간급|월급|요율|인상액|계산)",
-        "date": r"(?:언제|시행일?|적용일?|기한|기간|몇\s*년|몇\s*월|부터|까지)",
-        "comparison": r"(?:비교|차이|대비|vs\.?)",
+        "date": r"(?:언제|시행|적용|예정|기한|기간|몇\s*년|몇\s*월|부터|까지)",
+        "comparison": r"(?:비교|차이|대비|변화|변경|개정|바뀌|달라지|vs\.?)",
         "cause": r"(?:왜|이유|원인|목적)",
         "procedure": r"(?:어떻게|방법|절차|신청|제출)",
         "eligibility": r"(?:조건|요건|대상|가능|자격|해당)",
@@ -230,22 +240,32 @@ def _evidence_units(context: str) -> list[tuple[str, int, str]]:
 
 
 def _rank_evidence(query: str, context: str, limit: int = 4) -> tuple[ReasoningPlan, list[Evidence]]:
-    plan = build_reasoning_plan(query)
+    normalized_query = _normalize_short_years(query)
+    plan = build_reasoning_plan(normalized_query)
     q_tokens = set(plan.question_terms)
-    q_grams = _chargrams(query)
-    q_numbers = set(re.findall(r"\d+(?:[.,]\d+)?", query))
+    q_grams = _chargrams(normalized_query)
+    q_numbers = set(re.findall(r"\d+(?:[.,]\d+)?", normalized_query))
     ranked: list[Evidence] = []
     units = _evidence_units(context)
     all_years = [int(year) for sentence, _, _ in units for year in re.findall(r"(?<!\d)(20\d{2})년?", sentence)]
-    asks_current = bool(re.search(r"(?:현재|지금|올해)", query or ""))
+    asks_current = bool(re.search(r"(?:현재|지금|올해)", normalized_query))
     applicable_years = [year for year in all_years if year <= date.today().year] if asks_current else all_years
     latest_year = max(applicable_years) if applicable_years else None
-    requested_years = set(re.findall(r"(?<!\d)(20\d{2})년?", query or ""))
+    requested_years = set(re.findall(r"(?<!\d)(20\d{2})년?", normalized_query))
+    requires_year_evidence = bool(requested_years) and bool(
+        {"date", "comparison"}.intersection(plan.aspects)
+        or re.search(r"시행|적용|예정|변경|개정|바뀌|달라지", normalized_query)
+    )
     for index, (sentence, authority, source_label) in enumerate(units):
         sentence_years = set(re.findall(r"(?<!\d)(20\d{2})년?", sentence))
         # 특정 연도를 물었는데 다른 연도만 적힌 문장은 답 후보에서 제외한다.
         # 여러 연도를 함께 물은 비교 질문이면 요청된 연도는 모두 유지한다.
         if requested_years and sentence_years and requested_years.isdisjoint(sentence_years):
+            continue
+        # 특정 연도의 시행·변경을 묻는데 연도 자체가 없는 일반 조문 제목은
+        # 답 근거가 아니다. 과거에는 공식 출처 가산점만으로 제1조·제2조 같은
+        # 목차가 선택되어 검색했는데도 답이 없는 것처럼 보였다.
+        if requires_year_evidence and not sentence_years:
             continue
         # "현재/최신" 질문은 문맥에서 확인되는 가장 최근 연도 자료를 우선한다.
         if plan.intent == "latest" and latest_year and sentence_years \
