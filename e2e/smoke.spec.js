@@ -830,4 +830,76 @@ test.describe("로그인·기본 네비게이션", () => {
     await page.keyboard.press("Escape");
     await expect(page.locator('[role="dialog"]')).toHaveCount(0);
   });
+
+  test("우수사원 선정 일괄 업로드가 사번 없는 과거 이력을 이름으로 매칭하고 동명이인·매칭실패·선정일 자동입력을 정확히 구분한다", async ({ page }) => {
+    await page.goto("/");
+    await page.fill("#l-id", "e2e_admin");
+    await page.fill("#l-pw", "E2eTestPw123");
+    // 로그인 버튼을 누르기 "전"에 오버라이드해야 하는 이유는 위 "확정 평가가
+    // 성과급과..." 테스트의 상세 주석 참고.
+    await page.evaluate(() => {
+      autoSaveDebounced = () => {};
+      loadFromServer = async () => {};
+      connectSSE = async () => {};
+    });
+    await page.click(".login-card button.btn-primary");
+    await expect(page.locator("#main")).toBeVisible({ timeout: 10000 });
+
+    await page.evaluate(() => {
+      employees.push(
+        { id: "award-e2e-unique", loginId: "award-e2e-unique", empNo: "E2E-AWD1", name: "이유일무이", role: "member", active: true, salary: 40000000, dept: "전략사업부", team: "전략1팀", rank: "사원", rankYear: 1, jobGroup: "기획", nationality: "내국인", customFields: {}, careers: [], leaves: [], hrHistory: [], gradeResults: {} },
+        { id: "award-e2e-dup1", loginId: "award-e2e-dup1", empNo: "E2E-AWD2", name: "박동명", role: "member", active: true, salary: 40000000, dept: "R&BD센터", team: "R&BD팀", rank: "사원", rankYear: 1, jobGroup: "연구", nationality: "내국인", customFields: {}, careers: [], leaves: [], hrHistory: [], gradeResults: {} },
+        { id: "award-e2e-dup2", loginId: "award-e2e-dup2", empNo: "E2E-AWD3", name: "박동명", role: "member", active: false, salary: 40000000, dept: "S/F솔루션센터", team: "", rank: "사원", rankYear: 1, jobGroup: "연구", nationality: "내국인", customFields: {}, careers: [], leaves: [], hrHistory: [], gradeResults: {} },
+      );
+      _welfareSettingsTab = "award";
+      gotoPage("welfare-settings");
+    });
+    await expect(page.locator("#award-upload-file")).toBeAttached();
+
+    const csv = [
+      "사번,이름,부서,팀,연도,반기,구분,선정일,선정사유,비고",
+      "E2E-AWD1,이유일무이,전략사업부,전략1팀,2024,상반기,우수,,성과 우수,사번 매칭",
+      ",이유일무이,전략사업부,전략1팀,2024,하반기,우수,,이름 매칭(단독),",
+      ",박동명,R&BD센터,R&BD팀,2022,하반기,우수,,이름 매칭(동명이인),",
+      ",존재하지않는사람,미상부서,,2021,하반기,우수,,이름 매칭 실패,",
+    ].join("\n");
+    await page.setInputFiles("#award-upload-file", {
+      name: "award-upload.csv",
+      mimeType: "text/csv",
+      buffer: Buffer.from(csv, "utf-8"),
+    });
+
+    const dialog = page.locator('[role="dialog"][aria-modal="true"]');
+    await expect(dialog).toBeVisible();
+    await expect(dialog).toContainText("총 4건 감지됨");
+    await expect(dialog).toContainText("적용 가능 2건, 제외 2건");
+    // 선정일이 비어 있으면 반기 마지막 날짜로 자동 입력되고 "(자동)"으로 표시된다.
+    await expect(dialog).toContainText("2024-06-30");
+    await expect(dialog).toContainText("2024-12-31");
+    // 4개 행 전부 선정일 칸을 비워뒀으므로(유효/제외 여부와 무관하게 미리보기에서 참고 표시) 4건 모두 자동입력 표시가 붙는다.
+    await expect(dialog.locator("span.fz11.text-gray")).toHaveCount(4);
+    await expect(dialog.locator("span.fz11.text-gray").first()).toHaveText("(자동)");
+    // 동명이인은 자동으로 고르지 않고 후보 부서와 함께 보류된다.
+    await expect(dialog).toContainText("동명이인 2명");
+    await expect(dialog).toContainText("R&BD센터/R&BD팀");
+    await expect(dialog).toContainText("S/F솔루션센터");
+    // 이름 자체가 일치하지 않는 행도 사유를 밝혀 보류된다.
+    await expect(dialog).toContainText("이름과 일치하는 직원이 없음");
+
+    await dialog.getByRole("button", { name: "적용 (2건)" }).click();
+    await expect(page.locator(".toast")).toContainText("2건의 우수사원 선정이 등록되었습니다.");
+
+    const result = await page.evaluate(() => ({
+      uniqueAwards: getEmp("award-e2e-unique").hrHistory.filter(h => h.type === "award").map(h => ({ year: h.year, half: h.half, date: h.date })),
+      dup1Awards: getEmp("award-e2e-dup1").hrHistory.filter(h => h.type === "award"),
+      dup2Awards: getEmp("award-e2e-dup2").hrHistory.filter(h => h.type === "award"),
+    }));
+    expect(result.uniqueAwards).toHaveLength(2);
+    expect(result.uniqueAwards).toEqual(expect.arrayContaining([
+      { year: 2024, half: "상반기", date: "2024-06-30" },
+      { year: 2024, half: "하반기", date: "2024-12-31" },
+    ]));
+    expect(result.dup1Awards).toHaveLength(0);
+    expect(result.dup2Awards).toHaveLength(0);
+  });
 });
