@@ -26940,7 +26940,7 @@ function _renderWelfareAwardTab(){
 
   el.innerHTML=`
   <div class="card"><div class="card-head"><h3>🏆 (최)우수사원 선정 관리</h3>
-    <div class="flex gap2"><button class="btn btn-secondary btn-sm" onclick="_dlAwardHistory()">📥 명단 다운로드</button><button class="btn btn-secondary btn-sm" onclick="_dlAwardUploadTemplate()">📄 업로드 양식</button><label class="btn btn-secondary btn-sm" style="cursor:pointer">📤 엑셀 업로드<input type="file" accept=".csv" style="display:none" onchange="handleAwardUpload(this)"></label><button class="btn btn-primary btn-sm" onclick="openAwardRegisterModal()">+ 선정 등록</button></div>
+    <div class="flex gap2"><button class="btn btn-secondary btn-sm" onclick="_dlAwardHistory()">📥 명단 다운로드</button><button class="btn btn-secondary btn-sm" onclick="_dlAwardUploadTemplate()">📄 업로드 양식</button><label class="btn btn-secondary btn-sm" style="cursor:pointer">📤 엑셀 업로드<input type="file" id="award-upload-file" accept=".csv" style="display:none" onchange="handleAwardUpload(this)"></label><button class="btn btn-primary btn-sm" onclick="openAwardRegisterModal()">+ 선정 등록</button></div>
   </div><div class="card-body" style="padding:0">
     ${allAwards.length?`<div class="tbl-wrap"><table><thead><tr><th>이름</th><th>부서</th><th>연도/반기</th><th>날짜</th><th>사유</th><th>비고</th><th>삭제</th></tr></thead><tbody>
     ${allAwards.map(({emp,hh})=>`<tr><td><strong>${h(emp.name)}</strong></td><td class="fz12 text-gray">${h(emp.dept)}</td><td>${hh.year?`${hh.year}년 ${hh.half||""}`:"-"}</td><td>${h(hh.date)}</td><td class="fz12">${h(hh.reason||"-")}</td><td class="fz12 text-gray">${h(hh.note||"-")}</td><td><button class="btn btn-danger btn-sm" onclick="_removeAward(${emp.id},${hh.id})">삭제</button></td></tr>`).join("")}
@@ -26959,7 +26959,7 @@ function _dlAwardUploadTemplate(){
   const curYear=new Date().getFullYear();
   const rows=active.map(e=>[e.empNo,e.name,e.dept,e.team||"",curYear,"","","","",""]);
   dlCSV(`우수사원_선정_일괄등록_양식_${new Date().toISOString().slice(0,10)}.csv`,headers,rows);
-  showToast("업로드 양식을 다운로드했습니다. '연도/반기/구분/선정일/선정사유' 칸을 채운 뒤 업로드하세요.","success");
+  showToast("업로드 양식을 다운로드했습니다. '연도/반기/구분/선정사유' 칸을 채운 뒤 업로드하세요. 사번을 모르는 과거 인원은 '이름'만 채워도 되며(동명이인은 별도 확인이 필요합니다), 선정일을 비우면 해당 반기의 마지막 날짜로 자동 입력됩니다.","success");
 }
 let _awardBulkChanges=[];
 function handleAwardUpload(input){
@@ -26971,26 +26971,38 @@ function handleAwardUpload(input){
       if(!lines.length){showToast("파일이 비어 있습니다.","error");input.value="";return;}
       const rows=lines.map(parseCSVLine);
       const header=rows[0];
-      const iEmpNo=header.indexOf("사번"),iYear=header.indexOf("연도"),iHalf=header.indexOf("반기"),iTier=header.indexOf("구분"),iDate=header.indexOf("선정일"),iReason=header.indexOf("선정사유"),iNote=header.indexOf("비고");
-      if(iEmpNo<0||iYear<0||iDate<0||iReason<0){showToast("올바른 양식의 파일이 아닙니다. (사번/연도/선정일/선정사유 열 필요)","error");input.value="";return;}
+      const iEmpNo=header.indexOf("사번"),iName=header.indexOf("이름"),iYear=header.indexOf("연도"),iHalf=header.indexOf("반기"),iTier=header.indexOf("구분"),iDate=header.indexOf("선정일"),iReason=header.indexOf("선정사유"),iNote=header.indexOf("비고");
+      if(iYear<0||iReason<0||(iEmpNo<0&&iName<0)){showToast("올바른 양식의 파일이 아닙니다. (연도/선정사유 열과 사번 또는 이름 열이 필요합니다)","error");input.value="";return;}
       const changes=[];
       for(let i=1;i<rows.length;i++){
-        const r=rows[i];if(!r[iEmpNo])continue;
-        const year=parseInt(r[iYear]),half=(r[iHalf]||"").trim(),tier=(r[iTier]||"").trim()||"우수",date=(r[iDate]||"").trim(),reason=(r[iReason]||"").trim(),note=(r[iNote]||"").trim();
-        if(!year||!date||!reason){
-          // 예전에는 이 행을 그냥 continue로 건너뛰어 미리보기에 아예 나타나지 않고
-          // "몇 건이 제외됐다"는 안내도 없이 조용히 사라졌음 — 사번 매칭 실패와 동일하게
-          // 미리보기에 표시하고 제외 사유를 밝힌다.
-          changes.push({empNo:r[iEmpNo],name:r[header.indexOf("이름")]||"",year:year||"",half,tier,date,reason,note,invalid:true,invalidReason:"필수값 누락(연도/선정일/사유)"});
-          continue;
-        }
-        if(!["우수","최우수"].includes(tier)){changes.push({empNo:r[iEmpNo],name:r[header.indexOf("이름")]||"",year,half,tier,date,reason,note,invalid:true,invalidReason:"구분은 우수/최우수만 허용"});continue;}
-        const emp=employees.find(e=>e.empNo===r[iEmpNo]);
-        if(!emp){changes.push({empNo:r[iEmpNo],name:r[header.indexOf("이름")]||"",year,half,tier,date,reason,note,invalid:true});continue;}
+        const r=rows[i];
+        const empNoCell=((iEmpNo>=0?r[iEmpNo]:"")||"").trim(),nameCell=((iName>=0?r[iName]:"")||"").trim();
+        if(!empNoCell&&!nameCell&&!r.some(v=>(v||"").trim()))continue; // 완전히 빈 행은 건너뜀
+        const year=parseInt(r[iYear]),half=(r[iHalf]||"").trim(),tier=(r[iTier]||"").trim()||"우수",reason=(r[iReason]||"").trim(),note=(r[iNote]||"").trim();
+        const rawDate=(iDate>=0?(r[iDate]||"").trim():"");
+        let date=rawDate,dateAuto=false;
+        // 정확한 선정일이 없고 연도만 있는 과거 이력은 해당 반기의 마지막 날짜로 대체 입력(사용자 확인 완료)
+        if(!date&&year){date=half==="상반기"?`${year}-06-30`:`${year}-12-31`;dateAuto=true;}
+        const baseInfo={empNo:empNoCell,name:nameCell,year:year||"",half,tier,date,dateAuto,reason,note};
+        if(!year||!reason){changes.push({...baseInfo,invalid:true,invalidReason:"필수값 누락(연도/선정사유)"});continue;}
+        if(!["우수","최우수"].includes(tier)){changes.push({...baseInfo,invalid:true,invalidReason:"구분은 우수/최우수만 허용"});continue;}
+        let emp=null,invalidReason="";
+        if(empNoCell){
+          // 사번이 명시된 행은 사번으로만 매칭한다 — 오타가 있어도 이름으로 대신 추정하지 않는다(오귀속 방지)
+          emp=employees.find(e=>e.empNo===empNoCell);
+          if(!emp)invalidReason="사번과 일치하는 직원이 없음";
+        }else if(nameCell){
+          // 사번이 없는 과거 이력은 이름으로 매칭하되, 동명이인이면 자동으로 고르지 않고 보류(재직/퇴직 전체 대상)
+          const matches=employees.filter(e=>e.name===nameCell);
+          if(matches.length===1)emp=matches[0];
+          else if(matches.length===0)invalidReason="이름과 일치하는 직원이 없음";
+          else invalidReason=`동명이인 ${matches.length}명 — 사번 입력 필요(${matches.map(e=>`${e.dept}${e.team?"/"+e.team:""}`).join(", ")})`;
+        }else invalidReason="사번/이름 모두 없음";
+        if(!emp){changes.push({...baseInfo,invalid:true,invalidReason});continue;}
         const duplicate=_awardExactExists(emp,year,half,tier)||changes.some(c=>!c.invalid&&String(c.empId)===String(emp.id)&&c.year===year&&c.half===half&&c.tier===tier);
-        changes.push({empId:emp.id,empNo:emp.empNo,name:emp.name,dept:emp.dept,year,half,tier,date,reason,note,recent:_awardRecentlySelected(emp,year),invalid:duplicate,invalidReason:duplicate?"동일 연도/반기/구분 중복":""});
+        changes.push({empId:emp.id,empNo:emp.empNo,name:emp.name,dept:emp.dept,year,half,tier,date,dateAuto,reason,note,recent:_awardRecentlySelected(emp,year),invalid:duplicate,invalidReason:duplicate?"동일 연도/반기/구분 중복":""});
       }
-      if(!changes.length){showToast("적용할 등록 건이 없습니다. (연도/선정일/선정사유 미입력)","info");input.value="";return;}
+      if(!changes.length){showToast("적용할 등록 건이 없습니다. (연도/선정사유 미입력)","info");input.value="";return;}
       _showAwardBulkPreview(changes);
     }catch(err){showToast("파일 파싱 오류: "+err.message,"error");}
   };
@@ -27000,7 +27012,7 @@ function handleAwardUpload(input){
 function _showAwardBulkPreview(changes){
   _awardBulkChanges=changes;
   const valid=changes.filter(c=>!c.invalid),invalid=changes.filter(c=>c.invalid);
-  const rowsHtml=changes.map(c=>`<tr${c.invalid?' style="opacity:.5"':""}><td>${h(c.name)}</td><td class="text-gray">${h(c.empNo)}</td><td>${h(c.dept||"-")}</td><td>${c.year}년 ${h(c.half||"")}</td><td>${h(c.tier)}</td><td>${h(c.date)}</td><td class="fz12">${h(c.reason)}</td><td>${c.invalid?badge(c.invalidReason||"사번 없음","red"):c.recent?badge("최근 선정","yellow"):badge("정상","green")}</td></tr>`).join("");
+  const rowsHtml=changes.map(c=>`<tr${c.invalid?' style="opacity:.5"':""}><td>${h(c.name)}</td><td class="text-gray">${h(c.empNo)}</td><td>${h(c.dept||"-")}</td><td>${c.year}년 ${h(c.half||"")}</td><td>${h(c.tier)}</td><td>${h(c.date)}${c.dateAuto?' <span class="fz11 text-gray">(자동)</span>':''}</td><td class="fz12">${h(c.reason)}</td><td>${c.invalid?badge(c.invalidReason||"매칭 실패","red"):c.recent?badge("최근 선정","yellow"):badge("정상","green")}</td></tr>`).join("");
   showModal(`<div class="modal-box" style="max-width:780px"><div class="modal-head"><h3>📋 우수사원 선정 일괄 등록 미리보기</h3></div>
   <div class="modal-body">
     <div class="text-gray fz12" style="margin-bottom:8px">총 ${changes.length}건 감지됨 (적용 가능 ${valid.length}건${invalid.length?`, 제외 ${invalid.length}건`:""}).</div>
