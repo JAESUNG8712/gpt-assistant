@@ -27302,10 +27302,12 @@ function _awardRecentlySelected(emp,year){
 }
 function _awardExactExists(emp,year,half,tier){return (emp.hrHistory||[]).some(hh=>hh.type==="award"&&Number(hh.year||String(hh.date||"").slice(0,4))===Number(year)&&String(hh.half||"")===String(half||"")&&String(hh.tier||"우수")===String(tier||"우수"));}
 function openAwardRegisterModal(){
-  const active=employees.filter(e=>e.active);
   const curYear=new Date().getFullYear();
   openModal(`<div class="modal-box" style="max-width:440px"><div class="modal-head"><h3>🏆 (최)우수사원 선정 등록</h3></div><div class="modal-body">
-    <div class="fg"><label class="fl">대상자 <span class="req">*</span></label><select class="fc" id="award-emp" onchange="_updateAwardRecentNotice()">${active.map(e=>`<option value="${e.id}">${h(e.name)} (${h(e.dept)}/${h(e.team)})</option>`).join("")}</select></div>
+    <div class="fg"><label class="fl">대상자 <span class="req">*</span></label>
+      <div style="display:flex;align-items:center;gap:8px"><span class="badge bg-purple" id="award-emp-badge">미지정</span><button class="btn btn-secondary btn-sm" onclick="openOrgPicker({multi:false,title:'우수사원 대상자 선택',onConfirm:ids=>{const emp=getEmp(ids[0]);if(!emp)return;$('#award-emp').value=ids[0];$('#award-emp-badge').textContent=emp.name+' ('+emp.dept+(emp.team?'/'+emp.team:'')+')';_updateAwardRecentNotice();}})">이름 검색</button></div>
+      <input type="hidden" id="award-emp" value="">
+    </div>
     <div id="award-recent-notice"></div>
     <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px">
       <div class="fg"><label class="fl">연도 <span class="req">*</span></label><input class="fc" type="number" id="award-year" value="${curYear}"></div>
