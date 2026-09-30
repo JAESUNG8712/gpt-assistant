@@ -13722,6 +13722,127 @@ function _allMenuItemsByCategory(){
 function _allMenuItems(){
   return _allMenuItemsByCategory().flatMap(c=>c.items);
 }
+// 개인별 메뉴 권한 탭(기존 UI, 그대로 유지 — 직군/직책 일괄 탭과 나란히 쓰기 위해 함수로 분리)
+function _renderIndividualPermTab(permSearch,permEmpsFiltered,permEmpId,selEmp){
+  return `
+      <div class="flex gap2 mb3 wrap">
+        <div class="fg" style="min-width:160px;margin:0">
+          <label class="fl">인원/직책 검색</label>
+          <input class="fc" value="${h(permSearch)}" placeholder="이름·직급·직책·부서 검색" oninput="window._permEmpSearch=this.value;renderSettingsDeploy()">
+        </div>
+        <div class="fg" style="min-width:200px;margin:0">
+          <label class="fl">직원 선택 ${permSearch?`<span class="fz10 text-gray">(${permEmpsFiltered.length}명 검색됨)</span>`:""}</label>
+          <select class="fc" onchange="window._permEditEmpId=Number(this.value);renderSettingsDeploy()">
+            ${permEmpsFiltered.length?permEmpsFiltered.map(e=>`<option value="${e.id}"${e.id===permEmpId?" selected":""}>${h(e.name)} (${ROLES[e.role]||e.role}${e.position?" · "+h(e.position):e.rank?" · "+h(e.rank):""})</option>`).join(""):`<option value="">검색 결과 없음</option>`}
+          </select>
+        </div>
+        ${selEmp?`<div class="fg" style="margin:0;align-self:flex-end">
+          <button class="btn btn-ghost btn-sm" onclick="_resetMenuPerms(${selEmp.id})">역할 기본값으로 초기화</button>
+        </div>`:""}
+      </div>
+      ${selEmp?`
+        <p class="fz11 text-gray mb2">
+          <strong>${h(selEmp.name)}</strong>님의 역할: <span class="badge bg-blue">${ROLES[selEmp.role]||selEmp.role}</span>
+          · 체크 해제 시 해당 메뉴가 숨겨집니다
+        </p>
+        <div id="perm-matrix">
+          ${_allMenuItemsByCategory().map(cat=>{
+            const allChecked=cat.items.every(m=>_permChecked(selEmp,m.id));
+            const someChecked=cat.items.some(m=>_permChecked(selEmp,m.id));
+            const expanded=!!_permExpandedCats[cat.key];
+            const checkedCnt=cat.items.filter(m=>_permChecked(selEmp,m.id)).length;
+            return`<div style="border:1px solid #e2e8f0;border-radius:8px;margin-bottom:8px;overflow:hidden">
+              <div style="display:flex;align-items:center;gap:8px;padding:10px 12px;background:${allChecked?"#f0fdf4":someChecked?"#fffbeb":"#fef2f2"};cursor:pointer" onclick="_togglePermCatExpand('${cat.key}')">
+                <input type="checkbox" ${allChecked?"checked":""} onclick="event.stopPropagation();_toggleCategoryPerm(${selEmp.id},'${cat.key}',this.checked)" style="width:16px;height:16px;cursor:pointer">
+                <span style="font-weight:600;font-size:13px">${cat.icon} ${h(cat.label)}</span>
+                <span class="fz11 text-gray">(${checkedCnt}/${cat.items.length})</span>
+                <span style="margin-left:auto;font-size:11px;color:#94a3b8">${expanded?"▲ 접기":"▼ 상세 조정"}</span>
+              </div>
+              ${expanded?`<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:6px;padding:10px 12px;background:#fff">
+                ${cat.items.map(m=>{
+                  const checked=_permChecked(selEmp,m.id);
+                  return`<label style="display:flex;align-items:center;gap:6px;padding:6px 8px;border:1px solid #e2e8f0;border-radius:6px;cursor:pointer;font-size:12px;${checked?"background:#f0fdf4":"background:#fef2f2"}">
+                    <input type="checkbox" ${checked?"checked":""} onchange="_toggleMenuPerm(${selEmp.id},'${m.id}',this.checked)" style="width:15px;height:15px;cursor:pointer">
+                    <span>${h(m.label.replace(/\s*\(\d+\)\s*$/,""))}</span>
+                  </label>`;
+                }).join("")}
+              </div>`:""}
+            </div>`;
+          }).join("")}
+        </div>
+        <div class="flex gap2 mt3">
+          <button class="btn btn-primary" onclick="_saveAllMenuPerms(${selEmp.id})">권한 저장</button>
+          <button class="btn btn-ghost" onclick="_resetMenuPerms(${selEmp.id})">초기화</button>
+        </div>
+      `:`<p class="fz13 text-gray tc p-empty">직원을 선택하면 메뉴 권한을 설정할 수 있습니다.</p>`}
+  `;
+}
+// 직군별/직책별 메뉴 권한 일괄 적용 탭 — 그룹 값 하나를 선택해 전체 메뉴 매트릭스를 편집하고
+// "적용"을 누르면 그 순간 소속 재직자 전원의 개인별 menuPerms를 이 템플릿으로 전부 교체한다
+// (실시간 연동이 아님 — 이후 그룹 설정을 바꿔도 이미 적용된 사람에게 자동 반영되지 않음,
+// 대신 settings.groupMenuPermTemplates에 템플릿을 남겨둬 다음에 다시 열었을 때 이어서
+// 편집·재적용할 수 있게 함).
+function _renderGroupPermTab(mode,activeEmps){
+  const label=mode==="jobGroup"?"직군":"직책";
+  const values=mode==="jobGroup"?JOB_GROUPS.slice():orgDB.positions.filter(Boolean);
+  if(!values.length)return `<p class="fz13 text-gray tc p-empty">등록된 ${label}이(가) 없습니다.${mode==="position"?" 조직 관리에서 직책을 먼저 등록하세요.":""}</p>`;
+  window._permGroupValue=window._permGroupValue||{};
+  const sel=window._permGroupValue[mode]&&values.includes(window._permGroupValue[mode])?window._permGroupValue[mode]:values[0];
+  window._permGroupValue[mode]=sel;
+  const selSafe=h(sel).replace(/'/g,"\\'");
+  const affected=activeEmps.filter(e=>e[mode]===sel);
+  const template=((settings.groupMenuPermTemplates||{})[mode]||{})[sel]||{};
+  const pending=((_pendingGroupPerms[mode]||{})[sel])||{};
+  const checkedOf=menuId=>menuId in pending?pending[menuId]:template[menuId]!==false;
+  const hasTemplate=Object.keys(template).length>0||Object.keys(pending).length>0;
+  return `
+    <div class="flex gap2 mb3 wrap">
+      <div class="fg" style="min-width:200px;margin:0">
+        <label class="fl">${label} 선택</label>
+        <select class="fc" onchange="window._permGroupValue=window._permGroupValue||{};window._permGroupValue['${mode}']=this.value;renderSettingsDeploy()">
+          ${values.map(v=>`<option value="${h(v)}"${v===sel?" selected":""}>${h(v)} (${activeEmps.filter(e=>e[mode]===v).length}명)</option>`).join("")}
+        </select>
+      </div>
+      <div class="fg" style="margin:0;align-self:flex-end">
+        <button class="btn btn-ghost btn-sm" onclick="_resetGroupPermTemplate('${mode}','${selSafe}')">템플릿 초기화</button>
+      </div>
+    </div>
+    <p class="fz11 text-gray mb2">
+      <strong>${h(label)}: ${h(sel)}</strong> · 현재 재직자 <strong>${affected.length}명</strong> 대상
+      ${hasTemplate?"":" · 아직 템플릿 미지정(전체 허용 상태로 표시 중)"}
+      · 체크 해제 시 해당 메뉴가 숨겨집니다
+    </p>
+    <div id="group-perm-matrix">
+      ${_allMenuItemsByCategory().map(cat=>{
+        const allChecked=cat.items.every(m=>checkedOf(m.id));
+        const someChecked=cat.items.some(m=>checkedOf(m.id));
+        const expanded=!!_permGroupExpandedCats[cat.key];
+        const checkedCnt=cat.items.filter(m=>checkedOf(m.id)).length;
+        return`<div style="border:1px solid #e2e8f0;border-radius:8px;margin-bottom:8px;overflow:hidden">
+          <div style="display:flex;align-items:center;gap:8px;padding:10px 12px;background:${allChecked?"#f0fdf4":someChecked?"#fffbeb":"#fef2f2"};cursor:pointer" onclick="_toggleGroupPermCatExpand('${cat.key}')">
+            <input type="checkbox" ${allChecked?"checked":""} onclick="event.stopPropagation();_toggleGroupCategoryPerm('${mode}','${selSafe}','${cat.key}',this.checked)" style="width:16px;height:16px;cursor:pointer">
+            <span style="font-weight:600;font-size:13px">${cat.icon} ${h(cat.label)}</span>
+            <span class="fz11 text-gray">(${checkedCnt}/${cat.items.length})</span>
+            <span style="margin-left:auto;font-size:11px;color:#94a3b8">${expanded?"▲ 접기":"▼ 상세 조정"}</span>
+          </div>
+          ${expanded?`<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:6px;padding:10px 12px;background:#fff">
+            ${cat.items.map(m=>{
+              const checked=checkedOf(m.id);
+              return`<label style="display:flex;align-items:center;gap:6px;padding:6px 8px;border:1px solid #e2e8f0;border-radius:6px;cursor:pointer;font-size:12px;${checked?"background:#f0fdf4":"background:#fef2f2"}">
+                <input type="checkbox" ${checked?"checked":""} onchange="_toggleGroupMenuPerm('${mode}','${selSafe}','${m.id}',this.checked)" style="width:15px;height:15px;cursor:pointer">
+                <span>${h(m.label.replace(/\s*\(\d+\)\s*$/,""))}</span>
+              </label>`;
+            }).join("")}
+          </div>`:""}
+        </div>`;
+      }).join("")}
+    </div>
+    <div class="flex gap2 mt3">
+      <button class="btn btn-primary" ${affected.length?"":"disabled"} onclick="_confirmApplyGroupMenuPerms('${mode}','${selSafe}')">📋 ${h(sel)} 대상자 ${affected.length}명에게 일괄 적용</button>
+    </div>
+    ${affected.length===0?`<div class="fz11 text-gray mt2">⚠ 현재 이 ${label}에 해당하는 재직자가 없어 적용할 대상이 없습니다. 템플릿은 저장해둘 수 있으며, 이후 해당 ${label}의 직원이 생기면 이 화면에서 다시 적용하세요.</div>`:""}
+  `;
+}
 
 function renderSettingsDeploy(){
   const el=$("#settings-content");if(!el)return;
@@ -13736,6 +13857,8 @@ function renderSettingsDeploy(){
   const permEmpId=window._permEditEmpId||(permEmpsFiltered[0]?.id||activeEmps[0]?.id||null);
   const selEmp=employees.find(e=>e.id===permEmpId);
   const allMenus=_allMenuItems();
+  const permGroupMode=window._permGroupMode||"individual";
+  const widgetGroupMode=window._widgetGroupMode||"jobGroup";
 
   el.innerHTML=`
   <!-- ① 서버 연결 설정 -->
@@ -13794,59 +13917,15 @@ function renderSettingsDeploy(){
   <div class="card">
     <div class="card-head">
       <h3>🔐 메뉴 접근 권한 관리</h3>
-      <span class="fz11 text-gray">역할 기본 권한에서 개별 메뉴를 추가 제한할 수 있습니다</span>
+      <span class="fz11 text-gray">개인별로 조정하거나, 직군·직책 단위로 한 번에 적용할 수 있습니다</span>
     </div>
     <div class="card-body">
-      <div class="flex gap2 mb3 wrap">
-        <div class="fg" style="min-width:160px;margin:0">
-          <label class="fl">인원/직책 검색</label>
-          <input class="fc" value="${h(permSearch)}" placeholder="이름·직급·직책·부서 검색" oninput="window._permEmpSearch=this.value;renderSettingsDeploy()">
-        </div>
-        <div class="fg" style="min-width:200px;margin:0">
-          <label class="fl">직원 선택 ${permSearch?`<span class="fz10 text-gray">(${permEmpsFiltered.length}명 검색됨)</span>`:""}</label>
-          <select class="fc" onchange="window._permEditEmpId=Number(this.value);renderSettingsDeploy()">
-            ${permEmpsFiltered.length?permEmpsFiltered.map(e=>`<option value="${e.id}"${e.id===permEmpId?" selected":""}>${h(e.name)} (${ROLES[e.role]||e.role}${e.position?" · "+h(e.position):e.rank?" · "+h(e.rank):""})</option>`).join(""):`<option value="">검색 결과 없음</option>`}
-          </select>
-        </div>
-        ${selEmp?`<div class="fg" style="margin:0;align-self:flex-end">
-          <button class="btn btn-ghost btn-sm" onclick="_resetMenuPerms(${selEmp.id})">역할 기본값으로 초기화</button>
-        </div>`:""}
+      <div class="tabs mb3">
+        <button class="tab-btn${permGroupMode==="individual"?" active":""}" onclick="window._permGroupMode='individual';renderSettingsDeploy()">👤 개인별</button>
+        <button class="tab-btn${permGroupMode==="jobGroup"?" active":""}" onclick="window._permGroupMode='jobGroup';renderSettingsDeploy()">🧩 직군별</button>
+        <button class="tab-btn${permGroupMode==="position"?" active":""}" onclick="window._permGroupMode='position';renderSettingsDeploy()">🏷 직책별</button>
       </div>
-      ${selEmp?`
-        <p class="fz11 text-gray mb2">
-          <strong>${h(selEmp.name)}</strong>님의 역할: <span class="badge bg-blue">${ROLES[selEmp.role]||selEmp.role}</span>
-          · 체크 해제 시 해당 메뉴가 숨겨집니다
-        </p>
-        <div id="perm-matrix">
-          ${_allMenuItemsByCategory().map(cat=>{
-            const allChecked=cat.items.every(m=>_permChecked(selEmp,m.id));
-            const someChecked=cat.items.some(m=>_permChecked(selEmp,m.id));
-            const expanded=!!_permExpandedCats[cat.key];
-            const checkedCnt=cat.items.filter(m=>_permChecked(selEmp,m.id)).length;
-            return`<div style="border:1px solid #e2e8f0;border-radius:8px;margin-bottom:8px;overflow:hidden">
-              <div style="display:flex;align-items:center;gap:8px;padding:10px 12px;background:${allChecked?"#f0fdf4":someChecked?"#fffbeb":"#fef2f2"};cursor:pointer" onclick="_togglePermCatExpand('${cat.key}')">
-                <input type="checkbox" ${allChecked?"checked":""} onclick="event.stopPropagation();_toggleCategoryPerm(${selEmp.id},'${cat.key}',this.checked)" style="width:16px;height:16px;cursor:pointer">
-                <span style="font-weight:600;font-size:13px">${cat.icon} ${h(cat.label)}</span>
-                <span class="fz11 text-gray">(${checkedCnt}/${cat.items.length})</span>
-                <span style="margin-left:auto;font-size:11px;color:#94a3b8">${expanded?"▲ 접기":"▼ 상세 조정"}</span>
-              </div>
-              ${expanded?`<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:6px;padding:10px 12px;background:#fff">
-                ${cat.items.map(m=>{
-                  const checked=_permChecked(selEmp,m.id);
-                  return`<label style="display:flex;align-items:center;gap:6px;padding:6px 8px;border:1px solid #e2e8f0;border-radius:6px;cursor:pointer;font-size:12px;${checked?"background:#f0fdf4":"background:#fef2f2"}">
-                    <input type="checkbox" ${checked?"checked":""} onchange="_toggleMenuPerm(${selEmp.id},'${m.id}',this.checked)" style="width:15px;height:15px;cursor:pointer">
-                    <span>${h(m.label.replace(/\s*\(\d+\)\s*$/,""))}</span>
-                  </label>`;
-                }).join("")}
-              </div>`:""}
-            </div>`;
-          }).join("")}
-        </div>
-        <div class="flex gap2 mt3">
-          <button class="btn btn-primary" onclick="_saveAllMenuPerms(${selEmp.id})">권한 저장</button>
-          <button class="btn btn-ghost" onclick="_resetMenuPerms(${selEmp.id})">초기화</button>
-        </div>
-      `:`<p class="fz13 text-gray tc p-empty">직원을 선택하면 메뉴 권한을 설정할 수 있습니다.</p>`}
+      ${permGroupMode==="individual"?_renderIndividualPermTab(permSearch,permEmpsFiltered,permEmpId,selEmp):_renderGroupPermTab(permGroupMode,activeEmps)}
     </div>
   </div>
 
@@ -13904,6 +13983,22 @@ function renderSettingsDeploy(){
           `).join("")}</div>`;
         })()}
       </div>
+    </div>
+  </div>`;
+  el.innerHTML += `
+  <!-- ⑦ 메인화면 기본 위젯 관리 -->
+  <div class="card mt3">
+    <div class="card-head">
+      <h3>🧱 메인화면 기본 위젯 관리</h3>
+      <span class="fz11 text-gray">직군·직책 단위로 대시보드 기본 위젯 구성을 한 번에 적용합니다(적용 후 각자 자유롭게 다시 조정 가능)</span>
+    </div>
+    <div class="card-body">
+      <div class="tabs mb3">
+        <button class="tab-btn${widgetGroupMode==="jobGroup"?" active":""}" onclick="window._widgetGroupMode='jobGroup';renderSettingsDeploy()">🧩 직군별</button>
+        <button class="tab-btn${widgetGroupMode==="position"?" active":""}" onclick="window._widgetGroupMode='position';renderSettingsDeploy()">🏷 직책별</button>
+      </div>
+      <p class="fz11 text-gray mb2">직원 역할(개인 권한)에 따라 표시되지 않는 위젯은 적용 대상자 화면에서 자동으로 숨겨집니다.</p>
+      ${_renderGroupWidgetTab(widgetGroupMode,activeEmps)}
     </div>
   </div>`;
 }
@@ -14022,6 +14117,162 @@ function _resetMenuPerms(empId){
   _pendingPerms[empId]={};
   autoSaveDebounced();
   showToast(`${h(emp.name)}님의 권한이 역할 기본값으로 초기화되었습니다.`,"success");
+  renderSettingsDeploy();
+}
+
+// ── 직군별/직책별 메뉴 권한 일괄 적용 헬퍼 ──
+let _pendingGroupPerms={jobGroup:{},position:{}}; // {mode:{groupValue:{menuId:bool}}}
+let _permGroupExpandedCats={};
+function _toggleGroupPermCatExpand(catKey){
+  _permGroupExpandedCats[catKey]=!_permGroupExpandedCats[catKey];
+  renderSettingsDeploy();
+}
+function _toggleGroupCategoryPerm(mode,groupValue,catKey,checked){
+  const cat=_allMenuItemsByCategory().find(c=>c.key===catKey);
+  if(!cat)return;
+  if(!_pendingGroupPerms[mode])_pendingGroupPerms[mode]={};
+  if(!_pendingGroupPerms[mode][groupValue])_pendingGroupPerms[mode][groupValue]={};
+  cat.items.forEach(m=>{ _pendingGroupPerms[mode][groupValue][m.id]=checked; });
+  renderSettingsDeploy();
+}
+function _toggleGroupMenuPerm(mode,groupValue,menuId,checked){
+  if(!_pendingGroupPerms[mode])_pendingGroupPerms[mode]={};
+  if(!_pendingGroupPerms[mode][groupValue])_pendingGroupPerms[mode][groupValue]={};
+  _pendingGroupPerms[mode][groupValue][menuId]=checked;
+  const lbl=event?.target?.closest("label");
+  if(lbl)lbl.style.background=checked?"#f0fdf4":"#fef2f2";
+}
+async function _confirmApplyGroupMenuPerms(mode,groupValue){
+  const label=mode==="jobGroup"?"직군":"직책";
+  const affected=employees.filter(e=>e.active&&e.id!==currentUser.id&&e[mode]===groupValue);
+  if(!affected.length){showToast("적용 대상 재직자가 없습니다.","error");return;}
+  const names=affected.map(e=>e.name);
+  const preview=names.length>15?names.slice(0,15).join(", ")+` 외 ${names.length-15}명`:names.join(", ");
+  const ok=await askConfirmModal({
+    title:`${label}별 메뉴 권한 일괄 적용`,
+    message:`"${groupValue}" ${label}에 해당하는 재직자 ${affected.length}명의 개인별 메뉴 권한이 지금 설정한 템플릿으로 전부 교체됩니다.\n각 직원이 개별적으로 설정해둔 기존 메뉴 권한은 이 작업으로 사라집니다.`,
+    confirmText:"적용",
+    confirmClass:"btn-warning",
+    impacts:[
+      {label:`대상 ${label}`,value:groupValue},
+      {label:"영향받는 재직자",value:`${affected.length}명`},
+      {label:"대상자",value:preview},
+    ],
+    warnings:["적용 후에도 개인별 화면(개인별 탭)에서 다시 조정할 수 있습니다."]
+  });
+  if(!ok)return;
+  _applyGroupMenuPerms(mode,groupValue,affected);
+}
+function _applyGroupMenuPerms(mode,groupValue,affected){
+  const stored=((settings.groupMenuPermTemplates||{})[mode]||{})[groupValue]||{};
+  const pending=((_pendingGroupPerms[mode]||{})[groupValue])||{};
+  const full={...stored,...pending};
+  const lean={};
+  Object.keys(full).forEach(k=>{ if(full[k]===false)lean[k]=false; });
+  if(!settings.groupMenuPermTemplates)settings.groupMenuPermTemplates={jobGroup:{},position:{}};
+  if(!settings.groupMenuPermTemplates[mode])settings.groupMenuPermTemplates[mode]={};
+  settings.groupMenuPermTemplates[mode][groupValue]=lean;
+  affected.forEach(emp=>{ emp.menuPerms={...lean}; });
+  if(_pendingGroupPerms[mode])_pendingGroupPerms[mode][groupValue]={};
+  autoSaveDebounced();
+  showToast(`"${groupValue}" ${mode==="jobGroup"?"직군":"직책"} 소속 재직자 ${affected.length}명에게 메뉴 권한을 적용했습니다.`,"success");
+  renderSettingsDeploy();
+}
+function _resetGroupPermTemplate(mode,groupValue){
+  if(_pendingGroupPerms[mode])delete _pendingGroupPerms[mode][groupValue];
+  if(settings.groupMenuPermTemplates?.[mode])delete settings.groupMenuPermTemplates[mode][groupValue];
+  autoSaveDebounced();
+  showToast("템플릿을 초기화했습니다. (이미 적용된 직원의 권한은 유지됩니다)","info");
+  renderSettingsDeploy();
+}
+
+// ── 직군별/직책별 기본 위젯 일괄 적용 헬퍼 ──
+let _pendingGroupWidgets={jobGroup:{},position:{}}; // {mode:{groupValue:[widgetId,...]}}
+function _renderGroupWidgetTab(mode,activeEmps){
+  const label=mode==="jobGroup"?"직군":"직책";
+  const values=mode==="jobGroup"?JOB_GROUPS.slice():orgDB.positions.filter(Boolean);
+  if(!values.length)return `<p class="fz13 text-gray tc p-empty">등록된 ${label}이(가) 없습니다.</p>`;
+  window._widgetGroupValue=window._widgetGroupValue||{};
+  const sel=window._widgetGroupValue[mode]&&values.includes(window._widgetGroupValue[mode])?window._widgetGroupValue[mode]:values[0];
+  window._widgetGroupValue[mode]=sel;
+  const selSafe=h(sel).replace(/'/g,"\\'");
+  const affected=activeEmps.filter(e=>e[mode]===sel);
+  const saved=((settings.groupDashWidgetTemplates||{})[mode]||{})[sel];
+  const pending=(_pendingGroupWidgets[mode]||{})[sel];
+  const effective=pending||saved||_defaultDashWidgets();
+  const effectiveSet=new Set(effective);
+  return `
+    <div class="flex gap2 mb3 wrap">
+      <div class="fg" style="min-width:200px;margin:0">
+        <label class="fl">${label} 선택</label>
+        <select class="fc" onchange="window._widgetGroupValue=window._widgetGroupValue||{};window._widgetGroupValue['${mode}']=this.value;renderSettingsDeploy()">
+          ${values.map(v=>`<option value="${h(v)}"${v===sel?" selected":""}>${h(v)} (${activeEmps.filter(e=>e[mode]===v).length}명)</option>`).join("")}
+        </select>
+      </div>
+      <div class="fg" style="margin:0;align-self:flex-end">
+        <button class="btn btn-ghost btn-sm" onclick="_resetGroupDashWidgetTemplate('${mode}','${selSafe}')">템플릿 초기화</button>
+      </div>
+    </div>
+    <p class="fz11 text-gray mb2"><strong>${h(label)}: ${h(sel)}</strong> · 현재 재직자 <strong>${affected.length}명</strong> 대상${(!saved&&!pending)?" · 아직 템플릿 미지정(시스템 기본값 표시 중)":""}</p>
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:8px;margin-bottom:14px">
+      ${DASH_WIDGET_CATALOG.map(w=>{
+        const checked=effectiveSet.has(w.id);
+        return`<label style="display:flex;align-items:center;gap:8px;padding:8px 10px;border:1px solid #e2e8f0;border-radius:8px;cursor:pointer;font-size:12px;${checked?"background:#f0fdf4":"background:#fef2f2"}">
+          <input type="checkbox" ${checked?"checked":""} onchange="_toggleGroupWidgetItem('${mode}','${selSafe}','${w.id}',this.checked)" style="width:15px;height:15px;cursor:pointer">
+          <span>${w.icon} ${h(w.label)}</span>
+        </label>`;
+      }).join("")}
+    </div>
+    <button class="btn btn-primary" ${affected.length?"":"disabled"} onclick="_confirmApplyGroupDashWidgets('${mode}','${selSafe}')">🧱 ${h(sel)} 대상자 ${affected.length}명에게 일괄 적용</button>
+    ${affected.length===0?`<div class="fz11 text-gray mt2">⚠ 현재 이 ${label}에 해당하는 재직자가 없어 적용할 대상이 없습니다.</div>`:""}
+  `;
+}
+function _toggleGroupWidgetItem(mode,groupValue,widgetId,checked){
+  if(!_pendingGroupWidgets[mode])_pendingGroupWidgets[mode]={};
+  const saved=((settings.groupDashWidgetTemplates||{})[mode]||{})[groupValue];
+  const base=_pendingGroupWidgets[mode][groupValue]||saved||_defaultDashWidgets();
+  const set=new Set(base);
+  if(checked)set.add(widgetId);else set.delete(widgetId);
+  _pendingGroupWidgets[mode][groupValue]=DASH_WIDGET_CATALOG.filter(w=>set.has(w.id)).map(w=>w.id);
+  renderSettingsDeploy();
+}
+async function _confirmApplyGroupDashWidgets(mode,groupValue){
+  const label=mode==="jobGroup"?"직군":"직책";
+  const affected=employees.filter(e=>e.active&&e.id!==currentUser.id&&e[mode]===groupValue);
+  if(!affected.length){showToast("적용 대상 재직자가 없습니다.","error");return;}
+  const names=affected.map(e=>e.name);
+  const preview=names.length>15?names.slice(0,15).join(", ")+` 외 ${names.length-15}명`:names.join(", ");
+  const ok=await askConfirmModal({
+    title:`${label}별 기본 위젯 일괄 적용`,
+    message:`"${groupValue}" ${label}에 해당하는 재직자 ${affected.length}명의 대시보드 위젯 구성이 지금 선택한 목록으로 전부 교체됩니다.\n각 직원이 개별적으로 구성해둔 기존 위젯·배치는 사라지지만, 적용 후에는 각자 다시 자유롭게 바꿀 수 있습니다.`,
+    confirmText:"적용",
+    confirmClass:"btn-warning",
+    impacts:[
+      {label:`대상 ${label}`,value:groupValue},
+      {label:"영향받는 재직자",value:`${affected.length}명`},
+      {label:"대상자",value:preview},
+    ],
+  });
+  if(!ok)return;
+  _applyGroupDashWidgets(mode,groupValue,affected);
+}
+function _applyGroupDashWidgets(mode,groupValue,affected){
+  const saved=((settings.groupDashWidgetTemplates||{})[mode]||{})[groupValue];
+  const final=(_pendingGroupWidgets[mode]||{})[groupValue]||saved||_defaultDashWidgets();
+  if(!settings.groupDashWidgetTemplates)settings.groupDashWidgetTemplates={jobGroup:{},position:{}};
+  if(!settings.groupDashWidgetTemplates[mode])settings.groupDashWidgetTemplates[mode]={};
+  settings.groupDashWidgetTemplates[mode][groupValue]=[...final];
+  affected.forEach(emp=>{ emp.dashWidgets=[...final]; });
+  if(_pendingGroupWidgets[mode])delete _pendingGroupWidgets[mode][groupValue];
+  autoSaveDebounced();
+  showToast(`"${groupValue}" ${mode==="jobGroup"?"직군":"직책"} 소속 재직자 ${affected.length}명에게 기본 위젯을 적용했습니다.`,"success");
+  renderSettingsDeploy();
+}
+function _resetGroupDashWidgetTemplate(mode,groupValue){
+  if(_pendingGroupWidgets[mode])delete _pendingGroupWidgets[mode][groupValue];
+  if(settings.groupDashWidgetTemplates?.[mode])delete settings.groupDashWidgetTemplates[mode][groupValue];
+  autoSaveDebounced();
+  showToast("템플릿을 초기화했습니다. (이미 적용된 직원의 위젯 구성은 유지됩니다)","info");
   renderSettingsDeploy();
 }
 
