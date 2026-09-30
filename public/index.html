@@ -117,6 +117,7 @@ input,textarea,select,button{font-family:inherit}
 .dash-w-resize-ghost span{background:#3b82f6;color:#fff;font-size:12px;font-weight:700;padding:4px 10px;border-radius:6px;box-shadow:0 4px 10px rgba(0,0,0,.15)}
 .dash-w-newrow-zone{margin:-2px 0 14px;padding:14px;border:2px dashed #cbd5e1;border-radius:12px;text-align:center;font-size:12px;font-weight:600;color:#94a3b8;transition:all .15s}
 .dash-w-newrow-zone.drag-over{border-color:#3b82f6;background:rgba(59,130,246,.06);color:#3b82f6}
+.org-dept-row.drag-over,.org-team-row.drag-over{outline:2px dashed #3b82f6;outline-offset:-2px}
 /* 대시보드 위젯: 카드/항목 클릭 이동 */
 .dash-card-link{cursor:pointer;transition:box-shadow .15s,border-color .15s}
 .dash-card-link:hover{border-color:#93c5fd;box-shadow:0 6px 18px rgba(37,99,235,.12)}
@@ -25278,6 +25279,21 @@ function openLeaveDetailModal(empId){
 
 // ==================== ORG CHART (조직도) ====================
 let _orgViewDate="";
+// 조직도 부서/팀 블록의 드래그앤드롭 화면 배치 순서 — settings.orgChartOrder에 영속.
+// 실제 조직 배정(orgDB.depts/teams, employee.dept/team)은 전혀 건드리지 않고
+// 오직 이 화면에서 부서/팀을 보여주는 "순서"만 관리자가 조정하는 용도(Epic A "화면 배치만").
+let _orgDragSrc=null;
+// list: 현재 화면에 실제로 표시된 부서(또는 팀)명 배열, orderArr: settings에 저장된 커스텀 순서.
+// orderArr에 있는 항목은 그 순서대로, 없는 신규 항목은 기존 상대 순서를 유지한 채 뒤에 이어붙는다.
+function _applyOrgChartOrder(list,orderArr){
+  if(!orderArr||!orderArr.length)return list;
+  const idx=new Map(orderArr.map((k,i)=>[k,i]));
+  return list.map((v,i)=>({v,i})).sort((a,b)=>{
+    const ia=idx.has(a.v)?idx.get(a.v):Infinity;
+    const ib=idx.has(b.v)?idx.get(b.v):Infinity;
+    return ia!==ib?ia-ib:a.i-b.i;
+  }).map(x=>x.v);
+}
 function _orgEmployeeAtDate(emp,dateStr){
   if(!dateStr)return emp.active&&emp.role!=="admin"?{...emp}:null;
   if(emp.role==="admin"||(emp.hire&&emp.hire>dateStr)||(emp.retireDate&&emp.retireDate<=dateStr))return null;
@@ -25546,7 +25562,9 @@ function renderOrgChartBody(){
   const q=(_orgSearchQ||"").toLowerCase();
   const filtered=q?active.filter(e=>e.name.toLowerCase().includes(q)||e.dept.toLowerCase().includes(q)||(e.team||"").toLowerCase().includes(q)):active;
   const activeDeptSet=new Set(filtered.map(e=>e.dept));
-  const depts=orgDB.depts.filter(d=>activeDeptSet.has(d)).concat([...activeDeptSet].filter(d=>!orgDB.depts.includes(d)));
+  const depts=_applyOrgChartOrder(orgDB.depts.filter(d=>activeDeptSet.has(d)).concat([...activeDeptSet].filter(d=>!orgDB.depts.includes(d))),settings.orgChartOrder?.depts);
+  window._orgDeptsRendered=depts.slice();
+  window._orgTeamsRendered={};
   const isAdmin=currentUser.role==="admin";
   if(!window._orgCollapsed){
     // 첫 진입 시: 본인 소속 부서/팀만 펼치고 나머지는 모두 접어서 표시
@@ -25564,7 +25582,8 @@ function renderOrgChartBody(){
   depts.forEach(dept=>{
     const deptEmps=filtered.filter(e=>e.dept===dept);
     const teamSet=new Set(deptEmps.filter(e=>e.team).map(e=>e.team));
-    const teams=(orgDB.teams[dept]||[]).filter(t=>teamSet.has(t)).concat([...teamSet].filter(t=>!(orgDB.teams[dept]||[]).includes(t)));
+    const teams=_applyOrgChartOrder((orgDB.teams[dept]||[]).filter(t=>teamSet.has(t)).concat([...teamSet].filter(t=>!(orgDB.teams[dept]||[]).includes(t))),settings.orgChartOrder?.teams?.[dept]);
+    window._orgTeamsRendered[dept]=teams.slice();
     const deptDirectors=deptEmps.filter(e=>e.role==="director");
     const deptCollapsed=isDeptCollapsed(dept);
     treeItems.push({type:"dept",dept,count:deptEmps.length,collapsed:deptCollapsed});
@@ -25583,8 +25602,16 @@ function renderOrgChartBody(){
     _orgSortEmps(noTeam).forEach(m=>treeItems.push({type:"emp",emp:m,indent:2}));
   });
   const treeHtml=treeItems.map(item=>{
-    if(item.type==="dept")return`<div onclick="_orgToggleCollapse('dept:${h(item.dept)}')" style="padding:8px 12px;background:#1e3a8a;color:white;border-radius:6px;margin-bottom:4px;font-size:12px;font-weight:700;cursor:pointer;display:flex;align-items:center;gap:6px"><span style="display:inline-block;width:10px">${item.collapsed?"▸":"▾"}</span>🏢 ${h(item.dept)} <span style="opacity:.7;font-weight:400">(${item.count}명)</span></div>`;
-    if(item.type==="team")return`<div onclick="_orgToggleCollapse('team:${h(item.dept)}:${h(item.team)}')" style="padding:6px 12px 6px ${item.indent*10}px;background:#eff6ff;border-left:2px solid #3b82f6;border-radius:4px;margin-bottom:3px;font-size:11px;font-weight:700;color:#1d4ed8;cursor:pointer;display:flex;align-items:center;gap:6px"><span style="display:inline-block;width:10px">${item.collapsed?"▸":"▾"}</span>👥 ${h(item.team)} <span style="color:#93c5fd;font-weight:400">(${item.count}명)</span></div>`;
+    if(item.type==="dept"){
+      const safeDept=h(item.dept).replace(/'/g,"\\'");
+      const dragAttrs=isAdmin?`draggable="true" ondragstart="_orgDeptDragStart(this,'${safeDept}')" ondragend="_orgDeptDragEnd(this)" ondragover="_orgDeptDragOver(event,this)" ondrop="_orgDeptDrop(event,this,'${safeDept}')"`:"";
+      return`<div class="org-dept-row" ${dragAttrs} onclick="_orgToggleCollapse('dept:${safeDept}')" style="padding:8px 12px;background:#1e3a8a;color:white;border-radius:6px;margin-bottom:4px;font-size:12px;font-weight:700;cursor:pointer;display:flex;align-items:center;gap:6px">${isAdmin?`<span style="cursor:grab;opacity:.6" title="드래그하여 순서 변경">⠿</span>`:""}<span style="display:inline-block;width:10px">${item.collapsed?"▸":"▾"}</span>🏢 ${h(item.dept)} <span style="opacity:.7;font-weight:400">(${item.count}명)</span></div>`;
+    }
+    if(item.type==="team"){
+      const safeDept=h(item.dept).replace(/'/g,"\\'"),safeTeam=h(item.team).replace(/'/g,"\\'");
+      const dragAttrs=isAdmin?`draggable="true" ondragstart="_orgTeamDragStart(this,'${safeDept}','${safeTeam}')" ondragend="_orgTeamDragEnd(this)" ondragover="_orgTeamDragOver(event,this)" ondrop="_orgTeamDrop(event,this,'${safeDept}','${safeTeam}')"`:"";
+      return`<div class="org-team-row" ${dragAttrs} onclick="_orgToggleCollapse('team:${safeDept}:${safeTeam}')" style="padding:6px 12px 6px ${item.indent*10}px;background:#eff6ff;border-left:2px solid #3b82f6;border-radius:4px;margin-bottom:3px;font-size:11px;font-weight:700;color:#1d4ed8;cursor:pointer;display:flex;align-items:center;gap:6px">${isAdmin?`<span style="cursor:grab;opacity:.6" title="드래그하여 순서 변경">⠿</span>`:""}<span style="display:inline-block;width:10px">${item.collapsed?"▸":"▾"}</span>👥 ${h(item.team)} <span style="color:#93c5fd;font-weight:400">(${item.count}명)</span></div>`;
+    }
     if(item.type==="emp"){
       const e=item.emp;
       const isLeader=item.isLeader;
@@ -25655,6 +25682,40 @@ function _orgToggleCollapse(key){
   if(window._orgCollapsed.has(key))window._orgCollapsed.delete(key);
   else window._orgCollapsed.add(key);
   renderOrgChartBody();
+}
+// 조직도 부서 블록 드래그앤드롭 — 화면에 보여지는 순서(settings.orgChartOrder.depts)만 바꾸고
+// 실제 부서 배정(orgDB.depts, employee.dept)은 전혀 수정하지 않는다.
+function _orgDeptDragStart(el,dept){_orgDragSrc={type:"dept",dept};el.style.opacity=".4";}
+function _orgDeptDragEnd(el){el.style.opacity="";document.querySelectorAll(".org-dept-row").forEach(r=>r.classList.remove("drag-over"));}
+function _orgDeptDragOver(e,el){e.preventDefault();document.querySelectorAll(".org-dept-row").forEach(r=>r.classList.remove("drag-over"));el.classList.add("drag-over");}
+function _orgDeptDrop(e,el,dept){
+  e.preventDefault();el.classList.remove("drag-over");
+  const src=_orgDragSrc;_orgDragSrc=null;
+  if(!src||src.type!=="dept"||src.dept===dept)return;
+  const list=[...(window._orgDeptsRendered||[])];
+  const from=list.indexOf(src.dept),to=list.indexOf(dept);
+  if(from<0||to<0)return;
+  const[moved]=list.splice(from,1);list.splice(to,0,moved);
+  settings.orgChartOrder=settings.orgChartOrder||{};
+  settings.orgChartOrder.depts=list;
+  autoSaveDebounced();renderOrgChartBody();
+}
+// 조직도 팀 블록 드래그앤드롭 — 같은 부서 안에서만 순서를 바꾼다(부서 간 이동은 실제 조직개편이라 별개 기능).
+function _orgTeamDragStart(el,dept,team){_orgDragSrc={type:"team",dept,team};el.style.opacity=".4";}
+function _orgTeamDragEnd(el){el.style.opacity="";document.querySelectorAll(".org-team-row").forEach(r=>r.classList.remove("drag-over"));}
+function _orgTeamDragOver(e,el){e.preventDefault();document.querySelectorAll(".org-team-row").forEach(r=>r.classList.remove("drag-over"));el.classList.add("drag-over");}
+function _orgTeamDrop(e,el,dept,team){
+  e.preventDefault();el.classList.remove("drag-over");
+  const src=_orgDragSrc;_orgDragSrc=null;
+  if(!src||src.type!=="team"||src.dept!==dept||src.team===team)return;
+  const list=[...((window._orgTeamsRendered||{})[dept]||[])];
+  const from=list.indexOf(src.team),to=list.indexOf(team);
+  if(from<0||to<0)return;
+  const[moved]=list.splice(from,1);list.splice(to,0,moved);
+  settings.orgChartOrder=settings.orgChartOrder||{};
+  settings.orgChartOrder.teams=settings.orgChartOrder.teams||{};
+  settings.orgChartOrder.teams[dept]=list;
+  autoSaveDebounced();renderOrgChartBody();
 }
 
 // ==================== DASHBOARD ENHANCEMENTS ====================
