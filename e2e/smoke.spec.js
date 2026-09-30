@@ -180,7 +180,7 @@ test.describe("로그인·기본 네비게이션", () => {
     });
     await expect(page.locator("#content").getByRole("heading",{name:"정원 신설·증원 요청"})).toBeVisible();
     await expect(page.locator("#content")).toContainText("140,000,000원");
-    await expect(page.locator("#content")).toContainText("2027 사업계획 인건비");
+    await expect(page.locator("#content")).toContainText("DX 2027 확정계획 · ERP 인건비");
     await page.getByRole("button",{name:"승인",exact:true}).click();
     await expect(page.locator("#pr-approval-budget")).toBeVisible();
     await expect(page.locator("#pr-budget-confirmed")).toBeVisible();
