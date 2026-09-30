@@ -1454,7 +1454,7 @@ const SNAPSHOT_KEY="hr_kpi_snapshots";
 const MAX_SNAPSHOTS=10;
 let _lastRestoreUndo=null; // stores full state before last restore for undo
 
-let hrChgFilter={type:'',search:''};
+let hrChgFilter={type:'',search:'',dateFrom:'',dateTo:''};
 
 // ==================== UTILS ====================
 const $=s=>document.querySelector(s);
@@ -2258,6 +2258,9 @@ async function loadFromServer(){
       // mergeArrayById) — the root cause of newly-created attendance/approval
       // records occasionally vanishing on save right after a fresh load.
       if(r.version) _serverVersion = r.version;
+      // 서버에서 불러온 직후에도(로그인 시점뿐 아니라 수동 "서버에서 불러오기" 클릭
+      // 시에도) 이미 발령일이 도래한 예약 인사변동이 있으면 바로 반영한다.
+      _applyDueHRChanges();
       serverConfig.lastLoaded = new Date().toISOString();
       serverConfig.statusMsg = `불러오기 완료 ${new Date().toLocaleTimeString("ko-KR")}`;
       showToast("서버에서 데이터를 불러왔습니다.","success");
@@ -2278,7 +2281,14 @@ function startServerAutoSave(){
   if(!serverConfig.enabled || !serverConfig.autoSave || !serverConfig.url) return;
   const ms = (serverConfig.intervalMin||3) * 60 * 1000;
   _serverAutoSaveTimer = setInterval(()=>{
-    if(serverConfig.enabled && serverConfig.url && !_serverSaving) _doSave(true);
+    if(serverConfig.enabled && serverConfig.url && !_serverSaving){
+      // 예약된(미래 발령일) 인사 변동이 로그인 시점에만 반영되던 것을, 이미 돌고 있는
+      // 자동저장 주기(기본 3분)에 얹어 세션이 열려있는 동안 주기적으로도 체크되게 한다
+      // (완전한 서버측 스케줄러는 아니지만, 별도 타이머 없이 기존 인프라만으로 로그인을
+      // 기다리지 않고도 그 시점이 되면 곧 반영되게 하는 실용적 개선).
+      if(_applyDueHRChanges())renderPageDeferIfEditing();
+      _doSave(true);
+    }
   }, ms);
   console.log(`[Server] Auto-save: every ${serverConfig.intervalMin} min`);
   startHeartbeat();
@@ -5922,6 +5932,9 @@ async function connectSSE(){
             });
             const previousMenuPerms={...(currentUser?.menuPerms||{})};
             applyState({data: d}, true); // skipUndo: SSE로 인한 반영은 되돌리기 스냅샷을 안 남김
+            // 다른 사용자의 저장으로 실시간 동기화되는 시점에도, 이미 발령일이 도래한
+            // 예약 인사변동이 있으면 함께 반영한다(로그인/수동 불러오기와 동일 처리).
+            _applyDueHRChanges();
             if(currentUser){ const u=employees.find(e=>e.id===currentUser.id); if(u) currentUser=u; }
             const permissionsChanged=Object.keys({...previousMenuPerms,...(currentUser?.menuPerms||{})})
               .some(k=>previousMenuPerms[k]!==((currentUser?.menuPerms||{})[k]));
@@ -8868,9 +8881,17 @@ function getBeforeVal(emp,type){
 function renderHRChanges(){
   const active=employees.filter(e=>e.active&&e.role!=="admin");
   const selEmp=employees.find(e=>e.id===Number(hrChgEmpId));
-  let allHist=active.flatMap(e=>(e.hrHistory||[]).map(hh=>({...hh,empName:e.name,empNo:e.empNo,dept:e.dept}))).sort((a,b)=>b.date.localeCompare(a.date));
+  // "전체 인사 변동 현황"은 발령일자 기준 이력 조회 화면이라 퇴직자의 과거 이력도 포함한다
+  // (신규 등록 대상인 위 "직원 선택" 드롭다운은 그대로 재직자로 한정 — 퇴직자에게 새 인사
+  // 변동을 등록할 수는 없으므로).
+  const allEmpsForHistory=employees.filter(e=>e.role!=="admin");
+  let allHist=allEmpsForHistory.flatMap(e=>(e.hrHistory||[]).map(hh=>({...hh,empName:e.name,empNo:e.empNo,dept:e.dept})));
   if(hrChgFilter.type)allHist=allHist.filter(hh=>hh.type===hrChgFilter.type);
   if(hrChgFilter.search){const ss=hrChgFilter.search.toLowerCase();allHist=allHist.filter(hh=>hh.empName.toLowerCase().includes(ss)||hh.desc.toLowerCase().includes(ss));}
+  if(hrChgFilter.dateFrom)allHist=allHist.filter(hh=>hh.date>=hrChgFilter.dateFrom);
+  if(hrChgFilter.dateTo)allHist=allHist.filter(hh=>hh.date<=hrChgFilter.dateTo);
+  const histSortAsc=window._allHistSort==="asc";
+  allHist=allHist.sort((a,b)=>histSortAsc?a.date.localeCompare(b.date):b.date.localeCompare(a.date));
   const c=$("#content");
   c.innerHTML=`<div class="card"><div class="card-body"><div class="flex items-c gap3">
     <select class="fc" style="width:360px" onchange="hrChgEmpId=this.value;renderHRChanges()">
@@ -8894,6 +8915,12 @@ function renderHRChanges(){
     <div class="filter-bar">
       <select class="fc" style="width:180px" onchange="hrChgFilter.type=this.value;renderHRChanges()"><option value="">전체 유형</option>${Object.entries(HR_TYPES).map(([k,v])=>`<option value="${k}"${hrChgFilter.type===k?" selected":""}>${v}</option>`).join("")}</select>
       <input class="fc" style="width:200px" placeholder="직원명/내용 검색" value="${h(hrChgFilter.search)}" oninput="hrChgFilter.search=this.value;renderHRChanges()">
+      <label class="fz12 flex items-c gap1">발령일자 <input class="fc" type="date" style="width:140px" value="${h(hrChgFilter.dateFrom)}" onchange="hrChgFilter.dateFrom=this.value;window._allHistPage=1;renderHRChanges()"> ~ <input class="fc" type="date" style="width:140px" value="${h(hrChgFilter.dateTo)}" onchange="hrChgFilter.dateTo=this.value;window._allHistPage=1;renderHRChanges()"></label>
+      ${(hrChgFilter.dateFrom||hrChgFilter.dateTo)?`<button class="btn btn-ghost btn-sm" onclick="hrChgFilter.dateFrom='';hrChgFilter.dateTo='';renderHRChanges()">기간 초기화</button>`:""}
+      <select class="fc" style="width:110px" onchange="window._allHistSort=this.value;renderHRChanges()">
+        <option value="desc"${(window._allHistSort||"desc")==="desc"?" selected":""}>최신순</option>
+        <option value="asc"${window._allHistSort==="asc"?" selected":""}>오래된순</option>
+      </select>
       <select class="fc" style="width:110px" onchange="window._allHistPageSize=+this.value;window._allHistPage=1;renderHRChanges()">
         ${[10,15,30,50,100].map(n=>`<option value="${n}" ${allHistPageSize===n?"selected":""}>${n}건씩</option>`).join("")}
       </select>
@@ -25869,12 +25896,20 @@ function _printCertContent(){
 }
 
 // ==================== HR STATISTICS (인사 통계) ====================
-let _hrStatsYear=new Date().getFullYear(),_hrStatsFilterDept="";
+let _hrStatsYear=new Date().getFullYear(),_hrStatsFilterDept="",_hrStatsAsOfDate="";
+// 기준일이 비어있으면 현재 재직자 그대로, 있으면 조직도의 "기준일" 기능(_orgEmployeeAtDate)과
+// 동일한 방식으로 hrHistory를 되감아 그 시점의 부서/팀/직급/직책·재직 여부를 재구성한다.
+// AI 분석·다운로드도 이 헬퍼를 공유해 화면·리포트가 서로 다른 기준으로 계산되는 일을 막는다.
+function _hrStatsActiveAsOf(asOf){
+  return asOf?employees.map(e=>_orgEmployeeAtDate(e,asOf)).filter(Boolean):employees.filter(e=>e.active&&e.role!=="admin");
+}
 function renderHRStatsPage(){
   const c=$("#content");
   const now=new Date();
+  const refDate=_hrStatsAsOfDate?new Date(_hrStatsAsOfDate):now; // 근속연수는 기준일이 있으면 그 시점 기준으로 계산(현재 시점 아님)
   const yr=_hrStatsYear;
-  const active=employees.filter(e=>e.active&&e.role!=="admin");
+  const asOf=_hrStatsAsOfDate;
+  const active=_hrStatsActiveAsOf(asOf);
   const all=employees.filter(e=>e.role!=="admin");
   // Dept breakdown
   const depts=[...new Set(active.map(e=>e.dept))].sort();
@@ -25889,7 +25924,7 @@ function renderHRStatsPage(){
     return`<tr><td>${l}</td><td style="text-align:center">${cnt}명</td></tr>`;
   }).join("");
   // Tenure stats
-  const tenures=active.filter(e=>e.hire).map(e=>Math.floor((now-new Date(e.hire))/(365.25*24*3600*1000)));
+  const tenures=active.filter(e=>e.hire).map(e=>Math.floor((refDate-new Date(e.hire))/(365.25*24*3600*1000)));
   const avgTenure=tenures.length>0?(tenures.reduce((a,b)=>a+b,0)/tenures.length).toFixed(1):0;
   const lt1=tenures.filter(t=>t<1).length,lt3=tenures.filter(t=>t>=1&&t<3).length,lt5=tenures.filter(t=>t>=3&&t<5).length,gt5=tenures.filter(t=>t>=5).length;
   // Joined/left this year
@@ -25915,14 +25950,19 @@ function renderHRStatsPage(){
     return`<tr><td><strong>${h(d)}</strong></td><td style="text-align:center">${m}명</td><td style="text-align:center">${f}명</td></tr>`;
   }).join("");
   c.innerHTML=`<div class="flex items-c" style="justify-content:space-between;margin-bottom:10px;gap:6px;flex-wrap:wrap">
-    <label class="fz12">기준 연도 <input class="fc" type="number" style="width:90px" value="${yr}" onchange="_hrStatsYear=Number(this.value)||new Date().getFullYear();renderHRStatsPage()"></label>
+    <div class="flex items-c gap2 wrap">
+      <label class="fz12">기준 연도 <input class="fc" type="number" style="width:90px" value="${yr}" onchange="_hrStatsYear=Number(this.value)||new Date().getFullYear();renderHRStatsPage()"></label>
+      <label class="fz12">기준일(인원현황) <input class="fc" type="date" style="width:150px" value="${h(asOf)}" onchange="_hrStatsAsOfDate=this.value;renderHRStatsPage()"></label>
+      ${asOf?`<button class="btn btn-ghost btn-sm" onclick="_hrStatsAsOfDate='';renderHRStatsPage()">✕ 현재로</button>`:""}
+    </div>
     <div class="flex gap2">
       <button class="btn btn-ghost btn-sm" onclick="aiAnalyzeHRStats()">🤖 AI 분석</button>
       <button class="btn btn-secondary btn-sm" onclick="dlHRStats()">📥 인사 통계 자료 다운로드</button>
     </div>
   </div>
+  ${asOf?`<div class="info-note fz12 mb2">📅 <strong>${h(asOf)}</strong> 시점 기준 인원현황입니다(발령·변동 이력으로 재구성한 추정치). 입사/퇴사/이직률 등 "${yr}년" 통계는 기준일과 무관하게 항상 해당 연도 전체 기준입니다.</div>`:""}
   <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px;margin-bottom:16px">
-    ${[{n:"재직 인원(현재)",v:active.length+"명",i:"👥",c:"#eff6ff"},{n:`${yr}년 입사`,v:joined+"명",i:"🟢",c:"#f0fdf4"},{n:`${yr}년 퇴사`,v:left+"명",i:"🔴",c:"#fef2f2"},{n:"이직률",v:turnover+"%",i:"📉",c:"#fefce8"},{n:"평균 근속",v:avgTenure+"년",i:"⏳",c:"#faf5ff"}].map(s=>`<div style="background:${s.c};border-radius:10px;padding:16px;text-align:center"><div style="font-size:22px">${s.i}</div><div class="fz11 text-gray mt1">${s.n}</div><div style="font-size:20px;font-weight:800;margin-top:4px">${s.v}</div></div>`).join("")}
+    ${[{n:asOf?`재직 인원(${asOf} 기준)`:"재직 인원(현재)",v:active.length+"명",i:"👥",c:"#eff6ff"},{n:`${yr}년 입사`,v:joined+"명",i:"🟢",c:"#f0fdf4"},{n:`${yr}년 퇴사`,v:left+"명",i:"🔴",c:"#fef2f2"},{n:"이직률",v:turnover+"%",i:"📉",c:"#fefce8"},{n:"평균 근속",v:avgTenure+"년",i:"⏳",c:"#faf5ff"}].map(s=>`<div style="background:${s.c};border-radius:10px;padding:16px;text-align:center"><div style="font-size:22px">${s.i}</div><div class="fz11 text-gray mt1">${s.n}</div><div style="font-size:20px;font-weight:800;margin-top:4px">${s.v}</div></div>`).join("")}
   </div>
   <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
     <div class="card"><div class="card-head"><h3>부서별 인원</h3></div><div class="card-body" style="padding:0"><div class="tbl-wrap"><table><thead><tr><th>부서</th><th>인원</th><th>비중</th></tr></thead><tbody>${deptRows||`<tr><td colspan="3" style="text-align:center;padding:20px;color:#94a3b8">데이터 없음</td></tr>`}</tbody></table></div></div></div>
@@ -26036,13 +26076,14 @@ async function _hrBulkFixRetireeMismatches(year,filterDept){
   renderHRStatsPage();
 }
 function aiAnalyzeHRStats(){
-  const now=new Date();const yr=_hrStatsYear;
-  const active=employees.filter(e=>e.active&&e.role!=="admin");
+  const now=new Date();const yr=_hrStatsYear;const asOf=_hrStatsAsOfDate;
+  const refDate=asOf?new Date(asOf):now;
+  const active=_hrStatsActiveAsOf(asOf);
   const all=employees.filter(e=>e.role!=="admin");
   const left=all.filter(e=>!e.active&&e.retireDate&&e.retireDate.startsWith(yr)).length;
   const joined=all.filter(e=>e.hire&&e.hire.startsWith(yr)).length;
   const turnover=active.length>0?Number((left/(active.length+left)*100).toFixed(1)):0;
-  const tenures=active.filter(e=>e.hire).map(e=>Math.floor((now-new Date(e.hire))/(365.25*24*3600*1000)));
+  const tenures=active.filter(e=>e.hire).map(e=>Math.floor((refDate-new Date(e.hire))/(365.25*24*3600*1000)));
   const avgTenure=tenures.length>0?Number((tenures.reduce((a,b)=>a+b,0)/tenures.length).toFixed(1)):0;
   const depts=[...new Set(active.map(e=>e.dept))].sort();
   const deptCounts=depts.map(d=>({dept:d,count:active.filter(e=>e.dept===d).length}));
@@ -26050,19 +26091,21 @@ function aiAnalyzeHRStats(){
   const rankCounts=ranks.map(rk=>({rank:rk,count:active.filter(e=>e.rank===rk).length}));
   const maleCnt=active.filter(e=>e.gender==="남").length,femaleCnt=active.filter(e=>e.gender==="여").length;
   const tenureDist={"1년 미만":tenures.filter(t=>t<1).length,"1~3년":tenures.filter(t=>t>=1&&t<3).length,"3~5년":tenures.filter(t=>t>=3&&t<5).length,"5년 이상":tenures.filter(t=>t>=5).length};
-  openAiOrgAnalysisModal("stats",{기준연도:yr,재직인원:active.length,올해입사:joined,올해퇴사:left,이직률:turnover+"%",평균근속:avgTenure+"년",부서별인원:deptCounts,직급별인원:rankCounts,근속연수분포:tenureDist,남녀인원:{남:maleCnt,여:femaleCnt}});
+  openAiOrgAnalysisModal("stats",{기준연도:yr,기준일:asOf||"현재",재직인원:active.length,올해입사:joined,올해퇴사:left,이직률:turnover+"%",평균근속:avgTenure+"년",부서별인원:deptCounts,직급별인원:rankCounts,근속연수분포:tenureDist,남녀인원:{남:maleCnt,여:femaleCnt}});
 }
 function dlHRStats(){
-  const now=new Date();const yr=_hrStatsYear;
-  const active=employees.filter(e=>e.active&&e.role!=="admin");
+  const now=new Date();const yr=_hrStatsYear;const asOf=_hrStatsAsOfDate;
+  const refDate=asOf?new Date(asOf):now;
+  const active=_hrStatsActiveAsOf(asOf);
   const all=employees.filter(e=>e.role!=="admin");
   const rows=[["구분","항목","수치"]];
+  rows.push(["요약","기준일",asOf||"현재"]);
   rows.push(["요약","재직 인원",active.length+"명"]);
   rows.push(["요약","올해 입사",all.filter(e=>e.hire&&e.hire.startsWith(yr)).length+"명"]);
   const left=all.filter(e=>!e.active&&e.retireDate&&e.retireDate.startsWith(yr)).length;
   rows.push(["요약","올해 퇴사",left+"명"]);
   rows.push(["요약","이직률",(active.length>0?(left/(active.length+left)*100).toFixed(1):0)+"%"]);
-  const tenures=active.filter(e=>e.hire).map(e=>Math.floor((now-new Date(e.hire))/(365.25*24*3600*1000)));
+  const tenures=active.filter(e=>e.hire).map(e=>Math.floor((refDate-new Date(e.hire))/(365.25*24*3600*1000)));
   rows.push(["요약","평균 근속",(tenures.length>0?(tenures.reduce((a,b)=>a+b,0)/tenures.length).toFixed(1):0)+"년"]);
   const depts=[...new Set(active.map(e=>e.dept))].sort();
   depts.forEach(d=>{const cnt=active.filter(e=>e.dept===d).length;rows.push(["부서별 인원",d,cnt+"명"]);});
@@ -26073,7 +26116,7 @@ function dlHRStats(){
   rows.push(["남녀 비율","남성",maleCnt+"명"]);
   rows.push(["남녀 비율","여성",femaleCnt+"명"]);
   depts.forEach(d=>{const de=active.filter(e=>e.dept===d);rows.push(["부서별 남녀",d+" 남",de.filter(e=>e.gender==="남").length+"명"]);rows.push(["부서별 남녀",d+" 여",de.filter(e=>e.gender==="여").length+"명"]);});
-  dlCSV(`인사통계_${now.toISOString().slice(0,10)}.csv`,rows[0],rows.slice(1));
+  dlCSV(`인사통계_${asOf||now.toISOString().slice(0,10)}.csv`,rows[0],rows.slice(1));
 }
 
 // ==================== GPS SETTINGS (GPS 근태·회의실 관리) ====================
