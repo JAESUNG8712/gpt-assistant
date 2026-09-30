@@ -170,18 +170,23 @@ test.describe("로그인·기본 네비게이션", () => {
     const pageErrors=[];page.on("pageerror",e=>pageErrors.push(e.message));
     await page.evaluate(() => {
       currentUser={id:"pr-admin",name:"정원관리자",role:"admin",dept:"인사",menuPerms:{}};
-      positionRequests=[{id:"pr-e2e",requestType:"increase",existingPositionId:"pos-e2e",title:"ERP 컨설턴트",dept:"DX사업본부",team:"ERP팀",headcount:2,estimatedAnnualCost:140000000,budgetSource:"2027 사업계획 인건비",justification:"확정 수주 대응",status:"submitted",requestedBy:"leader-e2e",requestedByName:"ERP팀장",createdAt:"2026-09-30T00:00:00.000Z",updatedAt:"2026-09-30T00:00:00.000Z"}];
+      positionRequests=[{id:"pr-e2e",requestType:"increase",existingPositionId:"pos-e2e",title:"ERP 컨설턴트",dept:"DX사업본부",team:"ERP팀",headcount:2,estimatedAnnualCost:140000000,budgetSource:"2027 사업계획 인건비",businessPlanId:"plan-e2e",budgetItemKey:"0:e2e",budgetPlanName:"DX 2027 확정계획",budgetPlanYear:2027,budgetItemName:"ERP 인건비",justification:"확정 수주 대응",status:"submitted",requestedBy:"leader-e2e",requestedByName:"ERP팀장",createdAt:"2026-09-30T00:00:00.000Z",updatedAt:"2026-09-30T00:00:00.000Z"}];
       _positionRequestPicker=[{id:"pos-e2e",code:"POS-DX-ERP-001",title:"ERP 컨설턴트",dept:"DX사업본부",team:"ERP팀",targetHeadcount:3,positionType:"regular"}];
       _positionRequestPickerLoaded=true;
+      _positionBudgetPicker=[{businessPlanId:"plan-e2e",budgetItemKey:"0:e2e",planName:"DX 2027 확정계획",baseYear:2027,itemName:"ERP 인건비",budgetAmount:300000000,committedAmount:50000000,pendingAmount:140000000,remainingAmount:250000000}];
+      _positionBudgetPickerLoaded=true;
+      _loadPositionBudgetPicker=async()=>_positionBudgetPicker;
       render();gotoPage("position-requests");
     });
     await expect(page.locator("#content").getByRole("heading",{name:"정원 신설·증원 요청"})).toBeVisible();
     await expect(page.locator("#content")).toContainText("140,000,000원");
-    await expect(page.locator("#content")).toContainText("2027 사업계획 인건비");
+    await expect(page.locator("#content")).toContainText("DX 2027 확정계획 · ERP 인건비");
     await page.getByRole("button",{name:"승인",exact:true}).click();
     await expect(page.locator("#pr-approval-budget")).toBeVisible();
     await expect(page.locator("#pr-budget-confirmed")).toBeVisible();
     await expect(page.locator(".modal-ov")).toContainText("승인 즉시 기존 포지션 정원이 증가");
+    await expect(page.locator(".modal-ov")).toContainText("현재 예산 잔액");
+    await expect(page.locator(".modal-ov")).toContainText("110,000,000원");
     expect(pageErrors).toHaveLength(0);
   });
 

@@ -1729,6 +1729,11 @@ function _validateFieldValues(field, rec, storedList) {
       if (typeof rec.positionCode !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_-]{1,39}$/.test(rec.positionCode)) return false;
     } else if (typeof rec.existingPositionId !== "string" || !rec.existingPositionId) return false;
     if (rec.budgetReference != null && (typeof rec.budgetReference !== "string" || rec.budgetReference.length > 120)) return false;
+    if (rec.businessPlanId != null && (typeof rec.businessPlanId !== "string" || rec.businessPlanId.length > 160)) return false;
+    if (rec.budgetItemKey != null && (typeof rec.budgetItemKey !== "string" || rec.budgetItemKey.length > 160)) return false;
+    if (rec.budgetItemName != null && (typeof rec.budgetItemName !== "string" || rec.budgetItemName.length > 200)) return false;
+    if (rec.budgetPlanName != null && (typeof rec.budgetPlanName !== "string" || rec.budgetPlanName.length > 200)) return false;
+    if (rec.budgetPlanYear != null && (!Number.isInteger(Number(rec.budgetPlanYear)) || Number(rec.budgetPlanYear) < 2000 || Number(rec.budgetPlanYear) > 2200)) return false;
     if (rec.approvalComment != null && (typeof rec.approvalComment !== "string" || rec.approvalComment.length > 2000)) return false;
   }
   return true;
@@ -4874,6 +4879,75 @@ app.get("/api/workforce/positions/picker", async (req, res) => {
   }
 });
 
+// 확정 사업계획의 판관비 항목을 정원 요청용 최소 정보로 변환한다. 예산 원본을 요청
+// 레코드에 복제하지 않고 planId+항목 지문만 저장하므로, 승인 시점에는 항상 최신 계획과
+// 이미 승인된 요청을 다시 합산한다. 그 결과 두 관리자가 동시에 승인해도 회사별 저장
+// 잠금 안에서 뒤 요청은 앞 요청의 사용액을 보고 초과 승인이 차단된다.
+function _positionBudgetItemKey(plan, item, index) {
+  const fingerprint = crypto.createHash("sha256").update(JSON.stringify({
+    planId: String(plan?.id || ""), index,
+    name: String(item?.name || ""), detail: String(item?.detail || ""),
+    category: String(item?.category || ""), accountType: String(item?.accountType || ""),
+    expenseAccount: String(item?.expenseAccount || ""), dept: String(item?.dept || ""),
+    team: String(item?.team || ""), costDept: String(item?.costDept || ""),
+    baseAmount: Number(item?.baseAmount) || 0,
+  })).digest("hex").slice(0, 24);
+  return `${index}:${fingerprint}`;
+}
+
+function _positionBudgetCatalog(state, budgetData, actorEmp, auth) {
+  const requests = Array.isArray(state?.positionRequests) ? state.positionRequests : [];
+  const plans = Array.isArray(budgetData?.businessPlans) ? budgetData.businessPlans : [];
+  const isAdmin = auth?.role === "admin";
+  const visible = [];
+  for (const plan of plans) {
+    if (!plan || plan.status !== "finalConfirmed") continue;
+    const planDept = String(plan.dept || "");
+    const planTeam = String(plan.team || "");
+    if (!isAdmin) {
+      const sameDept = planDept && planDept === String(actorEmp?.dept || "");
+      const sameTeam = sameDept && planTeam === String(actorEmp?.team || "");
+      if ((auth?.role === "director" && !sameDept) || (auth?.role === "leader" && !sameTeam)) continue;
+    }
+    const items = Array.isArray(plan.assumptions?.sgaItems) ? plan.assumptions.sgaItems : [];
+    items.forEach((item, index) => {
+      const budgetAmount = Number(item?.baseAmount) || 0;
+      if (budgetAmount <= 0) return;
+      const itemKey = _positionBudgetItemKey(plan, item, index);
+      const linked = requests.filter(r => String(r?.businessPlanId || "") === String(plan.id) && String(r?.budgetItemKey || "") === itemKey);
+      const committedAmount = linked.filter(r => r.status === "approved").reduce((sum, r) => sum + (Number(r.estimatedAnnualCost) || 0), 0);
+      const pendingAmount = linked.filter(r => r.status === "submitted").reduce((sum, r) => sum + (Number(r.estimatedAnnualCost) || 0), 0);
+      visible.push({
+        businessPlanId: String(plan.id), budgetItemKey: itemKey,
+        planName: String(plan.name || ""), baseYear: Number(plan.baseYear),
+        dept: planDept, team: planTeam,
+        itemName: String(item?.name || ""), detail: String(item?.detail || ""),
+        category: String(item?.category || ""), accountType: String(item?.accountType || ""),
+        expenseAccount: String(item?.expenseAccount || ""),
+        budgetAmount, committedAmount, pendingAmount,
+        remainingAmount: budgetAmount - committedAmount,
+      });
+    });
+  }
+  return visible;
+}
+
+app.get("/api/workforce/position-budget-items/picker", async (req, res) => {
+  if (!requireAuth(req, res)) return;
+  if (!requireRole(req, res, ["admin", "leader", "director"])) return;
+  if (!requirePage(req, res, "position-requests")) return;
+  try {
+    const companyId = req.auth?.companyId || null;
+    const state = await loadData(companyId);
+    const actorEmp = (state.employees || []).find(e => String(e?.id) === String(req.auth.empId));
+    if (!actorEmp) return res.status(403).json({ ok: false, code: "POSITION_REQUEST_SCOPE_FORBIDDEN", message: "처리할 수 없는 사용자입니다." });
+    const budgetData = await budgetRouterFactory.readBudget(companyId);
+    res.json({ ok: true, items: _positionBudgetCatalog(state, budgetData, actorEmp, req.auth) });
+  } catch (e) {
+    res.status(500).json({ ok: false, message: _safeErrMsg(e) });
+  }
+});
+
 // 포지션 신설·증원 요청은 전체 상태 저장으로 상태를 바꾸지 않는다. 제출/승인/반려와
 // 승인 시 실제 정원 반영을 같은 회사 잠금 안에서 처리해 이중 승인과 정원 중복 증가를 막는다.
 app.post("/api/workforce/position-requests/:id/transition", async (req, res) => {
@@ -4910,6 +4984,9 @@ app.post("/api/workforce/position-requests/:id/transition", async (req, res) => 
         if (current.status !== "draft") throw httpError(409, "POSITION_REQUEST_INVALID_TRANSITION", "초안 상태에서만 제출할 수 있습니다.", { request: current });
         if (!isAdmin && (!isOwner || !["leader", "director"].includes(req.auth.role))) throw httpError(403, "POSITION_REQUEST_SCOPE_FORBIDDEN", "본인이 작성한 요청만 제출할 수 있습니다.");
         if (!_validateFieldValues("positionRequests", current)) throw httpError(400, "POSITION_REQUEST_INVALID", "요청 필수값과 예산 정보를 확인하세요.");
+        if (!current.businessPlanId || !current.budgetItemKey) {
+          throw httpError(400, "POSITION_REQUEST_BUDGET_LINK_REQUIRED", "최종확정된 사업계획 예산 항목을 선택하세요.");
+        }
         // 화면의 선택 목록만 조직 범위로 줄여서는 API 직접 호출로 타 조직 코드/ID를
         // 주입할 수 있다. 제출 시점에도 요청 조직과 대상 포지션을 인증된 요청자 조직으로
         // 다시 검증한다(팀장=동일 부서·팀, 사업부장=동일 부서).
@@ -4932,6 +5009,22 @@ app.post("/api/workforce/position-requests/:id/transition", async (req, res) => 
             throw httpError(409, "POSITION_REQUEST_POSITION_MISMATCH", "증원 대상 포지션 정보가 최신 원장과 일치하지 않습니다.");
           }
         }
+        const budgetData = await budgetRouterFactory.readBudget(companyId);
+        const budgetItem = _positionBudgetCatalog(state, budgetData, actorEmp, req.auth)
+          .find(x => x.businessPlanId === String(current.businessPlanId) && x.budgetItemKey === String(current.budgetItemKey));
+        if (!budgetItem) throw httpError(409, "POSITION_REQUEST_BUDGET_UNAVAILABLE", "선택한 예산 항목이 없거나 최종확정 상태가 아닙니다. 예산 항목을 다시 선택하세요.");
+        const effectiveYear = Number(String(current.effectiveDate || "").slice(0, 4));
+        if (!Number.isInteger(effectiveYear) || effectiveYear !== budgetItem.baseYear) {
+          throw httpError(409, "POSITION_REQUEST_BUDGET_YEAR_MISMATCH", "적용 희망일과 사업계획 기준연도가 일치해야 합니다.", { budgetItem });
+        }
+        if (Number(current.estimatedAnnualCost) > budgetItem.remainingAmount) {
+          throw httpError(409, "POSITION_REQUEST_BUDGET_EXCEEDED", "예상 연간 인건비가 현재 잔여 예산을 초과합니다.", { budgetItem });
+        }
+        next.budgetPlanName = budgetItem.planName;
+        next.budgetPlanYear = budgetItem.baseYear;
+        next.budgetItemName = budgetItem.itemName;
+        next.budgetAmountSnapshot = budgetItem.budgetAmount;
+        next.budgetRemainingAtSubmit = budgetItem.remainingAmount;
         next.status = "submitted";
         next.submittedAt = now;
         delete next.rejectedReason;
@@ -4941,6 +5034,13 @@ app.post("/api/workforce/position-requests/:id/transition", async (req, res) => 
         if (!isAdmin) throw httpError(403, "POSITION_REQUEST_SCOPE_FORBIDDEN", "관리자만 포지션 요청을 승인할 수 있습니다.");
         if (current.status !== "submitted") throw httpError(409, "POSITION_REQUEST_INVALID_TRANSITION", "제출된 요청만 승인할 수 있습니다.", { request: current });
         if (!budgetConfirmed || !budgetReference) throw httpError(400, "POSITION_REQUEST_BUDGET_REQUIRED", "예산 확인 여부와 예산 근거를 입력하세요.");
+        const budgetData = await budgetRouterFactory.readBudget(companyId);
+        const budgetItem = _positionBudgetCatalog(state, budgetData, actorEmp, req.auth)
+          .find(x => x.businessPlanId === String(current.businessPlanId) && x.budgetItemKey === String(current.budgetItemKey));
+        if (!budgetItem) throw httpError(409, "POSITION_REQUEST_BUDGET_UNAVAILABLE", "연결된 예산 항목이 없거나 더 이상 최종확정 상태가 아닙니다.");
+        if (Number(current.estimatedAnnualCost) > budgetItem.remainingAmount) {
+          throw httpError(409, "POSITION_REQUEST_BUDGET_EXCEEDED", "다른 승인으로 잔여 예산이 부족해졌습니다. 최신 예산을 확인하세요.", { budgetItem });
+        }
         if (current.requestType === "new") {
           if (positions.some(p => String(p?.code || "").toLocaleLowerCase() === String(current.positionCode || "").toLocaleLowerCase())) {
             throw httpError(409, "POSITION_REQUEST_CODE_CONFLICT", "이미 사용 중인 포지션 코드입니다.");
@@ -4977,6 +5077,12 @@ app.post("/api/workforce/position-requests/:id/transition", async (req, res) => 
         next.approvalComment = comment;
         next.budgetConfirmed = true;
         next.budgetReference = budgetReference;
+        next.budgetPlanName = budgetItem.planName;
+        next.budgetPlanYear = budgetItem.baseYear;
+        next.budgetItemName = budgetItem.itemName;
+        next.budgetAmountSnapshot = budgetItem.budgetAmount;
+        next.budgetCommittedBefore = budgetItem.committedAmount;
+        next.budgetRemainingAfter = budgetItem.remainingAmount - Number(current.estimatedAnnualCost);
         next.affectedPositionId = affectedPosition.id;
       } else {
         if (!isAdmin) throw httpError(403, "POSITION_REQUEST_SCOPE_FORBIDDEN", "관리자만 포지션 요청을 반려할 수 있습니다.");
