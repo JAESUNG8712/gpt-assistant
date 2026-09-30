@@ -665,6 +665,9 @@ function filterDataForRole(data, auth) {
     if (Array.isArray(out.employeeSkillProfiles)) out.employeeSkillProfiles = [];
     if (Array.isArray(out.workforceScenarios)) out.workforceScenarios = [];
     if (Array.isArray(out.workforcePositions)) out.workforcePositions = [];
+    if (Array.isArray(out.positionRequests)) {
+      out.positionRequests = out.positionRequests.filter(r => r && String(r.requestedBy) === myId);
+    }
   }
   if (auth.role !== "admin" && Array.isArray(out.compResponses)) {
     out.compResponses = out.compResponses.map(r => {
@@ -1349,6 +1352,7 @@ const _WRITE_GATED_FIELDS = {
   employeeSkillProfiles: { roles: ["admin"], pageIds: "skills-architecture" },
   workforceScenarios: { roles: ["admin"], pageIds: "workforce-planning" },
   workforcePositions: { roles: ["admin"], pageIds: "position-control" },
+  positionRequests: { roles: ["admin"], ownField: "requestedBy", ownRoles: ["leader", "director"], pageIds: "position-requests" },
   approvalTemplates:  { roles: ["admin"], pageIds: "approval-templates" },
   // hr-mandatory-training(admin/director/leader)의 일괄 등록 외에, 누구나 접근 가능한 개인
   // "법정의무교육" 화면(mandatory-training)에 본인 이수 자가등록 버튼("이수 등록")이 있다 —
@@ -1406,7 +1410,7 @@ function _writeGateAllowed(field, rec, actor, actorEmp, settings) {
   if (!rule || !actor) return false;
   const pageOk = _menuPermsAllow(rule.pageIds, actor);
   if (rule.roles.includes(actor.role) && pageOk) return true;
-  if (rule.ownField && String(rec[rule.ownField]) === String(actor.empId)) return true;
+  if (rule.ownField && pageOk && (!rule.ownRoles || rule.ownRoles.includes(actor.role)) && String(rec[rule.ownField]) === String(actor.empId)) return true;
   if (rule.viewersSetting && ((settings || {})[rule.viewersSetting] || []).map(String).includes(String(actor.empId))) return true;
   // director 한정, 그 부서 소속 레코드만 허용(예: KPI 등급조정 이력·동점자 처리 — 클라이언트가
   // 이미 director를 자기 사업부(dept)로만 스코핑해 버튼을 노출하고 있는 화면들).
@@ -1472,6 +1476,22 @@ function _sanitizeGatedRecord(field, incoming, stored, actor, actorEmp, settings
   if (field === "talentDevPlans" && !actor?._talentTransition) {
     if (!stored && incoming.status !== "draft") incoming = { ...incoming, status: "draft" };
     if (stored && incoming.status !== stored.status) return { ...stored };
+  }
+  // 포지션 요청의 승인 상태와 신청자 신원은 전용 transition API만 변경한다. 일반 /save로
+  // submitted/approved를 직접 주입하거나 다른 사람 명의로 신청하는 우회를 막고, 제출 이후
+  // 원문은 승인 근거이므로 수정되지 않게 동결한다.
+  if (field === "positionRequests" && !actor?._positionRequestTransition) {
+    if (!stored) {
+      incoming = {
+        ...incoming,
+        requestedBy: String(actor?.empId || ""),
+        requestedByName: actorEmp?.name || actor?.loginId || "",
+        status: "draft",
+      };
+    } else {
+      if (String(incoming.requestedBy) !== String(stored.requestedBy)) incoming = { ...incoming, requestedBy: stored.requestedBy, requestedByName: stored.requestedByName };
+      if (stored.status !== "draft" || (incoming.status || "draft") !== stored.status) return { ...stored };
+    }
   }
   // 전략적 인력계획은 운영 원장을 바꾸지 않는 샌드박스지만, 승인 결과 자체는 예산·채용
   // 의사결정의 근거가 된다. 따라서 신규 레코드는 draft로만 시작하고 승인된 시나리오는
@@ -1692,6 +1712,24 @@ function _validateFieldValues(field, rec, storedList) {
     }
     if (rec.effectiveDate && !/^\d{4}-\d{2}-\d{2}$/.test(rec.effectiveDate)) return false;
     if (rec.note != null && (typeof rec.note !== "string" || rec.note.length > 500)) return false;
+  } else if (field === "positionRequests") {
+    if (!['new', 'increase'].includes(rec.requestType)) return false;
+    if (!['draft', 'submitted', 'approved', 'rejected'].includes(rec.status || 'draft')) return false;
+    if (typeof rec.title !== "string" || !rec.title.trim() || rec.title.length > 120) return false;
+    if (typeof rec.dept !== "string" || !rec.dept.trim() || rec.dept.length > 120) return false;
+    if (rec.team != null && (typeof rec.team !== "string" || rec.team.length > 120)) return false;
+    const count = Number(rec.headcount), cost = Number(rec.estimatedAnnualCost);
+    if (!Number.isInteger(count) || count < 1 || count > 1000) return false;
+    if (!Number.isFinite(cost) || cost <= 0 || cost > 1_000_000_000_000) return false;
+    if (typeof rec.budgetSource !== "string" || !rec.budgetSource.trim() || rec.budgetSource.length > 120) return false;
+    if (rec.costCenter != null && (typeof rec.costCenter !== "string" || rec.costCenter.length > 120)) return false;
+    if (typeof rec.justification !== "string" || !rec.justification.trim() || rec.justification.length > 2000) return false;
+    if (typeof rec.requestedBy !== "string" || !rec.requestedBy || rec.requestedBy.length > 120) return false;
+    if (rec.requestType === "new") {
+      if (typeof rec.positionCode !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_-]{1,39}$/.test(rec.positionCode)) return false;
+    } else if (typeof rec.existingPositionId !== "string" || !rec.existingPositionId) return false;
+    if (rec.budgetReference != null && (typeof rec.budgetReference !== "string" || rec.budgetReference.length > 120)) return false;
+    if (rec.approvalComment != null && (typeof rec.approvalComment !== "string" || rec.approvalComment.length > 2000)) return false;
   }
   return true;
 }
@@ -4267,7 +4305,7 @@ const _BLOB_MODULE_FIELDS = {
   kpi:       ["kpiEntries", "changeRequests", "tieNotifications", "gradeAdjustHistory"],
   comp_eval: ["compSessions", "compResponses", "compGradeResults", "evaluatorConfig"],
   talent:    ["coreTalentPool", "talentDevPlans", "successionPlans", "jobSkillProfiles", "employeeSkillProfiles", "workforceScenarios", "lowPerfData", "coreTalentSettings"],
-  recruit:   ["workforcePositions"],
+  recruit:   ["workforcePositions", "positionRequests"],
   hr:        ["orgChartHistory"],
   // 승진 처리 자체(employees[].rank 변경)는 hr와 동일한 이유로 대상 밖(핵심 인사 데이터라
   // 통째로 막으면 위험)이지만, 자격요건 설정값(promotionSettings — 직급별 최소연수·등급
@@ -4798,6 +4836,166 @@ app.post("/api/talent-dev/plans/:id/transition", async (req, res) => {
     }));
     broadcastSSE("data_updated", { version: _getVersion(companyId) }, req.query.clientId, companyId);
     res.json({ ok: true, plan, version: _getVersion(companyId) });
+  } catch (e) {
+    const status = Number.isInteger(e.status) ? e.status : 500;
+    res.status(status).json({ ok: false, code: e.code, message: _safeErrMsg(e), ...(e.details || {}) });
+  }
+});
+
+// 증원 요청 화면에는 대상 포지션 선택에 필요한 최소 정보만 제공한다. 전체 포지션
+// 원장(재직자 배정 등)은 관리자 전용으로 유지하고, 팀장/사업부장은 자기 조직 범위의
+// 활성 포지션만 조회할 수 있게 해 정보 노출과 임의 조직 증원 요청을 함께 막는다.
+app.get("/api/workforce/positions/picker", async (req, res) => {
+  if (!requireAuth(req, res)) return;
+  if (!requireRole(req, res, ["admin", "leader", "director"])) return;
+  if (!requirePage(req, res, "position-requests")) return;
+  try {
+    const companyId = req.auth?.companyId || null;
+    const state = await loadData(companyId);
+    const actor = (state.employees || []).find(e => String(e?.id) === String(req.auth.empId));
+    if (!actor) return res.status(403).json({ ok: false, code: "POSITION_REQUEST_SCOPE_FORBIDDEN", message: "처리할 수 없는 사용자입니다." });
+    const positions = (Array.isArray(state.workforcePositions) ? state.workforcePositions : [])
+      .filter(p => p && p.status === "active")
+      .filter(p => req.auth.role === "admin"
+        || (req.auth.role === "director" && String(p.dept || "") === String(actor.dept || ""))
+        || (req.auth.role === "leader" && String(p.dept || "") === String(actor.dept || "") && String(p.team || "") === String(actor.team || "")))
+      .map(p => ({
+        id: p.id,
+        code: p.code,
+        title: p.title,
+        dept: p.dept,
+        team: p.team || "",
+        positionType: p.positionType || "regular",
+        targetHeadcount: Number(p.targetHeadcount) || 0,
+      }));
+    res.json({ ok: true, positions });
+  } catch (e) {
+    res.status(500).json({ ok: false, message: _safeErrMsg(e) });
+  }
+});
+
+// 포지션 신설·증원 요청은 전체 상태 저장으로 상태를 바꾸지 않는다. 제출/승인/반려와
+// 승인 시 실제 정원 반영을 같은 회사 잠금 안에서 처리해 이중 승인과 정원 중복 증가를 막는다.
+app.post("/api/workforce/position-requests/:id/transition", async (req, res) => {
+  if (!requireAuth(req, res)) return;
+  if (!requirePage(req, res, "position-requests")) return;
+  const companyId = req.auth?.companyId || null;
+  const requestId = String(req.params.id || "");
+  const action = String(req.body?.action || "");
+  const expectedUpdatedAt = String(req.body?.expectedUpdatedAt || "");
+  const comment = String(req.body?.comment || "").trim().slice(0, 2000);
+  const budgetReference = String(req.body?.budgetReference || "").trim().slice(0, 120);
+  const budgetConfirmed = req.body?.budgetConfirmed === true;
+  if (!expectedUpdatedAt) return res.status(428).json({ ok: false, code: "POSITION_REQUEST_REVISION_REQUIRED", message: "최신 요청 정보가 필요합니다." });
+  if (!new Set(["submit", "approve", "reject"]).has(action)) return res.status(400).json({ ok: false, code: "POSITION_REQUEST_INVALID_ACTION", message: "지원하지 않는 상태 변경입니다." });
+
+  try {
+    const result = await _withSaveLock(() => _withDistributedSaveLock(companyId, async () => {
+      const state = await loadData(companyId);
+      const requests = Array.isArray(state.positionRequests) ? state.positionRequests : [];
+      const positions = Array.isArray(state.workforcePositions) ? state.workforcePositions : [];
+      const index = requests.findIndex(r => String(r?.id) === requestId);
+      if (index < 0) throw httpError(404, "POSITION_REQUEST_NOT_FOUND", "포지션 요청을 찾을 수 없습니다.");
+      const current = requests[index];
+      if (String(current.updatedAt || "") !== expectedUpdatedAt) throw httpError(409, "POSITION_REQUEST_CONFLICT", "다른 사용자가 먼저 처리했습니다.", { request: current });
+      const actorEmp = (state.employees || []).find(e => String(e?.id) === String(req.auth.empId));
+      if (!actorEmp) throw httpError(403, "POSITION_REQUEST_SCOPE_FORBIDDEN", "처리할 수 없는 사용자입니다.");
+      const isAdmin = req.auth.role === "admin";
+      const isOwner = String(current.requestedBy) === String(req.auth.empId);
+      const now = new Date(Math.max(Date.now(), (Date.parse(current.updatedAt || "") || 0) + 1)).toISOString();
+      const next = { ...current, updatedAt: now };
+      let affectedPosition = null;
+
+      if (action === "submit") {
+        if (current.status !== "draft") throw httpError(409, "POSITION_REQUEST_INVALID_TRANSITION", "초안 상태에서만 제출할 수 있습니다.", { request: current });
+        if (!isAdmin && (!isOwner || !["leader", "director"].includes(req.auth.role))) throw httpError(403, "POSITION_REQUEST_SCOPE_FORBIDDEN", "본인이 작성한 요청만 제출할 수 있습니다.");
+        if (!_validateFieldValues("positionRequests", current)) throw httpError(400, "POSITION_REQUEST_INVALID", "요청 필수값과 예산 정보를 확인하세요.");
+        // 화면의 선택 목록만 조직 범위로 줄여서는 API 직접 호출로 타 조직 코드/ID를
+        // 주입할 수 있다. 제출 시점에도 요청 조직과 대상 포지션을 인증된 요청자 조직으로
+        // 다시 검증한다(팀장=동일 부서·팀, 사업부장=동일 부서).
+        if (!isAdmin) {
+          const sameDept = String(current.dept || "") === String(actorEmp.dept || "");
+          const sameTeam = sameDept && String(current.team || "") === String(actorEmp.team || "");
+          if ((req.auth.role === "leader" && !sameTeam) || (req.auth.role === "director" && !sameDept)) {
+            throw httpError(403, "POSITION_REQUEST_ORG_FORBIDDEN", "본인 조직의 정원만 요청할 수 있습니다.");
+          }
+        }
+        if (current.requestType === "increase") {
+          const target = positions.find(p => String(p?.id) === String(current.existingPositionId));
+          if (!target || target.status !== "active") throw httpError(409, "POSITION_REQUEST_POSITION_UNAVAILABLE", "증원 대상 포지션이 없거나 비활성 상태입니다.");
+          const targetSameDept = String(target.dept || "") === String(actorEmp.dept || "");
+          const targetSameTeam = targetSameDept && String(target.team || "") === String(actorEmp.team || "");
+          if (!isAdmin && ((req.auth.role === "leader" && !targetSameTeam) || (req.auth.role === "director" && !targetSameDept))) {
+            throw httpError(403, "POSITION_REQUEST_ORG_FORBIDDEN", "본인 조직의 포지션만 증원 요청할 수 있습니다.");
+          }
+          if (String(current.title || "") !== String(target.title || "") || String(current.dept || "") !== String(target.dept || "") || String(current.team || "") !== String(target.team || "")) {
+            throw httpError(409, "POSITION_REQUEST_POSITION_MISMATCH", "증원 대상 포지션 정보가 최신 원장과 일치하지 않습니다.");
+          }
+        }
+        next.status = "submitted";
+        next.submittedAt = now;
+        delete next.rejectedReason;
+        delete next.rejectedAt;
+        delete next.rejectedBy;
+      } else if (action === "approve") {
+        if (!isAdmin) throw httpError(403, "POSITION_REQUEST_SCOPE_FORBIDDEN", "관리자만 포지션 요청을 승인할 수 있습니다.");
+        if (current.status !== "submitted") throw httpError(409, "POSITION_REQUEST_INVALID_TRANSITION", "제출된 요청만 승인할 수 있습니다.", { request: current });
+        if (!budgetConfirmed || !budgetReference) throw httpError(400, "POSITION_REQUEST_BUDGET_REQUIRED", "예산 확인 여부와 예산 근거를 입력하세요.");
+        if (current.requestType === "new") {
+          if (positions.some(p => String(p?.code || "").toLocaleLowerCase() === String(current.positionCode || "").toLocaleLowerCase())) {
+            throw httpError(409, "POSITION_REQUEST_CODE_CONFLICT", "이미 사용 중인 포지션 코드입니다.");
+          }
+          affectedPosition = {
+            id: `position-from-${current.id}`,
+            code: current.positionCode,
+            title: current.title,
+            dept: current.dept,
+            team: current.team || "",
+            targetHeadcount: Number(current.headcount),
+            incumbentIds: [],
+            positionType: current.positionType || "regular",
+            status: "active",
+            effectiveDate: current.effectiveDate || now.slice(0, 10),
+            note: `포지션 요청 ${current.id} 승인 · ${current.justification}`.slice(0, 500),
+            sourceRequestId: current.id,
+            createdAt: now,
+            updatedAt: now,
+          };
+          positions.push(affectedPosition);
+        } else {
+          const pIndex = positions.findIndex(p => String(p?.id) === String(current.existingPositionId));
+          if (pIndex < 0 || positions[pIndex].status !== "active") throw httpError(409, "POSITION_REQUEST_POSITION_UNAVAILABLE", "증원 대상 포지션이 없거나 비활성 상태입니다.");
+          const nextTarget = Number(positions[pIndex].targetHeadcount) + Number(current.headcount);
+          if (!Number.isInteger(nextTarget) || nextTarget > 1000) throw httpError(409, "POSITION_REQUEST_CAPACITY_INVALID", "승인 후 정원이 허용 범위를 초과합니다.");
+          affectedPosition = { ...positions[pIndex], targetHeadcount: nextTarget, updatedAt: now, lastSourceRequestId: current.id };
+          positions[pIndex] = affectedPosition;
+        }
+        next.status = "approved";
+        next.approvedAt = now;
+        next.approvedBy = String(req.auth.empId);
+        next.approvedByName = actorEmp.name;
+        next.approvalComment = comment;
+        next.budgetConfirmed = true;
+        next.budgetReference = budgetReference;
+        next.affectedPositionId = affectedPosition.id;
+      } else {
+        if (!isAdmin) throw httpError(403, "POSITION_REQUEST_SCOPE_FORBIDDEN", "관리자만 포지션 요청을 반려할 수 있습니다.");
+        if (current.status !== "submitted") throw httpError(409, "POSITION_REQUEST_INVALID_TRANSITION", "제출된 요청만 반려할 수 있습니다.", { request: current });
+        if (!comment) throw httpError(400, "POSITION_REQUEST_COMMENT_REQUIRED", "반려 사유를 입력하세요.");
+        next.status = "draft";
+        next.rejectedReason = comment;
+        next.rejectedAt = now;
+        next.rejectedBy = actorEmp.name;
+      }
+
+      requests[index] = next;
+      state.positionRequests = requests;
+      state.workforcePositions = positions;
+      await _persistDataLocked(state, `auth:${req.auth.loginId || req.auth.empId}`, companyId, { ...req.auth, _positionRequestTransition: true });
+      return { request: next, position: affectedPosition };
+    }));
+    broadcastSSE("data_updated", { version: _getVersion(companyId) }, req.query.clientId, companyId);
+    res.json({ ok: true, ...result, version: _getVersion(companyId) });
   } catch (e) {
     const status = Number.isInteger(e.status) ? e.status : 500;
     res.status(status).json({ ok: false, code: e.code, message: _safeErrMsg(e), ...(e.details || {}) });
