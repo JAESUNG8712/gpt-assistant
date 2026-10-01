@@ -3582,12 +3582,52 @@ function renderCompResults(u,year){
   }).join("");
 }
 
+function _compBenchmarkRows(sessionId){
+  const session=compSessions.find(s=>String(s.id)===String(sessionId));if(!session)return[];
+  const items=session.type==="leadership"?LS_FORM_ITEMS:COMP_FORM_ITEMS;
+  const targetResponses=compResponses.filter(r=>String(r.sessionId)===String(session.id)&&r.submittedAt);
+  const otherResponses=compResponses.filter(r=>r.submittedAt&&r.year===session.year&&r.type===session.type&&String(r.sessionId)!==String(session.id));
+  // 비교군이 없을 때 대상자 자신의 점수를 회사 평균처럼 표시하지 않는다.
+  const benchmarkResponses=otherResponses;
+  const avg=(rows,itemId)=>{
+    const values=rows.map(r=>Number(r.answers?.[itemId])).filter(v=>Number.isFinite(v)&&v>=1&&v<=5);
+    return values.length?Math.round(values.reduce((a,b)=>a+b,0)/values.length*10)/10:null;
+  };
+  return items.map(item=>{
+    const targetAvg=avg(targetResponses,item.id),companyAvg=avg(benchmarkResponses,item.id);
+    return{itemId:item.id,category:item.cat||"기타",label:item.title||item.q||item.id,targetAvg,companyAvg,
+      gap:targetAvg!=null&&companyAvg!=null?Math.round((targetAvg-companyAvg)*10)/10:null,
+      responseCount:targetResponses.filter(r=>Number.isFinite(Number(r.answers?.[item.id]))).length};
+  });
+}
+function _compBenchmarkSummary(rows){
+  const valid=rows.filter(r=>r.targetAvg!=null&&r.companyAvg!=null);
+  const targetAvg=valid.length?Math.round(valid.reduce((a,r)=>a+r.targetAvg,0)/valid.length*10)/10:null;
+  const companyAvg=valid.length?Math.round(valid.reduce((a,r)=>a+r.companyAvg,0)/valid.length*10)/10:null;
+  const byCategory={};
+  valid.forEach(r=>(byCategory[r.category]=byCategory[r.category]||[]).push(r));
+  const categories=Object.entries(byCategory).map(([category,list])=>({category,
+    targetAvg:Math.round(list.reduce((a,r)=>a+r.targetAvg,0)/list.length*10)/10,
+    companyAvg:Math.round(list.reduce((a,r)=>a+r.companyAvg,0)/list.length*10)/10}));
+  categories.forEach(r=>r.gap=Math.round((r.targetAvg-r.companyAvg)*10)/10);
+  return{targetAvg,companyAvg,gap:targetAvg!=null&&companyAvg!=null?Math.round((targetAvg-companyAvg)*10)/10:null,categories};
+}
+function dlCompBenchmark(sessionId){
+  const session=compSessions.find(s=>String(s.id)===String(sessionId));if(!session)return;
+  const target=getEmp(session.targetId),rows=_compBenchmarkRows(sessionId);
+  dlCSV(`다면평가_비교분석_${target?.name||session.targetId}_${session.year}.csv`,["구분","평가항목","대상자 평균","회사 평균","차이","응답수"],
+    rows.map(r=>[r.category,r.label,r.targetAvg??"",r.companyAvg??"",r.gap??"",r.responseCount]));
+}
+
 function openCompDetailModal(sessionId){
-  const session=compSessions.find(s=>s.id===sessionId);if(!session)return;
+  const session=compSessions.find(s=>String(s.id)===String(sessionId));if(!session)return;
   const target=getEmp(session.targetId);
-  const responses=compResponses.filter(r=>r.sessionId===sessionId&&r.submittedAt);
+  const responses=compResponses.filter(r=>String(r.sessionId)===String(session.id)&&r.submittedAt);
   if(!responses.length){showToast("제출된 평가가 없습니다.","info");return;}
   const items=session.type==="leadership"?LS_FORM_ITEMS:COMP_FORM_ITEMS;
+  const benchmarkRows=_compBenchmarkRows(sessionId),benchmark=_compBenchmarkSummary(benchmarkRows);
+  const strongest=[...benchmark.categories].sort((a,b)=>b.gap-a.gap)[0];
+  const develop=[...benchmark.categories].sort((a,b)=>a.gap-b.gap)[0];
   let catRows="";let lastCat="";
   items.forEach(item=>{
     const cat=item.cat;
@@ -3601,16 +3641,24 @@ function openCompDetailModal(sessionId){
   const collabY=collabs.filter(r=>r.collab).length;
   showModal(`<div class="modal modal-lg"><div class="modal-head"><h2>${h(target?.name||"-")} 다면평가 상세</h2><button class="modal-close" onclick="closeModal()">×</button></div>
   <div class="modal-body">
+    <div class="sec-title">회사 평균 비교 <span class="fz11 text-gray">평가자 코멘트는 익명으로 표시됩니다</span></div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;margin-bottom:12px">
+      <div style="padding:10px;background:#eff6ff;border-radius:8px"><div class="fz10 text-gray">대상자 평균</div><div class="fz20 fw7 text-blue">${benchmark.targetAvg??"-"}</div></div>
+      <div style="padding:10px;background:#f8fafc;border-radius:8px"><div class="fz10 text-gray">회사 평균</div><div class="fz20 fw7">${benchmark.companyAvg??"-"}</div></div>
+      <div style="padding:10px;background:${(benchmark.gap??0)>=0?"#f0fdf4":"#fef2f2"};border-radius:8px"><div class="fz10 text-gray">평균 대비</div><div class="fz20 fw7" style="color:${(benchmark.gap??0)>=0?"#15803d":"#b91c1c"}">${benchmark.gap==null?"-":`${benchmark.gap>0?"+":""}${benchmark.gap}`}</div></div>
+    </div>
+    ${benchmark.categories.length?`<div style="display:grid;gap:8px;margin-bottom:12px">${benchmark.categories.map(row=>`<div style="display:grid;grid-template-columns:minmax(80px,120px) 1fr;gap:8px;align-items:center"><div class="fz11 fw6">${h(row.category)}</div><div><div role="img" aria-label="${h(row.category)} 대상자 평균 ${row.targetAvg}, 회사 평균 ${row.companyAvg}" style="height:7px;background:#e2e8f0;border-radius:6px;overflow:hidden"><div style="height:100%;width:${Math.max(0,Math.min(100,row.targetAvg/5*100))}%;background:#2563eb"></div></div><div class="fz10 text-gray mt1">대상 ${row.targetAvg} · 회사 ${row.companyAvg} · 차이 ${row.gap>0?"+":""}${row.gap}</div></div></div>`).join("")}</div>`:`<div class="info-note mb3">동일 연도·유형의 다른 평가 결과가 없어 회사 평균 비교를 표시하지 않습니다.</div>`}
+    ${strongest&&develop?`<div class="info-note mb3">강점 영역: <strong>${h(strongest.category)}</strong> (${strongest.gap>0?"+":""}${strongest.gap}) · 개발 우선 영역: <strong>${h(develop.category)}</strong> (${develop.gap>0?"+":""}${develop.gap})</div>`:""}
     <div class="tbl-wrap"><table>
       <thead><tr><th>평가항목</th><th>1</th><th>2</th><th>3</th><th>4</th><th>5</th><th>평균</th></tr></thead>
       <tbody>${catRows}</tbody></table></div>
     ${collabs.length?`<div class="mt3 fz12"><strong>협업 의향:</strong> 그렇다 ${collabY}명 / 아니다 ${collabs.length-collabY}명</div>`:""}
     <div class="sec-title mt3">강점 의견</div>
-    ${responses.filter(r=>r.strengths).map(r=>`<div style="padding:8px 10px;background:#f0fdf4;border-radius:6px;font-size:12px;margin-bottom:6px;border-left:3px solid #16a34a">${h(r.strengths)}</div>`).join("")||"<div class='text-gray fz12'>없음</div>"}
+    ${responses.filter(r=>r.strengths).map(r=>`<div style="padding:8px 10px;background:#f0fdf4;border-radius:6px;font-size:12px;margin-bottom:6px;border-left:3px solid #16a34a"><span class="fz10 text-gray">익명 평가자</span><div>${h(r.strengths)}</div></div>`).join("")||"<div class='text-gray fz12'>없음</div>"}
     <div class="sec-title mt3">보완/개발 의견</div>
-    ${responses.filter(r=>r.improvements).map(r=>`<div style="padding:8px 10px;background:#fefce8;border-radius:6px;font-size:12px;margin-bottom:6px;border-left:3px solid #eab308">${h(r.improvements)}</div>`).join("")||"<div class='text-gray fz12'>없음</div>"}
+    ${responses.filter(r=>r.improvements).map(r=>`<div style="padding:8px 10px;background:#fefce8;border-radius:6px;font-size:12px;margin-bottom:6px;border-left:3px solid #eab308"><span class="fz10 text-gray">익명 평가자</span><div>${h(r.improvements)}</div></div>`).join("")||"<div class='text-gray fz12'>없음</div>"}
   </div>
-  <div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal()">닫기</button></div></div>`);
+  <div class="modal-foot"><button class="btn btn-secondary" onclick="dlCompBenchmark(${JSON.stringify(session.id).replace(/"/g,"&quot;")})">CSV 다운로드</button><button class="btn btn-secondary" onclick="closeModal()">닫기</button></div></div>`);
 }
 
 function renderCompManageByType(u,year,type){
@@ -7270,6 +7318,21 @@ function _evalYearSummary(scope,year){
   const grades=rows.reduce((acc,r)=>{const g=String(r.grade||"미정");acc[g]=(acc[g]||0)+1;return acc;},{});
   return{count:rows.length,avg:scores.length?Math.round(scores.reduce((a,b)=>a+b,0)/scores.length*10)/10:null,grades};
 }
+function _evalFeedbackDigest(scope,year,u){
+  const ids=new Set(scope.map(e=>String(e.id))),rows=[];
+  kpiEntries.filter(k=>k.year===year&&ids.has(String(k.userId))).forEach(k=>{
+    const emp=getEmp(k.userId),stamp=k.updatedAt||"";
+    if(k.firstComment)rows.push({id:`kpi-first-${k.id}`,type:"1차 평가",target:emp?.name||"-",text:k.firstComment,date:stamp,anonymous:false});
+    if(k.secondComment&&(u.role!=="member"||k.secondCommentPublic))rows.push({id:`kpi-second-${k.id}`,type:"2차 평가",target:emp?.name||"-",text:k.secondComment,date:stamp,anonymous:false});
+  });
+  // 다면평가 코멘트는 서버가 허용한 응답만 사용하고 평가자 이름은 모든 역할에서 숨긴다.
+  compResponses.filter(r=>r.year===year&&r.submittedAt&&ids.has(String(r.targetId))).forEach(r=>{
+    const emp=getEmp(r.targetId),date=r.submittedAt||"";
+    if(r.strengths)rows.push({id:`comp-strength-${r.id}`,type:r.type==="leadership"?"리더십 강점":"역량 강점",target:emp?.name||"-",text:r.strengths,date,anonymous:true});
+    if(r.improvements)rows.push({id:`comp-improve-${r.id}`,type:r.type==="leadership"?"리더십 개발":"역량 개발",target:emp?.name||"-",text:r.improvements,date,anonymous:true});
+  });
+  return rows.sort((a,b)=>String(b.date).localeCompare(String(a.date))).slice(0,8);
+}
 function renderEvalProgressPage(){
   const c=$("#content");if(!c)return;
   const year=settings.evalYear;
@@ -7284,6 +7347,7 @@ function renderEvalProgressPage(){
   const pending=changeRequests.filter(r=>r.status==="pending"&&(isAdmin||scope.some(e=>e.id===r.empId)));
   const process=_evaluationProcess(scope,year,u),nextAction=_evalNextAction(process,u);
   const currentSummary=_evalYearSummary(scope,year),previousSummary=_evalYearSummary(scope,year-1);
+  const feedbackDigest=_evalFeedbackDigest(scope,year,u);
   const roleScopeLabel=isAdmin?"전사":isDir?u.dept:u.role==="leader"?`${u.team||u.dept} 팀`:"본인";
   c.innerHTML=`
   <div class="mb3">
@@ -7311,6 +7375,10 @@ function renderEvalProgressPage(){
       <div style="background:#eff6ff;border-radius:10px;padding:12px"><div class="fz11 text-gray">${year}년 확정 인원</div><div class="fw7 mt1" style="font-size:20px;color:#1d4ed8">${currentSummary.count}명</div><div class="fz11 text-gray mt1">평균 ${currentSummary.avg??"-"}점</div></div>
       <div style="background:#faf5ff;border-radius:10px;padding:12px"><div class="fz11 text-gray">등급 분포 (${year}년)</div><div class="fz11 mt2">${Object.keys(currentSummary.grades).length?Object.entries(currentSummary.grades).sort().map(([g,n])=>`${h(g)} ${n}명`).join(" · "):"확정 결과 없음"}</div></div>
     </div></div>
+  </div>
+  <div class="card mb3">
+    <div class="card-head"><h3>💬 최근 평가 피드백</h3><span class="fz11 text-gray">${feedbackDigest.length}건 · 다면평가 작성자는 익명 처리</span></div>
+    <div class="card-body">${feedbackDigest.length?`<div style="display:grid;gap:8px">${feedbackDigest.map(row=>`<div style="padding:10px 12px;border:1px solid #e2e8f0;border-radius:8px"><div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><span class="badge bg-blue">${h(row.type)}</span><span class="fz11 fw6">${h(row.target)}</span>${row.anonymous?`<span class="fz10 text-gray">익명 평가자</span>`:""}<span class="fz10 text-gray" style="margin-left:auto">${h((row.date||"").slice(0,10)||"-")}</span></div><div class="fz12 mt2" style="white-space:pre-wrap">${h(row.text)}</div></div>`).join("")}</div>`:`<div class="p-empty">표시할 평가 피드백이 없습니다.</div>`}</div>
   </div>
   <!-- KPI 진행 상황 -->
   <div class="card mb3">
