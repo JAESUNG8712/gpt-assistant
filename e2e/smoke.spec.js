@@ -869,6 +869,37 @@ test.describe("로그인·기본 네비게이션", () => {
     await expect(page.locator('[role="dialog"]')).toHaveCount(0);
   });
 
+  test("평가 진행 화면은 역할별 범위를 지키고 다음 할 일·프로세스·전년 비교를 제공한다", async ({ page }) => {
+    await page.goto("/");
+    const result=await page.evaluate(() => {
+      currentUser={id:"eval-me",name:"평가 본인",role:"member",dept:"DX",team:"플랫폼",active:true,menuPerms:{}};
+      employees=[
+        {id:"eval-me",name:"평가 본인",role:"member",dept:"DX",team:"플랫폼",active:true,gradeResults:{"2025":{score:80,grade:"B"},"2026":{score:90,grade:"A"}}},
+        {id:"eval-peer",name:"같은 팀 동료",role:"member",dept:"DX",team:"플랫폼",active:true,gradeResults:{"2026":{score:70,grade:"C"}}},
+      ];
+      kpiEntries=[
+        {id:"k-me",userId:"eval-me",year:2026,goalSub:1,perfSub:0,selfScore:null,firstScore:null,secondScore:null},
+        {id:"k-peer",userId:"eval-peer",year:2026,goalSub:1,perfSub:1,selfScore:70,firstScore:72,secondScore:73},
+      ];
+      compSessions=[];compResponses=[];changeRequests=[];
+      Object.assign(settings,{evalYear:2026,kpiGoalStart:"2026-01-01",kpiGoalEnd:"2026-03-31",kpiPerfStart:"2026-04-01",kpiPerfEnd:"2026-12-31",compEvalEnabled:false,leadershipEvalEnabled:false,kpiResultPublished:false});
+      const scope=_evalScopeForUser(currentUser),stages=_evaluationProcess(scope,2026,currentUser),next=_evalNextAction(stages,currentUser);
+      // 현재 기본 역할표에서 member는 진행현황 메뉴가 숨겨져 있으므로, 컴포넌트를
+      // 직접 렌더링해 향후 권한 부여/딥링크 상황에서도 본인 범위가 유지되는지 검증한다.
+      render();renderEvalProgressPage();
+      return{scopeIds:scope.map(e=>e.id),nextId:next?.id,current:_evalYearSummary(scope,2026),previous:_evalYearSummary(scope,2025)};
+    });
+    expect(result.scopeIds).toEqual(["eval-me"]);
+    expect(result.nextId).toBe("self");
+    expect(result.current).toMatchObject({count:1,avg:90,grades:{A:1}});
+    expect(result.previous).toMatchObject({count:1,avg:80,grades:{B:1}});
+    await expect(page.locator("#content")).toContainText("본인 기준");
+    await expect(page.locator("#content")).toContainText("지금 할 일 · 진행 중");
+    await expect(page.locator("#content")).toContainText("역할별 평가 프로세스 맵");
+    await expect(page.locator("#content")).toContainText("전년 대비 평가 결과");
+    await expect(page.locator("#content")).not.toContainText("같은 팀 동료");
+  });
+
   test("우수사원 선정 일괄 업로드가 사번 없는 과거 이력을 이름으로 매칭하고 동명이인·매칭실패·선정일 자동입력을 정확히 구분한다", async ({ page }) => {
     await page.goto("/");
     await page.fill("#l-id", "e2e_admin");

@@ -7097,23 +7097,104 @@ function renderPage(){
 }
 
 // ==================== EVAL PROGRESS ====================
+function _evalScopeForUser(u){
+  const active=employees.filter(e=>e.active&&e.role!=="admin");
+  if(!u)return[];
+  if(u.role==="admin")return active;
+  if(u.role==="director")return active.filter(e=>e.dept===u.dept);
+  if(u.role==="leader")return active.filter(e=>e.dept===u.dept&&e.team===u.team);
+  return active.filter(e=>String(e.id)===String(u.id));
+}
+function _evalPeriodState(start,end,done,enabled=true){
+  if(!enabled)return{key:"disabled",label:"비활성",color:"#64748b",bg:"#f1f5f9"};
+  if(done)return{key:"done",label:"완료",color:"#15803d",bg:"#f0fdf4"};
+  const today=new Date();today.setHours(0,0,0,0);
+  const s=start?new Date(`${start}T00:00:00`):null,e=end?new Date(`${end}T23:59:59`):null;
+  if(s&&today<s)return{key:"upcoming",label:"예정",color:"#1d4ed8",bg:"#eff6ff"};
+  if(e&&today>e)return{key:"overdue",label:"지연",color:"#b91c1c",bg:"#fef2f2"};
+  return{key:"active",label:"진행 중",color:"#b45309",bg:"#fffbeb"};
+}
+function _evaluationProcess(scope,year,u){
+  const ids=new Set(scope.map(e=>String(e.id)));
+  const scopedKpis=kpiEntries.filter(k=>k.year===year&&ids.has(String(k.userId)));
+  const completedPeople=predicate=>scope.filter(emp=>{
+    const rows=scopedKpis.filter(k=>String(k.userId)===String(emp.id));
+    return rows.length>0&&rows.every(predicate);
+  }).length;
+  const goalDone=completedPeople(k=>Boolean(k.goalSub));
+  const selfDone=completedPeople(k=>Boolean(k.perfSub)||k.selfScore!=null);
+  const firstDone=completedPeople(k=>k.firstScore!=null);
+  const secondDone=completedPeople(k=>k.secondScore!=null||Boolean(k.finalConfirmed));
+  const total=scope.length;
+  const duty=getEvalProgress(u,year);
+  const firstMetric=u.role==="leader"?{done:duty.done,total:duty.total}:{done:firstDone,total};
+  const secondMetric=u.role==="director"?{done:duty.done,total:duty.total}:{done:secondDone,total};
+  const sessions=compSessions.filter(s=>s.year===year&&ids.has(String(s.targetId)));
+  const compDone=sessions.filter(s=>s.status==="closed"||(Array.isArray(s.evaluatorIds)&&s.evaluatorIds.length>0&&s.evaluatorIds.every(eid=>compResponses.some(r=>r.sessionId===s.id&&String(r.evaluatorId)===String(eid)&&r.submittedAt)))).length;
+  const stage=(id,icon,label,done,totalCount,start,end,enabled,route,description)=>{
+    const state=_evalPeriodState(start,end,totalCount>0&&done>=totalCount,enabled);
+    return{id,icon,label,done,total:totalCount,start,end,enabled,route,description,state};
+  };
+  return[
+    stage("goal","🎯","목표 수립",goalDone,total,settings.kpiGoalStart,settings.kpiGoalEnd,true,u.role==="member"?"my-kpi":u.role==="admin"?"eval-ops":"grade-view","KPI 등록·비중 100% 확인 후 제출"),
+    stage("self","📝","실적·자체평가",selfDone,total,settings.kpiPerfStart,settings.kpiPerfEnd,true,u.role==="member"?"my-kpi":"grade-view","실적과 근거를 입력하고 자체평가 완료"),
+    stage("first","①","1차 평가",firstMetric.done,firstMetric.total,settings.kpiPerfStart,settings.kpiPerfEnd,true,u.role==="leader"?"first-eval":u.role==="admin"?"eval-progress":"grade-view","팀장 점수·의견 입력"),
+    stage("second","②","2차 평가",secondMetric.done,secondMetric.total,settings.kpiPerfStart,settings.kpiPerfEnd,true,u.role==="director"?"second-eval":u.role==="admin"?"eval-progress":"grade-view","사업부장 검토와 최종 점수 입력"),
+    stage("competency","⭐","역량·리더십",compDone,sessions.length,settings.compEvalStart,settings.compEvalEnd,Boolean(settings.compEvalEnabled||settings.leadershipEvalEnabled),"comp-eval","다면평가 응답과 리더십 피드백 수집"),
+    stage("publish","📢","결과 공개",settings.kpiResultPublished?1:0,1,"","",true,u.role==="admin"?"eval-ops":"grade-view","확정 등급 공개와 보상·육성 연계"),
+  ];
+}
+function _evalNextAction(stages,u){
+  const relevant=u.role==="member"?["goal","self","competency","publish"]:u.role==="leader"?["first","competency","publish"]:u.role==="director"?["second","competency","publish"]:["goal","self","first","second","competency","publish"];
+  return stages.find(s=>relevant.includes(s.id)&&s.state.key!=="done"&&s.state.key!=="disabled")||null;
+}
+function _evalYearSummary(scope,year){
+  const rows=scope.map(e=>(e.gradeResults||{})[String(year)]).filter(Boolean);
+  const scores=rows.map(r=>Number(r.score??r.finalScore)).filter(Number.isFinite);
+  const grades=rows.reduce((acc,r)=>{const g=String(r.grade||"미정");acc[g]=(acc[g]||0)+1;return acc;},{});
+  return{count:rows.length,avg:scores.length?Math.round(scores.reduce((a,b)=>a+b,0)/scores.length*10)/10:null,grades};
+}
 function renderEvalProgressPage(){
   const c=$("#content");if(!c)return;
   const year=settings.evalYear;
   const u=currentUser;
   const isAdmin=u.role==="admin",isDir=u.role==="director";
-  const activeAll=employees.filter(e=>e.active&&e.role!=="admin");
-  const scope=isAdmin?activeAll:isDir?activeAll.filter(e=>e.dept===u.dept):activeAll.filter(e=>e.dept===u.dept&&e.team===u.team);
+  const scope=_evalScopeForUser(u);
   const kpis=kpiEntries.filter(k=>k.year===year);
   const scopeKpis=kpis.filter(k=>scope.some(e=>e.id===k.userId));
   const submitted=scopeKpis.filter(k=>k.goalSub);
   const firstApproved=scopeKpis.filter(k=>k.firstStatus==="approved");
   const secondApproved=scopeKpis.filter(k=>k.finalStatus==="approved");
   const pending=changeRequests.filter(r=>r.status==="pending"&&(isAdmin||scope.some(e=>e.id===r.empId)));
+  const process=_evaluationProcess(scope,year,u),nextAction=_evalNextAction(process,u);
+  const currentSummary=_evalYearSummary(scope,year),previousSummary=_evalYearSummary(scope,year-1);
+  const roleScopeLabel=isAdmin?"전사":isDir?u.dept:u.role==="leader"?`${u.team||u.dept} 팀`:"본인";
   c.innerHTML=`
   <div class="mb3">
     <h2 style="font-size:16px;font-weight:800;color:#1e293b;margin-bottom:4px">📈 평가 진행 상황 (${year}년)</h2>
-    <div class="fz12 text-gray">KPI · 역량평가 · 리더십평가 진행 현황을 한눈에 확인합니다</div>
+    <div class="fz12 text-gray">${h(roleScopeLabel)} 기준 · 일정, 담당 업무와 다음 행동을 한눈에 확인합니다</div>
+  </div>
+  ${nextAction?`<div class="card mb3" style="border:1px solid ${nextAction.state.color};background:${nextAction.state.bg}"><div class="card-body" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+    <div style="font-size:25px">${nextAction.icon}</div><div style="flex:1;min-width:220px"><div class="fz11" style="color:${nextAction.state.color};font-weight:700">지금 할 일 · ${nextAction.state.label}</div><div class="fw7 mt1">${h(nextAction.label)}</div><div class="fz11 text-gray mt1">${h(nextAction.description)}${nextAction.end?` · 마감 ${h(nextAction.end)}`:""}</div></div>
+    <button class="btn btn-primary btn-sm" onclick="gotoPage('${nextAction.route}')">업무 바로가기</button>
+  </div></div>`:`<div class="card mb3" style="border:1px solid #86efac;background:#f0fdf4"><div class="card-body fw7" style="color:#15803d">✓ 현재 역할에 배정된 평가 업무를 모두 완료했습니다.</div></div>`}
+  <div class="card mb3">
+    <div class="card-head"><h3>🧭 역할별 평가 프로세스 맵</h3><span class="fz11 text-gray">카드를 선택하면 관련 업무로 이동합니다</span></div>
+    <div class="card-body"><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px">
+      ${process.map((s,i)=>`<button type="button" onclick="gotoPage('${s.route}')" style="position:relative;text-align:left;border:1px solid ${s.state.color}55;background:${s.state.bg};border-radius:10px;padding:12px;cursor:pointer;min-height:126px">
+        <div style="display:flex;justify-content:space-between;gap:6px"><span style="font-size:20px">${s.icon}</span><span class="fz10" style="color:${s.state.color};font-weight:800">${s.state.label}</span></div>
+        <div class="fw7 fz12 mt2">${i+1}. ${h(s.label)}</div><div class="fz10 text-gray mt1" style="line-height:1.45">${h(s.description)}</div>
+        <div class="fz10 mt2" style="color:${s.state.color};font-weight:700">${s.total?`${s.done}/${s.total} 완료`:s.enabled?"대상 준비 중":"운영 안 함"}</div>
+      </button>`).join("")}
+    </div></div>
+  </div>
+  <div class="card mb3">
+    <div class="card-head"><h3>📊 전년 대비 평가 결과</h3><span class="fz11 text-gray">${h(roleScopeLabel)} 집계 · 개인별 상세정보는 표시하지 않습니다</span></div>
+    <div class="card-body"><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px">
+      <div style="background:#f8fafc;border-radius:10px;padding:12px"><div class="fz11 text-gray">${year-1}년 확정 인원</div><div class="fw7 mt1" style="font-size:20px">${previousSummary.count}명</div><div class="fz11 text-gray mt1">평균 ${previousSummary.avg??"-"}점</div></div>
+      <div style="background:#eff6ff;border-radius:10px;padding:12px"><div class="fz11 text-gray">${year}년 확정 인원</div><div class="fw7 mt1" style="font-size:20px;color:#1d4ed8">${currentSummary.count}명</div><div class="fz11 text-gray mt1">평균 ${currentSummary.avg??"-"}점</div></div>
+      <div style="background:#faf5ff;border-radius:10px;padding:12px"><div class="fz11 text-gray">등급 분포 (${year}년)</div><div class="fz11 mt2">${Object.keys(currentSummary.grades).length?Object.entries(currentSummary.grades).sort().map(([g,n])=>`${h(g)} ${n}명`).join(" · "):"확정 결과 없음"}</div></div>
+    </div></div>
   </div>
   <!-- KPI 진행 상황 -->
   <div class="card mb3">
