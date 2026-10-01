@@ -10115,7 +10115,12 @@ function adjustKpiGrade(empId,year,newGrade,reason){
 
 function renderCompGradeView(){
   const u=currentUser;if(u.role!=="admin"){showToast("관리자만 역량평가 등급을 조회할 수 있습니다.","error");gotoPage(EVAL_ONLY_MODE?_evalDefaultPage(u):"dashboard");return;}
-  const year=settings.compEvalYear||settings.evalYear;
+  // 과거시점 평가결과 조회(Epic B #6): compSessions가 실제로 있는 연도 전체 + 현재 설정연도 +
+  // 지금 선택된 연도를 후보로 모아 드롭다운을 구성한다 — KPI 등급 현황(renderGradeView)이
+  // 이미 쓰고 있는 것과 동일한 패턴. calcCompGradesForAll()은 이미 adjustedBy가 있는
+  // 레코드는 건드리지 않는 멱등 함수라 과거 연도에 다시 호출해도 안전하다.
+  const allYrs=[...new Set([...Array.from({length:10},(_,i)=>2020+i).filter(y=>compSessions.some(s=>s.year===y)),settings.compEvalYear,window._cgvYear].filter(Boolean))].sort((a,b)=>b-a);
+  const year=window._cgvYear||settings.compEvalYear||settings.evalYear;
   const c=$("#content");
   calcCompGradesForAll(year);
   let emps=employees.filter(e=>e.active&&e.role!=="admin");
@@ -10129,6 +10134,7 @@ function renderCompGradeView(){
   cgvPager.page=Math.min(cgvPager.page,Math.max(1,Math.ceil(rows.length/cgvPager.pageSize)));window._cgvPage=cgvPager.page;
   c.innerHTML=`<div class="card"><div class="card-body">
     <div class="filter-bar">
+      <select class="fc" style="width:120px" onchange="window._cgvYear=Number(this.value);window._cgvPage=1;renderCompGradeView()">${allYrs.map(y=>`<option value="${y}"${year===y?" selected":""}>${y}년</option>`).join("")}</select>
       <select class="fc" style="width:160px" onchange="window._cgvDept=this.value;renderCompGradeView()"><option value="">전체 부서</option>${_dataDepts(deptF).map(d=>`<option${deptF===d?" selected":""}>${h(d)}</option>`).join("")}</select>
       <select class="fc" style="width:120px" onchange="window._cgvRole=this.value;renderCompGradeView()"><option value="">전체 직위</option><option value="leader"${roleF==="leader"?" selected":""}>팀장</option><option value="member"${roleF==="member"?" selected":""}>팀원</option></select>
       <select class="fc" style="width:120px" onchange="window._cgvGrade=this.value;renderCompGradeView()"><option value="">전체 등급</option>${COMP_GRADE_OPTS.map(g=>`<option value="${g}"${gradeF===g?" selected":""}>${g}등급</option>`).join("")}</select>
@@ -10192,7 +10198,7 @@ function saveAdjustGrade(type,empId,year){
   if(type==="comp")renderCompGradeView(); else renderGradeView();
 }
 function dlCompGrades(){
-  const year=settings.compEvalYear||settings.evalYear;
+  const year=window._cgvYear||settings.compEvalYear||settings.evalYear;
   let emps=employees.filter(e=>e.active&&e.role!=="admin");
   const deptF=window._cgvDept||"";const roleF=window._cgvRole||"";const gradeF=window._cgvGrade||"";
   if(deptF)emps=emps.filter(e=>e.dept===deptF);
