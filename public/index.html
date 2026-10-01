@@ -9271,6 +9271,7 @@ function buildKpiCard(k,selEmp,u,canEdit,isSelf,stageOK,resultsMode){
       ${stageOK&&!resultsMode&&canEdit&&!submitted?`<button class="btn btn-danger btn-sm" onclick="deleteKpi(${k.id})">삭제</button>`:""}
       ${stageOK&&!resultsMode&&submitted&&isSelf?`<button class="btn btn-warning btn-sm" onclick="openKpiReq(${k.id})">수정 요청</button>`:""}
       ${stageOK&&resultsMode&&isSelf?`<button class="btn btn-primary btn-sm" onclick="openKpiResult(${k.id})">결과 입력</button>`:""}
+      ${canEdit?`<button class="btn btn-ghost btn-sm" onclick="openKpiFeedbackThread(${k.id})">💬 피드백${k.feedbackThread?.length?` (${k.feedbackThread.length})`:""}</button>`:""}
     </div>
   </div>
   <div class="kpi-card-body"><div class="g3" style="gap:10px">
@@ -9413,6 +9414,46 @@ function submitKpi(id){
   kpiEntries=kpiEntries.map(ke=>ke.id===id?{...ke,goalSub:1,updatedAt:new Date().toISOString()}:ke);showToast("KPI가 제출되었습니다.","success");logAction("kpi_submitted","KPI 제출","kpi:"+k.userId,`${kpiEntries.filter(ke=>ke.userId===k.userId&&ke.year===k.year&&ke.goalSub).length}건`);autoSaveToServerIfEnabled();renderKPI(false);}
 function deleteKpi(id){_tombstone("kpiEntries",id);kpiEntries=kpiEntries.filter(k=>k.id!==id);autoSaveToServerIfEnabled();showToast("KPI가 삭제되었습니다.","info");renderKPI(false);}
 function dlKpiCSV(userId,year){const emp=getEmp(userId);dlCSV(`KPI_${emp?.name||userId}_${year}.csv`,["KPI항목","비중","전년실적","목표","전년비","전략","평가기준","실적","달성율","세부내용","자체점수","차상위자점수"],kpiEntries.filter(k=>k.userId===userId&&k.year===year).map(k=>[k.item,k.weight+"%",k.prev,k.goal,k.yoy,k.strategy,k.evalCriteria||"",k.actual||"",k.rate||"",k.detail||"",k.selfScore??"",k.ceoScore??""]));}
+// ── 평가 중 수시 피드백 교환(Epic A) ──────────────────────────────
+// 목표 등록~결과 확정까지 평가 기간 전체에 걸쳐 본인과 평가자(팀장/사업부장/관리자)가
+// 공식 점수 입력과 무관하게 자유롭게 의견을 주고받는 스레드. 서버(_sanitizeKpiEntry)가
+// "본인 명의로 끝에 추가만 가능(append-only)"을 강제하므로, 클라이언트는 항상 기존
+// 배열을 그대로 두고 끝에 새 메시지만 push한다 — 과거 메시지 수정·삭제 UI는 없음.
+function _kpiThreadMessagesHtml(k){
+  const list=k.feedbackThread||[];
+  if(!list.length)return`<div class="text-gray fz12" style="text-align:center;padding:16px">아직 주고받은 피드백이 없습니다.</div>`;
+  return list.map(m=>{
+    const mine=m.empId===currentUser.id;
+    return`<div style="display:flex;flex-direction:column;align-items:${mine?"flex-end":"flex-start"};margin-bottom:8px">
+      <div class="fz11 text-gray" style="margin-bottom:2px">${h(m.authorName||"-")}${m.role?` (${ROLES[m.role]||h(m.role)})`:""} · ${h(new Date(m.createdAt).toLocaleString("ko-KR"))}</div>
+      <div style="max-width:80%;padding:8px 12px;border-radius:10px;font-size:13px;white-space:pre-wrap;word-break:break-word;background:${mine?"#2563eb":"#f1f5f9"};color:${mine?"#fff":"#1e293b"}">${h(m.message)}</div>
+    </div>`;
+  }).join("");
+}
+function openKpiFeedbackThread(id){
+  const k=getKpi(id);if(!k)return;
+  showModal(`<div class="modal-box" style="max-width:560px"><div class="modal-head"><h3>💬 ${h(k.item)} — 피드백</h3></div>
+  <div class="modal-body">
+    <div id="kpi-fb-thread" style="max-height:360px;overflow-y:auto;padding:4px">${_kpiThreadMessagesHtml(k)}</div>
+    <div class="fg" style="margin-top:10px"><textarea class="fc" id="kpi-fb-input" rows="2" placeholder="평가 기간 중 의견을 자유롭게 남기세요"></textarea></div>
+  </div>
+  <div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal()">닫기</button><button class="btn btn-primary" onclick="sendKpiFeedback(${id})">보내기</button></div></div>`);
+  const area=document.getElementById("kpi-fb-thread");if(area)area.scrollTop=area.scrollHeight;
+}
+function sendKpiFeedback(id){
+  const k=getKpi(id);if(!k)return;
+  const text=$("#kpi-fb-input")?.value.trim();
+  if(!text){showToast("메시지를 입력하세요.","error");return;}
+  if(text.length>1000){showToast("메시지는 1000자 이내로 입력하세요.","error");return;}
+  if(!Array.isArray(k.feedbackThread))k.feedbackThread=[];
+  if(k.feedbackThread.length>=200){showToast("피드백 스레드가 가득 찼습니다(최대 200건).","error");return;}
+  k.feedbackThread.push({id:genId(),empId:currentUser.id,authorName:currentUser.name,role:currentUser.role,message:text,createdAt:new Date().toISOString()});
+  k.updatedAt=new Date().toISOString();
+  autoSaveToServerIfEnabled();
+  const area=document.getElementById("kpi-fb-thread");
+  if(area){area.innerHTML=_kpiThreadMessagesHtml(k);area.scrollTop=area.scrollHeight;}
+  const input=$("#kpi-fb-input");if(input)input.value="";
+}
 
 // ==================== APPROVALS ====================
 // 평가 단계: 팀원 KPI → 팀원 자체평가 → 팀장 1차 승인+점수 → 사업부장 2차 점수 → 최종확정
