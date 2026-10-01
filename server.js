@@ -767,6 +767,18 @@ function filterDataForRole(data, auth) {
     // 각 사용자는 제출 여부·수정만을 위해 본인 레코드만 받는다. 관리자도 예외가 아니다.
     out.engagementResponses = out.engagementResponses.filter(r => r && String(r.empId) === myId);
   }
+  if (Array.isArray(out.engagementActions)) {
+    const employees = Array.isArray(out.employees) ? out.employees : [];
+    const myEmp = employees.find(e => String(e?.id) === myId) || null;
+    out.engagementActions = out.engagementActions.filter(action => {
+      if (!action) return false;
+      if (auth.role === "admin" || action.scope === "company") return true;
+      if (!myEmp) return String(action.ownerId) === myId;
+      if (action.scope === "dept") return action.dept === myEmp.dept;
+      if (action.scope === "team") return action.dept === myEmp.dept && action.team === myEmp.team;
+      return String(action.ownerId) === myId;
+    });
+  }
   // 아래 필드들은 화면(클라이언트) 단에서는 이미 "본인 것만"/"관리자·director(dept)·leader(dept+team)만"
   // 으로 좁혀서 보여주고 있었지만(개별 화면 코드로 확인), GET /data 자체에는 이 좁히기가 없어
   // 로그인만 되어 있으면 브라우저 devtools로 회사 전체 데이터를 그대로 볼 수 있었다 — 이미 이
@@ -1460,6 +1472,7 @@ const _WRITE_GATED_FIELDS = {
   lowPerfData:        { roles: ["admin"], viewersSetting: "lowPerformerViewers", pageIds: "low-performer" },
   engagementSurveys:  { roles: ["admin"], pageIds: "engagement-pulse" },
   engagementResponses:{ roles: [], ownField: "empId", pageIds: "engagement-pulse" },
+  engagementActions:  { roles: ["admin", "director", "leader"], pageIds: "engagement-pulse" },
 };
 // menuPerms(개인별로 끈 메뉴) 확장 — 위 role 기반 승인/게이팅과 별개로, 관리자가 특정 직원의
 // 해당 화면 메뉴 자체를 꺼뒀다면 role상 자격이 있어도(예: admin, 또는 그 부서의 director) 그
@@ -1580,7 +1593,7 @@ function _sanitizeGatedRecord(field, incoming, stored, actor, actorEmp, settings
     const questions = Array.isArray(incoming.questions) ? incoming.questions.slice(0, 10).map(q => ({
       id: String(q?.id || "").slice(0, 40), driver: String(q?.driver || "").slice(0, 40), text: String(q?.text || "").trim().slice(0, 300),
     })).filter(q => q.id && q.text) : [];
-    if (!String(incoming.title || "").trim() || questions.length < 1) return stored ? { ...stored } : null;
+    if (!String(incoming.title || "").trim() || questions.length < 3) return stored ? { ...stored } : null;
     incoming = { ...incoming, title: String(incoming.title).trim().slice(0, 120), status: incoming.status === "closed" ? "closed" : "open", questions };
   }
   if (field === "engagementResponses") {
@@ -1603,6 +1616,31 @@ function _sanitizeGatedRecord(field, incoming, stored, actor, actorEmp, settings
       submittedAt: stored?.submittedAt || new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
+  }
+  if (field === "engagementActions") {
+    const isAdmin = actor?.role === "admin";
+    const canManageStored = !stored || isAdmin ||
+      (actor?.role === "director" && stored.scope !== "company" && stored.dept === actorEmp?.dept) ||
+      (actor?.role === "leader" && stored.scope === "team" && stored.dept === actorEmp?.dept && stored.team === actorEmp?.team);
+    if (!canManageStored) return stored ? { ...stored } : null;
+    const status = ["open", "in_progress", "done"].includes(incoming.status) ? incoming.status : "open";
+    const scope = stored?.scope || (isAdmin ? "company" : actor?.role === "director" ? "dept" : "team");
+    incoming = {
+      ...incoming,
+      surveyId: String(incoming.surveyId || "").slice(0, 80),
+      title: String(incoming.title || "").trim().slice(0, 200),
+      dueDate: /^\d{4}-\d{2}-\d{2}$/.test(String(incoming.dueDate || "")) ? incoming.dueDate : "",
+      status,
+      scope,
+      dept: scope === "company" ? "" : (stored?.dept || actorEmp?.dept || ""),
+      team: scope === "team" ? (stored?.team || actorEmp?.team || "") : "",
+      ownerId: stored?.ownerId || String(actor?.empId || ""),
+      ownerName: stored?.ownerName || actorEmp?.name || actor?.loginId || "",
+      createdAt: stored?.createdAt || new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      completedAt: status === "done" ? (stored?.completedAt || new Date().toISOString()) : "",
+    };
+    if (!incoming.surveyId || !incoming.title || !incoming.dueDate) return stored ? { ...stored } : null;
   }
   // talentDevPlans의 status는 전용 transition API만 바꿀 수 있다. 일반 /save는 전체
   // 배열을 싣기 때문에 여기서 상태 변경을 허용하면 전용 API의 상태/조직/CAS 검사를
@@ -4722,7 +4760,7 @@ const COMPANY_FEATURE_KEYS = new Set(COMPANY_FEATURE_CATALOG.map(f => f.key));
 // (마스터가 이 모듈을 꺼도 화면단 숨김(gotoPage 가드)만으로 충분) 여기 목록에는 없다.
 const _BLOB_MODULE_FIELDS = {
   approval:  ["approvalDocs", "approvalTemplates", "approvalDelegations", "approvalChainSettings"],
-  comm:      ["boardPosts", "roomReservations", "roomReservationTombstones", "engagementSurveys", "engagementResponses", "engagementPulseSummary"],
+  comm:      ["boardPosts", "roomReservations", "roomReservationTombstones", "engagementSurveys", "engagementResponses", "engagementActions", "engagementPulseSummary"],
   kpi:       ["kpiEntries", "changeRequests", "tieNotifications", "gradeAdjustHistory"],
   comp_eval: ["compSessions", "compResponses", "compGradeResults", "evaluatorConfig"],
   talent:    ["coreTalentPool", "talentDevPlans", "successionPlans", "jobSkillProfiles", "employeeSkillProfiles", "workforceScenarios", "lowPerfData", "coreTalentSettings"],
