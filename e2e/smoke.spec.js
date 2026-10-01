@@ -884,7 +884,7 @@ test.describe("로그인·기본 네비게이션", () => {
       compSessions=[];compResponses=[];changeRequests=[];
       Object.assign(settings,{evalYear:2026,kpiGoalStart:"2026-01-01",kpiGoalEnd:"2026-03-31",kpiPerfStart:"2026-04-01",kpiPerfEnd:"2026-12-31",compEvalEnabled:false,leadershipEvalEnabled:false,kpiResultPublished:false});
       const scope=_evalScopeForUser(currentUser),stages=_evaluationProcess(scope,2026,currentUser),next=_evalNextAction(stages,currentUser);
-      currentPage="eval-progress";renderPage();
+      render();gotoPage("eval-progress");
       return{scopeIds:scope.map(e=>e.id),nextId:next?.id,current:_evalYearSummary(scope,2026),previous:_evalYearSummary(scope,2025)};
     });
     expect(result.scopeIds).toEqual(["eval-me"]);
