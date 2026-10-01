@@ -7024,6 +7024,7 @@ function renderSidebar(){
   titles["engagement-pulse"]="직원 몰입도 펄스";
   titles["engagement-pulse-create"]="펄스 설문 개설";
   titles["engagement-pulse-action-new"]="설문 개선계획 작성";
+  titles["engagement-pulse-action-detail"]="개선계획 상세·점검";
   const ptEl=$("#page-title");if(ptEl)ptEl.textContent=titles[currentPage]||"";
   const sb=$("#sidebar");if(!sb)return;
   // Filter by role + per-user custom permission overrides (admin-managed)
@@ -7130,6 +7131,7 @@ function renderSidebar(){
 // 페이지별 접근 가능 권한 (사이드바 메뉴 표시 여부와 무관하게, 직접 이동 시도도 차단)
 const PAGE_ROLES={
   "engagement-pulse-create":["admin"],"engagement-pulse-action-new":["admin","director","leader"],
+  "engagement-pulse-action-detail":["admin","director","leader","member"],
   "hr-register":["admin"],"hr-changes":["admin"],"hr-stats":["admin"],"hr-list":["admin","director","leader"],
   "long-service-award":["admin"],"award-history":["admin","director","leader"],
   "hr-mandatory-training":["admin","director","leader"],
@@ -7361,17 +7363,18 @@ function renderPulseActionCreatePage(){
   const c=$("#content");if(!c)return;if(!["admin","director","leader"].includes(currentUser?.role))return _pageAccessDenied();
   const survey=engagementSurveys.find(s=>String(s.id)===String(_pulseActionSurveyId))||engagementSurveys[0];
   if(!survey){c.innerHTML=`<div class="notice">개선계획을 연결할 설문이 없습니다.</div><button class="btn btn-secondary mt3" onclick="gotoPage('engagement-pulse')">목록으로</button>`;return;}
-  _pulseActionSurveyId=survey.id;const due=new Date(Date.now()+30*86400000).toISOString().slice(0,10);
+  _pulseActionSurveyId=survey.id;const due=new Date(Date.now()+30*86400000).toISOString().slice(0,10),nextCheckIn=new Date(Date.now()+7*86400000).toISOString().slice(0,10);
   const scope=currentUser.role==="admin"?"전사":currentUser.role==="director"?currentUser.dept:`${currentUser.dept} · ${currentUser.team}`;
   c.innerHTML=`<div class="flex items-c gap2 mb3"><button class="btn btn-secondary" onclick="gotoPage('engagement-pulse')">← 목록</button><div><h2>설문 개선계획 작성</h2><div class="fz12 text-gray">${h(survey.title)} 결과를 실행 가능한 조치로 전환합니다.</div></div></div>
-    <div class="card"><div class="card-head"><h3>실행계획</h3></div><div class="card-body"><div class="notice info mb3">공개 범위: <b>${h(scope)}</b> · 담당자는 현재 작성자(${h(currentUser.name)})로 기록됩니다.</div><div class="fg"><label>개선 조치 *</label><input class="fc" id="pulse-action-title" maxlength="200" placeholder="예: 매주 월요일 팀 우선순위 15분 공유"></div><div class="form-grid"><div class="fg"><label>완료 목표일 *</label><input class="fc" id="pulse-action-due" type="date" value="${due}"></div><div class="fg"><label>초기 상태</label><select class="fc" id="pulse-action-status"><option value="open">계획</option><option value="in_progress">진행 중</option></select></div></div></div></div>
+    <div class="card"><div class="card-head"><h3>실행계획</h3></div><div class="card-body"><div class="notice info mb3">공개 범위: <b>${h(scope)}</b> · 담당자는 현재 작성자(${h(currentUser.name)})로 기록됩니다.</div><div class="fg"><label>개선 조치 *</label><input class="fc" id="pulse-action-title" maxlength="200" placeholder="예: 매주 월요일 팀 우선순위 15분 공유"></div><div class="form-grid"><div class="fg"><label>집중 영역</label><select class="fc" id="pulse-action-driver"><option value="">선택 안 함</option>${(survey.questions||[]).map(q=>`<option value="${h(q.id)}">${h(q.driver)}</option>`).join("")}</select></div><div class="fg"><label>성공 기준</label><input class="fc" id="pulse-action-metric" maxlength="500" placeholder="예: 주간 우선순위 공유율 90% 이상"></div><div class="fg"><label>완료 목표일 *</label><input class="fc" id="pulse-action-due" type="date" value="${due}"></div><div class="fg"><label>다음 점검일</label><input class="fc" id="pulse-action-checkin" type="date" value="${nextCheckIn}"></div><div class="fg"><label>초기 상태</label><select class="fc" id="pulse-action-status"><option value="open">계획</option><option value="in_progress">진행 중</option></select></div></div></div></div>
     <div class="flex justify-end gap2 mt3"><button class="btn btn-secondary" onclick="gotoPage('engagement-pulse')">취소</button><button class="btn btn-primary" onclick="createPulseAction()">개선계획 등록</button></div>`;
 }
 function createPulseAction(){
   if(!["admin","director","leader"].includes(currentUser?.role))return;
   const title=$("#pulse-action-title")?.value.trim(),dueDate=$("#pulse-action-due")?.value,status=$("#pulse-action-status")?.value||"open";
+  const focusDriver=$("#pulse-action-driver")?.value||"",successMetric=$("#pulse-action-metric")?.value.trim()||"",nextCheckIn=$("#pulse-action-checkin")?.value||"";
   if(!title||!dueDate){showToast("개선 조치와 목표일을 입력해주세요.","error");return;}
-  engagementActions.push({id:`pulse-action-${Date.now()}-${Math.random().toString(36).slice(2,8)}`,surveyId:_pulseActionSurveyId,title,dueDate,status,ownerId:currentUser.id,ownerName:currentUser.name,createdAt:new Date().toISOString()});
+  engagementActions.push({id:`pulse-action-${Date.now()}-${Math.random().toString(36).slice(2,8)}`,surveyId:_pulseActionSurveyId,title,dueDate,status,focusDriver,successMetric,nextCheckIn,progress:status==="in_progress"?10:0,checkIns:[],ownerId:currentUser.id,ownerName:currentUser.name,createdAt:new Date().toISOString()});
   autoSaveToServerIfEnabled();showToast("개선계획을 등록했습니다.","success");gotoPage("engagement-pulse");
 }
 function _canManagePulseAction(action){
@@ -7379,14 +7382,42 @@ function _canManagePulseAction(action){
   if(currentUser?.role==="director")return action?.scope!=="company"&&action?.dept===currentUser.dept;
   return currentUser?.role==="leader"&&action?.scope==="team"&&action?.dept===currentUser.dept&&action?.team===currentUser.team;
 }
-function updatePulseActionStatus(id,status){
-  const action=engagementActions.find(a=>String(a.id)===String(id));if(!action||!_canManagePulseAction(action)){showToast("이 개선계획을 변경할 권한이 없습니다.","error");return;}
-  action.status=status;action.updatedAt=new Date().toISOString();if(status==="done")action.completedAt=action.updatedAt;autoSaveToServerIfEnabled();renderEngagementPulsePage();showToast("개선계획 상태를 변경했습니다.","success");
+let _pulseActionId="";
+function openPulseActionDetail(id){_pulseActionId=String(id||"");gotoPage("engagement-pulse-action-detail");}
+function renderPulseActionDetailPage(){
+  const c=$("#content");if(!c)return;const action=engagementActions.find(a=>String(a.id)===String(_pulseActionId));
+  if(!action){c.innerHTML=`<div class="notice">열람 가능한 개선계획이 없습니다.</div><button class="btn btn-secondary mt3" onclick="gotoPage('engagement-pulse')">목록으로</button>`;return;}
+  const survey=engagementSurveys.find(s=>String(s.id)===String(action.surveyId));const question=(survey?.questions||[]).find(q=>q.id===action.focusDriver);
+  const labels={open:"계획",in_progress:"진행 중",done:"완료"},canManage=_canManagePulseAction(action),progress=Math.max(0,Math.min(100,Number(action.progress)||0));
+  const scope=action.scope==="company"?"전사":action.scope==="dept"?action.dept:`${action.dept||""} ${action.team||""}`;
+  const checkIns=[...(Array.isArray(action.checkIns)?action.checkIns:[])].reverse();
+  c.innerHTML=`<div class="flex items-c gap2 mb3"><button class="btn btn-secondary" onclick="gotoPage('engagement-pulse')">← 목록</button><div><h2>${h(action.title)}</h2><div class="fz12 text-gray">${h(survey?.title||"연결 설문")} · ${h(scope)} · 담당 ${h(action.ownerName||"")}</div></div></div>
+    <div class="grid grid-3 mb3"><div class="stat-card"><div class="stat-label">상태</div><div class="stat-value" style="font-size:20px">${h(labels[action.status]||action.status)}</div></div><div class="stat-card"><div class="stat-label">진행률</div><div class="stat-value">${progress}<span class="fz12">%</span></div></div><div class="stat-card"><div class="stat-label">다음 점검일</div><div class="stat-value" style="font-size:18px">${h(action.nextCheckIn||"미정")}</div></div></div>
+    <div class="card mb3"><div class="card-head"><h3>계획 기준</h3></div><div class="card-body"><div class="form-grid"><div><div class="fz11 text-gray">집중 영역</div><div class="fw7">${h(question?.driver||"미지정")}</div></div><div><div class="fz11 text-gray">완료 목표일</div><div class="fw7">${h(action.dueDate||"")}</div></div></div><div class="mt3"><div class="fz11 text-gray">성공 기준</div><div>${h(action.successMetric||"등록된 성공 기준이 없습니다.")}</div></div><div style="height:8px;background:#e2e8f0;border-radius:8px;margin-top:14px;overflow:hidden"><div style="height:100%;width:${progress}%;background:#2563eb"></div></div></div></div>
+    ${action.status==="done"?`<div class="card mb3"><div class="card-head"><h3>완료 성과</h3><span class="badge">효과 ${Number(action.effectiveness)||0}/5</span></div><div class="card-body"><div class="fw7 mb1">성과</div><div class="mb3">${h(action.outcome||"")}</div><div class="fw7 mb1">근거·확인자료</div><div>${h(action.evidence||"등록된 근거가 없습니다.")}</div></div></div>`:""}
+    ${canManage&&action.status!=="done"?`<div class="card mb3"><div class="card-head"><h3>정기 점검 기록</h3></div><div class="card-body"><div class="form-grid"><div class="fg"><label>현재 진행률</label><input class="fc" id="pulse-action-progress" type="number" min="0" max="99" value="${progress}"></div><div class="fg"><label>다음 점검일</label><input class="fc" id="pulse-action-next-checkin" type="date" value="${h(action.nextCheckIn||"")}"></div></div><div class="fg"><label>성공 기준</label><input class="fc" id="pulse-action-success-metric" maxlength="500" value="${h(action.successMetric||"")}" placeholder="예: 주간 공유율 90% 이상"></div><div class="fg"><label>이번 점검 내용 *</label><textarea class="fc" id="pulse-action-note" rows="3" maxlength="1000" placeholder="예: 4주 중 3주 공유를 완료했고 회의 시간이 평균 12분으로 줄었습니다."></textarea></div><div class="fg"><label>다음 실행 항목</label><input class="fc" id="pulse-action-next-step" maxlength="500" placeholder="예: 공유 양식을 단순화하고 미참여자에게 안내"></div><button class="btn btn-primary" onclick="savePulseActionCheckIn()">점검 기록 저장</button></div></div>
+    <div class="card mb3"><div class="card-head"><h3>완료 및 효과 확인</h3></div><div class="card-body"><div class="fg"><label>달성 성과 *</label><textarea class="fc" id="pulse-action-outcome" rows="3" maxlength="1000" placeholder="예: 팀원 전원이 주간 우선순위를 확인하고 중복 업무가 감소했습니다."></textarea></div><div class="fg"><label>근거·확인자료</label><textarea class="fc" id="pulse-action-evidence" rows="2" maxlength="1000" placeholder="예: 회의록, 참여율, 후속 설문 변화"></textarea></div><div class="fg"><label>효과 평가 *</label><select class="fc" id="pulse-action-effectiveness"><option value="">선택</option><option value="1">1 · 효과 미미</option><option value="2">2</option><option value="3">3 · 보통</option><option value="4">4</option><option value="5">5 · 매우 효과적</option></select></div><button class="btn btn-success" onclick="completePulseAction()">완료 처리</button></div></div>`:""}
+    <div class="card"><div class="card-head"><h3>점검 이력 (${checkIns.length}건)</h3></div><div class="card-body">${checkIns.length?checkIns.map(item=>`<div class="list-item"><div class="flex justify-between items-c"><b>${h(item.authorName||"")}</b><span class="fz11 text-gray">${h(String(item.createdAt||"").slice(0,10))} · ${Number(item.progress)||0}%</span></div><div class="mt2">${h(item.note||"")}</div>${item.nextStep?`<div class="fz12 text-gray mt2">다음 실행: ${h(item.nextStep)}</div>`:""}</div>`).join(""):`<div class="text-gray fz12">등록된 점검 기록이 없습니다.</div>`}</div></div>`;
+}
+async function savePulseActionCheckIn(){
+  const action=engagementActions.find(a=>String(a.id)===String(_pulseActionId));if(!action||!_canManagePulseAction(action))return;
+  const note=$("#pulse-action-note")?.value.trim(),nextStep=$("#pulse-action-next-step")?.value.trim()||"";if(!note){showToast("이번 점검 내용을 입력해주세요.","error");return;}
+  const progress=Math.max(0,Math.min(99,Math.round(Number($("#pulse-action-progress")?.value)||0)));
+  action.progress=progress;action.status=progress>0?"in_progress":action.status;action.nextCheckIn=$("#pulse-action-next-checkin")?.value||"";action.successMetric=$("#pulse-action-success-metric")?.value.trim()||"";
+  action.checkIns=Array.isArray(action.checkIns)?action.checkIns:[];action.checkIns.push({id:`pulse-checkin-${Date.now()}`,note,nextStep,progress,authorId:currentUser.id,authorName:currentUser.name,createdAt:new Date().toISOString()});
+  await saveToServer(false);showToast("점검 기록을 저장했습니다.","success");renderPulseActionDetailPage();
+}
+async function completePulseAction(){
+  const action=engagementActions.find(a=>String(a.id)===String(_pulseActionId));if(!action||!_canManagePulseAction(action))return;
+  const outcome=$("#pulse-action-outcome")?.value.trim(),evidence=$("#pulse-action-evidence")?.value.trim()||"",effectiveness=Number($("#pulse-action-effectiveness")?.value||0);
+  if(!outcome||effectiveness<1){showToast("달성 성과와 효과 평가를 입력해주세요.","error");return;}
+  action.status="done";action.progress=100;action.outcome=outcome;action.evidence=evidence;action.effectiveness=effectiveness;action.completedAt=new Date().toISOString();
+  await saveToServer(false);showToast("개선계획을 완료 처리했습니다.","success");renderPulseActionDetailPage();
 }
 function _renderPulseActions(survey){
   const rows=engagementActions.filter(a=>String(a.surveyId)===String(survey.id));
   const labels={open:"계획",in_progress:"진행 중",done:"완료"};
-  return `<div class="mt3"><div class="flex justify-between items-c mb2"><div class="fw7">결과 기반 개선계획 (${rows.length}건)</div>${["admin","director","leader"].includes(currentUser.role)?`<button class="btn btn-secondary btn-sm" onclick="openPulseActionPage('${survey.id}')">＋ 개선계획</button>`:""}</div>${rows.length?rows.map(a=>`<div class="list-item"><div class="flex justify-between items-c gap2"><div><b>${h(a.title)}</b><div class="fz11 text-gray">담당 ${h(a.ownerName||"")} · 목표 ${h(a.dueDate||"")} · ${h(a.scope==="company"?"전사":a.scope==="dept"?a.dept:`${a.dept||""} ${a.team||""}`)}</div></div><span class="badge">${labels[a.status]||a.status}</span></div>${_canManagePulseAction(a)&&a.status!=="done"?`<div class="flex gap1 mt2">${a.status==="open"?`<button class="btn btn-secondary btn-sm" onclick="updatePulseActionStatus('${a.id}','in_progress')">진행 시작</button>`:""}<button class="btn btn-success btn-sm" onclick="updatePulseActionStatus('${a.id}','done')">완료</button></div>`:""}</div>`).join(""):`<div class="fz12 text-gray">아직 공개된 개선계획이 없습니다.</div>`}</div>`;
+  return `<div class="mt3"><div class="flex justify-between items-c mb2"><div class="fw7">결과 기반 개선계획 (${rows.length}건)</div>${["admin","director","leader"].includes(currentUser.role)?`<button class="btn btn-secondary btn-sm" onclick="openPulseActionPage('${survey.id}')">＋ 개선계획</button>`:""}</div>${rows.length?rows.map(a=>`<div class="list-item"><div class="flex justify-between items-c gap2"><div><b>${h(a.title)}</b><div class="fz11 text-gray">담당 ${h(a.ownerName||"")} · 목표 ${h(a.dueDate||"")} · 진행 ${Number(a.progress)||0}% · ${h(a.scope==="company"?"전사":a.scope==="dept"?a.dept:`${a.dept||""} ${a.team||""}`)}</div></div><span class="badge">${labels[a.status]||a.status}</span></div><div class="flex gap1 mt2"><button class="btn btn-secondary btn-sm" onclick="openPulseActionDetail('${a.id}')">상세·점검</button></div></div>`).join(""):`<div class="fz12 text-gray">아직 공개된 개선계획이 없습니다.</div>`}</div>`;
 }
 function renderEngagementPulsePage(){
   const c=$("#content");if(!c)return;const surveys=[...engagementSurveys].sort((a,b)=>String(b.createdAt||"").localeCompare(String(a.createdAt||"")));const canViewSummary=["admin","director","leader"].includes(currentUser.role);
@@ -7412,6 +7443,7 @@ function renderPage(){
   pages["engagement-pulse"]=renderEngagementPulsePage;
   pages["engagement-pulse-create"]=renderPulseSurveyCreatePage;
   pages["engagement-pulse-action-new"]=renderPulseActionCreatePage;
+  pages["engagement-pulse-action-detail"]=renderPulseActionDetailPage;
   const fn=pages[currentPage];const c=$("#content");
   if(c&&fn){
     c.innerHTML="";

@@ -1623,14 +1623,52 @@ function _sanitizeGatedRecord(field, incoming, stored, actor, actorEmp, settings
       (actor?.role === "director" && stored.scope !== "company" && stored.dept === actorEmp?.dept) ||
       (actor?.role === "leader" && stored.scope === "team" && stored.dept === actorEmp?.dept && stored.team === actorEmp?.team);
     if (!canManageStored) return stored ? { ...stored } : null;
+    // 완료된 계획의 성과·근거·점검 이력은 조직 실행의 감사 기록이다. 일반 전체 상태
+    // 저장으로 재오픈하거나 내용을 바꿀 수 없게 최종 상태를 고정한다.
+    if (stored?.status === "done") return { ...stored };
+    const survey = (Array.isArray(engagementSurveys) ? engagementSurveys : []).find(s => String(s?.id) === String(incoming.surveyId || stored?.surveyId || ""));
+    if (!survey) return stored ? { ...stored } : null;
     const status = ["open", "in_progress", "done"].includes(incoming.status) ? incoming.status : "open";
     const scope = stored?.scope || (isAdmin ? "company" : actor?.role === "director" ? "dept" : "team");
+    const allowedDrivers = new Set((survey.questions || []).map(q => String(q?.id || "")).filter(Boolean));
+    const requestedDriver = String(incoming.focusDriver || stored?.focusDriver || "").slice(0, 40);
+    const storedCheckIns = Array.isArray(stored?.checkIns) ? stored.checkIns.slice(0, 50) : [];
+    const requestedCheckIns = Array.isArray(incoming.checkIns) ? incoming.checkIns : [];
+    const checkIns = storedCheckIns.map(item => ({ ...item }));
+    // 과거 점검 기록은 감사 근거이므로 수정·삭제하지 못한다. 전체 상태 저장에서는
+    // 저장본 뒤에 붙은 첫 신규 기록 하나만 받아 작성자와 작성시각을 서버가 고정한다.
+    if (requestedCheckIns.length > storedCheckIns.length && checkIns.length < 50) {
+      const added = requestedCheckIns[storedCheckIns.length] || {};
+      const note = String(added.note || "").trim().slice(0, 1000);
+      if (note) checkIns.push({
+        id: String(added.id || `pulse-checkin-${Date.now()}`).slice(0, 100),
+        note,
+        nextStep: String(added.nextStep || "").trim().slice(0, 500),
+        progress: Math.max(0, Math.min(100, Math.round(Number(added.progress) || 0))),
+        authorId: String(actor?.empId || ""),
+        authorName: actorEmp?.name || actor?.loginId || "",
+        createdAt: new Date().toISOString(),
+      });
+    }
+    const progress = status === "done" ? 100 : Math.max(0, Math.min(99, Math.round(Number(incoming.progress) || 0)));
+    const outcome = String(incoming.outcome || stored?.outcome || "").trim().slice(0, 1000);
+    const evidence = String(incoming.evidence || stored?.evidence || "").trim().slice(0, 1000);
+    const effectiveness = Number.isInteger(Number(incoming.effectiveness)) && Number(incoming.effectiveness) >= 1 && Number(incoming.effectiveness) <= 5 ? Number(incoming.effectiveness) : (Number(stored?.effectiveness) || 0);
+    if (status === "done" && stored?.status !== "done" && (!outcome || !effectiveness)) return stored ? { ...stored } : null;
     incoming = {
       ...incoming,
-      surveyId: String(incoming.surveyId || "").slice(0, 80),
+      surveyId: String(survey.id).slice(0, 80),
       title: String(incoming.title || "").trim().slice(0, 200),
       dueDate: /^\d{4}-\d{2}-\d{2}$/.test(String(incoming.dueDate || "")) ? incoming.dueDate : "",
       status,
+      focusDriver: allowedDrivers.has(requestedDriver) ? requestedDriver : "",
+      successMetric: String(incoming.successMetric || "").trim().slice(0, 500),
+      nextCheckIn: /^\d{4}-\d{2}-\d{2}$/.test(String(incoming.nextCheckIn || "")) ? incoming.nextCheckIn : "",
+      progress,
+      checkIns,
+      outcome: status === "done" ? outcome : "",
+      evidence: status === "done" ? evidence : "",
+      effectiveness: status === "done" ? effectiveness : 0,
       scope,
       dept: scope === "company" ? "" : (stored?.dept || actorEmp?.dept || ""),
       team: scope === "team" ? (stored?.team || actorEmp?.team || "") : "",

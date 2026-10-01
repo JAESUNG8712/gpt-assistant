@@ -64,7 +64,7 @@ test("직원 몰입도 펄스는 본인 응답만 쓰고 3명 이상일 때만 �
   assert.equal(afterLateWrite.data.engagementPulseSummary[survey.id].driverAverages.engagement, 8, "마감 뒤 응답 수정은 집계에 반영되면 안 됨");
   assert.equal(afterLateWrite.data.engagementPulseSummary[survey.id].comments.includes("마감 후 변조"), false);
 
-  const action = { id: "pulse-action-1", surveyId: survey.id, title: "주간 우선순위 공유", dueDate: "2026-11-30", status: "open" };
+  const action = { id: "pulse-action-1", surveyId: survey.id, title: "주간 우선순위 공유", dueDate: "2026-11-30", status: "open", focusDriver: "action", successMetric: "주간 공유율 90%", nextCheckIn: "2026-10-15", progress: 0, checkIns: [] };
   const actionWrite = await api("/save", { method: "POST", headers: auth(boot.token), body: JSON.stringify({ _version: afterLateWrite.version, data: { engagementActions: [action] } }) });
   assert.equal(actionWrite.status, 200);
   const memberWithAction = await (await api("/data", { headers: auth(tokens[0]) })).json();
@@ -75,4 +75,40 @@ test("직원 몰입도 펄스는 본인 응답만 쓰고 3명 이상일 때만 �
   const finalAdmin = await (await api("/data", { headers: auth(boot.token) })).json();
   assert.equal(finalAdmin.data.engagementActions[0].title, "주간 우선순위 공유");
   assert.equal(finalAdmin.data.engagementActions[0].status, "open");
+
+  const withCheckIn = { ...finalAdmin.data.engagementActions[0], status: "in_progress", progress: 40, nextCheckIn: "2026-10-22", checkIns: [{ id: "check-1", note: "첫 주 공유 완료", nextStep: "양식 단순화", progress: 40, authorId: "forged", authorName: "위조 작성자" }] };
+  const checkInWrite = await api("/save", { method: "POST", headers: auth(boot.token), body: JSON.stringify({ _version: finalAdmin.version, data: { engagementActions: [withCheckIn] } }) });
+  assert.equal(checkInWrite.status, 200);
+  const afterCheckIn = await (await api("/data", { headers: auth(boot.token) })).json();
+  assert.equal(afterCheckIn.data.engagementActions[0].progress, 40);
+  assert.equal(afterCheckIn.data.engagementActions[0].checkIns.length, 1);
+  assert.equal(afterCheckIn.data.engagementActions[0].checkIns[0].authorId, boot.employee.id, "점검 작성자는 로그인 사용자로 고정해야 함");
+  assert.equal(afterCheckIn.data.engagementActions[0].checkIns[0].authorName, "펄스관리자");
+
+  const tamperedHistory = { ...afterCheckIn.data.engagementActions[0], checkIns: [{ ...afterCheckIn.data.engagementActions[0].checkIns[0], note: "과거 기록 변조" }] };
+  const tamperWrite = await api("/save", { method: "POST", headers: auth(boot.token), body: JSON.stringify({ _version: afterCheckIn.version, data: { engagementActions: [tamperedHistory] } }) });
+  assert.equal(tamperWrite.status, 200);
+  const afterTamper = await (await api("/data", { headers: auth(boot.token) })).json();
+  assert.equal(afterTamper.data.engagementActions[0].checkIns[0].note, "첫 주 공유 완료", "과거 점검 기록은 수정할 수 없어야 함");
+
+  const incompleteDone = { ...afterTamper.data.engagementActions[0], status: "done", progress: 100 };
+  const incompleteWrite = await api("/save", { method: "POST", headers: auth(boot.token), body: JSON.stringify({ _version: afterTamper.version, data: { engagementActions: [incompleteDone] } }) });
+  assert.equal(incompleteWrite.status, 200);
+  const afterIncomplete = await (await api("/data", { headers: auth(boot.token) })).json();
+  assert.equal(afterIncomplete.data.engagementActions[0].status, "in_progress", "성과와 효과 평가 없이 완료할 수 없어야 함");
+
+  const completed = { ...afterIncomplete.data.engagementActions[0], status: "done", outcome: "주간 공유가 정착됨", evidence: "4주 회의록", effectiveness: 4 };
+  const completeWrite = await api("/save", { method: "POST", headers: auth(boot.token), body: JSON.stringify({ _version: afterIncomplete.version, data: { engagementActions: [completed] } }) });
+  assert.equal(completeWrite.status, 200);
+  const afterComplete = await (await api("/data", { headers: auth(boot.token) })).json();
+  assert.equal(afterComplete.data.engagementActions[0].status, "done");
+  assert.equal(afterComplete.data.engagementActions[0].progress, 100);
+  assert.equal(afterComplete.data.engagementActions[0].effectiveness, 4);
+
+  const reopen = { ...afterComplete.data.engagementActions[0], status: "open", outcome: "완료 기록 변조", progress: 0 };
+  const reopenWrite = await api("/save", { method: "POST", headers: auth(boot.token), body: JSON.stringify({ _version: afterComplete.version, data: { engagementActions: [reopen] } }) });
+  assert.equal(reopenWrite.status, 200);
+  const afterReopen = await (await api("/data", { headers: auth(boot.token) })).json();
+  assert.equal(afterReopen.data.engagementActions[0].status, "done", "완료된 개선계획은 일반 저장으로 재오픈할 수 없어야 함");
+  assert.equal(afterReopen.data.engagementActions[0].outcome, "주간 공유가 정착됨", "완료 성과는 사후 변조할 수 없어야 함");
 });
