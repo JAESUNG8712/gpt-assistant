@@ -3342,12 +3342,17 @@ function renderCompEval(){
   const u=currentUser;
   const year=compSelYear;
   const c=$("#content");
-  // Tabs: overview | evaluate | results | manage
+  // Tabs: overview | evaluate | my-team-eval | results | manage
   const isAdmin=u.role==="admin";
+  // Epic B 항목 #9: director(같은 dept)/leader(같은 dept+team)는 admin의 전체 관리 화면
+  // 대신, 자기 하위조직원의 평가자만 조정하는 좁은 전용 탭을 쓴다(세션 일괄생성·결과조회·
+  // 대량 업로드/다운로드는 여전히 admin 전용).
+  const canManageSubordinates=(u.role==="director"||u.role==="leader");
   const pendingCnt=getMyCompSessions(u.id,year).length;
   const tabs=[
     {id:"overview",label:"평가 현황"},
     ...(!isAdmin?[{id:"evaluate",label:`평가 진행${pendingCnt>0?" ("+pendingCnt+")":""}`}]:[]),
+    ...(canManageSubordinates?[{id:"my-team-eval",label:"하위조직원 평가자 조정"}]:[]),
     ...(isAdmin?[
       {id:"results",label:"평가 결과 조회"},
       {id:"comp-manage",label:"역량평가 관리"},
@@ -3363,6 +3368,7 @@ function renderCompEval(){
   <div id="comp-content"></div>`;
   if(compTab==="overview")renderCompOverview(u,year);
   else if(compTab==="evaluate")renderCompEvaluate(u,year);
+  else if(compTab==="my-team-eval"){if(!canManageSubordinates){showToast("권한이 없습니다.","error");compTab="overview";renderCompEval();return;}renderMyTeamEvalManage(u,year);}
   else if(compTab==="results"){if(u.role!=="admin"){showToast("평가 결과는 관리자만 조회 가능합니다.","error");compTab="overview";renderCompEval();return;}renderCompResults(u,year);}
   else if(compTab==="comp-manage")renderCompManageByType(u,year,"comp");
   else if(compTab==="ls-manage")renderCompManageByType(u,year,"leadership");
@@ -3623,6 +3629,43 @@ function renderCompManageTbl(year,type){
       </tr>`;
     }).join(""):`<tr><td colspan="10" class="text-gray" style="text-align:center;padding:20px">${q||deptF?"검색 결과가 없습니다.":"대상자가 없습니다."}</td></tr>`}
     </tbody></table></div></div></div>`;
+}
+// Epic B 항목 #9 — 사업부장·팀장의 하위조직원 평가자 조정. admin 전용 "역량평가 관리"/
+// "리더십평가 관리"(renderCompManageByType)와 달리, 세션 일괄생성·전체 결과조회·대량
+// 업로드/다운로드는 포함하지 않고 "평가자 설정"/"⚙ 기준 설정" 두 액션만 자기 하위조직원
+// 범위로 노출한다(서버 _canManageCompSessionTarget과 동일한 조직단위 기준: director=같은
+// dept, leader=같은 dept+team — 피평가자가 director인 리더십평가 대상은 애초에 "하위
+// 조직원"이 아니므로 제외).
+function renderMyTeamEvalManage(u,year){
+  const el=$("#comp-content");if(!el)return;
+  const targets=employees.filter(e=>e.active&&e.id!==u.id&&e.role!=="admin"&&e.role!=="director"&&(
+    u.role==="director"?e.dept===u.dept:(e.dept===u.dept&&e.team===u.team)
+  )).sort((a,b)=>(a.name||"").localeCompare(b.name||"","ko"));
+  const evalYear=settings.compEvalYear;
+  el.innerHTML=`
+  ${settings.compEvalEnabled===false?`<div class="warn-note mb3">⚠ 역량 평가가 현재 <strong>종료</strong> 상태입니다. 평가자 설정은 가능하나 평가 제출은 불가합니다.</div>`:""}
+  <div class="card mb3"><div class="card-body">
+    <div class="info-note">📌 하위조직원의 다면평가 평가자를 직접 조정할 수 있습니다. 세션 일괄 생성·전체 결과 조회·대량 업로드는 관리자만 가능합니다.</div>
+  </div></div>
+  <div class="tbl-wrap"><table><thead><tr><th>이름</th><th>소속</th><th>직급</th><th>직책</th><th>평가자 수</th><th>제출</th><th>관리</th></tr></thead>
+  <tbody>${targets.length?targets.map(e=>{
+    const s=compSessions.find(ss=>ss.targetId===e.id&&ss.year===evalYear);
+    const rCnt=s?compResponses.filter(r=>r.sessionId===s.id&&r.submittedAt).length:0;
+    const total=s?s.evaluatorIds.length:0;
+    return`<tr>
+      <td><div class="flex items-c gap2"><strong>${h(e.name)}</strong>${s?"":" "+badge("세션없음","gray")}${evaluatorConfig[e.id]?badge(evaluatorConfig[e.id].fixedEvaluatorIds?"직접지정":"수 조정","orange"):""}</div></td>
+      <td class="fz11 text-gray">${h(e.dept)}/${h(e.team)}</td>
+      <td>${h(e.rank||"-")}</td>
+      <td>${h(e.position||"-")}</td>
+      <td class="tc">${s?total:badge("미설정","yellow")}</td>
+      <td class="tc">${s?rCnt+"/"+total:"-"}</td>
+      <td><div class="flex gap2">
+        <button class="btn btn-ghost btn-sm" onclick="openPreSessionEvalEdit(${e.id},${evalYear})">평가자 설정</button>
+        <button class="btn btn-secondary btn-sm" onclick="openEvaluatorConfigModal(${e.id},${evalYear})">⚙ 기준 설정</button>
+      </div></td>
+    </tr>`;
+  }).join(""):`<tr><td colspan="7" class="text-gray" style="text-align:center;padding:20px">하위조직원이 없습니다.</td></tr>`}
+  </tbody></table></div>`;
 }
 function createAllCompSessionsByType(year,type){
   const isLs=type==="leadership";
