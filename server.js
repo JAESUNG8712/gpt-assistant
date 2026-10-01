@@ -646,7 +646,14 @@ function filterDataForRole(data, auth) {
   if (auth.role !== "admin" && Array.isArray(out.yearEndSettlements)) {
     out.yearEndSettlements = out.yearEndSettlements.filter(s => s && String(s.empId) === myId);
   }
-  if (auth.role === "member" && Array.isArray(out.kpiEntries)) {
+  // Epic B #1(2026-10) — settings.kpiApprovalStages는 role과 무관하게 특정 직원 1명
+  // (kind:"specific_employee", 예: "인사팀 검토자")을 승인자로 지정할 수 있는데, 그
+  // 지정된 사람이 role:"member"면 아래 필터에 그대로 걸려 자기가 승인해야 할 남의
+  // KPI 레코드 자체를 영원히 볼 수 없게 된다(승인 UI에 도달할 방법이 없음) — 그런
+  // 지정을 받은 member는 leader/director와 동일하게 필터 대상에서 제외한다.
+  const amSpecificKpiApprover = Array.isArray(settings.kpiApprovalStages) &&
+    settings.kpiApprovalStages.some(s => s && s.kind === "specific_employee" && String(s.approverEmpId) === myId);
+  if (auth.role === "member" && !amSpecificKpiApprover && Array.isArray(out.kpiEntries)) {
     out.kpiEntries = out.kpiEntries.filter(k => k && String(k.userId) === myId);
   }
   const canViewLowPerf = auth.role === "admin" ||
@@ -1924,10 +1931,85 @@ function _validateFieldValues(field, rec, storedList) {
 // 100점 만점으로 확정할 수 있었다. approvalDocs/expenseClaims 등과 동일한 원칙 — 권한 없는
 // 필드만 저장본 값으로 되돌리고(신규 레코드면 미승인 기본값으로), 같은 요청에 실린 무관한
 // 정상 변경(목표 등록/제출, 자체평가 입력 등)은 그대로 저장한다.
-// 권한 기준은 클라이언트 renderApprovalList/renderEvalTab이 실제로 버튼을 노출하는 조건과
-// 동일: 1차승인·1차점수는 그 팀원의 팀장(같은 dept+team)만, 최종확정·2차점수는 그 직원의
-// 사업부장(같은 dept)만 — director는 1차승인을, leader는 최종확정을 할 수 없다.
-function _sanitizeKpiEntry(incoming, stored, actor, actorEmp, empById) {
+//
+// Epic B #1/#5/#7(2026-10) — "N차 다중평가자+마감+조정기간" + "승인=최종확정" 의미론.
+// 기존엔 1차(팀장)/최종(사업부장) 2단계가 role로 하드코딩돼 있었다 — 이제
+// settings.kpiApprovalStages(관리자 설정, 미설정 시 아래 KPI_DEFAULT_STAGES와 완전히
+// 동일한 2단계)로 단계 "수"와 "누가 승인하는지"를 자유롭게 구성할 수 있다. 설계 원칙:
+//  - stages[0](첫 단계)과 stages[마지막](최종 단계)은 기존 필드명(firstScore/firstStatus,
+//    secondScore/finalStatus/finalConfirmed/finalScore)을 그대로 쓴다 — 그래서 2단계
+//    기본 구성(사실상 모든 기존 회사)에서는 이 함수의 동작이 한 글자도 바뀌지 않는다.
+//    등급계산(calcEmpFinalScore/assignPoolGrades/finalConfirmAll)·평가진행현황·대시보드·
+//    CSV 등 firstScore/finalStatus를 읽는 기존 소비자 전부가 수정 없이 그대로 동작한다
+//    — "마지막 단계의 승인 = 최종확정"이라는 요구사항도 이미 finalStatus/finalConfirmed가
+//    바로 그 의미이므로 별도 구현 없이 그대로 충족된다.
+//  - 3단계 이상을 구성했을 때만 쓰이는 중간 단계(index 1..N-2)는 새 필드 middleStages
+//    (stageId→{score,comment,itemFeedback,status,reason})에 저장되고, 직전 단계가
+//    approved여야만 다음 단계를 승인할 수 있다(기존 2단계엔 이 순서 강제가 전혀 없었으므로
+//    — isTeamFullyFirst는 클라이언트의 "팀 전체" 게이트일 뿐 서버 강제가 아니다 — 새
+//    기능에만 적용해 기존 동작을 바꾸지 않는다).
+//  - 마감(kpiApprovalDeadline)이 지나면 조정기간(kpiAdjustmentPeriod.open)이 열려있지
+//    않은 한 어떤 단계의 승인/반려도 서버가 거부한다(기존엔 마감 자체가 서버에 전혀
+//    강제되지 않고 있었다). 조정기간이 열려있으면 이미 승인된 마지막 단계를 그 승인
+//    권한자(또는 admin) 자신이 ""로 되돌릴(재오픈) 수도 있다 — 이 재오픈 전이는 기존
+//    코드에 전혀 없던 것으로, 사실 기존 코드는 finalStatus를 approved→""로 바꾸는 요청을
+//    검증 자체를 안 했다(값이 "approved"/"rejected"가 아니면 그냥 통과됐다) — 이번에
+//    함께 틀어막는다. 재오픈 이력은 서버가 직접 구성해 adjustmentHistory에 남기고,
+//    클라이언트가 보낸 adjustmentHistory 내용 자체는 신뢰하지 않는다(_rev처럼 서버 전용).
+function KPI_DEFAULT_STAGES() {
+  return [
+    { id: "stage1", label: "1차 평가(팀장)", kind: "team_leader", menuPageId: "first-eval" },
+    { id: "stage2", label: "최종 확정(사업부장)", kind: "dept_director", menuPageId: "second-eval" },
+  ];
+}
+function _kpiStagesConfig(settings) {
+  const raw = settings && Array.isArray(settings.kpiApprovalStages) ? settings.kpiApprovalStages : null;
+  if (!raw || raw.length < 2 || raw.length > 5) return KPI_DEFAULT_STAGES();
+  const valid = raw.every(s => s && typeof s.id === "string" && s.id &&
+    ["team_leader", "dept_director", "specific_employee"].includes(s.kind) &&
+    (s.kind !== "specific_employee" || s.approverEmpId != null));
+  if (!valid) return KPI_DEFAULT_STAGES();
+  const ids = new Set(raw.map(s => s.id));
+  if (ids.size !== raw.length) return KPI_DEFAULT_STAGES(); // 중복 id 방지(아래 middleStages 키로 쓰임)
+  return raw;
+}
+function _kpiStageActorAllowed(stageCfg, actor, actorEmp, ownerEmp) {
+  if (!stageCfg || !actor || !actorEmp || !ownerEmp) return false;
+  const menuPageId = stageCfg.menuPageId || "kpi-stage-review";
+  if (stageCfg.kind === "team_leader") {
+    return actor.role === "leader" && ownerEmp.dept === actorEmp.dept && ownerEmp.team === actorEmp.team &&
+      _menuPermsAllow(menuPageId, actor);
+  }
+  if (stageCfg.kind === "dept_director") {
+    return actor.role === "director" && ownerEmp.dept === actorEmp.dept && _menuPermsAllow(menuPageId, actor);
+  }
+  if (stageCfg.kind === "specific_employee") {
+    return actor.empId != null && String(actor.empId) === String(stageCfg.approverEmpId) && _menuPermsAllow(menuPageId, actor);
+  }
+  return false;
+}
+// 구성된 단계 배열에서 index번째 단계의 "현재 저장된 상태"(승인 순서 판정용)를 레코드에서
+// 읽는다 — 0번째는 firstStatus, 마지막은 finalStatus, 그 사이는 middleStages[stageId].status.
+function _kpiStageStatus(kpi, idx, stagesConfig) {
+  if (!kpi) return "";
+  if (idx === 0) return kpi.firstStatus || "";
+  if (idx === stagesConfig.length - 1) return kpi.finalStatus || "";
+  const cfg = stagesConfig[idx];
+  return (kpi.middleStages && kpi.middleStages[cfg.id] && kpi.middleStages[cfg.id].status) || "";
+}
+// approve/reject 전이, 그리고 "조정기간 중 재오픈"(approved/rejected → "") 전이가 허용되는지
+// 판정하는 공용 규칙 — 1차/중간/최종 단계 전부 동일하게 적용한다. 그 외의 값(가령 임의
+// 문자열)으로의 전이는 항상 거부한다(기존 코드는 "approved"/"rejected"가 아닌 값이면 아예
+// 검증을 건너뛰어 그대로 통과시키는 느슨한 지점이 있었다 — 이번에 함께 막는다).
+function _kpiStageTransitionAllowed(storedStatus, incomingStatus, canAct, deadlineBlocks, adjustmentOpen) {
+  if (incomingStatus === storedStatus) return true;
+  if (incomingStatus === "approved" || incomingStatus === "rejected") return canAct && !deadlineBlocks;
+  if (incomingStatus === "" && (storedStatus === "approved" || storedStatus === "rejected")) {
+    return canAct && adjustmentOpen; // 재오픈은 조정기간 중에만, 그 단계 승인권자(또는 admin)만
+  }
+  return false;
+}
+function _sanitizeKpiEntry(incoming, stored, actor, actorEmp, empById, settings) {
   if (!incoming) return incoming;
   let out = incoming;
   const cloneOnce = () => { if (out === incoming) out = { ...incoming }; };
@@ -1940,14 +2022,22 @@ function _sanitizeKpiEntry(incoming, stored, actor, actorEmp, empById) {
   }
   const ownerId = out.userId ?? stored?.userId;
   const ownerEmp = ownerId != null ? empById.get(String(ownerId)) : null;
+  const stagesConfig = _kpiStagesConfig(settings);
+  const lastIdx = stagesConfig.length - 1;
+  const deadlineStr = settings && typeof settings.kpiApprovalDeadline === "string" ? settings.kpiApprovalDeadline.trim() : "";
+  const deadlineMs = deadlineStr ? Date.parse(deadlineStr + "T23:59:59") : NaN;
+  const adjustmentOpen = !!(settings && settings.kpiAdjustmentPeriod && settings.kpiAdjustmentPeriod.open);
+  const deadlineBlocks = Number.isFinite(deadlineMs) && Date.now() > deadlineMs && !adjustmentOpen;
   // menuPerms 확장(2026-08-21) — role만으로는 자격이 있어도(팀장/사업부장), 관리자가 그
   // 직원의 "1차 평가"/"2차 평가" 메뉴 자체를 개인적으로 꺼뒀다면 그 승인 권한도 서버에서
   // 함께 차단한다(REST 화면의 requirePage와 동일한 원칙을 이 blob 동기화 필드에 적용).
-  const canFirst = actor.role === "leader" && actorEmp && ownerEmp &&
-    ownerEmp.dept === actorEmp.dept && ownerEmp.team === actorEmp.team &&
-    _menuPermsAllow("first-eval", actor);
-  const canFinal = actor.role === "director" && actorEmp && ownerEmp &&
-    ownerEmp.dept === actorEmp.dept && _menuPermsAllow("second-eval", actor);
+  // 기본 2단계 구성에서는 _kpiStageActorAllowed(stagesConfig[0]/[lastIdx], ...)가 아래의
+  // 옛 하드코딩 공식과 정확히 동일한 값을 내므로 동작 변화가 없다.
+  const canFirst = _kpiStageActorAllowed(stagesConfig[0], actor, actorEmp, ownerEmp);
+  // 최종 단계는 "직전 단계가 승인됐는지"를 추가로 요구한다 — 단, 이 요구는 3단계 이상을
+  // 구성했을 때만 적용한다(기존 2단계 동작에는 이런 순서 강제가 없었으므로 그대로 유지).
+  const prevOfLastApproved = lastIdx > 1 ? _kpiStageStatus(stored, lastIdx - 1, stagesConfig) === "approved" : true;
+  const canFinal = _kpiStageActorAllowed(stagesConfig[lastIdx], actor, actorEmp, ownerEmp) && prevOfLastApproved;
   // 목표 등록/자체평가 등 승인과 무관한 일반 편집은 본인(userId===actor.empId) 소유 레코드에
   // 한해 일어난다("kpi"/"kpi-results" 두 화면이 여기 해당, 어느 쪽이 보이는지는
   // settings.stage에 따라 갈리므로 둘 다 꺼졌을 때만 차단). admin은 그대로 예외.
@@ -1956,12 +2046,30 @@ function _sanitizeKpiEntry(incoming, stored, actor, actorEmp, empById) {
     return stored ? { ...stored } : null;
   }
 
+  // adjustmentHistory는 서버가 재오픈을 감지할 때만 이 배열에 쌓은 뒤, 함수 맨 끝에서
+  // 한 번에 반영한다(_rev처럼 완전히 서버 전용 필드 — 클라이언트가 보낸 내용은 아래 어느
+  // 경로에서도 절대 신뢰하지 않고 항상 저장본 값으로 고정한다).
+  const newAdjustmentEntries = [];
+  function pushAdjustment(stageCfg, fromStatus, extra) {
+    newAdjustmentEntries.push({
+      id: "adj" + Date.now().toString(36) + Math.random().toString(36).slice(2, 7),
+      stageId: stageCfg.id, label: stageCfg.label, from: fromStatus,
+      reopenedBy: actor.empId != null ? String(actor.empId) : null,
+      reopenedByName: actorEmp ? actorEmp.name : (actor.role === "admin" ? "관리자" : ""),
+      reopenedAt: new Date().toISOString(),
+      ...(extra || {}),
+    });
+  }
+
   const storedFirstStatus = stored?.firstStatus || "";
-  if ((incoming.firstStatus || "") !== storedFirstStatus &&
-      (incoming.firstStatus === "approved" || incoming.firstStatus === "rejected") && !canFirst) {
+  const incomingFirstStatus = incoming.firstStatus || "";
+  if (!_kpiStageTransitionAllowed(storedFirstStatus, incomingFirstStatus, canFirst, deadlineBlocks, adjustmentOpen)) {
     cloneOnce();
     out.firstStatus = storedFirstStatus;
     out.firstReason = stored?.firstReason || "";
+  } else if (incomingFirstStatus === "" && storedFirstStatus === "approved") {
+    // 1차 단계 재오픈(조정기간 전용) — 최종 단계와 달리 별도 확정 플래그가 없어 상태만 되돌린다.
+    pushAdjustment(stagesConfig[0], storedFirstStatus);
   }
   if (!canFirst && (incoming.firstScore !== (stored?.firstScore ?? null) ||
       (incoming.firstComment || "") !== (stored?.firstComment || ""))) {
@@ -1970,14 +2078,72 @@ function _sanitizeKpiEntry(incoming, stored, actor, actorEmp, empById) {
     out.firstComment = stored?.firstComment || "";
   }
 
+  // 3단계 이상 구성 시에만 쓰이는 중간 단계 — stageId로 키를 매겨(배열 인덱스가 아님)
+  // 단계 구성이 나중에 바뀌어도 기존 레코드의 중간단계 데이터가 엉뚱한 위치로 오귀속되지
+  // 않게 한다. 현재 구성에 없는 stageId는 전부 버린다(관리자가 단계를 줄인 뒤 남는
+  // 고아 데이터 방지).
+  if (stagesConfig.length > 2) {
+    const storedMiddle = (stored && stored.middleStages && typeof stored.middleStages === "object") ? stored.middleStages : {};
+    const incomingMiddleRaw = (incoming.middleStages && typeof incoming.middleStages === "object") ? incoming.middleStages : {};
+    const middleOut = {};
+    // 매번 권위 있는 값을 새로 계산해 무조건 덮어쓴다(출력이 storedEntry와 "같아 보인다고"
+    // 클론을 생략하면, cloneOnce()가 다른 이유로 한 번도 호출되지 않은 경우 out이 여전히
+    // incoming 그 자체를 가리켜 클라이언트가 보낸 위조값이 그대로 통과한다 — 반드시
+    // incoming과 비교해 다를 때만이 아니라, 이 블록이 실행되면 항상 cloneOnce한다).
+    for (let idx = 1; idx < lastIdx; idx++) {
+      const cfg = stagesConfig[idx];
+      const canAct = _kpiStageActorAllowed(cfg, actor, actorEmp, ownerEmp) &&
+        _kpiStageStatus(stored, idx - 1, stagesConfig) === "approved";
+      const storedEntry = storedMiddle[cfg.id] || { score: null, comment: "", itemFeedback: "", status: "", reason: "" };
+      const incomingEntry = incomingMiddleRaw[cfg.id] || {};
+      const storedStatus = storedEntry.status || "";
+      const incomingStatus = incomingEntry.status || "";
+      if (!_kpiStageTransitionAllowed(storedStatus, incomingStatus, canAct, deadlineBlocks, adjustmentOpen)) {
+        middleOut[cfg.id] = storedEntry;
+        continue;
+      }
+      const scoreChanged = (incomingEntry.score ?? null) !== (storedEntry.score ?? null) ||
+        (incomingEntry.comment || "") !== (storedEntry.comment || "") ||
+        (incomingEntry.itemFeedback || "") !== (storedEntry.itemFeedback || "");
+      if (!canAct && scoreChanged) {
+        middleOut[cfg.id] = { ...storedEntry };
+        continue;
+      }
+      middleOut[cfg.id] = {
+        score: incomingEntry.score ?? storedEntry.score ?? null,
+        comment: incomingEntry.comment || storedEntry.comment || "",
+        itemFeedback: incomingEntry.itemFeedback || storedEntry.itemFeedback || "",
+        status: incomingStatus,
+        reason: incomingStatus === "rejected" ? (incomingEntry.reason || "") : "",
+      };
+      if (incomingStatus === "" && storedStatus === "approved") pushAdjustment(cfg, storedStatus);
+    }
+    cloneOnce();
+    out.middleStages = middleOut;
+  } else if (incoming.middleStages !== undefined) {
+    cloneOnce();
+    delete out.middleStages; // 2단계 구성에선 쓰이지 않는 필드 — 조용히 무시(공격면 없음, 정리만)
+  }
+
   const storedFinalStatus = stored?.finalStatus || "";
-  if ((incoming.finalStatus || "") !== storedFinalStatus &&
-      (incoming.finalStatus === "approved" || incoming.finalStatus === "rejected") && !canFinal) {
+  const incomingFinalStatus = incoming.finalStatus || "";
+  if (!_kpiStageTransitionAllowed(storedFinalStatus, incomingFinalStatus, canFinal, deadlineBlocks, adjustmentOpen)) {
     cloneOnce();
     out.finalStatus = storedFinalStatus;
     out.finalReason = stored?.finalReason || "";
     out.finalConfirmed = stored?.finalConfirmed || false;
     out.finalScore = stored?.finalScore ?? null;
+  } else if (incomingFinalStatus === "" && storedFinalStatus === "approved") {
+    // 조정기간 재오픈(Epic B #1/#7) — 최종확정을 되돌린다. finalScore/secondScore 등 과거
+    // 값 자체는 감사를 위해 그대로 남기고(아래 어떤 코드도 이 되돌리기에서 지우지 않음),
+    // finalConfirmed만 꺼서 "확정 안 된 상태"로 재분류한다 — 등급계산 3경로
+    // (assignPoolGrades/finalConfirmAll/수동조정) 전부 finalStatus==="approved" 또는
+    // finalConfirmed를 기준으로 완료 여부를 판단하므로, 재오픈된 레코드는 그 즉시 "아직
+    // 완료 안 됨"으로 자연스럽게 재분류된다(완료 판정 로직 자체를 바꿀 필요가 없다).
+    cloneOnce();
+    out.finalStatus = "";
+    out.finalConfirmed = false;
+    pushAdjustment(stagesConfig[lastIdx], storedFinalStatus, { finalScoreBefore: stored?.finalScore ?? null });
   }
   if (!canFinal) {
     if (incoming.secondScore !== (stored?.secondScore ?? null) ||
@@ -1994,6 +2160,16 @@ function _sanitizeKpiEntry(incoming, stored, actor, actorEmp, empById) {
       out.finalConfirmed = stored?.finalConfirmed || false;
       out.finalScore = stored?.finalScore ?? null;
     }
+  }
+  // adjustmentHistory 최종 반영 — 서버가 위에서 직접 구성한 신규 항목이 있으면 그것만
+  // append하고, 없으면(클라이언트가 이 필드에 무엇을 보냈든) 항상 저장본 값으로 고정한다.
+  const storedAdjustmentHistory = Array.isArray(stored?.adjustmentHistory) ? stored.adjustmentHistory : [];
+  if (newAdjustmentEntries.length) {
+    cloneOnce();
+    out.adjustmentHistory = [...storedAdjustmentHistory, ...newAdjustmentEntries].slice(-200);
+  } else if (JSON.stringify(incoming.adjustmentHistory || []) !== JSON.stringify(storedAdjustmentHistory)) {
+    cloneOnce();
+    out.adjustmentHistory = storedAdjustmentHistory;
   }
   // 평가 중 수시 피드백 교환(Epic A, feedbackThread) — 목표 등록~결과 확정 전 기간 동안
   // 본인과 평가자(같은 dept+team의 leader, 같은 dept의 director)가 자유롭게 주고받는
@@ -2200,7 +2376,7 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
     // 채로 넘기면 TypeError로 요청이 죽는다(Express 4는 async 핸들러의 동기 throw를 못
     // 잡아 응답 없이 hang — 이 프로젝트에서 반복된 사고 클래스). 여기서 즉시 걸러낸다.
     data.kpiEntries = data.kpiEntries
-      .map(kpi => _sanitizeKpiEntry(kpi, kpi && kpi.id != null ? _kpiStoredById.get(String(kpi.id)) : null, actor, _kpiActorEmp, _kpiEmpById))
+      .map(kpi => _sanitizeKpiEntry(kpi, kpi && kpi.id != null ? _kpiStoredById.get(String(kpi.id)) : null, actor, _kpiActorEmp, _kpiEmpById, _kpiGatePrior.settings))
       .filter(kpi => kpi !== null);
   }
   if (USE_JSON_FILE) {
