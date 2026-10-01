@@ -677,7 +677,7 @@ test.describe("로그인·기본 네비게이션", () => {
     expect(secondSave.dependents).toBe(5);
   });
 
-  test("휴가·근무보상·복리후생 정책과 채용 키워드 적합도가 연동된다", async ({ page }) => {
+  test("휴가·근무보상·의료비·사내대출 정책과 채용 키워드 적합도가 연동된다", async ({ page }) => {
     const pageErrors = [];
     page.on("pageerror", e => pageErrors.push(e.message));
     await page.goto("/");
@@ -693,7 +693,11 @@ test.describe("로그인·기본 네비게이션", () => {
     const rules = await page.evaluate(() => {
       settings.leaveTypes = [{ id: "quarter", name: "시간연차", unit: 0.25, countsAnnual: true, paid: true, enabled: true }];
       settings.workCompOptions = [{ id: "sub", name: "대체휴무", mode: "leave", expiryMonths: 3, enabled: true }];
-      settings.welfarePolicies = [{ id: "marriage", group: "condolence", name: "본인 결혼", maxAmount: 1000000, minServiceMonths: 0, payrollLinked: true, enabled: true }];
+      settings.welfarePolicies = [
+        { id: "marriage", group: "condolence", name: "본인 결혼", maxAmount: 1000000, minServiceMonths: 0, payrollLinked: true, enabled: true },
+        { id: "medical", group: "medical", name: "본인·가족 의료비", maxAmount: 2000000, minServiceMonths: 0, payrollLinked: true, enabled: true },
+        { id: "loan", group: "loan", name: "생활안정 대출", maxAmount: 20000000, minServiceMonths: 12, interestRate: 12, maxRepaymentMonths: 60, payrollLinked: true, enabled: true },
+      ];
       recruitJobs = [{ id: "job-match", title: "ERP 개발자", keywords: ["JavaScript", "PostgreSQL", "제조ERP"] }];
       recruitCandidates = [{ id: "candidate-match", jobId: "job-match", name: "지원자 A", status: "서류검토", finalEducation: "컴퓨터공학 학사", careerHistory: "1. 2023.01~2024.12 | 제조사 | 개발자 | 제조ERP JavaScript 개발", lastSalary: "4,000만원", desiredSalary: "4,500만원", resumeSummary: "제조ERP JavaScript 개발" }];
       const match = _recruitCandidateMatch({ jobId: "job-match", careerHistory: "제조ERP JavaScript 개발", resumeSummary: "업무 경험" });
@@ -703,6 +707,9 @@ test.describe("로그인·기본 네비게이션", () => {
         leave: _selectedLeavePolicy("시간연차"),
         comp: settings.workCompOptions[0],
         welfare: _welfarePolicyForTemplate("tpl-welfare-condolence", "marriage"),
+        medical: _welfarePolicyForTemplate("tpl-welfare-medical", "medical"),
+        loan: _welfarePolicyForTemplate("tpl-welfare-loan", "loan"),
+        loanSchedule: _loanRepaymentSchedule({ requestedAmount: 1000000, repaymentMonths: 2, interestRate: 12, firstDeductionMonth: "2027-05" }),
         match,
         historical,
         flex,
@@ -711,6 +718,9 @@ test.describe("로그인·기본 네비게이션", () => {
     expect(rules.leave.unit).toBe(0.25);
     expect(rules.comp.expiryMonths).toBe(3);
     expect(rules.welfare.maxAmount).toBe(1000000);
+    expect(rules.medical.maxAmount).toBe(2000000);
+    expect(rules.loan.maxRepaymentMonths).toBe(60);
+    expect(rules.loanSchedule.map(r => r.payment)).toEqual([510000, 505000]);
     expect(rules.match).toEqual({ score: 67, matched: ["JavaScript", "제조ERP"], missing: ["PostgreSQL"] });
     expect(rules.historical).toMatchObject({ dept: "IT사업본부", team: "서비스개발팀" });
     expect(rules.flex).toMatchObject({ label: "A조", startHour: 6, endHour: 14, breakMinutes: 30, workDays: [1, 2, 3, 4] });
@@ -732,11 +742,14 @@ test.describe("로그인·기본 네비게이션", () => {
         minServiceMonths: 0,
         payrollLinked: true,
         enabled: true,
-      }];
+      }, { id: "medical", group: "medical", name: "본인·가족 의료비", maxAmount: 2000000, minServiceMonths: 0, payrollLinked: true, enabled: true },
+      { id: "loan", group: "loan", name: "생활안정 대출", maxAmount: 20000000, minServiceMonths: 12, interestRate: 12, maxRepaymentMonths: 60, payrollLinked: true, enabled: true }];
       renderWelfareSettingsPage();
     });
-    await expect(page.getByRole("heading", { name: /경조·학자금 지원 기준/ })).toBeVisible();
+    await expect(page.getByRole("heading", { name: /복리후생 지원 기준/ })).toBeVisible();
     await expect(page.locator('#welfare-settings-content input[placeholder="예: 본인 결혼"]').first()).toHaveValue("본인 결혼");
+    await expect(page.locator('#welfare-settings-content select').first()).toContainText("의료비");
+    await expect(page.locator('#welfare-settings-content input[step="0.01"]')).toHaveValue("12");
     expect(pageErrors, `콘솔 페이지 에러 발생: ${pageErrors.join("; ")}`).toHaveLength(0);
   });
 

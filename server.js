@@ -1426,7 +1426,7 @@ const _APPROVAL_GATED_FIELDS = {
   ...Object.fromEntries(Object.keys(_WRITE_GATED_FIELDS).map(f =>
     [f, { record: (rec, actor, actorEmp, settings) => _writeGateAllowed(f, rec, actor, actorEmp, settings) }])),
 };
-// payrollAdjustments 신규 레코드가 이미 승인 완료된 복리후생(경조금/학자금) 결재문서에서
+// payrollAdjustments 신규 레코드가 이미 승인 완료된 복리후생 결재문서에서
 // 그대로 파생된 것인지 검증한다 — empId/금액/구분/연월이 그 문서의 내용과 정확히 일치해야
 // 하고, doc 자체는 이미 _sanitizeApprovalDoc을 통과한(위조 불가능한) 값이어야 한다. 값 하나라도
 // 다르면 거부(사람이 임의 금액을 끼워넣는 것을 막기 위함) — 정상 화면은 항상 doc 내용
@@ -1442,18 +1442,36 @@ const _APPROVAL_GATED_FIELDS = {
 // doc과 다른 값으로는 여전히 만들 수 없어 중복·위조 둘 다 막힌다.
 function _welfareAdjustmentMatchesApprovedDoc(rec, doc) {
   if (!rec || !doc || doc.status !== "approved") return false;
-  if (rec.id !== `payadj-welfare-${doc.id}`) return false;
-  if (!["tpl-welfare-condolence", "tpl-welfare-tuition"].includes(doc.templateId)) return false;
+  const supported = ["tpl-welfare-condolence", "tpl-welfare-tuition", "tpl-welfare-medical", "tpl-welfare-loan"];
+  if (!supported.includes(doc.templateId)) return false;
   if (String(doc.authorId) !== String(rec.empId)) return false;
   const fd = doc.formData || {};
   if (fd.payrollLinked === false) return false;
   const amount = Number(fd.requestedAmount) || 0;
-  if (amount <= 0 || Number(rec.amount) !== amount) return false;
+  if (amount <= 0) return false;
+  if (doc.templateId === "tpl-welfare-loan") {
+    const months = Number(fd.repaymentMonths), rate = Math.max(0, Number(fd.interestRate) || 0);
+    if (!Number.isInteger(months) || months < 1 || months > 360 || !/^\d{4}-\d{2}$/.test(fd.firstDeductionMonth || "")) return false;
+    const [sy, sm] = fd.firstDeductionMonth.split("-").map(Number);
+    const installmentNo = Number(rec.installmentNo);
+    if (!Number.isInteger(installmentNo) || installmentNo < 1 || installmentNo > months) return false;
+    const d = new Date(sy, sm - 1 + installmentNo - 1, 1);
+    const basePrincipal = Math.floor(amount / months);
+    const principal = installmentNo === months ? amount - basePrincipal * (months - 1) : basePrincipal;
+    const remainingBefore = amount - basePrincipal * (installmentNo - 1);
+    const interest = Math.round(remainingBefore * (rate / 100) / 12);
+    const payment = principal + interest;
+    const expectedId = `payadj-welfare-${doc.id}-${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, "0")}`;
+    return rec.id === expectedId && rec.source === "welfare_loan" && rec.category === "사내대출 상환" &&
+      Number(rec.amount) === -payment && Number(rec.principal) === principal && Number(rec.interest) === interest &&
+      Number(rec.year) === d.getFullYear() && Number(rec.month) === d.getMonth() + 1;
+  }
+  if (rec.id !== `payadj-welfare-${doc.id}` || Number(rec.amount) !== amount) return false;
   const approvedAt = new Date(doc.approvedAt || doc.updatedAt || 0);
   if (Number.isNaN(approvedAt.getTime())) return false;
   if (Number(rec.year) !== approvedAt.getFullYear() || Number(rec.month) !== approvedAt.getMonth() + 1) return false;
-  const expectedCategory = doc.templateId === "tpl-welfare-condolence" ? "경조사비" : "학자금";
-  return rec.category === expectedCategory;
+  const expectedCategory = {"tpl-welfare-condolence":"경조사비","tpl-welfare-tuition":"학자금","tpl-welfare-medical":"의료비 지원"}[doc.templateId];
+  return rec.source === "welfare_approval" && rec.category === expectedCategory;
 }
 // 반환값: 저장할 레코드, 또는 null(= 이 레코드는 아예 쓰지 않음 — 권한 없이 새로 만들어진 것)
 // approvalDocForGate: field==="payrollAdjustments"이고 신규 레코드(!stored)일 때만 쓰이는,
@@ -1461,7 +1479,7 @@ function _welfareAdjustmentMatchesApprovedDoc(rec, doc) {
 function _sanitizeGatedRecord(field, incoming, stored, actor, actorEmp, settings, approvalDocForGate) {
   const rule = _APPROVAL_GATED_FIELDS[field];
   if (!rule || !incoming) return incoming;
-  // payrollAdjustments는 admin 전용 필드지만, 복리후생(경조금/학자금) 신청이 승인 완료되는
+  // payrollAdjustments는 admin 전용 필드지만, 복리후생 신청이 승인 완료되는
   // 순간 이 레코드를 만드는 것은 그 결재선의 "마지막 결재자"(대개 팀장·사업부장, admin이
   // 아님)다 — 그래서 이 정당한 파생 레코드가 role 게이팅에 걸려 항상 조용히 드롭되고
   // 있었다(2026-09-18 발견, PR#71 복리후생 신청 기능 감사). admin이 나중에 "급여 종합
