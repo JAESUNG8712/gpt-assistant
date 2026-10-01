@@ -23,14 +23,14 @@ test("직원 몰입도 펄스는 본인 응답만 쓰고 3명 이상일 때만 �
   for (const member of members) tokens.push(await login(member));
 
   state = await (await api("/data", { headers: auth(boot.token) })).json();
-  const survey = { id: "pulse-2026-10", title: "10월 몰입도", startDate: "2026-10-01", endDate: "2026-10-31", status: "open", questions: [{ id: "engagement", driver: "몰입", text: "추천 의향" }] };
+  const survey = { id: "pulse-2026-10", title: "10월 몰입도", startDate: "2026-10-01", endDate: "2026-10-31", status: "open", questions: [{ id: "engagement", driver: "몰입", text: "추천 의향" }, { id: "growth", driver: "성장", text: "성장 체감" }, { id: "action", driver: "실행 신뢰", text: "개선 조치 신뢰" }] };
   saved = await api("/save", { method: "POST", headers: auth(boot.token), body: JSON.stringify({ _version: state.version, data: { engagementSurveys: [survey] } }) });
   assert.equal(saved.status, 200);
 
   for (let i = 0; i < members.length; i++) {
     const token = tokens[i];
     const mine = await (await api("/data", { headers: auth(token) })).json();
-    const response = { id: `resp-${i + 1}`, surveyId: survey.id, empId: i === 0 ? "another-user" : members[i].id, scores: { engagement: 7 + i }, comment: `익명 의견 ${i + 1}` };
+    const response = { id: `resp-${i + 1}`, surveyId: survey.id, empId: i === 0 ? "another-user" : members[i].id, scores: { engagement: 7 + i, growth: 6 + i, action: 5 + i }, comment: `익명 의견 ${i + 1}` };
     const write = await api("/save", { method: "POST", headers: auth(token), body: JSON.stringify({ _version: mine.version, data: { engagementResponses: [response], engagementSurveys: [{ ...survey, title: "직원이 위조한 설문" }] } }) });
     assert.equal(write.status, 200);
 
@@ -63,4 +63,16 @@ test("직원 몰입도 펄스는 본인 응답만 쓰고 3명 이상일 때만 �
   const afterLateWrite = await (await api("/data", { headers: auth(boot.token) })).json();
   assert.equal(afterLateWrite.data.engagementPulseSummary[survey.id].driverAverages.engagement, 8, "마감 뒤 응답 수정은 집계에 반영되면 안 됨");
   assert.equal(afterLateWrite.data.engagementPulseSummary[survey.id].comments.includes("마감 후 변조"), false);
+
+  const action = { id: "pulse-action-1", surveyId: survey.id, title: "주간 우선순위 공유", dueDate: "2026-11-30", status: "open" };
+  const actionWrite = await api("/save", { method: "POST", headers: auth(boot.token), body: JSON.stringify({ _version: afterLateWrite.version, data: { engagementActions: [action] } }) });
+  assert.equal(actionWrite.status, 200);
+  const memberWithAction = await (await api("/data", { headers: auth(tokens[0]) })).json();
+  assert.equal(memberWithAction.data.engagementActions[0].title, "주간 우선순위 공유", "전사 개선계획은 직원에게 공개되어야 함");
+  const forgedAction = { ...memberWithAction.data.engagementActions[0], title: "직원이 변조", status: "done" };
+  const forgedWrite = await api("/save", { method: "POST", headers: auth(tokens[0]), body: JSON.stringify({ _version: memberWithAction.version, data: { engagementActions: [forgedAction] } }) });
+  assert.equal(forgedWrite.status, 200);
+  const finalAdmin = await (await api("/data", { headers: auth(boot.token) })).json();
+  assert.equal(finalAdmin.data.engagementActions[0].title, "주간 우선순위 공유");
+  assert.equal(finalAdmin.data.engagementActions[0].status, "open");
 });
