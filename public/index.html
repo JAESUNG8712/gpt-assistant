@@ -1188,14 +1188,17 @@ let settings={
     {id:"comp-time",name:"보상시간",mode:"time",expiryMonths:3,enabled:true},
     {id:"sub-leave",name:"대체휴무",mode:"leave",expiryMonths:3,enabled:true}
   ],
-  // 경조·학자금 기준. 승인 금액은 급여 조정 항목으로 연계할 수 있다.
+  // 복리후생 지원 기준. 승인 금액은 급여 지급 또는 공제 항목으로 연계할 수 있다.
   welfarePolicies:[
     {id:"marriage",group:"condolence",name:"본인 결혼",maxAmount:1000000,minServiceMonths:0,payrollLinked:true,enabled:true},
     {id:"parent-death",group:"condolence",name:"부모상",maxAmount:1000000,minServiceMonths:0,payrollLinked:true,enabled:true},
     {id:"kindergarten",group:"tuition",name:"유치원 학자금",maxAmount:500000,minServiceMonths:12,payrollLinked:true,enabled:true},
     {id:"highschool",group:"tuition",name:"고등학교 학자금",maxAmount:1000000,minServiceMonths:12,payrollLinked:true,enabled:true},
-    {id:"university",group:"tuition",name:"대학교 학자금",maxAmount:3000000,minServiceMonths:12,payrollLinked:true,enabled:true}
+    {id:"university",group:"tuition",name:"대학교 학자금",maxAmount:3000000,minServiceMonths:12,payrollLinked:true,enabled:true},
+    {id:"medical-family",group:"medical",name:"본인·가족 의료비",maxAmount:2000000,minServiceMonths:0,payrollLinked:true,enabled:true},
+    {id:"employee-loan",group:"loan",name:"임직원 생활안정 대출",maxAmount:20000000,minServiceMonths:12,payrollLinked:true,interestRate:2.5,maxRepaymentMonths:60,enabled:true}
   ],
+  welfarePolicySchemaVersion:2,
   // 종합검진 설정: 기준연령 이상은 자동 대상, targetIds는 관리자가 추가 지정한 대상자
   healthCheckup:{ageThreshold:40, year:new Date().getFullYear(), targetIds:[]},
   // 장기근속 포상 기준 [{years,reward}]
@@ -5322,7 +5325,17 @@ function applyState(state,skipUndo=false){
   if(d.compSessions&&Array.isArray(d.compSessions))compSessions=d.compSessions;
   if(d.compResponses&&Array.isArray(d.compResponses))compResponses=_mergeByIdPreferNewer(compResponses,d.compResponses,'compResponses');
   if(d.changeRequests&&Array.isArray(d.changeRequests))changeRequests=_mergeByIdPreferNewer(changeRequests,d.changeRequests,'changeRequests');
-  if(d.settings&&typeof d.settings==="object")settings={...settings,...d.settings};
+  if(d.settings&&typeof d.settings==="object"){
+    settings={...settings,...d.settings};
+    // 기존 운영 데이터에는 경조·학자금만 있으므로 최초 1회 새 기본 정책을 보강한다.
+    // schemaVersion이 저장된 뒤에는 관리자가 의료비/대출 정책을 삭제해도 다시 만들지 않는다.
+    if(Number(d.settings.welfarePolicySchemaVersion||0)<2){
+      const policies=Array.isArray(settings.welfarePolicies)?settings.welfarePolicies:[];
+      if(!policies.some(p=>p.group==="medical"))policies.push({id:"medical-family",group:"medical",name:"본인·가족 의료비",maxAmount:2000000,minServiceMonths:0,payrollLinked:true,enabled:true});
+      if(!policies.some(p=>p.group==="loan"))policies.push({id:"employee-loan",group:"loan",name:"임직원 생활안정 대출",maxAmount:20000000,minServiceMonths:12,payrollLinked:true,interestRate:2.5,maxRepaymentMonths:60,enabled:true});
+      settings.welfarePolicies=policies;settings.welfarePolicySchemaVersion=2;
+    }
+  }
   if(d.settings?.scoreWeights)settings.scoreWeights={...settings.scoreWeights,...d.settings.scoreWeights};
   if(Array.isArray(settings.boardCategories)){
     const wrDefaults={notice:["admin"],rules:["admin"]};
@@ -14534,6 +14547,10 @@ const _BTPLS=[
    fields:[{key:"welfarePolicyId",label:"지원 유형",type:"select",opts:[],req:true},{key:"eventDate",label:"경조일",type:"date",req:true},{key:"requestedAmount",label:"신청 금액(원)",type:"number",req:true},{key:"details",label:"신청 사유·대상",type:"textarea",req:true}],approvalType:"hierarchy"},
   {id:"tpl-welfare-tuition",name:"학자금 신청",category:"welfare",icon:"🎓",builtin:true,
    fields:[{key:"welfarePolicyId",label:"지원 유형",type:"select",opts:[],req:true},{key:"beneficiaryName",label:"대상자 이름",type:"text",req:true},{key:"semester",label:"학기·교육기간",type:"text",req:true},{key:"requestedAmount",label:"신청 금액(원)",type:"number",req:true},{key:"details",label:"학교·과정 및 비고",type:"textarea",req:true}],approvalType:"hierarchy"},
+  {id:"tpl-welfare-medical",name:"의료비 신청",category:"welfare",icon:"🩺",builtin:true,
+   fields:[{key:"welfarePolicyId",label:"지원 유형",type:"select",opts:[],req:true},{key:"treatmentDate",label:"진료일",type:"date",req:true,help:"지원 한도는 진료일이 속한 연도를 기준으로 계산합니다."},{key:"patientRelation",label:"환자와의 관계",type:"select",opts:["본인","배우자","자녀","부모","기타 가족"],req:true},{key:"patientName",label:"환자 이름",type:"text",req:true,placeholder:"예: 홍길동"},{key:"medicalProvider",label:"의료기관",type:"text",req:true,placeholder:"예: 서울대학교병원"},{key:"requestedAmount",label:"신청 금액(원)",type:"number",req:true,placeholder:"예: 350000"},{key:"receiptNote",label:"증빙",type:"text",req:true,placeholder:"예: 진료비 영수증·세부내역서 첨부"},{key:"details",label:"진료 내용 및 비고",type:"textarea",req:true,placeholder:"예: 외래 진료 및 검사비"}],approvalType:"hierarchy"},
+  {id:"tpl-welfare-loan",name:"사내대출 신청",category:"welfare",icon:"💴",builtin:true,
+   fields:[{key:"welfarePolicyId",label:"대출 유형",type:"select",opts:[],req:true},{key:"loanDate",label:"희망 대출일",type:"date",req:true},{key:"requestedAmount",label:"신청 금액(원)",type:"number",req:true,placeholder:"예: 10000000"},{key:"repaymentMonths",label:"상환 기간(개월)",type:"number",req:true,placeholder:"예: 24"},{key:"firstDeductionMonth",label:"첫 급여 공제월",type:"month",req:true,help:"승인 후 이 월부터 원금과 이자가 급여에서 자동 공제됩니다."},{key:"purpose",label:"대출 목적",type:"textarea",req:true,placeholder:"예: 주거 보증금 마련"}],approvalType:"hierarchy"},
   {id:"tpl-vendor-reg",name:"거래처 등록",category:"general",icon:"🏢",builtin:true,
    fields:[{key:"vendorName",label:"거래처명",type:"text",req:true},{key:"bizNo",label:"사업자등록번호",type:"text",req:false},{key:"ceoName",label:"대표자명",type:"text",req:true},{key:"contactName",label:"담당자명",type:"text",req:true},{key:"phone",label:"연락처",type:"text",req:true},{key:"email",label:"이메일",type:"text",req:true},{key:"address",label:"회사주소",type:"text",req:true},{key:"reason",label:"등록 사유",type:"textarea",req:true},{key:"attachNote",label:"첨부 파일명 (재무제표/신용평가서/사업자등록증/통장사본)",type:"text",req:false}],approvalType:"vendor_reg"}
 ];
@@ -14714,6 +14731,8 @@ function _getDocTitle(tplId,fd){
   if(tplId==="tpl-expense")return`경비 지출 신청 (${fd.expenseDate||""} ${fd.expenseType||""} ${fd.amount||""}원)`;
   if(tplId==="tpl-welfare-condolence")return`경조금 신청: ${fd.policyName||"복리후생"} (${Number(fd.requestedAmount||0).toLocaleString()}원)`;
   if(tplId==="tpl-welfare-tuition")return`학자금 신청: ${fd.policyName||"복리후생"} (${Number(fd.requestedAmount||0).toLocaleString()}원)`;
+  if(tplId==="tpl-welfare-medical")return`의료비 신청: ${fd.patientName||fd.policyName||"의료비"} (${Number(fd.requestedAmount||0).toLocaleString()}원)`;
+  if(tplId==="tpl-welfare-loan")return`사내대출 신청: ${fd.policyName||"사내대출"} (${Number(fd.requestedAmount||0).toLocaleString()}원)`;
   return fd.docTitle||getTpl(tplId)?.name||"결재 문서";
 }
 function approveApprovalDoc(docId,comment){
@@ -14905,7 +14924,7 @@ function _setAttRec(empId,date,status,note){
   else{attendanceRecords.push({id:`att-${empId}-${date}`,empId,date,checkIn:"",checkOut:"",status,note,updatedAt:new Date().toISOString()});}
 }
 function _welfarePolicyForTemplate(tplId,policyId){
-  const group=tplId==="tpl-welfare-condolence"?"condolence":tplId==="tpl-welfare-tuition"?"tuition":"";
+  const group={"tpl-welfare-condolence":"condolence","tpl-welfare-tuition":"tuition","tpl-welfare-medical":"medical","tpl-welfare-loan":"loan"}[tplId]||"";
   return(settings.welfarePolicies||[]).find(p=>String(p.id)===String(policyId)&&p.group===group&&p.enabled!==false);
 }
 function _serviceMonths(emp,asOf=new Date()){
@@ -14914,17 +14933,36 @@ function _serviceMonths(emp,asOf=new Date()){
   return Math.max(0,(asOf.getFullYear()-start.getFullYear())*12+(asOf.getMonth()-start.getMonth())-(asOf.getDate()<start.getDate()?1:0));
 }
 function _applyWelfareApproval(doc){
-  if(!["tpl-welfare-condolence","tpl-welfare-tuition"].includes(doc.templateId))return;
-  if(payrollAdjustments.some(a=>String(a.sourceDocId)===String(doc.id)))return;
+  if(!["tpl-welfare-condolence","tpl-welfare-tuition","tpl-welfare-medical","tpl-welfare-loan"].includes(doc.templateId))return;
   const fd=doc.formData||{};if(fd.payrollLinked===false)return;
   const approved=new Date(doc.approvedAt||doc.updatedAt||Date.now()),amount=Number(fd.requestedAmount)||0;if(amount<=0)return;
-  const built=_buildPayrollAdjustment({id:`payadj-welfare-${doc.id}`,empId:doc.authorId,year:approved.getFullYear(),month:approved.getMonth()+1,category:doc.templateId==="tpl-welfare-condolence"?"경조사비":"학자금",amount,note:`${fd.policyName||"복리후생"} · 결재 ${doc.id}`,source:"welfare_approval",sourceDocId:doc.id,createdAt:doc.approvedAt||new Date().toISOString(),taxable:true});
+  if(doc.templateId==="tpl-welfare-loan"){
+    _loanRepaymentSchedule(fd).forEach(row=>{
+      const id=`payadj-welfare-${doc.id}-${row.year}${String(row.month).padStart(2,"0")}`;
+      if(payrollAdjustments.some(a=>String(a.id)===id))return;
+      const built=_buildPayrollAdjustment({id,empId:doc.authorId,year:row.year,month:row.month,category:"사내대출 상환",amount:-row.payment,note:`${fd.policyName||"사내대출"} · ${row.no}/${row.total}회 (원금 ${row.principal.toLocaleString()}원, 이자 ${row.interest.toLocaleString()}원)`,source:"welfare_loan",sourceDocId:doc.id,installmentNo:row.no,principal:row.principal,interest:row.interest,createdAt:doc.approvedAt||new Date().toISOString(),taxable:false});
+      if(built.record)payrollAdjustments.push(built.record);
+    });
+    return;
+  }
+  const id=`payadj-welfare-${doc.id}`;if(payrollAdjustments.some(a=>String(a.id)===id))return;
+  const category={"tpl-welfare-condolence":"경조사비","tpl-welfare-tuition":"학자금","tpl-welfare-medical":"의료비 지원"}[doc.templateId];
+  const built=_buildPayrollAdjustment({id,empId:doc.authorId,year:approved.getFullYear(),month:approved.getMonth()+1,category,amount,note:`${fd.policyName||"복리후생"} · 결재 ${doc.id}`,source:"welfare_approval",sourceDocId:doc.id,createdAt:doc.approvedAt||new Date().toISOString(),taxable:true});
   if(built.record)payrollAdjustments.push(built.record);
+}
+function _loanRepaymentSchedule(fd){
+  const amount=Math.round(Number(fd.requestedAmount)||0),months=Math.round(Number(fd.repaymentMonths)||0),rate=Math.max(0,Number(fd.interestRate)||0),start=/^\d{4}-\d{2}$/.test(fd.firstDeductionMonth||"")?fd.firstDeductionMonth:"";
+  if(amount<=0||months<=0||!start)return[];
+  const [sy,sm]=start.split("-").map(Number),basePrincipal=Math.floor(amount/months);let remaining=amount;
+  return Array.from({length:months},(_,i)=>{
+    const d=new Date(sy,sm-1+i,1),principal=i===months-1?remaining:basePrincipal,interest=Math.round(remaining*(rate/100)/12),payment=principal+interest;
+    remaining-=principal;return{no:i+1,total:months,year:d.getFullYear(),month:d.getMonth()+1,principal,interest,payment,remaining:Math.max(0,remaining)};
+  });
 }
 function _syncApprovedWelfareAdjustments(){
   if(currentUser?.role!=="admin")return 0;
   let added=0;
-  approvalDocs.filter(d=>d.status==="approved"&&["tpl-welfare-condolence","tpl-welfare-tuition"].includes(d.templateId)).forEach(doc=>{const before=payrollAdjustments.length;_applyWelfareApproval(doc);if(payrollAdjustments.length>before)added++;});
+  approvalDocs.filter(d=>d.status==="approved"&&["tpl-welfare-condolence","tpl-welfare-tuition","tpl-welfare-medical","tpl-welfare-loan"].includes(d.templateId)).forEach(doc=>{const before=payrollAdjustments.length;_applyWelfareApproval(doc);added+=payrollAdjustments.length-before;});
   if(added)autoSaveToServerIfEnabled();
   return added;
 }
@@ -15104,11 +15142,11 @@ function openApprovalForm(tplId){
   const fieldsHtml=tplId==="tpl-vacation"?_vacationFormFieldsHtml():tpl.fields.map(f=>`<div class="fg"><label class="fl">${h(f.label)}${f.req?` <span class="req">*</span>`:""}</label>${
     f.key==="flexOptionId"?`<select class="fc" id="af-${f.key}"><option value="">선택</option>${(settings.flexWorkOptions||[]).map(o=>{const s=_flexOptionSnapshot(o);return`<option value="${h(o.id)}">${h(o.label)} · ${_flexDaysLabel(s.workDays)} · 휴게 ${s.breakMinutes}분</option>`}).join("")}</select>${(settings.flexWorkOptions||[]).length===0?`<div class="fz11" style="color:#dc2626;margin-top:3px">* 관리자가 유연근무 시간 옵션을 먼저 등록해야 신청할 수 있습니다.</div>`:""}`
     :f.key==="compType"?`<select class="fc" id="af-${f.key}"><option value="">선택</option>${(settings.workCompOptions||[]).filter(o=>o.enabled!==false).map(o=>`<option value="${h(o.name)}">${h(o.name)}${Number(o.expiryMonths)>0?` (사용기한 ${o.expiryMonths}개월)`:""}</option>`).join("")}</select>`
-    :f.key==="welfarePolicyId"?`<select class="fc" id="af-${f.key}"><option value="">선택</option>${(settings.welfarePolicies||[]).filter(p=>p.enabled!==false&&p.group===(tplId==="tpl-welfare-condolence"?"condolence":"tuition")).map(p=>`<option value="${h(p.id)}">${h(p.name)} · 한도 ${Number(p.maxAmount||0).toLocaleString()}원 · 근속 ${Number(p.minServiceMonths||0)}개월</option>`).join("")}</select>`
+    :f.key==="welfarePolicyId"?`<select class="fc" id="af-${f.key}"><option value="">선택</option>${(settings.welfarePolicies||[]).filter(p=>p.enabled!==false&&p.group===({"tpl-welfare-condolence":"condolence","tpl-welfare-tuition":"tuition","tpl-welfare-medical":"medical","tpl-welfare-loan":"loan"}[tplId])).map(p=>`<option value="${h(p.id)}">${h(p.name)} · 한도 ${Number(p.maxAmount||0).toLocaleString()}원 · 근속 ${Number(p.minServiceMonths||0)}개월${p.group==="loan"?` · 연 ${Number(p.interestRate||0)}% / 최장 ${Number(p.maxRepaymentMonths||0)}개월`:""}</option>`).join("")}</select>`
     :f.type==="select"?`<select class="fc" id="af-${f.key}"><option value="">선택</option>${(f.opts||[]).map(o=>`<option>${h(o)}</option>`).join("")}</select>`
-    :f.type==="textarea"?`<textarea class="fc" id="af-${f.key}" rows="3"></textarea>`
-    :`<input class="fc" type="${f.type}" id="af-${f.key}">`
-  }</div>`).join("");
+    :f.type==="textarea"?`<textarea class="fc" id="af-${f.key}" rows="3" placeholder="${h(f.placeholder||"")}"></textarea>`
+    :`<input class="fc" type="${f.type}" id="af-${f.key}" placeholder="${h(f.placeholder||"")}">`
+  }${f.help?`<div class="fz11 text-gray" style="margin-top:4px">${h(f.help)}</div>`:""}</div>`).join("");
   const activeEmps=employees.filter(e=>e.active&&e.id!==currentUser.id);
   const chainHtml=`<div class="card" style="margin-top:12px"><div class="card-head"><h4>결재선 ${chain.length>0?`<span class="fz11 text-gray" style="font-weight:400">(자동 설정된 결재선을 수정할 수 있습니다)</span>`:""}</h4></div><div class="card-body"><div id="custom-approvers-list"></div><button class="btn btn-secondary btn-sm" onclick="addCustomApprover()">+ 결재자 추가 (조직도에서 선택)</button></div></div>`;
   _customApprovers=chain.map(a=>({...a}));_afReceivers=[];_afCc=[];window._afAttachments=[];
@@ -15183,11 +15221,25 @@ function previewApprovalForm(tplId){
     if(!fd.startDate||!fd.endDate||fd.endDate<fd.startDate){showToast("유연근무 적용 기간을 확인하세요.","error");return;}
     fd.flexLabel=snap.label;fd.flexSnapshot=snap;
   }
-  if(["tpl-welfare-condolence","tpl-welfare-tuition"].includes(tplId)){
+  if(["tpl-welfare-condolence","tpl-welfare-tuition","tpl-welfare-medical","tpl-welfare-loan"].includes(tplId)){
     const policy=_welfarePolicyForTemplate(tplId,fd.welfarePolicyId),amount=Number(fd.requestedAmount),months=_serviceMonths(currentUser);
     if(!policy){showToast("현재 사용할 수 없는 복리후생 지원 유형입니다.","error");return;}
     if(!Number.isFinite(amount)||amount<=0||amount>Number(policy.maxAmount||0)){showToast(`신청 금액은 1원 이상 ${Number(policy.maxAmount||0).toLocaleString()}원 이하로 입력하세요.`,"error");return;}
     if(months<Number(policy.minServiceMonths||0)){showToast(`이 지원은 근속 ${policy.minServiceMonths}개월 이상부터 신청할 수 있습니다. 현재 ${months}개월입니다.`,"error");return;}
+    if(tplId==="tpl-welfare-medical"){
+      const treatmentYear=Number(String(fd.treatmentDate||"").slice(0,4));
+      if(!treatmentYear){showToast("진료일을 확인하세요.","error");return;}
+      const used=approvalDocs.filter(d=>String(d.authorId)===String(currentUser.id)&&d.templateId==="tpl-welfare-medical"&&["in_progress","approved"].includes(d.status)&&String(d.formData?.treatmentDate||"").startsWith(String(treatmentYear))&&String(d.formData?.welfarePolicyId)===String(policy.id)).reduce((s,d)=>s+(Number(d.formData?.requestedAmount)||0),0);
+      if(used+amount>Number(policy.maxAmount||0)){showToast(`${treatmentYear}년 잔여 의료비 한도는 ${Math.max(0,Number(policy.maxAmount||0)-used).toLocaleString()}원입니다. 진료연도가 다르면 신청서를 나누어 작성하세요.`,"error");return;}
+      fd.benefitYear=treatmentYear;fd.usedAmountBefore=used;fd.remainingAmountAfter=Number(policy.maxAmount||0)-used-amount;
+    }
+    if(tplId==="tpl-welfare-loan"){
+      const repaymentMonths=Number(fd.repaymentMonths),maxMonths=Number(policy.maxRepaymentMonths||60);
+      if(!Number.isInteger(repaymentMonths)||repaymentMonths<1||repaymentMonths>maxMonths){showToast(`상환 기간은 1~${maxMonths}개월로 입력하세요.`,"error");return;}
+      Object.assign(fd,{repaymentMonths,interestRate:Number(policy.interestRate)||0});
+      const schedule=_loanRepaymentSchedule(fd);if(!schedule.length){showToast("첫 급여 공제월과 상환 기간을 확인하세요.","error");return;}
+      Object.assign(fd,{firstPayment:schedule[0].payment,lastPayment:schedule.at(-1).payment,totalRepayment:schedule.reduce((s,r)=>s+r.payment,0)});
+    }
     Object.assign(fd,{requestedAmount:amount,policyName:policy.name,policyGroup:policy.group,policyMaxAmount:Number(policy.maxAmount)||0,payrollLinked:policy.payrollLinked!==false});
   }
   let approvers=_customApprovers.filter(a=>a.empId);
@@ -15819,8 +15871,9 @@ function calcStandardPayslip(emp,year,month){
   const customDeduct=customDeductItemsList.reduce((s,ci)=>s+ci.amount,0);
   // 직원별 급여 조정 항목(경조사비/인센티브/추가금액) — 급여 관리 메뉴에서 입력
   const empAdjustments=payrollAdjustments.filter(a=>String(a.empId)===String(emp.id)&&a.year===year&&a.month===month);
-  const adjustPay=empAdjustments.reduce((s,a)=>s+(a.amount||0),0);
-  const adjustmentPayItemsList=empAdjustments.filter(a=>Number(a.amount)!==0).map(a=>({label:a.category||"급여 조정",amount:Number(a.amount)||0,taxable:a.taxable!==false,sourceId:a.id,source:a.source||"manual",note:a.note||""}));
+  const adjustmentPayItemsList=empAdjustments.filter(a=>Number(a.amount)>0).map(a=>({label:a.category||"급여 조정",amount:Number(a.amount)||0,taxable:a.taxable!==false,sourceId:a.id,source:a.source||"manual",note:a.note||""}));
+  const adjustmentDeductItemsList=empAdjustments.filter(a=>Number(a.amount)<0).map(a=>({label:a.category||"급여 공제",amount:Math.abs(Number(a.amount)||0),sourceId:a.id,source:a.source||"manual",note:a.note||""}));
+  const adjustPay=adjustmentPayItemsList.reduce((s,a)=>s+a.amount,0),adjustDeduct=adjustmentDeductItemsList.reduce((s,a)=>s+a.amount,0);
   // 시급 및 연장근무 계산 (월 소정근로시간 209시간 기준, 근로기준법) — 임원(상무 이상)은 연장근로수당 미지급
   const standardMonthlyHours=209;
   const hourlyWage=Math.round(monthly/standardMonthlyHours);
@@ -15857,7 +15910,7 @@ function calcStandardPayslip(emp,year,month){
   else if(taxableIncome>=3000000)tax=Math.round(taxableIncome*0.06);
   else tax=Math.round(taxableIncome*0.02);
   const localTax=Math.round(tax*0.1);
-  const totalDeduct=pension+health+care+employ+tax+localTax+customDeduct;
+  const totalDeduct=pension+health+care+employ+tax+localTax+customDeduct+adjustDeduct;
   const deductItems=[
     {label:"국민연금 (4.5%)",amount:pension},
     {label:"건강보험 (3.545%)",amount:health},
@@ -15866,13 +15919,14 @@ function calcStandardPayslip(emp,year,month){
     {label:"소득세",amount:tax},
     {label:"지방소득세(주민세) (10%)",amount:localTax},
     ...customDeductItemsList.filter(ci=>ci.amount>0),
+    ...adjustmentDeductItemsList,
   ];
   // id is deterministic (emp+year+month, matching the uniqueness the callers
   // already enforce via findIndex/find on those 3 fields) — payslips is a
   // server-side ID_KEYED_LIST_FIELD (merged by `id`); a record with no id is
   // silently dropped by that merge instead of being kept (see _setAttRec for
   // the same bug/fix on attendanceRecords).
-  return{id:`payslip-${emp.id}-${year}-${month}`,empId:emp.id,year,month,gross,monthly,meal,transport,researchAllow,posAllow,customPay,customDeduct,adjustPay,adjustItems:empAdjustments,
+  return{id:`payslip-${emp.id}-${year}-${month}`,empId:emp.id,year,month,gross,monthly,meal,transport,researchAllow,posAllow,customPay,customDeduct,adjustPay,adjustDeduct,adjustItems:empAdjustments,
     payItems,deductItems,taxableIncome,
     standardMonthlyHours,hourlyWage,overtimeHourlyWage,stdDailyHours,regularHours,overtimeHours,overtimeAllowance,
     pension,health,care,employ,tax,localTax,totalDeduct,netPay:gross-totalDeduct,confirmed:false,confirmedAt:null,updatedAt:new Date().toISOString()};
@@ -27473,7 +27527,9 @@ function renderWelfareStatusPage(){
   const hcDone=healthCheckupLog.find(l=>String(l.empId)===String(u.id)&&l.year===yr);
   const policies=(settings.welfarePolicies||[]).filter(p=>p.enabled!==false);
   const serviceMonths=_serviceMonths(u);
-  const myWelfareDocs=approvalDocs.filter(d=>String(d.authorId)===String(u.id)&&["tpl-welfare-condolence","tpl-welfare-tuition"].includes(d.templateId)).sort((a,b)=>String(b.createdAt).localeCompare(String(a.createdAt)));
+  const welfareTplIds=["tpl-welfare-condolence","tpl-welfare-tuition","tpl-welfare-medical","tpl-welfare-loan"];
+  const groupMeta={condolence:{icon:"🌷",label:"경조금"},tuition:{icon:"🎓",label:"학자금"},medical:{icon:"🩺",label:"의료비"},loan:{icon:"💴",label:"사내대출"}};
+  const myWelfareDocs=approvalDocs.filter(d=>String(d.authorId)===String(u.id)&&welfareTplIds.includes(d.templateId)).sort((a,b)=>String(b.createdAt).localeCompare(String(a.createdAt)));
 
   c.innerHTML=`
   <div class="card"><div class="card-head"><h3>🩺 종합검진 대상 여부</h3></div><div class="card-body">
@@ -27483,11 +27539,15 @@ function renderWelfareStatusPage(){
       ${hcDone?`<div class="fz12 mt2" style="color:#16a34a">✅ ${h(hcDone.completedAt)} 검진 완료${hcDone.note?` · ${h(hcDone.note)}`:""}</div>`:`<div class="fz12 mt2" style="color:#d97706">⚠ 아직 검진 완료 처리되지 않았습니다.</div>`}
     </div>`:`<div style="padding:14px;background:#f8fafc;border-radius:8px;color:#94a3b8">${yr}년 종합검진 대상자가 아닙니다.${age!==null?` (만 ${age}세)`:""}</div>`}
   </div></div>
-  <div class="card mt3"><div class="card-head"><h3>🎁 경조·학자금 지원 제도</h3><button class="btn btn-primary btn-sm" onclick="gotoPage('approval-draft')">신청하기</button></div><div class="card-body">
-    <div class="fz11 text-gray mb2">현재 근속 ${serviceMonths}개월 기준입니다. 지원 한도는 신청 시 자동 검증되며, 급여 연동 정책은 최종 승인월 급여 조정에 반영됩니다.</div>
-    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:10px">${policies.map(p=>`<div style="border:1px solid ${serviceMonths>=Number(p.minServiceMonths||0)?"#bfdbfe":"#e2e8f0"};border-radius:9px;padding:11px;background:${serviceMonths>=Number(p.minServiceMonths||0)?"#eff6ff":"#f8fafc"}"><div class="fw7 fz13">${p.group==="condolence"?"🌷":"🎓"} ${h(p.name)}</div><div class="fz12 mt1">한도 ${Number(p.maxAmount||0).toLocaleString()}원 · 근속 ${Number(p.minServiceMonths||0)}개월</div><div class="fz11 text-gray mt1">${serviceMonths>=Number(p.minServiceMonths||0)?"신청 가능":"근속요건 미충족"}${p.payrollLinked!==false?" · 급여 연동":""}</div></div>`).join("")||`<div class="fz12 text-gray">등록된 지원 정책이 없습니다.</div>`}</div>
+  <div class="card mt3"><div class="card-head"><h3>🎁 복리후생 지원 제도</h3><button class="btn btn-primary btn-sm" onclick="gotoPage('approval-draft')">신청하기</button></div><div class="card-body">
+    <div class="fz11 text-gray mb2">현재 근속 ${serviceMonths}개월 기준입니다. 의료비는 진료연도별 잔여한도, 대출은 원금균등 방식의 월별 공제액을 신청 단계에서 자동 검증합니다.</div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:10px">${policies.map(p=>{const meta=groupMeta[p.group]||{icon:"🎁",label:"복리후생"};return`<div style="border:1px solid ${serviceMonths>=Number(p.minServiceMonths||0)?"#bfdbfe":"#e2e8f0"};border-radius:9px;padding:11px;background:${serviceMonths>=Number(p.minServiceMonths||0)?"#eff6ff":"#f8fafc"}"><div class="fw7 fz13">${meta.icon} ${h(p.name)}</div><div class="fz12 mt1">한도 ${Number(p.maxAmount||0).toLocaleString()}원 · 근속 ${Number(p.minServiceMonths||0)}개월</div>${p.group==="loan"?`<div class="fz11 mt1">연 ${Number(p.interestRate||0)}% · 최장 ${Number(p.maxRepaymentMonths||60)}개월</div>`:""}<div class="fz11 text-gray mt1">${serviceMonths>=Number(p.minServiceMonths||0)?"신청 가능":"근속요건 미충족"}${p.payrollLinked!==false?" · 급여 연동":""}</div></div>`}).join("")||`<div class="fz12 text-gray">등록된 지원 정책이 없습니다.</div>`}</div>
   </div></div>
-  <div class="card mt3"><div class="card-head"><h3>내 복리후생 신청 내역</h3></div><div class="card-body" style="padding:0">${myWelfareDocs.length?`<div class="tbl-wrap"><table><thead><tr><th>신청일</th><th>지원 유형</th><th>금액</th><th>상태</th></tr></thead><tbody>${myWelfareDocs.map(d=>`<tr><td>${h(String(d.createdAt||"").slice(0,10))}</td><td>${h(d.formData?.policyName||d.title)}</td><td>${Number(d.formData?.requestedAmount||0).toLocaleString()}원</td><td>${badge(d.status==="approved"?"승인":d.status==="rejected"?"반려":"진행중",d.status==="approved"?"green":d.status==="rejected"?"red":"blue")}</td></tr>`).join("")}</tbody></table></div>`:`<div style="padding:20px;text-align:center;color:#94a3b8">신청 내역이 없습니다.</div>`}</div></div>`;
+  <div class="card mt3"><div class="card-head"><h3>내 복리후생 신청 내역</h3><button class="btn btn-secondary btn-sm" onclick="exportMyWelfareCSV()">⬇ CSV</button></div><div class="card-body" style="padding:0">${myWelfareDocs.length?`<div class="tbl-wrap"><table><thead><tr><th>신청일</th><th>구분/지원 유형</th><th>금액</th><th>상환·잔여 정보</th><th>상태</th></tr></thead><tbody>${myWelfareDocs.map(d=>{const fd=d.formData||{},meta=groupMeta[fd.policyGroup]||{label:"복리후생"},loan=d.templateId==="tpl-welfare-loan",schedule=loan?_loanRepaymentSchedule(fd):[],paid=loan?payrollAdjustments.filter(a=>String(a.sourceDocId)===String(d.id)&&a.source==="welfare_loan"&&(`${a.year}-${String(a.month).padStart(2,"0")}`)<=`${yr}-${String(new Date().getMonth()+1).padStart(2,"0")}`).length:0,statusLabel={approved:"승인",rejected:"반려",cancelled:"취소",in_progress:"진행중"}[d.status]||"진행중",statusColor={approved:"green",rejected:"red",cancelled:"gray",in_progress:"blue"}[d.status]||"blue";return`<tr><td>${h(String(d.createdAt||"").slice(0,10))}</td><td><strong>${h(meta.label)}</strong><div class="fz11 text-gray">${h(fd.policyName||d.title)}</div></td><td>${Number(fd.requestedAmount||0).toLocaleString()}원</td><td class="fz11">${loan?`${paid}/${schedule.length}회 · 월 최초 ${Number(fd.firstPayment||0).toLocaleString()}원`:d.templateId==="tpl-welfare-medical"?`${fd.benefitYear||"-"}년 잔여 ${Number(fd.remainingAmountAfter||0).toLocaleString()}원`:"-"}</td><td>${badge(statusLabel,statusColor)}</td></tr>`}).join("")}</tbody></table></div>`:`<div style="padding:20px;text-align:center;color:#94a3b8">신청 내역이 없습니다.</div>`}</div></div>`;
+}
+function exportMyWelfareCSV(){
+  const ids=["tpl-welfare-condolence","tpl-welfare-tuition","tpl-welfare-medical","tpl-welfare-loan"],rows=approvalDocs.filter(d=>String(d.authorId)===String(currentUser.id)&&ids.includes(d.templateId)).map(d=>{const fd=d.formData||{};return[String(d.createdAt||"").slice(0,10),fd.policyGroup||"",fd.policyName||"",fd.patientName||"",fd.treatmentDate||fd.loanDate||"",Number(fd.requestedAmount)||0,fd.repaymentMonths||"",fd.interestRate||"",fd.firstDeductionMonth||"",d.status||""]});
+  dlCSV(`내_복리후생_신청_${new Date().toISOString().slice(0,10)}.csv`,["신청일","구분","지원유형","대상자","기준일","신청금액","상환개월","이율","첫공제월","상태"],rows);
 }
 
 // ==================== 장기근속 포상 (인사 메뉴, 전직원 현황) ====================
@@ -27577,7 +27637,7 @@ function renderWelfareSettingsPage(){
   const yr=new Date().getFullYear();
   if(!settings.healthCheckup)settings.healthCheckup={ageThreshold:40,year:yr,targetIds:[]};
   if(!settings.longServiceAwards)settings.longServiceAwards=[];
-  const tabs=[{id:"health",label:"🩺 종합검진"},{id:"policy",label:"🎁 경조·학자금"},{id:"longservice",label:"🏅 장기근속"},{id:"award",label:"🏆 우수사원"}];
+  const tabs=[{id:"health",label:"🩺 종합검진"},{id:"policy",label:"🎁 복리후생 정책"},{id:"longservice",label:"🏅 장기근속"},{id:"award",label:"🏆 우수사원"}];
   c.innerHTML=`<div class="tabs">${tabs.map(t=>`<button class="tab-btn${_welfareSettingsTab===t.id?" active":""}" onclick="_welfareSettingsTab='${t.id}';renderWelfareSettingsPage()">${t.label}</button>`).join("")}</div><div id="welfare-settings-content"></div>`;
   if(_welfareSettingsTab==="policy")_renderWelfarePolicyTab();
   else if(_welfareSettingsTab==="longservice")_renderWelfareLongServiceTab();
@@ -27587,13 +27647,15 @@ function renderWelfareSettingsPage(){
 function _renderWelfarePolicyTab(){
   const el=$("#welfare-settings-content");if(!el)return;
   if(!Array.isArray(settings.welfarePolicies))settings.welfarePolicies=[];
-  const groups={condolence:"경조금",tuition:"학자금"};
-  el.innerHTML=`<div class="card"><div class="card-head"><div><h3>🎁 경조·학자금 지원 기준</h3><div class="fz11 text-gray">정책별 지원 한도와 최소 근속기간을 설정합니다. 급여 연동 정책은 결재 완료월의 급여 조정에 1회만 반영됩니다.</div></div><button class="btn btn-primary btn-sm" onclick="_addWelfarePolicy()">+ 정책 추가</button></div><div class="card-body" style="padding:0">
-    ${settings.welfarePolicies.length?`<div class="tbl-wrap"><table><thead><tr><th>구분</th><th>지원명</th><th>한도(원)</th><th>최소 근속(개월)</th><th>급여 연동</th><th>사용</th><th>삭제</th></tr></thead><tbody>${settings.welfarePolicies.map((p,i)=>`<tr>
-      <td><select class="fc" onchange="settings.welfarePolicies[${i}].group=this.value;autoSaveDebounced();renderWelfareSettingsPage()"><option value="condolence" ${p.group==="condolence"?"selected":""}>경조금</option><option value="tuition" ${p.group==="tuition"?"selected":""}>학자금</option></select></td>
+  const groups={condolence:"경조금",tuition:"학자금",medical:"의료비",loan:"사내대출"};
+  el.innerHTML=`<div class="card"><div class="card-head"><div><h3>🎁 복리후생 지원 기준</h3><div class="fz11 text-gray">정책별 지원 한도와 최소 근속기간을 설정합니다. 의료비는 진료연도 한도, 대출은 원금균등상환과 월별 이자를 적용합니다.</div></div><button class="btn btn-primary btn-sm" onclick="_addWelfarePolicy()">+ 정책 추가</button></div><div class="card-body" style="padding:0">
+    ${settings.welfarePolicies.length?`<div class="tbl-wrap"><table><thead><tr><th>구분</th><th>지원명</th><th>한도(원)</th><th>최소 근속</th><th>연 이율</th><th>최장 상환</th><th>급여 연동</th><th>사용</th><th>삭제</th></tr></thead><tbody>${settings.welfarePolicies.map((p,i)=>`<tr>
+      <td><select class="fc" onchange="_updateWelfarePolicy(${i},'group',this.value);renderWelfareSettingsPage()">${Object.entries(groups).map(([v,l])=>`<option value="${v}" ${p.group===v?"selected":""}>${l}</option>`).join("")}</select></td>
       <td><input class="fc" value="${h(p.name||"")}" maxlength="40" placeholder="예: 본인 결혼" onchange="_updateWelfarePolicy(${i},'name',this.value)"></td>
       <td><input class="fc" type="number" min="1" max="999999999" value="${Number(p.maxAmount)||0}" placeholder="예: 1000000" onchange="_updateWelfarePolicy(${i},'maxAmount',+this.value)"></td>
       <td><input class="fc" type="number" min="0" max="600" value="${Number(p.minServiceMonths)||0}" placeholder="예: 12" onchange="_updateWelfarePolicy(${i},'minServiceMonths',+this.value)"></td>
+      <td>${p.group==="loan"?`<input class="fc" type="number" min="0" max="100" step="0.01" value="${Number(p.interestRate)||0}" onchange="_updateWelfarePolicy(${i},'interestRate',+this.value)">`:`<span class="text-gray">-</span>`}</td>
+      <td>${p.group==="loan"?`<input class="fc" type="number" min="1" max="360" value="${Number(p.maxRepaymentMonths)||60}" onchange="_updateWelfarePolicy(${i},'maxRepaymentMonths',+this.value)">`:`<span class="text-gray">-</span>`}</td>
       <td style="text-align:center"><input type="checkbox" ${p.payrollLinked!==false?"checked":""} onchange="_updateWelfarePolicy(${i},'payrollLinked',this.checked)"></td>
       <td style="text-align:center"><input type="checkbox" ${p.enabled!==false?"checked":""} onchange="_updateWelfarePolicy(${i},'enabled',this.checked)"></td>
       <td><button class="btn btn-danger btn-sm" onclick="_deleteWelfarePolicy(${i})">삭제</button></td>
@@ -27610,6 +27672,9 @@ function _updateWelfarePolicy(index,key,value){
   if(key==="name"){value=String(value||"").trim();if(!value){showToast("지원명을 입력하세요.","error");renderWelfareSettingsPage();return;}if(settings.welfarePolicies.some((x,i)=>i!==index&&String(x.name||"").trim().toLowerCase()===value.toLowerCase())){showToast("같은 지원명이 이미 등록되어 있습니다.","error");renderWelfareSettingsPage();return;}}
   if(key==="maxAmount"&&(!Number.isFinite(value)||value<1||value>999999999)){showToast("지원 한도는 1~999,999,999원으로 입력하세요.","error");renderWelfareSettingsPage();return;}
   if(key==="minServiceMonths"&&(!Number.isInteger(value)||value<0||value>600)){showToast("최소 근속기간은 0~600개월 정수로 입력하세요.","error");renderWelfareSettingsPage();return;}
+  if(key==="interestRate"&&(!Number.isFinite(value)||value<0||value>100)){showToast("대출 이율은 0~100%로 입력하세요.","error");renderWelfareSettingsPage();return;}
+  if(key==="maxRepaymentMonths"&&(!Number.isInteger(value)||value<1||value>360)){showToast("최장 상환기간은 1~360개월로 입력하세요.","error");renderWelfareSettingsPage();return;}
+  if(key==="group"&&value==="loan"){p.interestRate=Number(p.interestRate)||0;p.maxRepaymentMonths=Number(p.maxRepaymentMonths)||60;}
   p[key]=value;p.updatedAt=new Date().toISOString();autoSaveToServerIfEnabled();
 }
 async function _deleteWelfarePolicy(index){

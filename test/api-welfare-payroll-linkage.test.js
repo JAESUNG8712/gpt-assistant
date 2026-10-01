@@ -72,7 +72,7 @@ test("복리후생(경조금) 신청이 non-admin 결재로 승인 완료되면 
     };
     const adjustment = {
       id: "payadj-welfare-welf-doc-1", empId: "welf-mem-1", year: 2027, month: 3, category: "경조사비",
-      amount: 500000, note: "본인 결혼 · 결재 welf-doc-1", sourceDocId: "welf-doc-1",
+      amount: 500000, note: "본인 결혼 · 결재 welf-doc-1", source: "welfare_approval", sourceDocId: "welf-doc-1",
       createdAt: approvedAt, updatedAt: approvedAt,
     };
     const r = await api("/save", auth(dirToken, "POST", {
@@ -161,6 +161,39 @@ test("복리후생(경조금) 신청이 non-admin 결재로 승인 완료되면 
     assert.ok(d.data.payrollAdjustments.find(a => a.id === "payadj-admin-bonus-1"));
   });
 
+  await t.test("의료비 승인과 대출 상환 일정은 승인문서의 스냅샷과 정확히 일치할 때만 저장된다", async () => {
+    d = await getData(api, adminToken);
+    const baseApprover = [{ empId: "welf-dir-1", label: "사업부장", status: "pending", decidedAt: null, comment: "" }];
+    const medicalDoc = {
+      id: "welf-medical-1", templateId: "tpl-welfare-medical", title: "의료비 신청", authorId: "welf-mem-1",
+      status: "pending", createdAt: approvedAt, updatedAt: approvedAt,
+      formData: { welfarePolicyId: "medical-family", requestedAmount: 300000, policyName: "본인·가족 의료비", treatmentDate: "2027-02-10", payrollLinked: true }, approvers: baseApprover,
+    };
+    const loanDoc = {
+      id: "welf-loan-1", templateId: "tpl-welfare-loan", title: "사내대출 신청", authorId: "welf-mem-1",
+      status: "pending", createdAt: approvedAt, updatedAt: approvedAt,
+      formData: { welfarePolicyId: "employee-loan", requestedAmount: 1000000, repaymentMonths: 2, interestRate: 12, firstDeductionMonth: "2027-05", policyName: "임직원 생활안정 대출", payrollLinked: true }, approvers: baseApprover,
+    };
+    let r = await api("/save", auth(adminToken, "POST", { _version: d.version, approvalDocs: [medicalDoc, loanDoc] }));
+    assert.equal(r.status, 200);
+    d = await getData(api, dirToken);
+    const approve = doc => ({ ...doc, status: "approved", approvedAt, updatedAt: approvedAt, approvers: doc.approvers.map(a => ({ ...a, status: "approved", decidedAt: approvedAt })) });
+    const approvedMedical = approve(d.data.approvalDocs.find(x => x.id === medicalDoc.id));
+    const approvedLoan = approve(d.data.approvalDocs.find(x => x.id === loanDoc.id));
+    const adjustments = [
+      { id: "payadj-welfare-welf-medical-1", empId: "welf-mem-1", year: 2027, month: 3, category: "의료비 지원", amount: 300000, source: "welfare_approval", sourceDocId: medicalDoc.id, createdAt: approvedAt, updatedAt: approvedAt },
+      { id: "payadj-welfare-welf-loan-1-202705", empId: "welf-mem-1", year: 2027, month: 5, category: "사내대출 상환", amount: -510000, principal: 500000, interest: 10000, installmentNo: 1, source: "welfare_loan", sourceDocId: loanDoc.id, createdAt: approvedAt, updatedAt: approvedAt },
+      { id: "payadj-welfare-welf-loan-1-202706", empId: "welf-mem-1", year: 2027, month: 6, category: "사내대출 상환", amount: -505000, principal: 500000, interest: 5000, installmentNo: 2, source: "welfare_loan", sourceDocId: loanDoc.id, createdAt: approvedAt, updatedAt: approvedAt },
+      { id: "payadj-welfare-welf-loan-1-202707", empId: "welf-mem-1", year: 2027, month: 7, category: "사내대출 상환", amount: -1, principal: 1, interest: 0, installmentNo: 3, source: "welfare_loan", sourceDocId: loanDoc.id, createdAt: approvedAt, updatedAt: approvedAt },
+    ];
+    r = await api("/save", auth(dirToken, "POST", { _version: d.version, approvalDocs: [approvedMedical, approvedLoan], payrollAdjustments: adjustments }));
+    assert.equal(r.status, 200);
+    d = await getData(api, adminToken);
+    assert.ok(d.data.payrollAdjustments.find(a => a.id === "payadj-welfare-welf-medical-1"));
+    assert.equal(d.data.payrollAdjustments.filter(a => a.sourceDocId === loanDoc.id).length, 2);
+    assert.equal(d.data.payrollAdjustments.find(a => a.id === "payadj-welfare-welf-loan-1-202707"), undefined);
+  });
+
   await t.test("급여 조정 공통 스키마가 비정상 연월·금액·대상·구분을 저장 직전에 차단한다", async () => {
     const invalidCases = [
       { id: "payadj-invalid-emp", empId: "", year: 2027, month: 4, category: "인센티브", amount: 1 },
@@ -243,7 +276,7 @@ if (!ADMIN_DATABASE_URL) {
     };
     const adjustment = {
       id: "payadj-welfare-pg-welf-doc-1", empId: "pg-welf-mem-1", year: 2027, month: 3, category: "학자금",
-      amount: 1500000, sourceDocId: "pg-welf-doc-1", createdAt: approvedAt, updatedAt: approvedAt,
+      amount: 1500000, source: "welfare_approval", sourceDocId: "pg-welf-doc-1", createdAt: approvedAt, updatedAt: approvedAt,
     };
     r = await api("/save", auth(dirToken, "POST", { _version: d.version, approvalDocs: [approvedDoc], payrollAdjustments: [adjustment] }));
     assert.equal(r.status, 200);
