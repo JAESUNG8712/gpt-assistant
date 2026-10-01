@@ -1996,8 +1996,8 @@ function _validateFieldValues(field, rec, storedList) {
 //    클라이언트가 보낸 adjustmentHistory 내용 자체는 신뢰하지 않는다(_rev처럼 서버 전용).
 function KPI_DEFAULT_STAGES() {
   return [
-    { id: "stage1", label: "1차 평가(팀장)", kind: "team_leader", menuPageId: "first-eval" },
-    { id: "stage2", label: "최종 확정(사업부장)", kind: "dept_director", menuPageId: "second-eval" },
+    { id: "stage1", label: "1차 평가(팀장)", kind: "team_leader", menuPageId: "first-eval", weight: 0 },
+    { id: "stage2", label: "최종 확정(사업부장)", kind: "dept_director", menuPageId: "second-eval", weight: 100 },
   ];
 }
 function _kpiStagesConfig(settings) {
