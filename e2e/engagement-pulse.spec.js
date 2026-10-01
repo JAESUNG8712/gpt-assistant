@@ -32,8 +32,21 @@ test("관리자가 펄스 설문을 개설하고 익명 임계치 집계를 확�
   await page.getByRole("button", { name: "＋ 개선계획" }).click();
   await expect(page.locator("#content").getByRole("heading", { name: "설문 개선계획 작성" })).toBeVisible();
   await page.fill("#pulse-action-title", "매주 월요일 팀 우선순위 공유");
+  await page.selectOption("#pulse-action-driver", "clarity");
+  await page.fill("#pulse-action-metric", "주간 공유율 90% 이상");
   await page.getByRole("button", { name: "개선계획 등록" }).click();
   await expect(page.locator("#content")).toContainText("매주 월요일 팀 우선순위 공유");
   await expect(page.locator("#content")).toContainText("결과 기반 개선계획 (1건)");
+
+  await page.getByRole("button", { name: "상세·점검" }).click();
+  await expect(page.locator("#content").getByRole("heading", { name: "매주 월요일 팀 우선순위 공유" })).toBeVisible();
+  await expect(page.locator("#content")).toContainText("주간 공유율 90% 이상");
+  await page.fill("#pulse-action-progress", "40");
+  await page.fill("#pulse-action-note", "첫 주 우선순위 공유를 완료했습니다.");
+  await page.fill("#pulse-action-next-step", "공유 양식을 더 간단하게 정리합니다.");
+  await page.getByRole("button", { name: "점검 기록 저장" }).click();
+  await expect(page.locator("#content")).toContainText("첫 주 우선순위 공유를 완료했습니다.");
+  await expect(page.locator("#content")).toContainText("진행 중");
+  await expect(page.locator("#content")).toContainText("40%");
   expect(pageErrors).toEqual([]);
 });
