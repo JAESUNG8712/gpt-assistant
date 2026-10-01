@@ -878,8 +878,8 @@ test.describe("로그인·기본 네비게이션", () => {
         {id:"eval-peer",name:"같은 팀 동료",role:"member",dept:"DX",team:"플랫폼",active:true,gradeResults:{"2026":{score:70,grade:"C"}}},
       ];
       kpiEntries=[
-        {id:"k-me",userId:"eval-me",year:2026,goalSub:1,perfSub:0,selfScore:null,firstScore:null,secondScore:null},
-        {id:"k-peer",userId:"eval-peer",year:2026,goalSub:1,perfSub:1,selfScore:70,firstScore:72,secondScore:73},
+        {id:"k-me",userId:"eval-me",year:2026,goalSub:1,perfSub:0,selfScore:null,firstScore:null,secondScore:null,firstComment:"본인에게 보여야 하는 피드백",updatedAt:"2026-09-30T00:00:00.000Z"},
+        {id:"k-peer",userId:"eval-peer",year:2026,goalSub:1,perfSub:1,selfScore:70,firstScore:72,secondScore:73,firstComment:"동료의 비공개 피드백",updatedAt:"2026-09-30T00:00:00.000Z"},
       ];
       compSessions=[];compResponses=[];changeRequests=[];
       Object.assign(settings,{evalYear:2026,kpiGoalStart:"2026-01-01",kpiGoalEnd:"2026-03-31",kpiPerfStart:"2026-04-01",kpiPerfEnd:"2026-12-31",compEvalEnabled:false,leadershipEvalEnabled:false,kpiResultPublished:false});
@@ -887,17 +887,54 @@ test.describe("로그인·기본 네비게이션", () => {
       // 현재 기본 역할표에서 member는 진행현황 메뉴가 숨겨져 있으므로, 컴포넌트를
       // 직접 렌더링해 향후 권한 부여/딥링크 상황에서도 본인 범위가 유지되는지 검증한다.
       render();renderEvalProgressPage();
-      return{scopeIds:scope.map(e=>e.id),nextId:next?.id,current:_evalYearSummary(scope,2026),previous:_evalYearSummary(scope,2025)};
+      return{scopeIds:scope.map(e=>e.id),nextId:next?.id,current:_evalYearSummary(scope,2026),previous:_evalYearSummary(scope,2025),feedback:_evalFeedbackDigest(scope,2026,currentUser)};
     });
     expect(result.scopeIds).toEqual(["eval-me"]);
     expect(result.nextId).toBe("self");
     expect(result.current).toMatchObject({count:1,avg:90,grades:{A:1}});
     expect(result.previous).toMatchObject({count:1,avg:80,grades:{B:1}});
+    expect(result.feedback.map(r=>r.text)).toEqual(["본인에게 보여야 하는 피드백"]);
     await expect(page.locator("#content")).toContainText("본인 기준");
     await expect(page.locator("#content")).toContainText("지금 할 일 · 진행 중");
     await expect(page.locator("#content")).toContainText("역할별 평가 프로세스 맵");
     await expect(page.locator("#content")).toContainText("전년 대비 평가 결과");
+    await expect(page.locator("#content")).toContainText("최근 평가 피드백");
+    await expect(page.locator("#content")).toContainText("본인에게 보여야 하는 피드백");
+    await expect(page.locator("#content")).not.toContainText("동료의 비공개 피드백");
     await expect(page.locator("#content")).not.toContainText("같은 팀 동료");
+  });
+
+  test("다면평가 상세는 대상자와 회사 평균을 비교하고 코멘트 작성자를 익명 처리한다", async ({ page }) => {
+    await page.goto("/");
+    const result=await page.evaluate(() => {
+      currentUser={id:"bench-admin",name:"평가 관리자",role:"admin",active:true,menuPerms:{}};
+      employees=[
+        {id:"bench-target",name:"비교 대상",role:"member",dept:"DX",team:"플랫폼",active:true},
+        {id:"bench-peer",name:"비교 동료",role:"member",dept:"DX",team:"플랫폼",active:true},
+      ];
+      const first=COMP_FORM_ITEMS[0],second=COMP_FORM_ITEMS[1];
+      compSessions=[
+        {id:9101,targetId:"bench-target",year:2026,type:"comp",evaluatorIds:["ev-1"],status:"closed"},
+        {id:9102,targetId:"bench-peer",year:2026,type:"comp",evaluatorIds:["ev-2"],status:"closed"},
+      ];
+      compResponses=[
+        {id:"resp-target",sessionId:9101,targetId:"bench-target",evaluatorId:"ev-1",year:2026,type:"comp",answers:{[first.id]:5,[second.id]:2},strengths:"고객 대응이 탁월함",improvements:"문서화 보완 필요",submittedAt:"2026-09-30T00:00:00.000Z"},
+        {id:"resp-peer",sessionId:9102,targetId:"bench-peer",evaluatorId:"ev-2",year:2026,type:"comp",answers:{[first.id]:3,[second.id]:4},submittedAt:"2026-09-29T00:00:00.000Z"},
+      ];
+      const rows=_compBenchmarkRows(9101),summary=_compBenchmarkSummary(rows);
+      render();openCompDetailModal(9101);
+      return{first:rows.find(r=>r.itemId===first.id),second:rows.find(r=>r.itemId===second.id),summary};
+    });
+    expect(result.first).toMatchObject({targetAvg:5,companyAvg:3,gap:2,responseCount:1});
+    expect(result.second).toMatchObject({targetAvg:2,companyAvg:4,gap:-2,responseCount:1});
+    expect(result.summary.targetAvg).toBe(3.5);
+    expect(result.summary.companyAvg).toBe(3.5);
+    const dialog=page.locator('[role="dialog"][aria-modal="true"]');
+    await expect(dialog).toContainText("회사 평균 비교");
+    await expect(dialog).toContainText("강점 영역");
+    await expect(dialog).toContainText("익명 평가자");
+    await expect(dialog).toContainText("고객 대응이 탁월함");
+    await expect(dialog.getByRole("button",{name:"CSV 다운로드"})).toBeVisible();
   });
 
   test("우수사원 선정 일괄 업로드가 사번 없는 과거 이력을 이름으로 매칭하고 동명이인·매칭실패·선정일 자동입력을 정확히 구분한다", async ({ page }) => {
