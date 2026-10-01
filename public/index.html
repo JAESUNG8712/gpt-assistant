@@ -7333,6 +7333,14 @@ function _evalFeedbackDigest(scope,year,u){
   });
   return rows.sort((a,b)=>String(b.date).localeCompare(String(a.date))).slice(0,8);
 }
+function _evalFeedbackActions(scope,year){
+  const ids=new Set(scope.map(e=>String(e.id))),today=new Date().toISOString().slice(0,10),rows=[];
+  kpiEntries.filter(k=>k.year===year&&ids.has(String(k.userId))).forEach(k=>{
+    const thread=Array.isArray(k.feedbackThread)?k.feedbackThread:[],completed=new Set(thread.filter(m=>m.kind==="completion"&&m.parentId).map(m=>String(m.parentId)));
+    thread.filter(m=>m.kind==="action").forEach(m=>rows.push({id:m.id,kpiId:k.id,target:getEmp(k.userId)?.name||"-",item:k.item||"KPI",text:m.message,dueDate:m.dueDate||"",completed:completed.has(String(m.id)),overdue:!completed.has(String(m.id))&&m.dueDate&&m.dueDate<today}));
+  });
+  return rows.sort((a,b)=>Number(a.completed)-Number(b.completed)||Number(b.overdue)-Number(a.overdue)||String(a.dueDate).localeCompare(String(b.dueDate)));
+}
 function renderEvalProgressPage(){
   const c=$("#content");if(!c)return;
   const year=settings.evalYear;
@@ -7348,6 +7356,7 @@ function renderEvalProgressPage(){
   const process=_evaluationProcess(scope,year,u),nextAction=_evalNextAction(process,u);
   const currentSummary=_evalYearSummary(scope,year),previousSummary=_evalYearSummary(scope,year-1);
   const feedbackDigest=_evalFeedbackDigest(scope,year,u);
+  const feedbackActions=_evalFeedbackActions(scope,year);
   const roleScopeLabel=isAdmin?"전사":isDir?u.dept:u.role==="leader"?`${u.team||u.dept} 팀`:"본인";
   c.innerHTML=`
   <div class="mb3">
@@ -7379,6 +7388,10 @@ function renderEvalProgressPage(){
   <div class="card mb3">
     <div class="card-head"><h3>💬 최근 평가 피드백</h3><span class="fz11 text-gray">${feedbackDigest.length}건 · 다면평가 작성자는 익명 처리</span></div>
     <div class="card-body">${feedbackDigest.length?`<div style="display:grid;gap:8px">${feedbackDigest.map(row=>`<div style="padding:10px 12px;border:1px solid #e2e8f0;border-radius:8px"><div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><span class="badge bg-blue">${h(row.type)}</span><span class="fz11 fw6">${h(row.target)}</span>${row.anonymous?`<span class="fz10 text-gray">익명 평가자</span>`:""}<span class="fz10 text-gray" style="margin-left:auto">${h((row.date||"").slice(0,10)||"-")}</span></div><div class="fz12 mt2" style="white-space:pre-wrap">${h(row.text)}</div></div>`).join("")}</div>`:`<div class="p-empty">표시할 평가 피드백이 없습니다.</div>`}</div>
+  </div>
+  <div class="card mb3">
+    <div class="card-head"><h3>✅ 피드백 실행 약속</h3><span class="fz11 text-gray">진행 ${feedbackActions.filter(a=>!a.completed).length}건 · 완료 ${feedbackActions.filter(a=>a.completed).length}건</span></div>
+    <div class="card-body">${feedbackActions.length?`<div style="display:grid;gap:8px">${feedbackActions.map(a=>`<button type="button" style="width:100%;font:inherit;cursor:pointer;text-align:left;padding:10px 12px;border:1px solid ${a.overdue?"#fecaca":a.completed?"#bbf7d0":"#fde68a"};border-radius:8px;background:${a.overdue?"#fef2f2":a.completed?"#f0fdf4":"#fffbeb"}" onclick="openKpiFeedbackThread(${JSON.stringify(a.kpiId).replace(/"/g,"&quot;")})"><div class="flex items-c gap2 flex-wrap"><span class="badge ${a.completed?"bg-green":a.overdue?"bg-red":"bg-yellow"}">${a.completed?"완료":a.overdue?"기한 초과":"진행 중"}</span><span class="fz11 fw6">${h(a.target)} · ${h(a.item)}</span><span class="fz10 text-gray" style="margin-left:auto">목표 ${h(a.dueDate||"-")}</span></div><div class="fz12 mt2">${h(a.text)}</div></button>`).join("")}</div>`:`<div class="p-empty">등록된 실행 약속이 없습니다. KPI 피드백에서 실행 약속을 추가할 수 있습니다.</div>`}</div>
   </div>
   <!-- KPI 진행 상황 -->
   <div class="card mb3">
@@ -9606,19 +9619,25 @@ function dlKpiCSV(userId,year){const emp=getEmp(userId);dlCSV(`KPI_${emp?.name||
 function _kpiThreadMessagesHtml(k){
   const list=k.feedbackThread||[];
   if(!list.length)return`<div class="text-gray fz12" style="text-align:center;padding:16px">아직 주고받은 피드백이 없습니다.</div>`;
+  const completed=new Set(list.filter(m=>m.kind==="completion"&&m.parentId).map(m=>String(m.parentId)));
   return list.map(m=>{
-    const mine=m.empId===currentUser.id;
+    const mine=String(m.empId)===String(currentUser.id),isAction=m.kind==="action",isCompletion=m.kind==="completion";
+    const actionDone=isAction&&completed.has(String(m.id));
+    const actionMeta=isAction?`<div class="fz10 mt2" style="color:${actionDone?"#15803d":m.dueDate&&m.dueDate<new Date().toISOString().slice(0,10)?"#b91c1c":"#475569"}">${actionDone?"✓ 완료":`기한 ${h(m.dueDate||"-")}`}</div>`:"";
+    const completeBtn=isAction&&!actionDone&&String(k.userId)===String(currentUser.id)?`<button class="btn btn-ghost btn-sm mt2" onclick="completeKpiFeedbackAction(${JSON.stringify(k.id).replace(/"/g,"&quot;")},${JSON.stringify(m.id).replace(/"/g,"&quot;")})">완료 처리</button>`:"";
     return`<div style="display:flex;flex-direction:column;align-items:${mine?"flex-end":"flex-start"};margin-bottom:8px">
       <div class="fz11 text-gray" style="margin-bottom:2px">${h(m.authorName||"-")}${m.role?` (${ROLES[m.role]||h(m.role)})`:""} · ${h(new Date(m.createdAt).toLocaleString("ko-KR"))}</div>
-      <div style="max-width:80%;padding:8px 12px;border-radius:10px;font-size:13px;white-space:pre-wrap;word-break:break-word;background:${mine?"#2563eb":"#f1f5f9"};color:${mine?"#fff":"#1e293b"}">${h(m.message)}</div>
+      <div style="max-width:80%;padding:8px 12px;border-radius:10px;font-size:13px;white-space:pre-wrap;word-break:break-word;background:${isAction?"#fffbeb":isCompletion?"#f0fdf4":mine?"#2563eb":"#f1f5f9"};color:${isAction||isCompletion?"#1e293b":mine?"#fff":"#1e293b"};border:${isAction?"1px solid #f59e0b":isCompletion?"1px solid #22c55e":"0"}">${isAction?'<div class="fz10 fw7 mb1">실행 약속</div>':isCompletion?'<div class="fz10 fw7 mb1">완료 기록</div>':""}${h(m.message)}${actionMeta}${completeBtn}</div>
     </div>`;
   }).join("");
 }
 function openKpiFeedbackThread(id){
   const k=getKpi(id);if(!k)return;
+  const isOwner=String(k.userId)===String(currentUser.id),defaultDue=new Date(Date.now()+7*86400000).toISOString().slice(0,10);
   showModal(`<div class="modal-box" style="max-width:560px"><div class="modal-head"><h3>💬 ${h(k.item)} — 피드백</h3></div>
   <div class="modal-body">
     <div id="kpi-fb-thread" style="max-height:360px;overflow-y:auto;padding:4px">${_kpiThreadMessagesHtml(k)}</div>
+    ${isOwner?`<div class="g2 mt2"><div class="fg"><label class="fl" for="kpi-fb-kind">등록 유형</label><select class="fc" id="kpi-fb-kind" onchange="document.getElementById('kpi-fb-due-wrap').style.display=this.value==='action'?'block':'none'"><option value="message">일반 피드백</option><option value="action">실행 약속</option></select></div><div class="fg" id="kpi-fb-due-wrap" style="display:none"><label class="fl" for="kpi-fb-due">완료 목표일</label><input class="fc" id="kpi-fb-due" type="date" value="${defaultDue}"></div></div>`:""}
     <div class="fg" style="margin-top:10px"><textarea class="fc" id="kpi-fb-input" rows="2" placeholder="평가 기간 중 의견을 자유롭게 남기세요"></textarea></div>
   </div>
   <div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal()">닫기</button><button class="btn btn-primary" onclick="sendKpiFeedback(${id})">보내기</button></div></div>`);
@@ -9631,12 +9650,22 @@ function sendKpiFeedback(id){
   if(text.length>1000){showToast("메시지는 1000자 이내로 입력하세요.","error");return;}
   if(!Array.isArray(k.feedbackThread))k.feedbackThread=[];
   if(k.feedbackThread.length>=200){showToast("피드백 스레드가 가득 찼습니다(최대 200건).","error");return;}
-  k.feedbackThread.push({id:genId(),empId:currentUser.id,authorName:currentUser.name,role:currentUser.role,message:text,createdAt:new Date().toISOString()});
+  const kind=$("#kpi-fb-kind")?.value||"message",dueDate=$("#kpi-fb-due")?.value||"";
+  if(kind==="action"&&!dueDate){showToast("실행 약속의 완료 목표일을 입력하세요.","error");return;}
+  k.feedbackThread.push({id:genId(),empId:currentUser.id,authorName:currentUser.name,role:currentUser.role,message:text,kind,...(kind==="action"?{dueDate}:{}),createdAt:new Date().toISOString()});
   k.updatedAt=new Date().toISOString();
   autoSaveToServerIfEnabled();
   const area=document.getElementById("kpi-fb-thread");
   if(area){area.innerHTML=_kpiThreadMessagesHtml(k);area.scrollTop=area.scrollHeight;}
   const input=$("#kpi-fb-input");if(input)input.value="";
+}
+async function completeKpiFeedbackAction(kpiId,actionId){
+  const k=getKpi(kpiId),action=k?.feedbackThread?.find(m=>String(m.id)===String(actionId)&&m.kind==="action");if(!k||!action)return;
+  if(String(k.userId)!==String(currentUser.id)){showToast("실행 약속은 KPI 본인만 완료할 수 있습니다.","error");return;}
+  if(k.feedbackThread.some(m=>m.kind==="completion"&&String(m.parentId)===String(actionId))){showToast("이미 완료된 실행 약속입니다.","info");return;}
+  const ok=await askConfirmModal({title:"실행 약속 완료",message:"이 실행 약속을 완료로 기록하시겠습니까?",confirmText:"완료 처리",impacts:[{label:"실행 약속",value:action.message},{label:"목표일",value:action.dueDate||"-"}]});if(!ok)return;
+  k.feedbackThread.push({id:genId(),empId:currentUser.id,authorName:currentUser.name,role:currentUser.role,message:`실행 약속 완료: ${action.message}`,kind:"completion",parentId:action.id,createdAt:new Date().toISOString()});
+  k.updatedAt=new Date().toISOString();autoSaveToServerIfEnabled();const area=document.getElementById("kpi-fb-thread");if(area){area.innerHTML=_kpiThreadMessagesHtml(k);area.scrollTop=area.scrollHeight;}showToast("실행 약속을 완료했습니다.","success");
 }
 
 // ==================== APPROVALS ====================

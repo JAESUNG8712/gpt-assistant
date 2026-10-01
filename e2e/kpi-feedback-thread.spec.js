@@ -115,4 +115,39 @@ test.describe("평가 중 수시 피드백 교환(kpiEntries.feedbackThread)", (
 
     expect(pageErrors).toEqual([]);
   });
+
+  test("직원은 피드백을 기한 있는 실행 약속으로 전환하고 완료 상태를 추적한다", async ({ page }) => {
+    const pageErrors = [];
+    page.on("pageerror", (e) => pageErrors.push(e.message));
+    await loginAsAdmin(page);
+    await page.evaluate(() => {
+      settings.evalYear = 2026;
+      employees.push({ id: 9202, empNo: "E9202", name: "실행직원", dept: "개발본부", team: "T1", rank: "사원", active: true, hire: "2024-01-01", hrHistory: [], role: "member", menuPerms: {} });
+      currentUser = { ...currentUser, id: 9202, name: "실행직원", role: "member", dept: "개발본부", team: "T1" };
+      kpiEntries.push({ id: 7004, userId: 9202, year: 2026, item: "고객 응답 개선", weight: 25, firstStatus: "", finalStatus: "", feedbackThread: [] });
+      gotoPage("kpi");
+    });
+
+    await page.locator("#kpi-cards-area button", { hasText: "💬 피드백" }).click();
+    await page.selectOption("#kpi-fb-kind", "action");
+    await expect(page.locator("#kpi-fb-due-wrap")).toBeVisible();
+    await page.fill("#kpi-fb-due", "2026-12-15");
+    await page.fill("#kpi-fb-input", "고객 문의 24시간 내 회신율을 주간 점검하겠습니다.");
+    await page.locator(".modal-ov").last().getByRole("button", { name: "보내기" }).click();
+
+    const thread = page.locator("#kpi-fb-thread");
+    await expect(thread).toContainText("실행 약속");
+    await expect(thread).toContainText("기한 2026-12-15");
+    await thread.getByRole("button", { name: "완료 처리" }).click();
+    await page.locator(".modal-ov").last().getByRole("button", { name: "완료 처리" }).click();
+    await expect(thread).toContainText("✓ 완료");
+    await expect(thread).toContainText("완료 기록");
+
+    await page.locator(".modal-ov").last().getByRole("button", { name: "닫기" }).click();
+    await page.evaluate(() => renderEvalProgressPage());
+    await expect(page.locator("#content")).toContainText("피드백 실행 약속");
+    await expect(page.locator("#content")).toContainText("완료 1건");
+    await expect(page.locator("#content")).toContainText("고객 문의 24시간 내 회신율을 주간 점검하겠습니다.");
+    expect(pageErrors).toEqual([]);
+  });
 });
