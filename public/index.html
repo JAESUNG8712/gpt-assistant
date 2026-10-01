@@ -3342,13 +3342,19 @@ function renderCompEval(){
   const u=currentUser;
   const year=compSelYear;
   const c=$("#content");
-  // Tabs: overview | evaluate | results | manage
+  // Tabs: overview | evaluate | my-team-eval | results | manage
   const isAdmin=u.role==="admin";
+  // Epic B 항목 #9: director(같은 dept)/leader(같은 dept+team)는 admin의 전체 관리 화면
+  // 대신, 자기 하위조직원의 평가자만 조정하는 좁은 전용 탭을 쓴다(세션 일괄생성·결과조회·
+  // 대량 업로드/다운로드는 여전히 admin 전용).
+  const canManageSubordinates=(u.role==="director"||u.role==="leader");
   const pendingCnt=getMyCompSessions(u.id,year).length;
   const tabs=[
     {id:"overview",label:"평가 현황"},
     ...(!isAdmin?[{id:"evaluate",label:`평가 진행${pendingCnt>0?" ("+pendingCnt+")":""}`}]:[]),
+    ...(canManageSubordinates?[{id:"my-team-eval",label:"하위조직원 평가자 조정"}]:[]),
     ...(isAdmin?[
+      {id:"report",label:"📈 통합 리포트"},
       {id:"results",label:"평가 결과 조회"},
       {id:"comp-manage",label:"역량평가 관리"},
       {id:"ls-manage",label:"리더십평가 관리"},
@@ -3363,6 +3369,8 @@ function renderCompEval(){
   <div id="comp-content"></div>`;
   if(compTab==="overview")renderCompOverview(u,year);
   else if(compTab==="evaluate")renderCompEvaluate(u,year);
+  else if(compTab==="my-team-eval"){if(!canManageSubordinates){showToast("권한이 없습니다.","error");compTab="overview";renderCompEval();return;}renderMyTeamEvalManage(u,year);}
+  else if(compTab==="report"){if(u.role!=="admin"){showToast("평가 결과는 관리자만 조회 가능합니다.","error");compTab="overview";renderCompEval();return;}renderCompReport(u,year);}
   else if(compTab==="results"){if(u.role!=="admin"){showToast("평가 결과는 관리자만 조회 가능합니다.","error");compTab="overview";renderCompEval();return;}renderCompResults(u,year);}
   else if(compTab==="comp-manage")renderCompManageByType(u,year,"comp");
   else if(compTab==="ls-manage")renderCompManageByType(u,year,"leadership");
@@ -3476,6 +3484,77 @@ function submitCompResponse(sessionId){
   compSelSessionId=0;renderCompEval();
 }
 
+// Epic B 항목 #11(평가결과 리포트): KPI 등급(employees[].gradeResults)과 역량/리더십 등급
+// (compGradeResults)은 지금까지 완전히 분리된 화면(KPI 등급 현황/역량평가 등급)에서만
+// 각자 조회 가능해, 한 직원의 두 결과를 한눈에 보려면 두 화면을 오가야 했다. 두 저장소를
+// 그대로 둔 채(신규 데이터 모델 없이) 관리자용 "통합 리포트" 탭 하나로 합쳐서 보여준다.
+// _evalYearSummary()(KPI 등급분포, renderEvalProgressPage가 이미 쓰던 함수)와 동일한
+// 모양의 _compYearSummary()를 역량/리더십 쪽에 대해 신설해 두 요약을 나란히 제공한다.
+function _compYearSummary(scope,year){
+  const rows=scope.map(e=>getCompGradeResult(e.id,year)).filter(Boolean);
+  const scores=rows.map(r=>Number(r.score)).filter(Number.isFinite);
+  const grades=rows.reduce((acc,r)=>{const g=String(r.grade||"미정");acc[g]=(acc[g]||0)+1;return acc;},{});
+  return{count:rows.length,avg:scores.length?Math.round(scores.reduce((a,b)=>a+b,0)/scores.length*10)/10:null,grades};
+}
+function renderCompReport(u,year){
+  const el=$("#comp-content");if(!el)return;
+  calcCompGradesForAll(year); // 이미 adjustedBy(확정·수동조정)가 있는 레코드는 건드리지 않는 멱등 함수 — 과거 연도에서 호출해도 안전
+  const deptF=window._crDept||"";
+  let scope=employees.filter(e=>e.active&&e.role!=="admin");
+  if(deptF)scope=scope.filter(e=>e.dept===deptF);
+  const kpiSummary=_evalYearSummary(scope,year),compSummary=_compYearSummary(scope,year);
+  const gradeChips=grades=>Object.keys(grades).length?Object.entries(grades).sort().map(([g,n])=>`<span class="fz11" style="margin-right:8px">${h(g)} ${n}명</span>`).join(""):"확정 결과 없음";
+  const gradeBadge=g=>g?`<span style="display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:50%;font-size:12px;font-weight:800" class="grade-${g}">${h(g)}</span>`:"-";
+  el.innerHTML=`
+  <div class="card mb3"><div class="card-body">
+    <div class="filter-bar">
+      <select class="fc" style="width:160px" onchange="window._crDept=this.value;renderCompReport(currentUser,compSelYear)"><option value="">전체 부서</option>${_dataDepts(deptF).map(d=>`<option${deptF===d?" selected":""}>${h(d)}</option>`).join("")}</select>
+      <span class="fz12 text-gray">총 ${scope.length}명</span>
+      <div style="margin-left:auto"><button class="btn btn-teal btn-sm" onclick="dlEvalReport(${year})">📥 리포트 다운로드(CSV)</button></div>
+    </div>
+  </div></div>
+  <div class="card mb3"><div class="card-head"><h3>📊 ${year}년 평가결과 요약</h3>${deptF?`<span class="fz11 text-gray">${h(deptF)} 기준</span>`:""}</div>
+  <div class="card-body"><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px">
+    <div style="background:#eff6ff;border-radius:10px;padding:12px"><div class="fz11 text-gray">KPI 확정 인원</div><div class="fw7 mt1" style="font-size:20px;color:#1d4ed8">${kpiSummary.count}명</div><div class="fz11 text-gray mt1">평균 ${kpiSummary.avg??"-"}점</div></div>
+    <div style="background:#faf5ff;border-radius:10px;padding:12px"><div class="fz11 text-gray">KPI 등급 분포</div><div class="fz11 mt2">${gradeChips(kpiSummary.grades)}</div></div>
+    <div style="background:#f0fdf4;border-radius:10px;padding:12px"><div class="fz11 text-gray">역량·리더십 확정 인원</div><div class="fw7 mt1" style="font-size:20px;color:#15803d">${compSummary.count}명</div><div class="fz11 text-gray mt1">평균 ${compSummary.avg??"-"}점</div></div>
+    <div style="background:#fff7ed;border-radius:10px;padding:12px"><div class="fz11 text-gray">역량·리더십 등급 분포</div><div class="fz11 mt2">${gradeChips(compSummary.grades)}</div></div>
+  </div></div></div>
+  <div class="card"><div class="card-body" style="padding:0"><div class="tbl-wrap"><table>
+    <thead><tr><th>이름</th><th>소속</th><th>직급</th><th>KPI등급</th><th>KPI점수</th><th>평가구분</th><th>평가점수</th><th>평가등급</th></tr></thead>
+    <tbody>${scope.length?[...scope].sort((a,b)=>(a.name||"").localeCompare(b.name||"","ko")).map(e=>{
+      const kr=(e.gradeResults||{})[String(year)];
+      const cg=getCompGradeResult(e.id,year);
+      const typeLabel=e.role==="director"?"리더십":"역량";
+      return`<tr>
+        <td><strong>${h(e.name)}</strong></td>
+        <td class="fz11 text-gray">${h(e.dept)}/${h(e.team)}</td>
+        <td>${h(e.rank||"-")}</td>
+        <td>${gradeBadge(kr?.grade)}</td>
+        <td class="fw7 text-blue">${kr?.score!=null?kr.score+"점":"-"}</td>
+        <td>${badge(typeLabel,typeLabel==="리더십"?"indigo":"green")}</td>
+        <td class="fw7 text-blue">${cg?.score!=null?cg.score+"점":"-"}</td>
+        <td>${gradeBadge(cg?.grade)}</td>
+      </tr>`;
+    }).join(""):`<tr><td colspan="8" class="text-gray" style="text-align:center;padding:20px">대상자가 없습니다.</td></tr>`}
+    </tbody></table></div></div></div>`;
+}
+function dlEvalReport(year){
+  calcCompGradesForAll(year);
+  const deptF=window._crDept||"";
+  let scope=employees.filter(e=>e.active&&e.role!=="admin");
+  if(deptF)scope=scope.filter(e=>e.dept===deptF);
+  if(!scope.length){showToast("대상자가 없습니다.","info");return;}
+  const rows=[[`${year}년 평가결과 통합 리포트${deptF?`(${deptF})`:""}`],[""]];
+  rows.push(["이름","사번","소속","직급","KPI등급","KPI점수","평가구분","평가점수","평가등급"]);
+  [...scope].sort((a,b)=>(a.name||"").localeCompare(b.name||"","ko")).forEach(e=>{
+    const kr=(e.gradeResults||{})[String(year)];
+    const cg=getCompGradeResult(e.id,year);
+    rows.push([e.name,e.empNo||"",`${e.dept||""}${e.team?"/"+e.team:""}`,e.rank||"",kr?.grade||"-",kr?.score!=null?kr.score+"점":"-",e.role==="director"?"리더십":"역량",cg?.score!=null?cg.score+"점":"-",cg?.grade||"-"]);
+  });
+  dlCSV(`평가결과통합리포트_${year}년${deptF?"_"+deptF:""}.csv`,[],rows);
+  showToast("통합 리포트 다운로드 완료","success");
+}
 function renderCompResults(u,year){
   const el=$("#comp-content");if(!el)return;
   // Show results for sessions user can see
@@ -3671,6 +3750,43 @@ function renderCompManageTbl(year,type){
       </tr>`;
     }).join(""):`<tr><td colspan="10" class="text-gray" style="text-align:center;padding:20px">${q||deptF?"검색 결과가 없습니다.":"대상자가 없습니다."}</td></tr>`}
     </tbody></table></div></div></div>`;
+}
+// Epic B 항목 #9 — 사업부장·팀장의 하위조직원 평가자 조정. admin 전용 "역량평가 관리"/
+// "리더십평가 관리"(renderCompManageByType)와 달리, 세션 일괄생성·전체 결과조회·대량
+// 업로드/다운로드는 포함하지 않고 "평가자 설정"/"⚙ 기준 설정" 두 액션만 자기 하위조직원
+// 범위로 노출한다(서버 _canManageCompSessionTarget과 동일한 조직단위 기준: director=같은
+// dept, leader=같은 dept+team — 피평가자가 director인 리더십평가 대상은 애초에 "하위
+// 조직원"이 아니므로 제외).
+function renderMyTeamEvalManage(u,year){
+  const el=$("#comp-content");if(!el)return;
+  const targets=employees.filter(e=>e.active&&e.id!==u.id&&e.role!=="admin"&&e.role!=="director"&&(
+    u.role==="director"?e.dept===u.dept:(e.dept===u.dept&&e.team===u.team)
+  )).sort((a,b)=>(a.name||"").localeCompare(b.name||"","ko"));
+  const evalYear=settings.compEvalYear;
+  el.innerHTML=`
+  ${settings.compEvalEnabled===false?`<div class="warn-note mb3">⚠ 역량 평가가 현재 <strong>종료</strong> 상태입니다. 평가자 설정은 가능하나 평가 제출은 불가합니다.</div>`:""}
+  <div class="card mb3"><div class="card-body">
+    <div class="info-note">📌 하위조직원의 다면평가 평가자를 직접 조정할 수 있습니다. 세션 일괄 생성·전체 결과 조회·대량 업로드는 관리자만 가능합니다.</div>
+  </div></div>
+  <div class="tbl-wrap"><table><thead><tr><th>이름</th><th>소속</th><th>직급</th><th>직책</th><th>평가자 수</th><th>제출</th><th>관리</th></tr></thead>
+  <tbody>${targets.length?targets.map(e=>{
+    const s=compSessions.find(ss=>ss.targetId===e.id&&ss.year===evalYear);
+    const rCnt=s?compResponses.filter(r=>r.sessionId===s.id&&r.submittedAt).length:0;
+    const total=s?s.evaluatorIds.length:0;
+    return`<tr>
+      <td><div class="flex items-c gap2"><strong>${h(e.name)}</strong>${s?"":" "+badge("세션없음","gray")}${evaluatorConfig[e.id]?badge(evaluatorConfig[e.id].fixedEvaluatorIds?"직접지정":"수 조정","orange"):""}</div></td>
+      <td class="fz11 text-gray">${h(e.dept)}/${h(e.team)}</td>
+      <td>${h(e.rank||"-")}</td>
+      <td>${h(e.position||"-")}</td>
+      <td class="tc">${s?total:badge("미설정","yellow")}</td>
+      <td class="tc">${s?rCnt+"/"+total:"-"}</td>
+      <td><div class="flex gap2">
+        <button class="btn btn-ghost btn-sm" onclick="openPreSessionEvalEdit(${e.id},${evalYear})">평가자 설정</button>
+        <button class="btn btn-secondary btn-sm" onclick="openEvaluatorConfigModal(${e.id},${evalYear})">⚙ 기준 설정</button>
+      </div></td>
+    </tr>`;
+  }).join(""):`<tr><td colspan="7" class="text-gray" style="text-align:center;padding:20px">하위조직원이 없습니다.</td></tr>`}
+  </tbody></table></div>`;
 }
 function createAllCompSessionsByType(year,type){
   const isLs=type==="leadership";
@@ -9339,6 +9455,7 @@ function buildKpiCard(k,selEmp,u,canEdit,isSelf,stageOK,resultsMode){
       ${stageOK&&!resultsMode&&canEdit&&!submitted?`<button class="btn btn-danger btn-sm" onclick="deleteKpi(${k.id})">삭제</button>`:""}
       ${stageOK&&!resultsMode&&submitted&&isSelf?`<button class="btn btn-warning btn-sm" onclick="openKpiReq(${k.id})">수정 요청</button>`:""}
       ${stageOK&&resultsMode&&isSelf?`<button class="btn btn-primary btn-sm" onclick="openKpiResult(${k.id})">결과 입력</button>`:""}
+      ${canEdit?`<button class="btn btn-ghost btn-sm" onclick="openKpiFeedbackThread(${k.id})">💬 피드백${k.feedbackThread?.length?` (${k.feedbackThread.length})`:""}</button>`:""}
     </div>
   </div>
   <div class="kpi-card-body"><div class="g3" style="gap:10px">
@@ -9481,6 +9598,46 @@ function submitKpi(id){
   kpiEntries=kpiEntries.map(ke=>ke.id===id?{...ke,goalSub:1,updatedAt:new Date().toISOString()}:ke);showToast("KPI가 제출되었습니다.","success");logAction("kpi_submitted","KPI 제출","kpi:"+k.userId,`${kpiEntries.filter(ke=>ke.userId===k.userId&&ke.year===k.year&&ke.goalSub).length}건`);autoSaveToServerIfEnabled();renderKPI(false);}
 function deleteKpi(id){_tombstone("kpiEntries",id);kpiEntries=kpiEntries.filter(k=>k.id!==id);autoSaveToServerIfEnabled();showToast("KPI가 삭제되었습니다.","info");renderKPI(false);}
 function dlKpiCSV(userId,year){const emp=getEmp(userId);dlCSV(`KPI_${emp?.name||userId}_${year}.csv`,["KPI항목","비중","전년실적","목표","전년비","전략","평가기준","실적","달성율","세부내용","자체점수","차상위자점수"],kpiEntries.filter(k=>k.userId===userId&&k.year===year).map(k=>[k.item,k.weight+"%",k.prev,k.goal,k.yoy,k.strategy,k.evalCriteria||"",k.actual||"",k.rate||"",k.detail||"",k.selfScore??"",k.ceoScore??""]));}
+// ── 평가 중 수시 피드백 교환(Epic A) ──────────────────────────────
+// 목표 등록~결과 확정까지 평가 기간 전체에 걸쳐 본인과 평가자(팀장/사업부장/관리자)가
+// 공식 점수 입력과 무관하게 자유롭게 의견을 주고받는 스레드. 서버(_sanitizeKpiEntry)가
+// "본인 명의로 끝에 추가만 가능(append-only)"을 강제하므로, 클라이언트는 항상 기존
+// 배열을 그대로 두고 끝에 새 메시지만 push한다 — 과거 메시지 수정·삭제 UI는 없음.
+function _kpiThreadMessagesHtml(k){
+  const list=k.feedbackThread||[];
+  if(!list.length)return`<div class="text-gray fz12" style="text-align:center;padding:16px">아직 주고받은 피드백이 없습니다.</div>`;
+  return list.map(m=>{
+    const mine=m.empId===currentUser.id;
+    return`<div style="display:flex;flex-direction:column;align-items:${mine?"flex-end":"flex-start"};margin-bottom:8px">
+      <div class="fz11 text-gray" style="margin-bottom:2px">${h(m.authorName||"-")}${m.role?` (${ROLES[m.role]||h(m.role)})`:""} · ${h(new Date(m.createdAt).toLocaleString("ko-KR"))}</div>
+      <div style="max-width:80%;padding:8px 12px;border-radius:10px;font-size:13px;white-space:pre-wrap;word-break:break-word;background:${mine?"#2563eb":"#f1f5f9"};color:${mine?"#fff":"#1e293b"}">${h(m.message)}</div>
+    </div>`;
+  }).join("");
+}
+function openKpiFeedbackThread(id){
+  const k=getKpi(id);if(!k)return;
+  showModal(`<div class="modal-box" style="max-width:560px"><div class="modal-head"><h3>💬 ${h(k.item)} — 피드백</h3></div>
+  <div class="modal-body">
+    <div id="kpi-fb-thread" style="max-height:360px;overflow-y:auto;padding:4px">${_kpiThreadMessagesHtml(k)}</div>
+    <div class="fg" style="margin-top:10px"><textarea class="fc" id="kpi-fb-input" rows="2" placeholder="평가 기간 중 의견을 자유롭게 남기세요"></textarea></div>
+  </div>
+  <div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal()">닫기</button><button class="btn btn-primary" onclick="sendKpiFeedback(${id})">보내기</button></div></div>`);
+  const area=document.getElementById("kpi-fb-thread");if(area)area.scrollTop=area.scrollHeight;
+}
+function sendKpiFeedback(id){
+  const k=getKpi(id);if(!k)return;
+  const text=$("#kpi-fb-input")?.value.trim();
+  if(!text){showToast("메시지를 입력하세요.","error");return;}
+  if(text.length>1000){showToast("메시지는 1000자 이내로 입력하세요.","error");return;}
+  if(!Array.isArray(k.feedbackThread))k.feedbackThread=[];
+  if(k.feedbackThread.length>=200){showToast("피드백 스레드가 가득 찼습니다(최대 200건).","error");return;}
+  k.feedbackThread.push({id:genId(),empId:currentUser.id,authorName:currentUser.name,role:currentUser.role,message:text,createdAt:new Date().toISOString()});
+  k.updatedAt=new Date().toISOString();
+  autoSaveToServerIfEnabled();
+  const area=document.getElementById("kpi-fb-thread");
+  if(area){area.innerHTML=_kpiThreadMessagesHtml(k);area.scrollTop=area.scrollHeight;}
+  const input=$("#kpi-fb-input");if(input)input.value="";
+}
 
 // ==================== APPROVALS ====================
 // 평가 단계: 팀원 KPI → 팀원 자체평가 → 팀장 1차 승인+점수 → 사업부장 2차 점수 → 최종확정
@@ -10099,7 +10256,12 @@ function adjustKpiGrade(empId,year,newGrade,reason){
 
 function renderCompGradeView(){
   const u=currentUser;if(u.role!=="admin"){showToast("관리자만 역량평가 등급을 조회할 수 있습니다.","error");gotoPage(EVAL_ONLY_MODE?_evalDefaultPage(u):"dashboard");return;}
-  const year=settings.compEvalYear||settings.evalYear;
+  // 과거시점 평가결과 조회(Epic B #6): compSessions가 실제로 있는 연도 전체 + 현재 설정연도 +
+  // 지금 선택된 연도를 후보로 모아 드롭다운을 구성한다 — KPI 등급 현황(renderGradeView)이
+  // 이미 쓰고 있는 것과 동일한 패턴. calcCompGradesForAll()은 이미 adjustedBy가 있는
+  // 레코드는 건드리지 않는 멱등 함수라 과거 연도에 다시 호출해도 안전하다.
+  const allYrs=[...new Set([...Array.from({length:10},(_,i)=>2020+i).filter(y=>compSessions.some(s=>s.year===y)),settings.compEvalYear,window._cgvYear].filter(Boolean))].sort((a,b)=>b-a);
+  const year=window._cgvYear||settings.compEvalYear||settings.evalYear;
   const c=$("#content");
   calcCompGradesForAll(year);
   let emps=employees.filter(e=>e.active&&e.role!=="admin");
@@ -10113,6 +10275,7 @@ function renderCompGradeView(){
   cgvPager.page=Math.min(cgvPager.page,Math.max(1,Math.ceil(rows.length/cgvPager.pageSize)));window._cgvPage=cgvPager.page;
   c.innerHTML=`<div class="card"><div class="card-body">
     <div class="filter-bar">
+      <select class="fc" style="width:120px" onchange="window._cgvYear=Number(this.value);window._cgvPage=1;renderCompGradeView()">${allYrs.map(y=>`<option value="${y}"${year===y?" selected":""}>${y}년</option>`).join("")}</select>
       <select class="fc" style="width:160px" onchange="window._cgvDept=this.value;renderCompGradeView()"><option value="">전체 부서</option>${_dataDepts(deptF).map(d=>`<option${deptF===d?" selected":""}>${h(d)}</option>`).join("")}</select>
       <select class="fc" style="width:120px" onchange="window._cgvRole=this.value;renderCompGradeView()"><option value="">전체 직위</option><option value="leader"${roleF==="leader"?" selected":""}>팀장</option><option value="member"${roleF==="member"?" selected":""}>팀원</option></select>
       <select class="fc" style="width:120px" onchange="window._cgvGrade=this.value;renderCompGradeView()"><option value="">전체 등급</option>${COMP_GRADE_OPTS.map(g=>`<option value="${g}"${gradeF===g?" selected":""}>${g}등급</option>`).join("")}</select>
@@ -10176,7 +10339,7 @@ function saveAdjustGrade(type,empId,year){
   if(type==="comp")renderCompGradeView(); else renderGradeView();
 }
 function dlCompGrades(){
-  const year=settings.compEvalYear||settings.evalYear;
+  const year=window._cgvYear||settings.compEvalYear||settings.evalYear;
   let emps=employees.filter(e=>e.active&&e.role!=="admin");
   const deptF=window._cgvDept||"";const roleF=window._cgvRole||"";const gradeF=window._cgvGrade||"";
   if(deptF)emps=emps.filter(e=>e.dept===deptF);

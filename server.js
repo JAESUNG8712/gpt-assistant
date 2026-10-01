@@ -517,11 +517,32 @@ function preserveServerOwnedStateForNonAdmin(incoming, stored, actor) {
       out.recordTombstones = mergeRecordTombstones(stored?.recordTombstones, incoming.recordTombstones);
     } else if (key === "roomReservationTombstones") {
       out.roomReservationTombstones = mergeTombstones(stored?.roomReservationTombstones, incoming.roomReservationTombstones);
+    } else if (key === "evaluatorConfig") {
+      // Epic B 항목 #9: evaluatorConfig(다면평가 평가자 지정 기준, {targetId:{...}})도 다른
+      // SINGLETON_FIELDS처럼 non-admin 전체 되돌림 대상이었다 — 그래서 director/leader의
+      // 자기 하위조직원 평가자 조정 자기서비스가 구조적으로 불가능했다(막혀있던 것이지
+      // 뚫려있던 것이 아니다). _canManageCompSessionTarget과 동일한 조직단위 기준으로,
+      // 키(targetId) 단위로만 허용한다 — 권한 밖 키는 항상 저장본을 유지.
+      out.evaluatorConfig = _mergeEvaluatorConfigForActor(incoming.evaluatorConfig, stored?.evaluatorConfig, actor, stored?.employees);
     } else if (Object.prototype.hasOwnProperty.call(stored || {}, key)) {
       out[key] = stored[key];
     } else {
       delete out[key];
     }
+  }
+  return out;
+}
+function _mergeEvaluatorConfigForActor(incoming, stored, actor, employeesList) {
+  const storedCfg = (stored && typeof stored === "object") ? stored : {};
+  if (!actor || (actor.role !== "director" && actor.role !== "leader") || !_menuPermsAllow("comp-eval", actor)) return storedCfg;
+  const incomingCfg = (incoming && typeof incoming === "object") ? incoming : {};
+  const list = employeesList || [];
+  const actorEmp = list.find(e => String(e.id) === String(actor.empId));
+  if (!actorEmp) return storedCfg;
+  const out = { ...storedCfg };
+  for (const targetId of Object.keys(incomingCfg)) {
+    const targetEmp = list.find(e => String(e.id) === String(targetId));
+    if (_canManageCompSessionTarget(actor, actorEmp, targetEmp)) out[targetId] = incomingCfg[targetId];
   }
   return out;
 }
@@ -1473,10 +1494,28 @@ function _welfareAdjustmentMatchesApprovedDoc(rec, doc) {
   const expectedCategory = {"tpl-welfare-condolence":"경조사비","tpl-welfare-tuition":"학자금","tpl-welfare-medical":"의료비 지원"}[doc.templateId];
   return rec.source === "welfare_approval" && rec.category === expectedCategory;
 }
+// 다면평가 평가자 지정(compSessions 레코드 생성/수정, evaluatorConfig 싱글톤 키별 조정)을
+// 누가 할 수 있는지 판정하는 공용 규칙(Epic B 항목 #9 — "사업부장·팀장의 하위조직원 평가자
+// 조정"). 지금까지 compSessions는 _WRITE_GATED_FIELDS에 admin 전용(pageIds:"eval-ops")으로만
+// 등록돼 있어, director/leader가 자기 하위조직원의 평가자를 스스로 조정할 방법이 구조적으로
+// 없었다(기존 "역량평가 관리"/"리더십평가 관리" 탭 자체가 admin에게만 보임). kpiEntries의
+// director/leader 승인 범위(_sanitizeKpiEntry의 canFirst/canFinal)와 동일한 조직단위
+// 기준(director=같은 dept, leader=같은 dept+team)으로 admin 외에도 허용한다.
+function _canManageCompSessionTarget(actor, actorEmp, targetEmp) {
+  if (!actor) return false;
+  if (actor.role === "admin") return true;
+  if (!actorEmp || !targetEmp) return false;
+  if (actor.role === "director") return targetEmp.dept === actorEmp.dept;
+  if (actor.role === "leader") return targetEmp.dept === actorEmp.dept && targetEmp.team === actorEmp.team;
+  return false;
+}
 // 반환값: 저장할 레코드, 또는 null(= 이 레코드는 아예 쓰지 않음 — 권한 없이 새로 만들어진 것)
 // approvalDocForGate: field==="payrollAdjustments"이고 신규 레코드(!stored)일 때만 쓰이는,
 // 호출부가 미리 조회해둔 그 sourceDocId의(이미 _sanitizeApprovalDoc을 거친) 결재문서.
-function _sanitizeGatedRecord(field, incoming, stored, actor, actorEmp, settings, approvalDocForGate) {
+// targetEmp: field==="compSessions"일 때만 쓰이는, 호출부가 미리 조회해둔 incoming.targetId의
+// 직원 레코드(_canManageCompSessionTarget 판정용 — JSON모드는 _fileStore.employees에서,
+// Postgres모드는 별도 쿼리로 동일하게 조회해 호출부가 넘겨준다).
+function _sanitizeGatedRecord(field, incoming, stored, actor, actorEmp, settings, approvalDocForGate, targetEmp) {
   const rule = _APPROVAL_GATED_FIELDS[field];
   if (!rule || !incoming) return incoming;
   // payrollAdjustments는 admin 전용 필드지만, 복리후생 신청이 승인 완료되는
@@ -1542,6 +1581,18 @@ function _sanitizeGatedRecord(field, incoming, stored, actor, actorEmp, settings
   // 서버에는 없었음). role 위조가 아니라 확정 후 데이터 무결성을 지키는 것이 목적이라
   // _WRITE_GATED_FIELDS의 role/menuPerms 게이팅과 독립적으로 항상 적용한다.
   if (field === "payslips" && stored?.confirmed) return { ...stored };
+  // compSessions: _WRITE_GATED_FIELDS 상의 기본 규칙(admin, pageIds:"eval-ops")보다 먼저
+  // 평가한다 — director/leader는 "eval-ops"(admin 전용 화면) 메뉴 권한이 아니라 이미
+  // 갖고 있는 "comp-eval" 메뉴 권한을 기준으로, 자기 하위조직원(targetEmp)에 한해서만
+  // 허용한다(_canManageCompSessionTarget 주석 참고).
+  if (field === "compSessions") {
+    if (stored && JSON.stringify(stored) === JSON.stringify(incoming)) return incoming;
+    const pageOk = actor && actor.role === "admin"
+      ? _menuPermsAllow("eval-ops", actor)
+      : _menuPermsAllow("comp-eval", actor);
+    if (pageOk && _canManageCompSessionTarget(actor, actorEmp, targetEmp)) return incoming;
+    return stored ? { ...stored } : null;
+  }
   if (rule.record) {
     // 바뀌지 않은 레코드는 그대로 통과(매 저장마다 전체 배열이 재전송되므로 대부분이 여기).
     if (stored && JSON.stringify(stored) === JSON.stringify(incoming)) return incoming;
@@ -1834,6 +1885,37 @@ function _sanitizeKpiEntry(incoming, stored, actor, actorEmp, empById) {
       cloneOnce();
       out.finalConfirmed = stored?.finalConfirmed || false;
       out.finalScore = stored?.finalScore ?? null;
+    }
+  }
+  // 평가 중 수시 피드백 교환(Epic A, feedbackThread) — 목표 등록~결과 확정 전 기간 동안
+  // 본인과 평가자(같은 dept+team의 leader, 같은 dept의 director)가 자유롭게 주고받는
+  // 메시지 스레드. 다른 필드들과 달리 "누가 바꿀 수 있는가"뿐 아니라 "어떻게 바꿀 수
+  // 있는가"도 제한한다 — 과거 메시지를 수정·삭제하거나 남의 명의로 메시지를 심는 것은
+  // 항상 금지하고, 오직 "자기 명의로 끝에 새 메시지를 추가"만 허용한다(append-only).
+  const canFeedback = actor.role === "admin" || isOwner ||
+    (actor.role === "leader" && actorEmp && ownerEmp && ownerEmp.dept === actorEmp.dept && ownerEmp.team === actorEmp.team) ||
+    (actor.role === "director" && actorEmp && ownerEmp && ownerEmp.dept === actorEmp.dept);
+  const storedThread = Array.isArray(stored?.feedbackThread) ? stored.feedbackThread : [];
+  const incomingThreadRaw = incoming.feedbackThread;
+  if (incomingThreadRaw !== undefined || storedThread.length) {
+    const incomingThread = Array.isArray(incomingThreadRaw) ? incomingThreadRaw : [];
+    // id만 비교하면 "같은 id인데 내용(message 등)만 바꿔치기"하는 변조를 놓친다 — 과거
+    // 메시지 구간은 반드시 완전히 동일한(JSON 직렬화가 일치하는) 객체여야 "그대로 보존"으로
+    // 인정한다.
+    const prefixIntact = incomingThread.length >= storedThread.length &&
+      storedThread.every((m, i) => incomingThread[i] && JSON.stringify(incomingThread[i]) === JSON.stringify(m));
+    const appended = prefixIntact ? incomingThread.slice(storedThread.length) : [];
+    const isValidAppend = canFeedback && prefixIntact &&
+      appended.length > 0 && appended.length <= 20 &&
+      incomingThread.length <= 200 &&
+      appended.every(m => m && typeof m.message === "string" &&
+        m.message.trim().length > 0 && m.message.length <= 1000 &&
+        String(m.empId) === String(actor.empId));
+    const unchanged = incomingThread.length === storedThread.length &&
+      storedThread.every((m, i) => incomingThread[i] && JSON.stringify(incomingThread[i]) === JSON.stringify(m));
+    if (!isValidAppend && !unchanged) {
+      cloneOnce();
+      out.feedbackThread = storedThread;
     }
   }
   return out;
@@ -2130,7 +2212,9 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
           const stored = storedById.get(String(r.id));
           const approvalDocForGate = (gatedField === "payrollAdjustments" && !stored)
             ? _resolveApprovalDocForGate(r.sourceDocId) : null;
-          let out = _sanitizeGatedRecord(gatedField, r, stored, actor, _actorEmpJson, _fileStore.settings, approvalDocForGate);
+          const targetEmpForGate = (gatedField === "compSessions" && r.targetId != null)
+            ? (_fileStore.employees || []).find(e => String(e.id) === String(r.targetId)) || null : null;
+          let out = _sanitizeGatedRecord(gatedField, r, stored, actor, _actorEmpJson, _fileStore.settings, approvalDocForGate, targetEmpForGate);
           // 값 범위·형식 검증(_validateFieldValues 주석 참고) — 권한 검사를 통과한 뒤에도
           // 값 자체가 오염돼 있으면 저장본으로 되돌린다(신규 레코드면 드롭).
           if (out && !_validateFieldValues(gatedField, out, storedList)) out = stored ? { ...stored } : null;
@@ -2482,6 +2566,21 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
       _approvalDocForGateCache.set(key, resolved);
       return resolved;
     };
+    // compSessions의 _canManageCompSessionTarget 판정에 쓸 피평가자(targetId) 직원 레코드.
+    // _getActorEmpPg와 동일한 캐시 패턴 — id별로 한 번만 조회해 재사용한다.
+    const _employeeByIdPgCache = new Map();
+    const _getEmployeeByIdPg = async (id) => {
+      if (id == null) return null;
+      const key = String(id);
+      if (_employeeByIdPgCache.has(key)) return _employeeByIdPgCache.get(key);
+      const { rows } = await client.query(
+        "SELECT data FROM employees WHERE id = $1 AND is_deleted = FALSE AND (company_id = $2 OR company_id IS NULL)",
+        [id, companyId || null]
+      );
+      const resolved = rows.length ? rows[0].data : null;
+      _employeeByIdPgCache.set(key, resolved);
+      return resolved;
+    };
     // 이중예약 검사(_roomReservationConflicts)는 그 회의실의 기존 예약 전체가 필요해
     // 단건 SELECT로는 부족하다 — roomReservations를 실제로 쓸 때만 한 번 조회해 재사용한다.
     let _roomReservationsPg, _roomReservationsPgLoaded = false;
@@ -2530,7 +2629,9 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
           } else if (_APPROVAL_GATED_FIELDS[field]) {
             const approvalDocForGate = (field === "payrollAdjustments" && !storedItem)
               ? await _getApprovalDocForGate(item.sourceDocId) : null;
-            toWrite = _sanitizeGatedRecord(field, item, storedItem, actor, await _getActorEmpPg(), await _getSettingsPg(), approvalDocForGate);
+            const targetEmpForGate = (field === "compSessions" && item.targetId != null)
+              ? await _getEmployeeByIdPg(item.targetId) : null;
+            toWrite = _sanitizeGatedRecord(field, item, storedItem, actor, await _getActorEmpPg(), await _getSettingsPg(), approvalDocForGate, targetEmpForGate);
             if (toWrite === null) continue;   // 권한 없이 새로 만들어진 레코드 — 쓰지 않음
           }
           // 값 범위·형식 검증(_validateFieldValues 주석 참고, JSON모드와 동일 규칙).
