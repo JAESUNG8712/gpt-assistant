@@ -884,7 +884,9 @@ test.describe("로그인·기본 네비게이션", () => {
       compSessions=[];compResponses=[];changeRequests=[];
       Object.assign(settings,{evalYear:2026,kpiGoalStart:"2026-01-01",kpiGoalEnd:"2026-03-31",kpiPerfStart:"2026-04-01",kpiPerfEnd:"2026-12-31",compEvalEnabled:false,leadershipEvalEnabled:false,kpiResultPublished:false});
       const scope=_evalScopeForUser(currentUser),stages=_evaluationProcess(scope,2026,currentUser),next=_evalNextAction(stages,currentUser);
-      render();gotoPage("eval-progress");
+      // 현재 기본 역할표에서 member는 진행현황 메뉴가 숨겨져 있으므로, 컴포넌트를
+      // 직접 렌더링해 향후 권한 부여/딥링크 상황에서도 본인 범위가 유지되는지 검증한다.
+      render();renderEvalProgressPage();
       return{scopeIds:scope.map(e=>e.id),nextId:next?.id,current:_evalYearSummary(scope,2026),previous:_evalYearSummary(scope,2025)};
     });
     expect(result.scopeIds).toEqual(["eval-me"]);
