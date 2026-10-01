@@ -1836,6 +1836,37 @@ function _sanitizeKpiEntry(incoming, stored, actor, actorEmp, empById) {
       out.finalScore = stored?.finalScore ?? null;
     }
   }
+  // 평가 중 수시 피드백 교환(Epic A, feedbackThread) — 목표 등록~결과 확정 전 기간 동안
+  // 본인과 평가자(같은 dept+team의 leader, 같은 dept의 director)가 자유롭게 주고받는
+  // 메시지 스레드. 다른 필드들과 달리 "누가 바꿀 수 있는가"뿐 아니라 "어떻게 바꿀 수
+  // 있는가"도 제한한다 — 과거 메시지를 수정·삭제하거나 남의 명의로 메시지를 심는 것은
+  // 항상 금지하고, 오직 "자기 명의로 끝에 새 메시지를 추가"만 허용한다(append-only).
+  const canFeedback = actor.role === "admin" || isOwner ||
+    (actor.role === "leader" && actorEmp && ownerEmp && ownerEmp.dept === actorEmp.dept && ownerEmp.team === actorEmp.team) ||
+    (actor.role === "director" && actorEmp && ownerEmp && ownerEmp.dept === actorEmp.dept);
+  const storedThread = Array.isArray(stored?.feedbackThread) ? stored.feedbackThread : [];
+  const incomingThreadRaw = incoming.feedbackThread;
+  if (incomingThreadRaw !== undefined || storedThread.length) {
+    const incomingThread = Array.isArray(incomingThreadRaw) ? incomingThreadRaw : [];
+    // id만 비교하면 "같은 id인데 내용(message 등)만 바꿔치기"하는 변조를 놓친다 — 과거
+    // 메시지 구간은 반드시 완전히 동일한(JSON 직렬화가 일치하는) 객체여야 "그대로 보존"으로
+    // 인정한다.
+    const prefixIntact = incomingThread.length >= storedThread.length &&
+      storedThread.every((m, i) => incomingThread[i] && JSON.stringify(incomingThread[i]) === JSON.stringify(m));
+    const appended = prefixIntact ? incomingThread.slice(storedThread.length) : [];
+    const isValidAppend = canFeedback && prefixIntact &&
+      appended.length > 0 && appended.length <= 20 &&
+      incomingThread.length <= 200 &&
+      appended.every(m => m && typeof m.message === "string" &&
+        m.message.trim().length > 0 && m.message.length <= 1000 &&
+        String(m.empId) === String(actor.empId));
+    const unchanged = incomingThread.length === storedThread.length &&
+      storedThread.every((m, i) => incomingThread[i] && JSON.stringify(incomingThread[i]) === JSON.stringify(m));
+    if (!isValidAppend && !unchanged) {
+      cloneOnce();
+      out.feedbackThread = storedThread;
+    }
+  }
   return out;
 }
 // employees 쓰기 권한 위조 방어(2026-08-19 외부 감사 P0-1/P0-2 결합 대응). employees도
