@@ -25476,6 +25476,73 @@ function _toggleOrgHistoryViewer(empId,checked){
   settings.orgHistoryViewers=list;
   autoSaveDebounced();
 }
+// ── 두 시점 조직도 비교 ──────────────────────────────────────
+// _orgEmployeeAtDate()는 이미 임의의 날짜를 인자로 받아(전역 _orgViewDate와 무관하게)
+// 그 시점의 스냅샷을 역산해주므로, 두 날짜 각각에 대해 이 함수를 호출해 비교한다.
+function _orgSnapshotMapAt(dateStr){
+  const map=new Map();
+  employees.forEach(e=>{const s=_orgEmployeeAtDate(e,dateStr);if(s)map.set(e.id,s);});
+  return map;
+}
+function _orgCompareSnapshots(fromDate,toDate){
+  const fromMap=_orgSnapshotMapAt(fromDate),toMap=_orgSnapshotMapAt(toDate);
+  const allIds=new Set([...fromMap.keys(),...toMap.keys()]);
+  const hires=[],departures=[],moved=[],promoted=[],positionChanged=[];
+  allIds.forEach(id=>{
+    const f=fromMap.get(id),t=toMap.get(id);
+    if(!f&&t){hires.push(t);return;}
+    if(f&&!t){departures.push(f);return;}
+    if(f&&t){
+      if(f.dept!==t.dept||(f.team||"")!==(t.team||""))moved.push({emp:t,fromDept:f.dept,fromTeam:f.team||"",toDept:t.dept,toTeam:t.team||""});
+      if((f.rank||"")!==(t.rank||""))promoted.push({emp:t,from:f.rank||"-",to:t.rank||"-"});
+      if((f.position||"")!==(t.position||""))positionChanged.push({emp:t,from:f.position||"(없음)",to:t.position||"(없음)"});
+    }
+  });
+  const countBy=map=>{const c={};map.forEach(e=>{c[e.dept]=(c[e.dept]||0)+1;});return c;};
+  const fromCounts=countBy(fromMap),toCounts=countBy(toMap);
+  const allDepts=[...new Set([...Object.keys(fromCounts),...Object.keys(toCounts)])].sort();
+  const deptDelta=allDepts.map(d=>({dept:d,from:fromCounts[d]||0,to:toCounts[d]||0})).filter(d=>d.from!==d.to);
+  return{fromTotal:fromMap.size,toTotal:toMap.size,hires,departures,moved,promoted,positionChanged,deptDelta};
+}
+function openOrgChartCompareModal(){
+  const today=new Date().toISOString().slice(0,10);
+  showModal(`<div class="modal-box" style="max-width:760px"><div class="modal-head"><h3>📊 두 시점 조직도 비교</h3></div>
+  <div class="modal-body">
+    <div class="text-gray fz12" style="margin-bottom:10px">두 날짜를 선택하면 그 사이 부서별 인원 증감·전보·승진·직책 변동·입퇴사 내역을 정리해 보여줍니다. 저장된 입·퇴사일과 인사발령 이력(hrHistory)을 근거로 역산하므로, 조직도의 "기준일" 기능과 동일한 데이터를 사용합니다.</div>
+    <div class="flex gap2 wrap" style="align-items:flex-end;margin-bottom:12px">
+      <label class="fz12 text-gray">비교 시작일<br><input id="org-cmp-from" class="fc" type="date" max="${today}" style="width:150px"></label>
+      <label class="fz12 text-gray">비교 종료일<br><input id="org-cmp-to" class="fc" type="date" max="${today}" value="${today}" style="width:150px"></label>
+      <button class="btn btn-primary btn-sm" onclick="_orgRunCompare()">비교하기</button>
+    </div>
+    <div id="org-cmp-result"></div>
+  </div>
+  <div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal()">닫기</button></div></div>`);
+}
+function _orgRunCompare(){
+  const from=$("#org-cmp-from")?.value,to=$("#org-cmp-to")?.value;
+  if(!from||!to){showToast("비교할 두 날짜를 모두 선택하세요.","error");return;}
+  if(from>=to){showToast("시작일은 종료일보다 앞선 날짜여야 합니다.","error");return;}
+  const r=_orgCompareSnapshots(from,to);
+  const loc=e=>`${h(e.dept)}${e.team?" / "+h(e.team):""}`;
+  const section=(title,rows,emptyMsg,cols)=>`<div style="margin-top:14px"><div class="fz13" style="font-weight:700;margin-bottom:4px">${title}</div>
+    ${rows.length?`<div class="tbl-wrap"><table><thead><tr>${cols.map(c=>`<th>${h(c)}</th>`).join("")}</tr></thead><tbody>${rows.join("")}</tbody></table></div>`
+    :`<div class="fz12 text-gray" style="padding:8px 0">${h(emptyMsg)}</div>`}</div>`;
+  const deptRows=r.deptDelta.map(d=>{
+    const delta=d.to-d.from;
+    const tag=d.from===0?badge("신설","green"):d.to===0?badge("소멸","red"):"";
+    return`<tr><td>${h(d.dept)} ${tag}</td><td>${d.from}명</td><td>${d.to}명</td><td style="color:${delta>0?"#16a34a":delta<0?"#dc2626":"#94a3b8"}">${delta>0?"+":""}${delta}</td></tr>`;
+  });
+  const html=`
+  <div class="fz12 text-gray" style="margin-bottom:8px">${h(from)} → ${h(to)} · 전체 인원 ${r.fromTotal}명 → ${r.toTotal}명 (${r.toTotal-r.fromTotal>=0?"+":""}${r.toTotal-r.fromTotal}명)</div>
+  ${section("🏢 부서별 인원 증감",deptRows,"부서별 인원 변화가 없습니다.",["부서","시작일 기준","종료일 기준","증감"])}
+  ${section("🔀 전보(부서·팀 이동)",r.moved.map(m=>`<tr><td>${h(m.emp.name)}</td><td>${h(m.fromDept)}${m.fromTeam?" / "+h(m.fromTeam):""}</td><td>${h(m.toDept)}${m.toTeam?" / "+h(m.toTeam):""}</td></tr>`),"전보 내역이 없습니다.",["이름","이전 소속","현재 소속"])}
+  ${section("⬆️ 직급 변동",r.promoted.map(p=>`<tr><td>${h(p.emp.name)}</td><td>${loc(p.emp)}</td><td>${h(p.from)} → ${h(p.to)}</td></tr>`),"직급 변동 내역이 없습니다.",["이름","소속","변동"])}
+  ${section("🎖️ 직책 변동",r.positionChanged.map(p=>`<tr><td>${h(p.emp.name)}</td><td>${loc(p.emp)}</td><td>${h(p.from)} → ${h(p.to)}</td></tr>`),"직책 변동 내역이 없습니다.",["이름","소속","변동"])}
+  ${section("🆕 신규 입사",r.hires.map(e=>`<tr><td>${h(e.name)}</td><td>${loc(e)}</td><td>${h(e.hire||"-")}</td></tr>`),"신규 입사자가 없습니다.",["이름","소속","입사일"])}
+  ${section("🚪 퇴사",r.departures.map(e=>`<tr><td>${h(e.name)}</td><td>${loc(e)}</td><td>${h(e.retireDate||"-")}</td></tr>`),"퇴사자가 없습니다.",["이름","소속","퇴사일"])}
+  `;
+  const target=$("#org-cmp-result");if(target)target.innerHTML=html;
+}
 function openOrgChartHistoryModal(){
   if(!_canViewOrgHistory()){showToast("조직 변경이력은 관리자 및 지정된 인원만 열람할 수 있습니다.","error");return;}
   const TYPE_TAG={dept_add:["부서 추가","green"],dept_remove:["부서 삭제","red"],team_add:["팀 추가","blue"],team_remove:["팀 삭제","yellow"]};
@@ -25584,6 +25651,7 @@ function renderOrgChartPage(){
       <input class="fc" type="date" max="${new Date().toISOString().slice(0,10)}" value="${h(_orgViewDate)}" style="width:145px;height:32px" onchange="_setOrgViewDate(this.value)" aria-label="조직도 기준일">
     </label>
     ${_orgViewDate?`<button class="btn btn-secondary btn-sm" onclick="_setOrgViewDate('')">현재 조직 보기</button>`:""}
+    <button class="btn btn-secondary btn-sm" onclick="openOrgChartCompareModal()">📊 두 시점 비교</button>
     ${isAdmin?`<button class="btn btn-secondary btn-sm" onclick="dlOrgChartExport()">📥 조직도 엑셀 다운로드</button>
     <label class="btn btn-secondary btn-sm" for="orgchart-bulk-upload" style="cursor:pointer">📤 일괄 인사발령 업로드</label>
     <input type="file" id="orgchart-bulk-upload" accept=".csv" style="display:none" onchange="handleOrgChartUpload(this)">`:""}
