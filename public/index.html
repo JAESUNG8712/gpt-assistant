@@ -117,6 +117,7 @@ input,textarea,select,button{font-family:inherit}
 .dash-w-resize-ghost span{background:#3b82f6;color:#fff;font-size:12px;font-weight:700;padding:4px 10px;border-radius:6px;box-shadow:0 4px 10px rgba(0,0,0,.15)}
 .dash-w-newrow-zone{margin:-2px 0 14px;padding:14px;border:2px dashed #cbd5e1;border-radius:12px;text-align:center;font-size:12px;font-weight:600;color:#94a3b8;transition:all .15s}
 .dash-w-newrow-zone.drag-over{border-color:#3b82f6;background:rgba(59,130,246,.06);color:#3b82f6}
+.org-dept-row.drag-over,.org-team-row.drag-over{outline:2px dashed #3b82f6;outline-offset:-2px}
 /* 대시보드 위젯: 카드/항목 클릭 이동 */
 .dash-card-link{cursor:pointer;transition:box-shadow .15s,border-color .15s}
 .dash-card-link:hover{border-color:#93c5fd;box-shadow:0 6px 18px rgba(37,99,235,.12)}
@@ -8509,7 +8510,62 @@ function openEmpDetail(id){
     ${canViewPrivate?buildSalaryHistorySection(e.id):""}
     ${buildKpiHistorySection(e.id)}
   </div>
-  <div class="modal-foot"><button class="btn btn-ghost" onclick="openDownloadModal(${e.id})">📥 다운로드</button><button class="btn btn-secondary" onclick="closeModal()">닫기</button>${currentUser.role==="admin"?`<button class="btn btn-secondary btn-sm" onclick="closeModal();openEduRegModal(${e.id})">📚 교육 등록</button><button class="btn btn-primary" onclick="closeModal();openEmpEdit(${e.id})">수정</button><button class="btn btn-teal" onclick="closeModal();openPastGradeModal(${e.id})">📊 과거 등급 입력</button>`:""}</div></div>`);
+  <div class="modal-foot"><button class="btn btn-ghost" onclick="printHRPersonnelCard(${e.id})">🪪 인사카드 출력</button><button class="btn btn-ghost" onclick="openDownloadModal(${e.id})">📥 다운로드</button><button class="btn btn-secondary" onclick="closeModal()">닫기</button>${currentUser.role==="admin"?`<button class="btn btn-secondary btn-sm" onclick="closeModal();openEduRegModal(${e.id})">📚 교육 등록</button><button class="btn btn-primary" onclick="closeModal();openEmpEdit(${e.id})">수정</button><button class="btn btn-teal" onclick="closeModal();openPastGradeModal(${e.id})">📊 과거 등급 입력</button>`:""}</div></div>`);
+}
+// 인사카드 출력 — 인사기록카드(인적사항/학력·경력/인사발령이력/교육·휴직이력)를 A4 한 장
+// 분량의 정식 서식으로 인쇄. printHRLetter()(개별 발령 건 1장)와 달리 이 직원의 전체
+// 이력을 한 문서로 묶어 인사파일 보관용으로 출력하는 용도. 열람 권한(canViewPrivate)이
+// 없으면 공개 항목만, 있으면 기존 "다운로드"(CSV, 마스킹 없이 원문 출력)와 동일한 기준으로
+// 비공개 항목까지 포함 — 화면상 PII 마스킹(_piiFieldHtml)은 다시보기 클릭이 필요한 상시
+// 노출 방지용이지 "권한자의 명시적 출력 행위" 자체를 막는 장치가 아님(다운로드 기능과 동일 전제).
+function printHRPersonnelCard(empId){
+  const e=getEmp(empId);if(!e)return;
+  const canViewPrivate=_canViewPrivateHR();
+  const co=settings.companyName||"(주)회사";
+  const today=new Date().toISOString().slice(0,10);
+  const fmtDate=s=>s?`${s.slice(0,4)}-${s.slice(5,7)}-${s.slice(8,10)}`:"-";
+  const stampHtml=settings.certStamp?`<img src="${h(settings.certStamp)}" style="width:60px;height:60px;object-fit:contain" alt="직인">`:"(인)";
+  const basicRows=[["성명",e.name],["사번",e.empNo||"-"],["사업장",_workplaceName(e.workplaceId)||"-"],["부서/팀",[e.dept,e.team].filter(Boolean).join(" / ")||"-"],["직급/직책",[e.rank,e.position].filter(Boolean).join(" / ")||"-"],["연락처",e.phone||"-"],["이메일",e.email||"-"],["상태",e.active?"재직":"퇴직"]];
+  const privateRows=canViewPrivate?[["생년월일",fmtDate(e.birth)],["성별",e.gender||"-"],["국적",e.nationality||"내국인"],["입사일",fmtDate(e.hire)],["직군",e.jobGroup||"-"],["최종학력",e.edu||"-"],["학교(졸업)",e.eduSchool||"-"],["총경력",`${e.totalCareer||0}년`],["주소",e.address||"-"]]:[];
+  if(canViewPrivate&&!e.active)privateRows.push(["퇴직일",fmtDate(e.retireDate)],["퇴직사유",e.retireReason||"-"]);
+  const rowHtml=([l,v])=>`<tr><td class="lbl">${h(l)}</td><td class="val" colspan="3">${h(String(v))}</td></tr>`;
+  const twoColRows=(rows)=>{
+    let out="";
+    for(let i=0;i<rows.length;i+=2){
+      const [l1,v1]=rows[i],right=rows[i+1];
+      out+=`<tr><td class="lbl">${h(l1)}</td><td class="val">${h(String(v1))}</td>${right?`<td class="lbl">${h(right[0])}</td><td class="val">${h(String(right[1]))}</td>`:`<td class="lbl"></td><td class="val"></td>`}</tr>`;
+    }
+    return out;
+  };
+  const careerHtml=canViewPrivate&&(e.careers||[]).length?`<div class="sec">과거 경력</div><table class="tbl"><thead><tr><th>회사명</th><th>직위</th><th>기간</th><th>담당업무</th></tr></thead><tbody>${e.careers.map(c=>`<tr><td>${h(c.co||"")}</td><td>${h(c.pos||"")}</td><td>${h(c.start||"")}~${h(c.end||"")}</td><td>${h(c.desc||"")}</td></tr>`).join("")}</tbody></table>`:"";
+  const hrHist=canViewPrivate?[...(Array.isArray(e.hrHistory)?e.hrHistory:[])].sort((a,b)=>a.date.localeCompare(b.date)):[];
+  const histHtml=hrHist.length?`<div class="sec">인사 발령·변동 이력</div><table class="tbl"><thead><tr><th style="width:100px">일자</th><th style="width:100px">구분</th><th>내용</th></tr></thead><tbody>${hrHist.map(hh=>`<tr><td>${h(hh.date)}</td><td>${h(HR_TYPES[hh.type]||hh.type)}</td><td>${h(hh.desc||"")}${hh.before&&hh.after?` (${h(hh.before)} → ${h(hh.after)})`:""}</td></tr>`).join("")}</tbody></table>`:"";
+  const leaveHtml=canViewPrivate&&(e.leaves||[]).length?`<div class="sec">휴직 이력</div><table class="tbl"><thead><tr><th style="width:100px">종류</th><th style="width:200px">기간</th><th>비고</th></tr></thead><tbody>${[...e.leaves].sort((a,b)=>(a.start||"").localeCompare(b.start||"")).map(lv=>`<tr><td>${h(lv.type||"휴직")}</td><td>${h(lv.start||"")} ~ ${h(lv.end||"진행중")}</td><td>${h(lv.note||"")}</td></tr>`).join("")}</tbody></table>`:"";
+  const eduTypes=new Set(["edu_legal","edu_general","edu_external","edu_internal"]);
+  const eduHist=canViewPrivate?(Array.isArray(e.hrHistory)?e.hrHistory:[]).filter(hh=>eduTypes.has(hh.type)).sort((a,b)=>a.date.localeCompare(b.date)):[];
+  const eduHtml=eduHist.length?`<div class="sec">교육 이수 이력</div><table class="tbl"><thead><tr><th style="width:100px">일자</th><th>교육명</th><th style="width:140px">교육기관</th></tr></thead><tbody>${eduHist.map(hh=>`<tr><td>${h(hh.date)}${hh.endDate?" ~ "+h(hh.endDate):""}</td><td>${h(hh.desc||"")}</td><td>${h(hh.institution||hh.note||"-")}</td></tr>`).join("")}</tbody></table>`:"";
+  const printWin=window.open("","_blank","width=850,height=1000");
+  if(!printWin)return;
+  printWin.document.write(`<!DOCTYPE html><html lang="ko"><head><meta charset="UTF-8"><title>인사카드 - ${h(e.name)}</title>
+  <style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:'맑은 고딕','Malgun Gothic',sans-serif;padding:30px;color:#1e293b;font-size:12px}
+  .header{display:flex;justify-content:space-between;align-items:flex-end;border-bottom:3px solid #1e293b;padding-bottom:10px;margin-bottom:16px}
+  .header h1{font-size:22px;font-weight:800;letter-spacing:6px}.header .co{font-size:12px;color:#475569}
+  table.info{width:100%;border-collapse:collapse;margin-bottom:14px}
+  table.info td{border:1px solid #cbd5e1;padding:5px 8px;font-size:11.5px}
+  table.info td.lbl{background:#f1f5f9;font-weight:700;width:90px}
+  table.info td.val{width:calc(50% - 90px)}
+  .sec{font-size:12.5px;font-weight:800;margin:14px 0 6px;padding-bottom:3px;border-bottom:2px solid #334155}
+  table.tbl{width:100%;border-collapse:collapse;margin-bottom:8px}
+  table.tbl th{background:#f1f5f9;border:1px solid #e2e8f0;padding:4px 6px;font-size:11px;text-align:left}
+  table.tbl td{border:1px solid #e2e8f0;padding:4px 6px;font-size:11px}
+  .footer{margin-top:20px;text-align:right;font-size:11px;color:#64748b;display:flex;justify-content:flex-end;align-items:center;gap:8px}
+  @media print{body{padding:14px}}</style></head><body>
+  <div class="header"><h1>인 사 카 드</h1><div class="co">${h(co)}</div></div>
+  <table class="info"><tbody>${twoColRows(basicRows)}${privateRows.length?twoColRows(privateRows):""}</tbody></table>
+  ${careerHtml}${histHtml}${eduHtml}${leaveHtml}
+  <div class="footer"><span>출력일: ${today}</span>${canViewPrivate?`<span style="margin-left:8px">발급: ${h(co)} ${stampHtml}</span>`:""}</div>
+  <scr`+`ipt>window.print();window.close();</scr`+`ipt></body></html>`);
+  printWin.document.close();
 }
 function openEmpEdit(id){
   if(isLockedByOther("emp:"+id)){
@@ -25277,6 +25333,21 @@ function openLeaveDetailModal(empId){
 
 // ==================== ORG CHART (조직도) ====================
 let _orgViewDate="";
+// 조직도 부서/팀 블록의 드래그앤드롭 화면 배치 순서 — settings.orgChartOrder에 영속.
+// 실제 조직 배정(orgDB.depts/teams, employee.dept/team)은 전혀 건드리지 않고
+// 오직 이 화면에서 부서/팀을 보여주는 "순서"만 관리자가 조정하는 용도(Epic A "화면 배치만").
+let _orgDragSrc=null;
+// list: 현재 화면에 실제로 표시된 부서(또는 팀)명 배열, orderArr: settings에 저장된 커스텀 순서.
+// orderArr에 있는 항목은 그 순서대로, 없는 신규 항목은 기존 상대 순서를 유지한 채 뒤에 이어붙는다.
+function _applyOrgChartOrder(list,orderArr){
+  if(!orderArr||!orderArr.length)return list;
+  const idx=new Map(orderArr.map((k,i)=>[k,i]));
+  return list.map((v,i)=>({v,i})).sort((a,b)=>{
+    const ia=idx.has(a.v)?idx.get(a.v):Infinity;
+    const ib=idx.has(b.v)?idx.get(b.v):Infinity;
+    return ia!==ib?ia-ib:a.i-b.i;
+  }).map(x=>x.v);
+}
 function _orgEmployeeAtDate(emp,dateStr){
   if(!dateStr)return emp.active&&emp.role!=="admin"?{...emp}:null;
   if(emp.role==="admin"||(emp.hire&&emp.hire>dateStr)||(emp.retireDate&&emp.retireDate<=dateStr))return null;
@@ -25545,7 +25616,9 @@ function renderOrgChartBody(){
   const q=(_orgSearchQ||"").toLowerCase();
   const filtered=q?active.filter(e=>e.name.toLowerCase().includes(q)||e.dept.toLowerCase().includes(q)||(e.team||"").toLowerCase().includes(q)):active;
   const activeDeptSet=new Set(filtered.map(e=>e.dept));
-  const depts=orgDB.depts.filter(d=>activeDeptSet.has(d)).concat([...activeDeptSet].filter(d=>!orgDB.depts.includes(d)));
+  const depts=_applyOrgChartOrder(orgDB.depts.filter(d=>activeDeptSet.has(d)).concat([...activeDeptSet].filter(d=>!orgDB.depts.includes(d))),settings.orgChartOrder?.depts);
+  window._orgDeptsRendered=depts.slice();
+  window._orgTeamsRendered={};
   const isAdmin=currentUser.role==="admin";
   if(!window._orgCollapsed){
     // 첫 진입 시: 본인 소속 부서/팀만 펼치고 나머지는 모두 접어서 표시
@@ -25563,7 +25636,8 @@ function renderOrgChartBody(){
   depts.forEach(dept=>{
     const deptEmps=filtered.filter(e=>e.dept===dept);
     const teamSet=new Set(deptEmps.filter(e=>e.team).map(e=>e.team));
-    const teams=(orgDB.teams[dept]||[]).filter(t=>teamSet.has(t)).concat([...teamSet].filter(t=>!(orgDB.teams[dept]||[]).includes(t)));
+    const teams=_applyOrgChartOrder((orgDB.teams[dept]||[]).filter(t=>teamSet.has(t)).concat([...teamSet].filter(t=>!(orgDB.teams[dept]||[]).includes(t))),settings.orgChartOrder?.teams?.[dept]);
+    window._orgTeamsRendered[dept]=teams.slice();
     const deptDirectors=deptEmps.filter(e=>e.role==="director");
     const deptCollapsed=isDeptCollapsed(dept);
     treeItems.push({type:"dept",dept,count:deptEmps.length,collapsed:deptCollapsed});
@@ -25582,8 +25656,16 @@ function renderOrgChartBody(){
     _orgSortEmps(noTeam).forEach(m=>treeItems.push({type:"emp",emp:m,indent:2}));
   });
   const treeHtml=treeItems.map(item=>{
-    if(item.type==="dept")return`<div onclick="_orgToggleCollapse('dept:${h(item.dept)}')" style="padding:8px 12px;background:#1e3a8a;color:white;border-radius:6px;margin-bottom:4px;font-size:12px;font-weight:700;cursor:pointer;display:flex;align-items:center;gap:6px"><span style="display:inline-block;width:10px">${item.collapsed?"▸":"▾"}</span>🏢 ${h(item.dept)} <span style="opacity:.7;font-weight:400">(${item.count}명)</span></div>`;
-    if(item.type==="team")return`<div onclick="_orgToggleCollapse('team:${h(item.dept)}:${h(item.team)}')" style="padding:6px 12px 6px ${item.indent*10}px;background:#eff6ff;border-left:2px solid #3b82f6;border-radius:4px;margin-bottom:3px;font-size:11px;font-weight:700;color:#1d4ed8;cursor:pointer;display:flex;align-items:center;gap:6px"><span style="display:inline-block;width:10px">${item.collapsed?"▸":"▾"}</span>👥 ${h(item.team)} <span style="color:#93c5fd;font-weight:400">(${item.count}명)</span></div>`;
+    if(item.type==="dept"){
+      const safeDept=h(item.dept).replace(/'/g,"\\'");
+      const dragAttrs=isAdmin?`draggable="true" ondragstart="_orgDeptDragStart(this,'${safeDept}')" ondragend="_orgDeptDragEnd(this)" ondragover="_orgDeptDragOver(event,this)" ondrop="_orgDeptDrop(event,this,'${safeDept}')"`:"";
+      return`<div class="org-dept-row" ${dragAttrs} onclick="_orgToggleCollapse('dept:${safeDept}')" style="padding:8px 12px;background:#1e3a8a;color:white;border-radius:6px;margin-bottom:4px;font-size:12px;font-weight:700;cursor:pointer;display:flex;align-items:center;gap:6px">${isAdmin?`<span style="cursor:grab;opacity:.6" title="드래그하여 순서 변경">⠿</span>`:""}<span style="display:inline-block;width:10px">${item.collapsed?"▸":"▾"}</span>🏢 ${h(item.dept)} <span style="opacity:.7;font-weight:400">(${item.count}명)</span></div>`;
+    }
+    if(item.type==="team"){
+      const safeDept=h(item.dept).replace(/'/g,"\\'"),safeTeam=h(item.team).replace(/'/g,"\\'");
+      const dragAttrs=isAdmin?`draggable="true" ondragstart="_orgTeamDragStart(this,'${safeDept}','${safeTeam}')" ondragend="_orgTeamDragEnd(this)" ondragover="_orgTeamDragOver(event,this)" ondrop="_orgTeamDrop(event,this,'${safeDept}','${safeTeam}')"`:"";
+      return`<div class="org-team-row" ${dragAttrs} onclick="_orgToggleCollapse('team:${safeDept}:${safeTeam}')" style="padding:6px 12px 6px ${item.indent*10}px;background:#eff6ff;border-left:2px solid #3b82f6;border-radius:4px;margin-bottom:3px;font-size:11px;font-weight:700;color:#1d4ed8;cursor:pointer;display:flex;align-items:center;gap:6px">${isAdmin?`<span style="cursor:grab;opacity:.6" title="드래그하여 순서 변경">⠿</span>`:""}<span style="display:inline-block;width:10px">${item.collapsed?"▸":"▾"}</span>👥 ${h(item.team)} <span style="color:#93c5fd;font-weight:400">(${item.count}명)</span></div>`;
+    }
     if(item.type==="emp"){
       const e=item.emp;
       const isLeader=item.isLeader;
@@ -25654,6 +25736,40 @@ function _orgToggleCollapse(key){
   if(window._orgCollapsed.has(key))window._orgCollapsed.delete(key);
   else window._orgCollapsed.add(key);
   renderOrgChartBody();
+}
+// 조직도 부서 블록 드래그앤드롭 — 화면에 보여지는 순서(settings.orgChartOrder.depts)만 바꾸고
+// 실제 부서 배정(orgDB.depts, employee.dept)은 전혀 수정하지 않는다.
+function _orgDeptDragStart(el,dept){_orgDragSrc={type:"dept",dept};el.style.opacity=".4";}
+function _orgDeptDragEnd(el){el.style.opacity="";document.querySelectorAll(".org-dept-row").forEach(r=>r.classList.remove("drag-over"));}
+function _orgDeptDragOver(e,el){e.preventDefault();document.querySelectorAll(".org-dept-row").forEach(r=>r.classList.remove("drag-over"));el.classList.add("drag-over");}
+function _orgDeptDrop(e,el,dept){
+  e.preventDefault();el.classList.remove("drag-over");
+  const src=_orgDragSrc;_orgDragSrc=null;
+  if(!src||src.type!=="dept"||src.dept===dept)return;
+  const list=[...(window._orgDeptsRendered||[])];
+  const from=list.indexOf(src.dept),to=list.indexOf(dept);
+  if(from<0||to<0)return;
+  const[moved]=list.splice(from,1);list.splice(to,0,moved);
+  settings.orgChartOrder=settings.orgChartOrder||{};
+  settings.orgChartOrder.depts=list;
+  autoSaveDebounced();renderOrgChartBody();
+}
+// 조직도 팀 블록 드래그앤드롭 — 같은 부서 안에서만 순서를 바꾼다(부서 간 이동은 실제 조직개편이라 별개 기능).
+function _orgTeamDragStart(el,dept,team){_orgDragSrc={type:"team",dept,team};el.style.opacity=".4";}
+function _orgTeamDragEnd(el){el.style.opacity="";document.querySelectorAll(".org-team-row").forEach(r=>r.classList.remove("drag-over"));}
+function _orgTeamDragOver(e,el){e.preventDefault();document.querySelectorAll(".org-team-row").forEach(r=>r.classList.remove("drag-over"));el.classList.add("drag-over");}
+function _orgTeamDrop(e,el,dept,team){
+  e.preventDefault();el.classList.remove("drag-over");
+  const src=_orgDragSrc;_orgDragSrc=null;
+  if(!src||src.type!=="team"||src.dept!==dept||src.team===team)return;
+  const list=[...((window._orgTeamsRendered||{})[dept]||[])];
+  const from=list.indexOf(src.team),to=list.indexOf(team);
+  if(from<0||to<0)return;
+  const[moved]=list.splice(from,1);list.splice(to,0,moved);
+  settings.orgChartOrder=settings.orgChartOrder||{};
+  settings.orgChartOrder.teams=settings.orgChartOrder.teams||{};
+  settings.orgChartOrder.teams[dept]=list;
+  autoSaveDebounced();renderOrgChartBody();
 }
 
 // ==================== DASHBOARD ENHANCEMENTS ====================
