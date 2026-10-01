@@ -1086,6 +1086,9 @@ let approvalDelegations=[]; // 결재 위임 [{id,empId,empName,delegateId,deleg
 let mandatoryTraining=[]; // 법정의무교육 이수 [{id,empId,trainingType,year,completedAt,method,note}]
 let healthCheckupLog=[]; // 종합검진 이수 이력 [{id,empId,year,completedAt,note}]
 let scheduleEvents=[]; // 캘린더 일정 [{id,authorId,title,startDate,endDate,scope:"personal"|"team"|"dept"|"company",dept,team,memo,color,createdAt}]
+let engagementSurveys=[]; // 직원 몰입도 펄스 캠페인
+let engagementResponses=[]; // 서버에서는 항상 본인 응답만 내려옴
+let engagementPulseSummary={}; // 서버가 조직 범위·최소 익명 인원 기준으로 만든 집계
 function _recordCollections(){return{
   employees,kpiEntries,compSessions,compResponses,changeRequests,orgChartHistory,
   coreTalentPool,talentDevPlans,successionPlans,jobSkillProfiles,employeeSkillProfiles,workforceScenarios,workforcePositions,positionRequests,gradeAdjustHistory,tieNotifications,lowPerfData,
@@ -1093,7 +1096,7 @@ function _recordCollections(){return{
   yearEndSettlements,
   payrollAdjustments,leaveUsagePlans,boardPosts,roomReservations,certLog,certRequests,
   welfarePoints,mandatoryTraining,healthCheckupLog,scheduleEvents,expenseClaims,
-  overtimeRequests,onboardingFlows,approvalDelegations
+  overtimeRequests,onboardingFlows,approvalDelegations,engagementSurveys,engagementResponses
 };}
 function _applyRecordRevisions(revisions){
   const collections=_recordCollections();
@@ -5366,6 +5369,8 @@ function getFullState(action=""){
       mandatoryTraining:JSON.parse(JSON.stringify(mandatoryTraining)),
       healthCheckupLog:JSON.parse(JSON.stringify(healthCheckupLog)),
       scheduleEvents:JSON.parse(JSON.stringify(scheduleEvents)),
+      engagementSurveys:JSON.parse(JSON.stringify(engagementSurveys)),
+      engagementResponses:JSON.parse(JSON.stringify(engagementResponses)),
       _idCounter:_id
     }
   };
@@ -5596,6 +5601,9 @@ function applyState(state,skipUndo=false){
   if(d.mandatoryTraining&&Array.isArray(d.mandatoryTraining))mandatoryTraining=d.mandatoryTraining;
   if(d.healthCheckupLog&&Array.isArray(d.healthCheckupLog))healthCheckupLog=d.healthCheckupLog;
   if(d.scheduleEvents&&Array.isArray(d.scheduleEvents))scheduleEvents=_mergeByIdPreferNewer(scheduleEvents,d.scheduleEvents,'scheduleEvents');
+  if(d.engagementSurveys&&Array.isArray(d.engagementSurveys))engagementSurveys=_mergeByIdPreferNewer(engagementSurveys,d.engagementSurveys,'engagementSurveys');
+  if(d.engagementResponses&&Array.isArray(d.engagementResponses))engagementResponses=_mergeByIdPreferNewer(engagementResponses,d.engagementResponses,'engagementResponses');
+  engagementPulseSummary=d.engagementPulseSummary&&typeof d.engagementPulseSummary==="object"?d.engagementPulseSummary:{};
   if(d._idCounter&&typeof d._idCounter==="number")_id=d._idCounter;
   if(d.recordTombstones&&typeof d.recordTombstones==="object"){
     const cutoff=Date.now()-30*24*60*60*1000;
@@ -5630,6 +5638,8 @@ function applyState(state,skipUndo=false){
   mandatoryTraining=_tombFilter(mandatoryTraining,"mandatoryTraining");
   healthCheckupLog=_tombFilter(healthCheckupLog,"healthCheckupLog");
   scheduleEvents=_tombFilter(scheduleEvents,"scheduleEvents");
+  engagementSurveys=_tombFilter(engagementSurveys,"engagementSurveys");
+  engagementResponses=_tombFilter(engagementResponses,"engagementResponses");
   expenseClaims=_tombFilter(expenseClaims,"expenseClaims");
   overtimeRequests=_tombFilter(overtimeRequests,"overtimeRequests");
   onboardingFlows=_tombFilter(onboardingFlows,"onboardingFlows");
@@ -6837,6 +6847,7 @@ function renderSidebar(){
       {id:"comm-sep",type:"sep",label:"커뮤니케이션",roles:["admin","director","leader","member"]},
       ...(settings.boardCategories||[{id:"notice",name:"공지사항",icon:"📢"},{id:"general",name:"일반게시판",icon:"📌"},{id:"rules",name:"규정게시판",icon:"📋"}]).map(cat=>({id:`board-${cat.id}`,label:cat.name,icon:cat.icon||"📌",desc:`${cat.name} 게시판`,roles:["admin","director","leader","member"]})),
       {id:"room-booking",label:"회의실 예약",icon:"🗓",desc:"회의실 예약·현황",roles:["admin","director","leader","member"]},
+      {id:"engagement-pulse",label:"직원 몰입도 펄스",icon:"💬",desc:"익명 설문·조직별 몰입도·개선 의견",roles:["admin","director","leader","member"]},
     ],
     "attend-sep":[
       {id:"attend-sep",type:"sep",label:"근태 관리",roles:["admin","director","leader","member"]},
@@ -7006,6 +7017,7 @@ function renderSidebar(){
   titles["workforce-planning"]="전략적 인력계획";
   titles["position-control"]="정원·포지션 관리";
   titles["position-requests"]="정원 신설·증원 요청";
+  titles["engagement-pulse"]="직원 몰입도 펄스";
   const ptEl=$("#page-title");if(ptEl)ptEl.textContent=titles[currentPage]||"";
   const sb=$("#sidebar");if(!sb)return;
   // Filter by role + per-user custom permission overrides (admin-managed)
@@ -7276,6 +7288,66 @@ function renderCategoryLanding(catKey){
     ${sections||`<div class="card"><div class="card-body tc text-gray p-empty">접근 가능한 메뉴가 없습니다.</div></div>`}
   </div>`;
 }
+// ==================== EMPLOYEE LISTENING / PULSE ====================
+const PULSE_QUESTION_LIBRARY=[
+  {id:"engagement",driver:"몰입",text:"나는 이 회사를 일하기 좋은 곳으로 추천할 의향이 있다."},
+  {id:"leadership",driver:"리더십",text:"리더는 업무 방향과 우선순위를 명확하게 설명한다."},
+  {id:"growth",driver:"성장",text:"나는 업무를 통해 성장하고 있다고 느낀다."},
+  {id:"wellbeing",driver:"웰빙",text:"현재 업무량을 건강하게 지속할 수 있다."},
+  {id:"belonging",driver:"소속감",text:"나는 조직에서 존중받고 소속감을 느낀다."},
+];
+function _pulseIsOpen(s){const today=new Date().toISOString().slice(0,10);return s&&s.status!=="closed"&&(!s.startDate||s.startDate<=today)&&(!s.endDate||s.endDate>=today);}
+function openPulseSurveyModal(){
+  if(currentUser?.role!=="admin")return;
+  const today=new Date().toISOString().slice(0,10),end=new Date(Date.now()+14*86400000).toISOString().slice(0,10);
+  openModal(`<div class="modal-box" style="max-width:560px"><div class="modal-head"><h3>💬 펄스 설문 개설</h3></div><div class="modal-body">
+    <div class="notice info mb3">5개 표준 문항을 0~10점으로 측정합니다. 결과는 조직 범위 응답이 3명 이상일 때만 익명 집계됩니다.</div>
+    <div class="fg"><label>설문명 *</label><input class="fc" id="pulse-title" maxlength="120" placeholder="예: 2026년 10월 직원 몰입도 펄스"></div>
+    <div class="form-grid"><div class="fg"><label>시작일 *</label><input class="fc" id="pulse-start" type="date" value="${today}"></div><div class="fg"><label>종료일 *</label><input class="fc" id="pulse-end" type="date" value="${end}"></div></div>
+    <div class="fz12 text-gray">문항: ${PULSE_QUESTION_LIBRARY.map(q=>h(q.driver)).join(" · ")}</div>
+  </div><div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal()">취소</button><button class="btn btn-primary" onclick="createPulseSurvey()">개설</button></div></div>`);
+}
+function createPulseSurvey(){
+  if(currentUser?.role!=="admin")return;
+  const title=$("#pulse-title")?.value.trim(),startDate=$("#pulse-start")?.value,endDate=$("#pulse-end")?.value;
+  if(!title||!startDate||!endDate){showToast("설문명과 기간을 모두 입력해주세요.","error");return;}
+  if(endDate<startDate){showToast("종료일은 시작일 이후여야 합니다.","error");return;}
+  engagementSurveys.push({id:`pulse-${Date.now()}-${Math.random().toString(36).slice(2,8)}`,title,startDate,endDate,status:"open",questions:PULSE_QUESTION_LIBRARY.map(q=>({...q})),createdAt:new Date().toISOString(),createdBy:currentUser.id});
+  closeModal();autoSaveToServerIfEnabled();showToast("펄스 설문을 개설했습니다.","success");renderEngagementPulsePage();
+}
+async function closePulseSurvey(id){
+  if(currentUser?.role!=="admin")return;const s=engagementSurveys.find(x=>String(x.id)===String(id));if(!s)return;
+  const ok=await askConfirmModal({title:"설문 마감",message:`‘${s.title}’ 설문을 마감합니다.`,confirmText:"마감",danger:true,impacts:[{label:"영향",value:"직원 응답 종료"},{label:"집계 결과",value:"계속 보관"}],warnings:["마감 후에는 다시 열 수 없습니다."]});if(!ok)return;
+  s.status="closed";s.closedAt=new Date().toISOString();s.updatedAt=s.closedAt;autoSaveToServerIfEnabled();showToast("설문을 마감했습니다.","success");renderEngagementPulsePage();
+}
+function submitPulseResponse(surveyId){
+  const survey=engagementSurveys.find(s=>String(s.id)===String(surveyId));if(!survey||!_pulseIsOpen(survey)){showToast("응답 가능한 설문이 아닙니다.","error");return;}
+  const scores={};for(const q of survey.questions||[]){const el=document.getElementById(`pulse-${survey.id}-${q.id}`);if(!el||el.value===""){showToast("모든 문항에 응답해주세요.","error");return;}scores[q.id]=Number(el.value);}
+  const comment=(document.getElementById(`pulse-comment-${survey.id}`)?.value||"").trim();
+  const existing=engagementResponses.find(r=>String(r.surveyId)===String(survey.id)&&String(r.empId)===String(currentUser.id));
+  if(existing){existing.scores=scores;existing.comment=comment;existing.updatedAt=new Date().toISOString();}else engagementResponses.push({id:`pulse-response-${survey.id}-${currentUser.id}`,surveyId:survey.id,empId:currentUser.id,scores,comment,submittedAt:new Date().toISOString()});
+  autoSaveToServerIfEnabled();showToast(existing?"응답을 수정했습니다.":"익명 응답을 제출했습니다.","success");renderEngagementPulsePage();
+}
+function _renderPulseForm(survey){
+  const mine=engagementResponses.find(r=>String(r.surveyId)===String(survey.id)&&String(r.empId)===String(currentUser.id));
+  if(!_pulseIsOpen(survey))return mine?`<div class="notice success">응답 완료 · 설문이 마감되었습니다.</div>`:`<div class="notice">마감된 설문입니다.</div>`;
+  return `<div class="card mt3"><div class="card-head"><h3>${mine?"내 응답 수정":"설문 응답"}</h3><span class="badge">0 전혀 그렇지 않다 · 10 매우 그렇다</span></div><div class="card-body">
+    ${(survey.questions||[]).map((q,i)=>`<div class="fg"><label>${i+1}. ${h(q.text)} <span class="text-gray">(${h(q.driver)})</span></label><select class="fc" id="pulse-${survey.id}-${q.id}"><option value="">점수 선택</option>${Array.from({length:11},(_,n)=>`<option value="${n}" ${Number(mine?.scores?.[q.id])===n?"selected":""}>${n}</option>`).join("")}</select></div>`).join("")}
+    <div class="fg"><label>개선 의견 (선택)</label><textarea class="fc" id="pulse-comment-${survey.id}" maxlength="1000" rows="3" placeholder="예: 업무 우선순위를 주 단위로 공유해주면 좋겠습니다.">${h(mine?.comment||"")}</textarea><div class="fz11 text-gray">개인을 식별할 수 있는 이름·사번은 입력하지 마세요.</div></div>
+    <button class="btn btn-primary" onclick="submitPulseResponse('${survey.id}')">${mine?"응답 수정":"익명 제출"}</button></div></div>`;
+}
+function _renderPulseSummary(survey){
+  const summary=engagementPulseSummary[survey.id]||{responseCount:0,threshold:3,thresholdMet:false,driverAverages:{},comments:[]};
+  if(!summary.thresholdMet)return `<div class="notice info">응답 ${summary.responseCount||0}명 · 익명성 보호를 위해 ${summary.threshold||3}명 이상 응답하면 점수와 의견이 공개됩니다.</div>`;
+  const qById=Object.fromEntries((survey.questions||[]).map(q=>[q.id,q]));
+  return `<div class="grid grid-3 mb3">${Object.entries(summary.driverAverages||{}).map(([id,avg])=>`<div class="stat-card"><div class="stat-label">${h(qById[id]?.driver||id)}</div><div class="stat-value">${Number(avg).toFixed(1)}<span class="fz12 text-gray"> / 10</span></div></div>`).join("")}</div><div class="fz12 fw7 mb2">익명 개선 의견 (${(summary.comments||[]).length}건)</div>${(summary.comments||[]).length?`<div class="list">${summary.comments.map(comment=>`<div class="list-item">${h(comment)}</div>`).join("")}</div>`:`<div class="text-gray fz12">등록된 의견이 없습니다.</div>`}`;
+}
+function renderEngagementPulsePage(){
+  const c=$("#content");if(!c)return;const surveys=[...engagementSurveys].sort((a,b)=>String(b.createdAt||"").localeCompare(String(a.createdAt||"")));const canViewSummary=["admin","director","leader"].includes(currentUser.role);
+  c.innerHTML=`<div class="flex justify-between items-c mb3"><div><h2>💬 직원 몰입도 펄스</h2><div class="fz12 text-gray">짧고 정기적인 설문으로 조직 경험을 확인하고 개선 의견을 수집합니다.</div></div>${currentUser.role==="admin"?`<button class="btn btn-primary" onclick="openPulseSurveyModal()">＋ 설문 개설</button>`:""}</div>
+    <div class="notice info mb3"><b>익명성 원칙</b> · 관리자와 리더에게 개인 응답은 제공되지 않습니다. 소속 범위 응답이 3명 미만이면 점수와 의견도 표시하지 않습니다.</div>
+    ${surveys.length?surveys.map(s=>`<div class="card mb3"><div class="card-head"><div><h3>${h(s.title)}</h3><div class="fz11 text-gray">${h(s.startDate||"")} ~ ${h(s.endDate||"")} · ${_pulseIsOpen(s)?"진행 중":"마감"}</div></div>${currentUser.role==="admin"&&_pulseIsOpen(s)?`<button class="btn btn-secondary btn-sm" onclick="closePulseSurvey('${s.id}')">마감</button>`:""}</div><div class="card-body">${canViewSummary?_renderPulseSummary(s):""}${_renderPulseForm(s)}</div></div>`).join(""):`<div class="card"><div class="card-body tc text-gray p-empty">개설된 펄스 설문이 없습니다.</div></div>`}`;
+}
 function renderPage(){
   if(currentPage&&currentPage.startsWith("cat:")){renderCategoryLanding(currentPage.slice(4));renderCatNav();const attendBar=document.getElementById("attend-bar");if(attendBar)attendBar.innerHTML=(currentUser&&currentPage==="dashboard")?_renderTeamTodayWidget(currentUser):"";return;}
   if(currentPage&&currentPage.startsWith("board-")){renderBoardPage();renderCatNav();const attendBar=document.getElementById("attend-bar");if(attendBar)attendBar.innerHTML=(currentUser&&currentPage==="dashboard")?_renderTeamTodayWidget(currentUser):"";return;}
@@ -7291,6 +7363,7 @@ function renderPage(){
   pages["workforce-planning"]=renderWorkforcePlanningPage;
   pages["position-control"]=renderPositionControlPage;
   pages["position-requests"]=renderPositionRequestPage;
+  pages["engagement-pulse"]=renderEngagementPulsePage;
   const fn=pages[currentPage];const c=$("#content");
   if(c&&fn){
     c.innerHTML="";
@@ -13548,7 +13621,7 @@ async function doResetAll(){
     if(!d.ok)throw new Error(d.message);
     employees=[];kpiEntries=[];changeRequests=[];compGradeResults={};gradeAdjustHistory=[];
     coreTalentPool=[];talentDevPlans=[];successionPlans=[];jobSkillProfiles=[];employeeSkillProfiles=[];workforceScenarios=[];workforcePositions=[];positionRequests=[];_positionRequestPicker=[];_positionRequestPickerLoaded=false;_positionBudgetPicker=[];_positionBudgetPickerLoaded=false;lowPerfData=[];tieNotifications=[];
-    approvalDocs=[];attendanceRecords=[];payslips=[];yearEndSettlements=[];payrollAdjustments=[];leaveUsagePlans=[];boardPosts=[];roomReservations=[];certLog=[];certRequests=[];welfarePoints=[];mandatoryTraining=[];healthCheckupLog=[];
+    approvalDocs=[];attendanceRecords=[];payslips=[];yearEndSettlements=[];payrollAdjustments=[];leaveUsagePlans=[];boardPosts=[];roomReservations=[];certLog=[];certRequests=[];welfarePoints=[];mandatoryTraining=[];healthCheckupLog=[];engagementSurveys=[];engagementResponses=[];engagementPulseSummary={};
     showToast("전체 데이터가 초기화되었습니다.","success");
     renderPage();
   }catch(e){showToast("초기화 실패: "+e.message,"error");}

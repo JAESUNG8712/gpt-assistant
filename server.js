@@ -728,6 +728,45 @@ function filterDataForRole(data, auth) {
   if (auth.role !== "admin" && Array.isArray(out.scheduleEvents)) {
     out.scheduleEvents = out.scheduleEvents.filter(s => !s || s.scope !== "personal" || String(s.authorId) === myId);
   }
+  // 직원 몰입도 펄스 응답은 관리자에게도 개인 원본을 제공하지 않는다. 리더별 조직
+  // 범위를 서버에서 먼저 좁힌 뒤 최소 3명 이상일 때만 익명 통계를 생성해, 브라우저의
+  // 개발자 도구나 /data 직접 호출로 응답자·소수 의견을 역추적하는 것을 막는다.
+  if (Array.isArray(out.engagementResponses)) {
+    const employees = Array.isArray(out.employees) ? out.employees : [];
+    const myEmp = employees.find(e => String(e?.id) === myId) || null;
+    const source = out.engagementResponses.filter(r => {
+      if (!r) return false;
+      if (auth.role === "admin") return true;
+      const owner = employees.find(e => String(e?.id) === String(r.empId));
+      if (!owner || !myEmp) return String(r.empId) === myId;
+      if (auth.role === "director") return owner.dept === myEmp.dept;
+      if (auth.role === "leader") return owner.dept === myEmp.dept && owner.team === myEmp.team;
+      return String(r.empId) === myId;
+    });
+    const summaries = {};
+    for (const survey of (Array.isArray(out.engagementSurveys) ? out.engagementSurveys : [])) {
+      const rows = source.filter(r => String(r.surveyId) === String(survey.id));
+      const thresholdMet = rows.length >= 3;
+      const driverTotals = {}, driverCounts = {};
+      if (thresholdMet) rows.forEach(r => Object.entries(r.scores || {}).forEach(([driver, value]) => {
+        const n = Number(value); if (!Number.isFinite(n)) return;
+        driverTotals[driver] = (driverTotals[driver] || 0) + n;
+        driverCounts[driver] = (driverCounts[driver] || 0) + 1;
+      }));
+      const driverAverages = {};
+      if (thresholdMet) Object.keys(driverTotals).forEach(k => { driverAverages[k] = Math.round(driverTotals[k] / driverCounts[k] * 10) / 10; });
+      summaries[survey.id] = {
+        responseCount: rows.length,
+        threshold: 3,
+        thresholdMet,
+        driverAverages,
+        comments: thresholdMet ? rows.map(r => String(r.comment || "").trim()).filter(Boolean).slice(0, 100) : [],
+      };
+    }
+    out.engagementPulseSummary = summaries;
+    // 각 사용자는 제출 여부·수정만을 위해 본인 레코드만 받는다. 관리자도 예외가 아니다.
+    out.engagementResponses = out.engagementResponses.filter(r => r && String(r.empId) === myId);
+  }
   // 아래 필드들은 화면(클라이언트) 단에서는 이미 "본인 것만"/"관리자·director(dept)·leader(dept+team)만"
   // 으로 좁혀서 보여주고 있었지만(개별 화면 코드로 확인), GET /data 자체에는 이 좁히기가 없어
   // 로그인만 되어 있으면 브라우저 devtools로 회사 전체 데이터를 그대로 볼 수 있었다 — 이미 이
@@ -1419,6 +1458,8 @@ const _WRITE_GATED_FIELDS = {
   scheduleEvents:     { roles: ["admin", "director", "leader"], ownField: "authorId" },
   // 저성과자 관리: 읽기와 같은 기준(관리자 또는 settings.lowPerformerViewers 등록자)
   lowPerfData:        { roles: ["admin"], viewersSetting: "lowPerformerViewers", pageIds: "low-performer" },
+  engagementSurveys:  { roles: ["admin"], pageIds: "engagement-pulse" },
+  engagementResponses:{ roles: [], ownField: "empId", pageIds: "engagement-pulse" },
 };
 // menuPerms(개인별로 끈 메뉴) 확장 — 위 role 기반 승인/게이팅과 별개로, 관리자가 특정 직원의
 // 해당 화면 메뉴 자체를 꺼뒀다면 role상 자격이 있어도(예: admin, 또는 그 부서의 director) 그
@@ -1522,7 +1563,7 @@ function _canManageCompSessionTarget(actor, actorEmp, targetEmp) {
 // targetEmp: field==="compSessions"일 때만 쓰이는, 호출부가 미리 조회해둔 incoming.targetId의
 // 직원 레코드(_canManageCompSessionTarget 판정용 — JSON모드는 _fileStore.employees에서,
 // Postgres모드는 별도 쿼리로 동일하게 조회해 호출부가 넘겨준다).
-function _sanitizeGatedRecord(field, incoming, stored, actor, actorEmp, settings, approvalDocForGate, targetEmp) {
+function _sanitizeGatedRecord(field, incoming, stored, actor, actorEmp, settings, approvalDocForGate, targetEmp, engagementSurveys) {
   const rule = _APPROVAL_GATED_FIELDS[field];
   if (!rule || !incoming) return incoming;
   // payrollAdjustments는 admin 전용 필드지만, 복리후생 신청이 승인 완료되는
@@ -1534,6 +1575,35 @@ function _sanitizeGatedRecord(field, incoming, stored, actor, actorEmp, settings
   // 값 자체가 승인된 문서 내용과 완전히 일치할 때만(위조 불가) role과 무관하게 허용한다.
   if (field === "payrollAdjustments" && !stored && approvalDocForGate &&
       _welfareAdjustmentMatchesApprovedDoc(incoming, approvalDocForGate)) return incoming;
+  if (field === "engagementSurveys") {
+    if (stored?.status === "closed") return { ...stored };
+    const questions = Array.isArray(incoming.questions) ? incoming.questions.slice(0, 10).map(q => ({
+      id: String(q?.id || "").slice(0, 40), driver: String(q?.driver || "").slice(0, 40), text: String(q?.text || "").trim().slice(0, 300),
+    })).filter(q => q.id && q.text) : [];
+    if (!String(incoming.title || "").trim() || questions.length < 1) return stored ? { ...stored } : null;
+    incoming = { ...incoming, title: String(incoming.title).trim().slice(0, 120), status: incoming.status === "closed" ? "closed" : "open", questions };
+  }
+  if (field === "engagementResponses") {
+    const survey = (engagementSurveys || []).find(s => s && String(s.id) === String(incoming.surveyId));
+    const today = new Date().toISOString().slice(0, 10);
+    if (!survey || survey.status === "closed" || (survey.startDate && survey.startDate > today) || (survey.endDate && survey.endDate < today)) {
+      return stored ? { ...stored } : null;
+    }
+    const scores = {};
+    for (const [key, value] of Object.entries(incoming.scores || {})) {
+      const n = Number(value); if (/^[A-Za-z0-9_-]{1,40}$/.test(key) && Number.isFinite(n) && n >= 0 && n <= 10) scores[key] = Math.round(n);
+    }
+    if (!String(incoming.surveyId || "") || !Object.keys(scores).length) return stored ? { ...stored } : null;
+    incoming = {
+      ...incoming,
+      empId: String(actor?.empId || ""),
+      surveyId: String(incoming.surveyId).slice(0, 80),
+      scores,
+      comment: String(incoming.comment || "").trim().slice(0, 1000),
+      submittedAt: stored?.submittedAt || new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+  }
   // talentDevPlans의 status는 전용 transition API만 바꿀 수 있다. 일반 /save는 전체
   // 배열을 싣기 때문에 여기서 상태 변경을 허용하면 전용 API의 상태/조직/CAS 검사를
   // 우회할 수 있다. 초회 생성 역시 반드시 draft로 시작한다.
@@ -2430,7 +2500,7 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
             ? _resolveApprovalDocForGate(r.sourceDocId) : null;
           const targetEmpForGate = (gatedField === "compSessions" && r.targetId != null)
             ? (_fileStore.employees || []).find(e => String(e.id) === String(r.targetId)) || null : null;
-          let out = _sanitizeGatedRecord(gatedField, r, stored, actor, _actorEmpJson, _fileStore.settings, approvalDocForGate, targetEmpForGate);
+          let out = _sanitizeGatedRecord(gatedField, r, stored, actor, _actorEmpJson, _fileStore.settings, approvalDocForGate, targetEmpForGate, _fileStore.engagementSurveys || []);
           // 값 범위·형식 검증(_validateFieldValues 주석 참고) — 권한 검사를 통과한 뒤에도
           // 값 자체가 오염돼 있으면 저장본으로 되돌린다(신규 레코드면 드롭).
           if (out && !_validateFieldValues(gatedField, out, storedList)) out = stored ? { ...stored } : null;
@@ -2810,6 +2880,16 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
       _roomReservationsPg = rows.map(r => r.data);
       return _roomReservationsPg;
     };
+    let _engagementSurveysPg;
+    const _getEngagementSurveysPg = async () => {
+      if (_engagementSurveysPg) return _engagementSurveysPg;
+      const { rows } = await client.query(
+        "SELECT data FROM app_collections WHERE collection = 'engagementSurveys' AND (company_id = $1 OR company_id IS NULL)",
+        [companyId || null]
+      );
+      _engagementSurveysPg = rows.map(r => r.data);
+      return _engagementSurveysPg;
+    };
     for (const field of GENERIC_LIST_FIELDS) {
       const items = data[field];
       if (Array.isArray(items)) {
@@ -2847,7 +2927,8 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
               ? await _getApprovalDocForGate(item.sourceDocId) : null;
             const targetEmpForGate = (field === "compSessions" && item.targetId != null)
               ? await _getEmployeeByIdPg(item.targetId) : null;
-            toWrite = _sanitizeGatedRecord(field, item, storedItem, actor, await _getActorEmpPg(), await _getSettingsPg(), approvalDocForGate, targetEmpForGate);
+            toWrite = _sanitizeGatedRecord(field, item, storedItem, actor, await _getActorEmpPg(), await _getSettingsPg(), approvalDocForGate, targetEmpForGate,
+              field === "engagementResponses" ? await _getEngagementSurveysPg() : null);
             if (toWrite === null) continue;   // 권한 없이 새로 만들어진 레코드 — 쓰지 않음
           }
           // 값 범위·형식 검증(_validateFieldValues 주석 참고, JSON모드와 동일 규칙).
@@ -4641,7 +4722,7 @@ const COMPANY_FEATURE_KEYS = new Set(COMPANY_FEATURE_CATALOG.map(f => f.key));
 // (마스터가 이 모듈을 꺼도 화면단 숨김(gotoPage 가드)만으로 충분) 여기 목록에는 없다.
 const _BLOB_MODULE_FIELDS = {
   approval:  ["approvalDocs", "approvalTemplates", "approvalDelegations", "approvalChainSettings"],
-  comm:      ["boardPosts", "roomReservations", "roomReservationTombstones"],
+  comm:      ["boardPosts", "roomReservations", "roomReservationTombstones", "engagementSurveys", "engagementResponses", "engagementPulseSummary"],
   kpi:       ["kpiEntries", "changeRequests", "tieNotifications", "gradeAdjustHistory"],
   comp_eval: ["compSessions", "compResponses", "compGradeResults", "evaluatorConfig"],
   talent:    ["coreTalentPool", "talentDevPlans", "successionPlans", "jobSkillProfiles", "employeeSkillProfiles", "workforceScenarios", "lowPerfData", "coreTalentSettings"],
