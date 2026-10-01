@@ -75,10 +75,10 @@ test("KPI 피드백 스레드(feedbackThread) — 본인·평가자만 자기 �
   // 결과에서 레코드를 찾아 수정"하는 방식으로는 애초에 그 레코드에 접근조차 못 한다 —
   // 이 테스트는 "내용을 이미 알고 있는 공격자가 /save에 직접 그 내용을 실어 보내면
   // 서버가 차단하는가"를 검증하려는 것이므로, 내용은 admin 경로로 획득해 구성한다.
-  async function appendFeedback(token, empId, message) {
+  async function appendFeedback(token, empId, message, extra = {}) {
     const base = await kpiOf();
     const d = await getData(api, token);
-    const thread = [...(base.feedbackThread || []), { id: `fb-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, empId, authorName: empId, role: "member", message, createdAt: new Date().toISOString() }];
+    const thread = [...(base.feedbackThread || []), { id: `fb-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, empId, authorName: empId, role: "member", message, createdAt: new Date().toISOString(), ...extra }];
     const kpiEntries = [{ ...base, feedbackThread: thread }];
     return api("/save", auth(token, "POST", { _version: d.version, kpiEntries }));
   }
@@ -151,5 +151,56 @@ test("KPI 피드백 스레드(feedbackThread) — 본인·평가자만 자기 �
     const kpi = await kpiOf();
     assert.equal(kpi.feedbackThread.length, 3);
     assert.deepEqual(kpi.feedbackThread.map(m => m.empId), ["memberA", "leaderA", "dir1"]);
+  });
+
+  await t.test("표시 이름·역할·작성시각 위조는 인증 사용자 정보로 정규화된다", async () => {
+    const forgedAt = "2000-01-01T00:00:00.000Z";
+    const r = await appendFeedback(leaderAToken, "leaderA", "표시 정보 위조 방어 확인", {
+      authorName: "관리자 사칭", role: "admin", createdAt: forgedAt,
+    });
+    assert.equal(r.status, 200);
+    const kpi = await kpiOf();
+    const saved = kpi.feedbackThread.at(-1);
+    assert.equal(saved.empId, "leaderA");
+    assert.equal(saved.authorName, "팀장A");
+    assert.equal(saved.role, "leader");
+    assert.notEqual(saved.createdAt, forgedAt);
+    assert.equal(saved.kind, "message");
+  });
+
+  await t.test("직원 본인은 기한이 있는 실행 약속을 추가하고 완료 기록을 남길 수 있다", async () => {
+    const actionId = `action-${Date.now()}`;
+    let r = await appendFeedback(memberAToken, "memberA", "주간 실적 근거를 보완하겠습니다.", {
+      id: actionId, kind: "action", dueDate: "2026-11-30",
+    });
+    assert.equal(r.status, 200);
+    let kpi = await kpiOf();
+    const action = kpi.feedbackThread.find(m => m.id === actionId);
+    assert.equal(action.kind, "action");
+    assert.equal(action.dueDate, "2026-11-30");
+    assert.equal(action.authorName, "팀원A");
+
+    r = await appendFeedback(memberAToken, "memberA", "실행 약속을 완료했습니다.", {
+      kind: "completion", parentId: actionId,
+    });
+    assert.equal(r.status, 200);
+    kpi = await kpiOf();
+    const completion = kpi.feedbackThread.at(-1);
+    assert.equal(completion.kind, "completion");
+    assert.equal(completion.parentId, actionId);
+    const completedThread = kpi.feedbackThread;
+    await appendFeedback(memberAToken, "memberA", "중복 완료 시도", { kind: "completion", parentId: actionId });
+    kpi = await kpiOf();
+    assert.deepEqual(kpi.feedbackThread, completedThread, "같은 실행 약속에는 완료 기록이 한 번만 허용돼야 한다");
+  });
+
+  await t.test("평가자는 직원 명의의 실행 약속을 만들 수 없고 잘못된 날짜도 거부된다", async () => {
+    const before = await kpiOf();
+    await appendFeedback(leaderAToken, "leaderA", "평가자가 대신 만든 약속", { kind: "action", dueDate: "2026-12-01" });
+    let after = await kpiOf();
+    assert.deepEqual(after.feedbackThread, before.feedbackThread);
+    await appendFeedback(memberAToken, "memberA", "잘못된 날짜 약속", { kind: "action", dueDate: "2026-02-31" });
+    after = await kpiOf();
+    assert.deepEqual(after.feedbackThread, before.feedbackThread);
   });
 });

@@ -2081,15 +2081,55 @@ function _sanitizeKpiEntry(incoming, stored, actor, actorEmp, empById, settings)
     const prefixIntact = incomingThread.length >= storedThread.length &&
       storedThread.every((m, i) => incomingThread[i] && JSON.stringify(incomingThread[i]) === JSON.stringify(m));
     const appended = prefixIntact ? incomingThread.slice(storedThread.length) : [];
+    const knownIds = new Set(storedThread.map(m => String(m?.id || "")));
+    const normalizedAppended = [];
+    let validStructuredAppend = true;
+    for (const m of appended) {
+      const id = String(m?.id || "");
+      const kind = m?.kind || "message";
+      const message = typeof m?.message === "string" ? m.message.trim() : "";
+      const dueDate = m?.dueDate ? String(m.dueDate) : "";
+      const parentId = m?.parentId ? String(m.parentId) : "";
+      const dueDateParsed = /^\d{4}-\d{2}-\d{2}$/.test(dueDate) ? new Date(`${dueDate}T00:00:00Z`) : null;
+      const validDueDate = dueDateParsed && !Number.isNaN(dueDateParsed.getTime()) &&
+        dueDateParsed.toISOString().slice(0, 10) === dueDate && Number(dueDate.slice(0, 4)) >= 2000 && Number(dueDate.slice(0, 4)) <= 2100;
+      const threadSoFar = [...storedThread, ...normalizedAppended];
+      const parentAction = kind === "completion" && threadSoFar
+        .find(x => String(x?.id) === parentId && x?.kind === "action");
+      const duplicateCompletion = kind === "completion" && threadSoFar
+        .some(x => x?.kind === "completion" && String(x.parentId) === parentId);
+      if (!m || !id || id.length > 120 || knownIds.has(id) ||
+          !["message", "action", "completion"].includes(kind) ||
+          !message || message.length > 1000 || String(m.empId) !== String(actor.empId) ||
+          (kind === "action" && (!isOwner || !validDueDate)) ||
+          (kind === "completion" && (!isOwner || !parentAction || duplicateCompletion))) {
+        validStructuredAppend = false;
+        break;
+      }
+      knownIds.add(id);
+      normalizedAppended.push({
+        id,
+        empId: actor.empId,
+        authorName: actorEmp?.name || actor.loginId || String(actor.empId),
+        role: actor.role,
+        message,
+        kind,
+        ...(kind === "action" ? { dueDate } : {}),
+        ...(kind === "completion" ? { parentId } : {}),
+        createdAt: new Date().toISOString(),
+      });
+    }
     const isValidAppend = canFeedback && prefixIntact &&
       appended.length > 0 && appended.length <= 20 &&
-      incomingThread.length <= 200 &&
-      appended.every(m => m && typeof m.message === "string" &&
-        m.message.trim().length > 0 && m.message.length <= 1000 &&
-        String(m.empId) === String(actor.empId));
+      incomingThread.length <= 200 && validStructuredAppend;
     const unchanged = incomingThread.length === storedThread.length &&
       storedThread.every((m, i) => incomingThread[i] && JSON.stringify(incomingThread[i]) === JSON.stringify(m));
-    if (!isValidAppend && !unchanged) {
+    if (isValidAppend) {
+      // 표시 이름·역할·작성시각은 클라이언트 값을 신뢰하지 않고 인증 세션과 직원 원장에서
+      // 다시 만든다. empId만 본인으로 둔 채 authorName/role을 관리자로 위조하는 것을 막는다.
+      cloneOnce();
+      out.feedbackThread = [...storedThread, ...normalizedAppended];
+    } else if (!unchanged) {
       cloneOnce();
       out.feedbackThread = storedThread;
     }
