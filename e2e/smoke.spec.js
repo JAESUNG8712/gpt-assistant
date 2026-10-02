@@ -82,7 +82,7 @@ test.describe("로그인·기본 네비게이션", () => {
     await page.evaluate(() => gotoPage("work-reports"));
     await expect(page.locator("#content").getByRole("heading",{name:"업무보고"})).toBeVisible();
     await page.getByRole("button",{name:"업무보고 작성"}).click();
-    await expect(page.locator("#wr-summary")).toHaveAttribute("placeholder",/확인 가능한 결과/);
+    await expect(page.locator("#wr-summary")).toHaveAttribute("placeholder",/채용 면접.*급여 마감/);
     await expect(page.locator("#wr-next")).toHaveAttribute("placeholder",/다음 주/);
     expect(pageErrors).toHaveLength(0);
   });
