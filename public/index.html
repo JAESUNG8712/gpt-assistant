@@ -7961,8 +7961,68 @@ function _dashBoardCard(u,sz){
     </div>
   </div>`;
 }
+// 그룹웨어 메인 포털형 위젯: 흩어진 당일 업무를 한 화면에서 확인하고 원래 업무 화면으로 이동
+function _dashTodayWorkHub(u,sz){
+  const now=new Date();
+  const todayStr=`${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,"0")}-${String(now.getDate()).padStart(2,"0")}`;
+  const koDate=new Intl.DateTimeFormat("ko-KR",{month:"long",day:"numeric",weekday:"short"}).format(now);
+  const perms=u.menuPerms||{};
+  const canUse=pageId=>{
+    const item=_findMenuItemById(pageId);
+    const roles=item?.roles||PAGE_ROLES[pageId];
+    return perms[pageId]!==false&&(!roles||roles.includes(u.role));
+  };
+  const canAttendance=canUse("attendance"),canApproval=canUse("approval-inbox"),canCalendar=canUse("att-calendar"),canRoom=canUse("room-booking");
+  const boardPage=`board-${settings.boardCategories?.[0]?.id||"notice"}`;
+  const canBoard=canUse(boardPage);
+  const todayRec=canAttendance?attendanceRecords.find(r=>String(r.empId)===String(u.id)&&r.date===todayStr):null;
+  const pending=canApproval?approvalDocs.filter(d=>d.status==="in_progress"&&d.approvers.some(a=>String(a.empId)===String(u.id)&&a.status==="pending")):[];
+  const visibleEvents=canCalendar?scheduleEvents.filter(ev=>{
+    const visible=ev.scope==="company"||(ev.scope==="dept"&&ev.dept===u.dept)||(ev.scope==="team"&&ev.dept===u.dept&&ev.team===u.team)||(ev.scope==="personal"&&String(ev.authorId)===String(u.id));
+    return visible&&(ev.startDate||"")<=todayStr&&(ev.endDate||ev.startDate||"")>=todayStr;
+  }).sort((a,b)=>String(a.startDate||"").localeCompare(String(b.startDate||""))):[];
+  const myRooms=canRoom?roomReservations.filter(r=>String(r.bookedBy)===String(u.id)&&_roomCoversDate(r,todayStr)).sort((a,b)=>String(a.startTime||"").localeCompare(String(b.startTime||""))):[];
+  const latestPost=canBoard?boardPosts.slice().sort((a,b)=>String(b.createdAt||"").localeCompare(String(a.createdAt||"")))[0]:null;
+  const roomName=id=>(settings.meetingRooms||[]).find(r=>String(r.id)===String(id))?.name||"회의실";
+  const tiles=[];
+  if(canAttendance){
+    const status=todayRec?.checkOut?"퇴근 완료":todayRec?.checkIn?"근무 중":"미출근";
+    const detail=todayRec?.checkIn?`${todayRec.checkIn}${todayRec.checkOut?` ~ ${todayRec.checkOut}`:" 출근"}`:"출근 체크 필요";
+    tiles.push({page:"attendance",icon:"⏱",label:"오늘 근태",value:status,detail,color:todayRec?.checkIn?"#15803d":"#b45309",bg:todayRec?.checkIn?"#f0fdf4":"#fffbeb"});
+  }
+  if(canApproval)tiles.push({page:"approval-inbox",icon:"📥",label:"결재 대기",value:`${pending.length}건`,detail:pending.length?"처리할 문서가 있습니다":"대기 문서 없음",color:pending.length?"#dc2626":"#475569",bg:pending.length?"#fef2f2":"#f8fafc"});
+  if(canCalendar)tiles.push({page:"att-calendar",icon:"🗓",label:"오늘 일정",value:`${visibleEvents.length}건`,detail:visibleEvents[0]?.title||"등록된 일정 없음",color:"#1d4ed8",bg:"#eff6ff"});
+  if(canRoom)tiles.push({page:"room-booking",icon:"🏢",label:"내 회의실",value:`${myRooms.length}건`,detail:myRooms[0]?`${myRooms[0].startTime||"종일"} ${roomName(myRooms[0].roomId)}`:"오늘 예약 없음",color:"#6d28d9",bg:"#f5f3ff"});
+  const tileHtml=tiles.length?tiles.map(t=>`<button type="button" data-hub-action="${t.page}" onclick="event.stopPropagation();gotoPage('${t.page}')" style="appearance:none;text-align:left;border:1px solid #e2e8f0;background:${t.bg};border-radius:10px;padding:10px;cursor:pointer;min-width:0">
+    <div class="fz11 text-gray">${t.icon} ${t.label}</div><div style="font-size:17px;font-weight:800;color:${t.color};margin:2px 0">${h(t.value)}</div><div class="fz11 text-gray" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${h(t.detail)}</div>
+  </button>`).join(""):`<div class="fz12 text-gray">사용 가능한 오늘 업무 메뉴가 없습니다.</div>`;
+  const agenda=[];
+  pending.slice(0,2).forEach(d=>agenda.push({page:"approval-inbox",icon:"📥",title:`결재: ${d.title||_getDocTitle(d.templateId,d.formData||{})}`,meta:getEmpName(d.authorId)}));
+  visibleEvents.slice(0,2).forEach(ev=>agenda.push({page:"att-calendar",icon:"🗓",title:ev.title,meta:ev.scope==="personal"?"개인 일정":ev.scope==="company"?"전사 일정":"조직 일정"}));
+  myRooms.slice(0,2).forEach(r=>agenda.push({page:"room-booking",icon:"🏢",title:r.title||roomName(r.roomId),meta:`${r.allDay?"종일":`${r.startTime}~${r.endTime}`} · ${roomName(r.roomId)}`}));
+  if(latestPost)agenda.push({page:boardPage,icon:"📌",title:latestPost.title,meta:`최신 게시물 · ${(latestPost.createdAt||"").slice(0,10)}`});
+  const limit=Math.max(2,Math.min(6,(sz&&sz.rows)||4));
+  const agendaHtml=agenda.length?agenda.slice(0,limit).map(it=>`<button type="button" onclick="event.stopPropagation();gotoPage('${it.page}')" style="width:100%;display:flex;align-items:center;gap:8px;border:0;border-bottom:1px solid #f1f5f9;background:transparent;padding:7px 0;text-align:left;cursor:pointer"><span>${it.icon}</span><span style="flex:1;min-width:0"><span class="fz12 fw6" style="display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${h(it.title)}</span><span class="fz11 text-gray">${h(it.meta)}</span></span><span class="text-gray">›</span></button>`).join(""):`<div class="fz12 text-gray" style="padding:12px 0;text-align:center">오늘 처리할 일정과 알림이 없습니다.</div>`;
+  const quick=[
+    canUse("approval-draft")?{page:"approval-draft",label:"기안 작성"}:null,
+    canCalendar?{page:"att-calendar",label:"일정 관리"}:null,
+    canRoom?{page:"room-booking",label:"회의실 예약"}:null,
+    canBoard?{page:boardPage,label:"공지·게시판"}:null,
+  ].filter(Boolean);
+  return`<div class="card" data-testid="today-work-hub">
+    <div class="card-head"><div><h3>🏠 오늘의 업무 허브</h3><div class="fz11 text-gray mt1">${h(koDate)} · ${h(u.name)}님의 업무 요약</div></div>${canUse("notification-center")?`<button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();gotoPage('notification-center')">전체 알림 보기</button>`:""}</div>
+    <div class="card-body" style="padding:12px 16px">
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(125px,1fr));gap:8px;margin-bottom:10px">${tileHtml}</div>
+      <div style="display:grid;grid-template-columns:minmax(0,1fr) auto;gap:14px;align-items:start">
+        <div><div class="fz11 fw7 text-gray" style="margin-bottom:2px">오늘 처리할 업무</div>${agendaHtml}</div>
+        <div style="display:flex;flex-direction:column;gap:6px;min-width:104px">${quick.map(q=>`<button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();gotoPage('${q.page}')">${h(q.label)}</button>`).join("")}</div>
+      </div>
+    </div>
+  </div>`;
+}
 // ==================== DASHBOARD WIDGET CATALOG ====================
 const DASH_WIDGET_CATALOG=[
+  {id:"today_work_hub",label:"오늘의 업무 허브",icon:"🏠",fn:(u,sz)=>_dashTodayWorkHub(u,sz),roles:["admin","director","leader","member"]},
   {id:"approval_status",label:"전자결재 진행 현황",icon:"📑",fn:(u,sz)=>_dashApprovalCard(u,sz),roles:["admin","director","leader","member"]},
   {id:"calendar_preview",label:"이번 달 주요 일정",icon:"🗓",fn:(u,sz)=>_dashCalendarCard(u,sz),roles:["admin","director","leader","member"]},
   {id:"board_updates",label:"게시판 업데이트",icon:"📌",fn:(u,sz)=>_dashBoardCard(u,sz),roles:["admin","director","leader","member"]},
@@ -7974,7 +8034,7 @@ const DASH_WIDGET_CATALOG=[
 ];
 let _dashDragSrcIdx=-1;
 let _dashEditMode=false;
-function _defaultDashWidgets(){return["board_updates","my_kpi","week_hours","leave_status","calendar_preview","pending_certs","approval_status"];}
+function _defaultDashWidgets(){return["today_work_hub","board_updates","my_kpi","week_hours","leave_status","calendar_preview","pending_certs","approval_status"];}
 function _stripHtml(s){return String(s||"").replace(/<[^>]*>/g,"").trim();}
 function _findMenuItemById(pageId){
   const groups=_menuGroupsCache||{};
