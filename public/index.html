@@ -580,6 +580,8 @@ button,a,[role=button]{touch-action:manipulation}
 
 /* ── Small screens: shrink text only, layout keeps its columns and scrolls horizontally ── */
 @media(max-width:480px){
+  .eval-setup-layout{grid-template-columns:1fr!important}
+  .eval-setup-layout aside .card{position:static!important}
   .kpi-tbl-wrap{overflow-x:auto}
   /* Payslip net pay → scale down */
   .payslip-net-amount{font-size:clamp(20px,6vw,28px)!important}
@@ -693,7 +695,7 @@ button,a,[role=button]{touch-action:manipulation}
 const EVAL_ONLY_MODE=/^\/eval(\/|$)/i.test(location.pathname);
 // 이 모듈에 포함되는 화면 = 사이드바의 "평가"(kpi-sep/comp-sep) 대분류 전체 + "평가
 // 운영"(설정 화면, set-op-sep에 있지만 성격상 평가 모듈 소속) + 비밀번호 변경(계정 위생).
-const EVAL_MODULE_PAGE_IDS=new Set(["eval-progress","kpi","kpi-results","first-eval","second-eval","kpi-amend","kpi-midstage","my-kpi","grade-view","comp-eval","comp-grade-view","comp-settings-shortcut","eval-ops","change-pw","notification-center"]);
+const EVAL_MODULE_PAGE_IDS=new Set(["evaluation-center","comp-evaluator-setup","eval-progress","kpi","kpi-results","first-eval","second-eval","kpi-amend","kpi-midstage","my-kpi","grade-view","comp-eval","comp-grade-view","comp-settings-shortcut","eval-ops","change-pw","notification-center"]);
 if(EVAL_ONLY_MODE)document.title="평가 시스템";
 // 로그인 직후 랜딩 페이지 — 메인 앱은 항상 "dashboard"지만 이 모듈엔 없는 화면이라
 // role+menuPerms를 통과하는 첫 페이지로 보낸다. "나의 KPI"를 최우선으로 둔다 — 이 함수는
@@ -702,7 +704,7 @@ if(EVAL_ONLY_MODE)document.title="평가 시스템";
 // 페이지를 1순위로 고르면 클라이언트 기본값(하드코딩된 stage:"performance")을 잘못
 // 참조해 사이드바가 실제로 보여주는 것과 다른 화면에 랜딩하는 경합이 생긴다(실측 발견).
 function _evalDefaultPage(emp){
-  const order=["my-kpi","kpi","kpi-results","first-eval","second-eval","kpi-amend","kpi-midstage","grade-view","comp-eval","comp-grade-view","comp-settings-shortcut","eval-progress","eval-ops"];
+  const order=["evaluation-center","my-kpi","kpi","kpi-results","first-eval","second-eval","kpi-amend","kpi-midstage","grade-view","comp-eval","comp-grade-view","comp-settings-shortcut","eval-progress","eval-ops"];
   const perms=emp.menuPerms||{};
   for(const p of order){
     const allowed=PAGE_ROLES[p];
@@ -2692,11 +2694,11 @@ function autoSaveToServerIfEnabled(){
 }
 
 // ==================== COMP EVAL ASSIGNMENT ====================
-function getCompEvaluators(targetId,year){
+function getCompEvaluators(targetId,year,ignoreFixed=false){
   const target=getEmp(targetId);if(!target)return[];
   const cfg=getEvalConfig(targetId);
   // If fixed evaluator list is set, use it directly
-  if(cfg.fixedEvaluatorIds&&cfg.fixedEvaluatorIds.length>0){
+  if(!ignoreFixed&&cfg.fixedEvaluatorIds&&cfg.fixedEvaluatorIds.length>0){
     return cfg.fixedEvaluatorIds.map(id=>getEmp(id)).filter(e=>e&&e.active&&e.id!==targetId);
   }
   const role=target.role;
@@ -3416,6 +3418,60 @@ function renderCompEval(){
   else renderCompManage(u,year);
 }
 
+// SAP Performance Management의 유형별 진입점·route map과 360 Review의
+// nomination/evaluation 분리 원칙을 현재 데이터 모델에 맞춰 적용한 평가 홈이다.
+// KPI(목표·성과·등급)와 다면평가(평가자 구성·익명 피드백)를 별도 작업공간으로
+// 보여 주되, 기존 화면과 데이터를 그대로 사용해 마이그레이션 부담을 만들지 않는다.
+function renderEvaluationCenter(){
+  const c=$("#content");if(!c)return;
+  const u=currentUser,year=settings.evalYear;
+  const scope=_evalScopeForUser(u);
+  const scopeIds=new Set(scope.map(e=>String(e.id)));
+  const scopeKpis=kpiEntries.filter(k=>k.year===year&&scopeIds.has(String(k.userId)));
+  const kpiPeople=new Set(scopeKpis.map(k=>String(k.userId))).size;
+  const sessions=compSessions.filter(s=>s.year===year&&scopeIds.has(String(s.targetId)));
+  const assigned=sessions.reduce((n,s)=>n+(s.evaluatorIds||[]).length,0);
+  const sessionIds=new Set(sessions.map(s=>String(s.id)));
+  const submitted=compResponses.filter(r=>r.submittedAt&&sessionIds.has(String(r.sessionId))).length;
+  const isAdmin=u.role==="admin";
+  const kpiRoute=settings.stage==="goal"?"kpi":settings.stage==="performance"?"kpi-results":"my-kpi";
+  const nextKpi=u.role==="member"?"my-kpi":u.role==="leader"?"first-eval":u.role==="director"?"second-eval":kpiRoute;
+  const pending360=getMyCompSessions(u.id,year).length;
+  c.innerHTML=`
+  <div class="mb3"><h2 style="font-size:20px;font-weight:800;margin-bottom:5px">평가 워크스페이스</h2>
+    <div class="fz12 text-gray">평가 목적에 맞는 작업공간을 선택하세요. KPI 성과평가와 다면 피드백은 대상·절차·결과를 분리해 운영합니다.</div></div>
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(290px,1fr));gap:14px" class="mb3">
+    <section class="card" style="border-top:4px solid #2563eb"><div class="card-body" style="padding:20px">
+      <div class="flex justify-between items-c gap2"><div><div class="fz11 fw7 text-blue">PERFORMANCE REVIEW</div><h3 style="font-size:18px;margin-top:4px">🎯 KPI 성과평가</h3></div><span class="badge bg-blue">${year}년</span></div>
+      <p class="fz12 text-gray mt3" style="line-height:1.6">목표 합의 → 실적·자체평가 → 단계별 승인 → 등급 확정 흐름으로 정량 성과를 관리합니다.</p>
+      <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin:14px 0">
+        <div style="background:#eff6ff;border-radius:9px;padding:10px"><div class="fz10 text-gray">관리 범위</div><div class="fw7 mt1">${scope.length}명</div></div>
+        <div style="background:#eff6ff;border-radius:9px;padding:10px"><div class="fz10 text-gray">KPI 등록</div><div class="fw7 mt1">${kpiPeople}명</div></div>
+      </div>
+      <div class="fz11 text-gray mb3">① 목표 설정　② 자체평가　③ 리더 검토　④ 등급 확정</div>
+      <div class="flex gap2 flex-wrap"><button class="btn btn-primary" onclick="gotoPage('${nextKpi}')">${u.role==="member"?"내 KPI 보기":"KPI 업무 시작"}</button><button class="btn btn-secondary" onclick="gotoPage('eval-progress')">진행 현황</button></div>
+    </div></section>
+    <section class="card" style="border-top:4px solid #7c3aed"><div class="card-body" style="padding:20px">
+      <div class="flex justify-between items-c gap2"><div><div class="fz11 fw7" style="color:#7c3aed">MULTI-RATER FEEDBACK</div><h3 style="font-size:18px;margin-top:4px">⭐ 다면·역량평가</h3></div><span class="badge" style="background:#f3e8ff;color:#6d28d9">익명 피드백</span></div>
+      <p class="fz12 text-gray mt3" style="line-height:1.6">상사·동료·하위 구성원의 다양한 관점을 수집합니다. 평가자 구성과 응답 진행을 성과평가와 별도로 관리합니다.</p>
+      <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin:14px 0">
+        <div style="background:#faf5ff;border-radius:9px;padding:10px"><div class="fz10 text-gray">평가 세션</div><div class="fw7 mt1">${sessions.length}개</div></div>
+        <div style="background:#faf5ff;border-radius:9px;padding:10px"><div class="fz10 text-gray">응답 진행</div><div class="fw7 mt1">${submitted}/${assigned}</div></div>
+      </div>
+      <div class="fz11 text-gray mb3">① 평가자 추천·지정　② 응답 수집　③ 익명 집계　④ 개발 피드백</div>
+      <div class="flex gap2 flex-wrap"><button class="btn btn-primary" style="background:#7c3aed" onclick="gotoPage('comp-eval')">${pending360?`대기 평가 ${pending360}건 진행`:"다면평가 열기"}</button>${isAdmin?`<button class="btn btn-secondary" onclick="compTab='comp-manage';gotoPage('comp-eval')">평가자 구성</button>`:""}</div>
+    </div></section>
+  </div>
+  ${isAdmin?`<div class="card"><div class="card-head"><h3>🧭 평가 운영 설계</h3><span class="fz11 text-gray">설정부터 모니터링까지 단계별로 이동</span></div><div class="card-body"><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px">
+    ${[
+      ["1","평가 유형·일정","KPI와 다면평가의 기간·사용 여부 설정","eval-ops"],
+      ["2","평가 방법·등급","산식, 차수, 등급 비율 구성","eval-ops"],
+      ["3","대상·평가자 구성","자동 추천을 검토하고 직접 조정","comp-eval"],
+      ["4","실행·모니터링","미제출과 단계별 진행 확인","eval-progress"]
+    ].map(([n,title,desc,route])=>`<button type="button" onclick="gotoPage('${route}')" style="text-align:left;border:1px solid #e2e8f0;background:white;border-radius:10px;padding:13px;cursor:pointer"><span class="badge bg-blue">STEP ${n}</span><div class="fw7 mt2">${title}</div><div class="fz10 text-gray mt1" style="line-height:1.45">${desc}</div></button>`).join("")}
+  </div></div></div>`:""}`;
+}
+
 function renderCompOverview(u,year){
   const el=$("#comp-content");if(!el)return;
   const mySession=compSessions.find(s=>s.targetId===u.id&&s.year===year);
@@ -3992,42 +4048,94 @@ function openEvalProgressModal(sessionId){
   <div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal()">닫기</button></div></div>`);
 }
 let _evalEditSort={key:"name",asc:true};
+let _evaluatorSetupTargetId=null,_evaluatorSetupYear=null,_evaluatorSetupMode="manual";
+function _canManageEvaluatorTarget(target){
+  if(!currentUser||!target||!target.active||target.role==="admin")return false;
+  if(currentUser.role==="admin")return true;
+  if(target.role==="director")return false;
+  if(currentUser.role==="director")return target.dept===currentUser.dept&&target.id!==currentUser.id;
+  if(currentUser.role==="leader")return target.dept===currentUser.dept&&target.team===currentUser.team&&target.id!==currentUser.id;
+  return false;
+}
+function _evaluatorRelation(target,e){
+  if(e.role==="director"&&e.dept===target.dept)return"상위 리더";
+  if(e.role==="leader"&&e.dept===target.dept&&e.team===target.team)return"직속 상사";
+  if(target.role==="leader"&&e.role==="member"&&e.dept===target.dept&&e.team===target.team)return"하위 구성원";
+  if(e.dept===target.dept&&e.team===target.team)return"동료";
+  if(e.dept===target.dept)return"동일 본부";
+  return"타부서";
+}
 function openEvaluatorEditModal(targetId,year){
-  const session=compSessions.find(s=>s.targetId===targetId&&s.year===year);
-  const target=getEmp(targetId);if(!target)return;
+  const target=getEmp(targetId);
+  if(!_canManageEvaluatorTarget(target)){showToast("이 직원의 평가자를 관리할 권한이 없습니다.","error");return;}
+  _evaluatorSetupTargetId=targetId;_evaluatorSetupYear=year;
+  _evaluatorSetupMode=getEvalConfig(targetId).fixedEvaluatorIds?"manual":"auto";
+  gotoPage("comp-evaluator-setup");
+}
+function renderEvaluatorSetupPage(){
+  const c=$("#content");if(!c)return;
+  const target=getEmp(_evaluatorSetupTargetId),year=_evaluatorSetupYear||settings.compEvalYear;
+  if(!_canManageEvaluatorTarget(target)){
+    c.innerHTML=`<div class="card"><div class="card-body tc p-empty">관리할 피평가자를 먼저 선택하거나 접근 권한을 확인하세요.<div class="mt3"><button class="btn btn-secondary" onclick="gotoPage('comp-eval')">다면평가로 돌아가기</button></div></div></div>`;return;
+  }
+  const session=compSessions.find(s=>s.targetId===target.id&&s.year===year);
   const currentEvalIds=session?[...session.evaluatorIds]:[];
-  const suggestedEvalIds=getCompEvaluators(targetId,year).map(e=>e.id);
-  const allCandidates=employees.filter(e=>e.active&&e.id!==targetId&&e.role!=="admin")
+  const suggestedEvalIds=getCompEvaluators(target.id,year,true).map(e=>e.id);
+  const initialIds=_evaluatorSetupMode==="auto"?suggestedEvalIds:currentEvalIds;
+  const allCandidates=employees.filter(e=>e.active&&e.id!==target.id&&e.role!=="admin")
     .sort((a,b)=>(a.name||"").localeCompare(b.name||"","ko"));
   _evalEditSort={key:"name",asc:true};
   const sortTh=(key,label)=>`<th class="th-sort" style="cursor:pointer;user-select:none;white-space:nowrap" onclick="_sortEvalEditRows('${key}')" title="클릭하여 정렬">${label}<span id="eval-sort-arrow-${key}"></span></th>`;
-  showModal(`<div class="modal modal-lg"><div class="modal-head"><h2>평가자 관리 — ${h(target.name)}</h2><button class="modal-close" onclick="closeModal()">×</button></div>
-  <div class="modal-body">
-    <div class="info-note mb3">📌 체크박스로 평가자를 선택/해제하세요. 저장하면 세션의 평가자 목록이 업데이트됩니다.</div>
-    <div class="warn-note mb3">⚠ 이미 제출한 평가자를 제외해도 제출된 응답은 삭제되지 않습니다.</div>
-    <div class="fg mb2"><input class="fc" id="eval-edit-search" placeholder="이름·직급·직책 검색" oninput="_filterEvalEditRows(this.value)"><span class="fz11 text-gray" id="eval-edit-count" style="margin-left:8px"></span></div>
-    <div class="tbl-wrap"><table><thead><tr><th><input type="checkbox" id="eval-chk-all" onchange="toggleAllEvaluators(this)" title="검색으로 보이는 행만 선택/해제됩니다"></th>${sortTh("name","이름")}<th>소속</th>${sortTh("rank","직급")}${sortTh("position","직책")}<th>추천</th><th>제출여부</th></tr></thead>
+  c.innerHTML=`<div class="flex justify-between items-c gap2 flex-wrap mb3"><div><button class="btn btn-ghost btn-sm mb2" onclick="gotoPage('comp-eval')">← 다면평가로</button><h2 style="font-size:18px">평가자 구성 — ${h(target.name)}</h2><div class="fz11 text-gray mt1">${h(target.dept||"")} ${h(target.team||"")} · ${h(target.position||target.rank||ROLES[target.role])} · ${year}년</div></div><button class="btn btn-primary" onclick="saveEvaluators(${target.id},${year})">평가자 구성 저장</button></div>
+  <div style="display:grid;grid-template-columns:minmax(0,1fr) minmax(230px,300px);gap:14px" class="eval-setup-layout">
+  <div><div class="card mb3"><div class="card-head"><h3>1. 선정 방법</h3></div><div class="card-body"><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px">
+    <button type="button" id="eval-mode-auto" class="btn ${_evaluatorSetupMode==="auto"?"btn-primary":"btn-secondary"}" style="height:auto;text-align:left;padding:12px" onclick="setEvaluatorSetupMode('auto',${target.id},${year})"><b>✨ 자동 추천</b><br><span class="fz10" style="opacity:.8">조직·직책 기준으로 ${suggestedEvalIds.length}명을 추천합니다.</span></button>
+    <button type="button" id="eval-mode-manual" class="btn ${_evaluatorSetupMode==="manual"?"btn-primary":"btn-secondary"}" style="height:auto;text-align:left;padding:12px" onclick="setEvaluatorSetupMode('manual',${target.id},${year})"><b>☑ 직접 지정</b><br><span class="fz10" style="opacity:.8">추천 결과를 바탕으로 자유롭게 추가·제외합니다.</span></button>
+  </div></div></div>
+  <div class="card"><div class="card-head"><h3>2. 평가자 선택</h3><span class="fz11 text-gray">검색·정렬 후 복수 선택</span></div><div class="card-body">
+    <div class="info-note mb3">상사·동료·하위 구성원을 고르게 포함했는지 오른쪽 구성 요약에서 확인하세요.</div>
+    <div class="warn-note mb3">⚠ 이미 제출한 평가자를 제외해도 기존 응답은 삭제되지 않습니다.</div>
+    <div class="fg mb2"><input class="fc" id="eval-edit-search" placeholder="이름, 부서, 팀, 직급으로 검색" oninput="_filterEvalEditRows(this.value)"><span class="fz11 text-gray" id="eval-edit-count" style="margin-left:8px"></span></div>
+    <div class="tbl-wrap"><table><thead><tr><th><input type="checkbox" id="eval-chk-all" onchange="toggleAllEvaluators(this);refreshEvaluatorSetupSummary()" title="검색으로 보이는 행만 선택/해제됩니다"></th>${sortTh("name","이름")}<th>관계</th><th>소속</th>${sortTh("rank","직급")}${sortTh("position","직책")}<th>추천</th><th>제출</th></tr></thead>
     <tbody id="eval-edit-tbody">${allCandidates.map(e=>{
-      const checked=currentEvalIds.includes(e.id);
+      const checked=initialIds.includes(e.id);
       const suggested=suggestedEvalIds.includes(e.id);
       const resp=session?compResponses.find(r=>r.sessionId===session.id&&r.evaluatorId===e.id&&r.submittedAt):null;
-      const search=[e.name,e.rank,e.position].filter(Boolean).join(" ").toLowerCase();
+      const relation=_evaluatorRelation(target,e);
+      const search=[e.name,e.dept,e.team,e.rank,e.position,relation].filter(Boolean).join(" ").toLowerCase();
       return`<tr data-search="${h(search)}" data-name="${h((e.name||"").toLowerCase())}" data-rank="${h((e.rank||"").toLowerCase())}" data-position="${h((e.position||"").toLowerCase())}" style="${checked?"background:#eff6ff":""}">
-        <td><input type="checkbox" class="eval-chk" value="${e.id}" ${checked?"checked":""}></td>
+        <td><input type="checkbox" class="eval-chk" value="${e.id}" data-relation="${h(relation)}" onchange="refreshEvaluatorSetupSummary()" ${checked?"checked":""}></td>
         <td><strong>${h(e.name)}</strong></td>
+        <td><span class="badge ${relation==="직속 상사"||relation==="상위 리더"?"bg-blue":relation==="동료"?"bg-green":relation==="하위 구성원"?"bg-yellow":"bg-gray"}">${h(relation)}</span></td>
         <td class="fz11 text-gray">${h(e.dept)}/${h(e.team)}</td>
         <td>${h(e.rank||"-")}</td>
         <td>${h(e.position||"-")}</td>
         <td>${suggested?badge("추천","green"):""}</td>
         <td>${resp?badge("제출완료","teal"):""}</td>
       </tr>`;
-    }).join("")}</tbody></table></div>
-  </div>
-  <div class="modal-foot">
-    <button class="btn btn-secondary btn-sm" onclick="applyRecommendedEvaluators(${targetId},${year})">추천 평가자 선택</button>
-    <button class="btn btn-secondary" onclick="closeModal()">취소</button>
-    <button class="btn btn-primary" onclick="saveEvaluators(${targetId},${year})">저장</button>
-  </div></div>`);
+    }).join("")}</tbody></table></div></div></div></div>
+  <aside><div class="card" style="position:sticky;top:12px"><div class="card-head"><h3>구성 요약</h3></div><div class="card-body" id="eval-setup-summary"></div></div></aside></div>`;
+  refreshEvaluatorSetupSummary();
+}
+function setEvaluatorSetupMode(mode,targetId,year){
+  _evaluatorSetupMode=mode;
+  if(mode==="auto")applyRecommendedEvaluators(targetId,year);
+  document.getElementById("eval-mode-auto")?.classList.toggle("btn-primary",mode==="auto");
+  document.getElementById("eval-mode-auto")?.classList.toggle("btn-secondary",mode!=="auto");
+  document.getElementById("eval-mode-manual")?.classList.toggle("btn-primary",mode==="manual");
+  document.getElementById("eval-mode-manual")?.classList.toggle("btn-secondary",mode!=="manual");
+  refreshEvaluatorSetupSummary();
+}
+function refreshEvaluatorSetupSummary(){
+  const el=$("#eval-setup-summary");if(!el)return;
+  const checked=[...document.querySelectorAll(".eval-chk:checked")];
+  const counts={};checked.forEach(ch=>{const k=ch.dataset.relation||"기타";counts[k]=(counts[k]||0)+1;});
+  const hasLeader=(counts["직속 상사"]||0)+(counts["상위 리더"]||0)>0;
+  const hasPeer=(counts["동료"]||0)+(counts["동일 본부"]||0)>0;
+  el.innerHTML=`<div style="font-size:28px;font-weight:800;color:#1d4ed8">${checked.length}<span class="fz12 text-gray">명 선택</span></div>
+    <div style="display:grid;gap:7px;margin:14px 0">${Object.keys(counts).length?Object.entries(counts).map(([k,n])=>`<div class="flex justify-between"><span class="fz11">${h(k)}</span><b class="fz11">${n}명</b></div>`).join(""):`<div class="fz11 text-gray">평가자를 선택하세요.</div>`}</div>
+    <div class="${hasLeader&&hasPeer?"info-note":"warn-note"}" style="font-size:11px">${hasLeader&&hasPeer?"✓ 상위 관점과 동료 관점이 함께 포함되었습니다.":"권장: 상위 리더/직속 상사와 동료 관점을 함께 포함하세요."}</div>
+    <div class="fz10 text-gray mt3">저장 방식: ${_evaluatorSetupMode==="auto"?"조직 기준 자동 추천":"직접 지정"}<br>제출 완료 응답은 평가자 변경 후에도 보존됩니다.</div>`;
 }
 function toggleAllEvaluators(chk){
   // 검색으로 숨겨진(display:none) 행은 건드리지 않고, 현재 화면에 보이는 후보만 일괄 선택/해제한다.
@@ -4067,17 +4175,21 @@ function _sortEvalEditRows(key){
   });
 }
 function applyRecommendedEvaluators(targetId,year){
-  const suggested=getCompEvaluators(targetId,year).map(e=>e.id);
-  document.querySelectorAll(".eval-chk").forEach(chk=>{chk.checked=suggested.includes(Number(chk.value));});
+  const suggested=new Set(getCompEvaluators(targetId,year,true).map(e=>String(e.id)));
+  document.querySelectorAll(".eval-chk").forEach(chk=>{chk.checked=suggested.has(String(chk.value));});
+  refreshEvaluatorSetupSummary();
 }
 function saveEvaluators(targetId,year){
-  const checked=[...document.querySelectorAll(".eval-chk:checked")].map(c=>Number(c.value));
+  const checked=[...document.querySelectorAll(".eval-chk:checked")].map(c=>employees.find(e=>String(e.id)===String(c.value))?.id).filter(id=>id!=null);
   if(!checked.length){showToast("평가자를 최소 1명 이상 선택하세요.","error");return;}
+  const target=getEmp(targetId);
+  if(!_canManageEvaluatorTarget(target)){showToast("이 직원의 평가자를 관리할 권한이 없습니다.","error");return;}
   const existing=compSessions.find(s=>s.targetId===targetId&&s.year===year);
   if(existing){compSessions=compSessions.map(s=>s.id===existing.id?{...s,evaluatorIds:checked,updatedAt:new Date().toISOString()}:s);}
   else{compSessions.push({id:genId(),year,targetId,type:getCompType(getEmp(targetId)),evaluatorIds:checked,status:"open",createdAt:new Date().toISOString(),updatedAt:new Date().toISOString()});}
+  setEvalConfig(targetId,{...getEvalConfig(targetId),fixedEvaluatorIds:_evaluatorSetupMode==="manual"?checked:null});
   autoSaveToServerIfEnabled();
-  closeModal();showToast(`평가자 ${checked.length}명이 저장되었습니다.`,"success");renderCompEval();
+  showToast(`평가자 ${checked.length}명이 저장되었습니다.`,"success");compTab=currentUser.role==="admin"?"comp-manage":"my-team-eval";gotoPage("comp-eval");
 }
 function dlCompFullResult(year){
   calcCompGradesForAll(year);
@@ -6758,8 +6870,8 @@ const SIDEBAR_GROUP_META={
   "pay-sep":{label:"급여",roles:["admin","director","leader","member"]},
   "hr-sep":{label:"인사 관리",roles:["admin","director","leader"]},
   "recruit-sep":{label:"채용 관리",roles:["admin","director","leader"]},
-  "kpi-sep":{label:"KPI 평가",roles:["admin","director","leader","member"]},
-  "comp-sep":{label:"역량/리더십 평가",roles:["admin","director","leader","member"]},
+  "kpi-sep":{label:"KPI 성과평가",roles:["admin","director","leader","member"]},
+  "comp-sep":{label:"다면·역량평가",roles:["admin","director","leader","member"]},
   "promo-sep":{label:"승진 심사",roles:["admin"]},
   "talent-sep":{label:"핵심인재",roles:["admin","director","leader","member"]},
   "lowperf-sep":{label:"저성과 관리",roles:["admin","director"]},
@@ -6779,7 +6891,7 @@ const BIG_CATEGORIES=[
   {key:"approval",label:"전자결재",icon:"📑",desc:"기안·승인·수신·위임",groups:["approval-sep"]},
   {key:"comm",label:"커뮤니케이션",icon:"💬",desc:"공지·게시판·회의실",groups:["comm-sep"]},
   {key:"my",label:"내 정보·근태",icon:"👤",desc:"프로필·근태·복지·급여",groups:["profile-sep","attend-sep","welfare-sep","pay-sep"]},
-  {key:"eval",label:"평가",icon:"🏆",desc:"KPI·역량·리더십 평가",groups:["kpi-sep","comp-sep"]},
+  {key:"eval",label:"평가",icon:"🏆",desc:"KPI 성과평가 · 다면 피드백",groups:["kpi-sep","comp-sep"]},
   {key:"hr",label:"인사",icon:"🗂",desc:"직원·채용·승진·인재관리",groups:["hr-sep","recruit-sep","promo-sep","talent-sep","lowperf-sep"]},
   {key:"acct",label:"회계",icon:"💵",desc:"계정과목·전표·세금·결산",groups:["acct-sep"]},
   {key:"bizplan",label:"사업계획",icon:"🧮",desc:"예산·인원·손익계획",groups:["bizplan-sep"]},
@@ -6896,8 +7008,9 @@ function renderSidebar(){
       {id:"recruit-dashboard",label:"채용 현황 대시보드",icon:"📊",desc:"공고별 전형 단계 현황·평균 평가 점수",roles:["admin","director","leader"]},
     ],
     "kpi-sep":[
-      {id:"kpi-sep",type:"sep",label:"KPI 평가",roles:["admin","director","leader","member"]},
-      {id:"eval-progress",label:"평가 진행 상황",icon:"📈",desc:"KPI·역량·리더십 진행 현황",roles:["admin","director","leader"]},
+      {id:"kpi-sep",type:"sep",label:"KPI 성과평가",roles:["admin","director","leader","member"]},
+      {id:"evaluation-center",label:"평가 홈",icon:"▦",desc:"KPI와 다면평가 작업공간 선택",roles:["admin","director","leader","member"]},
+      {id:"eval-progress",label:"평가 진행 상황",icon:"📈",desc:"KPI·다면평가 통합 진행 현황",roles:["admin","director","leader"]},
       ...(stage==="goal"
         ?[{id:"kpi",label:"KPI 목표 등록",icon:"◎",desc:"목표 작성·제출",roles:["admin","director","leader","member"]}]
         :[{id:"kpi-results",label:"KPI 결과 입력",icon:"✎",desc:"자체평가 점수 입력",roles:["admin","director","leader","member"]}]),
@@ -6913,9 +7026,9 @@ function renderSidebar(){
       {id:"grade-view",label:"KPI 등급 현황",icon:"🏆",desc:"등급 분포·결과 조회",roles:["admin","director","leader"]},
     ],
     "comp-sep":[
-      {id:"comp-sep",type:"sep",label:"역량/리더십 평가",roles:(settings.compEvalEnabled||settings.leadershipEvalEnabled)?["admin","director","leader","member"]:["admin"]},
+      {id:"comp-sep",type:"sep",label:"다면·역량평가",roles:(settings.compEvalEnabled||settings.leadershipEvalEnabled)?["admin","director","leader","member"]:["admin"]},
       ...((settings.compEvalEnabled||settings.leadershipEvalEnabled)?[
-        {id:"comp-eval",label:"다면평가 진행",icon:"⭐",desc:"역량·리더십 평가",roles:["admin","director","leader","member"]},
+        {id:"comp-eval",label:"다면평가 진행",icon:"⭐",desc:"평가자 구성·역량·리더십 피드백",roles:["admin","director","leader","member"]},
         {id:"comp-grade-view",label:"역량평가 등급",icon:"📊",desc:"역량평가 결과 조회",roles:["admin"]}
       ]:[{id:"comp-settings-shortcut",label:"평가 설정하기",icon:"⚙",desc:"역량평가 활성화 필요",roles:["admin"]}]),
     ],
@@ -7015,7 +7128,7 @@ function renderSidebar(){
   _menuGroupsCache=menuGroups;
   const groupOrder=SIDEBAR_DEFAULT_ORDER.filter(g=>menuGroups[g]);
   const menus=groupOrder.flatMap(g=>menuGroups[g]);
-  const titles={dashboard:"대시보드","my-profile":"내 프로필","hr-register":"신규 직원 등록","hr-list":"직원 목록","hr-changes":"발령·변동 이력",kpi:"KPI 목표 등록","kpi-results":"KPI 결과 입력","my-kpi":"나의 KPI","grade-view":"KPI 등급 현황","comp-grade-view":"역량평가 등급","comp-eval":"다면평가 진행","first-eval":"1차 평가","second-eval":"2차 평가","kpi-amend":"수정 요청 승인","eval-progress":"평가 진행 상황",settings:"운영 설정",history:"수정 이력","change-pw":"비밀번호 변경","data-mgmt":"데이터 관리","core-talent":"핵심인재 관리","talent-dev":"육성 계획·실적","promotion-mgmt":"승진 심사 관리","low-performer":"저성과 인력 관리","approval-draft":"기안하기","approval-outbox":"상신함","approval-inbox":"결재함","approval-receive":"수신함","approval-cc-inbox":"참조함","approval-completed":"완료함","attendance":"근태 현황","att-calendar":"캘린더","leave-mgmt":"연차 관리","payslip":"급여 명세서","yearend-settlement":"연말정산(간이)","approval-templates":"결재 양식 관리","integrations":"연동 설정","orgchart":"조직도","certificate":"증명서 발급","hr-stats":"인사 통계","board":"게시판","room-booking":"회의실 예약","welfare-points":"복지포인트","mandatory-training":"법정의무교육","hr-welfare-points":"복지포인트 현황(전체)","hr-mandatory-training":"법정의무교육 현황(전체)","hr-attendance":"근태 현황(전체)","hr-leave-mgmt":"연차 관리(전체)","welfare-status":"복지 현황","long-service-award":"장기근속 포상","award-history":"(최)우수사원 선정 이력","salary-info":"급여 기준 정보","welfare-settings":"복지 제도 설정","notification-center":"알림","acct-partners":"거래처 관리","acct-accounts":"계정과목","acct-vouchers":"전표 관리","acct-tax-invoices":"세금계산서","acct-vat-report":"부가세 신고자료","acct-fixed-assets":"고정자산 관리","acct-fixed-assets-detail":"고정자산 상세","acct-cost-statement":"원가명세서","acct-rcps":"RCPS 관리","acct-rcps-detail":"RCPS 발행 상세","acct-reports":"회계 리포트","expense-claims":"경비 청구","expense-admin":"경비 정산 관리","acct-receivables":"채권/채무 관리","biz-plan":"사업계획","overtime-req":"초과근무 신청","exec-dashboard":"경영 대시보드","onboarding":"온보딩/오프보딩","approval-delegation":"결재 위임","sales-quotations":"견적서 관리","sales-dashboard":"영업 실적 대시보드","sales-purchase-orders":"발주서 관리","inv-items":"품목 관리","inv-locations":"위치 관리","inv-stock":"재고 현황","inv-purchase-requests":"구매요청","pms-projects":"프로젝트 관리","pms-allocation":"내 투입률 입력","pms-my-projects":"내가 투입된 프로젝트","pms-utilization":"가동률 현황","pms-worklog":"일일 업무 투입","recruit-jobs":"채용공고 관리","recruit-candidates":"지원자 관리","recruit-eval":"면접 일정/평가 입력","recruit-eval-detail":"면접 평가 상세","recruit-dashboard":"채용 현황 대시보드","eval-ops":"평가 운영","settings-org":"조직 관리","settings-ranks":"직급 체계","attend-settings":"근태 설정","payroll-settings":"급여 관리","payroll-mgmt":"급여 종합 관리","company-info":"회사 기본 정보","room-settings":"회의실 관리","deploy-perm":"권한 관리"};
+  const titles={dashboard:"대시보드","evaluation-center":"평가 홈","comp-evaluator-setup":"평가자 구성","my-profile":"내 프로필","hr-register":"신규 직원 등록","hr-list":"직원 목록","hr-changes":"발령·변동 이력",kpi:"KPI 목표 등록","kpi-results":"KPI 결과 입력","my-kpi":"나의 KPI","grade-view":"KPI 등급 현황","comp-grade-view":"역량평가 등급","comp-eval":"다면평가 진행","first-eval":"1차 평가","second-eval":"2차 평가","kpi-amend":"수정 요청 승인","eval-progress":"평가 진행 상황",settings:"운영 설정",history:"수정 이력","change-pw":"비밀번호 변경","data-mgmt":"데이터 관리","core-talent":"핵심인재 관리","talent-dev":"육성 계획·실적","promotion-mgmt":"승진 심사 관리","low-performer":"저성과 인력 관리","approval-draft":"기안하기","approval-outbox":"상신함","approval-inbox":"결재함","approval-receive":"수신함","approval-cc-inbox":"참조함","approval-completed":"완료함","attendance":"근태 현황","att-calendar":"캘린더","leave-mgmt":"연차 관리","payslip":"급여 명세서","yearend-settlement":"연말정산(간이)","approval-templates":"결재 양식 관리","integrations":"연동 설정","orgchart":"조직도","certificate":"증명서 발급","hr-stats":"인사 통계","board":"게시판","room-booking":"회의실 예약","welfare-points":"복지포인트","mandatory-training":"법정의무교육","hr-welfare-points":"복지포인트 현황(전체)","hr-mandatory-training":"법정의무교육 현황(전체)","hr-attendance":"근태 현황(전체)","hr-leave-mgmt":"연차 관리(전체)","welfare-status":"복지 현황","long-service-award":"장기근속 포상","award-history":"(최)우수사원 선정 이력","salary-info":"급여 기준 정보","welfare-settings":"복지 제도 설정","notification-center":"알림","acct-partners":"거래처 관리","acct-accounts":"계정과목","acct-vouchers":"전표 관리","acct-tax-invoices":"세금계산서","acct-vat-report":"부가세 신고자료","acct-fixed-assets":"고정자산 관리","acct-fixed-assets-detail":"고정자산 상세","acct-cost-statement":"원가명세서","acct-rcps":"RCPS 관리","acct-rcps-detail":"RCPS 발행 상세","acct-reports":"회계 리포트","expense-claims":"경비 청구","expense-admin":"경비 정산 관리","acct-receivables":"채권/채무 관리","biz-plan":"사업계획","overtime-req":"초과근무 신청","exec-dashboard":"경영 대시보드","onboarding":"온보딩/오프보딩","approval-delegation":"결재 위임","sales-quotations":"견적서 관리","sales-dashboard":"영업 실적 대시보드","sales-purchase-orders":"발주서 관리","inv-items":"품목 관리","inv-locations":"위치 관리","inv-stock":"재고 현황","inv-purchase-requests":"구매요청","pms-projects":"프로젝트 관리","pms-allocation":"내 투입률 입력","pms-my-projects":"내가 투입된 프로젝트","pms-utilization":"가동률 현황","pms-worklog":"일일 업무 투입","recruit-jobs":"채용공고 관리","recruit-candidates":"지원자 관리","recruit-eval":"면접 일정/평가 입력","recruit-eval-detail":"면접 평가 상세","recruit-dashboard":"채용 현황 대시보드","eval-ops":"평가 운영","settings-org":"조직 관리","settings-ranks":"직급 체계","attend-settings":"근태 설정","payroll-settings":"급여 관리","payroll-mgmt":"급여 종합 관리","company-info":"회사 기본 정보","room-settings":"회의실 관리","deploy-perm":"권한 관리"};
   titles["succession-planning"]="핵심직무 승계계획";
   titles["skills-architecture"]="직무·스킬 아키텍처";
   titles["workforce-planning"]="전략적 인력계획";
@@ -7087,7 +7200,7 @@ function renderSidebar(){
     const sec=(label,items)=>items.length?`<div class="sb-sec"><span>${h(label)}</span></div>`+items.map(m=>`<button class="sb-btn sb-leaf${currentPage===m.id?" active":""}" onclick="gotoPage('${m.id}')"><span class="si">${m.icon}</span><span style="flex:1;text-align:left;font-size:12px">${h(m.label)}</span></button>`).join(""):"";
     const opsItem=(menuGroups["set-op-sep"]||[]).filter(mm=>mm.id==="eval-ops"&&visible.includes(mm));
     const pwItem=(menuGroups["set-pw-sep"]||[]).filter(mm=>mm.id==="change-pw"&&visible.includes(mm));
-    const evalNav=sec("KPI 평가",inGroup("kpi-sep"))+sec("역량·리더십 평가",inGroup("comp-sep"))+sec("평가 운영",opsItem)+sec("개인 설정",pwItem);
+    const evalNav=sec("KPI 성과평가",inGroup("kpi-sep"))+sec("다면·역량평가",inGroup("comp-sep"))+sec("평가 운영",opsItem)+sec("개인 설정",pwItem);
     sb.innerHTML=`<div class="sb-logo"><div class="sb-logo-box"><div class="sb-icon">🏆</div><div><div class="sb-title">평가 시스템</div></div></div></div>
     <div style="padding:4px 8px">
       <div class="sb-stage ${stage==="goal"?"goal":"perf"}" style="margin-bottom:${compPeriod||lsPeriod?4:0}px">📊 ${kpiPeriod}</div>
@@ -7130,6 +7243,7 @@ function renderSidebar(){
 }
 // 페이지별 접근 가능 권한 (사이드바 메뉴 표시 여부와 무관하게, 직접 이동 시도도 차단)
 const PAGE_ROLES={
+  "evaluation-center":["admin","director","leader","member"],"comp-evaluator-setup":["admin","director","leader"],
   "engagement-pulse-create":["admin"],"engagement-pulse-action-new":["admin","director","leader"],
   "engagement-pulse-action-detail":["admin","director","leader","member"],
   "hr-register":["admin"],"hr-changes":["admin"],"hr-stats":["admin"],"hr-list":["admin","director","leader"],
@@ -7428,7 +7542,7 @@ function renderEngagementPulsePage(){
 function renderPage(){
   if(currentPage&&currentPage.startsWith("cat:")){renderCategoryLanding(currentPage.slice(4));renderCatNav();const attendBar=document.getElementById("attend-bar");if(attendBar)attendBar.innerHTML=(currentUser&&currentPage==="dashboard")?_renderTeamTodayWidget(currentUser):"";return;}
   if(currentPage&&currentPage.startsWith("board-")){renderBoardPage();renderCatNav();const attendBar=document.getElementById("attend-bar");if(attendBar)attendBar.innerHTML=(currentUser&&currentPage==="dashboard")?_renderTeamTodayWidget(currentUser):"";return;}
-  const pages={dashboard:renderDashboard,"my-profile":renderMyProfile,"hr-register":renderHRRegister,"hr-list":renderHRList,"hr-changes":renderHRChanges,kpi:()=>renderKPI(false),"kpi-results":()=>renderKPI(true),"my-kpi":renderMyKPI,"grade-view":renderGradeView,"comp-grade-view":renderCompGradeView,"comp-settings-shortcut":()=>gotoPage("eval-ops"),"comp-eval":renderCompEval,"data-mgmt":renderDataManagementPage,"core-talent":renderCoreTalentPage,"talent-dev":renderTalentDevPage,"promotion-mgmt":renderPromotionPageStandalone,"low-performer":renderLowPerformer,"activity-log":()=>{loadActivityFromServer();},"first-eval":()=>{approvalTab="eval";approvalSearch={name:"",dept:""};renderApprovals();},"second-eval":()=>{approvalTab="eval";approvalSearch={name:"",dept:""};renderApprovals();},"kpi-amend":()=>{approvalTab="requests";approvalSearch={name:"",dept:""};renderApprovals();},
+  const pages={dashboard:renderDashboard,"evaluation-center":renderEvaluationCenter,"comp-evaluator-setup":renderEvaluatorSetupPage,"my-profile":renderMyProfile,"hr-register":renderHRRegister,"hr-list":renderHRList,"hr-changes":renderHRChanges,kpi:()=>renderKPI(false),"kpi-results":()=>renderKPI(true),"my-kpi":renderMyKPI,"grade-view":renderGradeView,"comp-grade-view":renderCompGradeView,"comp-settings-shortcut":()=>gotoPage("eval-ops"),"comp-eval":renderCompEval,"data-mgmt":renderDataManagementPage,"core-talent":renderCoreTalentPage,"talent-dev":renderTalentDevPage,"promotion-mgmt":renderPromotionPageStandalone,"low-performer":renderLowPerformer,"activity-log":()=>{loadActivityFromServer();},"first-eval":()=>{approvalTab="eval";approvalSearch={name:"",dept:""};renderApprovals();},"second-eval":()=>{approvalTab="eval";approvalSearch={name:"",dept:""};renderApprovals();},"kpi-amend":()=>{approvalTab="requests";approvalSearch={name:"",dept:""};renderApprovals();},
   // Epic B #1(2026-10) — 중간 단계 승인자가 team_leader/dept_director가 아닌
   // specific_employee(예: role:"member"인 인사팀 직원)일 수 있어, first-eval/second-eval/
   // kpi-amend처럼 role로 막힌 기존 페이지로는 접근할 방법이 없다. PAGE_ROLES에 등록하지
