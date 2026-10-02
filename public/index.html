@@ -1088,6 +1088,8 @@ let approvalDelegations=[]; // 결재 위임 [{id,empId,empName,delegateId,deleg
 let mandatoryTraining=[]; // 법정의무교육 이수 [{id,empId,trainingType,year,completedAt,method,note}]
 let healthCheckupLog=[]; // 종합검진 이수 이력 [{id,empId,year,completedAt,note}]
 let scheduleEvents=[]; // 캘린더 일정 [{id,authorId,title,startDate,endDate,scope:"personal"|"team"|"dept"|"company",dept,team,memo,color,createdAt}]
+let personalTasks=[]; // 개인 할일 [{id,ownerId,title,dueDate,priority,status,memo,createdAt,updatedAt}]
+let workReports=[]; // 일·주간 업무보고 [{id,authorId,dept,team,periodType,periodStart,periodEnd,summary,blockers,nextPlan,status,...}]
 let engagementSurveys=[]; // 직원 몰입도 펄스 캠페인
 let engagementResponses=[]; // 서버에서는 항상 본인 응답만 내려옴
 let engagementPulseSummary={}; // 서버가 조직 범위·최소 익명 인원 기준으로 만든 집계
@@ -1098,7 +1100,7 @@ function _recordCollections(){return{
   approvalTemplates,integrationLogs,approvalDocs,attendanceRecords,payslips,
   yearEndSettlements,
   payrollAdjustments,leaveUsagePlans,boardPosts,roomReservations,certLog,certRequests,
-  welfarePoints,mandatoryTraining,healthCheckupLog,scheduleEvents,expenseClaims,
+  welfarePoints,mandatoryTraining,healthCheckupLog,scheduleEvents,personalTasks,workReports,expenseClaims,
   overtimeRequests,onboardingFlows,approvalDelegations,engagementSurveys,engagementResponses,engagementActions
 };}
 function _applyRecordRevisions(revisions){
@@ -2582,7 +2584,7 @@ const SNAPSHOT_FIELD_LABELS = {
   leaveUsagePlans:"연차 사용계획서",
   boardPosts:"게시판", roomReservations:"회의실 예약", certLog:"자격증 이력",
   certRequests:"자격증 신청", welfarePoints:"복지포인트", mandatoryTraining:"필수교육",
-  healthCheckupLog:"건강검진 이력", scheduleEvents:"일정",
+  healthCheckupLog:"건강검진 이력", scheduleEvents:"일정", personalTasks:"개인 할일", workReports:"업무보고",
   settings:"환경설정", orgDB:"조직 DB", gradeSettings:"등급 설정", promotionSettings:"승진 설정",
   coreTalentSettings:"핵심인재 설정", evaluatorConfig:"평가자 설정", approvalChainSettings:"결재선 설정",
   integrationSettings:"연동 설정", disabledTplIds:"비활성 템플릿", _idCounter:"ID 카운터",
@@ -5482,6 +5484,8 @@ function getFullState(action=""){
       mandatoryTraining:JSON.parse(JSON.stringify(mandatoryTraining)),
       healthCheckupLog:JSON.parse(JSON.stringify(healthCheckupLog)),
       scheduleEvents:JSON.parse(JSON.stringify(scheduleEvents)),
+      personalTasks:JSON.parse(JSON.stringify(personalTasks)),
+      workReports:JSON.parse(JSON.stringify(workReports)),
       engagementSurveys:JSON.parse(JSON.stringify(engagementSurveys)),
       engagementResponses:JSON.parse(JSON.stringify(engagementResponses)),
       engagementActions:JSON.parse(JSON.stringify(engagementActions)),
@@ -5715,6 +5719,8 @@ function applyState(state,skipUndo=false){
   if(d.mandatoryTraining&&Array.isArray(d.mandatoryTraining))mandatoryTraining=d.mandatoryTraining;
   if(d.healthCheckupLog&&Array.isArray(d.healthCheckupLog))healthCheckupLog=d.healthCheckupLog;
   if(d.scheduleEvents&&Array.isArray(d.scheduleEvents))scheduleEvents=_mergeByIdPreferNewer(scheduleEvents,d.scheduleEvents,'scheduleEvents');
+  if(d.personalTasks&&Array.isArray(d.personalTasks))personalTasks=_mergeByIdPreferNewer(personalTasks,d.personalTasks,'personalTasks');
+  if(d.workReports&&Array.isArray(d.workReports))workReports=_mergeByIdPreferNewer(workReports,d.workReports,'workReports');
   if(d.engagementSurveys&&Array.isArray(d.engagementSurveys))engagementSurveys=_mergeByIdPreferNewer(engagementSurveys,d.engagementSurveys,'engagementSurveys');
   if(d.engagementResponses&&Array.isArray(d.engagementResponses))engagementResponses=_mergeByIdPreferNewer(engagementResponses,d.engagementResponses,'engagementResponses');
   if(d.engagementActions&&Array.isArray(d.engagementActions))engagementActions=_mergeByIdPreferNewer(engagementActions,d.engagementActions,'engagementActions');
@@ -5753,6 +5759,8 @@ function applyState(state,skipUndo=false){
   mandatoryTraining=_tombFilter(mandatoryTraining,"mandatoryTraining");
   healthCheckupLog=_tombFilter(healthCheckupLog,"healthCheckupLog");
   scheduleEvents=_tombFilter(scheduleEvents,"scheduleEvents");
+  personalTasks=_tombFilter(personalTasks,"personalTasks");
+  workReports=_tombFilter(workReports,"workReports");
   engagementSurveys=_tombFilter(engagementSurveys,"engagementSurveys");
   engagementResponses=_tombFilter(engagementResponses,"engagementResponses");
   engagementActions=_tombFilter(engagementActions,"engagementActions");
@@ -6963,6 +6971,8 @@ function renderSidebar(){
       {id:"comm-sep",type:"sep",label:"커뮤니케이션",roles:["admin","director","leader","member"]},
       ...(settings.boardCategories||[{id:"notice",name:"공지사항",icon:"📢"},{id:"general",name:"일반게시판",icon:"📌"},{id:"rules",name:"규정게시판",icon:"📋"}]).map(cat=>({id:`board-${cat.id}`,label:cat.name,icon:cat.icon||"📌",desc:`${cat.name} 게시판`,roles:["admin","director","leader","member"]})),
       {id:"room-booking",label:"회의실 예약",icon:"🗓",desc:"회의실 예약·현황",roles:["admin","director","leader","member"]},
+      {id:"my-tasks",label:"할일 관리",icon:"☑",desc:"개인 할일·기한·우선순위 관리",roles:["admin","director","leader","member"]},
+      {id:"work-reports",label:"업무보고",icon:"📝",desc:"일·주간 업무보고 작성 및 조직별 조회",roles:["admin","director","leader","member"]},
       {id:"engagement-pulse",label:"직원 몰입도 펄스",icon:"💬",desc:"익명 설문·조직별 몰입도·개선 의견",roles:["admin","director","leader","member"]},
     ],
     "attend-sep":[
@@ -7138,6 +7148,8 @@ function renderSidebar(){
   titles["engagement-pulse-create"]="펄스 설문 개설";
   titles["engagement-pulse-action-new"]="설문 개선계획 작성";
   titles["engagement-pulse-action-detail"]="개선계획 상세·점검";
+  titles["my-tasks"]="할일 관리";
+  titles["work-reports"]="업무보고";
   const ptEl=$("#page-title");if(ptEl)ptEl.textContent=titles[currentPage]||"";
   const sb=$("#sidebar");if(!sb)return;
   // Filter by role + per-user custom permission overrides (admin-managed)
@@ -7554,6 +7566,8 @@ function renderPage(){
   pages["workforce-planning"]=renderWorkforcePlanningPage;
   pages["position-control"]=renderPositionControlPage;
   pages["position-requests"]=renderPositionRequestPage;
+  pages["my-tasks"]=renderMyTasksPage;
+  pages["work-reports"]=renderWorkReportsPage;
   pages["engagement-pulse"]=renderEngagementPulsePage;
   pages["engagement-pulse-create"]=renderPulseSurveyCreatePage;
   pages["engagement-pulse-action-new"]=renderPulseActionCreatePage;
@@ -7972,7 +7986,7 @@ function _dashTodayWorkHub(u,sz){
     const roles=item?.roles||PAGE_ROLES[pageId];
     return perms[pageId]!==false&&(!roles||roles.includes(u.role));
   };
-  const canAttendance=canUse("attendance"),canApproval=canUse("approval-inbox"),canCalendar=canUse("att-calendar"),canRoom=canUse("room-booking");
+  const canAttendance=canUse("attendance"),canApproval=canUse("approval-inbox"),canCalendar=canUse("att-calendar"),canRoom=canUse("room-booking"),canTasks=canUse("my-tasks");
   const boardPage=`board-${settings.boardCategories?.[0]?.id||"notice"}`;
   const canBoard=canUse(boardPage);
   const todayRec=canAttendance?attendanceRecords.find(r=>String(r.empId)===String(u.id)&&r.date===todayStr):null;
@@ -7982,6 +7996,7 @@ function _dashTodayWorkHub(u,sz){
     return visible&&(ev.startDate||"")<=todayStr&&(ev.endDate||ev.startDate||"")>=todayStr;
   }).sort((a,b)=>String(a.startDate||"").localeCompare(String(b.startDate||""))):[];
   const myRooms=canRoom?roomReservations.filter(r=>String(r.bookedBy)===String(u.id)&&_roomCoversDate(r,todayStr)).sort((a,b)=>String(a.startTime||"").localeCompare(String(b.startTime||""))):[];
+  const dueTasks=canTasks?personalTasks.filter(t=>String(t.ownerId)===String(u.id)&&t.status!=="done"&&(!t.dueDate||t.dueDate<=todayStr)).sort((a,b)=>(a.priority==="high"?-1:1)-(b.priority==="high"?-1:1)||String(a.dueDate||"").localeCompare(String(b.dueDate||""))):[];
   const latestPost=canBoard?boardPosts.slice().sort((a,b)=>String(b.createdAt||"").localeCompare(String(a.createdAt||"")))[0]:null;
   const roomName=id=>(settings.meetingRooms||[]).find(r=>String(r.id)===String(id))?.name||"회의실";
   const tiles=[];
@@ -7993,6 +8008,7 @@ function _dashTodayWorkHub(u,sz){
   if(canApproval)tiles.push({page:"approval-inbox",icon:"📥",label:"결재 대기",value:`${pending.length}건`,detail:pending.length?"처리할 문서가 있습니다":"대기 문서 없음",color:pending.length?"#dc2626":"#475569",bg:pending.length?"#fef2f2":"#f8fafc"});
   if(canCalendar)tiles.push({page:"att-calendar",icon:"🗓",label:"오늘 일정",value:`${visibleEvents.length}건`,detail:visibleEvents[0]?.title||"등록된 일정 없음",color:"#1d4ed8",bg:"#eff6ff"});
   if(canRoom)tiles.push({page:"room-booking",icon:"🏢",label:"내 회의실",value:`${myRooms.length}건`,detail:myRooms[0]?`${myRooms[0].startTime||"종일"} ${roomName(myRooms[0].roomId)}`:"오늘 예약 없음",color:"#6d28d9",bg:"#f5f3ff"});
+  if(canTasks)tiles.push({page:"my-tasks",icon:"☑",label:"기한 도래 할일",value:`${dueTasks.length}건`,detail:dueTasks[0]?.title||"오늘 처리할 할일 없음",color:dueTasks.length?"#b45309":"#475569",bg:dueTasks.length?"#fffbeb":"#f8fafc"});
   const tileHtml=tiles.length?tiles.map(t=>`<button type="button" data-hub-action="${t.page}" onclick="event.stopPropagation();gotoPage('${t.page}')" style="appearance:none;text-align:left;border:1px solid #e2e8f0;background:${t.bg};border-radius:10px;padding:10px;cursor:pointer;min-width:0">
     <div class="fz11 text-gray">${t.icon} ${t.label}</div><div style="font-size:17px;font-weight:800;color:${t.color};margin:2px 0">${h(t.value)}</div><div class="fz11 text-gray" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${h(t.detail)}</div>
   </button>`).join(""):`<div class="fz12 text-gray">사용 가능한 오늘 업무 메뉴가 없습니다.</div>`;
@@ -8000,6 +8016,7 @@ function _dashTodayWorkHub(u,sz){
   pending.slice(0,2).forEach(d=>agenda.push({page:"approval-inbox",icon:"📥",title:`결재: ${d.title||_getDocTitle(d.templateId,d.formData||{})}`,meta:getEmpName(d.authorId)}));
   visibleEvents.slice(0,2).forEach(ev=>agenda.push({page:"att-calendar",icon:"🗓",title:ev.title,meta:ev.scope==="personal"?"개인 일정":ev.scope==="company"?"전사 일정":"조직 일정"}));
   myRooms.slice(0,2).forEach(r=>agenda.push({page:"room-booking",icon:"🏢",title:r.title||roomName(r.roomId),meta:`${r.allDay?"종일":`${r.startTime}~${r.endTime}`} · ${roomName(r.roomId)}`}));
+  dueTasks.slice(0,2).forEach(t=>agenda.push({page:"my-tasks",icon:"☑",title:t.title,meta:t.dueDate&&t.dueDate<todayStr?`기한 초과 · ${t.dueDate}`:t.dueDate?`오늘까지 · ${t.dueDate}`:"기한 없음"}));
   if(latestPost)agenda.push({page:boardPage,icon:"📌",title:latestPost.title,meta:`최신 게시물 · ${(latestPost.createdAt||"").slice(0,10)}`});
   const limit=Math.max(2,Math.min(6,(sz&&sz.rows)||4));
   const agendaHtml=agenda.length?agenda.slice(0,limit).map(it=>`<button type="button" onclick="event.stopPropagation();gotoPage('${it.page}')" style="width:100%;display:flex;align-items:center;gap:8px;border:0;border-bottom:1px solid #f1f5f9;background:transparent;padding:7px 0;text-align:left;cursor:pointer"><span>${it.icon}</span><span style="flex:1;min-width:0"><span class="fz12 fw6" style="display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${h(it.title)}</span><span class="fz11 text-gray">${h(it.meta)}</span></span><span class="text-gray">›</span></button>`).join(""):`<div class="fz12 text-gray" style="padding:12px 0;text-align:center">오늘 처리할 일정과 알림이 없습니다.</div>`;
@@ -8007,6 +8024,7 @@ function _dashTodayWorkHub(u,sz){
     canUse("approval-draft")?{page:"approval-draft",label:"기안 작성"}:null,
     canCalendar?{page:"att-calendar",label:"일정 관리"}:null,
     canRoom?{page:"room-booking",label:"회의실 예약"}:null,
+    canTasks?{page:"my-tasks",label:"할일 관리"}:null,
     canBoard?{page:boardPage,label:"공지·게시판"}:null,
   ].filter(Boolean);
   return`<div class="card" data-testid="today-work-hub">
@@ -13875,7 +13893,7 @@ async function doResetAll(){
     if(!d.ok)throw new Error(d.message);
     employees=[];kpiEntries=[];changeRequests=[];compGradeResults={};gradeAdjustHistory=[];
     coreTalentPool=[];talentDevPlans=[];successionPlans=[];jobSkillProfiles=[];employeeSkillProfiles=[];workforceScenarios=[];workforcePositions=[];positionRequests=[];_positionRequestPicker=[];_positionRequestPickerLoaded=false;_positionBudgetPicker=[];_positionBudgetPickerLoaded=false;lowPerfData=[];tieNotifications=[];
-    approvalDocs=[];attendanceRecords=[];payslips=[];yearEndSettlements=[];payrollAdjustments=[];leaveUsagePlans=[];boardPosts=[];roomReservations=[];certLog=[];certRequests=[];welfarePoints=[];mandatoryTraining=[];healthCheckupLog=[];engagementSurveys=[];engagementResponses=[];engagementActions=[];engagementPulseSummary={};
+    approvalDocs=[];attendanceRecords=[];payslips=[];yearEndSettlements=[];payrollAdjustments=[];leaveUsagePlans=[];boardPosts=[];roomReservations=[];certLog=[];certRequests=[];welfarePoints=[];mandatoryTraining=[];healthCheckupLog=[];personalTasks=[];workReports=[];engagementSurveys=[];engagementResponses=[];engagementActions=[];engagementPulseSummary={};
     showToast("전체 데이터가 초기화되었습니다.","success");
     renderPage();
   }catch(e){showToast("초기화 실패: "+e.message,"error");}
@@ -27840,6 +27858,70 @@ async function deleteBoardPost(postId){
   if(!ok)return;
   _tombstone("boardPosts",postId);boardPosts=boardPosts.filter(p=>p.id!==postId);autoSaveToServerIfEnabled();closeModal();renderBoardPage();showToast("삭제되었습니다.","info");
 }
+
+// ==================== PERSONAL TASKS / WORK REPORTS ====================
+let _taskFilter="open",_reportFilter="all";
+function _todayYmd(){const d=new Date();return`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;}
+function renderMyTasksPage(){
+  const c=$("#content"),today=_todayYmd();
+  const mine=personalTasks.filter(t=>String(t.ownerId)===String(currentUser.id));
+  const rows=mine.filter(t=>_taskFilter==="all"||(_taskFilter==="open"?t.status!=="done":t.status===_taskFilter))
+    .sort((a,b)=>(a.status==="done")-(b.status==="done")||String(a.dueDate||"9999").localeCompare(String(b.dueDate||"9999")));
+  const overdue=mine.filter(t=>t.status!=="done"&&t.dueDate&&t.dueDate<today).length;
+  c.innerHTML=`<div class="card"><div class="card-head"><div><h3>☑ 할일 관리</h3><div class="fz11 text-gray mt1">개인 할일은 본인에게만 표시됩니다.</div></div><button class="btn btn-primary btn-sm" onclick="openTaskModal()">+ 할일 추가</button></div>
+    <div class="card-body"><div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px">
+      ${[["open","진행 중"],["todo","할일"],["doing","진행"],["done","완료"],["all","전체"]].map(([v,l])=>`<button class="btn btn-sm ${_taskFilter===v?"btn-primary":"btn-secondary"}" onclick="_taskFilter='${v}';renderMyTasksPage()">${l}</button>`).join("")}
+      <span class="fz12 ${overdue?"text-red":"text-gray"}" style="margin-left:auto">기한 초과 ${overdue}건 · 전체 ${mine.length}건</span></div>
+      <div class="tbl-wrap"><table><thead><tr><th>상태</th><th>할일</th><th>우선순위</th><th>기한</th><th>관리</th></tr></thead><tbody>${rows.length?rows.map(t=>{const late=t.status!=="done"&&t.dueDate&&t.dueDate<today;return`<tr><td><select class="fc" style="min-width:82px" onchange="updateTaskStatus('${t.id}',this.value)">${[["todo","할일"],["doing","진행"],["done","완료"]].map(([v,l])=>`<option value="${v}"${t.status===v?" selected":""}>${l}</option>`).join("")}</select></td><td><div class="fw6">${h(t.title)}</div>${t.memo?`<div class="fz11 text-gray">${h(t.memo)}</div>`:""}</td><td>${t.priority==="high"?"🔴 높음":t.priority==="low"?"⚪ 낮음":"🟡 보통"}</td><td class="${late?"text-red fw7":""}">${t.dueDate||"-"}${late?" · 초과":""}</td><td><button class="btn btn-secondary btn-sm" onclick="openTaskModal('${t.id}')">수정</button> <button class="btn btn-danger btn-sm" onclick="deleteTask('${t.id}')">삭제</button></td></tr>`;}).join(""):`<tr><td colspan="5" class="text-gray" style="text-align:center;padding:28px">조건에 맞는 할일이 없습니다.</td></tr>`}</tbody></table></div>
+    </div></div>`;
+}
+function openTaskModal(id){
+  const t=id?personalTasks.find(x=>String(x.id)===String(id)):null;
+  showModal(`<div class="modal modal-md"><div class="modal-head"><h2>${t?"할일 수정":"할일 추가"}</h2><button class="modal-close" onclick="closeModal()">×</button></div><div class="modal-body">
+    <div class="fg"><label class="fl">할일 *</label><input id="task-title" class="fc" maxlength="120" value="${h(t?.title||"")}" placeholder="예: 주간회의 자료 검토"></div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px"><div class="fg"><label class="fl">기한</label><input id="task-due" type="date" class="fc" value="${t?.dueDate||_todayYmd()}"></div><div class="fg"><label class="fl">우선순위</label><select id="task-priority" class="fc">${[["high","높음"],["normal","보통"],["low","낮음"]].map(([v,l])=>`<option value="${v}"${(t?.priority||"normal")===v?" selected":""}>${l}</option>`).join("")}</select></div></div>
+    <div class="fg"><label class="fl">메모</label><textarea id="task-memo" class="fc" rows="3" maxlength="500" placeholder="예: 검토 범위와 완료 기준을 적어두세요">${h(t?.memo||"")}</textarea></div></div>
+    <div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal()">취소</button><button class="btn btn-primary" onclick="saveTask('${id||""}')">저장</button></div></div>`);
+}
+function saveTask(id){
+  const title=$("#task-title")?.value.trim(),dueDate=$("#task-due")?.value,priority=$("#task-priority")?.value,memo=$("#task-memo")?.value.trim();
+  if(!title){showToast("할일을 입력하세요.","error");return;}
+  const now=new Date().toISOString(),old=id?personalTasks.find(t=>String(t.id)===String(id)):null;
+  if(old)Object.assign(old,{title,dueDate,priority,memo,updatedAt:now});
+  else personalTasks.push({id:`task-${genId()}`,ownerId:currentUser.id,title,dueDate,priority,status:"todo",memo,createdAt:now,updatedAt:now});
+  closeModal();autoSaveToServerIfEnabled();renderMyTasksPage();showToast("할일을 저장했습니다.","success");
+}
+function updateTaskStatus(id,status){const t=personalTasks.find(x=>String(x.id)===String(id));if(!t||String(t.ownerId)!==String(currentUser.id))return;t.status=status;t.updatedAt=new Date().toISOString();autoSaveToServerIfEnabled();renderMyTasksPage();}
+async function deleteTask(id){const t=personalTasks.find(x=>String(x.id)===String(id));if(!t||String(t.ownerId)!==String(currentUser.id))return;const ok=await askConfirmModal({title:"할일 삭제",message:"선택한 할일을 삭제하시겠습니까?",confirmText:"삭제",danger:true,impacts:[{label:"할일",value:t.title},{label:"상태",value:t.status==="done"?"완료":"미완료"}]});if(!ok)return;_tombstone("personalTasks",t.id);personalTasks=personalTasks.filter(x=>String(x.id)!==String(id));autoSaveToServerIfEnabled();renderMyTasksPage();}
+
+function _canViewReport(r){if(String(r.authorId)===String(currentUser.id)||currentUser.role==="admin")return true;const me=_liveUser();if(currentUser.role==="director")return r.dept===me.dept;if(currentUser.role==="leader")return r.dept===me.dept&&r.team===me.team;return false;}
+function renderWorkReportsPage(){
+  const c=$("#content"),mine=workReports.filter(r=>String(r.authorId)===String(currentUser.id)),visible=workReports.filter(_canViewReport).filter(r=>_reportFilter==="all"||(_reportFilter==="mine"?String(r.authorId)===String(currentUser.id):r.periodType===_reportFilter)).sort((a,b)=>String(b.periodStart||"").localeCompare(String(a.periodStart||"")));
+  c.innerHTML=`<div class="card"><div class="card-head"><div><h3>📝 업무보고</h3><div class="fz11 text-gray mt1">일·주간 실적, 애로사항과 다음 계획을 한 번에 공유합니다.</div></div><button class="btn btn-primary btn-sm" onclick="openWorkReportModal()">+ 업무보고 작성</button></div><div class="card-body">
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">${[["all","전체"],["mine",`내 보고 ${mine.length}`],["daily","일일"],["weekly","주간"]].map(([v,l])=>`<button class="btn btn-sm ${_reportFilter===v?"btn-primary":"btn-secondary"}" onclick="_reportFilter='${v}';renderWorkReportsPage()">${l}</button>`).join("")}</div>
+    <div class="tbl-wrap"><table><thead><tr><th>기간</th><th>작성자</th><th>업무 요약</th><th>애로사항</th><th>상태</th><th>관리</th></tr></thead><tbody>${visible.length?visible.map(r=>{const own=String(r.authorId)===String(currentUser.id);return`<tr><td>${r.periodType==="weekly"?"주간":"일일"}<br><span class="fz11 text-gray">${r.periodStart}${r.periodEnd&&r.periodEnd!==r.periodStart?` ~ ${r.periodEnd}`:""}</span></td><td>${h(r.authorName||getEmpName(r.authorId))}<br><span class="fz11 text-gray">${h([r.dept,r.team].filter(Boolean).join(" / "))}</span></td><td style="max-width:280px;white-space:pre-wrap">${h(r.summary)}</td><td style="max-width:220px;white-space:pre-wrap">${h(r.blockers||"-")}</td><td>${r.status==="submitted"?"✅ 제출":"📝 초안"}</td><td><button class="btn btn-secondary btn-sm" onclick="openWorkReportDetail('${r.id}')">보기</button>${own?` <button class="btn btn-secondary btn-sm" onclick="openWorkReportModal('${r.id}')">수정</button>${r.status!=="submitted"?` <button class="btn btn-danger btn-sm" onclick="deleteWorkReport('${r.id}')">삭제</button>`:""}`:""}</td></tr>`;}).join(""):`<tr><td colspan="6" class="text-gray" style="text-align:center;padding:28px">조회할 업무보고가 없습니다.</td></tr>`}</tbody></table></div></div></div>`;
+}
+function openWorkReportModal(id){
+  const r=id?workReports.find(x=>String(x.id)===String(id)):null;if(r&&String(r.authorId)!==String(currentUser.id))return;
+  if(r?.status==="submitted"){showToast("제출된 업무보고는 수정할 수 없습니다.","info");return;}
+  const start=r?.periodStart||_todayYmd();
+  showModal(`<div class="modal modal-lg"><div class="modal-head"><h2>${r?"업무보고 수정":"업무보고 작성"}</h2><button class="modal-close" onclick="closeModal()">×</button></div><div class="modal-body">
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px"><div class="fg"><label class="fl">구분 *</label><select id="wr-type" class="fc" onchange="_syncWorkReportPeriod()"><option value="daily"${r?.periodType!=="weekly"?" selected":""}>일일</option><option value="weekly"${r?.periodType==="weekly"?" selected":""}>주간</option></select></div><div class="fg"><label class="fl">시작일 *</label><input id="wr-start" type="date" class="fc" value="${start}" onchange="_syncWorkReportPeriod()"></div><div class="fg"><label class="fl">종료일 *</label><input id="wr-end" type="date" class="fc" value="${r?.periodEnd||start}"></div></div>
+    <div class="fg"><label class="fl">수행 업무·성과 *</label><textarea id="wr-summary" class="fc" rows="5" maxlength="3000" placeholder="예: 채용 면접 3건 완료, 급여 마감 검증 완료(오류 0건)">${h(r?.summary||"")}</textarea><div class="form-hint">완료한 일과 확인 가능한 결과를 함께 적어주세요.</div></div>
+    <div class="fg"><label class="fl">애로사항·지원 요청</label><textarea id="wr-blockers" class="fc" rows="3" maxlength="1500" placeholder="예: 협업 부서 회신 지연 — 금요일까지 자료 요청 필요">${h(r?.blockers||"")}</textarea></div>
+    <div class="fg"><label class="fl">다음 계획 *</label><textarea id="wr-next" class="fc" rows="3" maxlength="1500" placeholder="예: 다음 주 평가결과 검증 및 임원 보고안 작성">${h(r?.nextPlan||"")}</textarea></div></div>
+    <div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal()">취소</button><button class="btn btn-secondary" onclick="saveWorkReport('${id||""}','draft')">초안 저장</button><button class="btn btn-primary" onclick="saveWorkReport('${id||""}','submitted')">제출</button></div></div>`);
+}
+function _syncWorkReportPeriod(){const type=$("#wr-type")?.value,start=$("#wr-start")?.value,end=$("#wr-end");if(!end||!start)return;if(type==="daily")end.value=start;else if(end.value<start){const d=new Date(start+"T00:00:00");d.setDate(d.getDate()+6);end.value=d.toISOString().slice(0,10);}}
+function saveWorkReport(id,status){
+  const periodType=$("#wr-type")?.value,periodStart=$("#wr-start")?.value,periodEnd=$("#wr-end")?.value,summary=$("#wr-summary")?.value.trim(),blockers=$("#wr-blockers")?.value.trim(),nextPlan=$("#wr-next")?.value.trim();
+  if(!periodStart||!periodEnd||!summary||!nextPlan){showToast("기간, 수행 업무·성과, 다음 계획을 모두 입력하세요.","error");return;}if(periodEnd<periodStart){showToast("종료일은 시작일보다 빠를 수 없습니다.","error");return;}if(status==="submitted"&&summary.length<10){showToast("제출하려면 수행 업무·성과를 10자 이상 작성하세요.","error");return;}
+  const now=new Date().toISOString(),u=_liveUser(),old=id?workReports.find(r=>String(r.id)===String(id)):null,data={periodType,periodStart,periodEnd,summary,blockers,nextPlan,status,submittedAt:status==="submitted"?now:null,updatedAt:now};
+  if(old&&String(old.authorId)===String(currentUser.id))Object.assign(old,data);else workReports.push({id:`wr-${genId()}`,authorId:currentUser.id,authorName:u.name,dept:u.dept||"",team:u.team||"",createdAt:now,...data});
+  closeModal();autoSaveToServerIfEnabled();renderWorkReportsPage();showToast(status==="submitted"?"업무보고를 제출했습니다.":"초안을 저장했습니다.","success");
+}
+function openWorkReportDetail(id){const r=workReports.find(x=>String(x.id)===String(id));if(!r||!_canViewReport(r))return;showModal(`<div class="modal modal-lg"><div class="modal-head"><h2>${r.periodType==="weekly"?"주간":"일일"} 업무보고</h2><button class="modal-close" onclick="closeModal()">×</button></div><div class="modal-body"><div class="fz12 text-gray mb3">${h(r.authorName||getEmpName(r.authorId))} · ${h([r.dept,r.team].filter(Boolean).join(" / "))} · ${r.periodStart}${r.periodEnd!==r.periodStart?` ~ ${r.periodEnd}`:""}</div><h4>수행 업무·성과</h4><div style="white-space:pre-wrap;margin:8px 0 18px">${h(r.summary)}</div><h4>애로사항·지원 요청</h4><div style="white-space:pre-wrap;margin:8px 0 18px">${h(r.blockers||"없음")}</div><h4>다음 계획</h4><div style="white-space:pre-wrap;margin-top:8px">${h(r.nextPlan)}</div></div><div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal()">닫기</button></div></div>`);}
+async function deleteWorkReport(id){const r=workReports.find(x=>String(x.id)===String(id));if(!r||String(r.authorId)!==String(currentUser.id)||r.status==="submitted")return;const ok=await askConfirmModal({title:"업무보고 초안 삭제",message:"작성 중인 업무보고 초안을 삭제하시겠습니까?",confirmText:"삭제",danger:true,impacts:[{label:"기간",value:`${r.periodStart} ~ ${r.periodEnd}`}]});if(!ok)return;_tombstone("workReports",r.id);workReports=workReports.filter(x=>String(x.id)!==String(id));autoSaveToServerIfEnabled();renderWorkReportsPage();}
 
 // ==================== MEETING ROOM BOOKING (회의실 예약) ====================
 const _ROOM_COLOR_PALETTE=["#3b82f6","#16a34a","#dc2626","#7c3aed","#ea580c","#0891b2","#db2777","#65a30d"];

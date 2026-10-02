@@ -728,6 +728,22 @@ function filterDataForRole(data, auth) {
   if (auth.role !== "admin" && Array.isArray(out.scheduleEvents)) {
     out.scheduleEvents = out.scheduleEvents.filter(s => !s || s.scope !== "personal" || String(s.authorId) === myId);
   }
+  // 개인 할일은 직급과 무관하게 소유자에게만, 업무보고는 작성자와 실제 조직 관리 범위에만
+  // 제공한다. 화면 숨김에 의존하면 /data 직접 호출로 동료의 메모·애로사항이 노출된다.
+  if (Array.isArray(out.personalTasks)) {
+    out.personalTasks = out.personalTasks.filter(t => t && String(t.ownerId) === myId);
+  }
+  if (Array.isArray(out.workReports)) {
+    const employees = Array.isArray(out.employees) ? out.employees : [];
+    const me = employees.find(e => String(e && e.id) === myId);
+    out.workReports = out.workReports.filter(r => {
+      if (!r) return false;
+      if (String(r.authorId) === myId || auth.role === "admin") return true;
+      if (!me || (auth.role !== "director" && auth.role !== "leader")) return false;
+      if (auth.role === "director") return r.dept === me.dept;
+      return r.dept === me.dept && r.team === me.team;
+    });
+  }
   // 직원 몰입도 펄스 응답은 관리자에게도 개인 원본을 제공하지 않는다. 리더별 조직
   // 범위를 서버에서 먼저 좁힌 뒤 최소 3명 이상일 때만 익명 통계를 생성해, 브라우저의
   // 개발자 도구나 /data 직접 호출로 응답자·소수 의견을 역추적하는 것을 막는다.
@@ -1468,6 +1484,9 @@ const _WRITE_GATED_FIELDS = {
   integrationLogs:    { roles: ["admin"], pageIds: "integrations" },
   roomReservations:   { roles: ["admin"], ownField: "bookedBy" },
   scheduleEvents:     { roles: ["admin", "director", "leader"], ownField: "authorId" },
+  personalTasks:      { roles: [], ownField: "ownerId", pageIds: "my-tasks" },
+  // 조회 범위와 쓰기 권한을 분리한다. 관리자도 타인의 업무보고를 대리 수정할 수 없다.
+  workReports:        { roles: [], ownField: "authorId", pageIds: "work-reports" },
   // 저성과자 관리: 읽기와 같은 기준(관리자 또는 settings.lowPerformerViewers 등록자)
   lowPerfData:        { roles: ["admin"], viewersSetting: "lowPerformerViewers", pageIds: "low-performer" },
   engagementSurveys:  { roles: ["admin"], pageIds: "engagement-pulse" },
@@ -1579,6 +1598,34 @@ function _canManageCompSessionTarget(actor, actorEmp, targetEmp) {
 function _sanitizeGatedRecord(field, incoming, stored, actor, actorEmp, settings, approvalDocForGate, targetEmp, engagementSurveys) {
   const rule = _APPROVAL_GATED_FIELDS[field];
   if (!rule || !incoming) return incoming;
+  // ownField 기반 권한은 incoming 값만 보면 기존 타인 레코드의 id를 재사용하면서 owner를
+  // 자기 id로 바꿔 덮어쓰는 우회가 가능하다. 역할 기반 관리 권한이 없는 사용자는 저장본의
+  // 소유자도 반드시 본인이어야 하고, 소유자 필드는 변경할 수 없다.
+  const writeRule = _WRITE_GATED_FIELDS[field];
+  if (stored && writeRule?.ownField && !writeRule.roles.includes(actor?.role)) {
+    const ownerField = writeRule.ownField;
+    if (String(stored[ownerField]) !== String(actor?.empId) || String(incoming[ownerField]) !== String(stored[ownerField])) return { ...stored };
+  }
+  if (field === "personalTasks") {
+    const title = String(incoming.title || "").trim().slice(0, 120);
+    if (!title) return stored ? { ...stored } : null;
+    incoming = { ...incoming, ownerId: String(actor?.empId || ""), title,
+      dueDate: /^\d{4}-\d{2}-\d{2}$/.test(String(incoming.dueDate || "")) ? incoming.dueDate : "",
+      priority: ["high", "normal", "low"].includes(incoming.priority) ? incoming.priority : "normal",
+      status: ["todo", "doing", "done"].includes(incoming.status) ? incoming.status : "todo",
+      memo: String(incoming.memo || "").trim().slice(0, 500), createdAt: stored?.createdAt || new Date().toISOString(), updatedAt: new Date().toISOString() };
+  }
+  if (field === "workReports") {
+    if (stored?.status === "submitted") return { ...stored };
+    const summary = String(incoming.summary || "").trim().slice(0, 3000), nextPlan = String(incoming.nextPlan || "").trim().slice(0, 1500);
+    const periodStart = String(incoming.periodStart || ""), periodEnd = String(incoming.periodEnd || "");
+    if (!summary || !nextPlan || !/^\d{4}-\d{2}-\d{2}$/.test(periodStart) || !/^\d{4}-\d{2}-\d{2}$/.test(periodEnd) || periodEnd < periodStart) return stored ? { ...stored } : null;
+    const status = incoming.status === "submitted" ? "submitted" : "draft", now = new Date().toISOString();
+    incoming = { ...incoming, authorId: String(actor?.empId || ""), authorName: actorEmp?.name || actor?.loginId || "",
+      dept: actorEmp?.dept || "", team: actorEmp?.team || "", periodType: incoming.periodType === "weekly" ? "weekly" : "daily",
+      periodStart, periodEnd, summary, blockers: String(incoming.blockers || "").trim().slice(0, 1500), nextPlan, status,
+      submittedAt: status === "submitted" ? (stored?.submittedAt || now) : null, createdAt: stored?.createdAt || now, updatedAt: now };
+  }
   // payrollAdjustments는 admin 전용 필드지만, 복리후생 신청이 승인 완료되는
   // 순간 이 레코드를 만드는 것은 그 결재선의 "마지막 결재자"(대개 팀장·사업부장, admin이
   // 아님)다 — 그래서 이 정당한 파생 레코드가 role 게이팅에 걸려 항상 조용히 드롭되고
@@ -2624,6 +2671,8 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
     const changeRequestsFinal     = _mergeProtectedField("changeRequests");
     const attendanceRecordsFinal  = _mergeProtectedField("attendanceRecords");
     const scheduleEventsFinal     = _mergeProtectedField("scheduleEvents");
+    const personalTasksFinal      = _mergeProtectedField("personalTasks");
+    const workReportsFinal        = _mergeProtectedField("workReports");
     // 오늘 filterDataForRole()에 새로 추가한 9개 필드도 동일하게 보호 — 필터링된(불완전한)
     // 로컬 배열이 그대로 재저장돼 다른 직원의 레코드를 지우는 사고를 막는다(위 6개 필드와
     // 동일한 이유). Postgres 모드는 원래 upsert-only(들어온 id만 갱신)라 이미 안전.
@@ -2714,6 +2763,7 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
       payrollAdjustments: payrollAdjustmentsFinal, gradeAdjustHistory: gradeAdjustHistoryFinal,
       certRequests: certRequestsFinal, changeRequests: changeRequestsFinal,
       attendanceRecords: attendanceRecordsFinal, scheduleEvents: scheduleEventsFinal,
+      personalTasks: personalTasksFinal, workReports: workReportsFinal,
       expenseClaims: expenseClaimsFinal, overtimeRequests: overtimeRequestsFinal,
       mandatoryTraining: mandatoryTrainingFinal, leaveUsagePlans: leaveUsagePlansFinal,
       healthCheckupLog: healthCheckupLogFinal, certLog: certLogFinal,
@@ -4798,7 +4848,7 @@ const COMPANY_FEATURE_KEYS = new Set(COMPANY_FEATURE_CATALOG.map(f => f.key));
 // (마스터가 이 모듈을 꺼도 화면단 숨김(gotoPage 가드)만으로 충분) 여기 목록에는 없다.
 const _BLOB_MODULE_FIELDS = {
   approval:  ["approvalDocs", "approvalTemplates", "approvalDelegations", "approvalChainSettings"],
-  comm:      ["boardPosts", "roomReservations", "roomReservationTombstones", "engagementSurveys", "engagementResponses", "engagementActions", "engagementPulseSummary"],
+  comm:      ["boardPosts", "roomReservations", "roomReservationTombstones", "personalTasks", "workReports", "engagementSurveys", "engagementResponses", "engagementActions", "engagementPulseSummary"],
   kpi:       ["kpiEntries", "changeRequests", "tieNotifications", "gradeAdjustHistory"],
   comp_eval: ["compSessions", "compResponses", "compGradeResults", "evaluatorConfig"],
   talent:    ["coreTalentPool", "talentDevPlans", "successionPlans", "jobSkillProfiles", "employeeSkillProfiles", "workforceScenarios", "lowPerfData", "coreTalentSettings"],
