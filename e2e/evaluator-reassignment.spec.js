@@ -89,14 +89,34 @@ test.describe("Epic B #9 — 사업부장·팀장의 하위조직원 평가자 �
     // 기존 세션(8001, evaluatorIds=[9302])이 있어 "세션없음" 배지 없이 평가자 수가 표시된다.
     await expect(page.locator("#comp-content")).toContainText("1");
 
-    // "평가자 설정" 버튼 클릭 시 기존 openEvaluatorEditModal이 정상적으로 재사용된다.
+    // 평가자 선정은 좁은 팝업 대신 검색·관계별 구성 요약이 있는 전체 페이지에서 수행한다.
     await page.click("button:has-text('평가자 설정')");
-    await expect(page.locator(".modal-head h2")).toContainText("평가자 관리 — 팀원A1-가");
-    await page.click(".modal-close");
+    await expect(page.locator("#page-title")).toHaveText("평가자 구성");
+    await expect(page.locator("#content h2")).toContainText("평가자 구성 — 팀원A1-가");
+    await expect(page.locator("#eval-setup-summary")).toContainText("명 선택");
+    await expect(page.locator("#content")).toContainText("직속 상사");
+    await page.click("button:has-text('← 다면평가로')");
 
     // "⚙ 기준 설정" 버튼도 기존 openEvaluatorConfigModal을 그대로 재사용한다.
     await page.click("button:has-text('⚙ 기준 설정')");
     await expect(page.locator(".modal-head h2")).toContainText("평가자 기준 설정");
+
+    expect(pageErrors).toEqual([]);
+  });
+
+  test("평가 홈은 KPI 성과평가와 다면평가를 목적·절차별로 분리한다", async ({ page }) => {
+    const pageErrors = [];
+    page.on("pageerror", (e) => pageErrors.push(e.message));
+    await loginAsAdmin(page);
+    await seedOrg(page);
+
+    await page.evaluate(() => gotoPage("evaluation-center"));
+    await expect(page.locator("#page-title")).toHaveText("평가 홈");
+    await expect(page.locator("#content")).toContainText("KPI 성과평가");
+    await expect(page.locator("#content")).toContainText("다면·역량평가");
+    await expect(page.locator("#content")).toContainText("평가 운영 설계");
+    await expect(page.locator("#content")).toContainText("목표 합의 → 실적·자체평가 → 단계별 승인 → 등급 확정");
+    await expect(page.locator("#content")).toContainText("평가자 추천·지정");
 
     expect(pageErrors).toEqual([]);
   });

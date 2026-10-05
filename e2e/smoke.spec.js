@@ -67,6 +67,26 @@ test.describe("로그인·기본 네비게이션", () => {
     expect(result.toasts.some(t=>t.type==="error"&&/서버에 연결/.test(t.message))).toBe(true);
   });
 
+  test("할일 관리와 업무보고 화면이 개인정보 범위와 작성 안내를 표시한다", async ({ page }) => {
+    await page.goto("/");
+    const pageErrors=[]; page.on("pageerror", e=>pageErrors.push(e.message));
+    await page.evaluate(() => {
+      currentUser={id:"e2e-member",name:"테스트 사용자",role:"member",dept:"개발",team:"A",menuPerms:{}};
+      employees=[{id:"e2e-member",name:"테스트 사용자",role:"member",active:true,dept:"개발",team:"A"}];
+      personalTasks=[{id:"task-e2e",ownerId:"e2e-member",title:"주간회의 자료 검토",dueDate:"2026-10-02",priority:"high",status:"todo",memo:"수치 확인",createdAt:"2026-10-01T00:00:00.000Z",updatedAt:"2026-10-01T00:00:00.000Z"}];
+      workReports=[];
+      render(); gotoPage("my-tasks");
+    });
+    await expect(page.locator("#content").getByRole("heading",{name:"할일 관리"})).toBeVisible();
+    await expect(page.locator("#content")).toContainText("주간회의 자료 검토");
+    await page.evaluate(() => gotoPage("work-reports"));
+    await expect(page.locator("#content").getByRole("heading",{name:"업무보고"})).toBeVisible();
+    await page.getByRole("button",{name:"업무보고 작성"}).click();
+    await expect(page.locator("#wr-summary")).toHaveAttribute("placeholder",/채용 면접.*급여 마감/);
+    await expect(page.locator("#wr-next")).toHaveAttribute("placeholder",/다음 주/);
+    expect(pageErrors).toHaveLength(0);
+  });
+
   test("전표와 견적 상태전이가 공통 변경 실행기를 사용한다", async ({ page }) => {
     await page.goto("/");
     const captured = await page.evaluate(async () => {
