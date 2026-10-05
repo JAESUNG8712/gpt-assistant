@@ -1252,9 +1252,38 @@ function isKpiStageOpen(){return isInPeriod(settings.stage==="goal"?settings.kpi
 // 사용자 경험상 혼란스러우므로 가능한 한 정확히 일치시킨다).
 function kpiDefaultStages(){
   return [
-    {id:"stage1",label:"1차 평가(팀장)",kind:"team_leader",menuPageId:"first-eval"},
-    {id:"stage2",label:"최종 확정(사업부장)",kind:"dept_director",menuPageId:"second-eval"},
+    {id:"stage1",label:"1차 평가(팀장)",kind:"team_leader",menuPageId:"first-eval",weight:0},
+    {id:"stage2",label:"최종 확정(사업부장)",kind:"dept_director",menuPageId:"second-eval",weight:100},
   ];
+}
+// Epic B #4/#5(2026-10) — 차수별 반영비율. 단계별 weight(0~100, 합계 100)를 받아 KPI 항목
+// 하나의 "단계 가중 점수"를 계산한다. weight가 하나도 설정 안 됐거나 합계가 100이 아니면
+// (관리자가 아직 손대지 않은 기존 회사 포함) 항상 기존 공식(finalScore??secondScore, 1차
+// 점수는 0% 반영)과 완전히 동일한 값을 반환해 하위호환을 보장한다 — 그래서 계속 이 함수를
+// 호출해도 되고, 기존 calcWeighted/calcEmpFinalScore의 동작이 전혀 바뀌지 않는다.
+function kpiItemStageScore(kpi,stagesConfig){
+  if(!kpi)return null;
+  const cfg=stagesConfig||kpiStagesConfig();
+  const lastIdx=cfg.length-1;
+  const legacy=()=>kpi.finalScore!=null?kpi.finalScore:(kpi.secondScore!=null?kpi.secondScore:null);
+  const weights=cfg.map(s=>Number(s.weight));
+  const weightsValid=weights.every(w=>Number.isFinite(w)&&w>=0)&&Math.round(weights.reduce((a,b)=>a+b,0))===100;
+  if(!weightsValid)return legacy(); // weight 미설정/손상 시 "최종 단계 점수만 100% 반영"과 정확히 동일
+  const contributions=[];
+  cfg.forEach((s,idx)=>{
+    const w=weights[idx];if(w<=0)return;
+    let sc;
+    if(idx===0)sc=kpi.firstScore;
+    else if(idx===lastIdx)sc=legacy();
+    else sc=kpi.middleStages&&kpi.middleStages[s.id]?kpi.middleStages[s.id].score:null;
+    if(sc!=null)contributions.push({sc,w});
+  });
+  if(!contributions.length)return null;
+  // 단일 단계가 100% 전부를 차지하면(기본 2단계 구성이 정확히 이 형태) 반올림 없이 원값
+  // 그대로 반환 — 기존 공식과 부동소수점 오차 없이 완전히 동일함을 보장한다.
+  if(contributions.length===1&&contributions[0].w===100)return contributions[0].sc;
+  const sum=contributions.reduce((t,c)=>t+c.sc*(c.w/100),0);
+  return Math.round(sum*100)/100;
 }
 function kpiStagesConfig(){
   const raw=settings.kpiApprovalStages;
@@ -1662,7 +1691,7 @@ document.addEventListener("input",event=>{
 const h=s=>String(s==null?"":s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
 const badge=(t,c)=>`<span class="badge bg-${c}">${h(t)}</span>`;
 const weightTotal=entries=>entries.reduce((s,e)=>s+Number(e.weight||0),0);
-const calcWeighted=entries=>{let t=0;entries.forEach(e=>{const sc=e.finalScore!=null?e.finalScore:(e.secondScore!=null?e.secondScore:null);if(sc!=null)t+=sc*(e.weight/100);});return Math.round(t*100)/100;};
+const calcWeighted=entries=>{const cfg=kpiStagesConfig();let t=0;entries.forEach(e=>{const sc=kpiItemStageScore(e,cfg);if(sc!=null)t+=sc*(e.weight/100);});return Math.round(t*100)/100;};
 const getEmp=id=>{const sid=String(id);return employees.find(e=>String(e.id)===sid);};
 const getEmpName=id=>{const e=getEmp(id);return e?e.name:"-";};
 // currentUser는 로그인 시점의 employees 레코드를 가리키지만, 조직도에서 인사발령(부서/팀 이동)이
@@ -2782,7 +2811,8 @@ function calcCompScore(sessionId){
 function calcEmpFinalScore(empId,year){
   const kpis=kpiEntries.filter(k=>k.userId===empId&&k.year===year&&k.finalStatus==="approved");
   if(!kpis.length)return null;
-  return kpis.reduce((t,k)=>{const sc=k.finalScore!=null?k.finalScore:(k.secondScore!=null?k.secondScore:null);return t+(sc!=null?sc*(k.weight/100):0);},0);
+  const cfg=kpiStagesConfig();
+  return kpis.reduce((t,k)=>{const sc=kpiItemStageScore(k,cfg);return t+(sc!=null?sc*(k.weight/100):0);},0);
 }
 function tryCalcDeptGrades(dept,year){ _tryCalcDeptGrades(dept,year,false); }
 // saveFinalConfirm()이 KPI 1건 최종 확정될 때마다 "그 부서 전체가 이제 다 끝났는지"
@@ -3593,13 +3623,23 @@ function _compYearSummary(scope,year){
   const grades=rows.reduce((acc,r)=>{const g=String(r.grade||"미정");acc[g]=(acc[g]||0)+1;return acc;},{});
   return{count:rows.length,avg:scores.length?Math.round(scores.reduce((a,b)=>a+b,0)/scores.length*10)/10:null,grades};
 }
+// Epic B #4(2026-10) — 종합점수(settings.scoreWeights로 KPI+역량/리더십을 합산한 점수)를
+// _compYearSummary와 동일한 형태로 집계한다. "평가결과 통합 리포트"는 지금까지 KPI와
+// 역량/리더십 점수를 나란히만 보여줬을 뿐, 이미 존재하는 종합점수 설정화면(설정>평가
+// 운영>계산식)이 실제로 어떤 결과를 만드는지 보여주는 화면이 없었다 — 이 요약과 아래
+// renderCompReport/dlEvalReport의 신규 컬럼이 그 간극을 메운다.
+function _overallYearSummary(scope,year){
+  const scores=scope.map(e=>_calcOverallScore(e.id,year)).filter(Number.isFinite);
+  const grades=scope.reduce((acc,e)=>{const s=_calcOverallScore(e.id,year);if(!Number.isFinite(s))return acc;const g=getGrade(s);acc[g]=(acc[g]||0)+1;return acc;},{});
+  return{count:scores.length,avg:scores.length?Math.round(scores.reduce((a,b)=>a+b,0)/scores.length*10)/10:null,grades};
+}
 function renderCompReport(u,year){
   const el=$("#comp-content");if(!el)return;
   calcCompGradesForAll(year); // 이미 adjustedBy(확정·수동조정)가 있는 레코드는 건드리지 않는 멱등 함수 — 과거 연도에서 호출해도 안전
   const deptF=window._crDept||"";
   let scope=employees.filter(e=>e.active&&e.role!=="admin");
   if(deptF)scope=scope.filter(e=>e.dept===deptF);
-  const kpiSummary=_evalYearSummary(scope,year),compSummary=_compYearSummary(scope,year);
+  const kpiSummary=_evalYearSummary(scope,year),compSummary=_compYearSummary(scope,year),overallSummary=_overallYearSummary(scope,year);
   const gradeChips=grades=>Object.keys(grades).length?Object.entries(grades).sort().map(([g,n])=>`<span class="fz11" style="margin-right:8px">${h(g)} ${n}명</span>`).join(""):"확정 결과 없음";
   const gradeBadge=g=>g?`<span style="display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:50%;font-size:12px;font-weight:800" class="grade-${g}">${h(g)}</span>`:"-";
   el.innerHTML=`
@@ -3616,13 +3656,16 @@ function renderCompReport(u,year){
     <div style="background:#faf5ff;border-radius:10px;padding:12px"><div class="fz11 text-gray">KPI 등급 분포</div><div class="fz11 mt2">${gradeChips(kpiSummary.grades)}</div></div>
     <div style="background:#f0fdf4;border-radius:10px;padding:12px"><div class="fz11 text-gray">역량·리더십 확정 인원</div><div class="fw7 mt1" style="font-size:20px;color:#15803d">${compSummary.count}명</div><div class="fz11 text-gray mt1">평균 ${compSummary.avg??"-"}점</div></div>
     <div style="background:#fff7ed;border-radius:10px;padding:12px"><div class="fz11 text-gray">역량·리더십 등급 분포</div><div class="fz11 mt2">${gradeChips(compSummary.grades)}</div></div>
+    <div style="background:#fdf2f8;border-radius:10px;padding:12px"><div class="fz11 text-gray">종합점수 산출 인원<span class="fz11" style="margin-left:4px;color:#9333ea">(설정&gt;평가 운영&gt;계산식 가중치 적용)</span></div><div class="fw7 mt1" style="font-size:20px;color:#be185d">${overallSummary.count}명</div><div class="fz11 text-gray mt1">평균 ${overallSummary.avg??"-"}점</div></div>
+    <div style="background:#fef9c3;border-radius:10px;padding:12px"><div class="fz11 text-gray">종합등급 분포</div><div class="fz11 mt2">${gradeChips(overallSummary.grades)}</div></div>
   </div></div></div>
   <div class="card"><div class="card-body" style="padding:0"><div class="tbl-wrap"><table>
-    <thead><tr><th>이름</th><th>소속</th><th>직급</th><th>KPI등급</th><th>KPI점수</th><th>평가구분</th><th>평가점수</th><th>평가등급</th></tr></thead>
+    <thead><tr><th>이름</th><th>소속</th><th>직급</th><th>KPI등급</th><th>KPI점수</th><th>평가구분</th><th>평가점수</th><th>평가등급</th><th>종합점수</th><th>종합등급</th></tr></thead>
     <tbody>${scope.length?[...scope].sort((a,b)=>(a.name||"").localeCompare(b.name||"","ko")).map(e=>{
       const kr=(e.gradeResults||{})[String(year)];
       const cg=getCompGradeResult(e.id,year);
       const typeLabel=e.role==="director"?"리더십":"역량";
+      const overall=_calcOverallScore(e.id,year);
       return`<tr>
         <td><strong>${h(e.name)}</strong></td>
         <td class="fz11 text-gray">${h(e.dept)}/${h(e.team)}</td>
@@ -3632,8 +3675,10 @@ function renderCompReport(u,year){
         <td>${badge(typeLabel,typeLabel==="리더십"?"indigo":"green")}</td>
         <td class="fw7 text-blue">${cg?.score!=null?cg.score+"점":"-"}</td>
         <td>${gradeBadge(cg?.grade)}</td>
+        <td class="fw7" style="color:#be185d">${overall!=null?overall+"점":"-"}</td>
+        <td>${gradeBadge(overall!=null?getGrade(overall):null)}</td>
       </tr>`;
-    }).join(""):`<tr><td colspan="8" class="text-gray" style="text-align:center;padding:20px">대상자가 없습니다.</td></tr>`}
+    }).join(""):`<tr><td colspan="10" class="text-gray" style="text-align:center;padding:20px">대상자가 없습니다.</td></tr>`}
     </tbody></table></div></div></div>`;
 }
 function dlEvalReport(year){
@@ -3643,11 +3688,12 @@ function dlEvalReport(year){
   if(deptF)scope=scope.filter(e=>e.dept===deptF);
   if(!scope.length){showToast("대상자가 없습니다.","info");return;}
   const rows=[[`${year}년 평가결과 통합 리포트${deptF?`(${deptF})`:""}`],[""]];
-  rows.push(["이름","사번","소속","직급","KPI등급","KPI점수","평가구분","평가점수","평가등급"]);
+  rows.push(["이름","사번","소속","직급","KPI등급","KPI점수","평가구분","평가점수","평가등급","종합점수","종합등급"]);
   [...scope].sort((a,b)=>(a.name||"").localeCompare(b.name||"","ko")).forEach(e=>{
     const kr=(e.gradeResults||{})[String(year)];
     const cg=getCompGradeResult(e.id,year);
-    rows.push([e.name,e.empNo||"",`${e.dept||""}${e.team?"/"+e.team:""}`,e.rank||"",kr?.grade||"-",kr?.score!=null?kr.score+"점":"-",e.role==="director"?"리더십":"역량",cg?.score!=null?cg.score+"점":"-",cg?.grade||"-"]);
+    const overall=_calcOverallScore(e.id,year);
+    rows.push([e.name,e.empNo||"",`${e.dept||""}${e.team?"/"+e.team:""}`,e.rank||"",kr?.grade||"-",kr?.score!=null?kr.score+"점":"-",e.role==="director"?"리더십":"역량",cg?.score!=null?cg.score+"점":"-",cg?.grade||"-",overall!=null?overall+"점":"-",overall!=null?getGrade(overall):"-"]);
   });
   dlCSV(`평가결과통합리포트_${year}년${deptF?"_"+deptF:""}.csv`,[],rows);
   showToast("통합 리포트 다운로드 완료","success");
@@ -13507,8 +13553,12 @@ function renderDeployPermPage(){
 let _kpiStageDraft=null;
 function _kpiStageDraftInit(){
   if(_kpiStageDraft)return;
+  // weight가 없는 단계(이번 기능 이전에 저장된 기존 설정 포함)는 "최종 단계만 100%"라는
+  // 기존 동작 그대로 기본값을 채운다 — 관리자가 이 화면을 처음 열어도(아직 반영비율을
+  // 전혀 건드리지 않아도) 합계가 항상 100%라 저장이 막히지 않는다.
+  const rawStages=JSON.parse(JSON.stringify(kpiStagesConfig()));
   _kpiStageDraft={
-    stages:JSON.parse(JSON.stringify(kpiStagesConfig())),
+    stages:rawStages.map((s,idx)=>({...s,weight:Number.isFinite(Number(s.weight))?Number(s.weight):(idx===rawStages.length-1?100:0)})),
     deadline:settings.kpiApprovalDeadline||"",
     adj:{open:!!(settings.kpiAdjustmentPeriod&&settings.kpiAdjustmentPeriod.open),
       start:(settings.kpiAdjustmentPeriod&&settings.kpiAdjustmentPeriod.start)||"",
@@ -13519,7 +13569,7 @@ function _kpiStageDraftInit(){
 function kpiStageAddMiddle(){
   _kpiStageDraftInit();
   if(_kpiStageDraft.stages.length>=5){showToast("평가 단계는 최대 5단계까지 설정할 수 있습니다.","error");return;}
-  const newStage={id:"stage_"+Date.now().toString(36),label:"중간 단계",kind:"specific_employee",approverEmpId:null};
+  const newStage={id:"stage_"+Date.now().toString(36),label:"중간 단계",kind:"specific_employee",approverEmpId:null,weight:0};
   _kpiStageDraft.stages.splice(_kpiStageDraft.stages.length-1,0,newStage); // 항상 최종 단계 바로 앞에 삽입
   renderKpiStageSettings();
 }
@@ -13542,6 +13592,12 @@ function kpiStagePickApprover(idx){
     title:"단계 승인자 선택",
     onConfirm:sel=>{_kpiStageDraft.stages[idx].approverEmpId=sel[0]||null;renderKpiStageSettings();}});
 }
+function _kpiStageWeightTotal(){return _kpiStageDraft?_kpiStageDraft.stages.reduce((s,x)=>s+(Number(x.weight)||0),0):0;}
+function _kpiStageUpdateWeightTotal(){
+  const t=_kpiStageWeightTotal();
+  const el=$("#kpi-stage-weight-total");
+  if(el){el.textContent=t+"%";el.style.color=t===100?"#16a34a":"#dc2626";}
+}
 function kpiStageSaveAll(){
   _kpiStageDraftInit();
   for(const s of _kpiStageDraft.stages){
@@ -13551,6 +13607,8 @@ function kpiStageSaveAll(){
   if(_kpiStageDraft.adj.start&&_kpiStageDraft.adj.end&&_kpiStageDraft.adj.start>_kpiStageDraft.adj.end){
     showToast("조정기간 시작일이 종료일보다 늦습니다.","error");return;
   }
+  const wTotal=_kpiStageWeightTotal();
+  if(wTotal!==100){showToast(`차수별 반영비율 합계가 100%가 되어야 합니다(현재 ${wTotal}%).`,"error");return;}
   settings.kpiApprovalStages=JSON.parse(JSON.stringify(_kpiStageDraft.stages));
   settings.kpiApprovalDeadline=_kpiStageDraft.deadline||"";
   settings.kpiAdjustmentPeriod={..._kpiStageDraft.adj};
@@ -13576,12 +13634,19 @@ function renderKpiStageSettings(){
         <option value="specific_employee"${s.kind==="specific_employee"?" selected":""}>특정 직원 지정</option>
       </select>
       ${s.kind==="specific_employee"?`<button class="btn btn-ghost btn-sm" onclick="kpiStagePickApprover(${idx})">${approverEmp?h(approverEmp.name)+" 변경":"승인자 선택"}</button>`:""}
+      <label class="fz11 text-gray" style="display:flex;align-items:center;gap:4px">반영비율
+        <input class="fc" type="number" min="0" max="100" step="5" style="width:70px" value="${Number(s.weight)||0}"
+          oninput="_kpiStageDraft.stages[${idx}].weight=Number(this.value)||0;_kpiStageUpdateWeightTotal()">%
+      </label>
       ${isEdge?`<span class="fz11 text-gray">(역할만 변경 가능)</span>`:`<button class="btn btn-danger btn-sm" onclick="kpiStageRemove(${idx})">삭제</button>`}
     </div></div>`;
   }).join("");
   el.innerHTML=`<div class="card"><div class="card-head"><h3>평가 단계(차수) 구성</h3></div><div class="card-body">
-    <p class="fz11 text-gray mb3">1차 평가는 자체평가 제출 후 첫 승인 단계, 최종 단계는 승인 즉시 점수가 확정됩니다(승인=최종확정). 그 사이에 단계를 추가하면(최대 5단계) 순서대로 승인이 진행되어야 다음 단계·최종확정이 가능합니다.</p>
+    <p class="fz11 text-gray mb3">1차 평가는 자체평가 제출 후 첫 승인 단계, 최종 단계는 승인 즉시 점수가 확정됩니다(승인=최종확정). 그 사이에 단계를 추가하면(최대 5단계) 순서대로 승인이 진행되어야 다음 단계·최종확정이 가능합니다. <strong>반영비율</strong>은 각 KPI 항목의 최종 점수 계산 시 그 단계 점수가 차지하는 비중입니다(합계 100%, 기본값은 최종 단계만 100%로 기존 동작과 동일).</p>
     ${rows}
+    <div class="flex items-c gap2 mb3">
+      <span class="fz13 fw7">반영비율 합계: <span id="kpi-stage-weight-total" style="color:${_kpiStageWeightTotal()===100?"#16a34a":"#dc2626"}">${_kpiStageWeightTotal()}%</span></span>
+    </div>
     <button class="btn btn-secondary btn-sm" onclick="kpiStageAddMiddle()" ${d.stages.length>=5?"disabled":""}>+ 중간 단계 추가</button>
   </div></div>
   <div class="card" style="margin-top:14px"><div class="card-head"><h3>평가 마감일</h3></div><div class="card-body">
@@ -13921,6 +13986,8 @@ function renderFormulaSettings(){
   const total=(w.kpi||0)+(w.comp||0)+(w.ls||0);
   const ok=total===100;
   const yrs=Array.from({length:26},(_,i)=>2020+i);
+  const stagesCfg=kpiStagesConfig();
+  const hasNonFinalStageWeight=stagesCfg.some((s,idx)=>idx!==stagesCfg.length-1&&Number(s.weight)>0);
   el.innerHTML=`
   <div class="card"><div class="card-head"><h3>⚖️ 종합 성과 점수 가중치</h3></div><div class="card-body">
     <p class="fz12 text-gray mb3">KPI, 역량평가, 리더십평가 점수를 합산할 때 각 항목의 반영 비율입니다. 합계가 100%가 되어야 합니다.</p>
@@ -13961,6 +14028,7 @@ function renderFormulaSettings(){
       KPI 항목3: 최종 70점 × 비중 20% = 14점<br>
       → <strong>종합 KPI 점수 = 83점</strong>
     </div>
+    ${hasNonFinalStageWeight?`<div class="info-note mt3 fz11">📌 "각 항목 최종점수"는 [평가 운영 &gt; 평가 단계 설정]에서 지정한 <strong>차수별 반영비율</strong>로 1차/중간/최종 단계 점수를 먼저 가중 평균한 값입니다.</div>`:""}
     <div class="info-note mt3 fz11">📌 KPI 비중 합계는 반드시 100%가 되어야 하며, 각 항목 평가는 100점 만점 기준입니다.</div>
   </div></div>
 
@@ -14012,20 +14080,33 @@ function _calcOverallScore(empId,year){
   const w=settings.scoreWeights||{kpi:60,comp:20,ls:20};
   const emp=employees.find(e=>e.id===empId);
   if(!emp)return null;
-  // KPI: weighted average of approved/confirmed entries
-  const kpis=kpiEntries.filter(k=>k.userId===empId&&k.year===year&&k.finalStatus==="approved"&&k.finalConfirmed);
-  let kpiScore=null;
-  if(kpis.length){
-    let sum=0,wSum=0;
-    kpis.forEach(k=>{if(k.finalScore!=null){sum+=k.finalScore*(k.weight||0);wSum+=k.weight||0;}});
-    if(wSum>0)kpiScore=Math.round(sum/wSum*10)/10;
+  // KPI: gradeResults[year].score를 항상 먼저 신뢰한다(_performanceRewardCandidate와 동일한
+  // 확립된 패턴) — finalConfirmAll()은 연도말 일괄확정 시 kpiEntries의 finalScore를
+  // null로 비우고 이미 계산해둔 점수를 emp.gradeResults[year].score에 저장해두는데, 예전
+  // 코드는 이 저장값을 전혀 보지 않고 라이브 kpiEntries를 재계산해 finalScore가 전부
+  // null이면 KPI 비중(기본 60%)이 조용히 통째로 사라지는 버그가 있었다(실측 확인). 아직
+  // gradeResults가 없을 때만(평가 진행 중) kpiEntries에서 직접 재계산한다.
+  const gradeResult=(emp.gradeResults||{})[year];
+  let kpiScore=Number.isFinite(Number(gradeResult?.score))?Number(gradeResult.score):null;
+  if(kpiScore==null){
+    const kpis=kpiEntries.filter(k=>k.userId===empId&&k.year===year&&k.finalStatus==="approved"&&k.finalConfirmed);
+    if(kpis.length){
+      const cfg=kpiStagesConfig();
+      let sum=0,wSum=0;
+      kpis.forEach(k=>{const sc=kpiItemStageScore(k,cfg);if(sc!=null){sum+=sc*(k.weight||0);wSum+=k.weight||0;}});
+      if(wSum>0)kpiScore=Math.round(sum/wSum*10)/10;
+    }
   }
   // Competency/Leadership: stored in compGradeResults[empId][year].score
   // (directors have leadership score, members/leaders have comp score — same field)
   const compScore=compGradeResults[empId]?.[year]?.score??null;
   if(kpiScore==null&&compScore==null)return null;
-  const kW=w.kpi||60;
-  const cW=(w.comp||20)+(w.ls||20); // comp+ls weights merged into single eval score
+  // ||로 기본값을 채우면 관리자가 의도적으로 0%를 설정한 경우(0은 falsy)까지 조용히
+  // 기본값(60/20/20)으로 되돌려버려, "이 항목은 반영하지 않음"이라는 정당한 설정을
+  // 저장해도 무시되는 버그가 있었다(실측 확인) — settings.scoreWeights 자체가 아예
+  // 없을 때만(완전 미설정 회사) 기본값을 쓰고, 0을 포함한 모든 명시적 숫자는 그대로 존중한다.
+  const kW=Number.isFinite(w.kpi)?w.kpi:60;
+  const cW=(Number.isFinite(w.comp)?w.comp:20)+(Number.isFinite(w.ls)?w.ls:20); // comp+ls weights merged into single eval score
   if(kpiScore!=null&&compScore!=null)return Math.round((kpiScore*kW+compScore*cW)/100);
   if(kpiScore!=null)return Math.round(kpiScore);
   return Math.round(compScore);
