@@ -6509,6 +6509,18 @@ async function logAction(action, target, targetId="", detail=""){
   } catch(e){}
 }
 
+// 메뉴 사용 통계는 같은 페이지를 반복 렌더링할 때마다 로그를 쌓지 않고, 한 브라우저
+// 세션에서 페이지별 5분에 한 번만 기록한다. 관리자 운영센터의 "자주 쓰는 메뉴" 지표에
+// 사용되며 서버는 토큰 주체로 사용자명을 다시 확정한다.
+const _menuUsageLoggedAt=new Map();
+function _logMenuUsage(pageId){
+  if(!pageId||String(pageId).startsWith("cat:")||!currentUser)return;
+  const now=Date.now(),last=_menuUsageLoggedAt.get(pageId)||0;
+  if(now-last<5*60*1000)return;
+  _menuUsageLoggedAt.set(pageId,now);
+  logAction("menu_opened",String(pageId),"","메뉴 진입");
+}
+
 // ─── Activity Log UI ────────────────────────────────────────────
 
 let _activityLogCache = [];
@@ -7163,6 +7175,7 @@ function renderSidebar(){
     ],
     "set-sys-sep":[
       {id:"set-sys-sep",type:"sep",label:"시스템 관리",roles:["admin"]},
+      {id:"admin-operations",label:"관리자 운영센터",icon:"🛡",desc:"로그인·메뉴 사용·저장소·보안 현황",roles:["admin"]},
       {id:"integrations",label:"연동 설정",icon:"🔌",desc:"메신저 알림·캘린더·ERP 연동",roles:["admin"]},
       {id:"data-mgmt",label:"데이터 관리",icon:"💾",desc:"백업·복원·내보내기",roles:["admin"]},
       {id:"history",label:"수정 이력",icon:"⊞",desc:"변경 이력 감사",roles:["admin"]},
@@ -7196,6 +7209,7 @@ function renderSidebar(){
   titles["engagement-pulse-action-detail"]="개선계획 상세·점검";
   titles["my-tasks"]="할일 관리";
   titles["work-reports"]="업무보고";
+  titles["admin-operations"]="관리자 운영센터";
   const ptEl=$("#page-title");if(ptEl)ptEl.textContent=titles[currentPage]||"";
   const sb=$("#sidebar");if(!sb)return;
   // Filter by role + per-user custom permission overrides (admin-managed)
@@ -7313,7 +7327,7 @@ const PAGE_ROLES={
   "eval-progress":["admin","director","leader"],
   "promotion-mgmt":["admin"],"core-talent":["admin"],"succession-planning":["admin"],"skills-architecture":["admin"],"workforce-planning":["admin"],
   "position-control":["admin"],"position-requests":["admin","director","leader"],
-  "settings":["admin"],"approval-templates":["admin"],"integrations":["admin"],"data-mgmt":["admin"],
+  "settings":["admin"],"approval-templates":["admin"],"integrations":["admin"],"data-mgmt":["admin"],"admin-operations":["admin"],
   "history":["admin"],"activity-log":["admin"],
   "eval-ops":["admin"],"settings-org":["admin"],"settings-ranks":["admin"],"attend-settings":["admin"],
   "payroll-settings":["admin"],"company-info":["admin"],"room-settings":["admin"],"deploy-perm":["admin"],
@@ -7375,7 +7389,7 @@ function gotoPage(p){
     const catId=p.slice(6);
     _boardSelCat=catId;_boardPageFilter={search:"",dept:"",author:"",dateFrom:"",dateTo:"",pageSize:15,page:1};
     currentPage=p;const g=_groupForPage(p);const bc=g?_bigCatForGroup(g):null;_sbDrillCat=bc?bc.key:null;_sbExpandedGroup=g;
-    renderPage();renderSidebar();_updateMobileTabNav();return;
+    renderPage();renderSidebar();_updateMobileTabNav();_logMenuUsage(p);return;
   }
   const allowed=PAGE_ROLES[p];
   if(allowed&&currentUser&&!allowed.includes(currentUser.role)){currentPage=p;_pageAccessDenied();renderSidebar();_updateMobileTabNav();return;}
@@ -7398,7 +7412,7 @@ function gotoPage(p){
     const bc=g?_bigCatForGroup(g):null;
     _sbDrillCat=bc?bc.key:null;_sbExpandedGroup=g;
   }
-  renderPage();renderSidebar();_updateMobileTabNav();
+  renderPage();renderSidebar();_updateMobileTabNav();_logMenuUsage(p);
 }
 function _sbDrillBack(){_sbDrillCat=null;_sbExpandedGroup=null;renderSidebar();}
 function _sbToggleGroup(g){_sbExpandedGroup=(_sbExpandedGroup===g)?null:g;renderSidebar();}
@@ -7618,6 +7632,7 @@ function renderPage(){
   pages["engagement-pulse-create"]=renderPulseSurveyCreatePage;
   pages["engagement-pulse-action-new"]=renderPulseActionCreatePage;
   pages["engagement-pulse-action-detail"]=renderPulseActionDetailPage;
+  pages["admin-operations"]=window.renderAdminOperationsPage;
   const fn=pages[currentPage];const c=$("#content");
   if(c&&fn){
     c.innerHTML="";
@@ -29941,5 +29956,6 @@ if(_masterHandoff && _authToken){
   renderLogin();
 }
 </script>
+<script src="/admin-operations.js"></script>
 </body>
 </html>
