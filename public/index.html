@@ -695,7 +695,7 @@ button,a,[role=button]{touch-action:manipulation}
 const EVAL_ONLY_MODE=/^\/eval(\/|$)/i.test(location.pathname);
 // 이 모듈에 포함되는 화면 = 사이드바의 "평가"(kpi-sep/comp-sep) 대분류 전체 + "평가
 // 운영"(설정 화면, set-op-sep에 있지만 성격상 평가 모듈 소속) + 비밀번호 변경(계정 위생).
-const EVAL_MODULE_PAGE_IDS=new Set(["evaluation-center","comp-evaluator-setup","eval-progress","kpi","kpi-results","first-eval","second-eval","kpi-amend","kpi-midstage","my-kpi","grade-view","comp-eval","comp-grade-view","comp-settings-shortcut","eval-ops","change-pw","notification-center"]);
+const EVAL_MODULE_PAGE_IDS=new Set(["evaluation-center","comp-evaluator-setup","eval-progress","kpi","kpi-results","first-eval","second-eval","kpi-amend","kpi-midstage","my-kpi","grade-view","comp-eval","comp-grade-view","comp-settings-shortcut","eval-ops","change-pw","notification-center","okr"]);
 if(EVAL_ONLY_MODE)document.title="평가 시스템";
 // 로그인 직후 랜딩 페이지 — 메인 앱은 항상 "dashboard"지만 이 모듈엔 없는 화면이라
 // role+menuPerms를 통과하는 첫 페이지로 보낸다. "나의 KPI"를 최우선으로 둔다 — 이 함수는
@@ -1096,7 +1096,7 @@ let engagementPulseSummary={}; // 서버가 조직 범위·최소 익명 인원 
 let engagementActions=[]; // 설문 결과 기반 조직 개선 실행계획
 function _recordCollections(){return{
   employees,kpiEntries,compSessions,compResponses,changeRequests,orgChartHistory,
-  coreTalentPool,talentDevPlans,successionPlans,jobSkillProfiles,employeeSkillProfiles,workforceScenarios,workforcePositions,positionRequests,gradeAdjustHistory,tieNotifications,lowPerfData,
+  coreTalentPool,talentDevPlans,successionPlans,jobSkillProfiles,employeeSkillProfiles,workforceScenarios,workforcePositions,positionRequests,gradeAdjustHistory,scoreAdjustments,okrObjectives,tieNotifications,lowPerfData,
   approvalTemplates,integrationLogs,approvalDocs,attendanceRecords,payslips,
   yearEndSettlements,
   payrollAdjustments,leaveUsagePlans,boardPosts,roomReservations,certLog,certRequests,
@@ -1293,6 +1293,31 @@ function kpiStagesConfig(){
   if(new Set(raw.map(s=>s.id)).size!==raw.length)return kpiDefaultStages();
   return raw;
 }
+// 목표별 등급기준표(앵커링 자동채점, Epic C — HR마인드 벤치마킹). 달성률(%) 구간별로
+// 점수를 매핑한다 — "실적 입력" 단계에서 달성율을 입력하면 평가자가 매번 0~100점을
+// 손으로 가늠하지 않아도 제안 점수가 자동 계산된다(어디까지나 "제안"이며, 자체/1차/
+// 최종 점수는 지금처럼 평가자가 직접 입력·수정한다 — 자동 강제 적용이 아님).
+function kpiDefaultAchievementBands(){
+  return [{min:110,score:100},{min:100,score:90},{min:90,score:80},{min:80,score:70},{min:0,score:60}];
+}
+function kpiAchievementBands(){
+  const raw=settings.kpiAchievementBands;
+  if(!Array.isArray(raw)||!raw.length||raw.length>10)return kpiDefaultAchievementBands();
+  const valid=raw.every(b=>b&&Number.isFinite(Number(b.min))&&Number.isFinite(Number(b.score))&&Number(b.score)>=0&&Number(b.score)<=100);
+  if(!valid)return kpiDefaultAchievementBands();
+  if(!raw.some(b=>Number(b.min)<=0))return kpiDefaultAchievementBands(); // 최하위 구간(catch-all) 없으면 무효
+  return [...raw].sort((a,b)=>Number(b.min)-Number(a.min));
+}
+// rateText는 "100%"/"95.5"/"초과달성" 등 자유 텍스트(기존 호환) — 순수 숫자(%기호 선택)로만
+// 파싱되면 자동 점수를 계산하고, 그 외(빈칸·비숫자 설명문)는 null을 반환해 조용히 건너뛴다.
+function kpiAutoScoreFromRate(rateText){
+  const m=String(rateText??"").trim().match(/^(\d+(\.\d+)?)\s*%?$/);
+  if(!m)return null;
+  const rate=Number(m[1]);
+  const bands=kpiAchievementBands();
+  const hit=bands.find(b=>rate>=Number(b.min));
+  return hit?Number(hit.score):null;
+}
 function kpiStageActorAllowed(stageCfg,actorEmp,ownerEmp){
   if(!stageCfg||!actorEmp||!ownerEmp)return false;
   if(stageCfg.kind==="team_leader")return actorEmp.role==="leader"&&ownerEmp.dept===actorEmp.dept&&ownerEmp.team===actorEmp.team;
@@ -1316,6 +1341,8 @@ let compGradeSettings={};
 let compGradeResults={};
 // Comp grade adjustment history
 let gradeAdjustHistory=[]; // {id,type:'kpi'|'comp',empId,year,dept,oldGrade,newGrade,reason,adjustedBy,adjustedAt}
+let scoreAdjustments=[]; // 가감점(상벌점, Epic C) {id,type:'kpi'|'comp',empId,year,dept,points,reason,appliedBy,appliedByName,appliedAt,updatedAt}
+let okrObjectives=[]; // OKR(Epic C) {id,year,ownerId,ownerName,dept,team,scope:'personal'|'team'|'company',title,description,status:'draft'|'pending'|'approved'|'rejected',submittedAt,approvedBy,approvedByName,approvedAt,rejectReason,krs:[{id,title,targetValue,currentValue,unit,checkIns:[{date,value,note,by,byName}]}],comments:[{id,authorId,authorName,text,createdAt}],attachments:[{name,data,type}],createdAt,updatedAt}
 // Company-wide grade ratios
 let companyWideRatios={
   kpi:{member:[{grade:"S",pct:5},{grade:"A",pct:10},{grade:"B",pct:70},{grade:"C",pct:10},{grade:"D",pct:5}],leader:[{grade:"A",pct:50},{grade:"B",pct:50}]},
@@ -2607,7 +2634,7 @@ const SNAPSHOT_FIELD_LABELS = {
   employees:"인사 정보(employees)", kpiEntries:"KPI 평가", changeRequests:"변경요청",
   orgChartHistory:"조직도 이력", coreTalentPool:"핵심인재 풀", talentDevPlans:"인재개발계획", successionPlans:"승계계획",
   jobSkillProfiles:"직무·스킬 기준", employeeSkillProfiles:"직원 스킬 프로필", workforceScenarios:"전략적 인력계획 시나리오", workforcePositions:"정원·포지션 마스터", positionRequests:"포지션 신설·증원 요청",
-  compGradeResults:"보상등급 결과", gradeAdjustHistory:"등급조정 이력", tieNotifications:"동점자 알림",
+  compGradeResults:"보상등급 결과", gradeAdjustHistory:"등급조정 이력", scoreAdjustments:"가감점(상벌점)", okrObjectives:"OKR", tieNotifications:"동점자 알림",
   lowPerfData:"저성과자 데이터", approvalTemplates:"전자결재 템플릿", integrationLogs:"연동 로그",
   approvalDocs:"전자결재 문서", attendanceRecords:"근태기록", payslips:"급여명세서", payrollAdjustments:"급여 조정항목",
   leaveUsagePlans:"연차 사용계획서",
@@ -2730,7 +2757,7 @@ function getCompEvaluators(targetId,year,ignoreFixed=false){
   const cfg=getEvalConfig(targetId);
   // If fixed evaluator list is set, use it directly
   if(!ignoreFixed&&cfg.fixedEvaluatorIds&&cfg.fixedEvaluatorIds.length>0){
-    return cfg.fixedEvaluatorIds.map(id=>getEmp(id)).filter(e=>e&&e.active&&e.id!==targetId);
+    return cfg.fixedEvaluatorIds.map(id=>getEmp(id)).filter(e=>e&&e.active&&String(e.id)!==String(targetId));
   }
   const role=target.role;
   let evaluators=[];
@@ -2757,7 +2784,10 @@ function getCompEvaluators(targetId,year,ignoreFixed=false){
     if(peers.length>peerMax)peers=peers.slice(0,peerMax);
     evaluators=[...leader,...peers];
   }
-  return evaluators.filter(e=>e.id!==targetId);
+  // 문자열 targetId로 호출되는 경로(_autoTransitionCompEvaluators 등)가 생기면서 발견된
+  // 버그: e.id(숫자)!==targetId(문자열)는 엄격비교라 항상 true가 되어 평가대상자 본인이
+  // 자기 평가자 목록에 그대로 남아있었다(실측 재현) — getEmp()와 동일하게 String() 비교.
+  return evaluators.filter(e=>String(e.id)!==String(targetId));
 }
 function getCompType(target){
   if(!target)return"comp";
@@ -2773,6 +2803,36 @@ function createCompSession(targetId,year){
   const session={id:genId(),year,targetId,type,evaluatorIds:evaluators.map(e=>e.id),status:"open",createdAt:ts()};
   compSessions.push(session);
   return session;
+}
+// 부서이동 평가자 자동전환(Epic C — HR마인드 벤치마킹). getCompEvaluators()는 target.dept/
+// target.team을 그때그때 다시 읽는 라이브 함수라(fixedEvaluatorIds가 없을 때), 직원이
+// 부서를 이동하면 재호출만으로 새 부서 기준 평가자 목록이 자동으로 나온다 — 이 함수는
+// saveEmpEdit()/_applyOrgBulkChanges()/_applyDueHRChanges() 등 dept·team을 실제로 바꾸는
+// 지점 모두에서 호출돼 그 재계산을 실제로 반영한다.
+//
+// 안전 범위: 아직 응답이 하나도 제출되지 않은 세션(진행 전)이면서, 관리자가 고정
+// 평가자(fixedEvaluatorIds)를 지정해두지 않은 경우에만 evaluatorIds를 조용히 교체한다 —
+// 이미 제출된 다면평가 응답을 무효화하거나, 관리자가 일부러 지정한 평가자 구성을 덮어쓰는
+// 일은 절대 없다. 그 두 경우(응답 이미 있음, 또는 고정 평가자 지정됨)는 대신
+// session.transferFlagged로 표시만 해, 새 부서의 사업부장·팀장이 "하위조직원 평가자 조정"
+// 화면(Epic B #9)에서 직접 검토·조정하도록 한다.
+function _autoTransitionCompEvaluators(empId,oldDept,oldTeam){
+  const emp=getEmp(empId);if(!emp)return;
+  if(emp.dept===oldDept&&emp.team===oldTeam)return; // 부서·팀 변경 없음
+  const year=settings.compEvalYear||settings.evalYear;
+  // saveEmpEdit()는 id를 문자열로 넘기는데 compSessions.targetId는 보통 숫자라, 엄격비교(===)로
+  // 찾으면 타입 불일치로 조용히 못 찾는다(실제 재현된 버그) — getEmp()와 동일하게 String() 비교.
+  const session=compSessions.find(s=>String(s.targetId)===String(empId)&&s.year===year);
+  if(!session||session.status==="closed")return;
+  const hasResponses=compResponses.some(r=>r.sessionId===session.id&&r.submittedAt);
+  const cfg=getEvalConfig(empId);
+  const hasFixedEvaluators=cfg.fixedEvaluatorIds&&cfg.fixedEvaluatorIds.length>0;
+  if(hasResponses||hasFixedEvaluators){
+    compSessions=compSessions.map(s=>s.id===session.id?{...s,transferFlagged:true,transferNote:`${oldDept||"-"}/${oldTeam||"-"} → ${emp.dept}/${emp.team}`,updatedAt:new Date().toISOString()}:s);
+    return;
+  }
+  const newEvaluators=getCompEvaluators(empId,year);
+  compSessions=compSessions.map(s=>s.id===session.id?{...s,evaluatorIds:newEvaluators.map(e=>e.id),transferFlagged:false,transferNote:"",updatedAt:new Date().toISOString()}:s);
 }
 function getMyCompSessions(evaluatorId,year){
   return compSessions.filter(s=>s.year===year&&s.status==="open"&&s.evaluatorIds.includes(evaluatorId)&&!compResponses.find(r=>r.sessionId===s.id&&r.evaluatorId===evaluatorId));
@@ -2808,11 +2868,18 @@ function calcCompScore(sessionId){
 }
 
 
+// 가감점(상벌점, Epic C) 합계 — 상대평가 순위를 매기기 전(calcEmpFinalScore/
+// calcCompGradesForAll)에 raw score에 그대로 더해진다. 삭제된(tombstone) 항목은
+// scoreAdjustments 배열 자체에서 이미 빠져있으므로 별도 필터 불필요.
+function getScoreAdjustmentTotal(empId,year,type){
+  return scoreAdjustments.filter(a=>a&&a.empId===empId&&a.year===year&&a.type===type).reduce((t,a)=>t+(Number(a.points)||0),0);
+}
 function calcEmpFinalScore(empId,year){
   const kpis=kpiEntries.filter(k=>k.userId===empId&&k.year===year&&k.finalStatus==="approved");
   if(!kpis.length)return null;
   const cfg=kpiStagesConfig();
-  return kpis.reduce((t,k)=>{const sc=kpiItemStageScore(k,cfg);return t+(sc!=null?sc*(k.weight/100):0);},0);
+  const base=kpis.reduce((t,k)=>{const sc=kpiItemStageScore(k,cfg);return t+(sc!=null?sc*(k.weight/100):0);},0);
+  return base+getScoreAdjustmentTotal(empId,year,"kpi");
 }
 function tryCalcDeptGrades(dept,year){ _tryCalcDeptGrades(dept,year,false); }
 // saveFinalConfirm()이 KPI 1건 최종 확정될 때마다 "그 부서 전체가 이제 다 끝났는지"
@@ -3755,11 +3822,260 @@ function _compBenchmarkSummary(rows){
   categories.forEach(r=>r.gap=Math.round((r.targetAvg-r.companyAvg)*10)/10);
   return{targetAvg,companyAvg,gap:targetAvg!=null&&companyAvg!=null?Math.round((targetAvg-companyAvg)*10)/10:null,categories};
 }
+// 평가결과 리포트 레이더차트(Epic C — HR마인드 벤치마킹). 외부 차트 라이브러리 없이 순수
+// 인라인 SVG로 그린다(이 코드베이스의 기존 관례 — budget.html이 쓰던 svgLineChart와 동일한
+// "라이브러리 없는 SVG" 방향, 단 해당 함수는 이미 제거돼 있어 새로 작성). 축이 3개 미만이면
+// 다각형이 의미 없는 선이 되므로 호출부가 그 경우 기존 막대그래프로 폴백한다.
+function svgRadarChart(categories,series,maxValue=5){
+  const n=categories.length;if(n<3)return"";
+  const size=260,cx=size/2,cy=size/2,R=size/2-44;
+  const angleFor=i=>-Math.PI/2+i*(2*Math.PI/n);
+  const pt=(i,ratio)=>{const a=angleFor(i),r=R*Math.max(0,Math.min(1,ratio));return[cx+r*Math.cos(a),cy+r*Math.sin(a)];};
+  const rings=[0.25,0.5,0.75,1].map(ratio=>{
+    const pts=categories.map((_,i)=>pt(i,ratio).join(",")).join(" ");
+    return`<polygon points="${pts}" fill="none" stroke="#e2e8f0" stroke-width="1"/>`;
+  }).join("");
+  const axes=categories.map((_,i)=>{const[x,y]=pt(i,1);return`<line x1="${cx}" y1="${cy}" x2="${x}" y2="${y}" stroke="#e2e8f0" stroke-width="1"/>`;}).join("");
+  const labels=categories.map((c,i)=>{
+    const[x,y]=pt(i,1.18);
+    const anchor=Math.abs(Math.cos(angleFor(i)))<0.2?"middle":Math.cos(angleFor(i))>0?"start":"end";
+    return`<text x="${x}" y="${y}" font-size="10" fill="#475569" text-anchor="${anchor}" dominant-baseline="middle">${h(c)}</text>`;
+  }).join("");
+  const polys=series.map(s=>{
+    const pts=categories.map((_,i)=>pt(i,(Number(s.values[i])||0)/maxValue).join(",")).join(" ");
+    return`<polygon points="${pts}" fill="${s.color}" fill-opacity="0.18" stroke="${s.color}" stroke-width="2"/>`;
+  }).join("");
+  const legend=series.map((s,i)=>`<span style="display:inline-flex;align-items:center;gap:4px;margin-right:12px"><span style="width:10px;height:10px;border-radius:2px;background:${s.color};display:inline-block"></span><span class="fz11 text-gray">${h(s.label)}</span></span>`).join("");
+  return`<div style="text-align:center"><svg viewBox="0 0 ${size} ${size}" width="100%" style="max-width:300px">${rings}${axes}${polys}${labels}</svg><div style="margin-top:4px">${legend}</div></div>`;
+}
 function dlCompBenchmark(sessionId){
   const session=compSessions.find(s=>String(s.id)===String(sessionId));if(!session)return;
   const target=getEmp(session.targetId),rows=_compBenchmarkRows(sessionId);
   dlCSV(`다면평가_비교분석_${target?.name||session.targetId}_${session.year}.csv`,["구분","평가항목","대상자 평균","회사 평균","차이","응답수"],
     rows.map(r=>[r.category,r.label,r.targetAvg??"",r.companyAvg??"",r.gap??"",r.responseCount]));
+}
+
+// ==================== OKR(Epic C — HR마인드 벤치마킹) ====================
+// 목표(Objective)·핵심지표(KR) 등록/승인, 핵심지표 체크인 타임라인, 코멘트·첨부파일.
+// 서버의 okrObjectives 전용 _sanitizeGatedRecord 분기와 1:1로 대응하는 승인 흐름:
+// draft(본인 자유편집) → pending(본인 제출) → approved/rejected(직속 매니저 또는 admin).
+let okrTab="mine",okrFilterYear=null;
+// 서버의 _okrIsManagerOf와 동일한 조직단위 기준(leader→같은 dept+team의 member,
+// director→같은 dept의 member/leader) — 실제 권한 강제는 항상 서버가 한다, 이건 UI 노출용.
+function okrIsManagerOfClient(actorEmp,ownerEmp){
+  if(!actorEmp||!ownerEmp)return false;
+  if(actorEmp.role==="leader")return ownerEmp.role==="member"&&ownerEmp.dept===actorEmp.dept&&ownerEmp.team===actorEmp.team;
+  if(actorEmp.role==="director")return(ownerEmp.role==="member"||ownerEmp.role==="leader")&&ownerEmp.dept===actorEmp.dept;
+  return false;
+}
+function okrKrProgress(kr){
+  const t=Number(kr.targetValue),c=Number(kr.currentValue);
+  if(!Number.isFinite(t)||t===0||!Number.isFinite(c))return null;
+  return Math.max(0,Math.min(100,Math.round(c/t*100)));
+}
+const OKR_STATUS_LABEL={draft:"작성중",pending:"승인 대기",approved:"승인됨",rejected:"반려됨"};
+const OKR_STATUS_COLOR={draft:"gray",pending:"orange",approved:"green",rejected:"red"};
+const OKR_SCOPE_LABEL={personal:"개인",team:"팀",company:"전사"};
+function renderOkrPage(){
+  if(!okrFilterYear)okrFilterYear=settings.evalYear||new Date().getFullYear();
+  const u=currentUser;
+  const canReview=u.role==="leader"||u.role==="director"||u.role==="admin";
+  const c=$("#content");if(!c)return;
+  const yrs=[...new Set([okrFilterYear,settings.evalYear,...okrObjectives.map(o=>o.year)].filter(Boolean))].sort((a,b)=>b-a);
+  c.innerHTML=`<div class="flex justify-between items-c mb3" style="flex-wrap:wrap;gap:8px">
+    <h2>🎯 OKR</h2>
+    <div class="flex items-c gap2">
+      <select class="fc" style="width:110px" onchange="okrFilterYear=Number(this.value);renderOkrPage()">${yrs.map(y=>`<option value="${y}"${y===okrFilterYear?" selected":""}>${y}년</option>`).join("")}</select>
+      <button class="btn btn-primary btn-sm" onclick="openOkrEditModal(null)">+ 목표 등록</button>
+    </div>
+  </div>
+  <div class="flex gap2 mb3" style="border-bottom:1px solid #e2e8f0">
+    <button class="tab-btn ${okrTab==="mine"?"active":""}" onclick="okrTab='mine';renderOkrPage()">내 목표</button>
+    ${canReview?`<button class="tab-btn ${okrTab==="review"?"active":""}" onclick="okrTab='review';renderOkrPage()">팀 검토</button>`:""}
+    <button class="tab-btn ${okrTab==="board"?"active":""}" onclick="okrTab='board';renderOkrPage()">전사 목표 보드</button>
+  </div>
+  <div id="okr-content"></div>`;
+  renderOkrTabContent();
+}
+function renderOkrTabContent(){
+  const el=$("#okr-content");if(!el)return;
+  const u=currentUser;
+  let list=[];
+  if(okrTab==="mine")list=okrObjectives.filter(o=>o&&o.ownerId===u.id&&o.year===okrFilterYear);
+  else if(okrTab==="review")list=okrObjectives.filter(o=>o&&o.year===okrFilterYear&&o.status==="pending"&&okrIsManagerOfClient(u,getEmp(o.ownerId)));
+  else if(okrTab==="board")list=okrObjectives.filter(o=>o&&o.year===okrFilterYear&&o.scope==="company"&&o.status==="approved");
+  list=[...list].sort((a,b)=>(b.updatedAt||"").localeCompare(a.updatedAt||""));
+  el.innerHTML=list.length?`<div class="g2" style="gap:12px">${list.map(o=>_okrCardHtml(o)).join("")}</div>`:`<div class="card"><div class="p-empty">표시할 OKR이 없습니다.</div></div>`;
+}
+function _okrCardHtml(o){
+  const u=currentUser;
+  const isOwner=o.ownerId===u.id;
+  const ownerEmp=getEmp(o.ownerId);
+  const canManage=u.role==="admin"||okrIsManagerOfClient(u,ownerEmp);
+  const krProgresses=(o.krs||[]).map(kr=>okrKrProgress(kr)).filter(p=>p!=null);
+  const avgProgress=krProgresses.length?Math.round(krProgresses.reduce((a,b)=>a+b,0)/krProgresses.length):null;
+  return`<div class="card"><div class="card-head"><div>
+      <h3>${h(o.title)}</h3>
+      <div class="fz11 text-gray mt1">${h(ownerEmp?.name||o.ownerName||"-")} · ${OKR_SCOPE_LABEL[o.scope]||o.scope} · ${badge(OKR_STATUS_LABEL[o.status]||o.status,OKR_STATUS_COLOR[o.status]||"gray")}</div>
+    </div></div>
+    <div class="card-body">
+      ${o.description?`<div class="fz12 text-gray mb2">${h(o.description)}</div>`:""}
+      ${avgProgress!=null?`<div class="flex items-c gap2 mb2"><div style="flex:1;height:8px;background:#e2e8f0;border-radius:4px;overflow:hidden"><div style="height:100%;width:${avgProgress}%;background:#2563eb"></div></div><span class="fz11 fw7">${avgProgress}%</span></div>`:""}
+      <div class="fz11 text-gray">핵심지표 ${(o.krs||[]).length}개</div>
+      ${o.status==="rejected"&&o.rejectReason?`<div class="notice error fz11 mt2">반려 사유: ${h(o.rejectReason)}</div>`:""}
+      <div class="flex gap2 mt3 wrap">
+        <button class="btn btn-secondary btn-sm" onclick="openOkrDetailModal('${o.id}')">상세·체크인</button>
+        ${isOwner&&o.status==="draft"?`<button class="btn btn-ghost btn-sm" onclick="openOkrEditModal('${o.id}')">수정</button>`:""}
+        ${isOwner&&o.status==="draft"?`<button class="btn btn-primary btn-sm" onclick="submitOkrForApproval('${o.id}')">제출</button>`:""}
+        ${canManage&&o.status==="pending"?`<button class="btn btn-success btn-sm" onclick="approveOkr('${o.id}')">승인</button><button class="btn btn-danger btn-sm" onclick="rejectOkr('${o.id}')">반려</button>`:""}
+        ${(isOwner||u.role==="admin")?`<button class="btn btn-ghost btn-sm" onclick="deleteOkr('${o.id}')">삭제</button>`:""}
+      </div>
+    </div></div>`;
+}
+function openOkrEditModal(id){
+  const o=id?okrObjectives.find(x=>x.id===id):null;
+  if(o&&o.ownerId!==currentUser.id&&currentUser.role!=="admin"){showToast("본인 목표만 수정할 수 있습니다.","error");return;}
+  window._okrEditKrs=o?JSON.parse(JSON.stringify(o.krs||[])):[];
+  showModal(`<div class="modal modal-md"><div class="modal-head"><h2>${o?"OKR 수정":"새 OKR 등록"}</h2><button class="modal-close" onclick="closeModal()">×</button></div>
+  <div class="modal-body">
+    <div class="fg"><label class="fl">목표(Objective) <span class="req">*</span></label><input class="fc" id="okr-title" maxlength="200" value="${h(o?.title||"")}" placeholder="예: 신규 서비스 안정적 출시"></div>
+    <div class="fg"><label class="fl">설명</label><textarea class="fc" id="okr-desc" rows="2" maxlength="1000">${h(o?.description||"")}</textarea></div>
+    <div class="g2"><div class="fg"><label class="fl">범위</label><select class="fc" id="okr-scope">${["personal","team","company"].map(s=>`<option value="${s}"${((o?.scope)||"personal")===s?" selected":""}>${OKR_SCOPE_LABEL[s]}</option>`).join("")}</select></div>
+    <div class="fg"><label class="fl">연도</label><input class="fc" id="okr-year" type="number" value="${o?.year||okrFilterYear}"></div></div>
+    <div class="fg"><label class="fl">핵심지표(Key Results)</label><div id="okr-kr-rows"></div>
+      <button class="btn btn-secondary btn-sm mt2" onclick="_okrAddKrRow()" ${window._okrEditKrs.length>=10?"disabled":""}>+ 핵심지표 추가</button>
+    </div>
+  </div>
+  <div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal()">취소</button><button class="btn btn-primary" onclick="saveOkrDraft('${id||""}')">저장</button></div></div>`);
+  _renderOkrKrRows();
+}
+function _renderOkrKrRows(){
+  const el=$("#okr-kr-rows");if(!el)return;
+  const krs=window._okrEditKrs||[];
+  el.innerHTML=krs.length?krs.map((kr,i)=>`<div class="flex items-c gap2" style="margin-bottom:6px">
+    <input class="fc" style="flex:2" placeholder="핵심지표명" value="${h(kr.title||"")}" oninput="window._okrEditKrs[${i}].title=this.value">
+    <input class="fc" type="number" style="width:90px" placeholder="목표치" value="${kr.targetValue??""}" oninput="window._okrEditKrs[${i}].targetValue=this.value===''?null:Number(this.value)">
+    <input class="fc" style="width:70px" placeholder="단위" value="${h(kr.unit||"")}" oninput="window._okrEditKrs[${i}].unit=this.value">
+    <button class="btn btn-danger btn-sm" onclick="_okrRemoveKrRow(${i})">삭제</button>
+  </div>`).join(""):`<div class="fz11 text-gray">핵심지표를 추가하세요.</div>`;
+}
+function _okrAddKrRow(){window._okrEditKrs=window._okrEditKrs||[];window._okrEditKrs.push({id:"kr_"+Date.now().toString(36)+Math.random().toString(36).slice(2,6),title:"",targetValue:null,currentValue:0,unit:"",checkIns:[]});_renderOkrKrRows();}
+function _okrRemoveKrRow(i){window._okrEditKrs.splice(i,1);_renderOkrKrRows();}
+function saveOkrDraft(id){
+  const title=$("#okr-title")?.value.trim();
+  if(!title){showToast("목표명을 입력하세요.","error");return;}
+  const krs=(window._okrEditKrs||[]).filter(k=>k.title&&k.title.trim());
+  const now=new Date().toISOString();
+  if(id){
+    okrObjectives=okrObjectives.map(o=>o.id!==id?o:{...o,title,description:$("#okr-desc")?.value.trim()||"",scope:$("#okr-scope")?.value||"personal",year:Number($("#okr-year")?.value)||o.year,krs,updatedAt:now});
+  }else{
+    const emp=getEmp(currentUser.id);
+    okrObjectives.push({id:"okr_"+Date.now().toString(36)+Math.random().toString(36).slice(2,6),year:Number($("#okr-year")?.value)||okrFilterYear,ownerId:currentUser.id,ownerName:currentUser.name,dept:emp?.dept||"",team:emp?.team||"",scope:$("#okr-scope")?.value||"personal",title,description:$("#okr-desc")?.value.trim()||"",status:"draft",krs,comments:[],attachments:[],createdAt:now,updatedAt:now});
+  }
+  autoSaveToServerIfEnabled();closeModal();showToast("OKR이 저장되었습니다.","success");renderOkrPage();
+}
+function submitOkrForApproval(id){
+  const o=okrObjectives.find(x=>x.id===id);if(!o)return;
+  if(!(o.krs||[]).length){showToast("핵심지표를 최소 1개 이상 등록해야 제출할 수 있습니다.","error");return;}
+  okrObjectives=okrObjectives.map(x=>x.id!==id?x:{...x,status:"pending",submittedAt:new Date().toISOString(),updatedAt:new Date().toISOString()});
+  autoSaveToServerIfEnabled();showToast("승인 요청이 제출되었습니다.","success");renderOkrPage();
+}
+async function approveOkr(id){
+  const ok=await askConfirmModal({title:"OKR 승인",message:"이 목표를 승인합니다.",confirmText:"승인"});if(!ok)return;
+  okrObjectives=okrObjectives.map(o=>o.id!==id?o:{...o,status:"approved",approvedBy:currentUser.id,approvedByName:currentUser.name,approvedAt:new Date().toISOString(),rejectReason:"",updatedAt:new Date().toISOString()});
+  autoSaveToServerIfEnabled();showToast("OKR이 승인되었습니다.","success");renderOkrPage();
+}
+async function rejectOkr(id){
+  const reason=window.prompt("반려 사유를 입력하세요.");
+  if(reason==null)return;
+  if(!reason.trim()){showToast("반려 사유를 입력해야 합니다.","error");return;}
+  okrObjectives=okrObjectives.map(o=>o.id!==id?o:{...o,status:"rejected",approvedBy:currentUser.id,approvedByName:currentUser.name,approvedAt:new Date().toISOString(),rejectReason:reason.trim(),updatedAt:new Date().toISOString()});
+  autoSaveToServerIfEnabled();showToast("OKR이 반려되었습니다.","success");renderOkrPage();
+}
+async function deleteOkr(id){
+  const ok=await askConfirmModal({title:"OKR 삭제",message:"이 목표와 모든 핵심지표·체크인 기록이 삭제됩니다.",confirmText:"삭제",danger:true});if(!ok)return;
+  _tombstone("okrObjectives",id);
+  okrObjectives=okrObjectives.filter(o=>o.id!==id);
+  autoSaveToServerIfEnabled();showToast("OKR이 삭제되었습니다.","success");renderOkrPage();
+}
+function openOkrDetailModal(id){
+  const o=okrObjectives.find(x=>x.id===id);if(!o)return;
+  const u=currentUser;
+  const ownerEmp=getEmp(o.ownerId);
+  const isOwner=o.ownerId===u.id;
+  const canEdit=isOwner||u.role==="admin";
+  showModal(`<div class="modal modal-lg"><div class="modal-head"><h2>${h(o.title)}</h2><button class="modal-close" onclick="closeModal()">×</button></div>
+  <div class="modal-body">
+    <div class="fz11 text-gray mb3">${h(ownerEmp?.name||o.ownerName||"-")} · ${OKR_SCOPE_LABEL[o.scope]||o.scope} · ${badge(OKR_STATUS_LABEL[o.status]||o.status,OKR_STATUS_COLOR[o.status]||"gray")} · ${o.year}년</div>
+    ${o.description?`<div class="fz12 mb3">${h(o.description)}</div>`:""}
+    <div class="sec-title">핵심지표(Key Results)</div>
+    <div id="okr-kr-detail">${_okrKrDetailHtml(o,canEdit)}</div>
+    <div class="sec-title mt3">코멘트</div>
+    <div id="okr-comments">${_okrCommentsHtml(o)}</div>
+    <div class="flex gap2 mt2"><input class="fc" id="okr-comment-input" placeholder="코멘트 입력..." style="flex:1"><button class="btn btn-secondary btn-sm" onclick="okrAddComment('${id}')">등록</button></div>
+    <div class="sec-title mt3">첨부파일</div>
+    <div id="okr-attachments">${_okrAttachmentsHtml(o)}</div>
+    <label class="btn btn-secondary btn-sm mt2" for="okr-att-upload">📤 파일 첨부</label>
+    <input type="file" id="okr-att-upload" style="display:none" onchange="okrUploadAttachment('${id}',this)">
+  </div>
+  <div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal()">닫기</button></div></div>`);
+}
+function _okrKrDetailHtml(o,canEdit){
+  if(!(o.krs||[]).length)return`<div class="fz11 text-gray">등록된 핵심지표가 없습니다.</div>`;
+  return o.krs.map(kr=>{
+    const prog=okrKrProgress(kr);
+    const checkIns=[...(kr.checkIns||[])].sort((a,b)=>(b.date||"").localeCompare(a.date||""));
+    return`<div style="padding:10px;background:#f8fafc;border-radius:8px;margin-bottom:8px">
+      <div class="flex justify-between items-c"><strong class="fz12">${h(kr.title)}</strong><span class="fz11 text-gray">${kr.currentValue??0}${h(kr.unit||"")} / ${kr.targetValue??"-"}${h(kr.unit||"")}</span></div>
+      ${prog!=null?`<div style="height:6px;background:#e2e8f0;border-radius:3px;overflow:hidden;margin-top:6px"><div style="height:100%;width:${prog}%;background:#2563eb"></div></div><div class="fz10 text-gray mt1">${prog}%</div>`:""}
+      ${canEdit?`<div class="flex gap2 mt2"><input class="fc" type="number" id="okr-checkin-val-${kr.id}" style="width:90px" placeholder="새 실적치"><input class="fc" id="okr-checkin-note-${kr.id}" placeholder="메모(선택)" style="flex:1"><button class="btn btn-ghost btn-sm" onclick="okrCheckIn('${o.id}','${kr.id}')">체크인</button></div>`:""}
+      ${checkIns.length?`<div class="fz10 text-gray mt2" style="border-top:1px dashed #e2e8f0;padding-top:6px"><strong>타임라인</strong>${checkIns.map(ci=>`<div class="mt1">${h((ci.date||"").slice(0,10))} · ${ci.value}${h(kr.unit||"")}${ci.note?" · "+h(ci.note):""} · ${h(ci.byName||"")}</div>`).join("")}</div>`:""}
+    </div>`;
+  }).join("");
+}
+function okrCheckIn(objId,krId){
+  const valEl=$("#okr-checkin-val-"+krId);
+  const val=Number(valEl?.value);
+  if(!valEl?.value||!Number.isFinite(val)){showToast("실적치를 숫자로 입력하세요.","error");return;}
+  const note=$("#okr-checkin-note-"+krId)?.value.trim()||"";
+  const now=new Date().toISOString();
+  okrObjectives=okrObjectives.map(o=>{
+    if(o.id!==objId)return o;
+    const krs=(o.krs||[]).map(kr=>kr.id!==krId?kr:{...kr,currentValue:val,checkIns:[...(kr.checkIns||[]),{date:now,value:val,note,by:currentUser.id,byName:currentUser.name}]});
+    return{...o,krs,updatedAt:now};
+  });
+  autoSaveToServerIfEnabled();showToast("체크인이 기록되었습니다.","success");
+  closeModal();openOkrDetailModal(objId);renderOkrTabContent();
+}
+function _okrCommentsHtml(o){
+  const cs=o.comments||[];
+  if(!cs.length)return`<div class="fz11 text-gray">등록된 코멘트가 없습니다.</div>`;
+  return cs.map(c=>`<div style="padding:6px 0;border-bottom:1px solid #f1f5f9;font-size:12px"><strong>${h(c.authorName||"")}</strong> <span class="fz10 text-gray">${(c.createdAt||"").slice(0,16).replace("T"," ")}</span><div>${h(c.text)}</div></div>`).join("");
+}
+function okrAddComment(id){
+  const text=$("#okr-comment-input")?.value.trim();
+  if(!text){showToast("코멘트를 입력하세요.","error");return;}
+  const now=new Date().toISOString();
+  okrObjectives=okrObjectives.map(o=>o.id!==id?o:{...o,comments:[...(o.comments||[]),{id:"c_"+Date.now().toString(36),authorId:currentUser.id,authorName:currentUser.name,text,createdAt:now}],updatedAt:now});
+  autoSaveToServerIfEnabled();
+  closeModal();openOkrDetailModal(id);
+}
+function _okrAttachmentsHtml(o){
+  const atts=o.attachments||[];
+  if(!atts.length)return`<div class="fz11 text-gray">첨부파일이 없습니다.</div>`;
+  return atts.map((a,i)=>`<div class="fz11" style="padding:3px 0"><a href="${a.data}" download="${h(a.name)}">${h(a.name)}</a></div>`).join("");
+}
+function okrUploadAttachment(id,input){
+  const file=input.files?.[0];if(!file)return;
+  if(file.size>5*1024*1024){showToast("파일 크기는 5MB 이하만 첨부할 수 있습니다.","error");input.value="";return;}
+  const reader=new FileReader();
+  reader.onload=ev=>{
+    okrObjectives=okrObjectives.map(o=>o.id!==id?o:{...o,attachments:[...(o.attachments||[]),{name:file.name,data:ev.target.result,type:file.type}],updatedAt:new Date().toISOString()});
+    autoSaveToServerIfEnabled();
+    closeModal();openOkrDetailModal(id);
+  };
+  reader.readAsDataURL(file);
+  input.value="";
 }
 
 function openCompDetailModal(sessionId){
@@ -3790,7 +4106,12 @@ function openCompDetailModal(sessionId){
       <div style="padding:10px;background:#f8fafc;border-radius:8px"><div class="fz10 text-gray">회사 평균</div><div class="fz20 fw7">${benchmark.companyAvg??"-"}</div></div>
       <div style="padding:10px;background:${(benchmark.gap??0)>=0?"#f0fdf4":"#fef2f2"};border-radius:8px"><div class="fz10 text-gray">평균 대비</div><div class="fz20 fw7" style="color:${(benchmark.gap??0)>=0?"#15803d":"#b91c1c"}">${benchmark.gap==null?"-":`${benchmark.gap>0?"+":""}${benchmark.gap}`}</div></div>
     </div>
-    ${benchmark.categories.length?`<div style="display:grid;gap:8px;margin-bottom:12px">${benchmark.categories.map(row=>`<div style="display:grid;grid-template-columns:minmax(80px,120px) 1fr;gap:8px;align-items:center"><div class="fz11 fw6">${h(row.category)}</div><div><div role="img" aria-label="${h(row.category)} 대상자 평균 ${row.targetAvg}, 회사 평균 ${row.companyAvg}" style="height:7px;background:#e2e8f0;border-radius:6px;overflow:hidden"><div style="height:100%;width:${Math.max(0,Math.min(100,row.targetAvg/5*100))}%;background:#2563eb"></div></div><div class="fz10 text-gray mt1">대상 ${row.targetAvg} · 회사 ${row.companyAvg} · 차이 ${row.gap>0?"+":""}${row.gap}</div></div></div>`).join("")}</div>`:`<div class="info-note mb3">동일 연도·유형의 다른 평가 결과가 없어 회사 평균 비교를 표시하지 않습니다.</div>`}
+    ${benchmark.categories.length>=3?svgRadarChart(benchmark.categories.map(r=>r.category),[
+        {label:"대상자",color:"#2563eb",values:benchmark.categories.map(r=>r.targetAvg)},
+        {label:"회사 평균",color:"#94a3b8",values:benchmark.categories.map(r=>r.companyAvg)},
+      ])
+    :benchmark.categories.length?`<div style="display:grid;gap:8px;margin-bottom:12px">${benchmark.categories.map(row=>`<div style="display:grid;grid-template-columns:minmax(80px,120px) 1fr;gap:8px;align-items:center"><div class="fz11 fw6">${h(row.category)}</div><div><div role="img" aria-label="${h(row.category)} 대상자 평균 ${row.targetAvg}, 회사 평균 ${row.companyAvg}" style="height:7px;background:#e2e8f0;border-radius:6px;overflow:hidden"><div style="height:100%;width:${Math.max(0,Math.min(100,row.targetAvg/5*100))}%;background:#2563eb"></div></div><div class="fz10 text-gray mt1">대상 ${row.targetAvg} · 회사 ${row.companyAvg} · 차이 ${row.gap>0?"+":""}${row.gap}</div></div></div>`).join("")}</div>`
+    :`<div class="info-note mb3">동일 연도·유형의 다른 평가 결과가 없어 회사 평균 비교를 표시하지 않습니다.</div>`}
     ${strongest&&develop?`<div class="info-note mb3">강점 영역: <strong>${h(strongest.category)}</strong> (${strongest.gap>0?"+":""}${strongest.gap}) · 개발 우선 영역: <strong>${h(develop.category)}</strong> (${develop.gap>0?"+":""}${develop.gap})</div>`:""}
     <div class="tbl-wrap"><table>
       <thead><tr><th>평가항목</th><th>1</th><th>2</th><th>3</th><th>4</th><th>5</th><th>평균</th></tr></thead>
@@ -3874,7 +4195,7 @@ function renderCompManageTbl(year,type){
       const pct=total?Math.round(rCnt/total*100):0;
       const cg=getCompGradeResult(e.id,evalYear);
       return`<tr>
-        <td><div class="flex items-c gap2"><strong>${h(e.name)}</strong>${s?"":" "+badge("세션없음","gray")}${evaluatorConfig[e.id]?badge(evaluatorConfig[e.id].fixedEvaluatorIds?"직접지정":"수 조정","orange"):""}</div></td>
+        <td><div class="flex items-c gap2"><strong>${h(e.name)}</strong>${s?"":" "+badge("세션없음","gray")}${evaluatorConfig[e.id]?badge(evaluatorConfig[e.id].fixedEvaluatorIds?"직접지정":"수 조정","orange"):""}${s?.transferFlagged?badge("부서이동 — 평가자 확인 필요","red"):""}</div></td>
         <td class="fz11 text-gray">${h(e.dept)}/${h(e.team)}</td>
         <td>${h(e.rank||"-")}</td>
         <td>${h(e.position||"-")}</td>
@@ -3917,7 +4238,7 @@ function renderMyTeamEvalManage(u,year){
     const rCnt=s?compResponses.filter(r=>r.sessionId===s.id&&r.submittedAt).length:0;
     const total=s?s.evaluatorIds.length:0;
     return`<tr>
-      <td><div class="flex items-c gap2"><strong>${h(e.name)}</strong>${s?"":" "+badge("세션없음","gray")}${evaluatorConfig[e.id]?badge(evaluatorConfig[e.id].fixedEvaluatorIds?"직접지정":"수 조정","orange"):""}</div></td>
+      <td><div class="flex items-c gap2"><strong>${h(e.name)}</strong>${s?"":" "+badge("세션없음","gray")}${evaluatorConfig[e.id]?badge(evaluatorConfig[e.id].fixedEvaluatorIds?"직접지정":"수 조정","orange"):""}${s?.transferFlagged?badge("부서이동 — 평가자 확인 필요","red"):""}</div>${s?.transferFlagged?`<div class="fz10 text-gray mt1">이동: ${h(s.transferNote||"")}</div>`:""}</td>
       <td class="fz11 text-gray">${h(e.dept)}/${h(e.team)}</td>
       <td>${h(e.rank||"-")}</td>
       <td>${h(e.position||"-")}</td>
@@ -5502,6 +5823,8 @@ function getFullState(action=""){
       coreTalentSettings:JSON.parse(JSON.stringify(coreTalentSettings)),
       compGradeResults:JSON.parse(JSON.stringify(compGradeResults)),
       gradeAdjustHistory:JSON.parse(JSON.stringify(gradeAdjustHistory)),
+      scoreAdjustments:JSON.parse(JSON.stringify(scoreAdjustments)),
+      okrObjectives:JSON.parse(JSON.stringify(okrObjectives)),
       evaluatorConfig:JSON.parse(JSON.stringify(evaluatorConfig)),
       tieNotifications:JSON.parse(JSON.stringify(tieNotifications)),
       lowPerfData:JSON.parse(JSON.stringify(lowPerfData)),
@@ -5730,6 +6053,8 @@ function applyState(state,skipUndo=false){
   if(d.coreTalentSettings&&typeof d.coreTalentSettings==="object")coreTalentSettings={...coreTalentSettings,...d.coreTalentSettings};
   if(d.compGradeResults&&typeof d.compGradeResults==="object")compGradeResults={...compGradeResults,...d.compGradeResults};
   if(d.gradeAdjustHistory&&Array.isArray(d.gradeAdjustHistory))gradeAdjustHistory=d.gradeAdjustHistory;
+  if(d.scoreAdjustments&&Array.isArray(d.scoreAdjustments))scoreAdjustments=_mergeByIdPreferNewer(scoreAdjustments,d.scoreAdjustments,'scoreAdjustments');
+  if(d.okrObjectives&&Array.isArray(d.okrObjectives))okrObjectives=_mergeByIdPreferNewer(okrObjectives,d.okrObjectives,'okrObjectives');
   if(d.evaluatorConfig&&typeof d.evaluatorConfig==="object")evaluatorConfig={...evaluatorConfig,...d.evaluatorConfig};
   if(d.tieNotifications&&Array.isArray(d.tieNotifications))tieNotifications=_mergeByIdPreferNewer(tieNotifications,d.tieNotifications,'tieNotifications');
   if(d.lowPerfData&&Array.isArray(d.lowPerfData))lowPerfData=_mergeByIdPreferNewer(lowPerfData,d.lowPerfData,'lowPerfData');
@@ -6077,6 +6402,8 @@ function mergeImportData(parsed){
   if(d.coreTalentSettings&&typeof d.coreTalentSettings==="object")Object.assign(coreTalentSettings,d.coreTalentSettings);
   if(d.evaluatorConfig&&typeof d.evaluatorConfig==="object")Object.assign(evaluatorConfig,d.evaluatorConfig);
   if(d.gradeAdjustHistory&&Array.isArray(d.gradeAdjustHistory)){const existIds=new Set(gradeAdjustHistory.map(r=>r.id));d.gradeAdjustHistory.forEach(r=>{if(r&&r.id&&!existIds.has(r.id))gradeAdjustHistory.push(r);});}
+  if(d.scoreAdjustments&&Array.isArray(d.scoreAdjustments)){const existIds=new Set(scoreAdjustments.map(r=>r.id));d.scoreAdjustments.forEach(r=>{if(r&&r.id&&!existIds.has(r.id))scoreAdjustments.push(r);});}
+  if(d.okrObjectives&&Array.isArray(d.okrObjectives)){const existIds=new Set(okrObjectives.map(r=>r.id));d.okrObjectives.forEach(r=>{if(r&&r.id&&!existIds.has(r.id))okrObjectives.push(r);});}
 }
 
 async function normalizeEmployeeCredentials(){
@@ -6938,14 +7265,14 @@ const SIDEBAR_GROUP_META={
   "set-sys-sep":{label:"시스템 관리",roles:["admin"]},
   "set-pw-sep":{label:"개인 설정",roles:["admin","director","leader","member"]},
 };
-const SIDEBAR_DEFAULT_ORDER=["dashboard","notif-sep","profile-sep","approval-sep","comm-sep","attend-sep","welfare-sep","pay-sep","hr-sep","recruit-sep","kpi-sep","comp-sep","promo-sep","talent-sep","lowperf-sep","acct-sep","bizplan-sep","sales-sep","inv-sep","pms-sep","set-op-sep","set-sys-sep","set-pw-sep"];
+const SIDEBAR_DEFAULT_ORDER=["dashboard","notif-sep","profile-sep","approval-sep","comm-sep","attend-sep","welfare-sep","pay-sep","hr-sep","recruit-sep","kpi-sep","comp-sep","okr-sep","promo-sep","talent-sep","lowperf-sep","acct-sep","bizplan-sep","sales-sep","inv-sep","pms-sep","set-op-sep","set-sys-sep","set-pw-sep"];
 // 대분류 카테고리: 사이드바/상단 카테고리 내비게이션에서 사용 (중분류 그룹 묶음)
 const BIG_CATEGORIES=[
   {key:"home",label:"홈·알림",icon:"🏠",desc:"대시보드·업무 알림",groups:["dashboard","notif-sep"]},
   {key:"approval",label:"전자결재",icon:"📑",desc:"기안·승인·수신·위임",groups:["approval-sep"]},
   {key:"comm",label:"커뮤니케이션",icon:"💬",desc:"공지·게시판·회의실",groups:["comm-sep"]},
   {key:"my",label:"내 정보·근태",icon:"👤",desc:"프로필·근태·복지·급여",groups:["profile-sep","attend-sep","welfare-sep","pay-sep"]},
-  {key:"eval",label:"평가",icon:"🏆",desc:"KPI 성과평가 · 다면 피드백",groups:["kpi-sep","comp-sep"]},
+  {key:"eval",label:"평가",icon:"🏆",desc:"KPI 성과평가 · 다면 피드백 · OKR",groups:["kpi-sep","comp-sep","okr-sep"]},
   {key:"hr",label:"인사",icon:"🗂",desc:"직원·채용·승진·인재관리",groups:["hr-sep","recruit-sep","promo-sep","talent-sep","lowperf-sep"]},
   {key:"acct",label:"회계",icon:"💵",desc:"계정과목·전표·세금·결산",groups:["acct-sep"]},
   {key:"bizplan",label:"사업계획",icon:"🧮",desc:"예산·인원·손익계획",groups:["bizplan-sep"]},
@@ -7088,6 +7415,10 @@ function renderSidebar(){
         {id:"comp-grade-view",label:"역량평가 등급",icon:"📊",desc:"역량평가 결과 조회",roles:["admin"]}
       ]:[{id:"comp-settings-shortcut",label:"평가 설정하기",icon:"⚙",desc:"역량평가 활성화 필요",roles:["admin"]}]),
     ],
+    "okr-sep":[
+      {id:"okr-sep",type:"sep",label:"OKR",roles:["admin","director","leader","member"]},
+      {id:"okr",label:"OKR",icon:"🎯",desc:"목표·핵심지표 등록, 승인, 진행률 추적",roles:["admin","director","leader","member"]},
+    ],
     "promo-sep":[
       {id:"promo-sep",type:"sep",label:"승진 심사",roles:["admin"]},
       {id:"promotion-mgmt",label:"승진 심사 관리",icon:"🏅",desc:"승진 대상자 심사",roles:["admin"]},
@@ -7190,6 +7521,7 @@ function renderSidebar(){
   titles["workforce-planning"]="전략적 인력계획";
   titles["position-control"]="정원·포지션 관리";
   titles["position-requests"]="정원 신설·증원 요청";
+  titles["okr"]="OKR";
   titles["engagement-pulse"]="직원 몰입도 펄스";
   titles["engagement-pulse-create"]="펄스 설문 개설";
   titles["engagement-pulse-action-new"]="설문 개선계획 작성";
@@ -7618,6 +7950,7 @@ function renderPage(){
   pages["engagement-pulse-create"]=renderPulseSurveyCreatePage;
   pages["engagement-pulse-action-new"]=renderPulseActionCreatePage;
   pages["engagement-pulse-action-detail"]=renderPulseActionDetailPage;
+  pages["okr"]=renderOkrPage;
   const fn=pages[currentPage];const c=$("#content");
   if(c&&fn){
     c.innerHTML="";
@@ -9377,13 +9710,16 @@ function saveEmpEdit(id){
   const isActive=g("#ee-active")==="1";
   if(!isActive&&!g("#ee-retiredate")){showToast("퇴직일을 입력하세요.","error");return;}
   const nextSalary=Number(g("#ee-salary"))||0,today=new Date().toISOString().slice(0,10),now=new Date().toISOString();
+  const _prevEmp=getEmp(id),_oldDept=_prevEmp?.dept,_oldTeam=_prevEmp?.team;
   employees=employees.map(e=>{
     if(String(e.id)!==String(id))return e;
     const salaryChanged=Number(e.salary||0)!==nextSalary,hrHistory=[...(e.hrHistory||[])];
     if(salaryChanged)hrHistory.push({id:genId(),type:"salary",date:today,desc:"직원 정보 수정에서 연봉 변경",before:`${Number(e.salary||0).toLocaleString()}원`,after:`${nextSalary.toLocaleString()}원`,note:"직원 상세 수정 자동 이력",source:"employee_edit",applied:true,createdAt:now});
     return{...e,name:g("#ee-name"),empNo:g("#ee-empno"),birth:g("#ee-birth"),gender:g("#ee-gender"),nationality:g("#ee-nationality")||"내국인",hire:g("#ee-hire"),workplaceId:g("#ee-workplace"),dept:g("#ee-dept"),team:g("#ee-team"),position:g("#ee-position"),rank:g("#ee-rank"),rankYear:Number(g("#ee-rankyear"))||1,jobGroup:g("#ee-jobgroup"),salary:nextSalary,totalCareer:Number(g("#ee-career"))||0,edu:g("#ee-edu"),eduSchool:g("#ee-eduschool"),email:g("#ee-email"),phone:g("#ee-phone"),address:g("#ee-address"),role:g("#ee-role"),active:isActive,retireDate:isActive?"":g("#ee-retiredate"),retireReason:isActive?"":g("#ee-retirereason"),careers:window._eeEditCareers||e.careers||[],leaves:window._eeEditLeaves||e.leaves||[],hrHistory,updatedAt:now};
   });
-  if(String(id)===String(currentUser.id)){currentUser=employees.find(e=>String(e.id)===String(id))||currentUser;}closeModal();showToast("직원 정보가 수정되었습니다.","success");autoSaveToServerIfEnabled();renderHRListTbl();
+  if(String(id)===String(currentUser.id)){currentUser=employees.find(e=>String(e.id)===String(id))||currentUser;}
+  _autoTransitionCompEvaluators(id,_oldDept,_oldTeam);
+  closeModal();showToast("직원 정보가 수정되었습니다.","success");autoSaveToServerIfEnabled();renderHRListTbl();
 }
 function openResetPwModal(id){
   const e=getEmp(id);if(!e)return;
@@ -9792,6 +10128,7 @@ function submitHRChange(){
 function _applyDueHRChanges(){
   const today=new Date().toISOString().slice(0,10);
   let changed=false;
+  const _transfers=[]; // [{empId,oldDept,oldTeam}] — 전부 적용한 뒤 한 번에 처리(아래 참고)
   employees=employees.map(e=>{
     if(!e.hrHistory||!e.hrHistory.length)return e;
     let upd={},touched=false;
@@ -9803,6 +10140,7 @@ function _applyDueHRChanges(){
         // 항목) 이 변동의 발령일을 retireDate로 함께 채워, active만 바뀌고 retireDate는
         // 비어있는 정합성 문제가 생기지 않도록 방어한다.
         if(pu.active===false&&!pu.retireDate&&!e.retireDate)pu={...pu,retireDate:hh.date};
+        if((pu.dept!=null&&pu.dept!==e.dept)||(pu.team!=null&&pu.team!==e.team))_transfers.push({empId:e.id,oldDept:e.dept,oldTeam:e.team});
         upd={...upd,...pu};touched=true;changed=true;
         return{...hh,applied:true};
       }
@@ -9810,6 +10148,10 @@ function _applyDueHRChanges(){
     });
     return touched?{...e,...upd,hrHistory:hist,updatedAt:new Date().toISOString()}:e;
   });
+  // 부서이동 평가자 자동전환(Epic C) — employees 배열 전체가 커밋된 뒤에 호출해야
+  // getCompEvaluators()가 그 직원의 "새" dept/team을 읽는다(map 콜백 안에서는 아직
+  // 예전 employees 배열이 유효해 자기 자신의 변경조차 반영 전 상태로 보인다).
+  _transfers.forEach(t=>_autoTransitionCompEvaluators(t.empId,t.oldDept,t.oldTeam));
   if(changed){saveAutoSnapshot("auto");autoSaveToServerIfEnabled();}
   return changed;
 }
@@ -10011,11 +10353,23 @@ function openKpiResult(id){const k=getKpi(id);if(!k)return;
   <div class="modal-body">
     <div style="background:#f8fafc;padding:10px 12px;border-radius:8px;font-size:12px;margin-bottom:14px"><div class="fw7">${h(k.item)}</div><div class="text-gray mt2">목표: ${h(k.goal||"-")} / 비중: ${k.weight}%</div></div>
     <div class="fg"><label class="fl">당해년도 실적</label><input class="fc" id="kr-actual" value="${h(k.actual||"")}" placeholder="예: 95% 달성"></div>
-    <div class="fg"><label class="fl">달성율</label><input class="fc" id="kr-rate" value="${h(k.rate||"")}" placeholder="예: 100%"></div>
+    <div class="fg"><label class="fl">달성율</label><input class="fc" id="kr-rate" value="${h(k.rate||"")}" placeholder="예: 100%" oninput="_kpiRateSuggestScore()"></div>
     <div class="fg"><label class="fl">세부 추진 실적</label><textarea class="fc" id="kr-detail" rows="3">${h(k.detail||"")}</textarea></div>
-    <div class="fg"><label class="fl">자체 평가 점수 (0~100점)</label><input class="fc" id="kr-self" type="number" min="0" max="100" step="1" value="${k.selfScore??""}" placeholder="예: 85"></div>
+    <div class="fg"><label class="fl">자체 평가 점수 (0~100점)</label><input class="fc" id="kr-self" type="number" min="0" max="100" step="1" value="${k.selfScore??""}" placeholder="예: 85">
+      <div id="kr-rate-suggest" class="fz11 text-gray mt1"></div>
+    </div>
   </div>
-  <div class="modal-foot"><button class="btn btn-ghost btn-sm" onclick="saveKpiResultDraft(${id})">💾 임시저장</button><div style="flex:1"></div><button class="btn btn-secondary" onclick="closeModal()">취소</button><button class="btn btn-primary" onclick="saveKpiResult(${id})">저장</button></div></div>`);}
+  <div class="modal-foot"><button class="btn btn-ghost btn-sm" onclick="saveKpiResultDraft(${id})">💾 임시저장</button><div style="flex:1"></div><button class="btn btn-secondary" onclick="closeModal()">취소</button><button class="btn btn-primary" onclick="saveKpiResult(${id})">저장</button></div></div>`);
+  _kpiRateSuggestScore();
+}
+// 목표별 등급기준표(앵커링 자동채점) — 달성율을 숫자(%)로 입력하면 설정된 구간표로 제안
+// 점수를 보여준다. 어디까지나 제안일 뿐이라 "적용" 버튼을 눌러야만 자체 평가 점수(kr-self)
+// 입력칸에 채워지고, 비숫자 자유 텍스트("초과달성" 등)는 조용히 제안을 숨긴다(하위호환).
+function _kpiRateSuggestScore(){
+  const el=$("#kr-rate-suggest");if(!el)return;
+  const score=kpiAutoScoreFromRate($("#kr-rate")?.value);
+  el.innerHTML=score!=null?`💡 달성률 기준 제안 점수: <strong>${score}점</strong> <button type="button" class="btn btn-ghost btn-sm" style="padding:1px 8px" onclick="document.getElementById('kr-self').value=${score}">적용</button>`:"";
+}
 function _parseKpiScore(raw){
   const text=String(raw??"").trim();
   if(text==="")return {ok:true,value:null};
@@ -10736,7 +11090,7 @@ function calcCompGradesForAll(year){
     if(!session)return;
     const responses=compResponses.filter(r=>r.sessionId===session.id&&r.submittedAt);
     if(!responses.length)return;
-    const score=calcCompScore(session.id)||0;
+    const score=(calcCompScore(session.id)||0)+getScoreAdjustmentTotal(target.id,year,"comp");
     if(!compGradeResults[target.id])compGradeResults[target.id]={};
     const existing=compGradeResults[target.id][year];
     if(existing&&existing.adjustedBy)return; // keep manual adjustments
@@ -10842,18 +11196,20 @@ function renderCompGradeView(){
     </div>
   </div></div>
   <div class="card"><div class="card-body" style="padding:0"><div class="tbl-wrap"><table>
-    <thead><tr><th>이름</th><th>사번</th><th>소속</th><th>직위</th><th>평가 유형</th><th>평가자/응답</th><th>역량 점수</th><th>역량 등급</th><th>비고</th><th>수정</th></tr></thead>
-    <tbody>${rows.slice((cgvPager.page-1)*cgvPager.pageSize,(cgvPager.page-1)*cgvPager.pageSize+cgvPager.pageSize).map(({e,cg,s,respCnt})=>`<tr>
+    <thead><tr><th>이름</th><th>사번</th><th>소속</th><th>직위</th><th>평가 유형</th><th>평가자/응답</th><th>역량 점수</th><th>역량 등급</th><th>비고</th><th>조정</th></tr></thead>
+    <tbody>${rows.slice((cgvPager.page-1)*cgvPager.pageSize,(cgvPager.page-1)*cgvPager.pageSize+cgvPager.pageSize).map(({e,cg,s,respCnt})=>{
+      const adjTotal=getScoreAdjustmentTotal(e.id,year,"comp");
+      return`<tr>
       <td><strong>${h(e.name)}</strong></td><td class="text-gray fz11">${h(e.empNo)}</td>
       <td><div class="fz12">${h(e.dept)}</div><div class="fz11 text-gray">${h(e.team)}</div></td>
       <td>${roleBadge(e.role)}</td>
       <td>${s?badge(s.type==="leadership"?"리더십":"역량","indigo"):badge("세션 없음","gray")}</td>
       <td class="tc fz12">${s?`${respCnt}/${s.evaluatorIds.length}`:"-"}</td>
-      <td class="fw7 text-blue">${cg?.score!=null?cg.score+"점":"-"}</td>
+      <td class="fw7 text-blue">${cg?.score!=null?cg.score+"점":"-"}${adjTotal?`<div class="fz10" style="color:${adjTotal>0?"#16a34a":"#dc2626"}">가감점 ${adjTotal>0?"+":""}${adjTotal}</div>`:""}</td>
       <td>${cg?.grade?`<span style="display:inline-flex;align-items:center;justify-content:center;width:30px;height:30px;border-radius:50%;font-size:13px;font-weight:800" class="grade-${cg.grade}">${cg.grade}</span>`:badge("미산정","gray")}</td>
       <td class="fz11 text-gray">${cg?.adjustedBy?"✏ 수정됨":""}</td>
-      <td>${cg?.grade?`<button class="btn btn-ghost btn-sm" onclick="openAdjustGradeModal('comp',${e.id},${year},'${cg.grade||"B"}')">수정</button>`:""}</td>
-    </tr>`).join("")}
+      <td class="flex gap1 wrap">${cg?.grade?`<button class="btn btn-ghost btn-sm" onclick="openAdjustGradeModal('comp',${e.id},${year},'${cg.grade||"B"}')">등급수정</button>`:""}<button class="btn btn-ghost btn-sm" onclick="openScoreAdjustModal('comp',${e.id},${year})">가감점</button></td>
+    </tr>`;}).join("")}
     </tbody></table></div></div></div>`;
 }
 
@@ -10884,6 +11240,61 @@ function saveAdjustGrade(type,empId,year){
   if(type==="comp"){adjustCompGrade(empId,year,grade,reason);}
   else{adjustKpiGrade(empId,year,grade,reason);}
   closeModal();showToast("등급이 수정되었습니다. 수정 이력에 기록되었습니다.","success");
+  if(type==="comp")renderCompGradeView(); else renderGradeView();
+}
+// ==================== 가감점(상벌점, Epic C — HR마인드 벤치마킹) ====================
+// 등급 자체를 덮어쓰는 openAdjustGradeModal/saveAdjustGrade와 달리, 이 가감점은
+// raw score에 더해지는 항목별(사유별) 기록이다 — calcEmpFinalScore/calcCompGradesForAll이
+// 상대평가 순위를 매기기 전에 반영되므로, 추가/삭제 즉시 등급 재산정("🔄 등급 재산정"
+// 버튼) 전까지는 미리보기 점수(weighted/compScore)에만 반영되고 확정된 gradeResults는
+// 관리자가 재산정을 실행해야 바뀐다(기존 등급조정 UX와 동일한 흐름).
+function openScoreAdjustModal(type,empId,year){
+  const u=currentUser;if(u.role!=="admin"&&u.role!=="director"){showToast("권한이 없습니다.","error");return;}
+  const e=getEmp(empId);if(!e)return;
+  const items=scoreAdjustments.filter(a=>a&&a.empId===empId&&a.year===year&&a.type===type).sort((a,b)=>(b.appliedAt||"").localeCompare(a.appliedAt||""));
+  const total=items.reduce((t,a)=>t+(Number(a.points)||0),0);
+  showModal(`<div class="modal modal-sm"><div class="modal-head"><h2>가감점(상벌점) — ${h(e.name)}</h2><button class="modal-close" onclick="closeModal()">×</button></div>
+  <div class="modal-body">
+    <div style="padding:10px;background:#f8fafc;border-radius:8px;margin-bottom:14px;font-size:12px">
+      <div class="fw6">${h(e.name)} (${h(e.dept)} / ${h(e.team)})</div>
+      <div class="text-gray mt2">${year}년 ${type==="kpi"?"KPI":"역량평가"} 가감점 합계: <strong style="color:${total>0?"#16a34a":total<0?"#dc2626":"inherit"}">${total>0?"+":""}${total}점</strong></div>
+    </div>
+    <div class="fg"><label class="fl">가감점 <span class="req">*</span> (가점은 양수, 감점은 음수)</label>
+      <input class="fc" id="sa-points" type="number" step="1" placeholder="예: 3 또는 -5">
+    </div>
+    <div class="fg"><label class="fl">사유 <span class="req">*</span></label>
+      <textarea class="fc" id="sa-reason" rows="2" maxlength="300" placeholder="가감점 사유를 구체적으로 입력하세요"></textarea>
+    </div>
+    <div class="flex justify-end"><button class="btn btn-primary btn-sm" onclick="addScoreAdjustment('${type}',${empId},${year})">＋ 추가</button></div>
+    <div class="mt3" style="max-height:220px;overflow-y:auto">
+      ${items.length?items.map(a=>`<div class="flex justify-between items-c" style="padding:6px 0;border-bottom:1px solid #f1f5f9;font-size:12px">
+        <div><strong style="color:${a.points>0?'#16a34a':'#dc2626'}">${a.points>0?"+":""}${a.points}점</strong> · ${h(a.reason)}<div class="fz10 text-gray">${h(a.appliedByName||"")} · ${(a.appliedAt||"").slice(0,10)}</div></div>
+        <button class="btn btn-ghost btn-sm" onclick="deleteScoreAdjustment('${a.id}','${type}',${empId},${year})">삭제</button>
+      </div>`).join(""):`<div class="text-gray fz12 tc" style="padding:10px 0">등록된 가감점이 없습니다.</div>`}
+    </div>
+  </div>
+  <div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal()">닫기</button></div></div>`);
+}
+function addScoreAdjustment(type,empId,year){
+  const pts=Number($("#sa-points")?.value);const reason=$("#sa-reason")?.value.trim();
+  if(!Number.isFinite(pts)||pts===0){showToast("가감점을 0이 아닌 숫자로 입력하세요.","error");return;}
+  if(Math.abs(pts)>50){showToast("가감점은 ±50점 이내로 입력하세요.","error");return;}
+  if(!reason){showToast("사유를 입력하세요.","error");return;}
+  const e=getEmp(empId);
+  scoreAdjustments.push({id:genId(),type,empId,year,dept:e?.dept||"",points:pts,reason,appliedBy:currentUser.id,appliedByName:currentUser.name,appliedAt:new Date().toISOString(),updatedAt:new Date().toISOString()});
+  autoSaveToServerIfEnabled();
+  showToast("가감점이 등록되었습니다. 등급 재산정 후 결과에 반영됩니다.","success");
+  openScoreAdjustModal(type,empId,year);
+  if(type==="comp")renderCompGradeView(); else renderGradeView();
+}
+async function deleteScoreAdjustment(id,type,empId,year){
+  const ok=await askConfirmModal({title:"가감점 삭제",message:"이 가감점 항목을 삭제합니다.",confirmText:"삭제",danger:true});
+  if(!ok)return;
+  _tombstone("scoreAdjustments",id);
+  scoreAdjustments=scoreAdjustments.filter(a=>String(a.id)!==String(id));
+  autoSaveToServerIfEnabled();
+  showToast("가감점이 삭제되었습니다. 등급 재산정 후 결과에 반영됩니다.","success");
+  openScoreAdjustModal(type,empId,year);
   if(type==="comp")renderCompGradeView(); else renderGradeView();
 }
 function dlCompGrades(){
@@ -13367,7 +13778,7 @@ function renderGradeView(){
   const yr=gradeViewFilter.year;
   let rows=emps.map(e=>{
     const kpis=kpiEntries.filter(k=>k.userId===e.id&&k.year===yr&&k.finalConfirmed);
-    const weighted=kpis.length?calcWeighted(kpis):null;
+    const weighted=kpis.length?calcWeighted(kpis)+getScoreAdjustmentTotal(e.id,yr,"kpi"):null;
     const grade=weighted!=null?getGrade(weighted):"-";
     const grRes=e.gradeResults?.[yr];
     return{e,kpis,weighted,grade,grRes};
@@ -13388,19 +13799,22 @@ function renderGradeView(){
     </div>
   </div></div>
   <div class="card"><div class="card-body" style="padding:0"><div class="tbl-wrap"><table>
-    <thead><tr><th>이름</th><th>사번</th><th>소속</th><th>직급</th><th>KPI 항목수</th><th>종합점수</th><th>KPI 등급</th><th>사업부 등급</th><th>순위(풀내)</th><th>수정</th></tr></thead>
-    <tbody>${_pagedSlice(gradeViewFilter,rows).map(({e,kpis,weighted,grade,grRes})=>`<tr>
+    <thead><tr><th>이름</th><th>사번</th><th>소속</th><th>직급</th><th>KPI 항목수</th><th>종합점수</th><th>KPI 등급</th><th>사업부 등급</th><th>순위(풀내)</th><th>조정</th></tr></thead>
+    <tbody>${_pagedSlice(gradeViewFilter,rows).map(({e,kpis,weighted,grade,grRes})=>{
+      const canAdjust=u.role==="admin"||u.role==="director";
+      const adjTotal=getScoreAdjustmentTotal(e.id,yr,"kpi");
+      return`<tr>
       <td><strong>${h(e.name)}</strong></td>
       <td class="text-gray fz11">${h(e.empNo)}</td>
       <td><div class="fz12">${h(e.dept)}</div><div class="fz11 text-gray">${h(e.team)}</div></td>
       <td>${h(e.rank)}</td>
       <td class="tc text-gray">${kpis.length}</td>
-      <td class="fw7 text-blue">${weighted!=null?weighted+"점":badge("미확정","gray")}</td>
+      <td class="fw7 text-blue">${weighted!=null?weighted+"점":badge("미확정","gray")}${adjTotal?`<div class="fz10" style="color:${adjTotal>0?"#16a34a":"#dc2626"}">가감점 ${adjTotal>0?"+":""}${adjTotal}</div>`:""}</td>
       <td>${weighted!=null?`<span style="display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:50%;font-size:12px;font-weight:800" class="grade-${grade}">${grade}</span>`:`<span class="text-gray">-</span>`}</td>
       <td>${grRes?`<span style="display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:50%;font-size:12px;font-weight:800" class="grade-${grRes.grade}">${grRes.grade}</span>`:badge("미산정","gray")}</td>
       <td class="tc text-gray">${grRes?.rank||"-"}${grRes?.pool?(" ("+grRes.pool+")"):""}</td>
-      <td>${grRes?.grade&&(u.role==="admin"||u.role==="director")?`<button class="btn btn-ghost btn-sm" onclick="openAdjustGradeModal('kpi',${e.id},${yr},'${grRes.grade||"B"}')">수정</button>`:""}</td>
-    </tr>`).join("")}
+      <td class="flex gap1 wrap">${grRes?.grade&&canAdjust?`<button class="btn btn-ghost btn-sm" onclick="openAdjustGradeModal('kpi',${e.id},${yr},'${grRes.grade||"B"}')">등급수정</button>`:""}${canAdjust?`<button class="btn btn-ghost btn-sm" onclick="openScoreAdjustModal('kpi',${e.id},${yr})">가감점</button>`:""}</td>
+    </tr>`;}).join("")}
     </tbody></table></div></div></div>`;
 }
 function dlGradeList(){
@@ -13414,7 +13828,7 @@ function dlGradeList(){
   const yr=gradeViewFilter.year;
   let rows=emps.map(e=>{
     const kpis=kpiEntries.filter(k=>k.userId===e.id&&k.year===yr&&k.finalConfirmed);
-    const weighted=kpis.length?calcWeighted(kpis):null;
+    const weighted=kpis.length?calcWeighted(kpis)+getScoreAdjustmentTotal(e.id,yr,"kpi"):null;
     const grade=weighted!=null?getGrade(weighted):"-";
     const grRes=e.gradeResults?.[yr];
     return{grade,row:[e.name,e.empNo,ROLES[e.role],e.dept,e.team,e.rank,kpis.length,weighted!=null?weighted+"점":"-",grade,grRes?.grade||"-",grRes?.rank||"-",grRes?.pool||"-"]};
@@ -13549,6 +13963,7 @@ function _kpiStageDraftInit(){
       start:(settings.kpiAdjustmentPeriod&&settings.kpiAdjustmentPeriod.start)||"",
       end:(settings.kpiAdjustmentPeriod&&settings.kpiAdjustmentPeriod.end)||"",
       note:(settings.kpiAdjustmentPeriod&&settings.kpiAdjustmentPeriod.note)||""},
+    bands:JSON.parse(JSON.stringify(kpiAchievementBands())),
   };
 }
 function kpiStageAddMiddle(){
@@ -13594,10 +14009,17 @@ function kpiStageSaveAll(){
   }
   const wTotal=_kpiStageWeightTotal();
   if(wTotal!==100){showToast(`차수별 반영비율 합계가 100%가 되어야 합니다(현재 ${wTotal}%).`,"error");return;}
+  if(!_kpiStageDraft.bands.length||!_kpiStageDraft.bands.some(b=>Number(b.min)<=0)){
+    showToast("달성률 자동채점 구간에는 0% 이하(최하위) 구간이 하나 있어야 합니다.","error");return;
+  }
+  for(const b of _kpiStageDraft.bands){
+    if(!Number.isFinite(Number(b.score))||Number(b.score)<0||Number(b.score)>100){showToast("자동채점 점수는 0~100 사이여야 합니다.","error");return;}
+  }
   settings.kpiApprovalStages=JSON.parse(JSON.stringify(_kpiStageDraft.stages));
   settings.kpiApprovalDeadline=_kpiStageDraft.deadline||"";
   settings.kpiAdjustmentPeriod={..._kpiStageDraft.adj};
-  broadcastSettingsChange("KPI 평가 단계·마감·조정기간 설정 변경");
+  settings.kpiAchievementBands=JSON.parse(JSON.stringify(_kpiStageDraft.bands));
+  broadcastSettingsChange("KPI 평가 단계·마감·조정기간·자동채점 구간 설정 변경");
   showToast("평가 단계 설정이 저장되었습니다.","success");
   _kpiStageDraft=null;
   renderKpiStageSettings();
@@ -13647,7 +14069,34 @@ function renderKpiStageSettings(){
     </div>
     <div class="fg"><label class="fl">메모</label><input class="fc" value="${h(d.adj.note)}" placeholder="조정 사유 등" oninput="_kpiStageDraft.adj.note=this.value"></div>`:""}
   </div></div>
+  ${_kpiBandsSettingsHtml(d.bands)}
   <div style="margin-top:14px"><button class="btn btn-primary" onclick="kpiStageSaveAll()">저장</button></div>`;
+}
+function _kpiBandsSettingsHtml(bands){
+  const sorted=[...bands].map((b,origIdx)=>({...b,origIdx})).sort((a,b)=>Number(b.min)-Number(a.min));
+  const rows=sorted.map(b=>`<div class="flex items-c gap2" style="margin-bottom:6px">
+    <label class="fz11 text-gray" style="width:90px">달성률 ≥</label>
+    <input class="fc" type="number" step="1" style="width:90px" value="${Number(b.min)}" oninput="_kpiStageDraft.bands[${b.origIdx}].min=Number(this.value)||0;renderKpiStageSettings()">%
+    <label class="fz11 text-gray" style="width:50px;margin-left:12px">점수</label>
+    <input class="fc" type="number" min="0" max="100" style="width:80px" value="${Number(b.score)}" oninput="_kpiStageDraft.bands[${b.origIdx}].score=Number(this.value)||0">점
+    ${bands.length>1?`<button class="btn btn-danger btn-sm" onclick="_kpiBandRemove(${b.origIdx})">삭제</button>`:""}
+  </div>`).join("");
+  return `<div class="card" style="margin-top:14px"><div class="card-head"><h3>달성률 자동채점 구간(앵커링)</h3></div><div class="card-body">
+    <p class="fz11 text-gray mb3">"KPI 결과 입력"에서 달성율을 숫자(%)로 입력하면 아래 구간에 맞는 점수를 제안합니다(자동 강제 적용이 아니라 평가자가 "적용" 버튼을 눌러야 반영됩니다). 가장 낮은 구간은 반드시 0% 이하여야 합니다.</p>
+    ${rows}
+    <button class="btn btn-secondary btn-sm mt2" onclick="_kpiBandAdd()" ${bands.length>=10?"disabled":""}>+ 구간 추가</button>
+  </div></div>`;
+}
+function _kpiBandAdd(){
+  _kpiStageDraftInit();
+  _kpiStageDraft.bands.push({min:0,score:60});
+  renderKpiStageSettings();
+}
+function _kpiBandRemove(idx){
+  _kpiStageDraftInit();
+  if(_kpiStageDraft.bands.length<=1)return;
+  _kpiStageDraft.bands.splice(idx,1);
+  renderKpiStageSettings();
 }
 function renderSettingsMain(){
   if(!_settingsMainStage)_settingsMainStage={
@@ -13956,7 +14405,7 @@ async function doResetAll(){
     // 불가 상태였음).
     const d=await serverRequest("POST","/api/reset-all",{loginId:currentUser?.loginId,pw});
     if(!d.ok)throw new Error(d.message);
-    employees=[];kpiEntries=[];changeRequests=[];compGradeResults={};gradeAdjustHistory=[];
+    employees=[];kpiEntries=[];changeRequests=[];compGradeResults={};gradeAdjustHistory=[];scoreAdjustments=[];okrObjectives=[];
     coreTalentPool=[];talentDevPlans=[];successionPlans=[];jobSkillProfiles=[];employeeSkillProfiles=[];workforceScenarios=[];workforcePositions=[];positionRequests=[];_positionRequestPicker=[];_positionRequestPickerLoaded=false;_positionBudgetPicker=[];_positionBudgetPickerLoaded=false;lowPerfData=[];tieNotifications=[];
     approvalDocs=[];attendanceRecords=[];payslips=[];yearEndSettlements=[];payrollAdjustments=[];leaveUsagePlans=[];boardPosts=[];roomReservations=[];certLog=[];certRequests=[];welfarePoints=[];mandatoryTraining=[];healthCheckupLog=[];personalTasks=[];workReports=[];engagementSurveys=[];engagementResponses=[];engagementActions=[];engagementPulseSummary={};
     showToast("전체 데이터가 초기화되었습니다.","success");
@@ -26625,7 +27074,9 @@ function _applyOrgBulkChanges(){
       employees=employees.map(e=>e.id===emp.id?{...e,hrHistory:[...(e.hrHistory||[]),newH],updatedAt:new Date().toISOString()}:e);
       scheduledCnt++;
     }else{
+      const _oldDept=emp.dept,_oldTeam=emp.team;
       employees=employees.map(e=>e.id===emp.id?{...e,dept:c.newDept,team:c.newTeam,hrHistory:[...(e.hrHistory||[]),newH],updatedAt:new Date().toISOString()}:e);
+      _autoTransitionCompEvaluators(emp.id,_oldDept,_oldTeam);
       appliedCnt++;
     }
   });
