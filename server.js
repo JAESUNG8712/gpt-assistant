@@ -656,6 +656,32 @@ function filterDataForRole(data, auth) {
   if (auth.role === "member" && !amSpecificKpiApprover && Array.isArray(out.kpiEntries)) {
     out.kpiEntries = out.kpiEntries.filter(k => k && String(k.userId) === myId);
   }
+  // 가감점(상벌점, Epic C — HR마인드 벤치마킹): kpiEntries와 동일한 이유로 leader/director는
+  // 자기 팀/부서 구성원의 점수를 정확히 계산(calcEmpFinalScore/calcCompGradesForAll이 raw
+  // score에 그대로 더함)하려면 전체를 봐야 한다 — gradeAdjustHistory(순수 감사 로그, 계산에
+  // 쓰이지 않음)와 달리 본인만으로 필터링하면 director/leader 화면의 등급·순위 계산이 조용히
+  // 틀어진다. member만 본인 레코드로 제한.
+  if (auth.role === "member" && Array.isArray(out.scoreAdjustments)) {
+    out.scoreAdjustments = out.scoreAdjustments.filter(a => a && String(a.empId) === myId);
+  }
+  // OKR(Epic C): 본인 목표는 항상, 승인된 "company" 범위 목표는 전사 공개(OKR 보드), 그 외는
+  // 직속 매니저(leader→같은 dept+team의 member, director→같은 dept의 member/leader)만 검토를
+  // 위해 전체를 본다 — kpiEntries의 승인권자 범위 판정과 동일한 조직단위 기준.
+  if (auth.role !== "admin" && Array.isArray(out.okrObjectives)) {
+    const emps = Array.isArray(out.employees) ? out.employees : [];
+    const myEmp = emps.find(e => String(e.id) === myId);
+    out.okrObjectives = out.okrObjectives.filter(o => {
+      if (!o) return false;
+      if (String(o.ownerId) === myId) return true;
+      if (o.scope === "company" && o.status === "approved") return true;
+      if (!myEmp) return false;
+      const ownerEmp = emps.find(e => String(e.id) === String(o.ownerId));
+      if (!ownerEmp) return false;
+      if (auth.role === "leader") return ownerEmp.role === "member" && ownerEmp.dept === myEmp.dept && ownerEmp.team === myEmp.team;
+      if (auth.role === "director") return (ownerEmp.role === "member" || ownerEmp.role === "leader") && ownerEmp.dept === myEmp.dept;
+      return false;
+    });
+  }
   const canViewLowPerf = auth.role === "admin" ||
     (settings.lowPerformerViewers || []).map(String).includes(myId);
   if (!canViewLowPerf && Array.isArray(out.lowPerfData)) {
@@ -1441,6 +1467,15 @@ const _WRITE_GATED_FIELDS = {
   // (employees.gradeResults, 별도로 _sanitizeEmployeeRecord에서 게이팅)은 반영되지만
   // 이 감사이력만 조용히 되돌려지고 있었다. director는 자기 사업부(dept) 레코드에 한해 허용.
   gradeAdjustHistory: { roles: ["admin"], directorDeptField: "dept", pageIds: ["grade-view", "comp-grade-view"] },
+  // 가감점(상벌점, Epic C): 연도별 KPI/역량평가 raw score에 더해지는 수동 가감점 —
+  // calcEmpFinalScore/calcCompGradesForAll이 상대평가 순위를 매기기 전에 반영되므로
+  // 등급조정(gradeAdjustHistory)과 동등한 민감도다. admin 전체 + director는 자기 사업부
+  // 소속 레코드만, grade-view/comp-grade-view 양쪽에서 입력.
+  scoreAdjustments: { roles: ["admin"], directorDeptField: "dept", pageIds: ["grade-view", "comp-grade-view"] },
+  // OKR(Epic C): 쓰기 권한(생성/편집/제출/승인)은 전부 아래 _sanitizeGatedRecord의
+  // okrObjectives 전용 분기가 처리한다 — 이 규칙(ownField)은 그 분기를 거치지 않는
+  // tombstone 삭제 검증에서만 실제로 쓰인다(본인 또는 admin만 삭제 가능).
+  okrObjectives: { roles: ["admin"], ownField: "ownerId" },
   coreTalentPool:     { roles: ["admin"], pageIds: "core-talent" },
   successionPlans:    { roles: ["admin"], pageIds: "succession-planning" },
   jobSkillProfiles:   { roles: ["admin"], pageIds: "skills-architecture" },
@@ -1587,6 +1622,15 @@ function _canManageCompSessionTarget(actor, actorEmp, targetEmp) {
   if (!actorEmp || !targetEmp) return false;
   if (actor.role === "director") return targetEmp.dept === actorEmp.dept;
   if (actor.role === "leader") return targetEmp.dept === actorEmp.dept && targetEmp.team === actorEmp.team;
+  return false;
+}
+// OKR(Epic C) 승인권자 판정 — kpiEntries의 team_leader/dept_director 승인범위와 동일한
+// 조직단위 기준(leader는 같은 dept+team의 member, director는 같은 dept의 member/leader).
+// admin은 _sanitizeGatedRecord 호출부에서 이미 별도로 통과시키므로 여기서 다루지 않는다.
+function _okrIsManagerOf(actor, actorEmp, ownerEmp) {
+  if (!actor || !actorEmp || !ownerEmp) return false;
+  if (actor.role === "leader") return ownerEmp.role === "member" && ownerEmp.dept === actorEmp.dept && ownerEmp.team === actorEmp.team;
+  if (actor.role === "director") return (ownerEmp.role === "member" || ownerEmp.role === "leader") && ownerEmp.dept === actorEmp.dept;
   return false;
 }
 // 반환값: 저장할 레코드, 또는 null(= 이 레코드는 아예 쓰지 않음 — 권한 없이 새로 만들어진 것)
@@ -1793,6 +1837,39 @@ function _sanitizeGatedRecord(field, incoming, stored, actor, actorEmp, settings
     if (pageOk && _canManageCompSessionTarget(actor, actorEmp, targetEmp)) return incoming;
     return stored ? { ...stored } : null;
   }
+  // OKR(Epic C) — 소유자(ownerId)는 명의 도용 방지를 위해 절대 바꿀 수 없다(approvalDocs의
+  // 결재자 신원 변경 차단과 동일한 발상). 신규 레코드는 본인(또는 admin) 명의로만, 항상
+  // draft로 시작(승인 상태를 직접 주입하는 것을 차단). 상태 전이는 draft→pending(본인만
+  // 제출)·pending→approved/rejected(직속 매니저 또는 admin만 승인/반려)만 허용하고, 그 외
+  // 임의 전이(예: approved를 직접 draft로 되돌리기)는 차단한다. 상태 변경이 없는 일반 편집
+  // (제목·설명·KR·코멘트·첨부파일)은 소유자 또는 admin만 — 이미 승인된 목표의 KR 목표치를
+  // 조용히 바꿔 "달성"으로 보이게 하는 등의 위험은 이번 MVP 범위에서는 UI 경고로만 안내하고
+  // 서버에서 하드블록하지 않는다(범위를 좁혀 복잡도를 낮춤, 코멘트에 명시).
+  if (field === "okrObjectives") {
+    if (stored && String(incoming.ownerId) !== String(stored.ownerId)) {
+      incoming = { ...incoming, ownerId: stored.ownerId, ownerName: stored.ownerName };
+    }
+    const isAdmin = actor && actor.role === "admin";
+    const ownerId = incoming.ownerId ?? stored?.ownerId;
+    const isOwner = actor && String(actor.empId) === String(ownerId);
+    if (!stored) {
+      if (!isOwner && !isAdmin) return null;
+      return { ...incoming, ownerId: actor.empId, ownerName: actorEmp?.name || actor.loginId || "", status: "draft" };
+    }
+    const prevStatus = stored.status || "draft", nextStatus = incoming.status || "draft";
+    if (nextStatus !== prevStatus) {
+      if (prevStatus === "draft" && nextStatus === "pending") {
+        if (!isOwner && !isAdmin) return { ...stored };
+      } else if (prevStatus === "pending" && (nextStatus === "approved" || nextStatus === "rejected")) {
+        if (!isAdmin && !_okrIsManagerOf(actor, actorEmp, targetEmp)) return { ...stored };
+      } else {
+        return { ...stored };
+      }
+    } else if (!isOwner && !isAdmin) {
+      return { ...stored };
+    }
+    return incoming;
+  }
   if (rule.record) {
     // 바뀌지 않은 레코드는 그대로 통과(매 저장마다 전체 배열이 재전송되므로 대부분이 여기).
     if (stored && JSON.stringify(stored) === JSON.stringify(incoming)) return incoming;
@@ -1932,6 +2009,37 @@ function _validateFieldValues(field, rec, storedList) {
     const yr = Number(rec.year);
     if (!Number.isInteger(yr) || yr < 2000 || yr > 2100) return false;
     if (!rec.empId) return false;
+  } else if (field === "scoreAdjustments") {
+    // 가감점은 calcEmpFinalScore/calcCompGradesForAll에서 raw score에 그대로 더해져 상대평가
+    // 순위에 직접 영향을 준다 — 비정상 값(NaN·과도한 점수)이 저장되면 등급 배분 전체가
+    // 왜곡된다. 점수 척도(0~100, getGrade 임계값 기준)를 넘지 않도록 ±50으로 제한.
+    if (String(rec.empId ?? "").trim() === "") return false;
+    const yr = Number(rec.year), pts = Number(rec.points);
+    if (!Number.isInteger(yr) || yr < 2000 || yr > 2100) return false;
+    if (!Number.isFinite(pts) || pts === 0 || Math.abs(pts) > 50) return false;
+    if (rec.type !== "kpi" && rec.type !== "comp") return false;
+    const reason = typeof rec.reason === "string" ? rec.reason.trim() : "";
+    if (!reason || reason.length > 300) return false;
+  } else if (field === "okrObjectives") {
+    // OKR(Epic C): 핵심지표(KR)의 targetValue/currentValue는 진행률(currentValue/targetValue)
+    // 계산에 직접 쓰이므로 숫자 범위를 검증한다. 댓글·첨부파일도 개수 상한을 둔다.
+    if (!rec.ownerId) return false;
+    const yr = Number(rec.year);
+    if (!Number.isInteger(yr) || yr < 2000 || yr > 2100) return false;
+    if (typeof rec.title !== "string" || !rec.title.trim() || rec.title.length > 200) return false;
+    if (!["personal", "team", "company"].includes(rec.scope || "personal")) return false;
+    if (!["draft", "pending", "approved", "rejected"].includes(rec.status || "draft")) return false;
+    if (rec.krs != null) {
+      if (!Array.isArray(rec.krs) || rec.krs.length > 10) return false;
+      for (const kr of rec.krs) {
+        if (!kr || typeof kr.title !== "string" || !kr.title.trim() || kr.title.length > 200) return false;
+        if (kr.targetValue != null && !Number.isFinite(Number(kr.targetValue))) return false;
+        if (kr.currentValue != null && !Number.isFinite(Number(kr.currentValue))) return false;
+        if (Array.isArray(kr.checkIns) && kr.checkIns.length > 100) return false;
+      }
+    }
+    if (rec.comments != null && (!Array.isArray(rec.comments) || rec.comments.length > 200)) return false;
+    if (rec.attachments != null && (!Array.isArray(rec.attachments) || rec.attachments.length > 20)) return false;
   } else if (field === "workforceScenarios") {
     if (typeof rec.name !== "string" || !rec.name.trim() || rec.name.length > 120) return false;
     const year = Number(rec.year);
@@ -2621,8 +2729,11 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
           const stored = storedById.get(String(r.id));
           const approvalDocForGate = (gatedField === "payrollAdjustments" && !stored)
             ? _resolveApprovalDocForGate(r.sourceDocId) : null;
+          const _okrOwnerId = r.ownerId ?? stored?.ownerId;
           const targetEmpForGate = (gatedField === "compSessions" && r.targetId != null)
-            ? (_fileStore.employees || []).find(e => String(e.id) === String(r.targetId)) || null : null;
+            ? (_fileStore.employees || []).find(e => String(e.id) === String(r.targetId)) || null
+            : (gatedField === "okrObjectives" && _okrOwnerId != null)
+            ? (_fileStore.employees || []).find(e => String(e.id) === String(_okrOwnerId)) || null : null;
           let out = _sanitizeGatedRecord(gatedField, r, stored, actor, _actorEmpJson, _fileStore.settings, approvalDocForGate, targetEmpForGate, _fileStore.engagementSurveys || []);
           // 값 범위·형식 검증(_validateFieldValues 주석 참고) — 권한 검사를 통과한 뒤에도
           // 값 자체가 오염돼 있으면 저장본으로 되돌린다(신규 레코드면 드롭).
@@ -3051,8 +3162,11 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
           } else if (_APPROVAL_GATED_FIELDS[field]) {
             const approvalDocForGate = (field === "payrollAdjustments" && !storedItem)
               ? await _getApprovalDocForGate(item.sourceDocId) : null;
+            const _okrOwnerIdPg = item.ownerId ?? storedItem?.ownerId;
             const targetEmpForGate = (field === "compSessions" && item.targetId != null)
-              ? await _getEmployeeByIdPg(item.targetId) : null;
+              ? await _getEmployeeByIdPg(item.targetId)
+              : (field === "okrObjectives" && _okrOwnerIdPg != null)
+              ? await _getEmployeeByIdPg(_okrOwnerIdPg) : null;
             toWrite = _sanitizeGatedRecord(field, item, storedItem, actor, await _getActorEmpPg(), await _getSettingsPg(), approvalDocForGate, targetEmpForGate,
               field === "engagementResponses" ? await _getEngagementSurveysPg() : null);
             if (toWrite === null) continue;   // 권한 없이 새로 만들어진 레코드 — 쓰지 않음
