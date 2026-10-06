@@ -1047,4 +1047,37 @@ test.describe("로그인·기본 네비게이션", () => {
     expect(result.dup1Awards).toHaveLength(0);
     expect(result.dup2Awards).toHaveLength(0);
   });
+
+  test("관리자는 계약 원장을 등록하고 만료 임박 현황을 확인한다", async ({ page }) => {
+    await page.goto("/");
+    await page.fill("#l-id", "e2e_admin");
+    await page.fill("#l-pw", "E2eTestPw123");
+    await page.evaluate(() => {
+      autoSaveDebounced=()=>{};
+      loadFromServer=async()=>{};
+      connectSSE=async()=>{};
+    });
+    await page.click(".login-card button.btn-primary");
+    await expect(page.locator("#main")).toBeVisible({timeout:10000});
+    await page.evaluate(() => {
+      currentUser={...currentUser,id:"er-admin",name:"인사 관리자",role:"admin",active:true,menuPerms:{}};
+      employees=[{id:"er-emp",loginId:"er-emp",empNo:"E2601",name:"계약 직원",role:"member",active:true,dept:"경영지원"}];
+      employmentRecords=[];
+      autoSaveToServerIfEnabled=()=>{};
+      askConfirmModal=async()=>true;
+      gotoPage("employment-records");
+    });
+    await expect(page.locator("#content")).toContainText("계약·징계 원장");
+    await page.getByRole("button",{name:"기록 등록"}).click();
+    await page.selectOption("#er-employee","er-emp");
+    await page.fill("#er-title","기간제 근로계약");
+    await page.fill("#er-start","2026-10-01");
+    await page.fill("#er-end","2026-10-20");
+    await page.getByRole("button",{name:"저장",exact:true}).click();
+    await expect(page.locator("#content")).toContainText("기간제 근로계약");
+    await expect(page.locator("#content")).toContainText("30일 내 만료");
+    const rows=await page.evaluate(()=>employmentRecords);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({employeeId:"er-emp",type:"contract",status:"active",createdBy:"er-admin"});
+  });
 });

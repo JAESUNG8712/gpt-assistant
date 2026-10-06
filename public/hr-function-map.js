@@ -17,7 +17,7 @@
     { key: "operations", label: "인사운영", items: [
       ["사원등록·개인기록", "hr-register", "active"], ["발령·변동 이력", "hr-changes", "active"],
       ["증명서 발급", "certificate", "active"], ["온보딩·오프보딩", "onboarding", "active"],
-      ["포상·우수사원", "award-history", "active"], ["계약·징계 원장", "", "planned"],
+      ["포상·우수사원", "award-history", "active"], ["계약·징계 원장", "employment-records", "active"],
     ] },
     { key: "planning", label: "인사기획", items: [
       ["조직·직급 체계", "settings-org", "active"], ["정원·포지션", "position-control", "active"],

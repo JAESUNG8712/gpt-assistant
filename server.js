@@ -689,6 +689,7 @@ function filterDataForRole(data, auth) {
   // 직무별 요구역량과 개인별 검증 수준은 인사 의사결정용 제한정보다. 현재 화면이
   // 관리자 전용이므로 API 직접 조회에서도 동일하게 비관리자에게 노출하지 않는다.
   if (auth.role !== "admin") {
+    if (Array.isArray(out.employmentRecords)) out.employmentRecords = [];
     if (Array.isArray(out.jobSkillProfiles)) out.jobSkillProfiles = [];
     if (Array.isArray(out.employeeSkillProfiles)) out.employeeSkillProfiles = [];
     if (Array.isArray(out.workforceScenarios)) out.workforceScenarios = [];
@@ -908,6 +909,9 @@ function filterDataForRole(data, auth) {
 function filterDataForMenuPermissions(data, menuPerms) {
   if (!data || !menuPerms || typeof menuPerms !== "object") return data;
   const out = { ...data };
+  if (menuPerms["employment-records"] === false && Array.isArray(out.employmentRecords)) {
+    out.employmentRecords = [];
+  }
   if (menuPerms["acct-receivables"] === false && Array.isArray(out.acctPayments)) {
     out.acctPayments = [];
   }
@@ -1429,6 +1433,7 @@ function _welfareRecordAllowed(rec, actor, actorEmp, settings) {
 // roles: 이 역할이면 누구 레코드든 쓸 수 있음(해당 화면의 PAGE_ROLES와 일치)
 // ownField: 그 필드가 본인 id면 역할과 무관하게 허용(본인 출퇴근 체크·본인 증명서 발급 등)
 const _WRITE_GATED_FIELDS = {
+  employmentRecords:  { roles: ["admin"], pageIds: "employment-records" },
   payslips:           { roles: ["admin"], pageIds: "payroll-mgmt" },
   payrollAdjustments: { roles: ["admin"], pageIds: "payroll-mgmt" },
   // 연말정산 결과: payslips와 동일하게 admin만 계산·확정할 수 있다(본인이 자기 부양가족
@@ -1625,6 +1630,22 @@ function _sanitizeGatedRecord(field, incoming, stored, actor, actorEmp, settings
       dept: actorEmp?.dept || "", team: actorEmp?.team || "", periodType: incoming.periodType === "weekly" ? "weekly" : "daily",
       periodStart, periodEnd, summary, blockers: String(incoming.blockers || "").trim().slice(0, 1500), nextPlan, status,
       submittedAt: status === "submitted" ? (stored?.submittedAt || now) : null, createdAt: stored?.createdAt || now, updatedAt: now };
+  }
+  if (field === "employmentRecords") {
+    const type = ["contract", "discipline"].includes(incoming.type) ? incoming.type : "";
+    const status = ["active", "closed", "expired"].includes(incoming.status) ? incoming.status : "active";
+    const shortText = (value, max) => String(value == null ? "" : value).trim().slice(0, max);
+    const date = value => /^\d{4}-\d{2}-\d{2}$/.test(String(value || "")) ? String(value) : "";
+    const now = new Date().toISOString();
+    incoming = { ...incoming, employeeId: shortText(incoming.employeeId, 120), type, title: shortText(incoming.title, 120), status,
+      startDate: date(incoming.startDate), endDate: date(incoming.endDate), decisionDate: date(incoming.decisionDate),
+      note: shortText(incoming.note, 1000), documentRef: shortText(incoming.documentRef, 200),
+      createdAt: stored?.createdAt || now, createdBy: stored?.createdBy || String(actor?.empId || ""),
+      updatedAt: now, updatedBy: String(actor?.empId || "") };
+    if (!incoming.employeeId || !type || !incoming.title) return stored ? { ...stored } : null;
+    if (incoming.startDate && incoming.endDate && incoming.endDate < incoming.startDate) return stored ? { ...stored } : null;
+    if (type === "contract" && !incoming.startDate) return stored ? { ...stored } : null;
+    if (type === "discipline" && !incoming.decisionDate) return stored ? { ...stored } : null;
   }
   // payrollAdjustments는 admin 전용 필드지만, 복리후생 신청이 승인 완료되는
   // 순간 이 레코드를 만드는 것은 그 결재선의 "마지막 결재자"(대개 팀장·사업부장, admin이
@@ -1859,7 +1880,14 @@ const _HHMM_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
 // 동일하게 "이 레코드만 되돌리고 나머지 정상 변경은 그대로 저장"하는 원칙을 따른다.
 function _validateFieldValues(field, rec, storedList) {
   if (!rec) return true;
-  if (field === "overtimeRequests") {
+  if (field === "employmentRecords") {
+    if (!["contract", "discipline"].includes(rec.type)) return false;
+    if (!["active", "closed", "expired"].includes(rec.status)) return false;
+    if (!rec.employeeId || typeof rec.title !== "string" || !rec.title.trim() || rec.title.length > 120) return false;
+    if (rec.startDate && rec.endDate && rec.endDate < rec.startDate) return false;
+    if (rec.type === "contract" && !rec.startDate) return false;
+    if (rec.type === "discipline" && !rec.decisionDate) return false;
+  } else if (field === "overtimeRequests") {
     // hours는 승인 후 급여 계산의 초과근무수당(otReqAllowance = hours * 시급 * 배율)에
     // 그대로 곱해진다 — 실측: API로 hours:9999를 제출하면 검증 없이 그대로 저장됨(승인
     // 자체는 본인이 아닌 리더 이상만 가능하지만, 승인자가 화면상 값을 못 알아채고 승인하면

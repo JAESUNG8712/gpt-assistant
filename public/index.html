@@ -1094,6 +1094,7 @@ let engagementSurveys=[]; // 직원 몰입도 펄스 캠페인
 let engagementResponses=[]; // 서버에서는 항상 본인 응답만 내려옴
 let engagementPulseSummary={}; // 서버가 조직 범위·최소 익명 인원 기준으로 만든 집계
 let engagementActions=[]; // 설문 결과 기반 조직 개선 실행계획
+let employmentRecords=[]; // 관리자 전용 근로계약·징계 원장
 function _recordCollections(){return{
   employees,kpiEntries,compSessions,compResponses,changeRequests,orgChartHistory,
   coreTalentPool,talentDevPlans,successionPlans,jobSkillProfiles,employeeSkillProfiles,workforceScenarios,workforcePositions,positionRequests,gradeAdjustHistory,tieNotifications,lowPerfData,
@@ -1101,7 +1102,7 @@ function _recordCollections(){return{
   yearEndSettlements,
   payrollAdjustments,leaveUsagePlans,boardPosts,roomReservations,certLog,certRequests,
   welfarePoints,mandatoryTraining,healthCheckupLog,scheduleEvents,personalTasks,workReports,expenseClaims,
-  overtimeRequests,onboardingFlows,approvalDelegations,engagementSurveys,engagementResponses,engagementActions
+  overtimeRequests,onboardingFlows,approvalDelegations,engagementSurveys,engagementResponses,engagementActions,employmentRecords
 };}
 function _applyRecordRevisions(revisions){
   const collections=_recordCollections();
@@ -2405,6 +2406,7 @@ function startHeartbeat(){
               if(newData.compSessions) compSessions=newData.compSessions;
               if(newData.compResponses) compResponses=newData.compResponses;
               if(newData.certRequests) certRequests=newData.certRequests;
+              if(newData.employmentRecords) employmentRecords=newData.employmentRecords;
               if(newData.settings) Object.assign(settings, newData.settings);
               if(newData.orgDB){if(newData.orgDB.depts)orgDB.depts=newData.orgDB.depts;if(newData.orgDB.teams)orgDB.teams=newData.orgDB.teams;}
               if(newData.gradeSettings) Object.assign(gradeSettings,newData.gradeSettings);
@@ -5535,6 +5537,7 @@ function getFullState(action=""){
       engagementSurveys:JSON.parse(JSON.stringify(engagementSurveys)),
       engagementResponses:JSON.parse(JSON.stringify(engagementResponses)),
       engagementActions:JSON.parse(JSON.stringify(engagementActions)),
+      employmentRecords:JSON.parse(JSON.stringify(employmentRecords)),
       _idCounter:_id
     }
   };
@@ -5770,6 +5773,7 @@ function applyState(state,skipUndo=false){
   if(d.engagementSurveys&&Array.isArray(d.engagementSurveys))engagementSurveys=_mergeByIdPreferNewer(engagementSurveys,d.engagementSurveys,'engagementSurveys');
   if(d.engagementResponses&&Array.isArray(d.engagementResponses))engagementResponses=_mergeByIdPreferNewer(engagementResponses,d.engagementResponses,'engagementResponses');
   if(d.engagementActions&&Array.isArray(d.engagementActions))engagementActions=_mergeByIdPreferNewer(engagementActions,d.engagementActions,'engagementActions');
+  if(d.employmentRecords&&Array.isArray(d.employmentRecords))employmentRecords=_mergeByIdPreferNewer(employmentRecords,d.employmentRecords,'employmentRecords');
   engagementPulseSummary=d.engagementPulseSummary&&typeof d.engagementPulseSummary==="object"?d.engagementPulseSummary:{};
   if(d._idCounter&&typeof d._idCounter==="number")_id=d._idCounter;
   if(d.recordTombstones&&typeof d.recordTombstones==="object"){
@@ -5799,6 +5803,7 @@ function applyState(state,skipUndo=false){
   workforceScenarios=_tombFilter(workforceScenarios,"workforceScenarios");
   workforcePositions=_tombFilter(workforcePositions,"workforcePositions");
   positionRequests=_tombFilter(positionRequests,"positionRequests");
+  employmentRecords=_tombFilter(employmentRecords,"employmentRecords");
   approvalTemplates=_tombFilter(approvalTemplates,"approvalTemplates");
   payrollAdjustments=_tombFilter(payrollAdjustments,"payrollAdjustments");
   boardPosts=_tombFilter(boardPosts,"boardPosts");
@@ -7177,6 +7182,7 @@ function renderSidebar(){
       {id:"set-sys-sep",type:"sep",label:"시스템 관리",roles:["admin"]},
       {id:"admin-operations",label:"관리자 운영센터",icon:"🛡",desc:"로그인·메뉴 사용·저장소·보안 현황",roles:["admin"]},
       {id:"hr-function-map",label:"HR 업무지도",icon:"🧭",desc:"역할·업무·기준정보·외부 연계 구성",roles:["admin"]},
+      {id:"employment-records",label:"계약·징계 원장",icon:"🗃",desc:"근로계약 만료와 징계 조치 이력 관리",roles:["admin"]},
       {id:"integrations",label:"연동 설정",icon:"🔌",desc:"메신저 알림·캘린더·ERP 연동",roles:["admin"]},
       {id:"data-mgmt",label:"데이터 관리",icon:"💾",desc:"백업·복원·내보내기",roles:["admin"]},
       {id:"history",label:"수정 이력",icon:"⊞",desc:"변경 이력 감사",roles:["admin"]},
@@ -7212,6 +7218,7 @@ function renderSidebar(){
   titles["work-reports"]="업무보고";
   titles["admin-operations"]="관리자 운영센터";
   titles["hr-function-map"]="HR 업무지도";
+  titles["employment-records"]="계약·징계 원장";
   const ptEl=$("#page-title");if(ptEl)ptEl.textContent=titles[currentPage]||"";
   const sb=$("#sidebar");if(!sb)return;
   // Filter by role + per-user custom permission overrides (admin-managed)
@@ -7329,7 +7336,7 @@ const PAGE_ROLES={
   "eval-progress":["admin","director","leader"],
   "promotion-mgmt":["admin"],"core-talent":["admin"],"succession-planning":["admin"],"skills-architecture":["admin"],"workforce-planning":["admin"],
   "position-control":["admin"],"position-requests":["admin","director","leader"],
-  "settings":["admin"],"approval-templates":["admin"],"integrations":["admin"],"data-mgmt":["admin"],"admin-operations":["admin"],"hr-function-map":["admin"],
+  "settings":["admin"],"approval-templates":["admin"],"integrations":["admin"],"data-mgmt":["admin"],"admin-operations":["admin"],"hr-function-map":["admin"],"employment-records":["admin"],
   "history":["admin"],"activity-log":["admin"],
   "eval-ops":["admin"],"settings-org":["admin"],"settings-ranks":["admin"],"attend-settings":["admin"],
   "payroll-settings":["admin"],"company-info":["admin"],"room-settings":["admin"],"deploy-perm":["admin"],
@@ -7636,6 +7643,7 @@ function renderPage(){
   pages["engagement-pulse-action-detail"]=renderPulseActionDetailPage;
   pages["admin-operations"]=window.renderAdminOperationsPage;
   pages["hr-function-map"]=window.renderHrFunctionMapPage;
+  pages["employment-records"]=window.renderEmploymentRecordsPage;
   const fn=pages[currentPage];const c=$("#content");
   if(c&&fn){
     c.innerHTML="";
@@ -29961,6 +29969,7 @@ if(_masterHandoff && _authToken){
 </script>
 <script src="/groupware-employee-sync.js"></script>
 <script src="/hr-function-map.js"></script>
+<script src="/employment-records.js"></script>
 <script src="/admin-operations.js"></script>
 </body>
 </html>
