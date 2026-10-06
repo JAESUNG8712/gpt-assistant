@@ -7176,6 +7176,7 @@ function renderSidebar(){
     "set-sys-sep":[
       {id:"set-sys-sep",type:"sep",label:"시스템 관리",roles:["admin"]},
       {id:"admin-operations",label:"관리자 운영센터",icon:"🛡",desc:"로그인·메뉴 사용·저장소·보안 현황",roles:["admin"]},
+      {id:"hr-function-map",label:"HR 업무지도",icon:"🧭",desc:"역할·업무·기준정보·외부 연계 구성",roles:["admin"]},
       {id:"integrations",label:"연동 설정",icon:"🔌",desc:"메신저 알림·캘린더·ERP 연동",roles:["admin"]},
       {id:"data-mgmt",label:"데이터 관리",icon:"💾",desc:"백업·복원·내보내기",roles:["admin"]},
       {id:"history",label:"수정 이력",icon:"⊞",desc:"변경 이력 감사",roles:["admin"]},
@@ -7210,6 +7211,7 @@ function renderSidebar(){
   titles["my-tasks"]="할일 관리";
   titles["work-reports"]="업무보고";
   titles["admin-operations"]="관리자 운영센터";
+  titles["hr-function-map"]="HR 업무지도";
   const ptEl=$("#page-title");if(ptEl)ptEl.textContent=titles[currentPage]||"";
   const sb=$("#sidebar");if(!sb)return;
   // Filter by role + per-user custom permission overrides (admin-managed)
@@ -7327,7 +7329,7 @@ const PAGE_ROLES={
   "eval-progress":["admin","director","leader"],
   "promotion-mgmt":["admin"],"core-talent":["admin"],"succession-planning":["admin"],"skills-architecture":["admin"],"workforce-planning":["admin"],
   "position-control":["admin"],"position-requests":["admin","director","leader"],
-  "settings":["admin"],"approval-templates":["admin"],"integrations":["admin"],"data-mgmt":["admin"],"admin-operations":["admin"],
+  "settings":["admin"],"approval-templates":["admin"],"integrations":["admin"],"data-mgmt":["admin"],"admin-operations":["admin"],"hr-function-map":["admin"],
   "history":["admin"],"activity-log":["admin"],
   "eval-ops":["admin"],"settings-org":["admin"],"settings-ranks":["admin"],"attend-settings":["admin"],
   "payroll-settings":["admin"],"company-info":["admin"],"room-settings":["admin"],"deploy-perm":["admin"],
@@ -7633,6 +7635,7 @@ function renderPage(){
   pages["engagement-pulse-action-new"]=renderPulseActionCreatePage;
   pages["engagement-pulse-action-detail"]=renderPulseActionDetailPage;
   pages["admin-operations"]=window.renderAdminOperationsPage;
+  pages["hr-function-map"]=window.renderHrFunctionMapPage;
   const fn=pages[currentPage];const c=$("#content");
   if(c&&fn){
     c.innerHTML="";
@@ -29957,6 +29960,7 @@ if(_masterHandoff && _authToken){
 }
 </script>
 <script src="/groupware-employee-sync.js"></script>
+<script src="/hr-function-map.js"></script>
 <script src="/admin-operations.js"></script>
 </body>
 </html>

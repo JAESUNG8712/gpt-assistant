@@ -251,6 +251,25 @@ test.describe("로그인·기본 네비게이션", () => {
     expect(pageErrors, `콘솔 페이지 에러 발생: ${pageErrors.join("; ")}`).toHaveLength(0);
   });
 
+  test("관리자 HR 업무지도는 역할·기능 상태와 실제 메뉴 이동을 제공한다", async ({ page }) => {
+    const pageErrors = [];
+    page.on("pageerror", error => pageErrors.push(error.message));
+    await page.goto("/");
+    await page.fill("#l-id", "e2e_admin");
+    await page.fill("#l-pw", "E2eTestPw123");
+    await page.click(".login-card button.btn-primary");
+    await expect(page.locator("#main")).toBeVisible({ timeout: 10000 });
+
+    await page.evaluate(() => gotoPage("hr-function-map"));
+    await expect(page.getByRole("heading", { name: "HR 업무지도" })).toBeVisible();
+    await expect(page.locator("#content")).toContainText("경영진");
+    await expect(page.locator("#content")).toContainText("외부연계");
+    await expect(page.locator("#content")).toContainText("세무·사회보험");
+    await page.getByText("사원등록·개인기록", { exact: true }).click();
+    await expect(page.locator("#page-title")).toContainText("신규 직원 등록");
+    expect(pageErrors, `콘솔 페이지 에러 발생: ${pageErrors.join("; ")}`).toHaveLength(0);
+  });
+
   test("사업장 마스터의 검증·등록·직원 필터·삭제 보호가 동작한다", async ({ page }) => {
     const pageErrors = [];
     page.on("pageerror", e => pageErrors.push(e.message));
