@@ -9070,7 +9070,7 @@ function renderHRList(){
       <span class="fz12 text-gray" id="hr-list-count">총 ${filtered.length}명</span>
       <div id="hr-list-pager">${_pagerHtml("hrListFilter",hrListFilter,filtered.length,"renderHRListTbl()")}</div>
       <div style="margin-left:auto;display:flex;gap:6px">
-        ${currentUser.role==="admin"?`<button class="btn btn-secondary btn-sm" onclick="dlHRTemplate()">📋 양식 다운로드</button><label class="btn btn-secondary btn-sm" for="bulk-upload">📤 일괄 업로드</label><input type="file" id="bulk-upload" accept=".csv" onchange="handleBulkUpload(this)"><label class="btn btn-primary btn-sm" for="hr-spreadsheet-upload" title="인사현황 엑셀을 탭 구분 CSV로 저장 후 업로드">📊 인사현황 가져오기</label><input type="file" id="hr-spreadsheet-upload" accept=".csv,.tsv,.txt" style="display:none" onchange="handleHRSpreadsheetImport(this)"><button class="btn btn-secondary btn-sm" onclick="resetAllLoginToEmpNo()" title="전직원의 로그인ID·비밀번호를 사번으로 초기화">🔑 계정 사번으로 초기화</button>`:""}
+        ${currentUser.role==="admin"?`<button class="btn btn-secondary btn-sm" onclick="dlHRTemplate()">📋 양식 다운로드</button><label class="btn btn-secondary btn-sm" for="bulk-upload">📤 일괄 업로드</label><input type="file" id="bulk-upload" accept=".csv" onchange="handleBulkUpload(this)"><label class="btn btn-primary btn-sm" for="hr-spreadsheet-upload" title="인사현황 엑셀을 탭 구분 CSV로 저장 후 업로드">📊 인사현황 가져오기</label><input type="file" id="hr-spreadsheet-upload" accept=".csv,.tsv,.txt" style="display:none" onchange="handleHRSpreadsheetImport(this)"><label class="btn btn-teal btn-sm" for="groupware-employee-upload" title="그룹웨어 관리자 > 사원정보관리에서 내려받은 엑셀/CSV를 비교 후 반영">🔄 그룹웨어 동기화</label><input type="file" id="groupware-employee-upload" accept=".xlsx,.xls,.csv" style="display:none" onchange="handleGroupwareEmployeeImport(this)"><button class="btn btn-secondary btn-sm" onclick="resetAllLoginToEmpNo()" title="전직원의 로그인ID·비밀번호를 사번으로 초기화">🔑 계정 사번으로 초기화</button>`:""}
         <button class="btn btn-secondary btn-sm" onclick="dlHRList()">📥 목록 다운로드</button>
       </div>
     </div>
@@ -29956,6 +29956,7 @@ if(_masterHandoff && _authToken){
   renderLogin();
 }
 </script>
+<script src="/groupware-employee-sync.js"></script>
 <script src="/admin-operations.js"></script>
 </body>
 </html>
