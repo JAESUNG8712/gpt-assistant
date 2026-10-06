@@ -4403,6 +4403,30 @@ async function verifyCredentials(companyId, loginId, pw) {
   return safe;
 }
 
+// 관리자 운영센터에는 실패한 로그인도 보안 신호로 남기되, 존재 여부를 추측할 수 있는
+// 원문 아이디는 저장하지 않는다. 앞 두 글자만 남겨 같은 계정에 대한 반복 시도인지
+// 식별할 수 있게 하고 나머지는 마스킹한다.
+function _maskedLoginIdForAudit(loginId) {
+  const value = String(loginId || "").trim().slice(0, 80);
+  if (!value) return "(미입력)";
+  return `${value.slice(0, Math.min(2, value.length))}${"*".repeat(Math.max(3, value.length - 2))}`;
+}
+
+async function _recordLoginActivity({ companyId = null, loginId = "", employee = null, action, detail }) {
+  // 잘못된 회사 코드는 어느 회사의 감사 로그에도 섞지 않는다. JSON 파일 모드는 단일 회사라
+  // companyId가 원래 null인 것이 정상이다.
+  if (!USE_JSON_FILE && !companyId) return;
+  await addActivityLog({
+    userId: employee?.id != null ? `emp:${employee.id}` : "anonymous",
+    userName: employee?.name || _maskedLoginIdForAudit(loginId),
+    action,
+    target: "authentication",
+    targetId: "",
+    detail: String(detail || "").slice(0, 200),
+    time: new Date().toISOString(),
+  }, companyId);
+}
+
 // POST /login — verifies credentials against server-stored (hashed) passwords
 // without exposing any employee's password hash to the client. If the account
 // has 2FA enabled, a valid `otp` must also be supplied in the same request
@@ -4431,11 +4455,16 @@ app.post("/login", loginLimiter, async (req, res) => {
     // 응답해 계정·회사 존재 여부를 추측할 수 없게 하기 위함.
     const companyId = USE_JSON_FILE ? null : await _resolveCompanyId(companyCode);
     const employee = await verifyCredentials(companyId, loginId, pw);
-    if (!employee) return res.json({ ok: false, message: "아이디 또는 비밀번호가 올바르지 않습니다." });
+    if (!employee) {
+      await _recordLoginActivity({ companyId, loginId, action: "login_failed", detail: "아이디 또는 비밀번호 인증 실패" });
+      return res.json({ ok: false, message: "아이디 또는 비밀번호가 올바르지 않습니다." });
+    }
     if (employee.twoFactorEnabled) {
       if (!otp) { res.locals.loginOk = true; return res.json({ ok: true, requireOtp: true }); }
-      if (!employee._twoFactorSecret || !totpVerify(employee._twoFactorSecret, otp))
+      if (!employee._twoFactorSecret || !totpVerify(employee._twoFactorSecret, otp)) {
+        await _recordLoginActivity({ companyId, loginId, employee, action: "login_otp_failed", detail: "2단계 인증 코드 확인 실패" });
         return res.json({ ok: false, requireOtp: true, message: "인증 코드가 올바르지 않습니다." });
+      }
     }
     // 서버가 실제로 검증한 계정 정보로만 토큰을 발급한다(클라이언트가 보낸 role은 무시).
     // authVersion을 함께 실어 매 요청마다 authenticate()가 "그 사이 role/pw/active가
@@ -4447,6 +4476,7 @@ app.post("/login", loginLimiter, async (req, res) => {
     // 최초로 그릴 때부터 바로 반영할 수 있도록 여기서도 함께 내려준다.
     const companyFeatures = await _getCompanyFeatureMap(companyId);
     const token = signToken({ empId: employee.id, loginId: employee.loginId, role: employee.role, companyId, authVersion: employee.authVersion || 0 });
+    await _recordLoginActivity({ companyId, loginId, employee, action: "login_succeeded", detail: employee.twoFactorEnabled ? "2단계 인증 로그인" : "비밀번호 로그인" });
     res.json({ ok: true, employee, token, companyFeatures });
   } catch (e) {
     if (e?.code === "FEATURE_STATE_UNAVAILABLE") return _featureStateUnavailable(res);
@@ -5897,7 +5927,26 @@ app.post("/log", async (req, res) => {
   if (!requireAuth(req, res)) return;
   if (!req.body) return res.status(400).json({ ok: false });
   try {
-    await addActivityLog(req.body, req.auth.companyId || null);
+    const employee = await _fetchCurrentEmployeeForAuth(req.auth);
+    if (employee === undefined) return res.status(503).json({ ok: false, code: "AUTH_STATE_UNAVAILABLE", message: "로그인 상태를 확인할 수 없습니다." });
+    if (req.auth.empId != null && !employee) return res.status(401).json({ ok: false, message: "로그인이 필요합니다." });
+    // 감사 로그의 주체는 요청 본문(userName/userId)이 아니라 검증된 토큰과 현재 직원
+    // 레코드로 확정한다. action/target/detail도 제어문자와 과도한 길이를 제거해 로그 화면
+    // 변조·저장공간 남용을 막는다.
+    const clean = (value, max) => String(value || "").replace(/[\u0000-\u001f\u007f]/g, " ").trim().slice(0, max);
+    const action = clean(req.body.action, 80);
+    const target = clean(req.body.target, 120);
+    if (!action || !/^[\p{L}\p{N}_.:\- ]+$/u.test(action))
+      return res.status(400).json({ ok: false, message: "활동 유형이 올바르지 않습니다." });
+    await addActivityLog({
+      userId: _authenticatedActorKey(req.auth),
+      userName: _authenticatedDisplayName(req.auth, employee),
+      action,
+      target,
+      targetId: clean(req.body.targetId, 120),
+      detail: clean(req.body.detail, 500),
+      time: new Date().toISOString(),
+    }, req.auth.companyId || null);
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
@@ -5907,7 +5956,7 @@ app.get("/activity", async (req, res) => {
   // "activity-log" 페이지는 PAGE_ROLES상 admin 전용인데 requireAuth만 있어 member 토큰으로도
   // 자유텍스트 target/detail이 담긴 활동 로그를 조회할 수 있었다(실측 확인).
   if (!requireAdmin(req, res)) return;
-  const limit = parseInt(req.query.limit) || 300;
+  const limit = Math.max(1, Math.min(parseInt(req.query.limit) || 300, MAX_ACTIVITY_LOGS));
   if (USE_JSON_FILE) {
     return res.json({ ok: true, logs: _fileActivityLog.slice(0, limit) });
   }
