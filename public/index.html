@@ -9663,7 +9663,17 @@ function openEmpEdit(id){
 function _openEmpEdit(id){
   const e=getEmp(id);if(!e)return;
   showModal(`<div class="modal modal-lg"><div class="modal-head"><h2>${h(e.name)} 정보 수정</h2><button class="modal-close" onclick="closeModal()">×</button></div>
-  <div class="modal-body"><div class="g2">
+  <div class="modal-body">
+  <div class="fg mb2" style="display:flex;align-items:center;gap:14px">
+    <div id="ee-photo-preview"></div>
+    <div>
+      <label class="btn btn-secondary btn-sm" for="ee-photo-file" style="cursor:pointer">📷 사진 업로드</label>
+      <input type="file" id="ee-photo-file" accept="image/*" onchange="uploadEmpEditPhoto(this)">
+      <button id="ee-photo-remove-wrap" class="btn btn-ghost btn-sm" style="display:${e.photoUrl?"inline-block":"none"}" onclick="_eeRemoveEditPhoto()">삭제</button>
+      <div class="fz10 text-gray mt1">화상조직도에 표시됩니다. 300KB 이하 이미지만 업로드할 수 있습니다.</div>
+    </div>
+  </div>
+  <div class="g2">
     <div class="fg"><label class="fl">이름</label><input class="fc" id="ee-name" value="${h(e.name)}"></div>
     <div class="fg"><label class="fl">사번</label><input class="fc" id="ee-empno" value="${h(e.empNo)}"></div>
     <div class="fg"><label class="fl">생년월일</label><input class="fc" id="ee-birth" type="date" value="${e.birth||""}"></div>
@@ -9710,8 +9720,30 @@ function _openEmpEdit(id){
   </div><div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal()">취소</button><button class="btn btn-primary" onclick='saveEmpEdit(${JSON.stringify(String(id))})'>저장</button></div></div>`);
   window._eeEditCareers=JSON.parse(JSON.stringify(e.careers||[]));
   window._eeEditLeaves=JSON.parse(JSON.stringify(e.leaves||[]));
+  window._eeEditPhoto=e.photoUrl||"";window._eeEditName=e.name;
   setTimeout(_renderEmpEditCareers,30);
   setTimeout(_renderEmpEditLeaves,30);
+  _eeRenderPhotoPreview();
+}
+// 화상조직도(D2) — 직원 사진은 employees[] 배열(전 직원이 매 페이지 로드마다 통째로
+// 받는 상태)에 직접 base64로 저장되므로, OKR·게시판 첨부파일(5MB)보다 훨씬 작은
+// 300KB로 제한해 전체 응답 크기 증가를 억제한다. admin 전용(직원 수정 폼)으로만
+// 편집 가능 — self-service 업로드는 이 페이로드 크기 우려 때문에 이번 범위에서 제외.
+function uploadEmpEditPhoto(input){
+  const file=input.files?.[0];if(!file)return;
+  if(!file.type.startsWith("image/")){showToast("이미지 파일만 업로드할 수 있습니다.","error");input.value="";return;}
+  if(file.size>300*1024){showToast("사진 파일 크기는 300KB 이하만 업로드할 수 있습니다.","error");input.value="";return;}
+  const reader=new FileReader();
+  reader.onload=ev=>{window._eeEditPhoto=ev.target.result;_eeRenderPhotoPreview();};
+  reader.readAsDataURL(file);
+  input.value="";
+}
+function _eeRemoveEditPhoto(){window._eeEditPhoto="";_eeRenderPhotoPreview();}
+function _eeRenderPhotoPreview(){
+  const el=document.getElementById("ee-photo-preview");if(!el)return;
+  el.innerHTML=_orgAvatarHtml({name:window._eeEditName||"?",photoUrl:window._eeEditPhoto},64,false);
+  const removeBtn=document.getElementById("ee-photo-remove-wrap");
+  if(removeBtn)removeBtn.style.display=window._eeEditPhoto?"inline-block":"none";
 }
 function syncEditTeams(dept,curTeam){const el=$("#ee-team");if(!el)return;el.innerHTML=_selOptsKeepCurrent(getTeams(dept),curTeam);}
 function _renderEmpEditCareers(){
@@ -9761,7 +9793,7 @@ function saveEmpEdit(id){
     if(String(e.id)!==String(id))return e;
     const salaryChanged=Number(e.salary||0)!==nextSalary,hrHistory=[...(e.hrHistory||[])];
     if(salaryChanged)hrHistory.push({id:genId(),type:"salary",date:today,desc:"직원 정보 수정에서 연봉 변경",before:`${Number(e.salary||0).toLocaleString()}원`,after:`${nextSalary.toLocaleString()}원`,note:"직원 상세 수정 자동 이력",source:"employee_edit",applied:true,createdAt:now});
-    return{...e,name:g("#ee-name"),empNo:g("#ee-empno"),birth:g("#ee-birth"),gender:g("#ee-gender"),nationality:g("#ee-nationality")||"내국인",hire:g("#ee-hire"),workplaceId:g("#ee-workplace"),dept:g("#ee-dept"),team:g("#ee-team"),position:g("#ee-position"),rank:g("#ee-rank"),rankYear:Number(g("#ee-rankyear"))||1,jobGroup:g("#ee-jobgroup"),salary:nextSalary,totalCareer:Number(g("#ee-career"))||0,edu:g("#ee-edu"),eduSchool:g("#ee-eduschool"),email:g("#ee-email"),phone:g("#ee-phone"),address:g("#ee-address"),role:nextRole,contractType:g("#ee-contracttype")||"정규직",contractStart:g("#ee-contractstart"),contractEnd:g("#ee-contractend"),active:isActive,retireDate:isActive?"":g("#ee-retiredate"),retireReason:isActive?"":g("#ee-retirereason"),careers:window._eeEditCareers||e.careers||[],leaves:window._eeEditLeaves||e.leaves||[],hrHistory,updatedAt:now};
+    return{...e,name:g("#ee-name"),empNo:g("#ee-empno"),birth:g("#ee-birth"),gender:g("#ee-gender"),nationality:g("#ee-nationality")||"내국인",hire:g("#ee-hire"),workplaceId:g("#ee-workplace"),dept:g("#ee-dept"),team:g("#ee-team"),position:g("#ee-position"),rank:g("#ee-rank"),rankYear:Number(g("#ee-rankyear"))||1,jobGroup:g("#ee-jobgroup"),salary:nextSalary,totalCareer:Number(g("#ee-career"))||0,edu:g("#ee-edu"),eduSchool:g("#ee-eduschool"),email:g("#ee-email"),phone:g("#ee-phone"),address:g("#ee-address"),role:nextRole,contractType:g("#ee-contracttype")||"정규직",contractStart:g("#ee-contractstart"),contractEnd:g("#ee-contractend"),photoUrl:window._eeEditPhoto||"",active:isActive,retireDate:isActive?"":g("#ee-retiredate"),retireReason:isActive?"":g("#ee-retirereason"),careers:window._eeEditCareers||e.careers||[],leaves:window._eeEditLeaves||e.leaves||[],hrHistory,updatedAt:now};
   });
   if(String(id)===String(currentUser.id)){currentUser=employees.find(e=>String(e.id)===String(id))||currentUser;}
   _autoTransitionCompEvaluators(id,_oldDept,_oldTeam);
@@ -26950,6 +26982,15 @@ function openLeaveDetailModal(empId){
 
 // ==================== ORG CHART (조직도) ====================
 let _orgViewDate="";
+// 화상조직도(D2) — "목록형"(기존 트리, 부서/팀 접기+드래그 순서변경)과 "사진형"(사진 카드
+// 그리드, 항상 전체 펼침) 두 보기 모드. 사진형은 "둘러보기" 목적이라 접기 상태를
+// 따르지 않는다.
+let _orgChartViewMode="tree";
+function _setOrgChartViewMode(mode){_orgChartViewMode=mode==="photo"?"photo":"tree";renderOrgChartBody();}
+function _orgAvatarHtml(e,size,isLeader){
+  if(e.photoUrl)return`<img src="${h(e.photoUrl)}" alt="${h(e.name)}" style="width:${size}px;height:${size}px;border-radius:50%;object-fit:cover;flex-shrink:0">`;
+  return`<div style="width:${size}px;height:${size}px;border-radius:50%;background:${isLeader?"#3b82f6":"#e2e8f0"};display:flex;align-items:center;justify-content:center;font-size:${Math.round(size*0.42)}px;font-weight:700;color:${isLeader?"white":"#64748b"};flex-shrink:0">${h(e.name.slice(0,1))}</div>`;
+}
 // 조직도 부서/팀 블록의 드래그앤드롭 화면 배치 순서 — settings.orgChartOrder에 영속.
 // 실제 조직 배정(orgDB.depts/teams, employee.dept/team)은 전혀 건드리지 않고
 // 오직 이 화면에서 부서/팀을 보여주는 "순서"만 관리자가 조정하는 용도(Epic A "화면 배치만").
@@ -27270,6 +27311,7 @@ function renderOrgChartPage(){
       <input class="fc" type="date" max="${new Date().toISOString().slice(0,10)}" value="${h(_orgViewDate)}" style="width:145px;height:32px" onchange="_setOrgViewDate(this.value)" aria-label="조직도 기준일">
     </label>
     ${_orgViewDate?`<button class="btn btn-secondary btn-sm" onclick="_setOrgViewDate('')">현재 조직 보기</button>`:""}
+    <button class="btn ${_orgChartViewMode==="photo"?"btn-primary":"btn-secondary"} btn-sm" onclick="_setOrgChartViewMode('${_orgChartViewMode==="photo"?"tree":"photo"}')">${_orgChartViewMode==="photo"?"📋 목록형 보기":"🖼 사진형 보기"}</button>
     <button class="btn btn-secondary btn-sm" onclick="openOrgChartCompareModal()">📊 두 시점 비교</button>
     ${isAdmin?`<button class="btn btn-secondary btn-sm" onclick="dlOrgChartExport()">📥 조직도 엑셀 다운로드</button>
     <label class="btn btn-secondary btn-sm" for="orgchart-bulk-upload" style="cursor:pointer">📤 일괄 인사발령 업로드</label>
@@ -27357,11 +27399,37 @@ function renderOrgChartBody(){
       const e=item.emp;
       const isLeader=item.isLeader;
       return`<div onclick="_orgShowEmpPopup(${e.id})" style="padding:5px 10px 5px ${item.indent*10}px;border-radius:4px;margin-bottom:2px;cursor:pointer;display:flex;align-items:center;gap:8px;transition:background .1s" onmouseover="this.style.background='#f0f9ff'" onmouseout="this.style.background='transparent'">
-        <div style="width:26px;height:26px;border-radius:50%;background:${isLeader?"#3b82f6":"#e2e8f0"};display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;color:${isLeader?"white":"#64748b"};flex-shrink:0">${e.name.slice(0,1)}</div>
+        ${_orgAvatarHtml(e,26,isLeader)}
         <div><div style="font-size:12px;font-weight:${isLeader?"700":"600"}">${h(e.name)}</div><div style="font-size:10px;color:#94a3b8">${h(e.rank)}${e.position?" · "+h(e.position):""}</div></div>
       </div>`;
     }
     return"";
+  }).join("");
+  // 사진형 보기(D2) — 접기 상태를 따르지 않고 부서/팀별로 항상 전체를 카드 그리드로
+  // 보여준다(목록형=드릴다운 탐색, 사진형=얼굴 보고 둘러보기 — 목적이 다름).
+  const photoGridHtml=depts.map(dept=>{
+    const deptEmps=filtered.filter(e=>e.dept===dept);
+    const teamSet=new Set(deptEmps.filter(e=>e.team).map(e=>e.team));
+    const teams=_applyOrgChartOrder((orgDB.teams[dept]||[]).filter(t=>teamSet.has(t)).concat([...teamSet].filter(t=>!(orgDB.teams[dept]||[]).includes(t))),settings.orgChartOrder?.teams?.[dept]);
+    const deptDirectors=_orgSortEmps(deptEmps.filter(e=>e.role==="director"));
+    const noTeam=_orgSortEmps(deptEmps.filter(e=>!e.team&&e.role!=="director"));
+    const cardsOf=(emps,leaderId)=>emps.map(e=>`<div onclick="_orgShowEmpPopup(${e.id})" style="width:88px;text-align:center;cursor:pointer;padding:8px 4px;border-radius:8px" onmouseover="this.style.background='#f0f9ff'" onmouseout="this.style.background='transparent'">
+      ${_orgAvatarHtml(e,56,e.id===leaderId)}
+      <div style="font-size:11px;font-weight:700;margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${h(e.name)}</div>
+      <div style="font-size:9px;color:#94a3b8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${h(e.rank)}</div>
+    </div>`).join("");
+    const teamBlocks=teams.map(team=>{
+      const tEmps=deptEmps.filter(e=>e.team===team);
+      const leader=tEmps.find(e=>e.role==="leader");
+      const ordered=[...(leader?[leader]:[]),..._orgSortEmps(tEmps.filter(e=>e.role!=="leader"&&e.role!=="director"))];
+      return`<div style="margin-bottom:10px"><div style="font-size:11px;font-weight:700;color:#1d4ed8;margin-bottom:4px">👥 ${h(team)} (${tEmps.length}명)</div>
+        <div style="display:flex;flex-wrap:wrap;gap:4px">${cardsOf(ordered,leader?.id)}</div></div>`;
+    }).join("");
+    return`<div style="margin-bottom:16px"><div style="padding:8px 12px;background:#1e3a8a;color:white;border-radius:6px;margin-bottom:8px;font-size:12px;font-weight:700">🏢 ${h(dept)} (${deptEmps.length}명)</div>
+      ${deptDirectors.length?`<div style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:10px">${cardsOf(deptDirectors)}</div>`:""}
+      ${teamBlocks}
+      ${noTeam.length?`<div style="display:flex;flex-wrap:wrap;gap:4px">${cardsOf(noTeam)}</div>`:""}
+    </div>`;
   }).join("");
   const selId=window._orgSelEmpId;
   const selEmp=selId?active.find(e=>String(e.id)===String(selId)):null;
@@ -27369,7 +27437,7 @@ function renderOrgChartBody(){
     <div class="card-head"><h3>👤 ${h(selEmp.name)}</h3><button class="btn btn-ghost btn-sm" onclick="window._orgSelEmpId=null;renderOrgChartBody()">✕</button></div>
     <div class="card-body">
       <div style="display:flex;align-items:center;gap:14px;margin-bottom:14px">
-        <div style="width:48px;height:48px;border-radius:50%;background:#3b82f6;display:flex;align-items:center;justify-content:center;font-size:20px;font-weight:700;color:white;flex-shrink:0">${selEmp.name.slice(0,1)}</div>
+        ${_orgAvatarHtml(selEmp,48,true)}
         <div>
           <div style="font-size:16px;font-weight:700">${h(selEmp.name)}</div>
           <div style="font-size:12px;color:#64748b">${h(selEmp.dept)} · ${h(selEmp.team||"-")} · ${h(selEmp.rank)}${selEmp.position?" · "+h(selEmp.position):""}</div>
@@ -27409,7 +27477,7 @@ function renderOrgChartBody(){
   c.innerHTML=`
   <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;align-items:start">
     <div style="max-height:70vh;overflow-y:auto;border:1px solid #e2e8f0;border-radius:10px;padding:12px;background:white">
-      ${filtered.length===0&&q?`<div style="text-align:center;padding:30px;color:#94a3b8">검색 결과가 없습니다</div>`:treeHtml}
+      ${filtered.length===0&&q?`<div style="text-align:center;padding:30px;color:#94a3b8">검색 결과가 없습니다</div>`:(_orgChartViewMode==="photo"?photoGridHtml:treeHtml)}
     </div>
     <div>${detailHtml}</div>
   </div>`;
