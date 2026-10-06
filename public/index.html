@@ -938,16 +938,30 @@ function calcCareerYears(start,end){
   return yrs+"년"+(remM?` ${remM}개월`:"");
 }
 // 전월 말일 기준 근속일수/예상 퇴직금 계산 (퇴직금 ≈ 1일 평균임금×30 × (재직일수/365), 1일 평균임금≈월급여/30)
-function calcSeverancePay(emp){
-  if(!emp?.hire)return{days:0,years:0,monthlySalary:0,severance:0,asOfDate:""};
+// D4(퇴직금 정산모듈) — opts로 산정기간 시작일(periodStart, 기본 입사일)·산정기준일(asOfDate,
+// 기본 전월 말일)을 넘기면 중간정산 이후 기간만 다시 계산하거나 실제 퇴직일 기준으로 계산할
+// 수 있다. 두 옵션 모두 생략하면(기존 모든 호출부) 이전과 완전히 동일하게 동작한다.
+function calcSeverancePay(emp,opts={}){
+  if(!emp?.hire)return{days:0,years:0,monthlySalary:0,severance:0,asOfDate:"",periodStart:""};
   const now=new Date();
-  const asOfDate=new Date(now.getFullYear(),now.getMonth(),0); // 전월 말일
-  const hireDate=new Date(emp.hire);
-  const days=Math.max(0,Math.floor((asOfDate-hireDate)/(1000*60*60*24))+1);
+  const asOfDate=opts.asOfDate?new Date(opts.asOfDate):new Date(now.getFullYear(),now.getMonth(),0); // 전월 말일
+  const periodStart=opts.periodStart?new Date(opts.periodStart):new Date(emp.hire);
+  const days=Math.max(0,Math.floor((asOfDate-periodStart)/(1000*60*60*24))+1);
   const years=days/365;
   const monthlySalary=Math.round((emp.salary||0)/12);
   const severance=Math.round(monthlySalary*years);
-  return{days,years,monthlySalary,severance,asOfDate:asOfDate.toISOString().slice(0,10)};
+  return{days,years,monthlySalary,severance,asOfDate:asOfDate.toISOString().slice(0,10),periodStart:periodStart.toISOString().slice(0,10)};
+}
+// D4(퇴직금 정산모듈) — 그 직원의 가장 최근 정산(중간/최종) 기록. 있으면 그 다음날부터만
+// 다시 쌓이는 것으로 간주해(중간정산 이후 재산정) calcSeverancePay()의 periodStart로 넘긴다.
+function _lastSeveranceSettlement(empId){
+  const list=(typeof severanceSettlements!=="undefined"?severanceSettlements:[]).filter(s=>String(s.empId)===String(empId)).sort((a,b)=>String(b.settlementDate||"").localeCompare(String(a.settlementDate||"")));
+  return list[0]||null;
+}
+function _dayAfterStr(dateStr){
+  const d=new Date(dateStr);if(isNaN(d.getTime()))return dateStr;
+  d.setDate(d.getDate()+1);
+  return d.toISOString().slice(0,10);
 }
 
 
@@ -1111,6 +1125,12 @@ let mandatoryTraining=[]; // 법정의무교육 이수 [{id,empId,trainingType,y
 // 관리자가 별도로 그 화면에서 등록해야 한다(자동 연동 없음, 관리화면에 안내 문구로 명시).
 let trainingCourses=[]; // 교육 과정 [{id,title,category,instructor,institution,startDate,endDate,location,capacity,cost,status:"planned"|"open"|"closed"|"completed"|"canceled",description,surveyEnabled,createdBy,createdByName,createdAt,updatedAt}]
 let trainingEnrollments=[]; // 교육 신청/이수 [{id,courseId,empId,empName,dept,team,appliedAt,status:"applied"|"waitlisted"|"canceled"|"completed",completedAt,surveyResponse:{satisfaction,comment,submittedAt}|null,note,createdAt,updatedAt}]
+// D4(HR마인드 벤치마킹) — 급여/퇴직 고도화. wageGarnishments(급여압류)·severanceSettlements
+// (퇴직금 정산)는 둘 다 법적 정확성(민사집행법상 압류금지 최저생계비, 평균임금 산정의 법정
+// 세부규정 등)을 보장하지 않는 참고용 계산이며, 화면에도 안내 문구로 명시한다. 실제 공제·지급
+// 전 법원 명령서·노무사 확인을 거쳐야 한다.
+let wageGarnishments=[]; // 급여 압류 등록 [{id,empId,empName,caseNumber,creditor,courtName,type:"fixed"|"percentOfNet",amount,rate,startMonth,endMonth,status:"active"|"completed"|"canceled",note,createdBy,createdByName,createdAt,updatedAt}]
+let severanceSettlements=[]; // 퇴직금 정산(최종/중간) [{id,empId,empName,dept,team,type:"final"|"interim",settlementDate,periodStart,asOfDate,days,years,monthlySalary,severanceAmount,reason,note,createdBy,createdByName,createdAt,updatedAt}]
 let healthCheckupLog=[]; // 종합검진 이수 이력 [{id,empId,year,completedAt,note}]
 let scheduleEvents=[]; // 캘린더 일정 [{id,authorId,title,startDate,endDate,scope:"personal"|"team"|"dept"|"company",dept,team,memo,color,createdAt}]
 let personalTasks=[]; // 개인 할일 [{id,ownerId,title,dueDate,priority,status,memo,createdAt,updatedAt}]
@@ -1127,7 +1147,8 @@ function _recordCollections(){return{
   payrollAdjustments,leaveUsagePlans,boardPosts,roomReservations,certLog,certRequests,
   welfarePoints,mandatoryTraining,healthCheckupLog,scheduleEvents,personalTasks,workReports,expenseClaims,
   overtimeRequests,onboardingFlows,approvalDelegations,engagementSurveys,engagementResponses,engagementActions,
-  trainingCourses,trainingEnrollments
+  trainingCourses,trainingEnrollments,
+  wageGarnishments,severanceSettlements
 };}
 function _applyRecordRevisions(revisions){
   const collections=_recordCollections();
@@ -2662,6 +2683,7 @@ const SNAPSHOT_FIELD_LABELS = {
   jobSkillProfiles:"직무·스킬 기준", employeeSkillProfiles:"직원 스킬 프로필", workforceScenarios:"전략적 인력계획 시나리오", workforcePositions:"정원·포지션 마스터", positionRequests:"포지션 신설·증원 요청",
   compGradeResults:"보상등급 결과", gradeAdjustHistory:"등급조정 이력", scoreAdjustments:"가감점(상벌점)", okrObjectives:"OKR", tieNotifications:"동점자 알림",
   trainingCourses:"교육 과정", trainingEnrollments:"교육 신청/이수",
+  wageGarnishments:"급여 압류", severanceSettlements:"퇴직금 정산",
   lowPerfData:"저성과자 데이터", approvalTemplates:"전자결재 템플릿", integrationLogs:"연동 로그",
   approvalDocs:"전자결재 문서", attendanceRecords:"근태기록", payslips:"급여명세서", payrollAdjustments:"급여 조정항목",
   leaveUsagePlans:"연차 사용계획서",
@@ -5854,6 +5876,8 @@ function getFullState(action=""){
       okrObjectives:JSON.parse(JSON.stringify(okrObjectives)),
       trainingCourses:JSON.parse(JSON.stringify(trainingCourses)),
       trainingEnrollments:JSON.parse(JSON.stringify(trainingEnrollments)),
+      wageGarnishments:JSON.parse(JSON.stringify(wageGarnishments)),
+      severanceSettlements:JSON.parse(JSON.stringify(severanceSettlements)),
       evaluatorConfig:JSON.parse(JSON.stringify(evaluatorConfig)),
       tieNotifications:JSON.parse(JSON.stringify(tieNotifications)),
       lowPerfData:JSON.parse(JSON.stringify(lowPerfData)),
@@ -6086,6 +6110,8 @@ function applyState(state,skipUndo=false){
   if(d.okrObjectives&&Array.isArray(d.okrObjectives))okrObjectives=_mergeByIdPreferNewer(okrObjectives,d.okrObjectives,'okrObjectives');
   if(d.trainingCourses&&Array.isArray(d.trainingCourses))trainingCourses=_mergeByIdPreferNewer(trainingCourses,d.trainingCourses,'trainingCourses');
   if(d.trainingEnrollments&&Array.isArray(d.trainingEnrollments))trainingEnrollments=_mergeByIdPreferNewer(trainingEnrollments,d.trainingEnrollments,'trainingEnrollments');
+  if(d.wageGarnishments&&Array.isArray(d.wageGarnishments))wageGarnishments=_mergeByIdPreferNewer(wageGarnishments,d.wageGarnishments,'wageGarnishments');
+  if(d.severanceSettlements&&Array.isArray(d.severanceSettlements))severanceSettlements=_mergeByIdPreferNewer(severanceSettlements,d.severanceSettlements,'severanceSettlements');
   if(d.evaluatorConfig&&typeof d.evaluatorConfig==="object")evaluatorConfig={...evaluatorConfig,...d.evaluatorConfig};
   if(d.tieNotifications&&Array.isArray(d.tieNotifications))tieNotifications=_mergeByIdPreferNewer(tieNotifications,d.tieNotifications,'tieNotifications');
   if(d.lowPerfData&&Array.isArray(d.lowPerfData))lowPerfData=_mergeByIdPreferNewer(lowPerfData,d.lowPerfData,'lowPerfData');
@@ -6437,6 +6463,8 @@ function mergeImportData(parsed){
   if(d.okrObjectives&&Array.isArray(d.okrObjectives)){const existIds=new Set(okrObjectives.map(r=>r.id));d.okrObjectives.forEach(r=>{if(r&&r.id&&!existIds.has(r.id))okrObjectives.push(r);});}
   if(d.trainingCourses&&Array.isArray(d.trainingCourses)){const existIds=new Set(trainingCourses.map(r=>r.id));d.trainingCourses.forEach(r=>{if(r&&r.id&&!existIds.has(r.id))trainingCourses.push(r);});}
   if(d.trainingEnrollments&&Array.isArray(d.trainingEnrollments)){const existIds=new Set(trainingEnrollments.map(r=>r.id));d.trainingEnrollments.forEach(r=>{if(r&&r.id&&!existIds.has(r.id))trainingEnrollments.push(r);});}
+  if(d.wageGarnishments&&Array.isArray(d.wageGarnishments)){const existIds=new Set(wageGarnishments.map(r=>r.id));d.wageGarnishments.forEach(r=>{if(r&&r.id&&!existIds.has(r.id))wageGarnishments.push(r);});}
+  if(d.severanceSettlements&&Array.isArray(d.severanceSettlements)){const existIds=new Set(severanceSettlements.map(r=>r.id));d.severanceSettlements.forEach(r=>{if(r&&r.id&&!existIds.has(r.id))severanceSettlements.push(r);});}
 }
 
 async function normalizeEmployeeCredentials(){
@@ -7428,6 +7456,8 @@ function renderSidebar(){
       {id:"hr-attendance",label:"근태 현황(전체)",icon:"📅",desc:"소속 직원 전체 근태 현황 조회",roles:["admin","director"]},
       {id:"hr-leave-mgmt",label:"연차 관리(전체)",icon:"🌴",desc:"소속 직원 전체 연차 부여·사용·잔여 현황",roles:["admin","director"]},
       {id:"payroll-mgmt",label:"급여 종합 관리",icon:"💵",desc:"전직원 급여·공제 현황 조회 및 조정",roles:["admin"]},
+      {id:"wage-garnishment",label:"급여 압류 등록",icon:"⚖",desc:"법원 압류명령 등록·급여 공제 반영(참고용)",roles:["admin"]},
+      {id:"severance-settlement",label:"퇴직금 정산",icon:"🏳",desc:"중간정산·최종정산 등록 및 전사 퇴직급여추계액(참고용)",roles:["admin"]},
     ],
     "recruit-sep":[
       {id:"recruit-sep",type:"sep",label:"채용 관리",roles:["admin","director","leader"]},
@@ -7582,6 +7612,8 @@ function renderSidebar(){
   titles["code-mgmt"]="코드관리";
   titles["training-courses"]="교육 과정";
   titles["training-admin"]="교육 과정 관리";
+  titles["wage-garnishment"]="급여 압류 등록";
+  titles["severance-settlement"]="퇴직금 정산";
   const ptEl=$("#page-title");if(ptEl)ptEl.textContent=titles[currentPage]||"";
   const sb=$("#sidebar");if(!sb)return;
   // Filter by role + per-user custom permission overrides (admin-managed)
@@ -7692,7 +7724,7 @@ const PAGE_ROLES={
   "engagement-pulse-action-detail":["admin","director","leader","member"],
   "hr-register":["admin"],"hr-changes":["admin"],"contract-mgmt":["admin","director"],"hr-stats":["admin"],"hr-list":["admin","director","leader"],
   "long-service-award":["admin"],"award-history":["admin","director","leader"],
-  "hr-mandatory-training":["admin","director","leader"],"training-admin":["admin"],
+  "hr-mandatory-training":["admin","director","leader"],"training-admin":["admin"],"wage-garnishment":["admin"],"severance-settlement":["admin"],
   "hr-attendance":["admin","director"],"hr-leave-mgmt":["admin","director"],"payroll-mgmt":["admin"],
   "first-eval":["admin","leader"],"second-eval":["admin","director"],"kpi-amend":["admin","director","leader"],
   "grade-view":["admin","director","leader"],"comp-grade-view":["admin"],"comp-settings-shortcut":["admin"],
@@ -8009,6 +8041,8 @@ function renderPage(){
   pages["code-mgmt"]=renderCodeMgmtPage;
   pages["training-courses"]=renderTrainingCoursesPage;
   pages["training-admin"]=renderTrainingAdminPage;
+  pages["wage-garnishment"]=renderWageGarnishmentPage;
+  pages["severance-settlement"]=renderSeveranceSettlementPage;
   pages["admin-operations"]=window.renderAdminOperationsPage;
   const fn=pages[currentPage];const c=$("#content");
   if(c&&fn){
@@ -10329,6 +10363,8 @@ function renderCodeMgmtPage(){
       ["유연근무 옵션",(settings.flexWorkOptions||[]).length,"attend-settings"],
       ["KPI 평가 단계",kpiStagesConfig().length,"eval-ops"],
       ["회의실",(roomReservations?Array.from(new Set(roomReservations.map(r=>r.room))).length:0),"room-settings"],
+      ["급여 압류 등록",wageGarnishments.length,"wage-garnishment"],
+      ["퇴직금 정산 이력",severanceSettlements.length,"severance-settlement"],
     ]},
   ];
   c.innerHTML=`<div class="fz12 text-gray mb3">전사 마스터코드 현황을 한눈에 보고, 각 항목을 눌러 해당 관리 화면으로 바로 이동합니다. "고정값"은 코드 자체가 시스템에 내장되어 있어 편집 화면이 따로 없습니다.</div>
@@ -14626,7 +14662,7 @@ async function doResetAll(){
     // 불가 상태였음).
     const d=await serverRequest("POST","/api/reset-all",{loginId:currentUser?.loginId,pw});
     if(!d.ok)throw new Error(d.message);
-    employees=[];kpiEntries=[];changeRequests=[];compGradeResults={};gradeAdjustHistory=[];scoreAdjustments=[];okrObjectives=[];trainingCourses=[];trainingEnrollments=[];
+    employees=[];kpiEntries=[];changeRequests=[];compGradeResults={};gradeAdjustHistory=[];scoreAdjustments=[];okrObjectives=[];trainingCourses=[];trainingEnrollments=[];wageGarnishments=[];severanceSettlements=[];
     coreTalentPool=[];talentDevPlans=[];successionPlans=[];jobSkillProfiles=[];employeeSkillProfiles=[];workforceScenarios=[];workforcePositions=[];positionRequests=[];_positionRequestPicker=[];_positionRequestPickerLoaded=false;_positionBudgetPicker=[];_positionBudgetPickerLoaded=false;lowPerfData=[];tieNotifications=[];
     approvalDocs=[];attendanceRecords=[];payslips=[];yearEndSettlements=[];payrollAdjustments=[];leaveUsagePlans=[];boardPosts=[];roomReservations=[];certLog=[];certRequests=[];welfarePoints=[];mandatoryTraining=[];healthCheckupLog=[];personalTasks=[];workReports=[];engagementSurveys=[];engagementResponses=[];engagementActions=[];engagementPulseSummary={};
     showToast("전체 데이터가 초기화되었습니다.","success");
@@ -17523,13 +17559,24 @@ function _buildPayrollAdjustment(input={},existing=null){
   const now=new Date().toISOString(),source=String(input.source??existing?.source??"manual").trim()||"manual";
   return{record:{...(existing||{}),...input,id:input.id||existing?.id||`payadj-${Date.now()}-${Math.random().toString(36).slice(2,8)}`,empId,year,month,category,amount:Math.round(amount),note,source,taxable:input.taxable??existing?.taxable??true,createdAt:existing?.createdAt||input.createdAt||now,updatedAt:now},error:""};
 }
+// D4(호봉제) — settings.payBasisMode==="step"일 때만 직급×직급연차 기준 월 기본급표에서
+// 값을 찾는다. 표가 없거나 해당 직급 행이 비어있으면 연봉제와 동일한 계산으로 안전하게
+// 폴백(설정 미비로 급여가 0원이 되는 사고를 방지). 호봉이 표의 길이를 넘으면 마지막
+// 호봉 금액을 그대로 적용(실제 호봉제의 "호봉 상한" 관례와 동일).
+function _stepMonthlyBase(emp){
+  const steps=(settings.salaryStepTable||{})[emp.rank];
+  if(!Array.isArray(steps)||!steps.length)return Math.round((emp.salary||0)/12);
+  const idx=Math.min(Math.max(1,Math.round(emp.rankYear||1)),steps.length)-1;
+  return Number(steps[idx])||0;
+}
 function calcStandardPayslip(emp,year,month){
   const meal=200000;
   const transportIncluded=100000; // 교통비는 별도 구분 없이 기본급에 포함
   const isResearchAllowTarget=emp.dept==="R&BD센터"&&emp.position!=="센터장";
   const researchAllow=isResearchAllowTarget?200000:0;
   // 연구수당은 현재 연봉 범위 내에서 비과세 항목으로 분리 지급되므로 기본급에서 차감
-  const monthly=Math.round((emp.salary||0)/12)-researchAllow+transportIncluded;
+  const monthlyBase=settings.payBasisMode==="step"?_stepMonthlyBase(emp):Math.round((emp.salary||0)/12);
+  const monthly=monthlyBase-researchAllow+transportIncluded;
   const posAllow=emp.position==="팀장"?500000:0;
   const isExecutive=isExecutiveRank(emp.rank);
   // 회사별 계산식·대상·적용기간을 통과한 항목만 반영한다. 구버전 항목은 고정액/전체
@@ -17581,7 +17628,15 @@ function calcStandardPayslip(emp,year,month){
   else if(taxableIncome>=3000000)tax=Math.round(taxableIncome*0.06);
   else tax=Math.round(taxableIncome*0.02);
   const localTax=Math.round(tax*0.1);
-  const totalDeduct=pension+health+care+employ+tax+localTax+customDeduct+adjustDeduct;
+  const baseTotalDeduct=pension+health+care+employ+tax+localTax+customDeduct+adjustDeduct;
+  // D4(급여압류등록) — 활성 압류명령만 반영. 민사집행법상 압류금지 최저생계비 등 법정
+  // 세부규정은 반영하지 않는 참고용 계산이며, 화면에도 안내 문구로 명시한다.
+  const monthKey=`${year}-${String(month).padStart(2,"0")}`;
+  const activeGarnishments=(typeof wageGarnishments!=="undefined"?wageGarnishments:[]).filter(g=>String(g.empId)===String(emp.id)&&g.status!=="canceled"&&g.status!=="completed"&&(!g.startMonth||monthKey>=g.startMonth)&&(!g.endMonth||monthKey<=g.endMonth));
+  const preGarnishNet=gross-baseTotalDeduct;
+  const garnishDeductItemsList=activeGarnishments.map(g=>({label:`급여압류(${g.caseNumber||g.creditor||"법원명령"})`,amount:g.type==="percentOfNet"?Math.max(0,Math.round(preGarnishNet*(Number(g.rate)||0)/100)):Math.max(0,Math.round(Number(g.amount)||0)),sourceId:g.id}));
+  const garnishDeduct=garnishDeductItemsList.reduce((s,gi)=>s+gi.amount,0);
+  const totalDeduct=baseTotalDeduct+garnishDeduct;
   const deductItems=[
     {label:"국민연금 (4.5%)",amount:pension},
     {label:"건강보험 (3.545%)",amount:health},
@@ -17591,13 +17646,14 @@ function calcStandardPayslip(emp,year,month){
     {label:"지방소득세(주민세) (10%)",amount:localTax},
     ...customDeductItemsList.filter(ci=>ci.amount>0),
     ...adjustmentDeductItemsList,
+    ...garnishDeductItemsList,
   ];
   // id is deterministic (emp+year+month, matching the uniqueness the callers
   // already enforce via findIndex/find on those 3 fields) — payslips is a
   // server-side ID_KEYED_LIST_FIELD (merged by `id`); a record with no id is
   // silently dropped by that merge instead of being kept (see _setAttRec for
   // the same bug/fix on attendanceRecords).
-  return{id:`payslip-${emp.id}-${year}-${month}`,empId:emp.id,year,month,gross,monthly,meal,transport,researchAllow,posAllow,customPay,customDeduct,adjustPay,adjustDeduct,adjustItems:empAdjustments,
+  return{id:`payslip-${emp.id}-${year}-${month}`,empId:emp.id,year,month,gross,monthly,meal,transport,researchAllow,posAllow,customPay,customDeduct,adjustPay,adjustDeduct,garnishDeduct,adjustItems:empAdjustments,
     payItems,deductItems,taxableIncome,
     standardMonthlyHours,hourlyWage,overtimeHourlyWage,stdDailyHours,regularHours,overtimeHours,overtimeAllowance,
     pension,health,care,employ,tax,localTax,totalDeduct,netPay:gross-totalDeduct,confirmed:false,confirmedAt:null,updatedAt:new Date().toISOString()};
@@ -17646,6 +17702,7 @@ function renderPayslipPage(){
           <tr><td style="padding:5px 0;color:#475569">소득세 (간이)</td><td style="text-align:right">${fmtSalary(slip.tax)}</td></tr>
           <tr><td style="padding:5px 0;color:#475569">지방소득세 (10%)</td><td style="text-align:right">${fmtSalary(slip.localTax)}</td></tr>
           ${(slip.customDeduct||0)>0?`<tr><td style="padding:5px 0;color:#475569">기타공제</td><td style="text-align:right">${fmtSalary(slip.customDeduct)}</td></tr>`:""}
+          ${(slip.garnishDeduct||0)>0?`<tr><td style="padding:5px 0;color:#475569">급여압류</td><td style="text-align:right">${fmtSalary(slip.garnishDeduct)}</td></tr>`:""}
           <tr style="border-top:2px solid #fee2e2"><td style="padding:8px 0 4px;font-weight:700">공제 합계</td><td style="text-align:right;font-weight:700;color:#ef4444;font-size:15px">${fmtSalary(slip.totalDeduct)}</td></tr>
         </table>
       </div>
@@ -17743,6 +17800,7 @@ function openAdminPayslipDetail(empId,year,month){
       <table style="border-collapse:collapse;font-size:12px"><tr><th colspan="2" style="padding:5px;background:#fee2e2;border:1px solid #e2e8f0;color:#ef4444">공제 항목</th></tr>
         ${row("국민연금",slip.pension)}${row("건강보험",slip.health)}${row("장기요양",slip.care)}${row("고용보험",slip.employ)}${row("소득세",slip.tax)}${row("지방소득세",slip.localTax)}
         ${(slip.customDeduct||0)>0?row("기타공제",slip.customDeduct):""}
+        ${(slip.garnishDeduct||0)>0?row("급여압류",slip.garnishDeduct):""}
         ${row("공제합계",slip.totalDeduct)}
       </table>
     </div>
@@ -18250,6 +18308,7 @@ function printPayslip(empId,year,month){
         <tr><th colspan="2" style="padding:6px;background:#fee2e2;border:1px solid #e2e8f0;color:#ef4444">공제 항목</th></tr>
         ${row("국민연금",slip.pension)}${row("건강보험",slip.health)}${row("장기요양보험",slip.care)}${row("고용보험",slip.employ)}${row("소득세",slip.tax)}${row("지방소득세",slip.localTax)}
         ${(slip.customDeduct||0)>0?row("기타공제",slip.customDeduct):""}
+        ${(slip.garnishDeduct||0)>0?row("급여압류",slip.garnishDeduct):""}
         <tr><td style="padding:6px 10px;border:1px solid #e2e8f0;font-weight:800">공제 합계</td><td style="padding:6px 10px;border:1px solid #e2e8f0;text-align:right;font-weight:800;color:#ef4444">${fmtSalary(slip.totalDeduct)}</td></tr>
       </table>
     </div>
@@ -26669,10 +26728,10 @@ function downloadCalendarFeed(){
 function exportPayrollForErp(){
   const now=new Date();const year=now.getFullYear(),month=now.getMonth()+1;
   const active=employees.filter(e=>e.active);
-  const headers=["사번","이름","부서","팀","기본급","연장근로수당","식대","연구수당","직책수당","기타수당","경조사비/인센티브 등","지급합계","국민연금","건강보험","장기요양보험","고용보험","소득세","지방소득세","기타공제","공제합계","실수령액"];
+  const headers=["사번","이름","부서","팀","기본급","연장근로수당","식대","연구수당","직책수당","기타수당","경조사비/인센티브 등","지급합계","국민연금","건강보험","장기요양보험","고용보험","소득세","지방소득세","기타공제","공제합계","실수령액","급여압류"];
   const rows=active.map(e=>{
     const slip=payslips.find(p=>p.empId===e.id&&p.year===year&&p.month===month)||calcStandardPayslip(e,year,month);
-    return[e.empNo,e.name,e.dept,e.team,slip.monthly,slip.overtimeAllowance||0,slip.meal,slip.researchAllow||0,slip.posAllow,slip.customPay||0,slip.adjustPay||0,slip.gross,slip.pension,slip.health,slip.care,slip.employ,slip.tax,slip.localTax,slip.customDeduct||0,slip.totalDeduct,slip.netPay];
+    return[e.empNo,e.name,e.dept,e.team,slip.monthly,slip.overtimeAllowance||0,slip.meal,slip.researchAllow||0,slip.posAllow,slip.customPay||0,slip.adjustPay||0,slip.gross,slip.pension,slip.health,slip.care,slip.employ,slip.tax,slip.localTax,slip.customDeduct||0,slip.totalDeduct,slip.netPay,slip.garnishDeduct||0];
   });
   dlCSV(`급여데이터_${year}년${month}월_ERP연동용.csv`,headers,rows);
   showToast("급여 데이터를 내보냈습니다.","success");
@@ -28047,6 +28106,7 @@ function _opsStageSnapshot(){
     gpsEnabled:!!settings.gpsEnabled,naverMapClientId:settings.naverMapClientId||"",
     gpsLocations:settings.gpsLocations||[],customPayItems:settings.customPayItems||[],
     performanceRewardPolicy:_performanceRewardPolicy(),
+    payBasisMode:settings.payBasisMode||"annual",salaryStepTable:JSON.parse(JSON.stringify(settings.salaryStepTable||{})),
     flexWorkOptions:settings.flexWorkOptions||[],leaveTypes:settings.leaveTypes||[],
     workCompOptions:settings.workCompOptions||[],meetingRooms:settings.meetingRooms||[],
     boardCategories:settings.boardCategories||[],companyName:settings.companyName||"",
@@ -28176,6 +28236,13 @@ function renderPayrollSettings(){
     <div class="sec-title mt3">우수사원 포상 가산액</div><div class="g2"><div class="fg"><label class="fl">우수사원 1회</label><input class="fc" type="number" min="0" max="100000000" step="10000" value="${Number(reward.awardBonusAmounts?.["우수"])||0}" placeholder="예: 500000" oninput="_opsStage.performanceRewardPolicy.awardBonusAmounts['우수']=+this.value"></div><div class="fg"><label class="fl">최우수사원 1회</label><input class="fc" type="number" min="0" max="100000000" step="10000" value="${Number(reward.awardBonusAmounts?.["최우수"])||0}" placeholder="예: 1000000" oninput="_opsStage.performanceRewardPolicy.awardBonusAmounts['최우수']=+this.value"></div></div>
     <div class="info-note mt2">예: 연봉 5,000만원·A등급·12%이면 평가보상 600만원입니다. 같은 평가연도의 우수/최우수 선정 횟수별 가산액을 더한 뒤 1인 지급 상한을 적용합니다. 가산하지 않으려면 0원으로 유지하세요.</div>
   </div></div>
+  <div class="card mb3"><div class="card-head"><div><h3>📐 급여 지급 기준</h3><div class="fz11 text-gray mt1">연봉제(기존 방식, 연봉÷12)와 호봉제(직급·직급연차별 월 기본급표) 중 선택합니다. 기본값은 연봉제이며, 전환해도 이미 입력된 데이터는 그대로 유지됩니다.</div></div></div><div class="card-body">
+    <div class="fg"><label class="fl">지급 기준 방식</label><select class="fc" style="width:160px" onchange="_opsStage.payBasisMode=this.value;renderPayrollSettings()">
+      <option value="annual" ${(_opsStage.payBasisMode||"annual")==="annual"?"selected":""}>연봉제</option>
+      <option value="step" ${_opsStage.payBasisMode==="step"?"selected":""}>호봉제</option>
+    </select></div>
+    ${_opsStage.payBasisMode==="step"?_renderSalaryStepTableEditor():`<div class="fz11 text-gray">호봉제를 선택하면 직급·호봉별 월 기본급 표를 입력할 수 있습니다. 직급은 조직 관리에서 등록된 직급을 기준으로 표시됩니다.</div>`}
+  </div></div>
   <div class="card"><div class="card-head"><h3>💰 수당·공제 계산식 설정</h3>
     <button class="btn btn-primary btn-sm" onclick="_addCustomPayItem()">+ 항목 추가</button>
   </div><div class="card-body" style="padding:8px 14px 0">
@@ -28199,9 +28266,56 @@ function renderPayrollSettings(){
     </tbody></table></div>`}
   </div></div>`;
 }
+// D4(호봉제) — 직급×호봉 월 기본급표 편집 UI. _stepTableCols는 "+ 호봉 추가"로 늘린 열
+// 수를 세션 내에서만 기억하는 UI 전용 변수 — 저장되는 settings.salaryStepTable은
+// 항상 {직급명:[금액,...]} 형태만 유지한다(여기에 열 수를 끼워넣으면 조회 시 그 값도
+// 하나의 "직급"처럼 취급돼 데이터가 오염된다).
+let _stepTableCols=0;
+function _renderSalaryStepTableEditor(){
+  const table=_opsStage.salaryStepTable||(_opsStage.salaryStepTable={});
+  const ranks=orgDB.ranks||[];
+  const dataMax=Math.max(0,...Object.values(table).map(a=>Array.isArray(a)?a.length:0));
+  const maxSteps=Math.max(1,dataMax,_stepTableCols);
+  const stepCols=Array.from({length:maxSteps},(_,i)=>i+1);
+  return `<div style="overflow-x:auto;margin-top:10px">
+    <div class="flex gap2 mb2">
+      <button class="btn btn-secondary btn-sm" onclick="_stepTableCols=${maxSteps+1};renderPayrollSettings()">+ 호봉 추가</button>
+      ${maxSteps>1?`<button class="btn btn-secondary btn-sm" onclick="_removeLastSalaryStep()">- 마지막 호봉 삭제</button>`:""}
+    </div>
+    <table style="border-collapse:collapse;font-size:12px;min-width:600px"><thead><tr><th style="padding:5px 8px;background:#f1f5f9;position:sticky;left:0">직급</th>${stepCols.map(s=>`<th style="padding:5px 8px;background:#f1f5f9;min-width:90px">${s}호봉</th>`).join("")}</tr></thead><tbody>
+    ${ranks.length?ranks.map(rk=>`<tr><td style="padding:5px 8px;font-weight:700;background:#fff;position:sticky;left:0">${h(rk)}</td>${stepCols.map(s=>`<td style="padding:3px"><input class="fc" type="number" min="0" max="999999999" step="10000" value="${(table[rk]||[])[s-1]||0}" style="width:90px" oninput="_setSalaryStep('${h(rk).replace(/'/g,"\\'")}',${s-1},+this.value)"></td>`).join("")}</tr>`).join(""):`<tr><td colspan="${stepCols.length+1}" style="padding:16px;text-align:center;color:#94a3b8">조직 관리에서 직급을 먼저 등록하세요.</td></tr>`}
+    </tbody></table>
+  </div>`;
+}
+function _setSalaryStep(rank,idx,val){
+  if(!_opsStage.salaryStepTable)_opsStage.salaryStepTable={};
+  if(!Array.isArray(_opsStage.salaryStepTable[rank]))_opsStage.salaryStepTable[rank]=[];
+  const arr=_opsStage.salaryStepTable[rank];
+  while(arr.length<=idx)arr.push(0);
+  arr[idx]=Math.max(0,Number(val)||0);
+}
+function _removeLastSalaryStep(){
+  const table=_opsStage.salaryStepTable||{};
+  const dataMax=Math.max(0,...Object.values(table).map(a=>Array.isArray(a)?a.length:0));
+  const curMax=Math.max(1,dataMax,_stepTableCols);
+  if(curMax<=1)return;
+  _stepTableCols=curMax-1;
+  Object.keys(table).forEach(rk=>{if(Array.isArray(table[rk])&&table[rk].length>_stepTableCols)table[rk]=table[rk].slice(0,_stepTableCols);});
+  renderPayrollSettings();
+}
 function _validatePayrollSettings(){
   const reward=_opsStage?.performanceRewardPolicy;
   if(!reward||!["annualSalary","monthlySalary"].includes(reward.basis)){showToast("성과보상 기준금액 설정을 확인하세요.","error");return false;}
+  if(!["annual","step"].includes(_opsStage?.payBasisMode)){showToast("급여 지급 기준 방식을 확인하세요.","error");return false;}
+  if(_opsStage.payBasisMode==="step"){
+    const table=_opsStage.salaryStepTable||{};
+    const hasAny=Object.values(table).some(a=>Array.isArray(a)&&a.some(v=>Number(v)>0));
+    if(!hasAny){showToast("호봉제 사용 시 최소 1개 직급의 호봉 금액을 입력하세요.","error");return false;}
+    for(const rk in table){
+      const arr=table[rk];if(!Array.isArray(arr))continue;
+      for(const v of arr){if(!Number.isFinite(Number(v))||Number(v)<0||Number(v)>999999999){showToast(`${rk} 호봉 금액은 0~999,999,999원으로 입력하세요.`,"error");return false;}}
+    }
+  }
   const maxAmount=Number(reward.maxAmount);
   if(!Number.isFinite(maxAmount)||maxAmount<0||maxAmount>1000000000){showToast("성과급 1인 지급 상한은 0~10억원으로 입력하세요.","error");return false;}
   if(reward.enabled!==false&&maxAmount<=0){showToast("성과보상 정책 사용 시 1인 지급 상한을 0원보다 크게 입력하세요.","error");return false;}
@@ -29460,7 +29574,10 @@ function exportAwardEvaluationLinkCSV(){
 function renderSalaryInfoPage(){
   const c=$("#content");if(!c)return;
   const u=currentUser;
-  const sev=calcSeverancePay(u);
+  // D4(퇴직금 정산모듈) — 과거에 중간정산을 받았다면 그 다음날부터만 다시 쌓이는 것으로
+  // 계산해야 이 화면의 "예상 퇴직금"이 실제 잔여 퇴직금과 어긋나지 않는다.
+  const lastSettle=_lastSeveranceSettlement(u.id);
+  const sev=calcSeverancePay(u,lastSettle?{periodStart:_dayAfterStr(lastSettle.settlementDate)}:{});
 
   c.innerHTML=`
   <div class="card"><div class="card-head"><h3>💰 급여 기준 정보</h3></div><div class="card-body">
@@ -29468,7 +29585,7 @@ function renderSalaryInfoPage(){
       <div style="flex:1;min-width:140px;background:#f0fdf4;border-radius:10px;padding:14px;text-align:center"><div class="fz11 text-gray mb1">전월 급여 기준(월)</div><div style="font-size:20px;font-weight:800;color:#16a34a">${fmtSalary(sev.monthlySalary)}</div></div>
       <div style="flex:1;min-width:140px;background:#eff6ff;border-radius:10px;padding:14px;text-align:center"><div class="fz11 text-gray mb1">예상 퇴직금</div><div style="font-size:20px;font-weight:800;color:#2563eb">${fmtSalary(sev.severance)}</div></div>
     </div>
-    <div class="fz11 text-gray mt2">기준일: ${h(sev.asOfDate)} (재직일수 ${sev.days.toLocaleString()}일, 근속 ${sev.years.toFixed(2)}년) · 연봉 ${fmtSalary(u.salary)} 기준 월 환산액으로 산정한 추정치이며, 실제 퇴직금은 평균임금 산정 방식에 따라 달라질 수 있습니다.</div>
+    <div class="fz11 text-gray mt2">기준일: ${h(sev.asOfDate)} (산정기간 ${h(sev.periodStart)}부터, 재직일수 ${sev.days.toLocaleString()}일, 근속 ${sev.years.toFixed(2)}년) · 연봉 ${fmtSalary(u.salary)} 기준 월 환산액으로 산정한 추정치이며, 실제 퇴직금은 평균임금 산정 방식에 따라 달라질 수 있습니다.${lastSettle?`<br>최근 중간정산일: ${h(lastSettle.settlementDate)} (이후 기간만 재산정됨)`:""}</div>
   </div></div>`;
 }
 
@@ -30391,6 +30508,249 @@ function exportTrainingCoursesCSV(){
     return[cs.title,cs.category||"",cs.instructor||"",cs.institution||"",cs.startDate||"",cs.endDate||"",STATUS_LABEL[cs.status]||cs.status,stats.applied,stats.waitlisted,stats.completed,Number(cs.cost)||0];
   });
   dlCSV(`교육과정_비용결과_${new Date().toISOString().slice(0,10)}.csv`,["과정명","분류","강사","교육기관","시작일","종료일","상태","신청인원","대기인원","이수인원","교육비"],rows);
+}
+
+// ==================== 급여 압류 등록(D4, HR마인드 벤치마킹) ====================
+// 법원·행정기관의 급여 압류(가압류) 명령을 등록해 calcStandardPayslip()이 급여 명세서에
+// 자동 공제로 반영한다. 민사집행법상 압류금지 최저생계비 등 법정 세부규정은 반영하지
+// 않는 참고용 계산이며, 실제 공제 전 법원 명령서·노무사 확인이 필요하다(화면에도 명시).
+function _wgStatusBadge(status){
+  const M={active:["진행중","blue"],completed:["종료","gray"],canceled:["해제","red"]};
+  const [l,c2]=M[status]||[status,"gray"];
+  return badge(l,c2);
+}
+function renderWageGarnishmentPage(){
+  const c=$("#content");if(!c)return;
+  const list=[...wageGarnishments].sort((a,b)=>String(b.createdAt||"").localeCompare(String(a.createdAt||"")));
+  c.innerHTML=`<div class="flex justify-between items-c mb3"><div><h2>⚖ 급여 압류 등록</h2>
+    <div class="fz11 text-gray">⚠ 민사집행법상 압류금지 최저생계비 등 법정 세부규정을 반영하지 않는 참고용 계산입니다. 실제 공제 전 법원 명령서·노무사 확인이 필요합니다.</div></div>
+    <button class="btn btn-primary" onclick="openWageGarnishmentModal(null)">＋ 압류 등록</button></div>
+  <div class="card"><div class="card-body" style="padding:0"><div class="tbl-wrap"><table><thead><tr><th>대상자</th><th>사건번호/채권자</th><th>구분/금액</th><th>적용기간</th><th>상태</th><th style="text-align:right">관리</th></tr></thead><tbody>
+    ${list.length?list.map(g=>`<tr>
+      <td><strong>${h(g.empName)}</strong></td>
+      <td class="fz12">${h(g.caseNumber||"-")}${g.creditor?`<div class="fz11 text-gray">${h(g.creditor)}</div>`:""}</td>
+      <td class="fz12">${g.type==="percentOfNet"?`실수령액의 ${h(String(g.rate))}%`:fmtSalary(g.amount)}</td>
+      <td class="fz12">${h(g.startMonth||"-")} ~ ${h(g.endMonth||"무기한")}</td>
+      <td>${_wgStatusBadge(g.status)}</td>
+      <td style="text-align:right;white-space:nowrap"><button class="btn btn-secondary btn-sm" onclick="openWageGarnishmentModal('${g.id}')">수정</button> ${g.status==="active"?`<button class="btn btn-danger btn-sm" onclick="cancelWageGarnishment('${g.id}')">해제</button>`:""}</td>
+    </tr>`).join(""):`<tr><td colspan="6" style="padding:30px;text-align:center;color:#94a3b8">등록된 압류 명령이 없습니다.</td></tr>`}
+  </tbody></table></div></div></div>`;
+}
+function openWageGarnishmentModal(id){
+  const g=id?wageGarnishments.find(x=>x.id===id):null;
+  window._wgPickedEmp=g?{id:g.empId,name:g.empName}:null;
+  openModal(`<div class="modal-box" style="max-width:480px"><div class="modal-head"><h3>${g?"급여 압류 수정":"급여 압류 등록"}</h3></div><div class="modal-body">
+    ${g?`<div class="fz12 text-gray mb2">대상자: <strong>${h(g.empName)}</strong>(수정 시 대상자는 변경할 수 없습니다)</div>`:`<div class="fg"><label class="fl">대상자 <span class="req">*</span></label><div><button class="btn btn-secondary btn-sm" onclick="_wgPickEmployee()">직원 선택</button> <span id="wg-emp-picked" class="fz12"></span></div></div>`}
+    <div class="fg"><label class="fl">사건번호</label><input class="fc" id="wg-case" value="${g?h(g.caseNumber||""):""}" placeholder="예: 2026카명1234"></div>
+    <div class="fg"><label class="fl">채권자/발송기관</label><input class="fc" id="wg-creditor" value="${g?h(g.creditor||""):""}" placeholder="예: OOO 법무사무소"></div>
+    <div class="g2">
+      <div class="fg"><label class="fl">공제 방식</label><select class="fc" id="wg-type" onchange="renderWageGarnishmentModalAmountField()">
+        <option value="fixed" ${(!g||g.type==="fixed")?"selected":""}>고정액</option>
+        <option value="percentOfNet" ${g?.type==="percentOfNet"?"selected":""}>실수령액 비율(%)</option>
+      </select></div>
+      <div class="fg" id="wg-amount-wrap"></div>
+    </div>
+    <div class="g2">
+      <div class="fg"><label class="fl">적용 시작월</label><input class="fc" type="month" id="wg-start" value="${g?.startMonth||""}"></div>
+      <div class="fg"><label class="fl">적용 종료월(비우면 무기한)</label><input class="fc" type="month" id="wg-end" value="${g?.endMonth||""}"></div>
+    </div>
+    <div class="fg"><label class="fl">비고</label><textarea class="fc" id="wg-note" rows="2">${g?h(g.note||""):""}</textarea></div>
+    <div class="warn-note mt2">⚠ 실제 압류 가능 금액은 민사집행법상 압류금지 최저생계비 등을 고려해야 합니다. 이 기능은 법적 정확성을 보장하지 않는 참고용 계산입니다.</div>
+  </div><div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal()">취소</button><button class="btn btn-primary" onclick="saveWageGarnishment(${g?`'${g.id}'`:"null"})">저장</button></div></div>`);
+  setTimeout(()=>{renderWageGarnishmentModalAmountField(g);},10);
+}
+function renderWageGarnishmentModalAmountField(g){
+  const type=$("#wg-type")?.value||"fixed";
+  const wrap=$("#wg-amount-wrap");if(!wrap)return;
+  wrap.innerHTML=type==="percentOfNet"
+    ?`<label class="fl">비율(%)</label><input class="fc" type="number" id="wg-rate" min="0" max="100" step="0.1" value="${g?.rate||0}">`
+    :`<label class="fl">금액(원)</label><input class="fc" type="number" id="wg-amount" min="0" max="999999999" step="10000" value="${g?.amount||0}">`;
+}
+function _wgPickEmployee(){
+  openOrgPicker({multi:false,title:"압류 대상 직원 선택",onConfirm:(ids)=>{
+    const id=ids[0];if(!id)return;
+    const emp=getEmp(id);if(!emp)return;
+    window._wgPickedEmp={id:emp.id,name:emp.name};
+    const el=$("#wg-emp-picked");if(el)el.textContent=emp.name+" 선택됨";
+  }});
+}
+function saveWageGarnishment(id){
+  const existing=id?wageGarnishments.find(x=>x.id===id):null;
+  const empRef=existing?{id:existing.empId,name:existing.empName}:window._wgPickedEmp;
+  if(!empRef){showToast("대상 직원을 선택하세요.","error");return;}
+  const type=$("#wg-type")?.value||"fixed";
+  const amount=type==="fixed"?Number($("#wg-amount")?.value):0;
+  const rate=type==="percentOfNet"?Number($("#wg-rate")?.value):0;
+  if(type==="fixed"&&(!Number.isFinite(amount)||amount<=0||amount>999999999)){showToast("압류 금액을 0보다 크고 999,999,999원 이하로 입력하세요.","error");return;}
+  if(type==="percentOfNet"&&(!Number.isFinite(rate)||rate<=0||rate>100)){showToast("압류 비율을 0보다 크고 100% 이하로 입력하세요.","error");return;}
+  const startMonth=$("#wg-start")?.value||"",endMonth=$("#wg-end")?.value||"";
+  if(startMonth&&endMonth&&endMonth<startMonth){showToast("적용 종료월은 시작월보다 빠를 수 없습니다.","error");return;}
+  const payload={empId:empRef.id,empName:empRef.name,caseNumber:$("#wg-case")?.value.trim()||"",creditor:$("#wg-creditor")?.value.trim()||"",type,amount,rate,startMonth,endMonth,note:$("#wg-note")?.value.trim()||"",updatedAt:new Date().toISOString()};
+  if(id){
+    wageGarnishments=wageGarnishments.map(g=>g.id===id?{...g,...payload}:g);
+  }else{
+    wageGarnishments.push({id:`wg-${genId()}`,...payload,status:"active",createdBy:currentUser.id,createdByName:currentUser.name,createdAt:new Date().toISOString()});
+  }
+  closeModal();autoSaveToServerIfEnabled();showToast(id?"압류 정보가 수정되었습니다.":"압류가 등록되었습니다.","success");
+  logAction(id?"garnishment_updated":"garnishment_registered","급여 압류",empRef.name,empRef.name);
+  renderWageGarnishmentPage();
+}
+async function cancelWageGarnishment(id){
+  const g=wageGarnishments.find(x=>x.id===id);if(!g)return;
+  const ok=await askConfirmModal({title:"압류 해제",message:`${g.empName}님의 압류 명령을 해제하시겠습니까? 해제 후에는 급여 공제에 반영되지 않습니다.`,confirmText:"해제",danger:true});
+  if(!ok)return;
+  wageGarnishments=wageGarnishments.map(x=>x.id===id?{...x,status:"canceled",updatedAt:new Date().toISOString()}:x);
+  autoSaveToServerIfEnabled();showToast("압류가 해제되었습니다.","info");
+  logAction("garnishment_canceled","급여 압류",g.empName,g.empName);
+  renderWageGarnishmentPage();
+}
+
+// ==================== 퇴직금 정산모듈(D4, HR마인드 벤치마킹) ====================
+// severanceSettlements[]에 중간/최종 정산을 기록하고, calcSeverancePay()(기존 "급여 기준
+// 정보" 페이지의 예상 퇴직금 산식과 동일한 함수)를 재사용해 정산서를 출력하고 전사
+// 퇴직급여추계액대장을 집계한다. 평균임금 산정 등 법정 세부규정은 반영하지 않는
+// 참고용 계산이다(화면에도 명시).
+let _sevTab="list"; // 'list'(정산 등록/이력) | 'reserve'(퇴직급여추계액 전사)
+let _sevReserveAsOf=null;
+function renderSeveranceSettlementPage(){
+  const c=$("#content");if(!c)return;
+  c.innerHTML=`<div class="tabs"><button class="tab-btn${_sevTab==="list"?" active":""}" onclick="_sevTab='list';renderSeveranceSettlementPage()">정산 등록/이력</button><button class="tab-btn${_sevTab==="reserve"?" active":""}" onclick="_sevTab='reserve';renderSeveranceSettlementPage()">퇴직급여추계액(전사)</button></div><div id="sev-content"></div>`;
+  if(_sevTab==="reserve")_renderSevReserveTab();
+  else _renderSevListTab();
+}
+function _renderSevListTab(){
+  const el=$("#sev-content");if(!el)return;
+  const list=[...severanceSettlements].sort((a,b)=>String(b.settlementDate||"").localeCompare(String(a.settlementDate||"")));
+  el.innerHTML=`<div class="flex justify-between items-c mb3"><div class="fz11 text-gray">⚠ 평균임금 산정 등 법정 세부규정을 반영하지 않는 참고용 계산입니다(기존 "급여 기준 정보"의 예상 퇴직금 산식을 그대로 재사용). 실제 지급 전 노무사 확인이 필요합니다.</div><button class="btn btn-primary" onclick="openSeveranceSettlementModal()">＋ 정산 등록</button></div>
+  <div class="card"><div class="card-body" style="padding:0"><div class="tbl-wrap"><table><thead><tr><th>대상자</th><th>구분</th><th>정산기간</th><th>근속</th><th>월급여</th><th>정산액</th><th>정산일</th><th style="text-align:right">관리</th></tr></thead><tbody>
+    ${list.length?list.map(s=>`<tr>
+      <td><strong>${h(s.empName)}</strong><div class="fz11 text-gray">${h(s.dept||"")} ${h(s.team||"")}</div></td>
+      <td>${s.type==="final"?badge("최종퇴직","red"):badge("중간정산","orange")}</td>
+      <td class="fz12">${h(s.periodStart)} ~ ${h(s.asOfDate)}</td>
+      <td class="fz12">${Number(s.days||0).toLocaleString()}일(${Number(s.years||0).toFixed(2)}년)</td>
+      <td class="fz12">${fmtSalary(s.monthlySalary)}</td>
+      <td class="fz12" style="font-weight:700">${fmtSalary(s.severanceAmount)}</td>
+      <td class="fz12">${h(s.settlementDate)}</td>
+      <td style="text-align:right"><button class="btn btn-secondary btn-sm" onclick="printSeveranceStatement('${s.id}')">🖨 인쇄</button></td>
+    </tr>`).join(""):`<tr><td colspan="8" style="padding:30px;text-align:center;color:#94a3b8">등록된 정산 내역이 없습니다.</td></tr>`}
+  </tbody></table></div></div></div>`;
+}
+// D4(퇴직금 정산모듈) — 정산 대상자는 중간정산(재직자)·최종정산(이미 퇴직 처리된 직원) 둘 다
+// 가능해야 해서, 재직자만 보여주는 openOrgPicker() 대신 검색어로 전 직원(퇴직자 포함)을
+// 걸러주는 전용 검색 UI를 쓴다.
+function _sevEmpOptionsHtml(q){
+  q=String(q||"").trim().toLowerCase();
+  const list=employees.filter(e=>e.role!=="admin"&&(!q||e.name.toLowerCase().includes(q)||String(e.empNo||"").toLowerCase().includes(q))).sort((a,b)=>String(a.name||"").localeCompare(String(b.name||""),"ko"));
+  return list.map(e=>`<option value="${e.id}">${h(e.name)}${e.active?"":" (퇴직)"} · ${h(e.dept||"")}${e.team?" "+h(e.team):""}</option>`).join("");
+}
+function openSeveranceSettlementModal(){
+  window._sevPickedEmp=null;window._sevPreview=null;
+  openModal(`<div class="modal-box" style="max-width:480px"><div class="modal-head"><h3>🏳 퇴직금 정산 등록</h3></div><div class="modal-body">
+    <div class="fg"><label class="fl">대상자 검색(이름/사번)</label><input class="fc" type="text" id="sev-emp-search" placeholder="예: 홍길동" oninput="_sevFilterEmpOptions()"></div>
+    <div class="fg"><label class="fl">대상자 <span class="req">*</span></label><select class="fc" id="sev-emp-select" onchange="_sevSelectEmployee(this.value)"><option value="">선택하세요</option>${_sevEmpOptionsHtml("")}</select></div>
+    <div class="fg"><label class="fl">정산 구분 <span class="req">*</span></label><select class="fc" id="sev-type">
+      <option value="interim">중간정산</option>
+      <option value="final">최종 퇴직정산</option>
+    </select></div>
+    <div class="fg"><label class="fl">정산기준일 <span class="req">*</span></label><input class="fc" type="date" id="sev-date" value="${new Date().toISOString().slice(0,10)}" onchange="_sevRecalcPreview()"></div>
+    <div class="fg"><label class="fl">사유</label><input class="fc" id="sev-reason" placeholder="예: 주택구입, 퇴직 등"></div>
+    <div id="sev-preview" class="notice info" style="margin-top:8px"></div>
+    <div class="fg"><label class="fl">정산액(원, 자동계산값을 직접 조정할 수 있습니다)</label><input class="fc" type="number" id="sev-amount" min="0" max="9999999999" step="10000"></div>
+    <div class="fg"><label class="fl">비고</label><textarea class="fc" id="sev-note" rows="2"></textarea></div>
+  </div><div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal()">취소</button><button class="btn btn-primary" onclick="saveSeveranceSettlement()">저장</button></div></div>`);
+}
+function _sevFilterEmpOptions(){
+  const sel=$("#sev-emp-select");if(!sel)return;
+  const q=$("#sev-emp-search")?.value||"";
+  sel.innerHTML=`<option value="">선택하세요</option>`+_sevEmpOptionsHtml(q);
+}
+function _sevSelectEmployee(id){
+  if(!id){window._sevPickedEmp=null;return;}
+  const emp=getEmp(id);if(!emp)return;
+  window._sevPickedEmp=emp;
+  _sevRecalcPreview();
+}
+function _sevRecalcPreview(){
+  const emp=window._sevPickedEmp;if(!emp)return;
+  const asOfDate=$("#sev-date")?.value;if(!asOfDate)return;
+  const last=_lastSeveranceSettlement(emp.id);
+  const periodStart=last?_dayAfterStr(last.settlementDate):emp.hire;
+  const preview=calcSeverancePay(emp,{periodStart,asOfDate});
+  window._sevPreview=preview;
+  const el=$("#sev-preview");
+  if(el)el.innerHTML=`산정기간: ${h(preview.periodStart)} ~ ${h(preview.asOfDate)} (재직일수 ${preview.days.toLocaleString()}일, ${preview.years.toFixed(2)}년) · 월급여 ${fmtSalary(preview.monthlySalary)} 기준 정산 예상액 <strong>${fmtSalary(preview.severance)}</strong>${last?`<div class="fz11 text-gray mt1">최근 정산일(${h(last.settlementDate)}) 이후 기간만 재산정됨</div>`:""}`;
+  const amtEl=$("#sev-amount");if(amtEl)amtEl.value=preview.severance;
+}
+function saveSeveranceSettlement(){
+  const emp=window._sevPickedEmp;
+  if(!emp){showToast("대상 직원을 선택하세요.","error");return;}
+  const type=$("#sev-type")?.value||"interim";
+  const settlementDate=$("#sev-date")?.value;
+  if(!settlementDate){showToast("정산기준일을 입력하세요.","error");return;}
+  const preview=window._sevPreview;
+  if(!preview||preview.asOfDate!==settlementDate){showToast("정산기준일을 입력(또는 변경)해 산정 미리보기를 먼저 갱신하세요.","error");return;}
+  const amount=Number($("#sev-amount")?.value);
+  if(!Number.isFinite(amount)||amount<0||amount>9999999999){showToast("정산액을 0 이상 9,999,999,999원 이하로 입력하세요.","error");return;}
+  const reason=$("#sev-reason")?.value.trim()||"",note=$("#sev-note")?.value.trim()||"";
+  const now=new Date().toISOString();
+  severanceSettlements.push({id:`sev-${genId()}`,empId:emp.id,empName:emp.name,dept:emp.dept||"",team:emp.team||"",type,settlementDate,periodStart:preview.periodStart,asOfDate:preview.asOfDate,days:preview.days,years:preview.years,monthlySalary:preview.monthlySalary,severanceAmount:amount,reason,note,createdBy:currentUser.id,createdByName:currentUser.name,createdAt:now,updatedAt:now});
+  closeModal();autoSaveToServerIfEnabled();showToast("퇴직금 정산이 등록되었습니다.","success");
+  logAction("severance_settlement_registered","퇴직금 정산",emp.name,`${type==="final"?"최종":"중간"}정산 ${fmtSalary(amount)}`);
+  renderSeveranceSettlementPage();
+}
+function printSeveranceStatement(id){
+  const s=severanceSettlements.find(x=>x.id===id);if(!s)return;
+  const companyName=settings.companyName||"(주)회사";
+  const html=`<div style="font-family:'맑은 고딕','Malgun Gothic',sans-serif;padding:28px;color:#1e293b">
+    <h2 style="text-align:center;font-size:22px;letter-spacing:4px;margin-bottom:6px;border-bottom:3px solid #1e293b;padding-bottom:12px">퇴직금 정산서(${s.type==="final"?"최종":"중간정산"})</h2>
+    <p style="text-align:center;color:#64748b;font-size:12px;margin-bottom:20px">${h(companyName)}</p>
+    <table style="width:100%;border-collapse:collapse;font-size:13px">
+      <tr><td style="padding:6px 10px;border:1px solid #e2e8f0;background:#f8fafc;font-weight:700;width:120px">성 명</td><td style="padding:6px 10px;border:1px solid #e2e8f0">${h(s.empName)}</td>
+      <td style="padding:6px 10px;border:1px solid #e2e8f0;background:#f8fafc;font-weight:700;width:120px">부서/팀</td><td style="padding:6px 10px;border:1px solid #e2e8f0">${h(s.dept||"")} ${h(s.team||"")}</td></tr>
+      <tr><td style="padding:6px 10px;border:1px solid #e2e8f0;background:#f8fafc;font-weight:700">산정기간</td><td style="padding:6px 10px;border:1px solid #e2e8f0" colspan="3">${h(s.periodStart)} ~ ${h(s.asOfDate)} (재직일수 ${Number(s.days||0).toLocaleString()}일, ${Number(s.years||0).toFixed(2)}년)</td></tr>
+      <tr><td style="padding:6px 10px;border:1px solid #e2e8f0;background:#f8fafc;font-weight:700">월급여 기준</td><td style="padding:6px 10px;border:1px solid #e2e8f0">${fmtSalary(s.monthlySalary)}</td>
+      <td style="padding:6px 10px;border:1px solid #e2e8f0;background:#f8fafc;font-weight:700">사유</td><td style="padding:6px 10px;border:1px solid #e2e8f0">${h(s.reason||"-")}</td></tr>
+    </table>
+    <div style="margin-top:18px;padding:16px;background:#eff6ff;border-radius:8px;text-align:center">
+      <div style="font-size:12px;color:#3b82f6;font-weight:600">정산 지급액</div>
+      <div style="font-size:26px;font-weight:800;color:#1e40af">${fmtSalary(s.severanceAmount)}</div>
+    </div>
+    <p style="margin-top:14px;font-size:11px;color:#94a3b8">본 정산서는 평균임금 산정 등 법정 세부규정을 반영하지 않는 참고용 계산입니다.</p>
+    <p style="margin-top:18px;text-align:right;font-size:12px;color:#64748b">정산일: ${h(s.settlementDate)}</p>
+  </div>`;
+  const pw=window.open("","_blank","width=760,height=920");
+  pw.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>퇴직금 정산서</title><style>body{margin:0}@media print{@page{margin:10mm}}</style></head><body>${html}</body></html>`);
+  pw.document.close();pw.focus();setTimeout(()=>{pw.print();pw.close();},400);
+}
+function _renderSevReserveTab(){
+  const el=$("#sev-content");if(!el)return;
+  const asOf=_sevReserveAsOf||new Date().toISOString().slice(0,10);
+  const active=employees.filter(e=>e.active&&e.role!=="admin");
+  const rows=active.map(e=>{
+    const last=_lastSeveranceSettlement(e.id);
+    const periodStart=last?_dayAfterStr(last.settlementDate):e.hire;
+    return{emp:e,...calcSeverancePay(e,{periodStart,asOfDate:asOf})};
+  }).filter(r=>r.days>0);
+  const total=rows.reduce((s,r)=>s+r.severance,0);
+  el.innerHTML=`<div class="flex justify-between items-c mb3">
+    <div class="fg" style="margin:0"><label class="fl">기준일</label><input class="fc" type="date" id="sev-reserve-asof" value="${asOf}" onchange="_sevReserveAsOf=this.value;renderSeveranceSettlementPage()"></div>
+    <button class="btn btn-secondary btn-sm" onclick="exportSeveranceReserveCSV()">📥 다운로드</button>
+  </div>
+  <div class="card mb3"><div class="card-body tc"><div class="fz11 text-gray">전사 퇴직급여추계액 합계(${h(asOf)} 기준)</div><div style="font-size:26px;font-weight:800;color:#1e40af">${fmtSalary(total)}</div></div></div>
+  <div class="card"><div class="card-body" style="padding:0"><div class="tbl-wrap"><table><thead><tr><th>이름</th><th>부서/팀</th><th>산정기간</th><th>근속</th><th>월급여</th><th>추계액</th></tr></thead><tbody>
+    ${rows.length?rows.map(r=>`<tr><td><strong>${h(r.emp.name)}</strong></td><td class="fz12">${h(r.emp.dept)} ${h(r.emp.team||"")}</td><td class="fz12">${h(r.periodStart)} ~ ${h(r.asOfDate)}</td><td class="fz12">${r.days.toLocaleString()}일(${r.years.toFixed(2)}년)</td><td class="fz12">${fmtSalary(r.monthlySalary)}</td><td class="fz12" style="font-weight:700">${fmtSalary(r.severance)}</td></tr>`).join(""):`<tr><td colspan="6" style="padding:30px;text-align:center;color:#94a3b8">대상 직원이 없습니다.</td></tr>`}
+  </tbody></table></div></div></div>`;
+}
+function exportSeveranceReserveCSV(){
+  const asOf=_sevReserveAsOf||new Date().toISOString().slice(0,10);
+  const active=employees.filter(e=>e.active&&e.role!=="admin");
+  const rows=active.map(e=>{
+    const last=_lastSeveranceSettlement(e.id);
+    const periodStart=last?_dayAfterStr(last.settlementDate):e.hire;
+    const calc=calcSeverancePay(e,{periodStart,asOfDate:asOf});
+    return[e.name,e.empNo||"",e.dept||"",e.team||"",calc.periodStart,calc.asOfDate,calc.days,calc.years.toFixed(2),calc.monthlySalary,calc.severance];
+  }).filter(r=>r[6]>0);
+  dlCSV(`퇴직급여추계액대장_${asOf}.csv`,["이름","사번","부서","팀","산정기간시작","기준일","재직일수","근속연수","월급여","추계액"],rows);
 }
 
 // ==================== GLOBAL SEARCH ====================
