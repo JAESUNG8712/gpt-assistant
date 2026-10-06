@@ -1095,6 +1095,8 @@ let engagementResponses=[]; // 서버에서는 항상 본인 응답만 내려옴
 let engagementPulseSummary={}; // 서버가 조직 범위·최소 익명 인원 기준으로 만든 집계
 let engagementActions=[]; // 설문 결과 기반 조직 개선 실행계획
 let employmentRecords=[]; // 관리자 전용 근로계약·징계 원장
+let learningCourses=[]; // 교육 과정·강사 기준정보
+let learningAssignments=[]; // 직원별 과정 배정·이수 이력
 function _recordCollections(){return{
   employees,kpiEntries,compSessions,compResponses,changeRequests,orgChartHistory,
   coreTalentPool,talentDevPlans,successionPlans,jobSkillProfiles,employeeSkillProfiles,workforceScenarios,workforcePositions,positionRequests,gradeAdjustHistory,tieNotifications,lowPerfData,
@@ -1102,7 +1104,7 @@ function _recordCollections(){return{
   yearEndSettlements,
   payrollAdjustments,leaveUsagePlans,boardPosts,roomReservations,certLog,certRequests,
   welfarePoints,mandatoryTraining,healthCheckupLog,scheduleEvents,personalTasks,workReports,expenseClaims,
-  overtimeRequests,onboardingFlows,approvalDelegations,engagementSurveys,engagementResponses,engagementActions,employmentRecords
+  overtimeRequests,onboardingFlows,approvalDelegations,engagementSurveys,engagementResponses,engagementActions,employmentRecords,learningCourses,learningAssignments
 };}
 function _applyRecordRevisions(revisions){
   const collections=_recordCollections();
@@ -2407,6 +2409,8 @@ function startHeartbeat(){
               if(newData.compResponses) compResponses=newData.compResponses;
               if(newData.certRequests) certRequests=newData.certRequests;
               if(newData.employmentRecords) employmentRecords=newData.employmentRecords;
+              if(newData.learningCourses) learningCourses=newData.learningCourses;
+              if(newData.learningAssignments) learningAssignments=newData.learningAssignments;
               if(newData.settings) Object.assign(settings, newData.settings);
               if(newData.orgDB){if(newData.orgDB.depts)orgDB.depts=newData.orgDB.depts;if(newData.orgDB.teams)orgDB.teams=newData.orgDB.teams;}
               if(newData.gradeSettings) Object.assign(gradeSettings,newData.gradeSettings);
@@ -5538,6 +5542,8 @@ function getFullState(action=""){
       engagementResponses:JSON.parse(JSON.stringify(engagementResponses)),
       engagementActions:JSON.parse(JSON.stringify(engagementActions)),
       employmentRecords:JSON.parse(JSON.stringify(employmentRecords)),
+      learningCourses:JSON.parse(JSON.stringify(learningCourses)),
+      learningAssignments:JSON.parse(JSON.stringify(learningAssignments)),
       _idCounter:_id
     }
   };
@@ -5774,6 +5780,8 @@ function applyState(state,skipUndo=false){
   if(d.engagementResponses&&Array.isArray(d.engagementResponses))engagementResponses=_mergeByIdPreferNewer(engagementResponses,d.engagementResponses,'engagementResponses');
   if(d.engagementActions&&Array.isArray(d.engagementActions))engagementActions=_mergeByIdPreferNewer(engagementActions,d.engagementActions,'engagementActions');
   if(d.employmentRecords&&Array.isArray(d.employmentRecords))employmentRecords=_mergeByIdPreferNewer(employmentRecords,d.employmentRecords,'employmentRecords');
+  if(d.learningCourses&&Array.isArray(d.learningCourses))learningCourses=_mergeByIdPreferNewer(learningCourses,d.learningCourses,'learningCourses');
+  if(d.learningAssignments&&Array.isArray(d.learningAssignments))learningAssignments=_mergeByIdPreferNewer(learningAssignments,d.learningAssignments,'learningAssignments');
   engagementPulseSummary=d.engagementPulseSummary&&typeof d.engagementPulseSummary==="object"?d.engagementPulseSummary:{};
   if(d._idCounter&&typeof d._idCounter==="number")_id=d._idCounter;
   if(d.recordTombstones&&typeof d.recordTombstones==="object"){
@@ -5804,6 +5812,8 @@ function applyState(state,skipUndo=false){
   workforcePositions=_tombFilter(workforcePositions,"workforcePositions");
   positionRequests=_tombFilter(positionRequests,"positionRequests");
   employmentRecords=_tombFilter(employmentRecords,"employmentRecords");
+  learningCourses=_tombFilter(learningCourses,"learningCourses");
+  learningAssignments=_tombFilter(learningAssignments,"learningAssignments");
   approvalTemplates=_tombFilter(approvalTemplates,"approvalTemplates");
   payrollAdjustments=_tombFilter(payrollAdjustments,"payrollAdjustments");
   boardPosts=_tombFilter(boardPosts,"boardPosts");
@@ -7047,6 +7057,7 @@ function renderSidebar(){
     "welfare-sep":[
       {id:"welfare-sep",type:"sep",label:"복지/교육",roles:["admin","director","leader","member"]},
       {id:"mandatory-training",label:"법정의무교육",icon:"📚",desc:"법정 필수 교육 이수 현황",roles:["admin","director","leader","member"]},
+      {id:"learning-center",label:"교육 과정·이력",icon:"🎓",desc:"교육 과정 조회와 직원별 이수 관리",roles:["admin","director","leader","member"]},
       {id:"welfare-status",label:"복지 현황",icon:"🩺",desc:"종합검진 대상 여부",roles:["admin","director","leader","member"]},
     ],
     "pay-sep":[
@@ -7219,6 +7230,7 @@ function renderSidebar(){
   titles["admin-operations"]="관리자 운영센터";
   titles["hr-function-map"]="HR 업무지도";
   titles["employment-records"]="계약·징계 원장";
+  titles["learning-center"]="교육 과정·이력";
   const ptEl=$("#page-title");if(ptEl)ptEl.textContent=titles[currentPage]||"";
   const sb=$("#sidebar");if(!sb)return;
   // Filter by role + per-user custom permission overrides (admin-managed)
@@ -7330,6 +7342,7 @@ const PAGE_ROLES={
   "hr-register":["admin"],"hr-changes":["admin"],"hr-stats":["admin"],"hr-list":["admin","director","leader"],
   "long-service-award":["admin"],"award-history":["admin","director","leader"],
   "hr-mandatory-training":["admin","director","leader"],
+  "learning-center":["admin","director","leader","member"],
   "hr-attendance":["admin","director"],"hr-leave-mgmt":["admin","director"],"payroll-mgmt":["admin"],
   "first-eval":["admin","leader"],"second-eval":["admin","director"],"kpi-amend":["admin","director","leader"],
   "grade-view":["admin","director","leader"],"comp-grade-view":["admin"],"comp-settings-shortcut":["admin"],
@@ -7644,6 +7657,7 @@ function renderPage(){
   pages["admin-operations"]=window.renderAdminOperationsPage;
   pages["hr-function-map"]=window.renderHrFunctionMapPage;
   pages["employment-records"]=window.renderEmploymentRecordsPage;
+  pages["learning-center"]=window.renderLearningCenterPage;
   const fn=pages[currentPage];const c=$("#content");
   if(c&&fn){
     c.innerHTML="";
@@ -29970,6 +29984,7 @@ if(_masterHandoff && _authToken){
 <script src="/groupware-employee-sync.js"></script>
 <script src="/hr-function-map.js"></script>
 <script src="/employment-records.js"></script>
+<script src="/learning-center.js"></script>
 <script src="/admin-operations.js"></script>
 </body>
 </html>

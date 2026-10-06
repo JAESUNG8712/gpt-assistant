@@ -1080,4 +1080,44 @@ test.describe("로그인·기본 네비게이션", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({employeeId:"er-emp",type:"contract",status:"active",createdBy:"er-admin"});
   });
+
+  test("관리자는 교육 과정을 만들고 직원에게 배정해 이력을 연결한다", async ({ page }) => {
+    await page.goto("/");
+    await page.fill("#l-id", "e2e_admin");
+    await page.fill("#l-pw", "E2eTestPw123");
+    await page.evaluate(() => {
+      autoSaveDebounced=()=>{};
+      loadFromServer=async()=>{};
+      connectSSE=async()=>{};
+    });
+    await page.click(".login-card button.btn-primary");
+    await expect(page.locator("#main")).toBeVisible({timeout:10000});
+    await page.evaluate(() => {
+      currentUser={...currentUser,id:"lc-admin",name:"교육 관리자",role:"admin",active:true,menuPerms:{}};
+      employees=[{id:"lc-emp",loginId:"lc-emp",empNo:"E2602",name:"교육 직원",role:"member",active:true,dept:"경영지원",hrHistory:[]}];
+      learningCourses=[];
+      learningAssignments=[];
+      autoSaveToServerIfEnabled=()=>{};
+      askConfirmModal=async()=>true;
+      gotoPage("learning-center");
+    });
+    await expect(page.locator("#content")).toContainText("교육 과정·이력");
+    await page.getByRole("button",{name:"과정 등록"}).click();
+    await page.fill("#lc-name","신임 팀장 리더십");
+    await page.fill("#lc-start","2026-11-01");
+    await page.fill("#lc-end","2026-11-02");
+    await page.selectOption("#lc-status","active");
+    await page.getByRole("button",{name:"저장",exact:true}).click();
+    await expect(page.locator("#content")).toContainText("신임 팀장 리더십");
+
+    await page.getByRole("button",{name:"직원 배정"}).click();
+    await page.selectOption("#la-course",{index:1});
+    await page.selectOption("#la-emp","lc-emp");
+    await page.getByRole("button",{name:"저장",exact:true}).click();
+    await expect(page.locator("#content")).toContainText("교육 직원");
+    const result=await page.evaluate(()=>({courses:learningCourses,assignments:learningAssignments}));
+    expect(result.courses).toHaveLength(1);
+    expect(result.assignments).toHaveLength(1);
+    expect(result.assignments[0]).toMatchObject({empId:"lc-emp",status:"assigned"});
+  });
 });

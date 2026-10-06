@@ -31,8 +31,8 @@
     ] },
     { key: "learning", label: "교육관리", items: [
       ["법정의무교육", "mandatory-training", "active"], ["직무·스킬 체계", "skills-architecture", "active"],
-      ["육성 계획·실적", "talent-dev", "active"], ["교육 과정·강사 마스터", "", "planned"],
-      ["교육 신청·비용 정산", "approval-draft", "partial"], ["교육 이력·참여 현황", "hr-mandatory-training", "partial"],
+      ["육성 계획·실적", "talent-dev", "active"], ["교육 과정·강사 마스터", "learning-center", "active"],
+      ["교육 신청·비용 정산", "approval-draft", "partial"], ["교육 이력·참여 현황", "learning-center", "active"],
     ] },
     { key: "payroll", label: "급여관리", items: [
       ["급여 기준·계산식", "payroll-settings", "active"], ["급여 계산·조정", "payroll-mgmt", "active"],

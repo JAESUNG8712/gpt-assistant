@@ -690,6 +690,15 @@ function filterDataForRole(data, auth) {
   // 관리자 전용이므로 API 직접 조회에서도 동일하게 비관리자에게 노출하지 않는다.
   if (auth.role !== "admin") {
     if (Array.isArray(out.employmentRecords)) out.employmentRecords = [];
+    if (Array.isArray(out.learningCourses)) {
+      out.learningCourses = out.learningCourses.filter(c => c && c.status === "active").map(c => {
+        const { internalNote, cost, ...safe } = c;
+        return safe;
+      });
+    }
+    if (Array.isArray(out.learningAssignments)) {
+      out.learningAssignments = out.learningAssignments.filter(a => a && String(a.empId) === myId);
+    }
     if (Array.isArray(out.jobSkillProfiles)) out.jobSkillProfiles = [];
     if (Array.isArray(out.employeeSkillProfiles)) out.employeeSkillProfiles = [];
     if (Array.isArray(out.workforceScenarios)) out.workforceScenarios = [];
@@ -911,6 +920,10 @@ function filterDataForMenuPermissions(data, menuPerms) {
   const out = { ...data };
   if (menuPerms["employment-records"] === false && Array.isArray(out.employmentRecords)) {
     out.employmentRecords = [];
+  }
+  if (menuPerms["learning-center"] === false) {
+    if (Array.isArray(out.learningCourses)) out.learningCourses = [];
+    if (Array.isArray(out.learningAssignments)) out.learningAssignments = [];
   }
   if (menuPerms["acct-receivables"] === false && Array.isArray(out.acctPayments)) {
     out.acctPayments = [];
@@ -1434,6 +1447,8 @@ function _welfareRecordAllowed(rec, actor, actorEmp, settings) {
 // ownField: 그 필드가 본인 id면 역할과 무관하게 허용(본인 출퇴근 체크·본인 증명서 발급 등)
 const _WRITE_GATED_FIELDS = {
   employmentRecords:  { roles: ["admin"], pageIds: "employment-records" },
+  learningCourses:    { roles: ["admin"], pageIds: "learning-center" },
+  learningAssignments:{ roles: ["admin"], pageIds: "learning-center" },
   payslips:           { roles: ["admin"], pageIds: "payroll-mgmt" },
   payrollAdjustments: { roles: ["admin"], pageIds: "payroll-mgmt" },
   // 연말정산 결과: payslips와 동일하게 admin만 계산·확정할 수 있다(본인이 자기 부양가족
@@ -1646,6 +1661,36 @@ function _sanitizeGatedRecord(field, incoming, stored, actor, actorEmp, settings
     if (incoming.startDate && incoming.endDate && incoming.endDate < incoming.startDate) return stored ? { ...stored } : null;
     if (type === "contract" && !incoming.startDate) return stored ? { ...stored } : null;
     if (type === "discipline" && !incoming.decisionDate) return stored ? { ...stored } : null;
+  }
+  if (field === "learningCourses") {
+    const txt = (value, max) => String(value == null ? "" : value).trim().slice(0, max);
+    const date = value => /^\d{4}-\d{2}-\d{2}$/.test(String(value || "")) ? String(value) : "";
+    const now = new Date().toISOString();
+    const hours = Number(incoming.hours), capacity = Number(incoming.capacity), cost = Number(incoming.cost);
+    incoming = { ...incoming, name: txt(incoming.name, 120), category: txt(incoming.category, 80), provider: txt(incoming.provider, 120),
+      instructorName: txt(incoming.instructorName, 80), delivery: ["online", "offline", "blended"].includes(incoming.delivery) ? incoming.delivery : "offline",
+      startDate: date(incoming.startDate), endDate: date(incoming.endDate), hours, capacity, cost,
+      status: ["draft", "active", "closed"].includes(incoming.status) ? incoming.status : "draft",
+      description: txt(incoming.description, 1000), internalNote: txt(incoming.internalNote, 500),
+      createdAt: stored?.createdAt || now, createdBy: stored?.createdBy || String(actor?.empId || ""), updatedAt: now, updatedBy: String(actor?.empId || "") };
+    if (!incoming.name || !incoming.category || !incoming.startDate || !incoming.endDate || incoming.endDate < incoming.startDate) return stored ? { ...stored } : null;
+    if (!Number.isFinite(hours) || hours <= 0 || hours > 1000 || !Number.isInteger(capacity) || capacity < 1 || capacity > 10000 || !Number.isFinite(cost) || cost < 0 || cost > 1_000_000_000) return stored ? { ...stored } : null;
+    if (stored?.status === "closed") return { ...stored };
+  }
+  if (field === "learningAssignments") {
+    if (stored?.status === "completed") return { ...stored };
+    const txt = (value, max) => String(value == null ? "" : value).trim().slice(0, max);
+    const date = value => /^\d{4}-\d{2}-\d{2}$/.test(String(value || "")) ? String(value) : "";
+    const now = new Date().toISOString(), status = ["assigned", "in_progress", "completed", "cancelled"].includes(incoming.status) ? incoming.status : "assigned";
+    const score = incoming.score === "" || incoming.score == null ? null : Number(incoming.score);
+    incoming = { ...incoming, courseId: txt(incoming.courseId, 120), empId: txt(incoming.empId, 120), status,
+      assignedAt: stored?.assignedAt || date(incoming.assignedAt) || now.slice(0, 10), dueDate: date(incoming.dueDate),
+      completedAt: status === "completed" ? (date(incoming.completedAt) || now.slice(0, 10)) : "",
+      score, certificateNo: txt(incoming.certificateNo, 120), note: txt(incoming.note, 500),
+      createdAt: stored?.createdAt || now, createdBy: stored?.createdBy || String(actor?.empId || ""), updatedAt: now, updatedBy: String(actor?.empId || "") };
+    if (!incoming.courseId || !incoming.empId || !incoming.assignedAt) return stored ? { ...stored } : null;
+    if (incoming.dueDate && incoming.dueDate < incoming.assignedAt) return stored ? { ...stored } : null;
+    if (score != null && (!Number.isFinite(score) || score < 0 || score > 100)) return stored ? { ...stored } : null;
   }
   // payrollAdjustments는 admin 전용 필드지만, 복리후생 신청이 승인 완료되는
   // 순간 이 레코드를 만드는 것은 그 결재선의 "마지막 결재자"(대개 팀장·사업부장, admin이
@@ -1871,6 +1916,23 @@ function _roomReservationConflicts(rec, storedList, excludeId) {
     return r.startTime < rec.endTime && r.endTime > rec.startTime;
   });
 }
+// 교육 배정의 중복·정원 검사는 UI만 믿을 수 없다. 두 관리자가 동시에 저장하거나
+// /save를 직접 호출해도 같은 회사의 저장 잠금 안에서 기존 배정 전체를 기준으로 판단한다.
+// cancelled는 자리를 차지하지 않으며, 수정 중인 자기 자신은 중복/정원 집계에서 제외한다.
+function _learningAssignmentFits(rec, assignments, courses) {
+  const course = (courses || []).find(c => c && String(c.id) === String(rec.courseId));
+  if (!course) return false;
+  const active = (assignments || []).filter(a => a && a.status !== "cancelled" && String(a.id) !== String(rec.id));
+  if (rec.status !== "cancelled" && active.some(a => String(a.courseId) === String(rec.courseId) && String(a.empId) === String(rec.empId))) {
+    return false;
+  }
+  const capacity = Number(course.capacity);
+  if (rec.status !== "cancelled" && Number.isInteger(capacity) && capacity > 0) {
+    const occupied = active.filter(a => String(a.courseId) === String(rec.courseId)).length;
+    if (occupied >= capacity) return false;
+  }
+  return true;
+}
 const _HHMM_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
 // 화면 폼은 값을 제한하지만(예: <input type=number min=1 max=24>, 시작<종료 검사) 이
 // 범용 blob 동기화(/save) 경로는 위 승인 게이팅(권한) 통과 이후에도 값 자체의 범위·형식은
@@ -1887,6 +1949,15 @@ function _validateFieldValues(field, rec, storedList) {
     if (rec.startDate && rec.endDate && rec.endDate < rec.startDate) return false;
     if (rec.type === "contract" && !rec.startDate) return false;
     if (rec.type === "discipline" && !rec.decisionDate) return false;
+  } else if (field === "learningCourses") {
+    if (!rec.name || !rec.category || !rec.startDate || !rec.endDate || rec.endDate < rec.startDate) return false;
+    if (!["draft", "active", "closed"].includes(rec.status) || !["online", "offline", "blended"].includes(rec.delivery)) return false;
+    if (!Number.isFinite(Number(rec.hours)) || Number(rec.hours) <= 0 || Number(rec.hours) > 1000) return false;
+    if (!Number.isInteger(Number(rec.capacity)) || Number(rec.capacity) < 1 || Number(rec.capacity) > 10000) return false;
+  } else if (field === "learningAssignments") {
+    if (!rec.courseId || !rec.empId || !["assigned", "in_progress", "completed", "cancelled"].includes(rec.status)) return false;
+    if (rec.score != null && (!Number.isFinite(Number(rec.score)) || Number(rec.score) < 0 || Number(rec.score) > 100)) return false;
+    if (storedList && !Array.isArray(storedList) && !_learningAssignmentFits(rec, storedList.assignments, storedList.courses)) return false;
   } else if (field === "overtimeRequests") {
     // hours는 승인 후 급여 계산의 초과근무수당(otReqAllowance = hours * 시급 * 배율)에
     // 그대로 곱해진다 — 실측: API로 hours:9999를 제출하면 검증 없이 그대로 저장됨(승인
@@ -2674,6 +2745,18 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
           return true;
         });
       }
+      if (gatedField === "learningAssignments") {
+        const incomingIds = new Set(data[gatedField].filter(r => r?.id != null).map(r => String(r.id)));
+        const basis = storedList.filter(r => r?.id != null && !incomingIds.has(String(r.id)));
+        const courses = Array.isArray(data.learningCourses)
+          ? mergeArrayById(_fileStore.learningCourses || [], data.learningCourses)
+          : (_fileStore.learningCourses || []);
+        data[gatedField] = data[gatedField].filter(rec => {
+          if (!rec || rec.id == null || !_validateFieldValues(gatedField, rec, { assignments: basis, courses })) return false;
+          basis.push(rec);
+          return true;
+        });
+      }
       if (gatedField === "welfarePoints") {
         data[gatedField] = _dropOverspentWelfare(data[gatedField], storedList, actor);
       }
@@ -3034,6 +3117,19 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
       _roomReservationsPg = rows.map(r => r.data);
       return _roomReservationsPg;
     };
+    let _learningCoursesPg, _learningAssignmentsPg;
+    const _loadLearningCollectionsPg = async () => {
+      if (_learningCoursesPg && _learningAssignmentsPg) {
+        return { courses: _learningCoursesPg, assignments: _learningAssignmentsPg };
+      }
+      const { rows } = await client.query(
+        "SELECT collection, data FROM app_collections WHERE collection = ANY($1::text[]) AND (company_id = $2 OR company_id IS NULL)",
+        [["learningCourses", "learningAssignments"], companyId || null]
+      );
+      _learningCoursesPg = rows.filter(r => r.collection === "learningCourses").map(r => r.data);
+      _learningAssignmentsPg = rows.filter(r => r.collection === "learningAssignments").map(r => r.data);
+      return { courses: _learningCoursesPg, assignments: _learningAssignmentsPg };
+    };
     let _engagementSurveysPg;
     const _getEngagementSurveysPg = async () => {
       if (_engagementSurveysPg) return _engagementSurveysPg;
@@ -3088,6 +3184,7 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
           // 값 범위·형식 검증(_validateFieldValues 주석 참고, JSON모드와 동일 규칙).
           let validationList = null;
           if (field === "roomReservations") validationList = await _getRoomReservationsPg();
+          else if (field === "learningAssignments") validationList = await _loadLearningCollectionsPg();
           else if (field === "workforcePositions") {
             const { rows: positionRows } = await client.query(
               "SELECT data FROM app_collections WHERE collection = 'workforcePositions' AND (company_id = $1 OR company_id IS NULL)",
@@ -3104,6 +3201,19 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
              ON CONFLICT (company_id, collection, id) DO UPDATE SET data = $4, updated_at = NOW()`,
             [field, String(item.id), companyId, JSON.stringify(toWrite)]
           );
+          // 같은 요청에 여러 배정이 들어오면 뒤 레코드도 앞에서 막 저장한 배정을 보도록
+          // 메모리 검증 기준을 갱신한다. 회사별 저장 잠금과 함께 동시 정원 초과도 차단한다.
+          if (field === "learningAssignments" && _learningAssignmentsPg) {
+            _learningAssignmentsPg = [
+              ..._learningAssignmentsPg.filter(r => r && String(r.id) !== String(toWrite.id)),
+              toWrite,
+            ];
+          } else if (field === "learningCourses" && _learningCoursesPg) {
+            _learningCoursesPg = [
+              ..._learningCoursesPg.filter(r => r && String(r.id) !== String(toWrite.id)),
+              toWrite,
+            ];
+          }
         }
       }
       // roomReservations predates the generic recordTombstones mechanism and still tracks
