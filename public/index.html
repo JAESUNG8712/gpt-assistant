@@ -718,7 +718,25 @@ function _evalDefaultPage(emp){
 const ROLES={admin:"관리자",director:"사업부장",leader:"팀장",member:"팀원"};
 const JOB_GROUPS=["관리직","영업직","개발직","연구직","생산직","서비스직","기타"];
 const EDU_LEVELS=["고등학교 졸업","전문대 졸업","대학교 졸업","대학원 석사","대학원 박사"];
-const HR_TYPES={transfer:"조직 발령",salary:"연봉 변동",promotion:"승진",rank_change:"직급 변동",position:"직책 임명",award:"최/우수사원 선정",core_talent:"핵심인재 선정",leave:"휴직",return_leave:"복직",retirement:"퇴직",edu_legal:"법정의무교육",edu_general:"일반 교육",edu_external:"외부 교육",edu_internal:"사내 교육"};
+const HR_TYPES={transfer:"조직 발령",salary:"연봉 변동",promotion:"승진",rank_change:"직급 변동",position:"직책 임명",award:"최/우수사원 선정",discipline:"징계",core_talent:"핵심인재 선정",leave:"휴직",return_leave:"복직",retirement:"퇴직",edu_legal:"법정의무교육",edu_general:"일반 교육",edu_external:"외부 교육",edu_internal:"사내 교육"};
+// 징계 수위(경미→중대 순) — 통합 인사 변동 등록(updateHCFields/submitHRChange)의 discipline
+// 분기와 인사카드·HR 통계가 함께 참조한다.
+const DISCIPLINE_LEVELS=["견책","경고","감봉","정직","강등","해고"];
+// 계약 형태 — employees.contractType(직원 수정 폼의 "계약 정보" 섹션)과 계약 관리 화면이
+// 공유한다. "정규직"은 계약 종료일이 없는 것이 정상이라 만료 알림 대상에서 제외된다.
+const CONTRACT_TYPES=["정규직","계약직","인턴","파견","프리랜서"];
+// 오늘(자정 기준)부터 dateStr(YYYY-MM-DD)까지 남은 "역일수"를 시/분/초 영향 없이
+// 계산한다 — 단순히 `new Date(dateStr)-new Date()`를 쓰면 현재 시각(자정이 아닌 시/분)
+// 때문에 하루 오차가 생길 수 있어(예: 저녁에 확인하면 D-20이어야 할 날짜가 D-19로
+// 표시됨) 계약 관리·알림센터 양쪽이 이 헬퍼로 통일해 사용한다.
+function _daysUntil(dateStr){
+  if(!dateStr)return null;
+  const target=new Date(dateStr+"T00:00:00");
+  if(Number.isNaN(target.getTime()))return null;
+  const now=new Date();
+  const todayMid=new Date(now.getFullYear(),now.getMonth(),now.getDate());
+  return Math.round((target-todayMid)/86400000);
+}
 const LEAVE_TYPES=["육아휴직","병가휴직","군휴직","개인사정휴직","기타"];
 function _isOnLeave(e,dateStr){
   const d=dateStr||new Date().toISOString().slice(0,10);
@@ -7384,6 +7402,7 @@ function renderSidebar(){
       {id:"onboarding",label:"온보딩/오프보딩",icon:"🧭",desc:"입·퇴사 절차 체크리스트 관리",roles:["admin"]},
       {id:"hr-list",label:"직원 목록",icon:"☰",desc:"전체 직원 조회·관리",roles:["admin","director","leader"]},
       {id:"hr-changes",label:"발령·변동 이력",icon:"↻",desc:"인사 변동 등록·조회",roles:["admin"]},
+      {id:"contract-mgmt",label:"계약 관리",icon:"📑",desc:"계약직군 계약기간·만료 임박 현황",roles:["admin","director"]},
       {id:"hr-stats",label:"인사 통계",icon:"📊",desc:"인원현황·입퇴사율 분석",roles:["admin"]},
       {id:"long-service-award",label:"장기근속 포상",icon:"🏅",desc:"전직원 근속연수별 포상 기준·대상자 현황",roles:["admin"]},
       {id:"award-history",label:"(최)우수사원 선정 이력",icon:"🏆",desc:"전직원 우수사원 선정 이력 조회",roles:["admin","director","leader"]},
@@ -7507,6 +7526,7 @@ function renderSidebar(){
     "set-sys-sep":[
       {id:"set-sys-sep",type:"sep",label:"시스템 관리",roles:["admin"]},
       {id:"admin-operations",label:"관리자 운영센터",icon:"🛡",desc:"로그인·메뉴 사용·저장소·보안 현황",roles:["admin"]},
+      {id:"code-mgmt",label:"코드관리",icon:"🗂",desc:"전사 마스터코드 현황·관리 화면 모음",roles:["admin"]},
       {id:"integrations",label:"연동 설정",icon:"🔌",desc:"메신저 알림·캘린더·ERP 연동",roles:["admin"]},
       {id:"data-mgmt",label:"데이터 관리",icon:"💾",desc:"백업·복원·내보내기",roles:["admin"]},
       {id:"history",label:"수정 이력",icon:"⊞",desc:"변경 이력 감사",roles:["admin"]},
@@ -7528,7 +7548,7 @@ function renderSidebar(){
   _menuGroupsCache=menuGroups;
   const groupOrder=SIDEBAR_DEFAULT_ORDER.filter(g=>menuGroups[g]);
   const menus=groupOrder.flatMap(g=>menuGroups[g]);
-  const titles={dashboard:"대시보드","evaluation-center":"평가 홈","comp-evaluator-setup":"평가자 구성","my-profile":"내 프로필","hr-register":"신규 직원 등록","hr-list":"직원 목록","hr-changes":"발령·변동 이력",kpi:"KPI 목표 등록","kpi-results":"KPI 결과 입력","my-kpi":"나의 KPI","grade-view":"KPI 등급 현황","comp-grade-view":"역량평가 등급","comp-eval":"다면평가 진행","first-eval":"1차 평가","second-eval":"2차 평가","kpi-amend":"수정 요청 승인","eval-progress":"평가 진행 상황",settings:"운영 설정",history:"수정 이력","change-pw":"비밀번호 변경","data-mgmt":"데이터 관리","core-talent":"핵심인재 관리","talent-dev":"육성 계획·실적","promotion-mgmt":"승진 심사 관리","low-performer":"저성과 인력 관리","approval-draft":"기안하기","approval-outbox":"상신함","approval-inbox":"결재함","approval-receive":"수신함","approval-cc-inbox":"참조함","approval-completed":"완료함","attendance":"근태 현황","att-calendar":"캘린더","leave-mgmt":"연차 관리","payslip":"급여 명세서","yearend-settlement":"연말정산(간이)","approval-templates":"결재 양식 관리","integrations":"연동 설정","orgchart":"조직도","certificate":"증명서 발급","hr-stats":"인사 통계","board":"게시판","room-booking":"회의실 예약","welfare-points":"복지포인트","mandatory-training":"법정의무교육","hr-welfare-points":"복지포인트 현황(전체)","hr-mandatory-training":"법정의무교육 현황(전체)","hr-attendance":"근태 현황(전체)","hr-leave-mgmt":"연차 관리(전체)","welfare-status":"복지 현황","long-service-award":"장기근속 포상","award-history":"(최)우수사원 선정 이력","salary-info":"급여 기준 정보","welfare-settings":"복지 제도 설정","notification-center":"알림","acct-partners":"거래처 관리","acct-accounts":"계정과목","acct-vouchers":"전표 관리","acct-tax-invoices":"세금계산서","acct-vat-report":"부가세 신고자료","acct-fixed-assets":"고정자산 관리","acct-fixed-assets-detail":"고정자산 상세","acct-cost-statement":"원가명세서","acct-rcps":"RCPS 관리","acct-rcps-detail":"RCPS 발행 상세","acct-reports":"회계 리포트","expense-claims":"경비 청구","expense-admin":"경비 정산 관리","acct-receivables":"채권/채무 관리","biz-plan":"사업계획","overtime-req":"초과근무 신청","exec-dashboard":"경영 대시보드","onboarding":"온보딩/오프보딩","approval-delegation":"결재 위임","sales-quotations":"견적서 관리","sales-dashboard":"영업 실적 대시보드","sales-purchase-orders":"발주서 관리","inv-items":"품목 관리","inv-locations":"위치 관리","inv-stock":"재고 현황","inv-purchase-requests":"구매요청","pms-projects":"프로젝트 관리","pms-allocation":"내 투입률 입력","pms-my-projects":"내가 투입된 프로젝트","pms-utilization":"가동률 현황","pms-worklog":"일일 업무 투입","recruit-jobs":"채용공고 관리","recruit-candidates":"지원자 관리","recruit-eval":"면접 일정/평가 입력","recruit-eval-detail":"면접 평가 상세","recruit-dashboard":"채용 현황 대시보드","eval-ops":"평가 운영","settings-org":"조직 관리","settings-ranks":"직급 체계","attend-settings":"근태 설정","payroll-settings":"급여 관리","payroll-mgmt":"급여 종합 관리","company-info":"회사 기본 정보","room-settings":"회의실 관리","deploy-perm":"권한 관리"};
+  const titles={dashboard:"대시보드","evaluation-center":"평가 홈","comp-evaluator-setup":"평가자 구성","my-profile":"내 프로필","hr-register":"신규 직원 등록","hr-list":"직원 목록","hr-changes":"발령·변동 이력","contract-mgmt":"계약 관리",kpi:"KPI 목표 등록","kpi-results":"KPI 결과 입력","my-kpi":"나의 KPI","grade-view":"KPI 등급 현황","comp-grade-view":"역량평가 등급","comp-eval":"다면평가 진행","first-eval":"1차 평가","second-eval":"2차 평가","kpi-amend":"수정 요청 승인","eval-progress":"평가 진행 상황",settings:"운영 설정",history:"수정 이력","change-pw":"비밀번호 변경","data-mgmt":"데이터 관리","core-talent":"핵심인재 관리","talent-dev":"육성 계획·실적","promotion-mgmt":"승진 심사 관리","low-performer":"저성과 인력 관리","approval-draft":"기안하기","approval-outbox":"상신함","approval-inbox":"결재함","approval-receive":"수신함","approval-cc-inbox":"참조함","approval-completed":"완료함","attendance":"근태 현황","att-calendar":"캘린더","leave-mgmt":"연차 관리","payslip":"급여 명세서","yearend-settlement":"연말정산(간이)","approval-templates":"결재 양식 관리","integrations":"연동 설정","orgchart":"조직도","certificate":"증명서 발급","hr-stats":"인사 통계","board":"게시판","room-booking":"회의실 예약","welfare-points":"복지포인트","mandatory-training":"법정의무교육","hr-welfare-points":"복지포인트 현황(전체)","hr-mandatory-training":"법정의무교육 현황(전체)","hr-attendance":"근태 현황(전체)","hr-leave-mgmt":"연차 관리(전체)","welfare-status":"복지 현황","long-service-award":"장기근속 포상","award-history":"(최)우수사원 선정 이력","salary-info":"급여 기준 정보","welfare-settings":"복지 제도 설정","notification-center":"알림","acct-partners":"거래처 관리","acct-accounts":"계정과목","acct-vouchers":"전표 관리","acct-tax-invoices":"세금계산서","acct-vat-report":"부가세 신고자료","acct-fixed-assets":"고정자산 관리","acct-fixed-assets-detail":"고정자산 상세","acct-cost-statement":"원가명세서","acct-rcps":"RCPS 관리","acct-rcps-detail":"RCPS 발행 상세","acct-reports":"회계 리포트","expense-claims":"경비 청구","expense-admin":"경비 정산 관리","acct-receivables":"채권/채무 관리","biz-plan":"사업계획","overtime-req":"초과근무 신청","exec-dashboard":"경영 대시보드","onboarding":"온보딩/오프보딩","approval-delegation":"결재 위임","sales-quotations":"견적서 관리","sales-dashboard":"영업 실적 대시보드","sales-purchase-orders":"발주서 관리","inv-items":"품목 관리","inv-locations":"위치 관리","inv-stock":"재고 현황","inv-purchase-requests":"구매요청","pms-projects":"프로젝트 관리","pms-allocation":"내 투입률 입력","pms-my-projects":"내가 투입된 프로젝트","pms-utilization":"가동률 현황","pms-worklog":"일일 업무 투입","recruit-jobs":"채용공고 관리","recruit-candidates":"지원자 관리","recruit-eval":"면접 일정/평가 입력","recruit-eval-detail":"면접 평가 상세","recruit-dashboard":"채용 현황 대시보드","eval-ops":"평가 운영","settings-org":"조직 관리","settings-ranks":"직급 체계","attend-settings":"근태 설정","payroll-settings":"급여 관리","payroll-mgmt":"급여 종합 관리","company-info":"회사 기본 정보","room-settings":"회의실 관리","deploy-perm":"권한 관리"};
   titles["succession-planning"]="핵심직무 승계계획";
   titles["skills-architecture"]="직무·스킬 아키텍처";
   titles["workforce-planning"]="전략적 인력계획";
@@ -7542,6 +7562,7 @@ function renderSidebar(){
   titles["my-tasks"]="할일 관리";
   titles["work-reports"]="업무보고";
   titles["admin-operations"]="관리자 운영센터";
+  titles["code-mgmt"]="코드관리";
   const ptEl=$("#page-title");if(ptEl)ptEl.textContent=titles[currentPage]||"";
   const sb=$("#sidebar");if(!sb)return;
   // Filter by role + per-user custom permission overrides (admin-managed)
@@ -7650,7 +7671,7 @@ const PAGE_ROLES={
   "evaluation-center":["admin","director","leader","member"],"comp-evaluator-setup":["admin","director","leader"],
   "engagement-pulse-create":["admin"],"engagement-pulse-action-new":["admin","director","leader"],
   "engagement-pulse-action-detail":["admin","director","leader","member"],
-  "hr-register":["admin"],"hr-changes":["admin"],"hr-stats":["admin"],"hr-list":["admin","director","leader"],
+  "hr-register":["admin"],"hr-changes":["admin"],"contract-mgmt":["admin","director"],"hr-stats":["admin"],"hr-list":["admin","director","leader"],
   "long-service-award":["admin"],"award-history":["admin","director","leader"],
   "hr-mandatory-training":["admin","director","leader"],
   "hr-attendance":["admin","director"],"hr-leave-mgmt":["admin","director"],"payroll-mgmt":["admin"],
@@ -7659,7 +7680,7 @@ const PAGE_ROLES={
   "eval-progress":["admin","director","leader"],
   "promotion-mgmt":["admin"],"core-talent":["admin"],"succession-planning":["admin"],"skills-architecture":["admin"],"workforce-planning":["admin"],
   "position-control":["admin"],"position-requests":["admin","director","leader"],
-  "settings":["admin"],"approval-templates":["admin"],"integrations":["admin"],"data-mgmt":["admin"],"admin-operations":["admin"],
+  "settings":["admin"],"approval-templates":["admin"],"integrations":["admin"],"data-mgmt":["admin"],"admin-operations":["admin"],"code-mgmt":["admin"],
   "history":["admin"],"activity-log":["admin"],
   "eval-ops":["admin"],"settings-org":["admin"],"settings-ranks":["admin"],"attend-settings":["admin"],
   "payroll-settings":["admin"],"company-info":["admin"],"room-settings":["admin"],"deploy-perm":["admin"],
@@ -7965,6 +7986,8 @@ function renderPage(){
   pages["engagement-pulse-action-new"]=renderPulseActionCreatePage;
   pages["engagement-pulse-action-detail"]=renderPulseActionDetailPage;
   pages["okr"]=renderOkrPage;
+  pages["contract-mgmt"]=renderContractMgmtPage;
+  pages["code-mgmt"]=renderCodeMgmtPage;
   pages["admin-operations"]=window.renderAdminOperationsPage;
   const fn=pages[currentPage];const c=$("#content");
   if(c&&fn){
@@ -9602,7 +9625,7 @@ function printHRPersonnelCard(empId){
   };
   const careerHtml=canViewPrivate&&(e.careers||[]).length?`<div class="sec">과거 경력</div><table class="tbl"><thead><tr><th>회사명</th><th>직위</th><th>기간</th><th>담당업무</th></tr></thead><tbody>${e.careers.map(c=>`<tr><td>${h(c.co||"")}</td><td>${h(c.pos||"")}</td><td>${h(c.start||"")}~${h(c.end||"")}</td><td>${h(c.desc||"")}</td></tr>`).join("")}</tbody></table>`:"";
   const hrHist=canViewPrivate?[...(Array.isArray(e.hrHistory)?e.hrHistory:[])].sort((a,b)=>a.date.localeCompare(b.date)):[];
-  const histHtml=hrHist.length?`<div class="sec">인사 발령·변동 이력</div><table class="tbl"><thead><tr><th style="width:100px">일자</th><th style="width:100px">구분</th><th>내용</th></tr></thead><tbody>${hrHist.map(hh=>`<tr><td>${h(hh.date)}</td><td>${h(HR_TYPES[hh.type]||hh.type)}</td><td>${h(hh.desc||"")}${hh.before&&hh.after?` (${h(hh.before)} → ${h(hh.after)})`:""}</td></tr>`).join("")}</tbody></table>`:"";
+  const histHtml=hrHist.length?`<div class="sec">인사 발령·변동 이력</div><table class="tbl"><thead><tr><th style="width:100px">일자</th><th style="width:100px">구분</th><th>내용</th></tr></thead><tbody>${hrHist.map(hh=>`<tr><td>${h(hh.date)}</td><td>${h(HR_TYPES[hh.type]||hh.type)}</td><td>${h(hh.desc||"")}${hh.before&&hh.after?` (${h(hh.before)} → ${h(hh.after)})`:(hh.after&&!hh.before?` — ${h(hh.after)}`:"")}</td></tr>`).join("")}</tbody></table>`:"";
   const leaveHtml=canViewPrivate&&(e.leaves||[]).length?`<div class="sec">휴직 이력</div><table class="tbl"><thead><tr><th style="width:100px">종류</th><th style="width:200px">기간</th><th>비고</th></tr></thead><tbody>${[...e.leaves].sort((a,b)=>(a.start||"").localeCompare(b.start||"")).map(lv=>`<tr><td>${h(lv.type||"휴직")}</td><td>${h(lv.start||"")} ~ ${h(lv.end||"진행중")}</td><td>${h(lv.note||"")}</td></tr>`).join("")}</tbody></table>`:"";
   const eduTypes=new Set(["edu_legal","edu_general","edu_external","edu_internal"]);
   const eduHist=canViewPrivate?(Array.isArray(e.hrHistory)?e.hrHistory:[]).filter(hh=>eduTypes.has(hh.type)).sort((a,b)=>a.date.localeCompare(b.date)):[];
@@ -9668,6 +9691,14 @@ function _openEmpEdit(id){
     <label class="fl">퇴직일</label><input class="fc" id="ee-retiredate" type="date" value="${h(e.retireDate||"")}">
     <label class="fl mt2">퇴직 사유</label><select class="fc" id="ee-retirereason"><option value="">선택</option>${["자진 퇴사","권고 사직","계약 만료","정년 퇴직","기타"].map(r=>`<option${e.retireReason===r?" selected":""}>${r}</option>`).join("")}</select>
   </div>
+  <div class="fg mt3"><label class="fl" style="font-weight:700;font-size:13px">📑 계약 정보</label>
+    <div class="g3">
+      <div class="fg"><label class="fl">계약 형태</label><select class="fc" id="ee-contracttype">${_selOptsKeepCurrent(CONTRACT_TYPES,e.contractType||"정규직")}</select></div>
+      <div class="fg"><label class="fl">계약 시작일</label><input class="fc" id="ee-contractstart" type="date" value="${h(e.contractStart||"")}"></div>
+      <div class="fg"><label class="fl">계약 종료일</label><input class="fc" id="ee-contractend" type="date" value="${h(e.contractEnd||"")}"></div>
+    </div>
+    <div class="fz11 text-gray mt1">※ 정규직은 비워두어도 됩니다. 계약직 등 종료일이 있는 직원은 만료 30일 전부터 알림센터에 안내됩니다.</div>
+  </div>
   <div class="fg mt3"><label class="fl" style="font-weight:700;font-size:13px">📋 과거 경력 이력</label>
     <div id="ee-careers-wrap"></div>
     <button class="btn btn-secondary btn-sm mt2" onclick="_addEmpEditCareer()">+ 경력 추가</button>
@@ -9724,16 +9755,18 @@ function saveEmpEdit(id){
   const g=sel=>$(sel)?.value.trim()||"";
   const isActive=g("#ee-active")==="1";
   if(!isActive&&!g("#ee-retiredate")){showToast("퇴직일을 입력하세요.","error");return;}
-  const nextSalary=Number(g("#ee-salary"))||0,today=new Date().toISOString().slice(0,10),now=new Date().toISOString();
-  const _prevEmp=getEmp(id),_oldDept=_prevEmp?.dept,_oldTeam=_prevEmp?.team;
+  const nextSalary=Number(g("#ee-salary"))||0,nextRole=g("#ee-role"),today=new Date().toISOString().slice(0,10),now=new Date().toISOString();
+  const _prevEmp=getEmp(id),_oldDept=_prevEmp?.dept,_oldTeam=_prevEmp?.team,_oldRole=_prevEmp?.role;
   employees=employees.map(e=>{
     if(String(e.id)!==String(id))return e;
     const salaryChanged=Number(e.salary||0)!==nextSalary,hrHistory=[...(e.hrHistory||[])];
     if(salaryChanged)hrHistory.push({id:genId(),type:"salary",date:today,desc:"직원 정보 수정에서 연봉 변경",before:`${Number(e.salary||0).toLocaleString()}원`,after:`${nextSalary.toLocaleString()}원`,note:"직원 상세 수정 자동 이력",source:"employee_edit",applied:true,createdAt:now});
-    return{...e,name:g("#ee-name"),empNo:g("#ee-empno"),birth:g("#ee-birth"),gender:g("#ee-gender"),nationality:g("#ee-nationality")||"내국인",hire:g("#ee-hire"),workplaceId:g("#ee-workplace"),dept:g("#ee-dept"),team:g("#ee-team"),position:g("#ee-position"),rank:g("#ee-rank"),rankYear:Number(g("#ee-rankyear"))||1,jobGroup:g("#ee-jobgroup"),salary:nextSalary,totalCareer:Number(g("#ee-career"))||0,edu:g("#ee-edu"),eduSchool:g("#ee-eduschool"),email:g("#ee-email"),phone:g("#ee-phone"),address:g("#ee-address"),role:g("#ee-role"),active:isActive,retireDate:isActive?"":g("#ee-retiredate"),retireReason:isActive?"":g("#ee-retirereason"),careers:window._eeEditCareers||e.careers||[],leaves:window._eeEditLeaves||e.leaves||[],hrHistory,updatedAt:now};
+    return{...e,name:g("#ee-name"),empNo:g("#ee-empno"),birth:g("#ee-birth"),gender:g("#ee-gender"),nationality:g("#ee-nationality")||"내국인",hire:g("#ee-hire"),workplaceId:g("#ee-workplace"),dept:g("#ee-dept"),team:g("#ee-team"),position:g("#ee-position"),rank:g("#ee-rank"),rankYear:Number(g("#ee-rankyear"))||1,jobGroup:g("#ee-jobgroup"),salary:nextSalary,totalCareer:Number(g("#ee-career"))||0,edu:g("#ee-edu"),eduSchool:g("#ee-eduschool"),email:g("#ee-email"),phone:g("#ee-phone"),address:g("#ee-address"),role:nextRole,contractType:g("#ee-contracttype")||"정규직",contractStart:g("#ee-contractstart"),contractEnd:g("#ee-contractend"),active:isActive,retireDate:isActive?"":g("#ee-retiredate"),retireReason:isActive?"":g("#ee-retirereason"),careers:window._eeEditCareers||e.careers||[],leaves:window._eeEditLeaves||e.leaves||[],hrHistory,updatedAt:now};
   });
   if(String(id)===String(currentUser.id)){currentUser=employees.find(e=>String(e.id)===String(id))||currentUser;}
   _autoTransitionCompEvaluators(id,_oldDept,_oldTeam);
+  // 권한변경로그(D1) — 역할(role)이 실제로 바뀐 경우에만 관리자 운영센터 활동 로그에 기록한다.
+  if(_oldRole&&_oldRole!==nextRole)logAction("role_changed",`${_prevEmp.name} 권한 변경`,`emp:${id}`,`${ROLES[_oldRole]||_oldRole} → ${ROLES[nextRole]||nextRole}`);
   closeModal();showToast("직원 정보가 수정되었습니다.","success");autoSaveToServerIfEnabled();renderHRListTbl();
 }
 function openResetPwModal(id){
@@ -10090,6 +10123,7 @@ function updateHCFields(){
   else if(type==="leave"){html=`<div class="g3"><div class="fg"><label class="fl">휴직 시작일</label><input class="fc" id="hc-leave-start" type="date" value="${today}"></div><div class="fg"><label class="fl">휴직 종료(예정)일</label><input class="fc" id="hc-leave-end" type="date"></div><div class="fg"><label class="fl">휴직 사유</label><select class="fc" id="hc-leave-reason"><option value="">선택</option>${["개인 사정","육아 휴직","병가","군 휴직","가족 돌봄","기타"].map(r=>`<option>${r}</option>`).join("")}</select></div></div>`;}
   else if(type==="retirement"){html=`<div class="g2"><div class="fg"><label class="fl">퇴직일</label><input class="fc" id="hc-retire-date" type="date" value="${today}"></div><div class="fg"><label class="fl">퇴직 사유</label><select class="fc" id="hc-retire-reason"><option value="">선택</option>${["자진 퇴사","권고 사직","계약 만료","정년 퇴직","기타"].map(r=>`<option>${r}</option>`).join("")}</select></div></div>`;}
   else if(type==="award"){const yr=Number(today.slice(0,4));html=`<div class="g3"><div class="fg"><label class="fl">선정 연도 <span class="req">*</span></label><input class="fc" id="hc-award-year" type="number" min="2000" max="2100" value="${yr}"></div><div class="fg"><label class="fl">반기 <span class="req">*</span></label><select class="fc" id="hc-award-half"><option>상반기</option><option>하반기</option></select></div><div class="fg"><label class="fl">구분 <span class="req">*</span></label><select class="fc" id="hc-award-tier"><option value="우수">우수사원</option><option value="최우수">최우수사원</option></select></div></div>`;}
+  else if(type==="discipline"){html=`<div class="fg"><label class="fl">징계 수위 <span class="req">*</span></label><select class="fc" id="hc-discipline-level">${DISCIPLINE_LEVELS.map(l=>`<option>${l}</option>`).join("")}</select></div><div class="fz11 text-gray mt1">※ 위 "변동 내용"에 징계 사유를 기재하세요. 징계 기록은 직원 인사카드에 포함되며 비공개 열람 권한(생년월일·주소 등과 동일) 범위에서만 조회됩니다.</div>`;}
   else if(type==="core_talent"){html=`<div class="g2"><div class="fg"><label class="fl">선정 기간 시작</label><input class="fc" id="hc-period-start" type="date"></div><div class="fg"><label class="fl">선정 기간 종료</label><input class="fc" id="hc-period-end" type="date"></div></div>`;}
   else{html=`<div class="g2"><div class="fg"><label class="fl">변동 전</label><input class="fc" id="hc-before" value="${h(beforeVal)}"></div><div class="fg"><label class="fl">변동 후</label><input class="fc" id="hc-after-text" placeholder="변동 후 내용"></div></div>`;}
   el.innerHTML=html;
@@ -10116,6 +10150,7 @@ function submitHRChange(){
   // (openRetireModal/submitRetire, active와 retireDate를 항상 함께 갱신함)을 통해서만
   // 이뤄지도록 한다.
   else if(type==="award"){const year=Number($("#hc-award-year")?.value),half=$("#hc-award-half")?.value,tier=$("#hc-award-tier")?.value;if(!Number.isInteger(year)||year<2000||year>2100||!["상반기","하반기"].includes(half)||!["우수","최우수"].includes(tier)){showToast("선정 연도·반기·구분을 확인하세요.","error");return;}after=`${year}년 ${half} ${tier}사원`;historyMeta={year,half,tier,reason:desc};}
+  else if(type==="discipline"){const level=$("#hc-discipline-level")?.value;if(!DISCIPLINE_LEVELS.includes(level)){showToast("징계 수위를 선택하세요.","error");return;}after=level;historyMeta={level};}
   else if(type==="core_talent"){after=`${$("#hc-period-start")?.value||""}~${$("#hc-period-end")?.value||""}`;}
   else{after=$("#hc-after-text")?.value.trim()||"";}
   if(type==="award"&&_awardExactExists(emp,historyMeta.year,historyMeta.half,historyMeta.tier)){showToast("동일한 연도·반기·구분의 선정 이력이 이미 있습니다.","error");return;}
@@ -10212,6 +10247,78 @@ function printHRLetter(empId,histId){
   </div>
   <scr`+`ipt>window.print();window.close();</scr`+`ipt></body></html>`);
   printWin.document.close();
+}
+// ==================== 코드관리 통합 화면(D1) ====================
+// 조직 관리/직급 체계/회사 정보 등 전사 마스터코드가 각 설정 화면에 분산돼 있어, 한눈에
+// 현황(건수)을 보고 해당 화면으로 바로 이동할 수 있는 허브 — 기존 편집 UI를 그대로
+// 재사용(중복 구현 없음), 이 화면 자체는 읽기전용 요약+링크만 제공한다.
+function renderCodeMgmtPage(){
+  const c=$("#content");if(!c)return;
+  const groups=[
+    {title:"조직 코드",items:[
+      ["부서",orgDB.depts?.length||0,"settings-org"],
+      ["팀",(orgDB.teams?Object.values(orgDB.teams).flat().length:0),"settings-org"],
+      ["사업장",_workplaces().length,"settings-org"],
+      ["직급",orgDB.ranks?.length||0,"settings-ranks"],
+      ["직책",(orgDB.positions||[]).filter(p=>p).length,"settings-ranks"],
+    ]},
+    {title:"인사 기준 코드(고정값)",items:[
+      ["직군",JOB_GROUPS.length,""],
+      ["최종학력 구분",EDU_LEVELS.length,""],
+      ["휴직 종류",LEAVE_TYPES.length,""],
+      ["계약 형태",CONTRACT_TYPES.length,""],
+      ["징계 수위",DISCIPLINE_LEVELS.length,""],
+    ]},
+    {title:"운영 설정",items:[
+      ["결재 양식",approvalTemplates.length,"approval-templates"],
+      ["법정의무교육 유형",(settings.mandatoryTrainingTypes||[]).length,"settings"],
+      ["유연근무 옵션",(settings.flexWorkOptions||[]).length,"attend-settings"],
+      ["KPI 평가 단계",kpiStagesConfig().length,"eval-ops"],
+      ["회의실",(roomReservations?Array.from(new Set(roomReservations.map(r=>r.room))).length:0),"room-settings"],
+    ]},
+  ];
+  c.innerHTML=`<div class="fz12 text-gray mb3">전사 마스터코드 현황을 한눈에 보고, 각 항목을 눌러 해당 관리 화면으로 바로 이동합니다. "고정값"은 코드 자체가 시스템에 내장되어 있어 편집 화면이 따로 없습니다.</div>
+  ${groups.map(g=>`<div class="card mb3"><div class="card-head"><h3>${h(g.title)}</h3></div><div class="card-body"><div class="g3">${g.items.map(([label,count,pageId])=>`
+    <div style="padding:12px 14px;background:#f8fafc;border-radius:8px;border:1px solid #e2e8f0;${pageId?"cursor:pointer":""}" ${pageId?`onclick="gotoPage('${pageId}')"`:""}>
+      <div class="fz11 text-gray">${h(label)}</div>
+      <div class="fz18 fw7">${count}<small class="fz11 text-gray">개</small></div>
+      ${pageId?`<div class="fz10" style="color:#2563eb">관리 화면으로 이동 →</div>`:`<div class="fz10 text-gray">편집 불가(고정)</div>`}
+    </div>`).join("")}</div></div></div>`).join("")}
+  <div class="card"><div class="card-head"><h3>관리 화면 바로가기</h3></div><div class="card-body flex gap2" style="flex-wrap:wrap">${[["settings-org","조직 관리"],["settings-ranks","직급 체계"],["company-info","회사 기본 정보"],["approval-templates","결재 양식 관리"],["attend-settings","근태 설정"],["payroll-settings","급여 관리"],["room-settings","회의실 관리"],["eval-ops","평가 운영"]].map(([id,text])=>`<button class="btn btn-secondary btn-sm" onclick="gotoPage('${id}')">${text}</button>`).join("")}</div></div>`;
+}
+// ==================== 계약 관리(D1) ====================
+// 정규직 외 계약 형태(계약직/인턴/파견/프리랜서) 직원을 한 화면에서 보고 계약 종료가
+// 임박한 순서로 확인한다. admin은 전사, director는 소속 부서로 스코프(알림센터의
+// "계약 만료 임박" 항목과 동일한 기준).
+let _contractMgmtDept="";
+function renderContractMgmtPage(){
+  const c=$("#content");if(!c)return;
+  const u=currentUser;
+  let scope=employees.filter(e=>e.active&&e.contractType&&e.contractType!=="정규직"&&(u.role==="admin"||e.dept===u.dept));
+  if(u.role==="admin"&&_contractMgmtDept)scope=scope.filter(e=>e.dept===_contractMgmtDept);
+  const rows=scope.map(e=>{
+    const daysLeft=_daysUntil(e.contractEnd);
+    return{e,daysLeft};
+  }).sort((a,b)=>{
+    if(a.daysLeft==null)return 1;if(b.daysLeft==null)return -1;return a.daysLeft-b.daysLeft;
+  });
+  const overdue=rows.filter(r=>r.daysLeft!=null&&r.daysLeft<0).length;
+  const soon=rows.filter(r=>r.daysLeft!=null&&r.daysLeft>=0&&r.daysLeft<=30).length;
+  c.innerHTML=`
+  <div style="display:flex;gap:10px;margin-bottom:14px;flex-wrap:wrap">
+    <div style="flex:1;min-width:140px;padding:14px 18px;background:#fef2f2;border-radius:10px;border:1px solid #fecaca;text-align:center"><div class="fz22 fw7 text-red">${overdue}</div><div class="fz11 text-gray">계약 종료일 경과</div></div>
+    <div style="flex:1;min-width:140px;padding:14px 18px;background:#fffbeb;border-radius:10px;border:1px solid #fde68a;text-align:center"><div class="fz22 fw7" style="color:#d97706">${soon}</div><div class="fz11 text-gray">30일 이내 만료</div></div>
+    <div style="flex:1;min-width:140px;padding:14px 18px;background:#f8fafc;border-radius:10px;border:1px solid #e2e8f0;text-align:center"><div class="fz22 fw7 text-gray">${rows.length}</div><div class="fz11 text-gray">전체 계약직군</div></div>
+  </div>
+  ${u.role==="admin"?`<div class="card"><div class="card-body"><div class="fg" style="margin:0"><label class="fl">부서 필터</label><select class="fc" style="width:200px" onchange="_contractMgmtDept=this.value;renderContractMgmtPage()"><option value="">전체 부서</option>${_dataDepts(_contractMgmtDept).map(d=>`<option${_contractMgmtDept===d?" selected":""}>${h(d)}</option>`).join("")}</select></div></div></div>`:""}
+  <div class="card"><div class="card-head"><h3>📑 계약직군 현황</h3></div><div class="card-body" style="padding:0"><div class="tbl-wrap"><table>
+    <thead><tr><th>이름</th><th>소속</th><th>직급</th><th>계약 형태</th><th>계약 시작</th><th>계약 종료</th><th>잔여일수</th><th></th></tr></thead>
+    <tbody>${rows.length?rows.map(({e,daysLeft})=>{
+      const color=daysLeft==null?"#64748b":daysLeft<0?"#dc2626":daysLeft<=30?"#d97706":"#16a34a";
+      const label=daysLeft==null?"-":daysLeft<0?`${-daysLeft}일 경과`:`D-${daysLeft}`;
+      return`<tr><td>${h(e.name)}</td><td>${h(e.dept)} / ${h(e.team)}</td><td>${h(e.rank||"-")}</td><td>${h(e.contractType)}</td><td>${h(e.contractStart||"-")}</td><td>${h(e.contractEnd||"-")}</td><td style="color:${color};font-weight:700">${label}</td><td>${u.role==="admin"?`<button class="btn btn-secondary btn-sm" onclick="openEmpEdit(${e.id})">수정</button>`:""}</td></tr>`;
+    }).join(""):`<tr><td colspan="8" class="p-empty">계약직군 직원이 없습니다.</td></tr>`}</tbody>
+  </table></div></div></div>`;
 }
 // ==================== KPI ====================
 function getScopeEmps(){
@@ -12456,6 +12563,7 @@ function renderPromotionPage(){
       <div style="margin-left:auto;display:flex;gap:6px;flex-wrap:wrap">
         <button class="btn btn-primary btn-sm" onclick="executeBulkPromotion(${yr})">🏅 적격자 일괄 승진 처리</button>
         <button class="btn btn-ghost btn-sm" onclick="aiAnalyzePromotion(${yr})">🤖 AI 분석</button>
+        <button class="btn btn-teal btn-sm" onclick="openPromotionSimModal(${yr})">📊 승진 시뮬레이션</button>
         <button class="btn btn-secondary btn-sm" onclick="openPromoSettingsModal()">⚙ 승진 요건 설정</button>
         <button class="btn btn-ghost btn-sm" onclick="openLegalEduBulkModal()">📋 법정교육 일괄 등록</button>
         <button class="btn btn-ghost btn-sm" onclick="dlPromotionResult(${yr})">📥 결과 다운로드</button>
@@ -12766,6 +12874,50 @@ function doPromotion(empId, nextRank){
   renderPromotionPage();
 }
 
+// 승진자 시뮬레이션(D1) — 서버에 저장하지 않는 순수 what-if 미리보기. 체크한 후보를
+// 승진시켰다고 가정했을 때 부서별 직급 분포가 어떻게 바뀌는지 즉시 계산해 보여준다.
+let _promoSimSelected=null,_promoSimYear=null;
+function openPromotionSimModal(yr){
+  _promoSimYear=yr;
+  const candidates=employees.filter(e=>e.active&&e.role!=="admin"&&!promotionSettings.excludeRanks.includes(e.rank)).map(e=>calcPromotion(e,yr));
+  _promoSimSelected=new Set(candidates.filter(r=>r.eligible).map(r=>r.empId));
+  showModal(`<div class="modal modal-lg"><div class="modal-head"><h2>📊 승진 시뮬레이션 (${yr}년)</h2><button class="modal-close" onclick="closeModal()">×</button></div>
+  <div class="modal-body">
+    <div class="fz11 text-gray mb2">체크한 인원을 승진시켰다고 가정했을 때의 직급별 인원 분포를 미리 봅니다. <strong>실제로 저장되지 않으며</strong>, 적용하려면 기존 "적격자 일괄 승진 처리" 또는 개별 승진 버튼을 이용하세요.</div>
+    <div id="promo-sim-body"></div>
+  </div>
+  <div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal()">닫기</button></div></div>`);
+  _renderPromoSimBody();
+}
+function _promoSimToggle(empId,checked){
+  if(checked)_promoSimSelected.add(empId);else _promoSimSelected.delete(empId);
+  _renderPromoSimBody();
+}
+function _renderPromoSimBody(){
+  const el=document.getElementById("promo-sim-body");if(!el)return;
+  const yr=_promoSimYear;
+  const candidates=employees.filter(e=>e.active&&e.role!=="admin"&&!promotionSettings.excludeRanks.includes(e.rank)).map(e=>calcPromotion(e,yr));
+  const ranks=orgDB.ranks||[];
+  const before={},after={};
+  ranks.forEach(r=>{before[r]=0;after[r]=0;});
+  employees.filter(e=>e.active&&e.role!=="admin").forEach(e=>{
+    if(before[e.rank]!=null)before[e.rank]++;
+    const promoted=_promoSimSelected.has(e.id);
+    const result=candidates.find(r=>r.empId===e.id);
+    const targetRank=promoted&&result&&result.nextRank&&ranks.includes(result.nextRank)?result.nextRank:e.rank;
+    if(after[targetRank]!=null)after[targetRank]++;
+  });
+  const distTable=`<table class="tbl" style="margin-bottom:12px"><thead><tr><th>직급</th>${ranks.map(r=>`<th>${h(r)}</th>`).join("")}</tr></thead>
+    <tbody><tr><td class="fw6">현재</td>${ranks.map(r=>`<td>${before[r]}명</td>`).join("")}</tr>
+    <tr><td class="fw6">시뮬레이션 후</td>${ranks.map(r=>`<td style="color:${after[r]!==before[r]?(after[r]>before[r]?"#16a34a":"#dc2626"):"inherit"};font-weight:${after[r]!==before[r]?"700":"400"}">${after[r]}명${after[r]!==before[r]?`(${after[r]>before[r]?"+":""}${after[r]-before[r]})`:""}</td>`).join("")}</tr></tbody></table>`;
+  const rows=candidates.filter(r=>r.cond1.ok||r.cond2.ok||r.cond3.ok||r.eligible).sort((a,b)=>(b.eligible?1:0)-(a.eligible?1:0)||a.name.localeCompare(b.name));
+  el.innerHTML=`${distTable}
+  <div class="fz12 fw6 mb1">승진 후보 선택 (${_promoSimSelected.size}명 선택됨)</div>
+  <div class="tbl-wrap" style="max-height:320px;overflow:auto"><table class="tbl">
+    <thead><tr><th style="width:36px"></th><th>이름</th><th>소속</th><th>현재 직급</th><th>차상위 직급</th><th>적격 여부</th></tr></thead>
+    <tbody>${rows.length?rows.map(r=>`<tr><td><input type="checkbox" ${_promoSimSelected.has(r.empId)?"checked":""} onchange="_promoSimToggle(${r.empId},this.checked)"></td><td>${h(r.name)}</td><td>${h(r.dept)}</td><td>${h(r.rank)}</td><td>${h(r.nextRank)}</td><td>${r.eligible?badge("적격","green"):badge("일부 충족","yellow")}</td></tr>`).join(""):`<tr><td colspan="6" class="p-empty">승진 후보가 없습니다.</td></tr>`}</tbody>
+  </table></div>`;
+}
 function executeBulkPromotion(yr){
   const eligible=employees
     .filter(e=>e.active&&e.role!=="admin"&&!promotionSettings.excludeRanks.includes(e.rank))
@@ -15655,13 +15807,16 @@ function _toggleMenuPerm(empId,menuId,checked){
 function _saveAllMenuPerms(empId){
   const emp=employees.find(e=>e.id===empId);
   if(!emp)return;
-  const cur=emp.menuPerms||{};
   const changes=_pendingPerms[empId]||{};
+  const changedCount=Object.keys(changes).length;
+  const cur=emp.menuPerms||{};
   emp.menuPerms={...cur,...changes};
   // Clean up: remove entries that are `true` (default) to keep it lean
   Object.keys(emp.menuPerms).forEach(k=>{ if(emp.menuPerms[k]===true) delete emp.menuPerms[k]; });
   _pendingPerms[empId]={};
   autoSaveDebounced();
+  // 권한변경로그(D1) — 실제로 바뀐 메뉴가 있을 때만 기록(빈 저장 클릭까지 로그로 남기지 않음).
+  if(changedCount>0)logAction("menu_perm_changed",`${emp.name} 메뉴 권한 변경`,`emp:${empId}`,`${changedCount}개 메뉴 조정`);
   showToast(`${h(emp.name)}님의 메뉴 권한이 저장되었습니다.`,"success");
   renderSettingsDeploy();
   if(currentUser.id===empId) renderSidebar();
@@ -15731,6 +15886,8 @@ function _applyGroupMenuPerms(mode,groupValue,affected){
   affected.forEach(emp=>{ emp.menuPerms={...lean}; });
   if(_pendingGroupPerms[mode])_pendingGroupPerms[mode][groupValue]={};
   autoSaveDebounced();
+  // 권한변경로그(D1) — 그룹 단위 일괄 적용도 대상 인원수와 함께 기록(개별 변경 로그와 구분되는 액션명).
+  logAction("menu_perm_group_applied",`${groupValue} ${mode==="jobGroup"?"직군":"직책"} 메뉴 권한 일괄 적용`,`${mode}:${groupValue}`,`${affected.length}명 적용`);
   showToast(`"${groupValue}" ${mode==="jobGroup"?"직군":"직책"} 소속 재직자 ${affected.length}명에게 메뉴 권한을 적용했습니다.`,"success");
   renderSettingsDeploy();
 }
@@ -30283,6 +30440,16 @@ function renderNotificationCenterPage(){
     const active=employees.filter(e=>e.active&&e.role!=="admin");
     const notGranted=active.filter(e=>!welfarePoints.some(wp=>String(wp.empId)===String(e.id)&&wp.type==="grant"&&new Date(wp.date).getFullYear()===yr));
     if(notGranted.length>0)items.push({type:"welfare",pri:1,icon:"🎁",title:`복지포인트 미지급 ${notGranted.length}명`,desc:"올해 복지포인트가 지급되지 않은 직원이 있습니다",date:todayStr,action:"hr-welfare-points"});
+  }
+  // 6b. 계약 만료 임박(D1, 계약관리) — admin은 전사, director는 소속 부서로 스코프.
+  // 정규직은 계약 종료일이 없는 것이 정상이라 대상에서 제외된다.
+  if(u.role==="admin"||u.role==="director"){
+    const contractScope=employees.filter(e=>e.active&&e.contractType&&e.contractType!=="정규직"&&e.contractEnd&&(u.role==="admin"||e.dept===u.dept));
+    const contractSoon=contractScope.map(e=>({e,daysLeft:_daysUntil(e.contractEnd)})).filter(x=>Number.isFinite(x.daysLeft)&&x.daysLeft<=30);
+    if(contractSoon.length>0){
+      const overdue=contractSoon.filter(x=>x.daysLeft<0).length;
+      items.push({type:"contract-expiring",pri:overdue>0?0:1,icon:"📑",title:`계약 만료 임박/경과 ${contractSoon.length}명${overdue>0?` (경과 ${overdue}명)`:""}`,desc:contractSoon.sort((a,b)=>a.daysLeft-b.daysLeft).slice(0,5).map(x=>`${x.e.name}(${x.daysLeft<0?`${-x.daysLeft}일 경과`:`D-${x.daysLeft}`})`).join(", ")+(contractSoon.length>5?` 외 ${contractSoon.length-5}명`:""),date:todayStr,action:"contract-mgmt"});
+    }
   }
   // 7. Outbox items pending
   const myPending=approvalDocs.filter(d=>d.authorId===u.id&&d.status==="in_progress");
