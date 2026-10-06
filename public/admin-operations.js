@@ -2,7 +2,7 @@
 // 데이터 원본은 회사 범위+admin 권한이 적용된 /status와 /activity만 사용한다.
 (function(){
   const state={status:null,readiness:null,logs:[],days:7,query:"",action:"all",error:""};
-  const labels={login_succeeded:"로그인 성공",login_failed:"로그인 실패",login_otp_failed:"2단계 인증 실패",menu_opened:"메뉴 열람",kpi_submitted:"KPI 제출",kpi_approved:"KPI 승인",kpi_rejected:"KPI 반려",emp_registered:"직원 등록",emp_modified:"직원 수정",emp_retired:"퇴직 처리","데이터 저장":"데이터 저장",role_changed:"권한(역할) 변경",menu_perm_changed:"메뉴 권한 변경",menu_perm_group_applied:"메뉴 권한 일괄 적용"};
+  const labels={login_succeeded:"로그인 성공",login_failed:"로그인 실패",login_otp_failed:"2단계 인증 실패",menu_opened:"메뉴 열람",kpi_submitted:"KPI 제출",kpi_approved:"KPI 승인",kpi_rejected:"KPI 반려",emp_registered:"직원 등록",emp_modified:"직원 수정",emp_retired:"퇴직 처리","데이터 저장":"데이터 저장",role_changed:"권한(역할) 변경",menu_perm_changed:"메뉴 권한 변경",menu_perm_group_applied:"메뉴 권한 일괄 적용",training_course_created:"교육 과정 개설",training_course_updated:"교육 과정 수정",training_course_deleted:"교육 과정 삭제"};
   // 권한변경로그(D1) — 위 3개 액션만 따로 빠르게 필터링할 수 있는 바로가기.
   const PERM_ACTIONS=["role_changed","menu_perm_changed","menu_perm_group_applied"];
   const logTime=row=>new Date(row?.time||row?.ts||row?.createdAt||0);

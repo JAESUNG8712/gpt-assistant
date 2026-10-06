@@ -1104,6 +1104,13 @@ let overtimeRequests=[]; // 초과근무 신청 [{id,empId,empName,dept,team,dat
 let onboardingFlows=[]; // 온보딩/오프보딩 [{id,empId,empName,type:"onboard"|"offboard",items:[{label,done,doneBy,doneAt}],createdAt,completedAt}]
 let approvalDelegations=[]; // 결재 위임 [{id,empId,empName,delegateId,delegateName,startDate,endDate,reason,createdAt}]
 let mandatoryTraining=[]; // 법정의무교육 이수 [{id,empId,trainingType,year,completedAt,method,note}]
+// D3(HR마인드 벤치마킹) — 교육관리 고도화. mandatoryTraining(법정의무교육 완료로그)·legalEdu(hrHistory의
+// edu_legal 등 개인 교육이력)와는 완전히 별개의 신규 모듈 — 저 둘은 "이수했는지"만 기록하는
+// 로그인 반면, 이쪽은 과정 자체(개설·일정·정원·강사·비용)를 관리하고 직원이 신청해 정원
+// 안에서 배정받는 카탈로그+신청 워크플로우. 완료 후 법정의무교육/개인 교육이력에 반영하려면
+// 관리자가 별도로 그 화면에서 등록해야 한다(자동 연동 없음, 관리화면에 안내 문구로 명시).
+let trainingCourses=[]; // 교육 과정 [{id,title,category,instructor,institution,startDate,endDate,location,capacity,cost,status:"planned"|"open"|"closed"|"completed"|"canceled",description,surveyEnabled,createdBy,createdByName,createdAt,updatedAt}]
+let trainingEnrollments=[]; // 교육 신청/이수 [{id,courseId,empId,empName,dept,team,appliedAt,status:"applied"|"waitlisted"|"canceled"|"completed",completedAt,surveyResponse:{satisfaction,comment,submittedAt}|null,note,createdAt,updatedAt}]
 let healthCheckupLog=[]; // 종합검진 이수 이력 [{id,empId,year,completedAt,note}]
 let scheduleEvents=[]; // 캘린더 일정 [{id,authorId,title,startDate,endDate,scope:"personal"|"team"|"dept"|"company",dept,team,memo,color,createdAt}]
 let personalTasks=[]; // 개인 할일 [{id,ownerId,title,dueDate,priority,status,memo,createdAt,updatedAt}]
@@ -1119,7 +1126,8 @@ function _recordCollections(){return{
   yearEndSettlements,
   payrollAdjustments,leaveUsagePlans,boardPosts,roomReservations,certLog,certRequests,
   welfarePoints,mandatoryTraining,healthCheckupLog,scheduleEvents,personalTasks,workReports,expenseClaims,
-  overtimeRequests,onboardingFlows,approvalDelegations,engagementSurveys,engagementResponses,engagementActions
+  overtimeRequests,onboardingFlows,approvalDelegations,engagementSurveys,engagementResponses,engagementActions,
+  trainingCourses,trainingEnrollments
 };}
 function _applyRecordRevisions(revisions){
   const collections=_recordCollections();
@@ -2653,6 +2661,7 @@ const SNAPSHOT_FIELD_LABELS = {
   orgChartHistory:"조직도 이력", coreTalentPool:"핵심인재 풀", talentDevPlans:"인재개발계획", successionPlans:"승계계획",
   jobSkillProfiles:"직무·스킬 기준", employeeSkillProfiles:"직원 스킬 프로필", workforceScenarios:"전략적 인력계획 시나리오", workforcePositions:"정원·포지션 마스터", positionRequests:"포지션 신설·증원 요청",
   compGradeResults:"보상등급 결과", gradeAdjustHistory:"등급조정 이력", scoreAdjustments:"가감점(상벌점)", okrObjectives:"OKR", tieNotifications:"동점자 알림",
+  trainingCourses:"교육 과정", trainingEnrollments:"교육 신청/이수",
   lowPerfData:"저성과자 데이터", approvalTemplates:"전자결재 템플릿", integrationLogs:"연동 로그",
   approvalDocs:"전자결재 문서", attendanceRecords:"근태기록", payslips:"급여명세서", payrollAdjustments:"급여 조정항목",
   leaveUsagePlans:"연차 사용계획서",
@@ -5843,6 +5852,8 @@ function getFullState(action=""){
       gradeAdjustHistory:JSON.parse(JSON.stringify(gradeAdjustHistory)),
       scoreAdjustments:JSON.parse(JSON.stringify(scoreAdjustments)),
       okrObjectives:JSON.parse(JSON.stringify(okrObjectives)),
+      trainingCourses:JSON.parse(JSON.stringify(trainingCourses)),
+      trainingEnrollments:JSON.parse(JSON.stringify(trainingEnrollments)),
       evaluatorConfig:JSON.parse(JSON.stringify(evaluatorConfig)),
       tieNotifications:JSON.parse(JSON.stringify(tieNotifications)),
       lowPerfData:JSON.parse(JSON.stringify(lowPerfData)),
@@ -6073,6 +6084,8 @@ function applyState(state,skipUndo=false){
   if(d.gradeAdjustHistory&&Array.isArray(d.gradeAdjustHistory))gradeAdjustHistory=d.gradeAdjustHistory;
   if(d.scoreAdjustments&&Array.isArray(d.scoreAdjustments))scoreAdjustments=_mergeByIdPreferNewer(scoreAdjustments,d.scoreAdjustments,'scoreAdjustments');
   if(d.okrObjectives&&Array.isArray(d.okrObjectives))okrObjectives=_mergeByIdPreferNewer(okrObjectives,d.okrObjectives,'okrObjectives');
+  if(d.trainingCourses&&Array.isArray(d.trainingCourses))trainingCourses=_mergeByIdPreferNewer(trainingCourses,d.trainingCourses,'trainingCourses');
+  if(d.trainingEnrollments&&Array.isArray(d.trainingEnrollments))trainingEnrollments=_mergeByIdPreferNewer(trainingEnrollments,d.trainingEnrollments,'trainingEnrollments');
   if(d.evaluatorConfig&&typeof d.evaluatorConfig==="object")evaluatorConfig={...evaluatorConfig,...d.evaluatorConfig};
   if(d.tieNotifications&&Array.isArray(d.tieNotifications))tieNotifications=_mergeByIdPreferNewer(tieNotifications,d.tieNotifications,'tieNotifications');
   if(d.lowPerfData&&Array.isArray(d.lowPerfData))lowPerfData=_mergeByIdPreferNewer(lowPerfData,d.lowPerfData,'lowPerfData');
@@ -6422,6 +6435,8 @@ function mergeImportData(parsed){
   if(d.gradeAdjustHistory&&Array.isArray(d.gradeAdjustHistory)){const existIds=new Set(gradeAdjustHistory.map(r=>r.id));d.gradeAdjustHistory.forEach(r=>{if(r&&r.id&&!existIds.has(r.id))gradeAdjustHistory.push(r);});}
   if(d.scoreAdjustments&&Array.isArray(d.scoreAdjustments)){const existIds=new Set(scoreAdjustments.map(r=>r.id));d.scoreAdjustments.forEach(r=>{if(r&&r.id&&!existIds.has(r.id))scoreAdjustments.push(r);});}
   if(d.okrObjectives&&Array.isArray(d.okrObjectives)){const existIds=new Set(okrObjectives.map(r=>r.id));d.okrObjectives.forEach(r=>{if(r&&r.id&&!existIds.has(r.id))okrObjectives.push(r);});}
+  if(d.trainingCourses&&Array.isArray(d.trainingCourses)){const existIds=new Set(trainingCourses.map(r=>r.id));d.trainingCourses.forEach(r=>{if(r&&r.id&&!existIds.has(r.id))trainingCourses.push(r);});}
+  if(d.trainingEnrollments&&Array.isArray(d.trainingEnrollments)){const existIds=new Set(trainingEnrollments.map(r=>r.id));d.trainingEnrollments.forEach(r=>{if(r&&r.id&&!existIds.has(r.id))trainingEnrollments.push(r);});}
 }
 
 async function normalizeEmployeeCredentials(){
@@ -7387,6 +7402,7 @@ function renderSidebar(){
     "welfare-sep":[
       {id:"welfare-sep",type:"sep",label:"복지/교육",roles:["admin","director","leader","member"]},
       {id:"mandatory-training",label:"법정의무교육",icon:"📚",desc:"법정 필수 교육 이수 현황",roles:["admin","director","leader","member"]},
+      {id:"training-courses",label:"교육 과정",icon:"🎓",desc:"개설된 교육 과정 조회·신청·이수 현황",roles:["admin","director","leader","member"]},
       {id:"welfare-status",label:"복지 현황",icon:"🩺",desc:"종합검진 대상 여부",roles:["admin","director","leader","member"]},
     ],
     "pay-sep":[
@@ -7408,6 +7424,7 @@ function renderSidebar(){
       {id:"award-history",label:"(최)우수사원 선정 이력",icon:"🏆",desc:"전직원 우수사원 선정 이력 조회",roles:["admin","director","leader"]},
       {id:"hr-welfare-points",label:"복지포인트 현황(전체)",icon:"🎁",desc:"전체 직원 복지포인트 부여·사용 현황",roles:welfareAllRoles},
       {id:"hr-mandatory-training",label:"법정의무교육 현황(전체)",icon:"📚",desc:"소속 직원 전체 법정의무교육 이수 현황",roles:["admin","director","leader"]},
+      {id:"training-admin",label:"교육 과정 관리",icon:"🗂",desc:"과정 개설·신청자 관리·설문·비용정산",roles:["admin"]},
       {id:"hr-attendance",label:"근태 현황(전체)",icon:"📅",desc:"소속 직원 전체 근태 현황 조회",roles:["admin","director"]},
       {id:"hr-leave-mgmt",label:"연차 관리(전체)",icon:"🌴",desc:"소속 직원 전체 연차 부여·사용·잔여 현황",roles:["admin","director"]},
       {id:"payroll-mgmt",label:"급여 종합 관리",icon:"💵",desc:"전직원 급여·공제 현황 조회 및 조정",roles:["admin"]},
@@ -7563,6 +7580,8 @@ function renderSidebar(){
   titles["work-reports"]="업무보고";
   titles["admin-operations"]="관리자 운영센터";
   titles["code-mgmt"]="코드관리";
+  titles["training-courses"]="교육 과정";
+  titles["training-admin"]="교육 과정 관리";
   const ptEl=$("#page-title");if(ptEl)ptEl.textContent=titles[currentPage]||"";
   const sb=$("#sidebar");if(!sb)return;
   // Filter by role + per-user custom permission overrides (admin-managed)
@@ -7673,7 +7692,7 @@ const PAGE_ROLES={
   "engagement-pulse-action-detail":["admin","director","leader","member"],
   "hr-register":["admin"],"hr-changes":["admin"],"contract-mgmt":["admin","director"],"hr-stats":["admin"],"hr-list":["admin","director","leader"],
   "long-service-award":["admin"],"award-history":["admin","director","leader"],
-  "hr-mandatory-training":["admin","director","leader"],
+  "hr-mandatory-training":["admin","director","leader"],"training-admin":["admin"],
   "hr-attendance":["admin","director"],"hr-leave-mgmt":["admin","director"],"payroll-mgmt":["admin"],
   "first-eval":["admin","leader"],"second-eval":["admin","director"],"kpi-amend":["admin","director","leader"],
   "grade-view":["admin","director","leader"],"comp-grade-view":["admin"],"comp-settings-shortcut":["admin"],
@@ -7988,6 +8007,8 @@ function renderPage(){
   pages["okr"]=renderOkrPage;
   pages["contract-mgmt"]=renderContractMgmtPage;
   pages["code-mgmt"]=renderCodeMgmtPage;
+  pages["training-courses"]=renderTrainingCoursesPage;
+  pages["training-admin"]=renderTrainingAdminPage;
   pages["admin-operations"]=window.renderAdminOperationsPage;
   const fn=pages[currentPage];const c=$("#content");
   if(c&&fn){
@@ -10304,6 +10325,7 @@ function renderCodeMgmtPage(){
     {title:"운영 설정",items:[
       ["결재 양식",approvalTemplates.length,"approval-templates"],
       ["법정의무교육 유형",(settings.mandatoryTrainingTypes||[]).length,"settings"],
+      ["교육 과정",trainingCourses.length,"training-admin"],
       ["유연근무 옵션",(settings.flexWorkOptions||[]).length,"attend-settings"],
       ["KPI 평가 단계",kpiStagesConfig().length,"eval-ops"],
       ["회의실",(roomReservations?Array.from(new Set(roomReservations.map(r=>r.room))).length:0),"room-settings"],
@@ -14604,7 +14626,7 @@ async function doResetAll(){
     // 불가 상태였음).
     const d=await serverRequest("POST","/api/reset-all",{loginId:currentUser?.loginId,pw});
     if(!d.ok)throw new Error(d.message);
-    employees=[];kpiEntries=[];changeRequests=[];compGradeResults={};gradeAdjustHistory=[];scoreAdjustments=[];okrObjectives=[];
+    employees=[];kpiEntries=[];changeRequests=[];compGradeResults={};gradeAdjustHistory=[];scoreAdjustments=[];okrObjectives=[];trainingCourses=[];trainingEnrollments=[];
     coreTalentPool=[];talentDevPlans=[];successionPlans=[];jobSkillProfiles=[];employeeSkillProfiles=[];workforceScenarios=[];workforcePositions=[];positionRequests=[];_positionRequestPicker=[];_positionRequestPickerLoaded=false;_positionBudgetPicker=[];_positionBudgetPickerLoaded=false;lowPerfData=[];tieNotifications=[];
     approvalDocs=[];attendanceRecords=[];payslips=[];yearEndSettlements=[];payrollAdjustments=[];leaveUsagePlans=[];boardPosts=[];roomReservations=[];certLog=[];certRequests=[];welfarePoints=[];mandatoryTraining=[];healthCheckupLog=[];personalTasks=[];workReports=[];engagementSurveys=[];engagementResponses=[];engagementActions=[];engagementPulseSummary={};
     showToast("전체 데이터가 초기화되었습니다.","success");
@@ -30070,6 +30092,307 @@ function exportMandatoryTrainingCSV(yr){
   dlCSV(`법정의무교육_이수현황_${yr}.csv`,["이름","부서","교육명","이수여부","이수일","이수방법"],rows);
 }
 
+// ==================== 교육 과정 관리(D3, HR마인드 벤치마킹) ====================
+// trainingCourses(과정 카탈로그)+trainingEnrollments(신청/이수/설문) — mandatoryTraining(법정의무교육
+// 완료로그)·hrHistory의 edu_*(개인 교육이력)와는 완전히 별개의 모듈. 과정을 개설하고 정원 안에서
+// 직원이 자율 신청(정원 초과 시 대기)하는 카탈로그형 워크플로우이며, 완료 후 법정의무교육/인사
+// 이력에 반영하려면 관리자가 해당 화면에서 별도로 등록해야 한다(자동 연동 없음).
+const TRAINING_CATEGORIES=["리더십","직무역량","신입/온보딩","법정/컴플라이언스","어학","IT/디지털","기타"];
+function _tcCourseEnrollCounts(courseId){
+  const list=trainingEnrollments.filter(e=>e.courseId===courseId&&e.status!=="canceled");
+  return{applied:list.filter(e=>e.status!=="waitlisted").length,waitlisted:list.filter(e=>e.status==="waitlisted").length,completed:list.filter(e=>e.status==="completed").length};
+}
+function _tcStatusBadge(status){
+  const M={applied:["신청완료","blue"],waitlisted:["대기중","orange"],canceled:["취소","gray"],completed:["이수완료","green"]};
+  const [label,color]=M[status]||[status,"gray"];
+  return badge(label,color);
+}
+function _tcStatusBadgeCourse(status){
+  const M={planned:["준비중","gray"],open:["모집중","blue"],closed:["모집마감","orange"],completed:["종료","green"],canceled:["취소됨","red"]};
+  const [label,color]=M[status]||[status,"gray"];
+  return badge(label,color);
+}
+let _tcTab="browse"; // 'browse'(개설된 과정) | 'mine'(내 신청 내역)
+function _tcSwitchTab(t){_tcTab=t;renderTrainingCoursesPage();}
+function renderTrainingCoursesPage(){
+  const c=$("#content");if(!c)return;
+  const u=currentUser;
+  const myEnrollments=trainingEnrollments.filter(e=>String(e.empId)===String(u.id));
+  const courses=[...trainingCourses].sort((a,b)=>String(b.startDate||"").localeCompare(String(a.startDate||"")));
+  const myActiveCount=myEnrollments.filter(e=>e.status!=="canceled").length;
+  c.innerHTML=`<div class="flex justify-between items-c mb3"><h2>🎓 교육 과정</h2>
+    <div class="flex gap2">
+      <button class="btn btn-sm ${_tcTab==="browse"?"btn-primary":"btn-secondary"}" onclick="_tcSwitchTab('browse')">개설된 과정</button>
+      <button class="btn btn-sm ${_tcTab==="mine"?"btn-primary":"btn-secondary"}" onclick="_tcSwitchTab('mine')">내 신청 내역(${myActiveCount})</button>
+    </div></div>
+  ${_tcTab==="browse"?_tcRenderBrowse(courses,myEnrollments):_tcRenderMine(myEnrollments)}`;
+}
+function _tcRenderBrowse(courses,myEnrollments){
+  if(!courses.length)return`<div class="card"><div class="card-body tc text-gray p-empty">개설된 교육 과정이 없습니다.</div></div>`;
+  return courses.map(cs=>{
+    const myEnr=myEnrollments.find(e=>e.courseId===cs.id&&e.status!=="canceled");
+    const stats=_tcCourseEnrollCounts(cs.id);
+    const full=!!(cs.capacity&&stats.applied>=Number(cs.capacity));
+    const canApply=!myEnr&&["open","planned"].includes(cs.status);
+    let actionHtml="";
+    if(canApply)actionHtml=`<button class="btn btn-primary btn-sm" onclick="tcApply('${cs.id}')">${full?"대기 신청":"신청하기"}</button>`;
+    else if(myEnr&&["applied","waitlisted"].includes(myEnr.status))actionHtml=`<button class="btn btn-danger btn-sm" onclick="tcCancelMyEnrollment('${myEnr.id}')">신청 취소</button>`;
+    else if(myEnr&&myEnr.status==="completed"){
+      if(cs.surveyEnabled&&!myEnr.surveyResponse)actionHtml=`<button class="btn btn-secondary btn-sm" onclick="openTcSurveyModal('${myEnr.id}')">📝 만족도 설문 작성</button>`;
+      else if(myEnr.surveyResponse)actionHtml=`<span class="fz12 text-gray">설문 제출 완료</span>`;
+    }
+    return`<div class="card mb3"><div class="card-head"><div>
+      <h3>${h(cs.title)} ${_tcStatusBadgeCourse(cs.status)}</h3>
+      <div class="fz11 text-gray">${h(cs.category||"")}${cs.instructor?" · 강사: "+h(cs.instructor):""}${cs.institution?" · "+h(cs.institution):""}</div>
+      </div>${myEnr?_tcStatusBadge(myEnr.status):""}</div>
+      <div class="card-body">
+        <div class="fz12 mb2">📅 ${h(cs.startDate||"-")} ~ ${h(cs.endDate||"-")}${cs.location?" · 📍"+h(cs.location):""}</div>
+        <div class="fz12 mb2">👥 신청 ${stats.applied}명${cs.capacity?`/${cs.capacity}명`:""}${stats.waitlisted?` · 대기 ${stats.waitlisted}명`:""}</div>
+        ${cs.description?`<div class="fz12 text-gray mb2">${h(cs.description)}</div>`:""}
+        ${actionHtml}
+      </div></div>`;
+  }).join("");
+}
+function _tcRenderMine(myEnrollments){
+  const list=myEnrollments.filter(e=>e.status!=="canceled").sort((a,b)=>String(b.appliedAt||"").localeCompare(String(a.appliedAt||"")));
+  if(!list.length)return`<div class="card"><div class="card-body tc text-gray p-empty">신청한 교육이 없습니다.</div></div>`;
+  return`<div class="card"><div class="card-body" style="padding:0"><div class="tbl-wrap"><table><thead><tr><th>과정명</th><th>기간</th><th>상태</th><th>설문</th><th></th></tr></thead><tbody>
+    ${list.map(e=>{
+      const cs=trainingCourses.find(c=>c.id===e.courseId);
+      return`<tr><td><strong>${h(cs?.title||"(삭제된 과정)")}</strong></td>
+        <td class="fz12 text-gray">${h(cs?.startDate||"")} ~ ${h(cs?.endDate||"")}</td>
+        <td>${_tcStatusBadge(e.status)}</td>
+        <td class="fz12">${e.surveyResponse?`만족도 ${e.surveyResponse.satisfaction}/5`:(e.status==="completed"&&cs?.surveyEnabled?"미제출":"-")}</td>
+        <td style="white-space:nowrap">${["applied","waitlisted"].includes(e.status)?`<button class="btn btn-danger btn-sm" onclick="tcCancelMyEnrollment('${e.id}')">취소</button>`:""}${e.status==="completed"&&cs?.surveyEnabled&&!e.surveyResponse?`<button class="btn btn-secondary btn-sm" onclick="openTcSurveyModal('${e.id}')">설문 작성</button>`:""}</td>
+      </tr>`;
+    }).join("")}
+  </tbody></table></div></div></div>`;
+}
+function tcApply(courseId){
+  const cs=trainingCourses.find(c=>c.id===courseId);if(!cs)return;
+  if(!["open","planned"].includes(cs.status)){showToast("현재 신청을 받지 않는 과정입니다.","error");return;}
+  if(trainingEnrollments.some(e=>e.courseId===courseId&&String(e.empId)===String(currentUser.id)&&e.status!=="canceled")){showToast("이미 신청한 과정입니다.","error");return;}
+  const stats=_tcCourseEnrollCounts(courseId);
+  const full=!!(cs.capacity&&stats.applied>=Number(cs.capacity));
+  const emp=getEmp(currentUser.id);
+  const now=new Date().toISOString();
+  trainingEnrollments.push({id:`tenr-${genId()}`,courseId,empId:currentUser.id,empName:currentUser.name,dept:emp?.dept||"",team:emp?.team||"",appliedAt:now,status:full?"waitlisted":"applied",completedAt:"",surveyResponse:null,note:"",createdAt:now,updatedAt:now});
+  autoSaveToServerIfEnabled();
+  showToast(full?"정원이 가득 차 대기 신청되었습니다.":"신청이 완료되었습니다.","success");
+  renderTrainingCoursesPage();
+}
+function tcCancelMyEnrollment(enrollId){
+  const e=trainingEnrollments.find(x=>x.id===enrollId);if(!e)return;
+  if(String(e.empId)!==String(currentUser.id)&&currentUser.role!=="admin"){showToast("권한이 없습니다.","error");return;}
+  trainingEnrollments=trainingEnrollments.map(x=>x.id===enrollId?{...x,status:"canceled",updatedAt:new Date().toISOString()}:x);
+  autoSaveToServerIfEnabled();
+  showToast("신청이 취소되었습니다.","info");
+  renderTrainingCoursesPage();
+}
+function openTcSurveyModal(enrollId){
+  const e=trainingEnrollments.find(x=>x.id===enrollId);if(!e)return;
+  openModal(`<div class="modal-box" style="max-width:420px"><div class="modal-head"><h3>📝 교육 만족도 설문</h3></div><div class="modal-body">
+    <div class="fg"><label class="fl">만족도 <span class="req">*</span></label>
+      <select class="fc" id="tcs-sat"><option value="">선택</option>${[5,4,3,2,1].map(n=>`<option value="${n}">${n}점 (${"★".repeat(n)}${"☆".repeat(5-n)})</option>`).join("")}</select></div>
+    <div class="fg"><label class="fl">의견</label><textarea class="fc" id="tcs-comment" rows="4" placeholder="교육에 대한 의견을 남겨주세요."></textarea></div>
+  </div><div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal()">취소</button><button class="btn btn-primary" onclick="tcSubmitSurvey('${enrollId}')">제출</button></div></div>`);
+}
+function tcSubmitSurvey(enrollId){
+  const sat=Number($("#tcs-sat")?.value);
+  if(!sat){showToast("만족도를 선택하세요.","error");return;}
+  const comment=$("#tcs-comment")?.value.trim()||"";
+  trainingEnrollments=trainingEnrollments.map(e=>e.id===enrollId?{...e,surveyResponse:{satisfaction:sat,comment,submittedAt:new Date().toISOString()},updatedAt:new Date().toISOString()}:e);
+  closeModal();autoSaveToServerIfEnabled();showToast("설문이 제출되었습니다. 감사합니다.","success");
+  renderTrainingCoursesPage();
+}
+// ---- 관리자: 과정 개설/수정/삭제, 신청자 관리, 비용·결과 리포트 ----
+function renderTrainingAdminPage(){
+  const c=$("#content");if(!c)return;
+  const courses=[...trainingCourses].sort((a,b)=>String(b.startDate||"").localeCompare(String(a.startDate||"")));
+  const totalCost=courses.filter(cs=>cs.status!=="canceled").reduce((s,cs)=>s+(Number(cs.cost)||0),0);
+  const totalCompleted=trainingEnrollments.filter(e=>e.status==="completed").length;
+  c.innerHTML=`<div class="flex justify-between items-c mb3"><div><h2>🗂 교육 과정 관리</h2>
+    <div class="fz11 text-gray">법정의무교육(이수로그)·개인 교육이력(인사발령)과는 별개의 과정 카탈로그입니다. 완료된 과정을 법정의무교육/인사이력에 반영하려면 각 화면에서 직접 등록해주세요.</div></div>
+    <div class="flex gap2"><button class="btn btn-secondary btn-sm" onclick="exportTrainingCoursesCSV()">📥 비용·결과 다운로드</button><button class="btn btn-primary" onclick="openTrainingCourseModal(null)">＋ 과정 개설</button></div></div>
+  <div class="flex gap3 mb3">
+    <div class="card" style="flex:1"><div class="card-body tc"><div class="fz11 text-gray">전체 과정</div><div style="font-size:24px;font-weight:800">${courses.length}</div></div></div>
+    <div class="card" style="flex:1"><div class="card-body tc"><div class="fz11 text-gray">누적 이수 인원</div><div style="font-size:24px;font-weight:800;color:#16a34a">${totalCompleted}</div></div></div>
+    <div class="card" style="flex:1"><div class="card-body tc"><div class="fz11 text-gray">총 교육비(취소 제외)</div><div style="font-size:24px;font-weight:800;color:#2563eb">${totalCost.toLocaleString()}원</div></div></div>
+  </div>
+  <div class="card"><div class="card-body" style="padding:0"><div class="tbl-wrap"><table><thead><tr><th>과정명</th><th>기간</th><th>신청/정원</th><th>이수</th><th>비용</th><th>상태</th><th style="text-align:right">관리</th></tr></thead><tbody>
+    ${courses.length?courses.map(cs=>{
+      const stats=_tcCourseEnrollCounts(cs.id);
+      return`<tr>
+        <td><strong>${h(cs.title)}</strong><div class="fz11 text-gray">${h(cs.category||"")}</div></td>
+        <td class="fz12">${h(cs.startDate||"")} ~ ${h(cs.endDate||"")}</td>
+        <td class="tc">${stats.applied}${cs.capacity?`/${cs.capacity}`:""}${stats.waitlisted?` (대기${stats.waitlisted})`:""}</td>
+        <td class="tc" style="color:#16a34a;font-weight:600">${stats.completed}</td>
+        <td class="fz12">${(Number(cs.cost)||0).toLocaleString()}원</td>
+        <td>${_tcStatusBadgeCourse(cs.status)}</td>
+        <td style="text-align:right;white-space:nowrap"><button class="btn btn-secondary btn-sm" onclick="openTcRosterModal('${cs.id}')">신청자 관리</button> <button class="btn btn-secondary btn-sm" onclick="openTrainingCourseModal('${cs.id}')">수정</button> <button class="btn btn-danger btn-sm" onclick="deleteTrainingCourse('${cs.id}')">삭제</button></td>
+      </tr>`;
+    }).join(""):`<tr><td colspan="7" style="padding:30px;text-align:center;color:#94a3b8">개설된 교육 과정이 없습니다.</td></tr>`}
+  </tbody></table></div></div></div>`;
+}
+function openTrainingCourseModal(courseId){
+  const cs=courseId?trainingCourses.find(c=>c.id===courseId):null;
+  openModal(`<div class="modal-box" style="max-width:520px"><div class="modal-head"><h3>${cs?"교육 과정 수정":"교육 과정 개설"}</h3></div><div class="modal-body">
+    <div class="fg"><label class="fl">과정명 <span class="req">*</span></label><input class="fc" id="tc-title" value="${cs?h(cs.title):""}" placeholder="예: 신임 리더 역량강화 과정"></div>
+    <div class="g2">
+      <div class="fg"><label class="fl">분류</label><select class="fc" id="tc-category"><option value="">선택</option>${TRAINING_CATEGORIES.map(c2=>`<option ${cs?.category===c2?"selected":""}>${c2}</option>`).join("")}</select></div>
+      <div class="fg"><label class="fl">상태</label><select class="fc" id="tc-status">
+        <option value="planned" ${(!cs||cs.status==="planned")?"selected":""}>준비중</option>
+        <option value="open" ${cs?.status==="open"?"selected":""}>모집중</option>
+        <option value="closed" ${cs?.status==="closed"?"selected":""}>모집마감</option>
+        <option value="completed" ${cs?.status==="completed"?"selected":""}>종료</option>
+        <option value="canceled" ${cs?.status==="canceled"?"selected":""}>취소</option>
+      </select></div>
+    </div>
+    <div class="g2">
+      <div class="fg"><label class="fl">강사</label><input class="fc" id="tc-instructor" value="${cs?h(cs.instructor||""):""}"></div>
+      <div class="fg"><label class="fl">교육기관</label><input class="fc" id="tc-institution" value="${cs?h(cs.institution||""):""}"></div>
+    </div>
+    <div class="g2">
+      <div class="fg"><label class="fl">시작일 <span class="req">*</span></label><input class="fc" type="date" id="tc-start" value="${cs?.startDate||""}"></div>
+      <div class="fg"><label class="fl">종료일</label><input class="fc" type="date" id="tc-end" value="${cs?.endDate||""}"></div>
+    </div>
+    <div class="g2">
+      <div class="fg"><label class="fl">장소</label><input class="fc" id="tc-location" value="${cs?h(cs.location||""):""}" placeholder="온라인 / 본사 교육장 등"></div>
+      <div class="fg"><label class="fl">정원</label><input class="fc" type="number" id="tc-capacity" min="0" value="${cs?.capacity??""}" placeholder="제한 없음"></div>
+    </div>
+    <div class="fg"><label class="fl">교육비(원)</label><input class="fc" type="number" id="tc-cost" min="0" value="${cs?.cost??""}" placeholder="0"></div>
+    <div class="fg"><label class="fl">설명</label><textarea class="fc" id="tc-desc" rows="3">${cs?h(cs.description||""):""}</textarea></div>
+    <label style="display:flex;align-items:center;gap:6px;cursor:pointer;margin-top:4px"><input type="checkbox" id="tc-survey" ${(!cs||cs.surveyEnabled!==false)?"checked":""}> 이수 후 만족도 설문 사용</label>
+  </div><div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal()">취소</button><button class="btn btn-primary" onclick="saveTrainingCourse(${cs?`'${cs.id}'`:"null"})">저장</button></div></div>`);
+}
+function saveTrainingCourse(courseId){
+  const title=$("#tc-title")?.value.trim();
+  if(!title){showToast("과정명을 입력하세요.","error");return;}
+  const startDate=$("#tc-start")?.value;
+  if(!startDate){showToast("시작일을 입력하세요.","error");return;}
+  const endDate=$("#tc-end")?.value||"";
+  if(endDate&&endDate<startDate){showToast("종료일은 시작일 이후여야 합니다.","error");return;}
+  const capacityRaw=$("#tc-capacity")?.value;
+  const capacity=capacityRaw?Math.max(0,parseInt(capacityRaw,10)||0):null;
+  const costRaw=$("#tc-cost")?.value;
+  const cost=costRaw?Math.max(0,Number(costRaw)||0):0;
+  const payload={
+    title,category:$("#tc-category")?.value||"",status:$("#tc-status")?.value||"planned",
+    instructor:$("#tc-instructor")?.value.trim()||"",institution:$("#tc-institution")?.value.trim()||"",
+    startDate,endDate,location:$("#tc-location")?.value.trim()||"",capacity,cost,
+    description:$("#tc-desc")?.value.trim()||"",surveyEnabled:!!$("#tc-survey")?.checked,
+    updatedAt:new Date().toISOString(),
+  };
+  if(courseId){
+    trainingCourses=trainingCourses.map(c=>c.id===courseId?{...c,...payload}:c);
+  }else{
+    trainingCourses.push({id:`tcrs-${genId()}`,...payload,createdBy:currentUser.id,createdByName:currentUser.name,createdAt:new Date().toISOString()});
+  }
+  closeModal();autoSaveToServerIfEnabled();showToast(courseId?"과정이 수정되었습니다.":"과정이 개설되었습니다.","success");
+  logAction(courseId?"training_course_updated":"training_course_created","교육 과정",title,title);
+  renderTrainingAdminPage();
+}
+async function deleteTrainingCourse(courseId){
+  const cs=trainingCourses.find(c=>c.id===courseId);if(!cs)return;
+  const enrolled=trainingEnrollments.filter(e=>e.courseId===courseId&&e.status!=="canceled").length;
+  const ok=await askConfirmModal({
+    title:"교육 과정 삭제",message:"이 교육 과정을 삭제하시겠습니까?",confirmText:"삭제",danger:true,
+    impacts:[{label:"과정명",value:cs.title},{label:"신청 인원",value:`${enrolled}명`,tone:enrolled?"warn":undefined}],
+    warnings:enrolled?["신청/이수 기록도 함께 삭제됩니다. 신청 인원이 있는 과정은 삭제 대신 상태를 '취소'로 바꾸는 것을 권장합니다."]:undefined,
+  });
+  if(!ok)return;
+  _tombstone("trainingCourses",courseId);
+  trainingEnrollments.filter(e=>e.courseId===courseId).forEach(e=>_tombstone("trainingEnrollments",e.id));
+  trainingCourses=trainingCourses.filter(c=>c.id!==courseId);
+  trainingEnrollments=trainingEnrollments.filter(e=>e.courseId!==courseId);
+  autoSaveToServerIfEnabled();showToast("삭제되었습니다.","info");
+  logAction("training_course_deleted","교육 과정",cs.title,cs.title);
+  renderTrainingAdminPage();
+}
+function openTcRosterModal(courseId){
+  openModal(`<div class="modal-box" style="max-width:640px"><div class="modal-head"><h3>👥 신청자 관리</h3></div>
+    <div class="modal-body" id="tc-roster-body" style="padding:0;max-height:480px;overflow-y:auto"></div>
+    <div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal()">닫기</button></div></div>`);
+  _tcRosterRefresh(courseId);
+}
+function _tcRosterRefresh(courseId){
+  const el=document.getElementById("tc-roster-body");if(!el)return;
+  el.innerHTML=_tcRosterHtml(courseId);
+}
+function _tcRosterHtml(courseId){
+  const cs=trainingCourses.find(c=>c.id===courseId);if(!cs)return`<div class="p-empty tc text-gray">과정을 찾을 수 없습니다.</div>`;
+  const list=trainingEnrollments.filter(e=>e.courseId===courseId&&e.status!=="canceled").sort((a,b)=>String(a.appliedAt||"").localeCompare(String(b.appliedAt||"")));
+  return`<div style="padding:12px 16px;background:#f8fafc;border-bottom:1px solid #e2e8f0;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+    <div><strong>${h(cs.title)}</strong> <span class="fz11 text-gray">${h(cs.startDate||"")} ~ ${h(cs.endDate||"")}</span></div>
+    <div class="flex gap2">
+      <button class="btn btn-secondary btn-sm" onclick="_tcAdminAddEnrollment('${courseId}')">＋ 직원 등록</button>
+      <button class="btn btn-success btn-sm" onclick="_tcAdminCompleteAll('${courseId}')">선택 완료 처리</button>
+    </div></div>
+  <div class="tbl-wrap"><table><thead><tr><th><input type="checkbox" onchange="document.querySelectorAll('.tc-roster-chk:not(:disabled)').forEach(c2=>c2.checked=this.checked)"></th><th>이름</th><th>부서/팀</th><th>신청일</th><th>상태</th><th>설문</th><th>관리</th></tr></thead><tbody>
+    ${list.length?list.map(e=>`<tr>
+      <td><input type="checkbox" class="tc-roster-chk" value="${e.id}" ${e.status==="applied"?"":"disabled"}></td>
+      <td><strong>${h(e.empName)}</strong></td>
+      <td class="fz12 text-gray">${h(e.dept||"")} ${h(e.team||"")}</td>
+      <td class="fz12">${(e.appliedAt||"").slice(0,10)}</td>
+      <td>${_tcStatusBadge(e.status)}</td>
+      <td class="fz12">${e.surveyResponse?`${e.surveyResponse.satisfaction}/5`:"-"}</td>
+      <td style="white-space:nowrap">
+        ${e.status==="waitlisted"?`<button class="btn btn-secondary btn-sm" onclick="_tcAdminPromote('${e.id}')">대기→신청</button>`:""}
+        ${e.status!=="completed"?`<button class="btn btn-danger btn-sm" onclick="_tcAdminCancel('${e.id}')">취소</button>`:""}
+      </td>
+    </tr>`).join(""):`<tr><td colspan="7" style="padding:20px;text-align:center;color:#94a3b8">신청자가 없습니다.</td></tr>`}
+  </tbody></table></div>`;
+}
+function _tcAdminAddEnrollment(courseId){
+  const existing=new Set(trainingEnrollments.filter(e=>e.courseId===courseId&&e.status!=="canceled").map(e=>String(e.empId)));
+  openOrgPicker({multi:true,exclude:[...existing],title:"교육 과정에 등록할 직원 선택",onConfirm:(ids)=>{
+    if(!ids.length)return;
+    const cs=trainingCourses.find(c=>c.id===courseId);if(!cs)return;
+    let added=0;
+    ids.forEach(empId=>{
+      if(existing.has(String(empId)))return;
+      const emp=getEmp(empId);if(!emp)return;
+      const stats=_tcCourseEnrollCounts(courseId);
+      const full=!!(cs.capacity&&stats.applied>=Number(cs.capacity));
+      const now=new Date().toISOString();
+      trainingEnrollments.push({id:`tenr-${genId()}`,courseId,empId,empName:emp.name,dept:emp.dept||"",team:emp.team||"",appliedAt:now,status:full?"waitlisted":"applied",completedAt:"",surveyResponse:null,note:"관리자 등록",createdAt:now,updatedAt:now});
+      existing.add(String(empId));added++;
+    });
+    autoSaveToServerIfEnabled();showToast(`${added}명이 등록되었습니다.`,"success");
+    _tcRosterRefresh(courseId);
+  }});
+}
+function _tcAdminPromote(enrollId){
+  const e=trainingEnrollments.find(x=>x.id===enrollId);if(!e)return;
+  trainingEnrollments=trainingEnrollments.map(x=>x.id===enrollId?{...x,status:"applied",updatedAt:new Date().toISOString()}:x);
+  autoSaveToServerIfEnabled();showToast("신청으로 전환되었습니다.","success");
+  _tcRosterRefresh(e.courseId);
+}
+async function _tcAdminCancel(enrollId){
+  const e=trainingEnrollments.find(x=>x.id===enrollId);if(!e)return;
+  const ok=await askConfirmModal({title:"신청 취소",message:`${e.empName}님의 신청을 취소하시겠습니까?`,confirmText:"취소",danger:true});
+  if(!ok)return;
+  trainingEnrollments=trainingEnrollments.map(x=>x.id===enrollId?{...x,status:"canceled",updatedAt:new Date().toISOString()}:x);
+  autoSaveToServerIfEnabled();showToast("취소되었습니다.","info");
+  _tcRosterRefresh(e.courseId);
+}
+function _tcAdminCompleteAll(courseId){
+  const checked=[...document.querySelectorAll(".tc-roster-chk:checked")].map(c=>c.value);
+  if(!checked.length){showToast("완료 처리할 신청자를 선택하세요.","error");return;}
+  const today=new Date().toISOString().slice(0,10);
+  trainingEnrollments=trainingEnrollments.map(e=>checked.includes(e.id)?{...e,status:"completed",completedAt:today,updatedAt:new Date().toISOString()}:e);
+  autoSaveToServerIfEnabled();showToast(`${checked.length}명 이수 완료 처리되었습니다.`,"success");
+  _tcRosterRefresh(courseId);
+}
+function exportTrainingCoursesCSV(){
+  const STATUS_LABEL={planned:"준비중",open:"모집중",closed:"모집마감",completed:"종료",canceled:"취소"};
+  const rows=trainingCourses.map(cs=>{
+    const stats=_tcCourseEnrollCounts(cs.id);
+    return[cs.title,cs.category||"",cs.instructor||"",cs.institution||"",cs.startDate||"",cs.endDate||"",STATUS_LABEL[cs.status]||cs.status,stats.applied,stats.waitlisted,stats.completed,Number(cs.cost)||0];
+  });
+  dlCSV(`교육과정_비용결과_${new Date().toISOString().slice(0,10)}.csv`,["과정명","분류","강사","교육기관","시작일","종료일","상태","신청인원","대기인원","이수인원","교육비"],rows);
+}
+
 // ==================== GLOBAL SEARCH ====================
 function onGlobalSearchInput(val){
   const q=(val||"").trim().toLowerCase();
@@ -30494,6 +30817,10 @@ function renderNotificationCenterPage(){
   const myTr=mandatoryTraining.filter(t=>String(t.empId)===String(u.id)&&t.year===yr).map(t=>t.trainingType);
   const missingTr=(settings.mandatoryTrainingTypes||[]).filter(t=>!myTr.includes(t.id));
   if(missingTr.length>0)items.push({type:"training",pri:1,icon:"📚",title:`법정의무교육 미이수 ${missingTr.length}건`,desc:missingTr.map(t=>t.name).join(" · "),date:todayStr,action:"mandatory-training"});
+  // 3b. 교육 과정(D3) — 이수 완료했지만 설문을 아직 제출하지 않은 과정이 있으면 안내.
+  // 본인 신청 내역에 한정되는 개인 알림이라 전 역할 공통.
+  const myPendingSurveys=trainingEnrollments.filter(e=>String(e.empId)===String(u.id)&&e.status==="completed"&&!e.surveyResponse&&trainingCourses.find(cs=>cs.id===e.courseId)?.surveyEnabled);
+  if(myPendingSurveys.length>0)items.push({type:"training-survey",pri:2,icon:"📝",title:`교육 만족도 설문 미제출 ${myPendingSurveys.length}건`,desc:myPendingSurveys.map(e=>trainingCourses.find(cs=>cs.id===e.courseId)?.title).filter(Boolean).join(" · "),date:todayStr,action:"training-courses"});
   // 4. Birthdays today
   employees.filter(e=>e.active&&e.birthdate&&e.birthdate.slice(5)===`${mm}-${dd}`).forEach(e=>{
     items.push({type:"birthday",pri:2,icon:"🎂",title:`${e.name}님 생일`,desc:"오늘 생일인 동료입니다. 축하 메시지를 보내보세요!",date:todayStr,action:"hr-list"});
