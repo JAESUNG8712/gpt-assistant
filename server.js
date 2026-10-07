@@ -1538,6 +1538,22 @@ const _WRITE_GATED_FIELDS = {
   engagementSurveys:  { roles: ["admin"], pageIds: "engagement-pulse" },
   engagementResponses:{ roles: [], ownField: "empId", pageIds: "engagement-pulse" },
   engagementActions:  { roles: ["admin", "director", "leader"], pageIds: "engagement-pulse" },
+  // D3(교육관리 고도화) — 과정 카탈로그(개설·수정·삭제)는 관리자 전용("교육 과정 관리" 화면).
+  // 2026-10-07 재확인: 이 필드가 등록 전까지는 role 검사·값 검증이 전혀 없어 member 토큰으로도
+  // /save를 직접 호출해 임의 과정을 생성할 수 있었다(실측 확인, D1~D5 신규 컬렉션 공통 결함).
+  trainingCourses: { roles: ["admin"], pageIds: "training-admin" },
+  // 신청/대기/취소/설문 제출은 본인(empId)이, 등록·승급·완료 처리는 관리자가 한다. 두 경로가
+  // 서로 다른 화면(training-courses=직원, training-admin=관리자)을 쓰므로 한쪽만 꺼졌을 때
+  // 과잉차단되지 않도록 pageIds를 둘 다 등록(OR 시맨틱, _menuPermsAllow 주석 참고).
+  trainingEnrollments: { roles: ["admin"], pageIds: ["training-courses", "training-admin"], ownField: "empId" },
+  // D4(급여/퇴직 고도화) — 급여 압류·퇴직금 정산은 금전 지급(인쇄되는 정산서·급여 공제)에
+  // 그대로 반영되는 payrollAdjustments급 민감 데이터다. 실측: 등록 전에는 member가 자기
+  // 압류를 임의로 만들거나 자기 퇴직금을 5억원으로 위조해도 그대로 저장됐다 — admin 전용.
+  wageGarnishments: { roles: ["admin"], pageIds: "wage-garnishment" },
+  severanceSettlements: { roles: ["admin"], pageIds: "severance-settlement" },
+  // D5(세무/사회보험 참고용 화면) — 실제 신고 효력은 없는 참고용 기록이지만, 임의 직원 명의로
+  // 조작되면 인사기록 신뢰도를 해친다. admin 전용.
+  socialInsuranceRecords: { roles: ["admin"], pageIds: "tax-social-insurance" },
 };
 // menuPerms(개인별로 끈 메뉴) 확장 — 위 role 기반 승인/게이팅과 별개로, 관리자가 특정 직원의
 // 해당 화면 메뉴 자체를 꺼뒀다면 role상 자격이 있어도(예: admin, 또는 그 부서의 director) 그
@@ -1881,6 +1897,15 @@ function _sanitizeGatedRecord(field, incoming, stored, actor, actorEmp, settings
     }
     return incoming;
   }
+  if (field === "trainingEnrollments") {
+    // 신청/대기/취소/설문은 본인(empId)이 스스로 할 수 있지만, "완료 처리"(status:"completed")는
+    // 실제 출석·이수 확인이 필요한 관리자 전용 동작(renderTrainingAdminPage의 "선택 완료 처리")
+    // 이다 — 이 체크가 없으면 위 ownField 공용 가드(본인 레코드인지만 확인, 어떤 상태로
+    // 바꾸는지는 제한하지 않음)만으로는 member가 직접 /save로 자기 신청을 completed로 바꿔
+    // 이수율·교육비 집계를 조작할 수 있다.
+    const isAdmin = actor && actor.role === "admin";
+    if (!isAdmin && incoming.status === "completed" && stored?.status !== "completed") return stored ? { ...stored } : null;
+  }
   if (rule.record) {
     // 바뀌지 않은 레코드는 그대로 통과(매 저장마다 전체 배열이 재전송되므로 대부분이 여기).
     if (stored && JSON.stringify(stored) === JSON.stringify(incoming)) return incoming;
@@ -2123,6 +2148,62 @@ function _validateFieldValues(field, rec, storedList) {
     if (rec.budgetPlanName != null && (typeof rec.budgetPlanName !== "string" || rec.budgetPlanName.length > 200)) return false;
     if (rec.budgetPlanYear != null && (!Number.isInteger(Number(rec.budgetPlanYear)) || Number(rec.budgetPlanYear) < 2000 || Number(rec.budgetPlanYear) > 2200)) return false;
     if (rec.approvalComment != null && (typeof rec.approvalComment !== "string" || rec.approvalComment.length > 2000)) return false;
+  } else if (field === "trainingCourses") {
+    if (typeof rec.title !== "string" || !rec.title.trim() || rec.title.length > 200) return false;
+    if (!["planned", "open", "closed", "completed", "canceled"].includes(rec.status || "planned")) return false;
+    if (rec.capacity != null) {
+      const cap = Number(rec.capacity);
+      if (!Number.isInteger(cap) || cap < 1 || cap > 100000) return false;
+    }
+    if (rec.cost != null) {
+      const cost = Number(rec.cost);
+      if (!Number.isFinite(cost) || cost < 0 || cost > 1_000_000_000_000) return false;
+    }
+    if (rec.startDate && !/^\d{4}-\d{2}-\d{2}$/.test(rec.startDate)) return false;
+    if (rec.endDate && !/^\d{4}-\d{2}-\d{2}$/.test(rec.endDate)) return false;
+    if (rec.startDate && rec.endDate && rec.endDate < rec.startDate) return false;
+  } else if (field === "trainingEnrollments") {
+    if (String(rec.courseId ?? "").trim() === "") return false;
+    if (String(rec.empId ?? "").trim() === "") return false;
+    if (!["applied", "waitlisted", "canceled", "completed"].includes(rec.status || "applied")) return false;
+    if (rec.surveyResponse != null) {
+      const sr = rec.surveyResponse;
+      if (typeof sr !== "object") return false;
+      const sat = Number(sr.satisfaction);
+      if (!Number.isInteger(sat) || sat < 1 || sat > 5) return false;
+      if (sr.comment != null && (typeof sr.comment !== "string" || sr.comment.length > 1000)) return false;
+    }
+  } else if (field === "wageGarnishments" || field === "severanceSettlements" || field === "socialInsuranceRecords") {
+    // 세 컬렉션 모두 empId가 필수이고(실제 재직자 명의로만 존재해야 하는 인사기록), 금액류
+    // 필드는 급여 명세서·전사 집계(퇴직급여추계액대장 등)에 그대로 더해지므로 범위를 둔다.
+    if (String(rec.empId ?? "").trim() === "") return false;
+    if (field === "wageGarnishments") {
+      if (!["fixed", "percentOfNet"].includes(rec.type)) return false;
+      if (!["active", "completed", "canceled"].includes(rec.status || "active")) return false;
+      if (rec.type === "fixed") {
+        const amount = Number(rec.amount);
+        if (!Number.isFinite(amount) || amount <= 0 || amount > 1_000_000_000_000) return false;
+      } else {
+        const rate = Number(rec.rate);
+        if (!Number.isFinite(rate) || rate <= 0 || rate > 100) return false;
+      }
+      if (rec.startMonth && !/^\d{4}-\d{2}$/.test(rec.startMonth)) return false;
+      if (rec.endMonth && !/^\d{4}-\d{2}$/.test(rec.endMonth)) return false;
+    } else if (field === "severanceSettlements") {
+      if (!["final", "interim"].includes(rec.type)) return false;
+      const amount = Number(rec.severanceAmount);
+      if (!Number.isFinite(amount) || amount < 0 || amount > 1_000_000_000_000) return false;
+      if (rec.settlementDate && !/^\d{4}-\d{2}-\d{2}$/.test(rec.settlementDate)) return false;
+    } else {
+      if (!["acquisition", "loss", "wageChange"].includes(rec.type)) return false;
+      if (!Array.isArray(rec.insuranceTypes) || !rec.insuranceTypes.length ||
+          !rec.insuranceTypes.every(t => ["pension", "health", "employment", "industrial"].includes(t))) return false;
+      if (rec.effectiveDate && !/^\d{4}-\d{2}-\d{2}$/.test(rec.effectiveDate)) return false;
+      if (rec.monthlyWage != null) {
+        const wage = Number(rec.monthlyWage);
+        if (!Number.isFinite(wage) || wage < 0 || wage > 1_000_000_000) return false;
+      }
+    }
   }
   return true;
 }
