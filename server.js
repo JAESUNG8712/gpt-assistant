@@ -692,7 +692,9 @@ function filterDataForRole(data, auth) {
     if (Array.isArray(out.employmentRecords)) out.employmentRecords = [];
     if (Array.isArray(out.learningCourses)) {
       out.learningCourses = out.learningCourses.filter(c => c && c.status === "active").map(c => {
-        const { internalNote, cost, ...safe } = c;
+        // 신청자는 결재 전에 교육비를 확인해야 한다. 공개 과정의 비용은 신청·예산 검토용
+        // 정보로 제공하되, 계약조건 등이 적힌 관리자 내부 메모는 응답에서 제거한다.
+        const { internalNote, ...safe } = c;
         return safe;
       });
     }
@@ -1594,6 +1596,23 @@ function _welfareAdjustmentMatchesApprovedDoc(rec, doc) {
   const expectedCategory = {"tpl-welfare-condolence":"경조사비","tpl-welfare-tuition":"학자금","tpl-welfare-medical":"의료비 지원"}[doc.templateId];
   return rec.source === "welfare_approval" && rec.category === expectedCategory;
 }
+// 교육 신청의 최종 결재자가 관리자가 아닐 때도 승인 결과로 수강배정 1건은 생성돼야 한다.
+// 단, 결재문서 내용을 아는 사용자가 임의 배정을 복제하지 못하도록 문서·직원·과정·ID와
+// 초기 상태를 모두 결정론적으로 대조한다. 이후 배정 수정/수료/정산은 다시 관리자 게이트를 탄다.
+function _learningAssignmentMatchesApprovedDoc(rec, doc) {
+  if (!rec || !doc || doc.status !== "approved" || doc.templateId !== "tpl-training") return false;
+  const fd = doc.formData || {};
+  if (!fd.courseId || String(doc.authorId) !== String(rec.empId)) return false;
+  const approvedDate = String(doc.approvedAt || doc.updatedAt || "").slice(0, 10);
+  const cost = Number(fd.estimatedCost || 0);
+  const expectedSettlement = cost > 0 ? "pending" : "not_required";
+  return String(rec.id) === `learning-approval-${doc.id}` && rec.source === "approval" &&
+    String(rec.sourceDocId) === String(doc.id) && String(rec.courseId) === String(fd.courseId) &&
+    rec.status === "assigned" && rec.assignedAt === approvedDate && rec.dueDate === String(fd.endDate || "") &&
+    Number(rec.approvedCost || 0) === cost && rec.costCenter === String(fd.costCenter || "").trim().slice(0, 100) &&
+    rec.settlementStatus === expectedSettlement && rec.settledAt === "" &&
+    rec.note === String(fd.purpose || "").trim().slice(0, 500);
+}
 // 다면평가 평가자 지정(compSessions 레코드 생성/수정, evaluatorConfig 싱글톤 키별 조정)을
 // 누가 할 수 있는지 판정하는 공용 규칙(Epic B 항목 #9 — "사업부장·팀장의 하위조직원 평가자
 // 조정"). 지금까지 compSessions는 _WRITE_GATED_FIELDS에 admin 전용(pageIds:"eval-ops")으로만
@@ -1610,8 +1629,8 @@ function _canManageCompSessionTarget(actor, actorEmp, targetEmp) {
   return false;
 }
 // 반환값: 저장할 레코드, 또는 null(= 이 레코드는 아예 쓰지 않음 — 권한 없이 새로 만들어진 것)
-// approvalDocForGate: field==="payrollAdjustments"이고 신규 레코드(!stored)일 때만 쓰이는,
-// 호출부가 미리 조회해둔 그 sourceDocId의(이미 _sanitizeApprovalDoc을 거친) 결재문서.
+// approvalDocForGate: 결재에서 파생되는 payrollAdjustments/learningAssignments 신규 레코드에
+// 한해 호출부가 미리 조회한 sourceDocId의 결재문서(이미 _sanitizeApprovalDoc을 거침).
 // targetEmp: field==="compSessions"일 때만 쓰이는, 호출부가 미리 조회해둔 incoming.targetId의
 // 직원 레코드(_canManageCompSessionTarget 판정용 — JSON모드는 _fileStore.employees에서,
 // Postgres모드는 별도 쿼리로 동일하게 조회해 호출부가 넘겨준다).
@@ -1678,20 +1697,33 @@ function _sanitizeGatedRecord(field, incoming, stored, actor, actorEmp, settings
     if (stored?.status === "closed") return { ...stored };
   }
   if (field === "learningAssignments") {
-    if (stored?.status === "completed") return { ...stored };
     const txt = (value, max) => String(value == null ? "" : value).trim().slice(0, max);
     const date = value => /^\d{4}-\d{2}-\d{2}$/.test(String(value || "")) ? String(value) : "";
     const now = new Date().toISOString(), status = ["assigned", "in_progress", "completed", "cancelled"].includes(incoming.status) ? incoming.status : "assigned";
     const score = incoming.score === "" || incoming.score == null ? null : Number(incoming.score);
+    const approvedCost = Number(incoming.approvedCost || 0);
+    const settlementStatus = ["not_required", "pending", "settled"].includes(incoming.settlementStatus)
+      ? incoming.settlementStatus : (approvedCost > 0 ? "pending" : "not_required");
+    // 수료 핵심정보는 감사 이력이므로 불변이지만, 증빙 정산은 수료 후에도 마감할 수 있다.
+    if (stored?.status === "completed") {
+      return { ...stored, settlementStatus, settledAt: settlementStatus === "settled" ? (date(incoming.settledAt) || now.slice(0, 10)) : "",
+        settlementNote: txt(incoming.settlementNote, 500), updatedAt: now, updatedBy: String(actor?.empId || "") };
+    }
     incoming = { ...incoming, courseId: txt(incoming.courseId, 120), empId: txt(incoming.empId, 120), status,
       assignedAt: stored?.assignedAt || date(incoming.assignedAt) || now.slice(0, 10), dueDate: date(incoming.dueDate),
       completedAt: status === "completed" ? (date(incoming.completedAt) || now.slice(0, 10)) : "",
       score, certificateNo: txt(incoming.certificateNo, 120), note: txt(incoming.note, 500),
+      source: txt(incoming.source, 40), sourceDocId: txt(incoming.sourceDocId, 120), approvedCost,
+      costCenter: txt(incoming.costCenter, 100), settlementStatus,
+      settledAt: settlementStatus === "settled" ? (date(incoming.settledAt) || now.slice(0, 10)) : "",
+      settlementNote: txt(incoming.settlementNote, 500),
       createdAt: stored?.createdAt || now, createdBy: stored?.createdBy || String(actor?.empId || ""), updatedAt: now, updatedBy: String(actor?.empId || "") };
     if (!incoming.courseId || !incoming.empId || !incoming.assignedAt) return stored ? { ...stored } : null;
     if (incoming.dueDate && incoming.dueDate < incoming.assignedAt) return stored ? { ...stored } : null;
     if (score != null && (!Number.isFinite(score) || score < 0 || score > 100)) return stored ? { ...stored } : null;
   }
+  if (field === "learningAssignments" && !stored && approvalDocForGate &&
+      _learningAssignmentMatchesApprovedDoc(incoming, approvalDocForGate)) return incoming;
   // payrollAdjustments는 admin 전용 필드지만, 복리후생 신청이 승인 완료되는
   // 순간 이 레코드를 만드는 것은 그 결재선의 "마지막 결재자"(대개 팀장·사업부장, admin이
   // 아님)다 — 그래서 이 정당한 파생 레코드가 role 게이팅에 걸려 항상 조용히 드롭되고
@@ -1957,6 +1989,9 @@ function _validateFieldValues(field, rec, storedList) {
   } else if (field === "learningAssignments") {
     if (!rec.courseId || !rec.empId || !["assigned", "in_progress", "completed", "cancelled"].includes(rec.status)) return false;
     if (rec.score != null && (!Number.isFinite(Number(rec.score)) || Number(rec.score) < 0 || Number(rec.score) > 100)) return false;
+    if (!Number.isFinite(Number(rec.approvedCost || 0)) || Number(rec.approvedCost || 0) < 0 || Number(rec.approvedCost || 0) > 1_000_000_000) return false;
+    if (!["not_required", "pending", "settled"].includes(rec.settlementStatus || "not_required")) return false;
+    if (rec.settlementStatus === "settled" && !/^\d{4}-\d{2}-\d{2}$/.test(String(rec.settledAt || ""))) return false;
     if (storedList && !Array.isArray(storedList) && !_learningAssignmentFits(rec, storedList.assignments, storedList.courses)) return false;
   } else if (field === "overtimeRequests") {
     // hours는 승인 후 급여 계산의 초과근무수당(otReqAllowance = hours * 시급 * 배율)에
@@ -2718,7 +2753,7 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
         .map(r => {
           if (!r || r.id == null) return r;
           const stored = storedById.get(String(r.id));
-          const approvalDocForGate = (gatedField === "payrollAdjustments" && !stored)
+          const approvalDocForGate = (["payrollAdjustments", "learningAssignments"].includes(gatedField) && !stored)
             ? _resolveApprovalDocForGate(r.sourceDocId) : null;
           const targetEmpForGate = (gatedField === "compSessions" && r.targetId != null)
             ? (_fileStore.employees || []).find(e => String(e.id) === String(r.targetId)) || null : null;
@@ -3173,7 +3208,7 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
           if (field === "approvalDocs") {
             toWrite = _sanitizeApprovalDoc(item, storedItem, actor);
           } else if (_APPROVAL_GATED_FIELDS[field]) {
-            const approvalDocForGate = (field === "payrollAdjustments" && !storedItem)
+            const approvalDocForGate = (["payrollAdjustments", "learningAssignments"].includes(field) && !storedItem)
               ? await _getApprovalDocForGate(item.sourceDocId) : null;
             const targetEmpForGate = (field === "compSessions" && item.targetId != null)
               ? await _getEmployeeByIdPg(item.targetId) : null;

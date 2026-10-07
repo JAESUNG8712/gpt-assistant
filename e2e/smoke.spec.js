@@ -1120,4 +1120,37 @@ test.describe("로그인·기본 네비게이션", () => {
     expect(result.assignments).toHaveLength(1);
     expect(result.assignments[0]).toMatchObject({empId:"lc-emp",status:"assigned"});
   });
+
+  test("교육 신청 승인은 수강 배정만 만들고 수료 확정 때 이력·정산을 반영한다", async ({ page }) => {
+    await page.goto("/");
+    await page.fill("#l-id", "e2e_admin");
+    await page.fill("#l-pw", "E2eTestPw123");
+    await page.evaluate(() => { autoSaveDebounced=()=>{};loadFromServer=async()=>{};connectSSE=async()=>{}; });
+    await page.click(".login-card button.btn-primary");
+    await expect(page.locator("#main")).toBeVisible({timeout:10000});
+    const approved=await page.evaluate(() => {
+      currentUser={...currentUser,id:"lc-flow-admin",loginId:"lc-flow-admin",name:"교육 관리자",role:"admin",active:true,menuPerms:{}};
+      employees=[currentUser,{id:"lc-flow-emp",loginId:"lc-flow-emp",empNo:"E2603",name:"신청 직원",role:"member",active:true,dept:"개발",team:"플랫폼",hrHistory:[]}];
+      learningCourses=[{id:"lc-flow-course",name:"플랫폼 아키텍처",category:"직무",provider:"사내 HRD",delivery:"online",startDate:"2026-12-10",endDate:"2026-12-11",hours:6,capacity:5,cost:300000,status:"active"}];
+      learningAssignments=[];attendanceRecords=[];
+      approvalDocs=[{id:"lc-flow-doc",templateId:"tpl-training",authorId:"lc-flow-emp",title:"교육 신청: 플랫폼 아키텍처",status:"in_progress",createdAt:"2026-11-19T01:00:00.000Z",updatedAt:"2026-11-19T01:00:00.000Z",formData:{courseId:"lc-flow-course",trainingName:"플랫폼 아키텍처",startDate:"2026-12-10",endDate:"2026-12-11",estimatedCost:300000,costCenter:"개발팀",purpose:"직무 역량 강화"},approvers:[{empId:"lc-flow-admin",label:"관리자",status:"pending",decidedAt:null,comment:""}]}];
+      autoSaveToServerIfEnabled=()=>{};askConfirmModal=async()=>true;_fireIntegrationWebhooks=()=>{};
+      approveApprovalDoc("lc-flow-doc","");
+      gotoPage("learning-center");
+      return {assignment:learningAssignments[0],history:employees.find(e=>e.id==="lc-flow-emp").hrHistory,attendance:attendanceRecords};
+    });
+    expect(approved.assignment).toMatchObject({id:"learning-approval-lc-flow-doc",status:"assigned",approvedCost:300000,settlementStatus:"pending"});
+    expect(approved.history).toHaveLength(0);
+    expect(approved.attendance).toHaveLength(2);
+    await page.getByRole("button",{name:"수정"}).nth(1).click();
+    await page.selectOption("#la-status","completed");
+    await page.selectOption("#la-settlement","settled");
+    await page.fill("#la-settled-at","2026-12-12");
+    await page.fill("#la-cert","CERT-E2E-001");
+    await page.getByRole("button",{name:"저장",exact:true}).click();
+    const completed=await page.evaluate(()=>({assignment:learningAssignments[0],history:employees.find(e=>e.id==="lc-flow-emp").hrHistory}));
+    expect(completed.assignment).toMatchObject({status:"completed",settlementStatus:"settled",settledAt:"2026-12-12"});
+    expect(completed.history).toHaveLength(1);
+    expect(completed.history[0]).toMatchObject({type:"edu_general",desc:"플랫폼 아키텍처"});
+  });
 });

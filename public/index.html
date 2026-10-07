@@ -15564,7 +15564,7 @@ const _BTPLS=[
   {id:"tpl-parental",name:"육아휴직 신청",category:"attendance",icon:"👶",builtin:true,
    fields:[{key:"childName",label:"자녀명",type:"text",req:true},{key:"childBirth",label:"자녀 생년월일",type:"date",req:true},{key:"startDate",label:"휴직 시작일",type:"date",req:true},{key:"endDate",label:"휴직 종료일(예정)",type:"date",req:true},{key:"note",label:"비고",type:"textarea",req:false}],approvalType:"hierarchy"},
   {id:"tpl-training",name:"교육 신청",category:"attendance",icon:"📚",builtin:true,
-   fields:[{key:"trainingName",label:"교육명",type:"text",req:true},{key:"startDate",label:"시작일",type:"date",req:true},{key:"endDate",label:"종료일",type:"date",req:true},{key:"location",label:"장소",type:"text",req:false},{key:"purpose",label:"교육 목적",type:"textarea",req:true}],approvalType:"hierarchy"},
+   fields:[{key:"courseId",label:"교육 과정",type:"select",opts:[],req:true,help:"교육관리에서 운영 중인 과정만 신청할 수 있습니다."},{key:"costCenter",label:"비용 귀속",type:"text",req:false,placeholder:"예: 경영지원팀 / 프로젝트 코드"},{key:"purpose",label:"교육 목적",type:"textarea",req:true,placeholder:"예: 신임 팀장 역할 수행과 구성원 코칭 역량 강화"}],approvalType:"hierarchy"},
   {id:"tpl-biztrip",name:"출장 신청",category:"attendance",icon:"✈",builtin:true,
    fields:[{key:"destination",label:"출장지",type:"text",req:true},{key:"startDate",label:"출발일",type:"date",req:true},{key:"endDate",label:"귀임일",type:"date",req:true},{key:"purpose",label:"출장 목적",type:"textarea",req:true},{key:"budget",label:"예상 비용(원)",type:"number",req:false}],approvalType:"hierarchy"},
   {id:"tpl-general",name:"일반 결재",category:"general",icon:"📄",builtin:true,
@@ -15758,7 +15758,7 @@ function _getDocTitle(tplId,fd){
   if(tplId==="tpl-vacation")return`${fd.leaveType||"휴가"} 신청 (${fd.startDate||""}~${fd.endDate||""})`;
   if(tplId==="tpl-halfday")return`${fd.halfType||"반차"} 신청 (${fd.date||""})`;
   if(tplId==="tpl-early")return`조퇴 신청 (${fd.date||""} ${fd.leaveTime||""})`;
-  if(tplId==="tpl-training")return`교육 신청: ${fd.trainingName||""}`;
+  if(tplId==="tpl-training"){const c=learningCourses.find(x=>String(x.id)===String(fd.courseId));return`교육 신청: ${fd.trainingName||c?.name||""}`;}
   if(tplId==="tpl-biztrip")return`출장 신청: ${fd.destination||""} (${fd.startDate||""}~${fd.endDate||""})`;
   if(tplId==="tpl-flex"){const fo=(settings.flexWorkOptions||[]).find(o=>String(o.id)===String(fd.flexOptionId));return`유연근무 신청 (${fd.startDate||""}~${fd.endDate||""}, ${fd.flexLabel||(fo?fo.label:"")})`;}
   if(tplId==="tpl-holiday-work")return`휴일근무 신청 (${fd.workDate||""} ${fd.startTime||""}~${fd.endTime||""})`;
@@ -15913,14 +15913,19 @@ function _applyAttendanceApproval(doc){
   }else if(doc.templateId==="tpl-training"){
     let d=new Date(fd.startDate);const end=new Date(fd.endDate);
     while(d<=end){const ds=d.toISOString().slice(0,10);_setAttRec(doc.authorId,ds,"training",`교육: ${fd.trainingName}`);d.setDate(d.getDate()+1);}
-    // 교육 이력 자동 등록
-    const eduEmp=getEmp(doc.authorId);
-    if(eduEmp){
-      const eduEntry={id:genId(),type:"edu_general",date:fd.endDate||fd.startDate,desc:fd.trainingName||"",institution:fd.location||"",startDate:fd.startDate||"",endDate:fd.endDate||"",before:"",after:"이수완료",note:fd.purpose||"전자결재 승인"};
-      // updatedAt 갱신 필요(adjustKpiGrade 주석 참고) — 없으면 Postgres 모드에서 이 교육이력
-      // 자동등록이 조용히 스킵된다.
-      employees=employees.map(e=>String(e.id)===String(doc.authorId)?{...e,hrHistory:[...(e.hrHistory||[]),eduEntry],updatedAt:new Date().toISOString()}:e);
-      if(String(currentUser?.id)===String(doc.authorId))currentUser=employees.find(e=>String(e.id)===String(doc.authorId))||currentUser;
+    // 승인은 이수 완료가 아니라 수강 허가다. 실제 직원 교육이력은 교육관리에서 상태를
+    // "이수"로 확정할 때만 생성한다(learning-center.js). 승인문서별 결정론적 ID를 써서
+    // 재호출·네트워크 재시도에도 배정은 정확히 한 번만 만들어진다.
+    const course=learningCourses.find(c=>String(c.id)===String(fd.courseId));
+    const assignmentId=`learning-approval-${doc.id}`;
+    if(course&&!learningAssignments.some(a=>String(a.id)===assignmentId||
+      (String(a.courseId)===String(course.id)&&String(a.empId)===String(doc.authorId)&&a.status!=="cancelled"))){
+      const approvedDate=String(doc.approvedAt||doc.updatedAt||new Date().toISOString()).slice(0,10),cost=Number(fd.estimatedCost??course.cost??0)||0;
+      learningAssignments.push({id:assignmentId,courseId:course.id,empId:doc.authorId,status:"assigned",assignedAt:approvedDate,
+        dueDate:course.endDate||fd.endDate||"",score:null,certificateNo:"",note:fd.purpose||"전자결재 승인",
+        source:"approval",sourceDocId:String(doc.id),approvedCost:cost,costCenter:fd.costCenter||"",
+        settlementStatus:cost>0?"pending":"not_required",settledAt:"",settlementNote:"",
+        createdAt:new Date().toISOString(),createdBy:currentUser.id,updatedAt:new Date().toISOString(),updatedBy:currentUser.id});
     }
   }else if(doc.templateId==="tpl-biztrip"){
     let d=new Date(fd.startDate);const end=new Date(fd.endDate);
@@ -16177,6 +16182,7 @@ function openApprovalForm(tplId){
   const chain=tpl.approvalType==="hierarchy"?getApprovalChain(currentUser.id):tpl.approvalType==="direct_superior"?getDirectSuperiorChain(currentUser.id):tpl.approvalType==="vendor_reg"?getVendorRegChain(currentUser.id):[];
   const fieldsHtml=tplId==="tpl-vacation"?_vacationFormFieldsHtml():tpl.fields.map(f=>`<div class="fg"><label class="fl">${h(f.label)}${f.req?` <span class="req">*</span>`:""}</label>${
     f.key==="flexOptionId"?`<select class="fc" id="af-${f.key}"><option value="">선택</option>${(settings.flexWorkOptions||[]).map(o=>{const s=_flexOptionSnapshot(o);return`<option value="${h(o.id)}">${h(o.label)} · ${_flexDaysLabel(s.workDays)} · 휴게 ${s.breakMinutes}분</option>`}).join("")}</select>${(settings.flexWorkOptions||[]).length===0?`<div class="fz11" style="color:#dc2626;margin-top:3px">* 관리자가 유연근무 시간 옵션을 먼저 등록해야 신청할 수 있습니다.</div>`:""}`
+    :f.key==="courseId"?`<select class="fc" id="af-${f.key}"><option value="">선택</option>${learningCourses.filter(c=>c.status==="active").map(c=>`<option value="${h(c.id)}">${h(c.name)} · ${h(c.startDate)}~${h(c.endDate)} · ${Number(c.cost||0).toLocaleString()}원</option>`).join("")}</select>${learningCourses.some(c=>c.status==="active")?"":`<div class="fz11" style="color:#dc2626;margin-top:3px">* 신청 가능한 운영 과정이 없습니다. 관리자에게 과정 등록을 요청하세요.</div>`}`
     :f.key==="compType"?`<select class="fc" id="af-${f.key}"><option value="">선택</option>${(settings.workCompOptions||[]).filter(o=>o.enabled!==false).map(o=>`<option value="${h(o.name)}">${h(o.name)}${Number(o.expiryMonths)>0?` (사용기한 ${o.expiryMonths}개월)`:""}</option>`).join("")}</select>`
     :f.key==="welfarePolicyId"?`<select class="fc" id="af-${f.key}"><option value="">선택</option>${(settings.welfarePolicies||[]).filter(p=>p.enabled!==false&&p.group===({"tpl-welfare-condolence":"condolence","tpl-welfare-tuition":"tuition","tpl-welfare-medical":"medical","tpl-welfare-loan":"loan"}[tplId])).map(p=>`<option value="${h(p.id)}">${h(p.name)} · 한도 ${Number(p.maxAmount||0).toLocaleString()}원 · 근속 ${Number(p.minServiceMonths||0)}개월${p.group==="loan"?` · 연 ${Number(p.interestRate||0)}% / 최장 ${Number(p.maxRepaymentMonths||0)}개월`:""}</option>`).join("")}</select>`
     :f.type==="select"?`<select class="fc" id="af-${f.key}"><option value="">선택</option>${(f.opts||[]).map(o=>`<option>${h(o)}</option>`).join("")}</select>`
@@ -16257,6 +16263,17 @@ function previewApprovalForm(tplId){
     if(!fd.startDate||!fd.endDate||fd.endDate<fd.startDate){showToast("유연근무 적용 기간을 확인하세요.","error");return;}
     fd.flexLabel=snap.label;fd.flexSnapshot=snap;
   }
+  if(tplId==="tpl-training"){
+    const course=learningCourses.find(c=>String(c.id)===String(fd.courseId)&&c.status==="active");
+    if(!course){showToast("현재 신청할 수 없는 교육 과정입니다. 다시 선택하세요.","error");return;}
+    if(learningAssignments.some(a=>String(a.courseId)===String(course.id)&&String(a.empId)===String(currentUser.id)&&a.status!=="cancelled")){
+      showToast("이미 배정되었거나 수강 중인 과정입니다.","error");return;
+    }
+    const duplicateDoc=approvalDocs.some(d=>d.templateId==="tpl-training"&&String(d.authorId)===String(currentUser.id)&&String(d.formData?.courseId)===String(course.id)&&["in_progress","approved"].includes(d.status));
+    if(duplicateDoc){showToast("같은 과정의 교육 신청이 이미 진행 중이거나 승인되었습니다.","error");return;}
+    Object.assign(fd,{trainingName:course.name,provider:course.provider||"",startDate:course.startDate,endDate:course.endDate,
+      delivery:course.delivery,hours:Number(course.hours)||0,estimatedCost:Number(course.cost)||0});
+  }
   if(["tpl-welfare-condolence","tpl-welfare-tuition","tpl-welfare-medical","tpl-welfare-loan"].includes(tplId)){
     const policy=_welfarePolicyForTemplate(tplId,fd.welfarePolicyId),amount=Number(fd.requestedAmount),months=_serviceMonths(currentUser);
     if(!policy){showToast("현재 사용할 수 없는 복리후생 지원 유형입니다.","error");return;}
@@ -16284,11 +16301,12 @@ function previewApprovalForm(tplId){
   if(limitedApprovers.length<approvers.length)showToast(`금액 기준 전결 규정에 따라 결재선이 자동 조정되었습니다.`,"info");
   approvers=limitedApprovers;
   window._afPendingSubmit={tplId,fd,approvers,receivers:[..._afReceivers],ccList:[..._afCc],attachments:[...(window._afAttachments||[])]};
-  const fieldRows=tpl.fields.length?tpl.fields.map(f=>`<div style="display:flex;gap:8px;padding:4px 0;border-bottom:1px solid #f1f5f9"><span class="fz12 text-gray" style="width:110px;flex-shrink:0">${h(f.label)}</span><span class="fz12">${h(fd[f.key]||"-")}</span></div>`).join(""):Object.keys(fd).map(k=>`<div style="display:flex;gap:8px;padding:4px 0;border-bottom:1px solid #f1f5f9"><span class="fz12 text-gray" style="width:110px;flex-shrink:0">${h(k)}</span><span class="fz12">${h(fd[k]||"-")}</span></div>`).join("");
+  const fieldRows=tpl.fields.length?tpl.fields.map(f=>{let v=fd[f.key];if(f.key==="courseId")v=learningCourses.find(c=>String(c.id)===String(v))?.name||v;return`<div style="display:flex;gap:8px;padding:4px 0;border-bottom:1px solid #f1f5f9"><span class="fz12 text-gray" style="width:110px;flex-shrink:0">${h(f.label)}</span><span class="fz12">${h(v||"-")}</span></div>`;}).join(""):Object.keys(fd).map(k=>`<div style="display:flex;gap:8px;padding:4px 0;border-bottom:1px solid #f1f5f9"><span class="fz12 text-gray" style="width:110px;flex-shrink:0">${h(k)}</span><span class="fz12">${h(fd[k]||"-")}</span></div>`).join("");
+  const trainingRows=tplId==="tpl-training"?[["교육기관",fd.provider],["교육기간",fd.startDate&&fd.endDate?`${fd.startDate} ~ ${fd.endDate}`:""],["교육시간",fd.hours?`${fd.hours}시간`:""],["예상비용",`${Number(fd.estimatedCost||0).toLocaleString()}원`]].map(([label,value])=>`<div style="display:flex;gap:8px;padding:4px 0;border-bottom:1px solid #f1f5f9"><span class="fz12 text-gray" style="width:110px;flex-shrink:0">${h(label)}</span><span class="fz12">${h(value||"-")}</span></div>`).join(""):"";
   const approverRows=approvers.map((a,i)=>{const e=getEmp(a.empId);return`<div style="display:flex;align-items:center;gap:8px;padding:6px;background:${i===0?"#dbeafe":"#f8fafc"};border-radius:6px;margin-bottom:4px"><span style="font-size:10px;background:#3b82f6;color:white;padding:1px 6px;border-radius:4px">${i+1}차</span><strong>${e?h(e.name):"미선택"}</strong><span class="text-gray fz12">${h(a.label)}</span></div>`}).join("")||`<div class="text-gray fz12">결재자가 없습니다.</div>`;
   const attRows=(window._afAttachments||[]).map(a=>`<span style="background:#f1f5f9;border:1px solid #e2e8f0;border-radius:4px;padding:2px 6px;font-size:11px;display:inline-flex;margin:2px">${h(a.name)}</span>`).join("")||`<span class="fz11 text-gray">첨부파일 없음</span>`;
   openModal(`<div class="modal-box" style="max-width:560px"><div class="modal-head"><h3>👁 결재 상신 미리보기</h3></div><div class="modal-body">
-    <div class="card" style="margin-bottom:10px"><div class="card-head"><h4>${tpl.icon||"📄"} ${h(_getDocTitle(tplId,fd))}</h4></div><div class="card-body">${fieldRows}</div></div>
+    <div class="card" style="margin-bottom:10px"><div class="card-head"><h4>${tpl.icon||"📄"} ${h(_getDocTitle(tplId,fd))}</h4></div><div class="card-body">${fieldRows}${trainingRows}</div></div>
     <div class="card" style="margin-bottom:10px"><div class="card-head"><h4>수신/참조</h4></div><div class="card-body">
       <div class="fz12" style="margin-bottom:4px"><strong>수신자:</strong> ${_afReceivers.length?_afReceivers.map(r=>h(_refLabel(r))).join(", "):"없음"}</div>
       <div class="fz12"><strong>참조:</strong> ${_afCc.length?_afCc.map(r=>h(_refLabel(r))).join(", "):"없음"}</div>
@@ -16431,8 +16449,10 @@ function openApprovalDetail(docId){
   const fRows=(tpl?.fields||[]).map(f=>{
     let v=doc.formData[f.key];
     if(f.key==="flexOptionId"){const fo=(settings.flexWorkOptions||[]).find(o=>String(o.id)===String(v));v=fo?fo.label:v;}
+    if(f.key==="courseId"){const course=learningCourses.find(c=>String(c.id)===String(v));v=course?`${course.name} (${course.startDate}~${course.endDate})`:v;}
     return`<tr><td style="width:120px;color:#64748b;padding:6px 8px">${h(f.label)}</td><td style="padding:6px 8px;font-weight:600">${h(v||"-")}</td></tr>`;
   }).join("");
+  const trainingRows=doc.templateId==="tpl-training"?[["교육기관",doc.formData.provider],["교육기간",doc.formData.startDate&&doc.formData.endDate?`${doc.formData.startDate} ~ ${doc.formData.endDate}`:""],["교육시간",doc.formData.hours?`${doc.formData.hours}시간`:""],["예상비용",`${Number(doc.formData.estimatedCost||0).toLocaleString()}원`]].map(([label,value])=>`<tr><td style="width:120px;color:#64748b;padding:6px 8px">${h(label)}</td><td style="padding:6px 8px;font-weight:600">${h(value||"-")}</td></tr>`).join(""):"";
   const apRows=doc.approvers.map((a,i)=>{const ae=getEmp(a.empId);const sigCell=a.status==="approved"?(ae?.signature?`<img src="${ae.signature}" alt="서명" style="height:26px;max-width:70px">`:`<span class="fz11 text-gray">미등록</span>`):"-";return`<tr><td>${i+1}차 (${h(a.label)})</td><td>${h(getEmpName(a.empId))}</td><td>${badge(a.status==="approved"?"승인":a.status==="rejected"?"반려":a.status==="pending"?"검토중":"대기",a.status==="approved"?"green":a.status==="rejected"?"red":a.status==="pending"?"yellow":"gray")}</td><td>${sigCell}</td><td>${a.decidedAt?a.decidedAt.slice(0,10):"-"}</td><td style="max-width:160px;overflow:hidden;text-overflow:ellipsis">${h(a.comment||"-")}</td></tr>`;}).join("");
   const uid=currentUser.id;
   const canDecide=doc.status==="in_progress"&&doc.approvers.some(a=>a.empId===uid&&a.status==="pending");
@@ -16447,7 +16467,7 @@ function openApprovalDetail(docId){
   </div>`:"";
   openModal(`<div class="modal-box" style="max-width:600px"><div class="modal-head"><h3>${tpl?.icon||"📄"} ${h(doc.title)}</h3></div><div class="modal-body">
     <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap">${badge(SM[doc.status]||doc.status,SC[doc.status]||"gray")}<span class="text-gray fz12">상신자: ${h(getEmpName(doc.authorId))}</span><span class="text-gray fz12">상신일: ${doc.createdAt.slice(0,10)}</span></div>
-    <table style="width:100%;border-collapse:collapse;background:#f8fafc;border-radius:6px;overflow:hidden;margin-bottom:14px"><tbody>${fRows}</tbody></table>
+    <table style="width:100%;border-collapse:collapse;background:#f8fafc;border-radius:6px;overflow:hidden;margin-bottom:14px"><tbody>${fRows}${trainingRows}</tbody></table>
     <h4 style="margin-bottom:8px">결재 현황</h4>
     <div class="tbl-wrap"><table style="width:100%"><thead><tr><th>순서</th><th>결재자</th><th>상태</th><th>서명</th><th>처리일</th><th>의견</th></tr></thead><tbody>${apRows}</tbody></table></div>
     ${doc.receivers?.length>0?`<div class="mt3 fz12 text-gray">수신: ${doc.receivers.map(r=>h(_refLabel(r))).join(", ")}</div>`:""}
