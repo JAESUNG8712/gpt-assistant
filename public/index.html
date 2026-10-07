@@ -1131,6 +1131,10 @@ let trainingEnrollments=[]; // 교육 신청/이수 [{id,courseId,empId,empName,
 // 전 법원 명령서·노무사 확인을 거쳐야 한다.
 let wageGarnishments=[]; // 급여 압류 등록 [{id,empId,empName,caseNumber,creditor,courtName,type:"fixed"|"percentOfNet",amount,rate,startMonth,endMonth,status:"active"|"completed"|"canceled",note,createdBy,createdByName,createdAt,updatedAt}]
 let severanceSettlements=[]; // 퇴직금 정산(최종/중간) [{id,empId,empName,dept,team,type:"final"|"interim",settlementDate,periodStart,asOfDate,days,years,monthlySalary,severanceAmount,reason,note,createdBy,createdByName,createdAt,updatedAt}]
+// D5(HR마인드 벤치마킹) — 세무/사회보험. 실제 국세청/4대보험 기관에 전자신고하는 기능이
+// 아니라(그런 외부 연계는 범위 밖), 관리자가 신고 "내역"을 참고용으로 기록·조회하는
+// 화면이다 — 화면에도 안내 문구로 명시한다.
+let socialInsuranceRecords=[]; // 4대보험 신고 내역(참고용) [{id,empId,empName,dept,team,type:"acquisition"|"loss"|"wageChange",insuranceTypes:["pension","health","employment","industrial"],effectiveDate,monthlyWage,reason,note,createdBy,createdByName,createdAt,updatedAt}]
 let healthCheckupLog=[]; // 종합검진 이수 이력 [{id,empId,year,completedAt,note}]
 let scheduleEvents=[]; // 캘린더 일정 [{id,authorId,title,startDate,endDate,scope:"personal"|"team"|"dept"|"company",dept,team,memo,color,createdAt}]
 let personalTasks=[]; // 개인 할일 [{id,ownerId,title,dueDate,priority,status,memo,createdAt,updatedAt}]
@@ -1148,7 +1152,8 @@ function _recordCollections(){return{
   welfarePoints,mandatoryTraining,healthCheckupLog,scheduleEvents,personalTasks,workReports,expenseClaims,
   overtimeRequests,onboardingFlows,approvalDelegations,engagementSurveys,engagementResponses,engagementActions,
   trainingCourses,trainingEnrollments,
-  wageGarnishments,severanceSettlements
+  wageGarnishments,severanceSettlements,
+  socialInsuranceRecords
 };}
 function _applyRecordRevisions(revisions){
   const collections=_recordCollections();
@@ -2683,7 +2688,7 @@ const SNAPSHOT_FIELD_LABELS = {
   jobSkillProfiles:"직무·스킬 기준", employeeSkillProfiles:"직원 스킬 프로필", workforceScenarios:"전략적 인력계획 시나리오", workforcePositions:"정원·포지션 마스터", positionRequests:"포지션 신설·증원 요청",
   compGradeResults:"보상등급 결과", gradeAdjustHistory:"등급조정 이력", scoreAdjustments:"가감점(상벌점)", okrObjectives:"OKR", tieNotifications:"동점자 알림",
   trainingCourses:"교육 과정", trainingEnrollments:"교육 신청/이수",
-  wageGarnishments:"급여 압류", severanceSettlements:"퇴직금 정산",
+  wageGarnishments:"급여 압류", severanceSettlements:"퇴직금 정산", socialInsuranceRecords:"4대보험 신고 내역",
   lowPerfData:"저성과자 데이터", approvalTemplates:"전자결재 템플릿", integrationLogs:"연동 로그",
   approvalDocs:"전자결재 문서", attendanceRecords:"근태기록", payslips:"급여명세서", payrollAdjustments:"급여 조정항목",
   leaveUsagePlans:"연차 사용계획서",
@@ -5878,6 +5883,7 @@ function getFullState(action=""){
       trainingEnrollments:JSON.parse(JSON.stringify(trainingEnrollments)),
       wageGarnishments:JSON.parse(JSON.stringify(wageGarnishments)),
       severanceSettlements:JSON.parse(JSON.stringify(severanceSettlements)),
+      socialInsuranceRecords:JSON.parse(JSON.stringify(socialInsuranceRecords)),
       evaluatorConfig:JSON.parse(JSON.stringify(evaluatorConfig)),
       tieNotifications:JSON.parse(JSON.stringify(tieNotifications)),
       lowPerfData:JSON.parse(JSON.stringify(lowPerfData)),
@@ -6112,6 +6118,7 @@ function applyState(state,skipUndo=false){
   if(d.trainingEnrollments&&Array.isArray(d.trainingEnrollments))trainingEnrollments=_mergeByIdPreferNewer(trainingEnrollments,d.trainingEnrollments,'trainingEnrollments');
   if(d.wageGarnishments&&Array.isArray(d.wageGarnishments))wageGarnishments=_mergeByIdPreferNewer(wageGarnishments,d.wageGarnishments,'wageGarnishments');
   if(d.severanceSettlements&&Array.isArray(d.severanceSettlements))severanceSettlements=_mergeByIdPreferNewer(severanceSettlements,d.severanceSettlements,'severanceSettlements');
+  if(d.socialInsuranceRecords&&Array.isArray(d.socialInsuranceRecords))socialInsuranceRecords=_mergeByIdPreferNewer(socialInsuranceRecords,d.socialInsuranceRecords,'socialInsuranceRecords');
   if(d.evaluatorConfig&&typeof d.evaluatorConfig==="object")evaluatorConfig={...evaluatorConfig,...d.evaluatorConfig};
   if(d.tieNotifications&&Array.isArray(d.tieNotifications))tieNotifications=_mergeByIdPreferNewer(tieNotifications,d.tieNotifications,'tieNotifications');
   if(d.lowPerfData&&Array.isArray(d.lowPerfData))lowPerfData=_mergeByIdPreferNewer(lowPerfData,d.lowPerfData,'lowPerfData');
@@ -6465,6 +6472,7 @@ function mergeImportData(parsed){
   if(d.trainingEnrollments&&Array.isArray(d.trainingEnrollments)){const existIds=new Set(trainingEnrollments.map(r=>r.id));d.trainingEnrollments.forEach(r=>{if(r&&r.id&&!existIds.has(r.id))trainingEnrollments.push(r);});}
   if(d.wageGarnishments&&Array.isArray(d.wageGarnishments)){const existIds=new Set(wageGarnishments.map(r=>r.id));d.wageGarnishments.forEach(r=>{if(r&&r.id&&!existIds.has(r.id))wageGarnishments.push(r);});}
   if(d.severanceSettlements&&Array.isArray(d.severanceSettlements)){const existIds=new Set(severanceSettlements.map(r=>r.id));d.severanceSettlements.forEach(r=>{if(r&&r.id&&!existIds.has(r.id))severanceSettlements.push(r);});}
+  if(d.socialInsuranceRecords&&Array.isArray(d.socialInsuranceRecords)){const existIds=new Set(socialInsuranceRecords.map(r=>r.id));d.socialInsuranceRecords.forEach(r=>{if(r&&r.id&&!existIds.has(r.id))socialInsuranceRecords.push(r);});}
 }
 
 async function normalizeEmployeeCredentials(){
@@ -7458,6 +7466,7 @@ function renderSidebar(){
       {id:"payroll-mgmt",label:"급여 종합 관리",icon:"💵",desc:"전직원 급여·공제 현황 조회 및 조정",roles:["admin"]},
       {id:"wage-garnishment",label:"급여 압류 등록",icon:"⚖",desc:"법원 압류명령 등록·급여 공제 반영(참고용)",roles:["admin"]},
       {id:"severance-settlement",label:"퇴직금 정산",icon:"🏳",desc:"중간정산·최종정산 등록 및 전사 퇴직급여추계액(참고용)",roles:["admin"]},
+      {id:"tax-social-insurance",label:"세무/사회보험",icon:"🏛",desc:"4대보험 신고 내역·근로내역확인신고서 출력(참고용)",roles:["admin"]},
     ],
     "recruit-sep":[
       {id:"recruit-sep",type:"sep",label:"채용 관리",roles:["admin","director","leader"]},
@@ -7614,6 +7623,7 @@ function renderSidebar(){
   titles["training-admin"]="교육 과정 관리";
   titles["wage-garnishment"]="급여 압류 등록";
   titles["severance-settlement"]="퇴직금 정산";
+  titles["tax-social-insurance"]="세무/사회보험";
   const ptEl=$("#page-title");if(ptEl)ptEl.textContent=titles[currentPage]||"";
   const sb=$("#sidebar");if(!sb)return;
   // Filter by role + per-user custom permission overrides (admin-managed)
@@ -7724,7 +7734,7 @@ const PAGE_ROLES={
   "engagement-pulse-action-detail":["admin","director","leader","member"],
   "hr-register":["admin"],"hr-changes":["admin"],"contract-mgmt":["admin","director"],"hr-stats":["admin"],"hr-list":["admin","director","leader"],
   "long-service-award":["admin"],"award-history":["admin","director","leader"],
-  "hr-mandatory-training":["admin","director","leader"],"training-admin":["admin"],"wage-garnishment":["admin"],"severance-settlement":["admin"],
+  "hr-mandatory-training":["admin","director","leader"],"training-admin":["admin"],"wage-garnishment":["admin"],"severance-settlement":["admin"],"tax-social-insurance":["admin"],
   "hr-attendance":["admin","director"],"hr-leave-mgmt":["admin","director"],"payroll-mgmt":["admin"],
   "first-eval":["admin","leader"],"second-eval":["admin","director"],"kpi-amend":["admin","director","leader"],
   "grade-view":["admin","director","leader"],"comp-grade-view":["admin"],"comp-settings-shortcut":["admin"],
@@ -8043,6 +8053,7 @@ function renderPage(){
   pages["training-admin"]=renderTrainingAdminPage;
   pages["wage-garnishment"]=renderWageGarnishmentPage;
   pages["severance-settlement"]=renderSeveranceSettlementPage;
+  pages["tax-social-insurance"]=renderTaxSocialInsurancePage;
   pages["admin-operations"]=window.renderAdminOperationsPage;
   const fn=pages[currentPage];const c=$("#content");
   if(c&&fn){
@@ -10365,6 +10376,8 @@ function renderCodeMgmtPage(){
       ["회의실",(roomReservations?Array.from(new Set(roomReservations.map(r=>r.room))).length:0),"room-settings"],
       ["급여 압류 등록",wageGarnishments.length,"wage-garnishment"],
       ["퇴직금 정산 이력",severanceSettlements.length,"severance-settlement"],
+      ["4대보험 신고 내역",socialInsuranceRecords.length,"tax-social-insurance"],
+      ["단체보험",(settings.groupInsurancePolicies||[]).length,"welfare-settings"],
     ]},
   ];
   c.innerHTML=`<div class="fz12 text-gray mb3">전사 마스터코드 현황을 한눈에 보고, 각 항목을 눌러 해당 관리 화면으로 바로 이동합니다. "고정값"은 코드 자체가 시스템에 내장되어 있어 편집 화면이 따로 없습니다.</div>
@@ -14662,7 +14675,7 @@ async function doResetAll(){
     // 불가 상태였음).
     const d=await serverRequest("POST","/api/reset-all",{loginId:currentUser?.loginId,pw});
     if(!d.ok)throw new Error(d.message);
-    employees=[];kpiEntries=[];changeRequests=[];compGradeResults={};gradeAdjustHistory=[];scoreAdjustments=[];okrObjectives=[];trainingCourses=[];trainingEnrollments=[];wageGarnishments=[];severanceSettlements=[];
+    employees=[];kpiEntries=[];changeRequests=[];compGradeResults={};gradeAdjustHistory=[];scoreAdjustments=[];okrObjectives=[];trainingCourses=[];trainingEnrollments=[];wageGarnishments=[];severanceSettlements=[];socialInsuranceRecords=[];
     coreTalentPool=[];talentDevPlans=[];successionPlans=[];jobSkillProfiles=[];employeeSkillProfiles=[];workforceScenarios=[];workforcePositions=[];positionRequests=[];_positionRequestPicker=[];_positionRequestPickerLoaded=false;_positionBudgetPicker=[];_positionBudgetPickerLoaded=false;lowPerfData=[];tieNotifications=[];
     approvalDocs=[];attendanceRecords=[];payslips=[];yearEndSettlements=[];payrollAdjustments=[];leaveUsagePlans=[];boardPosts=[];roomReservations=[];certLog=[];certRequests=[];welfarePoints=[];mandatoryTraining=[];healthCheckupLog=[];personalTasks=[];workReports=[];engagementSurveys=[];engagementResponses=[];engagementActions=[];engagementPulseSummary={};
     showToast("전체 데이터가 초기화되었습니다.","success");
@@ -29595,11 +29608,12 @@ function renderWelfareSettingsPage(){
   const yr=new Date().getFullYear();
   if(!settings.healthCheckup)settings.healthCheckup={ageThreshold:40,year:yr,targetIds:[]};
   if(!settings.longServiceAwards)settings.longServiceAwards=[];
-  const tabs=[{id:"health",label:"🩺 종합검진"},{id:"policy",label:"🎁 복리후생 정책"},{id:"longservice",label:"🏅 장기근속"},{id:"award",label:"🏆 우수사원"}];
+  const tabs=[{id:"health",label:"🩺 종합검진"},{id:"policy",label:"🎁 복리후생 정책"},{id:"longservice",label:"🏅 장기근속"},{id:"award",label:"🏆 우수사원"},{id:"groupinsurance",label:"🛡 단체보험"}];
   c.innerHTML=`<div class="tabs">${tabs.map(t=>`<button class="tab-btn${_welfareSettingsTab===t.id?" active":""}" onclick="_welfareSettingsTab='${t.id}';renderWelfareSettingsPage()">${t.label}</button>`).join("")}</div><div id="welfare-settings-content"></div>`;
   if(_welfareSettingsTab==="policy")_renderWelfarePolicyTab();
   else if(_welfareSettingsTab==="longservice")_renderWelfareLongServiceTab();
   else if(_welfareSettingsTab==="award")_renderWelfareAwardTab();
+  else if(_welfareSettingsTab==="groupinsurance")_renderWelfareGroupInsuranceTab();
   else _renderWelfareHealthTab();
 }
 function _renderWelfarePolicyTab(){
@@ -29640,6 +29654,49 @@ async function _deleteWelfarePolicy(index){
   const used=approvalDocs.filter(d=>String(d.formData?.welfarePolicyId)===String(p.id)).length;
   const ok=await askConfirmModal({title:"복리후생 정책 삭제",danger:true,message:`'${p.name}' 정책을 삭제합니다.`,impacts:[{label:"기존 신청 문서",value:`${used}건 (문서는 유지)`},{label:"신규 신청",value:"즉시 선택 불가",tone:"danger"}],warnings:["기존 신청의 정책 스냅샷과 결재 기록은 삭제되지 않습니다."]});
   if(!ok)return;settings.welfarePolicies.splice(index,1);autoSaveToServerIfEnabled();renderWelfareSettingsPage();
+}
+// D5(HR마인드 벤치마킹) — 단체보험 등록(참고용). 실제 보험사 가입·변경은 보험사를 통해
+// 별도로 진행해야 하며, 이 화면은 계약 내용을 참고용으로 기록·조회하는 용도다.
+// welfarePolicies와 동일하게 settings 안의 단순 배열로 둬(독자 ID_KEYED_LIST_FIELD
+// 컬렉션을 새로 만들지 않음) 고빈도 동시편집 충돌 우려가 적은 소규모 참조 목록에
+// 맞는 가장 단순한 모델을 택했다.
+function _renderWelfareGroupInsuranceTab(){
+  const el=$("#welfare-settings-content");if(!el)return;
+  if(!Array.isArray(settings.groupInsurancePolicies))settings.groupInsurancePolicies=[];
+  el.innerHTML=`<div class="card"><div class="card-head"><div><h3>🛡 단체보험 등록(참고용)</h3><div class="fz11 text-gray">전사/부서 단위로 가입한 단체보험 계약을 참고용으로 기록·조회합니다. 실제 보험사 가입·변경·청구는 보험사를 통해 별도로 진행하세요.</div></div><button class="btn btn-primary btn-sm" onclick="_addGroupInsurancePolicy()">+ 계약 추가</button></div><div class="card-body" style="padding:0">
+    ${settings.groupInsurancePolicies.length?`<div class="tbl-wrap"><table><thead><tr><th>계약명</th><th>보험사</th><th>보장 종류</th><th>대상</th><th>개시일</th><th>종료일</th><th>총 보험료(원)</th><th>사용</th><th>삭제</th></tr></thead><tbody>${settings.groupInsurancePolicies.map((p,i)=>`<tr>
+      <td><input class="fc" value="${h(p.policyName||"")}" maxlength="60" placeholder="예: 임직원 단체상해보험" onchange="_updateGroupInsurancePolicy(${i},'policyName',this.value)"></td>
+      <td><input class="fc" value="${h(p.insurer||"")}" maxlength="40" placeholder="예: OO생명" onchange="_updateGroupInsurancePolicy(${i},'insurer',this.value)"></td>
+      <td><input class="fc" value="${h(p.coverageType||"")}" maxlength="60" placeholder="예: 상해/질병" onchange="_updateGroupInsurancePolicy(${i},'coverageType',this.value)"></td>
+      <td><input class="fc" value="${h(p.coveredScope||"")}" maxlength="60" placeholder="예: 전 직원" onchange="_updateGroupInsurancePolicy(${i},'coveredScope',this.value)"></td>
+      <td><input class="fc" type="date" value="${h(p.startDate||"")}" onchange="_updateGroupInsurancePolicy(${i},'startDate',this.value)"></td>
+      <td><input class="fc" type="date" value="${h(p.endDate||"")}" onchange="_updateGroupInsurancePolicy(${i},'endDate',this.value)"></td>
+      <td><input class="fc" type="number" min="0" max="9999999999" value="${Number(p.premiumTotal)||0}" placeholder="예: 12000000" onchange="_updateGroupInsurancePolicy(${i},'premiumTotal',+this.value)"></td>
+      <td style="text-align:center"><input type="checkbox" ${p.enabled!==false?"checked":""} onchange="_updateGroupInsurancePolicy(${i},'enabled',this.checked)"></td>
+      <td><button class="btn btn-danger btn-sm" onclick="_deleteGroupInsurancePolicy(${i})">삭제</button></td>
+    </tr>`).join("")}</tbody></table></div>`:`<div style="padding:20px;text-align:center;color:#94a3b8">등록된 단체보험 계약이 없습니다.</div>`}
+  </div></div>`;
+}
+function _addGroupInsurancePolicy(){
+  if(!Array.isArray(settings.groupInsurancePolicies))settings.groupInsurancePolicies=[];
+  const now=new Date().toISOString();
+  settings.groupInsurancePolicies.push({id:`gip-${genId()}`,policyName:"새 단체보험 계약",insurer:"",coverageType:"",coveredScope:"전 직원",startDate:"",endDate:"",premiumTotal:0,enabled:true,createdAt:now,updatedAt:now});
+  autoSaveToServerIfEnabled();renderWelfareSettingsPage();
+}
+function _updateGroupInsurancePolicy(index,key,value){
+  const p=settings.groupInsurancePolicies?.[index];if(!p)return;
+  if(key==="policyName"){value=String(value||"").trim();if(!value){showToast("계약명을 입력하세요.","error");renderWelfareSettingsPage();return;}}
+  if(key==="premiumTotal"&&(!Number.isFinite(value)||value<0||value>9999999999)){showToast("총 보험료는 0~9,999,999,999원으로 입력하세요.","error");renderWelfareSettingsPage();return;}
+  if(key==="startDate"||key==="endDate"){
+    const sd=key==="startDate"?value:p.startDate,ed=key==="endDate"?value:p.endDate;
+    if(sd&&ed&&ed<sd){showToast("종료일은 개시일보다 빠를 수 없습니다.","error");renderWelfareSettingsPage();return;}
+  }
+  p[key]=value;p.updatedAt=new Date().toISOString();autoSaveToServerIfEnabled();
+}
+async function _deleteGroupInsurancePolicy(index){
+  const p=settings.groupInsurancePolicies?.[index];if(!p)return;
+  const ok=await askConfirmModal({title:"단체보험 계약 삭제",danger:true,message:`'${p.policyName}' 계약을 삭제합니다.`});
+  if(!ok)return;settings.groupInsurancePolicies.splice(index,1);autoSaveToServerIfEnabled();renderWelfareSettingsPage();
 }
 function _renderWelfareHealthTab(){
   const el=$("#welfare-settings-content");if(!el)return;
@@ -30751,6 +30808,174 @@ function exportSeveranceReserveCSV(){
     return[e.name,e.empNo||"",e.dept||"",e.team||"",calc.periodStart,calc.asOfDate,calc.days,calc.years.toFixed(2),calc.monthlySalary,calc.severance];
   }).filter(r=>r[6]>0);
   dlCSV(`퇴직급여추계액대장_${asOf}.csv`,["이름","사번","부서","팀","산정기간시작","기준일","재직일수","근속연수","월급여","추계액"],rows);
+}
+
+// ==================== 세무/사회보험(D5, HR마인드 벤치마킹) ====================
+// 국세청·4대보험 기관에 실제 전자신고(EDI 연계 등)하는 기능이 아니라, 신고 "내역"을
+// 참고용으로 기록·조회하고(socialInsuranceRecords) 근로내역확인신고서를 기존 근태
+// 데이터로 즉석 생성해 인쇄하는 화면이다. 화면에도 참고용임을 명시한다.
+const SI_TYPE_LABEL={acquisition:"자격취득(입사)",loss:"자격상실(퇴사)",wageChange:"보수월액변경"};
+const SI_INSURANCE_LABEL={pension:"국민연금",health:"건강보험",employment:"고용보험",industrial:"산재보험"};
+const SI_INSURANCE_KEYS=["pension","health","employment","industrial"];
+let _siTab="records"; // 'records'(4대보험 신고 내역) | 'workreport'(근로내역확인신고서 출력)
+function renderTaxSocialInsurancePage(){
+  const c=$("#content");if(!c)return;
+  c.innerHTML=`<div class="tabs">
+    <button class="tab-btn${_siTab==="records"?" active":""}" onclick="_siTab='records';renderTaxSocialInsurancePage()">4대보험 신고 내역</button>
+    <button class="tab-btn${_siTab==="workreport"?" active":""}" onclick="_siTab='workreport';renderTaxSocialInsurancePage()">근로내역확인신고서 출력</button>
+  </div><div id="si-content"></div>`;
+  if(_siTab==="workreport")_renderSiWorkReportTab();
+  else _renderSiRecordsTab();
+}
+function _renderSiRecordsTab(){
+  const el=$("#si-content");if(!el)return;
+  const list=[...socialInsuranceRecords].sort((a,b)=>String(b.effectiveDate||"").localeCompare(String(a.effectiveDate||"")));
+  el.innerHTML=`<div class="flex justify-between items-c mb3" style="gap:12px"><div class="fz11 text-gray" style="max-width:600px">⚠ 국세청·4대보험 기관에 실제 전자신고하는 기능이 아니라, 신고 내역을 참고용으로 기록·조회하는 화면입니다. 실제 신고는 4대사회보험 정보연계센터(EDI) 등을 통해 별도로 진행하세요.</div>
+    <button class="btn btn-primary" onclick="openSocialInsuranceModal(null)">＋ 신고 등록</button></div>
+  <div class="card"><div class="card-body" style="padding:0"><div class="tbl-wrap"><table><thead><tr><th>대상자</th><th>구분</th><th>4대보험</th><th>발생일</th><th>신고 보수월액</th><th>사유/비고</th><th style="text-align:right">관리</th></tr></thead><tbody>
+    ${list.length?list.map(r=>`<tr>
+      <td><strong>${h(r.empName)}</strong><div class="fz11 text-gray">${h(r.dept||"")} ${h(r.team||"")}</div></td>
+      <td>${badge(SI_TYPE_LABEL[r.type]||r.type,r.type==="loss"?"red":r.type==="wageChange"?"orange":"blue")}</td>
+      <td class="fz12">${(r.insuranceTypes||[]).map(t=>SI_INSURANCE_LABEL[t]||t).join(", ")||"-"}</td>
+      <td class="fz12">${h(r.effectiveDate)}</td>
+      <td class="fz12">${r.type==="loss"?"-":fmtSalary(r.monthlyWage)}</td>
+      <td class="fz11 text-gray">${h(r.reason||r.note||"")}</td>
+      <td style="text-align:right;white-space:nowrap"><button class="btn btn-secondary btn-sm" onclick="openSocialInsuranceModal('${r.id}')">수정</button> <button class="btn btn-danger btn-sm" onclick="deleteSocialInsuranceRecord('${r.id}')">삭제</button></td>
+    </tr>`).join(""):`<tr><td colspan="7" style="padding:30px;text-align:center;color:#94a3b8">등록된 신고 내역이 없습니다.</td></tr>`}
+  </tbody></table></div></div></div>
+  ${list.length?`<div class="mt3"><button class="btn btn-secondary btn-sm" onclick="exportSocialInsuranceCSV()">📥 다운로드</button></div>`:""}`;
+}
+// D5(세무/사회보험) — 자격상실(퇴사) 신고는 이미 퇴직 처리된 직원도 대상이 될 수 있어
+// (퇴직금 정산모듈과 동일한 사정) openOrgPicker()의 재직자 전용 필터로는 부적합하다 —
+// severance-settlement가 쓰던 것과 동일한, 전 직원(퇴직자 포함) 검색선택 UI를 쓴다.
+function _siEmpOptionsHtml(q){
+  q=String(q||"").trim().toLowerCase();
+  const list=employees.filter(e=>e.role!=="admin"&&(!q||e.name.toLowerCase().includes(q)||String(e.empNo||"").toLowerCase().includes(q))).sort((a,b)=>String(a.name||"").localeCompare(String(b.name||""),"ko"));
+  return list.map(e=>`<option value="${e.id}">${h(e.name)}${e.active?"":" (퇴직)"} · ${h(e.dept||"")}${e.team?" "+h(e.team):""}</option>`).join("");
+}
+function openSocialInsuranceModal(id){
+  const r=id?socialInsuranceRecords.find(x=>x.id===id):null;
+  window._siPickedEmp=r?{id:r.empId,name:r.empName}:null;
+  openModal(`<div class="modal-box" style="max-width:520px"><div class="modal-head"><h3>${r?"4대보험 신고 내역 수정":"4대보험 신고 등록"}</h3></div><div class="modal-body">
+    ${r?`<div class="fz12 text-gray mb2">대상자: <strong>${h(r.empName)}</strong>(수정 시 대상자는 변경할 수 없습니다)</div>`:`
+    <div class="fg"><label class="fl">대상자 검색(이름/사번)</label><input class="fc" type="text" id="si-emp-search" placeholder="예: 홍길동" oninput="_siFilterEmpOptions()"></div>
+    <div class="fg"><label class="fl">대상자 <span class="req">*</span></label><select class="fc" id="si-emp-select" onchange="_siSelectEmployee(this.value)"><option value="">선택하세요</option>${_siEmpOptionsHtml("")}</select></div>`}
+    <div class="fg"><label class="fl">구분 <span class="req">*</span></label><select class="fc" id="si-type" onchange="renderSocialInsuranceModalFields()">
+      <option value="acquisition" ${(!r||r.type==="acquisition")?"selected":""}>자격취득(입사)</option>
+      <option value="loss" ${r?.type==="loss"?"selected":""}>자격상실(퇴사)</option>
+      <option value="wageChange" ${r?.type==="wageChange"?"selected":""}>보수월액변경</option>
+    </select></div>
+    <div class="fg"><label class="fl">4대보험 항목</label><div class="flex gap3 wrap">${SI_INSURANCE_KEYS.map(k=>`<label class="flex items-c gap2 fz12"><input type="checkbox" class="si-ins-chk" value="${k}" ${!r||(r.insuranceTypes||[]).includes(k)?"checked":""}>${SI_INSURANCE_LABEL[k]}</label>`).join("")}</div></div>
+    <div class="fg"><label class="fl">발생일(입사/퇴사/변경일) <span class="req">*</span></label><input class="fc" type="date" id="si-date" value="${r?.effectiveDate||""}"></div>
+    <div class="fg" id="si-wage-wrap"></div>
+    <div class="fg" id="si-reason-wrap"></div>
+    <div class="fg"><label class="fl">비고</label><textarea class="fc" id="si-note" rows="2">${r?h(r.note||""):""}</textarea></div>
+    <div class="warn-note mt2">⚠ 실제 신고는 4대사회보험 정보연계센터(EDI) 등을 통해 별도로 진행해야 합니다. 이 화면은 신고 내역을 참고용으로 기록하는 용도입니다.</div>
+  </div><div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal()">취소</button><button class="btn btn-primary" onclick="saveSocialInsuranceRecord(${r?`'${r.id}'`:"null"})">저장</button></div></div>`);
+  setTimeout(()=>{renderSocialInsuranceModalFields(r);},10);
+}
+function renderSocialInsuranceModalFields(r){
+  const type=$("#si-type")?.value||"acquisition";
+  const wageWrap=$("#si-wage-wrap"),reasonWrap=$("#si-reason-wrap");
+  if(wageWrap)wageWrap.innerHTML=type!=="loss"?`<label class="fl">신고 보수월액(원)</label><input class="fc" type="number" id="si-wage" min="0" max="999999999" step="10000" value="${r?.monthlyWage||0}">`:"";
+  if(reasonWrap)reasonWrap.innerHTML=type!=="acquisition"?`<label class="fl">${type==="loss"?"상실(퇴사) 사유":"변경 사유"}</label><input class="fc" id="si-reason" value="${r?h(r.reason||""):""}" placeholder="${type==="loss"?"예: 자진퇴사":"예: 승급, 수당 변경"}">`:"";
+}
+function _siFilterEmpOptions(){
+  const sel=$("#si-emp-select");if(!sel)return;
+  const q=$("#si-emp-search")?.value||"";
+  sel.innerHTML=`<option value="">선택하세요</option>`+_siEmpOptionsHtml(q);
+}
+function _siSelectEmployee(id){
+  if(!id){window._siPickedEmp=null;return;}
+  const emp=getEmp(id);if(!emp)return;
+  window._siPickedEmp={id:emp.id,name:emp.name};
+}
+function saveSocialInsuranceRecord(id){
+  const existing=id?socialInsuranceRecords.find(x=>x.id===id):null;
+  const empRef=existing?{id:existing.empId,name:existing.empName}:window._siPickedEmp;
+  if(!empRef){showToast("대상 직원을 선택하세요.","error");return;}
+  const type=$("#si-type")?.value||"acquisition";
+  const effectiveDate=$("#si-date")?.value;
+  if(!effectiveDate){showToast("발생일을 입력하세요.","error");return;}
+  const insuranceTypes=Array.from(document.querySelectorAll(".si-ins-chk:checked")).map(el2=>el2.value);
+  if(!insuranceTypes.length){showToast("4대보험 항목을 하나 이상 선택하세요.","error");return;}
+  const monthlyWage=type!=="loss"?Number($("#si-wage")?.value):0;
+  if(type!=="loss"&&(!Number.isFinite(monthlyWage)||monthlyWage<0||monthlyWage>999999999)){showToast("신고 보수월액은 0~999,999,999원으로 입력하세요.","error");return;}
+  const reason=type!=="acquisition"?($("#si-reason")?.value.trim()||""):"";
+  const emp=getEmp(empRef.id);
+  const payload={empId:empRef.id,empName:empRef.name,dept:emp?.dept||"",team:emp?.team||"",type,insuranceTypes,effectiveDate,monthlyWage,reason,note:$("#si-note")?.value.trim()||"",updatedAt:new Date().toISOString()};
+  if(id){
+    socialInsuranceRecords=socialInsuranceRecords.map(r=>r.id===id?{...r,...payload}:r);
+  }else{
+    socialInsuranceRecords.push({id:`sir-${genId()}`,...payload,createdBy:currentUser.id,createdByName:currentUser.name,createdAt:new Date().toISOString()});
+  }
+  closeModal();autoSaveToServerIfEnabled();showToast(id?"신고 내역이 수정되었습니다.":"신고 내역이 등록되었습니다.","success");
+  logAction(id?"social_insurance_updated":"social_insurance_registered","4대보험 신고",empRef.name,`${SI_TYPE_LABEL[type]||type} · ${effectiveDate}`);
+  renderTaxSocialInsurancePage();
+}
+async function deleteSocialInsuranceRecord(id){
+  const r=socialInsuranceRecords.find(x=>x.id===id);if(!r)return;
+  const ok=await askConfirmModal({title:"신고 내역 삭제",danger:true,message:`${r.empName}님의 '${SI_TYPE_LABEL[r.type]||r.type}' 신고 내역을 삭제하시겠습니까?`});
+  if(!ok)return;
+  socialInsuranceRecords=socialInsuranceRecords.filter(x=>x.id!==id);
+  autoSaveToServerIfEnabled();showToast("신고 내역이 삭제되었습니다.","info");
+  logAction("social_insurance_deleted","4대보험 신고",r.empName,r.empName);
+  renderTaxSocialInsurancePage();
+}
+function exportSocialInsuranceCSV(){
+  const rows=socialInsuranceRecords.map(r=>[r.empName,getEmp(r.empId)?.empNo||"",r.dept||"",r.team||"",SI_TYPE_LABEL[r.type]||r.type,(r.insuranceTypes||[]).map(t=>SI_INSURANCE_LABEL[t]||t).join("/"),r.effectiveDate,r.type==="loss"?0:(r.monthlyWage||0),r.reason||"",r.note||""]);
+  dlCSV(`4대보험신고내역_${new Date().toISOString().slice(0,10)}.csv`,["이름","사번","부서","팀","구분","4대보험","발생일","신고보수월액","사유","비고"],rows);
+}
+// D5(근로내역확인신고서) — 실제 신고서식이 아니라, 기존 근태(attendanceRecords) 기록을
+// 바탕으로 근무일수·근로시간·지급임금을 즉석 집계해 보여주는 참고용 문서. 기존
+// _calcMonthlyWorkHours()/calcStandardPayslip()을 그대로 재사용해 새 계산식을 만들지
+// 않는다(이미 검증된 산식과 어긋나는 별도 집계가 생기는 것을 방지).
+let _siWrEmpId=null,_siWrYear=new Date().getFullYear(),_siWrMonth=new Date().getMonth()+1;
+function _renderSiWorkReportTab(){
+  const el=$("#si-content");if(!el)return;
+  const active=employees.filter(e=>e.active&&e.role!=="admin");
+  el.innerHTML=`<div class="card"><div class="card-head"><h3>근로내역확인신고서 출력(참고용)</h3></div><div class="card-body">
+    <div class="fz11 text-gray mb3" style="max-width:600px">⚠ 기존 근태 기록(출퇴근 체크)을 바탕으로 근무일수·근로시간·지급임금을 즉석 집계해 보여주는 참고용 문서입니다. 실제 고용센터·근로복지공단 신고는 별도로 진행하세요.</div>
+    <div class="g3">
+      <div class="fg"><label class="fl">대상자</label><select class="fc" id="si-wr-emp" onchange="_siWrEmpId=this.value?Number(this.value):null">
+        <option value="">선택하세요</option>${active.map(e=>`<option value="${e.id}" ${_siWrEmpId===e.id?"selected":""}>${h(e.name)} (${h(e.dept||"")}${e.team?" "+h(e.team):""})</option>`).join("")}
+      </select></div>
+      <div class="fg"><label class="fl">연도</label><input class="fc" type="number" id="si-wr-year" value="${_siWrYear}" onchange="_siWrYear=+this.value"></div>
+      <div class="fg"><label class="fl">월</label><input class="fc" type="number" id="si-wr-month" min="1" max="12" value="${_siWrMonth}" onchange="_siWrMonth=+this.value"></div>
+    </div>
+    <button class="btn btn-primary" onclick="printWorkDetailsReport()">🖨 신고서 출력</button>
+  </div></div>`;
+}
+function printWorkDetailsReport(){
+  const empId=$("#si-wr-emp")?.value;
+  if(!empId){showToast("대상자를 선택하세요.","error");return;}
+  const emp=getEmp(empId);if(!emp){showToast("직원 정보를 찾을 수 없습니다.","error");return;}
+  const year=Number($("#si-wr-year")?.value)||new Date().getFullYear();
+  const month=Number($("#si-wr-month")?.value)||new Date().getMonth()+1;
+  const ym=`${year}-${String(month).padStart(2,"0")}`;
+  const workDays=attendanceRecords.filter(r=>String(r.empId)===String(emp.id)&&r.date.startsWith(ym)&&r.checkIn&&r.checkOut).length;
+  const {regularHours,overtimeHours}=_calcMonthlyWorkHours(emp.id,year,month);
+  const totalHours=Math.round((regularHours+overtimeHours)*10)/10;
+  const slip=calcStandardPayslip(emp,year,month);
+  const companyName=settings.companyName||"(주)회사";
+  const html=`<div style="font-family:'맑은 고딕','Malgun Gothic',sans-serif;padding:28px;color:#1e293b">
+    <h2 style="text-align:center;font-size:20px;letter-spacing:3px;margin-bottom:6px;border-bottom:3px solid #1e293b;padding-bottom:12px">근로내역확인신고서(참고용)</h2>
+    <p style="text-align:center;color:#64748b;font-size:12px;margin-bottom:20px">${h(companyName)} · ${year}년 ${month}월</p>
+    <table style="width:100%;border-collapse:collapse;font-size:13px">
+      <tr><td style="padding:6px 10px;border:1px solid #e2e8f0;background:#f8fafc;font-weight:700;width:120px">성 명</td><td style="padding:6px 10px;border:1px solid #e2e8f0">${h(emp.name)}</td>
+      <td style="padding:6px 10px;border:1px solid #e2e8f0;background:#f8fafc;font-weight:700;width:120px">부서/직급</td><td style="padding:6px 10px;border:1px solid #e2e8f0">${h(emp.dept||"")} ${h(emp.position||emp.rank||"")}</td></tr>
+      <tr><td style="padding:6px 10px;border:1px solid #e2e8f0;background:#f8fafc;font-weight:700">근무일수</td><td style="padding:6px 10px;border:1px solid #e2e8f0">${workDays}일</td>
+      <td style="padding:6px 10px;border:1px solid #e2e8f0;background:#f8fafc;font-weight:700">총 근로시간</td><td style="padding:6px 10px;border:1px solid #e2e8f0">${totalHours}시간</td></tr>
+    </table>
+    <div style="margin-top:18px;padding:16px;background:#eff6ff;border-radius:8px;text-align:center">
+      <div style="font-size:12px;color:#3b82f6;font-weight:600">해당 월 지급 임금(보수총액, 참고용)</div>
+      <div style="font-size:26px;font-weight:800;color:#1e40af">${fmtSalary(slip.gross)}</div>
+    </div>
+    <p style="margin-top:14px;font-size:11px;color:#94a3b8">본 문서는 기존 근태 기록을 바탕으로 즉석 집계한 참고용 자료이며, 실제 근로복지공단·고용센터 신고서식과 다를 수 있습니다. 실제 신고는 4대사회보험 정보연계센터(EDI) 등을 통해 별도로 진행하세요.</p>
+  </div>`;
+  const pw=window.open("","_blank","width=760,height=920");
+  pw.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>근로내역확인신고서</title><style>body{margin:0}@media print{@page{margin:10mm}}</style></head><body>${html}</body></html>`);
+  pw.document.close();pw.focus();setTimeout(()=>{pw.print();pw.close();},400);
 }
 
 // ==================== GLOBAL SEARCH ====================
