@@ -26678,24 +26678,20 @@ async function deleteWebhook(id){
 function _logIntegration(webhookName,event,status,message){
   integrationLogs=[{id:genId(),ts:new Date().toISOString(),webhookName,event,status,message},...integrationLogs].slice(0,50);
 }
-// 등록된 웹훅 중 해당 이벤트를 구독(events에 eventId 포함)한 활성 웹훅 전체에 메시지를 보낸다.
-// "연동 설정" 화면은 웹훅 등록 + 이벤트 선택 UI까지 갖춰져 있었지만, 실제 이벤트가 발생할 때
-// 이를 호출하는 코드가 전혀 없어 관리자가 누르는 "테스트 전송" 버튼 외에는 절대 동작하지 않던
-// 기능이었다 — 결재 상신/결재 완료·반려/휴가·근태 신청/공지사항 등록 4곳의 실제 액션 지점에서
-// 호출해 완성한다. testWebhook()과 동일한 전송 방식(no-cors POST, 응답 확인 불가는 동일한 한계)을
-// 재사용해 동작 일관성을 유지.
+// 결재 상신/결재 완료·반려/휴가·근태 신청/공지사항 등록 4곳의 실제 액션 지점에서 호출해,
+// 등록된 웹훅 중 해당 이벤트를 구독(events에 eventId 포함)한 활성 웹훅에 메시지를 보낸다.
+// 2026-10 고도화 이전에는 이 함수가 브라우저에서 직접 webhook.url로 fetch(no-cors)했는데,
+// 그러려면 integrationSettings(웹훅 URL 포함)가 매 사용자의 GET /data 응답에 전부 실려
+// 있어야 했다 — "연동 설정" 화면 자체는 admin 전용인데 이 데이터는 role과 무관하게 전체가
+// 노출돼 있어(filterDataForRole이 다른 모든 비밀값은 가리는데 이 필드만 빠져 있었음),
+// 로그인한 누구나 Slack 등 외부 채널에 영구히 직접 게시할 수 있는 URL을 그대로 읽어갈 수
+// 있는 비밀값 노출이었다. 디스패치 자체를 서버로 옮겨(POST /api/integrations/webhooks/
+// dispatch) 해결 — 클라이언트는 이벤트id+문구만 보내고, 실제 webhook URL은 서버만 안다
+// (non-admin의 GET /data에서는 webhooks 배열 자체가 제거됨). 전송이력(integrationLogs)도
+// 서버가 직접 기록하므로 여기서는 더 이상 _logIntegration()을 호출하지 않는다.
 function _fireIntegrationWebhooks(eventId,text){
-  const evLabel=INTEGRATION_EVENTS.find(e=>e.id===eventId)?.label||eventId;
-  const whs=(integrationSettings.webhooks||[]).filter(w=>w.active!==false&&(w.events||[]).includes(eventId));
-  whs.forEach(async wh=>{
-    try{
-      await fetch(wh.url,{method:"POST",mode:"no-cors",headers:{"Content-Type":"application/json"},body:JSON.stringify({text})});
-      _logIntegration(wh.name,evLabel,"success","자동 발송");
-    }catch(e){
-      _logIntegration(wh.name,evLabel,"fail",e.message);
-    }
-    autoSaveToServerIfEnabled();
-  });
+  if(!serverConfig.url)return; // 오프라인 데모 모드는 외부 연동 자체가 불가
+  serverRequest("POST","/api/integrations/webhooks/dispatch",{eventId,text}).catch(()=>{});
 }
 async function testWebhook(id){
   const wh=(integrationSettings.webhooks||[]).find(w=>String(w.id)===String(id));if(!wh)return;
