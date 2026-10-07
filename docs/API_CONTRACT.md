@@ -86,6 +86,7 @@
 | `GET/POST /api/pms/*` | PMS(프로젝트/투입률/업무일지) | 필요 |
 | `GET/POST /api/recruit/*` | 채용(공고/지원자/면접) | 필요, 부서별 열람 제한 있음 |
 | `POST /api/hr/resume-parse` | 신규 직원 등록 이력서 AI 자동입력 | 필요, admin 전용 |
+| `POST /api/integrations/webhooks/dispatch` | 결재 상신/완료·반려, 휴가신청, 공지등록 시 등록된 webhook으로 서버가 직접 전송(`{eventId,text}`). webhook URL은 서버만 알고 이 라우트 밖으로 나가지 않음(비관리자 `GET /data`에서도 제거됨) | 필요, role 무관(이벤트 발생 당사자가 호출) |
 | `POST /api/reset-all` | 전체 데이터 초기화 | loginId/pw 재검증(토큰 아님) |
 
 ### 1.4 이력서 AI 자동입력 — `POST /api/hr/resume-parse`
@@ -164,6 +165,7 @@ AI가 반환한 값도 그대로 신뢰하지 않는다 — `birth`는 실제 �
 | `PARSE_SHEET_TIMEOUT_MS` | 아니오 | `15000` | (`budget.js`) 예산/사업계획 엑셀 업로드 5개 라우트의 파일 파싱 타임아웃(밀리초). SheetJS는 보안 패치된 공식 배포판 0.20.3을 사용하며, 파싱은 별도 워커 스레드에서 실행된다. 이 시간을 넘기면 해당 워커만 강제 종료되고 400 오류를 반환해 손상되거나 비정상적으로 복잡한 파일이 멀티테넌트 서버 전체를 멈추지 못하게 한다(`lib/parse-sheet-worker.js` 참고). |
 | `READINESS_DB_TIMEOUT_MS` | 아니오 | `3000` | `/readyz`의 PostgreSQL 확인 쿼리 제한시간(밀리초). DB 연결은 열려 있지만 쿼리가 멈춘 상태에서 배포 헬스체크가 무기한 대기하지 않도록 한다. |
 | `BOOTSTRAP_SECRET` | JSON 파일 모드 최초 설정 시 필수 | (미설정) | `POST /api/bootstrap/admin`의 one-time 초기화 시크릿. 미설정이면 endpoint가 503으로 fail-closed하며, `POST /save`는 빈 저장소여도 무인증으로 열리지 않는다. 12자 이상 난수로 설정하고 `X-Bootstrap-Secret` 헤더로 한 번만 전달한다. |
+| `ALLOW_LOCAL_WEBHOOK_TARGETS` | 아니오(테스트 전용) | `false` | `true`면 `POST /api/integrations/webhooks/dispatch`의 SSRF 가드(webhook URL이 loopback/사설대역/링크로컬로 풀리면 그 건만 건너뜀)를 건너뛴다. 운영에서는 절대 설정하지 않는다 — e2e/통합 테스트가 localhost mock 수신 서버로 실제 발송을 검증하기 위해서만 켠다. |
 
 ### 1.6 공통 응답 헤더
 

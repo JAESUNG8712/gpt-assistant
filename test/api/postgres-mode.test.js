@@ -846,6 +846,124 @@ if (!ADMIN_DATABASE_URL) {
       });
     });
   });
+
+  // 웹훅 서버사이드 디스패치(2026-10)는 JSON 파일 모드 테스트(test/api-integration-webhooks.test.js)
+  // 로 핵심 계약을 전부 검증했지만, 그 경로는 _persistDataLocked()의 JSON 분기(mergeArrayById
+  // 기반 _mergeProtectedField)만 실제로 지나간다 — 실제 운영이 타는 Postgres 분기
+  // (GENERIC_LIST_FIELDS 루프의 INSERT ... ON CONFLICT 업서트, _APPROVAL_GATED_FIELDS를 통한
+  // _sanitizeGatedRecord 재검증)는 전혀 다른 코드 경로라 별도로 실제 DB에 대해 재확인한다.
+  test("postgres-mode: 웹훅 서버사이드 디스패치 — 멀티테넌트 격리 + 실제 DB 영속 + 비밀값 비노출", async (t) => {
+    const dbName = `hrtest_webhook_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`;
+    const testDbUrl = _withDatabaseName(ADMIN_DATABASE_URL, dbName);
+
+    const admin = new Client({ connectionString: ADMIN_DATABASE_URL });
+    await admin.connect();
+    await admin.query(`CREATE DATABASE ${dbName}`);
+    t.after(async () => {
+      try {
+        await admin.query(
+          "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = $1 AND pid <> pg_backend_pid()",
+          [dbName]
+        );
+        await admin.query(`DROP DATABASE IF EXISTS ${dbName}`);
+      } finally {
+        await admin.end();
+      }
+    });
+
+    // mock 수신 서버가 127.0.0.1(loopback)이라 SSRF 가드(server.js 참고)를 명시적으로
+    // 꺼야만 실제 디스패치를 재현할 수 있다 — 운영은 이 환경변수를 설정하지 않는다.
+    const server = await startServer({ env: { DATABASE_URL: testDbUrl, ALLOW_LOCAL_WEBHOOK_TARGETS: "true" } });
+    t.after(() => server.stop());
+    const api = (p, opts) => fetch(server.baseUrl + p, opts);
+
+    async function register(companyName, loginId, pw) {
+      const res = await api("/api/companies/register", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ companyName, adminName: `${companyName} 관리자`, loginId, password: pw }),
+      });
+      const json = await res.json();
+      assert.equal(res.status, 200, JSON.stringify(json));
+      return json;
+    }
+    function auth(token, method, body) {
+      return { method, headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: body !== undefined ? JSON.stringify(body) : undefined };
+    }
+    async function getData(token) {
+      const r = await (await api("/data", { headers: { Authorization: `Bearer ${token}` } })).json();
+      assert.equal(r.ok, true);
+      return r;
+    }
+
+    const http = require("node:http");
+    const received = [];
+    const mock = http.createServer((req, res) => {
+      let body = "";
+      req.on("data", c => (body += c));
+      req.on("end", () => { received.push(JSON.parse(body || "{}")); res.writeHead(200).end("{}"); });
+    });
+    await new Promise(resolve => mock.listen(0, "127.0.0.1", resolve));
+    const mockUrl = `http://127.0.0.1:${mock.address().port}/hook`;
+    t.after(() => new Promise(resolve => { mock.closeAllConnections(); mock.close(resolve); }));
+
+    const companyA = await register("회사A", "admin_a", "TestPassword123");
+    const companyB = await register("회사B", "admin_b", "TestPassword456");
+    const tokenA = companyA.token, tokenB = companyB.token;
+
+    const member = { id: "memberA", loginId: "memberA_wh", pw: "memberA-wh-pw-1", name: "팀원A", role: "member", active: true, dept: "개발본부", menuPerms: {} };
+    const dA = await getData(tokenA);
+    const seed = await api("/save", auth(tokenA, "POST", { _version: dA.version, employees: [...dA.data.employees, member] }));
+    assert.equal(seed.status, 200);
+    const memberLogin = await (await api("/login", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ companyCode: companyA.companyCode, loginId: "memberA_wh", pw: "memberA-wh-pw-1" }),
+    })).json();
+    assert.equal(memberLogin.ok, true);
+    const memberToken = memberLogin.token;
+
+    await t.test("회사A admin이 웹훅을 등록한다", async () => {
+      const d = await getData(tokenA);
+      const save = await api("/save", auth(tokenA, "POST", {
+        _version: d.version,
+        integrationSettings: { webhooks: [{ id: 1, name: "회사A-훅", type: "custom", url: mockUrl, active: true, events: ["approval_request"] }], calendar: {} },
+      }));
+      assert.equal(save.status, 200);
+    });
+
+    await t.test("회사A의 member GET /data에는 webhooks가 없다", async () => {
+      const d = await getData(memberToken);
+      assert.equal(d.data.integrationSettings.webhooks, undefined);
+    });
+
+    await t.test("회사A의 member가 디스패치를 트리거하면 실제 외부(mock)로 전송되고 DB에 로그가 쌓인다", async () => {
+      const r = await (await api("/api/integrations/webhooks/dispatch", auth(memberToken, "POST", { eventId: "approval_request", text: "[결재 상신] pg 테스트" }))).json();
+      assert.equal(r.ok, true);
+      assert.equal(r.dispatched, 1);
+      await new Promise(resolve => setTimeout(resolve, 100));
+      assert.equal(received.length, 1);
+      assert.equal(received[0].text, "[결재 상신] pg 테스트");
+
+      const db = new Client({ connectionString: testDbUrl });
+      await db.connect();
+      try {
+        const rows = await db.query("SELECT data FROM app_collections WHERE collection = 'integrationLogs'");
+        assert.equal(rows.rows.length, 1, "integrationLogs가 정확히 1건 DB에 기록돼야 함");
+        assert.equal(rows.rows[0].data.status, "success");
+      } finally {
+        await db.end();
+      }
+    });
+
+    await t.test("회사B admin은 회사A의 웹훅 URL을 전혀 볼 수 없고(완전한 멀티테넌트 격리), 회사B가 디스패치를 트리거해도 아무것도 전송되지 않는다", async () => {
+      const dB = await getData(tokenB);
+      assert.equal(((dB.data.integrationSettings || {}).webhooks || []).length, 0);
+      const before = received.length;
+      const r = await (await api("/api/integrations/webhooks/dispatch", auth(tokenB, "POST", { eventId: "approval_request", text: "회사B 트리거" }))).json();
+      assert.equal(r.ok, true);
+      assert.equal(r.dispatched, 0, "회사B에는 등록된 웹훅이 없으므로 0건이어야 함(회사A 웹훅을 잘못 공유하면 안 됨)");
+      assert.equal(received.length, before);
+    });
+  });
 }
 
 function _withDatabaseName(connStr, dbName) {

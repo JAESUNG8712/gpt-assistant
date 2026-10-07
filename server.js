@@ -9,6 +9,8 @@ const os      = require("os");
 const bcrypt  = require("bcryptjs");
 const crypto  = require("crypto");
 const { isDeepStrictEqual } = require("node:util");
+const dns = require("node:dns");
+const net = require("node:net");
 const pool    = require("./db");
 const multer  = require("multer");
 const budgetRouterFactory = require("./budget");
@@ -920,6 +922,15 @@ function filterDataForRole(data, auth) {
       if (!canSeeAddress) delete copy.address;
       return copy;
     });
+  }
+  // integrationSettings.webhooks[].url은 비밀값(Slack Incoming Webhook URL 등, 아는 사람은
+  // 누구나 그 채널에 영구히 직접 게시 가능)이다. "연동 설정"(integrations) 화면은 admin
+  // 전용인데 이 필드는 지금까지 role과 무관하게 전체가 그대로 노출돼 있었다 — 웹훅 발송
+  // 자체는 POST /api/integrations/webhooks/dispatch로 서버가 대신 수행하므로(위 라우트
+  // 참고) non-admin 클라이언트는 더 이상 이 URL을 알 필요가 없다. calendar 설정(민감정보
+  // 없음, 두 개의 불린 값)만 남기고 webhooks는 완전히 제거한다.
+  if (auth.role !== "admin" && out.integrationSettings && typeof out.integrationSettings === "object") {
+    out.integrationSettings = { calendar: out.integrationSettings.calendar };
   }
   if (auth.role !== "admin") out._singletonRevisions = {};
   // 회사 단위 모듈 on/off(마스터 콘솔) — 이 함수의 나머지는 전부 "같은 회사 안에서 role별로
@@ -5974,6 +5985,138 @@ app.get("/activity", async (req, res) => {
   } catch (e) {
     return res.status(500).json({ ok: false, message: _safeErrMsg(e) });
   }
+});
+
+// ── 외부 연동 웹훅(서버사이드 디스패치) ────────────────────────────────────────
+// "연동 설정"(integrations, admin 전용 화면)이 등록하는 Slack/카카오워크 등 웹훅 URL은
+// 비밀값(Slack Incoming Webhook URL은 경로 자체에 토큰이 박혀있어, 그 URL을 아는 사람은
+// 누구나 영구히 그 채널에 직접 게시할 수 있다)인데, 2026-09-09에 도입된 "결재 상신/완료·
+// 휴가신청/공지등록 시 자동 발송" 기능이 브라우저에서 직접 그 URL로 fetch하는 구조라
+// integrationSettings 전체(webhooks[].url 포함)가 GET /data 응답에 실려 있어야만
+// 작동했다 — filterDataForRole()이 다른 모든 비밀값(복지포인트·연봉 등)은 role별로
+// 가리는데 이 필드만 가린 적이 없어, 로그인만 되어 있으면 어떤 role이든 그대로 URL을
+// 읽어갈 수 있었다(실측 확인된 완전한 비밀값 노출 — 2026-09-25 주간점검에서 "서버사이드
+// 발송으로 아키텍처 변경 필요"로 두 차례 명시적으로 미뤄졌던 항목).
+// 디스패치 자체를 서버로 옮겨 해결한다 — 클라이언트는 이벤트id+문구만 보내고, 실제 webhook
+// URL은 이 라우트 안에서만(서버가 loadData()로 직접 읽어) 쓰인다. 이제 non-admin의
+// GET /data 응답에서는 webhooks 배열 자체를 제거하므로(filterDataForRole 참고) 그 URL을
+// 알 방법이 구조적으로 사라진다. 부수적으로, 브라우저의 no-cors fetch는 응답을 전혀 읽을
+// 수 없어 성공/실패를 영원히 구분 못 했던 기존 한계도 서버 쪽 fetch는 실제 HTTP 상태를
+// 읽을 수 있어 함께 해소된다.
+//
+// 이 이전(브라우저가 직접 fetch)에는 admin이 webhook.url에 악의적인 내부 주소를 넣어도
+// "피해자"가 각 직원의 브라우저(그 직원 PC가 속한 네트워크)뿐이었는데, 디스패치를 서버로
+// 옮기면서 그 요청의 발신지가 이 앱이 실제로 떠 있는 호스팅 인프라 자체로 바뀐다 — 이제는
+// admin(또는 탈취된 admin 계정)이 webhook URL을 클라우드 메타데이터 엔드포인트(예:
+// 169.254.169.254)나 127.0.0.1의 내부 포트로 설정하면 우리 서버 프로세스가 그 내부
+// 자원에 직접 요청을 보내게 된다(SSRF) — 이건 이 변경이 새로 만들어낸, 그래서 반드시
+// 함께 막아야 하는 위험이다. 디스패치 직전에 각 webhook의 호스트를 실제로 DNS 조회해(도메인이
+// 내부 IP로 리다이렉트/리바인딩되는 경우까지 포함) loopback·사설대역·링크로컬(클라우드
+// 메타데이터 포함)이면 그 건만 조용히 건너뛴다(요청 전체를 막지 않음 — 같은 이벤트에 걸린
+// 다른 정상 webhook은 그대로 발송).
+function _isPrivateOrLoopbackIp(ip) {
+  if (net.isIP(ip) === 4) {
+    const parts = ip.split(".").map(Number);
+    if (parts.length !== 4 || parts.some(n => !Number.isInteger(n) || n < 0 || n > 255)) return true; // 파싱 실패는 안전 쪽으로
+    const [a, b] = parts;
+    if (a === 127) return true;                       // loopback
+    if (a === 10) return true;                         // RFC1918
+    if (a === 172 && b >= 16 && b <= 31) return true;   // RFC1918
+    if (a === 192 && b === 168) return true;            // RFC1918
+    if (a === 169 && b === 254) return true;            // link-local(클라우드 메타데이터 169.254.169.254 포함)
+    if (a === 0) return true;                           // 0.0.0.0/8
+    if (a === 100 && b >= 64 && b <= 127) return true;   // CGNAT
+    return false;
+  }
+  if (net.isIP(ip) === 6) {
+    const low = ip.toLowerCase();
+    if (low === "::1") return true;                                  // loopback
+    if (low.startsWith("fe80:") || low.startsWith("fe8") || low.startsWith("fe9") || low.startsWith("fea") || low.startsWith("feb")) return true; // link-local fe80::/10
+    if (low.startsWith("fc") || low.startsWith("fd")) return true;    // ULA fc00::/7
+    const v4mapped = low.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
+    if (v4mapped) return _isPrivateOrLoopbackIp(v4mapped[1]);
+    return false;
+  }
+  return true; // IP도 아니면(파싱 실패) 안전 쪽으로 차단
+}
+// 테스트(e2e/API 테스트)는 이 가드가 지금 막으려는 대상(127.0.0.1의 mock 수신 서버)을
+// 실제 디스패치 검증에 그대로 써야 하므로, 명시적으로 켠 경우에만(기본은 항상 가드 적용)
+// 이 검사를 건너뛴다 — BOOTSTRAP_SECRET/ALLOW_DEMO_DATA와 동일하게 opt-in 환경변수로,
+// 운영 배포는 이 값을 설정하지 않는 한 항상 보호된 상태로 시작한다.
+const _ALLOW_LOCAL_WEBHOOK_TARGETS = String(process.env.ALLOW_LOCAL_WEBHOOK_TARGETS || "").toLowerCase() === "true";
+async function _isWebhookTargetSafe(urlString) {
+  if (_ALLOW_LOCAL_WEBHOOK_TARGETS) return true;
+  let u;
+  try { u = new URL(urlString); } catch { return false; }
+  if (u.protocol !== "http:" && u.protocol !== "https:") return false;
+  const hostname = u.hostname.replace(/^\[|\]$/g, ""); // IPv6 literal의 [] 벗기기
+  if (net.isIP(hostname)) return !_isPrivateOrLoopbackIp(hostname);
+  try {
+    const addrs = await dns.promises.lookup(hostname, { all: true, verbatim: true });
+    if (!addrs.length) return false;
+    return addrs.every(a => !_isPrivateOrLoopbackIp(a.address));
+  } catch {
+    return false; // DNS 조회 실패는 안전 쪽으로 차단(요청 자체를 보내지 않음)
+  }
+}
+const INTEGRATION_EVENT_LABELS = {
+  approval_request: "결재 요청 발생",
+  approval_complete: "결재 완료/반려",
+  leave_request: "휴가/근태 신청",
+  notice_post: "공지사항 등록",
+};
+app.post("/api/integrations/webhooks/dispatch", async (req, res) => {
+  if (!requireAuth(req, res)) return;
+  const eventId = String(req.body?.eventId || "");
+  if (!Object.prototype.hasOwnProperty.call(INTEGRATION_EVENT_LABELS, eventId))
+    return res.status(400).json({ ok: false, message: "알 수 없는 이벤트입니다." });
+  const text = String(req.body?.text || "").replace(/[\u0000-\u001f\u007f]/g, " ").trim().slice(0, 1000);
+  if (!text) return res.status(400).json({ ok: false, message: "전송할 내용이 없습니다." });
+  try {
+    const companyId = req.auth.companyId || null;
+    const data = await loadData(companyId);
+    const webhooks = Array.isArray(data?.integrationSettings?.webhooks) ? data.integrationSettings.webhooks : [];
+    const targets = webhooks.filter(w => w && w.active !== false && Array.isArray(w.events) && w.events.includes(eventId));
+    if (!targets.length) return res.json({ ok: true, dispatched: 0 });
+    const evLabel = INTEGRATION_EVENT_LABELS[eventId];
+    const now = new Date().toISOString();
+    const results = await Promise.allSettled(targets.map(async wh => {
+      if (!(await _isWebhookTargetSafe(wh.url))) {
+        return { webhookName: String(wh.name || "").slice(0, 100), status: "fail", message: "안전하지 않은 전송 대상(내부/루프백 주소)" };
+      }
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 5000);
+      try {
+        const resp = await fetch(wh.url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text }),
+          signal: controller.signal,
+        });
+        return { webhookName: String(wh.name || "").slice(0, 100), status: resp.ok ? "success" : "fail", message: resp.ok ? "자동 발송" : `HTTP ${resp.status}` };
+      } catch (e) {
+        return { webhookName: String(wh.name || "").slice(0, 100), status: "fail", message: String(e?.message || e).slice(0, 200) };
+      } finally {
+        clearTimeout(timer);
+      }
+    }));
+    const logs = results.map(r => (r.status === "fulfilled" ? r.value : { webhookName: "-", status: "fail", message: "dispatch error" }));
+    // 로그 기록은 best-effort — 이미 발생한 외부 전송 결과는 이 기록이 실패해도 바뀌지
+    // 않으므로, 로그 저장 실패를 응답 실패로 취급하지 않는다. 합성 admin actor로
+    // persistData()를 호출(기존 부트스트랩 호출부와 동일한 관례)해 integrationLogs
+    // 하나만 병합·기록한다 — data에 다른 필드를 전혀 싣지 않으므로 다른 모든 컬렉션은
+    // mergeArrayById(undefined incoming)가 그대로 저장본을 반환해 손대지 않는다.
+    try {
+      const existingLogs = Array.isArray(data.integrationLogs) ? data.integrationLogs : [];
+      const newEntries = logs.map((l, i) => ({
+        id: `webhook-log-${Date.now()}-${i}-${Math.random().toString(36).slice(2, 8)}`,
+        ts: now, webhookName: l.webhookName, event: evLabel, status: l.status, message: l.message,
+      }));
+      const merged = [...newEntries, ...existingLogs].slice(0, 50);
+      await persistData({ integrationLogs: merged }, "system:webhook-dispatch", companyId, { role: "admin", empId: null });
+    } catch (e) { console.warn("[webhook-dispatch] 전송 이력 기록 실패:", e.message); }
+    res.json({ ok: true, dispatched: logs.filter(l => l.status === "success").length });
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 // ── Annual snapshots ──────────────────────────────────────────────────────────
