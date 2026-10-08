@@ -2267,9 +2267,10 @@ async function _doSave(silent=false){
     }
     const r = await serverRequest("POST", "/save", _retrySaveRequest.state, 15000, { idempotencyKey:_retrySaveRequest.idempotencyKey });
     if(r.ok){
+      const hasLaterChanges=_saveChangeSeq>_retrySaveRequest.changeSeq;
       _snapshotSingletonBaselines(_retrySaveRequest.state.data);
       if(r.recordRevisions)_applyRecordRevisions(r.recordRevisions);
-      if(_saveChangeSeq>_retrySaveRequest.changeSeq)_serverSavePending=true;
+      if(hasLaterChanges)_serverSavePending=true;
       _retrySaveRequest=null;
       _serverFailCount = 0;
       serverConfig.status = "connected";
@@ -2279,14 +2280,27 @@ async function _doSave(silent=false){
       if(r.version) _serverVersion = r.version;
       if(r.singletonRevisions) _singletonRevisions = {...r.singletonRevisions};
       const m = r.meta;
-      if(r.conflict && r.mergedData){
-        // Server did a smart merge - apply merged state locally
-        console.log("[Server] Conflict auto-merged, applying merged state...");
+      if((r.merged||r.partial) && r.mergedData && !hasLaterChanges){
+        // 서버 계약은 `merged`다. 거부된 HR 행도 서버 원본으로 되돌린다.
+        console.log("[Server] Applying authoritative merged state...");
         const merged = r.mergedData?.data || r.mergedData;
         applyState({_singletonRevisions:r.singletonRevisions,data: merged}, true); // apply without undo snapshot
-        serverConfig.statusMsg = `⚡병합완료 ${new Date().toLocaleTimeString("ko-KR")} · ${m?.empCount||0}명/${m?.kpiCount||0}건`;
-        showToast("다른 사용자의 변경사항이 자동으로 병합되었습니다.","info");
+        if(r.partial){
+          if(Array.isArray(merged.employmentRecords))employmentRecords=merged.employmentRecords;
+          if(Array.isArray(merged.learningCourses))learningCourses=merged.learningCourses;
+          if(Array.isArray(merged.learningAssignments))learningAssignments=merged.learningAssignments;
+        }
         renderSidebar(); renderPage();
+      }
+      if(r.partial){
+        const rejected=r.warnings?.rejectedRecords||[];
+        const labels={employmentRecords:"계약·징계",learningCourses:"교육과정",learningAssignments:"교육배정"};
+        const names=rejected.slice(0,3).map(x=>`${labels[x.field]||x.field}(${x.id})`).join(", ");
+        serverConfig.statusMsg=`일부 항목 저장 거부 · ${rejected.length}건`;
+        showToast(`일부 항목이 저장되지 않았습니다: ${names}${rejected.length>3?" 외":""}. 입력값·권한·정원을 확인해 주세요.${hasLaterChanges?" 후속 변경이 있어 화면을 자동 갱신하지 않았습니다.":""}`,"error");
+      } else if(r.merged){
+        serverConfig.statusMsg=`⚡병합완료 ${new Date().toLocaleTimeString("ko-KR")} · ${m?.empCount||0}명/${m?.kpiCount||0}건`;
+        showToast(hasLaterChanges?"서버 병합 후 후속 변경사항을 저장 중입니다.":"다른 사용자의 변경사항이 자동으로 병합되었습니다.","info");
       } else {
         serverConfig.statusMsg = `저장완료 ${new Date().toLocaleTimeString("ko-KR")} · ${m?.empCount||0}명/${m?.kpiCount||0}건`;
         if(!silent) showToast("서버에 저장되었습니다.","success");

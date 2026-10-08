@@ -1640,7 +1640,7 @@ function _validCalendarDate(value) {
 // targetEmp: field==="compSessions"일 때만 쓰이는, 호출부가 미리 조회해둔 incoming.targetId의
 // 직원 레코드(_canManageCompSessionTarget 판정용 — JSON모드는 _fileStore.employees에서,
 // Postgres모드는 별도 쿼리로 동일하게 조회해 호출부가 넘겨준다).
-function _sanitizeGatedRecord(field, incoming, stored, actor, actorEmp, settings, approvalDocForGate, targetEmp, engagementSurveys) {
+function _sanitizeGatedRecord(field, incoming, stored, actor, actorEmp, settings, approvalDocForGate, targetEmp, engagementSurveys, reviewOwnerEmp) {
   const rule = _APPROVAL_GATED_FIELDS[field];
   if (!rule || !incoming) return incoming;
   // ownField 기반 권한은 incoming 값만 보면 기존 타인 레코드의 id를 재사용하면서 owner를
@@ -1684,9 +1684,17 @@ function _sanitizeGatedRecord(field, incoming, stored, actor, actorEmp, settings
     const reviewOwnerId = type === "contract" ? shortText(incoming.reviewOwnerId ?? stored?.reviewOwnerId, 120) : "";
     const reviewNote = type === "contract" ? shortText(incoming.reviewNote ?? stored?.reviewNote, 500) : "";
     if (reviewStatus === "completed" && (!reviewOwnerId || reviewDecision === "pending")) return stored ? { ...stored } : null;
+    // 담당자는 요청 본문이 아닌 저장된 같은 회사 직원 원장에서 검증한다.
+    // 기존 레거시 담당자를 단순히 다시 저장하는 경우는 허용하되, 담당자 변경이나
+    // 완료 전이에는 현재 활성 관리자여야 한다.
+    const ownerNeedsValidation = type === "contract" && reviewOwnerId &&
+      (reviewOwnerId !== String(stored?.reviewOwnerId || "") || (reviewStatus === "completed" && stored?.reviewStatus !== "completed"));
+    if (ownerNeedsValidation && (!reviewOwnerEmp || reviewOwnerEmp.role !== "admin" || reviewOwnerEmp.active === false || !_menuPermsAllow("employment-records", reviewOwnerEmp))) return stored ? { ...stored } : null;
     const reviewChanged = type === "contract" && (reviewOwnerId !== String(stored?.reviewOwnerId || "") || reviewStatus !== (stored?.reviewStatus || "open") || reviewDecision !== (stored?.reviewDecision || "pending") || reviewNote !== String(stored?.reviewNote || ""));
-    const reviewEvents = Array.isArray(stored?.reviewEvents) ? stored.reviewEvents.slice(-49) : [];
-    if (reviewChanged) reviewEvents.push({ at: now, actorId: String(actor?.empId || ""), ownerId: reviewOwnerId, status: reviewStatus, decision: reviewDecision });
+    const reviewEvents = Array.isArray(stored?.reviewEvents) ? [...stored.reviewEvents] : [];
+    if (reviewChanged) {
+      reviewEvents.push({ at: now, actorId: String(actor?.empId || ""), ownerId: reviewOwnerId, status: reviewStatus, decision: reviewDecision });
+    }
     incoming = { ...incoming, employeeId: shortText(incoming.employeeId, 120), type, title: shortText(incoming.title, 120), status,
       startDate: date(incoming.startDate), endDate: date(incoming.endDate), decisionDate: date(incoming.decisionDate),
       note: shortText(incoming.note, 1000), documentRef: shortText(incoming.documentRef, 200),
@@ -2581,7 +2589,30 @@ async function persistData(data, changedBy = "system", companyId = null, actor =
 // `externalClient` is reserved for the snapshot-restore workflow.  That route
 // owns a wider transaction which also covers deleteExtras and budget_store, so
 // this function must join it instead of committing a partial HR restore first.
+// HR 원장은 /save의 전체 상태 에코에 섞여 온다. 사용자가 수정하지 않은 행까지
+// "거부"로 오인하지 않도록 실제 업무 필드가 달라진 경우에만 저장 실패를 알린다.
+const _HR_SAVE_FIELDS = {
+  employmentRecords: ["employeeId", "type", "title", "status", "startDate", "endDate", "decisionDate", "note", "documentRef", "reviewOwnerId", "reviewStatus", "reviewDecision", "reviewNote"],
+  learningCourses: ["name", "category", "provider", "instructorName", "delivery", "startDate", "endDate", "hours", "capacity", "cost", "status", "description", "internalNote"],
+  learningAssignments: ["courseId", "empId", "status", "assignedAt", "dueDate", "completedAt", "score", "certificateNo", "evidenceRef", "note", "source", "sourceDocId", "approvedCost", "costCenter", "settlementStatus", "settledAt", "settledAmount", "settlementNote"],
+};
+function _hrSaveChangeRequested(field, incoming, stored) {
+  if (!_HR_SAVE_FIELDS[field]) return false;
+  if (!stored) return true;
+  // 읽기 권한에 따라 일부 필드(예: 교육과정 internalNote)가 응답에서 제거된다.
+  // 전송되지 않은 필드는 사용자가 지우려는 의도로 간주하지 않는다.
+  return _HR_SAVE_FIELDS[field].some(key => Object.prototype.hasOwnProperty.call(incoming, key) &&
+    JSON.stringify(incoming[key] ?? null) !== JSON.stringify(stored[key] ?? null));
+}
+
 async function _persistDataLocked(data, changedBy = "system", companyId = null, actor = null, externalClient = null) {
+  const rejectedRecords = [];
+  const rejectHrRecord = (field, incoming, stored) => {
+    if (incoming?.id != null && _hrSaveChangeRequested(field, incoming, stored) &&
+        !rejectedRecords.some(r => r.field === field && r.id === String(incoming.id))) {
+      rejectedRecords.push({ field, id: String(incoming.id) });
+    }
+  };
   if (data._enforceSingletonCas) {
     if (!Array.isArray(data._changedSingletonKeys)) {
       throw httpError(428, "SINGLETON_REVISION_REQUIRED", "설정 저장 전 최신 revision 정보가 필요합니다.");
@@ -2791,10 +2822,17 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
             ? _resolveApprovalDocForGate(r.sourceDocId) : null;
           const targetEmpForGate = (gatedField === "compSessions" && r.targetId != null)
             ? (_fileStore.employees || []).find(e => String(e.id) === String(r.targetId)) || null : null;
-          let out = _sanitizeGatedRecord(gatedField, r, stored, actor, _actorEmpJson, _fileStore.settings, approvalDocForGate, targetEmpForGate, _fileStore.engagementSurveys || []);
+          const reviewOwnerId = r.reviewOwnerId ?? stored?.reviewOwnerId;
+          const reviewOwnerEmp = gatedField === "employmentRecords" && reviewOwnerId != null
+            ? (_fileStore.employees || []).find(e => String(e.id) === String(reviewOwnerId)) || null : null;
+          let out = _sanitizeGatedRecord(gatedField, r, stored, actor, _actorEmpJson, _fileStore.settings, approvalDocForGate, targetEmpForGate, _fileStore.engagementSurveys || [], reviewOwnerEmp);
+          if (!out || (stored && JSON.stringify(out) === JSON.stringify(stored))) rejectHrRecord(gatedField, r, stored);
           // 값 범위·형식 검증(_validateFieldValues 주석 참고) — 권한 검사를 통과한 뒤에도
           // 값 자체가 오염돼 있으면 저장본으로 되돌린다(신규 레코드면 드롭).
-          if (out && !_validateFieldValues(gatedField, out, storedList)) out = stored ? { ...stored } : null;
+          if (out && !_validateFieldValues(gatedField, out, storedList)) {
+            rejectHrRecord(gatedField, r, stored);
+            out = stored ? { ...stored } : null;
+          }
           return out;
         })
         .filter(r => r !== null);
@@ -2821,7 +2859,10 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
           ? mergeArrayById(_fileStore.learningCourses || [], data.learningCourses)
           : (_fileStore.learningCourses || []);
         data[gatedField] = data[gatedField].filter(rec => {
-          if (!rec || rec.id == null || !_validateFieldValues(gatedField, rec, { assignments: basis, courses })) return false;
+          if (!rec || rec.id == null || !_validateFieldValues(gatedField, rec, { assignments: basis, courses })) {
+            rejectHrRecord(gatedField, rec, storedById.get(String(rec?.id)));
+            return false;
+          }
           basis.push(rec);
           return true;
         });
@@ -2958,7 +2999,7 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
     const tmp = JSON_FILE + ".tmp";
     await fs.promises.writeFile(tmp, JSON.stringify(_fileStore, null, 2), "utf8");
     await fs.promises.rename(tmp, JSON_FILE);
-    return { duplicateLoginIds };
+    return { duplicateLoginIds, rejectedRecords };
   }
   const client = externalClient || await pool.connect();
   const ownsTransaction = !externalClient;
@@ -3234,7 +3275,10 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
           if (field === "compResponses" && rows.length && !("answers" in item)) continue;
           const oldTs = rows.length ? (rows[0].data.updatedAt || rows[0].data.createdAt || "") : "";
           const newTs = item.updatedAt || item.createdAt || "";
-          if (rows.length && newTs < oldTs) continue; // server has a newer copy, keep it
+          if (rows.length && newTs < oldTs) {
+            rejectHrRecord(field, item, rows[0].data);
+            continue; // server has a newer copy, keep it
+          }
           // 결재 위조 방어(_sanitizeApprovalDoc / _sanitizeGatedRecord 주석 참고).
           // 저장본은 바로 위에서 이미 조회했으므로 추가 쿼리 없이 그대로 대조한다.
           const storedItem = rows.length ? rows[0].data : null;
@@ -3246,8 +3290,12 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
               ? await _getApprovalDocForGate(item.sourceDocId) : null;
             const targetEmpForGate = (field === "compSessions" && item.targetId != null)
               ? await _getEmployeeByIdPg(item.targetId) : null;
+            const reviewOwnerId = item.reviewOwnerId ?? storedItem?.reviewOwnerId;
+            const reviewOwnerEmp = field === "employmentRecords" && reviewOwnerId != null
+              ? await _getEmployeeByIdPg(reviewOwnerId) : null;
             toWrite = _sanitizeGatedRecord(field, item, storedItem, actor, await _getActorEmpPg(), await _getSettingsPg(), approvalDocForGate, targetEmpForGate,
-              field === "engagementResponses" ? await _getEngagementSurveysPg() : null);
+              field === "engagementResponses" ? await _getEngagementSurveysPg() : null, reviewOwnerEmp);
+            if (!toWrite || (storedItem && JSON.stringify(toWrite) === JSON.stringify(storedItem))) rejectHrRecord(field, item, storedItem);
             if (toWrite === null) continue;   // 권한 없이 새로 만들어진 레코드 — 쓰지 않음
           }
           // 값 범위·형식 검증(_validateFieldValues 주석 참고, JSON모드와 동일 규칙).
@@ -3262,6 +3310,7 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
             validationList = positionRows.map(r => r.data);
           }
           if (toWrite && !_validateFieldValues(field, toWrite, validationList)) {
+            rejectHrRecord(field, item, storedItem);
             toWrite = storedItem;
             if (toWrite === null) continue;
           }
@@ -3379,7 +3428,7 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
     );
 
     if (ownsTransaction) await client.query("COMMIT");
-    return { duplicateLoginIds, version: verState.version };
+    return { duplicateLoginIds, rejectedRecords, version: verState.version };
   } catch (e) {
     if (ownsTransaction) await client.query("ROLLBACK");
     throw e;
@@ -5447,7 +5496,7 @@ app.post("/save", async (req, res) => {
   clientData._enforceSingletonCas = Array.isArray(clientData._changedSingletonKeys);
 
   try {
-    const { finalData, merged, duplicateLoginIds, singletonRevisions, recordRevisions } = await _withSaveLock(() => _withDistributedSaveLock(companyId, async () => {
+    const { savedState, merged, duplicateLoginIds, rejectedRecords, singletonRevisions, recordRevisions } = await _withSaveLock(() => _withDistributedSaveLock(companyId, async () => {
       let finalData = clientData;
       let merged    = false;
       let serverData;
@@ -5502,11 +5551,11 @@ app.post("/save", async (req, res) => {
       // preserveServerOwnedStateForNonAdmin 이후, _persistDataLocked 진입 직전에 적용해
       // 그 함수 내부의 세밀한 필드별 로직과 겹치지 않게 한다.
       finalData = _revertDisabledFeatureFields(finalData, req.auth?.companyFeatures);
-      const { duplicateLoginIds } = await _persistDataLocked(finalData, changedBy, companyId, req.auth || null);
+      const { duplicateLoginIds, rejectedRecords } = await _persistDataLocked(finalData, changedBy, companyId, req.auth || null);
       const savedState = await loadData(companyId);
       const visibleSavedState = filterDataForRole(stripPwField(savedState), req.auth);
       return {
-        finalData, merged, duplicateLoginIds,
+        savedState, merged, duplicateLoginIds, rejectedRecords,
         singletonRevisions: savedState._singletonRevisions || {},
         // 필터링 전 전체 revision map은 숨겨진 레코드 id의 존재를 노출할 수 있으므로
         // 현재 역할이 GET /data에서 볼 수 있는 레코드에 한해서만 반환한다.
@@ -5515,18 +5564,18 @@ app.post("/save", async (req, res) => {
     }));
 
     const meta = {
-      empCount:  (finalData.employees  || []).length,
-      kpiCount:  (finalData.kpiEntries || []).length,
+      empCount:  (savedState.employees  || []).length,
+      kpiCount:  (savedState.kpiEntries || []).length,
       lastSaved: _getLastSaved(companyId),
     };
     broadcastSSE("data_updated", { version: _getVersion(companyId), meta }, req.query.clientId, companyId);
     res.json({
-      ok: true, version: _getVersion(companyId), merged,
+      ok: true, version: _getVersion(companyId), merged, partial: rejectedRecords.length > 0,
       singletonRevisions,
       recordRevisions,
-      mergedData: merged ? filterDataForRole(stripPwField(finalData), req.auth) : undefined,
+      mergedData: merged || rejectedRecords.length ? filterDataForRole(stripPwField(savedState), req.auth) : undefined,
       meta,
-      warnings: duplicateLoginIds && duplicateLoginIds.length ? { duplicateLoginIds } : undefined,
+      warnings: duplicateLoginIds?.length || rejectedRecords.length ? { duplicateLoginIds, rejectedRecords } : undefined,
     });
   } catch (e) {
     // rejectDemoDataForProduction() 등 httpError()로 만든 오류는 e.status/e.code를

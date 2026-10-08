@@ -99,7 +99,7 @@
     if (editingId != null && !old) { root.gotoPage("employment-records"); root.showToast("기록을 찾을 수 없습니다.", "error"); return; }
     const record = old || { type: "contract", status: "active", employeeId: "", title: "", startDate: "", endDate: "", decisionDate: "", note: "", documentRef: "", reviewOwnerId: "", reviewStatus: "open", reviewDecision: "pending", reviewNote: "" };
     const options = (employees || []).filter(e => e.active !== false || String(e.id) === String(record.employeeId)).map(e => `<option value="${esc(e.id)}" ${String(e.id) === String(record.employeeId) ? "selected" : ""}>${esc(e.name)} (${esc(e.empNo || "-")}) · ${esc(e.dept || "-")}</option>`).join("");
-    const owners = (employees || []).filter(e => e.role === "admin" && (e.active !== false || String(e.id) === String(record.reviewOwnerId))).map(e => `<option value="${esc(e.id)}" ${String(e.id) === String(record.reviewOwnerId) ? "selected" : ""}>${esc(e.name)} (${esc(e.empNo || "-")})</option>`).join("");
+    const owners = (employees || []).filter(e => e.role === "admin" && ((e.active !== false && e.menuPerms?.["employment-records"] !== false) || String(e.id) === String(record.reviewOwnerId))).map(e => `<option value="${esc(e.id)}" ${String(e.id) === String(record.reviewOwnerId) ? "selected" : ""}>${esc(e.name)} (${esc(e.empNo || "-")})</option>`).join("");
     const reviewEvents = Array.isArray(record.reviewEvents) ? record.reviewEvents : [];
     const body = `
       <div class="info-note mb3">근로계약은 시작·종료일을, 징계는 결정일과 조치명을 기록하세요. 주민번호·상세 조사자료 등 불필요한 민감정보는 메모에 입력하지 마세요.</div>
