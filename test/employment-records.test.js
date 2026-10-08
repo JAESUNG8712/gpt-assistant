@@ -13,6 +13,13 @@ test("징계 기록은 결정일을 요구한다", () => {
   assert.equal(result.ok, false); assert.match(result.errors.join(" "), /결정일/);
 });
 
+test("계약 검토 완료에는 담당자와 갱신·종료 결정이 필요하다", () => {
+  const base = { employeeId: "1", type: "contract", title: "기간제", status: "active", startDate: "2026-01-01", reviewStatus: "completed" };
+  assert.equal(tools.validate(base).ok, false);
+  assert.equal(tools.validate({ ...base, reviewOwnerId: "admin", reviewDecision: "renew" }).ok, true);
+  assert.equal(tools.normalize({ ...base, reviewOwnerId: "admin", reviewDecision: "end" }, null, { id: "admin" }, "2026-10-08T00:00:00.000Z").reviewedAt, "2026-10-08");
+});
+
 test("만료 요약은 30일 내와 기한 경과를 분리한다", () => {
   const summary = tools.summarize([
     { type: "contract", status: "active", endDate: "2026-10-20" },

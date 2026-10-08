@@ -1061,7 +1061,7 @@ test.describe("로그인·기본 네비게이션", () => {
     await expect(page.locator("#main")).toBeVisible({timeout:10000});
     await page.evaluate(() => {
       currentUser={...currentUser,id:"er-admin",name:"인사 관리자",role:"admin",active:true,menuPerms:{}};
-      employees=[{id:"er-emp",loginId:"er-emp",empNo:"E2601",name:"계약 직원",role:"member",active:true,dept:"경영지원"}];
+      employees=[currentUser,{id:"er-emp",loginId:"er-emp",empNo:"E2601",name:"계약 직원",role:"member",active:true,dept:"경영지원"}];
       employmentRecords=[];
       autoSaveToServerIfEnabled=()=>{};
       askConfirmModal=async()=>true;
@@ -1081,6 +1081,12 @@ test.describe("로그인·기본 네비게이션", () => {
     const rows=await page.evaluate(()=>employmentRecords);
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({employeeId:"er-emp",type:"contract",status:"active",createdBy:"er-admin"});
+    await page.getByRole("button",{name:"검토·수정"}).click();
+    await page.selectOption("#er-review-owner","er-admin");
+    await page.selectOption("#er-review-decision","renew");
+    await page.selectOption("#er-review-status","completed");
+    await page.getByRole("button",{name:"저장",exact:true}).click();
+    expect(await page.evaluate(()=>employmentRecords[0].reviewStatus)).toBe("completed");
   });
 
   test("관리자는 교육 과정을 만들고 직원에게 배정해 이력을 연결한다", async ({ page }) => {
@@ -1153,10 +1159,11 @@ test.describe("로그인·기본 네비게이션", () => {
     await page.selectOption("#la-status","completed");
     await page.selectOption("#la-settlement","settled");
     await page.fill("#la-settled-at","2026-12-12");
+    await page.fill("#la-settled-amount","280000");
     await page.fill("#la-cert","CERT-E2E-001");
     await page.getByRole("button",{name:"저장",exact:true}).click();
     const completed=await page.evaluate(()=>({assignment:learningAssignments[0],history:employees.find(e=>e.id==="lc-flow-emp").hrHistory}));
-    expect(completed.assignment).toMatchObject({status:"completed",settlementStatus:"settled",settledAt:"2026-12-12"});
+    expect(completed.assignment).toMatchObject({status:"completed",settlementStatus:"settled",settledAt:"2026-12-12",settledAmount:280000});
     expect(completed.history).toHaveLength(1);
     expect(completed.history[0]).toMatchObject({type:"edu_general",desc:"플랫폼 아키텍처"});
     await page.getByRole("button",{name:"수정"}).nth(1).click();

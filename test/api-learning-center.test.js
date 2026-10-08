@@ -14,10 +14,19 @@ test("교육 과정·이력은 공개 범위와 관리자 쓰기를 서버가 �
   r=await api("/save",auth(boot.token,"POST",{_version:d.version,learningAssignments:[...d.data.learningAssignments,{id:"dup",courseId:"c1",empId:"e1",status:"assigned",assignedAt:"2026-09-21"},{id:"over",courseId:"c3",empId:"e2",status:"assigned",assignedAt:"2026-11-21"}]}));assert.equal(r.status,200);d=await getData(api,boot.token);assert.equal(d.data.learningAssignments.some(x=>x.id==="dup"),false);assert.equal(d.data.learningAssignments.some(x=>x.id==="over"),false);
   const doc={id:"tr-doc-1",templateId:"tpl-training",authorId:"e2",title:"교육 신청: 결재 연계 과정",status:"approved",approvedAt:"2026-11-20T01:00:00.000Z",updatedAt:"2026-11-20T01:00:00.000Z",createdAt:"2026-11-19T01:00:00.000Z",approvers:[],formData:{courseId:"c4",trainingName:"결재 연계 과정",startDate:"2026-12-10",endDate:"2026-12-11",estimatedCost:300000,costCenter:"개발팀",purpose:"직무 역량 강화"}};
   r=await api("/save",auth(boot.token,"POST",{_version:d.version,approvalDocs:[doc]}));assert.equal(r.status,200);d=await getData(api,boot.token);
+  // 신청 이후 과정이 변경되어도 승인 배정은 문서에 고정된 기간·비용으로 생성한다.
+  r=await api("/save",auth(boot.token,"POST",{_version:d.version,learningCourses:[{...learningCourses[3],endDate:"2026-12-20",cost:500000}]}));assert.equal(r.status,200);d=await getData(api,boot.token);
+  assert.equal(d.data.learningCourses.find(x=>x.id==="c4").endDate,"2026-12-20");
   const token2=await login(api,"e2","member-test-pw-2"),mine2=await getData(api,token2),base={id:"learning-approval-tr-doc-1",courseId:"c4",empId:"e2",status:"assigned",assignedAt:"2026-11-20",dueDate:"2026-12-11",score:null,certificateNo:"",note:"직무 역량 강화",source:"approval",sourceDocId:"tr-doc-1",approvedCost:300000,costCenter:"개발팀",settlementStatus:"pending",settledAt:"",settlementNote:""};
   r=await api("/save",auth(token2,"POST",{_version:mine2.version,learningAssignments:[{...base,id:"forged-training",approvedCost:900000}]}));assert.equal(r.status,200);d=await getData(api,boot.token);assert.equal(d.data.learningAssignments.some(x=>x.id==="forged-training"),false);
   const mine2b=await getData(api,token2);r=await api("/save",auth(token2,"POST",{_version:mine2b.version,learningAssignments:[base]}));assert.equal(r.status,200);d=await getData(api,boot.token);assert.equal(d.data.learningAssignments.filter(x=>x.id==="learning-approval-tr-doc-1").length,1);assert.equal(d.data.learningAssignments.find(x=>x.id==="learning-approval-tr-doc-1").approvedCost,300000);
   r=await api("/save",auth(boot.token,"POST",{_version:d.version,learningAssignments:[{...d.data.learningAssignments.find(x=>x.id===base.id),courseId:"c1",empId:"e1",dueDate:"2027-01-01",approvedCost:1,costCenter:"변경",sourceDocId:"forged",status:"in_progress"}]}));assert.equal(r.status,200);
   d=await getData(api,boot.token);
   assert.deepEqual(Object.fromEntries(["courseId","empId","dueDate","approvedCost","costCenter","sourceDocId","status"].map(k=>[k,d.data.learningAssignments.find(x=>x.id===base.id)[k]])),{courseId:"c4",empId:"e2",dueDate:"2026-12-11",approvedCost:300000,costCenter:"개발팀",sourceDocId:"tr-doc-1",status:"in_progress"});
+  const withEvidence={...d.data.learningAssignments.find(x=>x.id===base.id),status:"completed",evidenceRef:"EDU-2026-001",settlementStatus:"settled",settledAt:"2026-12-21",settledAmount:280000};
+  r=await api("/save",auth(boot.token,"POST",{_version:d.version,learningAssignments:[withEvidence]}));assert.equal(r.status,200);d=await getData(api,boot.token);
+  assert.equal(d.data.learningAssignments.find(x=>x.id===base.id).settledAmount,280000);
+  assert.equal(d.data.learningAssignments.find(x=>x.id===base.id).evidenceRef,"EDU-2026-001");
+  r=await api("/save",auth(boot.token,"POST",{_version:d.version,learningAssignments:[{...withEvidence,settledAmount:-1}]}));assert.equal(r.status,200);d=await getData(api,boot.token);
+  assert.equal(d.data.learningAssignments.find(x=>x.id===base.id).settledAmount,280000);
 });

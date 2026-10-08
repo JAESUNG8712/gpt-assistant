@@ -1678,9 +1678,20 @@ function _sanitizeGatedRecord(field, incoming, stored, actor, actorEmp, settings
     const shortText = (value, max) => String(value == null ? "" : value).trim().slice(0, max);
     const date = value => _validCalendarDate(value) ? String(value) : "";
     const now = new Date().toISOString();
+    const reviewStatus = type === "contract" ? (incoming.reviewStatus ?? stored?.reviewStatus ?? "open") : "open";
+    const reviewDecision = type === "contract" ? (incoming.reviewDecision ?? stored?.reviewDecision ?? "pending") : "pending";
+    if (!["open", "completed"].includes(reviewStatus) || !["pending", "renew", "end"].includes(reviewDecision)) return stored ? { ...stored } : null;
+    const reviewOwnerId = type === "contract" ? shortText(incoming.reviewOwnerId ?? stored?.reviewOwnerId, 120) : "";
+    const reviewNote = type === "contract" ? shortText(incoming.reviewNote ?? stored?.reviewNote, 500) : "";
+    if (reviewStatus === "completed" && (!reviewOwnerId || reviewDecision === "pending")) return stored ? { ...stored } : null;
+    const reviewChanged = type === "contract" && (reviewOwnerId !== String(stored?.reviewOwnerId || "") || reviewStatus !== (stored?.reviewStatus || "open") || reviewDecision !== (stored?.reviewDecision || "pending") || reviewNote !== String(stored?.reviewNote || ""));
+    const reviewEvents = Array.isArray(stored?.reviewEvents) ? stored.reviewEvents.slice(-49) : [];
+    if (reviewChanged) reviewEvents.push({ at: now, actorId: String(actor?.empId || ""), ownerId: reviewOwnerId, status: reviewStatus, decision: reviewDecision });
     incoming = { ...incoming, employeeId: shortText(incoming.employeeId, 120), type, title: shortText(incoming.title, 120), status,
       startDate: date(incoming.startDate), endDate: date(incoming.endDate), decisionDate: date(incoming.decisionDate),
       note: shortText(incoming.note, 1000), documentRef: shortText(incoming.documentRef, 200),
+      reviewOwnerId, reviewStatus, reviewDecision, reviewNote, reviewEvents,
+      reviewedAt: reviewStatus === "completed" ? (reviewChanged ? now.slice(0, 10) : stored?.reviewedAt || now.slice(0, 10)) : "",
       createdAt: stored?.createdAt || now, createdBy: stored?.createdBy || String(actor?.empId || ""),
       updatedAt: now, updatedBy: String(actor?.empId || "") };
     if (!incoming.employeeId || !type || !incoming.title) return stored ? { ...stored } : null;
@@ -1712,18 +1723,22 @@ function _sanitizeGatedRecord(field, incoming, stored, actor, actorEmp, settings
     const approvedCost = Number(incoming.approvedCost || 0);
     const settlementStatus = ["not_required", "pending", "settled"].includes(incoming.settlementStatus)
       ? incoming.settlementStatus : (approvedCost > 0 ? "pending" : "not_required");
+    const settlementBase = stored ? Number(stored.approvedCost || 0) : approvedCost;
+    const settledAmount = settlementStatus === "settled"
+      ? Number(incoming.settledAmount === "" || incoming.settledAmount == null ? (stored?.settledAmount ?? settlementBase) : incoming.settledAmount)
+      : 0;
     // 수료 핵심정보는 감사 이력이므로 불변이지만, 증빙 정산은 수료 후에도 마감할 수 있다.
     if (stored?.status === "completed") {
-      return { ...stored, settlementStatus, settledAt: settlementStatus === "settled" ? (date(incoming.settledAt) || now.slice(0, 10)) : "",
+      return { ...stored, settlementStatus, settledAt: settlementStatus === "settled" ? (date(incoming.settledAt) || now.slice(0, 10)) : "", settledAmount,
         settlementNote: txt(incoming.settlementNote, 500), updatedAt: now, updatedBy: String(actor?.empId || "") };
     }
     incoming = { ...incoming, courseId: txt(incoming.courseId, 120), empId: txt(incoming.empId, 120), status,
       assignedAt: stored?.assignedAt || date(incoming.assignedAt) || now.slice(0, 10), dueDate: date(incoming.dueDate),
       completedAt: status === "completed" ? (date(incoming.completedAt) || now.slice(0, 10)) : "",
-      score, certificateNo: txt(incoming.certificateNo, 120), note: txt(incoming.note, 500),
+      score, certificateNo: txt(incoming.certificateNo, 120), evidenceRef: txt(incoming.evidenceRef, 200), note: txt(incoming.note, 500),
       source: txt(incoming.source, 40), sourceDocId: txt(incoming.sourceDocId, 120), approvedCost,
       costCenter: txt(incoming.costCenter, 100), settlementStatus,
-      settledAt: settlementStatus === "settled" ? (date(incoming.settledAt) || now.slice(0, 10)) : "",
+      settledAt: settlementStatus === "settled" ? (date(incoming.settledAt) || now.slice(0, 10)) : "", settledAmount,
       settlementNote: txt(incoming.settlementNote, 500),
       createdAt: stored?.createdAt || now, createdBy: stored?.createdBy || String(actor?.empId || ""), updatedAt: now, updatedBy: String(actor?.empId || "") };
     // 승인문서에서 파생된 기준값은 이후 관리자 수정에도 결재 당시 값으로 고정한다.
@@ -1995,6 +2010,8 @@ function _validateFieldValues(field, rec, storedList) {
     if (rec.startDate && rec.endDate && rec.endDate < rec.startDate) return false;
     if (rec.type === "contract" && !rec.startDate) return false;
     if (rec.type === "discipline" && !rec.decisionDate) return false;
+    if (rec.type === "contract" && (!["open", "completed"].includes(rec.reviewStatus || "open") || !["pending", "renew", "end"].includes(rec.reviewDecision || "pending"))) return false;
+    if (rec.type === "contract" && rec.reviewStatus === "completed" && (!rec.reviewOwnerId || rec.reviewDecision === "pending" || !_validCalendarDate(rec.reviewedAt))) return false;
   } else if (field === "learningCourses") {
     if (!rec.name || !rec.category || !rec.startDate || !rec.endDate || rec.endDate < rec.startDate) return false;
     if (!_validCalendarDate(rec.startDate) || !_validCalendarDate(rec.endDate)) return false;
@@ -2005,9 +2022,10 @@ function _validateFieldValues(field, rec, storedList) {
     if (!rec.courseId || !rec.empId || !["assigned", "in_progress", "completed", "cancelled"].includes(rec.status)) return false;
     if (!_validCalendarDate(rec.assignedAt) || rec.dueDate && !_validCalendarDate(rec.dueDate)) return false;
     if (rec.score != null && (!Number.isFinite(Number(rec.score)) || Number(rec.score) < 0 || Number(rec.score) > 100)) return false;
-    if (!Number.isFinite(Number(rec.approvedCost || 0)) || Number(rec.approvedCost || 0) < 0 || Number(rec.approvedCost || 0) > 1_000_000_000) return false;
+    if (!Number.isFinite(Number(rec.approvedCost ?? 0)) || Number(rec.approvedCost ?? 0) < 0 || Number(rec.approvedCost ?? 0) > 1_000_000_000) return false;
     if (!["not_required", "pending", "settled"].includes(rec.settlementStatus || "not_required")) return false;
     if (rec.settlementStatus === "settled" && !_validCalendarDate(rec.settledAt)) return false;
+    if (!Number.isFinite(Number(rec.settledAmount ?? 0)) || Number(rec.settledAmount ?? 0) < 0 || Number(rec.settledAmount ?? 0) > 1_000_000_000) return false;
     if (storedList && !Array.isArray(storedList) && !_learningAssignmentFits(rec, storedList.assignments, storedList.courses)) return false;
   } else if (field === "overtimeRequests") {
     // hours는 승인 후 급여 계산의 초과근무수당(otReqAllowance = hours * 시급 * 배율)에

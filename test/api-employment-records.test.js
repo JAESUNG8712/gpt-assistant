@@ -22,6 +22,18 @@ test("계약·징계 원장은 관리자 전용으로 저장·조회된다", asy
   d = await data(api, boot.token);
   assert.equal(d.data.employmentRecords.length, 1);
   assert.equal(d.data.employmentRecords[0].createdBy, String(boot.user?.id || d.data.employees.find(e => e.loginId === "admin").id));
+  const ownerId=String(boot.user?.id || d.data.employees.find(e=>e.loginId==="admin").id);
+  r=await api("/save",auth(boot.token,"POST",{_version:d.version,employmentRecords:[{...d.data.employmentRecords[0],reviewStatus:"completed",reviewDecision:"renew"}]}));
+  assert.equal(r.status,200);d=await data(api,boot.token);
+  assert.equal(d.data.employmentRecords[0].reviewStatus,"open","담당자 없는 완료 처리는 거부한다");
+  r=await api("/save",auth(boot.token,"POST",{_version:d.version,employmentRecords:[{...d.data.employmentRecords[0],reviewOwnerId:ownerId,reviewStatus:"completed",reviewDecision:"renew",reviewNote:"갱신 조건 확인",reviewEvents:[{actorId:"forged"}]}]}));
+  assert.equal(r.status,200);d=await data(api,boot.token);
+  assert.equal(d.data.employmentRecords[0].reviewStatus,"completed");
+  assert.equal(d.data.employmentRecords[0].reviewEvents.length,1);
+  assert.equal(d.data.employmentRecords[0].reviewEvents[0].actorId,ownerId,"검토 이력은 서버가 작성한다");
+  r=await api("/save",auth(boot.token,"POST",{_version:d.version,employmentRecords:[d.data.employmentRecords[0]]}));
+  assert.equal(r.status,200);d=await data(api,boot.token);
+  assert.equal(d.data.employmentRecords[0].reviewEvents.length,1,"동일 상태 재저장에 중복 이력이 생기지 않는다");
 
   const member = await login(api, "member1", "member-test-pw-1");
   const memberData = await data(api, member);

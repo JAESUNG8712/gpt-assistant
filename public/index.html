@@ -1869,6 +1869,7 @@ let _serverRetryTimer = null;
 let _serverSaving = false;        // mutex: only one save at a time
 let _serverSavePending = false;   // queued save waiting
 let _serverDebounceTimer = null;  // debounce timer for auto-saves
+let _saveChangeSeq = 0;           // 재시도 중 발생한 새 변경을 후속 저장으로 보낸다
 let _serverFailCount = 0;         // consecutive fail count
 let _retrySaveRequest = null;     // 네트워크 재시도 동안 동일 payload/Idempotency-Key 유지
 let _serverVersion = -1;
@@ -2194,12 +2195,16 @@ function _restoreRecordConflictDraft(){
   _recordConflictDraft=null;closeModal();autoSaveToServerIfEnabled();renderPage();
 }
 function autoSaveDebounced(){
+  _saveChangeSeq++;
   if(_demoMode){
     clearTimeout(_demoSaveTimer);
     _demoSaveTimer = setTimeout(_saveDemoState, 1500);
   }
   if(!serverConfig.enabled || !serverConfig.url) return;
   if(_serverDebounceTimer) clearTimeout(_serverDebounceTimer);
+  serverConfig.status="saving";
+  serverConfig.statusMsg="변경사항 저장 대기 중...";
+  updateServerStatusUI();
   _serverDebounceTimer = setTimeout(()=>{
     _serverDebounceTimer = null;
     _doSave(true);
@@ -2213,7 +2218,7 @@ function autoSaveDebounced(){
 // 대신 대기 중인 저장이 있을 때 브라우저 표준 이탈 확인 대화상자를 띄워, 사용자가
 // 직접 "머무르기"를 선택해 2초 디바운스가 정상 완료되도록 유도한다.
 window.addEventListener("beforeunload", (e)=>{
-  if(!_serverDebounceTimer || !serverConfig.enabled || !serverConfig.url) return;
+  if((!_serverDebounceTimer && !_serverSaving && !_retrySaveRequest) || !serverConfig.enabled || !serverConfig.url) return;
   e.preventDefault();
   e.returnValue = "저장되지 않은 변경사항이 있습니다. 잠시 후 자동 저장됩니다 — 지금 나가면 변경사항이 유실될 수 있습니다.";
   return e.returnValue;
@@ -2248,12 +2253,14 @@ async function _doSave(silent=false){
   if(!serverConfig.enabled || !serverConfig.url) return;
   if(_serverSaving){_serverSavePending=true;return;}
   _serverSaving = true;
-  // Only show "saving" indicator for explicit (non-silent) saves
-  if(!silent){serverConfig.status="saving";updateServerStatusUI();}
+  serverConfig.status="saving";
+  serverConfig.statusMsg="서버에 반영 중...";
+  updateServerStatusUI();
   try {
     if(!_retrySaveRequest){
       _retrySaveRequest={
         state:getFullState(),
+        changeSeq:_saveChangeSeq,
         idempotencyKey:(globalThis.crypto&&typeof globalThis.crypto.randomUUID==="function")
           ?globalThis.crypto.randomUUID():`save-${Date.now()}-${Math.random().toString(36).slice(2)}`
       };
@@ -2262,6 +2269,7 @@ async function _doSave(silent=false){
     if(r.ok){
       _snapshotSingletonBaselines(_retrySaveRequest.state.data);
       if(r.recordRevisions)_applyRecordRevisions(r.recordRevisions);
+      if(_saveChangeSeq>_retrySaveRequest.changeSeq)_serverSavePending=true;
       _retrySaveRequest=null;
       _serverFailCount = 0;
       serverConfig.status = "connected";
@@ -2282,6 +2290,10 @@ async function _doSave(silent=false){
       } else {
         serverConfig.statusMsg = `저장완료 ${new Date().toLocaleTimeString("ko-KR")} · ${m?.empCount||0}명/${m?.kpiCount||0}건`;
         if(!silent) showToast("서버에 저장되었습니다.","success");
+      }
+      if(_serverSavePending || _serverDebounceTimer){
+        serverConfig.status="saving";
+        serverConfig.statusMsg="새 변경사항 저장 대기 중...";
       }
       if(r.warnings?.duplicateLoginIds?.length) _notifyDuplicateLoginIds(r.warnings.duplicateLoginIds);
     } else {
@@ -2312,6 +2324,7 @@ async function _doSave(silent=false){
       scheduleReconnect();
     } else {
       // 1~2 failures: stay "connected", retry silently
+      serverConfig.status="saving";
       serverConfig.statusMsg = `저장 재시도 중 (${_serverFailCount}/3)...`;
       setTimeout(()=>_doSave(silent), 3000);
     }
@@ -2743,6 +2756,12 @@ function autoSaveToServerIfEnabled(){
   // autoSaveDebounced()는 서버 모드뿐 아니라 demo=1일 때 localStorage 영속도 담당한다.
   // 이 래퍼에서 서버 조건으로 막으면 성공 toast 뒤 새로고침했을 때 데모 변경이 사라진다.
   autoSaveDebounced();
+}
+function queueTrackedSave(label){
+  autoSaveToServerIfEnabled();
+  if(_demoMode){showToast(`${label} 변경사항을 데모 저장소에 반영 중입니다.`,"info");return;}
+  if(serverConfig.enabled&&serverConfig.url){showToast(`${label} 변경사항을 저장 중입니다. 연결 상태에서 완료 여부를 확인하세요.`,"info");return;}
+  showToast(`${label} 변경사항이 화면에만 반영되었습니다. 서버 연결 후 저장하세요.`,"error");
 }
 
 // ==================== COMP EVAL ASSIGNMENT ====================
@@ -7349,7 +7368,7 @@ function renderSidebar(){
     <div style="margin-top:8px;padding:7px 9px;background:#f1f5f9;border-radius:8px;cursor:pointer" onclick="openServerSettingsModal()">
       <div style="display:flex;align-items:center;gap:5px;font-size:11px">
         <span id="server-status-indicator" style="font-size:10px">⚫</span>
-        <span id="server-status-text" style="color:#64748b;font-size:10px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">서버 미연결</span>
+        <span id="server-status-text" role="status" aria-live="polite" style="color:#64748b;font-size:10px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">서버 미연결</span>
       </div>
     </div>
     <div style="margin-top:4px;display:flex;gap:3px"><button style="font-size:9.5px;padding:3px 6px;border-radius:5px;border:1px solid #e2e8f0;background:#fff;color:#64748b;cursor:pointer;flex:1" onclick="showOnlineUsers()">👥 접속</button>
@@ -15954,9 +15973,11 @@ function _applyAttendanceApproval(doc){
     const assignmentId=`learning-approval-${doc.id}`;
     if(course&&!learningAssignments.some(a=>String(a.id)===assignmentId||
       (String(a.courseId)===String(course.id)&&String(a.empId)===String(doc.authorId)&&a.status!=="cancelled"))){
-      const approvedDate=String(doc.approvedAt||doc.updatedAt||new Date().toISOString()).slice(0,10),cost=Number(fd.estimatedCost??course.cost??0)||0;
+      // 과정 기준정보는 신청 뒤에도 수정될 수 있다. 서버는 승인문서 스냅샷과
+      // 배정값을 대조하므로 승인 당시의 문서값만 사용한다.
+      const approvedDate=String(doc.approvedAt||doc.updatedAt||new Date().toISOString()).slice(0,10),cost=Number(fd.estimatedCost||0);
       learningAssignments.push({id:assignmentId,courseId:course.id,empId:doc.authorId,status:"assigned",assignedAt:approvedDate,
-        dueDate:course.endDate||fd.endDate||"",score:null,certificateNo:"",note:fd.purpose||"전자결재 승인",
+        dueDate:fd.endDate||"",score:null,certificateNo:"",note:fd.purpose||"전자결재 승인",
         source:"approval",sourceDocId:String(doc.id),approvedCost:cost,costCenter:fd.costCenter||"",
         settlementStatus:cost>0?"pending":"not_required",settledAt:"",settlementNote:"",
         createdAt:new Date().toISOString(),createdBy:currentUser.id,updatedAt:new Date().toISOString(),updatedBy:currentUser.id});
