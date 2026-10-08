@@ -1041,6 +1041,14 @@ const LS_FORM_ITEMS=[ // 리더십 다면평가 (사업부장)
   {id:"ls20",q:"Partner의 다양성을 인정하고 함께 발전할 수 있도록 협력한다."},
   {id:"ls21",q:"최고의 역량을 바탕으로 차별화된 가치를 제공한다."},
 ];
+// 실제 평가에 쓰이는 문항 목록 — settings.compEvalItems/leadershipEvalItems에 회사가 직접
+// 편집한 내용이 있으면 그걸, 없으면 위 하드코딩 기본값(COMP_FORM_ITEMS/LS_FORM_ITEMS)을 그대로 쓴다.
+// 과거엔 renderCompEvalSettings()의 "저장" 버튼이 COMP_FORM_ITEMS 배열 자체를 직접 mutate했는데,
+// 이 배열은 settings/getFullState() 어디에도 포함되지 않는 순수 JS const라 서버에 전혀 저장되지
+// 않고(새로고침·다른 사용자 모두에서 즉시 소실) "저장되었습니다" 토스트만 뜨는 침묵 데이터유실
+// 버그였다 — 이번에 settings 기반으로 옮겨 실제로 영속되도록 고쳤다.
+function compEvalItems(){return(settings.compEvalItems&&settings.compEvalItems.length)?settings.compEvalItems:COMP_FORM_ITEMS;}
+function lsEvalItems(){return(settings.leadershipEvalItems&&settings.leadershipEvalItems.length)?settings.leadershipEvalItems:LS_FORM_ITEMS;}
 // Weight config by role/rank
 function getCompWeights(emp){
   if(!emp)return{value:30,biz:50,leader:20};
@@ -1181,6 +1189,12 @@ let settings={
   leadershipEvalStart:"", leadershipEvalEnd:"",
   leadershipResultPublished:false,
   leadershipResultYear:2026,
+  // 역량/리더십 평가 문항(설문 항목)을 회사가 직접 편집한 경우 여기에 저장된다.
+  // 비어 있으면(기본 상태) COMP_FORM_ITEMS/LS_FORM_ITEMS 하드코딩 기본값을 그대로 사용한다.
+  compEvalItems:[], leadershipEvalItems:[],
+  // 직무별 KPI 목표 작성 템플릿(참고 예시) 라이브러리. {카테고리명:[{name,goal,strategy,evalCriteria}]}
+  // 비어 있으면 _KPI_TEMPLATE_LIBRARY_DEFAULT를 그대로 사용한다.
+  kpiTemplateLibrary:{},
   // 종합 성과 점수 가중치 (합계=100%)
   scoreWeights:{kpi:60,comp:20,ls:20},
   // 확정 평가 결과를 급여 성과급으로 연계하는 기준. 지급률은 기준금액 대비 %.
@@ -2896,7 +2910,7 @@ function calcCompScore(sessionId){
   const responses=compResponses.filter(r=>r.sessionId===sessionId&&r.submittedAt);
   if(!responses.length)return null;
   const target=getEmp(session.targetId);
-  const items=session.type==="leadership"?LS_FORM_ITEMS:COMP_FORM_ITEMS;
+  const items=session.type==="leadership"?lsEvalItems():compEvalItems();
   const avgAnswers={};
   items.forEach(item=>{
     const scores=responses.map(r=>r.answers?.[item.id]).filter(s=>s!=null&&s>0);
@@ -2908,11 +2922,14 @@ function calcCompScore(sessionId){
   }
   const w=getCompWeights(target);
   let valueScore=0,bizScore=0,leaderScore=0,valueCnt=0,bizCnt=0,leaderCnt=0;
-  COMP_FORM_ITEMS.forEach(item=>{
+  items.forEach(item=>{
     const s=avgAnswers[item.id]||0;
     if(item.cat==="가치역량"){valueScore+=s;valueCnt++;}
-    else if(item.cat==="업무역량"){bizScore+=s;bizCnt++;}
     else if(item.cat&&item.cat.includes("리더십")){leaderScore+=s;leaderCnt++;}
+    // 업무역량 또는 회사가 직접 추가한 그 외 모든 카테고리(예: 태도·조직문화, 안전및규정준수 등)는
+    // 전부 '업무역량(biz)' 가중치 버킷에 합산한다 — 새 카테고리를 추가해도 무가중치(0점 반영)로
+    // 조용히 누락되지 않도록 하는 안전한 폴백(기존 3개 기본 카테고리 동작은 완전히 동일하게 유지됨).
+    else{bizScore+=s;bizCnt++;}
   });
   const vAvg=valueCnt?valueScore/valueCnt:0;
   const bAvg=bizCnt?bizScore/bizCnt:0;
@@ -3663,7 +3680,7 @@ function renderCompEvaluate(u,year){
   const session=compSelSessionId?compSessions.find(s=>s.id===compSelSessionId&&pending.includes(s)):pending[0];
   if(!session){compSelSessionId=pending[0]?.id;return renderCompEvaluate(u,year);}
   const target=getEmp(session.targetId);
-  const items=session.type==="leadership"?LS_FORM_ITEMS:COMP_FORM_ITEMS;
+  const items=session.type==="leadership"?lsEvalItems():compEvalItems();
   let catHtml="";let lastCat="";
   items.forEach(item=>{
     const cat=item.cat+(item.subcat?" > "+item.subcat:"");
@@ -3711,7 +3728,7 @@ function submitCompResponse(sessionId){
   const isLs=session.type==="leadership";
   if(isLs&&!isLeadershipEvalOpen()&&settings.leadershipEvalStart){showToast("리더십 평가 기간이 아닙니다.","error");return;}
   if(!isLs&&!isCompEvalOpen()&&settings.compEvalStart){showToast("역량 평가 기간이 아닙니다.","error");return;}
-  const items=session.type==="leadership"?LS_FORM_ITEMS:COMP_FORM_ITEMS;
+  const items=session.type==="leadership"?lsEvalItems():compEvalItems();
   const scores=_compScores[sessionId]||{};
   const missing=items.filter(i=>!scores[i.id]);
   if(missing.length){showToast(`${missing.length}개 항목이 미입력되었습니다.`,"error");return;}
@@ -3848,7 +3865,7 @@ function renderCompResults(u,year){
 
 function _compBenchmarkRows(sessionId){
   const session=compSessions.find(s=>String(s.id)===String(sessionId));if(!session)return[];
-  const items=session.type==="leadership"?LS_FORM_ITEMS:COMP_FORM_ITEMS;
+  const items=session.type==="leadership"?lsEvalItems():compEvalItems();
   const targetResponses=compResponses.filter(r=>String(r.sessionId)===String(session.id)&&r.submittedAt);
   const otherResponses=compResponses.filter(r=>r.submittedAt&&r.year===session.year&&r.type===session.type&&String(r.sessionId)!==String(session.id));
   // 비교군이 없을 때 대상자 자신의 점수를 회사 평균처럼 표시하지 않는다.
@@ -4137,7 +4154,7 @@ function openCompDetailModal(sessionId){
   const target=getEmp(session.targetId);
   const responses=compResponses.filter(r=>String(r.sessionId)===String(session.id)&&r.submittedAt);
   if(!responses.length){showToast("제출된 평가가 없습니다.","info");return;}
-  const items=session.type==="leadership"?LS_FORM_ITEMS:COMP_FORM_ITEMS;
+  const items=session.type==="leadership"?lsEvalItems():compEvalItems();
   const benchmarkRows=_compBenchmarkRows(sessionId),benchmark=_compBenchmarkSummary(benchmarkRows);
   const strongest=[...benchmark.categories].sort((a,b)=>b.gap-a.gap)[0];
   const develop=[...benchmark.categories].sort((a,b)=>a.gap-b.gap)[0];
@@ -4370,7 +4387,7 @@ function dlCompIndividualResultsByType(year,type){
   const evalYear=isLs?settings.leadershipEvalYear:settings.compEvalYear;
   const targets=employees.filter(e=>e.active&&(isLs?e.role==="director":e.role!=="director"&&e.role!=="admin"))
     .sort((a,b)=>(a.name||"").localeCompare(b.name||"","ko"));
-  const items=isLs?LS_FORM_ITEMS:COMP_FORM_ITEMS;
+  const items=isLs?lsEvalItems():compEvalItems();
   const header=["피평가자","피평가자사번","피평가자소속","피평가자직급",
     "평가자","평가자소속","평가자직급","제출일시",
     ...items.map(i=>i.title||i.id),"개인평균점수"];
@@ -4454,7 +4471,7 @@ function openEvalProgressModal(sessionId){
   const target=getEmp(session.targetId);
   const evaluators=session.evaluatorIds.map(id=>getEmp(id)).filter(Boolean);
   const responses=compResponses.filter(r=>r.sessionId===sessionId&&r.submittedAt);
-  const items=session.type==="leadership"?LS_FORM_ITEMS:COMP_FORM_ITEMS;
+  const items=session.type==="leadership"?lsEvalItems():compEvalItems();
   showModal(`<div class="modal modal-lg"><div class="modal-head"><h2>평가 진행 현황 — ${h(target?.name||"-")}</h2><button class="modal-close" onclick="closeModal()">×</button></div>
   <div class="modal-body">
     <div class="flex gap3 mb3">
@@ -4625,7 +4642,7 @@ function dlCompFullResult(year){
     const rCnt=s?compResponses.filter(r=>r.sessionId===s.id&&r.submittedAt).length:0;
     const total=s?s.evaluatorIds.length:0;
     const cg=getCompGradeResult(e.id,year);
-    const items=s?.type==="leadership"?LS_FORM_ITEMS:COMP_FORM_ITEMS;
+    const items=s?.type==="leadership"?lsEvalItems():compEvalItems();
     const resps=s?compResponses.filter(r=>r.sessionId===s.id&&r.submittedAt):[];
     const itemAvgs=items.map(item=>{const scores=resps.map(r=>r.answers?.[item.id]).filter(s=>s!=null&&s>0);return scores.length?scores.reduce((a,b)=>a+b,0)/scores.length:0;});
     const avgStr=itemAvgs.map((a,i)=>`${items[i].title||items[i].id}:${a.toFixed(1)}`).join("|");
@@ -10497,6 +10514,56 @@ function buildKpiCard(k,selEmp,u,canEdit,isSelf,stageOK,resultsMode){
 }
 const JOB_ROLES=["Domain컨설팅/기술영업","설계/개발 리더 (PL)","설계/개발","구축PM","App운영","영업","재무","기획/분석","사업계획/성과관리/IR","연구개발","Infra구축/운영","인사","기타(미화)","기타(바리스타)","연구관리","ISP/진단 컨설팅","총무","경영기획","IR/공시","사업지원","운영","구매/총무","IT/보안","MES 운영","수행","상근 감사","내부통제"];
 function _jobRoleOptions(sel){return JOB_ROLES.map(j=>`<option value="${h(j)}" ${j===sel?"selected":""}>${h(j)}</option>`).join("");}
+// ── 직무별 KPI 목표 작성 템플릿 라이브러리 ──────────────────────────────
+// 위 JOB_ROLES 기반 AI 초안 생성(_aiKpiGoalFill, GROQ_API_KEY 필요)과는 별개로, 외부 API 없이도
+// 항상 즉시 동작하는 고정 참고 예시 세트. 관리자가 settings.kpiTemplateLibrary를 직접 편집해 회사
+// 실정에 맞는 카테고리·항목으로 바꿀 수 있고, 비어 있으면 아래 기본값을 그대로 사용한다.
+// goal/strategy/evalCriteria는 실제 수치 목표가 아니라 "이런 식으로 작성하라"는 작성 가이드 문구다.
+const _KPI_TEMPLATE_LIBRARY_DEFAULT={
+  "개발자(Backend/Frontend/Fullstack)":[
+    {name:"배포 성공률·장애 MTTR 개선",goal:"배포 성공률 OO% 이상, 장애 발생 시 평균복구시간(MTTR) OO분 이내",strategy:"배포 자동화 파이프라인 점검, 장애 대응 매뉴얼 정비",evalCriteria:"월별 배포 성공률 및 MTTR 집계 수치"},
+    {name:"기능 개발 리드타임 단축",goal:"기능 요청~배포까지 평균 리드타임 OO일 이내로 단축",strategy:"작업 단위 세분화, 코드 리뷰 지연 구간 개선",evalCriteria:"완료된 기능 티켓의 리드타임 평균"},
+    {name:"코드 품질·성능 개선",goal:"코드 리뷰 지적사항 반영률 OO% 이상, 주요 API 응답속도 OO% 개선",strategy:"코드 리뷰 문화 정착, 성능 병목 구간 프로파일링",evalCriteria:"리뷰 반영률, 응답속도 측정치"},
+  ],
+  "QA(품질보증)":[
+    {name:"테스트 커버리지 확대",goal:"핵심 모듈 테스트 커버리지 OO% 이상 달성",strategy:"자동화 테스트 케이스 추가, 회귀 테스트 범위 확대",evalCriteria:"커버리지 측정 도구 리포트"},
+    {name:"버그 발견·누적률 개선",goal:"출시 후 버그 발생 건수 전년 대비 OO% 감소",strategy:"릴리즈 전 체크리스트 강화, 자동화 비율 확대",evalCriteria:"출시 후 30일 이내 접수된 버그 건수"},
+  ],
+  "기획/PM":[
+    {name:"일정 준수율 개선",goal:"프로젝트 마일스톤 일정 준수율 OO% 이상",strategy:"리스크 조기 식별, 주간 진척 점검 체계화",evalCriteria:"계획 대비 실제 완료일 비교"},
+    {name:"요구사항 명확성·문서 품질",goal:"요구사항 변경으로 인한 재작업 비율 OO% 이하",strategy:"기획 단계 이해관계자 리뷰 강화, 문서 템플릿 표준화",evalCriteria:"요구사항 변경 이력 건수"},
+  ],
+  "UI/UX 디자이너":[
+    {name:"사용성·전환율 개선",goal:"핵심 화면 전환율 OO% 개선, UX 테스트 성공률 OO% 이상",strategy:"사용자 테스트 정기 실시, 가이드 준수율 점검",evalCriteria:"전환율 지표, 테스트 결과 리포트"},
+  ],
+  "DevOps/인프라 엔지니어":[
+    {name:"서비스 가용성·배포 자동화",goal:"서비스 가용성 OO% 이상 유지, 배포 자동화율 OO% 달성",strategy:"모니터링·알림 체계 고도화, CI/CD 파이프라인 개선",evalCriteria:"가용성 모니터링 수치, 자동화 적용 비율"},
+    {name:"보안 패치·비용 효율화",goal:"보안 패치 적용률 OO% 이상, 인프라 비용 OO% 절감",strategy:"패치 자동 적용 체계 구축, 리소스 사용량 정기 점검",evalCriteria:"패치 적용 이력, 비용 집계 비교"},
+  ],
+  "보안(Security)":[
+    {name:"취약점 해결률·보안 사고 예방",goal:"발견된 취약점 OO% 이내 조치 완료, 보안 사고 건수 0건 유지",strategy:"정기 점검 수행, 보안 교육 실시",evalCriteria:"취약점 조치 이력, 사고 발생 건수"},
+  ],
+  "데이터 분석/엔지니어":[
+    {name:"데이터 파이프라인 안정성",goal:"데이터 파이프라인 장애율 OO% 이하, 처리 속도 OO% 개선",strategy:"파이프라인 모니터링 강화, 병목 구간 최적화",evalCriteria:"장애 발생 이력, 처리 시간 측정치"},
+  ],
+  "영업":[
+    {name:"매출·수주 목표 달성",goal:"담당 영역 매출 목표 OO원 달성, 신규 수주 OO건 확보",strategy:"핵심 고객 관리 강화, 신규 영업 채널 발굴",evalCriteria:"월별 매출·수주 실적"},
+  ],
+  "고객지원(CS/운영)":[
+    {name:"응답·처리 시간 단축, 만족도 개선",goal:"평균 응답시간 OO분 이내, 고객 만족도 OO점 이상",strategy:"FAQ·매크로 정비, 반복 문의 원인 분석 및 제거",evalCriteria:"응답·처리시간 통계, 만족도 설문 결과"},
+  ],
+  "생산/물류":[
+    {name:"작업 생산성·정확성 개선",goal:"피킹·처리 수량 OO% 향상, 오배송률 OO% 이하 유지",strategy:"작업 동선 최적화, 품질 점검 체계 강화",evalCriteria:"생산성 지표, 오배송 집계"},
+    {name:"안전·재해예방 관리",goal:"안전사고 0건, 안전수칙 준수율 OO% 이상",strategy:"정기 안전교육, 위험요소 사전 점검",evalCriteria:"사고 발생 건수, 점검 이력"},
+  ],
+  "인사":[
+    {name:"채용·이직률 관리",goal:"핵심 포지션 채용 리드타임 OO일 이내, 자발적 이직률 OO% 이하",strategy:"채용 프로세스 효율화, 온보딩·리텐션 프로그램 운영",evalCriteria:"채용 소요일, 이직률 통계"},
+  ],
+  "재무/회계":[
+    {name:"결산 정확성·적시성",goal:"월 결산 마감 OO영업일 이내 완료, 정정 건수 0건",strategy:"마감 체크리스트 표준화, 전표 사전 검증 강화",evalCriteria:"마감 소요일, 정정 이력"},
+  ],
+};
+function kpiTemplateLibrary(){return(settings.kpiTemplateLibrary&&Object.keys(settings.kpiTemplateLibrary).length)?settings.kpiTemplateLibrary:_KPI_TEMPLATE_LIBRARY_DEFAULT;}
 async function _aiKpiJobSampleShow(selId,boxId){
   const job=$("#"+selId)?.value;
   const box=document.getElementById(boxId);if(!box)return;
@@ -10524,6 +10591,54 @@ async function _aiKpiGoalFill(prefix,selId){
   if($("#"+prefix+"-crit"))$("#"+prefix+"-crit").value=d.evalCriteria||"";
   showToast("AI 초안이 채워졌습니다. 내용을 검토 후 저장하세요.","success");
 }
+// ── KPI 목표 템플릿 라이브러리 선택기 ────────────────────────────────
+// 위 AI 초안(_aiKpiGoalFill)과 달리 GROQ_API_KEY 없이도 항상 즉시 동작하는, 관리자가 미리
+// 큐레이션한 고정 예시 세트에서 선택해 채우는 방식. 추가 모달을 KPI 추가/수정 모달 "위에" 쌓아
+// 올리고(showModal의 스택 구조), 닫을 때는 전역 closeModal()이 아니라 이 화면 전용의 가벼운
+// 제거 함수를 쓴다 — closeModal()은 매 호출마다 KPI/직원 편집 잠금을 전부 해제하는 부작용이
+// 있어, 그걸 그대로 썼다면 'KPI 수정' 모달이 열려 있는 채로 이 선택기만 닫아도 그 KPI의 편집
+// 잠금이 조용히 풀려 다른 사용자가 동시에 같은 레코드를 편집할 수 있게 되는 사고로 이어졌을 것.
+let _kpiTplPickerPrefix=null;
+function openKpiTemplatePicker(prefix){
+  _kpiTplPickerPrefix=prefix;
+  const lib=kpiTemplateLibrary();
+  const cats=Object.keys(lib);
+  showModal(`<div class="modal-box" style="max-width:560px"><div class="modal-head"><h3>📚 직무별 KPI 템플릿 불러오기</h3></div>
+  <div class="modal-body">
+    <div class="info-note fz12 mb2">참고용 예시입니다. 선택하면 항목명·목표·전략·평가기준이 채워지며, 실제 수치로 직접 수정해서 사용하세요.</div>
+    ${cats.length?`<select class="fc mb2" id="ktpl-cat" onchange="renderKpiTplItems()">${cats.map(c=>`<option value="${h(c)}">${h(c)}</option>`).join("")}</select>
+    <div id="ktpl-items" style="max-height:360px;overflow:auto"></div>`:`<div class="p-empty">등록된 템플릿이 없습니다.</div>`}
+  </div><div class="modal-foot"><button class="btn btn-secondary" onclick="_closeKpiTemplatePicker()">닫기</button></div></div>`);
+  if(cats.length)setTimeout(renderKpiTplItems,0);
+}
+function renderKpiTplItems(){
+  const el=$("#ktpl-items");if(!el)return;
+  const lib=kpiTemplateLibrary();
+  const cat=$("#ktpl-cat")?.value;
+  const items=lib[cat]||[];
+  el.innerHTML=items.length?items.map((it,i)=>`<div class="ta-btn" style="padding:10px;border:1px solid #e2e8f0;border-radius:8px;margin-bottom:8px;cursor:pointer" onclick="_applyKpiTemplateItem(${i})">
+    <div class="fw6 fz13">${h(it.name||"")}</div>
+    <div class="fz11 text-gray mt1">목표: ${h(it.goal||"")}</div>
+    <div class="fz11 text-gray">전략: ${h(it.strategy||"")}</div>
+    <div class="fz11 text-gray">기준: ${h(it.evalCriteria||"")}</div>
+  </div>`).join(""):`<div class="p-empty">이 카테고리에는 항목이 없습니다.</div>`;
+}
+function _applyKpiTemplateItem(idx){
+  const lib=kpiTemplateLibrary();
+  const cat=$("#ktpl-cat")?.value;
+  const it=(lib[cat]||[])[idx];if(!it)return;
+  const prefix=_kpiTplPickerPrefix;
+  if($("#"+prefix+"-item")&&!$("#"+prefix+"-item").value.trim())$("#"+prefix+"-item").value=it.name||"";
+  if($("#"+prefix+"-goal"))$("#"+prefix+"-goal").value=it.goal||"";
+  if($("#"+prefix+"-str"))$("#"+prefix+"-str").value=it.strategy||"";
+  if($("#"+prefix+"-crit"))$("#"+prefix+"-crit").value=it.evalCriteria||"";
+  _closeKpiTemplatePicker();
+  showToast("템플릿을 불러왔습니다. 실제 목표 수치로 수정하세요.","success");
+}
+function _closeKpiTemplatePicker(){
+  const ms=_modalStack(),ov=ms[ms.length-1];if(!ov)return;
+  ov.remove();_syncModalBackground();
+}
 function openKpiAdd(userId,year){
   const emp=getEmp(userId);
   const defJob=emp&&JOB_ROLES.includes(emp.jobGroup)?emp.jobGroup:"";
@@ -10539,6 +10654,7 @@ function openKpiAdd(userId,year){
     <div class="fg"><label class="fl">달성 전략</label><textarea class="fc" id="ka-str" rows="2"></textarea></div>
     <div class="fg"><label class="fl">평가 기준</label><input class="fc" id="ka-crit" placeholder="예: 리드타임 단축 일수 기준"></div>
     <button class="btn btn-ghost btn-sm" onclick="_aiKpiGoalFill('ka','ka-job')">🤖 AI 초안 생성(목표/전략/기준 채우기)</button>
+    <button class="btn btn-ghost btn-sm" onclick="openKpiTemplatePicker('ka')">📚 템플릿 불러오기</button>
   </div>
   <div class="modal-foot"><button class="btn btn-ghost btn-sm" onclick="saveKpiDraft(${userId},${year},null)">💾 임시저장</button><div style="flex:1"></div><button class="btn btn-secondary" onclick="closeModal()">취소</button><button class="btn btn-primary" onclick="saveKpiAdd(${userId},${year})">등록</button></div></div>`);
   if(defJob)_aiKpiJobSampleShow("ka-job","ka-job-sample");
@@ -10568,6 +10684,7 @@ function _openKpiEdit(id){const k=getKpi(id);if(!k)return;
     <div class="fg"><label class="fl">달성 전략</label><textarea class="fc" id="ke-str" rows="2">${h(k.strategy||"")}</textarea></div>
     <div class="fg"><label class="fl">평가 기준</label><input class="fc" id="ke-crit" value="${h(k.evalCriteria||"")}"></div>
     <button class="btn btn-ghost btn-sm" onclick="_aiKpiGoalFill('ke','ke-job')">🤖 AI 초안 생성(목표/전략/기준 채우기)</button>
+    <button class="btn btn-ghost btn-sm" onclick="openKpiTemplatePicker('ke')">📚 템플릿 불러오기</button>
   </div>
   <div class="modal-foot"><button class="btn btn-ghost btn-sm" onclick="saveKpiDraft(null,null,${id})">💾 임시저장</button><div style="flex:1"></div><button class="btn btn-secondary" onclick="closeModal()">취소</button><button class="btn btn-primary" onclick="saveKpiEdit(${id})">저장</button></div></div>`);
   if(defJob)_aiKpiJobSampleShow("ke-job","ke-job-sample");}
@@ -11559,16 +11676,33 @@ function dlRatioCompare(){
 }
 
 // ===== Comp Eval Settings Page (admin) =====
+// 제조·물류 업종형 평가요소 프리셋(참고자료의 성과/업무역량/태도·조직문화적합도/안전및규정준수/
+// 리더십 5개 축) — "프리셋 불러오기"로 편집 중인 목록에 통째로 교체 적용할 수 있다. 가중치 계산은
+// calcCompScore()가 '가치역량'/'리더십'을 제외한 모든 카테고리를 업무역량(biz) 버킷으로 합산하므로
+// 이 프리셋을 적용해도 기존 3버킷 가중치 모델이 깨지지 않는다.
+const _COMP_CATEGORY_PRESET_MFG=[
+  {cat:"성과(Performance)",title:"작업 생산성",q:"피킹 수량, 처리량, 상·하차 속도 등 작업 생산성 기준을 충족한다."},
+  {cat:"성과(Performance)",title:"정확성·납기준수",q:"오배송률, 분류 정확도, 재고 차이율을 최소화하고 납기를 준수한다."},
+  {cat:"업무역량",title:"장비·프로세스 이해도",q:"장비 조작 능력과 창고·재고·운송 프로세스를 정확히 이해하고 수행한다."},
+  {cat:"업무역량",title:"문제 해결력",q:"오류를 조기에 발견하고 즉시 조치하여 문제를 해결한다."},
+  {cat:"태도·조직문화적합도",title:"근태·팀워크",q:"근태를 준수하고 팀워크 및 협업 태도가 양호하다."},
+  {cat:"태도·조직문화적합도",title:"고객응대·책임감",q:"고객 응대 태도가 적절하고 책임감 있게 안정적으로 업무를 수행한다."},
+  {cat:"안전및규정준수",title:"안전수칙 준수",q:"보호구 착용, 장비 규칙 등 안전 수칙을 준수한다."},
+  {cat:"안전및규정준수",title:"사고예방·보고",q:"사고 예방 행동을 하고 위험 상황을 인지·보고한다."},
+  {cat:"리더십역량",title:"배치·스케줄 운영",q:"작업 배치·스케줄 운영 능력과 성수기 인력 관리 능력을 발휘한다."},
+  {cat:"리더십역량",title:"성과관리·현장대응",q:"성과 관리 및 코칭 능력을 바탕으로 현장 이슈에 신속히 대응한다."},
+];
 function renderCompEvalSettings(){
   const el=$("#settings-content");if(!el)return;
-  if(!_compItemsStage)_compItemsStage=JSON.parse(JSON.stringify(COMP_FORM_ITEMS));
-  if(!_compItemsLsStage)_compItemsLsStage=JSON.parse(JSON.stringify(LS_FORM_ITEMS));
+  if(!_compItemsStage)_compItemsStage=JSON.parse(JSON.stringify(compEvalItems()));
+  if(!_compItemsLsStage)_compItemsLsStage=JSON.parse(JSON.stringify(lsEvalItems()));
   el.innerHTML=`<div class="info-note mb3">📌 역량/리더십 평가 항목을 수정합니다. 수정 후 반드시 <strong>저장</strong> 버튼을 클릭해야 반영됩니다.</div>
   <div class="tabs mb3" id="comp-item-tabs">
     <button class="tab-btn active" onclick="showCompItemTab('comp')">역량평가 항목 (팀장/팀원)</button>
     <button class="tab-btn" onclick="showCompItemTab('ls')">리더십평가 항목 (사업부장)</button>
   </div>
   <div style="display:flex;justify-content:flex-end;gap:8px;margin-bottom:10px">
+    <button class="btn btn-ghost btn-sm" onclick="loadCompCategoryPreset()">📦 업종별 평가요소 프리셋 불러오기(성과/업무역량/태도/안전/리더십)</button>
     <button class="btn btn-secondary" onclick="_compItemsStage=null;_compItemsLsStage=null;renderCompEvalSettings()">↩ 변경 취소</button>
     <button class="btn btn-success" onclick="saveCompItems()">💾 평가 항목 저장</button>
   </div>
@@ -11583,15 +11717,19 @@ function renderCompEvalSettings(){
     <div class="card-body" style="padding:0"><div id="comp-items-ls-list">${renderCompItemsListStaged('ls')}</div></div></div>
   </div>`;
 }
+function _compItemCategoryDatalistHtml(){
+  const known=new Set(["가치역량","업무역량","리더십역량","성과(Performance)","태도·조직문화적합도","안전및규정준수"]);
+  (_compItemsStage||[]).forEach(i=>{if(i.cat)known.add(i.cat);});
+  return `<datalist id="comp-item-cat-list">${[...known].map(c=>`<option value="${h(c)}">`).join("")}</datalist>`;
+}
 function renderCompItemsListStaged(type){
   const items=type==="comp"?_compItemsStage:_compItemsLsStage;
   if(!items||!items.length)return'<div class="p-empty">항목이 없습니다.</div>';
-  return items.map((item,i)=>`<div style="padding:10px 14px;border-bottom:1px solid #f1f5f9;display:flex;gap:10px;align-items:flex-start">
+  return (type==="comp"?_compItemCategoryDatalistHtml():"")+items.map((item,i)=>`<div style="padding:10px 14px;border-bottom:1px solid #f1f5f9;display:flex;gap:10px;align-items:flex-start">
     <span class="fz11 text-gray" style="flex-shrink:0;padding-top:6px">${i+1}.</span>
     <div style="flex:1">
-      ${type==="comp"?`<div class="flex gap2 mb2"><select class="fc" style="width:130px" onchange="_compItemsStage[${i}].cat=this.value">
-        <option${item.cat==="가치역량"?" selected":""}>가치역량</option><option${item.cat==="업무역량"?" selected":""}>업무역량</option><option${item.cat&&item.cat.includes("리더십")?" selected":""}>리더십역량</option>
-      </select><input class="fc" value="${h(item.title||"")}" placeholder="항목명 (예: Excellence)" oninput="_compItemsStage[${i}].title=this.value" style="flex:1"></div>`:""}
+      ${type==="comp"?`<div class="flex gap2 mb2"><input class="fc" list="comp-item-cat-list" value="${h(item.cat||"")}" placeholder="카테고리(예: 업무역량, 안전및규정준수 — 자유 입력 가능)" oninput="_compItemsStage[${i}].cat=this.value" style="width:220px">
+      <input class="fc" value="${h(item.title||"")}" placeholder="항목명 (예: Excellence)" oninput="_compItemsStage[${i}].title=this.value" style="flex:1"></div>`:""}
       <textarea class="fc" rows="2" placeholder="평가 문항을 입력하세요" oninput="${type==="comp"?`_compItemsStage[${i}].q`:`_compItemsLsStage[${i}].q`}=this.value">${h(item.q)}</textarea>
     </div>
     <div class="flex gap2" style="flex-shrink:0">
@@ -11606,20 +11744,31 @@ function moveCompItem(type,i,dir){
   const tmp=arr[i];arr[i]=arr[i+dir];arr[i+dir]=tmp;renderCompEvalSettings();showCompItemTab(type);
 }
 function addCompItemStaged(type){
-  if(type==="comp"){if(!_compItemsStage)_compItemsStage=JSON.parse(JSON.stringify(COMP_FORM_ITEMS));_compItemsStage.push({id:"c"+Date.now(),cat:"업무역량",title:"",q:""});}
-  else{if(!_compItemsLsStage)_compItemsLsStage=JSON.parse(JSON.stringify(LS_FORM_ITEMS));_compItemsLsStage.push({id:"ls"+Date.now(),q:""});}
+  if(type==="comp"){if(!_compItemsStage)_compItemsStage=JSON.parse(JSON.stringify(compEvalItems()));_compItemsStage.push({id:"c"+Date.now(),cat:"업무역량",title:"",q:""});}
+  else{if(!_compItemsLsStage)_compItemsLsStage=JSON.parse(JSON.stringify(lsEvalItems()));_compItemsLsStage.push({id:"ls"+Date.now(),q:""});}
   renderCompEvalSettings();showCompItemTab(type);
+}
+async function loadCompCategoryPreset(){
+  const ok=await askConfirmModal({title:"업종별 평가요소 프리셋 불러오기",
+    message:"현재 편집 중인 역량평가 항목 목록이 제조·물류형 5개 카테고리(성과/업무역량/태도·조직문화적합도/안전및규정준수/리더십) 프리셋으로 완전히 교체됩니다. 저장 전까지는 적용되지 않으니 내용을 검토한 뒤 저장하세요.",
+    confirmText:"불러오기"});
+  if(!ok)return;
+  _compItemsStage=_COMP_CATEGORY_PRESET_MFG.map((it,idx)=>({id:"preset"+idx+"_"+Date.now(),...it}));
+  renderCompEvalSettings();showCompItemTab("comp");
+  showToast("프리셋을 불러왔습니다. 내용을 검토 후 저장하세요.","success");
 }
 function saveCompItems(){
   if(!_compItemsStage||!_compItemsLsStage){showToast("수정된 내용이 없습니다.","info");return;}
   const emptyComp=_compItemsStage.filter(i=>!i.q.trim());
   const emptyLs=_compItemsLsStage.filter(i=>!i.q.trim());
   if(emptyComp.length||emptyLs.length){showToast(`빈 문항이 ${emptyComp.length+emptyLs.length}개 있습니다. 모두 입력하거나 삭제하세요.`,"error");return;}
-  // Apply
-  COMP_FORM_ITEMS.length=0;_compItemsStage.forEach(i=>COMP_FORM_ITEMS.push({...i}));
-  LS_FORM_ITEMS.length=0;_compItemsLsStage.forEach(i=>LS_FORM_ITEMS.push({...i}));
+  const emptyCat=_compItemsStage.filter(i=>!String(i.cat||"").trim());
+  if(emptyCat.length){showToast(`카테고리가 비어있는 역량평가 항목이 ${emptyCat.length}개 있습니다.`,"error");return;}
+  settings.compEvalItems=_compItemsStage.map(i=>({...i}));
+  settings.leadershipEvalItems=_compItemsLsStage.map(i=>({...i}));
+  const savedCompCount=settings.compEvalItems.length,savedLsCount=settings.leadershipEvalItems.length;
   _compItemsStage=null;_compItemsLsStage=null;
-  showToast(`역량평가 ${COMP_FORM_ITEMS.length}개, 리더십평가 ${LS_FORM_ITEMS.length}개 항목이 저장되었습니다.`,"success");
+  showToast(`역량평가 ${savedCompCount}개, 리더십평가 ${savedLsCount}개 항목이 저장되었습니다.`,"success");
   broadcastSettingsChange("역량평가 항목 수정");
   renderCompEvalSettings();
 }
@@ -11629,6 +11778,67 @@ function showCompItemTab(t){
   [...document.getElementById("comp-item-tabs").querySelectorAll(".tab-btn")].forEach((b,i)=>b.classList.toggle("active",i===(t==="comp"?0:1)));
 }
 // renderCompItemsList & addCompItem replaced by staged versions above
+
+// ===== KPI 템플릿 라이브러리 관리(admin) =====
+let _kpiTplStage=null; // 편집 중인 {카테고리명:[{name,goal,strategy,evalCriteria}]} 스테이징 사본
+function renderKpiTemplateSettings(){
+  const el=$("#settings-content");if(!el)return;
+  if(!_kpiTplStage)_kpiTplStage=JSON.parse(JSON.stringify(kpiTemplateLibrary()));
+  const cats=Object.keys(_kpiTplStage);
+  el.innerHTML=`<div class="info-note mb3">📌 KPI 목표 등록 화면의 "📚 템플릿 불러오기"에 노출되는 직무별 참고 예시를 관리합니다. 수정 후 반드시 <strong>저장</strong>을 눌러야 반영됩니다.</div>
+  <div style="display:flex;justify-content:flex-end;gap:8px;margin-bottom:10px">
+    <button class="btn btn-primary btn-sm" onclick="addKpiTplCategory()">+ 카테고리 추가</button>
+    <button class="btn btn-secondary" onclick="_kpiTplStage=null;renderKpiTemplateSettings()">↩ 변경 취소</button>
+    <button class="btn btn-success" onclick="saveKpiTemplateLibrary()">💾 템플릿 저장</button>
+  </div>
+  ${cats.length?cats.map(cat=>_kpiTplCategoryCardHtml(cat)).join(""):`<div class="card"><div class="p-empty">등록된 카테고리가 없습니다. "+ 카테고리 추가"로 시작하세요.</div></div>`}`;
+}
+function _kpiTplCategoryCardHtml(cat){
+  const items=_kpiTplStage[cat]||[];
+  const safeCat=h(cat).replace(/'/g,"\\'");
+  return `<div class="card mb3"><div class="card-head"><h3>${h(cat)} <span class="badge bg-gray">${items.length}개</span></h3>
+    <div class="flex gap2"><button class="btn btn-primary btn-sm" onclick="addKpiTplItem('${safeCat}')">+ 항목 추가</button>
+    <button class="btn btn-danger btn-sm" onclick="removeKpiTplCategory('${safeCat}')">카테고리 삭제</button></div></div>
+    <div class="card-body" style="padding:0">${items.length?items.map((it,i)=>`<div style="padding:10px 14px;border-bottom:1px solid #f1f5f9;display:flex;gap:10px;align-items:flex-start">
+      <span class="fz11 text-gray" style="flex-shrink:0;padding-top:6px">${i+1}.</span>
+      <div style="flex:1">
+        <input class="fc mb2" value="${h(it.name||"")}" placeholder="KPI 항목명" oninput="_kpiTplStage['${safeCat}'][${i}].name=this.value">
+        <input class="fc mb2" value="${h(it.goal||"")}" placeholder="목표 작성 가이드" oninput="_kpiTplStage['${safeCat}'][${i}].goal=this.value">
+        <input class="fc mb2" value="${h(it.strategy||"")}" placeholder="달성 전략 가이드" oninput="_kpiTplStage['${safeCat}'][${i}].strategy=this.value">
+        <input class="fc" value="${h(it.evalCriteria||"")}" placeholder="평가 기준 가이드" oninput="_kpiTplStage['${safeCat}'][${i}].evalCriteria=this.value">
+      </div>
+      <button class="btn btn-danger btn-sm" style="flex-shrink:0" onclick="_kpiTplStage['${safeCat}'].splice(${i},1);renderKpiTemplateSettings()">삭제</button>
+    </div>`).join(""):`<div class="p-empty">항목이 없습니다.</div>`}</div></div>`;
+}
+async function addKpiTplCategory(){
+  const name=await askInputModal({title:"카테고리 추가",label:"카테고리명(직무/업종 등)",placeholder:"예: 모바일 개발자(iOS/Android)"});
+  if(!name)return;
+  if(_kpiTplStage[name]){showToast("이미 존재하는 카테고리입니다.","error");return;}
+  _kpiTplStage[name]=[];
+  renderKpiTemplateSettings();
+}
+async function removeKpiTplCategory(cat){
+  const ok=await askConfirmModal({title:"카테고리 삭제",message:`"${cat}" 카테고리와 그 안의 모든 템플릿 항목이 삭제됩니다. 저장을 눌러야 최종 반영됩니다.`,danger:true,confirmText:"삭제"});
+  if(!ok)return;
+  delete _kpiTplStage[cat];
+  renderKpiTemplateSettings();
+}
+function addKpiTplItem(cat){
+  if(!_kpiTplStage[cat])_kpiTplStage[cat]=[];
+  _kpiTplStage[cat].push({name:"",goal:"",strategy:"",evalCriteria:""});
+  renderKpiTemplateSettings();
+}
+function saveKpiTemplateLibrary(){
+  if(!_kpiTplStage){showToast("수정된 내용이 없습니다.","info");return;}
+  const emptyItems=Object.values(_kpiTplStage).flat().filter(i=>!String(i.name||"").trim());
+  if(emptyItems.length){showToast(`항목명이 비어있는 템플릿이 ${emptyItems.length}개 있습니다. 모두 입력하거나 삭제하세요.`,"error");return;}
+  settings.kpiTemplateLibrary=JSON.parse(JSON.stringify(_kpiTplStage));
+  const catCount=Object.keys(settings.kpiTemplateLibrary).length;
+  _kpiTplStage=null;
+  showToast(`KPI 템플릿 ${catCount}개 카테고리가 저장되었습니다.`,"success");
+  broadcastSettingsChange("KPI 템플릿 라이브러리 수정");
+  renderKpiTemplateSettings();
+}
 
 // ===== Comp Grade Ratio Settings =====
 function renderCompGradeRatioSettings(){
@@ -14165,7 +14375,7 @@ function renderMyKPI(){
 
 // ==================== SETTINGS ====================
 function renderSettings(){
-  const tabs2=[{id:"main",label:"운영 설정"},{id:"formula",label:"계산식 설정"},{id:"org",label:"조직 관리"},{id:"ranks",label:"직급 체계"},{id:"grades",label:"KPI 등급 비율"},{id:"comp-settings",label:"역량평가 설정"},{id:"comp-grades",label:"역량평가 등급 비율"},{id:"approval-tpl",label:"📋 결재 양식"},{id:"gps-settings",label:"📍 GPS·회의실"},{id:"deploy",label:"🚀 배포·권한 관리"}];
+  const tabs2=[{id:"main",label:"운영 설정"},{id:"formula",label:"계산식 설정"},{id:"org",label:"조직 관리"},{id:"ranks",label:"직급 체계"},{id:"grades",label:"KPI 등급 비율"},{id:"kpi-templates",label:"📚 KPI 템플릿"},{id:"comp-settings",label:"역량평가 설정"},{id:"comp-grades",label:"역량평가 등급 비율"},{id:"approval-tpl",label:"📋 결재 양식"},{id:"gps-settings",label:"📍 GPS·회의실"},{id:"deploy",label:"🚀 배포·권한 관리"}];
   const c=$("#content");
   c.innerHTML=`<div class="tabs">${tabs2.map(t=>`<button class="tab-btn${settingsTab===t.id?" active":""}" onclick="settingsTab='${t.id}';renderSettings()">${t.label}</button>`).join("")}</div><div id="settings-content"></div>`;
   if(settingsTab==="main")renderSettingsMain();
@@ -14173,6 +14383,7 @@ function renderSettings(){
   else if(settingsTab==="org")renderSettingsOrg();
   else if(settingsTab==="ranks")renderSettingsRanks();
   else if(settingsTab==="grades")renderSettingsGrades();
+  else if(settingsTab==="kpi-templates")renderKpiTemplateSettings();
   else if(settingsTab==="comp-settings")renderCompEvalSettings();
   else if(settingsTab==="comp-grades")renderCompGradeRatioSettings();
   else if(settingsTab==="approval-tpl"){settingsTab="main";gotoPage("approval-templates");}
@@ -14188,6 +14399,7 @@ function renderEvalOpsPage(){
     {id:"stages",label:"평가 단계 설정"},
     {id:"formula",label:"평가 점수 산정 방식"},
     {id:"grades",label:"KPI 등급 비율"},
+    {id:"kpi-templates",label:"📚 KPI 템플릿"},
     {id:"comp-settings",label:"역량평가 설정"},
     {id:"comp-grades",label:"역량평가 등급 비율"},
   ];
@@ -14196,6 +14408,7 @@ function renderEvalOpsPage(){
   else if(_evalOpsTab==="stages")renderKpiStageSettings();
   else if(_evalOpsTab==="formula")renderFormulaSettings();
   else if(_evalOpsTab==="grades")renderSettingsGrades();
+  else if(_evalOpsTab==="kpi-templates")renderKpiTemplateSettings();
   else if(_evalOpsTab==="comp-settings")renderCompEvalSettings();
   else if(_evalOpsTab==="comp-grades")renderCompGradeRatioSettings();
   else renderSettingsMain();
