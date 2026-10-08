@@ -40,7 +40,7 @@ async function waitForHttp(url, timeoutMs) {
 // (임시 디렉터리·포트·환경변수 조립) — 중복 없이 한 곳에만 둔다.
 function _prepareChildEnv(opts) {
   const port = opts.port; // 호출부가 getFreePort()로 미리 뽑아 넘긴다
-  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), opts.dirPrefix || "hr-test-"));
+  const dataDir = fs.mkdtempSync(path.join(process.env.HR_TEST_TEMP_DIR || os.tmpdir(), opts.dirPrefix || "hr-test-"));
   const dataFile = path.join(dataDir, "hr-data.json");
   const budgetDataFile = path.join(dataDir, "budget-data.json");
   const env = {

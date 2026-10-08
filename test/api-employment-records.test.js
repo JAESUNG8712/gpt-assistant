@@ -45,4 +45,8 @@ test("계약·징계 원장은 관리자 전용으로 저장·조회된다", asy
   assert.equal(r.status, 200);
   d = await data(api, boot.token);
   assert.equal(d.data.employmentRecords.some(x => x.id === "bad"), false, "역전된 계약기간은 서버에서 거부돼야 한다");
+  r = await api("/save", auth(boot.token, "POST", { _version: d.version, employmentRecords: [{ ...original, id: "invalid-calendar", startDate: "2026-02-30" }] }));
+  assert.equal(r.status, 200);
+  d = await data(api, boot.token);
+  assert.equal(d.data.employmentRecords.some(x => x.id === "invalid-calendar"), false, "존재하지 않는 계약 날짜도 저장하지 않는다");
 });

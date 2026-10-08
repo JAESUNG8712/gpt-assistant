@@ -88,7 +88,7 @@ input,textarea,select,button{font-family:inherit}
 .sb-footer{padding:13px 14px;border-top:1px solid #eef2f7;font-size:11.5px;color:#94a3b8}
 .sb-cat-arrow{font-size:13px;color:#cbd5e1;flex-shrink:0}
 .sb-btn.active .sb-cat-arrow{color:#93c5fd}
-.sb-cat-label{font-size:20.25px;font-weight:700}
+.sb-cat-label{font-size:14px;font-weight:700}
 .sb-back{color:#2563eb;font-weight:700}
 .sb-group{font-size:13px}
 .sb-leaf{padding-left:30px;font-weight:500}
@@ -96,8 +96,8 @@ input,textarea,select,button{font-family:inherit}
 /* Top-bar 대분류 카테고리 내비게이션 */
 #cat-nav{display:flex;gap:8px;padding:10px 20px;background:#fff;border-bottom:1px solid #eef2f7;overflow-x:auto;flex-shrink:0}
 #cat-nav:empty{display:none}
-.cn-btn{display:inline-flex;align-items:center;gap:7px;padding:8px 16px;border-radius:8px;border:1px solid #d0d9ef;background:linear-gradient(90deg,#dbeafe,#f0f5ff);
-  color:#475569;font-size:16.75px;font-weight:700;cursor:pointer;white-space:nowrap;transition:all .15s}
+.cn-btn{display:inline-flex;align-items:center;gap:7px;padding:8px 13px;border-radius:9px;border:1px solid #d0d9ef;background:linear-gradient(90deg,#dbeafe,#f0f5ff);
+  color:#475569;font-size:13px;font-weight:700;cursor:pointer;white-space:nowrap;transition:all .15s}
 .cn-btn:hover{border-color:#93c5fd;background:linear-gradient(90deg,#bfdbfe,#e0eaff);color:#1e40af}
 .cn-btn.active{background:linear-gradient(90deg,#2563eb,#60a5fa);border-color:transparent;color:#fff;box-shadow:0 4px 12px rgba(37,99,235,.18)}
 .cn-ico{font-size:14px}
@@ -140,11 +140,23 @@ input,textarea,select,button{font-family:inherit}
 .cl-desc{font-size:11px;color:#64748b;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .cl-arrow{font-size:16px;color:#cbd5e1;flex-shrink:0}
 .cl-card:hover .cl-arrow{color:#3b82f6}
+.function-map-link{display:flex;align-items:center;gap:7px;width:100%;padding:8px 5px;border:0;border-bottom:1px solid #f1f5f9;border-radius:5px;background:transparent;text-align:left;font:inherit;color:inherit;cursor:pointer;transition:background .15s}
+.function-map-link:hover:not(:disabled){background:#f1f6ff}
+.function-map-link:disabled{cursor:default;opacity:.72}
 /* Cards */
 .card{background:#fff;border-radius:14px;border:1px solid #e9eef5;margin-bottom:16px;box-shadow:0 2px 10px rgba(30,58,95,.04)}
 .card-head{display:flex;justify-content:space-between;align-items:center;padding:14px 18px;border-bottom:1px solid #f1f5f9}
 .card-head h3{font-size:13.5px;font-weight:800;color:#1e3a5f}
 .card-body{padding:18px}
+.workspace-editor{max-width:980px;margin:0 auto;padding-bottom:24px}
+.workspace-editor-head{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;flex-wrap:wrap;margin-bottom:18px}
+.workspace-editor-head h2{font-size:21px;font-weight:800;color:#17233b;letter-spacing:-.02em;margin:8px 0 4px}
+.workspace-editor-head p{font-size:13px;color:#64748b;line-height:1.55}
+.workspace-editor .card{box-shadow:0 8px 28px rgba(30,58,95,.06)}
+.workspace-editor .card-body{padding:24px}
+.workspace-editor-actions{display:flex;justify-content:flex-end;gap:9px;padding:16px 24px;border-top:1px solid #e8eef5;background:#f8fafc;border-radius:0 0 14px 14px}
+.workspace-editor .form-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 16px}
+@media(max-width:700px){.workspace-editor .form-grid{grid-template-columns:1fr}.workspace-editor .card-body{padding:16px}.workspace-editor-actions{padding:12px 16px}.workspace-editor-actions .btn{flex:1;justify-content:center}}
 .stat-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:16px}
 .stat-box{background:#fff;border-radius:12px;padding:16px;border:1px solid #e9eef5;box-shadow:0 2px 10px rgba(30,58,95,.04)}
 .stat-box .num{font-size:22px;font-weight:700;color:#1e293b;margin-top:6px}
@@ -162,6 +174,9 @@ input,textarea,select,button{font-family:inherit}
 .btn-indigo{background:#4f46e5;color:#fff;border-color:#4f46e5}.btn-indigo:hover:not(:disabled){background:#4338ca}
 .btn-teal{background:#0f766e;color:#fff;border-color:#0f766e}.btn-teal:hover:not(:disabled){background:#0d6b63}
 .btn-sm{padding:5px 10px;font-size:13px}.btn-lg{padding:10px 20px;font-size:15px}
+.btn:active:not(:disabled),.cl-card:active,.cn-btn:active,.sb-btn:active{transform:translateY(1px)}
+:where(.btn,.cl-card,.cn-btn,.sb-btn,.function-map-link,#mobile-menu-btn):focus-visible{outline:3px solid #2563eb;outline-offset:2px}
+@media(prefers-reduced-motion:reduce){:where(.btn,.cl-card,.cn-btn,.sb-btn,.function-map-link){transition:none;animation:none}}
 /* Forms */
 .fg{margin-bottom:12px}
 .fl{display:block;font-size:13px;font-weight:600;color:#475569;margin-bottom:4px}
@@ -6998,11 +7013,24 @@ let _menuGroupsCache={};
 let _sbDrillCat=null;   // 좌측 사이드바 드릴다운 상태: 선택된 대분류 키 (null이면 대분류 목록 표시)
 let _sbExpandedGroup=null; // 드릴다운 상태에서 펼쳐진 중분류 키
 function _bigCatForGroup(groupKey){return BIG_CATEGORIES.find(c=>c.groups.includes(groupKey));}
+const _EDITOR_PARENT_PAGES={"employment-records-edit":"employment-records","learning-course-edit":"learning-center","learning-assignment-edit":"learning-center"};
+function _menuPageForRoute(pageId){return _EDITOR_PARENT_PAGES[pageId]||pageId;}
 function _groupForPage(pageId){
+  pageId=_menuPageForRoute(pageId);
   for(const g in _menuGroupsCache){
     if(_menuGroupsCache[g].some(m=>m.id===pageId&&m.type!=="sep"))return g;
   }
   return null;
+}
+function _activeMenuPage(){return _menuPageForRoute(currentPage);}
+function renderWorkspaceFormPage({title,description,backPage,body,saveAction,saveLabel="저장"}){
+  const c=$("#content");if(!c)return;
+  c.innerHTML=`<div class="workspace-editor"><div class="workspace-editor-head"><div><button type="button" class="btn btn-ghost btn-sm" onclick="gotoPage('${backPage}')">← 목록으로</button><h2 data-page-heading>${h(title)}</h2><p>${h(description)}</p></div></div><div class="card"><div class="card-body">${body}</div><div class="workspace-editor-actions"><button type="button" class="btn btn-secondary" onclick="gotoPage('${backPage}')">목록으로</button>${saveAction?`<button type="button" class="btn btn-primary" onclick="${saveAction}">${h(saveLabel)}</button>`:""}</div></div></div>`;
+}
+function _finishPageNavigation(changed){
+  if(!changed)return;
+  const content=$("#content");if(content)content.scrollTop=0;
+  requestAnimationFrame(()=>{const heading=content?.querySelector("[data-page-heading],h2");if(heading){heading.tabIndex=-1;heading.focus({preventScroll:true});}});
 }
 function _bigCatForPage(pageId){
   if(pageId&&pageId.startsWith("cat:"))return BIG_CATEGORIES.find(c=>c.key===pageId.slice(4));
@@ -7231,6 +7259,9 @@ function renderSidebar(){
   titles["hr-function-map"]="HR 업무지도";
   titles["employment-records"]="계약·징계 원장";
   titles["learning-center"]="교육 과정·이력";
+  titles["learning-course-edit"]="교육 과정 편집";
+  titles["learning-assignment-edit"]="교육 배정 편집";
+  titles["employment-records-edit"]="계약·징계 기록 편집";
   const ptEl=$("#page-title");if(ptEl)ptEl.textContent=titles[currentPage]||"";
   const sb=$("#sidebar");if(!sb)return;
   // Filter by role + per-user custom permission overrides (admin-managed)
@@ -7262,7 +7293,7 @@ function renderSidebar(){
       const expanded=_sbExpandedGroup===g;
       navHtml+=`<button class="sb-btn sb-group${expanded?" active":""}" onclick="_sbToggleGroup('${g}')"><span style="flex:1;text-align:left">${h(sep.label)}</span><span class="sb-cat-arrow">${expanded?"⌄":"›"}</span></button>`;
       if(expanded){
-        navHtml+=leaves.map(m=>`<button class="sb-btn sb-leaf${currentPage===m.id?" active":""}" onclick="gotoPage('${m.id}')"><span class="si">${m.icon}</span><span style="flex:1;text-align:left;font-size:12px">${m.label}</span></button>`).join("");
+        navHtml+=leaves.map(m=>`<button class="sb-btn sb-leaf${_activeMenuPage()===m.id?" active":""}" onclick="gotoPage('${m.id}')"><span class="si">${m.icon}</span><span style="flex:1;text-align:left;font-size:12px">${m.label}</span></button>`).join("");
       }
     }
   }else{
@@ -7290,7 +7321,7 @@ function renderSidebar(){
   // 메인 앱의 "권한 관리" 화면에서 설정한 값이 그대로 적용된다.
   if(EVAL_ONLY_MODE){
     const inGroup=g=>(menuGroups[g]||[]).filter(mm=>mm.type!=="sep"&&visible.includes(mm));
-    const sec=(label,items)=>items.length?`<div class="sb-sec"><span>${h(label)}</span></div>`+items.map(m=>`<button class="sb-btn sb-leaf${currentPage===m.id?" active":""}" onclick="gotoPage('${m.id}')"><span class="si">${m.icon}</span><span style="flex:1;text-align:left;font-size:12px">${h(m.label)}</span></button>`).join(""):"";
+    const sec=(label,items)=>items.length?`<div class="sb-sec"><span>${h(label)}</span></div>`+items.map(m=>`<button class="sb-btn sb-leaf${_activeMenuPage()===m.id?" active":""}" onclick="gotoPage('${m.id}')"><span class="si">${m.icon}</span><span style="flex:1;text-align:left;font-size:12px">${h(m.label)}</span></button>`).join(""):"";
     const opsItem=(menuGroups["set-op-sep"]||[]).filter(mm=>mm.id==="eval-ops"&&visible.includes(mm));
     const pwItem=(menuGroups["set-pw-sep"]||[]).filter(mm=>mm.id==="change-pw"&&visible.includes(mm));
     const evalNav=sec("KPI 성과평가",inGroup("kpi-sep"))+sec("다면·역량평가",inGroup("comp-sep"))+sec("평가 운영",opsItem)+sec("개인 설정",pwItem);
@@ -7342,14 +7373,14 @@ const PAGE_ROLES={
   "hr-register":["admin"],"hr-changes":["admin"],"hr-stats":["admin"],"hr-list":["admin","director","leader"],
   "long-service-award":["admin"],"award-history":["admin","director","leader"],
   "hr-mandatory-training":["admin","director","leader"],
-  "learning-center":["admin","director","leader","member"],
+  "learning-center":["admin","director","leader","member"],"learning-course-edit":["admin"],"learning-assignment-edit":["admin"],
   "hr-attendance":["admin","director"],"hr-leave-mgmt":["admin","director"],"payroll-mgmt":["admin"],
   "first-eval":["admin","leader"],"second-eval":["admin","director"],"kpi-amend":["admin","director","leader"],
   "grade-view":["admin","director","leader"],"comp-grade-view":["admin"],"comp-settings-shortcut":["admin"],
   "eval-progress":["admin","director","leader"],
   "promotion-mgmt":["admin"],"core-talent":["admin"],"succession-planning":["admin"],"skills-architecture":["admin"],"workforce-planning":["admin"],
   "position-control":["admin"],"position-requests":["admin","director","leader"],
-  "settings":["admin"],"approval-templates":["admin"],"integrations":["admin"],"data-mgmt":["admin"],"admin-operations":["admin"],"hr-function-map":["admin"],"employment-records":["admin"],
+  "settings":["admin"],"approval-templates":["admin"],"integrations":["admin"],"data-mgmt":["admin"],"admin-operations":["admin"],"hr-function-map":["admin"],"employment-records":["admin"],"employment-records-edit":["admin"],
   "history":["admin"],"activity-log":["admin"],
   "eval-ops":["admin"],"settings-org":["admin"],"settings-ranks":["admin"],"attend-settings":["admin"],
   "payroll-settings":["admin"],"company-info":["admin"],"room-settings":["admin"],"deploy-perm":["admin"],
@@ -7393,6 +7424,7 @@ async function _confirmMyPagePw(){
   finally{if(btn)btn.disabled=false;}
 }
 function gotoPage(p){
+  const changed=currentPage!==p;
   // 메뉴 이동은 항상 현재 화면 전체를 교체하므로, 열려있는 모달(예: 본인확인 비밀번호
   // 확인창)이 있으면 먼저 닫는다 - 그렇지 않으면 새 페이지 컨텐츠 위에 이전 모달이 계속
   // 남아 화면을 가리는 문제가 있었다(모바일 QA에서 발견: 근태 탭 진입 시 뜨는 본인확인
@@ -7411,13 +7443,13 @@ function gotoPage(p){
     const catId=p.slice(6);
     _boardSelCat=catId;_boardPageFilter={search:"",dept:"",author:"",dateFrom:"",dateTo:"",pageSize:15,page:1};
     currentPage=p;const g=_groupForPage(p);const bc=g?_bigCatForGroup(g):null;_sbDrillCat=bc?bc.key:null;_sbExpandedGroup=g;
-    renderPage();renderSidebar();_updateMobileTabNav();_logMenuUsage(p);return;
+    renderPage();renderSidebar();_updateMobileTabNav();_logMenuUsage(p);_finishPageNavigation(changed);return;
   }
   const allowed=PAGE_ROLES[p];
   if(allowed&&currentUser&&!allowed.includes(currentUser.role)){currentPage=p;_pageAccessDenied();renderSidebar();_updateMobileTabNav();return;}
   // 권한관리에서 개인별로 끈 메뉴는 사이드바에서만 숨겨질 뿐 gotoPage() 직접 호출(URL
   // 조작 등)은 막지 못했다 — 사이드바 필터링과 동일한 menuPerms 기준을 여기서도 적용.
-  if(currentUser&&(currentUser.menuPerms||{})[p]===false){currentPage=p;_pageAccessDenied();renderSidebar();_updateMobileTabNav();return;}
+  if(currentUser&&(currentUser.menuPerms||{})[_menuPageForRoute(p)]===false){currentPage=p;_pageAccessDenied();renderSidebar();_updateMobileTabNav();return;}
   if(p==="talent-dev"&&!_canViewTalentDev()){currentPage=p;_pageAccessDenied();renderSidebar();_updateMobileTabNav();return;}
   if(p==="low-performer"&&!_canViewLowPerformer()){currentPage=p;_pageAccessDenied();renderSidebar();_updateMobileTabNav();return;}
   if(p==="hr-welfare-points"&&!_canViewWelfareAll()){currentPage=p;_pageAccessDenied();renderSidebar();_updateMobileTabNav();return;}
@@ -7434,7 +7466,7 @@ function gotoPage(p){
     const bc=g?_bigCatForGroup(g):null;
     _sbDrillCat=bc?bc.key:null;_sbExpandedGroup=g;
   }
-  renderPage();renderSidebar();_updateMobileTabNav();_logMenuUsage(p);
+  renderPage();renderSidebar();_updateMobileTabNav();_logMenuUsage(p);_finishPageNavigation(changed);
 }
 function _sbDrillBack(){_sbDrillCat=null;_sbExpandedGroup=null;renderSidebar();}
 function _sbToggleGroup(g){_sbExpandedGroup=(_sbExpandedGroup===g)?null:g;renderSidebar();}
@@ -7478,7 +7510,6 @@ function renderCatNav(){
     `<button class="cn-btn${activeCat&&activeCat.key===c.key?" active":""}" onclick="gotoPage('cat:${c.key}')"><span class="cn-ico">${c.icon}</span>${h(c.label)}</button>`
   ).join("");
   nav.innerHTML=`<button class="cn-btn${currentPage==="dashboard"?" active":""}" onclick="gotoPage('dashboard')"><span class="cn-ico">◉</span>대시보드</button>${btns}`;
-  setTimeout(()=>{const bs=document.querySelectorAll("#cat-nav .cn-btn");let mx=0;bs.forEach(b=>{b.style.minWidth="";mx=Math.max(mx,b.offsetWidth);});bs.forEach(b=>{b.style.minWidth=mx+"px";b.style.justifyContent="center";});},0);
 }
 // 중분류 선택 화면(소분류 목록을 카드로 제공) — 사이드바 대분류를 클릭하면 진입
 function renderCategoryLanding(catKey){
@@ -7657,7 +7688,10 @@ function renderPage(){
   pages["admin-operations"]=window.renderAdminOperationsPage;
   pages["hr-function-map"]=window.renderHrFunctionMapPage;
   pages["employment-records"]=window.renderEmploymentRecordsPage;
+  pages["employment-records-edit"]=window.renderEmploymentRecordEditorPage;
   pages["learning-center"]=window.renderLearningCenterPage;
+  pages["learning-course-edit"]=window.renderLearningCourseEditorPage;
+  pages["learning-assignment-edit"]=window.renderLearningAssignmentEditorPage;
   const fn=pages[currentPage];const c=$("#content");
   if(c&&fn){
     c.innerHTML="";

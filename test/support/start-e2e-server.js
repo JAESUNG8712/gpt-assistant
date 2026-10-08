@@ -19,7 +19,7 @@ const path = require("path");
 const bcrypt = require("bcryptjs");
 
 const port = process.env.E2E_PORT || "4300";
-const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "hr-e2e-"));
+const dataDir = fs.mkdtempSync(path.join(process.env.HR_TEST_TEMP_DIR || os.tmpdir(), "hr-e2e-"));
 const dataFile = path.join(dataDir, "hr-data.json");
 
 const E2E_ADMIN = { loginId: "e2e_admin", pw: "E2eTestPw123" };

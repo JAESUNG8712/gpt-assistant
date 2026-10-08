@@ -9,7 +9,7 @@
   const STATUSES = ["active", "closed", "expired"];
   const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
   const text = (v, max) => String(v == null ? "" : v).trim().slice(0, max);
-  const validDate = value => !value || (DATE_RE.test(value) && !Number.isNaN(Date.parse(`${value}T00:00:00Z`)));
+  const validDate = value => { if(!value)return true; const s=String(value); if(!DATE_RE.test(s))return false; const d=new Date(`${s}T00:00:00Z`); return !Number.isNaN(d.getTime())&&d.toISOString().slice(0,10)===s; };
 
   function validate(input) {
     const errors = [];
@@ -63,13 +63,21 @@
   const esc = value => typeof root.h === "function" ? root.h(String(value == null ? "" : value)) : String(value == null ? "" : value);
   const emp = id => (employees || []).find(e => String(e.id) === String(id));
   const statusLabel = { active: "진행", closed: "종결", expired: "만료" };
+  let editingId = null;
 
   function openEditor(id) {
     if (!currentUser || currentUser.role !== "admin") return root._pageAccessDenied();
-    const old = (employmentRecords || []).find(r => String(r.id) === String(id));
+    editingId = id == null ? null : String(id);
+    root.gotoPage("employment-records-edit");
+  }
+
+  function renderEditor() {
+    if (!currentUser || currentUser.role !== "admin") return root._pageAccessDenied();
+    const old = editingId == null ? null : (employmentRecords || []).find(r => String(r.id) === editingId);
+    if (editingId != null && !old) { root.gotoPage("employment-records"); root.showToast("기록을 찾을 수 없습니다.", "error"); return; }
     const record = old || { type: "contract", status: "active", employeeId: "", title: "", startDate: "", endDate: "", decisionDate: "", note: "", documentRef: "" };
-    const options = (employees || []).filter(e => e.active !== false).map(e => `<option value="${esc(e.id)}" ${String(e.id) === String(record.employeeId) ? "selected" : ""}>${esc(e.name)} (${esc(e.empNo || "-")}) · ${esc(e.dept || "-")}</option>`).join("");
-    root.showModal(`<div class="modal modal-lg"><div class="modal-head"><h2>${old ? "계약·징계 기록 수정" : "계약·징계 기록 등록"}</h2><button class="modal-close" onclick="closeModal()">×</button></div><div class="modal-body">
+    const options = (employees || []).filter(e => e.active !== false || String(e.id) === String(record.employeeId)).map(e => `<option value="${esc(e.id)}" ${String(e.id) === String(record.employeeId) ? "selected" : ""}>${esc(e.name)} (${esc(e.empNo || "-")}) · ${esc(e.dept || "-")}</option>`).join("");
+    const body = `
       <div class="info-note mb3">근로계약은 시작·종료일을, 징계는 결정일과 조치명을 기록하세요. 주민번호·상세 조사자료 등 불필요한 민감정보는 메모에 입력하지 마세요.</div>
       <div class="form-grid"><div class="fg"><label class="fl">직원 *</label><select id="er-employee"><option value="">선택</option>${options}</select></div>
       <div class="fg"><label class="fl">유형 *</label><select id="er-type"><option value="contract" ${record.type === "contract" ? "selected" : ""}>근로계약</option><option value="discipline" ${record.type === "discipline" ? "selected" : ""}>징계</option></select></div>
@@ -77,12 +85,14 @@
       <div class="fg"><label class="fl">상태 *</label><select id="er-status">${Object.entries(statusLabel).map(([v,l]) => `<option value="${v}" ${record.status === v ? "selected" : ""}>${l}</option>`).join("")}</select></div>
       <div class="fg"><label class="fl">시작일</label><input id="er-start" type="date" value="${esc(record.startDate)}"></div><div class="fg"><label class="fl">종료일</label><input id="er-end" type="date" value="${esc(record.endDate)}"></div>
       <div class="fg"><label class="fl">결정일</label><input id="er-decision" type="date" value="${esc(record.decisionDate)}"></div><div class="fg"><label class="fl">문서 참조</label><input id="er-document" maxlength="200" value="${esc(record.documentRef)}" placeholder="예: 전자결재 HR-2026-001"></div></div>
-      <div class="fg"><label class="fl">관리 메모</label><textarea id="er-note" rows="4" maxlength="1000" placeholder="예: 갱신 검토일 2026-11-01 / 담당자 인사팀">${esc(record.note)}</textarea></div><div id="er-errors" class="alert alert-error" style="display:none"></div>
-      </div><div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal()">취소</button><button class="btn btn-primary" onclick="saveEmploymentRecord('${esc(old?.id || "")}')">저장</button></div></div>`);
+      <div class="fg"><label class="fl">관리 메모</label><textarea id="er-note" rows="4" maxlength="1000" placeholder="예: 갱신 검토일 2026-11-01 / 담당자 인사팀">${esc(record.note)}</textarea></div><div id="er-errors" class="alert alert-error" role="alert" style="display:none"></div>`;
+    root.renderWorkspaceFormPage({ title: old ? "계약·징계 기록 수정" : "계약·징계 기록 등록", description: "직원별 계약과 인사 조치를 등록하고 기한을 관리합니다.", backPage: "employment-records", body, saveAction: "saveEmploymentRecord()" });
   }
 
   async function save(id) {
-    const old = (employmentRecords || []).find(r => String(r.id) === String(id));
+    const targetId = id == null ? editingId : String(id);
+    const old = targetId == null ? null : (employmentRecords || []).find(r => String(r.id) === targetId);
+    if (targetId != null && !old) { root.showToast("기록을 다시 확인하세요.", "error"); return; }
     const input = { employeeId: $("#er-employee")?.value, type: $("#er-type")?.value, title: $("#er-title")?.value,
       status: $("#er-status")?.value, startDate: $("#er-start")?.value, endDate: $("#er-end")?.value,
       decisionDate: $("#er-decision")?.value, documentRef: $("#er-document")?.value, note: $("#er-note")?.value };
@@ -93,7 +103,7 @@
     if (!ok) return;
     const next = tools.normalize({ ...input, id: old?.id || genId() }, old, currentUser);
     if (old) employmentRecords = employmentRecords.map(r => String(r.id) === String(old.id) ? next : r); else employmentRecords.push(next);
-    root.closeModal(); root.autoSaveToServerIfEnabled(); root.showToast("계약·징계 기록을 저장했습니다.", "success"); render();
+    root.autoSaveToServerIfEnabled(); root.showToast("계약·징계 기록을 저장했습니다.", "success"); root.gotoPage("employment-records");
   }
 
   async function remove(id) {
@@ -114,5 +124,5 @@
       ${sum.due30 || sum.overdue ? `<div class="warn-note mb3">계약 검토 필요: 30일 내 만료 ${sum.due30}건, 기한 경과 ${sum.overdue}건입니다. 갱신·종료 여부를 확인하세요.</div>` : ""}
       <div class="card"><div class="table-wrap"><table><thead><tr><th>직원</th><th>유형</th><th>계약/조치명</th><th>기준일</th><th>상태</th><th>관리</th></tr></thead><tbody>${body || `<tr><td colspan="6" class="text-gray" style="text-align:center;padding:28px">등록된 기록이 없습니다.</td></tr>`}</tbody></table></div></div>`;
   }
-  root.renderEmploymentRecordsPage = render; root.openEmploymentRecordEditor = openEditor; root.saveEmploymentRecord = save; root.deleteEmploymentRecord = remove;
+  root.renderEmploymentRecordsPage = render; root.renderEmploymentRecordEditorPage = renderEditor; root.openEmploymentRecordEditor = openEditor; root.saveEmploymentRecord = save; root.deleteEmploymentRecord = remove;
 })(typeof window !== "undefined" ? window : null);

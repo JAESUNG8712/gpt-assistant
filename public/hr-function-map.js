@@ -86,7 +86,6 @@
     planned: { label: "고도화", color: "#64748b", bg: "#f1f5f9" },
   };
   const esc = value => typeof root.h === "function" ? root.h(String(value == null ? "" : value)) : String(value == null ? "" : value).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
-  const navigate = page => page ? `onclick="gotoPage('${page}')" role="button" tabindex="0" onkeydown="_activateClickable(event)"` : "";
 
   function render() {
     const c = root.document.getElementById("content");
@@ -94,7 +93,7 @@
     if (typeof currentUser === "undefined" || !currentUser || currentUser.role !== "admin") { root._pageAccessDenied(); return; }
     const counts = api.summary();
     const roles = api.ROLE_LANES.map(role => `<div style="border:1px solid #dbe4f0;border-radius:10px;padding:10px;background:#fff"><div class="fw7">${esc(role.label)}</div><div class="fz11 text-gray mt1">${esc(role.desc)}</div></div>`).join("");
-    const areas = api.AREAS.map(area => `<section class="card"><div class="card-head"><h3>${esc(area.label)}</h3></div><div class="card-body" style="padding:8px 14px">${area.items.map(([label,page,status]) => { const meta = statusMeta[status]; return `<div ${navigate(page)} style="display:flex;align-items:center;gap:7px;padding:7px 3px;border-bottom:1px solid #f1f5f9;${page ? "cursor:pointer" : ""}"><span style="color:#14b8a6">•</span><span style="flex:1;font-size:12px">${esc(label)}</span><span style="font-size:10px;font-weight:700;color:${meta.color};background:${meta.bg};border-radius:9px;padding:2px 6px">${meta.label}</span></div>`; }).join("")}</div></section>`).join("");
+    const areas = api.AREAS.map(area => `<section class="card"><div class="card-head"><h3>${esc(area.label)}</h3></div><div class="card-body" style="padding:8px 14px">${area.items.map(([label,page,status]) => { const meta = statusMeta[status]; return `<button type="button" class="function-map-link" ${page?`onclick="gotoPage('${page}')"`:'disabled aria-disabled="true"'}><span style="color:#14b8a6">•</span><span style="flex:1;font-size:12px">${esc(label)}</span><span style="font-size:10px;font-weight:700;color:${meta.color};background:${meta.bg};border-radius:9px;padding:2px 6px">${meta.label}</span></button>`; }).join("")}</div></section>`).join("");
     const foundation = api.FOUNDATION.map(([label,page]) => `<button class="btn btn-secondary btn-sm" onclick="gotoPage('${page}')">${esc(label)}</button>`).join("");
     c.innerHTML = `<div class="flex justify-between items-c mb3" style="gap:12px;flex-wrap:wrap"><div><h2>🧭 HR 업무지도</h2><div class="fz12 text-gray">역할·업무·기준정보·외부 연계를 한 화면에서 점검합니다. 첨부된 HR 기능 구성도를 현재 시스템 기준으로 재구성했습니다.</div></div><button class="btn btn-secondary btn-sm" onclick="gotoPage('admin-operations')">관리자 운영센터</button></div>
       <div class="notice info mb3"><b>상태 기준</b> · 운영: 내부 기능 제공 · 부분: 일부 업무만 지원 · 외부연계: 전문 시스템 연결 필요 · 고도화: 아직 원장 기능 없음</div>

@@ -1069,6 +1069,8 @@ test.describe("로그인·기본 네비게이션", () => {
     });
     await expect(page.locator("#content")).toContainText("계약·징계 원장");
     await page.getByRole("button",{name:"기록 등록"}).click();
+    await expect(page.locator(".workspace-editor h2")).toHaveText("계약·징계 기록 등록");
+    await expect(page.locator(".modal-ov")).toHaveCount(0);
     await page.selectOption("#er-employee","er-emp");
     await page.fill("#er-title","기간제 근로계약");
     await page.fill("#er-start","2026-10-01");
@@ -1103,6 +1105,8 @@ test.describe("로그인·기본 네비게이션", () => {
     });
     await expect(page.locator("#content")).toContainText("교육 과정·이력");
     await page.getByRole("button",{name:"과정 등록"}).click();
+    await expect(page.locator(".workspace-editor h2")).toHaveText("교육 과정 등록");
+    await expect(page.locator(".modal-ov")).toHaveCount(0);
     await page.fill("#lc-name","신임 팀장 리더십");
     await page.fill("#lc-start","2026-11-01");
     await page.fill("#lc-end","2026-11-02");
@@ -1111,6 +1115,7 @@ test.describe("로그인·기본 네비게이션", () => {
     await expect(page.locator("#content")).toContainText("신임 팀장 리더십");
 
     await page.getByRole("button",{name:"직원 배정"}).click();
+    await expect(page.locator(".workspace-editor h2")).toHaveText("직원 교육 배정");
     await page.selectOption("#la-course",{index:1});
     await page.selectOption("#la-emp","lc-emp");
     await page.getByRole("button",{name:"저장",exact:true}).click();
@@ -1143,6 +1148,8 @@ test.describe("로그인·기본 네비게이션", () => {
     expect(approved.history).toHaveLength(0);
     expect(approved.attendance).toHaveLength(2);
     await page.getByRole("button",{name:"수정"}).nth(1).click();
+    await expect(page.locator("#la-course")).toBeDisabled();
+    await expect(page.locator("#la-cost")).toBeDisabled();
     await page.selectOption("#la-status","completed");
     await page.selectOption("#la-settlement","settled");
     await page.fill("#la-settled-at","2026-12-12");
@@ -1152,5 +1159,8 @@ test.describe("로그인·기본 네비게이션", () => {
     expect(completed.assignment).toMatchObject({status:"completed",settlementStatus:"settled",settledAt:"2026-12-12"});
     expect(completed.history).toHaveLength(1);
     expect(completed.history[0]).toMatchObject({type:"edu_general",desc:"플랫폼 아키텍처"});
+    await page.getByRole("button",{name:"수정"}).nth(1).click();
+    await expect(page.locator("#la-status")).toBeDisabled();
+    await expect(page.locator("#la-settlement")).toBeEnabled();
   });
 });

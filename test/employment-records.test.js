@@ -5,6 +5,7 @@ const tools = require("../public/employment-records.js");
 test("근로계약은 직원·제목·시작일과 정상 날짜 범위를 요구한다", () => {
   assert.equal(tools.validate({ employeeId: "1", type: "contract", title: "기간제", status: "active", startDate: "2026-01-01", endDate: "2026-12-31" }).ok, true);
   assert.equal(tools.validate({ employeeId: "1", type: "contract", title: "기간제", status: "active", startDate: "2026-12-31", endDate: "2026-01-01" }).ok, false);
+  assert.equal(tools.validate({ employeeId: "1", type: "contract", title: "기간제", status: "active", startDate: "2026-02-30" }).ok, false);
 });
 
 test("징계 기록은 결정일을 요구한다", () => {

@@ -1628,6 +1628,12 @@ function _canManageCompSessionTarget(actor, actorEmp, targetEmp) {
   if (actor.role === "leader") return targetEmp.dept === actorEmp.dept && targetEmp.team === actorEmp.team;
   return false;
 }
+function _validCalendarDate(value) {
+  const s = String(value || "");
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return false;
+  const d = new Date(`${s}T00:00:00Z`);
+  return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === s;
+}
 // 반환값: 저장할 레코드, 또는 null(= 이 레코드는 아예 쓰지 않음 — 권한 없이 새로 만들어진 것)
 // approvalDocForGate: 결재에서 파생되는 payrollAdjustments/learningAssignments 신규 레코드에
 // 한해 호출부가 미리 조회한 sourceDocId의 결재문서(이미 _sanitizeApprovalDoc을 거침).
@@ -1666,10 +1672,11 @@ function _sanitizeGatedRecord(field, incoming, stored, actor, actorEmp, settings
       submittedAt: status === "submitted" ? (stored?.submittedAt || now) : null, createdAt: stored?.createdAt || now, updatedAt: now };
   }
   if (field === "employmentRecords") {
+    if ([incoming.startDate, incoming.endDate, incoming.decisionDate].some(value => value && !_validCalendarDate(value))) return stored ? { ...stored } : null;
     const type = ["contract", "discipline"].includes(incoming.type) ? incoming.type : "";
     const status = ["active", "closed", "expired"].includes(incoming.status) ? incoming.status : "active";
     const shortText = (value, max) => String(value == null ? "" : value).trim().slice(0, max);
-    const date = value => /^\d{4}-\d{2}-\d{2}$/.test(String(value || "")) ? String(value) : "";
+    const date = value => _validCalendarDate(value) ? String(value) : "";
     const now = new Date().toISOString();
     incoming = { ...incoming, employeeId: shortText(incoming.employeeId, 120), type, title: shortText(incoming.title, 120), status,
       startDate: date(incoming.startDate), endDate: date(incoming.endDate), decisionDate: date(incoming.decisionDate),
@@ -1683,7 +1690,7 @@ function _sanitizeGatedRecord(field, incoming, stored, actor, actorEmp, settings
   }
   if (field === "learningCourses") {
     const txt = (value, max) => String(value == null ? "" : value).trim().slice(0, max);
-    const date = value => /^\d{4}-\d{2}-\d{2}$/.test(String(value || "")) ? String(value) : "";
+    const date = value => _validCalendarDate(value) ? String(value) : "";
     const now = new Date().toISOString();
     const hours = Number(incoming.hours), capacity = Number(incoming.capacity), cost = Number(incoming.cost);
     incoming = { ...incoming, name: txt(incoming.name, 120), category: txt(incoming.category, 80), provider: txt(incoming.provider, 120),
@@ -1697,8 +1704,9 @@ function _sanitizeGatedRecord(field, incoming, stored, actor, actorEmp, settings
     if (stored?.status === "closed") return { ...stored };
   }
   if (field === "learningAssignments") {
+    if ([incoming.assignedAt, incoming.dueDate, incoming.settledAt].some(value => value && !_validCalendarDate(value))) return stored ? { ...stored } : null;
     const txt = (value, max) => String(value == null ? "" : value).trim().slice(0, max);
-    const date = value => /^\d{4}-\d{2}-\d{2}$/.test(String(value || "")) ? String(value) : "";
+    const date = value => _validCalendarDate(value) ? String(value) : "";
     const now = new Date().toISOString(), status = ["assigned", "in_progress", "completed", "cancelled"].includes(incoming.status) ? incoming.status : "assigned";
     const score = incoming.score === "" || incoming.score == null ? null : Number(incoming.score);
     const approvedCost = Number(incoming.approvedCost || 0);
@@ -1718,6 +1726,11 @@ function _sanitizeGatedRecord(field, incoming, stored, actor, actorEmp, settings
       settledAt: settlementStatus === "settled" ? (date(incoming.settledAt) || now.slice(0, 10)) : "",
       settlementNote: txt(incoming.settlementNote, 500),
       createdAt: stored?.createdAt || now, createdBy: stored?.createdBy || String(actor?.empId || ""), updatedAt: now, updatedBy: String(actor?.empId || "") };
+    // 승인문서에서 파생된 기준값은 이후 관리자 수정에도 결재 당시 값으로 고정한다.
+    // 수강 상태·증빙·정산만 갱신할 수 있어야 원장과 결재 이력이 충돌하지 않는다.
+    if (stored?.source === "approval") {
+      for (const key of ["courseId", "empId", "assignedAt", "dueDate", "approvedCost", "costCenter", "source", "sourceDocId"]) incoming[key] = stored[key];
+    }
     if (!incoming.courseId || !incoming.empId || !incoming.assignedAt) return stored ? { ...stored } : null;
     if (incoming.dueDate && incoming.dueDate < incoming.assignedAt) return stored ? { ...stored } : null;
     if (score != null && (!Number.isFinite(score) || score < 0 || score > 100)) return stored ? { ...stored } : null;
@@ -1978,20 +1991,23 @@ function _validateFieldValues(field, rec, storedList) {
     if (!["contract", "discipline"].includes(rec.type)) return false;
     if (!["active", "closed", "expired"].includes(rec.status)) return false;
     if (!rec.employeeId || typeof rec.title !== "string" || !rec.title.trim() || rec.title.length > 120) return false;
+    if ([rec.startDate, rec.endDate, rec.decisionDate].some(value => value && !_validCalendarDate(value))) return false;
     if (rec.startDate && rec.endDate && rec.endDate < rec.startDate) return false;
     if (rec.type === "contract" && !rec.startDate) return false;
     if (rec.type === "discipline" && !rec.decisionDate) return false;
   } else if (field === "learningCourses") {
     if (!rec.name || !rec.category || !rec.startDate || !rec.endDate || rec.endDate < rec.startDate) return false;
+    if (!_validCalendarDate(rec.startDate) || !_validCalendarDate(rec.endDate)) return false;
     if (!["draft", "active", "closed"].includes(rec.status) || !["online", "offline", "blended"].includes(rec.delivery)) return false;
     if (!Number.isFinite(Number(rec.hours)) || Number(rec.hours) <= 0 || Number(rec.hours) > 1000) return false;
     if (!Number.isInteger(Number(rec.capacity)) || Number(rec.capacity) < 1 || Number(rec.capacity) > 10000) return false;
   } else if (field === "learningAssignments") {
     if (!rec.courseId || !rec.empId || !["assigned", "in_progress", "completed", "cancelled"].includes(rec.status)) return false;
+    if (!_validCalendarDate(rec.assignedAt) || rec.dueDate && !_validCalendarDate(rec.dueDate)) return false;
     if (rec.score != null && (!Number.isFinite(Number(rec.score)) || Number(rec.score) < 0 || Number(rec.score) > 100)) return false;
     if (!Number.isFinite(Number(rec.approvedCost || 0)) || Number(rec.approvedCost || 0) < 0 || Number(rec.approvedCost || 0) > 1_000_000_000) return false;
     if (!["not_required", "pending", "settled"].includes(rec.settlementStatus || "not_required")) return false;
-    if (rec.settlementStatus === "settled" && !/^\d{4}-\d{2}-\d{2}$/.test(String(rec.settledAt || ""))) return false;
+    if (rec.settlementStatus === "settled" && !_validCalendarDate(rec.settledAt)) return false;
     if (storedList && !Array.isArray(storedList) && !_learningAssignmentFits(rec, storedList.assignments, storedList.courses)) return false;
   } else if (field === "overtimeRequests") {
     // hours는 승인 후 급여 계산의 초과근무수당(otReqAllowance = hours * 시급 * 배율)에
