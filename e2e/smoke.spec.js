@@ -664,12 +664,16 @@ test.describe("로그인·기본 네비게이션", () => {
     await page.goto("/");
     await page.fill("#l-id", "e2e_admin");
     await page.fill("#l-pw", "E2eTestPw123");
-    await page.evaluate(() => {
-      loadFromServer = async () => {};
-      connectSSE = async () => {};
-    });
+    await page.evaluate(() => { connectSSE = async () => {}; });
     await page.click(".login-card button.btn-primary");
     await expect(page.locator("#main")).toBeVisible({ timeout: 10000 });
+    // settings는 REVISIONED_SINGLETON_FIELDS라 /save가 보내는 _singletonRevisions가
+    // 서버의 실제 revision과 다르면(다른 e2e 스펙이 같은 공유 서버에서 이미 settings를
+    // 저장해 revision을 올려둔 경우 등) 그 요청 전체가 409로 거부되어 함께 보낸
+    // yearEndSettlements 저장까지 조용히 사라진다(실측 확인) — 로그인 직후 실제
+    // loadFromServer를 한 번 돌려 revision을 동기화한 뒤에만 loadFromServer를 막는다.
+    await page.evaluate(() => loadFromServer());
+    await page.evaluate(() => { loadFromServer = async () => {}; });
 
     const year = 2024;
     const result = await page.evaluate(async (year) => {

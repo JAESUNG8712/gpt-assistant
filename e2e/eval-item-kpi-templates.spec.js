@@ -4,14 +4,22 @@ async function loginAsAdmin(page) {
   await page.goto("/");
   await page.fill("#l-id", "e2e_admin");
   await page.fill("#l-pw", "E2eTestPw123");
-  // 로그인 직후 백그라운드 서버 재동기화(SSE/자동로드)가 테스트가 시딩한
-  // 순수 인메모리 상태를 덮어쓰는 경합을 막는다(이 프로젝트의 확립된 관례).
+  // SSE 백그라운드 재동기화만 막는다(이 프로젝트의 확립된 관례) — loadFromServer는
+  // 일부러 막지 않는다. 이 스펙의 여러 테스트가 settings.compEvalItems/kpiTemplateLibrary
+  // (SINGLETON_FIELD, _singletonRevisions 기반 CAS)를 순서대로 저장하는데, 같은 e2e 스위트
+  // 전체가 서버/DATA_FILE 하나를 공유하는 구조상 loadFromServer를 막아두면 이전 테스트가
+  // 이미 올려둔 최신 revision을 이 세션이 전혀 모르는 채로 저장을 시도해 "설정 충돌"로
+  // 조용히 거부되는 것을 실측으로 확인했다 — 로그인 직후 실제 loadFromServer를 한 번
+  // 돌려 revision을 동기화한 뒤에만 테스트별 상태를 덧붙인다.
   await page.evaluate(() => {
-    loadFromServer = async () => {};
     connectSSE = async () => {};
   });
   await page.click(".login-card button.btn-primary");
   await expect(page.locator("#main")).toBeVisible({ timeout: 10000 });
+  await page.evaluate(() => loadFromServer());
+  await page.evaluate(() => {
+    loadFromServer = async () => {};
+  });
 }
 
 test.describe("역량평가 항목 편집 실제 영속 + 업종별 카테고리 반영(hrmind 참고자료 대응)", () => {
@@ -55,9 +63,11 @@ test.describe("역량평가 항목 편집 실제 영속 + 업종별 카테고리
     // askConfirmModal 확인창
     await page.locator(".modal-ov").last().getByRole("button", { name: "불러오기" }).click();
 
-    await expect(page.locator("#comp-items-comp")).toContainText("안전및규정준수");
-    await expect(page.locator("#comp-items-comp")).toContainText("성과(Performance)");
-    await expect(page.locator("#comp-items-comp")).toContainText("태도·조직문화적합도");
+    // 카테고리명은 <input value="..."> 속성이라 textContent(toContainText)로는 안 보이므로
+    // value 속성 기준으로 확인한다.
+    await expect(page.locator('#comp-items-comp input[value="안전및규정준수"]')).toHaveCount(2);
+    await expect(page.locator('#comp-items-comp input[value="성과(Performance)"]')).toHaveCount(2);
+    await expect(page.locator('#comp-items-comp input[value="태도·조직문화적합도"]')).toHaveCount(2);
 
     const result = await page.evaluate(async () => {
       saveCompItems();
@@ -152,6 +162,7 @@ test.describe("직무별 KPI 템플릿 라이브러리(hrmind 참고자료 대�
     await loginAsAdmin(page);
     await page.evaluate(() => {
       settings.evalYear = 2026;
+      settings.stage = "goal"; // "+ KPI 추가" 버튼은 목표 등록 단계(stageOK)에서만 노출된다
       settings.kpiTemplateLibrary = {
         "개발자(Backend/Frontend/Fullstack)": [
           { name: "배포 성공률·장애 MTTR 개선", goal: "배포 성공률 OO% 이상", strategy: "배포 자동화 파이프라인 점검", evalCriteria: "월별 배포 성공률 집계" },
@@ -180,6 +191,7 @@ test.describe("직무별 KPI 템플릿 라이브러리(hrmind 참고자료 대�
     await loginAsAdmin(page);
     await page.evaluate(() => {
       settings.evalYear = 2026;
+      settings.stage = "goal"; // "수정" 버튼은 목표 등록 단계(stageOK)에서만 노출된다
       settings.kpiTemplateLibrary = { "영업": [{ name: "매출 목표 달성", goal: "", strategy: "", evalCriteria: "" }] };
       kpiEntries.push({
         id: 66601, userId: currentUser.id, year: 2026, item: "잠금테스트목표", weight: 20,
