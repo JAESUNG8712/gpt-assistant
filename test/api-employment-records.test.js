@@ -23,6 +23,17 @@ test("계약·징계 원장은 관리자 전용으로 저장·조회된다", asy
   d = await data(api, boot.token);
   assert.equal(d.data.employmentRecords.length, 1);
   assert.equal(d.data.employmentRecords[0].createdBy, String(boot.user?.id || d.data.employees.find(e => e.loginId === "admin").id));
+  const orphan={...original,id:"orphan",employeeId:"missing-employee"};
+  r=await api("/save",auth(boot.token,"POST",{_version:d.version,employmentRecords:[...d.data.employmentRecords,orphan]}));
+  assert.equal(r.status,200);
+  assert.deepEqual((await r.json()).warnings.rejectedRecords,[{field:"employmentRecords",id:"orphan"}]);
+  d=await data(api,boot.token);
+  assert.equal(d.data.employmentRecords.some(x=>x.id==="orphan"),false,"없는 직원의 계약 기록은 저장하지 않는다");
+  r=await api("/save",auth(boot.token,"POST",{_version:d.version,employmentRecords:[{...d.data.employmentRecords[0],employeeId:"missing-employee"}]}));
+  assert.equal(r.status,200);
+  assert.equal((await r.json()).partial,true);
+  d=await data(api,boot.token);
+  assert.equal(d.data.employmentRecords[0].employeeId,"member1","기존 계약의 대상 변경도 검증한다");
   const ownerId=String(boot.user?.id || d.data.employees.find(e=>e.loginId==="admin").id);
   r=await api("/save",auth(boot.token,"POST",{_version:d.version,employmentRecords:[{...d.data.employmentRecords[0],reviewStatus:"completed",reviewDecision:"renew"}]}));
   assert.equal(r.status,200);

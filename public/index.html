@@ -1512,7 +1512,7 @@ async function loadRecruitFromServer(){
     if(ri?.ok)recruitInterviews=ri.interviews;
   }catch(e){/* 오프라인/서버 미연결 시 채용 페이지에서 안내 표시 */}
   _recruitLoaded=true;
-  if(currentPage&&currentPage.startsWith("recruit-"))renderPage();
+  if(currentPage&&(currentPage.startsWith("recruit-")||currentPage==="notification-center"))renderPage();
 }
 let kpiSearch={name:"",dept:""};
 let approvalSearch={name:"",dept:""};
@@ -2240,18 +2240,35 @@ window.addEventListener("unhandledrejection", (e)=>{
 });
 
 async function saveToServer(silent=false){
-  if(!serverConfig.enabled || !serverConfig.url) return;
+  if(!serverConfig.enabled || !serverConfig.url) return {status:"local-only"};
   if(_serverSaving){
     // Already saving — queue one more
     _serverSavePending = true;
-    return;
+    return {status:"queued"};
   }
-  await _doSave(silent);
+  return _doSave(silent);
+}
+
+function showExplicitSaveResult(result, successMessage){
+  if(result?.status==="saved"){
+    showToast(successMessage,"success");
+    return true;
+  }
+  if(result?.status==="queued")showToast("변경사항이 저장 대기 중입니다. 서버 반영 후 상태를 확인해 주세요.","info");
+  else if(result?.status==="local-only")showToast(_demoMode?"데모 저장소에만 반영 중입니다. 서버에는 저장되지 않습니다.":"서버 저장이 설정되지 않아 변경사항이 반영되지 않았습니다.",_demoMode?"info":"error");
+  else if(result?.status==="failed")showToast("서버 저장을 확인하지 못했습니다. 자동 재시도 상태를 확인해 주세요.","error");
+  // partial/conflict already have a specific warning from _doSave.
+  return false;
+}
+
+function markExplicitSaveChange(){
+  _saveChangeSeq++;
+  if(_demoMode){clearTimeout(_demoSaveTimer);_demoSaveTimer=setTimeout(_saveDemoState,1500);}
 }
 
 async function _doSave(silent=false){
-  if(!serverConfig.enabled || !serverConfig.url) return;
-  if(_serverSaving){_serverSavePending=true;return;}
+  if(!serverConfig.enabled || !serverConfig.url) return {status:"local-only"};
+  if(_serverSaving){_serverSavePending=true;return {status:"queued"};}
   _serverSaving = true;
   serverConfig.status="saving";
   serverConfig.statusMsg="서버에 반영 중...";
@@ -2281,7 +2298,7 @@ async function _doSave(silent=false){
       if(r.singletonRevisions) _singletonRevisions = {...r.singletonRevisions};
       const m = r.meta;
       if((r.merged||r.partial) && r.mergedData && !hasLaterChanges){
-        // 서버 계약은 `merged`다. 거부된 HR 행도 서버 원본으로 되돌린다.
+        // 서버 계약은 `merged`다. 거부된 보호 레코드도 서버 원본으로 되돌린다.
         console.log("[Server] Applying authoritative merged state...");
         const merged = r.mergedData?.data || r.mergedData;
         applyState({_singletonRevisions:r.singletonRevisions,data: merged}, true); // apply without undo snapshot
@@ -2289,15 +2306,20 @@ async function _doSave(silent=false){
           if(Array.isArray(merged.employmentRecords))employmentRecords=merged.employmentRecords;
           if(Array.isArray(merged.learningCourses))learningCourses=merged.learningCourses;
           if(Array.isArray(merged.learningAssignments))learningAssignments=merged.learningAssignments;
+          if(Array.isArray(merged.payslips))payslips=merged.payslips;
+          if(Array.isArray(merged.payrollAdjustments))payrollAdjustments=merged.payrollAdjustments;
+          if(Array.isArray(merged.yearEndSettlements))yearEndSettlements=merged.yearEndSettlements;
+          if(Array.isArray(merged.positionRequests))positionRequests=merged.positionRequests;
+          if(Array.isArray(merged.engagementActions))engagementActions=merged.engagementActions;
         }
         renderSidebar(); renderPage();
       }
       if(r.partial){
         const rejected=r.warnings?.rejectedRecords||[];
-        const labels={employmentRecords:"계약·징계",learningCourses:"교육과정",learningAssignments:"교육배정"};
+        const labels={employmentRecords:"계약·징계",learningCourses:"교육과정",learningAssignments:"교육배정",payslips:"급여명세서",payrollAdjustments:"급여조정",yearEndSettlements:"연말정산",positionRequests:"정원 요청",engagementActions:"개선계획"};
         const names=rejected.slice(0,3).map(x=>`${labels[x.field]||x.field}(${x.id})`).join(", ");
         serverConfig.statusMsg=`일부 항목 저장 거부 · ${rejected.length}건`;
-        showToast(`일부 항목이 저장되지 않았습니다: ${names}${rejected.length>3?" 외":""}. 입력값·권한·정원을 확인해 주세요.${hasLaterChanges?" 후속 변경이 있어 화면을 자동 갱신하지 않았습니다.":""}`,"error");
+        showToast(`일부 항목이 저장되지 않았습니다: ${names}${rejected.length>3?" 외":""}. 입력값·권한·확정 상태를 확인해 주세요.${hasLaterChanges?" 후속 변경이 있어 화면을 자동 갱신하지 않았습니다.":""}`,"error");
       } else if(r.merged){
         serverConfig.statusMsg=`⚡병합완료 ${new Date().toLocaleTimeString("ko-KR")} · ${m?.empCount||0}명/${m?.kpiCount||0}건`;
         showToast(hasLaterChanges?"서버 병합 후 후속 변경사항을 저장 중입니다.":"다른 사용자의 변경사항이 자동으로 병합되었습니다.","info");
@@ -2310,6 +2332,7 @@ async function _doSave(silent=false){
         serverConfig.statusMsg="새 변경사항 저장 대기 중...";
       }
       if(r.warnings?.duplicateLoginIds?.length) _notifyDuplicateLoginIds(r.warnings.duplicateLoginIds);
+      return {status:r.partial?"partial":hasLaterChanges?"queued":r.merged?"merged":"saved",response:r};
     } else {
       const err=new Error(r.message||"저장 실패");err.code=r.code;err.details=r.details;throw err;
     }
@@ -2319,14 +2342,14 @@ async function _doSave(silent=false){
       serverConfig.status="connected";
       serverConfig.statusMsg="자료 충돌 · 사용자 선택 필요";
       await _handleRecordRevisionConflict(e.details||{});
-      return;
+      return {status:"conflict",code:e.code};
     }
     if(e.code==="SINGLETON_REVISION_CONFLICT"){
       _retrySaveRequest=null;
       serverConfig.status="connected";
       serverConfig.statusMsg="설정 충돌 · 최신 데이터 확인 필요";
       showToast(`다른 사용자가 ${e.details?.key||"설정"}을 먼저 변경했습니다. 서버에서 최신 데이터를 불러온 뒤 다시 적용해주세요.`,"error");
-      return;
+      return {status:"conflict",code:e.code};
     }
     _serverFailCount++;
     console.warn(`[Server] Save failed (${_serverFailCount}):`, e.message);
@@ -2342,6 +2365,7 @@ async function _doSave(silent=false){
       serverConfig.statusMsg = `저장 재시도 중 (${_serverFailCount}/3)...`;
       setTimeout(()=>_doSave(silent), 3000);
     }
+    return {status:"failed",code:e.code};
   } finally {
     _serverSaving = false;
     updateServerStatusUI();
@@ -7677,14 +7701,14 @@ async function savePulseActionCheckIn(){
   const progress=Math.max(0,Math.min(99,Math.round(Number($("#pulse-action-progress")?.value)||0)));
   action.progress=progress;action.status=progress>0?"in_progress":action.status;action.nextCheckIn=$("#pulse-action-next-checkin")?.value||"";action.successMetric=$("#pulse-action-success-metric")?.value.trim()||"";
   action.checkIns=Array.isArray(action.checkIns)?action.checkIns:[];action.checkIns.push({id:`pulse-checkin-${Date.now()}`,note,nextStep,progress,authorId:currentUser.id,authorName:currentUser.name,createdAt:new Date().toISOString()});
-  await saveToServer(false);showToast("점검 기록을 저장했습니다.","success");renderPulseActionDetailPage();
+  markExplicitSaveChange();const result=await saveToServer(true);showExplicitSaveResult(result,"점검 기록을 저장했습니다.");renderPulseActionDetailPage();
 }
 async function completePulseAction(){
   const action=engagementActions.find(a=>String(a.id)===String(_pulseActionId));if(!action||!_canManagePulseAction(action))return;
   const outcome=$("#pulse-action-outcome")?.value.trim(),evidence=$("#pulse-action-evidence")?.value.trim()||"",effectiveness=Number($("#pulse-action-effectiveness")?.value||0);
   if(!outcome||effectiveness<1){showToast("달성 성과와 효과 평가를 입력해주세요.","error");return;}
   action.status="done";action.progress=100;action.outcome=outcome;action.evidence=evidence;action.effectiveness=effectiveness;action.completedAt=new Date().toISOString();
-  await saveToServer(false);showToast("개선계획을 완료 처리했습니다.","success");renderPulseActionDetailPage();
+  markExplicitSaveChange();const result=await saveToServer(true);showExplicitSaveResult(result,"개선계획을 완료 처리했습니다.");renderPulseActionDetailPage();
 }
 function _renderPulseActions(survey){
   const rows=engagementActions.filter(a=>String(a.surveyId)===String(survey.id));
@@ -23875,9 +23899,9 @@ async function savePositionRequest(id=""){
   if(estimatedAnnualCost>budgetItem.remainingAmount){showToast("예상 연간 인건비가 현재 잔여 예산을 초과합니다.","error");return;}
   const now=new Date().toISOString(),rec={...(prev||{}),id:prev?.id||genId(),requestType,existingPositionId:requestType==="increase"?existingPositionId:"",positionCode:requestType==="new"?positionCode:"",title,dept,team,headcount,estimatedAnnualCost,budgetSource,costCenter,effectiveDate,positionType,justification,businessPlanId:budgetItem.businessPlanId,budgetItemKey:budgetItem.budgetItemKey,budgetPlanName:budgetItem.planName,budgetPlanYear:budgetItem.baseYear,budgetItemName:budgetItem.itemName,status:"draft",requestedBy:prev?.requestedBy||currentUser.id,requestedByName:prev?.requestedByName||currentUser.name,createdAt:prev?.createdAt||now,updatedAt:now};
   if(prev)positionRequests=positionRequests.map(x=>String(x.id)===String(id)?rec:x);else positionRequests.push(rec);
-  closeModal();await saveToServer(false);renderPositionRequestPage();showToast("정원 요청 초안이 저장되었습니다.","success");
+  closeModal();markExplicitSaveChange();const result=await saveToServer(true);renderPositionRequestPage();showExplicitSaveResult(result,"정원 요청 초안이 저장되었습니다.");
 }
-async function deletePositionRequest(id){const r=positionRequests.find(x=>String(x.id)===String(id));if(!r||r.status!=="draft")return;const ok=await askConfirmModal({title:"정원 요청 초안 삭제",message:"아직 제출하지 않은 요청을 삭제하시겠습니까?",confirmText:"초안 삭제",danger:true,impacts:[{label:"요청",value:`${POSITION_REQUEST_TYPE[r.requestType]} · ${r.title}`},{label:"인원",value:`${r.headcount}명`},{label:"예상 연간 인건비",value:_positionRequestMoney(r.estimatedAnnualCost)}]});if(!ok)return;_tombstone("positionRequests",r.id);positionRequests=positionRequests.filter(x=>String(x.id)!==String(id));closeModal();await saveToServer(false);renderPositionRequestPage();showToast("초안이 삭제되었습니다.","success");}
+async function deletePositionRequest(id){const r=positionRequests.find(x=>String(x.id)===String(id));if(!r||r.status!=="draft")return;const ok=await askConfirmModal({title:"정원 요청 초안 삭제",message:"아직 제출하지 않은 요청을 삭제하시겠습니까?",confirmText:"초안 삭제",danger:true,impacts:[{label:"요청",value:`${POSITION_REQUEST_TYPE[r.requestType]} · ${r.title}`},{label:"인원",value:`${r.headcount}명`},{label:"예상 연간 인건비",value:_positionRequestMoney(r.estimatedAnnualCost)}]});if(!ok)return;_tombstone("positionRequests",r.id);positionRequests=positionRequests.filter(x=>String(x.id)!==String(id));closeModal();markExplicitSaveChange();const result=await saveToServer(true);renderPositionRequestPage();showExplicitSaveResult(result,"초안이 삭제되었습니다.");}
 async function submitPositionRequest(id){const r=positionRequests.find(x=>String(x.id)===String(id));if(!r)return;const result=await runMutationWorkflow({key:`position-request-submit:${id}`,endpoint:`/api/workforce/position-requests/${encodeURIComponent(id)}/transition`,body:{action:"submit",expectedUpdatedAt:r.updatedAt},confirm:{title:"정원 요청 제출",message:"예산 근거와 요청 인원을 검토했습니까? 제출 후에는 관리자가 반려하기 전까지 수정할 수 없습니다.",confirmText:"승인 요청",impacts:[{label:"요청",value:`${POSITION_REQUEST_TYPE[r.requestType]} · ${r.title}`},{label:"인원",value:`${r.headcount}명`},{label:"예상 연간 인건비",value:_positionRequestMoney(r.estimatedAnnualCost)}]},onConflict:async x=>{if(x.request)positionRequests=positionRequests.map(v=>String(v.id)===String(id)?x.request:v);else await loadFromServer();renderPositionRequestPage();},onSuccess:async x=>{positionRequests=positionRequests.map(v=>String(v.id)===String(id)?x.request:v);renderPositionRequestPage();},successMessage:"정원 요청을 제출했습니다."});return result;}
 async function openPositionRequestApprovalModal(id){const r=positionRequests.find(x=>String(x.id)===String(id));if(!r||r.status!=="submitted")return;await _loadPositionBudgetPicker(true);const item=_positionBudgetPicker.find(x=>x.businessPlanId===String(r.businessPlanId)&&x.budgetItemKey===String(r.budgetItemKey)),after=(item?.remainingAmount||0)-Number(r.estimatedAnnualCost||0);openModal(`<div class="modal-box" style="max-width:620px"><div class="modal-head"><h3>정원 요청 승인</h3><button class="modal-close" onclick="closeModal()">×</button></div><div class="modal-body"><div class="warn-note mb3"><strong>영향 범위:</strong> 승인 즉시 ${r.requestType==="new"?"신규 포지션이 생성":"기존 포지션 정원이 증가"}되며 채용공고의 사용 가능 정원과 예산 사용액에 반영됩니다.</div>${_dialogImpactHtml([{label:"요청",value:`${POSITION_REQUEST_TYPE[r.requestType]} · ${r.title}`},{label:"조직",value:`${r.dept}${r.team?` / ${r.team}`:""}`},{label:"인원",value:`${r.headcount}명`},{label:"예상 연간 인건비",value:_positionRequestMoney(r.estimatedAnnualCost),tone:"warn"},{label:"확정 사업계획",value:item?`${item.baseYear} · ${item.planName} · ${item.itemName}`:"연결 항목을 찾을 수 없음",tone:item?"":"warn"},{label:"현재 예산 잔액",value:item?_positionRequestMoney(item.remainingAmount):"-"},{label:"승인 후 잔액",value:item?_positionRequestMoney(after):"-",tone:after<0?"warn":""}])}<div class="fg mt3"><label class="fl">확인한 예산 근거 <span class="req">*</span></label><input class="fc" id="pr-approval-budget" maxlength="120" placeholder="예: 2027 사업계획 승인안 BP-HR-2027-03"></div><div class="fg"><label class="fl">승인 의견</label><textarea class="fc" id="pr-approval-comment" rows="3" maxlength="2000" placeholder="예: 경영계획 승인 정원과 금액 일치 확인"></textarea></div><label class="flex items-c gap2 fz13"><input type="checkbox" id="pr-budget-confirmed"${!item||after<0?" disabled":""}> 예산 금액과 근거 문서를 확인했습니다.</label>${!item||after<0?`<div class="warn-note mt2">현재 연결된 확정 예산으로는 승인할 수 없습니다. 요청을 반려한 뒤 예산 항목 또는 금액을 수정하세요.</div>`:""}</div><div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal()">취소</button><button class="btn btn-primary" onclick="approvePositionRequest('${r.id}')"${!item||after<0?" disabled":""}>예산 확인 후 승인</button></div></div>`);}
 async function approvePositionRequest(id){const r=positionRequests.find(x=>String(x.id)===String(id)),budgetReference=$("#pr-approval-budget")?.value.trim(),comment=$("#pr-approval-comment")?.value.trim(),budgetConfirmed=!!$("#pr-budget-confirmed")?.checked;if(!r)return;if(!budgetReference||!budgetConfirmed){showToast("예산 근거를 입력하고 확인 항목에 체크하세요.","error");return;}closeModal();return runMutationWorkflow({key:`position-request-approve:${id}`,endpoint:`/api/workforce/position-requests/${encodeURIComponent(id)}/transition`,body:{action:"approve",expectedUpdatedAt:r.updatedAt,budgetReference,budgetConfirmed,comment},onConflict:async x=>{if(x.request)positionRequests=positionRequests.map(v=>String(v.id)===String(id)?x.request:v);else await loadFromServer();_positionBudgetPickerLoaded=false;renderPositionRequestPage();},onSuccess:async x=>{positionRequests=positionRequests.map(v=>String(v.id)===String(id)?x.request:v);if(x.position&&currentUser.role==="admin"){const i=workforcePositions.findIndex(p=>String(p.id)===String(x.position.id));if(i>=0)workforcePositions[i]=x.position;else workforcePositions.push(x.position);}_positionRequestPicker=[];_positionRequestPickerLoaded=false;_positionBudgetPicker=[];_positionBudgetPickerLoaded=false;renderPositionRequestPage();},successMessage:"예산 확인과 정원 반영이 완료되었습니다."});}
@@ -29875,9 +29899,16 @@ async function deleteScheduleEvent(eventId){
 function renderNotificationCenterPage(){
   const c=$("#content");if(!c)return;
   const u=currentUser;const items=[];
-  const today=new Date();const todayStr=today.toISOString().slice(0,10);
+  const today=new Date();
   const mm=String(today.getMonth()+1).padStart(2,"0"),dd=String(today.getDate()).padStart(2,"0");
   const yr=today.getFullYear();
+  const todayStr=`${yr}-${mm}-${dd}`,localToday=todayStr;
+  const canOpen=pageId=>{
+    const menu=_findMenuItemById(pageId),roles=menu?.roles||PAGE_ROLES[pageId];
+    return u.menuPerms?.[pageId]!==false&&(!roles||roles.includes(u.role));
+  };
+  const dateAfterDays=days=>{const d=new Date(today.getFullYear(),today.getMonth(),today.getDate()+days);return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;};
+  const withinDays=(date,days)=>!!date&&date<=dateAfterDays(days);
   // 1. Pending approvals (inbox)
   const reminderThr=_apvReminderThreshold();
   approvalDocs.filter(d=>d.status==="in_progress"&&d.approvers.some(a=>String(a.empId)===String(u.id)&&a.status==="pending")).forEach(d=>{
@@ -30019,19 +30050,39 @@ function renderNotificationCenterPage(){
     }
   }
 
-  items.sort((a,b)=>a.pri-b.pri||(b.date||"").localeCompare(a.date||""));
+  // 기존 알림센터에서 직접 처리할 수 있는 HR 업무만 추가한다. 개인별 메뉴가 꺼진
+  // 경우에는 알림·이름·건수도 노출하지 않는다.
+  if(canOpen("employment-records")){
+    const openContracts=employmentRecords.filter(r=>r.type==="contract"&&r.status==="active"&&r.reviewStatus!=="completed"&&r.endDate&&r.endDate<=dateAfterDays(30));
+    if(openContracts.length)items.push({type:"contract-review",pri:0,icon:"📄",title:`계약 만료 검토 ${openContracts.length}건`,desc:"기한이 지났거나 30일 안에 만료될 계약의 갱신·종료 결정을 확인하세요.",date:localToday,action:"employment-records"});
+  }
+  if(canOpen("learning-center")){
+    const dueLearning=learningAssignments.filter(a=>String(a.empId)===String(u.id)&&!["completed","cancelled"].includes(a.status)&&a.dueDate&&a.dueDate<=dateAfterDays(14));
+    if(dueLearning.length)items.push({type:"learning-due",pri:1,icon:"🎓",title:`교육 이수 기한 확인 ${dueLearning.length}건`,desc:"기한이 지났거나 14일 안에 마감되는 내 교육 배정입니다.",date:localToday,action:"learning-center"});
+  }
+  if(u.role==="admin"&&canOpen("position-requests")){
+    const pendingPositions=positionRequests.filter(r=>r.status==="submitted");
+    if(pendingPositions.length)items.push({type:"position-approval",pri:0,icon:"📋",title:`정원 요청 승인 대기 ${pendingPositions.length}건`,desc:"포지션 신설·증원 요청의 예산과 인원 근거를 검토하세요.",date:pendingPositions[0].submittedAt||localToday,action:"position-requests"});
+  }
+  if(canOpen("engagement-pulse")){
+    const dueActions=engagementActions.filter(a=>String(a.ownerId)===String(u.id)&&a.status!=="done"&&withinDays(a.dueDate,14));
+    if(dueActions.length)items.push({type:"engagement-action",pri:1,icon:"💬",title:`조직 개선계획 마감 예정 ${dueActions.length}건`,desc:"담당 개선계획의 진행 상황과 점검 기록을 확인하세요.",date:dueActions[0].dueDate,action:"engagement-pulse"});
+  }
+
+  const visibleItems=items.filter(it=>canOpen(it.action));
+  visibleItems.sort((a,b)=>a.pri-b.pri||(b.date||"").localeCompare(a.date||""));
   const priStyle={0:{bg:"#fef2f2",color:"#dc2626",label:"긴급"},1:{bg:"#fefce8",color:"#d97706",label:"중요"},2:{bg:"#eff6ff",color:"#2563eb",label:"정보"}};
-  c.innerHTML=`<div class="card"><div class="card-head"><h3>🔔 알림</h3><span class="badge bg-blue">${items.length}건</span></div><div class="card-body">
-  ${items.length===0?`<div class="p-empty">✅ 확인할 알림이 없습니다</div>`:""}
-  ${items.map(it=>{const ps=priStyle[it.pri]||priStyle[2];return`<div onclick="gotoPage('${it.action}')" style="display:flex;align-items:flex-start;gap:12px;padding:14px;border-radius:10px;border:1px solid #e2e8f0;margin-bottom:8px;cursor:pointer;transition:background .15s" onmouseover="this.style.background='#f8fafc'" onmouseout="this.style.background='white'">
+  c.innerHTML=`<div class="card"><div class="card-head"><h3>🔔 알림</h3><span class="badge bg-blue">${visibleItems.length}건</span></div><div class="card-body">
+  ${visibleItems.length===0?`<div class="p-empty">✅ 확인할 알림이 없습니다</div>`:""}
+  ${visibleItems.map(it=>{const ps=priStyle[it.pri]||priStyle[2];return`<button type="button" onclick="gotoPage('${it.action}')" style="display:flex;align-items:flex-start;text-align:left;width:100%;background:white;color:inherit;font-family:inherit;gap:12px;padding:14px;border-radius:10px;border:1px solid #e2e8f0;margin-bottom:8px;cursor:pointer;transition:background .15s" onmouseover="this.style.background='#f8fafc'" onmouseout="this.style.background='white'">
     <span style="font-size:26px;line-height:1;flex-shrink:0">${it.icon}</span>
-    <div style="flex:1;min-width:0">
-      <div style="font-size:13px;font-weight:700;color:#1e293b;margin-bottom:3px">${h(it.title)}</div>
-      <div style="font-size:12px;color:#64748b">${h(it.desc)}</div>
-      ${it.date?`<div style="font-size:11px;color:#94a3b8;margin-top:4px">${it.date.slice(0,10)}</div>`:""}
-    </div>
+    <span style="flex:1;min-width:0">
+      <span style="display:block;font-size:13px;font-weight:700;color:#1e293b;margin-bottom:3px">${h(it.title)}</span>
+      <span style="display:block;font-size:12px;color:#64748b">${h(it.desc)}</span>
+      ${it.date?`<span style="display:block;font-size:11px;color:#94a3b8;margin-top:4px">${it.date.slice(0,10)}</span>`:""}
+    </span>
     <span style="font-size:11px;font-weight:700;padding:2px 7px;border-radius:5px;background:${ps.bg};color:${ps.color};flex-shrink:0;white-space:nowrap">${ps.label}</span>
-  </div>`;}).join("")}
+  </button>`;}).join("")}
   </div></div>`;
 }
 

@@ -24,6 +24,7 @@ test-results/
 playwright-report/
 blob-report/
 .playwright-browsers/
+.qa-temp/
 
 # GitHub CLI 로컬 캐시(제한된 Windows 환경에서 gh 로그 조회 시 생성)
 .gh-localappdata/

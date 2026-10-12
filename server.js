@@ -2589,26 +2589,41 @@ async function persistData(data, changedBy = "system", companyId = null, actor =
 // `externalClient` is reserved for the snapshot-restore workflow.  That route
 // owns a wider transaction which also covers deleteExtras and budget_store, so
 // this function must join it instead of committing a partial HR restore first.
-// HR 원장은 /save의 전체 상태 에코에 섞여 온다. 사용자가 수정하지 않은 행까지
-// "거부"로 오인하지 않도록 실제 업무 필드가 달라진 경우에만 저장 실패를 알린다.
-const _HR_SAVE_FIELDS = {
+// /save의 전체 상태 에코를 거부로 오인하지 않도록 실제 업무 필드가 달라진 경우만
+// 보고한다. null은 신규·보호 레코드의 모든 전송 필드(서버 메타데이터 제외)를 비교한다.
+const _SAVE_FEEDBACK_FIELDS = {
   employmentRecords: ["employeeId", "type", "title", "status", "startDate", "endDate", "decisionDate", "note", "documentRef", "reviewOwnerId", "reviewStatus", "reviewDecision", "reviewNote"],
   learningCourses: ["name", "category", "provider", "instructorName", "delivery", "startDate", "endDate", "hours", "capacity", "cost", "status", "description", "internalNote"],
   learningAssignments: ["courseId", "empId", "status", "assignedAt", "dueDate", "completedAt", "score", "certificateNo", "evidenceRef", "note", "source", "sourceDocId", "approvedCost", "costCenter", "settlementStatus", "settledAt", "settledAmount", "settlementNote"],
+  payslips: null,
+  payrollAdjustments: null,
+  yearEndSettlements: null,
+  positionRequests: null,
+  engagementActions: null,
 };
-function _hrSaveChangeRequested(field, incoming, stored) {
-  if (!_HR_SAVE_FIELDS[field]) return false;
+function _saveFeedbackChangeRequested(field, incoming, stored) {
+  if (!Object.prototype.hasOwnProperty.call(_SAVE_FEEDBACK_FIELDS, field)) return false;
   if (!stored) return true;
   // 읽기 권한에 따라 일부 필드(예: 교육과정 internalNote)가 응답에서 제거된다.
   // 전송되지 않은 필드는 사용자가 지우려는 의도로 간주하지 않는다.
-  return _HR_SAVE_FIELDS[field].some(key => Object.prototype.hasOwnProperty.call(incoming, key) &&
+  const keys = _SAVE_FEEDBACK_FIELDS[field] || Object.keys(incoming).filter(key => !["id", "updatedAt", "createdAt"].includes(key));
+  return keys.some(key => Object.prototype.hasOwnProperty.call(incoming, key) &&
     JSON.stringify(incoming[key] ?? null) !== JSON.stringify(stored[key] ?? null));
+}
+
+// 레거시 원장의 삭제된 직원 참조는 읽기/정정이 가능해야 한다. 신규 기록 또는
+// 대상 직원 변경에 한해 현재 회사 직원 존재 여부를 저장 잠금 안에서 확인한다.
+function _changedHrEmployeeRef(field, incoming, stored) {
+  const key = field === "employmentRecords" ? "employeeId" : field === "learningAssignments" ? "empId" : null;
+  if (!key || !incoming) return null;
+  const id = String(incoming[key] ?? "");
+  return !stored || id !== String(stored[key] ?? "") ? id : null;
 }
 
 async function _persistDataLocked(data, changedBy = "system", companyId = null, actor = null, externalClient = null) {
   const rejectedRecords = [];
-  const rejectHrRecord = (field, incoming, stored) => {
-    if (incoming?.id != null && _hrSaveChangeRequested(field, incoming, stored) &&
+  const rejectSaveRecord = (field, incoming, stored) => {
+    if (incoming?.id != null && _saveFeedbackChangeRequested(field, incoming, stored) &&
         !rejectedRecords.some(r => r.field === field && r.id === String(incoming.id))) {
       rejectedRecords.push({ field, id: String(incoming.id) });
     }
@@ -2738,6 +2753,7 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
       }
       return emp;
     }));
+    const trustedEmployeeIds = new Set(employees.filter(e => e?.id != null).map(e => String(e.id)));
     const duplicateLoginIds = warnDuplicateLoginIds(employees);
 
     // Same fix as above: only log kpi history when the record is new or
@@ -2826,11 +2842,16 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
           const reviewOwnerEmp = gatedField === "employmentRecords" && reviewOwnerId != null
             ? (_fileStore.employees || []).find(e => String(e.id) === String(reviewOwnerId)) || null : null;
           let out = _sanitizeGatedRecord(gatedField, r, stored, actor, _actorEmpJson, _fileStore.settings, approvalDocForGate, targetEmpForGate, _fileStore.engagementSurveys || [], reviewOwnerEmp);
-          if (!out || (stored && JSON.stringify(out) === JSON.stringify(stored))) rejectHrRecord(gatedField, r, stored);
+          if (!out || (stored && JSON.stringify(out) === JSON.stringify(stored))) rejectSaveRecord(gatedField, r, stored);
+          const changedEmployeeRef = _changedHrEmployeeRef(gatedField, out, stored);
+          if (out && changedEmployeeRef !== null && !trustedEmployeeIds.has(changedEmployeeRef)) {
+            rejectSaveRecord(gatedField, r, stored);
+            out = stored ? { ...stored } : null;
+          }
           // 값 범위·형식 검증(_validateFieldValues 주석 참고) — 권한 검사를 통과한 뒤에도
           // 값 자체가 오염돼 있으면 저장본으로 되돌린다(신규 레코드면 드롭).
           if (out && !_validateFieldValues(gatedField, out, storedList)) {
-            rejectHrRecord(gatedField, r, stored);
+            rejectSaveRecord(gatedField, r, stored);
             out = stored ? { ...stored } : null;
           }
           return out;
@@ -2860,7 +2881,7 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
           : (_fileStore.learningCourses || []);
         data[gatedField] = data[gatedField].filter(rec => {
           if (!rec || rec.id == null || !_validateFieldValues(gatedField, rec, { assignments: basis, courses })) {
-            rejectHrRecord(gatedField, rec, storedById.get(String(rec?.id)));
+            rejectSaveRecord(gatedField, rec, storedById.get(String(rec?.id)));
             return false;
           }
           basis.push(rec);
@@ -3276,7 +3297,7 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
           const oldTs = rows.length ? (rows[0].data.updatedAt || rows[0].data.createdAt || "") : "";
           const newTs = item.updatedAt || item.createdAt || "";
           if (rows.length && newTs < oldTs) {
-            rejectHrRecord(field, item, rows[0].data);
+            rejectSaveRecord(field, item, rows[0].data);
             continue; // server has a newer copy, keep it
           }
           // 결재 위조 방어(_sanitizeApprovalDoc / _sanitizeGatedRecord 주석 참고).
@@ -3295,7 +3316,7 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
               ? await _getEmployeeByIdPg(reviewOwnerId) : null;
             toWrite = _sanitizeGatedRecord(field, item, storedItem, actor, await _getActorEmpPg(), await _getSettingsPg(), approvalDocForGate, targetEmpForGate,
               field === "engagementResponses" ? await _getEngagementSurveysPg() : null, reviewOwnerEmp);
-            if (!toWrite || (storedItem && JSON.stringify(toWrite) === JSON.stringify(storedItem))) rejectHrRecord(field, item, storedItem);
+            if (!toWrite || (storedItem && JSON.stringify(toWrite) === JSON.stringify(storedItem))) rejectSaveRecord(field, item, storedItem);
             if (toWrite === null) continue;   // 권한 없이 새로 만들어진 레코드 — 쓰지 않음
           }
           // 값 범위·형식 검증(_validateFieldValues 주석 참고, JSON모드와 동일 규칙).
@@ -3310,7 +3331,13 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
             validationList = positionRows.map(r => r.data);
           }
           if (toWrite && !_validateFieldValues(field, toWrite, validationList)) {
-            rejectHrRecord(field, item, storedItem);
+            rejectSaveRecord(field, item, storedItem);
+            toWrite = storedItem;
+            if (toWrite === null) continue;
+          }
+          const changedEmployeeRef = _changedHrEmployeeRef(field, toWrite, storedItem);
+          if (toWrite && changedEmployeeRef !== null && !await _getEmployeeByIdPg(changedEmployeeRef)) {
+            rejectSaveRecord(field, item, storedItem);
             toWrite = storedItem;
             if (toWrite === null) continue;
           }
