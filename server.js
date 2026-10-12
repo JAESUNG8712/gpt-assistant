@@ -1366,62 +1366,66 @@ async function loadData(companyId) {
 // 완전히 무관한 타 부서 사용자 둘 다 200으로 통과해 status가 approved로 바뀜.
 // 병가·경조사·지출처럼 실제 권한이 걸린 문서라 결재 자체가 무의미해지는 문제다.
 //
-// 정책: 어떤 결재자 칸이 approved/rejected로 "바뀌는" 것은 그 칸의 당사자(empId ===
-// 요청자)이거나 관리자일 때만 허용한다. waiting→pending 승격(앞 결재자가 승인하면 다음
-// 차례가 열리는 정상 연쇄)과 그 외 상태는 그대로 둔다. 위조로 판정되면 요청을 통째로
-// 거부하지 않고 해당 칸만 저장된 값으로 되돌린다 — 이 앱은 매 저장마다 클라이언트가 가진
-// 전체 상태를 재전송하는 구조라, 한 칸 때문에 저장 전체를 막으면 무관한 정상 변경까지
-// 함께 날아가기 때문이다.
+// 정책: 일반 사용자는 본인 명의 진행중 문서만 새로 만들 수 있다. 저장 후 본문·결재선은
+// 동결하고, 현재 차례의 결재자만 승인/반려할 수 있다. 기안자 취소·삭제 요청은 별도
+// 허용하며 관리자는 결재선 교체·레거시 이관 권한을 유지한다. 거부한 레코드만 저장본으로
+// 되돌려 전체 상태 저장의 다른 정상 변경을 막지 않는다.
 function _sanitizeApprovalDoc(incoming, stored, actor) {
-  if (!incoming || !Array.isArray(incoming.approvers)) return incoming;
-  if (actor && actor.role === "admin") return incoming;  // 관리자 결재자 변경 등은 기존대로 허용
-  const actorId = actor && actor.empId != null ? String(actor.empId) : null;
-  const storedApprovers = (stored && Array.isArray(stored.approvers)) ? stored.approvers : null;
-
-  // 결재자 "신원"(empId) 자체를 바꾸는 것은 관리자 전용 기능(pickNewApprover, 퇴직자
-  // 결재선 정체 해소용)에서만 일어나야 하는 조작이다. 그런데 아래의 status 전이 검사는
-  // "그 칸의 empId가 요청자 본인과 같으면 통과"라는 규칙만 봐서, 이미 존재하는 문서의
-  // approvers[i].empId를 아직 status가 안 바뀐 상태(pending→pending 등)로 먼저 자신의
-  // empId로 바꿔치기한 뒤, 다음 저장에서 그 칸을 승인 처리하면 "본인 결재"로 오인해
-  // 통과시켜버리는 2단계 우회가 있었다(실측: 문서와 무관한 사원이 대기중인 결재 단계를
-  // 자기 자신으로 바꾸고 스스로 승인 완료). 신원 자체가 바뀌는 것은 status 값과 무관하게
-  // 항상 막아야 하므로, 이미 저장된 문서(stored 존재)라면 approvers 배열의 길이·각 칸의
-  // empId가 저장본과 정확히 같은 순서로 일치하는지부터 먼저 확인한다 — 신규 문서 생성
-  // 시점(stored 없음)은 결재선을 그 자리에서 새로 구성하는 정상 흐름이라 이 검사 대상이
-  // 아니다.
-  if (storedApprovers) {
-    const identityChanged = incoming.approvers.length !== storedApprovers.length ||
-      incoming.approvers.some((a, i) => a && storedApprovers[i] && String(a.empId) !== String(storedApprovers[i].empId));
-    if (identityChanged) {
-      return { ...incoming, approvers: storedApprovers.map(a => ({ ...a })), status: stored.status };
-    }
+  if (!incoming) return stored ? { ...stored } : null;
+  if (actor?.role === "admin") return incoming; // 관리자 결재선 교체·레거시 이관
+  const actorId = actor?.empId != null ? String(actor.empId) : null;
+  if (!actorId || !Array.isArray(incoming.approvers)) return stored ? { ...stored } : null;
+  if (!stored) {
+    // 새 문서를 타인 명의나 이미 승인된 상태로 삽입하면 급여·근태 연계의 신뢰 근거를
+    // 위조할 수 있다. UI의 실제 상신 계약은 본인 명의의 진행중 문서와 대기 결재선이다.
+    return String(incoming.authorId) === actorId && incoming.status === "in_progress" &&
+      incoming.approvers.length > 0 && incoming.approvers.every(a => a && ["pending", "waiting"].includes(a.status))
+      ? incoming : null;
   }
-
-  const storedList = storedApprovers || [];
-  let reverted = false;
-  const approvers = incoming.approvers.map((a, i) => {
-    if (!a) return a;
-    const prev = storedList[i] && String(storedList[i].empId) === String(a.empId)
-      ? storedList[i]
-      : storedList.find(s => s && String(s.empId) === String(a.empId));
-    const prevStatus = prev ? prev.status : "waiting";
-    if (a.status === prevStatus) return a;
-    if (a.status !== "approved" && a.status !== "rejected") return a;  // 연쇄 승격 등은 허용
-    if (actorId && String(a.empId) === actorId) return a;              // 당사자 본인의 결재
-    reverted = true;
-    return prev ? { ...prev } : { ...a, status: "waiting", decidedAt: null, comment: "" };
-  });
-  if (!reverted) return incoming;
-  // 결재자 칸을 되돌렸으면 그 칸들로부터 파생되는 문서 전체 상태도 저장된 값으로 되돌린다
-  // (상신 취소·삭제요청처럼 결재자와 무관한 status 변경은 reverted가 false라 영향 없음).
-  return { ...incoming, approvers, status: stored ? stored.status : "in_progress" };
+  if (JSON.stringify(incoming) === JSON.stringify(stored)) return incoming;
+  const mutable = new Set(["approvers", "status", "approvedAt", "updatedAt", "deletionRequest"]);
+  const immutableKeys = new Set([...Object.keys(stored), ...Object.keys(incoming)].filter(k => !mutable.has(k)));
+  if ([...immutableKeys].some(k => JSON.stringify(incoming[k]) !== JSON.stringify(stored[k]))) return { ...stored };
+  const before = Array.isArray(stored.approvers) ? stored.approvers : [];
+  if (incoming.approvers.length !== before.length ||
+      incoming.approvers.some((a, i) => !a || !before[i] || String(a.empId) !== String(before[i].empId))) return { ...stored };
+  const statusesChanged = incoming.approvers.map((a, i) => a.status !== before[i].status ? i : -1).filter(i => i >= 0);
+  const deletionChanged = JSON.stringify(incoming.deletionRequest) !== JSON.stringify(stored.deletionRequest);
+  if (deletionChanged) {
+    if (statusesChanged.length || incoming.status !== stored.status || stored.status !== "approved" ||
+        String(stored.authorId) !== actorId || incoming.deletionRequest?.status !== "pending" ||
+        ![undefined, "rejected"].includes(stored.deletionRequest?.status)) return { ...stored };
+    return { ...stored, deletionRequest: incoming.deletionRequest };
+  }
+  if (!statusesChanged.length) {
+    return incoming.status === "cancelled" && stored.status === "in_progress" && String(stored.authorId) === actorId
+      ? { ...stored, status: "cancelled", updatedAt: incoming.updatedAt } : { ...stored };
+  }
+  if (stored.status !== "in_progress" && stored.status !== "pending") return { ...stored };
+  const decisionIndex = statusesChanged.find(i => before[i].status === "pending" &&
+    ["approved", "rejected"].includes(incoming.approvers[i].status) && String(before[i].empId) === actorId);
+  if (decisionIndex == null) return { ...stored };
+  const decision = incoming.approvers[decisionIndex].status;
+  const nextIndex = decision === "approved" ? before.findIndex((a, i) => i > decisionIndex && a.status === "waiting") : -1;
+  const expectedChanged = nextIndex >= 0 ? [decisionIndex, nextIndex] : [decisionIndex];
+  if (statusesChanged.length !== expectedChanged.length || statusesChanged.some((i, n) => i !== expectedChanged[n]) ||
+      (nextIndex >= 0 && incoming.approvers[nextIndex].status !== "pending")) return { ...stored };
+  const approvers = before.map((a, i) => i === decisionIndex
+    ? { ...a, status: decision, decidedAt: incoming.approvers[i].decidedAt, comment: incoming.approvers[i].comment }
+    : i === nextIndex ? { ...a, status: "pending" } : { ...a });
+  const expectedStatus = decision === "rejected" ? "rejected" :
+    approvers.every(a => a.status === "approved") ? "approved" : "in_progress";
+  if (incoming.status !== expectedStatus) return { ...stored };
+  return { ...stored, approvers, status: expectedStatus,
+    approvedAt: expectedStatus === "approved" ? incoming.approvedAt : stored.approvedAt,
+    updatedAt: incoming.updatedAt };
 }
 // 경비청구·초과근무·증명서도 approvalDocs와 똑같은 구조적 문제를 갖고 있었다 — 승인 권한
 // 검사가 클라이언트 함수(approveExpenseClaim의 role!=="admin", _otCanApprove,
 // approveCertRequest의 role!=="admin")에만 있고, 실제 저장은 범용 blob 동기화(/save)로
 // 나가기 때문에 서버가 아무것도 검증하지 않았다. 실측: 사원(member)이 자기가 올린
 // 경비청구(금액)·초과근무(수당)·증명서 신청을 전부 스스로 승인 완료로 만들 수 있었다.
-// 각 컬렉션의 "승인 상태로 전이"만 게이팅하고, 신청·수정·취소 등 나머지는 그대로 둔다.
+// 현재는 상태 전이뿐 아니라 신규 신청자 신원·제출 후 본문 불변성·삭제 표식도 검증한다.
 function _otCanApproveServer(rec, actor, actorEmp) {
   if (!actor) return false;
   if (String(rec.empId) === String(actor.empId)) return false;   // 본인 신청은 본인이 승인 불가
@@ -1941,6 +1945,60 @@ function _sanitizeGatedRecord(field, incoming, stored, actor, actorEmp, settings
       : _menuPermsAllow("comp-eval", actor);
     if (pageOk && _canManageCompSessionTarget(actor, actorEmp, targetEmp)) return incoming;
     return stored ? { ...stored } : null;
+  }
+  // 경비/초과근무는 신청 후 화면에서 원문을 수정하지 않는다. 예전의 decided 상태만
+  // 검사하는 규칙은 같은 ID의 타인 신청 금액·시간을 바꾸거나 승인 후 원금을 고치는
+  // 요청을 통과시켰다. 저장본의 신청자·상태를 기준으로 합법적인 승인 전이만 반영한다.
+  if (field === "expenseClaims" || field === "overtimeRequests") {
+    if (stored && JSON.stringify(stored) === JSON.stringify(incoming)) return incoming;
+    const pageId = field === "expenseClaims" ? "expense-claims" : "overtime-req";
+    if (!stored) {
+      if (!_menuPermsAllow(pageId, actor)) return null;
+      if (actor?.role === "admin") return incoming; // 관리자 이관·초기 적재
+      return actor?.empId != null && String(incoming.empId) === String(actor.empId) && incoming.status === "pending"
+        ? incoming : null;
+    }
+    if (field === "expenseClaims") {
+      if (actor?.role !== "admin" || !_menuPermsAllow("expense-admin", actor)) return { ...stored };
+      if (stored.status === "pending" && ["approved", "rejected"].includes(incoming.status)) {
+        return { ...stored, status: incoming.status, approvedBy: incoming.approvedBy,
+          approvedAt: incoming.approvedAt, rejectReason: incoming.status === "rejected" ? incoming.rejectReason : stored.rejectReason,
+          updatedAt: incoming.updatedAt };
+      }
+      if (stored.status === "approved" && incoming.status === "paid") {
+        return { ...stored, status: "paid", paidAt: incoming.paidAt, payMethod: incoming.payMethod,
+          paidBy: incoming.paidBy, voucherId: incoming.voucherId, voucherNo: incoming.voucherNo,
+          updatedAt: incoming.updatedAt };
+      }
+      return { ...stored };
+    }
+    if (stored.status !== "pending" || !["approved", "rejected"].includes(incoming.status) ||
+        !_menuPermsAllow("overtime-req", actor) || !_otCanApproveServer(stored, actor, actorEmp)) return { ...stored };
+    return { ...stored, status: incoming.status, approvedBy: incoming.approvedBy,
+      approvedAt: incoming.approvedAt, rejectReason: incoming.status === "rejected" ? incoming.rejectReason : stored.rejectReason,
+      updatedAt: incoming.updatedAt };
+  }
+  if (field === "certRequests") {
+    if (stored && JSON.stringify(stored) === JSON.stringify(incoming)) return incoming;
+    if (!stored) {
+      if (!_menuPermsAllow("certificate", actor)) return null;
+      if (actor?.role === "admin") return incoming; // 관리자 이관·초기 적재
+      return actor?.empId != null && String(incoming.empId) === String(actor.empId) && incoming.status === "pending"
+        ? incoming : null;
+    }
+    // 발급 신청 본문과 신청자 신원은 제출 후 동결. 관리자도 대기→승인/반려
+    // 전이와 처리 메타데이터만 쓸 수 있고, 처리된 신청은 다시 변경할 수 없다.
+    if (actor?.role !== "admin" || !_menuPermsAllow("certificate", actor) ||
+        stored.status !== "pending" || !["approved", "rejected"].includes(incoming.status)) return { ...stored };
+    return { ...stored, status: incoming.status, processedAt: incoming.processedAt,
+      processedBy: actor.empId, processedByName: actorEmp?.name || actor.loginId || "",
+      rejectReason: incoming.status === "rejected" ? incoming.rejectReason : stored.rejectReason,
+      updatedAt: incoming.updatedAt };
+  }
+  // 복지포인트는 부여/사용 모두 잔액의 근거가 되는 원장이다. 새 기록만 권한·잔액
+  // 검사를 거쳐 추가하고, 기존 기록은 관리자도 수정하지 않는다(정정은 상쇄 기록으로).
+  if (field === "welfarePoints" && stored && JSON.stringify(stored) !== JSON.stringify(incoming)) {
+    return { ...stored };
   }
   if (rule.record) {
     // 바뀌지 않은 레코드는 그대로 통과(매 저장마다 전체 배열이 재전송되므로 대부분이 여기).
@@ -2706,8 +2764,12 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
   // JSON/PG 공통으로 저장 전에 표식 자체를 정리한다. 이미 삭제된 합법적 표식은
   // 이전 저장본에 같은 id가 있을 때만 보존해 오래된 클라이언트의 재생성을 막는다.
   const requestedTombstones = data.recordTombstones || {};
+  // 승인 문서와 복지포인트는 감사·금전 원장이므로 blob 삭제 표식을 허용하지 않는다.
+  // 경비/초과근무의 회수 UI는 본인의 승인 대기 신청에만 제공한다. 승인 이후의
+  // 신청이나 타인 신청을 지우면 결재/급여 근거가 사라지므로 서버에서도 동일하게 제한한다.
+  const specialDeleteFields = new Set(["approvalDocs", "welfarePoints", "certRequests", "expenseClaims", "overtimeRequests"]);
   const hasGatedTombstones = Object.entries(requestedTombstones).some(([field, rows]) =>
-    (field === "kpiEntries" || Object.prototype.hasOwnProperty.call(_WRITE_GATED_FIELDS, field)) && Array.isArray(rows) && rows.length);
+    (field === "kpiEntries" || specialDeleteFields.has(field) || Object.prototype.hasOwnProperty.call(_WRITE_GATED_FIELDS, field)) && Array.isArray(rows) && rows.length);
   const hasRoomTombstones = Array.isArray(data.roomReservationTombstones) && data.roomReservationTombstones.length;
   if (hasGatedTombstones || hasRoomTombstones) {
     const prior = await loadData(companyId);
@@ -2720,6 +2782,13 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
         if (!t || t.id == null) return false;
         const id = String(t.id), stored = storedById.get(id);
         if (!stored) return previousIds.has(id);
+        if (specialDeleteFields.has(field)) {
+          const allowed = (field === "expenseClaims" || field === "overtimeRequests") &&
+            stored.status === "pending" && actor?.empId != null && stored.empId != null &&
+            String(stored.empId) === String(actor.empId);
+          if (!allowed) { rejectSaveDeletion(field, t); return false; }
+          return true;
+        }
         if (field === "kpiEntries") {
           const ownerEmp = priorEmpById.get(String(stored.userId));
           const allowed = !!actor && _menuPermsAllow("kpi", actor) && (
@@ -2737,7 +2806,7 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
       });
     };
     for (const [field, rows] of Object.entries(requestedTombstones)) {
-      if ((field !== "kpiEntries" && !Object.prototype.hasOwnProperty.call(_WRITE_GATED_FIELDS, field)) || !Array.isArray(rows)) continue;
+      if ((field !== "kpiEntries" && !specialDeleteFields.has(field) && !Object.prototype.hasOwnProperty.call(_WRITE_GATED_FIELDS, field)) || !Array.isArray(rows)) continue;
       requestedTombstones[field] = keepAuthorized(field, rows, prior.recordTombstones?.[field]);
     }
     if (hasRoomTombstones) {
@@ -2870,7 +2939,10 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
       const storedDocsById = new Map((_fileStore.approvalDocs || []).map(d => [String(d.id), d]));
       for (const d of data.approvalDocs) {
         if (d && d.id != null) {
-          _sanitizedIncomingApprovalDocsById.set(String(d.id), _sanitizeApprovalDoc(d, storedDocsById.get(String(d.id)), actor));
+          const stored = storedDocsById.get(String(d.id));
+          const sanitized = _sanitizeApprovalDoc(d, stored, actor);
+          if (!sanitized || JSON.stringify(sanitized) !== JSON.stringify(d)) rejectSaveRecord("approvalDocs", d, stored);
+          _sanitizedIncomingApprovalDocsById.set(String(d.id), sanitized);
         }
       }
     }
@@ -3360,6 +3432,8 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
           let toWrite = item;
           if (field === "approvalDocs") {
             toWrite = _sanitizeApprovalDoc(item, storedItem, actor);
+            if (!toWrite || (storedItem && JSON.stringify(toWrite) !== JSON.stringify(item))) rejectSaveRecord(field, item, storedItem);
+            if (!toWrite) continue;
           } else if (_APPROVAL_GATED_FIELDS[field]) {
             const approvalDocForGate = (["payrollAdjustments", "learningAssignments"].includes(field) && !storedItem)
               ? await _getApprovalDocForGate(item.sourceDocId) : null;

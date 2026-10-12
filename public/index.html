@@ -22460,7 +22460,7 @@ function saveOvertimeRequest(){
 }
 async function cancelOvertime(id){
   const r=overtimeRequests.find(x=>String(x.id)===String(id));
-  if(!r||r.status!=="pending")return;
+  if(!r||r.status!=="pending"||String(r.empId)!==String(currentUser.id))return;
   const ok=await askConfirmModal({
     title:"초과근무 신청 취소 확인",
     message:"승인 대기 중인 초과근무 신청을 취소합니다.",
@@ -22699,6 +22699,7 @@ function saveExpenseClaim(){
 }
 async function deleteExpenseClaim(id){
   const x=expenseClaims.find(x=>String(x.id)===String(id));if(!x)return;
+  if(String(x.empId)!==String(currentUser.id)){showToast("본인의 경비 청구만 회수할 수 있습니다.","error");return;}
   if(x.status!=="pending"){showToast("승인 대기 상태만 회수할 수 있습니다.","error");return;}
   const ok=await askConfirmModal({
     title:"경비 청구 회수 확인",

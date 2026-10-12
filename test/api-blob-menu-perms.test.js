@@ -540,3 +540,201 @@ test("KPI 삭제 표식은 소유·조직·메뉴 권한을 따라야 한다", a
   after = await getData(api, boot.token);
   assert.equal(after.data.kpiEntries.some(k => k.id === "owner-kpi"), false);
 });
+
+test("민감 컬렉션 삭제 표식은 결재·금전 기록과 다른 직원 신청을 지켜야 한다", async (t) => {
+  const server = await startServer();
+  t.after(() => server.stop());
+  const api = (path, options) => fetch(server.baseUrl + path, options);
+  const boot = await bootstrapAdminAndLogin(server, { loginId: "admin", pw: "admin-test-pw-1" });
+  const initial = await getData(api, boot.token);
+  const employees = [
+    ...initial.data.employees,
+    { id: "claim-owner", loginId: "claim-owner", pw: "claim-owner-pw-1", name: "청구자", role: "member", active: true },
+    { id: "claim-other", loginId: "claim-other", pw: "claim-other-pw-1", name: "타 직원", role: "member", active: true },
+  ];
+  const seeded = await (await api("/save", auth(boot.token, "POST", {
+    _version: initial.version, data: {
+      employees,
+      expenseClaims: [
+        { id: "expense-pending", empId: "claim-owner", status: "pending", title: "출장비", total: 10000 },
+        { id: "expense-paid", empId: "claim-owner", status: "paid", title: "지급 완료", total: 20000 },
+      ],
+      overtimeRequests: [
+        { id: "overtime-pending", empId: "claim-owner", status: "pending", hours: 2 },
+        { id: "overtime-approved", empId: "claim-owner", status: "approved", hours: 3 },
+      ],
+      welfarePoints: [{ id: "welfare-grant", empId: "claim-owner", type: "grant", points: 10000, year: 2026 }],
+      approvalDocs: [{ id: "approval-doc", authorId: "claim-owner", status: "approved", approvers: [] }],
+      certRequests: [{ id: "cert-pending", empId: "claim-owner", status: "pending", certType: "employment", reason: "은행 제출" }],
+    },
+  }))).json();
+  assert.equal(seeded.ok, true);
+  const ownerToken = await login(api, "claim-owner", "claim-owner-pw-1");
+  const otherToken = await login(api, "claim-other", "claim-other-pw-1");
+
+  async function saveWelfare(token, record) {
+    const d = await getData(api, token);
+    return (await api("/save", auth(token, "POST", {
+      _version: d.version, data: { welfarePoints: [record] },
+    }))).json();
+  }
+  await saveWelfare(ownerToken, { id: "welfare-use", empId: "claim-owner", type: "use", points: 2000, year: 2026 });
+  let welfare = (await getData(api, boot.token)).data.welfarePoints;
+  assert.equal(welfare.find(r => r.id === "welfare-use")?.points, 2000);
+  await saveWelfare(ownerToken, { ...welfare.find(r => r.id === "welfare-use"), points: 1 });
+  welfare = (await getData(api, boot.token)).data.welfarePoints;
+  assert.equal(welfare.find(r => r.id === "welfare-use")?.points, 2000, "사용 금액은 사후 변경할 수 없어야 합니다");
+  await saveWelfare(ownerToken, { ...welfare.find(r => r.id === "welfare-grant"), type: "use", points: 1 });
+  welfare = (await getData(api, boot.token)).data.welfarePoints;
+  assert.equal(welfare.find(r => r.id === "welfare-grant")?.type, "grant", "부여 기록을 사용 기록으로 바꿀 수 없어야 합니다");
+
+  // 삭제뿐 아니라 동일 ID를 이용한 타인 신청 덮어쓰기와 승인 후 금액 변경도
+  // 같은 범용 저장 API에서 처리되므로 각각 서버 원본이 유지되어야 한다.
+  for (const [token, field, id, patch, checkedKey, original] of [
+    [otherToken, "expenseClaims", "expense-pending", { total: 999999 }, "total", 10000],
+    [otherToken, "overtimeRequests", "overtime-pending", { hours: 20 }, "hours", 2],
+    [ownerToken, "expenseClaims", "expense-paid", { total: 999999 }, "total", 20000],
+    [ownerToken, "overtimeRequests", "overtime-approved", { hours: 20 }, "hours", 3],
+  ]) {
+    const snapshot = await getData(api, boot.token);
+    const stored = snapshot.data[field].find(r => r.id === id);
+    const changed = { ...stored, ...patch, updatedAt: new Date().toISOString() };
+    const result = await (await api("/save", auth(token, "POST", {
+      _version: snapshot.version, data: { [field]: [changed] },
+    }))).json();
+    assert.equal(result.ok, true);
+    assert.equal((await getData(api, boot.token)).data[field].find(r => r.id === id)[checkedKey], original,
+      `${field}/${id} 승인 근거 변경이 되돌려져야 합니다`);
+  }
+
+  async function removeWith(token, field, id) {
+    const d = await getData(api, token);
+    return (await api("/save", auth(token, "POST", {
+      _version: d.version, data: { recordTombstones: { [field]: [{ id, ts: Date.now() }] } },
+    }))).json();
+  }
+  for (const [token, field, id] of [
+    [otherToken, "expenseClaims", "expense-pending"],
+    [otherToken, "overtimeRequests", "overtime-pending"],
+    [ownerToken, "expenseClaims", "expense-paid"],
+    [ownerToken, "overtimeRequests", "overtime-approved"],
+    [ownerToken, "welfarePoints", "welfare-grant"],
+    [ownerToken, "approvalDocs", "approval-doc"],
+    [ownerToken, "certRequests", "cert-pending"],
+  ]) {
+    const result = await removeWith(token, field, id);
+    assert.equal(result.partial, true, `${field}/${id} 삭제가 거부되어야 합니다`);
+    assert.ok(result.warnings?.rejectedRecords?.some(r => r.field === field && r.id === id && r.operation === "delete"));
+    const after = await getData(api, boot.token);
+    assert.ok(after.data[field].some(r => r.id === id), `${field}/${id} 원본이 보존되어야 합니다`);
+    assert.equal((after.data.recordTombstones?.[field] || []).some(r => r.id === id), false);
+  }
+  for (const [field, id] of [["expenseClaims", "expense-pending"], ["overtimeRequests", "overtime-pending"]]) {
+    const result = await removeWith(ownerToken, field, id);
+    assert.equal(result.ok, true);
+    assert.equal(result.partial, false);
+    assert.equal((await getData(api, boot.token)).data[field].some(r => r.id === id), false);
+  }
+
+  async function writeRecord(token, field, record) {
+    const d = await getData(api, token);
+    return (await api("/save", auth(token, "POST", {
+      _version: d.version, data: { [field]: [record] },
+    }))).json();
+  }
+  await writeRecord(ownerToken, "expenseClaims", { id: "expense-forged-owner", empId: "claim-other", status: "pending", total: 50000 });
+  await writeRecord(ownerToken, "overtimeRequests", { id: "overtime-forged-status", empId: "claim-owner", status: "approved", hours: 5 });
+  await writeRecord(ownerToken, "certRequests", { id: "cert-forged-owner", empId: "claim-other", status: "pending", certType: "salary" });
+  await writeRecord(ownerToken, "certRequests", { id: "cert-forged-approved", empId: "claim-owner", status: "approved", certType: "salary" });
+  let current = await getData(api, boot.token);
+  assert.equal(current.data.expenseClaims.some(r => r.id === "expense-forged-owner"), false);
+  assert.equal(current.data.overtimeRequests.some(r => r.id === "overtime-forged-status"), false);
+  assert.equal(current.data.certRequests.some(r => r.id === "cert-forged-owner"), false);
+  assert.equal(current.data.certRequests.some(r => r.id === "cert-forged-approved"), false);
+
+  await writeRecord(ownerToken, "certRequests", { ...current.data.certRequests.find(r => r.id === "cert-pending"), status: "approved", certType: "salary" });
+  current = await getData(api, boot.token);
+  assert.equal(current.data.certRequests.find(r => r.id === "cert-pending")?.status, "pending");
+  assert.equal(current.data.certRequests.find(r => r.id === "cert-pending")?.certType, "employment");
+  await writeRecord(boot.token, "certRequests", { ...current.data.certRequests.find(r => r.id === "cert-pending"), status: "approved", processedAt: "2026-01-01T00:00:00.000Z" });
+  current = await getData(api, boot.token);
+  assert.equal(current.data.certRequests.find(r => r.id === "cert-pending")?.status, "approved");
+  assert.equal(current.data.certRequests.find(r => r.id === "cert-pending")?.certType, "employment");
+
+  await writeRecord(ownerToken, "expenseClaims", { id: "expense-new", empId: "claim-owner", status: "pending", title: "신규 청구", total: 10000 });
+  await writeRecord(ownerToken, "overtimeRequests", { id: "overtime-new", empId: "claim-owner", status: "pending", hours: 2 });
+  current = await getData(api, boot.token);
+  assert.equal(current.data.expenseClaims.find(r => r.id === "expense-new")?.status, "pending");
+  assert.equal(current.data.overtimeRequests.find(r => r.id === "overtime-new")?.status, "pending");
+
+  await writeRecord(boot.token, "expenseClaims", { ...current.data.expenseClaims.find(r => r.id === "expense-new"), status: "approved", total: 999999 });
+  await writeRecord(boot.token, "overtimeRequests", { ...current.data.overtimeRequests.find(r => r.id === "overtime-new"), status: "approved", hours: 20 });
+  current = await getData(api, boot.token);
+  assert.equal(current.data.expenseClaims.find(r => r.id === "expense-new")?.status, "approved");
+  assert.equal(current.data.expenseClaims.find(r => r.id === "expense-new")?.total, 10000);
+  assert.equal(current.data.overtimeRequests.find(r => r.id === "overtime-new")?.status, "approved");
+  assert.equal(current.data.overtimeRequests.find(r => r.id === "overtime-new")?.hours, 2);
+
+  await writeRecord(boot.token, "expenseClaims", { ...current.data.expenseClaims.find(r => r.id === "expense-new"), status: "paid", paidAt: "2026-01-01", payMethod: "계좌이체" });
+  current = await getData(api, boot.token);
+  assert.equal(current.data.expenseClaims.find(r => r.id === "expense-new")?.status, "paid");
+  assert.equal(current.data.expenseClaims.find(r => r.id === "expense-new")?.total, 10000);
+});
+
+test("전자결재 신규 문서는 작성자·초기 상태를 위조할 수 없고 기존 승인 근거는 불변이다", async (t) => {
+  const server = await startServer();
+  t.after(() => server.stop());
+  const api = (path, options) => fetch(server.baseUrl + path, options);
+  const boot = await bootstrapAdminAndLogin(server, { loginId: "admin", pw: "admin-test-pw-1" });
+  const first = await getData(api, boot.token);
+  const employees = [
+    ...first.data.employees,
+    { id: "doc-author", loginId: "doc-author", pw: "doc-author-pw-1", name: "기안자", role: "member", active: true },
+    { id: "doc-approver", loginId: "doc-approver", pw: "doc-approver-pw-1", name: "결재자", role: "director", active: true },
+  ];
+  assert.equal((await api("/save", auth(boot.token, "POST", { _version: first.version, data: { employees } }))).status, 200);
+  const author = await login(api, "doc-author", "doc-author-pw-1");
+  const approver = await login(api, "doc-approver", "doc-approver-pw-1");
+  async function saveDoc(token, doc) {
+    const d = await getData(api, token);
+    return (await api("/save", auth(token, "POST", { _version: d.version, data: { approvalDocs: [doc] } }))).json();
+  }
+  const base = { templateId: "tpl-expense", authorId: "doc-author", status: "in_progress",
+    formData: { amount: 10000 }, approvers: [{ empId: "doc-approver", status: "pending" }],
+    createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z" };
+  await saveDoc(author, { ...base, id: "forged-author", authorId: "doc-approver" });
+  await saveDoc(author, { ...base, id: "forged-approved", status: "approved", approvers: [{ empId: "doc-approver", status: "approved" }] });
+  let adminView = await getData(api, boot.token);
+  assert.equal(adminView.data.approvalDocs.some(d => d.id === "forged-author"), false);
+  assert.equal(adminView.data.approvalDocs.some(d => d.id === "forged-approved"), false);
+
+  await saveDoc(author, { ...base, id: "real-doc" });
+  adminView = await getData(api, boot.token);
+  assert.equal(adminView.data.approvalDocs.find(d => d.id === "real-doc")?.status, "in_progress");
+  await saveDoc(author, { ...adminView.data.approvalDocs.find(d => d.id === "real-doc"), formData: { amount: 999999 }, updatedAt: "2026-01-02T00:00:00.000Z" });
+  adminView = await getData(api, boot.token);
+  assert.equal(adminView.data.approvalDocs.find(d => d.id === "real-doc")?.formData?.amount, 10000);
+
+  const approved = { ...adminView.data.approvalDocs.find(d => d.id === "real-doc"), status: "approved", approvedAt: "2026-01-03T00:00:00.000Z",
+    approvers: [{ empId: "doc-approver", status: "approved", decidedAt: "2026-01-03T00:00:00.000Z" }], updatedAt: "2026-01-03T00:00:00.000Z" };
+  await saveDoc(approver, approved);
+  adminView = await getData(api, boot.token);
+  assert.equal(adminView.data.approvalDocs.find(d => d.id === "real-doc")?.status, "approved");
+  assert.equal(adminView.data.approvalDocs.find(d => d.id === "real-doc")?.formData?.amount, 10000);
+
+  await saveDoc(author, { ...adminView.data.approvalDocs.find(d => d.id === "real-doc"),
+    deletionRequest: { status: "pending", reason: "중복 상신", requestedAt: "2026-01-04T00:00:00.000Z" } });
+  adminView = await getData(api, boot.token);
+  assert.equal(adminView.data.approvalDocs.find(d => d.id === "real-doc")?.deletionRequest?.status, "pending");
+  await saveDoc(author, { ...adminView.data.approvalDocs.find(d => d.id === "real-doc"), status: "cancelled" });
+  assert.equal((await getData(api, boot.token)).data.approvalDocs.find(d => d.id === "real-doc")?.status, "approved",
+    "승인 문서의 삭제 요청은 관리자가 결정하기 전에는 상태를 바꿀 수 없어야 합니다");
+
+  await saveDoc(author, { ...base, id: "cancel-doc" });
+  adminView = await getData(api, boot.token);
+  const cancelDoc = adminView.data.approvalDocs.find(d => d.id === "cancel-doc");
+  await saveDoc(approver, { ...cancelDoc, status: "cancelled", updatedAt: "2026-01-02T00:00:00.000Z" });
+  assert.equal((await getData(api, boot.token)).data.approvalDocs.find(d => d.id === "cancel-doc")?.status, "in_progress");
+  await saveDoc(author, { ...cancelDoc, status: "cancelled", updatedAt: "2026-01-02T00:00:00.000Z" });
+  assert.equal((await getData(api, boot.token)).data.approvalDocs.find(d => d.id === "cancel-doc")?.status, "cancelled");
+});
