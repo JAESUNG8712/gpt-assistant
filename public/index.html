@@ -1375,6 +1375,8 @@ function clearProtectedModuleState(){
   _faDetail=null;_faDetailId=null;_rcpsDetail=null;_rcpsDetailId=null;_vatReportData=null;
   erpItems=[];erpLocations=[];erpQuotations=[];erpPurchaseOrders=[];erpStock=[];erpPurchaseRequests=[];erpSalesTargets=[];_erpLoaded=false;_prLoaded=false;
   _acctAccountsPicker=[];_acctAccountsPickerLoaded=false;_acctPartnersPicker=[];_acctPartnersPickerLoaded=false;
+  pmsProjects=[];_pmsLoaded=false;
+  recruitJobs=[];recruitCandidates=[];recruitInterviews=[];_recruitLoaded=false;_recruitLoadError="";_recruitLoadPromise=null;_recruitLastAttempt=0;
 }
 // 계정과목/거래처 선택용 최소 조회 캐시(GET .../accounts/picker, .../partners/picker) —
 // 급여 전표(payroll-mgmt)·경비 지급(expense-admin)·세금계산서(acct-tax-invoices)·견적서/
@@ -1387,14 +1389,18 @@ function clearProtectedModuleState(){
 let _acctAccountsPicker=[],_acctAccountsPickerLoaded=false;
 async function loadAcctAccountsPicker(){
   if(_acctAccountsPickerLoaded||!serverConfig.url)return;
+  const dataEpoch=_protectedDataEpoch;
   const r=await serverRequest("GET","/api/accounting/accounts/picker");
+  if(dataEpoch!==_protectedDataEpoch)return;
   if(r?.ok)_acctAccountsPicker=r.accounts;
   _acctAccountsPickerLoaded=true;
 }
 let _acctPartnersPicker=[],_acctPartnersPickerLoaded=false;
 async function loadAcctPartnersPicker(){
   if(_acctPartnersPickerLoaded||!serverConfig.url)return;
+  const dataEpoch=_protectedDataEpoch;
   const r=await serverRequest("GET","/api/accounting/partners/picker");
+  if(dataEpoch!==_protectedDataEpoch)return;
   if(r?.ok)_acctPartnersPicker=r.partners;
   _acctPartnersPickerLoaded=true;
 }
@@ -1458,6 +1464,7 @@ let erpPurchaseRequests=[],_prLoaded=false;
 // loadSalesDashData())로 이전됐다.
 async function loadErpFromServer(){
   if(!serverConfig.url){_erpLoaded=true;return;}
+  const dataEpoch=_protectedDataEpoch;
   try{
     // items/locations는 member도 구매요청(inv-purchase-requests, 전 역할 개방) 등록에
     // 필요해 role 무관 조회 가능(server.js 참고) — quotations/purchase-orders/stock은
@@ -1474,12 +1481,14 @@ async function loadErpFromServer(){
       isAdmin?serverRequest("GET","/api/erp/purchase-orders"):Promise.resolve(null),
       isAdmin?serverRequest("GET","/api/erp/stock"):Promise.resolve(null),
     ]);
+    if(dataEpoch!==_protectedDataEpoch)return;
     if(ri?.ok)erpItems=ri.items;
     if(rl?.ok)erpLocations=rl.locations;
     if(rq?.ok)erpQuotations=rq.quotations;
     if(rp?.ok)erpPurchaseOrders=rp.purchaseOrders;
     if(rs?.ok)erpStock=rs.stock;
   }catch(e){/* 오프라인/서버 미연결 시 영업/재고 페이지에서 안내 표시 */}
+  if(dataEpoch!==_protectedDataEpoch)return;
   _erpLoaded=true;
   if(currentPage&&(currentPage.startsWith("sales-")||currentPage.startsWith("inv-")))renderPage();
 }
@@ -1490,29 +1499,48 @@ async function loadErpFromServer(){
 let pmsProjects=[],_pmsLoaded=false;
 async function loadPmsFromServer(){
   if(!serverConfig.url){_pmsLoaded=true;return;}
+  const dataEpoch=_protectedDataEpoch;
   try{
     const rp=await serverRequest("GET","/api/pms/projects");
+    if(dataEpoch!==_protectedDataEpoch)return;
     if(rp?.ok)pmsProjects=rp.projects;
   }catch(e){/* 오프라인/서버 미연결 시 PMS 페이지에서 안내 표시 */}
+  if(dataEpoch!==_protectedDataEpoch)return;
   _pmsLoaded=true;
   if(currentPage&&currentPage.startsWith("pms-"))renderPage();
 }
 let recruitJobs=[],recruitCandidates=[],recruitInterviews=[],_recruitLoaded=false;
-async function loadRecruitFromServer(){
-  if(!serverConfig.url){_recruitLoaded=true;return;}
-  try{
-    const qs=`?userId=${encodeURIComponent(currentUser?.id||"")}&role=${encodeURIComponent(currentUser?.role||"")}`;
+let _recruitLoadPromise=null,_recruitLoadError="",_recruitLastAttempt=0;
+async function loadRecruitFromServer(force=false){
+  if(!serverConfig.url){_recruitLoaded=true;return true;}
+  if(_recruitLoadPromise)return _recruitLoadPromise;
+  if(!force&&_recruitLoadError&&Date.now()-_recruitLastAttempt<30000)return false;
+  const dataEpoch=_protectedDataEpoch;
+  _recruitLastAttempt=Date.now();
+  _recruitLoadPromise=(async()=>{try{
     const [rj,rc,ri]=await Promise.all([
-      serverRequest("GET","/api/recruit/jobs"+qs),
-      serverRequest("GET","/api/recruit/candidates"+qs),
-      serverRequest("GET","/api/recruit/interviews"+qs),
+      serverRequest("GET","/api/recruit/jobs"),
+      serverRequest("GET","/api/recruit/candidates"),
+      serverRequest("GET","/api/recruit/interviews"),
     ]);
-    if(rj?.ok)recruitJobs=rj.jobs;
-    if(rc?.ok)recruitCandidates=rc.candidates;
-    if(ri?.ok)recruitInterviews=ri.interviews;
-  }catch(e){/* 오프라인/서버 미연결 시 채용 페이지에서 안내 표시 */}
-  _recruitLoaded=true;
-  if(currentPage&&(currentPage.startsWith("recruit-")||currentPage==="notification-center"))renderPage();
+    if(dataEpoch!==_protectedDataEpoch)return false;
+    if(!rj?.ok||!rc?.ok||!ri?.ok)throw new Error(rj?.message||rc?.message||ri?.message||"채용 자료를 불러오지 못했습니다.");
+    if(!Array.isArray(rj.jobs)||!Array.isArray(rc.candidates)||!Array.isArray(ri.interviews))throw new Error("채용 자료의 응답 형식이 올바르지 않습니다.");
+    recruitJobs=rj.jobs;recruitCandidates=rc.candidates;recruitInterviews=ri.interviews;
+    _recruitLoaded=true;_recruitLoadError="";
+    return true;
+  }catch(e){
+    if(dataEpoch!==_protectedDataEpoch)return false;
+    _recruitLoaded=false;
+    _recruitLoadError=e?.message||"서버 연결을 확인해 주세요.";
+    return false;
+  }finally{
+    if(dataEpoch===_protectedDataEpoch){
+      _recruitLoadPromise=null;
+      if(currentPage&&(currentPage.startsWith("recruit-")||currentPage==="notification-center"))renderPage();
+    }
+  }})();
+  return _recruitLoadPromise;
 }
 let kpiSearch={name:"",dept:""};
 let approvalSearch={name:"",dept:""};
@@ -2052,6 +2080,7 @@ function _clearDemoState(){
 const _mutationIdempotencyKeys=new Map();
 async function serverRequest(method, endpoint, body=null, timeout=8000, requestOptions={}){
   const base = _serverBase();
+  const requestToken = _authToken;
   const controller = new AbortController();
   const tid = setTimeout(()=>controller.abort(), timeout);
   const mutation = !["GET","HEAD","OPTIONS"].includes(String(method).toUpperCase());
@@ -2068,7 +2097,7 @@ async function serverRequest(method, endpoint, body=null, timeout=8000, requestO
       "Content-Type": "application/json",
       "X-Client-ID": encodeURIComponent(currentUser?.name||"unknown"),
       ...(mutation ? { "Idempotency-Key": requestOptions.idempotencyKey || generatedIdempotencyKey } : {}),
-      ...(_authToken ? { "Authorization": "Bearer " + _authToken } : {})
+      ...(requestToken ? { "Authorization": "Bearer " + requestToken } : {})
     }
   };
   if(body) opts.body = JSON.stringify(body);
@@ -2081,7 +2110,8 @@ async function serverRequest(method, endpoint, body=null, timeout=8000, requestO
     }
     // 토큰이 만료·무효화된 상태(재시작으로 세션 초기화 등) — 다음 요청부터는
     // 무효 토큰을 계속 보내지 않도록 즉시 비운다. 재로그인은 사용자가 다시 시도할 때 처리됨.
-    if(res.status === 401) _setAuthToken(null);
+    // 로그아웃/다른 계정 로그인 전 요청의 늦은 401이 새 세션 토큰을 지우면 안 된다.
+    if(res.status === 401 && _authToken === requestToken) _setAuthToken(null);
     try {
       return await res.json();
     } catch(parseErr) {
@@ -2303,14 +2333,17 @@ async function _doSave(silent=false){
         const merged = r.mergedData?.data || r.mergedData;
         applyState({_singletonRevisions:r.singletonRevisions,data: merged}, true); // apply without undo snapshot
         if(r.partial){
-          if(Array.isArray(merged.employmentRecords))employmentRecords=merged.employmentRecords;
-          if(Array.isArray(merged.learningCourses))learningCourses=merged.learningCourses;
-          if(Array.isArray(merged.learningAssignments))learningAssignments=merged.learningAssignments;
-          if(Array.isArray(merged.payslips))payslips=merged.payslips;
-          if(Array.isArray(merged.payrollAdjustments))payrollAdjustments=merged.payrollAdjustments;
-          if(Array.isArray(merged.yearEndSettlements))yearEndSettlements=merged.yearEndSettlements;
-          if(Array.isArray(merged.positionRequests))positionRequests=merged.positionRequests;
-          if(Array.isArray(merged.engagementActions))engagementActions=merged.engagementActions;
+          // applyState()의 일부 컬렉션은 최신 timestamp로 병합하므로 서버가 거부한
+          // 로컬 레코드가 다시 남을 수 있다. 거부된 ID만 권위 있는 응답으로 복원한다.
+          const collections=_recordCollections();
+          for(const rejected of r.warnings?.rejectedRecords||[]){
+            const local=collections[rejected.field],serverRows=merged[rejected.field];
+            if(!Array.isArray(local)||!Array.isArray(serverRows))continue;
+            const id=String(rejected.id),localIndex=local.findIndex(row=>String(row?.id)===id);
+            const accepted=serverRows.find(row=>String(row?.id)===id);
+            if(localIndex>=0)local.splice(localIndex,1);
+            if(accepted)local.push(accepted);
+          }
         }
         renderSidebar(); renderPage();
       }
@@ -2790,10 +2823,15 @@ async function restoreServerBackup(name, fields, deleteExtras){
 }
 
 // ── Auto-save hooks (call after major data changes) ──
+let _implicitSaveToastPending=false;
 function autoSaveToServerIfEnabled(){
   // autoSaveDebounced()는 서버 모드뿐 아니라 demo=1일 때 localStorage 영속도 담당한다.
   // 이 래퍼에서 서버 조건으로 막으면 성공 toast 뒤 새로고침했을 때 데모 변경이 사라진다.
   autoSaveDebounced();
+  // 같은 이벤트 핸들러에서 이어지는 과거형 완료 토스트는 아직 영속화되지 않은
+  // 디바운스 저장을 성공으로 오인하게 한다. 그 핸들러의 동기 구간에서만 바꾼다.
+  _implicitSaveToastPending=true;
+  queueMicrotask(()=>{_implicitSaveToastPending=false;});
 }
 function queueTrackedSave(label){
   autoSaveToServerIfEnabled();
@@ -3074,6 +3112,12 @@ async function dlCSV(fn,headers,rows){
   setTimeout(()=>URL.revokeObjectURL(url),1000);
 }
 function showToast(msg,type="success"){
+  if(_implicitSaveToastPending&&(type==="success"||type==="info")){
+    _implicitSaveToastPending=false;
+    if(_demoMode){msg="변경사항을 데모 저장소에 반영 중입니다. 서버에는 저장되지 않습니다.";type="info";}
+    else if(serverConfig.enabled&&serverConfig.url){msg="변경사항을 서버에 저장 중입니다. 완료 여부는 연결 상태에서 확인하세요.";type="info";}
+    else{msg="변경사항이 화면에만 반영되었습니다. 서버 연결 후 저장하세요.";type="error";}
+  }
   const t=document.createElement("div");t.className=`toast toast-${type}`;t.textContent=msg;
   // 성공/정보는 작업을 방해하지 않는 live status, 오류는 즉시 읽히는 alert로 알린다.
   t.setAttribute("role",type==="error"?"alert":"status");
@@ -5544,9 +5588,8 @@ function executeBulkImport(){
 
   closeModal();
   const msg=`업로드 완료: 신규 ${stats.emp_new}명, 업데이트 ${stats.emp_upd}명, 평가 ${stats.grade}건, KPI목표 ${stats.goal}건, 교육 ${stats.edu}건, 경력 ${stats.career}건, 연봉 ${stats.salary}건, 인사변동 ${stats.hr}건 (스킵: ${stats.skip}건)`;
-  showToast(msg,"success");
   logAction("bulk_import","통합 데이터 업로드","all",msg);
-  autoSaveToServerIfEnabled();
+  queueTrackedSave(msg);
   renderDataManagementPage();
 }
 
@@ -6525,11 +6568,9 @@ async function releaseLock(lockKey){
   } catch(e){}
 }
 
-function releaseAllMyLocks(){
-  for(const key of _myLocks){
-    releaseLock(key);
-  }
-  _myLocks.clear();
+async function releaseAllMyLocks(){
+  // 재로드 전에 해제 요청이 끝나야 중간에 취소된 요청 때문에 잠금이 남지 않는다.
+  await Promise.all([..._myLocks].map(key=>releaseLock(key)));
 }
 async function forceUnlockAndOpen(lockKey, targetLabel){
   try{
@@ -6981,14 +7022,26 @@ async function logout(){
   if(_serverDebounceTimer){
     clearTimeout(_serverDebounceTimer);
     _serverDebounceTimer=null;
-    await _doSave(true).catch(()=>{});
+    const result=await _doSave(true).catch(()=>({status:"failed"}));
+    if(!["saved","merged"].includes(result?.status)){
+      showToast("저장되지 않은 변경사항이 있어 로그아웃을 중단했습니다. 저장 상태를 확인해 주세요.","error");
+      return;
+    }
   }
+  if(_serverSaving||_retrySaveRequest||_serverSavePending||_serverDebounceTimer||serverConfig.status==="saving"){
+    showToast("저장이 진행 중입니다. 완료된 뒤 로그아웃해 주세요.","info");
+    return;
+  }
+  if(_demoMode){if(_demoSaveTimer)clearTimeout(_demoSaveTimer);_saveDemoState();}
   // 잠금 해제(/unlock)는 인증이 필요하므로 토큰을 지우기 전에 먼저 호출해야 한다
   // (순서가 바뀌면 서버가 401로 거절해 잠금이 실제로는 안 풀린 채 남아있게 됨).
-  releaseAllMyLocks();
+  await releaseAllMyLocks();
   clearProtectedModuleState();
   _setAuthToken(null);
-  disconnectSSE();_myPagePwVerified=false;currentUser=null;const app=$("#app");if(app)app.innerHTML="";renderLogin();
+  disconnectSSE();stopServerAutoSave();_myPagePwVerified=false;currentUser=null;
+  // 인사·평가·사업계획의 다수 컬렉션은 applyState가 id별로 병합한다. 로그인 화면만
+  // 다시 그리면 앞선 회사의 메모리 자료가 다음 회사 로그인 후 남을 수 있어 새 JS 세션으로 시작한다.
+  location.reload();
 }
 
 // ==================== MAIN ====================
@@ -9514,7 +9567,7 @@ function saveEmpEdit(id){
     if(salaryChanged)hrHistory.push({id:genId(),type:"salary",date:today,desc:"직원 정보 수정에서 연봉 변경",before:`${Number(e.salary||0).toLocaleString()}원`,after:`${nextSalary.toLocaleString()}원`,note:"직원 상세 수정 자동 이력",source:"employee_edit",applied:true,createdAt:now});
     return{...e,name:g("#ee-name"),empNo:g("#ee-empno"),birth:g("#ee-birth"),gender:g("#ee-gender"),nationality:g("#ee-nationality")||"내국인",hire:g("#ee-hire"),workplaceId:g("#ee-workplace"),dept:g("#ee-dept"),team:g("#ee-team"),position:g("#ee-position"),rank:g("#ee-rank"),rankYear:Number(g("#ee-rankyear"))||1,jobGroup:g("#ee-jobgroup"),salary:nextSalary,totalCareer:Number(g("#ee-career"))||0,edu:g("#ee-edu"),eduSchool:g("#ee-eduschool"),email:g("#ee-email"),phone:g("#ee-phone"),address:g("#ee-address"),role:g("#ee-role"),active:isActive,retireDate:isActive?"":g("#ee-retiredate"),retireReason:isActive?"":g("#ee-retirereason"),careers:window._eeEditCareers||e.careers||[],leaves:window._eeEditLeaves||e.leaves||[],hrHistory,updatedAt:now};
   });
-  if(String(id)===String(currentUser.id)){currentUser=employees.find(e=>String(e.id)===String(id))||currentUser;}closeModal();showToast("직원 정보가 수정되었습니다.","success");autoSaveToServerIfEnabled();renderHRListTbl();
+  if(String(id)===String(currentUser.id)){currentUser=employees.find(e=>String(e.id)===String(id))||currentUser;}closeModal();queueTrackedSave("직원 정보");renderHRListTbl();
 }
 function openResetPwModal(id){
   const e=getEmp(id);if(!e)return;
@@ -10108,7 +10161,7 @@ function openKpiAdd(userId,year){
   if(defJob)_aiKpiJobSampleShow("ka-job","ka-job-sample");
 }
 function saveKpiAdd(userId,year){
-  if(!isKpiStageOpen()&&settings.kpiGoalStart){showToast("KPI 등록 기간이 아닙니다.","error");return;}const item=$("#ka-item")?.value.trim(),wt=Number($("#ka-wt")?.value);if(!item||!wt){showToast("KPI 항목과 비중을 입력하세요.","error");return;}kpiEntries.push({id:genId(),userId,year,item,weight:wt,prev:$("#ka-prev")?.value.trim()||"",goal:$("#ka-goal")?.value.trim()||"",yoy:$("#ka-yoy")?.value.trim()||"",strategy:$("#ka-str")?.value.trim()||"",evalCriteria:$("#ka-crit")?.value.trim()||"",actual:"",rate:"",detail:"",selfScore:null,firstScore:null,firstComment:"",secondScore:null,secondComment:"",secondCommentPublic:false,goalSub:0,isDraft:false,firstStatus:"",firstReason:"",finalStatus:"",finalReason:"",finalConfirmed:false,finalScore:null,updatedAt:new Date().toISOString()});stopKpiAutoDraft();closeModal();showToast("KPI가 등록되었습니다.","success");autoSaveToServerIfEnabled();renderKPI(false);}
+  if(!isKpiStageOpen()&&settings.kpiGoalStart){showToast("KPI 등록 기간이 아닙니다.","error");return;}const item=$("#ka-item")?.value.trim(),wt=Number($("#ka-wt")?.value);if(!item||!wt){showToast("KPI 항목과 비중을 입력하세요.","error");return;}kpiEntries.push({id:genId(),userId,year,item,weight:wt,prev:$("#ka-prev")?.value.trim()||"",goal:$("#ka-goal")?.value.trim()||"",yoy:$("#ka-yoy")?.value.trim()||"",strategy:$("#ka-str")?.value.trim()||"",evalCriteria:$("#ka-crit")?.value.trim()||"",actual:"",rate:"",detail:"",selfScore:null,firstScore:null,firstComment:"",secondScore:null,secondComment:"",secondCommentPublic:false,goalSub:0,isDraft:false,firstStatus:"",firstReason:"",finalStatus:"",finalReason:"",finalConfirmed:false,finalScore:null,updatedAt:new Date().toISOString()});stopKpiAutoDraft();closeModal();queueTrackedSave("KPI 목표");renderKPI(false);}
 function openKpiEdit(id){
   // Check if locked by another user
   if(isLockedByOther("kpi:"+id)){
@@ -10156,7 +10209,7 @@ function _parseKpiScore(raw){
     :{ok:false};
 }
 function saveKpiResult(id){
-  if(!isKpiStageOpen()&&settings.kpiPerfStart){showToast("KPI 결과 입력 기간이 아닙니다.","error");return;}const score=_parseKpiScore($("#kr-self")?.value);if(!score.ok){showToast("자체 평가 점수는 0~100의 정수여야 합니다.","error");return;}kpiEntries=kpiEntries.map(k=>k.id===id?{...k,actual:$("#kr-actual")?.value.trim()||"",rate:$("#kr-rate")?.value.trim()||"",detail:$("#kr-detail")?.value.trim()||"",selfScore:score.value,perfSub:1,isDraft:false,draftSavedAt:null,updatedAt:new Date().toISOString()}:k);stopKpiAutoDraft();closeModal();showToast("결과가 저장되었습니다.","success");autoSaveToServerIfEnabled();renderKPI(true);}
+  if(!isKpiStageOpen()&&settings.kpiPerfStart){showToast("KPI 결과 입력 기간이 아닙니다.","error");return;}const score=_parseKpiScore($("#kr-self")?.value);if(!score.ok){showToast("자체 평가 점수는 0~100의 정수여야 합니다.","error");return;}kpiEntries=kpiEntries.map(k=>k.id===id?{...k,actual:$("#kr-actual")?.value.trim()||"",rate:$("#kr-rate")?.value.trim()||"",detail:$("#kr-detail")?.value.trim()||"",selfScore:score.value,perfSub:1,isDraft:false,draftSavedAt:null,updatedAt:new Date().toISOString()}:k);stopKpiAutoDraft();closeModal();queueTrackedSave("KPI 결과");renderKPI(true);}
 function openKpiReq(id){
   const k=getKpi(id);if(!k)return;
   const ownerRole=getEmp(k.userId)?.role;const approverLabel=ownerRole==="leader"?"사업부장":"팀장";
@@ -10513,7 +10566,7 @@ function approveMidStage(id,idx){
   const scoreEl=$(`#ms-score-${id}-${idx}`),commentEl=$(`#ms-comment-${id}-${idx}`);
   const score=scoreEl&&scoreEl.value!==""?Number(scoreEl.value):null;
   _midStageEntry(id,idx,{status:"approved",score,comment:commentEl?commentEl.value:""});
-  showToast("승인 처리되었습니다.","success");autoSaveToServerIfEnabled();renderApprovals();
+  queueTrackedSave("평가 승인");renderApprovals();
 }
 function rejectMidStage(id,idx){
   const commentEl=$(`#ms-comment-${id}-${idx}`);
@@ -10752,7 +10805,7 @@ function saveSecondEval(memberId,year){
 function approveFirst(id){
   const k0=getKpi(id);if(!k0)return;
   if(k0.firstStatus==="approved"){showToast("이미 1차 승인된 항목입니다.","info");return;}
-  kpiEntries=kpiEntries.map(k=>k.id===id?{...k,firstStatus:"approved",updatedAt:new Date().toISOString()}:k);showToast("1차 승인 처리되었습니다.","success");autoSaveToServerIfEnabled();renderApprovals();
+  kpiEntries=kpiEntries.map(k=>k.id===id?{...k,firstStatus:"approved",updatedAt:new Date().toISOString()}:k);queueTrackedSave("KPI 1차 승인");renderApprovals();
 }
 function openFinalConfirmModal(id){
   const k=getKpi(id);if(!k)return;const emp=getEmp(k.userId);
@@ -10821,7 +10874,7 @@ async function approveRequest(rid){
   if(!ok)return;
   kpiEntries=kpiEntries.map(k=>k.id===r.kpiId?{...k,...(r.after||{}),updatedAt:new Date().toISOString()}:k);
   changeRequests=changeRequests.map(x=>x.id===rid?{...x,status:"approved",approvedBy:currentUser.id,processedAt:ts(),updatedAt:new Date().toISOString()}:x);
-  showToast("수정 요청을 승인했습니다.","success");autoSaveToServerIfEnabled();renderApprovals();
+  queueTrackedSave("수정 요청 승인");renderApprovals();
 }
 async function rejectRequest(rid){
   const r=changeRequests.find(x=>x.id===rid);if(!r)return;
@@ -10846,8 +10899,8 @@ async function rejectRequest(rid){
 // Postgres 모드에서 이 등급 지정이 UPDATE 자체가 스킵되어 조용히 유실된다(실측 확인).
 // autoSaveToServerIfEnabled() 호출도 원래 빠져 있어 3분 주기 자동저장 전까지는 서버에
 // 전혀 반영되지 않았다(그 사이 탭을 닫으면 영구 유실).
-function resolveTie(tieId,empId,grade){const tie=tieNotifications.find(t=>t.id===tieId);if(!tie)return;employees=employees.map(e=>{if(e.id!==empId)return e;const gr={...(e.gradeResults||{})};const existing=gr[tie.year]||{};gr[tie.year]={...existing,grade,resolvedBy:currentUser.id,resolvedAt:ts()};return{...e,gradeResults:gr,updatedAt:new Date().toISOString()};});showToast(getEmpName(empId)+" - "+grade+"등급 지정 완료","success");autoSaveToServerIfEnabled();renderApprovals();}
-function markTieResolved(tieId){tieNotifications=tieNotifications.map(t=>t.id===tieId?{...t,resolved:true,updatedAt:new Date().toISOString()}:t);showToast("동점자 처리가 완료되었습니다.","success");autoSaveToServerIfEnabled();renderApprovals();renderSidebar();}
+function resolveTie(tieId,empId,grade){const tie=tieNotifications.find(t=>t.id===tieId);if(!tie)return;employees=employees.map(e=>{if(e.id!==empId)return e;const gr={...(e.gradeResults||{})};const existing=gr[tie.year]||{};gr[tie.year]={...existing,grade,resolvedBy:currentUser.id,resolvedAt:ts()};return{...e,gradeResults:gr,updatedAt:new Date().toISOString()};});queueTrackedSave(`${getEmpName(empId)} 등급 지정`);renderApprovals();}
+function markTieResolved(tieId){tieNotifications=tieNotifications.map(t=>t.id===tieId?{...t,resolved:true,updatedAt:new Date().toISOString()}:t);queueTrackedSave("동점자 처리");renderApprovals();renderSidebar();}
 
 
 
@@ -23800,6 +23853,13 @@ async function deletePmsWorklogBlock(idx){
 
 // ── 채용 관리: 채용공고 ────────────────────────────────────────────────────────
 function _recruitEnsureLoaded(){if(!_recruitLoaded)loadRecruitFromServer();}
+function _recruitLoadingHtml(){
+  if(_recruitLoadError)return `<div class="card"><div class="card-body" role="alert" style="text-align:center;padding:30px">
+    <p>채용 자료를 불러오지 못했습니다. ${h(_recruitLoadError)}</p>
+    <button class="btn btn-secondary" onclick="loadRecruitFromServer(true)">다시 시도</button>
+  </div></div>`;
+  return `<div class="card"><div class="card-body text-gray" role="status" style="text-align:center;padding:30px">채용 자료를 불러오는 중...</div></div>`;
+}
 function _recruitJobTitle(id){const j=recruitJobs.find(j=>j.id===id);return j?j.title:"(삭제됨)";}
 function _rjEmpOptions(selectedIds){
   const sel=(selectedIds||[]).map(String);
@@ -23920,7 +23980,7 @@ function _positionUsage(p,excludeJobId=""){
   return{target,incumbents,recruiting,vacancy:Math.max(0,target-incumbents-recruiting),overbooked:Math.max(0,incumbents+recruiting-target)};
 }
 function renderPositionControlPage(){
-  const c=$("#content");if(!c)return;if(!_recruitLoaded){c.innerHTML=`<div class="card"><div class="card-body text-gray" style="text-align:center;padding:30px">정원과 채용 현황을 불러오는 중...</div></div>`;_recruitEnsureLoaded();return;}
+  const c=$("#content");if(!c)return;if(!_recruitLoaded){c.innerHTML=_recruitLoadingHtml();_recruitEnsureLoaded();return;}
   const active=workforcePositions.filter(p=>p.status!=="inactive"),metrics=active.reduce((m,p)=>{const u=_positionUsage(p);m.target+=u.target;m.filled+=u.incumbents;m.recruiting+=u.recruiting;m.vacancy+=u.vacancy;m.over+=u.overbooked;return m;},{target:0,filled:0,recruiting:0,vacancy:0,over:0});
   const rows=workforcePositions.slice().sort((a,b)=>String(a.status).localeCompare(String(b.status))||String(a.dept+a.code).localeCompare(String(b.dept+b.code))).map(p=>{const u=_positionUsage(p),names=(p.incumbentIds||[]).map(id=>getEmp(id)?.name).filter(Boolean),jobs=recruitJobs.filter(j=>j.status==="open"&&String(j.positionId||"")===String(p.id));return`<tr${u.overbooked?' style="background:#fff7ed"':""}><td><strong>${h(p.code)}</strong><div class="fz11 text-gray">${h(POSITION_TYPES[p.positionType]||p.positionType||"일반")}</div></td><td><strong>${h(p.title)}</strong><div class="fz11 text-gray">${h(p.dept)}${p.team?` / ${h(p.team)}`:""}</div></td><td>${u.target}명</td><td>${u.incumbents}명<div class="fz11 text-gray">${names.map(h).join(", ")||"미배정"}</div></td><td>${u.recruiting}명<div class="fz11 text-gray">${jobs.map(j=>h(j.title)).join(", ")||"-"}</div></td><td>${u.overbooked?badge(`초과 ${u.overbooked}명`,"red"):badge(`${u.vacancy}명`,u.vacancy?"yellow":"green")}</td><td>${p.status==="inactive"?badge("비활성","gray"):badge("사용","green")}</td><td class="tr"><button class="btn btn-secondary btn-sm" onclick="openPositionModal('${p.id}')">수정</button> ${p.status!=="inactive"&&u.vacancy>0?`<button class="btn btn-primary btn-sm" onclick="openRecruitJobForPosition('${p.id}')">채용공고</button>`:""}</td></tr>`;}).join("");
   c.innerHTML=`<div class="flex items-c justify-b mb3"><div><h2>정원·포지션 관리</h2><div class="fz12 text-gray mt1">직원과 독립된 승인 정원을 관리하고 재직자·진행 중 채용을 차감해 공석을 통제합니다.</div></div><div class="flex gap2"><button class="btn btn-secondary" onclick="exportPositionsCSV()">⬇ 정원 CSV</button><button class="btn btn-primary" onclick="openPositionModal()">+ 포지션 등록</button></div></div>
@@ -23938,7 +23998,7 @@ function exportPositionsCSV(){const rows=workforcePositions.map(p=>{const u=_pos
 function renderRecruitJobsPage(){
   const c=$("#content");if(!c)return;
   if(!serverConfig.url){c.innerHTML=_erpNoServerHtml("채용공고 관리");return;}
-  if(!_recruitLoaded){c.innerHTML=`<div class="card"><div class="card-body text-gray" style="text-align:center;padding:30px">불러오는 중...</div></div>`;_recruitEnsureLoaded();return;}
+  if(!_recruitLoaded){c.innerHTML=_recruitLoadingHtml();_recruitEnsureLoaded();return;}
   const canManage=["admin","leader","director"].includes(currentUser.role);
   c.innerHTML=`<div class="card"><div class="card-head"><h3>📢 채용공고 관리</h3><div style="display:flex;gap:6px">
     <button class="btn btn-secondary btn-sm" onclick="downloadRecruitJobTemplate()">📄 등록 양식 다운로드</button>
@@ -24087,7 +24147,7 @@ async function exportRecruitCandidates(jobId){
 function renderRecruitCandidatesPage(){
   const c=$("#content");if(!c)return;
   if(!serverConfig.url){c.innerHTML=_erpNoServerHtml("지원자 관리");return;}
-  if(!_recruitLoaded){c.innerHTML=`<div class="card"><div class="card-body text-gray" style="text-align:center;padding:30px">불러오는 중...</div></div>`;_recruitEnsureLoaded();return;}
+  if(!_recruitLoaded){c.innerHTML=_recruitLoadingHtml();_recruitEnsureLoaded();return;}
   const canManage=["admin","leader","director"].includes(currentUser.role);
   const f=_recruitCandSearch;
   c.innerHTML=`<div class="card"><div class="card-head"><h3>🧑‍💼 지원자 관리</h3><div style="display:flex;gap:6px">
@@ -25285,7 +25345,7 @@ function _recruitCanManageInterviews(){return ["admin","leader","director"].incl
 function renderRecruitEvalPage(){
   const c=$("#content");if(!c)return;
   if(!serverConfig.url){c.innerHTML=_erpNoServerHtml("면접 일정/평가 입력");return;}
-  if(!_recruitLoaded){c.innerHTML=`<div class="card"><div class="card-body text-gray" style="text-align:center;padding:30px">불러오는 중...</div></div>`;_recruitEnsureLoaded();return;}
+  if(!_recruitLoaded){c.innerHTML=_recruitLoadingHtml();_recruitEnsureLoaded();return;}
   const myId=String(currentUser.id);
   const mine=recruitInterviews.filter(iv=>(iv.interviewerIds||[]).map(String).includes(myId));
   const others=recruitInterviews.filter(iv=>!(iv.interviewerIds||[]).map(String).includes(myId));
@@ -30010,7 +30070,7 @@ function renderNotificationCenterPage(){
   if(myCertApproved.length>0)items.push({type:"cert",pri:1,icon:"✅",title:`증명서 발급 승인 ${myCertApproved.length}건`,desc:"발급 신청이 승인되었습니다 — '발급받기'를 눌러 출력하세요",date:myCertApproved[0].processedAt,action:"certificate"});
   // 8e. 면접관 지정/취소 알림
   if(typeof _recruitEnsureLoaded==="function")_recruitEnsureLoaded();
-  if(typeof recruitInterviews!=="undefined"&&recruitInterviews.length){
+  if(_recruitLoaded&&recruitInterviews.length){
     const myId=String(u.id);
     recruitInterviews.filter(iv=>iv.status!=="canceled"&&(iv.interviewerIds||[]).map(String).includes(myId)).forEach(iv=>{
       const cd=_recruitCandById(iv.candidateId);
@@ -30073,7 +30133,8 @@ function renderNotificationCenterPage(){
   visibleItems.sort((a,b)=>a.pri-b.pri||(b.date||"").localeCompare(a.date||""));
   const priStyle={0:{bg:"#fef2f2",color:"#dc2626",label:"긴급"},1:{bg:"#fefce8",color:"#d97706",label:"중요"},2:{bg:"#eff6ff",color:"#2563eb",label:"정보"}};
   c.innerHTML=`<div class="card"><div class="card-head"><h3>🔔 알림</h3><span class="badge bg-blue">${visibleItems.length}건</span></div><div class="card-body">
-  ${visibleItems.length===0?`<div class="p-empty">✅ 확인할 알림이 없습니다</div>`:""}
+  ${_recruitLoadError?`<div class="warn-note" role="alert">채용·면접 알림을 확인하지 못했습니다. ${h(_recruitLoadError)} <button class="btn btn-secondary btn-sm" onclick="loadRecruitFromServer(true)">다시 시도</button></div>`:""}
+  ${visibleItems.length===0?`<div class="p-empty">${_recruitLoadError?"표시할 수 있는 알림은 없습니다. 채용 알림은 재시도 후 확인하세요.":"✅ 확인할 알림이 없습니다"}</div>`:""}
   ${visibleItems.map(it=>{const ps=priStyle[it.pri]||priStyle[2];return`<button type="button" onclick="gotoPage('${it.action}')" style="display:flex;align-items:flex-start;text-align:left;width:100%;background:white;color:inherit;font-family:inherit;gap:12px;padding:14px;border-radius:10px;border:1px solid #e2e8f0;margin-bottom:8px;cursor:pointer;transition:background .15s" onmouseover="this.style.background='#f8fafc'" onmouseout="this.style.background='white'">
     <span style="font-size:26px;line-height:1;flex-shrink:0">${it.icon}</span>
     <span style="flex:1;min-width:0">

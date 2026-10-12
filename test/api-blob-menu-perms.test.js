@@ -249,6 +249,9 @@ test("blob 동기화(/save) 컬렉션의 menuPerms/권한 확장 — kpiEntries�
     const coreTalentPool = [...(d.data.coreTalentPool || []), { id: "ct1", empId: "memberB", note: "테스트" }];
     const r = await api("/save", auth(admin2Token, "POST", { _version: d.version, coreTalentPool }));
     assert.equal(r.status, 200);
+    const rejected = await r.json();
+    assert.equal(rejected.partial, true, "서버가 보호 자료를 되돌릴 때 성공으로 보고하면 안 된다");
+    assert.deepEqual(rejected.warnings?.rejectedRecords, [{ field: "coreTalentPool", id: "ct1" }]);
     const check = await getData(api, adminToken);
     assert.equal((check.data.coreTalentPool || []).some(c => c.id === "ct1"), false);
   });
@@ -380,6 +383,7 @@ test("blob 동기화(/save) 컬렉션의 menuPerms/권한 확장 — kpiEntries�
     let gradeAdjustHistory = [...(d.data.gradeAdjustHistory || []), { id: "gah1", type: "kpi", empId: "memberA", year: 2026, dept: "개발본부", oldGrade: "-", newGrade: "A" }];
     let r = await api("/save", auth(dir1Token, "POST", { _version: d.version, gradeAdjustHistory }));
     assert.equal(r.status, 200);
+    assert.equal((await r.json()).partial, false, "정상 등급 조정은 부분 거부로 오인하면 안 된다");
     let check = await getData(api, adminToken);
     assert.equal((check.data.gradeAdjustHistory || []).some(x => x.id === "gah1"), true);
 
@@ -395,6 +399,9 @@ test("blob 동기화(/save) 컬렉션의 menuPerms/권한 확장 — kpiEntries�
     gradeAdjustHistory = [...(d.data.gradeAdjustHistory || []), { id: "gah2", type: "kpi", empId: "memberA", year: 2026, dept: "개발본부", oldGrade: "-", newGrade: "B" }];
     r = await api("/save", auth(dir1Token2, "POST", { _version: d.version, gradeAdjustHistory }));
     assert.equal(r.status, 200);
+    const rejected = await r.json();
+    assert.equal(rejected.partial, true);
+    assert.deepEqual(rejected.warnings?.rejectedRecords, [{ field: "gradeAdjustHistory", id: "gah2" }]);
     check = await getData(api, adminToken);
     assert.equal((check.data.gradeAdjustHistory || []).some(x => x.id === "gah2"), false);
   });

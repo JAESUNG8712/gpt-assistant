@@ -2592,6 +2592,9 @@ async function persistData(data, changedBy = "system", companyId = null, actor =
 // /save의 전체 상태 에코를 거부로 오인하지 않도록 실제 업무 필드가 달라진 경우만
 // 보고한다. null은 신규·보호 레코드의 모든 전송 필드(서버 메타데이터 제외)를 비교한다.
 const _SAVE_FEEDBACK_FIELDS = {
+  // 새 권한 제한 컬렉션이 추가돼도 /save가 거부 사실을 묵살하지 않도록 자동 포함한다.
+  // 아래 명시 필드는 읽기 응답의 일부 필드가 숨겨지는 경우 비교 범위를 좁힌다.
+  ...Object.fromEntries(Object.keys(_APPROVAL_GATED_FIELDS).map(field => [field, null])),
   employmentRecords: ["employeeId", "type", "title", "status", "startDate", "endDate", "decisionDate", "note", "documentRef", "reviewOwnerId", "reviewStatus", "reviewDecision", "reviewNote"],
   learningCourses: ["name", "category", "provider", "instructorName", "delivery", "startDate", "endDate", "hours", "capacity", "cost", "status", "description", "internalNote"],
   learningAssignments: ["courseId", "empId", "status", "assignedAt", "dueDate", "completedAt", "score", "certificateNo", "evidenceRef", "note", "source", "sourceDocId", "approvedCost", "costCenter", "settlementStatus", "settledAt", "settledAmount", "settlementNote"],

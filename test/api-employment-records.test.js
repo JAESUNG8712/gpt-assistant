@@ -44,7 +44,7 @@ test("계약·징계 원장은 관리자 전용으로 저장·조회된다", asy
   assert.equal(d.data.employmentRecords[0].reviewStatus,"open","담당자 없는 완료 처리는 거부한다");
   for(const invalidOwner of ["member1","missing-owner","limitedAdmin","inactiveAdmin"]){
     r=await api("/save",auth(boot.token,"POST",{_version:d.version,employmentRecords:[{...d.data.employmentRecords[0],reviewOwnerId:invalidOwner,reviewStatus:"completed",reviewDecision:"renew"}]}));
-    assert.equal(r.status,200);
+    assert.equal(r.status,200,JSON.stringify(await r.clone().json()));
     saveResult=await r.json();
     assert.equal(saveResult.partial,true,`${invalidOwner}는 검토 담당자가 될 수 없다`);
     d=await data(api,boot.token);
@@ -68,7 +68,7 @@ test("계약·징계 원장은 관리자 전용으로 저장·조회된다", asy
   d=await data(api,boot.token);
   for(let i=0;i<50;i++){
     r=await api("/save",auth(boot.token,"POST",{_version:d.version,employmentRecords:[{...d.data.employmentRecords[0],reviewNote:`검토 ${i}`}]}));
-    assert.equal(r.status,200);
+    assert.equal(r.status,200,`반복 저장 ${i}: ${JSON.stringify(await r.clone().json())}`);
     d=await data(api,boot.token);
   }
   assert.equal(d.data.employmentRecords[0].reviewEvents.length,51,"검토 이력은 50건을 넘어도 손실 없이 누적한다");
