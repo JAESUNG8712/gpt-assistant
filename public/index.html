@@ -4134,7 +4134,7 @@ function okrAddComment(id){
 function _okrAttachmentsHtml(o){
   const atts=o.attachments||[];
   if(!atts.length)return`<div class="fz11 text-gray">첨부파일이 없습니다.</div>`;
-  return atts.map((a,i)=>`<div class="fz11" style="padding:3px 0"><a href="${a.data}" download="${h(a.name)}">${h(a.name)}</a></div>`).join("");
+  return atts.map((a,i)=>`<div class="fz11" style="padding:3px 0"><a href="${h(a.data)}" download="${h(a.name)}">${h(a.name)}</a></div>`).join("");
 }
 function okrUploadAttachment(id,input){
   const file=input.files?.[0];if(!file)return;
