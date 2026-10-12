@@ -907,7 +907,14 @@ function filterDataForRole(data, auth) {
       return copy;
     });
   }
-  if (auth.role !== "admin") out._singletonRevisions = {};
+  if (auth.role !== "admin") {
+    out._singletonRevisions = {};
+    // 삭제 표식에는 이미 삭제된 자료의 ID가 남아 있다. 행 본문을 권한별로 숨긴
+    // 뒤에도 이 맵을 그대로 내리면 다른 직원의 급여/평가/인사 ID가 노출된다.
+    // 비관리자 클라이언트는 전체 서버 스냅샷으로 삭제를 수렴하므로 이 전역 표식은 불필요하다.
+    out.recordTombstones = {};
+    out.roomReservationTombstones = [];
+  }
   // 회사 단위 모듈 on/off(마스터 콘솔) — 이 함수의 나머지는 전부 "같은 회사 안에서 role별로
   // 얼마나 보이는지"를 다루는데, 이 한 줄만 "이 회사가 그 모듈 자체를 아예 껐는지"를 본다.
   // _hideDisabledFeatureFields() 정의부 주석 참고 — admin 포함 예외 없이 적용된다.
@@ -920,15 +927,23 @@ function filterDataForRole(data, auth) {
 function filterDataForMenuPermissions(data, menuPerms) {
   if (!data || !menuPerms || typeof menuPerms !== "object") return data;
   const out = { ...data };
-  if (menuPerms["employment-records"] === false && Array.isArray(out.employmentRecords)) {
-    out.employmentRecords = [];
+  const hiddenTombstoneFields = [];
+  if (menuPerms["employment-records"] === false) {
+    if (Array.isArray(out.employmentRecords)) out.employmentRecords = [];
+    hiddenTombstoneFields.push("employmentRecords");
   }
   if (menuPerms["learning-center"] === false) {
     if (Array.isArray(out.learningCourses)) out.learningCourses = [];
     if (Array.isArray(out.learningAssignments)) out.learningAssignments = [];
+    hiddenTombstoneFields.push("learningCourses", "learningAssignments");
   }
-  if (menuPerms["acct-receivables"] === false && Array.isArray(out.acctPayments)) {
-    out.acctPayments = [];
+  if (menuPerms["acct-receivables"] === false) {
+    if (Array.isArray(out.acctPayments)) out.acctPayments = [];
+    hiddenTombstoneFields.push("acctPayments");
+  }
+  if (hiddenTombstoneFields.length && out.recordTombstones) {
+    out.recordTombstones = { ...out.recordTombstones };
+    for (const field of hiddenTombstoneFields) delete out.recordTombstones[field];
   }
   return out;
 }
@@ -2631,6 +2646,11 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
       rejectedRecords.push({ field, id: String(incoming.id) });
     }
   };
+  const rejectSaveDeletion = (field, tombstone) => {
+    if (tombstone?.id != null && !rejectedRecords.some(r => r.field === field && r.id === String(tombstone.id))) {
+      rejectedRecords.push({ field, id: String(tombstone.id), operation: "delete" });
+    }
+  };
   if (data._enforceSingletonCas) {
     if (!Array.isArray(data._changedSingletonKeys)) {
       throw httpError(428, "SINGLETON_REVISION_REQUIRED", "설정 저장 전 최신 revision 정보가 필요합니다.");
@@ -2680,6 +2700,49 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
     data.kpiEntries = data.kpiEntries
       .map(kpi => _sanitizeKpiEntry(kpi, kpi && kpi.id != null ? _kpiStoredById.get(String(kpi.id)) : null, actor, _kpiActorEmp, _kpiEmpById, _kpiGatePrior.settings))
       .filter(kpi => kpi !== null);
+  }
+  // 삭제 표식은 실제 행 삭제뿐 아니라 singleton에도 보관된다. PostgreSQL의 삭제
+  // 루프만 권한 검사하면 거부한 표식이 DB에 남아 다음 관리자의 저장에서 실행될 수 있다.
+  // JSON/PG 공통으로 저장 전에 표식 자체를 정리한다. 이미 삭제된 합법적 표식은
+  // 이전 저장본에 같은 id가 있을 때만 보존해 오래된 클라이언트의 재생성을 막는다.
+  const requestedTombstones = data.recordTombstones || {};
+  const hasGatedTombstones = Object.entries(requestedTombstones).some(([field, rows]) =>
+    (field === "kpiEntries" || Object.prototype.hasOwnProperty.call(_WRITE_GATED_FIELDS, field)) && Array.isArray(rows) && rows.length);
+  const hasRoomTombstones = Array.isArray(data.roomReservationTombstones) && data.roomReservationTombstones.length;
+  if (hasGatedTombstones || hasRoomTombstones) {
+    const prior = await loadData(companyId);
+    const priorEmpById = new Map((prior.employees || []).filter(e => e?.id != null).map(e => [String(e.id), e]));
+    const actorEmp = actor?.empId != null ? priorEmpById.get(String(actor.empId)) || null : null;
+    const keepAuthorized = (field, rows, previousRows) => {
+      const storedById = new Map((prior[field] || []).filter(r => r?.id != null).map(r => [String(r.id), r]));
+      const previousIds = new Set((previousRows || []).filter(t => t?.id != null).map(t => String(t.id)));
+      return rows.filter(t => {
+        if (!t || t.id == null) return false;
+        const id = String(t.id), stored = storedById.get(id);
+        if (!stored) return previousIds.has(id);
+        if (field === "kpiEntries") {
+          const ownerEmp = priorEmpById.get(String(stored.userId));
+          const allowed = !!actor && _menuPermsAllow("kpi", actor) && (
+            actor.role === "admin" ||
+            (actor.empId != null && stored.userId != null && String(actor.empId) === String(stored.userId)) ||
+            (actor?.role === "director" && actorEmp && ownerEmp && actorEmp.dept === ownerEmp.dept) ||
+            (actor?.role === "leader" && actorEmp && ownerEmp && actorEmp.dept === ownerEmp.dept && actorEmp.team === ownerEmp.team)
+          );
+          if (!allowed || stored.goalSub === 1) { rejectSaveDeletion(field, t); return false; }
+          return true;
+        }
+        if (field === "workforceScenarios" && stored.status === "approved") { rejectSaveDeletion(field, t); return false; }
+        if (!_writeGateAllowed(field, stored, actor, actorEmp, prior.settings)) { rejectSaveDeletion(field, t); return false; }
+        return true;
+      });
+    };
+    for (const [field, rows] of Object.entries(requestedTombstones)) {
+      if ((field !== "kpiEntries" && !Object.prototype.hasOwnProperty.call(_WRITE_GATED_FIELDS, field)) || !Array.isArray(rows)) continue;
+      requestedTombstones[field] = keepAuthorized(field, rows, prior.recordTombstones?.[field]);
+    }
+    if (hasRoomTombstones) {
+      data.roomReservationTombstones = keepAuthorized("roomReservations", data.roomReservationTombstones, prior.roomReservationTombstones);
+    }
   }
   if (USE_JSON_FILE) {
     // Save the full client state to the JSON file
@@ -2794,19 +2857,7 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
     const _actorEmpJson = actor && actor.empId != null
       ? (_fileStore.employees || []).find(e => String(e.id) === String(actor.empId)) || null
       : null;
-    // 범용 tombstone도 해당 컬렉션의 쓰기 권한을 따라야 한다. 그렇지 않으면 읽기 응답에서
-    // 컬렉션을 숨겨도 비관리자가 id만 추측해 recordTombstones를 보내 관리자 전용 자료를
-    // 삭제할 수 있다. 승인된 인력계획은 관리자라도 삭제 불가(승인 이력 보존).
-    for (const [field, tombstones] of Object.entries(_tomb)) {
-      if (!_WRITE_GATED_FIELDS[field] || !Array.isArray(tombstones)) continue;
-      const storedById = new Map((_fileStore[field] || []).filter(r => r?.id != null).map(r => [String(r.id), r]));
-      _tomb[field] = tombstones.filter(t => {
-        const stored = storedById.get(String(t?.id));
-        if (!stored) return false;
-        if (field === "workforceScenarios" && stored.status === "approved") return false;
-        return _writeGateAllowed(field, stored, actor, _actorEmpJson, _fileStore.settings);
-      });
-    }
+    // 게이트가 필요한 삭제 표식은 JSON/PG 공통 저장 전 단계에서 이미 검증했다.
     // payrollAdjustments의 복리후생 파생 레코드 예외(_sanitizeGatedRecord 주석 참고)가
     // 신뢰할 수 있는 결재문서 상태를 보려면, 이 요청에 함께 실려온 approvalDocs를 (나중에
     // approvalDocsFinal을 만들 때와) 동일하게 미리 위조방지 처리해둬야 한다 — 그래야 같은
@@ -5526,7 +5577,7 @@ app.post("/save", async (req, res) => {
   clientData._enforceSingletonCas = Array.isArray(clientData._changedSingletonKeys);
 
   try {
-    const { savedState, merged, duplicateLoginIds, rejectedRecords, singletonRevisions, recordRevisions } = await _withSaveLock(() => _withDistributedSaveLock(companyId, async () => {
+    const { savedState, visibleSavedState, merged, duplicateLoginIds, rejectedRecords, singletonRevisions, recordRevisions } = await _withSaveLock(() => _withDistributedSaveLock(companyId, async () => {
       let finalData = clientData;
       let merged    = false;
       let serverData;
@@ -5583,9 +5634,11 @@ app.post("/save", async (req, res) => {
       finalData = _revertDisabledFeatureFields(finalData, req.auth?.companyFeatures);
       const { duplicateLoginIds, rejectedRecords } = await _persistDataLocked(finalData, changedBy, companyId, req.auth || null);
       const savedState = await loadData(companyId);
-      const visibleSavedState = filterDataForRole(stripPwField(savedState), req.auth);
+      // /data와 같은 두 단계 필터를 /save의 병합 응답에도 적용한다. 그렇지 않으면
+      // menuPerms로 숨긴 원장이 충돌/부분거부 시 mergedData에서 다시 노출된다.
+      const visibleSavedState = filterDataForMenuPermissions(filterDataForRole(stripPwField(savedState), req.auth), req.auth?.menuPerms);
       return {
-        savedState, merged, duplicateLoginIds, rejectedRecords,
+        savedState, visibleSavedState, merged, duplicateLoginIds, rejectedRecords,
         singletonRevisions: savedState._singletonRevisions || {},
         // 필터링 전 전체 revision map은 숨겨진 레코드 id의 존재를 노출할 수 있으므로
         // 현재 역할이 GET /data에서 볼 수 있는 레코드에 한해서만 반환한다.
@@ -5603,7 +5656,7 @@ app.post("/save", async (req, res) => {
       ok: true, version: _getVersion(companyId), merged, partial: rejectedRecords.length > 0,
       singletonRevisions,
       recordRevisions,
-      mergedData: merged || rejectedRecords.length ? filterDataForRole(stripPwField(savedState), req.auth) : undefined,
+      mergedData: merged || rejectedRecords.length ? visibleSavedState : undefined,
       meta,
       warnings: duplicateLoginIds?.length || rejectedRecords.length ? { duplicateLoginIds, rejectedRecords } : undefined,
     });

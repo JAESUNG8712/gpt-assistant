@@ -1901,6 +1901,11 @@ let _saveChangeSeq = 0;           // 재시도 중 발생한 새 변경을 후�
 let _serverFailCount = 0;         // consecutive fail count
 let _retrySaveRequest = null;     // 네트워크 재시도 동안 동일 payload/Idempotency-Key 유지
 let _serverVersion = -1;
+// 마지막으로 서버가 실제 내려준 id를 기억한다. 서버에서 삭제/권한 회수된 레코드를
+// 다음 SSE 병합에서 '저장 전 로컬 신규 레코드'로 오인해 되살리지 않기 위해서다.
+let _serverSnapshotIds = {};
+let _serverMergeContext = null;
+let _serverAccessEpoch = 0;
 let _singletonRevisions = {};
 let _singletonBaselines = {};
 const _REVISIONED_SINGLETON_KEYS=["settings","orgDB","gradeSettings","promotionSettings","coreTalentSettings","evaluatorConfig","approvalChainSettings","integrationSettings","disabledTplIds"];
@@ -2303,6 +2308,7 @@ async function _doSave(silent=false){
   serverConfig.status="saving";
   serverConfig.statusMsg="서버에 반영 중...";
   updateServerStatusUI();
+  const accessEpoch=_serverAccessEpoch;
   try {
     if(!_retrySaveRequest){
       _retrySaveRequest={
@@ -2313,8 +2319,11 @@ async function _doSave(silent=false){
       };
     }
     const r = await serverRequest("POST", "/save", _retrySaveRequest.state, 15000, { idempotencyKey:_retrySaveRequest.idempotencyKey });
+    // 저장 중 권한이 바뀌면 이전 권한으로 만든 응답/재시도를 새 화면에 적용하지 않는다.
+    if(accessEpoch!==_serverAccessEpoch){_retrySaveRequest=null;return {status:"cancelled"};}
     if(r.ok){
       const hasLaterChanges=_saveChangeSeq>_retrySaveRequest.changeSeq;
+      _rememberServerSnapshotIds((r.mergedData?.data||r.mergedData||_retrySaveRequest.state.data));
       _snapshotSingletonBaselines(_retrySaveRequest.state.data);
       if(r.recordRevisions)_applyRecordRevisions(r.recordRevisions);
       if(hasLaterChanges)_serverSavePending=true;
@@ -2331,12 +2340,17 @@ async function _doSave(silent=false){
         // 서버 계약은 `merged`다. 거부된 보호 레코드도 서버 원본으로 되돌린다.
         console.log("[Server] Applying authoritative merged state...");
         const merged = r.mergedData?.data || r.mergedData;
-        applyState({_singletonRevisions:r.singletonRevisions,data: merged}, true); // apply without undo snapshot
+        applyState({_singletonRevisions:r.singletonRevisions,data: merged}, true, {serverSnapshot:true,forceAuthoritative:true}); // apply without undo snapshot
         if(r.partial){
           // applyState()의 일부 컬렉션은 최신 timestamp로 병합하므로 서버가 거부한
           // 로컬 레코드가 다시 남을 수 있다. 거부된 ID만 권위 있는 응답으로 복원한다.
           const collections=_recordCollections();
           for(const rejected of r.warnings?.rejectedRecords||[]){
+            if(rejected.operation==="delete"){
+              const id=String(rejected.id);
+              recordTombstones[rejected.field]=(recordTombstones[rejected.field]||[]).filter(t=>String(t?.id)!==id);
+              if(rejected.field==="roomReservations")roomReservationTombstones=roomReservationTombstones.filter(t=>String(t?.id)!==id);
+            }
             const local=collections[rejected.field],serverRows=merged[rejected.field];
             if(!Array.isArray(local)||!Array.isArray(serverRows))continue;
             const id=String(rejected.id),localIndex=local.findIndex(row=>String(row?.id)===id);
@@ -2370,6 +2384,7 @@ async function _doSave(silent=false){
       const err=new Error(r.message||"저장 실패");err.code=r.code;err.details=r.details;throw err;
     }
   } catch(e) {
+    if(accessEpoch!==_serverAccessEpoch){_retrySaveRequest=null;return {status:"cancelled"};}
     if(e.code==="RECORD_REVISION_CONFLICT"){
       _retrySaveRequest=null;
       serverConfig.status="connected";
@@ -2419,7 +2434,7 @@ async function loadFromServer(){
       _step = "snapshot";
       saveAutoSnapshot("pre_import"); // 현재 상태 스냅샷
       _step = "apply";
-      applyState(r.data);
+      _applyServerSnapshot(r.data);
       // 회사 단위 모듈 on/off(마스터 콘솔) — 로그인마다(_completeLogin이 매번 호출) 항상
       // 이 함수를 거치므로, 별도 /login 응답뿐 아니라 마스터 impersonation 핸드오프처럼
       // /login을 거치지 않는 경로도 여기서 최신값을 받는다. 아래 renderSidebar()가 즉시
@@ -2496,26 +2511,22 @@ function startHeartbeat(){
         const svr = r.version || r.meta?.version;
         if(svr && _serverVersion >= 0 && svr > _serverVersion && !_serverSaving){
           console.log(`[Server] New version detected: ${_serverVersion} → ${svr}. Pulling updates...`);
-          _serverVersion = svr;
-          // Pull and merge latest data silently
+          // SSE가 끊겨도 heartbeat가 동일한 전체 스냅샷 경로로 동기화한다.
+          // 버전은 데이터 반영이 끝난 뒤에만 올린다.
           serverRequest("GET","/data",null,8000).then(dr=>{
             if(dr.ok && dr.data){
+              const fetchedVersion=dr.version||svr;
+              if(fetchedVersion<=_serverVersion)return; // 더 늦게 도착한 오래된 응답은 버린다.
               const newData = dr.data?.data || dr.data;
-              // Only merge employees and KPI (preserve local UI state)
-              if(newData.employees){employees=newData.employees;if(currentUser){const upd=employees.find(e=>e.id===currentUser.id);if(upd)currentUser=upd;}}
-              if(newData.kpiEntries) kpiEntries=newData.kpiEntries;
-              if(newData.compSessions) compSessions=newData.compSessions;
-              if(newData.compResponses) compResponses=newData.compResponses;
-              if(newData.certRequests) certRequests=newData.certRequests;
-              if(newData.employmentRecords) employmentRecords=newData.employmentRecords;
-              if(newData.learningCourses) learningCourses=newData.learningCourses;
-              if(newData.learningAssignments) learningAssignments=newData.learningAssignments;
-              if(newData.settings) Object.assign(settings, newData.settings);
-              if(newData.orgDB){if(newData.orgDB.depts)orgDB.depts=newData.orgDB.depts;if(newData.orgDB.teams)orgDB.teams=newData.orgDB.teams;}
-              if(newData.gradeSettings) Object.assign(gradeSettings,newData.gradeSettings);
-              serverConfig.statusMsg=`동기화됨 ${new Date().toLocaleTimeString("ko-KR")} (v${svr})`;
+              const accessChanged=_applyServerSnapshot({data:newData},true);
+              _serverVersion=fetchedVersion;
+              if(accessChanged&&currentUser?.role==="admin"){
+                loadAccountingFromServer();loadErpFromServer();
+              }
+              serverConfig.statusMsg=`동기화됨 ${new Date().toLocaleTimeString("ko-KR")} (v${_serverVersion})`;
               updateServerStatusUI();
               renderPageDeferIfEditing(); // refresh current page (입력 중이면 미룸)
+              renderSidebar();
               console.log("[Server] Data synced from server.");
             }
           }).catch(()=>{});
@@ -2810,7 +2821,7 @@ async function restoreServerBackup(name, fields, deleteExtras){
     if(deleteExtras) body.deleteExtras = true;
     const r = await serverRequest("POST", "/restore", body);
     if(r.ok && r.data){
-      applyState(r.data);
+      applyState(r.data,false,{serverSnapshot:true,forceAuthoritative:true});
       closeModal();
       showToast(`서버 백업으로 복원되었습니다. (${scopeMsg}${deleteExtras?" · 완전 복원":""})`,"success");
       renderSidebar(); renderPage();
@@ -5783,6 +5794,10 @@ function _resetSettingStages(){
 // 신규 레코드가 살아남도록 한다.
 function _mergeByIdPreferNewer(local,incoming,fieldName){
   if(!Array.isArray(incoming))return local;
+  const context=_serverMergeContext;
+  // 저장 대기 중인 변경이 없으면 서버 스냅샷이 유일한 원본이다. 과거의 더 늦은
+  // updatedAt이나 로컬 전용 행이 서버 삭제/권한 회수를 뒤집어서는 안 된다.
+  if(context&&!context.preservePending)return incoming;
   if(!Array.isArray(local)||!local.length)return incoming;
   const localById={};
   for(const r of local)if(r&&r.id!=null)localById[r.id]=r;
@@ -5799,11 +5814,27 @@ function _mergeByIdPreferNewer(local,incoming,fieldName){
   const deadIds=new Set((fieldName&&recordTombstones[fieldName]||[]).map(t=>t.id));
   for(const r of local){
     if(!r||r.id==null||incomingIds.has(r.id)||deadIds.has(r.id))continue;
+    // 전 서버 스냅샷에 있던 id가 이번에 없다면 원격 삭제 또는 응답 권한 축소다.
+    if(context&&context.previousIds[fieldName]?.has(String(r.id)))continue;
     merged.push(r); // local-only record the server hasn't seen yet — keep it
   }
   return merged;
 }
-function applyState(state,skipUndo=false){
+function _rememberServerSnapshotIds(data){
+  for(const [field,rows] of Object.entries(data||{})){
+    if(Array.isArray(rows)&&Object.prototype.hasOwnProperty.call(_recordCollections(),field))
+      _serverSnapshotIds[field]=new Set(rows.filter(r=>r&&r.id!=null).map(r=>String(r.id)));
+  }
+}
+function applyState(state,skipUndo=false,options={}){
+  const previousContext=_serverMergeContext;
+  if(options.serverSnapshot||options.forceAuthoritative){
+    _serverMergeContext={
+      preservePending:!options.forceAuthoritative&&!!(_serverDebounceTimer||_serverSaving||_retrySaveRequest||_serverSavePending),
+      previousIds:_serverSnapshotIds
+    };
+  }
+  try{
   if(!skipUndo)_lastRestoreUndo=getFullState();
   _resetSettingStages();
   const d=state.data||state;
@@ -5869,9 +5900,10 @@ function applyState(state,skipUndo=false){
   if(d.payrollAdjustments&&Array.isArray(d.payrollAdjustments))payrollAdjustments=d.payrollAdjustments;
   if(d.leaveUsagePlans&&Array.isArray(d.leaveUsagePlans))leaveUsagePlans=d.leaveUsagePlans;
   if(d.boardPosts&&Array.isArray(d.boardPosts))boardPosts=d.boardPosts;
-  if(d.roomReservationTombstones&&Array.isArray(d.roomReservationTombstones)){
+  if((d.roomReservationTombstones&&Array.isArray(d.roomReservationTombstones))||(_serverMergeContext&&!_serverMergeContext.preservePending)){
     const byId={};
-    [...roomReservationTombstones,...d.roomReservationTombstones].forEach(t=>{if(t&&t.id!=null&&(!byId[t.id]||t.ts>byId[t.id].ts))byId[t.id]=t;});
+    const localTombstones=_serverMergeContext&&!_serverMergeContext.preservePending?[]:roomReservationTombstones;
+    [...localTombstones,...(Array.isArray(d.roomReservationTombstones)?d.roomReservationTombstones:[])].forEach(t=>{if(t&&t.id!=null&&(!byId[t.id]||t.ts>byId[t.id].ts))byId[t.id]=t;});
     const cutoff=Date.now()-30*24*60*60*1000;
     roomReservationTombstones=Object.values(byId).filter(t=>t.ts>=cutoff);
   }
@@ -5899,12 +5931,13 @@ function applyState(state,skipUndo=false){
   if(d.learningAssignments&&Array.isArray(d.learningAssignments))learningAssignments=_mergeByIdPreferNewer(learningAssignments,d.learningAssignments,'learningAssignments');
   engagementPulseSummary=d.engagementPulseSummary&&typeof d.engagementPulseSummary==="object"?d.engagementPulseSummary:{};
   if(d._idCounter&&typeof d._idCounter==="number")_id=d._idCounter;
-  if(d.recordTombstones&&typeof d.recordTombstones==="object"){
+  if((d.recordTombstones&&typeof d.recordTombstones==="object")||(_serverMergeContext&&!_serverMergeContext.preservePending)){
     const cutoff=Date.now()-30*24*60*60*1000;
     const merged={};
-    new Set([...Object.keys(recordTombstones||{}),...Object.keys(d.recordTombstones||{})]).forEach(f=>{
+    const localTombstones=_serverMergeContext&&!_serverMergeContext.preservePending?{}:recordTombstones;
+    new Set([...Object.keys(localTombstones||{}),...Object.keys(d.recordTombstones||{})]).forEach(f=>{
       const byId={};
-      [...(recordTombstones[f]||[]),...(d.recordTombstones[f]||[])].forEach(t=>{if(t&&t.id!=null&&(!byId[t.id]||t.ts>byId[t.id].ts))byId[t.id]=t;});
+      [...(localTombstones[f]||[]),...(d.recordTombstones?.[f]||[])].forEach(t=>{if(t&&t.id!=null&&(!byId[t.id]||t.ts>byId[t.id].ts))byId[t.id]=t;});
       merged[f]=Object.values(byId).filter(t=>t.ts>=cutoff);
     });
     recordTombstones=merged;
@@ -5945,6 +5978,46 @@ function applyState(state,skipUndo=false){
   onboardingFlows=_tombFilter(onboardingFlows,"onboardingFlows");
   approvalDelegations=_tombFilter(approvalDelegations,"approvalDelegations");
   if(currentUser){const updated=employees.find(e=>e.id===currentUser.id);if(updated)currentUser=updated;}
+  if(options.serverSnapshot)_rememberServerSnapshotIds(d);
+  }finally{_serverMergeContext=previousContext;}
+}
+function _serverUserAccessChanged(data){
+  if(!currentUser||!Array.isArray(data?.employees))return false;
+  const updated=data.employees.find(e=>String(e?.id)===String(currentUser.id));
+  if(!updated)return false;
+  if(["role","dept","team","active","companyId"].some(key=>updated[key]!==currentUser[key]))return true;
+  const oldPerms=currentUser.menuPerms||{},newPerms=updated.menuPerms||{};
+  if(Object.keys({...oldPerms,...newPerms}).some(key=>oldPerms[key]!==newPerms[key]))return true;
+  // 응답 필터는 직원 권한 외에도 설정의 개별 열람자 지정에 의존한다.
+  if(!data.settings)return false;
+  const nextSettings=data.settings;
+  for(const key of ["lowPerformerViewers","talentDevViewers","welfarePointsViewers","orgHistoryViewers"]){
+    const was=(settings[key]||[]).map(String).includes(String(currentUser.id));
+    const now=(nextSettings[key]||[]).map(String).includes(String(currentUser.id));
+    if(was!==now)return true;
+  }
+  const isApprover=cfg=>Array.isArray(cfg?.kpiApprovalStages)&&cfg.kpiApprovalStages.some(s=>s?.kind==="specific_employee"&&String(s.approverEmpId)===String(currentUser.id));
+  return isApprover(settings)!==isApprover(nextSettings);
+}
+function _applyServerSnapshot(state,skipUndo=false){
+  const data=state?.data||state;
+  const accessChanged=_serverUserAccessChanged(data);
+  if(accessChanged){
+    const hadPending=!!(_serverDebounceTimer||_serverSaving||_retrySaveRequest||_serverSavePending);
+    _serverAccessEpoch++;
+    if(_serverDebounceTimer)clearTimeout(_serverDebounceTimer);
+    _serverDebounceTimer=null;_serverSavePending=false;_retrySaveRequest=null;
+    // 이전 권한으로 작성한 삭제 의도/보호 모듈 캐시는 새 권한에서 재사용할 수 없다.
+    recordTombstones={};roomReservationTombstones=[];
+    clearProtectedModuleState();
+    applyState(state,skipUndo,{serverSnapshot:true,forceAuthoritative:true});
+    if(currentPage&&(currentUser?.menuPerms||{})[currentPage]===false)currentPage="dashboard";
+    serverConfig.status="connected";serverConfig.statusMsg="권한 변경 · 최신 데이터 반영";
+    showToast(hadPending?"권한이 변경되어 저장 전 변경을 취소하고 최신 자료를 다시 불러왔습니다.":"권한이 변경되어 최신 자료를 다시 불러왔습니다.","info");
+  }else{
+    applyState(state,skipUndo,{serverSnapshot:true});
+  }
+  return accessChanged;
 }
 
 function restoreSnapshot(snapId){
@@ -5952,7 +6025,7 @@ function restoreSnapshot(snapId){
   const snap=snaps.find(s=>s.id===snapId);
   if(!snap){showToast("스냅샷을 찾을 수 없습니다.","error");return;}
   saveAutoSnapshot("pre_import"); // save current before restore
-  applyState(snap.state||snap);
+  applyState(snap.state||snap,false,{forceAuthoritative:true});
   showToast(`"${snap.label}" 스냅샷으로 복원되었습니다.`,"success");
   closeModal();
   renderSidebar();renderPage();
@@ -5962,7 +6035,7 @@ function undoLastRestore(){
   if(!_lastRestoreUndo){showToast("되돌릴 이전 상태가 없습니다.","info");return;}
   const backup=_lastRestoreUndo;
   _lastRestoreUndo=null;
-  applyState(backup,true);
+  applyState(backup,true,{forceAuthoritative:true});
   showToast("이전 상태로 되돌렸습니다.","success");
   closeModal();renderSidebar();renderPage();
 }
@@ -6428,7 +6501,8 @@ async function connectSSE(){
         // Pull latest data and apply
         serverRequest("GET","/data",null,8000).then(r=>{
           if(r.ok && r.data){
-            _serverVersion = r.version || svr;
+            const fetchedVersion=r.version||svr;
+            if(fetchedVersion<=_serverVersion)return; // 응답 역순 도착 시 최신 화면을 되돌리지 않는다.
             const d = r.data?.data || r.data;
             // 예전엔 이 핸들러가 employees/kpiEntries 등 일부 필드만 손으로 골라 반영해서,
             // 목록에 없는 필드(approvalDocs/expenseClaims/attendanceRecords 등 30여개)는
@@ -6440,20 +6514,13 @@ async function connectSSE(){
               leadershipEvalEnabled:settings.leadershipEvalEnabled,
               evalYear:settings.evalYear
             });
-            const previousMenuPerms={...(currentUser?.menuPerms||{})};
-            applyState({data: d}, true); // skipUndo: SSE로 인한 반영은 되돌리기 스냅샷을 안 남김
+            const accessChanged=_applyServerSnapshot({data:d},true); // skipUndo: SSE 반영은 되돌리기 스냅샷을 안 남김
+            _serverVersion=fetchedVersion;
             // 다른 사용자의 저장으로 실시간 동기화되는 시점에도, 이미 발령일이 도래한
             // 예약 인사변동이 있으면 함께 반영한다(로그인/수동 불러오기와 동일 처리).
             _applyDueHRChanges();
-            if(currentUser){ const u=employees.find(e=>e.id===currentUser.id); if(u) currentUser=u; }
-            const permissionsChanged=Object.keys({...previousMenuPerms,...(currentUser?.menuPerms||{})})
-              .some(k=>previousMenuPerms[k]!==((currentUser?.menuPerms||{})[k]));
-            if(permissionsChanged&&currentUser?.role==="admin"){
-              clearProtectedModuleState();
+            if(accessChanged&&currentUser?.role==="admin"){
               loadAccountingFromServer();loadErpFromServer();
-              if(currentPage&&((currentUser.menuPerms||{})[currentPage]===false)){
-                currentPage="dashboard";showToast("메뉴 권한이 변경되어 홈으로 이동했습니다.","info");
-              }
             }
             const currSettings = JSON.stringify({
               stage:settings.stage, compEvalEnabled:settings.compEvalEnabled,

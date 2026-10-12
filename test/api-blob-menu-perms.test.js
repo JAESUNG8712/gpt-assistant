@@ -406,3 +406,137 @@ test("blob 동기화(/save) 컬렉션의 menuPerms/권한 확장 — kpiEntries�
     assert.equal((check.data.gradeAdjustHistory || []).some(x => x.id === "gah2"), false);
   });
 });
+
+test("/save 병합 응답도 /data와 동일한 개인별 메뉴 권한 필터를 적용한다", async (t) => {
+  const server = await startServer();
+  t.after(() => server.stop());
+  const api = (path, options) => fetch(server.baseUrl + path, options);
+  const boot = await bootstrapAdminAndLogin(server, { loginId: "admin", pw: "admin-test-pw-1" });
+  const initial = await getData(api, boot.token);
+  const restricted = {
+    id: "restricted-admin", loginId: "restricted-admin", pw: "restricted-pw-1",
+    name: "제한 관리자", role: "admin", active: true,
+    menuPerms: { "learning-center": false }
+  };
+  const member = {
+    id: "ordinary-member", loginId: "ordinary-member", pw: "member-pw-1",
+    name: "일반 직원", role: "member", active: true,
+  };
+  const course = {
+    id: "private-course", name: "비공개 교육", category: "직무", provider: "사내",
+    startDate: "2026-10-01", endDate: "2026-10-02", hours: 2,
+    capacity: 10, cost: 0, status: "active", internalNote: "관리자 전용 메모"
+  };
+  const seeded = await (await api("/save", auth(boot.token, "POST", {
+    _version: initial.version,
+    employees: [...initial.data.employees, restricted, member],
+    learningCourses: [course, { ...course, id: "retired-sensitive-course" }]
+  }))).json();
+  assert.equal(seeded.ok, true);
+  const adminLatest = await getData(api, boot.token);
+  const retired = await (await api("/save", auth(boot.token, "POST", {
+    _version: adminLatest.version,
+    data: { recordTombstones: { learningCourses: [{ id: "retired-sensitive-course", ts: Date.now() }] } }
+  }))).json();
+  assert.equal(retired.ok, true);
+  assert.equal((await getData(api, boot.token)).data.recordTombstones.learningCourses.some(t => t.id === "retired-sensitive-course"), true);
+  const restrictedToken = await login(api, restricted.loginId, restricted.pw);
+  const visible = await getData(api, restrictedToken);
+  assert.deepEqual(visible.data.learningCourses, []);
+  assert.equal((visible.data.recordTombstones?.learningCourses || []).length, 0);
+  const memberToken = await login(api, member.loginId, member.pw);
+  const memberVisible = await getData(api, memberToken);
+  assert.deepEqual(memberVisible.data.recordTombstones, {});
+
+  // 의도적으로 오래된 버전을 보내 병합 응답을 강제로 받는다.
+  const saved = await (await api("/save", auth(restrictedToken, "POST", {
+    _version: 0, data: { learningCourses: [] }
+  }))).json();
+  assert.equal(saved.ok, true);
+  assert.equal(saved.merged, true);
+  assert.deepEqual(saved.mergedData.learningCourses, []);
+  assert.equal((saved.mergedData.recordTombstones?.learningCourses || []).length, 0);
+  assert.equal((await getData(api, boot.token)).data.learningCourses.some(row => row.id === course.id), true);
+
+  const latest = await getData(api, restrictedToken);
+  const rejectedDelete = await (await api("/save", auth(restrictedToken, "POST", {
+    _version: latest.version,
+    data: { recordTombstones: { learningCourses: [{ id: course.id, ts: Date.now() }] } }
+  }))).json();
+  assert.equal(rejectedDelete.ok, true);
+  assert.equal(rejectedDelete.partial, true);
+  assert.deepEqual(rejectedDelete.warnings?.rejectedRecords, [
+    { field: "learningCourses", id: course.id, operation: "delete" }
+  ]);
+  const afterDelete = await getData(api, boot.token);
+  assert.equal(afterDelete.data.learningCourses.some(row => row.id === course.id), true);
+  assert.equal((afterDelete.data.recordTombstones?.learningCourses || []).some(t => t.id === course.id), false);
+});
+
+test("KPI 삭제 표식은 소유·조직·메뉴 권한을 따라야 한다", async (t) => {
+  const server = await startServer();
+  t.after(() => server.stop());
+  const api = (path, options) => fetch(server.baseUrl + path, options);
+  const boot = await bootstrapAdminAndLogin(server, { loginId: "admin", pw: "admin-test-pw-1" });
+  const initial = await getData(api, boot.token);
+  const employees = [
+    ...initial.data.employees,
+    { id: "owner", loginId: "owner", pw: "owner-pw-1", name: "목표 소유자", role: "member", active: true, dept: "A", team: "1" },
+    { id: "other", loginId: "other", pw: "other-pw-1", name: "다른 직원", role: "member", active: true, dept: "B", team: "2" },
+    { id: "blocked", loginId: "blocked", pw: "blocked-pw-1", name: "메뉴 제한 직원", role: "member", active: true, dept: "A", team: "1", menuPerms: { kpi: false } },
+    { id: "leader", loginId: "leader", pw: "leader-pw-1", name: "같은 팀장", role: "leader", active: true, dept: "A", team: "1" },
+  ];
+  const kpiEntries = [
+    { id: "owner-kpi", userId: "owner", year: 2026, item: "소유자 목표", weight: 50 },
+    { id: "other-kpi", userId: "other", year: 2026, item: "타인 목표", weight: 50 },
+    { id: "blocked-kpi", userId: "blocked", year: 2026, item: "제한 목표", weight: 50 },
+    { id: "team-kpi", userId: "owner", year: 2026, item: "팀장 수정 가능 목표", weight: 50 },
+    { id: "submitted-kpi", userId: "owner", year: 2026, item: "이미 제출한 목표", weight: 50, goalSub: 1 },
+  ];
+  const seeded = await (await api("/save", auth(boot.token, "POST", {
+    _version: initial.version, employees, kpiEntries,
+  }))).json();
+  assert.equal(seeded.ok, true);
+  const ownerToken = await login(api, "owner", "owner-pw-1");
+  const blockedToken = await login(api, "blocked", "blocked-pw-1");
+  const leaderToken = await login(api, "leader", "leader-pw-1");
+
+  async function deleteWith(token, id) {
+    const d = await getData(api, token);
+    return (await api("/save", auth(token, "POST", {
+      _version: d.version,
+      data: { recordTombstones: { kpiEntries: [{ id, ts: Date.now() }] } },
+    }))).json();
+  }
+
+  const foreign = await deleteWith(ownerToken, "other-kpi");
+  assert.equal(foreign.partial, true);
+  assert.deepEqual(foreign.warnings?.rejectedRecords, [
+    { field: "kpiEntries", id: "other-kpi", operation: "delete" },
+  ]);
+  let after = await getData(api, boot.token);
+  assert.equal(after.data.kpiEntries.some(k => k.id === "other-kpi"), true);
+  assert.equal((after.data.recordTombstones?.kpiEntries || []).some(t => t.id === "other-kpi"), false);
+
+  const blocked = await deleteWith(blockedToken, "blocked-kpi");
+  assert.equal(blocked.partial, true);
+  after = await getData(api, boot.token);
+  assert.equal(after.data.kpiEntries.some(k => k.id === "blocked-kpi"), true);
+
+  const submitted = await deleteWith(ownerToken, "submitted-kpi");
+  assert.equal(submitted.partial, true);
+  after = await getData(api, boot.token);
+  assert.equal(after.data.kpiEntries.some(k => k.id === "submitted-kpi"), true);
+
+  const team = await deleteWith(leaderToken, "team-kpi");
+  assert.equal(team.ok, true);
+  assert.equal(team.partial, false);
+  after = await getData(api, boot.token);
+  assert.equal(after.data.kpiEntries.some(k => k.id === "team-kpi"), false);
+
+  const own = await deleteWith(ownerToken, "owner-kpi");
+  assert.equal(own.ok, true);
+  assert.equal(own.partial, false);
+  after = await getData(api, boot.token);
+  assert.equal(after.data.kpiEntries.some(k => k.id === "owner-kpi"), false);
+});
