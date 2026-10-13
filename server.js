@@ -246,10 +246,13 @@ function requireAuth(req, res) {
 // 대부분 code)를 함께 싣는 반면, 예기치 못한 예외는 보통 이 필드가 없다는 점을 이용해
 // 구분한다 — status/statusCode가 있으면(의도적으로 다듬어진 메시지) 그대로 통과시키고,
 // 없으면 운영(NODE_ENV=production)에서만 일반 문구로 대체한다(개발/로컬은 디버깅 편의를
-// 위해 항상 원문 그대로).
-function _safeErrMsg(e) {
+// 위해 항상 원문 그대로). fallback을 넘기면 production에서 그 문구를 쓴다(미지정 시 범용
+// 문구) — 호출부가 "AI 분석에 실패했습니다" 같은 맥락 있는 안내를 유지하면서도 Groq API
+// 응답 본문 등 내부 세부정보는 그대로 섞어내지 않게 하기 위함(2026-10-13 리뷰에서 발견된,
+// 이 헬퍼를 거치지 않고 e.message를 문자열에 직접 이어붙여 노출하던 6곳의 수정에 사용).
+function _safeErrMsg(e, fallback) {
   if (e && (e.status || e.statusCode)) return e.message;
-  if (process.env.NODE_ENV === "production") return "서버 오류가 발생했습니다.";
+  if (process.env.NODE_ENV === "production") return fallback || "서버 오류가 발생했습니다.";
   return e && e.message;
 }
 
@@ -10852,6 +10855,11 @@ const legacyResumeExtractionLimiter = rateLimit({
 const AI_API_TIMEOUT_MS = Number(process.env.AI_API_TIMEOUT_MS) || 30000;
 const AI_API_MAX_CONCURRENT = Number(process.env.AI_API_MAX_CONCURRENT) || 4;
 const AI_API_MAX_INPUT_CHARS = Number(process.env.AI_API_MAX_INPUT_CHARS) || 12000;
+// 아래 6개 AI 보조기능(_groqParseResume/_groqSuggestCareerCompanies/_groqSummarizePeople/
+// _groqAnalyzeOrgData/_groqDraftKpiGoal/_groqDraftEvalComment)이 공유하는 Groq 호출
+// 주소 — HR_RESUME_GROQ_URL_OVERRIDE(별도 이력서 OCR 파서용)와 동일한 테스트용 override
+// 관례를 그대로 따른다. 운영에서는 항상 실제 Groq 주소로 폴백해 동작 변화가 없다.
+const GROQ_API_URL = process.env.GROQ_API_URL_OVERRIDE || "https://api.groq.com/openai/v1/chat/completions";
 let _aiApiInFlight = 0;
 const aiApiLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
@@ -11123,7 +11131,7 @@ const RESUME_FIELDS_SCHEMA_PROMPT = `너는 한국어 이력서 텍스트에서 
 async function _groqParseResume(text) {
   const apiKey = process.env.GROQ_API_KEY;
   if (!apiKey) return null;
-  const resp = await _groqFetch("https://api.groq.com/openai/v1/chat/completions", {
+  const resp = await _groqFetch(GROQ_API_URL, {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: "Bearer " + apiKey },
     body: JSON.stringify({
@@ -11154,7 +11162,7 @@ app.post("/api/recruit/parse-resume-llm", aiApiLimiter, async (req, res) => {
     try {
       fields = await _groqParseResume(text);
     } catch (e) {
-      return res.json({ ok: false, message: "AI 분석에 실패했습니다: " + e.message });
+      return res.json({ ok: false, message: _safeErrMsg(e, "AI 분석에 실패했습니다.") });
     }
     if (!fields) return res.json({ ok: false, message: "AI 분석 기능이 설정되지 않았습니다(GROQ_API_KEY 필요)." });
     res.json({ ok: true, fields });
@@ -11572,7 +11580,7 @@ company가 이미 채워진 항목은 정규식/OCR로 이미 확정된 정답�
 {"suggestions": [{"idx": 0, "company": "회사명 또는 빈 문자열"}]}
 idx는 반드시 targetIdx 목록에 있는 값이어야 하고, targetIdx 개수만큼 정확히 응답해라. company가 이미 채워진 항목의 idx로는 응답하지 마라.`;
   const userContent = JSON.stringify({ resumeText: text.slice(0, 12000), entries, targetIdx });
-  const resp = await _groqFetch("https://api.groq.com/openai/v1/chat/completions", {
+  const resp = await _groqFetch(GROQ_API_URL, {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: "Bearer " + apiKey },
     body: JSON.stringify({
@@ -11607,7 +11615,7 @@ app.post("/api/recruit/suggest-career-companies", aiApiLimiter, async (req, res)
     try {
       suggestions = await _groqSuggestCareerCompanies(text, entries);
     } catch (e) {
-      return res.json({ ok: false, message: "AI 분석에 실패했습니다: " + e.message });
+      return res.json({ ok: false, message: _safeErrMsg(e, "AI 분석에 실패했습니다.") });
     }
     if (suggestions === null) return res.json({ ok: false, message: "AI 분석 기능이 설정되지 않았습니다(GROQ_API_KEY 필요)." });
     res.json({ ok: true, suggestions });
@@ -11625,7 +11633,7 @@ async function _groqSummarizePeople(kind, people) {
     { "empId": "직원ID(입력값 그대로)", "name": "이름", "summary": "이 인원이 왜 이 명단에 해당하는지 평가 데이터 근거를 2~3문장으로 요약. 추측하지 말고 주어진 데이터만 근거로 작성" }
   ]
 }`;
-  const resp = await _groqFetch("https://api.groq.com/openai/v1/chat/completions", {
+  const resp = await _groqFetch(GROQ_API_URL, {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: "Bearer " + apiKey },
     body: JSON.stringify({
@@ -11654,7 +11662,7 @@ app.post("/api/hr/analyze-summary", aiApiLimiter, async (req, res) => {
     try {
       summaries = await _groqSummarizePeople(kind, people);
     } catch (e) {
-      return res.json({ ok: false, message: "AI 분석에 실패했습니다: " + e.message });
+      return res.json({ ok: false, message: _safeErrMsg(e, "AI 분석에 실패했습니다.") });
     }
     if (!summaries) return res.json({ ok: false, message: "AI 분석 기능이 설정되지 않았습니다(GROQ_API_KEY 필요)." });
     res.json({ ok: true, summaries });
@@ -11672,7 +11680,7 @@ async function _groqDraftKpiGoal(jobRole, itemName) {
   "evalCriteria": "평가 기준 (측정 방법/기준)"
 }`;
   const userMsg = `직무: ${jobRole}${itemName ? `\nKPI 항목명(참고): ${itemName}` : ""}`;
-  const resp = await _groqFetch("https://api.groq.com/openai/v1/chat/completions", {
+  const resp = await _groqFetch(GROQ_API_URL, {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: "Bearer " + apiKey },
     body: JSON.stringify({
@@ -11702,7 +11710,7 @@ async function _groqAnalyzeOrgData(kind, data) {
     { "title": "이슈 제목 (간결하게)", "detail": "이슈 내용과 근거 데이터 (2~3문장)", "action": "대응 방안 초안 (2~3문장, 구체적 실행 방안)", "severity": "high|medium|low" }
   ]
 }`;
-  const resp = await _groqFetch("https://api.groq.com/openai/v1/chat/completions", {
+  const resp = await _groqFetch(GROQ_API_URL, {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: "Bearer " + apiKey },
     body: JSON.stringify({
@@ -11732,7 +11740,7 @@ app.post("/api/hr/analyze-org", aiApiLimiter, async (req, res) => {
     try {
       analysis = await _groqAnalyzeOrgData(kind, data);
     } catch (e) {
-      return res.json({ ok: false, message: "AI 분석에 실패했습니다: " + e.message });
+      return res.json({ ok: false, message: _safeErrMsg(e, "AI 분석에 실패했습니다.") });
     }
     if (!analysis) return res.json({ ok: false, message: "AI 분석 기능이 설정되지 않았습니다(GROQ_API_KEY 필요)." });
     res.json({ ok: true, ...analysis });
@@ -11749,7 +11757,7 @@ app.post("/api/hr/draft-kpi-goal", aiApiLimiter, async (req, res) => {
     try {
       draft = await _groqDraftKpiGoal(_boundedAiText(jobRole, 500), _boundedAiText(itemName, 500));
     } catch (e) {
-      return res.json({ ok: false, message: "AI 초안 생성에 실패했습니다: " + e.message });
+      return res.json({ ok: false, message: _safeErrMsg(e, "AI 초안 생성에 실패했습니다.") });
     }
     if (!draft) return res.json({ ok: false, message: "AI 초안 생성 기능이 설정되지 않았습니다(GROQ_API_KEY 필요)." });
     res.json({ ok: true, draft });
@@ -11765,7 +11773,7 @@ async function _groqDraftEvalComment(stage, memberName, kpis) {
   "comment": "종합 평가 의견 (4~6문장, 성과/역량/발전가능성/개선점을 포함)"
 }`;
   const userMsg = `직원: ${memberName}\nKPI 데이터: ${JSON.stringify(kpis).slice(0, 8000)}`;
-  const resp = await _groqFetch("https://api.groq.com/openai/v1/chat/completions", {
+  const resp = await _groqFetch(GROQ_API_URL, {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: "Bearer " + apiKey },
     body: JSON.stringify({
@@ -11795,7 +11803,7 @@ app.post("/api/hr/draft-eval-comment", aiApiLimiter, async (req, res) => {
     try {
       comment = await _groqDraftEvalComment(stage, _boundedAiText(memberName, 200), kpis.slice(0, 100));
     } catch (e) {
-      return res.json({ ok: false, message: "AI 초안 생성에 실패했습니다: " + e.message });
+      return res.json({ ok: false, message: _safeErrMsg(e, "AI 초안 생성에 실패했습니다.") });
     }
     if (!comment) return res.json({ ok: false, message: "AI 초안 생성 기능이 설정되지 않았습니다(GROQ_API_KEY 필요)." });
     res.json({ ok: true, comment });
