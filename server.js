@@ -2581,6 +2581,29 @@ function _sanitizeEmployeeRecord(rawEmp, stored, actor, actorEmp) {
   }
   return out;
 }
+// employees[].photoUrl(화상조직도, D2) 콘텐츠 검증 — _sanitizeEmployeeRecord()와 달리
+// actor 신원과 무관하게 항상 실행된다. _sanitizeEmployeeRecord는 "non-admin의 위조
+// 시도"만 방어하도록 설계돼 있어(두 호출부 모두 `_empActorNonAdmin ? _sanitizeEmployeeRecord(...)
+// : rawEmpIn`로 admin 쓰기는 이 함수 자체를 완전히 건너뛴다 — role/salary 등 다른 필드는
+// "admin은 무엇이든 쓸 수 있다"는 이 코드베이스의 기존 신뢰 모델과 일치해 문제가 없지만,
+// photoUrl은 신원이 아니라 내용(크기·형식) 자체가 문제라 admin 쓰기도 반드시 검증해야
+// 한다 — 처음엔 이 구분을 놓치고 _sanitizeEmployeeRecord 안에만 넣어, 정작 문제였던
+// admin 직접 /save 호출 경로가 전혀 검증되지 않는 채로 남아있었다(테스트로 재현해 발견).
+// 클라이언트(uploadEmpEditPhoto())가 "이미지 타입+300KB 이하"를 검증하지만 전부 브라우저
+// 측 검사일 뿐이라, /save를 직접 호출하면 수십MB 데이터나 이미지가 아닌 임의 문자열도
+// 그대로 저장돼 전 직원이 매 GET /data마다 받는 employees 배열의 응답 크기를 무한히
+// 부풀릴 수 있었다(XSS 자체는 _orgAvatarHtml()이 항상 h()로 이스케이프해 별도로 닫혀있음을
+// 확인했으나, 저장공간·응답크기 남용은 막혀있지 않았음). 빈 문자열(사진 제거)은 항상
+// 허용, 그 외엔 클라이언트가 실제로 만드는 형태(FileReader.readAsDataURL 결과)와 동일한
+// 300KB 상한을 강제하고, 위반 시 그 필드만 저장값으로 되돌린다(요청 전체를 거부하지 않음).
+function _sanitizePhotoUrl(rawEmp, stored) {
+  if (!rawEmp || !rawEmp.photoUrl) return rawEmp;
+  const validPhoto = typeof rawEmp.photoUrl === "string"
+    && rawEmp.photoUrl.length <= 420000 // 300KB 원본의 base64 인코딩(×4/3) + data URI 프리픽스 여유
+    && /^data:image\/[a-z0-9.+-]+;base64,[A-Za-z0-9+/]+=*$/i.test(rawEmp.photoUrl);
+  if (validPhoto) return rawEmp;
+  return { ...rawEmp, photoUrl: stored ? stored.photoUrl : undefined };
+}
 // 다면평가 최종등급(compGradeResults, {empId:{year:{grade,score,...}}} 형태의 nested
 // 싱글톤)은 comp-grade-view(admin 전용 화면)에서만 계산·조정되는데, 이 필드 자체는
 // gradeResults와 마찬가지로 전혀 게이팅되지 않고 있었다 — GET /data는 이미 non-admin에게
@@ -2715,7 +2738,7 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
     const _empActorOwnRecord = (actor && actor.empId != null) ? existingById[actor.empId] : null;
     const employees = employeesInputMissing ? (_fileStore.employees || []) : await Promise.all((data.employees || []).map(async (rawEmpIn) => {
       const ex0 = existingById[rawEmpIn.id];
-      const rawEmp = _empActorNonAdmin ? _sanitizeEmployeeRecord(rawEmpIn, ex0, actor, _empActorOwnRecord) : rawEmpIn;
+      const rawEmp = _sanitizePhotoUrl(_empActorNonAdmin ? _sanitizeEmployeeRecord(rawEmpIn, ex0, actor, _empActorOwnRecord) : rawEmpIn, ex0);
       const ex = existingById[rawEmp.id];
       const oldTs = ex ? (ex.updatedAt || ex.createdAt || "") : "";
       const newTs = rawEmp.updatedAt || rawEmp.createdAt || "";
@@ -3008,9 +3031,11 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
         "SELECT data, company_id FROM employees WHERE id = $1", [rawEmpIn.id]
       );
       if (rows.length && companyId && rows[0].company_id && rows[0].company_id !== companyId) continue;
-      const rawEmp = _empActorNonAdmin
-        ? _sanitizeEmployeeRecord(rawEmpIn, rows.length ? rows[0].data : null, actor, _empActorOwnRecord)
-        : rawEmpIn;
+      const storedEmpRow = rows.length ? rows[0].data : null;
+      const rawEmp = _sanitizePhotoUrl(
+        _empActorNonAdmin ? _sanitizeEmployeeRecord(rawEmpIn, storedEmpRow, actor, _empActorOwnRecord) : rawEmpIn,
+        storedEmpRow
+      );
       // 비밀번호는 관리자 또는 본인만(2026-08-19 외부 감사 P0-1 — JSON 파일 모드와 동일한
       // 방어를 Postgres/SaaS 모드에도 적용).
       const isSelf = actor && actor.empId != null && String(actor.empId) === String(rawEmp.id);
@@ -6015,6 +6040,16 @@ app.post("/unlock", (req, res) => {
 // pool.query()가 던지면(DB 순단 등) 이 요청이 응답 없이 멈춰버리는 것을 다른
 // 라우트들과 통일해 방지한다(Express 4는 async 핸들러의 미처리 reject를 자동으로
 // 못 잡아 그대로 두면 hang된다 — 이 프로젝트에서 여러 번 재발한 버그 클래스).
+//
+// 이 라우트는 "실제로 일어난 사건을 서버가 확인"하지 않고 클라이언트가 보낸 action
+// 문자열을 거의 그대로 믿는다(제어문자·형식만 검증) — 즉 인증된 사용자라면 누구나
+// 자기 신원으로 "role_changed"/"menu_perm_changed" 같은 위조 감사기록을 남길 수
+// 있었다. D1(권한변경로그) 기능이 보장하려던 감사 신뢰성을 무너뜨리는 구멍이라,
+// 이 3개 권한류 action은 실제로 그 변경을 일으킬 수 있는 유일한 화면(권한
+// 관리·직원 수정의 역할 변경)이 전부 관리자 전용이라는 사실에 맞춰 admin만
+// 자가보고할 수 있도록 제한한다(그 외 action — 본인 KPI 제출·본인 PII 열람 등 —
+// 은 "자신에 대한 사실 주장"이라 위조해도 보안 영향이 없어 그대로 둠).
+const _PRIVILEGED_LOG_ACTIONS = new Set(["role_changed", "menu_perm_changed", "menu_perm_group_applied"]);
 app.post("/log", async (req, res) => {
   if (!requireAuth(req, res)) return;
   if (!req.body) return res.status(400).json({ ok: false });
@@ -6030,6 +6065,8 @@ app.post("/log", async (req, res) => {
     const target = clean(req.body.target, 120);
     if (!action || !/^[\p{L}\p{N}_.:\- ]+$/u.test(action))
       return res.status(400).json({ ok: false, message: "활동 유형이 올바르지 않습니다." });
+    if (_PRIVILEGED_LOG_ACTIONS.has(action) && req.auth.role !== "admin")
+      return res.status(403).json({ ok: false, message: "이 활동 유형은 관리자만 기록할 수 있습니다." });
     await addActivityLog({
       userId: _authenticatedActorKey(req.auth),
       userName: _authenticatedDisplayName(req.auth, employee),
