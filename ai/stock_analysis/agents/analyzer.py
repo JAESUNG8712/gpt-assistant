@@ -79,6 +79,10 @@ class StockAnalyzer:
             "매크로연계": macro_factor,
             "매매시점": timing,
             "투자의견": opinion,
+            # 사업보고서/감사보고서 본문(financial_collector가 DART에서 수집) —
+            # analyze_stock_opinion()의 Claude 프롬프트와 report_writer.py의
+            # 종목별 상세 분석 섹션이 함께 참고하도록 그대로 전달.
+            "사업보고서": data.get("사업보고서", {}),
             "분석시각": now_kst().isoformat(),
         }
 

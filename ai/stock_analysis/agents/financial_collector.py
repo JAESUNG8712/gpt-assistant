@@ -11,6 +11,7 @@ from ..utils.dart_client import (
     CORP_CODES, STOCK_CODE_MAP,
     fetch_financial_statements,
     fetch_dividend_info, search_disclosures,
+    fetch_report_narrative,
 )
 from ..utils.krx_client import (
     get_stock_price, get_investor_trading,
@@ -64,6 +65,9 @@ class FinancialCollector:
             tasks["재무제표"] = fetch_financial_statements(corp_code, self.year)
             tasks["배당정보"] = fetch_dividend_info(corp_code, self.year)
             tasks["최근공시"] = search_disclosures(corp_name, days=60)
+            # 사업보고서/감사보고서 "본문"(사업의 내용·감사의견 등) — 재무제표
+            # 숫자만으로는 알 수 없는 질적 정보를 분석 단계에서 참고하도록 수집.
+            tasks["사업보고서"] = fetch_report_narrative(corp_name)
 
         if ticker:
             tasks["주가"] = get_stock_price(ticker, days=60)

@@ -56,6 +56,7 @@ def analyze_stock_opinion(stock_name: str, analysis_data: Dict) -> str:
     supply = analysis_data.get("수급분석", {})
     macro = analysis_data.get("매크로연계", {})
     timing = analysis_data.get("매매시점", {})
+    narrative_section = _narrative_prompt_section(analysis_data.get("사업보고서", {}))
 
     user_prompt = f"""다음 데이터를 바탕으로 {stock_name}에 대한 투자의견을 작성하세요.
 
@@ -85,9 +86,11 @@ RSI(14): {technical.get('RSI_14', 50):.1f}
 [매매시점]
 종합점수: {timing.get('종합점수', 0)} (-100~+100)
 판단근거: {', '.join(timing.get('근거', [])) or '없음'}
-
+{narrative_section}
 위 데이터를 종합해서 3-5문장으로 투자의견을 작성하세요.
-반드시 포함: 투자의견(매수/중립/매도), 목표주가 근거, 핵심 리스크 1가지, 매매전략 요약."""
+반드시 포함: 투자의견(매수/중립/매도), 목표주가 근거, 핵심 리스크 1가지, 매매전략 요약.
+사업보고서/감사보고서 발췌가 주어졌다면 그 내용(사업 내용·감사의견·리스크 요인)도
+숫자 지표와 함께 판단에 반영하되, 발췌에 없는 내용은 추측하지 마세요."""
 
     try:
         response = client.messages.create(
@@ -232,6 +235,36 @@ def generate_action_plan(top_picks: list, risk_val: Dict, economic_data: Dict) -
     except Exception as e:
         print(f"⚠️  Claude API 액션플랜 오류: {e}")
         return ""
+
+
+# Claude 프롬프트에 포함할 사업보고서/감사보고서 발췌 최대 길이. financial_collector가
+# 수집하는 dart_client.fetch_document_text()의 max_chars(12000자)보다 훨씬 짧게 —
+# 15개 종목 전체를 매 분석 실행마다 호출하는 비용·지연을 고려해 핵심 서두 부분만 사용.
+_NARRATIVE_PROMPT_MAX_CHARS = 1500
+
+
+def _narrative_prompt_section(narrative: Dict) -> str:
+    """사업보고서/감사보고서 발췌를 프롬프트 섹션 문자열로 만든다.
+
+    본문이 없거나(에러) 샘플(mock) 데이터인 경우는 "추측하지 마세요" 원칙에
+    따라 섹션 자체를 만들지 않는다 — 없는 근거를 있는 것처럼 프롬프트에
+    섞지 않기 위함.
+    """
+    if not narrative or narrative.get("is_mock") or narrative.get("error"):
+        return ""
+    text = (narrative.get("text") or "").strip()
+    if not text:
+        return ""
+
+    excerpt = text[:_NARRATIVE_PROMPT_MAX_CHARS]
+    truncated_note = "...(이하 생략)" if len(text) > _NARRATIVE_PROMPT_MAX_CHARS else ""
+    report_nm = narrative.get("report_nm", "공시서류")
+    rcept_dt = narrative.get("rcept_dt", "")
+
+    return f"""
+[{report_nm} 발췌 ({rcept_dt} 접수)]
+{excerpt}{truncated_note}
+"""
 
 
 def _extract_text(response) -> str:

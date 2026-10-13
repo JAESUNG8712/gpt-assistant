@@ -543,6 +543,12 @@ class ReportWriter:
                 lines.append(f"  주요리스크: {' / '.join(opinion.get('주요리스크', []))}")
             if logic.get("검증이슈"):
                 lines.append(f"  ⚠️ 검증이슈: {' / '.join(logic.get('검증이슈', []))}")
+            narrative = analysis.get("사업보고서", {})
+            if narrative.get("text") and not narrative.get("is_mock") and not narrative.get("error"):
+                lines.append(
+                    f"  📄 참고 공시: {narrative.get('report_nm', '공시서류')} "
+                    f"({narrative.get('rcept_dt', '')} 접수) — AI분석에 본문 반영됨"
+                )
             ai_text = opinion.get("AI분석", "")
             if ai_text:
                 lines.append(f"  🤖 AI분석: {ai_text}")
