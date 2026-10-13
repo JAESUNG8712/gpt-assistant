@@ -221,6 +221,23 @@ async function authenticate(req, res, next) {
     req.auth = null;
     return _featureStateUnavailable(res);
   }
+  // companies.status enforcement — 회사가 정지(suspended)되면 이미 발급된 토큰이라도
+  // 그 즉시 무효화한다(세션 철회와 동일한 즉시성 원칙). actingAsMaster가 있는
+  // impersonation 토큰은 예외다 — 마스터가 정지된 회사에 "들어가서" 다시 active로
+  // 되돌릴 수 있어야 하므로, 그 길목 자체를 막으면 영구히 정지된 채로 갇힌다.
+  if (auth.companyId && !auth.actingAsMaster) {
+    let companyStatus;
+    try {
+      companyStatus = await _getCompanyStatus(auth.companyId);
+    } catch {
+      req.auth = null;
+      return _companyStatusUnavailable(res);
+    }
+    if (companyStatus === "suspended") {
+      req.auth = null;
+      return res.status(403).json({ ok: false, code: "COMPANY_SUSPENDED", message: "이 회사는 현재 서비스가 일시 정지되었습니다. 관리자에게 문의하세요." });
+    }
+  }
   req.auth = {
     ...auth,
     menuPerms: (employee && employee.menuPerms) || {},
@@ -4592,6 +4609,23 @@ app.post("/login", loginLimiter, async (req, res) => {
     // 자격증명과 2FA는 이미 성공했으므로 이후 기능 상태 조회가 503이더라도 브루트포스
     // 실패 횟수에는 포함하지 않는다. 장애 복구 직후 정상 사용자가 429에 갇히는 것을 방지한다.
     res.locals.loginOk = true;
+    // 회사가 정지(suspended)됐으면 자격증명이 맞아도 새 토큰을 내주지 않는다 —
+    // authenticate()가 기존 토큰도 매 요청마다 같은 기준으로 끊지만, 로그인
+    // 자체를 여기서 막아야 "이미 로그아웃된 사용자가 다시 로그인을 시도"하는
+    // 가장 흔한 경로에서 곧바로 안내를 받는다(그 뒤 authenticate()에 도달할
+    // 필요 없이). 자격증명 검증 이후에만 확인해 "회사 존재 여부"를 사전에
+    // 흘리지 않는다(기존 anti-enumeration 설계 유지).
+    if (!USE_JSON_FILE && companyId) {
+      let companyStatus;
+      try {
+        companyStatus = await _getCompanyStatus(companyId);
+      } catch {
+        return _companyStatusUnavailable(res);
+      }
+      if (companyStatus === "suspended") {
+        return res.json({ ok: false, code: "COMPANY_SUSPENDED", message: "이 회사는 현재 서비스가 일시 정지되었습니다. 관리자에게 문의하세요." });
+      }
+    }
     // companyFeatures — 로그인 직후(아직 GET /data를 부르기 전) 클라이언트가 사이드바를
     // 최초로 그릴 때부터 바로 반영할 수 있도록 여기서도 함께 내려준다.
     const companyFeatures = await _getCompanyFeatureMap(companyId);
@@ -5037,6 +5071,37 @@ app.get("/master/companies", async (req, res) => {
   } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
+// PUT /master/companies/:id/status — {status: trial|active|suspended}. 지금까지 이
+// 값은 회원가입 시 'trial'로 고정 기록되고 마스터 콘솔에 표시만 될 뿐, 바꿀 수 있는
+// API가 전혀 없었다(실제 영향도 없었음 — authenticate()/POST /login의 enforcement가
+// 이번에 함께 추가됨). feature-toggle(PUT /master/companies/:id/features/:key)과
+// 동일한 가드·감사로그 패턴을 따른다.
+app.put("/master/companies/:id/status", async (req, res) => {
+  if (!_requireSaas(req, res)) return;
+  if (!requireMaster(req, res)) return;
+  if (!_requireValidCompanyIdParam(req, res)) return;
+  try {
+    const companyId = req.params.id;
+    const { status } = req.body || {};
+    if (!["trial", "active", "suspended"].includes(status))
+      return res.status(400).json({ ok: false, message: "status 값은 trial/active/suspended 중 하나여야 합니다." });
+    const { rows: existing } = await pool.query("SELECT status FROM companies WHERE id = $1", [companyId]);
+    if (!existing.length) return res.status(404).json({ ok: false, message: "존재하지 않는 회사입니다." });
+    const fromStatus = existing[0].status;
+    const { rows } = await pool.query(
+      "UPDATE companies SET status = $1 WHERE id = $2 RETURNING id, slug, name, status",
+      [status, companyId]
+    );
+    _invalidateCompanyStatusCache(companyId); // 다음 요청부터(또는 10초 뒤 자동으로) 반영
+    await pool.query(
+      "INSERT INTO master_audit_log (master_id, action, company_id, detail) VALUES ($1,'status_change',$2,$3)",
+      [req.auth.masterId, companyId, JSON.stringify({ from: fromStatus, to: status })]
+    );
+    const row = rows[0];
+    res.json({ ok: true, company: { id: row.id, slug: row.slug, name: row.name, status: row.status } });
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
+});
+
 // POST /master/companies/:id/impersonate — "이 회사로 들어가기". 계획 문서 설계 그대로:
 // 새 인가 체계를 만들지 않고 1단계에서 이미 만든 회사 스코프 로직(모든 requireAuth/
 // requireAdmin 라우트가 req.auth.companyId만 보고 동작)을 그대로 재사용한다 — 이 토큰이
@@ -5215,6 +5280,42 @@ function requireFeature(req, res, featureKey) {
     return false;
   }
   return true;
+}
+
+// companies.status(trial/active/suspended) 조회 — _getCompanyFeatureMap과 동일한
+// 10초 TTL 캐시+fail-closed 패턴(authenticate() 미들웨어에서 매 요청마다 쓰이므로
+// DB 왕복을 줄이고, 조회 실패를 "정상(active)"으로 취급하면 DB 순단 동안 정지된
+// 회사가 다시 열리는 셈이라 반드시 fail-closed 한다). 마스터 콘솔에서 상태를
+// 바꾸면(PUT /master/companies/:id/status) 그 즉시 캐시를 지워 다음 요청부터
+// 반영된다. 지금까지 이 값은 읽히는 곳이 전혀 없어(마스터 콘솔 목록 표시 용도뿐)
+// trial→active/suspended 전환이 로그인·API 접근에 실제 영향을 주지 못했다.
+const _companyStatusCache = new Map(); // companyId -> {status, expiresAt}
+const COMPANY_STATUS_CACHE_TTL_MS = 10000;
+async function _getCompanyStatus(companyId) {
+  if (USE_JSON_FILE || !companyId) return "active";
+  const cached = _companyStatusCache.get(companyId);
+  if (cached && cached.expiresAt > Date.now()) return cached.status;
+  try {
+    const { rows } = await pool.query("SELECT status FROM companies WHERE id = $1", [companyId]);
+    // 회사 자체가 안 보이면(삭제 등) 여기서 판단하지 않고 그대로 통과시킨다 — 그런
+    // 토큰을 실제로 쓰는 다른 라우트들이 이미 각자 "존재하지 않는 회사" 404를 낸다.
+    const status = rows.length ? rows[0].status : "active";
+    _companyStatusCache.set(companyId, { status, expiresAt: Date.now() + COMPANY_STATUS_CACHE_TTL_MS });
+    return status;
+  } catch (e) {
+    console.error("[company-status] 조회 실패 — fail-closed 처리:", e.message);
+    const err = new Error("Company status unavailable");
+    err.code = "COMPANY_STATUS_UNAVAILABLE";
+    throw err;
+  }
+}
+function _invalidateCompanyStatusCache(companyId) { _companyStatusCache.delete(companyId); }
+function _companyStatusUnavailable(res) {
+  return res.status(503).json({
+    ok: false,
+    code: "COMPANY_STATUS_UNAVAILABLE",
+    message: "회사 상태를 확인할 수 없습니다. 잠시 후 다시 시도해주세요.",
+  });
 }
 
 // /api/accounting/*·/api/pms/*·/api/recruit/* 전체와 /api/erp/*의 하위 경로별로(사이드바

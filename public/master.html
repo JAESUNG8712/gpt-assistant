@@ -126,6 +126,12 @@
   .btn-enter:hover { filter: brightness(1.08); }
   .hint { font-size: .72rem; color: #6b6f85; margin: 10px 0 14px; line-height: 1.5; }
 
+  .status-change { display: flex; align-items: center; gap: 8px; margin: 2px 0 10px; }
+  .status-change select {
+    background: #1c1f2b; color: #e6e8ee; border: 1px solid #2a2d3a; border-radius: 6px;
+    padding: 5px 8px; font-size: .74rem;
+  }
+
   .feature-row {
     display: flex; align-items: center; gap: 10px; padding: 9px 0; border-bottom: 1px solid #22242f;
   }
@@ -440,13 +446,54 @@ function selectCompany(id){
   loadFeatures(id);
 }
 
+const _STATUS_OPTIONS = [["trial", "체험"], ["active", "활성"], ["suspended", "정지"]];
 function panelHeadHtml(){
   const c = _selectedCompany;
   return `<div class="panel-head">
     <h3>⚙ ${h(c.name)} 기능 설정</h3>
-    <div class="panel-sub">코드: ${h(c.slug)} · 상태: ${h(statusLabel(c.status))}</div>
+    <div class="panel-sub">코드: ${h(c.slug)} · 상태: <span class="badge badge-${h(c.status || '')}">${h(statusLabel(c.status))}</span></div>
+    <div class="status-change">
+      <select id="status-select">
+        ${_STATUS_OPTIONS.map(([v, label]) => `<option value="${v}" ${c.status === v ? 'selected' : ''}>${h(label)}</option>`).join('')}
+      </select>
+      <button class="btn-mini" onclick="changeCompanyStatus('${h(c.id)}')">상태 변경</button>
+    </div>
     <button class="btn-enter" onclick="enterCompany('${h(c.id)}')">🔑 이 회사로 들어가기</button>
   </div>`;
+}
+
+// ── 회사 상태(체험/활성/정지) 전환 ───────────────────────────────
+// 정지는 그 회사의 로그인·API 접근 전체를 즉시 막는(기존 세션도 다음 요청부터
+// 끊기는) 강한 동작이라 다른 토글들보다 더 구체적인 영향 범위 안내를 붙인다.
+async function changeCompanyStatus(id){
+  const c = _companies.find(x => String(x.id) === String(id)) ||
+    (_selectedCompany && String(_selectedCompany.id) === String(id) ? _selectedCompany : null);
+  if(!c) return;
+  const sel = $('#status-select');
+  const newStatus = sel ? sel.value : null;
+  if(!newStatus){ showToast('변경할 상태를 선택하세요.', true); return; }
+  if(newStatus === c.status){ showToast('이미 그 상태입니다.', true); return; }
+  const newLabel = statusLabel(newStatus);
+  const impact = newStatus === 'suspended'
+    ? `영향 범위: '${c.name}' 회사의 모든 사용자(admin 포함)가 즉시 로그인·접근을 차단당합니다. 이미 로그인된 세션도 다음 요청부터 바로 끊깁니다. 다시 '활성'으로 되돌리면 즉시 복구됩니다.`
+    : `영향 범위: '${c.name}' 회사의 상태가 '${statusLabel(c.status)}'에서 '${newLabel}'로 바뀝니다.`;
+  const approved = await showConfirmDialog({
+    title: '회사 상태 변경',
+    message: `'${c.name}' 회사의 상태를 '${newLabel}'로 변경합니다.`,
+    impact,
+    confirmLabel: '상태 변경'
+  });
+  if(!approved) return;
+  const r = await masterRequest('PUT', `/master/companies/${encodeURIComponent(id)}/status`, { status: newStatus });
+  if(r && r.ok && r.company){
+    c.status = r.company.status;
+    if(_selectedCompany && String(_selectedCompany.id) === String(id)) _selectedCompany.status = r.company.status;
+    renderCompanyList();
+    if(_catalog) renderFeaturePanel(); else loadFeatures(id);
+    showToast(`상태를 '${statusLabel(r.company.status)}'로 변경했습니다.`);
+  } else {
+    showToast(`변경 실패: ${r?.message || '알 수 없는 오류'}`, true);
+  }
 }
 
 // 예전엔 관리자가 임의 문자열을 직접 타이핑해 "기능 키"를 만들 수 있었다(오타·중복·
