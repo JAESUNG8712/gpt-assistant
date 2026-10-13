@@ -737,6 +737,31 @@ function _daysUntil(dateStr){
   const todayMid=new Date(now.getFullYear(),now.getMonth(),now.getDate());
   return Math.round((target-todayMid)/86400000);
 }
+// 완료된(만) 근속연수 — 생일/기념일 방식(입사일의 월/일이 그 해에 이미 지났는지)으로
+// 정확히 계산한다. 과거엔 장기근속 포상·복지 현황 화면들이 각자
+// `(now-hire)/(1000*60*60*24*365)`(또는 365.25)를 복붙해 쓰고 있었는데, 서로 다른
+// 분모를 섞어 쓴 탓에 같은 입사일이라도 화면마다 "몇 주년을 꽉 채웠는지"가 경계일
+// 근처에서 1년씩 어긋날 수 있었다(예: 정확히 10주년을 채운 입사일이 365 분모로는
+// 10년, 365.25 분모로는 9년으로 계산되는 경우가 실제로 있음). 밀리초 평균값 근사
+// 대신 달력 연/월/일을 직접 비교해 윤년 자체가 문제될 일이 없는 정확한 값을 반환한다.
+function yearsBetweenDates(start,end){
+  const s=start instanceof Date?start:new Date(start);
+  const e=end instanceof Date?end:new Date(end);
+  if(Number.isNaN(s.getTime())||Number.isNaN(e.getTime())||e<s)return 0;
+  let years=e.getFullYear()-s.getFullYear();
+  if(e.getMonth()<s.getMonth()||(e.getMonth()===s.getMonth()&&e.getDate()<s.getDate()))years--;
+  return Math.max(0,years);
+}
+// 소수점 포함 경과연수(윤년을 포함한 평균 1년=365.25일 기준) — DB형 퇴직금처럼 "올해를
+// 몇 % 채웠는지"가 급여에 비례 반영돼야 하는 계산, 이력서 파서의 "총 경력 약 N년" 추정처럼
+// 정수로 끊을 필요 없이 근사치면 충분한 곳에서 쓴다(완료연수 판정이 필요한 포상 대상자
+// 여부 등에는 위 yearsBetweenDates()를 쓴다 — 둘은 서로 다른 목적의 계산이다).
+function yearsElapsedFraction(start,end){
+  const s=start instanceof Date?start:new Date(start);
+  const e=end instanceof Date?end:new Date(end);
+  if(Number.isNaN(s.getTime())||Number.isNaN(e.getTime()))return 0;
+  return Math.max(0,(e-s)/(1000*60*60*24*365.25));
+}
 const LEAVE_TYPES=["육아휴직","병가휴직","군휴직","개인사정휴직","기타"];
 function _isOnLeave(e,dateStr){
   const d=dateStr||new Date().toISOString().slice(0,10);
@@ -7641,6 +7666,10 @@ function renderSidebar(){
   titles["wage-garnishment"]="급여 압류 등록";
   titles["severance-settlement"]="퇴직금 정산";
   titles["tax-social-insurance"]="세무/사회보험";
+  titles["emp-pay-plan"]="개인별 급여 상세";
+  titles["activity-log"]="활동 이력";
+  titles["inv-stock-log"]="재고 변동 로그";
+  titles["comp-settings-shortcut"]="평가 설정하기";
   const ptEl=$("#page-title");if(ptEl)ptEl.textContent=titles[currentPage]||"";
   const sb=$("#sidebar");if(!sb)return;
   // Filter by role + per-user custom permission overrides (admin-managed)
@@ -22510,7 +22539,7 @@ function autoCalcEmpPayPlan(){
     }else{
       const hireDate=new Date(selectedEmp.hire);
       const yearEnd=new Date(_eppYear,11,31);
-      const years=Math.max(0,(yearEnd-hireDate)/(1000*60*60*24*365));
+      const years=yearsElapsedFraction(hireDate,yearEnd);
       const expected=Math.round((salary/12)*years*(s.dbMonthsPerYear||0)*multiplier);
       severanceIncrease=expected-baseline;
     }
@@ -25615,7 +25644,7 @@ function _rcParseResumeDetails(text){
       const firstEnd=careerEntries[0].end;
       const e=/현재|재직중|진행중/.test(firstEnd)?{t:Date.now()}:_rcParseDateLoose(firstEnd);
       if(!s||!e)return "";
-      const yrs=Math.max(0,(e.t-s.t)/(1000*60*60*24*365.25));
+      const yrs=yearsElapsedFraction(s.t,e.t);
       return yrs>=0.5?`총 경력 약 ${yrs.toFixed(1)}년`:"";
     })():"";
     const lastCareer=careerEntries[0];
@@ -29735,7 +29764,7 @@ function renderLongServiceAwardPage(){
   const tiers=settings.longServiceAwards||[];
   const scope=u.role==="admin"?employees.filter(e=>e.active):u.role==="director"?employees.filter(e=>e.active&&e.dept===u.dept):employees.filter(e=>e.active&&e.dept===u.dept&&e.team===u.team);
   let rows=scope.map(e=>{
-    const yearsOfService=e.hire?Math.floor((Date.now()-new Date(e.hire))/(1000*60*60*24*365)):0;
+    const yearsOfService=e.hire?yearsBetweenDates(e.hire,Date.now()):0;
     const tier=tiers.find(t=>t.years===yearsOfService);
     const onLeave=_isOnLeave(e);
     const pastAwards=(e.hrHistory||[]).filter(hh=>hh.type==="award"&&/장기근속/.test(hh.note||hh.reason||""));
@@ -29993,7 +30022,7 @@ function _renderWelfareLongServiceTab(){
   const active=employees.filter(e=>e.active);
   const lsTargets=active.filter(e=>{
     if(!e.hire)return false;
-    const yos=Math.floor((Date.now()-new Date(e.hire))/(1000*60*60*24*365));
+    const yos=yearsBetweenDates(e.hire,Date.now());
     return tiers.some(t=>t.years===yos);
   });
   const tierRows=tiers.map((t,i)=>`<tr>
@@ -30022,11 +30051,11 @@ function _dlLsTargets(){
   const active=employees.filter(e=>e.active);
   const lsTargets=active.filter(e=>{
     if(!e.hire)return false;
-    const yos=Math.floor((Date.now()-new Date(e.hire))/(1000*60*60*24*365));
+    const yos=yearsBetweenDates(e.hire,Date.now());
     return tiers.some(t=>t.years===yos);
   });
   dlCSV(`장기근속포상_대상자명단_${yr}.csv`,["이름","사번","부서","팀","입사일","근속연수","포상내용"],lsTargets.map(e=>{
-    const yos=Math.floor((Date.now()-new Date(e.hire))/(1000*60*60*24*365));
+    const yos=yearsBetweenDates(e.hire,Date.now());
     const tier=tiers.find(t=>t.years===yos);
     return[e.name,e.empNo,e.dept,e.team,e.hire,yos,tier?.reward||"-"];
   }));
