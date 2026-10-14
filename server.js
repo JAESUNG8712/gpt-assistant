@@ -324,7 +324,7 @@ let _fileErp = { items: [], locations: [], quotations: [], purchaseOrders: [], p
 let _fileAcctRcps = { issuances: [], schedule: [], valuations: [] };
 // 고정자산 모듈 전용 저장소 (취득·감가상각 스케줄) — RCPS와 동일한 클라이언트-비신뢰 패턴.
 let _fileAcctFixedAssets = { assets: [], schedule: [] };
-let _filePms = { projects: [], allocations: [], worklogs: [] };
+let _filePms = { projects: [], allocations: [], worklogs: [], tasks: [], milestones: [] };
 let _fileRecruit = { jobs: [], candidates: [], interviews: [] };
 // 활동 로그(관리자 전용 "활동 로그" 화면) — 2026-08-18 DB 영속성 감사에서 발견: 이전에는
 // _activityLog가 process 메모리에만 있고 이 위성 파일들처럼 디스크에 저장되지 않아, 재시작
@@ -10252,7 +10252,7 @@ app.post("/api/pms/projects", async (req, res) => {
     if (!requireRole(req, res, ["admin", "leader"])) return;
     if (!requirePage(req, res, "pms-projects")) return;
     const companyId = req.auth.companyId || null;
-    const { id, name, startDate, endDate, partnerId, pmId, memo, members } = req.body || {};
+    const { id, name, startDate, endDate, partnerId, pmId, memo, members, budgetPlanned } = req.body || {};
     if (!name) return res.status(400).json({ ok: false, message: "프로젝트명은 필수입니다." });
     // 생성 API를 upsert로 두면 id만 아는 사용자가 기존 프로젝트를 덮어쓸 수 있다.
     if (id) return res.status(400).json({ ok: false, message: "프로젝트 ID는 서버가 생성합니다." });
@@ -10262,11 +10262,12 @@ app.post("/api/pms/projects", async (req, res) => {
     const employeesById = await _pmsEmployeeMap(companyId);
     const creator = employeesById.get(createdById);
     const effectivePmId = String(pmId || createdById);
+    const safeBudgetPlanned = Number.isFinite(Number(budgetPlanned)) ? Number(budgetPlanned) : 0;
     if (USE_JSON_FILE) {
       const project = {
         id: projectId, name, startDate: startDate || "", endDate: endDate || "",
         partnerId: partnerId || null, pmId: effectivePmId,
-        status: "active", memo: memo || "",
+        status: "active", memo: memo || "", budgetPlanned: safeBudgetPlanned,
         members: _pmsNormalizeMembers(members, effectivePmId, createdById),
         createdById, createdByName: creator?.name || "unknown", createdBy: creator?.name || "unknown",
         createdAt: now, updatedAt: now,
@@ -10278,7 +10279,7 @@ app.post("/api/pms/projects", async (req, res) => {
     const project = {
       id: projectId, name, startDate: startDate || "", endDate: endDate || "",
       partnerId: partnerId || null, pmId: effectivePmId,
-      status: "active", memo: memo || "",
+      status: "active", memo: memo || "", budgetPlanned: safeBudgetPlanned,
       members: _pmsNormalizeMembers(members, effectivePmId, createdById),
       createdById, createdByName: creator?.name || "unknown", createdBy: creator?.name || "unknown",
       createdAt: now, updatedAt: now,
@@ -10297,7 +10298,7 @@ app.post("/api/pms/projects/:id", async (req, res) => {
     if (!requirePage(req, res, "pms-projects")) return;
     const id = req.params.id;
     const companyId = req.auth.companyId || null;
-    const { name, startDate, endDate, partnerId, pmId, status, memo, members, expectedUpdatedAt } = req.body || {};
+    const { name, startDate, endDate, partnerId, pmId, status, memo, members, budgetPlanned, expectedUpdatedAt } = req.body || {};
     if (USE_JSON_FILE) {
       const project = _filePms.projects.find(p => p.id === id);
       if (!project) return res.status(404).json({ ok: false, message: "프로젝트를 찾을 수 없습니다." });
@@ -10310,6 +10311,7 @@ app.post("/api/pms/projects/:id", async (req, res) => {
       if (pmId != null) project.pmId = String(pmId);
       if (status != null) project.status = status;
       if (memo != null) project.memo = memo;
+      if (budgetPlanned != null && Number.isFinite(Number(budgetPlanned))) project.budgetPlanned = Number(budgetPlanned);
       project.members = _pmsNormalizeMembers(Array.isArray(members) ? members : project.members, project.pmId, project.createdById);
       project.updatedAt = new Date().toISOString();
       _saveFilePms();
@@ -10327,6 +10329,7 @@ app.post("/api/pms/projects/:id", async (req, res) => {
     if (pmId != null) project.pmId = String(pmId);
     if (status != null) project.status = status;
     if (memo != null) project.memo = memo;
+    if (budgetPlanned != null && Number.isFinite(Number(budgetPlanned))) project.budgetPlanned = Number(budgetPlanned);
     project.members = _pmsNormalizeMembers(Array.isArray(members) ? members : project.members, project.pmId, project.createdById);
     project.updatedAt = new Date().toISOString();
     // id는 tenant마다 재사용될 수 있다(pms_projects PK = company_id + id). company_id 없이
@@ -10431,6 +10434,303 @@ async function _pmsProjectById(projectId, companyId) {
   );
   return rows[0] ? rows[0].data : null;
 }
+
+// ── PMS: 프로젝트 작업(Task)/마일스톤 ─────────────────────────────────────────
+// 조회는 _pmsCanViewProject(), 변경(생성/수정/삭제)은 _pmsCanManageProject() — 프로젝트
+// 자신의 CRUD와 동일한 권한 모델을 그대로 재사용한다(별도 세분 권한 설계 없음). id는
+// 항상 서버 생성(pms_worklogs와 동일한 단순 PK 패턴, schema.sql 참고).
+const PMS_TASK_STATUSES = ["todo", "in_progress", "done", "blocked"];
+const PMS_TASK_PRIORITIES = ["low", "normal", "high"];
+const PMS_MILESTONE_STATUSES = ["pending", "done"];
+
+app.get("/api/pms/projects/:id/tasks", async (req, res) => {
+  if (!requireAuth(req, res)) return;
+  try {
+    const companyId = req.auth.companyId || null;
+    const project = await _pmsProjectById(req.params.id, companyId);
+    if (!project) return res.status(404).json({ ok: false, message: "프로젝트를 찾을 수 없습니다." });
+    const employeesById = await _pmsEmployeeMap(companyId);
+    if (!_pmsCanViewProject(project, req.auth, employeesById)) return res.status(403).json({ ok: false, message: "이 프로젝트를 조회할 권한이 없습니다." });
+    let tasks;
+    if (USE_JSON_FILE) {
+      tasks = _filePms.tasks.filter(t => t.projectId === project.id);
+    } else {
+      const { rows } = await pool.query(
+        "SELECT data FROM pms_tasks WHERE project_id = $1 AND company_id = $2 AND is_deleted = FALSE ORDER BY created_at",
+        [project.id, companyId]
+      );
+      tasks = rows.map(r => r.data);
+    }
+    res.json({ ok: true, tasks });
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
+});
+
+app.post("/api/pms/projects/:id/tasks", async (req, res) => {
+  try {
+    if (!requirePage(req, res, "pms-projects")) return;
+    const companyId = req.auth.companyId || null;
+    const project = await _pmsProjectById(req.params.id, companyId);
+    if (!project) return res.status(404).json({ ok: false, message: "프로젝트를 찾을 수 없습니다." });
+    if (!_pmsCanManageProject(project, req.auth)) return res.status(403).json({ ok: false, message: "이 프로젝트의 작업을 추가할 권한이 없습니다." });
+    const { title, assigneeId, status, dueDate, priority } = req.body || {};
+    if (!title || !String(title).trim()) return res.status(400).json({ ok: false, message: "작업명은 필수입니다." });
+    const taskId = `task_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const now = new Date().toISOString();
+    const task = {
+      id: taskId, projectId: project.id, title: String(title).trim().slice(0, 200),
+      assigneeId: assigneeId != null && assigneeId !== "" ? String(assigneeId) : null,
+      status: PMS_TASK_STATUSES.includes(status) ? status : "todo",
+      dueDate: dueDate || "",
+      priority: PMS_TASK_PRIORITIES.includes(priority) ? priority : "normal",
+      createdById: String(req.auth.empId), createdAt: now, updatedAt: now,
+    };
+    if (USE_JSON_FILE) {
+      _filePms.tasks.push(task);
+      _saveFilePms();
+      return res.json({ ok: true, task });
+    }
+    await pool.query("INSERT INTO pms_tasks (id, project_id, company_id, data) VALUES ($1,$2,$3,$4)", [taskId, project.id, companyId, task]);
+    res.json({ ok: true, task });
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
+});
+
+function _pmsApplyTaskFields(task, body) {
+  const { title, assigneeId, status, dueDate, priority } = body || {};
+  if (title != null) task.title = String(title).trim().slice(0, 200);
+  if (assigneeId !== undefined) task.assigneeId = assigneeId != null && assigneeId !== "" ? String(assigneeId) : null;
+  if (status != null && PMS_TASK_STATUSES.includes(status)) task.status = status;
+  if (dueDate != null) task.dueDate = dueDate;
+  if (priority != null && PMS_TASK_PRIORITIES.includes(priority)) task.priority = priority;
+  task.updatedAt = new Date().toISOString();
+  return task;
+}
+
+app.post("/api/pms/projects/:id/tasks/:taskId", async (req, res) => {
+  try {
+    if (!requirePage(req, res, "pms-projects")) return;
+    const companyId = req.auth.companyId || null;
+    const project = await _pmsProjectById(req.params.id, companyId);
+    if (!project) return res.status(404).json({ ok: false, message: "프로젝트를 찾을 수 없습니다." });
+    if (!_pmsCanManageProject(project, req.auth)) return res.status(403).json({ ok: false, message: "이 프로젝트의 작업을 변경할 권한이 없습니다." });
+    const { expectedUpdatedAt } = req.body || {};
+    const taskId = req.params.taskId;
+    if (USE_JSON_FILE) {
+      const task = _filePms.tasks.find(t => t.id === taskId && t.projectId === project.id);
+      if (!task) return res.status(404).json({ ok: false, message: "작업을 찾을 수 없습니다." });
+      if (expectedUpdatedAt && task.updatedAt !== expectedUpdatedAt) {
+        return res.status(409).json({ ok: false, code: "PMS_TASK_CONFLICT", message: "다른 사용자가 먼저 수정했습니다. 최신 내용을 불러온 뒤 다시 시도하세요.", task });
+      }
+      _pmsApplyTaskFields(task, req.body);
+      _saveFilePms();
+      return res.json({ ok: true, task });
+    }
+    let task;
+    try {
+      task = await _pgLockedUpdate("pms_tasks", taskId, async (t) => {
+        if (t.projectId !== project.id) throw new _RecruitRouteError(404, "작업을 찾을 수 없습니다.");
+        if (expectedUpdatedAt && t.updatedAt !== expectedUpdatedAt) throw new _RecruitRouteError(409, "다른 사용자가 먼저 수정했습니다. 최신 내용을 불러온 뒤 다시 시도하세요.");
+        return _pmsApplyTaskFields({ ...t }, req.body);
+      }, companyId);
+    } catch (e) {
+      if (e instanceof _RecruitRouteError) return res.status(e.status).json({ ok: false, code: e.status === 409 ? "PMS_TASK_CONFLICT" : undefined, message: _safeErrMsg(e) });
+      throw e;
+    }
+    res.json({ ok: true, task });
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
+});
+
+app.post("/api/pms/projects/:id/tasks/:taskId/delete", async (req, res) => {
+  try {
+    if (!requirePage(req, res, "pms-projects")) return;
+    const companyId = req.auth.companyId || null;
+    const project = await _pmsProjectById(req.params.id, companyId);
+    if (!project) return res.status(404).json({ ok: false, message: "프로젝트를 찾을 수 없습니다." });
+    if (!_pmsCanManageProject(project, req.auth)) return res.status(403).json({ ok: false, message: "이 프로젝트의 작업을 삭제할 권한이 없습니다." });
+    const taskId = req.params.taskId;
+    if (USE_JSON_FILE) {
+      const idx = _filePms.tasks.findIndex(t => t.id === taskId && t.projectId === project.id);
+      if (idx < 0) return res.status(404).json({ ok: false, message: "작업을 찾을 수 없습니다." });
+      _filePms.tasks.splice(idx, 1);
+      _saveFilePms();
+      return res.json({ ok: true });
+    }
+    const result = await pool.query("UPDATE pms_tasks SET is_deleted = TRUE WHERE id = $1 AND project_id = $2 AND company_id = $3", [taskId, project.id, companyId]);
+    if (!result.rowCount) return res.status(404).json({ ok: false, message: "작업을 찾을 수 없습니다." });
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
+});
+
+app.get("/api/pms/projects/:id/milestones", async (req, res) => {
+  if (!requireAuth(req, res)) return;
+  try {
+    const companyId = req.auth.companyId || null;
+    const project = await _pmsProjectById(req.params.id, companyId);
+    if (!project) return res.status(404).json({ ok: false, message: "프로젝트를 찾을 수 없습니다." });
+    const employeesById = await _pmsEmployeeMap(companyId);
+    if (!_pmsCanViewProject(project, req.auth, employeesById)) return res.status(403).json({ ok: false, message: "이 프로젝트를 조회할 권한이 없습니다." });
+    let milestones;
+    if (USE_JSON_FILE) {
+      milestones = _filePms.milestones.filter(m => m.projectId === project.id);
+    } else {
+      const { rows } = await pool.query(
+        "SELECT data FROM pms_milestones WHERE project_id = $1 AND company_id = $2 AND is_deleted = FALSE ORDER BY created_at",
+        [project.id, companyId]
+      );
+      milestones = rows.map(r => r.data);
+    }
+    res.json({ ok: true, milestones });
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
+});
+
+app.post("/api/pms/projects/:id/milestones", async (req, res) => {
+  try {
+    if (!requirePage(req, res, "pms-projects")) return;
+    const companyId = req.auth.companyId || null;
+    const project = await _pmsProjectById(req.params.id, companyId);
+    if (!project) return res.status(404).json({ ok: false, message: "프로젝트를 찾을 수 없습니다." });
+    if (!_pmsCanManageProject(project, req.auth)) return res.status(403).json({ ok: false, message: "이 프로젝트의 마일스톤을 추가할 권한이 없습니다." });
+    const { title, dueDate, status, description } = req.body || {};
+    if (!title || !String(title).trim()) return res.status(400).json({ ok: false, message: "마일스톤명은 필수입니다." });
+    const msId = `ms_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const now = new Date().toISOString();
+    const milestone = {
+      id: msId, projectId: project.id, title: String(title).trim().slice(0, 200),
+      dueDate: dueDate || "", status: PMS_MILESTONE_STATUSES.includes(status) ? status : "pending",
+      description: (description || "").slice(0, 1000),
+      createdById: String(req.auth.empId), createdAt: now, updatedAt: now,
+    };
+    if (USE_JSON_FILE) {
+      _filePms.milestones.push(milestone);
+      _saveFilePms();
+      return res.json({ ok: true, milestone });
+    }
+    await pool.query("INSERT INTO pms_milestones (id, project_id, company_id, data) VALUES ($1,$2,$3,$4)", [msId, project.id, companyId, milestone]);
+    res.json({ ok: true, milestone });
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
+});
+
+function _pmsApplyMilestoneFields(milestone, body) {
+  const { title, dueDate, status, description } = body || {};
+  if (title != null) milestone.title = String(title).trim().slice(0, 200);
+  if (dueDate != null) milestone.dueDate = dueDate;
+  if (status != null && PMS_MILESTONE_STATUSES.includes(status)) milestone.status = status;
+  if (description != null) milestone.description = String(description).slice(0, 1000);
+  milestone.updatedAt = new Date().toISOString();
+  return milestone;
+}
+
+app.post("/api/pms/projects/:id/milestones/:msId", async (req, res) => {
+  try {
+    if (!requirePage(req, res, "pms-projects")) return;
+    const companyId = req.auth.companyId || null;
+    const project = await _pmsProjectById(req.params.id, companyId);
+    if (!project) return res.status(404).json({ ok: false, message: "프로젝트를 찾을 수 없습니다." });
+    if (!_pmsCanManageProject(project, req.auth)) return res.status(403).json({ ok: false, message: "이 프로젝트의 마일스톤을 변경할 권한이 없습니다." });
+    const { expectedUpdatedAt } = req.body || {};
+    const msId = req.params.msId;
+    if (USE_JSON_FILE) {
+      const milestone = _filePms.milestones.find(m => m.id === msId && m.projectId === project.id);
+      if (!milestone) return res.status(404).json({ ok: false, message: "마일스톤을 찾을 수 없습니다." });
+      if (expectedUpdatedAt && milestone.updatedAt !== expectedUpdatedAt) {
+        return res.status(409).json({ ok: false, code: "PMS_MILESTONE_CONFLICT", message: "다른 사용자가 먼저 수정했습니다. 최신 내용을 불러온 뒤 다시 시도하세요.", milestone });
+      }
+      _pmsApplyMilestoneFields(milestone, req.body);
+      _saveFilePms();
+      return res.json({ ok: true, milestone });
+    }
+    let milestone;
+    try {
+      milestone = await _pgLockedUpdate("pms_milestones", msId, async (m) => {
+        if (m.projectId !== project.id) throw new _RecruitRouteError(404, "마일스톤을 찾을 수 없습니다.");
+        if (expectedUpdatedAt && m.updatedAt !== expectedUpdatedAt) throw new _RecruitRouteError(409, "다른 사용자가 먼저 수정했습니다. 최신 내용을 불러온 뒤 다시 시도하세요.");
+        return _pmsApplyMilestoneFields({ ...m }, req.body);
+      }, companyId);
+    } catch (e) {
+      if (e instanceof _RecruitRouteError) return res.status(e.status).json({ ok: false, code: e.status === 409 ? "PMS_MILESTONE_CONFLICT" : undefined, message: _safeErrMsg(e) });
+      throw e;
+    }
+    res.json({ ok: true, milestone });
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
+});
+
+app.post("/api/pms/projects/:id/milestones/:msId/delete", async (req, res) => {
+  try {
+    if (!requirePage(req, res, "pms-projects")) return;
+    const companyId = req.auth.companyId || null;
+    const project = await _pmsProjectById(req.params.id, companyId);
+    if (!project) return res.status(404).json({ ok: false, message: "프로젝트를 찾을 수 없습니다." });
+    if (!_pmsCanManageProject(project, req.auth)) return res.status(403).json({ ok: false, message: "이 프로젝트의 마일스톤을 삭제할 권한이 없습니다." });
+    const msId = req.params.msId;
+    if (USE_JSON_FILE) {
+      const idx = _filePms.milestones.findIndex(m => m.id === msId && m.projectId === project.id);
+      if (idx < 0) return res.status(404).json({ ok: false, message: "마일스톤을 찾을 수 없습니다." });
+      _filePms.milestones.splice(idx, 1);
+      _saveFilePms();
+      return res.json({ ok: true });
+    }
+    const result = await pool.query("UPDATE pms_milestones SET is_deleted = TRUE WHERE id = $1 AND project_id = $2 AND company_id = $3", [msId, project.id, companyId]);
+    if (!result.rowCount) return res.status(404).json({ ok: false, message: "마일스톤을 찾을 수 없습니다." });
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
+});
+
+// 프로젝트 예산(참고용 자동산정) — 계획예산(project.budgetPlanned, 관리자 직접 입력)과 달리
+// 실적비용은 저장하지 않고 조회 시점에 즉석 계산한다(2026-10 사업계획 라운드에서 확립한
+// "항상 최신 계산식으로 재계산" 원칙과 동일 — 계산식이 바뀌어도 기존 데이터 재저장 없이
+// 소급 적용됨). 이 프로젝트의 전 직원 업무일지(blocks[].projectId 일치)를 모아 분을 합산,
+// 각 직원의 "월급÷표준근무시간" 추정 시급을 곱해 합산한다. 원본 업무일지 레코드는 응답에
+// 노출하지 않고 집계값만 반환(회계 리포트/원가명세서와 동일한 "서버가 계산한 결과만" 원칙).
+function _wlMinServer(t) {
+  const m = /^(\d{2}):(\d{2})$/.exec(String(t || ""));
+  if (!m) return NaN;
+  const hour = Number(m[1]), minute = Number(m[2]);
+  return hour >= 0 && hour <= 23 && minute >= 0 && minute <= 59 ? hour * 60 + minute : NaN;
+}
+app.get("/api/pms/projects/:id/budget", async (req, res) => {
+  if (!requireAuth(req, res)) return;
+  try {
+    const companyId = req.auth.companyId || null;
+    const project = await _pmsProjectById(req.params.id, companyId);
+    if (!project) return res.status(404).json({ ok: false, message: "프로젝트를 찾을 수 없습니다." });
+    const data = await loadData(companyId);
+    const employeesById = new Map((data.employees || []).map(e => [String(e.id), e]));
+    if (!_pmsCanViewProject(project, req.auth, employeesById)) return res.status(403).json({ ok: false, message: "이 프로젝트를 조회할 권한이 없습니다." });
+    let worklogs;
+    if (USE_JSON_FILE) {
+      worklogs = _filePms.worklogs;
+    } else {
+      const { rows } = await pool.query("SELECT data FROM pms_worklogs WHERE is_deleted = FALSE AND (company_id = $1 OR company_id IS NULL)", [companyId]);
+      worklogs = rows.map(r => r.data);
+    }
+    const standardMonthlyHours = Number(data.settings?.pmsStandardMonthlyHours) > 0 ? Number(data.settings.pmsStandardMonthlyHours) : 174;
+    let totalMinutes = 0;
+    const minutesByEmployee = {};
+    for (const w of worklogs) {
+      for (const b of (w.blocks || [])) {
+        if (String(b.projectId) !== String(project.id)) continue;
+        const s = _wlMinServer(b.startTime), e = _wlMinServer(b.endTime);
+        if (!Number.isFinite(s) || !Number.isFinite(e) || e <= s) continue;
+        const mins = e - s;
+        totalMinutes += mins;
+        minutesByEmployee[w.employeeId] = (minutesByEmployee[w.employeeId] || 0) + mins;
+      }
+    }
+    let actualCost = 0;
+    for (const [empId, mins] of Object.entries(minutesByEmployee)) {
+      const emp = employeesById.get(String(empId));
+      const monthlySalary = Math.round((Number(emp?.salary) || 0) / 12);
+      const hourlyRate = monthlySalary / standardMonthlyHours;
+      actualCost += (mins / 60) * hourlyRate;
+    }
+    res.json({
+      ok: true,
+      budgetPlanned: Number(project.budgetPlanned) || 0,
+      actualCost: Math.round(actualCost),
+      totalHours: Math.round((totalMinutes / 60) * 10) / 10,
+      standardMonthlyHours,
+    });
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
+});
 
 app.post("/api/pms/allocations", async (req, res) => {
   if (!requireAuth(req, res)) return;

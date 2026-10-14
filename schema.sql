@@ -920,6 +920,35 @@ BEGIN
   END IF;
 END $$;
 
+-- ── PMS: 프로젝트 작업(Task) ──────────────────────────────────────────────────
+-- id는 항상 서버 생성(pms_worklogs와 동일한 단순 단일컬럼 PK 패턴, 복합 PK 불필요) — pms_tasks/
+-- pms_milestones는 신규 테이블이라 company_id를 처음부터 NOT NULL로 선언한다(company_features
+-- 패턴과 동일, pms_worklogs처럼 기존 데이터 백필을 위한 2단계 마이그레이션이 필요 없음).
+CREATE TABLE IF NOT EXISTS pms_tasks (
+  id         TEXT        PRIMARY KEY,
+  project_id TEXT        NOT NULL,
+  company_id UUID        NOT NULL REFERENCES companies(id),
+  data       JSONB       NOT NULL,
+  is_deleted BOOLEAN     NOT NULL DEFAULT FALSE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_pms_tasks_project_id ON pms_tasks (project_id);
+CREATE INDEX IF NOT EXISTS idx_pms_tasks_company_id ON pms_tasks (company_id);
+
+-- ── PMS: 프로젝트 마일스톤 ────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS pms_milestones (
+  id         TEXT        PRIMARY KEY,
+  project_id TEXT        NOT NULL,
+  company_id UUID        NOT NULL REFERENCES companies(id),
+  data       JSONB       NOT NULL,
+  is_deleted BOOLEAN     NOT NULL DEFAULT FALSE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_pms_milestones_project_id ON pms_milestones (project_id);
+CREATE INDEX IF NOT EXISTS idx_pms_milestones_company_id ON pms_milestones (company_id);
+
 -- ── 채용: 채용공고 ────────────────────────────────────────────────────────────
 -- id 클라이언트 override 가능 — accounts와 동일한 (company_id, id) 복합 PK 패턴. 부서 스코프
 -- 검사(_recruitCanViewJob 등)는 server.js가 담당하며 company_id 스코프는 그 이전 단계로 추가된다.
