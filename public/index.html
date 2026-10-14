@@ -1971,6 +1971,28 @@ let _serverSavePending = false;   // queued save waiting
 let _serverDebounceTimer = null;  // debounce timer for auto-saves
 let _serverFailCount = 0;         // consecutive fail count
 let _retrySaveRequest = null;     // 네트워크 재시도 동안 동일 payload/Idempotency-Key 유지
+// 회사가 정지(suspended)되면 서버는 매 요청을 즉시 403 COMPANY_SUSPENDED로 거부한다
+// (server.js의 authenticate() — 작업1 companies.status enforcement). 그런데
+// 이 결과를 받는 배경 경로 3곳(_doSave의 자동저장, startHeartbeat의 30초 핑,
+// loadFromServer)이 서로 다르게 반응했다 — _doSave는 이 코드를 구분하지 않고
+// 일반 연결불안정 재시도 루프로 빠져 3회 실패 후 "서버 연결이 불안정합니다"라는
+// 오해를 부르는 문구로 실제 정지 안내를 덮어썼고, 하트비트는 r.ok가 false인
+// 분기 자체가 없어 아무 반응도 없이 조용히 넘어가(화면이 "정상"처럼 보임) 매
+// 30초마다 똑같이 반복됐다(둘 다 작업6 재점검에서 실측 확인). 세 경로가 전부
+// 이 헬퍼를 거치도록 통일해, 토스트는 한 번만 보여주고(반복 스팸 방지) 이후
+// 배경 타이머(자동저장+하트비트)를 멈춘다 — 재시도해도 결과가 달라지지 않는
+// 영구적 상태이므로, 다음 로그인(재활성화 이후) 때까지 불필요한 요청을 막는다.
+let _companySuspendedNotified = false;
+function _handleCompanySuspended(message){
+  stopServerAutoSave();
+  serverConfig.status = "error";
+  serverConfig.statusMsg = message || "이 회사는 현재 서비스가 일시 정지되었습니다.";
+  updateServerStatusUI();
+  if(!_companySuspendedNotified){
+    _companySuspendedNotified = true;
+    showToast(serverConfig.statusMsg, "error");
+  }
+}
 let _serverVersion = -1;
 let _singletonRevisions = {};
 let _singletonBaselines = {};
@@ -2402,6 +2424,14 @@ async function _doSave(silent=false){
       showToast(`다른 사용자가 ${e.details?.key||"설정"}을 먼저 변경했습니다. 서버에서 최신 데이터를 불러온 뒤 다시 적용해주세요.`,"error");
       return;
     }
+    if(e.code==="COMPANY_SUSPENDED"){
+      // 재시도해도 결과가 바뀌지 않는 영구 상태 — 일반 연결불안정 재시도 루프(아래)로
+      // 빠지면 3회 실패 후 "서버 연결이 불안정합니다"로 실제 정지 안내가 덮어써진다
+      // (_handleCompanySuspended 선언부 주석 참고, 작업6 재점검에서 실측 발견).
+      _retrySaveRequest=null;
+      _handleCompanySuspended(e.message);
+      return;
+    }
     _serverFailCount++;
     console.warn(`[Server] Save failed (${_serverFailCount}):`, e.message);
     if(_serverFailCount >= 3){
@@ -2457,6 +2487,8 @@ async function loadFromServer(){
       showToast("서버에서 데이터를 불러왔습니다.","success");
       _step = "render";
       renderSidebar(); renderPage();
+    } else if(r.code==="COMPANY_SUSPENDED"){
+      _handleCompanySuspended(r.message);
     } else {
       showToast(r.message||"서버에 저장된 데이터가 없습니다.","info");
     }
@@ -2491,9 +2523,10 @@ function stopServerAutoSave(){
 }
 
 // ── Heartbeat: ping every 30s, auto-reconnect if lost ──
-function startHeartbeat(){
-  if(_serverHeartbeatTimer) clearInterval(_serverHeartbeatTimer);
-  _serverHeartbeatTimer = setInterval(async ()=>{
+// setInterval에 익명 함수를 바로 넘기지 않고 이름 있는 _heartbeatTick()으로 뽑아둔 이유:
+// 테스트가 실제 30초를 기다리지 않고 이 함수를 직접 호출해 핑 실패 시나리오(예:
+// COMPANY_SUSPENDED)를 재현할 수 있게 하기 위함 — 동작은 그대로다.
+async function _heartbeatTick(){
     if(!serverConfig.enabled || !serverConfig.url) return;
     if(_serverSaving) return; // skip ping while saving
     try {
@@ -2540,6 +2573,11 @@ function startHeartbeat(){
           if(ago>0) serverConfig.statusMsg = `연결됨 · ${ago}분 전 저장`;
           updateServerStatusUI();
         }
+      } else if(r.code==="COMPANY_SUSPENDED"){
+        // r.ok===false는 예외를 던지지 않으므로 바깥 catch(e)로는 전혀 잡히지 않는다 —
+        // 이 분기가 없으면 하트비트는 30초마다 조용히 아무 반응도 안 해(화면이 "정상"처럼
+        // 보이는 채로) 매번 똑같이 재시도됨(_handleCompanySuspended 선언부 주석 참고).
+        _handleCompanySuspended(r.message);
       }
     } catch(e){
       if(serverConfig.status === "connected" && _serverFailCount >= 2){
@@ -2550,7 +2588,10 @@ function startHeartbeat(){
         scheduleReconnect();
       }
     }
-  }, 30000); // ping every 30s
+}
+function startHeartbeat(){
+  if(_serverHeartbeatTimer) clearInterval(_serverHeartbeatTimer);
+  _serverHeartbeatTimer = setInterval(_heartbeatTick, 30000); // ping every 30s
 }
 
 function stopHeartbeat(){
@@ -7157,6 +7198,10 @@ function renderLogin(){
 function _completeLogin(emp){
   const wrap=document.getElementById("login-wrap");if(wrap)wrap.style.display="none";
   clearProtectedModuleState();
+  // 새 로그인이 성공했다는 것 자체가 그 회사가 suspended가 아니라는 뜻이다(POST /login이
+  // 이미 그 상태를 막음) — 이전 세션에서 켜졌을 수 있는 1회성 통지 플래그를 되돌려
+  // 재활성화 이후에도 정지 안내가 쌓여있지 않게 한다.
+  _companySuspendedNotified = false;
   currentUser=emp;currentPage=EVAL_ONLY_MODE?_evalDefaultPage(emp):"dashboard";myKpiYear=settings.evalYear;
   // 회사가 회계/영업/재고 모듈을 껐으면 애초에 호출하지 않는다 — 어차피 서버가 403으로
   // 막지만(진짜 방어선), 매번 불필요한 요청+콘솔 에러 소음을 만드는 걸 피한다. ERP는

@@ -122,6 +122,20 @@ if (!ADMIN_DATABASE_URL) {
       }
     });
 
+    // /events(SSE)의 쿼리스트링 티켓(scope:"sse")은 전역 authenticate() 미들웨어를 완전히
+    // 비껴가(EventSource가 커스텀 헤더를 못 붙여 Authorization 대신 ?token=으로 전달) 이
+    // 라우트가 세션 철회만 직접 재구현하고 companyStatus는 재확인하지 않던 틈이 있었다
+    // (작업6 재점검에서 발견·수정) — 티켓은 정지 "전"에 발급받아둬야 재현 가능하므로
+    // 여기서 먼저 발급한다.
+    let compASseTicket;
+    await t.test("회사 A가 정지되기 전 SSE 티켓을 발급받아둔다", async () => {
+      const r = await (await api("/events/token", {
+        method: "POST", headers: { Authorization: `Bearer ${compA.token}` },
+      })).json();
+      assert.equal(r.ok, true, JSON.stringify(r));
+      compASseTicket = r.token;
+    });
+
     await t.test("정지(suspended) 전환 후: 그 회사는 로그인 자체가 차단된다(자격증명은 맞음)", async () => {
       const r = await setStatus(compA.company.id, "suspended");
       assert.equal(r.ok, true, JSON.stringify(r));
@@ -141,6 +155,24 @@ if (!ADMIN_DATABASE_URL) {
       const body = await res.json();
       assert.equal(res.status, 403);
       assert.equal(body.code, "COMPANY_SUSPENDED");
+    });
+
+    await t.test("정지 전 발급된 SSE 티켓도 /events에서 즉시 차단된다(세션철회 재구현에만 있던 틈 수정)", async () => {
+      // 403 분기는 res.flushHeaders()/스트리밍 쓰기 전에 즉시 반환되므로 평범한 JSON
+      // 응답과 동일하게 받을 수 있다. 반면 이 검사가 없던 수정 전 코드는 티켓을 그대로
+      // 통과시켜 res.flushHeaders() 이후 text/event-stream을 계속 쓰기만 해(res.json()이
+      // 영원히 끝나지 않음) — AbortController로 그 경우를 "통과 못함(타임아웃)"으로
+      // 확실히 실패시킨다(무한 행 방지 + 회귀 시 멈춰있지 않고 바로 알 수 있게).
+      const ac = new AbortController();
+      const timer = setTimeout(() => ac.abort(), 5000);
+      try {
+        const res = await api(`/events?token=${encodeURIComponent(compASseTicket)}`, { signal: ac.signal });
+        const body = await res.json();
+        assert.equal(res.status, 403);
+        assert.equal(body.code, "COMPANY_SUSPENDED");
+      } finally {
+        clearTimeout(timer);
+      }
     });
 
     await t.test("다른 회사(B)는 A의 정지와 무관하게 정상 동작한다", async () => {
