@@ -23605,6 +23605,26 @@ function _erpItemName(id){const i=erpItems.find(i=>i.id===id);return i?`${i.code
 function _erpLocationName(id){const l=erpLocations.find(l=>l.id===id);return l?l.name:id;}
 function _erpStockQty(itemId,locationId){const s=erpStock.find(s=>s.itemId===itemId&&s.locationId===locationId);return s?s.qty:0;}
 
+// 재고 리드타임 반영 재주문점(참고용 추정치) — 순수 함수(단위테스트 가능).
+// item: {safetyStock, leadTimeDays}. ledgerEntries: 그 품목+위치의 전체(또는 최근) 원장
+// 행 배열({type:"in"|"out", qty, createdAt}). leadTimeDays가 0/미설정이거나 최근
+// windowDays(기본 90일) 안에 출고 이력이 전혀 없으면 리드타임을 반영하지 않고 기존
+// 단순 부족분(안전재고-현재재고) 방식으로 그대로 폴백한다(하위호환, 퇴보 없음) —
+// 리드타임이 설정돼 있어도 "쌓인 출고 이력이 전혀 없으면" dailyUsage가 0이 되어
+// 수식상 자연스럽게 동일한 결과로 귀결되므로 별도 분기 없이 하나의 수식으로 처리.
+// 실제 발주 시점에는 리드타임·수요 변동을 반드시 다시 확인해야 하는 추정치일 뿐이다.
+function _erpReorderPoint(item,ledgerEntries,now,windowDays){
+  now=now||Date.now();windowDays=windowDays||90;
+  const safetyStock=Math.max(0,item?.safetyStock||0);
+  const leadTimeDays=Math.max(0,item?.leadTimeDays||0);
+  const cutoff=now-windowDays*24*60*60*1000;
+  const outQtySum=(ledgerEntries||[]).filter(e=>e&&e.type==="out"&&e.createdAt&&new Date(e.createdAt).getTime()>=cutoff)
+    .reduce((s,e)=>s+Math.abs(e.qty||0),0);
+  const dailyUsage=leadTimeDays>0?outQtySum/windowDays:0;
+  const reorderPoint=safetyStock+dailyUsage*leadTimeDays;
+  return{reorderPoint,dailyUsage,leadTimeApplied:leadTimeDays>0&&dailyUsage>0};
+}
+
 // ── 품목 관리 ────────────────────────────────────────────────────────────────
 function renderInvItemsPage(){
   const c=$("#content");if(!c)return;
@@ -23621,8 +23641,8 @@ function renderInvItemsTbl(){
   const wrap=$("#inv-items-tbl");if(!wrap)return;
   const q=(window._invItemSearch||"").trim();
   const rows=q?erpItems.filter(i=>[i.code,i.name,i.productName,i.assetNo,i.category].some(v=>(v||"").includes(q))):erpItems;
-  wrap.innerHTML=`<div class="tbl-wrap"><table><thead><tr><th>코드</th><th>품목명</th><th>제품명</th><th>단위</th><th>분류</th><th>안전재고</th><th>자산번호</th><th>사용여부</th><th>관리</th></tr></thead><tbody>
-  ${rows.length?rows.map(i=>`<tr><td>${h(i.code)}</td><td>${h(i.name)}</td><td>${h(i.productName||"-")}</td><td>${h(i.unit)}</td><td>${h(i.category||"-")}</td><td style="text-align:right">${i.safetyStock||0}</td><td>${h(i.assetNo||"-")}</td><td>${i.active?badge("사용","green"):badge("미사용","gray")}</td><td><button class="btn btn-secondary btn-sm" onclick="openItemModal('${i.id}')">수정</button> <button class="btn btn-danger btn-sm" onclick="deleteItem('${i.id}')">삭제</button></td></tr>`).join(""):`<tr><td colspan="9" class="text-gray" style="text-align:center;padding:20px">${q?"검색 결과가 없습니다.":"등록된 품목이 없습니다."}</td></tr>`}
+  wrap.innerHTML=`<div class="tbl-wrap"><table><thead><tr><th>코드</th><th>품목명</th><th>제품명</th><th>단위</th><th>분류</th><th>안전재고</th><th>리드타임(일)</th><th>자산번호</th><th>사용여부</th><th>관리</th></tr></thead><tbody>
+  ${rows.length?rows.map(i=>`<tr><td>${h(i.code)}</td><td>${h(i.name)}</td><td>${h(i.productName||"-")}</td><td>${h(i.unit)}</td><td>${h(i.category||"-")}</td><td style="text-align:right">${i.safetyStock||0}</td><td style="text-align:right">${i.leadTimeDays||0}</td><td>${h(i.assetNo||"-")}</td><td>${i.active?badge("사용","green"):badge("미사용","gray")}</td><td><button class="btn btn-secondary btn-sm" onclick="openItemModal('${i.id}')">수정</button> <button class="btn btn-danger btn-sm" onclick="deleteItem('${i.id}')">삭제</button></td></tr>`).join(""):`<tr><td colspan="10" class="text-gray" style="text-align:center;padding:20px">${q?"검색 결과가 없습니다.":"등록된 품목이 없습니다."}</td></tr>`}
   </tbody></table></div>`;
 }
 function openItemModal(id){
@@ -23634,6 +23654,7 @@ function openItemModal(id){
     <div class="fg"><label class="fl">단위</label><input class="fc" id="item-unit" value="${h(i?.unit||"EA")}"></div>
     <div class="fg"><label class="fl">분류</label><input class="fc" id="item-category" value="${h(i?.category||"")}"></div>
     <div class="fg"><label class="fl">안전재고</label><input class="fc" type="number" id="item-safety" value="${i?.safetyStock||0}"></div>
+    <div class="fg"><label class="fl">리드타임(일) <span class="fz11 text-gray">(발주~입고까지 평균 소요일, 재고 현황의 추천 발주량 계산에 반영 — 0 또는 미입력 시 리드타임 없이 안전재고 부족분만으로 계산)</span></label><input class="fc" type="number" min="0" id="item-leadtime" value="${i?.leadTimeDays||0}"></div>
     <div class="fg"><label class="fl">표준원가 <span class="fz11 text-gray">(재고 평가액 산정용)</span></label><input class="fc" type="number" id="item-cost" value="${i?.unitCost||0}"></div>
     <div class="fg"><label class="fl">자산번호</label><input class="fc" id="item-asset" value="${h(i?.assetNo||"")}"></div>
     <div class="fg"><label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" id="item-active" ${i?.active!==false?"checked":""}> 사용</label></div>
@@ -23642,7 +23663,7 @@ function openItemModal(id){
 async function saveItem(id){
   const code=$("#item-code")?.value.trim(),name=$("#item-name")?.value.trim();
   if(!code||!name){showToast("품목코드와 품목명을 입력하세요.","error");return;}
-  const body={id:id||undefined,code,name,productName:$("#item-pname")?.value.trim(),assetNo:$("#item-asset")?.value.trim(),unit:$("#item-unit")?.value.trim(),category:$("#item-category")?.value.trim(),safetyStock:+$("#item-safety")?.value||0,unitCost:+$("#item-cost")?.value||0,active:$("#item-active")?.checked,role:currentUser.role,user:currentUser.name};
+  const body={id:id||undefined,code,name,productName:$("#item-pname")?.value.trim(),assetNo:$("#item-asset")?.value.trim(),unit:$("#item-unit")?.value.trim(),category:$("#item-category")?.value.trim(),safetyStock:+$("#item-safety")?.value||0,unitCost:+$("#item-cost")?.value||0,leadTimeDays:Math.max(0,+$("#item-leadtime")?.value||0),active:$("#item-active")?.checked,role:currentUser.role,user:currentUser.name};
   const r=await serverRequest("POST","/api/erp/items",body);
   if(!r?.ok){showToast(r?.message||"저장에 실패했습니다.","error");return;}
   const idx=erpItems.findIndex(i=>i.id===r.item.id);
@@ -23675,8 +23696,8 @@ async function deleteItem(id){
 }
 
 function _dlInvItemsCSV(){
-  dlCSV(`품목_${new Date().toISOString().slice(0,10)}.csv`,["코드","품목명","제품명","단위","분류","안전재고","표준원가","자산번호","사용여부"],
-    erpItems.map(i=>[i.code,i.name,i.productName||"",i.unit||"",i.category||"",i.safetyStock||0,i.unitCost||0,i.assetNo||"",i.active?"사용":"미사용"]));
+  dlCSV(`품목_${new Date().toISOString().slice(0,10)}.csv`,["코드","품목명","제품명","단위","분류","안전재고","리드타임(일)","표준원가","자산번호","사용여부"],
+    erpItems.map(i=>[i.code,i.name,i.productName||"",i.unit||"",i.category||"",i.safetyStock||0,i.leadTimeDays||0,i.unitCost||0,i.assetNo||"",i.active?"사용":"미사용"]));
 }
 function _dlInvStockCSV(){
   dlCSV(`재고현황_${new Date().toISOString().slice(0,10)}.csv`,["품목","제품명","위치","현재재고","단위","안전재고","평가액","자산번호","상태"],
@@ -23739,11 +23760,15 @@ async function deleteLocation(id){
 }
 
 // ── 재고 현황 ────────────────────────────────────────────────────────────────
-function renderInvStockPage(){
+async function renderInvStockPage(){
   const c=$("#content");if(!c)return;
   if(!serverConfig.url){c.innerHTML=_erpNoServerHtml("재고 현황");return;}
+  // 재주문점(리드타임 반영) 계산에 최근 출고 이력이 필요해, "재고 변동 로그" 페이지와
+  // 동일하게 방문 시마다 전체 원장을 새로 불러온다(이 페이지도 admin 전용이라 과도한
+  // 비용은 아니며, 기존 로그 페이지의 캐시 전략을 그대로 재사용).
+  await _loadStockLedger();
   const f=window._invStockFilter||{q:"",status:"all"};
-  c.innerHTML=`<div class="card"><div class="card-head"><h3>📊 재고 현황</h3><div><button class="btn btn-secondary btn-sm" onclick="_dlInvStockCSV()">📥 엑셀 다운로드</button> <button class="btn btn-secondary btn-sm" onclick="gotoPage('inv-stock-log')">📜 변동 로그</button> <button class="btn btn-secondary btn-sm" onclick="openStockTransferModal()">↔ 창고 이동</button> <button class="btn btn-secondary btn-sm" onclick="openStockCountModal()">📋 재고 실사</button> <button class="btn btn-primary btn-sm" onclick="openStockAdjustModal()">+ 재고 조정</button></div></div>
+  c.innerHTML=`<div class="card"><div class="card-head"><h3>📊 재고 현황</h3><div><button class="btn btn-secondary btn-sm" onclick="_dlInvStockCSV()">📥 엑셀 다운로드</button> <button class="btn btn-secondary btn-sm" onclick="gotoPage('inv-stock-log')">📜 변동 로그</button> <button class="btn btn-secondary btn-sm" onclick="openStockTransferModal()">↔ 창고 이동</button> <button class="btn btn-secondary btn-sm" onclick="openStockCountModal()">📋 재고 실사</button> <button class="btn btn-secondary btn-sm" onclick="bulkCreatePurchaseRequestFromStock()">🧺 선택 항목 일괄 구매요청</button> <button class="btn btn-primary btn-sm" onclick="openStockAdjustModal()">+ 재고 조정</button></div></div>
   <div class="card-body">
   <div class="flex gap2 wrap mb3" style="align-items:center">
     <input class="fc" id="inv-stock-search" data-live-filter="inv-stock-search" style="max-width:280px" value="${h(f.q)}" placeholder="품목·제품명·위치·자산번호·수량 검색">
@@ -23754,7 +23779,7 @@ function renderInvStockPage(){
     </select>
     <span class="fz12 text-gray" id="inv-stock-total-value">표준원가 기준 재고 평가액: <b>0원</b></span>
   </div>
-  <div class="fz11 text-gray mb2">추천 발주량 = 안전재고 − 현재 재고 (품목별 리드타임 정보가 없어 부족분 기준으로 계산됩니다)</div>
+  <div class="fz11 text-gray mb2">추천 발주량 = 안전재고 − 현재 재고(품목에 리드타임이 설정돼 있으면, 여기에 최근 90일 평균 출고량×리드타임을 더해 재주문점을 다시 계산). 참고용 추정치이니 실제 발주 전 리드타임·수요 변동을 다시 확인하세요.</div>
   <div id="inv-stock-tbl"></div>
   </div></div>`;
   registerLiveFilter("inv-stock-search",{set:value=>{window._invStockFilter={...window._invStockFilter,q:value};},render:renderInvStockTbl});
@@ -23764,7 +23789,18 @@ function renderInvStockTbl(){
   const wrap=$("#inv-stock-tbl");if(!wrap)return;
   const f=window._invStockFilter||{q:"",status:"all"};
   let rows=erpStock.filter(s=>s.qty!==0).sort((a,b)=>_erpItemName(a.itemId).localeCompare(_erpItemName(b.itemId)));
-  rows=rows.map(s=>{const item=erpItems.find(i=>i.id===s.itemId);const low=item&&s.qty<(item.safetyStock||0);return{...s,_item:item,_low:low,_recQty:low?Math.max(0,(item.safetyStock||0)-s.qty):0};});
+  rows=rows.map(s=>{
+    const item=erpItems.find(i=>i.id===s.itemId);
+    const low=item&&s.qty<(item.safetyStock||0);
+    let recQty=0,leadTimeApplied=false;
+    if(low){
+      const ledgerForRow=erpStockLedger.filter(l=>l.itemId===s.itemId&&l.locationId===s.locationId);
+      const rp=_erpReorderPoint(item,ledgerForRow);
+      recQty=Math.max(0,Math.round(rp.reorderPoint-s.qty));
+      leadTimeApplied=rp.leadTimeApplied;
+    }
+    return{...s,_item:item,_low:low,_recQty:recQty,_leadTimeApplied:leadTimeApplied};
+  });
   if(f.status==="low")rows=rows.filter(s=>s._low);
   if(f.status==="ok")rows=rows.filter(s=>!s._low);
   if((f.q||"").trim()){
@@ -23773,9 +23809,15 @@ function renderInvStockTbl(){
   }
   const totalValue=rows.reduce((s,r)=>s+r.qty*(r._item?.unitCost||0),0);
   const totalEl=$("#inv-stock-total-value");if(totalEl)totalEl.innerHTML=`표준원가 기준 재고 평가액: <b>${totalValue.toLocaleString()}원</b>`;
-  wrap.innerHTML=`<div class="tbl-wrap"><table><thead><tr><th>품목</th><th>제품명</th><th>위치</th><th>현재 재고</th><th>안전재고</th><th>추천 발주량</th><th>평가액</th><th>자산번호</th><th>상태</th><th>이력</th></tr></thead><tbody>
-  ${rows.length?rows.map(s=>`<tr><td>${h(_erpItemName(s.itemId))}</td><td>${h(s._item?.productName||"-")}</td><td>${h(_erpLocationName(s.locationId))}</td><td style="text-align:right">${s.qty.toLocaleString()} ${h(s._item?.unit||"")}</td><td style="text-align:right">${s._item?.safetyStock||0}</td><td style="text-align:right">${s._low?`<b style="color:#dc2626">${s._recQty.toLocaleString()}</b> ${h(s._item?.unit||"")}`:"-"}</td><td style="text-align:right">${(s.qty*(s._item?.unitCost||0)).toLocaleString()}</td><td>${h(s._item?.assetNo||"-")}</td><td>${s._low?badge("부족","red"):badge("정상","green")}</td><td><button class="btn btn-ghost btn-sm" onclick="window._invLogFilter={itemId:'${s.itemId}',locationId:'${s.locationId}'};gotoPage('inv-stock-log')">로그</button></td></tr>`).join(""):`<tr><td colspan="10" class="text-gray" style="text-align:center;padding:20px">${f.q||f.status!=="all"?"검색 결과가 없습니다.":"재고 데이터가 없습니다."}</td></tr>`}
+  wrap.innerHTML=`<div class="tbl-wrap"><table><thead><tr><th><input type="checkbox" onchange="document.querySelectorAll('.inv-stock-chk').forEach(c=>c.checked=this.checked)"></th><th>품목</th><th>제품명</th><th>위치</th><th>현재 재고</th><th>안전재고</th><th>추천 발주량</th><th>평가액</th><th>자산번호</th><th>상태</th><th>관리</th></tr></thead><tbody>
+  ${rows.length?rows.map(s=>`<tr><td style="text-align:center">${s._low?`<input type="checkbox" class="inv-stock-chk" data-item-id="${s.itemId}" data-recqty="${s._recQty}">`:""}</td><td>${h(_erpItemName(s.itemId))}</td><td>${h(s._item?.productName||"-")}</td><td>${h(_erpLocationName(s.locationId))}</td><td style="text-align:right">${s.qty.toLocaleString()} ${h(s._item?.unit||"")}</td><td style="text-align:right">${s._item?.safetyStock||0}</td><td style="text-align:right">${s._low?`<b style="color:#dc2626">${s._recQty.toLocaleString()}</b> ${h(s._item?.unit||"")}${s._leadTimeApplied?` <span class="badge bg-blue fz10" title="최근 90일 평균 출고량×리드타임(${s._item?.leadTimeDays||0}일)을 반영한 추정치">⏱ 리드타임 반영</span>`:""}`:"-"}</td><td style="text-align:right">${(s.qty*(s._item?.unitCost||0)).toLocaleString()}</td><td>${h(s._item?.assetNo||"-")}</td><td>${s._low?badge("부족","red"):badge("정상","green")}</td><td>${s._low?`<button class="btn btn-secondary btn-sm" onclick="openPurchaseRequestModal([{itemId:'${s.itemId}',qty:${s._recQty}}])">📝 구매요청</button> `:""}<button class="btn btn-ghost btn-sm" onclick="window._invLogFilter={itemId:'${s.itemId}',locationId:'${s.locationId}'};gotoPage('inv-stock-log')">로그</button></td></tr>`).join(""):`<tr><td colspan="11" class="text-gray" style="text-align:center;padding:20px">${f.q||f.status!=="all"?"검색 결과가 없습니다.":"재고 데이터가 없습니다."}</td></tr>`}
   </tbody></table></div>`;
+}
+function bulkCreatePurchaseRequestFromStock(){
+  const checked=[...document.querySelectorAll(".inv-stock-chk:checked")];
+  if(!checked.length){showToast("선택된 품목이 없습니다. 부족 품목 행의 체크박스를 선택하세요.","error");return;}
+  const lines=checked.map(el=>({itemId:el.dataset.itemId,qty:Number(el.dataset.recqty)||1}));
+  openPurchaseRequestModal(lines);
 }
 // ── 재고 실사: 위치 선택 후 전 품목의 현재 재고를 보여주고 실사 수량 입력 → 차이만 일괄 조정 ──
 let _stockCountLines=[];
@@ -26736,10 +26778,22 @@ function _dlPRsCSV(){
   dlCSV(`구매요청_${new Date().toISOString().slice(0,10)}.csv`,["요청일","요청자","합계","상태","메모"],
     erpPurchaseRequests.map(pr=>[pr.date,pr.requestedBy,pr.grandTotal,SL[pr.status]||pr.status,pr.memo||""]));
 }
-function openPurchaseRequestModal(){
+// presetLines(선택): [{itemId,qty}] — "재고 현황"의 "📝 구매요청" 단일/일괄 버튼이
+// 추천 발주량으로 미리 채워서 여는 용도. 어디까지나 초안일 뿐 — 관리자가 모달에서
+// 수량·단가를 검토·수정한 뒤 "요청 제출"을 직접 눌러야만 서버에 실제로 생성된다
+// (반자동: 값만 자동으로 채우고 생성 자체는 사람이 확정).
+function openPurchaseRequestModal(presetLines){
   if(!erpItems.length){showToast("등록된 품목이 없습니다. 관리자에게 문의하세요.","error");return;}
-  _prItems=[{itemId:erpItems[0].id,name:erpItems[0].name,qty:1,unitPrice:0}];
+  if(Array.isArray(presetLines)&&presetLines.length){
+    _prItems=presetLines.map(l=>{
+      const item=erpItems.find(i=>i.id===l.itemId);
+      return{itemId:l.itemId,name:item?item.name:l.itemId,qty:Math.max(1,Math.round(l.qty)||1),unitPrice:item?.unitCost||0};
+    });
+  }else{
+    _prItems=[{itemId:erpItems[0].id,name:erpItems[0].name,qty:1,unitPrice:0}];
+  }
   openModal(`<div class="modal-box" style="max-width:680px"><div class="modal-head"><h3>🛒 구매요청 작성</h3></div><div class="modal-body">
+    ${Array.isArray(presetLines)&&presetLines.length?`<div class="info-note mb2">재고 부족 품목의 추천 발주량으로 미리 채워진 초안입니다. 수량·단가를 검토한 뒤 제출하세요.</div>`:""}
     <div class="fg"><label class="fl">요청일자 <span class="req">*</span></label><input class="fc" type="date" id="pr-date" value="${new Date().toISOString().slice(0,10)}"></div>
     <div class="fg"><label class="fl">품목</label><div id="pr-items"></div><button class="btn btn-secondary btn-sm mt2" onclick="_prItems.push({itemId:erpItems[0].id,name:erpItems[0].name,qty:1,unitPrice:0});renderPRItems()">+ 품목 추가</button></div>
     <div class="fg"><label class="fl">메모</label><input class="fc" id="pr-memo"></div>

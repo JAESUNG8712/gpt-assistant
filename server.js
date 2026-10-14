@@ -9013,10 +9013,13 @@ app.post("/api/erp/items", async (req, res) => {
     if (!requireAdmin(req, res)) return;
     if (!requirePage(req, res, "inv-items")) return;
     const companyId = req.auth.companyId || null;
-    const { id, code, name, productName, assetNo, unit, category, safetyStock = 0, unitCost = 0, active = true } = req.body || {};
+    const { id, code, name, productName, assetNo, unit, category, safetyStock = 0, unitCost = 0, leadTimeDays = 0, active = true } = req.body || {};
     if (!code || !name) return res.status(400).json({ ok: false, message: "품목코드, 품목명은 필수입니다." });
     const itemId = id || `item_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-    const item = { id: itemId, code, name, productName: productName || "", assetNo: assetNo || "", unit: unit || "EA", category: category || "", safetyStock: Number(safetyStock) || 0, unitCost: Number(unitCost) || 0, active };
+    // leadTimeDays: 발주~입고까지 걸리는 평균 일수(미설정/0 = 재주문점 계산에서 리드타임을
+    // 반영하지 않고 기존 단순 부족분(안전재고-현재재고) 방식으로 폴백) — 음수는 의미가
+    // 없으므로 0 이상으로 clamp.
+    const item = { id: itemId, code, name, productName: productName || "", assetNo: assetNo || "", unit: unit || "EA", category: category || "", safetyStock: Number(safetyStock) || 0, unitCost: Number(unitCost) || 0, leadTimeDays: Math.max(0, Number(leadTimeDays) || 0), active };
     if (USE_JSON_FILE) {
       const idx = _fileErp.items.findIndex(i => i.id === itemId);
       if (idx >= 0) _fileErp.items[idx] = item; else _fileErp.items.push(item);
