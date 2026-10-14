@@ -133,4 +133,76 @@ test.describe("OKR 모듈", () => {
 
     expect(pageErrors).toEqual([]);
   });
+
+  test("작업4 — 상위목표(parentOkrId) 선택 UI(scope/연도/승인상태로 후보 필터링)와 전사 목표 보드의 연계 트리뷰가 동작한다", async ({ page }) => {
+    const pageErrors = [];
+    page.on("pageerror", (e) => pageErrors.push(e.message));
+    await loginAsAdmin(page);
+    await seedTeam(page);
+
+    await page.evaluate(() => {
+      settings.evalYear = 2026;
+      const now = new Date().toISOString();
+      okrObjectives.push(
+        // 후보가 돼야 하는 것: 같은 연도(2026)·승인됨·회사 범위
+        { id: "okr_e2e_co1", year: 2026, ownerId: 9802, ownerName: "담당팀장", dept: "경영지원본부", team: "", scope: "company", title: "전사목표A", description: "", status: "approved", krs: [], parentOkrId: null, comments: [], attachments: [], createdAt: now, updatedAt: now },
+        // 후보가 되면 안 되는 것: 연도가 다름(2025)
+        { id: "okr_e2e_co_oldyr", year: 2025, ownerId: 9802, ownerName: "담당팀장", dept: "경영지원본부", team: "", scope: "company", title: "작년목표", description: "", status: "approved", krs: [], parentOkrId: null, comments: [], attachments: [], createdAt: now, updatedAt: now },
+        // 후보가 되면 안 되는 것: 아직 승인 안 됨(pending)
+        { id: "okr_e2e_co_pending", year: 2026, ownerId: 9802, ownerName: "담당팀장", dept: "경영지원본부", team: "", scope: "company", title: "미승인목표", description: "", status: "pending", krs: [], parentOkrId: null, comments: [], attachments: [], createdAt: now, updatedAt: now },
+      );
+    });
+
+    // 오너(팀원, scope 랭크상 personal(0))가 새 OKR 작성 — scope=team일 때 후보 목록 확인
+    await page.evaluate(() => { currentUser = { ...currentUser, id: 9801, role: "member", dept: "경영지원본부", team: "인사팀", name: "팀원오너" }; });
+    await page.evaluate(() => gotoPage("okr"));
+    await page.click("button:has-text('+ 목표 등록')");
+    await page.selectOption("#okr-scope", "team");
+
+    const optionsAfterTeamScope = await page.locator("#okr-parent option").allTextContents();
+    expect(optionsAfterTeamScope.some(t => t.includes("전사목표A"))).toBe(true);
+    expect(optionsAfterTeamScope.some(t => t.includes("작년목표"))).toBe(false);
+    expect(optionsAfterTeamScope.some(t => t.includes("미승인목표"))).toBe(false);
+
+    // scope=company로 바꾸면(회사 범위는 랭크가 가장 높아 부모를 가질 수 없음) 후보가 전혀 없어야 한다.
+    await page.selectOption("#okr-scope", "company");
+    const optionsAfterCompanyScope = await page.locator("#okr-parent option").allTextContents();
+    expect(optionsAfterCompanyScope.length).toBe(1); // "(없음)" 하나뿐
+    expect(optionsAfterCompanyScope[0]).toContain("없음");
+
+    // scope를 team으로 되돌리고 전사목표A를 상위로 선택해 저장
+    await page.selectOption("#okr-scope", "team");
+    await page.fill("#okr-title", "새 팀 목표");
+    await page.selectOption("#okr-parent", "okr_e2e_co1");
+    await page.click(".modal-foot button:has-text('저장')");
+    await expect(page.locator(".modal-box, .modal")).toHaveCount(0);
+    await expect(page.locator("#okr-content")).toContainText("새 팀 목표");
+    await expect(page.locator("#okr-content")).toContainText("상위 목표: 전사목표A");
+
+    const savedChild = await page.evaluate(() => okrObjectives.find(o => o.title === "새 팀 목표"));
+    expect(savedChild.parentOkrId).toBe("okr_e2e_co1");
+
+    // 전사 목표 보드 — 기본(목록형)은 회사 범위·승인된 것만, 자식(team)은 보이지 않는다.
+    await page.evaluate(() => { okrTab = "board"; okrBoardView = "flat"; renderOkrPage(); });
+    await expect(page.locator("#okr-content")).toContainText("전사목표A");
+    await expect(page.locator("#okr-content")).not.toContainText("새 팀 목표");
+
+    // 연계 보기(트리)로 전환하면 전사목표A 아래에 자식(새 팀 목표)이 들여쓰기로 함께 나타난다.
+    await page.click("button:has-text('연계 보기(트리)')");
+    await expect(page.locator("#okr-content")).toContainText("전사목표A");
+    await expect(page.locator("#okr-content")).toContainText("새 팀 목표");
+    const childIndent = await page.locator("#okr-content div:has-text('새 팀 목표')").first().evaluate(el => {
+      let n = el;
+      while (n && !n.style.marginLeft) n = n.parentElement;
+      return n ? n.style.marginLeft : null;
+    });
+    expect(childIndent).not.toBeNull();
+    expect(parseInt(childIndent, 10)).toBeGreaterThan(0);
+
+    // 목록형으로 되돌리면 다시 자식이 사라진다(토글이 상태를 정확히 되돌리는지 확인).
+    await page.click("button:has-text('목록형')");
+    await expect(page.locator("#okr-content")).not.toContainText("새 팀 목표");
+
+    expect(pageErrors).toEqual([]);
+  });
 });
