@@ -202,8 +202,14 @@ test.describe("재고 리드타임 + 반자동 구매요청", () => {
     await page.locator("tr", { hasText: "일괄구매요청품목2" }).locator(".inv-stock-chk").check();
     await page.click("button:has-text('🧺 선택 항목 일괄 구매요청')");
 
-    const qtyInputs = await page.locator("#pr-items input[placeholder='수량']").all();
-    expect(qtyInputs.length).toBe(2);
+    // openPurchaseRequestModal()이 모달 자체는 즉시 열지만 실제 입력란은
+    // setTimeout(renderPRItems,30)으로 지연 렌더링한다 — .all()은 toHaveValue()류
+    // 어서션과 달리 자동 재시도(auto-wait)를 하지 않으므로, 먼저 개수가 찰 때까지
+    // 기다린 뒤에 읽어야 한다(이 레이스를 놓쳐 처음엔 .all()을 즉시 호출해 실패를
+    // 재현했었음).
+    const qtyLocator = page.locator("#pr-items input[placeholder='수량']");
+    await expect(qtyLocator).toHaveCount(2);
+    const qtyInputs = await qtyLocator.all();
     const values = await Promise.all(qtyInputs.map((el) => el.inputValue()));
     expect(values.sort()).toEqual(["10", "20"]); // safetyStock(20|30) - 현재고(10)
 
