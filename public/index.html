@@ -24252,8 +24252,8 @@ function renderPmsProjectsPage(){
   if(!_pmsLoaded){c.innerHTML=`<div class="card"><div class="card-body text-gray" style="text-align:center;padding:30px">불러오는 중...</div></div>`;_pmsEnsureLoaded();return;}
   const visibleProjects=pmsProjects;
   c.innerHTML=`<div class="card"><div class="card-head"><h3>🗂 프로젝트 관리</h3>${_pmsCanManage()?`<button class="btn btn-primary btn-sm" onclick="openPmsProjectModal()">+ 프로젝트 등록</button>`:""}</div>
-  <div class="card-body" style="padding:0"><div class="tbl-wrap"><table><thead><tr><th>프로젝트명</th><th>기간</th><th>PM</th><th>투입 인원</th><th>상태</th><th>메모</th>${_pmsCanManage()?"<th>관리</th>":""}</tr></thead><tbody>
-  ${visibleProjects.length?visibleProjects.map(p=>`<tr><td>${h(p.name)}</td><td>${h(p.startDate||"-")} ~ ${h(p.endDate||"-")}</td><td>${p.pmId?h(getEmpName(p.pmId)):h(p.pm||"-")}</td><td class="fz11">${(p.members||[]).length?(p.members||[]).map(mid=>h(getEmpName(mid))).join(", "):"-"}</td><td>${p.status==="active"?badge("진행중","green"):badge("종료","gray")}</td><td>${h(p.memo||"")}</td>${_pmsCanManage()?`<td>${p.canManage?`<button class="btn btn-secondary btn-sm" onclick="openPmsProjectModal('${p.id}')">수정</button> ${p.status==="active"?`<button class="btn btn-danger btn-sm" onclick="closePmsProject('${p.id}')">종료</button>`:""}`:"-"}</td>`:""}</tr>`).join(""):`<tr><td colspan="${_pmsCanManage()?7:6}" class="text-gray" style="text-align:center;padding:20px">${_pmsCanManage()?"등록된 프로젝트가 없습니다.":"투입 인원으로 등록된 프로젝트가 없습니다."}</td></tr>`}
+  <div class="card-body" style="padding:0"><div class="tbl-wrap"><table><thead><tr><th>프로젝트명</th><th>기간</th><th>PM</th><th>투입 인원</th><th>상태</th><th>메모</th><th>상세</th>${_pmsCanManage()?"<th>관리</th>":""}</tr></thead><tbody>
+  ${visibleProjects.length?visibleProjects.map(p=>`<tr><td>${h(p.name)}</td><td>${h(p.startDate||"-")} ~ ${h(p.endDate||"-")}</td><td>${p.pmId?h(getEmpName(p.pmId)):h(p.pm||"-")}</td><td class="fz11">${(p.members||[]).length?(p.members||[]).map(mid=>h(getEmpName(mid))).join(", "):"-"}</td><td>${p.status==="active"?badge("진행중","green"):badge("종료","gray")}</td><td>${h(p.memo||"")}</td><td><button class="btn btn-secondary btn-sm" onclick="openPmsProjectDetailModal('${p.id}')">🗂 상세보기</button></td>${_pmsCanManage()?`<td>${p.canManage?`<button class="btn btn-secondary btn-sm" onclick="openPmsProjectModal('${p.id}')">수정</button> ${p.status==="active"?`<button class="btn btn-danger btn-sm" onclick="closePmsProject('${p.id}')">종료</button>`:""}`:"-"}</td>`:""}</tr>`).join(""):`<tr><td colspan="${_pmsCanManage()?8:7}" class="text-gray" style="text-align:center;padding:20px">${_pmsCanManage()?"등록된 프로젝트가 없습니다.":"투입 인원으로 등록된 프로젝트가 없습니다."}</td></tr>`}
   </tbody></table></div></div></div>`;
 }
 let _pmjDraftMembers=[];
@@ -24322,9 +24322,12 @@ async function savePmsProject(id){
   const r=await serverRequest("POST",id?`/api/pms/projects/${id}`:"/api/pms/projects",body);
   if(r?.code==="PMS_PROJECT_CONFLICT"){await loadPmsFromServer();closeModal();showToast("다른 사용자의 변경을 감지해 최신 내용을 불러왔습니다. 다시 확인 후 저장하세요.","error");return;}
   if(!r?.ok){showToast(r?.message||"저장에 실패했습니다.","error");return;}
-  const idx=pmsProjects.findIndex(p=>p.id===r.project.id);
-  if(idx>=0)pmsProjects[idx]=r.project;else pmsProjects.unshift(r.project);
-  closeModal();showToast("저장되었습니다.","success");renderPmsProjectsPage();
+  // POST 응답의 project는 canManage(목록 조회 전용 서버계산 필드, _pmsCanManageProject)를
+  // 포함하지 않는다 — 로컬에 그대로 꽂으면 방금 만든 프로젝트가 canManage=undefined(false)로
+  // 남아 상세모달의 "+ 작업 추가" 등 관리버튼이 작성자 본인에게도 안 보이는 버그가 생긴다
+  // (충돌 분기가 이미 하던 대로 전체목록을 다시 불러와 canManage를 서버 계산값으로 채운다).
+  await loadPmsFromServer();
+  closeModal();showToast("저장되었습니다.","success");
 }
 async function closePmsProject(id){
   const p=pmsProjects.find(project=>project.id===id);
@@ -24348,8 +24351,182 @@ async function closePmsProject(id){
   const r=await serverRequest("POST",`/api/pms/projects/${id}/close`,{expectedUpdatedAt:p?.updatedAt});
   if(r?.code==="PMS_PROJECT_CONFLICT"){await loadPmsFromServer();showToast("다른 사용자의 변경을 감지해 최신 내용을 불러왔습니다.","error");return;}
   if(!r?.ok){showToast(r?.message||"처리에 실패했습니다.","error");return;}
-  const idx=pmsProjects.findIndex(p=>p.id===id);if(idx>=0)pmsProjects[idx]=r.project;
-  showToast("종료 처리되었습니다.","info");renderPmsProjectsPage();
+  // savePmsProject()와 동일한 이유로 canManage 누락을 피하기 위해 전체 재조회.
+  await loadPmsFromServer();
+  showToast("종료 처리되었습니다.","info");
+}
+
+// ── PMS: 프로젝트 상세(작업/마일스톤/예산) — 모달 내부 pane 전환 ─────────────────
+// OKR/서명등록 등과 동일한 이 앱의 기존 관례(상세 뷰=페이지 아님, 모달)를 그대로 따른다.
+// closeModal()을 쓰면 KPI/직원 편집 잠금을 해제하는 부작용이 있는데, 이 플로우는 그런
+// 잠금을 전혀 잡지 않아(PMS와 무관) 안전하게 그대로 재사용한다.
+let _pmsDetailProjectId=null,_pmsDetailPane="tasks",_pmsDetailTasks=[],_pmsDetailMilestones=[],_pmsDetailBudget=null;
+const PMS_TASK_STATUS_LABEL={todo:"할 일",in_progress:"진행중",done:"완료",blocked:"막힘"};
+const PMS_TASK_STATUS_COLOR={todo:"gray",in_progress:"blue",done:"green",blocked:"red"};
+const PMS_TASK_PRIORITY_LABEL={low:"낮음",normal:"보통",high:"높음"};
+const PMS_MILESTONE_STATUS_LABEL={pending:"예정",done:"완료"};
+const PMS_MILESTONE_STATUS_COLOR={pending:"orange",done:"green"};
+async function openPmsProjectDetailModal(id){
+  const p=pmsProjects.find(x=>x.id===id);if(!p)return;
+  _pmsDetailProjectId=id;_pmsDetailPane="tasks";_pmsDetailTasks=[];_pmsDetailMilestones=[];_pmsDetailBudget=null;
+  showModal(`<div class="modal modal-lg"><div class="modal-head"><h2>🗂 ${h(p.name)}</h2><button class="modal-close" onclick="closeModal()">×</button></div>
+  <div class="modal-body">
+    <div class="fz11 text-gray mb2">${h(p.startDate||"-")} ~ ${h(p.endDate||"-")} · PM: ${p.pmId?h(getEmpName(p.pmId)):"-"} · ${p.status==="active"?"진행중":"종료"}</div>
+    <div style="display:flex;gap:6px;margin-bottom:10px">
+      <button class="btn btn-sm btn-primary" id="pmsd-tab-tasks" onclick="_pmsDetailSwitch('tasks')">✅ 작업</button>
+      <button class="btn btn-sm btn-secondary" id="pmsd-tab-milestones" onclick="_pmsDetailSwitch('milestones')">🚩 마일스톤</button>
+      <button class="btn btn-sm btn-secondary" id="pmsd-tab-budget" onclick="_pmsDetailSwitch('budget')">💰 예산</button>
+    </div>
+    <div id="pms-detail-content"><div class="text-gray" style="text-align:center;padding:20px">불러오는 중...</div></div>
+  </div>
+  <div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal()">닫기</button></div></div>`);
+  await _pmsDetailRenderPane();
+}
+function _pmsDetailRefreshTabButtons(){
+  ["tasks","milestones","budget"].forEach(pane=>{
+    const b=$("#pmsd-tab-"+pane);if(b)b.className="btn btn-sm "+(_pmsDetailPane===pane?"btn-primary":"btn-secondary");
+  });
+}
+async function _pmsDetailSwitch(pane){
+  _pmsDetailPane=pane;_pmsDetailRefreshTabButtons();
+  await _pmsDetailRenderPane();
+}
+async function _pmsDetailRenderPane(){
+  const el=$("#pms-detail-content");if(!el)return;
+  el.innerHTML=`<div class="text-gray" style="text-align:center;padding:20px">불러오는 중...</div>`;
+  if(_pmsDetailPane==="tasks"){
+    const r=await serverRequest("GET",`/api/pms/projects/${_pmsDetailProjectId}/tasks`);
+    _pmsDetailTasks=(r?.ok&&r.tasks)?r.tasks:[];
+    const el2=$("#pms-detail-content");if(el2)el2.innerHTML=_pmsTasksPaneHtml();
+  }else if(_pmsDetailPane==="milestones"){
+    const r=await serverRequest("GET",`/api/pms/projects/${_pmsDetailProjectId}/milestones`);
+    _pmsDetailMilestones=(r?.ok&&r.milestones)?r.milestones:[];
+    const el2=$("#pms-detail-content");if(el2)el2.innerHTML=_pmsMilestonesPaneHtml();
+  }else if(_pmsDetailPane==="budget"){
+    const r=await serverRequest("GET",`/api/pms/projects/${_pmsDetailProjectId}/budget`);
+    _pmsDetailBudget=r?.ok?r:null;
+    const el2=$("#pms-detail-content");if(el2)el2.innerHTML=_pmsBudgetPaneHtml();
+  }
+}
+function _pmsDetailCanManage(){return!!pmsProjects.find(p=>p.id===_pmsDetailProjectId)?.canManage;}
+function _pmsTasksPaneHtml(){
+  const canManage=_pmsDetailCanManage();
+  const rows=_pmsDetailTasks.map(t=>`<tr>
+    <td>${h(t.title)}</td>
+    <td>${t.assigneeId?h(getEmpName(t.assigneeId)):"-"}</td>
+    <td>${badge(PMS_TASK_STATUS_LABEL[t.status]||t.status,PMS_TASK_STATUS_COLOR[t.status]||"gray")}</td>
+    <td>${h(PMS_TASK_PRIORITY_LABEL[t.priority]||t.priority||"-")}</td>
+    <td>${h(t.dueDate||"-")}</td>
+    ${canManage?`<td><button class="btn btn-secondary btn-sm" onclick="openPmsTaskModal('${t.id}')">수정</button> <button class="btn btn-danger btn-sm" onclick="deletePmsTask('${t.id}')">삭제</button></td>`:""}
+  </tr>`).join("");
+  return `${canManage?`<button class="btn btn-primary btn-sm mb2" onclick="openPmsTaskModal()">+ 작업 추가</button>`:""}
+  <div class="tbl-wrap"><table><thead><tr><th>작업명</th><th>담당자</th><th>상태</th><th>우선순위</th><th>마감일</th>${canManage?"<th>관리</th>":""}</tr></thead><tbody>
+  ${rows||`<tr><td colspan="${canManage?6:5}" class="text-gray" style="text-align:center;padding:16px">등록된 작업이 없습니다.</td></tr>`}
+  </tbody></table></div>`;
+}
+function openPmsTaskModal(taskId){
+  const t=taskId?_pmsDetailTasks.find(x=>x.id===taskId):null;
+  showModal(`<div class="modal modal-md"><div class="modal-head"><h2>${t?"작업 수정":"작업 추가"}</h2><button class="modal-close" onclick="closeModal()">×</button></div>
+  <div class="modal-body">
+    <div class="fg"><label class="fl">작업명 <span class="req">*</span></label><input class="fc" id="pmst-title" maxlength="200" value="${h(t?.title||"")}"></div>
+    <div class="g2">
+      <div class="fg"><label class="fl">담당자</label><select class="fc" id="pmst-assignee"><option value="">(미지정)</option>${employees.map(e=>`<option value="${e.id}" ${t&&String(t.assigneeId)===String(e.id)?"selected":""}>${h(e.name)} (${h(e.dept||"")})</option>`).join("")}</select></div>
+      <div class="fg"><label class="fl">우선순위</label><select class="fc" id="pmst-priority">${["low","normal","high"].map(p=>`<option value="${p}" ${((t?.priority)||"normal")===p?"selected":""}>${PMS_TASK_PRIORITY_LABEL[p]}</option>`).join("")}</select></div>
+    </div>
+    <div class="g2">
+      <div class="fg"><label class="fl">상태</label><select class="fc" id="pmst-status">${["todo","in_progress","done","blocked"].map(s=>`<option value="${s}" ${((t?.status)||"todo")===s?"selected":""}>${PMS_TASK_STATUS_LABEL[s]}</option>`).join("")}</select></div>
+      <div class="fg"><label class="fl">마감일</label><input class="fc" type="date" id="pmst-duedate" value="${t?.dueDate||""}"></div>
+    </div>
+  </div>
+  <div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal()">취소</button><button class="btn btn-primary" onclick="savePmsTask(${taskId?`'${taskId}'`:"null"})">저장</button></div></div>`);
+}
+async function savePmsTask(taskId){
+  const title=$("#pmst-title")?.value.trim();
+  if(!title){showToast("작업명을 입력하세요.","error");return;}
+  const body={title,assigneeId:$("#pmst-assignee")?.value||null,priority:$("#pmst-priority")?.value,status:$("#pmst-status")?.value,dueDate:$("#pmst-duedate")?.value};
+  if(taskId)body.expectedUpdatedAt=_pmsDetailTasks.find(x=>x.id===taskId)?.updatedAt;
+  const r=await serverRequest("POST",taskId?`/api/pms/projects/${_pmsDetailProjectId}/tasks/${taskId}`:`/api/pms/projects/${_pmsDetailProjectId}/tasks`,body);
+  if(r?.code==="PMS_TASK_CONFLICT"){showToast("다른 사용자가 먼저 수정했습니다. 최신 내용을 다시 불러옵니다.","error");closeModal();await _pmsDetailRenderPane();return;}
+  if(!r?.ok){showToast(r?.message||"저장에 실패했습니다.","error");return;}
+  closeModal();showToast("저장되었습니다.","success");await _pmsDetailRenderPane();
+}
+async function deletePmsTask(taskId){
+  const ok=await askConfirmModal({title:"작업 삭제",message:"이 작업을 삭제합니다.",confirmText:"삭제",danger:true});if(!ok)return;
+  const r=await serverRequest("POST",`/api/pms/projects/${_pmsDetailProjectId}/tasks/${taskId}/delete`,{});
+  if(!r?.ok){showToast(r?.message||"삭제에 실패했습니다.","error");return;}
+  showToast("삭제되었습니다.","info");await _pmsDetailRenderPane();
+}
+function _pmsMilestonesPaneHtml(){
+  const canManage=_pmsDetailCanManage();
+  const sorted=[..._pmsDetailMilestones].sort((a,b)=>(a.dueDate||"").localeCompare(b.dueDate||""));
+  const rows=sorted.map(m=>`<tr>
+    <td>${h(m.title)}</td>
+    <td>${h(m.dueDate||"-")}</td>
+    <td>${badge(PMS_MILESTONE_STATUS_LABEL[m.status]||m.status,PMS_MILESTONE_STATUS_COLOR[m.status]||"gray")}</td>
+    <td class="fz11">${h(m.description||"")}</td>
+    ${canManage?`<td><button class="btn btn-secondary btn-sm" onclick="openPmsMilestoneModal('${m.id}')">수정</button> <button class="btn btn-danger btn-sm" onclick="deletePmsMilestone('${m.id}')">삭제</button></td>`:""}
+  </tr>`).join("");
+  return `${canManage?`<button class="btn btn-primary btn-sm mb2" onclick="openPmsMilestoneModal()">+ 마일스톤 추가</button>`:""}
+  <div class="tbl-wrap"><table><thead><tr><th>마일스톤</th><th>목표일</th><th>상태</th><th>설명</th>${canManage?"<th>관리</th>":""}</tr></thead><tbody>
+  ${rows||`<tr><td colspan="${canManage?5:4}" class="text-gray" style="text-align:center;padding:16px">등록된 마일스톤이 없습니다.</td></tr>`}
+  </tbody></table></div>`;
+}
+function openPmsMilestoneModal(msId){
+  const m=msId?_pmsDetailMilestones.find(x=>x.id===msId):null;
+  showModal(`<div class="modal modal-md"><div class="modal-head"><h2>${m?"마일스톤 수정":"마일스톤 추가"}</h2><button class="modal-close" onclick="closeModal()">×</button></div>
+  <div class="modal-body">
+    <div class="fg"><label class="fl">마일스톤명 <span class="req">*</span></label><input class="fc" id="pmsm-title" maxlength="200" value="${h(m?.title||"")}"></div>
+    <div class="g2">
+      <div class="fg"><label class="fl">목표일</label><input class="fc" type="date" id="pmsm-duedate" value="${m?.dueDate||""}"></div>
+      <div class="fg"><label class="fl">상태</label><select class="fc" id="pmsm-status">${["pending","done"].map(s=>`<option value="${s}" ${((m?.status)||"pending")===s?"selected":""}>${PMS_MILESTONE_STATUS_LABEL[s]}</option>`).join("")}</select></div>
+    </div>
+    <div class="fg"><label class="fl">설명</label><textarea class="fc" id="pmsm-desc" rows="2" maxlength="1000">${h(m?.description||"")}</textarea></div>
+  </div>
+  <div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal()">취소</button><button class="btn btn-primary" onclick="savePmsMilestone(${msId?`'${msId}'`:"null"})">저장</button></div></div>`);
+}
+async function savePmsMilestone(msId){
+  const title=$("#pmsm-title")?.value.trim();
+  if(!title){showToast("마일스톤명을 입력하세요.","error");return;}
+  const body={title,dueDate:$("#pmsm-duedate")?.value,status:$("#pmsm-status")?.value,description:$("#pmsm-desc")?.value.trim()};
+  if(msId)body.expectedUpdatedAt=_pmsDetailMilestones.find(x=>x.id===msId)?.updatedAt;
+  const r=await serverRequest("POST",msId?`/api/pms/projects/${_pmsDetailProjectId}/milestones/${msId}`:`/api/pms/projects/${_pmsDetailProjectId}/milestones`,body);
+  if(r?.code==="PMS_MILESTONE_CONFLICT"){showToast("다른 사용자가 먼저 수정했습니다. 최신 내용을 다시 불러옵니다.","error");closeModal();await _pmsDetailRenderPane();return;}
+  if(!r?.ok){showToast(r?.message||"저장에 실패했습니다.","error");return;}
+  closeModal();showToast("저장되었습니다.","success");await _pmsDetailRenderPane();
+}
+async function deletePmsMilestone(msId){
+  const ok=await askConfirmModal({title:"마일스톤 삭제",message:"이 마일스톤을 삭제합니다.",confirmText:"삭제",danger:true});if(!ok)return;
+  const r=await serverRequest("POST",`/api/pms/projects/${_pmsDetailProjectId}/milestones/${msId}/delete`,{});
+  if(!r?.ok){showToast(r?.message||"삭제에 실패했습니다.","error");return;}
+  showToast("삭제되었습니다.","info");await _pmsDetailRenderPane();
+}
+function _pmsBudgetPaneHtml(){
+  const b=_pmsDetailBudget;
+  const canManage=_pmsDetailCanManage();
+  if(!b)return`<div class="text-gray" style="text-align:center;padding:20px">불러오지 못했습니다.</div>`;
+  const diff=b.actualCost-b.budgetPlanned;
+  return `<div class="fz11 text-gray mb2" style="background:#fef3c7;padding:8px;border-radius:6px">⚠ 실적 비용은 업무일지("일일 업무 투입") 기록을 기준으로 "월급÷표준근무시간" 추정 시급을 곱해 서버가 조회 시점에 즉석 계산하는 참고용 추정치입니다. 실제 인건비·외주비 등과 다를 수 있습니다.</div>
+  <div class="g2" style="margin-bottom:10px">
+    <div class="fg"><label class="fl">계획 예산(원)</label>${canManage?`<input class="fc" type="number" id="pmsb-planned" value="${b.budgetPlanned}">`:`<div class="fz13 fw7">${b.budgetPlanned.toLocaleString()}원</div>`}</div>
+    <div class="fg"><label class="fl">실적(추정) 비용</label><div class="fz13 fw7">${b.actualCost.toLocaleString()}원</div></div>
+  </div>
+  <div class="fz12 text-gray mb2">총 투입 시간: ${b.totalHours}시간 · 표준 월근무시간: ${b.standardMonthlyHours}시간</div>
+  <div class="fz13 ${diff>=0?"":"text-red"}" style="margin-bottom:10px">${diff>=0?`예산 ${Math.abs(diff).toLocaleString()}원 여유`:`예산 ${Math.abs(diff).toLocaleString()}원 초과`}</div>
+  ${canManage?`<button class="btn btn-primary btn-sm" onclick="savePmsBudgetPlanned()">계획 예산 저장</button>`:""}`;
+}
+async function savePmsBudgetPlanned(){
+  const val=Number($("#pmsb-planned")?.value);
+  if(!Number.isFinite(val)){showToast("숫자를 입력하세요.","error");return;}
+  const p=pmsProjects.find(x=>x.id===_pmsDetailProjectId);
+  const r=await serverRequest("POST",`/api/pms/projects/${_pmsDetailProjectId}`,{budgetPlanned:val,expectedUpdatedAt:p?.updatedAt});
+  if(r?.code==="PMS_PROJECT_CONFLICT"){showToast("다른 사용자의 변경을 감지했습니다. 최신 내용을 다시 불러옵니다.","error");await loadPmsFromServer();return;}
+  if(!r?.ok){showToast(r?.message||"저장에 실패했습니다.","error");return;}
+  // savePmsProject()/closePmsProject()와 동일한 이유(POST 응답의 project에는 canManage가
+  // 없음)로 전체 재조회 — 그러지 않으면 예산 저장 직후 "계획 예산 저장" 입력란/버튼이
+  // 조용히 사라진다(canManage가 undefined로 덮어써짐).
+  await loadPmsFromServer();
+  showToast("저장되었습니다.","success");
+  await _pmsDetailRenderPane();
 }
 
 // ── PMS: 내 투입률 입력 (일일 업무 투입 기록 기반 월간 자동 집계) ────────────────
