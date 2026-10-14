@@ -128,12 +128,19 @@ test.describe("작업5(항목A) — PMS 프로젝트 상세(작업/마일스톤/
     await page.click(".modal-foot button.btn-primary:has-text('저장')");
     await expect(page.locator(".toast", { hasText: "저장되었습니다" })).toBeVisible();
 
-    // 일반직원A 시점으로 전환(이 프로젝트의 기존 관례 — org-chart-drag.spec.js 등).
-    await page.evaluate((id) => {
-      currentUser = { ...currentUser, id, role: "member", dept: "개발본부", team: "A팀" };
-    }, empId);
-    await page.evaluate(() => loadPmsFromServer());
-    await page.evaluate(() => renderPmsProjectsPage());
+    // canManage는 currentUser(클라이언트 변수)가 아니라 GET /api/pms/projects 응답에 서버가
+    // 실제 인증 토큰으로 계산해 실어주는 필드(_pmsCanManageProject, server.js)다 — 이 e2e
+    // 스위트는 다른 모든 spec과 동일하게 admin 계정으로만 로그인하므로(실제 member 토큰을
+    // 발급받지 않음), currentUser만 바꿔 loadPmsFromServer()를 다시 불러도 여전히 admin
+    // 토큰으로 조회해 canManage:true를 그대로 받는다(2026-10-14 실측: 이 방식으로는 아래
+    // "+ 작업 추가" 버튼이 사라지지 않음). 서버의 권한판정 자체는 이미
+    // test/api-pms-tasks-milestones.test.js가 실제 로그인으로 검증하므로, 이 e2e 테스트는
+    // "canManage:false를 받았을 때 클라이언트가 관리버튼을 올바르게 숨기는가"라는 순수
+    // 렌더링 로직만 검증하도록 그 결과값을 직접 주입한다.
+    await page.evaluate((name) => {
+      const p = pmsProjects.find((x) => x.name === name);
+      if (p) p.canManage = false;
+    }, projName);
 
     const row = page.locator("#content tbody tr", { hasText: projName });
     await expect(row.locator("button:has-text('🗂 상세보기')")).toBeVisible();
