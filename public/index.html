@@ -9427,7 +9427,29 @@ async function submitHRForm(){
   // happened to trigger a save afterward. Same class of bug as submitRetire()
   // below and submitHRChange() above.
   autoSaveToServerIfEnabled();
-  showToast(`${newEmp.name} 님이 등록되었습니다.`,"success");hrCareers=[];hrCustom={};renderHRRegister();
+  // 지원자→직원 전환 중이면(convertRecruitCandidateToEmployee()가 심어둔 숨은
+  // marker — renderHRRegister()가 폼을 다시 그릴 때마다 사라지는 이 렌더링
+  // 인스턴스 전용 상태) 방금 등록한 직원의 id로 지원자 상태를 "입사"로 전환한다.
+  // recruit_candidates는 employees와 저장 아키텍처가 달라 한 트랜잭션으로 묶을 수
+  // 없으므로, 디바운스된 autoSaveToServerIfEnabled() 대신 logout()과 동일한 패턴
+  // (debounce 타이머 취소 후 _doSave를 직접 await)으로 즉시 저장을 강제해 이 직원
+  // 레코드가 서버에 실제로 반영된 뒤에만 전환 API를 호출한다 — 그러지 않으면 아직
+  // 서버에 없는 employeeId를 검증하다 404가 나는 경쟁 상태가 생긴다.
+  const convertingCandId=$("#hr-converting-candidate-id")?.value||"";
+  if(convertingCandId){
+    if(_serverDebounceTimer){clearTimeout(_serverDebounceTimer);_serverDebounceTimer=null;}
+    await _doSave(true).catch(()=>{});
+    const cr=await serverRequest("POST",`/api/recruit/candidates/${convertingCandId}/convert`,{employeeId:newEmp.id});
+    if(cr?.ok){
+      const idx=recruitCandidates.findIndex(c=>c.id===convertingCandId);if(idx>=0)recruitCandidates[idx]=cr.candidate;
+      showToast(`${newEmp.name} 님이 등록되고, 지원자 상태가 "입사"로 전환되었습니다.`,"success");
+    }else{
+      showToast(`${newEmp.name} 님(사번 ${newEmp.empNo})은 등록되었으나 지원자 상태 전환에 실패했습니다: ${cr?.message||"알 수 없는 오류"} — 지원자 관리 화면에서 직접 확인해주세요.`,"error");
+    }
+  }else{
+    showToast(`${newEmp.name} 님이 등록되었습니다.`,"success");
+  }
+  hrCareers=[];hrCustom={};renderHRRegister();
 }
 // 신규 직원 등록의 이력서 자동입력. 예전엔 브라우저가 직접 api.anthropic.com을
 // 인증 헤더 없이 호출하고 있어(브라우저에는 API 키를 둘 방법이 없음) 이 기능
@@ -24949,9 +24971,42 @@ function renderRecruitCandidatesTbl(){
   if(f.jobId)list=list.filter(cd=>String(cd.jobId)===String(f.jobId));
   if(f.status)list=list.filter(cd=>cd.status===f.status);
   if(f.q){const needle=f.q.toLowerCase();list=list.filter(cd=>[cd.name,cd.email,cd.phone].some(v=>String(v||"").toLowerCase().includes(needle)));}
-  wrap.innerHTML=`<div style="padding:0" class="tbl-wrap"><table><thead><tr><th>이름</th><th>채용공고</th><th>키워드 적합도</th><th>연락처</th><th>이메일</th><th>전형단계</th><th>이력서</th><th>관리</th></tr></thead><tbody>
-  ${list.length?list.map(cd=>{const m=_recruitCandidateMatch(cd);return`<tr><td>${h(cd.name)}</td><td>${h(_recruitJobTitle(cd.jobId))}</td><td>${m.score==null?`<span class="fz11 text-gray">공고 키워드 없음</span>`:`<span class="badge ${m.score>=70?"bg-green":m.score>=40?"bg-yellow":"bg-gray"}" title="일치: ${h(m.matched.join(", ")||"없음")} · 미일치: ${h(m.missing.join(", ")||"없음")}">${m.score}% (${m.matched.length}/${m.matched.length+m.missing.length})</span>`}</td><td>${h(cd.phone||"-")}</td><td>${h(cd.email||"-")}</td><td>${badge(h(cd.status),"blue")}</td><td>${cd.resume?`<button class="btn btn-secondary btn-sm" onclick="downloadRecruitResume('${cd.id}')">다운로드</button>`:"-"}</td><td>${canManage?`<button class="btn btn-secondary btn-sm" onclick="openRecruitCandidateEditModal('${cd.id}')">수정</button> <button class="btn btn-secondary btn-sm" onclick="openRecruitStatusModal('${cd.id}')">단계변경</button> <button class="btn btn-secondary btn-sm" onclick="openRecruitNoticeModal('${cd.id}')">결과통보</button> <button class="btn btn-danger btn-sm" onclick="deleteRecruitCandidate('${cd.id}')">삭제</button>`:"-"}</td></tr>`;}).join(""):`<tr><td colspan="8" class="text-gray" style="text-align:center;padding:20px">조건에 맞는 지원자가 없습니다.</td></tr>`}
+  wrap.innerHTML=`<div style="padding:0" class="tbl-wrap"><table><thead><tr><th>이름</th><th>채용공고</th><th>키워드 적합도</th><th>연락처</th><th>이메일</th><th>지원경로</th><th>전형단계</th><th>이력서</th><th>관리</th></tr></thead><tbody>
+  ${list.length?list.map(cd=>{const m=_recruitCandidateMatch(cd);return`<tr><td>${h(cd.name)}</td><td>${h(_recruitJobTitle(cd.jobId))}</td><td>${m.score==null?`<span class="fz11 text-gray">공고 키워드 없음</span>`:`<span class="badge ${m.score>=70?"bg-green":m.score>=40?"bg-yellow":"bg-gray"}" title="일치: ${h(m.matched.join(", ")||"없음")} · 미일치: ${h(m.missing.join(", ")||"없음")}">${m.score}% (${m.matched.length}/${m.matched.length+m.missing.length})</span>`}</td><td>${h(cd.phone||"-")}</td><td>${h(cd.email||"-")}</td><td>${h(cd.source||"-")}</td><td>${badge(h(cd.status),"blue")}</td><td>${cd.resume?`<button class="btn btn-secondary btn-sm" onclick="downloadRecruitResume('${cd.id}')">다운로드</button>`:"-"}</td><td>${canManage?`<button class="btn btn-secondary btn-sm" onclick="openRecruitCandidateEditModal('${cd.id}')">수정</button> <button class="btn btn-secondary btn-sm" onclick="openRecruitStatusModal('${cd.id}')">단계변경</button> <button class="btn btn-secondary btn-sm" onclick="openRecruitNoticeModal('${cd.id}')">결과통보</button> <button class="btn btn-danger btn-sm" onclick="deleteRecruitCandidate('${cd.id}')">삭제</button>`:"-"}${_recruitConvertButtonHtml(cd)}</td></tr>`;}).join(""):`<tr><td colspan="9" class="text-gray" style="text-align:center;padding:20px">조건에 맞는 지원자가 없습니다.</td></tr>`}
   </tbody></table></div>`;
+}
+// 최종합격 지원자를 직원으로 전환하는 버튼 — 직원 레코드 생성은 employees 전체상태
+// /save 경로를 타야 해 role 위조가 불가능한 서버 검증(admin 전용)이 이미 걸려 있고,
+// "신규 직원 등록"(hr-register) 페이지 자체도 admin 전용이다 — 지원자 관리는 leader/
+// director도 할 수 있지만, 이 전환 버튼만은 그 두 역할을 일치시켜 admin으로 한정한다.
+function _recruitConvertedEmpLabel(employeeId){
+  const e=employees.find(e=>String(e.id)===String(employeeId));
+  return e?`${e.name}(${e.empNo||e.id})`:`id:${employeeId}`;
+}
+function _recruitConvertButtonHtml(cd){
+  if(currentUser.role!=="admin")return"";
+  // employeeId 존재 여부를 먼저 확인한다 — 전환이 성공하면 status가 "최종합격"에서
+  // "입사"로 바뀌므로, 순서를 바꾸면 전환 직후 "직원등록됨" 표시가 사라져버린다.
+  if(cd.employeeId)return` <span class="fz11 text-gray">직원등록됨 — ${h(_recruitConvertedEmpLabel(cd.employeeId))}</span>`;
+  if(cd.status!=="최종합격")return"";
+  return` <button class="btn btn-teal btn-sm" onclick="convertRecruitCandidateToEmployee('${cd.id}')">👤 직원으로 등록</button>`;
+}
+// 지원자 데이터로 "신규 직원 등록" 폼을 미리 채워 열고(완전자동 아님 — 관리자가
+// 부서/팀/직급/연봉 등을 직접 검토·입력한 뒤 제출해야 함), 제출 성공 시
+// submitHRForm()이 이 숨은 input의 값을 읽어 전환을 완료한다(hr-converting-
+// candidate-id — renderHRRegister()가 폼을 다시 그릴 때마다 사라지는, 이 렌더링
+// 인스턴스에만 묶인 상태라 페이지 이동 후 무관한 신규 등록에 잘못 연결될 위험이 없다).
+function convertRecruitCandidateToEmployee(id){
+  const cd=recruitCandidates.find(c=>c.id===id);if(!cd)return;
+  if(cd.status!=="최종합격"){showToast("최종합격 상태인 지원자만 직원으로 등록할 수 있습니다.","error");return;}
+  if(cd.employeeId){showToast("이미 직원으로 등록된 지원자입니다.","error");return;}
+  gotoPage("hr-register");
+  const marker=document.createElement("input");
+  marker.type="hidden";marker.id="hr-converting-candidate-id";marker.value=id;
+  $("#content")?.appendChild(marker);
+  applyHrResumeFields({name:cd.name,email:cd.email,phone:cd.phone,edu:cd.finalEducation});
+  if(cd.careerHistory){hrCustom["지원자 경력사항(참고)"]=cd.careerHistory;renderCustomFields();}
+  showResumeParseSuccess(`지원자 "${cd.name}"님의 정보를 불러왔습니다. 부서/직급/연봉 등 나머지 항목을 입력한 뒤 등록하세요.`);
 }
 function _recruitCareerMonths(candidate){return _careerStrToRows(candidate?.careerHistory||"").reduce((sum,row)=>sum+(_rcCareerMonths(row.period)||0),0);}
 function openRecruitCandidateCompare(jobId){
@@ -24965,6 +25020,14 @@ function openRecruitCandidateCompare(jobId){
     return`<tr><td>${index+1}</td><td><strong>${h(candidate.name)}</strong><div class="fz11 text-gray">${h(candidate.status||"-")}</div></td><td style="min-width:150px"><div style="display:flex;align-items:center;gap:6px"><div style="height:8px;flex:1;background:#e2e8f0;border-radius:5px;overflow:hidden"><div style="height:100%;width:${score}%;background:${score>=70?"#16a34a":score>=40?"#f59e0b":"#94a3b8"}"></div></div><strong class="fz12">${match.score==null?"-":score+"%"}</strong></div><div class="fz11 text-gray">${h(match.matched.join(", ")||"일치 키워드 없음")}</div></td><td>${candidate._careerMonths?_rcFormatDuration(candidate._careerMonths):"-"}</td><td class="fz12">${h(candidate.finalEducation||"-")}</td><td class="fz12">${h(candidate.lastSalary||candidate.salary||"-")}</td><td class="fz12">${h(candidate.desiredSalary||"-")}</td><td class="fz11" style="color:#b45309">${h(match.missing.join(", ")||"-")}</td></tr>`;
   }).join("");
   openModal(`<div class="modal-box" style="max-width:1000px"><div class="modal-head"><h3>📊 ${h(job?.title||"채용공고")} 지원자 비교</h3></div><div class="modal-body"><div class="info-note fz11 mb3">공고 키워드 포함 여부를 기준으로 정렬한 참고 지표입니다. 최종 채용 판단은 면접 평가와 담당자의 검토를 함께 반영하세요.</div><div class="tbl-wrap"><table><thead><tr><th>순위</th><th>지원자</th><th>키워드 적합도</th><th>총 경력</th><th>최종학력</th><th>최근연봉</th><th>희망연봉</th><th>보완 확인</th></tr></thead><tbody>${rows}</tbody></table></div></div><div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal()">닫기</button></div></div>`);
+}
+// 채용 소스추적 — 지원자가 어느 경로로 들어왔는지 회사 전체 또는 공고별로 집계해
+// (대시보드의 bySource) 채용 채널 효율을 파악하기 위한 필드. 고정 선택지로 두되
+// 다른 옵션에 안 맞는 경로가 있을 수 있어 "기타"를 두고, 자유 텍스트 입력까지는
+// 요구하지 않는다(서버는 임의 문자열을 50자까지 그대로 받아준다 — 과도한 제약 없음).
+const RECRUIT_SOURCES=["추천","채용사이트","헤드헌터","자체홈페이지","기타"];
+function _recruitSourceOptions(selected){
+  return`<option value="">선택 안 함</option>${RECRUIT_SOURCES.map(s=>`<option value="${h(s)}" ${selected===s?"selected":""}>${h(s)}</option>`).join("")}`;
 }
 let _rcResumeFile=null;
 let _rceResumeFile=null;
@@ -24984,9 +25047,10 @@ function openRecruitCandidateModal(jobId){
       <div class="fz11 text-gray" style="margin-top:4px">이력서를 업로드하면 이름/연락처/이메일을 자동으로 인식해 채워줍니다. (PDF, TXT 파일 인식 지원)</div>
     </div>
     <div class="fg"><label class="fl">지원자명 <span class="req">*</span></label><input class="fc" id="rc-name"></div>
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px">
       <div class="fg"><label class="fl">연락처</label><input class="fc" id="rc-phone"></div>
       <div class="fg"><label class="fl">이메일</label><input class="fc" id="rc-email"></div>
+      <div class="fg"><label class="fl">지원 경로</label><select class="fc" id="rc-source">${_recruitSourceOptions("")}</select></div>
     </div>
     <div class="fg"><label class="fl">최종학력 (학교/학과/졸업년도/학점)</label><input class="fc" id="rc-education"></div>
     <div class="fg"><label class="fl">경력사항 (회사명/재직기간/직급/주요업무, 최근 회사부터)</label>
@@ -25849,7 +25913,7 @@ async function saveRecruitCandidate(){
     });
     if(!ok)return;
   }
-  const body={jobId,name,phone,email,memo:$("#rc-memo")?.value.trim(),resumeSummary:$("#rc-summary")?.value.trim(),
+  const body={jobId,name,phone,email,source:$("#rc-source")?.value||"",memo:$("#rc-memo")?.value.trim(),resumeSummary:$("#rc-summary")?.value.trim(),
     finalEducation:$("#rc-education")?.value.trim(),careerHistory:$("#rc-career")?.value.trim(),lastSalary:$("#rc-salary")?.value.trim(),desiredSalary:$("#rc-desired-salary")?.value.trim(),activities:$("#rc-activities")?.value.trim(),careerGaps:$("#rc-gaps")?.value.trim(),
     resume:_rcResumeFile,role:currentUser.role,user:currentUser.name};
   let r;
@@ -25922,9 +25986,10 @@ function openRecruitCandidateEditModal(id){
   const cd=recruitCandidates.find(c=>c.id===id);if(!cd)return;
   openModal(`<div class="modal-box"><div class="modal-head"><h3>🧑‍💼 지원자 정보 수정</h3></div><div class="modal-body">
     <div class="fg"><label class="fl">지원자명</label><input class="fc" id="rce-name" value="${h(cd.name)}"></div>
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px">
       <div class="fg"><label class="fl">연락처</label><input class="fc" id="rce-phone" value="${h(cd.phone||"")}"></div>
       <div class="fg"><label class="fl">이메일</label><input class="fc" id="rce-email" value="${h(cd.email||"")}"></div>
+      <div class="fg"><label class="fl">지원 경로</label><select class="fc" id="rce-source">${_recruitSourceOptions(cd.source||"")}</select></div>
     </div>
     <div class="fg"><label class="fl">이력서 파일 (재업로드 시 아래 정보 자동 추출)</label>
       <input type="file" id="rce-resume" style="display:none" accept=".pdf,.docx,.hwp,.txt" onchange="_rceReadResume(this,'${id}')">
@@ -25952,7 +26017,7 @@ function openRecruitCandidateEditModal(id){
 }
 async function saveRecruitCandidateEdit(id){
   const current=recruitCandidates.find(c=>c.id===id);
-  const body={name:$("#rce-name")?.value.trim(),phone:$("#rce-phone")?.value.trim(),email:$("#rce-email")?.value.trim(),
+  const body={name:$("#rce-name")?.value.trim(),phone:$("#rce-phone")?.value.trim(),email:$("#rce-email")?.value.trim(),source:$("#rce-source")?.value||"",
     resumeSummary:$("#rce-summary")?.value.trim(),strengths:$("#rce-strengths")?.value.trim(),weaknesses:$("#rce-weaknesses")?.value.trim(),
     finalEducation:$("#rce-education")?.value.trim(),careerHistory:$("#rce-career")?.value.trim(),lastSalary:$("#rce-salary")?.value.trim(),desiredSalary:$("#rce-desired-salary")?.value.trim(),activities:$("#rce-activities")?.value.trim(),careerGaps:$("#rce-gaps")?.value.trim(),
     memo:$("#rce-memo")?.value.trim(),expectedUpdatedAt:current?.updatedAt||null,role:currentUser.role};
@@ -26455,7 +26520,17 @@ async function _recruitLoadDashboard(){
     <div class="tbl-wrap" style="margin-top:8px"><table><thead><tr><th>전형단계</th><th>인원</th><th>평균 평가 점수</th></tr></thead><tbody>
     ${s.stages.map(st=>`<tr><td>${h(st.stage)}</td><td>${st.count}</td><td>${st.avgScore!=null?st.avgScore+"점":"-"}</td></tr>`).join("")}
     </tbody></table></div>
-  </div>`).join("");
+  </div>`).join("")+_recruitDashboardSourceHtml(r.bySource||[]);
+}
+function _recruitDashboardSourceHtml(bySource){
+  if(!bySource.length)return"";
+  const total=bySource.reduce((s,x)=>s+x.count,0);
+  return`<div style="border:1px solid #e2e8f0;border-radius:8px;padding:12px;margin-top:4px">
+    <div style="font-weight:600;margin-bottom:8px">지원 경로별 지원자 분포 (총 ${total}명)</div>
+    <div class="tbl-wrap"><table><thead><tr><th>지원 경로</th><th>인원</th><th>비율</th></tr></thead><tbody>
+    ${bySource.map(x=>`<tr><td>${h(x.source)}</td><td>${x.count}</td><td>${total?Math.round(x.count/total*100):0}%</td></tr>`).join("")}
+    </tbody></table></div>
+  </div>`;
 }
 
 // ── 발주서 관리 ──────────────────────────────────────────────────────────────

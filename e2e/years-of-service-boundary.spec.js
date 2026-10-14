@@ -2,12 +2,21 @@ const { test, expect } = require("@playwright/test");
 
 // 2026-10-12 종합 고도화 리뷰에서 발견한 근속연수 계산 중복/불일치 수정의 회귀 테스트.
 // 장기근속 포상 등 4개 화면이 각자 `(now-hire)/(1000*60*60*24*365)`를 복붙해 쓰고 있었는데,
-// 밀리초 평균값 근사(윤년 보정 없음)라 경계일 근처에서 실제보다 1년 더 쳐주는 경우가
-// 있었다 — 아래 입사일(2016-10-14)은 오늘(2026-10-13, 이 테스트 실행 환경의 고정 날짜)
-// 기준으로 정확히 그 경계에 있다: 10주년 기념일(2016-10-14의 10년 뒤인 2026-10-14)이
-// 아직 하루 남았는데도, 옛 계산식은 그 사이에 쌓인 윤일(2020-02-29, 2024-02-29) 때문에
-// 이미 "10년"으로 반올림해 보여줬다(실제로는 아직 만 9년). 공용 yearsBetweenDates()로
-// 바꾼 뒤에는 달력 기념일 기준으로 정확히 9년만 표시돼야 한다.
+// 밀리초 평균값 근사(윤년 보정 없음)라 경계일 근처에서 실제보다 1년 더 쳐주는 경우가 있었다
+// — 입사일을 "오늘로부터 정확히 10년 뒤 기념일이 내일인" 날짜로 매 실행마다 동적으로
+// 계산한다(과거에는 "2016-10-14"를 하드코딩해 테스트를 작성한 날짜(2026-10-13) 기준으로만
+// 맞았는데, 다음날(2026-10-14, 정확히 그 기념일) 이후로는 입사일로부터 실제 10년이 지나
+// yearsBetweenDates()가 정확히 "10년"을 반환하는 게 옳은데도 테스트는 여전히 "9년"을
+// 기대해 매일 실패하는 상태가 됐었다 — 날짜를 하드코딩한 테스트 자체의 결함, 애플리케이션
+// 로직의 결함이 아니었다). 옛 계산식은 그 사이에 쌓인 윤일 때문에 기념일이 되기도 전에
+// "10년"으로 반올림해 보여줬다(실제로는 아직 만 9년). 공용 yearsBetweenDates()로 바꾼
+// 뒤에는 달력 기념일 기준으로 정확히 9년만 표시돼야 한다.
+function hireDateOneDayBeforeTenthAnniversary(now) {
+  const d = new Date(now);
+  d.setDate(d.getDate() + 1); // 내일(=10주년 기념일이 될 날)
+  d.setFullYear(d.getFullYear() - 10); // 그 날짜의 10년 전 == 입사일
+  return d.toISOString().slice(0, 10);
+}
 async function loginAsAdmin(page) {
   await page.goto("/");
   await page.fill("#l-id", "e2e_admin");
@@ -30,16 +39,20 @@ test.describe("근속연수 계산 — 윤년 경계일 정확성", () => {
 
     await loginAsAdmin(page);
 
-    await page.evaluate(() => {
+    // 매 실행 시점의 실제 날짜를 기준으로 "10주년 기념일이 내일인" 입사일을 계산한다
+    // (하드코딩된 과거 날짜 대신 — 위 주석 참고, 날짜가 지나가도 영구히 유효해야 함).
+    const hireDate = hireDateOneDayBeforeTenthAnniversary(new Date());
+
+    await page.evaluate((hire) => {
       settings.longServiceAwards = [
         { years: 9, reward: "9년차 포상" },
         { years: 10, reward: "10년차 포상" },
       ];
       employees.push({
         id: 9950, empNo: "E9950", name: "경계일직원", dept: "비교테스트부서", team: "",
-        rank: "과장", position: "", active: true, hire: "2016-10-14", hrHistory: [],
+        rank: "과장", position: "", active: true, hire, hrHistory: [],
       });
-    });
+    }, hireDate);
 
     await page.evaluate(() => gotoPage("long-service-award"));
     await page.fill('input[placeholder="이름/부서/팀 검색"]', "경계일직원");
