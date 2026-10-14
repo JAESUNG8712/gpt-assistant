@@ -6098,6 +6098,21 @@ app.get("/events", async (req, res) => {
   const authStillValid = await _employeeAuthStillValid(auth, employee);
   if (authStillValid === undefined) return _authStateUnavailable(res);
   if (!authStillValid) return res.status(401).json({ ok: false, message: "로그인이 필요합니다." });
+  // companies.status enforcement(작업1) — 전역 authenticate() 미들웨어는 Authorization
+  // 헤더가 있는 요청에만 적용되는데, 이 라우트는 EventSource의 제약 때문에 쿼리스트링
+  // 티켓(scope:"sse")으로 그 미들웨어를 완전히 비껴간다(위 주석 참고) — 그래서 세션 철회는
+  // 이 라우트가 직접 재구현했지만(바로 위 두 줄) companyStatus 재확인은 빠져 있었다. 그
+  // 결과 회사가 정지된 뒤에도 이미 발급된 5분짜리 티켓이 유효한 동안은 실시간 이벤트
+  // (잠금 보유자·접속자 이름 등 메타데이터, 실제 데이터는 아님)를 계속 받을 수 있었다
+  // (작업6 재점검에서 실측 확인) — "즉시 무효화"라는 설계 의도와 어긋나 동일하게 맞춘다.
+  if (auth.companyId && !auth.actingAsMaster) {
+    let companyStatus;
+    try { companyStatus = await _getCompanyStatus(auth.companyId); }
+    catch { return _companyStatusUnavailable(res); }
+    if (companyStatus === "suspended") {
+      return res.status(403).json({ ok: false, code: "COMPANY_SUSPENDED", message: "이 회사는 현재 서비스가 일시 정지되었습니다. 관리자에게 문의하세요." });
+    }
+  }
   const companyId = auth.companyId || null;
   const clientId = req.query.clientId || `client_${Date.now()}`;
   // 접속자 표시명은 클라이언트 쿼리스트링이 아니라 인증된 토큰/서버 저장 직원명에서만 만든다.
