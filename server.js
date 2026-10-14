@@ -10885,10 +10885,10 @@ app.get("/api/recruit/candidates/export", async (req, res) => {
       const safe = /^[=+\-@\t\r]/.test(s) ? "'" + s : s;
       return `"${safe.replace(/"/g, '""')}"`;
     };
-    const header = ["채용공고", "지원자명", "연락처", "이메일", "전형단계", "지원일", "최종학력", "경력사항", "마지막연봉", "희망연봉", "학력·경력 공백", "교육/대외활동", "이력서 요약", "메모"];
+    const header = ["채용공고", "지원자명", "연락처", "이메일", "지원 경로", "전형단계", "지원일", "최종학력", "경력사항", "마지막연봉", "희망연봉", "학력·경력 공백", "교육/대외활동", "이력서 요약", "메모"];
     const lines = [header.map(esc).join(",")];
     for (const c of list) {
-      lines.push([await jobTitleOf(c.jobId), c.name, c.phone || "", c.email || "", c.status, (c.appliedAt || "").slice(0, 10), c.finalEducation || "", c.careerHistory || "", c.lastSalary || "", c.desiredSalary || "", c.careerGaps || "", c.activities || "", c.resumeSummary || "", c.memo || ""].map(esc).join(","));
+      lines.push([await jobTitleOf(c.jobId), c.name, c.phone || "", c.email || "", c.source || "", c.status, (c.appliedAt || "").slice(0, 10), c.finalEducation || "", c.careerHistory || "", c.lastSalary || "", c.desiredSalary || "", c.careerGaps || "", c.activities || "", c.resumeSummary || "", c.memo || ""].map(esc).join(","));
     }
     res.json({ ok: true, csv: "﻿" + lines.join("\n") });
   } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
@@ -11967,7 +11967,7 @@ app.post("/api/recruit/candidates", async (req, res) => {
     if (!requireRole(req, res, ["admin", "leader", "director"])) return;
     if (!requirePage(req, res, "recruit-candidates")) return;
     const companyId = req.auth.companyId || null;
-    const { jobId, name, email, phone, resume, memo, resumeSummary, strengths, weaknesses, finalEducation, careerHistory, lastSalary, desiredSalary, activities, careerGaps, user: createdBy } = req.body || {};
+    const { jobId, name, email, phone, resume, memo, resumeSummary, strengths, weaknesses, finalEducation, careerHistory, lastSalary, desiredSalary, activities, careerGaps, source, user: createdBy } = req.body || {};
     if (!jobId || !name) return res.status(400).json({ ok: false, message: "채용공고, 지원자명은 필수입니다." });
     const job = await _recruitJobById(jobId, companyId);
     if (!job) return res.status(404).json({ ok: false, message: "채용공고를 찾을 수 없습니다." });
@@ -11979,10 +11979,13 @@ app.post("/api/recruit/candidates", async (req, res) => {
     const now = new Date().toISOString();
     const candidate = {
       id: candidateId, jobId, name, email: email || "", phone: phone || "",
-      status: job.stages[0], memo: memo || "",
+      status: job.stages[0], memo: memo || "", source: String(source || "").slice(0, 50),
       resumeSummary: resumeSummary || "", strengths: strengths || "", weaknesses: weaknesses || "",
       finalEducation: finalEducation || "", careerHistory: careerHistory || "", lastSalary: lastSalary || "", desiredSalary: desiredSalary || "", activities: activities || "", careerGaps: careerGaps || "",
       resume: resume && resume.fileName ? { fileName: resume.fileName, type: resume.type || "", data: resume.data || "" } : null,
+      // employeeId: "최종합격" 지원자를 직원으로 전환하면(candidates/:id/convert) 채워진다 —
+      // 중복 전환 방지(이미 전환된 지원자는 버튼이 비활성화됨)와 추적용 역참조.
+      employeeId: null,
       evaluations: [], appliedAt: now, createdBy: createdBy || "unknown",
       createdAt: now, updatedAt: now,
     };
@@ -12006,13 +12009,14 @@ app.post("/api/recruit/candidates/:id", async (req, res) => {
     const id = req.params.id;
     const { role, empId: userId } = req.auth;
     const companyId = req.auth.companyId || null;
-    const { name, email, phone, memo, resumeSummary, strengths, weaknesses, finalEducation, careerHistory, lastSalary, desiredSalary, activities, careerGaps, resume, expectedUpdatedAt } = req.body || {};
+    const { name, email, phone, memo, resumeSummary, strengths, weaknesses, finalEducation, careerHistory, lastSalary, desiredSalary, activities, careerGaps, resume, source, expectedUpdatedAt } = req.body || {};
     const applyEdits = (candidate) => {
       _recruitAssertFresh(candidate, expectedUpdatedAt);
       if (name != null) candidate.name = name;
       if (email != null) candidate.email = email;
       if (phone != null) candidate.phone = phone;
       if (memo != null) candidate.memo = memo;
+      if (source != null) candidate.source = String(source).slice(0, 50);
       if (resumeSummary != null) candidate.resumeSummary = resumeSummary;
       if (strengths != null) candidate.strengths = strengths;
       if (weaknesses != null) candidate.weaknesses = weaknesses;
@@ -12129,6 +12133,63 @@ app.post("/api/recruit/candidates/:id/status", async (req, res) => {
       throw e;
     }
     res.json({ ok: true, candidate });
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
+});
+
+// 지원자→직원 전환(반자동) — admin이 기존 "신규 직원 등록" 폼(renderHRRegister/
+// submitHRForm)을 지원자 데이터로 미리 채워 열고 검토 후 직접 제출하는 흐름의
+// 마지막 단계. 직원 레코드 자체는 employees 전체상태 블롭(/save)에 이미 저장된
+// 뒤 그 결과 id만 이 라우트로 넘어온다 — recruit_candidates는 전용 REST 테이블이라
+// employees(블롭 동기화)와 저장 아키텍처가 완전히 달라, 두 쓰기를 한 트랜잭션으로
+// 묶을 수 없다(두 번째 쓰기인 이 호출이 실패해도 이미 만들어진 직원 레코드를
+// 되돌리지 않음 — 클라이언트가 "직원은 등록됐지만 지원자 상태 반영에 실패했다"는
+// 것을 사번과 함께 안내해 관리자가 수동으로 확인할 수 있게 한다).
+app.post("/api/recruit/candidates/:id/convert", async (req, res) => {
+  try {
+    if (!requireRole(req, res, ["admin"])) return;
+    if (!requirePage(req, res, "recruit-candidates")) return;
+    const id = req.params.id;
+    const { role, empId: userId } = req.auth;
+    const companyId = req.auth.companyId || null;
+    const { employeeId } = req.body || {};
+    if (!employeeId) return res.status(400).json({ ok: false, message: "employeeId는 필수입니다." });
+    const emp = await _recruitEmpById(employeeId, companyId);
+    if (!emp) return res.status(404).json({ ok: false, message: "해당 직원 레코드를 찾을 수 없습니다." });
+    const applyConvert = (candidate) => {
+      // employeeId 존재 여부를 먼저 확인한다 — 전환이 성공하면 status가 "최종합격"에서
+      // "입사"로 바뀌므로, 순서를 바꾸면 재전환 시도가 이미 전환됐다는 구체적 안내 대신
+      // "최종합격 상태만" 이라는 혼란스러운 메시지로 되돌아간다.
+      if (candidate.employeeId) throw new _RecruitRouteError(409, "이미 직원으로 등록된 지원자입니다.");
+      if (candidate.status !== "최종합격") throw new _RecruitRouteError(409, "최종합격 상태인 지원자만 직원으로 전환할 수 있습니다.");
+      candidate.status = "입사";
+      candidate.employeeId = String(employeeId);
+      candidate.convertedAt = new Date().toISOString();
+      candidate.updatedAt = new Date().toISOString();
+      return candidate;
+    };
+    if (USE_JSON_FILE) {
+      const candidate = _fileRecruit.candidates.find(c => c.id === id);
+      if (!candidate) return res.status(404).json({ ok: false, message: "지원자를 찾을 수 없습니다." });
+      if (!(await _recruitCanViewCandidate(candidate, userId, role, companyId))) return res.status(403).json({ ok: false, message: "권한이 없습니다." });
+      try { applyConvert(candidate); }
+      catch (e) { if (e instanceof _RecruitRouteError) return res.status(e.status).json({ ok: false, message: _safeErrMsg(e) }); throw e; }
+      _saveFileRecruit();
+      return res.json({ ok: true, candidate: _recruitStripResume(candidate) });
+    }
+    let candidate;
+    try {
+      // 락 진입 전에 권한 판정에 필요한 조회를 전부 끝낸다(_recruitBuildCache 주석 참고
+      // — 락 안에서 추가 커넥션이 필요한 조회를 하면 부하 상황에서 자기교착 위험).
+      const rc = await _recruitBuildCache(companyId, { employees: true, jobs: true, interviews: true });
+      candidate = await _pgLockedUpdate("recruit_candidates", id, async (c) => {
+        if (!(await _recruitCanViewCandidate(c, userId, role, companyId, rc))) throw new _RecruitRouteError(403, "권한이 없습니다.");
+        return applyConvert(c);
+      }, companyId);
+    } catch (e) {
+      if (e instanceof _RecruitRouteError) return res.status(e.status).json({ ok: false, message: _safeErrMsg(e) });
+      throw e;
+    }
+    res.json({ ok: true, candidate: _recruitStripResume(candidate) });
   } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
@@ -12557,7 +12618,17 @@ app.get("/api/recruit/dashboard", async (req, res) => {
       });
       return { jobId: job.id, title: job.title, status: job.status, totalCandidates: jobCandidates.length, stages: stageStats };
     });
-    res.json({ ok: true, stats });
+    // 소스추적(지원 경로)별 집계 — 위에서 이미 부서 스코프로 걸러진 jobs에 속한
+    // 지원자만 대상으로 한다(회사 전체가 아니라, 위 스코프 필터와 동일한 경계 유지).
+    const visibleJobIds = new Set(jobs.map(j => String(j.id)));
+    const visibleCandidates = candidates.filter(c => visibleJobIds.has(String(c.jobId)));
+    const sourceCounts = {};
+    for (const c of visibleCandidates) {
+      const src = c.source || "미입력";
+      sourceCounts[src] = (sourceCounts[src] || 0) + 1;
+    }
+    const bySource = Object.entries(sourceCounts).map(([source, count]) => ({ source, count })).sort((a, b) => b.count - a.count);
+    res.json({ ok: true, stats, bySource });
   } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
