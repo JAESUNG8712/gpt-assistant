@@ -3955,7 +3955,7 @@ function dlCompBenchmark(sessionId){
 // 목표(Objective)·핵심지표(KR) 등록/승인, 핵심지표 체크인 타임라인, 코멘트·첨부파일.
 // 서버의 okrObjectives 전용 _sanitizeGatedRecord 분기와 1:1로 대응하는 승인 흐름:
 // draft(본인 자유편집) → pending(본인 제출) → approved/rejected(직속 매니저 또는 admin).
-let okrTab="mine",okrFilterYear=null;
+let okrTab="mine",okrFilterYear=null,okrBoardView="flat";
 // 서버의 _okrIsManagerOf와 동일한 조직단위 기준(leader→같은 dept+team의 member,
 // director→같은 dept의 member/leader) — 실제 권한 강제는 항상 서버가 한다, 이건 UI 노출용.
 function okrIsManagerOfClient(actorEmp,ownerEmp){
@@ -3972,6 +3972,19 @@ function okrKrProgress(kr){
 const OKR_STATUS_LABEL={draft:"작성중",pending:"승인 대기",approved:"승인됨",rejected:"반려됨"};
 const OKR_STATUS_COLOR={draft:"gray",pending:"orange",approved:"green",rejected:"red"};
 const OKR_SCOPE_LABEL={personal:"개인",team:"팀",company:"전사"};
+// 서버의 _OKR_SCOPE_RANK와 동일 — 부모는 자식보다 더 높은 랭크여야 한다(UI용, 실제 검증은 서버).
+const OKR_SCOPE_RANK={personal:0,team:1,company:2};
+function _okrParentTitle(parentId){
+  const p=okrObjectives.find(x=>x.id===parentId);
+  return p?p.title:"(알 수 없음)";
+}
+// 상위목표 후보: 자기 범위보다 랭크가 높고(회사 범위는 항상 후보가 없음), 같은 연도이며,
+// 승인된 OKR만(서버는 미승인 연계도 구조적으로는 막지 않지만, 선택 화면에서는 승인된 것만
+// 보여줘 "아직 확정 안 된 목표를 지원한다고 미리 주장하는" 흔한 UX 실수를 방지한다).
+function _okrParentCandidates(excludeId,scope,year){
+  const rank=OKR_SCOPE_RANK[scope||"personal"]??0;
+  return okrObjectives.filter(o=>o&&o.id!==excludeId&&o.year===year&&o.status==="approved"&&(OKR_SCOPE_RANK[o.scope||"personal"]??0)>rank);
+}
 function renderOkrPage(){
   if(!okrFilterYear)okrFilterYear=settings.evalYear||new Date().getFullYear();
   const u=currentUser;
@@ -3993,6 +4006,13 @@ function renderOkrPage(){
   <div id="okr-content"></div>`;
   renderOkrTabContent();
 }
+function _okrChildrenOf(parentId){
+  return okrObjectives.filter(o=>o&&o.parentOkrId===parentId&&o.year===okrFilterYear).sort((a,b)=>(b.updatedAt||"").localeCompare(a.updatedAt||""));
+}
+function _okrTreeNodeHtml(o,depth){
+  const children=_okrChildrenOf(o.id);
+  return `<div style="margin-left:${depth*24}px;margin-bottom:10px">${_okrCardHtml(o)}</div>`+children.map(c=>_okrTreeNodeHtml(c,depth+1)).join("");
+}
 function renderOkrTabContent(){
   const el=$("#okr-content");if(!el)return;
   const u=currentUser;
@@ -4001,7 +4021,15 @@ function renderOkrTabContent(){
   else if(okrTab==="review")list=okrObjectives.filter(o=>o&&o.year===okrFilterYear&&o.status==="pending"&&okrIsManagerOfClient(u,getEmp(o.ownerId)));
   else if(okrTab==="board")list=okrObjectives.filter(o=>o&&o.year===okrFilterYear&&o.scope==="company"&&o.status==="approved");
   list=[...list].sort((a,b)=>(b.updatedAt||"").localeCompare(a.updatedAt||""));
-  el.innerHTML=list.length?`<div class="g2" style="gap:12px">${list.map(o=>_okrCardHtml(o)).join("")}</div>`:`<div class="card"><div class="p-empty">표시할 OKR이 없습니다.</div></div>`;
+  const toggleHtml=okrTab==="board"?`<div class="flex gap2 mb2">
+    <button class="btn btn-sm ${okrBoardView==="flat"?"btn-primary":"btn-ghost"}" onclick="okrBoardView='flat';renderOkrTabContent()">목록형</button>
+    <button class="btn btn-sm ${okrBoardView==="tree"?"btn-primary":"btn-ghost"}" onclick="okrBoardView='tree';renderOkrTabContent()">연계 보기(트리)</button>
+  </div>`:"";
+  if(okrTab==="board"&&okrBoardView==="tree"){
+    el.innerHTML=toggleHtml+(list.length?list.map(o=>_okrTreeNodeHtml(o,0)).join(""):`<div class="card"><div class="p-empty">표시할 OKR이 없습니다.</div></div>`);
+    return;
+  }
+  el.innerHTML=toggleHtml+(list.length?`<div class="g2" style="gap:12px">${list.map(o=>_okrCardHtml(o)).join("")}</div>`:`<div class="card"><div class="p-empty">표시할 OKR이 없습니다.</div></div>`);
 }
 function _okrCardHtml(o){
   const u=currentUser;
@@ -4017,6 +4045,7 @@ function _okrCardHtml(o){
     <div class="card-body">
       ${o.description?`<div class="fz12 text-gray mb2">${h(o.description)}</div>`:""}
       ${avgProgress!=null?`<div class="flex items-c gap2 mb2"><div style="flex:1;height:8px;background:#e2e8f0;border-radius:4px;overflow:hidden"><div style="height:100%;width:${avgProgress}%;background:#2563eb"></div></div><span class="fz11 fw7">${avgProgress}%</span></div>`:""}
+      ${o.parentOkrId?`<div class="fz10 text-gray mb1">⬆ 상위 목표: ${h(_okrParentTitle(o.parentOkrId))}</div>`:""}
       <div class="fz11 text-gray">핵심지표 ${(o.krs||[]).length}개</div>
       ${o.status==="rejected"&&o.rejectReason?`<div class="notice error fz11 mt2">반려 사유: ${h(o.rejectReason)}</div>`:""}
       <div class="flex gap2 mt3 wrap">
@@ -4032,18 +4061,33 @@ function openOkrEditModal(id){
   const o=id?okrObjectives.find(x=>x.id===id):null;
   if(o&&o.ownerId!==currentUser.id&&currentUser.role!=="admin"){showToast("본인 목표만 수정할 수 있습니다.","error");return;}
   window._okrEditKrs=o?JSON.parse(JSON.stringify(o.krs||[])):[];
+  window._okrEditId=id||"";
+  window._okrEditParentId=o?.parentOkrId||"";
   showModal(`<div class="modal modal-md"><div class="modal-head"><h2>${o?"OKR 수정":"새 OKR 등록"}</h2><button class="modal-close" onclick="closeModal()">×</button></div>
   <div class="modal-body">
     <div class="fg"><label class="fl">목표(Objective) <span class="req">*</span></label><input class="fc" id="okr-title" maxlength="200" value="${h(o?.title||"")}" placeholder="예: 신규 서비스 안정적 출시"></div>
     <div class="fg"><label class="fl">설명</label><textarea class="fc" id="okr-desc" rows="2" maxlength="1000">${h(o?.description||"")}</textarea></div>
-    <div class="g2"><div class="fg"><label class="fl">범위</label><select class="fc" id="okr-scope">${["personal","team","company"].map(s=>`<option value="${s}"${((o?.scope)||"personal")===s?" selected":""}>${OKR_SCOPE_LABEL[s]}</option>`).join("")}</select></div>
-    <div class="fg"><label class="fl">연도</label><input class="fc" id="okr-year" type="number" value="${o?.year||okrFilterYear}"></div></div>
+    <div class="g2"><div class="fg"><label class="fl">범위</label><select class="fc" id="okr-scope" onchange="_okrRefreshParentOptions()">${["personal","team","company"].map(s=>`<option value="${s}"${((o?.scope)||"personal")===s?" selected":""}>${OKR_SCOPE_LABEL[s]}</option>`).join("")}</select></div>
+    <div class="fg"><label class="fl">연도</label><input class="fc" id="okr-year" type="number" value="${o?.year||okrFilterYear}" onchange="_okrRefreshParentOptions()"></div></div>
+    <div class="fg"><label class="fl">상위 목표</label><select class="fc" id="okr-parent" onchange="window._okrEditParentId=this.value"></select>
+      <div class="fz10 text-gray mt1">자기 범위보다 상위이고 승인된 목표만 선택할 수 있습니다.</div>
+    </div>
     <div class="fg"><label class="fl">핵심지표(Key Results)</label><div id="okr-kr-rows"></div>
       <button class="btn btn-secondary btn-sm mt2" onclick="_okrAddKrRow()" ${window._okrEditKrs.length>=10?"disabled":""}>+ 핵심지표 추가</button>
     </div>
   </div>
   <div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal()">취소</button><button class="btn btn-primary" onclick="saveOkrDraft('${id||""}')">저장</button></div></div>`);
   _renderOkrKrRows();
+  _okrRefreshParentOptions();
+}
+function _okrRefreshParentOptions(){
+  const sel=$("#okr-parent");if(!sel)return;
+  const scope=$("#okr-scope")?.value||"personal";
+  const year=Number($("#okr-year")?.value)||okrFilterYear;
+  const cands=_okrParentCandidates(window._okrEditId||"",scope,year);
+  const cur=window._okrEditParentId||"";
+  sel.innerHTML=`<option value="">(없음)</option>`+cands.map(o=>`<option value="${h(o.id)}"${o.id===cur?" selected":""}>${h(o.title)} (${OKR_SCOPE_LABEL[o.scope]})</option>`).join("");
+  if(cur&&!cands.some(o=>o.id===cur)){sel.value="";window._okrEditParentId="";}
 }
 function _renderOkrKrRows(){
   const el=$("#okr-kr-rows");if(!el)return;
@@ -4061,12 +4105,13 @@ function saveOkrDraft(id){
   const title=$("#okr-title")?.value.trim();
   if(!title){showToast("목표명을 입력하세요.","error");return;}
   const krs=(window._okrEditKrs||[]).filter(k=>k.title&&k.title.trim());
+  const parentOkrId=$("#okr-parent")?.value||null;
   const now=new Date().toISOString();
   if(id){
-    okrObjectives=okrObjectives.map(o=>o.id!==id?o:{...o,title,description:$("#okr-desc")?.value.trim()||"",scope:$("#okr-scope")?.value||"personal",year:Number($("#okr-year")?.value)||o.year,krs,updatedAt:now});
+    okrObjectives=okrObjectives.map(o=>o.id!==id?o:{...o,title,description:$("#okr-desc")?.value.trim()||"",scope:$("#okr-scope")?.value||"personal",year:Number($("#okr-year")?.value)||o.year,krs,parentOkrId,updatedAt:now});
   }else{
     const emp=getEmp(currentUser.id);
-    okrObjectives.push({id:"okr_"+Date.now().toString(36)+Math.random().toString(36).slice(2,6),year:Number($("#okr-year")?.value)||okrFilterYear,ownerId:currentUser.id,ownerName:currentUser.name,dept:emp?.dept||"",team:emp?.team||"",scope:$("#okr-scope")?.value||"personal",title,description:$("#okr-desc")?.value.trim()||"",status:"draft",krs,comments:[],attachments:[],createdAt:now,updatedAt:now});
+    okrObjectives.push({id:"okr_"+Date.now().toString(36)+Math.random().toString(36).slice(2,6),year:Number($("#okr-year")?.value)||okrFilterYear,ownerId:currentUser.id,ownerName:currentUser.name,dept:emp?.dept||"",team:emp?.team||"",scope:$("#okr-scope")?.value||"personal",title,description:$("#okr-desc")?.value.trim()||"",status:"draft",krs,parentOkrId,comments:[],attachments:[],createdAt:now,updatedAt:now});
   }
   autoSaveToServerIfEnabled();closeModal();showToast("OKR이 저장되었습니다.","success");renderOkrPage();
 }

@@ -1984,6 +1984,30 @@ function _roomReservationConflicts(rec, storedList, excludeId) {
   });
 }
 const _HHMM_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
+// OKR 상위목표(parentOkrId) 연계 검증 — scope 계층: personal(0) < team(1) < company(2),
+// 부모는 자식보다 더 높은 랭크여야 한다(회사 OKR은 랭크가 가장 높아 자동으로 부모를 가질 수
+// 없게 된다). _validateFieldValues('okrObjectives', ...) 안에 넣지 않고 별도 함수로 뗀
+// 이유: 그 함수는 같은 요청에 실린 "형제" okrObjectives 레코드(예: 방금 만든 회사 OKR과,
+// 그걸 parentOkrId로 지정하며 같은 디바운스 구간에 함께 저장되는 팀 OKR)를 모르는 storedList
+// (JSON모드는 이전에 저장된 값만)만 받는다 — 이 상태로 존재검사를 하면 신규 형제 레코드가
+// 거짓으로 실패해 그대로 드롭될 위험이 있다(1차 패스가 검증 실패를 레코드 전체 드롭/되돌림으로
+// 처리하기 때문, workforcePositions의 중복코드 검사와 달리 이 존재검사는 storedList만으로도
+// 쉽게 거짓 실패한다). 그래서 parentOkrId는 호출부가 "이 레코드 + 형제까지 포함한 전체 후보
+// 목록"을 직접 구성해 넘기도록 분리한다(JSON모드는 배치 축적 2차 패스, Postgres모드는 매
+// 아이템 직전에 다시 조회하는 쿼리 — 트랜잭션이 자신의 앞선 INSERT를 그대로 보는 특성 활용).
+// 위반 시 parentOkrId 필드만 되돌리고(신규면 null) 나머지 레코드는 그대로 둔다 — 다른 필드
+// 위조 방어(role/salary/birth/address 등)와 동일한 "해당 필드만 되돌림" 원칙.
+const _OKR_SCOPE_RANK = { personal: 0, team: 1, company: 2 };
+function _okrParentLinkValid(rec, basis) {
+  if (rec.parentOkrId == null || rec.parentOkrId === "") return true;
+  if (String(rec.parentOkrId) === String(rec.id)) return false;
+  const parent = Array.isArray(basis) ? basis.find(o => o && String(o.id) === String(rec.parentOkrId)) : null;
+  if (!parent) return false;
+  if (Number(parent.year) !== Number(rec.year)) return false;
+  const childRank = _OKR_SCOPE_RANK[rec.scope || "personal"] ?? 0;
+  const parentRank = _OKR_SCOPE_RANK[parent.scope || "personal"] ?? 0;
+  return parentRank > childRank;
+}
 // 화면 폼은 값을 제한하지만(예: <input type=number min=1 max=24>, 시작<종료 검사) 이
 // 범용 blob 동기화(/save) 경로는 위 승인 게이팅(권한) 통과 이후에도 값 자체의 범위·형식은
 // 전혀 검증하지 않아, API를 직접 호출하면 오염된 값이 그대로 저장돼 아래 화면들의 합계·
@@ -2096,6 +2120,9 @@ function _validateFieldValues(field, rec, storedList) {
     }
     if (rec.comments != null && (!Array.isArray(rec.comments) || rec.comments.length > 200)) return false;
     if (rec.attachments != null && (!Array.isArray(rec.attachments) || rec.attachments.length > 20)) return false;
+    // parentOkrId의 모양(타입·길이)만 여기서 걸러낸다 — 실제 존재/연도일치/scope계층 검증은
+    // 형제 레코드까지 봐야 해서 _okrParentLinkValid()로 분리돼 있다(위 주석 참고).
+    if (rec.parentOkrId != null && (typeof rec.parentOkrId !== "string" || rec.parentOkrId.length > 120)) return false;
   } else if (field === "workforceScenarios") {
     if (typeof rec.name !== "string" || !rec.name.trim() || rec.name.length > 120) return false;
     const year = Number(rec.year);
@@ -2895,6 +2922,28 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
       if (gatedField === "welfarePoints") {
         data[gatedField] = _dropOverspentWelfare(data[gatedField], storedList, actor);
       }
+      if (gatedField === "okrObjectives") {
+        // parentOkrId 전용 2차 패스(위 _okrParentLinkValid 주석 참고) — storedList(이전
+        // 저장값) + 이번 요청에서 이미 통과한 형제 레코드까지 basis로 넘겨, 같은 디바운스
+        // 구간에 부모·자식 OKR이 함께 처음 생성되는 흔한 경우도 정상 통과시킨다. 위반 시
+        // 레코드 전체가 아니라 parentOkrId 필드만 되돌린다(신규면 null).
+        const storedByIdOkr = new Map(storedList.map(r => [String(r.id), r]));
+        const accepted = [];
+        data[gatedField] = data[gatedField].map(rec => {
+          if (!rec || rec.id == null) return rec;
+          const basis = [
+            ...storedList.filter(p => p && String(p.id) !== String(rec.id)),
+            ...accepted.filter(p => p && String(p.id) !== String(rec.id)),
+          ];
+          let out = rec;
+          if (!_okrParentLinkValid(rec, basis)) {
+            const ownStored = storedByIdOkr.get(String(rec.id));
+            out = { ...rec, parentOkrId: ownStored ? (ownStored.parentOkrId ?? null) : null };
+          }
+          accepted.push(out);
+          return out;
+        });
+      }
     }
     function _mergeProtectedField(field) {
       let merged = mergeArrayById(_fileStore[field], data[field]);
@@ -3321,6 +3370,19 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
           if (toWrite && !_validateFieldValues(field, toWrite, validationList)) {
             toWrite = storedItem;
             if (toWrite === null) continue;
+          }
+          // OKR parentOkrId 전용 검증(위 _okrParentLinkValid 주석 참고) — 매 아이템 직전에
+          // 다시 조회해 같은 트랜잭션 안에서 앞서 INSERT된 형제 OKR(부모가 이 배치에서 막
+          // 함께 생성된 경우)까지 basis에 포함시킨다. 위반 시 parentOkrId 필드만 되돌린다.
+          if (toWrite && field === "okrObjectives" && toWrite.parentOkrId != null) {
+            const { rows: okrRows } = await client.query(
+              "SELECT data FROM app_collections WHERE collection = 'okrObjectives' AND (company_id = $1 OR company_id IS NULL)",
+              [companyId || null]
+            );
+            const okrBasis = okrRows.map(r => r.data).filter(o => o && String(o.id) !== String(toWrite.id));
+            if (!_okrParentLinkValid(toWrite, okrBasis)) {
+              toWrite = { ...toWrite, parentOkrId: storedItem ? (storedItem.parentOkrId ?? null) : null };
+            }
           }
           await client.query(
             `INSERT INTO app_collections (collection, id, company_id, data, updated_at) VALUES ($1,$2,$3,$4,NOW())
