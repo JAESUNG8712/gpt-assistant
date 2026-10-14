@@ -24521,7 +24521,10 @@ async function savePmsBudgetPlanned(){
   const r=await serverRequest("POST",`/api/pms/projects/${_pmsDetailProjectId}`,{budgetPlanned:val,expectedUpdatedAt:p?.updatedAt});
   if(r?.code==="PMS_PROJECT_CONFLICT"){showToast("다른 사용자의 변경을 감지했습니다. 최신 내용을 다시 불러옵니다.","error");await loadPmsFromServer();return;}
   if(!r?.ok){showToast(r?.message||"저장에 실패했습니다.","error");return;}
-  const idx=pmsProjects.findIndex(x=>x.id===r.project.id);if(idx>=0)pmsProjects[idx]=r.project;
+  // savePmsProject()/closePmsProject()와 동일한 이유(POST 응답의 project에는 canManage가
+  // 없음)로 전체 재조회 — 그러지 않으면 예산 저장 직후 "계획 예산 저장" 입력란/버튼이
+  // 조용히 사라진다(canManage가 undefined로 덮어써짐).
+  await loadPmsFromServer();
   showToast("저장되었습니다.","success");
   await _pmsDetailRenderPane();
 }

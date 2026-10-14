@@ -27,7 +27,10 @@ test.describe("작업5(항목A) — PMS 프로젝트 상세(작업/마일스톤/
     await page.click("button:has-text('+ 프로젝트 등록')");
     await page.fill("#pj-name", projName);
     await page.click(".modal-foot button.btn-primary:has-text('저장')");
-    await expect(page.locator(".toast", { hasText: "저장되었습니다" })).toBeVisible();
+    // 토스트는 3초간 유지되며(showToast(), public/index.html) 쌓일 수 있어 — 연속 저장
+    // 시나리오에서는 항상 가장 마지막 토스트로 확인한다(이 프로젝트의 기존 관례,
+    // inv-lead-time-reorder.spec.js 등).
+    await expect(page.locator(".toast").last()).toContainText("저장되었습니다");
 
     // 상세보기 모달 열기 — 기본 pane은 "작업".
     const row = page.locator("#content tbody tr", { hasText: projName });
@@ -43,7 +46,10 @@ test.describe("작업5(항목A) — PMS 프로젝트 상세(작업/마일스톤/
     await page.selectOption("#pmst-priority", "high");
     await page.fill("#pmst-duedate", "2026-11-30");
     await page.click(".modal-foot button.btn-primary:has-text('저장')");
-    await expect(page.locator(".toast", { hasText: "저장되었습니다" })).toBeVisible();
+    // 토스트는 3초간 유지되며(showToast(), public/index.html) 쌓일 수 있어 — 연속 저장
+    // 시나리오에서는 항상 가장 마지막 토스트로 확인한다(이 프로젝트의 기존 관례,
+    // inv-lead-time-reorder.spec.js 등).
+    await expect(page.locator(".toast").last()).toContainText("저장되었습니다");
     const taskRow = page.locator("#pms-detail-content tbody tr", { hasText: "요구사항 분석" });
     await expect(taskRow).toContainText("진행중");
     await expect(taskRow).toContainText("높음");
@@ -92,7 +98,10 @@ test.describe("작업5(항목A) — PMS 프로젝트 상세(작업/마일스톤/
 
     await page.fill("#pmsb-planned", "5000000");
     await page.click("button:has-text('계획 예산 저장')");
-    await expect(page.locator(".toast", { hasText: "저장되었습니다" })).toBeVisible();
+    // 토스트는 3초간 유지되며(showToast(), public/index.html) 쌓일 수 있어 — 연속 저장
+    // 시나리오에서는 항상 가장 마지막 토스트로 확인한다(이 프로젝트의 기존 관례,
+    // inv-lead-time-reorder.spec.js 등).
+    await expect(page.locator(".toast").last()).toContainText("저장되었습니다");
 
     // 모달을 닫고 다시 열어도(서버 재조회) 계획 예산이 유지되는지 확인.
     await page.click(".modal-foot button:has-text('닫기')");
@@ -126,7 +135,10 @@ test.describe("작업5(항목A) — PMS 프로젝트 상세(작업/마일스톤/
     await page.fill("#pj-member-search", `일반직원A (개발본부) [#${empId}]`);
     await page.click(".modal-body button:has-text('추가')");
     await page.click(".modal-foot button.btn-primary:has-text('저장')");
-    await expect(page.locator(".toast", { hasText: "저장되었습니다" })).toBeVisible();
+    // 토스트는 3초간 유지되며(showToast(), public/index.html) 쌓일 수 있어 — 연속 저장
+    // 시나리오에서는 항상 가장 마지막 토스트로 확인한다(이 프로젝트의 기존 관례,
+    // inv-lead-time-reorder.spec.js 등).
+    await expect(page.locator(".toast").last()).toContainText("저장되었습니다");
 
     // canManage는 currentUser(클라이언트 변수)가 아니라 GET /api/pms/projects 응답에 서버가
     // 실제 인증 토큰으로 계산해 실어주는 필드(_pmsCanManageProject, server.js)다 — 이 e2e
