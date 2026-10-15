@@ -54,11 +54,13 @@ test("확정된 급여명세서는 /save 직접 호출로도 위조·덮어쓰�
     assert.equal(saved?.confirmed, true);
   });
 
-  await t.test("확정된 레코드를 다른 금액으로 재전송해도 서버가 되돌린다(응답은 200이지만 값은 불변)", async () => {
+  await t.test("확정된 레코드의 변경은 부분 거부로 알리고 값은 불변이다", async () => {
     const confirmed = d.data.payslips.find(p => p.id === draft.id);
     const tampered = { ...confirmed, netPay: 99000000, gross: 100000000, updatedAt: new Date().toISOString() };
     const r = await (await api("/save", auth(token, "POST", { _version: d.version, payslips: [tampered] }))).json();
     assert.equal(r.ok, true);
+    assert.equal(r.partial, true);
+    assert.deepEqual(r.warnings?.rejectedRecords, [{ field: "payslips", id: draft.id }]);
     d = await getData(api, token);
     const saved = d.data.payslips.find(p => p.id === draft.id);
     assert.equal(saved?.netPay, 2700000);
@@ -70,6 +72,7 @@ test("확정된 급여명세서는 /save 직접 호출로도 위조·덮어쓰�
     const tampered = { ...confirmed, netPay: 1, updatedAt: new Date(Date.now() + 86400000).toISOString() };
     const r = await (await api("/save", auth(token, "POST", { _version: d.version, payslips: [tampered] }))).json();
     assert.equal(r.ok, true);
+    assert.equal(r.partial, true);
     d = await getData(api, token);
     const saved = d.data.payslips.find(p => p.id === draft.id);
     assert.equal(saved?.netPay, 2700000);
@@ -82,6 +85,7 @@ test("확정된 급여명세서는 /save 직접 호출로도 위조·덮어쓰�
       _version: d.version, boardPosts: [post], payslips: [{ ...confirmed, netPay: 5000000 }],
     }))).json();
     assert.equal(r.ok, true);
+    assert.equal(r.partial, true);
     d = await getData(api, token);
     assert.ok(d.data.boardPosts.some(p => p.id === "post-verify-1"));
     const saved = d.data.payslips.find(p => p.id === draft.id);
@@ -143,6 +147,7 @@ if (!ADMIN_DATABASE_URL) {
     const tampered = { ...saved, netPay: 99000000, updatedAt: new Date().toISOString() };
     r = await (await api("/save", auth(token, "POST", { _version: d.version, payslips: [tampered] }))).json();
     assert.equal(r.ok, true);
+    assert.equal(r.partial, true);
 
     d = await getData(api, token);
     saved = d.data.payslips.find(p => p.id === draft.id);

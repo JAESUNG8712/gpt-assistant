@@ -183,7 +183,11 @@ test("웹훅 서버사이드 디스패치 — SSRF 가드(기본값: 운영과 �
 
   const save = await api("/save", auth(adminToken, "POST", {
     _version: initial.version,
-    integrationSettings: { webhooks: [{ id: 1, name: "loopback훅", type: "custom", url: mock.url, active: true, events: ["approval_request"] }], calendar: {} },
+    integrationSettings: { webhooks: [
+      { id: 1, name: "loopback훅", type: "custom", url: mock.url, active: true, events: ["approval_request"] },
+      { id: 2, name: "IPv4매핑훅", type: "custom",
+        url: `http://[::ffff:127.0.0.1]:${mock.server.address().port}/hook`, active: true, events: ["approval_request"] },
+    ], calendar: {} },
   }));
   assert.equal(save.status, 200);
 
@@ -199,4 +203,41 @@ test("웹훅 서버사이드 디스패치 — SSRF 가드(기본값: 운영과 �
   assert.ok(log, "차단된 시도도 integrationLogs에 fail로 기록돼야 함");
   assert.equal(log.status, "fail");
   assert.match(log.message, /안전하지 않은/);
+  const mapped = d.data.integrationLogs.find(l => l.webhookName === "IPv4매핑훅");
+  assert.equal(mapped?.status, "fail", "IPv4 매핑 IPv6 주소도 차단해야 한다");
+});
+
+test("웹훅 디스패치는 3xx 리다이렉트를 따라가지 않는다", async (t) => {
+  const server = await startServer({ env: { ALLOW_LOCAL_WEBHOOK_TARGETS: "true" } });
+  t.after(() => server.stop());
+  const api = (path, options) => fetch(server.baseUrl + path, options);
+  const { token } = await bootstrapAdminAndLogin(server, { loginId: "admin", pw: "admin-test-pw-1", name: "관리자" });
+
+  let redirectedRequests = 0;
+  const destination = http.createServer((_req, res) => {
+    redirectedRequests += 1;
+    res.writeHead(200).end("ok");
+  });
+  await new Promise(resolve => destination.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise(resolve => { destination.closeAllConnections(); destination.close(resolve); }));
+  const redirector = http.createServer((_req, res) => {
+    res.writeHead(302, { Location: `http://127.0.0.1:${destination.address().port}/internal` }).end();
+  });
+  await new Promise(resolve => redirector.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise(resolve => { redirector.closeAllConnections(); redirector.close(resolve); }));
+
+  const initial = await getData(api, token);
+  const saved = await api("/save", auth(token, "POST", {
+    _version: initial.version,
+    integrationSettings: { webhooks: [{ id: 1, name: "redirect", type: "custom",
+      url: `http://127.0.0.1:${redirector.address().port}/hook`, active: true,
+      events: ["approval_request"] }], calendar: {} },
+  }));
+  assert.equal(saved.status, 200);
+  const dispatched = await (await api("/api/integrations/webhooks/dispatch", auth(token, "POST", {
+    eventId: "approval_request", text: "redirect test",
+  }))).json();
+  assert.equal(dispatched.ok, true);
+  assert.equal(dispatched.dispatched, 0);
+  assert.equal(redirectedRequests, 0, "리다이렉트된 내부 주소에 요청이 도달하면 안 된다");
 });

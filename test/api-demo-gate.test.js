@@ -1,12 +1,12 @@
 // 운영 더미 데이터 게이트(rejectDemoDataForProduction) 전용 회귀 테스트.
 // mkdtemp의 DATA_FILE/BUDGET_DATA_FILE, 랜덤 PORT, child process `node server.js`만
 // 사용한다 — 실제 DB나 운영 데이터 파일은 이 테스트가 존재하는지조차 모른다(항상
-// os.tmpdir() 아래 새 디렉터리에만 쓰고, 끝나면 지운다).
+// 테스트 전용 임시 디렉터리에만 쓰고, 끝나면 지운다).
 "use strict";
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const bcrypt = require("bcryptjs");
-const { startServer, startServerExpectingBootFailure, bootstrapAdminAndLogin } = require("./support/start-server");
+const { startServer, startServerExpectingBootFailure, bootstrapAdminAndLogin, getTestTempRoot } = require("./support/start-server");
 
 async function seedAdminAndLogin(server, empId = 1) {
   const login = await bootstrapAdminAndLogin(server, {
@@ -139,7 +139,7 @@ test("demo data gate: 부팅 시점 fail-fast(DATA_FILE에 이미 더미 마커�
       kpiEntries: [], _version: 1,
     };
     // 이번엔 정상 부팅을 기대하므로 startServer()(느긋한 /status 폴링)를 쓴다.
-    const dataDir = require("fs").mkdtempSync(require("path").join(require("os").tmpdir(), "hr-test-allowdemo-"));
+    const dataDir = require("fs").mkdtempSync(require("path").join(getTestTempRoot(), "hr-test-allowdemo-"));
     const dataFile = require("path").join(dataDir, "hr-data.json");
     require("fs").writeFileSync(dataFile, JSON.stringify(seedData));
     const server = await startServer({ env: { NODE_ENV: "production", ALLOW_DEMO_DATA: "true", DATA_FILE: dataFile } });
@@ -156,8 +156,7 @@ test("demo data gate: 부팅 시점 fail-fast(DATA_FILE에 이미 더미 마커�
 test("demo data gate: production에서 개발 스냅샷을 /restore로 복원하면 403이고 실제로 반영되지 않는다", async (t) => {
   const fs = require("fs");
   const path = require("path");
-  const os = require("os");
-  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "hr-test-restoregate-"));
+  const dataDir = fs.mkdtempSync(path.join(getTestTempRoot(), "hr-test-restoregate-"));
   const dataFile = path.join(dataDir, "hr-data.json");
   const snapFile = path.join(dataDir, "hr-data-snapshots.json");
   const pwHash = await bcrypt.hash("Admin@123", 10);

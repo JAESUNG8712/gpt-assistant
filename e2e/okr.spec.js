@@ -120,8 +120,9 @@ test.describe("OKR 모듈", () => {
     await page.evaluate(() => gotoPage("okr"));
     await page.evaluate(() => { okrTab = "review"; renderOkrPage(); });
 
-    page.once("dialog", d => d.accept("목표가 너무 모호합니다"));
     await page.click("#okr-content button:has-text('반려')");
+    await page.locator('input[id^="dialog-input-"]').fill("목표가 너무 모호합니다");
+    await page.locator(".modal-ov").last().getByRole("button", { name: "반려" }).click();
     const rec = await page.evaluate(() => okrObjectives.find(o => o.id === "okr_test_reject"));
     expect(rec.status).toBe("rejected");
     expect(rec.rejectReason).toBe("목표가 너무 모호합니다");

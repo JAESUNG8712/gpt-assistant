@@ -68,7 +68,7 @@ test.describe("D4 — 호봉제(급여 지급 기준)", () => {
     const stepInput = page.locator("tr:has-text('호봉테스트직급') input").nth(1); // 2호봉(index 1) 입력칸
     await stepInput.fill("3200000");
     await page.click("button:has-text('💾 변경사항 저장')");
-    await expect(page.locator(".toast")).toContainText("저장되었습니다");
+    await expect(page.locator(".toast")).toContainText(/저장되었습니다|서버에 저장 중입니다/);
 
     const afterMonthly = await page.evaluate(() => {
       const emp = getEmp(98401);

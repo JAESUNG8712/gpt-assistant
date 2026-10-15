@@ -8,11 +8,10 @@ test.describe("그룹웨어형 오늘의 업무 허브", () => {
     await page.goto("/");
     await page.fill("#l-id", "e2e_admin");
     await page.fill("#l-pw", "E2eTestPw123");
+    // 테스트가 주입한 화면 상태를 비동기 전체 동기화/SSE가 덮어쓰지 않게 한다.
+    await page.evaluate(() => { autoSaveDebounced = () => {}; loadFromServer = async () => {}; connectSSE = async () => {}; });
     await page.click(".login-card button.btn-primary");
     await expect(page.locator("#main")).toBeVisible({ timeout: 10000 });
-    // 로그인 직후 서버의 전체 상태 적용이 끝난 뒤 테스트 데이터를 주입해야
-    // 지연 도착한 응답이 approvalDocs/roomReservations/boardPosts를 덮어쓰지 않는다.
-    await page.waitForTimeout(750);
 
     await page.evaluate(() => {
       const now = new Date();

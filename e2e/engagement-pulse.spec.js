@@ -19,6 +19,9 @@ test("관리자가 펄스 설문을 개설하고 익명 임계치 집계를 확�
   await page.getByRole("button", { name: "개설" }).click();
   await expect(page.locator("#content")).toContainText("2026년 10월 몰입도");
   await expect(page.locator("#content")).toContainText("응답 0명");
+  // 자동저장을 이 테스트에서 끈 만큼 서버 선행 저장은 명시해야 한다. 그렇지 않으면
+  // 점검 기록 저장 시 서버에는 연결 설문이 없어 개선계획을 거부한다.
+  expect(["saved", "merged"]).toContain((await page.evaluate(() => saveToServer(true))).status);
 
   await page.evaluate(() => {
     const id = engagementSurveys[0].id;
@@ -37,6 +40,7 @@ test("관리자가 펄스 설문을 개설하고 익명 임계치 집계를 확�
   await page.getByRole("button", { name: "개선계획 등록" }).click();
   await expect(page.locator("#content")).toContainText("매주 월요일 팀 우선순위 공유");
   await expect(page.locator("#content")).toContainText("결과 기반 개선계획 (1건)");
+  expect(["saved", "merged"]).toContain((await page.evaluate(() => saveToServer(true))).status);
 
   await page.getByRole("button", { name: "상세·점검" }).click();
   await expect(page.locator("#content").getByRole("heading", { name: "매주 월요일 팀 우선순위 공유" })).toBeVisible();

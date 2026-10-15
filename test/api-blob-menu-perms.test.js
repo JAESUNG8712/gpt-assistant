@@ -249,6 +249,9 @@ test("blob 동기화(/save) 컬렉션의 menuPerms/권한 확장 — kpiEntries�
     const coreTalentPool = [...(d.data.coreTalentPool || []), { id: "ct1", empId: "memberB", note: "테스트" }];
     const r = await api("/save", auth(admin2Token, "POST", { _version: d.version, coreTalentPool }));
     assert.equal(r.status, 200);
+    const rejected = await r.json();
+    assert.equal(rejected.partial, true, "서버가 보호 자료를 되돌릴 때 성공으로 보고하면 안 된다");
+    assert.deepEqual(rejected.warnings?.rejectedRecords, [{ field: "coreTalentPool", id: "ct1" }]);
     const check = await getData(api, adminToken);
     assert.equal((check.data.coreTalentPool || []).some(c => c.id === "ct1"), false);
   });
@@ -380,6 +383,7 @@ test("blob 동기화(/save) 컬렉션의 menuPerms/권한 확장 — kpiEntries�
     let gradeAdjustHistory = [...(d.data.gradeAdjustHistory || []), { id: "gah1", type: "kpi", empId: "memberA", year: 2026, dept: "개발본부", oldGrade: "-", newGrade: "A" }];
     let r = await api("/save", auth(dir1Token, "POST", { _version: d.version, gradeAdjustHistory }));
     assert.equal(r.status, 200);
+    assert.equal((await r.json()).partial, false, "정상 등급 조정은 부분 거부로 오인하면 안 된다");
     let check = await getData(api, adminToken);
     assert.equal((check.data.gradeAdjustHistory || []).some(x => x.id === "gah1"), true);
 
@@ -395,7 +399,353 @@ test("blob 동기화(/save) 컬렉션의 menuPerms/권한 확장 — kpiEntries�
     gradeAdjustHistory = [...(d.data.gradeAdjustHistory || []), { id: "gah2", type: "kpi", empId: "memberA", year: 2026, dept: "개발본부", oldGrade: "-", newGrade: "B" }];
     r = await api("/save", auth(dir1Token2, "POST", { _version: d.version, gradeAdjustHistory }));
     assert.equal(r.status, 200);
+    const rejected = await r.json();
+    assert.equal(rejected.partial, true);
+    assert.deepEqual(rejected.warnings?.rejectedRecords, [{ field: "gradeAdjustHistory", id: "gah2" }]);
     check = await getData(api, adminToken);
     assert.equal((check.data.gradeAdjustHistory || []).some(x => x.id === "gah2"), false);
   });
+});
+
+test("/save 병합 응답도 /data와 동일한 개인별 메뉴 권한 필터를 적용한다", async (t) => {
+  const server = await startServer();
+  t.after(() => server.stop());
+  const api = (path, options) => fetch(server.baseUrl + path, options);
+  const boot = await bootstrapAdminAndLogin(server, { loginId: "admin", pw: "admin-test-pw-1" });
+  const initial = await getData(api, boot.token);
+  const restricted = {
+    id: "restricted-admin", loginId: "restricted-admin", pw: "restricted-pw-1",
+    name: "제한 관리자", role: "admin", active: true,
+    menuPerms: { "learning-center": false }
+  };
+  const member = {
+    id: "ordinary-member", loginId: "ordinary-member", pw: "member-pw-1",
+    name: "일반 직원", role: "member", active: true,
+  };
+  const course = {
+    id: "private-course", name: "비공개 교육", category: "직무", provider: "사내",
+    startDate: "2026-10-01", endDate: "2026-10-02", hours: 2,
+    capacity: 10, cost: 0, status: "active", internalNote: "관리자 전용 메모"
+  };
+  const seeded = await (await api("/save", auth(boot.token, "POST", {
+    _version: initial.version,
+    employees: [...initial.data.employees, restricted, member],
+    learningCourses: [course, { ...course, id: "retired-sensitive-course" }]
+  }))).json();
+  assert.equal(seeded.ok, true);
+  const adminLatest = await getData(api, boot.token);
+  const retired = await (await api("/save", auth(boot.token, "POST", {
+    _version: adminLatest.version,
+    data: { recordTombstones: { learningCourses: [{ id: "retired-sensitive-course", ts: Date.now() }] } }
+  }))).json();
+  assert.equal(retired.ok, true);
+  assert.equal((await getData(api, boot.token)).data.recordTombstones.learningCourses.some(t => t.id === "retired-sensitive-course"), true);
+  const restrictedToken = await login(api, restricted.loginId, restricted.pw);
+  const visible = await getData(api, restrictedToken);
+  assert.deepEqual(visible.data.learningCourses, []);
+  assert.equal((visible.data.recordTombstones?.learningCourses || []).length, 0);
+  const memberToken = await login(api, member.loginId, member.pw);
+  const memberVisible = await getData(api, memberToken);
+  assert.deepEqual(memberVisible.data.recordTombstones, {});
+
+  // 의도적으로 오래된 버전을 보내 병합 응답을 강제로 받는다.
+  const saved = await (await api("/save", auth(restrictedToken, "POST", {
+    _version: 0, data: { learningCourses: [] }
+  }))).json();
+  assert.equal(saved.ok, true);
+  assert.equal(saved.merged, true);
+  assert.deepEqual(saved.mergedData.learningCourses, []);
+  assert.equal((saved.mergedData.recordTombstones?.learningCourses || []).length, 0);
+  assert.equal((await getData(api, boot.token)).data.learningCourses.some(row => row.id === course.id), true);
+
+  const latest = await getData(api, restrictedToken);
+  const rejectedDelete = await (await api("/save", auth(restrictedToken, "POST", {
+    _version: latest.version,
+    data: { recordTombstones: { learningCourses: [{ id: course.id, ts: Date.now() }] } }
+  }))).json();
+  assert.equal(rejectedDelete.ok, true);
+  assert.equal(rejectedDelete.partial, true);
+  assert.deepEqual(rejectedDelete.warnings?.rejectedRecords, [
+    { field: "learningCourses", id: course.id, operation: "delete" }
+  ]);
+  const afterDelete = await getData(api, boot.token);
+  assert.equal(afterDelete.data.learningCourses.some(row => row.id === course.id), true);
+  assert.equal((afterDelete.data.recordTombstones?.learningCourses || []).some(t => t.id === course.id), false);
+});
+
+test("KPI 삭제 표식은 소유·조직·메뉴 권한을 따라야 한다", async (t) => {
+  const server = await startServer();
+  t.after(() => server.stop());
+  const api = (path, options) => fetch(server.baseUrl + path, options);
+  const boot = await bootstrapAdminAndLogin(server, { loginId: "admin", pw: "admin-test-pw-1" });
+  const initial = await getData(api, boot.token);
+  const employees = [
+    ...initial.data.employees,
+    { id: "owner", loginId: "owner", pw: "owner-pw-1", name: "목표 소유자", role: "member", active: true, dept: "A", team: "1" },
+    { id: "other", loginId: "other", pw: "other-pw-1", name: "다른 직원", role: "member", active: true, dept: "B", team: "2" },
+    { id: "blocked", loginId: "blocked", pw: "blocked-pw-1", name: "메뉴 제한 직원", role: "member", active: true, dept: "A", team: "1", menuPerms: { kpi: false } },
+    { id: "leader", loginId: "leader", pw: "leader-pw-1", name: "같은 팀장", role: "leader", active: true, dept: "A", team: "1" },
+  ];
+  const kpiEntries = [
+    { id: "owner-kpi", userId: "owner", year: 2026, item: "소유자 목표", weight: 50 },
+    { id: "other-kpi", userId: "other", year: 2026, item: "타인 목표", weight: 50 },
+    { id: "blocked-kpi", userId: "blocked", year: 2026, item: "제한 목표", weight: 50 },
+    { id: "team-kpi", userId: "owner", year: 2026, item: "팀장 수정 가능 목표", weight: 50 },
+    { id: "submitted-kpi", userId: "owner", year: 2026, item: "이미 제출한 목표", weight: 50, goalSub: 1 },
+  ];
+  const seeded = await (await api("/save", auth(boot.token, "POST", {
+    _version: initial.version, employees, kpiEntries,
+  }))).json();
+  assert.equal(seeded.ok, true);
+  const ownerToken = await login(api, "owner", "owner-pw-1");
+  const blockedToken = await login(api, "blocked", "blocked-pw-1");
+  const leaderToken = await login(api, "leader", "leader-pw-1");
+
+  async function deleteWith(token, id) {
+    const d = await getData(api, token);
+    return (await api("/save", auth(token, "POST", {
+      _version: d.version,
+      data: { recordTombstones: { kpiEntries: [{ id, ts: Date.now() }] } },
+    }))).json();
+  }
+
+  const foreign = await deleteWith(ownerToken, "other-kpi");
+  assert.equal(foreign.partial, true);
+  assert.deepEqual(foreign.warnings?.rejectedRecords, [
+    { field: "kpiEntries", id: "other-kpi", operation: "delete" },
+  ]);
+  let after = await getData(api, boot.token);
+  assert.equal(after.data.kpiEntries.some(k => k.id === "other-kpi"), true);
+  assert.equal((after.data.recordTombstones?.kpiEntries || []).some(t => t.id === "other-kpi"), false);
+
+  const blocked = await deleteWith(blockedToken, "blocked-kpi");
+  assert.equal(blocked.partial, true);
+  after = await getData(api, boot.token);
+  assert.equal(after.data.kpiEntries.some(k => k.id === "blocked-kpi"), true);
+
+  const submitted = await deleteWith(ownerToken, "submitted-kpi");
+  assert.equal(submitted.partial, true);
+  after = await getData(api, boot.token);
+  assert.equal(after.data.kpiEntries.some(k => k.id === "submitted-kpi"), true);
+
+  const team = await deleteWith(leaderToken, "team-kpi");
+  assert.equal(team.ok, true);
+  assert.equal(team.partial, false);
+  after = await getData(api, boot.token);
+  assert.equal(after.data.kpiEntries.some(k => k.id === "team-kpi"), false);
+
+  const own = await deleteWith(ownerToken, "owner-kpi");
+  assert.equal(own.ok, true);
+  assert.equal(own.partial, false);
+  after = await getData(api, boot.token);
+  assert.equal(after.data.kpiEntries.some(k => k.id === "owner-kpi"), false);
+});
+
+test("민감 컬렉션 삭제 표식은 결재·금전 기록과 다른 직원 신청을 지켜야 한다", async (t) => {
+  const server = await startServer();
+  t.after(() => server.stop());
+  const api = (path, options) => fetch(server.baseUrl + path, options);
+  const boot = await bootstrapAdminAndLogin(server, { loginId: "admin", pw: "admin-test-pw-1" });
+  const initial = await getData(api, boot.token);
+  const employees = [
+    ...initial.data.employees,
+    { id: "claim-owner", loginId: "claim-owner", pw: "claim-owner-pw-1", name: "청구자", role: "member", active: true },
+    { id: "claim-other", loginId: "claim-other", pw: "claim-other-pw-1", name: "타 직원", role: "member", active: true },
+  ];
+  const seeded = await (await api("/save", auth(boot.token, "POST", {
+    _version: initial.version, data: {
+      employees,
+      expenseClaims: [
+        { id: "expense-pending", empId: "claim-owner", status: "pending", title: "출장비", total: 10000 },
+        { id: "expense-paid", empId: "claim-owner", status: "approved", title: "지급 완료", total: 20000 },
+      ],
+      overtimeRequests: [
+        { id: "overtime-pending", empId: "claim-owner", status: "pending", hours: 2 },
+        { id: "overtime-approved", empId: "claim-owner", status: "approved", hours: 3 },
+      ],
+      welfarePoints: [{ id: "welfare-grant", empId: "claim-owner", type: "grant", points: 10000, year: 2026 }],
+      approvalDocs: [{ id: "approval-doc", authorId: "claim-owner", status: "approved", approvers: [] }],
+      certRequests: [{ id: "cert-pending", empId: "claim-owner", status: "pending", certType: "employment", reason: "은행 제출" }],
+    },
+  }))).json();
+  assert.equal(seeded.ok, true);
+  const paid = await api("/api/hr/expense-claims/expense-paid/pay", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${boot.token}`, "Content-Type": "application/json", "Idempotency-Key": "seed-paid-claim" },
+    body: JSON.stringify({ date: "2026-01-01", method: "계좌이체", makeVoucher: false }),
+  });
+  assert.equal(paid.status, 200, await paid.text());
+  const ownerToken = await login(api, "claim-owner", "claim-owner-pw-1");
+  const otherToken = await login(api, "claim-other", "claim-other-pw-1");
+
+  async function saveWelfare(token, record) {
+    const d = await getData(api, token);
+    return (await api("/save", auth(token, "POST", {
+      _version: d.version, data: { welfarePoints: [record] },
+    }))).json();
+  }
+  await saveWelfare(ownerToken, { id: "welfare-use", empId: "claim-owner", type: "use", points: 2000, year: 2026 });
+  let welfare = (await getData(api, boot.token)).data.welfarePoints;
+  assert.equal(welfare.find(r => r.id === "welfare-use")?.points, 2000);
+  await saveWelfare(ownerToken, { ...welfare.find(r => r.id === "welfare-use"), points: 1 });
+  welfare = (await getData(api, boot.token)).data.welfarePoints;
+  assert.equal(welfare.find(r => r.id === "welfare-use")?.points, 2000, "사용 금액은 사후 변경할 수 없어야 합니다");
+  await saveWelfare(ownerToken, { ...welfare.find(r => r.id === "welfare-grant"), type: "use", points: 1 });
+  welfare = (await getData(api, boot.token)).data.welfarePoints;
+  assert.equal(welfare.find(r => r.id === "welfare-grant")?.type, "grant", "부여 기록을 사용 기록으로 바꿀 수 없어야 합니다");
+
+  // 삭제뿐 아니라 동일 ID를 이용한 타인 신청 덮어쓰기와 승인 후 금액 변경도
+  // 같은 범용 저장 API에서 처리되므로 각각 서버 원본이 유지되어야 한다.
+  for (const [token, field, id, patch, checkedKey, original] of [
+    [otherToken, "expenseClaims", "expense-pending", { total: 999999 }, "total", 10000],
+    [otherToken, "overtimeRequests", "overtime-pending", { hours: 20 }, "hours", 2],
+    [ownerToken, "expenseClaims", "expense-paid", { total: 999999 }, "total", 20000],
+    [ownerToken, "overtimeRequests", "overtime-approved", { hours: 20 }, "hours", 3],
+  ]) {
+    const snapshot = await getData(api, boot.token);
+    const stored = snapshot.data[field].find(r => r.id === id);
+    const changed = { ...stored, ...patch, updatedAt: new Date().toISOString() };
+    const result = await (await api("/save", auth(token, "POST", {
+      _version: snapshot.version, data: { [field]: [changed] },
+    }))).json();
+    assert.equal(result.ok, true);
+    assert.equal((await getData(api, boot.token)).data[field].find(r => r.id === id)[checkedKey], original,
+      `${field}/${id} 승인 근거 변경이 되돌려져야 합니다`);
+  }
+
+  async function removeWith(token, field, id) {
+    const d = await getData(api, token);
+    return (await api("/save", auth(token, "POST", {
+      _version: d.version, data: { recordTombstones: { [field]: [{ id, ts: Date.now() }] } },
+    }))).json();
+  }
+  for (const [token, field, id] of [
+    [otherToken, "expenseClaims", "expense-pending"],
+    [otherToken, "overtimeRequests", "overtime-pending"],
+    [ownerToken, "expenseClaims", "expense-paid"],
+    [ownerToken, "overtimeRequests", "overtime-approved"],
+    [ownerToken, "welfarePoints", "welfare-grant"],
+    [ownerToken, "approvalDocs", "approval-doc"],
+    [ownerToken, "certRequests", "cert-pending"],
+  ]) {
+    const result = await removeWith(token, field, id);
+    assert.equal(result.partial, true, `${field}/${id} 삭제가 거부되어야 합니다`);
+    assert.ok(result.warnings?.rejectedRecords?.some(r => r.field === field && r.id === id && r.operation === "delete"));
+    const after = await getData(api, boot.token);
+    assert.ok(after.data[field].some(r => r.id === id), `${field}/${id} 원본이 보존되어야 합니다`);
+    assert.equal((after.data.recordTombstones?.[field] || []).some(r => r.id === id), false);
+  }
+  for (const [field, id] of [["expenseClaims", "expense-pending"], ["overtimeRequests", "overtime-pending"]]) {
+    const result = await removeWith(ownerToken, field, id);
+    assert.equal(result.ok, true);
+    assert.equal(result.partial, false);
+    assert.equal((await getData(api, boot.token)).data[field].some(r => r.id === id), false);
+  }
+
+  async function writeRecord(token, field, record) {
+    const d = await getData(api, token);
+    return (await api("/save", auth(token, "POST", {
+      _version: d.version, data: { [field]: [record] },
+    }))).json();
+  }
+  await writeRecord(ownerToken, "expenseClaims", { id: "expense-forged-owner", empId: "claim-other", status: "pending", total: 50000 });
+  await writeRecord(ownerToken, "overtimeRequests", { id: "overtime-forged-status", empId: "claim-owner", status: "approved", hours: 5 });
+  await writeRecord(ownerToken, "certRequests", { id: "cert-forged-owner", empId: "claim-other", status: "pending", certType: "salary" });
+  await writeRecord(ownerToken, "certRequests", { id: "cert-forged-approved", empId: "claim-owner", status: "approved", certType: "salary" });
+  let current = await getData(api, boot.token);
+  assert.equal(current.data.expenseClaims.some(r => r.id === "expense-forged-owner"), false);
+  assert.equal(current.data.overtimeRequests.some(r => r.id === "overtime-forged-status"), false);
+  assert.equal(current.data.certRequests.some(r => r.id === "cert-forged-owner"), false);
+  assert.equal(current.data.certRequests.some(r => r.id === "cert-forged-approved"), false);
+
+  await writeRecord(ownerToken, "certRequests", { ...current.data.certRequests.find(r => r.id === "cert-pending"), status: "approved", certType: "salary" });
+  current = await getData(api, boot.token);
+  assert.equal(current.data.certRequests.find(r => r.id === "cert-pending")?.status, "pending");
+  assert.equal(current.data.certRequests.find(r => r.id === "cert-pending")?.certType, "employment");
+  await writeRecord(boot.token, "certRequests", { ...current.data.certRequests.find(r => r.id === "cert-pending"), status: "approved", processedAt: "2026-01-01T00:00:00.000Z" });
+  current = await getData(api, boot.token);
+  assert.equal(current.data.certRequests.find(r => r.id === "cert-pending")?.status, "approved");
+  assert.equal(current.data.certRequests.find(r => r.id === "cert-pending")?.certType, "employment");
+
+  await writeRecord(ownerToken, "expenseClaims", { id: "expense-new", empId: "claim-owner", status: "pending", title: "신규 청구", total: 10000,
+    empName: "대표이사 위조", dept: "위조 부서", items: [{ date: "2026-01-01", category: "교통비", amount: 10000 }] });
+  await writeRecord(ownerToken, "expenseClaims", { id: "expense-inflated", empId: "claim-owner", status: "pending", title: "합계 위조", total: 999999,
+    items: [{ date: "2026-01-01", category: "교통비", amount: 10000 }] });
+  await writeRecord(ownerToken, "overtimeRequests", { id: "overtime-new", empId: "claim-owner", status: "pending", hours: 2 });
+  current = await getData(api, boot.token);
+  assert.equal(current.data.expenseClaims.find(r => r.id === "expense-new")?.status, "pending");
+  assert.equal(current.data.expenseClaims.find(r => r.id === "expense-new")?.empName, "청구자");
+  assert.equal(current.data.expenseClaims.find(r => r.id === "expense-inflated"), undefined, "항목 합계와 다른 청구 총액은 저장되지 않아야 함");
+  assert.equal(current.data.overtimeRequests.find(r => r.id === "overtime-new")?.status, "pending");
+
+  await writeRecord(boot.token, "expenseClaims", { ...current.data.expenseClaims.find(r => r.id === "expense-new"), status: "approved", total: 999999 });
+  await writeRecord(boot.token, "overtimeRequests", { ...current.data.overtimeRequests.find(r => r.id === "overtime-new"), status: "approved", hours: 20 });
+  current = await getData(api, boot.token);
+  assert.equal(current.data.expenseClaims.find(r => r.id === "expense-new")?.status, "approved");
+  assert.equal(current.data.expenseClaims.find(r => r.id === "expense-new")?.total, 10000);
+  assert.equal(current.data.overtimeRequests.find(r => r.id === "overtime-new")?.status, "approved");
+  assert.equal(current.data.overtimeRequests.find(r => r.id === "overtime-new")?.hours, 2);
+
+  await writeRecord(boot.token, "expenseClaims", { ...current.data.expenseClaims.find(r => r.id === "expense-new"), status: "paid", paidAt: "2026-01-01", payMethod: "계좌이체" });
+  current = await getData(api, boot.token);
+  assert.equal(current.data.expenseClaims.find(r => r.id === "expense-new")?.status, "approved", "범용 저장으로 지급 전표 원자성을 우회할 수 없어야 함");
+  assert.equal(current.data.expenseClaims.find(r => r.id === "expense-new")?.total, 10000);
+});
+
+test("전자결재 신규 문서는 작성자·초기 상태를 위조할 수 없고 기존 승인 근거는 불변이다", async (t) => {
+  const server = await startServer();
+  t.after(() => server.stop());
+  const api = (path, options) => fetch(server.baseUrl + path, options);
+  const boot = await bootstrapAdminAndLogin(server, { loginId: "admin", pw: "admin-test-pw-1" });
+  const first = await getData(api, boot.token);
+  const employees = [
+    ...first.data.employees,
+    { id: "doc-author", loginId: "doc-author", pw: "doc-author-pw-1", name: "기안자", role: "member", active: true },
+    { id: "doc-approver", loginId: "doc-approver", pw: "doc-approver-pw-1", name: "결재자", role: "director", active: true },
+  ];
+  assert.equal((await api("/save", auth(boot.token, "POST", { _version: first.version, data: { employees } }))).status, 200);
+  const author = await login(api, "doc-author", "doc-author-pw-1");
+  const approver = await login(api, "doc-approver", "doc-approver-pw-1");
+  async function saveDoc(token, doc) {
+    const d = await getData(api, token);
+    return (await api("/save", auth(token, "POST", { _version: d.version, data: { approvalDocs: [doc] } }))).json();
+  }
+  const base = { templateId: "tpl-expense", authorId: "doc-author", status: "in_progress",
+    formData: { amount: 10000 }, approvers: [{ empId: "doc-approver", status: "pending" }],
+    createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z" };
+  await saveDoc(author, { ...base, id: "forged-author", authorId: "doc-approver" });
+  await saveDoc(author, { ...base, id: "forged-approved", status: "approved", approvers: [{ empId: "doc-approver", status: "approved" }] });
+  let adminView = await getData(api, boot.token);
+  assert.equal(adminView.data.approvalDocs.some(d => d.id === "forged-author"), false);
+  assert.equal(adminView.data.approvalDocs.some(d => d.id === "forged-approved"), false);
+
+  await saveDoc(author, { ...base, id: "real-doc" });
+  adminView = await getData(api, boot.token);
+  assert.equal(adminView.data.approvalDocs.find(d => d.id === "real-doc")?.status, "in_progress");
+  await saveDoc(author, { ...adminView.data.approvalDocs.find(d => d.id === "real-doc"), formData: { amount: 999999 }, updatedAt: "2026-01-02T00:00:00.000Z" });
+  adminView = await getData(api, boot.token);
+  assert.equal(adminView.data.approvalDocs.find(d => d.id === "real-doc")?.formData?.amount, 10000);
+
+  const approved = { ...adminView.data.approvalDocs.find(d => d.id === "real-doc"), status: "approved", approvedAt: "2026-01-03T00:00:00.000Z",
+    approvers: [{ empId: "doc-approver", status: "approved", decidedAt: "2026-01-03T00:00:00.000Z" }], updatedAt: "2026-01-03T00:00:00.000Z" };
+  await saveDoc(approver, approved);
+  adminView = await getData(api, boot.token);
+  assert.equal(adminView.data.approvalDocs.find(d => d.id === "real-doc")?.status, "approved");
+  assert.equal(adminView.data.approvalDocs.find(d => d.id === "real-doc")?.formData?.amount, 10000);
+
+  await saveDoc(author, { ...adminView.data.approvalDocs.find(d => d.id === "real-doc"),
+    deletionRequest: { status: "pending", reason: "중복 상신", requestedAt: "2026-01-04T00:00:00.000Z" } });
+  adminView = await getData(api, boot.token);
+  assert.equal(adminView.data.approvalDocs.find(d => d.id === "real-doc")?.deletionRequest?.status, "pending");
+  await saveDoc(author, { ...adminView.data.approvalDocs.find(d => d.id === "real-doc"), status: "cancelled" });
+  assert.equal((await getData(api, boot.token)).data.approvalDocs.find(d => d.id === "real-doc")?.status, "approved",
+    "승인 문서의 삭제 요청은 관리자가 결정하기 전에는 상태를 바꿀 수 없어야 합니다");
+
+  await saveDoc(author, { ...base, id: "cancel-doc" });
+  adminView = await getData(api, boot.token);
+  const cancelDoc = adminView.data.approvalDocs.find(d => d.id === "cancel-doc");
+  await saveDoc(approver, { ...cancelDoc, status: "cancelled", updatedAt: "2026-01-02T00:00:00.000Z" });
+  assert.equal((await getData(api, boot.token)).data.approvalDocs.find(d => d.id === "cancel-doc")?.status, "in_progress");
+  await saveDoc(author, { ...cancelDoc, status: "cancelled", updatedAt: "2026-01-02T00:00:00.000Z" });
+  assert.equal((await getData(api, boot.token)).data.approvalDocs.find(d => d.id === "cancel-doc")?.status, "cancelled");
 });

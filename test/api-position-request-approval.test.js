@@ -141,7 +141,10 @@ test("정원 신설·증원 요청 — 예산 승인, 조직 범위, 이중 반�
     const after = await data(api, leaderToken);
     const attempted = after.data.positionRequests.map(x => x.id === requestId ? { ...x, headcount: 999, status: "approved", updatedAt: new Date().toISOString() } : x);
     const save = await api("/save", auth(leaderToken, "POST", { _version: after.version, data: { ...after.data, positionRequests: attempted } }));
-    assert.equal(save.status, 200, await save.text());
+    assert.equal(save.status, 200, await save.clone().text());
+    const saveBody = await save.json();
+    assert.equal(saveBody.partial, true, "거부된 정원 요청 수정은 화면에도 알려야 한다");
+    assert.ok(saveBody.warnings?.rejectedRecords?.some(x => x.field === "positionRequests" && x.id === requestId));
     const protectedRequest = (await data(api, adminToken)).data.positionRequests.find(x => x.id === requestId);
     assert.equal(protectedRequest.status, "submitted");
     assert.equal(protectedRequest.headcount, 2);

@@ -11,6 +11,8 @@ const crypto  = require("crypto");
 const { isDeepStrictEqual } = require("node:util");
 const dns = require("node:dns");
 const net = require("node:net");
+const http = require("node:http");
+const https = require("node:https");
 const pool    = require("./db");
 const multer  = require("multer");
 const budgetRouterFactory = require("./budget");
@@ -295,9 +297,30 @@ const JSON_FILE_WORKERS = Number(process.env.WEB_CONCURRENCY || 1);
 // rename)로 통일해 같은 보호를 적용한다 — POSIX에서 같은 파일시스템 내 rename은 원자적이라
 // 쓰다 만 tmp 파일이 있어도 원본은 마지막으로 완전히 쓰기 끝난 버전 그대로 남는다.
 function _atomicWriteFileSync(filePath, content) {
-  const tmp = `${filePath}.tmp`;
-  fs.writeFileSync(tmp, content, "utf8");
-  fs.renameSync(tmp, filePath);
+  // 고정 .tmp 이름은 서로 다른 요청/프로세스가 같은 파일을 재사용할 수 있고,
+  // Windows에서는 백신·동기화 도구의 순간적인 파일 잠금으로 교체가 EPERM이 될 수 있다.
+  // 기존 목적지를 지우지 않고 고유한 완성본을 보존한 채 짧게 재시도한다.
+  const tmp = `${filePath}.${process.pid}.${crypto.randomBytes(6).toString("hex")}.tmp`;
+  fs.writeFileSync(tmp, content, { encoding: "utf8", flag: "wx" });
+  const retrySignal = new Int32Array(new SharedArrayBuffer(4));
+  for (let attempt = 0; ; attempt++) {
+    try { fs.renameSync(tmp, filePath); return; }
+    catch (e) {
+      if (process.platform !== "win32" || !["EPERM", "EACCES", "EBUSY"].includes(e.code) || attempt >= 4) throw e;
+      Atomics.wait(retrySignal, 0, 0, 25 * (attempt + 1));
+    }
+  }
+}
+async function _atomicWriteFile(filePath, content) {
+  const tmp = `${filePath}.${process.pid}.${crypto.randomBytes(6).toString("hex")}.tmp`;
+  await fs.promises.writeFile(tmp, content, { encoding: "utf8", flag: "wx" });
+  for (let attempt = 0; ; attempt++) {
+    try { await fs.promises.rename(tmp, filePath); return; }
+    catch (e) {
+      if (process.platform !== "win32" || !["EPERM", "EACCES", "EBUSY"].includes(e.code) || attempt >= 4) throw e;
+      await new Promise(resolve => setTimeout(resolve, 25 * (attempt + 1)));
+    }
+  }
 }
 
 // 존재하는 데이터 파일을 "읽지 못하면 빈 저장소로 시작"하는 것은 다음 저장 시 원본을
@@ -737,6 +760,18 @@ function filterDataForRole(data, auth) {
   // 직무별 요구역량과 개인별 검증 수준은 인사 의사결정용 제한정보다. 현재 화면이
   // 관리자 전용이므로 API 직접 조회에서도 동일하게 비관리자에게 노출하지 않는다.
   if (auth.role !== "admin") {
+    if (Array.isArray(out.employmentRecords)) out.employmentRecords = [];
+    if (Array.isArray(out.learningCourses)) {
+      out.learningCourses = out.learningCourses.filter(c => c && c.status === "active").map(c => {
+        // 신청자는 결재 전에 교육비를 확인해야 한다. 공개 과정의 비용은 신청·예산 검토용
+        // 정보로 제공하되, 계약조건 등이 적힌 관리자 내부 메모는 응답에서 제거한다.
+        const { internalNote, ...safe } = c;
+        return safe;
+      });
+    }
+    if (Array.isArray(out.learningAssignments)) {
+      out.learningAssignments = out.learningAssignments.filter(a => a && String(a.empId) === myId);
+    }
     if (Array.isArray(out.jobSkillProfiles)) out.jobSkillProfiles = [];
     if (Array.isArray(out.employeeSkillProfiles)) out.employeeSkillProfiles = [];
     if (Array.isArray(out.workforceScenarios)) out.workforceScenarios = [];
@@ -943,6 +978,14 @@ function filterDataForRole(data, auth) {
       return copy;
     });
   }
+  if (auth.role !== "admin") {
+    out._singletonRevisions = {};
+    // 삭제 표식에는 이미 삭제된 자료의 ID가 남아 있다. 행 본문을 권한별로 숨긴
+    // 뒤에도 이 맵을 그대로 내리면 다른 직원의 급여/평가/인사 ID가 노출된다.
+    // 비관리자 클라이언트는 전체 서버 스냅샷으로 삭제를 수렴하므로 이 전역 표식은 불필요하다.
+    out.recordTombstones = {};
+    out.roomReservationTombstones = [];
+  }
   // integrationSettings.webhooks[].url은 비밀값(Slack Incoming Webhook URL 등, 아는 사람은
   // 누구나 그 채널에 영구히 직접 게시 가능)이다. "연동 설정"(integrations) 화면은 admin
   // 전용인데 이 필드는 지금까지 role과 무관하게 전체가 그대로 노출돼 있었다 — 웹훅 발송
@@ -952,7 +995,6 @@ function filterDataForRole(data, auth) {
   if (auth.role !== "admin" && out.integrationSettings && typeof out.integrationSettings === "object") {
     out.integrationSettings = { calendar: out.integrationSettings.calendar };
   }
-  if (auth.role !== "admin") out._singletonRevisions = {};
   // 회사 단위 모듈 on/off(마스터 콘솔) — 이 함수의 나머지는 전부 "같은 회사 안에서 role별로
   // 얼마나 보이는지"를 다루는데, 이 한 줄만 "이 회사가 그 모듈 자체를 아예 껐는지"를 본다.
   // _hideDisabledFeatureFields() 정의부 주석 참고 — admin 포함 예외 없이 적용된다.
@@ -965,8 +1007,23 @@ function filterDataForRole(data, auth) {
 function filterDataForMenuPermissions(data, menuPerms) {
   if (!data || !menuPerms || typeof menuPerms !== "object") return data;
   const out = { ...data };
-  if (menuPerms["acct-receivables"] === false && Array.isArray(out.acctPayments)) {
-    out.acctPayments = [];
+  const hiddenTombstoneFields = [];
+  if (menuPerms["employment-records"] === false) {
+    if (Array.isArray(out.employmentRecords)) out.employmentRecords = [];
+    hiddenTombstoneFields.push("employmentRecords");
+  }
+  if (menuPerms["learning-center"] === false) {
+    if (Array.isArray(out.learningCourses)) out.learningCourses = [];
+    if (Array.isArray(out.learningAssignments)) out.learningAssignments = [];
+    hiddenTombstoneFields.push("learningCourses", "learningAssignments");
+  }
+  if (menuPerms["acct-receivables"] === false) {
+    if (Array.isArray(out.acctPayments)) out.acctPayments = [];
+    hiddenTombstoneFields.push("acctPayments");
+  }
+  if (hiddenTombstoneFields.length && out.recordTombstones) {
+    out.recordTombstones = { ...out.recordTombstones };
+    for (const field of hiddenTombstoneFields) delete out.recordTombstones[field];
   }
   return out;
 }
@@ -1157,7 +1214,7 @@ async function _withDistributedSaveLock(companyId, fn) {
     await client.query("SELECT pg_advisory_lock(hashtext($1))", [`full-state-save:${_scopeKey(companyId)}`]);
     locked = true;
     await _refreshVersionFromDb(companyId, client);
-    return await fn();
+    return await fn(client);
   } catch (e) {
     if (e && e.code === "55P03") {
       throw httpError(409, "SAVE_LOCK_TIMEOUT", "다른 사용자의 저장이 진행 중입니다. 잠시 후 다시 시도하세요.");
@@ -1389,62 +1446,66 @@ async function loadData(companyId) {
 // 완전히 무관한 타 부서 사용자 둘 다 200으로 통과해 status가 approved로 바뀜.
 // 병가·경조사·지출처럼 실제 권한이 걸린 문서라 결재 자체가 무의미해지는 문제다.
 //
-// 정책: 어떤 결재자 칸이 approved/rejected로 "바뀌는" 것은 그 칸의 당사자(empId ===
-// 요청자)이거나 관리자일 때만 허용한다. waiting→pending 승격(앞 결재자가 승인하면 다음
-// 차례가 열리는 정상 연쇄)과 그 외 상태는 그대로 둔다. 위조로 판정되면 요청을 통째로
-// 거부하지 않고 해당 칸만 저장된 값으로 되돌린다 — 이 앱은 매 저장마다 클라이언트가 가진
-// 전체 상태를 재전송하는 구조라, 한 칸 때문에 저장 전체를 막으면 무관한 정상 변경까지
-// 함께 날아가기 때문이다.
+// 정책: 일반 사용자는 본인 명의 진행중 문서만 새로 만들 수 있다. 저장 후 본문·결재선은
+// 동결하고, 현재 차례의 결재자만 승인/반려할 수 있다. 기안자 취소·삭제 요청은 별도
+// 허용하며 관리자는 결재선 교체·레거시 이관 권한을 유지한다. 거부한 레코드만 저장본으로
+// 되돌려 전체 상태 저장의 다른 정상 변경을 막지 않는다.
 function _sanitizeApprovalDoc(incoming, stored, actor) {
-  if (!incoming || !Array.isArray(incoming.approvers)) return incoming;
-  if (actor && actor.role === "admin") return incoming;  // 관리자 결재자 변경 등은 기존대로 허용
-  const actorId = actor && actor.empId != null ? String(actor.empId) : null;
-  const storedApprovers = (stored && Array.isArray(stored.approvers)) ? stored.approvers : null;
-
-  // 결재자 "신원"(empId) 자체를 바꾸는 것은 관리자 전용 기능(pickNewApprover, 퇴직자
-  // 결재선 정체 해소용)에서만 일어나야 하는 조작이다. 그런데 아래의 status 전이 검사는
-  // "그 칸의 empId가 요청자 본인과 같으면 통과"라는 규칙만 봐서, 이미 존재하는 문서의
-  // approvers[i].empId를 아직 status가 안 바뀐 상태(pending→pending 등)로 먼저 자신의
-  // empId로 바꿔치기한 뒤, 다음 저장에서 그 칸을 승인 처리하면 "본인 결재"로 오인해
-  // 통과시켜버리는 2단계 우회가 있었다(실측: 문서와 무관한 사원이 대기중인 결재 단계를
-  // 자기 자신으로 바꾸고 스스로 승인 완료). 신원 자체가 바뀌는 것은 status 값과 무관하게
-  // 항상 막아야 하므로, 이미 저장된 문서(stored 존재)라면 approvers 배열의 길이·각 칸의
-  // empId가 저장본과 정확히 같은 순서로 일치하는지부터 먼저 확인한다 — 신규 문서 생성
-  // 시점(stored 없음)은 결재선을 그 자리에서 새로 구성하는 정상 흐름이라 이 검사 대상이
-  // 아니다.
-  if (storedApprovers) {
-    const identityChanged = incoming.approvers.length !== storedApprovers.length ||
-      incoming.approvers.some((a, i) => a && storedApprovers[i] && String(a.empId) !== String(storedApprovers[i].empId));
-    if (identityChanged) {
-      return { ...incoming, approvers: storedApprovers.map(a => ({ ...a })), status: stored.status };
-    }
+  if (!incoming) return stored ? { ...stored } : null;
+  if (actor?.role === "admin") return incoming; // 관리자 결재선 교체·레거시 이관
+  const actorId = actor?.empId != null ? String(actor.empId) : null;
+  if (!actorId || !Array.isArray(incoming.approvers)) return stored ? { ...stored } : null;
+  if (!stored) {
+    // 새 문서를 타인 명의나 이미 승인된 상태로 삽입하면 급여·근태 연계의 신뢰 근거를
+    // 위조할 수 있다. UI의 실제 상신 계약은 본인 명의의 진행중 문서와 대기 결재선이다.
+    return String(incoming.authorId) === actorId && incoming.status === "in_progress" &&
+      incoming.approvers.length > 0 && incoming.approvers.every(a => a && ["pending", "waiting"].includes(a.status))
+      ? incoming : null;
   }
-
-  const storedList = storedApprovers || [];
-  let reverted = false;
-  const approvers = incoming.approvers.map((a, i) => {
-    if (!a) return a;
-    const prev = storedList[i] && String(storedList[i].empId) === String(a.empId)
-      ? storedList[i]
-      : storedList.find(s => s && String(s.empId) === String(a.empId));
-    const prevStatus = prev ? prev.status : "waiting";
-    if (a.status === prevStatus) return a;
-    if (a.status !== "approved" && a.status !== "rejected") return a;  // 연쇄 승격 등은 허용
-    if (actorId && String(a.empId) === actorId) return a;              // 당사자 본인의 결재
-    reverted = true;
-    return prev ? { ...prev } : { ...a, status: "waiting", decidedAt: null, comment: "" };
-  });
-  if (!reverted) return incoming;
-  // 결재자 칸을 되돌렸으면 그 칸들로부터 파생되는 문서 전체 상태도 저장된 값으로 되돌린다
-  // (상신 취소·삭제요청처럼 결재자와 무관한 status 변경은 reverted가 false라 영향 없음).
-  return { ...incoming, approvers, status: stored ? stored.status : "in_progress" };
+  if (JSON.stringify(incoming) === JSON.stringify(stored)) return incoming;
+  const mutable = new Set(["approvers", "status", "approvedAt", "updatedAt", "deletionRequest"]);
+  const immutableKeys = new Set([...Object.keys(stored), ...Object.keys(incoming)].filter(k => !mutable.has(k)));
+  if ([...immutableKeys].some(k => JSON.stringify(incoming[k]) !== JSON.stringify(stored[k]))) return { ...stored };
+  const before = Array.isArray(stored.approvers) ? stored.approvers : [];
+  if (incoming.approvers.length !== before.length ||
+      incoming.approvers.some((a, i) => !a || !before[i] || String(a.empId) !== String(before[i].empId))) return { ...stored };
+  const statusesChanged = incoming.approvers.map((a, i) => a.status !== before[i].status ? i : -1).filter(i => i >= 0);
+  const deletionChanged = JSON.stringify(incoming.deletionRequest) !== JSON.stringify(stored.deletionRequest);
+  if (deletionChanged) {
+    if (statusesChanged.length || incoming.status !== stored.status || stored.status !== "approved" ||
+        String(stored.authorId) !== actorId || incoming.deletionRequest?.status !== "pending" ||
+        ![undefined, "rejected"].includes(stored.deletionRequest?.status)) return { ...stored };
+    return { ...stored, deletionRequest: incoming.deletionRequest };
+  }
+  if (!statusesChanged.length) {
+    return incoming.status === "cancelled" && stored.status === "in_progress" && String(stored.authorId) === actorId
+      ? { ...stored, status: "cancelled", updatedAt: incoming.updatedAt } : { ...stored };
+  }
+  if (stored.status !== "in_progress" && stored.status !== "pending") return { ...stored };
+  const decisionIndex = statusesChanged.find(i => before[i].status === "pending" &&
+    ["approved", "rejected"].includes(incoming.approvers[i].status) && String(before[i].empId) === actorId);
+  if (decisionIndex == null) return { ...stored };
+  const decision = incoming.approvers[decisionIndex].status;
+  const nextIndex = decision === "approved" ? before.findIndex((a, i) => i > decisionIndex && a.status === "waiting") : -1;
+  const expectedChanged = nextIndex >= 0 ? [decisionIndex, nextIndex] : [decisionIndex];
+  if (statusesChanged.length !== expectedChanged.length || statusesChanged.some((i, n) => i !== expectedChanged[n]) ||
+      (nextIndex >= 0 && incoming.approvers[nextIndex].status !== "pending")) return { ...stored };
+  const approvers = before.map((a, i) => i === decisionIndex
+    ? { ...a, status: decision, decidedAt: incoming.approvers[i].decidedAt, comment: incoming.approvers[i].comment }
+    : i === nextIndex ? { ...a, status: "pending" } : { ...a });
+  const expectedStatus = decision === "rejected" ? "rejected" :
+    approvers.every(a => a.status === "approved") ? "approved" : "in_progress";
+  if (incoming.status !== expectedStatus) return { ...stored };
+  return { ...stored, approvers, status: expectedStatus,
+    approvedAt: expectedStatus === "approved" ? incoming.approvedAt : stored.approvedAt,
+    updatedAt: incoming.updatedAt };
 }
 // 경비청구·초과근무·증명서도 approvalDocs와 똑같은 구조적 문제를 갖고 있었다 — 승인 권한
 // 검사가 클라이언트 함수(approveExpenseClaim의 role!=="admin", _otCanApprove,
 // approveCertRequest의 role!=="admin")에만 있고, 실제 저장은 범용 blob 동기화(/save)로
 // 나가기 때문에 서버가 아무것도 검증하지 않았다. 실측: 사원(member)이 자기가 올린
 // 경비청구(금액)·초과근무(수당)·증명서 신청을 전부 스스로 승인 완료로 만들 수 있었다.
-// 각 컬렉션의 "승인 상태로 전이"만 게이팅하고, 신청·수정·취소 등 나머지는 그대로 둔다.
+// 현재는 상태 전이뿐 아니라 신규 신청자 신원·제출 후 본문 불변성·삭제 표식도 검증한다.
 function _otCanApproveServer(rec, actor, actorEmp) {
   if (!actor) return false;
   if (String(rec.empId) === String(actor.empId)) return false;   // 본인 신청은 본인이 승인 불가
@@ -1486,6 +1547,9 @@ function _welfareRecordAllowed(rec, actor, actorEmp, settings) {
 // roles: 이 역할이면 누구 레코드든 쓸 수 있음(해당 화면의 PAGE_ROLES와 일치)
 // ownField: 그 필드가 본인 id면 역할과 무관하게 허용(본인 출퇴근 체크·본인 증명서 발급 등)
 const _WRITE_GATED_FIELDS = {
+  employmentRecords:  { roles: ["admin"], pageIds: "employment-records" },
+  learningCourses:    { roles: ["admin"], pageIds: "learning-center" },
+  learningAssignments:{ roles: ["admin"], pageIds: "learning-center" },
   payslips:           { roles: ["admin"], pageIds: "payroll-mgmt" },
   payrollAdjustments: { roles: ["admin"], pageIds: "payroll-mgmt" },
   // 연말정산 결과: payslips와 동일하게 admin만 계산·확정할 수 있다(본인이 자기 부양가족
@@ -1656,6 +1720,23 @@ function _welfareAdjustmentMatchesApprovedDoc(rec, doc) {
   const expectedCategory = {"tpl-welfare-condolence":"경조사비","tpl-welfare-tuition":"학자금","tpl-welfare-medical":"의료비 지원"}[doc.templateId];
   return rec.source === "welfare_approval" && rec.category === expectedCategory;
 }
+// 교육 신청의 최종 결재자가 관리자가 아닐 때도 승인 결과로 수강배정 1건은 생성돼야 한다.
+// 단, 결재문서 내용을 아는 사용자가 임의 배정을 복제하지 못하도록 문서·직원·과정·ID와
+// 초기 상태를 모두 결정론적으로 대조한다. 이후 배정 수정/수료/정산은 다시 관리자 게이트를 탄다.
+function _learningAssignmentMatchesApprovedDoc(rec, doc) {
+  if (!rec || !doc || doc.status !== "approved" || doc.templateId !== "tpl-training") return false;
+  const fd = doc.formData || {};
+  if (!fd.courseId || String(doc.authorId) !== String(rec.empId)) return false;
+  const approvedDate = String(doc.approvedAt || doc.updatedAt || "").slice(0, 10);
+  const cost = Number(fd.estimatedCost || 0);
+  const expectedSettlement = cost > 0 ? "pending" : "not_required";
+  return String(rec.id) === `learning-approval-${doc.id}` && rec.source === "approval" &&
+    String(rec.sourceDocId) === String(doc.id) && String(rec.courseId) === String(fd.courseId) &&
+    rec.status === "assigned" && rec.assignedAt === approvedDate && rec.dueDate === String(fd.endDate || "") &&
+    Number(rec.approvedCost || 0) === cost && rec.costCenter === String(fd.costCenter || "").trim().slice(0, 100) &&
+    rec.settlementStatus === expectedSettlement && rec.settledAt === "" &&
+    rec.note === String(fd.purpose || "").trim().slice(0, 500);
+}
 // 다면평가 평가자 지정(compSessions 레코드 생성/수정, evaluatorConfig 싱글톤 키별 조정)을
 // 누가 할 수 있는지 판정하는 공용 규칙(Epic B 항목 #9 — "사업부장·팀장의 하위조직원 평가자
 // 조정"). 지금까지 compSessions는 _WRITE_GATED_FIELDS에 admin 전용(pageIds:"eval-ops")으로만
@@ -1671,6 +1752,12 @@ function _canManageCompSessionTarget(actor, actorEmp, targetEmp) {
   if (actor.role === "leader") return targetEmp.dept === actorEmp.dept && targetEmp.team === actorEmp.team;
   return false;
 }
+function _validCalendarDate(value) {
+  const s = String(value || "");
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return false;
+  const d = new Date(`${s}T00:00:00Z`);
+  return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === s;
+}
 // OKR(Epic C) 승인권자 판정 — kpiEntries의 team_leader/dept_director 승인범위와 동일한
 // 조직단위 기준(leader는 같은 dept+team의 member, director는 같은 dept의 member/leader).
 // admin은 _sanitizeGatedRecord 호출부에서 이미 별도로 통과시키므로 여기서 다루지 않는다.
@@ -1681,12 +1768,12 @@ function _okrIsManagerOf(actor, actorEmp, ownerEmp) {
   return false;
 }
 // 반환값: 저장할 레코드, 또는 null(= 이 레코드는 아예 쓰지 않음 — 권한 없이 새로 만들어진 것)
-// approvalDocForGate: field==="payrollAdjustments"이고 신규 레코드(!stored)일 때만 쓰이는,
-// 호출부가 미리 조회해둔 그 sourceDocId의(이미 _sanitizeApprovalDoc을 거친) 결재문서.
+// approvalDocForGate: 결재에서 파생되는 payrollAdjustments/learningAssignments 신규 레코드에
+// 한해 호출부가 미리 조회한 sourceDocId의 결재문서(이미 _sanitizeApprovalDoc을 거침).
 // targetEmp: field==="compSessions"일 때만 쓰이는, 호출부가 미리 조회해둔 incoming.targetId의
 // 직원 레코드(_canManageCompSessionTarget 판정용 — JSON모드는 _fileStore.employees에서,
 // Postgres모드는 별도 쿼리로 동일하게 조회해 호출부가 넘겨준다).
-function _sanitizeGatedRecord(field, incoming, stored, actor, actorEmp, settings, approvalDocForGate, targetEmp, engagementSurveys) {
+function _sanitizeGatedRecord(field, incoming, stored, actor, actorEmp, settings, approvalDocForGate, targetEmp, engagementSurveys, reviewOwnerEmp) {
   const rule = _APPROVAL_GATED_FIELDS[field];
   if (!rule || !incoming) return incoming;
   // ownField 기반 권한은 incoming 값만 보면 기존 타인 레코드의 id를 재사용하면서 owner를
@@ -1717,6 +1804,95 @@ function _sanitizeGatedRecord(field, incoming, stored, actor, actorEmp, settings
       periodStart, periodEnd, summary, blockers: String(incoming.blockers || "").trim().slice(0, 1500), nextPlan, status,
       submittedAt: status === "submitted" ? (stored?.submittedAt || now) : null, createdAt: stored?.createdAt || now, updatedAt: now };
   }
+  if (field === "employmentRecords") {
+    if ([incoming.startDate, incoming.endDate, incoming.decisionDate].some(value => value && !_validCalendarDate(value))) return stored ? { ...stored } : null;
+    const type = ["contract", "discipline"].includes(incoming.type) ? incoming.type : "";
+    const status = ["active", "closed", "expired"].includes(incoming.status) ? incoming.status : "active";
+    const shortText = (value, max) => String(value == null ? "" : value).trim().slice(0, max);
+    const date = value => _validCalendarDate(value) ? String(value) : "";
+    const now = new Date().toISOString();
+    const reviewStatus = type === "contract" ? (incoming.reviewStatus ?? stored?.reviewStatus ?? "open") : "open";
+    const reviewDecision = type === "contract" ? (incoming.reviewDecision ?? stored?.reviewDecision ?? "pending") : "pending";
+    if (!["open", "completed"].includes(reviewStatus) || !["pending", "renew", "end"].includes(reviewDecision)) return stored ? { ...stored } : null;
+    const reviewOwnerId = type === "contract" ? shortText(incoming.reviewOwnerId ?? stored?.reviewOwnerId, 120) : "";
+    const reviewNote = type === "contract" ? shortText(incoming.reviewNote ?? stored?.reviewNote, 500) : "";
+    if (reviewStatus === "completed" && (!reviewOwnerId || reviewDecision === "pending")) return stored ? { ...stored } : null;
+    // 담당자는 요청 본문이 아닌 저장된 같은 회사 직원 원장에서 검증한다.
+    // 기존 레거시 담당자를 단순히 다시 저장하는 경우는 허용하되, 담당자 변경이나
+    // 완료 전이에는 현재 활성 관리자여야 한다.
+    const ownerNeedsValidation = type === "contract" && reviewOwnerId &&
+      (reviewOwnerId !== String(stored?.reviewOwnerId || "") || (reviewStatus === "completed" && stored?.reviewStatus !== "completed"));
+    if (ownerNeedsValidation && (!reviewOwnerEmp || reviewOwnerEmp.role !== "admin" || reviewOwnerEmp.active === false || !_menuPermsAllow("employment-records", reviewOwnerEmp))) return stored ? { ...stored } : null;
+    const reviewChanged = type === "contract" && (reviewOwnerId !== String(stored?.reviewOwnerId || "") || reviewStatus !== (stored?.reviewStatus || "open") || reviewDecision !== (stored?.reviewDecision || "pending") || reviewNote !== String(stored?.reviewNote || ""));
+    const reviewEvents = Array.isArray(stored?.reviewEvents) ? [...stored.reviewEvents] : [];
+    if (reviewChanged) {
+      reviewEvents.push({ at: now, actorId: String(actor?.empId || ""), ownerId: reviewOwnerId, status: reviewStatus, decision: reviewDecision });
+    }
+    incoming = { ...incoming, employeeId: shortText(incoming.employeeId, 120), type, title: shortText(incoming.title, 120), status,
+      startDate: date(incoming.startDate), endDate: date(incoming.endDate), decisionDate: date(incoming.decisionDate),
+      note: shortText(incoming.note, 1000), documentRef: shortText(incoming.documentRef, 200),
+      reviewOwnerId, reviewStatus, reviewDecision, reviewNote, reviewEvents,
+      reviewedAt: reviewStatus === "completed" ? (reviewChanged ? now.slice(0, 10) : stored?.reviewedAt || now.slice(0, 10)) : "",
+      createdAt: stored?.createdAt || now, createdBy: stored?.createdBy || String(actor?.empId || ""),
+      updatedAt: now, updatedBy: String(actor?.empId || "") };
+    if (!incoming.employeeId || !type || !incoming.title) return stored ? { ...stored } : null;
+    if (incoming.startDate && incoming.endDate && incoming.endDate < incoming.startDate) return stored ? { ...stored } : null;
+    if (type === "contract" && !incoming.startDate) return stored ? { ...stored } : null;
+    if (type === "discipline" && !incoming.decisionDate) return stored ? { ...stored } : null;
+  }
+  if (field === "learningCourses") {
+    const txt = (value, max) => String(value == null ? "" : value).trim().slice(0, max);
+    const date = value => _validCalendarDate(value) ? String(value) : "";
+    const now = new Date().toISOString();
+    const hours = Number(incoming.hours), capacity = Number(incoming.capacity), cost = Number(incoming.cost);
+    incoming = { ...incoming, name: txt(incoming.name, 120), category: txt(incoming.category, 80), provider: txt(incoming.provider, 120),
+      instructorName: txt(incoming.instructorName, 80), delivery: ["online", "offline", "blended"].includes(incoming.delivery) ? incoming.delivery : "offline",
+      startDate: date(incoming.startDate), endDate: date(incoming.endDate), hours, capacity, cost,
+      status: ["draft", "active", "closed"].includes(incoming.status) ? incoming.status : "draft",
+      description: txt(incoming.description, 1000), internalNote: txt(incoming.internalNote, 500),
+      createdAt: stored?.createdAt || now, createdBy: stored?.createdBy || String(actor?.empId || ""), updatedAt: now, updatedBy: String(actor?.empId || "") };
+    if (!incoming.name || !incoming.category || !incoming.startDate || !incoming.endDate || incoming.endDate < incoming.startDate) return stored ? { ...stored } : null;
+    if (!Number.isFinite(hours) || hours <= 0 || hours > 1000 || !Number.isInteger(capacity) || capacity < 1 || capacity > 10000 || !Number.isFinite(cost) || cost < 0 || cost > 1_000_000_000) return stored ? { ...stored } : null;
+    if (stored?.status === "closed") return { ...stored };
+  }
+  if (field === "learningAssignments") {
+    if ([incoming.assignedAt, incoming.dueDate, incoming.settledAt].some(value => value && !_validCalendarDate(value))) return stored ? { ...stored } : null;
+    const txt = (value, max) => String(value == null ? "" : value).trim().slice(0, max);
+    const date = value => _validCalendarDate(value) ? String(value) : "";
+    const now = new Date().toISOString(), status = ["assigned", "in_progress", "completed", "cancelled"].includes(incoming.status) ? incoming.status : "assigned";
+    const score = incoming.score === "" || incoming.score == null ? null : Number(incoming.score);
+    const approvedCost = Number(incoming.approvedCost || 0);
+    const settlementStatus = ["not_required", "pending", "settled"].includes(incoming.settlementStatus)
+      ? incoming.settlementStatus : (approvedCost > 0 ? "pending" : "not_required");
+    const settlementBase = stored ? Number(stored.approvedCost || 0) : approvedCost;
+    const settledAmount = settlementStatus === "settled"
+      ? Number(incoming.settledAmount === "" || incoming.settledAmount == null ? (stored?.settledAmount ?? settlementBase) : incoming.settledAmount)
+      : 0;
+    // 수료 핵심정보는 감사 이력이므로 불변이지만, 증빙 정산은 수료 후에도 마감할 수 있다.
+    if (stored?.status === "completed") {
+      return { ...stored, settlementStatus, settledAt: settlementStatus === "settled" ? (date(incoming.settledAt) || now.slice(0, 10)) : "", settledAmount,
+        settlementNote: txt(incoming.settlementNote, 500), updatedAt: now, updatedBy: String(actor?.empId || "") };
+    }
+    incoming = { ...incoming, courseId: txt(incoming.courseId, 120), empId: txt(incoming.empId, 120), status,
+      assignedAt: stored?.assignedAt || date(incoming.assignedAt) || now.slice(0, 10), dueDate: date(incoming.dueDate),
+      completedAt: status === "completed" ? (date(incoming.completedAt) || now.slice(0, 10)) : "",
+      score, certificateNo: txt(incoming.certificateNo, 120), evidenceRef: txt(incoming.evidenceRef, 200), note: txt(incoming.note, 500),
+      source: txt(incoming.source, 40), sourceDocId: txt(incoming.sourceDocId, 120), approvedCost,
+      costCenter: txt(incoming.costCenter, 100), settlementStatus,
+      settledAt: settlementStatus === "settled" ? (date(incoming.settledAt) || now.slice(0, 10)) : "", settledAmount,
+      settlementNote: txt(incoming.settlementNote, 500),
+      createdAt: stored?.createdAt || now, createdBy: stored?.createdBy || String(actor?.empId || ""), updatedAt: now, updatedBy: String(actor?.empId || "") };
+    // 승인문서에서 파생된 기준값은 이후 관리자 수정에도 결재 당시 값으로 고정한다.
+    // 수강 상태·증빙·정산만 갱신할 수 있어야 원장과 결재 이력이 충돌하지 않는다.
+    if (stored?.source === "approval") {
+      for (const key of ["courseId", "empId", "assignedAt", "dueDate", "approvedCost", "costCenter", "source", "sourceDocId"]) incoming[key] = stored[key];
+    }
+    if (!incoming.courseId || !incoming.empId || !incoming.assignedAt) return stored ? { ...stored } : null;
+    if (incoming.dueDate && incoming.dueDate < incoming.assignedAt) return stored ? { ...stored } : null;
+    if (score != null && (!Number.isFinite(score) || score < 0 || score > 100)) return stored ? { ...stored } : null;
+  }
+  if (field === "learningAssignments" && !stored && approvalDocForGate &&
+      _learningAssignmentMatchesApprovedDoc(incoming, approvalDocForGate)) return incoming;
   // payrollAdjustments는 admin 전용 필드지만, 복리후생 신청이 승인 완료되는
   // 순간 이 레코드를 만드는 것은 그 결재선의 "마지막 결재자"(대개 팀장·사업부장, admin이
   // 아님)다 — 그래서 이 정당한 파생 레코드가 role 게이팅에 걸려 항상 조용히 드롭되고
@@ -1884,6 +2060,85 @@ function _sanitizeGatedRecord(field, incoming, stored, actor, actorEmp, settings
     if (pageOk && _canManageCompSessionTarget(actor, actorEmp, targetEmp)) return incoming;
     return stored ? { ...stored } : null;
   }
+  // 경비/초과근무는 신청 후 화면에서 원문을 수정하지 않는다. 예전의 decided 상태만
+  // 검사하는 규칙은 같은 ID의 타인 신청 금액·시간을 바꾸거나 승인 후 원금을 고치는
+  // 요청을 통과시켰다. 저장본의 신청자·상태를 기준으로 합법적인 승인 전이만 반영한다.
+  if (field === "expenseClaims" || field === "overtimeRequests") {
+    if (stored && JSON.stringify(stored) === JSON.stringify(incoming)) return incoming;
+    const pageId = field === "expenseClaims" ? "expense-claims" : "overtime-req";
+    if (!stored) {
+      if (!_menuPermsAllow(pageId, actor)) return null;
+      if (actor?.role === "admin") {
+        // 지급은 전표와 청구를 함께 처리하는 전용 API만 허용한다. 신뢰된 서버 스냅샷
+        // 복원은 기존 paid 기록을 되살릴 수 있지만 일반 /save 신규 삽입은 불가하다.
+        if (field === "expenseClaims" && incoming.status === "paid" && !actor._trustedRestore) return null;
+        return incoming;
+      }
+      if (field === "expenseClaims") {
+        const items = incoming.items;
+        if (actor?.empId == null || !actorEmp || String(incoming.empId) !== String(actor.empId) ||
+            incoming.status !== "pending" || typeof incoming.title !== "string" ||
+            !incoming.title.trim() || incoming.title.length > 200 || !Array.isArray(items) ||
+            items.length < 1 || items.length > 100) return null;
+        let sum = 0;
+        for (const item of items) {
+          const amount = Number(item?.amount);
+          if (!item || !_isValidDateStr(item.date) || !Number.isFinite(amount) || amount <= 0 ||
+              amount > 999999999999 || _round2(amount) !== amount) return null;
+          sum += amount;
+        }
+        const total = Number(incoming.total);
+        if (!Number.isFinite(total) || total <= 0 || total > 999999999999 || _round2(sum) !== _round2(total)) return null;
+        const now = new Date().toISOString();
+        return { ...incoming, empId: actor.empId, empName: actorEmp.name || "",
+          dept: actorEmp.dept || "", team: actorEmp.team || "",
+          total: _round2(sum), status: "pending", createdAt: now, updatedAt: now };
+      }
+      return actor?.empId != null && String(incoming.empId) === String(actor.empId) && incoming.status === "pending"
+        ? incoming : null;
+    }
+    if (field === "expenseClaims") {
+      if (actor?.role !== "admin" || !_menuPermsAllow("expense-admin", actor)) return { ...stored };
+      if (stored.status === "pending" && ["approved", "rejected"].includes(incoming.status)) {
+        return { ...stored, status: incoming.status, approvedBy: incoming.approvedBy,
+          approvedAt: incoming.approvedAt, rejectReason: incoming.status === "rejected" ? incoming.rejectReason : stored.rejectReason,
+          updatedAt: incoming.updatedAt };
+      }
+      if (stored.status === "approved" && incoming.status === "paid" && actor._trustedRestore) {
+        return { ...stored, status: "paid", paidAt: incoming.paidAt, payMethod: incoming.payMethod,
+          paidBy: incoming.paidBy, voucherId: incoming.voucherId, voucherNo: incoming.voucherNo,
+          updatedAt: incoming.updatedAt };
+      }
+      return { ...stored };
+    }
+    if (stored.status !== "pending" || !["approved", "rejected"].includes(incoming.status) ||
+        !_menuPermsAllow("overtime-req", actor) || !_otCanApproveServer(stored, actor, actorEmp)) return { ...stored };
+    return { ...stored, status: incoming.status, approvedBy: incoming.approvedBy,
+      approvedAt: incoming.approvedAt, rejectReason: incoming.status === "rejected" ? incoming.rejectReason : stored.rejectReason,
+      updatedAt: incoming.updatedAt };
+  }
+  if (field === "certRequests") {
+    if (stored && JSON.stringify(stored) === JSON.stringify(incoming)) return incoming;
+    if (!stored) {
+      if (!_menuPermsAllow("certificate", actor)) return null;
+      if (actor?.role === "admin") return incoming; // 관리자 이관·초기 적재
+      return actor?.empId != null && String(incoming.empId) === String(actor.empId) && incoming.status === "pending"
+        ? incoming : null;
+    }
+    // 발급 신청 본문과 신청자 신원은 제출 후 동결. 관리자도 대기→승인/반려
+    // 전이와 처리 메타데이터만 쓸 수 있고, 처리된 신청은 다시 변경할 수 없다.
+    if (actor?.role !== "admin" || !_menuPermsAllow("certificate", actor) ||
+        stored.status !== "pending" || !["approved", "rejected"].includes(incoming.status)) return { ...stored };
+    return { ...stored, status: incoming.status, processedAt: incoming.processedAt,
+      processedBy: actor.empId, processedByName: actorEmp?.name || actor.loginId || "",
+      rejectReason: incoming.status === "rejected" ? incoming.rejectReason : stored.rejectReason,
+      updatedAt: incoming.updatedAt };
+  }
+  // 복지포인트는 부여/사용 모두 잔액의 근거가 되는 원장이다. 새 기록만 권한·잔액
+  // 검사를 거쳐 추가하고, 기존 기록은 관리자도 수정하지 않는다(정정은 상쇄 기록으로).
+  if (field === "welfarePoints" && stored && JSON.stringify(stored) !== JSON.stringify(incoming)) {
+    return { ...stored };
+  }
   // OKR(Epic C) — 소유자(ownerId)는 명의 도용 방지를 위해 절대 바꿀 수 없다(approvalDocs의
   // 결재자 신원 변경 차단과 동일한 발상). 신규 레코드는 본인(또는 admin) 명의로만, 항상
   // draft로 시작(승인 상태를 직접 주입하는 것을 차단). 상태 전이는 draft→pending(본인만
@@ -1983,6 +2238,23 @@ function _roomReservationConflicts(rec, storedList, excludeId) {
     return r.startTime < rec.endTime && r.endTime > rec.startTime;
   });
 }
+// 교육 배정의 중복·정원 검사는 UI만 믿을 수 없다. 두 관리자가 동시에 저장하거나
+// /save를 직접 호출해도 같은 회사의 저장 잠금 안에서 기존 배정 전체를 기준으로 판단한다.
+// cancelled는 자리를 차지하지 않으며, 수정 중인 자기 자신은 중복/정원 집계에서 제외한다.
+function _learningAssignmentFits(rec, assignments, courses) {
+  const course = (courses || []).find(c => c && String(c.id) === String(rec.courseId));
+  if (!course) return false;
+  const active = (assignments || []).filter(a => a && a.status !== "cancelled" && String(a.id) !== String(rec.id));
+  if (rec.status !== "cancelled" && active.some(a => String(a.courseId) === String(rec.courseId) && String(a.empId) === String(rec.empId))) {
+    return false;
+  }
+  const capacity = Number(course.capacity);
+  if (rec.status !== "cancelled" && Number.isInteger(capacity) && capacity > 0) {
+    const occupied = active.filter(a => String(a.courseId) === String(rec.courseId)).length;
+    if (occupied >= capacity) return false;
+  }
+  return true;
+}
 const _HHMM_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
 // OKR 상위목표(parentOkrId) 연계 검증 — scope 계층: personal(0) < team(1) < company(2),
 // 부모는 자식보다 더 높은 랭크여야 한다(회사 OKR은 랭크가 가장 높아 자동으로 부모를 가질 수
@@ -2016,7 +2288,32 @@ function _okrParentLinkValid(rec, basis) {
 // 동일하게 "이 레코드만 되돌리고 나머지 정상 변경은 그대로 저장"하는 원칙을 따른다.
 function _validateFieldValues(field, rec, storedList) {
   if (!rec) return true;
-  if (field === "overtimeRequests") {
+  if (field === "employmentRecords") {
+    if (!["contract", "discipline"].includes(rec.type)) return false;
+    if (!["active", "closed", "expired"].includes(rec.status)) return false;
+    if (!rec.employeeId || typeof rec.title !== "string" || !rec.title.trim() || rec.title.length > 120) return false;
+    if ([rec.startDate, rec.endDate, rec.decisionDate].some(value => value && !_validCalendarDate(value))) return false;
+    if (rec.startDate && rec.endDate && rec.endDate < rec.startDate) return false;
+    if (rec.type === "contract" && !rec.startDate) return false;
+    if (rec.type === "discipline" && !rec.decisionDate) return false;
+    if (rec.type === "contract" && (!["open", "completed"].includes(rec.reviewStatus || "open") || !["pending", "renew", "end"].includes(rec.reviewDecision || "pending"))) return false;
+    if (rec.type === "contract" && rec.reviewStatus === "completed" && (!rec.reviewOwnerId || rec.reviewDecision === "pending" || !_validCalendarDate(rec.reviewedAt))) return false;
+  } else if (field === "learningCourses") {
+    if (!rec.name || !rec.category || !rec.startDate || !rec.endDate || rec.endDate < rec.startDate) return false;
+    if (!_validCalendarDate(rec.startDate) || !_validCalendarDate(rec.endDate)) return false;
+    if (!["draft", "active", "closed"].includes(rec.status) || !["online", "offline", "blended"].includes(rec.delivery)) return false;
+    if (!Number.isFinite(Number(rec.hours)) || Number(rec.hours) <= 0 || Number(rec.hours) > 1000) return false;
+    if (!Number.isInteger(Number(rec.capacity)) || Number(rec.capacity) < 1 || Number(rec.capacity) > 10000) return false;
+  } else if (field === "learningAssignments") {
+    if (!rec.courseId || !rec.empId || !["assigned", "in_progress", "completed", "cancelled"].includes(rec.status)) return false;
+    if (!_validCalendarDate(rec.assignedAt) || rec.dueDate && !_validCalendarDate(rec.dueDate)) return false;
+    if (rec.score != null && (!Number.isFinite(Number(rec.score)) || Number(rec.score) < 0 || Number(rec.score) > 100)) return false;
+    if (!Number.isFinite(Number(rec.approvedCost ?? 0)) || Number(rec.approvedCost ?? 0) < 0 || Number(rec.approvedCost ?? 0) > 1_000_000_000) return false;
+    if (!["not_required", "pending", "settled"].includes(rec.settlementStatus || "not_required")) return false;
+    if (rec.settlementStatus === "settled" && !_validCalendarDate(rec.settledAt)) return false;
+    if (!Number.isFinite(Number(rec.settledAmount ?? 0)) || Number(rec.settledAmount ?? 0) < 0 || Number(rec.settledAmount ?? 0) > 1_000_000_000) return false;
+    if (storedList && !Array.isArray(storedList) && !_learningAssignmentFits(rec, storedList.assignments, storedList.courses)) return false;
+  } else if (field === "overtimeRequests") {
     // hours는 승인 후 급여 계산의 초과근무수당(otReqAllowance = hours * 시급 * 배율)에
     // 그대로 곱해진다 — 실측: API로 hours:9999를 제출하면 검증 없이 그대로 저장됨(승인
     // 자체는 본인이 아닌 리더 이상만 가능하지만, 승인자가 화면상 값을 못 알아채고 승인하면
@@ -2683,7 +2980,53 @@ async function persistData(data, changedBy = "system", companyId = null, actor =
 // `externalClient` is reserved for the snapshot-restore workflow.  That route
 // owns a wider transaction which also covers deleteExtras and budget_store, so
 // this function must join it instead of committing a partial HR restore first.
+// /save의 전체 상태 에코를 거부로 오인하지 않도록 실제 업무 필드가 달라진 경우만
+// 보고한다. null은 신규·보호 레코드의 모든 전송 필드(서버 메타데이터 제외)를 비교한다.
+const _SAVE_FEEDBACK_FIELDS = {
+  // 새 권한 제한 컬렉션이 추가돼도 /save가 거부 사실을 묵살하지 않도록 자동 포함한다.
+  // 아래 명시 필드는 읽기 응답의 일부 필드가 숨겨지는 경우 비교 범위를 좁힌다.
+  ...Object.fromEntries(Object.keys(_APPROVAL_GATED_FIELDS).map(field => [field, null])),
+  employmentRecords: ["employeeId", "type", "title", "status", "startDate", "endDate", "decisionDate", "note", "documentRef", "reviewOwnerId", "reviewStatus", "reviewDecision", "reviewNote"],
+  learningCourses: ["name", "category", "provider", "instructorName", "delivery", "startDate", "endDate", "hours", "capacity", "cost", "status", "description", "internalNote"],
+  learningAssignments: ["courseId", "empId", "status", "assignedAt", "dueDate", "completedAt", "score", "certificateNo", "evidenceRef", "note", "source", "sourceDocId", "approvedCost", "costCenter", "settlementStatus", "settledAt", "settledAmount", "settlementNote"],
+  payslips: null,
+  payrollAdjustments: null,
+  yearEndSettlements: null,
+  positionRequests: null,
+  engagementActions: null,
+};
+function _saveFeedbackChangeRequested(field, incoming, stored) {
+  if (!Object.prototype.hasOwnProperty.call(_SAVE_FEEDBACK_FIELDS, field)) return false;
+  if (!stored) return true;
+  // 읽기 권한에 따라 일부 필드(예: 교육과정 internalNote)가 응답에서 제거된다.
+  // 전송되지 않은 필드는 사용자가 지우려는 의도로 간주하지 않는다.
+  const keys = _SAVE_FEEDBACK_FIELDS[field] || Object.keys(incoming).filter(key => !["id", "updatedAt", "createdAt"].includes(key));
+  return keys.some(key => Object.prototype.hasOwnProperty.call(incoming, key) &&
+    JSON.stringify(incoming[key] ?? null) !== JSON.stringify(stored[key] ?? null));
+}
+
+// 레거시 원장의 삭제된 직원 참조는 읽기/정정이 가능해야 한다. 신규 기록 또는
+// 대상 직원 변경에 한해 현재 회사 직원 존재 여부를 저장 잠금 안에서 확인한다.
+function _changedHrEmployeeRef(field, incoming, stored) {
+  const key = field === "employmentRecords" ? "employeeId" : field === "learningAssignments" ? "empId" : null;
+  if (!key || !incoming) return null;
+  const id = String(incoming[key] ?? "");
+  return !stored || id !== String(stored[key] ?? "") ? id : null;
+}
+
 async function _persistDataLocked(data, changedBy = "system", companyId = null, actor = null, externalClient = null) {
+  const rejectedRecords = [];
+  const rejectSaveRecord = (field, incoming, stored) => {
+    if (incoming?.id != null && _saveFeedbackChangeRequested(field, incoming, stored) &&
+        !rejectedRecords.some(r => r.field === field && r.id === String(incoming.id))) {
+      rejectedRecords.push({ field, id: String(incoming.id) });
+    }
+  };
+  const rejectSaveDeletion = (field, tombstone) => {
+    if (tombstone?.id != null && !rejectedRecords.some(r => r.field === field && r.id === String(tombstone.id))) {
+      rejectedRecords.push({ field, id: String(tombstone.id), operation: "delete" });
+    }
+  };
   if (data._enforceSingletonCas) {
     if (!Array.isArray(data._changedSingletonKeys)) {
       throw httpError(428, "SINGLETON_REVISION_REQUIRED", "설정 저장 전 최신 revision 정보가 필요합니다.");
@@ -2733,6 +3076,60 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
     data.kpiEntries = data.kpiEntries
       .map(kpi => _sanitizeKpiEntry(kpi, kpi && kpi.id != null ? _kpiStoredById.get(String(kpi.id)) : null, actor, _kpiActorEmp, _kpiEmpById, _kpiGatePrior.settings))
       .filter(kpi => kpi !== null);
+  }
+  // 삭제 표식은 실제 행 삭제뿐 아니라 singleton에도 보관된다. PostgreSQL의 삭제
+  // 루프만 권한 검사하면 거부한 표식이 DB에 남아 다음 관리자의 저장에서 실행될 수 있다.
+  // JSON/PG 공통으로 저장 전에 표식 자체를 정리한다. 이미 삭제된 합법적 표식은
+  // 이전 저장본에 같은 id가 있을 때만 보존해 오래된 클라이언트의 재생성을 막는다.
+  const requestedTombstones = data.recordTombstones || {};
+  // 승인 문서와 복지포인트는 감사·금전 원장이므로 blob 삭제 표식을 허용하지 않는다.
+  // 경비/초과근무의 회수 UI는 본인의 승인 대기 신청에만 제공한다. 승인 이후의
+  // 신청이나 타인 신청을 지우면 결재/급여 근거가 사라지므로 서버에서도 동일하게 제한한다.
+  const specialDeleteFields = new Set(["approvalDocs", "welfarePoints", "certRequests", "expenseClaims", "overtimeRequests"]);
+  const hasGatedTombstones = Object.entries(requestedTombstones).some(([field, rows]) =>
+    (field === "kpiEntries" || specialDeleteFields.has(field) || Object.prototype.hasOwnProperty.call(_WRITE_GATED_FIELDS, field)) && Array.isArray(rows) && rows.length);
+  const hasRoomTombstones = Array.isArray(data.roomReservationTombstones) && data.roomReservationTombstones.length;
+  if (hasGatedTombstones || hasRoomTombstones) {
+    const prior = await loadData(companyId);
+    const priorEmpById = new Map((prior.employees || []).filter(e => e?.id != null).map(e => [String(e.id), e]));
+    const actorEmp = actor?.empId != null ? priorEmpById.get(String(actor.empId)) || null : null;
+    const keepAuthorized = (field, rows, previousRows) => {
+      const storedById = new Map((prior[field] || []).filter(r => r?.id != null).map(r => [String(r.id), r]));
+      const previousIds = new Set((previousRows || []).filter(t => t?.id != null).map(t => String(t.id)));
+      return rows.filter(t => {
+        if (!t || t.id == null) return false;
+        const id = String(t.id), stored = storedById.get(id);
+        if (!stored) return previousIds.has(id);
+        if (specialDeleteFields.has(field)) {
+          const allowed = (field === "expenseClaims" || field === "overtimeRequests") &&
+            stored.status === "pending" && actor?.empId != null && stored.empId != null &&
+            String(stored.empId) === String(actor.empId);
+          if (!allowed) { rejectSaveDeletion(field, t); return false; }
+          return true;
+        }
+        if (field === "kpiEntries") {
+          const ownerEmp = priorEmpById.get(String(stored.userId));
+          const allowed = !!actor && _menuPermsAllow("kpi", actor) && (
+            actor.role === "admin" ||
+            (actor.empId != null && stored.userId != null && String(actor.empId) === String(stored.userId)) ||
+            (actor?.role === "director" && actorEmp && ownerEmp && actorEmp.dept === ownerEmp.dept) ||
+            (actor?.role === "leader" && actorEmp && ownerEmp && actorEmp.dept === ownerEmp.dept && actorEmp.team === ownerEmp.team)
+          );
+          if (!allowed || stored.goalSub === 1) { rejectSaveDeletion(field, t); return false; }
+          return true;
+        }
+        if (field === "workforceScenarios" && stored.status === "approved") { rejectSaveDeletion(field, t); return false; }
+        if (!_writeGateAllowed(field, stored, actor, actorEmp, prior.settings)) { rejectSaveDeletion(field, t); return false; }
+        return true;
+      });
+    };
+    for (const [field, rows] of Object.entries(requestedTombstones)) {
+      if ((field !== "kpiEntries" && !specialDeleteFields.has(field) && !Object.prototype.hasOwnProperty.call(_WRITE_GATED_FIELDS, field)) || !Array.isArray(rows)) continue;
+      requestedTombstones[field] = keepAuthorized(field, rows, prior.recordTombstones?.[field]);
+    }
+    if (hasRoomTombstones) {
+      data.roomReservationTombstones = keepAuthorized("roomReservations", data.roomReservationTombstones, prior.roomReservationTombstones);
+    }
   }
   if (USE_JSON_FILE) {
     // Save the full client state to the JSON file
@@ -2809,6 +3206,7 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
       }
       return emp;
     }));
+    const trustedEmployeeIds = new Set(employees.filter(e => e?.id != null).map(e => String(e.id)));
     const duplicateLoginIds = warnDuplicateLoginIds(employees);
 
     // Same fix as above: only log kpi history when the record is new or
@@ -2846,19 +3244,7 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
     const _actorEmpJson = actor && actor.empId != null
       ? (_fileStore.employees || []).find(e => String(e.id) === String(actor.empId)) || null
       : null;
-    // 범용 tombstone도 해당 컬렉션의 쓰기 권한을 따라야 한다. 그렇지 않으면 읽기 응답에서
-    // 컬렉션을 숨겨도 비관리자가 id만 추측해 recordTombstones를 보내 관리자 전용 자료를
-    // 삭제할 수 있다. 승인된 인력계획은 관리자라도 삭제 불가(승인 이력 보존).
-    for (const [field, tombstones] of Object.entries(_tomb)) {
-      if (!_WRITE_GATED_FIELDS[field] || !Array.isArray(tombstones)) continue;
-      const storedById = new Map((_fileStore[field] || []).filter(r => r?.id != null).map(r => [String(r.id), r]));
-      _tomb[field] = tombstones.filter(t => {
-        const stored = storedById.get(String(t?.id));
-        if (!stored) return false;
-        if (field === "workforceScenarios" && stored.status === "approved") return false;
-        return _writeGateAllowed(field, stored, actor, _actorEmpJson, _fileStore.settings);
-      });
-    }
+    // 게이트가 필요한 삭제 표식은 JSON/PG 공통 저장 전 단계에서 이미 검증했다.
     // payrollAdjustments의 복리후생 파생 레코드 예외(_sanitizeGatedRecord 주석 참고)가
     // 신뢰할 수 있는 결재문서 상태를 보려면, 이 요청에 함께 실려온 approvalDocs를 (나중에
     // approvalDocsFinal을 만들 때와) 동일하게 미리 위조방지 처리해둬야 한다 — 그래야 같은
@@ -2871,7 +3257,10 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
       const storedDocsById = new Map((_fileStore.approvalDocs || []).map(d => [String(d.id), d]));
       for (const d of data.approvalDocs) {
         if (d && d.id != null) {
-          _sanitizedIncomingApprovalDocsById.set(String(d.id), _sanitizeApprovalDoc(d, storedDocsById.get(String(d.id)), actor));
+          const stored = storedDocsById.get(String(d.id));
+          const sanitized = _sanitizeApprovalDoc(d, stored, actor);
+          if (!sanitized || JSON.stringify(sanitized) !== JSON.stringify(d)) rejectSaveRecord("approvalDocs", d, stored);
+          _sanitizedIncomingApprovalDocsById.set(String(d.id), sanitized);
         }
       }
     }
@@ -2889,17 +3278,29 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
         .map(r => {
           if (!r || r.id == null) return r;
           const stored = storedById.get(String(r.id));
-          const approvalDocForGate = (gatedField === "payrollAdjustments" && !stored)
+          const approvalDocForGate = (["payrollAdjustments", "learningAssignments"].includes(gatedField) && !stored)
             ? _resolveApprovalDocForGate(r.sourceDocId) : null;
           const _okrOwnerId = r.ownerId ?? stored?.ownerId;
           const targetEmpForGate = (gatedField === "compSessions" && r.targetId != null)
             ? (_fileStore.employees || []).find(e => String(e.id) === String(r.targetId)) || null
             : (gatedField === "okrObjectives" && _okrOwnerId != null)
             ? (_fileStore.employees || []).find(e => String(e.id) === String(_okrOwnerId)) || null : null;
-          let out = _sanitizeGatedRecord(gatedField, r, stored, actor, _actorEmpJson, _fileStore.settings, approvalDocForGate, targetEmpForGate, _fileStore.engagementSurveys || []);
+          const reviewOwnerId = r.reviewOwnerId ?? stored?.reviewOwnerId;
+          const reviewOwnerEmp = gatedField === "employmentRecords" && reviewOwnerId != null
+            ? (_fileStore.employees || []).find(e => String(e.id) === String(reviewOwnerId)) || null : null;
+          let out = _sanitizeGatedRecord(gatedField, r, stored, actor, _actorEmpJson, _fileStore.settings, approvalDocForGate, targetEmpForGate, _fileStore.engagementSurveys || [], reviewOwnerEmp);
+          if (!out || (stored && JSON.stringify(out) === JSON.stringify(stored))) rejectSaveRecord(gatedField, r, stored);
+          const changedEmployeeRef = _changedHrEmployeeRef(gatedField, out, stored);
+          if (out && changedEmployeeRef !== null && !trustedEmployeeIds.has(changedEmployeeRef)) {
+            rejectSaveRecord(gatedField, r, stored);
+            out = stored ? { ...stored } : null;
+          }
           // 값 범위·형식 검증(_validateFieldValues 주석 참고) — 권한 검사를 통과한 뒤에도
           // 값 자체가 오염돼 있으면 저장본으로 되돌린다(신규 레코드면 드롭).
-          if (out && !_validateFieldValues(gatedField, out, storedList)) out = stored ? { ...stored } : null;
+          if (out && !_validateFieldValues(gatedField, out, storedList)) {
+            rejectSaveRecord(gatedField, r, stored);
+            out = stored ? { ...stored } : null;
+          }
           return out;
         })
         .filter(r => r !== null);
@@ -2916,6 +3317,21 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
           ];
           if (!_validateFieldValues(gatedField, rec, basis)) return false;
           accepted.push(rec);
+          return true;
+        });
+      }
+      if (gatedField === "learningAssignments") {
+        const incomingIds = new Set(data[gatedField].filter(r => r?.id != null).map(r => String(r.id)));
+        const basis = storedList.filter(r => r?.id != null && !incomingIds.has(String(r.id)));
+        const courses = Array.isArray(data.learningCourses)
+          ? mergeArrayById(_fileStore.learningCourses || [], data.learningCourses)
+          : (_fileStore.learningCourses || []);
+        data[gatedField] = data[gatedField].filter(rec => {
+          if (!rec || rec.id == null || !_validateFieldValues(gatedField, rec, { assignments: basis, courses })) {
+            rejectSaveRecord(gatedField, rec, storedById.get(String(rec?.id)));
+            return false;
+          }
+          basis.push(rec);
           return true;
         });
       }
@@ -3069,11 +3485,8 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
     };
     const verState = _bumpVersion(companyId);
     _fileStore._version = verState.version;
-    // Write atomically via a temp file
-    const tmp = JSON_FILE + ".tmp";
-    await fs.promises.writeFile(tmp, JSON.stringify(_fileStore, null, 2), "utf8");
-    await fs.promises.rename(tmp, JSON_FILE);
-    return { duplicateLoginIds };
+    await _atomicWriteFile(JSON_FILE, JSON.stringify(_fileStore, null, 2));
+    return { duplicateLoginIds, rejectedRecords };
   }
   const client = externalClient || await pool.connect();
   const ownsTransaction = !externalClient;
@@ -3303,6 +3716,19 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
       _roomReservationsPg = rows.map(r => r.data);
       return _roomReservationsPg;
     };
+    let _learningCoursesPg, _learningAssignmentsPg;
+    const _loadLearningCollectionsPg = async () => {
+      if (_learningCoursesPg && _learningAssignmentsPg) {
+        return { courses: _learningCoursesPg, assignments: _learningAssignmentsPg };
+      }
+      const { rows } = await client.query(
+        "SELECT collection, data FROM app_collections WHERE collection = ANY($1::text[]) AND (company_id = $2 OR company_id IS NULL)",
+        [["learningCourses", "learningAssignments"], companyId || null]
+      );
+      _learningCoursesPg = rows.filter(r => r.collection === "learningCourses").map(r => r.data);
+      _learningAssignmentsPg = rows.filter(r => r.collection === "learningAssignments").map(r => r.data);
+      return { courses: _learningCoursesPg, assignments: _learningAssignmentsPg };
+    };
     let _engagementSurveysPg;
     const _getEngagementSurveysPg = async () => {
       if (_engagementSurveysPg) return _engagementSurveysPg;
@@ -3338,28 +3764,38 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
           if (field === "compResponses" && rows.length && !("answers" in item)) continue;
           const oldTs = rows.length ? (rows[0].data.updatedAt || rows[0].data.createdAt || "") : "";
           const newTs = item.updatedAt || item.createdAt || "";
-          if (rows.length && newTs < oldTs) continue; // server has a newer copy, keep it
+          if (rows.length && newTs < oldTs) {
+            rejectSaveRecord(field, item, rows[0].data);
+            continue; // server has a newer copy, keep it
+          }
           // 결재 위조 방어(_sanitizeApprovalDoc / _sanitizeGatedRecord 주석 참고).
           // 저장본은 바로 위에서 이미 조회했으므로 추가 쿼리 없이 그대로 대조한다.
           const storedItem = rows.length ? rows[0].data : null;
           let toWrite = item;
           if (field === "approvalDocs") {
             toWrite = _sanitizeApprovalDoc(item, storedItem, actor);
+            if (!toWrite || (storedItem && JSON.stringify(toWrite) !== JSON.stringify(item))) rejectSaveRecord(field, item, storedItem);
+            if (!toWrite) continue;
           } else if (_APPROVAL_GATED_FIELDS[field]) {
-            const approvalDocForGate = (field === "payrollAdjustments" && !storedItem)
+            const approvalDocForGate = (["payrollAdjustments", "learningAssignments"].includes(field) && !storedItem)
               ? await _getApprovalDocForGate(item.sourceDocId) : null;
             const _okrOwnerIdPg = item.ownerId ?? storedItem?.ownerId;
             const targetEmpForGate = (field === "compSessions" && item.targetId != null)
               ? await _getEmployeeByIdPg(item.targetId)
               : (field === "okrObjectives" && _okrOwnerIdPg != null)
               ? await _getEmployeeByIdPg(_okrOwnerIdPg) : null;
+            const reviewOwnerId = item.reviewOwnerId ?? storedItem?.reviewOwnerId;
+            const reviewOwnerEmp = field === "employmentRecords" && reviewOwnerId != null
+              ? await _getEmployeeByIdPg(reviewOwnerId) : null;
             toWrite = _sanitizeGatedRecord(field, item, storedItem, actor, await _getActorEmpPg(), await _getSettingsPg(), approvalDocForGate, targetEmpForGate,
-              field === "engagementResponses" ? await _getEngagementSurveysPg() : null);
+              field === "engagementResponses" ? await _getEngagementSurveysPg() : null, reviewOwnerEmp);
+            if (!toWrite || (storedItem && JSON.stringify(toWrite) === JSON.stringify(storedItem))) rejectSaveRecord(field, item, storedItem);
             if (toWrite === null) continue;   // 권한 없이 새로 만들어진 레코드 — 쓰지 않음
           }
           // 값 범위·형식 검증(_validateFieldValues 주석 참고, JSON모드와 동일 규칙).
           let validationList = null;
           if (field === "roomReservations") validationList = await _getRoomReservationsPg();
+          else if (field === "learningAssignments") validationList = await _loadLearningCollectionsPg();
           else if (field === "workforcePositions") {
             const { rows: positionRows } = await client.query(
               "SELECT data FROM app_collections WHERE collection = 'workforcePositions' AND (company_id = $1 OR company_id IS NULL)",
@@ -3368,6 +3804,13 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
             validationList = positionRows.map(r => r.data);
           }
           if (toWrite && !_validateFieldValues(field, toWrite, validationList)) {
+            rejectSaveRecord(field, item, storedItem);
+            toWrite = storedItem;
+            if (toWrite === null) continue;
+          }
+          const changedEmployeeRef = _changedHrEmployeeRef(field, toWrite, storedItem);
+          if (toWrite && changedEmployeeRef !== null && !await _getEmployeeByIdPg(changedEmployeeRef)) {
+            rejectSaveRecord(field, item, storedItem);
             toWrite = storedItem;
             if (toWrite === null) continue;
           }
@@ -3389,6 +3832,19 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
              ON CONFLICT (company_id, collection, id) DO UPDATE SET data = $4, updated_at = NOW()`,
             [field, String(item.id), companyId, JSON.stringify(toWrite)]
           );
+          // 같은 요청에 여러 배정이 들어오면 뒤 레코드도 앞에서 막 저장한 배정을 보도록
+          // 메모리 검증 기준을 갱신한다. 회사별 저장 잠금과 함께 동시 정원 초과도 차단한다.
+          if (field === "learningAssignments" && _learningAssignmentsPg) {
+            _learningAssignmentsPg = [
+              ..._learningAssignmentsPg.filter(r => r && String(r.id) !== String(toWrite.id)),
+              toWrite,
+            ];
+          } else if (field === "learningCourses" && _learningCoursesPg) {
+            _learningCoursesPg = [
+              ..._learningCoursesPg.filter(r => r && String(r.id) !== String(toWrite.id)),
+              toWrite,
+            ];
+          }
         }
       }
       // roomReservations predates the generic recordTombstones mechanism and still tracks
@@ -3485,7 +3941,7 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
     );
 
     if (ownsTransaction) await client.query("COMMIT");
-    return { duplicateLoginIds, version: verState.version };
+    return { duplicateLoginIds, rejectedRecords, version: verState.version };
   } catch (e) {
     if (ownsTransaction) await client.query("ROLLBACK");
     throw e;
@@ -3772,6 +4228,9 @@ function _idempotencyRequired(req) {
   // 404 미들웨어가 이 경로 자체를 먼저 막아 도달 불가능하지만, 이 소문자 정규화는
   // 그 방어선이 앞으로 바뀌더라도 안전하도록 그대로 남겨둔다(다중 방어).
   const p = req.path.toLowerCase();
+  // 경비 지급은 파일 모드도 청구 상태·sourceExpenseClaimId로 재시도 결과를 판별한다.
+  // 범용 파일 멱등성의 pending 기록은 프로세스 종료 후 24시간 남아 복구를 막을 수 있다.
+  if (req.method === "POST" && /^\/api\/hr\/expense-claims\/[^/]+\/pay$/.test(p)) return false;
   // PostgreSQL 전표 명령은 업무 변경과 응답 기록을 같은 transaction에 넣는 전용
   // 실행기를 사용한다. JSON 모드는 기존 파일 멱등성 middleware를 계속 사용한다.
   if (!USE_JSON_FILE && req.method === "POST" && (
@@ -3883,7 +4342,7 @@ async function idempotencyMiddleware(req, res, next) {
 // 하나의 client/transaction에서 처리하므로, 업무 COMMIT 직후 프로세스가 종료되는
 // crash-gap이 없다. commit 전 종료면 둘 다 rollback되고, commit 후 재시도면 저장된
 // 응답을 그대로 재생한다.
-async function _runPgIdempotentCommand(req, res, work) {
+async function _runPgIdempotentCommand(req, res, work, existingClient = null) {
   const key = String(req.get("Idempotency-Key") || "");
   if (!/^[A-Za-z0-9._:-]{8,128}$/.test(key)) {
     return res.status(400).json({ ok: false, code: "IDEMPOTENCY_KEY_REQUIRED", message: "유효한 Idempotency-Key가 필요합니다." });
@@ -3892,7 +4351,7 @@ async function _runPgIdempotentCommand(req, res, work) {
   const actorId = String(req.auth?.empId || req.auth?.loginId || req.auth?.masterId || "unknown");
   const route = `${req.method} ${req.path}`;
   const requestHash = _idempotencyHash(req);
-  const client = await pool.connect();
+  const client = existingClient || await pool.connect();
   let committed = false;
   try {
     await client.query("BEGIN");
@@ -3945,7 +4404,7 @@ async function _runPgIdempotentCommand(req, res, work) {
     if (!committed) { try { await client.query("ROLLBACK"); } catch {} }
     throw e;
   } finally {
-    client.release();
+    if (!existingClient) client.release();
   }
 }
 
@@ -5637,7 +6096,7 @@ app.post("/save", async (req, res) => {
   clientData._enforceSingletonCas = Array.isArray(clientData._changedSingletonKeys);
 
   try {
-    const { finalData, merged, duplicateLoginIds, singletonRevisions, recordRevisions } = await _withSaveLock(() => _withDistributedSaveLock(companyId, async () => {
+    const { savedState, visibleSavedState, merged, duplicateLoginIds, rejectedRecords, singletonRevisions, recordRevisions } = await _withSaveLock(() => _withDistributedSaveLock(companyId, async () => {
       let finalData = clientData;
       let merged    = false;
       let serverData;
@@ -5692,11 +6151,13 @@ app.post("/save", async (req, res) => {
       // preserveServerOwnedStateForNonAdmin 이후, _persistDataLocked 진입 직전에 적용해
       // 그 함수 내부의 세밀한 필드별 로직과 겹치지 않게 한다.
       finalData = _revertDisabledFeatureFields(finalData, req.auth?.companyFeatures);
-      const { duplicateLoginIds } = await _persistDataLocked(finalData, changedBy, companyId, req.auth || null);
+      const { duplicateLoginIds, rejectedRecords } = await _persistDataLocked(finalData, changedBy, companyId, req.auth || null);
       const savedState = await loadData(companyId);
-      const visibleSavedState = filterDataForRole(stripPwField(savedState), req.auth);
+      // /data와 같은 두 단계 필터를 /save의 병합 응답에도 적용한다. 그렇지 않으면
+      // menuPerms로 숨긴 원장이 충돌/부분거부 시 mergedData에서 다시 노출된다.
+      const visibleSavedState = filterDataForMenuPermissions(filterDataForRole(stripPwField(savedState), req.auth), req.auth?.menuPerms);
       return {
-        finalData, merged, duplicateLoginIds,
+        savedState, visibleSavedState, merged, duplicateLoginIds, rejectedRecords,
         singletonRevisions: savedState._singletonRevisions || {},
         // 필터링 전 전체 revision map은 숨겨진 레코드 id의 존재를 노출할 수 있으므로
         // 현재 역할이 GET /data에서 볼 수 있는 레코드에 한해서만 반환한다.
@@ -5705,18 +6166,18 @@ app.post("/save", async (req, res) => {
     }));
 
     const meta = {
-      empCount:  (finalData.employees  || []).length,
-      kpiCount:  (finalData.kpiEntries || []).length,
+      empCount:  (savedState.employees  || []).length,
+      kpiCount:  (savedState.kpiEntries || []).length,
       lastSaved: _getLastSaved(companyId),
     };
     broadcastSSE("data_updated", { version: _getVersion(companyId), meta }, req.query.clientId, companyId);
     res.json({
-      ok: true, version: _getVersion(companyId), merged,
+      ok: true, version: _getVersion(companyId), merged, partial: rejectedRecords.length > 0,
       singletonRevisions,
       recordRevisions,
-      mergedData: merged ? filterDataForRole(stripPwField(finalData), req.auth) : undefined,
+      mergedData: merged || rejectedRecords.length ? visibleSavedState : undefined,
       meta,
-      warnings: duplicateLoginIds && duplicateLoginIds.length ? { duplicateLoginIds } : undefined,
+      warnings: duplicateLoginIds?.length || rejectedRecords.length ? { duplicateLoginIds, rejectedRecords } : undefined,
     });
   } catch (e) {
     // rejectDemoDataForProduction() 등 httpError()로 만든 오류는 e.status/e.code를
@@ -6325,16 +6786,17 @@ function _isPrivateOrLoopbackIp(ip) {
     if (a === 169 && b === 254) return true;            // link-local(클라우드 메타데이터 169.254.169.254 포함)
     if (a === 0) return true;                           // 0.0.0.0/8
     if (a === 100 && b >= 64 && b <= 127) return true;   // CGNAT
+    if (a === 192 && b === 0) return true;                // IETF protocol assignments
+    if (a === 198 && (b === 18 || b === 19)) return true; // 벤치마크용 비공개 범위
+    if (a >= 224) return true;                            // 멀티캐스트·예약 주소
     return false;
   }
   if (net.isIP(ip) === 6) {
     const low = ip.toLowerCase();
-    if (low === "::1") return true;                                  // loopback
-    if (low.startsWith("fe80:") || low.startsWith("fe8") || low.startsWith("fe9") || low.startsWith("fea") || low.startsWith("feb")) return true; // link-local fe80::/10
-    if (low.startsWith("fc") || low.startsWith("fd")) return true;    // ULA fc00::/7
-    const v4mapped = low.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
-    if (v4mapped) return _isPrivateOrLoopbackIp(v4mapped[1]);
-    return false;
+    // 공개 글로벌 유니캐스트(2000::/3)만 허용한다. ::ffff:c0a8:1처럼 16진수로
+    // 표현된 IPv4 매핑 주소와 ::, fc00::/7, fe80::/10도 일괄 차단한다.
+    const firstHextet = Number.parseInt(low.split(":", 1)[0], 16);
+    return !Number.isInteger(firstHextet) || firstHextet < 0x2000 || firstHextet >= 0x4000;
   }
   return true; // IP도 아니면(파싱 실패) 안전 쪽으로 차단
 }
@@ -6343,20 +6805,48 @@ function _isPrivateOrLoopbackIp(ip) {
 // 이 검사를 건너뛴다 — BOOTSTRAP_SECRET/ALLOW_DEMO_DATA와 동일하게 opt-in 환경변수로,
 // 운영 배포는 이 값을 설정하지 않는 한 항상 보호된 상태로 시작한다.
 const _ALLOW_LOCAL_WEBHOOK_TARGETS = String(process.env.ALLOW_LOCAL_WEBHOOK_TARGETS || "").toLowerCase() === "true";
-async function _isWebhookTargetSafe(urlString) {
-  if (_ALLOW_LOCAL_WEBHOOK_TARGETS) return true;
+async function _resolveSafeWebhookTarget(urlString) {
   let u;
   try { u = new URL(urlString); } catch { return false; }
   if (u.protocol !== "http:" && u.protocol !== "https:") return false;
+  if (u.username || u.password) return false;
+  if (_ALLOW_LOCAL_WEBHOOK_TARGETS) return { url: u, address: null };
   const hostname = u.hostname.replace(/^\[|\]$/g, ""); // IPv6 literal의 [] 벗기기
-  if (net.isIP(hostname)) return !_isPrivateOrLoopbackIp(hostname);
+  if (net.isIP(hostname)) return _isPrivateOrLoopbackIp(hostname) ? false : { url: u, address: null };
   try {
     const addrs = await dns.promises.lookup(hostname, { all: true, verbatim: true });
     if (!addrs.length) return false;
-    return addrs.every(a => !_isPrivateOrLoopbackIp(a.address));
+    if (!addrs.every(a => !_isPrivateOrLoopbackIp(a.address))) return false;
+    // 검사 후 HTTP 클라이언트가 DNS를 다시 조회하면 리바인딩으로 다른 IP에 연결될 수 있다.
+    // 실제 연결을 검사한 주소 중 하나에 고정하되 Host/SNI/인증서는 원래 호스트명으로 유지한다.
+    return { url: u, address: addrs[0] };
   } catch {
     return false; // DNS 조회 실패는 안전 쪽으로 차단(요청 자체를 보내지 않음)
   }
+}
+function _postWebhookPinned(target, text) {
+  return new Promise((resolve, reject) => {
+    const body = JSON.stringify({ text });
+    const options = {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(body) },
+      timeout: 5000,
+    };
+    if (target.address) {
+      options.lookup = (_hostname, _options, callback) =>
+        callback(null, target.address.address, target.address.family);
+    }
+    // http(s).request는 3xx를 자동으로 따라가지 않는다. 따라서 검증하지 않은
+    // Location(사설 IP/메타데이터 엔드포인트 등)에 두 번째 요청을 보내지 않는다.
+    const transport = target.url.protocol === "https:" ? https : http;
+    const request = transport.request(target.url, options, response => {
+      response.resume();
+      resolve(response.statusCode || 0);
+    });
+    request.on("timeout", () => request.destroy(new Error("웹훅 연결 시간 초과")));
+    request.on("error", reject);
+    request.end(body);
+  });
 }
 const INTEGRATION_EVENT_LABELS = {
   approval_request: "결재 요청 발생",
@@ -6380,23 +6870,16 @@ app.post("/api/integrations/webhooks/dispatch", async (req, res) => {
     const evLabel = INTEGRATION_EVENT_LABELS[eventId];
     const now = new Date().toISOString();
     const results = await Promise.allSettled(targets.map(async wh => {
-      if (!(await _isWebhookTargetSafe(wh.url))) {
+      const target = await _resolveSafeWebhookTarget(wh.url);
+      if (!target) {
         return { webhookName: String(wh.name || "").slice(0, 100), status: "fail", message: "안전하지 않은 전송 대상(내부/루프백 주소)" };
       }
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 5000);
       try {
-        const resp = await fetch(wh.url, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ text }),
-          signal: controller.signal,
-        });
-        return { webhookName: String(wh.name || "").slice(0, 100), status: resp.ok ? "success" : "fail", message: resp.ok ? "자동 발송" : `HTTP ${resp.status}` };
+        const statusCode = await _postWebhookPinned(target, text);
+        const ok = statusCode >= 200 && statusCode < 300;
+        return { webhookName: String(wh.name || "").slice(0, 100), status: ok ? "success" : "fail", message: ok ? "자동 발송" : `HTTP ${statusCode}` };
       } catch (e) {
         return { webhookName: String(wh.name || "").slice(0, 100), status: "fail", message: String(e?.message || e).slice(0, 200) };
-      } finally {
-        clearTimeout(timer);
       }
     }));
     const logs = results.map(r => (r.status === "fulfilled" ? r.value : { webhookName: "-", status: "fail", message: "dispatch error" }));
@@ -6746,7 +7229,7 @@ app.post("/restore", async (req, res) => {
           const plan = buildRestorePlan(snapshotData, current, fields, deleteExtras);
           rejectDemoDataForProduction(plan.dataToPersist);
           if (deleteExtras) await deleteRestoreExtras(client, plan.extrasByField, companyId);
-          const persisted = await _persistDataLocked(plan.dataToPersist, restoreActor, companyId, req.auth, client);
+          const persisted = await _persistDataLocked(plan.dataToPersist, restoreActor, companyId, { ...req.auth, _trustedRestore: true }, client);
           if (plan.restoreBudget) {
             await budgetRouterFactory.updateBudget(companyId, async (data) => {
               Object.keys(data).forEach(k => { delete data[k]; });
@@ -6791,7 +7274,7 @@ app.post("/restore", async (req, res) => {
     // JSON 파일 모드는 파일 두 개(HR 본문·budget_store)를 하나의 DB 트랜잭션으로 묶을 수
     // 없으므로, 기존의 원자 파일 교체 경로를 유지한다. 운영 다중 사용자 배포는 위의
     // PostgreSQL 경로를 사용한다.
-    await persistData(dataToPersist, restoreActor, companyId, req.auth || null);
+    await persistData(dataToPersist, restoreActor, companyId, { ...req.auth, _trustedRestore: true });
 
     // budget_store(사업계획/예산/개인별급여상세)는 위 일반 필드 병합 루프에서 제외했으므로
     // (persistData 소관 밖) 별도로 복원한다 — 다른 singleton 필드와 동일하게 "스냅샷이
@@ -7531,6 +8014,172 @@ app.delete("/api/accounting/voucher-templates/:id", async (req, res) => {
   } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
+// 경비 지급은 전표 생성과 청구 상태 변경을 하나의 업무 명령으로 처리한다.
+// PostgreSQL은 동일 트랜잭션, JSON 파일 모드는 전표에 sourceExpenseClaimId를 남겨
+// 두 파일 사이에서 프로세스가 종료되어도 재시도 시 기존 전표를 찾아 완료한다.
+app.post("/api/hr/expense-claims/:id/pay", async (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  if (!await requireStoredMenuPermission(req, res, "expense-admin")) return;
+  const companyId = req.auth.companyId || null;
+  const claimId = String(req.params.id || "");
+  const date = req.body?.date;
+  const method = req.body?.method;
+  const makeVoucher = req.body?.makeVoucher === true;
+  if (!claimId || claimId.length > 100 || !_isValidDateStr(date) || !["계좌이체", "급여 합산", "현금"].includes(method)) {
+    return res.status(400).json({ ok: false, message: "지급일 또는 지급 방법이 올바르지 않습니다." });
+  }
+  if (makeVoucher && !requireFeature(req, res, "acct")) return;
+  if (makeVoucher && !await requireStoredMenuPermission(req, res, "acct-vouchers")) return;
+  const debitAccountId = String(req.body?.debitAccountId || "");
+  const creditAccountId = String(req.body?.creditAccountId || "");
+  if (makeVoucher && (!debitAccountId || !creditAccountId || debitAccountId === creditAccountId)) {
+    return res.status(400).json({ ok: false, message: "차변·대변 계정과목을 각각 선택하세요." });
+  }
+  const responseFor = (claim, voucher, version) => ({ ok: true, claim, voucher: voucher || null, version });
+  const hasPayableAmount = claim => {
+    const amount = Number(claim.total);
+    if (!Number.isFinite(amount) || amount <= 0 || amount > 999999999999 || _round2(amount) !== amount) return false;
+    if (!Array.isArray(claim.items) || !claim.items.length) return true; // 레거시 청구의 합계 기록도 지원
+    const itemAmounts = claim.items.map(item => Number(item?.amount));
+    return itemAmounts.every(value => Number.isFinite(value) && value > 0 && _round2(value) === value) &&
+      _round2(itemAmounts.reduce((sum, value) => sum + value, 0)) === amount;
+  };
+  const buildPayment = (claim, voucher) => ({
+    ...claim, status: "paid", paidAt: date, payMethod: method, paidBy: _actorLabel(req),
+    voucherId: voucher?.id || null, voucherNo: voucher?.voucherNo || (voucher ? "(임시)" : null),
+    updatedAt: new Date().toISOString(),
+  });
+  const buildVoucher = claim => {
+    const amount = Number(claim.total);
+    if (!Number.isFinite(amount) || amount <= 0 || amount > 999999999999 || _round2(amount) !== amount) return null;
+    const title = String(claim.title || "");
+    const empName = String(claim.empName || "");
+    return {
+      id: `v_${Date.now()}_${crypto.randomBytes(6).toString("hex")}`,
+      voucherNo: null, status: "draft", date,
+      description: `경비정산 - ${empName} ${title}`.trim().slice(0, 200),
+      partner: empName.slice(0, 120), partnerId: null, category: "expense",
+      lines: [
+        { accountId: debitAccountId, debit: amount, credit: 0, memo: title.slice(0, 120) },
+        { accountId: creditAccountId, debit: 0, credit: amount, memo: `경비지급(${method})` },
+      ], amount, sourceExpenseClaimId: claimId,
+      createdBy: req.auth.loginId || req.auth.empId || "unknown", createdAt: new Date().toISOString(),
+    };
+  };
+  const matchesExistingVoucher = (voucher, claim) => !voucher || (
+    voucher.status !== "void" && Number(voucher.amount) === Number(claim.total) &&
+    voucher.date === date &&
+    String(voucher.lines?.[0]?.accountId) === debitAccountId &&
+    String(voucher.lines?.[1]?.accountId) === creditAccountId &&
+    voucher.lines?.[1]?.memo === `경비지급(${method})`
+  );
+  const matchesPaidResult = (claim, voucher) => claim.paidAt === date && claim.payMethod === method &&
+    Boolean(voucher) === makeVoucher && (!voucher || matchesExistingVoucher(voucher, claim));
+  const validatePaymentVoucher = (voucher, accounts) => {
+    const lineError = _validateVoucherLines(voucher.lines, accounts);
+    if (lineError) return lineError;
+    const debitAccount = accounts.find(a => String(a.id) === debitAccountId);
+    const creditAccount = accounts.find(a => String(a.id) === creditAccountId);
+    if (debitAccount?.type !== "expense" || !["asset", "liability"].includes(creditAccount?.type)) {
+      return "경비 차변은 비용 계정, 대변은 자산 또는 부채 계정이어야 합니다.";
+    }
+    return null;
+  };
+  try {
+    await _withSaveLock(() => _withDistributedSaveLock(companyId, async lockClient => {
+      if (USE_JSON_FILE) {
+        const claim = (_fileStore.expenseClaims || []).find(c => String(c.id) === claimId);
+        if (!claim) return res.status(404).json({ ok: false, message: "경비 청구를 찾을 수 없습니다." });
+        const existing = _fileAccounting.vouchers.find(v => String(v.sourceExpenseClaimId) === claimId);
+        if (claim.status === "paid") {
+          const voucher = _fileAccounting.vouchers.find(v => v.id === claim.voucherId) || existing;
+          if (!matchesPaidResult(claim, voucher)) return res.status(409).json({ ok: false, message: "이미 처리된 지급 조건과 다릅니다. 지급 내역을 확인하세요." });
+          return res.json(responseFor(claim, voucher, _getVersion(companyId)));
+        }
+        if (claim.status !== "approved") return res.status(409).json({ ok: false, message: "승인된 청구만 지급할 수 있습니다." });
+        if (!hasPayableAmount(claim)) return res.status(400).json({ ok: false, message: "청구 금액이 올바르지 않습니다." });
+        if (claim.voucherId && !existing) return res.status(409).json({ ok: false, message: "기존 연결 전표를 확인한 뒤 다시 시도하세요." });
+        if (existing && !matchesExistingVoucher(existing, claim))
+          return res.status(409).json({ ok: false, message: "기존 전표와 지급 조건이 달라 수동 확인이 필요합니다." });
+        if (existing && !makeVoucher) return res.status(409).json({ ok: false, message: "이미 생성된 전표가 있습니다. 전표를 포함해 지급을 재시도하세요." });
+        let voucher = existing || null;
+        if (makeVoucher && !voucher) {
+          voucher = buildVoucher(claim);
+          if (!voucher) return res.status(400).json({ ok: false, message: "청구 금액이 올바르지 않습니다." });
+          const lineError = validatePaymentVoucher(voucher, await _getAccountsList(companyId));
+          if (lineError) return res.status(400).json({ ok: false, message: lineError });
+          _fileAccounting.vouchers.push(voucher);
+          try { _saveFileAccounting(); }
+          catch (e) { _fileAccounting.vouchers.pop(); throw e; }
+          if (process.env.NODE_ENV === "test" && req.get("X-Test-Expense-Pay-Fail-After-Voucher") === "1") {
+            throw new Error("TEST_EXPENSE_PAY_FAIL_AFTER_VOUCHER");
+          }
+        }
+        const paid = buildPayment(claim, voucher);
+        const nextVersion = _getVersion(companyId) + 1;
+        const nextStore = { ..._fileStore,
+          expenseClaims: (_fileStore.expenseClaims || []).map(c => String(c.id) === claimId ? paid : c),
+          _version: nextVersion };
+        _atomicWriteFileSync(JSON_FILE, JSON.stringify(nextStore, null, 2));
+        _fileStore = nextStore;
+        _setVersion(companyId, nextVersion, new Date().toISOString());
+        broadcastSSE("data_updated", { version: nextVersion }, null, companyId);
+        return res.json(responseFor(paid, voucher, nextVersion));
+      }
+      await _runPgIdempotentCommand(req, res, async client => {
+        const { rows } = await client.query(
+          "SELECT data FROM app_collections WHERE company_id=$1 AND collection='expenseClaims' AND id=$2 FOR UPDATE",
+          [companyId, claimId]
+        );
+        const claim = rows[0]?.data;
+        if (!claim) return { status: 404, body: { ok: false, message: "경비 청구를 찾을 수 없습니다." } };
+        const prior = await client.query(
+          "SELECT data FROM vouchers WHERE company_id=$1 AND data->>'sourceExpenseClaimId'=$2 LIMIT 1",
+          [companyId, claimId]
+        );
+        const existing = prior.rows[0]?.data || null;
+        if (claim.status === "paid") {
+          if (!matchesPaidResult(claim, existing)) return { status: 409, body: { ok: false, message: "이미 처리된 지급 조건과 다릅니다. 지급 내역을 확인하세요." } };
+          return { body: responseFor(claim, existing, _getVersion(companyId)) };
+        }
+        if (claim.status !== "approved") return { status: 409, body: { ok: false, message: "승인된 청구만 지급할 수 있습니다." } };
+        if (!hasPayableAmount(claim)) return { status: 400, body: { ok: false, message: "청구 금액이 올바르지 않습니다." } };
+        if (claim.voucherId && !existing) return { status: 409, body: { ok: false, message: "기존 연결 전표를 확인한 뒤 다시 시도하세요." } };
+        if (existing && !matchesExistingVoucher(existing, claim))
+          return { status: 409, body: { ok: false, message: "기존 전표와 지급 조건이 달라 수동 확인이 필요합니다." } };
+        if (existing && !makeVoucher) return { status: 409, body: { ok: false, message: "이미 생성된 전표가 있습니다. 전표를 포함해 지급을 재시도하세요." } };
+        let voucher = existing;
+        if (makeVoucher && !voucher) {
+          voucher = buildVoucher(claim);
+          if (!voucher) return { status: 400, body: { ok: false, message: "청구 금액이 올바르지 않습니다." } };
+          const lineError = validatePaymentVoucher(voucher, await _getAccountsList(companyId, client));
+          if (lineError) return { status: 400, body: { ok: false, message: lineError } };
+          await client.query(
+            "INSERT INTO vouchers (id, voucher_no, voucher_date, status, data, company_id) VALUES ($1,$2,$3,'draft',$4,$5)",
+            [voucher.id, `DRAFT-${voucher.id}`, date, voucher, companyId]
+          );
+        }
+        const paid = buildPayment(claim, voucher);
+        await client.query(
+          "UPDATE app_collections SET data=$3, updated_at=NOW() WHERE company_id=$1 AND collection='expenseClaims' AND id=$2",
+          [companyId, claimId, paid]
+        );
+        const versionResult = await client.query(
+          "INSERT INTO app_meta (key,value) VALUES ($1,'1') ON CONFLICT (key) DO UPDATE SET value=(app_meta.value::bigint+1)::text RETURNING value",
+          [`data_version:${_scopeKey(companyId)}`]
+        );
+        return { body: responseFor(paid, voucher, Number(versionResult.rows[0].value)) };
+      }, lockClient);
+      await _refreshVersionFromDb(companyId, lockClient);
+      if (res.statusCode >= 200 && res.statusCode < 300) {
+        broadcastSSE("data_updated", { version: _getVersion(companyId) }, null, companyId);
+      }
+    }));
+  } catch (e) {
+    if (!res.headersSent) res.status(e.status || 500).json({ ok: false, code: e.code || "EXPENSE_PAYMENT_FAILED", message: e.status ? e.message : _safeErrMsg(e) });
+  }
+});
+
 app.get("/api/accounting/vouchers", async (req, res) => {
   if (!requireAdmin(req, res)) return;
   try {
@@ -7590,15 +8239,17 @@ app.post("/api/accounting/vouchers/:id/post", async (req, res) => {
     if (!requireAdmin(req, res)) return;
     const id = req.params.id;
     const companyId = req.auth.companyId || null;
-    const year = new Date().getFullYear();
+    const actorId = req.auth.loginId || req.auth.empId || "unknown";
     if (USE_JSON_FILE) {
       const v = _fileAccounting.vouchers.find(v => v.id === id);
       if (!v) return res.status(404).json({ ok: false, message: "전표를 찾을 수 없습니다." });
       if (v.status !== "draft") return res.status(400).json({ ok: false, message: "임시 저장 상태의 전표만 확정할 수 있습니다." });
+      if (!_isValidDateStr(v.date)) return res.status(400).json({ ok: false, message: "전표일자가 올바르지 않습니다." });
+      const year = Number(v.date.slice(0, 4));
       const seq = _nextAcctSeq("voucherSeq", year);
       v.voucherNo = `JE-${year}-${String(seq).padStart(6, "0")}`;
       v.status = "posted";
-      v.postedBy = req.body.user || "unknown";
+      v.postedBy = actorId;
       v.postedAt = new Date().toISOString();
       _saveFileAccounting();
       return res.json({ ok: true, voucher: v });
@@ -7607,12 +8258,14 @@ app.post("/api/accounting/vouchers/:id/post", async (req, res) => {
       const { rows } = await client.query("SELECT data, status FROM vouchers WHERE id = $1 AND (company_id = $2 OR company_id IS NULL) FOR UPDATE", [id, companyId]);
       if (!rows.length) return { status: 404, body: { ok: false, message: "전표를 찾을 수 없습니다." } };
       if (rows[0].status !== "draft") return { status: 400, body: { ok: false, message: "임시 저장 상태의 전표만 확정할 수 있습니다." } };
+      if (!_isValidDateStr(rows[0].data?.date)) return { status: 400, body: { ok: false, message: "전표일자가 올바르지 않습니다." } };
+      const year = Number(rows[0].data.date.slice(0, 4));
       const { rows: seqRows } = await client.query(
         "INSERT INTO voucher_seq (company_id, year, seq) VALUES ($1,$2,1) ON CONFLICT (company_id, year) DO UPDATE SET seq = voucher_seq.seq + 1 RETURNING seq",
         [companyId, year]
       );
       const voucherNo = `JE-${year}-${String(seqRows[0].seq).padStart(6, "0")}`;
-      const v = { ...rows[0].data, voucherNo, status: "posted", postedBy: req.body.user || "unknown", postedAt: new Date().toISOString() };
+      const v = { ...rows[0].data, voucherNo, status: "posted", postedBy: actorId, postedAt: new Date().toISOString() };
       await client.query("UPDATE vouchers SET voucher_no = $2, status = 'posted', data = $3, updated_at = NOW() WHERE id = $1", [id, voucherNo, v]);
       return { status: 200, body: { ok: true, voucher: v } };
     });
@@ -7656,13 +8309,15 @@ app.post("/api/accounting/vouchers/:id/void", async (req, res) => {
     if (!requireAdmin(req, res)) return;
     const id = req.params.id;
     const companyId = req.auth.companyId || null;
-    const reason = (req.body || {}).reason;
-    if (!reason) return res.status(400).json({ ok: false, message: "취소 사유를 입력하세요." });
+    const actorId = req.auth.loginId || req.auth.empId || "unknown";
+    const reason = typeof req.body?.reason === "string" ? req.body.reason.trim() : "";
+    if (!reason || reason.length > 500) return res.status(400).json({ ok: false, message: "취소 사유를 1~500자로 입력하세요." });
     if (USE_JSON_FILE) {
       const v = _fileAccounting.vouchers.find(v => v.id === id);
       if (!v) return res.status(404).json({ ok: false, message: "전표를 찾을 수 없습니다." });
       if (v.status !== "posted") return res.status(400).json({ ok: false, message: "확정된 전표만 취소할 수 있습니다." });
-      v.status = "void"; v.voidReason = reason; v.voidedBy = req.body.user || "unknown"; v.voidedAt = new Date().toISOString();
+      if (v.sourceExpenseClaimId) return res.status(409).json({ ok: false, message: "경비 지급 전표는 청구 기록과 연결되어 있어 일반 취소할 수 없습니다." });
+      v.status = "void"; v.voidReason = reason; v.voidedBy = actorId; v.voidedAt = new Date().toISOString();
       _saveFileAccounting();
       const unposted = _unpostScheduleRowsJson(id);
       return res.json({ ok: true, voucher: v, unpostedSchedules: unposted });
@@ -7672,7 +8327,8 @@ app.post("/api/accounting/vouchers/:id/void", async (req, res) => {
     return await _runPgIdempotentCommand(req, res, async client => {
       const { rows } = await client.query("SELECT data FROM vouchers WHERE id = $1 AND status = 'posted' AND (company_id = $2 OR company_id IS NULL) FOR UPDATE", [id, companyId]);
       if (!rows.length) return { status: 400, body: { ok: false, message: "확정된 전표만 취소할 수 있습니다." } };
-      const v = { ...rows[0].data, status: "void", voidReason: reason, voidedBy: req.body.user || "unknown", voidedAt: new Date().toISOString() };
+      if (rows[0].data.sourceExpenseClaimId) return { status: 409, body: { ok: false, message: "경비 지급 전표는 청구 기록과 연결되어 있어 일반 취소할 수 없습니다." } };
+      const v = { ...rows[0].data, status: "void", voidReason: reason, voidedBy: actorId, voidedAt: new Date().toISOString() };
       await client.query("UPDATE vouchers SET status = 'void', data = $2, updated_at = NOW() WHERE id = $1", [id, v]);
       const unposted = await _unpostScheduleRowsPg(id, companyId, client);
       return { status: 200, body: { ok: true, voucher: v, unpostedSchedules: unposted } };
@@ -7689,13 +8345,16 @@ app.delete("/api/accounting/vouchers/:id", async (req, res) => {
       const v = _fileAccounting.vouchers.find(v => v.id === id);
       if (!v) return res.status(404).json({ ok: false, message: "전표를 찾을 수 없습니다." });
       if (v.status !== "draft") return res.status(400).json({ ok: false, message: "임시 저장 상태의 전표만 삭제할 수 있습니다." });
+      if (v.sourceExpenseClaimId) return res.status(409).json({ ok: false, message: "경비 지급 전표는 청구 기록과 연결되어 있어 일반 삭제할 수 없습니다." });
       _fileAccounting.vouchers = _fileAccounting.vouchers.filter(v => v.id !== id);
       _saveFileAccounting();
       return res.json({ ok: true });
     }
-    const { rows } = await pool.query("SELECT 1 FROM vouchers WHERE id = $1 AND status = 'draft' AND (company_id = $2 OR company_id IS NULL)", [id, companyId]);
-    if (!rows.length) return res.status(400).json({ ok: false, message: "임시 저장 상태의 전표만 삭제할 수 있습니다." });
-    await pool.query("DELETE FROM vouchers WHERE id = $1", [id]);
+    const deleted = await pool.query(
+      "DELETE FROM vouchers WHERE id=$1 AND status='draft' AND (company_id=$2 OR company_id IS NULL) AND NOT (data ? 'sourceExpenseClaimId') RETURNING id",
+      [id, companyId]
+    );
+    if (!deleted.rowCount) return res.status(409).json({ ok: false, message: "전표가 임시 상태가 아니거나 경비 청구와 연결되어 있어 삭제할 수 없습니다." });
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
