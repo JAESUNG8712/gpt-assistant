@@ -51,6 +51,9 @@ process.env.BUDGET_DATA_FILE = path.join(dataDir, "budget-data.json");
 process.env.SESSION_SECRET = process.env.SESSION_SECRET || "e2e-session-secret-not-for-production";
 process.env.NODE_ENV = process.env.NODE_ENV || "test";
 delete process.env.DATABASE_URL;
+// e2e/webhook-dispatch.spec.js가 웹훅 디스패치 검증에 127.0.0.1(loopback) mock 수신
+// 서버를 쓴다 — server.js의 SSRF 가드(운영 기본값)가 이걸 막으므로 e2e 전용으로 끈다.
+process.env.ALLOW_LOCAL_WEBHOOK_TARGETS = "true";
 
 console.log(`[start-e2e-server] DATA_FILE=${dataFile} (관리자 ${E2E_ADMIN.loginId}/${E2E_ADMIN.pw} 사전 시딩됨)`);
 require(path.join(__dirname, "..", "..", "server.js"));

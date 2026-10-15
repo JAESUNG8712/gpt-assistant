@@ -9,6 +9,10 @@ const os      = require("os");
 const bcrypt  = require("bcryptjs");
 const crypto  = require("crypto");
 const { isDeepStrictEqual } = require("node:util");
+const dns = require("node:dns");
+const net = require("node:net");
+const http = require("node:http");
+const https = require("node:https");
 const pool    = require("./db");
 const multer  = require("multer");
 const budgetRouterFactory = require("./budget");
@@ -219,6 +223,23 @@ async function authenticate(req, res, next) {
     req.auth = null;
     return _featureStateUnavailable(res);
   }
+  // companies.status enforcement — 회사가 정지(suspended)되면 이미 발급된 토큰이라도
+  // 그 즉시 무효화한다(세션 철회와 동일한 즉시성 원칙). actingAsMaster가 있는
+  // impersonation 토큰은 예외다 — 마스터가 정지된 회사에 "들어가서" 다시 active로
+  // 되돌릴 수 있어야 하므로, 그 길목 자체를 막으면 영구히 정지된 채로 갇힌다.
+  if (auth.companyId && !auth.actingAsMaster) {
+    let companyStatus;
+    try {
+      companyStatus = await _getCompanyStatus(auth.companyId);
+    } catch {
+      req.auth = null;
+      return _companyStatusUnavailable(res);
+    }
+    if (companyStatus === "suspended") {
+      req.auth = null;
+      return res.status(403).json({ ok: false, code: "COMPANY_SUSPENDED", message: "이 회사는 현재 서비스가 일시 정지되었습니다. 관리자에게 문의하세요." });
+    }
+  }
   req.auth = {
     ...auth,
     menuPerms: (employee && employee.menuPerms) || {},
@@ -244,10 +265,13 @@ function requireAuth(req, res) {
 // 대부분 code)를 함께 싣는 반면, 예기치 못한 예외는 보통 이 필드가 없다는 점을 이용해
 // 구분한다 — status/statusCode가 있으면(의도적으로 다듬어진 메시지) 그대로 통과시키고,
 // 없으면 운영(NODE_ENV=production)에서만 일반 문구로 대체한다(개발/로컬은 디버깅 편의를
-// 위해 항상 원문 그대로).
-function _safeErrMsg(e) {
+// 위해 항상 원문 그대로). fallback을 넘기면 production에서 그 문구를 쓴다(미지정 시 범용
+// 문구) — 호출부가 "AI 분석에 실패했습니다" 같은 맥락 있는 안내를 유지하면서도 Groq API
+// 응답 본문 등 내부 세부정보는 그대로 섞어내지 않게 하기 위함(2026-10-13 리뷰에서 발견된,
+// 이 헬퍼를 거치지 않고 e.message를 문자열에 직접 이어붙여 노출하던 6곳의 수정에 사용).
+function _safeErrMsg(e, fallback) {
   if (e && (e.status || e.statusCode)) return e.message;
-  if (process.env.NODE_ENV === "production") return "서버 오류가 발생했습니다.";
+  if (process.env.NODE_ENV === "production") return fallback || "서버 오류가 발생했습니다.";
   return e && e.message;
 }
 
@@ -323,7 +347,7 @@ let _fileErp = { items: [], locations: [], quotations: [], purchaseOrders: [], p
 let _fileAcctRcps = { issuances: [], schedule: [], valuations: [] };
 // 고정자산 모듈 전용 저장소 (취득·감가상각 스케줄) — RCPS와 동일한 클라이언트-비신뢰 패턴.
 let _fileAcctFixedAssets = { assets: [], schedule: [] };
-let _filePms = { projects: [], allocations: [], worklogs: [] };
+let _filePms = { projects: [], allocations: [], worklogs: [], tasks: [], milestones: [] };
 let _fileRecruit = { jobs: [], candidates: [], interviews: [] };
 // 활동 로그(관리자 전용 "활동 로그" 화면) — 2026-08-18 DB 영속성 감사에서 발견: 이전에는
 // _activityLog가 process 메모리에만 있고 이 위성 파일들처럼 디스크에 저장되지 않아, 재시작
@@ -677,6 +701,32 @@ function filterDataForRole(data, auth) {
   if (auth.role === "member" && !amSpecificKpiApprover && Array.isArray(out.kpiEntries)) {
     out.kpiEntries = out.kpiEntries.filter(k => k && String(k.userId) === myId);
   }
+  // 가감점(상벌점, Epic C — HR마인드 벤치마킹): kpiEntries와 동일한 이유로 leader/director는
+  // 자기 팀/부서 구성원의 점수를 정확히 계산(calcEmpFinalScore/calcCompGradesForAll이 raw
+  // score에 그대로 더함)하려면 전체를 봐야 한다 — gradeAdjustHistory(순수 감사 로그, 계산에
+  // 쓰이지 않음)와 달리 본인만으로 필터링하면 director/leader 화면의 등급·순위 계산이 조용히
+  // 틀어진다. member만 본인 레코드로 제한.
+  if (auth.role === "member" && Array.isArray(out.scoreAdjustments)) {
+    out.scoreAdjustments = out.scoreAdjustments.filter(a => a && String(a.empId) === myId);
+  }
+  // OKR(Epic C): 본인 목표는 항상, 승인된 "company" 범위 목표는 전사 공개(OKR 보드), 그 외는
+  // 직속 매니저(leader→같은 dept+team의 member, director→같은 dept의 member/leader)만 검토를
+  // 위해 전체를 본다 — kpiEntries의 승인권자 범위 판정과 동일한 조직단위 기준.
+  if (auth.role !== "admin" && Array.isArray(out.okrObjectives)) {
+    const emps = Array.isArray(out.employees) ? out.employees : [];
+    const myEmp = emps.find(e => String(e.id) === myId);
+    out.okrObjectives = out.okrObjectives.filter(o => {
+      if (!o) return false;
+      if (String(o.ownerId) === myId) return true;
+      if (o.scope === "company" && o.status === "approved") return true;
+      if (!myEmp) return false;
+      const ownerEmp = emps.find(e => String(e.id) === String(o.ownerId));
+      if (!ownerEmp) return false;
+      if (auth.role === "leader") return ownerEmp.role === "member" && ownerEmp.dept === myEmp.dept && ownerEmp.team === myEmp.team;
+      if (auth.role === "director") return (ownerEmp.role === "member" || ownerEmp.role === "leader") && ownerEmp.dept === myEmp.dept;
+      return false;
+    });
+  }
   const canViewLowPerf = auth.role === "admin" ||
     (settings.lowPerformerViewers || []).map(String).includes(myId);
   if (!canViewLowPerf && Array.isArray(out.lowPerfData)) {
@@ -935,6 +985,15 @@ function filterDataForRole(data, auth) {
     // 비관리자 클라이언트는 전체 서버 스냅샷으로 삭제를 수렴하므로 이 전역 표식은 불필요하다.
     out.recordTombstones = {};
     out.roomReservationTombstones = [];
+  }
+  // integrationSettings.webhooks[].url은 비밀값(Slack Incoming Webhook URL 등, 아는 사람은
+  // 누구나 그 채널에 영구히 직접 게시 가능)이다. "연동 설정"(integrations) 화면은 admin
+  // 전용인데 이 필드는 지금까지 role과 무관하게 전체가 그대로 노출돼 있었다 — 웹훅 발송
+  // 자체는 POST /api/integrations/webhooks/dispatch로 서버가 대신 수행하므로(위 라우트
+  // 참고) non-admin 클라이언트는 더 이상 이 URL을 알 필요가 없다. calendar 설정(민감정보
+  // 없음, 두 개의 불린 값)만 남기고 webhooks는 완전히 제거한다.
+  if (auth.role !== "admin" && out.integrationSettings && typeof out.integrationSettings === "object") {
+    out.integrationSettings = { calendar: out.integrationSettings.calendar };
   }
   // 회사 단위 모듈 on/off(마스터 콘솔) — 이 함수의 나머지는 전부 "같은 회사 안에서 role별로
   // 얼마나 보이는지"를 다루는데, 이 한 줄만 "이 회사가 그 모듈 자체를 아예 껐는지"를 본다.
@@ -1503,6 +1562,15 @@ const _WRITE_GATED_FIELDS = {
   // (employees.gradeResults, 별도로 _sanitizeEmployeeRecord에서 게이팅)은 반영되지만
   // 이 감사이력만 조용히 되돌려지고 있었다. director는 자기 사업부(dept) 레코드에 한해 허용.
   gradeAdjustHistory: { roles: ["admin"], directorDeptField: "dept", pageIds: ["grade-view", "comp-grade-view"] },
+  // 가감점(상벌점, Epic C): 연도별 KPI/역량평가 raw score에 더해지는 수동 가감점 —
+  // calcEmpFinalScore/calcCompGradesForAll이 상대평가 순위를 매기기 전에 반영되므로
+  // 등급조정(gradeAdjustHistory)과 동등한 민감도다. admin 전체 + director는 자기 사업부
+  // 소속 레코드만, grade-view/comp-grade-view 양쪽에서 입력.
+  scoreAdjustments: { roles: ["admin"], directorDeptField: "dept", pageIds: ["grade-view", "comp-grade-view"] },
+  // OKR(Epic C): 쓰기 권한(생성/편집/제출/승인)은 전부 아래 _sanitizeGatedRecord의
+  // okrObjectives 전용 분기가 처리한다 — 이 규칙(ownField)은 그 분기를 거치지 않는
+  // tombstone 삭제 검증에서만 실제로 쓰인다(본인 또는 admin만 삭제 가능).
+  okrObjectives: { roles: ["admin"], ownField: "ownerId" },
   coreTalentPool:     { roles: ["admin"], pageIds: "core-talent" },
   successionPlans:    { roles: ["admin"], pageIds: "succession-planning" },
   jobSkillProfiles:   { roles: ["admin"], pageIds: "skills-architecture" },
@@ -1554,6 +1622,22 @@ const _WRITE_GATED_FIELDS = {
   engagementSurveys:  { roles: ["admin"], pageIds: "engagement-pulse" },
   engagementResponses:{ roles: [], ownField: "empId", pageIds: "engagement-pulse" },
   engagementActions:  { roles: ["admin", "director", "leader"], pageIds: "engagement-pulse" },
+  // D3(교육관리 고도화) — 과정 카탈로그(개설·수정·삭제)는 관리자 전용("교육 과정 관리" 화면).
+  // 2026-10-07 재확인: 이 필드가 등록 전까지는 role 검사·값 검증이 전혀 없어 member 토큰으로도
+  // /save를 직접 호출해 임의 과정을 생성할 수 있었다(실측 확인, D1~D5 신규 컬렉션 공통 결함).
+  trainingCourses: { roles: ["admin"], pageIds: "training-admin" },
+  // 신청/대기/취소/설문 제출은 본인(empId)이, 등록·승급·완료 처리는 관리자가 한다. 두 경로가
+  // 서로 다른 화면(training-courses=직원, training-admin=관리자)을 쓰므로 한쪽만 꺼졌을 때
+  // 과잉차단되지 않도록 pageIds를 둘 다 등록(OR 시맨틱, _menuPermsAllow 주석 참고).
+  trainingEnrollments: { roles: ["admin"], pageIds: ["training-courses", "training-admin"], ownField: "empId" },
+  // D4(급여/퇴직 고도화) — 급여 압류·퇴직금 정산은 금전 지급(인쇄되는 정산서·급여 공제)에
+  // 그대로 반영되는 payrollAdjustments급 민감 데이터다. 실측: 등록 전에는 member가 자기
+  // 압류를 임의로 만들거나 자기 퇴직금을 5억원으로 위조해도 그대로 저장됐다 — admin 전용.
+  wageGarnishments: { roles: ["admin"], pageIds: "wage-garnishment" },
+  severanceSettlements: { roles: ["admin"], pageIds: "severance-settlement" },
+  // D5(세무/사회보험 참고용 화면) — 실제 신고 효력은 없는 참고용 기록이지만, 임의 직원 명의로
+  // 조작되면 인사기록 신뢰도를 해친다. admin 전용.
+  socialInsuranceRecords: { roles: ["admin"], pageIds: "tax-social-insurance" },
 };
 // menuPerms(개인별로 끈 메뉴) 확장 — 위 role 기반 승인/게이팅과 별개로, 관리자가 특정 직원의
 // 해당 화면 메뉴 자체를 꺼뒀다면 role상 자격이 있어도(예: admin, 또는 그 부서의 director) 그
@@ -1673,6 +1757,15 @@ function _validCalendarDate(value) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return false;
   const d = new Date(`${s}T00:00:00Z`);
   return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === s;
+}
+// OKR(Epic C) 승인권자 판정 — kpiEntries의 team_leader/dept_director 승인범위와 동일한
+// 조직단위 기준(leader는 같은 dept+team의 member, director는 같은 dept의 member/leader).
+// admin은 _sanitizeGatedRecord 호출부에서 이미 별도로 통과시키므로 여기서 다루지 않는다.
+function _okrIsManagerOf(actor, actorEmp, ownerEmp) {
+  if (!actor || !actorEmp || !ownerEmp) return false;
+  if (actor.role === "leader") return ownerEmp.role === "member" && ownerEmp.dept === actorEmp.dept && ownerEmp.team === actorEmp.team;
+  if (actor.role === "director") return (ownerEmp.role === "member" || ownerEmp.role === "leader") && ownerEmp.dept === actorEmp.dept;
+  return false;
 }
 // 반환값: 저장할 레코드, 또는 null(= 이 레코드는 아예 쓰지 않음 — 권한 없이 새로 만들어진 것)
 // approvalDocForGate: 결재에서 파생되는 payrollAdjustments/learningAssignments 신규 레코드에
@@ -2046,6 +2139,48 @@ function _sanitizeGatedRecord(field, incoming, stored, actor, actorEmp, settings
   if (field === "welfarePoints" && stored && JSON.stringify(stored) !== JSON.stringify(incoming)) {
     return { ...stored };
   }
+  // OKR(Epic C) — 소유자(ownerId)는 명의 도용 방지를 위해 절대 바꿀 수 없다(approvalDocs의
+  // 결재자 신원 변경 차단과 동일한 발상). 신규 레코드는 본인(또는 admin) 명의로만, 항상
+  // draft로 시작(승인 상태를 직접 주입하는 것을 차단). 상태 전이는 draft→pending(본인만
+  // 제출)·pending→approved/rejected(직속 매니저 또는 admin만 승인/반려)만 허용하고, 그 외
+  // 임의 전이(예: approved를 직접 draft로 되돌리기)는 차단한다. 상태 변경이 없는 일반 편집
+  // (제목·설명·KR·코멘트·첨부파일)은 소유자 또는 admin만 — 이미 승인된 목표의 KR 목표치를
+  // 조용히 바꿔 "달성"으로 보이게 하는 등의 위험은 이번 MVP 범위에서는 UI 경고로만 안내하고
+  // 서버에서 하드블록하지 않는다(범위를 좁혀 복잡도를 낮춤, 코멘트에 명시).
+  if (field === "okrObjectives") {
+    if (stored && String(incoming.ownerId) !== String(stored.ownerId)) {
+      incoming = { ...incoming, ownerId: stored.ownerId, ownerName: stored.ownerName };
+    }
+    const isAdmin = actor && actor.role === "admin";
+    const ownerId = incoming.ownerId ?? stored?.ownerId;
+    const isOwner = actor && String(actor.empId) === String(ownerId);
+    if (!stored) {
+      if (!isOwner && !isAdmin) return null;
+      return { ...incoming, ownerId: actor.empId, ownerName: actorEmp?.name || actor.loginId || "", status: "draft" };
+    }
+    const prevStatus = stored.status || "draft", nextStatus = incoming.status || "draft";
+    if (nextStatus !== prevStatus) {
+      if (prevStatus === "draft" && nextStatus === "pending") {
+        if (!isOwner && !isAdmin) return { ...stored };
+      } else if (prevStatus === "pending" && (nextStatus === "approved" || nextStatus === "rejected")) {
+        if (!isAdmin && !_okrIsManagerOf(actor, actorEmp, targetEmp)) return { ...stored };
+      } else {
+        return { ...stored };
+      }
+    } else if (!isOwner && !isAdmin) {
+      return { ...stored };
+    }
+    return incoming;
+  }
+  if (field === "trainingEnrollments") {
+    // 신청/대기/취소/설문은 본인(empId)이 스스로 할 수 있지만, "완료 처리"(status:"completed")는
+    // 실제 출석·이수 확인이 필요한 관리자 전용 동작(renderTrainingAdminPage의 "선택 완료 처리")
+    // 이다 — 이 체크가 없으면 위 ownField 공용 가드(본인 레코드인지만 확인, 어떤 상태로
+    // 바꾸는지는 제한하지 않음)만으로는 member가 직접 /save로 자기 신청을 completed로 바꿔
+    // 이수율·교육비 집계를 조작할 수 있다.
+    const isAdmin = actor && actor.role === "admin";
+    if (!isAdmin && incoming.status === "completed" && stored?.status !== "completed") return stored ? { ...stored } : null;
+  }
   if (rule.record) {
     // 바뀌지 않은 레코드는 그대로 통과(매 저장마다 전체 배열이 재전송되므로 대부분이 여기).
     if (stored && JSON.stringify(stored) === JSON.stringify(incoming)) return incoming;
@@ -2121,6 +2256,30 @@ function _learningAssignmentFits(rec, assignments, courses) {
   return true;
 }
 const _HHMM_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
+// OKR 상위목표(parentOkrId) 연계 검증 — scope 계층: personal(0) < team(1) < company(2),
+// 부모는 자식보다 더 높은 랭크여야 한다(회사 OKR은 랭크가 가장 높아 자동으로 부모를 가질 수
+// 없게 된다). _validateFieldValues('okrObjectives', ...) 안에 넣지 않고 별도 함수로 뗀
+// 이유: 그 함수는 같은 요청에 실린 "형제" okrObjectives 레코드(예: 방금 만든 회사 OKR과,
+// 그걸 parentOkrId로 지정하며 같은 디바운스 구간에 함께 저장되는 팀 OKR)를 모르는 storedList
+// (JSON모드는 이전에 저장된 값만)만 받는다 — 이 상태로 존재검사를 하면 신규 형제 레코드가
+// 거짓으로 실패해 그대로 드롭될 위험이 있다(1차 패스가 검증 실패를 레코드 전체 드롭/되돌림으로
+// 처리하기 때문, workforcePositions의 중복코드 검사와 달리 이 존재검사는 storedList만으로도
+// 쉽게 거짓 실패한다). 그래서 parentOkrId는 호출부가 "이 레코드 + 형제까지 포함한 전체 후보
+// 목록"을 직접 구성해 넘기도록 분리한다(JSON모드는 배치 축적 2차 패스, Postgres모드는 매
+// 아이템 직전에 다시 조회하는 쿼리 — 트랜잭션이 자신의 앞선 INSERT를 그대로 보는 특성 활용).
+// 위반 시 parentOkrId 필드만 되돌리고(신규면 null) 나머지 레코드는 그대로 둔다 — 다른 필드
+// 위조 방어(role/salary/birth/address 등)와 동일한 "해당 필드만 되돌림" 원칙.
+const _OKR_SCOPE_RANK = { personal: 0, team: 1, company: 2 };
+function _okrParentLinkValid(rec, basis) {
+  if (rec.parentOkrId == null || rec.parentOkrId === "") return true;
+  if (String(rec.parentOkrId) === String(rec.id)) return false;
+  const parent = Array.isArray(basis) ? basis.find(o => o && String(o.id) === String(rec.parentOkrId)) : null;
+  if (!parent) return false;
+  if (Number(parent.year) !== Number(rec.year)) return false;
+  const childRank = _OKR_SCOPE_RANK[rec.scope || "personal"] ?? 0;
+  const parentRank = _OKR_SCOPE_RANK[parent.scope || "personal"] ?? 0;
+  return parentRank > childRank;
+}
 // 화면 폼은 값을 제한하지만(예: <input type=number min=1 max=24>, 시작<종료 검사) 이
 // 범용 blob 동기화(/save) 경로는 위 승인 게이팅(권한) 통과 이후에도 값 자체의 범위·형식은
 // 전혀 검증하지 않아, API를 직접 호출하면 오염된 값이 그대로 저장돼 아래 화면들의 합계·
@@ -2227,6 +2386,40 @@ function _validateFieldValues(field, rec, storedList) {
     const yr = Number(rec.year);
     if (!Number.isInteger(yr) || yr < 2000 || yr > 2100) return false;
     if (!rec.empId) return false;
+  } else if (field === "scoreAdjustments") {
+    // 가감점은 calcEmpFinalScore/calcCompGradesForAll에서 raw score에 그대로 더해져 상대평가
+    // 순위에 직접 영향을 준다 — 비정상 값(NaN·과도한 점수)이 저장되면 등급 배분 전체가
+    // 왜곡된다. 점수 척도(0~100, getGrade 임계값 기준)를 넘지 않도록 ±50으로 제한.
+    if (String(rec.empId ?? "").trim() === "") return false;
+    const yr = Number(rec.year), pts = Number(rec.points);
+    if (!Number.isInteger(yr) || yr < 2000 || yr > 2100) return false;
+    if (!Number.isFinite(pts) || pts === 0 || Math.abs(pts) > 50) return false;
+    if (rec.type !== "kpi" && rec.type !== "comp") return false;
+    const reason = typeof rec.reason === "string" ? rec.reason.trim() : "";
+    if (!reason || reason.length > 300) return false;
+  } else if (field === "okrObjectives") {
+    // OKR(Epic C): 핵심지표(KR)의 targetValue/currentValue는 진행률(currentValue/targetValue)
+    // 계산에 직접 쓰이므로 숫자 범위를 검증한다. 댓글·첨부파일도 개수 상한을 둔다.
+    if (!rec.ownerId) return false;
+    const yr = Number(rec.year);
+    if (!Number.isInteger(yr) || yr < 2000 || yr > 2100) return false;
+    if (typeof rec.title !== "string" || !rec.title.trim() || rec.title.length > 200) return false;
+    if (!["personal", "team", "company"].includes(rec.scope || "personal")) return false;
+    if (!["draft", "pending", "approved", "rejected"].includes(rec.status || "draft")) return false;
+    if (rec.krs != null) {
+      if (!Array.isArray(rec.krs) || rec.krs.length > 10) return false;
+      for (const kr of rec.krs) {
+        if (!kr || typeof kr.title !== "string" || !kr.title.trim() || kr.title.length > 200) return false;
+        if (kr.targetValue != null && !Number.isFinite(Number(kr.targetValue))) return false;
+        if (kr.currentValue != null && !Number.isFinite(Number(kr.currentValue))) return false;
+        if (Array.isArray(kr.checkIns) && kr.checkIns.length > 100) return false;
+      }
+    }
+    if (rec.comments != null && (!Array.isArray(rec.comments) || rec.comments.length > 200)) return false;
+    if (rec.attachments != null && (!Array.isArray(rec.attachments) || rec.attachments.length > 20)) return false;
+    // parentOkrId의 모양(타입·길이)만 여기서 걸러낸다 — 실제 존재/연도일치/scope계층 검증은
+    // 형제 레코드까지 봐야 해서 _okrParentLinkValid()로 분리돼 있다(위 주석 참고).
+    if (rec.parentOkrId != null && (typeof rec.parentOkrId !== "string" || rec.parentOkrId.length > 120)) return false;
   } else if (field === "workforceScenarios") {
     if (typeof rec.name !== "string" || !rec.name.trim() || rec.name.length > 120) return false;
     const year = Number(rec.year);
@@ -2299,6 +2492,62 @@ function _validateFieldValues(field, rec, storedList) {
     if (rec.budgetPlanName != null && (typeof rec.budgetPlanName !== "string" || rec.budgetPlanName.length > 200)) return false;
     if (rec.budgetPlanYear != null && (!Number.isInteger(Number(rec.budgetPlanYear)) || Number(rec.budgetPlanYear) < 2000 || Number(rec.budgetPlanYear) > 2200)) return false;
     if (rec.approvalComment != null && (typeof rec.approvalComment !== "string" || rec.approvalComment.length > 2000)) return false;
+  } else if (field === "trainingCourses") {
+    if (typeof rec.title !== "string" || !rec.title.trim() || rec.title.length > 200) return false;
+    if (!["planned", "open", "closed", "completed", "canceled"].includes(rec.status || "planned")) return false;
+    if (rec.capacity != null) {
+      const cap = Number(rec.capacity);
+      if (!Number.isInteger(cap) || cap < 1 || cap > 100000) return false;
+    }
+    if (rec.cost != null) {
+      const cost = Number(rec.cost);
+      if (!Number.isFinite(cost) || cost < 0 || cost > 1_000_000_000_000) return false;
+    }
+    if (rec.startDate && !/^\d{4}-\d{2}-\d{2}$/.test(rec.startDate)) return false;
+    if (rec.endDate && !/^\d{4}-\d{2}-\d{2}$/.test(rec.endDate)) return false;
+    if (rec.startDate && rec.endDate && rec.endDate < rec.startDate) return false;
+  } else if (field === "trainingEnrollments") {
+    if (String(rec.courseId ?? "").trim() === "") return false;
+    if (String(rec.empId ?? "").trim() === "") return false;
+    if (!["applied", "waitlisted", "canceled", "completed"].includes(rec.status || "applied")) return false;
+    if (rec.surveyResponse != null) {
+      const sr = rec.surveyResponse;
+      if (typeof sr !== "object") return false;
+      const sat = Number(sr.satisfaction);
+      if (!Number.isInteger(sat) || sat < 1 || sat > 5) return false;
+      if (sr.comment != null && (typeof sr.comment !== "string" || sr.comment.length > 1000)) return false;
+    }
+  } else if (field === "wageGarnishments" || field === "severanceSettlements" || field === "socialInsuranceRecords") {
+    // 세 컬렉션 모두 empId가 필수이고(실제 재직자 명의로만 존재해야 하는 인사기록), 금액류
+    // 필드는 급여 명세서·전사 집계(퇴직급여추계액대장 등)에 그대로 더해지므로 범위를 둔다.
+    if (String(rec.empId ?? "").trim() === "") return false;
+    if (field === "wageGarnishments") {
+      if (!["fixed", "percentOfNet"].includes(rec.type)) return false;
+      if (!["active", "completed", "canceled"].includes(rec.status || "active")) return false;
+      if (rec.type === "fixed") {
+        const amount = Number(rec.amount);
+        if (!Number.isFinite(amount) || amount <= 0 || amount > 1_000_000_000_000) return false;
+      } else {
+        const rate = Number(rec.rate);
+        if (!Number.isFinite(rate) || rate <= 0 || rate > 100) return false;
+      }
+      if (rec.startMonth && !/^\d{4}-\d{2}$/.test(rec.startMonth)) return false;
+      if (rec.endMonth && !/^\d{4}-\d{2}$/.test(rec.endMonth)) return false;
+    } else if (field === "severanceSettlements") {
+      if (!["final", "interim"].includes(rec.type)) return false;
+      const amount = Number(rec.severanceAmount);
+      if (!Number.isFinite(amount) || amount < 0 || amount > 1_000_000_000_000) return false;
+      if (rec.settlementDate && !/^\d{4}-\d{2}-\d{2}$/.test(rec.settlementDate)) return false;
+    } else {
+      if (!["acquisition", "loss", "wageChange"].includes(rec.type)) return false;
+      if (!Array.isArray(rec.insuranceTypes) || !rec.insuranceTypes.length ||
+          !rec.insuranceTypes.every(t => ["pension", "health", "employment", "industrial"].includes(t))) return false;
+      if (rec.effectiveDate && !/^\d{4}-\d{2}-\d{2}$/.test(rec.effectiveDate)) return false;
+      if (rec.monthlyWage != null) {
+        const wage = Number(rec.monthlyWage);
+        if (!Number.isFinite(wage) || wage < 0 || wage > 1_000_000_000) return false;
+      }
+    }
   }
   return true;
 }
@@ -2676,6 +2925,29 @@ function _sanitizeEmployeeRecord(rawEmp, stored, actor, actorEmp) {
   }
   return out;
 }
+// employees[].photoUrl(화상조직도, D2) 콘텐츠 검증 — _sanitizeEmployeeRecord()와 달리
+// actor 신원과 무관하게 항상 실행된다. _sanitizeEmployeeRecord는 "non-admin의 위조
+// 시도"만 방어하도록 설계돼 있어(두 호출부 모두 `_empActorNonAdmin ? _sanitizeEmployeeRecord(...)
+// : rawEmpIn`로 admin 쓰기는 이 함수 자체를 완전히 건너뛴다 — role/salary 등 다른 필드는
+// "admin은 무엇이든 쓸 수 있다"는 이 코드베이스의 기존 신뢰 모델과 일치해 문제가 없지만,
+// photoUrl은 신원이 아니라 내용(크기·형식) 자체가 문제라 admin 쓰기도 반드시 검증해야
+// 한다 — 처음엔 이 구분을 놓치고 _sanitizeEmployeeRecord 안에만 넣어, 정작 문제였던
+// admin 직접 /save 호출 경로가 전혀 검증되지 않는 채로 남아있었다(테스트로 재현해 발견).
+// 클라이언트(uploadEmpEditPhoto())가 "이미지 타입+300KB 이하"를 검증하지만 전부 브라우저
+// 측 검사일 뿐이라, /save를 직접 호출하면 수십MB 데이터나 이미지가 아닌 임의 문자열도
+// 그대로 저장돼 전 직원이 매 GET /data마다 받는 employees 배열의 응답 크기를 무한히
+// 부풀릴 수 있었다(XSS 자체는 _orgAvatarHtml()이 항상 h()로 이스케이프해 별도로 닫혀있음을
+// 확인했으나, 저장공간·응답크기 남용은 막혀있지 않았음). 빈 문자열(사진 제거)은 항상
+// 허용, 그 외엔 클라이언트가 실제로 만드는 형태(FileReader.readAsDataURL 결과)와 동일한
+// 300KB 상한을 강제하고, 위반 시 그 필드만 저장값으로 되돌린다(요청 전체를 거부하지 않음).
+function _sanitizePhotoUrl(rawEmp, stored) {
+  if (!rawEmp || !rawEmp.photoUrl) return rawEmp;
+  const validPhoto = typeof rawEmp.photoUrl === "string"
+    && rawEmp.photoUrl.length <= 420000 // 300KB 원본의 base64 인코딩(×4/3) + data URI 프리픽스 여유
+    && /^data:image\/[a-z0-9.+-]+;base64,[A-Za-z0-9+/]+=*$/i.test(rawEmp.photoUrl);
+  if (validPhoto) return rawEmp;
+  return { ...rawEmp, photoUrl: stored ? stored.photoUrl : undefined };
+}
 // 다면평가 최종등급(compGradeResults, {empId:{year:{grade,score,...}}} 형태의 nested
 // 싱글톤)은 comp-grade-view(admin 전용 화면)에서만 계산·조정되는데, 이 필드 자체는
 // gradeResults와 마찬가지로 전혀 게이팅되지 않고 있었다 — GET /data는 이미 non-admin에게
@@ -2910,7 +3182,7 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
     const _empActorOwnRecord = (actor && actor.empId != null) ? existingById[actor.empId] : null;
     const employees = employeesInputMissing ? (_fileStore.employees || []) : await Promise.all((data.employees || []).map(async (rawEmpIn) => {
       const ex0 = existingById[rawEmpIn.id];
-      const rawEmp = _empActorNonAdmin ? _sanitizeEmployeeRecord(rawEmpIn, ex0, actor, _empActorOwnRecord) : rawEmpIn;
+      const rawEmp = _sanitizePhotoUrl(_empActorNonAdmin ? _sanitizeEmployeeRecord(rawEmpIn, ex0, actor, _empActorOwnRecord) : rawEmpIn, ex0);
       const ex = existingById[rawEmp.id];
       const oldTs = ex ? (ex.updatedAt || ex.createdAt || "") : "";
       const newTs = rawEmp.updatedAt || rawEmp.createdAt || "";
@@ -3008,8 +3280,11 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
           const stored = storedById.get(String(r.id));
           const approvalDocForGate = (["payrollAdjustments", "learningAssignments"].includes(gatedField) && !stored)
             ? _resolveApprovalDocForGate(r.sourceDocId) : null;
+          const _okrOwnerId = r.ownerId ?? stored?.ownerId;
           const targetEmpForGate = (gatedField === "compSessions" && r.targetId != null)
-            ? (_fileStore.employees || []).find(e => String(e.id) === String(r.targetId)) || null : null;
+            ? (_fileStore.employees || []).find(e => String(e.id) === String(r.targetId)) || null
+            : (gatedField === "okrObjectives" && _okrOwnerId != null)
+            ? (_fileStore.employees || []).find(e => String(e.id) === String(_okrOwnerId)) || null : null;
           const reviewOwnerId = r.reviewOwnerId ?? stored?.reviewOwnerId;
           const reviewOwnerEmp = gatedField === "employmentRecords" && reviewOwnerId != null
             ? (_fileStore.employees || []).find(e => String(e.id) === String(reviewOwnerId)) || null : null;
@@ -3062,6 +3337,28 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
       }
       if (gatedField === "welfarePoints") {
         data[gatedField] = _dropOverspentWelfare(data[gatedField], storedList, actor);
+      }
+      if (gatedField === "okrObjectives") {
+        // parentOkrId 전용 2차 패스(위 _okrParentLinkValid 주석 참고) — storedList(이전
+        // 저장값) + 이번 요청에서 이미 통과한 형제 레코드까지 basis로 넘겨, 같은 디바운스
+        // 구간에 부모·자식 OKR이 함께 처음 생성되는 흔한 경우도 정상 통과시킨다. 위반 시
+        // 레코드 전체가 아니라 parentOkrId 필드만 되돌린다(신규면 null).
+        const storedByIdOkr = new Map(storedList.map(r => [String(r.id), r]));
+        const accepted = [];
+        data[gatedField] = data[gatedField].map(rec => {
+          if (!rec || rec.id == null) return rec;
+          const basis = [
+            ...storedList.filter(p => p && String(p.id) !== String(rec.id)),
+            ...accepted.filter(p => p && String(p.id) !== String(rec.id)),
+          ];
+          let out = rec;
+          if (!_okrParentLinkValid(rec, basis)) {
+            const ownStored = storedByIdOkr.get(String(rec.id));
+            out = { ...rec, parentOkrId: ownStored ? (ownStored.parentOkrId ?? null) : null };
+          }
+          accepted.push(out);
+          return out;
+        });
       }
     }
     function _mergeProtectedField(field) {
@@ -3216,9 +3513,11 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
         "SELECT data, company_id FROM employees WHERE id = $1", [rawEmpIn.id]
       );
       if (rows.length && companyId && rows[0].company_id && rows[0].company_id !== companyId) continue;
-      const rawEmp = _empActorNonAdmin
-        ? _sanitizeEmployeeRecord(rawEmpIn, rows.length ? rows[0].data : null, actor, _empActorOwnRecord)
-        : rawEmpIn;
+      const storedEmpRow = rows.length ? rows[0].data : null;
+      const rawEmp = _sanitizePhotoUrl(
+        _empActorNonAdmin ? _sanitizeEmployeeRecord(rawEmpIn, storedEmpRow, actor, _empActorOwnRecord) : rawEmpIn,
+        storedEmpRow
+      );
       // 비밀번호는 관리자 또는 본인만(2026-08-19 외부 감사 P0-1 — JSON 파일 모드와 동일한
       // 방어를 Postgres/SaaS 모드에도 적용).
       const isSelf = actor && actor.empId != null && String(actor.empId) === String(rawEmp.id);
@@ -3480,8 +3779,11 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
           } else if (_APPROVAL_GATED_FIELDS[field]) {
             const approvalDocForGate = (["payrollAdjustments", "learningAssignments"].includes(field) && !storedItem)
               ? await _getApprovalDocForGate(item.sourceDocId) : null;
+            const _okrOwnerIdPg = item.ownerId ?? storedItem?.ownerId;
             const targetEmpForGate = (field === "compSessions" && item.targetId != null)
-              ? await _getEmployeeByIdPg(item.targetId) : null;
+              ? await _getEmployeeByIdPg(item.targetId)
+              : (field === "okrObjectives" && _okrOwnerIdPg != null)
+              ? await _getEmployeeByIdPg(_okrOwnerIdPg) : null;
             const reviewOwnerId = item.reviewOwnerId ?? storedItem?.reviewOwnerId;
             const reviewOwnerEmp = field === "employmentRecords" && reviewOwnerId != null
               ? await _getEmployeeByIdPg(reviewOwnerId) : null;
@@ -3511,6 +3813,19 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
             rejectSaveRecord(field, item, storedItem);
             toWrite = storedItem;
             if (toWrite === null) continue;
+          }
+          // OKR parentOkrId 전용 검증(위 _okrParentLinkValid 주석 참고) — 매 아이템 직전에
+          // 다시 조회해 같은 트랜잭션 안에서 앞서 INSERT된 형제 OKR(부모가 이 배치에서 막
+          // 함께 생성된 경우)까지 basis에 포함시킨다. 위반 시 parentOkrId 필드만 되돌린다.
+          if (toWrite && field === "okrObjectives" && toWrite.parentOkrId != null) {
+            const { rows: okrRows } = await client.query(
+              "SELECT data FROM app_collections WHERE collection = 'okrObjectives' AND (company_id = $1 OR company_id IS NULL)",
+              [companyId || null]
+            );
+            const okrBasis = okrRows.map(r => r.data).filter(o => o && String(o.id) !== String(toWrite.id));
+            if (!_okrParentLinkValid(toWrite, okrBasis)) {
+              toWrite = { ...toWrite, parentOkrId: storedItem ? (storedItem.parentOkrId ?? null) : null };
+            }
           }
           await client.query(
             `INSERT INTO app_collections (collection, id, company_id, data, updated_at) VALUES ($1,$2,$3,$4,NOW())
@@ -4815,6 +5130,23 @@ app.post("/login", loginLimiter, async (req, res) => {
     // 자격증명과 2FA는 이미 성공했으므로 이후 기능 상태 조회가 503이더라도 브루트포스
     // 실패 횟수에는 포함하지 않는다. 장애 복구 직후 정상 사용자가 429에 갇히는 것을 방지한다.
     res.locals.loginOk = true;
+    // 회사가 정지(suspended)됐으면 자격증명이 맞아도 새 토큰을 내주지 않는다 —
+    // authenticate()가 기존 토큰도 매 요청마다 같은 기준으로 끊지만, 로그인
+    // 자체를 여기서 막아야 "이미 로그아웃된 사용자가 다시 로그인을 시도"하는
+    // 가장 흔한 경로에서 곧바로 안내를 받는다(그 뒤 authenticate()에 도달할
+    // 필요 없이). 자격증명 검증 이후에만 확인해 "회사 존재 여부"를 사전에
+    // 흘리지 않는다(기존 anti-enumeration 설계 유지).
+    if (!USE_JSON_FILE && companyId) {
+      let companyStatus;
+      try {
+        companyStatus = await _getCompanyStatus(companyId);
+      } catch {
+        return _companyStatusUnavailable(res);
+      }
+      if (companyStatus === "suspended") {
+        return res.json({ ok: false, code: "COMPANY_SUSPENDED", message: "이 회사는 현재 서비스가 일시 정지되었습니다. 관리자에게 문의하세요." });
+      }
+    }
     // companyFeatures — 로그인 직후(아직 GET /data를 부르기 전) 클라이언트가 사이드바를
     // 최초로 그릴 때부터 바로 반영할 수 있도록 여기서도 함께 내려준다.
     const companyFeatures = await _getCompanyFeatureMap(companyId);
@@ -5260,6 +5592,37 @@ app.get("/master/companies", async (req, res) => {
   } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
+// PUT /master/companies/:id/status — {status: trial|active|suspended}. 지금까지 이
+// 값은 회원가입 시 'trial'로 고정 기록되고 마스터 콘솔에 표시만 될 뿐, 바꿀 수 있는
+// API가 전혀 없었다(실제 영향도 없었음 — authenticate()/POST /login의 enforcement가
+// 이번에 함께 추가됨). feature-toggle(PUT /master/companies/:id/features/:key)과
+// 동일한 가드·감사로그 패턴을 따른다.
+app.put("/master/companies/:id/status", async (req, res) => {
+  if (!_requireSaas(req, res)) return;
+  if (!requireMaster(req, res)) return;
+  if (!_requireValidCompanyIdParam(req, res)) return;
+  try {
+    const companyId = req.params.id;
+    const { status } = req.body || {};
+    if (!["trial", "active", "suspended"].includes(status))
+      return res.status(400).json({ ok: false, message: "status 값은 trial/active/suspended 중 하나여야 합니다." });
+    const { rows: existing } = await pool.query("SELECT status FROM companies WHERE id = $1", [companyId]);
+    if (!existing.length) return res.status(404).json({ ok: false, message: "존재하지 않는 회사입니다." });
+    const fromStatus = existing[0].status;
+    const { rows } = await pool.query(
+      "UPDATE companies SET status = $1 WHERE id = $2 RETURNING id, slug, name, status",
+      [status, companyId]
+    );
+    _invalidateCompanyStatusCache(companyId); // 다음 요청부터(또는 10초 뒤 자동으로) 반영
+    await pool.query(
+      "INSERT INTO master_audit_log (master_id, action, company_id, detail) VALUES ($1,'status_change',$2,$3)",
+      [req.auth.masterId, companyId, JSON.stringify({ from: fromStatus, to: status })]
+    );
+    const row = rows[0];
+    res.json({ ok: true, company: { id: row.id, slug: row.slug, name: row.name, status: row.status } });
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
+});
+
 // POST /master/companies/:id/impersonate — "이 회사로 들어가기". 계획 문서 설계 그대로:
 // 새 인가 체계를 만들지 않고 1단계에서 이미 만든 회사 스코프 로직(모든 requireAuth/
 // requireAdmin 라우트가 req.auth.companyId만 보고 동작)을 그대로 재사용한다 — 이 토큰이
@@ -5438,6 +5801,42 @@ function requireFeature(req, res, featureKey) {
     return false;
   }
   return true;
+}
+
+// companies.status(trial/active/suspended) 조회 — _getCompanyFeatureMap과 동일한
+// 10초 TTL 캐시+fail-closed 패턴(authenticate() 미들웨어에서 매 요청마다 쓰이므로
+// DB 왕복을 줄이고, 조회 실패를 "정상(active)"으로 취급하면 DB 순단 동안 정지된
+// 회사가 다시 열리는 셈이라 반드시 fail-closed 한다). 마스터 콘솔에서 상태를
+// 바꾸면(PUT /master/companies/:id/status) 그 즉시 캐시를 지워 다음 요청부터
+// 반영된다. 지금까지 이 값은 읽히는 곳이 전혀 없어(마스터 콘솔 목록 표시 용도뿐)
+// trial→active/suspended 전환이 로그인·API 접근에 실제 영향을 주지 못했다.
+const _companyStatusCache = new Map(); // companyId -> {status, expiresAt}
+const COMPANY_STATUS_CACHE_TTL_MS = 10000;
+async function _getCompanyStatus(companyId) {
+  if (USE_JSON_FILE || !companyId) return "active";
+  const cached = _companyStatusCache.get(companyId);
+  if (cached && cached.expiresAt > Date.now()) return cached.status;
+  try {
+    const { rows } = await pool.query("SELECT status FROM companies WHERE id = $1", [companyId]);
+    // 회사 자체가 안 보이면(삭제 등) 여기서 판단하지 않고 그대로 통과시킨다 — 그런
+    // 토큰을 실제로 쓰는 다른 라우트들이 이미 각자 "존재하지 않는 회사" 404를 낸다.
+    const status = rows.length ? rows[0].status : "active";
+    _companyStatusCache.set(companyId, { status, expiresAt: Date.now() + COMPANY_STATUS_CACHE_TTL_MS });
+    return status;
+  } catch (e) {
+    console.error("[company-status] 조회 실패 — fail-closed 처리:", e.message);
+    const err = new Error("Company status unavailable");
+    err.code = "COMPANY_STATUS_UNAVAILABLE";
+    throw err;
+  }
+}
+function _invalidateCompanyStatusCache(companyId) { _companyStatusCache.delete(companyId); }
+function _companyStatusUnavailable(res) {
+  return res.status(503).json({
+    ok: false,
+    code: "COMPANY_STATUS_UNAVAILABLE",
+    message: "회사 상태를 확인할 수 없습니다. 잠시 후 다시 시도해주세요.",
+  });
 }
 
 // /api/accounting/*·/api/pms/*·/api/recruit/* 전체와 /api/erp/*의 하위 경로별로(사이드바
@@ -6160,6 +6559,21 @@ app.get("/events", async (req, res) => {
   const authStillValid = await _employeeAuthStillValid(auth, employee);
   if (authStillValid === undefined) return _authStateUnavailable(res);
   if (!authStillValid) return res.status(401).json({ ok: false, message: "로그인이 필요합니다." });
+  // companies.status enforcement(작업1) — 전역 authenticate() 미들웨어는 Authorization
+  // 헤더가 있는 요청에만 적용되는데, 이 라우트는 EventSource의 제약 때문에 쿼리스트링
+  // 티켓(scope:"sse")으로 그 미들웨어를 완전히 비껴간다(위 주석 참고) — 그래서 세션 철회는
+  // 이 라우트가 직접 재구현했지만(바로 위 두 줄) companyStatus 재확인은 빠져 있었다. 그
+  // 결과 회사가 정지된 뒤에도 이미 발급된 5분짜리 티켓이 유효한 동안은 실시간 이벤트
+  // (잠금 보유자·접속자 이름 등 메타데이터, 실제 데이터는 아님)를 계속 받을 수 있었다
+  // (작업6 재점검에서 실측 확인) — "즉시 무효화"라는 설계 의도와 어긋나 동일하게 맞춘다.
+  if (auth.companyId && !auth.actingAsMaster) {
+    let companyStatus;
+    try { companyStatus = await _getCompanyStatus(auth.companyId); }
+    catch { return _companyStatusUnavailable(res); }
+    if (companyStatus === "suspended") {
+      return res.status(403).json({ ok: false, code: "COMPANY_SUSPENDED", message: "이 회사는 현재 서비스가 일시 정지되었습니다. 관리자에게 문의하세요." });
+    }
+  }
   const companyId = auth.companyId || null;
   const clientId = req.query.clientId || `client_${Date.now()}`;
   // 접속자 표시명은 클라이언트 쿼리스트링이 아니라 인증된 토큰/서버 저장 직원명에서만 만든다.
@@ -6268,6 +6682,16 @@ app.post("/unlock", (req, res) => {
 // pool.query()가 던지면(DB 순단 등) 이 요청이 응답 없이 멈춰버리는 것을 다른
 // 라우트들과 통일해 방지한다(Express 4는 async 핸들러의 미처리 reject를 자동으로
 // 못 잡아 그대로 두면 hang된다 — 이 프로젝트에서 여러 번 재발한 버그 클래스).
+//
+// 이 라우트는 "실제로 일어난 사건을 서버가 확인"하지 않고 클라이언트가 보낸 action
+// 문자열을 거의 그대로 믿는다(제어문자·형식만 검증) — 즉 인증된 사용자라면 누구나
+// 자기 신원으로 "role_changed"/"menu_perm_changed" 같은 위조 감사기록을 남길 수
+// 있었다. D1(권한변경로그) 기능이 보장하려던 감사 신뢰성을 무너뜨리는 구멍이라,
+// 이 3개 권한류 action은 실제로 그 변경을 일으킬 수 있는 유일한 화면(권한
+// 관리·직원 수정의 역할 변경)이 전부 관리자 전용이라는 사실에 맞춰 admin만
+// 자가보고할 수 있도록 제한한다(그 외 action — 본인 KPI 제출·본인 PII 열람 등 —
+// 은 "자신에 대한 사실 주장"이라 위조해도 보안 영향이 없어 그대로 둠).
+const _PRIVILEGED_LOG_ACTIONS = new Set(["role_changed", "menu_perm_changed", "menu_perm_group_applied"]);
 app.post("/log", async (req, res) => {
   if (!requireAuth(req, res)) return;
   if (!req.body) return res.status(400).json({ ok: false });
@@ -6283,6 +6707,8 @@ app.post("/log", async (req, res) => {
     const target = clean(req.body.target, 120);
     if (!action || !/^[\p{L}\p{N}_.:\- ]+$/u.test(action))
       return res.status(400).json({ ok: false, message: "활동 유형이 올바르지 않습니다." });
+    if (_PRIVILEGED_LOG_ACTIONS.has(action) && req.auth.role !== "admin")
+      return res.status(403).json({ ok: false, message: "이 활동 유형은 관리자만 기록할 수 있습니다." });
     await addActivityLog({
       userId: _authenticatedActorKey(req.auth),
       userName: _authenticatedDisplayName(req.auth, employee),
@@ -6319,6 +6745,160 @@ app.get("/activity", async (req, res) => {
   } catch (e) {
     return res.status(500).json({ ok: false, message: _safeErrMsg(e) });
   }
+});
+
+// ── 외부 연동 웹훅(서버사이드 디스패치) ────────────────────────────────────────
+// "연동 설정"(integrations, admin 전용 화면)이 등록하는 Slack/카카오워크 등 웹훅 URL은
+// 비밀값(Slack Incoming Webhook URL은 경로 자체에 토큰이 박혀있어, 그 URL을 아는 사람은
+// 누구나 영구히 그 채널에 직접 게시할 수 있다)인데, 2026-09-09에 도입된 "결재 상신/완료·
+// 휴가신청/공지등록 시 자동 발송" 기능이 브라우저에서 직접 그 URL로 fetch하는 구조라
+// integrationSettings 전체(webhooks[].url 포함)가 GET /data 응답에 실려 있어야만
+// 작동했다 — filterDataForRole()이 다른 모든 비밀값(복지포인트·연봉 등)은 role별로
+// 가리는데 이 필드만 가린 적이 없어, 로그인만 되어 있으면 어떤 role이든 그대로 URL을
+// 읽어갈 수 있었다(실측 확인된 완전한 비밀값 노출 — 2026-09-25 주간점검에서 "서버사이드
+// 발송으로 아키텍처 변경 필요"로 두 차례 명시적으로 미뤄졌던 항목).
+// 디스패치 자체를 서버로 옮겨 해결한다 — 클라이언트는 이벤트id+문구만 보내고, 실제 webhook
+// URL은 이 라우트 안에서만(서버가 loadData()로 직접 읽어) 쓰인다. 이제 non-admin의
+// GET /data 응답에서는 webhooks 배열 자체를 제거하므로(filterDataForRole 참고) 그 URL을
+// 알 방법이 구조적으로 사라진다. 부수적으로, 브라우저의 no-cors fetch는 응답을 전혀 읽을
+// 수 없어 성공/실패를 영원히 구분 못 했던 기존 한계도 서버 쪽 fetch는 실제 HTTP 상태를
+// 읽을 수 있어 함께 해소된다.
+//
+// 이 이전(브라우저가 직접 fetch)에는 admin이 webhook.url에 악의적인 내부 주소를 넣어도
+// "피해자"가 각 직원의 브라우저(그 직원 PC가 속한 네트워크)뿐이었는데, 디스패치를 서버로
+// 옮기면서 그 요청의 발신지가 이 앱이 실제로 떠 있는 호스팅 인프라 자체로 바뀐다 — 이제는
+// admin(또는 탈취된 admin 계정)이 webhook URL을 클라우드 메타데이터 엔드포인트(예:
+// 169.254.169.254)나 127.0.0.1의 내부 포트로 설정하면 우리 서버 프로세스가 그 내부
+// 자원에 직접 요청을 보내게 된다(SSRF) — 이건 이 변경이 새로 만들어낸, 그래서 반드시
+// 함께 막아야 하는 위험이다. 디스패치 직전에 각 webhook의 호스트를 실제로 DNS 조회해(도메인이
+// 내부 IP로 리다이렉트/리바인딩되는 경우까지 포함) loopback·사설대역·링크로컬(클라우드
+// 메타데이터 포함)이면 그 건만 조용히 건너뛴다(요청 전체를 막지 않음 — 같은 이벤트에 걸린
+// 다른 정상 webhook은 그대로 발송).
+function _isPrivateOrLoopbackIp(ip) {
+  if (net.isIP(ip) === 4) {
+    const parts = ip.split(".").map(Number);
+    if (parts.length !== 4 || parts.some(n => !Number.isInteger(n) || n < 0 || n > 255)) return true; // 파싱 실패는 안전 쪽으로
+    const [a, b] = parts;
+    if (a === 127) return true;                       // loopback
+    if (a === 10) return true;                         // RFC1918
+    if (a === 172 && b >= 16 && b <= 31) return true;   // RFC1918
+    if (a === 192 && b === 168) return true;            // RFC1918
+    if (a === 169 && b === 254) return true;            // link-local(클라우드 메타데이터 169.254.169.254 포함)
+    if (a === 0) return true;                           // 0.0.0.0/8
+    if (a === 100 && b >= 64 && b <= 127) return true;   // CGNAT
+    if (a === 192 && b === 0) return true;                // IETF protocol assignments
+    if (a === 198 && (b === 18 || b === 19)) return true; // 벤치마크용 비공개 범위
+    if (a >= 224) return true;                            // 멀티캐스트·예약 주소
+    return false;
+  }
+  if (net.isIP(ip) === 6) {
+    const low = ip.toLowerCase();
+    // 공개 글로벌 유니캐스트(2000::/3)만 허용한다. ::ffff:c0a8:1처럼 16진수로
+    // 표현된 IPv4 매핑 주소와 ::, fc00::/7, fe80::/10도 일괄 차단한다.
+    const firstHextet = Number.parseInt(low.split(":", 1)[0], 16);
+    return !Number.isInteger(firstHextet) || firstHextet < 0x2000 || firstHextet >= 0x4000;
+  }
+  return true; // IP도 아니면(파싱 실패) 안전 쪽으로 차단
+}
+// 테스트(e2e/API 테스트)는 이 가드가 지금 막으려는 대상(127.0.0.1의 mock 수신 서버)을
+// 실제 디스패치 검증에 그대로 써야 하므로, 명시적으로 켠 경우에만(기본은 항상 가드 적용)
+// 이 검사를 건너뛴다 — BOOTSTRAP_SECRET/ALLOW_DEMO_DATA와 동일하게 opt-in 환경변수로,
+// 운영 배포는 이 값을 설정하지 않는 한 항상 보호된 상태로 시작한다.
+const _ALLOW_LOCAL_WEBHOOK_TARGETS = String(process.env.ALLOW_LOCAL_WEBHOOK_TARGETS || "").toLowerCase() === "true";
+async function _resolveSafeWebhookTarget(urlString) {
+  let u;
+  try { u = new URL(urlString); } catch { return false; }
+  if (u.protocol !== "http:" && u.protocol !== "https:") return false;
+  if (u.username || u.password) return false;
+  if (_ALLOW_LOCAL_WEBHOOK_TARGETS) return { url: u, address: null };
+  const hostname = u.hostname.replace(/^\[|\]$/g, ""); // IPv6 literal의 [] 벗기기
+  if (net.isIP(hostname)) return _isPrivateOrLoopbackIp(hostname) ? false : { url: u, address: null };
+  try {
+    const addrs = await dns.promises.lookup(hostname, { all: true, verbatim: true });
+    if (!addrs.length) return false;
+    if (!addrs.every(a => !_isPrivateOrLoopbackIp(a.address))) return false;
+    // 검사 후 HTTP 클라이언트가 DNS를 다시 조회하면 리바인딩으로 다른 IP에 연결될 수 있다.
+    // 실제 연결을 검사한 주소 중 하나에 고정하되 Host/SNI/인증서는 원래 호스트명으로 유지한다.
+    return { url: u, address: addrs[0] };
+  } catch {
+    return false; // DNS 조회 실패는 안전 쪽으로 차단(요청 자체를 보내지 않음)
+  }
+}
+function _postWebhookPinned(target, text) {
+  return new Promise((resolve, reject) => {
+    const body = JSON.stringify({ text });
+    const options = {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(body) },
+      timeout: 5000,
+    };
+    if (target.address) {
+      options.lookup = (_hostname, _options, callback) =>
+        callback(null, target.address.address, target.address.family);
+    }
+    // http(s).request는 3xx를 자동으로 따라가지 않는다. 따라서 검증하지 않은
+    // Location(사설 IP/메타데이터 엔드포인트 등)에 두 번째 요청을 보내지 않는다.
+    const transport = target.url.protocol === "https:" ? https : http;
+    const request = transport.request(target.url, options, response => {
+      response.resume();
+      resolve(response.statusCode || 0);
+    });
+    request.on("timeout", () => request.destroy(new Error("웹훅 연결 시간 초과")));
+    request.on("error", reject);
+    request.end(body);
+  });
+}
+const INTEGRATION_EVENT_LABELS = {
+  approval_request: "결재 요청 발생",
+  approval_complete: "결재 완료/반려",
+  leave_request: "휴가/근태 신청",
+  notice_post: "공지사항 등록",
+};
+app.post("/api/integrations/webhooks/dispatch", async (req, res) => {
+  if (!requireAuth(req, res)) return;
+  const eventId = String(req.body?.eventId || "");
+  if (!Object.prototype.hasOwnProperty.call(INTEGRATION_EVENT_LABELS, eventId))
+    return res.status(400).json({ ok: false, message: "알 수 없는 이벤트입니다." });
+  const text = String(req.body?.text || "").replace(/[\u0000-\u001f\u007f]/g, " ").trim().slice(0, 1000);
+  if (!text) return res.status(400).json({ ok: false, message: "전송할 내용이 없습니다." });
+  try {
+    const companyId = req.auth.companyId || null;
+    const data = await loadData(companyId);
+    const webhooks = Array.isArray(data?.integrationSettings?.webhooks) ? data.integrationSettings.webhooks : [];
+    const targets = webhooks.filter(w => w && w.active !== false && Array.isArray(w.events) && w.events.includes(eventId));
+    if (!targets.length) return res.json({ ok: true, dispatched: 0 });
+    const evLabel = INTEGRATION_EVENT_LABELS[eventId];
+    const now = new Date().toISOString();
+    const results = await Promise.allSettled(targets.map(async wh => {
+      const target = await _resolveSafeWebhookTarget(wh.url);
+      if (!target) {
+        return { webhookName: String(wh.name || "").slice(0, 100), status: "fail", message: "안전하지 않은 전송 대상(내부/루프백 주소)" };
+      }
+      try {
+        const statusCode = await _postWebhookPinned(target, text);
+        const ok = statusCode >= 200 && statusCode < 300;
+        return { webhookName: String(wh.name || "").slice(0, 100), status: ok ? "success" : "fail", message: ok ? "자동 발송" : `HTTP ${statusCode}` };
+      } catch (e) {
+        return { webhookName: String(wh.name || "").slice(0, 100), status: "fail", message: String(e?.message || e).slice(0, 200) };
+      }
+    }));
+    const logs = results.map(r => (r.status === "fulfilled" ? r.value : { webhookName: "-", status: "fail", message: "dispatch error" }));
+    // 로그 기록은 best-effort — 이미 발생한 외부 전송 결과는 이 기록이 실패해도 바뀌지
+    // 않으므로, 로그 저장 실패를 응답 실패로 취급하지 않는다. 합성 admin actor로
+    // persistData()를 호출(기존 부트스트랩 호출부와 동일한 관례)해 integrationLogs
+    // 하나만 병합·기록한다 — data에 다른 필드를 전혀 싣지 않으므로 다른 모든 컬렉션은
+    // mergeArrayById(undefined incoming)가 그대로 저장본을 반환해 손대지 않는다.
+    try {
+      const existingLogs = Array.isArray(data.integrationLogs) ? data.integrationLogs : [];
+      const newEntries = logs.map((l, i) => ({
+        id: `webhook-log-${Date.now()}-${i}-${Math.random().toString(36).slice(2, 8)}`,
+        ts: now, webhookName: l.webhookName, event: evLabel, status: l.status, message: l.message,
+      }));
+      const merged = [...newEntries, ...existingLogs].slice(0, 50);
+      await persistData({ integrationLogs: merged }, "system:webhook-dispatch", companyId, { role: "admin", empId: null });
+    } catch (e) { console.warn("[webhook-dispatch] 전송 이력 기록 실패:", e.message); }
+    res.json({ ok: true, dispatched: logs.filter(l => l.status === "success").length });
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
 // ── Annual snapshots ──────────────────────────────────────────────────────────
@@ -9169,10 +9749,13 @@ app.post("/api/erp/items", async (req, res) => {
     if (!requireAdmin(req, res)) return;
     if (!requirePage(req, res, "inv-items")) return;
     const companyId = req.auth.companyId || null;
-    const { id, code, name, productName, assetNo, unit, category, safetyStock = 0, unitCost = 0, active = true } = req.body || {};
+    const { id, code, name, productName, assetNo, unit, category, safetyStock = 0, unitCost = 0, leadTimeDays = 0, active = true } = req.body || {};
     if (!code || !name) return res.status(400).json({ ok: false, message: "품목코드, 품목명은 필수입니다." });
     const itemId = id || `item_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-    const item = { id: itemId, code, name, productName: productName || "", assetNo: assetNo || "", unit: unit || "EA", category: category || "", safetyStock: Number(safetyStock) || 0, unitCost: Number(unitCost) || 0, active };
+    // leadTimeDays: 발주~입고까지 걸리는 평균 일수(미설정/0 = 재주문점 계산에서 리드타임을
+    // 반영하지 않고 기존 단순 부족분(안전재고-현재재고) 방식으로 폴백) — 음수는 의미가
+    // 없으므로 0 이상으로 clamp.
+    const item = { id: itemId, code, name, productName: productName || "", assetNo: assetNo || "", unit: unit || "EA", category: category || "", safetyStock: Number(safetyStock) || 0, unitCost: Number(unitCost) || 0, leadTimeDays: Math.max(0, Number(leadTimeDays) || 0), active };
     if (USE_JSON_FILE) {
       const idx = _fileErp.items.findIndex(i => i.id === itemId);
       if (idx >= 0) _fileErp.items[idx] = item; else _fileErp.items.push(item);
@@ -10343,7 +10926,7 @@ app.post("/api/pms/projects", async (req, res) => {
     if (!requireRole(req, res, ["admin", "leader"])) return;
     if (!requirePage(req, res, "pms-projects")) return;
     const companyId = req.auth.companyId || null;
-    const { id, name, startDate, endDate, partnerId, pmId, memo, members } = req.body || {};
+    const { id, name, startDate, endDate, partnerId, pmId, memo, members, budgetPlanned } = req.body || {};
     if (!name) return res.status(400).json({ ok: false, message: "프로젝트명은 필수입니다." });
     // 생성 API를 upsert로 두면 id만 아는 사용자가 기존 프로젝트를 덮어쓸 수 있다.
     if (id) return res.status(400).json({ ok: false, message: "프로젝트 ID는 서버가 생성합니다." });
@@ -10353,11 +10936,12 @@ app.post("/api/pms/projects", async (req, res) => {
     const employeesById = await _pmsEmployeeMap(companyId);
     const creator = employeesById.get(createdById);
     const effectivePmId = String(pmId || createdById);
+    const safeBudgetPlanned = Number.isFinite(Number(budgetPlanned)) ? Number(budgetPlanned) : 0;
     if (USE_JSON_FILE) {
       const project = {
         id: projectId, name, startDate: startDate || "", endDate: endDate || "",
         partnerId: partnerId || null, pmId: effectivePmId,
-        status: "active", memo: memo || "",
+        status: "active", memo: memo || "", budgetPlanned: safeBudgetPlanned,
         members: _pmsNormalizeMembers(members, effectivePmId, createdById),
         createdById, createdByName: creator?.name || "unknown", createdBy: creator?.name || "unknown",
         createdAt: now, updatedAt: now,
@@ -10369,7 +10953,7 @@ app.post("/api/pms/projects", async (req, res) => {
     const project = {
       id: projectId, name, startDate: startDate || "", endDate: endDate || "",
       partnerId: partnerId || null, pmId: effectivePmId,
-      status: "active", memo: memo || "",
+      status: "active", memo: memo || "", budgetPlanned: safeBudgetPlanned,
       members: _pmsNormalizeMembers(members, effectivePmId, createdById),
       createdById, createdByName: creator?.name || "unknown", createdBy: creator?.name || "unknown",
       createdAt: now, updatedAt: now,
@@ -10388,7 +10972,7 @@ app.post("/api/pms/projects/:id", async (req, res) => {
     if (!requirePage(req, res, "pms-projects")) return;
     const id = req.params.id;
     const companyId = req.auth.companyId || null;
-    const { name, startDate, endDate, partnerId, pmId, status, memo, members, expectedUpdatedAt } = req.body || {};
+    const { name, startDate, endDate, partnerId, pmId, status, memo, members, budgetPlanned, expectedUpdatedAt } = req.body || {};
     if (USE_JSON_FILE) {
       const project = _filePms.projects.find(p => p.id === id);
       if (!project) return res.status(404).json({ ok: false, message: "프로젝트를 찾을 수 없습니다." });
@@ -10401,6 +10985,7 @@ app.post("/api/pms/projects/:id", async (req, res) => {
       if (pmId != null) project.pmId = String(pmId);
       if (status != null) project.status = status;
       if (memo != null) project.memo = memo;
+      if (budgetPlanned != null && Number.isFinite(Number(budgetPlanned))) project.budgetPlanned = Number(budgetPlanned);
       project.members = _pmsNormalizeMembers(Array.isArray(members) ? members : project.members, project.pmId, project.createdById);
       project.updatedAt = new Date().toISOString();
       _saveFilePms();
@@ -10418,6 +11003,7 @@ app.post("/api/pms/projects/:id", async (req, res) => {
     if (pmId != null) project.pmId = String(pmId);
     if (status != null) project.status = status;
     if (memo != null) project.memo = memo;
+    if (budgetPlanned != null && Number.isFinite(Number(budgetPlanned))) project.budgetPlanned = Number(budgetPlanned);
     project.members = _pmsNormalizeMembers(Array.isArray(members) ? members : project.members, project.pmId, project.createdById);
     project.updatedAt = new Date().toISOString();
     // id는 tenant마다 재사용될 수 있다(pms_projects PK = company_id + id). company_id 없이
@@ -10522,6 +11108,303 @@ async function _pmsProjectById(projectId, companyId) {
   );
   return rows[0] ? rows[0].data : null;
 }
+
+// ── PMS: 프로젝트 작업(Task)/마일스톤 ─────────────────────────────────────────
+// 조회는 _pmsCanViewProject(), 변경(생성/수정/삭제)은 _pmsCanManageProject() — 프로젝트
+// 자신의 CRUD와 동일한 권한 모델을 그대로 재사용한다(별도 세분 권한 설계 없음). id는
+// 항상 서버 생성(pms_worklogs와 동일한 단순 PK 패턴, schema.sql 참고).
+const PMS_TASK_STATUSES = ["todo", "in_progress", "done", "blocked"];
+const PMS_TASK_PRIORITIES = ["low", "normal", "high"];
+const PMS_MILESTONE_STATUSES = ["pending", "done"];
+
+app.get("/api/pms/projects/:id/tasks", async (req, res) => {
+  if (!requireAuth(req, res)) return;
+  try {
+    const companyId = req.auth.companyId || null;
+    const project = await _pmsProjectById(req.params.id, companyId);
+    if (!project) return res.status(404).json({ ok: false, message: "프로젝트를 찾을 수 없습니다." });
+    const employeesById = await _pmsEmployeeMap(companyId);
+    if (!_pmsCanViewProject(project, req.auth, employeesById)) return res.status(403).json({ ok: false, message: "이 프로젝트를 조회할 권한이 없습니다." });
+    let tasks;
+    if (USE_JSON_FILE) {
+      tasks = _filePms.tasks.filter(t => t.projectId === project.id);
+    } else {
+      const { rows } = await pool.query(
+        "SELECT data FROM pms_tasks WHERE project_id = $1 AND company_id = $2 AND is_deleted = FALSE ORDER BY created_at",
+        [project.id, companyId]
+      );
+      tasks = rows.map(r => r.data);
+    }
+    res.json({ ok: true, tasks });
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
+});
+
+app.post("/api/pms/projects/:id/tasks", async (req, res) => {
+  try {
+    if (!requirePage(req, res, "pms-projects")) return;
+    const companyId = req.auth.companyId || null;
+    const project = await _pmsProjectById(req.params.id, companyId);
+    if (!project) return res.status(404).json({ ok: false, message: "프로젝트를 찾을 수 없습니다." });
+    if (!_pmsCanManageProject(project, req.auth)) return res.status(403).json({ ok: false, message: "이 프로젝트의 작업을 추가할 권한이 없습니다." });
+    const { title, assigneeId, status, dueDate, priority } = req.body || {};
+    if (!title || !String(title).trim()) return res.status(400).json({ ok: false, message: "작업명은 필수입니다." });
+    const taskId = `task_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const now = new Date().toISOString();
+    const task = {
+      id: taskId, projectId: project.id, title: String(title).trim().slice(0, 200),
+      assigneeId: assigneeId != null && assigneeId !== "" ? String(assigneeId) : null,
+      status: PMS_TASK_STATUSES.includes(status) ? status : "todo",
+      dueDate: dueDate || "",
+      priority: PMS_TASK_PRIORITIES.includes(priority) ? priority : "normal",
+      createdById: String(req.auth.empId), createdAt: now, updatedAt: now,
+    };
+    if (USE_JSON_FILE) {
+      _filePms.tasks.push(task);
+      _saveFilePms();
+      return res.json({ ok: true, task });
+    }
+    await pool.query("INSERT INTO pms_tasks (id, project_id, company_id, data) VALUES ($1,$2,$3,$4)", [taskId, project.id, companyId, task]);
+    res.json({ ok: true, task });
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
+});
+
+function _pmsApplyTaskFields(task, body) {
+  const { title, assigneeId, status, dueDate, priority } = body || {};
+  if (title != null) task.title = String(title).trim().slice(0, 200);
+  if (assigneeId !== undefined) task.assigneeId = assigneeId != null && assigneeId !== "" ? String(assigneeId) : null;
+  if (status != null && PMS_TASK_STATUSES.includes(status)) task.status = status;
+  if (dueDate != null) task.dueDate = dueDate;
+  if (priority != null && PMS_TASK_PRIORITIES.includes(priority)) task.priority = priority;
+  task.updatedAt = new Date().toISOString();
+  return task;
+}
+
+app.post("/api/pms/projects/:id/tasks/:taskId", async (req, res) => {
+  try {
+    if (!requirePage(req, res, "pms-projects")) return;
+    const companyId = req.auth.companyId || null;
+    const project = await _pmsProjectById(req.params.id, companyId);
+    if (!project) return res.status(404).json({ ok: false, message: "프로젝트를 찾을 수 없습니다." });
+    if (!_pmsCanManageProject(project, req.auth)) return res.status(403).json({ ok: false, message: "이 프로젝트의 작업을 변경할 권한이 없습니다." });
+    const { expectedUpdatedAt } = req.body || {};
+    const taskId = req.params.taskId;
+    if (USE_JSON_FILE) {
+      const task = _filePms.tasks.find(t => t.id === taskId && t.projectId === project.id);
+      if (!task) return res.status(404).json({ ok: false, message: "작업을 찾을 수 없습니다." });
+      if (expectedUpdatedAt && task.updatedAt !== expectedUpdatedAt) {
+        return res.status(409).json({ ok: false, code: "PMS_TASK_CONFLICT", message: "다른 사용자가 먼저 수정했습니다. 최신 내용을 불러온 뒤 다시 시도하세요.", task });
+      }
+      _pmsApplyTaskFields(task, req.body);
+      _saveFilePms();
+      return res.json({ ok: true, task });
+    }
+    let task;
+    try {
+      task = await _pgLockedUpdate("pms_tasks", taskId, async (t) => {
+        if (t.projectId !== project.id) throw new _RecruitRouteError(404, "작업을 찾을 수 없습니다.");
+        if (expectedUpdatedAt && t.updatedAt !== expectedUpdatedAt) throw new _RecruitRouteError(409, "다른 사용자가 먼저 수정했습니다. 최신 내용을 불러온 뒤 다시 시도하세요.");
+        return _pmsApplyTaskFields({ ...t }, req.body);
+      }, companyId);
+    } catch (e) {
+      if (e instanceof _RecruitRouteError) return res.status(e.status).json({ ok: false, code: e.status === 409 ? "PMS_TASK_CONFLICT" : undefined, message: _safeErrMsg(e) });
+      throw e;
+    }
+    res.json({ ok: true, task });
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
+});
+
+app.post("/api/pms/projects/:id/tasks/:taskId/delete", async (req, res) => {
+  try {
+    if (!requirePage(req, res, "pms-projects")) return;
+    const companyId = req.auth.companyId || null;
+    const project = await _pmsProjectById(req.params.id, companyId);
+    if (!project) return res.status(404).json({ ok: false, message: "프로젝트를 찾을 수 없습니다." });
+    if (!_pmsCanManageProject(project, req.auth)) return res.status(403).json({ ok: false, message: "이 프로젝트의 작업을 삭제할 권한이 없습니다." });
+    const taskId = req.params.taskId;
+    if (USE_JSON_FILE) {
+      const idx = _filePms.tasks.findIndex(t => t.id === taskId && t.projectId === project.id);
+      if (idx < 0) return res.status(404).json({ ok: false, message: "작업을 찾을 수 없습니다." });
+      _filePms.tasks.splice(idx, 1);
+      _saveFilePms();
+      return res.json({ ok: true });
+    }
+    const result = await pool.query("UPDATE pms_tasks SET is_deleted = TRUE WHERE id = $1 AND project_id = $2 AND company_id = $3", [taskId, project.id, companyId]);
+    if (!result.rowCount) return res.status(404).json({ ok: false, message: "작업을 찾을 수 없습니다." });
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
+});
+
+app.get("/api/pms/projects/:id/milestones", async (req, res) => {
+  if (!requireAuth(req, res)) return;
+  try {
+    const companyId = req.auth.companyId || null;
+    const project = await _pmsProjectById(req.params.id, companyId);
+    if (!project) return res.status(404).json({ ok: false, message: "프로젝트를 찾을 수 없습니다." });
+    const employeesById = await _pmsEmployeeMap(companyId);
+    if (!_pmsCanViewProject(project, req.auth, employeesById)) return res.status(403).json({ ok: false, message: "이 프로젝트를 조회할 권한이 없습니다." });
+    let milestones;
+    if (USE_JSON_FILE) {
+      milestones = _filePms.milestones.filter(m => m.projectId === project.id);
+    } else {
+      const { rows } = await pool.query(
+        "SELECT data FROM pms_milestones WHERE project_id = $1 AND company_id = $2 AND is_deleted = FALSE ORDER BY created_at",
+        [project.id, companyId]
+      );
+      milestones = rows.map(r => r.data);
+    }
+    res.json({ ok: true, milestones });
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
+});
+
+app.post("/api/pms/projects/:id/milestones", async (req, res) => {
+  try {
+    if (!requirePage(req, res, "pms-projects")) return;
+    const companyId = req.auth.companyId || null;
+    const project = await _pmsProjectById(req.params.id, companyId);
+    if (!project) return res.status(404).json({ ok: false, message: "프로젝트를 찾을 수 없습니다." });
+    if (!_pmsCanManageProject(project, req.auth)) return res.status(403).json({ ok: false, message: "이 프로젝트의 마일스톤을 추가할 권한이 없습니다." });
+    const { title, dueDate, status, description } = req.body || {};
+    if (!title || !String(title).trim()) return res.status(400).json({ ok: false, message: "마일스톤명은 필수입니다." });
+    const msId = `ms_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const now = new Date().toISOString();
+    const milestone = {
+      id: msId, projectId: project.id, title: String(title).trim().slice(0, 200),
+      dueDate: dueDate || "", status: PMS_MILESTONE_STATUSES.includes(status) ? status : "pending",
+      description: (description || "").slice(0, 1000),
+      createdById: String(req.auth.empId), createdAt: now, updatedAt: now,
+    };
+    if (USE_JSON_FILE) {
+      _filePms.milestones.push(milestone);
+      _saveFilePms();
+      return res.json({ ok: true, milestone });
+    }
+    await pool.query("INSERT INTO pms_milestones (id, project_id, company_id, data) VALUES ($1,$2,$3,$4)", [msId, project.id, companyId, milestone]);
+    res.json({ ok: true, milestone });
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
+});
+
+function _pmsApplyMilestoneFields(milestone, body) {
+  const { title, dueDate, status, description } = body || {};
+  if (title != null) milestone.title = String(title).trim().slice(0, 200);
+  if (dueDate != null) milestone.dueDate = dueDate;
+  if (status != null && PMS_MILESTONE_STATUSES.includes(status)) milestone.status = status;
+  if (description != null) milestone.description = String(description).slice(0, 1000);
+  milestone.updatedAt = new Date().toISOString();
+  return milestone;
+}
+
+app.post("/api/pms/projects/:id/milestones/:msId", async (req, res) => {
+  try {
+    if (!requirePage(req, res, "pms-projects")) return;
+    const companyId = req.auth.companyId || null;
+    const project = await _pmsProjectById(req.params.id, companyId);
+    if (!project) return res.status(404).json({ ok: false, message: "프로젝트를 찾을 수 없습니다." });
+    if (!_pmsCanManageProject(project, req.auth)) return res.status(403).json({ ok: false, message: "이 프로젝트의 마일스톤을 변경할 권한이 없습니다." });
+    const { expectedUpdatedAt } = req.body || {};
+    const msId = req.params.msId;
+    if (USE_JSON_FILE) {
+      const milestone = _filePms.milestones.find(m => m.id === msId && m.projectId === project.id);
+      if (!milestone) return res.status(404).json({ ok: false, message: "마일스톤을 찾을 수 없습니다." });
+      if (expectedUpdatedAt && milestone.updatedAt !== expectedUpdatedAt) {
+        return res.status(409).json({ ok: false, code: "PMS_MILESTONE_CONFLICT", message: "다른 사용자가 먼저 수정했습니다. 최신 내용을 불러온 뒤 다시 시도하세요.", milestone });
+      }
+      _pmsApplyMilestoneFields(milestone, req.body);
+      _saveFilePms();
+      return res.json({ ok: true, milestone });
+    }
+    let milestone;
+    try {
+      milestone = await _pgLockedUpdate("pms_milestones", msId, async (m) => {
+        if (m.projectId !== project.id) throw new _RecruitRouteError(404, "마일스톤을 찾을 수 없습니다.");
+        if (expectedUpdatedAt && m.updatedAt !== expectedUpdatedAt) throw new _RecruitRouteError(409, "다른 사용자가 먼저 수정했습니다. 최신 내용을 불러온 뒤 다시 시도하세요.");
+        return _pmsApplyMilestoneFields({ ...m }, req.body);
+      }, companyId);
+    } catch (e) {
+      if (e instanceof _RecruitRouteError) return res.status(e.status).json({ ok: false, code: e.status === 409 ? "PMS_MILESTONE_CONFLICT" : undefined, message: _safeErrMsg(e) });
+      throw e;
+    }
+    res.json({ ok: true, milestone });
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
+});
+
+app.post("/api/pms/projects/:id/milestones/:msId/delete", async (req, res) => {
+  try {
+    if (!requirePage(req, res, "pms-projects")) return;
+    const companyId = req.auth.companyId || null;
+    const project = await _pmsProjectById(req.params.id, companyId);
+    if (!project) return res.status(404).json({ ok: false, message: "프로젝트를 찾을 수 없습니다." });
+    if (!_pmsCanManageProject(project, req.auth)) return res.status(403).json({ ok: false, message: "이 프로젝트의 마일스톤을 삭제할 권한이 없습니다." });
+    const msId = req.params.msId;
+    if (USE_JSON_FILE) {
+      const idx = _filePms.milestones.findIndex(m => m.id === msId && m.projectId === project.id);
+      if (idx < 0) return res.status(404).json({ ok: false, message: "마일스톤을 찾을 수 없습니다." });
+      _filePms.milestones.splice(idx, 1);
+      _saveFilePms();
+      return res.json({ ok: true });
+    }
+    const result = await pool.query("UPDATE pms_milestones SET is_deleted = TRUE WHERE id = $1 AND project_id = $2 AND company_id = $3", [msId, project.id, companyId]);
+    if (!result.rowCount) return res.status(404).json({ ok: false, message: "마일스톤을 찾을 수 없습니다." });
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
+});
+
+// 프로젝트 예산(참고용 자동산정) — 계획예산(project.budgetPlanned, 관리자 직접 입력)과 달리
+// 실적비용은 저장하지 않고 조회 시점에 즉석 계산한다(2026-10 사업계획 라운드에서 확립한
+// "항상 최신 계산식으로 재계산" 원칙과 동일 — 계산식이 바뀌어도 기존 데이터 재저장 없이
+// 소급 적용됨). 이 프로젝트의 전 직원 업무일지(blocks[].projectId 일치)를 모아 분을 합산,
+// 각 직원의 "월급÷표준근무시간" 추정 시급을 곱해 합산한다. 원본 업무일지 레코드는 응답에
+// 노출하지 않고 집계값만 반환(회계 리포트/원가명세서와 동일한 "서버가 계산한 결과만" 원칙).
+function _wlMinServer(t) {
+  const m = /^(\d{2}):(\d{2})$/.exec(String(t || ""));
+  if (!m) return NaN;
+  const hour = Number(m[1]), minute = Number(m[2]);
+  return hour >= 0 && hour <= 23 && minute >= 0 && minute <= 59 ? hour * 60 + minute : NaN;
+}
+app.get("/api/pms/projects/:id/budget", async (req, res) => {
+  if (!requireAuth(req, res)) return;
+  try {
+    const companyId = req.auth.companyId || null;
+    const project = await _pmsProjectById(req.params.id, companyId);
+    if (!project) return res.status(404).json({ ok: false, message: "프로젝트를 찾을 수 없습니다." });
+    const data = await loadData(companyId);
+    const employeesById = new Map((data.employees || []).map(e => [String(e.id), e]));
+    if (!_pmsCanViewProject(project, req.auth, employeesById)) return res.status(403).json({ ok: false, message: "이 프로젝트를 조회할 권한이 없습니다." });
+    let worklogs;
+    if (USE_JSON_FILE) {
+      worklogs = _filePms.worklogs;
+    } else {
+      const { rows } = await pool.query("SELECT data FROM pms_worklogs WHERE is_deleted = FALSE AND (company_id = $1 OR company_id IS NULL)", [companyId]);
+      worklogs = rows.map(r => r.data);
+    }
+    const standardMonthlyHours = Number(data.settings?.pmsStandardMonthlyHours) > 0 ? Number(data.settings.pmsStandardMonthlyHours) : 174;
+    let totalMinutes = 0;
+    const minutesByEmployee = {};
+    for (const w of worklogs) {
+      for (const b of (w.blocks || [])) {
+        if (String(b.projectId) !== String(project.id)) continue;
+        const s = _wlMinServer(b.startTime), e = _wlMinServer(b.endTime);
+        if (!Number.isFinite(s) || !Number.isFinite(e) || e <= s) continue;
+        const mins = e - s;
+        totalMinutes += mins;
+        minutesByEmployee[w.employeeId] = (minutesByEmployee[w.employeeId] || 0) + mins;
+      }
+    }
+    let actualCost = 0;
+    for (const [empId, mins] of Object.entries(minutesByEmployee)) {
+      const emp = employeesById.get(String(empId));
+      const monthlySalary = Math.round((Number(emp?.salary) || 0) / 12);
+      const hourlyRate = monthlySalary / standardMonthlyHours;
+      actualCost += (mins / 60) * hourlyRate;
+    }
+    res.json({
+      ok: true,
+      budgetPlanned: Number(project.budgetPlanned) || 0,
+      actualCost: Math.round(actualCost),
+      totalHours: Math.round((totalMinutes / 60) * 10) / 10,
+      standardMonthlyHours,
+    });
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
+});
 
 app.post("/api/pms/allocations", async (req, res) => {
   if (!requireAuth(req, res)) return;
@@ -11041,10 +11924,10 @@ app.get("/api/recruit/candidates/export", async (req, res) => {
       const safe = /^[=+\-@\t\r]/.test(s) ? "'" + s : s;
       return `"${safe.replace(/"/g, '""')}"`;
     };
-    const header = ["채용공고", "지원자명", "연락처", "이메일", "전형단계", "지원일", "최종학력", "경력사항", "마지막연봉", "희망연봉", "학력·경력 공백", "교육/대외활동", "이력서 요약", "메모"];
+    const header = ["채용공고", "지원자명", "연락처", "이메일", "지원 경로", "전형단계", "지원일", "최종학력", "경력사항", "마지막연봉", "희망연봉", "학력·경력 공백", "교육/대외활동", "이력서 요약", "메모"];
     const lines = [header.map(esc).join(",")];
     for (const c of list) {
-      lines.push([await jobTitleOf(c.jobId), c.name, c.phone || "", c.email || "", c.status, (c.appliedAt || "").slice(0, 10), c.finalEducation || "", c.careerHistory || "", c.lastSalary || "", c.desiredSalary || "", c.careerGaps || "", c.activities || "", c.resumeSummary || "", c.memo || ""].map(esc).join(","));
+      lines.push([await jobTitleOf(c.jobId), c.name, c.phone || "", c.email || "", c.source || "", c.status, (c.appliedAt || "").slice(0, 10), c.finalEducation || "", c.careerHistory || "", c.lastSalary || "", c.desiredSalary || "", c.careerGaps || "", c.activities || "", c.resumeSummary || "", c.memo || ""].map(esc).join(","));
     }
     res.json({ ok: true, csv: "﻿" + lines.join("\n") });
   } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
@@ -11112,6 +11995,11 @@ const legacyResumeExtractionLimiter = rateLimit({
 const AI_API_TIMEOUT_MS = Number(process.env.AI_API_TIMEOUT_MS) || 30000;
 const AI_API_MAX_CONCURRENT = Number(process.env.AI_API_MAX_CONCURRENT) || 4;
 const AI_API_MAX_INPUT_CHARS = Number(process.env.AI_API_MAX_INPUT_CHARS) || 12000;
+// 아래 6개 AI 보조기능(_groqParseResume/_groqSuggestCareerCompanies/_groqSummarizePeople/
+// _groqAnalyzeOrgData/_groqDraftKpiGoal/_groqDraftEvalComment)이 공유하는 Groq 호출
+// 주소 — HR_RESUME_GROQ_URL_OVERRIDE(별도 이력서 OCR 파서용)와 동일한 테스트용 override
+// 관례를 그대로 따른다. 운영에서는 항상 실제 Groq 주소로 폴백해 동작 변화가 없다.
+const GROQ_API_URL = process.env.GROQ_API_URL_OVERRIDE || "https://api.groq.com/openai/v1/chat/completions";
 let _aiApiInFlight = 0;
 const aiApiLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
@@ -11383,7 +12271,7 @@ const RESUME_FIELDS_SCHEMA_PROMPT = `너는 한국어 이력서 텍스트에서 
 async function _groqParseResume(text) {
   const apiKey = process.env.GROQ_API_KEY;
   if (!apiKey) return null;
-  const resp = await _groqFetch("https://api.groq.com/openai/v1/chat/completions", {
+  const resp = await _groqFetch(GROQ_API_URL, {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: "Bearer " + apiKey },
     body: JSON.stringify({
@@ -11414,7 +12302,7 @@ app.post("/api/recruit/parse-resume-llm", aiApiLimiter, async (req, res) => {
     try {
       fields = await _groqParseResume(text);
     } catch (e) {
-      return res.json({ ok: false, message: "AI 분석에 실패했습니다: " + e.message });
+      return res.json({ ok: false, message: _safeErrMsg(e, "AI 분석에 실패했습니다.") });
     }
     if (!fields) return res.json({ ok: false, message: "AI 분석 기능이 설정되지 않았습니다(GROQ_API_KEY 필요)." });
     res.json({ ok: true, fields });
@@ -11832,7 +12720,7 @@ company가 이미 채워진 항목은 정규식/OCR로 이미 확정된 정답�
 {"suggestions": [{"idx": 0, "company": "회사명 또는 빈 문자열"}]}
 idx는 반드시 targetIdx 목록에 있는 값이어야 하고, targetIdx 개수만큼 정확히 응답해라. company가 이미 채워진 항목의 idx로는 응답하지 마라.`;
   const userContent = JSON.stringify({ resumeText: text.slice(0, 12000), entries, targetIdx });
-  const resp = await _groqFetch("https://api.groq.com/openai/v1/chat/completions", {
+  const resp = await _groqFetch(GROQ_API_URL, {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: "Bearer " + apiKey },
     body: JSON.stringify({
@@ -11867,7 +12755,7 @@ app.post("/api/recruit/suggest-career-companies", aiApiLimiter, async (req, res)
     try {
       suggestions = await _groqSuggestCareerCompanies(text, entries);
     } catch (e) {
-      return res.json({ ok: false, message: "AI 분석에 실패했습니다: " + e.message });
+      return res.json({ ok: false, message: _safeErrMsg(e, "AI 분석에 실패했습니다.") });
     }
     if (suggestions === null) return res.json({ ok: false, message: "AI 분석 기능이 설정되지 않았습니다(GROQ_API_KEY 필요)." });
     res.json({ ok: true, suggestions });
@@ -11885,7 +12773,7 @@ async function _groqSummarizePeople(kind, people) {
     { "empId": "직원ID(입력값 그대로)", "name": "이름", "summary": "이 인원이 왜 이 명단에 해당하는지 평가 데이터 근거를 2~3문장으로 요약. 추측하지 말고 주어진 데이터만 근거로 작성" }
   ]
 }`;
-  const resp = await _groqFetch("https://api.groq.com/openai/v1/chat/completions", {
+  const resp = await _groqFetch(GROQ_API_URL, {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: "Bearer " + apiKey },
     body: JSON.stringify({
@@ -11914,7 +12802,7 @@ app.post("/api/hr/analyze-summary", aiApiLimiter, async (req, res) => {
     try {
       summaries = await _groqSummarizePeople(kind, people);
     } catch (e) {
-      return res.json({ ok: false, message: "AI 분석에 실패했습니다: " + e.message });
+      return res.json({ ok: false, message: _safeErrMsg(e, "AI 분석에 실패했습니다.") });
     }
     if (!summaries) return res.json({ ok: false, message: "AI 분석 기능이 설정되지 않았습니다(GROQ_API_KEY 필요)." });
     res.json({ ok: true, summaries });
@@ -11932,7 +12820,7 @@ async function _groqDraftKpiGoal(jobRole, itemName) {
   "evalCriteria": "평가 기준 (측정 방법/기준)"
 }`;
   const userMsg = `직무: ${jobRole}${itemName ? `\nKPI 항목명(참고): ${itemName}` : ""}`;
-  const resp = await _groqFetch("https://api.groq.com/openai/v1/chat/completions", {
+  const resp = await _groqFetch(GROQ_API_URL, {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: "Bearer " + apiKey },
     body: JSON.stringify({
@@ -11962,7 +12850,7 @@ async function _groqAnalyzeOrgData(kind, data) {
     { "title": "이슈 제목 (간결하게)", "detail": "이슈 내용과 근거 데이터 (2~3문장)", "action": "대응 방안 초안 (2~3문장, 구체적 실행 방안)", "severity": "high|medium|low" }
   ]
 }`;
-  const resp = await _groqFetch("https://api.groq.com/openai/v1/chat/completions", {
+  const resp = await _groqFetch(GROQ_API_URL, {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: "Bearer " + apiKey },
     body: JSON.stringify({
@@ -11992,7 +12880,7 @@ app.post("/api/hr/analyze-org", aiApiLimiter, async (req, res) => {
     try {
       analysis = await _groqAnalyzeOrgData(kind, data);
     } catch (e) {
-      return res.json({ ok: false, message: "AI 분석에 실패했습니다: " + e.message });
+      return res.json({ ok: false, message: _safeErrMsg(e, "AI 분석에 실패했습니다.") });
     }
     if (!analysis) return res.json({ ok: false, message: "AI 분석 기능이 설정되지 않았습니다(GROQ_API_KEY 필요)." });
     res.json({ ok: true, ...analysis });
@@ -12009,7 +12897,7 @@ app.post("/api/hr/draft-kpi-goal", aiApiLimiter, async (req, res) => {
     try {
       draft = await _groqDraftKpiGoal(_boundedAiText(jobRole, 500), _boundedAiText(itemName, 500));
     } catch (e) {
-      return res.json({ ok: false, message: "AI 초안 생성에 실패했습니다: " + e.message });
+      return res.json({ ok: false, message: _safeErrMsg(e, "AI 초안 생성에 실패했습니다.") });
     }
     if (!draft) return res.json({ ok: false, message: "AI 초안 생성 기능이 설정되지 않았습니다(GROQ_API_KEY 필요)." });
     res.json({ ok: true, draft });
@@ -12025,7 +12913,7 @@ async function _groqDraftEvalComment(stage, memberName, kpis) {
   "comment": "종합 평가 의견 (4~6문장, 성과/역량/발전가능성/개선점을 포함)"
 }`;
   const userMsg = `직원: ${memberName}\nKPI 데이터: ${JSON.stringify(kpis).slice(0, 8000)}`;
-  const resp = await _groqFetch("https://api.groq.com/openai/v1/chat/completions", {
+  const resp = await _groqFetch(GROQ_API_URL, {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: "Bearer " + apiKey },
     body: JSON.stringify({
@@ -12055,7 +12943,7 @@ app.post("/api/hr/draft-eval-comment", aiApiLimiter, async (req, res) => {
     try {
       comment = await _groqDraftEvalComment(stage, _boundedAiText(memberName, 200), kpis.slice(0, 100));
     } catch (e) {
-      return res.json({ ok: false, message: "AI 초안 생성에 실패했습니다: " + e.message });
+      return res.json({ ok: false, message: _safeErrMsg(e, "AI 초안 생성에 실패했습니다.") });
     }
     if (!comment) return res.json({ ok: false, message: "AI 초안 생성 기능이 설정되지 않았습니다(GROQ_API_KEY 필요)." });
     res.json({ ok: true, comment });
@@ -12118,7 +13006,7 @@ app.post("/api/recruit/candidates", async (req, res) => {
     if (!requireRole(req, res, ["admin", "leader", "director"])) return;
     if (!requirePage(req, res, "recruit-candidates")) return;
     const companyId = req.auth.companyId || null;
-    const { jobId, name, email, phone, resume, memo, resumeSummary, strengths, weaknesses, finalEducation, careerHistory, lastSalary, desiredSalary, activities, careerGaps, user: createdBy } = req.body || {};
+    const { jobId, name, email, phone, resume, memo, resumeSummary, strengths, weaknesses, finalEducation, careerHistory, lastSalary, desiredSalary, activities, careerGaps, source, user: createdBy } = req.body || {};
     if (!jobId || !name) return res.status(400).json({ ok: false, message: "채용공고, 지원자명은 필수입니다." });
     const job = await _recruitJobById(jobId, companyId);
     if (!job) return res.status(404).json({ ok: false, message: "채용공고를 찾을 수 없습니다." });
@@ -12130,10 +13018,13 @@ app.post("/api/recruit/candidates", async (req, res) => {
     const now = new Date().toISOString();
     const candidate = {
       id: candidateId, jobId, name, email: email || "", phone: phone || "",
-      status: job.stages[0], memo: memo || "",
+      status: job.stages[0], memo: memo || "", source: String(source || "").slice(0, 50),
       resumeSummary: resumeSummary || "", strengths: strengths || "", weaknesses: weaknesses || "",
       finalEducation: finalEducation || "", careerHistory: careerHistory || "", lastSalary: lastSalary || "", desiredSalary: desiredSalary || "", activities: activities || "", careerGaps: careerGaps || "",
       resume: resume && resume.fileName ? { fileName: resume.fileName, type: resume.type || "", data: resume.data || "" } : null,
+      // employeeId: "최종합격" 지원자를 직원으로 전환하면(candidates/:id/convert) 채워진다 —
+      // 중복 전환 방지(이미 전환된 지원자는 버튼이 비활성화됨)와 추적용 역참조.
+      employeeId: null,
       evaluations: [], appliedAt: now, createdBy: createdBy || "unknown",
       createdAt: now, updatedAt: now,
     };
@@ -12157,13 +13048,14 @@ app.post("/api/recruit/candidates/:id", async (req, res) => {
     const id = req.params.id;
     const { role, empId: userId } = req.auth;
     const companyId = req.auth.companyId || null;
-    const { name, email, phone, memo, resumeSummary, strengths, weaknesses, finalEducation, careerHistory, lastSalary, desiredSalary, activities, careerGaps, resume, expectedUpdatedAt } = req.body || {};
+    const { name, email, phone, memo, resumeSummary, strengths, weaknesses, finalEducation, careerHistory, lastSalary, desiredSalary, activities, careerGaps, resume, source, expectedUpdatedAt } = req.body || {};
     const applyEdits = (candidate) => {
       _recruitAssertFresh(candidate, expectedUpdatedAt);
       if (name != null) candidate.name = name;
       if (email != null) candidate.email = email;
       if (phone != null) candidate.phone = phone;
       if (memo != null) candidate.memo = memo;
+      if (source != null) candidate.source = String(source).slice(0, 50);
       if (resumeSummary != null) candidate.resumeSummary = resumeSummary;
       if (strengths != null) candidate.strengths = strengths;
       if (weaknesses != null) candidate.weaknesses = weaknesses;
@@ -12280,6 +13172,63 @@ app.post("/api/recruit/candidates/:id/status", async (req, res) => {
       throw e;
     }
     res.json({ ok: true, candidate });
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
+});
+
+// 지원자→직원 전환(반자동) — admin이 기존 "신규 직원 등록" 폼(renderHRRegister/
+// submitHRForm)을 지원자 데이터로 미리 채워 열고 검토 후 직접 제출하는 흐름의
+// 마지막 단계. 직원 레코드 자체는 employees 전체상태 블롭(/save)에 이미 저장된
+// 뒤 그 결과 id만 이 라우트로 넘어온다 — recruit_candidates는 전용 REST 테이블이라
+// employees(블롭 동기화)와 저장 아키텍처가 완전히 달라, 두 쓰기를 한 트랜잭션으로
+// 묶을 수 없다(두 번째 쓰기인 이 호출이 실패해도 이미 만들어진 직원 레코드를
+// 되돌리지 않음 — 클라이언트가 "직원은 등록됐지만 지원자 상태 반영에 실패했다"는
+// 것을 사번과 함께 안내해 관리자가 수동으로 확인할 수 있게 한다).
+app.post("/api/recruit/candidates/:id/convert", async (req, res) => {
+  try {
+    if (!requireRole(req, res, ["admin"])) return;
+    if (!requirePage(req, res, "recruit-candidates")) return;
+    const id = req.params.id;
+    const { role, empId: userId } = req.auth;
+    const companyId = req.auth.companyId || null;
+    const { employeeId } = req.body || {};
+    if (!employeeId) return res.status(400).json({ ok: false, message: "employeeId는 필수입니다." });
+    const emp = await _recruitEmpById(employeeId, companyId);
+    if (!emp) return res.status(404).json({ ok: false, message: "해당 직원 레코드를 찾을 수 없습니다." });
+    const applyConvert = (candidate) => {
+      // employeeId 존재 여부를 먼저 확인한다 — 전환이 성공하면 status가 "최종합격"에서
+      // "입사"로 바뀌므로, 순서를 바꾸면 재전환 시도가 이미 전환됐다는 구체적 안내 대신
+      // "최종합격 상태만" 이라는 혼란스러운 메시지로 되돌아간다.
+      if (candidate.employeeId) throw new _RecruitRouteError(409, "이미 직원으로 등록된 지원자입니다.");
+      if (candidate.status !== "최종합격") throw new _RecruitRouteError(409, "최종합격 상태인 지원자만 직원으로 전환할 수 있습니다.");
+      candidate.status = "입사";
+      candidate.employeeId = String(employeeId);
+      candidate.convertedAt = new Date().toISOString();
+      candidate.updatedAt = new Date().toISOString();
+      return candidate;
+    };
+    if (USE_JSON_FILE) {
+      const candidate = _fileRecruit.candidates.find(c => c.id === id);
+      if (!candidate) return res.status(404).json({ ok: false, message: "지원자를 찾을 수 없습니다." });
+      if (!(await _recruitCanViewCandidate(candidate, userId, role, companyId))) return res.status(403).json({ ok: false, message: "권한이 없습니다." });
+      try { applyConvert(candidate); }
+      catch (e) { if (e instanceof _RecruitRouteError) return res.status(e.status).json({ ok: false, message: _safeErrMsg(e) }); throw e; }
+      _saveFileRecruit();
+      return res.json({ ok: true, candidate: _recruitStripResume(candidate) });
+    }
+    let candidate;
+    try {
+      // 락 진입 전에 권한 판정에 필요한 조회를 전부 끝낸다(_recruitBuildCache 주석 참고
+      // — 락 안에서 추가 커넥션이 필요한 조회를 하면 부하 상황에서 자기교착 위험).
+      const rc = await _recruitBuildCache(companyId, { employees: true, jobs: true, interviews: true });
+      candidate = await _pgLockedUpdate("recruit_candidates", id, async (c) => {
+        if (!(await _recruitCanViewCandidate(c, userId, role, companyId, rc))) throw new _RecruitRouteError(403, "권한이 없습니다.");
+        return applyConvert(c);
+      }, companyId);
+    } catch (e) {
+      if (e instanceof _RecruitRouteError) return res.status(e.status).json({ ok: false, message: _safeErrMsg(e) });
+      throw e;
+    }
+    res.json({ ok: true, candidate: _recruitStripResume(candidate) });
   } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
@@ -12708,7 +13657,17 @@ app.get("/api/recruit/dashboard", async (req, res) => {
       });
       return { jobId: job.id, title: job.title, status: job.status, totalCandidates: jobCandidates.length, stages: stageStats };
     });
-    res.json({ ok: true, stats });
+    // 소스추적(지원 경로)별 집계 — 위에서 이미 부서 스코프로 걸러진 jobs에 속한
+    // 지원자만 대상으로 한다(회사 전체가 아니라, 위 스코프 필터와 동일한 경계 유지).
+    const visibleJobIds = new Set(jobs.map(j => String(j.id)));
+    const visibleCandidates = candidates.filter(c => visibleJobIds.has(String(c.jobId)));
+    const sourceCounts = {};
+    for (const c of visibleCandidates) {
+      const src = c.source || "미입력";
+      sourceCounts[src] = (sourceCounts[src] || 0) + 1;
+    }
+    const bySource = Object.entries(sourceCounts).map(([source, count]) => ({ source, count })).sort((a, b) => b.count - a.count);
+    res.json({ ok: true, stats, bySource });
   } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 

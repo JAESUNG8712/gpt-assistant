@@ -906,6 +906,20 @@ class _BudgetRouteError extends Error {
   }
 }
 
+// 라우트 안에서 예기치 못한 예외(DB 드라이버·파일시스템 등)를 받았을 때 쓰는 공용
+// 응답 헬퍼 — 일부 라우트(사업계획 승인 워크플로우)는 이미 `console.error` 로깅 +
+// 일반 문구 응답으로 통일돼 있었는데, 그 외 26개 라우트는 `res.status(500).json({
+// error: e.message })`로 원문 예외 메시지(DB 연결문자열 일부·파일 경로 등 운영 세부정보가
+// 섞여 나올 수 있음)를 그대로 클라이언트에 노출하고 있었다(server.js는 이미 2026-08-21에
+// 143개 catch 전부를 _safeErrMsg()로 통일했는데 이 파일만 비껴갔던 것). 서버 로그에는
+// 항상 전체 예외를 남겨 운영 진단은 그대로 가능하게 하면서, 응답은 환경과 무관하게 항상
+// 일반 문구로 고정한다(server.js의 NODE_ENV=production 조건부 방식보다 한 단계 더
+// 보수적 — 이미 이 파일의 _BudgetRouteError 인지 catch들이 쓰던 방식과 동일하게 통일).
+function _budgetServerError(res, e) {
+  console.error('[budget] 예기치 못한 오류:', e);
+  res.status(500).json({ error: '처리 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.' });
+}
+
 // ── 사업계획 변경 이력(감사 추적) ─────────────────────────────────────────────
 // 지금까지 사업계획은 승인/최종확정/수정요청 각각의 필드(divisionApproval/finalApproval/
 // editRequest)에 "가장 최근" 처리자·시각만 남고, 그 이전에 누가 무엇을 바꿨는지는 매
@@ -992,7 +1006,7 @@ router.post('/upload/headcount', upload.single('file'), async (req, res) => {
     });
     res.json({ message: '인원 현황이 반영되었습니다.', upserted, depts: [...new Set(rows.map(r => r['구분']).filter(Boolean))] });
 
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { _budgetServerError(res, e); }
 });
 
 // 사업부/팀별 예산 상세(판관/용역/경상) 업로드 (두번째 파일)
@@ -1057,7 +1071,7 @@ router.post('/upload/detail', upload.single('file'), async (req, res) => {
     });
     res.json({ message: '예산 상세(판관/용역/경상) 내역이 반영되었습니다.', upserted, depts: [...new Set(rows.map(r => r['부문']).filter(Boolean))] });
 
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { _budgetServerError(res, e); }
 });
 
 // 원본 데이터 조회
@@ -1066,7 +1080,7 @@ router.get('/data', async (req, res) => {
     if (!requireAdmin(req, res)) return;
     res.json(await readBudget(req.auth.companyId || null));
 
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { _budgetServerError(res, e); }
 });
 
 // 업로드 이력
@@ -1076,7 +1090,7 @@ router.get('/uploads', async (req, res) => {
     const data = await readBudget(req.auth.companyId || null);
     res.json({ uploads: data.uploads });
 
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { _budgetServerError(res, e); }
 });
 
 // 사업부별/월별 통합 요약 (인원 + 판관/용역/경상 합산, 중복 제외)
@@ -1124,7 +1138,7 @@ router.get('/summary', async (req, res) => {
 
     res.json({ summary, groupBy });
 
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { _budgetServerError(res, e); }
 });
 
 // 데이터 초기화 (본인 회사 데이터만 — 다른 회사 데이터는 건드리지 않음)
@@ -1155,7 +1169,7 @@ router.delete('/data', async (req, res) => {
     });
     res.json({ message: '예산 데이터가 초기화되었습니다.' });
 
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { _budgetServerError(res, e); }
 });
 
 // ── 개인별 급여 상세(계획용, 3단계 자료 연계의 1단계) ──────────────────────────
@@ -1170,7 +1184,7 @@ router.get('/emp-pay-plan', async (req, res) => {
     const plans = year ? data.empPayPlans.filter(p => p.year === year) : data.empPayPlans;
     res.json({ ok: true, plans });
 
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { _budgetServerError(res, e); }
 });
 
 router.post('/emp-pay-plan', async (req, res) => {
@@ -1235,7 +1249,7 @@ router.post('/emp-pay-plan', async (req, res) => {
     });
     res.json({ ok: true, plans: resultPlans });
 
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { _budgetServerError(res, e); }
 });
 
 // 개인별 급여 상세 자동계산(퇴직급여 증가분, 4대보험+주민세)에 쓰이는 요율 설정 —
@@ -1247,7 +1261,7 @@ router.get('/emp-pay-plan/settings', async (req, res) => {
     const data = await readBudget(req.auth.companyId || null);
     res.json({ ok: true, settings: data.empPayPlanSettings });
 
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { _budgetServerError(res, e); }
 });
 router.post('/emp-pay-plan/settings', async (req, res) => {
   try {
@@ -1276,7 +1290,7 @@ router.post('/emp-pay-plan/settings', async (req, res) => {
     });
     res.json({ ok: true, settings: resultSettings });
 
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { _budgetServerError(res, e); }
 });
 
 router.delete('/emp-pay-plan/:id', async (req, res) => {
@@ -1293,7 +1307,7 @@ router.delete('/emp-pay-plan/:id', async (req, res) => {
     if (!found) return res.status(404).json({ error: '데이터를 찾을 수 없습니다.' });
     res.json({ ok: true });
 
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { _budgetServerError(res, e); }
 });
 
 module.exports = function budgetRouterFactory(deps) {
@@ -1351,7 +1365,7 @@ module.exports = function budgetRouterFactory(deps) {
       const plans = data.empPayPlans.filter(p => p.year === year && ids.includes(String(p.empId)));
       res.json({ ok: true, plans });
   
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { _budgetServerError(res, e); }
 });
 
   // ── 사업계획 워크플로우 설정(예산담당자/기획팀장 지정, 입력기간 on/off) ──────────
@@ -1365,7 +1379,7 @@ module.exports = function budgetRouterFactory(deps) {
       const data = await readBudget(req.auth.companyId || null);
       res.json({ ok: true, settings: data.budgetPlanSettings });
   
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { _budgetServerError(res, e); }
 });
 
   // 예산담당자/기획팀장 지정 자체는 관리자만(민감한 권한 부여이므로 다른 지정 패턴
@@ -1389,7 +1403,7 @@ module.exports = function budgetRouterFactory(deps) {
       });
       res.json({ ok: true, settings: resultSettings });
   
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { _budgetServerError(res, e); }
 });
 
   // 입력기간 on/off: 예산담당자·기획팀장·관리자만(사용자 요청 그대로).
@@ -1412,7 +1426,7 @@ module.exports = function budgetRouterFactory(deps) {
       if (forbidden) return res.status(403).json({ error: '예산담당자, 기획팀장, 관리자만 입력기간을 설정할 수 있습니다.' });
       res.json({ ok: true, settings: resultSettings });
   
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { _budgetServerError(res, e); }
 });
 
   // ── 사업계획(팀별 작성 → 사업부장 승인 → 예산담당자+기획팀장 최종확정) ──────────
@@ -1428,7 +1442,7 @@ module.exports = function budgetRouterFactory(deps) {
       const profile = await getEmployeeProfile(companyId, req.auth.empId);
       res.json({ ok: true, profile });
   
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { _budgetServerError(res, e); }
 });
 
   // 목록 조회: 관리자/예산담당자/기획팀장은 전체, 사업부장은 자기 dept, 팀원/팀장은
@@ -1446,7 +1460,7 @@ module.exports = function budgetRouterFactory(deps) {
       const plans = visible.map(p => ({ ...p, ..._freshPlanCalc(p), budgetComparison: computeBudgetComparison(data, p) }));
       res.json({ ok: true, plans });
   
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { _budgetServerError(res, e); }
 });
 
   // 회사/사업부 롤업: 팀별 계획(dept가 있는 것만, 레거시 스크래치 계획은 제외)을 연도(절대
@@ -1541,7 +1555,7 @@ module.exports = function budgetRouterFactory(deps) {
 
       res.json({ ok: true, includeDraft, sgaYear, byDept, company: { planCount: scoped.length, projection: _rollup(scoped) }, sgaByCostDept, sgaByCategory, sgaByAccountType, sgaByExpenseAccount, revenueRollup });
   
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { _budgetServerError(res, e); }
 });
 
   // 항목별 실적 참고(신규 자동화, 작성 단계 실시간 안내): 사업계획 작성/수정 폼에서 판관비
@@ -1583,7 +1597,7 @@ module.exports = function budgetRouterFactory(deps) {
       if (!allowed) return res.status(403).json({ error: '조회 권한이 없습니다.' });
       res.json({ ok: true, items: _actualsByItemForDeptTeam(data, dept, team) });
   
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { _budgetServerError(res, e); }
 });
 
   // 예산(비인건비 판관/용역/경상) 엑셀 일괄 업로드 — 관리자 전용. 열 구성: "팀명"(필수,
@@ -2099,7 +2113,7 @@ module.exports = function budgetRouterFactory(deps) {
       });
       res.json({ ok: true, teams, sheetName: rows._sheetName, dropped, droppedCount: dropped.length });
   
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { _budgetServerError(res, e); }
 });
 
   // 미리보기에서 사람이 조정한 팀별 항목을 실제로 저장(생성 또는 upsert). 파일이 아니라
@@ -2215,7 +2229,7 @@ module.exports = function budgetRouterFactory(deps) {
       });
       res.json({ ok: true, upserted, overwritten });
   
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { _budgetServerError(res, e); }
 });
 
   // 월별 인원 계획 조회 — 롤업과 동일한 접근범위(관리자/예산담당자/기획팀장은 전체,
@@ -2239,7 +2253,7 @@ module.exports = function budgetRouterFactory(deps) {
       if (!isFullAccess) plans = plans.filter(h => h.dept === profile.dept);
       res.json({ ok: true, plans });
   
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { _budgetServerError(res, e); }
 });
 
   // 신규 생성: 관리자가 아니면 dept/team은 항상 작성자 본인 소속으로 강제(다른 팀
@@ -2339,7 +2353,7 @@ module.exports = function budgetRouterFactory(deps) {
       }
       res.json({ ok: true, plan: { ...plan, ..._freshPlanCalc(plan), budgetComparison: computeBudgetComparison(data, plan) } });
   
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { _budgetServerError(res, e); }
 });
 
   // 진단 도구(읽기전용, 관리자 전용) — 사업계획 매칭 키 이력 변화(name → +detail →
@@ -2357,7 +2371,7 @@ module.exports = function budgetRouterFactory(deps) {
       if (!plan) return res.status(404).json({ error: '사업계획을 찾을 수 없습니다.' });
       res.json({ ok: true, planId: plan.id, planName: plan.name, team: plan.team, dept: plan.dept, baseYear: plan.baseYear, diagnosis: _diagnosePlanDuplicates(plan) });
   
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { _budgetServerError(res, e); }
 });
 
   // 위 단건 진단을 전체 사업계획에 대해 한 번에 돌려주는 요약 버전 — 회사 전체를 팀별로
@@ -2383,7 +2397,7 @@ module.exports = function budgetRouterFactory(deps) {
         results,
       });
   
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { _budgetServerError(res, e); }
 });
 
   // 가정 갱신 + 재계산 — status가 'draft'일 때만(그리고 팀 소속 또는 관리자만) 가능.
@@ -2553,7 +2567,7 @@ module.exports = function budgetRouterFactory(deps) {
       }), { plan: 0, actual: 0, gap: 0 });
       res.json({ ok: true, planId: plan.id, planName: plan.name, dept: plan.dept, team: plan.team, monthLimit, items, totals });
   
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { _budgetServerError(res, e); }
 });
 
   // 사업부장 승인 → 잠금(divisionApproved)
