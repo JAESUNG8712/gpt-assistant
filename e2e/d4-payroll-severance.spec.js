@@ -111,6 +111,101 @@ test.describe("D4 — 호봉제(급여 지급 기준)", () => {
 
     expect(pageErrors).toEqual([]);
   });
+
+  // 아래 3개 테스트는 작업6(종합 재점검)이 payBasisMode/호봉제의 서버측 테스트 커버리지
+  // 공백을 지목한 뒤, e2e 레벨에서도 아직 커버되지 않았던 계산 정확성 세부 케이스를
+  // 메운다(UI 흐름 자체는 위 두 테스트가 이미 검증했으므로, 여기서는 직접 settings/
+  // employees를 설정해 계산 함수만 집중적으로 검증한다). 전부 이 스펙 전용 고유
+  // 직급명·id를 써서 공유 DATA_FILE/하드코딩 데모 상태와 무관하게 결정적이다.
+
+  test("호봉이 표 길이를 넘으면 마지막 호봉 금액이 그대로 적용된다(clamp)", async ({ page }) => {
+    const pageErrors = [];
+    page.on("pageerror", (e) => pageErrors.push(e.message));
+    await loginAsAdmin(page);
+
+    const monthly = await page.evaluate(() => {
+      settings.payBasisMode = "step";
+      settings.salaryStepTable = { "호봉클램프직급": [3000000, 3100000] }; // 2개 호봉만 존재
+      employees.push({
+        id: 98406, empNo: "E98406", name: "호봉클램프테스트", dept: "경영지원본부", team: "인사팀",
+        rank: "호봉클램프직급", rankYear: 5, position: "", active: true, hire: "2022-01-01", // 표 길이(2)를 넘는 5호봉
+        salary: 42000000, hrHistory: [], role: "member",
+      });
+      return calcStandardPayslip(getEmp(98406), 2026, 6).monthly;
+    });
+    // 마지막(2호봉=3,100,000) 금액이 적용돼야 한다 — researchAllow(0, 비R&BD) + transportIncluded(100000).
+    expect(monthly).toBe(3100000 + 100000);
+
+    expect(pageErrors).toEqual([]);
+  });
+
+  test("호봉제인데 해당 직급이 호봉표에 없으면 연봉제(연봉÷12)로 안전하게 폴백된다", async ({ page }) => {
+    const pageErrors = [];
+    page.on("pageerror", (e) => pageErrors.push(e.message));
+    await loginAsAdmin(page);
+
+    const monthly = await page.evaluate(() => {
+      settings.payBasisMode = "step";
+      settings.salaryStepTable = { "다른직급": [5000000] }; // 아래 직급과 다른 이름 — 테스트 직급은 표에 없음
+      employees.push({
+        id: 98407, empNo: "E98407", name: "호봉표없음테스트", dept: "경영지원본부", team: "인사팀",
+        rank: "호봉표없는직급", rankYear: 3, position: "", active: true, hire: "2022-01-01",
+        salary: 36000000, hrHistory: [], role: "member",
+      });
+      return calcStandardPayslip(getEmp(98407), 2026, 6).monthly;
+    });
+    // 표에 해당 직급 행이 없으면 호봉제여도 기존 연봉제 산식(연봉÷12)으로 폴백해야 한다
+    // (설정 미비로 급여가 0원이 되는 사고 방지 — _stepMonthlyBase()의 기존 주석대로).
+    expect(monthly).toBe(Math.round(36000000 / 12) + 100000); // researchAllow(0) + transportIncluded(100000)
+
+    expect(pageErrors).toEqual([]);
+  });
+
+  test("호봉제 월 기본급이 실제 gross/net 최종 계산까지 정확히 흘러간다(손계산 대조)", async ({ page }) => {
+    const pageErrors = [];
+    page.on("pageerror", (e) => pageErrors.push(e.message));
+    await loginAsAdmin(page);
+
+    const slip = await page.evaluate(() => {
+      settings.payBasisMode = "step";
+      // rankYear=3 → idx=min(max(1,3),3)-1=2 → 3호봉(3,000,000원)이 적용된다.
+      settings.salaryStepTable = { "호봉손계산직급": [2800000, 2900000, 3000000] };
+      employees.push({
+        id: 98408, empNo: "E98408", name: "호봉손계산테스트", dept: "경영지원본부", team: "인사팀",
+        rank: "호봉손계산직급", rankYear: 3, position: "", active: true, hire: "2022-01-01", // 비R&BD·직책없음 → researchAllow/posAllow 둘 다 0
+        salary: 0, hrHistory: [], role: "member", // 호봉제이므로 salary는 계산에 전혀 쓰이지 않는다(미설정이어도 무방)
+      });
+      return calcStandardPayslip(getEmp(98408), 2026, 6);
+    });
+
+    // monthly = 3호봉(3,000,000) - researchAllow(0) + transportIncluded(100,000) = 3,100,000.
+    // taxableIncome = monthly(과세, 100%)뿐(식대는 비과세, 그 외 수당·조정 없음) = 3,100,000.
+    // 각 비율은 전부 정확히 나뉘는(나머지 0) 값으로 골라 반올림 모호성을 없앴다.
+    const taxableIncome = 3100000;
+    const pension = Math.round(taxableIncome * 0.045);     // 139,500
+    const health = Math.round(taxableIncome * 0.03545);    // 109,895
+    const care = Math.round(taxableIncome * 0.00453);      // 14,043
+    const employ = Math.round(taxableIncome * 0.009);      // 27,900
+    const tax = Math.round(taxableIncome * 0.06);          // 186,000 (3,000,000~5,000,000 구간 6%)
+    const localTax = Math.round(tax * 0.1);                // 18,600
+    const expectedGross = 3000000 + 100000 + 200000;        // 기본급(연구수당·직책수당 0) + 식대
+    const expectedTotalDeduct = pension + health + care + employ + tax + localTax; // 공제항목(압류/커스텀/조정 없음)
+    const expectedNetPay = expectedGross - expectedTotalDeduct;
+
+    expect(slip.monthly).toBe(3100000);
+    expect(slip.taxableIncome).toBe(taxableIncome);
+    expect(slip.pension).toBe(pension);
+    expect(slip.health).toBe(health);
+    expect(slip.care).toBe(care);
+    expect(slip.employ).toBe(employ);
+    expect(slip.tax).toBe(tax);
+    expect(slip.localTax).toBe(localTax);
+    expect(slip.gross).toBe(expectedGross);
+    expect(slip.totalDeduct).toBe(expectedTotalDeduct);
+    expect(slip.netPay).toBe(expectedNetPay);
+
+    expect(pageErrors).toEqual([]);
+  });
 });
 
 test.describe("D4 — 급여 압류 등록", () => {
