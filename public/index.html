@@ -4302,9 +4302,9 @@ async function approveOkr(id){
   autoSaveToServerIfEnabled();showToast("OKR이 승인되었습니다.","success");renderOkrPage();
 }
 async function rejectOkr(id){
-  const reason=window.prompt("반려 사유를 입력하세요.");
+  const goal=okrObjectives.find(o=>o.id===id);if(!goal)return;
+  const reason=await askInputModal({title:"OKR 반려",label:"반려 사유",message:`${goal.title||"선택한 목표"}를 반려합니다. 소유자가 사유를 확인할 수 있습니다.`,placeholder:"예: 핵심지표의 측정 기준을 구체화해 주세요",maxLength:500,confirmText:"반려",confirmClass:"btn-danger"});
   if(reason==null)return;
-  if(!reason.trim()){showToast("반려 사유를 입력해야 합니다.","error");return;}
   okrObjectives=okrObjectives.map(o=>o.id!==id?o:{...o,status:"rejected",approvedBy:currentUser.id,approvedByName:currentUser.name,approvedAt:new Date().toISOString(),rejectReason:reason.trim(),updatedAt:new Date().toISOString()});
   autoSaveToServerIfEnabled();showToast("OKR이 반려되었습니다.","success");renderOkrPage();
 }
