@@ -49,6 +49,9 @@ jobs:
       - name: API 테스트 — JSON 파일 모드
         run: npm test
 
+      - name: 경비 지급·전표 복구 회귀 테스트
+        run: npm run test:expense
+
       - name: API 테스트 — PostgreSQL 모드
         run: npm run test:postgres
 
