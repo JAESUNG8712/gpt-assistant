@@ -194,6 +194,51 @@ if (!ADMIN_DATABASE_URL) {
       } finally { await dbCheck.end(); }
     });
 
+    await t.test("4c-1) 경비 지급 상태·전표·멱등성 결과가 함께 commit 또는 rollback된다", async () => {
+      const commonHeaders = { "Content-Type": "application/json", Authorization: `Bearer ${companyAToken}` };
+      const current = await (await api("/data", { headers: commonHeaders })).json();
+      const claimId = "pg-atomic-expense-1";
+      const saved = await api("/save", {
+        method: "POST", headers: commonHeaders,
+        body: JSON.stringify({ _version: current.version, data: {
+          expenseClaims: [{ id: claimId, empId: current.data.employees[0].id,
+            empName: "관리자A", title: "테스트 경비", total: 12500, status: "approved",
+            updatedAt: "2026-10-01T00:00:00.000Z" }],
+        } }),
+      });
+      assert.equal(saved.status, 200);
+      const accounts = (await (await api("/api/accounting/accounts/picker", { headers: commonHeaders })).json()).accounts;
+      const expenseAccount = accounts.find(account => account.type === "expense");
+      const paymentAccount = accounts.find(account => account.type === "asset");
+      assert.ok(expenseAccount && paymentAccount, "경비 지급용 비용·자산 계정이 준비되어야 함");
+      const payment = { date: "2026-10-02", method: "계좌이체", makeVoucher: true,
+        debitAccountId: expenseAccount.id, creditAccountId: paymentAccount.id };
+      const path = `/api/hr/expense-claims/${claimId}/pay`;
+      const key = "pg-expense-atomic-0001";
+      const failed = await api(path, { method: "POST", headers: {
+        ...commonHeaders, "Idempotency-Key": key, "X-Test-Idempotency-Fail-Before-Complete": "1",
+      }, body: JSON.stringify(payment) });
+      assert.equal(failed.status, 500);
+      const afterFail = await (await api("/data", { headers: commonHeaders })).json();
+      assert.equal(afterFail.data.expenseClaims.find(c => c.id === claimId)?.status, "approved");
+      const dbCheck = new Client({ connectionString: testDbUrl });
+      await dbCheck.connect();
+      try {
+        const count = await dbCheck.query("SELECT COUNT(*)::int AS n FROM vouchers WHERE data->>'sourceExpenseClaimId'=$1", [claimId]);
+        assert.equal(count.rows[0].n, 0);
+      } finally { await dbCheck.end(); }
+      const succeeded = await api(path, { method: "POST", headers: { ...commonHeaders, "Idempotency-Key": key }, body: JSON.stringify(payment) });
+      assert.equal(succeeded.status, 200, await succeeded.text());
+      const paid = (await (await api("/data", { headers: commonHeaders })).json()).data.expenseClaims.find(c => c.id === claimId);
+      assert.equal(paid.status, "paid");
+      assert.ok(paid.voucherId);
+      const replay = await api(path, { method: "POST", headers: { ...commonHeaders, "Idempotency-Key": key }, body: JSON.stringify(payment) });
+      assert.equal(replay.status, 200);
+      assert.equal(replay.headers.get("x-idempotency-replayed"), "true");
+      const vouchers = (await (await api("/api/accounting/vouchers", { headers: commonHeaders })).json()).vouchers;
+      assert.equal(vouchers.filter(v => v.sourceExpenseClaimId === claimId).length, 1);
+    });
+
     await t.test("4d) 재고 조정과 멱등성 완료 기록은 같은 transaction에서 commit", async () => {
       const commonHeaders = { "Content-Type": "application/json", Authorization: `Bearer ${companyAToken}` };
       const item = await (await api("/api/erp/items", {

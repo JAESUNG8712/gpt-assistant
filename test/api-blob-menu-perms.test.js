@@ -557,7 +557,7 @@ test("민감 컬렉션 삭제 표식은 결재·금전 기록과 다른 직원 �
       employees,
       expenseClaims: [
         { id: "expense-pending", empId: "claim-owner", status: "pending", title: "출장비", total: 10000 },
-        { id: "expense-paid", empId: "claim-owner", status: "paid", title: "지급 완료", total: 20000 },
+        { id: "expense-paid", empId: "claim-owner", status: "approved", title: "지급 완료", total: 20000 },
       ],
       overtimeRequests: [
         { id: "overtime-pending", empId: "claim-owner", status: "pending", hours: 2 },
@@ -569,6 +569,12 @@ test("민감 컬렉션 삭제 표식은 결재·금전 기록과 다른 직원 �
     },
   }))).json();
   assert.equal(seeded.ok, true);
+  const paid = await api("/api/hr/expense-claims/expense-paid/pay", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${boot.token}`, "Content-Type": "application/json", "Idempotency-Key": "seed-paid-claim" },
+    body: JSON.stringify({ date: "2026-01-01", method: "계좌이체", makeVoucher: false }),
+  });
+  assert.equal(paid.status, 200, await paid.text());
   const ownerToken = await login(api, "claim-owner", "claim-owner-pw-1");
   const otherToken = await login(api, "claim-other", "claim-other-pw-1");
 
@@ -661,10 +667,15 @@ test("민감 컬렉션 삭제 표식은 결재·금전 기록과 다른 직원 �
   assert.equal(current.data.certRequests.find(r => r.id === "cert-pending")?.status, "approved");
   assert.equal(current.data.certRequests.find(r => r.id === "cert-pending")?.certType, "employment");
 
-  await writeRecord(ownerToken, "expenseClaims", { id: "expense-new", empId: "claim-owner", status: "pending", title: "신규 청구", total: 10000 });
+  await writeRecord(ownerToken, "expenseClaims", { id: "expense-new", empId: "claim-owner", status: "pending", title: "신규 청구", total: 10000,
+    empName: "대표이사 위조", dept: "위조 부서", items: [{ date: "2026-01-01", category: "교통비", amount: 10000 }] });
+  await writeRecord(ownerToken, "expenseClaims", { id: "expense-inflated", empId: "claim-owner", status: "pending", title: "합계 위조", total: 999999,
+    items: [{ date: "2026-01-01", category: "교통비", amount: 10000 }] });
   await writeRecord(ownerToken, "overtimeRequests", { id: "overtime-new", empId: "claim-owner", status: "pending", hours: 2 });
   current = await getData(api, boot.token);
   assert.equal(current.data.expenseClaims.find(r => r.id === "expense-new")?.status, "pending");
+  assert.equal(current.data.expenseClaims.find(r => r.id === "expense-new")?.empName, "청구자");
+  assert.equal(current.data.expenseClaims.find(r => r.id === "expense-inflated"), undefined, "항목 합계와 다른 청구 총액은 저장되지 않아야 함");
   assert.equal(current.data.overtimeRequests.find(r => r.id === "overtime-new")?.status, "pending");
 
   await writeRecord(boot.token, "expenseClaims", { ...current.data.expenseClaims.find(r => r.id === "expense-new"), status: "approved", total: 999999 });
@@ -677,7 +688,7 @@ test("민감 컬렉션 삭제 표식은 결재·금전 기록과 다른 직원 �
 
   await writeRecord(boot.token, "expenseClaims", { ...current.data.expenseClaims.find(r => r.id === "expense-new"), status: "paid", paidAt: "2026-01-01", payMethod: "계좌이체" });
   current = await getData(api, boot.token);
-  assert.equal(current.data.expenseClaims.find(r => r.id === "expense-new")?.status, "paid");
+  assert.equal(current.data.expenseClaims.find(r => r.id === "expense-new")?.status, "approved", "범용 저장으로 지급 전표 원자성을 우회할 수 없어야 함");
   assert.equal(current.data.expenseClaims.find(r => r.id === "expense-new")?.total, 10000);
 });
 

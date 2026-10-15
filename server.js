@@ -273,9 +273,30 @@ const JSON_FILE_WORKERS = Number(process.env.WEB_CONCURRENCY || 1);
 // rename)로 통일해 같은 보호를 적용한다 — POSIX에서 같은 파일시스템 내 rename은 원자적이라
 // 쓰다 만 tmp 파일이 있어도 원본은 마지막으로 완전히 쓰기 끝난 버전 그대로 남는다.
 function _atomicWriteFileSync(filePath, content) {
-  const tmp = `${filePath}.tmp`;
-  fs.writeFileSync(tmp, content, "utf8");
-  fs.renameSync(tmp, filePath);
+  // 고정 .tmp 이름은 서로 다른 요청/프로세스가 같은 파일을 재사용할 수 있고,
+  // Windows에서는 백신·동기화 도구의 순간적인 파일 잠금으로 교체가 EPERM이 될 수 있다.
+  // 기존 목적지를 지우지 않고 고유한 완성본을 보존한 채 짧게 재시도한다.
+  const tmp = `${filePath}.${process.pid}.${crypto.randomBytes(6).toString("hex")}.tmp`;
+  fs.writeFileSync(tmp, content, { encoding: "utf8", flag: "wx" });
+  const retrySignal = new Int32Array(new SharedArrayBuffer(4));
+  for (let attempt = 0; ; attempt++) {
+    try { fs.renameSync(tmp, filePath); return; }
+    catch (e) {
+      if (process.platform !== "win32" || !["EPERM", "EACCES", "EBUSY"].includes(e.code) || attempt >= 4) throw e;
+      Atomics.wait(retrySignal, 0, 0, 25 * (attempt + 1));
+    }
+  }
+}
+async function _atomicWriteFile(filePath, content) {
+  const tmp = `${filePath}.${process.pid}.${crypto.randomBytes(6).toString("hex")}.tmp`;
+  await fs.promises.writeFile(tmp, content, { encoding: "utf8", flag: "wx" });
+  for (let attempt = 0; ; attempt++) {
+    try { await fs.promises.rename(tmp, filePath); return; }
+    catch (e) {
+      if (process.platform !== "win32" || !["EPERM", "EACCES", "EBUSY"].includes(e.code) || attempt >= 4) throw e;
+      await new Promise(resolve => setTimeout(resolve, 25 * (attempt + 1)));
+    }
+  }
 }
 
 // 존재하는 데이터 파일을 "읽지 못하면 빈 저장소로 시작"하는 것은 다음 저장 시 원본을
@@ -1134,7 +1155,7 @@ async function _withDistributedSaveLock(companyId, fn) {
     await client.query("SELECT pg_advisory_lock(hashtext($1))", [`full-state-save:${_scopeKey(companyId)}`]);
     locked = true;
     await _refreshVersionFromDb(companyId, client);
-    return await fn();
+    return await fn(client);
   } catch (e) {
     if (e && e.code === "55P03") {
       throw httpError(409, "SAVE_LOCK_TIMEOUT", "다른 사용자의 저장이 진행 중입니다. 잠시 후 다시 시도하세요.");
@@ -1954,7 +1975,32 @@ function _sanitizeGatedRecord(field, incoming, stored, actor, actorEmp, settings
     const pageId = field === "expenseClaims" ? "expense-claims" : "overtime-req";
     if (!stored) {
       if (!_menuPermsAllow(pageId, actor)) return null;
-      if (actor?.role === "admin") return incoming; // 관리자 이관·초기 적재
+      if (actor?.role === "admin") {
+        // 지급은 전표와 청구를 함께 처리하는 전용 API만 허용한다. 신뢰된 서버 스냅샷
+        // 복원은 기존 paid 기록을 되살릴 수 있지만 일반 /save 신규 삽입은 불가하다.
+        if (field === "expenseClaims" && incoming.status === "paid" && !actor._trustedRestore) return null;
+        return incoming;
+      }
+      if (field === "expenseClaims") {
+        const items = incoming.items;
+        if (actor?.empId == null || !actorEmp || String(incoming.empId) !== String(actor.empId) ||
+            incoming.status !== "pending" || typeof incoming.title !== "string" ||
+            !incoming.title.trim() || incoming.title.length > 200 || !Array.isArray(items) ||
+            items.length < 1 || items.length > 100) return null;
+        let sum = 0;
+        for (const item of items) {
+          const amount = Number(item?.amount);
+          if (!item || !_isValidDateStr(item.date) || !Number.isFinite(amount) || amount <= 0 ||
+              amount > 999999999999 || _round2(amount) !== amount) return null;
+          sum += amount;
+        }
+        const total = Number(incoming.total);
+        if (!Number.isFinite(total) || total <= 0 || total > 999999999999 || _round2(sum) !== _round2(total)) return null;
+        const now = new Date().toISOString();
+        return { ...incoming, empId: actor.empId, empName: actorEmp.name || "",
+          dept: actorEmp.dept || "", team: actorEmp.team || "",
+          total: _round2(sum), status: "pending", createdAt: now, updatedAt: now };
+      }
       return actor?.empId != null && String(incoming.empId) === String(actor.empId) && incoming.status === "pending"
         ? incoming : null;
     }
@@ -1965,7 +2011,7 @@ function _sanitizeGatedRecord(field, incoming, stored, actor, actorEmp, settings
           approvedAt: incoming.approvedAt, rejectReason: incoming.status === "rejected" ? incoming.rejectReason : stored.rejectReason,
           updatedAt: incoming.updatedAt };
       }
-      if (stored.status === "approved" && incoming.status === "paid") {
+      if (stored.status === "approved" && incoming.status === "paid" && actor._trustedRestore) {
         return { ...stored, status: "paid", paidAt: incoming.paidAt, payMethod: incoming.payMethod,
           paidBy: incoming.paidBy, voucherId: incoming.voucherId, voucherNo: incoming.voucherNo,
           updatedAt: incoming.updatedAt };
@@ -3142,10 +3188,7 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
     };
     const verState = _bumpVersion(companyId);
     _fileStore._version = verState.version;
-    // Write atomically via a temp file
-    const tmp = JSON_FILE + ".tmp";
-    await fs.promises.writeFile(tmp, JSON.stringify(_fileStore, null, 2), "utf8");
-    await fs.promises.rename(tmp, JSON_FILE);
+    await _atomicWriteFile(JSON_FILE, JSON.stringify(_fileStore, null, 2));
     return { duplicateLoginIds, rejectedRecords };
   }
   const client = externalClient || await pool.connect();
@@ -3870,6 +3913,9 @@ function _idempotencyRequired(req) {
   // 404 미들웨어가 이 경로 자체를 먼저 막아 도달 불가능하지만, 이 소문자 정규화는
   // 그 방어선이 앞으로 바뀌더라도 안전하도록 그대로 남겨둔다(다중 방어).
   const p = req.path.toLowerCase();
+  // 경비 지급은 파일 모드도 청구 상태·sourceExpenseClaimId로 재시도 결과를 판별한다.
+  // 범용 파일 멱등성의 pending 기록은 프로세스 종료 후 24시간 남아 복구를 막을 수 있다.
+  if (req.method === "POST" && /^\/api\/hr\/expense-claims\/[^/]+\/pay$/.test(p)) return false;
   // PostgreSQL 전표 명령은 업무 변경과 응답 기록을 같은 transaction에 넣는 전용
   // 실행기를 사용한다. JSON 모드는 기존 파일 멱등성 middleware를 계속 사용한다.
   if (!USE_JSON_FILE && req.method === "POST" && (
@@ -3981,7 +4027,7 @@ async function idempotencyMiddleware(req, res, next) {
 // 하나의 client/transaction에서 처리하므로, 업무 COMMIT 직후 프로세스가 종료되는
 // crash-gap이 없다. commit 전 종료면 둘 다 rollback되고, commit 후 재시도면 저장된
 // 응답을 그대로 재생한다.
-async function _runPgIdempotentCommand(req, res, work) {
+async function _runPgIdempotentCommand(req, res, work, existingClient = null) {
   const key = String(req.get("Idempotency-Key") || "");
   if (!/^[A-Za-z0-9._:-]{8,128}$/.test(key)) {
     return res.status(400).json({ ok: false, code: "IDEMPOTENCY_KEY_REQUIRED", message: "유효한 Idempotency-Key가 필요합니다." });
@@ -3990,7 +4036,7 @@ async function _runPgIdempotentCommand(req, res, work) {
   const actorId = String(req.auth?.empId || req.auth?.loginId || req.auth?.masterId || "unknown");
   const route = `${req.method} ${req.path}`;
   const requestHash = _idempotencyHash(req);
-  const client = await pool.connect();
+  const client = existingClient || await pool.connect();
   let committed = false;
   try {
     await client.query("BEGIN");
@@ -4043,7 +4089,7 @@ async function _runPgIdempotentCommand(req, res, work) {
     if (!committed) { try { await client.query("ROLLBACK"); } catch {} }
     throw e;
   } finally {
-    client.release();
+    if (!existingClient) client.release();
   }
 }
 
@@ -6603,7 +6649,7 @@ app.post("/restore", async (req, res) => {
           const plan = buildRestorePlan(snapshotData, current, fields, deleteExtras);
           rejectDemoDataForProduction(plan.dataToPersist);
           if (deleteExtras) await deleteRestoreExtras(client, plan.extrasByField, companyId);
-          const persisted = await _persistDataLocked(plan.dataToPersist, restoreActor, companyId, req.auth, client);
+          const persisted = await _persistDataLocked(plan.dataToPersist, restoreActor, companyId, { ...req.auth, _trustedRestore: true }, client);
           if (plan.restoreBudget) {
             await budgetRouterFactory.updateBudget(companyId, async (data) => {
               Object.keys(data).forEach(k => { delete data[k]; });
@@ -6648,7 +6694,7 @@ app.post("/restore", async (req, res) => {
     // JSON 파일 모드는 파일 두 개(HR 본문·budget_store)를 하나의 DB 트랜잭션으로 묶을 수
     // 없으므로, 기존의 원자 파일 교체 경로를 유지한다. 운영 다중 사용자 배포는 위의
     // PostgreSQL 경로를 사용한다.
-    await persistData(dataToPersist, restoreActor, companyId, req.auth || null);
+    await persistData(dataToPersist, restoreActor, companyId, { ...req.auth, _trustedRestore: true });
 
     // budget_store(사업계획/예산/개인별급여상세)는 위 일반 필드 병합 루프에서 제외했으므로
     // (persistData 소관 밖) 별도로 복원한다 — 다른 singleton 필드와 동일하게 "스냅샷이
@@ -7388,6 +7434,172 @@ app.delete("/api/accounting/voucher-templates/:id", async (req, res) => {
   } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
+// 경비 지급은 전표 생성과 청구 상태 변경을 하나의 업무 명령으로 처리한다.
+// PostgreSQL은 동일 트랜잭션, JSON 파일 모드는 전표에 sourceExpenseClaimId를 남겨
+// 두 파일 사이에서 프로세스가 종료되어도 재시도 시 기존 전표를 찾아 완료한다.
+app.post("/api/hr/expense-claims/:id/pay", async (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  if (!await requireStoredMenuPermission(req, res, "expense-admin")) return;
+  const companyId = req.auth.companyId || null;
+  const claimId = String(req.params.id || "");
+  const date = req.body?.date;
+  const method = req.body?.method;
+  const makeVoucher = req.body?.makeVoucher === true;
+  if (!claimId || claimId.length > 100 || !_isValidDateStr(date) || !["계좌이체", "급여 합산", "현금"].includes(method)) {
+    return res.status(400).json({ ok: false, message: "지급일 또는 지급 방법이 올바르지 않습니다." });
+  }
+  if (makeVoucher && !requireFeature(req, res, "acct")) return;
+  if (makeVoucher && !await requireStoredMenuPermission(req, res, "acct-vouchers")) return;
+  const debitAccountId = String(req.body?.debitAccountId || "");
+  const creditAccountId = String(req.body?.creditAccountId || "");
+  if (makeVoucher && (!debitAccountId || !creditAccountId || debitAccountId === creditAccountId)) {
+    return res.status(400).json({ ok: false, message: "차변·대변 계정과목을 각각 선택하세요." });
+  }
+  const responseFor = (claim, voucher, version) => ({ ok: true, claim, voucher: voucher || null, version });
+  const hasPayableAmount = claim => {
+    const amount = Number(claim.total);
+    if (!Number.isFinite(amount) || amount <= 0 || amount > 999999999999 || _round2(amount) !== amount) return false;
+    if (!Array.isArray(claim.items) || !claim.items.length) return true; // 레거시 청구의 합계 기록도 지원
+    const itemAmounts = claim.items.map(item => Number(item?.amount));
+    return itemAmounts.every(value => Number.isFinite(value) && value > 0 && _round2(value) === value) &&
+      _round2(itemAmounts.reduce((sum, value) => sum + value, 0)) === amount;
+  };
+  const buildPayment = (claim, voucher) => ({
+    ...claim, status: "paid", paidAt: date, payMethod: method, paidBy: _actorLabel(req),
+    voucherId: voucher?.id || null, voucherNo: voucher?.voucherNo || (voucher ? "(임시)" : null),
+    updatedAt: new Date().toISOString(),
+  });
+  const buildVoucher = claim => {
+    const amount = Number(claim.total);
+    if (!Number.isFinite(amount) || amount <= 0 || amount > 999999999999 || _round2(amount) !== amount) return null;
+    const title = String(claim.title || "");
+    const empName = String(claim.empName || "");
+    return {
+      id: `v_${Date.now()}_${crypto.randomBytes(6).toString("hex")}`,
+      voucherNo: null, status: "draft", date,
+      description: `경비정산 - ${empName} ${title}`.trim().slice(0, 200),
+      partner: empName.slice(0, 120), partnerId: null, category: "expense",
+      lines: [
+        { accountId: debitAccountId, debit: amount, credit: 0, memo: title.slice(0, 120) },
+        { accountId: creditAccountId, debit: 0, credit: amount, memo: `경비지급(${method})` },
+      ], amount, sourceExpenseClaimId: claimId,
+      createdBy: req.auth.loginId || req.auth.empId || "unknown", createdAt: new Date().toISOString(),
+    };
+  };
+  const matchesExistingVoucher = (voucher, claim) => !voucher || (
+    voucher.status !== "void" && Number(voucher.amount) === Number(claim.total) &&
+    voucher.date === date &&
+    String(voucher.lines?.[0]?.accountId) === debitAccountId &&
+    String(voucher.lines?.[1]?.accountId) === creditAccountId &&
+    voucher.lines?.[1]?.memo === `경비지급(${method})`
+  );
+  const matchesPaidResult = (claim, voucher) => claim.paidAt === date && claim.payMethod === method &&
+    Boolean(voucher) === makeVoucher && (!voucher || matchesExistingVoucher(voucher, claim));
+  const validatePaymentVoucher = (voucher, accounts) => {
+    const lineError = _validateVoucherLines(voucher.lines, accounts);
+    if (lineError) return lineError;
+    const debitAccount = accounts.find(a => String(a.id) === debitAccountId);
+    const creditAccount = accounts.find(a => String(a.id) === creditAccountId);
+    if (debitAccount?.type !== "expense" || !["asset", "liability"].includes(creditAccount?.type)) {
+      return "경비 차변은 비용 계정, 대변은 자산 또는 부채 계정이어야 합니다.";
+    }
+    return null;
+  };
+  try {
+    await _withSaveLock(() => _withDistributedSaveLock(companyId, async lockClient => {
+      if (USE_JSON_FILE) {
+        const claim = (_fileStore.expenseClaims || []).find(c => String(c.id) === claimId);
+        if (!claim) return res.status(404).json({ ok: false, message: "경비 청구를 찾을 수 없습니다." });
+        const existing = _fileAccounting.vouchers.find(v => String(v.sourceExpenseClaimId) === claimId);
+        if (claim.status === "paid") {
+          const voucher = _fileAccounting.vouchers.find(v => v.id === claim.voucherId) || existing;
+          if (!matchesPaidResult(claim, voucher)) return res.status(409).json({ ok: false, message: "이미 처리된 지급 조건과 다릅니다. 지급 내역을 확인하세요." });
+          return res.json(responseFor(claim, voucher, _getVersion(companyId)));
+        }
+        if (claim.status !== "approved") return res.status(409).json({ ok: false, message: "승인된 청구만 지급할 수 있습니다." });
+        if (!hasPayableAmount(claim)) return res.status(400).json({ ok: false, message: "청구 금액이 올바르지 않습니다." });
+        if (claim.voucherId && !existing) return res.status(409).json({ ok: false, message: "기존 연결 전표를 확인한 뒤 다시 시도하세요." });
+        if (existing && !matchesExistingVoucher(existing, claim))
+          return res.status(409).json({ ok: false, message: "기존 전표와 지급 조건이 달라 수동 확인이 필요합니다." });
+        if (existing && !makeVoucher) return res.status(409).json({ ok: false, message: "이미 생성된 전표가 있습니다. 전표를 포함해 지급을 재시도하세요." });
+        let voucher = existing || null;
+        if (makeVoucher && !voucher) {
+          voucher = buildVoucher(claim);
+          if (!voucher) return res.status(400).json({ ok: false, message: "청구 금액이 올바르지 않습니다." });
+          const lineError = validatePaymentVoucher(voucher, await _getAccountsList(companyId));
+          if (lineError) return res.status(400).json({ ok: false, message: lineError });
+          _fileAccounting.vouchers.push(voucher);
+          try { _saveFileAccounting(); }
+          catch (e) { _fileAccounting.vouchers.pop(); throw e; }
+          if (process.env.NODE_ENV === "test" && req.get("X-Test-Expense-Pay-Fail-After-Voucher") === "1") {
+            throw new Error("TEST_EXPENSE_PAY_FAIL_AFTER_VOUCHER");
+          }
+        }
+        const paid = buildPayment(claim, voucher);
+        const nextVersion = _getVersion(companyId) + 1;
+        const nextStore = { ..._fileStore,
+          expenseClaims: (_fileStore.expenseClaims || []).map(c => String(c.id) === claimId ? paid : c),
+          _version: nextVersion };
+        _atomicWriteFileSync(JSON_FILE, JSON.stringify(nextStore, null, 2));
+        _fileStore = nextStore;
+        _setVersion(companyId, nextVersion, new Date().toISOString());
+        broadcastSSE("data_updated", { version: nextVersion }, null, companyId);
+        return res.json(responseFor(paid, voucher, nextVersion));
+      }
+      await _runPgIdempotentCommand(req, res, async client => {
+        const { rows } = await client.query(
+          "SELECT data FROM app_collections WHERE company_id=$1 AND collection='expenseClaims' AND id=$2 FOR UPDATE",
+          [companyId, claimId]
+        );
+        const claim = rows[0]?.data;
+        if (!claim) return { status: 404, body: { ok: false, message: "경비 청구를 찾을 수 없습니다." } };
+        const prior = await client.query(
+          "SELECT data FROM vouchers WHERE company_id=$1 AND data->>'sourceExpenseClaimId'=$2 LIMIT 1",
+          [companyId, claimId]
+        );
+        const existing = prior.rows[0]?.data || null;
+        if (claim.status === "paid") {
+          if (!matchesPaidResult(claim, existing)) return { status: 409, body: { ok: false, message: "이미 처리된 지급 조건과 다릅니다. 지급 내역을 확인하세요." } };
+          return { body: responseFor(claim, existing, _getVersion(companyId)) };
+        }
+        if (claim.status !== "approved") return { status: 409, body: { ok: false, message: "승인된 청구만 지급할 수 있습니다." } };
+        if (!hasPayableAmount(claim)) return { status: 400, body: { ok: false, message: "청구 금액이 올바르지 않습니다." } };
+        if (claim.voucherId && !existing) return { status: 409, body: { ok: false, message: "기존 연결 전표를 확인한 뒤 다시 시도하세요." } };
+        if (existing && !matchesExistingVoucher(existing, claim))
+          return { status: 409, body: { ok: false, message: "기존 전표와 지급 조건이 달라 수동 확인이 필요합니다." } };
+        if (existing && !makeVoucher) return { status: 409, body: { ok: false, message: "이미 생성된 전표가 있습니다. 전표를 포함해 지급을 재시도하세요." } };
+        let voucher = existing;
+        if (makeVoucher && !voucher) {
+          voucher = buildVoucher(claim);
+          if (!voucher) return { status: 400, body: { ok: false, message: "청구 금액이 올바르지 않습니다." } };
+          const lineError = validatePaymentVoucher(voucher, await _getAccountsList(companyId, client));
+          if (lineError) return { status: 400, body: { ok: false, message: lineError } };
+          await client.query(
+            "INSERT INTO vouchers (id, voucher_no, voucher_date, status, data, company_id) VALUES ($1,$2,$3,'draft',$4,$5)",
+            [voucher.id, `DRAFT-${voucher.id}`, date, voucher, companyId]
+          );
+        }
+        const paid = buildPayment(claim, voucher);
+        await client.query(
+          "UPDATE app_collections SET data=$3, updated_at=NOW() WHERE company_id=$1 AND collection='expenseClaims' AND id=$2",
+          [companyId, claimId, paid]
+        );
+        const versionResult = await client.query(
+          "INSERT INTO app_meta (key,value) VALUES ($1,'1') ON CONFLICT (key) DO UPDATE SET value=(app_meta.value::bigint+1)::text RETURNING value",
+          [`data_version:${_scopeKey(companyId)}`]
+        );
+        return { body: responseFor(paid, voucher, Number(versionResult.rows[0].value)) };
+      }, lockClient);
+      await _refreshVersionFromDb(companyId, lockClient);
+      if (res.statusCode >= 200 && res.statusCode < 300) {
+        broadcastSSE("data_updated", { version: _getVersion(companyId) }, null, companyId);
+      }
+    }));
+  } catch (e) {
+    if (!res.headersSent) res.status(e.status || 500).json({ ok: false, code: e.code || "EXPENSE_PAYMENT_FAILED", message: e.status ? e.message : _safeErrMsg(e) });
+  }
+});
+
 app.get("/api/accounting/vouchers", async (req, res) => {
   if (!requireAdmin(req, res)) return;
   try {
@@ -7447,15 +7659,17 @@ app.post("/api/accounting/vouchers/:id/post", async (req, res) => {
     if (!requireAdmin(req, res)) return;
     const id = req.params.id;
     const companyId = req.auth.companyId || null;
-    const year = new Date().getFullYear();
+    const actorId = req.auth.loginId || req.auth.empId || "unknown";
     if (USE_JSON_FILE) {
       const v = _fileAccounting.vouchers.find(v => v.id === id);
       if (!v) return res.status(404).json({ ok: false, message: "전표를 찾을 수 없습니다." });
       if (v.status !== "draft") return res.status(400).json({ ok: false, message: "임시 저장 상태의 전표만 확정할 수 있습니다." });
+      if (!_isValidDateStr(v.date)) return res.status(400).json({ ok: false, message: "전표일자가 올바르지 않습니다." });
+      const year = Number(v.date.slice(0, 4));
       const seq = _nextAcctSeq("voucherSeq", year);
       v.voucherNo = `JE-${year}-${String(seq).padStart(6, "0")}`;
       v.status = "posted";
-      v.postedBy = req.body.user || "unknown";
+      v.postedBy = actorId;
       v.postedAt = new Date().toISOString();
       _saveFileAccounting();
       return res.json({ ok: true, voucher: v });
@@ -7464,12 +7678,14 @@ app.post("/api/accounting/vouchers/:id/post", async (req, res) => {
       const { rows } = await client.query("SELECT data, status FROM vouchers WHERE id = $1 AND (company_id = $2 OR company_id IS NULL) FOR UPDATE", [id, companyId]);
       if (!rows.length) return { status: 404, body: { ok: false, message: "전표를 찾을 수 없습니다." } };
       if (rows[0].status !== "draft") return { status: 400, body: { ok: false, message: "임시 저장 상태의 전표만 확정할 수 있습니다." } };
+      if (!_isValidDateStr(rows[0].data?.date)) return { status: 400, body: { ok: false, message: "전표일자가 올바르지 않습니다." } };
+      const year = Number(rows[0].data.date.slice(0, 4));
       const { rows: seqRows } = await client.query(
         "INSERT INTO voucher_seq (company_id, year, seq) VALUES ($1,$2,1) ON CONFLICT (company_id, year) DO UPDATE SET seq = voucher_seq.seq + 1 RETURNING seq",
         [companyId, year]
       );
       const voucherNo = `JE-${year}-${String(seqRows[0].seq).padStart(6, "0")}`;
-      const v = { ...rows[0].data, voucherNo, status: "posted", postedBy: req.body.user || "unknown", postedAt: new Date().toISOString() };
+      const v = { ...rows[0].data, voucherNo, status: "posted", postedBy: actorId, postedAt: new Date().toISOString() };
       await client.query("UPDATE vouchers SET voucher_no = $2, status = 'posted', data = $3, updated_at = NOW() WHERE id = $1", [id, voucherNo, v]);
       return { status: 200, body: { ok: true, voucher: v } };
     });
@@ -7513,13 +7729,15 @@ app.post("/api/accounting/vouchers/:id/void", async (req, res) => {
     if (!requireAdmin(req, res)) return;
     const id = req.params.id;
     const companyId = req.auth.companyId || null;
-    const reason = (req.body || {}).reason;
-    if (!reason) return res.status(400).json({ ok: false, message: "취소 사유를 입력하세요." });
+    const actorId = req.auth.loginId || req.auth.empId || "unknown";
+    const reason = typeof req.body?.reason === "string" ? req.body.reason.trim() : "";
+    if (!reason || reason.length > 500) return res.status(400).json({ ok: false, message: "취소 사유를 1~500자로 입력하세요." });
     if (USE_JSON_FILE) {
       const v = _fileAccounting.vouchers.find(v => v.id === id);
       if (!v) return res.status(404).json({ ok: false, message: "전표를 찾을 수 없습니다." });
       if (v.status !== "posted") return res.status(400).json({ ok: false, message: "확정된 전표만 취소할 수 있습니다." });
-      v.status = "void"; v.voidReason = reason; v.voidedBy = req.body.user || "unknown"; v.voidedAt = new Date().toISOString();
+      if (v.sourceExpenseClaimId) return res.status(409).json({ ok: false, message: "경비 지급 전표는 청구 기록과 연결되어 있어 일반 취소할 수 없습니다." });
+      v.status = "void"; v.voidReason = reason; v.voidedBy = actorId; v.voidedAt = new Date().toISOString();
       _saveFileAccounting();
       const unposted = _unpostScheduleRowsJson(id);
       return res.json({ ok: true, voucher: v, unpostedSchedules: unposted });
@@ -7529,7 +7747,8 @@ app.post("/api/accounting/vouchers/:id/void", async (req, res) => {
     return await _runPgIdempotentCommand(req, res, async client => {
       const { rows } = await client.query("SELECT data FROM vouchers WHERE id = $1 AND status = 'posted' AND (company_id = $2 OR company_id IS NULL) FOR UPDATE", [id, companyId]);
       if (!rows.length) return { status: 400, body: { ok: false, message: "확정된 전표만 취소할 수 있습니다." } };
-      const v = { ...rows[0].data, status: "void", voidReason: reason, voidedBy: req.body.user || "unknown", voidedAt: new Date().toISOString() };
+      if (rows[0].data.sourceExpenseClaimId) return { status: 409, body: { ok: false, message: "경비 지급 전표는 청구 기록과 연결되어 있어 일반 취소할 수 없습니다." } };
+      const v = { ...rows[0].data, status: "void", voidReason: reason, voidedBy: actorId, voidedAt: new Date().toISOString() };
       await client.query("UPDATE vouchers SET status = 'void', data = $2, updated_at = NOW() WHERE id = $1", [id, v]);
       const unposted = await _unpostScheduleRowsPg(id, companyId, client);
       return { status: 200, body: { ok: true, voucher: v, unpostedSchedules: unposted } };
@@ -7546,13 +7765,16 @@ app.delete("/api/accounting/vouchers/:id", async (req, res) => {
       const v = _fileAccounting.vouchers.find(v => v.id === id);
       if (!v) return res.status(404).json({ ok: false, message: "전표를 찾을 수 없습니다." });
       if (v.status !== "draft") return res.status(400).json({ ok: false, message: "임시 저장 상태의 전표만 삭제할 수 있습니다." });
+      if (v.sourceExpenseClaimId) return res.status(409).json({ ok: false, message: "경비 지급 전표는 청구 기록과 연결되어 있어 일반 삭제할 수 없습니다." });
       _fileAccounting.vouchers = _fileAccounting.vouchers.filter(v => v.id !== id);
       _saveFileAccounting();
       return res.json({ ok: true });
     }
-    const { rows } = await pool.query("SELECT 1 FROM vouchers WHERE id = $1 AND status = 'draft' AND (company_id = $2 OR company_id IS NULL)", [id, companyId]);
-    if (!rows.length) return res.status(400).json({ ok: false, message: "임시 저장 상태의 전표만 삭제할 수 있습니다." });
-    await pool.query("DELETE FROM vouchers WHERE id = $1", [id]);
+    const deleted = await pool.query(
+      "DELETE FROM vouchers WHERE id=$1 AND status='draft' AND (company_id=$2 OR company_id IS NULL) AND NOT (data ? 'sourceExpenseClaimId') RETURNING id",
+      [id, companyId]
+    );
+    if (!deleted.rowCount) return res.status(409).json({ ok: false, message: "전표가 임시 상태가 아니거나 경비 청구와 연결되어 있어 삭제할 수 없습니다." });
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });

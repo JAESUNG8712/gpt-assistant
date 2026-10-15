@@ -3,7 +3,9 @@
 // 형태가 아님)라, in-process로 여러 인스턴스를 올릴 수 없다 — 대신 child_process로
 // 완전히 격리된 프로세스를 매 테스트 파일마다 하나씩 띄운다(임시 DATA_FILE/
 // BUDGET_DATA_FILE, 랜덤 포트, 고정 SESSION_SECRET, NODE_ENV 상속). 운영 DB나
-// 실제 데이터 파일은 절대 건드리지 않는다 — 항상 os.tmpdir() 아래 새 디렉토리에만 쓴다.
+// 실제 데이터 파일은 절대 건드리지 않는다 — 매번 새 테스트 디렉터리에만 쓴다.
+// Windows 샌드박스의 시스템 임시 폴더에서는 rename이 EPERM으로 막힐 수 있어
+// 기본값으로 저장소의 gitignore된 .qa-temp를 사용한다.
 "use strict";
 const { spawn } = require("child_process");
 const fs = require("fs");
@@ -38,9 +40,17 @@ async function waitForHttp(url, timeoutMs) {
 
 // startServer()와 startServerExpectingBootFailure() 둘 다 쓰는 공통 준비 단계
 // (임시 디렉터리·포트·환경변수 조립) — 중복 없이 한 곳에만 둔다.
+function getTestTempRoot() {
+  const tempRoot = process.env.HR_TEST_TEMP_DIR || (process.platform === "win32"
+    ? path.join(__dirname, "..", "..", ".qa-temp") : os.tmpdir());
+  fs.mkdirSync(tempRoot, { recursive: true });
+  return tempRoot;
+}
+
 function _prepareChildEnv(opts) {
   const port = opts.port; // 호출부가 getFreePort()로 미리 뽑아 넘긴다
-  const dataDir = fs.mkdtempSync(path.join(process.env.HR_TEST_TEMP_DIR || os.tmpdir(), opts.dirPrefix || "hr-test-"));
+  const tempRoot = getTestTempRoot();
+  const dataDir = fs.mkdtempSync(path.join(tempRoot, opts.dirPrefix || "hr-test-"));
   const dataFile = path.join(dataDir, "hr-data.json");
   const budgetDataFile = path.join(dataDir, "budget-data.json");
   const env = {
@@ -139,11 +149,14 @@ async function startServerExpectingBootFailure(opts = {}) {
   }
   const { child, logs } = _spawnServer(env, path.join(__dirname, "..", ".."));
 
+  // Windows에서 Node 프로세스 시작과 보안 소프트웨어 검사가 5초를 넘길 수 있다.
+  // CI(Linux)의 빠른 fail-fast 기준은 유지하되 로컬 Windows 오탐만 줄인다.
+  const timeoutMs = opts.timeoutMs || (process.platform === "win32" ? 30000 : 5000);
   const exitCode = await new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       child.kill("SIGKILL");
-      reject(new Error(`서버가 fail-fast로 종료될 것으로 기대했으나 ${opts.timeoutMs || 5000}ms 안에 종료되지 않았습니다.\n--- stdout ---\n${logs.stdout}\n--- stderr ---\n${logs.stderr}`));
-    }, opts.timeoutMs || 5000);
+      reject(new Error(`서버가 fail-fast로 종료될 것으로 기대했으나 ${timeoutMs}ms 안에 종료되지 않았습니다.\n--- stdout ---\n${logs.stdout}\n--- stderr ---\n${logs.stderr}`));
+    }, timeoutMs);
     child.on("exit", (code) => { clearTimeout(timer); resolve(code); });
   });
 
@@ -155,4 +168,4 @@ async function startServerExpectingBootFailure(opts = {}) {
   };
 }
 
-module.exports = { startServer, startServerExpectingBootFailure, getFreePort, bootstrapAdminAndLogin };
+module.exports = { startServer, startServerExpectingBootFailure, getFreePort, bootstrapAdminAndLogin, getTestTempRoot };

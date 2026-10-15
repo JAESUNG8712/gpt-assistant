@@ -5,6 +5,44 @@
 const { test, expect } = require("@playwright/test");
 
 test.describe("로그인·기본 네비게이션", () => {
+  test("경비 청구 ID가 HTML 속성을 벗어나 관리자 버튼 코드로 실행되지 않는다", async ({ page }) => {
+    await page.goto("/");
+    await page.fill("#l-id", "e2e_admin");
+    await page.fill("#l-pw", "E2eTestPw123");
+    await page.evaluate(() => { autoSaveDebounced = () => {}; loadFromServer = async () => {}; connectSSE = async () => {}; });
+    await page.click(".login-card button.btn-primary");
+    await expect(page.locator("#main")).toBeVisible();
+    await page.evaluate(() => {
+      expenseClaims = [{
+        id: "claim');window.__expenseIdExecuted=true;//", empId: currentUser.id,
+        empName: "관리자", title: "정상 청구", total: 1000, status: "approved",
+        items: [{ date: "2026-10-01", category: "교통비", amount: 1000 }],
+        createdAt: "2026-10-01T00:00:00.000Z",
+      }];
+      renderExpenseAdminPage();
+    });
+    await page.locator("#expense-admin-tbl").getByRole("button", { name: "보기" }).click();
+    await expect(page.locator(".modal-box")).toContainText("정상 청구");
+    expect(await page.evaluate(() => window.__expenseIdExecuted)).toBeUndefined();
+  });
+
+  test("경비 청구 상세는 전표 확정 후 원장의 최신 번호를 표시한다", async ({ page }) => {
+    await page.goto("/");
+    await page.fill("#l-id", "e2e_admin");
+    await page.fill("#l-pw", "E2eTestPw123");
+    await page.evaluate(() => { autoSaveDebounced = () => {}; loadFromServer = async () => {}; connectSSE = async () => {}; });
+    await page.click(".login-card button.btn-primary");
+    await expect(page.locator("#main")).toBeVisible();
+    await page.evaluate(() => {
+      expenseClaims = [{ id: "paid-claim", title: "교통비", empName: "관리자", total: 1000,
+        status: "paid", voucherId: "linked-voucher", voucherNo: "(임시)", items: [] }];
+      acctVouchers = [{ id: "linked-voucher", voucherNo: "JE-2026-000001", status: "posted" }];
+      viewExpenseClaimModal("paid-claim");
+    });
+    await expect(page.locator(".modal-box")).toContainText("JE-2026-000001");
+    await expect(page.locator(".modal-box")).not.toContainText("(임시)");
+  });
+
   test("hosted 앱은 ?srv와 저장된 서버 URL 대신 same-origin API만 사용한다", async ({ page }) => {
     await page.goto("/");
     await page.evaluate(() => localStorage.setItem("hr_kpi_server_url", "https://evil.example"));
@@ -261,7 +299,7 @@ test.describe("로그인·기본 네비게이션", () => {
     await expect(page.locator("#main")).toBeVisible({ timeout: 10000 });
 
     await page.evaluate(() => gotoPage("hr-function-map"));
-    await expect(page.getByRole("heading", { name: "HR 업무지도" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "HR 업무지도", exact: true })).toBeVisible();
     await expect(page.locator("#content")).toContainText("경영진");
     await expect(page.locator("#content")).toContainText("외부연계");
     await expect(page.locator("#content")).toContainText("세무·사회보험");
@@ -477,6 +515,7 @@ test.describe("로그인·기본 네비게이션", () => {
     await page.goto("/");
     await page.fill("#l-id", "e2e_admin");
     await page.fill("#l-pw", "E2eTestPw123");
+    await page.evaluate(() => { autoSaveDebounced = () => {}; loadFromServer = async () => {}; connectSSE = async () => {}; });
     await page.click(".login-card button.btn-primary");
     await expect(page.locator("#main")).toBeVisible({ timeout: 10000 });
 
@@ -691,29 +730,33 @@ test.describe("로그인·기본 네비게이션", () => {
     await expect(page.locator("#main")).toBeVisible({ timeout: 10000 });
 
     const year = 2024;
-    const result = await page.evaluate(async (year) => {
+    await page.evaluate(async (year) => {
       const empId = currentUser.id;
       saveYearEndSettlement(empId, year, 2, true); // dependents=2, confirmed=true
       await _doSave(true); // autoSaveDebounced()의 지연 없이 즉시 실제 서버 저장을 실행
-      const r = await serverRequest("GET", "/data"); // 클라이언트 메모리가 아니라 서버에서 새로 조회
-      const rec = (r.data?.yearEndSettlements || []).find(y => String(y.empId) === String(empId) && y.year === year);
-      return { found: !!rec, dependents: rec?.dependents, confirmed: rec?.confirmed };
     }, year);
-    expect(result).toEqual({ found: true, dependents: 2, confirmed: true });
+    // 다른 초기 저장이 진행 중이면 _doSave()는 queued를 반환한다. 서버에 반영된
+    // 결과를 기다려 확인해야, 진행 중인 저장과 GET 사이의 경합을 실패로 오인하지 않는다.
+    await expect.poll(() => page.evaluate(async (year) => {
+      const r = await serverRequest("GET", "/data");
+      const rec = (r.data?.yearEndSettlements || []).find(y => String(y.empId) === String(currentUser.id) && y.year === year);
+      return { found: !!rec, dependents: rec?.dependents, confirmed: rec?.confirmed };
+    }, year), { timeout: 15000 }).toEqual({ found: true, dependents: 2, confirmed: true });
 
     // 재저장(dependents만 변경)해도 CAS(_rev) 충돌 없이 반영돼야 한다 — saveYearEndSettlement()가
     // 매번 완전히 새 레코드 객체를 만들면서 기존 _rev를 옮기지 않으면, 서버가 부여한 _rev를
     // 잃어버려 두 번째 저장부터 항상 409(RECORD_REVISION_CONFLICT)가 발생하던 버그가 있었다.
-    const secondSave = await page.evaluate(async (year) => {
+    await page.evaluate(async (year) => {
       const empId = currentUser.id;
       saveYearEndSettlement(empId, year, 5, true); // dependents 2 → 5로 변경
       await _doSave(false);
-      const r = await serverRequest("GET", "/data");
-      const rec = (r.data?.yearEndSettlements || []).find(y => String(y.empId) === String(empId) && y.year === year);
-      return { statusMsg: serverConfig.statusMsg, dependents: rec?.dependents };
     }, year);
-    expect(secondSave.statusMsg).not.toContain("충돌");
-    expect(secondSave.dependents).toBe(5);
+    await expect.poll(() => page.evaluate(async (year) => {
+      const r = await serverRequest("GET", "/data");
+      const rec = (r.data?.yearEndSettlements || []).find(y => String(y.empId) === String(currentUser.id) && y.year === year);
+      return { statusMsg: serverConfig.statusMsg, dependents: rec?.dependents };
+    }, year), { timeout: 15000 }).toMatchObject({ dependents: 5 });
+    expect(await page.evaluate(() => serverConfig.statusMsg)).not.toContain("충돌");
   });
 
   test("휴가·근무보상·의료비·사내대출 정책과 채용 키워드 적합도가 연동된다", async ({ page }) => {
@@ -1032,7 +1075,7 @@ test.describe("로그인·기본 네비게이션", () => {
     await expect(dialog).toContainText("이름과 일치하는 직원이 없음");
 
     await dialog.getByRole("button", { name: "적용 (2건)" }).click();
-    await expect(page.locator(".toast")).toContainText("2건의 우수사원 선정이 등록되었습니다.");
+    await expect(page.locator("#content")).toContainText("이유일무이");
 
     const result = await page.evaluate(() => ({
       uniqueAwards: getEmp("award-e2e-unique").hrHistory.filter(h => h.type === "award").map(h => ({ year: h.year, half: h.half, date: h.date })),
@@ -1153,7 +1196,7 @@ test.describe("로그인·기본 네비게이션", () => {
     expect(approved.assignment).toMatchObject({id:"learning-approval-lc-flow-doc",status:"assigned",approvedCost:300000,settlementStatus:"pending"});
     expect(approved.history).toHaveLength(0);
     expect(approved.attendance).toHaveLength(2);
-    await page.getByRole("button",{name:"수정"}).nth(1).click();
+    await page.locator("tr",{hasText:"신청 직원"}).getByRole("button",{name:"수정",exact:true}).click();
     await expect(page.locator("#la-course")).toBeDisabled();
     await expect(page.locator("#la-cost")).toBeDisabled();
     await page.selectOption("#la-status","completed");
@@ -1166,7 +1209,7 @@ test.describe("로그인·기본 네비게이션", () => {
     expect(completed.assignment).toMatchObject({status:"completed",settlementStatus:"settled",settledAt:"2026-12-12",settledAmount:280000});
     expect(completed.history).toHaveLength(1);
     expect(completed.history[0]).toMatchObject({type:"edu_general",desc:"플랫폼 아키텍처"});
-    await page.getByRole("button",{name:"수정"}).nth(1).click();
+    await page.locator("tr",{hasText:"신청 직원"}).getByRole("button",{name:"정산",exact:true}).click();
     await expect(page.locator("#la-status")).toBeDisabled();
     await expect(page.locator("#la-settlement")).toBeEnabled();
   });

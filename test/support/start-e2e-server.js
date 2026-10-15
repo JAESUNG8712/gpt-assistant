@@ -14,12 +14,12 @@
 // 임시 데이터 파일에만 쓰며, 운영 DATA_FILE/DATABASE_URL은 절대 건드리지 않는다.
 "use strict";
 const fs = require("fs");
-const os = require("os");
 const path = require("path");
 const bcrypt = require("bcryptjs");
+const { getTestTempRoot } = require("./start-server");
 
 const port = process.env.E2E_PORT || "4300";
-const dataDir = fs.mkdtempSync(path.join(process.env.HR_TEST_TEMP_DIR || os.tmpdir(), "hr-e2e-"));
+const dataDir = fs.mkdtempSync(path.join(getTestTempRoot(), "hr-e2e-"));
 const dataFile = path.join(dataDir, "hr-data.json");
 
 const E2E_ADMIN = { loginId: "e2e_admin", pw: "E2eTestPw123" };

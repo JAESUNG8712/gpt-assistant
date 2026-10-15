@@ -31,6 +31,12 @@ test("회계 기본 계정과 회사별 전표 템플릿을 안전하게 CRUD한
   res=await api("/api/accounting/vouchers",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({date:"2026-02-31",description:"존재하지 않는 날짜",lines})}); assert.equal(res.status,400);
   res=await api("/api/accounting/vouchers",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({date:"2026-09-10",description:"금액 없는 라인",lines:[...lines,{accountId:made[0].id,debit:0,credit:0}]})}); assert.equal(res.status,400);
   res=await api("/api/accounting/vouchers",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({date:"2026-09-10",description:"복리후생비 인식",lines})}); assert.equal(res.status,200);
+  res=await api("/api/accounting/vouchers",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({date:"2023-12-31",description:"역년도 경비",lines})});
+  assert.equal(res.status,200);
+  const backdated=(await res.json()).voucher;
+  res=await api(`/api/accounting/vouchers/${encodeURIComponent(backdated.id)}/post`,{method:"POST",headers:{"Content-Type":"application/json"},body:"{}"});
+  assert.equal(res.status,200);
+  assert.match((await res.json()).voucher.voucherNo,/^JE-2023-\d{6}$/,"전표번호 연도는 확정일이 아닌 전표일자를 따라야 한다");
   res=await api(`/api/accounting/voucher-templates/${encodeURIComponent(created.id)}`,{method:"DELETE"}); assert.equal(res.status,200);
   json=await (await api("/api/accounting/voucher-templates")).json(); assert.equal(json.templates.length,0);
 });
