@@ -1185,7 +1185,8 @@ test.describe("로그인·기본 네비게이션", () => {
       askConfirmModal=async()=>true;
       gotoPage("learning-center");
     });
-    await expect(page.locator("#content")).toContainText("교육 과정·이력");
+    await expect(page.locator("#content")).toContainText("교육 배정·이수·정산");
+    await expect(page.locator("#content")).toContainText("직접 신청 과정은 별도 기록");
     await page.getByRole("button",{name:"과정 등록"}).click();
     await expect(page.locator(".workspace-editor h2")).toHaveText("교육 과정 등록");
     await expect(page.locator(".modal-ov")).toHaveCount(0);

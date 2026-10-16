@@ -7793,8 +7793,8 @@ function renderSidebar(){
     "welfare-sep":[
       {id:"welfare-sep",type:"sep",label:"복지/교육",roles:["admin","director","leader","member"]},
       {id:"mandatory-training",label:"법정의무교육",icon:"📚",desc:"법정 필수 교육 이수 현황",roles:["admin","director","leader","member"]},
-      {id:"learning-center",label:"교육 과정·이력",icon:"🎓",desc:"교육 과정 조회와 직원별 이수 관리",roles:["admin","director","leader","member"]},
-      {id:"training-courses",label:"교육 과정",icon:"🎓",desc:"개설된 교육 과정 조회·신청·이수 현황",roles:["admin","director","leader","member"]},
+      {id:"learning-center",label:"교육 배정·이수·정산",icon:"🎓",desc:"결재 연계 교육 배정과 이수·비용 정산",roles:["admin","director","leader","member"]},
+      {id:"training-courses",label:"교육 신청·설문",icon:"🎓",desc:"개설 과정 직접 신청과 만족도 설문",roles:["admin","director","leader","member"]},
       {id:"welfare-status",label:"복지 현황",icon:"🩺",desc:"종합검진 대상 여부",roles:["admin","director","leader","member"]},
     ],
     "pay-sep":[
@@ -7816,7 +7816,7 @@ function renderSidebar(){
       {id:"award-history",label:"(최)우수사원 선정 이력",icon:"🏆",desc:"전직원 우수사원 선정 이력 조회",roles:["admin","director","leader"]},
       {id:"hr-welfare-points",label:"복지포인트 현황(전체)",icon:"🎁",desc:"전체 직원 복지포인트 부여·사용 현황",roles:welfareAllRoles},
       {id:"hr-mandatory-training",label:"법정의무교육 현황(전체)",icon:"📚",desc:"소속 직원 전체 법정의무교육 이수 현황",roles:["admin","director","leader"]},
-      {id:"training-admin",label:"교육 과정 관리",icon:"🗂",desc:"과정 개설·신청자 관리·설문·비용정산",roles:["admin"]},
+      {id:"training-admin",label:"교육 개설·신청 관리",icon:"🗂",desc:"직접 신청 과정의 개설·신청자·설문 관리",roles:["admin"]},
       {id:"hr-attendance",label:"근태 현황(전체)",icon:"📅",desc:"소속 직원 전체 근태 현황 조회",roles:["admin","director"]},
       {id:"hr-leave-mgmt",label:"연차 관리(전체)",icon:"🌴",desc:"소속 직원 전체 연차 부여·사용·잔여 현황",roles:["admin","director"]},
       {id:"payroll-mgmt",label:"급여 종합 관리",icon:"💵",desc:"전직원 급여·공제 현황 조회 및 조정",roles:["admin"]},
@@ -7978,13 +7978,13 @@ function renderSidebar(){
   titles["admin-operations"]="관리자 운영센터";
   titles["hr-function-map"]="HR 업무지도";
   titles["employment-records"]="계약·징계 원장";
-  titles["learning-center"]="교육 과정·이력";
+  titles["learning-center"]="교육 배정·이수·정산";
   titles["learning-course-edit"]="교육 과정 편집";
   titles["learning-assignment-edit"]="교육 배정 편집";
   titles["employment-records-edit"]="계약·징계 기록 편집";
   titles["code-mgmt"]="코드관리";
-  titles["training-courses"]="교육 과정";
-  titles["training-admin"]="교육 과정 관리";
+  titles["training-courses"]="교육 신청·설문";
+  titles["training-admin"]="교육 개설·신청 관리";
   titles["wage-garnishment"]="급여 압류 등록";
   titles["severance-settlement"]="퇴직금 정산";
   titles["tax-social-insurance"]="세무/사회보험";
@@ -31222,7 +31222,7 @@ function renderTrainingCoursesPage(){
   const myEnrollments=trainingEnrollments.filter(e=>String(e.empId)===String(u.id));
   const courses=[...trainingCourses].sort((a,b)=>String(b.startDate||"").localeCompare(String(a.startDate||"")));
   const myActiveCount=myEnrollments.filter(e=>e.status!=="canceled").length;
-  c.innerHTML=`<div class="flex justify-between items-c mb3"><h2>🎓 교육 과정</h2>
+  c.innerHTML=`<div class="flex justify-between items-c mb3"><div><h2>🎓 교육 신청·설문</h2><div class="fz12 text-gray">이 화면은 개설 과정 직접 신청용입니다. 결재를 통해 배정된 과정·이수·정산은 교육 배정·이수·정산 화면에서 확인하세요.</div></div>
     <div class="flex gap2">
       <button class="btn btn-sm ${_tcTab==="browse"?"btn-primary":"btn-secondary"}" onclick="_tcSwitchTab('browse')">개설된 과정</button>
       <button class="btn btn-sm ${_tcTab==="mine"?"btn-primary":"btn-secondary"}" onclick="_tcSwitchTab('mine')">내 신청 내역(${myActiveCount})</button>
@@ -31313,8 +31313,8 @@ function renderTrainingAdminPage(){
   const courses=[...trainingCourses].sort((a,b)=>String(b.startDate||"").localeCompare(String(a.startDate||"")));
   const totalCost=courses.filter(cs=>cs.status!=="canceled").reduce((s,cs)=>s+(Number(cs.cost)||0),0);
   const totalCompleted=trainingEnrollments.filter(e=>e.status==="completed").length;
-  c.innerHTML=`<div class="flex justify-between items-c mb3"><div><h2>🗂 교육 과정 관리</h2>
-    <div class="fz11 text-gray">법정의무교육(이수로그)·개인 교육이력(인사발령)과는 별개의 과정 카탈로그입니다. 완료된 과정을 법정의무교육/인사이력에 반영하려면 각 화면에서 직접 등록해주세요.</div></div>
+  c.innerHTML=`<div class="flex justify-between items-c mb3"><div><h2>🗂 교육 개설·신청 관리</h2>
+    <div class="fz11 text-gray">직접 신청 과정 카탈로그입니다. 결재 연계 교육 배정·이수·정산, 법정의무교육(이수로그), 개인 교육이력(인사발령)과는 별도 기록입니다. 다른 화면에 반영하려면 해당 화면에서 직접 등록해주세요.</div></div>
     <div class="flex gap2"><button class="btn btn-secondary btn-sm" onclick="exportTrainingCoursesCSV()">📥 비용·결과 다운로드</button><button class="btn btn-primary" onclick="openTrainingCourseModal(null)">＋ 과정 개설</button></div></div>
   <div class="flex gap3 mb3">
     <div class="card" style="flex:1"><div class="card-body tc"><div class="fz11 text-gray">전체 과정</div><div style="font-size:24px;font-weight:800">${courses.length}</div></div></div>
