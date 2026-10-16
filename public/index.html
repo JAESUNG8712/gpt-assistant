@@ -2468,7 +2468,9 @@ async function _doSave(silent=false){
       _snapshotSingletonBaselines(_retrySaveRequest.state.data);
       if(r.recordRevisions)_applyRecordRevisions(r.recordRevisions);
       if(hasLaterChanges)_serverSavePending=true;
+      const savedChangeSeq=_retrySaveRequest.changeSeq;
       _retrySaveRequest=null;
+      _flushIntegrationWebhooks(savedChangeSeq);
       _serverFailCount = 0;
       serverConfig.status = "connected";
       serverConfig.retryCount = 0;
@@ -17054,15 +17056,15 @@ function approveApprovalDoc(docId,comment){
   const idx=doc.approvers.findIndex(a=>a.empId===currentUser.id&&a.status==="pending");if(idx<0)return;
   doc.approvers[idx].status="approved";doc.approvers[idx].decidedAt=new Date().toISOString();doc.approvers[idx].comment=comment||"";
   const next=doc.approvers.find(a=>a.status==="waiting");
-  if(next){next.status="pending";}else{doc.status="approved";doc.approvedAt=new Date().toISOString();_applyAttendanceApproval(doc);_applyWelfareApproval(doc);if(doc.templateId==="tpl-vendor-reg")_autoRegisterVendorFromApproval(doc);_fireIntegrationWebhooks("approval_complete",`[결재 완료] ${doc.title} — 최종 승인되었습니다.`);}
-  doc.updatedAt=new Date().toISOString();autoSaveToServerIfEnabled();showToast("승인 처리되었습니다.","success");renderPage();renderSidebar();
+  if(next){next.status="pending";}else{doc.status="approved";doc.approvedAt=new Date().toISOString();_applyAttendanceApproval(doc);_applyWelfareApproval(doc);if(doc.templateId==="tpl-vendor-reg")_autoRegisterVendorFromApproval(doc);}
+  doc.updatedAt=new Date().toISOString();autoSaveToServerIfEnabled();if(doc.status==="approved")_fireIntegrationWebhooks("approval_complete",doc.id);showToast("승인 처리되었습니다.","success");renderPage();renderSidebar();
 }
 function rejectApprovalDoc(docId,comment){
   const doc=approvalDocs.find(d=>String(d.id)===String(docId));if(!doc)return;
   const idx=doc.approvers.findIndex(a=>a.empId===currentUser.id&&a.status==="pending");if(idx<0)return;
   doc.approvers[idx].status="rejected";doc.approvers[idx].decidedAt=new Date().toISOString();doc.approvers[idx].comment=comment||"";
   doc.status="rejected";doc.updatedAt=new Date().toISOString();autoSaveToServerIfEnabled();showToast("반려 처리되었습니다.","info");renderPage();renderSidebar();
-  _fireIntegrationWebhooks("approval_complete",`[결재 반려] ${doc.title} — 반려되었습니다.`);
+  _fireIntegrationWebhooks("approval_complete",doc.id);
 }
 // ── 관리자: 미결재 문서의 결재자 변경 ────────────────────────────────────────────
 // 퇴직자가 "현재 결재자"로 지정된 진행중 문서는 아무도 처리할 수 없어 영구히 정체된다
@@ -17601,8 +17603,8 @@ function _doSubmitApprovalForm(){
   if(tplId==="tpl-flex"){const adm=employees.find(e=>e.active&&e.role==="admin");if(adm&&!ccList.includes(`emp:${adm.id}`))ccList.push(`emp:${adm.id}`);}
   const doc={id:genId(),templateId:tplId,authorId:currentUser.id,title:_getDocTitle(tplId,fd),createdAt:new Date().toISOString(),updatedAt:new Date().toISOString(),status:"in_progress",formData:fd,approvers,receivers,cc:ccList,attachments:p.attachments||[]};
   approvalDocs.push(doc);window._afPendingSubmit=null;window._afAttachments=[];closeTopModal();closeModal();autoSaveToServerIfEnabled();
-  _fireIntegrationWebhooks("approval_request",`[결재 상신] ${doc.title} (기안자: ${currentUser.name||""})`);
-  if(getTpl(tplId)?.category==="attendance")_fireIntegrationWebhooks("leave_request",`[휴가/근태 신청] ${doc.title} (신청자: ${currentUser.name||""})`);
+  _fireIntegrationWebhooks("approval_request",doc.id);
+  if(getTpl(tplId)?.category==="attendance")_fireIntegrationWebhooks("leave_request",doc.id);
   showToast("결재가 상신되었습니다.","success");gotoPage("approval-outbox");
 }
 let _apvFilter={search:"",dept:"",team:"",author:"",tplId:"",dateFrom:"",dateTo:""};
@@ -27621,9 +27623,32 @@ function _logIntegration(webhookName,event,status,message){
 // dispatch) 해결 — 클라이언트는 이벤트id+문구만 보내고, 실제 webhook URL은 서버만 안다
 // (non-admin의 GET /data에서는 webhooks 배열 자체가 제거됨). 전송이력(integrationLogs)도
 // 서버가 직접 기록하므로 여기서는 더 이상 _logIntegration()을 호출하지 않는다.
-function _fireIntegrationWebhooks(eventId,text){
-  if(!serverConfig.url)return; // 오프라인 데모 모드는 외부 연동 자체가 불가
-  serverRequest("POST","/api/integrations/webhooks/dispatch",{eventId,text}).catch(()=>{});
+const _pendingIntegrationWebhooks=[];
+function _fireIntegrationWebhooks(eventId,recordId){
+  if(!serverConfig.enabled||!serverConfig.url||_demoMode)return;
+  const key=`${eventId}:${recordId}`;
+  if(_pendingIntegrationWebhooks.some(e=>e.key===key))return;
+  _pendingIntegrationWebhooks.push({key,eventId,recordId,changeSeq:_saveChangeSeq,accessEpoch:_serverAccessEpoch,attempts:0,ready:false,busy:false});
+}
+function _flushIntegrationWebhooks(savedChangeSeq){
+  for(const event of _pendingIntegrationWebhooks){
+    if(event.accessEpoch!==_serverAccessEpoch){_pendingIntegrationWebhooks.splice(_pendingIntegrationWebhooks.indexOf(event),1);continue;}
+    if(event.changeSeq<=savedChangeSeq)event.ready=true;
+    if(!event.ready||event.busy)continue;
+    event.busy=true;
+    serverRequest("POST","/api/integrations/webhooks/dispatch",{eventId:event.eventId,recordId:event.recordId},20000)
+      .then(result=>{
+        if(result?.ok||result?.code==="WEBHOOK_SOURCE_INVALID"){
+          _pendingIntegrationWebhooks.splice(_pendingIntegrationWebhooks.indexOf(event),1);
+          if(result?.code==="WEBHOOK_SOURCE_INVALID")showToast("저장된 기록과 일치하지 않아 외부 알림을 보내지 않았습니다.","info");
+        }else throw new Error(result?.message||"웹훅 알림 전송 실패");
+      })
+      .catch(()=>{
+        if(++event.attempts>=3){_pendingIntegrationWebhooks.splice(_pendingIntegrationWebhooks.indexOf(event),1);showToast("외부 알림 전송을 확인하지 못했습니다. 연동 전송 이력을 확인해 주세요.","error");}
+        else setTimeout(()=>{event.busy=false;_flushIntegrationWebhooks(savedChangeSeq);},5000);
+      })
+      .finally(()=>{event.busy=false;});
+  }
 }
 async function testWebhook(id){
   const wh=(integrationSettings.webhooks||[]).find(w=>String(w.id)===String(id));if(!wh)return;
@@ -29654,6 +29679,7 @@ function _bpAddAttachment(e){
 }
 function saveBoardPost(editId){
   const title=$("#bp-title")?.value.trim();const content=$("#bp-content")?.value.trim();const catId=$("#bp-cat")?.value||_boardSelCat||"general";
+  let newNoticePostId=null;
   if(!title||!content){showToast("제목과 내용을 입력하세요.","error");return;}
   const attachments=window._bpAttachments||[];
   const isAnonymous=$("#bp-anonymous")?.checked||false;
@@ -29661,10 +29687,11 @@ function saveBoardPost(editId){
     const p=boardPosts.find(x=>x.id===editId);
     if(p){p.title=title;p.content=content;p.categoryId=catId;p.attachments=attachments;p.isAnonymous=isAnonymous;p.updatedAt=new Date().toISOString();}
   }else{
-    boardPosts.push({id:`post-${Date.now()}`,categoryId:catId,title,content,attachments,isAnonymous,authorId:currentUser.id,createdAt:new Date().toISOString(),updatedAt:new Date().toISOString(),views:0});
-    if(catId==="notice")_fireIntegrationWebhooks("notice_post",`[공지사항] ${title}`);
+    const post={id:`post-${Date.now()}`,categoryId:catId,title,content,attachments,isAnonymous,authorId:currentUser.id,createdAt:new Date().toISOString(),updatedAt:new Date().toISOString(),views:0};
+    boardPosts.push(post);
+    if(catId==="notice")newNoticePostId=post.id;
   }
-  closeModal();autoSaveToServerIfEnabled();showToast("게시물이 저장되었습니다.","success");renderBoardPage();
+  closeModal();autoSaveToServerIfEnabled();if(newNoticePostId)_fireIntegrationWebhooks("notice_post",newNoticePostId);showToast("게시물이 저장되었습니다.","success");renderBoardPage();
 }
 function openBoardPostDetail(postId){
   const post=boardPosts.find(p=>p.id===postId);if(!post)return;

@@ -72,7 +72,13 @@ test("웹훅 서버사이드 디스패치 — non-admin 비밀값 노출 차단 
     ...initial.data.employees,
     { id: "memberA", loginId: "memberA", pw: "memberA-pw-1", name: "팀원A", role: "member", active: true, dept: "개발본부", team: "A팀", menuPerms: {} },
   ];
-  const seed = await api("/save", auth(adminToken, "POST", { _version: initial.version, employees, boardPosts: [{ id: "bp-untouched", title: "다른 컬렉션", authorId: "admin" }] }));
+  const now = new Date().toISOString();
+  const seed = await api("/save", auth(adminToken, "POST", { _version: initial.version, employees,
+    boardPosts: [{ id: "bp-untouched", title: "다른 컬렉션", authorId: "admin" }],
+    approvalDocs: [{ id: "apv-member-1", authorId: "memberA", title: "member 트리거 테스트",
+      templateId: "tpl-vacation", createdAt: now, updatedAt: now, status: "in_progress",
+      approvers: [{ empId: "admin", status: "pending" }] }],
+  }));
   assert.equal(seed.status, 200);
   const memberToken = await login(api, "memberA", "memberA-pw-1");
 
@@ -104,14 +110,19 @@ test("웹훅 서버사이드 디스패치 — non-admin 비밀값 노출 차단 
     assert.equal(d.data.integrationSettings.webhooks[0].url, mock.url);
   });
 
-  await t.test("member가 이벤트id+문구만으로 디스패치를 트리거해도(URL을 몰라도) 실제 전송된다", async () => {
+  await t.test("저장된 본인 결재 기록으로만 디스패치하고 임의 문구는 무시한다", async () => {
     const r = await (await api("/api/integrations/webhooks/dispatch", auth(memberToken, "POST", {
-      eventId: "approval_request", text: "[결재 상신] member 트리거 테스트",
+      eventId: "approval_request", recordId: "apv-member-1", text: "위조된 외부 알림",
     }))).json();
     assert.equal(r.ok, true);
     assert.equal(r.dispatched, 1); // 구독된 활성 웹훅은 1개(미구독훅·비활성훅 제외)
     assert.equal(mock.received.length, 1);
-    assert.equal(mock.received[0].text, "[결재 상신] member 트리거 테스트");
+    assert.equal(mock.received[0].text, "[결재 상신] member 트리거 테스트 (신청자: 팀원A)");
+    const duplicate = await (await api("/api/integrations/webhooks/dispatch", auth(memberToken, "POST", {
+      eventId: "approval_request", recordId: "apv-member-1", text: "다른 문구",
+    }))).json();
+    assert.equal(duplicate.duplicate, true);
+    assert.equal(mock.received.length, 1);
   });
 
   await t.test("전송 결과가 integrationLogs에 기록되고, 다른 컬렉션(boardPosts)은 전혀 건드리지 않는다", async () => {
@@ -125,10 +136,27 @@ test("웹훅 서버사이드 디스패치 — non-admin 비밀값 노출 차단 
     assert.equal(post.title, "다른 컬렉션");
   });
 
+  await t.test("공지 알림은 저장된 작성자·제목을 사용하고 채널 멘션을 무력화한다", async () => {
+    const d = await getData(api, adminToken);
+    const post = { id: "notice-webhook-1", title: "@channel <긴급>", categoryId: "notice",
+      authorId: String(d.data.employees[0].id), createdAt: new Date().toISOString() };
+    const saved = await api("/save", auth(adminToken, "POST", { _version: d.version, boardPosts: [...d.data.boardPosts, post] }));
+    assert.equal(saved.status, 200);
+    const sent = await (await api("/api/integrations/webhooks/dispatch", auth(adminToken, "POST", {
+      eventId: "notice_post", recordId: post.id, text: "위조 문구",
+    }))).json();
+    assert.equal(sent.dispatched, 1);
+    assert.equal(mock.received.at(-1).text, "[공지사항] ＠channel &lt;긴급&gt;");
+    const forged = await api("/api/integrations/webhooks/dispatch", auth(memberToken, "POST", {
+      eventId: "notice_post", recordId: post.id,
+    }));
+    assert.equal(forged.status, 403);
+  });
+
   await t.test("구독한 활성 웹훅이 없으면 아무것도 보내지 않고 dispatched:0을 반환한다", async () => {
     const before = mock.received.length;
     const r = await (await api("/api/integrations/webhooks/dispatch", auth(memberToken, "POST", {
-      eventId: "leave_request", text: "[휴가/근태 신청] 아무도 구독 안 함",
+      eventId: "leave_request", recordId: "apv-member-1",
     }))).json();
     assert.equal(r.ok, true);
     assert.equal(r.dispatched, 0);
@@ -136,17 +164,19 @@ test("웹훅 서버사이드 디스패치 — non-admin 비밀값 노출 차단 
   });
 
   await t.test("알 수 없는 eventId는 400으로 거부된다", async () => {
-    const r = await api("/api/integrations/webhooks/dispatch", auth(memberToken, "POST", { eventId: "not_a_real_event", text: "x" }));
+    const r = await api("/api/integrations/webhooks/dispatch", auth(memberToken, "POST", { eventId: "not_a_real_event", recordId: "apv-member-1" }));
     assert.equal(r.status, 400);
   });
 
-  await t.test("빈 text는 400으로 거부된다", async () => {
-    const r = await api("/api/integrations/webhooks/dispatch", auth(memberToken, "POST", { eventId: "approval_request", text: "   " }));
-    assert.equal(r.status, 400);
+  await t.test("저장되지 않은 원본과 다른 사람의 결재 문서는 거부된다", async () => {
+    const missing = await api("/api/integrations/webhooks/dispatch", auth(memberToken, "POST", { eventId: "approval_request", recordId: "not-saved" }));
+    assert.equal(missing.status, 403);
+    const other = await api("/api/integrations/webhooks/dispatch", auth(adminToken, "POST", { eventId: "approval_request", recordId: "apv-member-1" }));
+    assert.equal(other.status, 403);
   });
 
   await t.test("토큰 없이는 401로 거부된다", async () => {
-    const r = await api("/api/integrations/webhooks/dispatch", auth(null, "POST", { eventId: "approval_request", text: "x" }));
+    const r = await api("/api/integrations/webhooks/dispatch", auth(null, "POST", { eventId: "approval_request", recordId: "apv-member-1" }));
     assert.equal(r.status, 401);
   });
 
@@ -183,6 +213,9 @@ test("웹훅 서버사이드 디스패치 — SSRF 가드(기본값: 운영과 �
 
   const save = await api("/save", auth(adminToken, "POST", {
     _version: initial.version,
+    approvalDocs: [{ id: "apv-ssrf", authorId: boot?.empId || initial.data.employees[0].id,
+      title: "SSRF 가드 검증", templateId: "tpl-vacation", createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(), status: "in_progress", approvers: [{ empId: "memberA", status: "pending" }] }],
     integrationSettings: { webhooks: [
       { id: 1, name: "loopback훅", type: "custom", url: mock.url, active: true, events: ["approval_request"] },
       { id: 2, name: "IPv4매핑훅", type: "custom",
@@ -192,7 +225,7 @@ test("웹훅 서버사이드 디스패치 — SSRF 가드(기본값: 운영과 �
   assert.equal(save.status, 200);
 
   const r = await (await api("/api/integrations/webhooks/dispatch", auth(adminToken, "POST", {
-    eventId: "approval_request", text: "SSRF 가드 검증",
+    eventId: "approval_request", recordId: "apv-ssrf",
   }))).json();
   assert.equal(r.ok, true);
   assert.equal(r.dispatched, 0, "loopback 목적지로는 실제 전송되면 안 됨");
@@ -229,13 +262,16 @@ test("웹훅 디스패치는 3xx 리다이렉트를 따라가지 않는다", asy
   const initial = await getData(api, token);
   const saved = await api("/save", auth(token, "POST", {
     _version: initial.version,
+    approvalDocs: [{ id: "apv-redirect", authorId: initial.data.employees[0].id,
+      title: "redirect test", templateId: "tpl-vacation", createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(), status: "in_progress", approvers: [{ empId: "admin", status: "pending" }] }],
     integrationSettings: { webhooks: [{ id: 1, name: "redirect", type: "custom",
       url: `http://127.0.0.1:${redirector.address().port}/hook`, active: true,
       events: ["approval_request"] }], calendar: {} },
   }));
   assert.equal(saved.status, 200);
   const dispatched = await (await api("/api/integrations/webhooks/dispatch", auth(token, "POST", {
-    eventId: "approval_request", text: "redirect test",
+    eventId: "approval_request", recordId: "apv-redirect",
   }))).json();
   assert.equal(dispatched.ok, true);
   assert.equal(dispatched.dispatched, 0);

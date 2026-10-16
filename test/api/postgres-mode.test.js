@@ -237,6 +237,14 @@ if (!ADMIN_DATABASE_URL) {
       assert.equal(replay.headers.get("x-idempotency-replayed"), "true");
       const vouchers = (await (await api("/api/accounting/vouchers", { headers: commonHeaders })).json()).vouchers;
       assert.equal(vouchers.filter(v => v.sourceExpenseClaimId === claimId).length, 1);
+      const postedResponse = await api(`/api/accounting/vouchers/${paid.voucherId}/post`, {
+        method: "POST", headers: { ...commonHeaders, "Idempotency-Key": "pg-expense-post-0001" },
+        body: JSON.stringify({}),
+      });
+      const postedResult = await postedResponse.json();
+      assert.equal(postedResponse.status, 200, JSON.stringify(postedResult));
+      const postedClaim = (await (await api("/data", { headers: commonHeaders })).json()).data.expenseClaims.find(c => c.id === claimId);
+      assert.equal(postedClaim.voucherNo, postedResult.voucher.voucherNo);
     });
 
     await t.test("4d) 재고 조정과 멱등성 완료 기록은 같은 transaction에서 commit", async () => {

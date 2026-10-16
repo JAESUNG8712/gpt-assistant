@@ -47,24 +47,20 @@ const budgetRouterFactory = require("./budget");
 // 동작해야 함) — 이런 경우 해당 라우트 바로 위 주석에 "왜 생략했는지"를 남겨둔다.
 // ════════════════════════════════════════════════════════════════════════════
 
-// Express 4는 async 라우트 핸들러 내부의 동기 throw/reject를 자동으로 잡아주지 않는다
-// (Express 5와 다른 점) — try/catch 없이 작성된 async 핸들러 하나가 예외를 던지면
-// unhandled promise rejection이 되고, Node 15+ 기본 동작상 프로세스 전체가 종료된다.
-// 2026-08-03 실제 운영 장애: budget.js의 사업계획 저장 라우트가 디스크 미마운트로 인한
-// 파일쓰기 ENOENT를 그대로 던져 인스턴스 전체가 크래시(Exited with status 1)됐음 — 라우트
-// 하나의 개별 오류가 전 직원의 HR/ERP 서비스 전체를 다운시키는 사고로 이어진 것. 근본
-// 원인(해당 파일쓰기 경로)은 별도로 수정했지만, 앞으로 유사한 미처리 예외가 어디서든
-// 발생해도 서버 프로세스 자체는 계속 살아있도록 안전망을 추가한다(로그만 남기고 종료하지
-// 않음 — 해당 요청은 클라이언트에 응답 없이 타임아웃되거나 500으로 끝날 수 있으나, 다른
-// 모든 사용자의 세션·요청에는 영향이 없다).
+// 요청의 async 예외는 라우트 가드가 Express 오류 미들웨어로 전달해 500을 응답한다.
+// 여기까지 올라온 오류는 요청 범위 밖의 미처리 오류이므로 상태가 안전하다고 가정할 수
+// 없다. 로그만 남기고 계속 실행하면 손상된 상태/응답 없는 요청이 쌓일 수 있다.
 process.on("unhandledRejection", (reason) => {
-  console.error("⚠️  [unhandledRejection] 처리되지 않은 프로미스 거부(요청 하나가 실패했을 뿐 서버는 계속 실행됩니다):", reason);
+  console.error("[fatal] 처리되지 않은 프로미스 거부:", reason);
+  process.exit(1);
 });
 process.on("uncaughtException", (err) => {
-  console.error("⚠️  [uncaughtException] 처리되지 않은 예외(요청 하나가 실패했을 뿐 서버는 계속 실행됩니다):", err);
+  console.error("[fatal] 처리되지 않은 예외:", err);
+  process.exit(1);
 });
 
 const app  = express();
+require("./lib/async-route-guard").installAsyncRouteGuard(app);
 const PORT = process.env.PORT || 3000;
 // 보안상 API 라우트는 경로 대소문자를 정확히 맞춰야 한다. Express 기본값은
 // case-insensitive라 `/API/Accounting/Accounts`가 실제 `/api/accounting/accounts`
@@ -683,6 +679,11 @@ function filterDataForRole(data, auth) {
   const out = { ...data };
   const settings = out.settings || {};
   const myId = String(auth.empId);
+  // 직접 신청 과정의 설문 응답에는 직원별 의견이 포함된다. 관리 화면은 admin 전용이므로
+  // 일반 직원에게는 본인의 신청·이수·설문만 제공한다.
+  if (auth.role !== "admin" && Array.isArray(out.trainingEnrollments)) {
+    out.trainingEnrollments = out.trainingEnrollments.filter(e => e && String(e.empId) === myId);
+  }
   if (auth.role !== "admin" && Array.isArray(out.payslips)) {
     out.payslips = out.payslips.filter(p => p && String(p.empId) === myId);
   }
@@ -1016,6 +1017,11 @@ function filterDataForMenuPermissions(data, menuPerms) {
     if (Array.isArray(out.learningCourses)) out.learningCourses = [];
     if (Array.isArray(out.learningAssignments)) out.learningAssignments = [];
     hiddenTombstoneFields.push("learningCourses", "learningAssignments");
+  }
+  if (menuPerms["training-courses"] === false && menuPerms["training-admin"] === false) {
+    if (Array.isArray(out.trainingCourses)) out.trainingCourses = [];
+    if (Array.isArray(out.trainingEnrollments)) out.trainingEnrollments = [];
+    hiddenTombstoneFields.push("trainingCourses", "trainingEnrollments");
   }
   if (menuPerms["acct-receivables"] === false) {
     if (Array.isArray(out.acctPayments)) out.acctPayments = [];
@@ -6854,19 +6860,85 @@ const INTEGRATION_EVENT_LABELS = {
   leave_request: "휴가/근태 신청",
   notice_post: "공지사항 등록",
 };
+const _ATTENDANCE_TEMPLATE_IDS = new Set([
+  "tpl-vacation", "tpl-halfday", "tpl-early", "tpl-sick", "tpl-funeral", "tpl-parental",
+  "tpl-training", "tpl-biztrip", "tpl-flex", "tpl-holiday-work", "tpl-overtime", "tpl-remote",
+]);
+function _isRecentWebhookEventTime(value) {
+  const time = Date.parse(value);
+  return Number.isFinite(time) && time <= Date.now() + 60_000 && Date.now() - time <= 24 * 60 * 60 * 1000;
+}
+function _safeWebhookLabel(value, max = 200) {
+  // Slack-style markup/mentions must not be interpreted from a user-entered title.
+  return String(value || "").replace(/[\u0000-\u001f\u007f]/g, " ").trim().slice(0, max)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/@/g, "＠");
+}
+function _webhookEventFromStoredRecord(data, auth, eventId, recordId) {
+  const actorId = String(auth?.empId ?? "");
+  if (!actorId || !recordId || recordId.length > 128) return null;
+  if (eventId === "notice_post") {
+    const post = (data.boardPosts || []).find(p => String(p?.id) === recordId);
+    if (!post || post.categoryId !== "notice" || String(post.authorId) !== actorId) return null;
+    if (!_isRecentWebhookEventTime(post.createdAt)) return null;
+    return { key: `${eventId}:${recordId}`, text: `[공지사항] ${_safeWebhookLabel(post.title)}` };
+  }
+  const doc = (data.approvalDocs || []).find(d => String(d?.id) === recordId);
+  if (!doc) return null;
+  const title = _safeWebhookLabel(doc.title);
+  if (eventId === "approval_request" || eventId === "leave_request") {
+    if (String(doc.authorId) !== actorId || doc.status === "cancelled") return null;
+    if (!_isRecentWebhookEventTime(doc.createdAt)) return null;
+    if (eventId === "leave_request") {
+      const custom = (data.approvalTemplates || []).find(t => t?.id === doc.templateId);
+      if (!_ATTENDANCE_TEMPLATE_IDS.has(doc.templateId) && custom?.category !== "attendance") return null;
+    }
+    const author = (data.employees || []).find(e => String(e?.id) === actorId);
+    const label = eventId === "leave_request" ? "휴가/근태 신청" : "결재 상신";
+    return { key: `${eventId}:${recordId}`, text: `[${label}] ${title} (신청자: ${_safeWebhookLabel(author?.name, 80)})` };
+  }
+  if (eventId === "approval_complete") {
+    const deciders = Array.isArray(doc.approvers) ? doc.approvers : [];
+    const decisive = doc.status === "rejected" ? deciders.find(a => a?.status === "rejected") : deciders.at(-1);
+    if (!["approved", "rejected"].includes(doc.status) || String(decisive?.empId) !== actorId ||
+        decisive?.status !== (doc.status === "rejected" ? "rejected" : "approved")) return null;
+    if (!_isRecentWebhookEventTime(doc.updatedAt || doc.approvedAt)) return null;
+    return { key: `${eventId}:${recordId}:${doc.status}`, text: `[결재 ${doc.status === "approved" ? "완료" : "반려"}] ${title} — ${doc.status === "approved" ? "최종 승인" : "반려"}되었습니다.` };
+  }
+  return null;
+}
+async function _reserveWebhookEvent(companyId, eventKey) {
+  const digest = crypto.createHash("sha256").update(eventKey).digest("hex");
+  if (USE_JSON_FILE) {
+    _loadFileIdempotency();
+    _pruneFileIdempotency();
+    const scope = `webhook:${_scopeKey(companyId)}:${digest}`;
+    if (_fileIdempotency[scope]) return false;
+    _fileIdempotency[scope] = { reserved: true, expiresAt: new Date(Date.now() + 48 * 60 * 60 * 1000).toISOString() };
+    _atomicWriteFileSync(IDEMPOTENCY_FILE, JSON.stringify(_fileIdempotency, null, 2));
+    return true;
+  }
+  await pool.query("DELETE FROM api_idempotency WHERE actor_id='system:webhook' AND expires_at<=NOW()");
+  const result = await pool.query(
+    `INSERT INTO api_idempotency (company_id,actor_id,route,idempotency_key,request_hash,expires_at)
+     VALUES ($1,'system:webhook','POST /api/integrations/webhooks/dispatch',$2,$2,NOW()+INTERVAL '48 hours')
+     ON CONFLICT DO NOTHING RETURNING idempotency_key`, [companyId, digest]);
+  return result.rowCount > 0;
+}
 app.post("/api/integrations/webhooks/dispatch", async (req, res) => {
   if (!requireAuth(req, res)) return;
   const eventId = String(req.body?.eventId || "");
   if (!Object.prototype.hasOwnProperty.call(INTEGRATION_EVENT_LABELS, eventId))
     return res.status(400).json({ ok: false, message: "알 수 없는 이벤트입니다." });
-  const text = String(req.body?.text || "").replace(/[\u0000-\u001f\u007f]/g, " ").trim().slice(0, 1000);
-  if (!text) return res.status(400).json({ ok: false, message: "전송할 내용이 없습니다." });
+  const recordId = String(req.body?.recordId || "");
   try {
     const companyId = req.auth.companyId || null;
     const data = await loadData(companyId);
+    const source = _webhookEventFromStoredRecord(data, req.auth, eventId, recordId);
+    if (!source) return res.status(403).json({ ok: false, code: "WEBHOOK_SOURCE_INVALID", message: "저장된 업무 기록과 발송 권한을 확인할 수 없습니다." });
     const webhooks = Array.isArray(data?.integrationSettings?.webhooks) ? data.integrationSettings.webhooks : [];
     const targets = webhooks.filter(w => w && w.active !== false && Array.isArray(w.events) && w.events.includes(eventId));
     if (!targets.length) return res.json({ ok: true, dispatched: 0 });
+    if (!await _reserveWebhookEvent(companyId, source.key)) return res.json({ ok: true, dispatched: 0, duplicate: true });
     const evLabel = INTEGRATION_EVENT_LABELS[eventId];
     const now = new Date().toISOString();
     const results = await Promise.allSettled(targets.map(async wh => {
@@ -6875,7 +6947,7 @@ app.post("/api/integrations/webhooks/dispatch", async (req, res) => {
         return { webhookName: String(wh.name || "").slice(0, 100), status: "fail", message: "안전하지 않은 전송 대상(내부/루프백 주소)" };
       }
       try {
-        const statusCode = await _postWebhookPinned(target, text);
+        const statusCode = await _postWebhookPinned(target, source.text);
         const ok = statusCode >= 200 && statusCode < 300;
         return { webhookName: String(wh.name || "").slice(0, 100), status: ok ? "success" : "fail", message: ok ? "자동 발송" : `HTTP ${statusCode}` };
       } catch (e) {
@@ -7250,7 +7322,8 @@ app.post("/restore", async (req, res) => {
       }));
       const finalData = await loadData(companyId);
       broadcastSSE("data_restored", { name, fields: result.restoredFields, deletedExtras: deleteExtras, version: result.version }, null, companyId);
-      return res.json({ ok: true, version: result.version, restoredFields: result.restoredFields, deletedExtras: deleteExtras, data: filterDataForRole(stripPwField(finalData), req.auth) });
+      return res.json({ ok: true, version: result.version, restoredFields: result.restoredFields, deletedExtras: deleteExtras,
+        data: filterDataForMenuPermissions(filterDataForRole(stripPwField(finalData), req.auth), req.auth?.menuPerms) });
     }
 
     const current = await loadData(companyId);
@@ -7292,7 +7365,8 @@ app.post("/restore", async (req, res) => {
 
     const finalData = await loadData(companyId);
     broadcastSSE("data_restored", { name, fields: restoredFields, deletedExtras: deleteExtras, version: _getVersion(companyId) }, null, companyId);
-    res.json({ ok: true, version: _getVersion(companyId), restoredFields, deletedExtras: deleteExtras, data: filterDataForRole(stripPwField(finalData), req.auth) });
+    res.json({ ok: true, version: _getVersion(companyId), restoredFields, deletedExtras: deleteExtras,
+      data: filterDataForMenuPermissions(filterDataForRole(stripPwField(finalData), req.auth), req.auth?.menuPerms) });
   } catch (e) {
     // rejectDemoDataForProduction()이 httpError()로 만든 오류는 e.status/e.code를 갖고
     // 있다(예: 403 DEMO_DATA_FORBIDDEN) — POST /save와 동일하게 그 상태코드로 응답한다.
@@ -8046,7 +8120,8 @@ app.post("/api/hr/expense-claims/:id/pay", async (req, res) => {
   };
   const buildPayment = (claim, voucher) => ({
     ...claim, status: "paid", paidAt: date, payMethod: method, paidBy: _actorLabel(req),
-    voucherId: voucher?.id || null, voucherNo: voucher?.voucherNo || (voucher ? "(임시)" : null),
+    // 임시 전표에는 아직 확정 번호가 없다. 표시용 문자열을 원장 데이터에 저장하지 않는다.
+    voucherId: voucher?.id || null, voucherNo: voucher?.voucherNo || null,
     updatedAt: new Date().toISOString(),
   });
   const buildVoucher = claim => {
@@ -8234,6 +8309,20 @@ app.post("/api/accounting/vouchers", async (req, res) => {
   } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
+function _syncExpenseVoucherNumberFile(voucher, companyId) {
+  if (voucher?.status !== "posted" || !voucher.voucherNo) return false;
+  const claims = _fileStore.expenseClaims || [];
+  if (!claims.some(c => c?.status === "paid" && String(c.voucherId) === String(voucher.id) && c.voucherNo !== voucher.voucherNo)) return false;
+  const nextVersion = _getVersion(companyId) + 1;
+  const nextStore = { ..._fileStore, _version: nextVersion,
+    expenseClaims: claims.map(c => c?.status === "paid" && String(c.voucherId) === String(voucher.id)
+      ? { ...c, voucherNo: voucher.voucherNo } : c) };
+  _atomicWriteFileSync(JSON_FILE, JSON.stringify(nextStore, null, 2));
+  _fileStore = nextStore;
+  _setVersion(companyId, nextVersion, new Date().toISOString());
+  broadcastSSE("data_updated", { version: nextVersion }, null, companyId);
+  return true;
+}
 app.post("/api/accounting/vouchers/:id/post", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
@@ -8241,9 +8330,15 @@ app.post("/api/accounting/vouchers/:id/post", async (req, res) => {
     const companyId = req.auth.companyId || null;
     const actorId = req.auth.loginId || req.auth.empId || "unknown";
     if (USE_JSON_FILE) {
+      return await _withSaveLock(async () => {
       const v = _fileAccounting.vouchers.find(v => v.id === id);
       if (!v) return res.status(404).json({ ok: false, message: "전표를 찾을 수 없습니다." });
-      if (v.status !== "draft") return res.status(400).json({ ok: false, message: "임시 저장 상태의 전표만 확정할 수 있습니다." });
+      if (v.status !== "draft") {
+        // 회계 파일 저장 후 경비 파일 반영 전에 프로세스가 중단됐다면, 같은 전표의
+        // 재요청에서 번호만 안전하게 복구한다. 확정 동작 자체는 반복하지 않는다.
+        if (_syncExpenseVoucherNumberFile(v, companyId)) return res.json({ ok: true, voucher: v, reconciled: true });
+        return res.status(400).json({ ok: false, message: "임시 저장 상태의 전표만 확정할 수 있습니다." });
+      }
       if (!_isValidDateStr(v.date)) return res.status(400).json({ ok: false, message: "전표일자가 올바르지 않습니다." });
       const year = Number(v.date.slice(0, 4));
       const seq = _nextAcctSeq("voucherSeq", year);
@@ -8252,22 +8347,44 @@ app.post("/api/accounting/vouchers/:id/post", async (req, res) => {
       v.postedBy = actorId;
       v.postedAt = new Date().toISOString();
       _saveFileAccounting();
+      _syncExpenseVoucherNumberFile(v, companyId);
       return res.json({ ok: true, voucher: v });
+      });
     }
-    return await _runPgIdempotentCommand(req, res, async client => {
-      const { rows } = await client.query("SELECT data, status FROM vouchers WHERE id = $1 AND (company_id = $2 OR company_id IS NULL) FOR UPDATE", [id, companyId]);
-      if (!rows.length) return { status: 404, body: { ok: false, message: "전표를 찾을 수 없습니다." } };
-      if (rows[0].status !== "draft") return { status: 400, body: { ok: false, message: "임시 저장 상태의 전표만 확정할 수 있습니다." } };
-      if (!_isValidDateStr(rows[0].data?.date)) return { status: 400, body: { ok: false, message: "전표일자가 올바르지 않습니다." } };
-      const year = Number(rows[0].data.date.slice(0, 4));
-      const { rows: seqRows } = await client.query(
-        "INSERT INTO voucher_seq (company_id, year, seq) VALUES ($1,$2,1) ON CONFLICT (company_id, year) DO UPDATE SET seq = voucher_seq.seq + 1 RETURNING seq",
-        [companyId, year]
-      );
-      const voucherNo = `JE-${year}-${String(seqRows[0].seq).padStart(6, "0")}`;
-      const v = { ...rows[0].data, voucherNo, status: "posted", postedBy: actorId, postedAt: new Date().toISOString() };
-      await client.query("UPDATE vouchers SET voucher_no = $2, status = 'posted', data = $3, updated_at = NOW() WHERE id = $1", [id, voucherNo, v]);
-      return { status: 200, body: { ok: true, voucher: v } };
+    let claimVersion = null;
+    await _withDistributedSaveLock(companyId, async lockClient => {
+      await _runPgIdempotentCommand(req, res, async client => {
+        const { rows } = await client.query("SELECT data, status FROM vouchers WHERE id = $1 AND (company_id = $2 OR company_id IS NULL) FOR UPDATE", [id, companyId]);
+        if (!rows.length) return { status: 404, body: { ok: false, message: "전표를 찾을 수 없습니다." } };
+        if (rows[0].status !== "draft") return { status: 400, body: { ok: false, message: "임시 저장 상태의 전표만 확정할 수 있습니다." } };
+        if (!_isValidDateStr(rows[0].data?.date)) return { status: 400, body: { ok: false, message: "전표일자가 올바르지 않습니다." } };
+        const year = Number(rows[0].data.date.slice(0, 4));
+        const { rows: seqRows } = await client.query(
+          "INSERT INTO voucher_seq (company_id, year, seq) VALUES ($1,$2,1) ON CONFLICT (company_id, year) DO UPDATE SET seq = voucher_seq.seq + 1 RETURNING seq",
+          [companyId, year]
+        );
+        const voucherNo = `JE-${year}-${String(seqRows[0].seq).padStart(6, "0")}`;
+        const v = { ...rows[0].data, voucherNo, status: "posted", postedBy: actorId, postedAt: new Date().toISOString() };
+        await client.query("UPDATE vouchers SET voucher_no = $2, status = 'posted', data = $3, updated_at = NOW() WHERE id = $1", [id, voucherNo, v]);
+        const synced = await client.query(
+          `UPDATE app_collections SET data=jsonb_set(data,'{voucherNo}',to_jsonb($3::text),true), updated_at=NOW()
+           WHERE company_id=$2 AND collection='expenseClaims' AND data->>'voucherId'=$1
+             AND data->>'status'='paid' AND data->>'voucherNo' IS DISTINCT FROM $3`,
+          [id, companyId, voucherNo]
+        );
+        if (synced.rowCount) {
+          const versionResult = await client.query(
+            "INSERT INTO app_meta (key,value) VALUES ($1,'1') ON CONFLICT (key) DO UPDATE SET value=(app_meta.value::bigint+1)::text RETURNING value",
+            [`data_version:${_scopeKey(companyId)}`]
+          );
+          claimVersion = Number(versionResult.rows[0].value);
+        }
+        return { status: 200, body: { ok: true, voucher: v } };
+      }, lockClient);
+      if (claimVersion !== null) {
+        _setVersion(companyId, claimVersion, new Date().toISOString());
+        broadcastSSE("data_updated", { version: claimVersion }, null, companyId);
+      }
     });
   } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
@@ -13745,8 +13862,18 @@ app.post("/api/reset-all", loginLimiter, async (req, res) => {
 });
 
 // ── Fallback SPA ──────────────────────────────────────────────────────────────
+if (process.env.NODE_ENV === "test") {
+  app.get("/__test__/async-route-error", async () => { throw new Error("TEST_ASYNC_ROUTE_ERROR"); });
+}
 app.get("*", (req, res) => {
   res.sendFile(path.join(__dirname, "public", "index.html"));
+});
+app.use((err, req, res, next) => {
+  console.error(`[request-error] ${req.method} ${req.path}:`, err);
+  if (res.headersSent) return next(err);
+  res.status(Number(err?.status) >= 400 && Number(err?.status) < 500 ? Number(err.status) : 500)
+    .json({ ok: false, code: err?.code && Number(err?.status) < 500 ? err.code : "INTERNAL_ERROR",
+      message: Number(err?.status) >= 400 && Number(err?.status) < 500 ? String(err.message || "요청 오류") : "요청을 처리하지 못했습니다." });
 });
 
 // ── Local IP helper ───────────────────────────────────────────────────────────

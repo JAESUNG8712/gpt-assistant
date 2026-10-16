@@ -127,7 +127,8 @@ test("D1~D5 신설 컬렉션(5종) — member의 직접 /save 위조가 차단�
     // mem2가 mem1의 기존 레코드(e1)를 자기 명의로 바꿔치기 시도 — 소유자 필드 변경 자체가 막힌다.
     d = await getData(api, mem2Token);
     const victim = d.data.trainingEnrollments.find(e => e.id === "e1");
-    await api("/save", auth(mem2Token, "POST", { _version: d.version, trainingEnrollments: [{ ...victim, empId: "mem2", status: "completed" }] }));
+    assert.equal(victim, undefined, "다른 직원의 설문·신청 원본은 읽기 응답에서 제외해야 함");
+    await api("/save", auth(mem2Token, "POST", { _version: d.version, trainingEnrollments: [{ id: "e1", courseId: "c1", empId: "mem2", status: "completed" }] }));
     d = await getData(api, admin.token);
     const after = d.data.trainingEnrollments.find(e => e.id === "e1");
     assert.equal(after.empId, "mem1");
@@ -148,6 +149,24 @@ test("D1~D5 신설 컬렉션(5종) — member의 직접 /save 위조가 차단�
     assert.equal(r.ok, true);
     d = await getData(api, admin.token);
     assert.equal(d.data.trainingEnrollments.find(e => e.id === "e1").status, "completed");
+  });
+
+  await t.test("직접 교육 신청·설문은 본인만 조회하고 메뉴 제한 시 원본도 내려오지 않는다", async () => {
+    d = await getData(api, mem2Token);
+    assert.equal(d.data.trainingEnrollments.length, 0);
+    const added = await api("/save", auth(mem2Token, "POST", { _version: d.version,
+      trainingEnrollments: [{ id: "e2", courseId: "c1", empId: "mem2", status: "applied" }] }));
+    assert.equal(added.status, 200);
+    assert.deepEqual((await getData(api, memToken)).data.trainingEnrollments.map(e => e.id), ["e1"]);
+    assert.deepEqual((await getData(api, mem2Token)).data.trainingEnrollments.map(e => e.id), ["e2"]);
+    d = await getData(api, admin.token);
+    const restricted = d.data.employees.map(e => e.id === "mem2"
+      ? { ...e, menuPerms: { ...(e.menuPerms || {}), "training-courses": false, "training-admin": false } } : e);
+    assert.equal((await (await api("/save", auth(admin.token, "POST", { _version: d.version, employees: restricted }))).json()).ok, true);
+    const restrictedToken = await login(api, "mem2", "mem-pw-123456");
+    const hidden = (await getData(api, restrictedToken)).data;
+    assert.deepEqual(hidden.trainingCourses, []);
+    assert.deepEqual(hidden.trainingEnrollments, []);
   });
 
   await t.test("값 범위 검증 — admin이라도 음수 압류금액·범위 밖 날짜는 거부된다", async () => {

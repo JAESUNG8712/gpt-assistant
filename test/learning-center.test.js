@@ -7,3 +7,14 @@ test("정산일은 실제 달력 날짜여야 한다",()=>{assert.equal(tools.va
 test("실제 정산액은 입력한 유효한 비음수여야 한다",()=>{assert.equal(tools.validateSettlement({settlementStatus:"settled",settledAmount:280000}).ok,true);assert.equal(tools.validateSettlement({settlementStatus:"settled",settledAmount:""}).ok,false);assert.equal(tools.validateSettlement({settlementStatus:"settled",settledAmount:-1}).ok,false);assert.equal(tools.validateSettlement({settlementStatus:"settled",settledAmount:"abc"}).ok,false);});
 test("개인별 교육 요약은 다른 직원을 제외하고 실제 정산액을 사용한다",()=>{const s=tools.summarize([{id:"c1",status:"active"}],[{empId:"e1",status:"completed",approvedCost:300000,settledAmount:280000,settlementStatus:"settled"},{empId:"e2",status:"assigned",approvedCost:500000,settlementStatus:"pending"}],"e1","2026-10-01");assert.deepEqual(s,{activeCourses:1,assigned:0,completed:1,overdue:0,dueSoon:0,pendingSettlement:0,approvedCost:300000,settledCost:280000});});
 test("교육 이수기한 7일 이내는 경과 건과 분리한다",()=>{const s=tools.summarize([],[{empId:"e1",status:"assigned",dueDate:"2026-10-08"},{empId:"e1",status:"in_progress",dueDate:"2026-09-30"}],"e1","2026-10-01");assert.equal(s.dueSoon,1);assert.equal(s.overdue,1);});
+test("두 교육 원장을 읽기 전용으로 합치되 같은 과정명을 임의로 중복 제거하지 않는다",()=>{
+  const rows=tools.combinedHistory([{id:"a",name:"리더십",startDate:"2026-10-01"}],
+    [{id:"assignment-1",courseId:"a",empId:"e1",status:"completed",completedAt:"2026-10-10"}],
+    [{id:"b",title:"리더십",startDate:"2026-10-02"}],
+    [{id:"enrollment-1",courseId:"b",empId:"e1",status:"completed",completedAt:"2026-10-11"},
+      {id:"enrollment-2",courseId:"b",empId:"e2",status:"applied"}],"e1");
+  assert.equal(rows.length,2);
+  assert.deepEqual(rows.map(r=>r.source),["직접 신청","배정·결재"]);
+  assert.ok(rows.every(r=>r.courseName==="리더십"));
+  assert.ok(rows.every(r=>r.empId==="e1"));
+});
