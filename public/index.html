@@ -3482,13 +3482,6 @@ function showModal(html,opts){
 const openModal=showModal; // alias
 function closeTopModal(){closeModal();}
 function closeModal(){
-  stopKpiAutoDraft();
-  setTimeout(()=>{ if(_pendingRender){ _pendingRender=false; renderPage(); } }, 150);
-  // Release any locks held for editing (they will be released server-side on SSE disconnect too)
-  // We release KPI/emp locks when modal closes
-  for(const key of Array.from(_myLocks)){
-    if(key.startsWith("kpi:") || key.startsWith("emp:")) releaseLock(key);
-  }
   // $(".modal-ov")(=querySelector, DOM 순서상 첫 번째 = 가장 먼저 열린/아래쪽 모달)를
   // 지우고 있었는데, 모달 안에서 showModal()을 다시 호출해 모달이 쌓이는 화면(예: PMS
   // 프로젝트 등록의 투입인원 추가/삭제)에서는 사용자가 보고 있는 맨 위(최신) 모달이 아니라
@@ -3499,6 +3492,15 @@ function closeModal(){
   const opener=state?.opener;
   try{state?.onClose?.();}catch(e){console.warn("modal close callback failed",e);}
   ov.remove();_syncModalBackground();
+  // 중첩 확인창만 닫힌 동안에는 뒤의 편집 화면이 여전히 열려 있다. 이 시점에
+  // 초안 저장을 멈추거나 편집 잠금을 해제하면 다른 사용자의 동시 수정이 허용된다.
+  if(!_modalStack().length){
+    stopKpiAutoDraft();
+    setTimeout(()=>{ if(_pendingRender){ _pendingRender=false; renderPage(); } }, 150);
+    for(const key of Array.from(_myLocks)){
+      if(key.startsWith("kpi:") || key.startsWith("emp:")) releaseLock(key);
+    }
+  }
   requestAnimationFrame(()=>{const parent=_modalStack().at(-1);if(parent)return _focusModal(_modalDialog(parent));if(opener?.isConnected)opener.focus({preventScroll:true});});
 }
 
