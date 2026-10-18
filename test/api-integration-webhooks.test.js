@@ -21,17 +21,18 @@ const { startServer, bootstrapAdminAndLogin } = require("./support/start-server"
 
 function startMockReceiver() {
   const received = [];
+  let statusCode = 200;
   const server = http.createServer((req, res) => {
     let body = "";
     req.on("data", c => (body += c));
     req.on("end", () => {
       received.push(JSON.parse(body || "{}"));
-      res.writeHead(200, { "Content-Type": "application/json" });
+      res.writeHead(statusCode, { "Content-Type": "application/json" });
       res.end("{}");
     });
   });
   return new Promise((resolve) => {
-    server.listen(0, "127.0.0.1", () => resolve({ server, received, url: `http://127.0.0.1:${server.address().port}/hook` }));
+    server.listen(0, "127.0.0.1", () => resolve({ server, received, setStatus: value => { statusCode = value; }, url: `http://127.0.0.1:${server.address().port}/hook` }));
   });
 }
 
@@ -191,6 +192,27 @@ test("웹훅 서버사이드 디스패치 — non-admin 비밀값 노출 차단 
     assert.equal(after.data.integrationSettings.webhooks.length, 3); // 위조된 1건으로 교체되지 않음
     assert.ok(!after.data.integrationSettings.webhooks.some(w => w.url === "http://evil.example/steal"));
   });
+
+  await t.test("연동 테스트는 관리자만 저장된 대상으로 발송하고 실제 HTTP 실패를 표시한다", async () => {
+    const denied = await api("/api/integrations/webhooks/test", auth(memberToken, "POST", { webhookId: 1 }));
+    assert.equal(denied.status, 403);
+    const before = mock.received.length;
+    const success = await (await api("/api/integrations/webhooks/test", auth(adminToken, "POST", { webhookId: 1, url: "http://evil.example" }))).json();
+    assert.equal(success.delivered, true); assert.equal(mock.received.length, before + 1);
+    mock.setStatus(503);
+    const failure = await (await api("/api/integrations/webhooks/test", auth(adminToken, "POST", { webhookId: 1 }))).json();
+    assert.equal(failure.ok, false); assert.equal(failure.delivered, false); assert.equal(failure.message, "HTTP 503");
+    assert.equal(failure.log.status, "fail"); mock.setStatus(200);
+  });
+
+  await t.test("기안 메뉴 차단 후에는 저장된 본인 문서도 알림 재전송할 수 없다", async () => {
+    const d = await getData(api, adminToken);
+    await api("/save", auth(adminToken, "POST", { _version: d.version,
+      employees: d.data.employees.map(e => e.id === "memberA" ? { ...e, menuPerms: { "approval-draft": false } } : e) }));
+    const restrictedToken = await login(api, "memberA", "memberA-pw-1");
+    const denied = await api("/api/integrations/webhooks/dispatch", auth(restrictedToken, "POST", { eventId: "approval_request", recordId: "apv-member-1" }));
+    assert.equal(denied.status, 403);
+  });
 });
 
 // 위 테스트는 ALLOW_LOCAL_WEBHOOK_TARGETS=true로 SSRF 가드를 꺼야만 동작했다 — 이 테스트는
@@ -238,6 +260,9 @@ test("웹훅 서버사이드 디스패치 — SSRF 가드(기본값: 운영과 �
   assert.match(log.message, /안전하지 않은/);
   const mapped = d.data.integrationLogs.find(l => l.webhookName === "IPv4매핑훅");
   assert.equal(mapped?.status, "fail", "IPv4 매핑 IPv6 주소도 차단해야 한다");
+  const tested = await (await api("/api/integrations/webhooks/test", auth(adminToken, "POST", { webhookId: 1 }))).json();
+  assert.equal(tested.delivered, false);
+  assert.equal(mock.received.length, 0, "테스트 발송도 동일한 SSRF 보호 적용");
 });
 
 test("웹훅 디스패치는 3xx 리다이렉트를 따라가지 않는다", async (t) => {

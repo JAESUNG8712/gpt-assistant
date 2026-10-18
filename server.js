@@ -16,6 +16,7 @@ const https = require("node:https");
 const pool    = require("./db");
 const multer  = require("multer");
 const budgetRouterFactory = require("./budget");
+const { canReadTraining, canManageTraining, countsByCourse, normalizeEnrollment } = require("./lib/training-integrity");
 
 // ════════════════════════════════════════════════════════════════════════════
 // 목차(파일 안 "// ── 제목 ──" 배너 문자열로 검색) — 이 파일은 인사(HR)/전자결재/
@@ -679,9 +680,19 @@ function filterDataForRole(data, auth) {
   const out = { ...data };
   const settings = out.settings || {};
   const myId = String(auth.empId);
+  // Aggregate seats before filtering employee identities; never trust client counts.
+  if (Array.isArray(out.trainingCourses)) {
+    const counts = countsByCourse(data.trainingEnrollments);
+    out.trainingCourses = out.trainingCourses.map(c => ({ ...c,
+      enrollmentCounts: counts.get(String(c.id)) || { applied: 0, waitlisted: 0, completed: 0 } }));
+  }
+  if (!canReadTraining(auth)) {
+    out.trainingCourses = [];
+    out.trainingEnrollments = [];
+  }
   // 직접 신청 과정의 설문 응답에는 직원별 의견이 포함된다. 관리 화면은 admin 전용이므로
   // 일반 직원에게는 본인의 신청·이수·설문만 제공한다.
-  if (auth.role !== "admin" && Array.isArray(out.trainingEnrollments)) {
+  if (!canManageTraining(auth) && Array.isArray(out.trainingEnrollments)) {
     out.trainingEnrollments = out.trainingEnrollments.filter(e => e && String(e.empId) === myId);
   }
   if (auth.role !== "admin" && Array.isArray(out.payslips)) {
@@ -996,6 +1007,12 @@ function filterDataForRole(data, auth) {
   if (auth.role !== "admin" && out.integrationSettings && typeof out.integrationSettings === "object") {
     out.integrationSettings = { calendar: out.integrationSettings.calendar };
   }
+  if (auth.menuPerms?.integrations === false) {
+    out.integrationSettings = { calendar: out.integrationSettings?.calendar };
+    out.integrationLogs = [];
+  }
+  if (Array.isArray(out.integrationLogs)) out.integrationLogs = [...out.integrationLogs]
+    .sort((a, b) => String(b.ts || "").localeCompare(String(a.ts || ""))).slice(0, 50);
   // 회사 단위 모듈 on/off(마스터 콘솔) — 이 함수의 나머지는 전부 "같은 회사 안에서 role별로
   // 얼마나 보이는지"를 다루는데, 이 한 줄만 "이 회사가 그 모듈 자체를 아예 껐는지"를 본다.
   // _hideDisabledFeatureFields() 정의부 주석 참고 — admin 포함 예외 없이 적용된다.
@@ -1661,6 +1678,8 @@ function _menuPermsAllow(pageIds, actor) {
 function _writeGateAllowed(field, rec, actor, actorEmp, settings) {
   const rule = _WRITE_GATED_FIELDS[field];
   if (!rule || !actor) return false;
+  if (field === "trainingEnrollments") return canManageTraining(actor) ||
+    (actor.menuPerms?.["training-courses"] !== false && String(rec.empId) === String(actor.empId));
   const pageOk = _menuPermsAllow(rule.pageIds, actor);
   if (rule.roles.includes(actor.role) && pageOk) return true;
   if (rule.ownField && pageOk && (!rule.ownRoles || rule.ownRoles.includes(actor.role)) && String(rec[rule.ownField]) === String(actor.empId)) return true;
@@ -2509,8 +2528,8 @@ function _validateFieldValues(field, rec, storedList) {
       const cost = Number(rec.cost);
       if (!Number.isFinite(cost) || cost < 0 || cost > 1_000_000_000_000) return false;
     }
-    if (rec.startDate && !/^\d{4}-\d{2}-\d{2}$/.test(rec.startDate)) return false;
-    if (rec.endDate && !/^\d{4}-\d{2}-\d{2}$/.test(rec.endDate)) return false;
+    if (rec.startDate && !_validCalendarDate(rec.startDate)) return false;
+    if (rec.endDate && !_validCalendarDate(rec.endDate)) return false;
     if (rec.startDate && rec.endDate && rec.endDate < rec.startDate) return false;
   } else if (field === "trainingEnrollments") {
     if (String(rec.courseId ?? "").trim() === "") return false;
@@ -3014,13 +3033,18 @@ function _saveFeedbackChangeRequested(field, incoming, stored) {
 // 레거시 원장의 삭제된 직원 참조는 읽기/정정이 가능해야 한다. 신규 기록 또는
 // 대상 직원 변경에 한해 현재 회사 직원 존재 여부를 저장 잠금 안에서 확인한다.
 function _changedHrEmployeeRef(field, incoming, stored) {
-  const key = field === "employmentRecords" ? "employeeId" : field === "learningAssignments" ? "empId" : null;
+  const key = field === "employmentRecords" ? "employeeId" : ["learningAssignments", "trainingEnrollments"].includes(field) ? "empId" : null;
   if (!key || !incoming) return null;
   const id = String(incoming[key] ?? "");
   return !stored || id !== String(stored[key] ?? "") ? id : null;
 }
 
 async function _persistDataLocked(data, changedBy = "system", companyId = null, actor = null, externalClient = null) {
+  if (Array.isArray(data.trainingCourses)) data.trainingCourses = data.trainingCourses.map(course => {
+    if (!course) return course;
+    const { enrollmentCounts: _readOnlyCounts, ...storedCourse } = course;
+    return storedCourse;
+  });
   const rejectedRecords = [];
   const rejectSaveRecord = (field, incoming, stored) => {
     if (incoming?.id != null && _saveFeedbackChangeRequested(field, incoming, stored) &&
@@ -3343,6 +3367,17 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
       }
       if (gatedField === "welfarePoints") {
         data[gatedField] = _dropOverspentWelfare(data[gatedField], storedList, actor);
+      }
+      if (gatedField === "trainingEnrollments") {
+        const courses = mergeArrayById(_fileStore.trainingCourses || [], data.trainingCourses);
+        let basis = [...storedList];
+        data[gatedField] = data[gatedField].map(rec => {
+          const stored = storedById.get(String(rec.id));
+          const next = normalizeEnrollment(rec, stored, courses, basis, actor);
+          if (!next || !isDeepStrictEqual(rec, next)) rejectSaveRecord(gatedField, rec, next || stored);
+          if (next) basis = [...basis.filter(r => String(r.id) !== String(next.id)), next];
+          return next;
+        }).filter(Boolean);
       }
       if (gatedField === "okrObjectives") {
         // parentOkrId 전용 2차 패스(위 _okrParentLinkValid 주석 참고) — storedList(이전
@@ -3745,6 +3780,17 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
       _engagementSurveysPg = rows.map(r => r.data);
       return _engagementSurveysPg;
     };
+    let trainingContext;
+    const loadTrainingContext = async () => {
+      if (!trainingContext) {
+        const { rows } = await client.query(
+          "SELECT collection, data FROM app_collections WHERE collection = ANY($1) AND company_id IS NOT DISTINCT FROM $2",
+          [["trainingCourses", "trainingEnrollments"], companyId || null]);
+        trainingContext = { courses: rows.filter(r => r.collection === "trainingCourses").map(r => r.data),
+          enrollments: rows.filter(r => r.collection === "trainingEnrollments").map(r => r.data) };
+      }
+      return trainingContext;
+    };
     for (const field of GENERIC_LIST_FIELDS) {
       const items = data[field];
       if (Array.isArray(items)) {
@@ -3799,6 +3845,13 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
             if (toWrite === null) continue;   // 권한 없이 새로 만들어진 레코드 — 쓰지 않음
           }
           // 값 범위·형식 검증(_validateFieldValues 주석 참고, JSON모드와 동일 규칙).
+          if (field === "trainingEnrollments" && !isDeepStrictEqual(toWrite, storedItem)) {
+            const context = await loadTrainingContext();
+            const next = normalizeEnrollment(toWrite, storedItem, context.courses, context.enrollments, actor);
+            if (!next || !isDeepStrictEqual(toWrite, next)) rejectSaveRecord(field, item, next || storedItem);
+            if (!next) continue;
+            toWrite = next;
+          }
           let validationList = null;
           if (field === "roomReservations") validationList = await _getRoomReservationsPg();
           else if (field === "learningAssignments") validationList = await _loadLearningCollectionsPg();
@@ -3840,6 +3893,9 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
           );
           // 같은 요청에 여러 배정이 들어오면 뒤 레코드도 앞에서 막 저장한 배정을 보도록
           // 메모리 검증 기준을 갱신한다. 회사별 저장 잠금과 함께 동시 정원 초과도 차단한다.
+          if (field === "trainingEnrollments" && trainingContext) {
+            trainingContext.enrollments = [...trainingContext.enrollments.filter(r => String(r.id) !== String(toWrite.id)), toWrite];
+          }
           if (field === "learningAssignments" && _learningAssignmentsPg) {
             _learningAssignmentsPg = [
               ..._learningAssignmentsPg.filter(r => r && String(r.id) !== String(toWrite.id)),
@@ -6810,7 +6866,8 @@ function _isPrivateOrLoopbackIp(ip) {
 // 실제 디스패치 검증에 그대로 써야 하므로, 명시적으로 켠 경우에만(기본은 항상 가드 적용)
 // 이 검사를 건너뛴다 — BOOTSTRAP_SECRET/ALLOW_DEMO_DATA와 동일하게 opt-in 환경변수로,
 // 운영 배포는 이 값을 설정하지 않는 한 항상 보호된 상태로 시작한다.
-const _ALLOW_LOCAL_WEBHOOK_TARGETS = String(process.env.ALLOW_LOCAL_WEBHOOK_TARGETS || "").toLowerCase() === "true";
+const _ALLOW_LOCAL_WEBHOOK_TARGETS = process.env.NODE_ENV === "test" &&
+  String(process.env.ALLOW_LOCAL_WEBHOOK_TARGETS || "").toLowerCase() === "true";
 async function _resolveSafeWebhookTarget(urlString) {
   let u;
   try { u = new URL(urlString); } catch { return false; }
@@ -6886,7 +6943,7 @@ function _webhookEventFromStoredRecord(data, auth, eventId, recordId) {
   if (!doc) return null;
   const title = _safeWebhookLabel(doc.title);
   if (eventId === "approval_request" || eventId === "leave_request") {
-    if (String(doc.authorId) !== actorId || doc.status === "cancelled") return null;
+    if (String(doc.authorId) !== actorId || !["in_progress", "approved", "rejected"].includes(doc.status)) return null;
     if (!_isRecentWebhookEventTime(doc.createdAt)) return null;
     if (eventId === "leave_request") {
       const custom = (data.approvalTemplates || []).find(t => t?.id === doc.templateId);
@@ -6924,11 +6981,45 @@ async function _reserveWebhookEvent(companyId, eventKey) {
      ON CONFLICT DO NOTHING RETURNING idempotency_key`, [companyId, digest]);
   return result.rowCount > 0;
 }
+async function _sendIntegrationWebhook(wh, text) {
+  const target = await _resolveSafeWebhookTarget(wh.url);
+  if (!target) return { webhookName: String(wh.name || "").slice(0, 100), status: "fail", message: "안전하지 않은 전송 대상(내부/루프백 주소)" };
+  try {
+    const statusCode = await _postWebhookPinned(target, text);
+    return { webhookName: String(wh.name || "").slice(0, 100),
+      status: statusCode >= 200 && statusCode < 300 ? "success" : "fail", message: `HTTP ${statusCode}` };
+  } catch {
+    // Transport errors can contain the credential-bearing webhook URL.
+    return { webhookName: String(wh.name || "").slice(0, 100), status: "fail", message: "연결 실패 또는 전송 시간 초과" };
+  }
+}
+async function _recordWebhookLogs(companyId, event, logs) {
+  const now = new Date().toISOString();
+  const entries = logs.map(l => ({ ...l, id: `webhook-log-${crypto.randomUUID()}`, ts: now, event }));
+  try {
+    // Persist only new rows. The save merger preserves concurrent log additions.
+    await persistData({ integrationLogs: entries }, "system:webhook-dispatch", companyId, { role: "admin", empId: null });
+  } catch { console.warn("[webhook-dispatch] 전송 이력 기록 실패"); }
+  return entries;
+}
+const webhookTestLimiter = rateLimit({ windowMs: 60_000, limit: 10, standardHeaders: true, legacyHeaders: false });
+app.post("/api/integrations/webhooks/test", webhookTestLimiter, async (req, res) => {
+  if (!requireAdmin(req, res) || !requirePage(req, res, "integrations")) return;
+  const companyId = req.auth.companyId || null;
+  const data = await loadData(companyId);
+  const wh = (data.integrationSettings?.webhooks || []).find(w => w && String(w.id) === String(req.body?.webhookId));
+  if (!wh) return res.status(404).json({ ok: false, message: "저장된 연동을 찾을 수 없습니다. 설정을 먼저 저장해 주세요." });
+  const result = await _sendIntegrationWebhook(wh, `[HR시스템] ${_safeWebhookLabel(wh.name)} 연동 테스트 메시지입니다.`);
+  const [log] = await _recordWebhookLogs(companyId, "테스트 전송", [result]);
+  res.json({ ok: result.status === "success", delivered: result.status === "success", message: result.message, log });
+});
 app.post("/api/integrations/webhooks/dispatch", async (req, res) => {
   if (!requireAuth(req, res)) return;
   const eventId = String(req.body?.eventId || "");
   if (!Object.prototype.hasOwnProperty.call(INTEGRATION_EVENT_LABELS, eventId))
     return res.status(400).json({ ok: false, message: "알 수 없는 이벤트입니다." });
+  const pageId = eventId === "notice_post" ? "board-notice" : eventId === "approval_complete" ? "approval-inbox" : "approval-draft";
+  if (!requireFeature(req, res, eventId === "notice_post" ? "comm" : "approval") || !requirePage(req, res, pageId)) return;
   const recordId = String(req.body?.recordId || "");
   try {
     const companyId = req.auth.companyId || null;
@@ -6939,37 +7030,11 @@ app.post("/api/integrations/webhooks/dispatch", async (req, res) => {
     const targets = webhooks.filter(w => w && w.active !== false && Array.isArray(w.events) && w.events.includes(eventId));
     if (!targets.length) return res.json({ ok: true, dispatched: 0 });
     if (!await _reserveWebhookEvent(companyId, source.key)) return res.json({ ok: true, dispatched: 0, duplicate: true });
-    const evLabel = INTEGRATION_EVENT_LABELS[eventId];
-    const now = new Date().toISOString();
-    const results = await Promise.allSettled(targets.map(async wh => {
-      const target = await _resolveSafeWebhookTarget(wh.url);
-      if (!target) {
-        return { webhookName: String(wh.name || "").slice(0, 100), status: "fail", message: "안전하지 않은 전송 대상(내부/루프백 주소)" };
-      }
-      try {
-        const statusCode = await _postWebhookPinned(target, source.text);
-        const ok = statusCode >= 200 && statusCode < 300;
-        return { webhookName: String(wh.name || "").slice(0, 100), status: ok ? "success" : "fail", message: ok ? "자동 발송" : `HTTP ${statusCode}` };
-      } catch (e) {
-        return { webhookName: String(wh.name || "").slice(0, 100), status: "fail", message: String(e?.message || e).slice(0, 200) };
-      }
-    }));
+    const results = await Promise.allSettled(targets.map(wh => _sendIntegrationWebhook(wh, source.text)));
     const logs = results.map(r => (r.status === "fulfilled" ? r.value : { webhookName: "-", status: "fail", message: "dispatch error" }));
-    // 로그 기록은 best-effort — 이미 발생한 외부 전송 결과는 이 기록이 실패해도 바뀌지
-    // 않으므로, 로그 저장 실패를 응답 실패로 취급하지 않는다. 합성 admin actor로
-    // persistData()를 호출(기존 부트스트랩 호출부와 동일한 관례)해 integrationLogs
-    // 하나만 병합·기록한다 — data에 다른 필드를 전혀 싣지 않으므로 다른 모든 컬렉션은
-    // mergeArrayById(undefined incoming)가 그대로 저장본을 반환해 손대지 않는다.
-    try {
-      const existingLogs = Array.isArray(data.integrationLogs) ? data.integrationLogs : [];
-      const newEntries = logs.map((l, i) => ({
-        id: `webhook-log-${Date.now()}-${i}-${Math.random().toString(36).slice(2, 8)}`,
-        ts: now, webhookName: l.webhookName, event: evLabel, status: l.status, message: l.message,
-      }));
-      const merged = [...newEntries, ...existingLogs].slice(0, 50);
-      await persistData({ integrationLogs: merged }, "system:webhook-dispatch", companyId, { role: "admin", empId: null });
-    } catch (e) { console.warn("[webhook-dispatch] 전송 이력 기록 실패:", e.message); }
-    res.json({ ok: true, dispatched: logs.filter(l => l.status === "success").length });
+    await _recordWebhookLogs(companyId, INTEGRATION_EVENT_LABELS[eventId], logs);
+    res.json({ ok: true, dispatched: logs.filter(l => l.status === "success").length,
+      failed: logs.filter(l => l.status !== "success").length });
   } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 

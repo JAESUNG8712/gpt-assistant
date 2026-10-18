@@ -27609,9 +27609,6 @@ async function deleteWebhook(id){
   integrationSettings={...integrationSettings,webhooks:integrationSettings.webhooks.filter(w=>String(w.id)!==String(id))};
   autoSaveToServerIfEnabled();showToast("삭제되었습니다.","info");renderIntegrationsPage();
 }
-function _logIntegration(webhookName,event,status,message){
-  integrationLogs=[{id:genId(),ts:new Date().toISOString(),webhookName,event,status,message},...integrationLogs].slice(0,50);
-}
 // 결재 상신/결재 완료·반려/휴가·근태 신청/공지사항 등록 4곳의 실제 액션 지점에서 호출해,
 // 등록된 웹훅 중 해당 이벤트를 구독(events에 eventId 포함)한 활성 웹훅에 메시지를 보낸다.
 // 2026-10 고도화 이전에는 이 함수가 브라우저에서 직접 webhook.url로 fetch(no-cors)했는데,
@@ -27620,7 +27617,7 @@ function _logIntegration(webhookName,event,status,message){
 // 노출돼 있어(filterDataForRole이 다른 모든 비밀값은 가리는데 이 필드만 빠져 있었음),
 // 로그인한 누구나 Slack 등 외부 채널에 영구히 직접 게시할 수 있는 URL을 그대로 읽어갈 수
 // 있는 비밀값 노출이었다. 디스패치 자체를 서버로 옮겨(POST /api/integrations/webhooks/
-// dispatch) 해결 — 클라이언트는 이벤트id+문구만 보내고, 실제 webhook URL은 서버만 안다
+// dispatch) 해결 — 클라이언트는 이벤트ID와 저장된 기록ID만 보내고, 실제 webhook URL은 서버만 안다
 // (non-admin의 GET /data에서는 webhooks 배열 자체가 제거됨). 전송이력(integrationLogs)도
 // 서버가 직접 기록하므로 여기서는 더 이상 _logIntegration()을 호출하지 않는다.
 const _pendingIntegrationWebhooks=[];
@@ -27631,37 +27628,44 @@ function _fireIntegrationWebhooks(eventId,recordId){
   _pendingIntegrationWebhooks.push({key,eventId,recordId,changeSeq:_saveChangeSeq,accessEpoch:_serverAccessEpoch,attempts:0,ready:false,busy:false});
 }
 function _flushIntegrationWebhooks(savedChangeSeq){
-  for(const event of _pendingIntegrationWebhooks){
-    if(event.accessEpoch!==_serverAccessEpoch){_pendingIntegrationWebhooks.splice(_pendingIntegrationWebhooks.indexOf(event),1);continue;}
+  const remove=event=>{const index=_pendingIntegrationWebhooks.indexOf(event);if(index>=0)_pendingIntegrationWebhooks.splice(index,1);};
+  for(const event of [..._pendingIntegrationWebhooks]){
+    if(event.accessEpoch!==_serverAccessEpoch){remove(event);continue;}
     if(event.changeSeq<=savedChangeSeq)event.ready=true;
-    if(!event.ready||event.busy)continue;
+    if(!event.ready||event.busy||event.retryAt>Date.now())continue;
     event.busy=true;
     serverRequest("POST","/api/integrations/webhooks/dispatch",{eventId:event.eventId,recordId:event.recordId},20000)
       .then(result=>{
+        if(event.accessEpoch!==_serverAccessEpoch){remove(event);return;}
         if(result?.ok||result?.code==="WEBHOOK_SOURCE_INVALID"){
-          _pendingIntegrationWebhooks.splice(_pendingIntegrationWebhooks.indexOf(event),1);
+          remove(event);
           if(result?.code==="WEBHOOK_SOURCE_INVALID")showToast("저장된 기록과 일치하지 않아 외부 알림을 보내지 않았습니다.","info");
+          else if(result?.failed)showToast(`외부 알림 ${result.failed}건이 전송되지 않았습니다. 연동 전송 이력을 확인해 주세요.`,"error");
         }else throw new Error(result?.message||"웹훅 알림 전송 실패");
       })
       .catch(()=>{
-        if(++event.attempts>=3){_pendingIntegrationWebhooks.splice(_pendingIntegrationWebhooks.indexOf(event),1);showToast("외부 알림 전송을 확인하지 못했습니다. 연동 전송 이력을 확인해 주세요.","error");}
-        else setTimeout(()=>{event.busy=false;_flushIntegrationWebhooks(savedChangeSeq);},5000);
+        if(event.accessEpoch!==_serverAccessEpoch){remove(event);return;}
+        if(++event.attempts>=3){remove(event);showToast("외부 알림 전송을 확인하지 못했습니다. 연동 전송 이력을 확인해 주세요.","error");}
+        else {event.retryAt=Date.now()+5000;setTimeout(()=>_flushIntegrationWebhooks(savedChangeSeq),5000);}
       })
       .finally(()=>{event.busy=false;});
   }
 }
 async function testWebhook(id){
   const wh=(integrationSettings.webhooks||[]).find(w=>String(w.id)===String(id));if(!wh)return;
-  const payload={text:`[HR시스템] "${wh.name}" 연동 테스트 메시지입니다. (${new Date().toLocaleString("ko-KR")})`};
+  if(!serverConfig.enabled||_demoMode){showToast("서버에 연결하고 연동 설정을 저장한 후 테스트해 주세요.","info");return;}
+  const accessEpoch=_serverAccessEpoch;
   try{
-    await fetch(wh.url,{method:"POST",mode:"no-cors",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
-    _logIntegration(wh.name,"테스트 전송","success","전송 요청을 보냈습니다 (수신 여부는 연동 채널에서 확인하세요)");
-    showToast("테스트 메시지를 전송했습니다.","success");
+    const result=await serverRequest("POST","/api/integrations/webhooks/test",{webhookId:wh.id},15000);
+    if(accessEpoch!==_serverAccessEpoch)return;
+    if(result?.log)integrationLogs=[result.log,...integrationLogs.filter(l=>l.id!==result.log.id)];
+    if(!result?.delivered)throw new Error(result?.message||"전송을 확인할 수 없습니다.");
+    showToast("연동 서버가 테스트 메시지를 정상 수신했습니다.","success");
   }catch(e){
-    _logIntegration(wh.name,"테스트 전송","fail",e.message);
+    if(accessEpoch!==_serverAccessEpoch)return;
     showToast("전송 실패: "+e.message,"error");
   }
-  autoSaveToServerIfEnabled();renderIntegrationsPage();
+  renderIntegrationsPage();
 }
 function downloadCalendarFeed(){
   const uid=currentUser.id;const cal=integrationSettings.calendar||{};
@@ -31228,6 +31232,8 @@ function exportMandatoryTrainingCSV(yr){
 // 이력에 반영하려면 관리자가 해당 화면에서 별도로 등록해야 한다(자동 연동 없음).
 const TRAINING_CATEGORIES=["리더십","직무역량","신입/온보딩","법정/컴플라이언스","어학","IT/디지털","기타"];
 function _tcCourseEnrollCounts(courseId){
+  const counts=trainingCourses.find(c=>String(c.id)===String(courseId))?.enrollmentCounts;
+  if(!(currentUser?.role==="admin"&&currentUser.menuPerms?.["training-admin"]!==false)&&counts)return counts;
   const list=trainingEnrollments.filter(e=>e.courseId===courseId&&e.status!=="canceled");
   return{applied:list.filter(e=>e.status!=="waitlisted").length,waitlisted:list.filter(e=>e.status==="waitlisted").length,completed:list.filter(e=>e.status==="completed").length};
 }
@@ -31307,7 +31313,7 @@ function tcApply(courseId){
   const now=new Date().toISOString();
   trainingEnrollments.push({id:`tenr-${genId()}`,courseId,empId:currentUser.id,empName:currentUser.name,dept:emp?.dept||"",team:emp?.team||"",appliedAt:now,status:full?"waitlisted":"applied",completedAt:"",surveyResponse:null,note:"",createdAt:now,updatedAt:now});
   autoSaveToServerIfEnabled();
-  showToast(full?"정원이 가득 차 대기 신청되었습니다.":"신청이 완료되었습니다.","success");
+  showToast(full?"대기 신청을 저장 중입니다. 저장 후 상태를 확인해 주세요.":"신청을 저장 중입니다. 서버에서 정원을 확인한 후 상태가 반영됩니다.","info");
   renderTrainingCoursesPage();
 }
 function tcCancelMyEnrollment(enrollId){

@@ -17,4 +17,8 @@ test("두 교육 원장을 읽기 전용으로 합치되 같은 과정명을 임
   assert.deepEqual(rows.map(r=>r.source),["직접 신청","배정·결재"]);
   assert.ok(rows.every(r=>r.courseName==="리더십"));
   assert.ok(rows.every(r=>r.empId==="e1"));
+  assert.ok(rows.every(r=>r.statusLabel==="이수"));
+  const filtered=tools.filterHistory(rows,[{id:"e1",name:"김교육",empNo:"1001",dept:"인사"}],"1001","직접 신청");
+  assert.equal(filtered.length,1); assert.equal(filtered[0].id,"enrollment-1");
+  assert.equal(tools.filterHistory(rows,[],"없는 과정","all").length,0);
 });
