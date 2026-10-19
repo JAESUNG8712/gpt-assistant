@@ -926,7 +926,7 @@ if (!ADMIN_DATABASE_URL) {
 
     // mock 수신 서버가 127.0.0.1(loopback)이라 SSRF 가드(server.js 참고)를 명시적으로
     // 꺼야만 실제 디스패치를 재현할 수 있다 — 운영은 이 환경변수를 설정하지 않는다.
-    const server = await startServer({ env: { DATABASE_URL: testDbUrl, ALLOW_LOCAL_WEBHOOK_TARGETS: "true" } });
+    const server = await startServer({ env: { NODE_ENV: "test", DATABASE_URL: testDbUrl, ALLOW_LOCAL_WEBHOOK_TARGETS: "true" } });
     t.after(() => server.stop());
     const api = (p, opts) => fetch(server.baseUrl + p, opts);
 
@@ -974,6 +974,27 @@ if (!ADMIN_DATABASE_URL) {
     assert.equal(memberLogin.ok, true);
     const memberToken = memberLogin.token;
 
+    // The server derives messages from a persisted, authorized source record.
+    // A text-only request is intentionally no longer a valid dispatch contract.
+    async function seedApproval(token, id, authorId, approverId, title) {
+      const d = await getData(token);
+      const now = new Date().toISOString();
+      const saved = await api("/save", auth(token, "POST", {
+        _version: d.version,
+        approvalDocs: [{ id, authorId, title, templateId: "tpl-vacation",
+          status: "in_progress", createdAt: now, updatedAt: now,
+          approvers: [{ empId: approverId, status: "pending" }] }],
+      }));
+      const result = await saved.json();
+      assert.equal(saved.status, 200, JSON.stringify(result));
+      const stored = (await getData(token)).data.approvalDocs.find(doc => doc.id === id);
+      assert.equal(stored?.status, "in_progress", JSON.stringify(result));
+    }
+    await seedApproval(memberToken, "pg-webhook-a", member.id, dA.data.employees[0].id, "pg 테스트");
+    const dB = await getData(tokenB);
+    const adminBId = dB.data.employees[0].id;
+    await seedApproval(tokenB, "pg-webhook-b", adminBId, adminBId, "회사B 테스트");
+
     await t.test("회사A admin이 웹훅을 등록한다", async () => {
       const d = await getData(tokenA);
       const save = await api("/save", auth(tokenA, "POST", {
@@ -988,13 +1009,31 @@ if (!ADMIN_DATABASE_URL) {
       assert.equal(d.data.integrationSettings.webhooks, undefined);
     });
 
-    await t.test("회사A의 member가 디스패치를 트리거하면 실제 외부(mock)로 전송되고 DB에 로그가 쌓인다", async () => {
-      const r = await (await api("/api/integrations/webhooks/dispatch", auth(memberToken, "POST", { eventId: "approval_request", text: "[결재 상신] pg 테스트" }))).json();
-      assert.equal(r.ok, true);
-      assert.equal(r.dispatched, 1);
-      await new Promise(resolve => setTimeout(resolve, 100));
+    await t.test("원본 없는 문구 및 다른 작성자의 문서는 발송할 수 없다", async () => {
+      for (const [token, body] of [
+        [memberToken, { eventId: "approval_request", text: "임의 문구" }],
+        [memberToken, { eventId: "approval_request", recordId: "missing-source" }],
+        [tokenA, { eventId: "approval_request", recordId: "pg-webhook-a" }],
+      ]) {
+        const response = await api("/api/integrations/webhooks/dispatch", auth(token, "POST", body));
+        assert.equal(response.status, 403);
+        assert.equal((await response.json()).code, "WEBHOOK_SOURCE_INVALID");
+      }
+      assert.equal(received.length, 0);
+    });
+
+    await t.test("동시 디스패치도 저장된 본인 문구만 1회 전송하고 DB에 기록한다", async () => {
+      const dispatch = () => api("/api/integrations/webhooks/dispatch", auth(memberToken, "POST", {
+        eventId: "approval_request", recordId: "pg-webhook-a", text: "위조된 문구",
+      })).then(r => r.json());
+      const results = await Promise.all([dispatch(), dispatch()]);
+      assert.ok(results.every(r => r.ok), JSON.stringify(results));
+      assert.equal(results.reduce((n, r) => n + r.dispatched, 0), 1);
+      assert.equal(results.filter(r => r.duplicate).length, 1);
+      const retry = await dispatch();
+      assert.equal(retry.duplicate, true);
       assert.equal(received.length, 1);
-      assert.equal(received[0].text, "[결재 상신] pg 테스트");
+      assert.equal(received[0].text, "[결재 상신] pg 테스트 (신청자: 팀원A)");
 
       const db = new Client({ connectionString: testDbUrl });
       await db.connect();
@@ -1002,6 +1041,10 @@ if (!ADMIN_DATABASE_URL) {
         const rows = await db.query("SELECT data FROM app_collections WHERE collection = 'integrationLogs'");
         assert.equal(rows.rows.length, 1, "integrationLogs가 정확히 1건 DB에 기록돼야 함");
         assert.equal(rows.rows[0].data.status, "success");
+        const reservations = await db.query("SELECT company_id FROM api_idempotency WHERE actor_id='system:webhook'");
+        assert.equal(reservations.rows.length, 1, "중복 발송 방지 예약도 DB에 1건 남아야 함");
+        const logs = await db.query("SELECT company_id FROM app_collections WHERE collection='integrationLogs'");
+        assert.equal(reservations.rows[0].company_id, logs.rows[0].company_id);
       } finally {
         await db.end();
       }
@@ -1011,8 +1054,15 @@ if (!ADMIN_DATABASE_URL) {
       const dB = await getData(tokenB);
       assert.equal(((dB.data.integrationSettings || {}).webhooks || []).length, 0);
       const before = received.length;
-      const r = await (await api("/api/integrations/webhooks/dispatch", auth(tokenB, "POST", { eventId: "approval_request", text: "회사B 트리거" }))).json();
-      assert.equal(r.ok, true);
+      const foreign = await api("/api/integrations/webhooks/dispatch", auth(tokenB, "POST", {
+        eventId: "approval_request", recordId: "pg-webhook-a",
+      }));
+      assert.equal(foreign.status, 403);
+      assert.equal((await foreign.json()).code, "WEBHOOK_SOURCE_INVALID");
+      const r = await (await api("/api/integrations/webhooks/dispatch", auth(tokenB, "POST", {
+        eventId: "approval_request", recordId: "pg-webhook-b",
+      }))).json();
+      assert.equal(r.ok, true, JSON.stringify(r));
       assert.equal(r.dispatched, 0, "회사B에는 등록된 웹훅이 없으므로 0건이어야 함(회사A 웹훅을 잘못 공유하면 안 됨)");
       assert.equal(received.length, before);
     });
