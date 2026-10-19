@@ -965,7 +965,12 @@ if (!ADMIN_DATABASE_URL) {
 
     const member = { id: "memberA", loginId: "memberA_wh", pw: "memberA-wh-pw-1", name: "팀원A", role: "member", active: true, dept: "개발본부", menuPerms: {} };
     const dA = await getData(tokenA);
-    const seed = await api("/save", auth(tokenA, "POST", { _version: dA.version, employees: [...dA.data.employees, member] }));
+    // 디스패치는 클라이언트가 보낸 문구가 아니라 서버에 "저장된 업무 기록"(recordId)을 근거로
+    // 하므로, 신청자(member) 명의의 결재문서를 먼저 저장해 둔다.
+    const nowIso = new Date().toISOString();
+    const seed = await api("/save", auth(tokenA, "POST", { _version: dA.version, employees: [...dA.data.employees, member],
+      approvalDocs: [{ id: "apv-pg-1", authorId: "memberA", title: "pg 테스트", templateId: "tpl-general",
+        createdAt: nowIso, updatedAt: nowIso, status: "in_progress", approvers: [{ empId: "admin", status: "pending" }] }] }));
     assert.equal(seed.status, 200);
     const memberLogin = await (await api("/login", {
       method: "POST", headers: { "Content-Type": "application/json" },
@@ -989,12 +994,12 @@ if (!ADMIN_DATABASE_URL) {
     });
 
     await t.test("회사A의 member가 디스패치를 트리거하면 실제 외부(mock)로 전송되고 DB에 로그가 쌓인다", async () => {
-      const r = await (await api("/api/integrations/webhooks/dispatch", auth(memberToken, "POST", { eventId: "approval_request", text: "[결재 상신] pg 테스트" }))).json();
+      const r = await (await api("/api/integrations/webhooks/dispatch", auth(memberToken, "POST", { eventId: "approval_request", recordId: "apv-pg-1" }))).json();
       assert.equal(r.ok, true);
       assert.equal(r.dispatched, 1);
       await new Promise(resolve => setTimeout(resolve, 100));
       assert.equal(received.length, 1);
-      assert.equal(received[0].text, "[결재 상신] pg 테스트");
+      assert.equal(received[0].text, "[결재 상신] pg 테스트 (신청자: 팀원A)", "문구는 서버가 저장된 기록에서 만든다");
 
       const db = new Client({ connectionString: testDbUrl });
       await db.connect();
@@ -1011,9 +1016,10 @@ if (!ADMIN_DATABASE_URL) {
       const dB = await getData(tokenB);
       assert.equal(((dB.data.integrationSettings || {}).webhooks || []).length, 0);
       const before = received.length;
-      const r = await (await api("/api/integrations/webhooks/dispatch", auth(tokenB, "POST", { eventId: "approval_request", text: "회사B 트리거" }))).json();
-      assert.equal(r.ok, true);
-      assert.equal(r.dispatched, 0, "회사B에는 등록된 웹훅이 없으므로 0건이어야 함(회사A 웹훅을 잘못 공유하면 안 됨)");
+      const r = await (await api("/api/integrations/webhooks/dispatch", auth(tokenB, "POST", { eventId: "approval_request", recordId: "apv-pg-1" }))).json();
+      assert.equal(r.ok, false, "회사B에는 회사A의 결재문서가 없으므로 발송 근거 자체가 없어야 함");
+      assert.equal(r.code, "WEBHOOK_SOURCE_INVALID");
+      assert.equal(r.dispatched, undefined, "회사A 웹훅을 잘못 공유하면 안 됨");
       assert.equal(received.length, before);
     });
   });
