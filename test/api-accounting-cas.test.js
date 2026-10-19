@@ -52,10 +52,37 @@ test("계정과목/거래처 CAS(expectedUpdatedAt) — JSON 파일 모드", asy
     assert.equal(final.accounts.find(a => a.id === created.account.id).name, "A가 수정", "B의 stale 저장이 A의 변경을 덮어씀");
   });
 
-  await t.test("계정과목: expectedUpdatedAt을 안 보내면(구버전 클라이언트) 기존처럼 그냥 덮어쓴다", async () => {
+  await t.test("계정과목: expectedUpdatedAt이 없으면(구버전 클라이언트·직접 호출) 428로 거부하고 기존 값을 건드리지 않는다", async () => {
     const created = await (await api("/api/accounting/accounts", auth(token, "POST", { code: "T901", name: "원본2", type: "expense", user: "admin1" }))).json();
     const r = await api("/api/accounting/accounts", auth(token, "POST", { id: created.account.id, code: "T901", name: "확인없이수정", type: "expense", user: "admin1" }));
-    assert.equal(r.status, 200);
+    assert.equal(r.status, 428);
+    assert.equal((await r.json()).code, "ACCT_REVISION_REQUIRED");
+    const list = await (await api("/api/accounting/accounts", auth(token, "GET"))).json();
+    assert.equal(list.accounts.find(a => a.id === created.account.id).name, "원본2", "428 거부인데 값이 바뀜");
+    // 최신 revision을 함께 보내면 정상 수정된다.
+    const ok = await api("/api/accounting/accounts", auth(token, "POST", { id: created.account.id, code: "T901", name: "확인후수정", type: "expense", user: "admin1", expectedUpdatedAt: created.account.updatedAt }));
+    assert.equal(ok.status, 200);
+  });
+
+  await t.test("거래처: expectedUpdatedAt이 없으면 428, 새 거래처 등록(id 없음)은 revision 없이도 가능하다", async () => {
+    const created = await (await api("/api/accounting/partners", auth(token, "POST", { name: "락필수거래처", type: "vendor", user: "admin1" }))).json();
+    assert.ok(created.partner?.id, "신규 등록(id 없음)은 revision 없이 가능해야 함");
+    const r = await api("/api/accounting/partners", auth(token, "POST", { id: created.partner.id, name: "무확인수정", type: "vendor", user: "admin1" }));
+    assert.equal(r.status, 428);
+    const list = await (await api("/api/accounting/partners", auth(token, "GET"))).json();
+    assert.equal(list.partners.find(p => p.id === created.partner.id).name, "락필수거래처");
+  });
+
+  await t.test("전표 템플릿: 기존 템플릿 수정은 expectedUpdatedAt이 없으면 428", async () => {
+    const acc = await (await api("/api/accounting/accounts", auth(token, "POST", { code: "TV01", name: "템플릿차변", type: "expense", user: "admin1" }))).json();
+    const acc2 = await (await api("/api/accounting/accounts", auth(token, "POST", { code: "TV02", name: "템플릿대변", type: "asset", user: "admin1" }))).json();
+    const lines = [{ accountCode: "TV01", side: "debit" }, { accountCode: "TV02", side: "credit" }];
+    const created = await (await api("/api/accounting/voucher-templates", auth(token, "POST", { name: "락템플릿", category: "기타", lines }))).json();
+    assert.equal(created.ok, true, JSON.stringify(created));
+    const r = await api("/api/accounting/voucher-templates", auth(token, "POST", { id: created.template.id, name: "무확인", category: "기타", lines }));
+    assert.equal(r.status, 428);
+    const ok = await api("/api/accounting/voucher-templates", auth(token, "POST", { id: created.template.id, name: "확인후", category: "기타", lines, expectedUpdatedAt: created.template.updatedAt }));
+    assert.equal(ok.status, 200);
   });
 
   await t.test("거래처: expectedUpdatedAt이 옛 값이면 409, 최신 값이면 정상 반영된다", async () => {

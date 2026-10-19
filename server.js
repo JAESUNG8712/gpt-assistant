@@ -7880,6 +7880,18 @@ function _acctConflict(res, kind, key, record) {
     [key]: record,
   });
 }
+// ── 회계 마스터 수정의 낙관적 락 필수화 ─────────────────────────────────────────
+// 계정과목·거래처·전표 템플릿의 "기존 레코드 수정"은 화면이 열릴 때 본 revision(updatedAt)을
+// 반드시 함께 보내야 한다. 예전에는 expectedUpdatedAt이 없으면 조건 없이 덮어썼는데(구버전
+// 캐시 탭·API 직접 호출), 그 경우 두 관리자가 동시에 같은 레코드를 고치면 앞선 변경이
+// 조용히 사라졌다. 키 자체가 없으면 428, 값이 다르면 409(최신본 포함). updatedAt이 아직
+// 없는 레거시 레코드는 빈 문자열("")이 "최신"이므로 화면은 `updatedAt ?? ""`를 보낸다.
+function _acctRevisionMissing(expected) { return expected === undefined || expected === null; }
+function _acctRevisionMatches(current, expected) { return String(current?.updatedAt ?? "") === String(expected ?? ""); }
+function _acctRevisionRequired(res, label) {
+  return res.status(428).json({ ok: false, code: "ACCT_REVISION_REQUIRED",
+    message: `${label} 수정에는 화면을 연 시점의 최신 정보(expectedUpdatedAt)가 필요합니다. 화면을 새로고침한 뒤 다시 시도하세요.` });
+}
 app.post("/api/accounting/accounts", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
@@ -7908,7 +7920,8 @@ app.post("/api/accounting/accounts", async (req, res) => {
       // 어느 것을 골랐는지 알 수 없는 혼란이 생긴다(실측 재현으로 발견).
       const dup = _fileAccounting.accounts.find(a => a.id !== accId && !a.isDeleted && String(a.code).toLowerCase() === normalizedCode.toLowerCase());
       if (dup) return res.status(400).json({ ok: false, message: `이미 사용 중인 계정코드입니다: ${normalizedCode} (${dup.name})` });
-      if (idx >= 0 && expectedUpdatedAt && _fileAccounting.accounts[idx].updatedAt !== expectedUpdatedAt) {
+      if (idx >= 0 && _acctRevisionMissing(expectedUpdatedAt)) return _acctRevisionRequired(res, "계정과목");
+      if (idx >= 0 && !_acctRevisionMatches(_fileAccounting.accounts[idx], expectedUpdatedAt)) {
         return _acctConflict(res, "ACCT_ACCOUNT_CONFLICT", "account", _fileAccounting.accounts[idx]);
       }
       const prevHist = idx >= 0 ? (_fileAccounting.accounts[idx].history || []) : [];
@@ -7927,6 +7940,7 @@ app.post("/api/accounting/accounts", async (req, res) => {
     const { rows: prevRows } = await pool.query(
       "SELECT data FROM accounts WHERE id = $1 AND (company_id = $2 OR company_id IS NULL)", [accId, companyId]
     );
+    if (prevRows.length && _acctRevisionMissing(expectedUpdatedAt)) return _acctRevisionRequired(res, "계정과목");
     const prevHist = prevRows.length ? (prevRows[0].data.history || []) : [];
     const histEntry = { action: prevRows.length ? "update" : "create", user: user || "unknown", at: new Date().toISOString() };
     const acc = { id: accId, code: normalizedCode, name: normalizedName, type, category: normalizedCategory, costCategory, costSubType, active: active !== false, history: [...prevHist, histEntry], updatedAt: histEntry.at };
@@ -7934,10 +7948,10 @@ app.post("/api/accounting/accounts", async (req, res) => {
       // 위 SELECT는 조기 오류 메시지용일 뿐, 진짜 CAS는 이 UPDATE의 WHERE절이 원자적으로
       // 담당한다(PMS 프로젝트 수정과 동일한 원칙) — SELECT와 쓰기 사이의 시간차 동안 다른
       // 요청이 끼어드는 race는 WHERE절 자체가 그 순간의 실제 행 상태를 다시 확인하므로
-      // 안전하다. expectedUpdatedAt을 안 보낸(구버전) 요청은 이 조건절 없이 그대로 통과한다.
+      // 안전하다. expectedUpdatedAt을 안 보낸(구버전) 요청은 위에서 428로 거부한다.
       const updateParams = [accId, acc, companyId];
       let sql = "UPDATE accounts SET data = $2, updated_at = NOW() WHERE id = $1 AND (company_id = $3 OR company_id IS NULL)";
-      if (expectedUpdatedAt) { updateParams.push(expectedUpdatedAt); sql += " AND data->>'updatedAt' = $4"; }
+      updateParams.push(String(expectedUpdatedAt ?? "")); sql += " AND COALESCE(data->>'updatedAt','') = $4";
       const result = await pool.query(sql, updateParams);
       if (!result.rowCount) {
         const { rows: latestRows } = await pool.query(
@@ -8094,7 +8108,8 @@ app.post("/api/accounting/voucher-templates", async (req, res) => {
     if (USE_JSON_FILE) {
       const previous = id ? (_fileAccounting.voucherTemplates || []).find(t => t.id === id) : null;
       if (id && !previous) return res.status(404).json({ ok: false, message: "전표 템플릿을 찾을 수 없습니다." });
-      if (previous && req.body?.expectedUpdatedAt && previous.updatedAt !== req.body.expectedUpdatedAt) {
+      if (previous && _acctRevisionMissing(req.body?.expectedUpdatedAt)) return _acctRevisionRequired(res, "전표 템플릿");
+      if (previous && !_acctRevisionMatches(previous, req.body?.expectedUpdatedAt)) {
         return res.status(409).json({ ok: false, code: "VOUCHER_TEMPLATE_CONFLICT", message: "다른 사용자가 템플릿을 먼저 수정했습니다.", template: previous });
       }
       const built = _sanitizeVoucherTemplate({ ...req.body, user: req.auth.loginId || req.auth.empId }, accounts, previous);
@@ -8115,7 +8130,8 @@ app.post("/api/accounting/voucher-templates", async (req, res) => {
         );
         if (!rows.length) { await client.query("ROLLBACK"); return res.status(404).json({ ok: false, message: "전표 템플릿을 찾을 수 없습니다." }); }
         previous = rows[0].data;
-        if (req.body?.expectedUpdatedAt && previous.updatedAt !== req.body.expectedUpdatedAt) {
+        if (_acctRevisionMissing(req.body?.expectedUpdatedAt)) { await client.query("ROLLBACK"); return _acctRevisionRequired(res, "전표 템플릿"); }
+        if (!_acctRevisionMatches(previous, req.body?.expectedUpdatedAt)) {
           await client.query("ROLLBACK");
           return res.status(409).json({ ok: false, code: "VOUCHER_TEMPLATE_CONFLICT", message: "다른 사용자가 템플릿을 먼저 수정했습니다.", template: previous });
         }
@@ -8756,7 +8772,8 @@ app.post("/api/accounting/partners", async (req, res) => {
     const partnerId = id || `partner_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     if (USE_JSON_FILE) {
       const idx = _fileAccounting.partners.findIndex(p => p.id === partnerId);
-      if (idx >= 0 && expectedUpdatedAt && _fileAccounting.partners[idx].updatedAt !== expectedUpdatedAt) {
+      if (idx >= 0 && _acctRevisionMissing(expectedUpdatedAt)) return _acctRevisionRequired(res, "거래처");
+      if (idx >= 0 && !_acctRevisionMatches(_fileAccounting.partners[idx], expectedUpdatedAt)) {
         return _acctConflict(res, "ACCT_PARTNER_CONFLICT", "partner", _fileAccounting.partners[idx]);
       }
       const prevHist = idx >= 0 ? (_fileAccounting.partners[idx].history || []) : [];
@@ -8775,6 +8792,7 @@ app.post("/api/accounting/partners", async (req, res) => {
     const { rows: prevRows } = await pool.query(
       "SELECT data FROM partners WHERE id = $1 AND (company_id = $2 OR company_id IS NULL)", [partnerId, companyId]
     );
+    if (prevRows.length && _acctRevisionMissing(expectedUpdatedAt)) return _acctRevisionRequired(res, "거래처");
     const prevHist = prevRows.length ? (prevRows[0].data.history || []) : [];
     const histEntry = { action: prevRows.length ? "update" : "create", user: user || "unknown", at: new Date().toISOString() };
     const partner = {
@@ -8788,7 +8806,7 @@ app.post("/api/accounting/partners", async (req, res) => {
       // accounts와 동일 원칙 — 진짜 CAS는 이 UPDATE의 WHERE절이 원자적으로 담당한다.
       const updateParams = [partnerId, partner, companyId];
       let sql = "UPDATE partners SET data = $2, updated_at = NOW() WHERE id = $1 AND (company_id = $3 OR company_id IS NULL)";
-      if (expectedUpdatedAt) { updateParams.push(expectedUpdatedAt); sql += " AND data->>'updatedAt' = $4"; }
+      updateParams.push(String(expectedUpdatedAt ?? "")); sql += " AND COALESCE(data->>'updatedAt','') = $4";
       const result = await pool.query(sql, updateParams);
       if (!result.rowCount) {
         const { rows: latestRows } = await pool.query(

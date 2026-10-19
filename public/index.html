@@ -19478,7 +19478,7 @@ async function saveAcctAccount(id){
   if(dup){showToast(`이미 사용 중인 계정코드입니다: ${code} (${dup.name}) — 다른 코드를 입력해주세요.`,"error");return;}
   const costCategory=$("#acc-cost-category")?.value||null;
   const costSubType=costCategory==="mfg"?($("#acc-cost-subtype")?.value||null):null;
-  const body={id:id||undefined,code,name,type:$("#acc-type")?.value,category:$("#acc-category")?.value.trim(),costCategory,costSubType,active:$("#acc-active")?.checked,role:currentUser.role,user:currentUser.name,expectedUpdatedAt:_acctEditingAccount?.updatedAt};
+  const body={id:id||undefined,code,name,type:$("#acc-type")?.value,category:$("#acc-category")?.value.trim(),costCategory,costSubType,active:$("#acc-active")?.checked,role:currentUser.role,user:currentUser.name,expectedUpdatedAt:id?(_acctEditingAccount?.updatedAt??""):undefined};
   const r=await serverRequest("POST","/api/accounting/accounts",body);
   if(r?.code==="ACCT_ACCOUNT_CONFLICT"){await loadAccountingFromServer();closeModal();showToast("다른 사용자의 변경을 감지해 최신 내용을 불러왔습니다. 다시 확인 후 저장하세요.","error");return;}
   if(!r?.ok){showToast(r?.message||"저장에 실패했습니다.","error");return;}
@@ -19598,7 +19598,7 @@ async function savePartner(id){
   const files=$("#ptn-files")?.files;
   let attachments=existing?.attachments||[];
   if(files&&files.length)attachments=[...attachments,...Array.from(files).map(f=>({name:f.name,size:f.size}))];
-  const body={id:id||undefined,name,bizNo,ceoName:$("#ptn-ceo")?.value.trim(),type:$("#ptn-type")?.value,contactName:$("#ptn-contact")?.value.trim(),phone:$("#ptn-phone")?.value.trim(),email,address:$("#ptn-address")?.value.trim(),registerReason:$("#ptn-reason")?.value.trim(),attachments,active:$("#ptn-active")?.checked,role:currentUser.role,user:currentUser.name,expectedUpdatedAt:_acctEditingPartner?.updatedAt};
+  const body={id:id||undefined,name,bizNo,ceoName:$("#ptn-ceo")?.value.trim(),type:$("#ptn-type")?.value,contactName:$("#ptn-contact")?.value.trim(),phone:$("#ptn-phone")?.value.trim(),email,address:$("#ptn-address")?.value.trim(),registerReason:$("#ptn-reason")?.value.trim(),attachments,active:$("#ptn-active")?.checked,role:currentUser.role,user:currentUser.name,expectedUpdatedAt:id?(_acctEditingPartner?.updatedAt??""):undefined};
   const r=await serverRequest("POST","/api/accounting/partners",body);
   if(r?.code==="ACCT_PARTNER_CONFLICT"){await loadAccountingFromServer();closeModal();showToast("다른 사용자의 변경을 감지해 최신 내용을 불러왔습니다. 다시 확인 후 저장하세요.","error");return;}
   if(!r?.ok){showToast(r?.message||"저장에 실패했습니다.","error");return;}
