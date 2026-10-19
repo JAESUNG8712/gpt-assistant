@@ -26584,10 +26584,6 @@ function _rcFindDuplicateCandidates(name,phone,email,excludeId){
     return(ph&&cph&&ph===cph)||(em&&cem&&em===cem);
   });
 }
-function _rcDuplicateWarningMsg(dups){
-  const lines=dups.map(c=>`- ${c.name} · ${_recruitJobTitle(c.jobId)} · ${(c.appliedAt||"").slice(0,10)} · ${c.status||""}`);
-  return`동일한 연락처/이메일로 이미 지원한 이력이 있습니다:\n\n${lines.join("\n")}\n\n계속 등록하시겠습니까?`;
-}
 async function saveRecruitCandidate(){
   const name=$("#rc-name")?.value.trim();
   const jobId=$("#rc-job")?.value;
