@@ -1,5 +1,6 @@
 "use strict";
 const test = require("node:test");
+const { brief } = require("./support/save-feedback");
 const assert = require("node:assert/strict");
 const { startServer, bootstrapAdminAndLogin } = require("./support/start-server");
 
@@ -26,7 +27,7 @@ test("계약·징계 원장은 관리자 전용으로 저장·조회된다", asy
   const orphan={...original,id:"orphan",employeeId:"missing-employee"};
   r=await api("/save",auth(boot.token,"POST",{_version:d.version,employmentRecords:[...d.data.employmentRecords,orphan]}));
   assert.equal(r.status,200);
-  assert.deepEqual((await r.json()).warnings.rejectedRecords,[{field:"employmentRecords",id:"orphan"}]);
+  assert.deepEqual(brief((await r.json()).warnings.rejectedRecords),[{field:"employmentRecords",id:"orphan"}]);
   d=await data(api,boot.token);
   assert.equal(d.data.employmentRecords.some(x=>x.id==="orphan"),false,"없는 직원의 계약 기록은 저장하지 않는다");
   r=await api("/save",auth(boot.token,"POST",{_version:d.version,employmentRecords:[{...d.data.employmentRecords[0],employeeId:"missing-employee"}]}));
@@ -39,7 +40,7 @@ test("계약·징계 원장은 관리자 전용으로 저장·조회된다", asy
   assert.equal(r.status,200);
   let saveResult=await r.json();
   assert.equal(saveResult.partial,true);
-  assert.deepEqual(saveResult.warnings.rejectedRecords,[{field:"employmentRecords",id:"er1"}]);
+  assert.deepEqual(brief(saveResult.warnings.rejectedRecords),[{field:"employmentRecords",id:"er1"}]);
   d=await data(api,boot.token);
   assert.equal(d.data.employmentRecords[0].reviewStatus,"open","담당자 없는 완료 처리는 거부한다");
   for(const invalidOwner of ["member1","missing-owner","limitedAdmin","inactiveAdmin"]){
@@ -99,7 +100,7 @@ test("계약·징계 원장은 관리자 전용으로 저장·조회된다", asy
   assert.equal(r.status, 200);
   saveResult=await r.json();
   assert.equal(saveResult.partial,true);
-  assert.deepEqual(saveResult.warnings.rejectedRecords,[{field:"employmentRecords",id:"bad"}]);
+  assert.deepEqual(brief(saveResult.warnings.rejectedRecords),[{field:"employmentRecords",id:"bad"}]);
   assert.equal(saveResult.mergedData.employmentRecords.some(x => x.id === "bad"),false,"거부된 입력을 병합 응답에 다시 내려주면 안 된다");
   d = await data(api, boot.token);
   assert.equal(d.data.employmentRecords.some(x => x.id === "bad"), false, "역전된 계약기간은 서버에서 거부돼야 한다");

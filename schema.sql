@@ -1250,3 +1250,27 @@ CREATE TABLE IF NOT EXISTS api_idempotency (
   PRIMARY KEY (company_id, actor_id, route, idempotency_key)
 );
 CREATE INDEX IF NOT EXISTS idx_api_idempotency_expires_at ON api_idempotency (expires_at);
+
+-- 웹훅 발송 대기함. 알림을 먼저 영속 저장하고 실패 시 재시도(탭을 닫거나 수신 서버가 잠깐
+-- 죽어도 알림이 사라지지 않게 한다). webhook URL은 저장하지 않고 발송 시점에 연동 설정에서 읽는다.
+CREATE TABLE IF NOT EXISTS webhook_outbox (
+  id              TEXT PRIMARY KEY,
+  company_id      UUID,
+  event_id        TEXT        NOT NULL,
+  event_label     TEXT,
+  dedupe_key      TEXT        NOT NULL,
+  webhook_id      TEXT        NOT NULL,
+  webhook_name    TEXT,
+  text            TEXT        NOT NULL,
+  status          TEXT        NOT NULL DEFAULT 'pending',
+  attempts        INTEGER     NOT NULL DEFAULT 0,
+  next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  last_error      TEXT,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  sent_at         TIMESTAMPTZ
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_webhook_outbox_dedupe
+  ON webhook_outbox (COALESCE(company_id, '00000000-0000-0000-0000-000000000000'::uuid), dedupe_key, webhook_id);
+CREATE INDEX IF NOT EXISTS idx_webhook_outbox_due ON webhook_outbox (status, next_attempt_at);
+CREATE INDEX IF NOT EXISTS idx_webhook_outbox_company ON webhook_outbox (company_id, created_at DESC);

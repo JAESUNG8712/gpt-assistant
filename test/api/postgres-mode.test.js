@@ -1023,6 +1023,62 @@ if (!ADMIN_DATABASE_URL) {
       assert.equal(received.length, before);
     });
   });
+
+  test("postgres-mode: 웹훅 발송 대기함 — 실패 재시도·회사 간 격리·수동 재전송", async (t) => {
+    const dbName = `hrtest_outbox_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`;
+    const testDbUrl = _withDatabaseName(ADMIN_DATABASE_URL, dbName);
+    const admin = new Client({ connectionString: ADMIN_DATABASE_URL });
+    await admin.connect();
+    await admin.query(`CREATE DATABASE ${dbName}`);
+    t.after(async () => {
+      try {
+        await admin.query("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = $1 AND pid <> pg_backend_pid()", [dbName]);
+        await admin.query(`DROP DATABASE IF EXISTS ${dbName}`);
+      } finally { await admin.end(); }
+    });
+    const server = await startServer({ env: { DATABASE_URL: testDbUrl, ALLOW_LOCAL_WEBHOOK_TARGETS: "true", WEBHOOK_RETRY_DELAYS_MS: "300,300", WEBHOOK_OUTBOX_POLL_MS: "200" } });
+    t.after(() => server.stop());
+    const api = (p, opts) => fetch(server.baseUrl + p, opts);
+    const authH = (token, method, body) => ({ method, headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` }, body: body === undefined ? undefined : JSON.stringify(body) });
+    async function register(companyName, loginId, pw) {
+      const res = await api("/api/companies/register", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ companyName, adminName: `${companyName} 관리자`, loginId, password: pw }) });
+      const json = await res.json(); assert.equal(res.status, 200, JSON.stringify(json)); return json;
+    }
+    const http = require("node:http");
+    let status = 500; const received = [];
+    const mock = http.createServer((req, res) => { req.resume(); req.on("end", () => { received.push(status); res.writeHead(status).end("{}"); }); });
+    await new Promise(r => mock.listen(0, "127.0.0.1", r));
+    t.after(() => new Promise(r => { mock.closeAllConnections(); mock.close(r); }));
+    const url = `http://127.0.0.1:${mock.address().port}/hook`;
+    const A = await register("대기함A", "outbox_a", "TestPassword123");
+    const B = await register("대기함B", "outbox_b", "TestPassword456");
+    const dA = await (await api("/data", { headers: { Authorization: `Bearer ${A.token}` } })).json();
+    const adminId = String(dA.data.employees[0].id);
+    const nowIso = new Date().toISOString();
+    const saved = await api("/save", authH(A.token, "POST", { _version: dA.version,
+      approvalDocs: [{ id: "apv-ob-1", authorId: adminId, title: "대기함", templateId: "tpl-general", createdAt: nowIso, updatedAt: nowIso, status: "in_progress", approvers: [{ empId: "x", status: "pending" }] }],
+      integrationSettings: { webhooks: [{ id: 1, name: "훅", type: "custom", url, active: true, events: ["approval_request"] }], calendar: {} } }));
+    assert.equal(saved.status, 200);
+    const first = await (await api("/api/integrations/webhooks/dispatch", authH(A.token, "POST", { eventId: "approval_request", recordId: "apv-ob-1" }))).json();
+    assert.equal(first.failed, 1);
+    assert.equal(first.retryScheduled, 1);
+    const dup = await (await api("/api/integrations/webhooks/dispatch", authH(A.token, "POST", { eventId: "approval_request", recordId: "apv-ob-1" }))).json();
+    assert.equal(dup.duplicate, true);
+    status = 200;
+    let entry;
+    for (let i = 0; i < 80 && !entry; i++) {
+      const o = await (await api("/api/integrations/webhooks/outbox", { headers: { Authorization: `Bearer ${A.token}` } })).json();
+      entry = o.entries.find(e => e.status === "sent");
+      if (!entry) await new Promise(r => setTimeout(r, 100));
+    }
+    assert.ok(entry, "복구 후 워커가 재전송해 sent가 되어야 한다");
+    assert.ok(entry.attempts >= 2);
+    const oB = await (await api("/api/integrations/webhooks/outbox", { headers: { Authorization: `Bearer ${B.token}` } })).json();
+    assert.equal(oB.entries.length, 0, "다른 회사의 대기함은 보이지 않는다");
+    const cross = await api(`/api/integrations/webhooks/outbox/${entry.id}/retry`, authH(B.token, "POST"));
+    assert.equal(cross.status, 404, "다른 회사 건은 재전송할 수 없다");
+  });
 }
 
 function _withDatabaseName(connStr, dbName) {
