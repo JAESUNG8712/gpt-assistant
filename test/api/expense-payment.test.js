@@ -63,6 +63,7 @@ test("expense payment recovers after voucher-only file write without duplicate v
   assert.equal(recovered.status, 200, JSON.stringify(recovered.body));
   assert.equal(recovered.body.claim.status, "paid");
   assert.equal(recovered.body.claim.voucherId, recovered.body.voucher.id);
+  assert.equal(recovered.body.claim.voucherNo, null, "임시 전표의 표시 문구는 청구 원장에 저장하지 않는다");
   assert.equal((await api("/api/accounting/vouchers")).body.vouchers.length, 1);
   const blockedDelete = await api(`/api/accounting/vouchers/${recovered.body.voucher.id}`, "DELETE", undefined,
     { "Idempotency-Key": "linked-voucher-delete" });
@@ -71,6 +72,9 @@ test("expense payment recovers after voucher-only file write without duplicate v
     { user: "spoofed-actor" }, { "Idempotency-Key": "linked-voucher-post" });
   assert.equal(posted.status, 200);
   assert.equal(posted.body.voucher.postedBy, "pay_admin", "전표 확정 이력의 사용자는 요청 본문이 아닌 인증 정보에서 가져와야 함");
+  const postedClaim = (await api("/data")).body.data.expenseClaims.find(c => c.id === claim.id);
+  assert.equal(postedClaim.voucherNo, posted.body.voucher.voucherNo,
+    "전표 확정 번호는 연결된 경비 청구 원장에도 반영돼야 함");
   const blockedVoid = await api(`/api/accounting/vouchers/${recovered.body.voucher.id}/void`, "POST",
     { user: "spoofed-actor", reason: "임의 취소" }, { "Idempotency-Key": "linked-voucher-void" });
   assert.equal(blockedVoid.status, 409, "지급 완료 청구의 근거 전표는 일반 취소할 수 없어야 함");

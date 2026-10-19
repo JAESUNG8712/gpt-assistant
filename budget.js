@@ -955,6 +955,7 @@ function _fmtNum(n) {
 }
 
 const router = express.Router();
+require("./lib/async-route-guard").installAsyncRouteGuard(router);
 // 이 라우터 전체(사업계획 CRUD·승인 워크플로우·엑셀 업로드·개인별 급여상세 포함)에
 // "사업계획/예산" 모듈 게이트를 일괄 적용 — 이후 등록되는 모든 라우트에 적용되므로
 // 개별 라우트마다 따로 넣을 필요가 없다(공용 실적 조회는 budget.html이 쓰는 별개

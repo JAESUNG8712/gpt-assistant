@@ -46,6 +46,10 @@ async function loginAsAdmin(page) {
   });
   await page.click(".login-card button.btn-primary");
   await expect(page.locator("#main")).toBeVisible({ timeout: 10000 });
+  // 결재문서·게시글 ID는 브라우저별 카운터(genId)라 서버를 공유하는 테스트들이 같은 ID를
+  // 만든다. 서버는 이제 "이벤트종류:기록ID"를 48시간 동안 중복 발송 차단 키로 예약하므로,
+  // ID가 겹치면 뒤 테스트의 웹훅이 duplicate로 조용히 버려진다 — 테스트마다 ID 구간을 분리한다.
+  await page.evaluate(() => { _id = 1000000 + Math.floor(Math.random() * 8000000); });
 }
 
 // 웹훅 설정을 브라우저 메모리에 세팅한 뒤 실제 서버에 저장(_doSave(true), 지연 없는

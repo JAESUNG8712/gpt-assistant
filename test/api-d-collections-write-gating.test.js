@@ -127,7 +127,8 @@ test("D1~D5 신설 컬렉션(5종) — member의 직접 /save 위조가 차단�
     // mem2가 mem1의 기존 레코드(e1)를 자기 명의로 바꿔치기 시도 — 소유자 필드 변경 자체가 막힌다.
     d = await getData(api, mem2Token);
     const victim = d.data.trainingEnrollments.find(e => e.id === "e1");
-    await api("/save", auth(mem2Token, "POST", { _version: d.version, trainingEnrollments: [{ ...victim, empId: "mem2", status: "completed" }] }));
+    assert.equal(victim, undefined, "다른 직원의 설문·신청 원본은 읽기 응답에서 제외해야 함");
+    await api("/save", auth(mem2Token, "POST", { _version: d.version, trainingEnrollments: [{ id: "e1", courseId: "c1", empId: "mem2", status: "completed" }] }));
     d = await getData(api, admin.token);
     const after = d.data.trainingEnrollments.find(e => e.id === "e1");
     assert.equal(after.empId, "mem1");
@@ -150,6 +151,24 @@ test("D1~D5 신설 컬렉션(5종) — member의 직접 /save 위조가 차단�
     assert.equal(d.data.trainingEnrollments.find(e => e.id === "e1").status, "completed");
   });
 
+  await t.test("직접 교육 신청·설문은 본인만 조회하고 메뉴 제한 시 원본도 내려오지 않는다", async () => {
+    d = await getData(api, mem2Token);
+    assert.equal(d.data.trainingEnrollments.length, 0);
+    const added = await api("/save", auth(mem2Token, "POST", { _version: d.version,
+      trainingEnrollments: [{ id: "e2", courseId: "c1", empId: "mem2", status: "applied" }] }));
+    assert.equal(added.status, 200);
+    assert.deepEqual((await getData(api, memToken)).data.trainingEnrollments.map(e => e.id), ["e1"]);
+    assert.deepEqual((await getData(api, mem2Token)).data.trainingEnrollments.map(e => e.id), ["e2"]);
+    d = await getData(api, admin.token);
+    const restricted = d.data.employees.map(e => e.id === "mem2"
+      ? { ...e, menuPerms: { ...(e.menuPerms || {}), "training-courses": false, "training-admin": false } } : e);
+    assert.equal((await (await api("/save", auth(admin.token, "POST", { _version: d.version, employees: restricted }))).json()).ok, true);
+    const restrictedToken = await login(api, "mem2", "mem-pw-123456");
+    const hidden = (await getData(api, restrictedToken)).data;
+    assert.deepEqual(hidden.trainingCourses, []);
+    assert.deepEqual(hidden.trainingEnrollments, []);
+  });
+
   await t.test("값 범위 검증 — admin이라도 음수 압류금액·범위 밖 날짜는 거부된다", async () => {
     d = await getData(api, admin.token);
     await api("/save", auth(admin.token, "POST", { _version: d.version, wageGarnishments: [...d.data.wageGarnishments, { id: "wg-bad", empId: "mem1", type: "fixed", amount: -500, status: "active" }] }));
@@ -159,6 +178,68 @@ test("D1~D5 신설 컬렉션(5종) — member의 직접 /save 위조가 차단�
 });
 
 const ADMIN_DATABASE_URL = process.env.TEST_DATABASE_URL || process.env.DATABASE_URL;
+test("교육 신청 정원·중복·마감·메뉴권한은 서버 저장본으로 검증한다", async t => {
+  const server = await startServer(); t.after(() => server.stop());
+  const api = (p, o) => fetch(server.baseUrl + p, o);
+  const admin = await bootstrapAdminAndLogin(server, { loginId: "seat-admin", pw: "TestPassword123" });
+  let d = await getData(api, admin.token);
+  await api("/save", auth(admin.token, "POST", { _version: d.version,
+    employees: [...d.data.employees, ...["seat1", "seat2"].map(id => ({ id, loginId: id, name: id, pw: "TestPassword123", role: "member", active: true }))],
+    trainingCourses: [{ id: "limited", title: "정원 1명", capacity: 1, status: "open" },
+      { id: "closed", title: "마감 과정", capacity: 2, status: "closed" }] }));
+  const tokens = await Promise.all(["seat1", "seat2"].map(id => login(api, id, "TestPassword123")));
+  d = await getData(api, admin.token);
+  const results = await Promise.all(tokens.map((token, i) => api("/save", auth(token, "POST", { _version: d.version,
+    trainingEnrollments: [{ id: `seat-row-${i}`, courseId: "limited", empId: `seat${i + 1}`, status: "applied" }] }))));
+  assert.ok(results.every(r => r.status === 200));
+  const all = (await getData(api, admin.token)).data.trainingEnrollments;
+  assert.equal(all.filter(e => e.status === "applied").length, 1);
+  assert.equal(all.filter(e => e.status === "waitlisted").length, 1);
+  d = await getData(api, tokens[0]);
+  assert.equal(d.data.trainingEnrollments.length, 1, "타인 신청은 비공개");
+  assert.deepEqual(d.data.trainingCourses.find(c => c.id === "limited").enrollmentCounts,
+    { applied: 1, waitlisted: 1, completed: 0 }, "정원 집계는 모든 신청을 포함");
+  await api("/save", auth(tokens[0], "POST", { _version: d.version, trainingEnrollments: [
+    { id: "duplicate", empId: "seat1", courseId: "limited", status: "applied" },
+    { id: "closed-row", empId: "seat1", courseId: "closed", status: "applied" },
+    { id: "missing-course", empId: "seat1", courseId: "missing", status: "applied" },
+  ] }));
+  assert.equal((await getData(api, admin.token)).data.trainingEnrollments.length, 2);
+  d = await getData(api, admin.token);
+  await api("/save", auth(admin.token, "POST", { _version: d.version,
+    trainingEnrollments: [{ id: "unknown-employee", courseId: "limited", empId: "not-in-company", status: "applied" }],
+    trainingCourses: [{ id: "invalid-date", title: "잘못된 날짜", startDate: "2026-02-30", endDate: "2026-03-01" }] }));
+  d = await getData(api, admin.token);
+  assert.equal(d.data.trainingEnrollments.length, 2);
+  assert.equal(d.data.trainingCourses.some(c => c.id === "invalid-date"), false);
+  d = await getData(api, admin.token);
+  const original = d.data.trainingEnrollments.find(e => e.empId === "seat1");
+  await api("/save", auth(tokens[0], "POST", { _version: d.version,
+    trainingEnrollments: [{ ...original, courseId: "closed", completedAt: "2026-01-01" }] }));
+  const preserved = (await getData(api, admin.token)).data.trainingEnrollments.find(e => e.id === original.id);
+  assert.equal(preserved.courseId, "limited"); assert.notEqual(preserved.completedAt, "2026-01-01");
+  d = await getData(api, admin.token);
+  await api("/save", auth(admin.token, "POST", { _version: d.version,
+    employees: d.data.employees.map(e => e.id === "seat1" ? { ...e, menuPerms: { "training-courses": false, "training-admin": true } } : e) }));
+  const restricted = await login(api, "seat1", "TestPassword123");
+  d = await getData(api, restricted);
+  assert.deepEqual(d.data.trainingCourses, []); assert.deepEqual(d.data.trainingEnrollments, []);
+  await api("/save", auth(restricted, "POST", { _version: d.version,
+    trainingEnrollments: [{ ...preserved, status: "canceled" }] }));
+  assert.equal((await getData(api, admin.token)).data.trainingEnrollments.find(e => e.id === preserved.id).status, preserved.status);
+  d = await getData(api, admin.token);
+  await api("/save", auth(admin.token, "POST", { _version: d.version,
+    employees: d.data.employees.map(e => e.role === "admin" ? { ...e, menuPerms: { "training-admin": false } } : e) }));
+  const limitedAdmin = await login(api, "seat-admin", "TestPassword123");
+  d = await getData(api, limitedAdmin);
+  assert.deepEqual(d.data.trainingEnrollments, [], "관리 메뉴가 꺼진 관리자도 타인 신청·설문을 읽을 수 없음");
+  await api("/save", auth(limitedAdmin, "POST", { _version: d.version,
+    trainingEnrollments: [{ ...preserved, status: "completed" }] }));
+  assert.equal((await getData(api, tokens[1])).data.trainingEnrollments.length, 1);
+  const stored = JSON.parse(require("node:fs").readFileSync(server.dataFile, "utf8"));
+  assert.equal(stored.trainingEnrollments.find(e => e.id === preserved.id).status, preserved.status);
+});
+
 if (!ADMIN_DATABASE_URL) {
   test("D1~D5 신설 컬렉션 쓰기 게이팅 — 실제 PostgreSQL (skipped: DATABASE_URL/TEST_DATABASE_URL not set)", { skip: true }, () => {});
 } else {
@@ -231,6 +312,17 @@ if (!ADMIN_DATABASE_URL) {
       assert.equal(r.ok, true);
       d = await getData(api, adminToken);
       assert.equal(d.data.trainingEnrollments.find(e => e.id === "e1").empId, "mem1");
+    });
+    await t.test("PostgreSQL도 정원 초과·중복 신청을 저장 트랜잭션 안에서 판정한다", async () => {
+      d = await getData(api, adminToken);
+      const adminId = d.data.employees.find(e => e.role === "admin").id;
+      await api("/save", auth(adminToken, "POST", { _version: d.version,
+        trainingCourses: [{ ...d.data.trainingCourses.find(c => c.id === "c1"), capacity: 1 }],
+        trainingEnrollments: [{ id: "pg-second", courseId: "c1", empId: adminId, status: "applied" },
+          { id: "pg-duplicate", courseId: "c1", empId: "mem1", status: "applied" }] }));
+      d = await getData(api, adminToken);
+      assert.equal(d.data.trainingEnrollments.find(e => e.id === "pg-second").status, "waitlisted");
+      assert.equal(d.data.trainingEnrollments.some(e => e.id === "pg-duplicate"), false);
     });
   });
 }

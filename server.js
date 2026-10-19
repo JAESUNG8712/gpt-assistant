@@ -16,6 +16,7 @@ const https = require("node:https");
 const pool    = require("./db");
 const multer  = require("multer");
 const budgetRouterFactory = require("./budget");
+const { canReadTraining, canManageTraining, countsByCourse, normalizeEnrollment } = require("./lib/training-integrity");
 
 // ════════════════════════════════════════════════════════════════════════════
 // 목차(파일 안 "// ── 제목 ──" 배너 문자열로 검색) — 이 파일은 인사(HR)/전자결재/
@@ -47,24 +48,20 @@ const budgetRouterFactory = require("./budget");
 // 동작해야 함) — 이런 경우 해당 라우트 바로 위 주석에 "왜 생략했는지"를 남겨둔다.
 // ════════════════════════════════════════════════════════════════════════════
 
-// Express 4는 async 라우트 핸들러 내부의 동기 throw/reject를 자동으로 잡아주지 않는다
-// (Express 5와 다른 점) — try/catch 없이 작성된 async 핸들러 하나가 예외를 던지면
-// unhandled promise rejection이 되고, Node 15+ 기본 동작상 프로세스 전체가 종료된다.
-// 2026-08-03 실제 운영 장애: budget.js의 사업계획 저장 라우트가 디스크 미마운트로 인한
-// 파일쓰기 ENOENT를 그대로 던져 인스턴스 전체가 크래시(Exited with status 1)됐음 — 라우트
-// 하나의 개별 오류가 전 직원의 HR/ERP 서비스 전체를 다운시키는 사고로 이어진 것. 근본
-// 원인(해당 파일쓰기 경로)은 별도로 수정했지만, 앞으로 유사한 미처리 예외가 어디서든
-// 발생해도 서버 프로세스 자체는 계속 살아있도록 안전망을 추가한다(로그만 남기고 종료하지
-// 않음 — 해당 요청은 클라이언트에 응답 없이 타임아웃되거나 500으로 끝날 수 있으나, 다른
-// 모든 사용자의 세션·요청에는 영향이 없다).
+// 요청의 async 예외는 라우트 가드가 Express 오류 미들웨어로 전달해 500을 응답한다.
+// 여기까지 올라온 오류는 요청 범위 밖의 미처리 오류이므로 상태가 안전하다고 가정할 수
+// 없다. 로그만 남기고 계속 실행하면 손상된 상태/응답 없는 요청이 쌓일 수 있다.
 process.on("unhandledRejection", (reason) => {
-  console.error("⚠️  [unhandledRejection] 처리되지 않은 프로미스 거부(요청 하나가 실패했을 뿐 서버는 계속 실행됩니다):", reason);
+  console.error("[fatal] 처리되지 않은 프로미스 거부:", reason);
+  process.exit(1);
 });
 process.on("uncaughtException", (err) => {
-  console.error("⚠️  [uncaughtException] 처리되지 않은 예외(요청 하나가 실패했을 뿐 서버는 계속 실행됩니다):", err);
+  console.error("[fatal] 처리되지 않은 예외:", err);
+  process.exit(1);
 });
 
 const app  = express();
+require("./lib/async-route-guard").installAsyncRouteGuard(app);
 const PORT = process.env.PORT || 3000;
 // 보안상 API 라우트는 경로 대소문자를 정확히 맞춰야 한다. Express 기본값은
 // case-insensitive라 `/API/Accounting/Accounts`가 실제 `/api/accounting/accounts`
@@ -683,6 +680,21 @@ function filterDataForRole(data, auth) {
   const out = { ...data };
   const settings = out.settings || {};
   const myId = String(auth.empId);
+  // Aggregate seats before filtering employee identities; never trust client counts.
+  if (Array.isArray(out.trainingCourses)) {
+    const counts = countsByCourse(data.trainingEnrollments);
+    out.trainingCourses = out.trainingCourses.map(c => ({ ...c,
+      enrollmentCounts: counts.get(String(c.id)) || { applied: 0, waitlisted: 0, completed: 0 } }));
+  }
+  if (!canReadTraining(auth)) {
+    out.trainingCourses = [];
+    out.trainingEnrollments = [];
+  }
+  // 직접 신청 과정의 설문 응답에는 직원별 의견이 포함된다. 관리 화면은 admin 전용이므로
+  // 일반 직원에게는 본인의 신청·이수·설문만 제공한다.
+  if (!canManageTraining(auth) && Array.isArray(out.trainingEnrollments)) {
+    out.trainingEnrollments = out.trainingEnrollments.filter(e => e && String(e.empId) === myId);
+  }
   if (auth.role !== "admin" && Array.isArray(out.payslips)) {
     out.payslips = out.payslips.filter(p => p && String(p.empId) === myId);
   }
@@ -995,6 +1007,12 @@ function filterDataForRole(data, auth) {
   if (auth.role !== "admin" && out.integrationSettings && typeof out.integrationSettings === "object") {
     out.integrationSettings = { calendar: out.integrationSettings.calendar };
   }
+  if (auth.menuPerms?.integrations === false) {
+    out.integrationSettings = { calendar: out.integrationSettings?.calendar };
+    out.integrationLogs = [];
+  }
+  if (Array.isArray(out.integrationLogs)) out.integrationLogs = [...out.integrationLogs]
+    .sort((a, b) => String(b.ts || "").localeCompare(String(a.ts || ""))).slice(0, 50);
   // 회사 단위 모듈 on/off(마스터 콘솔) — 이 함수의 나머지는 전부 "같은 회사 안에서 role별로
   // 얼마나 보이는지"를 다루는데, 이 한 줄만 "이 회사가 그 모듈 자체를 아예 껐는지"를 본다.
   // _hideDisabledFeatureFields() 정의부 주석 참고 — admin 포함 예외 없이 적용된다.
@@ -1016,6 +1034,11 @@ function filterDataForMenuPermissions(data, menuPerms) {
     if (Array.isArray(out.learningCourses)) out.learningCourses = [];
     if (Array.isArray(out.learningAssignments)) out.learningAssignments = [];
     hiddenTombstoneFields.push("learningCourses", "learningAssignments");
+  }
+  if (menuPerms["training-courses"] === false && menuPerms["training-admin"] === false) {
+    if (Array.isArray(out.trainingCourses)) out.trainingCourses = [];
+    if (Array.isArray(out.trainingEnrollments)) out.trainingEnrollments = [];
+    hiddenTombstoneFields.push("trainingCourses", "trainingEnrollments");
   }
   if (menuPerms["acct-receivables"] === false) {
     if (Array.isArray(out.acctPayments)) out.acctPayments = [];
@@ -1655,6 +1678,8 @@ function _menuPermsAllow(pageIds, actor) {
 function _writeGateAllowed(field, rec, actor, actorEmp, settings) {
   const rule = _WRITE_GATED_FIELDS[field];
   if (!rule || !actor) return false;
+  if (field === "trainingEnrollments") return canManageTraining(actor) ||
+    (actor.menuPerms?.["training-courses"] !== false && String(rec.empId) === String(actor.empId));
   const pageOk = _menuPermsAllow(rule.pageIds, actor);
   if (rule.roles.includes(actor.role) && pageOk) return true;
   if (rule.ownField && pageOk && (!rule.ownRoles || rule.ownRoles.includes(actor.role)) && String(rec[rule.ownField]) === String(actor.empId)) return true;
@@ -2503,8 +2528,8 @@ function _validateFieldValues(field, rec, storedList) {
       const cost = Number(rec.cost);
       if (!Number.isFinite(cost) || cost < 0 || cost > 1_000_000_000_000) return false;
     }
-    if (rec.startDate && !/^\d{4}-\d{2}-\d{2}$/.test(rec.startDate)) return false;
-    if (rec.endDate && !/^\d{4}-\d{2}-\d{2}$/.test(rec.endDate)) return false;
+    if (rec.startDate && !_validCalendarDate(rec.startDate)) return false;
+    if (rec.endDate && !_validCalendarDate(rec.endDate)) return false;
     if (rec.startDate && rec.endDate && rec.endDate < rec.startDate) return false;
   } else if (field === "trainingEnrollments") {
     if (String(rec.courseId ?? "").trim() === "") return false;
@@ -3008,13 +3033,18 @@ function _saveFeedbackChangeRequested(field, incoming, stored) {
 // 레거시 원장의 삭제된 직원 참조는 읽기/정정이 가능해야 한다. 신규 기록 또는
 // 대상 직원 변경에 한해 현재 회사 직원 존재 여부를 저장 잠금 안에서 확인한다.
 function _changedHrEmployeeRef(field, incoming, stored) {
-  const key = field === "employmentRecords" ? "employeeId" : field === "learningAssignments" ? "empId" : null;
+  const key = field === "employmentRecords" ? "employeeId" : ["learningAssignments", "trainingEnrollments"].includes(field) ? "empId" : null;
   if (!key || !incoming) return null;
   const id = String(incoming[key] ?? "");
   return !stored || id !== String(stored[key] ?? "") ? id : null;
 }
 
 async function _persistDataLocked(data, changedBy = "system", companyId = null, actor = null, externalClient = null) {
+  if (Array.isArray(data.trainingCourses)) data.trainingCourses = data.trainingCourses.map(course => {
+    if (!course) return course;
+    const { enrollmentCounts: _readOnlyCounts, ...storedCourse } = course;
+    return storedCourse;
+  });
   const rejectedRecords = [];
   const rejectSaveRecord = (field, incoming, stored) => {
     if (incoming?.id != null && _saveFeedbackChangeRequested(field, incoming, stored) &&
@@ -3337,6 +3367,17 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
       }
       if (gatedField === "welfarePoints") {
         data[gatedField] = _dropOverspentWelfare(data[gatedField], storedList, actor);
+      }
+      if (gatedField === "trainingEnrollments") {
+        const courses = mergeArrayById(_fileStore.trainingCourses || [], data.trainingCourses);
+        let basis = [...storedList];
+        data[gatedField] = data[gatedField].map(rec => {
+          const stored = storedById.get(String(rec.id));
+          const next = normalizeEnrollment(rec, stored, courses, basis, actor);
+          if (!next || !isDeepStrictEqual(rec, next)) rejectSaveRecord(gatedField, rec, next || stored);
+          if (next) basis = [...basis.filter(r => String(r.id) !== String(next.id)), next];
+          return next;
+        }).filter(Boolean);
       }
       if (gatedField === "okrObjectives") {
         // parentOkrId 전용 2차 패스(위 _okrParentLinkValid 주석 참고) — storedList(이전
@@ -3739,6 +3780,17 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
       _engagementSurveysPg = rows.map(r => r.data);
       return _engagementSurveysPg;
     };
+    let trainingContext;
+    const loadTrainingContext = async () => {
+      if (!trainingContext) {
+        const { rows } = await client.query(
+          "SELECT collection, data FROM app_collections WHERE collection = ANY($1) AND company_id IS NOT DISTINCT FROM $2",
+          [["trainingCourses", "trainingEnrollments"], companyId || null]);
+        trainingContext = { courses: rows.filter(r => r.collection === "trainingCourses").map(r => r.data),
+          enrollments: rows.filter(r => r.collection === "trainingEnrollments").map(r => r.data) };
+      }
+      return trainingContext;
+    };
     for (const field of GENERIC_LIST_FIELDS) {
       const items = data[field];
       if (Array.isArray(items)) {
@@ -3793,6 +3845,13 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
             if (toWrite === null) continue;   // 권한 없이 새로 만들어진 레코드 — 쓰지 않음
           }
           // 값 범위·형식 검증(_validateFieldValues 주석 참고, JSON모드와 동일 규칙).
+          if (field === "trainingEnrollments" && !isDeepStrictEqual(toWrite, storedItem)) {
+            const context = await loadTrainingContext();
+            const next = normalizeEnrollment(toWrite, storedItem, context.courses, context.enrollments, actor);
+            if (!next || !isDeepStrictEqual(toWrite, next)) rejectSaveRecord(field, item, next || storedItem);
+            if (!next) continue;
+            toWrite = next;
+          }
           let validationList = null;
           if (field === "roomReservations") validationList = await _getRoomReservationsPg();
           else if (field === "learningAssignments") validationList = await _loadLearningCollectionsPg();
@@ -3834,6 +3893,9 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
           );
           // 같은 요청에 여러 배정이 들어오면 뒤 레코드도 앞에서 막 저장한 배정을 보도록
           // 메모리 검증 기준을 갱신한다. 회사별 저장 잠금과 함께 동시 정원 초과도 차단한다.
+          if (field === "trainingEnrollments" && trainingContext) {
+            trainingContext.enrollments = [...trainingContext.enrollments.filter(r => String(r.id) !== String(toWrite.id)), toWrite];
+          }
           if (field === "learningAssignments" && _learningAssignmentsPg) {
             _learningAssignmentsPg = [
               ..._learningAssignmentsPg.filter(r => r && String(r.id) !== String(toWrite.id)),
@@ -6804,7 +6866,8 @@ function _isPrivateOrLoopbackIp(ip) {
 // 실제 디스패치 검증에 그대로 써야 하므로, 명시적으로 켠 경우에만(기본은 항상 가드 적용)
 // 이 검사를 건너뛴다 — BOOTSTRAP_SECRET/ALLOW_DEMO_DATA와 동일하게 opt-in 환경변수로,
 // 운영 배포는 이 값을 설정하지 않는 한 항상 보호된 상태로 시작한다.
-const _ALLOW_LOCAL_WEBHOOK_TARGETS = String(process.env.ALLOW_LOCAL_WEBHOOK_TARGETS || "").toLowerCase() === "true";
+const _ALLOW_LOCAL_WEBHOOK_TARGETS = process.env.NODE_ENV === "test" &&
+  String(process.env.ALLOW_LOCAL_WEBHOOK_TARGETS || "").toLowerCase() === "true";
 async function _resolveSafeWebhookTarget(urlString) {
   let u;
   try { u = new URL(urlString); } catch { return false; }
@@ -6854,50 +6917,124 @@ const INTEGRATION_EVENT_LABELS = {
   leave_request: "휴가/근태 신청",
   notice_post: "공지사항 등록",
 };
+const _ATTENDANCE_TEMPLATE_IDS = new Set([
+  "tpl-vacation", "tpl-halfday", "tpl-early", "tpl-sick", "tpl-funeral", "tpl-parental",
+  "tpl-training", "tpl-biztrip", "tpl-flex", "tpl-holiday-work", "tpl-overtime", "tpl-remote",
+]);
+function _isRecentWebhookEventTime(value) {
+  const time = Date.parse(value);
+  return Number.isFinite(time) && time <= Date.now() + 60_000 && Date.now() - time <= 24 * 60 * 60 * 1000;
+}
+function _safeWebhookLabel(value, max = 200) {
+  // Slack-style markup/mentions must not be interpreted from a user-entered title.
+  return String(value || "").replace(/[\u0000-\u001f\u007f]/g, " ").trim().slice(0, max)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/@/g, "＠");
+}
+function _webhookEventFromStoredRecord(data, auth, eventId, recordId) {
+  const actorId = String(auth?.empId ?? "");
+  if (!actorId || !recordId || recordId.length > 128) return null;
+  if (eventId === "notice_post") {
+    const post = (data.boardPosts || []).find(p => String(p?.id) === recordId);
+    if (!post || post.categoryId !== "notice" || String(post.authorId) !== actorId) return null;
+    if (!_isRecentWebhookEventTime(post.createdAt)) return null;
+    return { key: `${eventId}:${recordId}`, text: `[공지사항] ${_safeWebhookLabel(post.title)}` };
+  }
+  const doc = (data.approvalDocs || []).find(d => String(d?.id) === recordId);
+  if (!doc) return null;
+  const title = _safeWebhookLabel(doc.title);
+  if (eventId === "approval_request" || eventId === "leave_request") {
+    if (String(doc.authorId) !== actorId || !["in_progress", "approved", "rejected"].includes(doc.status)) return null;
+    if (!_isRecentWebhookEventTime(doc.createdAt)) return null;
+    if (eventId === "leave_request") {
+      const custom = (data.approvalTemplates || []).find(t => t?.id === doc.templateId);
+      if (!_ATTENDANCE_TEMPLATE_IDS.has(doc.templateId) && custom?.category !== "attendance") return null;
+    }
+    const author = (data.employees || []).find(e => String(e?.id) === actorId);
+    const label = eventId === "leave_request" ? "휴가/근태 신청" : "결재 상신";
+    return { key: `${eventId}:${recordId}`, text: `[${label}] ${title} (신청자: ${_safeWebhookLabel(author?.name, 80)})` };
+  }
+  if (eventId === "approval_complete") {
+    const deciders = Array.isArray(doc.approvers) ? doc.approvers : [];
+    const decisive = doc.status === "rejected" ? deciders.find(a => a?.status === "rejected") : deciders.at(-1);
+    if (!["approved", "rejected"].includes(doc.status) || String(decisive?.empId) !== actorId ||
+        decisive?.status !== (doc.status === "rejected" ? "rejected" : "approved")) return null;
+    if (!_isRecentWebhookEventTime(doc.updatedAt || doc.approvedAt)) return null;
+    return { key: `${eventId}:${recordId}:${doc.status}`, text: `[결재 ${doc.status === "approved" ? "완료" : "반려"}] ${title} — ${doc.status === "approved" ? "최종 승인" : "반려"}되었습니다.` };
+  }
+  return null;
+}
+async function _reserveWebhookEvent(companyId, eventKey) {
+  const digest = crypto.createHash("sha256").update(eventKey).digest("hex");
+  if (USE_JSON_FILE) {
+    _loadFileIdempotency();
+    _pruneFileIdempotency();
+    const scope = `webhook:${_scopeKey(companyId)}:${digest}`;
+    if (_fileIdempotency[scope]) return false;
+    _fileIdempotency[scope] = { reserved: true, expiresAt: new Date(Date.now() + 48 * 60 * 60 * 1000).toISOString() };
+    _atomicWriteFileSync(IDEMPOTENCY_FILE, JSON.stringify(_fileIdempotency, null, 2));
+    return true;
+  }
+  await pool.query("DELETE FROM api_idempotency WHERE actor_id='system:webhook' AND expires_at<=NOW()");
+  const result = await pool.query(
+    `INSERT INTO api_idempotency (company_id,actor_id,route,idempotency_key,request_hash,expires_at)
+     VALUES ($1,'system:webhook','POST /api/integrations/webhooks/dispatch',$2,$2,NOW()+INTERVAL '48 hours')
+     ON CONFLICT DO NOTHING RETURNING idempotency_key`, [companyId, digest]);
+  return result.rowCount > 0;
+}
+async function _sendIntegrationWebhook(wh, text) {
+  const target = await _resolveSafeWebhookTarget(wh.url);
+  if (!target) return { webhookName: String(wh.name || "").slice(0, 100), status: "fail", message: "안전하지 않은 전송 대상(내부/루프백 주소)" };
+  try {
+    const statusCode = await _postWebhookPinned(target, text);
+    return { webhookName: String(wh.name || "").slice(0, 100),
+      status: statusCode >= 200 && statusCode < 300 ? "success" : "fail", message: `HTTP ${statusCode}` };
+  } catch {
+    // Transport errors can contain the credential-bearing webhook URL.
+    return { webhookName: String(wh.name || "").slice(0, 100), status: "fail", message: "연결 실패 또는 전송 시간 초과" };
+  }
+}
+async function _recordWebhookLogs(companyId, event, logs) {
+  const now = new Date().toISOString();
+  const entries = logs.map(l => ({ ...l, id: `webhook-log-${crypto.randomUUID()}`, ts: now, event }));
+  try {
+    // Persist only new rows. The save merger preserves concurrent log additions.
+    await persistData({ integrationLogs: entries }, "system:webhook-dispatch", companyId, { role: "admin", empId: null });
+  } catch { console.warn("[webhook-dispatch] 전송 이력 기록 실패"); }
+  return entries;
+}
+const webhookTestLimiter = rateLimit({ windowMs: 60_000, limit: 10, standardHeaders: true, legacyHeaders: false });
+app.post("/api/integrations/webhooks/test", webhookTestLimiter, async (req, res) => {
+  if (!requireAdmin(req, res) || !requirePage(req, res, "integrations")) return;
+  const companyId = req.auth.companyId || null;
+  const data = await loadData(companyId);
+  const wh = (data.integrationSettings?.webhooks || []).find(w => w && String(w.id) === String(req.body?.webhookId));
+  if (!wh) return res.status(404).json({ ok: false, message: "저장된 연동을 찾을 수 없습니다. 설정을 먼저 저장해 주세요." });
+  const result = await _sendIntegrationWebhook(wh, `[HR시스템] ${_safeWebhookLabel(wh.name)} 연동 테스트 메시지입니다.`);
+  const [log] = await _recordWebhookLogs(companyId, "테스트 전송", [result]);
+  res.json({ ok: result.status === "success", delivered: result.status === "success", message: result.message, log });
+});
 app.post("/api/integrations/webhooks/dispatch", async (req, res) => {
   if (!requireAuth(req, res)) return;
   const eventId = String(req.body?.eventId || "");
   if (!Object.prototype.hasOwnProperty.call(INTEGRATION_EVENT_LABELS, eventId))
     return res.status(400).json({ ok: false, message: "알 수 없는 이벤트입니다." });
-  const text = String(req.body?.text || "").replace(/[\u0000-\u001f\u007f]/g, " ").trim().slice(0, 1000);
-  if (!text) return res.status(400).json({ ok: false, message: "전송할 내용이 없습니다." });
+  const pageId = eventId === "notice_post" ? "board-notice" : eventId === "approval_complete" ? "approval-inbox" : "approval-draft";
+  if (!requireFeature(req, res, eventId === "notice_post" ? "comm" : "approval") || !requirePage(req, res, pageId)) return;
+  const recordId = String(req.body?.recordId || "");
   try {
     const companyId = req.auth.companyId || null;
     const data = await loadData(companyId);
+    const source = _webhookEventFromStoredRecord(data, req.auth, eventId, recordId);
+    if (!source) return res.status(403).json({ ok: false, code: "WEBHOOK_SOURCE_INVALID", message: "저장된 업무 기록과 발송 권한을 확인할 수 없습니다." });
     const webhooks = Array.isArray(data?.integrationSettings?.webhooks) ? data.integrationSettings.webhooks : [];
     const targets = webhooks.filter(w => w && w.active !== false && Array.isArray(w.events) && w.events.includes(eventId));
     if (!targets.length) return res.json({ ok: true, dispatched: 0 });
-    const evLabel = INTEGRATION_EVENT_LABELS[eventId];
-    const now = new Date().toISOString();
-    const results = await Promise.allSettled(targets.map(async wh => {
-      const target = await _resolveSafeWebhookTarget(wh.url);
-      if (!target) {
-        return { webhookName: String(wh.name || "").slice(0, 100), status: "fail", message: "안전하지 않은 전송 대상(내부/루프백 주소)" };
-      }
-      try {
-        const statusCode = await _postWebhookPinned(target, text);
-        const ok = statusCode >= 200 && statusCode < 300;
-        return { webhookName: String(wh.name || "").slice(0, 100), status: ok ? "success" : "fail", message: ok ? "자동 발송" : `HTTP ${statusCode}` };
-      } catch (e) {
-        return { webhookName: String(wh.name || "").slice(0, 100), status: "fail", message: String(e?.message || e).slice(0, 200) };
-      }
-    }));
+    if (!await _reserveWebhookEvent(companyId, source.key)) return res.json({ ok: true, dispatched: 0, duplicate: true });
+    const results = await Promise.allSettled(targets.map(wh => _sendIntegrationWebhook(wh, source.text)));
     const logs = results.map(r => (r.status === "fulfilled" ? r.value : { webhookName: "-", status: "fail", message: "dispatch error" }));
-    // 로그 기록은 best-effort — 이미 발생한 외부 전송 결과는 이 기록이 실패해도 바뀌지
-    // 않으므로, 로그 저장 실패를 응답 실패로 취급하지 않는다. 합성 admin actor로
-    // persistData()를 호출(기존 부트스트랩 호출부와 동일한 관례)해 integrationLogs
-    // 하나만 병합·기록한다 — data에 다른 필드를 전혀 싣지 않으므로 다른 모든 컬렉션은
-    // mergeArrayById(undefined incoming)가 그대로 저장본을 반환해 손대지 않는다.
-    try {
-      const existingLogs = Array.isArray(data.integrationLogs) ? data.integrationLogs : [];
-      const newEntries = logs.map((l, i) => ({
-        id: `webhook-log-${Date.now()}-${i}-${Math.random().toString(36).slice(2, 8)}`,
-        ts: now, webhookName: l.webhookName, event: evLabel, status: l.status, message: l.message,
-      }));
-      const merged = [...newEntries, ...existingLogs].slice(0, 50);
-      await persistData({ integrationLogs: merged }, "system:webhook-dispatch", companyId, { role: "admin", empId: null });
-    } catch (e) { console.warn("[webhook-dispatch] 전송 이력 기록 실패:", e.message); }
-    res.json({ ok: true, dispatched: logs.filter(l => l.status === "success").length });
+    await _recordWebhookLogs(companyId, INTEGRATION_EVENT_LABELS[eventId], logs);
+    res.json({ ok: true, dispatched: logs.filter(l => l.status === "success").length,
+      failed: logs.filter(l => l.status !== "success").length });
   } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
@@ -7250,7 +7387,8 @@ app.post("/restore", async (req, res) => {
       }));
       const finalData = await loadData(companyId);
       broadcastSSE("data_restored", { name, fields: result.restoredFields, deletedExtras: deleteExtras, version: result.version }, null, companyId);
-      return res.json({ ok: true, version: result.version, restoredFields: result.restoredFields, deletedExtras: deleteExtras, data: filterDataForRole(stripPwField(finalData), req.auth) });
+      return res.json({ ok: true, version: result.version, restoredFields: result.restoredFields, deletedExtras: deleteExtras,
+        data: filterDataForMenuPermissions(filterDataForRole(stripPwField(finalData), req.auth), req.auth?.menuPerms) });
     }
 
     const current = await loadData(companyId);
@@ -7292,7 +7430,8 @@ app.post("/restore", async (req, res) => {
 
     const finalData = await loadData(companyId);
     broadcastSSE("data_restored", { name, fields: restoredFields, deletedExtras: deleteExtras, version: _getVersion(companyId) }, null, companyId);
-    res.json({ ok: true, version: _getVersion(companyId), restoredFields, deletedExtras: deleteExtras, data: filterDataForRole(stripPwField(finalData), req.auth) });
+    res.json({ ok: true, version: _getVersion(companyId), restoredFields, deletedExtras: deleteExtras,
+      data: filterDataForMenuPermissions(filterDataForRole(stripPwField(finalData), req.auth), req.auth?.menuPerms) });
   } catch (e) {
     // rejectDemoDataForProduction()이 httpError()로 만든 오류는 e.status/e.code를 갖고
     // 있다(예: 403 DEMO_DATA_FORBIDDEN) — POST /save와 동일하게 그 상태코드로 응답한다.
@@ -8046,7 +8185,8 @@ app.post("/api/hr/expense-claims/:id/pay", async (req, res) => {
   };
   const buildPayment = (claim, voucher) => ({
     ...claim, status: "paid", paidAt: date, payMethod: method, paidBy: _actorLabel(req),
-    voucherId: voucher?.id || null, voucherNo: voucher?.voucherNo || (voucher ? "(임시)" : null),
+    // 임시 전표에는 아직 확정 번호가 없다. 표시용 문자열을 원장 데이터에 저장하지 않는다.
+    voucherId: voucher?.id || null, voucherNo: voucher?.voucherNo || null,
     updatedAt: new Date().toISOString(),
   });
   const buildVoucher = claim => {
@@ -8234,6 +8374,20 @@ app.post("/api/accounting/vouchers", async (req, res) => {
   } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
+function _syncExpenseVoucherNumberFile(voucher, companyId) {
+  if (voucher?.status !== "posted" || !voucher.voucherNo) return false;
+  const claims = _fileStore.expenseClaims || [];
+  if (!claims.some(c => c?.status === "paid" && String(c.voucherId) === String(voucher.id) && c.voucherNo !== voucher.voucherNo)) return false;
+  const nextVersion = _getVersion(companyId) + 1;
+  const nextStore = { ..._fileStore, _version: nextVersion,
+    expenseClaims: claims.map(c => c?.status === "paid" && String(c.voucherId) === String(voucher.id)
+      ? { ...c, voucherNo: voucher.voucherNo } : c) };
+  _atomicWriteFileSync(JSON_FILE, JSON.stringify(nextStore, null, 2));
+  _fileStore = nextStore;
+  _setVersion(companyId, nextVersion, new Date().toISOString());
+  broadcastSSE("data_updated", { version: nextVersion }, null, companyId);
+  return true;
+}
 app.post("/api/accounting/vouchers/:id/post", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
@@ -8241,9 +8395,15 @@ app.post("/api/accounting/vouchers/:id/post", async (req, res) => {
     const companyId = req.auth.companyId || null;
     const actorId = req.auth.loginId || req.auth.empId || "unknown";
     if (USE_JSON_FILE) {
+      return await _withSaveLock(async () => {
       const v = _fileAccounting.vouchers.find(v => v.id === id);
       if (!v) return res.status(404).json({ ok: false, message: "전표를 찾을 수 없습니다." });
-      if (v.status !== "draft") return res.status(400).json({ ok: false, message: "임시 저장 상태의 전표만 확정할 수 있습니다." });
+      if (v.status !== "draft") {
+        // 회계 파일 저장 후 경비 파일 반영 전에 프로세스가 중단됐다면, 같은 전표의
+        // 재요청에서 번호만 안전하게 복구한다. 확정 동작 자체는 반복하지 않는다.
+        if (_syncExpenseVoucherNumberFile(v, companyId)) return res.json({ ok: true, voucher: v, reconciled: true });
+        return res.status(400).json({ ok: false, message: "임시 저장 상태의 전표만 확정할 수 있습니다." });
+      }
       if (!_isValidDateStr(v.date)) return res.status(400).json({ ok: false, message: "전표일자가 올바르지 않습니다." });
       const year = Number(v.date.slice(0, 4));
       const seq = _nextAcctSeq("voucherSeq", year);
@@ -8252,22 +8412,44 @@ app.post("/api/accounting/vouchers/:id/post", async (req, res) => {
       v.postedBy = actorId;
       v.postedAt = new Date().toISOString();
       _saveFileAccounting();
+      _syncExpenseVoucherNumberFile(v, companyId);
       return res.json({ ok: true, voucher: v });
+      });
     }
-    return await _runPgIdempotentCommand(req, res, async client => {
-      const { rows } = await client.query("SELECT data, status FROM vouchers WHERE id = $1 AND (company_id = $2 OR company_id IS NULL) FOR UPDATE", [id, companyId]);
-      if (!rows.length) return { status: 404, body: { ok: false, message: "전표를 찾을 수 없습니다." } };
-      if (rows[0].status !== "draft") return { status: 400, body: { ok: false, message: "임시 저장 상태의 전표만 확정할 수 있습니다." } };
-      if (!_isValidDateStr(rows[0].data?.date)) return { status: 400, body: { ok: false, message: "전표일자가 올바르지 않습니다." } };
-      const year = Number(rows[0].data.date.slice(0, 4));
-      const { rows: seqRows } = await client.query(
-        "INSERT INTO voucher_seq (company_id, year, seq) VALUES ($1,$2,1) ON CONFLICT (company_id, year) DO UPDATE SET seq = voucher_seq.seq + 1 RETURNING seq",
-        [companyId, year]
-      );
-      const voucherNo = `JE-${year}-${String(seqRows[0].seq).padStart(6, "0")}`;
-      const v = { ...rows[0].data, voucherNo, status: "posted", postedBy: actorId, postedAt: new Date().toISOString() };
-      await client.query("UPDATE vouchers SET voucher_no = $2, status = 'posted', data = $3, updated_at = NOW() WHERE id = $1", [id, voucherNo, v]);
-      return { status: 200, body: { ok: true, voucher: v } };
+    let claimVersion = null;
+    await _withDistributedSaveLock(companyId, async lockClient => {
+      await _runPgIdempotentCommand(req, res, async client => {
+        const { rows } = await client.query("SELECT data, status FROM vouchers WHERE id = $1 AND (company_id = $2 OR company_id IS NULL) FOR UPDATE", [id, companyId]);
+        if (!rows.length) return { status: 404, body: { ok: false, message: "전표를 찾을 수 없습니다." } };
+        if (rows[0].status !== "draft") return { status: 400, body: { ok: false, message: "임시 저장 상태의 전표만 확정할 수 있습니다." } };
+        if (!_isValidDateStr(rows[0].data?.date)) return { status: 400, body: { ok: false, message: "전표일자가 올바르지 않습니다." } };
+        const year = Number(rows[0].data.date.slice(0, 4));
+        const { rows: seqRows } = await client.query(
+          "INSERT INTO voucher_seq (company_id, year, seq) VALUES ($1,$2,1) ON CONFLICT (company_id, year) DO UPDATE SET seq = voucher_seq.seq + 1 RETURNING seq",
+          [companyId, year]
+        );
+        const voucherNo = `JE-${year}-${String(seqRows[0].seq).padStart(6, "0")}`;
+        const v = { ...rows[0].data, voucherNo, status: "posted", postedBy: actorId, postedAt: new Date().toISOString() };
+        await client.query("UPDATE vouchers SET voucher_no = $2, status = 'posted', data = $3, updated_at = NOW() WHERE id = $1", [id, voucherNo, v]);
+        const synced = await client.query(
+          `UPDATE app_collections SET data=jsonb_set(data,'{voucherNo}',to_jsonb($3::text),true), updated_at=NOW()
+           WHERE company_id=$2 AND collection='expenseClaims' AND data->>'voucherId'=$1
+             AND data->>'status'='paid' AND data->>'voucherNo' IS DISTINCT FROM $3`,
+          [id, companyId, voucherNo]
+        );
+        if (synced.rowCount) {
+          const versionResult = await client.query(
+            "INSERT INTO app_meta (key,value) VALUES ($1,'1') ON CONFLICT (key) DO UPDATE SET value=(app_meta.value::bigint+1)::text RETURNING value",
+            [`data_version:${_scopeKey(companyId)}`]
+          );
+          claimVersion = Number(versionResult.rows[0].value);
+        }
+        return { status: 200, body: { ok: true, voucher: v } };
+      }, lockClient);
+      if (claimVersion !== null) {
+        _setVersion(companyId, claimVersion, new Date().toISOString());
+        broadcastSSE("data_updated", { version: claimVersion }, null, companyId);
+      }
     });
   } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
@@ -13745,8 +13927,18 @@ app.post("/api/reset-all", loginLimiter, async (req, res) => {
 });
 
 // ── Fallback SPA ──────────────────────────────────────────────────────────────
+if (process.env.NODE_ENV === "test") {
+  app.get("/__test__/async-route-error", async () => { throw new Error("TEST_ASYNC_ROUTE_ERROR"); });
+}
 app.get("*", (req, res) => {
   res.sendFile(path.join(__dirname, "public", "index.html"));
+});
+app.use((err, req, res, next) => {
+  console.error(`[request-error] ${req.method} ${req.path}:`, err);
+  if (res.headersSent) return next(err);
+  res.status(Number(err?.status) >= 400 && Number(err?.status) < 500 ? Number(err.status) : 500)
+    .json({ ok: false, code: err?.code && Number(err?.status) < 500 ? err.code : "INTERNAL_ERROR",
+      message: Number(err?.status) >= 400 && Number(err?.status) < 500 ? String(err.message || "요청 오류") : "요청을 처리하지 못했습니다." });
 });
 
 // ── Local IP helper ───────────────────────────────────────────────────────────

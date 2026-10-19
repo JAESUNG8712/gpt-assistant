@@ -64,7 +64,40 @@
       approvedCost: rows.reduce((sum, a) => sum + (Number(a.approvedCost) || 0), 0),
       settledCost: rows.filter(a => a.settlementStatus === "settled").reduce((sum, a) => sum + (Number(a.settledAmount ?? a.approvedCost) || 0), 0) };
   }
-  return { validateCourse, validateAssignment, validateSettlement, summarize };
+  const historyStatusText = { assigned: "배정", in_progress: "수강 중", completed: "이수", cancelled: "취소", canceled: "취소", applied: "신청", waitlisted: "대기" };
+  function combinedHistory(courses, assignments, directCourses, enrollments, empId) {
+    const assignedById = new Map((courses || []).map(c => [String(c.id), c]));
+    const directById = new Map((directCourses || []).map(c => [String(c.id), c]));
+    const visible = row => empId == null || String(row.empId) === String(empId);
+    const rows = [
+      ...(assignments || []).filter(a => a && visible(a)).map(a => {
+        const course = assignedById.get(String(a.courseId));
+        return { source: "배정·결재", id: String(a.id), empId: String(a.empId), courseName: course?.name || "삭제된 과정",
+          status: a.status || "", startDate: course?.startDate || "", endDate: course?.endDate || "",
+          completedAt: a.completedAt || "", sortDate: a.completedAt || a.assignedAt || course?.startDate || "" };
+      }),
+      ...(enrollments || []).filter(e => e && visible(e)).map(e => {
+        const course = directById.get(String(e.courseId));
+        return { source: "직접 신청", id: String(e.id), empId: String(e.empId), courseName: course?.title || "삭제된 과정",
+          status: e.status || "", startDate: course?.startDate || "", endDate: course?.endDate || "",
+          completedAt: e.completedAt || "", sortDate: e.completedAt || e.appliedAt || course?.startDate || "" };
+      }),
+    ];
+    // 서로 다른 원장의 같은 이름 과정은 동일하다고 단정할 수 없어 합치거나 비용을 더하지 않는다.
+    return rows.map(row => ({ ...row, statusLabel: historyStatusText[row.status] || row.status }))
+      .sort((a, b) => String(b.sortDate).localeCompare(String(a.sortDate)) || a.source.localeCompare(b.source));
+  }
+  function filterHistory(rows, employees, query, source) {
+    const byId = new Map((employees || []).map(e => [String(e.id), e]));
+    const keyword = String(query || "").trim().toLocaleLowerCase("ko-KR");
+    return rows.filter(row => {
+      if (source && source !== "all" && row.source !== source) return false;
+      const employee = byId.get(row.empId);
+      return !keyword || [row.courseName, row.statusLabel, employee?.name, employee?.empNo, employee?.dept]
+        .some(value => String(value || "").toLocaleLowerCase("ko-KR").includes(keyword));
+    });
+  }
+  return { validateCourse, validateAssignment, validateSettlement, summarize, combinedHistory, filterHistory };
 });
 
 (function attachUi(root) {
@@ -75,6 +108,7 @@
   const statusText = { draft: "초안", active: "운영", closed: "종료", assigned: "배정", in_progress: "수강 중", completed: "이수", cancelled: "취소" };
   let editingCourseId = null, editingAssignmentId = null;
   const listFilter = { query: "", courseStatus: "all", assignmentStatus: "all", page: 1 };
+  const historyFilter = { query: "", source: "all", page: 1 };
   const PAGE_SIZE = 25;
   const money = value => (Number(value) || 0).toLocaleString("ko-KR");
 
@@ -192,6 +226,23 @@
       ["직원","사번","부서","과정","배정일","이수기한","상태","수료일","점수","수료번호","증빙참조","승인비용","실제정산액","정산상태","정산일"],
       rows.map(a => { const e=empOf(a.empId), c=courseOf(a.courseId); return [e?.name||"",e?.empNo||"",e?.dept||"",c?.name||"",a.assignedAt||"",a.dueDate||"",statusText[a.status]||a.status,a.completedAt||"",a.score??"",a.certificateNo||"",a.evidenceRef||"",a.approvedCost||0,a.settlementStatus==="settled"?(a.settledAmount??a.approvedCost??0):0,a.settlementStatus||"",a.settledAt||""]; }));
   }
+  async function exportCombinedCsv() {
+    const rows=visibleHistory();
+    if(!rows.length){showToast("추출할 교육 이력이 없습니다.","info");return;}
+    await root.dlCSV(`통합교육이력_${new Date().toISOString().slice(0,10)}.csv`,
+      ["직원","사번","출처","과정","상태","시작일","종료일","수료일"],
+      rows.map(row=>{const employee=empOf(row.empId);return [employee?.name||"",employee?.empNo||"",row.source,row.courseName,row.statusLabel,row.startDate,row.endDate,row.completedAt];}));
+  }
+  function visibleHistory() {
+    const rows=tools.combinedHistory(learningCourses,learningAssignments,trainingCourses,trainingEnrollments,currentUser?.role==="admin"?null:currentUser?.id);
+    return tools.filterHistory(rows,employees,historyFilter.query,historyFilter.source);
+  }
+  function applyHistoryFilters() {
+    historyFilter.query=String($("#learning-history-query")?.value||"").trim().slice(0,100);
+    historyFilter.source=$("#learning-history-source")?.value||"all";
+    historyFilter.page=1;render();
+  }
+  function changeHistoryPage(delta) { historyFilter.page+=delta;render(); }
 
   function render(){
     const c=$("#content"); if(!c)return;
@@ -201,12 +252,17 @@
     const courseRows=courses.map(x=>{const used=learningAssignments.filter(a=>String(a.courseId)===String(x.id)&&a.status!=="cancelled").length;return`<tr><td><b>${esc(x.name)}</b><div class="fz11 text-gray">${esc(x.category)} · ${esc(x.provider||"자체")}</div></td><td>${esc(x.instructorName||"-")}</td><td>${esc(x.startDate)} ~ ${esc(x.endDate)}<div class="fz11 text-gray">${esc(x.hours)}시간 · ${x.delivery==="online"?"온라인":x.delivery==="blended"?"혼합":"집합"}</div></td><td>${used}/${esc(x.capacity)}</td><td>${statusText[x.status]||esc(x.status)}</td>${admin?`<td><button class="btn btn-ghost btn-sm" onclick="openLearningCourseEditor('${esc(x.id)}')">${x.status==="closed"?"조회":"수정"}</button></td>`:""}</tr>`;}).join("");
     const filtered=visibleAssignments(),pages=Math.max(1,Math.ceil(filtered.length/PAGE_SIZE));listFilter.page=Math.max(1,Math.min(listFilter.page,pages));
     const assignmentRows=filtered.slice((listFilter.page-1)*PAGE_SIZE,listFilter.page*PAGE_SIZE).map(a=>{const course=courseOf(a.courseId),e=empOf(a.empId),settlement={not_required:"정산 없음",pending:"정산 대기",settled:"정산 완료"}[a.settlementStatus||"not_required"];return`<tr><td>${admin?`${esc(e?.name||"삭제된 직원")}<div class="fz11 text-gray">${esc(e?.empNo||"-")} · ${esc(e?.dept||"-")}</div>`:"내 이력"}</td><td>${esc(course?.name||"삭제된 과정")}${a.sourceDocId?`<div class="fz11 text-gray">결재 연계</div>`:""}</td><td>${statusText[a.status]||esc(a.status)}</td><td>${esc(a.dueDate||"-")}</td><td>${esc(a.completedAt||"-")}${a.score!=null?` · ${esc(a.score)}점`:""}${a.evidenceRef?`<div class="fz11 text-gray">증빙 ${esc(a.evidenceRef)}</div>`:""}</td><td>승인 ${money(a.approvedCost)}원<div class="fz11 text-gray">${esc(settlement)}${a.settlementStatus==="settled"?` · 실제 ${money(a.settledAmount??a.approvedCost)}원`:""}${a.settledAt?` · ${esc(a.settledAt)}`:""}</div></td>${admin?`<td><button class="btn btn-ghost btn-sm" onclick="openLearningAssignmentEditor('${esc(a.id)}')">${a.status==="completed"?"정산":"수정"}</button></td>`:""}</tr>`;}).join("");
-    c.innerHTML=`<div class="flex justify-between items-c mb3"><div><h2>🎓 교육 과정·이력</h2><div class="fz12 text-gray">교육 신청부터 승인·수료·정산까지 추적합니다.</div></div><div class="flex gap2 wrap">${!admin?`<button class="btn btn-primary" onclick="openApprovalForm('tpl-training')">+ 교육 신청</button>`:""}${admin?`<button class="btn btn-secondary" onclick="openLearningCourseEditor()">+ 과정 등록</button><button class="btn btn-primary" onclick="openLearningAssignmentEditor()">+ 직원 배정</button>`:""}</div></div>
+    const combined=visibleHistory(),historyPages=Math.max(1,Math.ceil(combined.length/PAGE_SIZE));
+    historyFilter.page=Math.max(1,Math.min(historyFilter.page,historyPages));
+    const combinedRows=combined.slice((historyFilter.page-1)*PAGE_SIZE,historyFilter.page*PAGE_SIZE).map(row=>`<tr><td>${admin?esc(empOf(row.empId)?.name||"삭제된 직원"):"내 이력"}</td><td>${esc(row.source)}</td><td>${esc(row.courseName)}</td><td>${esc(row.statusLabel)}</td><td>${esc(row.startDate||"-")} ~ ${esc(row.endDate||"-")}</td><td>${esc(row.completedAt||"-")}</td></tr>`).join("");
+    c.innerHTML=`<div class="flex justify-between items-c mb3"><div><h2>🎓 교육 배정·이수·정산</h2><div class="fz12 text-gray">결재 연계 신청과 직원별 배정·수료·정산을 추적합니다. 교육 신청·설문의 직접 신청 과정은 별도 기록입니다.</div></div><div class="flex gap2 wrap">${!admin?`<button class="btn btn-primary" onclick="openApprovalForm('tpl-training')">+ 교육 신청</button>`:""}${admin?`<button class="btn btn-secondary" onclick="openLearningCourseEditor()">+ 과정 등록</button><button class="btn btn-primary" onclick="openLearningAssignmentEditor()">+ 직원 배정</button>`:""}</div></div>
       <div class="kpi-grid mb3"><div class="kpi-card"><div class="kpi-label">운영 과정</div><div class="kpi-val">${sum.activeCourses}</div></div><div class="kpi-card"><div class="kpi-label">배정·수강 중</div><div class="kpi-val">${sum.assigned}</div></div><div class="kpi-card"><div class="kpi-label">이수</div><div class="kpi-val">${sum.completed}</div></div><div class="kpi-card"><div class="kpi-label">7일 내 기한</div><button class="btn btn-ghost btn-sm" onclick="filterLearningDue('dueSoon')">${sum.dueSoon}건 보기</button></div><div class="kpi-card"><div class="kpi-label">기한 경과</div><button class="btn btn-ghost btn-sm text-danger" onclick="filterLearningDue('overdue')">${sum.overdue}건 보기</button></div><div class="kpi-card"><div class="kpi-label">정산 대기</div><button class="btn btn-ghost btn-sm" onclick="filterLearningDue('settlementPending')">${sum.pendingSettlement}건 보기</button><div class="fz11 text-gray">승인 ${money(sum.approvedCost)}원 · 실제 정산 ${money(sum.settledCost)}원</div></div></div>
       <div class="card mb3"><div class="card-body" style="display:flex;gap:10px;align-items:end;flex-wrap:wrap"><div class="fg" style="flex:2;min-width:180px"><label class="fl" for="learning-query">검색</label><input id="learning-query" class="fc" value="${esc(listFilter.query)}" placeholder="과정·직원·사번·부서" onkeydown="if(event.key==='Enter')applyLearningFilters()"></div><div class="fg" style="min-width:120px"><label class="fl" for="learning-course-status">과정 상태</label><select id="learning-course-status" class="fc">${[['all','전체'],['draft','초안'],['active','운영'],['closed','종료']].filter(([v])=>admin||v==='all'||v==='active').map(([v,l])=>`<option value="${v}" ${listFilter.courseStatus===v?'selected':''}>${l}</option>`).join('')}</select></div><div class="fg" style="min-width:130px"><label class="fl" for="learning-assignment-status">배정 상태</label><select id="learning-assignment-status" class="fc">${[['all','전체'],['assigned','배정'],['in_progress','수강 중'],['completed','이수'],['cancelled','취소'],['dueSoon','7일 내 기한'],['overdue','기한 경과'],['settlementPending','정산 대기']].map(([v,l])=>`<option value="${v}" ${listFilter.assignmentStatus===v?'selected':''}>${l}</option>`).join('')}</select></div><button class="btn btn-primary" onclick="applyLearningFilters()">조회</button><button class="btn btn-secondary" onclick="exportLearningCsv()">CSV 추출</button></div></div>
       <div class="card mb3"><div class="card-head"><h3>교육 과정 · ${courses.length}건</h3></div><div class="table-wrap"><table><thead><tr><th>과정</th><th>강사</th><th>일정</th><th>배정/정원</th><th>상태</th>${admin?"<th>관리</th>":""}</tr></thead><tbody>${courseRows||`<tr><td colspan="${admin?6:5}" class="p-empty">조건에 맞는 과정이 없습니다.</td></tr>`}</tbody></table></div></div>
-      <div class="card"><div class="card-head"><h3>${admin?"직원별 배정·이수·정산":"나의 교육 이력"} · ${filtered.length}건</h3></div><div class="table-wrap"><table><thead><tr><th>${admin?"직원":"구분"}</th><th>과정</th><th>상태</th><th>이수기한</th><th>수료/점수</th><th>승인비용/정산</th>${admin?"<th>관리</th>":""}</tr></thead><tbody>${assignmentRows||`<tr><td colspan="${admin?7:6}" class="p-empty">조건에 맞는 이력이 없습니다.</td></tr>`}</tbody></table></div><div class="workspace-editor-actions"><button class="btn btn-secondary btn-sm" onclick="changeLearningPage(-1)" ${listFilter.page<=1?'disabled':''}>이전</button><span class="fz12 text-gray">${listFilter.page} / ${pages}</span><button class="btn btn-secondary btn-sm" onclick="changeLearningPage(1)" ${listFilter.page>=pages?'disabled':''}>다음</button></div></div>`;
+      <div class="card mb3"><div class="card-head"><h3>${admin?"직원별 배정·이수·정산":"나의 배정 교육 이력"} · ${filtered.length}건</h3></div><div class="table-wrap"><table><thead><tr><th>${admin?"직원":"구분"}</th><th>과정</th><th>상태</th><th>이수기한</th><th>수료/점수</th><th>승인비용/정산</th>${admin?"<th>관리</th>":""}</tr></thead><tbody>${assignmentRows||`<tr><td colspan="${admin?7:6}" class="p-empty">조건에 맞는 이력이 없습니다.</td></tr>`}</tbody></table></div><div class="workspace-editor-actions"><button class="btn btn-secondary btn-sm" onclick="changeLearningPage(-1)" ${listFilter.page<=1?'disabled':''}>이전</button><span class="fz12 text-gray">${listFilter.page} / ${pages}</span><button class="btn btn-secondary btn-sm" onclick="changeLearningPage(1)" ${listFilter.page>=pages?'disabled':''}>다음</button></div></div>
+      <div class="card"><div class="card-head"><h3>전체 교육 이력 · ${combined.length}건</h3><button class="btn btn-secondary btn-sm" onclick="exportCombinedLearningCsv()">조회 결과 CSV 추출</button></div><div class="card-body"><div class="fz12 text-gray mb2">배정·결재와 직접 신청 기록을 출처별로 확인합니다. 과정명이 같아도 별도 기록으로 보존합니다.</div><div class="flex gap2 wrap items-c"><label for="learning-history-query">이력 검색</label><input id="learning-history-query" class="fc" style="max-width:260px" value="${esc(historyFilter.query)}" placeholder="과정·직원·사번·부서·상태" onkeydown="if(event.key==='Enter')applyLearningHistoryFilters()"><label for="learning-history-source">출처</label><select id="learning-history-source" class="fc" style="max-width:150px">${[['all','전체'],['배정·결재','배정·결재'],['직접 신청','직접 신청']].map(([value,label])=>`<option value="${value}" ${historyFilter.source===value?'selected':''}>${label}</option>`).join('')}</select><button class="btn btn-primary btn-sm" onclick="applyLearningHistoryFilters()">이력 조회</button></div></div><div class="table-wrap"><table><thead><tr><th>${admin?"직원":"구분"}</th><th>출처</th><th>과정</th><th>상태</th><th>기간</th><th>수료일</th></tr></thead><tbody>${combinedRows||'<tr><td colspan="6" class="p-empty">조건에 맞는 교육 이력이 없습니다.</td></tr>'}</tbody></table></div><div class="workspace-editor-actions"><button class="btn btn-secondary btn-sm" onclick="changeLearningHistoryPage(-1)" ${historyFilter.page<=1?'disabled':''}>이력 이전</button><span class="fz12 text-gray">${historyFilter.page} / ${historyPages}</span><button class="btn btn-secondary btn-sm" onclick="changeLearningHistoryPage(1)" ${historyFilter.page>=historyPages?'disabled':''}>이력 다음</button></div></div>`;
   }
-  root.applyLearningFilters=applyFilters;root.filterLearningDue=showDue;root.changeLearningPage=changePage;root.exportLearningCsv=exportCsv;
+  root.applyLearningFilters=applyFilters;root.filterLearningDue=showDue;root.changeLearningPage=changePage;root.exportLearningCsv=exportCsv;root.exportCombinedLearningCsv=exportCombinedCsv;
+  root.applyLearningHistoryFilters=applyHistoryFilters;root.changeLearningHistoryPage=changeHistoryPage;
   root.renderLearningCenterPage=render;root.renderLearningCourseEditorPage=renderCourseEditor;root.renderLearningAssignmentEditorPage=renderAssignmentEditor;root.openLearningCourseEditor=courseEditor;root.saveLearningCourse=saveCourse;root.openLearningAssignmentEditor=assignmentEditor;root.saveLearningAssignment=saveAssignment;
 })(typeof window!=="undefined"?window:null);

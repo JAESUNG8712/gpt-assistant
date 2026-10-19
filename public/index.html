@@ -2468,7 +2468,9 @@ async function _doSave(silent=false){
       _snapshotSingletonBaselines(_retrySaveRequest.state.data);
       if(r.recordRevisions)_applyRecordRevisions(r.recordRevisions);
       if(hasLaterChanges)_serverSavePending=true;
+      const savedChangeSeq=_retrySaveRequest.changeSeq;
       _retrySaveRequest=null;
+      _flushIntegrationWebhooks(savedChangeSeq);
       _serverFailCount = 0;
       serverConfig.status = "connected";
       serverConfig.retryCount = 0;
@@ -3482,13 +3484,6 @@ function showModal(html,opts){
 const openModal=showModal; // alias
 function closeTopModal(){closeModal();}
 function closeModal(){
-  stopKpiAutoDraft();
-  setTimeout(()=>{ if(_pendingRender){ _pendingRender=false; renderPage(); } }, 150);
-  // Release any locks held for editing (they will be released server-side on SSE disconnect too)
-  // We release KPI/emp locks when modal closes
-  for(const key of Array.from(_myLocks)){
-    if(key.startsWith("kpi:") || key.startsWith("emp:")) releaseLock(key);
-  }
   // $(".modal-ov")(=querySelector, DOM 순서상 첫 번째 = 가장 먼저 열린/아래쪽 모달)를
   // 지우고 있었는데, 모달 안에서 showModal()을 다시 호출해 모달이 쌓이는 화면(예: PMS
   // 프로젝트 등록의 투입인원 추가/삭제)에서는 사용자가 보고 있는 맨 위(최신) 모달이 아니라
@@ -3499,6 +3494,15 @@ function closeModal(){
   const opener=state?.opener;
   try{state?.onClose?.();}catch(e){console.warn("modal close callback failed",e);}
   ov.remove();_syncModalBackground();
+  // 중첩 확인창만 닫힌 동안에는 뒤의 편집 화면이 여전히 열려 있다. 이 시점에
+  // 초안 저장을 멈추거나 편집 잠금을 해제하면 다른 사용자의 동시 수정이 허용된다.
+  if(!_modalStack().length){
+    stopKpiAutoDraft();
+    setTimeout(()=>{ if(_pendingRender){ _pendingRender=false; renderPage(); } }, 150);
+    for(const key of Array.from(_myLocks)){
+      if(key.startsWith("kpi:") || key.startsWith("emp:")) releaseLock(key);
+    }
+  }
   requestAnimationFrame(()=>{const parent=_modalStack().at(-1);if(parent)return _focusModal(_modalDialog(parent));if(opener?.isConnected)opener.focus({preventScroll:true});});
 }
 
@@ -7791,8 +7795,8 @@ function renderSidebar(){
     "welfare-sep":[
       {id:"welfare-sep",type:"sep",label:"복지/교육",roles:["admin","director","leader","member"]},
       {id:"mandatory-training",label:"법정의무교육",icon:"📚",desc:"법정 필수 교육 이수 현황",roles:["admin","director","leader","member"]},
-      {id:"learning-center",label:"교육 과정·이력",icon:"🎓",desc:"교육 과정 조회와 직원별 이수 관리",roles:["admin","director","leader","member"]},
-      {id:"training-courses",label:"교육 과정",icon:"🎓",desc:"개설된 교육 과정 조회·신청·이수 현황",roles:["admin","director","leader","member"]},
+      {id:"learning-center",label:"교육 배정·이수·정산",icon:"🎓",desc:"결재 연계 교육 배정과 이수·비용 정산",roles:["admin","director","leader","member"]},
+      {id:"training-courses",label:"교육 신청·설문",icon:"🎓",desc:"개설 과정 직접 신청과 만족도 설문",roles:["admin","director","leader","member"]},
       {id:"welfare-status",label:"복지 현황",icon:"🩺",desc:"종합검진 대상 여부",roles:["admin","director","leader","member"]},
     ],
     "pay-sep":[
@@ -7814,7 +7818,7 @@ function renderSidebar(){
       {id:"award-history",label:"(최)우수사원 선정 이력",icon:"🏆",desc:"전직원 우수사원 선정 이력 조회",roles:["admin","director","leader"]},
       {id:"hr-welfare-points",label:"복지포인트 현황(전체)",icon:"🎁",desc:"전체 직원 복지포인트 부여·사용 현황",roles:welfareAllRoles},
       {id:"hr-mandatory-training",label:"법정의무교육 현황(전체)",icon:"📚",desc:"소속 직원 전체 법정의무교육 이수 현황",roles:["admin","director","leader"]},
-      {id:"training-admin",label:"교육 과정 관리",icon:"🗂",desc:"과정 개설·신청자 관리·설문·비용정산",roles:["admin"]},
+      {id:"training-admin",label:"교육 개설·신청 관리",icon:"🗂",desc:"직접 신청 과정의 개설·신청자·설문 관리",roles:["admin"]},
       {id:"hr-attendance",label:"근태 현황(전체)",icon:"📅",desc:"소속 직원 전체 근태 현황 조회",roles:["admin","director"]},
       {id:"hr-leave-mgmt",label:"연차 관리(전체)",icon:"🌴",desc:"소속 직원 전체 연차 부여·사용·잔여 현황",roles:["admin","director"]},
       {id:"payroll-mgmt",label:"급여 종합 관리",icon:"💵",desc:"전직원 급여·공제 현황 조회 및 조정",roles:["admin"]},
@@ -7976,13 +7980,13 @@ function renderSidebar(){
   titles["admin-operations"]="관리자 운영센터";
   titles["hr-function-map"]="HR 업무지도";
   titles["employment-records"]="계약·징계 원장";
-  titles["learning-center"]="교육 과정·이력";
+  titles["learning-center"]="교육 배정·이수·정산";
   titles["learning-course-edit"]="교육 과정 편집";
   titles["learning-assignment-edit"]="교육 배정 편집";
   titles["employment-records-edit"]="계약·징계 기록 편집";
   titles["code-mgmt"]="코드관리";
-  titles["training-courses"]="교육 과정";
-  titles["training-admin"]="교육 과정 관리";
+  titles["training-courses"]="교육 신청·설문";
+  titles["training-admin"]="교육 개설·신청 관리";
   titles["wage-garnishment"]="급여 압류 등록";
   titles["severance-settlement"]="퇴직금 정산";
   titles["tax-social-insurance"]="세무/사회보험";
@@ -17052,15 +17056,15 @@ function approveApprovalDoc(docId,comment){
   const idx=doc.approvers.findIndex(a=>a.empId===currentUser.id&&a.status==="pending");if(idx<0)return;
   doc.approvers[idx].status="approved";doc.approvers[idx].decidedAt=new Date().toISOString();doc.approvers[idx].comment=comment||"";
   const next=doc.approvers.find(a=>a.status==="waiting");
-  if(next){next.status="pending";}else{doc.status="approved";doc.approvedAt=new Date().toISOString();_applyAttendanceApproval(doc);_applyWelfareApproval(doc);if(doc.templateId==="tpl-vendor-reg")_autoRegisterVendorFromApproval(doc);_fireIntegrationWebhooks("approval_complete",`[결재 완료] ${doc.title} — 최종 승인되었습니다.`);}
-  doc.updatedAt=new Date().toISOString();autoSaveToServerIfEnabled();showToast("승인 처리되었습니다.","success");renderPage();renderSidebar();
+  if(next){next.status="pending";}else{doc.status="approved";doc.approvedAt=new Date().toISOString();_applyAttendanceApproval(doc);_applyWelfareApproval(doc);if(doc.templateId==="tpl-vendor-reg")_autoRegisterVendorFromApproval(doc);}
+  doc.updatedAt=new Date().toISOString();autoSaveToServerIfEnabled();if(doc.status==="approved")_fireIntegrationWebhooks("approval_complete",doc.id);showToast("승인 처리되었습니다.","success");renderPage();renderSidebar();
 }
 function rejectApprovalDoc(docId,comment){
   const doc=approvalDocs.find(d=>String(d.id)===String(docId));if(!doc)return;
   const idx=doc.approvers.findIndex(a=>a.empId===currentUser.id&&a.status==="pending");if(idx<0)return;
   doc.approvers[idx].status="rejected";doc.approvers[idx].decidedAt=new Date().toISOString();doc.approvers[idx].comment=comment||"";
   doc.status="rejected";doc.updatedAt=new Date().toISOString();autoSaveToServerIfEnabled();showToast("반려 처리되었습니다.","info");renderPage();renderSidebar();
-  _fireIntegrationWebhooks("approval_complete",`[결재 반려] ${doc.title} — 반려되었습니다.`);
+  _fireIntegrationWebhooks("approval_complete",doc.id);
 }
 // ── 관리자: 미결재 문서의 결재자 변경 ────────────────────────────────────────────
 // 퇴직자가 "현재 결재자"로 지정된 진행중 문서는 아무도 처리할 수 없어 영구히 정체된다
@@ -17599,8 +17603,8 @@ function _doSubmitApprovalForm(){
   if(tplId==="tpl-flex"){const adm=employees.find(e=>e.active&&e.role==="admin");if(adm&&!ccList.includes(`emp:${adm.id}`))ccList.push(`emp:${adm.id}`);}
   const doc={id:genId(),templateId:tplId,authorId:currentUser.id,title:_getDocTitle(tplId,fd),createdAt:new Date().toISOString(),updatedAt:new Date().toISOString(),status:"in_progress",formData:fd,approvers,receivers,cc:ccList,attachments:p.attachments||[]};
   approvalDocs.push(doc);window._afPendingSubmit=null;window._afAttachments=[];closeTopModal();closeModal();autoSaveToServerIfEnabled();
-  _fireIntegrationWebhooks("approval_request",`[결재 상신] ${doc.title} (기안자: ${currentUser.name||""})`);
-  if(getTpl(tplId)?.category==="attendance")_fireIntegrationWebhooks("leave_request",`[휴가/근태 신청] ${doc.title} (신청자: ${currentUser.name||""})`);
+  _fireIntegrationWebhooks("approval_request",doc.id);
+  if(getTpl(tplId)?.category==="attendance")_fireIntegrationWebhooks("leave_request",doc.id);
   showToast("결재가 상신되었습니다.","success");gotoPage("approval-outbox");
 }
 let _apvFilter={search:"",dept:"",team:"",author:"",tplId:"",dateFrom:"",dateTo:""};
@@ -27605,9 +27609,6 @@ async function deleteWebhook(id){
   integrationSettings={...integrationSettings,webhooks:integrationSettings.webhooks.filter(w=>String(w.id)!==String(id))};
   autoSaveToServerIfEnabled();showToast("삭제되었습니다.","info");renderIntegrationsPage();
 }
-function _logIntegration(webhookName,event,status,message){
-  integrationLogs=[{id:genId(),ts:new Date().toISOString(),webhookName,event,status,message},...integrationLogs].slice(0,50);
-}
 // 결재 상신/결재 완료·반려/휴가·근태 신청/공지사항 등록 4곳의 실제 액션 지점에서 호출해,
 // 등록된 웹훅 중 해당 이벤트를 구독(events에 eventId 포함)한 활성 웹훅에 메시지를 보낸다.
 // 2026-10 고도화 이전에는 이 함수가 브라우저에서 직접 webhook.url로 fetch(no-cors)했는데,
@@ -27616,25 +27617,55 @@ function _logIntegration(webhookName,event,status,message){
 // 노출돼 있어(filterDataForRole이 다른 모든 비밀값은 가리는데 이 필드만 빠져 있었음),
 // 로그인한 누구나 Slack 등 외부 채널에 영구히 직접 게시할 수 있는 URL을 그대로 읽어갈 수
 // 있는 비밀값 노출이었다. 디스패치 자체를 서버로 옮겨(POST /api/integrations/webhooks/
-// dispatch) 해결 — 클라이언트는 이벤트id+문구만 보내고, 실제 webhook URL은 서버만 안다
+// dispatch) 해결 — 클라이언트는 이벤트ID와 저장된 기록ID만 보내고, 실제 webhook URL은 서버만 안다
 // (non-admin의 GET /data에서는 webhooks 배열 자체가 제거됨). 전송이력(integrationLogs)도
 // 서버가 직접 기록하므로 여기서는 더 이상 _logIntegration()을 호출하지 않는다.
-function _fireIntegrationWebhooks(eventId,text){
-  if(!serverConfig.url)return; // 오프라인 데모 모드는 외부 연동 자체가 불가
-  serverRequest("POST","/api/integrations/webhooks/dispatch",{eventId,text}).catch(()=>{});
+const _pendingIntegrationWebhooks=[];
+function _fireIntegrationWebhooks(eventId,recordId){
+  if(!serverConfig.enabled||!serverConfig.url||_demoMode)return;
+  const key=`${eventId}:${recordId}`;
+  if(_pendingIntegrationWebhooks.some(e=>e.key===key))return;
+  _pendingIntegrationWebhooks.push({key,eventId,recordId,changeSeq:_saveChangeSeq,accessEpoch:_serverAccessEpoch,attempts:0,ready:false,busy:false});
+}
+function _flushIntegrationWebhooks(savedChangeSeq){
+  const remove=event=>{const index=_pendingIntegrationWebhooks.indexOf(event);if(index>=0)_pendingIntegrationWebhooks.splice(index,1);};
+  for(const event of [..._pendingIntegrationWebhooks]){
+    if(event.accessEpoch!==_serverAccessEpoch){remove(event);continue;}
+    if(event.changeSeq<=savedChangeSeq)event.ready=true;
+    if(!event.ready||event.busy||event.retryAt>Date.now())continue;
+    event.busy=true;
+    serverRequest("POST","/api/integrations/webhooks/dispatch",{eventId:event.eventId,recordId:event.recordId},20000)
+      .then(result=>{
+        if(event.accessEpoch!==_serverAccessEpoch){remove(event);return;}
+        if(result?.ok||result?.code==="WEBHOOK_SOURCE_INVALID"){
+          remove(event);
+          if(result?.code==="WEBHOOK_SOURCE_INVALID")showToast("저장된 기록과 일치하지 않아 외부 알림을 보내지 않았습니다.","info");
+          else if(result?.failed)showToast(`외부 알림 ${result.failed}건이 전송되지 않았습니다. 연동 전송 이력을 확인해 주세요.`,"error");
+        }else throw new Error(result?.message||"웹훅 알림 전송 실패");
+      })
+      .catch(()=>{
+        if(event.accessEpoch!==_serverAccessEpoch){remove(event);return;}
+        if(++event.attempts>=3){remove(event);showToast("외부 알림 전송을 확인하지 못했습니다. 연동 전송 이력을 확인해 주세요.","error");}
+        else {event.retryAt=Date.now()+5000;setTimeout(()=>_flushIntegrationWebhooks(savedChangeSeq),5000);}
+      })
+      .finally(()=>{event.busy=false;});
+  }
 }
 async function testWebhook(id){
   const wh=(integrationSettings.webhooks||[]).find(w=>String(w.id)===String(id));if(!wh)return;
-  const payload={text:`[HR시스템] "${wh.name}" 연동 테스트 메시지입니다. (${new Date().toLocaleString("ko-KR")})`};
+  if(!serverConfig.enabled||_demoMode){showToast("서버에 연결하고 연동 설정을 저장한 후 테스트해 주세요.","info");return;}
+  const accessEpoch=_serverAccessEpoch;
   try{
-    await fetch(wh.url,{method:"POST",mode:"no-cors",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
-    _logIntegration(wh.name,"테스트 전송","success","전송 요청을 보냈습니다 (수신 여부는 연동 채널에서 확인하세요)");
-    showToast("테스트 메시지를 전송했습니다.","success");
+    const result=await serverRequest("POST","/api/integrations/webhooks/test",{webhookId:wh.id},15000);
+    if(accessEpoch!==_serverAccessEpoch)return;
+    if(result?.log)integrationLogs=[result.log,...integrationLogs.filter(l=>l.id!==result.log.id)];
+    if(!result?.delivered)throw new Error(result?.message||"전송을 확인할 수 없습니다.");
+    showToast("연동 서버가 테스트 메시지를 정상 수신했습니다.","success");
   }catch(e){
-    _logIntegration(wh.name,"테스트 전송","fail",e.message);
+    if(accessEpoch!==_serverAccessEpoch)return;
     showToast("전송 실패: "+e.message,"error");
   }
-  autoSaveToServerIfEnabled();renderIntegrationsPage();
+  renderIntegrationsPage();
 }
 function downloadCalendarFeed(){
   const uid=currentUser.id;const cal=integrationSettings.calendar||{};
@@ -29652,6 +29683,7 @@ function _bpAddAttachment(e){
 }
 function saveBoardPost(editId){
   const title=$("#bp-title")?.value.trim();const content=$("#bp-content")?.value.trim();const catId=$("#bp-cat")?.value||_boardSelCat||"general";
+  let newNoticePostId=null;
   if(!title||!content){showToast("제목과 내용을 입력하세요.","error");return;}
   const attachments=window._bpAttachments||[];
   const isAnonymous=$("#bp-anonymous")?.checked||false;
@@ -29659,10 +29691,11 @@ function saveBoardPost(editId){
     const p=boardPosts.find(x=>x.id===editId);
     if(p){p.title=title;p.content=content;p.categoryId=catId;p.attachments=attachments;p.isAnonymous=isAnonymous;p.updatedAt=new Date().toISOString();}
   }else{
-    boardPosts.push({id:`post-${Date.now()}`,categoryId:catId,title,content,attachments,isAnonymous,authorId:currentUser.id,createdAt:new Date().toISOString(),updatedAt:new Date().toISOString(),views:0});
-    if(catId==="notice")_fireIntegrationWebhooks("notice_post",`[공지사항] ${title}`);
+    const post={id:`post-${Date.now()}`,categoryId:catId,title,content,attachments,isAnonymous,authorId:currentUser.id,createdAt:new Date().toISOString(),updatedAt:new Date().toISOString(),views:0};
+    boardPosts.push(post);
+    if(catId==="notice")newNoticePostId=post.id;
   }
-  closeModal();autoSaveToServerIfEnabled();showToast("게시물이 저장되었습니다.","success");renderBoardPage();
+  closeModal();autoSaveToServerIfEnabled();if(newNoticePostId)_fireIntegrationWebhooks("notice_post",newNoticePostId);showToast("게시물이 저장되었습니다.","success");renderBoardPage();
 }
 function openBoardPostDetail(postId){
   const post=boardPosts.find(p=>p.id===postId);if(!post)return;
@@ -31199,6 +31232,8 @@ function exportMandatoryTrainingCSV(yr){
 // 이력에 반영하려면 관리자가 해당 화면에서 별도로 등록해야 한다(자동 연동 없음).
 const TRAINING_CATEGORIES=["리더십","직무역량","신입/온보딩","법정/컴플라이언스","어학","IT/디지털","기타"];
 function _tcCourseEnrollCounts(courseId){
+  const counts=trainingCourses.find(c=>String(c.id)===String(courseId))?.enrollmentCounts;
+  if(!(currentUser?.role==="admin"&&currentUser.menuPerms?.["training-admin"]!==false)&&counts)return counts;
   const list=trainingEnrollments.filter(e=>e.courseId===courseId&&e.status!=="canceled");
   return{applied:list.filter(e=>e.status!=="waitlisted").length,waitlisted:list.filter(e=>e.status==="waitlisted").length,completed:list.filter(e=>e.status==="completed").length};
 }
@@ -31220,7 +31255,7 @@ function renderTrainingCoursesPage(){
   const myEnrollments=trainingEnrollments.filter(e=>String(e.empId)===String(u.id));
   const courses=[...trainingCourses].sort((a,b)=>String(b.startDate||"").localeCompare(String(a.startDate||"")));
   const myActiveCount=myEnrollments.filter(e=>e.status!=="canceled").length;
-  c.innerHTML=`<div class="flex justify-between items-c mb3"><h2>🎓 교육 과정</h2>
+  c.innerHTML=`<div class="flex justify-between items-c mb3"><div><h2>🎓 교육 신청·설문</h2><div class="fz12 text-gray">이 화면은 개설 과정 직접 신청용입니다. 결재를 통해 배정된 과정·이수·정산은 교육 배정·이수·정산 화면에서 확인하세요.</div></div>
     <div class="flex gap2">
       <button class="btn btn-sm ${_tcTab==="browse"?"btn-primary":"btn-secondary"}" onclick="_tcSwitchTab('browse')">개설된 과정</button>
       <button class="btn btn-sm ${_tcTab==="mine"?"btn-primary":"btn-secondary"}" onclick="_tcSwitchTab('mine')">내 신청 내역(${myActiveCount})</button>
@@ -31278,7 +31313,7 @@ function tcApply(courseId){
   const now=new Date().toISOString();
   trainingEnrollments.push({id:`tenr-${genId()}`,courseId,empId:currentUser.id,empName:currentUser.name,dept:emp?.dept||"",team:emp?.team||"",appliedAt:now,status:full?"waitlisted":"applied",completedAt:"",surveyResponse:null,note:"",createdAt:now,updatedAt:now});
   autoSaveToServerIfEnabled();
-  showToast(full?"정원이 가득 차 대기 신청되었습니다.":"신청이 완료되었습니다.","success");
+  showToast(full?"대기 신청을 저장 중입니다. 저장 후 상태를 확인해 주세요.":"신청을 저장 중입니다. 서버에서 정원을 확인한 후 상태가 반영됩니다.","info");
   renderTrainingCoursesPage();
 }
 function tcCancelMyEnrollment(enrollId){
@@ -31311,8 +31346,8 @@ function renderTrainingAdminPage(){
   const courses=[...trainingCourses].sort((a,b)=>String(b.startDate||"").localeCompare(String(a.startDate||"")));
   const totalCost=courses.filter(cs=>cs.status!=="canceled").reduce((s,cs)=>s+(Number(cs.cost)||0),0);
   const totalCompleted=trainingEnrollments.filter(e=>e.status==="completed").length;
-  c.innerHTML=`<div class="flex justify-between items-c mb3"><div><h2>🗂 교육 과정 관리</h2>
-    <div class="fz11 text-gray">법정의무교육(이수로그)·개인 교육이력(인사발령)과는 별개의 과정 카탈로그입니다. 완료된 과정을 법정의무교육/인사이력에 반영하려면 각 화면에서 직접 등록해주세요.</div></div>
+  c.innerHTML=`<div class="flex justify-between items-c mb3"><div><h2>🗂 교육 개설·신청 관리</h2>
+    <div class="fz11 text-gray">직접 신청 과정 카탈로그입니다. 결재 연계 교육 배정·이수·정산, 법정의무교육(이수로그), 개인 교육이력(인사발령)과는 별도 기록입니다. 다른 화면에 반영하려면 해당 화면에서 직접 등록해주세요.</div></div>
     <div class="flex gap2"><button class="btn btn-secondary btn-sm" onclick="exportTrainingCoursesCSV()">📥 비용·결과 다운로드</button><button class="btn btn-primary" onclick="openTrainingCourseModal(null)">＋ 과정 개설</button></div></div>
   <div class="flex gap3 mb3">
     <div class="card" style="flex:1"><div class="card-body tc"><div class="fz11 text-gray">전체 과정</div><div style="font-size:24px;font-weight:800">${courses.length}</div></div></div>

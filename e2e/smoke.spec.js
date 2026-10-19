@@ -4,7 +4,62 @@
 // 확인한다. 화면별 상세 시나리오는 이 스캐폴드 위에 추가해 나가면 된다.
 const { test, expect } = require("@playwright/test");
 
+test("통합 교육 이력은 페이지 이동·출처 검색·CSV 추출 결과가 일치한다", async ({ page }) => {
+  await page.goto("/");
+  await page.fill("#l-id", "e2e_admin"); await page.fill("#l-pw", "E2eTestPw123");
+  await page.evaluate(() => { autoSaveDebounced = () => {}; loadFromServer = async () => {}; connectSSE = async () => {}; });
+  await page.click(".login-card button.btn-primary"); await expect(page.locator("#main")).toBeVisible();
+  await page.evaluate(() => {
+    learningCourses = [{ id: "assigned", name: "리더십", status: "active", capacity: 50 }];
+    learningAssignments = Array.from({ length: 28 }, (_, i) => ({ id: `assignment-${i}`, courseId: "assigned", empId: currentUser.id, status: "completed" }));
+    trainingCourses = [{ id: "direct", title: "리더십" }];
+    trainingEnrollments = [{ id: "direct-1", courseId: "direct", empId: currentUser.id, status: "waitlisted" }];
+    window.dlCSV = async (name, columns, rows) => { window.__historyExport = { columns, rows }; };
+    renderLearningCenterPage();
+  });
+  const card = page.locator("#content .card").filter({ has: page.getByRole("heading", { name: /전체 교육 이력/ }) });
+  await expect(card.locator("tbody tr")).toHaveCount(25);
+  await card.getByRole("button", { name: "이력 다음" }).click();
+  await expect(card.locator("tbody tr")).toHaveCount(4);
+  await page.selectOption("#learning-history-source", "직접 신청");
+  await page.fill("#learning-history-query", "대기");
+  await page.getByRole("button", { name: "이력 조회", exact: true }).click();
+  await expect(card.locator("tbody tr")).toHaveCount(1);
+  await expect(card.locator("tbody")).toContainText("대기");
+  await card.getByRole("button", { name: "조회 결과 CSV 추출" }).click();
+  expect(await page.evaluate(() => window.__historyExport.rows.map(r => [r[2], r[4]]))).toEqual([["직접 신청", "대기"]]);
+});
+
 test.describe("로그인·기본 네비게이션", () => {
+  test("중첩 확인창만 닫으면 부모 편집 잠금과 자동 초안이 유지된다", async ({ page }) => {
+    await page.goto("/");
+    const result = await page.evaluate(() => {
+      const lockKey = "emp:e2e-nested-modal";
+      serverConfig.url = location.origin;
+      _myLocks.add(lockKey);
+      _autoKpiDraftTimer = setInterval(() => {}, 10000);
+      showModal('<div class="modal-box"><div class="modal-head"><h2>직원 편집</h2></div></div>');
+      showModal('<div class="modal-box"><div class="modal-head"><h2>변경 확인</h2></div></div>');
+      closeModal();
+      const nested = {
+        modalCount: _modalStack().length,
+        hasLock: _myLocks.has(lockKey),
+        draftRunning: _autoKpiDraftTimer !== null,
+      };
+      closeModal();
+      return {
+        nested,
+        parentClosed: {
+          modalCount: _modalStack().length,
+          hasLock: _myLocks.has(lockKey),
+          draftStopped: _autoKpiDraftTimer === null,
+        },
+      };
+    });
+    expect(result.nested).toEqual({ modalCount: 1, hasLock: true, draftRunning: true });
+    expect(result.parentClosed).toEqual({ modalCount: 0, hasLock: false, draftStopped: true });
+  });
+
   test("경비 청구 ID가 HTML 속성을 벗어나 관리자 버튼 코드로 실행되지 않는다", async ({ page }) => {
     await page.goto("/");
     await page.fill("#l-id", "e2e_admin");
@@ -1156,7 +1211,8 @@ test.describe("로그인·기본 네비게이션", () => {
       askConfirmModal=async()=>true;
       gotoPage("learning-center");
     });
-    await expect(page.locator("#content")).toContainText("교육 과정·이력");
+    await expect(page.locator("#content")).toContainText("교육 배정·이수·정산");
+    await expect(page.locator("#content")).toContainText("직접 신청 과정은 별도 기록");
     await page.getByRole("button",{name:"과정 등록"}).click();
     await expect(page.locator(".workspace-editor h2")).toHaveText("교육 과정 등록");
     await expect(page.locator(".modal-ov")).toHaveCount(0);
