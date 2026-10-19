@@ -17,6 +17,10 @@ const pool    = require("./db");
 const multer  = require("multer");
 const budgetRouterFactory = require("./budget");
 const { canReadTraining, canManageTraining, countsByCourse, normalizeEnrollment } = require("./lib/training-integrity");
+const { assertFieldOrder } = require("./lib/field-order-guard");
+const { saveRejectInfo, snapshotIntendedRecord, findSilentRejections } = require("./lib/save-feedback");
+const { retryDelays, nextOutboxState, SENDING_LEASE_MS } = require("./lib/webhook-outbox");
+const { trackedFields, takePreImage, diffRevisions, KEEP_PER_RECORD } = require("./lib/record-revisions");
 
 // ════════════════════════════════════════════════════════════════════════════
 // 목차(파일 안 "// ── 제목 ──" 배너 문자열로 검색) — 이 파일은 인사(HR)/전자결재/
@@ -1698,6 +1702,10 @@ const _APPROVAL_GATED_FIELDS = {
   ...Object.fromEntries(Object.keys(_WRITE_GATED_FIELDS).map(f =>
     [f, { record: (rec, actor, actorEmp, settings) => _writeGateAllowed(f, rec, actor, actorEmp, settings) }])),
 };
+// 같은 요청의 다른 컬렉션을 판정 근거로 삼는 필드(교육 신청→과정 등)는 근거 컬렉션이 먼저
+// 권한 검증을 거쳐야 한다. 키 순서가 바뀌면 부팅 단계에서 실패시킨다(lib/field-order-guard.js).
+assertFieldOrder(Object.keys(_APPROVAL_GATED_FIELDS), "_APPROVAL_GATED_FIELDS");
+assertFieldOrder(GENERIC_LIST_FIELDS, "GENERIC_LIST_FIELDS");
 // payrollAdjustments 신규 레코드가 이미 승인 완료된 복리후생 결재문서에서
 // 그대로 파생된 것인지 검증한다 — empId/금액/구분/연월이 그 문서의 내용과 정확히 일치해야
 // 하고, doc 자체는 이미 _sanitizeApprovalDoc을 통과한(위조 불가능한) 값이어야 한다. 값 하나라도
@@ -3039,6 +3047,33 @@ function _changedHrEmployeeRef(field, incoming, stored) {
   return !stored || id !== String(stored[key] ?? "") ? id : null;
 }
 
+// 사용자가 보낸 신규 레코드가 최종 저장본에 없을 때의 사유. 필드별로 알려진 원인이 있으면 구체화한다.
+function _silentNotSavedReason(field) {
+  if (field === "welfarePoints") return "WELFARE_OVERSPEND";
+  if (["trainingEnrollments", "learningAssignments"].includes(field)) return "LEARNING_INVALID";
+  return "NOT_SAVED";
+}
+// 필드 단위로 값이 달라진 경우의 사유: 마감 → 확정 → 더 최신 수정 순으로 구체화하고, 알 수 없으면 일반 사유.
+function _silentPartialReason(item, finalRecord, keys, settings) {
+  if (item.moduleDisabled) return "MODULE_DISABLED";
+  if (finalRecord?.confirmed === true || finalRecord?.finalConfirmed === true) return "CONFIRMED";
+  if (item.field === "kpiEntries" && _kpiDeadlineBlocks(settings) && keys.some(k => /status|score|stage|confirm|comment|feedback/i.test(k))) return "DEADLINE";
+  if (item.incomingUpdatedAt && String(finalRecord?.updatedAt || "") > String(item.incomingUpdatedAt)) return "CONFLICT_NEWER";
+  return "PARTIAL_FIELDS";
+}
+function _kpiDeadlineBlocks(settings) {
+  const deadlineStr = settings && typeof settings.kpiApprovalDeadline === "string" ? settings.kpiApprovalDeadline.trim() : "";
+  const deadlineMs = deadlineStr ? Date.parse(deadlineStr + "T23:59:59") : NaN;
+  const adjustmentOpen = !!(settings && settings.kpiAdjustmentPeriod && settings.kpiAdjustmentPeriod.open);
+  return Number.isFinite(deadlineMs) && Date.now() > deadlineMs && !adjustmentOpen;
+}
+// 게이팅 거부의 기본 사유. 확정된 급여명세서처럼 "이미 끝난 항목"은 권한이 아니라 확정 상태가
+// 이유이므로 구분해서 알린다(그 외에는 역할·메뉴 권한·허용되지 않은 상태 전이로 본다).
+function _gateRejectReason(field, stored) {
+  if (field === "payslips" && stored?.confirmed) return "CONFIRMED";
+  return "PERMISSION";
+}
+
 async function _persistDataLocked(data, changedBy = "system", companyId = null, actor = null, externalClient = null) {
   if (Array.isArray(data.trainingCourses)) data.trainingCourses = data.trainingCourses.map(course => {
     if (!course) return course;
@@ -3046,15 +3081,16 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
     return storedCourse;
   });
   const rejectedRecords = [];
-  const rejectSaveRecord = (field, incoming, stored) => {
+  // reason은 lib/save-feedback.js의 사유 코드. 화면이 "왜 저장되지 않았는지"를 그대로 보여준다.
+  const rejectSaveRecord = (field, incoming, stored, reason = "PERMISSION") => {
     if (incoming?.id != null && _saveFeedbackChangeRequested(field, incoming, stored) &&
         !rejectedRecords.some(r => r.field === field && r.id === String(incoming.id))) {
-      rejectedRecords.push({ field, id: String(incoming.id) });
+      rejectedRecords.push({ field, id: String(incoming.id), ...saveRejectInfo(reason) });
     }
   };
-  const rejectSaveDeletion = (field, tombstone) => {
+  const rejectSaveDeletion = (field, tombstone, reason = "DELETE_FORBIDDEN") => {
     if (tombstone?.id != null && !rejectedRecords.some(r => r.field === field && r.id === String(tombstone.id))) {
-      rejectedRecords.push({ field, id: String(tombstone.id), operation: "delete" });
+      rejectedRecords.push({ field, id: String(tombstone.id), operation: "delete", ...saveRejectInfo(reason) });
     }
   };
   if (data._enforceSingletonCas) {
@@ -3289,7 +3325,7 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
         if (d && d.id != null) {
           const stored = storedDocsById.get(String(d.id));
           const sanitized = _sanitizeApprovalDoc(d, stored, actor);
-          if (!sanitized || JSON.stringify(sanitized) !== JSON.stringify(d)) rejectSaveRecord("approvalDocs", d, stored);
+          if (!sanitized || JSON.stringify(sanitized) !== JSON.stringify(d)) rejectSaveRecord("approvalDocs", d, stored, "APPROVAL_FORBIDDEN");
           _sanitizedIncomingApprovalDocsById.set(String(d.id), sanitized);
         }
       }
@@ -3319,16 +3355,16 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
           const reviewOwnerEmp = gatedField === "employmentRecords" && reviewOwnerId != null
             ? (_fileStore.employees || []).find(e => String(e.id) === String(reviewOwnerId)) || null : null;
           let out = _sanitizeGatedRecord(gatedField, r, stored, actor, _actorEmpJson, _fileStore.settings, approvalDocForGate, targetEmpForGate, _fileStore.engagementSurveys || [], reviewOwnerEmp);
-          if (!out || (stored && JSON.stringify(out) === JSON.stringify(stored))) rejectSaveRecord(gatedField, r, stored);
+          if (!out || (stored && JSON.stringify(out) === JSON.stringify(stored))) rejectSaveRecord(gatedField, r, stored, _gateRejectReason(gatedField, stored));
           const changedEmployeeRef = _changedHrEmployeeRef(gatedField, out, stored);
           if (out && changedEmployeeRef !== null && !trustedEmployeeIds.has(changedEmployeeRef)) {
-            rejectSaveRecord(gatedField, r, stored);
+            rejectSaveRecord(gatedField, r, stored, "EMPLOYEE_REF");
             out = stored ? { ...stored } : null;
           }
           // 값 범위·형식 검증(_validateFieldValues 주석 참고) — 권한 검사를 통과한 뒤에도
           // 값 자체가 오염돼 있으면 저장본으로 되돌린다(신규 레코드면 드롭).
           if (out && !_validateFieldValues(gatedField, out, storedList)) {
-            rejectSaveRecord(gatedField, r, stored);
+            rejectSaveRecord(gatedField, r, stored, "VALIDATION");
             out = stored ? { ...stored } : null;
           }
           return out;
@@ -3345,7 +3381,7 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
             ...storedList.filter(p => p && String(p.id) !== String(rec.id)),
             ...accepted.filter(p => String(p.id) !== String(rec.id)),
           ];
-          if (!_validateFieldValues(gatedField, rec, basis)) return false;
+          if (!_validateFieldValues(gatedField, rec, basis)) { rejectSaveRecord(gatedField, rec, storedById.get(String(rec.id)), "VALIDATION"); return false; }
           accepted.push(rec);
           return true;
         });
@@ -3358,7 +3394,7 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
           : (_fileStore.learningCourses || []);
         data[gatedField] = data[gatedField].filter(rec => {
           if (!rec || rec.id == null || !_validateFieldValues(gatedField, rec, { assignments: basis, courses })) {
-            rejectSaveRecord(gatedField, rec, storedById.get(String(rec?.id)));
+            rejectSaveRecord(gatedField, rec, storedById.get(String(rec?.id)), "LEARNING_INVALID");
             return false;
           }
           basis.push(rec);
@@ -3366,15 +3402,19 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
         });
       }
       if (gatedField === "welfarePoints") {
+        const beforeDrop = data[gatedField];
         data[gatedField] = _dropOverspentWelfare(data[gatedField], storedList, actor);
+        const kept = new Set(data[gatedField].map(r => String(r?.id)));
+        for (const rec of beforeDrop) if (rec?.id != null && !kept.has(String(rec.id))) rejectSaveRecord(gatedField, rec, null, "WELFARE_OVERSPEND");
       }
       if (gatedField === "trainingEnrollments") {
         const courses = mergeArrayById(_fileStore.trainingCourses || [], data.trainingCourses);
         let basis = [...storedList];
         data[gatedField] = data[gatedField].map(rec => {
           const stored = storedById.get(String(rec.id));
-          const next = normalizeEnrollment(rec, stored, courses, basis, actor);
-          if (!next || !isDeepStrictEqual(rec, next)) rejectSaveRecord(gatedField, rec, next || stored);
+          let why = null;
+          const next = normalizeEnrollment(rec, stored, courses, basis, actor, code => { why = code; });
+          if (!next || !isDeepStrictEqual(rec, next)) rejectSaveRecord(gatedField, rec, next || stored, why || "PERMISSION");
           if (next) basis = [...basis.filter(r => String(r.id) !== String(next.id)), next];
           return next;
         }).filter(Boolean);
@@ -3672,7 +3712,10 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
         "SELECT data FROM app_collections WHERE collection = 'welfarePoints' AND (company_id = $1 OR company_id IS NULL)",
         [companyId || null]
       );
+      const beforeDrop = data.welfarePoints;
       data.welfarePoints = _dropOverspentWelfare(data.welfarePoints, wpRows.map(r => r.data), actor);
+      const kept = new Set(data.welfarePoints.map(r => String(r?.id)));
+      for (const rec of beforeDrop) if (rec?.id != null && !kept.has(String(rec.id))) rejectSaveRecord("welfarePoints", rec, null, "WELFARE_OVERSPEND");
     }
     // 승인 게이팅에 쓸 요청자의 부서/팀. 클라이언트가 보낸 data.employees는 위조 가능하므로
     // 저장본에서 읽는다. 초과근무 승인처럼 실제로 필요할 때 한 번만 조회하고 재사용한다.
@@ -3817,7 +3860,7 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
           const oldTs = rows.length ? (rows[0].data.updatedAt || rows[0].data.createdAt || "") : "";
           const newTs = item.updatedAt || item.createdAt || "";
           if (rows.length && newTs < oldTs) {
-            rejectSaveRecord(field, item, rows[0].data);
+            rejectSaveRecord(field, item, rows[0].data, "CONFLICT_NEWER");
             continue; // server has a newer copy, keep it
           }
           // 결재 위조 방어(_sanitizeApprovalDoc / _sanitizeGatedRecord 주석 참고).
@@ -3826,7 +3869,7 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
           let toWrite = item;
           if (field === "approvalDocs") {
             toWrite = _sanitizeApprovalDoc(item, storedItem, actor);
-            if (!toWrite || (storedItem && JSON.stringify(toWrite) !== JSON.stringify(item))) rejectSaveRecord(field, item, storedItem);
+            if (!toWrite || (storedItem && JSON.stringify(toWrite) !== JSON.stringify(item))) rejectSaveRecord(field, item, storedItem, "APPROVAL_FORBIDDEN");
             if (!toWrite) continue;
           } else if (_APPROVAL_GATED_FIELDS[field]) {
             const approvalDocForGate = (["payrollAdjustments", "learningAssignments"].includes(field) && !storedItem)
@@ -3841,14 +3884,15 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
               ? await _getEmployeeByIdPg(reviewOwnerId) : null;
             toWrite = _sanitizeGatedRecord(field, item, storedItem, actor, await _getActorEmpPg(), await _getSettingsPg(), approvalDocForGate, targetEmpForGate,
               field === "engagementResponses" ? await _getEngagementSurveysPg() : null, reviewOwnerEmp);
-            if (!toWrite || (storedItem && JSON.stringify(toWrite) === JSON.stringify(storedItem))) rejectSaveRecord(field, item, storedItem);
+            if (!toWrite || (storedItem && JSON.stringify(toWrite) === JSON.stringify(storedItem))) rejectSaveRecord(field, item, storedItem, _gateRejectReason(field, storedItem));
             if (toWrite === null) continue;   // 권한 없이 새로 만들어진 레코드 — 쓰지 않음
           }
           // 값 범위·형식 검증(_validateFieldValues 주석 참고, JSON모드와 동일 규칙).
           if (field === "trainingEnrollments" && !isDeepStrictEqual(toWrite, storedItem)) {
             const context = await loadTrainingContext();
-            const next = normalizeEnrollment(toWrite, storedItem, context.courses, context.enrollments, actor);
-            if (!next || !isDeepStrictEqual(toWrite, next)) rejectSaveRecord(field, item, next || storedItem);
+            let why = null;
+            const next = normalizeEnrollment(toWrite, storedItem, context.courses, context.enrollments, actor, code => { why = code; });
+            if (!next || !isDeepStrictEqual(toWrite, next)) rejectSaveRecord(field, item, next || storedItem, why || "PERMISSION");
             if (!next) continue;
             toWrite = next;
           }
@@ -3863,13 +3907,13 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
             validationList = positionRows.map(r => r.data);
           }
           if (toWrite && !_validateFieldValues(field, toWrite, validationList)) {
-            rejectSaveRecord(field, item, storedItem);
+            rejectSaveRecord(field, item, storedItem, field === "learningAssignments" ? "LEARNING_INVALID" : "VALIDATION");
             toWrite = storedItem;
             if (toWrite === null) continue;
           }
           const changedEmployeeRef = _changedHrEmployeeRef(field, toWrite, storedItem);
           if (toWrite && changedEmployeeRef !== null && !await _getEmployeeByIdPg(changedEmployeeRef)) {
-            rejectSaveRecord(field, item, storedItem);
+            rejectSaveRecord(field, item, storedItem, "EMPLOYEE_REF");
             toWrite = storedItem;
             if (toWrite === null) continue;
           }
@@ -4046,16 +4090,32 @@ function _disabledBlobFields(companyFeatures) {
 // 직전에 _revertDisabledFeatureFields()가 통째로 되돌리므로 여기서 충돌을 던지면(예: 모듈이
 // 꺼지기 전에 열려 있던 탭이 stale _rev로 무관한 다른 필드 변경과 함께 autosave하는 경우)
 // 반영됐어야 할 무관한 변경까지 전체 요청이 409로 막히는 회귀가 생긴다(실측 확인).
-function _applyRecordCas(serverData, clientData, companyFeatures) {
+//
+// intended(선택)에는 "사용자가 이번 요청으로 실제 바꾸려던 레코드"(신규이거나 수신 시각이 저장본보다
+// 새로운 것)의 보관본을 모은다. 저장이 끝난 뒤 최종 저장값과 비교해, 서버가 값을 되돌리고도
+// 알리지 않은 경우(권한·확정·마감·값 검증 등)를 사용자에게 사유와 함께 알리는 데 쓴다.
+function _applyRecordCas(serverData, clientData, companyFeatures, intended = null) {
   const disabledFields = _disabledBlobFields(companyFeatures);
   for (const field of ID_KEYED_LIST_FIELDS) {
-    if (disabledFields.has(field)) continue;
     if (!Array.isArray(clientData[field])) continue;
     const storedById = new Map((serverData[field] || []).filter(r => r && r.id != null).map(r => [String(r.id), r]));
+    if (disabledFields.has(field)) {
+      // 꺼진 모듈의 컬렉션은 CAS 대상이 아니고 저장 직전에 통째로 걷어진다. 사용자가 바꾸려던
+      // 새 항목이 있었다면 그 사실만 알린다.
+      if (intended) for (const record of clientData[field]) {
+        if (!record || record.id == null) continue;
+        const stored = storedById.get(String(record.id));
+        if (!stored || _recordTimestamp(record) > _recordTimestamp(stored)) {
+          intended.push({ field, id: String(record.id), isNew: !stored, moduleDisabled: true, snapshot: {}, incomingUpdatedAt: record.updatedAt });
+        }
+      }
+      continue;
+    }
     for (const record of clientData[field]) {
       if (!record || record.id == null) continue;
       const stored = storedById.get(String(record.id));
       if (!stored) {
+        if (intended) intended.push({ field, id: String(record.id), isNew: true, snapshot: snapshotIntendedRecord(record), incomingUpdatedAt: record.updatedAt });
         record._rev = 1;
         continue;
       }
@@ -4063,6 +4123,7 @@ function _applyRecordCas(serverData, clientData, companyFeatures) {
       const incomingRevision = Number(record._rev) || 0;
       if (_recordTimestamp(record) > _recordTimestamp(stored)) {
         if (incomingRevision !== currentRevision) _recordConflict(field, record.id, currentRevision);
+        if (intended) intended.push({ field, id: String(record.id), isNew: false, snapshot: snapshotIntendedRecord(record), incomingUpdatedAt: record.updatedAt });
         record._rev = currentRevision + 1;
       } else {
         record._rev = currentRevision;
@@ -6167,8 +6228,9 @@ app.post("/save", async (req, res) => {
       // 새 웹 클라이언트는 레코드마다 서버가 발급한 _rev를 다시 보낸다. 수정 시점의
       // revision과 현재 서버 revision이 다르면 updatedAt이 더 최신이어도 덮어쓰지 않는다.
       // 레거시 백업/연동은 _recordCasVersion을 보내지 않으므로 기존 병합 계약을 유지한다.
+      const intendedChanges = [];
       if (Number(clientData._recordCasVersion) === 1) {
-        _applyRecordCas(await getServerData(), clientData, req.auth?.companyFeatures);
+        _applyRecordCas(await getServerData(), clientData, req.auth?.companyFeatures, intendedChanges);
       }
 
       // Re-checked *inside* the lock so a request that arrived while another
@@ -6213,11 +6275,32 @@ app.post("/save", async (req, res) => {
       // preserveServerOwnedStateForNonAdmin 이후, _persistDataLocked 진입 직전에 적용해
       // 그 함수 내부의 세밀한 필드별 로직과 겹치지 않게 한다.
       finalData = _revertDisabledFeatureFields(finalData, req.auth?.companyFeatures);
+      // 수정·삭제 복구용 이력: 이번 요청이 건드리는 레코드의 "저장 전" 모습을 고정해 두었다가
+      // 저장 후 달라진 것만 보관한다(실패해도 저장 자체에는 영향을 주지 않는다).
+      let _revisionPre = null;
+      try { _revisionPre = takePreImage(await getServerData(), finalData, REVISION_TRACKED_FIELDS); } catch (e) { console.warn("[record-revisions] 사전 이미지 실패:", _safeErrMsg(e)); }
       const { duplicateLoginIds, rejectedRecords } = await _persistDataLocked(finalData, changedBy, companyId, req.auth || null);
       const savedState = await loadData(companyId);
+      if (_revisionPre) {
+        try { await _revisionAdd(companyId, diffRevisions(_revisionPre, savedState), changedBy); }
+        catch (e) { console.warn("[record-revisions] 이력 기록 실패:", _safeErrMsg(e)); }
+      }
       // /data와 같은 두 단계 필터를 /save의 병합 응답에도 적용한다. 그렇지 않으면
       // menuPerms로 숨긴 원장이 충돌/부분거부 시 mergedData에서 다시 노출된다.
       const visibleSavedState = filterDataForMenuPermissions(filterDataForRole(stripPwField(savedState), req.auth), req.auth?.menuPerms);
+      // 명시적으로 거부 보고되지 않았는데 사용자가 바꾼 값이 저장본과 다르면(필드 단위 되돌림 등)
+      // 침묵 대신 사유와 함께 알린다. 이미 보고된 레코드는 건너뛴다.
+      const alreadyReported = new Set(rejectedRecords.map(r => `${r.field}\u0000${r.id}`));
+      const finalIndex = new Map();
+      const finalLookup = (field, id) => {
+        if (!finalIndex.has(field)) finalIndex.set(field, new Map((visibleSavedState[field] || []).filter(r => r && r.id != null).map(r => [String(r.id), r])));
+        return finalIndex.get(field).get(String(id));
+      };
+      const kpiSettings = savedState.settings;
+      for (const silent of findSilentRejections(intendedChanges, finalLookup, alreadyReported, {
+        notSavedReason: item => item.moduleDisabled ? "MODULE_DISABLED" : _silentNotSavedReason(item.field),
+        partialReason: (item, finalRecord, keys) => _silentPartialReason(item, finalRecord, keys, kpiSettings),
+      })) rejectedRecords.push(silent);
       return {
         savedState, visibleSavedState, merged, duplicateLoginIds, rejectedRecords,
         singletonRevisions: savedState._singletonRevisions || {},
@@ -6963,23 +7046,142 @@ function _webhookEventFromStoredRecord(data, auth, eventId, recordId) {
   }
   return null;
 }
-async function _reserveWebhookEvent(companyId, eventKey) {
-  const digest = crypto.createHash("sha256").update(eventKey).digest("hex");
-  if (USE_JSON_FILE) {
-    _loadFileIdempotency();
-    _pruneFileIdempotency();
-    const scope = `webhook:${_scopeKey(companyId)}:${digest}`;
-    if (_fileIdempotency[scope]) return false;
-    _fileIdempotency[scope] = { reserved: true, expiresAt: new Date(Date.now() + 48 * 60 * 60 * 1000).toISOString() };
-    _atomicWriteFileSync(IDEMPOTENCY_FILE, JSON.stringify(_fileIdempotency, null, 2));
-    return true;
+// ── 웹훅 발송 대기함(outbox) ────────────────────────────────────────────────
+// 알림을 "보내기 전에" 먼저 영속 저장하고, 실패하면 지연을 늘려가며 서버가 재시도한다.
+// (예전: 브라우저 메모리 대기열 + 1회 시도 + 실패해도 48시간 중복방지 선점 → 알림 영구 유실.)
+// 중복 방지는 (회사, 이벤트 키, 웹훅) 단위의 UNIQUE로 처리하므로 재시도가 중복 발송이 되지 않는다.
+const WEBHOOK_OUTBOX_FILE = JSON_FILE.replace(/\.json$/, "-webhook-outbox.json");
+const WEBHOOK_RETRY_DELAYS = retryDelays(process.env.WEBHOOK_RETRY_DELAYS_MS);
+const WEBHOOK_OUTBOX_POLL_MS = Math.max(200, Number(process.env.WEBHOOK_OUTBOX_POLL_MS) || 30_000);
+const WEBHOOK_SENT_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+const WEBHOOK_DEAD_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+let _fileOutbox = null;
+let _outboxChain = Promise.resolve();
+function _withOutboxLock(fn) { // JSON 파일 모드의 read-modify-write 직렬화
+  const run = _outboxChain.then(fn, fn);
+  _outboxChain = run.catch(() => {});
+  return run;
+}
+function _loadFileOutbox() {
+  if (_fileOutbox) return;
+  _fileOutbox = { entries: [] };
+  if (fs.existsSync(WEBHOOK_OUTBOX_FILE)) {
+    const d = _readExistingJsonFileOrFail(WEBHOOK_OUTBOX_FILE, "웹훅 발송 대기함");
+    _fileOutbox = { entries: Array.isArray(d?.entries) ? d.entries : [] };
   }
-  await pool.query("DELETE FROM api_idempotency WHERE actor_id='system:webhook' AND expires_at<=NOW()");
-  const result = await pool.query(
-    `INSERT INTO api_idempotency (company_id,actor_id,route,idempotency_key,request_hash,expires_at)
-     VALUES ($1,'system:webhook','POST /api/integrations/webhooks/dispatch',$2,$2,NOW()+INTERVAL '48 hours')
-     ON CONFLICT DO NOTHING RETURNING idempotency_key`, [companyId, digest]);
-  return result.rowCount > 0;
+}
+function _saveFileOutbox() { _atomicWriteFileSync(WEBHOOK_OUTBOX_FILE, JSON.stringify(_fileOutbox)); }
+function _outboxFromRow(r) {
+  return { id: r.id, companyId: r.company_id || null, eventId: r.event_id, eventLabel: r.event_label || "", dedupeKey: r.dedupe_key,
+    webhookId: r.webhook_id, webhookName: r.webhook_name || "", text: r.text, status: r.status, attempts: r.attempts,
+    nextAttemptAt: new Date(r.next_attempt_at).toISOString(), lastError: r.last_error || "",
+    createdAt: new Date(r.created_at).toISOString(), updatedAt: new Date(r.updated_at).toISOString(),
+    sentAt: r.sent_at ? new Date(r.sent_at).toISOString() : null };
+}
+// 접수: 이미 같은 (이벤트 키, 웹훅) 건이 있으면 null(중복). 접수 직후에는 'sending' 임대(lease)로 두어
+// 호출자가 바로 보내는 동안 백그라운드 워커가 같은 건을 가로채지 않게 한다.
+async function _outboxEnqueue(companyId, e) {
+  const now = Date.now();
+  const entry = { id: `whob-${crypto.randomUUID()}`, companyId: companyId || null, eventId: e.eventId, eventLabel: e.eventLabel || "",
+    dedupeKey: e.dedupeKey, webhookId: String(e.webhookId), webhookName: String(e.webhookName || "").slice(0, 100), text: e.text,
+    status: "sending", attempts: 0, nextAttemptAt: new Date(now + SENDING_LEASE_MS).toISOString(), lastError: "",
+    createdAt: new Date(now).toISOString(), updatedAt: new Date(now).toISOString(), sentAt: null };
+  if (USE_JSON_FILE) {
+    return _withOutboxLock(() => {
+      _loadFileOutbox();
+      const scope = _scopeKey(companyId);
+      if (_fileOutbox.entries.some(x => _scopeKey(x.companyId) === scope && x.dedupeKey === entry.dedupeKey && x.webhookId === entry.webhookId)) return null;
+      _fileOutbox.entries.push(entry);
+      _saveFileOutbox();
+      return { ...entry };
+    });
+  }
+  const { rows } = await pool.query(
+    `INSERT INTO webhook_outbox (id,company_id,event_id,event_label,dedupe_key,webhook_id,webhook_name,text,status,attempts,next_attempt_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'sending',0,$9)
+     ON CONFLICT (COALESCE(company_id, '00000000-0000-0000-0000-000000000000'::uuid), dedupe_key, webhook_id) DO NOTHING RETURNING *`,
+    [entry.id, entry.companyId, entry.eventId, entry.eventLabel, entry.dedupeKey, entry.webhookId, entry.webhookName, entry.text, entry.nextAttemptAt]);
+  return rows[0] ? _outboxFromRow(rows[0]) : null;
+}
+// 기한이 지난 건('pending' 또는 임대가 만료된 'sending')을 가져가며 임대를 갱신한다(다중 인스턴스 안전).
+async function _outboxClaimDue(limit) {
+  const lease = new Date(Date.now() + SENDING_LEASE_MS * 2).toISOString();
+  if (USE_JSON_FILE) {
+    return _withOutboxLock(() => {
+      _loadFileOutbox();
+      const now = Date.now();
+      const due = _fileOutbox.entries.filter(x => (x.status === "pending" || x.status === "sending") && Date.parse(x.nextAttemptAt) <= now).slice(0, limit);
+      for (const x of due) { x.status = "sending"; x.nextAttemptAt = lease; x.updatedAt = new Date(now).toISOString(); }
+      if (due.length) _saveFileOutbox();
+      return due.map(x => ({ ...x }));
+    });
+  }
+  const { rows } = await pool.query(
+    `UPDATE webhook_outbox SET status='sending', next_attempt_at=$2, updated_at=NOW()
+      WHERE id IN (SELECT id FROM webhook_outbox WHERE status IN ('pending','sending') AND next_attempt_at<=NOW()
+                   ORDER BY next_attempt_at LIMIT $1 FOR UPDATE SKIP LOCKED) RETURNING *`, [limit, lease]);
+  return rows.map(_outboxFromRow);
+}
+async function _outboxFinish(entry, outcome, message) {
+  const next = nextOutboxState(entry, outcome, message, Date.now(), WEBHOOK_RETRY_DELAYS);
+  if (USE_JSON_FILE) {
+    await _withOutboxLock(() => {
+      _loadFileOutbox();
+      const row = _fileOutbox.entries.find(x => x.id === entry.id);
+      if (!row) return;
+      Object.assign(row, next, { updatedAt: new Date().toISOString() });
+      _saveFileOutbox();
+    });
+  } else {
+    await pool.query(
+      `UPDATE webhook_outbox SET status=$2, attempts=$3, last_error=$4, next_attempt_at=$5, sent_at=COALESCE($6,sent_at), updated_at=NOW() WHERE id=$1`,
+      [entry.id, next.status, next.attempts, next.lastError, next.nextAttemptAt, next.sentAt || null]);
+  }
+  return next;
+}
+async function _outboxList(companyId, limit) {
+  if (USE_JSON_FILE) {
+    return _withOutboxLock(() => {
+      _loadFileOutbox();
+      const scope = _scopeKey(companyId);
+      return _fileOutbox.entries.filter(x => _scopeKey(x.companyId) === scope)
+        .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt))).slice(0, limit).map(x => ({ ...x }));
+    });
+  }
+  const { rows } = await pool.query("SELECT * FROM webhook_outbox WHERE company_id IS NOT DISTINCT FROM $1 ORDER BY created_at DESC LIMIT $2", [companyId || null, limit]);
+  return rows.map(_outboxFromRow);
+}
+// 수동 재전송: 중단(dead)·취소(cancelled)·대기 중 건을 즉시 다시 대상으로 만든다.
+async function _outboxManualRetry(companyId, id) {
+  if (USE_JSON_FILE) {
+    return _withOutboxLock(() => {
+      _loadFileOutbox();
+      const scope = _scopeKey(companyId);
+      const row = _fileOutbox.entries.find(x => x.id === id && _scopeKey(x.companyId) === scope);
+      if (!row || row.status === "sent" || row.status === "sending") return null;
+      Object.assign(row, { status: "pending", attempts: 0, nextAttemptAt: new Date().toISOString(), lastError: "", updatedAt: new Date().toISOString() });
+      _saveFileOutbox();
+      return { ...row };
+    });
+  }
+  const { rows } = await pool.query(
+    `UPDATE webhook_outbox SET status='pending', attempts=0, next_attempt_at=NOW(), last_error='', updated_at=NOW()
+      WHERE id=$1 AND company_id IS NOT DISTINCT FROM $2 AND status IN ('pending','dead','cancelled') RETURNING *`, [id, companyId || null]);
+  return rows[0] ? _outboxFromRow(rows[0]) : null;
+}
+async function _outboxPrune() {
+  const sentBefore = new Date(Date.now() - WEBHOOK_SENT_RETENTION_MS).toISOString();
+  const deadBefore = new Date(Date.now() - WEBHOOK_DEAD_RETENTION_MS).toISOString();
+  if (USE_JSON_FILE) {
+    await _withOutboxLock(() => {
+      _loadFileOutbox();
+      const before = _fileOutbox.entries.length;
+      _fileOutbox.entries = _fileOutbox.entries.filter(x => !(x.status === "sent" && x.updatedAt < sentBefore) && !((x.status === "dead" || x.status === "cancelled") && x.updatedAt < deadBefore));
+      if (_fileOutbox.entries.length !== before) _saveFileOutbox();
+    });
+    return;
+  }
+  await pool.query("DELETE FROM webhook_outbox WHERE (status='sent' AND updated_at<$1) OR (status IN ('dead','cancelled') AND updated_at<$2)", [sentBefore, deadBefore]);
 }
 async function _sendIntegrationWebhook(wh, text) {
   const target = await _resolveSafeWebhookTarget(wh.url);
@@ -7001,6 +7203,45 @@ async function _recordWebhookLogs(companyId, event, logs) {
     await persistData({ integrationLogs: entries }, "system:webhook-dispatch", companyId, { role: "admin", empId: null });
   } catch { console.warn("[webhook-dispatch] 전송 이력 기록 실패"); }
   return entries;
+}
+// 대기함 한 건을 실제로 보내고 결과를 반영한다. wh가 없거나 비활성/구독 해제된 연동이면 보내지 않고 취소한다.
+async function _deliverOutboxEntry(entry, wh) {
+  if (!wh || wh.active === false || !Array.isArray(wh.events) || !wh.events.includes(entry.eventId)) {
+    await _outboxFinish(entry, "cancelled", "연동이 삭제·비활성화되었거나 이 이벤트 구독이 해제되어 보내지 않았습니다.");
+    return { webhookName: entry.webhookName, status: "cancelled", message: "연동 삭제/비활성" };
+  }
+  const result = await _sendIntegrationWebhook(wh, entry.text);
+  const ok = result.status === "success";
+  const next = await _outboxFinish(entry, ok ? "sent" : "failed", result.message);
+  return { ...result, retryScheduled: !ok && next.status === "pending", gaveUp: !ok && next.status === "dead" };
+}
+let _outboxWorkerRunning = false;
+let _outboxLastPrune = 0;
+async function _processWebhookOutbox() {
+  if (_outboxWorkerRunning) return;
+  _outboxWorkerRunning = true;
+  try {
+    const due = await _outboxClaimDue(20);
+    const settingsCache = new Map();
+    for (const entry of due) {
+      try {
+        const key = _scopeKey(entry.companyId);
+        if (!settingsCache.has(key)) settingsCache.set(key, (await loadData(entry.companyId))?.integrationSettings?.webhooks || []);
+        const wh = settingsCache.get(key).find(w => w && String(w.id ?? w.name) === entry.webhookId);
+        const result = await _deliverOutboxEntry(entry, wh);
+        if (result.status !== "cancelled") {
+          await _recordWebhookLogs(entry.companyId, `${entry.eventLabel || entry.eventId} (재시도 ${entry.attempts + 1}회차)`, [result]);
+        }
+      } catch (e) {
+        // 이 건만 다음 주기에 다시 시도되도록 대기 상태로 되돌린다(워커 전체는 계속 진행).
+        try { await _outboxFinish(entry, "failed", "내부 오류로 전송하지 못했습니다."); } catch {}
+        console.warn("[webhook-outbox] 처리 실패:", _safeErrMsg(e));
+      }
+    }
+    if (Date.now() - _outboxLastPrune > 60 * 60 * 1000) { _outboxLastPrune = Date.now(); await _outboxPrune(); await _revisionPrune(); }
+  } catch (e) {
+    console.warn("[webhook-outbox] 워커 오류:", _safeErrMsg(e));
+  } finally { _outboxWorkerRunning = false; }
 }
 const webhookTestLimiter = rateLimit({ windowMs: 60_000, limit: 10, standardHeaders: true, legacyHeaders: false });
 app.post("/api/integrations/webhooks/test", webhookTestLimiter, async (req, res) => {
@@ -7029,13 +7270,194 @@ app.post("/api/integrations/webhooks/dispatch", async (req, res) => {
     const webhooks = Array.isArray(data?.integrationSettings?.webhooks) ? data.integrationSettings.webhooks : [];
     const targets = webhooks.filter(w => w && w.active !== false && Array.isArray(w.events) && w.events.includes(eventId));
     if (!targets.length) return res.json({ ok: true, dispatched: 0 });
-    if (!await _reserveWebhookEvent(companyId, source.key)) return res.json({ ok: true, dispatched: 0, duplicate: true });
-    const results = await Promise.allSettled(targets.map(wh => _sendIntegrationWebhook(wh, source.text)));
+    // 웹훅마다 대기함에 먼저 영속 저장(중복이면 건너뜀)한 뒤 바로 한 번 보낸다. 실패한 건은 서버가 재시도한다.
+    const queued = [];
+    for (const wh of targets) {
+      const entry = await _outboxEnqueue(companyId, { eventId, eventLabel: INTEGRATION_EVENT_LABELS[eventId], dedupeKey: source.key,
+        webhookId: String(wh.id ?? wh.name), webhookName: wh.name, text: source.text });
+      if (entry) queued.push({ entry, wh });
+    }
+    if (!queued.length) return res.json({ ok: true, dispatched: 0, duplicate: true });
+    const results = await Promise.allSettled(queued.map(({ entry, wh }) => _deliverOutboxEntry(entry, wh)));
     const logs = results.map(r => (r.status === "fulfilled" ? r.value : { webhookName: "-", status: "fail", message: "dispatch error" }));
-    await _recordWebhookLogs(companyId, INTEGRATION_EVENT_LABELS[eventId], logs);
+    await _recordWebhookLogs(companyId, INTEGRATION_EVENT_LABELS[eventId], logs.filter(l => l.status !== "cancelled"));
     res.json({ ok: true, dispatched: logs.filter(l => l.status === "success").length,
-      failed: logs.filter(l => l.status !== "success").length });
+      failed: logs.filter(l => l.status === "fail").length, retryScheduled: logs.filter(l => l.retryScheduled).length });
   } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
+});
+
+app.get("/api/integrations/webhooks/outbox", async (req, res) => {
+  if (!requireAdmin(req, res) || !requirePage(req, res, "integrations")) return;
+  try {
+    const entries = await _outboxList(req.auth.companyId || null, 100);
+    const summary = { pending: 0, sent: 0, dead: 0, cancelled: 0 };
+    for (const x of entries) { const k = x.status === "sending" ? "pending" : x.status; if (k in summary) summary[k]++; }
+    res.json({ ok: true, summary, entries: entries.map(x => ({ id: x.id, eventLabel: x.eventLabel, webhookName: x.webhookName, text: x.text,
+      status: x.status === "sending" ? "pending" : x.status, attempts: x.attempts, nextAttemptAt: x.nextAttemptAt, lastError: x.lastError, createdAt: x.createdAt, sentAt: x.sentAt })) });
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
+});
+app.post("/api/integrations/webhooks/outbox/:id/retry", async (req, res) => {
+  if (!requireAdmin(req, res) || !requirePage(req, res, "integrations")) return;
+  try {
+    const entry = await _outboxManualRetry(req.auth.companyId || null, String(req.params.id || ""));
+    if (!entry) return res.status(404).json({ ok: false, message: "다시 보낼 수 있는 알림이 없습니다(이미 전송됨, 처리 중이거나 존재하지 않음)." });
+    setImmediate(() => { _processWebhookOutbox().catch(() => {}); });
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
+});
+
+// ── 수정·삭제 이력(복구용) 저장소 ─────────────────────────────────────────────
+// 저장이 레코드를 바꾸거나 지울 때 "바뀌기 전" 모습을 보관하고, 관리자가 레코드 단위로 되돌린다.
+// 레코드당 최근 KEEP_PER_RECORD건, 180일까지만 유지한다. 비밀번호 해시와 큰 첨부는 보관하지 않는다.
+const REVISION_TRACKED_FIELDS = trackedFields(ID_KEYED_LIST_FIELDS);
+const REVISION_FILE = JSON_FILE.replace(/\.json$/, "-record-revisions.json");
+const REVISION_MAX_FILE_ENTRIES = 5000;
+const REVISION_RETENTION_MS = 180 * 24 * 60 * 60 * 1000;
+let _fileRevisions = null;
+function _loadFileRevisions() {
+  if (_fileRevisions) return;
+  _fileRevisions = { entries: [] };
+  if (fs.existsSync(REVISION_FILE)) {
+    const d = _readExistingJsonFileOrFail(REVISION_FILE, "수정·삭제 이력");
+    _fileRevisions = { entries: Array.isArray(d?.entries) ? d.entries : [] };
+  }
+}
+function _revisionFromRow(r) {
+  return { id: r.id, companyId: r.company_id || null, field: r.field, recordId: r.record_id, operation: r.operation, title: r.title || "",
+    snapshot: r.snapshot, changedBy: r.changed_by || "", changedAt: new Date(r.changed_at).toISOString() };
+}
+async function _revisionAdd(companyId, entries, changedBy) {
+  if (!entries.length) return;
+  const nowIso = new Date().toISOString();
+  const rows = entries.map(e => ({ id: `rev-${crypto.randomUUID()}`, companyId: companyId || null, field: e.field, recordId: e.recordId,
+    operation: e.operation, title: e.title, snapshot: e.snapshot, changedBy: String(changedBy || "").slice(0, 120), changedAt: nowIso }));
+  if (USE_JSON_FILE) {
+    await _withOutboxLock(() => { // 직렬화 체인을 재사용(파일 read-modify-write 보호)
+      _loadFileRevisions();
+      _fileRevisions.entries.push(...rows);
+      const counts = new Map();
+      const keep = [];
+      for (let i = _fileRevisions.entries.length - 1; i >= 0; i--) { // 최신부터 훑으며 레코드당 상한 적용
+        const x = _fileRevisions.entries[i];
+        const k = `${_scopeKey(x.companyId)}|${x.field}|${x.recordId}`;
+        const n = (counts.get(k) || 0) + 1; counts.set(k, n);
+        if (n <= KEEP_PER_RECORD) keep.push(x);
+      }
+      _fileRevisions.entries = keep.reverse().slice(-REVISION_MAX_FILE_ENTRIES);
+      _atomicWriteFileSync(REVISION_FILE, JSON.stringify(_fileRevisions));
+    });
+    return;
+  }
+  for (const r of rows) {
+    await pool.query(
+      `INSERT INTO record_revisions (id,company_id,field,record_id,operation,title,snapshot,changed_by,changed_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+      [r.id, r.companyId, r.field, r.recordId, r.operation, r.title, JSON.stringify(r.snapshot), r.changedBy, r.changedAt]);
+  }
+  // 같은 레코드의 오래된 이력을 상한까지만 남긴다(이번에 추가한 레코드만 정리).
+  await pool.query(
+    `DELETE FROM record_revisions WHERE id IN (
+       SELECT id FROM (SELECT id, ROW_NUMBER() OVER (PARTITION BY field, record_id ORDER BY changed_at DESC, id DESC) rn
+                       FROM record_revisions WHERE company_id IS NOT DISTINCT FROM $1 AND (field, record_id) IN (SELECT * FROM UNNEST($2::text[], $3::text[]))) x
+       WHERE rn > $4)`,
+    [companyId || null, rows.map(r => r.field), rows.map(r => r.recordId), KEEP_PER_RECORD]);
+}
+async function _revisionList(companyId, { field, operation, q, limit }) {
+  const lim = Math.max(1, Math.min(200, Number(limit) || 100));
+  const needle = String(q || "").trim().toLowerCase();
+  if (USE_JSON_FILE) {
+    return _withOutboxLock(() => {
+      _loadFileRevisions();
+      const scope = _scopeKey(companyId);
+      return _fileRevisions.entries.filter(x => _scopeKey(x.companyId) === scope && (!field || x.field === field) && (!operation || x.operation === operation) &&
+        (!needle || String(x.title).toLowerCase().includes(needle) || String(x.recordId).toLowerCase().includes(needle)))
+        .sort((a, b) => String(b.changedAt).localeCompare(String(a.changedAt))).slice(0, lim);
+    });
+  }
+  const params = [companyId || null]; const cond = ["company_id IS NOT DISTINCT FROM $1"];
+  if (field) { params.push(field); cond.push(`field = $${params.length}`); }
+  if (operation) { params.push(operation); cond.push(`operation = $${params.length}`); }
+  if (needle) { params.push(`%${needle}%`); cond.push(`(LOWER(title) LIKE $${params.length} OR LOWER(record_id) LIKE $${params.length})`); }
+  params.push(lim);
+  const { rows } = await pool.query(`SELECT * FROM record_revisions WHERE ${cond.join(" AND ")} ORDER BY changed_at DESC LIMIT $${params.length}`, params);
+  return rows.map(_revisionFromRow);
+}
+async function _revisionGet(companyId, id) {
+  if (USE_JSON_FILE) {
+    return _withOutboxLock(() => { _loadFileRevisions(); const scope = _scopeKey(companyId); return _fileRevisions.entries.find(x => x.id === id && _scopeKey(x.companyId) === scope) || null; });
+  }
+  const { rows } = await pool.query("SELECT * FROM record_revisions WHERE id=$1 AND company_id IS NOT DISTINCT FROM $2", [id, companyId || null]);
+  return rows[0] ? _revisionFromRow(rows[0]) : null;
+}
+async function _revisionPrune() {
+  const before = new Date(Date.now() - REVISION_RETENTION_MS).toISOString();
+  if (USE_JSON_FILE) {
+    await _withOutboxLock(() => {
+      _loadFileRevisions();
+      const n = _fileRevisions.entries.length;
+      _fileRevisions.entries = _fileRevisions.entries.filter(x => x.changedAt >= before);
+      if (_fileRevisions.entries.length !== n) _atomicWriteFileSync(REVISION_FILE, JSON.stringify(_fileRevisions));
+    });
+    return;
+  }
+  await pool.query("DELETE FROM record_revisions WHERE changed_at < $1", [before]);
+}
+
+// 보관된 한 시점의 레코드를 현재 상태로 되돌린다. 삭제된 레코드는 되살리고, 지금 값은 새 이력으로 남겨 복구도 되돌릴 수 있다.
+async function _restoreRevision(companyId, revision, actor) {
+  const field = revision.field;
+  if (!REVISION_TRACKED_FIELDS.includes(field)) throw httpError(400, "FIELD_NOT_RESTORABLE", "복구할 수 없는 항목입니다.");
+  return _withSaveLock(() => _withDistributedSaveLock(companyId, async () => {
+    const current = await loadData(companyId);
+    const existing = (Array.isArray(current[field]) ? current[field] : []).find(r => r && String(r.id) === String(revision.recordId));
+    // 복구본은 반드시 현재 저장본보다 "더 최근"이어야 병합 규칙(최신 updatedAt 우선)에서 이긴다 —
+    // 서버/클라이언트 시계 차이로 현재 값의 updatedAt이 미래일 수 있어 그보다 1ms 뒤로 맞춘다.
+    const existingTs = Date.parse(existing?.updatedAt || "");
+    const now = new Date(Math.max(Date.now(), Number.isFinite(existingTs) ? existingTs + 1 : 0)).toISOString();
+    const restored = { ...revision.snapshot, updatedAt: now };
+    delete restored._truncatedKeys;
+    if (existing && existing._rev !== undefined) restored._rev = existing._rev; else delete restored._rev;
+    if (field === "employees") {
+      // 비밀번호·세션 버전은 이력에 보관하지 않으므로 현재 값을 유지한다. 삭제된 직원은 사용할 수 없는
+      // 임의 비밀번호로 되살리고, 로그인하려면 관리자가 비밀번호를 다시 설정해야 한다.
+      restored.pw = existing?.pw || await hashPlaintextPw(crypto.randomUUID());
+      restored.authVersion = existing?.authVersion ?? 0;
+    }
+    const tombstones = { ...(current.recordTombstones || {}) };
+    if (Array.isArray(tombstones[field])) tombstones[field] = tombstones[field].filter(t => String(t?.id) !== String(revision.recordId));
+    const data = USE_JSON_FILE
+      ? { ...current, [field]: unionPreferSnapshot(current[field], [restored]), recordTombstones: tombstones }
+      : { [field]: [restored], recordTombstones: tombstones };
+    const pre = takePreImage(current, { [field]: [restored] }, [field]);
+    await _persistDataLocked(data, actor.changedBy, companyId, { role: "admin", empId: actor.empId });
+    const after = await loadData(companyId);
+    try { await _revisionAdd(companyId, diffRevisions(pre, after), actor.changedBy); } catch {}
+    return { existed: !!existing };
+  }));
+}
+
+app.get("/api/record-revisions", async (req, res) => {
+  if (!requireAdmin(req, res) || !requirePage(req, res, "history")) return;
+  try {
+    const field = String(req.query.field || "");
+    if (field && !REVISION_TRACKED_FIELDS.includes(field)) return res.status(400).json({ ok: false, message: "알 수 없는 항목입니다." });
+    const operation = ["update", "delete"].includes(String(req.query.operation)) ? String(req.query.operation) : "";
+    const rows = await _revisionList(req.auth.companyId || null, { field, operation, q: req.query.q, limit: req.query.limit });
+    res.json({ ok: true, revisions: rows.map(x => ({ id: x.id, field: x.field, recordId: x.recordId, operation: x.operation, title: x.title, changedBy: x.changedBy, changedAt: x.changedAt })) });
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
+});
+app.post("/api/record-revisions/:id/restore", async (req, res) => {
+  if (!requireAdmin(req, res) || !requirePage(req, res, "history")) return;
+  try {
+    const companyId = req.auth.companyId || null;
+    const revision = await _revisionGet(companyId, String(req.params.id || ""));
+    if (!revision) return res.status(404).json({ ok: false, message: "복구할 이력을 찾을 수 없습니다." });
+    const result = await _restoreRevision(companyId, revision, { empId: req.auth.empId, changedBy: `restore:${req.auth.loginId || req.auth.empId}` });
+    broadcastSSE("data_updated", { version: _getVersion(companyId), meta: {} }, req.query.clientId, companyId);
+    res.json({ ok: true, existed: result.existed });
+  } catch (e) {
+    const status = Number.isInteger(e.status) ? e.status : 500;
+    res.status(status).json({ ok: false, code: e.code, message: _safeErrMsg(e) });
+  }
 });
 
 // ── Annual snapshots ──────────────────────────────────────────────────────────
@@ -7880,6 +8302,18 @@ function _acctConflict(res, kind, key, record) {
     [key]: record,
   });
 }
+// ── 회계 마스터 수정의 낙관적 락 필수화 ─────────────────────────────────────────
+// 계정과목·거래처·전표 템플릿의 "기존 레코드 수정"은 화면이 열릴 때 본 revision(updatedAt)을
+// 반드시 함께 보내야 한다. 예전에는 expectedUpdatedAt이 없으면 조건 없이 덮어썼는데(구버전
+// 캐시 탭·API 직접 호출), 그 경우 두 관리자가 동시에 같은 레코드를 고치면 앞선 변경이
+// 조용히 사라졌다. 키 자체가 없으면 428, 값이 다르면 409(최신본 포함). updatedAt이 아직
+// 없는 레거시 레코드는 빈 문자열("")이 "최신"이므로 화면은 `updatedAt ?? ""`를 보낸다.
+function _acctRevisionMissing(expected) { return expected === undefined || expected === null; }
+function _acctRevisionMatches(current, expected) { return String(current?.updatedAt ?? "") === String(expected ?? ""); }
+function _acctRevisionRequired(res, label) {
+  return res.status(428).json({ ok: false, code: "ACCT_REVISION_REQUIRED",
+    message: `${label} 수정에는 화면을 연 시점의 최신 정보(expectedUpdatedAt)가 필요합니다. 화면을 새로고침한 뒤 다시 시도하세요.` });
+}
 app.post("/api/accounting/accounts", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
@@ -7908,7 +8342,8 @@ app.post("/api/accounting/accounts", async (req, res) => {
       // 어느 것을 골랐는지 알 수 없는 혼란이 생긴다(실측 재현으로 발견).
       const dup = _fileAccounting.accounts.find(a => a.id !== accId && !a.isDeleted && String(a.code).toLowerCase() === normalizedCode.toLowerCase());
       if (dup) return res.status(400).json({ ok: false, message: `이미 사용 중인 계정코드입니다: ${normalizedCode} (${dup.name})` });
-      if (idx >= 0 && expectedUpdatedAt && _fileAccounting.accounts[idx].updatedAt !== expectedUpdatedAt) {
+      if (idx >= 0 && _acctRevisionMissing(expectedUpdatedAt)) return _acctRevisionRequired(res, "계정과목");
+      if (idx >= 0 && !_acctRevisionMatches(_fileAccounting.accounts[idx], expectedUpdatedAt)) {
         return _acctConflict(res, "ACCT_ACCOUNT_CONFLICT", "account", _fileAccounting.accounts[idx]);
       }
       const prevHist = idx >= 0 ? (_fileAccounting.accounts[idx].history || []) : [];
@@ -7927,6 +8362,7 @@ app.post("/api/accounting/accounts", async (req, res) => {
     const { rows: prevRows } = await pool.query(
       "SELECT data FROM accounts WHERE id = $1 AND (company_id = $2 OR company_id IS NULL)", [accId, companyId]
     );
+    if (prevRows.length && _acctRevisionMissing(expectedUpdatedAt)) return _acctRevisionRequired(res, "계정과목");
     const prevHist = prevRows.length ? (prevRows[0].data.history || []) : [];
     const histEntry = { action: prevRows.length ? "update" : "create", user: user || "unknown", at: new Date().toISOString() };
     const acc = { id: accId, code: normalizedCode, name: normalizedName, type, category: normalizedCategory, costCategory, costSubType, active: active !== false, history: [...prevHist, histEntry], updatedAt: histEntry.at };
@@ -7934,10 +8370,10 @@ app.post("/api/accounting/accounts", async (req, res) => {
       // 위 SELECT는 조기 오류 메시지용일 뿐, 진짜 CAS는 이 UPDATE의 WHERE절이 원자적으로
       // 담당한다(PMS 프로젝트 수정과 동일한 원칙) — SELECT와 쓰기 사이의 시간차 동안 다른
       // 요청이 끼어드는 race는 WHERE절 자체가 그 순간의 실제 행 상태를 다시 확인하므로
-      // 안전하다. expectedUpdatedAt을 안 보낸(구버전) 요청은 이 조건절 없이 그대로 통과한다.
+      // 안전하다. expectedUpdatedAt을 안 보낸(구버전) 요청은 위에서 428로 거부한다.
       const updateParams = [accId, acc, companyId];
       let sql = "UPDATE accounts SET data = $2, updated_at = NOW() WHERE id = $1 AND (company_id = $3 OR company_id IS NULL)";
-      if (expectedUpdatedAt) { updateParams.push(expectedUpdatedAt); sql += " AND data->>'updatedAt' = $4"; }
+      updateParams.push(String(expectedUpdatedAt ?? "")); sql += " AND COALESCE(data->>'updatedAt','') = $4";
       const result = await pool.query(sql, updateParams);
       if (!result.rowCount) {
         const { rows: latestRows } = await pool.query(
@@ -8094,7 +8530,8 @@ app.post("/api/accounting/voucher-templates", async (req, res) => {
     if (USE_JSON_FILE) {
       const previous = id ? (_fileAccounting.voucherTemplates || []).find(t => t.id === id) : null;
       if (id && !previous) return res.status(404).json({ ok: false, message: "전표 템플릿을 찾을 수 없습니다." });
-      if (previous && req.body?.expectedUpdatedAt && previous.updatedAt !== req.body.expectedUpdatedAt) {
+      if (previous && _acctRevisionMissing(req.body?.expectedUpdatedAt)) return _acctRevisionRequired(res, "전표 템플릿");
+      if (previous && !_acctRevisionMatches(previous, req.body?.expectedUpdatedAt)) {
         return res.status(409).json({ ok: false, code: "VOUCHER_TEMPLATE_CONFLICT", message: "다른 사용자가 템플릿을 먼저 수정했습니다.", template: previous });
       }
       const built = _sanitizeVoucherTemplate({ ...req.body, user: req.auth.loginId || req.auth.empId }, accounts, previous);
@@ -8115,7 +8552,8 @@ app.post("/api/accounting/voucher-templates", async (req, res) => {
         );
         if (!rows.length) { await client.query("ROLLBACK"); return res.status(404).json({ ok: false, message: "전표 템플릿을 찾을 수 없습니다." }); }
         previous = rows[0].data;
-        if (req.body?.expectedUpdatedAt && previous.updatedAt !== req.body.expectedUpdatedAt) {
+        if (_acctRevisionMissing(req.body?.expectedUpdatedAt)) { await client.query("ROLLBACK"); return _acctRevisionRequired(res, "전표 템플릿"); }
+        if (!_acctRevisionMatches(previous, req.body?.expectedUpdatedAt)) {
           await client.query("ROLLBACK");
           return res.status(409).json({ ok: false, code: "VOUCHER_TEMPLATE_CONFLICT", message: "다른 사용자가 템플릿을 먼저 수정했습니다.", template: previous });
         }
@@ -8756,7 +9194,8 @@ app.post("/api/accounting/partners", async (req, res) => {
     const partnerId = id || `partner_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     if (USE_JSON_FILE) {
       const idx = _fileAccounting.partners.findIndex(p => p.id === partnerId);
-      if (idx >= 0 && expectedUpdatedAt && _fileAccounting.partners[idx].updatedAt !== expectedUpdatedAt) {
+      if (idx >= 0 && _acctRevisionMissing(expectedUpdatedAt)) return _acctRevisionRequired(res, "거래처");
+      if (idx >= 0 && !_acctRevisionMatches(_fileAccounting.partners[idx], expectedUpdatedAt)) {
         return _acctConflict(res, "ACCT_PARTNER_CONFLICT", "partner", _fileAccounting.partners[idx]);
       }
       const prevHist = idx >= 0 ? (_fileAccounting.partners[idx].history || []) : [];
@@ -8775,6 +9214,7 @@ app.post("/api/accounting/partners", async (req, res) => {
     const { rows: prevRows } = await pool.query(
       "SELECT data FROM partners WHERE id = $1 AND (company_id = $2 OR company_id IS NULL)", [partnerId, companyId]
     );
+    if (prevRows.length && _acctRevisionMissing(expectedUpdatedAt)) return _acctRevisionRequired(res, "거래처");
     const prevHist = prevRows.length ? (prevRows[0].data.history || []) : [];
     const histEntry = { action: prevRows.length ? "update" : "create", user: user || "unknown", at: new Date().toISOString() };
     const partner = {
@@ -8788,7 +9228,7 @@ app.post("/api/accounting/partners", async (req, res) => {
       // accounts와 동일 원칙 — 진짜 CAS는 이 UPDATE의 WHERE절이 원자적으로 담당한다.
       const updateParams = [partnerId, partner, companyId];
       let sql = "UPDATE partners SET data = $2, updated_at = NOW() WHERE id = $1 AND (company_id = $3 OR company_id IS NULL)";
-      if (expectedUpdatedAt) { updateParams.push(expectedUpdatedAt); sql += " AND data->>'updatedAt' = $4"; }
+      updateParams.push(String(expectedUpdatedAt ?? "")); sql += " AND COALESCE(data->>'updatedAt','') = $4";
       const result = await pool.query(sql, updateParams);
       if (!result.rowCount) {
         const { rows: latestRows } = await pool.query(
@@ -13989,6 +14429,8 @@ initDB()
         console.log("    render.yaml의 envVars에 BUDGET_DATA_FILE=<DATA_FILE과 동일한 영속 디스크 경로>/budget-data.json 을 추가하세요.\n");
       }
     });
+    // 웹훅 발송 대기함 워커: 실패·미전송 알림을 주기적으로 재시도한다(서버 재시작 후에도 이어짐).
+    setInterval(() => { _processWebhookOutbox().catch(() => {}); }, WEBHOOK_OUTBOX_POLL_MS).unref();
     server.on("error", (err) => {
       if (err.code === "EADDRINUSE") {
         console.error(`\n[오류] 포트 ${PORT}가 이미 사용 중입니다.`);

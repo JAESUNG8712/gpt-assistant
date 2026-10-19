@@ -11,6 +11,7 @@
 // 운영 데이터 파일은 이 테스트가 존재하는지조차 모른다.
 "use strict";
 const test = require("node:test");
+const { brief } = require("./support/save-feedback");
 const assert = require("node:assert/strict");
 const { startServer, bootstrapAdminAndLogin } = require("./support/start-server");
 
@@ -60,7 +61,7 @@ test("확정된 급여명세서는 /save 직접 호출로도 위조·덮어쓰�
     const r = await (await api("/save", auth(token, "POST", { _version: d.version, payslips: [tampered] }))).json();
     assert.equal(r.ok, true);
     assert.equal(r.partial, true);
-    assert.deepEqual(r.warnings?.rejectedRecords, [{ field: "payslips", id: draft.id }]);
+    assert.deepEqual(brief(r.warnings?.rejectedRecords), [{ field: "payslips", id: draft.id }]);
     d = await getData(api, token);
     const saved = d.data.payslips.find(p => p.id === draft.id);
     assert.equal(saved?.netPay, 2700000);

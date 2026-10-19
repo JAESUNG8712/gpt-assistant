@@ -12,6 +12,7 @@
 // 운영 데이터 파일은 이 테스트가 존재하는지조차 모른다.
 "use strict";
 const test = require("node:test");
+const { brief } = require("./support/save-feedback");
 const assert = require("node:assert/strict");
 const { startServer, bootstrapAdminAndLogin } = require("./support/start-server");
 
@@ -251,7 +252,7 @@ test("blob 동기화(/save) 컬렉션의 menuPerms/권한 확장 — kpiEntries�
     assert.equal(r.status, 200);
     const rejected = await r.json();
     assert.equal(rejected.partial, true, "서버가 보호 자료를 되돌릴 때 성공으로 보고하면 안 된다");
-    assert.deepEqual(rejected.warnings?.rejectedRecords, [{ field: "coreTalentPool", id: "ct1" }]);
+    assert.deepEqual(brief(rejected.warnings?.rejectedRecords), [{ field: "coreTalentPool", id: "ct1" }]);
     const check = await getData(api, adminToken);
     assert.equal((check.data.coreTalentPool || []).some(c => c.id === "ct1"), false);
   });
@@ -401,7 +402,7 @@ test("blob 동기화(/save) 컬렉션의 menuPerms/권한 확장 — kpiEntries�
     assert.equal(r.status, 200);
     const rejected = await r.json();
     assert.equal(rejected.partial, true);
-    assert.deepEqual(rejected.warnings?.rejectedRecords, [{ field: "gradeAdjustHistory", id: "gah2" }]);
+    assert.deepEqual(brief(rejected.warnings?.rejectedRecords), [{ field: "gradeAdjustHistory", id: "gah2" }]);
     check = await getData(api, adminToken);
     assert.equal((check.data.gradeAdjustHistory || []).some(x => x.id === "gah2"), false);
   });
@@ -465,7 +466,7 @@ test("/save 병합 응답도 /data와 동일한 개인별 메뉴 권한 필터�
   }))).json();
   assert.equal(rejectedDelete.ok, true);
   assert.equal(rejectedDelete.partial, true);
-  assert.deepEqual(rejectedDelete.warnings?.rejectedRecords, [
+  assert.deepEqual(brief(rejectedDelete.warnings?.rejectedRecords), [
     { field: "learningCourses", id: course.id, operation: "delete" }
   ]);
   const afterDelete = await getData(api, boot.token);
@@ -511,7 +512,7 @@ test("KPI 삭제 표식은 소유·조직·메뉴 권한을 따라야 한다", a
 
   const foreign = await deleteWith(ownerToken, "other-kpi");
   assert.equal(foreign.partial, true);
-  assert.deepEqual(foreign.warnings?.rejectedRecords, [
+  assert.deepEqual(brief(foreign.warnings?.rejectedRecords), [
     { field: "kpiEntries", id: "other-kpi", operation: "delete" },
   ]);
   let after = await getData(api, boot.token);
