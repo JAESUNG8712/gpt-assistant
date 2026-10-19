@@ -17,6 +17,7 @@ const pool    = require("./db");
 const multer  = require("multer");
 const budgetRouterFactory = require("./budget");
 const { canReadTraining, canManageTraining, countsByCourse, normalizeEnrollment } = require("./lib/training-integrity");
+const { assertFieldOrder } = require("./lib/field-order-guard");
 
 // ════════════════════════════════════════════════════════════════════════════
 // 목차(파일 안 "// ── 제목 ──" 배너 문자열로 검색) — 이 파일은 인사(HR)/전자결재/
@@ -1698,6 +1699,10 @@ const _APPROVAL_GATED_FIELDS = {
   ...Object.fromEntries(Object.keys(_WRITE_GATED_FIELDS).map(f =>
     [f, { record: (rec, actor, actorEmp, settings) => _writeGateAllowed(f, rec, actor, actorEmp, settings) }])),
 };
+// 같은 요청의 다른 컬렉션을 판정 근거로 삼는 필드(교육 신청→과정 등)는 근거 컬렉션이 먼저
+// 권한 검증을 거쳐야 한다. 키 순서가 바뀌면 부팅 단계에서 실패시킨다(lib/field-order-guard.js).
+assertFieldOrder(Object.keys(_APPROVAL_GATED_FIELDS), "_APPROVAL_GATED_FIELDS");
+assertFieldOrder(GENERIC_LIST_FIELDS, "GENERIC_LIST_FIELDS");
 // payrollAdjustments 신규 레코드가 이미 승인 완료된 복리후생 결재문서에서
 // 그대로 파생된 것인지 검증한다 — empId/금액/구분/연월이 그 문서의 내용과 정확히 일치해야
 // 하고, doc 자체는 이미 _sanitizeApprovalDoc을 통과한(위조 불가능한) 값이어야 한다. 값 하나라도
