@@ -16139,10 +16139,54 @@ function resetPassword(){const id=Number($("#reset-emp")?.value),pw=$("#reset-pw
   employees=employees.map(e=>e.id===id?{...e,pw,updatedAt:new Date().toISOString()}:e);showToast(`${getEmpName(id)}님의 비밀번호가 초기화되었습니다.`,"success");if($("#reset-emp"))$("#reset-emp").value="";if($("#reset-pw"))$("#reset-pw").value="";autoSaveToServerIfEnabled();}
 
 // ==================== HISTORY ====================
+// ── 수정·삭제 복구 ───────────────────────────────────────────────────
+// 잘못 수정하거나 지운 레코드를 서버가 보관한 "바뀌기 전" 모습으로 되돌린다(관리자 전용, 레코드당 최근 10건·180일).
+let _revFilter={field:"",operation:"",q:""};
+function _revFieldLabel(f){return (typeof SNAPSHOT_FIELD_LABELS!=="undefined"&&SNAPSHOT_FIELD_LABELS[f])||_SAVE_REJECT_FIELD_LABELS[f]||f;}
+async function loadRecordRevisions(){
+  const box=document.getElementById("rev-panel");if(!box)return;
+  const qs=new URLSearchParams();
+  if(_revFilter.field)qs.set("field",_revFilter.field);
+  if(_revFilter.operation)qs.set("operation",_revFilter.operation);
+  if(_revFilter.q)qs.set("q",_revFilter.q);
+  const r=await serverRequest("GET","/api/record-revisions?"+qs.toString(),null,10000);
+  if(!document.getElementById("rev-panel"))return;
+  const list=document.getElementById("rev-list");
+  if(!r?.ok){list.innerHTML=`<div class="fz11 text-gray">이력을 불러오지 못했습니다: ${h(r?.message||"")}</div>`;return;}
+  const rows=r.revisions||[];
+  list.innerHTML=rows.length?`<div class="tbl-wrap"><table><thead><tr><th>변경 시각</th><th>구분</th><th>대상</th><th>변경자</th><th></th></tr></thead><tbody>${rows.map(x=>`<tr>
+    <td class="fz11 text-gray">${h(new Date(x.changedAt).toLocaleString("ko-KR"))}</td>
+    <td>${x.operation==="delete"?badge("삭제됨","red"):badge("수정됨","blue")}</td>
+    <td><strong>${h(_revFieldLabel(x.field))}</strong><div class="fz11 text-gray">${h(x.title||("#"+x.recordId))}</div></td>
+    <td class="fz11 text-gray">${h(x.changedBy||"-")}</td>
+    <td><button class="btn btn-secondary btn-sm" onclick="restoreRecordRevision('${h(x.id)}')">${x.operation==="delete"?"되살리기":"이전 내용으로 복구"}</button></td></tr>`).join("")}</tbody></table></div>`
+    :`<div class="fz12 text-gray" style="padding:12px;text-align:center">조건에 맞는 수정·삭제 이력이 없습니다.</div>`;
+}
+async function restoreRecordRevision(id){
+  const ok=await askConfirmModal({title:"이전 내용으로 복구",message:"선택한 시점(바뀌기 전)의 내용으로 이 항목을 되돌립니다. 현재 내용은 새 이력으로 남아 다시 되돌릴 수 있습니다. 계속할까요?",confirmText:"복구"});
+  if(!ok)return;
+  const r=await serverRequest("POST",`/api/record-revisions/${encodeURIComponent(id)}/restore`,{},20000);
+  if(!r?.ok){showToast(r?.message||"복구하지 못했습니다.","error");return;}
+  showToast(r.existed?"이전 내용으로 복구했습니다.":"삭제된 항목을 되살렸습니다.","success");
+  await loadFromServer();
+  renderHistory();
+}
+function _revPanelHtml(){
+  const fields=["employees","kpiEntries",...GENERIC_LIST_FIELD_NAMES_FOR_REVISIONS()];
+  return `<div class="card"><div class="card-head"><h3>🗂 수정·삭제 복구</h3></div><div class="card-body" id="rev-panel">
+    <p class="fz12 text-gray mb2">잘못 수정하거나 삭제한 항목을 바뀌기 전 내용으로 되돌립니다. 항목마다 최근 10건, 180일까지 보관되며 비밀번호는 보관·복구되지 않습니다.</p>
+    <div class="flex gap2 mb2 wrap">
+      <select class="fc" style="max-width:200px" onchange="_revFilter.field=this.value;loadRecordRevisions()"><option value="">전체 항목</option>${fields.map(f=>`<option value="${h(f)}"${_revFilter.field===f?" selected":""}>${h(_revFieldLabel(f))}</option>`).join("")}</select>
+      <select class="fc" style="max-width:140px" onchange="_revFilter.operation=this.value;loadRecordRevisions()"><option value="">수정+삭제</option><option value="update"${_revFilter.operation==="update"?" selected":""}>수정만</option><option value="delete"${_revFilter.operation==="delete"?" selected":""}>삭제만</option></select>
+      <input class="fc" style="max-width:220px" placeholder="제목·이름으로 검색" value="${h(_revFilter.q)}" oninput="_revFilter.q=this.value;loadRecordRevisions()">
+    </div><div id="rev-list"><div class="fz12 text-gray">불러오는 중...</div></div></div></div>`;
+}
+function GENERIC_LIST_FIELD_NAMES_FOR_REVISIONS(){return Object.keys(_SAVE_REJECT_FIELD_LABELS).filter(f=>!["settings","employees","kpiEntries","attendanceRecords"].includes(f));}
 function renderHistory(){
   const c=$("#content");
   const adjHistory=gradeAdjustHistory;
   c.innerHTML=`
+  ${(serverConfig.enabled&&serverConfig.url&&!_demoMode)?_revPanelHtml():""}
   ${adjHistory.length?`<div class="card"><div class="card-head"><h3>🔧 등급 수정 이력</h3><button class="btn btn-secondary btn-sm" onclick="dlAdjustHistory()">📥 다운로드</button></div><div class="card-body" style="padding:0"><div class="tbl-wrap"><table>
     <thead><tr><th>날짜</th><th>직원</th><th>부서</th><th>유형</th><th>연도</th><th>변경전</th><th>변경후</th><th>사유</th><th>수정자</th></tr></thead>
     <tbody>${[...adjHistory].sort((a,b)=>b.adjustedAt.localeCompare(a.adjustedAt)).map(r=>`<tr>
@@ -16161,6 +16205,7 @@ function renderHistory(){
       <thead><tr><th>날짜</th><th>요청자</th><th>KPI</th><th>사유</th><th>상태</th><th>처리일</th></tr></thead>
       <tbody>${[...changeRequests].sort((a,b)=>b.createdAt.localeCompare(a.createdAt)).map(r=>{const k=getKpi(r.kpiId);const emp=getEmp(r.reqUserId);return`<tr><td class="text-gray">${r.createdAt.slice(0,10)}</td><td>${emp?.name||"-"}</td><td>${k?.item||"-"}</td><td>${h(r.reason)}</td><td>${badge(r.status==="approved"?"승인":r.status==="rejected"?"반려":"대기",r.status==="approved"?"green":r.status==="rejected"?"red":"yellow")}</td><td class="text-gray">${r.processedAt?.slice(0,10)||"-"}</td></tr>`;}).join("")}</tbody></table></div>`}
   </div></div>`;
+  if(serverConfig.enabled&&serverConfig.url&&!_demoMode)loadRecordRevisions();
 }
 
 // ==================== DEPLOY & PERMISSIONS ====================

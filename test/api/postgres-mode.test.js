@@ -1079,6 +1079,61 @@ if (!ADMIN_DATABASE_URL) {
     const cross = await api(`/api/integrations/webhooks/outbox/${entry.id}/retry`, authH(B.token, "POST"));
     assert.equal(cross.status, 404, "다른 회사 건은 재전송할 수 없다");
   });
+
+  test("postgres-mode: 수정·삭제 복구 — 이력 보관·복구·tombstone 해제·회사 간 격리", async (t) => {
+    const dbName = `hrtest_rev_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`;
+    const testDbUrl = _withDatabaseName(ADMIN_DATABASE_URL, dbName);
+    const admin = new Client({ connectionString: ADMIN_DATABASE_URL });
+    await admin.connect();
+    await admin.query(`CREATE DATABASE ${dbName}`);
+    t.after(async () => {
+      try {
+        await admin.query("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = $1 AND pid <> pg_backend_pid()", [dbName]);
+        await admin.query(`DROP DATABASE IF EXISTS ${dbName}`);
+      } finally { await admin.end(); }
+    });
+    const server = await startServer({ env: { DATABASE_URL: testDbUrl } });
+    t.after(() => server.stop());
+    const api = (p, opts) => fetch(server.baseUrl + p, opts);
+    const authH = (token, method, body) => ({ method, headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` }, body: body === undefined ? undefined : JSON.stringify(body) });
+    async function register(companyName, loginId, pw) {
+      const res = await api("/api/companies/register", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ companyName, adminName: `${companyName} 관리자`, loginId, password: pw }) });
+      const json = await res.json(); assert.equal(res.status, 200, JSON.stringify(json)); return json;
+    }
+    const getD = async token => (await (await api("/data", { headers: { Authorization: `Bearer ${token}` } })).json());
+    const A = await register("복구A", "rev_a", "TestPassword123");
+    const B = await register("복구B", "rev_b", "TestPassword456");
+    let d = await getD(A.token);
+    const adminId = String(d.data.employees[0].id);
+    const base = { authorId: adminId, content: "", catId: "free", createdAt: new Date().toISOString() };
+    assert.equal((await api("/save", authH(A.token, "POST", { _version: d.version, boardPosts: [{ id: "p1", title: "원본", ...base }, { id: "p2", title: "지울 글", ...base }] }))).status, 200);
+    d = await getD(A.token);
+    const p1 = d.data.boardPosts.find(p => p.id === "p1");
+    assert.equal((await api("/save", authH(A.token, "POST", { _version: d.version, boardPosts: [{ ...p1, title: "잘못", updatedAt: new Date(Date.now() + 500).toISOString() }, d.data.boardPosts.find(p => p.id === "p2")] }))).status, 200);
+    d = await getD(A.token);
+    const p2 = d.data.boardPosts.find(p => p.id === "p2");
+    assert.equal((await api("/save", authH(A.token, "POST", { _version: d.version, boardPosts: d.data.boardPosts.filter(p => p.id !== "p2"), recordTombstones: { boardPosts: [{ id: "p2", ts: Date.now(), rev: Number(p2._rev) || 0 }] } }))).status, 200);
+    const list = await (await api("/api/record-revisions?field=boardPosts", { headers: { Authorization: `Bearer ${A.token}` } })).json();
+    const upd = list.revisions.find(x => x.recordId === "p1" && x.operation === "update");
+    const del = list.revisions.find(x => x.recordId === "p2" && x.operation === "delete");
+    assert.ok(upd && del, JSON.stringify(list));
+    // 다른 회사는 보지도 복구하지도 못한다
+    const listB = await (await api("/api/record-revisions", { headers: { Authorization: `Bearer ${B.token}` } })).json();
+    assert.equal(listB.revisions.length, 0);
+    assert.equal((await api(`/api/record-revisions/${upd.id}/restore`, authH(B.token, "POST"))).status, 404);
+    assert.equal((await (await api(`/api/record-revisions/${upd.id}/restore`, authH(A.token, "POST"))).json()).ok, true);
+    assert.equal((await (await api(`/api/record-revisions/${del.id}/restore`, authH(A.token, "POST"))).json()).ok, true);
+    d = await getD(A.token);
+    assert.equal(d.data.boardPosts.find(p => p.id === "p1").title, "원본");
+    assert.equal(d.data.boardPosts.find(p => p.id === "p2")?.title, "지울 글");
+    const tomb = (d.data.recordTombstones?.boardPosts || []).some(t => String(t.id) === "p2");
+    assert.equal(tomb, false, "복구한 글의 삭제 표시(tombstone)가 해제되어야 다시 지워지지 않는다");
+    // 이후 일반 저장(복구 후 최신 상태 그대로)에서도 되살린 글이 유지된다
+    assert.equal((await api("/save", authH(A.token, "POST", { _version: d.version, boardPosts: d.data.boardPosts }))).status, 200);
+    d = await getD(A.token);
+    assert.equal(d.data.boardPosts.some(p => p.id === "p2"), true);
+  });
 }
 
 function _withDatabaseName(connStr, dbName) {

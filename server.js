@@ -20,6 +20,7 @@ const { canReadTraining, canManageTraining, countsByCourse, normalizeEnrollment 
 const { assertFieldOrder } = require("./lib/field-order-guard");
 const { saveRejectInfo, snapshotIntendedRecord, findSilentRejections } = require("./lib/save-feedback");
 const { retryDelays, nextOutboxState, SENDING_LEASE_MS } = require("./lib/webhook-outbox");
+const { trackedFields, takePreImage, diffRevisions, KEEP_PER_RECORD } = require("./lib/record-revisions");
 
 // ════════════════════════════════════════════════════════════════════════════
 // 목차(파일 안 "// ── 제목 ──" 배너 문자열로 검색) — 이 파일은 인사(HR)/전자결재/
@@ -6274,8 +6275,16 @@ app.post("/save", async (req, res) => {
       // preserveServerOwnedStateForNonAdmin 이후, _persistDataLocked 진입 직전에 적용해
       // 그 함수 내부의 세밀한 필드별 로직과 겹치지 않게 한다.
       finalData = _revertDisabledFeatureFields(finalData, req.auth?.companyFeatures);
+      // 수정·삭제 복구용 이력: 이번 요청이 건드리는 레코드의 "저장 전" 모습을 고정해 두었다가
+      // 저장 후 달라진 것만 보관한다(실패해도 저장 자체에는 영향을 주지 않는다).
+      let _revisionPre = null;
+      try { _revisionPre = takePreImage(await getServerData(), finalData, REVISION_TRACKED_FIELDS); } catch (e) { console.warn("[record-revisions] 사전 이미지 실패:", _safeErrMsg(e)); }
       const { duplicateLoginIds, rejectedRecords } = await _persistDataLocked(finalData, changedBy, companyId, req.auth || null);
       const savedState = await loadData(companyId);
+      if (_revisionPre) {
+        try { await _revisionAdd(companyId, diffRevisions(_revisionPre, savedState), changedBy); }
+        catch (e) { console.warn("[record-revisions] 이력 기록 실패:", _safeErrMsg(e)); }
+      }
       // /data와 같은 두 단계 필터를 /save의 병합 응답에도 적용한다. 그렇지 않으면
       // menuPerms로 숨긴 원장이 충돌/부분거부 시 mergedData에서 다시 노출된다.
       const visibleSavedState = filterDataForMenuPermissions(filterDataForRole(stripPwField(savedState), req.auth), req.auth?.menuPerms);
@@ -7229,7 +7238,7 @@ async function _processWebhookOutbox() {
         console.warn("[webhook-outbox] 처리 실패:", _safeErrMsg(e));
       }
     }
-    if (Date.now() - _outboxLastPrune > 60 * 60 * 1000) { _outboxLastPrune = Date.now(); await _outboxPrune(); }
+    if (Date.now() - _outboxLastPrune > 60 * 60 * 1000) { _outboxLastPrune = Date.now(); await _outboxPrune(); await _revisionPrune(); }
   } catch (e) {
     console.warn("[webhook-outbox] 워커 오류:", _safeErrMsg(e));
   } finally { _outboxWorkerRunning = false; }
@@ -7295,6 +7304,160 @@ app.post("/api/integrations/webhooks/outbox/:id/retry", async (req, res) => {
     setImmediate(() => { _processWebhookOutbox().catch(() => {}); });
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
+});
+
+// ── 수정·삭제 이력(복구용) 저장소 ─────────────────────────────────────────────
+// 저장이 레코드를 바꾸거나 지울 때 "바뀌기 전" 모습을 보관하고, 관리자가 레코드 단위로 되돌린다.
+// 레코드당 최근 KEEP_PER_RECORD건, 180일까지만 유지한다. 비밀번호 해시와 큰 첨부는 보관하지 않는다.
+const REVISION_TRACKED_FIELDS = trackedFields(ID_KEYED_LIST_FIELDS);
+const REVISION_FILE = JSON_FILE.replace(/\.json$/, "-record-revisions.json");
+const REVISION_MAX_FILE_ENTRIES = 5000;
+const REVISION_RETENTION_MS = 180 * 24 * 60 * 60 * 1000;
+let _fileRevisions = null;
+function _loadFileRevisions() {
+  if (_fileRevisions) return;
+  _fileRevisions = { entries: [] };
+  if (fs.existsSync(REVISION_FILE)) {
+    const d = _readExistingJsonFileOrFail(REVISION_FILE, "수정·삭제 이력");
+    _fileRevisions = { entries: Array.isArray(d?.entries) ? d.entries : [] };
+  }
+}
+function _revisionFromRow(r) {
+  return { id: r.id, companyId: r.company_id || null, field: r.field, recordId: r.record_id, operation: r.operation, title: r.title || "",
+    snapshot: r.snapshot, changedBy: r.changed_by || "", changedAt: new Date(r.changed_at).toISOString() };
+}
+async function _revisionAdd(companyId, entries, changedBy) {
+  if (!entries.length) return;
+  const nowIso = new Date().toISOString();
+  const rows = entries.map(e => ({ id: `rev-${crypto.randomUUID()}`, companyId: companyId || null, field: e.field, recordId: e.recordId,
+    operation: e.operation, title: e.title, snapshot: e.snapshot, changedBy: String(changedBy || "").slice(0, 120), changedAt: nowIso }));
+  if (USE_JSON_FILE) {
+    await _withOutboxLock(() => { // 직렬화 체인을 재사용(파일 read-modify-write 보호)
+      _loadFileRevisions();
+      _fileRevisions.entries.push(...rows);
+      const counts = new Map();
+      const keep = [];
+      for (let i = _fileRevisions.entries.length - 1; i >= 0; i--) { // 최신부터 훑으며 레코드당 상한 적용
+        const x = _fileRevisions.entries[i];
+        const k = `${_scopeKey(x.companyId)}|${x.field}|${x.recordId}`;
+        const n = (counts.get(k) || 0) + 1; counts.set(k, n);
+        if (n <= KEEP_PER_RECORD) keep.push(x);
+      }
+      _fileRevisions.entries = keep.reverse().slice(-REVISION_MAX_FILE_ENTRIES);
+      _atomicWriteFileSync(REVISION_FILE, JSON.stringify(_fileRevisions));
+    });
+    return;
+  }
+  for (const r of rows) {
+    await pool.query(
+      `INSERT INTO record_revisions (id,company_id,field,record_id,operation,title,snapshot,changed_by,changed_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+      [r.id, r.companyId, r.field, r.recordId, r.operation, r.title, JSON.stringify(r.snapshot), r.changedBy, r.changedAt]);
+  }
+  // 같은 레코드의 오래된 이력을 상한까지만 남긴다(이번에 추가한 레코드만 정리).
+  await pool.query(
+    `DELETE FROM record_revisions WHERE id IN (
+       SELECT id FROM (SELECT id, ROW_NUMBER() OVER (PARTITION BY field, record_id ORDER BY changed_at DESC, id DESC) rn
+                       FROM record_revisions WHERE company_id IS NOT DISTINCT FROM $1 AND (field, record_id) IN (SELECT * FROM UNNEST($2::text[], $3::text[]))) x
+       WHERE rn > $4)`,
+    [companyId || null, rows.map(r => r.field), rows.map(r => r.recordId), KEEP_PER_RECORD]);
+}
+async function _revisionList(companyId, { field, operation, q, limit }) {
+  const lim = Math.max(1, Math.min(200, Number(limit) || 100));
+  const needle = String(q || "").trim().toLowerCase();
+  if (USE_JSON_FILE) {
+    return _withOutboxLock(() => {
+      _loadFileRevisions();
+      const scope = _scopeKey(companyId);
+      return _fileRevisions.entries.filter(x => _scopeKey(x.companyId) === scope && (!field || x.field === field) && (!operation || x.operation === operation) &&
+        (!needle || String(x.title).toLowerCase().includes(needle) || String(x.recordId).toLowerCase().includes(needle)))
+        .sort((a, b) => String(b.changedAt).localeCompare(String(a.changedAt))).slice(0, lim);
+    });
+  }
+  const params = [companyId || null]; const cond = ["company_id IS NOT DISTINCT FROM $1"];
+  if (field) { params.push(field); cond.push(`field = $${params.length}`); }
+  if (operation) { params.push(operation); cond.push(`operation = $${params.length}`); }
+  if (needle) { params.push(`%${needle}%`); cond.push(`(LOWER(title) LIKE $${params.length} OR LOWER(record_id) LIKE $${params.length})`); }
+  params.push(lim);
+  const { rows } = await pool.query(`SELECT * FROM record_revisions WHERE ${cond.join(" AND ")} ORDER BY changed_at DESC LIMIT $${params.length}`, params);
+  return rows.map(_revisionFromRow);
+}
+async function _revisionGet(companyId, id) {
+  if (USE_JSON_FILE) {
+    return _withOutboxLock(() => { _loadFileRevisions(); const scope = _scopeKey(companyId); return _fileRevisions.entries.find(x => x.id === id && _scopeKey(x.companyId) === scope) || null; });
+  }
+  const { rows } = await pool.query("SELECT * FROM record_revisions WHERE id=$1 AND company_id IS NOT DISTINCT FROM $2", [id, companyId || null]);
+  return rows[0] ? _revisionFromRow(rows[0]) : null;
+}
+async function _revisionPrune() {
+  const before = new Date(Date.now() - REVISION_RETENTION_MS).toISOString();
+  if (USE_JSON_FILE) {
+    await _withOutboxLock(() => {
+      _loadFileRevisions();
+      const n = _fileRevisions.entries.length;
+      _fileRevisions.entries = _fileRevisions.entries.filter(x => x.changedAt >= before);
+      if (_fileRevisions.entries.length !== n) _atomicWriteFileSync(REVISION_FILE, JSON.stringify(_fileRevisions));
+    });
+    return;
+  }
+  await pool.query("DELETE FROM record_revisions WHERE changed_at < $1", [before]);
+}
+
+// 보관된 한 시점의 레코드를 현재 상태로 되돌린다. 삭제된 레코드는 되살리고, 지금 값은 새 이력으로 남겨 복구도 되돌릴 수 있다.
+async function _restoreRevision(companyId, revision, actor) {
+  const field = revision.field;
+  if (!REVISION_TRACKED_FIELDS.includes(field)) throw httpError(400, "FIELD_NOT_RESTORABLE", "복구할 수 없는 항목입니다.");
+  return _withSaveLock(() => _withDistributedSaveLock(companyId, async () => {
+    const current = await loadData(companyId);
+    const existing = (Array.isArray(current[field]) ? current[field] : []).find(r => r && String(r.id) === String(revision.recordId));
+    // 복구본은 반드시 현재 저장본보다 "더 최근"이어야 병합 규칙(최신 updatedAt 우선)에서 이긴다 —
+    // 서버/클라이언트 시계 차이로 현재 값의 updatedAt이 미래일 수 있어 그보다 1ms 뒤로 맞춘다.
+    const existingTs = Date.parse(existing?.updatedAt || "");
+    const now = new Date(Math.max(Date.now(), Number.isFinite(existingTs) ? existingTs + 1 : 0)).toISOString();
+    const restored = { ...revision.snapshot, updatedAt: now };
+    delete restored._truncatedKeys;
+    if (existing && existing._rev !== undefined) restored._rev = existing._rev; else delete restored._rev;
+    if (field === "employees") {
+      // 비밀번호·세션 버전은 이력에 보관하지 않으므로 현재 값을 유지한다. 삭제된 직원은 사용할 수 없는
+      // 임의 비밀번호로 되살리고, 로그인하려면 관리자가 비밀번호를 다시 설정해야 한다.
+      restored.pw = existing?.pw || await hashPlaintextPw(crypto.randomUUID());
+      restored.authVersion = existing?.authVersion ?? 0;
+    }
+    const tombstones = { ...(current.recordTombstones || {}) };
+    if (Array.isArray(tombstones[field])) tombstones[field] = tombstones[field].filter(t => String(t?.id) !== String(revision.recordId));
+    const data = USE_JSON_FILE
+      ? { ...current, [field]: unionPreferSnapshot(current[field], [restored]), recordTombstones: tombstones }
+      : { [field]: [restored], recordTombstones: tombstones };
+    const pre = takePreImage(current, { [field]: [restored] }, [field]);
+    await _persistDataLocked(data, actor.changedBy, companyId, { role: "admin", empId: actor.empId });
+    const after = await loadData(companyId);
+    try { await _revisionAdd(companyId, diffRevisions(pre, after), actor.changedBy); } catch {}
+    return { existed: !!existing };
+  }));
+}
+
+app.get("/api/record-revisions", async (req, res) => {
+  if (!requireAdmin(req, res) || !requirePage(req, res, "history")) return;
+  try {
+    const field = String(req.query.field || "");
+    if (field && !REVISION_TRACKED_FIELDS.includes(field)) return res.status(400).json({ ok: false, message: "알 수 없는 항목입니다." });
+    const operation = ["update", "delete"].includes(String(req.query.operation)) ? String(req.query.operation) : "";
+    const rows = await _revisionList(req.auth.companyId || null, { field, operation, q: req.query.q, limit: req.query.limit });
+    res.json({ ok: true, revisions: rows.map(x => ({ id: x.id, field: x.field, recordId: x.recordId, operation: x.operation, title: x.title, changedBy: x.changedBy, changedAt: x.changedAt })) });
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
+});
+app.post("/api/record-revisions/:id/restore", async (req, res) => {
+  if (!requireAdmin(req, res) || !requirePage(req, res, "history")) return;
+  try {
+    const companyId = req.auth.companyId || null;
+    const revision = await _revisionGet(companyId, String(req.params.id || ""));
+    if (!revision) return res.status(404).json({ ok: false, message: "복구할 이력을 찾을 수 없습니다." });
+    const result = await _restoreRevision(companyId, revision, { empId: req.auth.empId, changedBy: `restore:${req.auth.loginId || req.auth.empId}` });
+    broadcastSSE("data_updated", { version: _getVersion(companyId), meta: {} }, req.query.clientId, companyId);
+    res.json({ ok: true, existed: result.existed });
+  } catch (e) {
+    const status = Number.isInteger(e.status) ? e.status : 500;
+    res.status(status).json({ ok: false, code: e.code, message: _safeErrMsg(e) });
+  }
 });
 
 // ── Annual snapshots ──────────────────────────────────────────────────────────

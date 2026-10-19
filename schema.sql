@@ -1274,3 +1274,19 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_webhook_outbox_dedupe
   ON webhook_outbox (COALESCE(company_id, '00000000-0000-0000-0000-000000000000'::uuid), dedupe_key, webhook_id);
 CREATE INDEX IF NOT EXISTS idx_webhook_outbox_due ON webhook_outbox (status, next_attempt_at);
 CREATE INDEX IF NOT EXISTS idx_webhook_outbox_company ON webhook_outbox (company_id, created_at DESC);
+
+-- 수정·삭제 이력(복구용): 저장이 레코드를 바꾸거나 지울 때 "바뀌기 전" 모습을 보관한다.
+-- 레코드당 최근 10건, 180일까지만 유지한다(관리자만 조회·복구).
+CREATE TABLE IF NOT EXISTS record_revisions (
+  id          TEXT PRIMARY KEY,
+  company_id  UUID,
+  field       TEXT        NOT NULL,
+  record_id   TEXT        NOT NULL,
+  operation   TEXT        NOT NULL,
+  title       TEXT,
+  snapshot    JSONB       NOT NULL,
+  changed_by  TEXT,
+  changed_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_record_revisions_company ON record_revisions (company_id, changed_at DESC);
+CREATE INDEX IF NOT EXISTS idx_record_revisions_record ON record_revisions (company_id, field, record_id, changed_at DESC);
