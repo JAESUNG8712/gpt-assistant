@@ -592,11 +592,6 @@ function _mergeEvaluatorConfigForActor(incoming, stored, actor, employeesList) {
   }
   return out;
 }
-function employeeDirectoryView(employee) {
-  if (!employee || typeof employee !== "object") return employee;
-  const { id, name, empNo, role, dept, team, rank, position, active, hire } = employee;
-  return { id, name, empNo, role, dept, team, rank, position, active, hire };
-}
 // Single employee record (e.g. an employee_history row's `data` column) — strip its own pw
 // and 2FA secret fields, neither of which the client should ever receive back.
 function omitPw(emp) {
@@ -5903,14 +5898,6 @@ async function _getCompanyFeatureMap(companyId) {
 }
 function _invalidateCompanyFeatureCache(companyId) { _companyFeatureCache.delete(companyId); }
 
-// company_features 행이 없으면(대부분의 회사가 이에 해당) 기본 true — 하위호환 원칙
-// (기존 회사는 전 모듈 켜진 채로 시작, 마스터가 명시적으로 끈 것만 반영). req.auth 밖의
-// 맥락(예: 클라이언트에 내려줄 초기 상태 조립)에서 쓰는 범용 버전.
-async function isFeatureEnabled(companyId, featureKey) {
-  if (USE_JSON_FILE || !companyId) return true;
-  const map = await _getCompanyFeatureMap(companyId);
-  return map[featureKey] !== false;
-}
 // requirePage()(개인별 menuPerms)와 같은 자리에서 함께 쓰는, 회사 단위 상위 게이트.
 // req.auth.companyFeatures는 authenticate() 미들웨어가 이미 채워둔 캐시된 맵이라 이
 // 함수 자체는 추가 DB 조회 없이 동기적으로 판정한다. admin이라도 예외 없이 막는다 —
@@ -6077,34 +6064,6 @@ async function _employeesEmpty() {
   const { rows } = await pool.query("SELECT COUNT(*) FROM employees WHERE is_deleted = FALSE");
   return parseInt(rows[0].count, 10) === 0;
 }
-// P0-3 방어(2026-08-19 외부 감사): JSON 파일 모드의 부트스트랩 예외(직원 0명일 때 POST
-// /save를 무인증으로 1회 허용)는 로컬/사내망 전용 자체호스팅을 전제로 설계됐다 — 최초
-// 배포 직후 곧바로 관리자 계정을 만들어 올릴 수 있어야 하기 때문. 그런데 같은 서버가
-// 인터넷에 노출된 채로 "배포 완료~관리자가 처음 로그인하기 전" 사이의 짧은 창에 공격자가
-// 먼저 이 요청을 보내면, 공격자가 만든 계정이 최초 admin이 되어 서버 전체를 선점당할 수
-// 있다(부트스트랩 자체는 role/employees 어떤 값이든 검증 없이 받아들이므로) — 실측 가능한
-// 취약점.
-//
-// BOOTSTRAP_SECRET 환경변수를 설정한 배포에 한해서만(opt-in) 이 요청에 X-Bootstrap-Secret
-// 헤더로 같은 값을 실어 보내야만 부트스트랩을 허용하도록 강제한다. NODE_ENV=production
-// 여부와 무관하게 오직 "이 값을 설정했는지"만으로 켜지는 이유: (1) 이 취약점은 JSON 파일
-// (자체호스팅) 모드에만 있고, 이 저장소의 실제 운영 배포는 Postgres/SaaS 모드라 애초에
-// 이 코드 경로를 타지 않는다 — 즉 이 서버 자신의 실제 서비스에는 영향이 없는 방어다.
-// (2) demo-data 게이트(rejectDemoDataForProduction)처럼 NODE_ENV=production이면 자동으로
-// 켜지게 만들면, 이미 배포돼 있던 자체호스팅 인스턴스가 이 커밋을 반영해 재배포되는
-// 순간(운영자가 이 신규 요구사항을 미처 모른 채) 최초 관리자 계정을 만들 방법이 갑자기
-// 사라지는 회귀가 된다 — 보안 강화를 원하는 운영자가 능동적으로 이 값을 설정해야만
-// 적용되는 opt-in 방식이 자체호스팅 zero-config 기본 경험을 깨지 않으면서 원하는 사람에게는
-// 실제 보호를 제공한다.
-function _bootstrapSecretMatches(req) {
-  const secret = process.env.BOOTSTRAP_SECRET;
-  const provided = req.headers["x-bootstrap-secret"];
-  if (!secret || typeof provided !== "string") return false;
-  const a = Buffer.from(secret), b = Buffer.from(provided);
-  if (a.length !== b.length) return false;
-  try { return crypto.timingSafeEqual(a, b); } catch { return false; }
-}
-
 // POST /save
 function httpError(status, code, message, details) {
   return Object.assign(new Error(message), { status, code, details });

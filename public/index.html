@@ -18223,17 +18223,12 @@ function downloadAttDetailCSV(empId){
   const from=_attState.dateFrom,to=_attState.dateTo;
   const recs=attendanceRecords.filter(r=>r.empId===empId&&r.date>=(from+"-01")&&r.date<=(to+"-31")).sort((a,b)=>a.date.localeCompare(b.date));
   const SL={normal:"정상",late:"지각",early_leave:"조퇴",absent:"결근",vacation:"휴가",half_day:"반차",training:"교육",biztrip:"출장"};
-  const header="날짜,출근시간,퇴근시간,근무시간(h),상태,비고";
+  // 따옴표 감싸기·수식 주입 무력화(_csvSafeCell)는 공용 dlCSV가 처리한다.
   const rows=recs.map(r=>{
     let hrs="";if(r.checkIn&&r.checkOut){const[ih,im]=r.checkIn.split(":").map(Number);const[oh,om]=r.checkOut.split(":").map(Number);hrs=Math.round(((oh*60+om)-(ih*60+im))/60*10)/10;}
-    // r.note는 자유텍스트라 콤마가 섞이면 컬럼이 깨지고, =/+/-/@로 시작하면 Excel이
-    // 수식으로 해석할 수 있어(CSV/formula injection) 다른 CSV 내보내기와 동일하게
-    // 따옴표로 감싸고 _csvSafeCell로 무력화한다.
-    return[r.date,r.checkIn||"",r.checkOut||"",hrs,SL[r.status]||r.status,r.note||""].map(c=>`"${_csvSafeCell(c).replace(/"/g,"'")}"`).join(",");
+    return[r.date,r.checkIn||"",r.checkOut||"",hrs,SL[r.status]||r.status,r.note||""];
   });
-  const csv=[header,...rows].join("\n");
-  const blob=new Blob(["﻿"+csv],{type:"text/csv;charset=utf-8"});
-  const a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download=`근태_${emp.name}_${from}_${to}.csv`;a.click();
+  dlCSV(`근태_${emp.name}_${from}_${to}.csv`,["날짜","출근시간","퇴근시간","근무시간(h)","상태","비고"],rows);
 }
 
 // ==================== PAYSLIP (급여 명세서) ====================
@@ -26583,10 +26578,6 @@ function _rcFindDuplicateCandidates(name,phone,email,excludeId){
     const cem=String(c.email||"").trim().toLowerCase();
     return(ph&&cph&&ph===cph)||(em&&cem&&em===cem);
   });
-}
-function _rcDuplicateWarningMsg(dups){
-  const lines=dups.map(c=>`- ${c.name} · ${_recruitJobTitle(c.jobId)} · ${(c.appliedAt||"").slice(0,10)} · ${c.status||""}`);
-  return`동일한 연락처/이메일로 이미 지원한 이력이 있습니다:\n\n${lines.join("\n")}\n\n계속 등록하시겠습니까?`;
 }
 async function saveRecruitCandidate(){
   const name=$("#rc-name")?.value.trim();
