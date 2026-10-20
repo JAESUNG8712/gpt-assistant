@@ -1078,6 +1078,41 @@ if (!ADMIN_DATABASE_URL) {
     assert.equal(oB.entries.length, 0, "다른 회사의 대기함은 보이지 않는다");
     const cross = await api(`/api/integrations/webhooks/outbox/${entry.id}/retry`, authH(B.token, "POST"));
     assert.equal(cross.status, 404, "다른 회사 건은 재전송할 수 없다");
+
+    // A background worker must honor the same company/module kill switches
+    // as authenticated requests. Modify only this disposable test database.
+    const db = new Client({ connectionString: testDbUrl }); await db.connect();
+    try {
+      const scope = (await db.query("SELECT company_id FROM employees WHERE id=$1", [adminId])).rows[0].company_id;
+      await db.query("INSERT INTO company_features(company_id,feature_key,enabled) VALUES($1,'approval',false) ON CONFLICT(company_id,feature_key) DO UPDATE SET enabled=false", [scope]);
+      // Feature/status maps have a documented 10-second cache.
+      await new Promise(r => setTimeout(r, 10100));
+      const enqueue = async id => db.query(
+        "INSERT INTO webhook_outbox(id,company_id,event_id,dedupe_key,webhook_id,webhook_name,text,status,next_attempt_at) VALUES($1,$2,'approval_request',$1,'1','훅','차단 후 발송 금지','pending',NOW())",
+        [id, scope]);
+      const expectCancelled = async id => {
+        for (let i = 0; i < 80; i++) {
+          const row = (await db.query("SELECT status FROM webhook_outbox WHERE id=$1", [id])).rows[0];
+          if (row.status === "cancelled") return;
+          await new Promise(r => setTimeout(r, 100));
+        }
+        assert.fail("기능 차단/회사 정지 뒤 대기 알림은 취소되어야 함");
+      };
+      const before = received.length;
+      await enqueue("disabled-feature-job");
+      await expectCancelled("disabled-feature-job");
+      assert.equal(received.length, before);
+      // Manual retry is not an escape hatch around the disabled feature.
+      assert.equal((await api("/api/integrations/webhooks/outbox/disabled-feature-job/retry", authH(A.token, "POST"))).status, 200);
+      await expectCancelled("disabled-feature-job");
+      assert.equal(received.length, before);
+      await db.query("UPDATE company_features SET enabled=true WHERE company_id=$1 AND feature_key='approval'", [scope]);
+      await db.query("UPDATE companies SET status='suspended' WHERE id=$1", [scope]);
+      await new Promise(r => setTimeout(r, 10100));
+      await enqueue("suspended-company-job");
+      await expectCancelled("suspended-company-job");
+      assert.equal(received.length, before);
+    } finally { await db.end(); }
   });
 
   test("postgres-mode: 수정·삭제 복구 — 이력 보관·복구·tombstone 해제·회사 간 격리", async (t) => {
@@ -1133,6 +1168,17 @@ if (!ADMIN_DATABASE_URL) {
     assert.equal((await api("/save", authH(A.token, "POST", { _version: d.version, boardPosts: d.data.boardPosts }))).status, 200);
     d = await getD(A.token);
     assert.equal(d.data.boardPosts.some(p => p.id === "p2"), true);
+    const db = new Client({ connectionString: testDbUrl }); await db.connect();
+    try {
+      const scope = (await db.query("SELECT company_id FROM employees WHERE id=$1", [adminId])).rows[0].company_id;
+      await db.query("INSERT INTO company_features(company_id,feature_key,enabled) VALUES($1,'comm',false) ON CONFLICT(company_id,feature_key) DO UPDATE SET enabled=false", [scope]);
+      await new Promise(r => setTimeout(r, 10100));
+      const hidden = await (await api("/api/record-revisions?field=boardPosts", authH(A.token, "GET"))).json();
+      assert.equal(hidden.revisions.length, 0);
+      const denied = await api(`/api/record-revisions/${upd.id}/restore`, authH(A.token, "POST"));
+      assert.equal(denied.status, 403);
+      assert.equal((await denied.json()).code, "REVISION_ACCESS_DENIED");
+    } finally { await db.end(); }
   });
 }
 

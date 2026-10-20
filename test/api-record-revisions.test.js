@@ -92,3 +92,60 @@ test("직원 정보를 되돌려도 현재 비밀번호는 바뀌지 않는다",
   const login = await (await api("/login", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ loginId: "m1", pw: "member-pw-1" }) })).json();
   assert.equal(login.ok, true, "복구 후에도 기존 비밀번호로 로그인된다");
 });
+
+test("복구 이력도 원래 업무 메뉴 권한을 지키고 불완전한 보관본은 복구하지 않는다", async t => {
+  const server = await startServer(); t.after(() => server.stop());
+  const api = (p, o) => fetch(server.baseUrl + p, o);
+  const boot = await bootstrapAdminAndLogin(server, { loginId: "admin", pw: "admin-test-pw-1", name: "관리자" });
+  const token = boot.token;
+  let d = await data(api, token);
+  const adminId = d.data.employees[0].id;
+  const restricted = { id: "restricted", loginId: "restricted", pw: "restricted-pw-123",
+    name: "제한 관리자", role: "admin", active: true, menuPerms: { history: true, "employment-records": false } };
+  await api("/save", auth(token, "POST", { _version: d.version, employees: [...d.data.employees, restricted],
+    employmentRecords: [{ id: "contract1", employeeId: adminId, type: "contract", title: "원본 계약", startDate: "2026-01-01" }],
+    boardPosts: [{ id: "large-post", authorId: adminId, title: "원본 글", content: "x".repeat(100001), createdAt: new Date().toISOString() }],
+  }));
+  d = await data(api, token);
+  assert.equal(d.data.employmentRecords.length, 1);
+  await api("/save", auth(token, "POST", { _version: d.version,
+    employmentRecords: d.data.employmentRecords.map(r => ({ ...r, title: "수정 계약", updatedAt: new Date(Date.now() + 1000).toISOString() })),
+    boardPosts: d.data.boardPosts.map(r => ({ ...r, title: "수정 글", updatedAt: new Date(Date.now() + 1000).toISOString() })),
+  }));
+  const revisions = (await (await api("/api/record-revisions", auth(token, "GET"))).json()).revisions;
+  const contract = revisions.find(r => r.recordId === "contract1");
+  const large = revisions.find(r => r.recordId === "large-post");
+  assert.ok(contract); assert.ok(large);
+  const login = await (await api("/login", auth(token, "POST", { loginId: restricted.loginId, pw: restricted.pw }))).json();
+  assert.equal(login.ok, true);
+  const restrictedList = await (await api("/api/record-revisions", auth(login.token, "GET"))).json();
+  assert.ok(!restrictedList.revisions.some(r => r.field === "employmentRecords"), "차단한 메뉴의 제목도 이력에서 숨겨야 함");
+  assert.equal((await api(`/api/record-revisions/${contract.id}/restore`, auth(login.token, "POST"))).status, 403);
+  const incomplete = await api(`/api/record-revisions/${large.id}/restore`, auth(token, "POST"));
+  assert.equal(incomplete.status, 409);
+  assert.equal((await incomplete.json()).code, "REVISION_INCOMPLETE");
+  d = await data(api, token);
+  assert.equal(d.data.employmentRecords[0].title, "수정 계약");
+  assert.equal(d.data.boardPosts[0].content.length, 100001, "복구가 생략된 큰 본문을 지우면 안 됨");
+});
+
+test("확정된 급여의 복구 거부는 성공으로 표시하지 않는다", async t => {
+  const server = await startServer(); t.after(() => server.stop());
+  const api = (p, o) => fetch(server.baseUrl + p, o);
+  const boot = await bootstrapAdminAndLogin(server, { loginId: "admin", pw: "admin-test-pw-1", name: "관리자" });
+  const token = boot.token;
+  let d = await data(api, token);
+  const draft = { id: "salary-restore", empId: d.data.employees[0].id, year: 2026, month: 10,
+    gross: 3000000, netPay: 2700000, confirmed: false, updatedAt: new Date().toISOString() };
+  await api("/save", auth(token, "POST", { _version: d.version, payslips: [draft] }));
+  d = await data(api, token);
+  await api("/save", auth(token, "POST", { _version: d.version,
+    payslips: [{ ...d.data.payslips[0], confirmed: true, updatedAt: new Date(Date.now() + 1000).toISOString() }] }));
+  const list = await (await api("/api/record-revisions?field=payslips", auth(token, "GET"))).json();
+  assert.ok(list.revisions.length);
+  const res = await api(`/api/record-revisions/${list.revisions[0].id}/restore`, auth(token, "POST"));
+  assert.equal(res.status, 409);
+  assert.equal((await res.json()).code, "REVISION_RESTORE_REJECTED");
+  d = await data(api, token);
+  assert.equal(d.data.payslips[0].confirmed, true);
+});

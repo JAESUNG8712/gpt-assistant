@@ -7206,6 +7206,13 @@ async function _recordWebhookLogs(companyId, event, logs) {
 }
 // 대기함 한 건을 실제로 보내고 결과를 반영한다. wh가 없거나 비활성/구독 해제된 연동이면 보내지 않고 취소한다.
 async function _deliverOutboxEntry(entry, wh) {
+  // A queued job has no HTTP authentication middleware. Re-check the company
+  // switch here as well, including manual retries and jobs from before shutdown.
+  if ((await _getCompanyStatus(entry.companyId)) === "suspended" ||
+      !(await isFeatureEnabled(entry.companyId, entry.eventId === "notice_post" ? "comm" : "approval"))) {
+    await _outboxFinish(entry, "cancelled", "회사 또는 해당 기능이 비활성화되어 보내지 않았습니다.");
+    return { webhookName: entry.webhookName, status: "cancelled", message: "회사/기능 비활성" };
+  }
   if (!wh || wh.active === false || !Array.isArray(wh.events) || !wh.events.includes(entry.eventId)) {
     await _outboxFinish(entry, "cancelled", "연동이 삭제·비활성화되었거나 이 이벤트 구독이 해제되어 보내지 않았습니다.");
     return { webhookName: entry.webhookName, status: "cancelled", message: "연동 삭제/비활성" };
@@ -7403,9 +7410,19 @@ async function _revisionPrune() {
 }
 
 // 보관된 한 시점의 레코드를 현재 상태로 되돌린다. 삭제된 레코드는 되살리고, 지금 값은 새 이력으로 남겨 복구도 되돌릴 수 있다.
+function _revisionAccessAllowed(field, actor) {
+  if (_disabledBlobFields(actor?.companyFeatures).has(field)) return false;
+  if (!_menuPermsAllow(_WRITE_GATED_FIELDS[field]?.pageIds, actor)) return false;
+  if (["trainingCourses", "trainingEnrollments"].includes(field) && !canManageTraining(actor)) return false;
+  return true;
+}
 async function _restoreRevision(companyId, revision, actor) {
   const field = revision.field;
   if (!REVISION_TRACKED_FIELDS.includes(field)) throw httpError(400, "FIELD_NOT_RESTORABLE", "복구할 수 없는 항목입니다.");
+  if (!_revisionAccessAllowed(field, actor)) throw httpError(403, "REVISION_ACCESS_DENIED", "이 항목의 업무 권한이 없어 복구할 수 없습니다.");
+  if (Array.isArray(revision.snapshot?._truncatedKeys) && revision.snapshot._truncatedKeys.length) {
+    throw httpError(409, "REVISION_INCOMPLETE", "큰 본문이나 첨부가 생략된 이력입니다. 자료 유실을 막기 위해 복구하지 않았습니다. 전체 백업을 확인하세요.");
+  }
   return _withSaveLock(() => _withDistributedSaveLock(companyId, async () => {
     const current = await loadData(companyId);
     const existing = (Array.isArray(current[field]) ? current[field] : []).find(r => r && String(r.id) === String(revision.recordId));
@@ -7424,13 +7441,19 @@ async function _restoreRevision(companyId, revision, actor) {
     }
     const tombstones = { ...(current.recordTombstones || {}) };
     if (Array.isArray(tombstones[field])) tombstones[field] = tombstones[field].filter(t => String(t?.id) !== String(revision.recordId));
+    // JSON employees/kpiEntries retain full-list persistence semantics.
+    // Supply the current lists so restoring one employee cannot remove others.
     const data = USE_JSON_FILE
       ? { ...current, [field]: unionPreferSnapshot(current[field], [restored]), recordTombstones: tombstones }
       : { [field]: [restored], recordTombstones: tombstones };
     const pre = takePreImage(current, { [field]: [restored] }, [field]);
-    await _persistDataLocked(data, actor.changedBy, companyId, { role: "admin", empId: actor.empId });
+    const result = await _persistDataLocked(data, actor.changedBy, companyId, actor);
     const after = await loadData(companyId);
     try { await _revisionAdd(companyId, diffRevisions(pre, after), actor.changedBy); } catch {}
+    if (result.rejectedRecords?.some(r => r.field === field && String(r.id) === String(revision.recordId)) ||
+        !(after[field] || []).some(r => String(r.id) === String(revision.recordId))) {
+      throw httpError(409, "REVISION_RESTORE_REJECTED", "확정 상태·참조 자료 또는 현재 권한 때문에 복구되지 않았습니다. 최신 자료를 확인하세요.");
+    }
     return { existed: !!existing };
   }));
 }
@@ -7442,7 +7465,7 @@ app.get("/api/record-revisions", async (req, res) => {
     if (field && !REVISION_TRACKED_FIELDS.includes(field)) return res.status(400).json({ ok: false, message: "알 수 없는 항목입니다." });
     const operation = ["update", "delete"].includes(String(req.query.operation)) ? String(req.query.operation) : "";
     const rows = await _revisionList(req.auth.companyId || null, { field, operation, q: req.query.q, limit: req.query.limit });
-    res.json({ ok: true, revisions: rows.map(x => ({ id: x.id, field: x.field, recordId: x.recordId, operation: x.operation, title: x.title, changedBy: x.changedBy, changedAt: x.changedAt })) });
+    res.json({ ok: true, revisions: rows.filter(x => _revisionAccessAllowed(x.field, req.auth)).map(x => ({ id: x.id, field: x.field, recordId: x.recordId, operation: x.operation, title: x.title, changedBy: x.changedBy, changedAt: x.changedAt })) });
   } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 app.post("/api/record-revisions/:id/restore", async (req, res) => {
@@ -7451,7 +7474,7 @@ app.post("/api/record-revisions/:id/restore", async (req, res) => {
     const companyId = req.auth.companyId || null;
     const revision = await _revisionGet(companyId, String(req.params.id || ""));
     if (!revision) return res.status(404).json({ ok: false, message: "복구할 이력을 찾을 수 없습니다." });
-    const result = await _restoreRevision(companyId, revision, { empId: req.auth.empId, changedBy: `restore:${req.auth.loginId || req.auth.empId}` });
+    const result = await _restoreRevision(companyId, revision, { ...req.auth, changedBy: `restore:${req.auth.loginId || req.auth.empId}` });
     broadcastSSE("data_updated", { version: _getVersion(companyId), meta: {} }, req.query.clientId, companyId);
     res.json({ ok: true, existed: result.existed });
   } catch (e) {
