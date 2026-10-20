@@ -7168,7 +7168,7 @@ async function _deliverOutboxEntry(entry, wh) {
   // A queued job has no HTTP authentication middleware. Re-check the company
   // switch here as well, including manual retries and jobs from before shutdown.
   if ((await _getCompanyStatus(entry.companyId)) === "suspended" ||
-      !(await isFeatureEnabled(entry.companyId, entry.eventId === "notice_post" ? "comm" : "approval"))) {
+      (await _getCompanyFeatureMap(entry.companyId))[entry.eventId === "notice_post" ? "comm" : "approval"] === false) {
     await _outboxFinish(entry, "cancelled", "회사 또는 해당 기능이 비활성화되어 보내지 않았습니다.");
     return { webhookName: entry.webhookName, status: "cancelled", message: "회사/기능 비활성" };
   }
