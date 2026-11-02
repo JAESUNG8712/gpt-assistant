@@ -3,6 +3,9 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const { startServer, bootstrapAdminAndLogin } = require("./support/start-server");
 
+// 서버가 오늘 날짜로 설문 기간을 검사하므로 고정 날짜를 쓰면 기간이 지나는 순간 테스트가 깨진다.
+const isoDay = offset => new Date(Date.now() + offset * 86400000).toISOString().slice(0, 10);
+
 test("직원 몰입도 펄스는 본인 응답만 쓰고 3명 이상일 때만 익명 집계한다", async t => {
   const server = await startServer();
   t.after(() => server.stop());
@@ -23,7 +26,7 @@ test("직원 몰입도 펄스는 본인 응답만 쓰고 3명 이상일 때만 �
   for (const member of members) tokens.push(await login(member));
 
   state = await (await api("/data", { headers: auth(boot.token) })).json();
-  const survey = { id: "pulse-2026-10", title: "10월 몰입도", startDate: "2026-10-01", endDate: "2026-10-31", status: "open", questions: [{ id: "engagement", driver: "몰입", text: "추천 의향" }, { id: "growth", driver: "성장", text: "성장 체감" }, { id: "action", driver: "실행 신뢰", text: "개선 조치 신뢰" }] };
+  const survey = { id: "pulse-2026-10", title: "10월 몰입도", startDate: isoDay(-1), endDate: isoDay(30), status: "open", questions: [{ id: "engagement", driver: "몰입", text: "추천 의향" }, { id: "growth", driver: "성장", text: "성장 체감" }, { id: "action", driver: "실행 신뢰", text: "개선 조치 신뢰" }] };
   saved = await api("/save", { method: "POST", headers: auth(boot.token), body: JSON.stringify({ _version: state.version, data: { engagementSurveys: [survey] } }) });
   assert.equal(saved.status, 200);
 
