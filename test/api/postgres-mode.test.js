@@ -1066,8 +1066,9 @@ if (!ADMIN_DATABASE_URL) {
       integrationSettings: { webhooks: [{ id: 1, name: "훅", type: "custom", url, active: true, events: ["approval_request"] }], calendar: {} } }));
     assert.equal(saved.status, 200);
     const first = await (await api("/api/integrations/webhooks/dispatch", authH(A.token, "POST", { eventId: "approval_request", recordId: "apv-ob-1" }))).json();
-    assert.equal(first.failed, 1);
-    assert.equal(first.retryScheduled, 1);
+    assert.ok(first.duplicate || (first.failed === 1 && first.retryScheduled === 1), JSON.stringify(first));
+    for (let i = 0; i < 80 && !received.length; i++) await new Promise(r => setTimeout(r, 100));
+    assert.ok(received.includes(500));
     const dup = await (await api("/api/integrations/webhooks/dispatch", authH(A.token, "POST", { eventId: "approval_request", recordId: "apv-ob-1" }))).json();
     assert.equal(dup.duplicate, true);
     status = 200;
@@ -1089,18 +1090,43 @@ if (!ADMIN_DATABASE_URL) {
     const db = new Client({ connectionString: testDbUrl }); await db.connect();
     try {
       const scope = (await db.query("SELECT company_id FROM employees WHERE id=$1", [adminId])).rows[0].company_id;
+      // Fault injection is confined to this disposable database. Outbox failure
+      // must roll back the business row; history failure must roll back its edit.
+      await db.query(`CREATE FUNCTION fail_atomic_outbox() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN
+        IF NEW.dedupe_key = 'approval_request:apv-atomic-rollback' THEN RAISE EXCEPTION 'test outbox unavailable'; END IF;
+        RETURN NEW; END $$`);
+      await db.query("CREATE TRIGGER fail_atomic_outbox BEFORE INSERT ON webhook_outbox FOR EACH ROW EXECUTE FUNCTION fail_atomic_outbox()");
+      let atomicState = await (await api("/data", authH(A.token, "GET"))).json();
+      const rejectedSave = await api("/save", authH(A.token, "POST", { _version: atomicState.version,
+        approvalDocs: [{ id: "apv-atomic-rollback", authorId: adminId, title: "rollback", createdAt: new Date().toISOString(),
+          status: "in_progress", approvers: [{ empId: "x", status: "pending" }] }] }));
+      assert.equal(rejectedSave.status, 500);
+      assert.equal((await db.query("SELECT id FROM app_collections WHERE id='apv-atomic-rollback'")).rowCount, 0);
+      assert.equal((await db.query("SELECT id FROM webhook_outbox WHERE dedupe_key='approval_request:apv-atomic-rollback'")).rowCount, 0);
+      await db.query("DROP TRIGGER fail_atomic_outbox ON webhook_outbox");
+      assert.equal((await api("/save", authH(A.token, "POST", { boardPosts: [{ id: "atomic-revision", title: "original", authorId: adminId }] }))).status, 200);
+      await db.query(`CREATE FUNCTION fail_atomic_revision() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN
+        IF NEW.record_id = 'atomic-revision' THEN RAISE EXCEPTION 'test history unavailable'; END IF; RETURN NEW; END $$`);
+      await db.query("CREATE TRIGGER fail_atomic_revision BEFORE INSERT ON record_revisions FOR EACH ROW EXECUTE FUNCTION fail_atomic_revision()");
+      atomicState = await (await api("/data", authH(A.token, "GET"))).json();
+      const post = atomicState.data.boardPosts.find(p => p.id === "atomic-revision");
+      const rejectedEdit = await api("/save", authH(A.token, "POST", { _version: atomicState.version,
+        boardPosts: [{ ...post, title: "must rollback", updatedAt: new Date(Date.now() + 1000).toISOString() }] }));
+      assert.equal(rejectedEdit.status, 500);
+      assert.equal((await db.query("SELECT data FROM app_collections WHERE collection='boardPosts' AND id='atomic-revision'")).rows[0].data.title, "original");
+      await db.query("DROP TRIGGER fail_atomic_revision ON record_revisions");
       // Simulate takeover while the original HTTP call is still in flight.
       // Both late success and late failure must leave the new owner's row alone.
       for (const lateStatus of [200, 500]) {
         const state = await (await api("/data", { headers: { Authorization: `Bearer ${A.token}` } })).json();
         const id = `apv-ob-fenced-${lateStatus}`;
+        heldResponse = null; holdNext = true;
         assert.equal((await api("/save", authH(A.token, "POST", { _version: state.version,
           approvalDocs: [...state.data.approvalDocs, { id, authorId: adminId, title: id,
             templateId: "tpl-general", createdAt: nowIso, updatedAt: nowIso, status: "in_progress",
             approvers: [{ empId: "x", status: "pending" }] }] }))).status, 200);
         const logCount = async () => Number((await db.query("SELECT COUNT(*) AS n FROM app_collections WHERE company_id=$1 AND collection='integrationLogs'", [scope])).rows[0].n);
         const beforeLogs = await logCount();
-        heldResponse = null; holdNext = true;
         const pending = api("/api/integrations/webhooks/dispatch", authH(A.token, "POST", { eventId: "approval_request", recordId: id }));
         try {
           for (let i = 0; i < 60 && !heldResponse; i++) await new Promise(r => setTimeout(r, 50));
@@ -1114,8 +1140,8 @@ if (!ADMIN_DATABASE_URL) {
           heldResponse.writeHead(lateStatus).end("{}");
           const response = await (await pending).json();
           assert.equal(response.dispatched, 0);
-          assert.equal(response.failed, 0);
-          assert.equal(response.retryScheduled, 0);
+          assert.equal(response.failed || 0, 0);
+          assert.equal(response.retryScheduled || 0, 0);
           const kept = (await db.query("SELECT status,attempts,claim_token FROM webhook_outbox WHERE id=$1", [jobId])).rows[0];
           assert.deepEqual(kept, { status: "sending", attempts: 7, claim_token: replacement });
           assert.equal(await logCount(), beforeLogs, "이전 작업자의 성공/실패 로그를 최신 결과처럼 추가하면 안 됨");
@@ -1200,8 +1226,11 @@ if (!ADMIN_DATABASE_URL) {
     const listB = await (await api("/api/record-revisions", { headers: { Authorization: `Bearer ${B.token}` } })).json();
     assert.equal(listB.revisions.length, 0);
     assert.equal((await api(`/api/record-revisions/${upd.id}/restore`, authH(B.token, "POST"))).status, 404);
-    assert.equal((await (await api(`/api/record-revisions/${upd.id}/restore`, authH(A.token, "POST"))).json()).ok, true);
-    assert.equal((await (await api(`/api/record-revisions/${del.id}/restore`, authH(A.token, "POST"))).json()).ok, true);
+    for (const revision of [upd, del]) {
+      const preview = await (await api(`/api/record-revisions/${revision.id}/preview`, authH(A.token, "GET"))).json();
+      assert.equal(preview.ok, true);
+      assert.equal((await (await api(`/api/record-revisions/${revision.id}/restore`, authH(A.token, "POST", { expectedToken: preview.expectedToken }))).json()).ok, true);
+    }
     d = await getD(A.token);
     assert.equal(d.data.boardPosts.find(p => p.id === "p1").title, "원본");
     assert.equal(d.data.boardPosts.find(p => p.id === "p2")?.title, "지울 글");

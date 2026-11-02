@@ -1424,20 +1424,21 @@ const REVISIONED_SINGLETON_FIELDS = SINGLETON_FIELDS.filter(key => ![
 // genId()가 회사 간에 공유되는 로컬 카운터(547부터 증가)라 서로 다른 회사가 같은 id를 만드는
 // 게 일상적이기 때문(schema.sql 주석 참고). companyId를 생략하면(레거시 호출부 방어용) 기존처럼
 // 전체를 반환한다 — 단일 회사만 존재하는 배포에서는 이 기본 동작이 곧 정상 동작이다.
-async function loadData(companyId) {
+async function loadData(companyId, db = pool) {
   if (USE_JSON_FILE) {
     // Return the full stored state so the client restores everything
     // (employees, kpiEntries, settings, coreTalentPool, lowPerfData, etc.)
-    return { ..._fileStore, _version: _getVersion(companyId), _singletonRevisions: { ...(_fileStore._singletonRevisions || {}) } };
+    const { _pendingSaveEffects, ...visible } = _fileStore;
+    return { ...visible, _version: _getVersion(companyId), _singletonRevisions: { ...(_fileStore._singletonRevisions || {}) } };
   }
   const empParams = companyId ? [companyId] : [];
   const empFilter = companyId ? "AND company_id = $1" : "";
   const collFilter = companyId ? "WHERE company_id = $1" : "";
   const [empRes, kpiRes, collRes, singRes] = await Promise.all([
-    pool.query(`SELECT data FROM employees  WHERE is_deleted = FALSE ${empFilter} ORDER BY created_at`, empParams),
-    pool.query(`SELECT data FROM kpi_entries WHERE is_deleted = FALSE ${empFilter} ORDER BY created_at`, empParams),
-    pool.query(`SELECT collection, data FROM app_collections ${collFilter} ORDER BY created_at`, empParams),
-    pool.query(`SELECT key, data, revision FROM app_singletons ${collFilter}`, empParams),
+    db.query(`SELECT data FROM employees  WHERE is_deleted = FALSE ${empFilter} ORDER BY created_at`, empParams),
+    db.query(`SELECT data FROM kpi_entries WHERE is_deleted = FALSE ${empFilter} ORDER BY created_at`, empParams),
+    db.query(`SELECT collection, data FROM app_collections ${collFilter} ORDER BY created_at`, empParams),
+    db.query(`SELECT key, data, revision FROM app_singletons ${collFilter}`, empParams),
   ]);
   const result = {
     employees:  empRes.rows.map(r => r.data),
@@ -3069,7 +3070,9 @@ function _gateRejectReason(field, stored) {
   return "PERMISSION";
 }
 
-async function _persistDataLocked(data, changedBy = "system", companyId = null, actor = null, externalClient = null) {
+async function _persistDataLocked(data, changedBy = "system", companyId = null, actor = null, externalClient = null, prepareEffects = null) {
+  // Internal journal cannot be injected, cleared or echoed by a client/backup.
+  delete data._pendingSaveEffects;
   if (Array.isArray(data.trainingCourses)) data.trainingCourses = data.trainingCourses.map(course => {
     if (!course) return course;
     const { enrollmentCounts: _readOnlyCounts, ...storedCourse } = course;
@@ -3541,7 +3544,7 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
     // smartMerge (client claims to be exactly at the current version), keep any existing
     // collection the incoming payload doesn't mention instead of dropping it — a plain
     // `{...data, employees}` would silently delete every field absent from `data`.
-    _fileStore = {
+    const nextStore = {
       ..._fileStore, ...data, employees,
       _singletonRevisions: nextSingletonRevisions,
       kpiEntries: kpiEntriesFinal, payslips: payslipsFinal, yearEndSettlements: yearEndSettlementsFinal,
@@ -3559,9 +3562,17 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
       approvalDocs: approvalDocsFinal, compGradeResults: compGradeResultsFinal,
       ...writeGatedFieldFinals,
     };
-    const verState = _bumpVersion(companyId);
-    _fileStore._version = verState.version;
-    await _atomicWriteFile(JSON_FILE, JSON.stringify(_fileStore, null, 2));
+    if (prepareEffects) {
+      const effects = await prepareEffects(nextStore);
+      if (effects.events.length || effects.revisions.length) {
+        nextStore._pendingSaveEffects = [...(_fileStore._pendingSaveEffects || []), effects];
+      }
+    }
+    const nextVersion = _getVersion(companyId) + 1;
+    nextStore._version = nextVersion;
+    await _atomicWriteFile(JSON_FILE, JSON.stringify(nextStore, null, 2));
+    _fileStore = nextStore;
+    _bumpVersion(companyId);
     return { duplicateLoginIds, rejectedRecords };
   }
   const client = externalClient || await pool.connect();
@@ -4029,19 +4040,24 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
       );
     }
 
+    // Accepted business rows, outbox and revision history share this transaction.
+    if (prepareEffects) {
+      const effects = await prepareEffects(await loadData(companyId, client));
+      await _storeSaveEffects(effects, client);
+    }
     // ── bump version (회사별로 분리된 카운터, _bumpVersion 참고) ──────────────────
     // When joining /restore's wider transaction, do not update the process
     // version before COMMIT.  A later budget/delete failure would otherwise
     // leave memory one version ahead of the rolled-back database.
     const verState = ownsTransaction
-      ? _bumpVersion(companyId)
+      ? { version: _getVersion(companyId) + 1, lastSaved: new Date().toISOString() }
       : { version: _getVersion(companyId) + 1, lastSaved: new Date().toISOString() };
     await client.query(
       "INSERT INTO app_meta (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = $2",
       [`data_version:${_scopeKey(companyId)}`, String(verState.version)]
     );
 
-    if (ownsTransaction) await client.query("COMMIT");
+    if (ownsTransaction) { await client.query("COMMIT"); _bumpVersion(companyId); }
     return { duplicateLoginIds, rejectedRecords, version: verState.version };
   } catch (e) {
     if (ownsTransaction) await client.query("ROLLBACK");
@@ -6234,16 +6250,11 @@ app.post("/save", async (req, res) => {
       // preserveServerOwnedStateForNonAdmin 이후, _persistDataLocked 진입 직전에 적용해
       // 그 함수 내부의 세밀한 필드별 로직과 겹치지 않게 한다.
       finalData = _revertDisabledFeatureFields(finalData, req.auth?.companyFeatures);
-      // 수정·삭제 복구용 이력: 이번 요청이 건드리는 레코드의 "저장 전" 모습을 고정해 두었다가
-      // 저장 후 달라진 것만 보관한다(실패해도 저장 자체에는 영향을 주지 않는다).
-      let _revisionPre = null;
-      try { _revisionPre = takePreImage(await getServerData(), finalData, REVISION_TRACKED_FIELDS); } catch (e) { console.warn("[record-revisions] 사전 이미지 실패:", _safeErrMsg(e)); }
-      const { duplicateLoginIds, rejectedRecords } = await _persistDataLocked(finalData, changedBy, companyId, req.auth || null);
+      const before = await getServerData();
+      const revisionPre = takePreImage(before, finalData, REVISION_TRACKED_FIELDS);
+      const { duplicateLoginIds, rejectedRecords } = await _persistDataLocked(finalData, changedBy, companyId, req.auth || null, null,
+        after => _prepareSaveEffects(companyId, before, after, revisionPre, changedBy, req.auth));
       const savedState = await loadData(companyId);
-      if (_revisionPre) {
-        try { await _revisionAdd(companyId, diffRevisions(_revisionPre, savedState), changedBy); }
-        catch (e) { console.warn("[record-revisions] 이력 기록 실패:", _safeErrMsg(e)); }
-      }
       // /data와 같은 두 단계 필터를 /save의 병합 응답에도 적용한다. 그렇지 않으면
       // menuPerms로 숨긴 원장이 충돌/부분거부 시 mergedData에서 다시 노출된다.
       const visibleSavedState = filterDataForMenuPermissions(filterDataForRole(stripPwField(savedState), req.auth), req.auth?.menuPerms);
@@ -7005,6 +7016,61 @@ function _webhookEventFromStoredRecord(data, auth, eventId, recordId) {
   }
   return null;
 }
+// Only accepted new records/state transitions generate notifications. A full
+// state echo, restore, import of old records or a rejected write is not an event.
+function _prepareSaveEffects(companyId, before, after, revisionPre, changedBy, actor, notify = true) {
+  const events = [];
+  const candidates = [];
+  if (notify && actor?.empId != null) {
+    const oldPosts = new Set((before.boardPosts || []).map(r => String(r.id)));
+    for (const post of after.boardPosts || []) if (!oldPosts.has(String(post.id))) candidates.push(["notice_post", String(post.id)]);
+    const oldDocs = new Map((before.approvalDocs || []).map(r => [String(r.id), r]));
+    for (const doc of after.approvalDocs || []) {
+      const old = oldDocs.get(String(doc.id));
+      if ((!old || old.status === "draft") && doc.status === "in_progress") {
+        candidates.push(["approval_request", String(doc.id)], ["leave_request", String(doc.id)]);
+      }
+      if (old && ["in_progress", "pending"].includes(old.status) && ["approved", "rejected"].includes(doc.status)) {
+        candidates.push(["approval_complete", String(doc.id)]);
+      }
+    }
+    for (const [eventId, recordId] of candidates) {
+      const page = _webhookEventPage(eventId);
+      if (!_menuPermsAllow(page, actor) || actor.companyFeatures?.[eventId === "notice_post" ? "comm" : "approval"] === false) continue;
+      const source = _webhookEventFromStoredRecord(after, actor, eventId, recordId);
+      if (!source) continue;
+      for (const wh of after.integrationSettings?.webhooks || []) {
+        if (!wh || wh.active === false || !Array.isArray(wh.events) || !wh.events.includes(eventId)) continue;
+        events.push({ eventId, eventLabel: INTEGRATION_EVENT_LABELS[eventId], dedupeKey: source.key,
+          webhookId: String(wh.id ?? wh.name), webhookName: wh.name, text: source.text,
+          actorId: String(actor.empId), recordId });
+      }
+    }
+  }
+  return { id: crypto.randomUUID(), companyId: companyId || null, changedBy,
+    events, revisions: diffRevisions(revisionPre, after).map(r => ({ ...r, revisionId: `rev-${crypto.randomUUID()}`, changedAt: new Date().toISOString() })) };
+}
+function _webhookEventPage(eventId) {
+  return eventId === "notice_post" ? "board-notice" : eventId === "approval_complete" ? "approval-inbox" : "approval-draft";
+}
+async function _storeSaveEffects(effects, db = pool) {
+  for (const event of effects.events) await _outboxEnqueue(effects.companyId, event, db, true);
+  await _revisionAdd(effects.companyId, effects.revisions, effects.changedBy, db);
+}
+// JSON has no multi-file transaction. Commit a private journal with the business
+// file, then replay it idempotently into sidecars. Clear it only after both writes.
+// A crash before/after either sidecar write is recoverable on the next poll/read.
+async function _drainSaveEffects() {
+  if (!USE_JSON_FILE) return;
+  await _withSaveLock(async () => {
+    for (const effects of [...(_fileStore._pendingSaveEffects || [])]) {
+      await _storeSaveEffects(effects);
+      const next = { ..._fileStore, _pendingSaveEffects: _fileStore._pendingSaveEffects.filter(x => x.id !== effects.id) };
+      await _atomicWriteFile(JSON_FILE, JSON.stringify(next, null, 2));
+      _fileStore = next;
+    }
+  });
+}
 // ── 웹훅 발송 대기함(outbox) ────────────────────────────────────────────────
 // 알림을 "보내기 전에" 먼저 영속 저장하고, 실패하면 지연을 늘려가며 서버가 재시도한다.
 // (예전: 브라우저 메모리 대기열 + 1회 시도 + 실패해도 48시간 중복방지 선점 → 알림 영구 유실.)
@@ -7023,46 +7089,68 @@ function _withOutboxLock(fn) { // JSON 파일 모드의 read-modify-write 직렬
 }
 function _loadFileOutbox() {
   if (_fileOutbox) return;
-  _fileOutbox = { entries: [] };
+  let loaded = { entries: [] };
   if (fs.existsSync(WEBHOOK_OUTBOX_FILE)) {
     const d = _readExistingJsonFileOrFail(WEBHOOK_OUTBOX_FILE, "웹훅 발송 대기함");
-    _fileOutbox = { entries: Array.isArray(d?.entries) ? d.entries : [] };
+    if (!Array.isArray(d?.entries)) throw new Error("웹훅 발송 대기함 형식이 올바르지 않습니다.");
+    loaded = { entries: d.entries };
   }
+  _fileOutbox = loaded;
 }
 function _saveFileOutbox() { _atomicWriteFileSync(WEBHOOK_OUTBOX_FILE, JSON.stringify(_fileOutbox)); }
 function _outboxFromRow(r) {
   return { id: r.id, companyId: r.company_id || null, eventId: r.event_id, eventLabel: r.event_label || "", dedupeKey: r.dedupe_key,
     webhookId: r.webhook_id, webhookName: r.webhook_name || "", text: r.text, status: r.status, attempts: r.attempts, claimToken: r.claim_token || null,
+    actorId: r.actor_id || null, recordId: r.record_id || null,
     nextAttemptAt: new Date(r.next_attempt_at).toISOString(), lastError: r.last_error || "",
     createdAt: new Date(r.created_at).toISOString(), updatedAt: new Date(r.updated_at).toISOString(),
     sentAt: r.sent_at ? new Date(r.sent_at).toISOString() : null };
 }
 // 접수: 이미 같은 (이벤트 키, 웹훅) 건이 있으면 null(중복). 접수 직후에는 'sending' 임대(lease)로 두어
 // 호출자가 바로 보내는 동안 백그라운드 워커가 같은 건을 가로채지 않게 한다.
-async function _outboxEnqueue(companyId, e) {
+async function _outboxEnqueue(companyId, e, db = pool, pending = false) {
   const now = Date.now();
   const entry = { id: `whob-${crypto.randomUUID()}`, companyId: companyId || null, eventId: e.eventId, eventLabel: e.eventLabel || "",
     dedupeKey: e.dedupeKey, webhookId: String(e.webhookId), webhookName: String(e.webhookName || "").slice(0, 100), text: e.text,
-    status: "sending", attempts: 0, claimToken: crypto.randomUUID(), nextAttemptAt: new Date(now + SENDING_LEASE_MS).toISOString(), lastError: "",
+    actorId: e.actorId || null, recordId: e.recordId || null,
+    status: pending ? "pending" : "sending", attempts: 0, claimToken: pending ? null : crypto.randomUUID(), nextAttemptAt: new Date(now + (pending ? 0 : SENDING_LEASE_MS)).toISOString(), lastError: "",
     createdAt: new Date(now).toISOString(), updatedAt: new Date(now).toISOString(), sentAt: null };
   if (USE_JSON_FILE) {
     return _withOutboxLock(() => {
       _loadFileOutbox();
       const scope = _scopeKey(companyId);
       if (_fileOutbox.entries.some(x => _scopeKey(x.companyId) === scope && x.dedupeKey === entry.dedupeKey && x.webhookId === entry.webhookId)) return null;
-      _fileOutbox.entries.push(entry);
-      _saveFileOutbox();
+      const previous = _fileOutbox.entries;
+      _fileOutbox.entries = [...previous, entry];
+      try { _saveFileOutbox(); } catch (err) { _fileOutbox.entries = previous; throw err; }
       return { ...entry };
     });
   }
-  const { rows } = await pool.query(
-    `INSERT INTO webhook_outbox (id,company_id,event_id,event_label,dedupe_key,webhook_id,webhook_name,text,status,attempts,next_attempt_at,claim_token)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'sending',0,$9,$10)
+  const { rows } = await db.query(
+    `INSERT INTO webhook_outbox (id,company_id,event_id,event_label,dedupe_key,webhook_id,webhook_name,text,status,attempts,next_attempt_at,claim_token,actor_id,record_id)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$11,0,$9,$10,$12,$13)
      ON CONFLICT (COALESCE(company_id, '00000000-0000-0000-0000-000000000000'::uuid), dedupe_key, webhook_id) DO NOTHING RETURNING *`,
-    [entry.id, entry.companyId, entry.eventId, entry.eventLabel, entry.dedupeKey, entry.webhookId, entry.webhookName, entry.text, entry.nextAttemptAt, entry.claimToken]);
+    [entry.id, entry.companyId, entry.eventId, entry.eventLabel, entry.dedupeKey, entry.webhookId, entry.webhookName, entry.text, entry.nextAttemptAt, entry.claimToken, entry.status, entry.actorId, entry.recordId]);
   return rows[0] ? _outboxFromRow(rows[0]) : null;
 }
 // 기한이 지난 건('pending' 또는 임대가 만료된 'sending')을 가져가며 임대를 갱신한다(다중 인스턴스 안전).
+async function _outboxClaimNewEvent(companyId, dedupeKey, webhookId) {
+  const claimToken = crypto.randomUUID();
+  const lease = new Date(Date.now() + SENDING_LEASE_MS).toISOString();
+  if (USE_JSON_FILE) return _withOutboxLock(() => {
+    _loadFileOutbox();
+    const row = _fileOutbox.entries.find(x => _scopeKey(x.companyId) === _scopeKey(companyId) &&
+      x.dedupeKey === dedupeKey && x.webhookId === webhookId && x.status === "pending" && x.attempts === 0);
+    if (!row) return null;
+    Object.assign(row, { status: "sending", claimToken, nextAttemptAt: lease });
+    _saveFileOutbox();
+    return { ...row };
+  });
+  const { rows } = await pool.query(`UPDATE webhook_outbox SET status='sending', claim_token=$4, next_attempt_at=$5, updated_at=NOW()
+    WHERE company_id IS NOT DISTINCT FROM $1 AND dedupe_key=$2 AND webhook_id=$3 AND status='pending' AND attempts=0 RETURNING *`,
+    [companyId || null, dedupeKey, webhookId, claimToken, lease]);
+  return rows[0] ? _outboxFromRow(rows[0]) : null;
+}
 async function _outboxClaimDue(limit) {
   const lease = new Date(Date.now() + SENDING_LEASE_MS * 2).toISOString();
   const claimToken = crypto.randomUUID();
@@ -7206,6 +7294,12 @@ async function _deliverOutboxEntry(entry, wh) {
     if (!await _outboxFinish(entry, "cancelled", "연동이 삭제·비활성화되었거나 이 이벤트 구독이 해제되어 보내지 않았습니다.")) return superseded;
     return { webhookName: entry.webhookName, status: "cancelled", message: "연동 삭제/비활성" };
   }
+  const employee = entry.actorId ? await _fetchCurrentEmployeeForAuth({ empId: entry.actorId, companyId: entry.companyId }) : null;
+  if (employee === undefined) throw new Error("알림 요청자의 현재 권한을 확인하지 못했습니다.");
+  if (!employee || employee.active === false || !_menuPermsAllow(_webhookEventPage(entry.eventId), employee)) {
+    if (!await _outboxFinish(entry, "cancelled", "요청자가 없거나 퇴사·메뉴 권한 변경으로 발송 권한이 없습니다.")) return superseded;
+    return { webhookName: entry.webhookName, status: "cancelled", message: "요청자 권한 철회 또는 확인 불가" };
+  }
   if (!await _outboxRenew(entry)) return superseded;
   const result = await _sendIntegrationWebhook(wh, entry.text);
   const ok = result.status === "success";
@@ -7219,6 +7313,7 @@ async function _processWebhookOutbox() {
   if (_outboxWorkerRunning) return;
   _outboxWorkerRunning = true;
   try {
+    await _drainSaveEffects();
     const settingsCache = new Map();
     // Claim just before processing: later jobs must not sit in a preclaimed
     // batch while earlier slow HTTP requests consume their leases.
@@ -7265,6 +7360,7 @@ app.post("/api/integrations/webhooks/dispatch", async (req, res) => {
   const recordId = String(req.body?.recordId || "");
   try {
     const companyId = req.auth.companyId || null;
+    await _drainSaveEffects();
     const data = await loadData(companyId);
     const source = _webhookEventFromStoredRecord(data, req.auth, eventId, recordId);
     if (!source) return res.status(403).json({ ok: false, code: "WEBHOOK_SOURCE_INVALID", message: "저장된 업무 기록과 발송 권한을 확인할 수 없습니다." });
@@ -7274,8 +7370,9 @@ app.post("/api/integrations/webhooks/dispatch", async (req, res) => {
     // 웹훅마다 대기함에 먼저 영속 저장(중복이면 건너뜀)한 뒤 바로 한 번 보낸다. 실패한 건은 서버가 재시도한다.
     const queued = [];
     for (const wh of targets) {
-      const entry = await _outboxEnqueue(companyId, { eventId, eventLabel: INTEGRATION_EVENT_LABELS[eventId], dedupeKey: source.key,
-        webhookId: String(wh.id ?? wh.name), webhookName: wh.name, text: source.text });
+      const entry = await _outboxClaimNewEvent(companyId, source.key, String(wh.id ?? wh.name)) ||
+        await _outboxEnqueue(companyId, { eventId, eventLabel: INTEGRATION_EVENT_LABELS[eventId], dedupeKey: source.key,
+          webhookId: String(wh.id ?? wh.name), webhookName: wh.name, text: source.text, actorId: String(req.auth.empId), recordId });
       if (entry) queued.push({ entry, wh });
     }
     if (!queued.length) return res.json({ ok: true, dispatched: 0, duplicate: true });
@@ -7290,6 +7387,7 @@ app.post("/api/integrations/webhooks/dispatch", async (req, res) => {
 app.get("/api/integrations/webhooks/outbox", async (req, res) => {
   if (!requireAdmin(req, res) || !requirePage(req, res, "integrations")) return;
   try {
+    await _drainSaveEffects();
     const entries = await _outboxList(req.auth.companyId || null, 100);
     const summary = { pending: 0, sent: 0, dead: 0, cancelled: 0 };
     for (const x of entries) { const k = x.status === "sending" ? "pending" : x.status; if (k in summary) summary[k]++; }
@@ -7317,25 +7415,29 @@ const REVISION_RETENTION_MS = 180 * 24 * 60 * 60 * 1000;
 let _fileRevisions = null;
 function _loadFileRevisions() {
   if (_fileRevisions) return;
-  _fileRevisions = { entries: [] };
+  let loaded = { entries: [] };
   if (fs.existsSync(REVISION_FILE)) {
     const d = _readExistingJsonFileOrFail(REVISION_FILE, "수정·삭제 이력");
-    _fileRevisions = { entries: Array.isArray(d?.entries) ? d.entries : [] };
+    if (!Array.isArray(d?.entries)) throw new Error("수정·삭제 이력 형식이 올바르지 않습니다.");
+    loaded = { entries: d.entries };
   }
+  _fileRevisions = loaded;
 }
 function _revisionFromRow(r) {
   return { id: r.id, companyId: r.company_id || null, field: r.field, recordId: r.record_id, operation: r.operation, title: r.title || "",
     snapshot: r.snapshot, changedBy: r.changed_by || "", changedAt: new Date(r.changed_at).toISOString() };
 }
-async function _revisionAdd(companyId, entries, changedBy) {
+async function _revisionAdd(companyId, entries, changedBy, db = pool) {
   if (!entries.length) return;
   const nowIso = new Date().toISOString();
-  const rows = entries.map(e => ({ id: `rev-${crypto.randomUUID()}`, companyId: companyId || null, field: e.field, recordId: e.recordId,
-    operation: e.operation, title: e.title, snapshot: e.snapshot, changedBy: String(changedBy || "").slice(0, 120), changedAt: nowIso }));
+  const rows = entries.map(e => ({ id: e.revisionId || `rev-${crypto.randomUUID()}`, companyId: companyId || null, field: e.field, recordId: e.recordId,
+    operation: e.operation, title: e.title, snapshot: e.snapshot, changedBy: String(changedBy || "").slice(0, 120), changedAt: e.changedAt || nowIso }));
   if (USE_JSON_FILE) {
     await _withOutboxLock(() => { // 직렬화 체인을 재사용(파일 read-modify-write 보호)
       _loadFileRevisions();
-      _fileRevisions.entries.push(...rows);
+      const previous = _fileRevisions.entries;
+      const ids = new Set(previous.map(x => x.id));
+      _fileRevisions.entries = [...previous, ...rows.filter(x => !ids.has(x.id))];
       const counts = new Map();
       const keep = [];
       for (let i = _fileRevisions.entries.length - 1; i >= 0; i--) { // 최신부터 훑으며 레코드당 상한 적용
@@ -7345,17 +7447,18 @@ async function _revisionAdd(companyId, entries, changedBy) {
         if (n <= KEEP_PER_RECORD) keep.push(x);
       }
       _fileRevisions.entries = keep.reverse().slice(-REVISION_MAX_FILE_ENTRIES);
-      _atomicWriteFileSync(REVISION_FILE, JSON.stringify(_fileRevisions));
+      try { _atomicWriteFileSync(REVISION_FILE, JSON.stringify(_fileRevisions)); }
+      catch (err) { _fileRevisions.entries = previous; throw err; }
     });
     return;
   }
   for (const r of rows) {
-    await pool.query(
-      `INSERT INTO record_revisions (id,company_id,field,record_id,operation,title,snapshot,changed_by,changed_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+    await db.query(
+      `INSERT INTO record_revisions (id,company_id,field,record_id,operation,title,snapshot,changed_by,changed_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT (id) DO NOTHING`,
       [r.id, r.companyId, r.field, r.recordId, r.operation, r.title, JSON.stringify(r.snapshot), r.changedBy, r.changedAt]);
   }
   // 같은 레코드의 오래된 이력을 상한까지만 남긴다(이번에 추가한 레코드만 정리).
-  await pool.query(
+  await db.query(
     `DELETE FROM record_revisions WHERE id IN (
        SELECT id FROM (SELECT id, ROW_NUMBER() OVER (PARTITION BY field, record_id ORDER BY changed_at DESC, id DESC) rn
                        FROM record_revisions WHERE company_id IS NOT DISTINCT FROM $1 AND (field, record_id) IN (SELECT * FROM UNNEST($2::text[], $3::text[]))) x
@@ -7363,6 +7466,7 @@ async function _revisionAdd(companyId, entries, changedBy) {
     [companyId || null, rows.map(r => r.field), rows.map(r => r.recordId), KEEP_PER_RECORD]);
 }
 async function _revisionList(companyId, { field, operation, q, limit }) {
+  await _drainSaveEffects();
   const lim = Math.max(1, Math.min(200, Number(limit) || 100));
   const needle = String(q || "").trim().toLowerCase();
   if (USE_JSON_FILE) {
@@ -7383,6 +7487,7 @@ async function _revisionList(companyId, { field, operation, q, limit }) {
   return rows.map(_revisionFromRow);
 }
 async function _revisionGet(companyId, id) {
+  await _drainSaveEffects();
   if (USE_JSON_FILE) {
     return _withOutboxLock(() => { _loadFileRevisions(); const scope = _scopeKey(companyId); return _fileRevisions.entries.find(x => x.id === id && _scopeKey(x.companyId) === scope) || null; });
   }
@@ -7410,15 +7515,30 @@ function _revisionAccessAllowed(field, actor) {
   if (["trainingCourses", "trainingEnrollments"].includes(field) && !canManageTraining(actor)) return false;
   return true;
 }
-async function _restoreRevision(companyId, revision, actor) {
+function _assertRevisionRestorable(revision, actor) {
   const field = revision.field;
   if (!REVISION_TRACKED_FIELDS.includes(field)) throw httpError(400, "FIELD_NOT_RESTORABLE", "복구할 수 없는 항목입니다.");
   if (!_revisionAccessAllowed(field, actor)) throw httpError(403, "REVISION_ACCESS_DENIED", "이 항목의 업무 권한이 없어 복구할 수 없습니다.");
   if (Array.isArray(revision.snapshot?._truncatedKeys) && revision.snapshot._truncatedKeys.length) {
     throw httpError(409, "REVISION_INCOMPLETE", "큰 본문이나 첨부가 생략된 이력입니다. 자료 유실을 막기 위해 복구하지 않았습니다. 전체 백업을 확인하세요.");
   }
+}
+function _revisionTargetToken(companyId, revision, current) {
+  const existing = (current[revision.field] || []).find(r => String(r?.id) === String(revision.recordId)) || null;
+  const tombstones = (current.recordTombstones?.[revision.field] || []).filter(r => String(r?.id) === String(revision.recordId));
+  return crypto.createHash("sha256").update(JSON.stringify([companyId || null, revision.id, existing, tombstones])).digest("hex");
+}
+async function _restoreRevision(companyId, revision, actor, expectedToken) {
+  _assertRevisionRestorable(revision, actor);
+  const field = revision.field;
+  if (typeof expectedToken !== "string" || !/^[a-f0-9]{64}$/.test(expectedToken)) {
+    throw httpError(428, "REVISION_PREVIEW_REQUIRED", "복구 영향 범위를 먼저 확인해 주세요.");
+  }
   return _withSaveLock(() => _withDistributedSaveLock(companyId, async () => {
     const current = await loadData(companyId);
+    if (_revisionTargetToken(companyId, revision, current) !== expectedToken) {
+      throw httpError(409, "REVISION_TARGET_CHANGED", "미리보기 이후 자료가 변경되었습니다. 최신 내용을 다시 확인해 주세요.");
+    }
     const existing = (Array.isArray(current[field]) ? current[field] : []).find(r => r && String(r.id) === String(revision.recordId));
     // 복구본은 반드시 현재 저장본보다 "더 최근"이어야 병합 규칙(최신 updatedAt 우선)에서 이긴다 —
     // 서버/클라이언트 시계 차이로 현재 값의 updatedAt이 미래일 수 있어 그보다 1ms 뒤로 맞춘다.
@@ -7441,9 +7561,9 @@ async function _restoreRevision(companyId, revision, actor) {
       ? { ...current, [field]: unionPreferSnapshot(current[field], [restored]), recordTombstones: tombstones }
       : { [field]: [restored], recordTombstones: tombstones };
     const pre = takePreImage(current, { [field]: [restored] }, [field]);
-    const result = await _persistDataLocked(data, actor.changedBy, companyId, actor);
+    const result = await _persistDataLocked(data, actor.changedBy, companyId, actor, null,
+      after => _prepareSaveEffects(companyId, current, after, pre, actor.changedBy, actor, false));
     const after = await loadData(companyId);
-    try { await _revisionAdd(companyId, diffRevisions(pre, after), actor.changedBy); } catch {}
     if (result.rejectedRecords?.some(r => r.field === field && String(r.id) === String(revision.recordId)) ||
         !(after[field] || []).some(r => String(r.id) === String(revision.recordId))) {
       throw httpError(409, "REVISION_RESTORE_REJECTED", "확정 상태·참조 자료 또는 현재 권한 때문에 복구되지 않았습니다. 최신 자료를 확인하세요.");
@@ -7468,13 +7588,29 @@ app.post("/api/record-revisions/:id/restore", async (req, res) => {
     const companyId = req.auth.companyId || null;
     const revision = await _revisionGet(companyId, String(req.params.id || ""));
     if (!revision) return res.status(404).json({ ok: false, message: "복구할 이력을 찾을 수 없습니다." });
-    const result = await _restoreRevision(companyId, revision, { ...req.auth, changedBy: `restore:${req.auth.loginId || req.auth.empId}` });
+    const result = await _restoreRevision(companyId, revision, { ...req.auth, changedBy: `restore:${req.auth.loginId || req.auth.empId}` }, req.body?.expectedToken);
     broadcastSSE("data_updated", { version: _getVersion(companyId), meta: {} }, req.query.clientId, companyId);
     res.json({ ok: true, existed: result.existed });
   } catch (e) {
     const status = Number.isInteger(e.status) ? e.status : 500;
     res.status(status).json({ ok: false, code: e.code, message: _safeErrMsg(e) });
   }
+});
+app.get("/api/record-revisions/:id/preview", async (req, res) => {
+  if (!requireAdmin(req, res) || !requirePage(req, res, "history")) return;
+  try {
+    const companyId = req.auth.companyId || null;
+    const revision = await _revisionGet(companyId, String(req.params.id || ""));
+    if (!revision) return res.status(404).json({ ok: false, message: "복구할 이력을 찾을 수 없습니다." });
+    _assertRevisionRestorable(revision, req.auth);
+    const current = await loadData(companyId);
+    const existing = (current[revision.field] || []).find(r => String(r?.id) === String(revision.recordId));
+    res.json({ ok: true, expectedToken: _revisionTargetToken(companyId, revision, current),
+      field: revision.field, title: revision.title, existed: !!existing, affectedRecords: 1,
+      changedAt: revision.changedAt,
+      changedFields: Object.keys(revision.snapshot || {}).filter(key => !["pw", "authVersion", "twoFactorSecret", "_rev", "updatedAt", "_truncatedKeys"].includes(key) &&
+        !isDeepStrictEqual(existing?.[key], revision.snapshot[key])) });
+  } catch (e) { res.status(Number.isInteger(e.status) ? e.status : 500).json({ ok: false, code: e.code, message: _safeErrMsg(e) }); }
 });
 
 // ── Annual snapshots ──────────────────────────────────────────────────────────

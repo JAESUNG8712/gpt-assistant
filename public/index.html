@@ -16163,9 +16163,11 @@ async function loadRecordRevisions(){
     :`<div class="fz12 text-gray" style="padding:12px;text-align:center">조건에 맞는 수정·삭제 이력이 없습니다.</div>`;
 }
 async function restoreRecordRevision(id){
-  const ok=await askConfirmModal({title:"이전 내용으로 복구",message:"선택한 시점(바뀌기 전)의 내용으로 이 항목을 되돌립니다. 현재 내용은 새 이력으로 남아 다시 되돌릴 수 있습니다. 계속할까요?",confirmText:"복구"});
+  const preview=await serverRequest("GET",`/api/record-revisions/${encodeURIComponent(id)}/preview`,null,10000);
+  if(!preview?.ok){showToast(preview?.message||"복구 영향 범위를 확인하지 못했습니다.","error");return;}
+  const ok=await askConfirmModal({title:"복구 영향 범위 확인",message:`${_revFieldLabel(preview.field)} · ${preview.title||"선택한 자료"}\n영향 범위: ${preview.affectedRecords}건 (${preview.existed?"현재 자료를 이전 내용으로 변경":"삭제된 자료를 되살림"})\n변경 대상: ${preview.changedFields.length}개 항목\n현재 내용은 새 이력으로 보관됩니다. 확인 후 다른 사람이 수정하면 복구를 중단합니다.`,confirmText:"확인 후 복구"});
   if(!ok)return;
-  const r=await serverRequest("POST",`/api/record-revisions/${encodeURIComponent(id)}/restore`,{},20000);
+  const r=await serverRequest("POST",`/api/record-revisions/${encodeURIComponent(id)}/restore`,{expectedToken:preview.expectedToken},20000);
   if(!r?.ok){showToast(r?.message||"복구하지 못했습니다.","error");return;}
   showToast(r.existed?"이전 내용으로 복구했습니다.":"삭제된 항목을 되살렸습니다.","success");
   await loadFromServer();

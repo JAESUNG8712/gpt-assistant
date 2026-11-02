@@ -1276,6 +1276,8 @@ CREATE INDEX IF NOT EXISTS idx_webhook_outbox_due ON webhook_outbox (status, nex
 CREATE INDEX IF NOT EXISTS idx_webhook_outbox_company ON webhook_outbox (company_id, created_at DESC);
 -- Additive migration: existing pending/expired jobs receive a token when claimed.
 ALTER TABLE webhook_outbox ADD COLUMN IF NOT EXISTS claim_token TEXT;
+ALTER TABLE webhook_outbox ADD COLUMN IF NOT EXISTS actor_id TEXT;
+ALTER TABLE webhook_outbox ADD COLUMN IF NOT EXISTS record_id TEXT;
 
 -- 수정·삭제 이력(복구용): 저장이 레코드를 바꾸거나 지울 때 "바뀌기 전" 모습을 보관한다.
 -- 레코드당 최근 10건, 180일까지만 유지한다(관리자만 조회·복구).

@@ -6,6 +6,11 @@ const { startServer, bootstrapAdminAndLogin } = require("./support/start-server"
 
 const auth = (token, method, body) => ({ method, headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` }, body: body === undefined ? undefined : JSON.stringify(body) });
 async function data(api, token) { const r = await (await api("/data", { headers: { Authorization: `Bearer ${token}` } })).json(); assert.equal(r.ok, true); return r; }
+async function restore(api, token, id) {
+  const preview = await (await api(`/api/record-revisions/${id}/preview`, auth(token, "GET"))).json();
+  assert.equal(preview.ok, true, JSON.stringify(preview));
+  return api(`/api/record-revisions/${id}/restore`, auth(token, "POST", { expectedToken: preview.expectedToken }));
+}
 
 test("수정·삭제 이력이 쌓이고 관리자가 이전 내용으로 복구·되살릴 수 있다", async t => {
   const server = await startServer(); t.after(() => server.stop());
@@ -39,12 +44,25 @@ test("수정·삭제 이력이 쌓이고 관리자가 이전 내용으로 복구
   assert.ok(del, "삭제 이력");
   assert.equal(upd.title, "원본 제목");
 
+  assert.equal((await api(`/api/record-revisions/${upd.id}/restore`, auth(token, "POST"))).status, 428, "미리보기 없이 복원할 수 없다");
+  const preview = await (await api(`/api/record-revisions/${upd.id}/preview`, auth(token, "GET"))).json();
+  assert.equal(preview.affectedRecords, 1);
+  assert.equal(preview.existed, true);
+  assert.ok(!Object.hasOwn(preview, "snapshot"), "미리보기는 원본 민감값을 반환하지 않는다");
+  d = await data(api, token);
+  assert.equal((await api("/save", auth(token, "POST", { _version: d.version,
+    boardPosts: d.data.boardPosts.map(p => p.id === "p1" ? { ...p, title: "동료의 최신 수정", updatedAt: new Date(Date.now() + 3000).toISOString() } : p) }))).status, 200);
+  const conflict = await api(`/api/record-revisions/${upd.id}/restore`, auth(token, "POST", { expectedToken: preview.expectedToken }));
+  assert.equal(conflict.status, 409);
+  assert.equal((await conflict.json()).code, "REVISION_TARGET_CHANGED");
+  assert.equal((await data(api, token)).data.boardPosts.find(p => p.id === "p1").title, "동료의 최신 수정");
+
   // 이전 내용으로 복구
-  r = await (await api(`/api/record-revisions/${upd.id}/restore`, auth(token, "POST"))).json();
+  r = await (await restore(api, token, upd.id)).json();
   assert.equal(r.ok, true);
   assert.equal(r.existed, true);
   // 삭제 되살리기
-  r = await (await api(`/api/record-revisions/${del.id}/restore`, auth(token, "POST"))).json();
+  r = await (await restore(api, token, del.id)).json();
   assert.equal(r.ok, true);
   assert.equal(r.existed, false);
   d = await data(api, token);
@@ -85,7 +103,7 @@ test("직원 정보를 되돌려도 현재 비밀번호는 바뀌지 않는다",
   const list = await (await api("/api/record-revisions?field=employees", { headers: { Authorization: `Bearer ${boot.token}` } })).json();
   const rev = list.revisions.find(x => x.recordId === "m1");
   assert.ok(rev);
-  const r = await (await api(`/api/record-revisions/${rev.id}/restore`, auth(boot.token, "POST"))).json();
+  const r = await (await restore(api, boot.token, rev.id)).json();
   assert.equal(r.ok, true, JSON.stringify(r));
   d = await data(api, boot.token);
   assert.equal(d.data.employees.find(e => e.id === "m1").name, "원래이름");
@@ -143,7 +161,7 @@ test("확정된 급여의 복구 거부는 성공으로 표시하지 않는다",
     payslips: [{ ...d.data.payslips[0], confirmed: true, updatedAt: new Date(Date.now() + 1000).toISOString() }] }));
   const list = await (await api("/api/record-revisions?field=payslips", auth(token, "GET"))).json();
   assert.ok(list.revisions.length);
-  const res = await api(`/api/record-revisions/${list.revisions[0].id}/restore`, auth(token, "POST"));
+  const res = await restore(api, token, list.revisions[0].id);
   assert.equal(res.status, 409);
   assert.equal((await res.json()).code, "REVISION_RESTORE_REJECTED");
   d = await data(api, token);

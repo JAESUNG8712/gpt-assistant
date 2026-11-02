@@ -72,6 +72,7 @@ test("워커는 발송 직전에 한 건씩 점유하고 한 주기에 최대 20
       assert.equal(claims, delivered, "앞선 전송이 완료된 뒤 다음 작업을 점유해야 함");
       return [{ id: ++claims, companyId: "A", webhookId: "hook", attempts: 0 }];
     },
+    async _drainSaveEffects() {},
     async loadData() { return { integrationSettings: { webhooks: [{ id: "hook" }] } }; },
     async _deliverOutboxEntry() { delivered++; return { status: "superseded" }; },
     async _recordWebhookLogs() { logged++; },
