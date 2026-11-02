@@ -19,7 +19,7 @@ const budgetRouterFactory = require("./budget");
 const { canReadTraining, canManageTraining, countsByCourse, normalizeEnrollment } = require("./lib/training-integrity");
 const { assertFieldOrder } = require("./lib/field-order-guard");
 const { saveRejectInfo, snapshotIntendedRecord, findSilentRejections } = require("./lib/save-feedback");
-const { retryDelays, nextOutboxState, SENDING_LEASE_MS } = require("./lib/webhook-outbox");
+const { retryDelays, nextOutboxState, SENDING_LEASE_MS, ownsOutboxClaim } = require("./lib/webhook-outbox");
 const { trackedFields, takePreImage, diffRevisions, KEEP_PER_RECORD } = require("./lib/record-revisions");
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -7032,7 +7032,7 @@ function _loadFileOutbox() {
 function _saveFileOutbox() { _atomicWriteFileSync(WEBHOOK_OUTBOX_FILE, JSON.stringify(_fileOutbox)); }
 function _outboxFromRow(r) {
   return { id: r.id, companyId: r.company_id || null, eventId: r.event_id, eventLabel: r.event_label || "", dedupeKey: r.dedupe_key,
-    webhookId: r.webhook_id, webhookName: r.webhook_name || "", text: r.text, status: r.status, attempts: r.attempts,
+    webhookId: r.webhook_id, webhookName: r.webhook_name || "", text: r.text, status: r.status, attempts: r.attempts, claimToken: r.claim_token || null,
     nextAttemptAt: new Date(r.next_attempt_at).toISOString(), lastError: r.last_error || "",
     createdAt: new Date(r.created_at).toISOString(), updatedAt: new Date(r.updated_at).toISOString(),
     sentAt: r.sent_at ? new Date(r.sent_at).toISOString() : null };
@@ -7043,7 +7043,7 @@ async function _outboxEnqueue(companyId, e) {
   const now = Date.now();
   const entry = { id: `whob-${crypto.randomUUID()}`, companyId: companyId || null, eventId: e.eventId, eventLabel: e.eventLabel || "",
     dedupeKey: e.dedupeKey, webhookId: String(e.webhookId), webhookName: String(e.webhookName || "").slice(0, 100), text: e.text,
-    status: "sending", attempts: 0, nextAttemptAt: new Date(now + SENDING_LEASE_MS).toISOString(), lastError: "",
+    status: "sending", attempts: 0, claimToken: crypto.randomUUID(), nextAttemptAt: new Date(now + SENDING_LEASE_MS).toISOString(), lastError: "",
     createdAt: new Date(now).toISOString(), updatedAt: new Date(now).toISOString(), sentAt: null };
   if (USE_JSON_FILE) {
     return _withOutboxLock(() => {
@@ -7056,45 +7056,73 @@ async function _outboxEnqueue(companyId, e) {
     });
   }
   const { rows } = await pool.query(
-    `INSERT INTO webhook_outbox (id,company_id,event_id,event_label,dedupe_key,webhook_id,webhook_name,text,status,attempts,next_attempt_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'sending',0,$9)
+    `INSERT INTO webhook_outbox (id,company_id,event_id,event_label,dedupe_key,webhook_id,webhook_name,text,status,attempts,next_attempt_at,claim_token)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'sending',0,$9,$10)
      ON CONFLICT (COALESCE(company_id, '00000000-0000-0000-0000-000000000000'::uuid), dedupe_key, webhook_id) DO NOTHING RETURNING *`,
-    [entry.id, entry.companyId, entry.eventId, entry.eventLabel, entry.dedupeKey, entry.webhookId, entry.webhookName, entry.text, entry.nextAttemptAt]);
+    [entry.id, entry.companyId, entry.eventId, entry.eventLabel, entry.dedupeKey, entry.webhookId, entry.webhookName, entry.text, entry.nextAttemptAt, entry.claimToken]);
   return rows[0] ? _outboxFromRow(rows[0]) : null;
 }
 // 기한이 지난 건('pending' 또는 임대가 만료된 'sending')을 가져가며 임대를 갱신한다(다중 인스턴스 안전).
 async function _outboxClaimDue(limit) {
   const lease = new Date(Date.now() + SENDING_LEASE_MS * 2).toISOString();
+  const claimToken = crypto.randomUUID();
   if (USE_JSON_FILE) {
     return _withOutboxLock(() => {
       _loadFileOutbox();
       const now = Date.now();
       const due = _fileOutbox.entries.filter(x => (x.status === "pending" || x.status === "sending") && Date.parse(x.nextAttemptAt) <= now).slice(0, limit);
-      for (const x of due) { x.status = "sending"; x.nextAttemptAt = lease; x.updatedAt = new Date(now).toISOString(); }
+      for (const x of due) { x.status = "sending"; x.claimToken = claimToken; x.nextAttemptAt = lease; x.updatedAt = new Date(now).toISOString(); }
       if (due.length) _saveFileOutbox();
       return due.map(x => ({ ...x }));
     });
   }
   const { rows } = await pool.query(
-    `UPDATE webhook_outbox SET status='sending', next_attempt_at=$2, updated_at=NOW()
+    `UPDATE webhook_outbox SET status='sending', next_attempt_at=$2, claim_token=$3, updated_at=NOW()
       WHERE id IN (SELECT id FROM webhook_outbox WHERE status IN ('pending','sending') AND next_attempt_at<=NOW()
-                   ORDER BY next_attempt_at LIMIT $1 FOR UPDATE SKIP LOCKED) RETURNING *`, [limit, lease]);
+                   ORDER BY next_attempt_at LIMIT $1 FOR UPDATE SKIP LOCKED) RETURNING *`, [limit, lease, claimToken]);
   return rows.map(_outboxFromRow);
 }
-async function _outboxFinish(entry, outcome, message) {
-  const next = nextOutboxState(entry, outcome, message, Date.now(), WEBHOOK_RETRY_DELAYS);
+// Renew only a live claim. Never revive a replaced/expired claim before HTTP I/O.
+async function _outboxRenew(entry) {
+  if (!entry.claimToken) return false;
+  const lease = new Date(Date.now() + SENDING_LEASE_MS).toISOString();
   if (USE_JSON_FILE) {
-    await _withOutboxLock(() => {
+    return _withOutboxLock(() => {
       _loadFileOutbox();
       const row = _fileOutbox.entries.find(x => x.id === entry.id);
-      if (!row) return;
-      Object.assign(row, next, { updatedAt: new Date().toISOString() });
+      if (!ownsOutboxClaim(row, entry, Date.now())) return false;
+      Object.assign(row, { nextAttemptAt: lease, updatedAt: new Date().toISOString() });
       _saveFileOutbox();
+      return true;
+    });
+  }
+  const result = await pool.query(
+    `UPDATE webhook_outbox SET next_attempt_at=$4, updated_at=NOW()
+     WHERE id=$1 AND company_id IS NOT DISTINCT FROM $2 AND claim_token=$3
+       AND status='sending' AND next_attempt_at>NOW()`,
+    [entry.id, entry.companyId || null, entry.claimToken, lease]);
+  return result.rowCount === 1;
+}
+async function _outboxFinish(entry, outcome, message) {
+  if (!entry.claimToken) return null;
+  const next = nextOutboxState(entry, outcome, message, Date.now(), WEBHOOK_RETRY_DELAYS);
+  if (USE_JSON_FILE) {
+    return _withOutboxLock(() => {
+      _loadFileOutbox();
+      const row = _fileOutbox.entries.find(x => x.id === entry.id);
+      if (!ownsOutboxClaim(row, entry, Date.now())) return null;
+      Object.assign(row, next, { claimToken: null, updatedAt: new Date().toISOString() });
+      _saveFileOutbox();
+      return next;
     });
   } else {
-    await pool.query(
-      `UPDATE webhook_outbox SET status=$2, attempts=$3, last_error=$4, next_attempt_at=$5, sent_at=COALESCE($6,sent_at), updated_at=NOW() WHERE id=$1`,
-      [entry.id, next.status, next.attempts, next.lastError, next.nextAttemptAt, next.sentAt || null]);
+    const result = await pool.query(
+      `UPDATE webhook_outbox SET status=$2, attempts=$3, last_error=$4, next_attempt_at=$5,
+       sent_at=COALESCE($6,sent_at), claim_token=NULL, updated_at=NOW()
+       WHERE id=$1 AND company_id IS NOT DISTINCT FROM $7 AND claim_token=$8
+         AND status='sending' AND next_attempt_at>NOW()`,
+      [entry.id, next.status, next.attempts, next.lastError, next.nextAttemptAt, next.sentAt || null, entry.companyId || null, entry.claimToken]);
+    if (result.rowCount !== 1) return null;
   }
   return next;
 }
@@ -7118,13 +7146,13 @@ async function _outboxManualRetry(companyId, id) {
       const scope = _scopeKey(companyId);
       const row = _fileOutbox.entries.find(x => x.id === id && _scopeKey(x.companyId) === scope);
       if (!row || row.status === "sent" || row.status === "sending") return null;
-      Object.assign(row, { status: "pending", attempts: 0, nextAttemptAt: new Date().toISOString(), lastError: "", updatedAt: new Date().toISOString() });
+      Object.assign(row, { status: "pending", claimToken: null, attempts: 0, nextAttemptAt: new Date().toISOString(), lastError: "", updatedAt: new Date().toISOString() });
       _saveFileOutbox();
       return { ...row };
     });
   }
   const { rows } = await pool.query(
-    `UPDATE webhook_outbox SET status='pending', attempts=0, next_attempt_at=NOW(), last_error='', updated_at=NOW()
+    `UPDATE webhook_outbox SET status='pending', claim_token=NULL, attempts=0, next_attempt_at=NOW(), last_error='', updated_at=NOW()
       WHERE id=$1 AND company_id IS NOT DISTINCT FROM $2 AND status IN ('pending','dead','cancelled') RETURNING *`, [id, companyId || null]);
   return rows[0] ? _outboxFromRow(rows[0]) : null;
 }
@@ -7155,6 +7183,7 @@ async function _sendIntegrationWebhook(wh, text) {
   }
 }
 async function _recordWebhookLogs(companyId, event, logs) {
+  if (!logs.length) return [];
   const now = new Date().toISOString();
   const entries = logs.map(l => ({ ...l, id: `webhook-log-${crypto.randomUUID()}`, ts: now, event }));
   try {
@@ -7165,20 +7194,23 @@ async function _recordWebhookLogs(companyId, event, logs) {
 }
 // 대기함 한 건을 실제로 보내고 결과를 반영한다. wh가 없거나 비활성/구독 해제된 연동이면 보내지 않고 취소한다.
 async function _deliverOutboxEntry(entry, wh) {
+  const superseded = { webhookName: entry.webhookName, status: "superseded", message: "작업 소유권이 변경되어 이전 결과를 반영하지 않았습니다." };
   // A queued job has no HTTP authentication middleware. Re-check the company
   // switch here as well, including manual retries and jobs from before shutdown.
   if ((await _getCompanyStatus(entry.companyId)) === "suspended" ||
       (await _getCompanyFeatureMap(entry.companyId))[entry.eventId === "notice_post" ? "comm" : "approval"] === false) {
-    await _outboxFinish(entry, "cancelled", "회사 또는 해당 기능이 비활성화되어 보내지 않았습니다.");
+    if (!await _outboxFinish(entry, "cancelled", "회사 또는 해당 기능이 비활성화되어 보내지 않았습니다.")) return superseded;
     return { webhookName: entry.webhookName, status: "cancelled", message: "회사/기능 비활성" };
   }
   if (!wh || wh.active === false || !Array.isArray(wh.events) || !wh.events.includes(entry.eventId)) {
-    await _outboxFinish(entry, "cancelled", "연동이 삭제·비활성화되었거나 이 이벤트 구독이 해제되어 보내지 않았습니다.");
+    if (!await _outboxFinish(entry, "cancelled", "연동이 삭제·비활성화되었거나 이 이벤트 구독이 해제되어 보내지 않았습니다.")) return superseded;
     return { webhookName: entry.webhookName, status: "cancelled", message: "연동 삭제/비활성" };
   }
+  if (!await _outboxRenew(entry)) return superseded;
   const result = await _sendIntegrationWebhook(wh, entry.text);
   const ok = result.status === "success";
   const next = await _outboxFinish(entry, ok ? "sent" : "failed", result.message);
+  if (!next) return superseded;
   return { ...result, retryScheduled: !ok && next.status === "pending", gaveUp: !ok && next.status === "dead" };
 }
 let _outboxWorkerRunning = false;
@@ -7187,15 +7219,18 @@ async function _processWebhookOutbox() {
   if (_outboxWorkerRunning) return;
   _outboxWorkerRunning = true;
   try {
-    const due = await _outboxClaimDue(20);
     const settingsCache = new Map();
-    for (const entry of due) {
+    // Claim just before processing: later jobs must not sit in a preclaimed
+    // batch while earlier slow HTTP requests consume their leases.
+    for (let processed = 0; processed < 20; processed++) {
+      const [entry] = await _outboxClaimDue(1);
+      if (!entry) break;
       try {
         const key = _scopeKey(entry.companyId);
         if (!settingsCache.has(key)) settingsCache.set(key, (await loadData(entry.companyId))?.integrationSettings?.webhooks || []);
         const wh = settingsCache.get(key).find(w => w && String(w.id ?? w.name) === entry.webhookId);
         const result = await _deliverOutboxEntry(entry, wh);
-        if (result.status !== "cancelled") {
+        if (result.status !== "cancelled" && result.status !== "superseded") {
           await _recordWebhookLogs(entry.companyId, `${entry.eventLabel || entry.eventId} (재시도 ${entry.attempts + 1}회차)`, [result]);
         }
       } catch (e) {
@@ -7246,7 +7281,7 @@ app.post("/api/integrations/webhooks/dispatch", async (req, res) => {
     if (!queued.length) return res.json({ ok: true, dispatched: 0, duplicate: true });
     const results = await Promise.allSettled(queued.map(({ entry, wh }) => _deliverOutboxEntry(entry, wh)));
     const logs = results.map(r => (r.status === "fulfilled" ? r.value : { webhookName: "-", status: "fail", message: "dispatch error" }));
-    await _recordWebhookLogs(companyId, INTEGRATION_EVENT_LABELS[eventId], logs.filter(l => l.status !== "cancelled"));
+    await _recordWebhookLogs(companyId, INTEGRATION_EVENT_LABELS[eventId], logs.filter(l => l.status !== "cancelled" && l.status !== "superseded"));
     res.json({ ok: true, dispatched: logs.filter(l => l.status === "success").length,
       failed: logs.filter(l => l.status === "fail").length, retryScheduled: logs.filter(l => l.retryScheduled).length });
   } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }

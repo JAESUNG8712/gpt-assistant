@@ -56,6 +56,7 @@ test("수신 서버 장애로 실패한 알림은 대기함에서 재시도되�
   const body = await (await api("/api/integrations/webhooks/outbox", { headers: { Authorization: `Bearer ${token}` } })).json();
   assert.equal(body.summary.sent, 1);
   assert.equal(body.summary.pending, 0);
+  assert.ok(body.entries.every(e => !Object.hasOwn(e, "claimToken") && !Object.hasOwn(e, "claim_token")), "내부 작업 소유 토큰은 API 응답에 노출하지 않는다");
 });
 
 test("끝내 실패해 중단된 알림은 관리자가 수동으로 다시 보낼 수 있고 권한이 없으면 목록을 볼 수 없다", async t => {

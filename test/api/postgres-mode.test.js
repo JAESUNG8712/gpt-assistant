@@ -1047,7 +1047,12 @@ if (!ADMIN_DATABASE_URL) {
     }
     const http = require("node:http");
     let status = 500; const received = [];
-    const mock = http.createServer((req, res) => { req.resume(); req.on("end", () => { received.push(status); res.writeHead(status).end("{}"); }); });
+    let holdNext = false, heldResponse = null;
+    const mock = http.createServer((req, res) => { req.resume(); req.on("end", () => {
+      received.push(status);
+      if (holdNext) { holdNext = false; heldResponse = res; return; }
+      res.writeHead(status).end("{}");
+    }); });
     await new Promise(r => mock.listen(0, "127.0.0.1", r));
     t.after(() => new Promise(r => { mock.closeAllConnections(); mock.close(r); }));
     const url = `http://127.0.0.1:${mock.address().port}/hook`;
@@ -1084,6 +1089,44 @@ if (!ADMIN_DATABASE_URL) {
     const db = new Client({ connectionString: testDbUrl }); await db.connect();
     try {
       const scope = (await db.query("SELECT company_id FROM employees WHERE id=$1", [adminId])).rows[0].company_id;
+      // Simulate takeover while the original HTTP call is still in flight.
+      // Both late success and late failure must leave the new owner's row alone.
+      for (const lateStatus of [200, 500]) {
+        const state = await (await api("/data", { headers: { Authorization: `Bearer ${A.token}` } })).json();
+        const id = `apv-ob-fenced-${lateStatus}`;
+        assert.equal((await api("/save", authH(A.token, "POST", { _version: state.version,
+          approvalDocs: [...state.data.approvalDocs, { id, authorId: adminId, title: id,
+            templateId: "tpl-general", createdAt: nowIso, updatedAt: nowIso, status: "in_progress",
+            approvers: [{ empId: "x", status: "pending" }] }] }))).status, 200);
+        const logCount = async () => Number((await db.query("SELECT COUNT(*) AS n FROM app_collections WHERE company_id=$1 AND collection='integrationLogs'", [scope])).rows[0].n);
+        const beforeLogs = await logCount();
+        heldResponse = null; holdNext = true;
+        const pending = api("/api/integrations/webhooks/dispatch", authH(A.token, "POST", { eventId: "approval_request", recordId: id }));
+        try {
+          for (let i = 0; i < 60 && !heldResponse; i++) await new Promise(r => setTimeout(r, 50));
+          assert.ok(heldResponse, "이전 작업자의 HTTP 전송이 응답 대기 중이어야 함");
+          const sending = (await db.query("SELECT * FROM webhook_outbox WHERE company_id=$1 AND status='sending'", [scope])).rows;
+          assert.equal(sending.length, 1);
+          assert.ok(sending[0].claim_token);
+          const jobId = sending[0].id;
+          const replacement = `replacement-${lateStatus}`;
+          await db.query("UPDATE webhook_outbox SET claim_token=$2, attempts=7, next_attempt_at=NOW()+INTERVAL '10 minutes' WHERE id=$1", [jobId, replacement]);
+          heldResponse.writeHead(lateStatus).end("{}");
+          const response = await (await pending).json();
+          assert.equal(response.dispatched, 0);
+          assert.equal(response.failed, 0);
+          assert.equal(response.retryScheduled, 0);
+          const kept = (await db.query("SELECT status,attempts,claim_token FROM webhook_outbox WHERE id=$1", [jobId])).rows[0];
+          assert.deepEqual(kept, { status: "sending", attempts: 7, claim_token: replacement });
+          assert.equal(await logCount(), beforeLogs, "이전 작업자의 성공/실패 로그를 최신 결과처럼 추가하면 안 됨");
+          assert.equal((await api(`/api/integrations/webhooks/outbox/${jobId}/retry`, authH(A.token, "POST"))).status, 404);
+          await db.query("UPDATE webhook_outbox SET status='sent',claim_token=NULL WHERE id=$1", [jobId]);
+        } finally {
+          if (heldResponse && !heldResponse.writableEnded) heldResponse.end("{}");
+          await pending.catch(() => {});
+          holdNext = false;
+        }
+      }
       await db.query("INSERT INTO company_features(company_id,feature_key,enabled) VALUES($1,'approval',false) ON CONFLICT(company_id,feature_key) DO UPDATE SET enabled=false", [scope]);
       // Feature/status maps have a documented 10-second cache.
       await new Promise(r => setTimeout(r, 10100));
