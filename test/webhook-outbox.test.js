@@ -91,6 +91,24 @@ test("재시도 간격 환경변수는 숫자 목록만 받고 잘못되면 기�
   assert.deepEqual(retryDelays(""), DEFAULT_RETRY_DELAYS_MS);
 });
 
+test("느린 첫 발송 중 연동이 해제되면 다음 작업은 최신 설정을 읽는다", async () => {
+  const source = fs.readFileSync(path.join(__dirname, "../server.js"), "utf8");
+  const start = source.indexOf("async function _processWebhookOutbox(");
+  const end = source.indexOf("const webhookTestLimiter", start);
+  let claimed = 0, delivered = 0, reads = 0;
+  const activeTargets = [];
+  const context = { Date, Map, console, _scopeKey: x => x, _outboxWorkerRunning: false, _outboxLastPrune: Date.now(),
+    async _drainSaveEffects() {},
+    async _outboxClaimDue() { return claimed++ < 2 ? [{ companyId: "A", webhookId: "hook", attempts: 0 }] : []; },
+    async loadData() { reads++; return { integrationSettings: { webhooks: [{ id: "hook", active: delivered === 0 }] } }; },
+    async _deliverOutboxEntry(entry, wh) { activeTargets.push(wh.active); delivered++; return { status: "cancelled" }; },
+    async _outboxFinish() { assert.fail("최신 설정 확인 실패"); },
+    _safeErrMsg: e => e.message };
+  await vm.runInNewContext(source.slice(start, end) + ";_processWebhookOutbox()", context);
+  assert.deepEqual(activeTargets, [true, false]);
+  assert.equal(reads, 2);
+});
+
 test("성공/실패/취소 상태 전이", () => {
   const now = Date.parse("2026-01-01T00:00:00Z");
   const delays = [1000, 2000];

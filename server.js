@@ -7314,16 +7314,15 @@ async function _processWebhookOutbox() {
   _outboxWorkerRunning = true;
   try {
     await _drainSaveEffects();
-    const settingsCache = new Map();
     // Claim just before processing: later jobs must not sit in a preclaimed
     // batch while earlier slow HTTP requests consume their leases.
     for (let processed = 0; processed < 20; processed++) {
       const [entry] = await _outboxClaimDue(1);
       if (!entry) break;
       try {
-        const key = _scopeKey(entry.companyId);
-        if (!settingsCache.has(key)) settingsCache.set(key, (await loadData(entry.companyId))?.integrationSettings?.webhooks || []);
-        const wh = settingsCache.get(key).find(w => w && String(w.id ?? w.name) === entry.webhookId);
+        // Re-read each job's target: a slow earlier send may outlive a settings change.
+        const targets = (await loadData(entry.companyId))?.integrationSettings?.webhooks || [];
+        const wh = targets.find(w => w && String(w.id ?? w.name) === entry.webhookId);
         const result = await _deliverOutboxEntry(entry, wh);
         if (result.status !== "cancelled" && result.status !== "superseded") {
           await _recordWebhookLogs(entry.companyId, `${entry.eventLabel || entry.eventId} (재시도 ${entry.attempts + 1}회차)`, [result]);
