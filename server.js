@@ -11413,7 +11413,45 @@ app.get("/api/erp/sales-dashboard", async (req, res) => {
     }
     const repRanking = Array.from(repMap.values()).sort((a, b) => b.revenue - a.revenue);
 
-    res.json({ ok: true, targetsByYear, partnerRanking, pipeline, repRanking });
+    // 월별 추이 — 선택 연도(?year=, 기본 올해)와 전년을 월 단위로 비교한다.
+    // 수주액은 수주확정+출고완료, 매출액은 출고완료 기준(목표 대비 실적과 같은 정의).
+    // 견적일(q.date)은 "YYYY-MM-DD" 문자열이라 타임존에 흔들리지 않도록 문자열로 연/월을 읽는다.
+    const ymOf = q => {
+      const m = /^(\d{4})-(\d{2})/.exec(String(q.date || ""));
+      if (m) return [Number(m[1]), Number(m[2])];
+      const d = new Date(q.date);
+      return Number.isNaN(d.getTime()) ? null : [d.getFullYear(), d.getMonth() + 1];
+    };
+    const thisYear = new Date().getFullYear();
+    const reqYear = Number.parseInt(req.query.year, 10);
+    const trendYear = Number.isInteger(reqYear) && reqYear >= 2000 && reqYear <= 2100 ? reqYear : thisYear;
+    const bucket = () => Array.from({ length: 12 }, (_, i) => ({ month: i + 1, count: 0, order: 0, revenue: 0 }));
+    const cur = bucket(), prev = bucket();
+    const yearSet = new Set([thisYear]);
+    for (const q of quotations) {
+      const ym = ymOf(q);
+      if (!ym) continue;
+      yearSet.add(ym[0]);
+      const target = ym[0] === trendYear ? cur : ym[0] === trendYear - 1 ? prev : null;
+      if (!target) continue;
+      const b = target[ym[1] - 1];
+      b.count++;
+      if (q.status === "accepted" || q.status === "shipped") b.order += supplyOf(q);
+      if (q.status === "shipped") b.revenue += supplyOf(q);
+    }
+    const monthlyTrend = {
+      year: trendYear,
+      years: Array.from(yearSet).sort((a, b) => b - a),
+      months: cur.map((b, i) => ({
+        ...b,
+        prevOrder: prev[i].order,
+        prevRevenue: prev[i].revenue,
+        // 전년 동월이 0이면 증감률은 정의할 수 없으므로 null(화면에서 "-")
+        revenueGrowthPct: prev[i].revenue > 0 ? Math.round(((b.revenue - prev[i].revenue) / prev[i].revenue) * 100) : null,
+      })),
+    };
+
+    res.json({ ok: true, targetsByYear, partnerRanking, pipeline, repRanking, monthlyTrend });
   } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
