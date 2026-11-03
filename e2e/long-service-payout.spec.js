@@ -59,6 +59,12 @@ test.describe("장기근속 포상금 급여 연동", () => {
     const after = await page.evaluate((r) => calcStandardPayslip(getEmp(9801), r.year, r.month).adjustPay || 0, rec[0]);
     expect(after - (rec[0].year === new Date().getFullYear() && rec[0].month === new Date().getMonth() + 1 ? before : 0)).toBe(500000);
 
+    // 직원 이력에 "장기근속 포상"으로 남고, 우수사원(award) 이력과는 섞이지 않는다
+    const hist = await page.evaluate(() => getEmp(9801).hrHistory.filter((x) => x.id === "hh-longservice-9801-5"));
+    expect(hist).toHaveLength(1);
+    expect(hist[0]).toMatchObject({ type: "longservice", year: 5 });
+    expect(await page.evaluate(() => getEmp(9801).hrHistory.filter((x) => x.type === "award").length)).toBe(0);
+
     // 행은 반영 완료 배지 + 취소 버튼으로 바뀐다
     await expect(row).toContainText("급여 500,000원");
     await expect(row.locator("button", { hasText: "취소" })).toBeVisible();
@@ -69,11 +75,15 @@ test.describe("장기근속 포상금 급여 연동", () => {
     await page.evaluate(() => applyLongServicePayout("9801", 5));
     expect(await page.evaluate(() => payrollAdjustments.filter((a) => a.sourceKey === "longservice-9801-5").length)).toBe(1);
 
+    // 중복 반영 시도에도 이력은 한 건만 남는다
+    expect(await page.evaluate(() => getEmp(9801).hrHistory.filter((x) => x.type === "longservice").length)).toBe(1);
+
     // 취소하면 급여 조정이 사라지고 다시 반영 버튼이 나온다
     await row.locator("button", { hasText: "취소" }).click();
     await page.locator("section.modal", { hasText: "장기근속 포상금 반영 취소" }).locator("button", { hasText: "반영 취소" }).click();
     await expect(row.locator("button", { hasText: "500,000원 반영" })).toBeVisible();
     expect(await page.evaluate(() => payrollAdjustments.filter((a) => a.sourceKey === "longservice-9801-5").length)).toBe(0);
+    expect(await page.evaluate(() => getEmp(9801).hrHistory.filter((x) => x.type === "longservice").length)).toBe(0);
     expect(pageErrors).toEqual([]);
   });
 
