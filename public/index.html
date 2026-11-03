@@ -1320,11 +1320,12 @@ let settings={
   // 종합검진 설정: 기준연령 이상은 자동 대상, targetIds는 관리자가 추가 지정한 대상자
   healthCheckup:{ageThreshold:40, year:new Date().getFullYear(), targetIds:[]},
   // 장기근속 포상 기준 [{years,reward}]
+  // amount(원)는 급여 반영용 포상금이다. 없거나 0이면 안내 문구(reward)만 있는 기준으로 보고 급여 연동을 하지 않는다.
   longServiceAwards:[
-    {years:5,reward:"포상금 50만원 + 휴가 2일"},
-    {years:10,reward:"포상금 100만원 + 휴가 3일 + 기념패"},
-    {years:15,reward:"포상금 150만원 + 휴가 5일"},
-    {years:20,reward:"포상금 200만원 + 휴가 5일 + 안식휴가"}
+    {years:5,reward:"포상금 50만원 + 휴가 2일",amount:500000},
+    {years:10,reward:"포상금 100만원 + 휴가 3일 + 기념패",amount:1000000},
+    {years:15,reward:"포상금 150만원 + 휴가 5일",amount:1500000},
+    {years:20,reward:"포상금 200만원 + 휴가 5일 + 안식휴가",amount:2000000}
   ],
 };
 function _performanceRewardPolicy(){
@@ -30728,10 +30729,77 @@ function exportMyWelfareCSV(){
 
 // ==================== 장기근속 포상 (인사 메뉴, 전직원 현황) ====================
 let _lsaSearch="",_lsaPageSize=15,_lsaPage=1;
+// 장기근속 포상금 급여 연동 — 직원×근속연수 기준당 급여 조정 1건만 존재하도록 id를 고정한다
+// (같은 포상을 두 번 지급하거나 두 달에 나눠 반영하는 사고 방지).
+const _lsPayoutKey=(empId,years)=>`longservice-${empId}-${years}`;
+const _lsPayoutId=(empId,years)=>`payadj-longservice-${empId}-${years}`;
+function _lsPayoutRecord(empId,years){
+  const key=_lsPayoutKey(empId,years);
+  return payrollAdjustments.find(a=>a.sourceKey===key)||null;
+}
+function _lsTierAmount(tier){const n=Math.round(Number(tier&&tier.amount));return Number.isFinite(n)&&n>0?n:0;}
+// 해당 월 명세서가 이미 확정됐거나 월이 마감됐으면 금액을 바꿀 수 없다
+function _lsMonthBlocked(empId,year,month){
+  if(_payrollLocked(year,month))return"마감된 월";
+  if(payslips.some(p=>String(p.empId)===String(empId)&&p.year===year&&p.month===month&&p.confirmed))return"명세서가 확정된 월";
+  return"";
+}
+function _lsRecalcSlip(emp,year,month){
+  const idx=payslips.findIndex(p=>String(p.empId)===String(emp.id)&&p.year===year&&p.month===month&&!p.confirmed);
+  if(idx>=0)payslips[idx]=calcStandardPayslip(emp,year,month);
+}
+function openLongServicePayoutModal(empId,years){
+  if(currentUser.role!=="admin")return;
+  const emp=getEmp(empId),tier=(settings.longServiceAwards||[]).find(t=>t.years===years);
+  const amount=_lsTierAmount(tier);
+  if(!emp||!tier||!amount){showToast("급여로 지급할 포상금이 설정된 기준이 아닙니다. 복지 제도 설정에서 포상금(원)을 입력하세요.","error");return;}
+  if(_lsPayoutRecord(emp.id,years)){showToast("이미 급여에 반영된 포상입니다.","info");return;}
+  const now=new Date(),curY=now.getFullYear(),curM=now.getMonth()+1;
+  const months=[];for(let i=0;i<4;i++){const d=new Date(curY,curM-1+i,1);months.push([d.getFullYear(),d.getMonth()+1]);}
+  openModal(`<div class="modal-box" style="max-width:420px"><div class="modal-head"><h3>🏅 장기근속 포상금 급여 반영</h3></div><div class="modal-body">
+    <div class="fz12" style="margin-bottom:10px"><strong>${h(emp.name)}</strong> · ${years}년 근속 포상금 <strong>${amount.toLocaleString()}원</strong><div class="fz11 text-gray">${h(tier.reward||"")}</div></div>
+    <div class="fg"><label class="fl">반영할 급여월 <span class="req">*</span></label><select class="fc" id="lsp-month">${months.map(([y,m])=>{const blocked=_lsMonthBlocked(emp.id,y,m);return`<option value="${y}-${m}" ${blocked?"disabled":""}>${y}년 ${m}월${blocked?` (${blocked})`:""}</option>`;}).join("")}</select></div>
+    <div class="fz11 text-gray">과세 소득(상여)으로 해당 월 명세서에 더해지며, 한 번 반영하면 같은 포상은 다시 반영되지 않습니다. 휴가·기념패 등 현물 포상은 이 기능과 별개로 운영합니다.</div>
+  </div><div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal()">취소</button><button class="btn btn-primary" onclick="applyLongServicePayout(${h(JSON.stringify(String(empId)))},${years})">급여에 반영</button></div></div>`);
+}
+function applyLongServicePayout(empId,years){
+  if(currentUser.role!=="admin")return;
+  const emp=getEmp(empId),tier=(settings.longServiceAwards||[]).find(t=>t.years===years),amount=_lsTierAmount(tier);
+  if(!emp||!tier||!amount){showToast("포상금이 설정된 기준이 아닙니다.","error");return;}
+  if(_lsPayoutRecord(emp.id,years)){showToast("이미 급여에 반영된 포상입니다.","info");closeModal();renderLongServiceAwardPage();return;}
+  const sel=($("#lsp-month")?.value||"").split("-").map(Number);
+  const year=sel[0],month=sel[1];
+  if(!year||!month){showToast("급여월을 선택하세요.","error");return;}
+  const blocked=_lsMonthBlocked(emp.id,year,month);
+  if(blocked){showToast(`${year}년 ${month}월은 ${blocked}이라 반영할 수 없습니다. 다른 월을 선택하세요.`,"error");return;}
+  const built=_buildPayrollAdjustment({id:_lsPayoutId(emp.id,years),empId:emp.id,year,month,category:"장기근속 포상금",amount,
+    note:`${years}년 장기근속 포상 (${String(tier.reward||"").slice(0,200)})`,source:"longservice_award",sourceKey:_lsPayoutKey(emp.id,years),taxable:true,longServiceYears:years});
+  if(!built.record){showToast(built.error||"급여 조정을 만들 수 없습니다.","error");return;}
+  payrollAdjustments.push(built.record);
+  _lsRecalcSlip(emp,year,month);
+  logAction("longservice_payout",`${emp.name} ${years}년 근속 포상금 ${amount.toLocaleString()}원 → ${year}-${String(month).padStart(2,"0")} 급여`,"payrollAdjustments",built.record.id);
+  closeModal();autoSaveToServerIfEnabled();showToast("장기근속 포상금이 급여에 반영되었습니다.","success");renderLongServiceAwardPage();
+}
+async function cancelLongServicePayout(empId,years){
+  if(currentUser.role!=="admin")return;
+  const rec=_lsPayoutRecord(empId,years),emp=getEmp(empId);
+  if(!rec||!emp)return;
+  const blocked=_lsMonthBlocked(emp.id,rec.year,rec.month);
+  if(blocked){showToast(`${rec.year}년 ${rec.month}월은 ${blocked}이라 취소할 수 없습니다.`,"error");return;}
+  const ok=await askConfirmModal({title:"장기근속 포상금 반영 취소",message:`${emp.name}님의 ${years}년 근속 포상금을 급여에서 제외합니다.`,confirmText:"반영 취소",danger:true,
+    impacts:[{label:"금액",value:`${Number(rec.amount).toLocaleString()}원`},{label:"급여월",value:`${rec.year}년 ${rec.month}월`}]});
+  if(!ok)return;
+  _tombstone("payrollAdjustments",rec.id);
+  const idx=payrollAdjustments.indexOf(rec);if(idx>=0)payrollAdjustments.splice(idx,1);
+  _lsRecalcSlip(emp,rec.year,rec.month);
+  logAction("longservice_payout_cancel",`${emp.name} ${years}년 근속 포상금 반영 취소`,"payrollAdjustments",rec.id);
+  autoSaveToServerIfEnabled();showToast("급여 반영을 취소했습니다.","success");renderLongServiceAwardPage();
+}
 function renderLongServiceAwardPage(){
   const c=$("#content");if(!c)return;
   const u=currentUser;
   const tiers=settings.longServiceAwards||[];
+  const isAdminView=u.role==="admin"; // 급여 반영 열은 급여 데이터를 다루는 관리자만 본다(비관리자 화면에는 타인의 급여 조정이 내려오지 않음)
   const scope=u.role==="admin"?employees.filter(e=>e.active):u.role==="director"?employees.filter(e=>e.active&&e.dept===u.dept):employees.filter(e=>e.active&&e.dept===u.dept&&e.team===u.team);
   let rows=scope.map(e=>{
     const yearsOfService=e.hire?yearsBetweenDates(e.hire,Date.now()):0;
@@ -30761,8 +30829,8 @@ function renderLongServiceAwardPage(){
         ${[10,15,30,50,100].map(n=>`<option value="${n}" ${_lsaPageSize===n?"selected":""}>${n}건씩</option>`).join("")}
       </select>
     </div>
-    <div class="tbl-wrap" style="max-height:65vh;overflow-y:auto"><table><thead style="position:sticky;top:0;z-index:2;background:#fff"><tr><th>이름</th><th>부서</th><th>팀</th><th>입사일</th><th>근속연수</th><th>포상 대상</th><th>과거 포상이력</th></tr></thead><tbody>
-      ${pageRows.map(r=>`<tr><td><strong>${h(r.emp.name)}</strong></td><td class="fz12 text-gray">${h(r.emp.dept)}</td><td class="fz12 text-gray">${h(r.emp.team)}</td><td class="fz12 text-gray">${h(r.emp.hire||"-")}</td><td>${r.yearsOfService}년</td><td>${r.tier?(r.onLeave?badge("휴직 (다음해 대상 포함)","gray"):badge(`${r.tier.years}년 달성 — ${h(r.tier.reward)}`,"orange")):"-"}</td><td class="fz11 text-gray">${r.pastAwards.length?r.pastAwards.map(pa=>h(pa.note||pa.reason)).join("<br>"):"-"}</td></tr>`).join("")}
+    <div class="tbl-wrap" style="max-height:65vh;overflow-y:auto"><table><thead style="position:sticky;top:0;z-index:2;background:#fff"><tr><th>이름</th><th>부서</th><th>팀</th><th>입사일</th><th>근속연수</th><th>포상 대상</th>${isAdminView?`<th>급여 반영</th>`:""}<th>과거 포상이력</th></tr></thead><tbody>
+      ${pageRows.map(r=>`<tr><td><strong>${h(r.emp.name)}</strong></td><td class="fz12 text-gray">${h(r.emp.dept)}</td><td class="fz12 text-gray">${h(r.emp.team)}</td><td class="fz12 text-gray">${h(r.emp.hire||"-")}</td><td>${r.yearsOfService}년</td><td>${r.tier?(r.onLeave?badge("휴직 (다음해 대상 포함)","gray"):badge(`${r.tier.years}년 달성 — ${h(r.tier.reward)}`,"orange")):"-"}</td>${isAdminView?`<td>${_lsPayoutCellHtml(r)}</td>`:""}<td class="fz11 text-gray">${r.pastAwards.length?r.pastAwards.map(pa=>h(pa.note||pa.reason)).join("<br>"):"-"}</td></tr>`).join("")}
     </tbody></table></div>
     ${totalPages>1?`<div class="flex items-c gap2" style="padding:10px 12px;justify-content:center">
       <button class="btn btn-secondary btn-sm" ${_lsaPage<=1?"disabled":""} onclick="_lsaPage--;renderLongServiceAwardPage()">‹ 이전</button>
@@ -30770,6 +30838,18 @@ function renderLongServiceAwardPage(){
       <button class="btn btn-secondary btn-sm" ${_lsaPage>=totalPages?"disabled":""} onclick="_lsaPage++;renderLongServiceAwardPage()">다음 ›</button>
     </div>`:""}
   </div></div>`;
+}
+
+function _lsPayoutCellHtml(r){
+  if(!r.tier)return"-";
+  const rec=_lsPayoutRecord(r.emp.id,r.tier.years);
+  if(rec){
+    const blocked=_lsMonthBlocked(r.emp.id,rec.year,rec.month);
+    return`${badge(`${rec.year}-${String(rec.month).padStart(2,"0")} 급여 ${Number(rec.amount).toLocaleString()}원`,"green")}${blocked?`<div class="fz11 text-gray">${blocked} — 변경 불가</div>`:`<button class="btn btn-secondary btn-sm" style="margin-left:4px" onclick="cancelLongServicePayout(${h(JSON.stringify(String(r.emp.id)))},${r.tier.years})">취소</button>`}`;
+  }
+  if(!_lsTierAmount(r.tier))return`<span class="fz11 text-gray">포상금 미설정</span>`;
+  if(r.onLeave)return`<span class="fz11 text-gray">휴직 중</span>`;
+  return`<button class="btn btn-primary btn-sm" onclick="openLongServicePayoutModal(${h(JSON.stringify(String(r.emp.id)))},${r.tier.years})">${_lsTierAmount(r.tier).toLocaleString()}원 반영</button>`;
 }
 
 // ==================== (최)우수사원 선정 이력 (인사 메뉴, 전직원 조회) ====================
@@ -30998,14 +31078,16 @@ function _renderWelfareLongServiceTab(){
   const tierRows=tiers.map((t,i)=>`<tr>
     <td><input class="fc" type="number" style="width:70px" value="${t.years}" min="1" oninput="settings.longServiceAwards[${i}].years=+this.value;autoSaveDebounced()"></td>
     <td><input class="fc" value="${h(t.reward)}" oninput="settings.longServiceAwards[${i}].reward=this.value;autoSaveDebounced()"></td>
+    <td><input class="fc" type="number" style="width:130px" min="0" step="10000" placeholder="예: 500000" value="${_lsTierAmount(t)||""}" oninput="settings.longServiceAwards[${i}].amount=Math.max(0,Math.round(+this.value||0));autoSaveDebounced()"></td>
     <td><button class="btn btn-danger btn-sm" onclick="settings.longServiceAwards.splice(${i},1);autoSaveDebounced();renderWelfareSettingsPage()">삭제</button></td>
   </tr>`).join("");
 
   el.innerHTML=`
   <div class="card" style="margin-bottom:14px"><div class="card-head"><h3>🏅 장기근속 포상 기준 설정</h3>
-    <button class="btn btn-primary btn-sm" onclick="settings.longServiceAwards.push({years:5,reward:''});autoSaveDebounced();renderWelfareSettingsPage()">+ 기준 추가</button>
+    <button class="btn btn-primary btn-sm" onclick="settings.longServiceAwards.push({years:5,reward:'',amount:0});autoSaveDebounced();renderWelfareSettingsPage()">+ 기준 추가</button>
   </div><div class="card-body" style="padding:0">
-    ${tiers.length?`<div class="tbl-wrap"><table><thead><tr><th>근속연수</th><th>포상 내용</th><th>삭제</th></tr></thead><tbody>${tierRows}</tbody></table></div>`:`<div style="padding:20px;text-align:center;color:#94a3b8">등록된 기준이 없습니다.</div>`}
+    <div class="fz11 text-gray" style="padding:8px 12px">포상금(원)을 입력한 기준만 "장기근속 포상" 화면에서 급여에 반영할 수 있습니다. 비워 두면 안내 문구만 있는 기준으로 취급합니다.</div>
+    ${tiers.length?`<div class="tbl-wrap"><table><thead><tr><th>근속연수</th><th>포상 내용</th><th>급여 반영 포상금(원)</th><th>삭제</th></tr></thead><tbody>${tierRows}</tbody></table></div>`:`<div style="padding:20px;text-align:center;color:#94a3b8">등록된 기준이 없습니다.</div>`}
   </div></div>
   <div class="card"><div class="card-body">
     <div class="flex items-c gap2 mb2" style="justify-content:space-between">
