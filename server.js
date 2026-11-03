@@ -3070,6 +3070,33 @@ function _gateRejectReason(field, stored) {
   return "PERMISSION";
 }
 
+function _payrollPeriodBlock(record, prior) {
+  if (!record) return null;
+  const period = `${Number(record.year)}-${Number(record.month)}`;
+  const lockedMonths = prior.settings?.payrollLockedMonths;
+  const locked = (Array.isArray(lockedMonths) ? lockedMonths : []).some(value => {
+    const [year, month] = String(value).split("-");
+    return `${Number(year)}-${Number(month)}` === period;
+  });
+  if (locked) return "PAYROLL_LOCKED";
+  return (prior.payslips || []).some(p => p.confirmed &&
+    String(p.empId) === String(record.empId) &&
+    Number(p.year) === Number(record.year) && Number(p.month) === Number(record.month))
+    ? "CONFIRMED" : null;
+}
+
+function _payrollRewardConflict(record, stored, basis) {
+  if (!record || !_saveFeedbackChangeRequested("payrollAdjustments", record, stored)) return null;
+  if (record.source === "performance_reward") {
+    const year = Number(record.evalYear);
+    if (!Number.isInteger(year) || year < 2000 || year > 2100 ||
+        record.sourceKey !== `performance:${year}:${record.empId}`) return "VALIDATION";
+  }
+  if (record.sourceKey && basis.some(row => String(row.id) !== String(record.id) &&
+      row.sourceKey === record.sourceKey)) return "PAYROLL_DUPLICATE";
+  return null;
+}
+
 async function _persistDataLocked(data, changedBy = "system", companyId = null, actor = null, externalClient = null, prepareEffects = null) {
   // Internal journal cannot be injected, cleared or echoed by a client/backup.
   delete data._pendingSaveEffects;
@@ -3193,6 +3220,32 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
     }
     if (hasRoomTombstones) {
       data.roomReservationTombstones = keepAuthorized("roomReservations", data.roomReservationTombstones, prior.roomReservationTombstones);
+    }
+  }
+  // Check persisted periods while holding the company save lock. A client cannot
+  // unlock and rewrite a closed month in one request, or move its rows elsewhere.
+  if (["payrollAdjustments", "payslips"].some(field =>
+      Array.isArray(data[field]) || data.recordTombstones?.[field]?.length)) {
+    const prior = await loadData(companyId, externalClient || pool);
+    for (const field of ["payrollAdjustments", "payslips"]) {
+      const storedById = new Map((prior[field] || []).map(row => [String(row.id), row]));
+      if (Array.isArray(data[field])) data[field] = data[field].map(row => {
+        if (!row || row.id == null) return row;
+        const stored = storedById.get(String(row.id));
+        if (!_saveFeedbackChangeRequested(field, row, stored)) return row;
+        const reason = _payrollPeriodBlock(stored, prior) || _payrollPeriodBlock(row, prior);
+        if (!reason) return row;
+        rejectSaveRecord(field, row, stored, reason);
+        return stored || null;
+      }).filter(Boolean);
+      if (Array.isArray(data.recordTombstones?.[field])) {
+        data.recordTombstones[field] = data.recordTombstones[field].filter(t => {
+          const reason = _payrollPeriodBlock(storedById.get(String(t.id)), prior);
+          if (!reason) return true;
+          rejectSaveDeletion(field, t, reason);
+          return false;
+        });
+      }
     }
   }
   if (USE_JSON_FILE) {
@@ -3371,6 +3424,21 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
       // JSON 모드는 한 요청에 실린 신규 레코드를 일괄 병합하므로, 저장본만 기준으로
       // 검증하면 같은 요청 안의 중복 포지션 코드/재직자 이중 배정을 놓칠 수 있다.
       // 이미 수락한 요청 레코드를 차례로 검증 기준에 더해 이 우회를 막는다.
+      if (gatedField === "payrollAdjustments") {
+        const deadIds = new Set((_tomb.payrollAdjustments || []).map(t => String(t.id)));
+        const basis = new Map(storedList.filter(p => !deadIds.has(String(p.id))).map(p => [String(p.id), p]));
+        data[gatedField] = data[gatedField].map(rec => {
+          const stored = storedById.get(String(rec.id));
+          if (stored && (rec.updatedAt || rec.createdAt || "") < (stored.updatedAt || stored.createdAt || "")) {
+            rejectSaveRecord(gatedField, rec, stored, "CONFLICT_NEWER");
+            return stored;
+          }
+          const why = _payrollRewardConflict(rec, stored, [...basis.values()]);
+          if (why) { rejectSaveRecord(gatedField, rec, stored, why); return stored || null; }
+          basis.set(String(rec.id), rec);
+          return rec;
+        }).filter(Boolean);
+      }
       if (gatedField === "workforcePositions") {
         const accepted = [];
         data[gatedField] = data[gatedField].filter(rec => {
@@ -3903,6 +3971,18 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
             toWrite = next;
           }
           let validationList = null;
+          if (field === "payrollAdjustments") {
+            const { rows: adjustmentRows } = await client.query(
+              "SELECT data FROM app_collections WHERE collection = 'payrollAdjustments' AND (company_id = $1 OR company_id IS NULL)",
+              [companyId || null]);
+            const deadIds = new Set((data.recordTombstones?.payrollAdjustments || []).map(t => String(t.id)));
+            const basis = adjustmentRows.map(r => r.data).filter(r => !deadIds.has(String(r.id)));
+            const why = _payrollRewardConflict(toWrite, storedItem, basis);
+            if (why) {
+              rejectSaveRecord(field, item, storedItem, why);
+              continue;
+            }
+          }
           if (field === "roomReservations") validationList = await _getRoomReservationsPg();
           else if (field === "learningAssignments") validationList = await _loadLearningCollectionsPg();
           else if (field === "workforcePositions") {
