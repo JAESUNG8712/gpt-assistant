@@ -206,7 +206,6 @@ function _authPayload() {
   }
 }
 const _auth = _authPayload();
-function _isAdminUser() { return !!(_auth && _auth.role === 'admin'); }
 
 async function uploadFile(inputId, url, statusId) {
   const input = document.getElementById(inputId);

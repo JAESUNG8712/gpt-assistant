@@ -1662,7 +1662,6 @@ async function loadRecruitFromServer(force=false){
   }})();
   return _recruitLoadPromise;
 }
-let kpiSearch={name:"",dept:""};
 let approvalSearch={name:"",dept:""};
 let myKpiYear=0,hrListFilter={search:"",dept:"",workplaceId:"",role:"",status:"active",sortKey:"empNo",sortDir:1,pageSize:15,page:1};
 let _boardPageFilter={search:"",dept:"",author:"",dateFrom:"",dateTo:"",pageSize:15,page:1};
@@ -7712,31 +7711,6 @@ ${EVAL_ONLY_MODE?"":`<nav id="mobile-tab-nav"><div class="tab-items">
 </div></nav>`}`;
   _observeContentForms();renderSidebar();renderPage();_updateMobileTabNav();
 }
-const SIDEBAR_GROUP_META={
-  dashboard:{label:"대시보드",roles:["admin","director","leader","member"]},
-  "notif-sep":{label:"알림",roles:["admin","director","leader","member"]},
-  "profile-sep":{label:"내 정보",roles:["admin","director","leader","member"]},
-  "approval-sep":{label:"전자결재",roles:["admin","director","leader","member"]},
-  "comm-sep":{label:"커뮤니케이션",roles:["admin","director","leader","member"]},
-  "attend-sep":{label:"근태 관리",roles:["admin","director","leader","member"]},
-  "welfare-sep":{label:"복지/교육",roles:["admin","director","leader","member"]},
-  "pay-sep":{label:"급여",roles:["admin","director","leader","member"]},
-  "hr-sep":{label:"인사 관리",roles:["admin","director","leader"]},
-  "recruit-sep":{label:"채용 관리",roles:["admin","director","leader"]},
-  "kpi-sep":{label:"KPI 성과평가",roles:["admin","director","leader","member"]},
-  "comp-sep":{label:"다면·역량평가",roles:["admin","director","leader","member"]},
-  "promo-sep":{label:"승진 심사",roles:["admin"]},
-  "talent-sep":{label:"핵심인재",roles:["admin","director","leader","member"]},
-  "lowperf-sep":{label:"저성과 관리",roles:["admin","director"]},
-  "acct-sep":{label:"회계",roles:["admin"]},
-  "bizplan-sep":{label:"사업계획",roles:["admin","director","leader","member"]},
-  "sales-sep":{label:"영업관리",roles:["admin"]},
-  "inv-sep":{label:"재고관리",roles:["admin"]},
-  "pms-sep":{label:"PMS",roles:["admin","director","leader","member"]},
-  "set-op-sep":{label:"시스템 운영",roles:["admin"]},
-  "set-sys-sep":{label:"시스템 관리",roles:["admin"]},
-  "set-pw-sep":{label:"개인 설정",roles:["admin","director","leader","member"]},
-};
 const SIDEBAR_DEFAULT_ORDER=["dashboard","notif-sep","profile-sep","approval-sep","comm-sep","attend-sep","welfare-sep","pay-sep","hr-sep","recruit-sep","kpi-sep","comp-sep","okr-sep","promo-sep","talent-sep","lowperf-sep","acct-sep","bizplan-sep","sales-sep","inv-sep","pms-sep","set-op-sep","set-sys-sep","set-pw-sep"];
 // 대분류 카테고리: 사이드바/상단 카테고리 내비게이션에서 사용 (중분류 그룹 묶음)
 const BIG_CATEGORIES=[
@@ -28349,7 +28323,6 @@ function _orgUnitCounts(){
   // 조직 위계: 회사(대표이사) - 본부/센터/실 - 팀 - 파트
   return{"본부/센터/실":orgDB.depts.length,"팀":Object.values(orgDB.teams).flat().length};
 }
-let _orgDragData=null;
 function _canViewOrgHistory(){
   if(!currentUser)return false;
   if(currentUser.role==="admin")return true;
@@ -29794,7 +29767,6 @@ function _initAdminNaverMap(){
 
 // ==================== BOARD / NOTICE (게시판·공지사항) ====================
 let _boardSelCat=null;
-let _boardFilter={search:"",dept:"",author:"",dateFrom:"",dateTo:""};
 function renderBoardPage(){
   const c=$("#content");
   const cats=settings.boardCategories||[{id:"notice",name:"공지사항",icon:"📢"},{id:"general",name:"일반게시판",icon:"📌"}];
@@ -31335,7 +31307,6 @@ async function _removeAward(empId,hhId){
 }
 
 // ==================== 법정의무교육 (Mandatory Training) ====================
-const _MT_COLORS={"sexual-harassment":"pink","privacy":"blue","safety":"orange","bullying":"red","disabled-employment":"teal"};
 function renderMandatoryTrainingPage(){
   const c=$("#content");
   const yr=new Date().getFullYear();
