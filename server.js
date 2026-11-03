@@ -2996,9 +2996,10 @@ function _sanitizeCompGradeResultsForRole(incoming, stored, actor) {
 // 1 증가시키고, 로그인 시 발급하는 토큰에 그 시점의 authVersion을 함께 실어(authenticate()
 // 미들웨어 참고) 매 요청마다 "토큰에 찍힌 버전 == 지금 저장된 버전"을 대조 — 다르면 그
 // 토큰은 즉시 무효로 취급된다(재로그인해야 새 버전의 토큰을 받음). 새 레코드(ex 없음)는
-// 비교 대상이 없으므로 0에서 시작.
+// 비교 대상이 없으면 새로운 난수 버전으로 시작한다. 삭제 후 같은 ID를 복구할 때
+// 0을 재사용하면 삭제 전 토큰이 다시 유효해질 수 있으므로 요청값도 재사용하지 않는다.
 function _nextAuthVersion(ex, emp, pw) {
-  if (!ex) return 0;
+  if (!ex) return crypto.randomInt(1, 2 ** 48 - 1);
   const prev = Number(ex.authVersion) || 0;
   const changed = pw !== ex.pw || emp.role !== ex.role || !!emp.active !== !!ex.active;
   return changed ? prev + 1 : prev;
@@ -3681,7 +3682,7 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
         let pw = rawEmp.pw;
         if (!pwAllowed) pw = undefined;
         else if (pw != null && pw !== "") pw = await hashPlaintextPw(pw);
-        const emp = { ...rawEmp, pw, authVersion: 0 };
+        const emp = { ...rawEmp, pw, authVersion: _nextAuthVersion(null, rawEmp, pw) };
         await client.query(
           "INSERT INTO employees (id, data, company_id) VALUES ($1, $2, $3)",
           [emp.id, emp, companyId]

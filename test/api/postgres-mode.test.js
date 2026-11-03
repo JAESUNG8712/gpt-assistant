@@ -1140,6 +1140,25 @@ if (!ADMIN_DATABASE_URL) {
       assert.equal((await legacyRestore.json()).code, "REVISION_REDACTED");
       assert.equal((await db.query("SELECT data FROM app_collections WHERE company_id=$1 AND collection='boardPosts' AND id=$2",
         [scope, secretPost.id])).rows[0].data.title, "current title");
+      const reviveEmployee = { id: "revive-pg", loginId: "revive-pg", pw: "RevivePassword123",
+        name: "복구 직원", role: "member", active: true, updatedAt: new Date().toISOString() };
+      assert.equal((await api("/save", authH(A.token, "POST", { employees: [reviveEmployee] }))).status, 200);
+      const oldLogin = await (await api("/login", authH(A.token, "POST", {
+        loginId: reviveEmployee.loginId, pw: reviveEmployee.pw, companyCode: A.companyCode }))).json();
+      assert.equal(oldLogin.ok, true, JSON.stringify(oldLogin));
+      assert.equal((await api("/save", authH(A.token, "POST", { employees: [{ ...reviveEmployee,
+        name: "수정 직원", updatedAt: new Date(Date.now() + 2000).toISOString() }] }))).status, 200);
+      const employeeRevision = (await db.query(
+        "SELECT id FROM record_revisions WHERE company_id=$1 AND record_id=$2 ORDER BY changed_at DESC LIMIT 1",
+        [scope, reviveEmployee.id])).rows[0];
+      assert.ok(employeeRevision);
+      await db.query("DELETE FROM employees WHERE company_id=$1 AND id=$2", [scope, reviveEmployee.id]);
+      assert.equal((await api("/data", authH(oldLogin.token, "GET"))).status, 401);
+      const revivePreview = await (await api(`/api/record-revisions/${employeeRevision.id}/preview`, authH(A.token, "GET"))).json();
+      assert.equal(revivePreview.ok, true, JSON.stringify(revivePreview));
+      assert.equal((await api(`/api/record-revisions/${employeeRevision.id}/restore`,
+        authH(A.token, "POST", { expectedToken: revivePreview.expectedToken }))).status, 200);
+      assert.equal((await api("/data", authH(oldLogin.token, "GET"))).status, 401);
       // Simulate takeover while the original HTTP call is still in flight.
       // Both late success and late failure must leave the new owner's row alone.
       for (const lateStatus of [200, 500]) {

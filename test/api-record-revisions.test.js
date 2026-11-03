@@ -142,6 +142,29 @@ test("일반 직원은 이력을 보거나 복구할 수 없다", async t => {
   assert.equal((await api("/api/record-revisions?field=bogus", { headers: { Authorization: `Bearer ${boot.token}` } })).status, 400);
 });
 
+test("삭제된 직원을 복구해도 삭제 전 로그인 토큰은 다시 유효해지지 않는다", async t => {
+  const server = await startServer(); t.after(() => server.stop());
+  const api = (p, o) => fetch(server.baseUrl + p, o);
+  const { token } = await bootstrapAdminAndLogin(server, { loginId: "admin", pw: "admin-test-pw-1" });
+  let d = await data(api, token);
+  const member = { id: "revived-member", loginId: "revived-member", pw: "member-pw-123",
+    name: "복구 대상", role: "member", active: true, updatedAt: new Date().toISOString() };
+  await api("/save", auth(token, "POST", { _version: d.version, employees: [...d.data.employees, member] }));
+  const oldLogin = await (await api("/login", auth(token, "POST", { loginId: member.loginId, pw: member.pw }))).json();
+  assert.equal(oldLogin.ok, true);
+  d = await data(api, token);
+  await api("/save", auth(token, "POST", { _version: d.version, employees: d.data.employees.map(e =>
+    e.id === member.id ? { ...e, name: "수정 이름", updatedAt: new Date(Date.now() + 1000).toISOString() } : e) }));
+  const revisions = await (await api("/api/record-revisions?field=employees", auth(token, "GET"))).json();
+  const revision = revisions.revisions.find(r => r.recordId === member.id);
+  assert.ok(revision);
+  d = await data(api, token);
+  await api("/save", auth(token, "POST", { _version: d.version, employees: d.data.employees.filter(e => e.id !== member.id) }));
+  assert.equal((await api("/data", auth(oldLogin.token, "GET"))).status, 401);
+  assert.equal((await restore(api, token, revision.id)).status, 200);
+  assert.equal((await api("/data", auth(oldLogin.token, "GET"))).status, 401, "복구 이후에도 과거 토큰은 철회 상태여야 한다");
+});
+
 test("직원 정보를 되돌려도 현재 비밀번호는 바뀌지 않는다", async t => {
   const server = await startServer(); t.after(() => server.stop());
   const api = (p, o) => fetch(server.baseUrl + p, o);
