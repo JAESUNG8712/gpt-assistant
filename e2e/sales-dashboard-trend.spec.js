@@ -22,7 +22,7 @@ test("월별 추이 탭: 차트·표·전년 대비를 그리고, 연도를 바�
   await loginAsAdmin(page);
 
   const months = (rev, prev) => Array.from({ length: 12 }, (_, i) => ({
-    month: i + 1, count: rev[i] ? 1 : 0, order: rev[i], revenue: rev[i],
+    month: i + 1, count: rev[i] ? 1 : 0, orderCount: rev[i] ? 1 : 0, order: rev[i], revenue: rev[i],
     prevOrder: prev[i], prevRevenue: prev[i],
     revenueGrowthPct: prev[i] > 0 ? Math.round(((rev[i] - prev[i]) / prev[i]) * 100) : null,
   }));
@@ -32,10 +32,12 @@ test("월별 추이 탭: 차트·표·전년 대비를 그리고, 연도를 바�
   const requested = [];
   await page.route("**/api/erp/sales-dashboard**", (route) => {
     requested.push(new URL(route.request().url()).search);
-    const year = Number(new URL(route.request().url()).searchParams.get("year")) || 2031;
+    const sp = new URL(route.request().url()).searchParams;
+    const year = Number(sp.get("year")) || 2031;
+    const rep = sp.get("rep") || "";
     route.fulfill({ json: {
       ok: true, targetsByYear: {}, partnerRanking: [], pipeline: [], repRanking: [],
-      monthlyTrend: { year, years: [2031, 2030], months: months(rev, prev) },
+      monthlyTrend: { year, rep, reps: ['김영업', '이영업<b>'], years: [2031, 2030], months: months(rep ? rev.map(v => v / 2) : rev, prev) },
     } });
   });
 
@@ -55,9 +57,20 @@ test("월별 추이 탭: 차트·표·전년 대비를 그리고, 연도를 바�
   await expect(page.locator("#sales-dash-body")).toContainText("+90%");
 
   // 연도 변경 → 서버에 ?year=2030 으로 재요청
-  await page.locator("#sales-dash-body select").selectOption("2030");
+  await page.locator("#sales-dash-body select").first().selectOption("2030");
   await expect.poll(() => requested.some((q) => q.includes("year=2030"))).toBe(true);
-  await expect(page.locator("#sales-dash-body select")).toHaveValue("2030");
+  await expect(page.locator("#sales-dash-body select").first()).toHaveValue("2030");
+
+  // 담당자 필터 → ?rep= 로 재요청, 이름은 이스케이프되어 태그로 해석되지 않음
+  const repSel = page.locator("#sales-trend-rep");
+  await expect(repSel.locator("option")).toHaveCount(3); // 전체 + 2명
+  await expect(repSel.locator("option b")).toHaveCount(0);
+  await repSel.selectOption("이영업<b>");
+  await expect.poll(() => requested.some((q) => q.includes("rep=" + encodeURIComponent("이영업<b>")))).toBe(true);
+  await expect(page.locator("#sales-trend-rep")).toHaveValue("이영업<b>");
+  await expect(page.locator("#sales-dash-body")).toContainText("담당자 필터는 전년 비교에도 같이 적용됩니다");
+  // 수주 건수 열
+  await expect(page.locator("#sales-dash-body thead")).toContainText("수주 건수");
 
   expect(pageErrors).toEqual([]);
 });
