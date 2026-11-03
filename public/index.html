@@ -8327,7 +8327,7 @@ const PULSE_QUESTION_LIBRARY=[
   {id:"wellbeing",driver:"웰빙",text:"현재 업무량을 건강하게 지속할 수 있다."},
   {id:"action",driver:"실행 신뢰",text:"이번 설문 결과를 바탕으로 의미 있는 개선 조치가 이루어질 것이라 믿는다."},
 ];
-function _pulseIsOpen(s){const today=new Date().toISOString().slice(0,10);return s&&s.status!=="closed"&&(!s.startDate||s.startDate<=today)&&(!s.endDate||s.endDate>=today);}
+function _pulseIsOpen(s){const n=new Date(),today=`${n.getFullYear()}-${String(n.getMonth()+1).padStart(2,"0")}-${String(n.getDate()).padStart(2,"0")}`;return s&&s.status!=="closed"&&(!s.startDate||s.startDate<=today)&&(!s.endDate||s.endDate>=today);}
 function openPulseSurveyModal(){
   if(currentUser?.role==="admin")gotoPage("engagement-pulse-create");
 }
