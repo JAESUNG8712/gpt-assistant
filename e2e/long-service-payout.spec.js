@@ -84,6 +84,16 @@ test.describe("장기근속 포상금 급여 연동", () => {
     await expect(row.locator("button", { hasText: "500,000원 반영" })).toBeVisible();
     expect(await page.evaluate(() => payrollAdjustments.filter((a) => a.sourceKey === "longservice-9801-5").length)).toBe(0);
     expect(await page.evaluate(() => getEmp(9801).hrHistory.filter((x) => x.type === "longservice").length)).toBe(0);
+
+    // 취소 후 재반영: 삭제 표식이 남은 id를 다시 쓰면 다음 병합에서 새 급여 조정이 지워진다
+    await row.locator("button", { hasText: "500,000원 반영" }).click();
+    await page.locator(".modal-box", { hasText: "장기근속 포상금 급여 반영" }).locator("button", { hasText: "급여에 반영" }).click();
+    const again = await page.evaluate(() => payrollAdjustments.filter((a) => a.sourceKey === "longservice-9801-5"));
+    expect(again).toHaveLength(1);
+    expect(again[0].id).not.toBe("payadj-longservice-9801-5");
+    // 서버에서 같은 표식과 함께 내려온 데이터를 병합해도 재반영한 조정이 남는다
+    await page.evaluate(() => applyState({ payrollAdjustments: JSON.parse(JSON.stringify(payrollAdjustments)), recordTombstones: JSON.parse(JSON.stringify(recordTombstones)) }, true));
+    expect(await page.evaluate(() => payrollAdjustments.filter((a) => a.sourceKey === "longservice-9801-5").length)).toBe(1);
     expect(pageErrors).toEqual([]);
   });
 

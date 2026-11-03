@@ -30754,7 +30754,14 @@ let _lsaSearch="",_lsaPageSize=15,_lsaPage=1;
 // 장기근속 포상금 급여 연동 — 직원×근속연수 기준당 급여 조정 1건만 존재하도록 id를 고정한다
 // (같은 포상을 두 번 지급하거나 두 달에 나눠 반영하는 사고 방지).
 const _lsPayoutKey=(empId,years)=>`longservice-${empId}-${years}`;
-const _lsPayoutId=(empId,years)=>`payadj-longservice-${empId}-${years}`;
+const _lsPayoutId=(empId,years)=>{
+  const base=`payadj-longservice-${empId}-${years}`;
+  // 취소하면 이 id로 삭제 표식(tombstone)이 30일간 남고, 병합은 id만 보고 걸러낸다.
+  // 같은 id로 재반영하면 저장·새로고침 때 새 조정이 지워지므로, 표식이 남은 id는 새 id를 쓴다.
+  // (중복 방지는 id가 아니라 sourceKey 조회로 하므로 영향 없음)
+  const dead=((recordTombstones.payrollAdjustments)||[]).some(t=>t&&String(t.id)===base);
+  return dead?`${base}-r${Date.now()}`:base;
+};
 // 포상금을 급여에 반영하면 직원 이력에도 남긴다. 우수사원(type:"award") 이력과 섞이면 최근 선정 제한·포상 가산점 계산이 왜곡되므로 별도 type을 쓴다.
 const _lsHistoryId=(empId,years)=>`hh-longservice-${empId}-${years}`;
 function _lsPayoutRecord(empId,years){
