@@ -1940,7 +1940,8 @@ function _sanitizeGatedRecord(field, incoming, stored, actor, actorEmp, settings
   }
   if (field === "engagementResponses") {
     const survey = (engagementSurveys || []).find(s => s && String(s.id) === String(incoming.surveyId));
-    const today = new Date().toISOString().slice(0, 10);
+    // 설문 기간은 한국 날짜 기준이다. UTC 날짜를 쓰면 한국 시간 00~09시에 '시작일=오늘'인 설문이 마감으로 거부된다.
+    const today = new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 10);
     if (!survey || survey.status === "closed" || (survey.startDate && survey.startDate > today) || (survey.endDate && survey.endDate < today)) {
       return stored ? { ...stored } : null;
     }

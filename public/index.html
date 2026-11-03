@@ -1662,7 +1662,6 @@ async function loadRecruitFromServer(force=false){
   }})();
   return _recruitLoadPromise;
 }
-let kpiSearch={name:"",dept:""};
 let approvalSearch={name:"",dept:""};
 let myKpiYear=0,hrListFilter={search:"",dept:"",workplaceId:"",role:"",status:"active",sortKey:"empNo",sortDir:1,pageSize:15,page:1};
 let _boardPageFilter={search:"",dept:"",author:"",dateFrom:"",dateTo:"",pageSize:15,page:1};
@@ -7712,31 +7711,6 @@ ${EVAL_ONLY_MODE?"":`<nav id="mobile-tab-nav"><div class="tab-items">
 </div></nav>`}`;
   _observeContentForms();renderSidebar();renderPage();_updateMobileTabNav();
 }
-const SIDEBAR_GROUP_META={
-  dashboard:{label:"대시보드",roles:["admin","director","leader","member"]},
-  "notif-sep":{label:"알림",roles:["admin","director","leader","member"]},
-  "profile-sep":{label:"내 정보",roles:["admin","director","leader","member"]},
-  "approval-sep":{label:"전자결재",roles:["admin","director","leader","member"]},
-  "comm-sep":{label:"커뮤니케이션",roles:["admin","director","leader","member"]},
-  "attend-sep":{label:"근태 관리",roles:["admin","director","leader","member"]},
-  "welfare-sep":{label:"복지/교육",roles:["admin","director","leader","member"]},
-  "pay-sep":{label:"급여",roles:["admin","director","leader","member"]},
-  "hr-sep":{label:"인사 관리",roles:["admin","director","leader"]},
-  "recruit-sep":{label:"채용 관리",roles:["admin","director","leader"]},
-  "kpi-sep":{label:"KPI 성과평가",roles:["admin","director","leader","member"]},
-  "comp-sep":{label:"다면·역량평가",roles:["admin","director","leader","member"]},
-  "promo-sep":{label:"승진 심사",roles:["admin"]},
-  "talent-sep":{label:"핵심인재",roles:["admin","director","leader","member"]},
-  "lowperf-sep":{label:"저성과 관리",roles:["admin","director"]},
-  "acct-sep":{label:"회계",roles:["admin"]},
-  "bizplan-sep":{label:"사업계획",roles:["admin","director","leader","member"]},
-  "sales-sep":{label:"영업관리",roles:["admin"]},
-  "inv-sep":{label:"재고관리",roles:["admin"]},
-  "pms-sep":{label:"PMS",roles:["admin","director","leader","member"]},
-  "set-op-sep":{label:"시스템 운영",roles:["admin"]},
-  "set-sys-sep":{label:"시스템 관리",roles:["admin"]},
-  "set-pw-sep":{label:"개인 설정",roles:["admin","director","leader","member"]},
-};
 const SIDEBAR_DEFAULT_ORDER=["dashboard","notif-sep","profile-sep","approval-sep","comm-sep","attend-sep","welfare-sep","pay-sep","hr-sep","recruit-sep","kpi-sep","comp-sep","okr-sep","promo-sep","talent-sep","lowperf-sep","acct-sep","bizplan-sep","sales-sep","inv-sep","pms-sep","set-op-sep","set-sys-sep","set-pw-sep"];
 // 대분류 카테고리: 사이드바/상단 카테고리 내비게이션에서 사용 (중분류 그룹 묶음)
 const BIG_CATEGORIES=[
@@ -8327,7 +8301,7 @@ const PULSE_QUESTION_LIBRARY=[
   {id:"wellbeing",driver:"웰빙",text:"현재 업무량을 건강하게 지속할 수 있다."},
   {id:"action",driver:"실행 신뢰",text:"이번 설문 결과를 바탕으로 의미 있는 개선 조치가 이루어질 것이라 믿는다."},
 ];
-function _pulseIsOpen(s){const today=new Date().toISOString().slice(0,10);return s&&s.status!=="closed"&&(!s.startDate||s.startDate<=today)&&(!s.endDate||s.endDate>=today);}
+function _pulseIsOpen(s){const n=new Date(),today=`${n.getFullYear()}-${String(n.getMonth()+1).padStart(2,"0")}-${String(n.getDate()).padStart(2,"0")}`;return s&&s.status!=="closed"&&(!s.startDate||s.startDate<=today)&&(!s.endDate||s.endDate>=today);}
 function openPulseSurveyModal(){
   if(currentUser?.role==="admin")gotoPage("engagement-pulse-create");
 }
@@ -28349,7 +28323,6 @@ function _orgUnitCounts(){
   // 조직 위계: 회사(대표이사) - 본부/센터/실 - 팀 - 파트
   return{"본부/센터/실":orgDB.depts.length,"팀":Object.values(orgDB.teams).flat().length};
 }
-let _orgDragData=null;
 function _canViewOrgHistory(){
   if(!currentUser)return false;
   if(currentUser.role==="admin")return true;
@@ -29794,7 +29767,6 @@ function _initAdminNaverMap(){
 
 // ==================== BOARD / NOTICE (게시판·공지사항) ====================
 let _boardSelCat=null;
-let _boardFilter={search:"",dept:"",author:"",dateFrom:"",dateTo:""};
 function renderBoardPage(){
   const c=$("#content");
   const cats=settings.boardCategories||[{id:"notice",name:"공지사항",icon:"📢"},{id:"general",name:"일반게시판",icon:"📌"}];
@@ -30754,7 +30726,14 @@ let _lsaSearch="",_lsaPageSize=15,_lsaPage=1;
 // 장기근속 포상금 급여 연동 — 직원×근속연수 기준당 급여 조정 1건만 존재하도록 id를 고정한다
 // (같은 포상을 두 번 지급하거나 두 달에 나눠 반영하는 사고 방지).
 const _lsPayoutKey=(empId,years)=>`longservice-${empId}-${years}`;
-const _lsPayoutId=(empId,years)=>`payadj-longservice-${empId}-${years}`;
+const _lsPayoutId=(empId,years)=>{
+  const base=`payadj-longservice-${empId}-${years}`;
+  // 취소하면 이 id로 삭제 표식(tombstone)이 30일간 남고, 병합은 id만 보고 걸러낸다.
+  // 같은 id로 재반영하면 저장·새로고침 때 새 조정이 지워지므로, 표식이 남은 id는 새 id를 쓴다.
+  // (중복 방지는 id가 아니라 sourceKey 조회로 하므로 영향 없음)
+  const dead=((recordTombstones.payrollAdjustments)||[]).some(t=>t&&String(t.id)===base);
+  return dead?`${base}-r${Date.now()}`:base;
+};
 // 포상금을 급여에 반영하면 직원 이력에도 남긴다. 우수사원(type:"award") 이력과 섞이면 최근 선정 제한·포상 가산점 계산이 왜곡되므로 별도 type을 쓴다.
 const _lsHistoryId=(empId,years)=>`hh-longservice-${empId}-${years}`;
 function _lsPayoutRecord(empId,years){
@@ -31328,7 +31307,6 @@ async function _removeAward(empId,hhId){
 }
 
 // ==================== 법정의무교육 (Mandatory Training) ====================
-const _MT_COLORS={"sexual-harassment":"pink","privacy":"blue","safety":"orange","bullying":"red","disabled-employment":"teal"};
 function renderMandatoryTrainingPage(){
   const c=$("#content");
   const yr=new Date().getFullYear();

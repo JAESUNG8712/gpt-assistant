@@ -20,7 +20,7 @@
 1. `POST /login`
    ```json
    // 요청
-   { "loginId": "u2008001", "pw": "비밀번호", "otp": "123456 (2FA 설정된 계정만, 선택)" }
+   { "companyCode": "회사 코드 (PostgreSQL 모드에서는 필수, JSON 파일 모드에서는 불필요)", "loginId": "u2008001", "pw": "비밀번호", "otp": "123456 (2FA 설정된 계정만, 선택)" }
    // 응답 (성공)
    { "ok": true, "employee": { "id": 2, "name": "...", "role": "admin|director|leader|member", ... }, "token": "eyJ..." }
    // 응답 (2FA 필요)
@@ -30,7 +30,7 @@
    ```
    - `employee` 객체에는 `pw` 필드가 없습니다(서버가 항상 제거).
    - `token`은 HMAC 서명된 문자열이며 **12시간 후 만료**됩니다. 만료되면 다시 `/login`을 호출해야 합니다.
-   - IP당 15분에 20회로 요청 제한이 걸려 있습니다(초과 시 429).
+   - 실패한 시도만 세어 IP당 15분에 20회로 제한합니다(초과 시 429). 성공한 로그인은 횟수에 포함되지 않습니다.
    - 자연 만료 전이라도, 그 계정의 role/pw/재직여부(active) 중 하나라도 바뀌면(퇴직 처리,
      강등, 관리자의 비밀번호 강제 초기화 등) 이미 발급된 토큰은 다음 요청부터 즉시 401로
      거부됩니다 — 토큰에 실린 `authVersion`을 매 요청마다 그 계정의 현재 저장값과 대조하기
@@ -68,6 +68,12 @@
 새 네이티브 클라이언트를 만든다면, 이 "전체 블롭 GET/POST" 패턴을 그대로 따르거나, 특정 화면에 필요한
 필드만 골라 쓰는 게 쉽습니다(예: 직원 목록 화면만 만들려면 `GET /data` 응답에서 `data.employees`만
 사용).
+
+### 1.2-1 멱등키(`Idempotency-Key`)
+
+`/api/accounting/*`, `/api/erp/*`의 GET이 아닌 요청은 `Idempotency-Key` 헤더를 요구합니다. 같은 키로 다시 보내면
+처리 결과를 그대로 돌려주고 한 번만 반영합니다. 헤더가 없으면 `400 IDEMPOTENCY_KEY_REQUIRED`입니다
+(테스트 환경과 `/save`는 예외). 재시도하는 클라이언트는 요청마다 새 키를 만들고, 재전송에는 같은 키를 쓰세요.
 
 ### 1.3 대표 엔드포인트 (전체는 `server.js` 참고, 100개 이상 존재)
 
@@ -145,6 +151,16 @@ AI가 반환한 값도 그대로 신뢰하지 않는다 — `birth`는 실제 �
 
 | 변수 | 필수 여부 | 기본값 | 설명 |
 |---|---|---|---|
+| `MAX_COMPANIES` | 아니오 | 운영 2, 그 외 무제한 | 셀프 가입으로 만들 수 있는 회사 수 상한. 운영 기본값이 2라서 3번째 회사부터는 이 값을 올려야 가입됩니다. |
+| `PORT` | 아니오 | `3000` | 서버가 듣는 포트. |
+| `WEB_CONCURRENCY` | 아니오 | `1` | JSON 파일 모드는 1만 지원합니다(초과하면 부팅 거부). 여러 인스턴스는 PostgreSQL 모드를 쓰세요. |
+| `PGSSLMODE` | 아니오 | (미설정) | PostgreSQL 접속에 TLS를 쓰려면 `require`로 설정합니다. 미설정이면 평문으로 접속합니다. |
+| `PUBLIC_APP_ORIGIN`, `APP_ORIGIN`, `FRONTEND_ORIGIN` | 아니오 | (미설정) | `ALLOWED_ORIGINS`와 합쳐져 CORS 허용 목록이 됩니다. |
+| `INGRESS_RATE_LIMIT_ANON_MAX`, `INGRESS_RATE_LIMIT_AUTH_MAX` | 아니오 | 코드 기본값 | 익명/인증 사용자의 쓰기 요청 속도 제한. |
+| `JSON_BODY_LIMIT_DEFAULT_BYTES`, `JSON_BODY_LIMIT_SAVE_BYTES`, `JSON_BODY_LIMIT_RESTORE_BYTES` | 아니오 | 코드 기본값 | JSON 요청 본문 크기 상한. |
+| `AI_API_TIMEOUT_MS`, `AI_API_MAX_CONCURRENT`, `AI_API_MAX_INPUT_CHARS`, `AI_API_RATE_MAX` | 아니오 | 코드 기본값 | AI 보조 기능(`/api/hr/*`)의 시간·동시 실행·입력 길이·호출 횟수 제한. |
+| `WEBHOOK_OUTBOX_POLL_MS`, `WEBHOOK_RETRY_DELAYS_MS` | 아니오 | 30초 / 1분·5분·30분·2시간·6시간 | 웹훅 발송 대기함의 재시도 주기와 간격. |
+| `PARSE_SHEET_MAX_OLD_MB` | 아니오 | 코드 기본값 | 엑셀 파싱 워커의 메모리 상한. |
 | `DATABASE_URL` | 아니오 | (미설정) | 설정 시 PostgreSQL 모드(운영), 미설정 시 JSON 파일 모드(자체호스팅/오프라인). |
 | `DATA_FILE` | JSON 파일 모드만 | `hr-data.json` | 메인 데이터 파일 경로. 재배포 시 초기화되지 않으려면 영속 디스크 경로를 가리켜야 함. |
 | `BUDGET_DATA_FILE` | JSON 파일 모드만 | `budget-data.json` | 사업계획/예산/개인별급여상세 데이터 파일 경로(DATABASE_URL 설정 시 무시되고 Postgres `budget_store` 사용). |
