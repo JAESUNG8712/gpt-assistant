@@ -65,6 +65,12 @@ test("영업 대시보드 월별 추이 집계(수주/매출 구분, 전년 비�
     assert.ok(tr.years.includes(2030) && tr.years.includes(2031));
   });
 
+  await t.test("데이터가 없는 연도를 골라도 연도 선택지에 그 연도가 남는다", async () => {
+    const { monthlyTrend: tr } = await get("?year=2040");
+    assert.equal(tr.year, 2040);
+    assert.ok(tr.years.includes(2040), "선택한 연도가 목록에 없으면 select가 다른 연도를 보여준다");
+  });
+
   await t.test("연도를 2030으로 바꾸면 그 해가 기준이 되고 전년(2029)은 0", async () => {
     const { monthlyTrend: tr } = await get("?year=2030");
     assert.equal(tr.year, 2030);

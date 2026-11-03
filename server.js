@@ -11427,7 +11427,7 @@ app.get("/api/erp/sales-dashboard", async (req, res) => {
     const trendYear = Number.isInteger(reqYear) && reqYear >= 2000 && reqYear <= 2100 ? reqYear : thisYear;
     const bucket = () => Array.from({ length: 12 }, (_, i) => ({ month: i + 1, count: 0, order: 0, revenue: 0 }));
     const cur = bucket(), prev = bucket();
-    const yearSet = new Set([thisYear]);
+    const yearSet = new Set([thisYear, trendYear]); // 선택한 연도는 데이터가 없어도 선택지에 남겨 select가 엉뚱한 값을 보여주지 않게 한다
     for (const q of quotations) {
       const ym = ymOf(q);
       if (!ym) continue;
