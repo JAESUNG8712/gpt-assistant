@@ -17047,23 +17047,31 @@ function _approvalAmountOf(fd){
   }
   return 0;
 }
-// 금액 구간별 추가 결재자(approvalChainSettings.amountTiers = [{minAmount,empId,label}]).
+// 금액 구간별 추가 결재자(approvalChainSettings.amountTiers = [{minAmount,empId,label,tplIds?}]).
+// tplIds가 비어 있거나 없으면 모든 양식에 적용되고, 양식 id 목록이 있으면 그 양식에만 적용된다.
 // 전결 규정(_applyApprovalLimits)이 "결재선을 줄이는" 규정이라면 이쪽은 "고액일 때 결재자를 더하는"
 // 규정이다 — 추가만 하고 기존 결재 단계는 절대 빼지 않는다. 설정 데이터는 관리자가 직접 넣지만
 // 모양이 어긋나 있어도 화면이 깨지지 않도록 항목을 하나씩 검증한다.
 function _normalizedAmountTiers(){
   const raw=Array.isArray(approvalChainSettings.amountTiers)?approvalChainSettings.amountTiers:[];
   return raw.filter(t=>t&&Number.isFinite(Number(t.minAmount))&&Number(t.minAmount)>0&&t.empId!=null&&t.empId!=="")
-    .map(t=>({minAmount:Number(t.minAmount),empId:t.empId,label:String(t.label||"").trim()||"금액 구간 결재"}))
+    .map(t=>({minAmount:Number(t.minAmount),empId:t.empId,label:String(t.label||"").trim()||"금액 구간 결재",
+      tplIds:Array.isArray(t.tplIds)?[...new Set(t.tplIds.map(String).filter(Boolean))]:[]}))
     .sort((a,b)=>a.minAmount-b.minAmount);
 }
-function _applyApprovalAmountTiers(approvers,fd,authorId){
+function _amountTierScopeText(t){
+  if(!t.tplIds.length)return "전체 양식";
+  const names=t.tplIds.map(id=>getTpl(id)?.name||id);
+  return h(names.length>2?`${names.slice(0,2).join(", ")} 외 ${names.length-2}개`:names.join(", "));
+}
+function _applyApprovalAmountTiers(approvers,fd,authorId,tplId){
   const amt=_approvalAmountOf(fd);
   if(!amt)return approvers;
   const out=[...approvers];
   const added=[];
   for(const t of _normalizedAmountTiers()){
     if(amt<t.minAmount)continue;
+    if(t.tplIds.length&&!t.tplIds.includes(String(tplId)))continue;   // 양식 지정 구간은 해당 양식에서만 적용
     const e=getEmp(t.empId);
     if(!e||!e.active)continue;                               // 퇴직·비활성 결재자는 건너뜀
     if(String(e.id)===String(authorId))continue;             // 본인 문서를 본인이 결재하지 않음
@@ -17715,7 +17723,7 @@ function previewApprovalForm(tplId){
   const limitedApprovers=_applyApprovalLimits(approvers,fd);
   if(limitedApprovers.length<approvers.length)showToast(`금액 기준 전결 규정에 따라 결재선이 자동 조정되었습니다.`,"info");
   approvers=limitedApprovers;
-  const tieredApprovers=_applyApprovalAmountTiers(approvers,fd,currentUser.id);
+  const tieredApprovers=_applyApprovalAmountTiers(approvers,fd,currentUser.id,tplId);
   if(tieredApprovers.length>approvers.length)showToast(`금액 기준 규정에 따라 결재자 ${tieredApprovers.length-approvers.length}명이 추가되었습니다.`,"info");
   approvers=tieredApprovers;
   window._afPendingSubmit={tplId,fd,approvers,receivers:[..._afReceivers],ccList:[..._afCc],attachments:[...(window._afAttachments||[])]};
@@ -19148,8 +19156,8 @@ function renderApprovalTemplateAdmin(){
     <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:6px">${(approvalChainSettings.finalApprovers||[]).map(fa=>`<span class="badge bg-purple" style="display:inline-flex;align-items:center;gap:4px">${h(getEmpName(fa.empId))} · ${h(fa.label)} <span style="cursor:pointer" onclick="removeFinalApprover(${fa.empId})">✕</span></span>`).join("")||`<span class="text-gray fz12">설정된 최종 결재자가 없습니다.</span>`}</div>
     <button class="btn btn-secondary btn-sm" onclick="addFinalApprover()">+ 최종 결재자 추가</button>
   </div>
-  <div class="fg" style="margin-top:10px"><label class="fl">금액 구간별 추가 결재자 <span class="fz11 text-gray">(금액이 기준 이상인 문서에만 결재자를 더합니다. 기존 결재 단계는 줄이지 않으며, 이미 결재선에 있거나 기안자 본인이면 건너뜁니다. 금액은 amount·requestedAmount·estimatedCost·budget 항목 중 먼저 값이 있는 것을 씁니다.)</span></label>
-    <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:6px">${_normalizedAmountTiers().map(t=>`<span class="badge bg-purple" style="display:inline-flex;align-items:center;gap:4px">${t.minAmount.toLocaleString()}원 이상 → ${h(getEmpName(t.empId))} · ${h(t.label)} <span style="cursor:pointer" role="button" aria-label="삭제" onclick="removeAmountTier(${h(JSON.stringify(t.empId))})">✕</span></span>`).join("")||`<span class="text-gray fz12">설정된 금액 구간이 없습니다.</span>`}</div>
+  <div class="fg" style="margin-top:10px"><label class="fl">금액 구간별 추가 결재자 <span class="fz11 text-gray">(금액이 기준 이상인 문서에만 결재자를 더합니다. 양식을 지정하면 그 양식에만 적용됩니다. 기존 결재 단계는 줄이지 않으며, 이미 결재선에 있거나 기안자 본인이면 건너뜁니다. 금액은 amount·requestedAmount·estimatedCost·budget 항목 중 먼저 값이 있는 것을 씁니다.)</span></label>
+    <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:6px">${_normalizedAmountTiers().map(t=>`<span class="badge bg-purple" style="display:inline-flex;align-items:center;gap:4px">${t.minAmount.toLocaleString()}원 이상 → ${h(getEmpName(t.empId))} · ${h(t.label)} <span class="fz11" style="opacity:.8">[${_amountTierScopeText(t)}]</span> <span style="cursor:pointer" role="button" aria-label="삭제" onclick="removeAmountTier(${h(JSON.stringify(t.empId))})">✕</span></span>`).join("")||`<span class="text-gray fz12">설정된 금액 구간이 없습니다.</span>`}</div>
     <button class="btn btn-secondary btn-sm" onclick="addAmountTier()">+ 금액 구간 추가</button>
   </div>
   <div class="fg" style="margin-top:10px"><label class="fl">구매 담당자 <span class="fz11 text-gray">(거래처 등록 양식의 최종 승인자 — 사업부장 결재 후 이 담당자가 최종 승인해야 거래처가 등록됩니다)</span></label>
@@ -24620,10 +24628,11 @@ async function deleteQuotationDraft(id){
 let _salesDashTab="target";
 let _salesDashData=null,_salesDashLoading=false;
 let _salesTrendYear=null; // null이면 서버 기본값(올해)
+let _salesTrendRep=""; // 빈 문자열이면 전체 담당자
 async function loadSalesDashData(){
   if(!serverConfig.url||_salesDashLoading)return;
   _salesDashLoading=true;
-  const r=await serverRequest("GET","/api/erp/sales-dashboard"+(_salesTrendYear?`?year=${encodeURIComponent(_salesTrendYear)}`:""));
+  const r=await serverRequest("GET","/api/erp/sales-dashboard"+_salesTrendQuery());
   _salesDashLoading=false;
   if(r?.ok)_salesDashData=r;
   else if(r)showToast(r.message||"영업 실적 대시보드를 불러오지 못했습니다.","error");
@@ -24642,6 +24651,13 @@ function renderSalesDashboardPage(){
 }
 // 월별 추이: 선택 연도를 바꾸면 서버에서 그 연도(와 전년) 기준으로 다시 집계한다.
 function setSalesTrendYear(y){_salesTrendYear=+y||null;_salesDashData=null;renderSalesDashboardPage();}
+function setSalesTrendRep(r){_salesTrendRep=r||"";_salesDashData=null;renderSalesDashboardPage();}
+function _salesTrendQuery(){
+  const p=[];
+  if(_salesTrendYear)p.push("year="+encodeURIComponent(_salesTrendYear));
+  if(_salesTrendRep)p.push("rep="+encodeURIComponent(_salesTrendRep));
+  return p.length?"?"+p.join("&"):"";
+}
 function _salesTrendChartSvg(months){
   const W=720,H=220,padL=48,padB=26,padT=12,plotW=W-padL-8,plotH=H-padB-padT;
   const max=Math.max(1,...months.map(m=>Math.max(m.revenue,m.prevRevenue)));
@@ -24661,24 +24677,26 @@ function _renderSalesTrendTab(d){
   const t=d.monthlyTrend;
   if(!t)return `<div class="text-gray" style="text-align:center;padding:20px">월별 추이를 불러오지 못했습니다.</div>`;
   const sum=k=>t.months.reduce((s,m)=>s+m[k],0);
-  const tot={order:sum("order"),revenue:sum("revenue"),prevOrder:sum("prevOrder"),prevRevenue:sum("prevRevenue")};
+  const tot={order:sum("order"),orderCount:sum("orderCount"),revenue:sum("revenue"),prevOrder:sum("prevOrder"),prevRevenue:sum("prevRevenue")};
   const growth=tot.prevRevenue>0?Math.round(((tot.revenue-tot.prevRevenue)/tot.prevRevenue)*100):null;
   const fmtG=g=>g==null?"-":`<span style="color:${g>=0?"#16a34a":"#dc2626"}">${g>0?"+":""}${g}%</span>`;
-  const rows=t.months.map(m=>`<tr><td>${m.month}월</td><td style="text-align:right">${m.count}</td><td style="text-align:right">${m.order.toLocaleString()}</td><td style="text-align:right">${m.revenue.toLocaleString()}</td><td style="text-align:right">${m.prevRevenue.toLocaleString()}</td><td style="text-align:right">${fmtG(m.revenueGrowthPct)}</td></tr>`).join("");
+  const rows=t.months.map(m=>`<tr><td>${m.month}월</td><td style="text-align:right">${m.count}</td><td style="text-align:right">${m.orderCount||0}</td><td style="text-align:right">${m.order.toLocaleString()}</td><td style="text-align:right">${m.revenue.toLocaleString()}</td><td style="text-align:right">${m.prevRevenue.toLocaleString()}</td><td style="text-align:right">${fmtG(m.revenueGrowthPct)}</td></tr>`).join("");
   return `<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px">
     <label class="fl" style="margin:0">연도</label>
     <select class="fc" style="width:auto" onchange="setSalesTrendYear(this.value)">${t.years.map(y=>`<option value="${y}" ${y===t.year?"selected":""}>${y}년</option>`).join("")}</select>
-    <span class="fz12 text-gray">수주액=수주확정+출고완료, 매출액=출고완료 기준(공급가액). 전년은 같은 월과 비교합니다.</span>
+    <label class="fl" style="margin:0">담당자</label>
+    <select class="fc" style="width:auto" id="sales-trend-rep" onchange="setSalesTrendRep(this.value)"><option value="">전체</option>${(t.reps||[]).map(r=>`<option value="${h(r)}" ${r===t.rep?"selected":""}>${h(r)}</option>`).join("")}</select>
+    <span class="fz12 text-gray">수주액=수주확정+출고완료, 매출액=출고완료 기준(공급가액). 전년은 같은 월과 비교합니다.${t.rep?` 담당자 필터는 전년 비교에도 같이 적용됩니다.`:""}</span>
   </div>
   <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:8px">
     <div class="card" style="padding:10px 14px"><div class="fz12 text-gray">${t.year}년 매출</div><div style="font-weight:700">${tot.revenue.toLocaleString()}</div></div>
     <div class="card" style="padding:10px 14px"><div class="fz12 text-gray">${t.year-1}년 매출</div><div style="font-weight:700">${tot.prevRevenue.toLocaleString()}</div></div>
     <div class="card" style="padding:10px 14px"><div class="fz12 text-gray">전년 대비</div><div style="font-weight:700">${fmtG(growth)}</div></div>
-    <div class="card" style="padding:10px 14px"><div class="fz12 text-gray">${t.year}년 수주액</div><div style="font-weight:700">${tot.order.toLocaleString()}</div></div>
+    <div class="card" style="padding:10px 14px"><div class="fz12 text-gray">${t.year}년 수주액</div><div style="font-weight:700">${tot.order.toLocaleString()} <span class="fz12 text-gray">(${tot.orderCount||0}건)</span></div></div>
   </div>
   <div style="margin-bottom:6px" class="fz12 text-gray"><span style="color:#2f6fed">■</span> ${t.year}년 매출 &nbsp; <span style="color:#9fb0c8">■</span> ${t.year-1}년 매출</div>
   ${_salesTrendChartSvg(t.months)}
-  <div class="tbl-wrap" style="margin-top:10px"><table><thead><tr><th>월</th><th>견적 건수</th><th>수주액</th><th>매출액</th><th>전년 매출</th><th>전년 대비</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+  <div class="tbl-wrap" style="margin-top:10px"><table><thead><tr><th>월</th><th>견적 건수</th><th>수주 건수</th><th>수주액</th><th>매출액</th><th>전년 매출</th><th>전년 대비</th></tr></thead><tbody>${rows}</tbody></table></div>`;
 }
 function _renderSalesDashTab(){
   const d=_salesDashData;
@@ -27708,6 +27726,9 @@ function addAmountTier(){
         <div class="fz12 text-gray mb3">${h(getEmpName(empId))} 님을 결재선에 추가할 금액 기준과 단계 이름을 입력하세요.</div>
         <div class="fg"><label class="fl">기준 금액(원 이상) <span class="req">*</span></label><input class="fc" type="number" min="1" id="at-min" placeholder="예: 5000000"></div>
         <div class="fg"><label class="fl">결재 단계 명칭</label><input class="fc" id="at-label" value="금액 구간 결재" placeholder="예: 재무 결재"></div>
+        <div class="fg"><label class="fl">적용 양식 <span class="fz11 text-gray">(하나도 선택하지 않으면 모든 양식에 적용)</span></label>
+          <div style="max-height:180px;overflow:auto;border:1px solid #e2e8f0;border-radius:6px;padding:6px">${getAllTpls().map(t=>`<label style="display:flex;align-items:center;gap:6px;padding:2px 0;font-size:13px"><input type="checkbox" class="at-tpl" value="${h(t.id)}"> ${h(t.icon||"")} ${h(t.name)}</label>`).join("")}</div>
+        </div>
       </div><div class="modal-foot"><button class="btn btn-secondary" onclick="closeTopModal()">취소</button><button class="btn btn-primary" onclick="confirmAddAmountTier(${h(JSON.stringify(empId))})">추가</button></div></div>`);
     },0);
   }});
@@ -27716,9 +27737,10 @@ function confirmAddAmountTier(empId){
   const min=Math.floor(Number($("#at-min")?.value));
   if(!Number.isFinite(min)||min<=0){showToast("기준 금액은 1원 이상으로 입력하세요.","error");return;}
   const label=($("#at-label")?.value||"").trim().slice(0,30)||"금액 구간 결재";
+  const tplIds=[...document.querySelectorAll(".at-tpl:checked")].map(el=>el.value);
   const cur=Array.isArray(approvalChainSettings.amountTiers)?approvalChainSettings.amountTiers:[];
   if(cur.length>=10){showToast("금액 구간은 최대 10개까지 등록할 수 있습니다.","error");return;}
-  approvalChainSettings={...approvalChainSettings,amountTiers:[...cur,{minAmount:min,empId,label}]};
+  approvalChainSettings={...approvalChainSettings,amountTiers:[...cur,{minAmount:min,empId,label,...(tplIds.length?{tplIds}:{})}]};
   closeTopModal();autoSaveToServerIfEnabled();showToast("금액 구간 결재자가 추가되었습니다.","success");renderApprovalTemplateAdmin();
 }
 function removeAmountTier(empId){

@@ -79,6 +79,37 @@ test("영업 대시보드 월별 추이 집계(수주/매출 구분, 전년 비�
     assert.equal(tr.months[2].revenueGrowthPct, null);
   });
 
+  await t.test("담당자 필터(?rep=)와 수주 건수(orderCount)", async () => {
+    // 견적 작성자는 서버가 로그인 계정으로 정한다(body.user 무시) → 두 번째 관리자 계정으로 다른 담당자 견적을 만든다.
+    const init = await (await api("/data", { headers: { Authorization: `Bearer ${token}` } })).json();
+    const sv = await (await api("/save", auth(token, "POST", { _version: init.version, data: { ...init.data, employees: [...init.data.employees,
+      { id: "a2", loginId: "admin2", pw: "admin2-test-pw", name: "관리자2", role: "admin", active: true, menuPerms: {} }] } }))).json();
+    assert.equal(sv.ok, true);
+    const login2 = await (await api("/login", auth(null, "POST", { loginId: "admin2", pw: "admin2-test-pw" }))).json();
+    assert.ok(login2.token, "두 번째 관리자 로그인 실패");
+    const t2 = login2.token;
+    const q = (await (await api("/api/erp/quotations", auth(t2, "POST", {
+      date: "2031-03-15", partnerName: "추이거래처", locationId: loc.id,
+      items: [{ itemId: item.id, name: item.name, qty: 1, unitPrice: 5000 }],
+    }))).json()).quotation;
+    assert.ok(q);
+    for (const step of ["send", "accept"]) await api(`/api/erp/quotations/${q.id}/${step}`, auth(t2, "POST", {}));
+    const all = (await get("?year=2031")).monthlyTrend;
+    // 3월: admin1의 출고1+수주1, admin2의 수주1 → 수주 건수(수주확정+출고완료) 3
+    assert.equal(all.months[2].orderCount, 3);
+    assert.equal(all.reps.length, 2, "담당자 목록은 필터와 무관하게 전체");
+    const rep2 = q.createdBy || all.reps.find(r => !String(r).includes("admin1"));
+    const only = (await get(`?year=2031&rep=${encodeURIComponent(rep2)}`)).monthlyTrend;
+    assert.equal(only.rep, rep2);
+    assert.equal(only.months[2].orderCount, 1);
+    assert.equal(only.months[2].order, 5000);
+    assert.deepEqual(only.reps, all.reps, "필터를 걸어도 담당자 목록은 그대로");
+    // 존재하지 않는 담당자 → 전부 0, 목록에는 선택값이 남는다
+    const none = (await get(`?year=2031&rep=${encodeURIComponent("없는사람")}`)).monthlyTrend;
+    assert.equal(none.months.reduce((s, m) => s + m.count, 0), 0);
+    assert.ok(none.reps.includes("없는사람"));
+  });
+
   await t.test("year 파라미터가 비정상이면 올해로 안전하게 대체되고 기존 집계 필드는 그대로", async () => {
     for (const qs of ["?year=abc", "?year=1", "?year=99999", "?year="]) {
       const body = await get(qs);

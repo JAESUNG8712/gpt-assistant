@@ -154,4 +154,43 @@ test.describe("금액 구간별 추가 결재자", () => {
     expect(await page.evaluate(() => window._afPendingSubmit.approvers.map((a) => a.empId))).toEqual([9701]);
     expect(pageErrors).toEqual([]);
   });
+  test("양식 지정 구간: 지정한 양식에서만 적용되고, 설정 화면에서 양식을 골라 저장·표시된다", async ({ page }) => {
+    const pageErrors = [];
+    page.on("pageerror", (e) => pageErrors.push(e.message));
+    await loginAsAdmin(page);
+
+    const r = await page.evaluate((seedSrc) => {
+      eval(`(${seedSrc})()`);
+      const chain = () => [{ empId: 9701, label: "팀장", status: "pending", decidedAt: null, comment: "" }];
+      const ids = (list) => list.map((a) => a.empId);
+      approvalChainSettings = { ...approvalChainSettings, amountTiers: [
+        { minAmount: 1000000, empId: 9702, label: "경비만", tplIds: ["tpl-expense"] },
+        { minAmount: 1000000, empId: 9704, label: "전체 양식" },
+        { minAmount: 1000000, empId: 9705, label: "빈 목록", tplIds: [] },   // 빈 목록 = 전체 양식
+      ] };
+      const run = (tplId) => ids(_applyApprovalAmountTiers(chain(), { amount: 2000000 }, 1, tplId));
+      return { expense: run("tpl-expense"), other: run("tpl-vacation"), noTpl: run(undefined), scope: _normalizedAmountTiers().map(_amountTierScopeText) };
+    }, seedPeople.toString());
+    expect(r.expense).toEqual([9701, 9702, 9704, 9705]);   // 지정 양식에서는 지정·전체 구간 모두
+    expect(r.other).toEqual([9701, 9704, 9705]);           // 다른 양식에서는 양식 지정 구간만 빠진다
+    expect(r.noTpl).toEqual([9701, 9704, 9705]);           // 양식을 모르면 양식 지정 구간은 적용하지 않는다
+    expect(r.scope).toEqual(["경비 지출 신청", "전체 양식", "전체 양식"]);
+
+    // 설정 화면: 양식 체크박스로 범위를 정하면 저장되고 배지에 범위가 표시된다.
+    await page.evaluate(() => { approvalChainSettings = { ...approvalChainSettings, amountTiers: [] }; gotoPage("approval-templates"); });
+    await page.locator("button", { hasText: "+ 금액 구간 추가" }).click();
+    const picker = page.locator(".modal-box", { hasText: "금액 구간 결재자 선택" });
+    await picker.locator("#op-search").fill("구간재무");
+    await picker.locator("#op-tree label", { hasText: "구간재무" }).click();
+    await picker.locator("button", { hasText: "선택 완료" }).click();
+    const modal = page.locator(".modal-box", { hasText: "금액 구간 설정" });
+    await modal.locator("#at-min").fill("3000000");
+    await modal.locator(".at-tpl[value='tpl-expense']").check();
+    await modal.locator(".at-tpl[value='tpl-vacation']").check();
+    await modal.locator("button", { hasText: "추가" }).click();
+    await expect(page.locator("#content")).toContainText("3,000,000원 이상 → 구간재무");
+    await expect(page.locator("#content")).toContainText("경비 지출 신청");
+    expect((await page.evaluate(() => approvalChainSettings.amountTiers[0].tplIds)).sort()).toEqual(["tpl-expense", "tpl-vacation"]);
+    expect(pageErrors).toEqual([]);
+  });
 });
