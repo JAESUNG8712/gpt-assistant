@@ -4,6 +4,7 @@ const assert = require("node:assert/strict");
 const { startServer, bootstrapAdminAndLogin } = require("./support/start-server");
 
 test("직원 몰입도 펄스는 본인 응답만 쓰고 3명 이상일 때만 익명 집계한다", async t => {
+  // 모든 기간을 같은 기준시각으로 계산해 날짜 변경에도 정상/기간 외 검증을 유지한다.
   const testNow = Date.now();
   const day = offset => new Date(testNow + offset * 86400000).toISOString().slice(0, 10);
   const server = await startServer();
