@@ -2,6 +2,7 @@
 // 수정·삭제된 레코드를 관리자가 "바뀌기 전" 내용으로 복구할 수 있는지 검증한다.
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
 const { startServer, bootstrapAdminAndLogin } = require("./support/start-server");
 
 const auth = (token, method, body) => ({ method, headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` }, body: body === undefined ? undefined : JSON.stringify(body) });
@@ -11,6 +12,56 @@ async function restore(api, token, id) {
   assert.equal(preview.ok, true, JSON.stringify(preview));
   return api(`/api/record-revisions/${id}/restore`, auth(token, "POST", { expectedToken: preview.expectedToken }));
 }
+
+test("이력은 중첩 인증정보를 보관하지 않고 직원 복구는 현재 2단계 인증을 유지한다", async t => {
+  const server = await startServer(); t.after(() => server.stop());
+  const api = (p, o) => fetch(server.baseUrl + p, o);
+  const { token } = await bootstrapAdminAndLogin(server, { loginId: "admin", pw: "admin-test-pw-1" });
+  const save = async payload => {
+    const d = await data(api, token);
+    const response = await api("/save", auth(token, "POST", { _version: d.version, ...payload }));
+    const result = await response.json();
+    assert.equal(result.ok, true, JSON.stringify(result));
+    assert.notEqual(result.partial, true, JSON.stringify(result));
+  };
+  let d = await data(api, token);
+  const member = { id: "secure-member", loginId: "secure-member", pw: "member-pw-123",
+    name: "이전 이름", role: "member", active: true, twoFactorEnabled: false, twoFactorSecret: "old-otp-test-only",
+    updatedAt: new Date().toISOString() };
+  await save({ employees: [...d.data.employees, member],
+    boardPosts: [{ id: "nested-secret", title: "원본", authorId: d.data.employees[0].id,
+      custom: { accessToken: "nested-secret-test-only", label: "업무 설정" } }],
+  });
+  d = await data(api, token);
+  await save({
+    employees: d.data.employees.map(e => e.id === member.id ? { ...e, name: "현재 이름",
+      twoFactorEnabled: true, twoFactorSecret: "new-otp-test-only", updatedAt: new Date(Date.now() + 2000).toISOString() } : e),
+    boardPosts: d.data.boardPosts.map(p => ({ ...p, title: "수정", updatedAt: new Date(Date.now() + 2000).toISOString() })),
+  });
+  const list = await (await api("/api/record-revisions", auth(token, "GET"))).json();
+  const employeeRevision = list.revisions.find(r => r.recordId === member.id);
+  const nestedRevision = list.revisions.find(r => r.recordId === "nested-secret");
+  assert.ok(employeeRevision); assert.ok(nestedRevision);
+  const text = fs.readFileSync(server.dataFile.replace(/\.json$/, "-record-revisions.json"), "utf8");
+  assert.ok(!text.includes("old-otp-test-only"));
+  assert.ok(!text.includes("nested-secret-test-only"));
+  const incomplete = await api(`/api/record-revisions/${nestedRevision.id}/preview`, auth(token, "GET"));
+  assert.equal(incomplete.status, 409);
+  assert.equal((await incomplete.json()).code, "REVISION_REDACTED");
+  const direct = await api(`/api/record-revisions/${nestedRevision.id}/restore`, auth(token, "POST", { expectedToken: "a".repeat(64) }));
+  assert.equal(direct.status, 409);
+  assert.equal((await direct.json()).code, "REVISION_REDACTED");
+  const preview = await (await api(`/api/record-revisions/${employeeRevision.id}/preview`, auth(token, "GET"))).json();
+  assert.ok(!preview.changedFields.includes("twoFactorEnabled"));
+  assert.equal((await restore(api, token, employeeRevision.id)).status, 200);
+  const stored = JSON.parse(fs.readFileSync(server.dataFile, "utf8")).employees.find(e => e.id === member.id);
+  assert.equal(stored.name, "이전 이름");
+  assert.equal(stored.twoFactorEnabled, true);
+  assert.equal(stored.twoFactorSecret, "new-otp-test-only");
+  const nested = (await data(api, token)).data.boardPosts.find(p => p.id === "nested-secret");
+  assert.equal(nested.title, "수정");
+  assert.equal(nested.custom.accessToken, "nested-secret-test-only", "거절된 복구가 업무 원본을 지우면 안 된다");
+});
 
 test("수정·삭제 이력이 쌓이고 관리자가 이전 내용으로 복구·되살릴 수 있다", async t => {
   const server = await startServer(); t.after(() => server.stop());

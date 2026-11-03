@@ -29,3 +29,29 @@ test("보관용 사본은 비밀번호와 아주 큰 값을 제외한다", () =>
   assert.equal("photoUrl" in snap, false);
   assert.deepEqual(snap._truncatedKeys, ["photoUrl"]);
 });
+
+test("중첩 객체·배열의 인증정보와 첨부도 제외하고 원본은 변경하지 않는다", () => {
+  const source = { id: 1, twoFactorSecret: "old-otp", authVersion: 7,
+    custom: { access_token: "token-value", salary: 100, rows: [{ passwordHash: "hash-value", label: "정상", attachment: "x".repeat(100001) }] } };
+  const snap = capSnapshot(source);
+  const text = JSON.stringify(snap);
+  assert.ok(!text.includes("old-otp"));
+  assert.ok(!text.includes("token-value"));
+  assert.ok(!text.includes("hash-value"));
+  assert.equal(snap.custom.salary, 100);
+  assert.equal(snap.custom.rows[0].label, "정상");
+  assert.ok(snap._truncatedKeys.includes("custom.rows.0.attachment"));
+  assert.ok(snap._redactedKeys.includes("custom.access_token"));
+  assert.equal(source.custom.access_token, "token-value");
+  assert.deepEqual(capSnapshot(snap), snap, "legacy read/write sanitation must be idempotent");
+});
+
+test("개별 값이 작아도 총 크기·노드·깊이를 제한하고 불완전 표시를 남긴다", () => {
+  const large = capSnapshot({ id: 1, rows: Array.from({ length: 100 }, () => ({ text: "가".repeat(2000) })) });
+  assert.ok(Buffer.byteLength(JSON.stringify(large), "utf8") <= 262144);
+  assert.ok(large._truncatedKeys.length);
+  let deep = { value: "end" };
+  for (let i = 0; i < 100; i++) deep = { child: deep };
+  assert.ok(capSnapshot(deep)._truncatedKeys.length);
+  assert.ok(capSnapshot({ rows: Array.from({ length: 12000 }, () => 1) })._truncatedKeys.length);
+});

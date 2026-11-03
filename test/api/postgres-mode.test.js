@@ -1115,6 +1115,31 @@ if (!ADMIN_DATABASE_URL) {
       assert.equal(rejectedEdit.status, 500);
       assert.equal((await db.query("SELECT data FROM app_collections WHERE collection='boardPosts' AND id='atomic-revision'")).rows[0].data.title, "original");
       await db.query("DROP TRIGGER fail_atomic_revision ON record_revisions");
+      // New snapshots exclude nested credentials; legacy rows are sanitized again
+      // when read, so old stored secrets cannot be restored into live records.
+      const secretPost = { id: "secret-revision", authorId: adminId, title: "sensitive original",
+        custom: { apiKey: "synthetic-pg-api-key", nested: [{ refresh_token: "synthetic-pg-refresh" }] } };
+      assert.equal((await api("/save", authH(A.token, "POST", { boardPosts: [secretPost] }))).status, 200);
+      atomicState = await (await api("/data", authH(A.token, "GET"))).json();
+      const beforeSecretEdit = atomicState.data.boardPosts.find(p => p.id === secretPost.id);
+      assert.equal((await api("/save", authH(A.token, "POST", { _version: atomicState.version,
+        boardPosts: [{ ...beforeSecretEdit, title: "current title", updatedAt: new Date(Date.now() + 2000).toISOString() }] }))).status, 200);
+      const secretRevision = (await db.query(
+        "SELECT id, snapshot FROM record_revisions WHERE company_id=$1 AND record_id=$2 ORDER BY changed_at DESC LIMIT 1",
+        [scope, secretPost.id])).rows[0];
+      assert.ok(secretRevision);
+      assert.ok(!JSON.stringify(secretRevision.snapshot).includes("synthetic-pg-"));
+      assert.ok(secretRevision.snapshot._redactedKeys.length);
+      await db.query("UPDATE record_revisions SET snapshot=$1 WHERE id=$2", [JSON.stringify(secretPost), secretRevision.id]);
+      const legacyPreview = await api(`/api/record-revisions/${secretRevision.id}/preview`, authH(A.token, "GET"));
+      assert.equal(legacyPreview.status, 409);
+      assert.equal((await legacyPreview.json()).code, "REVISION_REDACTED");
+      const legacyRestore = await api(`/api/record-revisions/${secretRevision.id}/restore`,
+        authH(A.token, "POST", { expectedToken: "a".repeat(64) }));
+      assert.equal(legacyRestore.status, 409);
+      assert.equal((await legacyRestore.json()).code, "REVISION_REDACTED");
+      assert.equal((await db.query("SELECT data FROM app_collections WHERE company_id=$1 AND collection='boardPosts' AND id=$2",
+        [scope, secretPost.id])).rows[0].data.title, "current title");
       // Simulate takeover while the original HTTP call is still in flight.
       // Both late success and late failure must leave the new owner's row alone.
       for (const lateStatus of [200, 500]) {

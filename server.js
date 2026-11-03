@@ -20,7 +20,7 @@ const { canReadTraining, canManageTraining, countsByCourse, normalizeEnrollment 
 const { assertFieldOrder } = require("./lib/field-order-guard");
 const { saveRejectInfo, snapshotIntendedRecord, findSilentRejections } = require("./lib/save-feedback");
 const { retryDelays, nextOutboxState, SENDING_LEASE_MS, ownsOutboxClaim } = require("./lib/webhook-outbox");
-const { trackedFields, takePreImage, diffRevisions, KEEP_PER_RECORD } = require("./lib/record-revisions");
+const { trackedFields, takePreImage, diffRevisions, KEEP_PER_RECORD, capSnapshot, EMPLOYEE_AUTH_FIELDS } = require("./lib/record-revisions");
 
 // ════════════════════════════════════════════════════════════════════════════
 // 목차(파일 안 "// ── 제목 ──" 배너 문자열로 검색) — 이 파일은 인사(HR)/전자결재/
@@ -7504,13 +7504,13 @@ function _loadFileRevisions() {
 }
 function _revisionFromRow(r) {
   return { id: r.id, companyId: r.company_id || null, field: r.field, recordId: r.record_id, operation: r.operation, title: r.title || "",
-    snapshot: r.snapshot, changedBy: r.changed_by || "", changedAt: new Date(r.changed_at).toISOString() };
+    snapshot: capSnapshot(r.snapshot), changedBy: r.changed_by || "", changedAt: new Date(r.changed_at).toISOString() };
 }
 async function _revisionAdd(companyId, entries, changedBy, db = pool) {
   if (!entries.length) return;
   const nowIso = new Date().toISOString();
   const rows = entries.map(e => ({ id: e.revisionId || `rev-${crypto.randomUUID()}`, companyId: companyId || null, field: e.field, recordId: e.recordId,
-    operation: e.operation, title: e.title, snapshot: e.snapshot, changedBy: String(changedBy || "").slice(0, 120), changedAt: e.changedAt || nowIso }));
+    operation: e.operation, title: e.title, snapshot: capSnapshot(e.snapshot), changedBy: String(changedBy || "").slice(0, 120), changedAt: e.changedAt || nowIso }));
   if (USE_JSON_FILE) {
     await _withOutboxLock(() => { // 직렬화 체인을 재사용(파일 read-modify-write 보호)
       _loadFileRevisions();
@@ -7568,7 +7568,11 @@ async function _revisionList(companyId, { field, operation, q, limit }) {
 async function _revisionGet(companyId, id) {
   await _drainSaveEffects();
   if (USE_JSON_FILE) {
-    return _withOutboxLock(() => { _loadFileRevisions(); const scope = _scopeKey(companyId); return _fileRevisions.entries.find(x => x.id === id && _scopeKey(x.companyId) === scope) || null; });
+    return _withOutboxLock(() => {
+      _loadFileRevisions(); const scope = _scopeKey(companyId);
+      const entry = _fileRevisions.entries.find(x => x.id === id && _scopeKey(x.companyId) === scope);
+      return entry ? { ...entry, snapshot: capSnapshot(entry.snapshot) } : null;
+    });
   }
   const { rows } = await pool.query("SELECT * FROM record_revisions WHERE id=$1 AND company_id IS NOT DISTINCT FROM $2", [id, companyId || null]);
   return rows[0] ? _revisionFromRow(rows[0]) : null;
@@ -7601,6 +7605,9 @@ function _assertRevisionRestorable(revision, actor) {
   if (Array.isArray(revision.snapshot?._truncatedKeys) && revision.snapshot._truncatedKeys.length) {
     throw httpError(409, "REVISION_INCOMPLETE", "큰 본문이나 첨부가 생략된 이력입니다. 자료 유실을 막기 위해 복구하지 않았습니다. 전체 백업을 확인하세요.");
   }
+  if ((revision.snapshot?._redactedKeys || []).some(key => field !== "employees" || !EMPLOYEE_AUTH_FIELDS.includes(key))) {
+    throw httpError(409, "REVISION_REDACTED", "인증정보가 제외된 이력입니다. 현재 설정 유실을 막기 위해 자동 복구하지 않았습니다. 필요한 업무 내용만 직접 수정하세요.");
+  }
 }
 function _revisionTargetToken(companyId, revision, current) {
   const existing = (current[revision.field] || []).find(r => String(r?.id) === String(revision.recordId)) || null;
@@ -7625,8 +7632,13 @@ async function _restoreRevision(companyId, revision, actor, expectedToken) {
     const now = new Date(Math.max(Date.now(), Number.isFinite(existingTs) ? existingTs + 1 : 0)).toISOString();
     const restored = { ...revision.snapshot, updatedAt: now };
     delete restored._truncatedKeys;
+    delete restored._redactedKeys;
     if (existing && existing._rev !== undefined) restored._rev = existing._rev; else delete restored._rev;
     if (field === "employees") {
+      for (const key of EMPLOYEE_AUTH_FIELDS) {
+        delete restored[key];
+        if (existing && Object.hasOwn(existing, key)) restored[key] = existing[key];
+      }
       // 비밀번호·세션 버전은 이력에 보관하지 않으므로 현재 값을 유지한다. 삭제된 직원은 사용할 수 없는
       // 임의 비밀번호로 되살리고, 로그인하려면 관리자가 비밀번호를 다시 설정해야 한다.
       restored.pw = existing?.pw || await hashPlaintextPw(crypto.randomUUID());
@@ -7687,7 +7699,7 @@ app.get("/api/record-revisions/:id/preview", async (req, res) => {
     res.json({ ok: true, expectedToken: _revisionTargetToken(companyId, revision, current),
       field: revision.field, title: revision.title, existed: !!existing, affectedRecords: 1,
       changedAt: revision.changedAt,
-      changedFields: Object.keys(revision.snapshot || {}).filter(key => !["pw", "authVersion", "twoFactorSecret", "_rev", "updatedAt", "_truncatedKeys"].includes(key) &&
+      changedFields: Object.keys(revision.snapshot || {}).filter(key => ![...EMPLOYEE_AUTH_FIELDS, "_rev", "updatedAt", "_truncatedKeys", "_redactedKeys"].includes(key) &&
         !isDeepStrictEqual(existing?.[key], revision.snapshot[key])) });
   } catch (e) { res.status(Number.isInteger(e.status) ? e.status : 500).json({ ok: false, code: e.code, message: _safeErrMsg(e) }); }
 });
