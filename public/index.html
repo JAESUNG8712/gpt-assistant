@@ -733,7 +733,7 @@ function _evalDefaultPage(emp){
 const ROLES={admin:"관리자",director:"사업부장",leader:"팀장",member:"팀원"};
 const JOB_GROUPS=["관리직","영업직","개발직","연구직","생산직","서비스직","기타"];
 const EDU_LEVELS=["고등학교 졸업","전문대 졸업","대학교 졸업","대학원 석사","대학원 박사"];
-const HR_TYPES={transfer:"조직 발령",salary:"연봉 변동",promotion:"승진",rank_change:"직급 변동",position:"직책 임명",award:"최/우수사원 선정",discipline:"징계",core_talent:"핵심인재 선정",leave:"휴직",return_leave:"복직",retirement:"퇴직",edu_legal:"법정의무교육",edu_general:"일반 교육",edu_external:"외부 교육",edu_internal:"사내 교육"};
+const HR_TYPES={transfer:"조직 발령",salary:"연봉 변동",promotion:"승진",rank_change:"직급 변동",position:"직책 임명",award:"최/우수사원 선정",longservice:"장기근속 포상",discipline:"징계",core_talent:"핵심인재 선정",leave:"휴직",return_leave:"복직",retirement:"퇴직",edu_legal:"법정의무교육",edu_general:"일반 교육",edu_external:"외부 교육",edu_internal:"사내 교육"};
 // 징계 수위(경미→중대 순) — 통합 인사 변동 등록(updateHCFields/submitHRChange)의 discipline
 // 분기와 인사카드·HR 통계가 함께 참조한다.
 const DISCIPLINE_LEVELS=["견책","경고","감봉","정직","강등","해고"];
@@ -30733,6 +30733,8 @@ let _lsaSearch="",_lsaPageSize=15,_lsaPage=1;
 // (같은 포상을 두 번 지급하거나 두 달에 나눠 반영하는 사고 방지).
 const _lsPayoutKey=(empId,years)=>`longservice-${empId}-${years}`;
 const _lsPayoutId=(empId,years)=>`payadj-longservice-${empId}-${years}`;
+// 포상금을 급여에 반영하면 직원 이력에도 남긴다. 우수사원(type:"award") 이력과 섞이면 최근 선정 제한·포상 가산점 계산이 왜곡되므로 별도 type을 쓴다.
+const _lsHistoryId=(empId,years)=>`hh-longservice-${empId}-${years}`;
 function _lsPayoutRecord(empId,years){
   const key=_lsPayoutKey(empId,years);
   return payrollAdjustments.find(a=>a.sourceKey===key)||null;
@@ -30777,6 +30779,11 @@ function applyLongServicePayout(empId,years){
   if(!built.record){showToast(built.error||"급여 조정을 만들 수 없습니다.","error");return;}
   payrollAdjustments.push(built.record);
   _lsRecalcSlip(emp,year,month);
+  const hhId=_lsHistoryId(emp.id,years),nowIso=new Date().toISOString();
+  if(!(emp.hrHistory||[]).some(x=>x.id===hhId)){
+    const entry={id:hhId,type:"longservice",date:new Date().toISOString().slice(0,10),year:years,desc:`${years}년 장기근속 포상`,before:"-",after:`${amount.toLocaleString()}원 (${year}-${String(month).padStart(2,"0")} 급여 반영)`,note:`장기근속 ${years}년 포상금 ${amount.toLocaleString()}원`,reason:"장기근속 포상"};
+    employees=employees.map(e=>String(e.id)===String(emp.id)?{...e,hrHistory:[...(e.hrHistory||[]),entry],updatedAt:nowIso}:e);
+  }
   logAction("longservice_payout",`${emp.name} ${years}년 근속 포상금 ${amount.toLocaleString()}원 → ${year}-${String(month).padStart(2,"0")} 급여`,"payrollAdjustments",built.record.id);
   closeModal();autoSaveToServerIfEnabled();showToast("장기근속 포상금이 급여에 반영되었습니다.","success");renderLongServiceAwardPage();
 }
@@ -30792,6 +30799,10 @@ async function cancelLongServicePayout(empId,years){
   _tombstone("payrollAdjustments",rec.id);
   const idx=payrollAdjustments.indexOf(rec);if(idx>=0)payrollAdjustments.splice(idx,1);
   _lsRecalcSlip(emp,rec.year,rec.month);
+  const hhId=_lsHistoryId(emp.id,years);
+  if((emp.hrHistory||[]).some(x=>x.id===hhId)){
+    employees=employees.map(e=>String(e.id)===String(emp.id)?{...e,hrHistory:(e.hrHistory||[]).filter(x=>x.id!==hhId),updatedAt:new Date().toISOString()}:e);
+  }
   logAction("longservice_payout_cancel",`${emp.name} ${years}년 근속 포상금 반영 취소`,"payrollAdjustments",rec.id);
   autoSaveToServerIfEnabled();showToast("급여 반영을 취소했습니다.","success");renderLongServiceAwardPage();
 }
@@ -30805,7 +30816,7 @@ function renderLongServiceAwardPage(){
     const yearsOfService=e.hire?yearsBetweenDates(e.hire,Date.now()):0;
     const tier=tiers.find(t=>t.years===yearsOfService);
     const onLeave=_isOnLeave(e);
-    const pastAwards=(e.hrHistory||[]).filter(hh=>hh.type==="award"&&/장기근속/.test(hh.note||hh.reason||""));
+    const pastAwards=(e.hrHistory||[]).filter(hh=>hh.type==="longservice"||(hh.type==="award"&&/장기근속/.test(hh.note||hh.reason||"")));
     return{emp:e,yearsOfService,tier,onLeave,pastAwards};
   }).sort((a,b)=>b.yearsOfService-a.yearsOfService);
   if(_lsaSearch.trim()){
