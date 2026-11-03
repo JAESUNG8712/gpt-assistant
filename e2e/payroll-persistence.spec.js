@@ -1,6 +1,6 @@
 const { test, expect } = require("@playwright/test");
 
-test("급여 조정은 실제 저장되고 동료의 급여 확정 뒤 추가한 금액은 되돌린다", async ({ page }) => {
+test("급여 조정은 실제 저장되고 동료의 급여 확정 뒤 추가한 금액은 되돌린다", async ({ page }, testInfo) => {
   await page.goto("/");
   await page.fill("#l-id", "e2e_admin");
   await page.fill("#l-pw", "E2eTestPw123");
@@ -8,26 +8,29 @@ test("급여 조정은 실제 저장되고 동료의 급여 확정 뒤 추가한
   await page.evaluate(() => { autoSaveDebounced = () => {}; connectSSE = async () => {}; });
   await page.click(".login-card button.btn-primary");
   await expect(page.locator("#main")).toBeVisible();
-  await page.evaluate(() => {
-    _payMgmtState = { year: 2096, month: 12, dept: "", team: "", search: "" };
+  await page.evaluate(retry => {
+    window.__payrollTestMonth = 12 - retry;
+    _payMgmtState = { year: 2096, month: window.__payrollTestMonth, dept: "", team: "", search: "" };
     openPayAdjustModal(currentUser.id);
-  });
+  }, testInfo.retry);
   await page.fill("#pay-adj-amount", "12345");
   await page.fill("#pay-adj-note", "실제 저장 검증");
   await page.locator('[onclick^="addPayAdjustment("]').click();
+  await expect(page.locator("[data-pay-adjust]")).toHaveCount(1);
   const saved = await page.evaluate(async () => {
     const result = await saveToServer(true);
     const d = await serverRequest("GET", "/data");
-    return { status: result.status, row: d.data.payrollAdjustments.find(a => a.note === "실제 저장 검증") };
+    return { status: result.status, row: d.data.payrollAdjustments.find(a => a.note === "실제 저장 검증" && a.month === window.__payrollTestMonth),
+      warnings: result.response?.warnings };
   });
-  expect(["saved", "merged"]).toContain(saved.status);
+  expect(["saved", "merged"], JSON.stringify(saved.warnings)).toContain(saved.status);
   expect(saved.row.amount).toBe(12345);
 
   // Another browser confirms the payslip while this edit screen is still open.
   await page.evaluate(async () => {
     const d = await serverRequest("GET", "/data");
     const r = await serverRequest("POST", "/save", { _version: d.version,
-      payslips: [{ id: "e2e-payroll-confirmed", empId: currentUser.id, year: 2096, month: 12,
+      payslips: [{ id: `e2e-payroll-confirmed-${window.__payrollTestMonth}`, empId: currentUser.id, year: 2096, month: window.__payrollTestMonth,
         confirmed: true, gross: 20000, netPay: 18000 }] });
     if (!r.ok || r.partial) throw new Error(JSON.stringify(r));
   });

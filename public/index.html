@@ -18837,6 +18837,8 @@ function openPayDetailModal(empId){
 }
 function openPayAdjustModal(empId){
   const emp=getEmp(empId);if(!emp)return;
+  // Refresh this editor instead of stacking another copy with duplicate input IDs.
+  if(_modalStack().at(-1)?.querySelector("[data-pay-adjust]"))closeModal();
   const s=_payMgmtState;const year=s.year,month=s.month;
   const blocked=_payAdjustmentBlock(empId,year,month);
   const items=payrollAdjustments.filter(a=>String(a.empId)===String(empId)&&a.year===year&&a.month===month);
@@ -18844,7 +18846,7 @@ function openPayAdjustModal(empId){
     <td>${h(a.category)}</td><td style="text-align:right">${fmtSalary(a.amount)}</td><td class="fz11 text-gray">${h(a.note||"")}</td>
     <td style="text-align:right"><button class="btn btn-secondary btn-sm" ${blocked?"disabled":""} onclick="deletePayAdjustment('${a.id}','${empId}')">삭제</button></td>
   </tr>`).join("");
-  openModal(`<div class="modal-box" style="max-width:560px"><div class="modal-head"><h3>${h(emp.name)} - ${year}년 ${month}월 급여 조정</h3></div>
+  openModal(`<div class="modal-box" data-pay-adjust style="max-width:560px"><div class="modal-head"><h3>${h(emp.name)} - ${year}년 ${month}월 급여 조정</h3></div>
   <div class="modal-body">
     ${blocked?`<div class="info-note mb3" role="status">${h(blocked)}</div>`:""}
     <table style="width:100%;border-collapse:collapse;margin-bottom:14px"><thead><tr><th>구분</th><th style="text-align:right">금액</th><th>비고</th><th></th></tr></thead>
