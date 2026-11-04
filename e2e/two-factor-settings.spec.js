@@ -24,6 +24,13 @@ test("2단계 인증을 실제 저장하고 새로고침 후 비밀값 없이 �
   await page.getByRole("button", { name: "인증 코드 확인 및 활성화", exact: true }).click();
   await expect(page.getByRole("button", { name: "2단계 인증 해제", exact: true })).toBeVisible();
   await page.reload();
+  // The application intentionally renders the login form on a fresh page load.
+  // Re-enter through the real OTP login flow before testing secret-free disable.
+  await page.fill("#l-id", id); await page.fill("#l-pw", password);
+  await page.click(".login-card button.btn-primary");
+  await expect(page.locator("#l-otp")).toBeVisible();
+  await page.fill("#l-otp", totp(generated.secret));
+  await page.click(".login-card button.btn-primary");
   await expect(page.locator("#main")).toBeVisible();
   await page.evaluate(() => gotoPage("change-pw"));
   expect(await page.evaluate(() => !!getEmp(currentUser.id)?.twoFactorSecret)).toBe(false);
