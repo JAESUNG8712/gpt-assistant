@@ -10790,6 +10790,10 @@ app.post("/api/erp/quotations", async (req, res) => {
     const companyId = req.auth.companyId || null;
     const { date, validUntil, partnerId, partnerName, locationId, items, memo, user: createdBy } = req.body || {};
     if (!date || !partnerName) return res.status(400).json({ ok: false, message: "견적일자와 거래처명은 필수입니다." });
+    if (!_isValidDateStr(date)) return res.status(400).json({ ok: false, code: "INVALID_QUOTATION_DATE", message: "견적일자는 실제 존재하는 날짜를 YYYY-MM-DD 형식으로 입력하세요." });
+    if (validUntil != null && validUntil !== "" && (!_isValidDateStr(validUntil) || validUntil < date)) {
+      return res.status(400).json({ ok: false, code: "INVALID_QUOTATION_EXPIRY", message: "유효기한은 견적일자와 같거나 이후인 유효한 날짜를 입력하세요." });
+    }
     if (!Array.isArray(items) || !items.length) return res.status(400).json({ ok: false, message: "품목을 1개 이상 입력하세요." });
     const _lineErr = _validateItemLines(items);
     if (_lineErr) return res.status(400).json({ ok: false, message: _lineErr });

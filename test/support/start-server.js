@@ -85,6 +85,7 @@ function _spawnServer(env, cwd) {
 async function startServer(opts = {}) {
   const port = await getFreePort();
   const { dataDir, dataFile, budgetDataFile, env } = _prepareChildEnv({ ...opts, port });
+  if (opts.seedErp) fs.writeFileSync(dataFile.replace(/\.json$/, "-erp.json"), JSON.stringify(opts.seedErp));
   const { child, logs } = _spawnServer(env, path.join(__dirname, "..", ".."));
 
   let exited = false;
