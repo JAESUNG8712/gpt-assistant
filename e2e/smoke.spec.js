@@ -4,6 +4,52 @@
 // 확인한다. 화면별 상세 시나리오는 이 스캐폴드 위에 추가해 나가면 된다.
 const { test, expect } = require("@playwright/test");
 
+test("복구 영향 범위를 확인하는 동안 다른 사용자가 수정하면 최신 자료를 보존한다", async ({ page }) => {
+  await page.goto("/");
+  await page.fill("#l-id", "e2e_admin");
+  await page.fill("#l-pw", "E2eTestPw123");
+  await page.evaluate(() => { autoSaveDebounced = () => {}; connectSSE = async () => {}; });
+  await page.click(".login-card button.btn-primary");
+  await expect(page.locator("#main")).toBeVisible();
+  const revisionId = await page.evaluate(async () => {
+    const id = `e2e-restore-${Date.now()}`;
+    window.__restorePostId = id;
+    let d = await serverRequest("GET", "/data");
+    let result = await serverRequest("POST", "/save", { _version: d.version,
+      boardPosts: [{ id, authorId: String(currentUser.id), title: "복구할 원본", createdAt: new Date().toISOString() }] });
+    if (!result.ok) throw new Error(result.message);
+    d = await serverRequest("GET", "/data");
+    const post = d.data.boardPosts.find(p => p.id === id);
+    result = await serverRequest("POST", "/save", { _version: d.version,
+      boardPosts: [{ ...post, title: "수정본", updatedAt: new Date(Date.now() + 1000).toISOString() }] });
+    if (!result.ok) throw new Error(result.message);
+    const list = await serverRequest("GET", `/api/record-revisions?field=boardPosts&q=${id}`);
+    return list.revisions[0].id;
+  });
+  const openPreview = async () => {
+    await page.evaluate(id => { window.__restoreDone = false; void restoreRecordRevision(id).then(() => { window.__restoreDone = true; }); }, revisionId);
+    await expect(page.getByRole("heading", { name: "복구 영향 범위 확인" })).toBeVisible();
+    await expect(page.locator(".modal-body").last()).toContainText("영향 범위: 1건");
+  };
+  await openPreview();
+  await page.evaluate(async () => {
+    const d = await serverRequest("GET", "/data");
+    const post = d.data.boardPosts.find(p => p.id === window.__restorePostId);
+    const r = await serverRequest("POST", "/save", { _version: d.version,
+      boardPosts: [{ ...post, title: "동시 수정 보존", updatedAt: new Date(Date.now() + 3000).toISOString() }] });
+    if (!r.ok) throw new Error(r.message);
+  });
+  await page.getByRole("button", { name: "확인 후 복구", exact: true }).click();
+  await expect.poll(() => page.evaluate(() => window.__restoreDone)).toBe(true);
+  const readTitle = () => page.evaluate(async () => (await serverRequest("GET", "/data")).data.boardPosts.find(p => p.id === window.__restorePostId).title);
+  expect(await readTitle()).toBe("동시 수정 보존");
+  await expect(page.getByText("미리보기 이후 자료가 변경되었습니다. 최신 내용을 다시 확인해 주세요.", { exact: true })).toBeVisible();
+  await openPreview();
+  await page.getByRole("button", { name: "확인 후 복구", exact: true }).click();
+  await expect.poll(() => page.evaluate(() => window.__restoreDone)).toBe(true);
+  expect(await readTitle()).toBe("복구할 원본");
+});
+
 test("통합 교육 이력은 페이지 이동·출처 검색·CSV 추출 결과가 일치한다", async ({ page }) => {
   await page.goto("/");
   await page.fill("#l-id", "e2e_admin"); await page.fill("#l-pw", "E2eTestPw123");

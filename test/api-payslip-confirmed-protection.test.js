@@ -28,6 +28,94 @@ async function getData(api, token) {
   return r;
 }
 
+// Both storage modes exercise actual saves and reloads, rather than UI-only arrays.
+async function exercisePayrollIntegrity(api, token) {
+  const read = () => getData(api, token);
+  const save = async (payload) => {
+    const d = await read();
+    const r = await (await api("/save", auth(token, "POST", {
+      _version: d.version, _singletonRevisions: d.data._singletonRevisions, ...payload,
+    }))).json();
+    assert.equal(r.ok, true, JSON.stringify(r));
+    return r;
+  };
+  let d = await read();
+  const empId = d.data.employees[0].id;
+  const adjustment = { id: "integrity-adjustment", empId, year: 2098, month: 1,
+    amount: 500000, category: "성과급", source: "performance_reward", evalYear: 2097,
+    sourceKey: `performance:2097:${empId}`, updatedAt: "2098-01-01T00:00:00Z" };
+  await save({ payrollAdjustments: [adjustment] });
+  let r = await save({ payrollAdjustments: [{ ...adjustment, id: "duplicate-source" }] });
+  assert.equal(r.partial, true, "same employee/evaluation reward must not be paid twice");
+  assert.equal((await read()).data.payrollAdjustments.filter(a => a.sourceKey === adjustment.sourceKey).length, 1);
+  r = await save({ payrollAdjustments: [{ ...adjustment, id: "forged-source", sourceKey: "different-key" }] });
+  assert.equal(r.partial, true, "performance source key must match employee and evaluation year");
+  const batch = { ...adjustment, evalYear: 2096, sourceKey: `performance:2096:${empId}` };
+  r = await save({ payrollAdjustments: [{ ...batch, id: "batch-a" }, { ...batch, id: "batch-b" }] });
+  assert.equal(r.partial, true);
+  assert.equal((await read()).data.payrollAdjustments.filter(a => a.sourceKey === batch.sourceKey).length, 1);
+  r = await save({ payrollAdjustments: [
+    { ...batch, id: "batch-a", evalYear: 2094, sourceKey: `performance:2094:${empId}`, updatedAt: "2097-01-01T00:00:00Z" },
+    { ...batch, id: "stale-key-reuse" },
+  ] });
+  assert.equal(r.partial, true);
+  assert.equal((await read()).data.payrollAdjustments.filter(a => a.sourceKey === batch.sourceKey).length, 1,
+    "a rejected stale update must not free the original reward key");
+  const concurrent = { ...adjustment, evalYear: 2095, sourceKey: `performance:2095:${empId}` };
+  d = await read();
+  const replies = await Promise.all(["parallel-a", "parallel-b"].map(id =>
+    api("/save", auth(token, "POST", { _version: d.version, payrollAdjustments: [{ ...concurrent, id }] }))
+      .then(r => r.json())));
+  assert.ok(replies.some(r => r.ok));
+  assert.equal((await read()).data.payrollAdjustments.filter(a => a.sourceKey === concurrent.sourceKey).length, 1);
+
+  d = await read();
+  await save({ settings: { ...d.data.settings, payrollLockedMonths: ["2098-1", "2098-02"] } });
+  r = await save({ payrollAdjustments: [
+    { ...adjustment, month: 3, amount: 1, updatedAt: "2099-01-01T00:00:00Z" },
+    { id: "locked-new", empId, year: 2098, month: 2, amount: 100, category: "수당" },
+    { id: "safe-new", empId, year: 2098, month: 3, amount: 200, category: "수당" },
+  ] });
+  assert.equal(r.partial, true);
+  d = await read();
+  assert.equal(d.data.payrollAdjustments.find(a => a.id === adjustment.id).amount, 500000);
+  assert.equal(d.data.payrollAdjustments.find(a => a.id === adjustment.id).month, 1);
+  assert.equal(d.data.payrollAdjustments.some(a => a.id === "locked-new"), false);
+  assert.equal(d.data.payrollAdjustments.find(a => a.id === "safe-new").amount, 200);
+  r = await save({ payslips: [{ id: "closed-month-slip", empId, year: 2098, month: 2, gross: 1000, netPay: 900 }] });
+  assert.equal(r.partial, true);
+  assert.equal((await read()).data.payslips.some(p => p.id === "closed-month-slip"), false);
+
+  // A same-request unlock cannot bypass the previously persisted lock.
+  r = await save({ settings: { ...d.data.settings, payrollLockedMonths: [] },
+    recordTombstones: { payrollAdjustments: [{ id: adjustment.id, deletedAt: new Date().toISOString() }] } });
+  assert.equal(r.partial, true);
+  d = await read();
+  assert.ok(d.data.payrollAdjustments.some(a => a.id === adjustment.id));
+  assert.equal((d.data.recordTombstones?.payrollAdjustments || []).some(a => a.id === adjustment.id), false);
+  r = await save({ payrollAdjustments: [{ ...adjustment, amount: 600000, updatedAt: "2099-01-01T00:00:00Z" }] });
+  assert.notEqual(r.partial, true, "a separately completed unlock permits editing");
+
+  const slip = { id: "integrity-confirmed", empId, year: 2098, month: 3, gross: 1000, netPay: 900, confirmed: true };
+  await save({ payslips: [slip] });
+  r = await save({ payrollAdjustments: [
+    { id: "confirmed-new", empId, year: 2098, month: 3, amount: 300, category: "수당" },
+    { id: "safe-new", empId, year: 2098, month: 4, amount: 999, category: "수당" },
+  ], recordTombstones: { payslips: [{ id: slip.id }], payrollAdjustments: [{ id: "safe-new" }] } });
+  assert.equal(r.partial, true);
+  d = await read();
+  assert.ok(d.data.payslips.some(p => p.id === slip.id));
+  assert.equal(d.data.payrollAdjustments.some(a => a.id === "confirmed-new"), false);
+  assert.equal(d.data.payrollAdjustments.find(a => a.id === "safe-new").amount, 200);
+}
+
+test("급여 마감·확정 및 성과급 중복 보호 — JSON 실제 저장", async (t) => {
+  const server = await startServer();
+  t.after(() => server.stop());
+  const boot = await bootstrapAdminAndLogin(server, { loginId: "admin", pw: "admin-test-pw-1" });
+  await exercisePayrollIntegrity((p, o) => fetch(server.baseUrl + p, o), boot.token);
+});
+
 test("확정된 급여명세서는 /save 직접 호출로도 위조·덮어쓰기가 불가능하다", async (t) => {
   const server = await startServer();
   t.after(() => server.stop());
@@ -153,5 +241,6 @@ if (!ADMIN_DATABASE_URL) {
     d = await getData(api, token);
     saved = d.data.payslips.find(p => p.id === draft.id);
     assert.equal(saved?.netPay, 3600000, "Postgres 모드에서도 확정 급여는 위조되지 않아야 함");
+    await exercisePayrollIntegrity(api, token);
   });
 }

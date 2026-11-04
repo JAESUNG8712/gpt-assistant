@@ -1,0 +1,50 @@
+const { test, expect } = require("@playwright/test");
+const { totp } = require("../test/support/totp");
+
+test("2단계 인증을 실제 저장하고 새로고침 후 비밀값 없이 해제한다", async ({ page, request }) => {
+  const boot = await (await request.post("/login", { data: { loginId: "e2e_admin", pw: "E2eTestPw123" } })).json();
+  const headers = { Authorization: `Bearer ${boot.token}` };
+  const state = await (await request.get("/data", { headers })).json();
+  const id = `otp-browser-${Date.now()}`;
+  const password = "OtpBrowserPassword123";
+  const saved = await request.post("/save", { headers, data: { _version: state.version, employees: [...state.data.employees,
+    { id, loginId: id, pw: password, name: "인증 화면 시험", role: "admin", active: true, updatedAt: new Date().toISOString() }] } });
+  expect(saved.status()).toBe(200);
+  await page.goto("/");
+  await page.fill("#l-id", id); await page.fill("#l-pw", password);
+  await page.click(".login-card button.btn-primary");
+  await expect(page.locator("#main")).toBeVisible();
+  await page.evaluate(() => gotoPage("change-pw"));
+  await page.getByRole("button", { name: "2단계 인증 설정", exact: true }).click();
+  await page.fill("#tfa-pw", password);
+  const generatedResponse = page.waitForResponse(r => r.url().endsWith("/api/auth/2fa/generate-secret") && r.request().method() === "POST");
+  await page.getByRole("button", { name: "인증 코드 발급", exact: true }).click();
+  const generated = await (await generatedResponse).json(); expect(generated.ok).toBe(true);
+  await page.fill("#tfa-code", totp(generated.secret));
+  await page.getByRole("button", { name: "인증 코드 확인 및 활성화", exact: true }).click();
+  await expect(page.getByRole("button", { name: "2단계 인증 해제", exact: true })).toBeVisible();
+  await page.reload();
+  // The application intentionally renders the login form on a fresh page load.
+  // Re-enter through the real OTP login flow before testing secret-free disable.
+  await page.fill("#l-id", id); await page.fill("#l-pw", password);
+  await page.click(".login-card button.btn-primary");
+  await expect(page.locator("#l-otp")).toBeVisible();
+  await page.fill("#l-otp", totp(generated.secret));
+  await page.click(".login-card button.btn-primary");
+  await expect(page.locator("#main")).toBeVisible();
+  await page.evaluate(() => gotoPage("change-pw"));
+  expect(await page.evaluate(() => !!getEmp(currentUser.id)?.twoFactorSecret)).toBe(false);
+  await page.getByRole("button", { name: "2단계 인증 해제", exact: true }).click();
+  await page.fill("#tfa-disable-pw", "wrong-password");
+  await page.fill("#tfa-disable-code", totp(generated.secret));
+  const rejected = page.waitForResponse(r => r.url().endsWith("/api/auth/2fa/settings") && r.request().method() === "POST");
+  await page.getByRole("button", { name: "해제", exact: true }).click();
+  expect((await rejected).status()).toBe(403);
+  await expect(page.locator("#tfa-disable-code")).toBeVisible();
+  await page.fill("#tfa-disable-pw", password);
+  await page.fill("#tfa-disable-code", totp(generated.secret));
+  await page.getByRole("button", { name: "해제", exact: true }).click();
+  await expect(page.getByRole("button", { name: "2단계 인증 설정", exact: true })).toBeVisible();
+  const login = await (await request.post("/login", { data: { loginId: id, pw: password } })).json();
+  expect(login.token).toBeTruthy(); expect(login.requireOtp).not.toBe(true);
+});

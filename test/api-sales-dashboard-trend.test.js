@@ -118,6 +118,14 @@ test("영업 대시보드 월별 추이 집계(수주/매출 구분, 전년 비�
     }
   });
 
+  await t.test("잘못된 견적 월이 남아 있어도 영업 추이 전체가 500으로 실패하지 않는다", async () => {
+    const before = (await get("?year=2031")).monthlyTrend.months;
+    await quote("2031-13-10", 1, 1000, "draft");
+    await quote("2031-00-10", 1, 1000, "draft");
+    const after = (await get("?year=2031")).monthlyTrend.months;
+    assert.deepEqual(after, before, "유효하지 않은 월은 월별 집계에서 제외한다");
+  });
+
   await t.test("인증 없음 401 / 일반 직원 403 (기존 게이팅 유지)", async () => {
     assert.equal((await api("/api/erp/sales-dashboard")).status, 401);
     const init = await (await api("/data", { headers: { Authorization: `Bearer ${token}` } })).json();

@@ -1047,7 +1047,12 @@ if (!ADMIN_DATABASE_URL) {
     }
     const http = require("node:http");
     let status = 500; const received = [];
-    const mock = http.createServer((req, res) => { req.resume(); req.on("end", () => { received.push(status); res.writeHead(status).end("{}"); }); });
+    let holdNext = false, heldResponse = null;
+    const mock = http.createServer((req, res) => { req.resume(); req.on("end", () => {
+      received.push(status);
+      if (holdNext) { holdNext = false; heldResponse = res; return; }
+      res.writeHead(status).end("{}");
+    }); });
     await new Promise(r => mock.listen(0, "127.0.0.1", r));
     t.after(() => new Promise(r => { mock.closeAllConnections(); mock.close(r); }));
     const url = `http://127.0.0.1:${mock.address().port}/hook`;
@@ -1061,8 +1066,9 @@ if (!ADMIN_DATABASE_URL) {
       integrationSettings: { webhooks: [{ id: 1, name: "훅", type: "custom", url, active: true, events: ["approval_request"] }], calendar: {} } }));
     assert.equal(saved.status, 200);
     const first = await (await api("/api/integrations/webhooks/dispatch", authH(A.token, "POST", { eventId: "approval_request", recordId: "apv-ob-1" }))).json();
-    assert.equal(first.failed, 1);
-    assert.equal(first.retryScheduled, 1);
+    assert.ok(first.duplicate || (first.failed === 1 && first.retryScheduled === 1), JSON.stringify(first));
+    for (let i = 0; i < 80 && !received.length; i++) await new Promise(r => setTimeout(r, 100));
+    assert.ok(received.includes(500));
     const dup = await (await api("/api/integrations/webhooks/dispatch", authH(A.token, "POST", { eventId: "approval_request", recordId: "apv-ob-1" }))).json();
     assert.equal(dup.duplicate, true);
     status = 200;
@@ -1078,6 +1084,149 @@ if (!ADMIN_DATABASE_URL) {
     assert.equal(oB.entries.length, 0, "다른 회사의 대기함은 보이지 않는다");
     const cross = await api(`/api/integrations/webhooks/outbox/${entry.id}/retry`, authH(B.token, "POST"));
     assert.equal(cross.status, 404, "다른 회사 건은 재전송할 수 없다");
+
+    // A background worker must honor the same company/module kill switches
+    // as authenticated requests. Modify only this disposable test database.
+    const db = new Client({ connectionString: testDbUrl }); await db.connect();
+    try {
+      const scope = (await db.query("SELECT company_id FROM employees WHERE id=$1", [adminId])).rows[0].company_id;
+      // Fault injection is confined to this disposable database. Outbox failure
+      // must roll back the business row; history failure must roll back its edit.
+      await db.query(`CREATE FUNCTION fail_atomic_outbox() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN
+        IF NEW.dedupe_key = 'approval_request:apv-atomic-rollback' THEN RAISE EXCEPTION 'test outbox unavailable'; END IF;
+        RETURN NEW; END $$`);
+      await db.query("CREATE TRIGGER fail_atomic_outbox BEFORE INSERT ON webhook_outbox FOR EACH ROW EXECUTE FUNCTION fail_atomic_outbox()");
+      let atomicState = await (await api("/data", authH(A.token, "GET"))).json();
+      const rejectedSave = await api("/save", authH(A.token, "POST", { _version: atomicState.version,
+        approvalDocs: [{ id: "apv-atomic-rollback", authorId: adminId, title: "rollback", createdAt: new Date().toISOString(),
+          status: "in_progress", approvers: [{ empId: "x", status: "pending" }] }] }));
+      assert.equal(rejectedSave.status, 500);
+      assert.equal((await db.query("SELECT id FROM app_collections WHERE id='apv-atomic-rollback'")).rowCount, 0);
+      assert.equal((await db.query("SELECT id FROM webhook_outbox WHERE dedupe_key='approval_request:apv-atomic-rollback'")).rowCount, 0);
+      await db.query("DROP TRIGGER fail_atomic_outbox ON webhook_outbox");
+      assert.equal((await api("/save", authH(A.token, "POST", { boardPosts: [{ id: "atomic-revision", title: "original", authorId: adminId }] }))).status, 200);
+      await db.query(`CREATE FUNCTION fail_atomic_revision() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN
+        IF NEW.record_id = 'atomic-revision' THEN RAISE EXCEPTION 'test history unavailable'; END IF; RETURN NEW; END $$`);
+      await db.query("CREATE TRIGGER fail_atomic_revision BEFORE INSERT ON record_revisions FOR EACH ROW EXECUTE FUNCTION fail_atomic_revision()");
+      atomicState = await (await api("/data", authH(A.token, "GET"))).json();
+      const post = atomicState.data.boardPosts.find(p => p.id === "atomic-revision");
+      const rejectedEdit = await api("/save", authH(A.token, "POST", { _version: atomicState.version,
+        boardPosts: [{ ...post, title: "must rollback", updatedAt: new Date(Date.now() + 1000).toISOString() }] }));
+      assert.equal(rejectedEdit.status, 500);
+      assert.equal((await db.query("SELECT data FROM app_collections WHERE collection='boardPosts' AND id='atomic-revision'")).rows[0].data.title, "original");
+      await db.query("DROP TRIGGER fail_atomic_revision ON record_revisions");
+      // New snapshots exclude nested credentials; legacy rows are sanitized again
+      // when read, so old stored secrets cannot be restored into live records.
+      const secretPost = { id: "secret-revision", authorId: adminId, title: "sensitive original",
+        custom: { apiKey: "synthetic-pg-api-key", nested: [{ refresh_token: "synthetic-pg-refresh" }] } };
+      assert.equal((await api("/save", authH(A.token, "POST", { boardPosts: [secretPost] }))).status, 200);
+      atomicState = await (await api("/data", authH(A.token, "GET"))).json();
+      const beforeSecretEdit = atomicState.data.boardPosts.find(p => p.id === secretPost.id);
+      assert.equal((await api("/save", authH(A.token, "POST", { _version: atomicState.version,
+        boardPosts: [{ ...beforeSecretEdit, title: "current title", updatedAt: new Date(Date.now() + 2000).toISOString() }] }))).status, 200);
+      const secretRevision = (await db.query(
+        "SELECT id, snapshot FROM record_revisions WHERE company_id=$1 AND record_id=$2 ORDER BY changed_at DESC LIMIT 1",
+        [scope, secretPost.id])).rows[0];
+      assert.ok(secretRevision);
+      assert.ok(!JSON.stringify(secretRevision.snapshot).includes("synthetic-pg-"));
+      assert.ok(secretRevision.snapshot._redactedKeys.length);
+      await db.query("UPDATE record_revisions SET snapshot=$1 WHERE id=$2", [JSON.stringify(secretPost), secretRevision.id]);
+      const legacyPreview = await api(`/api/record-revisions/${secretRevision.id}/preview`, authH(A.token, "GET"));
+      assert.equal(legacyPreview.status, 409);
+      assert.equal((await legacyPreview.json()).code, "REVISION_REDACTED");
+      const legacyRestore = await api(`/api/record-revisions/${secretRevision.id}/restore`,
+        authH(A.token, "POST", { expectedToken: "a".repeat(64) }));
+      assert.equal(legacyRestore.status, 409);
+      assert.equal((await legacyRestore.json()).code, "REVISION_REDACTED");
+      assert.equal((await db.query("SELECT data FROM app_collections WHERE company_id=$1 AND collection='boardPosts' AND id=$2",
+        [scope, secretPost.id])).rows[0].data.title, "current title");
+      const reviveEmployee = { id: "revive-pg", loginId: "revive-pg", pw: "RevivePassword123",
+        name: "복구 직원", role: "member", active: true, updatedAt: new Date().toISOString() };
+      assert.equal((await api("/save", authH(A.token, "POST", { employees: [reviveEmployee] }))).status, 200);
+      const oldLogin = await (await api("/login", authH(A.token, "POST", {
+        loginId: reviveEmployee.loginId, pw: reviveEmployee.pw, companyCode: A.companyCode }))).json();
+      assert.equal(oldLogin.ok, true, JSON.stringify(oldLogin));
+      assert.equal((await api("/save", authH(A.token, "POST", { employees: [{ ...reviveEmployee,
+        name: "수정 직원", updatedAt: new Date(Date.now() + 2000).toISOString() }] }))).status, 200);
+      const employeeRevision = (await db.query(
+        "SELECT id FROM record_revisions WHERE company_id=$1 AND record_id=$2 ORDER BY changed_at DESC LIMIT 1",
+        [scope, reviveEmployee.id])).rows[0];
+      assert.ok(employeeRevision);
+      await db.query("DELETE FROM employees WHERE company_id=$1 AND id=$2", [scope, reviveEmployee.id]);
+      assert.equal((await api("/data", authH(oldLogin.token, "GET"))).status, 401);
+      const revivePreview = await (await api(`/api/record-revisions/${employeeRevision.id}/preview`, authH(A.token, "GET"))).json();
+      assert.equal(revivePreview.ok, true, JSON.stringify(revivePreview));
+      assert.equal((await api(`/api/record-revisions/${employeeRevision.id}/restore`,
+        authH(A.token, "POST", { expectedToken: revivePreview.expectedToken }))).status, 200);
+      assert.equal((await api("/data", authH(oldLogin.token, "GET"))).status, 401);
+      // Simulate takeover while the original HTTP call is still in flight.
+      await require("../support/two-factor-flow").exerciseTwoFactor(api, A.token, A.companyCode);
+      // Both late success and late failure must leave the new owner's row alone.
+      for (const lateStatus of [200, 500]) {
+        const state = await (await api("/data", { headers: { Authorization: `Bearer ${A.token}` } })).json();
+        const id = `apv-ob-fenced-${lateStatus}`;
+        heldResponse = null; holdNext = true;
+        assert.equal((await api("/save", authH(A.token, "POST", { _version: state.version,
+          approvalDocs: [...state.data.approvalDocs, { id, authorId: adminId, title: id,
+            templateId: "tpl-general", createdAt: nowIso, updatedAt: nowIso, status: "in_progress",
+            approvers: [{ empId: "x", status: "pending" }] }] }))).status, 200);
+        const logCount = async () => Number((await db.query("SELECT COUNT(*) AS n FROM app_collections WHERE company_id=$1 AND collection='integrationLogs'", [scope])).rows[0].n);
+        const beforeLogs = await logCount();
+        const pending = api("/api/integrations/webhooks/dispatch", authH(A.token, "POST", { eventId: "approval_request", recordId: id }));
+        try {
+          for (let i = 0; i < 60 && !heldResponse; i++) await new Promise(r => setTimeout(r, 50));
+          assert.ok(heldResponse, "이전 작업자의 HTTP 전송이 응답 대기 중이어야 함");
+          const sending = (await db.query("SELECT * FROM webhook_outbox WHERE company_id=$1 AND status='sending'", [scope])).rows;
+          assert.equal(sending.length, 1);
+          assert.ok(sending[0].claim_token);
+          const jobId = sending[0].id;
+          const replacement = `replacement-${lateStatus}`;
+          await db.query("UPDATE webhook_outbox SET claim_token=$2, attempts=7, next_attempt_at=NOW()+INTERVAL '10 minutes' WHERE id=$1", [jobId, replacement]);
+          heldResponse.writeHead(lateStatus).end("{}");
+          const response = await (await pending).json();
+          assert.equal(response.dispatched, 0);
+          assert.equal(response.failed || 0, 0);
+          assert.equal(response.retryScheduled || 0, 0);
+          const kept = (await db.query("SELECT status,attempts,claim_token FROM webhook_outbox WHERE id=$1", [jobId])).rows[0];
+          assert.deepEqual(kept, { status: "sending", attempts: 7, claim_token: replacement });
+          assert.equal(await logCount(), beforeLogs, "이전 작업자의 성공/실패 로그를 최신 결과처럼 추가하면 안 됨");
+          assert.equal((await api(`/api/integrations/webhooks/outbox/${jobId}/retry`, authH(A.token, "POST"))).status, 404);
+          await db.query("UPDATE webhook_outbox SET status='sent',claim_token=NULL WHERE id=$1", [jobId]);
+        } finally {
+          if (heldResponse && !heldResponse.writableEnded) heldResponse.end("{}");
+          await pending.catch(() => {});
+          holdNext = false;
+        }
+      }
+      await db.query("INSERT INTO company_features(company_id,feature_key,enabled) VALUES($1,'approval',false) ON CONFLICT(company_id,feature_key) DO UPDATE SET enabled=false", [scope]);
+      // Feature/status maps have a documented 10-second cache.
+      await new Promise(r => setTimeout(r, 10100));
+      const enqueue = async id => db.query(
+        "INSERT INTO webhook_outbox(id,company_id,event_id,dedupe_key,webhook_id,webhook_name,text,status,next_attempt_at) VALUES($1,$2,'approval_request',$1,'1','훅','차단 후 발송 금지','pending',NOW())",
+        [id, scope]);
+      const expectCancelled = async id => {
+        for (let i = 0; i < 80; i++) {
+          const row = (await db.query("SELECT status FROM webhook_outbox WHERE id=$1", [id])).rows[0];
+          if (row.status === "cancelled") return;
+          await new Promise(r => setTimeout(r, 100));
+        }
+        assert.fail("기능 차단/회사 정지 뒤 대기 알림은 취소되어야 함");
+      };
+      const before = received.length;
+      await enqueue("disabled-feature-job");
+      await expectCancelled("disabled-feature-job");
+      assert.equal(received.length, before);
+      // Manual retry is not an escape hatch around the disabled feature.
+      assert.equal((await api("/api/integrations/webhooks/outbox/disabled-feature-job/retry", authH(A.token, "POST"))).status, 200);
+      await expectCancelled("disabled-feature-job");
+      assert.equal(received.length, before);
+      await db.query("UPDATE company_features SET enabled=true WHERE company_id=$1 AND feature_key='approval'", [scope]);
+      await db.query("UPDATE companies SET status='suspended' WHERE id=$1", [scope]);
+      await new Promise(r => setTimeout(r, 10100));
+      await enqueue("suspended-company-job");
+      await expectCancelled("suspended-company-job");
+      assert.equal(received.length, before);
+    } finally { await db.end(); }
   });
 
   test("postgres-mode: 수정·삭제 복구 — 이력 보관·복구·tombstone 해제·회사 간 격리", async (t) => {
@@ -1122,8 +1271,11 @@ if (!ADMIN_DATABASE_URL) {
     const listB = await (await api("/api/record-revisions", { headers: { Authorization: `Bearer ${B.token}` } })).json();
     assert.equal(listB.revisions.length, 0);
     assert.equal((await api(`/api/record-revisions/${upd.id}/restore`, authH(B.token, "POST"))).status, 404);
-    assert.equal((await (await api(`/api/record-revisions/${upd.id}/restore`, authH(A.token, "POST"))).json()).ok, true);
-    assert.equal((await (await api(`/api/record-revisions/${del.id}/restore`, authH(A.token, "POST"))).json()).ok, true);
+    for (const revision of [upd, del]) {
+      const preview = await (await api(`/api/record-revisions/${revision.id}/preview`, authH(A.token, "GET"))).json();
+      assert.equal(preview.ok, true);
+      assert.equal((await (await api(`/api/record-revisions/${revision.id}/restore`, authH(A.token, "POST", { expectedToken: preview.expectedToken }))).json()).ok, true);
+    }
     d = await getD(A.token);
     assert.equal(d.data.boardPosts.find(p => p.id === "p1").title, "원본");
     assert.equal(d.data.boardPosts.find(p => p.id === "p2")?.title, "지울 글");
@@ -1133,6 +1285,17 @@ if (!ADMIN_DATABASE_URL) {
     assert.equal((await api("/save", authH(A.token, "POST", { _version: d.version, boardPosts: d.data.boardPosts }))).status, 200);
     d = await getD(A.token);
     assert.equal(d.data.boardPosts.some(p => p.id === "p2"), true);
+    const db = new Client({ connectionString: testDbUrl }); await db.connect();
+    try {
+      const scope = (await db.query("SELECT company_id FROM employees WHERE id=$1", [adminId])).rows[0].company_id;
+      await db.query("INSERT INTO company_features(company_id,feature_key,enabled) VALUES($1,'comm',false) ON CONFLICT(company_id,feature_key) DO UPDATE SET enabled=false", [scope]);
+      await new Promise(r => setTimeout(r, 10100));
+      const hidden = await (await api("/api/record-revisions?field=boardPosts", authH(A.token, "GET"))).json();
+      assert.equal(hidden.revisions.length, 0);
+      const denied = await api(`/api/record-revisions/${upd.id}/restore`, authH(A.token, "POST"));
+      assert.equal(denied.status, 403);
+      assert.equal((await denied.json()).code, "REVISION_ACCESS_DENIED");
+    } finally { await db.end(); }
   });
 }
 

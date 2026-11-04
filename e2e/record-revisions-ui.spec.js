@@ -15,10 +15,12 @@ test("수정 이력 화면에서 삭제·수정된 항목을 확인하고 복구
     window.__calls = [];
     serverConfig.enabled = true; serverConfig.url = location.origin;
     serverRequest = async (method, path, body) => {
-      window.__calls.push({ method, path });
+      window.__calls.push({ method, path, body });
       if (path.startsWith("/api/record-revisions?")) return { ok: true, revisions: [
         { id: "rev-1", field: "boardPosts", recordId: "p1", operation: "delete", title: "<b>지운 글</b>", changedBy: "auth:admin", changedAt: new Date().toISOString() },
         { id: "rev-2", field: "okrObjectives", recordId: "o1", operation: "update", title: "목표", changedBy: "auth:admin", changedAt: new Date().toISOString() }] };
+      if (path.endsWith("/rev-1/preview")) return { ok: true, expectedToken: "a".repeat(64), field: "boardPosts",
+        title: "<b>지운 글</b>", existed: false, affectedRecords: 1, changedFields: ["title", "content"] };
       return { ok: true, existed: false };
     };
     gotoPage("history");
@@ -28,6 +30,11 @@ test("수정 이력 화면에서 삭제·수정된 항목을 확인하고 복구
   await expect(panel).toContainText("수정됨");
   await expect(panel.locator("b")).toHaveCount(0); // 제목은 이스케이프된다
   await panel.getByRole("button", { name: "되살리기" }).click();
-  await page.locator(".modal-ov").getByRole("button", { name: "복구" }).click();
-  await expect.poll(() => page.evaluate(() => window.__calls.some(c => c.method === "POST" && c.path.endsWith("/rev-1/restore")))).toBe(true);
+  const dialog = page.locator(".modal-ov");
+  await expect(dialog).toContainText("영향 범위: 1건");
+  await expect(dialog.locator("b")).toHaveCount(0);
+  expect(await page.evaluate(() => window.__calls.some(c => c.method === "POST" && c.path.endsWith("/restore")))).toBe(false);
+  await dialog.getByRole("button", { name: "확인 후 복구", exact: true }).click();
+  await expect.poll(() => page.evaluate(() => window.__calls.some(c => c.method === "POST" &&
+    c.path.endsWith("/rev-1/restore") && c.body.expectedToken === "a".repeat(64)))).toBe(true);
 });

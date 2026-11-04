@@ -3,10 +3,10 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const { startServer, bootstrapAdminAndLogin } = require("./support/start-server");
 
-// 서버가 오늘 날짜로 설문 기간을 검사하므로 고정 날짜를 쓰면 기간이 지나는 순간 테스트가 깨진다.
-const isoDay = offset => new Date(Date.now() + offset * 86400000).toISOString().slice(0, 10);
-
 test("직원 몰입도 펄스는 본인 응답만 쓰고 3명 이상일 때만 익명 집계한다", async t => {
+  // 모든 기간을 같은 기준시각으로 계산해 날짜 변경에도 정상/기간 외 검증을 유지한다.
+  const testNow = Date.now();
+  const day = offset => new Date(testNow + offset * 86400000).toISOString().slice(0, 10);
   const server = await startServer();
   t.after(() => server.stop());
   const api = (path, opts) => fetch(server.baseUrl + path, opts);
@@ -26,7 +26,8 @@ test("직원 몰입도 펄스는 본인 응답만 쓰고 3명 이상일 때만 �
   for (const member of members) tokens.push(await login(member));
 
   state = await (await api("/data", { headers: auth(boot.token) })).json();
-  const survey = { id: "pulse-2026-10", title: "10월 몰입도", startDate: isoDay(-1), endDate: isoDay(30), status: "open", questions: [{ id: "engagement", driver: "몰입", text: "추천 의향" }, { id: "growth", driver: "성장", text: "성장 체감" }, { id: "action", driver: "실행 신뢰", text: "개선 조치 신뢰" }] };
+  // A fixed October 2026 window made this test fail once the calendar advanced.
+  const survey = { id: "pulse-current", title: "정기 몰입도", startDate: day(-7), endDate: day(7), status: "open", questions: [{ id: "engagement", driver: "몰입", text: "추천 의향" }, { id: "growth", driver: "성장", text: "성장 체감" }, { id: "action", driver: "실행 신뢰", text: "개선 조치 신뢰" }] };
   saved = await api("/save", { method: "POST", headers: auth(boot.token), body: JSON.stringify({ _version: state.version, data: { engagementSurveys: [survey] } }) });
   assert.equal(saved.status, 200);
 
@@ -40,7 +41,7 @@ test("직원 몰입도 펄스는 본인 응답만 쓰고 3명 이상일 때만 �
     const selfView = await (await api("/data", { headers: auth(token) })).json();
     assert.equal(selfView.data.engagementResponses.length, 1);
     assert.equal(String(selfView.data.engagementResponses[0].empId), members[i].id, "서버가 응답자 ID를 로그인 사용자로 고정해야 함");
-    assert.equal(selfView.data.engagementSurveys[0].title, "10월 몰입도", "직원이 설문 원본을 수정하면 안 됨");
+    assert.equal(selfView.data.engagementSurveys[0].title, survey.title, "직원이 설문 원본을 수정하면 안 됨");
 
     const adminView = await (await api("/data", { headers: auth(boot.token) })).json();
     assert.deepEqual(adminView.data.engagementResponses, [], "관리자에게도 개인 응답 원본을 제공하면 안 됨");
@@ -56,6 +57,24 @@ test("직원 몰입도 펄스는 본인 응답만 쓰고 3명 이상일 때만 �
     }
   }
 
+  // Keep date enforcement covered rather than bypassing the server clock.
+  for (const [id, start, end] of [["expired", -14, -7], ["future", 7, 14]]) {
+    const adminState = await (await api("/data", { headers: auth(boot.token) })).json();
+    assert.equal((await api("/save", { method: "POST", headers: auth(boot.token), body: JSON.stringify({
+      _version: adminState.version, data: { engagementSurveys: [{ ...survey, id, startDate: day(start), endDate: day(end) }] },
+    }) })).status, 200);
+    const memberState = await (await api("/data", { headers: auth(tokens[0]) })).json();
+    assert.ok(memberState.data.engagementSurveys.some(s => s.id === id), "기간 밖 설문도 실제 저장되어 있어야 함");
+    const rejected = await (await api("/save", { method: "POST", headers: auth(tokens[0]), body: JSON.stringify({
+      _version: memberState.version, data: { engagementResponses: [{ id: `response-${id}`, surveyId: id,
+        empId: members[0].id, scores: { engagement: 10, growth: 10, action: 10 } }] },
+    }) })).json();
+    assert.equal(rejected.partial, true);
+    const after = await (await api("/data", { headers: auth(tokens[0]) })).json();
+    assert.ok(!after.data.engagementResponses.some(r => r.surveyId === id), "시작 전/종료 후 응답은 저장되지 않아야 함");
+    assert.equal(after.data.engagementResponses.find(r => r.surveyId === survey.id).scores.engagement, 7);
+  }
+
   const beforeClose = await (await api("/data", { headers: auth(boot.token) })).json();
   const close = await api("/save", { method: "POST", headers: auth(boot.token), body: JSON.stringify({ _version: beforeClose.version, data: { engagementSurveys: [{ ...survey, status: "closed", closedAt: new Date().toISOString() }] } }) });
   assert.equal(close.status, 200);
@@ -67,7 +86,7 @@ test("직원 몰입도 펄스는 본인 응답만 쓰고 3명 이상일 때만 �
   assert.equal(afterLateWrite.data.engagementPulseSummary[survey.id].driverAverages.engagement, 8, "마감 뒤 응답 수정은 집계에 반영되면 안 됨");
   assert.equal(afterLateWrite.data.engagementPulseSummary[survey.id].comments.includes("마감 후 변조"), false);
 
-  const action = { id: "pulse-action-1", surveyId: survey.id, title: "주간 우선순위 공유", dueDate: "2026-11-30", status: "open", focusDriver: "action", successMetric: "주간 공유율 90%", nextCheckIn: "2026-10-15", progress: 0, checkIns: [] };
+  const action = { id: "pulse-action-1", surveyId: survey.id, title: "주간 우선순위 공유", dueDate: day(30), status: "open", focusDriver: "action", successMetric: "주간 공유율 90%", nextCheckIn: day(7), progress: 0, checkIns: [] };
   const actionWrite = await api("/save", { method: "POST", headers: auth(boot.token), body: JSON.stringify({ _version: afterLateWrite.version, data: { engagementActions: [action] } }) });
   assert.equal(actionWrite.status, 200);
   const memberWithAction = await (await api("/data", { headers: auth(tokens[0]) })).json();
@@ -79,7 +98,7 @@ test("직원 몰입도 펄스는 본인 응답만 쓰고 3명 이상일 때만 �
   assert.equal(finalAdmin.data.engagementActions[0].title, "주간 우선순위 공유");
   assert.equal(finalAdmin.data.engagementActions[0].status, "open");
 
-  const withCheckIn = { ...finalAdmin.data.engagementActions[0], status: "in_progress", progress: 40, nextCheckIn: "2026-10-22", checkIns: [{ id: "check-1", note: "첫 주 공유 완료", nextStep: "양식 단순화", progress: 40, authorId: "forged", authorName: "위조 작성자" }] };
+  const withCheckIn = { ...finalAdmin.data.engagementActions[0], status: "in_progress", progress: 40, nextCheckIn: day(14), checkIns: [{ id: "check-1", note: "첫 주 공유 완료", nextStep: "양식 단순화", progress: 40, authorId: "forged", authorName: "위조 작성자" }] };
   const checkInWrite = await api("/save", { method: "POST", headers: auth(boot.token), body: JSON.stringify({ _version: finalAdmin.version, data: { engagementActions: [withCheckIn] } }) });
   assert.equal(checkInWrite.status, 200);
   const afterCheckIn = await (await api("/data", { headers: auth(boot.token) })).json();
