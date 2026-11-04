@@ -1160,6 +1160,7 @@ if (!ADMIN_DATABASE_URL) {
         authH(A.token, "POST", { expectedToken: revivePreview.expectedToken }))).status, 200);
       assert.equal((await api("/data", authH(oldLogin.token, "GET"))).status, 401);
       // Simulate takeover while the original HTTP call is still in flight.
+      await require("../support/two-factor-flow").exerciseTwoFactor(api, A.token, A.companyCode);
       // Both late success and late failure must leave the new owner's row alone.
       for (const lateStatus of [200, 500]) {
         const state = await (await api("/data", { headers: { Authorization: `Bearer ${A.token}` } })).json();

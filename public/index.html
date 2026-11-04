@@ -16838,7 +16838,9 @@ function renderChangePW(){
   </div>`;
 }
 let _2faSetupSecret=null;
+let _2faSaving=false;
 function openSetup2faModal(){
+  _2faSetupSecret=null;
   openModal(`<div class="modal-box" style="max-width:420px"><div class="modal-head"><h3>🔐 2단계 인증 설정</h3></div><div class="modal-body">
     <div class="fg"><label class="fl">현재 비밀번호 <span class="req">*</span></label><input class="fc" type="password" id="tfa-pw"></div>
     <button class="btn btn-secondary btn-sm" onclick="_generate2faSecret()">인증 코드 발급</button>
@@ -16853,6 +16855,7 @@ async function _generate2faSecret(){
   if(!r?.ok){showToast(r?.message||"비밀번호가 올바르지 않습니다.","error");return;}
   _2faSetupSecret=r.secret;
   const el=$("#tfa-secret-box");
+  if(!el){_2faSetupSecret=null;return;}
   el.innerHTML=`<div class="fz12 mb2">인증 앱(Google Authenticator 등)에서 "직접 키 입력"으로 아래 키를 등록하세요.</div>
   <div class="fz13 fw7" style="background:#f1f5f9;padding:8px 10px;border-radius:6px;letter-spacing:1px;word-break:break-all">${h(r.secret)}</div>
   <div class="fg mt3"><label class="fl">앱에 표시된 6자리 코드 입력</label><input class="fc" id="tfa-code" maxlength="6" placeholder="123456"></div>
@@ -16861,33 +16864,38 @@ async function _generate2faSecret(){
 async function _confirmEnable2fa(){
   const code=$("#tfa-code")?.value.trim();
   if(!code||!_2faSetupSecret){showToast("인증 코드를 입력하세요.","error");return;}
-  const r=await serverRequest("POST","/api/auth/2fa/verify-code",{secret:_2faSetupSecret,otp:code});
-  if(!r?.ok){showToast("인증 코드가 올바르지 않습니다.","error");return;}
-  // updatedAt을 갱신해야 한다(adjustKpiGrade/_applyChangedPW와 동일한 클래스) — 그러지
-  // 않으면 Postgres 모드에서 이 저장이 조용히 스킵되어, "활성화되었습니다" 토스트를 봐도
-  // 실제로는 2단계 인증이 꺼진 채로 남는다(보안상 위험 — 사용자가 켜졌다고 오인).
-  employees=employees.map(e=>e.id===currentUser.id?{...e,twoFactorEnabled:true,twoFactorSecret:_2faSetupSecret,updatedAt:new Date().toISOString()}:e);
-  currentUser={...currentUser,twoFactorEnabled:true};
-  _2faSetupSecret=null;
-  autoSaveToServerIfEnabled();
-  closeModal();showToast("2단계 인증이 활성화되었습니다. 다음 로그인부터 인증 코드가 필요합니다.","success");renderChangePW();
+  await _saveTwoFactorSettings({enabled:true,currentPassword:$("#tfa-pw")?.value,secret:_2faSetupSecret,otp:code});
 }
 function openDisable2faModal(){
   openModal(`<div class="modal-box" style="max-width:380px"><div class="modal-head"><h3>2단계 인증 해제</h3></div><div class="modal-body">
+    <div class="fg"><label class="fl" for="tfa-disable-pw">현재 비밀번호 <span class="req">*</span></label><input class="fc" type="password" id="tfa-disable-pw" autocomplete="current-password"></div>
     <div class="fg"><label class="fl">인증 앱의 6자리 코드 입력 <span class="req">*</span></label><input class="fc" id="tfa-disable-code" maxlength="6" placeholder="123456"></div>
   </div><div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal()">취소</button><button class="btn btn-danger" onclick="_confirmDisable2fa()">해제</button></div></div>`);
 }
 async function _confirmDisable2fa(){
   const code=$("#tfa-disable-code")?.value.trim();
-  const emp=getEmp(currentUser.id);
-  if(!code||!emp?.twoFactorSecret){showToast("인증 코드를 입력하세요.","error");return;}
-  const r=await serverRequest("POST","/api/auth/2fa/verify-code",{secret:emp.twoFactorSecret,otp:code});
-  if(!r?.ok){showToast("인증 코드가 올바르지 않습니다.","error");return;}
-  // updatedAt 갱신 필요(위 _confirmEnable2fa 주석 참고).
-  employees=employees.map(e=>e.id===currentUser.id?{...e,twoFactorEnabled:false,twoFactorSecret:"",updatedAt:new Date().toISOString()}:e);
-  currentUser={...currentUser,twoFactorEnabled:false};
-  autoSaveToServerIfEnabled();
-  closeModal();showToast("2단계 인증이 해제되었습니다.","info");renderChangePW();
+  await _saveTwoFactorSettings({enabled:false,currentPassword:$("#tfa-disable-pw")?.value,otp:code});
+}
+async function _saveTwoFactorSettings(payload){
+  if(_2faSaving)return;
+  if(!payload.currentPassword||!/^\d{6}$/.test(payload.otp||"")){showToast("현재 비밀번호와 인증 앱의 6자리 코드를 입력하세요.","error");return;}
+  _2faSaving=true;
+  try{
+    const r=await serverRequest("POST","/api/auth/2fa/settings",payload);
+    if(!r?.ok){showToast(r?.message||"인증 설정을 저장하지 못했습니다. 다시 확인하세요.","error");return;}
+    if(r.token)_setAuthToken(r.token);
+    employees=employees.map(e=>{
+      if(String(e.id)!==String(currentUser.id))return e;
+      const {twoFactorSecret,...safe}=e;
+      return {...safe,twoFactorEnabled:r.twoFactorEnabled,updatedAt:r.updatedAt,_rev:r.revision};
+    });
+    const {twoFactorSecret,...safeUser}=currentUser;
+    currentUser={...safeUser,twoFactorEnabled:r.twoFactorEnabled};
+    _2faSetupSecret=null;
+    closeModal();renderChangePW();
+    showToast(r.twoFactorEnabled?"2단계 인증이 활성화되었습니다. 다음 로그인부터 인증 코드가 필요합니다.":"2단계 인증이 해제되었습니다.","success");
+  }catch(e){showToast("인증 설정 저장에 실패했습니다. 연결 상태를 확인하세요.","error");}
+  finally{_2faSaving=false;}
 }
 function _applyChangedPW(nw){
   // resetPassword()(관리자 비밀번호 초기화, 2026-07-20 수정)와 정확히 같은 클래스의 버그가

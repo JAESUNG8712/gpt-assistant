@@ -3,6 +3,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
+const { totp } = require("./support/totp");
 const { startServer, bootstrapAdminAndLogin } = require("./support/start-server");
 
 const auth = (token, method, body) => ({ method, headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` }, body: body === undefined ? undefined : JSON.stringify(body) });
@@ -26,16 +27,22 @@ test("이력은 중첩 인증정보를 보관하지 않고 직원 복구는 현�
   };
   let d = await data(api, token);
   const member = { id: "secure-member", loginId: "secure-member", pw: "member-pw-123",
-    name: "이전 이름", role: "member", active: true, twoFactorEnabled: false, twoFactorSecret: "old-otp-test-only",
+    name: "이전 이름", role: "member", active: true,
     updatedAt: new Date().toISOString() };
   await save({ employees: [...d.data.employees, member],
     boardPosts: [{ id: "nested-secret", title: "원본", authorId: d.data.employees[0].id,
       custom: { accessToken: "nested-secret-test-only", label: "업무 설정" } }],
   });
+  const memberLogin = await (await api("/login", auth(null, "POST", { loginId: member.loginId, pw: member.pw }))).json();
+  const newSecret = "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP";
+  const enable = await api("/api/auth/2fa/settings", auth(memberLogin.token, "POST", {
+    enabled: true, currentPassword: member.pw, secret: newSecret, otp: totp(newSecret),
+  }));
+  assert.equal(enable.status, 200, await enable.text());
   d = await data(api, token);
   await save({
     employees: d.data.employees.map(e => e.id === member.id ? { ...e, name: "현재 이름",
-      twoFactorEnabled: true, twoFactorSecret: "new-otp-test-only", updatedAt: new Date(Date.now() + 2000).toISOString() } : e),
+      updatedAt: new Date(Date.now() + 2000).toISOString() } : e),
     boardPosts: d.data.boardPosts.map(p => ({ ...p, title: "수정", updatedAt: new Date(Date.now() + 2000).toISOString() })),
   });
   const list = await (await api("/api/record-revisions", auth(token, "GET"))).json();
@@ -43,7 +50,7 @@ test("이력은 중첩 인증정보를 보관하지 않고 직원 복구는 현�
   const nestedRevision = list.revisions.find(r => r.recordId === "nested-secret");
   assert.ok(employeeRevision); assert.ok(nestedRevision);
   const text = fs.readFileSync(server.dataFile.replace(/\.json$/, "-record-revisions.json"), "utf8");
-  assert.ok(!text.includes("old-otp-test-only"));
+  assert.ok(!text.includes(newSecret));
   assert.ok(!text.includes("nested-secret-test-only"));
   const incomplete = await api(`/api/record-revisions/${nestedRevision.id}/preview`, auth(token, "GET"));
   assert.equal(incomplete.status, 409);
@@ -57,7 +64,12 @@ test("이력은 중첩 인증정보를 보관하지 않고 직원 복구는 현�
   const stored = JSON.parse(fs.readFileSync(server.dataFile, "utf8")).employees.find(e => e.id === member.id);
   assert.equal(stored.name, "이전 이름");
   assert.equal(stored.twoFactorEnabled, true);
-  assert.equal(stored.twoFactorSecret, "new-otp-test-only");
+  assert.equal(stored.twoFactorSecret, newSecret);
+  d = await data(api, token);
+  await save({ employees: d.data.employees.map(e => e.id === member.id
+    ? { ...e, name: "일반 정보 수정", updatedAt: new Date(Date.now() + 5000).toISOString() } : e) });
+  const afterProfileSave = JSON.parse(fs.readFileSync(server.dataFile, "utf8")).employees.find(e => e.id === member.id);
+  assert.equal(afterProfileSave.twoFactorSecret, newSecret, "화면에서 숨긴 인증 비밀값이 일반 저장으로 삭제되면 안 된다");
   const nested = (await data(api, token)).data.boardPosts.find(p => p.id === "nested-secret");
   assert.equal(nested.title, "수정");
   assert.equal(nested.custom.accessToken, "nested-secret-test-only", "거절된 복구가 업무 원본을 지우면 안 된다");

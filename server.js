@@ -2998,10 +2998,21 @@ function _sanitizeCompGradeResultsForRole(incoming, stored, actor) {
 // 토큰은 즉시 무효로 취급된다(재로그인해야 새 버전의 토큰을 받음). 새 레코드(ex 없음)는
 // 비교 대상이 없으면 새로운 난수 버전으로 시작한다. 삭제 후 같은 ID를 복구할 때
 // 0을 재사용하면 삭제 전 토큰이 다시 유효해질 수 있으므로 요청값도 재사용하지 않는다.
+const _verifiedTwoFactorChange = Symbol("verifiedTwoFactorChange");
+function _preserveTwoFactor(raw, stored, actor) {
+  if (stored && actor?.[_verifiedTwoFactorChange] === String(raw.id)) return raw;
+  const next = { ...raw };
+  for (const key of ["twoFactorSecret", "twoFactorEnabled"]) {
+    delete next[key];
+    if (stored && Object.prototype.hasOwnProperty.call(stored, key)) next[key] = stored[key];
+  }
+  return next;
+}
 function _nextAuthVersion(ex, emp, pw) {
   if (!ex) return crypto.randomInt(1, 2 ** 48 - 1);
   const prev = Number(ex.authVersion) || 0;
-  const changed = pw !== ex.pw || emp.role !== ex.role || !!emp.active !== !!ex.active;
+  const changed = pw !== ex.pw || emp.role !== ex.role || !!emp.active !== !!ex.active ||
+    !!emp.twoFactorEnabled !== !!ex.twoFactorEnabled || emp.twoFactorSecret !== ex.twoFactorSecret;
   return changed ? prev + 1 : prev;
 }
 async function persistData(data, changedBy = "system", companyId = null, actor = null) {
@@ -3300,7 +3311,7 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
     const _empActorOwnRecord = (actor && actor.empId != null) ? existingById[actor.empId] : null;
     const employees = employeesInputMissing ? (_fileStore.employees || []) : await Promise.all((data.employees || []).map(async (rawEmpIn) => {
       const ex0 = existingById[rawEmpIn.id];
-      const rawEmp = _sanitizePhotoUrl(_empActorNonAdmin ? _sanitizeEmployeeRecord(rawEmpIn, ex0, actor, _empActorOwnRecord) : rawEmpIn, ex0);
+      const rawEmp = _preserveTwoFactor(_sanitizePhotoUrl(_empActorNonAdmin ? _sanitizeEmployeeRecord(rawEmpIn, ex0, actor, _empActorOwnRecord) : rawEmpIn, ex0), ex0, actor);
       const ex = existingById[rawEmp.id];
       const oldTs = ex ? (ex.updatedAt || ex.createdAt || "") : "";
       const newTs = rawEmp.updatedAt || rawEmp.createdAt || "";
@@ -3670,10 +3681,10 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
       );
       if (rows.length && companyId && rows[0].company_id && rows[0].company_id !== companyId) continue;
       const storedEmpRow = rows.length ? rows[0].data : null;
-      const rawEmp = _sanitizePhotoUrl(
+      const rawEmp = _preserveTwoFactor(_sanitizePhotoUrl(
         _empActorNonAdmin ? _sanitizeEmployeeRecord(rawEmpIn, storedEmpRow, actor, _empActorOwnRecord) : rawEmpIn,
         storedEmpRow
-      );
+      ), storedEmpRow, actor);
       // 비밀번호는 관리자 또는 본인만(2026-08-19 외부 감사 P0-1 — JSON 파일 모드와 동일한
       // 방어를 Postgres/SaaS 모드에도 적용).
       const isSelf = actor && actor.empId != null && String(actor.empId) === String(rawEmp.id);
@@ -4915,7 +4926,7 @@ function _isReadOnlyRequest(req) {
 // 이 경로들은 이미 보호돼 있으므로 이 블랭킷 한도에서는 제외하고, 그 외 전용 limiter가
 // 없는 익명 쓰기 요청에 대한 안전망 역할만 하도록 좁힌다.
 const _DEDICATED_LIMITER_PATHS = new Set([
-  "/login", "/api/auth/change-password", "/api/auth/2fa/generate-secret", "/api/auth/2fa/verify-code",
+  "/login", "/api/auth/change-password", "/api/auth/2fa/generate-secret", "/api/auth/2fa/verify-code", "/api/auth/2fa/settings",
   "/api/companies/register", "/master/login", "/api/bootstrap/admin", "/api/reset-all",
 ]);
 const anonymousWriteLimiter = rateLimit({
@@ -5509,38 +5520,67 @@ app.post("/api/auth/change-password", loginLimiter, async (req, res) => {
 });
 
 // ── 2단계 인증(TOTP) 설정 ──────────────────────────────────────────────────────
-// 1) generate-secret: 비밀번호 재확인 후 새 시크릿 발급(아직 미저장 — 클라이언트가
-//    인증 앱에 등록하고 코드로 검증 성공해야 emp.twoFactorSecret/Enabled로 저장됨)
-// /login과 동일하게 verifyCredentials()로 비밀번호를 직접 검증하는 엔드포인트인데
-// loginLimiter가 없어, /login에는 20회/15분 제한이 걸려도 이 라우트로는 같은 계정 비밀번호를
-// 무제한 추측할 수 있었다(실측: 틀린 비밀번호 25회 연속 시도해도 429 없이 전부 즉시 403).
-// /login과 동일한 loginLimiter를 재사용해 같은 IP의 시도를 함께 카운트한다.
-// companyId: 이 라우트는 보통 이미 로그인된 사용자가 본인 계정에 2FA를 설정하려고
-// 비밀번호를 재확인하는 흐름이라(설정 화면 진입 자체가 로그인 후이므로) 이미 붙어있는
-// Authorization 토큰의 companyId를 우선 사용하고, 없으면(레거시 호출) body의 companyCode로
-// 보조한다 — /login과 달리 프런트엔드가 아직 companyCode를 body에 채워 보내도록 갱신되지
-// 않았어도 로그인된 세션에서는 그대로 동작한다.
+// 본인의 현재 비밀번호를 확인해 등록용 키만 발급한다. 실제 활성화는
+// /settings가 비밀번호와 OTP를 함께 검증하고 저장한 뒤에 완료된다.
+// 로그인 제한을 공유하며 대상 회사/계정은 인증된 세션에서만 선택한다.
 app.post("/api/auth/2fa/generate-secret", loginLimiter, async (req, res) => {
   res.locals.loginOk = false;
+  if (!requireAuth(req, res)) return;
   try {
-    const { loginId, pw, companyCode } = req.body || {};
-    const companyId = USE_JSON_FILE ? null : (req.auth?.companyId || await _resolveCompanyId(companyCode));
-    const employee = await verifyCredentials(companyId, loginId, pw);
-    if (!employee) return res.status(403).json({ ok: false, message: "비밀번호가 올바르지 않습니다." });
+    const { pw } = req.body || {};
+    const companyId = req.auth.companyId || null;
+    const employee = typeof pw === "string" && pw.length <= 128
+      ? await verifyCredentials(companyId, req.auth.loginId, pw) : null;
+    if (!employee || String(employee.id) !== String(req.auth.empId)) return res.status(403).json({ ok: false, message: "비밀번호가 올바르지 않습니다." });
+    if (employee.twoFactorEnabled) return res.status(409).json({ ok: false, message: "이미 2단계 인증을 사용 중입니다." });
     res.locals.loginOk = true;
     const secret = generateTotpSecret();
-    const otpauthUrl = `otpauth://totp/HR-ERP:${encodeURIComponent(loginId)}?secret=${secret}&issuer=HR-ERP`;
+    const otpauthUrl = `otpauth://totp/HR-ERP:${encodeURIComponent(employee.loginId)}?secret=${secret}&issuer=HR-ERP`;
     res.json({ ok: true, secret, otpauthUrl });
   } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
-// 2) verify-code: {secret,otp} 순수 검증(상태 없음, 계정 조회 없음) — 클라이언트에서는
-// 2FA 설정 확인(_confirmEnable2fa, secret은 방금 /generate-secret이 발급한 값)과 2FA
-// 해제(_confirmDisable2fa, secret은 이미 로그인된 본인의 emp.twoFactorSecret) 2곳에서만
-// 쓰인다. 실제 로그인 시 OTP 검증은 이 라우트를 거치지 않고 POST /login이 서버에 저장된
-// 진짜 secret으로 직접 검증한다(loginLimiter로 이미 보호됨) — 이 라우트 자신은 브루트포스
-// 로그인 우회 경로가 아니지만(secret을 이미 아는 사람만 의미 있게 호출 가능), 자격증명
-// 성격의 값을 검증하는 엔드포인트는 예외 없이 요청 빈도를 제한하는 것이 안전하다는
-// 원칙(defense in depth)에 따라 다른 인증 라우트와 동일하게 제한을 건다.
+// No browser-supplied employee ID or stored secret is trusted. Validation and
+// mutation share the company save lock, including a fresh session-version check.
+app.post("/api/auth/2fa/settings", loginLimiter, async (req, res) => {
+  res.locals.loginOk = false;
+  if (!requireAuth(req, res)) return;
+  const { enabled, currentPassword, secret, otp } = req.body || {};
+  if (typeof enabled !== "boolean" || typeof currentPassword !== "string" || !currentPassword || currentPassword.length > 128 ||
+      typeof otp !== "string" || !/^\d{6}$/.test(otp) ||
+      (enabled && (typeof secret !== "string" || !/^[A-Z2-7]{32}$/.test(secret)))) {
+    return res.status(400).json({ ok: false, code: "INVALID_2FA_SETTINGS", message: "현재 비밀번호와 인증 앱의 6자리 코드를 확인하세요." });
+  }
+  try {
+    const companyId = req.auth.companyId || null;
+    const result = await _withSaveLock(() => _withDistributedSaveLock(companyId, async () => {
+      const stored = await loadData(companyId);
+      const current = (stored.employees || []).find(e => String(e.id) === String(req.auth.empId));
+      if (!current?.active || Number(current.authVersion || 0) !== Number(req.auth.authVersion || 0)) {
+        throw httpError(401, "SESSION_REVOKED", "로그인이 만료되었습니다. 다시 로그인하세요.");
+      }
+      const validPassword = current.pw && (isHashedPw(current.pw)
+        ? await bcrypt.compare(currentPassword, current.pw) : currentPassword === current.pw);
+      if (!validPassword) throw httpError(403, "CURRENT_PASSWORD_INVALID", "현재 비밀번호가 올바르지 않습니다.");
+      if (!!current.twoFactorEnabled === enabled) throw httpError(409, "TWO_FACTOR_STATE_CHANGED", "인증 설정이 이미 변경되었습니다. 화면을 새로고침하세요.");
+      const verifiedSecret = enabled ? secret : current.twoFactorSecret;
+      if (!verifiedSecret || !totpVerify(verifiedSecret, otp)) throw httpError(403, "INVALID_OTP", "인증 코드가 올바르지 않습니다.");
+      const updatedAt = new Date(Math.max(Date.now(), (Date.parse(current.updatedAt || current.createdAt) || 0) + 1)).toISOString();
+      const next = { ...current, twoFactorEnabled: enabled, twoFactorSecret: enabled ? secret : "",
+        updatedAt, _rev: (Number(current._rev) || 0) + 1 };
+      await _persistDataLocked({ ...stored, employees: stored.employees.map(e => String(e.id) === String(current.id) ? next : e) },
+        `auth:2fa:${req.auth.empId}`, companyId, { ...req.auth, [_verifiedTwoFactorChange]: String(current.id) });
+      const refreshed = (await loadData(companyId)).employees.find(e => String(e.id) === String(current.id));
+      return { ok: true, twoFactorEnabled: !!refreshed.twoFactorEnabled, updatedAt: refreshed.updatedAt, revision: refreshed._rev,
+        token: signToken({ empId: refreshed.id, loginId: refreshed.loginId, role: refreshed.role, companyId, authVersion: refreshed.authVersion }) };
+    }));
+    res.locals.loginOk = true;
+    res.json(result);
+  } catch (e) {
+    res.status(e.status || 500).json({ ok: false, code: e.code || "TWO_FACTOR_UPDATE_FAILED", message: _safeErrMsg(e) });
+  }
+});
+// 구형 클라이언트 호환용 순수 검증 API. 계정 설정은 변경하지 않는다.
+// 실제 설정 변경/해제는 /settings에서 서버 저장값으로 검증한다.
 app.post("/api/auth/2fa/verify-code", loginLimiter, async (req, res) => {
   try {
     const { secret, otp } = req.body || {};
