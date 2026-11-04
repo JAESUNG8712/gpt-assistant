@@ -1941,7 +1941,8 @@ function _sanitizeGatedRecord(field, incoming, stored, actor, actorEmp, settings
   }
   if (field === "engagementResponses") {
     const survey = (engagementSurveys || []).find(s => s && String(s.id) === String(incoming.surveyId));
-    const today = new Date().toISOString().slice(0, 10);
+    // 설문 기간은 한국 날짜 기준이다. UTC 날짜를 쓰면 한국 시간 00~09시에 '시작일=오늘'인 설문이 마감으로 거부된다.
+    const today = new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 10);
     if (!survey || survey.status === "closed" || (survey.startDate && survey.startDate > today) || (survey.endDate && survey.endDate < today)) {
       return stored ? { ...stored } : null;
     }
@@ -11739,7 +11740,57 @@ app.get("/api/erp/sales-dashboard", async (req, res) => {
     }
     const repRanking = Array.from(repMap.values()).sort((a, b) => b.revenue - a.revenue);
 
-    res.json({ ok: true, targetsByYear, partnerRanking, pipeline, repRanking });
+    // 월별 추이 — 선택 연도(?year=, 기본 올해)와 전년을 월 단위로 비교한다.
+    // 수주액은 수주확정+출고완료, 매출액은 출고완료 기준(목표 대비 실적과 같은 정의).
+    // 견적일(q.date)은 "YYYY-MM-DD" 문자열이라 타임존에 흔들리지 않도록 문자열로 연/월을 읽는다.
+    const ymOf = q => {
+      const m = /^(\d{4})-(\d{2})/.exec(String(q.date || ""));
+      if (m) {
+        const month = Number(m[2]);
+        return month >= 1 && month <= 12 ? [Number(m[1]), month] : null;
+      }
+      const d = new Date(q.date);
+      return Number.isNaN(d.getTime()) ? null : [d.getFullYear(), d.getMonth() + 1];
+    };
+    const thisYear = new Date().getFullYear();
+    const reqYear = Number.parseInt(req.query.year, 10);
+    const trendYear = Number.isInteger(reqYear) && reqYear >= 2000 && reqYear <= 2100 ? reqYear : thisYear;
+    const bucket = () => Array.from({ length: 12 }, (_, i) => ({ month: i + 1, count: 0, orderCount: 0, order: 0, revenue: 0 }));
+    const cur = bucket(), prev = bucket();
+    const yearSet = new Set([thisYear, trendYear]); // 선택한 연도는 데이터가 없어도 선택지에 남겨 select가 엉뚱한 값을 보여주지 않게 한다
+    // 담당자 필터(?rep=) — 견적서 작성자(createdBy) 이름과 정확히 일치하는 건만 집계한다.
+    // 담당자 목록은 필터와 무관하게 전체 견적서 기준으로 만들어, 필터를 건 뒤에도 다른 담당자로 바꿀 수 있게 한다.
+    const repFilter = String(req.query.rep || "").trim().slice(0, 100);
+    const repNames = new Set();
+    for (const q of quotations) {
+      const ym = ymOf(q);
+      if (q.createdBy) repNames.add(q.createdBy);
+      if (!ym) continue;
+      yearSet.add(ym[0]);
+      if (repFilter && (q.createdBy || "") !== repFilter) continue;
+      const target = ym[0] === trendYear ? cur : ym[0] === trendYear - 1 ? prev : null;
+      if (!target) continue;
+      const b = target[ym[1] - 1];
+      b.count++;
+      if (q.status === "accepted" || q.status === "shipped") { b.order += supplyOf(q); b.orderCount++; }
+      if (q.status === "shipped") b.revenue += supplyOf(q);
+    }
+    if (repFilter) repNames.add(repFilter);
+    const monthlyTrend = {
+      year: trendYear,
+      rep: repFilter,
+      reps: Array.from(repNames).sort((a, b) => String(a).localeCompare(String(b), "ko")),
+      years: Array.from(yearSet).sort((a, b) => b - a),
+      months: cur.map((b, i) => ({
+        ...b,
+        prevOrder: prev[i].order,
+        prevRevenue: prev[i].revenue,
+        // 전년 동월이 0이면 증감률은 정의할 수 없으므로 null(화면에서 "-")
+        revenueGrowthPct: prev[i].revenue > 0 ? Math.round(((b.revenue - prev[i].revenue) / prev[i].revenue) * 100) : null,
+      })),
+    };
+
+    res.json({ ok: true, targetsByYear, partnerRanking, pipeline, repRanking, monthlyTrend });
   } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 

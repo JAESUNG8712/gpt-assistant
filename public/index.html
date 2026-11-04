@@ -733,7 +733,7 @@ function _evalDefaultPage(emp){
 const ROLES={admin:"관리자",director:"사업부장",leader:"팀장",member:"팀원"};
 const JOB_GROUPS=["관리직","영업직","개발직","연구직","생산직","서비스직","기타"];
 const EDU_LEVELS=["고등학교 졸업","전문대 졸업","대학교 졸업","대학원 석사","대학원 박사"];
-const HR_TYPES={transfer:"조직 발령",salary:"연봉 변동",promotion:"승진",rank_change:"직급 변동",position:"직책 임명",award:"최/우수사원 선정",discipline:"징계",core_talent:"핵심인재 선정",leave:"휴직",return_leave:"복직",retirement:"퇴직",edu_legal:"법정의무교육",edu_general:"일반 교육",edu_external:"외부 교육",edu_internal:"사내 교육"};
+const HR_TYPES={transfer:"조직 발령",salary:"연봉 변동",promotion:"승진",rank_change:"직급 변동",position:"직책 임명",award:"최/우수사원 선정",longservice:"장기근속 포상",discipline:"징계",core_talent:"핵심인재 선정",leave:"휴직",return_leave:"복직",retirement:"퇴직",edu_legal:"법정의무교육",edu_general:"일반 교육",edu_external:"외부 교육",edu_internal:"사내 교육"};
 // 징계 수위(경미→중대 순) — 통합 인사 변동 등록(updateHCFields/submitHRChange)의 discipline
 // 분기와 인사카드·HR 통계가 함께 참조한다.
 const DISCIPLINE_LEVELS=["견책","경고","감봉","정직","강등","해고"];
@@ -1320,11 +1320,12 @@ let settings={
   // 종합검진 설정: 기준연령 이상은 자동 대상, targetIds는 관리자가 추가 지정한 대상자
   healthCheckup:{ageThreshold:40, year:new Date().getFullYear(), targetIds:[]},
   // 장기근속 포상 기준 [{years,reward}]
+  // amount(원)는 급여 반영용 포상금이다. 없거나 0이면 안내 문구(reward)만 있는 기준으로 보고 급여 연동을 하지 않는다.
   longServiceAwards:[
-    {years:5,reward:"포상금 50만원 + 휴가 2일"},
-    {years:10,reward:"포상금 100만원 + 휴가 3일 + 기념패"},
-    {years:15,reward:"포상금 150만원 + 휴가 5일"},
-    {years:20,reward:"포상금 200만원 + 휴가 5일 + 안식휴가"}
+    {years:5,reward:"포상금 50만원 + 휴가 2일",amount:500000},
+    {years:10,reward:"포상금 100만원 + 휴가 3일 + 기념패",amount:1000000},
+    {years:15,reward:"포상금 150만원 + 휴가 5일",amount:1500000},
+    {years:20,reward:"포상금 200만원 + 휴가 5일 + 안식휴가",amount:2000000}
   ],
 };
 function _performanceRewardPolicy(){
@@ -1661,7 +1662,6 @@ async function loadRecruitFromServer(force=false){
   }})();
   return _recruitLoadPromise;
 }
-let kpiSearch={name:"",dept:""};
 let approvalSearch={name:"",dept:""};
 let myKpiYear=0,hrListFilter={search:"",dept:"",workplaceId:"",role:"",status:"active",sortKey:"empNo",sortDir:1,pageSize:15,page:1};
 let _boardPageFilter={search:"",dept:"",author:"",dateFrom:"",dateTo:"",pageSize:15,page:1};
@@ -7711,31 +7711,6 @@ ${EVAL_ONLY_MODE?"":`<nav id="mobile-tab-nav"><div class="tab-items">
 </div></nav>`}`;
   _observeContentForms();renderSidebar();renderPage();_updateMobileTabNav();
 }
-const SIDEBAR_GROUP_META={
-  dashboard:{label:"대시보드",roles:["admin","director","leader","member"]},
-  "notif-sep":{label:"알림",roles:["admin","director","leader","member"]},
-  "profile-sep":{label:"내 정보",roles:["admin","director","leader","member"]},
-  "approval-sep":{label:"전자결재",roles:["admin","director","leader","member"]},
-  "comm-sep":{label:"커뮤니케이션",roles:["admin","director","leader","member"]},
-  "attend-sep":{label:"근태 관리",roles:["admin","director","leader","member"]},
-  "welfare-sep":{label:"복지/교육",roles:["admin","director","leader","member"]},
-  "pay-sep":{label:"급여",roles:["admin","director","leader","member"]},
-  "hr-sep":{label:"인사 관리",roles:["admin","director","leader"]},
-  "recruit-sep":{label:"채용 관리",roles:["admin","director","leader"]},
-  "kpi-sep":{label:"KPI 성과평가",roles:["admin","director","leader","member"]},
-  "comp-sep":{label:"다면·역량평가",roles:["admin","director","leader","member"]},
-  "promo-sep":{label:"승진 심사",roles:["admin"]},
-  "talent-sep":{label:"핵심인재",roles:["admin","director","leader","member"]},
-  "lowperf-sep":{label:"저성과 관리",roles:["admin","director"]},
-  "acct-sep":{label:"회계",roles:["admin"]},
-  "bizplan-sep":{label:"사업계획",roles:["admin","director","leader","member"]},
-  "sales-sep":{label:"영업관리",roles:["admin"]},
-  "inv-sep":{label:"재고관리",roles:["admin"]},
-  "pms-sep":{label:"PMS",roles:["admin","director","leader","member"]},
-  "set-op-sep":{label:"시스템 운영",roles:["admin"]},
-  "set-sys-sep":{label:"시스템 관리",roles:["admin"]},
-  "set-pw-sep":{label:"개인 설정",roles:["admin","director","leader","member"]},
-};
 const SIDEBAR_DEFAULT_ORDER=["dashboard","notif-sep","profile-sep","approval-sep","comm-sep","attend-sep","welfare-sep","pay-sep","hr-sep","recruit-sep","kpi-sep","comp-sep","okr-sep","promo-sep","talent-sep","lowperf-sep","acct-sep","bizplan-sep","sales-sep","inv-sep","pms-sep","set-op-sep","set-sys-sep","set-pw-sep"];
 // 대분류 카테고리: 사이드바/상단 카테고리 내비게이션에서 사용 (중분류 그룹 묶음)
 const BIG_CATEGORIES=[
@@ -8326,7 +8301,7 @@ const PULSE_QUESTION_LIBRARY=[
   {id:"wellbeing",driver:"웰빙",text:"현재 업무량을 건강하게 지속할 수 있다."},
   {id:"action",driver:"실행 신뢰",text:"이번 설문 결과를 바탕으로 의미 있는 개선 조치가 이루어질 것이라 믿는다."},
 ];
-function _pulseIsOpen(s){const today=new Date().toISOString().slice(0,10);return s&&s.status!=="closed"&&(!s.startDate||s.startDate<=today)&&(!s.endDate||s.endDate>=today);}
+function _pulseIsOpen(s){const n=new Date(),today=`${n.getFullYear()}-${String(n.getMonth()+1).padStart(2,"0")}-${String(n.getDate()).padStart(2,"0")}`;return s&&s.status!=="closed"&&(!s.startDate||s.startDate<=today)&&(!s.endDate||s.endDate>=today);}
 function openPulseSurveyModal(){
   if(currentUser?.role==="admin")gotoPage("engagement-pulse-create");
 }
@@ -17047,6 +17022,50 @@ function _applyApprovalLimits(approvers,fd){
   }
   return approvers;
 }
+// 양식마다 금액 필드명이 달라(경비 amount / 복리후생·대출 requestedAmount / 교육 estimatedCost / 출장 budget)
+// 금액 구간 규정이 읽을 값을 한 곳에서 정한다. 앞쪽 키가 양수면 그 값을 쓴다.
+function _approvalAmountOf(fd){
+  for(const k of ["amount","requestedAmount","estimatedCost","budget"]){
+    const n=Number(fd&&fd[k]);
+    if(Number.isFinite(n)&&n>0)return n;
+  }
+  return 0;
+}
+// 금액 구간별 추가 결재자(approvalChainSettings.amountTiers = [{minAmount,empId,label,tplIds?}]).
+// tplIds가 비어 있거나 없으면 모든 양식에 적용되고, 양식 id 목록이 있으면 그 양식에만 적용된다.
+// 전결 규정(_applyApprovalLimits)이 "결재선을 줄이는" 규정이라면 이쪽은 "고액일 때 결재자를 더하는"
+// 규정이다 — 추가만 하고 기존 결재 단계는 절대 빼지 않는다. 설정 데이터는 관리자가 직접 넣지만
+// 모양이 어긋나 있어도 화면이 깨지지 않도록 항목을 하나씩 검증한다.
+function _normalizedAmountTiers(){
+  const raw=Array.isArray(approvalChainSettings.amountTiers)?approvalChainSettings.amountTiers:[];
+  return raw.filter(t=>t&&Number.isFinite(Number(t.minAmount))&&Number(t.minAmount)>0&&t.empId!=null&&t.empId!=="")
+    .map(t=>({minAmount:Number(t.minAmount),empId:t.empId,label:String(t.label||"").trim()||"금액 구간 결재",
+      tplIds:Array.isArray(t.tplIds)?[...new Set(t.tplIds.map(String).filter(Boolean))]:[]}))
+    .sort((a,b)=>a.minAmount-b.minAmount);
+}
+function _amountTierScopeText(t){
+  if(!t.tplIds.length)return "전체 양식";
+  const names=t.tplIds.map(id=>getTpl(id)?.name||id);
+  return h(names.length>2?`${names.slice(0,2).join(", ")} 외 ${names.length-2}개`:names.join(", "));
+}
+function _applyApprovalAmountTiers(approvers,fd,authorId,tplId){
+  const amt=_approvalAmountOf(fd);
+  if(!amt)return approvers;
+  const out=[...approvers];
+  const added=[];
+  for(const t of _normalizedAmountTiers()){
+    if(amt<t.minAmount)continue;
+    if(t.tplIds.length&&!t.tplIds.includes(String(tplId)))continue;   // 양식 지정 구간은 해당 양식에서만 적용
+    const e=getEmp(t.empId);
+    if(!e||!e.active)continue;                               // 퇴직·비활성 결재자는 건너뜀
+    if(String(e.id)===String(authorId))continue;             // 본인 문서를 본인이 결재하지 않음
+    if(out.some(a=>String(a.empId)===String(e.id)||String(a.originalEmpId||"")===String(e.id)))continue; // 이미 결재선에 있음
+    const entry={empId:e.id,label:t.label,status:"waiting",decidedAt:null,comment:""};
+    out.push(entry);added.push(entry);
+  }
+  if(added.length)_applyApprovalDelegations(added);          // 휴가 중이면 대결자로 치환(기존 결재선과 동일 규칙)
+  return out;
+}
 // 직속 상급자까지만 결재: 팀원→팀장, 팀장→사업부장, 사업부장→관리자
 function getDirectSuperiorChain(authorId){
   const author=getEmp(authorId);if(!author)return[];
@@ -17688,6 +17707,9 @@ function previewApprovalForm(tplId){
   const limitedApprovers=_applyApprovalLimits(approvers,fd);
   if(limitedApprovers.length<approvers.length)showToast(`금액 기준 전결 규정에 따라 결재선이 자동 조정되었습니다.`,"info");
   approvers=limitedApprovers;
+  const tieredApprovers=_applyApprovalAmountTiers(approvers,fd,currentUser.id,tplId);
+  if(tieredApprovers.length>approvers.length)showToast(`금액 기준 규정에 따라 결재자 ${tieredApprovers.length-approvers.length}명이 추가되었습니다.`,"info");
+  approvers=tieredApprovers;
   window._afPendingSubmit={tplId,fd,approvers,receivers:[..._afReceivers],ccList:[..._afCc],attachments:[...(window._afAttachments||[])]};
   const fieldRows=tpl.fields.length?tpl.fields.map(f=>{let v=fd[f.key];if(f.key==="courseId")v=learningCourses.find(c=>String(c.id)===String(v))?.name||v;return`<div style="display:flex;gap:8px;padding:4px 0;border-bottom:1px solid #f1f5f9"><span class="fz12 text-gray" style="width:110px;flex-shrink:0">${h(f.label)}</span><span class="fz12">${h(v||"-")}</span></div>`;}).join(""):Object.keys(fd).map(k=>`<div style="display:flex;gap:8px;padding:4px 0;border-bottom:1px solid #f1f5f9"><span class="fz12 text-gray" style="width:110px;flex-shrink:0">${h(k)}</span><span class="fz12">${h(fd[k]||"-")}</span></div>`).join("");
   const trainingRows=tplId==="tpl-training"?[["교육기관",fd.provider],["교육기간",fd.startDate&&fd.endDate?`${fd.startDate} ~ ${fd.endDate}`:""],["교육시간",fd.hours?`${fd.hours}시간`:""],["예상비용",`${Number(fd.estimatedCost||0).toLocaleString()}원`]].map(([label,value])=>`<div style="display:flex;gap:8px;padding:4px 0;border-bottom:1px solid #f1f5f9"><span class="fz12 text-gray" style="width:110px;flex-shrink:0">${h(label)}</span><span class="fz12">${h(value||"-")}</span></div>`).join(""):"";
@@ -19128,6 +19150,10 @@ function renderApprovalTemplateAdmin(){
   <div class="fg"><label class="fl">최종 결재자 <span class="fz11 text-gray">(모든 결재선 마지막에 추가로 포함될 결재자, 예: 대표이사)</span></label>
     <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:6px">${(approvalChainSettings.finalApprovers||[]).map(fa=>`<span class="badge bg-purple" style="display:inline-flex;align-items:center;gap:4px">${h(getEmpName(fa.empId))} · ${h(fa.label)} <span style="cursor:pointer" onclick="removeFinalApprover(${fa.empId})">✕</span></span>`).join("")||`<span class="text-gray fz12">설정된 최종 결재자가 없습니다.</span>`}</div>
     <button class="btn btn-secondary btn-sm" onclick="addFinalApprover()">+ 최종 결재자 추가</button>
+  </div>
+  <div class="fg" style="margin-top:10px"><label class="fl">금액 구간별 추가 결재자 <span class="fz11 text-gray">(금액이 기준 이상인 문서에만 결재자를 더합니다. 양식을 지정하면 그 양식에만 적용됩니다. 기존 결재 단계는 줄이지 않으며, 이미 결재선에 있거나 기안자 본인이면 건너뜁니다. 금액은 amount·requestedAmount·estimatedCost·budget 항목 중 먼저 값이 있는 것을 씁니다.)</span></label>
+    <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:6px">${_normalizedAmountTiers().map(t=>`<span class="badge bg-purple" style="display:inline-flex;align-items:center;gap:4px">${t.minAmount.toLocaleString()}원 이상 → ${h(getEmpName(t.empId))} · ${h(t.label)} <span class="fz11" style="opacity:.8">[${_amountTierScopeText(t)}]</span> <span style="cursor:pointer" role="button" aria-label="삭제" onclick="removeAmountTier(${h(JSON.stringify(t.empId))})">✕</span></span>`).join("")||`<span class="text-gray fz12">설정된 금액 구간이 없습니다.</span>`}</div>
+    <button class="btn btn-secondary btn-sm" onclick="addAmountTier()">+ 금액 구간 추가</button>
   </div>
   <div class="fg" style="margin-top:10px"><label class="fl">구매 담당자 <span class="fz11 text-gray">(거래처 등록 양식의 최종 승인자 — 사업부장 결재 후 이 담당자가 최종 승인해야 거래처가 등록됩니다)</span></label>
     <div style="display:flex;align-items:center;gap:8px">
@@ -24596,10 +24622,12 @@ async function deleteQuotationDraft(id){
 // 이유·동일한 패턴 — 이 화면 자체가 admin+"sales-dashboard" 전용이라 서버도 동일 게이팅).
 let _salesDashTab="target";
 let _salesDashData=null,_salesDashLoading=false;
+let _salesTrendYear=null; // null이면 서버 기본값(올해)
+let _salesTrendRep=""; // 빈 문자열이면 전체 담당자
 async function loadSalesDashData(){
   if(!serverConfig.url||_salesDashLoading)return;
   _salesDashLoading=true;
-  const r=await serverRequest("GET","/api/erp/sales-dashboard");
+  const r=await serverRequest("GET","/api/erp/sales-dashboard"+_salesTrendQuery());
   _salesDashLoading=false;
   if(r?.ok)_salesDashData=r;
   else if(r)showToast(r.message||"영업 실적 대시보드를 불러오지 못했습니다.","error");
@@ -24609,15 +24637,65 @@ function renderSalesDashboardPage(){
   const c=$("#content");if(!c)return;
   if(!serverConfig.url){c.innerHTML=_erpNoServerHtml("영업 실적 대시보드");return;}
   if(!_salesDashData&&!_salesDashLoading){loadSalesDashData();}
-  const tabs=[["target","목표 대비 실적"],["partner","거래처별 매출"],["pipeline","파이프라인"],["rep","담당자별 실적"]];
+  const tabs=[["target","목표 대비 실적"],["trend","월별 추이"],["partner","거래처별 매출"],["pipeline","파이프라인"],["rep","담당자별 실적"]];
   c.innerHTML=`<div class="card"><div class="card-head"><h3>📈 영업 실적 대시보드</h3>${_salesDashTab==="target"?`<button class="btn btn-primary btn-sm" onclick="openSalesTargetModal()">+ 목표 등록</button>`:""}</div>
   <div class="card-body">
     <div class="tabs" style="margin-bottom:12px">${tabs.map(([k,l])=>`<button class="tab-btn ${_salesDashTab===k?"active":""}" onclick="_salesDashTab='${k}';renderSalesDashboardPage()">${l}</button>`).join("")}</div>
     <div id="sales-dash-body">${!_salesDashData?`<div class="p-empty">${_salesDashLoading?"불러오는 중...":"데이터를 불러오지 못했습니다."}</div>`:_renderSalesDashTab()}</div>
   </div></div>`;
 }
+// 월별 추이: 선택 연도를 바꾸면 서버에서 그 연도(와 전년) 기준으로 다시 집계한다.
+function setSalesTrendYear(y){_salesTrendYear=+y||null;_salesDashData=null;renderSalesDashboardPage();}
+function setSalesTrendRep(r){_salesTrendRep=r||"";_salesDashData=null;renderSalesDashboardPage();}
+function _salesTrendQuery(){
+  const p=[];
+  if(_salesTrendYear)p.push("year="+encodeURIComponent(_salesTrendYear));
+  if(_salesTrendRep)p.push("rep="+encodeURIComponent(_salesTrendRep));
+  return p.length?"?"+p.join("&"):"";
+}
+function _salesTrendChartSvg(months){
+  const W=720,H=220,padL=48,padB=26,padT=12,plotW=W-padL-8,plotH=H-padB-padT;
+  const max=Math.max(1,...months.map(m=>Math.max(m.revenue,m.prevRevenue)));
+  const slot=plotW/12,bw=Math.max(6,slot/2-4);
+  const y=v=>padT+plotH-(v/max)*plotH;
+  const bars=months.map((m,i)=>{
+    const x0=padL+i*slot+slot/2;
+    return `<rect x="${(x0-bw-1).toFixed(1)}" y="${y(m.prevRevenue).toFixed(1)}" width="${bw}" height="${(padT+plotH-y(m.prevRevenue)).toFixed(1)}" fill="#c7d2e0"><title>${m.month}월 전년 ${m.prevRevenue.toLocaleString()}</title></rect>`
+      +`<rect x="${(x0+1).toFixed(1)}" y="${y(m.revenue).toFixed(1)}" width="${bw}" height="${(padT+plotH-y(m.revenue)).toFixed(1)}" fill="#2f6fed"><title>${m.month}월 매출 ${m.revenue.toLocaleString()}</title></rect>`
+      +`<text x="${x0.toFixed(1)}" y="${H-8}" font-size="11" text-anchor="middle" fill="#6b7280">${m.month}월</text>`;
+  }).join("");
+  const unit=max>=1e8?[1e8,"억"]:max>=1e4?[1e4,"만"]:[1,""];
+  const ticks=[0,.5,1].map(f=>`<text x="${padL-6}" y="${(y(max*f)+4).toFixed(1)}" font-size="10" text-anchor="end" fill="#6b7280">${Math.round(max*f/unit[0]).toLocaleString()}${unit[1]}</text><line x1="${padL}" x2="${W-8}" y1="${y(max*f).toFixed(1)}" y2="${y(max*f).toFixed(1)}" stroke="#eef0f3"/>`).join("");
+  return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;max-width:${W}px;height:auto" role="img" aria-label="월별 매출 추이 막대 차트">${ticks}${bars}</svg>`;
+}
+function _renderSalesTrendTab(d){
+  const t=d.monthlyTrend;
+  if(!t)return `<div class="text-gray" style="text-align:center;padding:20px">월별 추이를 불러오지 못했습니다.</div>`;
+  const sum=k=>t.months.reduce((s,m)=>s+m[k],0);
+  const tot={order:sum("order"),orderCount:sum("orderCount"),revenue:sum("revenue"),prevOrder:sum("prevOrder"),prevRevenue:sum("prevRevenue")};
+  const growth=tot.prevRevenue>0?Math.round(((tot.revenue-tot.prevRevenue)/tot.prevRevenue)*100):null;
+  const fmtG=g=>g==null?"-":`<span style="color:${g>=0?"#16a34a":"#dc2626"}">${g>0?"+":""}${g}%</span>`;
+  const rows=t.months.map(m=>`<tr><td>${m.month}월</td><td style="text-align:right">${m.count}</td><td style="text-align:right">${m.orderCount||0}</td><td style="text-align:right">${m.order.toLocaleString()}</td><td style="text-align:right">${m.revenue.toLocaleString()}</td><td style="text-align:right">${m.prevRevenue.toLocaleString()}</td><td style="text-align:right">${fmtG(m.revenueGrowthPct)}</td></tr>`).join("");
+  return `<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px">
+    <label class="fl" style="margin:0">연도</label>
+    <select class="fc" style="width:auto" onchange="setSalesTrendYear(this.value)">${t.years.map(y=>`<option value="${y}" ${y===t.year?"selected":""}>${y}년</option>`).join("")}</select>
+    <label class="fl" style="margin:0">담당자</label>
+    <select class="fc" style="width:auto" id="sales-trend-rep" onchange="setSalesTrendRep(this.value)"><option value="">전체</option>${(t.reps||[]).map(r=>`<option value="${h(r)}" ${r===t.rep?"selected":""}>${h(r)}</option>`).join("")}</select>
+    <span class="fz12 text-gray">수주액=수주확정+출고완료, 매출액=출고완료 기준(공급가액). 전년은 같은 월과 비교합니다.${t.rep?` 담당자 필터는 전년 비교에도 같이 적용됩니다.`:""}</span>
+  </div>
+  <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:8px">
+    <div class="card" style="padding:10px 14px"><div class="fz12 text-gray">${t.year}년 매출</div><div style="font-weight:700">${tot.revenue.toLocaleString()}</div></div>
+    <div class="card" style="padding:10px 14px"><div class="fz12 text-gray">${t.year-1}년 매출</div><div style="font-weight:700">${tot.prevRevenue.toLocaleString()}</div></div>
+    <div class="card" style="padding:10px 14px"><div class="fz12 text-gray">전년 대비</div><div style="font-weight:700">${fmtG(growth)}</div></div>
+    <div class="card" style="padding:10px 14px"><div class="fz12 text-gray">${t.year}년 수주액</div><div style="font-weight:700">${tot.order.toLocaleString()} <span class="fz12 text-gray">(${tot.orderCount||0}건)</span></div></div>
+  </div>
+  <div style="margin-bottom:6px" class="fz12 text-gray"><span style="color:#2f6fed">■</span> ${t.year}년 매출 &nbsp; <span style="color:#9fb0c8">■</span> ${t.year-1}년 매출</div>
+  ${_salesTrendChartSvg(t.months)}
+  <div class="tbl-wrap" style="margin-top:10px"><table><thead><tr><th>월</th><th>견적 건수</th><th>수주 건수</th><th>수주액</th><th>매출액</th><th>전년 매출</th><th>전년 대비</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+}
 function _renderSalesDashTab(){
   const d=_salesDashData;
+  if(_salesDashTab==="trend")return _renderSalesTrendTab(d);
   if(_salesDashTab==="target"){
     const years=Object.keys(d.targetsByYear).sort((a,b)=>b-a);
     if(!years.length)return `<div class="text-gray" style="text-align:center;padding:20px">등록된 영업 목표가 없습니다.</div>`;
@@ -27633,6 +27711,39 @@ function removeFinalApprover(empId){
   autoSaveToServerIfEnabled();showToast("삭제되었습니다.","info");renderApprovalTemplateAdmin();
 }
 
+function addAmountTier(){
+  const used=_normalizedAmountTiers().map(t=>t.empId);
+  openOrgPicker({multi:false,exclude:used,title:"금액 구간 결재자 선택",onConfirm:ids=>{
+    if(!ids.length)return;
+    const empId=ids[0];
+    setTimeout(()=>{
+      openModal(`<div class="modal-box" style="max-width:420px"><div class="modal-head"><h3>금액 구간 설정</h3></div><div class="modal-body">
+        <div class="fz12 text-gray mb3">${h(getEmpName(empId))} 님을 결재선에 추가할 금액 기준과 단계 이름을 입력하세요.</div>
+        <div class="fg"><label class="fl">기준 금액(원 이상) <span class="req">*</span></label><input class="fc" type="number" min="1" id="at-min" placeholder="예: 5000000"></div>
+        <div class="fg"><label class="fl">결재 단계 명칭</label><input class="fc" id="at-label" value="금액 구간 결재" placeholder="예: 재무 결재"></div>
+        <div class="fg"><label class="fl">적용 양식 <span class="fz11 text-gray">(하나도 선택하지 않으면 모든 양식에 적용)</span></label>
+          <div style="max-height:180px;overflow:auto;border:1px solid #e2e8f0;border-radius:6px;padding:6px">${getAllTpls().map(t=>`<label style="display:flex;align-items:center;gap:6px;padding:2px 0;font-size:13px"><input type="checkbox" class="at-tpl" value="${h(t.id)}"> ${h(t.icon||"")} ${h(t.name)}</label>`).join("")}</div>
+        </div>
+      </div><div class="modal-foot"><button class="btn btn-secondary" onclick="closeTopModal()">취소</button><button class="btn btn-primary" onclick="confirmAddAmountTier(${h(JSON.stringify(empId))})">추가</button></div></div>`);
+    },0);
+  }});
+}
+function confirmAddAmountTier(empId){
+  const min=Math.floor(Number($("#at-min")?.value));
+  if(!Number.isFinite(min)||min<=0){showToast("기준 금액은 1원 이상으로 입력하세요.","error");return;}
+  const label=($("#at-label")?.value||"").trim().slice(0,30)||"금액 구간 결재";
+  const tplIds=[...document.querySelectorAll(".at-tpl:checked")].map(el=>el.value);
+  const cur=Array.isArray(approvalChainSettings.amountTiers)?approvalChainSettings.amountTiers:[];
+  if(cur.length>=10){showToast("금액 구간은 최대 10개까지 등록할 수 있습니다.","error");return;}
+  approvalChainSettings={...approvalChainSettings,amountTiers:[...cur,{minAmount:min,empId,label,...(tplIds.length?{tplIds}:{})}]};
+  closeTopModal();autoSaveToServerIfEnabled();showToast("금액 구간 결재자가 추가되었습니다.","success");renderApprovalTemplateAdmin();
+}
+function removeAmountTier(empId){
+  const cur=Array.isArray(approvalChainSettings.amountTiers)?approvalChainSettings.amountTiers:[];
+  approvalChainSettings={...approvalChainSettings,amountTiers:cur.filter(t=>String(t&&t.empId)!==String(empId))};
+  autoSaveToServerIfEnabled();showToast("삭제되었습니다.","info");renderApprovalTemplateAdmin();
+}
+
 // ==================== 외부 시스템 연동 (메신저/캘린더/ERP) ====================
 let _calOptStage=null; // 캘린더 연동 옵션 저장 전 임시 편집본
 const _WH_OUTBOX_STATUS={pending:["재시도 대기","orange"],sent:["전송 완료","green"],dead:["전송 중단","red"],cancelled:["취소됨","gray"]};
@@ -28233,7 +28344,6 @@ function _orgUnitCounts(){
   // 조직 위계: 회사(대표이사) - 본부/센터/실 - 팀 - 파트
   return{"본부/센터/실":orgDB.depts.length,"팀":Object.values(orgDB.teams).flat().length};
 }
-let _orgDragData=null;
 function _canViewOrgHistory(){
   if(!currentUser)return false;
   if(currentUser.role==="admin")return true;
@@ -29678,7 +29788,6 @@ function _initAdminNaverMap(){
 
 // ==================== BOARD / NOTICE (게시판·공지사항) ====================
 let _boardSelCat=null;
-let _boardFilter={search:"",dept:"",author:"",dateFrom:"",dateTo:""};
 function renderBoardPage(){
   const c=$("#content");
   const cats=settings.boardCategories||[{id:"notice",name:"공지사항",icon:"📢"},{id:"general",name:"일반게시판",icon:"📌"}];
@@ -30635,16 +30744,101 @@ function exportMyWelfareCSV(){
 
 // ==================== 장기근속 포상 (인사 메뉴, 전직원 현황) ====================
 let _lsaSearch="",_lsaPageSize=15,_lsaPage=1;
+// 장기근속 포상금 급여 연동 — 직원×근속연수 기준당 급여 조정 1건만 존재하도록 id를 고정한다
+// (같은 포상을 두 번 지급하거나 두 달에 나눠 반영하는 사고 방지).
+const _lsPayoutKey=(empId,years)=>`longservice-${empId}-${years}`;
+const _lsPayoutId=(empId,years)=>{
+  const base=`payadj-longservice-${empId}-${years}`;
+  // 취소하면 이 id로 삭제 표식(tombstone)이 30일간 남고, 병합은 id만 보고 걸러낸다.
+  // 같은 id로 재반영하면 저장·새로고침 때 새 조정이 지워지므로, 표식이 남은 id는 새 id를 쓴다.
+  // (중복 방지는 id가 아니라 sourceKey 조회로 하므로 영향 없음)
+  const dead=((recordTombstones.payrollAdjustments)||[]).some(t=>t&&String(t.id)===base);
+  return dead?`${base}-r${Date.now()}`:base;
+};
+// 포상금을 급여에 반영하면 직원 이력에도 남긴다. 우수사원(type:"award") 이력과 섞이면 최근 선정 제한·포상 가산점 계산이 왜곡되므로 별도 type을 쓴다.
+const _lsHistoryId=(empId,years)=>`hh-longservice-${empId}-${years}`;
+function _lsPayoutRecord(empId,years){
+  const key=_lsPayoutKey(empId,years);
+  return payrollAdjustments.find(a=>a.sourceKey===key)||null;
+}
+function _lsTierAmount(tier){const n=Math.round(Number(tier&&tier.amount));return Number.isFinite(n)&&n>0?n:0;}
+// 해당 월 명세서가 이미 확정됐거나 월이 마감됐으면 금액을 바꿀 수 없다
+function _lsMonthBlocked(empId,year,month){
+  if(_payrollLocked(year,month))return"마감된 월";
+  if(payslips.some(p=>String(p.empId)===String(empId)&&p.year===year&&p.month===month&&p.confirmed))return"명세서가 확정된 월";
+  return"";
+}
+function _lsRecalcSlip(emp,year,month){
+  const idx=payslips.findIndex(p=>String(p.empId)===String(emp.id)&&p.year===year&&p.month===month&&!p.confirmed);
+  if(idx>=0)payslips[idx]=calcStandardPayslip(emp,year,month);
+}
+function openLongServicePayoutModal(empId,years){
+  if(currentUser.role!=="admin")return;
+  const emp=getEmp(empId),tier=(settings.longServiceAwards||[]).find(t=>t.years===years);
+  const amount=_lsTierAmount(tier);
+  if(!emp||!tier||!amount){showToast("급여로 지급할 포상금이 설정된 기준이 아닙니다. 복지 제도 설정에서 포상금(원)을 입력하세요.","error");return;}
+  if(_lsPayoutRecord(emp.id,years)){showToast("이미 급여에 반영된 포상입니다.","info");return;}
+  const now=new Date(),curY=now.getFullYear(),curM=now.getMonth()+1;
+  const months=[];for(let i=0;i<4;i++){const d=new Date(curY,curM-1+i,1);months.push([d.getFullYear(),d.getMonth()+1]);}
+  openModal(`<div class="modal-box" style="max-width:420px"><div class="modal-head"><h3>🏅 장기근속 포상금 급여 반영</h3></div><div class="modal-body">
+    <div class="fz12" style="margin-bottom:10px"><strong>${h(emp.name)}</strong> · ${years}년 근속 포상금 <strong>${amount.toLocaleString()}원</strong><div class="fz11 text-gray">${h(tier.reward||"")}</div></div>
+    <div class="fg"><label class="fl">반영할 급여월 <span class="req">*</span></label><select class="fc" id="lsp-month">${months.map(([y,m])=>{const blocked=_lsMonthBlocked(emp.id,y,m);return`<option value="${y}-${m}" ${blocked?"disabled":""}>${y}년 ${m}월${blocked?` (${blocked})`:""}</option>`;}).join("")}</select></div>
+    <div class="fz11 text-gray">과세 소득(상여)으로 해당 월 명세서에 더해지며, 한 번 반영하면 같은 포상은 다시 반영되지 않습니다. 휴가·기념패 등 현물 포상은 이 기능과 별개로 운영합니다.</div>
+  </div><div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal()">취소</button><button class="btn btn-primary" onclick="applyLongServicePayout(${h(JSON.stringify(String(empId)))},${years})">급여에 반영</button></div></div>`);
+}
+function applyLongServicePayout(empId,years){
+  if(currentUser.role!=="admin")return;
+  const emp=getEmp(empId),tier=(settings.longServiceAwards||[]).find(t=>t.years===years),amount=_lsTierAmount(tier);
+  if(!emp||!tier||!amount){showToast("포상금이 설정된 기준이 아닙니다.","error");return;}
+  if(_lsPayoutRecord(emp.id,years)){showToast("이미 급여에 반영된 포상입니다.","info");closeModal();renderLongServiceAwardPage();return;}
+  const sel=($("#lsp-month")?.value||"").split("-").map(Number);
+  const year=sel[0],month=sel[1];
+  if(!year||!month){showToast("급여월을 선택하세요.","error");return;}
+  const blocked=_lsMonthBlocked(emp.id,year,month);
+  if(blocked){showToast(`${year}년 ${month}월은 ${blocked}이라 반영할 수 없습니다. 다른 월을 선택하세요.`,"error");return;}
+  const built=_buildPayrollAdjustment({id:_lsPayoutId(emp.id,years),empId:emp.id,year,month,category:"장기근속 포상금",amount,
+    note:`${years}년 장기근속 포상 (${String(tier.reward||"").slice(0,200)})`,source:"longservice_award",sourceKey:_lsPayoutKey(emp.id,years),taxable:true,longServiceYears:years});
+  if(!built.record){showToast(built.error||"급여 조정을 만들 수 없습니다.","error");return;}
+  payrollAdjustments.push(built.record);
+  _lsRecalcSlip(emp,year,month);
+  const hhId=_lsHistoryId(emp.id,years),nowIso=new Date().toISOString();
+  if(!(emp.hrHistory||[]).some(x=>x.id===hhId)){
+    const entry={id:hhId,type:"longservice",date:new Date().toISOString().slice(0,10),year:years,desc:`${years}년 장기근속 포상`,before:"-",after:`${amount.toLocaleString()}원 (${year}-${String(month).padStart(2,"0")} 급여 반영)`,note:`장기근속 ${years}년 포상금 ${amount.toLocaleString()}원`,reason:"장기근속 포상"};
+    employees=employees.map(e=>String(e.id)===String(emp.id)?{...e,hrHistory:[...(e.hrHistory||[]),entry],updatedAt:nowIso}:e);
+  }
+  logAction("longservice_payout",`${emp.name} ${years}년 근속 포상금 ${amount.toLocaleString()}원 → ${year}-${String(month).padStart(2,"0")} 급여`,"payrollAdjustments",built.record.id);
+  closeModal();autoSaveToServerIfEnabled();showToast("장기근속 포상금이 급여에 반영되었습니다.","success");renderLongServiceAwardPage();
+}
+async function cancelLongServicePayout(empId,years){
+  if(currentUser.role!=="admin")return;
+  const rec=_lsPayoutRecord(empId,years),emp=getEmp(empId);
+  if(!rec||!emp)return;
+  const blocked=_lsMonthBlocked(emp.id,rec.year,rec.month);
+  if(blocked){showToast(`${rec.year}년 ${rec.month}월은 ${blocked}이라 취소할 수 없습니다.`,"error");return;}
+  const ok=await askConfirmModal({title:"장기근속 포상금 반영 취소",message:`${emp.name}님의 ${years}년 근속 포상금을 급여에서 제외합니다.`,confirmText:"반영 취소",danger:true,
+    impacts:[{label:"금액",value:`${Number(rec.amount).toLocaleString()}원`},{label:"급여월",value:`${rec.year}년 ${rec.month}월`}]});
+  if(!ok)return;
+  _tombstone("payrollAdjustments",rec.id);
+  const idx=payrollAdjustments.indexOf(rec);if(idx>=0)payrollAdjustments.splice(idx,1);
+  _lsRecalcSlip(emp,rec.year,rec.month);
+  const hhId=_lsHistoryId(emp.id,years);
+  if((emp.hrHistory||[]).some(x=>x.id===hhId)){
+    employees=employees.map(e=>String(e.id)===String(emp.id)?{...e,hrHistory:(e.hrHistory||[]).filter(x=>x.id!==hhId),updatedAt:new Date().toISOString()}:e);
+  }
+  logAction("longservice_payout_cancel",`${emp.name} ${years}년 근속 포상금 반영 취소`,"payrollAdjustments",rec.id);
+  autoSaveToServerIfEnabled();showToast("급여 반영을 취소했습니다.","success");renderLongServiceAwardPage();
+}
 function renderLongServiceAwardPage(){
   const c=$("#content");if(!c)return;
   const u=currentUser;
   const tiers=settings.longServiceAwards||[];
+  const isAdminView=u.role==="admin"; // 급여 반영 열은 급여 데이터를 다루는 관리자만 본다(비관리자 화면에는 타인의 급여 조정이 내려오지 않음)
   const scope=u.role==="admin"?employees.filter(e=>e.active):u.role==="director"?employees.filter(e=>e.active&&e.dept===u.dept):employees.filter(e=>e.active&&e.dept===u.dept&&e.team===u.team);
   let rows=scope.map(e=>{
     const yearsOfService=e.hire?yearsBetweenDates(e.hire,Date.now()):0;
     const tier=tiers.find(t=>t.years===yearsOfService);
     const onLeave=_isOnLeave(e);
-    const pastAwards=(e.hrHistory||[]).filter(hh=>hh.type==="award"&&/장기근속/.test(hh.note||hh.reason||""));
+    const pastAwards=(e.hrHistory||[]).filter(hh=>hh.type==="longservice"||(hh.type==="award"&&/장기근속/.test(hh.note||hh.reason||"")));
     return{emp:e,yearsOfService,tier,onLeave,pastAwards};
   }).sort((a,b)=>b.yearsOfService-a.yearsOfService);
   if(_lsaSearch.trim()){
@@ -30668,8 +30862,8 @@ function renderLongServiceAwardPage(){
         ${[10,15,30,50,100].map(n=>`<option value="${n}" ${_lsaPageSize===n?"selected":""}>${n}건씩</option>`).join("")}
       </select>
     </div>
-    <div class="tbl-wrap" style="max-height:65vh;overflow-y:auto"><table><thead style="position:sticky;top:0;z-index:2;background:#fff"><tr><th>이름</th><th>부서</th><th>팀</th><th>입사일</th><th>근속연수</th><th>포상 대상</th><th>과거 포상이력</th></tr></thead><tbody>
-      ${pageRows.map(r=>`<tr><td><strong>${h(r.emp.name)}</strong></td><td class="fz12 text-gray">${h(r.emp.dept)}</td><td class="fz12 text-gray">${h(r.emp.team)}</td><td class="fz12 text-gray">${h(r.emp.hire||"-")}</td><td>${r.yearsOfService}년</td><td>${r.tier?(r.onLeave?badge("휴직 (다음해 대상 포함)","gray"):badge(`${r.tier.years}년 달성 — ${h(r.tier.reward)}`,"orange")):"-"}</td><td class="fz11 text-gray">${r.pastAwards.length?r.pastAwards.map(pa=>h(pa.note||pa.reason)).join("<br>"):"-"}</td></tr>`).join("")}
+    <div class="tbl-wrap" style="max-height:65vh;overflow-y:auto"><table><thead style="position:sticky;top:0;z-index:2;background:#fff"><tr><th>이름</th><th>부서</th><th>팀</th><th>입사일</th><th>근속연수</th><th>포상 대상</th>${isAdminView?`<th>급여 반영</th>`:""}<th>과거 포상이력</th></tr></thead><tbody>
+      ${pageRows.map(r=>`<tr><td><strong>${h(r.emp.name)}</strong></td><td class="fz12 text-gray">${h(r.emp.dept)}</td><td class="fz12 text-gray">${h(r.emp.team)}</td><td class="fz12 text-gray">${h(r.emp.hire||"-")}</td><td>${r.yearsOfService}년</td><td>${r.tier?(r.onLeave?badge("휴직 (다음해 대상 포함)","gray"):badge(`${r.tier.years}년 달성 — ${h(r.tier.reward)}`,"orange")):"-"}</td>${isAdminView?`<td>${_lsPayoutCellHtml(r)}</td>`:""}<td class="fz11 text-gray">${r.pastAwards.length?r.pastAwards.map(pa=>h(pa.note||pa.reason)).join("<br>"):"-"}</td></tr>`).join("")}
     </tbody></table></div>
     ${totalPages>1?`<div class="flex items-c gap2" style="padding:10px 12px;justify-content:center">
       <button class="btn btn-secondary btn-sm" ${_lsaPage<=1?"disabled":""} onclick="_lsaPage--;renderLongServiceAwardPage()">‹ 이전</button>
@@ -30677,6 +30871,18 @@ function renderLongServiceAwardPage(){
       <button class="btn btn-secondary btn-sm" ${_lsaPage>=totalPages?"disabled":""} onclick="_lsaPage++;renderLongServiceAwardPage()">다음 ›</button>
     </div>`:""}
   </div></div>`;
+}
+
+function _lsPayoutCellHtml(r){
+  if(!r.tier)return"-";
+  const rec=_lsPayoutRecord(r.emp.id,r.tier.years);
+  if(rec){
+    const blocked=_lsMonthBlocked(r.emp.id,rec.year,rec.month);
+    return`${badge(`${rec.year}-${String(rec.month).padStart(2,"0")} 급여 ${Number(rec.amount).toLocaleString()}원`,"green")}${blocked?`<div class="fz11 text-gray">${blocked} — 변경 불가</div>`:`<button class="btn btn-secondary btn-sm" style="margin-left:4px" onclick="cancelLongServicePayout(${h(JSON.stringify(String(r.emp.id)))},${r.tier.years})">취소</button>`}`;
+  }
+  if(!_lsTierAmount(r.tier))return`<span class="fz11 text-gray">포상금 미설정</span>`;
+  if(r.onLeave)return`<span class="fz11 text-gray">휴직 중</span>`;
+  return`<button class="btn btn-primary btn-sm" onclick="openLongServicePayoutModal(${h(JSON.stringify(String(r.emp.id)))},${r.tier.years})">${_lsTierAmount(r.tier).toLocaleString()}원 반영</button>`;
 }
 
 // ==================== (최)우수사원 선정 이력 (인사 메뉴, 전직원 조회) ====================
@@ -30905,14 +31111,16 @@ function _renderWelfareLongServiceTab(){
   const tierRows=tiers.map((t,i)=>`<tr>
     <td><input class="fc" type="number" style="width:70px" value="${t.years}" min="1" oninput="settings.longServiceAwards[${i}].years=+this.value;autoSaveDebounced()"></td>
     <td><input class="fc" value="${h(t.reward)}" oninput="settings.longServiceAwards[${i}].reward=this.value;autoSaveDebounced()"></td>
+    <td><input class="fc" type="number" style="width:130px" min="0" step="10000" placeholder="예: 500000" value="${_lsTierAmount(t)||""}" oninput="settings.longServiceAwards[${i}].amount=Math.max(0,Math.round(+this.value||0));autoSaveDebounced()"></td>
     <td><button class="btn btn-danger btn-sm" onclick="settings.longServiceAwards.splice(${i},1);autoSaveDebounced();renderWelfareSettingsPage()">삭제</button></td>
   </tr>`).join("");
 
   el.innerHTML=`
   <div class="card" style="margin-bottom:14px"><div class="card-head"><h3>🏅 장기근속 포상 기준 설정</h3>
-    <button class="btn btn-primary btn-sm" onclick="settings.longServiceAwards.push({years:5,reward:''});autoSaveDebounced();renderWelfareSettingsPage()">+ 기준 추가</button>
+    <button class="btn btn-primary btn-sm" onclick="settings.longServiceAwards.push({years:5,reward:'',amount:0});autoSaveDebounced();renderWelfareSettingsPage()">+ 기준 추가</button>
   </div><div class="card-body" style="padding:0">
-    ${tiers.length?`<div class="tbl-wrap"><table><thead><tr><th>근속연수</th><th>포상 내용</th><th>삭제</th></tr></thead><tbody>${tierRows}</tbody></table></div>`:`<div style="padding:20px;text-align:center;color:#94a3b8">등록된 기준이 없습니다.</div>`}
+    <div class="fz11 text-gray" style="padding:8px 12px">포상금(원)을 입력한 기준만 "장기근속 포상" 화면에서 급여에 반영할 수 있습니다. 비워 두면 안내 문구만 있는 기준으로 취급합니다.</div>
+    ${tiers.length?`<div class="tbl-wrap"><table><thead><tr><th>근속연수</th><th>포상 내용</th><th>급여 반영 포상금(원)</th><th>삭제</th></tr></thead><tbody>${tierRows}</tbody></table></div>`:`<div style="padding:20px;text-align:center;color:#94a3b8">등록된 기준이 없습니다.</div>`}
   </div></div>
   <div class="card"><div class="card-body">
     <div class="flex items-c gap2 mb2" style="justify-content:space-between">
@@ -31120,7 +31328,6 @@ async function _removeAward(empId,hhId){
 }
 
 // ==================== 법정의무교육 (Mandatory Training) ====================
-const _MT_COLORS={"sexual-harassment":"pink","privacy":"blue","safety":"orange","bullying":"red","disabled-employment":"teal"};
 function renderMandatoryTrainingPage(){
   const c=$("#content");
   const yr=new Date().getFullYear();
