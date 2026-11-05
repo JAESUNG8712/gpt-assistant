@@ -15,7 +15,10 @@ const auth = (token, method, body) => ({
 });
 
 test("영업 대시보드 월별 추이 집계(수주/매출 구분, 전년 비교, 연도 파라미터, 권한)", async (t) => {
-  const server = await startServer();
+  const legacyQuotes = ["2031-13-10", "2031-00-10"].map(date => ({
+    id: "legacy-" + date, date, status: "draft", partnerName: "기존 자료", lines: [],
+  }));
+  const server = await startServer({ seedErp: { quotations: legacyQuotes } });
   t.after(() => server.stop());
   const api = (path, options) => fetch(server.baseUrl + path, options);
   const boot = await bootstrapAdminAndLogin(server, { loginId: "admin1", pw: "admin1-test-pw", name: "관리자1" });
@@ -119,11 +122,34 @@ test("영업 대시보드 월별 추이 집계(수주/매출 구분, 전년 비�
   });
 
   await t.test("잘못된 견적 월이 남아 있어도 영업 추이 전체가 500으로 실패하지 않는다", async () => {
-    const before = (await get("?year=2031")).monthlyTrend.months;
-    await quote("2031-13-10", 1, 1000, "draft");
-    await quote("2031-00-10", 1, 1000, "draft");
-    const after = (await get("?year=2031")).monthlyTrend.months;
-    assert.deepEqual(after, before, "유효하지 않은 월은 월별 집계에서 제외한다");
+    const list = await (await api("/api/erp/quotations", auth(token, "GET"))).json();
+    for (const q of legacyQuotes) assert.ok(list.quotations.some(r => r.id === q.id && r.date === q.date));
+    const trend = (await get("?year=2031")).monthlyTrend;
+    const actual = list.quotations.filter(q => /^2031-(0[1-9]|1[012])-/.test(q.date));
+    assert.equal(trend.months.reduce((n, m) => n + m.count, 0), actual.length);
+  });
+
+  await t.test("견적일과 유효기한을 저장 전에 검증하며 당일 만료와 윤일을 허용한다", async () => {
+    const create = (date, validUntil) => api("/api/erp/quotations", auth(token, "POST", {
+      date, validUntil, partnerName: "날짜검증", items: [{ name: "품목", qty: 1, unitPrice: 1000 }],
+    }));
+    const list = async () => (await (await api("/api/erp/quotations", auth(token, "GET"))).json()).quotations;
+    const before = (await list()).map(q => q.id).sort();
+    for (const date of ["2031-02-29", "2031-13-10", "2031-00-10", "2031-04-31", "2032-2-9", 123]) {
+      const r = await create(date);
+      assert.equal(r.status, 400); assert.equal((await r.json()).code, "INVALID_QUOTATION_DATE");
+    }
+    for (const end of ["2032-02-28", "2032-02-30", false]) {
+      const r = await create("2032-02-29", end);
+      assert.equal(r.status, 400); assert.equal((await r.json()).code, "INVALID_QUOTATION_EXPIRY");
+    }
+    assert.deepEqual((await list()).map(q => q.id).sort(), before);
+    for (const end of [undefined, "", "2032-02-29", "2032-03-01"]) {
+      const r = await create("2032-02-29", end);
+      const result = await r.json();
+      assert.equal(result.ok, true, JSON.stringify(result));
+      assert.ok((await list()).some(q => q.id === result.quotation.id && q.validUntil === (end || "")));
+    }
   });
 
   await t.test("인증 없음 401 / 일반 직원 403 (기존 게이팅 유지)", async () => {

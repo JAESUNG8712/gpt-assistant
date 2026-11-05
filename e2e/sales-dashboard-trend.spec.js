@@ -16,6 +16,34 @@ async function loginAsAdmin(page) {
   await expect(page.locator("#main")).toBeVisible({ timeout: 10000 });
 }
 
+test("견적 작성 시 유효기한을 수정한 뒤 한 번만 저장한다", async ({ page }) => {
+  await loginAsAdmin(page);
+  await page.evaluate(() => gotoPage("sales-quotations"));
+  await page.getByRole("button", { name: "+ 견적서 작성", exact: true }).click();
+  await page.locator("#qt-partner").fill("날짜 경계 시험");
+  await page.locator('#qt-items input[placeholder="품목명"]').fill("시험 품목");
+  await page.locator('#qt-items input[placeholder="단가"]').fill("1000");
+  const date = page.getByLabel("견적일자");
+  const expiry = page.getByLabel("유효기한 (선택)");
+  await date.fill("2032-02-29");
+  await expiry.fill("2032-02-28");
+  const save = page.getByRole("button", { name: "저장 (임시)", exact: true });
+  const writes = [];
+  page.on("request", req => { if (req.method() === "POST" && new URL(req.url()).pathname === "/api/erp/quotations") writes.push(req); });
+  await save.click();
+  await expect(expiry).toBeFocused();
+  await expect(expiry).toHaveAttribute("min", "2032-02-29");
+  await expect(page.locator("#qt-partner")).toHaveValue("날짜 경계 시험");
+  expect(writes).toHaveLength(0);
+  await expiry.fill("2032-02-29");
+  const saved = page.waitForResponse(res => res.request().method() === "POST" && new URL(res.url()).pathname === "/api/erp/quotations");
+  await save.click();
+  const result = await (await saved).json();
+  expect(result.quotation).toMatchObject({ date: "2032-02-29", validUntil: "2032-02-29" });
+  await expect(save).toBeHidden();
+  expect(writes).toHaveLength(1);
+});
+
 test("월별 추이 탭: 차트·표·전년 대비를 그리고, 연도를 바꾸면 ?year= 로 다시 조회한다", async ({ page }) => {
   const pageErrors = [];
   page.on("pageerror", (e) => pageErrors.push(e.message));

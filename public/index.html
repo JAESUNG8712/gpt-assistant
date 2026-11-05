@@ -24490,10 +24490,11 @@ function _dlQuotationsCSV(){
 async function openQuotationModal(){
   await loadAcctPartnersPicker();
   _quoteItems=[{itemId:"",name:"",qty:1,unitPrice:0}];
+  const now=new Date(), today=new Date(now.getTime()-now.getTimezoneOffset()*60000).toISOString().slice(0,10);
   openModal(`<div class="modal-box" style="max-width:680px"><div class="modal-head"><h3>📃 견적서 작성</h3></div><div class="modal-body">
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
-      <div class="fg"><label class="fl">견적일자 <span class="req">*</span></label><input class="fc" type="date" id="qt-date" value="${new Date().toISOString().slice(0,10)}"></div>
-      <div class="fg"><label class="fl">유효기한</label><input class="fc" type="date" id="qt-valid"></div>
+      <div class="fg"><label class="fl" for="qt-date">견적일자 <span class="req">*</span></label><input class="fc" type="date" id="qt-date" required value="${today}" oninput="$('#qt-valid').min=this.value"></div>
+      <div class="fg"><label class="fl" for="qt-valid">유효기한 (선택)</label><input class="fc" type="date" id="qt-valid" min="${today}" aria-describedby="qt-valid-help"><small id="qt-valid-help">견적일자와 같거나 이후인 날짜를 선택하세요.</small></div>
     </div>
     <div class="fg"><label class="fl">거래처명 <span class="req">*</span></label>${_acctPartnerPickerSelectHtml("qt-partner-id","$('#qt-partner').value=_acctPartnerPickerName(this.value)")}<input class="fc mt2" id="qt-partner" placeholder="거래처명 직접 입력"></div>
     <div class="fg"><label class="fl">출고 위치 <span class="fz12 text-gray">(수주 확정 후 출고/매출 처리 시 사용)</span></label><select class="fc" id="qt-location"><option value="">선택 안 함</option>${erpLocations.map(l=>`<option value="${l.id}">${h(l.name)}</option>`).join("")}</select></div>
@@ -24520,6 +24521,7 @@ function updateQuoteTotals(){
   el.textContent=`공급가액: ${supply.toLocaleString()} / 세액(10%): ${tax.toLocaleString()} / 합계: ${(supply+tax).toLocaleString()}`;
 }
 async function saveQuotation(){
+  if(!$("#qt-date").reportValidity()||!$("#qt-valid").reportValidity())return;
   const date=$("#qt-date")?.value,partnerName=$("#qt-partner")?.value.trim();
   if(!date||!partnerName){showToast("견적일자와 거래처명을 입력하세요.","error");return;}
   const body={date,validUntil:$("#qt-valid")?.value,partnerId:$("#qt-partner-id")?.value||null,partnerName,locationId:$("#qt-location")?.value||null,items:_quoteItems,memo:$("#qt-memo")?.value.trim(),role:currentUser.role,user:currentUser.name};
