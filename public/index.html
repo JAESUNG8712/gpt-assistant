@@ -27980,11 +27980,13 @@ function exportPayrollForErp(){
 function calcAnnualLeaveGrant(emp){
   if(!emp.hire)return 0;
   const hire=new Date(emp.hire);const now=new Date();
-  const years=Math.floor((now-hire)/(365.25*24*3600*1000));
+  // 달력 기준 완료 연/월(365.25일 근사는 입사 1주년 전후 하루가 어긋날 수 있음)
+  const years=yearsBetweenDates(hire,now);
   if(years<1){
     // 1년 미만: 매월 1일 (최대 11일)
-    const months=Math.floor((now-hire)/(30.44*24*3600*1000));
-    return Math.min(months,11);
+    let months=(now.getFullYear()-hire.getFullYear())*12+now.getMonth()-hire.getMonth();
+    if(now.getDate()<hire.getDate())months--;
+    return Math.max(0,Math.min(months,11));
   }
   // 1년 이상: 15일 + 2년 초과마다 1일씩 추가 (최대 25일)
   return Math.min(15+Math.floor((years-1)/2),25);
