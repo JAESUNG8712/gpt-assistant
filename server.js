@@ -2978,6 +2978,37 @@ function _sanitizePhotoUrl(rawEmp, stored) {
   if (validPhoto) return rawEmp;
   return { ...rawEmp, photoUrl: stored ? stored.photoUrl : undefined };
 }
+// employees[].salary/hire 값 검증 — _sanitizePhotoUrl과 같이 actor 신원과 무관하게(관리자
+// 쓰기도) 항상 실행된다. 화면 폼(type="number"/"date")은 값을 제한하지만 서버는 /save로
+// 들어온 값을 그대로 저장해, API 직접 호출·잘못된 일괄 업로드로 salary가 음수·문자열·NaN이
+// 되거나 hire가 날짜가 아닌 문자열이 되면 급여 계산·근속연수·연차 발생이 NaN으로 깨졌다.
+// - salary: 유한한 숫자이고 0 이상 100억 이하여야 한다(undefined/null/빈 문자열은 미입력으로 허용).
+// - hire: 빈 값이거나 실제 존재하는 날짜여야 한다. CSV/엑셀 일괄 업로드가 "2020.1.2",
+//   "2020/01/02"처럼 구분자·자릿수가 다른 값을 그대로 넣어 온 기존 데이터가 있어, 구분자(. / -)와
+//   한 자리 월·일은 허용하고 값은 변형하지 않는다. 완전히 날짜가 아닌 값만 거부한다.
+// 위반 시 그 필드만 저장값으로 되돌린다(요청 전체를 거부하지 않음). 저장값과 같은 값이 다시
+// 들어오는 것(기존 데이터의 재저장)은 형식이 낡았더라도 항상 통과시킨다.
+function _lenientDateOk(v) {
+  const m = /^(\d{4})[-./](\d{1,2})[-./](\d{1,2})$/.exec(v);
+  if (!m) return false;
+  const y = Number(m[1]), mo = Number(m[2]), d = Number(m[3]);
+  const dt = new Date(Date.UTC(y, mo - 1, d));
+  return y >= 1900 && y <= 2100 && dt.getUTCFullYear() === y && dt.getUTCMonth() === mo - 1 && dt.getUTCDate() === d;
+}
+function _sanitizeEmployeeSalaryHire(rawEmp, stored) {
+  if (!rawEmp) return rawEmp;
+  let out = rawEmp;
+  const revert = (key) => { if (out === rawEmp) out = { ...rawEmp }; out[key] = stored ? stored[key] : undefined; };
+  const sal = rawEmp.salary;
+  if (sal !== undefined && sal !== null && sal !== "" && !(stored && sal === stored.salary)) {
+    if (typeof sal !== "number" || !Number.isFinite(sal) || sal < 0 || sal > 10000000000) revert("salary");
+  }
+  const hire = rawEmp.hire;
+  if (hire !== undefined && hire !== null && hire !== "" && !(stored && hire === stored.hire)) {
+    if (typeof hire !== "string" || !_lenientDateOk(hire.trim())) revert("hire");
+  }
+  return out;
+}
 // 다면평가 최종등급(compGradeResults, {empId:{year:{grade,score,...}}} 형태의 nested
 // 싱글톤)은 comp-grade-view(admin 전용 화면)에서만 계산·조정되는데, 이 필드 자체는
 // gradeResults와 마찬가지로 전혀 게이팅되지 않고 있었다 — GET /data는 이미 non-admin에게
@@ -3312,7 +3343,7 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
     const _empActorOwnRecord = (actor && actor.empId != null) ? existingById[actor.empId] : null;
     const employees = employeesInputMissing ? (_fileStore.employees || []) : await Promise.all((data.employees || []).map(async (rawEmpIn) => {
       const ex0 = existingById[rawEmpIn.id];
-      const rawEmp = _preserveTwoFactor(_sanitizePhotoUrl(_empActorNonAdmin ? _sanitizeEmployeeRecord(rawEmpIn, ex0, actor, _empActorOwnRecord) : rawEmpIn, ex0), ex0, actor);
+      const rawEmp = _preserveTwoFactor(_sanitizeEmployeeSalaryHire(_sanitizePhotoUrl(_empActorNonAdmin ? _sanitizeEmployeeRecord(rawEmpIn, ex0, actor, _empActorOwnRecord) : rawEmpIn, ex0), ex0), ex0, actor);
       const ex = existingById[rawEmp.id];
       const oldTs = ex ? (ex.updatedAt || ex.createdAt || "") : "";
       const newTs = rawEmp.updatedAt || rawEmp.createdAt || "";
@@ -3682,10 +3713,10 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
       );
       if (rows.length && companyId && rows[0].company_id && rows[0].company_id !== companyId) continue;
       const storedEmpRow = rows.length ? rows[0].data : null;
-      const rawEmp = _preserveTwoFactor(_sanitizePhotoUrl(
+      const rawEmp = _preserveTwoFactor(_sanitizeEmployeeSalaryHire(_sanitizePhotoUrl(
         _empActorNonAdmin ? _sanitizeEmployeeRecord(rawEmpIn, storedEmpRow, actor, _empActorOwnRecord) : rawEmpIn,
         storedEmpRow
-      ), storedEmpRow, actor);
+      ), storedEmpRow), storedEmpRow, actor);
       // 비밀번호는 관리자 또는 본인만(2026-08-19 외부 감사 P0-1 — JSON 파일 모드와 동일한
       // 방어를 Postgres/SaaS 모드에도 적용).
       const isSelf = actor && actor.empId != null && String(actor.empId) === String(rawEmp.id);
