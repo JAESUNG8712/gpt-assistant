@@ -9400,6 +9400,7 @@ app.post("/api/accounting/payments", async (req, res) => {
     const { direction, date, partnerId, partnerName, amount, method, memo, taxInvoiceId, user } = req.body || {};
     if (!["in", "out"].includes(direction)) return res.status(400).json({ ok: false, message: "direction은 in(수금) 또는 out(지급)이어야 합니다." });
     if (!date || !partnerName || !(Number(amount) > 0)) return res.status(400).json({ ok: false, message: "일자, 거래처, 금액(0보다 큼)은 필수입니다." });
+    if (!_isValidDateStr(date)) return res.status(400).json({ ok: false, message: "일자는 실제 존재하는 YYYY-MM-DD 형식이어야 합니다." });
     const payment = {
       id: `pay_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
       direction, date, partnerId: partnerId || null, partnerName,
@@ -10127,6 +10128,8 @@ app.get("/api/accounting/vat-report", async (req, res) => {
   try {
     const { from, to } = req.query || {};
     if (!from || !to) return res.status(400).json({ ok: false, message: "from, to(YYYY-MM-DD)는 필수입니다." });
+    if (!_isValidDateStr(from) || !_isValidDateStr(to)) return res.status(400).json({ ok: false, message: "from, to는 실제 존재하는 YYYY-MM-DD 형식이어야 합니다." });
+    if (from > to) return res.status(400).json({ ok: false, message: "from은 to보다 이후일 수 없습니다." });
     let list;
     if (USE_JSON_FILE) {
       list = _fileAccounting.taxInvoices.filter(t => t.status === "issued" && t.issueDate >= from && t.issueDate <= to);
