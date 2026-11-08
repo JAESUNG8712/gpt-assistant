@@ -10046,6 +10046,12 @@ app.post("/api/accounting/rcps/valuations", async (req, res) => {
     if (!issuanceId || !valuationDate || fairValue === undefined || fairValue === null || fairValue === "") {
       return res.status(400).json({ ok: false, message: "issuanceId, valuationDate, fairValue는 필수입니다." });
     }
+    if (!Number.isFinite(Number(fairValue)) || Number(fairValue) < 0) {
+      return res.status(400).json({ ok: false, message: "fairValue는 0 이상의 숫자여야 합니다." });
+    }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(String(valuationDate)) || Number.isNaN(Date.parse(valuationDate))) {
+      return res.status(400).json({ ok: false, message: "valuationDate는 YYYY-MM-DD 형식이어야 합니다." });
+    }
     let issuance, priorList;
     if (USE_JSON_FILE) {
       issuance = _fileAcctRcps.issuances.find(i => i.id === issuanceId && !i.isDeleted);
