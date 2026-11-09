@@ -10726,6 +10726,23 @@ function _applyDueHRChanges(){
   // getCompEvaluators()가 그 직원의 "새" dept/team을 읽는다(map 콜백 안에서는 아직
   // 예전 employees 배열이 유효해 자기 자신의 변경조차 반영 전 상태로 보인다).
   _transfers.forEach(t=>_autoTransitionCompEvaluators(t.empId,t.oldDept,t.oldTeam));
+  // 서버 스케줄러(lib/scheduled-hr.js)가 접속자 없이 먼저 반영한 예약발령의 부서이동은 평가자 자동전환을
+  // 서버가 대신하지 못해 transferPending 표식만 남긴다. 평가 세션을 저장할 수 있는 관리자 화면이
+  // 여기서 전환을 처리하고 표식을 지운다(비관리자 저장은 서버가 되돌리므로 건드리지 않는다).
+  if(typeof currentUser!=="undefined"&&currentUser?.role==="admin"){
+    const _pendingXfers=[];
+    employees=employees.map(e=>{
+      if(!Array.isArray(e.hrHistory)||!e.hrHistory.some(hh=>hh&&hh.transferPending))return e;
+      const hist=e.hrHistory.map(hh=>{
+        if(!(hh&&hh.transferPending))return hh;
+        _pendingXfers.push({empId:e.id,oldDept:hh.transferFrom?.dept||"",oldTeam:hh.transferFrom?.team||""});
+        return{...hh,transferPending:false};
+      });
+      return{...e,hrHistory:hist,updatedAt:new Date().toISOString()};
+    });
+    _pendingXfers.forEach(t=>_autoTransitionCompEvaluators(t.empId,t.oldDept,t.oldTeam));
+    if(_pendingXfers.length)changed=true;
+  }
   if(changed){saveAutoSnapshot("auto");autoSaveToServerIfEnabled();}
   return changed;
 }
