@@ -7538,6 +7538,40 @@ async function _deliverOutboxEntry(entry, wh) {
 }
 let _outboxWorkerRunning = false;
 let _outboxLastPrune = 0;
+// ── 예약발령 서버 스케줄러 ───────────────────────────────────────────────────────
+// 발령일이 도래한 예약 인사발령(hrHistory applied:false)을 서버가 직접 반영한다. 계산 규칙은
+// lib/scheduled-hr.js(클라이언트 _applyDueHRChanges와 같은 규칙 + pendingUpdates 허용 목록).
+// 반영은 /save와 같은 저장 잠금 안에서 "읽기→계산→저장"을 한 번에 해 동시 편집을 덮어쓰지 않고,
+// 일반 저장 경로(_persistDataLocked)를 그대로 써서 변경 이력·authVersion(세션 철회)·버전이 정상 처리된다.
+const HR_SCHEDULER_POLL_MS = Math.max(200, Number(process.env.HR_SCHEDULER_POLL_MS) || 10 * 60_000);
+let _hrSchedulerRunning = false;
+function _kstToday() { return new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 10); }
+async function _applyScheduledHrChangesForCompany(companyId) {
+  const { computeDueHrChanges } = require("./lib/scheduled-hr");
+  return _withSaveLock(() => _withDistributedSaveLock(companyId, async () => {
+    const stored = await loadData(companyId);
+    const nowIso = new Date().toISOString();
+    const { employees, applied } = computeDueHrChanges(stored.employees || [], _kstToday(), nowIso);
+    if (!applied.length) return 0;
+    await _persistDataLocked({ employees }, "system:scheduled-hr", companyId, { role: "admin", empId: null });
+    broadcastSSE("data_updated", { version: _getVersion(companyId), meta: {} }, null, companyId);
+    return applied.length;
+  }));
+}
+async function _runHrScheduler() {
+  if (_hrSchedulerRunning) return 0;
+  _hrSchedulerRunning = true;
+  let total = 0;
+  try {
+    const companyIds = USE_JSON_FILE ? [null]
+      : (await pool.query("SELECT id FROM companies WHERE status <> 'suspended'")).rows.map(r => r.id);
+    for (const companyId of companyIds) {
+      try { total += await _applyScheduledHrChangesForCompany(companyId); }
+      catch (e) { console.warn("[hr-scheduler] 예약발령 반영 실패:", e.message); }
+    }
+  } finally { _hrSchedulerRunning = false; }
+  return total;
+}
 async function _processWebhookOutbox() {
   if (_outboxWorkerRunning) return;
   _outboxWorkerRunning = true;
@@ -14887,6 +14921,9 @@ initDB()
     });
     // 웹훅 발송 대기함 워커: 실패·미전송 알림을 주기적으로 재시도한다(서버 재시작 후에도 이어짐).
     setInterval(() => { _processWebhookOutbox().catch(() => {}); }, WEBHOOK_OUTBOX_POLL_MS).unref();
+    // 예약발령 워커: 발령일이 도래한 예약 인사발령을 접속자 없이도 반영한다.
+    setTimeout(() => { _runHrScheduler().catch(() => {}); }, 5000).unref();
+    setInterval(() => { _runHrScheduler().catch(() => {}); }, HR_SCHEDULER_POLL_MS).unref();
     server.on("error", (err) => {
       if (err.code === "EADDRINUSE") {
         console.error(`\n[오류] 포트 ${PORT}가 이미 사용 중입니다.`);

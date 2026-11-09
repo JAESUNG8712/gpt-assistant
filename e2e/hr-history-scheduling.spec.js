@@ -179,3 +179,27 @@ test.describe("예약(미래) 인사발령의 자동 반영 시점", () => {
     expect(pageErrors).toEqual([]);
   });
 });
+
+test.describe("서버 스케줄러가 반영한 부서이동의 평가자 전환 표식", () => {
+  test("관리자 화면이 transferPending 표식을 보고 평가자를 전환한 뒤 표식을 지운다", async ({ page }) => {
+    const pageErrors = [];
+    page.on("pageerror", e => pageErrors.push(e.message));
+    await loginAsAdmin(page);
+    const result = await page.evaluate(() => {
+      const year = settings.compEvalYear || settings.evalYear;
+      employees = employees.concat([
+        // 서버가 이미 영업/A → 기획/B로 반영했고 평가자 전환만 남은 직원
+        { id: 9201, empNo: "E9201", name: "전환대상", dept: "기획", team: "B", rank: "사원", position: "", active: true, hire: "2020-01-01",
+          hrHistory: [{ id: "hx1", type: "transfer", date: "2000-01-01", applied: true, appliedBy: "server", transferPending: true, transferFrom: { dept: "영업", team: "A" } }] },
+      ]);
+      compSessions = compSessions.concat([{ id: "cs-xfer", targetId: 9201, year, status: "open", type: "comp", evaluatorIds: [999999], createdAt: new Date().toISOString() }]);
+      _applyDueHRChanges();
+      const emp = employees.find(e => e.id === 9201);
+      return { flag: emp.hrHistory[0].transferPending, session: compSessions.find(s => s.id === "cs-xfer") };
+    });
+    expect(result.flag).toBe(false);
+    // 응답이 없고 고정 평가자도 없으니 평가자가 현재 조직 기준으로 다시 계산돼 옛 값(999999)이 남지 않는다.
+    expect(result.session.evaluatorIds).not.toContain(999999);
+    expect(pageErrors).toEqual([]);
+  });
+});
