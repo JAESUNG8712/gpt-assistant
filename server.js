@@ -1473,7 +1473,51 @@ async function loadData(companyId, db = pool) {
 // 동결하고, 현재 차례의 결재자만 승인/반려할 수 있다. 기안자 취소·삭제 요청은 별도
 // 허용하며 관리자는 결재선 교체·레거시 이관 권한을 유지한다. 거부한 레코드만 저장본으로
 // 되돌려 전체 상태 저장의 다른 정상 변경을 막지 않는다.
-function _sanitizeApprovalDoc(incoming, stored, actor) {
+// 금액 구간별 추가 결재자(approvalChainSettings.amountTiers) 서버 강제.
+// 구간 규정은 클라이언트(_applyApprovalAmountTiers)가 결재선에 "추가"만 하는 규칙인데, 결재선은
+// 상신 화면에서 사용자가 직접 고칠 수 있고 서버는 그 구성을 검증하지 않아 고액 문서도 구간 결재자
+// 없이 상신할 수 있었다. 새 문서에 한해 저장본의 구간 설정(클라이언트가 보낸 값이 아님)으로
+// 필요한 결재자가 모두 결재선에 있는지(대결자로 치환됐으면 originalEmpId로 인정) 확인한다.
+function _approvalAmountOfServer(fd) {
+  for (const k of ["amount", "requestedAmount", "estimatedCost", "budget"]) {
+    const n = Number(fd && fd[k]);
+    if (Number.isFinite(n) && n > 0) return n;
+  }
+  return 0;
+}
+function _amountTierEmpIds(chainSettings, doc) {
+  const raw = Array.isArray(chainSettings?.amountTiers) ? chainSettings.amountTiers : [];
+  const amt = _approvalAmountOfServer(doc?.formData);
+  if (!amt) return [];
+  const out = [];
+  for (const t of raw) {
+    if (!t || t.empId == null || t.empId === "") continue;
+    const min = Number(t.minAmount);
+    if (!Number.isFinite(min) || min <= 0 || amt < min) continue;
+    const tplIds = Array.isArray(t.tplIds) ? t.tplIds.map(String).filter(Boolean) : [];
+    if (tplIds.length && !tplIds.includes(String(doc?.templateId))) continue;
+    if (String(t.empId) === String(doc?.authorId)) continue;   // 본인 문서를 본인이 결재하지 않음
+    out.push(String(t.empId));
+  }
+  return [...new Set(out)];
+}
+// ctx.activeEmpIds: 구간 결재자 중 재직 중인 직원 id 집합(호출부가 저장본에서 조회). 퇴직·없는
+// 직원은 클라이언트도 결재선에 넣지 않으므로 요구 대상에서 제외한다.
+function _missingAmountTierApprovers(doc, ctx) {
+  if (!ctx || !ctx.chainSettings || !ctx.activeEmpIds) return [];
+  return _amountTierEmpIds(ctx.chainSettings, doc).filter(id => {
+    if (!ctx.activeEmpIds.has(id)) return false;
+    return !(doc.approvers || []).some(a => a && (String(a.empId) === id || String(a.originalEmpId || "") === id));
+  });
+}
+function _amountTierActiveSet(chainSettings, employeesList) {
+  const ids = new Set();
+  for (const t of (Array.isArray(chainSettings?.amountTiers) ? chainSettings.amountTiers : [])) if (t && t.empId != null) ids.add(String(t.empId));
+  const active = new Set();
+  for (const e of employeesList || []) if (e && ids.has(String(e.id)) && e.active) active.add(String(e.id));
+  return active;
+}
+function _sanitizeApprovalDoc(incoming, stored, actor, ctx) {
   if (!incoming) return stored ? { ...stored } : null;
   if (actor?.role === "admin") return incoming; // 관리자 결재선 교체·레거시 이관
   const actorId = actor?.empId != null ? String(actor.empId) : null;
@@ -1481,9 +1525,14 @@ function _sanitizeApprovalDoc(incoming, stored, actor) {
   if (!stored) {
     // 새 문서를 타인 명의나 이미 승인된 상태로 삽입하면 급여·근태 연계의 신뢰 근거를
     // 위조할 수 있다. UI의 실제 상신 계약은 본인 명의의 진행중 문서와 대기 결재선이다.
-    return String(incoming.authorId) === actorId && incoming.status === "in_progress" &&
-      incoming.approvers.length > 0 && incoming.approvers.every(a => a && ["pending", "waiting"].includes(a.status))
-      ? incoming : null;
+    const okNew = String(incoming.authorId) === actorId && incoming.status === "in_progress" &&
+      incoming.approvers.length > 0 && incoming.approvers.every(a => a && ["pending", "waiting"].includes(a.status));
+    if (!okNew) return null;
+    if (_missingAmountTierApprovers(incoming, ctx).length) {
+      if (ctx && typeof ctx.onReject === "function") ctx.onReject("APPROVAL_TIER_MISSING");
+      return null;
+    }
+    return incoming;
   }
   if (JSON.stringify(incoming) === JSON.stringify(stored)) return incoming;
   const mutable = new Set(["approvers", "status", "approvedAt", "updatedAt", "deletionRequest"]);
@@ -3062,6 +3111,7 @@ const _SAVE_FEEDBACK_FIELDS = {
   employmentRecords: ["employeeId", "type", "title", "status", "startDate", "endDate", "decisionDate", "note", "documentRef", "reviewOwnerId", "reviewStatus", "reviewDecision", "reviewNote"],
   learningCourses: ["name", "category", "provider", "instructorName", "delivery", "startDate", "endDate", "hours", "capacity", "cost", "status", "description", "internalNote"],
   learningAssignments: ["courseId", "empId", "status", "assignedAt", "dueDate", "completedAt", "score", "certificateNo", "evidenceRef", "note", "source", "sourceDocId", "approvedCost", "costCenter", "settlementStatus", "settledAt", "settledAmount", "settlementNote"],
+  approvalDocs: null,
   payslips: null,
   payrollAdjustments: null,
   yearEndSettlements: null,
@@ -3414,13 +3464,20 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
     // 않는다. sourceDocId가 이번 요청의 approvalDocs에 없으면(이전 요청에서 이미 승인된
     // 문서를 뒤늦게 참조하는 경우) 저장된 값으로 폴백한다.
     const _sanitizedIncomingApprovalDocsById = new Map();
+    // 금액 구간 결재자 서버 강제용 — 구간 설정과 재직 여부는 요청 본문이 아니라 저장본에서 읽는다.
+    const _approvalTierActiveIds = _amountTierActiveSet(_fileStore.approvalChainSettings, _fileStore.employees);
     if (Array.isArray(data.approvalDocs)) {
       const storedDocsById = new Map((_fileStore.approvalDocs || []).map(d => [String(d.id), d]));
       for (const d of data.approvalDocs) {
         if (d && d.id != null) {
           const stored = storedDocsById.get(String(d.id));
-          const sanitized = _sanitizeApprovalDoc(d, stored, actor);
-          if (!sanitized || JSON.stringify(sanitized) !== JSON.stringify(d)) rejectSaveRecord("approvalDocs", d, stored, "APPROVAL_FORBIDDEN");
+          let approvalWhy = null;
+          const sanitized = _sanitizeApprovalDoc(d, stored, actor, {
+            chainSettings: _fileStore.approvalChainSettings,
+            activeEmpIds: _approvalTierActiveIds,
+            onReject: c => { approvalWhy = c; },
+          });
+          if (!sanitized || JSON.stringify(sanitized) !== JSON.stringify(d)) rejectSaveRecord("approvalDocs", d, stored, approvalWhy || "APPROVAL_FORBIDDEN");
           _sanitizedIncomingApprovalDocsById.set(String(d.id), sanitized);
         }
       }
@@ -3864,6 +3921,23 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
       _settingsPg = rows.length ? rows[0].data : {};
       return _settingsPg;
     };
+    // 금액 구간 결재자 서버 강제(_missingAmountTierApprovers 주석 참고)용 — 저장된 구간 설정과
+    // 구간 결재자의 재직 여부를 요청당 한 번만 조회한다(새 결재문서가 있을 때만 호출됨).
+    let _approvalTierCtxPg = null;
+    const _getApprovalTierCtxPg = async () => {
+      if (_approvalTierCtxPg) return _approvalTierCtxPg;
+      const { rows } = await client.query(
+        "SELECT data FROM app_singletons WHERE key = 'approvalChainSettings' AND (company_id = $1 OR company_id IS NULL)",
+        [companyId || null]
+      );
+      const chainSettings = rows.length ? rows[0].data : {};
+      const ids = (Array.isArray(chainSettings?.amountTiers) ? chainSettings.amountTiers : [])
+        .filter(t => t && t.empId != null).map(t => String(t.empId));
+      const emps = [];
+      for (const id of new Set(ids)) { const e = await _getEmployeeByIdPg(id); if (e) emps.push(e); }
+      _approvalTierCtxPg = { chainSettings, activeEmpIds: _amountTierActiveSet(chainSettings, emps) };
+      return _approvalTierCtxPg;
+    };
     // payrollAdjustments의 복리후생 파생 레코드 예외(_sanitizeGatedRecord 주석 참고)용 —
     // 특정 sourceDocId의 결재문서를 조회해 _sanitizeApprovalDoc으로 위조여부까지 확인한
     // "신뢰 가능한" 버전을 돌려준다. 이번 요청의 data.approvalDocs에 그 문서가 함께 실려
@@ -3986,8 +4060,10 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
           const storedItem = rows.length ? rows[0].data : null;
           let toWrite = item;
           if (field === "approvalDocs") {
-            toWrite = _sanitizeApprovalDoc(item, storedItem, actor);
-            if (!toWrite || (storedItem && JSON.stringify(toWrite) !== JSON.stringify(item))) rejectSaveRecord(field, item, storedItem, "APPROVAL_FORBIDDEN");
+            let approvalWhy = null;
+            toWrite = _sanitizeApprovalDoc(item, storedItem, actor,
+              (!storedItem && actor?.role !== "admin") ? { ...(await _getApprovalTierCtxPg()), onReject: c => { approvalWhy = c; } } : undefined);
+            if (!toWrite || (storedItem && JSON.stringify(toWrite) !== JSON.stringify(item))) rejectSaveRecord(field, item, storedItem, approvalWhy || "APPROVAL_FORBIDDEN");
             if (!toWrite) continue;
           } else if (_APPROVAL_GATED_FIELDS[field]) {
             const approvalDocForGate = (["payrollAdjustments", "learningAssignments"].includes(field) && !storedItem)
