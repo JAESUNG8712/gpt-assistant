@@ -56,13 +56,15 @@ test("서버 스케줄러 — 접속자 없이 도래한 예약발령이 반영�
     { id: "m2", loginId: "m2", pw: "m2-pw-123456", name: "퇴직자", role: "member", active: true, dept: "영업", team: "A", updatedAt: "2026-01-01T00:00:00.000Z",
       hrHistory: [{ id: "x3", type: "retirement", date: past, desc: "퇴직", applied: false, pendingUpdates: { active: false } }] },
   ];
-  const login2 = await (await api("/login", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ loginId: "m2", pw: "m2-pw-123456" }) }));
-  // m2는 아직 저장 전이라 로그인 불가 — 먼저 저장한다.
-  assert.equal(login2.status >= 200, true);
-  const saved = await (await api("/save", { method: "POST", headers: hdr(admin.token), body: JSON.stringify({ _version: d.version, employees }) })).json();
+  const saved = await (await api("/save", { method: "POST", headers: hdr(admin.token), body: JSON.stringify({ _version: d.version, employees: employees.map(e => e.id === "m2" ? { ...e, hrHistory: [] } : e) }) })).json();
   assert.equal(saved.ok, true, JSON.stringify(saved));
+  // m2는 퇴직 예약을 넣기 전에 로그인해 토큰을 확보한다(스케줄러가 먼저 돌아 로그인이 막히는 경합 방지).
   const m2 = await (await api("/login", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ loginId: "m2", pw: "m2-pw-123456" }) })).json();
   assert.equal(m2.ok, true, JSON.stringify(m2));
+  d = await (await api("/data", { headers: hdr(admin.token) })).json();
+  const saved2 = await (await api("/save", { method: "POST", headers: hdr(admin.token), body: JSON.stringify({ _version: d.version,
+    employees: d.data.employees.map(e => e.id === "m2" ? { ...e, updatedAt: "2026-02-01T00:00:00.000Z", hrHistory: employees.find(x => x.id === "m2").hrHistory } : e) }) })).json();
+  assert.equal(saved2.ok, true, JSON.stringify(saved2));
   const find = async (id) => (await (await api("/data", { headers: hdr(admin.token) })).json()).data.employees.find(e => e.id === id);
   // 위 /save 직후 워커가 돌 수 있으므로 반영될 때까지 기다린다.
   const waitFor = async (fn, ms = 15000) => { const end = Date.now() + ms; for (;;) { const v = await fn(); if (v) return v; if (Date.now() > end) return null; await new Promise(r => setTimeout(r, 200)); } };
