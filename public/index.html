@@ -7744,7 +7744,12 @@ let _menuGroupsCache={};
 let _sbDrillCat=null;   // 좌측 사이드바 드릴다운 상태: 선택된 대분류 키 (null이면 대분류 목록 표시)
 let _sbExpandedGroup=null; // 드릴다운 상태에서 펼쳐진 중분류 키
 function _bigCatForGroup(groupKey){return BIG_CATEGORIES.find(c=>c.groups.includes(groupKey));}
-const _EDITOR_PARENT_PAGES={"employment-records-edit":"employment-records","learning-course-edit":"learning-center","learning-assignment-edit":"learning-center"};
+// 사이드바에 직접 노출되지 않는 편집·상세 화면 → 소속 메뉴. 부모 메뉴를 menuPerms로 끈 사용자가
+// 다른 화면의 버튼/링크/gotoPage() 직접 호출로 하위 화면에 들어가지 못하도록 gotoPage()가 이 매핑으로
+// 부모 기준 권한을 검사하고, 사이드바 강조·중분류 판정도 같은 매핑을 쓴다.
+const _EDITOR_PARENT_PAGES={"employment-records-edit":"employment-records","learning-course-edit":"learning-center","learning-assignment-edit":"learning-center",
+  "comp-evaluator-setup":"comp-eval","engagement-pulse-create":"engagement-pulse","engagement-pulse-action-new":"engagement-pulse","engagement-pulse-action-detail":"engagement-pulse",
+  "acct-fixed-assets-detail":"acct-fixed-assets","acct-rcps-detail":"acct-rcps","recruit-eval-detail":"recruit-eval"};
 function _menuPageForRoute(pageId){return _EDITOR_PARENT_PAGES[pageId]||pageId;}
 function _groupForPage(pageId){
   pageId=_menuPageForRoute(pageId);
