@@ -30,3 +30,6 @@ blob-report/
 .gh-localappdata/
 .env.*
 !.env.example
+
+# Private rollback journal for ERP/accounting JSON transactions
+*.erp-accounting-journal

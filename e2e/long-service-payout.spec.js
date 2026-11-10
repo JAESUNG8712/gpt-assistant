@@ -33,6 +33,37 @@ const seed = () => {
 };
 
 test.describe("장기근속 포상금 급여 연동", () => {
+  test("저장 완료 전 성공 안내를 하지 않고 연계 충돌은 자동 재시도하지 않는다", async ({ page }) => {
+    await loginAsAdmin(page);
+    await page.evaluate(`(${seed.toString()})()`);
+    await page.evaluate(() => {
+      window.payoutToasts = [];
+      const original = showToast;
+      showToast = (message, type) => { window.payoutToasts.push({ message, type }); original(message, type); };
+      gotoPage("long-service-award");
+    });
+    let release;
+    const pending = new Promise(resolve => { release = resolve; });
+    let saves = 0;
+    await page.route("**/save*", async route => {
+      saves++;
+      await pending;
+      await route.fulfill({ status: 409, contentType: "application/json", body: JSON.stringify({
+        ok: false, code: "LONG_SERVICE_BUNDLE_CONFLICT", message: "포상과 급여를 함께 저장하지 못했습니다.",
+      }) });
+    });
+    try {
+      await page.locator("#content tbody tr", { hasText: "근속대상" }).getByRole("button", { name: "500,000원 반영" }).click();
+      await page.locator(".modal-box", { hasText: "장기근속 포상금 급여 반영" }).getByRole("button", { name: "급여에 반영", exact: true }).click();
+      await expect.poll(() => saves).toBe(1);
+      expect(await page.evaluate(() => window.payoutToasts.some(t => t.message === "장기근속 포상금이 급여에 반영되었습니다."))).toBe(false);
+      release();
+      await expect.poll(() => page.evaluate(() => window.payoutToasts.some(t => t.type === "error" && t.message.includes("함께 저장")))).toBe(true);
+      expect(await page.evaluate(() => _retrySaveRequest)).toBeNull();
+      expect(await page.evaluate(() => window.payoutToasts.some(t => t.message === "장기근속 포상금이 급여에 반영되었습니다."))).toBe(false);
+    } finally { release(); }
+  });
+
   test("반영 → 중복 방지 → 취소 흐름과 급여 명세서 금액 반영", async ({ page }) => {
     const pageErrors = [];
     page.on("pageerror", (e) => pageErrors.push(e.message));
