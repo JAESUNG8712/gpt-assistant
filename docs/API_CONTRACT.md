@@ -160,6 +160,7 @@ AI가 반환한 값도 그대로 신뢰하지 않는다 — `birth`는 실제 �
 | `JSON_BODY_LIMIT_DEFAULT_BYTES`, `JSON_BODY_LIMIT_SAVE_BYTES`, `JSON_BODY_LIMIT_RESTORE_BYTES` | 아니오 | 코드 기본값 | JSON 요청 본문 크기 상한. |
 | `AI_API_TIMEOUT_MS`, `AI_API_MAX_CONCURRENT`, `AI_API_MAX_INPUT_CHARS`, `AI_API_RATE_MAX` | 아니오 | 코드 기본값 | AI 보조 기능(`/api/hr/*`)의 시간·동시 실행·입력 길이·호출 횟수 제한. |
 | `WEBHOOK_OUTBOX_POLL_MS`, `WEBHOOK_RETRY_DELAYS_MS` | 아니오 | 30초 / 1분·5분·30분·2시간·6시간 | 웹훅 발송 대기함의 재시도 주기와 간격. |
+| `HR_SCHEDULER_POLL_MS` | 아니오 | 10분 | 도래한 예약 인사발령(`hrHistory` applied:false)을 서버가 반영하는 주기. 정지(suspended)된 회사는 건너뜀. |
 | `PARSE_SHEET_MAX_OLD_MB` | 아니오 | 코드 기본값 | 엑셀 파싱 워커의 메모리 상한. |
 | `DATABASE_URL` | 아니오 | (미설정) | 설정 시 PostgreSQL 모드(운영), 미설정 시 JSON 파일 모드(자체호스팅/오프라인). |
 | `DATA_FILE` | JSON 파일 모드만 | `hr-data.json` | 메인 데이터 파일 경로. 재배포 시 초기화되지 않으려면 영속 디스크 경로를 가리켜야 함. |

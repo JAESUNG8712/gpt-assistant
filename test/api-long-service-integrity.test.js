@@ -94,13 +94,19 @@ async function exerciseLinkedSave(t, server, token) {
   };
   let d = await read();
   const employee = d.data.employees[0];
+  // PostgreSQL employee upserts intentionally require a strictly newer updatedAt;
+  // JSON mode also accepts it. Mirror the browser contract whenever this test
+  // changes hrHistory/menu permissions instead of relying on file-mode merging.
+  let employeeUpdateSeq = 0;
+  const updateEmployee = (row, patch) => ({ ...row, ...patch,
+    updatedAt: new Date(Date.UTC(2099, 0, 1, 0, 0, ++employeeUpdateSeq)).toISOString() });
   const award = { id: "linked-award", empId: employee.id, year: 2095, month: 1,
     amount: 500000, category: "장기근속 포상금", source: "longservice_award",
     sourceKey: `longservice-${employee.id}-5`, longServiceYears: 5 };
   const entry = { id: "linked-history", type: "longservice", year: 5, amount: 500000 };
   const slip = { id: "linked-slip", empId: employee.id, year: 2095, month: 1,
     gross: 3500000, netPay: 3000000, confirmed: false };
-  const reply = await save({ employees: [{ ...employee, hrHistory: [entry] }],
+  const reply = await save({ employees: [updateEmployee(employee, { hrHistory: [entry] })],
     payrollAdjustments: [award], payslips: [slip] });
   assert.equal(reply.status, 200, JSON.stringify(reply));
   assert.notEqual(reply.partial, true, JSON.stringify(reply));
@@ -114,7 +120,7 @@ async function exerciseLinkedSave(t, server, token) {
   await t.test("duplicate award plus changed history and slip rolls back every linked change", async () => {
     d = await read();
     const emp = d.data.employees.find(row => row.id === employee.id);
-    const reply = await save({ employees: [{ ...emp, hrHistory: [{ ...entry, amount: 999999 }] }],
+    const reply = await save({ employees: [updateEmployee(emp, { hrHistory: [{ ...entry, amount: 999999 }] })],
       payrollAdjustments: [{ ...award, id: "duplicate-linked-award", amount: 999999 }],
       payslips: [{ ...slip, gross: 9999999 }] });
     assert.equal(reply.status, 409, JSON.stringify(reply));
@@ -130,7 +136,7 @@ async function exerciseLinkedSave(t, server, token) {
     assert.equal((await save({ settings: { ...d.data.settings, payrollLockedMonths: ["2095-01"] } })).status, 200);
     d = await read();
     const emp = d.data.employees.find(row => row.id === employee.id);
-    const reply = await save({ employees: [{ ...emp, hrHistory: [] }],
+    const reply = await save({ employees: [updateEmployee(emp, { hrHistory: [] })],
       payrollAdjustments: [], recordTombstones: { payrollAdjustments: [{ id: award.id }] },
       payslips: [{ ...slip, gross: 3000000 }] });
     assert.equal(reply.status, 409, JSON.stringify(reply));
@@ -145,13 +151,13 @@ async function exerciseLinkedSave(t, server, token) {
   await t.test("denied payroll menu cannot save only the HR half of a new award", async () => {
     d = await read();
     const emp = d.data.employees.find(row => row.id === employee.id);
-    const denied = { ...emp, menuPerms: { ...emp.menuPerms, "payroll-mgmt": false } };
+    const denied = updateEmployee(emp, { menuPerms: { ...emp.menuPerms, "payroll-mgmt": false } });
     assert.equal((await save({ employees: [denied] })).status, 200);
-    const reply = await save({ employees: [{ ...denied, hrHistory: [...emp.hrHistory, { ...entry, id: "new-history", year: 10 }] }],
+    const reply = await save({ employees: [updateEmployee(denied, { hrHistory: [...emp.hrHistory, { ...entry, id: "new-history", year: 10 }] })],
       payrollAdjustments: [{ ...award, id: "new-award", month: 2, longServiceYears: 10,
         sourceKey: `longservice-${employee.id}-10` }] });
     assert.equal(reply.status, 409, JSON.stringify(reply));
-    assert.equal((await save({ employees: [{ ...denied, menuPerms: { ...emp.menuPerms, "payroll-mgmt": true } }] })).status, 200);
+    assert.equal((await save({ employees: [updateEmployee(denied, { menuPerms: { ...emp.menuPerms, "payroll-mgmt": true } })] })).status, 200);
     const after = (await read()).data;
     assert.deepEqual(after.employees.find(row => row.id === employee.id).hrHistory, emp.hrHistory);
     assert.deepEqual(after.payrollAdjustments, d.data.payrollAdjustments);
@@ -160,7 +166,7 @@ async function exerciseLinkedSave(t, server, token) {
   await t.test("valid cancellation removes award and history together", async () => {
     d = await read();
     const emp = d.data.employees.find(row => row.id === employee.id);
-    const reply = await save({ employees: [{ ...emp, hrHistory: [] }],
+    const reply = await save({ employees: [updateEmployee(emp, { hrHistory: [] })],
       recordTombstones: { payrollAdjustments: [{ id: award.id }] }, payslips: [{ ...slip, gross: 3000000 }] });
     assert.equal(reply.status, 200, JSON.stringify(reply));
     const after = (await read()).data;

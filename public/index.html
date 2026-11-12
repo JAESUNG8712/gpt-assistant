@@ -7751,7 +7751,12 @@ let _menuGroupsCache={};
 let _sbDrillCat=null;   // 좌측 사이드바 드릴다운 상태: 선택된 대분류 키 (null이면 대분류 목록 표시)
 let _sbExpandedGroup=null; // 드릴다운 상태에서 펼쳐진 중분류 키
 function _bigCatForGroup(groupKey){return BIG_CATEGORIES.find(c=>c.groups.includes(groupKey));}
-const _EDITOR_PARENT_PAGES={"employment-records-edit":"employment-records","learning-course-edit":"learning-center","learning-assignment-edit":"learning-center"};
+// 사이드바에 직접 노출되지 않는 편집·상세 화면 → 소속 메뉴. 부모 메뉴를 menuPerms로 끈 사용자가
+// 다른 화면의 버튼/링크/gotoPage() 직접 호출로 하위 화면에 들어가지 못하도록 gotoPage()가 이 매핑으로
+// 부모 기준 권한을 검사하고, 사이드바 강조·중분류 판정도 같은 매핑을 쓴다.
+const _EDITOR_PARENT_PAGES={"employment-records-edit":"employment-records","learning-course-edit":"learning-center","learning-assignment-edit":"learning-center",
+  "comp-evaluator-setup":"comp-eval","engagement-pulse-create":"engagement-pulse","engagement-pulse-action-new":"engagement-pulse","engagement-pulse-action-detail":"engagement-pulse",
+  "acct-fixed-assets-detail":"acct-fixed-assets","acct-rcps-detail":"acct-rcps","recruit-eval-detail":"recruit-eval"};
 function _menuPageForRoute(pageId){return _EDITOR_PARENT_PAGES[pageId]||pageId;}
 function _groupForPage(pageId){
   pageId=_menuPageForRoute(pageId);
@@ -10728,6 +10733,23 @@ function _applyDueHRChanges(){
   // getCompEvaluators()가 그 직원의 "새" dept/team을 읽는다(map 콜백 안에서는 아직
   // 예전 employees 배열이 유효해 자기 자신의 변경조차 반영 전 상태로 보인다).
   _transfers.forEach(t=>_autoTransitionCompEvaluators(t.empId,t.oldDept,t.oldTeam));
+  // 서버 스케줄러(lib/scheduled-hr.js)가 접속자 없이 먼저 반영한 예약발령의 부서이동은 평가자 자동전환을
+  // 서버가 대신하지 못해 transferPending 표식만 남긴다. 평가 세션을 저장할 수 있는 관리자 화면이
+  // 여기서 전환을 처리하고 표식을 지운다(비관리자 저장은 서버가 되돌리므로 건드리지 않는다).
+  if(typeof currentUser!=="undefined"&&currentUser?.role==="admin"){
+    const _pendingXfers=[];
+    employees=employees.map(e=>{
+      if(!Array.isArray(e.hrHistory)||!e.hrHistory.some(hh=>hh&&hh.transferPending))return e;
+      const hist=e.hrHistory.map(hh=>{
+        if(!(hh&&hh.transferPending))return hh;
+        _pendingXfers.push({empId:e.id,oldDept:hh.transferFrom?.dept||"",oldTeam:hh.transferFrom?.team||""});
+        return{...hh,transferPending:false};
+      });
+      return{...e,hrHistory:hist,updatedAt:new Date().toISOString()};
+    });
+    _pendingXfers.forEach(t=>_autoTransitionCompEvaluators(t.empId,t.oldDept,t.oldTeam));
+    if(_pendingXfers.length)changed=true;
+  }
   if(changed){saveAutoSnapshot("auto");autoSaveToServerIfEnabled();}
   return changed;
 }
@@ -27987,11 +28009,13 @@ function exportPayrollForErp(){
 function calcAnnualLeaveGrant(emp){
   if(!emp.hire)return 0;
   const hire=new Date(emp.hire);const now=new Date();
-  const years=Math.floor((now-hire)/(365.25*24*3600*1000));
+  // 달력 기준 완료 연/월(365.25일 근사는 입사 1주년 전후 하루가 어긋날 수 있음)
+  const years=yearsBetweenDates(hire,now);
   if(years<1){
     // 1년 미만: 매월 1일 (최대 11일)
-    const months=Math.floor((now-hire)/(30.44*24*3600*1000));
-    return Math.min(months,11);
+    let months=(now.getFullYear()-hire.getFullYear())*12+now.getMonth()-hire.getMonth();
+    if(now.getDate()<hire.getDate())months--;
+    return Math.max(0,Math.min(months,11));
   }
   // 1년 이상: 15일 + 2년 초과마다 1일씩 추가 (최대 25일)
   return Math.min(15+Math.floor((years-1)/2),25);

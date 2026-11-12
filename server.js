@@ -1484,7 +1484,51 @@ async function loadData(companyId, db = pool) {
 // 동결하고, 현재 차례의 결재자만 승인/반려할 수 있다. 기안자 취소·삭제 요청은 별도
 // 허용하며 관리자는 결재선 교체·레거시 이관 권한을 유지한다. 거부한 레코드만 저장본으로
 // 되돌려 전체 상태 저장의 다른 정상 변경을 막지 않는다.
-function _sanitizeApprovalDoc(incoming, stored, actor) {
+// 금액 구간별 추가 결재자(approvalChainSettings.amountTiers) 서버 강제.
+// 구간 규정은 클라이언트(_applyApprovalAmountTiers)가 결재선에 "추가"만 하는 규칙인데, 결재선은
+// 상신 화면에서 사용자가 직접 고칠 수 있고 서버는 그 구성을 검증하지 않아 고액 문서도 구간 결재자
+// 없이 상신할 수 있었다. 새 문서에 한해 저장본의 구간 설정(클라이언트가 보낸 값이 아님)으로
+// 필요한 결재자가 모두 결재선에 있는지(대결자로 치환됐으면 originalEmpId로 인정) 확인한다.
+function _approvalAmountOfServer(fd) {
+  for (const k of ["amount", "requestedAmount", "estimatedCost", "budget"]) {
+    const n = Number(fd && fd[k]);
+    if (Number.isFinite(n) && n > 0) return n;
+  }
+  return 0;
+}
+function _amountTierEmpIds(chainSettings, doc) {
+  const raw = Array.isArray(chainSettings?.amountTiers) ? chainSettings.amountTiers : [];
+  const amt = _approvalAmountOfServer(doc?.formData);
+  if (!amt) return [];
+  const out = [];
+  for (const t of raw) {
+    if (!t || t.empId == null || t.empId === "") continue;
+    const min = Number(t.minAmount);
+    if (!Number.isFinite(min) || min <= 0 || amt < min) continue;
+    const tplIds = Array.isArray(t.tplIds) ? t.tplIds.map(String).filter(Boolean) : [];
+    if (tplIds.length && !tplIds.includes(String(doc?.templateId))) continue;
+    if (String(t.empId) === String(doc?.authorId)) continue;   // 본인 문서를 본인이 결재하지 않음
+    out.push(String(t.empId));
+  }
+  return [...new Set(out)];
+}
+// ctx.activeEmpIds: 구간 결재자 중 재직 중인 직원 id 집합(호출부가 저장본에서 조회). 퇴직·없는
+// 직원은 클라이언트도 결재선에 넣지 않으므로 요구 대상에서 제외한다.
+function _missingAmountTierApprovers(doc, ctx) {
+  if (!ctx || !ctx.chainSettings || !ctx.activeEmpIds) return [];
+  return _amountTierEmpIds(ctx.chainSettings, doc).filter(id => {
+    if (!ctx.activeEmpIds.has(id)) return false;
+    return !(doc.approvers || []).some(a => a && (String(a.empId) === id || String(a.originalEmpId || "") === id));
+  });
+}
+function _amountTierActiveSet(chainSettings, employeesList) {
+  const ids = new Set();
+  for (const t of (Array.isArray(chainSettings?.amountTiers) ? chainSettings.amountTiers : [])) if (t && t.empId != null) ids.add(String(t.empId));
+  const active = new Set();
+  for (const e of employeesList || []) if (e && ids.has(String(e.id)) && e.active) active.add(String(e.id));
+  return active;
+}
+function _sanitizeApprovalDoc(incoming, stored, actor, ctx) {
   if (!incoming) return stored ? { ...stored } : null;
   if (actor?.role === "admin") return incoming; // 관리자 결재선 교체·레거시 이관
   const actorId = actor?.empId != null ? String(actor.empId) : null;
@@ -1492,9 +1536,14 @@ function _sanitizeApprovalDoc(incoming, stored, actor) {
   if (!stored) {
     // 새 문서를 타인 명의나 이미 승인된 상태로 삽입하면 급여·근태 연계의 신뢰 근거를
     // 위조할 수 있다. UI의 실제 상신 계약은 본인 명의의 진행중 문서와 대기 결재선이다.
-    return String(incoming.authorId) === actorId && incoming.status === "in_progress" &&
-      incoming.approvers.length > 0 && incoming.approvers.every(a => a && ["pending", "waiting"].includes(a.status))
-      ? incoming : null;
+    const okNew = String(incoming.authorId) === actorId && incoming.status === "in_progress" &&
+      incoming.approvers.length > 0 && incoming.approvers.every(a => a && ["pending", "waiting"].includes(a.status));
+    if (!okNew) return null;
+    if (_missingAmountTierApprovers(incoming, ctx).length) {
+      if (ctx && typeof ctx.onReject === "function") ctx.onReject("APPROVAL_TIER_MISSING");
+      return null;
+    }
+    return incoming;
   }
   if (JSON.stringify(incoming) === JSON.stringify(stored)) return incoming;
   const mutable = new Set(["approvers", "status", "approvedAt", "updatedAt", "deletionRequest"]);
@@ -2989,6 +3038,37 @@ function _sanitizePhotoUrl(rawEmp, stored) {
   if (validPhoto) return rawEmp;
   return { ...rawEmp, photoUrl: stored ? stored.photoUrl : undefined };
 }
+// employees[].salary/hire 값 검증 — _sanitizePhotoUrl과 같이 actor 신원과 무관하게(관리자
+// 쓰기도) 항상 실행된다. 화면 폼(type="number"/"date")은 값을 제한하지만 서버는 /save로
+// 들어온 값을 그대로 저장해, API 직접 호출·잘못된 일괄 업로드로 salary가 음수·문자열·NaN이
+// 되거나 hire가 날짜가 아닌 문자열이 되면 급여 계산·근속연수·연차 발생이 NaN으로 깨졌다.
+// - salary: 유한한 숫자이고 0 이상 100억 이하여야 한다(undefined/null/빈 문자열은 미입력으로 허용).
+// - hire: 빈 값이거나 실제 존재하는 날짜여야 한다. CSV/엑셀 일괄 업로드가 "2020.1.2",
+//   "2020/01/02"처럼 구분자·자릿수가 다른 값을 그대로 넣어 온 기존 데이터가 있어, 구분자(. / -)와
+//   한 자리 월·일은 허용하고 값은 변형하지 않는다. 완전히 날짜가 아닌 값만 거부한다.
+// 위반 시 그 필드만 저장값으로 되돌린다(요청 전체를 거부하지 않음). 저장값과 같은 값이 다시
+// 들어오는 것(기존 데이터의 재저장)은 형식이 낡았더라도 항상 통과시킨다.
+function _lenientDateOk(v) {
+  const m = /^(\d{4})[-./](\d{1,2})[-./](\d{1,2})$/.exec(v);
+  if (!m) return false;
+  const y = Number(m[1]), mo = Number(m[2]), d = Number(m[3]);
+  const dt = new Date(Date.UTC(y, mo - 1, d));
+  return y >= 1900 && y <= 2100 && dt.getUTCFullYear() === y && dt.getUTCMonth() === mo - 1 && dt.getUTCDate() === d;
+}
+function _sanitizeEmployeeSalaryHire(rawEmp, stored) {
+  if (!rawEmp) return rawEmp;
+  let out = rawEmp;
+  const revert = (key) => { if (out === rawEmp) out = { ...rawEmp }; out[key] = stored ? stored[key] : undefined; };
+  const sal = rawEmp.salary;
+  if (sal !== undefined && sal !== null && sal !== "" && !(stored && sal === stored.salary)) {
+    if (typeof sal !== "number" || !Number.isFinite(sal) || sal < 0 || sal > 10000000000) revert("salary");
+  }
+  const hire = rawEmp.hire;
+  if (hire !== undefined && hire !== null && hire !== "" && !(stored && hire === stored.hire)) {
+    if (typeof hire !== "string" || !_lenientDateOk(hire.trim())) revert("hire");
+  }
+  return out;
+}
 // 다면평가 최종등급(compGradeResults, {empId:{year:{grade,score,...}}} 형태의 nested
 // 싱글톤)은 comp-grade-view(admin 전용 화면)에서만 계산·조정되는데, 이 필드 자체는
 // gradeResults와 마찬가지로 전혀 게이팅되지 않고 있었다 — GET /data는 이미 non-admin에게
@@ -3042,6 +3122,7 @@ const _SAVE_FEEDBACK_FIELDS = {
   employmentRecords: ["employeeId", "type", "title", "status", "startDate", "endDate", "decisionDate", "note", "documentRef", "reviewOwnerId", "reviewStatus", "reviewDecision", "reviewNote"],
   learningCourses: ["name", "category", "provider", "instructorName", "delivery", "startDate", "endDate", "hours", "capacity", "cost", "status", "description", "internalNote"],
   learningAssignments: ["courseId", "empId", "status", "assignedAt", "dueDate", "completedAt", "score", "certificateNo", "evidenceRef", "note", "source", "sourceDocId", "approvedCost", "costCenter", "settlementStatus", "settledAt", "settledAmount", "settlementNote"],
+  approvalDocs: null,
   payslips: null,
   payrollAdjustments: null,
   yearEndSettlements: null,
@@ -3332,7 +3413,7 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
     const _empActorOwnRecord = (actor && actor.empId != null) ? existingById[actor.empId] : null;
     const employees = employeesInputMissing ? (_fileStore.employees || []) : await Promise.all((data.employees || []).map(async (rawEmpIn) => {
       const ex0 = existingById[rawEmpIn.id];
-      const rawEmp = _preserveTwoFactor(_sanitizePhotoUrl(_empActorNonAdmin ? _sanitizeEmployeeRecord(rawEmpIn, ex0, actor, _empActorOwnRecord) : rawEmpIn, ex0), ex0, actor);
+      const rawEmp = _preserveTwoFactor(_sanitizeEmployeeSalaryHire(_sanitizePhotoUrl(_empActorNonAdmin ? _sanitizeEmployeeRecord(rawEmpIn, ex0, actor, _empActorOwnRecord) : rawEmpIn, ex0), ex0), ex0, actor);
       const ex = existingById[rawEmp.id];
       const oldTs = ex ? (ex.updatedAt || ex.createdAt || "") : "";
       const newTs = rawEmp.updatedAt || rawEmp.createdAt || "";
@@ -3403,13 +3484,20 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
     // 않는다. sourceDocId가 이번 요청의 approvalDocs에 없으면(이전 요청에서 이미 승인된
     // 문서를 뒤늦게 참조하는 경우) 저장된 값으로 폴백한다.
     const _sanitizedIncomingApprovalDocsById = new Map();
+    // 금액 구간 결재자 서버 강제용 — 구간 설정과 재직 여부는 요청 본문이 아니라 저장본에서 읽는다.
+    const _approvalTierActiveIds = _amountTierActiveSet(_fileStore.approvalChainSettings, _fileStore.employees);
     if (Array.isArray(data.approvalDocs)) {
       const storedDocsById = new Map((_fileStore.approvalDocs || []).map(d => [String(d.id), d]));
       for (const d of data.approvalDocs) {
         if (d && d.id != null) {
           const stored = storedDocsById.get(String(d.id));
-          const sanitized = _sanitizeApprovalDoc(d, stored, actor);
-          if (!sanitized || JSON.stringify(sanitized) !== JSON.stringify(d)) rejectSaveRecord("approvalDocs", d, stored, "APPROVAL_FORBIDDEN");
+          let approvalWhy = null;
+          const sanitized = _sanitizeApprovalDoc(d, stored, actor, {
+            chainSettings: _fileStore.approvalChainSettings,
+            activeEmpIds: _approvalTierActiveIds,
+            onReject: c => { approvalWhy = c; },
+          });
+          if (!sanitized || JSON.stringify(sanitized) !== JSON.stringify(d)) rejectSaveRecord("approvalDocs", d, stored, approvalWhy || "APPROVAL_FORBIDDEN");
           _sanitizedIncomingApprovalDocsById.set(String(d.id), sanitized);
         }
       }
@@ -3702,10 +3790,10 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
       );
       if (rows.length && companyId && rows[0].company_id && rows[0].company_id !== companyId) continue;
       const storedEmpRow = rows.length ? rows[0].data : null;
-      const rawEmp = _preserveTwoFactor(_sanitizePhotoUrl(
+      const rawEmp = _preserveTwoFactor(_sanitizeEmployeeSalaryHire(_sanitizePhotoUrl(
         _empActorNonAdmin ? _sanitizeEmployeeRecord(rawEmpIn, storedEmpRow, actor, _empActorOwnRecord) : rawEmpIn,
         storedEmpRow
-      ), storedEmpRow, actor);
+      ), storedEmpRow), storedEmpRow, actor);
       // 비밀번호는 관리자 또는 본인만(2026-08-19 외부 감사 P0-1 — JSON 파일 모드와 동일한
       // 방어를 Postgres/SaaS 모드에도 적용).
       const isSelf = actor && actor.empId != null && String(actor.empId) === String(rawEmp.id);
@@ -3853,6 +3941,23 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
       _settingsPg = rows.length ? rows[0].data : {};
       return _settingsPg;
     };
+    // 금액 구간 결재자 서버 강제(_missingAmountTierApprovers 주석 참고)용 — 저장된 구간 설정과
+    // 구간 결재자의 재직 여부를 요청당 한 번만 조회한다(새 결재문서가 있을 때만 호출됨).
+    let _approvalTierCtxPg = null;
+    const _getApprovalTierCtxPg = async () => {
+      if (_approvalTierCtxPg) return _approvalTierCtxPg;
+      const { rows } = await client.query(
+        "SELECT data FROM app_singletons WHERE key = 'approvalChainSettings' AND (company_id = $1 OR company_id IS NULL)",
+        [companyId || null]
+      );
+      const chainSettings = rows.length ? rows[0].data : {};
+      const ids = (Array.isArray(chainSettings?.amountTiers) ? chainSettings.amountTiers : [])
+        .filter(t => t && t.empId != null).map(t => String(t.empId));
+      const emps = [];
+      for (const id of new Set(ids)) { const e = await _getEmployeeByIdPg(id); if (e) emps.push(e); }
+      _approvalTierCtxPg = { chainSettings, activeEmpIds: _amountTierActiveSet(chainSettings, emps) };
+      return _approvalTierCtxPg;
+    };
     // payrollAdjustments의 복리후생 파생 레코드 예외(_sanitizeGatedRecord 주석 참고)용 —
     // 특정 sourceDocId의 결재문서를 조회해 _sanitizeApprovalDoc으로 위조여부까지 확인한
     // "신뢰 가능한" 버전을 돌려준다. 이번 요청의 data.approvalDocs에 그 문서가 함께 실려
@@ -3975,8 +4080,10 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
           const storedItem = rows.length ? rows[0].data : null;
           let toWrite = item;
           if (field === "approvalDocs") {
-            toWrite = _sanitizeApprovalDoc(item, storedItem, actor);
-            if (!toWrite || (storedItem && JSON.stringify(toWrite) !== JSON.stringify(item))) rejectSaveRecord(field, item, storedItem, "APPROVAL_FORBIDDEN");
+            let approvalWhy = null;
+            toWrite = _sanitizeApprovalDoc(item, storedItem, actor,
+              (!storedItem && actor?.role !== "admin") ? { ...(await _getApprovalTierCtxPg()), onReject: c => { approvalWhy = c; } } : undefined);
+            if (!toWrite || (storedItem && JSON.stringify(toWrite) !== JSON.stringify(item))) rejectSaveRecord(field, item, storedItem, approvalWhy || "APPROVAL_FORBIDDEN");
             if (!toWrite) continue;
           } else if (_APPROVAL_GATED_FIELDS[field]) {
             const approvalDocForGate = (["payrollAdjustments", "learningAssignments"].includes(field) && !storedItem)
@@ -6344,11 +6451,8 @@ app.post("/save", async (req, res) => {
       // Keep the unfiltered user intent.  Feature/menu gates and record-CAS may
       // legitimately turn individual fields back to their server values, but a
       // long-service payout must never leave only its HR-history half accepted.
-      const longServiceRequestedState = JSON.parse(JSON.stringify(clientData));
-      const longServiceBeforeState = await getServerData();
-      const longServiceBundleIntent = createLongServiceBundleIntent(
-        longServiceBeforeState,
-        longServiceRequestedState
+      const longServiceBundleIntent = structuredClone(
+        createLongServiceBundleIntent(await getServerData(), clientData)
       );
 
       // 새 웹 클라이언트는 레코드마다 서버가 발급한 _rev를 다시 보낸다. 수정 시점의
@@ -7465,6 +7569,40 @@ async function _deliverOutboxEntry(entry, wh) {
 }
 let _outboxWorkerRunning = false;
 let _outboxLastPrune = 0;
+// ── 예약발령 서버 스케줄러 ───────────────────────────────────────────────────────
+// 발령일이 도래한 예약 인사발령(hrHistory applied:false)을 서버가 직접 반영한다. 계산 규칙은
+// lib/scheduled-hr.js(클라이언트 _applyDueHRChanges와 같은 규칙 + pendingUpdates 허용 목록).
+// 반영은 /save와 같은 저장 잠금 안에서 "읽기→계산→저장"을 한 번에 해 동시 편집을 덮어쓰지 않고,
+// 일반 저장 경로(_persistDataLocked)를 그대로 써서 변경 이력·authVersion(세션 철회)·버전이 정상 처리된다.
+const HR_SCHEDULER_POLL_MS = Math.max(200, Number(process.env.HR_SCHEDULER_POLL_MS) || 10 * 60_000);
+let _hrSchedulerRunning = false;
+function _kstToday() { return new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 10); }
+async function _applyScheduledHrChangesForCompany(companyId) {
+  const { computeDueHrChanges } = require("./lib/scheduled-hr");
+  return _withSaveLock(() => _withDistributedSaveLock(companyId, async () => {
+    const stored = await loadData(companyId);
+    const nowIso = new Date().toISOString();
+    const { employees, applied } = computeDueHrChanges(stored.employees || [], _kstToday(), nowIso);
+    if (!applied.length) return 0;
+    await _persistDataLocked({ employees }, "system:scheduled-hr", companyId, { role: "admin", empId: null });
+    broadcastSSE("data_updated", { version: _getVersion(companyId), meta: {} }, null, companyId);
+    return applied.length;
+  }));
+}
+async function _runHrScheduler() {
+  if (_hrSchedulerRunning) return 0;
+  _hrSchedulerRunning = true;
+  let total = 0;
+  try {
+    const companyIds = USE_JSON_FILE ? [null]
+      : (await pool.query("SELECT id FROM companies WHERE status <> 'suspended'")).rows.map(r => r.id);
+    for (const companyId of companyIds) {
+      try { total += await _applyScheduledHrChangesForCompany(companyId); }
+      catch (e) { console.warn("[hr-scheduler] 예약발령 반영 실패:", e.message); }
+    }
+  } finally { _hrSchedulerRunning = false; }
+  return total;
+}
 async function _processWebhookOutbox() {
   if (_outboxWorkerRunning) return;
   _outboxWorkerRunning = true;
@@ -9434,6 +9572,7 @@ app.post("/api/accounting/payments", async (req, res) => {
     const { direction, date, partnerId, partnerName, amount, method, memo, taxInvoiceId, user } = req.body || {};
     if (!["in", "out"].includes(direction)) return res.status(400).json({ ok: false, message: "direction은 in(수금) 또는 out(지급)이어야 합니다." });
     if (!date || !partnerName || !(Number(amount) > 0)) return res.status(400).json({ ok: false, message: "일자, 거래처, 금액(0보다 큼)은 필수입니다." });
+    if (!_isValidDateStr(date)) return res.status(400).json({ ok: false, message: "일자는 실제 존재하는 YYYY-MM-DD 형식이어야 합니다." });
     const payment = {
       id: `pay_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
       direction, date, partnerId: partnerId || null, partnerName,
@@ -10080,6 +10219,12 @@ app.post("/api/accounting/rcps/valuations", async (req, res) => {
     if (!issuanceId || !valuationDate || fairValue === undefined || fairValue === null || fairValue === "") {
       return res.status(400).json({ ok: false, message: "issuanceId, valuationDate, fairValue는 필수입니다." });
     }
+    if (!Number.isFinite(Number(fairValue)) || Number(fairValue) < 0) {
+      return res.status(400).json({ ok: false, message: "fairValue는 0 이상의 숫자여야 합니다." });
+    }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(String(valuationDate)) || Number.isNaN(Date.parse(valuationDate))) {
+      return res.status(400).json({ ok: false, message: "valuationDate는 YYYY-MM-DD 형식이어야 합니다." });
+    }
     let issuance, priorList;
     if (USE_JSON_FILE) {
       issuance = _fileAcctRcps.issuances.find(i => i.id === issuanceId && !i.isDeleted);
@@ -10155,6 +10300,8 @@ app.get("/api/accounting/vat-report", async (req, res) => {
   try {
     const { from, to } = req.query || {};
     if (!from || !to) return res.status(400).json({ ok: false, message: "from, to(YYYY-MM-DD)는 필수입니다." });
+    if (!_isValidDateStr(from) || !_isValidDateStr(to)) return res.status(400).json({ ok: false, message: "from, to는 실제 존재하는 YYYY-MM-DD 형식이어야 합니다." });
+    if (from > to) return res.status(400).json({ ok: false, message: "from은 to보다 이후일 수 없습니다." });
     let list;
     if (USE_JSON_FILE) {
       list = _fileAccounting.taxInvoices.filter(t => t.status === "issued" && t.issueDate >= from && t.issueDate <= to);
@@ -14803,6 +14950,9 @@ initDB()
     });
     // 웹훅 발송 대기함 워커: 실패·미전송 알림을 주기적으로 재시도한다(서버 재시작 후에도 이어짐).
     setInterval(() => { _processWebhookOutbox().catch(() => {}); }, WEBHOOK_OUTBOX_POLL_MS).unref();
+    // 예약발령 워커: 발령일이 도래한 예약 인사발령을 접속자 없이도 반영한다.
+    setTimeout(() => { _runHrScheduler().catch(() => {}); }, 5000).unref();
+    setInterval(() => { _runHrScheduler().catch(() => {}); }, HR_SCHEDULER_POLL_MS).unref();
     server.on("error", (err) => {
       if (err.code === "EADDRINUSE") {
         console.error(`\n[오류] 포트 ${PORT}가 이미 사용 중입니다.`);

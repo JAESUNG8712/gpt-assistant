@@ -136,7 +136,7 @@ test("ERP document transitions preserve linked records and reject stale operatio
   });
 });
 
-const ADMIN_DATABASE_URL = process.env.TEST_DATABASE_URL || process.env.DATABASE_URL;
+const ADMIN_DATABASE_URL = process.env.TEST_DATABASE_URL;
 if (!ADMIN_DATABASE_URL) {
   test("ERP document strict company scope — PostgreSQL (skipped: no test DB)", { skip: true }, () => {});
 } else {
@@ -148,15 +148,20 @@ if (!ADMIN_DATABASE_URL) {
     const admin = new Client({ connectionString: ADMIN_DATABASE_URL });
     await admin.connect();
     await admin.query(`CREATE DATABASE ${dbName}`);
+    let server;
+    let db;
     t.after(async () => {
       try {
+        // Close known clients before terminating unknown stragglers. Reversing
+        // this order makes their own teardown reject with PostgreSQL 57P01.
+        if (server) await server.stop();
+        if (db) await db.end();
         await admin.query("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname=$1 AND pid<>pg_backend_pid()", [dbName]);
         await admin.query(`DROP DATABASE IF EXISTS ${dbName}`);
       } finally { await admin.end(); }
     });
 
-    const server = await startServer({ env: { DATABASE_URL: testDbUrl } });
-    t.after(() => server.stop());
+    server = await startServer({ env: { DATABASE_URL: testDbUrl } });
     const register = async (companyName, loginId) => {
       const response = await fetch(server.baseUrl + "/api/companies/register", {
         method: "POST", headers: { "Content-Type": "application/json" },
@@ -169,9 +174,8 @@ if (!ADMIN_DATABASE_URL) {
     };
     const companyA = await register("ERP 범위 회사 A", "erp_scope_a");
     const companyB = await register("ERP 범위 회사 B", "erp_scope_b");
-    const db = new Client({ connectionString: testDbUrl });
+    db = new Client({ connectionString: testDbUrl });
     await db.connect();
-    t.after(() => db.end());
     // Fresh schema is NOT NULL. Drop it only inside this disposable DB to model a
     // pre-backfill legacy row and prove commands do not adopt it implicitly.
     for (const table of ["erp_quotations", "erp_purchase_orders", "erp_purchase_requests"]) {
