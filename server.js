@@ -7564,7 +7564,15 @@ async function _runHrScheduler() {
   let total = 0;
   try {
     const companyIds = USE_JSON_FILE ? [null]
-      : (await pool.query("SELECT id FROM companies WHERE status <> 'suspended'")).rows.map(r => r.id);
+      // 예약발령(applied:false)이 있는 직원이 한 명이라도 있는 회사만 대상으로 한다. 이 필터가 없으면
+      // 매 주기마다 모든 회사의 전체 데이터를 불러오게 되어 회사 수에 비례해 부담이 커진다.
+      : (await pool.query(
+          `SELECT c.id FROM companies c
+            WHERE c.status <> 'suspended'
+              AND EXISTS (SELECT 1 FROM employees e
+                           WHERE e.company_id = c.id AND e.is_deleted = FALSE
+                             AND e.data->'hrHistory' @> '[{"applied": false}]'::jsonb)`
+        )).rows.map(r => r.id);
     for (const companyId of companyIds) {
       try { total += await _applyScheduledHrChangesForCompany(companyId); }
       catch (e) { console.warn("[hr-scheduler] 예약발령 반영 실패:", e.message); }
