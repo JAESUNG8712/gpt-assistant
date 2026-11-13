@@ -24375,7 +24375,7 @@ function openStockCountModal(){
   if(!erpLocations.length){showToast("먼저 위치를 등록하세요.","error");return;}
   openModal(`<div class="modal-box" style="max-width:640px"><div class="modal-head"><h3>📋 재고 실사</h3></div><div class="modal-body">
     <div class="fg"><label class="fl">실사 위치 <span class="req">*</span></label><select class="fc" id="count-loc" onchange="_loadStockCountSheet()">${erpLocations.map(l=>`<option value="${l.id}">${h(l.name)}</option>`).join("")}</select></div>
-    <div class="fz11 text-gray mb2">시스템 재고와 다른 실사 수량만 입력하세요. 동일하면 조정되지 않습니다.</div>
+    <div class="fz11 text-gray mb2">직접 센 수량을 입력하세요. 빈칸은 그대로 두고, 재고가 없으면 0을 입력하세요.</div>
     <div id="count-sheet"></div>
   </div><div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal()">취소</button><button class="btn btn-primary" onclick="submitStockCount()">실사 반영</button></div></div>`);
   setTimeout(_loadStockCountSheet,30);
@@ -24386,11 +24386,13 @@ function _loadStockCountSheet(){
   _stockCountLines=items.map(i=>({itemId:i.id,current:_erpStockQty(i.id,locId),countedQty:null}));
   const el=$("#count-sheet");if(!el)return;
   el.innerHTML=`<div class="tbl-wrap" style="max-height:340px;overflow:auto"><table><thead><tr><th>품목</th><th>시스템 재고</th><th>실사 수량</th></tr></thead><tbody>
-  ${_stockCountLines.map((l,i)=>`<tr><td>${h(_erpItemName(l.itemId))}</td><td style="text-align:right">${l.current}</td><td><input class="fc" type="number" style="width:100px" placeholder="${l.current}" oninput="_stockCountLines[${i}].countedQty=this.value===''?null:+this.value"></td></tr>`).join("")}
+  ${_stockCountLines.map((l,i)=>`<tr><td>${h(_erpItemName(l.itemId))}</td><td style="text-align:right">${l.current}</td><td><input class="fc" type="number" min="0" step="any" style="width:100px" aria-label="${h(_erpItemName(l.itemId))} 실사 수량" placeholder="${l.current}" oninput="_stockCountLines[${i}].countedQty=this.value===''?null:+this.value"></td></tr>`).join("")}
   </tbody></table></div>`;
 }
 async function submitStockCount(){
   const locId=$("#count-loc")?.value;
+  const invalid=$("#count-sheet input:invalid");
+  if(invalid){invalid.focus();invalid.reportValidity();return;}
   const lines=_stockCountLines.filter(l=>l.countedQty!==null&&l.countedQty!==l.current).map(l=>({itemId:l.itemId,countedQty:l.countedQty}));
   if(!lines.length){showToast("시스템 재고와 다른 실사 수량이 없습니다.","info");closeModal();return;}
   const r=await serverRequest("POST","/api/erp/stock/count",{locationId:locId,lines,role:currentUser.role,user:currentUser.name});

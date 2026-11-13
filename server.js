@@ -1345,8 +1345,7 @@ async function initDB() {
       console.log(`[Storage] 기초 계정과목 ${_fileAccounting.accounts.length}건 시딩 완료`);
     }
     if (!_fileErp.locations || _fileErp.locations.length === 0) {
-      _fileErp.locations = DEFAULT_LOCATIONS.map((l, i) => ({ id: `loc_seed_${i + 1}`, ...l }));
-      _saveFileErp();
+      _commitFileErp({ ..._fileErp, locations: DEFAULT_LOCATIONS.map((l, i) => ({ id: `loc_seed_${i + 1}`, ...l })) });
       console.log(`[Storage] 기초 위치(창고) ${_fileErp.locations.length}건 시딩 완료`);
     }
     return;
@@ -10793,9 +10792,10 @@ function _commitFileErpAccounting(erp, accounting) {
   _fileErp = erp;
   _fileAccounting = accounting;
 }
-function _saveFileErp(state = _fileErp) {
+function _commitFileErp(state) {
   const erpFile = JSON_FILE.replace(/\.json$/, "-erp.json");
   _atomicWriteFileSync(erpFile, JSON.stringify(state, null, 2));
+  _fileErp = state;
 }
 function _commitFileErpMaster(collection, id, row) {
   const stored = _fileErp[collection];
@@ -10805,9 +10805,7 @@ function _commitFileErpMaster(collection, id, row) {
     if (index < 0) rows.push(row);
     else rows[index] = row;
   }
-  const next = { ..._fileErp, [collection]: rows };
-  _saveFileErp(next);
-  _fileErp = next;
+  _commitFileErp({ ..._fileErp, [collection]: rows });
 }
 // Only single-document changes use this helper. Shipping, receiving and conversion
 // keep their wider transactions so the inventory, invoice and document commit together.
@@ -10832,8 +10830,7 @@ async function _changeErpDocument(kind, id, companyId, { from, patch, message, o
     validate(current, current?.status);
     const next = patch ? { ...current, ...patch } : null;
     const state = { ..._fileErp, [kind]: next ? rows.map(r => r === current ? next : r) : rows.filter(r => r !== current) };
-    _saveFileErp(state);
-    _fileErp = state;
+    _commitFileErp(state);
     return next || current;
   }
   const client = await pool.connect();
@@ -10860,11 +10857,15 @@ function _saveFileRecruit() {
   const recruitFile = JSON_FILE.replace(/\.json$/, "-recruit.json");
   _atomicWriteFileSync(recruitFile, JSON.stringify(_fileRecruit, null, 2));
 }
-function _nextErpSeq(kind, year) {
-  if (!_fileErp[kind]) _fileErp[kind] = {};
-  const next = (_fileErp[kind][year] || 0) + 1;
-  _fileErp[kind][year] = next;
-  return next;
+function _issueFileErpNumber(collection, current, patch, seqKey, numberField, prefix, year) {
+  const seq = (_fileErp[seqKey]?.[year] || 0) + 1;
+  const issued = { ...current, ...patch, [numberField]: `${prefix}-${year}-${String(seq).padStart(6, "0")}` };
+  _commitFileErp({
+    ..._fileErp,
+    [seqKey]: { ..._fileErp[seqKey], [year]: seq },
+    [collection]: _fileErp[collection].map(row => row === current ? issued : row),
+  });
+  return issued;
 }
 // 수량·단가에 음수가 들어와도 아무 검증 없이 통과해, 견적서 → 출고(재고 차감) → 세금계산서
 // 발행까지 그대로 흘러갔다. 그 결과 마이너스 공급가액 세금계산서가 만들어지고 부가세
@@ -11081,8 +11082,7 @@ app.post("/api/erp/quotations", async (req, res) => {
       createdBy: createdBy || "unknown", createdAt: new Date().toISOString(),
     };
     if (USE_JSON_FILE) {
-      _fileErp.quotations.push(quote);
-      _saveFileErp();
+      _commitFileErp({ ..._fileErp, quotations: [..._fileErp.quotations, quote] });
       return res.json({ ok: true, quotation: quote });
     }
     await pool.query("INSERT INTO erp_quotations (id, doc_date, status, data, company_id) VALUES ($1,$2,'draft',$3,$4)", [quote.id, date, quote, companyId]);
@@ -11101,11 +11101,10 @@ app.post("/api/erp/quotations/:id/send", async (req, res) => {
       const q = _fileErp.quotations.find(q => q.id === id);
       if (!q) return res.status(404).json({ ok: false, message: "견적서를 찾을 수 없습니다." });
       if (q.status !== "draft") return res.status(400).json({ ok: false, message: "임시 저장 상태의 견적서만 발송할 수 있습니다." });
-      const seq = _nextErpSeq("quoteSeq", year);
-      q.quoteNo = `QT-${year}-${String(seq).padStart(6, "0")}`;
-      q.status = "sent"; q.sentBy = req.body.user || "unknown"; q.sentAt = new Date().toISOString();
-      _saveFileErp();
-      return res.json({ ok: true, quotation: q });
+      const quotation = _issueFileErpNumber("quotations", q, {
+        status: "sent", sentBy: req.body.user || "unknown", sentAt: new Date().toISOString(),
+      }, "quoteSeq", "quoteNo", "QT", year);
+      return res.json({ ok: true, quotation });
     }
     const client = await pool.connect();
     try {
@@ -11158,6 +11157,16 @@ async function _lockStockKeys(client, companyId, pairs) {
 
 // 출고/매출 처리: 수주 확정된 견적서를 기준으로 재고 출고(원장 차감)와 세금계산서 발행을
 // 한 번에 처리한다. 재고 부족 시 거부, 성공 시 견적서는 'shipped'로 종결된다.
+function _requiredShipmentStock(lines) {
+  const required = new Map();
+  for (const line of lines) {
+    const key = String(line.itemId);
+    const item = required.get(key);
+    if (item) item.qty += Number(line.qty);
+    else required.set(key, { itemId: line.itemId, name: line.name, qty: Number(line.qty) });
+  }
+  return [...required.values()];
+}
 app.post("/api/erp/quotations/:id/ship", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
@@ -11172,7 +11181,7 @@ app.post("/api/erp/quotations/:id/ship", async (req, res) => {
       if (!q) return res.status(404).json({ ok: false, message: "견적서를 찾을 수 없습니다." });
       if (q.status !== "accepted") return res.status(400).json({ ok: false, message: "수주 확정된 견적서만 출고 처리할 수 있습니다." });
       if (!q.locationId) return res.status(400).json({ ok: false, message: "출고 위치가 지정되지 않은 견적서입니다." });
-      for (const l of q.lines) {
+      for (const l of _requiredShipmentStock(q.lines)) {
         const current = erp.stockLedger
           .filter(s => s.itemId === l.itemId && s.locationId === q.locationId)
           .reduce((sum, s) => sum + (s.type === "out" ? -Math.abs(s.qty) : Math.abs(s.qty)), 0);
@@ -11212,8 +11221,9 @@ app.post("/api/erp/quotations/:id/ship", async (req, res) => {
       const q0 = rows[0].data;
       if (rows[0].status !== "accepted") { await client.query("ROLLBACK"); return res.status(400).json({ ok: false, message: "수주 확정된 견적서만 출고 처리할 수 있습니다." }); }
       if (!q0.locationId) { await client.query("ROLLBACK"); return res.status(400).json({ ok: false, message: "출고 위치가 지정되지 않은 견적서입니다." }); }
-      await _lockStockKeys(client, companyId, q0.lines.map(l => [l.itemId, q0.locationId]));
-      for (const l of q0.lines) {
+      const required = _requiredShipmentStock(q0.lines);
+      await _lockStockKeys(client, companyId, required.map(l => [l.itemId, q0.locationId]));
+      for (const l of required) {
         const { rows: ledgerRows } = await client.query(
           "SELECT data FROM erp_stock_ledger WHERE item_id = $1 AND location_id = $2 AND (company_id = $3 OR company_id IS NULL) FOR UPDATE", [l.itemId, q0.locationId, companyId]
         );
@@ -11322,8 +11332,7 @@ app.post("/api/erp/purchase-orders", async (req, res) => {
       createdBy: createdBy || "unknown", createdAt: new Date().toISOString(),
     };
     if (USE_JSON_FILE) {
-      _fileErp.purchaseOrders.push(po);
-      _saveFileErp();
+      _commitFileErp({ ..._fileErp, purchaseOrders: [..._fileErp.purchaseOrders, po] });
       return res.json({ ok: true, purchaseOrder: po });
     }
     await pool.query("INSERT INTO erp_purchase_orders (id, doc_date, status, data, company_id) VALUES ($1,$2,'draft',$3,$4)", [po.id, date, po, companyId]);
@@ -11342,11 +11351,10 @@ app.post("/api/erp/purchase-orders/:id/confirm", async (req, res) => {
       const po = _fileErp.purchaseOrders.find(p => p.id === id);
       if (!po) return res.status(404).json({ ok: false, message: "발주서를 찾을 수 없습니다." });
       if (po.status !== "draft") return res.status(400).json({ ok: false, message: "임시 저장 상태의 발주서만 발주 확정할 수 있습니다." });
-      const seq = _nextErpSeq("poSeq", year);
-      po.poNo = `PO-${year}-${String(seq).padStart(6, "0")}`;
-      po.status = "ordered"; po.orderedBy = req.body.user || "unknown"; po.orderedAt = new Date().toISOString();
-      _saveFileErp();
-      return res.json({ ok: true, purchaseOrder: po });
+      const purchaseOrder = _issueFileErpNumber("purchaseOrders", po, {
+        status: "ordered", orderedBy: req.body.user || "unknown", orderedAt: new Date().toISOString(),
+      }, "poSeq", "poNo", "PO", year);
+      return res.json({ ok: true, purchaseOrder });
     }
     const client = await pool.connect();
     try {
@@ -11512,8 +11520,7 @@ app.post("/api/erp/purchase-requests", async (req, res) => {
       createdAt: new Date().toISOString(),
     };
     if (USE_JSON_FILE) {
-      _fileErp.purchaseRequests.push(pr);
-      _saveFileErp();
+      _commitFileErp({ ..._fileErp, purchaseRequests: [..._fileErp.purchaseRequests, pr] });
       return res.json({ ok: true, purchaseRequest: pr });
     }
     await pool.query("INSERT INTO erp_purchase_requests (id, doc_date, status, data, company_id) VALUES ($1,$2,'pending',$3,$4)", [pr.id, date, pr, companyId]);
@@ -11573,8 +11580,7 @@ app.post("/api/erp/purchase-requests/:id/convert-to-po", async (req, res) => {
       };
       erp.purchaseOrders.push(po);
       pr.status = "converted"; pr.convertedPoId = po.id; pr.convertedAt = new Date().toISOString();
-      _saveFileErp(erp);
-      _fileErp = erp;
+      _commitFileErp(erp);
       return res.json({ ok: true, purchaseOrder: po, purchaseRequest: pr });
     }
     const client = await pool.connect();
@@ -11629,17 +11635,16 @@ app.get("/api/erp/stock", async (req, res) => {
       const { rows } = await pool.query("SELECT data FROM erp_stock_ledger WHERE (company_id = $1 OR company_id IS NULL)", [req.auth.companyId || null]);
       ledger = rows.map(r => r.data);
     }
-    const map = {};
+    const balances = new Map();
     for (const l of ledger) {
-      const key = `${l.itemId}::${l.locationId}`;
+      const itemId = String(l.itemId), locationId = String(l.locationId);
+      const key = JSON.stringify([itemId, locationId]);
       const delta = l.type === "out" ? -Math.abs(l.qty) : Math.abs(l.qty);
-      map[key] = (map[key] || 0) + delta;
+      const balance = balances.get(key);
+      if (balance) balance.qty += delta;
+      else balances.set(key, { itemId, locationId, qty: delta });
     }
-    const stock = Object.entries(map).map(([key, qty]) => {
-      const [itemId, locationId] = key.split("::");
-      return { itemId, locationId, qty };
-    });
-    res.json({ ok: true, stock });
+    res.json({ ok: true, stock: [...balances.values()] });
   } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
@@ -11652,8 +11657,8 @@ app.get("/api/erp/stock/ledger", async (req, res) => {
     if (USE_JSON_FILE) {
       ledger = _fileErp.stockLedger;
     } else {
-      const { rows } = await pool.query("SELECT data FROM erp_stock_ledger WHERE (company_id = $1 OR company_id IS NULL)", [req.auth.companyId || null]);
-      ledger = rows.map(r => r.data);
+      const { rows } = await pool.query("SELECT id, data FROM erp_stock_ledger WHERE (company_id = $1 OR company_id IS NULL)", [req.auth.companyId || null]);
+      ledger = rows.map(r => ({ ...r.data, id: r.id }));
     }
     if (itemId) ledger = ledger.filter(l => l.itemId === itemId);
     if (locationId) ledger = ledger.filter(l => l.locationId === locationId);
@@ -11686,8 +11691,7 @@ app.post("/api/erp/stock/adjust", async (req, res) => {
       const current = _fileErp.stockLedger.filter(l => l.itemId === itemId && l.locationId === locationId)
         .reduce((s, l) => s + (l.type === "out" ? -Math.abs(l.qty) : Math.abs(l.qty)), 0);
       if (type === "out" && current < qtyNum) return res.status(400).json({ ok: false, message: `현재 재고(${current})보다 많은 수량을 출고할 수 없습니다.` });
-      _fileErp.stockLedger.push(entry);
-      _saveFileErp();
+      _commitFileErp({ ..._fileErp, stockLedger: [..._fileErp.stockLedger, entry] });
       return res.json({ ok: true, entry });
     }
     return await _runPgIdempotentCommand(req, res, async client => {
@@ -11715,32 +11719,38 @@ app.post("/api/erp/stock/count", async (req, res) => {
     const { locationId, lines, user } = req.body || {};
     if (!locationId || !Array.isArray(lines) || !lines.length)
       return res.status(400).json({ ok: false, message: "위치와 실사 항목이 필요합니다." });
-    // 실사 수량은 "창고에서 실제로 센 개수"라 음수가 될 수 없다. 검증이 없어 countedQty:-50이
-    // 그대로 접수되면 그 차이만큼 출고 원장이 생겨 재고가 마이너스로 내려갔다.
-    const negLine = lines.find(l => l && l.itemId && Number.isFinite(Number(l.countedQty)) && Number(l.countedQty) < 0);
-    if (negLine) {
-      return res.status(400).json({ ok: false, message: "실사 수량은 0 이상이어야 합니다." });
+    const itemIds = new Set();
+    for (const line of lines) {
+      const id = line?.itemId, qty = line?.countedQty;
+      if (!id || !["number","string"].includes(typeof id) || !String(id).trim())
+        return res.status(400).json({ ok: false, message: "각 실사 항목의 품목을 선택하세요." });
+      if (itemIds.has(String(id)))
+        return res.status(400).json({ ok: false, message: "같은 창고의 한 품목은 실사표에 한 번만 입력하세요." });
+      if (!["number","string"].includes(typeof qty) || !String(qty).trim() || !Number.isFinite(Number(qty)) || Number(qty) < 0)
+        return res.status(400).json({ ok: false, message: "실사 수량은 0 이상이어야 합니다. 빈칸 없이 숫자를 입력하세요." });
+      itemIds.add(String(id));
     }
     if (USE_JSON_FILE) {
       const locErr = await _erpRefsExist(null, [locationId], companyId);
       if (locErr) return res.status(404).json({ ok: false, message: locErr });
       for (const l of lines) {
-        if (!l || !l.itemId) continue;
         const itemErr = await _erpRefsExist(l.itemId, [], companyId);
         if (itemErr) return res.status(404).json({ ok: false, message: itemErr });
       }
     }
     const now = new Date().toISOString();
     const countId = `count_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-    if (USE_JSON_FILE) {
-      const ledger = _fileErp.stockLedger;
+    function buildCountEntries(ledger) {
+      const balances = new Map();
+      for (const row of ledger) {
+        if (row.locationId !== locationId) continue;
+        const delta = row.type === "out" ? -Math.abs(row.qty) : Math.abs(row.qty);
+        balances.set(row.itemId, (balances.get(row.itemId) || 0) + delta);
+      }
       const entries = [];
-      for (const l of lines) {
-        const itemId = l.itemId, countedQty = Number(l.countedQty);
-        if (!itemId || !Number.isFinite(countedQty)) continue;
-        const current = ledger.filter(x => x.itemId === itemId && x.locationId === locationId)
-          .reduce((s, x) => s + (x.type === "out" ? -Math.abs(x.qty) : Math.abs(x.qty)), 0);
-        const diff = countedQty - current;
+      for (const { itemId, countedQty } of lines) {
+        const current = balances.get(itemId) || 0;
+        const diff = Number(countedQty) - current;
         if (diff === 0) continue;
         entries.push({
           id: `sl_${Date.now()}_${Math.random().toString(36).slice(2, 8)}_${entries.length}`,
@@ -11750,37 +11760,23 @@ app.post("/api/erp/stock/count", async (req, res) => {
           createdBy: user || "unknown", createdAt: now,
         });
       }
-      _fileErp.stockLedger.push(...entries);
-      _saveFileErp();
+      return entries;
+    }
+    if (USE_JSON_FILE) {
+      const entries = buildCountEntries(_fileErp.stockLedger);
+      _commitFileErp({ ..._fileErp, stockLedger: [..._fileErp.stockLedger, ...entries] });
       return res.json({ ok: true, adjusted: entries.length, entries });
     }
     return await _runPgIdempotentCommand(req, res, async client => {
       const locErr = await _erpRefsExist(null, [locationId], companyId, client);
       if (locErr) return { status: 404, body: { ok: false, message: locErr } };
       for (const l of lines) {
-        if (!l || !l.itemId) continue;
         const itemErr = await _erpRefsExist(l.itemId, [], companyId, client);
         if (itemErr) return { status: 404, body: { ok: false, message: itemErr } };
       }
-      await _lockStockKeys(client, companyId, lines.filter(l => l.itemId).map(l => [l.itemId, locationId]));
+      await _lockStockKeys(client, companyId, lines.map(l => [l.itemId, locationId]));
       const { rows } = await client.query("SELECT data FROM erp_stock_ledger WHERE location_id = $1 AND (company_id = $2 OR company_id IS NULL)", [locationId, companyId]);
-      const ledger = rows.map(r => r.data);
-      const entries = [];
-      for (const l of lines) {
-        const itemId = l.itemId, countedQty = Number(l.countedQty);
-        if (!itemId || !Number.isFinite(countedQty)) continue;
-        const current = ledger.filter(x => x.itemId === itemId && x.locationId === locationId)
-          .reduce((s, x) => s + (x.type === "out" ? -Math.abs(x.qty) : Math.abs(x.qty)), 0);
-        const diff = countedQty - current;
-        if (diff === 0) continue;
-        entries.push({
-          id: `sl_${Date.now()}_${Math.random().toString(36).slice(2, 8)}_${entries.length}`,
-          itemId, locationId, type: diff > 0 ? "in" : "out", qty: Math.abs(diff),
-          refType: "count", refId: countId, refNo: null,
-          memo: `재고실사 조정 (시스템 ${current} → 실사 ${countedQty})`,
-          createdBy: user || "unknown", createdAt: now,
-        });
-      }
+      const entries = buildCountEntries(rows.map(r => r.data));
       for (const e of entries) {
         await client.query("INSERT INTO erp_stock_ledger (id, item_id, location_id, data, company_id) VALUES ($1,$2,$3,$4,$5)", [e.id, e.itemId, e.locationId, e, companyId]);
       }
@@ -11813,8 +11809,7 @@ app.post("/api/erp/stock/transfer", async (req, res) => {
       if (current < qtyNum) return res.status(400).json({ ok: false, message: `출발 위치 재고 부족 (현재 ${current} / 이동 요청 ${qtyNum})` });
       const outEntry = { id: `sl_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`, itemId, locationId: fromLocationId, type: "out", qty: qtyNum, refType: "transfer", refId: transferId, refNo: null, memo: memo || "", createdBy, createdAt: now };
       const inEntry = { id: `sl_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`, itemId, locationId: toLocationId, type: "in", qty: qtyNum, refType: "transfer", refId: transferId, refNo: null, memo: memo || "", createdBy, createdAt: now };
-      _fileErp.stockLedger.push(outEntry, inEntry);
-      _saveFileErp();
+      _commitFileErp({ ..._fileErp, stockLedger: [..._fileErp.stockLedger, outEntry, inEntry] });
       return res.json({ ok: true, transferId, outEntry, inEntry });
     }
     return await _runPgIdempotentCommand(req, res, async client => {
@@ -11867,9 +11862,7 @@ app.post("/api/erp/sales-targets", async (req, res) => {
       updatedAt: new Date().toISOString(),
     };
     if (USE_JSON_FILE) {
-      const idx = _fileErp.salesTargets.findIndex(t => t.id === targetId);
-      if (idx >= 0) _fileErp.salesTargets[idx] = target; else _fileErp.salesTargets.push(target);
-      _saveFileErp();
+      _commitFileErpMaster("salesTargets", targetId, target);
       return res.json({ ok: true, salesTarget: target });
     }
     await pool.query(
@@ -11886,8 +11879,7 @@ app.post("/api/erp/sales-targets/:id/delete", async (req, res) => {
     if (!requirePage(req, res, "sales-dashboard")) return;
     const id = req.params.id;
     if (USE_JSON_FILE) {
-      _fileErp.salesTargets = _fileErp.salesTargets.filter(t => t.id !== id);
-      _saveFileErp();
+      _commitFileErpMaster("salesTargets", id, null);
       return res.json({ ok: true });
     }
     await pool.query("UPDATE erp_sales_targets SET is_deleted = TRUE WHERE id = $1 AND (company_id = $2 OR company_id IS NULL)", [id, req.auth.companyId || null]);

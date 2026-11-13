@@ -18,9 +18,129 @@ test("ERP document transitions preserve linked records and reject stale operatio
   const item = (await api("items", "POST", { code: "SAFE-ITEM", name: "Test item", unit: "EA" })).item;
   const location = (await api("locations", "POST", { name: "Test warehouse" })).location;
   const input = { date: "2031-05-01", items: [{ itemId: item.id, qty: 2, unitPrice: 100 }] };
+  const erpFile = server.dataFile.replace(/\.json$/, "-erp.json");
+  const disk = () => JSON.parse(fs.readFileSync(erpFile, "utf8"));
+  async function failAndRetry(route, body, listRoute, field) {
+    const list = async () => {
+      const reply = await api(listRoute);
+      assert.equal(reply.status, 200, JSON.stringify(reply));
+      assert.ok(Array.isArray(reply[field]), field);
+      return reply[field];
+    };
+    const before = await list();
+    const backup = erpFile + ".retry-test";
+    fs.renameSync(erpFile, backup);
+    fs.mkdirSync(erpFile);
+    try {
+      const failed = await api(route, "POST", body);
+      assert.equal(failed.status, 500, JSON.stringify(failed));
+      assert.deepEqual(await list(), before, route + " must not publish a failed write");
+    } finally {
+      fs.rmdirSync(erpFile);
+      fs.renameSync(backup, erpFile);
+    }
+    const reply = await api(route, "POST", body);
+    assert.equal(reply.status, 200, JSON.stringify(reply));
+    assert.equal(reply.ok, true, JSON.stringify(reply));
+    return { before, after: await list(), reply };
+  }
+  await t.test("failed document creation, sending and confirmation leave no duplicate or skipped number", async () => {
+    const body = { ...input, partnerName: "Retry partner", locationId: location.id };
+    const documents = {};
+    for (const [route, list, field] of [
+      ["quotations", "quotations", "quotation"],
+      ["purchase-orders", "purchaseOrders", "purchaseOrder"],
+      ["purchase-requests", "purchaseRequests", "purchaseRequest"],
+    ]) {
+      const { before, after, reply } = await failAndRetry(route, body, route, list);
+      const document = reply[field];
+      documents[route] = document;
+      assert.equal(after.length, before.length + 1);
+      assert.deepEqual(after.find(row => row.id === document.id), document);
+      assert.equal(disk()[list].filter(row => row.id === document.id).length, 1);
+    }
+    for (const [route, list, action, numberField, counter, prefix, status] of [
+      ["quotations", "quotations", "send", "quoteNo", "quoteSeq", "QT", "sent"],
+      ["purchase-orders", "purchaseOrders", "confirm", "poNo", "poSeq", "PO", "ordered"],
+    ]) {
+      const { id } = documents[route];
+      const prior = disk()[counter];
+      const { after } = await failAndRetry(`${route}/${id}/${action}`, {}, route, list);
+      const saved = after.find(row => row.id === id);
+      assert.equal(saved.status, status);
+      const [docPrefix, year, sequence] = saved[numberField].split("-");
+      assert.equal(docPrefix, prefix);
+      assert.equal(Number(sequence), (prior[year] || 0) + 1);
+      assert.equal(disk()[counter][year], Number(sequence));
+      assert.deepEqual(disk()[list].find(row => row.id === id), saved);
+    }
+  });
+  await t.test("failed stock movements leave the ledger unchanged; count and transfer retries write complete sets", async () => {
+    const destination = (await api("locations", "POST", { name: "Destination" })).location;
+    const second = (await api("items", "POST", { code: "COUNT-SECOND", name: "Second counted item" })).item;
+    const source = { itemId: item.id, locationId: location.id };
+    for (const [route, body, expected] of [
+      ["stock/adjust", { ...source, type: "in", qty: 9 }, [[item.id, location.id, "in", 9]]],
+      ["stock/adjust", { ...source, type: "out", qty: 2 }, [[item.id, location.id, "out", 2]]],
+      ["stock/count", { locationId: location.id, lines: [{ itemId: item.id, countedQty: 8 }, { itemId: second.id, countedQty: 4 }] },
+        [[item.id, location.id, "in", 1], [second.id, location.id, "in", 4]]],
+      ["stock/transfer", { itemId: item.id, fromLocationId: location.id, toLocationId: destination.id, qty: 3 },
+        [[item.id, location.id, "out", 3], [item.id, destination.id, "in", 3]]],
+    ]) {
+      const { before, after, reply } = await failAndRetry(route, body, "stock/ledger", "ledger");
+      const priorIds = new Set(before.map(row => row.id));
+      const entries = disk().stockLedger.filter(row => !priorIds.has(row.id));
+      assert.equal(after.length, before.length + expected.length);
+      assert.deepEqual(entries.map(row => [row.itemId, row.locationId, row.type, row.qty]), expected);
+      for (const entry of entries) assert.deepEqual(after.find(row => row.id === entry.id), entry);
+      if (route === "stock/transfer") assert.ok(entries.every(entry => entry.refId === reply.transferId && entry.refType === "transfer"));
+    }
+  });
+  await t.test("sales target create, update and delete retries agree with the persisted list", async () => {
+    const route = "sales-targets";
+    const target = { year: 2031, month: 5, targetAmount: 1000, memo: "Retry target" };
+    const created = await failAndRetry(route, target, route, "salesTargets");
+    const { id } = created.reply.salesTarget;
+    assert.equal(created.after.length, created.before.length + 1);
+    assert.deepEqual(disk().salesTargets, created.after);
+    const updated = await failAndRetry(route, { ...target, id, targetAmount: 2500 }, route, "salesTargets");
+    assert.equal(updated.after.length, created.after.length);
+    assert.equal(updated.after.find(row => row.id === id).targetAmount, 2500);
+    assert.deepEqual(disk().salesTargets, updated.after);
+    const removed = await failAndRetry(`${route}/${id}/delete`, {}, route, "salesTargets");
+    assert.deepEqual(removed.after, created.before);
+    assert.deepEqual(disk().salesTargets, removed.after);
+  });
+  await t.test("an invalid count batch writes nothing; an explicit zero clears the counted stock", async () => {
+    const counted = (await api("items", "POST", { code: "COUNT-ZERO", name: "Zero count item" })).item;
+    const initial = { itemId: counted.id, locationId: location.id, type: "in", qty: 4 };
+    assert.equal((await api("stock/adjust", "POST", initial)).status, 200);
+    const before = disk().stockLedger;
+    const beforeList = (await api("stock/ledger")).ledger;
+    const good = { itemId: item.id, countedQty: 123 };
+    for (const invalid of [
+      { ...good, countedQty: 55 }, null, { itemId: "", countedQty: 0 },
+      { itemId: counted.id }, { itemId: counted.id, countedQty: null },
+      { itemId: counted.id, countedQty: " " }, { itemId: counted.id, countedQty: "Infinity" },
+    ]) {
+      const result = await api("stock/count", "POST", { locationId: location.id, lines: [good, invalid] });
+      assert.equal(result.status, 400, JSON.stringify({ invalid, result }));
+      assert.deepEqual((await api("stock/ledger")).ledger, beforeList);
+      assert.deepEqual(disk().stockLedger, before);
+    }
+    const countedZero = await api("stock/count", "POST", {
+      locationId: location.id, lines: [{ itemId: counted.id, countedQty: 0 }],
+    });
+    assert.equal(countedZero.status, 200, JSON.stringify(countedZero));
+    assert.equal(countedZero.adjusted, 1);
+    const additions = disk().stockLedger.slice(before.length);
+    assert.deepEqual(additions.map(row => [row.itemId, row.locationId, row.type, row.qty]), [[counted.id, location.id, "out", 4]]);
+  });
   await t.test("failed item and warehouse writes retain the saved list; retries persist once", async () => {
     const file = server.dataFile.replace(/\.json$/, "-erp.json");
-    for (const [collection, original] of [["items", item], ["locations", location]]) {
+    const unusedItem = (await api("items", "POST", { code: "UNUSED", name: "Unused item" })).item;
+    const unusedWarehouse = (await api("locations", "POST", { name: "Unused warehouse" })).location;
+    for (const [collection, original] of [["items", unusedItem], ["locations", unusedWarehouse]]) {
       const created = { ...original, id: "master-retry", code: "RETRY", name: "Retry record" };
       const edited = { ...original, name: "Updated record" };
       const before = (await api(collection))[collection];

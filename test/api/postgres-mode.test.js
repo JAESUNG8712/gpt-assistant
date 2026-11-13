@@ -346,6 +346,50 @@ if (!ADMIN_DATABASE_URL) {
       } finally { await dbCheck.end(); }
     });
 
+    await t.test("동일 품목 합산 출고와 창고별 잔고", () => require("../support/erp-shipment-stock")(api, companyAToken));
+
+    await t.test("재고실사 — 중복·누락 항목은 원장 전체를 보존하고 명시적 0은 반영한다", async () => {
+      const headers = { "Content-Type": "application/json", Authorization: `Bearer ${companyAToken}` };
+      const post = (path, body) => api("/api/erp/" + path, { method: "POST", headers, body: JSON.stringify(body) });
+      const itemIds = [];
+      for (const code of ["COUNT-A", "COUNT-B"]) {
+        const response = await post("items", { code, name: code });
+        assert.equal(response.status, 200);
+        itemIds.push((await response.json()).item.id);
+      }
+      const location = await post("locations", { name: "실사 검증 창고" });
+      assert.equal(location.status, 200);
+      const locationId = (await location.json()).location.id;
+      const [first, second] = itemIds;
+      const opening = await post("stock/adjust", { itemId: first, locationId, type: "in", qty: 4 });
+      assert.equal(opening.status, 200);
+      async function readLedger() {
+        const response = await api("/api/erp/stock/ledger?locationId=" + encodeURIComponent(locationId), { headers });
+        assert.equal(response.status, 200);
+        return (await response.json()).ledger;
+      }
+      const before = await readLedger();
+      assert.equal(before.length, 1);
+      for (const invalid of [
+        { itemId: first, countedQty: 2 }, { itemId: second },
+        { itemId: second, countedQty: null }, { itemId: second, countedQty: "  " }, null,
+      ]) {
+        const response = await post("stock/count", { locationId, lines: [{ itemId: first, countedQty: 1 }, invalid] });
+        assert.equal(response.status, 400, JSON.stringify(invalid));
+        assert.deepEqual(await readLedger(), before);
+      }
+      const zeroCount = await post("stock/count", { locationId, lines: [{ itemId: first, countedQty: 0 }] });
+      assert.equal(zeroCount.status, 200);
+      assert.equal((await zeroCount.json()).adjusted, 1);
+      const after = await readLedger();
+      assert.equal(after.length, 2);
+      const adjustment = after.find(row => row.refType === "count");
+      assert.ok(adjustment);
+      assert.equal(adjustment.itemId, first);
+      assert.equal(adjustment.type, "out");
+      assert.equal(adjustment.qty, 4);
+    });
+
     await t.test("4e) RCPS·감가상각 전표와 멱등성 완료 기록은 같은 transaction에서 commit", async () => {
       const commonHeaders = { "Content-Type": "application/json", Authorization: `Bearer ${companyAToken}` };
       await api("/api/accounting/accounts/seed-defaults", { method: "POST", headers: commonHeaders, body: "{}" });
