@@ -2536,6 +2536,13 @@ async function _doSave(silent=false){
       await _handleRecordRevisionConflict(e.details||{});
       return {status:"conflict",code:e.code};
     }
+    if(e.code==="LONG_SERVICE_BUNDLE_CONFLICT"){
+      _retrySaveRequest=null;
+      serverConfig.status="connected";
+      serverConfig.statusMsg="포상·급여 연계 충돌 · 최신 자료 확인 필요";
+      showToast(e.message||"포상과 급여·인사이력을 함께 저장하지 못했습니다. 최신 자료를 확인하세요.","error");
+      return {status:"conflict",code:e.code};
+    }
     if(e.code==="SINGLETON_REVISION_CONFLICT"){
       _retrySaveRequest=null;
       serverConfig.status="connected";
@@ -6464,9 +6471,13 @@ function applyState(state,skipUndo=false,options={}){
   if(d.integrationLogs&&Array.isArray(d.integrationLogs))integrationLogs=d.integrationLogs;
   if(d.approvalDocs&&Array.isArray(d.approvalDocs))approvalDocs=d.approvalDocs;
   if(d.attendanceRecords&&Array.isArray(d.attendanceRecords))attendanceRecords=_mergeByIdPreferNewer(attendanceRecords,d.attendanceRecords,'attendanceRecords');
-  if(d.payslips&&Array.isArray(d.payslips))payslips=d.payslips;
+  // Older JSON stores omit payroll collections until their first write.
+  const replaceMissingPayroll = options.fullServerRead && !_serverMergeContext.preservePending;
+  if(Array.isArray(d.payslips))payslips=d.payslips;
+  else if(replaceMissingPayroll && !Object.hasOwn(d,"payslips"))payslips=[];
   if(d.yearEndSettlements&&Array.isArray(d.yearEndSettlements))yearEndSettlements=d.yearEndSettlements;
-  if(d.payrollAdjustments&&Array.isArray(d.payrollAdjustments))payrollAdjustments=d.payrollAdjustments;
+  if(Array.isArray(d.payrollAdjustments))payrollAdjustments=d.payrollAdjustments;
+  else if(replaceMissingPayroll && !Object.hasOwn(d,"payrollAdjustments"))payrollAdjustments=[];
   if(d.leaveUsagePlans&&Array.isArray(d.leaveUsagePlans))leaveUsagePlans=d.leaveUsagePlans;
   if(d.boardPosts&&Array.isArray(d.boardPosts))boardPosts=d.boardPosts;
   if((d.roomReservationTombstones&&Array.isArray(d.roomReservationTombstones))||(_serverMergeContext&&!_serverMergeContext.preservePending)){
@@ -6579,12 +6590,12 @@ function _applyServerSnapshot(state,skipUndo=false){
     // 이전 권한으로 작성한 삭제 의도/보호 모듈 캐시는 새 권한에서 재사용할 수 없다.
     recordTombstones={};roomReservationTombstones=[];
     clearProtectedModuleState();
-    applyState(state,skipUndo,{serverSnapshot:true,forceAuthoritative:true});
+    applyState(state,skipUndo,{serverSnapshot:true,forceAuthoritative:true,fullServerRead:true});
     if(currentPage&&(currentUser?.menuPerms||{})[currentPage]===false)currentPage="dashboard";
     serverConfig.status="connected";serverConfig.statusMsg="권한 변경 · 최신 데이터 반영";
     showToast(hadPending?"권한이 변경되어 저장 전 변경을 취소하고 최신 자료를 다시 불러왔습니다.":"권한이 변경되어 최신 자료를 다시 불러왔습니다.","info");
   }else{
-    applyState(state,skipUndo,{serverSnapshot:true});
+    applyState(state,skipUndo,{serverSnapshot:true,fullServerRead:true});
   }
   return accessChanged;
 }
@@ -24366,7 +24377,7 @@ function openStockCountModal(){
   if(!erpLocations.length){showToast("먼저 위치를 등록하세요.","error");return;}
   openModal(`<div class="modal-box" style="max-width:640px"><div class="modal-head"><h3>📋 재고 실사</h3></div><div class="modal-body">
     <div class="fg"><label class="fl">실사 위치 <span class="req">*</span></label><select class="fc" id="count-loc" onchange="_loadStockCountSheet()">${erpLocations.map(l=>`<option value="${l.id}">${h(l.name)}</option>`).join("")}</select></div>
-    <div class="fz11 text-gray mb2">시스템 재고와 다른 실사 수량만 입력하세요. 동일하면 조정되지 않습니다.</div>
+    <div class="fz11 text-gray mb2">직접 센 수량을 입력하세요. 빈칸은 그대로 두고, 재고가 없으면 0을 입력하세요.</div>
     <div id="count-sheet"></div>
   </div><div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal()">취소</button><button class="btn btn-primary" onclick="submitStockCount()">실사 반영</button></div></div>`);
   setTimeout(_loadStockCountSheet,30);
@@ -24377,11 +24388,13 @@ function _loadStockCountSheet(){
   _stockCountLines=items.map(i=>({itemId:i.id,current:_erpStockQty(i.id,locId),countedQty:null}));
   const el=$("#count-sheet");if(!el)return;
   el.innerHTML=`<div class="tbl-wrap" style="max-height:340px;overflow:auto"><table><thead><tr><th>품목</th><th>시스템 재고</th><th>실사 수량</th></tr></thead><tbody>
-  ${_stockCountLines.map((l,i)=>`<tr><td>${h(_erpItemName(l.itemId))}</td><td style="text-align:right">${l.current}</td><td><input class="fc" type="number" style="width:100px" placeholder="${l.current}" oninput="_stockCountLines[${i}].countedQty=this.value===''?null:+this.value"></td></tr>`).join("")}
+  ${_stockCountLines.map((l,i)=>`<tr><td>${h(_erpItemName(l.itemId))}</td><td style="text-align:right">${l.current}</td><td><input class="fc" type="number" min="0" step="any" style="width:100px" aria-label="${h(_erpItemName(l.itemId))} 실사 수량" placeholder="${l.current}" oninput="_stockCountLines[${i}].countedQty=this.value===''?null:+this.value"></td></tr>`).join("")}
   </tbody></table></div>`;
 }
 async function submitStockCount(){
   const locId=$("#count-loc")?.value;
+  const invalid=$("#count-sheet input:invalid");
+  if(invalid){invalid.focus();invalid.reportValidity();return;}
   const lines=_stockCountLines.filter(l=>l.countedQty!==null&&l.countedQty!==l.current).map(l=>({itemId:l.itemId,countedQty:l.countedQty}));
   if(!lines.length){showToast("시스템 재고와 다른 실사 수량이 없습니다.","info");closeModal();return;}
   const r=await serverRequest("POST","/api/erp/stock/count",{locationId:locId,lines,role:currentUser.role,user:currentUser.name});
@@ -30814,8 +30827,10 @@ function openLongServicePayoutModal(empId,years){
     <div class="fz11 text-gray">과세 소득(상여)으로 해당 월 명세서에 더해지며, 한 번 반영하면 같은 포상은 다시 반영되지 않습니다. 휴가·기념패 등 현물 포상은 이 기능과 별개로 운영합니다.</div>
   </div><div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal()">취소</button><button class="btn btn-primary" onclick="applyLongServicePayout(${h(JSON.stringify(String(empId)))},${years})">급여에 반영</button></div></div>`);
 }
-function applyLongServicePayout(empId,years){
+async function applyLongServicePayout(empId,years){
   if(currentUser.role!=="admin")return;
+  if(_serverSaving){showToast("진행 중인 저장이 끝난 뒤 다시 반영해 주세요.","info");return;}
+  if(!serverConfig.enabled||!serverConfig.url){showToast("급여 반영 전에 서버 연결을 확인해 주세요.","error");return;}
   const emp=getEmp(empId),tier=(settings.longServiceAwards||[]).find(t=>t.years===years),amount=_lsTierAmount(tier);
   if(!emp||!tier||!amount){showToast("포상금이 설정된 기준이 아닙니다.","error");return;}
   if(_lsPayoutRecord(emp.id,years)){showToast("이미 급여에 반영된 포상입니다.","info");closeModal();renderLongServiceAwardPage();return;}
@@ -30835,7 +30850,16 @@ function applyLongServicePayout(empId,years){
     employees=employees.map(e=>String(e.id)===String(emp.id)?{...e,hrHistory:[...(e.hrHistory||[]),entry],updatedAt:nowIso}:e);
   }
   logAction("longservice_payout",`${emp.name} ${years}년 근속 포상금 ${amount.toLocaleString()}원 → ${year}-${String(month).padStart(2,"0")} 급여`,"payrollAdjustments",built.record.id);
-  closeModal();autoSaveToServerIfEnabled();showToast("장기근속 포상금이 급여에 반영되었습니다.","success");renderLongServiceAwardPage();
+  markExplicitSaveChange();
+  const result=await saveToServer(true);
+  if(result?.status==="saved"||result?.status==="merged"){
+    closeModal();showToast("장기근속 포상금이 급여에 반영되었습니다.","success");renderLongServiceAwardPage();return;
+  }
+  // The server rejects the entire linked bundle when payroll/history cannot be
+  // accepted together.  Discard the optimistic local mutation before retrying.
+  try{await loadFromServer();}catch(e){console.warn("long-service payout refresh failed",e);}
+  closeModal();renderLongServiceAwardPage();
+  if(result?.status!=="partial")showExplicitSaveResult(result,"장기근속 포상금이 급여에 반영되었습니다.");
 }
 async function cancelLongServicePayout(empId,years){
   if(currentUser.role!=="admin")return;
@@ -30846,6 +30870,8 @@ async function cancelLongServicePayout(empId,years){
   const ok=await askConfirmModal({title:"장기근속 포상금 반영 취소",message:`${emp.name}님의 ${years}년 근속 포상금을 급여에서 제외합니다.`,confirmText:"반영 취소",danger:true,
     impacts:[{label:"금액",value:`${Number(rec.amount).toLocaleString()}원`},{label:"급여월",value:`${rec.year}년 ${rec.month}월`}]});
   if(!ok)return;
+  if(_serverSaving){showToast("진행 중인 저장이 끝난 뒤 다시 취소해 주세요.","info");return;}
+  if(!serverConfig.enabled||!serverConfig.url){showToast("급여 반영 취소 전에 서버 연결을 확인해 주세요.","error");return;}
   _tombstone("payrollAdjustments",rec.id);
   const idx=payrollAdjustments.indexOf(rec);if(idx>=0)payrollAdjustments.splice(idx,1);
   _lsRecalcSlip(emp,rec.year,rec.month);
@@ -30854,7 +30880,14 @@ async function cancelLongServicePayout(empId,years){
     employees=employees.map(e=>String(e.id)===String(emp.id)?{...e,hrHistory:(e.hrHistory||[]).filter(x=>x.id!==hhId),updatedAt:new Date().toISOString()}:e);
   }
   logAction("longservice_payout_cancel",`${emp.name} ${years}년 근속 포상금 반영 취소`,"payrollAdjustments",rec.id);
-  autoSaveToServerIfEnabled();showToast("급여 반영을 취소했습니다.","success");renderLongServiceAwardPage();
+  markExplicitSaveChange();
+  const result=await saveToServer(true);
+  if(result?.status==="saved"||result?.status==="merged"){
+    showToast("급여 반영을 취소했습니다.","success");renderLongServiceAwardPage();return;
+  }
+  try{await loadFromServer();}catch(e){console.warn("long-service payout cancel refresh failed",e);}
+  renderLongServiceAwardPage();
+  if(result?.status!=="partial")showExplicitSaveResult(result,"급여 반영을 취소했습니다.");
 }
 function renderLongServiceAwardPage(){
   const c=$("#content");if(!c)return;

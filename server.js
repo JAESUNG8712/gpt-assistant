@@ -1,4 +1,5 @@
 const express = require("express");
+
 const cors    = require("cors");
 const helmet  = require("helmet");
 const compression = require("compression");
@@ -64,7 +65,16 @@ process.on("uncaughtException", (err) => {
   process.exit(1);
 });
 
+const { createLongServiceBundleIntent, assertLongServiceBundleIntegrity } = require("./lib/long-service-integrity");
 const app  = express();
+// A failed two-file rollback must finish before any route can observe or write state.
+app.use((req, res, next) => {
+  if (USE_JSON_FILE) {
+    try { _recoverFileErpAccounting(); }
+    catch (_) { return res.status(503).json({ ok: false, code: "STORAGE_RECOVERY_REQUIRED", message: "저장소 복구가 필요합니다. 잠시 후 다시 시도하세요." }); }
+  }
+  next();
+});
 require("./lib/async-route-guard").installAsyncRouteGuard(app);
 const PORT = process.env.PORT || 3000;
 // 보안상 API 라우트는 경로 대소문자를 정확히 맞춰야 한다. Express 기본값은
@@ -1257,6 +1267,7 @@ async function initDB() {
     if (Number.isFinite(JSON_FILE_WORKERS) && JSON_FILE_WORKERS > 1) {
       throw new Error("JSON 파일 저장 모드는 WEB_CONCURRENCY=1만 지원합니다. 다중 인스턴스 운영에는 DATABASE_URL(PostgreSQL)을 설정하세요.");
     }
+    _recoverFileErpAccounting(false);
     if (fs.existsSync(JSON_FILE)) {
       _fileStore = _readExistingJsonFileOrFail(JSON_FILE, "메인 데이터");
       _setVersion(null, _fileStore._version || 0);
@@ -1334,8 +1345,7 @@ async function initDB() {
       console.log(`[Storage] 기초 계정과목 ${_fileAccounting.accounts.length}건 시딩 완료`);
     }
     if (!_fileErp.locations || _fileErp.locations.length === 0) {
-      _fileErp.locations = DEFAULT_LOCATIONS.map((l, i) => ({ id: `loc_seed_${i + 1}`, ...l }));
-      _saveFileErp();
+      _commitFileErp({ ..._fileErp, locations: DEFAULT_LOCATIONS.map((l, i) => ({ id: `loc_seed_${i + 1}`, ...l })) });
       console.log(`[Storage] 기초 위치(창고) ${_fileErp.locations.length}건 시딩 완료`);
     }
     return;
@@ -3185,6 +3195,15 @@ function _payrollRewardConflict(record, stored, basis) {
     const year = Number(record.evalYear);
     if (!Number.isInteger(year) || year < 2000 || year > 2100 ||
         record.sourceKey !== `performance:${year}:${record.empId}`) return "VALIDATION";
+  }
+  // 장기근속 포상은 직원×근속연수당 정확히 한 번만 급여에 반영돼야 한다. UI는
+  // `longservice-${empId}-${years}`를 만들지만 서버가 sourceKey의 모양을 검증하지 않으면
+  // 동일 포상을 다른 키로 바꿔 여러 달에 반복 지급할 수 있다. sourceKey 중복 검사는
+  // 아래에서 JSON/PG 공통으로 수행되므로, 먼저 신뢰할 수 있는 정규 키로 강제한다.
+  if (record.source === "longservice_award") {
+    const years = Number(record.longServiceYears);
+    if (!Number.isInteger(years) || years < 1 || years > 100 ||
+        record.sourceKey !== `longservice-${record.empId}-${years}`) return "VALIDATION";
   }
   if (record.sourceKey && basis.some(row => String(row.id) !== String(record.id) &&
       row.sourceKey === record.sourceKey)) return "PAYROLL_DUPLICATE";
@@ -6428,6 +6447,12 @@ app.post("/save", async (req, res) => {
       let merged    = false;
       let serverData;
       const getServerData = async () => (serverData ??= await loadData(companyId));
+      // Keep the unfiltered user intent.  Feature/menu gates and record-CAS may
+      // legitimately turn individual fields back to their server values, but a
+      // long-service payout must never leave only its HR-history half accepted.
+      const longServiceBundleIntent = structuredClone(
+        createLongServiceBundleIntent(await getServerData(), clientData)
+      );
 
       // 새 웹 클라이언트는 레코드마다 서버가 발급한 _rev를 다시 보낸다. 수정 시점의
       // revision과 현재 서버 revision이 다르면 updatedAt이 더 최신이어도 덮어쓰지 않는다.
@@ -6482,7 +6507,12 @@ app.post("/save", async (req, res) => {
       const before = await getServerData();
       const revisionPre = takePreImage(before, finalData, REVISION_TRACKED_FIELDS);
       const { duplicateLoginIds, rejectedRecords } = await _persistDataLocked(finalData, changedBy, companyId, req.auth || null, null,
-        after => _prepareSaveEffects(companyId, before, after, revisionPre, changedBy, req.auth));
+        after => {
+          // Runs before the JSON snapshot is published and before PostgreSQL
+          // COMMIT, so throwing here rolls the whole linked workflow back.
+          assertLongServiceBundleIntegrity(longServiceBundleIntent, after);
+          return _prepareSaveEffects(companyId, before, after, revisionPre, changedBy, req.auth);
+        });
       const savedState = await loadData(companyId);
       // /data와 같은 두 단계 필터를 /save의 병합 응답에도 적용한다. 그렇지 않으면
       // menuPerms로 숨긴 원장이 충돌/부분거부 시 mergedData에서 다시 노출된다.
@@ -7548,12 +7578,31 @@ let _hrSchedulerRunning = false;
 function _kstToday() { return new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 10); }
 async function _applyScheduledHrChangesForCompany(companyId) {
   const { computeDueHrChanges } = require("./lib/scheduled-hr");
-  return _withSaveLock(() => _withDistributedSaveLock(companyId, async () => {
-    const stored = await loadData(companyId);
+  return _withSaveLock(() => _withDistributedSaveLock(companyId, async client => {
+    const stored = await loadData(companyId, client);
     const nowIso = new Date().toISOString();
     const { employees, applied } = computeDueHrChanges(stored.employees || [], _kstToday(), nowIso);
     if (!applied.length) return 0;
-    await _persistDataLocked({ employees }, "system:scheduled-hr", companyId, { role: "admin", empId: null });
+    const actor = { role: "admin", empId: null };
+    if (client) {
+      await client.query("BEGIN");
+      try {
+        // Suspension may have committed since this company was selected for the cycle.
+        const eligible = await client.query("SELECT id FROM companies WHERE id = $1 AND status <> 'suspended' FOR SHARE", [companyId]);
+        if (!eligible.rowCount) {
+          await client.query("ROLLBACK");
+          return 0;
+        }
+        await _persistDataLocked({ employees }, "system:scheduled-hr", companyId, actor, client);
+        await client.query("COMMIT");
+      } catch (error) {
+        await client.query("ROLLBACK");
+        throw error;
+      }
+      _bumpVersion(companyId);
+    } else {
+      await _persistDataLocked({ employees }, "system:scheduled-hr", companyId, actor);
+    }
     broadcastSSE("data_updated", { version: _getVersion(companyId), meta: {} }, null, companyId);
     return applied.length;
   }));
@@ -10725,9 +10774,80 @@ app.post("/api/accounting/fixed-assets/:id/depreciation-schedule/:year/post", as
 // 회계 모듈과 동일하게 서버-권위형: 번호 발급·상태 전환·발주 입고 시 재고 반영을
 // 서버가 직접 처리한다. JSON 파일 모드는 `_fileErp`, PostgreSQL 모드는 전용 테이블 사용.
 
-function _saveFileErp() {
+function _erpAccountingPaths() {
+  return [JSON_FILE.replace(/\.json$/, "-erp.json"), JSON_FILE.replace(/\.json$/, "-accounting.json")];
+}
+function _recoverFileErpAccounting(publish = true) {
+  const paths = _erpAccountingPaths();
+  const recovered = require("./lib/json-pair-transaction").recoverJsonPair(paths,
+    JSON_FILE + ".erp-accounting-journal", _atomicWriteFileSync);
+  if (recovered && publish) {
+    _fileErp = { ..._fileErp, ...JSON.parse(fs.readFileSync(paths[0], "utf8")) };
+    _fileAccounting = { ..._fileAccounting, ...JSON.parse(fs.readFileSync(paths[1], "utf8")) };
+  }
+}
+function _commitFileErpAccounting(erp, accounting) {
+  require("./lib/json-pair-transaction").commitJsonPair(_erpAccountingPaths(),
+    JSON_FILE + ".erp-accounting-journal", [erp, accounting], _atomicWriteFileSync);
+  _fileErp = erp;
+  _fileAccounting = accounting;
+}
+function _commitFileErp(state) {
   const erpFile = JSON_FILE.replace(/\.json$/, "-erp.json");
-  _atomicWriteFileSync(erpFile, JSON.stringify(_fileErp, null, 2));
+  _atomicWriteFileSync(erpFile, JSON.stringify(state, null, 2));
+  _fileErp = state;
+}
+function _commitFileErpMaster(collection, id, row) {
+  const stored = _fileErp[collection];
+  const rows = row ? stored.slice() : stored.filter(entry => entry.id !== id);
+  if (row) {
+    const index = rows.findIndex(entry => entry.id === id);
+    if (index < 0) rows.push(row);
+    else rows[index] = row;
+  }
+  _commitFileErp({ ..._fileErp, [collection]: rows });
+}
+// Only single-document changes use this helper. Shipping, receiving and conversion
+// keep their wider transactions so the inventory, invoice and document commit together.
+const ERP_DOCUMENT_TABLES = new Map([
+  ["quotations", "erp_quotations"], ["purchaseOrders", "erp_purchase_orders"], ["purchaseRequests", "erp_purchase_requests"],
+]);
+async function _changeErpDocument(kind, id, companyId, { from, patch, message, ownerId }) {
+  const table = ERP_DOCUMENT_TABLES.get(kind);
+  if (!table) throw new Error("Unknown ERP document type");
+  function validate(record, status) {
+    if (!record) throw httpError(404, "ERP_DOCUMENT_NOT_FOUND", "문서를 찾을 수 없습니다.");
+    if (ownerId !== undefined && String(record.requestedById) !== String(ownerId)) {
+      throw httpError(403, "ERP_NOT_OWNER", "본인 요청만 삭제할 수 있습니다.");
+    }
+    if (!from.includes(status)) throw httpError(400, "ERP_DOCUMENT_STATE", message);
+    if (!patch && kind === "purchaseOrders" && record.sourcePurchaseRequestId) {
+      throw httpError(409, "ERP_ORDER_LINKED", "구매요청에서 전환된 발주서입니다. 이력을 유지하려면 삭제 대신 취소하세요.");
+    }
+  }
+  if (USE_JSON_FILE) {
+    const rows = _fileErp[kind], current = rows.find(row => row.id === id);
+    validate(current, current?.status);
+    const next = patch ? { ...current, ...patch } : null;
+    const state = { ..._fileErp, [kind]: next ? rows.map(r => r === current ? next : r) : rows.filter(r => r !== current) };
+    _commitFileErp(state);
+    return next || current;
+  }
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const { rows } = await client.query(`SELECT data, status FROM ${table} WHERE id=$1 AND company_id=$2 FOR UPDATE`, [id, companyId]);
+    const current = rows[0]?.data;
+    validate(current, rows[0]?.status);
+    const next = patch ? { ...current, ...patch } : null;
+    if (next) await client.query(`UPDATE ${table} SET status=$3, data=$4, updated_at=NOW() WHERE id=$1 AND company_id=$2`, [id, companyId, next.status, next]);
+    else await client.query(`DELETE FROM ${table} WHERE id=$1 AND company_id=$2`, [id, companyId]);
+    await client.query("COMMIT");
+    return next || current;
+  } catch (e) {
+    await client.query("ROLLBACK");
+    throw e;
+  } finally { client.release(); }
 }
 function _saveFilePms() {
   const pmsFile = JSON_FILE.replace(/\.json$/, "-pms.json");
@@ -10737,11 +10857,15 @@ function _saveFileRecruit() {
   const recruitFile = JSON_FILE.replace(/\.json$/, "-recruit.json");
   _atomicWriteFileSync(recruitFile, JSON.stringify(_fileRecruit, null, 2));
 }
-function _nextErpSeq(kind, year) {
-  if (!_fileErp[kind]) _fileErp[kind] = {};
-  const next = (_fileErp[kind][year] || 0) + 1;
-  _fileErp[kind][year] = next;
-  return next;
+function _issueFileErpNumber(collection, current, patch, seqKey, numberField, prefix, year) {
+  const seq = (_fileErp[seqKey]?.[year] || 0) + 1;
+  const issued = { ...current, ...patch, [numberField]: `${prefix}-${year}-${String(seq).padStart(6, "0")}` };
+  _commitFileErp({
+    ..._fileErp,
+    [seqKey]: { ..._fileErp[seqKey], [year]: seq },
+    [collection]: _fileErp[collection].map(row => row === current ? issued : row),
+  });
+  return issued;
 }
 // 수량·단가에 음수가 들어와도 아무 검증 없이 통과해, 견적서 → 출고(재고 차감) → 세금계산서
 // 발행까지 그대로 흘러갔다. 그 결과 마이너스 공급가액 세금계산서가 만들어지고 부가세
@@ -10823,9 +10947,7 @@ app.post("/api/erp/items", async (req, res) => {
     // 없으므로 0 이상으로 clamp.
     const item = { id: itemId, code, name, productName: productName || "", assetNo: assetNo || "", unit: unit || "EA", category: category || "", safetyStock: Number(safetyStock) || 0, unitCost: Number(unitCost) || 0, leadTimeDays: Math.max(0, Number(leadTimeDays) || 0), active };
     if (USE_JSON_FILE) {
-      const idx = _fileErp.items.findIndex(i => i.id === itemId);
-      if (idx >= 0) _fileErp.items[idx] = item; else _fileErp.items.push(item);
-      _saveFileErp();
+      _commitFileErpMaster("items", itemId, item);
       return res.json({ ok: true, item });
     }
     await pool.query("INSERT INTO erp_items (id, company_id, data) VALUES ($1,$2,$3) ON CONFLICT (company_id, id) DO UPDATE SET data = $3, updated_at = NOW()", [itemId, companyId, item]);
@@ -10844,8 +10966,7 @@ app.post("/api/erp/items/:id/delete", async (req, res) => {
         _fileErp.quotations.some(q => (q.lines || []).some(l => l.itemId === id)) ||
         _fileErp.purchaseOrders.some(p => (p.lines || []).some(l => l.itemId === id));
       if (used) return res.status(400).json({ ok: false, message: "재고 이력 또는 문서에서 사용 중인 품목은 삭제할 수 없습니다. 비활성화를 이용하세요." });
-      _fileErp.items = _fileErp.items.filter(i => i.id !== id);
-      _saveFileErp();
+      _commitFileErpMaster("items", id, null);
       return res.json({ ok: true });
     }
     // JSON 파일 모드는 재고원장 + 견적서 + 발주서 3곳을 검사하는데, Postgres 모드는
@@ -10890,9 +11011,7 @@ app.post("/api/erp/locations", async (req, res) => {
     const locId = id || `loc_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const loc = { id: locId, name, address: address || "", active };
     if (USE_JSON_FILE) {
-      const idx = _fileErp.locations.findIndex(l => l.id === locId);
-      if (idx >= 0) _fileErp.locations[idx] = loc; else _fileErp.locations.push(loc);
-      _saveFileErp();
+      _commitFileErpMaster("locations", locId, loc);
       return res.json({ ok: true, location: loc });
     }
     await pool.query("INSERT INTO erp_locations (id, company_id, data) VALUES ($1,$2,$3) ON CONFLICT (company_id, id) DO UPDATE SET data = $3, updated_at = NOW()", [locId, req.auth.companyId || null, loc]);
@@ -10909,8 +11028,7 @@ app.post("/api/erp/locations/:id/delete", async (req, res) => {
     if (USE_JSON_FILE) {
       const used = _fileErp.stockLedger.some(l => l.locationId === id);
       if (used) return res.status(400).json({ ok: false, message: "재고 이력에서 사용 중인 위치는 삭제할 수 없습니다. 비활성화를 이용하세요." });
-      _fileErp.locations = _fileErp.locations.filter(l => l.id !== id);
-      _saveFileErp();
+      _commitFileErpMaster("locations", id, null);
       return res.json({ ok: true });
     }
     const { rows } = await pool.query("SELECT 1 FROM erp_stock_ledger WHERE location_id = $1 AND (company_id = $2 OR company_id IS NULL) LIMIT 1", [id, companyId]);
@@ -10964,8 +11082,7 @@ app.post("/api/erp/quotations", async (req, res) => {
       createdBy: createdBy || "unknown", createdAt: new Date().toISOString(),
     };
     if (USE_JSON_FILE) {
-      _fileErp.quotations.push(quote);
-      _saveFileErp();
+      _commitFileErp({ ..._fileErp, quotations: [..._fileErp.quotations, quote] });
       return res.json({ ok: true, quotation: quote });
     }
     await pool.query("INSERT INTO erp_quotations (id, doc_date, status, data, company_id) VALUES ($1,$2,'draft',$3,$4)", [quote.id, date, quote, companyId]);
@@ -10984,16 +11101,15 @@ app.post("/api/erp/quotations/:id/send", async (req, res) => {
       const q = _fileErp.quotations.find(q => q.id === id);
       if (!q) return res.status(404).json({ ok: false, message: "견적서를 찾을 수 없습니다." });
       if (q.status !== "draft") return res.status(400).json({ ok: false, message: "임시 저장 상태의 견적서만 발송할 수 있습니다." });
-      const seq = _nextErpSeq("quoteSeq", year);
-      q.quoteNo = `QT-${year}-${String(seq).padStart(6, "0")}`;
-      q.status = "sent"; q.sentBy = req.body.user || "unknown"; q.sentAt = new Date().toISOString();
-      _saveFileErp();
-      return res.json({ ok: true, quotation: q });
+      const quotation = _issueFileErpNumber("quotations", q, {
+        status: "sent", sentBy: req.body.user || "unknown", sentAt: new Date().toISOString(),
+      }, "quoteSeq", "quoteNo", "QT", year);
+      return res.json({ ok: true, quotation });
     }
     const client = await pool.connect();
     try {
       await client.query("BEGIN");
-      const { rows } = await client.query("SELECT data, status FROM erp_quotations WHERE id = $1 AND (company_id = $2 OR company_id IS NULL) FOR UPDATE", [id, companyId]);
+      const { rows } = await client.query("SELECT data, status FROM erp_quotations WHERE id = $1 AND company_id = $2 FOR UPDATE", [id, companyId]);
       if (!rows.length) { await client.query("ROLLBACK"); return res.status(404).json({ ok: false, message: "견적서를 찾을 수 없습니다." }); }
       if (rows[0].status !== "draft") { await client.query("ROLLBACK"); return res.status(400).json({ ok: false, message: "임시 저장 상태의 견적서만 발송할 수 있습니다." }); }
       const { rows: seqRows } = await client.query(
@@ -11001,7 +11117,7 @@ app.post("/api/erp/quotations/:id/send", async (req, res) => {
       );
       const quoteNo = `QT-${year}-${String(seqRows[0].seq).padStart(6, "0")}`;
       const q = { ...rows[0].data, quoteNo, status: "sent", sentBy: req.body.user || "unknown", sentAt: new Date().toISOString() };
-      await client.query("UPDATE erp_quotations SET status = 'sent', data = $2, updated_at = NOW() WHERE id = $1", [id, q]);
+      await client.query("UPDATE erp_quotations SET status = 'sent', data = $3, updated_at = NOW() WHERE id = $1 AND company_id = $2", [id, companyId, q]);
       await client.query("COMMIT");
       res.json({ ok: true, quotation: q });
     } catch (e) { await client.query("ROLLBACK"); throw e; } finally { client.release(); }
@@ -11014,20 +11130,13 @@ app.post("/api/erp/quotations/:id/accept", async (req, res) => {
     if (!requirePage(req, res, "sales-quotations")) return;
     const id = req.params.id;
     const companyId = req.auth.companyId || null;
-    if (USE_JSON_FILE) {
-      const q = _fileErp.quotations.find(q => q.id === id);
-      if (!q) return res.status(404).json({ ok: false, message: "견적서를 찾을 수 없습니다." });
-      if (q.status !== "sent") return res.status(400).json({ ok: false, message: "발송된 견적서만 수주 확정할 수 있습니다." });
-      q.status = "accepted"; q.acceptedBy = req.body.user || "unknown"; q.acceptedAt = new Date().toISOString();
-      _saveFileErp();
-      return res.json({ ok: true, quotation: q });
-    }
-    const { rows } = await pool.query("SELECT data FROM erp_quotations WHERE id = $1 AND status = 'sent' AND (company_id = $2 OR company_id IS NULL)", [id, companyId]);
-    if (!rows.length) return res.status(400).json({ ok: false, message: "발송된 견적서만 수주 확정할 수 있습니다." });
-    const q = { ...rows[0].data, status: "accepted", acceptedBy: req.body.user || "unknown", acceptedAt: new Date().toISOString() };
-    await pool.query("UPDATE erp_quotations SET status = 'accepted', data = $2, updated_at = NOW() WHERE id = $1", [id, q]);
+    const q = await _changeErpDocument("quotations", id, companyId, {
+      from: ["sent"],
+      patch: { status: "accepted", acceptedBy: req.body.user || "unknown", acceptedAt: new Date().toISOString() },
+      message: "발송된 견적서만 수주 확정할 수 있습니다.",
+    });
     res.json({ ok: true, quotation: q });
-  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
+  } catch (e) { res.status(e.status || 500).json({ ok: false, code: e.code, message: _safeErrMsg(e) }); }
 });
 
 // erp_stock_ledger는 append-only 원장이라(현재고 = item+location의 모든 행 합) 그
@@ -11048,6 +11157,16 @@ async function _lockStockKeys(client, companyId, pairs) {
 
 // 출고/매출 처리: 수주 확정된 견적서를 기준으로 재고 출고(원장 차감)와 세금계산서 발행을
 // 한 번에 처리한다. 재고 부족 시 거부, 성공 시 견적서는 'shipped'로 종결된다.
+function _requiredShipmentStock(lines) {
+  const required = new Map();
+  for (const line of lines) {
+    const key = String(line.itemId);
+    const item = required.get(key);
+    if (item) item.qty += Number(line.qty);
+    else required.set(key, { itemId: line.itemId, name: line.name, qty: Number(line.qty) });
+  }
+  return [...required.values()];
+}
 app.post("/api/erp/quotations/:id/ship", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
@@ -11057,18 +11176,19 @@ app.post("/api/erp/quotations/:id/ship", async (req, res) => {
     const user = req.body.user || "unknown";
     const now = new Date().toISOString();
     if (USE_JSON_FILE) {
-      const q = _fileErp.quotations.find(q => q.id === id);
+      const erp = structuredClone(_fileErp), accounting = structuredClone(_fileAccounting);
+      const q = erp.quotations.find(q => q.id === id);
       if (!q) return res.status(404).json({ ok: false, message: "견적서를 찾을 수 없습니다." });
       if (q.status !== "accepted") return res.status(400).json({ ok: false, message: "수주 확정된 견적서만 출고 처리할 수 있습니다." });
       if (!q.locationId) return res.status(400).json({ ok: false, message: "출고 위치가 지정되지 않은 견적서입니다." });
-      for (const l of q.lines) {
-        const current = _fileErp.stockLedger
+      for (const l of _requiredShipmentStock(q.lines)) {
+        const current = erp.stockLedger
           .filter(s => s.itemId === l.itemId && s.locationId === q.locationId)
           .reduce((sum, s) => sum + (s.type === "out" ? -Math.abs(s.qty) : Math.abs(s.qty)), 0);
         if (current < l.qty) return res.status(400).json({ ok: false, message: `재고 부족: ${l.name || l.itemId} (현재 ${current} / 필요 ${l.qty})` });
       }
       for (const l of q.lines) {
-        _fileErp.stockLedger.push({
+        erp.stockLedger.push({
           id: `sl_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
           itemId: l.itemId, locationId: q.locationId, type: "out", qty: l.qty,
           refType: "quotation", refId: q.id, refNo: q.quoteNo, memo: `견적 출고 (${q.quoteNo})`,
@@ -11076,32 +11196,34 @@ app.post("/api/erp/quotations/:id/ship", async (req, res) => {
         });
       }
       const year = new Date(q.date).getFullYear();
-      const seq = _nextAcctSeq("taxInvoiceSeq", year);
+      accounting.taxInvoiceSeq ||= {};
+      const seq = (accounting.taxInvoiceSeq[year] || 0) + 1;
+      accounting.taxInvoiceSeq[year] = seq;
       const invoiceNo = `TI-${year}-${String(seq).padStart(6, "0")}`;
       const invTotals = _buildTaxInvoiceTotals(q.lines);
       const inv = {
         id: `ti_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
         invoiceNo, status: "issued", direction: "sales",
-        issueDate: q.date, partnerId: q.partnerId || null, partnerName: q.partnerName, partnerBizNo: await _lookupPartnerBizNo(q.partnerId, companyId),
+        issueDate: q.date, partnerId: q.partnerId || null, partnerName: q.partnerName, partnerBizNo: accounting.partners.find(p => p.id === q.partnerId)?.bizNo || "",
         ...invTotals,
         createdBy: user, createdAt: now, sourceType: "quotation", sourceId: q.id, sourceNo: q.quoteNo,
       };
-      _fileAccounting.taxInvoices.push(inv);
+      accounting.taxInvoices.push(inv);
       q.status = "shipped"; q.shippedBy = user; q.shippedAt = now; q.taxInvoiceId = inv.id; q.taxInvoiceNo = inv.invoiceNo;
-      _saveFileErp();
-      _saveFileAccounting();
+      _commitFileErpAccounting(erp, accounting);
       return res.json({ ok: true, quotation: q, taxInvoice: _taxInvoiceReference(inv) });
     }
     const client = await pool.connect();
     try {
       await client.query("BEGIN");
-      const { rows } = await client.query("SELECT data, status FROM erp_quotations WHERE id = $1 AND (company_id = $2 OR company_id IS NULL) FOR UPDATE", [id, companyId]);
+      const { rows } = await client.query("SELECT data, status FROM erp_quotations WHERE id = $1 AND company_id = $2 FOR UPDATE", [id, companyId]);
       if (!rows.length) { await client.query("ROLLBACK"); return res.status(404).json({ ok: false, message: "견적서를 찾을 수 없습니다." }); }
       const q0 = rows[0].data;
       if (rows[0].status !== "accepted") { await client.query("ROLLBACK"); return res.status(400).json({ ok: false, message: "수주 확정된 견적서만 출고 처리할 수 있습니다." }); }
       if (!q0.locationId) { await client.query("ROLLBACK"); return res.status(400).json({ ok: false, message: "출고 위치가 지정되지 않은 견적서입니다." }); }
-      await _lockStockKeys(client, companyId, q0.lines.map(l => [l.itemId, q0.locationId]));
-      for (const l of q0.lines) {
+      const required = _requiredShipmentStock(q0.lines);
+      await _lockStockKeys(client, companyId, required.map(l => [l.itemId, q0.locationId]));
+      for (const l of required) {
         const { rows: ledgerRows } = await client.query(
           "SELECT data FROM erp_stock_ledger WHERE item_id = $1 AND location_id = $2 AND (company_id = $3 OR company_id IS NULL) FOR UPDATE", [l.itemId, q0.locationId, companyId]
         );
@@ -11130,7 +11252,7 @@ app.post("/api/erp/quotations/:id/ship", async (req, res) => {
       };
       await client.query("INSERT INTO tax_invoices (id, invoice_no, issue_date, status, data, company_id) VALUES ($1,$2,$3,'issued',$4,$5)", [inv.id, invoiceNo, q0.date, inv, companyId]);
       const q = { ...q0, status: "shipped", shippedBy: user, shippedAt: now, taxInvoiceId: inv.id, taxInvoiceNo: inv.invoiceNo };
-      await client.query("UPDATE erp_quotations SET status = 'shipped', data = $2, updated_at = NOW() WHERE id = $1", [id, q]);
+      await client.query("UPDATE erp_quotations SET status = 'shipped', data = $3, updated_at = NOW() WHERE id = $1 AND company_id = $2", [id, companyId, q]);
       await client.query("COMMIT");
       res.json({ ok: true, quotation: q, taxInvoice: _taxInvoiceReference(inv) });
     } catch (e) { await client.query("ROLLBACK"); throw e; } finally { client.release(); }
@@ -11145,20 +11267,13 @@ app.post("/api/erp/quotations/:id/reject", async (req, res) => {
     const companyId = req.auth.companyId || null;
     const reason = (req.body || {}).reason;
     if (!reason) return res.status(400).json({ ok: false, message: "반려/실주 사유를 입력하세요." });
-    if (USE_JSON_FILE) {
-      const q = _fileErp.quotations.find(q => q.id === id);
-      if (!q) return res.status(404).json({ ok: false, message: "견적서를 찾을 수 없습니다." });
-      if (q.status !== "sent") return res.status(400).json({ ok: false, message: "발송된 견적서만 처리할 수 있습니다." });
-      q.status = "rejected"; q.rejectReason = reason; q.rejectedBy = req.body.user || "unknown"; q.rejectedAt = new Date().toISOString();
-      _saveFileErp();
-      return res.json({ ok: true, quotation: q });
-    }
-    const { rows } = await pool.query("SELECT data FROM erp_quotations WHERE id = $1 AND status = 'sent' AND (company_id = $2 OR company_id IS NULL)", [id, companyId]);
-    if (!rows.length) return res.status(400).json({ ok: false, message: "발송된 견적서만 처리할 수 있습니다." });
-    const q = { ...rows[0].data, status: "rejected", rejectReason: reason, rejectedBy: req.body.user || "unknown", rejectedAt: new Date().toISOString() };
-    await pool.query("UPDATE erp_quotations SET status = 'rejected', data = $2, updated_at = NOW() WHERE id = $1", [id, q]);
+    const q = await _changeErpDocument("quotations", id, companyId, {
+      from: ["sent"],
+      patch: { status: "rejected", rejectReason: reason, rejectedBy: req.body.user || "unknown", rejectedAt: new Date().toISOString() },
+      message: "발송된 견적서만 처리할 수 있습니다.",
+    });
     res.json({ ok: true, quotation: q });
-  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
+  } catch (e) { res.status(e.status || 500).json({ ok: false, code: e.code, message: _safeErrMsg(e) }); }
 });
 
 app.delete("/api/erp/quotations/:id", async (req, res) => {
@@ -11167,19 +11282,12 @@ app.delete("/api/erp/quotations/:id", async (req, res) => {
     if (!requirePage(req, res, "sales-quotations")) return;
     const id = req.params.id;
     const companyId = req.auth.companyId || null;
-    if (USE_JSON_FILE) {
-      const q = _fileErp.quotations.find(q => q.id === id);
-      if (!q) return res.status(404).json({ ok: false, message: "견적서를 찾을 수 없습니다." });
-      if (q.status !== "draft") return res.status(400).json({ ok: false, message: "임시 저장 상태의 견적서만 삭제할 수 있습니다." });
-      _fileErp.quotations = _fileErp.quotations.filter(q => q.id !== id);
-      _saveFileErp();
-      return res.json({ ok: true });
-    }
-    const { rows } = await pool.query("SELECT 1 FROM erp_quotations WHERE id = $1 AND status = 'draft' AND (company_id = $2 OR company_id IS NULL)", [id, companyId]);
-    if (!rows.length) return res.status(400).json({ ok: false, message: "임시 저장 상태의 견적서만 삭제할 수 있습니다." });
-    await pool.query("DELETE FROM erp_quotations WHERE id = $1", [id]);
+    await _changeErpDocument("quotations", id, companyId, {
+      from: ["draft"], patch: null,
+      message: "임시 저장 상태의 견적서만 삭제할 수 있습니다.",
+    });
     res.json({ ok: true });
-  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
+  } catch (e) { res.status(e.status || 500).json({ ok: false, code: e.code, message: _safeErrMsg(e) }); }
 });
 
 // ── 발주서 (Purchase orders) ────────────────────────────────────────────────
@@ -11224,8 +11332,7 @@ app.post("/api/erp/purchase-orders", async (req, res) => {
       createdBy: createdBy || "unknown", createdAt: new Date().toISOString(),
     };
     if (USE_JSON_FILE) {
-      _fileErp.purchaseOrders.push(po);
-      _saveFileErp();
+      _commitFileErp({ ..._fileErp, purchaseOrders: [..._fileErp.purchaseOrders, po] });
       return res.json({ ok: true, purchaseOrder: po });
     }
     await pool.query("INSERT INTO erp_purchase_orders (id, doc_date, status, data, company_id) VALUES ($1,$2,'draft',$3,$4)", [po.id, date, po, companyId]);
@@ -11244,16 +11351,15 @@ app.post("/api/erp/purchase-orders/:id/confirm", async (req, res) => {
       const po = _fileErp.purchaseOrders.find(p => p.id === id);
       if (!po) return res.status(404).json({ ok: false, message: "발주서를 찾을 수 없습니다." });
       if (po.status !== "draft") return res.status(400).json({ ok: false, message: "임시 저장 상태의 발주서만 발주 확정할 수 있습니다." });
-      const seq = _nextErpSeq("poSeq", year);
-      po.poNo = `PO-${year}-${String(seq).padStart(6, "0")}`;
-      po.status = "ordered"; po.orderedBy = req.body.user || "unknown"; po.orderedAt = new Date().toISOString();
-      _saveFileErp();
-      return res.json({ ok: true, purchaseOrder: po });
+      const purchaseOrder = _issueFileErpNumber("purchaseOrders", po, {
+        status: "ordered", orderedBy: req.body.user || "unknown", orderedAt: new Date().toISOString(),
+      }, "poSeq", "poNo", "PO", year);
+      return res.json({ ok: true, purchaseOrder });
     }
     const client = await pool.connect();
     try {
       await client.query("BEGIN");
-      const { rows } = await client.query("SELECT data, status FROM erp_purchase_orders WHERE id = $1 AND (company_id = $2 OR company_id IS NULL) FOR UPDATE", [id, companyId]);
+      const { rows } = await client.query("SELECT data, status FROM erp_purchase_orders WHERE id = $1 AND company_id = $2 FOR UPDATE", [id, companyId]);
       if (!rows.length) { await client.query("ROLLBACK"); return res.status(404).json({ ok: false, message: "발주서를 찾을 수 없습니다." }); }
       if (rows[0].status !== "draft") { await client.query("ROLLBACK"); return res.status(400).json({ ok: false, message: "임시 저장 상태의 발주서만 발주 확정할 수 있습니다." }); }
       const { rows: seqRows } = await client.query(
@@ -11261,7 +11367,7 @@ app.post("/api/erp/purchase-orders/:id/confirm", async (req, res) => {
       );
       const poNo = `PO-${year}-${String(seqRows[0].seq).padStart(6, "0")}`;
       const po = { ...rows[0].data, poNo, status: "ordered", orderedBy: req.body.user || "unknown", orderedAt: new Date().toISOString() };
-      await client.query("UPDATE erp_purchase_orders SET status = 'ordered', data = $2, updated_at = NOW() WHERE id = $1", [id, po]);
+      await client.query("UPDATE erp_purchase_orders SET status = 'ordered', data = $3, updated_at = NOW() WHERE id = $1 AND company_id = $2", [id, companyId, po]);
       await client.query("COMMIT");
       res.json({ ok: true, purchaseOrder: po });
     } catch (e) { await client.query("ROLLBACK"); throw e; } finally { client.release(); }
@@ -11276,12 +11382,13 @@ app.post("/api/erp/purchase-orders/:id/receive", async (req, res) => {
     const companyId = req.auth.companyId || null;
     const user = req.body.user || "unknown";
     if (USE_JSON_FILE) {
-      const po = _fileErp.purchaseOrders.find(p => p.id === id);
+      const erp = structuredClone(_fileErp), accounting = structuredClone(_fileAccounting);
+      const po = erp.purchaseOrders.find(p => p.id === id);
       if (!po) return res.status(404).json({ ok: false, message: "발주서를 찾을 수 없습니다." });
       if (po.status !== "ordered") return res.status(400).json({ ok: false, message: "발주 확정 상태의 발주서만 입고 처리할 수 있습니다." });
       const now = new Date().toISOString();
       for (const l of po.lines) {
-        _fileErp.stockLedger.push({
+        erp.stockLedger.push({
           id: `sl_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
           itemId: l.itemId, locationId: po.locationId, type: "in", qty: l.qty,
           refType: "po", refId: po.id, refNo: po.poNo, memo: `발주 입고 (${po.poNo})`,
@@ -11289,26 +11396,27 @@ app.post("/api/erp/purchase-orders/:id/receive", async (req, res) => {
         });
       }
       const year = new Date(po.date).getFullYear();
-      const seq = _nextAcctSeq("taxInvoiceSeq", year);
+      accounting.taxInvoiceSeq ||= {};
+      const seq = (accounting.taxInvoiceSeq[year] || 0) + 1;
+      accounting.taxInvoiceSeq[year] = seq;
       const invoiceNo = `TI-${year}-${String(seq).padStart(6, "0")}`;
       const invTotals = _buildTaxInvoiceTotals(po.lines);
       const inv = {
         id: `ti_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
         invoiceNo, status: "issued", direction: "purchase",
-        issueDate: po.date, partnerId: po.partnerId || null, partnerName: po.partnerName, partnerBizNo: await _lookupPartnerBizNo(po.partnerId, companyId),
+        issueDate: po.date, partnerId: po.partnerId || null, partnerName: po.partnerName, partnerBizNo: accounting.partners.find(p => p.id === po.partnerId)?.bizNo || "",
         ...invTotals,
         createdBy: user, createdAt: now, sourceType: "po", sourceId: po.id, sourceNo: po.poNo,
       };
-      _fileAccounting.taxInvoices.push(inv);
+      accounting.taxInvoices.push(inv);
       po.status = "received"; po.receivedBy = user; po.receivedAt = now; po.taxInvoiceId = inv.id; po.taxInvoiceNo = inv.invoiceNo;
-      _saveFileErp();
-      _saveFileAccounting();
+      _commitFileErpAccounting(erp, accounting);
       return res.json({ ok: true, purchaseOrder: po, taxInvoice: _taxInvoiceReference(inv) });
     }
     const client = await pool.connect();
     try {
       await client.query("BEGIN");
-      const { rows } = await client.query("SELECT data, status FROM erp_purchase_orders WHERE id = $1 AND (company_id = $2 OR company_id IS NULL) FOR UPDATE", [id, companyId]);
+      const { rows } = await client.query("SELECT data, status FROM erp_purchase_orders WHERE id = $1 AND company_id = $2 FOR UPDATE", [id, companyId]);
       if (!rows.length) { await client.query("ROLLBACK"); return res.status(404).json({ ok: false, message: "발주서를 찾을 수 없습니다." }); }
       if (rows[0].status !== "ordered") { await client.query("ROLLBACK"); return res.status(400).json({ ok: false, message: "발주 확정 상태의 발주서만 입고 처리할 수 있습니다." }); }
       const po0 = rows[0].data;
@@ -11335,7 +11443,7 @@ app.post("/api/erp/purchase-orders/:id/receive", async (req, res) => {
       };
       await client.query("INSERT INTO tax_invoices (id, invoice_no, issue_date, status, data, company_id) VALUES ($1,$2,$3,'issued',$4,$5)", [inv.id, invoiceNo, po0.date, inv, companyId]);
       const po = { ...po0, status: "received", receivedBy: user, receivedAt: now, taxInvoiceId: inv.id, taxInvoiceNo: inv.invoiceNo };
-      await client.query("UPDATE erp_purchase_orders SET status = 'received', data = $2, updated_at = NOW() WHERE id = $1", [id, po]);
+      await client.query("UPDATE erp_purchase_orders SET status = 'received', data = $3, updated_at = NOW() WHERE id = $1 AND company_id = $2", [id, companyId, po]);
       await client.query("COMMIT");
       res.json({ ok: true, purchaseOrder: po, taxInvoice: _taxInvoiceReference(inv) });
     } catch (e) { await client.query("ROLLBACK"); throw e; } finally { client.release(); }
@@ -11346,44 +11454,26 @@ app.post("/api/erp/purchase-orders/:id/cancel", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
     if (!requirePage(req, res, "sales-purchase-orders")) return;
-    const id = req.params.id;
-    const companyId = req.auth.companyId || null;
     const reason = (req.body || {}).reason;
     if (!reason) return res.status(400).json({ ok: false, message: "취소 사유를 입력하세요." });
-    if (USE_JSON_FILE) {
-      const po = _fileErp.purchaseOrders.find(p => p.id === id);
-      if (!po) return res.status(404).json({ ok: false, message: "발주서를 찾을 수 없습니다." });
-      if (po.status === "received") return res.status(400).json({ ok: false, message: "이미 입고 처리된 발주서는 취소할 수 없습니다." });
-      po.status = "cancelled"; po.cancelReason = reason; po.cancelledBy = req.body.user || "unknown"; po.cancelledAt = new Date().toISOString();
-      _saveFileErp();
-      return res.json({ ok: true, purchaseOrder: po });
-    }
-    const { rows } = await pool.query("SELECT data FROM erp_purchase_orders WHERE id = $1 AND status != 'received' AND (company_id = $2 OR company_id IS NULL)", [id, companyId]);
-    if (!rows.length) return res.status(400).json({ ok: false, message: "이미 입고 처리된 발주서는 취소할 수 없습니다." });
-    const po = { ...rows[0].data, status: "cancelled", cancelReason: reason, cancelledBy: req.body.user || "unknown", cancelledAt: new Date().toISOString() };
-    await pool.query("UPDATE erp_purchase_orders SET status = 'cancelled', data = $2, updated_at = NOW() WHERE id = $1", [id, po]);
+    const po = await _changeErpDocument("purchaseOrders", req.params.id, req.auth.companyId || null, {
+      from: ["draft", "ordered"],
+      patch: { status: "cancelled", cancelReason: reason, cancelledBy: req.body.user || "unknown", cancelledAt: new Date().toISOString() },
+      message: "이미 입고 또는 취소 처리된 발주서는 취소할 수 없습니다.",
+    });
     res.json({ ok: true, purchaseOrder: po });
-  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
+  } catch (e) { res.status(e.status || 500).json({ ok: false, code: e.code, message: _safeErrMsg(e) }); }
 });
 
 app.delete("/api/erp/purchase-orders/:id", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
     if (!requirePage(req, res, "sales-purchase-orders")) return;
-    const id = req.params.id;
-    if (USE_JSON_FILE) {
-      const po = _fileErp.purchaseOrders.find(p => p.id === id);
-      if (!po) return res.status(404).json({ ok: false, message: "발주서를 찾을 수 없습니다." });
-      if (po.status !== "draft") return res.status(400).json({ ok: false, message: "임시 저장 상태의 발주서만 삭제할 수 있습니다." });
-      _fileErp.purchaseOrders = _fileErp.purchaseOrders.filter(p => p.id !== id);
-      _saveFileErp();
-      return res.json({ ok: true });
-    }
-    const { rows } = await pool.query("SELECT 1 FROM erp_purchase_orders WHERE id = $1 AND status = 'draft' AND (company_id = $2 OR company_id IS NULL)", [id, req.auth.companyId || null]);
-    if (!rows.length) return res.status(400).json({ ok: false, message: "임시 저장 상태의 발주서만 삭제할 수 있습니다." });
-    await pool.query("DELETE FROM erp_purchase_orders WHERE id = $1", [id]);
+    await _changeErpDocument("purchaseOrders", req.params.id, req.auth.companyId || null, {
+      from: ["draft"], message: "임시 저장 상태의 발주서만 삭제할 수 있습니다.",
+    });
     res.json({ ok: true });
-  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
+  } catch (e) { res.status(e.status || 500).json({ ok: false, code: e.code, message: _safeErrMsg(e) }); }
 });
 
 // ── 구매요청 (Purchase requests — 구성원이 요청, admin이 승인/반려/발주전환) ─────
@@ -11430,8 +11520,7 @@ app.post("/api/erp/purchase-requests", async (req, res) => {
       createdAt: new Date().toISOString(),
     };
     if (USE_JSON_FILE) {
-      _fileErp.purchaseRequests.push(pr);
-      _saveFileErp();
+      _commitFileErp({ ..._fileErp, purchaseRequests: [..._fileErp.purchaseRequests, pr] });
       return res.json({ ok: true, purchaseRequest: pr });
     }
     await pool.query("INSERT INTO erp_purchase_requests (id, doc_date, status, data, company_id) VALUES ($1,$2,'pending',$3,$4)", [pr.id, date, pr, companyId]);
@@ -11443,47 +11532,28 @@ app.post("/api/erp/purchase-requests/:id/approve", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
     if (!requirePage(req, res, "inv-purchase-requests")) return;
-    const id = req.params.id;
-    const companyId = req.auth.companyId || null;
-    const user = req.body.user || "unknown";
-    if (USE_JSON_FILE) {
-      const pr = _fileErp.purchaseRequests.find(r => r.id === id);
-      if (!pr) return res.status(404).json({ ok: false, message: "구매요청을 찾을 수 없습니다." });
-      if (pr.status !== "pending") return res.status(400).json({ ok: false, message: "대기 중인 요청만 승인할 수 있습니다." });
-      pr.status = "approved"; pr.approvedBy = user; pr.approvedAt = new Date().toISOString();
-      _saveFileErp();
-      return res.json({ ok: true, purchaseRequest: pr });
-    }
-    const { rows } = await pool.query("SELECT data FROM erp_purchase_requests WHERE id = $1 AND status = 'pending' AND (company_id = $2 OR company_id IS NULL)", [id, companyId]);
-    if (!rows.length) return res.status(400).json({ ok: false, message: "대기 중인 요청만 승인할 수 있습니다." });
-    const pr = { ...rows[0].data, status: "approved", approvedBy: user, approvedAt: new Date().toISOString() };
-    await pool.query("UPDATE erp_purchase_requests SET status = 'approved', data = $2, updated_at = NOW() WHERE id = $1", [id, pr]);
+    const pr = await _changeErpDocument("purchaseRequests", req.params.id, req.auth.companyId || null, {
+      from: ["pending"],
+      patch: { status: "approved", approvedBy: req.body.user || "unknown", approvedAt: new Date().toISOString() },
+      message: "대기 중인 요청만 승인할 수 있습니다.",
+    });
     res.json({ ok: true, purchaseRequest: pr });
-  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
+  } catch (e) { res.status(e.status || 500).json({ ok: false, code: e.code, message: _safeErrMsg(e) }); }
 });
 
 app.post("/api/erp/purchase-requests/:id/reject", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
     if (!requirePage(req, res, "inv-purchase-requests")) return;
-    const id = req.params.id;
-    const companyId = req.auth.companyId || null;
     const reason = (req.body || {}).reason;
     if (!reason) return res.status(400).json({ ok: false, message: "반려 사유를 입력하세요." });
-    if (USE_JSON_FILE) {
-      const pr = _fileErp.purchaseRequests.find(r => r.id === id);
-      if (!pr) return res.status(404).json({ ok: false, message: "구매요청을 찾을 수 없습니다." });
-      if (pr.status !== "pending") return res.status(400).json({ ok: false, message: "대기 중인 요청만 반려할 수 있습니다." });
-      pr.status = "rejected"; pr.rejectReason = reason; pr.rejectedBy = req.body.user || "unknown"; pr.rejectedAt = new Date().toISOString();
-      _saveFileErp();
-      return res.json({ ok: true, purchaseRequest: pr });
-    }
-    const { rows } = await pool.query("SELECT data FROM erp_purchase_requests WHERE id = $1 AND status = 'pending' AND (company_id = $2 OR company_id IS NULL)", [id, companyId]);
-    if (!rows.length) return res.status(400).json({ ok: false, message: "대기 중인 요청만 반려할 수 있습니다." });
-    const pr = { ...rows[0].data, status: "rejected", rejectReason: reason, rejectedBy: req.body.user || "unknown", rejectedAt: new Date().toISOString() };
-    await pool.query("UPDATE erp_purchase_requests SET status = 'rejected', data = $2, updated_at = NOW() WHERE id = $1", [id, pr]);
+    const pr = await _changeErpDocument("purchaseRequests", req.params.id, req.auth.companyId || null, {
+      from: ["pending"],
+      patch: { status: "rejected", rejectReason: reason, rejectedBy: req.body.user || "unknown", rejectedAt: new Date().toISOString() },
+      message: "대기 중인 요청만 반려할 수 있습니다.",
+    });
     res.json({ ok: true, purchaseRequest: pr });
-  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
+  } catch (e) { res.status(e.status || 500).json({ ok: false, code: e.code, message: _safeErrMsg(e) }); }
 });
 
 app.post("/api/erp/purchase-requests/:id/convert-to-po", async (req, res) => {
@@ -11496,7 +11566,8 @@ app.post("/api/erp/purchase-requests/:id/convert-to-po", async (req, res) => {
     if (!partnerName) return res.status(400).json({ ok: false, message: "거래처명은 필수입니다." });
     if (!locationId) return res.status(400).json({ ok: false, message: "입고 위치를 선택하세요." });
     if (USE_JSON_FILE) {
-      const pr = _fileErp.purchaseRequests.find(r => r.id === id);
+      const erp = structuredClone(_fileErp);
+      const pr = erp.purchaseRequests.find(r => r.id === id);
       if (!pr) return res.status(404).json({ ok: false, message: "구매요청을 찾을 수 없습니다." });
       if (pr.status !== "approved") return res.status(400).json({ ok: false, message: "승인된 요청만 발주로 전환할 수 있습니다." });
       const po = {
@@ -11507,15 +11578,15 @@ app.post("/api/erp/purchase-requests/:id/convert-to-po", async (req, res) => {
         memo: pr.memo, createdBy: createdBy || "unknown", createdAt: new Date().toISOString(),
         sourcePurchaseRequestId: pr.id,
       };
-      _fileErp.purchaseOrders.push(po);
+      erp.purchaseOrders.push(po);
       pr.status = "converted"; pr.convertedPoId = po.id; pr.convertedAt = new Date().toISOString();
-      _saveFileErp();
+      _commitFileErp(erp);
       return res.json({ ok: true, purchaseOrder: po, purchaseRequest: pr });
     }
     const client = await pool.connect();
     try {
       await client.query("BEGIN");
-      const { rows } = await client.query("SELECT data, status FROM erp_purchase_requests WHERE id = $1 AND (company_id = $2 OR company_id IS NULL) FOR UPDATE", [id, companyId]);
+      const { rows } = await client.query("SELECT data, status FROM erp_purchase_requests WHERE id = $1 AND company_id = $2 FOR UPDATE", [id, companyId]);
       if (!rows.length) { await client.query("ROLLBACK"); return res.status(404).json({ ok: false, message: "구매요청을 찾을 수 없습니다." }); }
       if (rows[0].status !== "approved") { await client.query("ROLLBACK"); return res.status(400).json({ ok: false, message: "승인된 요청만 발주로 전환할 수 있습니다." }); }
       const pr0 = rows[0].data;
@@ -11529,7 +11600,7 @@ app.post("/api/erp/purchase-requests/:id/convert-to-po", async (req, res) => {
       };
       await client.query("INSERT INTO erp_purchase_orders (id, doc_date, status, data, company_id) VALUES ($1,$2,'draft',$3,$4)", [po.id, po.date, po, companyId]);
       const pr = { ...pr0, status: "converted", convertedPoId: po.id, convertedAt: new Date().toISOString() };
-      await client.query("UPDATE erp_purchase_requests SET status = 'converted', data = $2, updated_at = NOW() WHERE id = $1", [id, pr]);
+      await client.query("UPDATE erp_purchase_requests SET status = 'converted', data = $3, updated_at = NOW() WHERE id = $1 AND company_id = $2", [id, companyId, pr]);
       await client.query("COMMIT");
       res.json({ ok: true, purchaseOrder: po, purchaseRequest: pr });
     } catch (e) { await client.query("ROLLBACK"); throw e; } finally { client.release(); }
@@ -11540,24 +11611,13 @@ app.delete("/api/erp/purchase-requests/:id", async (req, res) => {
   if (!requireAuth(req, res)) return;
   if (!requirePage(req, res, "inv-purchase-requests")) return;
   try {
-    const id = req.params.id;
     const { role, empId: userId } = req.auth;
-    const companyId = req.auth.companyId || null;
-    if (USE_JSON_FILE) {
-      const pr = _fileErp.purchaseRequests.find(r => r.id === id);
-      if (!pr) return res.status(404).json({ ok: false, message: "구매요청을 찾을 수 없습니다." });
-      if (pr.status !== "pending") return res.status(400).json({ ok: false, message: "대기 중인 요청만 삭제할 수 있습니다." });
-      if (role !== "admin" && String(pr.requestedById) !== String(userId)) return res.status(403).json({ ok: false, message: "본인 요청만 삭제할 수 있습니다." });
-      _fileErp.purchaseRequests = _fileErp.purchaseRequests.filter(r => r.id !== id);
-      _saveFileErp();
-      return res.json({ ok: true });
-    }
-    const { rows } = await pool.query("SELECT data FROM erp_purchase_requests WHERE id = $1 AND status = 'pending' AND (company_id = $2 OR company_id IS NULL)", [id, companyId]);
-    if (!rows.length) return res.status(400).json({ ok: false, message: "대기 중인 요청만 삭제할 수 있습니다." });
-    if (role !== "admin" && String(rows[0].data.requestedById) !== String(userId)) return res.status(403).json({ ok: false, message: "본인 요청만 삭제할 수 있습니다." });
-    await pool.query("DELETE FROM erp_purchase_requests WHERE id = $1", [id]);
+    await _changeErpDocument("purchaseRequests", req.params.id, req.auth.companyId || null, {
+      from: ["pending"], ownerId: role === "admin" ? undefined : String(userId),
+      message: "대기 중인 요청만 삭제할 수 있습니다.",
+    });
     res.json({ ok: true });
-  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
+  } catch (e) { res.status(e.status || 500).json({ ok: false, code: e.code, message: _safeErrMsg(e) }); }
 });
 
 // ── 재고 (Stock — computed from ledger, plus manual adjustment) ──────────────
@@ -11575,17 +11635,16 @@ app.get("/api/erp/stock", async (req, res) => {
       const { rows } = await pool.query("SELECT data FROM erp_stock_ledger WHERE (company_id = $1 OR company_id IS NULL)", [req.auth.companyId || null]);
       ledger = rows.map(r => r.data);
     }
-    const map = {};
+    const balances = new Map();
     for (const l of ledger) {
-      const key = `${l.itemId}::${l.locationId}`;
+      const itemId = String(l.itemId), locationId = String(l.locationId);
+      const key = JSON.stringify([itemId, locationId]);
       const delta = l.type === "out" ? -Math.abs(l.qty) : Math.abs(l.qty);
-      map[key] = (map[key] || 0) + delta;
+      const balance = balances.get(key);
+      if (balance) balance.qty += delta;
+      else balances.set(key, { itemId, locationId, qty: delta });
     }
-    const stock = Object.entries(map).map(([key, qty]) => {
-      const [itemId, locationId] = key.split("::");
-      return { itemId, locationId, qty };
-    });
-    res.json({ ok: true, stock });
+    res.json({ ok: true, stock: [...balances.values()] });
   } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
@@ -11598,8 +11657,8 @@ app.get("/api/erp/stock/ledger", async (req, res) => {
     if (USE_JSON_FILE) {
       ledger = _fileErp.stockLedger;
     } else {
-      const { rows } = await pool.query("SELECT data FROM erp_stock_ledger WHERE (company_id = $1 OR company_id IS NULL)", [req.auth.companyId || null]);
-      ledger = rows.map(r => r.data);
+      const { rows } = await pool.query("SELECT id, data FROM erp_stock_ledger WHERE (company_id = $1 OR company_id IS NULL)", [req.auth.companyId || null]);
+      ledger = rows.map(r => ({ ...r.data, id: r.id }));
     }
     if (itemId) ledger = ledger.filter(l => l.itemId === itemId);
     if (locationId) ledger = ledger.filter(l => l.locationId === locationId);
@@ -11632,8 +11691,7 @@ app.post("/api/erp/stock/adjust", async (req, res) => {
       const current = _fileErp.stockLedger.filter(l => l.itemId === itemId && l.locationId === locationId)
         .reduce((s, l) => s + (l.type === "out" ? -Math.abs(l.qty) : Math.abs(l.qty)), 0);
       if (type === "out" && current < qtyNum) return res.status(400).json({ ok: false, message: `현재 재고(${current})보다 많은 수량을 출고할 수 없습니다.` });
-      _fileErp.stockLedger.push(entry);
-      _saveFileErp();
+      _commitFileErp({ ..._fileErp, stockLedger: [..._fileErp.stockLedger, entry] });
       return res.json({ ok: true, entry });
     }
     return await _runPgIdempotentCommand(req, res, async client => {
@@ -11661,32 +11719,38 @@ app.post("/api/erp/stock/count", async (req, res) => {
     const { locationId, lines, user } = req.body || {};
     if (!locationId || !Array.isArray(lines) || !lines.length)
       return res.status(400).json({ ok: false, message: "위치와 실사 항목이 필요합니다." });
-    // 실사 수량은 "창고에서 실제로 센 개수"라 음수가 될 수 없다. 검증이 없어 countedQty:-50이
-    // 그대로 접수되면 그 차이만큼 출고 원장이 생겨 재고가 마이너스로 내려갔다.
-    const negLine = lines.find(l => l && l.itemId && Number.isFinite(Number(l.countedQty)) && Number(l.countedQty) < 0);
-    if (negLine) {
-      return res.status(400).json({ ok: false, message: "실사 수량은 0 이상이어야 합니다." });
+    const itemIds = new Set();
+    for (const line of lines) {
+      const id = line?.itemId, qty = line?.countedQty;
+      if (!id || !["number","string"].includes(typeof id) || !String(id).trim())
+        return res.status(400).json({ ok: false, message: "각 실사 항목의 품목을 선택하세요." });
+      if (itemIds.has(String(id)))
+        return res.status(400).json({ ok: false, message: "같은 창고의 한 품목은 실사표에 한 번만 입력하세요." });
+      if (!["number","string"].includes(typeof qty) || !String(qty).trim() || !Number.isFinite(Number(qty)) || Number(qty) < 0)
+        return res.status(400).json({ ok: false, message: "실사 수량은 0 이상이어야 합니다. 빈칸 없이 숫자를 입력하세요." });
+      itemIds.add(String(id));
     }
     if (USE_JSON_FILE) {
       const locErr = await _erpRefsExist(null, [locationId], companyId);
       if (locErr) return res.status(404).json({ ok: false, message: locErr });
       for (const l of lines) {
-        if (!l || !l.itemId) continue;
         const itemErr = await _erpRefsExist(l.itemId, [], companyId);
         if (itemErr) return res.status(404).json({ ok: false, message: itemErr });
       }
     }
     const now = new Date().toISOString();
     const countId = `count_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-    if (USE_JSON_FILE) {
-      const ledger = _fileErp.stockLedger;
+    function buildCountEntries(ledger) {
+      const balances = new Map();
+      for (const row of ledger) {
+        if (row.locationId !== locationId) continue;
+        const delta = row.type === "out" ? -Math.abs(row.qty) : Math.abs(row.qty);
+        balances.set(row.itemId, (balances.get(row.itemId) || 0) + delta);
+      }
       const entries = [];
-      for (const l of lines) {
-        const itemId = l.itemId, countedQty = Number(l.countedQty);
-        if (!itemId || !Number.isFinite(countedQty)) continue;
-        const current = ledger.filter(x => x.itemId === itemId && x.locationId === locationId)
-          .reduce((s, x) => s + (x.type === "out" ? -Math.abs(x.qty) : Math.abs(x.qty)), 0);
-        const diff = countedQty - current;
+      for (const { itemId, countedQty } of lines) {
+        const current = balances.get(itemId) || 0;
+        const diff = Number(countedQty) - current;
         if (diff === 0) continue;
         entries.push({
           id: `sl_${Date.now()}_${Math.random().toString(36).slice(2, 8)}_${entries.length}`,
@@ -11696,37 +11760,23 @@ app.post("/api/erp/stock/count", async (req, res) => {
           createdBy: user || "unknown", createdAt: now,
         });
       }
-      _fileErp.stockLedger.push(...entries);
-      _saveFileErp();
+      return entries;
+    }
+    if (USE_JSON_FILE) {
+      const entries = buildCountEntries(_fileErp.stockLedger);
+      _commitFileErp({ ..._fileErp, stockLedger: [..._fileErp.stockLedger, ...entries] });
       return res.json({ ok: true, adjusted: entries.length, entries });
     }
     return await _runPgIdempotentCommand(req, res, async client => {
       const locErr = await _erpRefsExist(null, [locationId], companyId, client);
       if (locErr) return { status: 404, body: { ok: false, message: locErr } };
       for (const l of lines) {
-        if (!l || !l.itemId) continue;
         const itemErr = await _erpRefsExist(l.itemId, [], companyId, client);
         if (itemErr) return { status: 404, body: { ok: false, message: itemErr } };
       }
-      await _lockStockKeys(client, companyId, lines.filter(l => l.itemId).map(l => [l.itemId, locationId]));
+      await _lockStockKeys(client, companyId, lines.map(l => [l.itemId, locationId]));
       const { rows } = await client.query("SELECT data FROM erp_stock_ledger WHERE location_id = $1 AND (company_id = $2 OR company_id IS NULL)", [locationId, companyId]);
-      const ledger = rows.map(r => r.data);
-      const entries = [];
-      for (const l of lines) {
-        const itemId = l.itemId, countedQty = Number(l.countedQty);
-        if (!itemId || !Number.isFinite(countedQty)) continue;
-        const current = ledger.filter(x => x.itemId === itemId && x.locationId === locationId)
-          .reduce((s, x) => s + (x.type === "out" ? -Math.abs(x.qty) : Math.abs(x.qty)), 0);
-        const diff = countedQty - current;
-        if (diff === 0) continue;
-        entries.push({
-          id: `sl_${Date.now()}_${Math.random().toString(36).slice(2, 8)}_${entries.length}`,
-          itemId, locationId, type: diff > 0 ? "in" : "out", qty: Math.abs(diff),
-          refType: "count", refId: countId, refNo: null,
-          memo: `재고실사 조정 (시스템 ${current} → 실사 ${countedQty})`,
-          createdBy: user || "unknown", createdAt: now,
-        });
-      }
+      const entries = buildCountEntries(rows.map(r => r.data));
       for (const e of entries) {
         await client.query("INSERT INTO erp_stock_ledger (id, item_id, location_id, data, company_id) VALUES ($1,$2,$3,$4,$5)", [e.id, e.itemId, e.locationId, e, companyId]);
       }
@@ -11759,8 +11809,7 @@ app.post("/api/erp/stock/transfer", async (req, res) => {
       if (current < qtyNum) return res.status(400).json({ ok: false, message: `출발 위치 재고 부족 (현재 ${current} / 이동 요청 ${qtyNum})` });
       const outEntry = { id: `sl_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`, itemId, locationId: fromLocationId, type: "out", qty: qtyNum, refType: "transfer", refId: transferId, refNo: null, memo: memo || "", createdBy, createdAt: now };
       const inEntry = { id: `sl_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`, itemId, locationId: toLocationId, type: "in", qty: qtyNum, refType: "transfer", refId: transferId, refNo: null, memo: memo || "", createdBy, createdAt: now };
-      _fileErp.stockLedger.push(outEntry, inEntry);
-      _saveFileErp();
+      _commitFileErp({ ..._fileErp, stockLedger: [..._fileErp.stockLedger, outEntry, inEntry] });
       return res.json({ ok: true, transferId, outEntry, inEntry });
     }
     return await _runPgIdempotentCommand(req, res, async client => {
@@ -11813,9 +11862,7 @@ app.post("/api/erp/sales-targets", async (req, res) => {
       updatedAt: new Date().toISOString(),
     };
     if (USE_JSON_FILE) {
-      const idx = _fileErp.salesTargets.findIndex(t => t.id === targetId);
-      if (idx >= 0) _fileErp.salesTargets[idx] = target; else _fileErp.salesTargets.push(target);
-      _saveFileErp();
+      _commitFileErpMaster("salesTargets", targetId, target);
       return res.json({ ok: true, salesTarget: target });
     }
     await pool.query(
@@ -11832,8 +11879,7 @@ app.post("/api/erp/sales-targets/:id/delete", async (req, res) => {
     if (!requirePage(req, res, "sales-dashboard")) return;
     const id = req.params.id;
     if (USE_JSON_FILE) {
-      _fileErp.salesTargets = _fileErp.salesTargets.filter(t => t.id !== id);
-      _saveFileErp();
+      _commitFileErpMaster("salesTargets", id, null);
       return res.json({ ok: true });
     }
     await pool.query("UPDATE erp_sales_targets SET is_deleted = TRUE WHERE id = $1 AND (company_id = $2 OR company_id IS NULL)", [id, req.auth.companyId || null]);

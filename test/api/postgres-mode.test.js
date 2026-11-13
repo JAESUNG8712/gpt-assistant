@@ -346,6 +346,53 @@ if (!ADMIN_DATABASE_URL) {
       } finally { await dbCheck.end(); }
     });
 
+    await t.test("동일 품목 합산 출고와 창고별 잔고", () => require("../support/erp-shipment-stock")(api, companyAToken));
+
+    await t.test("재고실사 — 중복·누락 항목은 원장 전체를 보존하고 명시적 0은 반영한다", async () => {
+      const headers = { "Content-Type": "application/json", Authorization: `Bearer ${companyAToken}` };
+      const post = (path, body) => api("/api/erp/" + path, {
+        method: "POST", headers: { ...headers, "Idempotency-Key": require("node:crypto").randomUUID() },
+        body: JSON.stringify(body),
+      });
+      const itemIds = [];
+      for (const code of ["COUNT-A", "COUNT-B"]) {
+        const response = await post("items", { code, name: code });
+        assert.equal(response.status, 200);
+        itemIds.push((await response.json()).item.id);
+      }
+      const location = await post("locations", { name: "실사 검증 창고" });
+      assert.equal(location.status, 200);
+      const locationId = (await location.json()).location.id;
+      const [first, second] = itemIds;
+      const opening = await post("stock/adjust", { itemId: first, locationId, type: "in", qty: 4 });
+      assert.equal(opening.status, 200);
+      async function readLedger() {
+        const response = await api("/api/erp/stock/ledger?locationId=" + encodeURIComponent(locationId), { headers });
+        assert.equal(response.status, 200);
+        return (await response.json()).ledger;
+      }
+      const before = await readLedger();
+      assert.equal(before.length, 1);
+      for (const invalid of [
+        { itemId: first, countedQty: 2 }, { itemId: second },
+        { itemId: second, countedQty: null }, { itemId: second, countedQty: "  " }, null,
+      ]) {
+        const response = await post("stock/count", { locationId, lines: [{ itemId: first, countedQty: 1 }, invalid] });
+        assert.equal(response.status, 400, JSON.stringify(invalid));
+        assert.deepEqual(await readLedger(), before);
+      }
+      const zeroCount = await post("stock/count", { locationId, lines: [{ itemId: first, countedQty: 0 }] });
+      assert.equal(zeroCount.status, 200);
+      assert.equal((await zeroCount.json()).adjusted, 1);
+      const after = await readLedger();
+      assert.equal(after.length, 2);
+      const adjustment = after.find(row => row.refType === "count");
+      assert.ok(adjustment);
+      assert.equal(adjustment.itemId, first);
+      assert.equal(adjustment.type, "out");
+      assert.equal(adjustment.qty, 4);
+    });
+
     await t.test("4e) RCPS·감가상각 전표와 멱등성 완료 기록은 같은 transaction에서 commit", async () => {
       const commonHeaders = { "Content-Type": "application/json", Authorization: `Bearer ${companyAToken}` };
       await api("/api/accounting/accounts/seed-defaults", { method: "POST", headers: commonHeaders, body: "{}" });
@@ -622,6 +669,87 @@ if (!ADMIN_DATABASE_URL) {
         assert.equal(budget.rows[0].data.restoreMarker, "snapshot", "budget_store도 동일 복원 트랜잭션에 포함돼야 함");
       } finally {
         await dbVerify.end();
+      }
+    });
+
+    await t.test("7d) 두 인스턴스의 ERP 문서 상태 경합은 한 전이만 커밋하고 타 회사 문서는 숨긴다", async () => {
+      const db = new Client({ connectionString: testDbUrl });
+      await db.connect();
+      let companyAId, companyBId;
+      const quoteId = `qt_pg_race_${Date.now()}`;
+      const foreignQuoteId = `qt_pg_foreign_${Date.now()}`;
+      try {
+        companyAId = (await db.query("SELECT id FROM companies WHERE slug = $1", [companyACode])).rows[0].id;
+        companyBId = (await db.query("SELECT id FROM companies WHERE id <> $1 ORDER BY created_at LIMIT 1", [companyAId])).rows[0].id;
+        const quote = { id: quoteId, status: "sent", date: "2031-08-01", partnerName: "PG 경합", lines: [], sentAt: new Date().toISOString() };
+        const foreign = { id: foreignQuoteId, status: "sent", date: "2031-08-01", partnerName: "타 회사", lines: [], sentAt: new Date().toISOString() };
+        await db.query("INSERT INTO erp_quotations (id, doc_date, status, data, company_id) VALUES ($1,$2,'sent',$3,$4),($5,$2,'sent',$6,$7)", [quoteId, quote.date, quote, companyAId, foreignQuoteId, foreign, companyBId]);
+
+        const apiB = (p, opts) => fetch(serverB.baseUrl + p, opts);
+        const headers = { "Content-Type": "application/json", Authorization: `Bearer ${companyAToken}` };
+        const [accepted, rejected] = await Promise.all([
+          api(`/api/erp/quotations/${quoteId}/accept`, { method: "POST", headers, body: JSON.stringify({ user: "admin_a" }) }),
+          apiB(`/api/erp/quotations/${quoteId}/reject`, { method: "POST", headers, body: JSON.stringify({ user: "admin_a", reason: "동시 반려" }) }),
+        ]);
+        assert.deepEqual([accepted.status, rejected.status].sort((a, b) => a - b), [200, 400]);
+        const saved = (await db.query("SELECT status, data FROM erp_quotations WHERE id=$1 AND company_id=$2", [quoteId, companyAId])).rows[0];
+        assert.ok(["accepted", "rejected"].includes(saved.status));
+        assert.equal(saved.data.status, saved.status, "검색용 status 컬럼과 JSON data.status가 일치해야 함");
+
+        const foreignAttempt = await api(`/api/erp/quotations/${foreignQuoteId}/accept`, { method: "POST", headers, body: JSON.stringify({ user: "admin_a" }) });
+        assert.equal(foreignAttempt.status, 404);
+        const foreignSaved = (await db.query("SELECT status FROM erp_quotations WHERE id=$1 AND company_id=$2", [foreignQuoteId, companyBId])).rows[0];
+        assert.equal(foreignSaved.status, "sent");
+
+        const poId = `po_pg_race_${Date.now()}`;
+        const po = {
+          id: poId, status: "ordered", date: "2031-08-02", poNo: "PO-PG-RACE",
+          partnerId: null, partnerName: "PG 발주 경합", locationId: null, lines: [],
+          supplyTotal: 0, taxTotal: 0, grandTotal: 0,
+        };
+        await db.query(
+          "INSERT INTO erp_purchase_orders (id, doc_date, status, data, company_id) VALUES ($1,$2,'ordered',$3,$4)",
+          [poId, po.date, po, companyAId]
+        );
+        const [cancelled, received] = await Promise.all([
+          api(`/api/erp/purchase-orders/${poId}/cancel`, { method: "POST", headers, body: JSON.stringify({ user: "admin_a", reason: "동시 취소" }) }),
+          apiB(`/api/erp/purchase-orders/${poId}/receive`, { method: "POST", headers, body: JSON.stringify({ user: "admin_a" }) }),
+        ]);
+        assert.deepEqual([cancelled.status, received.status].sort((a, b) => a - b), [200, 400]);
+        const savedPo = (await db.query("SELECT status, data FROM erp_purchase_orders WHERE id=$1 AND company_id=$2", [poId, companyAId])).rows[0];
+        assert.ok(["cancelled", "received"].includes(savedPo.status));
+        assert.equal(savedPo.data.status, savedPo.status);
+        const invoiceCount = Number((await db.query("SELECT COUNT(*) FROM tax_invoices WHERE company_id=$1 AND data->>'sourceType'='po' AND data->>'sourceId'=$2", [companyAId, poId])).rows[0].count);
+        assert.equal(invoiceCount, savedPo.status === "received" ? 1 : 0, "입고가 이긴 경우에만 세금계산서가 한 건 생성돼야 함");
+
+        const prId = `pr_pg_race_${Date.now()}`;
+        const pr = {
+          id: prId, status: "pending", date: "2031-08-03", requestedById: String(companyAId),
+          requestedBy: "admin_a", lines: [], supplyTotal: 0, taxTotal: 0, grandTotal: 0,
+          createdAt: new Date().toISOString(),
+        };
+        await db.query(
+          "INSERT INTO erp_purchase_requests (id, doc_date, status, data, company_id) VALUES ($1,$2,'pending',$3,$4)",
+          [prId, pr.date, pr, companyAId]
+        );
+        const [approved, prRejected, prDeleted] = await Promise.all([
+          api(`/api/erp/purchase-requests/${prId}/approve`, { method: "POST", headers, body: JSON.stringify({ user: "admin_a" }) }),
+          apiB(`/api/erp/purchase-requests/${prId}/reject`, { method: "POST", headers, body: JSON.stringify({ user: "admin_a", reason: "동시 반려" }) }),
+          api(`/api/erp/purchase-requests/${prId}`, { method: "DELETE", headers }),
+        ]);
+        const prStatuses = [approved.status, prRejected.status, prDeleted.status];
+        assert.equal(prStatuses.filter(status => status === 200).length, 1, "승인/반려/삭제 중 정확히 하나만 성공해야 함");
+        assert.ok(prStatuses.filter(status => status !== 200).every(status => status === 400 || status === 404));
+        const savedPrRows = (await db.query("SELECT status, data FROM erp_purchase_requests WHERE id=$1 AND company_id=$2", [prId, companyAId])).rows;
+        if (prDeleted.status === 200) {
+          assert.equal(savedPrRows.length, 0);
+        } else {
+          assert.equal(savedPrRows.length, 1);
+          assert.ok(["approved", "rejected"].includes(savedPrRows[0].status));
+          assert.equal(savedPrRows[0].data.status, savedPrRows[0].status);
+        }
+      } finally {
+        await db.end();
       }
     });
 
