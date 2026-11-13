@@ -207,4 +207,3 @@ test("linked long-service saves — disposable PostgreSQL API", { skip: !testDb 
   assert.equal(registered.ok, true, JSON.stringify(registered));
   await exerciseLinkedSave(t, server, registered.token);
 });
-

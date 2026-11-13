@@ -18,6 +18,33 @@ test("ERP document transitions preserve linked records and reject stale operatio
   const item = (await api("items", "POST", { code: "SAFE-ITEM", name: "Test item", unit: "EA" })).item;
   const location = (await api("locations", "POST", { name: "Test warehouse" })).location;
   const input = { date: "2031-05-01", items: [{ itemId: item.id, qty: 2, unitPrice: 100 }] };
+  await t.test("failed item and warehouse writes retain the saved list; retries persist once", async () => {
+    const file = server.dataFile.replace(/\.json$/, "-erp.json");
+    for (const [collection, original] of [["items", item], ["locations", location]]) {
+      const created = { ...original, id: "master-retry", code: "RETRY", name: "Retry record" };
+      const edited = { ...original, name: "Updated record" };
+      const before = (await api(collection))[collection];
+      const backup = file + ".master-test";
+      fs.renameSync(file, backup);
+      fs.mkdirSync(file);
+      try {
+        assert.equal((await api(collection, "POST", created)).status, 500);
+        assert.equal((await api(collection, "POST", edited)).status, 500);
+        assert.equal((await api(`${collection}/${original.id}/delete`, "POST", {})).status, 500);
+        assert.deepEqual((await api(collection))[collection], before);
+      } finally {
+        fs.rmdirSync(file);
+        fs.renameSync(backup, file);
+      }
+      assert.equal((await api(collection, "POST", created)).status, 200);
+      assert.equal((await api(collection, "POST", edited)).status, 200);
+      const saved = JSON.parse(fs.readFileSync(file, "utf8"))[collection];
+      assert.equal(saved.filter(row => row.id === created.id).length, 1);
+      assert.equal(saved.find(row => row.id === original.id).name, edited.name);
+      assert.equal((await api(`${collection}/${created.id}/delete`, "POST", {})).status, 200);
+      assert.ok(!JSON.parse(fs.readFileSync(file, "utf8"))[collection].some(row => row.id === created.id));
+    }
+  });
   async function request() {
     const r = await api("purchase-requests", "POST", input);
     assert.equal(r.ok, true, JSON.stringify(r));

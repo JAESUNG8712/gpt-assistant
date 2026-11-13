@@ -10770,6 +10770,18 @@ function _saveFileErp(state = _fileErp) {
   const erpFile = JSON_FILE.replace(/\.json$/, "-erp.json");
   _atomicWriteFileSync(erpFile, JSON.stringify(state, null, 2));
 }
+function _commitFileErpMaster(collection, id, row) {
+  const stored = _fileErp[collection];
+  const rows = row ? stored.slice() : stored.filter(entry => entry.id !== id);
+  if (row) {
+    const index = rows.findIndex(entry => entry.id === id);
+    if (index < 0) rows.push(row);
+    else rows[index] = row;
+  }
+  const next = { ..._fileErp, [collection]: rows };
+  _saveFileErp(next);
+  _fileErp = next;
+}
 // Only single-document changes use this helper. Shipping, receiving and conversion
 // keep their wider transactions so the inventory, invoice and document commit together.
 const ERP_DOCUMENT_TABLES = new Map([
@@ -10907,9 +10919,7 @@ app.post("/api/erp/items", async (req, res) => {
     // 없으므로 0 이상으로 clamp.
     const item = { id: itemId, code, name, productName: productName || "", assetNo: assetNo || "", unit: unit || "EA", category: category || "", safetyStock: Number(safetyStock) || 0, unitCost: Number(unitCost) || 0, leadTimeDays: Math.max(0, Number(leadTimeDays) || 0), active };
     if (USE_JSON_FILE) {
-      const idx = _fileErp.items.findIndex(i => i.id === itemId);
-      if (idx >= 0) _fileErp.items[idx] = item; else _fileErp.items.push(item);
-      _saveFileErp();
+      _commitFileErpMaster("items", itemId, item);
       return res.json({ ok: true, item });
     }
     await pool.query("INSERT INTO erp_items (id, company_id, data) VALUES ($1,$2,$3) ON CONFLICT (company_id, id) DO UPDATE SET data = $3, updated_at = NOW()", [itemId, companyId, item]);
@@ -10928,8 +10938,7 @@ app.post("/api/erp/items/:id/delete", async (req, res) => {
         _fileErp.quotations.some(q => (q.lines || []).some(l => l.itemId === id)) ||
         _fileErp.purchaseOrders.some(p => (p.lines || []).some(l => l.itemId === id));
       if (used) return res.status(400).json({ ok: false, message: "재고 이력 또는 문서에서 사용 중인 품목은 삭제할 수 없습니다. 비활성화를 이용하세요." });
-      _fileErp.items = _fileErp.items.filter(i => i.id !== id);
-      _saveFileErp();
+      _commitFileErpMaster("items", id, null);
       return res.json({ ok: true });
     }
     // JSON 파일 모드는 재고원장 + 견적서 + 발주서 3곳을 검사하는데, Postgres 모드는
@@ -10974,9 +10983,7 @@ app.post("/api/erp/locations", async (req, res) => {
     const locId = id || `loc_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const loc = { id: locId, name, address: address || "", active };
     if (USE_JSON_FILE) {
-      const idx = _fileErp.locations.findIndex(l => l.id === locId);
-      if (idx >= 0) _fileErp.locations[idx] = loc; else _fileErp.locations.push(loc);
-      _saveFileErp();
+      _commitFileErpMaster("locations", locId, loc);
       return res.json({ ok: true, location: loc });
     }
     await pool.query("INSERT INTO erp_locations (id, company_id, data) VALUES ($1,$2,$3) ON CONFLICT (company_id, id) DO UPDATE SET data = $3, updated_at = NOW()", [locId, req.auth.companyId || null, loc]);
@@ -10993,8 +11000,7 @@ app.post("/api/erp/locations/:id/delete", async (req, res) => {
     if (USE_JSON_FILE) {
       const used = _fileErp.stockLedger.some(l => l.locationId === id);
       if (used) return res.status(400).json({ ok: false, message: "재고 이력에서 사용 중인 위치는 삭제할 수 없습니다. 비활성화를 이용하세요." });
-      _fileErp.locations = _fileErp.locations.filter(l => l.id !== id);
-      _saveFileErp();
+      _commitFileErpMaster("locations", id, null);
       return res.json({ ok: true });
     }
     const { rows } = await pool.query("SELECT 1 FROM erp_stock_ledger WHERE location_id = $1 AND (company_id = $2 OR company_id IS NULL) LIMIT 1", [id, companyId]);
