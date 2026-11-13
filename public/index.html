@@ -6469,9 +6469,13 @@ function applyState(state,skipUndo=false,options={}){
   if(d.integrationLogs&&Array.isArray(d.integrationLogs))integrationLogs=d.integrationLogs;
   if(d.approvalDocs&&Array.isArray(d.approvalDocs))approvalDocs=d.approvalDocs;
   if(d.attendanceRecords&&Array.isArray(d.attendanceRecords))attendanceRecords=_mergeByIdPreferNewer(attendanceRecords,d.attendanceRecords,'attendanceRecords');
-  if(d.payslips&&Array.isArray(d.payslips))payslips=d.payslips;
+  // Older JSON stores omit payroll collections until their first write.
+  const replaceMissingPayroll = options.fullServerRead && !_serverMergeContext.preservePending;
+  if(Array.isArray(d.payslips))payslips=d.payslips;
+  else if(replaceMissingPayroll && !Object.hasOwn(d,"payslips"))payslips=[];
   if(d.yearEndSettlements&&Array.isArray(d.yearEndSettlements))yearEndSettlements=d.yearEndSettlements;
-  if(d.payrollAdjustments&&Array.isArray(d.payrollAdjustments))payrollAdjustments=d.payrollAdjustments;
+  if(Array.isArray(d.payrollAdjustments))payrollAdjustments=d.payrollAdjustments;
+  else if(replaceMissingPayroll && !Object.hasOwn(d,"payrollAdjustments"))payrollAdjustments=[];
   if(d.leaveUsagePlans&&Array.isArray(d.leaveUsagePlans))leaveUsagePlans=d.leaveUsagePlans;
   if(d.boardPosts&&Array.isArray(d.boardPosts))boardPosts=d.boardPosts;
   if((d.roomReservationTombstones&&Array.isArray(d.roomReservationTombstones))||(_serverMergeContext&&!_serverMergeContext.preservePending)){
@@ -6584,12 +6588,12 @@ function _applyServerSnapshot(state,skipUndo=false){
     // 이전 권한으로 작성한 삭제 의도/보호 모듈 캐시는 새 권한에서 재사용할 수 없다.
     recordTombstones={};roomReservationTombstones=[];
     clearProtectedModuleState();
-    applyState(state,skipUndo,{serverSnapshot:true,forceAuthoritative:true});
+    applyState(state,skipUndo,{serverSnapshot:true,forceAuthoritative:true,fullServerRead:true});
     if(currentPage&&(currentUser?.menuPerms||{})[currentPage]===false)currentPage="dashboard";
     serverConfig.status="connected";serverConfig.statusMsg="권한 변경 · 최신 데이터 반영";
     showToast(hadPending?"권한이 변경되어 저장 전 변경을 취소하고 최신 자료를 다시 불러왔습니다.":"권한이 변경되어 최신 자료를 다시 불러왔습니다.","info");
   }else{
-    applyState(state,skipUndo,{serverSnapshot:true});
+    applyState(state,skipUndo,{serverSnapshot:true,fullServerRead:true});
   }
   return accessChanged;
 }

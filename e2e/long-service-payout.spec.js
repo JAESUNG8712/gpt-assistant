@@ -9,6 +9,7 @@ async function loginAsAdmin(page) {
   await page.fill("#l-pw", "E2eTestPw123");
   await page.evaluate(() => {
     autoSaveDebounced = () => {};
+    window.reloadPayoutTestData = loadFromServer;
     loadFromServer = async () => {};
     connectSSE = async () => {};
   });
@@ -36,7 +37,18 @@ test.describe("장기근속 포상금 급여 연동", () => {
   test("저장 완료 전 성공 안내를 하지 않고 연계 충돌은 자동 재시도하지 않는다", async ({ page }) => {
     await loginAsAdmin(page);
     await page.evaluate(`(${seed.toString()})()`);
+    const legacyState = await page.evaluate(() => ({
+      employees: structuredClone(employees), settings: structuredClone(settings)
+    }));
+    let refreshes = 0;
+    await page.route("**/data", async route => {
+      refreshes++;
+      await route.fulfill({ json: { ok:true, data:legacyState, version:1 } });
+    });
     await page.evaluate(() => {
+      loadFromServer = window.reloadPayoutTestData;
+      const now = new Date();
+      payslips.push(calcStandardPayslip(getEmp(9801), now.getFullYear(), now.getMonth()+1));
       window.payoutToasts = [];
       const original = showToast;
       showToast = (message, type) => { window.payoutToasts.push({ message, type }); original(message, type); };
@@ -59,6 +71,12 @@ test.describe("장기근속 포상금 급여 연동", () => {
       expect(await page.evaluate(() => window.payoutToasts.some(t => t.message === "장기근속 포상금이 급여에 반영되었습니다."))).toBe(false);
       release();
       await expect.poll(() => page.evaluate(() => window.payoutToasts.some(t => t.type === "error" && t.message.includes("함께 저장")))).toBe(true);
+      await expect.poll(() => refreshes).toBeGreaterThan(0);
+      await expect.poll(() => page.evaluate(() => ({
+        adjustments: payrollAdjustments.filter(row => String(row.empId) === "9801").length,
+        slips: payslips.filter(row => String(row.empId) === "9801").length,
+        history: (getEmp(9801).hrHistory || []).filter(row => row.type === "longservice").length,
+      }))).toEqual({ adjustments:0, slips:0, history:0 });
       expect(await page.evaluate(() => _retrySaveRequest)).toBeNull();
       expect(await page.evaluate(() => window.payoutToasts.some(t => t.message === "장기근속 포상금이 급여에 반영되었습니다."))).toBe(false);
     } finally { release(); }
