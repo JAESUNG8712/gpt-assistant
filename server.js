@@ -7579,12 +7579,31 @@ let _hrSchedulerRunning = false;
 function _kstToday() { return new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 10); }
 async function _applyScheduledHrChangesForCompany(companyId) {
   const { computeDueHrChanges } = require("./lib/scheduled-hr");
-  return _withSaveLock(() => _withDistributedSaveLock(companyId, async () => {
-    const stored = await loadData(companyId);
+  return _withSaveLock(() => _withDistributedSaveLock(companyId, async client => {
+    const stored = await loadData(companyId, client);
     const nowIso = new Date().toISOString();
     const { employees, applied } = computeDueHrChanges(stored.employees || [], _kstToday(), nowIso);
     if (!applied.length) return 0;
-    await _persistDataLocked({ employees }, "system:scheduled-hr", companyId, { role: "admin", empId: null });
+    const actor = { role: "admin", empId: null };
+    if (client) {
+      await client.query("BEGIN");
+      try {
+        // Suspension may have committed since this company was selected for the cycle.
+        const eligible = await client.query("SELECT id FROM companies WHERE id = $1 AND status <> 'suspended' FOR SHARE", [companyId]);
+        if (!eligible.rowCount) {
+          await client.query("ROLLBACK");
+          return 0;
+        }
+        await _persistDataLocked({ employees }, "system:scheduled-hr", companyId, actor, client);
+        await client.query("COMMIT");
+      } catch (error) {
+        await client.query("ROLLBACK");
+        throw error;
+      }
+      _bumpVersion(companyId);
+    } else {
+      await _persistDataLocked({ employees }, "system:scheduled-hr", companyId, actor);
+    }
     broadcastSSE("data_updated", { version: _getVersion(companyId), meta: {} }, null, companyId);
     return applied.length;
   }));

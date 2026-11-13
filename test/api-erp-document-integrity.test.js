@@ -245,4 +245,3 @@ if (!ADMIN_DATABASE_URL) {
     }
   });
 }
-
