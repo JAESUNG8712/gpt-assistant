@@ -1,12 +1,14 @@
 "use strict";
 const assert = require("node:assert/strict");
+const { randomUUID } = require("node:crypto");
 
 // Exercise the same quotation and inventory contract in JSON and PostgreSQL.
 module.exports = async function checkShipmentStock(api, token) {
   const headers = { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
   async function request(path, body, expected = 200) {
     const res = await api("/api/erp/" + path, {
-      headers, method: body === undefined ? "GET" : "POST", body: JSON.stringify(body),
+      headers: body === undefined ? headers : { ...headers, "Idempotency-Key": randomUUID() },
+      method: body === undefined ? "GET" : "POST", body: JSON.stringify(body),
     });
     const json = await res.json();
     assert.equal(res.status, expected, JSON.stringify(json));

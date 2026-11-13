@@ -350,7 +350,10 @@ if (!ADMIN_DATABASE_URL) {
 
     await t.test("재고실사 — 중복·누락 항목은 원장 전체를 보존하고 명시적 0은 반영한다", async () => {
       const headers = { "Content-Type": "application/json", Authorization: `Bearer ${companyAToken}` };
-      const post = (path, body) => api("/api/erp/" + path, { method: "POST", headers, body: JSON.stringify(body) });
+      const post = (path, body) => api("/api/erp/" + path, {
+        method: "POST", headers: { ...headers, "Idempotency-Key": require("node:crypto").randomUUID() },
+        body: JSON.stringify(body),
+      });
       const itemIds = [];
       for (const code of ["COUNT-A", "COUNT-B"]) {
         const response = await post("items", { code, name: code });
