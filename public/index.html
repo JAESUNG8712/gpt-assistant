@@ -1532,10 +1532,10 @@ function _acctPartnerPickerSelectHtml(selectId,onSelectExpr){
   return `<select class="fc" id="${selectId}" onchange="${onSelectExpr}"><option value="">직접 입력</option>${_acctPartnersPicker.map(p=>`<option value="${p.id}">${h(p.name)}</option>`).join("")}</select>`;
 }
 // 원가명세서 조회 기간 상태(회계 리포트 페이지의 _acctRptYear 등과 동일한 페이지 로컬 상태 패턴)
-let _costStmtFrom=new Date(new Date().getFullYear(),0,1).toISOString().slice(0,10),_costStmtTo=_localDateStr();
+let _costStmtFrom=_localDateStr(new Date(new Date().getFullYear(),0,1)),_costStmtTo=_localDateStr();
 // 부가세 신고자료 조회 기간 상태 — 데이터는 캐시된 클라이언트 배열이 아니라 기간별 서버 집계라
 // _vatReportData에 별도로 보관(원가명세서와 달리 매 조회마다 서버 재계산이 필요).
-let _vatFrom=new Date(new Date().getFullYear(),0,1).toISOString().slice(0,10),_vatTo=_localDateStr(),_vatReportData=null;
+let _vatFrom=_localDateStr(new Date(new Date().getFullYear(),0,1)),_vatTo=_localDateStr(),_vatReportData=null;
 // 고정자산 상세(감가상각 스케줄) — 목록은 acctFixedAssets로 아래 loadAccountingFromServer에서
 // 일괄 로드되지만, 상세는 RCPS 발행 상세와 동일하게 진입 시 지연 로드한다.
 let _faDetail=null,_faDetailId=null;
@@ -8658,7 +8658,7 @@ function renderEvalProgressPage(){
 
 // ==================== DASHBOARD ====================
 function _renderDashboardAlerts(u){
-  const today=new Date();const todayStr=today.toISOString().slice(0,10);
+  const today=new Date();const todayStr=_localDateStr(today);
   const mm=String(today.getMonth()+1).padStart(2,"0"),dd=String(today.getDate()).padStart(2,"0");
   const items=[];
   // Birthday alerts (check all active employees)
@@ -8810,7 +8810,7 @@ function _dashApprovalCard(u,sz){
 function _dashCalendarCard(u,sz){
   const limit=Math.max(1,(sz&&sz.rows)||4);
   const today=new Date();
-  const todayStr=today.toISOString().slice(0,10);
+  const todayStr=_localDateStr(today);
   const monthStr=todayStr.slice(0,7);
   const visible=scheduleEvents.filter(ev=>{
     if(ev.scope==="company")return true;
@@ -9153,7 +9153,7 @@ function _dashLeaveCard(u,sz){
 function _dashWeekHoursCard(u,sz){
   const now=new Date();const dow=now.getDay();
   const mon=new Date(now);mon.setDate(now.getDate()-(dow===0?6:dow-1));
-  const wds=[];for(let i=0;i<7;i++){const d=new Date(mon);d.setDate(mon.getDate()+i);wds.push(d.toISOString().slice(0,10));}
+  const wds=[];for(let i=0;i<7;i++){const d=new Date(mon);d.setDate(mon.getDate()+i);wds.push(_localDateStr(d));}
   let wm=0;wds.forEach(date=>{const r=attendanceRecords.find(r=>r.empId===u.id&&r.date===date);if(r&&r.checkIn&&r.checkOut){const[ih,im]=r.checkIn.split(":").map(Number);const[oh,om]=r.checkOut.split(":").map(Number);const m=(oh*60+om)-(ih*60+im);if(m>0)wm+=m;}});
   const wh=Math.round(wm/60*10)/10;const pct=Math.min(100,Math.round(wh/52*100));
   const col=wh>=52?"#dc2626":wh>=45?"#d97706":"#16a34a";
@@ -18114,7 +18114,7 @@ function _render52HrMonitor(uid){
   const now=new Date();
   const dayOfWeek=now.getDay();
   const monday=new Date(now);monday.setDate(now.getDate()-(dayOfWeek===0?6:dayOfWeek-1));
-  const weekDates=[];for(let i=0;i<7;i++){const d=new Date(monday);d.setDate(monday.getDate()+i);weekDates.push(d.toISOString().slice(0,10));}
+  const weekDates=[];for(let i=0;i<7;i++){const d=new Date(monday);d.setDate(monday.getDate()+i);weekDates.push(_localDateStr(d));}
   let weekMins=0;
   weekDates.forEach(date=>{
     const rec=attendanceRecords.find(r=>r.empId===uid&&r.date===date);
@@ -18145,7 +18145,7 @@ function openOvertimeRequestCheck(){
   const uid=currentUser.id;
   const now=new Date();const dow=now.getDay();
   const mon=new Date(now);mon.setDate(now.getDate()-(dow===0?6:dow-1));
-  const wds=[];for(let i=0;i<7;i++){const d=new Date(mon);d.setDate(mon.getDate()+i);wds.push(d.toISOString().slice(0,10));}
+  const wds=[];for(let i=0;i<7;i++){const d=new Date(mon);d.setDate(mon.getDate()+i);wds.push(_localDateStr(d));}
   let wm=0;wds.forEach(date=>{const r=attendanceRecords.find(r=>r.empId===uid&&r.date===date);if(r&&r.checkIn&&r.checkOut){const[ih,im]=r.checkIn.split(":").map(Number);const[oh,om]=r.checkOut.split(":").map(Number);const m=(oh*60+om)-(ih*60+im);if(m>0)wm+=m;}});
   const wh=Math.round(wm/60*10)/10;
   if(wh>=52){showToast(`주 52시간 초과 (현재 ${wh}h) — 연장/휴일 근무 신청이 불가합니다.`,"error");return;}
@@ -25244,7 +25244,7 @@ function _pmsWeekDates(dateStr){
   const d=new Date(dateStr+"T00:00:00");
   const dow=(d.getDay()+6)%7; // 0=Mon
   const mon=new Date(d);mon.setDate(d.getDate()-dow);
-  return Array.from({length:7},(_,i)=>{const x=new Date(mon);x.setDate(mon.getDate()+i);return x.toISOString().slice(0,10);});
+  return Array.from({length:7},(_,i)=>{const x=new Date(mon);x.setDate(mon.getDate()+i);return _localDateStr(x);});
 }
 function _pmsTimelineHtml(blocks,heightPx){
   const sorted=[...blocks].sort((a,b)=>_wlMin(a.startTime)-_wlMin(b.startTime));
@@ -29332,7 +29332,7 @@ function dlHRStats(){
   rows.push(["남녀 비율","남성",maleCnt+"명"]);
   rows.push(["남녀 비율","여성",femaleCnt+"명"]);
   depts.forEach(d=>{const de=active.filter(e=>e.dept===d);rows.push(["부서별 남녀",d+" 남",de.filter(e=>e.gender==="남").length+"명"]);rows.push(["부서별 남녀",d+" 여",de.filter(e=>e.gender==="여").length+"명"]);});
-  dlCSV(`인사통계_${asOf||now.toISOString().slice(0,10)}.csv`,rows[0],rows.slice(1));
+  dlCSV(`인사통계_${asOf||_localDateStr(now)}.csv`,rows[0],rows.slice(1));
 }
 
 // ==================== GPS SETTINGS (GPS 근태·회의실 관리) ====================
@@ -30085,7 +30085,7 @@ function openWorkReportModal(id){
     <div class="fg"><label class="fl">다음 계획 *</label><textarea id="wr-next" class="fc" rows="3" maxlength="1500" placeholder="예: 다음 주 평가결과 검증 및 임원 보고안 작성">${h(r?.nextPlan||"")}</textarea></div></div>
     <div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal()">취소</button><button class="btn btn-secondary" onclick="saveWorkReport('${id||""}','draft')">초안 저장</button><button class="btn btn-primary" onclick="saveWorkReport('${id||""}','submitted')">제출</button></div></div>`);
 }
-function _syncWorkReportPeriod(){const type=$("#wr-type")?.value,start=$("#wr-start")?.value,end=$("#wr-end");if(!end||!start)return;if(type==="daily")end.value=start;else if(end.value<start){const d=new Date(start+"T00:00:00");d.setDate(d.getDate()+6);end.value=d.toISOString().slice(0,10);}}
+function _syncWorkReportPeriod(){const type=$("#wr-type")?.value,start=$("#wr-start")?.value,end=$("#wr-end");if(!end||!start)return;if(type==="daily")end.value=start;else if(end.value<start){const d=new Date(start+"T00:00:00");d.setDate(d.getDate()+6);end.value=_localDateStr(d);}}
 function saveWorkReport(id,status){
   const periodType=$("#wr-type")?.value,periodStart=$("#wr-start")?.value,periodEnd=$("#wr-end")?.value,summary=$("#wr-summary")?.value.trim(),blockers=$("#wr-blockers")?.value.trim(),nextPlan=$("#wr-next")?.value.trim();
   if(!periodStart||!periodEnd||!summary||!nextPlan){showToast("기간, 수행 업무·성과, 다음 계획을 모두 입력하세요.","error");return;}if(periodEnd<periodStart){showToast("종료일은 시작일보다 빠를 수 없습니다.","error");return;}if(status==="submitted"&&summary.length<10){showToast("제출하려면 수행 업무·성과를 10자 이상 작성하세요.","error");return;}
@@ -30306,7 +30306,7 @@ function _roomWeekDates(dateStr){
   const d=new Date(dateStr+"T00:00:00");
   const day=(d.getDay()+6)%7;
   const monday=new Date(d);monday.setDate(d.getDate()-day);
-  return Array.from({length:7},(_,i)=>{const x=new Date(monday);x.setDate(monday.getDate()+i);return x.toISOString().slice(0,10);});
+  return Array.from({length:7},(_,i)=>{const x=new Date(monday);x.setDate(monday.getDate()+i);return _localDateStr(x);});
 }
 function _roomWeekAllDayPlan(dates,filterRoom){
   const weekStart=dates[0],weekEnd=dates[6];
@@ -30388,7 +30388,7 @@ function _roomRenderMonth(rooms,viewRoom,selDate){
   const WD=["월","화","수","목","금","토","일"];
   const filterRoom=viewRoom==="all"?null:viewRoom;
   const cellsHtml=days.map(d=>{
-    const ds=d.toISOString().slice(0,10);
+    const ds=_localDateStr(d);
     const inMonth=d.getMonth()===month;
     const dayRsv=roomReservations.filter(r=>(!filterRoom||r.roomId===filterRoom)&&_roomCoversDate(r,ds)).sort((a,b)=>(a.allDay?"00:00":a.startTime).localeCompare(b.allDay?"00:00":b.startTime));
     const chips=dayRsv.slice(0,4).map(r=>{const room=rooms.find(x=>x.id===r.roomId);return `<div style="background:${_roomColorOf(room)};color:white;border-radius:3px;padding:1px 4px;font-size:10px;margin-bottom:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-align:center" title="${h(r.title)} (${h(room?.name||"")}, ${r.allDay?"종일":r.startTime+"~"+r.endTime})">${r.allDay?"종일":r.startTime} ${h(r.title)}</div>`;}).join("");
@@ -30454,13 +30454,13 @@ function _roomRecurDates(startDate,recurType,recurStart,recurEnd,weekdays){
   const endD=new Date(recurEnd+"T00:00:00");
   if(recurType==="weekday"){
     while(d<=endD){
-      if(weekdays.includes(d.getDay()))dates.push(d.toISOString().slice(0,10));
+      if(weekdays.includes(d.getDay()))dates.push(_localDateStr(d));
       d=new Date(d);d.setDate(d.getDate()+1);
     }
     return dates.length?dates:[startDate];
   }
   while(d<=endD){
-    dates.push(d.toISOString().slice(0,10));
+    dates.push(_localDateStr(d));
     const nd=new Date(d);
     if(recurType==="daily")nd.setDate(nd.getDate()+1);
     else if(recurType==="weekly")nd.setDate(nd.getDate()+7);
@@ -30495,7 +30495,7 @@ function saveRoomReservation(date){
   }
   const pairs=starts.map(d=>{
     const ed=new Date(d+"T00:00:00");ed.setDate(ed.getDate()+spanDays);
-    return {start:d,end:ed.toISOString().slice(0,10)};
+    return {start:d,end:_localDateStr(ed)};
   });
   const conflicts=pairs.filter(p=>_roomConflicts(roomId,p.start,p.end,start,end,allDay,null));
   if(recur==="none"&&conflicts.length){showToast(`${baseDate} 해당 시간대에 이미 예약이 있습니다. 동일 시간대 예약은 등록할 수 없습니다.`,"error");return;}
@@ -32513,7 +32513,7 @@ function _calWeeksOfMonth(yr,mo){
     const week=[];
     for(let i=0;i<7;i++){
       const x=new Date(gridStart);x.setDate(gridStart.getDate()+w*7+i);
-      week.push({ds:x.toISOString().slice(0,10),inMonth:x.getMonth()===mo-1,dow:x.getDay()});
+      week.push({ds:_localDateStr(x),inMonth:x.getMonth()===mo-1,dow:x.getDay()});
     }
     weeks.push(week);
   }
