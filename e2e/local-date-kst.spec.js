@@ -54,3 +54,24 @@ test("한국 시간대에서 주간·월간 날짜 배열과 기간 기본값이
   expect(r.recur).toEqual(["2026-11-09", "2026-11-11"]);
   expect(r.costFrom).toBe("2026-01-01"); // 수정 전에는 2025-12-31
 });
+
+test("월 경계 한국 새벽에도 근태 조회 기본 기간이 이번 달(KST)이다", async ({ page }) => {
+  await page.clock.setFixedTime(new Date("2026-11-30T20:00:00Z")); // KST 2026-12-01 05:00
+  await page.goto("/");
+  await page.fill("#l-id", "e2e_admin");
+  await page.fill("#l-pw", "E2eTestPw123");
+  await page.evaluate(() => {
+    autoSaveDebounced = () => {};
+    loadFromServer = async () => {};
+    connectSSE = async () => {};
+  });
+  await page.click(".login-card button.btn-primary");
+  await expect(page.locator("#main")).toBeVisible({ timeout: 10000 });
+  const r = await page.evaluate(() => {
+    _attState.dateFrom = "";
+    _attState.dateTo = "";
+    _attInitDates();
+    return { from: _attState.dateFrom, to: _attState.dateTo };
+  });
+  expect(r).toEqual({ from: "2026-12", to: "2026-12" });
+});
