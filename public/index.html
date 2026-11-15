@@ -18167,7 +18167,7 @@ function openOvertimeRequestCheck(){
 }
 // ==================== ATTENDANCE TEAM SECTION (with filters, pagination, detail) ====================
 let _attState={scope:"all",dept:"",team:"",search:"",dateFrom:"",dateTo:"",pageSize:30,pageOffset:0};
-function _attInitDates(){const ym=new Date().toISOString().slice(0,7);if(!_attState.dateFrom)_attState.dateFrom=ym;if(!_attState.dateTo)_attState.dateTo=ym;}
+function _attInitDates(){const ym=_localDateStr().slice(0,7);if(!_attState.dateFrom)_attState.dateFrom=ym;if(!_attState.dateTo)_attState.dateTo=ym;}
 function _attSetScope(v){_attState.scope=v;_attState.pageOffset=0;_attRefresh();}
 function _attSetDept(v){_attState.dept=v;_attState.team="";_attState.pageOffset=0;_attRefresh();}
 function _attSetTeam(v){_attState.team=v;_attState.pageOffset=0;_attRefresh();}
