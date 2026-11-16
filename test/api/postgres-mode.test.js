@@ -346,6 +346,8 @@ if (!ADMIN_DATABASE_URL) {
       } finally { await dbCheck.end(); }
     });
 
+    await t.test("마스터 삭제·복원과 참조 경합", () => require("../support/erp-master-lifecycle")(api, companyAToken));
+
     await t.test("동일 품목 합산 출고와 창고별 잔고", () => require("../support/erp-shipment-stock")(api, companyAToken));
 
     await t.test("재고실사 — 중복·누락 항목은 원장 전체를 보존하고 명시적 0은 반영한다", async () => {

@@ -1345,7 +1345,7 @@ async function initDB() {
       console.log(`[Storage] 기초 계정과목 ${_fileAccounting.accounts.length}건 시딩 완료`);
     }
     if (!_fileErp.locations || _fileErp.locations.length === 0) {
-      _commitFileErp({ ..._fileErp, locations: DEFAULT_LOCATIONS.map((l, i) => ({ id: `loc_seed_${i + 1}`, ...l })) });
+      _commitFileErp({ ..._fileErp, locations: DEFAULT_LOCATIONS.map((l, i) => ({ id: `loc_seed_${i + 1}`, ...l })).filter(l => !(_fileErp.masterTombstones?.locations || []).includes(l.id)) });
       console.log(`[Storage] 기초 위치(창고) ${_fileErp.locations.length}건 시딩 완료`);
     }
     return;
@@ -10797,15 +10797,37 @@ function _commitFileErp(state) {
   _atomicWriteFileSync(erpFile, JSON.stringify(state, null, 2));
   _fileErp = state;
 }
-function _commitFileErpMaster(collection, id, row) {
+function _commitFileErpMaster(collection, id, row, restore = false) {
   const stored = _fileErp[collection];
+  const deletedIds = new Set(_fileErp.masterTombstones?.[collection] || []);
+  if (row && deletedIds.has(id) && !restore) throw _erpMasterDeleted();
   const rows = row ? stored.slice() : stored.filter(entry => entry.id !== id);
   if (row) {
     const index = rows.findIndex(entry => entry.id === id);
     if (index < 0) rows.push(row);
     else rows[index] = row;
   }
-  _commitFileErp({ ..._fileErp, [collection]: rows });
+  if (row) deletedIds.delete(id);
+  else if (stored.some(entry => entry.id === id)) deletedIds.add(id);
+  _commitFileErp({ ..._fileErp, [collection]: rows,
+    masterTombstones: { ..._fileErp.masterTombstones, [collection]: [...deletedIds] } });
+}
+function _erpMasterDeleted() {
+  return httpError(409, "ERP_MASTER_DELETED", "다른 작업에서 삭제된 자료입니다. 현재 입력 내용으로 복원할지 확인해 주세요.");
+}
+const ERP_MASTER_TABLES = new Map([
+  ["items", "erp_items"], ["locations", "erp_locations"], ["salesTargets", "erp_sales_targets"],
+]);
+async function _saveErpMaster(collection, id, companyId, row, restore) {
+  if (USE_JSON_FILE) return _commitFileErpMaster(collection, id, row, restore === true);
+  const table = ERP_MASTER_TABLES.get(collection);
+  if (!table) throw new Error("Unknown ERP master type");
+  const result = await pool.query(
+    `INSERT INTO ${table} (id, company_id, data) VALUES ($1,$2,$3)
+     ON CONFLICT (company_id, id) DO UPDATE SET data = $3, is_deleted = FALSE, updated_at = NOW()
+     WHERE ${table}.is_deleted = FALSE OR $4::boolean RETURNING id`,
+    [id, companyId, row, restore === true]);
+  if (!result.rowCount) throw _erpMasterDeleted();
 }
 // Only single-document changes use this helper. Shipping, receiving and conversion
 // keep their wider transactions so the inventory, invoice and document commit together.
@@ -10875,17 +10897,16 @@ function _issueFileErpNumber(collection, current, patch, seqKey, numberField, pr
 // 재고 원장은 itemId/locationId를 참조만 하고 존재 검증은 하지 않아, 오타나 연동 실수로
 // 없는 id를 보내면 어떤 품목·창고 화면에도 안 보이는 유령 원장 행이 조용히 쌓였다
 // (재고 합계에는 잡히므로 "품목명이 빈 칸인 수량"으로만 드러난다).
+function _fileErpRefsError(itemIds, locationIds) {
+  if (itemIds.filter(Boolean).some(id => !_fileErp.items.some(row => row.id === id))) return "품목을 찾을 수 없습니다.";
+  if (locationIds.filter(Boolean).some(id => !_fileErp.locations.some(row => row.id === id))) return "위치(창고)를 찾을 수 없습니다.";
+  return null;
+}
 async function _erpRefsExist(itemId, locationIds, companyId, externalClient) {
   const locs = locationIds.filter(Boolean);
-  if (USE_JSON_FILE) {
-    if (itemId && !(_fileErp.items || []).some(i => i.id === itemId)) return "품목을 찾을 수 없습니다.";
-    for (const l of locs) {
-      if (!(_fileErp.locations || []).some(x => x.id === l)) return "위치(창고)를 찾을 수 없습니다.";
-    }
-    return null;
-  }
+  if (USE_JSON_FILE) return _fileErpRefsError([itemId], locs);
   const db = externalClient || pool;
-  const lock = externalClient ? " FOR KEY SHARE" : "";
+  const lock = externalClient ? " FOR SHARE" : "";
   if (itemId) {
     const { rows } = await db.query(
       `SELECT 1 FROM erp_items WHERE id = $1 AND is_deleted = FALSE AND (company_id = $2 OR company_id IS NULL)${lock}`, [itemId, companyId]
@@ -10900,6 +10921,67 @@ async function _erpRefsExist(itemId, locationIds, companyId, externalClient) {
   }
   return null;
 }
+function _checkFileErpDocumentRefs(record) {
+  const error = _fileErpRefsError((record.lines || []).map(line => line.itemId), [record.locationId]);
+  if (error) throw httpError(400, "ERP_REFERENCE_NOT_FOUND", error);
+}
+async function _lockErpDocumentRefs(client, companyId, record) {
+  for (const itemId of [...new Set((record.lines || []).map(line => line.itemId).filter(Boolean))].sort()) {
+    const error = await _erpRefsExist(itemId, [], companyId, client);
+    if (error) throw httpError(400, "ERP_REFERENCE_NOT_FOUND", error);
+  }
+  const error = await _erpRefsExist(null, [record.locationId], companyId, client);
+  if (error) throw httpError(400, "ERP_REFERENCE_NOT_FOUND", error);
+}
+async function _insertErpDocument(kind, record, companyId) {
+  const table = ERP_DOCUMENT_TABLES.get(kind);
+  if (!table) throw new Error("Unknown ERP document type");
+  if (USE_JSON_FILE) {
+    _checkFileErpDocumentRefs(record);
+    _commitFileErp({ ..._fileErp, [kind]: [..._fileErp[kind], record] });
+    return;
+  }
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await _lockErpDocumentRefs(client, companyId, record);
+    await client.query(`INSERT INTO ${table} (id, doc_date, status, data, company_id) VALUES ($1,$2,$3,$4,$5)`, [record.id, record.date, record.status, record, companyId]);
+    await client.query("COMMIT");
+  } catch (error) { await client.query("ROLLBACK"); throw error; }
+  finally { client.release(); }
+}
+async function _deleteErpMaster(collection, id, companyId) {
+  const table = ERP_MASTER_TABLES.get(collection);
+  if (!["items", "locations"].includes(collection)) throw new Error("Unsupported ERP master deletion");
+  const item = collection === "items";
+  const message = "재고 이력 또는 문서에서 사용 중인 자료는 삭제할 수 없습니다. 비활성화를 이용하세요.";
+  if (USE_JSON_FILE) {
+    const used = _fileErp.stockLedger.some(row => (item ? row.itemId : row.locationId) === id) ||
+      ["quotations", "purchaseOrders", "purchaseRequests"].some(kind => _fileErp[kind].some(doc =>
+        item ? (doc.lines || []).some(line => line.itemId === id) : doc.locationId === id));
+    if (used) throw httpError(400, "ERP_MASTER_IN_USE", message);
+    _commitFileErpMaster(collection, id, null);
+    return;
+  }
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    // FOR UPDATE conflicts with the FOR SHARE locks held by creators, including
+    // soft deletion (a non-key update). Check references only after obtaining it.
+    const target = await client.query(`SELECT id FROM ${table} WHERE id=$1 AND company_id=$2 FOR UPDATE`, [id, companyId]);
+    if (target.rowCount) {
+      const checks = [...ERP_DOCUMENT_TABLES.values()].map(docTable => item
+        ? `EXISTS (SELECT 1 FROM ${docTable} d WHERE (d.company_id=$2 OR d.company_id IS NULL) AND EXISTS (SELECT 1 FROM jsonb_array_elements(COALESCE(d.data->'lines','[]'::jsonb)) ln WHERE ln->>'itemId'=$1))`
+        : `EXISTS (SELECT 1 FROM ${docTable} d WHERE (d.company_id=$2 OR d.company_id IS NULL) AND d.data->>'locationId'=$1)`);
+      const used = await client.query(`SELECT 1 WHERE EXISTS (SELECT 1 FROM erp_stock_ledger WHERE ${item ? "item_id" : "location_id"}=$1 AND (company_id=$2 OR company_id IS NULL)) OR ${checks.join(" OR ")}`, [id, companyId]);
+      if (used.rowCount) throw httpError(400, "ERP_MASTER_IN_USE", message);
+      await client.query(`UPDATE ${table} SET is_deleted=TRUE, updated_at=NOW() WHERE id=$1 AND company_id=$2`, [id, companyId]);
+    }
+    await client.query("COMMIT");
+  } catch (error) { await client.query("ROLLBACK"); throw error; }
+  finally { client.release(); }
+}
+
 function _validateItemLines(items) {
   for (const it of (items || [])) {
     const q = Number(it.qty), p = Number(it.unitPrice);
@@ -10946,13 +11028,9 @@ app.post("/api/erp/items", async (req, res) => {
     // 반영하지 않고 기존 단순 부족분(안전재고-현재재고) 방식으로 폴백) — 음수는 의미가
     // 없으므로 0 이상으로 clamp.
     const item = { id: itemId, code, name, productName: productName || "", assetNo: assetNo || "", unit: unit || "EA", category: category || "", safetyStock: Number(safetyStock) || 0, unitCost: Number(unitCost) || 0, leadTimeDays: Math.max(0, Number(leadTimeDays) || 0), active };
-    if (USE_JSON_FILE) {
-      _commitFileErpMaster("items", itemId, item);
-      return res.json({ ok: true, item });
-    }
-    await pool.query("INSERT INTO erp_items (id, company_id, data) VALUES ($1,$2,$3) ON CONFLICT (company_id, id) DO UPDATE SET data = $3, updated_at = NOW()", [itemId, companyId, item]);
+    await _saveErpMaster("items", itemId, req.auth.companyId || null, item, req.body.restore);
     res.json({ ok: true, item });
-  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
+  } catch (e) { res.status(e.status || 500).json({ ok: false, code: e.code, message: _safeErrMsg(e) }); }
 });
 
 app.post("/api/erp/items/:id/delete", async (req, res) => {
@@ -10961,30 +11039,9 @@ app.post("/api/erp/items/:id/delete", async (req, res) => {
     if (!requirePage(req, res, "inv-items")) return;
     const id = req.params.id;
     const companyId = req.auth.companyId || null;
-    if (USE_JSON_FILE) {
-      const used = _fileErp.stockLedger.some(l => l.itemId === id) ||
-        _fileErp.quotations.some(q => (q.lines || []).some(l => l.itemId === id)) ||
-        _fileErp.purchaseOrders.some(p => (p.lines || []).some(l => l.itemId === id));
-      if (used) return res.status(400).json({ ok: false, message: "재고 이력 또는 문서에서 사용 중인 품목은 삭제할 수 없습니다. 비활성화를 이용하세요." });
-      _commitFileErpMaster("items", id, null);
-      return res.json({ ok: true });
-    }
-    // JSON 파일 모드는 재고원장 + 견적서 + 발주서 3곳을 검사하는데, Postgres 모드는
-    // 재고원장만 보고 있어 견적서·발주서에서 사용 중인 품목이 그대로 삭제됐다(운영은
-    // Postgres). 삭제되면 그 문서의 품목명 자리에 마스터에서 못 찾은 원본 id(UUID)가
-    // 그대로 노출된다(_erpItemName). 양 모드의 검사 범위를 동일하게 맞춘다.
-    const { rows } = await pool.query(
-      `SELECT 1 WHERE
-         EXISTS (SELECT 1 FROM erp_stock_ledger WHERE item_id = $1 AND (company_id = $2 OR company_id IS NULL))
-      OR EXISTS (SELECT 1 FROM erp_quotations q WHERE (q.company_id = $2 OR q.company_id IS NULL)
-           AND EXISTS (SELECT 1 FROM jsonb_array_elements(COALESCE(q.data->'lines','[]'::jsonb)) ln WHERE ln->>'itemId' = $1))
-      OR EXISTS (SELECT 1 FROM erp_purchase_orders po WHERE (po.company_id = $2 OR po.company_id IS NULL)
-           AND EXISTS (SELECT 1 FROM jsonb_array_elements(COALESCE(po.data->'lines','[]'::jsonb)) ln WHERE ln->>'itemId' = $1))`,
-      [id, companyId]);
-    if (rows.length) return res.status(400).json({ ok: false, message: "재고 이력 또는 문서에서 사용 중인 품목은 삭제할 수 없습니다. 비활성화를 이용하세요." });
-    await pool.query("UPDATE erp_items SET is_deleted = TRUE WHERE id = $1 AND (company_id = $2 OR company_id IS NULL)", [id, companyId]);
+    await _deleteErpMaster("items", id, companyId);
     res.json({ ok: true });
-  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
+  } catch (e) { res.status(e.status || 500).json({ ok: false, code: e.code, message: _safeErrMsg(e) }); }
 });
 
 // ── 창고/위치 마스터 ─────────────────────────────────────────────────────────
@@ -11010,13 +11067,9 @@ app.post("/api/erp/locations", async (req, res) => {
     if (!name) return res.status(400).json({ ok: false, message: "위치명은 필수입니다." });
     const locId = id || `loc_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const loc = { id: locId, name, address: address || "", active };
-    if (USE_JSON_FILE) {
-      _commitFileErpMaster("locations", locId, loc);
-      return res.json({ ok: true, location: loc });
-    }
-    await pool.query("INSERT INTO erp_locations (id, company_id, data) VALUES ($1,$2,$3) ON CONFLICT (company_id, id) DO UPDATE SET data = $3, updated_at = NOW()", [locId, req.auth.companyId || null, loc]);
+    await _saveErpMaster("locations", locId, req.auth.companyId || null, loc, req.body.restore);
     res.json({ ok: true, location: loc });
-  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
+  } catch (e) { res.status(e.status || 500).json({ ok: false, code: e.code, message: _safeErrMsg(e) }); }
 });
 
 app.post("/api/erp/locations/:id/delete", async (req, res) => {
@@ -11025,17 +11078,9 @@ app.post("/api/erp/locations/:id/delete", async (req, res) => {
     if (!requirePage(req, res, "inv-locations")) return;
     const id = req.params.id;
     const companyId = req.auth.companyId || null;
-    if (USE_JSON_FILE) {
-      const used = _fileErp.stockLedger.some(l => l.locationId === id);
-      if (used) return res.status(400).json({ ok: false, message: "재고 이력에서 사용 중인 위치는 삭제할 수 없습니다. 비활성화를 이용하세요." });
-      _commitFileErpMaster("locations", id, null);
-      return res.json({ ok: true });
-    }
-    const { rows } = await pool.query("SELECT 1 FROM erp_stock_ledger WHERE location_id = $1 AND (company_id = $2 OR company_id IS NULL) LIMIT 1", [id, companyId]);
-    if (rows.length) return res.status(400).json({ ok: false, message: "재고 이력에서 사용 중인 위치는 삭제할 수 없습니다. 비활성화를 이용하세요." });
-    await pool.query("UPDATE erp_locations SET is_deleted = TRUE WHERE id = $1 AND (company_id = $2 OR company_id IS NULL)", [id, companyId]);
+    await _deleteErpMaster("locations", id, companyId);
     res.json({ ok: true });
-  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
+  } catch (e) { res.status(e.status || 500).json({ ok: false, code: e.code, message: _safeErrMsg(e) }); }
 });
 
 // ── 견적서 (Quotations) ─────────────────────────────────────────────────────
@@ -11081,13 +11126,9 @@ app.post("/api/erp/quotations", async (req, res) => {
       ...totals, memo: memo || "",
       createdBy: createdBy || "unknown", createdAt: new Date().toISOString(),
     };
-    if (USE_JSON_FILE) {
-      _commitFileErp({ ..._fileErp, quotations: [..._fileErp.quotations, quote] });
-      return res.json({ ok: true, quotation: quote });
-    }
-    await pool.query("INSERT INTO erp_quotations (id, doc_date, status, data, company_id) VALUES ($1,$2,'draft',$3,$4)", [quote.id, date, quote, companyId]);
+    await _insertErpDocument("quotations", quote, companyId);
     res.json({ ok: true, quotation: quote });
-  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
+  } catch (e) { res.status(e.status || 500).json({ ok: false, code: e.code, message: _safeErrMsg(e) }); }
 });
 
 app.post("/api/erp/quotations/:id/send", async (req, res) => {
@@ -11225,7 +11266,7 @@ app.post("/api/erp/quotations/:id/ship", async (req, res) => {
       await _lockStockKeys(client, companyId, required.map(l => [l.itemId, q0.locationId]));
       for (const l of required) {
         const { rows: ledgerRows } = await client.query(
-          "SELECT data FROM erp_stock_ledger WHERE item_id = $1 AND location_id = $2 AND (company_id = $3 OR company_id IS NULL) FOR UPDATE", [l.itemId, q0.locationId, companyId]
+          "SELECT data FROM erp_stock_ledger WHERE item_id = $1 AND location_id = $2 AND company_id = $3 FOR UPDATE", [l.itemId, q0.locationId, companyId]
         );
         const current = ledgerRows.reduce((sum, r) => sum + (r.data.type === "out" ? -Math.abs(r.data.qty) : Math.abs(r.data.qty)), 0);
         if (current < l.qty) { await client.query("ROLLBACK"); return res.status(400).json({ ok: false, message: `재고 부족: ${l.name || l.itemId} (현재 ${current} / 필요 ${l.qty})` }); }
@@ -11331,13 +11372,9 @@ app.post("/api/erp/purchase-orders", async (req, res) => {
       ...totals, memo: memo || "",
       createdBy: createdBy || "unknown", createdAt: new Date().toISOString(),
     };
-    if (USE_JSON_FILE) {
-      _commitFileErp({ ..._fileErp, purchaseOrders: [..._fileErp.purchaseOrders, po] });
-      return res.json({ ok: true, purchaseOrder: po });
-    }
-    await pool.query("INSERT INTO erp_purchase_orders (id, doc_date, status, data, company_id) VALUES ($1,$2,'draft',$3,$4)", [po.id, date, po, companyId]);
+    await _insertErpDocument("purchaseOrders", po, companyId);
     res.json({ ok: true, purchaseOrder: po });
-  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
+  } catch (e) { res.status(e.status || 500).json({ ok: false, code: e.code, message: _safeErrMsg(e) }); }
 });
 
 app.post("/api/erp/purchase-orders/:id/confirm", async (req, res) => {
@@ -11519,13 +11556,9 @@ app.post("/api/erp/purchase-requests", async (req, res) => {
       requestedById: String(userId), requestedBy: requestedBy || "unknown",
       createdAt: new Date().toISOString(),
     };
-    if (USE_JSON_FILE) {
-      _commitFileErp({ ..._fileErp, purchaseRequests: [..._fileErp.purchaseRequests, pr] });
-      return res.json({ ok: true, purchaseRequest: pr });
-    }
-    await pool.query("INSERT INTO erp_purchase_requests (id, doc_date, status, data, company_id) VALUES ($1,$2,'pending',$3,$4)", [pr.id, date, pr, companyId]);
+    await _insertErpDocument("purchaseRequests", pr, companyId);
     res.json({ ok: true, purchaseRequest: pr });
-  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
+  } catch (e) { res.status(e.status || 500).json({ ok: false, code: e.code, message: _safeErrMsg(e) }); }
 });
 
 app.post("/api/erp/purchase-requests/:id/approve", async (req, res) => {
@@ -11578,6 +11611,7 @@ app.post("/api/erp/purchase-requests/:id/convert-to-po", async (req, res) => {
         memo: pr.memo, createdBy: createdBy || "unknown", createdAt: new Date().toISOString(),
         sourcePurchaseRequestId: pr.id,
       };
+      _checkFileErpDocumentRefs(po);
       erp.purchaseOrders.push(po);
       pr.status = "converted"; pr.convertedPoId = po.id; pr.convertedAt = new Date().toISOString();
       _commitFileErp(erp);
@@ -11598,13 +11632,14 @@ app.post("/api/erp/purchase-requests/:id/convert-to-po", async (req, res) => {
         memo: pr0.memo, createdBy: createdBy || "unknown", createdAt: new Date().toISOString(),
         sourcePurchaseRequestId: pr0.id,
       };
+      await _lockErpDocumentRefs(client, companyId, po);
       await client.query("INSERT INTO erp_purchase_orders (id, doc_date, status, data, company_id) VALUES ($1,$2,'draft',$3,$4)", [po.id, po.date, po, companyId]);
       const pr = { ...pr0, status: "converted", convertedPoId: po.id, convertedAt: new Date().toISOString() };
       await client.query("UPDATE erp_purchase_requests SET status = 'converted', data = $3, updated_at = NOW() WHERE id = $1 AND company_id = $2", [id, companyId, pr]);
       await client.query("COMMIT");
       res.json({ ok: true, purchaseOrder: po, purchaseRequest: pr });
     } catch (e) { await client.query("ROLLBACK"); throw e; } finally { client.release(); }
-  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
+  } catch (e) { res.status(e.status || 500).json({ ok: false, code: e.code, message: _safeErrMsg(e) }); }
 });
 
 app.delete("/api/erp/purchase-requests/:id", async (req, res) => {
@@ -11632,7 +11667,7 @@ app.get("/api/erp/stock", async (req, res) => {
     if (USE_JSON_FILE) {
       ledger = _fileErp.stockLedger;
     } else {
-      const { rows } = await pool.query("SELECT data FROM erp_stock_ledger WHERE (company_id = $1 OR company_id IS NULL)", [req.auth.companyId || null]);
+      const { rows } = await pool.query("SELECT data FROM erp_stock_ledger WHERE company_id = $1", [req.auth.companyId]);
       ledger = rows.map(r => r.data);
     }
     const balances = new Map();
@@ -11657,7 +11692,7 @@ app.get("/api/erp/stock/ledger", async (req, res) => {
     if (USE_JSON_FILE) {
       ledger = _fileErp.stockLedger;
     } else {
-      const { rows } = await pool.query("SELECT id, data FROM erp_stock_ledger WHERE (company_id = $1 OR company_id IS NULL)", [req.auth.companyId || null]);
+      const { rows } = await pool.query("SELECT id, data FROM erp_stock_ledger WHERE company_id = $1", [req.auth.companyId]);
       ledger = rows.map(r => ({ ...r.data, id: r.id }));
     }
     if (itemId) ledger = ledger.filter(l => l.itemId === itemId);
@@ -11686,7 +11721,7 @@ app.post("/api/erp/stock/adjust", async (req, res) => {
       memo: memo || "", createdBy: user || "unknown", createdAt: new Date().toISOString(),
     };
     if (USE_JSON_FILE) {
-      const refErr = await _erpRefsExist(itemId, [locationId], companyId);
+      const refErr = _fileErpRefsError([itemId], [locationId]);
       if (refErr) return res.status(404).json({ ok: false, message: refErr });
       const current = _fileErp.stockLedger.filter(l => l.itemId === itemId && l.locationId === locationId)
         .reduce((s, l) => s + (l.type === "out" ? -Math.abs(l.qty) : Math.abs(l.qty)), 0);
@@ -11698,7 +11733,7 @@ app.post("/api/erp/stock/adjust", async (req, res) => {
       const refErr = await _erpRefsExist(itemId, [locationId], companyId, client);
       if (refErr) return { status: 404, body: { ok: false, message: refErr } };
       await _lockStockKeys(client, companyId, [[itemId, locationId]]);
-      const { rows } = await client.query("SELECT data FROM erp_stock_ledger WHERE item_id = $1 AND location_id = $2 AND (company_id = $3 OR company_id IS NULL)", [itemId, locationId, companyId]);
+      const { rows } = await client.query("SELECT data FROM erp_stock_ledger WHERE item_id = $1 AND location_id = $2 AND company_id = $3", [itemId, locationId, companyId]);
       const current = rows.reduce((s, r) => s + (r.data.type === "out" ? -Math.abs(r.data.qty) : Math.abs(r.data.qty)), 0);
       if (type === "out" && current < qtyNum) {
         return { status: 400, body: { ok: false, message: `현재 재고(${current})보다 많은 수량을 출고할 수 없습니다.` } };
@@ -11731,10 +11766,10 @@ app.post("/api/erp/stock/count", async (req, res) => {
       itemIds.add(String(id));
     }
     if (USE_JSON_FILE) {
-      const locErr = await _erpRefsExist(null, [locationId], companyId);
+      const locErr = _fileErpRefsError([], [locationId]);
       if (locErr) return res.status(404).json({ ok: false, message: locErr });
       for (const l of lines) {
-        const itemErr = await _erpRefsExist(l.itemId, [], companyId);
+        const itemErr = _fileErpRefsError([l.itemId], []);
         if (itemErr) return res.status(404).json({ ok: false, message: itemErr });
       }
     }
@@ -11775,7 +11810,7 @@ app.post("/api/erp/stock/count", async (req, res) => {
         if (itemErr) return { status: 404, body: { ok: false, message: itemErr } };
       }
       await _lockStockKeys(client, companyId, lines.map(l => [l.itemId, locationId]));
-      const { rows } = await client.query("SELECT data FROM erp_stock_ledger WHERE location_id = $1 AND (company_id = $2 OR company_id IS NULL)", [locationId, companyId]);
+      const { rows } = await client.query("SELECT data FROM erp_stock_ledger WHERE location_id = $1 AND company_id = $2", [locationId, companyId]);
       const entries = buildCountEntries(rows.map(r => r.data));
       for (const e of entries) {
         await client.query("INSERT INTO erp_stock_ledger (id, item_id, location_id, data, company_id) VALUES ($1,$2,$3,$4,$5)", [e.id, e.itemId, e.locationId, e, companyId]);
@@ -11802,7 +11837,7 @@ app.post("/api/erp/stock/transfer", async (req, res) => {
     const now = new Date().toISOString();
     const createdBy = user || "unknown";
     if (USE_JSON_FILE) {
-      const refErrT = await _erpRefsExist(itemId, [fromLocationId, toLocationId], companyId);
+      const refErrT = _fileErpRefsError([itemId], [fromLocationId, toLocationId]);
       if (refErrT) return res.status(404).json({ ok: false, message: refErrT });
       const current = _fileErp.stockLedger.filter(l => l.itemId === itemId && l.locationId === fromLocationId)
         .reduce((s, l) => s + (l.type === "out" ? -Math.abs(l.qty) : Math.abs(l.qty)), 0);
@@ -11816,7 +11851,7 @@ app.post("/api/erp/stock/transfer", async (req, res) => {
       const refErrT = await _erpRefsExist(itemId, [fromLocationId, toLocationId], companyId, client);
       if (refErrT) return { status: 404, body: { ok: false, message: refErrT } };
       await _lockStockKeys(client, companyId, [[itemId, fromLocationId], [itemId, toLocationId]]);
-      const { rows: ledgerRows } = await client.query("SELECT data FROM erp_stock_ledger WHERE item_id = $1 AND location_id = $2 AND (company_id = $3 OR company_id IS NULL)", [itemId, fromLocationId, companyId]);
+      const { rows: ledgerRows } = await client.query("SELECT data FROM erp_stock_ledger WHERE item_id = $1 AND location_id = $2 AND company_id = $3", [itemId, fromLocationId, companyId]);
       const current = ledgerRows.reduce((s, r) => s + (r.data.type === "out" ? -Math.abs(r.data.qty) : Math.abs(r.data.qty)), 0);
       if (current < qtyNum) {
         return { status: 400, body: { ok: false, message: `출발 위치 재고 부족 (현재 ${current} / 이동 요청 ${qtyNum})` } };
@@ -11861,16 +11896,9 @@ app.post("/api/erp/sales-targets", async (req, res) => {
       targetAmount: Number(targetAmount), memo: memo || "",
       updatedAt: new Date().toISOString(),
     };
-    if (USE_JSON_FILE) {
-      _commitFileErpMaster("salesTargets", targetId, target);
-      return res.json({ ok: true, salesTarget: target });
-    }
-    await pool.query(
-      "INSERT INTO erp_sales_targets (id, company_id, data) VALUES ($1,$2,$3) ON CONFLICT (company_id, id) DO UPDATE SET data = $3, updated_at = NOW()",
-      [targetId, req.auth.companyId || null, target]
-    );
+    await _saveErpMaster("salesTargets", targetId, req.auth.companyId || null, target, req.body.restore);
     res.json({ ok: true, salesTarget: target });
-  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
+  } catch (e) { res.status(e.status || 500).json({ ok: false, code: e.code, message: _safeErrMsg(e) }); }
 });
 
 app.post("/api/erp/sales-targets/:id/delete", async (req, res) => {
@@ -11882,7 +11910,7 @@ app.post("/api/erp/sales-targets/:id/delete", async (req, res) => {
       _commitFileErpMaster("salesTargets", id, null);
       return res.json({ ok: true });
     }
-    await pool.query("UPDATE erp_sales_targets SET is_deleted = TRUE WHERE id = $1 AND (company_id = $2 OR company_id IS NULL)", [id, req.auth.companyId || null]);
+    await pool.query("UPDATE erp_sales_targets SET is_deleted = TRUE WHERE id = $1 AND company_id = $2", [id, req.auth.companyId || null]);
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });

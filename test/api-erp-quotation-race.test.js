@@ -38,6 +38,8 @@ test("ERP 견적 상태 전이 경합은 원자적으로 한 요청만 반영한
     else assert.equal(final.acceptedAt, undefined);
   });
 
+  await t.test("마스터 삭제·복원과 참조 경합", () => require("./support/erp-master-lifecycle")(api, token));
+
   await t.test("동일 품목 합산 출고와 창고별 잔고", () => require("./support/erp-shipment-stock")(api, token));
 
   await t.test("draft 삭제와 발송 경합은 성공 하나만 남긴다", async () => {

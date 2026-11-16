@@ -24212,11 +24212,23 @@ function openItemModal(id){
     <div class="fg"><label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" id="item-active" ${i?.active!==false?"checked":""}> 사용</label></div>
   </div><div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal()">취소</button><button class="btn btn-primary" onclick="saveItem('${id||""}')">저장</button></div></div>`);
 }
+async function saveErpMasterRequest(path,body){
+  try {
+    const result=await serverRequest("POST",path,body);
+    if(result?.code!=="ERP_MASTER_DELETED")return result;
+    const restore=await askConfirmModal({title:"삭제된 자료 복원 확인",message:"다른 작업에서 이 자료가 삭제되었습니다. 현재 입력 내용으로 복원하시겠습니까?",confirmText:"복원하여 저장",danger:true,impacts:[{label:"복원 대상",value:body.name||body.id||"영업 목표"}],warnings:["복원 후에는 다른 사용자의 목록에서도 다시 표시됩니다."]});
+    if(!restore)return {ok:false,cancelled:true};
+    return await serverRequest("POST",path,{...body,restore:true});
+  } catch(error) {
+    return {ok:false,message:"서버에 연결하지 못했습니다. 입력 내용은 유지됩니다. 연결 상태를 확인한 뒤 다시 시도하세요."};
+  }
+}
 async function saveItem(id){
   const code=$("#item-code")?.value.trim(),name=$("#item-name")?.value.trim();
   if(!code||!name){showToast("품목코드와 품목명을 입력하세요.","error");return;}
   const body={id:id||undefined,code,name,productName:$("#item-pname")?.value.trim(),assetNo:$("#item-asset")?.value.trim(),unit:$("#item-unit")?.value.trim(),category:$("#item-category")?.value.trim(),safetyStock:+$("#item-safety")?.value||0,unitCost:+$("#item-cost")?.value||0,leadTimeDays:Math.max(0,+$("#item-leadtime")?.value||0),active:$("#item-active")?.checked,role:currentUser.role,user:currentUser.name};
-  const r=await serverRequest("POST","/api/erp/items",body);
+  const r=await saveErpMasterRequest("/api/erp/items",body);
+  if(r?.cancelled)return;
   if(!r?.ok){showToast(r?.message||"저장에 실패했습니다.","error");return;}
   const idx=erpItems.findIndex(i=>i.id===r.item.id);
   if(idx>=0)erpItems[idx]=r.item;else erpItems.push(r.item);
@@ -24280,7 +24292,8 @@ async function saveLocation(id){
   const name=$("#loc-name")?.value.trim();
   if(!name){showToast("위치명을 입력하세요.","error");return;}
   const body={id:id||undefined,name,address:$("#loc-address")?.value.trim(),active:$("#loc-active")?.checked,role:currentUser.role,user:currentUser.name};
-  const r=await serverRequest("POST","/api/erp/locations",body);
+  const r=await saveErpMasterRequest("/api/erp/locations",body);
+  if(r?.cancelled)return;
   if(!r?.ok){showToast(r?.message||"저장에 실패했습니다.","error");return;}
   const idx=erpLocations.findIndex(l=>l.id===r.location.id);
   if(idx>=0)erpLocations[idx]=r.location;else erpLocations.push(r.location);
@@ -24779,7 +24792,8 @@ async function saveSalesTarget(){
   const empId=$("#st-emp")?.value;
   const emp=empId?employees.find(e=>String(e.id)===String(empId)):null;
   const body={year:+year,month:$("#st-month")?.value||null,employeeId:empId||null,employeeName:emp?emp.name:"",targetAmount:+amount,memo:$("#st-memo")?.value.trim(),role:currentUser.role,user:currentUser.name};
-  const r=await serverRequest("POST","/api/erp/sales-targets",body);
+  const r=await saveErpMasterRequest("/api/erp/sales-targets",body);
+  if(r?.cancelled)return;
   if(!r?.ok){showToast(r?.message||"저장에 실패했습니다.","error");return;}
   closeModal();showToast("영업 목표가 등록되었습니다.","success");
   _salesDashData=null;renderSalesDashboardPage();

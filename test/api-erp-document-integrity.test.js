@@ -283,6 +283,25 @@ test("ERP document transitions preserve linked records and reject stale operatio
   });
 });
 
+test("deleted JSON masters and default locations remain deleted after restart", async t => {
+  const first=await startServer();t.after(()=>first.stop());
+  const {token}=await bootstrapAdminAndLogin(first,{loginId:"tombstone-admin",pw:"TombstonePassword123"});
+  const call=async(path,body)=>{
+    const r=await fetch(first.baseUrl+"/api/erp/"+path,{method:"POST",headers:{Authorization:"Bearer "+token,"Content-Type":"application/json"},body:JSON.stringify(body)});
+    const data=await r.json();assert.equal(r.status,200,JSON.stringify(data));return data;
+  };
+  await call("items",{id:"restart-item",code:"RESTART",name:"Deleted item"});await call("items/restart-item/delete",{});
+  const locations=await (await fetch(first.baseUrl+"/api/erp/locations",{headers:{Authorization:"Bearer "+token}})).json();
+  for(const loc of locations.locations)await call("locations/"+loc.id+"/delete",{});
+  const seedErp=JSON.parse(fs.readFileSync(first.dataFile.replace(/\.json$/,"-erp.json"),"utf8"));
+  const second=await startServer({seedErp});t.after(()=>second.stop());
+  const admin=await bootstrapAdminAndLogin(second,{loginId:"restart-admin",pw:"RestartPassword123"});
+  const headers={Authorization:"Bearer "+admin.token,"Content-Type":"application/json"};
+  const list=await (await fetch(second.baseUrl+"/api/erp/locations",{headers})).json();assert.deepEqual(list.locations,[]);
+  const stale=await fetch(second.baseUrl+"/api/erp/items",{method:"POST",headers,body:JSON.stringify({id:"restart-item",code:"RESTART",name:"Stale update"})});
+  assert.equal(stale.status,409);assert.equal((await stale.json()).code,"ERP_MASTER_DELETED");
+});
+
 const ADMIN_DATABASE_URL = process.env.TEST_DATABASE_URL;
 if (!ADMIN_DATABASE_URL) {
   test("ERP document strict company scope — PostgreSQL (skipped: no test DB)", { skip: true }, () => {});
@@ -342,7 +361,10 @@ if (!ADMIN_DATABASE_URL) {
     }
     const command = async (path, body = {}) => {
       const response = await fetch(server.baseUrl + "/api/erp/" + path, {
-        method: "POST", headers: { Authorization: `Bearer ${companyA.token}`, "Content-Type": "application/json" },
+        method: "POST", headers: {
+          Authorization: `Bearer ${companyA.token}`, "Content-Type": "application/json",
+          "Idempotency-Key": require("node:crypto").randomUUID(),
+        },
         body: JSON.stringify(body),
       });
       return { status: response.status, body: await response.json() };
@@ -363,5 +385,92 @@ if (!ADMIN_DATABASE_URL) {
       const result = await db.query(`SELECT status FROM ${table} WHERE id=$1`, [id]);
       assert.equal(result.rows[0].status, status, `${table}/${id} must remain unchanged`);
     }
+
+    await t.test("master deletion never mutates legacy NULL or foreign rows", async () => {
+      for(const [table,route] of [["erp_items","items"],["erp_locations","locations"],["erp_sales_targets","sales-targets"]]) {
+        await db.query(`ALTER TABLE ${table} ALTER COLUMN company_id DROP NOT NULL`);
+        for(const [suffix,companyId] of [["null",null],["foreign",companyB.companyId]]) {
+          const id=route+"-"+suffix;
+          await db.query(`INSERT INTO ${table}(id,company_id,data) VALUES($1,$2,$3)`,[id,companyId,{id,name:"Legacy master"}]);
+          assert.equal((await command(route+"/"+id+"/delete")).status,200);
+          const row=await db.query(`SELECT is_deleted FROM ${table} WHERE id=$1`,[id]);
+          assert.equal(row.rows[0].is_deleted,false);
+        }
+      }
+    });
+
+    await t.test("stock reads and writes exclude unassigned and foreign-company balances", async () => {
+      const itemId = "scope-stock-item", locationId = "scope-stock-from", toLocationId = "scope-stock-to";
+      const post = async (path, body, expected = 200) => {
+        const result = await command(path, body);
+        assert.equal(result.status, expected, `${path}: ${JSON.stringify(result.body)}`);
+        return result.body;
+      };
+      const read = async (path, token = companyA.token) => {
+        const response = await fetch(server.baseUrl + "/api/erp/" + path, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        const body = await response.json();
+        assert.equal(response.status, 200, `${path}: ${JSON.stringify(body)}`);
+        return body;
+      };
+      await post("items", { id: itemId, code: itemId, name: "Scoped stock item" });
+      for (const id of [locationId, toLocationId]) await post("locations", { id, name: id });
+      // The same item/location identifiers can occur in different companies.
+      // Only this disposable database permits legacy NULL-company rows.
+      await db.query("ALTER TABLE erp_stock_ledger ALTER COLUMN company_id DROP NOT NULL");
+      for (const [id, companyId, qty] of [
+        ["scope-stock-own", companyA.companyId, 2],
+        ["scope-stock-foreign", companyB.companyId, 200],
+        ["scope-stock-null", null, 100],
+      ]) {
+        const entry = { id, itemId, locationId, type: "in", qty, createdAt: "2031-05-01T00:00:00.000Z" };
+        await db.query("INSERT INTO erp_stock_ledger(id,item_id,location_id,data,company_id) VALUES($1,$2,$3,$4,$5)",
+          [id, itemId, locationId, entry, companyId]);
+      }
+      const outsideRows = async () => (await db.query(
+        "SELECT id,data,company_id FROM erp_stock_ledger WHERE company_id IS DISTINCT FROM $1 ORDER BY id", [companyA.companyId]
+      )).rows;
+      const outsideBefore = await outsideRows();
+      const initialLedger = (await read("stock/ledger")).ledger;
+      assert.deepEqual(initialLedger.map(row => row.id), ["scope-stock-own"]);
+      assert.deepEqual((await read("stock")).stock, [{ itemId, locationId, qty: 2 }]);
+      assert.deepEqual((await read("stock/ledger", companyB.token)).ledger.map(row => row.id), ["scope-stock-foreign"]);
+      assert.deepEqual((await read("stock", companyB.token)).stock, [{ itemId, locationId, qty: 200 }]);
+
+      // A NULL or foreign balance must never authorize an overdrawn operation.
+      await post("stock/adjust", { itemId, locationId, type: "out", qty: 3 }, 400);
+      await post("stock/transfer", { itemId, fromLocationId: locationId, toLocationId, qty: 3 }, 400);
+      const { quotation } = await post("quotations", {
+        date: "2031-05-01", partnerName: "Scope customer", locationId,
+        items: [{ itemId, qty: 3, unitPrice: 100 }],
+      });
+      const quotationPath = "quotations/" + quotation.id;
+      await post(quotationPath + "/send", {});
+      await post(quotationPath + "/accept", {});
+      await post(quotationPath + "/ship", {}, 400);
+      const afterRejectedShipment = (await read("quotations")).quotations.find(row => row.id === quotation.id);
+      assert.equal(afterRejectedShipment.status, "accepted");
+      assert.ok(!afterRejectedShipment.taxInvoiceId);
+      assert.deepEqual((await read("stock/ledger")).ledger, initialLedger);
+
+      // Counting five items against two owned items creates +3, not a large
+      // compensating withdrawal against another company's or legacy stock.
+      const counted = await post("stock/count", { locationId, lines: [{ itemId, countedQty: 5 }] });
+      assert.equal(counted.adjusted, 1);
+      assert.equal(counted.entries[0].type, "in");
+      assert.equal(counted.entries[0].qty, 3);
+      assert.deepEqual((await read("stock")).stock, [{ itemId, locationId, qty: 5 }]);
+      assert.equal((await post(quotationPath + "/ship", {})).quotation.status, "shipped");
+      await post("stock/transfer", { itemId, fromLocationId: locationId, toLocationId, qty: 1 });
+      await post("stock/adjust", { itemId, locationId, type: "out", qty: 1 });
+      const finalStock = (await read("stock")).stock;
+      assert.equal(finalStock.find(row => row.locationId === locationId)?.qty, 0);
+      assert.equal(finalStock.find(row => row.locationId === toLocationId)?.qty, 1);
+      const filteredLedger = (await read(`stock/ledger?itemId=${itemId}&locationId=${locationId}`)).ledger;
+      assert.ok(filteredLedger.every(row => row.itemId === itemId && row.locationId === locationId));
+      assert.equal(filteredLedger.reduce((sum, row) => sum + (row.type === "out" ? -row.qty : row.qty), 0), 0);
+      assert.deepEqual(await outsideRows(), outsideBefore, "unassigned/foreign ledger data must remain untouched");
+    });
   });
 }
