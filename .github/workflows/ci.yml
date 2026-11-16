@@ -7,7 +7,8 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    # ubuntu-latest가 26.04로 바뀌면서 Playwright가 Chromium 설치를 지원하지 않아 24.04로 고정한다.
+    runs-on: ubuntu-24.04
     # test/api/postgres-mode.test.js가 TEST_DATABASE_URL을 보고 이 서비스 컨테이너
     # 안에 매 실행마다 새 임시 DB를 만들고 지운다 — 운영 DB와는 완전히 무관하다.
     services:
