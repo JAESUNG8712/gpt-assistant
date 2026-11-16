@@ -41,6 +41,14 @@ module.exports = async function masterLifecycle(api, token) {
   await call("purchase-requests/"+pr.id+"/approve",{});
   await call("purchase-requests/"+pr.id+"/convert-to-po",{partnerName:"Test supplier",locationId:"missing-location"},400);
   assert.equal((await call("purchase-requests",undefined,200,"GET")).purchaseRequests.find(row=>row.id===pr.id).status,"approved");
+  const location=(await call("locations",{name:"Free text validation"})).location;
+  const freeItems=[{name:"Unlinked item",qty:1,unitPrice:100}];
+  await call("purchase-requests",{date:"2031-05-01",items:freeItems},400);
+  const stockBefore=(await call("stock/ledger",undefined,200,"GET")).ledger;
+  const freeQuote=(await call("quotations",{date:"2031-05-01",partnerName:"Customer",locationId:location.id,items:freeItems})).quotation;
+  await call("quotations/"+freeQuote.id+"/send",{});await call("quotations/"+freeQuote.id+"/accept",{});
+  assert.equal((await call("quotations/"+freeQuote.id+"/ship",{},400)).code,"ERP_STOCK_REFERENCE_REQUIRED");
+  assert.deepEqual((await call("stock/ledger",undefined,200,"GET")).ledger,stockBefore);
   // Concurrent create/delete may pick either winner but never leave a dangling reference.
   for (const route of ["quotations","purchase-orders","purchase-requests"]) {
     const id="race-"+randomUUID(),loc="race-"+randomUUID();

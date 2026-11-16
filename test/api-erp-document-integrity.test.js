@@ -302,6 +302,21 @@ test("deleted JSON masters and default locations remain deleted after restart", 
   assert.equal(stale.status,409);assert.equal((await stale.json()).code,"ERP_MASTER_DELETED");
 });
 
+test("legacy broken references cannot create inventory or invoices", async t => {
+  const record=(id,status,itemId)=>({id,status,date:"2031-05-01",locationId:"known-location",lines:[{itemId,name:"Legacy",qty:1,unitPrice:100}]});
+  const seedErp={locations:[{id:"known-location",name:"Known"}],quotations:[record("broken-quote","accepted","missing-item")],purchaseOrders:[record("broken-po","ordered","missing-item")],purchaseRequests:[record("broken-pr","approved",null)]};
+  const server=await startServer({seedErp});t.after(()=>server.stop());
+  const {token}=await bootstrapAdminAndLogin(server,{loginId:"legacy-admin",pw:"LegacyPassword123"});
+  const file=server.dataFile.replace(/\.json$/,"-erp.json"),before=fs.readFileSync(file,"utf8");
+  for(const route of ["quotations/broken-quote/ship","purchase-orders/broken-po/receive","purchase-requests/broken-pr/convert-to-po"]) {
+    const response=await fetch(server.baseUrl+"/api/erp/"+route,{method:"POST",headers:{Authorization:"Bearer "+token,"Content-Type":"application/json"},body:JSON.stringify({partnerName:"Supplier",locationId:"known-location"})});
+    assert.equal(response.status,400,route+": "+await response.text());
+    assert.equal(fs.readFileSync(file,"utf8"),before);
+  }
+  const accounting=JSON.parse(fs.readFileSync(server.dataFile.replace(/\.json$/,"-accounting.json"),"utf8"));
+  assert.deepEqual(accounting.taxInvoices,[]);
+});
+
 const ADMIN_DATABASE_URL = process.env.TEST_DATABASE_URL;
 if (!ADMIN_DATABASE_URL) {
   test("ERP document strict company scope — PostgreSQL (skipped: no test DB)", { skip: true }, () => {});
@@ -386,8 +401,31 @@ if (!ADMIN_DATABASE_URL) {
       assert.equal(result.rows[0].status, status, `${table}/${id} must remain unchanged`);
     }
 
+    await t.test("legacy broken references fail before stock and invoice writes", async () => {
+      assert.equal((await command("locations",{id:"known-legacy-location",name:"Known"})).status,200);
+      const fixtures=[
+        ["erp_quotations","broken-owned-quote","accepted","missing-item","quotations/broken-owned-quote/ship"],
+        ["erp_purchase_orders","broken-owned-po","ordered","missing-item","purchase-orders/broken-owned-po/receive"],
+        ["erp_purchase_requests","broken-owned-pr","approved",null,"purchase-requests/broken-owned-pr/convert-to-po"],
+      ];
+      const counts=async()=> (await db.query("SELECT (SELECT count(*) FROM erp_stock_ledger)::int AS stock, (SELECT count(*) FROM tax_invoices)::int AS invoices")).rows;
+      const before=await counts();
+      for(const [table,id,status,itemId,route] of fixtures) {
+        const data={id,status,date:"2031-05-01",locationId:"known-legacy-location",lines:[{itemId,name:"Legacy",qty:1,unitPrice:100}]};
+        await db.query(`INSERT INTO ${table}(id,doc_date,status,data,company_id) VALUES($1,'2031-05-01',$2,$3,$4)`,[id,status,data,companyA.companyId]);
+        const result=await command(route,{partnerName:"Supplier",locationId:"known-legacy-location"});
+        assert.equal(result.status,400,JSON.stringify(result));
+        assert.deepEqual((await db.query(`SELECT data FROM ${table} WHERE id=$1 AND company_id=$2`,[id,companyA.companyId])).rows[0].data,data);
+      }
+      assert.deepEqual(await counts(),before);
+    });
+
     await t.test("master deletion never mutates legacy NULL or foreign rows", async () => {
       for(const [table,route] of [["erp_items","items"],["erp_locations","locations"],["erp_sales_targets","sales-targets"]]) {
+        // Test-only legacy schema: replace the composite PK with equivalent
+        // uniqueness so a NULL company row can be represented in this disposable DB.
+        await db.query(`ALTER TABLE ${table} DROP CONSTRAINT ${table}_pk_company`);
+        await db.query(`ALTER TABLE ${table} ADD UNIQUE (company_id,id)`);
         await db.query(`ALTER TABLE ${table} ALTER COLUMN company_id DROP NOT NULL`);
         for(const [suffix,companyId] of [["null",null],["foreign",companyB.companyId]]) {
           const id=route+"-"+suffix;

@@ -10921,6 +10921,13 @@ async function _erpRefsExist(itemId, locationIds, companyId, externalClient) {
   }
   return null;
 }
+function _checkErpStockDocument(record) {
+  if (!record.locationId || !Array.isArray(record.lines) || !record.lines.length || record.lines.some(line => !line || !line.itemId)) {
+    throw httpError(400, "ERP_STOCK_REFERENCE_REQUIRED", "재고를 반영하려면 모든 라인에 등록된 품목과 창고가 연결되어야 합니다. 품목 연결을 확인해 주세요.");
+  }
+  const error = _validateItemLines(record.lines);
+  if (error) throw httpError(400, "ERP_INVALID_STOCK_LINES", error);
+}
 function _checkFileErpDocumentRefs(record) {
   const error = _fileErpRefsError((record.lines || []).map(line => line.itemId), [record.locationId]);
   if (error) throw httpError(400, "ERP_REFERENCE_NOT_FOUND", error);
@@ -11222,6 +11229,8 @@ app.post("/api/erp/quotations/:id/ship", async (req, res) => {
       if (!q) return res.status(404).json({ ok: false, message: "견적서를 찾을 수 없습니다." });
       if (q.status !== "accepted") return res.status(400).json({ ok: false, message: "수주 확정된 견적서만 출고 처리할 수 있습니다." });
       if (!q.locationId) return res.status(400).json({ ok: false, message: "출고 위치가 지정되지 않은 견적서입니다." });
+      _checkErpStockDocument(q);
+      _checkFileErpDocumentRefs(q);
       for (const l of _requiredShipmentStock(q.lines)) {
         const current = erp.stockLedger
           .filter(s => s.itemId === l.itemId && s.locationId === q.locationId)
@@ -11262,6 +11271,8 @@ app.post("/api/erp/quotations/:id/ship", async (req, res) => {
       const q0 = rows[0].data;
       if (rows[0].status !== "accepted") { await client.query("ROLLBACK"); return res.status(400).json({ ok: false, message: "수주 확정된 견적서만 출고 처리할 수 있습니다." }); }
       if (!q0.locationId) { await client.query("ROLLBACK"); return res.status(400).json({ ok: false, message: "출고 위치가 지정되지 않은 견적서입니다." }); }
+      _checkErpStockDocument(q0);
+      await _lockErpDocumentRefs(client, companyId, q0);
       const required = _requiredShipmentStock(q0.lines);
       await _lockStockKeys(client, companyId, required.map(l => [l.itemId, q0.locationId]));
       for (const l of required) {
@@ -11297,7 +11308,7 @@ app.post("/api/erp/quotations/:id/ship", async (req, res) => {
       await client.query("COMMIT");
       res.json({ ok: true, quotation: q, taxInvoice: _taxInvoiceReference(inv) });
     } catch (e) { await client.query("ROLLBACK"); throw e; } finally { client.release(); }
-  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
+  } catch (e) { res.status(e.status || 500).json({ ok: false, code: e.code, message: _safeErrMsg(e) }); }
 });
 
 app.post("/api/erp/quotations/:id/reject", async (req, res) => {
@@ -11423,6 +11434,8 @@ app.post("/api/erp/purchase-orders/:id/receive", async (req, res) => {
       const po = erp.purchaseOrders.find(p => p.id === id);
       if (!po) return res.status(404).json({ ok: false, message: "발주서를 찾을 수 없습니다." });
       if (po.status !== "ordered") return res.status(400).json({ ok: false, message: "발주 확정 상태의 발주서만 입고 처리할 수 있습니다." });
+      _checkErpStockDocument(po);
+      _checkFileErpDocumentRefs(po);
       const now = new Date().toISOString();
       for (const l of po.lines) {
         erp.stockLedger.push({
@@ -11457,6 +11470,8 @@ app.post("/api/erp/purchase-orders/:id/receive", async (req, res) => {
       if (!rows.length) { await client.query("ROLLBACK"); return res.status(404).json({ ok: false, message: "발주서를 찾을 수 없습니다." }); }
       if (rows[0].status !== "ordered") { await client.query("ROLLBACK"); return res.status(400).json({ ok: false, message: "발주 확정 상태의 발주서만 입고 처리할 수 있습니다." }); }
       const po0 = rows[0].data;
+      _checkErpStockDocument(po0);
+      await _lockErpDocumentRefs(client, companyId, po0);
       const now = new Date().toISOString();
       for (const l of po0.lines) {
         await client.query(
@@ -11484,7 +11499,7 @@ app.post("/api/erp/purchase-orders/:id/receive", async (req, res) => {
       await client.query("COMMIT");
       res.json({ ok: true, purchaseOrder: po, taxInvoice: _taxInvoiceReference(inv) });
     } catch (e) { await client.query("ROLLBACK"); throw e; } finally { client.release(); }
-  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
+  } catch (e) { res.status(e.status || 500).json({ ok: false, code: e.code, message: _safeErrMsg(e) }); }
 });
 
 app.post("/api/erp/purchase-orders/:id/cancel", async (req, res) => {
@@ -11611,6 +11626,7 @@ app.post("/api/erp/purchase-requests/:id/convert-to-po", async (req, res) => {
         memo: pr.memo, createdBy: createdBy || "unknown", createdAt: new Date().toISOString(),
         sourcePurchaseRequestId: pr.id,
       };
+      _checkErpStockDocument(po);
       _checkFileErpDocumentRefs(po);
       erp.purchaseOrders.push(po);
       pr.status = "converted"; pr.convertedPoId = po.id; pr.convertedAt = new Date().toISOString();
@@ -11632,6 +11648,7 @@ app.post("/api/erp/purchase-requests/:id/convert-to-po", async (req, res) => {
         memo: pr0.memo, createdBy: createdBy || "unknown", createdAt: new Date().toISOString(),
         sourcePurchaseRequestId: pr0.id,
       };
+      _checkErpStockDocument(po);
       await _lockErpDocumentRefs(client, companyId, po);
       await client.query("INSERT INTO erp_purchase_orders (id, doc_date, status, data, company_id) VALUES ($1,$2,'draft',$3,$4)", [po.id, po.date, po, companyId]);
       const pr = { ...pr0, status: "converted", convertedPoId: po.id, convertedAt: new Date().toISOString() };
