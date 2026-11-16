@@ -25758,7 +25758,7 @@ function _csvDownload(filename,csv){
   document.body.appendChild(a);a.click();a.remove();
 }
 async function exportRecruitCandidates(jobId){
-  const qs=`?userId=${encodeURIComponent(currentUser?.id||"")}&role=${encodeURIComponent(currentUser?.role||"")}${jobId?`&jobId=${encodeURIComponent(jobId)}`:""}`;
+  const qs=jobId?`?jobId=${encodeURIComponent(jobId)}`:"";
   const r=await serverRequest("GET","/api/recruit/candidates/export"+qs);
   if(!r?.ok){showToast(r?.message||"다운로드에 실패했습니다.","error");return;}
   _csvDownload(jobId?`지원현황_${_recruitJobTitle(jobId)}.csv`:"지원현황_전체.csv",r.csv);
@@ -27701,7 +27701,7 @@ async function loadPurchaseRequestsFromServer(){
   if(!serverConfig.url) return;
   try{
     if(!_erpLoaded) await loadErpFromServer();
-    const r=await serverRequest("GET",`/api/erp/purchase-requests?role=${encodeURIComponent(currentUser.role)}&userId=${encodeURIComponent(currentUser.id)}`);
+    const r=await serverRequest("GET","/api/erp/purchase-requests");
     if(r?.ok) erpPurchaseRequests=r.purchaseRequests;
   }catch(e){}
   _prLoaded=true;
@@ -32200,11 +32200,8 @@ function _renderSiRecordsTab(){
 // D5(세무/사회보험) — 자격상실(퇴사) 신고는 이미 퇴직 처리된 직원도 대상이 될 수 있어
 // (퇴직금 정산모듈과 동일한 사정) openOrgPicker()의 재직자 전용 필터로는 부적합하다 —
 // severance-settlement가 쓰던 것과 동일한, 전 직원(퇴직자 포함) 검색선택 UI를 쓴다.
-function _siEmpOptionsHtml(q){
-  q=String(q||"").trim().toLowerCase();
-  const list=employees.filter(e=>e.role!=="admin"&&(!q||e.name.toLowerCase().includes(q)||String(e.empNo||"").toLowerCase().includes(q))).sort((a,b)=>String(a.name||"").localeCompare(String(b.name||""),"ko"));
-  return list.map(e=>`<option value="${e.id}">${h(e.name)}${e.active?"":" (퇴직)"} · ${h(e.dept||"")}${e.team?" "+h(e.team):""}</option>`).join("");
-}
+// 대상자 선택 옵션은 퇴직금 정산과 공용(_sevEmpOptionsHtml)
+const _siEmpOptionsHtml=_sevEmpOptionsHtml;
 function openSocialInsuranceModal(id){
   const r=id?socialInsuranceRecords.find(x=>x.id===id):null;
   window._siPickedEmp=r?{id:r.empId,name:r.empName}:null;
