@@ -605,7 +605,7 @@ END $$;
 CREATE TABLE IF NOT EXISTS erp_quotations (
   id         TEXT        PRIMARY KEY,
   doc_date   DATE        NOT NULL,
-  status     TEXT        NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','sent','accepted','rejected','shipped')),
+  status     TEXT        NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','sent','accepted','partially_shipped','rejected','shipped')),
   data       JSONB       NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -613,6 +613,16 @@ CREATE TABLE IF NOT EXISTS erp_quotations (
 CREATE INDEX IF NOT EXISTS idx_erp_quotations_date ON erp_quotations (doc_date);
 ALTER TABLE erp_quotations ADD COLUMN IF NOT EXISTS company_id UUID;
 CREATE INDEX IF NOT EXISTS idx_erp_quotations_company_id ON erp_quotations (company_id);
+
+-- 부분 출고·입고(회차 처리) 상태 추가 — 이미 만들어진 테이블의 예전 CHECK 제약을 새 값 집합으로 교체한다.
+-- 정의에 새 상태가 이미 들어 있으면 아무것도 하지 않아 부팅 때마다 다시 적용돼도 안전하다.
+DO $$ BEGIN
+  IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'erp_quotations_status_check'
+             AND pg_get_constraintdef(oid) NOT LIKE '%partially_%') THEN
+    ALTER TABLE erp_quotations DROP CONSTRAINT erp_quotations_status_check;
+    ALTER TABLE erp_quotations ADD CONSTRAINT erp_quotations_status_check CHECK (status IN ('draft','sent','accepted','partially_shipped','rejected','shipped'));
+  END IF;
+END $$;
 DO $$ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'erp_quotations_company_id_fkey') THEN
     ALTER TABLE erp_quotations ADD CONSTRAINT erp_quotations_company_id_fkey FOREIGN KEY (company_id) REFERENCES companies(id);
@@ -663,7 +673,7 @@ END $$;
 CREATE TABLE IF NOT EXISTS erp_purchase_orders (
   id         TEXT        PRIMARY KEY,
   doc_date   DATE        NOT NULL,
-  status     TEXT        NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','ordered','received','cancelled')),
+  status     TEXT        NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','ordered','partially_received','received','cancelled')),
   data       JSONB       NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -671,6 +681,16 @@ CREATE TABLE IF NOT EXISTS erp_purchase_orders (
 CREATE INDEX IF NOT EXISTS idx_erp_po_date ON erp_purchase_orders (doc_date);
 ALTER TABLE erp_purchase_orders ADD COLUMN IF NOT EXISTS company_id UUID;
 CREATE INDEX IF NOT EXISTS idx_erp_po_company_id ON erp_purchase_orders (company_id);
+
+-- 부분 출고·입고(회차 처리) 상태 추가 — 이미 만들어진 테이블의 예전 CHECK 제약을 새 값 집합으로 교체한다.
+-- 정의에 새 상태가 이미 들어 있으면 아무것도 하지 않아 부팅 때마다 다시 적용돼도 안전하다.
+DO $$ BEGIN
+  IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'erp_purchase_orders_status_check'
+             AND pg_get_constraintdef(oid) NOT LIKE '%partially_%') THEN
+    ALTER TABLE erp_purchase_orders DROP CONSTRAINT erp_purchase_orders_status_check;
+    ALTER TABLE erp_purchase_orders ADD CONSTRAINT erp_purchase_orders_status_check CHECK (status IN ('draft','ordered','partially_received','received','cancelled'));
+  END IF;
+END $$;
 DO $$ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'erp_purchase_orders_company_id_fkey') THEN
     ALTER TABLE erp_purchase_orders ADD CONSTRAINT erp_purchase_orders_company_id_fkey FOREIGN KEY (company_id) REFERENCES companies(id);
