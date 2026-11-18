@@ -69,6 +69,61 @@ async function exercisePayrollIntegrity(api, token) {
   assert.ok(replies.some(r => r.ok));
   assert.equal((await read()).data.payrollAdjustments.filter(a => a.sourceKey === concurrent.sourceKey).length, 1);
 
+  // 장기근속 포상은 UI의 고정 id가 아니라 직원×근속연수 정규 sourceKey로 중복을
+  // 판정한다. 취소 후 재반영은 tombstone 때문에 id가 달라질 수 있으므로 id만 고정하면
+  // 정상 재반영을 막거나, 반대로 임의 id/sourceKey로 같은 포상을 반복 지급할 수 있다.
+  d = await read();
+  const employee = d.data.employees.find(e => String(e.id) === String(empId));
+  const serviceHistory = { id: `hh-longservice-${empId}-5`, type: "longservice", year: 5,
+    date: "2097-06-01", desc: "5년 장기근속 포상", amount: 500000 };
+  const serviceSlip = { id: `payslip-${empId}-2097-6`, empId, year: 2097, month: 6,
+    gross: 3500000, netPay: 3000000, confirmed: false, updatedAt: "2097-06-01T00:00:00Z" };
+  const serviceAward = { id: `payadj-longservice-${empId}-5`, empId, year: 2097, month: 6,
+    amount: 500000, category: "장기근속 포상금", source: "longservice_award",
+    sourceKey: `longservice-${empId}-5`, longServiceYears: 5, taxable: true,
+    updatedAt: "2097-06-01T00:00:00Z" };
+  r = await save({
+    employees: [{ ...employee, hrHistory: [...(employee.hrHistory || []), serviceHistory], updatedAt: "2097-06-01T00:00:00Z" }],
+    payslips: [serviceSlip], payrollAdjustments: [serviceAward],
+  });
+  assert.notEqual(r.partial, true, "정규 장기근속 포상은 저장되어야 한다");
+
+  // 동일 레코드의 네트워크 재전송은 새 급여 조정이나 이력/명세서를 만들지 않는다.
+  await save({ payrollAdjustments: [serviceAward] });
+  d = await read();
+  assert.equal(d.data.payrollAdjustments.filter(a => a.sourceKey === serviceAward.sourceKey).length, 1);
+  assert.equal(d.data.employees.find(e => String(e.id) === String(empId)).hrHistory
+    .filter(h => h.id === serviceHistory.id).length, 1);
+  assert.equal(d.data.payslips.filter(p => p.id === serviceSlip.id).length, 1);
+
+  r = await save({ payrollAdjustments: [{ ...serviceAward, id: "longservice-forged-key", month: 7,
+    sourceKey: `longservice-${empId}-forged` }] });
+  assert.equal(r.partial, true, "같은 장기근속 포상의 임의 sourceKey는 거부해야 한다");
+  r = await save({ payrollAdjustments: [{ ...serviceAward, id: "longservice-duplicate", month: 7 }] });
+  assert.equal(r.partial, true, "정규 sourceKey가 같은 별도 레코드는 거부해야 한다");
+
+  const serviceBatch = { ...serviceAward, longServiceYears: 10, sourceKey: `longservice-${empId}-10`,
+    year: 2098, month: 1, updatedAt: "2098-01-01T00:00:00Z" };
+  r = await save({ payrollAdjustments: [
+    { ...serviceBatch, id: "longservice-batch-a" }, { ...serviceBatch, id: "longservice-batch-b" },
+  ] });
+  assert.equal(r.partial, true);
+  assert.equal((await read()).data.payrollAdjustments.filter(a => a.sourceKey === serviceBatch.sourceKey).length, 1);
+
+  const serviceConcurrent = { ...serviceAward, longServiceYears: 15, sourceKey: `longservice-${empId}-15`,
+    year: 2098, month: 2, updatedAt: "2098-02-01T00:00:00Z" };
+  d = await read();
+  await Promise.all(["longservice-parallel-a", "longservice-parallel-b"].map(id =>
+    api("/save", auth(token, "POST", { _version: d.version, payrollAdjustments: [{ ...serviceConcurrent, id }] }))
+      .then(response => response.json())));
+  d = await read();
+  assert.equal(d.data.payrollAdjustments.filter(a => a.sourceKey === serviceConcurrent.sourceKey).length, 1,
+    "동시 생성도 장기근속 포상을 한 건만 남겨야 한다");
+  assert.equal(d.data.employees.find(e => String(e.id) === String(empId)).hrHistory
+    .filter(h => h.id === serviceHistory.id).length, 1, "중복 거부가 포상이력을 복제하면 안 된다");
+  assert.equal(d.data.payslips.find(p => p.id === serviceSlip.id).gross, serviceSlip.gross,
+    "중복 거부가 연결 급여명세서를 덮어쓰면 안 된다");
+
   d = await read();
   await save({ settings: { ...d.data.settings, payrollLockedMonths: ["2098-1", "2098-02"] } });
   r = await save({ payrollAdjustments: [

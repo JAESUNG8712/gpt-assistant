@@ -110,7 +110,7 @@ if (!ADMIN_DATABASE_URL) {
     const a = await register("스케줄A", "admina");
     const b = await register("스케줄B", "adminb");
     assert.ok(a.ok && b.ok);
-    const seed = async (co, id, date = "2000-01-01") => {
+    const seed = async (co, id, date) => {
       const d = await (await api("/data", { headers: hdr(co.token) })).json();
       const emp = { id, loginId: `u${id}`, pw: "u-pw-123456", name: `직원${id}`, role: "member", active: true, dept: "영업", team: "A",
         updatedAt: "2026-01-01T00:00:00.000Z",
@@ -118,19 +118,22 @@ if (!ADMIN_DATABASE_URL) {
       const r = await (await api("/save", { method: "POST", headers: hdr(co.token), body: JSON.stringify({ _version: d.version, employees: [...d.data.employees, emp] }) })).json();
       assert.equal(r.ok, true, JSON.stringify(r));
     };
-    await seed(a, 9301);
-    // B는 정지시키기 전에 스케줄러가 먼저 반영하는 경합을 막기 위해 미래 날짜로 만든 뒤, 정지 후 도래일로 바꾼다.
+    await seed(a, 9301, "2000-01-01");
     await seed(b, 9302, "2999-01-01");
-    // 회사 B는 정지시킨다(마스터 API 대신 DB 직접 변경) — 정지된 회사의 예약발령은 반영하지 않는다.
-    await adminDb.query("SELECT 1");
     const bdb = new Client({ connectionString: `${base}/${dbName}` });
     bdb.on("error", () => {});
     await bdb.connect();
     t.after(() => bdb.end());
-    await bdb.query("UPDATE companies SET status = 'suspended' WHERE slug <> (SELECT slug FROM companies ORDER BY created_at LIMIT 1)");
-    const { rows: comps } = await bdb.query("SELECT slug, status FROM companies ORDER BY created_at");
-    assert.deepEqual(comps.map(c => c.status), ["trial", "suspended"]);
-    await bdb.query(`UPDATE employees SET data = jsonb_set(data, '{hrHistory,0,date}', '"2000-01-01"') WHERE id = '9302'`);
+    await bdb.query("BEGIN");
+    try {
+      assert.equal((await bdb.query("UPDATE companies SET status = 'suspended' WHERE id = $1", [b.company.id])).rowCount, 1);
+      // Make the transfer due in the same commit as suspension, never while B is active.
+      assert.equal((await bdb.query("UPDATE employees SET data = jsonb_set(data, '{hrHistory,0,date}', to_jsonb($1::text)) WHERE id = '9302' AND company_id = $2", ["2000-01-01", b.company.id])).rowCount, 1);
+      await bdb.query("COMMIT");
+    } catch (error) {
+      await bdb.query("ROLLBACK");
+      throw error;
+    }
     const end = Date.now() + 15000;
     let emp;
     for (;;) {
