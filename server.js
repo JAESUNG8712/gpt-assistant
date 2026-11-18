@@ -13712,12 +13712,7 @@ const HR_JOBGROUP_VALUES = new Set(["관리직", "영업직", "개발직", "연�
 // 못 거른다 — 자릿수/범위를 먼저 보고, 그다음 Date로 왕복 변환해 실제로 그 날짜가
 // 존재하는지(예: 2월 30일이 3월 2일로 밀리지 않는지) 확인한다.
 function _isValidCalendarDateStr(s) {
-  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
-  if (!m) return false;
-  const y = Number(m[1]), mo = Number(m[2]), d = Number(m[3]);
-  if (mo < 1 || mo > 12 || d < 1 || d > 31) return false;
-  const dt = new Date(Date.UTC(y, mo - 1, d));
-  return dt.getUTCFullYear() === y && dt.getUTCMonth() === mo - 1 && dt.getUTCDate() === d;
+  return _isValidDateStr(s);
 }
 const HR_YEARMONTH_RE = /^\d{4}-(0[1-9]|1[0-2])$/;
 function _sanitizeHrResumeFields(raw) {
