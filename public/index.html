@@ -24334,7 +24334,7 @@ async function renderInvStockPage(){
   // 비용은 아니며, 기존 로그 페이지의 캐시 전략을 그대로 재사용).
   await _loadStockLedger();
   const f=window._invStockFilter||{q:"",status:"all"};
-  c.innerHTML=`<div class="card"><div class="card-head"><h3>📊 재고 현황</h3><div><button class="btn btn-secondary btn-sm" onclick="_dlInvStockCSV()">📥 엑셀 다운로드</button> <button class="btn btn-secondary btn-sm" onclick="gotoPage('inv-stock-log')">📜 변동 로그</button> <button class="btn btn-secondary btn-sm" onclick="openStockTransferModal()">↔ 창고 이동</button> <button class="btn btn-secondary btn-sm" onclick="openStockCountModal()">📋 재고 실사</button> <button class="btn btn-secondary btn-sm" onclick="bulkCreatePurchaseRequestFromStock()">🧺 선택 항목 일괄 구매요청</button> <button class="btn btn-primary btn-sm" onclick="openStockAdjustModal()">+ 재고 조정</button></div></div>
+  c.innerHTML=`<div class="card"><div class="card-head"><h3>📊 재고 현황</h3><div><button class="btn btn-secondary btn-sm" onclick="_dlInvStockCSV()">📥 엑셀 다운로드</button> <button class="btn btn-secondary btn-sm" onclick="openStockValuationModal()">💰 재고평가</button> <button class="btn btn-secondary btn-sm" onclick="gotoPage('inv-stock-log')">📜 변동 로그</button> <button class="btn btn-secondary btn-sm" onclick="openStockTransferModal()">↔ 창고 이동</button> <button class="btn btn-secondary btn-sm" onclick="openStockCountModal()">📋 재고 실사</button> <button class="btn btn-secondary btn-sm" onclick="bulkCreatePurchaseRequestFromStock()">🧺 선택 항목 일괄 구매요청</button> <button class="btn btn-primary btn-sm" onclick="openStockAdjustModal()">+ 재고 조정</button></div></div>
   <div class="card-body">
   <div class="flex gap2 wrap mb3" style="align-items:center">
     <input class="fc" id="inv-stock-search" data-live-filter="inv-stock-search" style="max-width:280px" value="${h(f.q)}" placeholder="품목·제품명·위치·자산번호·수량 검색">
@@ -24455,6 +24455,26 @@ function renderInvStockLogTbl(){
   ${rows.length?rows.map(l=>`<tr><td>${h(new Date(l.createdAt).toLocaleString("ko-KR"))}</td><td>${h(_erpItemName(l.itemId))}</td><td>${h(_erpLocationName(l.locationId))}</td><td>${l.type==="in"?badge("입고","green"):badge("출고","red")}${l.refType==="transfer"?` <span class="fz10 text-gray">(이동)</span>`:""}</td><td style="text-align:right">${l.qty}</td><td>${h(l.memo||"-")}</td><td>${h(l.createdBy||"-")}</td></tr>`).join(""):`<tr><td colspan="7" class="text-gray" style="text-align:center;padding:20px">로그가 없습니다.</td></tr>`}
   </tbody></table></div>`;
 }
+// 재고평가 — 이동평균/FIFO 두 방식의 품목별 재고 금액(참고용 즉석 계산).
+async function openStockValuationModal(asOf){
+  const q=asOf?`?asOf=${encodeURIComponent(asOf)}`:"";
+  const r=await serverRequest("GET","/api/erp/stock/valuation"+q);
+  if(!r?.ok){showToast(r?.message||"재고평가를 불러오지 못했습니다.","error");return;}
+  const fmt=n=>Math.round(n||0).toLocaleString();
+  const rows=r.items.map(it=>`<tr><td>${h(it.code||"")}</td><td>${h(it.name||it.itemId)}</td><td class="tr">${(+it.qty||0).toLocaleString()} ${h(it.unit||"")}</td>
+    <td class="tr">${fmt(it.avg.unitCost)}</td><td class="tr">${fmt(it.avg.value)}</td>
+    <td class="tr">${fmt(it.fifo.unitCost)}</td><td class="tr">${fmt(it.fifo.value)}</td>
+    <td>${it.estimatedRows?`<span class="badge bg-yellow" title="입고 단가가 없어 품목 단가/평균으로 추정한 입고 ${it.estimatedRows}건">추정 ${it.estimatedRows}</span>`:""}</td></tr>`).join("");
+  openModal(`<div class="modal-box" style="max-width:920px"><div class="modal-head"><h3>💰 재고평가 (이동평균 / FIFO)</h3></div><div class="modal-body">
+    <div class="flex gap2 mb3" style="align-items:center"><label class="fl" style="margin:0">기준일</label>
+      <input class="fc" type="date" id="val-asof" value="${h(r.asOf||"")}" style="max-width:170px">
+      <button class="btn btn-secondary btn-sm" onclick="closeModal();openStockValuationModal($('#val-asof').value)">조회</button></div>
+    <div class="tbl-wrap"><table class="tbl"><thead><tr><th>코드</th><th>품목</th><th class="tr">수량</th><th class="tr">평균단가</th><th class="tr">이동평균 금액</th><th class="tr">FIFO 단가</th><th class="tr">FIFO 금액</th><th></th></tr></thead>
+    <tbody>${rows||`<tr><td colspan="8" class="tc" style="padding:20px;color:var(--text3)">재고 이력이 없습니다.</td></tr>`}</tbody>
+    <tfoot><tr><th colspan="4">합계</th><th class="tr">${fmt(r.totals.avg)}원</th><th></th><th class="tr">${fmt(r.totals.fifo)}원</th><th></th></tr></tfoot></table></div>
+    <div style="font-size:12px;color:var(--text3);margin-top:8px">참고용 계산입니다. 발주 입고는 발주 단가, 수동 입고는 입력한 취득단가를 쓰고 단가가 없으면 품목 마스터 단가로 추정합니다(배지 표시). 창고 간 이동은 평가에서 제외됩니다.</div>
+  </div><div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal()">닫기</button></div></div>`);
+}
 function openStockAdjustModal(){
   if(!erpItems.length||!erpLocations.length){showToast("먼저 품목과 위치를 등록하세요.","error");return;}
   openModal(`<div class="modal-box"><div class="modal-head"><h3>📊 재고 조정</h3></div><div class="modal-body">
@@ -24462,11 +24482,14 @@ function openStockAdjustModal(){
     <div class="fg"><label class="fl">위치 <span class="req">*</span></label><select class="fc" id="adj-loc">${erpLocations.map(l=>`<option value="${l.id}">${h(l.name)}</option>`).join("")}</select></div>
     <div class="fg"><label class="fl">구분 <span class="req">*</span></label><select class="fc" id="adj-type"><option value="in">입고(+)</option><option value="out">출고(-)</option></select></div>
     <div class="fg"><label class="fl">수량 <span class="req">*</span></label><input class="fc" type="number" id="adj-qty" value="1"></div>
+    <div class="fg"><label class="fl">취득 단가 (입고, 선택)</label><input class="fc" type="number" min="0" id="adj-unit-cost" placeholder="비우면 품목 단가로 재고평가"></div>
     <div class="fg"><label class="fl">비고</label><input class="fc" id="adj-memo"></div>
   </div><div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal()">취소</button><button class="btn btn-primary" onclick="saveStockAdjust()">저장</button></div></div>`);
 }
 async function saveStockAdjust(){
   const body={itemId:$("#adj-item")?.value,locationId:$("#adj-loc")?.value,type:$("#adj-type")?.value,qty:+$("#adj-qty")?.value||0,memo:$("#adj-memo")?.value.trim(),role:currentUser.role,user:currentUser.name};
+  const costRaw=$("#adj-unit-cost")?.value;
+  if(body.type==="in"&&costRaw!==undefined&&String(costRaw).trim()!=="")body.unitCost=Number(costRaw);
   const r=await serverRequest("POST","/api/erp/stock/adjust",body);
   if(!r?.ok){showToast(r?.message||"저장에 실패했습니다.","error");return;}
   const rs=await serverRequest("GET","/api/erp/stock");if(rs?.ok)erpStock=rs.stock;

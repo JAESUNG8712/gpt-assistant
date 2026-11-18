@@ -20,6 +20,7 @@ const budgetRouterFactory = require("./budget");
 const { canReadTraining, canManageTraining, countsByCourse, normalizeEnrollment } = require("./lib/training-integrity");
 const { assertFieldOrder } = require("./lib/field-order-guard");
 const { saveRejectInfo, snapshotIntendedRecord, findSilentRejections } = require("./lib/save-feedback");
+const { computeStockValuation } = require("./lib/stock-valuation");
 const { retryDelays, nextOutboxState, SENDING_LEASE_MS, ownsOutboxClaim } = require("./lib/webhook-outbox");
 const { trackedFields, takePreImage, diffRevisions, KEEP_PER_RECORD, capSnapshot, EMPLOYEE_AUTH_FIELDS } = require("./lib/record-revisions");
 
@@ -11305,12 +11306,17 @@ function _erpPickLines(doc, picks) {
   return picks.map(p => ({ ...doc.lines[p.index], qty: p.qty }));
 }
 function _erpLedgerRows(flow, doc, picks, ctx) {
-  return _erpPickLines(doc, picks).map(l => ({
-    itemId: l.itemId, locationId: doc.locationId, type: ctx.type, qty: l.qty,
-    refType: ctx.refType, refId: doc.id, refNo: doc[flow.noField], round: ctx.round,
-    memo: `${ctx.memo} (${doc[flow.noField]})${ctx.showRound ? ` ${ctx.round}차` : ""}`,
-    createdBy: ctx.user, createdAt: ctx.now,
-  }));
+  return _erpPickLines(doc, picks).map(l => {
+    const row = {
+      itemId: l.itemId, locationId: doc.locationId, type: ctx.type, qty: l.qty,
+      refType: ctx.refType, refId: doc.id, refNo: doc[flow.noField], round: ctx.round,
+      memo: `${ctx.memo} (${doc[flow.noField]})${ctx.showRound ? ` ${ctx.round}차` : ""}`,
+      createdBy: ctx.user, createdAt: ctx.now,
+    };
+    // 발주 입고는 발주 단가를 재고평가용 취득단가로 남긴다(재고평가는 이 값을 읽는다).
+    if (ctx.type === "in" && ctx.refType === "po") row.unitCost = Math.max(0, Number(l.unitPrice) || 0);
+    return row;
+  });
 }
 function _erpNewId(prefix) { return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`; }
 // 회차 세금계산서(양수) 또는 반품 수정세금계산서(음수 수량 → 음수 금액).
@@ -11908,6 +11914,26 @@ app.get("/api/erp/stock/ledger", async (req, res) => {
   } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
+// 재고평가: 품목별 재고 금액을 이동평균·FIFO 두 방식으로 함께 계산한다(참고용 즉석 계산, 저장 안 함).
+app.get("/api/erp/stock/valuation", async (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  if (!requirePage(req, res, "inv-stock")) return;
+  try {
+    const asOf = String(req.query.asOf || "");
+    if (asOf && !_isValidDateStr(asOf)) return res.status(400).json({ ok: false, message: "기준일은 YYYY-MM-DD 형식의 실제 날짜여야 합니다." });
+    let ledger, items;
+    if (USE_JSON_FILE) {
+      ledger = _fileErp.stockLedger; items = _fileErp.items;
+    } else {
+      const led = await pool.query("SELECT data, created_at FROM erp_stock_ledger WHERE company_id = $1 ORDER BY created_at, id", [req.auth.companyId]);
+      ledger = led.rows.map(r => ({ ...r.data, createdAt: r.data.createdAt || r.created_at.toISOString() }));
+      const it = await pool.query("SELECT id, data FROM erp_items WHERE company_id = $1", [req.auth.companyId]);
+      items = it.rows.map(r => ({ ...r.data, id: r.id }));
+    }
+    res.json({ ok: true, ...computeStockValuation(ledger, items, { asOf }) });
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
+});
+
 app.post("/api/erp/stock/adjust", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
@@ -11916,6 +11942,12 @@ app.post("/api/erp/stock/adjust", async (req, res) => {
     const { itemId, locationId, type, qty, memo, user } = req.body || {};
     if (!itemId || !locationId) return res.status(400).json({ ok: false, message: "품목과 위치를 선택하세요." });
     if (!["in", "out"].includes(type)) return res.status(400).json({ ok: false, message: "입고/출고 구분이 올바르지 않습니다." });
+    // 수동 입고의 취득 단가(선택). 재고평가에만 쓰이며 비우면 품목 마스터 단가로 추정한다.
+    let manualUnitCost;
+    if (type === "in" && req.body.unitCost !== undefined && req.body.unitCost !== null && req.body.unitCost !== "") {
+      manualUnitCost = Number(req.body.unitCost);
+      if (!Number.isFinite(manualUnitCost) || manualUnitCost < 0) return res.status(400).json({ ok: false, message: "입고 단가는 0 이상의 숫자여야 합니다." });
+    }
     // Math.abs()로 감싸고 있어 qty:-5를 보내면 조용히 5로 바뀌어 처리됐다 — 입고/출고 방향은
     // type이 정하므로 음수 수량은 사용자의 오입력이거나 연동 버그이지 "절대값으로 처리하라"는
     // 뜻이 아니다. 조용히 고치지 말고 거부한다.
@@ -11927,6 +11959,7 @@ app.post("/api/erp/stock/adjust", async (req, res) => {
       itemId, locationId, type, qty: qtyNum, refType: "manual", refId: null, refNo: null,
       memo: memo || "", createdBy: user || "unknown", createdAt: new Date().toISOString(),
     };
+    if (manualUnitCost !== undefined) entry.unitCost = manualUnitCost;
     if (USE_JSON_FILE) {
       const refErr = _fileErpRefsError([itemId], [locationId]);
       if (refErr) return res.status(404).json({ ok: false, message: refErr });
