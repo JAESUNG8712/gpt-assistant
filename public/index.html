@@ -24550,6 +24550,7 @@ function renderSalesQuotationsTbl(){
   wrap.innerHTML=`<div class="tbl-wrap"><table><thead><tr><th>견적번호</th><th>견적일</th><th>거래처</th><th>합계</th><th>상태</th><th>관리</th></tr></thead><tbody>
   ${rows.length?rows.map(q=>`<tr><td>${h(q.quoteNo||"(임시)")}</td><td>${h(q.date)}</td><td>${h(q.partnerName)}</td><td style="text-align:right">${q.grandTotal.toLocaleString()}</td><td>${QUOTE_STATUS_LABEL[q.status]}</td><td>
     <button class="btn btn-secondary btn-sm" onclick="viewQuotationModal('${q.id}')">보기</button>
+    <button class="btn btn-secondary btn-sm" onclick="copyQuotation('${q.id}')">복사</button>
     <button class="btn btn-ghost btn-sm" onclick="_showRecordHistory('${h(q.quoteNo||'견적서').replace(/'/g,"\\'")}',_buildHistoryRows(${h(JSON.stringify(q))},[['createdBy','createdAt','작성'],['sentBy','sentAt','발송'],['acceptedBy','acceptedAt','수주확정'],['shippedBy','shippedAt','출고/매출'],['rejectedBy','rejectedAt','실주처리']]))">이력</button>
     ${q.status==="draft"?` <button class="btn btn-primary btn-sm" onclick="sendQuotation('${q.id}')">발송</button> <button class="btn btn-danger btn-sm" onclick="deleteQuotationDraft('${q.id}')">삭제</button>`:""}
     ${q.status==="sent"?` <button class="btn btn-primary btn-sm" onclick="acceptQuotation('${q.id}')">수주확정</button> <button class="btn btn-danger btn-sm" onclick="rejectQuotation('${q.id}')">실주처리</button>`:""}
@@ -24587,14 +24588,18 @@ function renderQuoteItems(){
     <input class="fc" placeholder="품목명" style="flex:2" value="${h(it.name)}" oninput="_quoteItems[${i}].name=this.value">
     <input class="fc" type="number" placeholder="수량" style="flex:1" value="${it.qty||""}" oninput="_quoteItems[${i}].qty=+this.value||0;updateQuoteTotals()">
     <input class="fc" type="number" placeholder="단가" style="flex:1" value="${it.unitPrice||""}" oninput="_quoteItems[${i}].unitPrice=+this.value||0;updateQuoteTotals()">
+    <input class="fc" type="number" min="0" max="100" step="any" placeholder="할인%" title="품목별 할인율(%)" style="flex:.7" value="${it.discountRate||""}" oninput="_quoteItems[${i}].discountRate=Math.min(100,Math.max(0,+this.value||0));updateQuoteTotals()">
     <button class="btn btn-danger btn-sm" onclick="_quoteItems.splice(${i},1);renderQuoteItems()">✕</button>
   </div>`).join("");
   updateQuoteTotals();
 }
 function updateQuoteTotals(){
   const el=$("#qt-totals");if(!el)return;
-  const supply=_quoteItems.reduce((s,it)=>s+(it.qty||0)*(it.unitPrice||0),0),tax=Math.round(supply*0.1);
-  el.textContent=`공급가액: ${supply.toLocaleString()} / 세액(10%): ${tax.toLocaleString()} / 합계: ${(supply+tax).toLocaleString()}`;
+  const r2=n=>Math.round((n+Number.EPSILON)*100)/100;
+  let supply=0,tax=0;
+  _quoteItems.forEach(it=>{const line=r2((it.qty||0)*(it.unitPrice||0)*(1-(it.discountRate||0)/100));supply+=line;tax+=r2(line*0.1);});
+  supply=r2(supply);tax=r2(tax);
+  el.textContent=`공급가액: ${supply.toLocaleString()} / 세액(10%): ${tax.toLocaleString()} / 합계: ${r2(supply+tax).toLocaleString()}`;
 }
 async function saveQuotation(){
   if(!$("#qt-date").reportValidity()||!$("#qt-valid").reportValidity())return;
@@ -24612,15 +24617,24 @@ function viewQuotationModal(id){
     <div class="fg"><label class="fl">견적일자</label><div class="fz13">${h(q.date)}${q.validUntil?` (유효기한: ${h(q.validUntil)})`:""}</div></div>
     <div class="fg"><label class="fl">거래처</label><div class="fz13">${h(q.partnerName)}</div></div>
     <div class="fg"><label class="fl">출고 위치</label><div class="fz13">${q.locationId?h(_erpLocationName(q.locationId)):"-"}</div></div>
-    <div class="fg"><label class="fl">품목</label><div class="tbl-wrap"><table><thead><tr><th>품목</th><th>수량</th><th>단가</th><th>공급가액</th><th>세액</th></tr></thead><tbody>
-    ${q.lines.map(l=>`<tr><td>${h(l.name)}</td><td style="text-align:right">${l.qty}</td><td style="text-align:right">${l.unitPrice.toLocaleString()}</td><td style="text-align:right">${l.supplyAmount.toLocaleString()}</td><td style="text-align:right">${l.taxAmount.toLocaleString()}</td></tr>`).join("")}
+    <div class="fg"><label class="fl">품목</label><div class="tbl-wrap"><table><thead><tr><th>품목</th><th>수량</th><th>단가</th><th>할인</th><th>공급가액</th><th>세액</th></tr></thead><tbody>
+    ${q.lines.map(l=>`<tr><td>${h(l.name)}</td><td style="text-align:right">${l.qty}</td><td style="text-align:right">${l.unitPrice.toLocaleString()}</td><td style="text-align:right">${l.discountRate?l.discountRate+"%":"-"}</td><td style="text-align:right">${l.supplyAmount.toLocaleString()}</td><td style="text-align:right">${l.taxAmount.toLocaleString()}</td></tr>`).join("")}
     </tbody></table></div></div>
     <div class="fg"><label class="fl">합계</label><div class="fz13">공급가액 ${q.supplyTotal.toLocaleString()} + 세액 ${q.taxTotal.toLocaleString()} = ${q.grandTotal.toLocaleString()}</div></div>
+    ${q.copiedFromId?`<div class="fg"><label class="fl">복사 원본</label><div class="fz13">${h(q.copiedFromNo||"(임시)")}</div></div>`:""}
     ${q.memo?`<div class="fg"><label class="fl">메모</label><div class="fz13">${h(q.memo)}</div></div>`:""}
     ${q.status==="rejected"?`<div class="fg"><label class="fl">실주 사유</label><div class="fz13">${h(q.rejectReason)}</div></div>`:""}
     ${q.status==="shipped"&&!(q.fulfillments||[]).length?`<div class="fg"><label class="fl">발행 세금계산서</label><div class="fz13">${h(q.taxInvoiceNo)}</div></div>`:""}
     ${_erpRoundsHtml("quotation",q)}
   </div><div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal()">닫기</button><button class="btn btn-secondary" onclick="window.print()">🖨 출력</button></div></div>`);
+}
+// 견적서 복사 — 같은 거래처·품목·할인율의 새 임시 저장 견적서를 만든다(견적일은 오늘).
+async function copyQuotation(id){
+  const r=await serverRequest("POST",`/api/erp/quotations/${id}/copy`,{role:currentUser.role,user:currentUser.name});
+  if(!r?.ok){showToast(r?.message||"견적서 복사에 실패했습니다.","error");return;}
+  erpQuotations.unshift(r.quotation);
+  showToast("견적서가 복사되었습니다. 임시 저장 상태에서 확인 후 발송하세요.","success");
+  renderSalesQuotationsPage();
 }
 async function sendQuotation(id){
   const q=erpQuotations.find(q=>q.id===id);
