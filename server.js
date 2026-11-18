@@ -9547,6 +9547,8 @@ app.post("/api/accounting/tax-invoices", async (req, res) => {
   } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
+// 반품과 연결된 수정세금계산서를 취소하면 재고는 이미 되돌아갔는데 세액만 원복돼 장부가 어긋난다.
+const AMENDMENT_VOID_MSG = "반품 수정세금계산서는 취소할 수 없습니다. 반품 처리를 정정하려면 관리자에게 문의하세요.";
 app.post("/api/accounting/tax-invoices/:id/void", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
@@ -9558,12 +9560,14 @@ app.post("/api/accounting/tax-invoices/:id/void", async (req, res) => {
       const inv = _fileAccounting.taxInvoices.find(t => t.id === id);
       if (!inv) return res.status(404).json({ ok: false, message: "세금계산서를 찾을 수 없습니다." });
       if (inv.status !== "issued") return res.status(400).json({ ok: false, message: "발행된 세금계산서만 취소할 수 있습니다." });
+      if (inv.invoiceKind === "amendment") return res.status(400).json({ ok: false, message: AMENDMENT_VOID_MSG });
       inv.status = "void"; inv.voidReason = reason; inv.voidedBy = req.body.user || "unknown"; inv.voidedAt = new Date().toISOString();
       _saveFileAccounting();
       return res.json({ ok: true, taxInvoice: inv });
     }
     const { rows } = await pool.query("SELECT data FROM tax_invoices WHERE id = $1 AND status = 'issued' AND (company_id = $2 OR company_id IS NULL)", [id, companyId]);
     if (!rows.length) return res.status(400).json({ ok: false, message: "발행된 세금계산서만 취소할 수 있습니다." });
+    if (rows[0].data.invoiceKind === "amendment") return res.status(400).json({ ok: false, message: AMENDMENT_VOID_MSG });
     const inv = { ...rows[0].data, status: "void", voidReason: reason, voidedBy: req.body.user || "unknown", voidedAt: new Date().toISOString() };
     await pool.query("UPDATE tax_invoices SET status = 'void', data = $2, updated_at = NOW() WHERE id = $1", [id, inv]);
     res.json({ ok: true, taxInvoice: inv });
@@ -12123,6 +12127,14 @@ app.post("/api/erp/sales-targets/:id/delete", async (req, res) => {
 // menuPerms로 좁히려면(다른 여러 화면이 "견적서를 하나 고른다"는 목적 없이 sales-dashboard만
 // 원본 견적서 레코드를 필요로 하므로) 이 화면이 원본 레코드가 아니라 서버가 집계한 결과만
 // 받도록 먼저 바꿔야 한다(회계 리포트/원가명세서와 동일한 이유·동일한 패턴).
+// 견적서의 순 출고 공급가액(출고 회차 합계 - 반품 합계). 회차 기록이 없는 예전 출고완료 문서는 합계 그대로.
+function _erpNetShippedSupply(q) {
+  const price = index => Number(q.lines?.[index]?.unitPrice) || 0;
+  const sum = records => (records || []).reduce((s, r) => s + (r.lines || []).reduce((a, l) => a + (Number(l.qty) || 0) * price(l.index), 0), 0);
+  const returned = sum(q.returns);
+  const shipped = Array.isArray(q.fulfillments) ? sum(q.fulfillments) : (q.status === "shipped" ? Number(q.supplyTotal) || 0 : 0);
+  return _round2(shipped - returned);
+}
 app.get("/api/erp/sales-dashboard", async (req, res) => {
   if (!requireAdmin(req, res)) return;
   if (!requirePage(req, res, "sales-dashboard")) return;
@@ -12139,11 +12151,15 @@ app.get("/api/erp/sales-dashboard", async (req, res) => {
       salesTargets = tRows.map(r => ({ id: r.id, ...r.data }));
     }
     const supplyOf = q => Number(q.supplyTotal) || 0;
+    // 매출은 실제 출고된 분(회차 합계)에서 반품분을 뺀 순매출이다. 부분 출고 견적서도 출고된 만큼 잡힌다.
+    const isOrder = q => q.status === "accepted" || q.status === "partially_shipped" || q.status === "shipped";
+    const hasRevenue = q => q.status === "partially_shipped" || q.status === "shipped";
+    const revenueOf = q => hasRevenue(q) ? _erpNetShippedSupply(q) : 0;
 
     const targetsByYear = {};
     for (const t of salesTargets) {
       const actual = quotations
-        .filter(q => q.status === "accepted" || q.status === "shipped")
+        .filter(isOrder)
         .filter(q => new Date(q.date).getFullYear() === Number(t.year)
           && (t.month ? new Date(q.date).getMonth() + 1 === Number(t.month) : true)
           && (t.employeeId ? q.createdBy === t.employeeName : true))
@@ -12156,13 +12172,13 @@ app.get("/api/erp/sales-dashboard", async (req, res) => {
     }
 
     const partnerMap = new Map();
-    for (const q of quotations.filter(q => q.status === "shipped")) {
+    for (const q of quotations.filter(hasRevenue)) {
       const k = q.partnerName || "(미지정)";
-      partnerMap.set(k, (partnerMap.get(k) || 0) + supplyOf(q));
+      partnerMap.set(k, (partnerMap.get(k) || 0) + revenueOf(q));
     }
     const partnerRanking = Array.from(partnerMap.entries()).map(([name, amount]) => ({ name, amount })).sort((a, b) => b.amount - a.amount);
 
-    const STAGES = [["draft", "임시"], ["sent", "발송"], ["accepted", "수주확정"], ["shipped", "출고/매출완료"], ["rejected", "실주"]];
+    const STAGES = [["draft", "임시"], ["sent", "발송"], ["accepted", "수주확정"], ["partially_shipped", "부분출고"], ["shipped", "출고/매출완료"], ["rejected", "실주"]];
     const pipeline = STAGES.map(([status, label]) => {
       const list = quotations.filter(q => q.status === status);
       return { status, label, count: list.length, amount: list.reduce((s, q) => s + supplyOf(q), 0) };
@@ -12173,8 +12189,8 @@ app.get("/api/erp/sales-dashboard", async (req, res) => {
       const k = q.createdBy || "unknown";
       const cur = repMap.get(k) || { name: k, count: 0, order: 0, revenue: 0 };
       cur.count++;
-      if (q.status === "accepted" || q.status === "shipped") cur.order += supplyOf(q);
-      if (q.status === "shipped") cur.revenue += supplyOf(q);
+      if (isOrder(q)) cur.order += supplyOf(q);
+      cur.revenue += revenueOf(q);
       repMap.set(k, cur);
     }
     const repRanking = Array.from(repMap.values()).sort((a, b) => b.revenue - a.revenue);
@@ -12211,8 +12227,8 @@ app.get("/api/erp/sales-dashboard", async (req, res) => {
       if (!target) continue;
       const b = target[ym[1] - 1];
       b.count++;
-      if (q.status === "accepted" || q.status === "shipped") { b.order += supplyOf(q); b.orderCount++; }
-      if (q.status === "shipped") b.revenue += supplyOf(q);
+      if (isOrder(q)) { b.order += supplyOf(q); b.orderCount++; }
+      b.revenue += revenueOf(q);
     }
     if (repFilter) repNames.add(repFilter);
     const monthlyTrend = {
