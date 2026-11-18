@@ -16,6 +16,7 @@ module.exports = async function checkQuotationDiscountCopy(baseUrl, token, tag =
     return json;
   }
   const erp = (p, b, e) => call("/api/erp/" + p, b, e);
+  const invoiceOf = async res => (await call("/api/accounting/tax-invoices")).taxInvoices.find(t => t.id === res.taxInvoice.id || t.invoiceNo === res.taxInvoice.invoiceNo);
 
   const itemA = (await erp("items", { code: `${tag}-A`, name: "품목A", unit: "EA" })).item.id;
   const itemB = (await erp("items", { code: `${tag}-B`, name: "품목B", unit: "EA" })).item.id;
@@ -53,12 +54,13 @@ module.exports = async function checkQuotationDiscountCopy(baseUrl, token, tag =
   await erp(qPath + "/send", {});
   await erp(qPath + "/accept", {});
   const r1 = await erp(qPath + "/ship", { lines: [{ index: 0, qty: 5 }] });
-  assert.equal(r1.taxInvoice.supplyTotal, 4500, "5 × 1000 × 0.9");
-  assert.equal(r1.taxInvoice.lines[0].discountRate, 10);
+  const inv1 = await invoiceOf(r1);
+  assert.equal(inv1.supplyTotal, 4500, "5 × 1000 × 0.9");
+  assert.equal(inv1.lines[0].discountRate, 10);
   const r2 = await erp(qPath + "/ship", {});
-  assert.equal(r2.taxInvoice.supplyTotal, 4500 + 20000);
+  assert.equal((await invoiceOf(r2)).supplyTotal, 4500 + 20000);
   const ret = await erp(qPath + "/return", { round: 1, lines: [{ index: 0, qty: 2 }], reason: "불량" });
-  assert.equal(ret.taxInvoice.supplyTotal, -1800, "2 × 1000 × 0.9 음수");
+  assert.equal((await invoiceOf(ret)).supplyTotal, -1800, "2 × 1000 × 0.9 음수");
 
   // 영업 대시보드 매출 = 출고 − 반품(할인 반영)
   const dash = await erp("sales-dashboard?year=2032");
@@ -76,7 +78,7 @@ module.exports = async function checkQuotationDiscountCopy(baseUrl, token, tag =
   assert.equal(copy.partnerName, "할인 고객");
   assert.equal(copy.memo, "원본 메모");
   assert.equal(copy.copiedFromId, q.id);
-  assert.equal(copy.copiedFromNo, q.quoteNo || "");
+  assert.match(copy.copiedFromNo, /^QT-\d{4}-\d{6}$/, "원본의 견적번호를 함께 남긴다");
   assert.equal(copy.lines.length, 2);
   assert.equal(copy.lines[0].discountRate, 10);
   assert.equal(copy.supplyTotal, 29000);
