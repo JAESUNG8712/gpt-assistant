@@ -9465,11 +9465,22 @@ app.delete("/api/accounting/vouchers/:id", async (req, res) => {
 });
 
 // ── 세금계산서 (사내 발행용) ──────────────────────────────────────────────────
+// 품목별 할인율(%, 견적서 라인의 discountRate) — 공급가액 = 수량 × 단가 × (1 − 할인율).
+function _lineDiscountRate(it) {
+  const r = Number(it && it.discountRate);
+  return Number.isFinite(r) && r > 0 ? Math.min(r, 100) : 0;
+}
+function _lineSupplyAmount(qty, unitPrice, rate) {
+  return _round2((Number(qty) || 0) * (Number(unitPrice) || 0) * (1 - (Number(rate) || 0) / 100));
+}
 function _buildTaxInvoiceTotals(items) {
   const lines = (items || []).map(it => {
-    const supplyAmount = _round2((Number(it.qty) || 0) * (Number(it.unitPrice) || 0));
+    const rate = _lineDiscountRate(it);
+    const supplyAmount = _lineSupplyAmount(it.qty, it.unitPrice, rate);
     const taxAmount = _round2(supplyAmount * 0.1);
-    return { name: it.name || "", qty: Number(it.qty) || 0, unitPrice: Number(it.unitPrice) || 0, supplyAmount, taxAmount };
+    const line = { name: it.name || "", qty: Number(it.qty) || 0, unitPrice: Number(it.unitPrice) || 0, supplyAmount, taxAmount };
+    if (rate) line.discountRate = rate;
+    return line;
   });
   const supplyTotal = _round2(lines.reduce((s, l) => s + l.supplyAmount, 0));
   const taxTotal = _round2(lines.reduce((s, l) => s + l.taxAmount, 0));
@@ -10999,14 +11010,22 @@ function _validateItemLines(items) {
     const q = Number(it.qty), p = Number(it.unitPrice);
     if (!Number.isFinite(q) || q <= 0) return `수량은 0보다 큰 숫자여야 합니다(${it.name || it.itemId || "품목"}).`;
     if (!Number.isFinite(p) || p < 0) return `단가는 0 이상의 숫자여야 합니다(${it.name || it.itemId || "품목"}).`;
+    if (it.discountRate !== undefined && it.discountRate !== null && it.discountRate !== "") {
+      const d = Number(it.discountRate);
+      if (!Number.isFinite(d) || d < 0 || d > 100) return `할인율은 0~100% 사이여야 합니다(${it.name || it.itemId || "품목"}).`;
+    }
   }
   return null;
 }
-function _buildItemLineTotals(items) {
+// allowDiscount: 견적서만 품목별 할인율을 쓴다(발주서·구매요청은 요청에 실려도 무시).
+function _buildItemLineTotals(items, allowDiscount = false) {
   const lines = (items || []).map(it => {
-    const supplyAmount = _round2((Number(it.qty) || 0) * (Number(it.unitPrice) || 0));
+    const rate = allowDiscount ? _lineDiscountRate(it) : 0;
+    const supplyAmount = _lineSupplyAmount(it.qty, it.unitPrice, rate);
     const taxAmount = _round2(supplyAmount * 0.1);
-    return { itemId: it.itemId || null, name: it.name || "", qty: Number(it.qty) || 0, unitPrice: Number(it.unitPrice) || 0, supplyAmount, taxAmount };
+    const line = { itemId: it.itemId || null, name: it.name || "", qty: Number(it.qty) || 0, unitPrice: Number(it.unitPrice) || 0, supplyAmount, taxAmount };
+    if (rate) line.discountRate = rate;
+    return line;
   });
   const supplyTotal = _round2(lines.reduce((s, l) => s + l.supplyAmount, 0));
   const taxTotal = _round2(lines.reduce((s, l) => s + l.taxAmount, 0));
@@ -11130,13 +11149,50 @@ app.post("/api/erp/quotations", async (req, res) => {
     if (!Array.isArray(items) || !items.length) return res.status(400).json({ ok: false, message: "품목을 1개 이상 입력하세요." });
     const _lineErr = _validateItemLines(items);
     if (_lineErr) return res.status(400).json({ ok: false, message: _lineErr });
-    const totals = _buildItemLineTotals(items);
+    const totals = _buildItemLineTotals(items, true);
     const quote = {
       id: `qt_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
       quoteNo: null, status: "draft",
       date, validUntil: validUntil || "", partnerId: partnerId || null, partnerName, locationId: locationId || null,
       ...totals, memo: memo || "",
       createdBy: createdBy || "unknown", createdAt: new Date().toISOString(),
+    };
+    await _insertErpDocument("quotations", quote, companyId);
+    res.json({ ok: true, quotation: quote });
+  } catch (e) { res.status(e.status || 500).json({ ok: false, code: e.code, message: _safeErrMsg(e) }); }
+});
+
+// 견적서 복사 — 기존 견적서의 거래처·위치·품목(할인율 포함)으로 새 임시 저장 견적서를 만든다.
+// 출고·반품·세금계산서 이력은 복사하지 않는다. 견적일은 오늘(한국)이고, 유효기한은 원본과
+// 같은 기간만큼 뒤로 잡는다.
+app.post("/api/erp/quotations/:id/copy", async (req, res) => {
+  try {
+    if (!requireAdmin(req, res)) return;
+    if (!requirePage(req, res, "sales-quotations")) return;
+    const companyId = req.auth.companyId || null;
+    let src;
+    if (USE_JSON_FILE) src = _fileErp.quotations.find(q => q.id === req.params.id);
+    else {
+      const { rows } = await pool.query("SELECT data FROM erp_quotations WHERE id = $1 AND company_id = $2", [req.params.id, companyId]);
+      src = rows[0] && rows[0].data;
+    }
+    if (!src) return res.status(404).json({ ok: false, message: "견적서를 찾을 수 없습니다." });
+    const date = req.body && req.body.date ? String(req.body.date) : _erpTodayKst();
+    if (!_isValidDateStr(date)) return res.status(400).json({ ok: false, code: "INVALID_QUOTATION_DATE", message: "견적일자는 실제 존재하는 날짜를 YYYY-MM-DD 형식으로 입력하세요." });
+    let validUntil = "";
+    if (src.validUntil && src.date && _isValidDateStr(src.validUntil) && _isValidDateStr(src.date)) {
+      const span = Math.round((Date.parse(src.validUntil) - Date.parse(src.date)) / 86400000);
+      if (span >= 0) validUntil = new Date(Date.parse(date) + span * 86400000).toISOString().slice(0, 10);
+    }
+    const items = (src.lines || []).map(l => ({ itemId: l.itemId, name: l.name, qty: l.qty, unitPrice: l.unitPrice, discountRate: l.discountRate }));
+    const totals = _buildItemLineTotals(items, true);
+    const quote = {
+      id: `qt_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      quoteNo: null, status: "draft",
+      date, validUntil, partnerId: src.partnerId || null, partnerName: src.partnerName, locationId: src.locationId || null,
+      ...totals, memo: src.memo || "",
+      copiedFromId: src.id, copiedFromNo: src.quoteNo || "",
+      createdBy: (req.body && req.body.user) || "unknown", createdAt: new Date().toISOString(),
     };
     await _insertErpDocument("quotations", quote, companyId);
     res.json({ ok: true, quotation: quote });
@@ -12162,7 +12218,7 @@ app.post("/api/erp/sales-targets/:id/delete", async (req, res) => {
 // 받도록 먼저 바꿔야 한다(회계 리포트/원가명세서와 동일한 이유·동일한 패턴).
 // 견적서의 순 출고 공급가액(출고 회차 합계 - 반품 합계). 회차 기록이 없는 예전 출고완료 문서는 합계 그대로.
 function _erpNetShippedSupply(q) {
-  const price = index => Number(q.lines?.[index]?.unitPrice) || 0;
+  const price = index => (Number(q.lines?.[index]?.unitPrice) || 0) * (1 - _lineDiscountRate(q.lines?.[index]) / 100);
   const sum = records => (records || []).reduce((s, r) => s + (r.lines || []).reduce((a, l) => a + (Number(l.qty) || 0) * price(l.index), 0), 0);
   const returned = sum(q.returns);
   const shipped = Array.isArray(q.fulfillments) ? sum(q.fulfillments) : (q.status === "shipped" ? Number(q.supplyTotal) || 0 : 0);
