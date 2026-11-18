@@ -20104,10 +20104,10 @@ function renderAcctTaxInvoicesTbl(){
   if(f.dir!=="all")rows=rows.filter(t=>(t.direction==="purchase"?"purchase":"sales")===f.dir);
   if(f.q.trim()){const q=f.q.trim();rows=rows.filter(t=>[t.invoiceNo,t.issueDate,t.partnerName,t.partnerBizNo].some(x=>(x||"").includes(q)));}
   wrap.innerHTML=`<table><thead><tr><th>구분</th><th>승인번호</th><th>발행일</th><th>거래처</th><th>공급가액</th><th>세액</th><th>합계</th><th>상태</th><th>관리</th></tr></thead><tbody>
-  ${rows.length?rows.map(t=>`<tr><td>${t.direction==="purchase"?badge("매입","orange"):badge("매출","blue")}</td><td>${h(t.invoiceNo)}</td><td>${h(t.issueDate)}</td><td>${h(t.partnerName)}</td><td style="text-align:right">${t.supplyTotal.toLocaleString()}</td><td style="text-align:right">${t.taxTotal.toLocaleString()}</td><td style="text-align:right">${t.grandTotal.toLocaleString()}</td><td>${t.status==="issued"?badge("발행","green"):badge("취소","red")}</td><td>
+  ${rows.length?rows.map(t=>`<tr><td>${t.direction==="purchase"?badge("매입","orange"):badge("매출","blue")}${t.invoiceKind==="amendment"?" "+badge("수정","red"):""}</td><td>${h(t.invoiceNo)}</td><td>${h(t.issueDate)}</td><td>${h(t.partnerName)}</td><td style="text-align:right">${t.supplyTotal.toLocaleString()}</td><td style="text-align:right">${t.taxTotal.toLocaleString()}</td><td style="text-align:right">${t.grandTotal.toLocaleString()}</td><td>${t.status==="issued"?badge("발행","green"):badge("취소","red")}</td><td>
     <button class="btn btn-secondary btn-sm" onclick="viewTaxInvoiceModal('${t.id}')">보기</button>
     <button class="btn btn-ghost btn-sm" onclick="_showRecordHistory('${h(t.invoiceNo).replace(/'/g,"\\'")}',_buildHistoryRows(${h(JSON.stringify(t))},[['createdBy','createdAt','발행'],['voidedBy','voidedAt','취소']]))">이력</button>
-    ${t.status==="issued"?` <button class="btn btn-danger btn-sm" onclick="voidTaxInvoice('${t.id}')">취소</button>`:""}
+    ${t.status==="issued"&&t.invoiceKind!=="amendment"?` <button class="btn btn-danger btn-sm" onclick="voidTaxInvoice('${t.id}')">취소</button>`:""}
   </td></tr>`).join(""):`<tr><td colspan="9" class="text-gray" style="text-align:center;padding:20px">발행된 세금계산서가 없습니다.</td></tr>`}
   </tbody></table>`;
 }
@@ -20166,6 +20166,7 @@ function viewTaxInvoiceModal(id){
     ${t.lines.map(l=>`<tr><td>${h(l.name)}</td><td style="text-align:right">${l.qty}</td><td style="text-align:right">${l.unitPrice.toLocaleString()}</td><td style="text-align:right">${l.supplyAmount.toLocaleString()}</td><td style="text-align:right">${l.taxAmount.toLocaleString()}</td></tr>`).join("")}
     </tbody></table></div></div>
     <div class="fg"><label class="fl">합계</label><div class="fz13">공급가액 ${t.supplyTotal.toLocaleString()} + 세액 ${t.taxTotal.toLocaleString()} = ${t.grandTotal.toLocaleString()}</div></div>
+    ${t.invoiceKind==="amendment"?`<div class="fg"><label class="fl">수정(반품) 사유</label><div class="fz13">${h(t.amendReason||"")} — 원본 ${h(t.amendsInvoiceNo||"-")}</div></div>`:""}
     ${t.status==="void"?`<div class="fg"><label class="fl">취소 사유</label><div class="fz13">${h(t.voidReason)}</div></div>`:""}
   </div><div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal()">닫기</button><button class="btn btn-secondary" onclick="window.print()">🖨 출력</button></div></div>`);
 }
@@ -20176,7 +20177,7 @@ function _dlVouchersCSV(){
 }
 function _dlTaxInvoicesCSV(){
   dlCSV(`세금계산서_${_localDateStr()}.csv`,["구분","승인번호","발행일","거래처","사업자번호","공급가액","세액","합계","상태"],
-    acctTaxInvoices.map(t=>[t.direction==="purchase"?"매입":"매출",t.invoiceNo,t.issueDate,t.partnerName,t.partnerBizNo||"",t.supplyTotal,t.taxTotal,t.grandTotal,t.status==="issued"?"발행":"취소"]));
+    acctTaxInvoices.map(t=>[(t.direction==="purchase"?"매입":"매출")+(t.invoiceKind==="amendment"?"(수정)":""),t.invoiceNo,t.issueDate,t.partnerName,t.partnerBizNo||"",t.supplyTotal,t.taxTotal,t.grandTotal,t.status==="issued"?"발행":"취소"]));
 }
 async function voidTaxInvoice(id){
   const t=acctTaxInvoices.find(t=>t.id===id);
@@ -23809,7 +23810,7 @@ function _arAgingRows(){
   const rows=[];
   _arApByPartner().filter(r=>r.ar>0.001).forEach(r=>{
     let remaining=r.ar;
-    const invs=acctTaxInvoices.filter(t=>t.status==="issued"&&t.direction!=="purchase"&&_arApKey(t.partnerId,t.partnerName)===_arApKey(r.partnerId,r.name))
+    const invs=acctTaxInvoices.filter(t=>t.status==="issued"&&t.direction!=="purchase"&&(t.grandTotal||0)>0&&_arApKey(t.partnerId,t.partnerName)===_arApKey(r.partnerId,r.name))
       .sort((a,b)=>(b.issueDate||"").localeCompare(a.issueDate||"")); // 최신부터 미수 배분
     const bucket={b30:0,b60:0,b90:0,b90p:0};
     for(const t of invs){
@@ -24492,7 +24493,7 @@ async function saveStockTransfer(){
 }
 
 // ── 견적서 관리 ──────────────────────────────────────────────────────────────
-const QUOTE_STATUS_LABEL={draft:badge("임시","gray"),sent:badge("발송","blue"),accepted:badge("수주","green"),rejected:badge("실주","red"),shipped:badge("출고완료","green")};
+const QUOTE_STATUS_LABEL={draft:badge("임시","gray"),sent:badge("발송","blue"),accepted:badge("수주","green"),partially_shipped:badge("부분출고","orange"),rejected:badge("실주","red"),shipped:badge("출고완료","green")};
 let _quoteItems=[];
 function renderSalesQuotationsPage(){
   const c=$("#content");if(!c)return;
@@ -24507,6 +24508,7 @@ function renderSalesQuotationsPage(){
       <option value="draft" ${f.status==="draft"?"selected":""}>임시</option>
       <option value="sent" ${f.status==="sent"?"selected":""}>발송</option>
       <option value="accepted" ${f.status==="accepted"?"selected":""}>수주확정</option>
+      <option value="partially_shipped" ${f.status==="partially_shipped"?"selected":""}>부분출고</option>
       <option value="shipped" ${f.status==="shipped"?"selected":""}>출고/매출</option>
       <option value="rejected" ${f.status==="rejected"?"selected":""}>실주</option>
     </select>
@@ -24528,12 +24530,13 @@ function renderSalesQuotationsTbl(){
     <button class="btn btn-ghost btn-sm" onclick="_showRecordHistory('${h(q.quoteNo||'견적서').replace(/'/g,"\\'")}',_buildHistoryRows(${h(JSON.stringify(q))},[['createdBy','createdAt','작성'],['sentBy','sentAt','발송'],['acceptedBy','acceptedAt','수주확정'],['shippedBy','shippedAt','출고/매출'],['rejectedBy','rejectedAt','실주처리']]))">이력</button>
     ${q.status==="draft"?` <button class="btn btn-primary btn-sm" onclick="sendQuotation('${q.id}')">발송</button> <button class="btn btn-danger btn-sm" onclick="deleteQuotationDraft('${q.id}')">삭제</button>`:""}
     ${q.status==="sent"?` <button class="btn btn-primary btn-sm" onclick="acceptQuotation('${q.id}')">수주확정</button> <button class="btn btn-danger btn-sm" onclick="rejectQuotation('${q.id}')">실주처리</button>`:""}
-    ${q.status==="accepted"?` <button class="btn btn-primary btn-sm" onclick="shipQuotation('${q.id}')">출고/매출 처리</button>`:""}
+    ${q.status==="accepted"||q.status==="partially_shipped"?` <button class="btn btn-primary btn-sm" onclick="shipQuotation('${q.id}')">${q.status==="partially_shipped"?"추가 출고":"출고/매출 처리"}</button>`:""}
+    ${q.status==="partially_shipped"||q.status==="shipped"?` <button class="btn btn-secondary btn-sm" onclick="openErpReturnModal('quotation','${q.id}')">반품</button>`:""}
   </td></tr>`).join(""):`<tr><td colspan="6" class="text-gray" style="text-align:center;padding:20px">등록된 견적서가 없습니다.</td></tr>`}
   </tbody></table></div>`;
 }
 function _dlQuotationsCSV(){
-  const SL={draft:"임시",sent:"발송",accepted:"수주확정",shipped:"출고/매출",rejected:"실주"};
+  const SL={draft:"임시",sent:"발송",accepted:"수주확정",partially_shipped:"부분출고",shipped:"출고/매출",rejected:"실주"};
   dlCSV(`견적서_${_localDateStr()}.csv`,["견적번호","견적일","거래처","공급가액","세액","합계","상태"],
     erpQuotations.map(q=>[q.quoteNo||"(임시)",q.date,q.partnerName,q.supplyTotal,q.taxTotal,q.grandTotal,SL[q.status]||q.status]));
 }
@@ -24592,7 +24595,8 @@ function viewQuotationModal(id){
     <div class="fg"><label class="fl">합계</label><div class="fz13">공급가액 ${q.supplyTotal.toLocaleString()} + 세액 ${q.taxTotal.toLocaleString()} = ${q.grandTotal.toLocaleString()}</div></div>
     ${q.memo?`<div class="fg"><label class="fl">메모</label><div class="fz13">${h(q.memo)}</div></div>`:""}
     ${q.status==="rejected"?`<div class="fg"><label class="fl">실주 사유</label><div class="fz13">${h(q.rejectReason)}</div></div>`:""}
-    ${q.status==="shipped"?`<div class="fg"><label class="fl">발행 세금계산서</label><div class="fz13">${h(q.taxInvoiceNo)}</div></div>`:""}
+    ${q.status==="shipped"&&!(q.fulfillments||[]).length?`<div class="fg"><label class="fl">발행 세금계산서</label><div class="fz13">${h(q.taxInvoiceNo)}</div></div>`:""}
+    ${_erpRoundsHtml("quotation",q)}
   </div><div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal()">닫기</button><button class="btn btn-secondary" onclick="window.print()">🖨 출력</button></div></div>`);
 }
 async function sendQuotation(id){
@@ -24618,19 +24622,7 @@ async function acceptQuotation(id){
     ],confirmText:"수주 확정"},errorMessage:r=>r?.message||"처리에 실패했습니다.",successMessage:"수주가 확정되었습니다.",
     onSuccess:r=>{const idx=erpQuotations.findIndex(q=>q.id===id);if(idx>=0)erpQuotations[idx]=r.quotation;renderSalesQuotationsPage();}});
 }
-async function shipQuotation(id){
-  const q=erpQuotations.find(q=>q.id===id);
-  await runMutationWorkflow({key:`quotation:${id}:ship`,method:"POST",endpoint:`/api/erp/quotations/${id}/ship`,body:{role:currentUser.role,user:currentUser.name},confirm:{
-    title:"출고/매출 처리 확인",message:"출고와 매출 세금계산서 발행을 함께 처리합니다.",impacts:[
-      {label:"견적번호",value:q?.quoteNo||id},
-      {label:"출고 위치",value:_erpLocationName(q?.locationId)||"-"},
-      {label:"품목 수",value:`${(q?.items||q?.lines||[]).length}건`},
-      {label:"매출 합계",value:`${(q?.grandTotal||0).toLocaleString()}원`,tone:"warn"},
-      {label:"처리 후 영향",value:"재고 차감 + 매출 세금계산서 발행",tone:"danger"}
-    ],warnings:["재고 부족 또는 세금계산서 생성 실패 시 서버에서 처리가 거부될 수 있습니다."],confirmText:"출고/매출 처리",danger:true},
-    errorMessage:r=>r?.message||"처리에 실패했습니다.",successMessage:r=>`출고 및 세금계산서 발행이 완료되었습니다 (${r.taxInvoice.invoiceNo}).`,
-    onSuccess:async r=>{const idx=erpQuotations.findIndex(q=>q.id===id);if(idx>=0)erpQuotations[idx]=r.quotation;if(currentUser?.menuPerms?.["acct-tax-invoices"]!==false){const rt=await serverRequest("GET","/api/accounting/tax-invoices");if(rt?.ok)acctTaxInvoices=rt.taxInvoices;}const rs=await serverRequest("GET","/api/erp/stock");if(rs?.ok)erpStock=rs.stock;renderSalesQuotationsPage();}});
-}
+async function shipQuotation(id){return openErpFulfillModal("quotation",id);}
 async function rejectQuotation(id){
   const q=erpQuotations.find(q=>q.id===id);
   const reason=await askInputModal({
@@ -24665,6 +24657,148 @@ async function deleteQuotationDraft(id){
       {label:"삭제 후 영향",value:"견적 목록에서 제거",tone:"danger"}
     ],confirmText:"임시 견적서 삭제",danger:true},errorMessage:r=>r?.message||"삭제에 실패했습니다.",successMessage:"삭제되었습니다.",successType:"info",
     onSuccess:()=>{erpQuotations=erpQuotations.filter(q=>q.id!==id);renderSalesQuotationsPage();}});
+}
+
+// ── 부분 출고·입고 + 반품 (견적서 출고 / 발주서 입고 공용 화면) ─────────────────────
+// 서버(_ERP_FLOWS)와 같은 규칙: 문서는 회차(fulfillments[])로 나눠 처리되고, 반품(returns[])은
+// 특정 회차의 처리분 안에서만 가능하다. 예전 완료 문서는 전량 1회차로 간주한다.
+const _ERP_UI={
+  quotation:{
+    base:"/api/erp/quotations",done:"shipped",doneBy:["shippedBy","shippedAt"],noKey:"quoteNo",
+    verb:"출고",noun:"견적번호",list:()=>erpQuotations,
+    put:doc=>{const i=erpQuotations.findIndex(x=>x.id===doc.id);if(i>=0)erpQuotations[i]=doc;},
+    rerender:()=>renderSalesQuotationsPage(),
+    effect:"재고 차감 + 매출 세금계산서 발행",retEffect:"재고 복구 + 매출 수정세금계산서(음수) 발행",invoiceLabel:"매출",
+  },
+  po:{
+    base:"/api/erp/purchase-orders",done:"received",doneBy:["receivedBy","receivedAt"],noKey:"poNo",
+    verb:"입고",noun:"발주번호",list:()=>erpPurchaseOrders,
+    put:doc=>{const i=erpPurchaseOrders.findIndex(x=>x.id===doc.id);if(i>=0)erpPurchaseOrders[i]=doc;},
+    rerender:()=>renderSalesPurchaseOrdersPage(),
+    effect:"재고 증가 + 매입 세금계산서 발행",retEffect:"재고 차감 + 매입 수정세금계산서(음수) 발행",invoiceLabel:"매입",
+  },
+};
+function _erpClientRounds(kind,doc){
+  if(Array.isArray(doc.fulfillments))return doc.fulfillments;
+  const ui=_ERP_UI[kind];
+  if(doc.status===ui.done)return[{round:1,at:doc[ui.doneBy[1]]||"",lines:(doc.lines||[]).map((l,index)=>({index,qty:Number(l.qty)||0})),taxInvoiceNo:doc.taxInvoiceNo||"",legacy:true}];
+  return[];
+}
+function _erpQtyMapClient(records){
+  const m=new Map();
+  for(const r of records)for(const l of(r.lines||[]))m.set(l.index,Math.round(((m.get(l.index)||0)+(Number(l.qty)||0))*100)/100);
+  return m;
+}
+function _erpRemainingQty(kind,doc){
+  const done=_erpQtyMapClient(_erpClientRounds(kind,doc));
+  return(doc.lines||[]).map((l,i)=>Math.round(((Number(l.qty)||0)-(done.get(i)||0))*100)/100);
+}
+function _erpLinesSummary(doc,lines){
+  return(lines||[]).map(l=>`${h(doc.lines?.[l.index]?.name||"-")} ${l.qty}`).join(", ");
+}
+// 보기 모달 하단: 회차별 처리 내역과 반품 내역
+function _erpRoundsHtml(kind,doc){
+  const rounds=Array.isArray(doc.fulfillments)?doc.fulfillments:[];
+  const returns=Array.isArray(doc.returns)?doc.returns:[];
+  if(!rounds.length&&!returns.length)return"";
+  const ui=_ERP_UI[kind];
+  return`<div class="fg"><label class="fl">${ui.verb} 회차</label><div class="tbl-wrap"><table><thead><tr><th>회차</th><th>일자</th><th>품목·수량</th><th>세금계산서</th></tr></thead><tbody>
+  ${rounds.map(r=>`<tr><td>${r.round}차</td><td>${h(r.date||String(r.at||"").slice(0,10))}</td><td>${_erpLinesSummary(doc,r.lines)}</td><td>${h(r.taxInvoiceNo||"")}</td></tr>`).join("")}
+  </tbody></table></div></div>
+  ${returns.length?`<div class="fg"><label class="fl">반품 내역</label><div class="tbl-wrap"><table><thead><tr><th>대상 회차</th><th>일자</th><th>품목·수량</th><th>사유</th><th>수정세금계산서</th></tr></thead><tbody>
+  ${returns.map(r=>`<tr><td>${r.round}차</td><td>${h(r.date||"")}</td><td>${_erpLinesSummary(doc,r.lines)}</td><td>${h(r.reason||"")}</td><td>${h(r.taxInvoiceNo||"")}</td></tr>`).join("")}
+  </tbody></table></div></div>`:""}`;
+}
+async function _erpAfterStockChange(){
+  try{
+    if(currentUser?.menuPerms?.["acct-tax-invoices"]!==false){const rt=await serverRequest("GET","/api/accounting/tax-invoices");if(rt?.ok)acctTaxInvoices=rt.taxInvoices;}
+    const rs=await serverRequest("GET","/api/erp/stock");if(rs?.ok)erpStock=rs.stock;
+  }catch(e){console.warn("ERP 후속 조회 실패",e);}
+}
+function openErpFulfillModal(kind,id){
+  const ui=_ERP_UI[kind],doc=ui.list().find(x=>x.id===id);if(!doc)return;
+  const remaining=_erpRemainingQty(kind,doc);
+  const rounds=_erpClientRounds(kind,doc).length;
+  openModal(`<div class="modal-box" style="max-width:640px"><div class="modal-head"><h3>${h(ui.verb)} 처리 — ${rounds+1}차</h3></div><div class="modal-body">
+    <div class="fz12 text-gray mb2">${h(ui.noun)}: ${h(doc[ui.noKey]||id)} · 위치: ${h(_erpLocationName(doc.locationId)||"-")} · 처리 후: ${h(ui.effect)}</div>
+    <div class="fg"><label class="fl">${h(ui.verb)}일자 <span class="req">*</span></label><input class="fc" type="date" id="erp-ful-date" value="${_localDateStr()}"></div>
+    <div class="tbl-wrap"><table><thead><tr><th>품목</th><th>주문</th><th>기처리</th><th>잔여</th><th>이번 ${h(ui.verb)} 수량</th></tr></thead><tbody>
+    ${(doc.lines||[]).map((l,i)=>`<tr><td>${h(l.name||"")}</td><td style="text-align:right">${l.qty}</td><td style="text-align:right">${Math.round((l.qty-remaining[i])*100)/100}</td><td style="text-align:right">${remaining[i]}</td><td>${remaining[i]>0?`<input class="fc" type="number" min="0" max="${remaining[i]}" step="any" id="erp-ful-qty-${i}" value="${remaining[i]}" style="max-width:110px">`:`<span class="text-gray">완료</span>`}</td></tr>`).join("")}
+    </tbody></table></div>
+    <div class="fz12 text-gray mt2">일부 품목만 처리하려면 수량을 줄이거나 0으로 두세요. ${h(ui.verb)}한 회차마다 세금계산서가 따로 발행됩니다.</div>
+  </div><div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal()">취소</button><button class="btn btn-primary" onclick="submitErpFulfill('${kind}','${id}')">${h(ui.verb)} 처리</button></div></div>`);
+}
+async function submitErpFulfill(kind,id){
+  const ui=_ERP_UI[kind],doc=ui.list().find(x=>x.id===id);if(!doc)return;
+  const remaining=_erpRemainingQty(kind,doc);
+  const date=$("#erp-ful-date")?.value;
+  if(!date){showToast(`${ui.verb}일자를 입력하세요.`,"error");return;}
+  const lines=[];
+  for(let i=0;i<remaining.length;i++){
+    const el=$(`#erp-ful-qty-${i}`);if(!el)continue;
+    const qty=Number(el.value);
+    if(!Number.isFinite(qty)||qty<0){showToast("수량은 0 이상의 숫자여야 합니다.","error");return;}
+    if(qty>remaining[i]){showToast(`잔여 수량(${remaining[i]})을 초과했습니다(${doc.lines[i].name||"품목"}).`,"error");return;}
+    if(qty>0)lines.push({index:i,qty});
+  }
+  if(!lines.length){showToast(`${ui.verb}할 수량을 입력하세요.`,"error");return;}
+  await runMutationWorkflow({key:`${kind}:${id}:fulfill`,method:"POST",endpoint:`${ui.base}/${id}/${kind==="quotation"?"ship":"receive"}`,body:{lines,date,role:currentUser.role,user:currentUser.name},
+    errorMessage:r=>r?.message||"처리에 실패했습니다.",
+    successMessage:r=>`${ui.verb} 처리 및 세금계산서 발행이 완료되었습니다 (${r.taxInvoice?.invoiceNo||""}).`,
+    onSuccess:async r=>{ui.put(r.quotation||r.purchaseOrder);closeModal();await _erpAfterStockChange();ui.rerender();}});
+}
+let _erpReturnState=null;
+function openErpReturnModal(kind,id){
+  const ui=_ERP_UI[kind],doc=ui.list().find(x=>x.id===id);if(!doc)return;
+  const rounds=_erpClientRounds(kind,doc);
+  if(!rounds.length){showToast("처리된 회차가 없습니다.","error");return;}
+  _erpReturnState={kind,id,round:rounds[rounds.length-1].round};
+  openModal(`<div class="modal-box" style="max-width:660px"><div class="modal-head"><h3>↩ 반품 처리</h3></div><div class="modal-body">
+    <div class="fz12 text-gray mb2">${h(ui.noun)}: ${h(doc[ui.noKey]||id)} · 처리 후: ${h(ui.retEffect)}</div>
+    <div class="fg"><label class="fl">대상 회차 <span class="req">*</span></label><select class="fc" id="erp-ret-round" onchange="_erpReturnState.round=Number(this.value);_erpRenderReturnLines()">${rounds.map(r=>`<option value="${r.round}" ${r.round===_erpReturnState.round?"selected":""}>${r.round}차 (${h(r.date||String(r.at||"").slice(0,10))}${r.taxInvoiceNo?`, ${h(r.taxInvoiceNo)}`:""})</option>`).join("")}</select></div>
+    <div class="fg"><label class="fl">반품일자 <span class="req">*</span></label><input class="fc" type="date" id="erp-ret-date" value="${_localDateStr()}"></div>
+    <div id="erp-ret-lines"></div>
+    <div class="fg mt2"><label class="fl">반품 사유 <span class="req">*</span></label><textarea class="fc" id="erp-ret-reason" rows="2" maxlength="300" placeholder="예: 불량, 오배송, 수량 오류 등"></textarea></div>
+  </div><div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal()">취소</button><button class="btn btn-danger" onclick="submitErpReturn()">반품 처리</button></div></div>`);
+  _erpRenderReturnLines();
+}
+function _erpReturnable(kind,doc,roundNo){
+  const round=_erpClientRounds(kind,doc).find(r=>r.round===roundNo);
+  const base=_erpQtyMapClient(round?[round]:[]);
+  const ret=_erpQtyMapClient((doc.returns||[]).filter(r=>r.round===roundNo));
+  return{base,returnable:(doc.lines||[]).map((l,i)=>base.has(i)?Math.round((base.get(i)-(ret.get(i)||0))*100)/100:0)};
+}
+function _erpRenderReturnLines(){
+  const st=_erpReturnState;if(!st)return;
+  const ui=_ERP_UI[st.kind],doc=ui.list().find(x=>x.id===st.id),el=$("#erp-ret-lines");if(!doc||!el)return;
+  const{base,returnable}=_erpReturnable(st.kind,doc,st.round);
+  el.innerHTML=`<div class="tbl-wrap"><table><thead><tr><th>품목</th><th>처리 수량</th><th>반품 가능</th><th>반품 수량</th></tr></thead><tbody>
+  ${(doc.lines||[]).map((l,i)=>base.has(i)?`<tr><td>${h(l.name||"")}</td><td style="text-align:right">${base.get(i)}</td><td style="text-align:right">${returnable[i]}</td><td>${returnable[i]>0?`<input class="fc" type="number" min="0" max="${returnable[i]}" step="any" id="erp-ret-qty-${i}" value="0" style="max-width:110px">`:`<span class="text-gray">없음</span>`}</td></tr>`:"").join("")}
+  </tbody></table></div>`;
+}
+async function submitErpReturn(){
+  const st=_erpReturnState;if(!st)return;
+  const ui=_ERP_UI[st.kind],doc=ui.list().find(x=>x.id===st.id);if(!doc)return;
+  const reason=($("#erp-ret-reason")?.value||"").trim(),date=$("#erp-ret-date")?.value;
+  if(!date){showToast("반품일자를 입력하세요.","error");return;}
+  if(!reason){showToast("반품 사유를 입력하세요.","error");return;}
+  const{returnable}=_erpReturnable(st.kind,doc,st.round);
+  const lines=[];
+  for(let i=0;i<returnable.length;i++){
+    const el=$(`#erp-ret-qty-${i}`);if(!el)continue;
+    const qty=Number(el.value);
+    if(!Number.isFinite(qty)||qty<0){showToast("수량은 0 이상의 숫자여야 합니다.","error");return;}
+    if(qty>returnable[i]){showToast(`반품 가능 수량(${returnable[i]})을 초과했습니다(${doc.lines[i].name||"품목"}).`,"error");return;}
+    if(qty>0)lines.push({index:i,qty});
+  }
+  if(!lines.length){showToast("반품할 수량을 입력하세요.","error");return;}
+  const approved=await askConfirmModal({title:"반품 처리 확인",message:"반품을 처리하고 수정세금계산서를 발행합니다. 되돌릴 수 없습니다.",impacts:[
+    {label:ui.noun,value:doc[ui.noKey]||st.id},{label:"대상 회차",value:`${st.round}차`},{label:"처리 후 영향",value:ui.retEffect,tone:"danger"}],confirmText:"반품 처리",danger:true});
+  if(!approved)return;
+  await runMutationWorkflow({key:`${st.kind}:${st.id}:return`,method:"POST",endpoint:`${ui.base}/${st.id}/return`,body:{round:st.round,lines,reason,date,role:currentUser.role,user:currentUser.name},
+    errorMessage:r=>r?.message||"반품 처리에 실패했습니다.",
+    successMessage:r=>`반품 처리 및 수정세금계산서 발행이 완료되었습니다 (${r.taxInvoice?.invoiceNo||""}).`,
+    onSuccess:async r=>{ui.put(r.quotation||r.purchaseOrder);closeModal();await _erpAfterStockChange();ui.rerender();}});
 }
 
 // ── 영업 실적 대시보드 ────────────────────────────────────────────────────────
@@ -27378,7 +27512,7 @@ function _recruitDashboardSourceHtml(bySource){
 }
 
 // ── 발주서 관리 ──────────────────────────────────────────────────────────────
-const PO_STATUS_LABEL={draft:badge("임시","gray"),ordered:badge("발주확정","blue"),received:badge("입고완료","green"),cancelled:badge("취소","red")};
+const PO_STATUS_LABEL={draft:badge("임시","gray"),ordered:badge("발주확정","blue"),partially_received:badge("부분입고","orange"),received:badge("입고완료","green"),cancelled:badge("취소","red")};
 let _poItems=[];
 function renderSalesPurchaseOrdersPage(){
   const c=$("#content");if(!c)return;
@@ -27392,6 +27526,7 @@ function renderSalesPurchaseOrdersPage(){
       <option value="all" ${f.status==="all"?"selected":""}>전체 상태</option>
       <option value="draft" ${f.status==="draft"?"selected":""}>임시</option>
       <option value="ordered" ${f.status==="ordered"?"selected":""}>발주확정</option>
+      <option value="partially_received" ${f.status==="partially_received"?"selected":""}>부분입고</option>
       <option value="received" ${f.status==="received"?"selected":""}>입고완료</option>
       <option value="cancelled" ${f.status==="cancelled"?"selected":""}>취소</option>
     </select>
@@ -27413,11 +27548,13 @@ function renderSalesPurchaseOrdersTbl(){
     <button class="btn btn-ghost btn-sm" onclick="_showRecordHistory('${h(p.poNo||'발주서').replace(/'/g,"\\'")}',_buildHistoryRows(${h(JSON.stringify(p))},[['createdBy','createdAt','작성'],['orderedBy','orderedAt','발주확정'],['receivedBy','receivedAt','입고처리'],['cancelledBy','cancelledAt','취소']]))">이력</button>
     ${p.status==="draft"?` <button class="btn btn-primary btn-sm" onclick="confirmPO('${p.id}')">발주확정</button> <button class="btn btn-danger btn-sm" onclick="deletePODraft('${p.id}')">삭제</button>`:""}
     ${p.status==="ordered"?` <button class="btn btn-primary btn-sm" onclick="receivePO('${p.id}')">입고처리</button> <button class="btn btn-danger btn-sm" onclick="cancelPO('${p.id}')">취소</button>`:""}
+    ${p.status==="partially_received"?` <button class="btn btn-primary btn-sm" onclick="receivePO('${p.id}')">추가 입고</button>`:""}
+    ${p.status==="partially_received"||p.status==="received"?` <button class="btn btn-secondary btn-sm" onclick="openErpReturnModal('po','${p.id}')">반품</button>`:""}
   </td></tr>`).join(""):`<tr><td colspan="7" class="text-gray" style="text-align:center;padding:20px">등록된 발주서가 없습니다.</td></tr>`}
   </tbody></table></div>`;
 }
 function _dlPOsCSV(){
-  const SL={draft:"임시",ordered:"발주확정",received:"입고완료",cancelled:"취소"};
+  const SL={draft:"임시",ordered:"발주확정",partially_received:"부분입고",received:"입고완료",cancelled:"취소"};
   dlCSV(`발주서_${_localDateStr()}.csv`,["발주번호","발주일","거래처","입고위치","공급가액","세액","합계","상태"],
     erpPurchaseOrders.map(p=>[p.poNo||"(임시)",p.date,p.partnerName,_erpLocationName(p.locationId),p.supplyTotal,p.taxTotal,p.grandTotal,SL[p.status]||p.status]));
 }
@@ -27477,7 +27614,8 @@ function viewPOModal(id){
     <div class="fg"><label class="fl">합계</label><div class="fz13">공급가액 ${p.supplyTotal.toLocaleString()} + 세액 ${p.taxTotal.toLocaleString()} = ${p.grandTotal.toLocaleString()}</div></div>
     ${p.memo?`<div class="fg"><label class="fl">메모</label><div class="fz13">${h(p.memo)}</div></div>`:""}
     ${p.status==="cancelled"?`<div class="fg"><label class="fl">취소 사유</label><div class="fz13">${h(p.cancelReason)}</div></div>`:""}
-    ${p.taxInvoiceNo?`<div class="fg"><label class="fl">연동 매입세금계산서</label><div class="fz13">${h(p.taxInvoiceNo)}</div></div>`:""}
+    ${p.taxInvoiceNo&&!(p.fulfillments||[]).length?`<div class="fg"><label class="fl">연동 매입세금계산서</label><div class="fz13">${h(p.taxInvoiceNo)}</div></div>`:""}
+    ${_erpRoundsHtml("po",p)}
   </div><div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal()">닫기</button><button class="btn btn-secondary" onclick="window.print()">🖨 출력</button></div></div>`);
 }
 async function confirmPO(id){
@@ -27492,19 +27630,7 @@ async function confirmPO(id){
     ],confirmText:"발주 확정",danger:true},errorMessage:r=>r?.message||"발주 확정에 실패했습니다.",
     successMessage:r=>`발주가 확정되었습니다 (${r.purchaseOrder.poNo}).`,onSuccess:r=>{const idx=erpPurchaseOrders.findIndex(p=>p.id===id);if(idx>=0)erpPurchaseOrders[idx]=r.purchaseOrder;renderSalesPurchaseOrdersPage();}});
 }
-async function receivePO(id){
-  const p=erpPurchaseOrders.find(p=>p.id===id);
-  await runMutationWorkflow({key:`purchase-order:${id}:receive`,method:"POST",endpoint:`/api/erp/purchase-orders/${id}/receive`,body:{role:currentUser.role,user:currentUser.name},confirm:{
-    title:"입고 처리 확인",message:"입고 처리와 매입 세금계산서 발행을 함께 진행합니다.",impacts:[
-      {label:"발주번호",value:p?.poNo||id},
-      {label:"입고 위치",value:_erpLocationName(p?.locationId)||"-"},
-      {label:"품목 수",value:`${(p?.items||p?.lines||[]).length}건`},
-      {label:"매입 합계",value:`${(p?.grandTotal||0).toLocaleString()}원`,tone:"warn"},
-      {label:"처리 후 영향",value:"재고 증가 + 매입 세금계산서 발행",tone:"danger"}
-    ],confirmText:"입고 처리",danger:true},errorMessage:r=>r?.message||"입고 처리에 실패했습니다.",
-    successMessage:r=>`입고 처리되어 재고에 반영되고 매입세금계산서가 발행되었습니다 (${r.taxInvoice?.invoiceNo||""}).`,
-    onSuccess:async r=>{const idx=erpPurchaseOrders.findIndex(p=>p.id===id);if(idx>=0)erpPurchaseOrders[idx]=r.purchaseOrder;const rs=await serverRequest("GET","/api/erp/stock");if(rs?.ok)erpStock=rs.stock;if(currentUser?.menuPerms?.["acct-tax-invoices"]!==false){const rt=await serverRequest("GET","/api/accounting/tax-invoices");if(rt?.ok)acctTaxInvoices=rt.taxInvoices;}renderSalesPurchaseOrdersPage();}});
-}
+async function receivePO(id){return openErpFulfillModal("po",id);}
 async function cancelPO(id){
   const p=erpPurchaseOrders.find(p=>p.id===id);
   const reason=await askInputModal({

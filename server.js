@@ -9547,6 +9547,8 @@ app.post("/api/accounting/tax-invoices", async (req, res) => {
   } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
+// 반품과 연결된 수정세금계산서를 취소하면 재고는 이미 되돌아갔는데 세액만 원복돼 장부가 어긋난다.
+const AMENDMENT_VOID_MSG = "반품 수정세금계산서는 취소할 수 없습니다. 반품 처리를 정정하려면 관리자에게 문의하세요.";
 app.post("/api/accounting/tax-invoices/:id/void", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
@@ -9558,12 +9560,14 @@ app.post("/api/accounting/tax-invoices/:id/void", async (req, res) => {
       const inv = _fileAccounting.taxInvoices.find(t => t.id === id);
       if (!inv) return res.status(404).json({ ok: false, message: "세금계산서를 찾을 수 없습니다." });
       if (inv.status !== "issued") return res.status(400).json({ ok: false, message: "발행된 세금계산서만 취소할 수 있습니다." });
+      if (inv.invoiceKind === "amendment") return res.status(400).json({ ok: false, message: AMENDMENT_VOID_MSG });
       inv.status = "void"; inv.voidReason = reason; inv.voidedBy = req.body.user || "unknown"; inv.voidedAt = new Date().toISOString();
       _saveFileAccounting();
       return res.json({ ok: true, taxInvoice: inv });
     }
     const { rows } = await pool.query("SELECT data FROM tax_invoices WHERE id = $1 AND status = 'issued' AND (company_id = $2 OR company_id IS NULL)", [id, companyId]);
     if (!rows.length) return res.status(400).json({ ok: false, message: "발행된 세금계산서만 취소할 수 있습니다." });
+    if (rows[0].data.invoiceKind === "amendment") return res.status(400).json({ ok: false, message: AMENDMENT_VOID_MSG });
     const inv = { ...rows[0].data, status: "void", voidReason: reason, voidedBy: req.body.user || "unknown", voidedAt: new Date().toISOString() };
     await pool.query("UPDATE tax_invoices SET status = 'void', data = $2, updated_at = NOW() WHERE id = $1", [id, inv]);
     res.json({ ok: true, taxInvoice: inv });
@@ -11203,8 +11207,338 @@ async function _lockStockKeys(client, companyId, pairs) {
   for (const k of keys) await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [k]);
 }
 
+// ── 부분 출고·입고 + 반품 (견적서 출고 / 발주서 입고 공용 흐름) ─────────────────────
+// 한 문서를 여러 회차(fulfillments[])로 나눠 출고(견적서)·입고(발주서)할 수 있고, 회차마다
+// 재고 원장과 세금계산서가 따로 만들어진다. 반품(returns[])은 특정 회차의 처리분 안에서만
+// 가능하며 재고를 되돌리고 원본 세금계산서를 가리키는 음수 금액의 수정세금계산서를 발행한다.
+// 예전(회차 개념이 없던) 문서는 status가 완료(shipped/received)면 전량 1회차로 간주한다.
+const _ERP_FLOWS = {
+  quotation: {
+    collection: "quotations", table: "erp_quotations", noField: "quoteNo", responseKey: "quotation",
+    allowed: ["accepted", "partially_shipped"], partial: "partially_shipped", done: "shipped",
+    notFound: "견적서를 찾을 수 없습니다.", badStatus: "수주 확정된 견적서만 출고 처리할 수 있습니다.",
+    noReturnMsg: "출고된 이력이 있는 견적서만 반품 처리할 수 있습니다.",
+    noLocationMsg: "출고 위치가 지정되지 않은 견적서입니다.",
+    direction: "sales", stockType: "out", returnStockType: "in",
+    refType: "quotation", returnRefType: "quotation_return",
+    memo: "견적 출고", returnMemo: "견적 반품 입고", doneBy: ["shippedBy", "shippedAt"],
+  },
+  po: {
+    collection: "purchaseOrders", table: "erp_purchase_orders", noField: "poNo", responseKey: "purchaseOrder",
+    allowed: ["ordered", "partially_received"], partial: "partially_received", done: "received",
+    notFound: "발주서를 찾을 수 없습니다.", badStatus: "발주 확정 상태의 발주서만 입고 처리할 수 있습니다.",
+    noReturnMsg: "입고된 이력이 있는 발주서만 반품 처리할 수 있습니다.",
+    noLocationMsg: null,
+    direction: "purchase", stockType: "in", returnStockType: "out",
+    refType: "po", returnRefType: "po_return",
+    memo: "발주 입고", returnMemo: "발주 반품 출고", doneBy: ["receivedBy", "receivedAt"],
+  },
+};
+function _erpTodayKst() { return new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 10); }
+// 문서의 처리 회차 목록. 회차 기록이 없는 예전 완료 문서는 전량 1회차로 합성한다.
+function _erpDocFulfillments(flow, doc) {
+  if (Array.isArray(doc.fulfillments)) return doc.fulfillments;
+  if (doc.status === flow.done) {
+    return [{
+      round: 1, at: doc[flow.doneBy[1]] || "", by: doc[flow.doneBy[0]] || "",
+      lines: (doc.lines || []).map((l, index) => ({ index, qty: Number(l.qty) || 0 })),
+      taxInvoiceId: doc.taxInvoiceId || null, taxInvoiceNo: doc.taxInvoiceNo || "", legacy: true,
+    }];
+  }
+  return [];
+}
+function _erpQtyMap(records) {
+  const map = new Map();
+  for (const rec of records) for (const l of (rec.lines || [])) map.set(l.index, _round2((map.get(l.index) || 0) + (Number(l.qty) || 0)));
+  return map;
+}
+// 처리 계획: 요청 본문의 lines([{index,qty}])를 검증한다. 생략하면 잔여 수량 전부.
+function _erpPlanFulfill(flow, doc, body) {
+  const done = _erpQtyMap(_erpDocFulfillments(flow, doc));
+  const remaining = (doc.lines || []).map((l, i) => _round2((Number(l.qty) || 0) - (done.get(i) || 0)));
+  let picks;
+  if (body.lines === undefined || body.lines === null) {
+    picks = remaining.map((qty, index) => ({ index, qty })).filter(p => p.qty > 0);
+  } else {
+    if (!Array.isArray(body.lines) || !body.lines.length) throw httpError(400, "ERP_FULFILL_LINES_INVALID", "처리할 품목 수량을 입력하세요.");
+    const seen = new Set();
+    picks = [];
+    for (const raw of body.lines) {
+      const index = Number(raw?.index), qty = Number(raw?.qty);
+      if (!Number.isInteger(index) || index < 0 || index >= remaining.length) throw httpError(400, "ERP_FULFILL_LINES_INVALID", "존재하지 않는 품목 라인입니다.");
+      if (seen.has(index)) throw httpError(400, "ERP_FULFILL_LINES_INVALID", "같은 품목 라인을 중복해서 입력할 수 없습니다.");
+      seen.add(index);
+      if (!Number.isFinite(qty) || qty <= 0) throw httpError(400, "ERP_FULFILL_LINES_INVALID", `수량은 0보다 큰 숫자여야 합니다(${doc.lines[index].name || doc.lines[index].itemId}).`);
+      if (_round2(qty) > remaining[index]) throw httpError(400, "ERP_FULFILL_QTY_EXCEEDED", `잔여 수량(${remaining[index]})을 초과했습니다(${doc.lines[index].name || doc.lines[index].itemId}).`);
+      picks.push({ index, qty: _round2(qty) });
+    }
+  }
+  if (!picks.length) throw httpError(400, "ERP_NOTHING_TO_FULFILL", "처리할 잔여 수량이 없습니다.");
+  return picks;
+}
+// 반품 계획: 선택한 회차의 처리분 중 아직 반품되지 않은 수량 안에서만 허용한다.
+function _erpPlanReturn(flow, doc, body) {
+  const rounds = _erpDocFulfillments(flow, doc);
+  if (!rounds.length) throw httpError(400, "ERP_NO_FULFILLMENT", flow.noReturnMsg);
+  const roundNo = Number(body.round);
+  const round = rounds.find(r => r.round === roundNo);
+  if (!round) throw httpError(400, "ERP_ROUND_NOT_FOUND", "반품할 회차를 선택하세요.");
+  if (!Array.isArray(body.lines) || !body.lines.length) throw httpError(400, "ERP_FULFILL_LINES_INVALID", "반품할 품목 수량을 입력하세요.");
+  const returned = _erpQtyMap((doc.returns || []).filter(r => r.round === roundNo));
+  const base = _erpQtyMap([round]);
+  const seen = new Set();
+  const picks = [];
+  for (const raw of body.lines) {
+    const index = Number(raw?.index), qty = Number(raw?.qty);
+    if (!Number.isInteger(index) || !base.has(index)) throw httpError(400, "ERP_FULFILL_LINES_INVALID", "해당 회차에 처리되지 않은 품목입니다.");
+    if (seen.has(index)) throw httpError(400, "ERP_FULFILL_LINES_INVALID", "같은 품목 라인을 중복해서 입력할 수 없습니다.");
+    seen.add(index);
+    const name = doc.lines[index]?.name || doc.lines[index]?.itemId;
+    if (!Number.isFinite(qty) || qty <= 0) throw httpError(400, "ERP_FULFILL_LINES_INVALID", `수량은 0보다 큰 숫자여야 합니다(${name}).`);
+    const returnable = _round2(base.get(index) - (returned.get(index) || 0));
+    if (_round2(qty) > returnable) throw httpError(400, "ERP_RETURN_QTY_EXCEEDED", `반품 가능 수량(${returnable})을 초과했습니다(${name}).`);
+    picks.push({ index, qty: _round2(qty) });
+  }
+  return { round, picks };
+}
+function _erpPickLines(doc, picks) {
+  return picks.map(p => ({ ...doc.lines[p.index], qty: p.qty }));
+}
+function _erpLedgerRows(flow, doc, picks, ctx) {
+  return _erpPickLines(doc, picks).map(l => ({
+    itemId: l.itemId, locationId: doc.locationId, type: ctx.type, qty: l.qty,
+    refType: ctx.refType, refId: doc.id, refNo: doc[flow.noField], round: ctx.round,
+    memo: `${ctx.memo} (${doc[flow.noField]})${ctx.showRound ? ` ${ctx.round}차` : ""}`,
+    createdBy: ctx.user, createdAt: ctx.now,
+  }));
+}
+function _erpNewId(prefix) { return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`; }
+// 회차 세금계산서(양수) 또는 반품 수정세금계산서(음수 수량 → 음수 금액).
+function _erpBuildInvoice(flow, doc, ctx) {
+  const sign = ctx.amend ? -1 : 1;
+  const totals = _buildTaxInvoiceTotals(_erpPickLines(doc, ctx.picks).map(l => ({ ...l, qty: l.qty * sign })));
+  const inv = {
+    id: _erpNewId("ti"), invoiceNo: ctx.invoiceNo, status: "issued", direction: flow.direction,
+    issueDate: ctx.issueDate, partnerId: doc.partnerId || null, partnerName: doc.partnerName, partnerBizNo: ctx.partnerBizNo || "",
+    ...totals,
+    createdBy: ctx.user, createdAt: ctx.now,
+    sourceType: ctx.amend ? flow.returnRefType : flow.refType, sourceId: doc.id, sourceNo: doc[flow.noField], round: ctx.round,
+  };
+  if (ctx.amend) {
+    inv.invoiceKind = "amendment";
+    inv.amendsInvoiceId = ctx.original?.id || ctx.round_taxInvoiceId || null;
+    inv.amendsInvoiceNo = ctx.original?.invoiceNo || ctx.round_taxInvoiceNo || "";
+    inv.amendReason = ctx.reason;
+    inv.returnId = ctx.returnId;
+  }
+  return inv;
+}
+function _erpFulfilledDoc(flow, doc, picks, ctx) {
+  const fulfillments = [..._erpDocFulfillments(flow, doc), {
+    round: ctx.round, at: ctx.now, by: ctx.user, date: ctx.issueDate, lines: picks,
+    taxInvoiceId: ctx.invoice.id, taxInvoiceNo: ctx.invoice.invoiceNo,
+  }];
+  const doneQty = _erpQtyMap(fulfillments);
+  const complete = (doc.lines || []).every((l, i) => _round2((Number(l.qty) || 0) - (doneQty.get(i) || 0)) <= 0);
+  return {
+    ...doc, fulfillments, status: complete ? flow.done : flow.partial,
+    [flow.doneBy[0]]: ctx.user, [flow.doneBy[1]]: ctx.now,
+    taxInvoiceId: ctx.invoice.id, taxInvoiceNo: ctx.invoice.invoiceNo,
+  };
+}
+function _erpReturnedDoc(doc, round, picks, ctx) {
+  const returns = [...(doc.returns || []), {
+    id: ctx.returnId, round, at: ctx.now, by: ctx.user, date: ctx.issueDate, reason: ctx.reason, lines: picks,
+    taxInvoiceId: ctx.invoice.id, taxInvoiceNo: ctx.invoice.invoiceNo,
+  }];
+  return { ...doc, returns };
+}
+function _erpCurrentStock(rows, itemId, locationId) {
+  return rows.filter(s => s.itemId === itemId && s.locationId === locationId)
+    .reduce((sum, s) => sum + (s.type === "out" ? -Math.abs(s.qty) : Math.abs(s.qty)), 0);
+}
+
+async function _handleErpFulfill(flow, req, res) {
+  const id = req.params.id;
+  const companyId = req.auth.companyId || null;
+  const body = req.body || {};
+  const user = body.user || "unknown";
+  const now = new Date().toISOString();
+  if (body.date !== undefined && body.date !== null && body.date !== "" && !_isValidDateStr(body.date)) {
+    return res.status(400).json({ ok: false, message: "처리일자는 실제 존재하는 YYYY-MM-DD 형식이어야 합니다." });
+  }
+  if (USE_JSON_FILE) {
+    const erp = structuredClone(_fileErp), accounting = structuredClone(_fileAccounting);
+    const doc = erp[flow.collection].find(d => d.id === id);
+    if (!doc) return res.status(404).json({ ok: false, message: flow.notFound });
+    if (!flow.allowed.includes(doc.status)) return res.status(400).json({ ok: false, message: flow.badStatus });
+    if (flow.noLocationMsg && !doc.locationId) return res.status(400).json({ ok: false, message: flow.noLocationMsg });
+    _checkErpStockDocument(doc);
+    _checkFileErpDocumentRefs(doc);
+    const picks = _erpPlanFulfill(flow, doc, body);
+    const round = _erpDocFulfillments(flow, doc).length + 1;
+    if (flow.stockType === "out") {
+      for (const l of _requiredShipmentStock(_erpPickLines(doc, picks))) {
+        const current = _erpCurrentStock(erp.stockLedger, l.itemId, doc.locationId);
+        if (current < l.qty) return res.status(400).json({ ok: false, message: `재고 부족: ${l.name || l.itemId} (현재 ${current} / 필요 ${l.qty})` });
+      }
+    }
+    for (const row of _erpLedgerRows(flow, doc, picks, { type: flow.stockType, refType: flow.refType, memo: flow.memo, round, showRound: round > 1, user, now })) {
+      erp.stockLedger.push({ id: _erpNewId("sl"), ...row });
+    }
+    const issueDate = body.date || doc.date;
+    const year = new Date(issueDate).getFullYear();
+    accounting.taxInvoiceSeq ||= {};
+    const seq = (accounting.taxInvoiceSeq[year] || 0) + 1;
+    accounting.taxInvoiceSeq[year] = seq;
+    const invoiceNo = `TI-${year}-${String(seq).padStart(6, "0")}`;
+    const invoice = _erpBuildInvoice(flow, doc, {
+      picks, round, user, now, invoiceNo, issueDate,
+      partnerBizNo: accounting.partners.find(p => p.id === doc.partnerId)?.bizNo || "",
+    });
+    accounting.taxInvoices.push(invoice);
+    const updated = _erpFulfilledDoc(flow, doc, picks, { round, user, now, issueDate, invoice });
+    Object.assign(doc, updated);
+    _commitFileErpAccounting(erp, accounting);
+    return res.json({ ok: true, [flow.responseKey]: doc, taxInvoice: _taxInvoiceReference(invoice) });
+  }
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const { rows } = await client.query(`SELECT data, status FROM ${flow.table} WHERE id = $1 AND company_id = $2 FOR UPDATE`, [id, companyId]);
+    if (!rows.length) { await client.query("ROLLBACK"); return res.status(404).json({ ok: false, message: flow.notFound }); }
+    if (!flow.allowed.includes(rows[0].status)) { await client.query("ROLLBACK"); return res.status(400).json({ ok: false, message: flow.badStatus }); }
+    const doc = rows[0].data;
+    if (flow.noLocationMsg && !doc.locationId) { await client.query("ROLLBACK"); return res.status(400).json({ ok: false, message: flow.noLocationMsg }); }
+    _checkErpStockDocument(doc);
+    await _lockErpDocumentRefs(client, companyId, doc);
+    const picks = _erpPlanFulfill(flow, doc, body);
+    const round = _erpDocFulfillments(flow, doc).length + 1;
+    if (flow.stockType === "out") {
+      const required = _requiredShipmentStock(_erpPickLines(doc, picks));
+      await _lockStockKeys(client, companyId, required.map(l => [l.itemId, doc.locationId]));
+      for (const l of required) {
+        const { rows: ledgerRows } = await client.query(
+          "SELECT data FROM erp_stock_ledger WHERE item_id = $1 AND location_id = $2 AND company_id = $3 FOR UPDATE", [l.itemId, doc.locationId, companyId]
+        );
+        const current = ledgerRows.reduce((sum, r) => sum + (r.data.type === "out" ? -Math.abs(r.data.qty) : Math.abs(r.data.qty)), 0);
+        if (current < l.qty) { await client.query("ROLLBACK"); return res.status(400).json({ ok: false, message: `재고 부족: ${l.name || l.itemId} (현재 ${current} / 필요 ${l.qty})` }); }
+      }
+    }
+    for (const row of _erpLedgerRows(flow, doc, picks, { type: flow.stockType, refType: flow.refType, memo: flow.memo, round, showRound: round > 1, user, now })) {
+      await client.query("INSERT INTO erp_stock_ledger (id, item_id, location_id, data, company_id) VALUES ($1,$2,$3,$4,$5)", [_erpNewId("sl"), row.itemId, row.locationId, row, companyId]);
+    }
+    const issueDate = body.date || doc.date;
+    const year = new Date(issueDate).getFullYear();
+    const { rows: seqRows } = await client.query(
+      "INSERT INTO tax_invoice_seq (company_id, year, seq) VALUES ($1,$2,1) ON CONFLICT (company_id, year) DO UPDATE SET seq = tax_invoice_seq.seq + 1 RETURNING seq", [companyId, year]
+    );
+    const invoiceNo = `TI-${year}-${String(seqRows[0].seq).padStart(6, "0")}`;
+    const invoice = _erpBuildInvoice(flow, doc, { picks, round, user, now, invoiceNo, issueDate, partnerBizNo: await _lookupPartnerBizNo(doc.partnerId, companyId, client) });
+    await client.query("INSERT INTO tax_invoices (id, invoice_no, issue_date, status, data, company_id) VALUES ($1,$2,$3,'issued',$4,$5)", [invoice.id, invoiceNo, issueDate, invoice, companyId]);
+    const updated = _erpFulfilledDoc(flow, doc, picks, { round, user, now, issueDate, invoice });
+    await client.query(`UPDATE ${flow.table} SET status = $3, data = $4, updated_at = NOW() WHERE id = $1 AND company_id = $2`, [id, companyId, updated.status, updated]);
+    await client.query("COMMIT");
+    res.json({ ok: true, [flow.responseKey]: updated, taxInvoice: _taxInvoiceReference(invoice) });
+  } catch (e) { await client.query("ROLLBACK"); throw e; } finally { client.release(); }
+}
+
+async function _handleErpReturn(flow, req, res) {
+  const id = req.params.id;
+  const companyId = req.auth.companyId || null;
+  const body = req.body || {};
+  const user = body.user || "unknown";
+  const now = new Date().toISOString();
+  const reason = String(body.reason || "").trim().slice(0, 500);
+  if (!reason) return res.status(400).json({ ok: false, message: "반품 사유를 입력하세요." });
+  if (body.date !== undefined && body.date !== null && body.date !== "" && !_isValidDateStr(body.date)) {
+    return res.status(400).json({ ok: false, message: "반품일자는 실제 존재하는 YYYY-MM-DD 형식이어야 합니다." });
+  }
+  const issueDate = body.date || _erpTodayKst();
+  const year = new Date(issueDate).getFullYear();
+  const returnId = _erpNewId("ret");
+  const voidedOriginal = () => res.status(409).json({ ok: false, code: "ERP_ORIGINAL_INVOICE_VOID", message: "원본 세금계산서가 취소되어 반품 수정세금계산서를 발행할 수 없습니다." });
+  if (USE_JSON_FILE) {
+    const erp = structuredClone(_fileErp), accounting = structuredClone(_fileAccounting);
+    const doc = erp[flow.collection].find(d => d.id === id);
+    if (!doc) return res.status(404).json({ ok: false, message: flow.notFound });
+    _checkErpStockDocument(doc);
+    _checkFileErpDocumentRefs(doc);
+    const { round, picks } = _erpPlanReturn(flow, doc, body);
+    if (flow.returnStockType === "out") {
+      for (const l of _requiredShipmentStock(_erpPickLines(doc, picks))) {
+        const current = _erpCurrentStock(erp.stockLedger, l.itemId, doc.locationId);
+        if (current < l.qty) return res.status(400).json({ ok: false, message: `재고 부족: ${l.name || l.itemId} (현재 ${current} / 필요 ${l.qty})` });
+      }
+    }
+    const original = round.taxInvoiceId ? accounting.taxInvoices.find(t => t.id === round.taxInvoiceId) : null;
+    if (original && original.status === "void") return voidedOriginal();
+    for (const row of _erpLedgerRows(flow, doc, picks, { type: flow.returnStockType, refType: flow.returnRefType, memo: flow.returnMemo, round: round.round, showRound: true, user, now })) {
+      erp.stockLedger.push({ id: _erpNewId("sl"), ...row });
+    }
+    accounting.taxInvoiceSeq ||= {};
+    const seq = (accounting.taxInvoiceSeq[year] || 0) + 1;
+    accounting.taxInvoiceSeq[year] = seq;
+    const invoiceNo = `TI-${year}-${String(seq).padStart(6, "0")}`;
+    const invoice = _erpBuildInvoice(flow, doc, {
+      picks, round: round.round, user, now, invoiceNo, issueDate, amend: true, original, reason, returnId,
+      round_taxInvoiceId: round.taxInvoiceId, round_taxInvoiceNo: round.taxInvoiceNo,
+      partnerBizNo: accounting.partners.find(p => p.id === doc.partnerId)?.bizNo || "",
+    });
+    accounting.taxInvoices.push(invoice);
+    Object.assign(doc, _erpReturnedDoc(doc, round.round, picks, { returnId, user, now, issueDate, reason, invoice }));
+    _commitFileErpAccounting(erp, accounting);
+    return res.json({ ok: true, [flow.responseKey]: doc, taxInvoice: _taxInvoiceReference(invoice) });
+  }
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const { rows } = await client.query(`SELECT data, status FROM ${flow.table} WHERE id = $1 AND company_id = $2 FOR UPDATE`, [id, companyId]);
+    if (!rows.length) { await client.query("ROLLBACK"); return res.status(404).json({ ok: false, message: flow.notFound }); }
+    const doc = rows[0].data;
+    _checkErpStockDocument(doc);
+    await _lockErpDocumentRefs(client, companyId, doc);
+    const { round, picks } = _erpPlanReturn(flow, doc, body);
+    if (flow.returnStockType === "out") {
+      const required = _requiredShipmentStock(_erpPickLines(doc, picks));
+      await _lockStockKeys(client, companyId, required.map(l => [l.itemId, doc.locationId]));
+      for (const l of required) {
+        const { rows: ledgerRows } = await client.query(
+          "SELECT data FROM erp_stock_ledger WHERE item_id = $1 AND location_id = $2 AND company_id = $3 FOR UPDATE", [l.itemId, doc.locationId, companyId]
+        );
+        const current = ledgerRows.reduce((sum, r) => sum + (r.data.type === "out" ? -Math.abs(r.data.qty) : Math.abs(r.data.qty)), 0);
+        if (current < l.qty) { await client.query("ROLLBACK"); return res.status(400).json({ ok: false, message: `재고 부족: ${l.name || l.itemId} (현재 ${current} / 필요 ${l.qty})` }); }
+      }
+    }
+    let original = null;
+    if (round.taxInvoiceId) {
+      const found = await client.query("SELECT data FROM tax_invoices WHERE id = $1 AND (company_id = $2 OR company_id IS NULL) FOR SHARE", [round.taxInvoiceId, companyId]);
+      original = found.rows[0]?.data || null;
+    }
+    if (original && original.status === "void") { await client.query("ROLLBACK"); return voidedOriginal(); }
+    for (const row of _erpLedgerRows(flow, doc, picks, { type: flow.returnStockType, refType: flow.returnRefType, memo: flow.returnMemo, round: round.round, showRound: true, user, now })) {
+      await client.query("INSERT INTO erp_stock_ledger (id, item_id, location_id, data, company_id) VALUES ($1,$2,$3,$4,$5)", [_erpNewId("sl"), row.itemId, row.locationId, row, companyId]);
+    }
+    const { rows: seqRows } = await client.query(
+      "INSERT INTO tax_invoice_seq (company_id, year, seq) VALUES ($1,$2,1) ON CONFLICT (company_id, year) DO UPDATE SET seq = tax_invoice_seq.seq + 1 RETURNING seq", [companyId, year]
+    );
+    const invoiceNo = `TI-${year}-${String(seqRows[0].seq).padStart(6, "0")}`;
+    const invoice = _erpBuildInvoice(flow, doc, {
+      picks, round: round.round, user, now, invoiceNo, issueDate, amend: true, original, reason, returnId,
+      round_taxInvoiceId: round.taxInvoiceId, round_taxInvoiceNo: round.taxInvoiceNo,
+      partnerBizNo: await _lookupPartnerBizNo(doc.partnerId, companyId, client),
+    });
+    await client.query("INSERT INTO tax_invoices (id, invoice_no, issue_date, status, data, company_id) VALUES ($1,$2,$3,'issued',$4,$5)", [invoice.id, invoiceNo, issueDate, invoice, companyId]);
+    const updated = _erpReturnedDoc(doc, round.round, picks, { returnId, user, now, issueDate, reason, invoice });
+    await client.query(`UPDATE ${flow.table} SET data = $3, updated_at = NOW() WHERE id = $1 AND company_id = $2`, [id, companyId, updated]);
+    await client.query("COMMIT");
+    res.json({ ok: true, [flow.responseKey]: updated, taxInvoice: _taxInvoiceReference(invoice) });
+  } catch (e) { await client.query("ROLLBACK"); throw e; } finally { client.release(); }
+}
+
 // 출고/매출 처리: 수주 확정된 견적서를 기준으로 재고 출고(원장 차감)와 세금계산서 발행을
-// 한 번에 처리한다. 재고 부족 시 거부, 성공 시 견적서는 'shipped'로 종결된다.
+// 회차 단위로 처리한다. body.lines([{index,qty}])를 생략하면 잔여 수량 전부를 출고한다.
+// 재고 부족 시 거부, 모든 품목이 출고되면 'shipped', 일부만 출고되면 'partially_shipped'.
 function _requiredShipmentStock(lines) {
   const required = new Map();
   for (const line of lines) {
@@ -11219,95 +11553,14 @@ app.post("/api/erp/quotations/:id/ship", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
     if (!requirePage(req, res, "sales-quotations")) return;
-    const id = req.params.id;
-    const companyId = req.auth.companyId || null;
-    const user = req.body.user || "unknown";
-    const now = new Date().toISOString();
-    if (USE_JSON_FILE) {
-      const erp = structuredClone(_fileErp), accounting = structuredClone(_fileAccounting);
-      const q = erp.quotations.find(q => q.id === id);
-      if (!q) return res.status(404).json({ ok: false, message: "견적서를 찾을 수 없습니다." });
-      if (q.status !== "accepted") return res.status(400).json({ ok: false, message: "수주 확정된 견적서만 출고 처리할 수 있습니다." });
-      if (!q.locationId) return res.status(400).json({ ok: false, message: "출고 위치가 지정되지 않은 견적서입니다." });
-      _checkErpStockDocument(q);
-      _checkFileErpDocumentRefs(q);
-      for (const l of _requiredShipmentStock(q.lines)) {
-        const current = erp.stockLedger
-          .filter(s => s.itemId === l.itemId && s.locationId === q.locationId)
-          .reduce((sum, s) => sum + (s.type === "out" ? -Math.abs(s.qty) : Math.abs(s.qty)), 0);
-        if (current < l.qty) return res.status(400).json({ ok: false, message: `재고 부족: ${l.name || l.itemId} (현재 ${current} / 필요 ${l.qty})` });
-      }
-      for (const l of q.lines) {
-        erp.stockLedger.push({
-          id: `sl_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-          itemId: l.itemId, locationId: q.locationId, type: "out", qty: l.qty,
-          refType: "quotation", refId: q.id, refNo: q.quoteNo, memo: `견적 출고 (${q.quoteNo})`,
-          createdBy: user, createdAt: now,
-        });
-      }
-      const year = new Date(q.date).getFullYear();
-      accounting.taxInvoiceSeq ||= {};
-      const seq = (accounting.taxInvoiceSeq[year] || 0) + 1;
-      accounting.taxInvoiceSeq[year] = seq;
-      const invoiceNo = `TI-${year}-${String(seq).padStart(6, "0")}`;
-      const invTotals = _buildTaxInvoiceTotals(q.lines);
-      const inv = {
-        id: `ti_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-        invoiceNo, status: "issued", direction: "sales",
-        issueDate: q.date, partnerId: q.partnerId || null, partnerName: q.partnerName, partnerBizNo: accounting.partners.find(p => p.id === q.partnerId)?.bizNo || "",
-        ...invTotals,
-        createdBy: user, createdAt: now, sourceType: "quotation", sourceId: q.id, sourceNo: q.quoteNo,
-      };
-      accounting.taxInvoices.push(inv);
-      q.status = "shipped"; q.shippedBy = user; q.shippedAt = now; q.taxInvoiceId = inv.id; q.taxInvoiceNo = inv.invoiceNo;
-      _commitFileErpAccounting(erp, accounting);
-      return res.json({ ok: true, quotation: q, taxInvoice: _taxInvoiceReference(inv) });
-    }
-    const client = await pool.connect();
-    try {
-      await client.query("BEGIN");
-      const { rows } = await client.query("SELECT data, status FROM erp_quotations WHERE id = $1 AND company_id = $2 FOR UPDATE", [id, companyId]);
-      if (!rows.length) { await client.query("ROLLBACK"); return res.status(404).json({ ok: false, message: "견적서를 찾을 수 없습니다." }); }
-      const q0 = rows[0].data;
-      if (rows[0].status !== "accepted") { await client.query("ROLLBACK"); return res.status(400).json({ ok: false, message: "수주 확정된 견적서만 출고 처리할 수 있습니다." }); }
-      if (!q0.locationId) { await client.query("ROLLBACK"); return res.status(400).json({ ok: false, message: "출고 위치가 지정되지 않은 견적서입니다." }); }
-      _checkErpStockDocument(q0);
-      await _lockErpDocumentRefs(client, companyId, q0);
-      const required = _requiredShipmentStock(q0.lines);
-      await _lockStockKeys(client, companyId, required.map(l => [l.itemId, q0.locationId]));
-      for (const l of required) {
-        const { rows: ledgerRows } = await client.query(
-          "SELECT data FROM erp_stock_ledger WHERE item_id = $1 AND location_id = $2 AND company_id = $3 FOR UPDATE", [l.itemId, q0.locationId, companyId]
-        );
-        const current = ledgerRows.reduce((sum, r) => sum + (r.data.type === "out" ? -Math.abs(r.data.qty) : Math.abs(r.data.qty)), 0);
-        if (current < l.qty) { await client.query("ROLLBACK"); return res.status(400).json({ ok: false, message: `재고 부족: ${l.name || l.itemId} (현재 ${current} / 필요 ${l.qty})` }); }
-      }
-      for (const l of q0.lines) {
-        await client.query(
-          "INSERT INTO erp_stock_ledger (id, item_id, location_id, data, company_id) VALUES ($1,$2,$3,$4,$5)",
-          [`sl_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`, l.itemId, q0.locationId,
-           { itemId: l.itemId, locationId: q0.locationId, type: "out", qty: l.qty, refType: "quotation", refId: q0.id, refNo: q0.quoteNo, memo: `견적 출고 (${q0.quoteNo})`, createdBy: user, createdAt: now }, companyId]
-        );
-      }
-      const year = new Date(q0.date).getFullYear();
-      const { rows: seqRows } = await client.query(
-        "INSERT INTO tax_invoice_seq (company_id, year, seq) VALUES ($1,$2,1) ON CONFLICT (company_id, year) DO UPDATE SET seq = tax_invoice_seq.seq + 1 RETURNING seq", [companyId, year]
-      );
-      const invoiceNo = `TI-${year}-${String(seqRows[0].seq).padStart(6, "0")}`;
-      const invTotals = _buildTaxInvoiceTotals(q0.lines);
-      const inv = {
-        id: `ti_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-        invoiceNo, status: "issued", direction: "sales",
-        issueDate: q0.date, partnerId: q0.partnerId || null, partnerName: q0.partnerName, partnerBizNo: await _lookupPartnerBizNo(q0.partnerId, companyId, client),
-        ...invTotals,
-        createdBy: user, createdAt: now, sourceType: "quotation", sourceId: q0.id, sourceNo: q0.quoteNo,
-      };
-      await client.query("INSERT INTO tax_invoices (id, invoice_no, issue_date, status, data, company_id) VALUES ($1,$2,$3,'issued',$4,$5)", [inv.id, invoiceNo, q0.date, inv, companyId]);
-      const q = { ...q0, status: "shipped", shippedBy: user, shippedAt: now, taxInvoiceId: inv.id, taxInvoiceNo: inv.invoiceNo };
-      await client.query("UPDATE erp_quotations SET status = 'shipped', data = $3, updated_at = NOW() WHERE id = $1 AND company_id = $2", [id, companyId, q]);
-      await client.query("COMMIT");
-      res.json({ ok: true, quotation: q, taxInvoice: _taxInvoiceReference(inv) });
-    } catch (e) { await client.query("ROLLBACK"); throw e; } finally { client.release(); }
+    await _handleErpFulfill(_ERP_FLOWS.quotation, req, res);
+  } catch (e) { res.status(e.status || 500).json({ ok: false, code: e.code, message: _safeErrMsg(e) }); }
+});
+app.post("/api/erp/quotations/:id/return", async (req, res) => {
+  try {
+    if (!requireAdmin(req, res)) return;
+    if (!requirePage(req, res, "sales-quotations")) return;
+    await _handleErpReturn(_ERP_FLOWS.quotation, req, res);
   } catch (e) { res.status(e.status || 500).json({ ok: false, code: e.code, message: _safeErrMsg(e) }); }
 });
 
@@ -11422,83 +11675,20 @@ app.post("/api/erp/purchase-orders/:id/confirm", async (req, res) => {
   } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
+// 입고 처리: 발주 확정된 발주서를 기준으로 재고 입고와 매입 세금계산서 발행을 회차 단위로
+// 처리한다(body.lines 생략 시 잔여 수량 전부). 일부만 입고하면 'partially_received'.
 app.post("/api/erp/purchase-orders/:id/receive", async (req, res) => {
   try {
     if (!requireAdmin(req, res)) return;
     if (!requirePage(req, res, "sales-purchase-orders")) return;
-    const id = req.params.id;
-    const companyId = req.auth.companyId || null;
-    const user = req.body.user || "unknown";
-    if (USE_JSON_FILE) {
-      const erp = structuredClone(_fileErp), accounting = structuredClone(_fileAccounting);
-      const po = erp.purchaseOrders.find(p => p.id === id);
-      if (!po) return res.status(404).json({ ok: false, message: "발주서를 찾을 수 없습니다." });
-      if (po.status !== "ordered") return res.status(400).json({ ok: false, message: "발주 확정 상태의 발주서만 입고 처리할 수 있습니다." });
-      _checkErpStockDocument(po);
-      _checkFileErpDocumentRefs(po);
-      const now = new Date().toISOString();
-      for (const l of po.lines) {
-        erp.stockLedger.push({
-          id: `sl_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-          itemId: l.itemId, locationId: po.locationId, type: "in", qty: l.qty,
-          refType: "po", refId: po.id, refNo: po.poNo, memo: `발주 입고 (${po.poNo})`,
-          createdBy: user, createdAt: now,
-        });
-      }
-      const year = new Date(po.date).getFullYear();
-      accounting.taxInvoiceSeq ||= {};
-      const seq = (accounting.taxInvoiceSeq[year] || 0) + 1;
-      accounting.taxInvoiceSeq[year] = seq;
-      const invoiceNo = `TI-${year}-${String(seq).padStart(6, "0")}`;
-      const invTotals = _buildTaxInvoiceTotals(po.lines);
-      const inv = {
-        id: `ti_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-        invoiceNo, status: "issued", direction: "purchase",
-        issueDate: po.date, partnerId: po.partnerId || null, partnerName: po.partnerName, partnerBizNo: accounting.partners.find(p => p.id === po.partnerId)?.bizNo || "",
-        ...invTotals,
-        createdBy: user, createdAt: now, sourceType: "po", sourceId: po.id, sourceNo: po.poNo,
-      };
-      accounting.taxInvoices.push(inv);
-      po.status = "received"; po.receivedBy = user; po.receivedAt = now; po.taxInvoiceId = inv.id; po.taxInvoiceNo = inv.invoiceNo;
-      _commitFileErpAccounting(erp, accounting);
-      return res.json({ ok: true, purchaseOrder: po, taxInvoice: _taxInvoiceReference(inv) });
-    }
-    const client = await pool.connect();
-    try {
-      await client.query("BEGIN");
-      const { rows } = await client.query("SELECT data, status FROM erp_purchase_orders WHERE id = $1 AND company_id = $2 FOR UPDATE", [id, companyId]);
-      if (!rows.length) { await client.query("ROLLBACK"); return res.status(404).json({ ok: false, message: "발주서를 찾을 수 없습니다." }); }
-      if (rows[0].status !== "ordered") { await client.query("ROLLBACK"); return res.status(400).json({ ok: false, message: "발주 확정 상태의 발주서만 입고 처리할 수 있습니다." }); }
-      const po0 = rows[0].data;
-      _checkErpStockDocument(po0);
-      await _lockErpDocumentRefs(client, companyId, po0);
-      const now = new Date().toISOString();
-      for (const l of po0.lines) {
-        await client.query(
-          "INSERT INTO erp_stock_ledger (id, item_id, location_id, data, company_id) VALUES ($1,$2,$3,$4,$5)",
-          [`sl_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`, l.itemId, po0.locationId,
-           { itemId: l.itemId, locationId: po0.locationId, type: "in", qty: l.qty, refType: "po", refId: po0.id, refNo: po0.poNo, memo: `발주 입고 (${po0.poNo})`, createdBy: user, createdAt: now }, companyId]
-        );
-      }
-      const year = new Date(po0.date).getFullYear();
-      const { rows: seqRows } = await client.query(
-        "INSERT INTO tax_invoice_seq (company_id, year, seq) VALUES ($1,$2,1) ON CONFLICT (company_id, year) DO UPDATE SET seq = tax_invoice_seq.seq + 1 RETURNING seq", [companyId, year]
-      );
-      const invoiceNo = `TI-${year}-${String(seqRows[0].seq).padStart(6, "0")}`;
-      const invTotals = _buildTaxInvoiceTotals(po0.lines);
-      const inv = {
-        id: `ti_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-        invoiceNo, status: "issued", direction: "purchase",
-        issueDate: po0.date, partnerId: po0.partnerId || null, partnerName: po0.partnerName, partnerBizNo: await _lookupPartnerBizNo(po0.partnerId, companyId, client),
-        ...invTotals,
-        createdBy: user, createdAt: now, sourceType: "po", sourceId: po0.id, sourceNo: po0.poNo,
-      };
-      await client.query("INSERT INTO tax_invoices (id, invoice_no, issue_date, status, data, company_id) VALUES ($1,$2,$3,'issued',$4,$5)", [inv.id, invoiceNo, po0.date, inv, companyId]);
-      const po = { ...po0, status: "received", receivedBy: user, receivedAt: now, taxInvoiceId: inv.id, taxInvoiceNo: inv.invoiceNo };
-      await client.query("UPDATE erp_purchase_orders SET status = 'received', data = $3, updated_at = NOW() WHERE id = $1 AND company_id = $2", [id, companyId, po]);
-      await client.query("COMMIT");
-      res.json({ ok: true, purchaseOrder: po, taxInvoice: _taxInvoiceReference(inv) });
-    } catch (e) { await client.query("ROLLBACK"); throw e; } finally { client.release(); }
+    await _handleErpFulfill(_ERP_FLOWS.po, req, res);
+  } catch (e) { res.status(e.status || 500).json({ ok: false, code: e.code, message: _safeErrMsg(e) }); }
+});
+app.post("/api/erp/purchase-orders/:id/return", async (req, res) => {
+  try {
+    if (!requireAdmin(req, res)) return;
+    if (!requirePage(req, res, "sales-purchase-orders")) return;
+    await _handleErpReturn(_ERP_FLOWS.po, req, res);
   } catch (e) { res.status(e.status || 500).json({ ok: false, code: e.code, message: _safeErrMsg(e) }); }
 });
 
@@ -11937,6 +12127,14 @@ app.post("/api/erp/sales-targets/:id/delete", async (req, res) => {
 // menuPerms로 좁히려면(다른 여러 화면이 "견적서를 하나 고른다"는 목적 없이 sales-dashboard만
 // 원본 견적서 레코드를 필요로 하므로) 이 화면이 원본 레코드가 아니라 서버가 집계한 결과만
 // 받도록 먼저 바꿔야 한다(회계 리포트/원가명세서와 동일한 이유·동일한 패턴).
+// 견적서의 순 출고 공급가액(출고 회차 합계 - 반품 합계). 회차 기록이 없는 예전 출고완료 문서는 합계 그대로.
+function _erpNetShippedSupply(q) {
+  const price = index => Number(q.lines?.[index]?.unitPrice) || 0;
+  const sum = records => (records || []).reduce((s, r) => s + (r.lines || []).reduce((a, l) => a + (Number(l.qty) || 0) * price(l.index), 0), 0);
+  const returned = sum(q.returns);
+  const shipped = Array.isArray(q.fulfillments) ? sum(q.fulfillments) : (q.status === "shipped" ? Number(q.supplyTotal) || 0 : 0);
+  return _round2(shipped - returned);
+}
 app.get("/api/erp/sales-dashboard", async (req, res) => {
   if (!requireAdmin(req, res)) return;
   if (!requirePage(req, res, "sales-dashboard")) return;
@@ -11953,11 +12151,15 @@ app.get("/api/erp/sales-dashboard", async (req, res) => {
       salesTargets = tRows.map(r => ({ id: r.id, ...r.data }));
     }
     const supplyOf = q => Number(q.supplyTotal) || 0;
+    // 매출은 실제 출고된 분(회차 합계)에서 반품분을 뺀 순매출이다. 부분 출고 견적서도 출고된 만큼 잡힌다.
+    const isOrder = q => q.status === "accepted" || q.status === "partially_shipped" || q.status === "shipped";
+    const hasRevenue = q => q.status === "partially_shipped" || q.status === "shipped";
+    const revenueOf = q => hasRevenue(q) ? _erpNetShippedSupply(q) : 0;
 
     const targetsByYear = {};
     for (const t of salesTargets) {
       const actual = quotations
-        .filter(q => q.status === "accepted" || q.status === "shipped")
+        .filter(isOrder)
         .filter(q => new Date(q.date).getFullYear() === Number(t.year)
           && (t.month ? new Date(q.date).getMonth() + 1 === Number(t.month) : true)
           && (t.employeeId ? q.createdBy === t.employeeName : true))
@@ -11970,13 +12172,13 @@ app.get("/api/erp/sales-dashboard", async (req, res) => {
     }
 
     const partnerMap = new Map();
-    for (const q of quotations.filter(q => q.status === "shipped")) {
+    for (const q of quotations.filter(hasRevenue)) {
       const k = q.partnerName || "(미지정)";
-      partnerMap.set(k, (partnerMap.get(k) || 0) + supplyOf(q));
+      partnerMap.set(k, (partnerMap.get(k) || 0) + revenueOf(q));
     }
     const partnerRanking = Array.from(partnerMap.entries()).map(([name, amount]) => ({ name, amount })).sort((a, b) => b.amount - a.amount);
 
-    const STAGES = [["draft", "임시"], ["sent", "발송"], ["accepted", "수주확정"], ["shipped", "출고/매출완료"], ["rejected", "실주"]];
+    const STAGES = [["draft", "임시"], ["sent", "발송"], ["accepted", "수주확정"], ["partially_shipped", "부분출고"], ["shipped", "출고/매출완료"], ["rejected", "실주"]];
     const pipeline = STAGES.map(([status, label]) => {
       const list = quotations.filter(q => q.status === status);
       return { status, label, count: list.length, amount: list.reduce((s, q) => s + supplyOf(q), 0) };
@@ -11987,8 +12189,8 @@ app.get("/api/erp/sales-dashboard", async (req, res) => {
       const k = q.createdBy || "unknown";
       const cur = repMap.get(k) || { name: k, count: 0, order: 0, revenue: 0 };
       cur.count++;
-      if (q.status === "accepted" || q.status === "shipped") cur.order += supplyOf(q);
-      if (q.status === "shipped") cur.revenue += supplyOf(q);
+      if (isOrder(q)) cur.order += supplyOf(q);
+      cur.revenue += revenueOf(q);
       repMap.set(k, cur);
     }
     const repRanking = Array.from(repMap.values()).sort((a, b) => b.revenue - a.revenue);
@@ -12025,8 +12227,8 @@ app.get("/api/erp/sales-dashboard", async (req, res) => {
       if (!target) continue;
       const b = target[ym[1] - 1];
       b.count++;
-      if (q.status === "accepted" || q.status === "shipped") { b.order += supplyOf(q); b.orderCount++; }
-      if (q.status === "shipped") b.revenue += supplyOf(q);
+      if (isOrder(q)) { b.order += supplyOf(q); b.orderCount++; }
+      b.revenue += revenueOf(q);
     }
     if (repFilter) repNames.add(repFilter);
     const monthlyTrend = {
