@@ -14978,6 +14978,38 @@ app.post("/api/labor-contracts/:id/notify-email", async (req, res) => {
   } catch (e) { res.status(e && e.status ? e.status : 500).json({ ok: false, code: e && e.code, message: _safeErrMsg(e) }); }
 });
 
+app.post("/api/payroll/notify-email", async (req, res) => {
+  try {
+    if (!requireAdmin(req, res)) return;
+    if (!requirePage(req, res, "payroll-mgmt")) return;
+    _hrMailRequireConfigured();
+    const year = Number(req.body && req.body.year), month = Number(req.body && req.body.month);
+    if (!Number.isInteger(year) || year < 2000 || year > 2100 || !Number.isInteger(month) || month < 1 || month > 12)
+      return res.status(400).json({ ok: false, message: "귀속 연도와 월을 올바르게 지정해주세요." });
+    const companyId = req.auth.companyId || null;
+    const data = await loadData(companyId);
+    const empById = new Map((data.employees || []).map(e => [String(e.id), e]));
+    const confirmedIds = [...new Set((data.payslips || []).filter(p => p.confirmed === true && Number(p.year) === year && Number(p.month) === month).map(p => String(p.empId)))];
+    if (!confirmedIds.length) return res.status(409).json({ ok: false, code: "NO_CONFIRMED_PAYSLIPS", message: `${year}년 ${month}월에 확정된 급여명세서가 없습니다. 먼저 명세서를 확정해주세요.` });
+    if (confirmedIds.length > HR_MAIL_MAX_RECIPIENTS) return res.status(413).json({ ok: false, message: `한 번에 ${HR_MAIL_MAX_RECIPIENTS}명까지만 보낼 수 있습니다.` });
+    _hrMailCooldownBlock(`${companyId}:payroll:${year}-${month}`);
+    const result = { sent: 0, noEmail: 0, inactive: 0, failed: 0, total: confirmedIds.length };
+    let consecutiveFailures = 0;
+    for (const id of confirmedIds) {
+      const emp = empById.get(id);
+      if (!emp || emp.active === false) { result.inactive++; continue; }
+      if (!mailer.isValidEmail(emp.email)) { result.noEmail++; continue; }
+      if (consecutiveFailures >= 3) { result.failed++; continue; } // 메일 서버 장애로 보고 나머지는 시도하지 않는다
+      const ok = await _sendHrNoticeMail(String(emp.email).trim(), `[급여명세서 확정 안내] ${year}년 ${month}월`,
+        `${_hrMailOneLine(emp.name, 50)}님,\n\n${year}년 ${month}월 급여명세서가 확정되었습니다.\nHR 시스템에 로그인하여 [급여명세서] 메뉴에서 확인해 주세요.${_hrMailLoginHint()}\n\n※ 보안을 위해 급여 금액은 메일에 포함하지 않습니다.`);
+      if (ok) { result.sent++; consecutiveFailures = 0; } else { result.failed++; consecutiveFailures++; }
+    }
+    if (result.sent === 0) _hrMailCooldown.delete(`${companyId}:payroll:${year}-${month}`);
+    await addActivityLog({ userId: _authenticatedActorKey(req.auth), userName: _authenticatedDisplayName(req.auth), action: "payroll_mail_sent", target: "급여명세서", detail: `${year}-${month} 발송 ${result.sent}/${result.total}` }, companyId).catch(() => {});
+    res.json({ ok: true, ...result });
+  } catch (e) { res.status(e && e.status ? e.status : 500).json({ ok: false, code: e && e.code, message: _safeErrMsg(e) }); }
+});
+
 // ── 채용 관리: 면접 일정/평가 (1차·2차 구분, 면접관별 비공개 평가) ────────────────
 const RECRUIT_SCORE_CATEGORIES = ["태도", "전문지식", "적극성", "의사소통능력", "조직적합성"];
 const RECRUIT_SCORE_MIN = 1, RECRUIT_SCORE_MAX = 5;
