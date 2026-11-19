@@ -27112,10 +27112,11 @@ function openRecruitNoticeModal(id){
   const jobTitle=_recruitJobTitle(cd.jobId);
   const last=(cd.noticeHistory||[])[cd.noticeHistory?.length-1];
   openModal(`<div class="modal-box"><div class="modal-head"><h3>결과 통보서 발급 - ${h(cd.name)}</h3></div><div class="modal-body">
-    ${last?`<div class="fz12 text-gray" style="margin-bottom:8px">최근 발급: ${last.result==="pass"?"합격":"불합격"} · ${h(_recruitEmpName(last.issuedBy))} · ${(last.issuedAt||"").slice(0,16).replace("T"," ")}</div>`:""}
+    ${last?`<div class="fz12 text-gray" style="margin-bottom:8px">최근 발급: ${last.result==="pass"?"합격":"불합격"} · ${h(_recruitEmpName(last.issuedBy))} · ${(last.issuedAt||"").slice(0,16).replace("T"," ")}${last.emailedTo?` · ✉ ${h(last.emailedTo)}`:""}</div>`:""}
     <div class="fg"><label class="fl">통보 결과</label><select class="fc" id="rc-notice-result" onchange="_rcNoticeApplyTemplate('${id}')"><option value="pass">합격</option><option value="fail">불합격</option></select></div>
     <div class="fg"><label class="fl">통보 내용</label><textarea class="fc autogrow" id="rc-notice-message" rows="6" oninput="_autoGrow(this)"></textarea></div>
-    <div class="fz11 text-gray">이메일 발송 기능은 없습니다 — 발급 후 뜨는 인쇄창을 인쇄하거나, 내용을 복사해 이메일로 직접 보내주세요.</div>
+    <label style="display:flex;align-items:center;gap:6px;cursor:pointer;margin-bottom:6px"><input type="checkbox" id="rc-notice-email" ${cd.email?"":"disabled"}> 지원자 이메일로도 발송 ${cd.email?`<span class="fz11 text-gray">(${h(cd.email)})</span>`:`<span class="fz11 text-gray">(등록된 이메일 없음)</span>`}</label>
+    <div class="fz11 text-gray">발급하면 인쇄용 통보서가 열립니다. 이메일 발송은 서버에 메일 설정(관리자: 연동 설정)이 되어 있을 때만 가능하며, 발송에 실패하면 발급 이력은 남지 않습니다.</div>
   </div><div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal()">취소</button><button class="btn btn-primary" onclick="issueRecruitNotice('${id}')">발급</button></div></div>`);
   _rcNoticeApplyTemplate(id);
 }
@@ -27129,10 +27130,13 @@ async function issueRecruitNotice(id){
   const result=$("#rc-notice-result")?.value;
   const message=$("#rc-notice-message")?.value.trim()||"";
   if(!["pass","fail"].includes(result))return;
-  const r=await serverRequest("POST",`/api/recruit/candidates/${id}/notice`,{result,message});
+  const sendEmail=!!$("#rc-notice-email")?.checked;
+  if(sendEmail&&!message){showToast("이메일로 보낼 통보 내용을 입력하세요.","error");return;}
+  const r=await serverRequest("POST",`/api/recruit/candidates/${id}/notice`,{result,message,sendEmail});
   if(!r?.ok){showToast(r?.message||"발급에 실패했습니다.","error");return;}
   const idx=recruitCandidates.findIndex(c=>c.id===id);if(idx>=0)recruitCandidates[idx]=r.candidate;
-  closeModal();showToast("통보서가 발급되었습니다.","success");
+  const mailed=(r.candidate.noticeHistory||[]).slice(-1)[0]?.emailedTo;
+  closeModal();showToast(mailed?`통보서가 발급되었고 ${mailed}로 이메일을 보냈습니다.`:"통보서가 발급되었습니다.","success");
   printRecruitNotice(r.candidate,result,message);
 }
 function printRecruitNotice(cd,result,message){
@@ -27999,6 +28003,13 @@ function renderIntegrationsPage(){
   ${integrationLogs.length?`<div class="mt3"><label class="fl">최근 전송 이력</label><div style="max-height:160px;overflow:auto">${integrationLogs.slice(0,10).map(l=>`<div class="fz11" style="padding:4px 0;border-bottom:1px solid #f1f5f9;display:flex;gap:8px;align-items:center"><span style="color:#94a3b8">${new Date(l.ts).toLocaleString("ko-KR")}</span><span>${h(l.webhookName)}</span><span class="text-gray">${h(l.event)}</span>${l.status==="success"?badge("성공","green"):badge("실패","red")}<span class="text-gray">${h(l.message||"")}</span></div>`).join("")}</div></div>`:""}
   </div></div>
 
+  <div class="card mb3"><div class="card-head"><h3>✉️ 이메일 발송 설정</h3></div>
+  <div class="card-body">
+  <div class="fz12 text-gray mb3">채용 결과 통보 등 시스템 메일은 서버 환경변수(SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_FROM)로 설정한 메일 서버를 통해 발송됩니다. 비밀번호는 이 화면에 표시되지 않습니다.</div>
+  <div id="mail-status-panel" class="fz12 mb3">상태 확인 중...</div>
+  <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap"><input class="fc" id="mail-test-to" type="email" placeholder="테스트 메일을 받을 이메일 (예: name@company.com)" style="max-width:320px"><button class="btn btn-secondary btn-sm" onclick="sendMailTest()">테스트 메일 보내기</button></div>
+  </div></div>
+
   <div class="card mb3"><div class="card-head"><h3>📅 캘린더 연동</h3></div>
   <div class="card-body">
   <div class="fz12 text-gray mb3">내 일정(승인된 휴가·근태, 회의실 예약)을 iCalendar(.ics) 파일로 내보내 Google 캘린더, Outlook 등에서 가져오기(구독)할 수 있습니다.</div>
@@ -28013,7 +28024,22 @@ function renderIntegrationsPage(){
   <div class="fz12 text-gray mb3">전 직원의 당월 급여 데이터를 CSV로 내보내 외부 회계·ERP 시스템에 업로드할 수 있습니다.</div>
   <button class="btn btn-primary btn-sm" onclick="exportPayrollForErp()">📤 당월 급여 데이터 내보내기 (CSV)</button>
   </div></div>`;
-  if(serverConfig.enabled&&serverConfig.url&&!_demoMode)loadWebhookOutbox();
+  if(serverConfig.enabled&&serverConfig.url&&!_demoMode){loadWebhookOutbox();loadMailStatus();}
+}
+async function loadMailStatus(){
+  const el=$("#mail-status-panel");if(!el)return;
+  const r=await serverRequest("GET","/api/mail/status");
+  const el2=$("#mail-status-panel");if(!el2)return;
+  if(!r?.ok){el2.innerHTML=`<span class="text-gray">상태를 불러오지 못했습니다.</span>`;return;}
+  const m=r.mail||{};
+  el2.innerHTML=m.configured?`${badge("설정됨","green")} 서버 ${h(m.host)}:${h(String(m.port))} · ${m.secure?"TLS":"STARTTLS(지원 시)"} · 보내는 사람 ${h(m.from)} · 인증 ${m.auth?"사용":"없음"}`:`${badge("미설정","yellow")} 서버 환경변수 SMTP_HOST, SMTP_FROM을 설정하면 이메일 발송이 활성화됩니다.`;
+}
+async function sendMailTest(){
+  const to=$("#mail-test-to")?.value.trim()||"";
+  if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(to)){showToast("받는 사람 이메일을 올바르게 입력하세요. 예: name@company.com","error");return;}
+  const r=await serverRequest("POST","/api/mail/test",{to});
+  if(!r?.ok){showToast(r?.message||"테스트 메일 발송에 실패했습니다.","error");return;}
+  showToast("테스트 메일을 발송했습니다. 수신함을 확인하세요.","success");
 }
 function _saveCalOptStage(){
   if(!_calOptStage)return;

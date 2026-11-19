@@ -21,6 +21,7 @@ const { canReadTraining, canManageTraining, countsByCourse, normalizeEnrollment 
 const { assertFieldOrder } = require("./lib/field-order-guard");
 const { saveRejectInfo, snapshotIntendedRecord, findSilentRejections } = require("./lib/save-feedback");
 const { computeStockValuation } = require("./lib/stock-valuation");
+const mailer = require("./lib/mailer");
 const { retryDelays, nextOutboxState, SENDING_LEASE_MS, ownsOutboxClaim } = require("./lib/webhook-outbox");
 const { trackedFields, takePreImage, diffRevisions, KEEP_PER_RECORD, capSnapshot, EMPLOYEE_AUTH_FIELDS } = require("./lib/record-revisions");
 
@@ -14729,6 +14730,28 @@ app.post("/api/recruit/candidates/:id/convert", async (req, res) => {
   } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
+// ── 메일 발송 설정 상태/테스트 (관리자 전용) ─────────────────────────────────────
+// 설정(SMTP_HOST 등)은 환경변수로만 하며, 화면에는 비밀번호·계정 없이 요약만 보여준다.
+app.get("/api/mail/status", (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  res.json({ ok: true, mail: mailer.publicMailStatus() });
+});
+app.post("/api/mail/test", async (req, res) => {
+  try {
+    if (!requireAdmin(req, res)) return;
+    const to = String((req.body || {}).to || "").trim();
+    if (!mailer.isValidEmail(to)) return res.status(400).json({ ok: false, message: "받는 사람 이메일 형식이 올바르지 않습니다." });
+    if (!mailer.getMailConfig().configured) return res.status(503).json({ ok: false, code: "MAIL_NOT_CONFIGURED", message: "메일 서버가 설정되지 않았습니다. 서버 환경변수(SMTP_HOST, SMTP_FROM 등)를 확인해주세요." });
+    try {
+      await mailer.sendMail({ to, subject: "[HR 시스템] 메일 발송 테스트", text: "이 메일은 HR 시스템의 메일 발송 설정 확인용입니다.\n수신하셨다면 설정이 정상입니다." });
+    } catch (e) {
+      console.error("[mail] 테스트 메일 발송 실패:", e && e.code ? e.code : "", e && e.message);
+      return res.status(502).json({ ok: false, code: "MAIL_SEND_FAILED", message: "테스트 메일 발송에 실패했습니다. 메일 서버 설정을 확인해주세요." });
+    }
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
+});
+
 // 채용 합격/불합격 통보 — 이 앱에는 이메일(SMTP) 발송 기능이 전혀 없어(server.js
 // 전체에 nodemailer/SMTP 참조 0건, 확인됨) 서버가 지원자에게 직접 메일을 보낼
 // 방법이 없다. 대신 인사발령장(printHRLetter)·증명서(printCertificate)와 동일한
@@ -14736,6 +14759,24 @@ app.post("/api/recruit/candidates/:id/convert", async (req, res) => {
 // 재사용 — 담당자가 통보서를 인쇄해 우편·수기 전달하거나, 내용을 복사해 별도
 // 메일 클라이언트로 보내는 방식. 이력을 남기는 이유: 같은 지원자에게 통보서를
 // 중복 발급했는지, 누가 언제 발급했는지 추적할 수 있어야 하기 때문.
+// 선택 옵션 sendEmail:true — 서버에 저장된 지원자 이메일로 통보 메일을 실제로 발송한다
+// (lib/mailer.js, SMTP 설정이 있을 때만). 수신 주소는 클라이언트가 보낸 값이 아니라
+// 서버에 저장된 지원자 이메일만 쓰고, 발송 성공 시에만 이력에 emailedTo를 남긴다.
+// 메일 발송(네트워크 I/O)은 행 잠금 트랜잭션 밖에서 먼저 끝낸다(풀 점유 방지).
+async function _sendRecruitNoticeMail(candidate, result, message, companyId) {
+  if (!mailer.getMailConfig().configured) throw httpError(503, "MAIL_NOT_CONFIGURED", "메일 서버가 설정되지 않아 이메일을 보낼 수 없습니다.");
+  if (!mailer.isValidEmail(candidate.email)) throw httpError(400, "CANDIDATE_EMAIL_MISSING", "지원자의 이메일 주소가 없거나 형식이 올바르지 않습니다.");
+  const job = await _recruitJobById(candidate.jobId, companyId);
+  const jobTitle = String((job && job.title) || "채용").replace(/[\r\n]+/g, " ").slice(0, 80);
+  const subject = `[채용 결과 안내] ${jobTitle} - ${result === "pass" ? "합격" : "불합격"}`;
+  try {
+    await mailer.sendMail({ to: candidate.email.trim(), subject, text: message });
+  } catch (e) {
+    console.error("[mail] 채용 통보 메일 발송 실패:", e && e.code ? e.code : "", e && e.message);
+    throw httpError(502, "MAIL_SEND_FAILED", "이메일 발송에 실패했습니다. 메일 서버 설정을 확인한 뒤 다시 시도해주세요.");
+  }
+  return candidate.email.trim();
+}
 app.post("/api/recruit/candidates/:id/notice", async (req, res) => {
   try {
     if (!requireRole(req, res, ["admin", "leader", "director"])) return;
@@ -14743,13 +14784,15 @@ app.post("/api/recruit/candidates/:id/notice", async (req, res) => {
     const id = req.params.id;
     const { role, empId: userId } = req.auth;
     const companyId = req.auth.companyId || null;
-    const { result, message } = req.body || {};
+    const { result, message, sendEmail } = req.body || {};
     if (!["pass", "fail"].includes(result)) return res.status(400).json({ ok: false, message: "통보 결과는 pass 또는 fail이어야 합니다." });
     const noticeEntry = { result, message: String(message || "").slice(0, 2000), issuedBy: userId, issuedAt: new Date().toISOString() };
+    if (sendEmail === true && !String(message || "").trim()) return res.status(400).json({ ok: false, message: "이메일로 보낼 통보 내용을 입력해주세요." });
     if (USE_JSON_FILE) {
       const candidate = _fileRecruit.candidates.find(c => c.id === id);
       if (!candidate) return res.status(404).json({ ok: false, message: "지원자를 찾을 수 없습니다." });
       if (!(await _recruitCanViewCandidate(candidate, userId, role, companyId))) return res.status(403).json({ ok: false, message: "발급 권한이 없습니다." });
+      if (sendEmail === true) noticeEntry.emailedTo = await _sendRecruitNoticeMail(candidate, result, noticeEntry.message, companyId);
       candidate.noticeHistory = [...(candidate.noticeHistory || []), noticeEntry].slice(-20);
       // 다른 모든 지원자 변경 지점(상태변경·수정 등)과 동일하게 updatedAt을 갱신해,
       // 결과통보 발급도 _recruitAssertFresh() 낙관적 동시성 검사의 대상이 되도록 한다
@@ -14761,6 +14804,15 @@ app.post("/api/recruit/candidates/:id/notice", async (req, res) => {
     }
     let candidate;
     try {
+      if (sendEmail === true) {
+        // 잠금 밖 사전 조회: 권한 확인 → 메일 발송 → (성공 시) 이력 저장.
+        const { rows } = await pool.query(
+          "SELECT data FROM recruit_candidates WHERE id = $1 AND is_deleted = FALSE AND (company_id = $2 OR company_id IS NULL)", [id, companyId]
+        );
+        if (!rows[0]) return res.status(404).json({ ok: false, message: "지원자를 찾을 수 없습니다." });
+        if (!(await _recruitCanViewCandidate(rows[0].data, userId, role, companyId))) return res.status(403).json({ ok: false, message: "발급 권한이 없습니다." });
+        noticeEntry.emailedTo = await _sendRecruitNoticeMail(rows[0].data, result, noticeEntry.message, companyId);
+      }
       candidate = await _pgLockedUpdate("recruit_candidates", id, async (c) => {
         if (!(await _recruitCanViewCandidate(c, userId, role, companyId))) throw new _RecruitRouteError(403, "발급 권한이 없습니다.");
         c.noticeHistory = [...(c.noticeHistory || []), noticeEntry].slice(-20);
@@ -14772,7 +14824,7 @@ app.post("/api/recruit/candidates/:id/notice", async (req, res) => {
       throw e;
     }
     res.json({ ok: true, candidate });
-  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
+  } catch (e) { res.status(e && e.status ? e.status : 500).json({ ok: false, code: e && e.code, message: _safeErrMsg(e) }); }
 });
 
 // ── 채용 관리: 면접 일정/평가 (1차·2차 구분, 면접관별 비공개 평가) ────────────────
