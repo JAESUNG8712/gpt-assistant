@@ -707,6 +707,8 @@ function filterDataForRole(data, auth) {
     out.trainingEnrollments = out.trainingEnrollments.filter(e => e && String(e.empId) === myId);
   }
   // 근로계약은 본인 계약 중 발송된 것(작성중 제외)만 보인다. 관리자는 전체.
+  // 퇴직 면담은 관리자만 본다(퇴직 사유·불만 등 민감 기록).
+  if (auth.role !== "admin" && Array.isArray(out.exitInterviews)) out.exitInterviews = [];
   if (auth.role !== "admin" && Array.isArray(out.laborContracts)) {
     out.laborContracts = out.laborContracts.filter(c => c && String(c.empId) === myId && c.status !== "draft");
   }
@@ -1729,6 +1731,8 @@ const _WRITE_GATED_FIELDS = {
   // 근로계약 전자서명 — 관리자가 작성·발송하고 직원은 본인 계약에만 서명/거절한다. 상태 전이와
   // 내용 불변은 _sanitizeLaborContract가 강제한다(roles/ownField는 기본 통과 판정용).
   laborContracts: { roles: ["admin"], pageIds: ["labor-contracts", "my-contracts"], ownField: "empId" },
+  // 퇴직 면담 — 퇴직 사유·불만 등 민감한 면담 기록. 관리자 전용(조회도 filterDataForRole에서 차단).
+  exitInterviews: { roles: ["admin"], pageIds: "exit-interviews" },
 };
 // menuPerms(개인별로 끈 메뉴) 확장 — 위 role 기반 승인/게이팅과 별개로, 관리자가 특정 직원의
 // 해당 화면 메뉴 자체를 꺼뒀다면 role상 자격이 있어도(예: admin, 또는 그 부서의 director) 그
@@ -2688,6 +2692,19 @@ function _validateFieldValues(field, rec, storedList) {
     if (rec.signatureData) {
       if (typeof rec.signatureData !== "string" || rec.signatureData.length > 150000 || !/^data:image\/png;base64,[A-Za-z0-9+/=]+$/.test(rec.signatureData)) return false;
     }
+  } else if (field === "exitInterviews") {
+    if (String(rec.empId ?? "").trim() === "") return false;
+    if (!["scheduled", "done"].includes(rec.status)) return false;
+    const reasons = ["pay", "environment", "culture", "growth", "personal", "contractEnd", "other"];
+    if (rec.reasonCategory && !reasons.includes(rec.reasonCategory)) return false;
+    if (rec.status === "done" && !rec.reasonCategory) return false;
+    if ([rec.interviewDate, rec.retireDate].some(value => value && !_validCalendarDate(value))) return false;
+    if (rec.satisfaction != null && rec.satisfaction !== "" && !(Number.isInteger(Number(rec.satisfaction)) && Number(rec.satisfaction) >= 1 && Number(rec.satisfaction) <= 5)) return false;
+    if (rec.wouldRecommend && !["yes", "no"].includes(rec.wouldRecommend)) return false;
+    if (rec.rehireEligible && !["yes", "no", "hold"].includes(rec.rehireEligible)) return false;
+    if (rec.interviewerName != null && (typeof rec.interviewerName !== "string" || rec.interviewerName.length > 50)) return false;
+    if (rec.reasonDetail != null && (typeof rec.reasonDetail !== "string" || rec.reasonDetail.length > 2000)) return false;
+    if (rec.feedback != null && (typeof rec.feedback !== "string" || rec.feedback.length > 3000)) return false;
   } else if (field === "wageGarnishments" || field === "severanceSettlements" || field === "socialInsuranceRecords") {
     // 세 컬렉션 모두 empId가 필수이고(실제 재직자 명의로만 존재해야 하는 인사기록), 금액류
     // 필드는 급여 명세서·전사 집계(퇴직급여추계액대장 등)에 그대로 더해지므로 범위를 둔다.
