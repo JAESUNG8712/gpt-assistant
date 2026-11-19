@@ -14927,6 +14927,57 @@ app.post("/api/recruit/candidates/:id/notice", async (req, res) => {
   } catch (e) { res.status(e && e.status ? e.status : 500).json({ ok: false, code: e && e.code, message: _safeErrMsg(e) }); }
 });
 
+// ── HR 알림 메일: 근로계약서 서명 요청 / 급여명세서 확정 안내 ──────────────────────
+// 수신 주소는 항상 서버에 저장된 직원 이메일만 쓴다(클라이언트가 보낸 주소는 무시).
+// 메일에는 금액·계약 본문 같은 민감 내용을 싣지 않고 "시스템에서 확인하라"는 안내만 보낸다
+// (이메일은 전송 구간·보관 구간이 사내 시스템만큼 안전하지 않기 때문).
+// 급여명세서 금액은 클라이언트가 계산하므로 서버가 내용을 보낼 수도 없다 — 서버는 저장된
+// 확정(confirmed) 명세서가 실제로 있는 직원에게만 안내를 보낸다.
+// 같은 대상에 대한 반복 클릭 스팸을 막으려고 대상별 1분 간격 제한을 둔다(인스턴스 메모리).
+const _hrMailCooldown = new Map();
+const HR_MAIL_COOLDOWN_MS = 60 * 1000;
+const HR_MAIL_MAX_RECIPIENTS = 1000;
+function _hrMailCooldownBlock(key) {
+  const now = Date.now();
+  for (const [k, t] of _hrMailCooldown) if (now - t > HR_MAIL_COOLDOWN_MS) _hrMailCooldown.delete(k);
+  if (_hrMailCooldown.has(key)) throw httpError(429, "MAIL_COOLDOWN", "같은 안내 메일을 방금 보냈습니다. 1분 뒤에 다시 시도해주세요.");
+  _hrMailCooldown.set(key, now);
+}
+function _hrMailRequireConfigured() {
+  if (!mailer.getMailConfig().configured) throw httpError(503, "MAIL_NOT_CONFIGURED", "메일 서버가 설정되지 않아 이메일을 보낼 수 없습니다. 서버 환경변수(SMTP_HOST, SMTP_FROM 등)를 확인해주세요.");
+}
+function _hrMailOneLine(v, max) { return String(v == null ? "" : v).replace(/[\r\n]+/g, " ").trim().slice(0, max); }
+function _hrMailLoginHint() {
+  const base = String(process.env.APP_BASE_URL || "").trim();
+  return /^https?:\/\/[^\s]+$/i.test(base) ? `\n접속 주소: ${base}` : "";
+}
+async function _sendHrNoticeMail(to, subject, text) {
+  try { await mailer.sendMail({ to, subject, text }); return true; }
+  catch (e) { console.error("[mail] HR 알림 메일 발송 실패:", e && e.code ? e.code : "", e && e.message); return false; }
+}
+app.post("/api/labor-contracts/:id/notify-email", async (req, res) => {
+  try {
+    if (!requireAdmin(req, res)) return;
+    if (!requirePage(req, res, "labor-contracts")) return;
+    _hrMailRequireConfigured();
+    const companyId = req.auth.companyId || null;
+    const data = await loadData(companyId);
+    const contract = (data.laborContracts || []).find(c => String(c.id) === String(req.params.id));
+    if (!contract) return res.status(404).json({ ok: false, message: "계약서를 찾을 수 없습니다." });
+    if (contract.status !== "sent") return res.status(409).json({ ok: false, code: "CONTRACT_NOT_PENDING", message: "서명 대기 중인 계약서에만 안내 메일을 보낼 수 있습니다." });
+    const emp = (data.employees || []).find(e => String(e.id) === String(contract.empId));
+    if (!emp || emp.active === false) return res.status(409).json({ ok: false, code: "EMPLOYEE_INACTIVE", message: "대상 직원이 재직 중이 아닙니다." });
+    if (!mailer.isValidEmail(emp.email)) return res.status(400).json({ ok: false, code: "EMPLOYEE_EMAIL_MISSING", message: "대상 직원의 이메일 주소가 없거나 형식이 올바르지 않습니다." });
+    _hrMailCooldownBlock(`${companyId}:contract:${contract.id}`);
+    const title = _hrMailOneLine(contract.title, 100);
+    const ok = await _sendHrNoticeMail(String(emp.email).trim(), `[근로계약 서명 요청] ${title}`,
+      `${_hrMailOneLine(emp.name, 50)}님,\n\n근로계약서 '${title}'이(가) 발송되었습니다.\nHR 시스템에 로그인하여 [내 근로계약] 메뉴에서 내용을 확인하고 서명(또는 거절)해 주세요.${_hrMailLoginHint()}\n\n※ 보안을 위해 계약 내용은 메일에 포함하지 않습니다.`);
+    if (!ok) { _hrMailCooldown.delete(`${companyId}:contract:${contract.id}`); throw httpError(502, "MAIL_SEND_FAILED", "이메일 발송에 실패했습니다. 메일 서버 설정을 확인한 뒤 다시 시도해주세요."); }
+    await addActivityLog({ userId: _authenticatedActorKey(req.auth), userName: _authenticatedDisplayName(req.auth), action: "labor_contract_mail_sent", target: "근로계약", detail: `${_hrMailOneLine(emp.name, 50)} / ${title}` }, companyId).catch(() => {});
+    res.json({ ok: true, emailedTo: String(emp.email).trim() });
+  } catch (e) { res.status(e && e.status ? e.status : 500).json({ ok: false, code: e && e.code, message: _safeErrMsg(e) }); }
+});
+
 // ── 채용 관리: 면접 일정/평가 (1차·2차 구분, 면접관별 비공개 평가) ────────────────
 const RECRUIT_SCORE_CATEGORIES = ["태도", "전문지식", "적극성", "의사소통능력", "조직적합성"];
 const RECRUIT_SCORE_MIN = 1, RECRUIT_SCORE_MAX = 5;

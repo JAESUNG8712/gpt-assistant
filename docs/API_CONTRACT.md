@@ -249,3 +249,4 @@ AI가 반환한 값도 그대로 신뢰하지 않는다 — `birth`는 실제 �
 - `GET /api/mail/status` (관리자) — `{ok, mail:{configured, host, port, secure, from, auth}}` (비밀번호·계정은 포함하지 않음).
 - `POST /api/mail/test` (관리자) — body `{to}`로 테스트 메일 1통 발송. 400 형식 오류, 503 `MAIL_NOT_CONFIGURED`, 502 `MAIL_SEND_FAILED`.
 - `POST /api/recruit/candidates/:id/notice`에 선택 필드 `sendEmail:true`를 주면 서버에 저장된 지원자 이메일로 통보 내용을 발송한다(수신 주소는 클라이언트 값을 쓰지 않음). 성공 시 `noticeHistory[].emailedTo`에 기록되고, 실패하면 이력이 남지 않는다(400 `CANDIDATE_EMAIL_MISSING`, 503 `MAIL_NOT_CONFIGURED`, 502 `MAIL_SEND_FAILED`).
+- `POST /api/labor-contracts/:id/notify-email` (관리자, `labor-contracts` 메뉴 권한) — 서명 대기(`sent`) 계약의 대상 직원에게 서명 요청 안내 메일을 보낸다. 수신 주소는 서버에 저장된 직원 이메일이며 계약 내용은 메일에 싣지 않는다. 같은 계약은 1분에 1번만(429 `MAIL_COOLDOWN`). 404 계약 없음, 409 `CONTRACT_NOT_PENDING`/`EMPLOYEE_INACTIVE`, 400 `EMPLOYEE_EMAIL_MISSING`, 503 `MAIL_NOT_CONFIGURED`, 502 `MAIL_SEND_FAILED`. 선택 환경변수 `APP_BASE_URL`(http/https)을 설정하면 메일에 접속 주소를 함께 적는다.

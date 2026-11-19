@@ -32485,6 +32485,7 @@ function renderLaborContractsPage(){
       ${["draft","declined"].includes(r.status)?`<button class="btn btn-secondary btn-sm" onclick="openLaborContractModal('${r.id}')">수정</button> `:""}
       ${r.status==="draft"?`<button class="btn btn-primary btn-sm" onclick="sendLaborContract('${r.id}')">발송</button> `:""}
       <button class="btn btn-secondary btn-sm" onclick="viewLaborContract('${r.id}')">보기</button>
+      ${r.status==="sent"?` <button class="btn btn-secondary btn-sm" onclick="notifyLaborContractEmail('${r.id}')" title="대상 직원에게 서명 요청 안내 메일을 보냅니다(계약 내용은 메일에 포함되지 않음)">📧 메일 안내</button>`:""}
       ${["sent","declined"].includes(r.status)?` <button class="btn btn-secondary btn-sm" onclick="cancelLaborContract('${r.id}')">취소</button>`:""}
       ${["draft","declined","cancelled"].includes(r.status)?` <button class="btn btn-danger btn-sm" onclick="deleteLaborContract('${r.id}')">삭제</button>`:""}
     </td></tr>`).join(""):`<tr><td colspan="6" style="padding:30px;text-align:center;color:#94a3b8">작성된 근로계약서가 없습니다.</td></tr>`}
@@ -32522,13 +32523,30 @@ async function saveLaborContract(id,send){
   if(!content){showToast("계약 내용을 입력하세요.","error");return;}
   if(startDate&&endDate&&endDate<startDate){showToast("종료일은 시작일보다 빠를 수 없습니다.","error");return;}
   const payload={empId,title,contractType:$("#lc-type")?.value||"",startDate,endDate,content,status:send?"sent":"draft"};
+  const newId=id||`lc-${genId()}`;
   if(r)laborContracts=laborContracts.map(x=>x.id===id?{...x,...payload}:x);
-  else laborContracts.push({id:`lc-${genId()}`,...payload,createdBy:currentUser.id,createdAt:new Date().toISOString()});
+  else laborContracts.push({id:newId,...payload,createdBy:currentUser.id,createdAt:new Date().toISOString()});
   closeModal();
   await _lcSync();
   logAction(send?"labor_contract_sent":"labor_contract_saved","근로계약",_lcEmpName(empId),title);
   showToast(send?"계약서를 발송했습니다. 대상 직원이 서명하면 상태가 바뀝니다.":"작성중으로 저장했습니다.","success");
   renderLaborContractsPage();
+  if(send)_lcOfferMail(newId);
+}
+// 서명 요청 안내 메일(서버가 저장된 직원 이메일로 발송, 계약 내용은 싣지 않음).
+async function notifyLaborContractEmail(id,silent){
+  const r=await serverRequest("POST",`/api/labor-contracts/${encodeURIComponent(id)}/notify-email`,{});
+  if(r?.ok){showToast("서명 요청 안내 메일을 보냈습니다.","success");return true;}
+  showToast(r?.message||"메일을 보내지 못했습니다.",silent?"info":"error");return false;
+}
+// 발송 직후: 메일 서버가 설정돼 있으면 안내 메일을 함께 보낼지 묻는다(미설정이면 묻지 않는다).
+async function _lcOfferMail(id){
+  try{
+    const st=await serverRequest("GET","/api/mail/status");
+    if(!st?.ok||!st.mail?.configured)return;
+    const ok=await askConfirmModal({title:"서명 요청 메일",message:"대상 직원에게 서명 요청 안내 메일도 보낼까요? 계약 내용은 메일에 포함되지 않습니다."});
+    if(ok)await notifyLaborContractEmail(id,true);
+  }catch(e){}
 }
 async function sendLaborContract(id){
   const r=laborContracts.find(x=>x.id===id);if(!r||r.status!=="draft")return;
@@ -32537,6 +32555,7 @@ async function sendLaborContract(id){
   laborContracts=laborContracts.map(x=>x.id===id?{...x,status:"sent"}:x);
   await _lcSync();
   showToast("계약서를 발송했습니다.","success");renderLaborContractsPage();
+  _lcOfferMail(id);
 }
 async function cancelLaborContract(id){
   const r=laborContracts.find(x=>x.id===id);if(!r)return;

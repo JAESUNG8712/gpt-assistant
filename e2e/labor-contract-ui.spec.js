@@ -102,3 +102,24 @@ test("알림센터: 서명할 계약이 있으면 안내가 표시된다", async
   expect(found).toBe(true);
   await expect(page.locator("#content")).toContainText("서명할 근로계약 1건");
 });
+
+test("관리자: 서명 대기 계약에만 메일 안내 버튼이 보이고 서버 API를 호출한다", async ({ page }) => {
+  await loginAsAdmin(page);
+  const calls = [];
+  await page.route("**/api/labor-contracts/*/notify-email", async route => {
+    calls.push(route.request().url());
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true, emailedTo: "x@y.test" }) });
+  });
+  await page.evaluate(() => {
+    laborContracts = [
+      { id: "s1", empId: "lc-emp1", title: "대기 계약", contractType: "정규직", content: "A", status: "sent" },
+      { id: "d1", empId: "lc-emp1", title: "작성중 계약", contractType: "정규직", content: "B", status: "draft" },
+    ];
+    renderLaborContractsPage();
+  });
+  await expect(page.getByRole("button", { name: /메일 안내/ })).toHaveCount(1);
+  await page.getByRole("button", { name: /메일 안내/ }).click();
+  await expect.poll(() => calls.length).toBe(1);
+  expect(calls[0]).toContain("/api/labor-contracts/s1/notify-email");
+  await expect(page.locator(".toast").last()).toContainText("안내 메일을 보냈습니다");
+});
