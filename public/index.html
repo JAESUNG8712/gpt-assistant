@@ -1184,6 +1184,7 @@ let severanceSettlements=[]; // 퇴직금 정산(최종/중간) [{id,empId,empNa
 // D5(HR마인드 벤치마킹) — 세무/사회보험. 실제 국세청/4대보험 기관에 전자신고하는 기능이
 // 아니라(그런 외부 연계는 범위 밖), 관리자가 신고 "내역"을 참고용으로 기록·조회하는
 // 화면이다 — 화면에도 안내 문구로 명시한다.
+let laborContracts=[]; // 근로계약 전자서명 [{id,empId,title,contractType,startDate,endDate,content,status:"draft"|"sent"|"signed"|"declined"|"cancelled",contentHash,sentAt,signedAt,signatureName,signatureData,signedHash,declineReason,history}] — 서버가 상태 전이를 강제
 let socialInsuranceRecords=[]; // 4대보험 신고 내역(참고용) [{id,empId,empName,dept,team,type:"acquisition"|"loss"|"wageChange",insuranceTypes:["pension","health","employment","industrial"],effectiveDate,monthlyWage,reason,note,createdBy,createdByName,createdAt,updatedAt}]
 let healthCheckupLog=[]; // 종합검진 이수 이력 [{id,empId,year,completedAt,note}]
 let scheduleEvents=[]; // 캘린더 일정 [{id,authorId,title,startDate,endDate,scope:"personal"|"team"|"dept"|"company",dept,team,memo,color,createdAt}]
@@ -1207,7 +1208,7 @@ function _recordCollections(){return{
   employmentRecords,learningCourses,learningAssignments,
   trainingCourses,trainingEnrollments,
   wageGarnishments,severanceSettlements,
-  socialInsuranceRecords
+  socialInsuranceRecords,laborContracts
 };}
 function _applyRecordRevisions(revisions){
   const collections=_recordCollections();
@@ -2895,7 +2896,7 @@ const SNAPSHOT_FIELD_LABELS = {
   jobSkillProfiles:"직무·스킬 기준", employeeSkillProfiles:"직원 스킬 프로필", workforceScenarios:"전략적 인력계획 시나리오", workforcePositions:"정원·포지션 마스터", positionRequests:"포지션 신설·증원 요청",
   compGradeResults:"보상등급 결과", gradeAdjustHistory:"등급조정 이력", scoreAdjustments:"가감점(상벌점)", okrObjectives:"OKR", tieNotifications:"동점자 알림",
   trainingCourses:"교육 과정", trainingEnrollments:"교육 신청/이수",
-  wageGarnishments:"급여 압류", severanceSettlements:"퇴직금 정산", socialInsuranceRecords:"4대보험 신고 내역",
+  wageGarnishments:"급여 압류", severanceSettlements:"퇴직금 정산", socialInsuranceRecords:"4대보험 신고 내역", laborContracts:"근로계약",
   lowPerfData:"저성과자 데이터", approvalTemplates:"전자결재 템플릿", integrationLogs:"연동 로그",
   approvalDocs:"전자결재 문서", attendanceRecords:"근태기록", payslips:"급여명세서", payrollAdjustments:"급여 조정항목",
   leaveUsagePlans:"연차 사용계획서",
@@ -3465,7 +3466,7 @@ function _focusModal(dialog){const target=dialog?.querySelector("[data-modal-ini
 // 담은 토스트 한 줄이라 "왜 안 됐는지"를 알 수 없었다. 서버가 보내는 reason/message/fields를
 // 배너 + 상세 모달로 보여주고, 최근 내역은 세션 동안 보관해 다시 열어볼 수 있게 한다.
 let _saveRejectLog=[];
-const _SAVE_REJECT_FIELD_LABELS={employees:"직원 정보",kpiEntries:"KPI 목표",employmentRecords:"계약·징계",learningCourses:"교육과정",learningAssignments:"교육배정",trainingEnrollments:"교육 신청",trainingCourses:"교육 과정",payslips:"급여명세서",payrollAdjustments:"급여조정",yearEndSettlements:"연말정산",positionRequests:"정원 요청",engagementActions:"개선계획",approvalDocs:"전자결재",expenseClaims:"경비청구",overtimeRequests:"초과근무",certRequests:"증명서",welfarePoints:"복지포인트",okrObjectives:"OKR",compSessions:"역량평가 세션",compResponses:"역량평가 응답",boardPosts:"게시글",roomReservations:"회의실 예약",scheduleEvents:"일정",attendanceRecords:"근태",settings:"설정"};
+const _SAVE_REJECT_FIELD_LABELS={employees:"직원 정보",kpiEntries:"KPI 목표",employmentRecords:"계약·징계",learningCourses:"교육과정",learningAssignments:"교육배정",trainingEnrollments:"교육 신청",trainingCourses:"교육 과정",laborContracts:"근로계약",payslips:"급여명세서",payrollAdjustments:"급여조정",yearEndSettlements:"연말정산",positionRequests:"정원 요청",engagementActions:"개선계획",approvalDocs:"전자결재",expenseClaims:"경비청구",overtimeRequests:"초과근무",certRequests:"증명서",welfarePoints:"복지포인트",okrObjectives:"OKR",compSessions:"역량평가 세션",compResponses:"역량평가 응답",boardPosts:"게시글",roomReservations:"회의실 예약",scheduleEvents:"일정",attendanceRecords:"근태",settings:"설정"};
 const _SAVE_REJECT_FIELD_NAMES={name:"이름",title:"제목",status:"상태",role:"권한",salary:"연봉",amount:"금액",firstStatus:"1차 승인",finalStatus:"최종 승인",firstScore:"1차 점수",finalScore:"최종 점수",dept:"부서",team:"팀",rank:"직급",position:"직책",birth:"생년월일",address:"주소",phone:"연락처",email:"이메일",startDate:"시작일",endDate:"종료일",gradeResults:"등급 결과",photoUrl:"사진",menuPerms:"메뉴 권한"};
 function _saveRejectRecordTitle(field,id){
   try{
@@ -6203,6 +6204,7 @@ function getFullState(action=""){
       wageGarnishments:JSON.parse(JSON.stringify(wageGarnishments)),
       severanceSettlements:JSON.parse(JSON.stringify(severanceSettlements)),
       socialInsuranceRecords:JSON.parse(JSON.stringify(socialInsuranceRecords)),
+      laborContracts:JSON.parse(JSON.stringify(laborContracts)),
       evaluatorConfig:JSON.parse(JSON.stringify(evaluatorConfig)),
       tieNotifications:JSON.parse(JSON.stringify(tieNotifications)),
       lowPerfData:JSON.parse(JSON.stringify(lowPerfData)),
@@ -6461,6 +6463,7 @@ function applyState(state,skipUndo=false,options={}){
   if(d.wageGarnishments&&Array.isArray(d.wageGarnishments))wageGarnishments=_mergeByIdPreferNewer(wageGarnishments,d.wageGarnishments,'wageGarnishments');
   if(d.severanceSettlements&&Array.isArray(d.severanceSettlements))severanceSettlements=_mergeByIdPreferNewer(severanceSettlements,d.severanceSettlements,'severanceSettlements');
   if(d.socialInsuranceRecords&&Array.isArray(d.socialInsuranceRecords))socialInsuranceRecords=_mergeByIdPreferNewer(socialInsuranceRecords,d.socialInsuranceRecords,'socialInsuranceRecords');
+  if(d.laborContracts&&Array.isArray(d.laborContracts))laborContracts=_mergeByIdPreferNewer(laborContracts,d.laborContracts,'laborContracts');
   if(d.evaluatorConfig&&typeof d.evaluatorConfig==="object")evaluatorConfig={...evaluatorConfig,...d.evaluatorConfig};
   if(d.tieNotifications&&Array.isArray(d.tieNotifications))tieNotifications=_mergeByIdPreferNewer(tieNotifications,d.tieNotifications,'tieNotifications');
   if(d.lowPerfData&&Array.isArray(d.lowPerfData))lowPerfData=_mergeByIdPreferNewer(lowPerfData,d.lowPerfData,'lowPerfData');
@@ -6867,6 +6870,7 @@ function mergeImportData(parsed){
   if(d.wageGarnishments&&Array.isArray(d.wageGarnishments)){const existIds=new Set(wageGarnishments.map(r=>r.id));d.wageGarnishments.forEach(r=>{if(r&&r.id&&!existIds.has(r.id))wageGarnishments.push(r);});}
   if(d.severanceSettlements&&Array.isArray(d.severanceSettlements)){const existIds=new Set(severanceSettlements.map(r=>r.id));d.severanceSettlements.forEach(r=>{if(r&&r.id&&!existIds.has(r.id))severanceSettlements.push(r);});}
   if(d.socialInsuranceRecords&&Array.isArray(d.socialInsuranceRecords)){const existIds=new Set(socialInsuranceRecords.map(r=>r.id));d.socialInsuranceRecords.forEach(r=>{if(r&&r.id&&!existIds.has(r.id))socialInsuranceRecords.push(r);});}
+  if(d.laborContracts&&Array.isArray(d.laborContracts)){const existIds=new Set(laborContracts.map(r=>r.id));d.laborContracts.forEach(r=>{if(r&&r.id&&!existIds.has(r.id))laborContracts.push(r);});}
 }
 
 async function normalizeEmployeeCredentials(){
@@ -7836,6 +7840,7 @@ function renderSidebar(){
       {id:"mandatory-training",label:"법정의무교육",icon:"📚",desc:"법정 필수 교육 이수 현황",roles:["admin","director","leader","member"]},
       {id:"learning-center",label:"교육 배정·이수·정산",icon:"🎓",desc:"결재 연계 교육 배정과 이수·비용 정산",roles:["admin","director","leader","member"]},
       {id:"training-courses",label:"교육 신청·설문",icon:"🎓",desc:"개설 과정 직접 신청과 만족도 설문",roles:["admin","director","leader","member"]},
+      {id:"my-contracts",label:"내 근로계약",icon:"✍️",desc:"발송된 근로계약서 확인·전자서명",roles:["admin","director","leader","member"]},
       {id:"welfare-status",label:"복지 현황",icon:"🩺",desc:"종합검진 대상 여부",roles:["admin","director","leader","member"]},
     ],
     "pay-sep":[
@@ -7858,6 +7863,7 @@ function renderSidebar(){
       {id:"hr-welfare-points",label:"복지포인트 현황(전체)",icon:"🎁",desc:"전체 직원 복지포인트 부여·사용 현황",roles:welfareAllRoles},
       {id:"hr-mandatory-training",label:"법정의무교육 현황(전체)",icon:"📚",desc:"소속 직원 전체 법정의무교육 이수 현황",roles:["admin","director","leader"]},
       {id:"training-admin",label:"교육 개설·신청 관리",icon:"🗂",desc:"직접 신청 과정의 개설·신청자·설문 관리",roles:["admin"]},
+      {id:"labor-contracts",label:"근로계약 관리",icon:"📝",desc:"근로계약서 작성·발송·전자서명 현황",roles:["admin"]},
       {id:"hr-attendance",label:"근태 현황(전체)",icon:"📅",desc:"소속 직원 전체 근태 현황 조회",roles:["admin","director"]},
       {id:"hr-leave-mgmt",label:"연차 관리(전체)",icon:"🌴",desc:"소속 직원 전체 연차 부여·사용·잔여 현황",roles:["admin","director"]},
       {id:"payroll-mgmt",label:"급여 종합 관리",icon:"💵",desc:"전직원 급여·공제 현황 조회 및 조정",roles:["admin"]},
@@ -8026,6 +8032,7 @@ function renderSidebar(){
   titles["code-mgmt"]="코드관리";
   titles["training-courses"]="교육 신청·설문";
   titles["training-admin"]="교육 개설·신청 관리";
+  titles["my-contracts"]="내 근로계약";titles["labor-contracts"]="근로계약 관리";
   titles["wage-garnishment"]="급여 압류 등록";
   titles["severance-settlement"]="퇴직금 정산";
   titles["tax-social-insurance"]="세무/사회보험";
@@ -8145,7 +8152,7 @@ const PAGE_ROLES={
   "long-service-award":["admin"],"award-history":["admin","director","leader"],
   "hr-mandatory-training":["admin","director","leader"],
   "learning-center":["admin","director","leader","member"],"learning-course-edit":["admin"],"learning-assignment-edit":["admin"],
-  "training-admin":["admin"],"wage-garnishment":["admin"],"severance-settlement":["admin"],"tax-social-insurance":["admin"],
+  "training-admin":["admin"],"labor-contracts":["admin"],"wage-garnishment":["admin"],"severance-settlement":["admin"],"tax-social-insurance":["admin"],
   "hr-attendance":["admin","director"],"hr-leave-mgmt":["admin","director"],"payroll-mgmt":["admin"],
   "first-eval":["admin","leader"],"second-eval":["admin","director"],"kpi-amend":["admin","director","leader"],
   "grade-view":["admin","director","leader"],"comp-grade-view":["admin"],"comp-settings-shortcut":["admin"],
@@ -8462,6 +8469,7 @@ function renderPage(){
   pages["code-mgmt"]=renderCodeMgmtPage;
   pages["training-courses"]=renderTrainingCoursesPage;
   pages["training-admin"]=renderTrainingAdminPage;
+  pages["my-contracts"]=renderMyContractsPage;pages["labor-contracts"]=renderLaborContractsPage;
   pages["wage-garnishment"]=renderWageGarnishmentPage;
   pages["severance-settlement"]=renderSeveranceSettlementPage;
   pages["tax-social-insurance"]=renderTaxSocialInsurancePage;
@@ -15332,7 +15340,7 @@ async function doResetAll(){
     // 불가 상태였음).
     const d=await serverRequest("POST","/api/reset-all",{loginId:currentUser?.loginId,pw});
     if(!d.ok)throw new Error(d.message);
-    employees=[];kpiEntries=[];changeRequests=[];compGradeResults={};gradeAdjustHistory=[];scoreAdjustments=[];okrObjectives=[];trainingCourses=[];trainingEnrollments=[];wageGarnishments=[];severanceSettlements=[];socialInsuranceRecords=[];
+    employees=[];kpiEntries=[];changeRequests=[];compGradeResults={};gradeAdjustHistory=[];scoreAdjustments=[];okrObjectives=[];trainingCourses=[];trainingEnrollments=[];wageGarnishments=[];severanceSettlements=[];socialInsuranceRecords=[];laborContracts=[];
     coreTalentPool=[];talentDevPlans=[];successionPlans=[];jobSkillProfiles=[];employeeSkillProfiles=[];workforceScenarios=[];workforcePositions=[];positionRequests=[];_positionRequestPicker=[];_positionRequestPickerLoaded=false;_positionBudgetPicker=[];_positionBudgetPickerLoaded=false;lowPerfData=[];tieNotifications=[];
     approvalDocs=[];attendanceRecords=[];payslips=[];yearEndSettlements=[];payrollAdjustments=[];leaveUsagePlans=[];boardPosts=[];roomReservations=[];certLog=[];certRequests=[];welfarePoints=[];mandatoryTraining=[];healthCheckupLog=[];personalTasks=[];workReports=[];engagementSurveys=[];engagementResponses=[];engagementActions=[];engagementPulseSummary={};
     showToast("전체 데이터가 초기화되었습니다.","success");
@@ -32438,6 +32446,204 @@ function _renderSiRecordsTab(){
 // severance-settlement가 쓰던 것과 동일한, 전 직원(퇴직자 포함) 검색선택 UI를 쓴다.
 // 대상자 선택 옵션은 퇴직금 정산과 공용(_sevEmpOptionsHtml)
 const _siEmpOptionsHtml=_sevEmpOptionsHtml;
+// ── 근로계약 전자서명 ─────────────────────────────────────────────────────────────
+// 관리자가 계약서(제목·기간·본문)를 작성해 발송하면 대상 직원이 "내 근로계약"에서 내용을 확인하고
+// 본인 이름 입력(+선택 손글씨)으로 서명하거나 사유를 적어 거절한다. 상태 전이·내용 불변·본인 확인은
+// 서버(_sanitizeLaborContract)가 강제하므로 이 화면은 입력과 표시만 담당한다.
+const LC_STATUS_LABEL={draft:"작성중",sent:"서명 대기",signed:"서명 완료",declined:"거절됨",cancelled:"취소됨"};
+const LC_STATUS_COLOR={draft:"gray",sent:"orange",signed:"green",declined:"red",cancelled:"gray"};
+const LC_TYPES=["정규직","계약직","인턴","아르바이트","기타"];
+const LC_DEFAULT_CONTENT="제1조 (목적) 본 계약은 회사와 근로자 간의 근로조건을 정함을 목적으로 한다.\n제2조 (근로계약기간) 위 기간으로 한다.\n제3조 (근무장소 및 업무) 회사가 정하는 장소에서 지정한 업무를 수행한다.\n제4조 (근로시간) 주 40시간을 원칙으로 하며, 휴게시간은 근로기준법에 따른다.\n제5조 (임금) 임금의 구성·지급일은 별도 급여 규정에 따른다.\n제6조 (기타) 이 계약에 정하지 않은 사항은 근로기준법과 회사 규정에 따른다.";
+async function _lcSync(){
+  try{
+    if(serverConfig?.enabled&&serverConfig.url&&!_demoMode){
+      if(typeof _doSave==="function")await _doSave(true);
+      if(typeof loadFromServer==="function")await loadFromServer();
+    }
+  }catch(e){}
+}
+function _lcEmpName(id){return getEmp(id)?.name||String(id);}
+function renderLaborContractsPage(){
+  const c=$("#content");if(!c)return;
+  const rank={sent:0,declined:1,draft:2,signed:3,cancelled:4};
+  const list=[...laborContracts].sort((a,b)=>(rank[a.status]??9)-(rank[b.status]??9)||String(b.updatedAt||b.createdAt||"").localeCompare(String(a.updatedAt||a.createdAt||"")));
+  c.innerHTML=`<div class="flex justify-between items-c mb3" style="gap:12px"><div class="fz11 text-gray" style="max-width:640px">계약서를 작성해 <strong>발송</strong>하면 대상 직원이 "내 근로계약"에서 확인하고 전자서명합니다. 발송 후에는 내용을 바꿀 수 없고(필요하면 취소 후 새로 작성), 서명 완료된 계약은 증빙으로 보존되어 삭제·변경할 수 없습니다.</div>
+  <button class="btn btn-primary" onclick="openLaborContractModal(null)">＋ 계약서 작성</button></div>
+  <div class="card"><div class="card-body" style="padding:0"><div class="tbl-wrap"><table><thead><tr><th>대상자</th><th>계약서</th><th>기간</th><th>상태</th><th>발송/서명</th><th style="text-align:right">관리</th></tr></thead><tbody>
+  ${list.length?list.map(r=>`<tr>
+    <td><strong>${h(_lcEmpName(r.empId))}</strong></td>
+    <td>${h(r.title)}<div class="fz11 text-gray">${h(r.contractType||"")}</div></td>
+    <td class="fz12">${h(r.startDate||"-")} ~ ${h(r.endDate||"기간 없음")}</td>
+    <td>${badge(LC_STATUS_LABEL[r.status]||r.status,LC_STATUS_COLOR[r.status]||"gray")}${r.status==="declined"?`<div class="fz11 text-gray" title="${h(r.declineReason||"")}">${h((r.declineReason||"").slice(0,30))}</div>`:""}</td>
+    <td class="fz11 text-gray">${r.sentAt?`발송 ${h(r.sentAt.slice(0,10))}`:"-"}${r.signedAt?`<br>서명 ${h(r.signedAt.slice(0,16).replace("T"," "))}`:""}</td>
+    <td style="text-align:right;white-space:nowrap">
+      ${["draft","declined"].includes(r.status)?`<button class="btn btn-secondary btn-sm" onclick="openLaborContractModal('${r.id}')">수정</button> `:""}
+      ${r.status==="draft"?`<button class="btn btn-primary btn-sm" onclick="sendLaborContract('${r.id}')">발송</button> `:""}
+      <button class="btn btn-secondary btn-sm" onclick="viewLaborContract('${r.id}')">보기</button>
+      ${["sent","declined"].includes(r.status)?` <button class="btn btn-secondary btn-sm" onclick="cancelLaborContract('${r.id}')">취소</button>`:""}
+      ${["draft","declined","cancelled"].includes(r.status)?` <button class="btn btn-danger btn-sm" onclick="deleteLaborContract('${r.id}')">삭제</button>`:""}
+    </td></tr>`).join(""):`<tr><td colspan="6" style="padding:30px;text-align:center;color:#94a3b8">작성된 근로계약서가 없습니다.</td></tr>`}
+  </tbody></table></div></div></div>`;
+}
+function _lcFilterEmpOptions(){
+  const sel=$("#lc-emp");if(!sel)return;
+  const keep=sel.value;
+  sel.innerHTML=_sevEmpOptionsHtml($("#lc-emp-search")?.value||"");
+  if([...sel.options].some(o=>o.value===keep))sel.value=keep;
+}
+function openLaborContractModal(id){
+  const r=id?laborContracts.find(x=>x.id===id):null;
+  if(id&&(!r||!["draft","declined"].includes(r.status)))return;
+  openModal(`<div class="modal-box" style="max-width:620px"><div class="modal-head"><h3>📝 ${r?"근로계약서 수정":"근로계약서 작성"}</h3></div><div class="modal-body">
+    ${r?.status==="declined"?`<div class="fz12 mb3" style="background:#fef2f2;border:1px solid #fecaca;border-radius:6px;padding:8px">직원이 거절했습니다: ${h(r.declineReason||"")}<br>수정하면 작성중으로 되돌아가며 이전 서명 정보는 초기화됩니다.</div>`:""}
+    <div class="fg"><label class="fl">대상자 검색(이름/사번)</label><input class="fc" type="text" id="lc-emp-search" placeholder="예: 홍길동" oninput="_lcFilterEmpOptions()" ${r?"disabled":""}></div>
+    <div class="fg"><label class="fl">대상자 <span class="req">*</span></label><select class="fc" id="lc-emp" ${r?"disabled":""}>${_sevEmpOptionsHtml("")}</select></div>
+    <div class="fg"><label class="fl">계약서 제목 <span class="req">*</span></label><input class="fc" id="lc-title" maxlength="100" placeholder="예: 2027년 정규직 근로계약서" value="${h(r?.title||"")}"></div>
+    <div class="fg"><label class="fl">계약 유형</label><select class="fc" id="lc-type">${LC_TYPES.map(t=>`<option ${r?.contractType===t?"selected":""}>${t}</option>`).join("")}</select></div>
+    <div style="display:flex;gap:8px"><div class="fg" style="flex:1"><label class="fl">시작일</label><input class="fc" type="date" id="lc-start" value="${h(r?.startDate||"")}"></div><div class="fg" style="flex:1"><label class="fl">종료일 (없으면 비움)</label><input class="fc" type="date" id="lc-end" value="${h(r?.endDate||"")}"></div></div>
+    <div class="fg"><label class="fl">계약 내용 <span class="req">*</span></label><textarea class="fc" id="lc-content" rows="12" maxlength="20000" style="font-family:inherit">${h(r?.content||LC_DEFAULT_CONTENT)}</textarea></div>
+    <div class="fz11 text-gray">작성중으로 저장한 뒤 목록에서 [발송]하거나, 아래 [저장 후 발송]으로 바로 보낼 수 있습니다. 발송하면 내용을 바꿀 수 없습니다.</div>
+  </div><div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal()">취소</button><button class="btn btn-secondary" onclick="saveLaborContract('${id||""}',false)">작성중으로 저장</button><button class="btn btn-primary" onclick="saveLaborContract('${id||""}',true)">저장 후 발송</button></div></div>`);
+  if(r)$("#lc-emp").innerHTML=`<option value="${h(r.empId)}">${h(_lcEmpName(r.empId))}</option>`;
+}
+async function saveLaborContract(id,send){
+  const r=id?laborContracts.find(x=>x.id===id):null;
+  const empId=r?r.empId:$("#lc-emp")?.value;
+  const title=$("#lc-title")?.value.trim()||"";
+  const content=$("#lc-content")?.value.trim()||"";
+  const startDate=$("#lc-start")?.value||"",endDate=$("#lc-end")?.value||"";
+  if(!empId){showToast("대상자를 선택하세요.","error");return;}
+  if(!title){showToast("계약서 제목을 입력하세요. 예: 2027년 정규직 근로계약서","error");return;}
+  if(!content){showToast("계약 내용을 입력하세요.","error");return;}
+  if(startDate&&endDate&&endDate<startDate){showToast("종료일은 시작일보다 빠를 수 없습니다.","error");return;}
+  const payload={empId,title,contractType:$("#lc-type")?.value||"",startDate,endDate,content,status:send?"sent":"draft"};
+  if(r)laborContracts=laborContracts.map(x=>x.id===id?{...x,...payload}:x);
+  else laborContracts.push({id:`lc-${genId()}`,...payload,createdBy:currentUser.id,createdAt:new Date().toISOString()});
+  closeModal();
+  await _lcSync();
+  logAction(send?"labor_contract_sent":"labor_contract_saved","근로계약",_lcEmpName(empId),title);
+  showToast(send?"계약서를 발송했습니다. 대상 직원이 서명하면 상태가 바뀝니다.":"작성중으로 저장했습니다.","success");
+  renderLaborContractsPage();
+}
+async function sendLaborContract(id){
+  const r=laborContracts.find(x=>x.id===id);if(!r||r.status!=="draft")return;
+  const ok=await askConfirmModal({title:"근로계약서 발송",message:`${_lcEmpName(r.empId)}님에게 '${r.title}'을(를) 발송합니다. 발송 후에는 내용을 바꿀 수 없습니다.`});
+  if(!ok)return;
+  laborContracts=laborContracts.map(x=>x.id===id?{...x,status:"sent"}:x);
+  await _lcSync();
+  showToast("계약서를 발송했습니다.","success");renderLaborContractsPage();
+}
+async function cancelLaborContract(id){
+  const r=laborContracts.find(x=>x.id===id);if(!r)return;
+  const ok=await askConfirmModal({title:"근로계약서 취소",danger:true,message:`'${r.title}' (${_lcEmpName(r.empId)})을(를) 취소합니다. 취소된 계약은 다시 발송할 수 없고 새로 작성해야 합니다.`});
+  if(!ok)return;
+  laborContracts=laborContracts.map(x=>x.id===id?{...x,status:"cancelled"}:x);
+  await _lcSync();
+  showToast("계약서를 취소했습니다.","info");renderLaborContractsPage();
+}
+async function deleteLaborContract(id){
+  const r=laborContracts.find(x=>x.id===id);if(!r)return;
+  const ok=await askConfirmModal({title:"근로계약서 삭제",danger:true,message:`'${r.title}' (${_lcEmpName(r.empId)})을(를) 삭제합니다.`});
+  if(!ok)return;
+  _tombstone("laborContracts",id);
+  laborContracts=laborContracts.filter(x=>x.id!==id);
+  await _lcSync();
+  showToast("삭제했습니다.","info");renderLaborContractsPage();
+}
+function viewLaborContract(id){
+  const r=laborContracts.find(x=>x.id===id);if(!r)return;
+  const own=String(r.empId)===String(currentUser.id);
+  openModal(`<div class="modal-box" style="max-width:640px"><div class="modal-head"><h3>${h(r.title)}</h3></div><div class="modal-body">
+    <div class="fz12 mb3">${badge(LC_STATUS_LABEL[r.status]||r.status,LC_STATUS_COLOR[r.status]||"gray")} · 대상자 ${h(_lcEmpName(r.empId))} · ${h(r.contractType||"")} · ${h(r.startDate||"-")} ~ ${h(r.endDate||"기간 없음")}</div>
+    <pre style="white-space:pre-wrap;font-family:inherit;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:14px;max-height:340px;overflow:auto">${h(r.content)}</pre>
+    ${r.status==="signed"?`<div class="fz12 mt3">✍ 서명자 <strong>${h(r.signatureName)}</strong> · ${h((r.signedAt||"").slice(0,16).replace("T"," "))}${r.signatureData?`<div><img src="${h(r.signatureData)}" alt="서명" style="max-width:240px;border:1px solid #e2e8f0;border-radius:6px;margin-top:6px;background:#fff"></div>`:""}</div>`:""}
+    ${r.status==="declined"?`<div class="fz12 mt3" style="color:#b91c1c">거절 사유: ${h(r.declineReason||"")}</div>`:""}
+    ${r.contentHash?`<div class="fz11 text-gray mt3" style="word-break:break-all">내용 해시(SHA-256): ${h(r.contentHash)}</div>`:""}
+    ${(r.history||[]).length?`<div class="fz11 text-gray mt3">이력: ${r.history.map(x=>`${h(x.action)} ${h((x.at||"").slice(0,16).replace("T"," "))}`).join(" → ")}</div>`:""}
+  </div><div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal()">닫기</button>${r.status==="signed"?`<button class="btn btn-primary" onclick="printLaborContract('${r.id}')">🖨 인쇄</button>`:""}${own&&r.status==="sent"?`<button class="btn btn-primary" onclick="openLaborContractSignModal('${r.id}')">검토·서명</button>`:""}</div></div>`);
+}
+function renderMyContractsPage(){
+  const c=$("#content");if(!c)return;
+  const mine=laborContracts.filter(r=>String(r.empId)===String(currentUser.id)&&r.status!=="draft").sort((a,b)=>String(b.sentAt||b.createdAt||"").localeCompare(String(a.sentAt||a.createdAt||"")));
+  c.innerHTML=`<div class="fz12 text-gray mb3">회사가 발송한 근로계약서를 확인하고 전자서명합니다. 내용에 이의가 있으면 사유를 적어 거절할 수 있습니다.</div>
+  <div class="card"><div class="card-body" style="padding:0"><div class="tbl-wrap"><table><thead><tr><th>계약서</th><th>기간</th><th>상태</th><th>발송일</th><th style="text-align:right">관리</th></tr></thead><tbody>
+  ${mine.length?mine.map(r=>`<tr>
+    <td>${h(r.title)}<div class="fz11 text-gray">${h(r.contractType||"")}</div></td>
+    <td class="fz12">${h(r.startDate||"-")} ~ ${h(r.endDate||"기간 없음")}</td>
+    <td>${badge(LC_STATUS_LABEL[r.status]||r.status,LC_STATUS_COLOR[r.status]||"gray")}</td>
+    <td class="fz12">${h((r.sentAt||"").slice(0,10)||"-")}</td>
+    <td style="text-align:right;white-space:nowrap">${r.status==="sent"?`<button class="btn btn-primary btn-sm" onclick="openLaborContractSignModal('${r.id}')">검토·서명</button> `:""}<button class="btn btn-secondary btn-sm" onclick="viewLaborContract('${r.id}')">보기</button>${r.status==="signed"?` <button class="btn btn-secondary btn-sm" onclick="printLaborContract('${r.id}')">🖨 인쇄</button>`:""}</td></tr>`).join(""):`<tr><td colspan="5" style="padding:30px;text-align:center;color:#94a3b8">받은 근로계약서가 없습니다.</td></tr>`}
+  </tbody></table></div></div></div>`;
+}
+let _lcDrawn=false;
+function openLaborContractSignModal(id){
+  const r=laborContracts.find(x=>x.id===id);
+  if(!r||r.status!=="sent"||String(r.empId)!==String(currentUser.id))return;
+  _lcDrawn=false;
+  openModal(`<div class="modal-box" style="max-width:640px"><div class="modal-head"><h3>✍ ${h(r.title)} — 검토·서명</h3></div><div class="modal-body">
+    <div class="fz12 mb3">${h(r.contractType||"")} · ${h(r.startDate||"-")} ~ ${h(r.endDate||"기간 없음")}</div>
+    <pre style="white-space:pre-wrap;font-family:inherit;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:14px;max-height:260px;overflow:auto">${h(r.content)}</pre>
+    <div class="fg mt3"><label class="fl">서명 — 본인 이름을 입력하세요 <span class="req">*</span></label><input class="fc" id="lc-sign-name" placeholder="${h(currentUser.name)}" autocomplete="off"></div>
+    <div class="fg"><label class="fl">손글씨 서명 (선택)</label><canvas id="lc-sign-canvas" width="400" height="120" style="border:1px solid #cbd5e1;border-radius:6px;background:#fff;touch-action:none;max-width:100%"></canvas><div><button class="btn btn-secondary btn-sm" type="button" onclick="_lcClearCanvas()">지우기</button></div></div>
+    <label style="display:flex;gap:6px;align-items:center;cursor:pointer"><input type="checkbox" id="lc-sign-agree"> 위 계약 내용을 모두 확인했으며 이에 동의합니다.</label>
+    <div class="fg mt3"><label class="fl">거절 사유 (거절할 때만 입력)</label><textarea class="fc" id="lc-decline-reason" rows="2" maxlength="500" placeholder="예: 급여 조건 재협의 필요"></textarea></div>
+    <div class="fz11 text-gray mt3">서명하면 서명 시각과 계약 내용 해시가 기록되며 이후 계약 내용은 변경할 수 없습니다.</div>
+  </div><div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal()">닫기</button><button class="btn btn-danger" onclick="declineLaborContract('${r.id}')">거절</button><button class="btn btn-primary" onclick="submitLaborContractSign('${r.id}')">서명하기</button></div></div>`);
+  const cv=$("#lc-sign-canvas");if(!cv)return;
+  const ctx=cv.getContext("2d");ctx.lineWidth=2;ctx.lineCap="round";ctx.strokeStyle="#0f172a";
+  let drawing=false;
+  const pos=e=>{const b=cv.getBoundingClientRect();return{x:(e.clientX-b.left)*cv.width/b.width,y:(e.clientY-b.top)*cv.height/b.height};};
+  cv.addEventListener("pointerdown",e=>{drawing=true;_lcDrawn=true;const p=pos(e);ctx.beginPath();ctx.moveTo(p.x,p.y);cv.setPointerCapture&&cv.setPointerCapture(e.pointerId);});
+  cv.addEventListener("pointermove",e=>{if(!drawing)return;const p=pos(e);ctx.lineTo(p.x,p.y);ctx.stroke();});
+  const stop=()=>{drawing=false;};cv.addEventListener("pointerup",stop);cv.addEventListener("pointerleave",stop);
+}
+function _lcClearCanvas(){const cv=$("#lc-sign-canvas");if(!cv)return;cv.getContext("2d").clearRect(0,0,cv.width,cv.height);_lcDrawn=false;}
+async function submitLaborContractSign(id){
+  const r=laborContracts.find(x=>x.id===id);
+  if(!r||r.status!=="sent")return;
+  const name=($("#lc-sign-name")?.value||"").trim();
+  if(!name){showToast(`서명하려면 본인 이름(${currentUser.name})을 입력하세요.`,"error");return;}
+  if(name!==String(currentUser.name||"").trim()){showToast(`입력한 이름이 본인 이름(${currentUser.name})과 다릅니다.`,"error");return;}
+  if(!$("#lc-sign-agree")?.checked){showToast("계약 내용 확인·동의에 체크하세요.","error");return;}
+  const signatureData=_lcDrawn?$("#lc-sign-canvas").toDataURL("image/png"):"";
+  laborContracts=laborContracts.map(x=>x.id===id?{...x,status:"signed",signatureName:name,signatureData}:x);
+  closeModal();
+  await _lcSync();
+  const done=laborContracts.find(x=>x.id===id);
+  if(done?.status==="signed"){logAction("labor_contract_signed","근로계약",currentUser.name,r.title);showToast("서명이 완료되었습니다.","success");}
+  else showToast("서명이 저장되지 않았습니다. 계약 상태를 확인하세요.","error");
+  renderMyContractsPage();
+}
+async function declineLaborContract(id){
+  const r=laborContracts.find(x=>x.id===id);
+  if(!r||r.status!=="sent")return;
+  const reason=($("#lc-decline-reason")?.value||"").trim();
+  if(!reason){showToast("거절하려면 거절 사유를 입력하세요. 예: 급여 조건 재협의 필요","error");return;}
+  laborContracts=laborContracts.map(x=>x.id===id?{...x,status:"declined",declineReason:reason}:x);
+  closeModal();
+  await _lcSync();
+  showToast("계약을 거절했습니다. 담당자가 사유를 확인합니다.","info");
+  renderMyContractsPage();
+}
+function printLaborContract(id){
+  const r=laborContracts.find(x=>x.id===id);if(!r)return;
+  const co=settings.companyName||"(주)회사";
+  const w=window.open("","_blank","width=800,height=900");if(!w)return;
+  w.document.write(`<!DOCTYPE html><html lang="ko"><head><meta charset="UTF-8"><title>${h(r.title)}</title>
+  <style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:'맑은 고딕','Malgun Gothic',sans-serif;padding:50px;color:#1e293b;font-size:14px}
+  h1{text-align:center;font-size:24px;margin-bottom:8px}.sub{text-align:center;color:#475569;margin-bottom:30px}
+  .meta{margin-bottom:20px;line-height:1.9}.body{white-space:pre-wrap;line-height:1.9;border:1px solid #e2e8f0;border-radius:8px;padding:20px;margin-bottom:30px}
+  .sign{margin-top:30px;line-height:1.9}.sign img{max-width:240px;display:block;margin-top:6px}.hash{margin-top:24px;font-size:11px;color:#64748b;word-break:break-all}
+  @media print{body{padding:30px}}</style></head><body>
+  <h1>${h(r.title)}</h1><div class="sub">${h(co)}</div>
+  <div class="meta">근로자: ${h(_lcEmpName(r.empId))}<br>계약 유형: ${h(r.contractType||"")}<br>계약 기간: ${h(r.startDate||"-")} ~ ${h(r.endDate||"기간 없음")}</div>
+  <div class="body">${h(r.content)}</div>
+  <div class="sign">전자서명: <strong>${h(r.signatureName||"")}</strong> (${h((r.signedAt||"").slice(0,16).replace("T"," "))})${r.signatureData?`<img src="${h(r.signatureData)}" alt="서명">`:""}</div>
+  <div class="hash">내용 해시(SHA-256): ${h(r.contentHash||"")}</div>
+  <scr`+`ipt>window.print();</scr`+`ipt></body></html>`);
+  w.document.close();
+}
+
 function openSocialInsuranceModal(id){
   const r=id?socialInsuranceRecords.find(x=>x.id===id):null;
   window._siPickedEmp=r?{id:r.empId,name:r.empName}:null;
@@ -32997,6 +33203,8 @@ function renderNotificationCenterPage(){
   // 3b. 교육 과정(D3) — 이수 완료했지만 설문을 아직 제출하지 않은 과정이 있으면 안내.
   // 본인 신청 내역에 한정되는 개인 알림이라 전 역할 공통.
   const myPendingSurveys=trainingEnrollments.filter(e=>String(e.empId)===String(u.id)&&e.status==="completed"&&!e.surveyResponse&&trainingCourses.find(cs=>cs.id===e.courseId)?.surveyEnabled);
+  const myContractsToSign=laborContracts.filter(c=>String(c.empId)===String(u.id)&&c.status==="sent");
+  if(myContractsToSign.length>0)items.push({type:"labor-contract",pri:1,icon:"✍️",title:`서명할 근로계약 ${myContractsToSign.length}건`,desc:myContractsToSign.map(c=>c.title).join(" · "),date:todayStr,action:"my-contracts"});
   if(myPendingSurveys.length>0)items.push({type:"training-survey",pri:2,icon:"📝",title:`교육 만족도 설문 미제출 ${myPendingSurveys.length}건`,desc:myPendingSurveys.map(e=>trainingCourses.find(cs=>cs.id===e.courseId)?.title).filter(Boolean).join(" · "),date:todayStr,action:"training-courses"});
   // 4. Birthdays today
   employees.filter(e=>e.active&&e.birthdate&&e.birthdate.slice(5)===`${mm}-${dd}`).forEach(e=>{
