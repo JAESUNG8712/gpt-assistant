@@ -65,3 +65,34 @@ test("채용 결과 통보 모달: 이메일이 없는 지원자는 메일 발�
   await expect.poll(() => page.evaluate(() => window.__noticeCalls.some(c => c.path === "/api/recruit/candidates/rc2/notice" && c.body.sendEmail === true))).toBe(true);
   await expect(page.locator(".toast").last()).toContainText("has@applicant.test");
 });
+
+test("급여 종합 관리: 확정된 명세서가 없으면 안내만, 있으면 확인 후 서버에 안내 메일을 요청한다", async ({ page }) => {
+  await loginAsAdmin(page);
+  await page.evaluate(() => {
+    window.__payCalls = [];
+    _doSave = async () => {};
+    serverConfig.enabled = true; serverConfig.url = location.origin;
+    serverRequest = async (method, path, body) => {
+      window.__payCalls.push({ method, path, body });
+      return { ok: true, sent: 2, noEmail: 1, inactive: 0, failed: 0, total: 3 };
+    };
+    payslips = [];
+    gotoPage("payroll-mgmt");
+  });
+  await page.getByRole("button", { name: /확정 안내 메일/ }).click();
+  await expect(page.locator(".toast").last()).toContainText("확정된 명세서가 없습니다");
+  expect(await page.evaluate(() => window.__payCalls.filter(c => c.path === "/api/payroll/notify-email").length)).toBe(0);
+
+  await page.evaluate(() => {
+    const y = _payMgmtState.year, m = _payMgmtState.month;
+    payslips = [{ id: "p1", empId: "x1", year: y, month: m, confirmed: true }, { id: "p2", empId: "x2", year: y, month: m, confirmed: false }];
+  });
+  await page.getByRole("button", { name: /확정 안내 메일/ }).click();
+  await page.getByRole("button", { name: "확인" }).click();
+  await expect.poll(() => page.evaluate(() => window.__payCalls.filter(c => c.path === "/api/payroll/notify-email").length)).toBe(1);
+  const call = await page.evaluate(() => ({ ...window.__payCalls.find(c => c.path === "/api/payroll/notify-email"), ym: [_payMgmtState.year, _payMgmtState.month] }));
+  expect(call.path).toBe("/api/payroll/notify-email");
+  expect(call.body).toEqual({ year: call.ym[0], month: call.ym[1] });
+  await expect(page.locator(".toast").last()).toContainText("2/3명 발송");
+  await expect(page.locator(".toast").last()).toContainText("이메일 없음 1명");
+});
