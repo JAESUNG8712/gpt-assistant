@@ -1185,6 +1185,7 @@ let severanceSettlements=[]; // 퇴직금 정산(최종/중간) [{id,empId,empNa
 // 아니라(그런 외부 연계는 범위 밖), 관리자가 신고 "내역"을 참고용으로 기록·조회하는
 // 화면이다 — 화면에도 안내 문구로 명시한다.
 let laborContracts=[]; // 근로계약 전자서명 [{id,empId,title,contractType,startDate,endDate,content,status:"draft"|"sent"|"signed"|"declined"|"cancelled",contentHash,sentAt,signedAt,signatureName,signatureData,signedHash,declineReason,history}] — 서버가 상태 전이를 강제
+let exitInterviews=[]; // 퇴직 면담 [{id,empId,empName,dept,team,retireDate,interviewDate,interviewerName,status:"scheduled"|"done",reasonCategory,reasonDetail,satisfaction(1~5),wouldRecommend:"yes"|"no",rehireEligible:"yes"|"no"|"hold",feedback}] — 관리자 전용
 let socialInsuranceRecords=[]; // 4대보험 신고 내역(참고용) [{id,empId,empName,dept,team,type:"acquisition"|"loss"|"wageChange",insuranceTypes:["pension","health","employment","industrial"],effectiveDate,monthlyWage,reason,note,createdBy,createdByName,createdAt,updatedAt}]
 let healthCheckupLog=[]; // 종합검진 이수 이력 [{id,empId,year,completedAt,note}]
 let scheduleEvents=[]; // 캘린더 일정 [{id,authorId,title,startDate,endDate,scope:"personal"|"team"|"dept"|"company",dept,team,memo,color,createdAt}]
@@ -1208,7 +1209,7 @@ function _recordCollections(){return{
   employmentRecords,learningCourses,learningAssignments,
   trainingCourses,trainingEnrollments,
   wageGarnishments,severanceSettlements,
-  socialInsuranceRecords,laborContracts
+  socialInsuranceRecords,laborContracts,exitInterviews
 };}
 function _applyRecordRevisions(revisions){
   const collections=_recordCollections();
@@ -2896,7 +2897,7 @@ const SNAPSHOT_FIELD_LABELS = {
   jobSkillProfiles:"직무·스킬 기준", employeeSkillProfiles:"직원 스킬 프로필", workforceScenarios:"전략적 인력계획 시나리오", workforcePositions:"정원·포지션 마스터", positionRequests:"포지션 신설·증원 요청",
   compGradeResults:"보상등급 결과", gradeAdjustHistory:"등급조정 이력", scoreAdjustments:"가감점(상벌점)", okrObjectives:"OKR", tieNotifications:"동점자 알림",
   trainingCourses:"교육 과정", trainingEnrollments:"교육 신청/이수",
-  wageGarnishments:"급여 압류", severanceSettlements:"퇴직금 정산", socialInsuranceRecords:"4대보험 신고 내역", laborContracts:"근로계약",
+  wageGarnishments:"급여 압류", severanceSettlements:"퇴직금 정산", socialInsuranceRecords:"4대보험 신고 내역", laborContracts:"근로계약", exitInterviews:"퇴직 면담",
   lowPerfData:"저성과자 데이터", approvalTemplates:"전자결재 템플릿", integrationLogs:"연동 로그",
   approvalDocs:"전자결재 문서", attendanceRecords:"근태기록", payslips:"급여명세서", payrollAdjustments:"급여 조정항목",
   leaveUsagePlans:"연차 사용계획서",
@@ -3466,7 +3467,7 @@ function _focusModal(dialog){const target=dialog?.querySelector("[data-modal-ini
 // 담은 토스트 한 줄이라 "왜 안 됐는지"를 알 수 없었다. 서버가 보내는 reason/message/fields를
 // 배너 + 상세 모달로 보여주고, 최근 내역은 세션 동안 보관해 다시 열어볼 수 있게 한다.
 let _saveRejectLog=[];
-const _SAVE_REJECT_FIELD_LABELS={employees:"직원 정보",kpiEntries:"KPI 목표",employmentRecords:"계약·징계",learningCourses:"교육과정",learningAssignments:"교육배정",trainingEnrollments:"교육 신청",trainingCourses:"교육 과정",laborContracts:"근로계약",payslips:"급여명세서",payrollAdjustments:"급여조정",yearEndSettlements:"연말정산",positionRequests:"정원 요청",engagementActions:"개선계획",approvalDocs:"전자결재",expenseClaims:"경비청구",overtimeRequests:"초과근무",certRequests:"증명서",welfarePoints:"복지포인트",okrObjectives:"OKR",compSessions:"역량평가 세션",compResponses:"역량평가 응답",boardPosts:"게시글",roomReservations:"회의실 예약",scheduleEvents:"일정",attendanceRecords:"근태",settings:"설정"};
+const _SAVE_REJECT_FIELD_LABELS={employees:"직원 정보",kpiEntries:"KPI 목표",employmentRecords:"계약·징계",learningCourses:"교육과정",learningAssignments:"교육배정",trainingEnrollments:"교육 신청",trainingCourses:"교육 과정",laborContracts:"근로계약",exitInterviews:"퇴직 면담",payslips:"급여명세서",payrollAdjustments:"급여조정",yearEndSettlements:"연말정산",positionRequests:"정원 요청",engagementActions:"개선계획",approvalDocs:"전자결재",expenseClaims:"경비청구",overtimeRequests:"초과근무",certRequests:"증명서",welfarePoints:"복지포인트",okrObjectives:"OKR",compSessions:"역량평가 세션",compResponses:"역량평가 응답",boardPosts:"게시글",roomReservations:"회의실 예약",scheduleEvents:"일정",attendanceRecords:"근태",settings:"설정"};
 const _SAVE_REJECT_FIELD_NAMES={name:"이름",title:"제목",status:"상태",role:"권한",salary:"연봉",amount:"금액",firstStatus:"1차 승인",finalStatus:"최종 승인",firstScore:"1차 점수",finalScore:"최종 점수",dept:"부서",team:"팀",rank:"직급",position:"직책",birth:"생년월일",address:"주소",phone:"연락처",email:"이메일",startDate:"시작일",endDate:"종료일",gradeResults:"등급 결과",photoUrl:"사진",menuPerms:"메뉴 권한"};
 function _saveRejectRecordTitle(field,id){
   try{
@@ -6205,6 +6206,7 @@ function getFullState(action=""){
       severanceSettlements:JSON.parse(JSON.stringify(severanceSettlements)),
       socialInsuranceRecords:JSON.parse(JSON.stringify(socialInsuranceRecords)),
       laborContracts:JSON.parse(JSON.stringify(laborContracts)),
+      exitInterviews:JSON.parse(JSON.stringify(exitInterviews)),
       evaluatorConfig:JSON.parse(JSON.stringify(evaluatorConfig)),
       tieNotifications:JSON.parse(JSON.stringify(tieNotifications)),
       lowPerfData:JSON.parse(JSON.stringify(lowPerfData)),
@@ -6464,6 +6466,7 @@ function applyState(state,skipUndo=false,options={}){
   if(d.severanceSettlements&&Array.isArray(d.severanceSettlements))severanceSettlements=_mergeByIdPreferNewer(severanceSettlements,d.severanceSettlements,'severanceSettlements');
   if(d.socialInsuranceRecords&&Array.isArray(d.socialInsuranceRecords))socialInsuranceRecords=_mergeByIdPreferNewer(socialInsuranceRecords,d.socialInsuranceRecords,'socialInsuranceRecords');
   if(d.laborContracts&&Array.isArray(d.laborContracts))laborContracts=_mergeByIdPreferNewer(laborContracts,d.laborContracts,'laborContracts');
+  if(d.exitInterviews&&Array.isArray(d.exitInterviews))exitInterviews=_mergeByIdPreferNewer(exitInterviews,d.exitInterviews,'exitInterviews');
   if(d.evaluatorConfig&&typeof d.evaluatorConfig==="object")evaluatorConfig={...evaluatorConfig,...d.evaluatorConfig};
   if(d.tieNotifications&&Array.isArray(d.tieNotifications))tieNotifications=_mergeByIdPreferNewer(tieNotifications,d.tieNotifications,'tieNotifications');
   if(d.lowPerfData&&Array.isArray(d.lowPerfData))lowPerfData=_mergeByIdPreferNewer(lowPerfData,d.lowPerfData,'lowPerfData');
@@ -6871,6 +6874,7 @@ function mergeImportData(parsed){
   if(d.severanceSettlements&&Array.isArray(d.severanceSettlements)){const existIds=new Set(severanceSettlements.map(r=>r.id));d.severanceSettlements.forEach(r=>{if(r&&r.id&&!existIds.has(r.id))severanceSettlements.push(r);});}
   if(d.socialInsuranceRecords&&Array.isArray(d.socialInsuranceRecords)){const existIds=new Set(socialInsuranceRecords.map(r=>r.id));d.socialInsuranceRecords.forEach(r=>{if(r&&r.id&&!existIds.has(r.id))socialInsuranceRecords.push(r);});}
   if(d.laborContracts&&Array.isArray(d.laborContracts)){const existIds=new Set(laborContracts.map(r=>r.id));d.laborContracts.forEach(r=>{if(r&&r.id&&!existIds.has(r.id))laborContracts.push(r);});}
+  if(d.exitInterviews&&Array.isArray(d.exitInterviews)){const existIds=new Set(exitInterviews.map(r=>r.id));d.exitInterviews.forEach(r=>{if(r&&r.id&&!existIds.has(r.id))exitInterviews.push(r);});}
 }
 
 async function normalizeEmployeeCredentials(){
@@ -7858,6 +7862,7 @@ function renderSidebar(){
       {id:"hr-changes",label:"발령·변동 이력",icon:"↻",desc:"인사 변동 등록·조회",roles:["admin"]},
       {id:"contract-mgmt",label:"계약 관리",icon:"📑",desc:"계약직군 계약기간·만료 임박 현황",roles:["admin","director"]},
       {id:"hr-stats",label:"인사 통계",icon:"📊",desc:"인원현황·입퇴사율 분석",roles:["admin"]},
+      {id:"exit-interviews",label:"퇴직 면담",icon:"🚪",desc:"퇴직자 면담 기록·퇴직 사유 통계",roles:["admin"]},
       {id:"long-service-award",label:"장기근속 포상",icon:"🏅",desc:"전직원 근속연수별 포상 기준·대상자 현황",roles:["admin"]},
       {id:"award-history",label:"(최)우수사원 선정 이력",icon:"🏆",desc:"전직원 우수사원 선정 이력 조회",roles:["admin","director","leader"]},
       {id:"hr-welfare-points",label:"복지포인트 현황(전체)",icon:"🎁",desc:"전체 직원 복지포인트 부여·사용 현황",roles:welfareAllRoles},
@@ -8032,7 +8037,7 @@ function renderSidebar(){
   titles["code-mgmt"]="코드관리";
   titles["training-courses"]="교육 신청·설문";
   titles["training-admin"]="교육 개설·신청 관리";
-  titles["my-contracts"]="내 근로계약";titles["labor-contracts"]="근로계약 관리";
+  titles["exit-interviews"]="퇴직 면담";titles["my-contracts"]="내 근로계약";titles["labor-contracts"]="근로계약 관리";
   titles["wage-garnishment"]="급여 압류 등록";
   titles["severance-settlement"]="퇴직금 정산";
   titles["tax-social-insurance"]="세무/사회보험";
@@ -8152,7 +8157,7 @@ const PAGE_ROLES={
   "long-service-award":["admin"],"award-history":["admin","director","leader"],
   "hr-mandatory-training":["admin","director","leader"],
   "learning-center":["admin","director","leader","member"],"learning-course-edit":["admin"],"learning-assignment-edit":["admin"],
-  "training-admin":["admin"],"labor-contracts":["admin"],"wage-garnishment":["admin"],"severance-settlement":["admin"],"tax-social-insurance":["admin"],
+  "training-admin":["admin"],"labor-contracts":["admin"],"exit-interviews":["admin"],"wage-garnishment":["admin"],"severance-settlement":["admin"],"tax-social-insurance":["admin"],
   "hr-attendance":["admin","director"],"hr-leave-mgmt":["admin","director"],"payroll-mgmt":["admin"],
   "first-eval":["admin","leader"],"second-eval":["admin","director"],"kpi-amend":["admin","director","leader"],
   "grade-view":["admin","director","leader"],"comp-grade-view":["admin"],"comp-settings-shortcut":["admin"],
@@ -8469,7 +8474,7 @@ function renderPage(){
   pages["code-mgmt"]=renderCodeMgmtPage;
   pages["training-courses"]=renderTrainingCoursesPage;
   pages["training-admin"]=renderTrainingAdminPage;
-  pages["my-contracts"]=renderMyContractsPage;pages["labor-contracts"]=renderLaborContractsPage;
+  pages["my-contracts"]=renderMyContractsPage;pages["labor-contracts"]=renderLaborContractsPage;pages["exit-interviews"]=renderExitInterviewsPage;
   pages["wage-garnishment"]=renderWageGarnishmentPage;
   pages["severance-settlement"]=renderSeveranceSettlementPage;
   pages["tax-social-insurance"]=renderTaxSocialInsurancePage;
@@ -15340,7 +15345,7 @@ async function doResetAll(){
     // 불가 상태였음).
     const d=await serverRequest("POST","/api/reset-all",{loginId:currentUser?.loginId,pw});
     if(!d.ok)throw new Error(d.message);
-    employees=[];kpiEntries=[];changeRequests=[];compGradeResults={};gradeAdjustHistory=[];scoreAdjustments=[];okrObjectives=[];trainingCourses=[];trainingEnrollments=[];wageGarnishments=[];severanceSettlements=[];socialInsuranceRecords=[];laborContracts=[];
+    employees=[];kpiEntries=[];changeRequests=[];compGradeResults={};gradeAdjustHistory=[];scoreAdjustments=[];okrObjectives=[];trainingCourses=[];trainingEnrollments=[];wageGarnishments=[];severanceSettlements=[];socialInsuranceRecords=[];laborContracts=[];exitInterviews=[];
     coreTalentPool=[];talentDevPlans=[];successionPlans=[];jobSkillProfiles=[];employeeSkillProfiles=[];workforceScenarios=[];workforcePositions=[];positionRequests=[];_positionRequestPicker=[];_positionRequestPickerLoaded=false;_positionBudgetPicker=[];_positionBudgetPickerLoaded=false;lowPerfData=[];tieNotifications=[];
     approvalDocs=[];attendanceRecords=[];payslips=[];yearEndSettlements=[];payrollAdjustments=[];leaveUsagePlans=[];boardPosts=[];roomReservations=[];certLog=[];certRequests=[];welfarePoints=[];mandatoryTraining=[];healthCheckupLog=[];personalTasks=[];workReports=[];engagementSurveys=[];engagementResponses=[];engagementActions=[];engagementPulseSummary={};
     showToast("전체 데이터가 초기화되었습니다.","success");
@@ -32562,6 +32567,104 @@ function viewLaborContract(id){
     ${(r.history||[]).length?`<div class="fz11 text-gray mt3">이력: ${r.history.map(x=>`${h(x.action)} ${h((x.at||"").slice(0,16).replace("T"," "))}`).join(" → ")}</div>`:""}
   </div><div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal()">닫기</button>${r.status==="signed"?`<button class="btn btn-primary" onclick="printLaborContract('${r.id}')">🖨 인쇄</button>`:""}${own&&r.status==="sent"?`<button class="btn btn-primary" onclick="openLaborContractSignModal('${r.id}')">검토·서명</button>`:""}</div></div>`);
 }
+
+// ── 퇴직 면담 ─────────────────────────────────────────────────────────────────────
+// 퇴직자(또는 퇴직 예정자)와의 면담 내용·퇴직 사유를 기록하고 사유 분포·만족도·재입사 가능 여부를
+// 집계한다. 민감한 기록이라 관리자 전용이며 서버도 일반 직원에게는 전달하지 않는다.
+const EXIT_REASONS={pay:"보상·처우",environment:"근무환경",culture:"조직문화·관계",growth:"성장·커리어",personal:"개인 사정",contractEnd:"계약 만료",other:"기타"};
+const EXIT_REHIRE={yes:"가능",hold:"보류",no:"불가"};
+function _exitStats(list){
+  const done=list.filter(r=>r.status==="done");
+  const byReason={};Object.keys(EXIT_REASONS).forEach(k=>byReason[k]=0);
+  done.forEach(r=>{if(r.reasonCategory)byReason[r.reasonCategory]=(byReason[r.reasonCategory]||0)+1;});
+  const sats=done.map(r=>Number(r.satisfaction)).filter(n=>Number.isFinite(n)&&n>=1);
+  const rec=done.filter(r=>r.wouldRecommend);
+  return{total:list.length,done:done.length,byReason,
+    avgSat:sats.length?Math.round(sats.reduce((a,b)=>a+b,0)/sats.length*10)/10:null,
+    recommendYes:rec.filter(r=>r.wouldRecommend==="yes").length,recommendTotal:rec.length,
+    rehireYes:done.filter(r=>r.rehireEligible==="yes").length};
+}
+function renderExitInterviewsPage(){
+  const c=$("#content");if(!c)return;
+  const year=window._exitYear||"";
+  const years=[...new Set(exitInterviews.map(r=>String(r.retireDate||r.interviewDate||"").slice(0,4)).filter(Boolean))].sort().reverse();
+  const list=[...exitInterviews].filter(r=>!year||String(r.retireDate||r.interviewDate||"").slice(0,4)===year)
+    .sort((a,b)=>String(b.interviewDate||b.retireDate||"").localeCompare(String(a.interviewDate||a.retireDate||"")));
+  const st=_exitStats(list);
+  const waiting=employees.filter(e=>e.active===false&&e.retireDate&&!exitInterviews.some(x=>String(x.empId)===String(e.id)))
+    .sort((a,b)=>String(b.retireDate).localeCompare(String(a.retireDate))).slice(0,20);
+  const maxReason=Math.max(1,...Object.values(st.byReason));
+  c.innerHTML=`<div class="flex justify-between items-c mb3" style="gap:12px;flex-wrap:wrap">
+    <div class="flex items-c" style="gap:8px"><label class="fz12">기준 연도(퇴직일)</label><select class="fc" style="width:auto" onchange="window._exitYear=this.value;renderExitInterviewsPage()"><option value="">전체</option>${years.map(y=>`<option ${y===year?"selected":""}>${h(y)}</option>`).join("")}</select></div>
+    <div><button class="btn btn-secondary btn-sm" onclick="exportExitInterviewsCSV()">📥 다운로드</button> <button class="btn btn-primary" onclick="openExitInterviewModal(null,null)">＋ 면담 기록</button></div></div>
+  <div class="stat-grid mb3" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px">
+    <div class="card"><div class="card-body"><div class="fz11 text-gray">면담 완료</div><div style="font-size:22px;font-weight:800">${st.done}<span class="fz12 text-gray"> / ${st.total}건</span></div></div></div>
+    <div class="card"><div class="card-body"><div class="fz11 text-gray">평균 만족도(5점)</div><div style="font-size:22px;font-weight:800">${st.avgSat==null?"-":st.avgSat}</div></div></div>
+    <div class="card"><div class="card-body"><div class="fz11 text-gray">회사 추천 의향</div><div style="font-size:22px;font-weight:800">${st.recommendTotal?Math.round(st.recommendYes/st.recommendTotal*100)+"%":"-"}</div></div></div>
+    <div class="card"><div class="card-body"><div class="fz11 text-gray">재입사 가능</div><div style="font-size:22px;font-weight:800">${st.rehireYes}<span class="fz12 text-gray">명</span></div></div></div></div>
+  <div class="card mb3"><div class="card-head"><h3>퇴직 사유 분포</h3></div><div class="card-body">
+    ${st.done?Object.entries(st.byReason).filter(([,n])=>n>0).sort((a,b)=>b[1]-a[1]).map(([k,n])=>`<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px"><div class="fz12" style="width:110px">${h(EXIT_REASONS[k])}</div><div style="flex:1;background:#f1f5f9;border-radius:4px;height:14px"><div style="width:${Math.round(n/maxReason*100)}%;background:#3b82f6;height:14px;border-radius:4px"></div></div><div class="fz12" style="width:70px;text-align:right">${n}건 (${Math.round(n/st.done*100)}%)</div></div>`).join(""):`<div class="text-gray fz12">완료된 면담이 없습니다.</div>`}
+  </div></div>
+  ${waiting.length?`<div class="card mb3"><div class="card-head"><h3>면담 기록이 없는 퇴직자</h3></div><div class="card-body"><div style="display:flex;gap:6px;flex-wrap:wrap">${waiting.map(e=>`<button class="btn btn-secondary btn-sm" onclick="openExitInterviewModal(null,'${h(String(e.id)).replace(/'/g,"\\'")}')">${h(e.name)} <span class="fz11 text-gray">(${h(e.retireDate)})</span></button>`).join("")}</div></div></div>`:""}
+  <div class="card"><div class="card-body" style="padding:0"><div class="tbl-wrap"><table><thead><tr><th>대상자</th><th>퇴직일</th><th>면담일/면담자</th><th>사유</th><th>만족도</th><th>재입사</th><th>상태</th><th style="text-align:right">관리</th></tr></thead><tbody>
+  ${list.length?list.map(r=>`<tr>
+    <td><strong>${h(r.empName||_lcEmpName(r.empId))}</strong><div class="fz11 text-gray">${h(r.dept||"")} ${h(r.team||"")}</div></td>
+    <td class="fz12">${h(r.retireDate||"-")}</td>
+    <td class="fz12">${h(r.interviewDate||"-")}<div class="fz11 text-gray">${h(r.interviewerName||"")}</div></td>
+    <td class="fz12">${h(EXIT_REASONS[r.reasonCategory]||"-")}${r.reasonDetail?`<div class="fz11 text-gray" title="${h(r.reasonDetail)}">${h(r.reasonDetail.slice(0,30))}</div>`:""}</td>
+    <td class="fz12">${r.satisfaction?h(String(r.satisfaction)):"-"}</td>
+    <td class="fz12">${h(EXIT_REHIRE[r.rehireEligible]||"-")}</td>
+    <td>${badge(r.status==="done"?"완료":"예정",r.status==="done"?"green":"orange")}</td>
+    <td style="text-align:right;white-space:nowrap"><button class="btn btn-secondary btn-sm" onclick="openExitInterviewModal('${r.id}',null)">수정</button> <button class="btn btn-danger btn-sm" onclick="deleteExitInterview('${r.id}')">삭제</button></td></tr>`).join(""):`<tr><td colspan="8" style="padding:30px;text-align:center;color:#94a3b8">기록된 퇴직 면담이 없습니다.</td></tr>`}
+  </tbody></table></div></div></div>`;
+}
+function openExitInterviewModal(id,presetEmpId){
+  const r=id?exitInterviews.find(x=>x.id===id):null;
+  if(id&&!r)return;
+  const sel=r?.empId??presetEmpId??"";
+  const emp=sel!==""?getEmp(sel):null;
+  openModal(`<div class="modal-box" style="max-width:600px"><div class="modal-head"><h3>🚪 퇴직 면담 ${r?"수정":"기록"}</h3></div><div class="modal-body">
+    ${r||presetEmpId?`<div class="fg"><label class="fl">대상자</label><div><strong>${h(emp?.name||r?.empName||"")}</strong> <span class="fz11 text-gray">${h(emp?.dept||"")} ${h(emp?.team||"")}</span></div><input type="hidden" id="ei-emp" value="${h(String(sel))}"></div>`
+    :`<div class="fg"><label class="fl">대상자 검색(이름/사번)</label><input class="fc" id="ei-emp-search" placeholder="예: 홍길동" oninput="const s=$('#ei-emp');s.innerHTML=_sevEmpOptionsHtml(this.value)"></div><div class="fg"><label class="fl">대상자 <span class="req">*</span></label><select class="fc" id="ei-emp">${_sevEmpOptionsHtml("")}</select></div>`}
+    <div style="display:flex;gap:8px"><div class="fg" style="flex:1"><label class="fl">면담일</label><input class="fc" type="date" id="ei-date" value="${h(r?.interviewDate||_localDateStr())}"></div><div class="fg" style="flex:1"><label class="fl">면담자</label><input class="fc" id="ei-interviewer" maxlength="50" value="${h(r?.interviewerName||currentUser.name||"")}"></div></div>
+    <div style="display:flex;gap:8px"><div class="fg" style="flex:1"><label class="fl">상태</label><select class="fc" id="ei-status"><option value="done" ${r?.status!=="scheduled"?"selected":""}>면담 완료</option><option value="scheduled" ${r?.status==="scheduled"?"selected":""}>면담 예정</option></select></div><div class="fg" style="flex:1"><label class="fl">주된 퇴직 사유 (완료 시 필수)</label><select class="fc" id="ei-reason"><option value="">선택</option>${Object.entries(EXIT_REASONS).map(([k,v])=>`<option value="${k}" ${r?.reasonCategory===k?"selected":""}>${v}</option>`).join("")}</select></div></div>
+    <div class="fg"><label class="fl">퇴직 사유 상세</label><textarea class="fc" id="ei-detail" rows="3" maxlength="2000" placeholder="예: 직무 성장 기회가 부족하다고 느꼈음">${h(r?.reasonDetail||"")}</textarea></div>
+    <div style="display:flex;gap:8px"><div class="fg" style="flex:1"><label class="fl">회사 만족도</label><select class="fc" id="ei-sat"><option value="">-</option>${[1,2,3,4,5].map(n=>`<option ${Number(r?.satisfaction)===n?"selected":""}>${n}</option>`).join("")}</select></div><div class="fg" style="flex:1"><label class="fl">회사 추천 의향</label><select class="fc" id="ei-rec"><option value="">-</option><option value="yes" ${r?.wouldRecommend==="yes"?"selected":""}>추천</option><option value="no" ${r?.wouldRecommend==="no"?"selected":""}>비추천</option></select></div><div class="fg" style="flex:1"><label class="fl">재입사</label><select class="fc" id="ei-rehire"><option value="">-</option>${Object.entries(EXIT_REHIRE).map(([k,v])=>`<option value="${k}" ${r?.rehireEligible===k?"selected":""}>${v}</option>`).join("")}</select></div></div>
+    <div class="fg"><label class="fl">회사에 바라는 점·피드백</label><textarea class="fc" id="ei-feedback" rows="3" maxlength="3000" placeholder="예: 교육 지원과 성과 보상 기준을 명확히 해주면 좋겠다">${h(r?.feedback||"")}</textarea></div>
+    <div class="fz11 text-gray">퇴직 면담 기록은 관리자만 볼 수 있습니다.</div>
+  </div><div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal()">취소</button><button class="btn btn-primary" onclick="saveExitInterview('${id||""}')">저장</button></div></div>`);
+}
+function saveExitInterview(id){
+  const r=id?exitInterviews.find(x=>x.id===id):null;
+  const empId=$("#ei-emp")?.value||"";
+  const status=$("#ei-status")?.value||"done";
+  const reasonCategory=$("#ei-reason")?.value||"";
+  if(!empId){showToast("대상자를 선택하세요.","error");return;}
+  if(status==="done"&&!reasonCategory){showToast("면담을 완료로 저장하려면 주된 퇴직 사유를 선택하세요.","error");return;}
+  const emp=getEmp(empId);
+  const sat=$("#ei-sat")?.value;
+  const payload={empId,empName:emp?.name||r?.empName||"",dept:emp?.dept||r?.dept||"",team:emp?.team||r?.team||"",retireDate:emp?.retireDate||r?.retireDate||"",
+    interviewDate:$("#ei-date")?.value||"",interviewerName:($("#ei-interviewer")?.value||"").trim(),status,reasonCategory,
+    reasonDetail:($("#ei-detail")?.value||"").trim(),satisfaction:sat?Number(sat):null,wouldRecommend:$("#ei-rec")?.value||"",
+    rehireEligible:$("#ei-rehire")?.value||"",feedback:($("#ei-feedback")?.value||"").trim(),updatedAt:new Date().toISOString()};
+  if(r)exitInterviews=exitInterviews.map(x=>x.id===id?{...x,...payload}:x);
+  else exitInterviews.push({id:`exi-${genId()}`,...payload,createdBy:currentUser.id,createdAt:new Date().toISOString()});
+  closeModal();autoSaveToServerIfEnabled();
+  logAction("exit_interview_saved","퇴직 면담",payload.empName,EXIT_REASONS[reasonCategory]||"예정");
+  showToast("퇴직 면담이 저장되었습니다.","success");renderExitInterviewsPage();
+}
+async function deleteExitInterview(id){
+  const r=exitInterviews.find(x=>x.id===id);if(!r)return;
+  const ok=await askConfirmModal({title:"퇴직 면담 기록 삭제",danger:true,message:`${r.empName||_lcEmpName(r.empId)}님의 퇴직 면담 기록을 삭제합니다.`});
+  if(!ok)return;
+  _tombstone("exitInterviews",id);
+  exitInterviews=exitInterviews.filter(x=>x.id!==id);
+  autoSaveToServerIfEnabled();showToast("삭제했습니다.","info");renderExitInterviewsPage();
+}
+function exportExitInterviewsCSV(){
+  const rows=exitInterviews.map(r=>[r.empName||"",getEmp(r.empId)?.empNo||"",r.dept||"",r.team||"",r.retireDate||"",r.interviewDate||"",r.interviewerName||"",r.status==="done"?"완료":"예정",EXIT_REASONS[r.reasonCategory]||"",r.reasonDetail||"",r.satisfaction||"",r.wouldRecommend==="yes"?"추천":r.wouldRecommend==="no"?"비추천":"",EXIT_REHIRE[r.rehireEligible]||"",r.feedback||""]);
+  dlCSV(`퇴직면담_${_localDateStr()}.csv`,["이름","사번","부서","팀","퇴직일","면담일","면담자","상태","퇴직사유","사유상세","만족도","추천의향","재입사","피드백"],rows);
+}
 function renderMyContractsPage(){
   const c=$("#content");if(!c)return;
   const mine=laborContracts.filter(r=>String(r.empId)===String(currentUser.id)&&r.status!=="draft").sort((a,b)=>String(b.sentAt||b.createdAt||"").localeCompare(String(a.sentAt||a.createdAt||"")));
@@ -33203,6 +33306,11 @@ function renderNotificationCenterPage(){
   // 3b. 교육 과정(D3) — 이수 완료했지만 설문을 아직 제출하지 않은 과정이 있으면 안내.
   // 본인 신청 내역에 한정되는 개인 알림이라 전 역할 공통.
   const myPendingSurveys=trainingEnrollments.filter(e=>String(e.empId)===String(u.id)&&e.status==="completed"&&!e.surveyResponse&&trainingCourses.find(cs=>cs.id===e.courseId)?.surveyEnabled);
+  if(u.role==="admin"){
+    const cutoff=_localDateStr(new Date(Date.now()-30*86400000));
+    const noInterview=employees.filter(e=>e.active===false&&e.retireDate&&e.retireDate>=cutoff&&!exitInterviews.some(x=>String(x.empId)===String(e.id)));
+    if(noInterview.length>0)items.push({type:"exit-interview",pri:2,icon:"🚪",title:`퇴직 면담 미기록 ${noInterview.length}명`,desc:noInterview.map(e=>e.name).join(" · "),date:todayStr,action:"exit-interviews"});
+  }
   const myContractsToSign=laborContracts.filter(c=>String(c.empId)===String(u.id)&&c.status==="sent");
   if(myContractsToSign.length>0)items.push({type:"labor-contract",pri:1,icon:"✍️",title:`서명할 근로계약 ${myContractsToSign.length}건`,desc:myContractsToSign.map(c=>c.title).join(" · "),date:todayStr,action:"my-contracts"});
   if(myPendingSurveys.length>0)items.push({type:"training-survey",pri:2,icon:"📝",title:`교육 만족도 설문 미제출 ${myPendingSurveys.length}건`,desc:myPendingSurveys.map(e=>trainingCourses.find(cs=>cs.id===e.courseId)?.title).filter(Boolean).join(" · "),date:todayStr,action:"training-courses"});
