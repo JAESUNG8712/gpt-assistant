@@ -706,6 +706,10 @@ function filterDataForRole(data, auth) {
   if (!canManageTraining(auth) && Array.isArray(out.trainingEnrollments)) {
     out.trainingEnrollments = out.trainingEnrollments.filter(e => e && String(e.empId) === myId);
   }
+  // 근로계약은 본인 계약 중 발송된 것(작성중 제외)만 보인다. 관리자는 전체.
+  if (auth.role !== "admin" && Array.isArray(out.laborContracts)) {
+    out.laborContracts = out.laborContracts.filter(c => c && String(c.empId) === myId && c.status !== "draft");
+  }
   if (auth.role !== "admin" && Array.isArray(out.payslips)) {
     out.payslips = out.payslips.filter(p => p && String(p.empId) === myId);
   }
@@ -1722,6 +1726,9 @@ const _WRITE_GATED_FIELDS = {
   // D5(세무/사회보험 참고용 화면) — 실제 신고 효력은 없는 참고용 기록이지만, 임의 직원 명의로
   // 조작되면 인사기록 신뢰도를 해친다. admin 전용.
   socialInsuranceRecords: { roles: ["admin"], pageIds: "tax-social-insurance" },
+  // 근로계약 전자서명 — 관리자가 작성·발송하고 직원은 본인 계약에만 서명/거절한다. 상태 전이와
+  // 내용 불변은 _sanitizeLaborContract가 강제한다(roles/ownField는 기본 통과 판정용).
+  laborContracts: { roles: ["admin"], pageIds: ["labor-contracts", "my-contracts"], ownField: "empId" },
 };
 // menuPerms(개인별로 끈 메뉴) 확장 — 위 role 기반 승인/게이팅과 별개로, 관리자가 특정 직원의
 // 해당 화면 메뉴 자체를 꺼뒀다면 role상 자격이 있어도(예: admin, 또는 그 부서의 director) 그
@@ -1863,6 +1870,65 @@ function _okrIsManagerOf(actor, actorEmp, ownerEmp) {
 // targetEmp: field==="compSessions"일 때만 쓰이는, 호출부가 미리 조회해둔 incoming.targetId의
 // 직원 레코드(_canManageCompSessionTarget 판정용 — JSON모드는 _fileStore.employees에서,
 // Postgres모드는 별도 쿼리로 동일하게 조회해 호출부가 넘겨준다).
+// ── 근로계약 전자서명 ─────────────────────────────────────────────────────────────
+// 상태: draft(작성중) → sent(발송) → signed(서명)/declined(거절). 발송 후에는 내용(제목·기간·본문)을
+// 바꿀 수 없고, 발송 시점의 내용 해시(contentHash)를 서명 시 signedHash로 함께 남긴다.
+// 관리자: 작성·수정(draft/거절 후 재작성)·발송·취소. 서명 완료/취소된 계약은 변경 불가.
+// 직원: 본인(empId) 계약이 sent일 때만 서명(본인 이름 입력 필수) 또는 거절. 그 외 필드는 저장본 유지.
+const _LC_CONTENT_FIELDS = ["empId", "title", "contractType", "startDate", "endDate", "content"];
+function _laborContractHash(rec) {
+  return crypto.createHash("sha256").update(JSON.stringify(
+    [String(rec.empId), rec.title || "", rec.contractType || "", rec.startDate || "", rec.endDate || "", rec.content || ""])).digest("hex");
+}
+function _sanitizeLaborContract(incoming, stored, actor, actorEmp) {
+  const keep = () => (stored ? { ...stored } : null);
+  if (!actor || !incoming) return keep();
+  if (stored && JSON.stringify(stored) === JSON.stringify(incoming)) return incoming;
+  const nowIso = new Date().toISOString();
+  const rev = incoming._rev !== undefined ? incoming._rev : stored?._rev;
+  const finish = (rec, action) => {
+    const out = { ...rec, updatedAt: nowIso };
+    if (rev !== undefined) out._rev = rev;
+    if (action) out.history = [...(stored?.history || []), { at: nowIso, by: actor.empId, action }].slice(-50);
+    return out;
+  };
+  const prev = stored ? stored.status : "draft";
+  if (actor.role === "admin") {
+    if (!_menuPermsAllow("labor-contracts", actor)) return keep();
+    if (stored && ["signed", "cancelled"].includes(stored.status)) return keep();
+    const target = incoming.status;
+    const allowed = { draft: ["draft", "sent", "cancelled"], declined: ["declined", "draft", "cancelled"], sent: ["sent", "cancelled"] }[prev] || [];
+    if (!allowed.includes(target)) return keep();
+    const editable = prev === "draft" || (prev === "declined" && target === "draft");
+    if (stored && target === prev && (!editable || _LC_CONTENT_FIELDS.every(key => String(incoming[key] ?? "") === String(stored[key] ?? "")))) return keep();
+    const base = stored ? { ...stored } : { id: incoming.id, createdBy: actor.empId, createdAt: nowIso };
+    for (const key of _LC_CONTENT_FIELDS) base[key] = editable ? incoming[key] : (stored ? stored[key] : incoming[key]);
+    base.status = target;
+    if (target === "sent" && prev !== "sent") { base.contentHash = _laborContractHash(base); base.sentAt = nowIso; }
+    if (target === "draft" && prev === "declined") {
+      for (const key of ["signatureName", "signatureData", "declineReason", "signedAt", "signedHash", "contentHash", "sentAt"]) delete base[key];
+    }
+    if (target === "cancelled") base.cancelledAt = nowIso;
+    const action = target !== prev ? { sent: "sent", cancelled: "cancelled", draft: "reopened" }[target] : (!stored ? "created" : null);
+    return finish(base, action || (!stored ? "created" : null));
+  }
+  // 직원 본인 서명/거절
+  if (!stored || stored.status !== "sent" || actor.empId == null || String(stored.empId) !== String(actor.empId)) return keep();
+  if (!_menuPermsAllow("my-contracts", actor)) return keep();
+  if (incoming.status === "signed") {
+    const name = String(incoming.signatureName || "").trim();
+    if (!name || name.length > 50 || !actorEmp || name !== String(actorEmp.name || "").trim()) return keep();
+    const sig = incoming.signatureData == null ? "" : String(incoming.signatureData);
+    if (sig && (!/^data:image\/png;base64,[A-Za-z0-9+/=]+$/.test(sig) || sig.length > 150000)) return keep();
+    return finish({ ...stored, status: "signed", signedAt: nowIso, signatureName: name, signatureData: sig, signedHash: stored.contentHash }, "signed");
+  }
+  if (incoming.status === "declined") {
+    const reason = String(incoming.declineReason || "").trim();
+    if (!reason || reason.length > 500) return keep();
+    return finish({ ...stored, status: "declined", declineReason: reason }, "declined");
+  }
+  return keep();
+}
 function _sanitizeGatedRecord(field, incoming, stored, actor, actorEmp, settings, approvalDocForGate, targetEmp, engagementSurveys, reviewOwnerEmp) {
   const rule = _APPROVAL_GATED_FIELDS[field];
   if (!rule || !incoming) return incoming;
@@ -2143,6 +2209,7 @@ function _sanitizeGatedRecord(field, incoming, stored, actor, actorEmp, settings
   // 평가한다 — director/leader는 "eval-ops"(admin 전용 화면) 메뉴 권한이 아니라 이미
   // 갖고 있는 "comp-eval" 메뉴 권한을 기준으로, 자기 하위조직원(targetEmp)에 한해서만
   // 허용한다(_canManageCompSessionTarget 주석 참고).
+  if (field === "laborContracts") return _sanitizeLaborContract(incoming, stored, actor, actorEmp);
   if (field === "compSessions") {
     if (stored && JSON.stringify(stored) === JSON.stringify(incoming)) return incoming;
     const pageOk = actor && actor.role === "admin"
@@ -2607,6 +2674,19 @@ function _validateFieldValues(field, rec, storedList) {
       const sat = Number(sr.satisfaction);
       if (!Number.isInteger(sat) || sat < 1 || sat > 5) return false;
       if (sr.comment != null && (typeof sr.comment !== "string" || sr.comment.length > 1000)) return false;
+    }
+  } else if (field === "laborContracts") {
+    if (String(rec.empId ?? "").trim() === "") return false;
+    if (!["draft", "sent", "signed", "declined", "cancelled"].includes(rec.status)) return false;
+    if (typeof rec.title !== "string" || !rec.title.trim() || rec.title.length > 100) return false;
+    if (typeof rec.content !== "string" || !rec.content.trim() || rec.content.length > 20000) return false;
+    if (rec.contractType != null && (typeof rec.contractType !== "string" || rec.contractType.length > 30)) return false;
+    if ([rec.startDate, rec.endDate].some(value => value && !_validCalendarDate(value))) return false;
+    if (rec.startDate && rec.endDate && rec.endDate < rec.startDate) return false;
+    if (rec.signatureName != null && (typeof rec.signatureName !== "string" || rec.signatureName.length > 50)) return false;
+    if (rec.declineReason != null && (typeof rec.declineReason !== "string" || rec.declineReason.length > 500)) return false;
+    if (rec.signatureData) {
+      if (typeof rec.signatureData !== "string" || rec.signatureData.length > 150000 || !/^data:image\/png;base64,[A-Za-z0-9+/=]+$/.test(rec.signatureData)) return false;
     }
   } else if (field === "wageGarnishments" || field === "severanceSettlements" || field === "socialInsuranceRecords") {
     // 세 컬렉션 모두 empId가 필수이고(실제 재직자 명의로만 존재해야 하는 인사기록), 금액류
@@ -3121,6 +3201,7 @@ const _SAVE_FEEDBACK_FIELDS = {
   // 아래 명시 필드는 읽기 응답의 일부 필드가 숨겨지는 경우 비교 범위를 좁힌다.
   ...Object.fromEntries(Object.keys(_APPROVAL_GATED_FIELDS).map(field => [field, null])),
   employmentRecords: ["employeeId", "type", "title", "status", "startDate", "endDate", "decisionDate", "note", "documentRef", "reviewOwnerId", "reviewStatus", "reviewDecision", "reviewNote"],
+  laborContracts: ["empId", "title", "contractType", "startDate", "endDate", "content", "status", "signatureName", "declineReason"],
   learningCourses: ["name", "category", "provider", "instructorName", "delivery", "startDate", "endDate", "hours", "capacity", "cost", "status", "description", "internalNote"],
   learningAssignments: ["courseId", "empId", "status", "assignedAt", "dueDate", "completedAt", "score", "certificateNo", "evidenceRef", "note", "source", "sourceDocId", "approvedCost", "costCenter", "settlementStatus", "settledAt", "settledAmount", "settlementNote"],
   approvalDocs: null,
@@ -3325,6 +3406,8 @@ async function _persistDataLocked(data, changedBy = "system", companyId = null, 
           return true;
         }
         if (field === "workforceScenarios" && stored.status === "approved") { rejectSaveDeletion(field, t); return false; }
+        // 근로계약: 관리자만, 작성중·거절·취소 상태만 삭제할 수 있다(발송·서명된 계약은 증빙이라 보존).
+        if (field === "laborContracts" && (actor?.role !== "admin" || ["sent", "signed"].includes(stored.status))) { rejectSaveDeletion(field, t); return false; }
         if (!_writeGateAllowed(field, stored, actor, actorEmp, prior.settings)) { rejectSaveDeletion(field, t); return false; }
         return true;
       });
