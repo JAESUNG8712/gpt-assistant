@@ -178,6 +178,10 @@ AI가 반환한 값도 그대로 신뢰하지 않는다 — `birth`는 실제 �
 | `RESUME_IMAGE_MAX_PIXELS` | 아니오 | `40000000`(40MP) | 이력서 이미지(png/jpg/webp)의 가로×세로 픽셀 수 상한(디코드 전 헤더만으로 판정). |
 | `RESUME_MAX_CONCURRENT` | 아니오 | `3` | 이력서 분석 요청의 동시 처리 개수 상한(시간창 기반 rate limit과 별개). |
 | `GROQ_API_KEY` | 이력서/채용 AI 파싱 기능에 필요 | (미설정) | 없으면 이력서 자동입력은 503(`RESUME_AI_UNAVAILABLE`), 채용 모듈 AI 파싱은 기능 자체가 비활성화됨(무료 발급: https://console.groq.com). |
+| `SMTP_HOST` / `SMTP_FROM` | 이메일 발송 기능에 필요 | (미설정) | 둘 다 있어야 메일 발송이 활성화된다. 미설정이면 채용 통보 메일은 503(`MAIL_NOT_CONFIGURED`). 상태는 `GET /api/mail/status`(관리자). |
+| `SMTP_PORT` / `SMTP_SECURE` | 아니오 | `587` / `false` | `SMTP_SECURE=true`면 연결 즉시 TLS(기본 포트 465). 아니면 서버가 STARTTLS를 지원할 때 자동으로 TLS로 전환한다. |
+| `SMTP_USER` / `SMTP_PASS` | 아니오 | (없음) | 인증(AUTH PLAIN/LOGIN). 암호화되지 않은 비루프백 연결에서는 보내지 않으며(`SMTP_ALLOW_PLAIN_AUTH=true`로 허용), 어떤 API에도 노출되지 않는다. |
+| `SMTP_TIMEOUT_MS` | 아니오 | `15000` | 메일 서버 연결/응답 제한 시간. |
 | `DEMO_ADMIN_PASSWORD` | `scripts/seed-demo.js` 실행 시 필수 | (미설정) | 생성될 데모 관리자 계정(`demo_admin`)의 로그인 비밀번호(8자 이상). bcrypt 해시로만 저장되고 콘솔에는 로그인 ID만 출력됨. |
 | `PARSE_SHEET_TIMEOUT_MS` | 아니오 | `15000` | (`budget.js`) 예산/사업계획 엑셀 업로드 5개 라우트의 파일 파싱 타임아웃(밀리초). SheetJS는 보안 패치된 공식 배포판 0.20.3을 사용하며, 파싱은 별도 워커 스레드에서 실행된다. 이 시간을 넘기면 해당 워커만 강제 종료되고 400 오류를 반환해 손상되거나 비정상적으로 복잡한 파일이 멀티테넌트 서버 전체를 멈추지 못하게 한다(`lib/parse-sheet-worker.js` 참고). |
 | `READINESS_DB_TIMEOUT_MS` | 아니오 | `3000` | `/readyz`의 PostgreSQL 확인 쿼리 제한시간(밀리초). DB 연결은 열려 있지만 쿼리가 멈춘 상태에서 배포 헬스체크가 무기한 대기하지 않도록 한다. |
@@ -239,3 +243,9 @@ AI가 반환한 값도 그대로 신뢰하지 않는다 — `birth`는 실제 �
    이 문서를 갱신해달라고 요청하거나 직접 고쳐도 됩니다.
 4. 백엔드 쪽에 새 기능이 필요하면(예: 모바일 전용 경량 API), 이 문서에 "다음 세션에 요청할 백엔드
    작업" 섹션을 추가해 남겨두면 원래 세션에서 이어서 처리할 수 있습니다.
+
+### 1.6 이메일 발송
+
+- `GET /api/mail/status` (관리자) — `{ok, mail:{configured, host, port, secure, from, auth}}` (비밀번호·계정은 포함하지 않음).
+- `POST /api/mail/test` (관리자) — body `{to}`로 테스트 메일 1통 발송. 400 형식 오류, 503 `MAIL_NOT_CONFIGURED`, 502 `MAIL_SEND_FAILED`.
+- `POST /api/recruit/candidates/:id/notice`에 선택 필드 `sendEmail:true`를 주면 서버에 저장된 지원자 이메일로 통보 내용을 발송한다(수신 주소는 클라이언트 값을 쓰지 않음). 성공 시 `noticeHistory[].emailedTo`에 기록되고, 실패하면 이력이 남지 않는다(400 `CANDIDATE_EMAIL_MISSING`, 503 `MAIL_NOT_CONFIGURED`, 502 `MAIL_SEND_FAILED`).
