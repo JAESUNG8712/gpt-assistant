@@ -103,7 +103,7 @@ test("ERP document transitions preserve linked records and reject stale operatio
     const { id } = created.reply.salesTarget;
     assert.equal(created.after.length, created.before.length + 1);
     assert.deepEqual(disk().salesTargets, created.after);
-    const updated = await failAndRetry(route, { ...target, id, targetAmount: 2500 }, route, "salesTargets");
+    const updated = await failAndRetry(route, { ...target, id, _rev: created.reply.salesTarget._rev, targetAmount: 2500 }, route, "salesTargets");
     assert.equal(updated.after.length, created.after.length);
     assert.equal(updated.after.find(row => row.id === id).targetAmount, 2500);
     assert.deepEqual(disk().salesTargets, updated.after);
@@ -141,7 +141,7 @@ test("ERP document transitions preserve linked records and reject stale operatio
     const unusedItem = (await api("items", "POST", { code: "UNUSED", name: "Unused item" })).item;
     const unusedWarehouse = (await api("locations", "POST", { name: "Unused warehouse" })).location;
     for (const [collection, original] of [["items", unusedItem], ["locations", unusedWarehouse]]) {
-      const created = { ...original, id: "master-retry", code: "RETRY", name: "Retry record" };
+      const created = { ...original, _rev: undefined, id: "master-retry", code: "RETRY", name: "Retry record" };
       const edited = { ...original, name: "Updated record" };
       const before = (await api(collection))[collection];
       const backup = file + ".master-test";
@@ -512,3 +512,21 @@ if (!ADMIN_DATABASE_URL) {
     });
   });
 }
+
+
+test("legacy ERP masters require an explicit legacy revision and upgrade after one edit", async t => {
+  const seedErp={items:[{id:"legacy-item",code:"LEGACY",name:"Original"}],locations:[{id:"legacy-location",name:"Original"}],salesTargets:[{id:"legacy-target",year:2031,targetAmount:100}],quotations:[],purchaseOrders:[],purchaseRequests:[],stockLedger:[],quoteSeq:{},poSeq:{}};
+  const server=await startServer({seedErp});t.after(()=>server.stop());
+  const {token}=await bootstrapAdminAndLogin(server,{loginId:"legacy-master-admin",pw:"LegacyMasterTest123!"});
+  for(const [route,field,key] of [["items","items","item"],["locations","locations","location"],["sales-targets","salesTargets","salesTarget"]]){
+    const original=seedErp[field][0];
+    const save=body=>fetch(server.baseUrl+"/api/erp/"+route,{method:"POST",headers:{Authorization:"Bearer "+token,"Content-Type":"application/json"},body:JSON.stringify(body)});
+    assert.equal((await save({...original,name:"Blind"})).status,409);
+    const updated=await save({...original,_rev:"legacy",name:"Updated",targetAmount:200});
+    assert.equal(updated.status,200);
+    const saved=(await updated.json())[key];assert.equal(typeof saved._rev,"string");assert.notEqual(saved._rev,"legacy");
+    assert.equal((await save({...original,_rev:"legacy"})).status,409);
+    const persisted=JSON.parse(fs.readFileSync(server.dataFile.replace(/\.json$/,"-erp.json"),"utf8"));
+    assert.deepEqual(persisted[field][0],saved);
+  }
+});
