@@ -24247,11 +24247,14 @@ async function saveErpMasterRequest(path,body){
     if(result?.code==="ERP_MASTER_CONFLICT"){
       const kind=path.endsWith("/items")?"items":path.endsWith("/locations")?"locations":null;
       if(!kind)return result;
+      const editor=$(kind==="items"?"#item-revision":"#loc-revision")?.closest(".modal-ov");
       const reload=await askConfirmModal({title:"다른 사용자의 변경 내용 확인",message:"먼저 저장된 변경이 있어 현재 입력을 저장하지 않았습니다. 최신 내용을 불러오면 지금 입력한 내용이 교체됩니다.",confirmText:"최신 내용 불러오기",cancelText:"입력 유지",warnings:["입력을 유지해도 최신 자료를 다시 확인하기 전에는 저장할 수 없습니다."]});
       if(!reload)return {ok:false,cancelled:true};
       const latest=await serverRequest("GET",path);
       if(!latest?.ok)return {ok:false,message:"최신 자료를 불러오지 못했습니다. 입력 내용은 유지됩니다."};
       if(!latest[kind]?.some(row=>row.id===body.id))return {ok:false,message:"자료가 삭제되었습니다. 입력 내용을 확인하고 다시 시도하세요."};
+      if(!editor?.isConnected||_modalStack().at(-1)!==editor)return {ok:false,cancelled:true};
+      closeModal();
       if(kind==="items"){erpItems=latest.items;openItemModal(body.id);}
       else {erpLocations=latest.locations;openLocationModal(body.id);}
       return {ok:false,cancelled:true};
