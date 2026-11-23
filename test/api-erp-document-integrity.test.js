@@ -142,7 +142,7 @@ test("ERP document transitions preserve linked records and reject stale operatio
     const unusedWarehouse = (await api("locations", "POST", { name: "Unused warehouse" })).location;
     for (const [collection, original] of [["items", unusedItem], ["locations", unusedWarehouse]]) {
       const created = { ...original, id: "master-retry", code: "RETRY", name: "Retry record" };
-      const edited = { ...original, name: "Updated record" };
+      const edited = { ...original, name: "Updated record", expectedUpdatedAt: original.updatedAt }; // 기존 레코드 수정은 revision 필수
       const before = (await api(collection))[collection];
       const backup = file + ".master-test";
       fs.renameSync(file, backup);
