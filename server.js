@@ -10915,11 +10915,10 @@ function _commitFileErp(state) {
   _atomicWriteFileSync(erpFile, JSON.stringify(state, null, 2));
   _fileErp = state;
 }
-function _commitFileErpMaster(collection, id, row, restore = false, revision) {
+function _commitFileErpMaster(collection, id, row, restore = false) {
   const stored = _fileErp[collection];
   const deletedIds = new Set(_fileErp.masterTombstones?.[collection] || []);
   if (row && deletedIds.has(id) && !restore) throw _erpMasterDeleted();
-  if (row && !restore && revision) _assertErpMasterRevision(stored.find(entry => entry.id === id), revision.expected);
   const rows = row ? stored.slice() : stored.filter(entry => entry.id !== id);
   if (row) {
     const index = rows.findIndex(entry => entry.id === id);
@@ -10931,49 +10930,16 @@ function _commitFileErpMaster(collection, id, row, restore = false, revision) {
   _commitFileErp({ ..._fileErp, [collection]: rows,
     masterTombstones: { ..._fileErp.masterTombstones, [collection]: [...deletedIds] } });
 }
-// 품목·창고 같은 활성 마스터는 계정과목·거래처와 같이 폼 전체를 다시 제출하는 방식이라, 두 관리자가
-// 같은 레코드를 동시에 고치면 나중 저장이 먼저 저장을 통째로 덮어쓴다. 기존 레코드 수정은 화면을 연
-// 시점의 updatedAt(`expectedUpdatedAt`)을 반드시 보내야 하고(428), 값이 다르면 409(최신본 포함)다.
-// updatedAt이 아직 없는 레거시 레코드는 빈 문자열이 "최신"이다(화면은 `updatedAt ?? ""`를 보낸다).
-function _assertErpMasterRevision(current, expected) {
-  if (!current) return; // 새 레코드
-  if (expected === undefined || expected === null) {
-    throw httpError(428, "ERP_REVISION_REQUIRED", "수정에는 화면을 연 시점의 최신 정보(expectedUpdatedAt)가 필요합니다. 화면을 새로고침한 뒤 다시 시도하세요.");
-  }
-  if (String(current.updatedAt ?? "") !== String(expected)) {
-    throw httpError(409, "ERP_MASTER_CONFLICT", "다른 사용자가 먼저 수정했습니다. 최신 내용을 불러온 뒤 다시 시도하세요.", { latest: current });
-  }
-}
 function _erpMasterDeleted() {
   return httpError(409, "ERP_MASTER_DELETED", "다른 작업에서 삭제된 자료입니다. 현재 입력 내용으로 복원할지 확인해 주세요.");
 }
 const ERP_MASTER_TABLES = new Map([
   ["items", "erp_items"], ["locations", "erp_locations"], ["salesTargets", "erp_sales_targets"],
 ]);
-// revision: 품목·창고는 { expected }를 넘겨 낙관적 락을 켠다(영업 목표는 생략 = 기존 동작).
-async function _saveErpMaster(collection, id, companyId, row, restore, revision) {
-  if (USE_JSON_FILE) return _commitFileErpMaster(collection, id, row, restore === true, revision);
+async function _saveErpMaster(collection, id, companyId, row, restore) {
+  if (USE_JSON_FILE) return _commitFileErpMaster(collection, id, row, restore === true);
   const table = ERP_MASTER_TABLES.get(collection);
   if (!table) throw new Error("Unknown ERP master type");
-  if (revision && restore !== true) {
-    // 읽기는 오류 메시지용일 뿐, 실제 경합 차단은 아래 조건부 UPDATE의 WHERE절이 담당한다.
-    const { rows } = await pool.query(`SELECT data, is_deleted FROM ${table} WHERE id = $1 AND company_id = $2`, [id, companyId]);
-    const cur = rows[0];
-    if (cur && cur.is_deleted) throw _erpMasterDeleted();
-    if (cur) {
-      _assertErpMasterRevision(cur.data, revision.expected);
-      const upd = await pool.query(
-        `UPDATE ${table} SET data = $3, updated_at = NOW() WHERE id = $1 AND company_id = $2 AND is_deleted = FALSE AND COALESCE(data->>'updatedAt','') = $4 RETURNING id`,
-        [id, companyId, row, String(revision.expected ?? "")]);
-      if (upd.rowCount) return;
-      const latest = await pool.query(`SELECT data, is_deleted FROM ${table} WHERE id = $1 AND company_id = $2`, [id, companyId]);
-      if (!latest.rows[0] || latest.rows[0].is_deleted) throw _erpMasterDeleted();
-      throw httpError(409, "ERP_MASTER_CONFLICT", "다른 사용자가 먼저 수정했습니다. 최신 내용을 불러온 뒤 다시 시도하세요.", { latest: latest.rows[0].data });
-    }
-    const ins = await pool.query(`INSERT INTO ${table} (id, company_id, data) VALUES ($1,$2,$3) ON CONFLICT (company_id, id) DO NOTHING RETURNING id`, [id, companyId, row]);
-    if (!ins.rowCount) throw httpError(409, "ERP_MASTER_CONFLICT", "다른 사용자가 먼저 같은 자료를 등록했습니다. 최신 내용을 불러온 뒤 다시 시도하세요.");
-    return;
-  }
   const result = await pool.query(
     `INSERT INTO ${table} (id, company_id, data) VALUES ($1,$2,$3)
      ON CONFLICT (company_id, id) DO UPDATE SET data = $3, is_deleted = FALSE, updated_at = NOW()
@@ -11188,16 +11154,16 @@ app.post("/api/erp/items", async (req, res) => {
     if (!requireAdmin(req, res)) return;
     if (!requirePage(req, res, "inv-items")) return;
     const companyId = req.auth.companyId || null;
-    const { id, code, name, productName, assetNo, unit, category, safetyStock = 0, unitCost = 0, leadTimeDays = 0, active = true, expectedUpdatedAt } = req.body || {};
+    const { id, code, name, productName, assetNo, unit, category, safetyStock = 0, unitCost = 0, leadTimeDays = 0, active = true } = req.body || {};
     if (!code || !name) return res.status(400).json({ ok: false, message: "품목코드, 품목명은 필수입니다." });
     const itemId = id || `item_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     // leadTimeDays: 발주~입고까지 걸리는 평균 일수(미설정/0 = 재주문점 계산에서 리드타임을
     // 반영하지 않고 기존 단순 부족분(안전재고-현재재고) 방식으로 폴백) — 음수는 의미가
     // 없으므로 0 이상으로 clamp.
-    const item = { id: itemId, code, name, productName: productName || "", assetNo: assetNo || "", unit: unit || "EA", category: category || "", safetyStock: Number(safetyStock) || 0, unitCost: Number(unitCost) || 0, leadTimeDays: Math.max(0, Number(leadTimeDays) || 0), active, updatedAt: new Date().toISOString() };
-    await _saveErpMaster("items", itemId, req.auth.companyId || null, item, req.body.restore, { expected: expectedUpdatedAt });
+    const item = { id: itemId, code, name, productName: productName || "", assetNo: assetNo || "", unit: unit || "EA", category: category || "", safetyStock: Number(safetyStock) || 0, unitCost: Number(unitCost) || 0, leadTimeDays: Math.max(0, Number(leadTimeDays) || 0), active };
+    await _saveErpMaster("items", itemId, req.auth.companyId || null, item, req.body.restore);
     res.json({ ok: true, item });
-  } catch (e) { res.status(e.status || 500).json({ ok: false, code: e.code, message: _safeErrMsg(e), latest: e.details?.latest }); }
+  } catch (e) { res.status(e.status || 500).json({ ok: false, code: e.code, message: _safeErrMsg(e) }); }
 });
 
 app.post("/api/erp/items/:id/delete", async (req, res) => {
@@ -11230,13 +11196,13 @@ app.post("/api/erp/locations", async (req, res) => {
     if (!requireAdmin(req, res)) return;
     if (!requirePage(req, res, "inv-locations")) return;
     const companyId = req.auth.companyId || null;
-    const { id, name, address, active = true, expectedUpdatedAt } = req.body || {};
+    const { id, name, address, active = true } = req.body || {};
     if (!name) return res.status(400).json({ ok: false, message: "위치명은 필수입니다." });
     const locId = id || `loc_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-    const loc = { id: locId, name, address: address || "", active, updatedAt: new Date().toISOString() };
-    await _saveErpMaster("locations", locId, req.auth.companyId || null, loc, req.body.restore, { expected: expectedUpdatedAt });
+    const loc = { id: locId, name, address: address || "", active };
+    await _saveErpMaster("locations", locId, req.auth.companyId || null, loc, req.body.restore);
     res.json({ ok: true, location: loc });
-  } catch (e) { res.status(e.status || 500).json({ ok: false, code: e.code, message: _safeErrMsg(e), latest: e.details?.latest }); }
+  } catch (e) { res.status(e.status || 500).json({ ok: false, code: e.code, message: _safeErrMsg(e) }); }
 });
 
 app.post("/api/erp/locations/:id/delete", async (req, res) => {

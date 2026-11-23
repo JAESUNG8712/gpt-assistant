@@ -24244,13 +24244,6 @@ function openItemModal(id){
 async function saveErpMasterRequest(path,body){
   try {
     const result=await serverRequest("POST",path,body);
-    if(result?.code==="ERP_MASTER_CONFLICT"||result?.code==="ERP_REVISION_REQUIRED"){
-      // 다른 사용자가 먼저 수정했다 — 최신 목록을 다시 불러와 화면을 갱신하고 다시 열어 확인하게 한다.
-      if(typeof loadErpFromServer==="function")await loadErpFromServer();
-      closeModal();
-      if(currentPage==="inv-items")renderInvItemsPage();else if(currentPage==="inv-locations")renderInvLocationsPage();
-      return {ok:false,message:result.message||"다른 사용자가 먼저 수정했습니다. 최신 내용을 불러왔으니 다시 수정해 주세요."};
-    }
     if(result?.code!=="ERP_MASTER_DELETED")return result;
     const restore=await askConfirmModal({title:"삭제된 자료 복원 확인",message:"다른 작업에서 이 자료가 삭제되었습니다. 현재 입력 내용으로 복원하시겠습니까?",confirmText:"복원하여 저장",danger:true,impacts:[{label:"복원 대상",value:body.name||body.id||"영업 목표"}],warnings:["복원 후에는 다른 사용자의 목록에서도 다시 표시됩니다."]});
     if(!restore)return {ok:false,cancelled:true};
@@ -24262,8 +24255,7 @@ async function saveErpMasterRequest(path,body){
 async function saveItem(id){
   const code=$("#item-code")?.value.trim(),name=$("#item-name")?.value.trim();
   if(!code||!name){showToast("품목코드와 품목명을 입력하세요.","error");return;}
-  const prev=id?erpItems.find(i=>i.id===id):null;
-  const body={id:id||undefined,...(prev?{expectedUpdatedAt:prev.updatedAt??""}:{}),code,name,productName:$("#item-pname")?.value.trim(),assetNo:$("#item-asset")?.value.trim(),unit:$("#item-unit")?.value.trim(),category:$("#item-category")?.value.trim(),safetyStock:+$("#item-safety")?.value||0,unitCost:+$("#item-cost")?.value||0,leadTimeDays:Math.max(0,+$("#item-leadtime")?.value||0),active:$("#item-active")?.checked,role:currentUser.role,user:currentUser.name};
+  const body={id:id||undefined,code,name,productName:$("#item-pname")?.value.trim(),assetNo:$("#item-asset")?.value.trim(),unit:$("#item-unit")?.value.trim(),category:$("#item-category")?.value.trim(),safetyStock:+$("#item-safety")?.value||0,unitCost:+$("#item-cost")?.value||0,leadTimeDays:Math.max(0,+$("#item-leadtime")?.value||0),active:$("#item-active")?.checked,role:currentUser.role,user:currentUser.name};
   const r=await saveErpMasterRequest("/api/erp/items",body);
   if(r?.cancelled)return;
   if(!r?.ok){showToast(r?.message||"저장에 실패했습니다.","error");return;}
@@ -24328,8 +24320,7 @@ function openLocationModal(id){
 async function saveLocation(id){
   const name=$("#loc-name")?.value.trim();
   if(!name){showToast("위치명을 입력하세요.","error");return;}
-  const prevLoc=id?erpLocations.find(l=>l.id===id):null;
-  const body={id:id||undefined,...(prevLoc?{expectedUpdatedAt:prevLoc.updatedAt??""}:{}),name,address:$("#loc-address")?.value.trim(),active:$("#loc-active")?.checked,role:currentUser.role,user:currentUser.name};
+  const body={id:id||undefined,name,address:$("#loc-address")?.value.trim(),active:$("#loc-active")?.checked,role:currentUser.role,user:currentUser.name};
   const r=await saveErpMasterRequest("/api/erp/locations",body);
   if(r?.cancelled)return;
   if(!r?.ok){showToast(r?.message||"저장에 실패했습니다.","error");return;}
