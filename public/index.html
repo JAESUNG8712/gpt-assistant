@@ -9730,7 +9730,7 @@ function openRetireModal(id){
   </div>
   <div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal()">취소</button><button class="btn btn-danger" onclick="submitRetire(${id})">퇴직 처리</button></div></div>`);
 }
-function submitRetire(id){
+async function submitRetire(id){
   const date=$("#rt-date")?.value,reason=$("#rt-reason")?.value;
   if(!date||!reason){showToast("퇴직일과 사유를 입력하세요.","error");return;}
   const note=$("#rt-note")?.value.trim()||"";
@@ -9745,6 +9745,13 @@ function submitRetire(id){
   closeModal();showToast("퇴직 처리가 완료되었습니다.","info");renderHRListTbl();
   if(currentPage==="biz-plan")renderBizPlanPage();
   else if(currentPage==="hr-stats")renderHRStatsPage();
+  // 퇴직 처리 직후 면담 기록으로 바로 이어갈 수 있게 안내(관리자만 이 화면에 접근 가능).
+  // 이미 면담 기록이 있으면 묻지 않는다.
+  if(currentUser.role==="admin"&&!exitInterviews.some(x=>String(x.empId)===String(id))){
+    const emp=getEmp(id);
+    const go=await askConfirmModal({title:"퇴직 면담 기록",message:`${emp?.name||"퇴직자"}님의 퇴직 면담을 지금 기록하시겠습니까?\n나중에 "퇴직 면담" 화면에서도 기록할 수 있습니다.`,confirmText:"지금 기록"});
+    if(go){gotoPage("exit-interviews");openExitInterviewModal(null,String(id));}
+  }
 }
 // 퇴직자에 대한 미결 참조를 정리 — 퇴직 이후에도 결재 위임이 계속 대결자로 치환되거나,
 // 승인 시 급여에 반영될 수 있는 초과근무/경비 건이 그대로 남는 것을 방지
@@ -10111,10 +10118,21 @@ function openEmpDetail(id){
     </div>`:""}
     ${canViewPrivate?_employeeLinkedProfileHtml(e,settings.evalYear):""}
     ${eduHistHtml}${customHtml}${leaveHtml}${hrHistHtml}
+    ${_exitInterviewDetailHtml(e)}
     ${canViewPrivate?buildSalaryHistorySection(e.id):""}
     ${buildKpiHistorySection(e.id)}
   </div>
   <div class="modal-foot"><button class="btn btn-ghost" onclick="printHRPersonnelCard(${e.id})">🪪 인사카드 출력</button><button class="btn btn-ghost" onclick="openDownloadModal(${e.id})">📥 다운로드</button><button class="btn btn-secondary" onclick="closeModal()">닫기</button>${currentUser.role==="admin"?`<button class="btn btn-secondary btn-sm" onclick="closeModal();openEduRegModal(${e.id})">📚 교육 등록</button><button class="btn btn-primary" onclick="closeModal();openEmpEdit(${e.id})">수정</button><button class="btn btn-teal" onclick="closeModal();openPastGradeModal(${e.id})">📊 과거 등급 입력</button>`:""}</div></div>`);
+}
+// 직원 상세의 퇴직 면담 요약 — 퇴직자이고 관리자일 때만(면담 기록은 관리자 전용 컬렉션)
+function _exitInterviewDetailHtml(e){
+  if(e.active!==false||currentUser.role!=="admin")return"";
+  const r=exitInterviews.find(x=>String(x.empId)===String(e.id));
+  const idAttr=r?`'${String(r.id).replace(/'/g,"\\'")}',null`:`null,'${String(e.id).replace(/'/g,"\\'")}'`;
+  const body=r
+    ?`${badge(r.status==="done"?"면담 완료":"면담 예정",r.status==="done"?"green":"orange")} ${h(r.interviewDate||"")} ${h(r.interviewerName||"")}${r.reasonCategory?` · ${h(EXIT_REASONS[r.reasonCategory]||"")}`:""}${r.rehireEligible?` · 재입사 ${h(EXIT_REHIRE[r.rehireEligible]||"")}`:""}`
+    :`<span class="text-gray">기록된 퇴직 면담이 없습니다.</span>`;
+  return`<div class="sec-title mt3">퇴직 면담</div><div style="font-size:12px;padding:5px 0;display:flex;justify-content:space-between;align-items:center;gap:8px"><div>${body}</div><button class="btn btn-secondary btn-sm" onclick="closeModal();gotoPage('exit-interviews');openExitInterviewModal(${idAttr})">${r?"면담 보기·수정":"면담 기록"}</button></div>`;
 }
 // 인사카드 출력 — 인사기록카드(인적사항/학력·경력/인사발령이력/교육·휴직이력)를 A4 한 장
 // 분량의 정식 서식으로 인쇄. printHRLetter()(개별 발령 건 1장)와 달리 이 직원의 전체
@@ -32662,7 +32680,7 @@ function openExitInterviewModal(id,presetEmpId){
     :`<div class="fg"><label class="fl">대상자 검색(이름/사번)</label><input class="fc" id="ei-emp-search" placeholder="예: 홍길동" oninput="const s=$('#ei-emp');s.innerHTML=_sevEmpOptionsHtml(this.value)"></div><div class="fg"><label class="fl">대상자 <span class="req">*</span></label><select class="fc" id="ei-emp">${_sevEmpOptionsHtml("")}</select></div>`}
     <div style="display:flex;gap:8px"><div class="fg" style="flex:1"><label class="fl">면담일</label><input class="fc" type="date" id="ei-date" value="${h(r?.interviewDate||_localDateStr())}"></div><div class="fg" style="flex:1"><label class="fl">면담자</label><input class="fc" id="ei-interviewer" maxlength="50" value="${h(r?.interviewerName||currentUser.name||"")}"></div></div>
     <div style="display:flex;gap:8px"><div class="fg" style="flex:1"><label class="fl">상태</label><select class="fc" id="ei-status"><option value="done" ${r?.status!=="scheduled"?"selected":""}>면담 완료</option><option value="scheduled" ${r?.status==="scheduled"?"selected":""}>면담 예정</option></select></div><div class="fg" style="flex:1"><label class="fl">주된 퇴직 사유 (완료 시 필수)</label><select class="fc" id="ei-reason"><option value="">선택</option>${Object.entries(EXIT_REASONS).map(([k,v])=>`<option value="${k}" ${r?.reasonCategory===k?"selected":""}>${v}</option>`).join("")}</select></div></div>
-    <div class="fg"><label class="fl">퇴직 사유 상세</label><textarea class="fc" id="ei-detail" rows="3" maxlength="2000" placeholder="예: 직무 성장 기회가 부족하다고 느꼈음">${h(r?.reasonDetail||"")}</textarea></div>
+    <div class="fg"><label class="fl">퇴직 사유 상세</label><textarea class="fc" id="ei-detail" rows="3" maxlength="2000" placeholder="예: 직무 성장 기회가 부족하다고 느꼈음">${h(r?.reasonDetail??(emp?.retireReason?`퇴직 처리 시 사유: ${emp.retireReason}`:""))}</textarea></div>
     <div style="display:flex;gap:8px"><div class="fg" style="flex:1"><label class="fl">회사 만족도</label><select class="fc" id="ei-sat"><option value="">-</option>${[1,2,3,4,5].map(n=>`<option ${Number(r?.satisfaction)===n?"selected":""}>${n}</option>`).join("")}</select></div><div class="fg" style="flex:1"><label class="fl">회사 추천 의향</label><select class="fc" id="ei-rec"><option value="">-</option><option value="yes" ${r?.wouldRecommend==="yes"?"selected":""}>추천</option><option value="no" ${r?.wouldRecommend==="no"?"selected":""}>비추천</option></select></div><div class="fg" style="flex:1"><label class="fl">재입사</label><select class="fc" id="ei-rehire"><option value="">-</option>${Object.entries(EXIT_REHIRE).map(([k,v])=>`<option value="${k}" ${r?.rehireEligible===k?"selected":""}>${v}</option>`).join("")}</select></div></div>
     <div class="fg"><label class="fl">회사에 바라는 점·피드백</label><textarea class="fc" id="ei-feedback" rows="3" maxlength="3000" placeholder="예: 교육 지원과 성과 보상 기준을 명확히 해주면 좋겠다">${h(r?.feedback||"")}</textarea></div>
     <div class="fz11 text-gray">퇴직 면담 기록은 관리자만 볼 수 있습니다.</div>
