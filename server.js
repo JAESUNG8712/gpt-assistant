@@ -20,7 +20,7 @@ const budgetRouterFactory = require("./budget");
 const { canReadTraining, canManageTraining, countsByCourse, normalizeEnrollment } = require("./lib/training-integrity");
 const { assertFieldOrder } = require("./lib/field-order-guard");
 const { saveRejectInfo, snapshotIntendedRecord, findSilentRejections } = require("./lib/save-feedback");
-const { computeStockValuation } = require("./lib/stock-valuation");
+const { computeStockValuation, computeLocationValuation } = require("./lib/stock-valuation");
 const mailer = require("./lib/mailer");
 const { retryDelays, nextOutboxState, SENDING_LEASE_MS, ownsOutboxClaim } = require("./lib/webhook-outbox");
 const { trackedFields, takePreImage, diffRevisions, KEEP_PER_RECORD, capSnapshot, EMPLOYEE_AUTH_FIELDS } = require("./lib/record-revisions");
@@ -10009,13 +10009,14 @@ function _addYearsStr(dateStr, k) {
 // pool.connect()를 또 호출하면(동시 요청이 많을 때 잠금 대기자들이 커넥션 풀을 다 점유해)
 // 커넥션 풀 고갈로 데드락에 준하는 상태에 빠질 수 있어, 이 경우 BEGIN/COMMIT/release는
 // 호출부 책임으로 남기고 여기서는 쿼리만 실행한다.
-async function _issuePostedVoucher(companyId, { date, description, partnerId, partner, lines, user, category }, externalClient) {
+async function _issuePostedVoucher(companyId, { date, description, partnerId, partner, lines, user, category, meta }, externalClient) {
   const accounts = await _getAccountsList(companyId, externalClient);
   const err = _validateVoucherLines(lines, accounts);
   if (err) throw Object.assign(new Error(err), { statusCode: 400 });
   const debitSum = _round2(lines.reduce((s, l) => s + (Number(l.debit) || 0), 0));
   const year = new Date(date).getFullYear();
   const baseVoucher = {
+    ...(meta && typeof meta === "object" ? meta : {}), // 출처 표식(예: source:"stock_valuation") — 아래 핵심 필드가 항상 우선한다
     id: `v_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
     date, description: description || "", partner: partner || "", partnerId: partnerId || null,
     category: _normalizeVoucherCategory(category),
@@ -12096,24 +12097,109 @@ app.get("/api/erp/stock/ledger", async (req, res) => {
   } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
 });
 
+// 재고평가 입력(원장·품목·창고 이름)을 읽는다 — 조회와 전표 발행이 같은 데이터를 쓴다.
+async function _loadErpValuationInputs(companyId) {
+  if (USE_JSON_FILE) {
+    return { ledger: _fileErp.stockLedger, items: _fileErp.items, locations: _fileErp.locations };
+  }
+  const led = await pool.query("SELECT data, created_at FROM erp_stock_ledger WHERE company_id = $1 ORDER BY created_at, id", [companyId]);
+  const ledger = led.rows.map(r => ({ ...r.data, createdAt: r.data.createdAt || r.created_at.toISOString() }));
+  const it = await pool.query("SELECT id, data FROM erp_items WHERE company_id = $1", [companyId]);
+  const loc = await pool.query("SELECT id, data FROM erp_locations WHERE company_id = $1", [companyId]);
+  return { ledger, items: it.rows.map(r => ({ ...r.data, id: r.id })), locations: loc.rows.map(r => ({ ...r.data, id: r.id })) };
+}
+function _erpLocationNameMap(locations) {
+  const names = {};
+  (locations || []).forEach(l => { names[String(l.id)] = l.name || ""; });
+  return names;
+}
+
 // 재고평가: 품목별 재고 금액을 이동평균·FIFO 두 방식으로 함께 계산한다(참고용 즉석 계산, 저장 안 함).
+// ?by=location 이면 창고(위치)별 평가(`byLocation`)를 함께 돌려준다.
 app.get("/api/erp/stock/valuation", async (req, res) => {
   if (!requireAdmin(req, res)) return;
   if (!requirePage(req, res, "inv-stock")) return;
   try {
     const asOf = String(req.query.asOf || "");
     if (asOf && !_isValidDateStr(asOf)) return res.status(400).json({ ok: false, message: "기준일은 YYYY-MM-DD 형식의 실제 날짜여야 합니다." });
-    let ledger, items;
-    if (USE_JSON_FILE) {
-      ledger = _fileErp.stockLedger; items = _fileErp.items;
-    } else {
-      const led = await pool.query("SELECT data, created_at FROM erp_stock_ledger WHERE company_id = $1 ORDER BY created_at, id", [req.auth.companyId]);
-      ledger = led.rows.map(r => ({ ...r.data, createdAt: r.data.createdAt || r.created_at.toISOString() }));
-      const it = await pool.query("SELECT id, data FROM erp_items WHERE company_id = $1", [req.auth.companyId]);
-      items = it.rows.map(r => ({ ...r.data, id: r.id }));
+    const { ledger, items, locations } = await _loadErpValuationInputs(req.auth.companyId);
+    const body = { ok: true, ...computeStockValuation(ledger, items, { asOf }) };
+    if (String(req.query.by || "") === "location") {
+      body.byLocation = computeLocationValuation(ledger, items, { asOf, locationNames: _erpLocationNameMap(locations) });
     }
-    res.json({ ok: true, ...computeStockValuation(ledger, items, { asOf }) });
+    res.json(body);
   } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
+});
+
+// 재고평가 회계 반영: 기준일의 평가 금액과 "직전에 반영한 평가 금액"의 차이를 재고자산 조정 전표로
+// 발행한다. 재고 입출고는 회계 전표로 자동 분개되지 않으므로, 이 전표는 평가 결과를 장부 재고자산
+// 계정에 맞추는 결산 조정 한 건이다. 같은 방식·기준일은 한 번만 반영할 수 있고, 이미 더 늦은 기준일의
+// 반영이 있으면 거절한다(순서가 뒤집히면 차이 계산이 틀어진다). 취소(void)된 전표는 없던 것으로 본다.
+const _stockValuationPostInFlight = new Set();
+function _planStockValuationVoucher(existingVouchers, { asOf, method, total }) {
+  const mine = existingVouchers.filter(v => v && v.source === "stock_valuation" && v.status !== "void" && v.valuation && v.valuation.method === method);
+  if (mine.some(v => v.valuation.asOf === asOf)) return { status: 409, code: "STOCK_VALUATION_ALREADY_POSTED", message: "같은 기준일·방식의 재고평가 전표가 이미 있습니다. 필요하면 해당 전표를 취소한 뒤 다시 발행하세요." };
+  if (mine.some(v => String(v.valuation.asOf) > asOf)) return { status: 409, code: "STOCK_VALUATION_LATER_EXISTS", message: "더 늦은 기준일의 재고평가 전표가 이미 있어 이 기준일은 발행할 수 없습니다." };
+  const prev = mine.slice().sort((a, b) => String(b.valuation.asOf).localeCompare(String(a.valuation.asOf)))[0];
+  const previousValue = prev ? Number(prev.valuation.totalValue) || 0 : 0;
+  const delta = _round2(total - previousValue);
+  if (!delta) return { status: 400, code: "STOCK_VALUATION_NO_DELTA", message: "직전에 반영한 평가 금액과 같아 조정할 금액이 없습니다." };
+  return { previousValue, delta };
+}
+app.post("/api/erp/stock/valuation/post-voucher", async (req, res) => {
+  const lockKey = `${req.auth?.companyId || "_"}`;
+  let locked = false;
+  try {
+    if (!requireAdmin(req, res)) return;
+    if (!requirePage(req, res, "inv-stock")) return;
+    if (!requireFeature(req, res, "acct")) return;
+    if (!requirePage(req, res, "acct-vouchers")) return;
+    const companyId = req.auth.companyId || null;
+    const { asOf, method, inventoryAccountId, adjustmentAccountId } = req.body || {};
+    if (!_isValidDateStr(String(asOf || ""))) return res.status(400).json({ ok: false, message: "기준일은 YYYY-MM-DD 형식의 실제 날짜여야 합니다." });
+    if (!["avg", "fifo"].includes(method)) return res.status(400).json({ ok: false, message: "평가 방식은 avg(이동평균) 또는 fifo 중 하나여야 합니다." });
+    if (!inventoryAccountId || !adjustmentAccountId || String(inventoryAccountId) === String(adjustmentAccountId)) {
+      return res.status(400).json({ ok: false, message: "재고자산 계정과 평가손익 계정을 서로 다르게 선택하세요." });
+    }
+    const { ledger, items } = await _loadErpValuationInputs(companyId);
+    const total = computeStockValuation(ledger, items, { asOf }).totals[method];
+    const user = _authenticatedDisplayName(req.auth, null);
+    const issue = async (plan, client) => {
+      const amount = Math.abs(plan.delta);
+      const up = plan.delta > 0;
+      return _issuePostedVoucher(companyId, {
+        date: asOf,
+        description: `재고자산 평가 조정 (${method === "avg" ? "이동평균" : "FIFO"}, ${asOf})`,
+        lines: [
+          { accountId: up ? inventoryAccountId : adjustmentAccountId, debit: amount, credit: 0 },
+          { accountId: up ? adjustmentAccountId : inventoryAccountId, debit: 0, credit: amount },
+        ],
+        user, category: "adjustment",
+        meta: { source: "stock_valuation", valuation: { asOf, method, totalValue: total, previousValue: plan.previousValue, delta: plan.delta } },
+      }, client);
+    };
+    if (USE_JSON_FILE) {
+      if (_stockValuationPostInFlight.has(lockKey)) return res.status(409).json({ ok: false, message: "다른 재고평가 전표 발행이 처리 중입니다. 잠시 후 다시 시도하세요." });
+      _stockValuationPostInFlight.add(lockKey); locked = true;
+      const plan = _planStockValuationVoucher(_fileAccounting.vouchers, { asOf, method, total });
+      if (plan.status) return res.status(plan.status).json({ ok: false, code: plan.code, message: plan.message });
+      const voucher = await issue(plan);
+      return res.json({ ok: true, voucher, valuation: voucher.valuation });
+    }
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [`stockval:${companyId}`]);
+      const { rows } = await client.query(
+        "SELECT data FROM vouchers WHERE company_id = $1 AND data->>'source' = 'stock_valuation'", [companyId]);
+      const plan = _planStockValuationVoucher(rows.map(r => r.data), { asOf, method, total });
+      if (plan.status) { await client.query("ROLLBACK"); return res.status(plan.status).json({ ok: false, code: plan.code, message: plan.message }); }
+      const voucher = await issue(plan, client);
+      await client.query("COMMIT");
+      res.json({ ok: true, voucher, valuation: voucher.valuation });
+    } catch (e) { await client.query("ROLLBACK").catch(() => {}); throw e; } finally { client.release(); }
+  } catch (e) { if (!res.headersSent) res.status(e.statusCode || 500).json({ ok: false, message: e.statusCode ? e.message : _safeErrMsg(e) }); }
+  finally { if (locked) _stockValuationPostInFlight.delete(lockKey); }
 });
 
 app.post("/api/erp/stock/adjust", async (req, res) => {
