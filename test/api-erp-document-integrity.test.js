@@ -107,7 +107,7 @@ test("ERP document transitions preserve linked records and reject stale operatio
     assert.equal(updated.after.length, created.after.length);
     assert.equal(updated.after.find(row => row.id === id).targetAmount, 2500);
     assert.deepEqual(disk().salesTargets, updated.after);
-    const removed = await failAndRetry(`${route}/${id}/delete`, {}, route, "salesTargets");
+    const removed = await failAndRetry(`${route}/${id}/delete`, {_rev:updated.reply.salesTarget._rev}, route, "salesTargets");
     assert.deepEqual(removed.after, created.before);
     assert.deepEqual(disk().salesTargets, removed.after);
   });
@@ -150,7 +150,7 @@ test("ERP document transitions preserve linked records and reject stale operatio
       try {
         assert.equal((await api(collection, "POST", created)).status, 500);
         assert.equal((await api(collection, "POST", edited)).status, 500);
-        assert.equal((await api(`${collection}/${original.id}/delete`, "POST", {})).status, 500);
+        assert.equal((await api(`${collection}/${original.id}/delete`, "POST", {_rev:original._rev})).status, 500);
         assert.deepEqual((await api(collection))[collection], before);
       } finally {
         fs.rmdirSync(file);
@@ -161,7 +161,7 @@ test("ERP document transitions preserve linked records and reject stale operatio
       const saved = JSON.parse(fs.readFileSync(file, "utf8"))[collection];
       assert.equal(saved.filter(row => row.id === created.id).length, 1);
       assert.equal(saved.find(row => row.id === original.id).name, edited.name);
-      assert.equal((await api(`${collection}/${created.id}/delete`, "POST", {})).status, 200);
+      assert.equal((await api(`${collection}/${created.id}/delete`, "POST", {_rev:saved.find(row=>row.id===created.id)._rev})).status, 200);
       assert.ok(!JSON.parse(fs.readFileSync(file, "utf8"))[collection].some(row => row.id === created.id));
     }
   });
@@ -290,9 +290,9 @@ test("deleted JSON masters and default locations remain deleted after restart", 
     const r=await fetch(first.baseUrl+"/api/erp/"+path,{method:"POST",headers:{Authorization:"Bearer "+token,"Content-Type":"application/json"},body:JSON.stringify(body)});
     const data=await r.json();assert.equal(r.status,200,JSON.stringify(data));return data;
   };
-  await call("items",{id:"restart-item",code:"RESTART",name:"Deleted item"});await call("items/restart-item/delete",{});
+  const restartItem=(await call("items",{id:"restart-item",code:"RESTART",name:"Deleted item"})).item;await call("items/restart-item/delete",{_rev:restartItem._rev});
   const locations=await (await fetch(first.baseUrl+"/api/erp/locations",{headers:{Authorization:"Bearer "+token}})).json();
-  for(const loc of locations.locations)await call("locations/"+loc.id+"/delete",{});
+  for(const loc of locations.locations)await call("locations/"+loc.id+"/delete",{_rev:loc._rev||"legacy"});
   const seedErp=JSON.parse(fs.readFileSync(first.dataFile.replace(/\.json$/,"-erp.json"),"utf8"));
   const second=await startServer({seedErp});t.after(()=>second.stop());
   const admin=await bootstrapAdminAndLogin(second,{loginId:"restart-admin",pw:"RestartPassword123"});
@@ -528,5 +528,8 @@ test("legacy ERP masters require an explicit legacy revision and upgrade after o
     assert.equal((await save({...original,_rev:"legacy"})).status,409);
     const persisted=JSON.parse(fs.readFileSync(server.dataFile.replace(/\.json$/,"-erp.json"),"utf8"));
     assert.deepEqual(persisted[field][0],saved);
+    const remove=revision=>fetch(server.baseUrl+"/api/erp/"+route+"/"+saved.id+"/delete",{method:"POST",headers:{Authorization:"Bearer "+token,"Content-Type":"application/json"},body:JSON.stringify({_rev:revision})});
+    assert.equal((await remove("legacy")).status,409);
+    assert.equal((await remove(saved._rev)).status,200);
   }
 });

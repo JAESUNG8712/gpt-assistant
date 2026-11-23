@@ -31,9 +31,18 @@ module.exports = async function masterLifecycle(api, token) {
     assert.deepEqual((await call(route,undefined,200,"GET"))[field].find(row=>row.id===id),winner);
     assert.equal((await call(route,{...edit,restore:true},409)).code,"ERP_MASTER_CONFLICT","restore must not overwrite a live edit");
     assert.equal((await call(route,{...body,id:"missing-"+randomUUID(),_rev:winner._rev},409)).code,"ERP_MASTER_CONFLICT");
-    const updated=(await call(route,{...winner,memo:"active edit"}))[key];
+    let updated=(await call(route,{...winner,memo:"active edit"}))[key];
     assert.notEqual(updated._rev,winner._rev);
-    await call(route+"/"+id+"/delete",{});
+    assert.equal((await call(route+"/"+id+"/delete",{},409)).code,"ERP_MASTER_CONFLICT");
+    assert.equal((await call(route+"/"+id+"/delete",{_rev:created._rev},409)).code,"ERP_MASTER_CONFLICT");
+    assert.equal((await call(route+"/"+id+"/delete",{_rev:{}},400)).code,"ERP_MASTER_REVISION_INVALID");
+    const race=await Promise.all([call(route,{...updated,name:"Concurrent editor"},null),call(route+"/"+id+"/delete",{_rev:updated._rev},null)]);
+    assert.equal(race.filter(result=>result.ok).length,1,"edit/delete only one wins");
+    assert.ok(race.some(result=>["ERP_MASTER_CONFLICT","ERP_MASTER_DELETED"].includes(result.code)));
+    if(race[0].ok) updated=race[0][key];
+    else updated=(await call(route,{...body,restore:true}))[key];
+    await call(route+"/"+id+"/delete",{_rev:updated._rev});
+    await call(route+"/"+id+"/delete",{_rev:updated._rev});
     const hidden=async()=>assert.ok(!(await call(route,undefined,200,"GET"))[field].some(row=>row.id===id));
     await hidden();
     for(const extra of [{},{restore:"true"},{restore:false}])assert.equal((await call(route,{...body,...extra},409)).code,"ERP_MASTER_DELETED");
@@ -42,18 +51,19 @@ module.exports = async function masterLifecycle(api, token) {
     assert.notEqual(restored._rev,created._rev);
     assert.equal((await call(route,{...body,_rev:created._rev,restore:true},409)).code,"ERP_MASTER_CONFLICT");
     assert.ok((await call(route,undefined,200,"GET"))[field].some(row=>row.id===id));
-    await call(route+"/"+id+"/delete",{});
+    assert.equal((await call(route+"/"+id+"/delete",{_rev:updated._rev},409)).code,"ERP_MASTER_CONFLICT","old delete cannot remove restored data");
+    await call(route+"/"+id+"/delete",{_rev:restored._rev});
     assert.equal((await call(route,body,409)).code,"ERP_MASTER_DELETED");
   }
   const itemId="refs-"+randomUUID();
-  await call("items",{id:itemId,code:itemId,name:"Reference item"});
+  const referenceItem=(await call("items",{id:itemId,code:itemId,name:"Reference item"})).item;
   const items=[{itemId,qty:1,unitPrice:100}];
   const pr=(await call("purchase-requests",{date:"2031-05-01",items})).purchaseRequest;
-  assert.equal((await call("items/"+itemId+"/delete",{},400)).code,"ERP_MASTER_IN_USE");
+  assert.equal((await call("items/"+itemId+"/delete",{_rev:referenceItem._rev},400)).code,"ERP_MASTER_IN_USE");
   for(const route of ["quotations","purchase-orders"]) {
-    const locationId="refs-"+randomUUID();await call("locations",{id:locationId,name:"Document warehouse"});
+    const locationId="refs-"+randomUUID();const referenceLocation=(await call("locations",{id:locationId,name:"Document warehouse"})).location;
     await call(route,{date:"2031-05-01",partnerName:"Test supplier",locationId,items});
-    assert.equal((await call("locations/"+locationId+"/delete",{},400)).code,"ERP_MASTER_IN_USE");
+    assert.equal((await call("locations/"+locationId+"/delete",{_rev:referenceLocation._rev},400)).code,"ERP_MASTER_IN_USE");
     await call(route,{date:"2031-05-01",partnerName:"Test supplier",locationId:"missing-location",items},400);
   }
   await call("purchase-requests",{date:"2031-05-01",items:[{itemId:"missing-item",qty:1,unitPrice:1}]},400);
@@ -71,9 +81,9 @@ module.exports = async function masterLifecycle(api, token) {
   // Concurrent create/delete may pick either winner but never leave a dangling reference.
   for (const route of ["quotations","purchase-orders","purchase-requests"]) {
     const id="race-"+randomUUID(),loc="race-"+randomUUID();
-    await call("items",{id,code:id,name:"Race item"});await call("locations",{id:loc,name:"Race location"});
+    const raceItem=(await call("items",{id,code:id,name:"Race item"})).item;await call("locations",{id:loc,name:"Race location"});
     const raw=(path,body)=>api("/api/erp/"+path,{method:"POST",headers:{Authorization:"Bearer "+token,"Content-Type":"application/json","Idempotency-Key":randomUUID()},body:JSON.stringify(body)});
-    const [created,deleted]=await Promise.all([raw(route,{date:"2031-05-01",partnerName:"Race",locationId:loc,items:[{itemId:id,qty:1,unitPrice:1}]}),raw("items/"+id+"/delete",{})]);
+    const [created,deleted]=await Promise.all([raw(route,{date:"2031-05-01",partnerName:"Race",locationId:loc,items:[{itemId:id,qty:1,unitPrice:1}]}),raw("items/"+id+"/delete",{_rev:raceItem._rev})]);
     assert.deepEqual([created.status,deleted.status].sort(),[200,400],route+" concurrent reference protection");
     const present=(await call("items",undefined,200,"GET")).items.some(row=>row.id===id);
     assert.equal(present,created.status===200);

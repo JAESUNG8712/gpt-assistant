@@ -10938,11 +10938,14 @@ const ERP_MASTER_TABLES = new Map([
 function _erpMasterConflict() {
   return httpError(409, "ERP_MASTER_CONFLICT", "다른 작업에서 변경된 자료입니다. 입력 내용은 유지됩니다. 최신 자료를 다시 확인해 주세요.");
 }
-async function _saveErpMaster(collection, id, companyId, row, restore, expectedRevision) {
+function _validateErpMasterRevision(expectedRevision) {
   if (expectedRevision !== undefined && (typeof expectedRevision !== "string" ||
       !/^(legacy|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/.test(expectedRevision))) {
     throw httpError(400, "ERP_MASTER_REVISION_INVALID", "편집 버전이 올바르지 않습니다. 자료를 다시 열어 주세요.");
   }
+}
+async function _saveErpMaster(collection, id, companyId, row, restore, expectedRevision) {
+  _validateErpMasterRevision(expectedRevision);
   const saved = { ...row, _rev: crypto.randomUUID() };
   if (USE_JSON_FILE) {
     const current = _fileErp[collection].find(entry => entry.id === id);
@@ -11099,15 +11102,20 @@ async function _insertErpDocument(kind, record, companyId) {
   } catch (error) { await client.query("ROLLBACK"); throw error; }
   finally { client.release(); }
 }
-async function _deleteErpMaster(collection, id, companyId) {
+async function _deleteErpMaster(collection, id, companyId, expectedRevision) {
+  _validateErpMasterRevision(expectedRevision);
   const table = ERP_MASTER_TABLES.get(collection);
-  if (!["items", "locations"].includes(collection)) throw new Error("Unsupported ERP master deletion");
+  if (!table) throw new Error("Unsupported ERP master deletion");
+  const hasReferences = collection !== "salesTargets";
   const item = collection === "items";
   const message = "재고 이력 또는 문서에서 사용 중인 자료는 삭제할 수 없습니다. 비활성화를 이용하세요.";
   if (USE_JSON_FILE) {
-    const used = _fileErp.stockLedger.some(row => (item ? row.itemId : row.locationId) === id) ||
+    const current = _fileErp[collection].find(row => row.id === id);
+    if (!current) return;
+    if ((current._rev || "legacy") !== expectedRevision) throw _erpMasterConflict();
+    const used = hasReferences && (_fileErp.stockLedger.some(row => (item ? row.itemId : row.locationId) === id) ||
       ["quotations", "purchaseOrders", "purchaseRequests"].some(kind => _fileErp[kind].some(doc =>
-        item ? (doc.lines || []).some(line => line.itemId === id) : doc.locationId === id));
+        item ? (doc.lines || []).some(line => line.itemId === id) : doc.locationId === id)));
     if (used) throw httpError(400, "ERP_MASTER_IN_USE", message);
     _commitFileErpMaster(collection, id, null);
     return;
@@ -11117,13 +11125,16 @@ async function _deleteErpMaster(collection, id, companyId) {
     await client.query("BEGIN");
     // FOR UPDATE conflicts with the FOR SHARE locks held by creators, including
     // soft deletion (a non-key update). Check references only after obtaining it.
-    const target = await client.query(`SELECT id FROM ${table} WHERE id=$1 AND company_id=$2 FOR UPDATE`, [id, companyId]);
-    if (target.rowCount) {
-      const checks = [...ERP_DOCUMENT_TABLES.values()].map(docTable => item
-        ? `EXISTS (SELECT 1 FROM ${docTable} d WHERE (d.company_id=$2 OR d.company_id IS NULL) AND EXISTS (SELECT 1 FROM jsonb_array_elements(COALESCE(d.data->'lines','[]'::jsonb)) ln WHERE ln->>'itemId'=$1))`
-        : `EXISTS (SELECT 1 FROM ${docTable} d WHERE (d.company_id=$2 OR d.company_id IS NULL) AND d.data->>'locationId'=$1)`);
-      const used = await client.query(`SELECT 1 WHERE EXISTS (SELECT 1 FROM erp_stock_ledger WHERE ${item ? "item_id" : "location_id"}=$1 AND (company_id=$2 OR company_id IS NULL)) OR ${checks.join(" OR ")}`, [id, companyId]);
-      if (used.rowCount) throw httpError(400, "ERP_MASTER_IN_USE", message);
+    const target = await client.query(`SELECT id, data, is_deleted FROM ${table} WHERE id=$1 AND company_id=$2 FOR UPDATE`, [id, companyId]);
+    if (target.rowCount && !target.rows[0].is_deleted) {
+      if ((target.rows[0].data._rev || "legacy") !== expectedRevision) throw _erpMasterConflict();
+      if (hasReferences) {
+        const checks = [...ERP_DOCUMENT_TABLES.values()].map(docTable => item
+          ? `EXISTS (SELECT 1 FROM ${docTable} d WHERE (d.company_id=$2 OR d.company_id IS NULL) AND EXISTS (SELECT 1 FROM jsonb_array_elements(COALESCE(d.data->'lines','[]'::jsonb)) ln WHERE ln->>'itemId'=$1))`
+          : `EXISTS (SELECT 1 FROM ${docTable} d WHERE (d.company_id=$2 OR d.company_id IS NULL) AND d.data->>'locationId'=$1)`);
+        const used = await client.query(`SELECT 1 WHERE EXISTS (SELECT 1 FROM erp_stock_ledger WHERE ${item ? "item_id" : "location_id"}=$1 AND (company_id=$2 OR company_id IS NULL)) OR ${checks.join(" OR ")}`, [id, companyId]);
+        if (used.rowCount) throw httpError(400, "ERP_MASTER_IN_USE", message);
+      }
       await client.query(`UPDATE ${table} SET is_deleted=TRUE, updated_at=NOW() WHERE id=$1 AND company_id=$2`, [id, companyId]);
     }
     await client.query("COMMIT");
@@ -11196,7 +11207,7 @@ app.post("/api/erp/items/:id/delete", async (req, res) => {
     if (!requirePage(req, res, "inv-items")) return;
     const id = req.params.id;
     const companyId = req.auth.companyId || null;
-    await _deleteErpMaster("items", id, companyId);
+    await _deleteErpMaster("items", id, companyId, req.body?._rev);
     res.json({ ok: true });
   } catch (e) { res.status(e.status || 500).json({ ok: false, code: e.code, message: _safeErrMsg(e) }); }
 });
@@ -11235,7 +11246,7 @@ app.post("/api/erp/locations/:id/delete", async (req, res) => {
     if (!requirePage(req, res, "inv-locations")) return;
     const id = req.params.id;
     const companyId = req.auth.companyId || null;
-    await _deleteErpMaster("locations", id, companyId);
+    await _deleteErpMaster("locations", id, companyId, req.body?._rev);
     res.json({ ok: true });
   } catch (e) { res.status(e.status || 500).json({ ok: false, code: e.code, message: _safeErrMsg(e) }); }
 });
@@ -12328,13 +12339,9 @@ app.post("/api/erp/sales-targets/:id/delete", async (req, res) => {
     if (!requireAdmin(req, res)) return;
     if (!requirePage(req, res, "sales-dashboard")) return;
     const id = req.params.id;
-    if (USE_JSON_FILE) {
-      _commitFileErpMaster("salesTargets", id, null);
-      return res.json({ ok: true });
-    }
-    await pool.query("UPDATE erp_sales_targets SET is_deleted = TRUE WHERE id = $1 AND company_id = $2", [id, req.auth.companyId || null]);
+    await _deleteErpMaster("salesTargets", id, req.auth.companyId || null, req.body?._rev);
     res.json({ ok: true });
-  } catch (e) { res.status(500).json({ ok: false, message: _safeErrMsg(e) }); }
+  } catch (e) { res.status(e.status || 500).json({ ok: false, code: e.code, message: _safeErrMsg(e) }); }
 });
 
 // 영업 대시보드(목표대비실적/거래처별/파이프라인/담당자별) — 예전엔 클라이언트가 이미
@@ -12381,7 +12388,7 @@ app.get("/api/erp/sales-dashboard", async (req, res) => {
         .reduce((s, q) => s + supplyOf(q), 0);
       const rate = t.targetAmount ? Math.round((actual / t.targetAmount) * 100) : 0;
       (targetsByYear[t.year] = targetsByYear[t.year] || []).push({
-        id: t.id, month: t.month, employeeName: t.employeeName || "", targetAmount: t.targetAmount,
+        id: t.id, _rev: t._rev || "legacy", year: t.year, month: t.month, employeeName: t.employeeName || "", targetAmount: t.targetAmount,
         actual, rate, memo: t.memo || "",
       });
     }

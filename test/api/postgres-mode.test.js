@@ -367,6 +367,10 @@ if (!ADMIN_DATABASE_URL) {
           const saved=(await result.json())[key];assert.equal(typeof saved._rev,'string');
           assert.equal((await save({...original,_rev:'legacy'})).status,409);
           assert.deepEqual((await client.query('SELECT data FROM '+table+' WHERE id=$1 AND company_id=$2',[id,companyId])).rows[0].data,saved);
+          const remove=revision=>api('/api/erp/'+route+'/'+id+'/delete',{method:'POST',headers:{Authorization:'Bearer '+companyAToken,'Content-Type':'application/json'},body:JSON.stringify({_rev:revision})});
+          assert.equal((await remove('legacy')).status,409);
+          assert.equal((await remove(saved._rev)).status,200);
+          assert.equal((await client.query('SELECT is_deleted FROM '+table+' WHERE id=$1 AND company_id=$2',[id,companyId])).rows[0].is_deleted,true);
         }
       } finally {await client.end();}
     });

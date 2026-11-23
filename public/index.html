@@ -24280,6 +24280,8 @@ async function saveItem(id){
 }
 async function deleteItem(id){
   const item=erpItems.find(i=>i.id===id);
+  if(!item){showToast("자료를 다시 불러온 뒤 삭제해 주세요.","error");return;}
+  const revision=item._rev||"legacy";
   const stockRows=erpStock.filter(s=>String(s.itemId)===String(id)&&Number(s.qty||0)!==0);
   const quoteRefs=erpQuotations.reduce((n,q)=>n+(q.items||q.lines||[]).filter(l=>String(l.itemId)===String(id)).length,0);
   const poRefs=erpPurchaseOrders.reduce((n,p)=>n+(p.items||p.lines||[]).filter(l=>String(l.itemId)===String(id)).length,0);
@@ -24298,7 +24300,12 @@ async function deleteItem(id){
     danger:true
   });
   if(!ok)return;
-  const r=await serverRequest("POST",`/api/erp/items/${id}/delete`,{role:currentUser.role,user:currentUser.name});
+  const r=await serverRequest("POST",`/api/erp/items/${id}/delete`,{_rev:revision,role:currentUser.role,user:currentUser.name});
+  if(r?.code==="ERP_MASTER_CONFLICT"){
+    const latest=await serverRequest("GET","/api/erp/items");
+    if(latest?.ok){erpItems=latest.items;renderInvItemsPage();}
+    showToast("다른 작업에서 변경되어 삭제하지 않았습니다. 최신 내용을 확인하고 다시 삭제해 주세요.","error");return;
+  }
   if(!r?.ok){showToast(r?.message||"삭제에 실패했습니다.","error");return;}
   erpItems=erpItems.filter(i=>i.id!==id);showToast("삭제되었습니다.","info");renderInvItemsPage();
 }
@@ -24345,6 +24352,8 @@ async function saveLocation(id){
 }
 async function deleteLocation(id){
   const loc=erpLocations.find(l=>l.id===id);
+  if(!loc){showToast("자료를 다시 불러온 뒤 삭제해 주세요.","error");return;}
+  const revision=loc._rev||"legacy";
   const stockRows=erpStock.filter(s=>String(s.locationId)===String(id)&&Number(s.qty||0)!==0);
   const quoteRefs=erpQuotations.filter(q=>String(q.locationId)===String(id)).length;
   const poRefs=erpPurchaseOrders.filter(p=>String(p.locationId)===String(id)).length;
@@ -24363,7 +24372,12 @@ async function deleteLocation(id){
     danger:true
   });
   if(!ok)return;
-  const r=await serverRequest("POST",`/api/erp/locations/${id}/delete`,{role:currentUser.role,user:currentUser.name});
+  const r=await serverRequest("POST",`/api/erp/locations/${id}/delete`,{_rev:revision,role:currentUser.role,user:currentUser.name});
+  if(r?.code==="ERP_MASTER_CONFLICT"){
+    const latest=await serverRequest("GET","/api/erp/locations");
+    if(latest?.ok){erpLocations=latest.locations;renderInvLocationsPage();}
+    showToast("다른 작업에서 변경되어 삭제하지 않았습니다. 최신 내용을 확인하고 다시 삭제해 주세요.","error");return;
+  }
   if(!r?.ok){showToast(r?.message||"삭제에 실패했습니다.","error");return;}
   erpLocations=erpLocations.filter(l=>l.id!==id);showToast("삭제되었습니다.","info");renderInvLocationsPage();
 }
@@ -25013,7 +25027,9 @@ async function saveSalesTarget(){
   _salesDashData=null;renderSalesDashboardPage();
 }
 async function deleteSalesTarget(id){
-  const target=(_salesDashData?.targets||[]).find(t=>String(t.id)===String(id))||{};
+  const target=Object.values(_salesDashData?.targetsByYear||{}).flat().find(t=>String(t.id)===String(id));
+  if(!target){showToast("목표를 다시 불러온 뒤 삭제해 주세요.","error");return;}
+  const revision=target._rev||"legacy";
   const ok=await askConfirmModal({
     title:"영업 목표 삭제 확인",
     message:"영업 목표를 삭제합니다. 대시보드 목표 대비 실적이 달라질 수 있습니다.",
@@ -25027,7 +25043,8 @@ async function deleteSalesTarget(id){
     danger:true
   });
   if(!ok)return;
-  const r=await serverRequest("POST",`/api/erp/sales-targets/${id}/delete`,{role:currentUser.role,user:currentUser.name});
+  const r=await serverRequest("POST",`/api/erp/sales-targets/${id}/delete`,{_rev:revision,role:currentUser.role,user:currentUser.name});
+  if(r?.code==="ERP_MASTER_CONFLICT"){_salesDashData=null;renderSalesDashboardPage();showToast("다른 작업에서 변경되어 삭제하지 않았습니다. 최신 목표를 확인하고 다시 삭제해 주세요.","error");return;}
   if(!r?.ok){showToast(r?.message||"삭제에 실패했습니다.","error");return;}
   showToast("삭제되었습니다.","info");
   _salesDashData=null;renderSalesDashboardPage();
