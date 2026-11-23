@@ -10936,16 +10936,41 @@ function _erpMasterDeleted() {
 const ERP_MASTER_TABLES = new Map([
   ["items", "erp_items"], ["locations", "erp_locations"], ["salesTargets", "erp_sales_targets"],
 ]);
-async function _saveErpMaster(collection, id, companyId, row, restore) {
-  if (USE_JSON_FILE) return _commitFileErpMaster(collection, id, row, restore === true);
+function _erpMasterConflict() {
+  return httpError(409, "ERP_MASTER_CONFLICT", "다른 작업에서 변경된 자료입니다. 입력 내용은 유지됩니다. 최신 자료를 다시 확인해 주세요.");
+}
+async function _saveErpMaster(collection, id, companyId, row, restore, expectedRevision) {
+  if (expectedRevision !== undefined && (typeof expectedRevision !== "string" ||
+      !/^(legacy|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/.test(expectedRevision))) {
+    throw httpError(400, "ERP_MASTER_REVISION_INVALID", "편집 버전이 올바르지 않습니다. 자료를 다시 열어 주세요.");
+  }
+  const saved = { ...row, _rev: crypto.randomUUID() };
+  if (USE_JSON_FILE) {
+    const current = _fileErp[collection].find(entry => entry.id === id);
+    const deleted = (_fileErp.masterTombstones?.[collection] || []).includes(id);
+    if (deleted && restore !== true) throw _erpMasterDeleted();
+    if (current ? (current._rev || "legacy") !== expectedRevision : !deleted && expectedRevision !== undefined) throw _erpMasterConflict();
+    _commitFileErpMaster(collection, id, saved, restore === true);
+    return saved;
+  }
   const table = ERP_MASTER_TABLES.get(collection);
   if (!table) throw new Error("Unknown ERP master type");
+  // The revision comparison runs inside the conflicting row's update lock.
+  // Supplying an edit revision must never create a missing record.
   const result = await pool.query(
-    `INSERT INTO ${table} (id, company_id, data) VALUES ($1,$2,$3)
+    `INSERT INTO ${table} (id, company_id, data)
+     SELECT $1,$2,$3 WHERE $5::text IS NULL OR EXISTS (SELECT 1 FROM ${table} WHERE id=$1 AND company_id=$2)
      ON CONFLICT (company_id, id) DO UPDATE SET data = $3, is_deleted = FALSE, updated_at = NOW()
-     WHERE ${table}.is_deleted = FALSE OR $4::boolean RETURNING id`,
-    [id, companyId, row, restore === true]);
-  if (!result.rowCount) throw _erpMasterDeleted();
+     WHERE (${table}.is_deleted = TRUE AND $4::boolean)
+        OR (${table}.is_deleted = FALSE AND COALESCE(${table}.data->>'_rev', 'legacy') = $5::text)
+     RETURNING id`,
+    [id, companyId, saved, restore === true, expectedRevision ?? null]);
+  if (!result.rowCount) {
+    const current = await pool.query(`SELECT is_deleted FROM ${table} WHERE id=$1 AND company_id=$2`, [id, companyId]);
+    if (current.rows[0]?.is_deleted) throw _erpMasterDeleted();
+    throw _erpMasterConflict();
+  }
+  return saved;
 }
 // Only single-document changes use this helper. Shipping, receiving and conversion
 // keep their wider transactions so the inventory, invoice and document commit together.
@@ -11161,8 +11186,8 @@ app.post("/api/erp/items", async (req, res) => {
     // 반영하지 않고 기존 단순 부족분(안전재고-현재재고) 방식으로 폴백) — 음수는 의미가
     // 없으므로 0 이상으로 clamp.
     const item = { id: itemId, code, name, productName: productName || "", assetNo: assetNo || "", unit: unit || "EA", category: category || "", safetyStock: Number(safetyStock) || 0, unitCost: Number(unitCost) || 0, leadTimeDays: Math.max(0, Number(leadTimeDays) || 0), active };
-    await _saveErpMaster("items", itemId, req.auth.companyId || null, item, req.body.restore);
-    res.json({ ok: true, item });
+    const saved = await _saveErpMaster("items", itemId, req.auth.companyId || null, item, req.body.restore, req.body._rev);
+    res.json({ ok: true, item: saved });
   } catch (e) { res.status(e.status || 500).json({ ok: false, code: e.code, message: _safeErrMsg(e) }); }
 });
 
@@ -11200,8 +11225,8 @@ app.post("/api/erp/locations", async (req, res) => {
     if (!name) return res.status(400).json({ ok: false, message: "위치명은 필수입니다." });
     const locId = id || `loc_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const loc = { id: locId, name, address: address || "", active };
-    await _saveErpMaster("locations", locId, req.auth.companyId || null, loc, req.body.restore);
-    res.json({ ok: true, location: loc });
+    const saved = await _saveErpMaster("locations", locId, req.auth.companyId || null, loc, req.body.restore, req.body._rev);
+    res.json({ ok: true, location: saved });
   } catch (e) { res.status(e.status || 500).json({ ok: false, code: e.code, message: _safeErrMsg(e) }); }
 });
 
@@ -12379,8 +12404,8 @@ app.post("/api/erp/sales-targets", async (req, res) => {
       targetAmount: Number(targetAmount), memo: memo || "",
       updatedAt: new Date().toISOString(),
     };
-    await _saveErpMaster("salesTargets", targetId, req.auth.companyId || null, target, req.body.restore);
-    res.json({ ok: true, salesTarget: target });
+    const saved = await _saveErpMaster("salesTargets", targetId, req.auth.companyId || null, target, req.body.restore, req.body._rev);
+    res.json({ ok: true, salesTarget: saved });
   } catch (e) { res.status(e.status || 500).json({ ok: false, code: e.code, message: _safeErrMsg(e) }); }
 });
 
