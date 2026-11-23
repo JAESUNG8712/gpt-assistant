@@ -24244,6 +24244,13 @@ function openItemModal(id){
 async function saveErpMasterRequest(path,body){
   try {
     const result=await serverRequest("POST",path,body);
+    if(result?.code==="ERP_MASTER_CONFLICT"||result?.code==="ERP_REVISION_REQUIRED"){
+      // 다른 사용자가 먼저 수정했다 — 최신 목록을 다시 불러와 화면을 갱신하고 다시 열어 확인하게 한다.
+      if(typeof loadErpFromServer==="function")await loadErpFromServer();
+      closeModal();
+      if(currentPage==="inv-items")renderInvItemsPage();else if(currentPage==="inv-locations")renderInvLocationsPage();
+      return {ok:false,message:result.message||"다른 사용자가 먼저 수정했습니다. 최신 내용을 불러왔으니 다시 수정해 주세요."};
+    }
     if(result?.code!=="ERP_MASTER_DELETED")return result;
     const restore=await askConfirmModal({title:"삭제된 자료 복원 확인",message:"다른 작업에서 이 자료가 삭제되었습니다. 현재 입력 내용으로 복원하시겠습니까?",confirmText:"복원하여 저장",danger:true,impacts:[{label:"복원 대상",value:body.name||body.id||"영업 목표"}],warnings:["복원 후에는 다른 사용자의 목록에서도 다시 표시됩니다."]});
     if(!restore)return {ok:false,cancelled:true};
@@ -24255,7 +24262,8 @@ async function saveErpMasterRequest(path,body){
 async function saveItem(id){
   const code=$("#item-code")?.value.trim(),name=$("#item-name")?.value.trim();
   if(!code||!name){showToast("품목코드와 품목명을 입력하세요.","error");return;}
-  const body={id:id||undefined,code,name,productName:$("#item-pname")?.value.trim(),assetNo:$("#item-asset")?.value.trim(),unit:$("#item-unit")?.value.trim(),category:$("#item-category")?.value.trim(),safetyStock:+$("#item-safety")?.value||0,unitCost:+$("#item-cost")?.value||0,leadTimeDays:Math.max(0,+$("#item-leadtime")?.value||0),active:$("#item-active")?.checked,role:currentUser.role,user:currentUser.name};
+  const prev=id?erpItems.find(i=>i.id===id):null;
+  const body={id:id||undefined,...(prev?{expectedUpdatedAt:prev.updatedAt??""}:{}),code,name,productName:$("#item-pname")?.value.trim(),assetNo:$("#item-asset")?.value.trim(),unit:$("#item-unit")?.value.trim(),category:$("#item-category")?.value.trim(),safetyStock:+$("#item-safety")?.value||0,unitCost:+$("#item-cost")?.value||0,leadTimeDays:Math.max(0,+$("#item-leadtime")?.value||0),active:$("#item-active")?.checked,role:currentUser.role,user:currentUser.name};
   const r=await saveErpMasterRequest("/api/erp/items",body);
   if(r?.cancelled)return;
   if(!r?.ok){showToast(r?.message||"저장에 실패했습니다.","error");return;}
@@ -24320,7 +24328,8 @@ function openLocationModal(id){
 async function saveLocation(id){
   const name=$("#loc-name")?.value.trim();
   if(!name){showToast("위치명을 입력하세요.","error");return;}
-  const body={id:id||undefined,name,address:$("#loc-address")?.value.trim(),active:$("#loc-active")?.checked,role:currentUser.role,user:currentUser.name};
+  const prevLoc=id?erpLocations.find(l=>l.id===id):null;
+  const body={id:id||undefined,...(prevLoc?{expectedUpdatedAt:prevLoc.updatedAt??""}:{}),name,address:$("#loc-address")?.value.trim(),active:$("#loc-active")?.checked,role:currentUser.role,user:currentUser.name};
   const r=await saveErpMasterRequest("/api/erp/locations",body);
   if(r?.cancelled)return;
   if(!r?.ok){showToast(r?.message||"저장에 실패했습니다.","error");return;}
@@ -24483,25 +24492,65 @@ function renderInvStockLogTbl(){
   ${rows.length?rows.map(l=>`<tr><td>${h(new Date(l.createdAt).toLocaleString("ko-KR"))}</td><td>${h(_erpItemName(l.itemId))}</td><td>${h(_erpLocationName(l.locationId))}</td><td>${l.type==="in"?badge("입고","green"):badge("출고","red")}${l.refType==="transfer"?` <span class="fz10 text-gray">(이동)</span>`:""}</td><td style="text-align:right">${l.qty}</td><td>${h(l.memo||"-")}</td><td>${h(l.createdBy||"-")}</td></tr>`).join(""):`<tr><td colspan="7" class="text-gray" style="text-align:center;padding:20px">로그가 없습니다.</td></tr>`}
   </tbody></table></div>`;
 }
-// 재고평가 — 이동평균/FIFO 두 방식의 품목별 재고 금액(참고용 즉석 계산).
-async function openStockValuationModal(asOf){
-  const q=asOf?`?asOf=${encodeURIComponent(asOf)}`:"";
+// 재고평가 — 이동평균/FIFO 두 방식의 재고 금액(참고용 즉석 계산). view="location"이면 창고별로 나눠 보여준다.
+async function openStockValuationModal(asOf,view){
+  view=view==="location"?"location":"item";
+  const q=`?${asOf?`asOf=${encodeURIComponent(asOf)}&`:""}${view==="location"?"by=location":""}`;
   const r=await serverRequest("GET","/api/erp/stock/valuation"+q);
   if(!r?.ok){showToast(r?.message||"재고평가를 불러오지 못했습니다.","error");return;}
   const fmt=n=>Math.round(n||0).toLocaleString();
-  const rows=r.items.map(it=>`<tr><td>${h(it.code||"")}</td><td>${h(it.name||it.itemId)}</td><td class="tr">${(+it.qty||0).toLocaleString()} ${h(it.unit||"")}</td>
+  const itemRow=it=>`<tr><td>${h(it.code||"")}</td><td>${h(it.name||it.itemId)}</td><td class="tr">${(+it.qty||0).toLocaleString()} ${h(it.unit||"")}</td>
     <td class="tr">${fmt(it.avg.unitCost)}</td><td class="tr">${fmt(it.avg.value)}</td>
     <td class="tr">${fmt(it.fifo.unitCost)}</td><td class="tr">${fmt(it.fifo.value)}</td>
-    <td>${it.estimatedRows?`<span class="badge bg-yellow" title="입고 단가가 없어 품목 단가/평균으로 추정한 입고 ${it.estimatedRows}건">추정 ${it.estimatedRows}</span>`:""}</td></tr>`).join("");
-  openModal(`<div class="modal-box" style="max-width:920px"><div class="modal-head"><h3>💰 재고평가 (이동평균 / FIFO)</h3></div><div class="modal-body">
-    <div class="flex gap2 mb3" style="align-items:center"><label class="fl" style="margin:0">기준일</label>
+    <td>${it.estimatedRows?`<span class="badge bg-yellow" title="입고 단가가 없어 품목 단가/평균으로 추정한 입고 ${it.estimatedRows}건">추정 ${it.estimatedRows}</span>`:""}</td></tr>`;
+  const bodyRows=view==="location"
+    ?(r.byLocation?.locations||[]).map(l=>`<tr style="background:#f1f5f9"><th colspan="4">📍 ${h(l.name||l.locationId||"(위치 미지정)")}</th><th class="tr">${fmt(l.totals.avg)}</th><th></th><th class="tr">${fmt(l.totals.fifo)}</th><th></th></tr>${l.items.map(itemRow).join("")}`).join("")
+    :r.items.map(itemRow).join("");
+  const tot=view==="location"?r.byLocation?.totals||r.totals:r.totals;
+  // 회계 반영 — 계정 목록을 불러올 수 있는(회계 모듈 사용 가능) 경우에만 보여준다.
+  await loadAcctAccountsPicker().catch(()=>{});
+  const accts=_acctActiveAccounts();
+  const acctOpts=accts.map(a=>`<option value="${h(a.id)}">${h(a.code)} ${h(a.name)}</option>`).join("");
+  const postHtml=accts.length?`<div class="card mt3"><div class="card-body" style="padding:10px 12px">
+    <div class="fw6 fz12" style="margin-bottom:6px">📒 회계 반영 (재고자산 평가 조정 전표)</div>
+    <div class="fz11 text-gray" style="margin-bottom:8px">기준일의 평가 금액과 직전에 반영한 금액의 차이를 조정 전표로 발행합니다(첫 반영은 전액). 재고 입출고는 자동 분개되지 않으므로 결산 시점에 한 번 맞추는 용도입니다. 같은 기준일·방식은 한 번만 발행됩니다.</div>
+    <div class="flex gap2" style="flex-wrap:wrap;align-items:flex-end">
+      <div><label class="fl" style="margin:0">방식</label><select class="fc" id="val-post-method"><option value="avg">이동평균</option><option value="fifo">FIFO</option></select></div>
+      <div><label class="fl" style="margin:0">재고자산 계정</label><select class="fc" id="val-post-inv"><option value="">선택</option>${acctOpts}</select></div>
+      <div><label class="fl" style="margin:0">평가손익 계정</label><select class="fc" id="val-post-adj"><option value="">선택</option>${acctOpts}</select></div>
+      <button class="btn btn-primary btn-sm" onclick="postStockValuationVoucher()">전표 발행</button>
+    </div></div></div>`:"";
+  window._valAsOfShown=r.asOf||_localDateStr();
+  openModal(`<div class="modal-box" style="max-width:960px"><div class="modal-head"><h3>💰 재고평가 (이동평균 / FIFO)</h3></div><div class="modal-body">
+    <div class="flex gap2 mb3" style="align-items:center;flex-wrap:wrap"><label class="fl" style="margin:0">기준일</label>
       <input class="fc" type="date" id="val-asof" value="${h(r.asOf||"")}" style="max-width:170px">
-      <button class="btn btn-secondary btn-sm" onclick="closeModal();openStockValuationModal($('#val-asof').value)">조회</button></div>
+      <label class="fl" style="margin:0">보기</label>
+      <select class="fc" id="val-view" style="max-width:130px"><option value="item"${view==="item"?" selected":""}>품목별</option><option value="location"${view==="location"?" selected":""}>창고별</option></select>
+      <button class="btn btn-secondary btn-sm" onclick="_valRefresh()">조회</button></div>
     <div class="tbl-wrap"><table class="tbl"><thead><tr><th>코드</th><th>품목</th><th class="tr">수량</th><th class="tr">평균단가</th><th class="tr">이동평균 금액</th><th class="tr">FIFO 단가</th><th class="tr">FIFO 금액</th><th></th></tr></thead>
-    <tbody>${rows||`<tr><td colspan="8" class="tc" style="padding:20px;color:var(--text3)">재고 이력이 없습니다.</td></tr>`}</tbody>
-    <tfoot><tr><th colspan="4">합계</th><th class="tr">${fmt(r.totals.avg)}원</th><th></th><th class="tr">${fmt(r.totals.fifo)}원</th><th></th></tr></tfoot></table></div>
-    <div style="font-size:12px;color:var(--text3);margin-top:8px">참고용 계산입니다. 발주 입고는 발주 단가, 수동 입고는 입력한 취득단가를 쓰고 단가가 없으면 품목 마스터 단가로 추정합니다(배지 표시). 창고 간 이동은 평가에서 제외됩니다.</div>
+    <tbody>${bodyRows||`<tr><td colspan="8" class="tc" style="padding:20px;color:var(--text3)">재고 이력이 없습니다.</td></tr>`}</tbody>
+    <tfoot><tr><th colspan="4">합계</th><th class="tr">${fmt(tot.avg)}원</th><th></th><th class="tr">${fmt(tot.fifo)}원</th><th></th></tr></tfoot></table></div>
+    <div style="font-size:12px;color:var(--text3);margin-top:8px">참고용 계산입니다. 발주 입고는 발주 단가, 수동 입고는 입력한 취득단가를 쓰고 단가가 없으면 품목 마스터 단가로 추정합니다(배지 표시). ${view==="location"?"창고 간 이동은 출발 창고의 단가가 도착 창고로 따라갑니다. 창고별 합계는 단가 흐름 차이로 품목별 합계와 다를 수 있습니다.":"품목별 보기에서는 창고 간 이동이 평가에서 제외됩니다."}</div>
+    ${postHtml}
   </div><div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal()">닫기</button></div></div>`);
+}
+// 조회 버튼 — 모달을 닫기 전에 입력값을 먼저 읽는다(닫으면 입력칸이 사라진다).
+function _valRefresh(){
+  const asOf=$("#val-asof")?.value||"",view=$("#val-view")?.value||"item";
+  closeModal();openStockValuationModal(asOf,view);
+}
+async function postStockValuationVoucher(){
+  const method=$("#val-post-method")?.value,inv=$("#val-post-inv")?.value,adj=$("#val-post-adj")?.value;
+  const asOf=$("#val-asof")?.value||window._valAsOfShown||_localDateStr();
+  if(!inv||!adj){showToast("재고자산 계정과 평가손익 계정을 선택하세요.","error");return;}
+  if(inv===adj){showToast("두 계정은 서로 달라야 합니다.","error");return;}
+  const ok=await askConfirmModal({title:"재고평가 전표 발행",message:`${asOf} 기준 ${method==="fifo"?"FIFO":"이동평균"} 평가 금액을 재고자산 조정 전표로 발행합니다.\n발행한 전표는 회계 > 전표에서 확인·취소할 수 있습니다.`,confirmText:"발행"});
+  if(!ok)return;
+  const r=await serverRequest("POST","/api/erp/stock/valuation/post-voucher",{asOf,method,inventoryAccountId:inv,adjustmentAccountId:adj});
+  if(!r?.ok){showToast(r?.message||"전표를 발행하지 못했습니다.","error");return;}
+  const d=r.valuation||{};
+  showToast(`전표 ${r.voucher?.voucherNo||""} 발행 — 평가 ${Math.round(d.totalValue||0).toLocaleString()}원, 조정 ${Math.round(d.delta||0).toLocaleString()}원`,"success");
+  if(typeof loadAccountingFromServer==="function")loadAccountingFromServer();
 }
 function openStockAdjustModal(){
   if(!erpItems.length||!erpLocations.length){showToast("먼저 품목과 위치를 등록하세요.","error");return;}

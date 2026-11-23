@@ -14,8 +14,15 @@ module.exports = async function masterLifecycle(api, token) {
     ["sales-targets","salesTargets",{year:2031,targetAmount:50}],
   ]) {
     const id="lifecycle-"+randomUUID(), body={...payload,id};
-    await call(route,body);
-    await call(route,{...body,memo:"active edit"});
+    const created = await call(route,body);
+    // 품목·창고는 수정 시 낙관적 락(expectedUpdatedAt)이 필수 — 영업 목표는 기존 동작
+    const revisioned = route === "items" || route === "locations";
+    const rec = created.item || created.location || {};
+    if (revisioned) {
+      assert.equal((await call(route,{...body,memo:"no revision"},428)).code,"ERP_REVISION_REQUIRED");
+      assert.equal((await call(route,{...body,memo:"stale",expectedUpdatedAt:"1999-01-01T00:00:00.000Z"},409)).code,"ERP_MASTER_CONFLICT");
+    }
+    await call(route,{...body,memo:"active edit",...(revisioned?{expectedUpdatedAt:rec.updatedAt}:{})});
     await call(route+"/"+id+"/delete",{});
     const hidden=async()=>assert.ok(!(await call(route,undefined,200,"GET"))[field].some(row=>row.id===id));
     await hidden();
