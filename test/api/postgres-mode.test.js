@@ -347,6 +347,29 @@ if (!ADMIN_DATABASE_URL) {
     });
 
     await t.test("마스터 삭제·복원과 참조 경합", () => require("../support/erp-master-lifecycle")(api, companyAToken));
+    await t.test("legacy master revisions upgrade without allowing blind or stale writes", async () => {
+      const client=new Client({connectionString:testDbUrl});await client.connect();
+      try {
+        const companyId=(await client.query("SELECT id FROM companies WHERE slug=$1", [companyACode])).rows[0]?.id;
+        assert.ok(companyId,"company A fixture exists");
+        for(const [route,table,key,payload] of [
+          ["items","erp_items","item",{code:"LEGACY-CAS",name:"Legacy item"}],
+          ["locations","erp_locations","location",{name:"Legacy warehouse"}],
+          ["sales-targets","erp_sales_targets","salesTarget",{year:2031,targetAmount:10}],
+        ]){
+          const id="legacy-revision-"+route;
+          const original={id,...payload};
+          await client.query('INSERT INTO '+table+' (id,company_id,data) VALUES ($1,$2,$3)',[id,companyId,original]);
+          const save=body=>api('/api/erp/'+route,{method:'POST',headers:{Authorization:'Bearer '+companyAToken,'Content-Type':'application/json'},body:JSON.stringify(body)});
+          assert.equal((await save(original)).status,409);
+          const result=await save({...original,_rev:'legacy',name:'Reviewed',targetAmount:20});
+          assert.equal(result.status,200,await result.clone().text());
+          const saved=(await result.json())[key];assert.equal(typeof saved._rev,'string');
+          assert.equal((await save({...original,_rev:'legacy'})).status,409);
+          assert.deepEqual((await client.query('SELECT data FROM '+table+' WHERE id=$1 AND company_id=$2',[id,companyId])).rows[0].data,saved);
+        }
+      } finally {await client.end();}
+    });
 
     await t.test("동일 품목 합산 출고와 창고별 잔고", () => require("../support/erp-shipment-stock")(api, companyAToken));
 

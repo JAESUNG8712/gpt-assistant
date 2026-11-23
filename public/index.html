@@ -24247,7 +24247,7 @@ function renderInvItemsTbl(){
 function openItemModal(id){
   const i=id?erpItems.find(i=>i.id===id):null;
   openModal(`<div class="modal-box"><div class="modal-head"><h3>${id?"품목 수정":"품목 추가"}</h3></div><div class="modal-body">
-    <div class="fg"><label class="fl">품목코드 <span class="req">*</span></label><input class="fc" id="item-code" value="${h(i?.code||"")}"></div>
+    <div class="fg"><label class="fl">품목코드 <span class="req">*</span></label><input type="hidden" id="item-revision" value="${h(i?(i._rev||"legacy"):"")}"><input class="fc" id="item-code" value="${h(i?.code||"")}"></div>
     <div class="fg"><label class="fl">품목명 <span class="req">*</span></label><input class="fc" id="item-name" value="${h(i?.name||"")}"></div>
     <div class="fg"><label class="fl">제품명</label><input class="fc" id="item-pname" value="${h(i?.productName||"")}"></div>
     <div class="fg"><label class="fl">단위</label><input class="fc" id="item-unit" value="${h(i?.unit||"EA")}"></div>
@@ -24262,6 +24262,21 @@ function openItemModal(id){
 async function saveErpMasterRequest(path,body){
   try {
     const result=await serverRequest("POST",path,body);
+    if(result?.code==="ERP_MASTER_CONFLICT"){
+      const kind=path.endsWith("/items")?"items":path.endsWith("/locations")?"locations":null;
+      if(!kind)return result;
+      const editor=$(kind==="items"?"#item-revision":"#loc-revision")?.closest(".modal-ov");
+      const reload=await askConfirmModal({title:"다른 사용자의 변경 내용 확인",message:"먼저 저장된 변경이 있어 현재 입력을 저장하지 않았습니다. 최신 내용을 불러오면 지금 입력한 내용이 교체됩니다.",confirmText:"최신 내용 불러오기",cancelText:"입력 유지",warnings:["입력을 유지해도 최신 자료를 다시 확인하기 전에는 저장할 수 없습니다."]});
+      if(!reload)return {ok:false,cancelled:true};
+      const latest=await serverRequest("GET",path);
+      if(!latest?.ok)return {ok:false,message:"최신 자료를 불러오지 못했습니다. 입력 내용은 유지됩니다."};
+      if(!latest[kind]?.some(row=>row.id===body.id))return {ok:false,message:"자료가 삭제되었습니다. 입력 내용을 확인하고 다시 시도하세요."};
+      if(!editor?.isConnected||_modalStack().at(-1)!==editor)return {ok:false,cancelled:true};
+      closeModal();
+      if(kind==="items"){erpItems=latest.items;openItemModal(body.id);}
+      else {erpLocations=latest.locations;openLocationModal(body.id);}
+      return {ok:false,cancelled:true};
+    }
     if(result?.code!=="ERP_MASTER_DELETED")return result;
     const restore=await askConfirmModal({title:"삭제된 자료 복원 확인",message:"다른 작업에서 이 자료가 삭제되었습니다. 현재 입력 내용으로 복원하시겠습니까?",confirmText:"복원하여 저장",danger:true,impacts:[{label:"복원 대상",value:body.name||body.id||"영업 목표"}],warnings:["복원 후에는 다른 사용자의 목록에서도 다시 표시됩니다."]});
     if(!restore)return {ok:false,cancelled:true};
@@ -24273,7 +24288,7 @@ async function saveErpMasterRequest(path,body){
 async function saveItem(id){
   const code=$("#item-code")?.value.trim(),name=$("#item-name")?.value.trim();
   if(!code||!name){showToast("품목코드와 품목명을 입력하세요.","error");return;}
-  const body={id:id||undefined,code,name,productName:$("#item-pname")?.value.trim(),assetNo:$("#item-asset")?.value.trim(),unit:$("#item-unit")?.value.trim(),category:$("#item-category")?.value.trim(),safetyStock:+$("#item-safety")?.value||0,unitCost:+$("#item-cost")?.value||0,leadTimeDays:Math.max(0,+$("#item-leadtime")?.value||0),active:$("#item-active")?.checked,role:currentUser.role,user:currentUser.name};
+  const body={id:id||undefined,_rev:id?$("#item-revision")?.value:undefined,code,name,productName:$("#item-pname")?.value.trim(),assetNo:$("#item-asset")?.value.trim(),unit:$("#item-unit")?.value.trim(),category:$("#item-category")?.value.trim(),safetyStock:+$("#item-safety")?.value||0,unitCost:+$("#item-cost")?.value||0,leadTimeDays:Math.max(0,+$("#item-leadtime")?.value||0),active:$("#item-active")?.checked,role:currentUser.role,user:currentUser.name};
   const r=await saveErpMasterRequest("/api/erp/items",body);
   if(r?.cancelled)return;
   if(!r?.ok){showToast(r?.message||"저장에 실패했습니다.","error");return;}
@@ -24330,7 +24345,7 @@ function renderInvLocationsPage(){
 function openLocationModal(id){
   const l=id?erpLocations.find(l=>l.id===id):null;
   openModal(`<div class="modal-box"><div class="modal-head"><h3>${id?"위치 수정":"위치 추가"}</h3></div><div class="modal-body">
-    <div class="fg"><label class="fl">위치명 <span class="req">*</span></label><input class="fc" id="loc-name" value="${h(l?.name||"")}"></div>
+    <div class="fg"><label class="fl">위치명 <span class="req">*</span></label><input type="hidden" id="loc-revision" value="${h(l?(l._rev||"legacy"):"")}"><input class="fc" id="loc-name" value="${h(l?.name||"")}"></div>
     <div class="fg"><label class="fl">주소</label><input class="fc" id="loc-address" value="${h(l?.address||"")}"></div>
     <div class="fg"><label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" id="loc-active" ${l?.active!==false?"checked":""}> 사용</label></div>
   </div><div class="modal-foot"><button class="btn btn-secondary" onclick="closeModal()">취소</button><button class="btn btn-primary" onclick="saveLocation('${id||""}')">저장</button></div></div>`);
@@ -24338,7 +24353,7 @@ function openLocationModal(id){
 async function saveLocation(id){
   const name=$("#loc-name")?.value.trim();
   if(!name){showToast("위치명을 입력하세요.","error");return;}
-  const body={id:id||undefined,name,address:$("#loc-address")?.value.trim(),active:$("#loc-active")?.checked,role:currentUser.role,user:currentUser.name};
+  const body={id:id||undefined,_rev:id?$("#loc-revision")?.value:undefined,name,address:$("#loc-address")?.value.trim(),active:$("#loc-active")?.checked,role:currentUser.role,user:currentUser.name};
   const r=await saveErpMasterRequest("/api/erp/locations",body);
   if(r?.cancelled)return;
   if(!r?.ok){showToast(r?.message||"저장에 실패했습니다.","error");return;}
