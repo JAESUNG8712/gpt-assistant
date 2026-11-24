@@ -1,4 +1,4 @@
-const { test, expect } = require("@playwright/test");
+const { test, expect } = require("./fixtures");
 
 // 한국 시간 00~09시에는 UTC 날짜가 하루 전이라, toISOString() 기반 "오늘"이 어제로 나오던 문제의 회귀 테스트.
 // 시스템 시각을 UTC 2026-11-12 20:00(=KST 2026-11-13 05:00)로 고정하고 브라우저 시간대를 Asia/Seoul로 맞춘다.

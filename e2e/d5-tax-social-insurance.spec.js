@@ -1,4 +1,4 @@
-const { test, expect } = require("@playwright/test");
+const { test, expect } = require("./fixtures");
 
 // D5(HR마인드 벤치마킹 2차 라운드) — 세무/사회보험 참고용 화면 + 단체보험 등록. 세 기능 모두
 // "실제 전자신고/보험사 가입을 대체하지 않는 참고용 기록·조회"로 범위를 명시적으로 줄인

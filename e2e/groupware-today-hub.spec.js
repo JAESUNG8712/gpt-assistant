@@ -1,4 +1,4 @@
-const { test, expect } = require("@playwright/test");
+const { test, expect } = require("./fixtures");
 
 test.describe("그룹웨어형 오늘의 업무 허브", () => {
   test("오늘의 근태·결재·일정·회의실·공지를 요약하고 원래 업무 화면으로 이동한다", async ({ page }) => {

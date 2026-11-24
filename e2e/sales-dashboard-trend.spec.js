@@ -1,4 +1,4 @@
-const { test, expect } = require("@playwright/test");
+const { test, expect } = require("./fixtures");
 
 // 영업 대시보드 "월별 추이" 탭 — 서버 집계 숫자 자체는 test/api-sales-dashboard-trend.test.js가
 // 검증하고, 여기서는 화면이 그 응답을 차트·표·증감률로 올바르게 그리는지와 연도 선택이

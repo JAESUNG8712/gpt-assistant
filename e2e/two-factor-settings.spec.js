@@ -1,4 +1,4 @@
-const { test, expect } = require("@playwright/test");
+const { test, expect } = require("./fixtures");
 const { totp } = require("../test/support/totp");
 
 test("2단계 인증을 실제 저장하고 새로고침 후 비밀값 없이 해제한다", async ({ page, request }) => {

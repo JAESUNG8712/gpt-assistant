@@ -1,4 +1,4 @@
-const { test, expect } = require("@playwright/test");
+const { test, expect } = require("./fixtures");
 
 // D2(HR마인드 벤치마킹 2차 라운드) — 화상조직도. 직원 사진 업로드(admin 전용, 300KB 상한)와
 // 조직도의 "사진형 보기" 토글, 사진이 없을 때의 이니셜 아바타 폴백을 검증한다. 서버측 쓰기는

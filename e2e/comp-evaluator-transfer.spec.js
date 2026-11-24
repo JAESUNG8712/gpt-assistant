@@ -1,4 +1,4 @@
-const { test, expect } = require("@playwright/test");
+const { test, expect } = require("./fixtures");
 
 // 부서이동 평가자 자동전환(Epic C — HR마인드 벤치마킹, _autoTransitionCompEvaluators).
 // 아직 응답이 없고 고정 평가자 지정도 없는 세션은 saveEmpEdit()/_applyDueHRChanges() 등

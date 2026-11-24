@@ -1,4 +1,4 @@
-const { test, expect } = require("@playwright/test");
+const { test, expect } = require("./fixtures");
 
 // 재고평가 모달 — 창고별 보기와 재고자산 평가 조정 전표 발행.
 async function loginAsAdmin(page) {
