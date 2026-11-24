@@ -1,4 +1,4 @@
-const { test, expect } = require("@playwright/test");
+const { test, expect } = require("./fixtures");
 
 // ERP 부분 출고·입고 + 반품 — 화면 흐름(회차 모달, 잔여 수량 검증, 반품 가능 수량, 상태 배지).
 // ERP 문서는 전용 REST 테이블이라 /save 전체상태 블롭과 무관하므로 loadFromServer를

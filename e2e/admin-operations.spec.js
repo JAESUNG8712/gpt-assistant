@@ -1,4 +1,4 @@
-const { test, expect } = require("@playwright/test");
+const { test, expect } = require("./fixtures");
 
 test("관리자 운영센터가 상태·보안·활동 통계를 표시하고 필터링한다", async ({ page }) => {
   const pageErrors=[];

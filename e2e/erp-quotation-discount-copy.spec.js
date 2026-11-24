@@ -1,4 +1,4 @@
-const { test, expect } = require("@playwright/test");
+const { test, expect } = require("./fixtures");
 
 // 견적서 품목별 할인율 입력·합계 계산과 복사 버튼.
 async function loginAsAdmin(page) {

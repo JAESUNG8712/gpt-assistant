@@ -1,4 +1,4 @@
-const { test, expect } = require("@playwright/test");
+const { test, expect } = require("./fixtures");
 
 test.describe("직군별/직책별 권한·위젯 일괄 관리", () => {
   test("직군별 메뉴 권한을 일괄 적용하면 소속 재직자 전원에게 반영된다", async ({ page }) => {

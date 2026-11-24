@@ -1,4 +1,4 @@
-const { test, expect } = require("@playwright/test");
+const { test, expect } = require("./fixtures");
 const fs = require("fs");
 
 // 급여 명세서 PDF 다운로드 — 화면의 "📄 PDF" 버튼이 호출하는 downloadPayslipPdf()가

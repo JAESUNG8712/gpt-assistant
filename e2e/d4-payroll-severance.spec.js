@@ -1,4 +1,4 @@
-const { test, expect } = require("@playwright/test");
+const { test, expect } = require("./fixtures");
 
 // D4(HR마인드 벤치마킹 2차 라운드) — 급여/퇴직 고도화. 기존 연봉제 계산 경로(annual÷12)는
 // settings.payBasisMode 기본값("annual")에서 완전히 동일하게 유지되어야 하므로(하위호환

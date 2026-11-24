@@ -1,4 +1,4 @@
-const { test, expect } = require("@playwright/test");
+const { test, expect } = require("./fixtures");
 
 test("HR 알림은 담당 업무와 메뉴 권한에 맞게 보이고 키보드로 이동된다", async ({ page }) => {
   const errors = [];

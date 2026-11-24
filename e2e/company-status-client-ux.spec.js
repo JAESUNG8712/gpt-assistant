@@ -1,4 +1,4 @@
-const { test, expect } = require("@playwright/test");
+const { test, expect } = require("./fixtures");
 
 // 작업6(종합 재점검) — companies.status(trial/active/suspended) enforcement의 부작용
 // 점검 중 발견: 서버는 회사가 정지(suspended)되면 모든 요청을 즉시 403 COMPANY_SUSPENDED로

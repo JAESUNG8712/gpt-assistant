@@ -1,4 +1,4 @@
-const { test, expect } = require("@playwright/test");
+const { test, expect } = require("./fixtures");
 
 // 평가결과 리포트 레이더차트(Epic C — HR마인드 벤치마킹). 다면평가 상세(openCompDetailModal)의
 // "회사 평균 비교"가 축(카테고리)이 3개 이상이면 기존 막대그래프 대신 방사형(레이더) SVG

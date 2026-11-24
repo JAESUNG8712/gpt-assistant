@@ -1,4 +1,4 @@
-const { test, expect } = require("@playwright/test");
+const { test, expect } = require("./fixtures");
 
 // 작업3(항목C) — 재고 리드타임 + 반자동 구매요청(재주문점 계산 + 원클릭 생성).
 // erp_items/erp_stock_ledger/erp_purchase_requests는 전용 REST 테이블(employees처럼

@@ -1,8 +1,8 @@
-// P1-3 e2e 스캐폴드의 최소 스모크 테스트. playwright.config.js의 webServer가
-// test/support/start-e2e-server.js로 서버를 띄우고(관리자 e2e_admin/E2eTestPw123
+// P1-3 e2e 스캐폴드의 최소 스모크 테스트. e2e/fixtures.js가
+// test/support/start-e2e-server.js로 파일마다 서버를 띄우고(관리자 e2e_admin/E2eTestPw123
 // 사전 시딩됨), 여기서는 그 서버를 상대로 실제 브라우저 로그인·기본 네비게이션만
 // 확인한다. 화면별 상세 시나리오는 이 스캐폴드 위에 추가해 나가면 된다.
-const { test, expect } = require("@playwright/test");
+const { test, expect } = require("./fixtures");
 
 test("복구 영향 범위를 확인하는 동안 다른 사용자가 수정하면 최신 자료를 보존한다", async ({ page }) => {
   await page.goto("/");

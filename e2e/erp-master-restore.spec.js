@@ -1,4 +1,4 @@
-const { test, expect } = require("@playwright/test");
+const { test, expect } = require("./fixtures");
 for (const kind of ["items", "locations"]) {
   test(kind+": stale editor asks before restoring a deleted record and preserves cancelled input", async ({ page }) => {
     const errors=[];page.on("pageerror",e=>errors.push(e.message));

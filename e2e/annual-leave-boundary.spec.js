@@ -1,4 +1,4 @@
-const { test, expect } = require("@playwright/test");
+const { test, expect } = require("./fixtures");
 
 // 연차 발생(calcAnnualLeaveGrant)이 365.25일 근사 대신 달력 기준 완료 연/월을 쓰는지 확인한다.
 // 입사 1주년 전날은 아직 1년 미만(월차 최대 11일), 당일부터 15일이다. 날짜는 실행일 기준으로

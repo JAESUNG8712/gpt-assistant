@@ -1,13 +1,12 @@
-// Playwright e2e(playwright.config.js의 webServer.command)가 직접 실행하는 진입점.
+// e2e/fixtures.js가 spec 파일마다 자식 프로세스로 실행하는 진입점(E2E_PORT 환경변수로 포트 지정).
 // server.js는 별도 startServer() export 없이 require 시점에 곧바로 app.listen()을
 // 호출하는 구조라, 여기서는 필요한 환경변수를 먼저 세팅한 뒤 그 파일을 그대로
-// require해서 같은 프로세스 안에서 띄운다(Playwright의 webServer가 이 스크립트
-// 자체의 생명주기를 관리해준다 — 별도 child_process spawn 불필요).
+// require해서 같은 프로세스 안에서 띄운다(이 스크립트 자체의 생명주기는
+// e2e/fixtures.js가 자식 프로세스로 관리한다).
 //
 // 관리자 계정은 서버가 뜬 "뒤"에 POST /save로 비동기 부트스트랩하는 대신, 서버를
 // 띄우기 "전"에 DATA_FILE을 미리 (bcrypt로 해시한 비밀번호까지) 직접 써둔다 —
-// Playwright의 webServer.url 준비확인은 GET /status가 200만 반환하면 곧바로
-// "준비됨"으로 판단해 다음 단계(첫 e2e 테스트)로 넘어가므로, 서버 기동 "후"에
+// fixtures.js는 GET /status가 응답하면 곧바로 테스트를 시작하므로, 서버 기동 "후"에
 // 비동기로 관리자를 만드는 방식은 그 사이에 로그인 테스트가 먼저 도착하는
 // 레이스 컨디션이 될 수 있다. 파일을 미리 채워두면 app.listen()이 성공적으로
 // 응답하는 시점엔 이미 관리자 계정이 메모리에 로드돼 있어 이 레이스 자체가 없다.

@@ -1,4 +1,4 @@
-const { test, expect } = require("@playwright/test");
+const { test, expect } = require("./fixtures");
 
 // OKR 모듈(Epic C — HR마인드 벤치마킹). 목표(Objective)·핵심지표(KR) 등록/승인, 체크인
 // 타임라인, 코멘트·첨부파일을 UI 흐름으로 검증한다. 서버측 권한 게이팅은 별도 작성될 수

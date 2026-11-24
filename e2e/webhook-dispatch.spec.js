@@ -13,7 +13,7 @@
 // 바꾸는 것으로는 부족하고, 실제 서버에 그 설정을 저장(_doSave(true))한 뒤에야
 // 서버 쪽 디스패치가 그 웹훅을 찾아 로컬 HTTP 목(mock) 수신 서버로 실제 fetch(POST)를
 // 보낸다 — 목 서버가 요청을 받았는지로 "발송됐다"를 확인한다.
-const { test, expect } = require("@playwright/test");
+const { test, expect } = require("./fixtures");
 const http = require("http");
 
 function startMockReceiver() {

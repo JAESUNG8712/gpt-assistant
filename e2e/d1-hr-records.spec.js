@@ -1,4 +1,4 @@
-const { test, expect } = require("@playwright/test");
+const { test, expect } = require("./fixtures");
 
 // D1(HR마인드 벤치마킹 2차 라운드) — 징계관리·계약관리·승진시뮬레이션·권한변경로그·
 // 코드관리 통합화면. 서버측 쓰기는 기존 employees 보호(role/salary/birth/address 전용

@@ -1,4 +1,4 @@
-const { test, expect } = require("@playwright/test");
+const { test, expect } = require("./fixtures");
 
 // 2026-10-12 종합 고도화 리뷰에서 발견한 근속연수 계산 중복/불일치 수정의 회귀 테스트.
 // 장기근속 포상 등 4개 화면이 각자 `(now-hire)/(1000*60*60*24*365)`를 복붙해 쓰고 있었는데,

@@ -1,4 +1,4 @@
-const { test, expect } = require("@playwright/test");
+const { test, expect } = require("./fixtures");
 
 // 장기근속 포상금 급여 연동 — 대상자 행에서 한 번 클릭으로 급여 조정(payrollAdjustments)을 만들고,
 // 같은 포상의 중복 반영·마감/확정 월 반영·휴직자·포상금 미설정 기준을 막는지 확인한다.

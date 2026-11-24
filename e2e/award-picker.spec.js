@@ -1,4 +1,4 @@
-const { test, expect } = require("@playwright/test");
+const { test, expect } = require("./fixtures");
 
 test.describe("우수사원 등록 - 이름 검색 선택", () => {
   test("openOrgPicker로 대상자를 검색·선택하고 정상 등록된다", async ({ page }) => {

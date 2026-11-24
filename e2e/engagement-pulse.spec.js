@@ -1,4 +1,4 @@
-const { test, expect } = require("@playwright/test");
+const { test, expect } = require("./fixtures");
 
 test("관리자가 펄스 설문을 개설하고 익명 임계치 집계를 확인한다", async ({ page }) => {
   const pageErrors = [];

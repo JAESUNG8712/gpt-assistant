@@ -1,4 +1,4 @@
-const { test, expect } = require("@playwright/test");
+const { test, expect } = require("./fixtures");
 
 test.describe("서버 스냅샷과 로컬 변경 병합", () => {
   test.beforeEach(async ({ page }) => {

@@ -1,4 +1,4 @@
-const { test, expect } = require("@playwright/test");
+const { test, expect } = require("./fixtures");
 
 test("급여 조정은 실제 저장되고 동료의 급여 확정 뒤 추가한 금액은 되돌린다", async ({ page }, testInfo) => {
   await page.goto("/");

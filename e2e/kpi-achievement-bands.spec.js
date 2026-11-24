@@ -1,4 +1,4 @@
-const { test, expect } = require("@playwright/test");
+const { test, expect } = require("./fixtures");
 
 // 목표별 등급기준표(앵커링 자동채점, Epic C — HR마인드 벤치마킹). settings.kpiAchievementBands
 // (달성률 % → 점수 매핑 구간표)가 "KPI 결과 입력" 화면에서 제안 점수로만 작동하고(강제 자동

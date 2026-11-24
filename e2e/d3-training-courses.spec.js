@@ -1,4 +1,4 @@
-const { test, expect } = require("@playwright/test");
+const { test, expect } = require("./fixtures");
 
 // D3(HR마인드 벤치마킹 2차 라운드) — 교육관리 고도화. mandatoryTraining(법정의무교육 완료로그)와는
 // 완전히 별개의 과정 카탈로그(개설·정원 기반 신청/대기·이수·설문·비용정산) 워크플로우를 검증한다.

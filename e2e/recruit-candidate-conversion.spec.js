@@ -1,4 +1,4 @@
-const { test, expect } = require("@playwright/test");
+const { test, expect } = require("./fixtures");
 
 // 작업2(항목E) — 채용 소스추적 + 지원자→직원 전환(반자동). 지원자 등록/수정/대시보드/
 // CSV의 source 필드는 server.js 단위테스트(test/api-recruit-source-conversion.test.js)가

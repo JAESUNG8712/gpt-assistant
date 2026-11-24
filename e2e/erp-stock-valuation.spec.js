@@ -1,4 +1,4 @@
-const { test, expect } = require("@playwright/test");
+const { test, expect } = require("./fixtures");
 
 // 재고평가 모달 — 발주 입고 단가와 수동 취득단가로 이동평균/FIFO 금액이 서로 다르게 표시된다.
 async function loginAsAdmin(page) {

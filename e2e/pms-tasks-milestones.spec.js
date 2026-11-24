@@ -1,4 +1,4 @@
-const { test, expect } = require("@playwright/test");
+const { test, expect } = require("./fixtures");
 
 // 작업5(항목A) — PMS 작업/마일스톤/예산. pms_tasks/pms_milestones/프로젝트
 // budgetPlanned는 전용 REST 테이블(employees처럼 /save 전체상태 블롭을 거치지

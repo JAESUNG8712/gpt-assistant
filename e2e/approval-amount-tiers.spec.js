@@ -1,4 +1,4 @@
-const { test, expect } = require("@playwright/test");
+const { test, expect } = require("./fixtures");
 
 // 결재 금액 구간별 추가 결재자 — 고액 문서에만 결재자를 "더하는" 규정(전결 규정은 줄이는 규정).
 // 순수 함수(_applyApprovalAmountTiers)의 경계·예외, 설정 화면의 추가/삭제, 상신 미리보기 연동을 본다.

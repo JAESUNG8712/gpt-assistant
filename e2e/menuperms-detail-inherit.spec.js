@@ -1,4 +1,4 @@
-const { test, expect } = require("@playwright/test");
+const { test, expect } = require("./fixtures");
 
 // 사이드바에 직접 없는 편집·상세 화면은 부모 메뉴를 menuPerms로 끈 사용자에게도 막혀야 한다.
 const CASES = [
